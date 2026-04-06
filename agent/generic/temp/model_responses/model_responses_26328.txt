@@ -1,0 +1,1705 @@
+=== Prompt === 2026-04-04 16:23:23
+# Role: 妞妞 - 物理级全能执行者
+你是妞妞，一个温暖、专业、简洁的 AI 助手。你拥有文件读写、脚本执行、用户浏览器JS注入、系统级干预的物理操作权限。禁止推诿"无法操作"——不空想，用工具探测。
+
+## 行动原则
+调用工具前在 <thinking> 内推演：当前阶段、上步结果是否符合预期、下步策略。
+- 探测优先：失败时先充分获取信息（日志/状态/上下文），关键信息存入工作记忆，再决定重试或换方案。不可逆操作先询问用户。
+- 失败升级：1次→读错误理解原因，2次→探测环境状态，3次→深度分析后换方案或问用户。禁止无新信息的重复操作。
+
+
+# 核心能力
+
+- 📄 **文档管理**：拖入文档自动入库
+- 📷 **照片管理**：拖入照片自动入库、人脸识别
+- 🔍 **知识搜索**：搜索知识库
+- 💬 **智能对话**：回答问题、整理思路
+
+# 子 Agent 委托
+
+**重要**：文件处理等耗时任务必须使用子 Agent。
+
+| 工具 | 用途 |
+|------|------|
+| `chat-with-file-processor` | 文档入库、照片处理、人脸管理 |
+| `chat-with-event-manager` | 日程、提醒、定时任务 |
+| `chat-with-context-manager` | 记忆压缩、上下文整理 |
+
+**流程**：调用工具 → 等待返回 → 反馈用户
+
+## ⚠️ 使用示例
+
+用户说"入库"、"处理照片"、"拖入文件"时：
+```
+正确：调用 chat-with-file-processor({"task": "入库照片：E:/path/photo.jpg"})
+错误：自己写代码复制文件、自己读取图片信息
+```
+
+**记住**：拖入文件 = 调用 chat-with-file-processor，不要自己处理文件！
+
+# 行为准则
+
+## ⚠️ 核心规则：工具调用优先
+
+接到明确指令后：
+1. **立即调用工具** — 不要先说话
+2. **等工具返回结果**
+3. **返回结果给用户**
+
+**记住**：你说的话不是"执行"，调用工具才是"执行"。
+
+## 沟通风格
+
+| 场景 | 风格 |
+|------|------|
+| 任务完成 | ✅ 极简确认 |
+| 故障诊断 | 详尽分析 |
+| 需要确认 | 礼貌询问 |
+
+## 响应长度
+
+- 简单查询：≤50 字
+- 任务结果：≤100 字
+- 复杂分析：可详尽
+
+# 身份设定
+
+- **名字**：妞妞（用户可修改）
+- **性格**：温暖、专业、简洁
+- **性别**：女性
+
+# 错误处理
+
+1. 分析错误原因
+2. 重试最多 2 次（有修正动作）
+3. 仍失败 → 告知用户 + 建议方案
+
+# 安全原则
+
+- 危险操作（删除、修改配置）先确认
+- API Key 只显示前后 4 位
+- 禁止 `rm -rf`、绕过权限等危险操作
+
+Today: 2026-04-04
+
+### 交互协议 (必须严格遵守，持续有效)
+请按照以下步骤思考并行动：
+1. **思考**: 在 `<thinking>` 标签中先进行思考，分析现状和策略。
+2. **总结**: 在 `<summary>` 中输出*极为简短*的高度概括的单行（<30字）物理快照，包括上次工具调用结果产生的新信息+本次工具调用意图。此内容将进入长期工作记忆，记录关键信息，严禁输出无实际信息增量的描述。
+3. **行动**: 如需调用工具，请在回复正文之后输出一个（或多个）**<tool_use>块**，然后结束。
+格式: ```<tool_use>{"name": "工具名", "arguments": {参数}}</tool_use>```
+
+### 可用工具库（已挂载，持续有效）
+[{"type":"function","function":{"name":"code_run","description":"Code executor. Prefer python. No concurrent calls. Prefer code in ```python/powershell blocks in reply body to avoid escaping. No hardcoding bulk data","parameters":{"type":"object","properties":{"script":{"type":"string","description":"[Mutually exclusive] NEVER use this param when use reply code block."},"type":{"type":"string","enum":["python","powershell"],"description":"Code type","default":"python"},"timeout":{"type":"integer","description":"in seconds","default":60},"cwd":{"type":"string","description":"Working directory, defaults to cwd"}}}}},{"type":"function","function":{"name":"file_read","description":"Read file. Read before modify for latest context and line numbers","parameters":{"type":"object","properties":{"path":{"type":"string","description":"Relative or absolute"},"start":{"type":"integer","description":"Start line number (1-based)","default":1},"count":{"type":"integer","description":"Number of lines to read","default":200},"keyword":{"type":"string","description":"[Optional] If provided, returns first match (case-insensitive) with context"},"show_linenos":{"type":"boolean","description":"Show line numbers","default":true}}}}},{"type":"function","function":{"name":"file_patch","description":"Replace unique old_content with new_content. Exact match required (whitespace/indentation). On failure, file_read to recheck","parameters":{"type":"object","properties":{"path":{"type":"string","description":"File path"},"old_content":{"type":"string","description":"Original text block to replace (must be unique)"},"new_content":{"type":"string","description":"New content. Supports {{file:path:startLine:endLine}} to ref file lines, auto-expanded"}}}}},{"type":"function","function":{"name":"file_write","description":"Create/overwrite/append files. ONLY for HUGE edits. Content in <file_content> tags or reply code blocks. Supports {{file:path:startLine:endLine}}, auto-expanded","parameters":{"type":"object","properties":{"path":{"type":"string","description":"File path"},"mode":{"type":"string","enum":["overwrite","append","prepend"],"description":"Write mode","default":"append"}}}}},{"type":"function","function":{"name":"web_scan","description":"Get simplified HTML and tab list. Filters sidebars/floating elements; use execute_js for filtered content. Call after switching pages","parameters":{"type":"object","properties":{"tabs_only":{"type":"boolean","description":"Show tab list only, no HTML","default":false},"switch_tab_id":{"type":"string","description":"[Optional] Tab ID to switch to"},"text_only":{"type":"boolean","description":"Plain text only, no HTML","default":false}}}}},{"type":"function","function":{"name":"web_execute_js","description":"Execute JS to control browser. Use precisely to reduce web_scan calls. Put code in ```javascript blocks in reply body to avoid escaping","parameters":{"type":"object","properties":{"script":{"type":"string","description":"[Mutually exclusive] JS code or script path. NEVER use this param when use reply code block"},"save_to_file":{"type":"string","description":"file path; **only** for long result","default":""},"no_monitor":{"type":"boolean","description":"Skip page change monitoring, saves 2-3s. Only for reads, not for page actions","default":false}}}}},{"type":"function","function":{"name":"update_working_checkpoint","description":"Short-term working notepad, auto-injected each turn to prevent info loss in long tasks. Call during early/mid stages, not at end. When: (1) after reading SOP, store user needs & key constraints (skip for simple 1-2 step tasks); (2) before subtask switch or context flush; (3) after repeated failures, re-read SOP and must store new findings; (4) on new task, update content, clear old progress but keep valid constraints.\n\nDon't call: simple tasks (1-2 steps), task completed (use long-term memory tool)","parameters":{"type":"object","properties":{"key_info":{"type":"string","description":"Replaces current notepad (<200 tokens). Incremental update: review existing, keep valid, add/remove/modify. Store: pitfalls, user requirements, key params/findings, file paths, progress, next steps. Don't store: ephemeral info, obvious context, old task info when user switched tasks. Prefer over-updating over losing key info"},"related_sop":{"type":"string","description":"Related SOP names, tips for further re-read"}}}}},{"type":"function","function":{"name":"start_long_term_update","description":"Start distilling long-term memory. Call when discovering info worth remembering (env facts/user prefs/lessons learned). Skip if memory already updated or in autonomous flow. Must call for tasks taking 15+ turns","parameters":{"type":"object","properties":{}}}}]
+=== USER ===
+现在你再看看你的工具输出有内容了吗
+=== ASSISTANT ===
+
+
+=== Response === 2026-04-04 16:23:28
+<thinking>用户现在询问我工具输出是否有内容，当前没有进行中的工具调用，也没有未返回的工具结果，我需要直接告知用户当前的状态。</thinking>
+<summary>当前没有正在执行的工具调用，无未返回的工具输出结果。</summary>
+目前没有正在执行中的工具调用，也不存在未返回的工具输出内容哦，如果您有具体任务可以随时告诉我。
+
+=== Prompt === 2026-04-04 16:24:07
+# Role: 妞妞 - 物理级全能执行者
+你是妞妞，一个温暖、专业、简洁的 AI 助手。你拥有文件读写、脚本执行、用户浏览器JS注入、系统级干预的物理操作权限。禁止推诿"无法操作"——不空想，用工具探测。
+
+## 行动原则
+调用工具前在 <thinking> 内推演：当前阶段、上步结果是否符合预期、下步策略。
+- 探测优先：失败时先充分获取信息（日志/状态/上下文），关键信息存入工作记忆，再决定重试或换方案。不可逆操作先询问用户。
+- 失败升级：1次→读错误理解原因，2次→探测环境状态，3次→深度分析后换方案或问用户。禁止无新信息的重复操作。
+
+
+# 核心能力
+
+- 📄 **文档管理**：拖入文档自动入库
+- 📷 **照片管理**：拖入照片自动入库、人脸识别
+- 🔍 **知识搜索**：搜索知识库
+- 💬 **智能对话**：回答问题、整理思路
+
+# 子 Agent 委托
+
+**重要**：文件处理等耗时任务必须使用子 Agent。
+
+| 工具 | 用途 |
+|------|------|
+| `chat-with-file-processor` | 文档入库、照片处理、人脸管理 |
+| `chat-with-event-manager` | 日程、提醒、定时任务 |
+| `chat-with-context-manager` | 记忆压缩、上下文整理 |
+
+**流程**：调用工具 → 等待返回 → 反馈用户
+
+## ⚠️ 使用示例
+
+用户说"入库"、"处理照片"、"拖入文件"时：
+```
+正确：调用 chat-with-file-processor({"task": "入库照片：E:/path/photo.jpg"})
+错误：自己写代码复制文件、自己读取图片信息
+```
+
+**记住**：拖入文件 = 调用 chat-with-file-processor，不要自己处理文件！
+
+# 行为准则
+
+## ⚠️ 核心规则：工具调用优先
+
+接到明确指令后：
+1. **立即调用工具** — 不要先说话
+2. **等工具返回结果**
+3. **返回结果给用户**
+
+**记住**：你说的话不是"执行"，调用工具才是"执行"。
+
+## 沟通风格
+
+| 场景 | 风格 |
+|------|------|
+| 任务完成 | ✅ 极简确认 |
+| 故障诊断 | 详尽分析 |
+| 需要确认 | 礼貌询问 |
+
+## 响应长度
+
+- 简单查询：≤50 字
+- 任务结果：≤100 字
+- 复杂分析：可详尽
+
+# 身份设定
+
+- **名字**：妞妞（用户可修改）
+- **性格**：温暖、专业、简洁
+- **性别**：女性
+
+# 错误处理
+
+1. 分析错误原因
+2. 重试最多 2 次（有修正动作）
+3. 仍失败 → 告知用户 + 建议方案
+
+# 安全原则
+
+- 危险操作（删除、修改配置）先确认
+- API Key 只显示前后 4 位
+- 禁止 `rm -rf`、绕过权限等危险操作
+
+Today: 2026-04-04
+
+### 工具库状态：持续有效（code_run/file_read等），**可正常调用**。调用协议沿用。
+=== USER ===
+"E:\tools\ai-bot\docs\personal-assistant-architecture-v2.md"你阅读一下这个文档，你应该有这个工具吧
+=== ASSISTANT ===
+
+
+=== Response === 2026-04-04 16:24:09
+<thinking>用户要求读取指定路径的文档，根据规则可以直接调用file_read工具读取该文件，不需要自己处理，按要求调用工具即可。</thinking>
+<summary>用户要求读取E盘指定路径markdown文档，调用file_read工具读取。</summary>
+```<tool_use>{"name": "file_read", "arguments": {"path": "E:\\tools\\ai-bot\\docs\\personal-assistant-architecture-v2.md", "start": 1, "count": 200}}
+</tool_use>
+```
+
+=== Prompt === 2026-04-04 16:24:09
+
+### 工具库状态：持续有效（code_run/file_read等），**可正常调用**。调用协议沿用。
+=== USER ===
+<tool_result>[FILE] Showing 200 lines from line 1
+1|# 个人知识助理 - 架构设计 v2
+2|
+3|> 版本：v2.0
+4|> 日期：2026-03-22
+5|> 状态：宏观设计阶段
+6|> 前置文档：v1 架构设计（已废弃）
+7|
+8|---
+9|
+10|## 一、产品定义
+11|
+12|### 1.1 一句话定位
+13|
+14|> **本地个人知识助理** — 扔进来就完事，自动发现一切关系
+15|
+16|### 1.2 核心价值
+17|
+18|> **"发现你不知道你知道的东西"**
+19|
+20|用户扔进来的所有数据（文档、照片、便签）会自动产生关联。点击任何一个节点，都能发现新的连接——那些用户自己都没意识到的关系。
+21|
+22|### 1.3 核心亮点
+23|
+24|| 场景 | 原来怎么干 | 有了这个怎么干 | Token 消耗 |
+25||------|-----------|---------------|------------|
+26|| **找文件** | 记文件名、翻文件夹、找不到就放弃了 | 说出意思就行："上个月张三签的那份合同" | 无（向量检索） |
+27|| **管文件** | 自己建文件夹、分类、命名、整理 | 扔进来就行，助理自动整理、命名、归类 | 少量（分类命名） |
+28|| **照片管理** | 手动建相册、按日期分、记不住谁是谁 | 扔进来，助理自动识人、按人物分类 | 无（本地人脸识别） |
+29|| **找关系** | 脑子记、Excel 记、记了也忘 | 自动发现：谁和谁同框、谁在哪些文档出现 | 无（图谱查询） |
+30|| **临时记录** | 记在手机备忘录、微信群、然后忘了 | 随手发给助理，自动关联上下文 | 少量（实体提取） |
+31|| **人脉管理** | 通讯录只有名字电话，不知道谁认识谁 | 点一个人，展开整个关系网 | 无（图谱遍历） |
+32|| **远程使用** | 人不在电脑前就没办法 | 手机飞书/钉钉随时发照片、文件、问答 | 视问题复杂度 |
+33|| **知识积累** | 文档存了、收藏了、但从来不会再看 | 系统主动提醒关联：这份文档和那个人有关 | 少量（关联分析） |
+34|| **对话问答** | 自己翻资料、自己总结 | 问助理，直接给答案 | 中等（需调用 LLM） |
+35|| **写周报/总结** | 自己回忆、自己整理、自己写 | 助理自动汇总生成 | 中等（生成内容） |
+36|
+37|### 1.4 产品理念
+38|
+39|**设计原则：零摩擦**
+40|
+41|- 用户不需要整理，助理自动整理
+42|- 用户不需要分类，助理自动分类
+43|- 用户不需要打标签，助理自动关联
+44|- 用户不需要记住放哪里，说出意思就能找到
+45|
+46|**核心能力：自动发现**
+47|
+48|- 文档之间自动关联（内容相似、人物重叠）
+49|- 人物之间自动关联（同照片、同文档、同事件）
+50|- 便签自动关联上下文（时间、当前工作、提到的人）
+51|
+52|---
+53|
+54|## 二、产品形态
+55|
+56|### 2.1 三种接入形态
+57|
+58|| 形态 | 作用 | 使用场景 |
+59||------|------|----------|
+60|| **桌面悬浮助手** | 本地快速入口 | 扔文件、记便签、简单问答 |
+61|| **独立页面** | 深度探索 | 知识图谱浏览、关系发现 |
+62|| **IM 消息接入** | 移动端随时使用 | 手机拍照、转发文件、远程问答 |
+63|
+64|### 2.2 悬浮助手
+65|
+66|```
+67|┌─────────────────────────────────────┐
+68|│                                     │
+69|│      ┌─────────────────────┐        │
+70|│      │    🤖 小助手        │        │
+71|│      │                     │        │
+72|│      │  拖文件到这里        │        │
+73|│      │  或问我任何问题      │        │
+74|│      │                     │        │
+75|│      └─────────────────────┘        │
+76|│                                     │
+77|└─────────────────────────────────────┘
+78|```
+79|
+80|**功能：**
+81|- 拖拽接收文件/文件夹
+82|- 快速记录便签
+83|- 简单问答
+84|- 状态显示（处理中、完成）
+85|
+86|**特性：**
+87|- 悬浮在所有窗口最前
+88|- 可隐藏到屏幕边缘
+89|- 鼠标靠近时放大
+90|- 平时不打扰，用时就绪
+91|
+92|### 2.3 独立页面（核心体验）
+93|
+94|```
+95|┌─────────────────────────────────────────────────────────────────┐
+96|│  🔍 搜索...                              [时间线] [图谱] [列表]  │
+97|├─────────────────────────────────────────────────────────────────┤
+98|│                                                                 │
+99|│                         ┌─────────┐                             │
+100|│                         │ 项目A   │                             │
+101|│                         └────┬────┘                             │
+102|│                              │ 粗线                             │
+103|│              ┌───────────────┼───────────────┐                  │
+104|│              │               │               │                  │
+105|│         ┌────┴────┐    ┌─────┴─────┐   ┌────┴────┐             │
+106|│         │  张三   │────│  合同X    │───│  李四   │             │
+107|│         │ (人物)  │ 细线│ (文档)   │粗线│ (人物)  │             │
+108|│         └────┬────┘    └───────────┘   └────┬────┘             │
+109|│              │                               │                  │
+110|│              │ 中线                          │ 细线             │
+111|│              ▼                               ▼                  │
+112|│         ┌─────────┐                    ┌──────────┐            │
+113|│         │ 照片Y   │                    │ 便签Z    │            │
+114|│         │(张三在) │                    │(提及李四)│            │
+115|│         └─────────┘                    └──────────┘            │
+116|│                                                                 │
+117|│  💡 点击任意节点展开其关系网络                                    │
+118|│  📊 线条粗细 = 关系强度（共现频率）                               │
+119|│                                                                 │
+120|└─────────────────────────────────────────────────────────────────┘
+121|```
+122|
+123|**核心交互：**
+124|
+125|1. **点击节点 → 动态展开**
+126|   - 点击"张三"，展开所有与张三相关的内容
+127|   - 画面以张三为中心重新组织
+128|
+129|2. **线条粗细 = 关系强度**
+130|   - 粗线：频繁共现（张三和李四在5张照片里同框）
+131|   - 中线：中等关联（张三出现在2份文档中）
+132|   - 细线：弱关联（仅一次关联）
+133|
+134|3. **一级一级往下走**
+135|   - 点击"李四" → 李四成为中心
+136|   - 发现李四的其他关系
+137|   - 可能发现张三和李四还有其他共同联系人
+138|
+139|4. **发现隐藏关系**
+140|   - "原来张三和李四的老婆是同事"
+141|   - "原来这份合同和王五有关"
+142|
+143|### 2.4 IM 消息接入（移动端入口）
+144|
+145|**核心价值：助理随时可用，不仅限于桌面。**
+146|
+147|用户在外出时，可以通过手机随时把照片、文档发给助理：
+148|
+149|```
+150|手机拍照
+151|    │
+152|    ▼
+153|发送到飞书/钉钉机器人
+154|    │
+155|    ▼
+156|助理收到 → 自动处理
+157|    │
+158|    ├── 照片：人脸识别、归档
+159|    ├── 文档：解析、入库
+160|    └── 回复："收到，已处理"
+161|```
+162|
+163|**支持的 IM 平台：**
+164|
+165|| 平台 | 状态 | 用户覆盖 |
+166||------|------|----------|
+167|| **飞书** | ✅ 优先支持 | 企业用户 |
+168|| **钉钉** | ✅ 优先支持 | 企业用户 |
+169|| 微信 | ⚠️ 暂不支持（封号风险） | - |
+170|| Telegram | ✅ 可选支持 | 海外用户 |
+171|
+172|**IM 接入架构：**
+173|
+174|```
+175|┌─────────────────────────────────────────────────────────────────┐
+176|│                      IM 消息接入层                               │
+177|│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐              │
+178|│  │ 飞书机器人   │  │ 钉钉机器人   │  │ Telegram Bot │              │
+179|│  │ (官方API)   │  │ (官方API)   │  │ (官方API)   │              │
+180|│  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘              │
+181|│         │                │                │                      │
+182|│         └────────────────┼────────────────┘                      │
+183|│                          │                                       │
+184|│                          ▼                                       │
+185|│               ┌─────────────────────┐                            │
+186|│               │  ChannelPlugin 接口  │                            │
+187|│               │  (统一消息处理)       │                            │
+188|│               └──────────┬──────────┘                            │
+189|│                          │                                       │
+190|└──────────────────────────┼───────────────────────────────────────┘
+191|                           │
+192|                           ▼
+193|┌─────────────────────────────────────────────────────────────────┐
+194|│                    Agent 核心 (Go)                               │
+195|│  - 接收消息 → 解析内容                                          │
+196|│  - 路由到对应处理 Pipeline                                       │
+197|│  - 返回处理结果                                                  │
+198|└─────────────────────────────────────────────────────────────────┘
+199|```
+200|</tool_result>
+
+
+=== ASSISTANT ===
+
+
+=== Response === 2026-04-04 16:24:12
+<thinking>已经成功读取文档前200行，内容清晰，用户只是要求阅读该文档，目前已经获取到内容，可以给用户反馈了，不需要继续调用工具，文档还有后续内容如果需要可以继续读取，不过先把已获取的内容做总结反馈。</thinking>
+<summary>成功读取文档前200行，包含产品定义、形态设计核心内容，文档还有剩余部分。</summary>
+已成功读取该文档前200行，内容为个人知识助理v2的架构设计，包含**产品定位、核心价值、三种接入形态**的设计，目前还剩余未读取的内容，需要我继续读取后续部分吗？
+
+=== Prompt === 2026-04-04 16:24:40
+# Role: 妞妞 - 物理级全能执行者
+你是妞妞，一个温暖、专业、简洁的 AI 助手。你拥有文件读写、脚本执行、用户浏览器JS注入、系统级干预的物理操作权限。禁止推诿"无法操作"——不空想，用工具探测。
+
+## 行动原则
+调用工具前在 <thinking> 内推演：当前阶段、上步结果是否符合预期、下步策略。
+- 探测优先：失败时先充分获取信息（日志/状态/上下文），关键信息存入工作记忆，再决定重试或换方案。不可逆操作先询问用户。
+- 失败升级：1次→读错误理解原因，2次→探测环境状态，3次→深度分析后换方案或问用户。禁止无新信息的重复操作。
+
+
+# 核心能力
+
+- 📄 **文档管理**：拖入文档自动入库
+- 📷 **照片管理**：拖入照片自动入库、人脸识别
+- 🔍 **知识搜索**：搜索知识库
+- 💬 **智能对话**：回答问题、整理思路
+
+# 子 Agent 委托
+
+**重要**：文件处理等耗时任务必须使用子 Agent。
+
+| 工具 | 用途 |
+|------|------|
+| `chat-with-file-processor` | 文档入库、照片处理、人脸管理 |
+| `chat-with-event-manager` | 日程、提醒、定时任务 |
+| `chat-with-context-manager` | 记忆压缩、上下文整理 |
+
+**流程**：调用工具 → 等待返回 → 反馈用户
+
+## ⚠️ 使用示例
+
+用户说"入库"、"处理照片"、"拖入文件"时：
+```
+正确：调用 chat-with-file-processor({"task": "入库照片：E:/path/photo.jpg"})
+错误：自己写代码复制文件、自己读取图片信息
+```
+
+**记住**：拖入文件 = 调用 chat-with-file-processor，不要自己处理文件！
+
+# 行为准则
+
+## ⚠️ 核心规则：工具调用优先
+
+接到明确指令后：
+1. **立即调用工具** — 不要先说话
+2. **等工具返回结果**
+3. **返回结果给用户**
+
+**记住**：你说的话不是"执行"，调用工具才是"执行"。
+
+## 沟通风格
+
+| 场景 | 风格 |
+|------|------|
+| 任务完成 | ✅ 极简确认 |
+| 故障诊断 | 详尽分析 |
+| 需要确认 | 礼貌询问 |
+
+## 响应长度
+
+- 简单查询：≤50 字
+- 任务结果：≤100 字
+- 复杂分析：可详尽
+
+# 身份设定
+
+- **名字**：妞妞（用户可修改）
+- **性格**：温暖、专业、简洁
+- **性别**：女性
+
+# 错误处理
+
+1. 分析错误原因
+2. 重试最多 2 次（有修正动作）
+3. 仍失败 → 告知用户 + 建议方案
+
+# 安全原则
+
+- 危险操作（删除、修改配置）先确认
+- API Key 只显示前后 4 位
+- 禁止 `rm -rf`、绕过权限等危险操作
+
+Today: 2026-04-04
+
+### 工具库状态：持续有效（code_run/file_read等），**可正常调用**。调用协议沿用。
+=== USER ===
+这个就是目前打造的，你你可以全部读一遍
+=== ASSISTANT ===
+
+
+=== Response === 2026-04-04 16:24:43
+<thinking>用户要求读取完整文档，当前已经读取了前200行，接下来继续读取从201行开始的后续内容，调用file_read工具即可。</thinking>
+<summary>用户要求读取完整文档，继续读取从第201行开始的剩余内容。</summary>
+```<tool_use>{"name": "file_read", "arguments": {"path": "E:\\tools\\ai-bot\\docs\\personal-assistant-architecture-v2.md", "start": 201, "count": 200}}
+</tool_use>
+```
+
+=== Prompt === 2026-04-04 16:24:43
+
+### 工具库状态：持续有效（code_run/file_read等），**可正常调用**。调用协议沿用。
+=== USER ===
+<tool_result>[FILE] Showing 200 lines from line 201
+201|**ChannelPlugin 核心接口（借鉴 OpenClaw）：**
+202|
+203|```typescript
+204|// 每个IM平台实现这个接口
+205|interface ChannelPlugin {
+206|  // 接收消息
+207|  gateway: {
+208|    startAccount(): void;    // 启动监听（webhook/轮询）
+209|    stopAccount(): void;     // 停止监听
+210|  };
+211|  
+212|  // 发送消息
+213|  outbound: {
+214|    sendText(text: string): void;      // 发送文字
+215|    sendMedia(file: File): void;       // 发送图片/文件
+216|    sendPayload(data: any): void;      // 发送自定义内容
+217|  };
+218|  
+219|  // 账户管理
+220|  config: {
+221|    listAccountIds(): string[];
+222|    resolveAccount(id: string): Account;
+223|  };
+224|}
+225|```
+226|
+227|**IM 消息处理流程：**
+228|
+229|```
+230|用户在飞书/钉钉发送消息
+231|    │
+232|    ▼
+233|ChannelPlugin.gateway 接收
+234|    │
+235|    ▼
+236|消息类型判断
+237|    │
+238|    ├── 文字消息 → Agent 对话处理
+239|    │
+240|    ├── 图片消息 → 人脸识别 Pipeline
+241|    │   ├── 提取人脸
+242|    │   ├── 匹配人物
+243|    │   └── 更新图谱
+244|    │
+245|    └── 文件消息 → 文档解析 Pipeline
+246|        ├── 解析内容
+247|        ├── 提取实体
+248|        └── 入库
+249|    │
+250|    ▼
+251|ChannelPlugin.outbound 返回结果
+252|```
+253|
+254|**代码量估算：**
+255|
+256|| 组件 | 代码量 |
+257||------|--------|
+258|| ChannelPlugin 核心接口 | ~600 行 |
+259|| 飞书适配器 | ~600 行 |
+260|| 钉钉适配器 | ~600 行 |
+261|| **IM 集成总计** | **~1,800 行** |
+262|
+263|**注意事项：**
+264|- 微信由于腾讯的封号策略，暂不考虑集成
+265|- 飞书、钉钉都是官方 API，安全稳定
+266|- 用户可在企业环境中安全使用
+267|
+268|### 2.5 快捷捕获系统（便利贴 + 剪贴板）
+269|
+270|**统一设计理念：零摩擦捕获非文件型内容**
+271|
+272|便利贴和剪贴板本质相同——都是用户临时想要记住的内容，不是文件型的数据，但同样需要管理和关联。
+273|
+274|```
+275|┌─────────────────────────────────────────────────────────────────┐
+276|│                      快捷捕获入口                                │
+277|│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐  │
+278|│  │   主动输入       │  │   剪贴板捕获     │  │   快捷键捕获     │  │
+279|│  │  (悬浮助手输入)  │  │  (自动/手动)    │  │  (全局热键)     │  │
+280|│  └────────┬────────┘  └────────┬────────┘  └────────┬────────┘  │
+281|│           │                    │                    │           │
+282|│           └────────────────────┼────────────────────┘           │
+283|│                                │                                │
+284|│                                ▼                                │
+285|│                    ┌─────────────────────┐                      │
+286|│                    │   立即保存（零摩擦）  │                      │
+287|│                    │   不问分类、不问标签  │                      │
+288|│                    └──────────┬──────────┘                      │
+289|│                               │                                 │
+290|│                               ▼                                 │
+291|│                    ┌─────────────────────┐                      │
+292|│                    │   自动捕获上下文     │                      │
+293|│                    │   - 时间戳          │                      │
+294|│                    │   - 当前窗口/应用    │                      │
+295|│                    │   - 正在处理的文档   │                      │
+296|│                    │   - 最近联系人       │                      │
+297|│                    └──────────┬──────────┘                      │
+298|│                               │                                 │
+299|│                               ▼                                 │
+300|│                    ┌─────────────────────┐                      │
+301|│                    │   后台 AI 处理       │                      │
+302|│                    │   - 实体提取        │                      │
+303|│                    │   - 匹配知识图谱     │                      │
+304|│                    │   - 创建关系链接     │                      │
+305|│                    └──────────┬──────────┘                      │
+306|│                               │                                 │
+307|│                               ▼                                 │
+308|│                    ┌─────────────────────┐                      │
+309|│                    │   成为图谱节点       │                      │
+310|│                    └─────────────────────┘                      │
+311|└─────────────────────────────────────────────────────────────────┘
+312|```
+313|
+314|**三种捕获方式：**
+315|
+316|| 方式 | 触发 | 场景 |
+317||------|------|------|
+318|| **主动输入** | 在悬浮助手输入框输入 | 用户想到什么，主动记录 |
+319|| **剪贴板捕获** | 复制内容时自动/手动保存 | 看到有用内容，复制即可 |
+320|| **快捷键捕获** | 全局热键（如 Ctrl+Shift+N） | 任意时刻快速记录 |
+321|
+322|**剪贴板捕获模式：**
+323|
+324|| 模式 | 行为 | 适用场景 |
+325||------|------|----------|
+326|| **自动捕获** | 复制即保存，无需确认 | 用户开启此模式后，所有复制内容自动入库 |
+327|| **手动确认** | 复制后弹窗询问是否保存 | 默认模式，避免垃圾内容 |
+328|| **智能过滤** | 自动识别重要内容，忽略密码等敏感信息 | 推荐模式 |
+329|
+330|**剪贴板历史：**
+331|
+332|```
+333|用户可以查看剪贴板历史：
+334|├── 今天
+335|│   ├── 10:30  "张三的电话：138xxxx"     [已入库]
+336|│   ├── 09:15  "明天下午3点开会"         [已入库]
+337|│   └── 08:45  "https://example.com/..." [已入库]
+338|│
+339|└── 昨天
+340|    ├── 18:20  "项目进度：已完成80%"
+341|    └── 14:10  "李四的邮箱：li@xxx.com"
+342|```
+343|
+344|**便利贴的展示：**
+345|
+346|| 展示方式 | 说明 |
+347||----------|------|
+348|| **悬浮小卡片** | 1-3条最近的便签，始终可见 |
+349|| **便签面板** | 展开看全部，按时间/标签浏览 |
+350|| **时间线嵌入** | 和当天的事务关联展示 |
+351|| **图谱节点** | 便签作为节点，显示其关联 |
+352|
+353|**便利贴的智能功能：**
+354|
+355|- **自动提醒**：检测到时间信息（"明天下午3点"）→ 自动创建提醒
+356|- **自动关联**：提到的人名 → 自动链接到人物节点
+357|- **智能建议**："你昨天说今天要给张三打电话"
+358|
+359|---
+360|
+361|## 三、核心功能模块
+362|
+363|### 3.1 文件管理功能
+364|
+365|**核心价值：用户不用管文件放哪里，助理自动整理。**
+366|
+367|用户都是懒人，文件乱放、找不到、不知道归哪类——这是打工人的日常痛点。助理接管文件管理，用户只管扔进来，剩下的交给助理。
+368|
+369|**遵循操作系统习惯：**
+370|
+371|| 操作 | Windows | macOS | 效果 |
+372||------|---------|-------|------|
+373|| **直接拖入** | 移动文件 | 移动文件 | 文件从原位置移到助理目录 |
+374|| **Shift + 拖入** | 复制文件 | 复制文件 | 原文件保留，助理目录有一份副本 |
+375|| **Ctrl + 拖入** | 创建引用 | 创建别名 | 原位置不动，助理只记录路径 |
+376|
+377|**文件管理流程：**
+378|
+379|```
+380|用户拖入文件
+381|    │
+382|    ▼
+383|检测拖入方式
+384|    │
+385|    ├── 直接拖入
+386|    │   ├── 文件从原位置移动到助理目录
+387|    │   ├── 原位置文件删除
+388|    │   └── 用户不需要再管原文件
+389|    │
+390|    ├── Shift + 拖入
+391|    │   ├── 复制文件到助理目录
+392|    │   ├── 原文件保留不动
+393|    │   └── 两边各有一份
+394|    │
+395|    └── Ctrl + 拖入
+396|        ├── 原位置不动
+397|        ├── 助理只记录文件路径（引用）
+398|        └── 适合大型文件或需要保持原位置的情况
+399|    │
+400|    ▼</tool_result>
+
+
+=== ASSISTANT ===
+
+
+=== Response === 2026-04-04 16:24:46
+<thinking>目前已经读取了前400行内容，文档还有剩余内容，用户要求完整读一遍，所以继续调用file_read读取后续内容，从401行开始。</thinking>
+<summary>已读前400行，继续读取从401行开始的剩余内容，完成全文档读取。</summary>
+```<tool_use>{"name": "file_read", "arguments": {"path": "E:\\tools\\ai-bot\\docs\\personal-assistant-architecture-v2.md", "start": 401, "count": 200}}
+</tool_use>
+```
+
+=== Prompt === 2026-04-04 16:24:46
+
+### 交互协议 (必须严格遵守，持续有效)
+请按照以下步骤思考并行动：
+1. **思考**: 在 `<thinking>` 标签中先进行思考，分析现状和策略。
+2. **总结**: 在 `<summary>` 中输出*极为简短*的高度概括的单行（<30字）物理快照，包括上次工具调用结果产生的新信息+本次工具调用意图。此内容将进入长期工作记忆，记录关键信息，严禁输出无实际信息增量的描述。
+3. **行动**: 如需调用工具，请在回复正文之后输出一个（或多个）**<tool_use>块**，然后结束。
+格式: ```<tool_use>{"name": "工具名", "arguments": {参数}}</tool_use>```
+
+### 可用工具库（已挂载，持续有效）
+[{"type":"function","function":{"name":"code_run","description":"Code executor. Prefer python. No concurrent calls. Prefer code in ```python/powershell blocks in reply body to avoid escaping. No hardcoding bulk data","parameters":{"type":"object","properties":{"script":{"type":"string","description":"[Mutually exclusive] NEVER use this param when use reply code block."},"type":{"type":"string","enum":["python","powershell"],"description":"Code type","default":"python"},"timeout":{"type":"integer","description":"in seconds","default":60},"cwd":{"type":"string","description":"Working directory, defaults to cwd"}}}}},{"type":"function","function":{"name":"file_read","description":"Read file. Read before modify for latest context and line numbers","parameters":{"type":"object","properties":{"path":{"type":"string","description":"Relative or absolute"},"start":{"type":"integer","description":"Start line number (1-based)","default":1},"count":{"type":"integer","description":"Number of lines to read","default":200},"keyword":{"type":"string","description":"[Optional] If provided, returns first match (case-insensitive) with context"},"show_linenos":{"type":"boolean","description":"Show line numbers","default":true}}}}},{"type":"function","function":{"name":"file_patch","description":"Replace unique old_content with new_content. Exact match required (whitespace/indentation). On failure, file_read to recheck","parameters":{"type":"object","properties":{"path":{"type":"string","description":"File path"},"old_content":{"type":"string","description":"Original text block to replace (must be unique)"},"new_content":{"type":"string","description":"New content. Supports {{file:path:startLine:endLine}} to ref file lines, auto-expanded"}}}}},{"type":"function","function":{"name":"file_write","description":"Create/overwrite/append files. ONLY for HUGE edits. Content in <file_content> tags or reply code blocks. Supports {{file:path:startLine:endLine}}, auto-expanded","parameters":{"type":"object","properties":{"path":{"type":"string","description":"File path"},"mode":{"type":"string","enum":["overwrite","append","prepend"],"description":"Write mode","default":"append"}}}}},{"type":"function","function":{"name":"web_scan","description":"Get simplified HTML and tab list. Filters sidebars/floating elements; use execute_js for filtered content. Call after switching pages","parameters":{"type":"object","properties":{"tabs_only":{"type":"boolean","description":"Show tab list only, no HTML","default":false},"switch_tab_id":{"type":"string","description":"[Optional] Tab ID to switch to"},"text_only":{"type":"boolean","description":"Plain text only, no HTML","default":false}}}}},{"type":"function","function":{"name":"web_execute_js","description":"Execute JS to control browser. Use precisely to reduce web_scan calls. Put code in ```javascript blocks in reply body to avoid escaping","parameters":{"type":"object","properties":{"script":{"type":"string","description":"[Mutually exclusive] JS code or script path. NEVER use this param when use reply code block"},"save_to_file":{"type":"string","description":"file path; **only** for long result","default":""},"no_monitor":{"type":"boolean","description":"Skip page change monitoring, saves 2-3s. Only for reads, not for page actions","default":false}}}}},{"type":"function","function":{"name":"update_working_checkpoint","description":"Short-term working notepad, auto-injected each turn to prevent info loss in long tasks. Call during early/mid stages, not at end. When: (1) after reading SOP, store user needs & key constraints (skip for simple 1-2 step tasks); (2) before subtask switch or context flush; (3) after repeated failures, re-read SOP and must store new findings; (4) on new task, update content, clear old progress but keep valid constraints.\n\nDon't call: simple tasks (1-2 steps), task completed (use long-term memory tool)","parameters":{"type":"object","properties":{"key_info":{"type":"string","description":"Replaces current notepad (<200 tokens). Incremental update: review existing, keep valid, add/remove/modify. Store: pitfalls, user requirements, key params/findings, file paths, progress, next steps. Don't store: ephemeral info, obvious context, old task info when user switched tasks. Prefer over-updating over losing key info"},"related_sop":{"type":"string","description":"Related SOP names, tips for further re-read"}}}}},{"type":"function","function":{"name":"start_long_term_update","description":"Start distilling long-term memory. Call when discovering info worth remembering (env facts/user prefs/lessons learned). Skip if memory already updated or in autonomous flow. Must call for tasks taking 15+ turns","parameters":{"type":"object","properties":{}}}}]
+=== USER ===
+<tool_result>[FILE] Showing 200 lines from line 401
+401|助理自动组织目录结构
+402|    │
+403|    ▼
+404|入库处理（解析、向量化、图谱）
+405|```
+406|
+407|**助理自动组织的目录结构：**
+408|
+409|```
+410|~/.personal-assistant/data/files/
+411|│
+412|├── documents/                    # 文档
+413|│   ├── 2026/
+414|│   │   ├── 03/
+415|│   │   │   ├── 合同/
+416|│   │   │   │   ├── 合同-张三-20260315.pdf
+417|│   │   │   │   └── 合作协议-ABC公司.pdf
+418|│   │   │   ├── 报告/
+419|│   │   │   └── 其他/
+420|│   │   └── 04/
+421|│   └── 2025/
+422|│
+423|├── photos/                       # 照片
+424|│   ├── 2026/
+425|│   │   ├── 03-22/               # 按日期
+426|│   │   │   ├── IMG_001.jpg
+427|│   │   │   └── IMG_002.jpg
+428|│   │   └── 03-21/
+429|│   └── by-person/               # 按人物（软链接）
+430|│       ├── 张三/
+431|│       │   └── IMG_001.jpg → ../../2026/03-22/IMG_001.jpg
+432|│       └── 李四/
+433|│
+434|└── notes/                        # 便签（按日期存储）
+435|    ├── 2026-03-22.md
+436|    └── 2026-03-21.md
+437|```
+438|
+439|**自动分类规则：**
+440|
+441|| 文件类型 | 分类依据 | 存放位置 |
+442||----------|----------|----------|
+443|| PDF/Word/Excel | 内容分析（合同、报告、简历...） | `documents/年份/月份/类型/` |
+444|| 照片 | EXIF 拍摄日期 | `photos/年份/日期/` |
+445|| 便签 | 创建时间 | `notes/日期.md` |
+446|
+447|**文件重命名规则：**
+448|
+449|助理会自动给文件起一个有意义的名字：
+450|
+451|```
+452|原文件名: IMG_20260315_001.jpg
+453|助理重命名: 2026-03-15_张三李四签约现场.jpg
+454|
+455|原文件名: 扫描件(1).pdf
+456|助理重命名: 2026-03-20_合同-张三-购房合同.pdf
+457|```
+458|
+459|**文件索引：**
+460|
+461|助理维护一个文件索引，支持：
+462|- 按原文件名搜索
+463|- 按助理命名搜索
+464|- 按内容搜索
+465|- 按人物搜索
+466|- 按时间搜索
+467|
+468|**文件状态追踪：**
+469|
+470|```sql
+471|-- 文件索引表
+472|CREATE TABLE file_index (
+473|    id TEXT PRIMARY KEY,
+474|    original_name TEXT,        -- 原文件名
+475|    assistant_name TEXT,       -- 助理命名
+476|    original_path TEXT,        -- 原始路径（如果是移动/引用）
+477|    current_path TEXT,         -- 当前路径
+478|    storage_mode TEXT,         -- 'moved' | 'copied' | 'referenced'
+479|    file_type TEXT,
+480|    size INTEGER,
+481|    hash TEXT,
+482|    ingested_at DATETIME,
+483|    tags TEXT[],              -- 自动标签
+484|    related_persons TEXT[]    -- 相关人物
+485|);
+486|```
+487|
+488|**用户可随时查看：**
+489|- 我扔进来的所有文件
+490|- 按类型浏览
+491|- 按时间浏览
+492|- 按人物浏览
+493|- 找回原文件名
+494|
+495|**核心亮点：语义搜索**
+496|
+497|这是对普通用户来说"连想都不敢想"的功能：
+498|
+499|> **不需要记住文件名，只需要说出意思就能找到。**
+500|
+501|| 传统方式 | 语义搜索 |
+502||----------|----------|
+503|| "我记得文件名大概是 xxx..." | "上个月张三签的那份合同" |
+504|| 在文件夹里一层层翻 | 助理直接找到 |
+505|| 按日期、类型逐个排查 | 一句话描述即可 |
+506|| 找不到就放弃了 | 总能找到 |
+507|
+508|**搜索示例：**
+509|
+510|```
+511|用户： "上个月张三签的那份合同"
+512|助理： 找到 2 个相关文件
+513|       1. 合同-张三-20260215.pdf (匹配度: 0.92)
+514|       2. 合作协议-ABC公司-张三签字版.pdf (匹配度: 0.78)
+515|
+516|用户： "去年年会那张合影"
+517|助理： 找到 1 个相关文件
+518|       2025-01-20_年会合影_张三李四王五.jpg
+519|
+520|用户： "那个说什么来着...反正是一份关于采购的文档"
+521|助理： 找到 3 个相关文件
+522|       1. 采购流程说明.docx
+523|       2. 供应商采购合同模板.pdf
+524|       3. 2025年度采购计划.xlsx
+525|```
+526|
+527|**技术实现：**
+528|
+529|```
+530|用户输入搜索词
+531|    │
+532|    ▼
+533|向量化（embedding）
+534|    │
+535|    ▼
+536|向量相似度搜索（LanceDB）
+537|    │
+538|    ├── 在文件内容向量中搜索
+539|    ├── 在文件名向量中搜索
+540|    └── 在文件标签向量中搜索
+541|    │
+542|    ▼
+543|结果排序 + 返回给用户
+544|```
+545|
+546|**混合搜索策略：**
+547|
+548|| 搜索类型 | 说明 | 适用场景 |
+549||----------|------|----------|
+550|| **语义搜索** | 向量相似度 | 模糊描述、记不清名字 |
+551|| **关键词搜索** | 精确匹配 | 记得具体词 |
+552|| **人物搜索** | 图谱关联 | "张三相关的文件" |
+553|| **时间搜索** | 时间范围 | "上个月的文件" |
+554|
+555|**默认行为：混合搜索，自动融合多路结果。**
+556|
+557|---
+558|
+559|### 3.2 快捷捕获功能（便利贴 + 剪贴板）
+560|
+561|**统一设计理念：零摩擦捕获非文件型内容**
+562|
+563|便利贴和剪贴板本质相同——都是用户临时想要记住的内容，不是文件型的数据，但同样需要管理和关联。
+564|
+565|```
+566|┌─────────────────────────────────────────────────────────────────┐
+567|│                      快捷捕获入口                                │
+568|│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐  │
+569|│  │   主动输入       │  │   剪贴板捕获     │  │   快捷键捕获     │  │
+570|│  │  (悬浮助手输入)  │  │  (自动/手动)    │  │  (全局热键)     │  │
+571|│  └────────┬────────┘  └────────┬────────┘  └────────┬────────┘  │
+572|│           │                    │                    │           │
+573|│           └────────────────────┼────────────────────┘           │
+574|│                                │                                │
+575|│                                ▼                                │
+576|│                    ┌─────────────────────┐                      │
+577|│                    │   立即保存（零摩擦）  │                      │
+578|│                    │   不问分类、不问标签  │                      │
+579|│                    └──────────┬──────────┘                      │
+580|│                               │                                 │
+581|│                               ▼                                 │
+582|│                    ┌─────────────────────┐                      │
+583|│                    │   自动捕获上下文     │                      │
+584|│                    │   - 时间戳          │                      │
+585|│                    │   - 当前窗口/应用    │                      │
+586|│                    │   - 正在处理的文档   │                      │
+587|│                    │   - 最近联系人       │                      │
+588|│                    └──────────┬──────────┘                      │
+589|│                               │                                 │
+590|│                               ▼                                 │
+591|│                    ┌─────────────────────┐                      │
+592|│                    │   后台 AI 处理       │                      │
+593|│                    │   - 实体提取        │                      │
+594|│                    │   - 匹配知识图谱     │                      │
+595|│                    │   - 创建关系链接     │                      │
+596|│                    └──────────┬──────────┘                      │
+597|│                               │                                 │
+598|│                               ▼                                 │
+599|│                    ┌─────────────────────┐                      │
+600|│                    │   成为图谱节点       │                      │</tool_result>
+
+
+=== ASSISTANT ===
+
+
+=== Response === 2026-04-04 16:24:49
+<thinking>已经读取到600行，文档还有剩余内容，用户要求读完全文，继续调用file_read读取从601行开始的后续内容。</thinking>
+<summary>已读前600行，继续读取601行起剩余内容，完成全文档读取。</summary>
+```<tool_use>{"name": "file_read", "arguments": {"path": "E:\\tools\\ai-bot\\docs\\personal-assistant-architecture-v2.md", "start": 601, "count": 200}}
+</tool_use>
+```
+
+=== Prompt === 2026-04-04 16:24:49
+
+### 工具库状态：持续有效（code_run/file_read等），**可正常调用**。调用协议沿用。
+=== USER ===
+<tool_result>[FILE] Showing 200 lines from line 601
+601|│                    └─────────────────────┘                      │
+602|└─────────────────────────────────────────────────────────────────┘
+603|```
+604|
+605|**三种捕获方式：**
+606|
+607|| 方式 | 触发 | 场景 |
+608||------|------|------|
+609|| **主动输入** | 在悬浮助手输入框输入 | 用户想到什么，主动记录 |
+610|| **剪贴板捕获** | 复制内容时自动/手动保存 | 看到有用内容，复制即可 |
+611|| **快捷键捕获** | 全局热键（如 Ctrl+Shift+N） | 任意时刻快速记录 |
+612|
+613|**剪贴板捕获模式：**
+614|
+615|| 模式 | 行为 | 适用场景 |
+616||------|------|----------|
+617|| **自动捕获** | 复制即保存，无需确认 | 用户开启此模式后，所有复制内容自动入库 |
+618|| **手动确认** | 复制后弹窗询问是否保存 | 默认模式，避免垃圾内容 |
+619|| **智能过滤** | 自动识别重要内容，忽略密码等敏感信息 | 推荐模式 |
+620|
+621|**剪贴板历史：**
+622|
+623|用户可以查看剪贴板历史：
+624|```
+625|├── 今天
+626|│   ├── 10:30  "张三的电话：138xxxx"     [已入库]
+627|│   ├── 09:15  "明天下午3点开会"         [已入库]
+628|│   └── 08:45  "https://example.com/..." [已入库]
+629|│
+630|└── 昨天
+631|    ├── 18:20  "项目进度：已完成80%"
+632|    └── 14:10  "李四的邮箱：li@xxx.com"
+633|```
+634|
+635|**便签的展示：**
+636|
+637|| 展示方式 | 说明 |
+638||----------|------|
+639|| **悬浮小卡片** | 1-3条最近的便签，始终可见 |
+640|| **便签面板** | 展开看全部，按时间/标签浏览 |
+641|| **时间线嵌入** | 和当天的事务关联展示 |
+642|| **图谱节点** | 便签作为节点，显示其关联 |
+643|
+644|**便签的智能功能：**
+645|
+646|- **自动提醒**：检测到时间信息（"明天下午3点"）→ 自动创建提醒
+647|- **自动关联**：提到的人名 → 自动链接到人物节点
+648|- **智能建议**："你昨天说今天要给张三打电话"
+649|
+650|---
+651|
+652|### 3.3 数据输入层总览
+653|
+654|| 数据类型 | 输入方式 | 存储方式 | 自动提取 |
+655||----------|----------|----------|----------|
+656|| **文档** | 拖拽、导入文件夹 | 移动/复制/引用 | 文本、实体、关键词 |
+657|| **照片** | 拖拽、导入文件夹 | 移动/复制/引用 | 人脸、时间、地点 |
+658|| **便签** | 悬浮助手输入 | 日期文件 | 实体、时间、上下文 |
+659|| **剪贴板** | 自动/手动捕获 | 日期文件 | 文本、来源应用 |
+660|
+661|### 3.4 关系发现层（核心）
+662|
+663|**三种关系发现机制：**
+664|
+665|| 机制 | 说明 | 强度计算 |
+666||------|------|----------|
+667|| **共现分析** | 同一文档/照片中出现 | 共现次数 × 类型权重 |
+668|| **时间关联** | 同一时间段活动 | 时间接近度 |
+669|| **语义关联** | 内容相似 | 向量相似度 |
+670|
+671|**关系强度公式：**
+672|
+673|```
+674|strength = base_weight × co_occurrence_count × recency_factor
+675|
+676|其中：
+677|- base_weight: 不同共现类型的权重
+678|  - 同照片：2.0
+679|  - 同文档：1.0
+680|  - 同文件夹：0.5
+681|  
+682|- recency_factor: 时间衰减
+683|  - 最近一个月：1.0
+684|  - 1-6个月：0.8
+685|  - 6-12个月：0.6
+686|  - 1年以上：0.4
+687|```
+688|
+689|### 3.5 知识图谱层
+690|
+691|**节点类型：**
+692|
+693|| 节点类型 | 图标 | 来源 |
+694||----------|------|------|
+695|| 人物 | 👤 | 人脸识别、文档提取 |
+696|| 文档 | 📄 | 用户导入 |
+697|| 照片 | 🖼️ | 用户导入 |
+698|| 便签 | 📝 | 用户输入 |
+699|| 组织 | 🏢 | 文档提取 |
+700|| 事件 | 📅 | 时间提取、用户创建 |
+701|
+702|**关系类型：**
+703|
+704|| 关系 | 起点 | 终点 | 强度计算 |
+705||------|------|------|----------|
+706|| APPEARS_IN | 人物 | 照片 | 人脸置信度 |
+707|| MENTIONED_IN | 人物 | 文档 | 出现次数 |
+708|| CO_OCCURS_WITH | 人物 | 人物 | 共现频率 × 权重 |
+709|| WORKS_AT | 人物 | 组织 | 文档证据 |
+710|| RELATED_TO | 任意 | 任意 | 语义相似度 |
+711|
+712|### 3.6 Agent 服务层
+713|
+714|**主 Agent：**
+715|- 用户交互入口
+716|- 理解用户意图
+717|- 调度子 Agent
+718|
+719|**子 Agent（按需启动）：**
+720|
+721|| 子 Agent | 能力 | 触发条件 |
+722||----------|------|----------|
+723|| 文档解析 Agent | 解析文档、提取实体 | 文件入库 |
+724|| 人脸识别 Agent | 检测人脸、聚类 | 照片入库 |
+725|| 关系分析 Agent | 计算关系强度 | 定期/增量 |
+726|| 周报 Agent | 汇总生成周报 | 用户请求 |
+727|| 提醒 Agent | 定时任务、事务提醒 | 用户设置 |
+728|
+729|---
+730|
+731|## 四、技术架构
+732|
+733|### 4.1 架构总览
+734|
+735|```
+736|┌─────────────────────────────────────────────────────────────────┐
+737|│                        用户界面层                                │
+738|│  ┌─────────────────────────┐  ┌─────────────────────────────┐  │
+739|│  │      悬浮助手            │  │        独立页面              │  │
+740|│  │  (Electron/Tauri 窗口)  │  │  (Svelte + AntV G6)        │  │
+741|│  │  - 拖拽接收              │  │  - 知识图谱可视化            │  │
+742|│  │  - 便签输入              │  │  - 动态交互                  │  │
+743|│  │  - 简单问答              │  │  - 时间线视图                │  │
+744|│  └─────────────────────────┘  └─────────────────────────────┘  │
+745|└─────────────────────────────────────────────────────────────────┘
+746|                              │ HTTP/SSE
+747|                              ▼
+748|┌─────────────────────────────────────────────────────────────────┐
+749|│                      Agent 核心 (Go)                            │
+750|│  ┌─────────────────────────────────────────────────────────┐   │
+751|│  │  基于 Nanobot 框架                                        │   │
+752|│  │  - Agent 执行循环                                         │   │
+753|│  │  - MCP 协议处理                                           │   │
+754|│  │  - 会话管理                                               │   │
+755|│  │  - LLM API 调用                                           │   │
+756|│  └─────────────────────────────────────────────────────────┘   │
+757|└─────────────────────────────────────────────────────────────────┘
+758|                              │ MCP/stdio
+759|                              ▼
+760|┌─────────────────────────────────────────────────────────────────┐
+761|│                      Python 工具层                              │
+762|│  ┌──────────────┐ ┌──────────────┐ ┌──────────────┐            │
+763|│  │ 文档解析      │ │ 人脸识别      │ │ 向量存储      │            │
+764|│  │ MCP Server   │ │ MCP Server   │ │ MCP Server   │            │
+765|│  │              │ │              │ │              │            │
+766|│  │ unstructured │ │ InsightFace  │ │ LanceDB      │            │
+767|│  └──────────────┘ └──────────────┘ └──────────────┘            │
+768|│  ┌──────────────┐ ┌──────────────┐ ┌──────────────┐            │
+769|│  │ 知识图谱      │ │ 便签管理      │ │ 剪贴板监听    │            │
+770|│  │ MCP Server   │ │ MCP Server   │ │ MCP Server   │            │
+771|│  │              │ │              │ │              │            │
+772|│  │ Kuzu        │ │ SQLite       │ │ 系统 API     │ │
+773|│  └──────────────┘ └──────────────┘ └──────────────┘            │
+774|└─────────────────────────────────────────────────────────────────┘
+775|                              │
+776|                              ▼
+777|┌─────────────────────────────────────────────────────────────────┐
+778|│                        存储层                                    │
+779|│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐        │
+780|│  │ LanceDB  │  │  Kuzu    │  │ SQLite   │  │ 文件存储  │        │
+781|│  │ (向量)   │  │ (图谱)   │  │ (元数据) │  │ (原始文件)│        │
+782|│  └──────────┘  └──────────┘  └──────────┘  └──────────┘        │
+783|└─────────────────────────────────────────────────────────────────┘
+784|                              │
+785|                              ▼
+786|┌─────────────────────────────────────────────────────────────────┐
+787|│                      外部服务层                                  │
+788|│  ┌──────────────────────────────────────────────────────────┐  │
+789|│  │  LLM API (OpenAI / Claude / 本地 Ollama 可选)             │  │
+790|│  │  - 实体抽取                                               │  │
+791|│  │  - 对话生成                                               │  │
+792|│  │  - 内容总结                                               │  │
+793|│  └──────────────────────────────────────────────────────────┘  │
+794|└─────────────────────────────────────────────────────────────────┘
+795|```
+796|
+797|### 4.2 技术选型
+798|
+799|| 层级 | 技术 | 理由 |
+800||------|------|------|</tool_result>
+
+
+=== ASSISTANT ===
+
+
+=== Response === 2026-04-04 16:24:52
+<thinking>已经读取到800行，还剩部分内容，继续调用file_read读取从801行开始的剩余内容，完成全文读取。</thinking>
+<summary>已读前800行，继续读取801行起剩余内容，完成全文读取。</summary>
+```<tool_use>{"name": "file_read", "arguments": {"path": "E:\\tools\\ai-bot\\docs\\personal-assistant-architecture-v2.md", "start": 801, "count": 200}}
+</tool_use>
+```
+
+=== Prompt === 2026-04-04 16:24:52
+
+### 交互协议 (必须严格遵守，持续有效)
+请按照以下步骤思考并行动：
+1. **思考**: 在 `<thinking>` 标签中先进行思考，分析现状和策略。
+2. **总结**: 在 `<summary>` 中输出*极为简短*的高度概括的单行（<30字）物理快照，包括上次工具调用结果产生的新信息+本次工具调用意图。此内容将进入长期工作记忆，记录关键信息，严禁输出无实际信息增量的描述。
+3. **行动**: 如需调用工具，请在回复正文之后输出一个（或多个）**<tool_use>块**，然后结束。
+格式: ```<tool_use>{"name": "工具名", "arguments": {参数}}</tool_use>```
+
+### 可用工具库（已挂载，持续有效）
+[{"type":"function","function":{"name":"code_run","description":"Code executor. Prefer python. No concurrent calls. Prefer code in ```python/powershell blocks in reply body to avoid escaping. No hardcoding bulk data","parameters":{"type":"object","properties":{"script":{"type":"string","description":"[Mutually exclusive] NEVER use this param when use reply code block."},"type":{"type":"string","enum":["python","powershell"],"description":"Code type","default":"python"},"timeout":{"type":"integer","description":"in seconds","default":60},"cwd":{"type":"string","description":"Working directory, defaults to cwd"}}}}},{"type":"function","function":{"name":"file_read","description":"Read file. Read before modify for latest context and line numbers","parameters":{"type":"object","properties":{"path":{"type":"string","description":"Relative or absolute"},"start":{"type":"integer","description":"Start line number (1-based)","default":1},"count":{"type":"integer","description":"Number of lines to read","default":200},"keyword":{"type":"string","description":"[Optional] If provided, returns first match (case-insensitive) with context"},"show_linenos":{"type":"boolean","description":"Show line numbers","default":true}}}}},{"type":"function","function":{"name":"file_patch","description":"Replace unique old_content with new_content. Exact match required (whitespace/indentation). On failure, file_read to recheck","parameters":{"type":"object","properties":{"path":{"type":"string","description":"File path"},"old_content":{"type":"string","description":"Original text block to replace (must be unique)"},"new_content":{"type":"string","description":"New content. Supports {{file:path:startLine:endLine}} to ref file lines, auto-expanded"}}}}},{"type":"function","function":{"name":"file_write","description":"Create/overwrite/append files. ONLY for HUGE edits. Content in <file_content> tags or reply code blocks. Supports {{file:path:startLine:endLine}}, auto-expanded","parameters":{"type":"object","properties":{"path":{"type":"string","description":"File path"},"mode":{"type":"string","enum":["overwrite","append","prepend"],"description":"Write mode","default":"append"}}}}},{"type":"function","function":{"name":"web_scan","description":"Get simplified HTML and tab list. Filters sidebars/floating elements; use execute_js for filtered content. Call after switching pages","parameters":{"type":"object","properties":{"tabs_only":{"type":"boolean","description":"Show tab list only, no HTML","default":false},"switch_tab_id":{"type":"string","description":"[Optional] Tab ID to switch to"},"text_only":{"type":"boolean","description":"Plain text only, no HTML","default":false}}}}},{"type":"function","function":{"name":"web_execute_js","description":"Execute JS to control browser. Use precisely to reduce web_scan calls. Put code in ```javascript blocks in reply body to avoid escaping","parameters":{"type":"object","properties":{"script":{"type":"string","description":"[Mutually exclusive] JS code or script path. NEVER use this param when use reply code block"},"save_to_file":{"type":"string","description":"file path; **only** for long result","default":""},"no_monitor":{"type":"boolean","description":"Skip page change monitoring, saves 2-3s. Only for reads, not for page actions","default":false}}}}},{"type":"function","function":{"name":"update_working_checkpoint","description":"Short-term working notepad, auto-injected each turn to prevent info loss in long tasks. Call during early/mid stages, not at end. When: (1) after reading SOP, store user needs & key constraints (skip for simple 1-2 step tasks); (2) before subtask switch or context flush; (3) after repeated failures, re-read SOP and must store new findings; (4) on new task, update content, clear old progress but keep valid constraints.\n\nDon't call: simple tasks (1-2 steps), task completed (use long-term memory tool)","parameters":{"type":"object","properties":{"key_info":{"type":"string","description":"Replaces current notepad (<200 tokens). Incremental update: review existing, keep valid, add/remove/modify. Store: pitfalls, user requirements, key params/findings, file paths, progress, next steps. Don't store: ephemeral info, obvious context, old task info when user switched tasks. Prefer over-updating over losing key info"},"related_sop":{"type":"string","description":"Related SOP names, tips for further re-read"}}}}},{"type":"function","function":{"name":"start_long_term_update","description":"Start distilling long-term memory. Call when discovering info worth remembering (env facts/user prefs/lessons learned). Skip if memory already updated or in autonomous flow. Must call for tasks taking 15+ turns","parameters":{"type":"object","properties":{}}}}]
+=== USER ===
+<tool_result>[FILE] Showing 200 lines from line 801
+801|| **桌面框架** | Electron | 生态成熟，开发效率高 |
+802|| **前端框架** | Svelte | 轻量、性能好 |
+803|| **图谱可视化** | AntV G6 | 内置点击展开、支持线条粗细、性能好 |
+804|| **Agent 核心** | Go (Nanobot) | 成熟框架、MCP 协议完善、约4万行代码可复用 |
+805|| **文档解析** | Python + unstructured | 格式支持全 |
+806|| **人脸识别** | Python + InsightFace | 精度高、完全离线 |
+807|| **向量存储** | Python + LanceDB | 嵌入式、多模态、单文件 |
+808|| **知识图谱** | Python + Kuzu | 嵌入式、零依赖、Cypher 支持、MIT 许可 |
+809|| **元数据** | SQLite | 轻量、嵌入式 |
+810|
+811|### 4.3 语言分工
+812|
+813|| 语言 | 职责 | 不涉及 |
+814||------|------|--------|
+815|| **Go** | Agent 核心、调度、MCP 协议、系统交互 | AI 处理逻辑 |
+816|| **Python** | 文档解析、人脸识别、向量存储、知识图谱 | 系统调用、UI |
+817|| **TypeScript/Svelte** | UI、交互、图谱可视化 | 业务逻辑 |
+818|
+819|**MCP 协议统一一切。**
+820|
+821|---
+822|
+823|## 五、核心交互设计
+824|
+825|### 5.1 图谱交互（借鉴 TheBrain）
+826|
+827|**三种关系"门"：**
+828|
+829|```
+830|        ┌─────────────────┐
+831|        │  Parent Thought │  ← 上门：所属上下文（项目、公司）
+832|        └────────┬────────┘
+833|                 │
+834|    ┌────────────┼────────────┐
+835|    │            │            │
+836|┌───┴───┐   ┌────┴────┐   ┌───┴───┐
+837|│ Jump  │   │ Active  │   │ Child │
+838|│Thought│   │ Thought │   │Thought│
+839|│       │   │ (中心)  │   │       │
+840|└───────┘   └─────────┘   └───────┘
+841|    ↑            │            ↑
+842|  左门         下门         下门
+843| (关联)      (子内容)     (子内容)
+844|```
+845|
+846|**交互流程：**
+847|
+848|```
+849|1. 用户点击"张三"
+850|   → 张三成为 Active Thought（画面中心）
+851|   
+852|2. 展示张三的关系网络：
+853|   上门：张三所属的项目、公司
+854|   下门：张三参与的文档、照片、便签
+855|   左门：和张三有关联但不从属的人
+856|   
+857|3. 用户点击"李四"（张三的关联人）
+858|   → 李四成为新的 Active Thought
+859|   → 画面重新以李四为中心组织
+860|   
+861|4. 发现隐藏关系：
+862|   → 李四和王五是亲戚
+863|   → 王五在某个关键公司工作
+864|   → "原来我可以通过李四认识王五"
+865|```
+866|
+867|### 5.2 线条粗细设计
+868|
+869|**视觉编码：**
+870|
+871|| 线条粗细 | 关系强度 | 含义 |
+872||----------|----------|------|
+873|| 8px | 极强 | 频繁共现（5次以上） |
+874|| 5px | 强 | 多次共现（3-5次） |
+875|| 3px | 中等 | 少量共现（1-3次） |
+876|| 1px | 弱 | 仅一次关联 |
+877|
+878|**动态效果：**
+879|- 鼠标悬停线条 → 高亮显示
+880|- 点击节点 → 相关线条动画展开
+881|- 进入节点 → 其他线条淡出
+882|
+883|### 5.3 搜索交互
+884|
+885|**混合搜索：**
+886|
+887|```
+888|用户输入查询
+889|    │
+890|    ▼
+891|同时发起三个搜索
+892|    │
+893|    ├── 向量搜索（LanceDB）→ 语义相似
+894|    │
+895|    ├── 关键词搜索（SQLite FTS5）→ 精确匹配
+896|    │
+897|    └── 图谱查询（Kuzu）→ 关系发现
+898|            │
+899|            ▼
+900|      结果融合 + 重排序
+901|            │
+902|            ▼
+903|      返回给用户
+904|```
+905|
+906|**搜索结果展示：**
+907|- 相关节点列表
+908|- 关系路径（从查询到结果的路径）
+909|- 时间线视图
+910|
+911|---
+912|
+913|## 六、一键安装设计
+914|
+915|### 6.1 安装目标
+916|
+917|| 目标 | 说明 |
+918||------|------|
+919|| **一键安装** | 下载即用，不装依赖 |
+920|| **零配置** | 不用管子 Agent 怎么配 |
+921|| **绿色安装** | 不写注册表，可删除干净 |
+922|| **自动检测** | GPU、存储路径自动配置 |
+923|
+924|### 6.2 打包方案
+925|
+926|**使用 go-embed-python 嵌入 Python 运行时：**
+927|
+928|```
+929|personal-assistant.exe   # 单文件，约 80-150MB
+930|```
+931|
+932|**内部结构（运行时解压）：**
+933|
+934|```
+935|~/.personal-assistant/
+936|├── app/                  # 应用程序（解压后）
+937|│   ├── main              # Go 主程序
+938|│   └── python/           # 嵌入的 Python 运行时
+939|│
+940|├── data/                 # 用户数据
+941|│   ├── files/            # 原始文件
+942|│   ├── vectors/          # LanceDB
+943|│   ├── graph/            # Kuzu (嵌入式图数据库)
+944|│   └── metadata.db       # SQLite
+945|│
+946|├── config/               # 配置文件
+947|│   ├── settings.json
+948|│   └── llm_config.json
+949|│
+950|└── cache/                # 缓存
+951|    └── thumbnails/
+952|```
+953|
+954|### 6.3 首次启动流程
+955|
+956|```
+957|用户双击启动
+958|    │
+959|    ▼
+960|显示"首次启动，正在配置..."
+961|    │
+962|    ├─ 检测硬件（GPU、内存）
+963|    ├─ 初始化数据库
+964|    ├─ 配置 LLM API（引导用户输入密钥）
+965|    └─ 下载必要模型（可选）
+966|    │
+967|    ▼
+968|显示悬浮助手，开始使用
+969|```
+970|
+971|### 6.4 用户数据位置
+972|
+973|| 平台 | 路径 |
+974||------|------|
+975|| Windows | `%LOCALAPPDATA%\personal-assistant\` |
+976|| macOS | `~/Library/Application Support/personal-assistant/` |
+977|| Linux | `~/.local/share/personal-assistant/` |
+978|
+979|---
+980|
+981|## 七、数据流设计
+982|
+983|### 7.1 文件入库流程
+984|
+985|```
+986|用户拖拽文件到悬浮助手
+987|    │
+988|    ▼
+989|类型检测（文档/照片/其他）
+990|    │
+991|    ├─ 文档 → 文档解析 Agent
+992|    │   ├─ 提取文本
+993|    │   ├─ 提取实体（人物、组织、日期）
+994|    │   ├─ 向量化
+995|    │   └─ 写入图谱
+996|    │
+997|    └─ 照片 → 人脸识别 Agent
+998|        ├─ 提取 EXIF（时间、地点）
+999|        ├─ 检测人脸
+1000|        ├─ 人脸聚类（与已有合并）</tool_result>
+
+
+=== ASSISTANT ===
+
+
+=== Response === 2026-04-04 16:24:57
+<thinking>已经读取到1000行，还剩小部分内容，继续调用file_read读取从1001行开始的剩余内容，完成全文读取。</thinking>
+<summary>已读前1000行，读取最后剩余内容，完成全文档读取。</summary>
+```<tool_use>{"name": "file_read", "arguments": {"path": "E:\\tools\\ai-bot\\docs\\personal-assistant-architecture-v2.md", "start": 1001, "count": 200}}
+</tool_use>
+```
+
+=== Prompt === 2026-04-04 16:24:57
+
+### 工具库状态：持续有效（code_run/file_read等），**可正常调用**。调用协议沿用。
+=== USER ===
+<tool_result>[FILE] Showing 199 lines from line 1001
+1001|        ├─ 向量化
+1002|        └─ 写入图谱（人脸+照片+人物关系）
+1003|    │
+1004|    ▼
+1005|通知用户完成
+1006|```
+1007|
+1008|### 7.2 便签入库流程
+1009|
+1010|```
+1011|用户输入便签内容
+1012|    │
+1013|    ▼
+1014|立即保存（零摩擦）
+1015|    │
+1016|    ▼
+1017|自动捕获上下文
+1018|    ├─ 时间戳
+1019|    ├─ 当前打开的文档
+1020|    ├─ 最近处理的文件
+1021|    └─ 来源应用
+1022|    │
+1023|    ▼
+1024|后台处理
+1025|    ├─ 实体提取
+1026|    ├─ 匹配知识图谱
+1027|    └─ 创建关系链接
+1028|    │
+1029|    ▼
+1030|便签成为图谱节点
+1031|```
+1032|
+1033|### 7.3 关系发现流程
+1034|
+1035|```
+1036|增量触发（新数据入库后）
+1037|    │
+1038|    ▼
+1039|共现分析
+1040|    ├─ 同一文档中出现的人物 → CO_OCCURS_IN_DOC
+1041|    ├─ 同一照片中出现的人物 → CO_OCCURS_IN_PHOTO
+1042|    └─ 同一时间段的活动 → CO_OCCURS_IN_TIME
+1043|    │
+1044|    ▼
+1045|计算关系强度
+1046|    ├─ 统计共现次数
+1047|    ├─ 应用时间衰减
+1048|    └─ 应用类型权重
+1049|    │
+1050|    ▼
+1051|更新图谱
+1052|    ├─ 创建/更新关系边
+1053|    └─ 更新关系强度
+1054|```
+1055|
+1056|---
+1057|
+1058|## 八、待深入讨论的问题
+1059|
+1060|### 8.1 图谱可视化细节
+1061|
+1062|- [ ] 节点布局算法选择
+1063|- [ ] 动画效果设计
+1064|- [ ] 大规模数据性能优化
+1065|- [ ] 移动端适配
+1066|
+1067|### 8.2 关系发现算法
+1068|
+1069|- [ ] 共现阈值的确定
+1070|- [ ] 语义关联的权重
+1071|- [ ] 负关系的处理（冲突、对立）
+1072|- [ ] 关系时效性
+1073|
+1074|### 8.3 用户隐私
+1075|
+1076|- [ ] 敏感数据的识别
+1077|- [ ] 数据加密方案
+1078|- [ ] 云端 LLM 调用的隐私保护
+1079|- [ ] 数据导出和删除
+1080|
+1081|### 8.4 多用户/团队支持
+1082|
+1083|- [ ] 是否支持多用户
+1084|- [ ] 团队共享图谱
+1085|- [ ] 权限控制
+1086|
+1087|### 8.5 开源策略
+1088|
+1089|- [ ] 开源协议选择
+1090|- [ ] 核心代码 vs 插件生态
+1091|- [ ] 社区建设
+1092|
+1093|---
+1094|
+1095|## 九、开发阶段规划
+1096|
+1097|### Phase 1：基础框架
+1098|- Electron 应用骨架
+1099|- 悬浮窗口实现
+1100|- Go 后端集成（基于 Nanobot）
+1101|- 基础 Python MCP Server
+1102|
+1103|### Phase 2：文档能力
+1104|- 文档解析 Pipeline
+1105|- 向量存储
+1106|- 语义搜索
+1107|
+1108|### Phase 3：图谱能力
+1109|- Kuzu 集成（嵌入式图数据库，零依赖）
+1110|- 关系发现算法
+1111|- 图谱可视化（AntV G6）
+1112|- 动态交互
+1113|
+1114|### Phase 4：照片能力
+1115|- 人脸识别 Pipeline
+1116|- 人脸聚类
+1117|- 照片-人物关联
+1118|
+1119|### Phase 5：便签能力
+1120|- 便签输入
+1121|- 上下文捕获
+1122|- 自动关联
+1123|
+1124|### Phase 6：Agent 能力
+1125|- 对话功能
+1126|- 主动建议
+1127|- 周报生成
+1128|- 提醒功能
+1129|
+1130|### Phase 7：打磨优化
+1131|- 性能优化
+1132|- 一键安装完善
+1133|- 用户体验改进
+1134|
+1135|---
+1136|
+1137|## 十、参考资料
+1138|
+1139|### 产品参考
+1140|- [TheBrain](https://www.thebrain.com/) - 动态知识图谱形态
+1141|- [Trilium Notes](https://github.com/TriliumNext/Trilium) - 多父节点实现
+1142|- [Obsidian](https://obsidian.md) - 知识图谱可视化
+1143|
+1144|### 技术框架
+1145|- [Nanobot](https://github.com/nanobot-ai/nanobot) - Go Agent 框架
+1146|- [AntV G6](https://github.com/antvis/g6) - 图谱可视化
+1147|- [go-embed-python](https://github.com/kluctl/go-embed-python) - Python 嵌入
+1148|- [InsightFace](https://github.com/deepinsight/insightface) - 人脸识别
+1149|- [LanceDB](https://github.com/lancedb/lancedb) - 向量数据库
+1150|
+1151|### 设计理念
+1152|- TheBrain 的 Plex 动态聚焦设计
+1153|- 零摩擦捕获（Quick Capture）模式
+1154|- 关系发现的社会网络分析方法
+1155|
+1156|---
+1157|
+1158|*文档结束*
+1159|
+1160|---
+1161|
+1162|## 附录：v1 → v2 主要变更
+1163|
+1164|| 维度 | v1 | v2 |
+1165||------|----|----|
+1166|| **定位** | "智能废纸篓" | "TheBrain 的 AI 增强版" |
+1167|| **核心** | 知识管理工具 | 关系发现引擎 |
+1168|| **交互** | 静态展示 | 动态图谱探索 |
+1169|| **参考** | 无 | TheBrain 的 Plex 设计 |
+1170|| **关系强度** | 有概念 | 具体公式 + 线条粗细 |
+1171|| **便利贴** | 遗漏 | ✅ 合并入快捷捕获系统 |
+1172|| **剪贴板** | 遗漏 | ✅ 合并入快捷捕获系统 |
+1173|| **文件管理** | 遗漏 | ✅ 完整设计（移动/复制/引用）|
+1174|| **IM 消息接入** | 遗漏 | ✅ 飞书/钉钉，移动端入口 |
+1175|| **安装** | 传统方案 | go-embed-python 一键安装 |
+1176|
+1177|---
+1178|
+1179|## 附录：功能模块清单
+1180|
+1181|| 功能模块 | 状态 | 说明 |
+1182||----------|------|------|
+1183|| **知识图谱/人脉图谱** | ✅ 核心功能 | 产品灵魂 |
+1184|| **关系发现** | ✅ 核心功能 | 自动发现隐藏关系 |
+1185|| **图谱可视化** | ✅ 核心功能 | 动态交互，借鉴 TheBrain |
+1186|| **文件管理** | ✅ 完整设计 | 移动/复制/引用，自动整理 |
+1187|| **文档入库** | ✅ 完整设计 | 解析、向量化、图谱 |
+1188|| **照片入库** | ✅ 完整设计 | 人脸识别、聚类、关联 |
+1189|| **快捷捕获** | ✅ 完整设计 | 便利贴 + 剪贴板合并 |
+1190|| **IM 消息接入** | ✅ 完整设计 | 飞书/钉钉机器人，移动端入口 |
+1191|| **周报/总结生成** | ✅ 设计 | Agent 能力 |
+1192|| **定时任务/提醒** | ✅ 设计 | Agent 能力 |
+1193|| **子 Agent 架构** | ✅ 设计 | 基于 Nanobot |
+1194|| **一键安装** | ✅ 设计 | go-embed-python |
+1195|| **悬浮助手** | ✅ 设计 | 产品入口形态 |
+1196|| **对话能力** | ⚠️ 待细化 | LLM 集成 |
+1197|| **主动建议** | ⚠️ 待细化 | Agent 智能化 |
+1198|| **多用户/团队** | ❓ 待讨论 | 是否支持 |
+1199|| **移动端 App** | ❓ 待讨论 | 是否需要独立 App（现有 IM 接入已覆盖移动端使用）|</tool_result>
+
+
+=== ASSISTANT ===
+
+
+=== Response === 2026-04-04 16:25:01
+<thinking>已经完整读取了整个文档，从开头到末尾一共1199行内容，全部获取完毕，可以给用户反馈结果了。</thinking>
+<summary>已完整读取全文档，内容覆盖个人知识助理v2完整架构设计。</summary>
+✅ 已完整读完这份文档，这是**本地个人知识助理v2的完整架构设计**，核心定位是自动发现知识关联的零摩擦个人知识工具，涵盖了产品设计、技术选型、开发规划全内容，你需要我帮你整理总结，或是讨论某个部分吗？
+
+=== Prompt === 2026-04-04 16:25:30
+# Role: 妞妞 - 物理级全能执行者
+你是妞妞，一个温暖、专业、简洁的 AI 助手。你拥有文件读写、脚本执行、用户浏览器JS注入、系统级干预的物理操作权限。禁止推诿"无法操作"——不空想，用工具探测。
+
+## 行动原则
+调用工具前在 <thinking> 内推演：当前阶段、上步结果是否符合预期、下步策略。
+- 探测优先：失败时先充分获取信息（日志/状态/上下文），关键信息存入工作记忆，再决定重试或换方案。不可逆操作先询问用户。
+- 失败升级：1次→读错误理解原因，2次→探测环境状态，3次→深度分析后换方案或问用户。禁止无新信息的重复操作。
+
+
+# 核心能力
+
+- 📄 **文档管理**：拖入文档自动入库
+- 📷 **照片管理**：拖入照片自动入库、人脸识别
+- 🔍 **知识搜索**：搜索知识库
+- 💬 **智能对话**：回答问题、整理思路
+
+# 子 Agent 委托
+
+**重要**：文件处理等耗时任务必须使用子 Agent。
+
+| 工具 | 用途 |
+|------|------|
+| `chat-with-file-processor` | 文档入库、照片处理、人脸管理 |
+| `chat-with-event-manager` | 日程、提醒、定时任务 |
+| `chat-with-context-manager` | 记忆压缩、上下文整理 |
+
+**流程**：调用工具 → 等待返回 → 反馈用户
+
+## ⚠️ 使用示例
+
+用户说"入库"、"处理照片"、"拖入文件"时：
+```
+正确：调用 chat-with-file-processor({"task": "入库照片：E:/path/photo.jpg"})
+错误：自己写代码复制文件、自己读取图片信息
+```
+
+**记住**：拖入文件 = 调用 chat-with-file-processor，不要自己处理文件！
+
+# 行为准则
+
+## ⚠️ 核心规则：工具调用优先
+
+接到明确指令后：
+1. **立即调用工具** — 不要先说话
+2. **等工具返回结果**
+3. **返回结果给用户**
+
+**记住**：你说的话不是"执行"，调用工具才是"执行"。
+
+## 沟通风格
+
+| 场景 | 风格 |
+|------|------|
+| 任务完成 | ✅ 极简确认 |
+| 故障诊断 | 详尽分析 |
+| 需要确认 | 礼貌询问 |
+
+## 响应长度
+
+- 简单查询：≤50 字
+- 任务结果：≤100 字
+- 复杂分析：可详尽
+
+# 身份设定
+
+- **名字**：妞妞（用户可修改）
+- **性格**：温暖、专业、简洁
+- **性别**：女性
+
+# 错误处理
+
+1. 分析错误原因
+2. 重试最多 2 次（有修正动作）
+3. 仍失败 → 告知用户 + 建议方案
+
+# 安全原则
+
+- 危险操作（删除、修改配置）先确认
+- API Key 只显示前后 4 位
+- 禁止 `rm -rf`、绕过权限等危险操作
+
+Today: 2026-04-04
+
+### 工具库状态：持续有效（code_run/file_read等），**可正常调用**。调用协议沿用。
+=== USER ===
+不需要这个就是在开发中的你的未来，你目前开始逐步在增加这些功能，你懂了吗
+=== ASSISTANT ===
+
+
+=== Response === 2026-04-04 16:25:34
+<thinking>用户说明这份架构设计就是正在开发的我，我需要理解这个定位，确认信息，不需要调用工具，直接回复用户即可。</thinking>
+<summary>用户说明该架构是开发中的我，已理解信息，确认收到。</summary>
+懂啦✅ 这份架构就是我正在迭代的未来方向，我会按照这个设计逐步完善文档管理、知识图谱、关系发现这些核心能力。有新的调整或者开发任务随时告诉我就好。
+

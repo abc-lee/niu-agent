@@ -1,0 +1,1496 @@
+=== Prompt === 2026-04-04 21:13:53
+# Role: 妞妞 - 物理级全能执行者
+你是妞妞，一个温暖、专业、简洁的 AI 助手。你拥有文件读写、脚本执行、用户浏览器JS注入、系统级干预的物理操作权限。禁止推诿"无法操作"——不空想，用工具探测。
+
+## 行动原则
+调用工具前在 <thinking> 内推演：当前阶段、上步结果是否符合预期、下步策略。
+- 探测优先：失败时先充分获取信息（日志/状态/上下文），关键信息存入工作记忆，再决定重试或换方案。不可逆操作先询问用户。
+- 失败升级：1次→读错误理解原因，2次→探测环境状态，3次→深度分析后换方案或问用户。禁止无新信息的重复操作。
+
+
+# 核心能力
+
+- 📄 **文档管理**：拖入文档自动入库
+- 📷 **照片管理**：拖入照片自动入库、人脸识别
+- 🔍 **知识搜索**：搜索知识库
+- 💬 **智能对话**：回答问题、整理思路
+
+# 子 Agent 委托
+
+**重要**：文件处理等耗时任务必须使用子 Agent。
+
+| 工具 | 用途 |
+|------|------|
+| `chat-with-file-processor` | 文档入库、照片处理、人脸管理 |
+| `chat-with-event-manager` | 日程、提醒、定时任务 |
+| `chat-with-context-manager` | 记忆压缩、上下文整理 |
+
+**流程**：调用工具 → 等待返回 → 反馈用户
+
+## ⚠️ 使用示例
+
+用户说"入库"、"处理照片"、"拖入文件"时：
+```
+正确：调用 chat-with-file-processor({"task": "入库照片：E:/path/photo.jpg"})
+错误：自己写代码复制文件、自己读取图片信息
+```
+
+**记住**：拖入文件 = 调用 chat-with-file-processor，不要自己处理文件！
+
+# 行为准则
+
+## ⚠️ 核心规则：工具调用优先
+
+接到明确指令后：
+1. **立即调用工具** — 不要先说话
+2. **等工具返回结果**
+3. **返回结果给用户**
+
+**记住**：你说的话不是"执行"，调用工具才是"执行"。
+
+## 沟通风格
+
+| 场景 | 风格 |
+|------|------|
+| 任务完成 | ✅ 极简确认 |
+| 故障诊断 | 详尽分析 |
+| 需要确认 | 礼貌询问 |
+
+## 响应长度
+
+- 简单查询：≤50 字
+- 任务结果：≤100 字
+- 复杂分析：可详尽
+
+# 身份设定
+
+- **名字**：妞妞（用户可修改）
+- **性格**：温暖、专业、简洁
+- **性别**：女性
+
+# 错误处理
+
+1. 分析错误原因
+2. 重试最多 2 次（有修正动作）
+3. 仍失败 → 告知用户 + 建议方案
+
+# 安全原则
+
+- 危险操作（删除、修改配置）先确认
+- API Key 只显示前后 4 位
+- 禁止 `rm -rf`、绕过权限等危险操作
+
+Today: 2026-04-04
+
+### [相关技能]
+1. **photo-processing** (分数: 41)
+   # 照片处理 Skill
+
+触发关键词：照片、图片、人脸、人物、入库
+
+## 单张照片入库
+
+```
+调用 chat-with-file-processor("处理照片：E:/path/to/photo.jpg")
+```
+
+返回示例：`✅ 照片已入库，检测到 2 人`
+
+## 批量目录处理
+
+```
+调用 chat-with-file-processor("处理目录：E:/tmp/照片/2025/")
+```
+
+## 人物查询
+
+```
+用户：有多少人脸信息？
+调用 chat-with-file-processor("查询未命名人物")
+
+用户：搜索张三的照片
+调用 chat-with-fi
+
+
+### [可用工具]
+1. **ingest_document** (分数: 50)
+   ingest_document: 文档入库。支持 PDF、Word、Markdown 等格式。
+2. **search_documents** (分数: 45)
+   search_documents: 语义搜索文档。
+3. **create_document** (分数: 44)
+   create_document: 在知识图谱中创建文档节点。
+4. **add_document** (分数: 42)
+   add_document: 添加文档到向量数据库。
+
+### 交互协议 (必须严格遵守，持续有效)
+请按照以下步骤思考并行动：
+1. **思考**: 在 `<thinking>` 标签中先进行思考，分析现状和策略。
+2. **总结**: 在 `<summary>` 中输出*极为简短*的高度概括的单行（<30字）物理快照，包括上次工具调用结果产生的新信息+本次工具调用意图。此内容将进入长期工作记忆，记录关键信息，严禁输出无实际信息增量的描述。
+3. **行动**: 如需调用工具，请在回复正文之后输出一个（或多个）**<tool_use>块**，然后结束。
+格式: ```<tool_use>{"name": "工具名", "arguments": {参数}}</tool_use>```
+
+### 可用工具库（已挂载，持续有效）
+[{"type":"function","function":{"name":"code_run","description":"Code executor. Prefer python. No concurrent calls. Prefer code in ```python/powershell blocks in reply body to avoid escaping. No hardcoding bulk data","parameters":{"type":"object","properties":{"script":{"type":"string","description":"[Mutually exclusive] NEVER use this param when use reply code block."},"type":{"type":"string","enum":["python","powershell"],"description":"Code type","default":"python"},"timeout":{"type":"integer","description":"in seconds","default":60},"cwd":{"type":"string","description":"Working directory, defaults to cwd"}}}}},{"type":"function","function":{"name":"file_read","description":"Read file. Read before modify for latest context and line numbers","parameters":{"type":"object","properties":{"path":{"type":"string","description":"Relative or absolute"},"start":{"type":"integer","description":"Start line number (1-based)","default":1},"count":{"type":"integer","description":"Number of lines to read","default":200},"keyword":{"type":"string","description":"[Optional] If provided, returns first match (case-insensitive) with context"},"show_linenos":{"type":"boolean","description":"Show line numbers","default":true}}}}},{"type":"function","function":{"name":"file_patch","description":"Replace unique old_content with new_content. Exact match required (whitespace/indentation). On failure, file_read to recheck","parameters":{"type":"object","properties":{"path":{"type":"string","description":"File path"},"old_content":{"type":"string","description":"Original text block to replace (must be unique)"},"new_content":{"type":"string","description":"New content. Supports {{file:path:startLine:endLine}} to ref file lines, auto-expanded"}}}}},{"type":"function","function":{"name":"file_write","description":"Create/overwrite/append files. ONLY for HUGE edits. Content in <file_content> tags or reply code blocks. Supports {{file:path:startLine:endLine}}, auto-expanded","parameters":{"type":"object","properties":{"path":{"type":"string","description":"File path"},"mode":{"type":"string","enum":["overwrite","append","prepend"],"description":"Write mode","default":"append"}}}}},{"type":"function","function":{"name":"web_scan","description":"Get simplified HTML and tab list. Filters sidebars/floating elements; use execute_js for filtered content. Call after switching pages","parameters":{"type":"object","properties":{"tabs_only":{"type":"boolean","description":"Show tab list only, no HTML","default":false},"switch_tab_id":{"type":"string","description":"[Optional] Tab ID to switch to"},"text_only":{"type":"boolean","description":"Plain text only, no HTML","default":false}}}}},{"type":"function","function":{"name":"web_execute_js","description":"Execute JS to control browser. Use precisely to reduce web_scan calls. Put code in ```javascript blocks in reply body to avoid escaping","parameters":{"type":"object","properties":{"script":{"type":"string","description":"[Mutually exclusive] JS code or script path. NEVER use this param when use reply code block"},"save_to_file":{"type":"string","description":"file path; **only** for long result","default":""},"no_monitor":{"type":"boolean","description":"Skip page change monitoring, saves 2-3s. Only for reads, not for page actions","default":false}}}}},{"type":"function","function":{"name":"update_working_checkpoint","description":"Short-term working notepad, auto-injected each turn to prevent info loss in long tasks. Call during early/mid stages, not at end. When: (1) after reading SOP, store user needs & key constraints (skip for simple 1-2 step tasks); (2) before subtask switch or context flush; (3) after repeated failures, re-read SOP and must store new findings; (4) on new task, update content, clear old progress but keep valid constraints.\n\nDon't call: simple tasks (1-2 steps), task completed (use long-term memory tool)","parameters":{"type":"object","properties":{"key_info":{"type":"string","description":"Replaces current notepad (<200 tokens). Incremental update: review existing, keep valid, add/remove/modify. Store: pitfalls, user requirements, key params/findings, file paths, progress, next steps. Don't store: ephemeral info, obvious context, old task info when user switched tasks. Prefer over-updating over losing key info"},"related_sop":{"type":"string","description":"Related SOP names, tips for further re-read"}}}}},{"type":"function","function":{"name":"start_long_term_update","description":"Start distilling long-term memory. Call when discovering info worth remembering (env facts/user prefs/lessons learned). Skip if memory already updated or in autonomous flow. Must call for tasks taking 15+ turns","parameters":{"type":"object","properties":{}}}},{"type":"function","function":{"name":"chat-with-file-processor","description":"Delegate complex tasks to file-processor sub-agent. Use for time-consuming operations like file processing.","parameters":{"type":"object","properties":{"task":{"type":"string","description":"Task description for sub-agent"}},"required":["task"]}}},{"type":"function","function":{"name":"chat-with-event-manager","description":"Delegate complex tasks to event-manager sub-agent. Use for time-consuming operations like file processing.","parameters":{"type":"object","properties":{"task":{"type":"string","description":"Task description for sub-agent"}},"required":["task"]}}},{"type":"function","function":{"name":"chat-with-context-manager","description":"Delegate complex tasks to context-manager sub-agent. Use for time-consuming operations like file processing.","parameters":{"type":"object","properties":{"task":{"type":"string","description":"Task description for sub-agent"}},"required":["task"]}}},{"type":"function","function":{"name":"photo-server/ingest_document","description":"文档入库工具\n\n参数:\n- file_path: 必填，源文件绝对路径\n- category: 分类名称，从 preferences.json 的 categories.documents 中选取（财务、合同、报告、方案、其他）\n- mode: copy（复制）| move（移动）| reference（引用）\n\n返回:\n- status: success | error\n- action: created | versioned | renamed | referenced | skipped\n- file_path: 存储后的完整路径\n- note: 处理说明\n\n冲突处理:\n- 完全相同文件（哈希相同）→ 跳过\n- 内容相似（语义相似度 > 阈值）→ 版本管理\n- 内容不同 → 自动改名","parameters":{"type":"object","properties":{"file_path":{"type":"string","description":"源文件绝对路径"},"category":{"type":"string","description":"分类（财务/合同/报告/方案/其他）","default":"其他"},"mode":{"type":"string","enum":["copy","move","reference"],"default":"copy"}},"required":["file_path"]}}},{"type":"function","function":{"name":"photo-server/ingest_documents","description":"批量文档入库工具\n\n参数:\n- file_paths: 必填，源文件路径列表\n- category: 分类名称\n- mode: copy | move | reference\n\n返回:\n- status: success\n- total: 总数\n- processed: 成功数\n- failed: 失败数\n- results: 每个文件的处理结果\n- summary: 总结","parameters":{"type":"object","properties":{"file_paths":{"type":"array","items":{"type":"string"},"description":"源文件路径列表"},"category":{"type":"string","default":"其他"},"mode":{"type":"string","enum":["copy","move","reference"],"default":"copy"}},"required":["file_paths"]}}},{"type":"function","function":{"name":"photo-server/ingest_photo","description":"照片入库工具（带人脸识别）\n\n参数:\n- file_path: 必填，照片文件绝对路径\n- category: 分类（生活/工作/旅行/证件/其他），默认从 preferences.json 读取\n\n返回:\n- status: success | error\n- photo_id: 照片唯一ID\n- detected_persons: 检测到的人物列表 [{id, name, similarity}]\n- abstract: L0 摘要（人物+时间）\n- exif: EXIF 信息（taken_at, location, camera）\n\n处理流程:\n1. 提取 EXIF 信息（拍摄时间、GPS、相机）\n2. 使用 InsightFace 检测人脸\n3. 匹配已有人物或创建\"未命名人物_N\"\n4. 生成 L0 摘要","parameters":{"type":"object","properties":{"file_path":{"type":"string","description":"照片文件绝对路径"},"category":{"type":"string","description":"分类（生活/工作/旅行/证件/其他）"}},"required":["file_path"]}}},{"type":"function","function":{"name":"photo-server/name_person","description":"为人物命名\n\n参数:\n- person_id: 必填，人物ID\n- name: 必填，新名称\n\n返回:\n- status: success | error\n- person_id: 人物ID\n- name: 新名称\n- auto_label: 自动标签（如\"未命名人物_1\"）","parameters":{"type":"object","properties":{"person_id":{"type":"string","description":"人物ID"},"name":{"type":"string","description":"新名称"}},"required":["person_id","name"]}}},{"type":"function","function":{"name":"photo-server/merge_persons","description":"合并两个人物\n\n参数:\n- person_a_id: 必填，保留的人物ID\n- person_b_id: 必填，要合并到A的人物ID\n\n返回:\n- status: success | error\n- merged_into: 合并到的人物ID\n- name: 保留的名称\n- photo_count: 合并后的照片数量\n- deleted_person_id: 被删除的人物ID\n\n说明:\n- 保留 person_a 的名称\n- 合并所有人脸向量，重新计算中心\n- 更新所有照片关联\n- 学习机制：如果相似度低于阈值，自动调整阈值","parameters":{"type":"object","properties":{"person_a_id":{"type":"string","description":"保留的人物ID"},"person_b_id":{"type":"string","description":"要合并的人物ID"}},"required":["person_a_id","person_b_id"]}}},{"type":"function","function":{"name":"photo-server/ingest_photos","description":"智能照片入库（自动判断单张/多张/目录）\n\n参数:\n- source_path: 必填，文件路径或目录路径\n- category: 分类（生活/工作/旅行/证件/其他）\n\n两种模式:\n1. 目录路径 → 批量模式：保持原目录结构，整体搬迁\n2. 文件路径 → 单张模式：按模板重命名、人脸识别、分类存储\n\n批量模式返回:\n- total: 照片总数\n- success: 成功数\n- target_path: 目标目录\n\n单张模式返回:\n- photo_id: 照片ID\n- detected_persons: 检测到的人物\n- file_path: 存储路径","parameters":{"type":"object","properties":{"source_path":{"type":"string","description":"文件路径或目录路径"},"category":{"type":"string","description":"分类（生活/工作/旅行/证件/其他）"}},"required":["source_path"]}}},{"type":"function","function":{"name":"photo-server/search_persons","description":"搜索人物（按名字语义相似度）\n\n参数:\n- query: 搜索词（人名）\n- limit: 返回数量（默认10）\n\n返回:\n- 匹配的人物列表，按相似度排序","parameters":{"type":"object","properties":{"query":{"type":"string","description":"搜索词（人名）"},"limit":{"type":"integer","description":"返回数量","default":10}},"required":["query"]}}},{"type":"function","function":{"name":"photo-server/get_unnamed_persons","description":"获取所有未命名人物\n\n返回:\n- 未命名人物列表，按出现次数排序\n- 包含：id, auto_label, photo_count, photos","parameters":{"type":"object","properties":{}}}},{"type":"function","function":{"name":"photo-server/delete_person","description":"删除人物及其所有关联数据\n\n警告：这会删除人物图谱中的节点，请谨慎使用。\n只有在用户明确要求删除时才调用。\n\n参数:\n- person_id: 要删除的人物ID\n\n返回:\n- status: success | error\n- message: 结果说明","parameters":{"type":"object","properties":{"person_id":{"type":"string","description":"人物ID"}},"required":["person_id"]}}},{"type":"function","function":{"name":"photo-server/cleanup_deleted_photos","description":"清理已删除照片的数据库记录\n\n在删除照片文件/目录后调用，清理数据库中的孤儿记录。\n扫描 photos 表，删除文件不存在的记录及其关联的 faces 记录。\n\n返回:\n- deleted_photos: 删除的照片记录数\n- deleted_faces: 删除的人脸记录数\n\n使用场景：\n- 用户删除了照片目录后\n- 清理数据库中的残留记录","parameters":{"type":"object","properties":{}}}},{"type":"function","function":{"name":"photo-server/get_person_photos","description":"获取某人物的多张照片（用于\"换一张\"场景）\n\n当用户说\"看不清\"、\"换一张\"时调用此工具。\n\n参数:\n- person_id: 人物ID\n- limit: 最多返回几张照片（默认5）\n\n返回:\n- person_id, person_name\n- photos: [{file_path, bbox, taken_at}, ...]","parameters":{"type":"object","properties":{"person_id":{"type":"string","description":"人物ID"},"limit":{"type":"integer","description":"最多返回几张（默认5）"}},"required":["person_id"]}}},{"type":"function","function":{"name":"photo-server/store_document_l1","description":"存储单个文档的 L1 摘要到向量库\n\n当 ingest_document 返回 status=\"need_l1\" 时，调用此工具存储生成的摘要。\n\n参数:\n- file_path: 必填，文档存储路径（从 ingest_document 返回值获取）\n- l1: 必填，极简格式摘要：标题|关键词|摘要|实体|类型|指针\n- l2: 可选，完整内容（如果不提供则只存储 L1）\n\n返回:\n- status: success | error\n- document_id: 文档ID\n\nL1 格式说明:\n- 标题：文档标题\n- 关键词：3-5个核心概念，用逗号分隔\n- 摘要：50-80字现代中文摘要\n- 实体：命名实体（人名、地名、技术名词）\n- 类型：文档类型（技术文档/合同/报告等）\n- 指针：文件路径或其他定位信息\n\n示例:\nZellij使用指南|终端,复用器,Rust|Zellij终端复用器的基本使用方法和配置说明|Zellij,终端|技术文档|/docs/zellij.md","parameters":{"type":"object","properties":{"file_path":{"type":"string","description":"文档存储路径"},"l1":{"type":"string","description":"L1 极简格式摘要"},"l2":{"type":"string","description":"完整内容（可选）"}},"required":["file_path","l1"]}}},{"type":"function","function":{"name":"photo-server/store_documents_l1","description":"批量存储文档的 L1 摘要到向量库\n\n当 ingest_documents 返回 status=\"need_l1\" 时，调用此工具一次性存储所有摘要。\n\n参数:\n- documents: 必填，文档列表，每个包含：\n  - file_path: 文档存储路径\n  - l1: L1 极简格式摘要\n  - l2: 完整内容（可选）\n\n返回:\n- status: success | error\n- total: 总数\n- processed: 成功数\n- failed: 失败数\n- results: 每个文档的处理结果\n\n这是批量处理的首选方式，一次调用完成所有 L1 存储，然后向主 Agent 汇报。","parameters":{"type":"object","properties":{"documents":{"type":"array","items":{"type":"object","properties":{"file_path":{"type":"string"},"l1":{"type":"string"},"l2":{"type":"string"}},"required":["file_path","l1"]},"description":"文档列表"}},"required":["documents"]}}},{"type":"function","function":{"name":"photo-server/unload_face_model","description":"卸载人脸识别模型，释放内存（约 326MB）\n\n在长时间空闲时调用此工具释放内存。\n通常由系统在 SLEEP 状态时自动调用。\n\n返回:\n- status: success\n- message: 卸载结果","parameters":{"type":"object","properties":{}}}},{"type":"function","function":{"name":"kg-server/create_document","description":"Create a document node in the knowledge graph. Use file_path to avoid passing large content through JSON.","parameters":{"type":"object","properties":{"uri":{"type":"string","description":"Unique identifier for the document (e.g., file path)"},"title":{"type":"string","description":"Document title"},"content":{"type":"string","description":"Document content (optional if file_path provided)"},"source":{"type":"string","description":"Source of the document (optional)"},"file_path":{"type":"string","description":"Path to file to read content from (avoids JSON size limits)"}},"required":["uri","title"]}}},{"type":"function","function":{"name":"kg-server/create_entity","description":"Create an entity node (person, organization, etc.) in the knowledge graph.","parameters":{"type":"object","properties":{"id":{"type":"string","description":"Unique identifier for the entity"},"name":{"type":"string","description":"Entity name"},"type":{"type":"string","description":"Entity type (e.g., person, organization, location)"},"description":{"type":"string","description":"Entity description (optional)"}},"required":["id","name","type"]}}},{"type":"function","function":{"name":"kg-server/create_concept","description":"Create a concept node in the knowledge graph.","parameters":{"type":"object","properties":{"name":{"type":"string","description":"Concept name"},"description":{"type":"string","description":"Concept description (optional)"}},"required":["name"]}}},{"type":"function","function":{"name":"kg-server/link_document_entity","description":"Link a document to an entity (MENTIONS relation).","parameters":{"type":"object","properties":{"doc_uri":{"type":"string","description":"Document URI"},"entity_id":{"type":"string","description":"Entity ID"}},"required":["doc_uri","entity_id"]}}},{"type":"function","function":{"name":"kg-server/link_document_concept","description":"Link a document to a concept (CONTAINS relation).","parameters":{"type":"object","properties":{"doc_uri":{"type":"string","description":"Document URI"},"concept_name":{"type":"string","description":"Concept name"}},"required":["doc_uri","concept_name"]}}},{"type":"function","function":{"name":"kg-server/link_entities","description":"Create a relation between two entities.","parameters":{"type":"object","properties":{"entity1_id":{"type":"string","description":"First entity ID"},"entity2_id":{"type":"string","description":"Second entity ID"},"relation":{"type":"string","description":"Relation type (e.g., works_for, knows)"}},"required":["entity1_id","entity2_id","relation"]}}},{"type":"function","function":{"name":"kg-server/get_document","description":"Get a document by URI.","parameters":{"type":"object","properties":{"uri":{"type":"string","description":"Document URI"}},"required":["uri"]}}},{"type":"function","function":{"name":"kg-server/list_documents","description":"List all documents in the knowledge graph.","parameters":{"type":"object","properties":{"limit":{"type":"integer","description":"Maximum number of documents to return (default: 10)"}}}}},{"type":"function","function":{"name":"kg-server/search_documents","description":"Search documents by keyword.","parameters":{"type":"object","properties":{"keyword":{"type":"string","description":"Search keyword"},"limit":{"type":"integer","description":"Maximum results (default: 10)"}},"required":["keyword"]}}},{"type":"function","function":{"name":"kg-server/get_related_entities","description":"Get entities mentioned in a document.","parameters":{"type":"object","properties":{"doc_uri":{"type":"string","description":"Document URI"}},"required":["doc_uri"]}}},{"type":"function","function":{"name":"kg-server/get_related_concepts","description":"Get concepts contained in a document.","parameters":{"type":"object","properties":{"doc_uri":{"type":"string","description":"Document URI"}},"required":["doc_uri"]}}},{"type":"function","function":{"name":"kg-server/query_graph","description":"Execute a Cypher query on the knowledge graph.","parameters":{"type":"object","properties":{"cypher":{"type":"string","description":"Cypher query string"}},"required":["cypher"]}}},{"type":"function","function":{"name":"vector-store/add_document","description":"Add a document to the vector store for semantic search. Use file_path to avoid passing large content through JSON.","parameters":{"type":"object","properties":{"id":{"type":"string","description":"Unique document ID"},"content":{"type":"string","description":"Document content (optional if file_path provided)"},"metadata":{"type":"object","description":"Optional metadata"},"file_path":{"type":"string","description":"Path to file to read content from (avoids JSON size limits)"}},"required":["id"]}}},{"type":"function","function":{"name":"vector-store/search_documents","description":"Search for similar documents using semantic search. Use filter to narrow results by metadata, e.g. filter={\"type\": \"event\", \"status\": \"pending\"}.","parameters":{"type":"object","properties":{"query":{"type":"string","description":"Search query"},"limit":{"type":"integer","description":"Max results (default: 5)"},"filter":{"type":"object","description":"Optional metadata filter, e.g. {\"type\": \"event\", \"status\": \"pending\"}"}},"required":["query"]}}},{"type":"function","function":{"name":"vector-store/get_document","description":"Get a document by ID.","parameters":{"type":"object","properties":{"id":{"type":"string","description":"Document ID"}},"required":["id"]}}},{"type":"function","function":{"name":"vector-store/delete_document","description":"Delete documents by ID, query (semantic search), or metadata filter. Use filter to delete by type/status, e.g. filter={\"type\": \"event\", \"status\": \"cancelled\"}.","parameters":{"type":"object","properties":{"doc_id":{"type":"string","description":"Document ID to delete (exact match)"},"query":{"type":"string","description":"Delete documents matching content (semantic search, similarity > 0.7)"},"filter":{"type":"object","description":"Delete documents matching metadata filter, e.g. {\"type\": \"event\", \"status\": \"cancelled\"}"}}}}},{"type":"function","function":{"name":"vector-store/list_documents","description":"List all documents in the vector store, optionally filtered by metadata.","parameters":{"type":"object","properties":{"limit":{"type":"integer","description":"Max results (default: 10)"},"offset":{"type":"integer","description":"Offset for pagination (default: 0)"},"filter":{"type":"object","description":"Optional metadata filter, e.g. {\"type\": \"l2\"}"}}}}},{"type":"function","function":{"name":"vector-store/count_documents","description":"Count total documents in the vector store.","parameters":{"type":"object","properties":{}}}},{"type":"function","function":{"name":"config-manager/get_llm_config","description":"Get current LLM configuration (API key is hidden).","parameters":{"type":"object","properties":{}}}},{"type":"function","function":{"name":"config-manager/set_llm_config","description":"Set LLM configuration. Use preset_id to load a preset, or provide individual values.","parameters":{"type":"object","properties":{"preset_id":{"type":"string","description":"Preset ID to load (e.g., 'openai', 'anthropic', 'deepseek')"},"api_key":{"type":"string","description":"API key"},"api_base":{"type":"string","description":"API base URL"},"model":{"type":"string","description":"Model name"},"llm_type":{"type":"string","description":"Provider type: 'openai' or 'anthropic'"}}}}},{"type":"function","function":{"name":"config-manager/list_llm_presets","description":"List all available LLM presets.","parameters":{"type":"object","properties":{}}}},{"type":"function","function":{"name":"config-manager/test_llm_connection","description":"Test LLM connection with current configuration.","parameters":{"type":"object","properties":{}}}},{"type":"function","function":{"name":"config-manager/get_storage_config","description":"Get storage configuration (document root, database path).","parameters":{"type":"object","properties":{}}}},{"type":"function","function":{"name":"config-manager/set_storage_config","description":"Set storage configuration.","parameters":{"type":"object","properties":{"document_root":{"type":"string","description":"Root directory for documents"},"database_path":{"type":"string","description":"Path to knowledge database"}}}}},{"type":"function","function":{"name":"config-manager/get_identity","description":"Get assistant identity settings (name, gender, personality).","parameters":{"type":"object","properties":{}}}},{"type":"function","function":{"name":"config-manager/update_identity","description":"Update assistant identity. User can change name, personality, etc.","parameters":{"type":"object","properties":{"name":{"type":"string","description":"Assistant name"},"gender":{"type":"string","description":"Gender: 'male' or 'female'"},"personality":{"type":"array","items":{"type":"string"},"description":"Personality traits (e.g., ['warm', 'professional', 'concise'])"},"greeting_style":{"type":"string","description":"How to greet users"}}}}},{"type":"function","function":{"name":"config-manager/get_workspace","description":"Get workspace path where documents and database are stored.","parameters":{"type":"object","properties":{}}}},{"type":"function","function":{"name":"config-manager/set_workspace","description":"Set workspace path. This is where all documents and knowledge will be stored.","parameters":{"type":"object","properties":{"path":{"type":"string","description":"Workspace directory path (e.g., 'D:\\\\MyKnowledge')"}},"required":["path"]}}},{"type":"function","function":{"name":"config-manager/get_user_info","description":"Get user information (name, preferences).","parameters":{"type":"object","properties":{}}}},{"type":"function","function":{"name":"config-manager/set_user_info","description":"Set user information.","parameters":{"type":"object","properties":{"name":{"type":"string","description":"User's name or nickname"},"preferences":{"type":"array","items":{"type":"string"},"description":"User preferences (e.g., ['concise answers', 'Chinese'])"}}}}},{"type":"function","function":{"name":"config-manager/add_user_preference","description":"Add a user preference to remember.","parameters":{"type":"object","properties":{"preference":{"type":"string","description":"Preference to remember (e.g., 'likes concise answers')"}},"required":["preference"]}}},{"type":"function","function":{"name":"config-manager/is_first_run","description":"Check if this is the first run (need to show setup wizard).","parameters":{"type":"object","properties":{}}}},{"type":"function","function":{"name":"config-manager/complete_setup","description":"Complete initial setup with workspace path and optional settings.","parameters":{"type":"object","properties":{"workspace_path":{"type":"string","description":"Workspace directory path"},"user_name":{"type":"string","description":"User's name"},"assistant_name":{"type":"string","description":"Assistant name"}}}}},{"type":"function","function":{"name":"config-manager/get_full_memory","description":"Get full memory for system prompt (all settings and info).","parameters":{"type":"object","properties":{}}}},{"type":"function","function":{"name":"config-manager/mkdir","description":"Create a directory (and parent directories if needed). Use this to create year-based directories like 'documents/2025'.","parameters":{"type":"object","properties":{"path":{"type":"string","description":"Directory path to create (e.g., 'E:\\\\tmp\\\\bot\\\\documents\\\\2025')"}},"required":["path"]}}},{"type":"function","function":{"name":"config-manager/copy_to_path","description":"Copy a file to a specific destination path. Use this to organize files by year/category. Example: copy_to_path('C:/file.pdf', 'E:/workspace/documents/2025/file.pdf')","parameters":{"type":"object","properties":{"source_path":{"type":"string","description":"Source file path"},"dest_path":{"type":"string","description":"Destination file path (absolute path)"}},"required":["source_path","dest_path"]}}},{"type":"function","function":{"name":"config-manager/move_to_path","description":"Move a file to a specific destination path. Use this to organize files by year/category.","parameters":{"type":"object","properties":{"source_path":{"type":"string","description":"Source file path"},"dest_path":{"type":"string","description":"Destination file path (absolute path)"}},"required":["source_path","dest_path"]}}},{"type":"function","function":{"name":"config-manager/list_files_in_workspace","description":"List all files in the workspace documents directory.","parameters":{"type":"object","properties":{}}}},{"type":"function","function":{"name":"file-parser/parse_file","description":"Parse a document file (PDF, Word, PPT, Excel, Markdown, HTML, Text) and extract text content.","parameters":{"type":"object","properties":{"file_path":{"type":"string","description":"Absolute path to the file to parse"}},"required":["file_path"]}}},{"type":"function","function":{"name":"file-parser/list_supported_formats","description":"List all supported file formats for parsing.","parameters":{"type":"object","properties":{}}}},{"type":"function","function":{"name":"memory-server/recall","description":"语义搜索相关记忆","parameters":{"type":"object","properties":{"query":{"type":"string","description":"搜索查询"},"limit":{"type":"integer","description":"返回数量限制","default":5},"memory_type":{"type":"string","description":"可选的记忆类型过滤"}},"required":["query"]}}},{"type":"function","function":{"name":"memory-server/list_memories","description":"列出已存储的记忆","parameters":{"type":"object","properties":{"memory_type":{"type":"string","description":"可选的记忆类型过滤"},"limit":{"type":"integer","description":"返回数量限制","default":20}}}}},{"type":"function","function":{"name":"memory-server/delete_memory","description":"删除一条记忆","parameters":{"type":"object","properties":{"memory_id":{"type":"string","description":"记忆 ID"}},"required":["memory_id"]}}}]
+=== USER ===
+用户拖入了以下文件，请处理入库：
+
+- plan-phase5-6.md (3.4 KB) 路径: E:/tools/ai-bot/docs/plans/plan-phase5-6.md
+
+处理方式：复制（复制一份到知识库，原文件保留）
+
+请按以下步骤处理：
+1. 解析文件内容
+2. 提取关键信息（人物、组织、概念等）
+3. 存储到知识图谱
+4. 向量化存储
+=== ASSISTANT ===
+
+
+=== Response === 2026-04-04 21:13:56
+<thinking>用户需要将文档 E:/tools/ai-bot/docs/plans/plan-phase5-6.md 复制入库，首先需要解析文件内容，第一步先调用file-parser/parse_file工具解析文件。</thinking>
+<summary>用户要求将plan-phase5-6.md复制入库，先调用工具解析文件内容。</summary>
+```<tool_use>{"name": "file-parser/parse_file", "arguments": {"file_path": "E:/tools/ai-bot/docs/plans/plan-phase5-6.md"}}</tool_use>```
+
+=== Prompt === 2026-04-04 21:13:57
+
+### 工具库状态：持续有效（code_run/file_read等），**可正常调用**。调用协议沿用。
+=== USER ===
+<tool_result>{"status": "success", "content": "{\n  \"file_type\": \"markdown\",\n  \"content\": \"# Phase 5-6 执行计划\\n\\n## 目标\\n1. Phase 5: 简化 main.go，使其调用 Python agent\\n2. Phase 6: 删除 Nanobot Go 代码\\n\\n## 当前状态\\n\\n### Python Agent (已完成)\\n- agent/__main__.py: CLI 入口\\n- agent/llm_client.py: LiteLLM 封装\\n- agent/handler.py: 工具处理器\\n- agent/tools/: 7 个原子工具\\n\\n### Go main.go (需要简化)\\n- 1683 行代码\\n- 关键端点:\\n  - `/api/chat/session` - 主聊天端点\\n  - `/api/chat/clear` - 清空聊天\\n  - `/api/context/messages` - 获取历史\\n  - `/api/shutdown` - 关闭服务\\n- 依赖:\\n  - pkg/toolloop - Agent 循环\\n  - pkg/session - 会话管理\\n  - pkg/llm - LLM 客户端\\n  - pkg/agents - Agent 定义\\n  - pkg/runtime - 运行时\\n  - pkg/config - 配置加载\\n\\n## Phase 5: 简化 main.go\\n\\n### 5.1 保留的功能\\n- HTTP 服务器\\n- Electron 窗口管理\\n- MCP 服务器代理\\n- 静态文件服务\\n\\n### 5.2 修改的端点\\n\\n| 端点 | 修改 |\\n|------|------|\\n| `/api/chat/session` | 调用 Python agent HTTP API |\\n| `/api/chat/clear` | 保留（Python agent session 独立管理） |\\n| `/api/context/messages` | 保留（从数据库读取） |\\n| `/api/shutdown` | 保留 |\\n\\n### 5.3 删除的代码\\n- toolloop.ChatWithToolLoop 调用\\n- nanobotRuntime.NewRuntime\\n- rt.Service, rt.Call\\n- config.Load() 中 Agent 相关部分\\n\\n### 5.4 新增代码\\n- Python agent HTTP 客户端\\n- 调用 `http://127.0.0.1:9878/chat` 转发请求\\n\\n## Phase 6: 删除 Nanobot 代码\\n\\n### 6.1 删除的 pkg/ 目录\\n```\\npkg/\\n├── agents/          # 删除\\n├── sampling/        # 删除\\n├── server/          # 删除\\n├── toolloop/        # 删除\\n├── runtime/         # 删除\\n├── tools/           # 删除\\n├── types/           # 删除\\n├── config/          # 删除\\n├── mcp/             # 删除\\n├── llm/             # 删除\\n├── servers/         # 删除\\n├── assistant/       # 删除\\n├── supervise/       # 删除\\n├── scheduler/       # 删除\\n├── skillformat/     # 删除\\n├── sessiondata/     # 删除\\n├── system/          # 删除\\n├── log/             # 删除\\n├── uuid/            # 删除\\n└── version/         # 保留\\n```\\n\\n### 6.2 保留的 pkg/ 目录\\n```\\npkg/\\n├── session/         # 保留（会话数据库）\\n└── version/         # 保留（版本信息）\\n```\\n\\n### 6.3 执行顺序\\n1. 创建简化版 main.go (main_simplified.go)\\n2. 测试简化版能编译通过\\n3. 替换 main.go\\n4. 编译验证\\n5. 删除不需要的 pkg/ 目录\\n6. 最终测试\\n\\n## 执行步骤\\n\\n### Step 1: 创建 Python agent HTTP 服务器模式\\n- 修改 agent/__main__.py 添加 serve 命令\\n- 监听 127.0.0.1:9878\\n- 提供 /chat POST 端点\\n\\n### Step 2: 创建简化版 main.go\\n- 复制 main.go 到 main_simplified.go\\n- 删除 Nanobot 相关调用\\n- 添加 Python agent HTTP 调用\\n\\n### Step 3: 测试编译\\n- go build -o niu_test.exe main_simplified.go\\n- 解决编译错误\\n\\n### Step 4: 替换并删除\\n- 备份原 main.go\\n- 用简化版替换\\n- 删除不需要的 pkg/ 目录\\n\\n### Step 5: 最终验证\\n- 编译 niu.exe\\n- 运行测试\\n\\n## 回滚计划\\n\\n如果出现问题:\\n1. `git checkout HEAD~1 -- main.go` 恢复 main.go\\n2. `git checkout HEAD~1 -- pkg/` 恢复 pkg/\\n3. 重新编译\\n\\n## Git 提交策略\\n\\n每完成一个步骤就提交:\\n1. \\\"feat(agent): add HTTP server mode\\\"\\n2. \\\"refactor(main): simplify main.go for Python agent\\\"\\n3. \\\"refactor(pkg): remove Nanobot code\\\"\\n4. \\\"test: verify Python agent integration\\\"\\n\",\n  \"file_path\": \"E:/tools/ai-bot/docs/plans/plan-phase5-6.md\",\n  \"file_name\": \"plan-phase5-6.md\"\n}"}</tool_result>
+
+
+=== ASSISTANT ===
+
+
+=== Response === 2026-04-04 21:13:59
+<thinking>文件解析成功，接下来需要将文档入库，按照要求分类为方案，使用复制模式，调用photo-server/ingest_document完成入库。</thinking>
+<summary>文件解析成功，调用文档入库工具复制入库，分类为方案。</summary>
+```<tool_use>{"name": "photo-server/ingest_document", "arguments": {"file_path": "E:/tools/ai-bot/docs/plans/plan-phase5-6.md", "category": "方案", "mode": "copy"}}</tool_use>```
+
+=== Prompt === 2026-04-04 21:14:05
+
+### 工具库状态：持续有效（code_run/file_read等），**可正常调用**。调用协议沿用。
+=== USER ===
+<tool_result>{"status": "success", "content": "{\"status\": \"need_l1\", \"action\": \"created\", \"file_path\": \"E:\\\\tmp\\\\bot\\\\2026\\\\方案\\\\plan-phase5-6.md\", \"original_path\": \"E:\\\\tools\\\\ai-bot\\\\docs\\\\plans\\\\plan-phase5-6.md\", \"category\": \"方案\", \"content\": \"# Phase 5-6 执行计划\\n\\n## 目标\\n1. Phase 5: 简化 main.go，使其调用 Python agent\\n2. Phase 6: 删除 Nanobot Go 代码\\n\\n## 当前状态\\n\\n### Python Agent (已完成)\\n- agent/__main__.py: CLI 入口\\n- agent/llm_client.py: LiteLLM 封装\\n- agent/handler.py: 工具处理器\\n- agent/tools/: 7 个原子工具\\n\\n### Go main.go (需要简化)\\n- 1683 行代码\\n- 关键端点:\\n  - `/api/chat/session` - 主聊天端点\\n  - `/api/chat/clear` - 清空聊天\\n  - `/api/context/messages` - 获取历史\\n  - `/api/shutdown` - 关闭服务\\n- 依赖:\\n  - pkg/toolloop - Agent 循环\\n  - pkg/session - 会话管理\\n  - pkg/llm - LLM 客户端\\n  - pkg/agents - Agent 定义\\n  - pkg/runtime - 运行时\\n  - pkg/config - 配置加载\\n\\n## Phase 5: 简化 main.go\\n\\n### 5.1 保留的功能\\n- HTTP 服务器\\n- Electron 窗口管理\\n- MCP 服务器代理\\n- 静态文件服务\\n\\n### 5.2 修改的端点\\n\\n| 端点 | 修改 |\\n|------|------|\\n| `/api/chat/session` | 调用 Python agent HTTP API |\\n| `/api/chat/clear` | 保留（Python agent session 独立管理） |\\n| `/api/context/messages` | 保留（从数据库读取） |\\n| `/api/shutdown` | 保留 |\\n\\n### 5.3 删除的代码\\n- toolloop.ChatWithToolLoop 调用\\n- nanobotRuntime.NewRuntime\\n- rt.Service, rt.Call\\n- config.Load() 中 Agent 相关部分\\n\\n### 5.4 新增代码\\n- Python agent HTTP 客户端\\n- 调用 `http://127.0.0.1:9878/chat` 转发请求\\n\\n## Phase 6: 删除 Nanobot 代码\\n\\n### 6.1 删除的 pkg/ 目录\\n```\\npkg/\\n├── agents/          # 删除\\n├── sampling/        # 删除\\n├── server/          # 删除\\n├── toolloop/        # 删除\\n├── runtime/         # 删除\\n├── tools/           # 删除\\n├── types/           # 删除\\n├── config/          # 删除\\n├── mcp/             # 删除\\n├── llm/             # 删除\\n├── servers/         # 删除\\n├── assistant/       # 删除\\n├── supervise/       # 删除\\n├── scheduler/       # 删除\\n├── skillformat/     # 删除\\n├── sessiondata/     # 删除\\n├── system/          # 删除\\n├── log/             # 删除\\n├── uuid/            # 删除\\n└── version/         # 保留\\n```\\n\\n### 6.2 保留的 pkg/ 目录\\n```\\npkg/\\n├── session/         # 保留（会话数据库）\\n└── version/         # 保留（版本信息）\\n```\\n\\n### 6.3 执行顺序\\n1. 创建简化版 main.go (main_simplified.go)\\n2. 测试简化版能编译通过\\n3. 替换 main.go\\n4. 编译验证\\n5. 删除不需要的 pkg/ 目录\\n6. 最终测试\\n\\n## 执行步骤\\n\\n### Step 1: 创建 Python agent HTTP 服务器模式\\n- 修改 agent/__main__.py 添加 serve 命令\\n- 监听 127.0.0.1:9878\\n- 提供 /chat POST 端点\\n\\n### Step 2: 创建简化版 main.go\\n- 复制 main.go 到 main_simplified.go\\n- 删除 Nanobot 相关调用\\n- 添加 Python agent HTTP 调用\\n\\n### Step 3: 测试编译\\n- go build -o niu_test.exe main_simplified.go\\n- 解决编译错误\\n\\n### Step 4: 替换并删除\\n- 备份原 main.go\\n- 用简化版替换\\n- 删除不需要的 pkg/ 目录\\n\\n### Step 5: 最终验证\\n- 编译 niu.exe\\n- 运行测试\\n\\n## 回滚计划\\n\\n如果出现问题:\\n1. `git checkout HEAD~1 -- main.go` 恢复 main.go\\n2. `git checkout HEAD~1 -- pkg/` 恢复 pkg/\\n3. 重新编译\\n\\n## Git 提交策略\\n\\n每完成一个步骤就提交:\\n1. \\\"feat(agent): add HTTP server mode\\\"\\n2. \\\"refactor(main): simplify main.go for Python agent\\\"\\n3. \\\"refactor(pkg): remove Nanobot code\\\"\\n4. \\\"test: verify Python agent integration\\\"\\n\", \"hint\": \"请生成 L1 摘要（极简格式：标题|关键词|摘要|实体|类型|指针），然后调用 store_document_l1 存储\"}"}</tool_result>
+
+
+=== ASSISTANT ===
+
+
+=== Response === 2026-04-04 21:14:07
+<thinking>需要生成符合要求的L1摘要，然后调用photo-server/store_document_l1存储摘要。根据文档内容，生成正确格式的L1摘要。</thinking>
+<summary>文档已复制入库，生成L1摘要并存储到向量库。</summary>
+```<tool_use>{"name": "photo-server/store_document_l1", "arguments": {"file_path": "E:\\tmp\\bot\\2026\\方案\\plan-phase5-6.md", "l1": "Phase 5-6 执行计划|Nanobot,Go,Python Agent,重构,代码删除|本文档是项目重构执行计划，包含Phase5简化main.go调用Python Agent、Phase6删除旧Nanobot Go代码的具体步骤、执行顺序和回滚策略|Nanobot,Go,Python Agent,main.go|技术方案|E:\\tmp\\bot\\2026\\方案\\plan-phase5-6.md"}}}</tool_use>```
+
+=== Prompt === 2026-04-04 21:14:13
+
+### 工具库状态：持续有效（code_run/file_read等），**可正常调用**。调用协议沿用。
+=== USER ===
+<tool_result>{"status": "success", "content": "{\"status\": \"success\", \"l1_id\": \"doc_b4e8ae0b73d0\", \"l2_id\": null, \"file_path\": \"E:\\\\tmp\\\\bot\\\\2026\\\\方案\\\\plan-phase5-6.md\", \"message\": \"文档摘要已存储到向量库\"}"}</tool_result>
+
+
+=== ASSISTANT ===
+
+
+=== Response === 2026-04-04 21:14:16
+<thinking>现在需要创建知识图谱文档节点，将文档存入知识图谱。调用kg-server/create_document工具，使用文件路径作为URI，标题为Phase 5-6 执行计划。</thinking>
+<summary>摘要已存储，接下来创建知识图谱文档节点。</summary>
+```<tool_use>{"name": "kg-server/create_document", "arguments": {"uri": "E:\\tmp\\bot\\2026\\方案\\plan-phase5-6.md", "title": "Phase 5-6 执行计划", "file_path": "E:\\tmp\\bot\\2026\\方案\\plan-phase5-6.md"}}</tool_use>```
+
+=== Prompt === 2026-04-04 21:14:16
+
+### 工具库状态：持续有效（code_run/file_read等），**可正常调用**。调用协议沿用。
+=== USER ===
+<tool_result>{"status": "success", "content": "{\"status\": \"created\", \"uri\": \"E:\\\\tmp\\\\bot\\\\2026\\\\方案\\\\plan-phase5-6.md\", \"title\": \"Phase 5-6 执行计划\"}"}</tool_result>
+
+
+=== ASSISTANT ===
+
+
+=== Response === 2026-04-04 21:14:20
+<thinking>接下来提取关键概念，需要创建概念节点并关联文档。先提取核心概念：Python Agent、Go、Nanobot、main.go、重构这些核心概念，逐个创建并关联。</thinking>
+<summary>文档节点创建成功，创建核心概念节点并关联文档。</summary>
+```<tool_use>{"name": "kg-server/create_concept", "arguments": {"name": "Python Agent", "description": "Python实现的AI代理，包含工具调用和LLM交互能力"}}}</tool_use>```
+
+=== Prompt === 2026-04-04 21:14:20
+
+### 工具库状态：持续有效（code_run/file_read等），**可正常调用**。调用协议沿用。
+=== USER ===
+<tool_result>{"status": "success", "content": "{\"status\": \"created\", \"name\": \"Python Agent\"}"}</tool_result>
+
+
+=== ASSISTANT ===
+
+
+=== Response === 2026-04-04 21:14:22
+<thinking></thinking>
+```<tool_use>{"name": "kg-server/create_concept", "arguments": {"name": "Go语言", "description": "Golang编程语言，项目原后端实现语言"}}}</tool_use>```
+
+=== Prompt === 2026-04-04 21:14:23
+
+### 工具库状态：持续有效（code_run/file_read等），**可正常调用**。调用协议沿用。
+=== USER ===
+<tool_result>{"status": "success", "content": "{\"status\": \"created\", \"name\": \"Go语言\"}"}</tool_result>
+
+
+=== ASSISTANT ===
+
+
+=== Response === 2026-04-04 21:14:25
+```<tool_use>{"name": "kg-server/create_concept", "arguments": {"name": "Nanobot", "description": "原Go语言实现的AI代理项目，将被重构删除"}}}</tool_use>```
+
+=== Prompt === 2026-04-04 21:14:26
+
+### 工具库状态：持续有效（code_run/file_read等），**可正常调用**。调用协议沿用。
+=== USER ===
+<tool_result>{"status": "success", "content": "{\"status\": \"created\", \"name\": \"Nanobot\"}"}</tool_result>
+
+
+=== ASSISTANT ===
+
+
+=== Response === 2026-04-04 21:14:28
+```<tool_use>{"name": "kg-server/create_concept", "arguments": {"name": "main.go", "description": "Go项目主入口文件，本次重构的核心修改对象"}}}</tool_use>```
+
+=== Prompt === 2026-04-04 21:14:29
+
+### 工具库状态：持续有效（code_run/file_read等），**可正常调用**。调用协议沿用。
+=== USER ===
+<tool_result>{"status": "success", "content": "{\"status\": \"created\", \"name\": \"main.go\"}"}</tool_result>
+
+
+=== ASSISTANT ===
+
+
+=== Response === 2026-04-04 21:14:30
+```<tool_use>{"name": "kg-server/create_concept", "arguments": {"name": "代码重构", "description": "对项目代码结构进行调整，删除旧代码迁移到新实现"}}}</tool_use>```
+
+=== Prompt === 2026-04-04 21:14:31
+
+### 交互协议 (必须严格遵守，持续有效)
+请按照以下步骤思考并行动：
+1. **思考**: 在 `<thinking>` 标签中先进行思考，分析现状和策略。
+2. **总结**: 在 `<summary>` 中输出*极为简短*的高度概括的单行（<30字）物理快照，包括上次工具调用结果产生的新信息+本次工具调用意图。此内容将进入长期工作记忆，记录关键信息，严禁输出无实际信息增量的描述。
+3. **行动**: 如需调用工具，请在回复正文之后输出一个（或多个）**<tool_use>块**，然后结束。
+格式: ```<tool_use>{"name": "工具名", "arguments": {参数}}</tool_use>```
+
+### 可用工具库（已挂载，持续有效）
+[{"type":"function","function":{"name":"code_run","description":"Code executor. Prefer python. No concurrent calls. Prefer code in ```python/powershell blocks in reply body to avoid escaping. No hardcoding bulk data","parameters":{"type":"object","properties":{"script":{"type":"string","description":"[Mutually exclusive] NEVER use this param when use reply code block."},"type":{"type":"string","enum":["python","powershell"],"description":"Code type","default":"python"},"timeout":{"type":"integer","description":"in seconds","default":60},"cwd":{"type":"string","description":"Working directory, defaults to cwd"}}}}},{"type":"function","function":{"name":"file_read","description":"Read file. Read before modify for latest context and line numbers","parameters":{"type":"object","properties":{"path":{"type":"string","description":"Relative or absolute"},"start":{"type":"integer","description":"Start line number (1-based)","default":1},"count":{"type":"integer","description":"Number of lines to read","default":200},"keyword":{"type":"string","description":"[Optional] If provided, returns first match (case-insensitive) with context"},"show_linenos":{"type":"boolean","description":"Show line numbers","default":true}}}}},{"type":"function","function":{"name":"file_patch","description":"Replace unique old_content with new_content. Exact match required (whitespace/indentation). On failure, file_read to recheck","parameters":{"type":"object","properties":{"path":{"type":"string","description":"File path"},"old_content":{"type":"string","description":"Original text block to replace (must be unique)"},"new_content":{"type":"string","description":"New content. Supports {{file:path:startLine:endLine}} to ref file lines, auto-expanded"}}}}},{"type":"function","function":{"name":"file_write","description":"Create/overwrite/append files. ONLY for HUGE edits. Content in <file_content> tags or reply code blocks. Supports {{file:path:startLine:endLine}}, auto-expanded","parameters":{"type":"object","properties":{"path":{"type":"string","description":"File path"},"mode":{"type":"string","enum":["overwrite","append","prepend"],"description":"Write mode","default":"append"}}}}},{"type":"function","function":{"name":"web_scan","description":"Get simplified HTML and tab list. Filters sidebars/floating elements; use execute_js for filtered content. Call after switching pages","parameters":{"type":"object","properties":{"tabs_only":{"type":"boolean","description":"Show tab list only, no HTML","default":false},"switch_tab_id":{"type":"string","description":"[Optional] Tab ID to switch to"},"text_only":{"type":"boolean","description":"Plain text only, no HTML","default":false}}}}},{"type":"function","function":{"name":"web_execute_js","description":"Execute JS to control browser. Use precisely to reduce web_scan calls. Put code in ```javascript blocks in reply body to avoid escaping","parameters":{"type":"object","properties":{"script":{"type":"string","description":"[Mutually exclusive] JS code or script path. NEVER use this param when use reply code block"},"save_to_file":{"type":"string","description":"file path; **only** for long result","default":""},"no_monitor":{"type":"boolean","description":"Skip page change monitoring, saves 2-3s. Only for reads, not for page actions","default":false}}}}},{"type":"function","function":{"name":"update_working_checkpoint","description":"Short-term working notepad, auto-injected each turn to prevent info loss in long tasks. Call during early/mid stages, not at end. When: (1) after reading SOP, store user needs & key constraints (skip for simple 1-2 step tasks); (2) before subtask switch or context flush; (3) after repeated failures, re-read SOP and must store new findings; (4) on new task, update content, clear old progress but keep valid constraints.\n\nDon't call: simple tasks (1-2 steps), task completed (use long-term memory tool)","parameters":{"type":"object","properties":{"key_info":{"type":"string","description":"Replaces current notepad (<200 tokens). Incremental update: review existing, keep valid, add/remove/modify. Store: pitfalls, user requirements, key params/findings, file paths, progress, next steps. Don't store: ephemeral info, obvious context, old task info when user switched tasks. Prefer over-updating over losing key info"},"related_sop":{"type":"string","description":"Related SOP names, tips for further re-read"}}}}},{"type":"function","function":{"name":"start_long_term_update","description":"Start distilling long-term memory. Call when discovering info worth remembering (env facts/user prefs/lessons learned). Skip if memory already updated or in autonomous flow. Must call for tasks taking 15+ turns","parameters":{"type":"object","properties":{}}}},{"type":"function","function":{"name":"chat-with-file-processor","description":"Delegate complex tasks to file-processor sub-agent. Use for time-consuming operations like file processing.","parameters":{"type":"object","properties":{"task":{"type":"string","description":"Task description for sub-agent"}},"required":["task"]}}},{"type":"function","function":{"name":"chat-with-event-manager","description":"Delegate complex tasks to event-manager sub-agent. Use for time-consuming operations like file processing.","parameters":{"type":"object","properties":{"task":{"type":"string","description":"Task description for sub-agent"}},"required":["task"]}}},{"type":"function","function":{"name":"chat-with-context-manager","description":"Delegate complex tasks to context-manager sub-agent. Use for time-consuming operations like file processing.","parameters":{"type":"object","properties":{"task":{"type":"string","description":"Task description for sub-agent"}},"required":["task"]}}},{"type":"function","function":{"name":"photo-server/ingest_document","description":"文档入库工具\n\n参数:\n- file_path: 必填，源文件绝对路径\n- category: 分类名称，从 preferences.json 的 categories.documents 中选取（财务、合同、报告、方案、其他）\n- mode: copy（复制）| move（移动）| reference（引用）\n\n返回:\n- status: success | error\n- action: created | versioned | renamed | referenced | skipped\n- file_path: 存储后的完整路径\n- note: 处理说明\n\n冲突处理:\n- 完全相同文件（哈希相同）→ 跳过\n- 内容相似（语义相似度 > 阈值）→ 版本管理\n- 内容不同 → 自动改名","parameters":{"type":"object","properties":{"file_path":{"type":"string","description":"源文件绝对路径"},"category":{"type":"string","description":"分类（财务/合同/报告/方案/其他）","default":"其他"},"mode":{"type":"string","enum":["copy","move","reference"],"default":"copy"}},"required":["file_path"]}}},{"type":"function","function":{"name":"photo-server/ingest_documents","description":"批量文档入库工具\n\n参数:\n- file_paths: 必填，源文件路径列表\n- category: 分类名称\n- mode: copy | move | reference\n\n返回:\n- status: success\n- total: 总数\n- processed: 成功数\n- failed: 失败数\n- results: 每个文件的处理结果\n- summary: 总结","parameters":{"type":"object","properties":{"file_paths":{"type":"array","items":{"type":"string"},"description":"源文件路径列表"},"category":{"type":"string","default":"其他"},"mode":{"type":"string","enum":["copy","move","reference"],"default":"copy"}},"required":["file_paths"]}}},{"type":"function","function":{"name":"photo-server/ingest_photo","description":"照片入库工具（带人脸识别）\n\n参数:\n- file_path: 必填，照片文件绝对路径\n- category: 分类（生活/工作/旅行/证件/其他），默认从 preferences.json 读取\n\n返回:\n- status: success | error\n- photo_id: 照片唯一ID\n- detected_persons: 检测到的人物列表 [{id, name, similarity}]\n- abstract: L0 摘要（人物+时间）\n- exif: EXIF 信息（taken_at, location, camera）\n\n处理流程:\n1. 提取 EXIF 信息（拍摄时间、GPS、相机）\n2. 使用 InsightFace 检测人脸\n3. 匹配已有人物或创建\"未命名人物_N\"\n4. 生成 L0 摘要","parameters":{"type":"object","properties":{"file_path":{"type":"string","description":"照片文件绝对路径"},"category":{"type":"string","description":"分类（生活/工作/旅行/证件/其他）"}},"required":["file_path"]}}},{"type":"function","function":{"name":"photo-server/name_person","description":"为人物命名\n\n参数:\n- person_id: 必填，人物ID\n- name: 必填，新名称\n\n返回:\n- status: success | error\n- person_id: 人物ID\n- name: 新名称\n- auto_label: 自动标签（如\"未命名人物_1\"）","parameters":{"type":"object","properties":{"person_id":{"type":"string","description":"人物ID"},"name":{"type":"string","description":"新名称"}},"required":["person_id","name"]}}},{"type":"function","function":{"name":"photo-server/merge_persons","description":"合并两个人物\n\n参数:\n- person_a_id: 必填，保留的人物ID\n- person_b_id: 必填，要合并到A的人物ID\n\n返回:\n- status: success | error\n- merged_into: 合并到的人物ID\n- name: 保留的名称\n- photo_count: 合并后的照片数量\n- deleted_person_id: 被删除的人物ID\n\n说明:\n- 保留 person_a 的名称\n- 合并所有人脸向量，重新计算中心\n- 更新所有照片关联\n- 学习机制：如果相似度低于阈值，自动调整阈值","parameters":{"type":"object","properties":{"person_a_id":{"type":"string","description":"保留的人物ID"},"person_b_id":{"type":"string","description":"要合并的人物ID"}},"required":["person_a_id","person_b_id"]}}},{"type":"function","function":{"name":"photo-server/ingest_photos","description":"智能照片入库（自动判断单张/多张/目录）\n\n参数:\n- source_path: 必填，文件路径或目录路径\n- category: 分类（生活/工作/旅行/证件/其他）\n\n两种模式:\n1. 目录路径 → 批量模式：保持原目录结构，整体搬迁\n2. 文件路径 → 单张模式：按模板重命名、人脸识别、分类存储\n\n批量模式返回:\n- total: 照片总数\n- success: 成功数\n- target_path: 目标目录\n\n单张模式返回:\n- photo_id: 照片ID\n- detected_persons: 检测到的人物\n- file_path: 存储路径","parameters":{"type":"object","properties":{"source_path":{"type":"string","description":"文件路径或目录路径"},"category":{"type":"string","description":"分类（生活/工作/旅行/证件/其他）"}},"required":["source_path"]}}},{"type":"function","function":{"name":"photo-server/search_persons","description":"搜索人物（按名字语义相似度）\n\n参数:\n- query: 搜索词（人名）\n- limit: 返回数量（默认10）\n\n返回:\n- 匹配的人物列表，按相似度排序","parameters":{"type":"object","properties":{"query":{"type":"string","description":"搜索词（人名）"},"limit":{"type":"integer","description":"返回数量","default":10}},"required":["query"]}}},{"type":"function","function":{"name":"photo-server/get_unnamed_persons","description":"获取所有未命名人物\n\n返回:\n- 未命名人物列表，按出现次数排序\n- 包含：id, auto_label, photo_count, photos","parameters":{"type":"object","properties":{}}}},{"type":"function","function":{"name":"photo-server/delete_person","description":"删除人物及其所有关联数据\n\n警告：这会删除人物图谱中的节点，请谨慎使用。\n只有在用户明确要求删除时才调用。\n\n参数:\n- person_id: 要删除的人物ID\n\n返回:\n- status: success | error\n- message: 结果说明","parameters":{"type":"object","properties":{"person_id":{"type":"string","description":"人物ID"}},"required":["person_id"]}}},{"type":"function","function":{"name":"photo-server/cleanup_deleted_photos","description":"清理已删除照片的数据库记录\n\n在删除照片文件/目录后调用，清理数据库中的孤儿记录。\n扫描 photos 表，删除文件不存在的记录及其关联的 faces 记录。\n\n返回:\n- deleted_photos: 删除的照片记录数\n- deleted_faces: 删除的人脸记录数\n\n使用场景：\n- 用户删除了照片目录后\n- 清理数据库中的残留记录","parameters":{"type":"object","properties":{}}}},{"type":"function","function":{"name":"photo-server/get_person_photos","description":"获取某人物的多张照片（用于\"换一张\"场景）\n\n当用户说\"看不清\"、\"换一张\"时调用此工具。\n\n参数:\n- person_id: 人物ID\n- limit: 最多返回几张照片（默认5）\n\n返回:\n- person_id, person_name\n- photos: [{file_path, bbox, taken_at}, ...]","parameters":{"type":"object","properties":{"person_id":{"type":"string","description":"人物ID"},"limit":{"type":"integer","description":"最多返回几张（默认5）"}},"required":["person_id"]}}},{"type":"function","function":{"name":"photo-server/store_document_l1","description":"存储单个文档的 L1 摘要到向量库\n\n当 ingest_document 返回 status=\"need_l1\" 时，调用此工具存储生成的摘要。\n\n参数:\n- file_path: 必填，文档存储路径（从 ingest_document 返回值获取）\n- l1: 必填，极简格式摘要：标题|关键词|摘要|实体|类型|指针\n- l2: 可选，完整内容（如果不提供则只存储 L1）\n\n返回:\n- status: success | error\n- document_id: 文档ID\n\nL1 格式说明:\n- 标题：文档标题\n- 关键词：3-5个核心概念，用逗号分隔\n- 摘要：50-80字现代中文摘要\n- 实体：命名实体（人名、地名、技术名词）\n- 类型：文档类型（技术文档/合同/报告等）\n- 指针：文件路径或其他定位信息\n\n示例:\nZellij使用指南|终端,复用器,Rust|Zellij终端复用器的基本使用方法和配置说明|Zellij,终端|技术文档|/docs/zellij.md","parameters":{"type":"object","properties":{"file_path":{"type":"string","description":"文档存储路径"},"l1":{"type":"string","description":"L1 极简格式摘要"},"l2":{"type":"string","description":"完整内容（可选）"}},"required":["file_path","l1"]}}},{"type":"function","function":{"name":"photo-server/store_documents_l1","description":"批量存储文档的 L1 摘要到向量库\n\n当 ingest_documents 返回 status=\"need_l1\" 时，调用此工具一次性存储所有摘要。\n\n参数:\n- documents: 必填，文档列表，每个包含：\n  - file_path: 文档存储路径\n  - l1: L1 极简格式摘要\n  - l2: 完整内容（可选）\n\n返回:\n- status: success | error\n- total: 总数\n- processed: 成功数\n- failed: 失败数\n- results: 每个文档的处理结果\n\n这是批量处理的首选方式，一次调用完成所有 L1 存储，然后向主 Agent 汇报。","parameters":{"type":"object","properties":{"documents":{"type":"array","items":{"type":"object","properties":{"file_path":{"type":"string"},"l1":{"type":"string"},"l2":{"type":"string"}},"required":["file_path","l1"]},"description":"文档列表"}},"required":["documents"]}}},{"type":"function","function":{"name":"photo-server/unload_face_model","description":"卸载人脸识别模型，释放内存（约 326MB）\n\n在长时间空闲时调用此工具释放内存。\n通常由系统在 SLEEP 状态时自动调用。\n\n返回:\n- status: success\n- message: 卸载结果","parameters":{"type":"object","properties":{}}}},{"type":"function","function":{"name":"kg-server/create_document","description":"Create a document node in the knowledge graph. Use file_path to avoid passing large content through JSON.","parameters":{"type":"object","properties":{"uri":{"type":"string","description":"Unique identifier for the document (e.g., file path)"},"title":{"type":"string","description":"Document title"},"content":{"type":"string","description":"Document content (optional if file_path provided)"},"source":{"type":"string","description":"Source of the document (optional)"},"file_path":{"type":"string","description":"Path to file to read content from (avoids JSON size limits)"}},"required":["uri","title"]}}},{"type":"function","function":{"name":"kg-server/create_entity","description":"Create an entity node (person, organization, etc.) in the knowledge graph.","parameters":{"type":"object","properties":{"id":{"type":"string","description":"Unique identifier for the entity"},"name":{"type":"string","description":"Entity name"},"type":{"type":"string","description":"Entity type (e.g., person, organization, location)"},"description":{"type":"string","description":"Entity description (optional)"}},"required":["id","name","type"]}}},{"type":"function","function":{"name":"kg-server/create_concept","description":"Create a concept node in the knowledge graph.","parameters":{"type":"object","properties":{"name":{"type":"string","description":"Concept name"},"description":{"type":"string","description":"Concept description (optional)"}},"required":["name"]}}},{"type":"function","function":{"name":"kg-server/link_document_entity","description":"Link a document to an entity (MENTIONS relation).","parameters":{"type":"object","properties":{"doc_uri":{"type":"string","description":"Document URI"},"entity_id":{"type":"string","description":"Entity ID"}},"required":["doc_uri","entity_id"]}}},{"type":"function","function":{"name":"kg-server/link_document_concept","description":"Link a document to a concept (CONTAINS relation).","parameters":{"type":"object","properties":{"doc_uri":{"type":"string","description":"Document URI"},"concept_name":{"type":"string","description":"Concept name"}},"required":["doc_uri","concept_name"]}}},{"type":"function","function":{"name":"kg-server/link_entities","description":"Create a relation between two entities.","parameters":{"type":"object","properties":{"entity1_id":{"type":"string","description":"First entity ID"},"entity2_id":{"type":"string","description":"Second entity ID"},"relation":{"type":"string","description":"Relation type (e.g., works_for, knows)"}},"required":["entity1_id","entity2_id","relation"]}}},{"type":"function","function":{"name":"kg-server/get_document","description":"Get a document by URI.","parameters":{"type":"object","properties":{"uri":{"type":"string","description":"Document URI"}},"required":["uri"]}}},{"type":"function","function":{"name":"kg-server/list_documents","description":"List all documents in the knowledge graph.","parameters":{"type":"object","properties":{"limit":{"type":"integer","description":"Maximum number of documents to return (default: 10)"}}}}},{"type":"function","function":{"name":"kg-server/search_documents","description":"Search documents by keyword.","parameters":{"type":"object","properties":{"keyword":{"type":"string","description":"Search keyword"},"limit":{"type":"integer","description":"Maximum results (default: 10)"}},"required":["keyword"]}}},{"type":"function","function":{"name":"kg-server/get_related_entities","description":"Get entities mentioned in a document.","parameters":{"type":"object","properties":{"doc_uri":{"type":"string","description":"Document URI"}},"required":["doc_uri"]}}},{"type":"function","function":{"name":"kg-server/get_related_concepts","description":"Get concepts contained in a document.","parameters":{"type":"object","properties":{"doc_uri":{"type":"string","description":"Document URI"}},"required":["doc_uri"]}}},{"type":"function","function":{"name":"kg-server/query_graph","description":"Execute a Cypher query on the knowledge graph.","parameters":{"type":"object","properties":{"cypher":{"type":"string","description":"Cypher query string"}},"required":["cypher"]}}},{"type":"function","function":{"name":"vector-store/add_document","description":"Add a document to the vector store for semantic search. Use file_path to avoid passing large content through JSON.","parameters":{"type":"object","properties":{"id":{"type":"string","description":"Unique document ID"},"content":{"type":"string","description":"Document content (optional if file_path provided)"},"metadata":{"type":"object","description":"Optional metadata"},"file_path":{"type":"string","description":"Path to file to read content from (avoids JSON size limits)"}},"required":["id"]}}},{"type":"function","function":{"name":"vector-store/search_documents","description":"Search for similar documents using semantic search. Use filter to narrow results by metadata, e.g. filter={\"type\": \"event\", \"status\": \"pending\"}.","parameters":{"type":"object","properties":{"query":{"type":"string","description":"Search query"},"limit":{"type":"integer","description":"Max results (default: 5)"},"filter":{"type":"object","description":"Optional metadata filter, e.g. {\"type\": \"event\", \"status\": \"pending\"}"}},"required":["query"]}}},{"type":"function","function":{"name":"vector-store/get_document","description":"Get a document by ID.","parameters":{"type":"object","properties":{"id":{"type":"string","description":"Document ID"}},"required":["id"]}}},{"type":"function","function":{"name":"vector-store/delete_document","description":"Delete documents by ID, query (semantic search), or metadata filter. Use filter to delete by type/status, e.g. filter={\"type\": \"event\", \"status\": \"cancelled\"}.","parameters":{"type":"object","properties":{"doc_id":{"type":"string","description":"Document ID to delete (exact match)"},"query":{"type":"string","description":"Delete documents matching content (semantic search, similarity > 0.7)"},"filter":{"type":"object","description":"Delete documents matching metadata filter, e.g. {\"type\": \"event\", \"status\": \"cancelled\"}"}}}}},{"type":"function","function":{"name":"vector-store/list_documents","description":"List all documents in the vector store, optionally filtered by metadata.","parameters":{"type":"object","properties":{"limit":{"type":"integer","description":"Max results (default: 10)"},"offset":{"type":"integer","description":"Offset for pagination (default: 0)"},"filter":{"type":"object","description":"Optional metadata filter, e.g. {\"type\": \"l2\"}"}}}}},{"type":"function","function":{"name":"vector-store/count_documents","description":"Count total documents in the vector store.","parameters":{"type":"object","properties":{}}}},{"type":"function","function":{"name":"config-manager/get_llm_config","description":"Get current LLM configuration (API key is hidden).","parameters":{"type":"object","properties":{}}}},{"type":"function","function":{"name":"config-manager/set_llm_config","description":"Set LLM configuration. Use preset_id to load a preset, or provide individual values.","parameters":{"type":"object","properties":{"preset_id":{"type":"string","description":"Preset ID to load (e.g., 'openai', 'anthropic', 'deepseek')"},"api_key":{"type":"string","description":"API key"},"api_base":{"type":"string","description":"API base URL"},"model":{"type":"string","description":"Model name"},"llm_type":{"type":"string","description":"Provider type: 'openai' or 'anthropic'"}}}}},{"type":"function","function":{"name":"config-manager/list_llm_presets","description":"List all available LLM presets.","parameters":{"type":"object","properties":{}}}},{"type":"function","function":{"name":"config-manager/test_llm_connection","description":"Test LLM connection with current configuration.","parameters":{"type":"object","properties":{}}}},{"type":"function","function":{"name":"config-manager/get_storage_config","description":"Get storage configuration (document root, database path).","parameters":{"type":"object","properties":{}}}},{"type":"function","function":{"name":"config-manager/set_storage_config","description":"Set storage configuration.","parameters":{"type":"object","properties":{"document_root":{"type":"string","description":"Root directory for documents"},"database_path":{"type":"string","description":"Path to knowledge database"}}}}},{"type":"function","function":{"name":"config-manager/get_identity","description":"Get assistant identity settings (name, gender, personality).","parameters":{"type":"object","properties":{}}}},{"type":"function","function":{"name":"config-manager/update_identity","description":"Update assistant identity. User can change name, personality, etc.","parameters":{"type":"object","properties":{"name":{"type":"string","description":"Assistant name"},"gender":{"type":"string","description":"Gender: 'male' or 'female'"},"personality":{"type":"array","items":{"type":"string"},"description":"Personality traits (e.g., ['warm', 'professional', 'concise'])"},"greeting_style":{"type":"string","description":"How to greet users"}}}}},{"type":"function","function":{"name":"config-manager/get_workspace","description":"Get workspace path where documents and database are stored.","parameters":{"type":"object","properties":{}}}},{"type":"function","function":{"name":"config-manager/set_workspace","description":"Set workspace path. This is where all documents and knowledge will be stored.","parameters":{"type":"object","properties":{"path":{"type":"string","description":"Workspace directory path (e.g., 'D:\\\\MyKnowledge')"}},"required":["path"]}}},{"type":"function","function":{"name":"config-manager/get_user_info","description":"Get user information (name, preferences).","parameters":{"type":"object","properties":{}}}},{"type":"function","function":{"name":"config-manager/set_user_info","description":"Set user information.","parameters":{"type":"object","properties":{"name":{"type":"string","description":"User's name or nickname"},"preferences":{"type":"array","items":{"type":"string"},"description":"User preferences (e.g., ['concise answers', 'Chinese'])"}}}}},{"type":"function","function":{"name":"config-manager/add_user_preference","description":"Add a user preference to remember.","parameters":{"type":"object","properties":{"preference":{"type":"string","description":"Preference to remember (e.g., 'likes concise answers')"}},"required":["preference"]}}},{"type":"function","function":{"name":"config-manager/is_first_run","description":"Check if this is the first run (need to show setup wizard).","parameters":{"type":"object","properties":{}}}},{"type":"function","function":{"name":"config-manager/complete_setup","description":"Complete initial setup with workspace path and optional settings.","parameters":{"type":"object","properties":{"workspace_path":{"type":"string","description":"Workspace directory path"},"user_name":{"type":"string","description":"User's name"},"assistant_name":{"type":"string","description":"Assistant name"}}}}},{"type":"function","function":{"name":"config-manager/get_full_memory","description":"Get full memory for system prompt (all settings and info).","parameters":{"type":"object","properties":{}}}},{"type":"function","function":{"name":"config-manager/mkdir","description":"Create a directory (and parent directories if needed). Use this to create year-based directories like 'documents/2025'.","parameters":{"type":"object","properties":{"path":{"type":"string","description":"Directory path to create (e.g., 'E:\\\\tmp\\\\bot\\\\documents\\\\2025')"}},"required":["path"]}}},{"type":"function","function":{"name":"config-manager/copy_to_path","description":"Copy a file to a specific destination path. Use this to organize files by year/category. Example: copy_to_path('C:/file.pdf', 'E:/workspace/documents/2025/file.pdf')","parameters":{"type":"object","properties":{"source_path":{"type":"string","description":"Source file path"},"dest_path":{"type":"string","description":"Destination file path (absolute path)"}},"required":["source_path","dest_path"]}}},{"type":"function","function":{"name":"config-manager/move_to_path","description":"Move a file to a specific destination path. Use this to organize files by year/category.","parameters":{"type":"object","properties":{"source_path":{"type":"string","description":"Source file path"},"dest_path":{"type":"string","description":"Destination file path (absolute path)"}},"required":["source_path","dest_path"]}}},{"type":"function","function":{"name":"config-manager/list_files_in_workspace","description":"List all files in the workspace documents directory.","parameters":{"type":"object","properties":{}}}},{"type":"function","function":{"name":"file-parser/parse_file","description":"Parse a document file (PDF, Word, PPT, Excel, Markdown, HTML, Text) and extract text content.","parameters":{"type":"object","properties":{"file_path":{"type":"string","description":"Absolute path to the file to parse"}},"required":["file_path"]}}},{"type":"function","function":{"name":"file-parser/list_supported_formats","description":"List all supported file formats for parsing.","parameters":{"type":"object","properties":{}}}},{"type":"function","function":{"name":"memory-server/recall","description":"语义搜索相关记忆","parameters":{"type":"object","properties":{"query":{"type":"string","description":"搜索查询"},"limit":{"type":"integer","description":"返回数量限制","default":5},"memory_type":{"type":"string","description":"可选的记忆类型过滤"}},"required":["query"]}}},{"type":"function","function":{"name":"memory-server/list_memories","description":"列出已存储的记忆","parameters":{"type":"object","properties":{"memory_type":{"type":"string","description":"可选的记忆类型过滤"},"limit":{"type":"integer","description":"返回数量限制","default":20}}}}},{"type":"function","function":{"name":"memory-server/delete_memory","description":"删除一条记忆","parameters":{"type":"object","properties":{"memory_id":{"type":"string","description":"记忆 ID"}},"required":["memory_id"]}}}]
+=== USER ===
+<tool_result>{"status": "success", "content": "{\"status\": \"created\", \"name\": \"代码重构\"}"}</tool_result>
+
+
+=== ASSISTANT ===
+
+
+=== Response === 2026-04-04 21:14:33
+<thinking>所有核心概念创建完成，现在需要将文档和每个概念建立关联，逐个调用link_document_concept工具完成关联。</thinking>
+<summary>所有概念创建完成，开始将文档关联到各个概念。</summary>
+```<tool_use>{"name": "kg-server/link_document_concept", "arguments": {"doc_uri": "E:\\tmp\\bot\\2026\\方案\\plan-phase5-6.md", "concept_name": "Python Agent"}}</tool_use>```
+
+=== Prompt === 2026-04-04 21:14:34
+
+### 工具库状态：持续有效（code_run/file_read等），**可正常调用**。调用协议沿用。
+=== USER ===
+<tool_result>{"status": "success", "content": "{\"status\": \"linked\", \"document\": \"E:\\\\tmp\\\\bot\\\\2026\\\\方案\\\\plan-phase5-6.md\", \"concept\": \"Python Agent\"}"}</tool_result>
+
+
+=== ASSISTANT ===
+
+
+=== Response === 2026-04-04 21:14:36
+```<tool_use>{"name": "kg-server/link_document_concept", "arguments": {"doc_uri": "E:\\tmp\\bot\\2026\\方案\\plan-phase5-6.md", "concept_name": "Go语言"}}</tool_use>```
+
+=== Prompt === 2026-04-04 21:14:37
+
+### 工具库状态：持续有效（code_run/file_read等），**可正常调用**。调用协议沿用。
+=== USER ===
+<tool_result>{"status": "success", "content": "{\"status\": \"linked\", \"document\": \"E:\\\\tmp\\\\bot\\\\2026\\\\方案\\\\plan-phase5-6.md\", \"concept\": \"Go语言\"}"}</tool_result>
+
+
+=== ASSISTANT ===
+
+
+=== Response === 2026-04-04 21:14:38
+```<tool_use>{"name": "kg-server/link_document_concept", "arguments": {"doc_uri": "E:\\tmp\\bot\\2026\\方案\\plan-phase5-6.md", "concept_name": "Nanobot"}}}</tool_use>```
+
+=== Prompt === 2026-04-04 21:14:39
+
+### 工具库状态：持续有效（code_run/file_read等），**可正常调用**。调用协议沿用。
+=== USER ===
+<tool_result>{"status": "success", "content": "{\"status\": \"linked\", \"document\": \"E:\\\\tmp\\\\bot\\\\2026\\\\方案\\\\plan-phase5-6.md\", \"concept\": \"Nanobot\"}"}</tool_result>
+
+
+=== ASSISTANT ===
+
+
+=== Response === 2026-04-04 21:14:41
+```<tool_use>{"name": "kg-server/link_document_concept", "arguments": {"doc_uri": "E:\\tmp\\bot\\2026\\方案\\plan-phase5-6.md", "concept_name": "main.go"}}}</tool_use>```
+
+=== Prompt === 2026-04-04 21:14:42
+
+### 工具库状态：持续有效（code_run/file_read等），**可正常调用**。调用协议沿用。
+=== USER ===
+<tool_result>{"status": "success", "content": "{\"status\": \"linked\", \"document\": \"E:\\\\tmp\\\\bot\\\\2026\\\\方案\\\\plan-phase5-6.md\", \"concept\": \"main.go\"}"}</tool_result>
+
+
+=== ASSISTANT ===
+
+
+=== Response === 2026-04-04 21:14:44
+```<tool_use>{"name": "kg-server/link_document_concept", "arguments": {"doc_uri": "E:\\tmp\\bot\\2026\\方案\\plan-phase5-6.md", "concept_name": "代码重构"}}}</tool_use>```
+
+=== Prompt === 2026-04-04 21:14:45
+
+### 工具库状态：持续有效（code_run/file_read等），**可正常调用**。调用协议沿用。
+=== USER ===
+<tool_result>{"status": "success", "content": "{\"status\": \"linked\", \"document\": \"E:\\\\tmp\\\\bot\\\\2026\\\\方案\\\\plan-phase5-6.md\", \"concept\": \"代码重构\"}"}</tool_result>
+
+
+=== ASSISTANT ===
+
+
+=== Response === 2026-04-04 21:14:47
+<thinking>所有入库、摘要存储、知识图谱创建和关联都已经完成。现在需要读取当前main.go文件查看内容，准备进行Phase 5的修改工作。</thinking>
+<summary>所有知识图谱关联完成，读取main.go准备开始重构。</summary>
+```<tool_use>{"name": "file_read", "parameters": {"path": "E:/tools/ai-bot/cmd/nanobot/main.go", "count": 100, "show_linenos": true}}</tool_use>```
+
+=== Prompt === 2026-04-04 21:14:47
+
+### 工具库状态：持续有效（code_run/file_read等），**可正常调用**。调用协议沿用。
+=== USER ===
+<tool_result>Error: [Errno 2] No such file or directory: 'E:\\tools\\ai-bot\\cmd\\nanobot\\main.go'</tool_result>
+
+
+=== ASSISTANT ===
+
+
+=== Response === 2026-04-04 21:14:49
+<thinking>路径不对，需要先查找main.go的正确位置。先查看项目根目录结构，找到main.go的位置。</thinking>
+<summary>路径错误，先查看项目根目录结构查找main.go位置。</summary>
+```<tool_use>{"name": "code_run", "parameters": {"script": "import os\nfor root, dirs, files in os.walk('E:/tools/ai-bot'):\n    if 'main.go' in files:\n        print(os.path.join(root, 'main.go'))\n", "type": "python"}}</tool_use>```
+
+=== Prompt === 2026-04-04 21:14:54
+
+### 工具库状态：持续有效（code_run/file_read等），**可正常调用**。调用协议沿用。
+=== USER ===
+<tool_result>{"status": "success", "stdout": "E:/tools/ai-bot\\main.go\r\n", "exit_code": 0}</tool_result>
+
+
+=== ASSISTANT ===
+
+
+=== Response === 2026-04-04 21:14:56
+<thinking>找到路径了，main.go在项目根目录，现在读取文件内容查看。</thinking>
+<summary>找到main.go在根目录，读取完整文件查看当前代码。</summary>
+```<tool_use>{"name": "file_read", "parameters": {"path": "E:/tools/ai-bot/main.go", "show_linenos": true}}</tool_use>```
+
+=== Prompt === 2026-04-04 21:14:56
+
+### 工具库状态：持续有效（code_run/file_read等），**可正常调用**。调用协议沿用。
+=== USER ===
+<tool_result>[FILE] Showing 200 lines from line 1
+1|package main
+2|
+3|import (
+4|	"bufio"
+5|	"context"
+6|	"encoding/json"
+7|	"flag"
+8|	"fmt"
+9|	"io"
+10|	"log/slog"
+11|	"net/http"
+12|	"os"
+13|	"os/exec"
+14|	"os/signal"
+15|	"path/filepath"
+16|	"strings"
+17|	"syscall"
+18|	"time"
+19|)
+20|
+21|// ContextConfig represents context window configuration
+22|type ContextConfig struct {
+23|	WarningThreshold    float64 `json:"warningThreshold"`
+24|	TargetThreshold     float64 `json:"targetThreshold"`
+25|	SleepTriggerMinutes int     `json:"sleepTriggerMinutes"`
+26|	ContextWindowSize   int     `json:"contextWindowSize"`
+27|}
+28|
+29|// DefaultContextConfig returns default context configuration
+30|func DefaultContextConfig() *ContextConfig {
+31|	return &ContextConfig{
+32|		WarningThreshold:    0.80,
+33|		TargetThreshold:     0.50,
+34|		SleepTriggerMinutes: 5,
+35|		ContextWindowSize:   200000,
+36|	}
+37|}
+38|
+39|// LoadContextConfig loads context config from preferences.json
+40|func LoadContextConfig() *ContextConfig {
+41|	cfg := DefaultContextConfig()
+42|
+43|	homeDir, err := os.UserHomeDir()
+44|	if err != nil {
+45|		return cfg
+46|	}
+47|
+48|	prefsPath := filepath.Join(homeDir, ".niu", "preferences.json")
+49|	data, err := os.ReadFile(prefsPath)
+50|	if err != nil {
+51|		return cfg
+52|	}
+53|
+54|	var prefs struct {
+55|		Context *ContextConfig `json:"context"`
+56|	}
+57|	if err := json.Unmarshal(data, &prefs); err != nil {
+58|		return cfg
+59|	}
+60|
+61|	if prefs.Context != nil {
+62|		if prefs.Context.WarningThreshold > 0 {
+63|			cfg.WarningThreshold = prefs.Context.WarningThreshold
+64|		}
+65|		if prefs.Context.TargetThreshold > 0 {
+66|			cfg.TargetThreshold = prefs.Context.TargetThreshold
+67|		}
+68|		if prefs.Context.SleepTriggerMinutes > 0 {
+69|			cfg.SleepTriggerMinutes = prefs.Context.SleepTriggerMinutes
+70|		}
+71|		if prefs.Context.ContextWindowSize > 0 {
+72|			cfg.ContextWindowSize = prefs.Context.ContextWindowSize
+73|		}
+74|	}
+75|
+76|	return cfg
+77|}
+78|
+79|// detectPython finds a suitable Python executable for launching the API server
+80|func detectPython() string {
+81|	exePath, _ := os.Executable()
+82|	exeDir := filepath.Dir(exePath)
+83|
+84|	candidates := []string{
+85|		filepath.Join(exeDir, "python", "Scripts", "python.exe"),
+86|		filepath.Join(".", "python", "Scripts", "python.exe"),
+87|		"E:/opencode/venv/Scripts/python.exe",
+88|		filepath.Join(exeDir, ".venv", "Scripts", "python.exe"),
+89|		"C:/Python311/python.exe",
+90|		"C:/Python310/python.exe",
+91|		"python",
+92|		"python3",
+93|	}
+94|
+95|	for _, candidate := range candidates {
+96|		cmd := exec.Command(candidate, "--version")
+97|		if err := cmd.Run(); err == nil {
+98|			if absPath, err := filepath.Abs(candidate); err == nil {
+99|				return absPath
+100|			}
+101|			return candidate
+102|		}
+103|	}
+104|
+105|	slog.Warn("No Python found, using 'python' as fallback")
+106|	return "python"
+107|}
+108|
+109|// loadMemory loads user memory from ~/.niu/memory.json
+110|func loadMemory() map[string]any {
+111|	homeDir, err := os.UserHomeDir()
+112|	if err != nil {
+113|		return nil
+114|	}
+115|
+116|	memoryPath := filepath.Join(homeDir, ".niu", "memory.json")
+117|	data, err := os.ReadFile(memoryPath)
+118|	if err != nil {
+119|		return nil
+120|	}
+121|
+122|	var memory map[string]any
+123|	if err := json.Unmarshal(data, &memory); err != nil {
+124|		return nil
+125|	}
+126|
+127|	return memory
+128|}
+129|
+130|// formatMemoryForPrompt formats memory for system prompt injection
+131|func formatMemoryForPrompt(memory map[string]any) string {
+132|	if memory == nil {
+133|		return ""
+134|	}
+135|
+136|	var sb strings.Builder
+137|	sb.WriteString("\n\n# 我的重要记忆\n\n")
+138|
+139|	// Identity
+140|	if identity, ok := memory["identity"].(map[string]any); ok {
+141|		sb.WriteString("## 我的身份\n\n")
+142|		if name, ok := identity["name"].(string); ok && name != "" {
+143|			sb.WriteString(fmt.Sprintf("我的名字是 %s。\n", name))
+144|		}
+145|		if personality, ok := identity["personality"].([]any); ok && len(personality) > 0 {
+146|			var traits []string
+147|			for _, t := range personality {
+148|				if s, ok := t.(string); ok {
+149|					traits = append(traits, s)
+150|				}
+151|			}
+152|			if len(traits) > 0 {
+153|				sb.WriteString(fmt.Sprintf("我的性格：%s。\n", strings.Join(traits, "、")))
+154|			}
+155|		}
+156|		sb.WriteString("\n")
+157|	}
+158|
+159|	// Workspace
+160|	if workspace, ok := memory["workspace"].(map[string]any); ok {
+161|		if path, ok := workspace["path"].(string); ok && path != "" {
+162|			sb.WriteString("## 工作目录\n\n")
+163|			sb.WriteString(fmt.Sprintf("我的知识库存储在：%s\n\n", path))
+164|		}
+165|	}
+166|
+167|	// User
+168|	if user, ok := memory["user"].(map[string]any); ok {
+169|		if name, ok := user["name"].(string); ok && name != "" {
+170|			sb.WriteString("## 用户信息\n\n")
+171|			sb.WriteString(fmt.Sprintf("用户称呼：%s\n", name))
+172|		}
+173|	}
+174|
+175|	return sb.String()
+176|}
+177|
+178|var (
+179|	contextConfig *ContextConfig
+180|)
+181|
+182|func main() {
+183|	// Parse flags
+184|	_ = flag.String("config", "./config", "path to configuration directory") // Kept for compatibility
+185|	showSettings := flag.Bool("settings", false, "open settings window")
+186|	showGraph := flag.Bool("graph", false, "open knowledge graph window")
+187|	port := flag.Int("port", 9876, "port for Python API server")
+188|	flag.Parse()
+189|
+190|	ctx, cancel := context.WithCancel(context.Background())
+191|	defer cancel()
+192|
+193|	// Handle shutdown signals
+194|	sigChan := make(chan os.Signal, 1)
+195|	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+196|
+197|	go func() {
+198|		<-sigChan
+199|		slog.Info("Shutdown signal received")
+200|		cancel()</tool_result>
+
+
+=== ASSISTANT ===
+
+
+=== Response === 2026-04-04 21:14:58
+<thinking>文件比较长，继续读取剩余部分，查看完整代码结构。</thinking>
+<summary>继续读取剩余代码，了解完整结构。</summary>
+```<tool_use>{"name": "file_read", "parameters": {"path": "E:/tools/ai-bot/main.go", "start": 200, "show_linenos": true}}</tool_use>```
+
+=== Prompt === 2026-04-04 21:14:58
+
+### 工具库状态：持续有效（code_run/file_read等），**可正常调用**。调用协议沿用。
+=== USER ===
+<tool_result>[FILE] Showing 195 lines from line 200
+200|		cancel()
+201|	}()
+202|
+203|	slog.Info("Niu launcher starting...")
+204|
+205|	// Load context configuration
+206|	contextConfig = LoadContextConfig()
+207|
+208|	// Detect Python
+209|	pythonPath := detectPython()
+210|	slog.Info("Using Python path", "path", pythonPath)
+211|
+212|	// Load memory for injection (passed to Python API via environment)
+213|	memory := loadMemory()
+214|	_ = formatMemoryForPrompt(memory) // Memory injection handled by Python API
+215|
+216|	// Get project root
+217|	execPath, _ := os.Executable()
+218|	projectRoot := filepath.Dir(execPath)
+219|
+220|	// Start Python API server as background process
+221|	slog.Info("Starting Python API server...")
+222|	apiServerCmd := exec.Command(pythonPath, "-m", "niu_api")
+223|	apiServerCmd.Dir = projectRoot
+224|	apiServerCmd.Env = append(os.Environ(),
+225|		fmt.Sprintf("NIU_API_PORT=%d", *port),
+226|		"PYTHONUNBUFFERED=1",
+227|	)
+228|
+229|	// Capture output
+230|	if stdout, err := apiServerCmd.StdoutPipe(); err == nil {
+231|		go func() {
+232|			scanner := bufio.NewScanner(stdout)
+233|			for scanner.Scan() {
+234|				slog.Info("niu_api", "output", scanner.Text())
+235|			}
+236|		}()
+237|	}
+238|	if stderr, err := apiServerCmd.StderrPipe(); err == nil {
+239|		go func() {
+240|			scanner := bufio.NewScanner(stderr)
+241|			for scanner.Scan() {
+242|				slog.Error("niu_api", "error", scanner.Text())
+243|			}
+244|		}()
+245|	}
+246|
+247|	if err := apiServerCmd.Start(); err != nil {
+248|		slog.Error("Failed to start Python API server", "error", err)
+249|		fmt.Printf("Failed to start API server: %v\n", err)
+250|		os.Exit(1)
+251|	}
+252|
+253|	// Wait for API server to be ready
+254|	apiReady := false
+255|	for i := 0; i < 30; i++ {
+256|		time.Sleep(1 * time.Second)
+257|		resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/health", *port))
+258|		if err == nil {
+259|			resp.Body.Close()
+260|			if resp.StatusCode == http.StatusOK {
+261|				apiReady = true
+262|				break
+263|			}
+264|		}
+265|	}
+266|
+267|	if !apiReady {
+268|		slog.Warn("Python API server may not be ready")
+269|	}
+270|	slog.Info("Python API server started")
+271|
+272|	// Wait for preload to complete (embedding-service, MCP tools)
+273|	slog.Info("Waiting for preload to complete...")
+274|	preloadReady := false
+275|	for i := 0; i < 120; i++ {
+276|		time.Sleep(500 * time.Millisecond)
+277|		resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/api/preload-status", *port))
+278|		if err == nil {
+279|			body, _ := io.ReadAll(resp.Body)
+280|			resp.Body.Close()
+281|
+282|			// Parse JSON
+283|			var status struct {
+284|				Ready  bool   `json:"ready"`
+285|				Uptime string `json:"uptime"`
+286|			}
+287|			if err := json.Unmarshal(body, &status); err != nil {
+288|				slog.Warn("Failed to parse preload status", "error", err, "body", string(body))
+289|				continue
+290|			}
+291|
+292|			// Log first response or when ready
+293|			if i == 0 || status.Ready {
+294|				slog.Info("Preload status check", "ready", status.Ready, "uptime", status.Uptime, "attempt", i+1)
+295|			}
+296|
+297|			if status.Ready {
+298|				preloadReady = true
+299|				slog.Info("Preload complete, launching window...")
+300|				break
+301|			}
+302|		}
+303|	}
+304|
+305|	if !preloadReady {
+306|		slog.Warn("Preload may not be complete, proceeding anyway")
+307|	}
+308|	slog.Info("Preload complete, launching window...")
+309|
+310|	// If --settings flag, just open settings and exit
+311|	if *showSettings {
+312|		if _, err := launchWindow("settings"); err != nil {
+313|			slog.Error("Failed to launch settings window", "error", err)
+314|		}
+315|		return
+316|	}
+317|
+318|	// If --graph flag, just open graph and exit
+319|	if *showGraph {
+320|		if _, err := launchWindow("graph"); err != nil {
+321|			slog.Error("Failed to launch graph window", "error", err)
+322|		}
+323|		return
+324|	}
+325|
+326|	// Launch assistant window
+327|	electronCmd, err := launchWindow("assistant")
+328|	if err != nil {
+329|		slog.Error("Failed to launch assistant window", "error", err)
+330|		fmt.Println("\nPlease run manually: cd ui/assistant && npm start")
+331|	}
+332|
+333|	// Monitor Electron process - when it exits, trigger shutdown
+334|	if electronCmd != nil {
+335|		go func() {
+336|			err := electronCmd.Wait()
+337|			if err != nil {
+338|				slog.Info("Electron window exited", "error", err)
+339|			} else {
+340|				slog.Info("Electron window closed normally")
+341|			}
+342|			cancel() // Trigger shutdown
+343|		}()
+344|	}
+345|
+346|	// Wait for shutdown (either signal or Electron exit)
+347|	<-ctx.Done()
+348|
+349|	// Graceful shutdown: notify Python API first
+350|	slog.Info("Notifying Python API to shutdown...")
+351|	if err := notifyShutdown(*port); err != nil {
+352|		slog.Warn("Failed to notify Python API shutdown", "error", err)
+353|	}
+354|
+355|	// Wait a moment for graceful shutdown
+356|	time.Sleep(500 * time.Millisecond)
+357|
+358|	// Shutdown API server
+359|	slog.Info("Stopping Python API server...")
+360|	if err := apiServerCmd.Process.Kill(); err != nil {
+361|		slog.Warn("Failed to kill API server", "error", err)
+362|	}
+363|
+364|	// Electron window should already be closed (triggered shutdown)
+365|	// No need to kill it again
+366|
+367|	slog.Info("Niu launcher shutdown complete")
+368|}
+369|
+370|// notifyShutdown sends shutdown request to Python API
+371|func notifyShutdown(port int) error {
+372|	client := http.Client{Timeout: 2 * time.Second}
+373|	resp, err := client.Post(fmt.Sprintf("http://127.0.0.1:%d/api/shutdown", port), "application/json", nil)
+374|	if err != nil {
+375|		return err
+376|	}
+377|	resp.Body.Close()
+378|	return nil
+379|}
+380|
+381|func launchWindow(name string) (*exec.Cmd, error) {
+382|	windowDir := filepath.Join("ui", name)
+383|
+384|	cmd := exec.Command("npm", "start")
+385|	cmd.Dir, _ = filepath.Abs(windowDir)
+386|	cmd.Stdout = os.Stdout
+387|	cmd.Stderr = os.Stderr
+388|	cmd.Stdin = os.Stdin
+389|
+390|	if err := cmd.Start(); err != nil {
+391|		return nil, err
+392|	}
+393|	return cmd, nil
+394|}</tool_result>
+
+
+=== ASSISTANT ===
+
+
+=== Response === 2026-04-04 21:15:00
+<thinking>奇怪，这个main.go已经是简化后的启动器了，只有394行，并不是计划中说的1683行。让我检查一下git状态或者看看是不是已经被修改过了，同时查看计划文档的剩余部分确认需求。</thinking>
+<summary>main.go实际只有394行已是简化版，读取完整计划文档确认需求。</summary>
+```<tool_use>{"name": "file_read", "parameters": {"path": "E:/tools/ai-bot/docs/plans/plan-phase5-6.md", "show_linenos": false}}</tool_use>```
+
+=== Prompt === 2026-04-04 21:15:00
+
+### 交互协议 (必须严格遵守，持续有效)
+请按照以下步骤思考并行动：
+1. **思考**: 在 `<thinking>` 标签中先进行思考，分析现状和策略。
+2. **总结**: 在 `<summary>` 中输出*极为简短*的高度概括的单行（<30字）物理快照，包括上次工具调用结果产生的新信息+本次工具调用意图。此内容将进入长期工作记忆，记录关键信息，严禁输出无实际信息增量的描述。
+3. **行动**: 如需调用工具，请在回复正文之后输出一个（或多个）**<tool_use>块**，然后结束。
+格式: ```<tool_use>{"name": "工具名", "arguments": {参数}}</tool_use>```
+
+### 可用工具库（已挂载，持续有效）
+[{"type":"function","function":{"name":"code_run","description":"Code executor. Prefer python. No concurrent calls. Prefer code in ```python/powershell blocks in reply body to avoid escaping. No hardcoding bulk data","parameters":{"type":"object","properties":{"script":{"type":"string","description":"[Mutually exclusive] NEVER use this param when use reply code block."},"type":{"type":"string","enum":["python","powershell"],"description":"Code type","default":"python"},"timeout":{"type":"integer","description":"in seconds","default":60},"cwd":{"type":"string","description":"Working directory, defaults to cwd"}}}}},{"type":"function","function":{"name":"file_read","description":"Read file. Read before modify for latest context and line numbers","parameters":{"type":"object","properties":{"path":{"type":"string","description":"Relative or absolute"},"start":{"type":"integer","description":"Start line number (1-based)","default":1},"count":{"type":"integer","description":"Number of lines to read","default":200},"keyword":{"type":"string","description":"[Optional] If provided, returns first match (case-insensitive) with context"},"show_linenos":{"type":"boolean","description":"Show line numbers","default":true}}}}},{"type":"function","function":{"name":"file_patch","description":"Replace unique old_content with new_content. Exact match required (whitespace/indentation). On failure, file_read to recheck","parameters":{"type":"object","properties":{"path":{"type":"string","description":"File path"},"old_content":{"type":"string","description":"Original text block to replace (must be unique)"},"new_content":{"type":"string","description":"New content. Supports {{file:path:startLine:endLine}} to ref file lines, auto-expanded"}}}}},{"type":"function","function":{"name":"file_write","description":"Create/overwrite/append files. ONLY for HUGE edits. Content in <file_content> tags or reply code blocks. Supports {{file:path:startLine:endLine}}, auto-expanded","parameters":{"type":"object","properties":{"path":{"type":"string","description":"File path"},"mode":{"type":"string","enum":["overwrite","append","prepend"],"description":"Write mode","default":"append"}}}}},{"type":"function","function":{"name":"web_scan","description":"Get simplified HTML and tab list. Filters sidebars/floating elements; use execute_js for filtered content. Call after switching pages","parameters":{"type":"object","properties":{"tabs_only":{"type":"boolean","description":"Show tab list only, no HTML","default":false},"switch_tab_id":{"type":"string","description":"[Optional] Tab ID to switch to"},"text_only":{"type":"boolean","description":"Plain text only, no HTML","default":false}}}}},{"type":"function","function":{"name":"web_execute_js","description":"Execute JS to control browser. Use precisely to reduce web_scan calls. Put code in ```javascript blocks in reply body to avoid escaping","parameters":{"type":"object","properties":{"script":{"type":"string","description":"[Mutually exclusive] JS code or script path. NEVER use this param when use reply code block"},"save_to_file":{"type":"string","description":"file path; **only** for long result","default":""},"no_monitor":{"type":"boolean","description":"Skip page change monitoring, saves 2-3s. Only for reads, not for page actions","default":false}}}}},{"type":"function","function":{"name":"update_working_checkpoint","description":"Short-term working notepad, auto-injected each turn to prevent info loss in long tasks. Call during early/mid stages, not at end. When: (1) after reading SOP, store user needs & key constraints (skip for simple 1-2 step tasks); (2) before subtask switch or context flush; (3) after repeated failures, re-read SOP and must store new findings; (4) on new task, update content, clear old progress but keep valid constraints.\n\nDon't call: simple tasks (1-2 steps), task completed (use long-term memory tool)","parameters":{"type":"object","properties":{"key_info":{"type":"string","description":"Replaces current notepad (<200 tokens). Incremental update: review existing, keep valid, add/remove/modify. Store: pitfalls, user requirements, key params/findings, file paths, progress, next steps. Don't store: ephemeral info, obvious context, old task info when user switched tasks. Prefer over-updating over losing key info"},"related_sop":{"type":"string","description":"Related SOP names, tips for further re-read"}}}}},{"type":"function","function":{"name":"start_long_term_update","description":"Start distilling long-term memory. Call when discovering info worth remembering (env facts/user prefs/lessons learned). Skip if memory already updated or in autonomous flow. Must call for tasks taking 15+ turns","parameters":{"type":"object","properties":{}}}},{"type":"function","function":{"name":"chat-with-file-processor","description":"Delegate complex tasks to file-processor sub-agent. Use for time-consuming operations like file processing.","parameters":{"type":"object","properties":{"task":{"type":"string","description":"Task description for sub-agent"}},"required":["task"]}}},{"type":"function","function":{"name":"chat-with-event-manager","description":"Delegate complex tasks to event-manager sub-agent. Use for time-consuming operations like file processing.","parameters":{"type":"object","properties":{"task":{"type":"string","description":"Task description for sub-agent"}},"required":["task"]}}},{"type":"function","function":{"name":"chat-with-context-manager","description":"Delegate complex tasks to context-manager sub-agent. Use for time-consuming operations like file processing.","parameters":{"type":"object","properties":{"task":{"type":"string","description":"Task description for sub-agent"}},"required":["task"]}}},{"type":"function","function":{"name":"photo-server/ingest_document","description":"文档入库工具\n\n参数:\n- file_path: 必填，源文件绝对路径\n- category: 分类名称，从 preferences.json 的 categories.documents 中选取（财务、合同、报告、方案、其他）\n- mode: copy（复制）| move（移动）| reference（引用）\n\n返回:\n- status: success | error\n- action: created | versioned | renamed | referenced | skipped\n- file_path: 存储后的完整路径\n- note: 处理说明\n\n冲突处理:\n- 完全相同文件（哈希相同）→ 跳过\n- 内容相似（语义相似度 > 阈值）→ 版本管理\n- 内容不同 → 自动改名","parameters":{"type":"object","properties":{"file_path":{"type":"string","description":"源文件绝对路径"},"category":{"type":"string","description":"分类（财务/合同/报告/方案/其他）","default":"其他"},"mode":{"type":"string","enum":["copy","move","reference"],"default":"copy"}},"required":["file_path"]}}},{"type":"function","function":{"name":"photo-server/ingest_documents","description":"批量文档入库工具\n\n参数:\n- file_paths: 必填，源文件路径列表\n- category: 分类名称\n- mode: copy | move | reference\n\n返回:\n- status: success\n- total: 总数\n- processed: 成功数\n- failed: 失败数\n- results: 每个文件的处理结果\n- summary: 总结","parameters":{"type":"object","properties":{"file_paths":{"type":"array","items":{"type":"string"},"description":"源文件路径列表"},"category":{"type":"string","default":"其他"},"mode":{"type":"string","enum":["copy","move","reference"],"default":"copy"}},"required":["file_paths"]}}},{"type":"function","function":{"name":"photo-server/ingest_photo","description":"照片入库工具（带人脸识别）\n\n参数:\n- file_path: 必填，照片文件绝对路径\n- category: 分类（生活/工作/旅行/证件/其他），默认从 preferences.json 读取\n\n返回:\n- status: success | error\n- photo_id: 照片唯一ID\n- detected_persons: 检测到的人物列表 [{id, name, similarity}]\n- abstract: L0 摘要（人物+时间）\n- exif: EXIF 信息（taken_at, location, camera）\n\n处理流程:\n1. 提取 EXIF 信息（拍摄时间、GPS、相机）\n2. 使用 InsightFace 检测人脸\n3. 匹配已有人物或创建\"未命名人物_N\"\n4. 生成 L0 摘要","parameters":{"type":"object","properties":{"file_path":{"type":"string","description":"照片文件绝对路径"},"category":{"type":"string","description":"分类（生活/工作/旅行/证件/其他）"}},"required":["file_path"]}}},{"type":"function","function":{"name":"photo-server/name_person","description":"为人物命名\n\n参数:\n- person_id: 必填，人物ID\n- name: 必填，新名称\n\n返回:\n- status: success | error\n- person_id: 人物ID\n- name: 新名称\n- auto_label: 自动标签（如\"未命名人物_1\"）","parameters":{"type":"object","properties":{"person_id":{"type":"string","description":"人物ID"},"name":{"type":"string","description":"新名称"}},"required":["person_id","name"]}}},{"type":"function","function":{"name":"photo-server/merge_persons","description":"合并两个人物\n\n参数:\n- person_a_id: 必填，保留的人物ID\n- person_b_id: 必填，要合并到A的人物ID\n\n返回:\n- status: success | error\n- merged_into: 合并到的人物ID\n- name: 保留的名称\n- photo_count: 合并后的照片数量\n- deleted_person_id: 被删除的人物ID\n\n说明:\n- 保留 person_a 的名称\n- 合并所有人脸向量，重新计算中心\n- 更新所有照片关联\n- 学习机制：如果相似度低于阈值，自动调整阈值","parameters":{"type":"object","properties":{"person_a_id":{"type":"string","description":"保留的人物ID"},"person_b_id":{"type":"string","description":"要合并的人物ID"}},"required":["person_a_id","person_b_id"]}}},{"type":"function","function":{"name":"photo-server/ingest_photos","description":"智能照片入库（自动判断单张/多张/目录）\n\n参数:\n- source_path: 必填，文件路径或目录路径\n- category: 分类（生活/工作/旅行/证件/其他）\n\n两种模式:\n1. 目录路径 → 批量模式：保持原目录结构，整体搬迁\n2. 文件路径 → 单张模式：按模板重命名、人脸识别、分类存储\n\n批量模式返回:\n- total: 照片总数\n- success: 成功数\n- target_path: 目标目录\n\n单张模式返回:\n- photo_id: 照片ID\n- detected_persons: 检测到的人物\n- file_path: 存储路径","parameters":{"type":"object","properties":{"source_path":{"type":"string","description":"文件路径或目录路径"},"category":{"type":"string","description":"分类（生活/工作/旅行/证件/其他）"}},"required":["source_path"]}}},{"type":"function","function":{"name":"photo-server/search_persons","description":"搜索人物（按名字语义相似度）\n\n参数:\n- query: 搜索词（人名）\n- limit: 返回数量（默认10）\n\n返回:\n- 匹配的人物列表，按相似度排序","parameters":{"type":"object","properties":{"query":{"type":"string","description":"搜索词（人名）"},"limit":{"type":"integer","description":"返回数量","default":10}},"required":["query"]}}},{"type":"function","function":{"name":"photo-server/get_unnamed_persons","description":"获取所有未命名人物\n\n返回:\n- 未命名人物列表，按出现次数排序\n- 包含：id, auto_label, photo_count, photos","parameters":{"type":"object","properties":{}}}},{"type":"function","function":{"name":"photo-server/delete_person","description":"删除人物及其所有关联数据\n\n警告：这会删除人物图谱中的节点，请谨慎使用。\n只有在用户明确要求删除时才调用。\n\n参数:\n- person_id: 要删除的人物ID\n\n返回:\n- status: success | error\n- message: 结果说明","parameters":{"type":"object","properties":{"person_id":{"type":"string","description":"人物ID"}},"required":["person_id"]}}},{"type":"function","function":{"name":"photo-server/cleanup_deleted_photos","description":"清理已删除照片的数据库记录\n\n在删除照片文件/目录后调用，清理数据库中的孤儿记录。\n扫描 photos 表，删除文件不存在的记录及其关联的 faces 记录。\n\n返回:\n- deleted_photos: 删除的照片记录数\n- deleted_faces: 删除的人脸记录数\n\n使用场景：\n- 用户删除了照片目录后\n- 清理数据库中的残留记录","parameters":{"type":"object","properties":{}}}},{"type":"function","function":{"name":"photo-server/get_person_photos","description":"获取某人物的多张照片（用于\"换一张\"场景）\n\n当用户说\"看不清\"、\"换一张\"时调用此工具。\n\n参数:\n- person_id: 人物ID\n- limit: 最多返回几张照片（默认5）\n\n返回:\n- person_id, person_name\n- photos: [{file_path, bbox, taken_at}, ...]","parameters":{"type":"object","properties":{"person_id":{"type":"string","description":"人物ID"},"limit":{"type":"integer","description":"最多返回几张（默认5）"}},"required":["person_id"]}}},{"type":"function","function":{"name":"photo-server/store_document_l1","description":"存储单个文档的 L1 摘要到向量库\n\n当 ingest_document 返回 status=\"need_l1\" 时，调用此工具存储生成的摘要。\n\n参数:\n- file_path: 必填，文档存储路径（从 ingest_document 返回值获取）\n- l1: 必填，极简格式摘要：标题|关键词|摘要|实体|类型|指针\n- l2: 可选，完整内容（如果不提供则只存储 L1）\n\n返回:\n- status: success | error\n- document_id: 文档ID\n\nL1 格式说明:\n- 标题：文档标题\n- 关键词：3-5个核心概念，用逗号分隔\n- 摘要：50-80字现代中文摘要\n- 实体：命名实体（人名、地名、技术名词）\n- 类型：文档类型（技术文档/合同/报告等）\n- 指针：文件路径或其他定位信息\n\n示例:\nZellij使用指南|终端,复用器,Rust|Zellij终端复用器的基本使用方法和配置说明|Zellij,终端|技术文档|/docs/zellij.md","parameters":{"type":"object","properties":{"file_path":{"type":"string","description":"文档存储路径"},"l1":{"type":"string","description":"L1 极简格式摘要"},"l2":{"type":"string","description":"完整内容（可选）"}},"required":["file_path","l1"]}}},{"type":"function","function":{"name":"photo-server/store_documents_l1","description":"批量存储文档的 L1 摘要到向量库\n\n当 ingest_documents 返回 status=\"need_l1\" 时，调用此工具一次性存储所有摘要。\n\n参数:\n- documents: 必填，文档列表，每个包含：\n  - file_path: 文档存储路径\n  - l1: L1 极简格式摘要\n  - l2: 完整内容（可选）\n\n返回:\n- status: success | error\n- total: 总数\n- processed: 成功数\n- failed: 失败数\n- results: 每个文档的处理结果\n\n这是批量处理的首选方式，一次调用完成所有 L1 存储，然后向主 Agent 汇报。","parameters":{"type":"object","properties":{"documents":{"type":"array","items":{"type":"object","properties":{"file_path":{"type":"string"},"l1":{"type":"string"},"l2":{"type":"string"}},"required":["file_path","l1"]},"description":"文档列表"}},"required":["documents"]}}},{"type":"function","function":{"name":"photo-server/unload_face_model","description":"卸载人脸识别模型，释放内存（约 326MB）\n\n在长时间空闲时调用此工具释放内存。\n通常由系统在 SLEEP 状态时自动调用。\n\n返回:\n- status: success\n- message: 卸载结果","parameters":{"type":"object","properties":{}}}},{"type":"function","function":{"name":"kg-server/create_document","description":"Create a document node in the knowledge graph. Use file_path to avoid passing large content through JSON.","parameters":{"type":"object","properties":{"uri":{"type":"string","description":"Unique identifier for the document (e.g., file path)"},"title":{"type":"string","description":"Document title"},"content":{"type":"string","description":"Document content (optional if file_path provided)"},"source":{"type":"string","description":"Source of the document (optional)"},"file_path":{"type":"string","description":"Path to file to read content from (avoids JSON size limits)"}},"required":["uri","title"]}}},{"type":"function","function":{"name":"kg-server/create_entity","description":"Create an entity node (person, organization, etc.) in the knowledge graph.","parameters":{"type":"object","properties":{"id":{"type":"string","description":"Unique identifier for the entity"},"name":{"type":"string","description":"Entity name"},"type":{"type":"string","description":"Entity type (e.g., person, organization, location)"},"description":{"type":"string","description":"Entity description (optional)"}},"required":["id","name","type"]}}},{"type":"function","function":{"name":"kg-server/create_concept","description":"Create a concept node in the knowledge graph.","parameters":{"type":"object","properties":{"name":{"type":"string","description":"Concept name"},"description":{"type":"string","description":"Concept description (optional)"}},"required":["name"]}}},{"type":"function","function":{"name":"kg-server/link_document_entity","description":"Link a document to an entity (MENTIONS relation).","parameters":{"type":"object","properties":{"doc_uri":{"type":"string","description":"Document URI"},"entity_id":{"type":"string","description":"Entity ID"}},"required":["doc_uri","entity_id"]}}},{"type":"function","function":{"name":"kg-server/link_document_concept","description":"Link a document to a concept (CONTAINS relation).","parameters":{"type":"object","properties":{"doc_uri":{"type":"string","description":"Document URI"},"concept_name":{"type":"string","description":"Concept name"}},"required":["doc_uri","concept_name"]}}},{"type":"function","function":{"name":"kg-server/link_entities","description":"Create a relation between two entities.","parameters":{"type":"object","properties":{"entity1_id":{"type":"string","description":"First entity ID"},"entity2_id":{"type":"string","description":"Second entity ID"},"relation":{"type":"string","description":"Relation type (e.g., works_for, knows)"}},"required":["entity1_id","entity2_id","relation"]}}},{"type":"function","function":{"name":"kg-server/get_document","description":"Get a document by URI.","parameters":{"type":"object","properties":{"uri":{"type":"string","description":"Document URI"}},"required":["uri"]}}},{"type":"function","function":{"name":"kg-server/list_documents","description":"List all documents in the knowledge graph.","parameters":{"type":"object","properties":{"limit":{"type":"integer","description":"Maximum number of documents to return (default: 10)"}}}}},{"type":"function","function":{"name":"kg-server/search_documents","description":"Search documents by keyword.","parameters":{"type":"object","properties":{"keyword":{"type":"string","description":"Search keyword"},"limit":{"type":"integer","description":"Maximum results (default: 10)"}},"required":["keyword"]}}},{"type":"function","function":{"name":"kg-server/get_related_entities","description":"Get entities mentioned in a document.","parameters":{"type":"object","properties":{"doc_uri":{"type":"string","description":"Document URI"}},"required":["doc_uri"]}}},{"type":"function","function":{"name":"kg-server/get_related_concepts","description":"Get concepts contained in a document.","parameters":{"type":"object","properties":{"doc_uri":{"type":"string","description":"Document URI"}},"required":["doc_uri"]}}},{"type":"function","function":{"name":"kg-server/query_graph","description":"Execute a Cypher query on the knowledge graph.","parameters":{"type":"object","properties":{"cypher":{"type":"string","description":"Cypher query string"}},"required":["cypher"]}}},{"type":"function","function":{"name":"vector-store/add_document","description":"Add a document to the vector store for semantic search. Use file_path to avoid passing large content through JSON.","parameters":{"type":"object","properties":{"id":{"type":"string","description":"Unique document ID"},"content":{"type":"string","description":"Document content (optional if file_path provided)"},"metadata":{"type":"object","description":"Optional metadata"},"file_path":{"type":"string","description":"Path to file to read content from (avoids JSON size limits)"}},"required":["id"]}}},{"type":"function","function":{"name":"vector-store/search_documents","description":"Search for similar documents using semantic search. Use filter to narrow results by metadata, e.g. filter={\"type\": \"event\", \"status\": \"pending\"}.","parameters":{"type":"object","properties":{"query":{"type":"string","description":"Search query"},"limit":{"type":"integer","description":"Max results (default: 5)"},"filter":{"type":"object","description":"Optional metadata filter, e.g. {\"type\": \"event\", \"status\": \"pending\"}"}},"required":["query"]}}},{"type":"function","function":{"name":"vector-store/get_document","description":"Get a document by ID.","parameters":{"type":"object","properties":{"id":{"type":"string","description":"Document ID"}},"required":["id"]}}},{"type":"function","function":{"name":"vector-store/delete_document","description":"Delete documents by ID, query (semantic search), or metadata filter. Use filter to delete by type/status, e.g. filter={\"type\": \"event\", \"status\": \"cancelled\"}.","parameters":{"type":"object","properties":{"doc_id":{"type":"string","description":"Document ID to delete (exact match)"},"query":{"type":"string","description":"Delete documents matching content (semantic search, similarity > 0.7)"},"filter":{"type":"object","description":"Delete documents matching metadata filter, e.g. {\"type\": \"event\", \"status\": \"cancelled\"}"}}}}},{"type":"function","function":{"name":"vector-store/list_documents","description":"List all documents in the vector store, optionally filtered by metadata.","parameters":{"type":"object","properties":{"limit":{"type":"integer","description":"Max results (default: 10)"},"offset":{"type":"integer","description":"Offset for pagination (default: 0)"},"filter":{"type":"object","description":"Optional metadata filter, e.g. {\"type\": \"l2\"}"}}}}},{"type":"function","function":{"name":"vector-store/count_documents","description":"Count total documents in the vector store.","parameters":{"type":"object","properties":{}}}},{"type":"function","function":{"name":"config-manager/get_llm_config","description":"Get current LLM configuration (API key is hidden).","parameters":{"type":"object","properties":{}}}},{"type":"function","function":{"name":"config-manager/set_llm_config","description":"Set LLM configuration. Use preset_id to load a preset, or provide individual values.","parameters":{"type":"object","properties":{"preset_id":{"type":"string","description":"Preset ID to load (e.g., 'openai', 'anthropic', 'deepseek')"},"api_key":{"type":"string","description":"API key"},"api_base":{"type":"string","description":"API base URL"},"model":{"type":"string","description":"Model name"},"llm_type":{"type":"string","description":"Provider type: 'openai' or 'anthropic'"}}}}},{"type":"function","function":{"name":"config-manager/list_llm_presets","description":"List all available LLM presets.","parameters":{"type":"object","properties":{}}}},{"type":"function","function":{"name":"config-manager/test_llm_connection","description":"Test LLM connection with current configuration.","parameters":{"type":"object","properties":{}}}},{"type":"function","function":{"name":"config-manager/get_storage_config","description":"Get storage configuration (document root, database path).","parameters":{"type":"object","properties":{}}}},{"type":"function","function":{"name":"config-manager/set_storage_config","description":"Set storage configuration.","parameters":{"type":"object","properties":{"document_root":{"type":"string","description":"Root directory for documents"},"database_path":{"type":"string","description":"Path to knowledge database"}}}}},{"type":"function","function":{"name":"config-manager/get_identity","description":"Get assistant identity settings (name, gender, personality).","parameters":{"type":"object","properties":{}}}},{"type":"function","function":{"name":"config-manager/update_identity","description":"Update assistant identity. User can change name, personality, etc.","parameters":{"type":"object","properties":{"name":{"type":"string","description":"Assistant name"},"gender":{"type":"string","description":"Gender: 'male' or 'female'"},"personality":{"type":"array","items":{"type":"string"},"description":"Personality traits (e.g., ['warm', 'professional', 'concise'])"},"greeting_style":{"type":"string","description":"How to greet users"}}}}},{"type":"function","function":{"name":"config-manager/get_workspace","description":"Get workspace path where documents and database are stored.","parameters":{"type":"object","properties":{}}}},{"type":"function","function":{"name":"config-manager/set_workspace","description":"Set workspace path. This is where all documents and knowledge will be stored.","parameters":{"type":"object","properties":{"path":{"type":"string","description":"Workspace directory path (e.g., 'D:\\\\MyKnowledge')"}},"required":["path"]}}},{"type":"function","function":{"name":"config-manager/get_user_info","description":"Get user information (name, preferences).","parameters":{"type":"object","properties":{}}}},{"type":"function","function":{"name":"config-manager/set_user_info","description":"Set user information.","parameters":{"type":"object","properties":{"name":{"type":"string","description":"User's name or nickname"},"preferences":{"type":"array","items":{"type":"string"},"description":"User preferences (e.g., ['concise answers', 'Chinese'])"}}}}},{"type":"function","function":{"name":"config-manager/add_user_preference","description":"Add a user preference to remember.","parameters":{"type":"object","properties":{"preference":{"type":"string","description":"Preference to remember (e.g., 'likes concise answers')"}},"required":["preference"]}}},{"type":"function","function":{"name":"config-manager/is_first_run","description":"Check if this is the first run (need to show setup wizard).","parameters":{"type":"object","properties":{}}}},{"type":"function","function":{"name":"config-manager/complete_setup","description":"Complete initial setup with workspace path and optional settings.","parameters":{"type":"object","properties":{"workspace_path":{"type":"string","description":"Workspace directory path"},"user_name":{"type":"string","description":"User's name"},"assistant_name":{"type":"string","description":"Assistant name"}}}}},{"type":"function","function":{"name":"config-manager/get_full_memory","description":"Get full memory for system prompt (all settings and info).","parameters":{"type":"object","properties":{}}}},{"type":"function","function":{"name":"config-manager/mkdir","description":"Create a directory (and parent directories if needed). Use this to create year-based directories like 'documents/2025'.","parameters":{"type":"object","properties":{"path":{"type":"string","description":"Directory path to create (e.g., 'E:\\\\tmp\\\\bot\\\\documents\\\\2025')"}},"required":["path"]}}},{"type":"function","function":{"name":"config-manager/copy_to_path","description":"Copy a file to a specific destination path. Use this to organize files by year/category. Example: copy_to_path('C:/file.pdf', 'E:/workspace/documents/2025/file.pdf')","parameters":{"type":"object","properties":{"source_path":{"type":"string","description":"Source file path"},"dest_path":{"type":"string","description":"Destination file path (absolute path)"}},"required":["source_path","dest_path"]}}},{"type":"function","function":{"name":"config-manager/move_to_path","description":"Move a file to a specific destination path. Use this to organize files by year/category.","parameters":{"type":"object","properties":{"source_path":{"type":"string","description":"Source file path"},"dest_path":{"type":"string","description":"Destination file path (absolute path)"}},"required":["source_path","dest_path"]}}},{"type":"function","function":{"name":"config-manager/list_files_in_workspace","description":"List all files in the workspace documents directory.","parameters":{"type":"object","properties":{}}}},{"type":"function","function":{"name":"file-parser/parse_file","description":"Parse a document file (PDF, Word, PPT, Excel, Markdown, HTML, Text) and extract text content.","parameters":{"type":"object","properties":{"file_path":{"type":"string","description":"Absolute path to the file to parse"}},"required":["file_path"]}}},{"type":"function","function":{"name":"file-parser/list_supported_formats","description":"List all supported file formats for parsing.","parameters":{"type":"object","properties":{}}}},{"type":"function","function":{"name":"memory-server/recall","description":"语义搜索相关记忆","parameters":{"type":"object","properties":{"query":{"type":"string","description":"搜索查询"},"limit":{"type":"integer","description":"返回数量限制","default":5},"memory_type":{"type":"string","description":"可选的记忆类型过滤"}},"required":["query"]}}},{"type":"function","function":{"name":"memory-server/list_memories","description":"列出已存储的记忆","parameters":{"type":"object","properties":{"memory_type":{"type":"string","description":"可选的记忆类型过滤"},"limit":{"type":"integer","description":"返回数量限制","default":20}}}}},{"type":"function","function":{"name":"memory-server/delete_memory","description":"删除一条记忆","parameters":{"type":"object","properties":{"memory_id":{"type":"string","description":"记忆 ID"}},"required":["memory_id"]}}}]
+=== USER ===
+<tool_result># Phase 5-6 执行计划
+
+## 目标
+1. Phase 5: 简化 main.go，使其调用 Python agent
+2. Phase 6: 删除 Nanobot Go 代码
+
+## 当前状态
+
+### Python Agent (已完成)
+- agent/__main__.py: CLI 入口
+- agent/llm_client.py: LiteLLM 封装
+- agent/handler.py: 工具处理器
+- agent/tools/: 7 个原子工具
+
+### Go main.go (需要简化)
+- 1683 行代码
+- 关键端点:
+  - `/api/chat/session` - 主聊天端点
+  - `/api/chat/clear` - 清空聊天
+  - `/api/context/messages` - 获取历史
+  - `/api/shutdown` - 关闭服务
+- 依赖:
+  - pkg/toolloop - Agent 循环
+  - pkg/session - 会话管理
+  - pkg/llm - LLM 客户端
+  - pkg/agents - Agent 定义
+  - pkg/runtime - 运行时
+  - pkg/config - 配置加载
+
+## Phase 5: 简化 main.go
+
+### 5.1 保留的功能
+- HTTP 服务器
+- Electron 窗口管理
+- MCP 服务器代理
+- 静态文件服务
+
+### 5.2 修改的端点
+
+| 端点 | 修改 |
+|------|------|
+| `/api/chat/session` | 调用 Python agent HTTP API |
+| `/api/chat/clear` | 保留（Python agent session 独立管理） |
+| `/api/context/messages` | 保留（从数据库读取） |
+| `/api/shutdown` | 保留 |
+
+### 5.3 删除的代码
+- toolloop.ChatWithToolLoop 调用
+- nanobotRuntime.NewRuntime
+- rt.Service, rt.Call
+- config.Load() 中 Agent 相关部分
+
+### 5.4 新增代码
+- Python agent HTTP 客户端
+- 调用 `http://127.0.0.1:9878/chat` 转发请求
+
+## Phase 6: 删除 Nanobot 代码
+
+### 6.1 删除的 pkg/ 目录
+```
+pkg/
+├── agents/          # 删除
+├── sampling/        # 删除
+├── server/          # 删除
+├── toolloop/        # 删除
+├── runtime/         # 删除
+├── tools/           # 删除
+├── types/           # 删除
+├── config/          # 删除
+├── mcp/             # 删除
+├── llm/             # 删除
+├── servers/         # 删除
+├── assistant/       # 删除
+├── supervise/       # 删除
+├── scheduler/       # 删除
+├── skillformat/     # 删除
+├── sessiondata/     # 删除
+├── system/          # 删除
+├── log/             # 删除
+├── uuid/            # 删除
+└── version/         # 保留
+```
+
+### 6.2 保留的 pkg/ 目录
+```
+pkg/
+├── session/         # 保留（会话数据库）
+└── version/         # 保留（版本信息）
+```
+
+### 6.3 执行顺序
+1. 创建简化版 main.go (main_simplified.go)
+2. 测试简化版能编译通过
+3. 替换 main.go
+4. 编译验证
+5. 删除不需要的 pkg/ 目录
+6. 最终测试
+
+## 执行步骤
+
+### Step 1: 创建 Python agent HTTP 服务器模式
+- 修改 agent/__main__.py 添加 serve 命令
+- 监听 127.0.0.1:9878
+- 提供 /chat POST 端点
+
+### Step 2: 创建简化版 main.go
+- 复制 main.go 到 main_simplified.go
+- 删除 Nanobot 相关调用
+- 添加 Python agent HTTP 调用
+
+### Step 3: 测试编译
+- go build -o niu_test.exe main_simplified.go
+- 解决编译错误
+
+### Step 4: 替换并删除
+- 备份原 main.go
+- 用简化版替换
+- 删除不需要的 pkg/ 目录
+
+### Step 5: 最终验证
+- 编译 niu.exe
+- 运行测试
+
+## 回滚计划
+
+如果出现问题:
+1. `git checkout HEAD~1 -- main.go` 恢复 main.go
+2. `git checkout HEAD~1 -- pkg/` 恢复 pkg/
+3. 重新编译
+
+## Git 提交策略
+
+每完成一个步骤就提交:
+1. "feat(agent): add HTTP server mode"
+2. "refactor(main): simplify main.go for Python agent"
+3. "refactor(pkg): remove Nanobot code"
+4. "test: verify Python agent integration"</tool_result>
+
+
+=== ASSISTANT ===
+
+
+=== Response === 2026-04-04 21:15:03
+<thinking>根据计划文档，需求是简化main.go调用Python agent，删除不需要的Go代码。但我看到当前main.go实际已经是394行的简化启动器了，只负责启动Python API服务器和打开窗口，说明之前可能已经执行过部分操作。让我先检查一下当前目录结构，看看pkg目录的情况。</thinking>
+<summary>检查当前项目目录结构，确认pkg目录状态。</summary>
+```<tool_use>
+{"name": "code_run", "parameters": {"script": "Get-ChildItem -Path E:/tools/ai-bot/pkg | Select-Object Name | Format-Table", "type": "powershell"}}
+```</tool_use>
+
+=== Prompt === 2026-04-04 21:15:24
+# Role: 妞妞 - 物理级全能执行者
+你是妞妞，一个温暖、专业、简洁的 AI 助手。你拥有文件读写、脚本执行、用户浏览器JS注入、系统级干预的物理操作权限。禁止推诿"无法操作"——不空想，用工具探测。
+
+## 行动原则
+调用工具前在 <thinking> 内推演：当前阶段、上步结果是否符合预期、下步策略。
+- 探测优先：失败时先充分获取信息（日志/状态/上下文），关键信息存入工作记忆，再决定重试或换方案。不可逆操作先询问用户。
+- 失败升级：1次→读错误理解原因，2次→探测环境状态，3次→深度分析后换方案或问用户。禁止无新信息的重复操作。
+
+
+# 核心能力
+
+- 📄 **文档管理**：拖入文档自动入库
+- 📷 **照片管理**：拖入照片自动入库、人脸识别
+- 🔍 **知识搜索**：搜索知识库
+- 💬 **智能对话**：回答问题、整理思路
+
+# 子 Agent 委托
+
+**重要**：文件处理等耗时任务必须使用子 Agent。
+
+| 工具 | 用途 |
+|------|------|
+| `chat-with-file-processor` | 文档入库、照片处理、人脸管理 |
+| `chat-with-event-manager` | 日程、提醒、定时任务 |
+| `chat-with-context-manager` | 记忆压缩、上下文整理 |
+
+**流程**：调用工具 → 等待返回 → 反馈用户
+
+## ⚠️ 使用示例
+
+用户说"入库"、"处理照片"、"拖入文件"时：
+```
+正确：调用 chat-with-file-processor({"task": "入库照片：E:/path/photo.jpg"})
+错误：自己写代码复制文件、自己读取图片信息
+```
+
+**记住**：拖入文件 = 调用 chat-with-file-processor，不要自己处理文件！
+
+# 行为准则
+
+## ⚠️ 核心规则：工具调用优先
+
+接到明确指令后：
+1. **立即调用工具** — 不要先说话
+2. **等工具返回结果**
+3. **返回结果给用户**
+
+**记住**：你说的话不是"执行"，调用工具才是"执行"。
+
+## 沟通风格
+
+| 场景 | 风格 |
+|------|------|
+| 任务完成 | ✅ 极简确认 |
+| 故障诊断 | 详尽分析 |
+| 需要确认 | 礼貌询问 |
+
+## 响应长度
+
+- 简单查询：≤50 字
+- 任务结果：≤100 字
+- 复杂分析：可详尽
+
+# 身份设定
+
+- **名字**：妞妞（用户可修改）
+- **性格**：温暖、专业、简洁
+- **性别**：女性
+
+# 错误处理
+
+1. 分析错误原因
+2. 重试最多 2 次（有修正动作）
+3. 仍失败 → 告知用户 + 建议方案
+
+# 安全原则
+
+- 危险操作（删除、修改配置）先确认
+- API Key 只显示前后 4 位
+- 禁止 `rm -rf`、绕过权限等危险操作
+
+Today: 2026-04-04
+
+### [可用工具]
+1. **name_person** (分数: 51)
+   name_person: 为识别出的人物命名。
+
+### 工具库状态：持续有效（code_run/file_read等），**可正常调用**。调用协议沿用。
+=== USER ===
+又是你自己处理的呀
+=== ASSISTANT ===
+
+
+=== Response === 2026-04-04 21:15:27
+<thinking>用户指出了我违反了规则，文件处理等耗时任务应该委托给子 Agent。让我纠正，现在让context-manager子Agent来处理这个重构任务。</thinking>
+<summary>委托context-manager子Agent执行代码重构任务。</summary>
+```<tool_use>
+{"name": "chat-with-context-manager", "parameters": {"task": "根据 docs/plans/plan-phase5-6.md 计划，简化 main.go，删除不需要的 pkg/ 目录，只保留 session/ 和 version/，将聊天请求转发到 Python agent HTTP API (127.0.0.1:9878/chat)。请按计划步骤执行：1. 修改 agent/__main__.py 添加 HTTP serve 模式；2. 创建简化版 main.go；3. 删除不需要的 pkg 目录；4. 验证编译。"}}
+```</tool_use>
+
+=== Prompt === 2026-04-04 21:15:34
+# Role: 妞妞 - 物理级全能执行者
+你是妞妞，一个温暖、专业、简洁的 AI 助手。你拥有文件读写、脚本执行、用户浏览器JS注入、系统级干预的物理操作权限。禁止推诿"无法操作"——不空想，用工具探测。
+
+## 行动原则
+调用工具前在 <thinking> 内推演：当前阶段、上步结果是否符合预期、下步策略。
+- 探测优先：失败时先充分获取信息（日志/状态/上下文），关键信息存入工作记忆，再决定重试或换方案。不可逆操作先询问用户。
+- 失败升级：1次→读错误理解原因，2次→探测环境状态，3次→深度分析后换方案或问用户。禁止无新信息的重复操作。
+
+
+# 核心能力
+
+- 📄 **文档管理**：拖入文档自动入库
+- 📷 **照片管理**：拖入照片自动入库、人脸识别
+- 🔍 **知识搜索**：搜索知识库
+- 💬 **智能对话**：回答问题、整理思路
+
+# 子 Agent 委托
+
+**重要**：文件处理等耗时任务必须使用子 Agent。
+
+| 工具 | 用途 |
+|------|------|
+| `chat-with-file-processor` | 文档入库、照片处理、人脸管理 |
+| `chat-with-event-manager` | 日程、提醒、定时任务 |
+| `chat-with-context-manager` | 记忆压缩、上下文整理 |
+
+**流程**：调用工具 → 等待返回 → 反馈用户
+
+## ⚠️ 使用示例
+
+用户说"入库"、"处理照片"、"拖入文件"时：
+```
+正确：调用 chat-with-file-processor({"task": "入库照片：E:/path/photo.jpg"})
+错误：自己写代码复制文件、自己读取图片信息
+```
+
+**记住**：拖入文件 = 调用 chat-with-file-processor，不要自己处理文件！
+
+# 行为准则
+
+## ⚠️ 核心规则：工具调用优先
+
+接到明确指令后：
+1. **立即调用工具** — 不要先说话
+2. **等工具返回结果**
+3. **返回结果给用户**
+
+**记住**：你说的话不是"执行"，调用工具才是"执行"。
+
+## 沟通风格
+
+| 场景 | 风格 |
+|------|------|
+| 任务完成 | ✅ 极简确认 |
+| 故障诊断 | 详尽分析 |
+| 需要确认 | 礼貌询问 |
+
+## 响应长度
+
+- 简单查询：≤50 字
+- 任务结果：≤100 字
+- 复杂分析：可详尽
+
+# 身份设定
+
+- **名字**：妞妞（用户可修改）
+- **性格**：温暖、专业、简洁
+- **性别**：女性
+
+# 错误处理
+
+1. 分析错误原因
+2. 重试最多 2 次（有修正动作）
+3. 仍失败 → 告知用户 + 建议方案
+
+# 安全原则
+
+- 危险操作（删除、修改配置）先确认
+- API Key 只显示前后 4 位
+- 禁止 `rm -rf`、绕过权限等危险操作
+
+Today: 2026-04-04
+
+### 工具库状态：持续有效（code_run/file_read等），**可正常调用**。调用协议沿用。
+=== USER ===
+？？？
+=== ASSISTANT ===
+
+
+=== Response === 2026-04-04 21:15:39
+<thinking>我理解错了，context-manager是用于记忆压缩和上下文整理，不是代码重构。这个任务应该由file-processor子Agent来处理文件重构操作。</thinking>
+<summary>委托file-processor子Agent执行代码重构任务。</summary>
+```<tool_use>
+{"name": "chat-with-file-processor", "parameters": {"task": "根据 docs/plans/plan-phase5-6.md 计划，执行代码重构：\n1. 修改 agent/__main__.py 添加 HTTP serve 命令，监听 127.0.0.1:9878，提供 /chat POST 端点\n2. 简化 main.go，删除原Nanobot相关代码，添加转发到 Python agent HTTP API 的逻辑\n3. 删除不需要的 pkg/ 子目录，只保留 session/ 和 version/\n4. 验证编译通过"}}
+```</tool_use>
+
+=== Prompt === 2026-04-04 21:15:50
+# Role: 妞妞 - 物理级全能执行者
+你是妞妞，一个温暖、专业、简洁的 AI 助手。你拥有文件读写、脚本执行、用户浏览器JS注入、系统级干预的物理操作权限。禁止推诿"无法操作"——不空想，用工具探测。
+
+## 行动原则
+调用工具前在 <thinking> 内推演：当前阶段、上步结果是否符合预期、下步策略。
+- 探测优先：失败时先充分获取信息（日志/状态/上下文），关键信息存入工作记忆，再决定重试或换方案。不可逆操作先询问用户。
+- 失败升级：1次→读错误理解原因，2次→探测环境状态，3次→深度分析后换方案或问用户。禁止无新信息的重复操作。
+
+
+# 核心能力
+
+- 📄 **文档管理**：拖入文档自动入库
+- 📷 **照片管理**：拖入照片自动入库、人脸识别
+- 🔍 **知识搜索**：搜索知识库
+- 💬 **智能对话**：回答问题、整理思路
+
+# 子 Agent 委托
+
+**重要**：文件处理等耗时任务必须使用子 Agent。
+
+| 工具 | 用途 |
+|------|------|
+| `chat-with-file-processor` | 文档入库、照片处理、人脸管理 |
+| `chat-with-event-manager` | 日程、提醒、定时任务 |
+| `chat-with-context-manager` | 记忆压缩、上下文整理 |
+
+**流程**：调用工具 → 等待返回 → 反馈用户
+
+## ⚠️ 使用示例
+
+用户说"入库"、"处理照片"、"拖入文件"时：
+```
+正确：调用 chat-with-file-processor({"task": "入库照片：E:/path/photo.jpg"})
+错误：自己写代码复制文件、自己读取图片信息
+```
+
+**记住**：拖入文件 = 调用 chat-with-file-processor，不要自己处理文件！
+
+# 行为准则
+
+## ⚠️ 核心规则：工具调用优先
+
+接到明确指令后：
+1. **立即调用工具** — 不要先说话
+2. **等工具返回结果**
+3. **返回结果给用户**
+
+**记住**：你说的话不是"执行"，调用工具才是"执行"。
+
+## 沟通风格
+
+| 场景 | 风格 |
+|------|------|
+| 任务完成 | ✅ 极简确认 |
+| 故障诊断 | 详尽分析 |
+| 需要确认 | 礼貌询问 |
+
+## 响应长度
+
+- 简单查询：≤50 字
+- 任务结果：≤100 字
+- 复杂分析：可详尽
+
+# 身份设定
+
+- **名字**：妞妞（用户可修改）
+- **性格**：温暖、专业、简洁
+- **性别**：女性
+
+# 错误处理
+
+1. 分析错误原因
+2. 重试最多 2 次（有修正动作）
+3. 仍失败 → 告知用户 + 建议方案
+
+# 安全原则
+
+- 危险操作（删除、修改配置）先确认
+- API Key 只显示前后 4 位
+- 禁止 `rm -rf`、绕过权限等危险操作
+
+Today: 2026-04-04
+
+### 工具库状态：持续有效（code_run/file_read等），**可正常调用**。调用协议沿用。
+=== USER ===
+怎么不说话了
+=== ASSISTANT ===
+
+
+=== Response === 2026-04-04 21:15:53
+<thinking>我理解规则有误，file-processor只处理文档和照片入库。这是代码重构任务，应该由我直接执行。先查看当前pkg目录结构，确认需要删除哪些目录。</thinking>
+<summary>查看当前pkg目录结构，确认需要删除的内容。</summary>
+```<tool_use>
+{"name": "code_run", "parameters": {"script": "Get-ChildItem -Path E:/tools/ai-bot/pkg | Select-Object Name, @{Name='Type';Expression={if($_.PSIsContainer){'Directory'}else{'File'}}} | Format-Table", "type": "powershell"}}
+```</tool_use>
+
+=== Prompt === 2026-04-04 21:19:54
+# Role: 妞妞 - 物理级全能执行者
+你是妞妞，一个温暖、专业、简洁的 AI 助手。你拥有文件读写、脚本执行、用户浏览器JS注入、系统级干预的物理操作权限。禁止推诿"无法操作"——不空想，用工具探测。
+
+## 行动原则
+调用工具前在 <thinking> 内推演：当前阶段、上步结果是否符合预期、下步策略。
+- 探测优先：失败时先充分获取信息（日志/状态/上下文），关键信息存入工作记忆，再决定重试或换方案。不可逆操作先询问用户。
+- 失败升级：1次→读错误理解原因，2次→探测环境状态，3次→深度分析后换方案或问用户。禁止无新信息的重复操作。
+
+
+# 核心能力
+
+- 📄 **文档管理**：拖入文档自动入库
+- 📷 **照片管理**：拖入照片自动入库、人脸识别
+- 🔍 **知识搜索**：搜索知识库
+- 💬 **智能对话**：回答问题、整理思路
+
+# 子 Agent 委托
+
+**重要**：文件处理等耗时任务必须使用子 Agent。
+
+| 工具 | 用途 |
+|------|------|
+| `chat-with-file-processor` | 文档入库、照片处理、人脸管理 |
+| `chat-with-event-manager` | 日程、提醒、定时任务 |
+| `chat-with-context-manager` | 记忆压缩、上下文整理 |
+
+**流程**：调用工具 → 等待返回 → 反馈用户
+
+## ⚠️ 使用示例
+
+用户说"入库"、"处理照片"、"拖入文件"时：
+```
+正确：调用 chat-with-file-processor({"task": "入库照片：E:/path/photo.jpg"})
+错误：自己写代码复制文件、自己读取图片信息
+```
+
+**记住**：拖入文件 = 调用 chat-with-file-processor，不要自己处理文件！
+
+# 行为准则
+
+## ⚠️ 核心规则：工具调用优先
+
+接到明确指令后：
+1. **立即调用工具** — 不要先说话
+2. **等工具返回结果**
+3. **返回结果给用户**
+
+**记住**：你说的话不是"执行"，调用工具才是"执行"。
+
+## 沟通风格
+
+| 场景 | 风格 |
+|------|------|
+| 任务完成 | ✅ 极简确认 |
+| 故障诊断 | 详尽分析 |
+| 需要确认 | 礼貌询问 |
+
+## 响应长度
+
+- 简单查询：≤50 字
+- 任务结果：≤100 字
+- 复杂分析：可详尽
+
+# 身份设定
+
+- **名字**：妞妞（用户可修改）
+- **性格**：温暖、专业、简洁
+- **性别**：女性
+
+# 错误处理
+
+1. 分析错误原因
+2. 重试最多 2 次（有修正动作）
+3. 仍失败 → 告知用户 + 建议方案
+
+# 安全原则
+
+- 危险操作（删除、修改配置）先确认
+- API Key 只显示前后 4 位
+- 禁止 `rm -rf`、绕过权限等危险操作
+
+Today: 2026-04-04
+
+### [可用工具]
+1. **ingest_photo** (分数: 40)
+   ingest_photo: 照片入库与人脸识别。支持单张照片或目录批量处理。
+
+### 工具库状态：持续有效（code_run/file_read等），**可正常调用**。调用协议沿用。
+=== USER ===
+你不要再调用它了，它应该有bug，你告诉我什么情况就行了
+=== ASSISTANT ===
+
+
+=== Response === 2026-04-04 21:19:58
+明白了，我直接执行并向您汇报情况。
+
+根据探测，当前状态：
+- `main.go` 已经是简化版（只有394行），仅负责启动Python API服务器和打开Electron窗口
+- `pkg/` 目录下现有这些内容：
+
+<tool_use>{"name": "code_run", "parameters": {"script": "Get-ChildItem E:/tools/ai-bot/pkg | Select-Object Name | Out-String", "type": "powershell"}}</tool_use>
+
+=== Prompt === 2026-04-04 21:19:58
+
+### 工具库状态：持续有效（code_run/file_read等），**可正常调用**。调用协议沿用。
+=== USER ===
+<tool_result>{"status": "success", "stdout": "\r\n", "exit_code": 0}</tool_result>
+
+
+=== ASSISTANT ===
+
+
+=== Response === 2026-04-04 21:20:01
+让我重新列出目录：
+
+```<tool_use>
+{"name": "code_run", "parameters": {"script": "ls E:/tools/ai-bot/pkg/", "type": "powershell"}}
+```</tool_use>
+
+=== Prompt === 2026-04-04 21:20:33
+# Role: 妞妞 - 物理级全能执行者
+你是妞妞，一个温暖、专业、简洁的 AI 助手。你拥有文件读写、脚本执行、用户浏览器JS注入、系统级干预的物理操作权限。禁止推诿"无法操作"——不空想，用工具探测。
+
+## 行动原则
+调用工具前在 <thinking> 内推演：当前阶段、上步结果是否符合预期、下步策略。
+- 探测优先：失败时先充分获取信息（日志/状态/上下文），关键信息存入工作记忆，再决定重试或换方案。不可逆操作先询问用户。
+- 失败升级：1次→读错误理解原因，2次→探测环境状态，3次→深度分析后换方案或问用户。禁止无新信息的重复操作。
+
+
+# 核心能力
+
+- 📄 **文档管理**：拖入文档自动入库
+- 📷 **照片管理**：拖入照片自动入库、人脸识别
+- 🔍 **知识搜索**：搜索知识库
+- 💬 **智能对话**：回答问题、整理思路
+
+# 子 Agent 委托
+
+**重要**：文件处理等耗时任务必须使用子 Agent。
+
+| 工具 | 用途 |
+|------|------|
+| `chat-with-file-processor` | 文档入库、照片处理、人脸管理 |
+| `chat-with-event-manager` | 日程、提醒、定时任务 |
+| `chat-with-context-manager` | 记忆压缩、上下文整理 |
+
+**流程**：调用工具 → 等待返回 → 反馈用户
+
+## ⚠️ 使用示例
+
+用户说"入库"、"处理照片"、"拖入文件"时：
+```
+正确：调用 chat-with-file-processor({"task": "入库照片：E:/path/photo.jpg"})
+错误：自己写代码复制文件、自己读取图片信息
+```
+
+**记住**：拖入文件 = 调用 chat-with-file-processor，不要自己处理文件！
+
+# 行为准则
+
+## ⚠️ 核心规则：工具调用优先
+
+接到明确指令后：
+1. **立即调用工具** — 不要先说话
+2. **等工具返回结果**
+3. **返回结果给用户**
+
+**记住**：你说的话不是"执行"，调用工具才是"执行"。
+
+## 沟通风格
+
+| 场景 | 风格 |
+|------|------|
+| 任务完成 | ✅ 极简确认 |
+| 故障诊断 | 详尽分析 |
+| 需要确认 | 礼貌询问 |
+
+## 响应长度
+
+- 简单查询：≤50 字
+- 任务结果：≤100 字
+- 复杂分析：可详尽
+
+# 身份设定
+
+- **名字**：妞妞（用户可修改）
+- **性格**：温暖、专业、简洁
+- **性别**：女性
+
+# 错误处理
+
+1. 分析错误原因
+2. 重试最多 2 次（有修正动作）
+3. 仍失败 → 告知用户 + 建议方案
+
+# 安全原则
+
+- 危险操作（删除、修改配置）先确认
+- API Key 只显示前后 4 位
+- 禁止 `rm -rf`、绕过权限等危险操作
+
+Today: 2026-04-04
+
+### [可用工具]
+1. **ingest_document** (分数: 46)
+   ingest_document: 文档入库。支持 PDF、Word、Markdown 等格式。
+2. **name_person** (分数: 43)
+   name_person: 为识别出的人物命名。
+3. **ingest_photo** (分数: 41)
+   ingest_photo: 照片入库与人脸识别。支持单张照片或目录批量处理。
+4. **add_document** (分数: 41)
+   add_document: 添加文档到向量数据库。
+5. **search_documents** (分数: 41)
+   search_documents: 语义搜索文档。
+
+### 工具库状态：持续有效（code_run/file_read等），**可正常调用**。调用协议沿用。
+=== USER ===
+PKG下面的东西早就不用了，取消了，作废了
+=== ASSISTANT ===
+
+
+=== Response === 2026-04-04 21:20:36
+明白了，pkg下面都是旧的Nanobot Go代码，早就不用了，按计划只保留 `session/` 和 `version/`，删除其他目录。让我先确认一下目录：
+
+```<tool_use>
+{"name": "code_run", "parameters": {"script": "Get-ChildItem E:/tools/ai-bot/pkg | ForEach-Object { $_.Name }", "type": "powershell"}}
+```</tool_use>
+

@@ -1,0 +1,1072 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>妞妞聊天</title>
+  <!-- 英文手写字体 fallback -->
+  <link href="https://fonts.googleapis.com/css2?family=Caveat:wght@400;600&display=swap" rel="stylesheet">
+  <style>
+    /* 本地中文字体 - 阿朱泡泡体 */
+    @font-face {
+      font-family: 'AZhuPaoPaoTi';
+      src: url('fonts/AZhuPaoPaoTi.ttf') format('truetype');
+      font-weight: normal;
+      font-style: normal;
+      font-display: swap;
+    }
+    
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { 
+      background: transparent; 
+      overflow: hidden;
+      width: 100%;
+      height: 100%;
+      /* fallback 链：阿朱泡泡体 -> Caveat(英文) -> 系统默认 */
+      font-family: 'AZhuPaoPaoTi', 'Caveat', system-ui, sans-serif;
+      /* 铅笔笔迹效果 */
+      color: #000;
+      -webkit-font-smoothing: antialiased;
+    }
+    
+    /* 主容器 - 便签风格 */
+    .container {
+      width: 100%;
+      height: 100%;
+      background: #faf8f0;
+      border-radius: 12px;
+      box-shadow: 3px 3px 10px rgba(0,0,0,0.15);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      position: relative;
+      /* 棉纸纹理 */
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.08'/%3E%3C/svg%3E");
+    }
+    
+    /* 调整大小手柄 */
+    .resize-handle {
+      position: absolute;
+      right: 0;
+      bottom: 0;
+      width: 20px;
+      height: 20px;
+      cursor: nwse-resize;
+      z-index: 100;
+      -webkit-app-region: no-drag;
+    }
+    .resize-handle::before {
+      content: '';
+      position: absolute;
+      right: 4px;
+      bottom: 4px;
+      width: 8px;
+      height: 8px;
+      border-right: 2px solid rgba(0,0,0,0.2);
+      border-bottom: 2px solid rgba(0,0,0,0.2);
+    }
+    
+    /* 标题栏 - 可拖动 */
+    .header {
+      padding: 12px 16px;
+      background: #e7ca4a;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      cursor: grab;
+      border-bottom: 2px dashed rgba(0,0,0,0.1);
+      -webkit-app-region: drag;
+    }
+    .header:active { cursor: grabbing; }
+    .header-title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .header-title .avatar {
+      width: 28px;
+      height: 42px;
+      object-fit: contain;
+    }
+    .header-title span {
+      font-size: 18px;
+      font-weight: normal;
+      color: #000;
+      /* 铅笔笔迹效果 */
+      -webkit-text-stroke: 0.3px rgba(0,0,0,0.4);
+      text-shadow: 0.5px 0.5px 0 rgba(0,0,0,0.25);
+    }
+    .close-btn {
+      background: #f8a7c8;
+      border: none;
+      color: #000;
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      cursor: pointer;
+      font-size: 16px;
+      font-family: 'AZhuPaoPaoTi', cursive;
+      box-shadow: 2px 2px 4px rgba(0,0,0,0.1);
+      -webkit-app-region: no-drag;
+    }
+    .close-btn:hover { 
+      transform: scale(1.1);
+      box-shadow: 2px 2px 6px rgba(0,0,0,0.15);
+    }
+    
+    /* 消息区域 */
+    .messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 12px;
+      background: transparent;
+    }
+    .message {
+      margin-bottom: 10px;
+      max-width: 85%;
+      padding: 10px 14px;
+      border-radius: 12px;
+      font-size: 16px;
+      line-height: 1.5;
+      word-wrap: break-word;
+      /* 保留换行符 */
+      white-space: pre-wrap;
+    }
+    .message.user {
+      background: #78b2be;
+      color: white;
+      margin-left: auto;
+      border-bottom-right-radius: 4px;
+      text-shadow: 0.5px 0.5px 0 rgba(0,0,0,0.1);
+    }
+    .message.assistant {
+      background: white;
+      color: #000;
+      border-bottom-left-radius: 4px;
+      box-shadow: 2px 2px 5px rgba(0,0,0,0.08);
+      /* 铅笔笔迹效果 */
+      -webkit-text-stroke: 0.2px rgba(0,0,0,0.35);
+    }
+    .message.system {
+      background: #e9ecef;
+      color: #000;
+      font-size: 13px;
+      text-align: center;
+      max-width: 100%;
+      border-radius: 4px;
+    }
+    
+    /* 正在输入动画 */
+    .message.typing {
+      background: white;
+      color: #000;
+      border-bottom-left-radius: 4px;
+      box-shadow: 2px 2px 5px rgba(0,0,0,0.08);
+      padding: 10px 14px;
+    }
+    .typing-dots {
+      display: inline-flex;
+      gap: 4px;
+      align-items: center;
+    }
+    .typing-dots span {
+      width: 8px;
+      height: 8px;
+      background: #666;
+      border-radius: 50%;
+      animation: typing-bounce 1.4s infinite ease-in-out;
+    }
+    .typing-dots span:nth-child(1) { animation-delay: 0s; }
+    .typing-dots span:nth-child(2) { animation-delay: 0.2s; }
+    .typing-dots span:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes typing-bounce {
+      0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
+      40% { transform: scale(1); opacity: 1; }
+    }
+    
+    /* 输入区域 */
+    .input-area {
+      padding: 12px;
+      background: white;
+      border-top: 2px dashed rgba(0,0,0,0.08);
+      display: flex;
+      gap: 8px;
+    }
+    .input-area textarea {
+      flex: 1;
+      padding: 10px 14px;
+      border: 2px dashed rgba(0,0,0,0.15);
+      border-radius: 4px;
+      font-size: 16px;
+      font-family: 'AZhuPaoPaoTi', cursive;
+      background: rgba(255,255,255,0.8);
+      color: #000;
+      outline: none;
+      /* 铅笔笔迹效果 */
+      -webkit-text-stroke: 0.2px rgba(0,0,0,0.35);
+      resize: none;
+      min-height: 42px;
+      max-height: 120px;
+      overflow-y: auto;
+    }
+    .input-area textarea:focus { border-color: #78b2be; }
+    .input-area button {
+      background: #a3f0c2;
+      color: #000;
+      border: none;
+      padding: 10px 16px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 16px;
+      font-family: 'AZhuPaoPaoTi', cursive;
+      box-shadow: 2px 2px 4px rgba(0,0,0,0.1);
+      -webkit-text-stroke: 0.2px rgba(0,0,0,0.3);
+    }
+    .input-area button:hover { 
+      transform: translateY(-1px);
+      box-shadow: 2px 2px 6px rgba(0,0,0,0.15);
+    }
+    .input-area button:disabled { 
+      background: #ccc; 
+      cursor: not-allowed; 
+      transform: none;
+    }
+    
+    /* 状态栏 */
+    .status-bar {
+      padding: 8px 16px;
+      background: #faf8f0;
+      border-top: 2px dashed rgba(0,0,0,0.05);
+      font-size: 14px;
+      color: #000;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .status-bar .stats {
+      display: flex;
+      gap: 16px;
+    }
+    .status-bar .stat {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .status-bar .graph-btn {
+      background: #a3f0c2;
+      color: #000;
+      border: none;
+      padding: 4px 12px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-family: 'AZhuPaoPaoTi', cursive;
+      font-size: 14px;
+      -webkit-text-stroke: 0.2px rgba(0,0,0,0.3);
+    }
+    .status-bar .graph-btn:hover {
+      background: #8de0a8;
+    }
+    
+    /* 进度条 - 简洁不占地方 */
+    .progress-bar {
+      display: none;
+      padding: 4px 12px;
+      background: white;
+      border-top: 1px dashed rgba(0,0,0,0.08);
+      font-size: 13px;
+      color: #000;
+    }
+    .progress-bar.show {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .progress-bar .progress-track {
+      flex: 1;
+      height: 4px;
+      background: #e9ecef;
+      border-radius: 2px;
+      overflow: hidden;
+    }
+    .progress-bar .progress-fill {
+      height: 100%;
+      background: #78b2be;
+      transition: width 0.3s ease;
+    }
+    .progress-bar .progress-text {
+      min-width: 40px;
+      text-align: right;
+    }
+    
+    /* ========== 图片显示 ========== */
+    .message-images {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 8px;
+    }
+    .chat-image {
+      max-width: 200px;
+      max-height: 200px;
+      border-radius: 8px;
+      cursor: pointer;
+      object-fit: cover;
+      transition: transform 0.2s;
+    }
+    .chat-image:hover {
+      transform: scale(1.02);
+    }
+    
+    /* ========== 人脸框显示 ========== */
+    .image-container {
+      position: relative;
+      display: inline-block;
+    }
+    .face-overlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+    }
+    .face-box {
+      position: absolute;
+      border: 2px solid #f8a7c8;
+      border-radius: 4px;
+      box-sizing: border-box;
+    }
+    .face-label {
+      position: absolute;
+      bottom: -18px;
+      left: 0;
+      background: #f8a7c8;
+      color: white;
+      font-size: 11px;
+      padding: 1px 6px;
+      border-radius: 3px;
+      white-space: nowrap;
+    }
+    
+    /* ========== 拖放上传 ========== */
+    .messages.drag-over {
+      background: rgba(120, 178, 190, 0.1);
+      outline: 2px dashed #78b2be;
+    }
+    .image-preview {
+      position: relative;
+      display: inline-block;
+    }
+    .image-preview img {
+      max-width: 300px;
+      max-height: 300px;
+      border-radius: 8px;
+    }
+    .upload-overlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0,0,0,0.5);
+      color: white;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 8px;
+      font-size: 14px;
+    }
+    .image-preview.error .upload-overlay {
+      background: rgba(200, 50, 50, 0.7);
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header" id="header">
+      <div class="header-title">
+        <img src="icons/icon-32.png" class="avatar" />
+        <span>妞妞</span>
+      </div>
+      <button class="close-btn" id="close-btn">×</button>
+    </div>
+    
+    <div class="messages" id="messages"></div>
+    
+    <!-- 简洁进度条 -->
+    <div class="progress-bar" id="progress-bar">
+      <span id="progress-text">处理中...</span>
+      <div class="progress-track">
+        <div class="progress-fill" id="progress-fill" style="width: 0%"></div>
+      </div>
+      <span class="progress-text" id="progress-percent">0%</span>
+    </div>
+    
+    <div class="input-area">
+      <textarea id="user-input" placeholder="说点什么..." rows="1"></textarea>
+      <button id="send-btn">发送</button>
+    </div>
+    
+    <div class="status-bar" id="status-bar">
+      <div class="stats">
+        <span class="stat">📁 <span id="file-count">0</span></span>
+        <span class="stat">👤 <span id="person-count">0</span></span>
+        <span class="stat">📝 <span id="note-count">0</span></span>
+      </div>
+      <button class="graph-btn" id="graph-btn">图谱 →</button>
+    </div>
+    <div class="resize-handle" id="resize-handle"></div>
+  </div>
+
+  <script>
+    const messages = document.getElementById('messages');
+    const userInput = document.getElementById('user-input');
+    const sendBtn = document.getElementById('send-btn');
+    const closeBtn = document.getElementById('close-btn');
+    const header = document.getElementById('header');
+    const statusBar = document.getElementById('status-bar');
+    const resizeHandle = document.getElementById('resize-handle');
+    const progressBar = document.getElementById('progress-bar');
+    const progressText = document.getElementById('progress-text');
+    const progressFill = document.getElementById('progress-fill');
+    const progressPercent = document.getElementById('progress-percent');
+    const fileCount = document.getElementById('file-count');
+    const personCount = document.getElementById('person-count');
+    const noteCount = document.getElementById('note-count');
+    const graphBtn = document.getElementById('graph-btn');
+    
+    // ========== 拖拽窗口 ==========
+    let isDragging = false;
+    let dragOffset = { x: 0, y: 0 };
+    
+    header.addEventListener('mousedown', (e) => {
+      if (e.target === closeBtn) return;
+      isDragging = true;
+      dragOffset.x = e.screenX - window.screenX;
+      dragOffset.y = e.screenY - window.screenY;
+      e.preventDefault();
+    });
+    
+    document.addEventListener('mousemove', (e) => {
+      if (isDragging) {
+        window.electronAPI.setPosition(e.screenX - dragOffset.x, e.screenY - dragOffset.y);
+      }
+    });
+    
+    document.addEventListener('mouseup', () => {
+      isDragging = false;
+    });
+    
+    // ========== 调整窗口大小 ==========
+    let isResizing = false;
+    let resizeStart = { x: 0, y: 0, width: 0, height: 0 };
+    
+    resizeHandle.addEventListener('mousedown', (e) => {
+      isResizing = true;
+      resizeStart.x = e.screenX;
+      resizeStart.y = e.screenY;
+      resizeStart.width = window.outerWidth;
+      resizeStart.height = window.outerHeight;
+      e.preventDefault();
+      e.stopPropagation();
+    });
+    
+    document.addEventListener('mousemove', (e) => {
+      if (!isResizing) return;
+      const dx = e.screenX - resizeStart.x;
+      const dy = e.screenY - resizeStart.y;
+      const newWidth = Math.max(300, Math.min(800, resizeStart.width + dx));
+      const newHeight = Math.max(400, Math.min(900, resizeStart.height + dy));
+      window.electronAPI.resizeWindow(newWidth, newHeight);
+    });
+    
+    document.addEventListener('mouseup', () => {
+      isResizing = false;
+    });
+    
+    // ========== 关闭窗口 ==========
+    closeBtn.addEventListener('click', () => {
+      window.electronAPI.close();
+    });
+    
+    // ========== 图谱按钮 ==========
+    graphBtn.addEventListener('click', () => {
+      window.electronAPI.openGraph();
+    });
+    
+    // ========== 发送消息 ==========
+    sendBtn.addEventListener('click', sendMessage);
+    
+    // 自动调整 textarea 高度
+    userInput.addEventListener('input', () => {
+      userInput.style.height = 'auto';
+      userInput.style.height = Math.min(userInput.scrollHeight, 120) + 'px';
+    });
+    
+    userInput.addEventListener('keydown', (e) => {
+      // 通知 spirit 用户正在活动（重置空闲计时器）
+      window.electronAPI.notifyActivity();
+      
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        sendMessage();
+      }
+      // Shift+Enter 允许换行（默认行为）
+    });
+    
+    // 显示"正在输入"动画（3个点）
+    function showTyping() {
+      const div = document.createElement('div');
+      div.className = 'message assistant typing';
+      div.id = 'typing-indicator';
+      div.innerHTML = '<div class="typing-dots"><span></span><span></span><span></span></div>';
+      messages.appendChild(div);
+      messages.scrollTop = messages.scrollHeight;
+    }
+    
+    function hideTyping() {
+      const typing = document.getElementById('typing-indicator');
+      if (typing) typing.remove();
+    }
+    
+    // 重试发送消息（自动重连）
+    async function sendMessageWithRetry(text, maxRetries = 10, delay = 2000) {
+      for (let i = 0; i < maxRetries; i++) {
+        try {
+          const result = await window.electronAPI.sendMessage(text);
+          
+          // 检查返回的错误是否是连接错误
+          if (result && result.error) {
+            const isConnectionError = result.error.includes('ECONNREFUSED') ||
+              result.error.includes('connect') ||
+              result.error.includes('ENOTFOUND') ||
+              result.error.includes('ECONNRESET');
+            
+            if (isConnectionError && i < maxRetries - 1) {
+              await new Promise(resolve => setTimeout(resolve, delay));
+              continue;
+            }
+          }
+          
+          return result;
+        } catch (err) {
+          const errMsg = err.message || String(err);
+          const isConnectionError = errMsg.includes('ECONNREFUSED') ||
+            errMsg.includes('connect') ||
+            errMsg.includes('ENOTFOUND');
+          
+          if (isConnectionError && i < maxRetries - 1) {
+            await new Promise(resolve => setTimeout(resolve, delay));
+          } else {
+            throw err;
+          }
+        }
+      }
+      return null;
+    }
+    
+    async function sendMessage() {
+      const text = userInput.value.trim();
+      if (!text) return;
+      
+      // 检测 /new 指令 - 清空聊天记录
+      if (text === '/new') {
+        userInput.value = '';
+        userInput.style.height = 'auto';
+        await clearChat();
+        return;
+      }
+      
+      addMessage('user', text);
+      userInput.value = '';
+      userInput.style.height = 'auto';
+      sendBtn.disabled = true;
+      
+      // 显示"正在输入"动画
+      showTyping();
+      
+      // 通知小女孩进入忙碌状态
+      window.electronAPI.notifyBusy(true, 'chat');
+      statusBar.querySelector('.stats').innerHTML = '思考中...';
+      
+      try {
+        const result = await sendMessageWithRetry(text);
+        hideTyping();
+        
+        if (result && result.error) {
+          addMessage('assistant', `出错了: ${result.error}`);
+        } else if (result) {
+          addMessage('assistant', result.reply);
+        } else {
+          addMessage('assistant', '连接失败，请检查后台服务');
+        }
+      } catch (err) {
+        hideTyping();
+        addMessage('assistant', `连接失败: ${err.message}`);
+      }
+      
+      // 通知小女孩退出忙碌状态
+      window.electronAPI.notifyBusy(false, 'chat');
+      
+      sendBtn.disabled = false;
+      statusBar.querySelector('.stats').innerHTML = `
+        <span class="stat">📁 <span id="file-count">${fileCount.textContent}</span></span>
+        <span class="stat">👤 <span id="person-count">${personCount.textContent}</span></span>
+        <span class="stat">📝 <span id="note-count">${noteCount.textContent}</span></span>
+      `;
+      userInput.focus();
+    }
+    
+    // 清空聊天记录
+    async function clearChat() {
+      try {
+        const result = await window.electronAPI.clearChat();
+        if (result.success) {
+          // 清空消息区域
+          messages.innerHTML = '';
+          // 重置 oldestMessageId，防止重新加载历史
+          oldestMessageId = null;
+          addMessage('system', '✅ 聊天记录已清空');
+        } else {
+          addMessage('system', '❌ 清空失败: ' + (result.error || '未知错误'));
+        }
+      } catch (err) {
+        addMessage('system', '❌ 清空失败: ' + err.message);
+      }
+      userInput.focus();
+    }
+    
+    // ========== 消息显示 ==========
+    function addMessage(role, text, images = []) {
+      const div = document.createElement('div');
+      div.className = `message ${role}`;
+      
+      // 解析 ::person_photo:: 标记并渲染图片+人脸框
+      if (text && text.includes('::person_photo::')) {
+        const { cleanText, photos } = parsePersonPhotoMarkers(text);
+        
+        // 文本内容（不含标记）
+        if (cleanText) {
+          const textDiv = document.createElement('div');
+          textDiv.className = 'message-text';
+          textDiv.textContent = cleanText;
+          div.appendChild(textDiv);
+        }
+        
+        // 渲染人物照片+人脸框（异步）
+        photos.forEach(photo => {
+          // 先创建容器，异步填充内容
+          const container = document.createElement('div');
+          container.className = 'image-container loading';
+          div.appendChild(container);
+          
+          // 异步加载图片
+          createPersonPhotoElement(photo).then(el => {
+            container.replaceWith(el);
+          }).catch(err => {
+            console.error('[Chat] 渲染人物照片失败:', err);
+            container.textContent = '[图片加载失败]';
+            container.classList.remove('loading');
+          });
+        });
+      } else {
+        // 普通文本消息
+        if (text) {
+          const textDiv = document.createElement('div');
+          textDiv.className = 'message-text';
+          textDiv.textContent = text;
+          div.appendChild(textDiv);
+        }
+      }
+      
+      // 额外图片（拖入等）
+      if (images && images.length > 0) {
+        const imagesDiv = document.createElement('div');
+        imagesDiv.className = 'message-images';
+        images.forEach(img => {
+          const imgEl = document.createElement('img');
+          imgEl.src = img.src;
+          imgEl.className = 'chat-image';
+          if (img.alt) imgEl.alt = img.alt;
+          if (img.photoId) imgEl.dataset.photoId = img.photoId;
+          if (img.filePath) imgEl.dataset.filePath = img.filePath;
+          
+          // 双击用系统查看器打开
+          if (img.filePath) {
+            imgEl.addEventListener('dblclick', () => {
+              window.electronAPI.openWithSystemViewer(img.filePath);
+            });
+          }
+          
+          imagesDiv.appendChild(imgEl);
+        });
+        div.appendChild(imagesDiv);
+      }
+      
+      messages.appendChild(div);
+      messages.scrollTop = messages.scrollHeight;
+      return div;
+    }
+    
+    // 解析 ::person_photo:: 标记
+    function parsePersonPhotoMarkers(text) {
+      const regex = /::person_photo::(\{.*?\})::/g;
+      const photos = [];
+      let match;
+      let cleanText = text;
+      
+      while ((match = regex.exec(text)) !== null) {
+        try {
+          const data = JSON.parse(match[1]);
+          photos.push(data);
+          cleanText = cleanText.replace(match[0], '');
+        } catch (e) {
+          console.error('[Chat] 解析 person_photo 标记失败:', e);
+        }
+      }
+      
+      return { cleanText: cleanText.trim(), photos };
+    }
+    
+    // 创建人物照片元素（图片+人脸框）
+    async function createPersonPhotoElement(data) {
+      const container = document.createElement('div');
+      container.className = 'image-container';
+      container.dataset.personId = data.person_id;
+      
+      const img = document.createElement('img');
+      img.className = 'chat-image';
+      img.style.cursor = 'pointer';
+      
+      // 获取图片 URL
+      const imageUrl = await window.electronAPI.getImageUrl(data.path);
+      img.src = imageUrl;
+      img.dataset.filePath = data.path;
+      
+      // 图片加载完成后渲染人脸框
+      img.onload = () => {
+        if (data.bbox && data.bbox.length === 4) {
+          renderFaceBox(container, img, data.bbox, data.name);
+        }
+      };
+      
+      // 双击用系统查看器打开
+      img.addEventListener('dblclick', () => {
+        window.electronAPI.openWithSystemViewer(data.path);
+      });
+      
+      container.appendChild(img);
+      return container;
+    }
+    
+    // 渲染人脸框
+    function renderFaceBox(container, img, bbox, name) {
+      if (!bbox || bbox.length !== 4) {
+        console.warn('[renderFaceBox] Invalid bbox:', bbox);
+        return;
+      }
+      
+      const [x1, y1, x2, y2] = bbox;
+      const scaleX = img.clientWidth / img.naturalWidth;
+      const scaleY = img.clientHeight / img.naturalHeight;
+      
+      // 计算后的位置和尺寸
+      let left = x1 * scaleX;
+      let top = y1 * scaleY;
+      let width = (x2 - x1) * scaleX;
+      let height = (y2 - y1) * scaleY;
+      
+      // 设置最小框尺寸（人脸在原图中可能很小，缩放后更小）
+      const MIN_SIZE = 30; // 最小 30x30 像素
+      if (width < MIN_SIZE) {
+        left -= (MIN_SIZE - width) / 2;
+        width = MIN_SIZE;
+      }
+      if (height < MIN_SIZE) {
+        top -= (MIN_SIZE - height) / 2;
+        height = MIN_SIZE;
+      }
+      
+      const box = document.createElement('div');
+      box.className = 'face-box';
+      box.style.left = left + 'px';
+      box.style.top = top + 'px';
+      box.style.width = width + 'px';
+      box.style.height = height + 'px';
+      
+      container.appendChild(box);
+    }
+    
+    // 带消息ID的消息（用于历史加载）
+    function addMessageWithId(role, text, id, images = []) {
+      const div = addMessage(role, text, images);
+      div.dataset.id = id;
+      return div;
+    }
+    
+    // ========== 进度条 ==========
+    function showProgress(text, percent) {
+      progressText.textContent = text;
+      progressFill.style.width = percent + '%';
+      progressPercent.textContent = percent + '%';
+      progressBar.classList.add('show');
+    }
+    
+    function hideProgress() {
+      progressBar.classList.remove('show');
+    }
+    
+    // 示例：模拟进度条（实际应从后端获取）
+    // showProgress('处理中...', 45);
+    // setTimeout(() => hideProgress(), 2000);
+    
+    // ========== 加载统计数据 ==========
+    async function loadStats() {
+      try {
+        const result = await window.electronAPI.getStats();
+        if (result) {
+          fileCount.textContent = result.files || 0;
+          personCount.textContent = result.persons || 0;
+          noteCount.textContent = result.notes || 0;
+        }
+      } catch (e) {
+        console.error('加载统计失败:', e);
+      }
+    }
+    
+    // ========== 接收小女孩状态 ==========
+    window.electronAPI.onSpiritState((state) => {
+      if (state === 'busy') {
+        statusBar.querySelector('.stats').textContent = '⏳ 处理中...';
+      } else if (state === 'idle') {
+        statusBar.querySelector('.stats').innerHTML = `
+          <span class="stat">📁 <span id="file-count">${fileCount.textContent}</span></span>
+          <span class="stat">👤 <span id="person-count">${personCount.textContent}</span></span>
+          <span class="stat">📝 <span id="note-count">${noteCount.textContent}</span></span>
+        `;
+      }
+    });
+    
+    // ========== 初始化 ==========
+    let oldestMessageId = null;  // 用于加载更早的消息
+    let isLoadingMore = false;   // 防止重复加载
+    
+    // 先加载历史消息
+    loadHistory().then(() => {
+      // 如果没有历史消息，显示欢迎语
+      if (messages.children.length === 0) {
+        addMessage('system', '妞妞已就绪！有什么可以帮你的？');
+      }
+      // 滚动到底部
+      messages.scrollTop = messages.scrollHeight;
+      loadStats();
+      userInput.focus();
+    });
+    
+    // ========== 拖放文件/图片处理 ==========
+    // 阻止默认拖放行为
+    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+      messages.addEventListener(eventName, (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+      });
+    });
+    
+    // 拖入时添加视觉反馈
+    messages.addEventListener('dragenter', () => {
+      messages.classList.add('drag-over');
+    });
+    
+    messages.addEventListener('dragleave', (e) => {
+      // 只有离开 messages 区域时才移除高亮
+      if (e.target === messages || !messages.contains(e.relatedTarget)) {
+        messages.classList.remove('drag-over');
+      }
+    });
+    
+    messages.addEventListener('drop', async (e) => {
+      messages.classList.remove('drag-over');
+      
+      const files = e.dataTransfer.files;
+      if (files.length === 0) return;
+      
+      // 分离图片和文件
+      const imageFiles = [];
+      const otherFiles = [];
+      Array.from(files).forEach(f => {
+        if (f.type.startsWith('image/')) {
+          imageFiles.push(f);
+        } else {
+          otherFiles.push(f);
+        }
+      });
+      
+      // 处理图片
+      for (const file of imageFiles) {
+        await handleDroppedImage(file);
+      }
+      
+      // 处理其他文件
+      for (const file of otherFiles) {
+        await handleDroppedFile(file);
+      }
+    });
+    
+    // 处理拖入的图片
+    async function handleDroppedImage(file) {
+      const filePath = file.path;
+      if (!filePath) {
+        console.error('[Chat] 无法获取文件路径');
+        return;
+      }
+      
+      console.log('[Chat] 拖入图片:', filePath);
+      
+      // 显示预览（用户消息）
+      const previewDiv = document.createElement('div');
+      previewDiv.className = 'image-preview uploading';
+      const imgEl = document.createElement('img');
+      imgEl.src = await window.electronAPI.getImageUrl(filePath);
+      imgEl.dataset.filePath = filePath;  // 保存文件路径用于双击打开
+      previewDiv.appendChild(imgEl);
+      
+      // 双击用系统查看器打开
+      imgEl.addEventListener('dblclick', () => {
+        window.electronAPI.openWithSystemViewer(filePath);
+      });
+      
+      const overlayDiv = document.createElement('div');
+      overlayDiv.className = 'upload-overlay';
+      overlayDiv.textContent = '处理中...';
+      previewDiv.appendChild(overlayDiv);
+      
+      const msgDiv = addMessage('user', null);
+      msgDiv.appendChild(previewDiv);
+      
+      try {
+        // 发送给 Agent 处理
+        const result = await window.electronAPI.processImage(filePath);
+        
+        if (result && result.reply) {
+          // 显示 Agent 响应
+          addMessage('assistant', result.reply);
+        }
+        
+        // 移除上传状态
+        previewDiv.classList.remove('uploading');
+        overlayDiv.remove();
+        
+      } catch (e) {
+        console.error('[Chat] 图片处理失败:', e);
+        previewDiv.classList.add('error');
+        overlayDiv.textContent = '处理失败';
+      }
+    }
+    
+    // 处理拖入的文件（非图片）
+    async function handleDroppedFile(file) {
+      const filePath = file.path;
+      if (!filePath) {
+        console.error('[Chat] 无法获取文件路径');
+        return;
+      }
+      
+      console.log('[Chat] 拖入文件:', filePath);
+      
+      // 显示文件名
+      const msgDiv = addMessage('user', `📄 ${file.name}`);
+      
+      try {
+        // 发送给 Agent 处理
+        const result = await window.electronAPI.processImage(filePath);
+        
+        if (result && result.reply) {
+          addMessage('assistant', result.reply);
+        }
+      } catch (e) {
+        console.error('[Chat] 文件处理失败:', e);
+        addMessage('assistant', '文件处理失败，请重试');
+      }
+    }
+    
+    // 监听滚动，到顶部时加载更多
+    messages.addEventListener('scroll', async () => {
+      // 检查是否滚动到顶部
+      if (messages.scrollTop < 50 && !isLoadingMore && oldestMessageId) {
+        isLoadingMore = true;
+        const oldScrollHeight = messages.scrollHeight;
+        
+        try {
+          const result = await window.electronAPI.getHistory(20, oldestMessageId);
+          const history = result.messages || result;  // 兼容新旧格式
+          if (history && history.length > 0) {
+            // 在顶部插入消息（history 已经是正序：最旧在前）
+            history.forEach(msg => {
+              prependMessage(msg.role, msg.content, msg.id);
+            });
+            // 更新最旧消息ID为刚加载的第一条（最旧的）
+            oldestMessageId = history[0].id;
+            // 保持滚动位置
+            const newScrollHeight = messages.scrollHeight;
+            messages.scrollTop = newScrollHeight - oldScrollHeight;
+            console.log('[Chat] 加载了更多', history.length, '条历史消息，最旧ID:', oldestMessageId);
+          } else {
+            console.log('[Chat] 没有更多历史消息');
+          }
+        } catch (e) {
+          console.error('[Chat] 加载更多失败:', e);
+        }
+        
+        isLoadingMore = false;
+      }
+    });
+    
+    // 窗口获得焦点时，显示待通知消息 + 通知 spirit 重置空闲计时器
+    window.addEventListener('focus', async () => {
+      // 通知 spirit 用户正在活动
+      window.electronAPI.notifyActivity();
+      
+      try {
+        const pending = await window.electronAPI.getPendingMessages();
+        if (pending && pending.length > 0) {
+          console.log('[Chat] 显示', pending.length, '条待通知消息');
+          pending.forEach(msg => addMessage('assistant', msg));
+          messages.scrollTop = messages.scrollHeight;
+        }
+      } catch (e) {
+        console.error('[Chat] 获取待通知消息失败:', e);
+      }
+    });
+    
+    // 加载历史消息
+    async function loadHistory() {
+      try {
+        const result = await window.electronAPI.getHistory(20);
+        const history = result.messages || result;  // 兼容新旧格式
+        const totalInDb = result.totalInDb || history.length;
+        console.log('[Chat] API 返回:', history.length, '条消息, 数据库总数:', totalInDb);
+        if (history && history.length > 0) {
+          history.forEach(msg => {
+            addMessageWithId(msg.role, msg.content, msg.id);
+          });
+          // 记录最旧的消息ID（history[0] 是最旧的）
+          oldestMessageId = history[0].id;
+          console.log('[Chat] 加载了', history.length, '条历史消息，最旧ID:', oldestMessageId);
+        }
+      } catch (e) {
+        console.error('[Chat] 加载历史失败:', e);
+        addMessage('system', '妞妞已就绪！有什么可以帮你的？');
+      }
+    }
+    
+    // 在顶部插入消息（用于加载更多历史）
+    function prependMessage(role, content, id) {
+      const div = document.createElement('div');
+      div.className = `message ${role}`;
+      div.dataset.id = id;
+      div.textContent = content;
+      messages.insertBefore(div, messages.firstChild);
+    }
+  </script>
+</body>
+</html>

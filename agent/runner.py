@@ -1,0 +1,437 @@
+"""
+Niu Agent Runner
+
+简化的 Agent 入口，直接使用 GenericAgent 组件。
+集成动态注入：Skills 和 MCP 工具描述按语义注入提示词。
+"""
+
+import json
+import os
+import re
+import sys
+import threading
+from datetime import datetime
+from typing import Any, Dict, Generator, Optional
+
+from .generic.agent_loop import agent_runner_loop
+from .generic.llmcore import (
+    LLMSession,
+    ClaudeSession,
+    NativeClaudeSession,
+    NativeOAISession,
+    ToolClient,
+    NativeToolClient,
+)
+from .handler import NiuHandler
+from .vector_search import get_vector_search
+from .injector.sync import get_skill_sync
+
+
+def get_system_prompt() -> str:
+    """获取系统提示词"""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+
+    # 1. 读取核心提示词
+    sys_prompt_path = os.path.join(script_dir, "generic", "assets", "sys_prompt.txt")
+    if os.path.exists(sys_prompt_path):
+        with open(sys_prompt_path, "r", encoding="utf-8") as f:
+            sys_prompt = f.read()
+    else:
+        sys_prompt = "# Role: Niu Agent\nYou are a helpful assistant with file and code access."
+
+    # 2. 追加 niu.md 配置
+    niu_md_path = os.path.join(script_dir, "..", "config", "agents", "niu.md")
+    if os.path.exists(niu_md_path):
+        with open(niu_md_path, "r", encoding="utf-8") as f:
+            content = f.read()
+            if "---" in content:
+                parts = content.split("---", 2)
+                if len(parts) >= 3:
+                    sys_prompt += "\n\n" + parts[2].strip()
+
+    # 3. 注入 memory.json 中的身份设定和用户偏好
+    memory_section = _load_memory_for_prompt()
+    if memory_section:
+        sys_prompt += "\n\n" + memory_section
+
+    # 4. 添加当前时间
+    now = datetime.now()
+    sys_prompt += f"\n\nCurrent Time: {now.strftime('%Y-%m-%d %H:%M:%S')}"
+
+    return sys_prompt
+
+
+def _load_memory_for_prompt() -> str:
+    """从 memory.json 加载身份设定和用户偏好，格式化为提示词"""
+    import json
+    from pathlib import Path
+
+    memory_path = Path.home() / ".niu" / "memory.json"
+    if not memory_path.exists():
+        return ""
+
+    try:
+        memory = json.loads(memory_path.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+
+    parts = []
+
+    # 身份设定
+    identity = memory.get("identity", {})
+    if identity:
+        name = identity.get("name", "妞妞")
+        personality = identity.get("personality", [])
+        greeting_style = identity.get("greetingStyle", "")
+
+        identity_str = f"## 身份设定\n\n你的名字是 **{name}**。"
+        if personality:
+            identity_str += f"\n性格特质：{'、'.join(personality)}。"
+        if greeting_style:
+            identity_str += f"\n问候风格：{greeting_style}。"
+        parts.append(identity_str)
+
+    # 工作环境
+    workspace = memory.get("workspace", {})
+    if workspace.get("path"):
+        ws_str = f"## 工作环境\n\n知识库目录：{workspace['path']}"
+        parts.append(ws_str)
+
+    # 用户信息
+    user = memory.get("user", {})
+    if user.get("name") or user.get("preferences"):
+        user_str = "## 用户信息\n\n"
+        if user.get("name"):
+            user_str += f"用户称呼：{user['name']}\n"
+        if user.get("preferences"):
+            user_str += f"用户偏好：{'、'.join(user['preferences'])}"
+        parts.append(user_str)
+
+    return "\n\n".join(parts)
+
+
+def get_tools_schema() -> list:
+    """获取工具 Schema（排除不支持的工具 + 注册子 Agent 工具）"""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    schema_path = os.path.join(script_dir, "generic", "assets", "tools_schema.json")
+
+    excluded_tools = {"ask_user"}  # 前端不支持的工具
+
+    tools = []
+    if os.path.exists(schema_path):
+        with open(schema_path, "r", encoding="utf-8") as f:
+            all_tools = json.load(f)
+        tools = [t for t in all_tools if t.get("function", {}).get("name") not in excluded_tools]
+
+    # 注册子 Agent 工具
+    sub_agent_descriptions = {
+        "file-processor": "【必须调用】处理文件和照片：入库、人脸识别、文档解析。用户拖入文件/照片时必须调用此工具，不要自己处理文件。",
+        "event-manager": "处理日程、提醒、定时任务。",
+        "context-manager": "记忆压缩、上下文整理。",
+    }
+    for agent_name, desc in sub_agent_descriptions.items():
+        tools.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": f"chat-with-{agent_name}",
+                    "description": desc,
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "task": {
+                                "type": "string",
+                                "description": "任务描述，如：处理照片：E:/path/photo.jpg",
+                            },
+                        },
+                        "required": ["task"],
+                    },
+                },
+            }
+        )
+
+    return tools
+
+
+def create_client(config: Dict[str, Any]):
+    """创建 LLM 客户端"""
+    client_type = config.get("type", "openai")
+
+    # 规范化配置字段名
+    cfg = {
+        "apikey": config.get("apikey") or config.get("api_key", ""),
+        "apibase": config.get("apibase") or config.get("api_base", ""),
+        "model": config.get("model", ""),
+    }
+
+    if client_type in ("native_claude", "native"):
+        session = NativeClaudeSession(cfg)
+        return NativeToolClient(session)
+    elif client_type in ("native_openai", "native_oai"):
+        session = NativeOAISession(cfg)
+        return NativeToolClient(session)
+    elif client_type in ("claude", "anthropic"):
+        session = ClaudeSession(cfg)
+        return ToolClient(session)
+    else:  # openai or default
+        session = LLMSession(cfg)
+        return ToolClient(session)
+
+
+def format_resources_for_prompt(results: list, title: str = "相关资源") -> str:
+    """
+    格式化资源为提示词注入格式
+
+    格式：
+    ### [相关资源]
+    1. **name** (分数: 87)
+       完整内容...
+    """
+    if not results:
+        return ""
+
+    lines = [f"\n\n### [{title}]"]
+    for i, r in enumerate(results, 1):
+        score_pct = int(r.score * 100)
+        name = r.metadata.get("name", "")
+        category = r.metadata.get("category", "")
+
+        # 对于 MCP 工具，显示完整名称 server/name
+        if category == "mcp_tool":
+            server = r.metadata.get("server", "")
+            display_name = f"{server}/{name}" if server else name
+        else:
+            display_name = name
+
+        if display_name:
+            lines.append(f"{i}. **{display_name}** (分数: {score_pct})")
+
+            # 对于 MCP 工具，组装完整描述（description + input_schema）
+            if category == "mcp_tool":
+                description = r.metadata.get("description", r.content)
+                input_schema = r.metadata.get("input_schema", {})
+                if input_schema:
+                    # 格式化参数说明
+                    props = input_schema.get("properties", {})
+                    if props:
+                        params = []
+                        for param_name, param_info in props.items():
+                            param_desc = param_info.get("description", "")
+                            param_type = param_info.get("type", "")
+                            params.append(f"         - {param_name} ({param_type}): {param_desc}")
+                        lines.append(f"       {description}")
+                        lines.append(f"       参数:")
+                        lines.extend(params)
+                    else:
+                        lines.append(f"       {description}")
+                else:
+                    lines.append(f"       {r.content}")
+            else:
+                # Skills 等其他类型，注入完整内容
+                lines.append(f"   {r.content}")
+        else:
+            lines.append(f"{i}. {r.content} (分数: {score_pct})")
+
+    return "\n".join(lines)
+
+
+class NiuRunner:
+    """
+    Niu Agent Runner
+
+    简化的 Agent 运行器，直接使用 GenericAgent 组件。
+    集成动态注入：Skills 和 MCP 工具描述按语义注入提示词。
+    """
+
+    def __init__(self, llm_config: Dict[str, Any], mcp_client=None):
+        self.llm_config = llm_config
+        self.mcp_client = mcp_client
+        self.client = create_client(llm_config)
+        self.handler = NiuHandler(mcp_client=mcp_client)
+        self.base_system_prompt = get_system_prompt()
+        self.base_tools_schema = get_tools_schema()
+        self.vector_search = get_vector_search()
+
+        # 启动 Skills 后台同步
+        get_skill_sync(auto_start=True)
+
+        # MCP 工具列表（启动时加载，缓存）
+        self._mcp_tools_schema: list = []
+
+    def set_mcp_tools_schema(self, tools: list):
+        """设置 MCP 工具 Schema（从外部调用）"""
+        schema = []
+        for tool in tools:
+            schema.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": tool["name"],
+                        "description": tool.get("description", ""),
+                        "parameters": tool.get(
+                            "input_schema", {"type": "object", "properties": {}}
+                        ),
+                    },
+                }
+            )
+        self._mcp_tools_schema = schema
+        print(f"[NiuRunner] Loaded {len(schema)} MCP tools", file=sys.stderr, flush=True)
+
+    def _inject_dynamic_resources(self, user_input: str) -> str:
+        """
+        动态注入相关资源（Skills、MCP 工具描述）
+
+        从向量库搜索 metadata.type in ["skill", "mcp_tool"]
+        返回格式化的提示词扩展
+
+        阈值策略：
+        - 初始阈值 0.25（过滤掉明显不相关的）
+        - 如果结果太少，降级到文本搜索
+        - 结果数量限制保证不会注入过多内容
+        """
+        # 搜索 Skills（符合L0/L1/L2规范，使用level字段）
+        skills = self.vector_search.search(
+            query=user_input, limit=3, min_score=0.25, filter={"level": "l1", "category": "skill"}
+        )
+        print(f"[Debug] Dynamic injection - Skills: {len(skills)} results", file=sys.stderr, flush=True)
+
+        # 搜索 MCP 工具描述（符合L0/L1/L2规范，使用level字段）
+        mcp_tools = self.vector_search.search(
+            query=user_input, limit=5, min_score=0.25, filter={"level": "l1", "category": "mcp_tool"}
+        )
+        print(f"[Debug] Dynamic injection - MCP tools: {len(mcp_tools)} results", file=sys.stderr, flush=True)
+
+        # 搜索知识（符合L0/L1/L2规范，使用level字段）
+        knowledge = self.vector_search.search(
+            query=user_input,
+            limit=8,
+            min_score=0.35,
+            filter={"level": "l1", "category": "document"},  # L1 文档摘要
+        )
+        print(f"[Debug] Dynamic injection - Knowledge: {len(knowledge)} results", file=sys.stderr, flush=True)
+
+        # 格式化
+        parts = []
+        if skills:
+            parts.append(format_resources_for_prompt(skills, "相关技能"))
+        if mcp_tools:
+            parts.append(format_resources_for_prompt(mcp_tools, "可用工具"))
+        if knowledge:
+            parts.append(format_resources_for_prompt(knowledge, "参考知识"))
+
+        injection = "\n".join(parts)
+        if injection:
+            print(f"[Debug] Dynamic injection - Total length: {len(injection)} chars", file=sys.stderr, flush=True)
+
+        return injection
+
+    def chat(
+        self, session_id: str, user_input: str, stream: bool = True, max_turns: int = 40, history: list = None
+    ) -> Generator[str, None, None]:
+        """
+        执行对话
+
+        动态注入：
+        1. 根据用户输入搜索 Skills、MCP 工具描述、知识
+        2. 组装 system_prompt = base_prompt + 动态资源
+        3. 组装 tools_schema = base_tools + mcp_tools
+
+        Args:
+            session_id: 会话ID
+            user_input: 用户输入
+            stream: 是否流式输出
+            max_turns: 最大轮次
+            history: 可选的历史消息列表 [{"role": "user/assistant", "content": str}, ...]
+        """
+        # 动态注入资源
+        injection = self._inject_dynamic_resources(user_input)
+
+        # 组装 system_prompt
+        system_prompt = self.base_system_prompt
+        if injection:
+            system_prompt += injection
+
+        # 组装 tools_schema = 内置工具 + MCP 工具
+        tools_schema = self.base_tools_schema.copy()
+        if self._mcp_tools_schema:
+            tools_schema.extend(self._mcp_tools_schema)
+
+        # 调试：打印工具数量
+        print(
+            f"[Debug] tools_schema: {len(self.base_tools_schema)} base + {len(self._mcp_tools_schema)} mcp = {len(tools_schema)} total"
+        )
+
+        gen = agent_runner_loop(
+            client=self.client,
+            system_prompt=system_prompt,
+            user_input=user_input,
+            handler=self.handler,
+            tools_schema=tools_schema,
+            max_turns=max_turns,
+            verbose=False,
+            initial_user_content=user_input,
+            history=history,  # Pass history to agent_loop
+        )
+
+        # 累加输出
+        full_resp = ""
+        for chunk in gen:
+            full_resp += chunk
+
+        # 清理 CLI 调试输出
+        full_resp = re.sub(r"\*\*LLM Running \(Turn \d+\) \.\.\.\*\*\n*", "", full_resp)
+        full_resp = re.sub(r"🛠️ \*\*正在调用工具:[\s\S]*?````\n", "", full_resp)
+        full_resp = re.sub(r"<summary>[\s\S]*?</summary>\n*", "", full_resp, flags=re.IGNORECASE)
+
+        # 清理 LLM 输出的结构化标签（如 <text>, </text>）
+        full_resp = re.sub(r"</?text>\n*", "", full_resp)
+        full_resp = re.sub(r"</?response>\n*", "", full_resp)
+        full_resp = re.sub(r"</?content>\n*", "", full_resp)
+
+        # 清理空代码块（可能来自 LLM 响应）
+        # 先处理多个连续反引号的情况
+        full_resp = re.sub(r"`{6,}\n*", "", full_resp)  # 6个及以上反引号
+        full_resp = re.sub(r"`{5}\n*", "", full_resp)  # 5个反引号
+        full_resp = re.sub(r"`{4}\n*", "", full_resp)  # 4个反引号
+        full_resp = re.sub(r"```\s*```\n*", "", full_resp)  # 连续的空代码块
+
+        # 清理开头和结尾的单独反引号（无内容的代码块标记）
+        # 开头的 ``` 后面没有内容或直接换行
+        full_resp = re.sub(r"^```\s*\n", "", full_resp)
+        full_resp = re.sub(r"^```\s*$", "", full_resp, flags=re.MULTILINE)
+        # 结尾的 ```
+        full_resp = re.sub(r"\n```\s*$", "", full_resp)
+        full_resp = re.sub(r"```\s*$", "", full_resp)
+
+        # 清理中间的孤立反引号行（整行只有反引号）
+        full_resp = re.sub(r"\n```\s*\n", "\n", full_resp)
+        full_resp = re.sub(r"\n```\s*", "\n", full_resp)
+
+        # 清理连续空行（超过2个空行变成2个）
+        full_resp = re.sub(r"\n{3,}", "\n\n", full_resp)
+
+        yield full_resp.strip()
+
+
+# 全局实例
+_runner: Optional[NiuRunner] = None
+_runner_lock = threading.Lock()
+
+
+def get_runner(llm_config: Dict[str, Any] = None, mcp_client=None) -> NiuRunner:
+    """获取全局 Runner 实例（线程安全）"""
+    global _runner
+    if _runner is None and llm_config:
+        with _runner_lock:
+            # 双重检查
+            if _runner is None:
+                _runner = NiuRunner(llm_config, mcp_client)
+    return _runner
+
+
+def chat(session_id: str, user_input: str, **kwargs) -> Generator[str, None, None]:
+    """便捷函数：执行对话"""
+    runner = get_runner()
+    if runner is None:
+        raise RuntimeError("Runner not initialized. Call get_runner() with config first.")
+    return runner.chat(session_id, user_input, **kwargs)

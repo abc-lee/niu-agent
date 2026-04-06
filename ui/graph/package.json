@@ -1,0 +1,25 @@
+{
+  "name": "niu-knowledge-graph",
+  "version": "1.0.0",
+  "description": "Knowledge Graph Visualization for Niu",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder"
+  },
+  "keywords": [
+    "knowledge-graph",
+    "visualization",
+    "antv-g6",
+    "electron"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@antv/g6": "^4.8.24",
+    "electron": "^28.0.0"
+  },
+  "devDependencies": {
+    "electron-builder": "^24.9.1"
+  }
+}
