@@ -96,19 +96,12 @@ def _sanitize_leading_user_msg(msg):
 
 
 def trim_messages_history(history, context_win):
+    """Compress history tags without deleting messages."""
     compress_history_tags(history)
     cost = sum(len(json.dumps(m, ensure_ascii=False)) for m in history)
     print(f"[Debug] Current context: {cost} chars, {len(history)} messages.")
-    if cost > context_win * 3:
-        target = context_win * 3 * 0.6
-        while len(history) > 5 and cost > target:
-            history.pop(0)
-            while history and history[0].get("role") != "user":
-                history.pop(0)
-            if history and history[0].get("role") == "user":
-                history[0] = _sanitize_leading_user_msg(history[0])
-            cost = sum(len(json.dumps(m, ensure_ascii=False)) for m in history)
-        print(f"[Debug] Trimmed context, current: {cost} chars, {len(history)} messages.")
+    # No longer delete early messages - keep all history
+    # Let the database be the single source of truth
 
 
 def auto_make_url(base, path):
