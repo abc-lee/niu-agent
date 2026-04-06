@@ -1,0 +1,14 @@
+{
+  "name": "niu-settings",
+  "version": "0.1.0",
+  "description": "Niu Settings Window",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.0.0"
+  }
+}

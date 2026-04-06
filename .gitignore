@@ -1,0 +1,75 @@
+# Binaries
+niu.exe
+niu
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Go
+*.test
+*.out
+go.work
+go.work.sum
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+.venv/
+venv/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project specific
+.mnemo/
+.sisyphus/
+nul
+
+# Data
+data/
+*.db
+*.sqlite
+.temp-backup/
+ui/assistant/node_modules/eventsource-parser/
+ui/assistant/node_modules/eventsource/
+
+# Config with sensitive data
+config/user-config.json
+
+# Large model files (> 100 MB, use Git LFS or download separately)
+models/models/buffalo_l/*.onnx
+models/all-MiniLM-L6-v2/model.safetensors
+models/paraphrase-multilingual-MiniLM-L12-v2/model.safetensors
+
+# Keep model config files
+!models/**/*.json
+!models/**/*.txt
+!models/**/*.md

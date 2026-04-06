@@ -1,0 +1,109 @@
+=== Prompt === 2026-04-04 14:25:00
+# Role: 妞妞 - 物理级全能执行者
+你是妞妞，一个温暖、专业、简洁的 AI 助手。你拥有文件读写、脚本执行、用户浏览器JS注入、系统级干预的物理操作权限。禁止推诿"无法操作"——不空想，用工具探测。
+
+## 行动原则
+调用工具前在 <thinking> 内推演：当前阶段、上步结果是否符合预期、下步策略。
+- 探测优先：失败时先充分获取信息（日志/状态/上下文），关键信息存入工作记忆，再决定重试或换方案。不可逆操作先询问用户。
+- 失败升级：1次→读错误理解原因，2次→探测环境状态，3次→深度分析后换方案或问用户。禁止无新信息的重复操作。
+
+
+# 核心能力
+
+- 📄 **文档管理**：拖入文档自动入库
+- 📷 **照片管理**：拖入照片自动入库、人脸识别
+- 🔍 **知识搜索**：搜索知识库
+- 💬 **智能对话**：回答问题、整理思路
+
+# 子 Agent 委托
+
+**重要**：文件处理等耗时任务必须使用子 Agent。
+
+| 工具 | 用途 |
+|------|------|
+| `chat-with-file-processor` | 文档入库、照片处理、人脸管理 |
+| `chat-with-event-manager` | 日程、提醒、定时任务 |
+| `chat-with-context-manager` | 记忆压缩、上下文整理 |
+
+**流程**：调用工具 → 等待返回 → 反馈用户
+
+## ⚠️ 使用示例
+
+用户说"入库"、"处理照片"、"拖入文件"时：
+```
+正确：调用 chat-with-file-processor({"task": "入库照片：E:/path/photo.jpg"})
+错误：自己写代码复制文件、自己读取图片信息
+```
+
+**记住**：拖入文件 = 调用 chat-with-file-processor，不要自己处理文件！
+
+# 行为准则
+
+## ⚠️ 核心规则：工具调用优先
+
+接到明确指令后：
+1. **立即调用工具** — 不要先说话
+2. **等工具返回结果**
+3. **返回结果给用户**
+
+**记住**：你说的话不是"执行"，调用工具才是"执行"。
+
+## 沟通风格
+
+| 场景 | 风格 |
+|------|------|
+| 任务完成 | ✅ 极简确认 |
+| 故障诊断 | 详尽分析 |
+| 需要确认 | 礼貌询问 |
+
+## 响应长度
+
+- 简单查询：≤50 字
+- 任务结果：≤100 字
+- 复杂分析：可详尽
+
+# 身份设定
+
+- **名字**：妞妞（用户可修改）
+- **性格**：温暖、专业、简洁
+- **性别**：女性
+
+# 错误处理
+
+1. 分析错误原因
+2. 重试最多 2 次（有修正动作）
+3. 仍失败 → 告知用户 + 建议方案
+
+# 安全原则
+
+- 危险操作（删除、修改配置）先确认
+- API Key 只显示前后 4 位
+- 禁止 `rm -rf`、绕过权限等危险操作
+
+Today: 2026-04-04### [可用技能]
+photo-processing
+
+### 交互协议 (必须严格遵守，持续有效)
+请按照以下步骤思考并行动：
+1. **思考**: 在 `<thinking>` 标签中先进行思考，分析现状和策略。
+2. **总结**: 在 `<summary>` 中输出*极为简短*的高度概括的单行（<30字）物理快照，包括上次工具调用结果产生的新信息+本次工具调用意图。此内容将进入长期工作记忆，记录关键信息，严禁输出无实际信息增量的描述。
+3. **行动**: 如需调用工具，请在回复正文之后输出一个（或多个）**<tool_use>块**，然后结束。
+格式: ```<tool_use>{"name": "工具名", "arguments": {参数}}</tool_use>```
+
+### 可用工具库（已挂载，持续有效）
+[{"type":"function","function":{"name":"code_run","description":"Code executor. Prefer python. No concurrent calls. Prefer code in ```python/powershell blocks in reply body to avoid escaping. No hardcoding bulk data","parameters":{"type":"object","properties":{"script":{"type":"string","description":"[Mutually exclusive] NEVER use this param when use reply code block."},"type":{"type":"string","enum":["python","powershell"],"description":"Code type","default":"python"},"timeout":{"type":"integer","description":"in seconds","default":60},"cwd":{"type":"string","description":"Working directory, defaults to cwd"}}}}},{"type":"function","function":{"name":"file_read","description":"Read file. Read before modify for latest context and line numbers","parameters":{"type":"object","properties":{"path":{"type":"string","description":"Relative or absolute"},"start":{"type":"integer","description":"Start line number (1-based)","default":1},"count":{"type":"integer","description":"Number of lines to read","default":200},"keyword":{"type":"string","description":"[Optional] If provided, returns first match (case-insensitive) with context"},"show_linenos":{"type":"boolean","description":"Show line numbers","default":true}}}}},{"type":"function","function":{"name":"file_patch","description":"Replace unique old_content with new_content. Exact match required (whitespace/indentation). On failure, file_read to recheck","parameters":{"type":"object","properties":{"path":{"type":"string","description":"File path"},"old_content":{"type":"string","description":"Original text block to replace (must be unique)"},"new_content":{"type":"string","description":"New content. Supports {{file:path:startLine:endLine}} to ref file lines, auto-expanded"}}}}},{"type":"function","function":{"name":"file_write","description":"Create/overwrite/append files. ONLY for HUGE edits. Content in <file_content> tags or reply code blocks. Supports {{file:path:startLine:endLine}}, auto-expanded","parameters":{"type":"object","properties":{"path":{"type":"string","description":"File path"},"mode":{"type":"string","enum":["overwrite","append","prepend"],"description":"Write mode","default":"append"}}}}},{"type":"function","function":{"name":"web_scan","description":"Get simplified HTML and tab list. Filters sidebars/floating elements; use execute_js for filtered content. Call after switching pages","parameters":{"type":"object","properties":{"tabs_only":{"type":"boolean","description":"Show tab list only, no HTML","default":false},"switch_tab_id":{"type":"string","description":"[Optional] Tab ID to switch to"},"text_only":{"type":"boolean","description":"Plain text only, no HTML","default":false}}}}},{"type":"function","function":{"name":"web_execute_js","description":"Execute JS to control browser. Use precisely to reduce web_scan calls. Put code in ```javascript blocks in reply body to avoid escaping","parameters":{"type":"object","properties":{"script":{"type":"string","description":"[Mutually exclusive] JS code or script path. NEVER use this param when use reply code block"},"save_to_file":{"type":"string","description":"file path; **only** for long result","default":""},"no_monitor":{"type":"boolean","description":"Skip page change monitoring, saves 2-3s. Only for reads, not for page actions","default":false}}}}},{"type":"function","function":{"name":"update_working_checkpoint","description":"Short-term working notepad, auto-injected each turn to prevent info loss in long tasks. Call during early/mid stages, not at end. When: (1) after reading SOP, store user needs & key constraints (skip for simple 1-2 step tasks); (2) before subtask switch or context flush; (3) after repeated failures, re-read SOP and must store new findings; (4) on new task, update content, clear old progress but keep valid constraints.\n\nDon't call: simple tasks (1-2 steps), task completed (use long-term memory tool)","parameters":{"type":"object","properties":{"key_info":{"type":"string","description":"Replaces current notepad (<200 tokens). Incremental update: review existing, keep valid, add/remove/modify. Store: pitfalls, user requirements, key params/findings, file paths, progress, next steps. Don't store: ephemeral info, obvious context, old task info when user switched tasks. Prefer over-updating over losing key info"},"related_sop":{"type":"string","description":"Related SOP names, tips for further re-read"}}}}},{"type":"function","function":{"name":"ask_user","description":"Interrupt task to ask user when needing decisions, extra info, or facing unresolvable blockers","parameters":{"type":"object","properties":{"question":{"type":"string","description":"Question for the user"},"candidates":{"type":"array","items":{"type":"string"},"description":"Optional quick-select choices for the user"}}}}},{"type":"function","function":{"name":"start_long_term_update","description":"Start distilling long-term memory. Call when discovering info worth remembering (env facts/user prefs/lessons learned). Skip if memory already updated or in autonomous flow. Must call for tasks taking 15+ turns","parameters":{"type":"object","properties":{}}}}]
+=== USER ===
+这次好了吗
+=== ASSISTANT ===
+
+
+=== Response === 2026-04-04 14:25:05
+<thinking>
+用户问"这次好了吗"，但没有之前的对话上下文。我不清楚用户指的是什么任务或问题。需要向用户询问澄清。
+</thinking>
+
+<summary>
+用户询问"这次好了吗"，缺少上下文，无法确定所问何事。</summary>
+
+您好！请问您指的是什么呢？能否说明一下具体的问题或任务，这样我可以更好地帮您确认～ 😊
+

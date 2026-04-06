@@ -1,0 +1,21 @@
+[project]
+name = "niu-kg-server"
+version = "0.1.0"
+description = "Knowledge Graph MCP server for Niu - uses Kuzu database"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "mcp>=1.0.0",
+    "kuzu>=0.4.0",
+    "loguru>=0.7.0",
+]
+
+[project.scripts]
+niu-kg-server = "niu_kg_server:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/niu_kg_server"]

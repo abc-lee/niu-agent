@@ -1,0 +1,14 @@
+{
+  "llm": {
+    "presetId": "",
+    "apiKey": "",
+    "apiBase": "",
+    "model": "",
+    "type": "openai"
+  },
+  "storage": {
+    "documentRoot": "E:\\tmp\\bot",
+    "databasePath": "E:\\tmp\\bot\\knowledge.db"
+  },
+  "firstRun": false
+}

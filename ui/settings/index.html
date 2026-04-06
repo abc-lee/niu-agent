@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Niu 设置</title>
+  <link href="https://fonts.googleapis.com/css2?family=Ma+Shan+Zheng&family=Caveat:wght@400;600&display=swap" rel="stylesheet">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'Ma Shan Zheng', 'Caveat', cursive;
+      background: #faf8f0;
+      min-height: 100vh;
+      color: #333;
+      -webkit-app-region: drag;
+      /* 棉纸纹理 */
+      background-image: 
+        url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.08'/%3E%3C/svg%3E");
+    }
+    .container {
+      padding: 20px;
+      -webkit-app-region: no-drag;
+    }
+    .titlebar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 12px 20px;
+      background: #e7ca4a;
+      border-bottom: 2px dashed rgba(0,0,0,0.1);
+    }
+    .titlebar h1 { 
+      font-size: 20px; 
+      font-weight: normal;
+      color: #333;
+      text-shadow: 0.5px 0.5px 0.5px rgba(0,0,0,0.15);
+    }
+    .close-btn {
+      background: #f8a7c8;
+      border: none;
+      color: #333;
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      cursor: pointer;
+      font-size: 16px;
+      font-family: 'Ma Shan Zheng', cursive;
+      box-shadow: 2px 2px 4px rgba(0,0,0,0.1);
+      transition: transform 0.2s;
+    }
+    .close-btn:hover { 
+      transform: scale(1.1);
+      box-shadow: 2px 2px 6px rgba(0,0,0,0.15);
+    }
+    
+    .logo { 
+      text-align: center; 
+      margin: 25px 0 20px; 
+    }
+    .logo-icon { font-size: 56px; }
+    .logo-text { 
+      font-size: 28px; 
+      color: #333;
+      text-shadow: 0.5px 0.5px 0.5px rgba(0,0,0,0.15);
+      margin-top: 10px;
+    }
+    .logo-sub { 
+      font-size: 16px; 
+      color: #666;
+      margin-top: 5px;
+    }
+    
+    /* 便签卡片 */
+    .note-card {
+      background: #e7ca4a;
+      border-radius: 4px;
+      padding: 16px;
+      margin-bottom: 16px;
+      box-shadow: 3px 3px 8px rgba(0,0,0,0.1);
+      position: relative;
+    }
+    .note-card::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 100 100' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.06'/%3E%3C/svg%3E");
+      border-radius: 4px;
+      pointer-events: none;
+    }
+    .note-card.pink { background: #f8a7c8; }
+    .note-card.blue { background: #78b2be; }
+    .note-card.mint { background: #a3f0c2; }
+    
+    label { 
+      display: block; 
+      margin-bottom: 8px; 
+      font-size: 16px; 
+      color: #333;
+    }
+    
+    select, input {
+      width: 100%;
+      padding: 10px 14px;
+      border: 2px dashed rgba(0,0,0,0.15);
+      border-radius: 4px;
+      font-size: 16px;
+      font-family: 'Ma Shan Zheng', 'Caveat', cursive;
+      background: rgba(255,255,255,0.7);
+      color: #333;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 50 50' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.7' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.05'/%3E%3C/svg%3E");
+    }
+    select:focus, input:focus { 
+      outline: none; 
+      border-color: #78b2be;
+      background: rgba(255,255,255,0.9);
+    }
+    input::placeholder { color: #999; }
+    
+    .advanced-toggle {
+      background: none;
+      border: 2px dashed rgba(0,0,0,0.15);
+      color: #666;
+      cursor: pointer;
+      font-size: 14px;
+      font-family: 'Ma Shan Zheng', cursive;
+      padding: 8px 16px;
+      border-radius: 4px;
+      width: 100%;
+      text-align: left;
+      margin-top: 10px;
+    }
+    .advanced-toggle:hover { 
+      background: rgba(0,0,0,0.03);
+      border-color: #78b2be;
+    }
+    .advanced-fields { 
+      display: none; 
+      margin-top: 15px;
+      padding: 15px;
+      background: rgba(0,0,0,0.02);
+      border-radius: 4px;
+      border: 2px dashed rgba(0,0,0,0.08);
+    }
+    .advanced-fields.show { display: block; }
+    
+    .btn {
+      width: 100%;
+      padding: 14px;
+      border: none;
+      border-radius: 4px;
+      font-size: 18px;
+      font-family: 'Ma Shan Zheng', cursive;
+      cursor: pointer;
+      margin-top: 16px;
+      transition: all 0.2s;
+      box-shadow: 3px 3px 8px rgba(0,0,0,0.1);
+    }
+    .btn-primary {
+      background: #a3f0c2;
+      color: #333;
+    }
+    .btn-primary:hover { 
+      transform: translateY(-2px);
+      box-shadow: 4px 4px 12px rgba(0,0,0,0.15);
+    }
+    .btn-primary:disabled { 
+      opacity: 0.5; 
+      cursor: not-allowed; 
+      transform: none;
+    }
+    
+    .status { 
+      text-align: center; 
+      margin-top: 12px; 
+      font-size: 16px;
+      padding: 8px;
+      border-radius: 4px;
+    }
+    .status.success { 
+      background: #9bc295;
+      color: #333;
+    }
+    .status.error { 
+      background: #f8a7c8;
+      color: #333;
+    }
+    .status.loading { 
+      background: #78b2be;
+      color: white;
+    }
+    
+    .footer { 
+      text-align: center; 
+      margin-top: 20px; 
+      font-size: 14px; 
+      color: #999;
+    }
+    
+    /* 铅笔字效果 */
+    .pencil-text {
+      text-shadow: 
+        0.5px 0.5px 0.5px rgba(0,0,0,0.2),
+        -0.5px -0.5px 0 rgba(255,255,255,0.5);
+      letter-spacing: 0.5px;
+    }
+  </style>
+</head>
+<body>
+  <div class="titlebar">
+    <h1 class="pencil-text">🤖 小妞设置</h1>
+    <button class="close-btn" onclick="window.electron.closeWindow()">×</button>
+  </div>
+  
+  <div class="container">
+    <div class="logo">
+      <div class="logo-icon">👋</div>
+      <div class="logo-text pencil-text">欢迎使用小妞</div>
+      <div class="logo-sub">请配置你的大模型</div>
+    </div>
+    
+    <div class="note-card">
+      <div class="form-group">
+        <label class="pencil-text">选择预设</label>
+        <select id="preset">
+          <option value="">-- 选择预设 --</option>
+        </select>
+      </div>
+      
+      <div class="form-group" style="margin-top: 12px;">
+        <label class="pencil-text">API Key</label>
+        <input type="password" id="apiKey" placeholder="输入你的 API Key">
+      </div>
+    </div>
+    
+    <button class="advanced-toggle" onclick="toggleAdvanced()">▼ 高级选项</button>
+    <div class="advanced-fields" id="advancedFields">
+      <div class="form-group">
+        <label class="pencil-text">API 类型</label>
+        <select id="apiType">
+          <option value="openai">OpenAI 兼容</option>
+          <option value="anthropic">Anthropic</option>
+        </select>
+      </div>
+      <div class="form-group" style="margin-top: 12px;">
+        <label class="pencil-text">API 地址</label>
+        <input type="text" id="apiBase" placeholder="https://api.openai.com/v1">
+      </div>
+      <div class="form-group" style="margin-top: 12px;">
+        <label class="pencil-text">模型名称</label>
+        <input type="text" id="model" placeholder="gpt-4o-mini">
+      </div>
+    </div>
+    
+    <button class="btn btn-primary" id="testBtn" onclick="testAndSave()">
+      ✨ 测试连接并保存
+    </button>
+    
+    <div class="status" id="status"></div>
+    
+    <div class="footer">
+      配置完成后，小妞就可以帮你管理知识啦！
+    </div>
+  </div>
+
+  <script>
+    let presets = [];
+    
+    async function init() {
+      presets = await window.electronAPI.getPresets();
+      const config = await window.electronAPI.getConfig();
+      
+      const presetSelect = document.getElementById('preset');
+      presets.forEach(p => {
+        const opt = document.createElement('option');
+        opt.value = p.id;
+        opt.textContent = p.name;
+        presetSelect.appendChild(opt);
+      });
+      
+      if (config.llm) {
+        document.getElementById('preset').value = config.llm.presetId || '';
+        document.getElementById('apiKey').value = config.llm.apiKey || '';
+        document.getElementById('apiBase').value = config.llm.apiBase || '';
+        document.getElementById('model').value = config.llm.model || '';
+        document.getElementById('apiType').value = config.llm.type || 'openai';
+      }
+    }
+    
+    function toggleAdvanced() {
+      const fields = document.getElementById('advancedFields');
+      const btn = document.querySelector('.advanced-toggle');
+      fields.classList.toggle('show');
+      btn.textContent = fields.classList.contains('show') ? '▲ 高级选项' : '▼ 高级选项';
+    }
+    
+    document.getElementById('preset').addEventListener('change', (e) => {
+      const preset = presets.find(p => p.id === e.target.value);
+      if (preset) {
+        document.getElementById('apiBase').value = preset.apiBase;
+        document.getElementById('model').value = preset.model;
+        document.getElementById('apiType').value = preset.type || 'openai';
+      }
+    });
+    
+    async function testAndSave() {
+      const presetId = document.getElementById('preset').value;
+      const apiKey = document.getElementById('apiKey').value;
+      const apiBase = document.getElementById('apiBase').value;
+      const model = document.getElementById('model').value;
+      const type = document.getElementById('apiType').value;
+      
+      if (!apiKey) {
+        setStatus('请输入 API Key', 'error');
+        return;
+      }
+      
+      if (!apiBase) {
+        setStatus('请选择预设或填写 API 地址', 'error');
+        return;
+      }
+      
+      if (!model) {
+        setStatus('请输入模型名称', 'error');
+        return;
+      }
+      
+      setStatus('保存配置中...', 'loading');
+      document.getElementById('testBtn').disabled = true;
+      
+      // Save config first
+      const config = {
+        llm: { presetId, apiKey, apiBase, model, type },
+        storage: {},
+        firstRun: false
+      };
+      
+      const saveResult = await window.electronAPI.saveConfig(config);
+      
+      if (!saveResult.success) {
+        setStatus('❌ 保存失败: ' + saveResult.error, 'error');
+        document.getElementById('testBtn').disabled = false;
+        return;
+      }
+      
+      // Then test connection
+      const result = await window.electronAPI.testConnection({ apiBase, apiKey, type });
+      
+      if (result.success) {
+        setStatus('✅ ' + (result.message || '配置已保存！'), 'success');
+        
+        setTimeout(() => {
+          window.electronAPI.closeWindow();
+        }, 1500);
+      } else {
+        setStatus('⚠️ 连接测试失败，但配置已保存', 'error');
+      }
+      
+      document.getElementById('testBtn').disabled = false;
+    }
+    
+    function setStatus(msg, cls) {
+      const el = document.getElementById('status');
+      el.textContent = msg;
+      el.className = 'status ' + cls;
+    }
+    
+    // Close button handler
+    document.querySelector('.close-btn').addEventListener('click', () => {
+      window.electronAPI.closeWindow();
+    });
+    
+    init();
+  </script>
+</body>
+</html>
