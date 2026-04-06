@@ -100,26 +100,40 @@ class MessageStore:
         logger.debug(f"Added message: {msg_id}")
         return msg_id
 
-    async def get_messages(self, limit: int = 100, before_id: Optional[str] = None) -> List[Message]:
-        """Get messages (chronological order)"""
+    async def get_messages(self, limit: Optional[int] = None, before_id: Optional[str] = None) -> List[Message]:
+        """Get messages (chronological order). If limit is None, return all messages."""
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
 
             if before_id:
-                cursor = await db.execute(
-                    """SELECT * FROM messages
-                       WHERE id < ?
-                       ORDER BY created_at DESC
-                       LIMIT ?""",
-                    (before_id, limit),
-                )
+                if limit is not None:
+                    cursor = await db.execute(
+                        """SELECT * FROM messages
+                           WHERE id < ?
+                           ORDER BY created_at DESC
+                           LIMIT ?""",
+                        (before_id, limit),
+                    )
+                else:
+                    cursor = await db.execute(
+                        """SELECT * FROM messages
+                           WHERE id < ?
+                           ORDER BY created_at DESC""",
+                        (before_id,),
+                    )
             else:
-                cursor = await db.execute(
-                    """SELECT * FROM messages
-                       ORDER BY created_at DESC
-                       LIMIT ?""",
-                    (limit,),
-                )
+                if limit is not None:
+                    cursor = await db.execute(
+                        """SELECT * FROM messages
+                           ORDER BY created_at DESC
+                           LIMIT ?""",
+                        (limit,),
+                    )
+                else:
+                    cursor = await db.execute(
+                        """SELECT * FROM messages
+                           ORDER BY created_at DESC"""
+                    )
 
             rows = await cursor.fetchall()
 
