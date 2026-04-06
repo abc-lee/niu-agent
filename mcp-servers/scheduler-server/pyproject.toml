@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "niu-scheduler-server"
+version = "0.2.0"
+description = "Scheduler Server for Niu - Scheduled Tasks and Reminders"
+requires-python = ">=3.11"
+dependencies = [
+    "mcp>=1.0.0",
+    "fastapi>=0.104.0",
+    "uvicorn>=0.24.0",
+    "requests>=2.31.0",
+    "loguru>=0.7.0",
+]
+
+[project.scripts]
+niu-scheduler-server = "niu_scheduler_server:run_server"
+niu-scheduler-service = "niu_scheduler_service:main"
+
+[tool.setuptools.packages.find]
+where = ["."]

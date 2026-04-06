@@ -1,0 +1,16 @@
+[project]
+name = "niu-config-manager"
+version = "0.1.0"
+description = "Configuration manager MCP server for Niu"
+requires-python = ">=3.11"
+dependencies = [
+    "mcp>=1.0.0",
+    "loguru>=0.7.0",
+]
+
+[project.scripts]
+niu-config-manager = "niu_config_manager:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

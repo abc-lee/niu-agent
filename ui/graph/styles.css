@@ -1,0 +1,223 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+/* Cotton paper texture background */
+body {
+  background-color: #faf8f0;
+  background-image: 
+    url("data:image/svg+xml,%3Csvg width='100' height='100' viewBox='0 0 100 100' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M11 18c3.866 0 7-3.134 7-7s-3.134-7-7-7-7 3.134-7 7 3.134 7 7 7zm48 25c3.866 0 7-3.134 7-7s-3.134-7-7-7-7 3.134-7 7 3.134 7 7 7zm-43-7c1.657 0 3-1.343 3-3s-1.343-3-3-3-3 1.343-3 3 1.343 3 3 3zm63 31c1.657 0 3-1.343 3-3s-1.343-3-3-3-3 1.343-3 3 1.343 3 3 3zM34 90c1.657 0 3-1.343 3-3s-1.343-3-3-3-3 1.343-3 3 1.343 3 3 3zm56-76c1.657 0 3-1.343 3-3s-1.343-3-3-3-3 1.343-3 3 1.343 3 3 3zM12 86c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm28-65c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm23-11c2.76 0 5-2.24 5-5s-2.24-5-5-5-5 2.24-5 5 2.24 5 5 5zm-6 60c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm29 22c2.76 0 5-2.24 5-5s-2.24-5-5-5-5 2.24-5 5 2.24 5 5 5zM32 63c2.76 0 5-2.24 5-5s-2.24-5-5-5-5 2.24-5 5 2.24 5 5 5zm57-13c2.76 0 5-2.24 5-5s-2.24-5-5-5-5 2.24-5 5 2.24 5 5 5zm-9-21c1.105 0 2-.895 2-2s-.895-2-2-2-2 .895-2 2 .895 2 2 2zM60 91c1.105 0 2-.895 2-2s-.895-2-2-2-2 .895-2 2 .895 2 2 2zM35 41c1.105 0 2-.895 2-2s-.895-2-2-2-2 .895-2 2 .895 2 2 2zM12 60c1.105 0 2-.895 2-2s-.895-2-2-2-2 .895-2 2 .895 2 2 2z' fill='%23e6e2d8' fill-opacity='0.4' fill-rule='evenodd'/%3E%3C/svg%3E");
+  font-family: 'Ma Shan Zheng', 'Caveat', cursive;
+  color: #2c2c2c;
+  overflow: hidden;
+  height: 100vh;
+}
+
+/* Pencil text effect */
+* {
+  text-shadow: 0.5px 0.5px 0.5px rgba(0, 0, 0, 0.2);
+}
+
+/* Toolbar */
+.toolbar {
+  height: 60px;
+  border-bottom: 2px dashed rgba(0, 0, 0, 0.15);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 20px;
+  background-color: rgba(250, 248, 240, 0.8);
+  box-shadow: 3px 3px 8px rgba(0, 0, 0, 0.1);
+}
+
+.search-box {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 2px dashed rgba(0, 0, 0, 0.15);
+  border-radius: 12px;
+  padding: 8px 16px;
+  background-color: #faf8f0;
+  box-shadow: 2px 2px 6px rgba(0, 0, 0, 0.08);
+}
+
+.search-icon {
+  font-size: 18px;
+}
+
+#searchInput {
+  border: none;
+  outline: none;
+  background: transparent;
+  font-family: 'Caveat', cursive;
+  font-size: 18px;
+  width: 200px;
+  color: #2c2c2c;
+}
+
+.filters {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.filter-btn {
+  font-family: 'Ma Shan Zheng', 'Caveat', cursive;
+  font-size: 16px;
+  padding: 6px 14px;
+  border: 2px dashed rgba(0, 0, 0, 0.15);
+  border-radius: 8px;
+  background-color: #faf8f0;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  color: #2c2c2c;
+  box-shadow: 2px 2px 5px rgba(0, 0, 0, 0.08);
+}
+
+.filter-btn:hover {
+  background-color: #e8e4d6;
+  box-shadow: 1px 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.filter-btn.active {
+  background-color: #d3cbb8;
+  border-color: rgba(0, 0, 0, 0.25);
+}
+
+/* Graph Container */
+#graph-container {
+  flex: 1;
+  width: 100%;
+  height: calc(100vh - 110px);
+  position: relative;
+}
+
+/* Detail Panel */
+.detail-panel {
+  position: absolute;
+  top: 70px;
+  right: 20px;
+  width: 320px;
+  max-height: calc(100vh - 140px);
+  background-color: #faf8f0;
+  border: 2px dashed rgba(0, 0, 0, 0.15);
+  border-radius: 12px;
+  box-shadow: 3px 3px 8px rgba(0, 0, 0, 0.1);
+  padding: 16px;
+  transition: transform 0.3s ease;
+  z-index: 100;
+  overflow-y: auto;
+}
+
+.detail-panel.hidden {
+  transform: translateX(360px);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.detail-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 2px dashed rgba(0, 0, 0, 0.1);
+}
+
+.detail-header h2 {
+  font-size: 24px;
+  font-weight: normal;
+}
+
+.close-btn {
+  width: 32px;
+  height: 32px;
+  border: 2px dashed rgba(0, 0, 0, 0.15);
+  border-radius: 50%;
+  background-color: transparent;
+  font-family: 'Ma Shan Zheng', cursive;
+  font-size: 24px;
+  line-height: 26px;
+  text-align: center;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #2c2c2c;
+  padding: 0;
+}
+
+.close-btn:hover {
+  background-color: #e8e4d6;
+}
+
+.detail-content {
+  font-family: 'Caveat', cursive;
+  font-size: 18px;
+  line-height: 1.8;
+}
+
+.detail-row {
+  margin-bottom: 8px;
+}
+
+.detail-label {
+  font-weight: bold;
+}
+
+.relation-list {
+  margin-left: 20px;
+}
+
+.detail-actions {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 2px dashed rgba(0, 0, 0, 0.1);
+}
+
+.action-btn {
+  font-family: 'Ma Shan Zheng', 'Caveat', cursive;
+  font-size: 16px;
+  width: 100%;
+  padding: 10px;
+  border: 2px dashed rgba(0, 0, 0, 0.15);
+  border-radius: 8px;
+  background-color: #faf8f0;
+  cursor: pointer;
+  transition: all 0.2s;
+  color: #2c2c2c;
+}
+
+.action-btn:hover {
+  background-color: #e8e4d6;
+}
+
+/* Status Bar */
+.status-bar {
+  height: 50px;
+  border-top: 2px dashed rgba(0, 0, 0, 0.15);
+  display: flex;
+  align-items: center;
+  padding: 0 20px;
+  background-color: rgba(250, 248, 240, 0.8);
+  font-family: 'Caveat', cursive;
+  font-size: 18px;
+  box-shadow: -3px -3px 8px rgba(0, 0, 0, 0.05);
+}
+
+.status-bar span {
+  display: flex;
+  gap: 24px;
+}
+
+.stat-item {
+  display: flex;
+  gap: 4px;
+}
+
+/* Canvas overrides for paper background */
+#graph-container canvas {
+  background: transparent !important;
+}

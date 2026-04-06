@@ -1,0 +1,79 @@
+# Niu MCP Servers Configuration
+# These servers provide tools for the Niu assistant
+
+# File Parser - Parse various document formats (PDF, Word, PPT, Excel, MD, HTML)
+file-parser:
+  command: ${PYTHON_PATH}
+  args:
+    - "-m"
+    - "niu_file_parser"
+  workdir: ../mcp-servers/file-parser/src
+  preload: true
+
+# Knowledge Graph - Manage documents, entities, and their relationships
+kg-server:
+  command: ${PYTHON_PATH}
+  args:
+    - "-m"
+    - "niu_kg_server"
+  workdir: ../mcp-servers/kg-server/src
+  preload: true
+
+# Vector Store - Semantic search using embeddings
+vector-store:
+  command: ${PYTHON_PATH}
+  args:
+    - "-m"
+    - "niu_vector_store"
+  workdir: ../mcp-servers/vector-store/src
+  preload: true
+
+# Config Manager - Read/write user configuration and memory
+config-manager:
+  command: ${PYTHON_PATH}
+  args:
+    - "-m"
+    - "niu_config_manager"
+  workdir: ../mcp-servers/config-manager/src
+  preload: true
+
+# Photo Server - File and photo management with face recognition
+photo-server:
+  command: ${PYTHON_PATH}
+  args:
+    - "-m"
+    - "niu_photo_server"
+  workdir: ../mcp-servers/photo-server/src
+  preload: true
+
+# Memory Server - Smart memory extraction and retrieval
+memory-server:
+  command: ${PYTHON_PATH}
+  args:
+    - "-m"
+    - "niu_memory_server"
+  workdir: ../mcp-servers/memory-server/src
+  preload: true
+
+# Scheduler Server - Scheduled tasks and reminders
+scheduler-server:
+  command: ${PYTHON_PATH}
+  args:
+    - "-m"
+    - "niu_scheduler_server"
+  workdir: ../mcp-servers/scheduler-server/src
+  preload: true
+
+# Session Manager - Message management for context compression
+session-manager:
+  command: ${PYTHON_PATH}
+  args:
+    - "-m"
+    - "niu_session_manager"
+  workdir: ../mcp-servers/session-manager/src
+  preload: false  # 按需启动，不预加载
+
+# Nanobot System - Built-in system tools (not a real MCP server, added programmatically)
+# This entry exists to satisfy validation that references all defined servers
+nanobot.system:
+  # No command - this is a built-in server added via registry.AddServer in code

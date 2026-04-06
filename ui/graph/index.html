@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>知识图谱 - Niu</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Caveat:wght@400;600&family=Ma+Shan+Zheng&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <!-- Toolbar -->
+  <div class="toolbar">
+    <div class="search-box">
+      <span class="search-icon">🔍</span>
+      <input type="text" id="searchInput" placeholder="搜索节点...">
+    </div>
+    <div class="filters">
+      <button class="filter-btn active" data-type="all">全部</button>
+      <button class="filter-btn" data-type="人物">人物</button>
+      <button class="filter-btn" data-type="文档">文档</button>
+      <button class="filter-btn" data-type="照片">照片</button>
+      <button class="filter-btn" data-type="便签">便签</button>
+      <button class="filter-btn" data-type="链接">链接</button>
+      <button class="filter-btn" data-type="组织">组织</button>
+    </div>
+  </div>
+
+  <!-- Graph Container -->
+  <div id="graph-container"></div>
+
+  <!-- Detail Panel -->
+  <div id="detail-panel" class="detail-panel hidden">
+    <div class="detail-header">
+      <h2 id="detail-title"></h2>
+      <button id="close-detail" class="close-btn">×</button>
+    </div>
+    <div class="detail-content" id="detail-content"></div>
+    <div class="detail-actions">
+      <button id="focus-node" class="action-btn">在图谱中聚焦</button>
+    </div>
+  </div>
+
+  <!-- Status Bar -->
+  <div class="status-bar">
+    <span id="stats"></span>
+  </div>
+
+  <script src="./node_modules/@antv/g6/dist/g6.min.js"></script>
+  <script src="renderer.js"></script>
+</body>
+</html>

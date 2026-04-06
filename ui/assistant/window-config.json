@@ -1,0 +1,17 @@
+{
+  "spirit": {
+    "x": 2341,
+    "y": 706
+  },
+  "chat": {
+    "x": 1155,
+    "y": 201,
+    "width": 800,
+    "height": 821
+  },
+  "sticky": {
+    "x": null,
+    "y": null
+  },
+  "stickySize": 250
+}
