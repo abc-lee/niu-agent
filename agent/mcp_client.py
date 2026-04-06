@@ -38,14 +38,21 @@ class MCPServerConfig:
 
 
 def get_python_path() -> str:
-    """获取 Python 解释器路径"""
-    # 1. 打包的 Python
-    packaged = os.path.join(os.path.dirname(__file__), "..", "python", "Scripts", "python.exe")
+    """获取 Python 解释器路径（跨平台）"""
+    base_dir = os.path.dirname(__file__)
+
+    # 根据操作系统选择不同的路径
+    if sys.platform == "darwin" or sys.platform == "linux":
+        # Mac/Linux: 使用 bin 目录
+        packaged = os.path.join(base_dir, "..", "python", "bin", "python3")
+        venv = os.path.join(base_dir, "..", "venv", "bin", "python3")
+    else:
+        # Windows: 使用 Scripts 目录和 python.exe
+        packaged = os.path.join(base_dir, "..", "python", "Scripts", "python.exe")
+        venv = os.path.join(base_dir, "..", "venv", "Scripts", "python.exe")
+
     if os.path.exists(packaged):
         return os.path.abspath(packaged)
-
-    # 2. 虚拟环境
-    venv = os.path.join(os.path.dirname(__file__), "..", "venv", "Scripts", "python.exe")
     if os.path.exists(venv):
         return os.path.abspath(venv)
 
@@ -69,8 +76,10 @@ def load_mcp_configs() -> Dict[str, MCPServerConfig]:
     # 添加主项目根目录到 PYTHONPATH，确保 MCP 服务器能找到主项目模块
     project_root = os.path.abspath(os.path.join(base_dir, ".."))
     pythonpath = inherited_env.get("PYTHONPATH", "")
+    # 跨平台路径分隔符：Windows 用 ;，Mac/Linux 用 :
+    path_sep = ";" if sys.platform == "win32" else ":"
     if pythonpath:
-        inherited_env["PYTHONPATH"] = f"{project_root};{pythonpath}"
+        inherited_env["PYTHONPATH"] = f"{project_root}{path_sep}{pythonpath}"
     else:
         inherited_env["PYTHONPATH"] = project_root
 
