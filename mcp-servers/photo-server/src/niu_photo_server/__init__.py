@@ -2622,12 +2622,15 @@ def preload_face_model():
     """预加载人脸识别模型（在 MCP stdio 启动前）"""
     import sys
     import os
+    from pathlib import Path
+
+    # 跨平台日志路径：使用 ~/.niu/logs
+    log_dir = Path.home() / ".niu" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir / "photo-server-preload.log"
 
     # 强制输出到 stderr，确保在 MCP stdio 启动前可见
-    os.makedirs("E:/tools/ai-bot/logs", exist_ok=True)
-    with open(
-        "E:/tools/ai-bot/logs/photo-server-preload.log", "a", encoding="utf-8"
-    ) as f:
+    with open(log_file, "a", encoding="utf-8") as f:
         f.write(f"[PRELOAD] Starting at {datetime.now().isoformat()}\n")
         f.flush()
 
