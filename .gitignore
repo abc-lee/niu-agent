@@ -73,3 +73,6 @@ models/paraphrase-multilingual-MiniLM-L12-v2/model.safetensors
 !models/**/*.json
 !models/**/*.txt
 !models/**/*.md
+
+# User config files with API keys
+config/user-config*.json
