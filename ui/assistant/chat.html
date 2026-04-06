@@ -799,6 +799,13 @@
     
     // 带消息ID的消息（用于历史加载）
     function addMessageWithId(role, text, id, images = []) {
+      // 检查是否已存在相同ID的消息，避免重复
+      const existing = document.querySelector(`.message[data-id="${id}"]`);
+      if (existing) {
+        console.log('[Chat] 消息已存在，跳过重复:', id);
+        return existing;
+      }
+
       const div = addMessage(role, text, images);
       div.dataset.id = id;
       return div;
@@ -1025,12 +1032,20 @@
     window.addEventListener('focus', async () => {
       // 通知 spirit 用户正在活动
       window.electronAPI.notifyActivity();
-      
+
       try {
         const pending = await window.electronAPI.getPendingMessages();
         if (pending && pending.length > 0) {
           console.log('[Chat] 显示', pending.length, '条待通知消息');
-          pending.forEach(msg => addMessage('assistant', msg));
+          // 去重：只添加不在DOM中的消息
+          pending.forEach(msg => {
+            // 检查是否已存在相同内容的消息
+            const existingMessages = Array.from(document.querySelectorAll('.message.assistant'));
+            const isDuplicate = existingMessages.some(el => el.textContent === msg);
+            if (!isDuplicate) {
+              addMessage('assistant', msg);
+            }
+          });
           messages.scrollTop = messages.scrollHeight;
         }
       } catch (e) {
@@ -1041,6 +1056,10 @@
     // 加载历史消息
     async function loadHistory() {
       try {
+        // 清空现有消息，避免重复
+        messages.innerHTML = '';
+        oldestMessageId = null;
+
         const result = await window.electronAPI.getHistory(20);
         const history = result.messages || result;  // 兼容新旧格式
         const totalInDb = result.totalInDb || history.length;
