@@ -99,7 +99,10 @@ func detectPython() string {
 		}
 	} else {
 		// Mac/Linux 路径 (使用 bin 而不是 Scripts，无 .exe 扩展名)
+		homeDir, _ := os.UserHomeDir()
 		candidates = []string{
+			filepath.Join(homeDir, ".niu-venv", "bin", "python3"),
+			filepath.Join(homeDir, ".venv", "bin", "python3"),
 			filepath.Join(exeDir, "python", "bin", "python3"),
 			filepath.Join(exeDir, ".venv", "bin", "python3"),
 			filepath.Join(".", "python", "bin", "python3"),
