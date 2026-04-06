@@ -158,7 +158,7 @@ async def code_run(
             try:
                 line = line_bytes.decode("utf-8")
             except UnicodeDecodeError:
-                line = line_bytes.decode("gbk", errors="ignore")
+                line = line_bytes.decode("latin-1", errors="ignore")
             logs.append(line)
             logger.debug(line.rstrip())
 

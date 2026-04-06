@@ -38,8 +38,8 @@ def get_home_dir() -> Path:
     except RuntimeError:
         pass
 
-    # Fallback: check environment variables
-    for env_var in ["USERPROFILE", "HOME", "HOMEPATH"]:
+    # Fallback: check environment variables (优先 Unix/Mac 兼容的 HOME)
+    for env_var in ["HOME", "USERPROFILE", "HOMEPATH"]:
         path_str = os.environ.get(env_var)
         if path_str and Path(path_str).exists():
             return Path(path_str)

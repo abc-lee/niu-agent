@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -81,15 +82,32 @@ func detectPython() string {
 	exePath, _ := os.Executable()
 	exeDir := filepath.Dir(exePath)
 
-	candidates := []string{
-		filepath.Join(exeDir, "python", "Scripts", "python.exe"),
-		filepath.Join(".", "python", "Scripts", "python.exe"),
-		"E:/opencode/venv/Scripts/python.exe",
-		filepath.Join(exeDir, ".venv", "Scripts", "python.exe"),
-		"C:/Python311/python.exe",
-		"C:/Python310/python.exe",
-		"python",
-		"python3",
+	var candidates []string
+
+	// 根据操作系统选择不同的路径格式
+	if runtime.GOOS == "windows" {
+		// Windows 路径
+		candidates = []string{
+			filepath.Join(exeDir, "python", "Scripts", "python.exe"),
+			filepath.Join(".", "python", "Scripts", "python.exe"),
+			"E:/opencode/venv/Scripts/python.exe",
+			filepath.Join(exeDir, ".venv", "Scripts", "python.exe"),
+			"C:/Python311/python.exe",
+			"C:/Python310/python.exe",
+			"python",
+			"python3",
+		}
+	} else {
+		// Mac/Linux 路径 (使用 bin 而不是 Scripts，无 .exe 扩展名)
+		candidates = []string{
+			filepath.Join(exeDir, "python", "bin", "python3"),
+			filepath.Join(exeDir, ".venv", "bin", "python3"),
+			filepath.Join(".", "python", "bin", "python3"),
+			"/usr/local/bin/python3",
+			"/usr/bin/python3",
+			"python3",
+			"python",
+		}
 	}
 
 	for _, candidate := range candidates {
@@ -378,10 +396,13 @@ func notifyShutdown(port int) error {
 }
 
 func launchWindow(name string) (*exec.Cmd, error) {
-	windowDir := filepath.Join("ui", name)
+	// 使用可执行文件所在目录作为基准，而不是当前工作目录
+	exePath, _ := os.Executable()
+	exeDir := filepath.Dir(exePath)
+	windowDir := filepath.Join(exeDir, "ui", name)
 
 	cmd := exec.Command("npm", "start")
-	cmd.Dir, _ = filepath.Abs(windowDir)
+	cmd.Dir = windowDir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
