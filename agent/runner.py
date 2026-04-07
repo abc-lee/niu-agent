@@ -310,8 +310,9 @@ class NiuRunner:
         print(f"[Debug] Dynamic injection - Skills: {len(skills)} results", file=sys.stderr, flush=True)
 
         # 搜索 MCP 工具描述（符合L0/L1/L2规范，使用level字段）
+        # 降低阈值到 0.15，因为工具描述较短，语义相似度天然偏低
         mcp_tools = self.vector_search.search(
-            query=user_input, limit=5, min_score=0.35, filter={"level": "l1", "category": "mcp_tool"}
+            query=user_input, limit=5, min_score=0.15, filter={"level": "l1", "category": "mcp_tool"}
         )
         print(f"[Debug] Dynamic injection - MCP tools: {len(mcp_tools)} results", file=sys.stderr, flush=True)
 
