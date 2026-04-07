@@ -117,14 +117,26 @@ def agent_runner_loop(
         if not response.tool_calls:
             tool_calls = [{"tool_name": "no_tool", "args": {}}]
         else:
-            tool_calls = [
-                {
-                    "tool_name": tc.function.name,
-                    "args": json.loads(tc.function.arguments),
-                    "id": tc.id,
-                }
-                for tc in response.tool_calls
-            ]
+            # P0-6: 添加 JSON 解析异常处理
+            tool_calls = []
+            for tc in response.tool_calls:
+                try:
+                    args = json.loads(tc.function.arguments)
+                    tool_calls.append({
+                        "tool_name": tc.function.name,
+                        "args": args,
+                        "id": tc.id,
+                    })
+                except json.JSONDecodeError as e:
+                    # 记录错误并使用空参数继续执行
+                    print(f"[ERROR] Failed to parse tool arguments for {tc.function.name}: {e}", file=sys.stderr, flush=True)
+                    print(f"[ERROR] Raw arguments: {tc.function.arguments}", file=sys.stderr, flush=True)
+                    tool_calls.append({
+                        "tool_name": tc.function.name,
+                        "args": {},  # 回退为空参数
+                        "id": tc.id,
+                        "error": str(e),  # 记录错误信息
+                    })
 
         tool_results = []
         next_prompts = set()

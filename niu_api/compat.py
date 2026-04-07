@@ -130,8 +130,8 @@ async def chat_session(request: ChatRequest) -> ChatResponse:
     await store.add_message(role="user", content=request.message)
 
     # Get conversation history (before current message)
-    # No limit - load all messages from database
-    history = await store.get_messages(limit=None)
+    # P0-3: 限制最近 50 条消息，避免上下文爆炸
+    history = await store.get_messages(limit=50)
     logger.info(f"Loaded {len(history)} history messages")
 
     # Convert history to format expected by runner

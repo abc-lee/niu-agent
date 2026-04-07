@@ -629,8 +629,8 @@ class BaseSession:
         self.api_base = cfg["apibase"].rstrip("/")
         self.default_model = cfg.get("model", "")
         self.context_win = cfg.get("context_win", 24000)
-        self.history = []
-        self.lock = threading.Lock()
+        # P0-1: 删除废弃的 history 和 lock 字段
+        # 历史管理已迁移到 MessageStore (agent/session.py)
         self.system = ""
         self.name = cfg.get("name", self.default_model)
         proxy = cfg.get("proxy")
@@ -823,11 +823,21 @@ class NativeClaudeSession(BaseSession):
         # History is managed externally by NiuRunner via MessageStore.
         # The 'msg' here is the current user message; the caller is responsible
         # for building the full message list if needed.
-        assert type(msg) is dict
+        if not isinstance(msg, dict):
+            raise TypeError(f"Expected dict, got {type(msg).__name__}: {msg}")
         messages = [msg]  # Just pass the single message, no internal history
 
-        content_blocks = None
+        # Fix: Properly consume generator and get return value
         gen = self.raw_ask(messages, tools, self.system, model)
+        content_blocks = []
+        try:
+            while True:
+                next(gen)  # Consume generator yields
+        except StopIteration as e:
+            # Get return value from StopIteration
+            content_blocks = e.value or []
+
+        # Now content_blocks is properly initialized
         text_parts = [b["text"] for b in content_blocks if b.get("type") == "text"]
         content = "\n".join(text_parts).strip()
         tool_calls = [
