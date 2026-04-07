@@ -107,14 +107,16 @@ class TestContentBlocksInitialization:
                 "Response content should match"
             assert len(response.tool_calls) == 1, \
                 "Should extract 1 tool call"
-            assert response.tool_calls[0].name == "test_tool", \
+            # MockToolCall 的属性是 function.name 而不是 name
+            assert response.tool_calls[0].function.name == "test_tool", \
                 "Tool name should match"
 
     def test_ask_handles_empty_generator(self, session):
         """测试 ask 处理空生成器"""
         def mock_empty_generator():
-            """空生成器"""
-            return []
+            """空生成器 - 必须有 yield 才是生成器"""
+            return []  # 空列表
+            yield  # 永远不会执行，但让函数成为生成器
 
         with mock.patch.object(session, 'raw_ask', return_value=mock_empty_generator()):
             msg = {"role": "user", "content": "Test"}
@@ -130,6 +132,7 @@ class TestContentBlocksInitialization:
         def mock_none_generator():
             """返回 None 的生成器"""
             return None
+            yield  # 永远不会执行，但让函数成为生成器
 
         with mock.patch.object(session, 'raw_ask', return_value=mock_none_generator()):
             msg = {"role": "user", "content": "Test"}
@@ -143,6 +146,7 @@ class TestContentBlocksInitialization:
         # 这个测试确保 content_blocks 已初始化
         def mock_generator():
             return [{"type": "text", "text": "test"}]
+            yield  # 永远不会执行，但让函数成为生成器
 
         with mock.patch.object(session, 'raw_ask', return_value=mock_generator()):
             msg = {"role": "user", "content": "Test"}
