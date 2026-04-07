@@ -38,24 +38,30 @@ class MCPServerConfig:
 
 
 def get_python_path() -> str:
-    """获取打包的 Python 解释器路径（跨平台）"""
+    """获取 Python 解释器路径（跨平台）"""
     base_dir = os.path.dirname(__file__)
 
-    # 根据操作系统选择不同的路径格式
+    # 根据操作系统选择不同的路径
     if sys.platform == "darwin" or sys.platform == "linux":
         # Mac/Linux: 使用 bin 目录
-        python_path = os.path.join(base_dir, "..", "python", "bin", "python3")
+        packaged = os.path.join(base_dir, "..", "python", "bin", "python3")
+        venv = os.path.join(base_dir, "..", "venv", "bin", "python3")
     else:
         # Windows: 使用 Scripts 目录和 python.exe
-        python_path = os.path.join(base_dir, "..", "python", "Scripts", "python.exe")
+        packaged = os.path.join(base_dir, "..", "python", "Scripts", "python.exe")
+        venv = os.path.join(base_dir, "..", "venv", "Scripts", "python.exe")
 
-    if os.path.exists(python_path):
-        return os.path.abspath(python_path)
+    if os.path.exists(packaged):
+        return os.path.abspath(packaged)
+    if os.path.exists(venv):
+        return os.path.abspath(venv)
 
     # Python not found - this is a packaging error
     raise RuntimeError(
-        f"Python not found in bundled directory: {python_path}\n"
-        "Please download the complete package from the release page."
+        f"Python not found. Tried:\n"
+        f"  - Packaged: {packaged}\n"
+        f"  - Virtual env: {venv}\n"
+        "Please download the complete package from the release page or create a virtual environment."
     )
 
 

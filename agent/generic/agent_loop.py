@@ -175,7 +175,7 @@ def agent_runner_loop(
         if not next_prompt or not next_prompt.strip():
             return should_exit
 
-        messages = [
+        messages.append(
             {"role": "user", "content": next_prompt, "tool_results": tool_results}
-        ]  # just new message, history is kept in *Session
+        )  # append, don't reassign - history managed by NiuRunner via MessageStore
     return {"result": "MAX_TURNS_EXCEEDED"}
