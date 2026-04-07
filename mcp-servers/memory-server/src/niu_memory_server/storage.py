@@ -142,22 +142,34 @@ class MemoryStorage:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
 
-            # L2
+            # L2（原文）
             embedding_l2 = np.array(get_embedding_sync(l2_content), dtype=np.float32)
+            # ✅ L2归一化（符合L1规范v2.0）
+            norm_l2 = np.linalg.norm(embedding_l2)
+            if norm_l2 > 0:
+                embedding_l2 = embedding_l2 / norm_l2
             cursor.execute(
                 "INSERT INTO documents (id, content, embedding, metadata) VALUES (?, ?, ?, ?)",
                 (l2_id, l2_content, embedding_l2.tobytes(), json.dumps(l2_metadata)),
             )
 
-            # L1
+            # L1（摘要）
             embedding_l1 = np.array(get_embedding_sync(l1_content), dtype=np.float32)
+            # ✅ L2归一化（符合L1规范v2.0）
+            norm_l1 = np.linalg.norm(embedding_l1)
+            if norm_l1 > 0:
+                embedding_l1 = embedding_l1 / norm_l1
             cursor.execute(
                 "INSERT INTO documents (id, content, embedding, metadata) VALUES (?, ?, ?, ?)",
                 (l1_id, l1_content, embedding_l1.tobytes(), json.dumps(l1_metadata)),
             )
 
-            # L0
+            # L0（极简索引）
             embedding_l0 = np.array(get_embedding_sync(l0_content), dtype=np.float32)
+            # ✅ L2归一化（符合L1规范v2.0）
+            norm_l0 = np.linalg.norm(embedding_l0)
+            if norm_l0 > 0:
+                embedding_l0 = embedding_l0 / norm_l0
             cursor.execute(
                 "INSERT INTO documents (id, content, embedding, metadata) VALUES (?, ?, ?, ?)",
                 (l0_id, l0_content, embedding_l0.tobytes(), json.dumps(l0_metadata)),
@@ -194,12 +206,15 @@ class MemoryStorage:
 
     def _generate_l1_summary(self, content: str, memory_type: str, title: str = None) -> str:
         """
-        生成 L1 摘要
+        生成 L1 摘要（英文，符合L1规范v2.0）
 
         格式：{title}|{keywords}|{summary}|{entities}|{type}|{pointer}
 
+        **重要**：根据L1规范v2.0，L1内容必须是英文。
+        如果content是中文，应该在外部先翻译成英文再传入。
+
         Args:
-            content: 记忆内容
+            content: 记忆内容（建议英文）
             memory_type: 记忆类型
             title: 可选标题，不提供则自动生成
         """
@@ -210,7 +225,7 @@ class MemoryStorage:
             title_str = title[:20]
         else:
             lines = content.strip().split('\n')
-            title_str = lines[0].strip('# ')[:20] if lines else f"{memory_type}记录"
+            title_str = lines[0].strip('# ')[:20] if lines else f"{memory_type} record"
 
         # 提取关键词（简单实现：提取英文单词和数字）
         keywords = re.findall(r'\b[A-Z][a-z]+\b|\b\d+\b', content)
