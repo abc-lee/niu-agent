@@ -67,18 +67,25 @@ def set_preload_complete():
 
 @router.get("/api/llm-status")
 async def get_llm_status() -> dict:
-    """检测 LLM 是否已配置可用"""
-    from niu_api.config import get_config
+    """检测 LLM 是否已配置可用（直接从文件读取，不走缓存）"""
+    import json
+    from pathlib import Path
 
-    config = get_config()
+    config_path = Path(__file__).parent.parent / "config" / "user-config.json"
+    try:
+        data = json.loads(config_path.read_text(encoding="utf-8"))
+        llm = data.get("llm", {})
+        api_key = llm.get("apiKey", "")
+        api_base = llm.get("apiBase", "")
+        model = llm.get("model", "")
 
-    if not config.llm or not config.llm.api_key:
-        return {"ready": False, "error": "API key not configured"}
-
-    if not config.llm.api_base or not config.llm.model:
-        return {"ready": False, "error": "API base or model not configured"}
-
-    return {"ready": True}
+        if not api_key:
+            return {"ready": False, "error": "API key not configured"}
+        if not api_base or not model:
+            return {"ready": False, "error": "API base or model not configured"}
+        return {"ready": True}
+    except Exception as e:
+        return {"ready": False, "error": str(e)}
 
 
 @router.get("/api/preload-status")
