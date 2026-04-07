@@ -152,23 +152,27 @@ class VectorSearchAdapter:
                 if not refined:
                     continue
 
-                # 构建新的过滤条件
-                new_filter = {"category": result.metadata.get("category")}
-
                 # 记录递归信息
                 recursion_depth = 4 - max_recursion
                 print(f"[Recursive Query] {query} → {refined} (depth: {recursion_depth}/3)",
                       file=sys.stderr, flush=True)
 
-                # 递归调用（强制递减）
-                return self.search(
+                # 第二轮检索，排除查询模式
+                results = self._search_once(
                     query=refined,
                     limit=limit,
                     min_score=min_score,
-                    filter=new_filter,
-                    level=level,
-                    max_recursion=max_recursion - 1  # ✅ 强制递减
+                    filter=None,  # 不过滤，在后面排除
+                    level=level
                 )
+
+                # 排除查询模式
+                filtered_results = [
+                    r for r in results
+                    if r.metadata.get("type") != "query_pattern"
+                ]
+
+                return filtered_results
 
         # 没有递归标记，直接返回
         return results
