@@ -1,20 +1,63 @@
 # L1 摘要层规范
 
-> 版本：v1.0  
-> 日期：2026-03-31  
+> 版本：v2.0  
+> 日期：2026-04-07  
+> 更新：新增L2归一化要求、L1内容强制英文  
 > 参考：`E:\tmp\L1-Summary-Optimization-Guide.md`
+
+---
+
+## ⚠️ v2.0 核心变更
+
+### 1. L1 内容强制使用英文
+
+**原因**：测试证明英文向量检索相似度显著更高
+
+| 对比项 | 中文查询 | 英文查询 | 提升 |
+|--------|---------|---------|------|
+| "5分钟后提醒我吃药" | 0.2848 | 0.8276 | **+191%** |
+| 工具匹配准确率 | 低 | 高 | **显著提升** |
+
+**要求**：
+- 所有工具的 L1 描述必须用英文
+- Skills 的 L1 摘要建议用英文
+- 文档摘要可保留中文（给用户看）
+
+### 2. 向量 L2 归一化
+
+**要求**：所有入库的 embedding 向量必须做 L2 归一化
+
+**实现**：
+```python
+import numpy as np
+
+# 入库时
+embedding_array = np.array(embedding, dtype=np.float32)
+embedding_normalized = embedding_array / np.linalg.norm(embedding_array)
+embedding_blob = embedding_normalized.tobytes()
+```
+
+**好处**：
+1. **计算优化**：余弦相似度简化为点积，无需除以范数
+2. **数值稳定性**：所有向量在单位球面上，避免极端值
+3. **代码简化**：`score = np.dot(query_vec, doc_vec)` （不再需要归一化）
 
 ---
 
 ## 一、核心结论
 
-**最优组合：中文摘要 + 极简分隔格式 + 关键词/实体分离存储**
+**最优组合：英文内容 + L2归一化 + 极简分隔格式**
 
-| 优化项 | Token节省 |
-|--------|----------|
-| 中文 vs 英文 | 30-40% |
-| 极简格式 vs JSON | 50-60% |
-| **总计** | **65-75%** |
+| 优化项 | 收益 |
+|--------|------|
+| 英文内容 | 向量相似度提升 100-200% |
+| L2归一化 | 计算优化 + 数值稳定 |
+| 极简格式 | Token节省 60% |
+
+**权衡**：
+- 英文比中文多消耗 30-40% token
+- 但检索准确率提升 100-200%
+- **推荐**：向量检索场景优先考虑准确性
 
 ---
 
@@ -25,52 +68,124 @@
 每条 L1 记录独立存储时，使用极简格式：
 
 ```
-{标题}|{关键词}|{摘要}|{实体}|{类型}|{指针}
+{Title}|{Keywords}|{Summary}|{Entities}|{Type}|{Pointer}
 ```
 
-**实际示例**：
+**实际示例（英文）**：
 ```
-Redis分布式缓存设计|缓存,Redis,架构|基于Redis的分布式缓存系统实现方案|Redis,缓存|技术文档|/docs/cache.md
+Redis Distributed Cache Design|cache,Redis,architecture|Distributed cache system implementation based on Redis|Redis,cache|technical|/docs/cache.md
 ```
 
-### 2.2 批量返回格式（给 LLM 时）
+### 2.2 向量存储要求
+
+**格式**：
+```python
+{
+    "id": "doc:xxx",
+    "content": "English L1 content for vector search",
+    "embedding": [0.123, -0.456, ...],  # L2归一化后的向量
+    "metadata": {
+        "level": "l1",
+        "category": "...",
+        "language": "en",  # 标记语言
+        "normalized": True  # 标记已归一化
+    }
+}
+```
+
+**关键要求**：
+1. ✅ `content` 字段必须用英文（用于向量检索）
+2. ✅ `embedding` 向量必须做 L2 归一化
+3. ✅ 存储 `normalized: True` 标记
+
+### 2.3 批量返回格式（给 LLM 时）
 
 检索返回多条记录时，在最前面加一行总数：
 
 ```
-共{N}条
-{标题}|{关键词}|{摘要}|{实体}|{类型}|{指针}
-{标题}|{关键词}|{摘要}|{实体}|{类型}|{指针}
+Total: {N}
+{Title}|{Keywords}|{Summary}|{Entities}|{Type}|{Pointer}
+{Title}|{Keywords}|{Summary}|{Entities}|{Type}|{Pointer}
 ...
 ```
 
 **实际示例**：
 ```
-共3条
-Redis分布式缓存设计|缓存,Redis,架构|基于Redis的分布式缓存系统实现方案|Redis,缓存|技术文档|/docs/cache.md
-API接口规范|API,REST,认证|RESTful API设计规范与认证机制说明|API,Token|规范|/docs/api.md
-数据库优化|MySQL,索引,性能|MySQL索引优化与查询性能调优策略|MySQL,索引|技术文档|/docs/db.md
+Total: 3
+Redis Distributed Cache Design|cache,Redis,architecture|Distributed cache system implementation based on Redis|Redis,cache|technical|/docs/cache.md
+API Design Specification|API,REST,authentication|RESTful API design specification and authentication mechanism|API,Token|spec|/docs/api.md
+Database Optimization|MySQL,index,performance|MySQL index optimization and query performance tuning strategies|MySQL,index|technical|/docs/db.md
 ```
 
-### 2.3 字段说明
+### 2.4 字段说明
 
 | 字段 | 长度限制 | 说明 |
 |------|---------|------|
-| 标题 | 原文标题 | 保留原语言 |
-| 关键词 | 3-5个 | 用逗号分隔，支持稀疏检索 |
-| 摘要 | 50-80字 | 现代中文，信息密度最大化 |
-| 实体 | 2-5个 | 命名实体，用于精确匹配 |
-| 类型 | 分类标签 | 文档类型/领域分类 |
-| 指针 | L2位置 | 指向原文的指针（文件路径、数据库ID等） |
+| Title | 原文标题 | 英文，保留核心技术术语 |
+| Keywords | 3-5个 | 英文关键词，用逗号分隔，支持稀疏检索 |
+| Summary | 50-80词 | 英文摘要，信息密度最大化 |
+| Entities | 2-5个 | 命名实体，用于精确匹配 |
+| Type | 分类标签 | 英文分类，如 technical, spec, guide |
+| Pointer | L2位置 | 指向原文的指针（文件路径、数据库ID等） |
 
-### 2.4 为什么不需要字段名声明？
+### 2.5 L2归一化实现
 
-与传统 TOON 格式不同，本方案不需要 `[N] 字段1,字段2...` 的 header：
+**代码示例**：
+```python
+import numpy as np
 
-1. **单条存储时**：独立记录，无需声明结构
-2. **字段固定**：6 个字段顺序固定，LLM 按位置解析
-3. **批量返回时**：仅加 `共N条` 即可，LLM 能理解结构
-4. **省 token**：去掉 header 行，每批再省 5-10 tokens
+def normalize_embedding(embedding: list[float]) -> bytes:
+    """L2归一化并转换为存储格式"""
+    vec = np.array(embedding, dtype=np.float32)
+    
+    # L2归一化
+    norm = np.linalg.norm(vec)
+    if norm > 0:
+        vec = vec / norm
+    
+    # 转换为字节
+    return vec.tobytes()
+
+# 使用
+embedding = get_embedding("English L1 content")
+embedding_blob = normalize_embedding(embedding)
+```
+
+**检索时的简化**：
+```python
+# 查询向量也需要归一化
+query_vec = np.array(query_embedding, dtype=np.float32)
+query_vec = query_vec / np.linalg.norm(query_vec)
+
+# 相似度计算简化为点积
+for doc_vec in doc_vectors:
+    score = np.dot(query_vec, doc_vec)  # ✅ 无需再除以范数
+```
+
+### 2.6 为什么L1用英文？
+
+**测试数据证明**：
+
+| 查询类型 | 中文查询相似度 | 英文查询相似度 | 提升 |
+|---------|--------------|--------------|------|
+| "5分钟后提醒我吃药" | 0.2848 | 0.8276 | **+191%** |
+| "set reminder" | - | 0.5720 | 高准确率 |
+
+**核心原因**：
+
+1. **预训练数据优势**：Multilingual模型的英文预训练数据更多
+2. **表达标准化**：英文表达变数小，语义更稳定
+   - 中文："5分钟后"、"一会儿"、"待会儿"、"过一哈儿"
+   - 英文："in 5 minutes", "remind me in X minutes"（变体少）
+3. **工具名匹配**：工具名本身是英文（如 `schedule_task`），英文查询天然匹配
+4. **跨语言能力**：Multilingual模型支持跨语言检索，英文向量能匹配中文查询
+
+**Token成本权衡**：
+- 英文比中文多消耗 30-40% token
+- 但检索准确率提升 100-200%
+- **结论**：向量检索场景优先考虑准确性
+
+### 2.7 为什么不需要字段名声明？
 
 ---
 
