@@ -41,8 +41,9 @@ mcpServers:
 
 ### 步骤 1：调用 ingest_document
 
+示例：
 ```
-ingest_document(file_path="...", category="...", mode="copy")
+<tool_use>{"name": "photo-server/ingest_document", "arguments": {"file_path": "...", "category": "...", "mode": "copy"}}</tool_use>
 ```
 
 **返回值可能是**：
@@ -78,18 +79,14 @@ Zellij使用指南|终端,复用器,Rust|Zellij终端复用器的基本使用方
 
 **调用 store_document_l1**：
 ```
-store_document_l1(
-    file_path="从 ingest_document 返回值获取",
-    l1="标题|关键词|摘要|实体|类型|指针",
-    l2="可选，完整内容"
-)
+<tool_use>{"name": "photo-server/store_document_l1", "arguments": {"file_path": "从 ingest_document 返回值获取", "l1": "标题|关键词|摘要|实体|类型|指针", "l2": "可选，完整内容"}}</tool_use>
 ```
 
 ### 完整示例
 
 ```
 第一次调用：
-ingest_document(file_path="E:/tmp/zellij.md", category="其他", mode="copy")
+<tool_use>{"name": "photo-server/ingest_document", "arguments": {"file_path": "E:/tmp/zellij.md", "category": "其他", "mode": "copy"}}</tool_use>
 
 返回：
 {
@@ -100,10 +97,7 @@ ingest_document(file_path="E:/tmp/zellij.md", category="其他", mode="copy")
 }
 
 第二次调用（必须执行）：
-store_document_l1(
-    file_path="E:/tmp/bot/2026/其他/zellij.md",
-    l1="Zellij使用指南|终端,复用器,Rust|Zellij终端复用器的基本使用方法|Zellij,终端|技术文档|E:/tmp/bot/2026/其他/zellij.md"
-)
+<tool_use>{"name": "photo-server/store_document_l1", "arguments": {"file_path": "E:/tmp/bot/2026/其他/zellij.md", "l1": "Zellij使用指南|终端,复用器,Rust|Zellij终端复用器的基本使用方法|Zellij,终端|技术文档|E:/tmp/bot/2026/其他/zellij.md"}}</tool_use>
 
 返回：
 {
@@ -121,8 +115,9 @@ store_document_l1(
 
 当用户拖入多个文件时，使用 `ingest_documents`：
 
+示例：
 ```
-ingest_documents(file_paths=["文件1.md", "文件2.md"], category="其他", mode="copy")
+<tool_use>{"name": "photo-server/ingest_documents", "arguments": {"file_paths": ["文件1.md", "文件2.md"], "category": "其他", "mode": "copy"}}</tool_use>
 ```
 
 **返回值**：
@@ -143,20 +138,7 @@ ingest_documents(file_paths=["文件1.md", "文件2.md"], category="其他", mod
 **一次性为所有文件生成 L1，然后调用 `store_documents_l1`**：
 
 ```
-store_documents_l1(documents=[
-    {
-        "file_path": "E:/tmp/bot/...",
-        "l1": "文件1标题|关键词|摘要|实体|类型|指针"
-    },
-    {
-        "file_path": "E:/tmp/bot/...",
-        "l1": "文件2标题|关键词|摘要|实体|类型|指针"
-    },
-    {
-        "file_path": "E:/tmp/bot/...",
-        "l1": "文件3标题|关键词|摘要|实体|类型|指针"
-    }
-])
+<tool_use>{"name": "photo-server/store_documents_l1", "arguments": {"documents": [{"file_path": "E:/tmp/bot/...", "l1": "文件1标题|关键词|摘要|实体|类型|指针"}, {"file_path": "E:/tmp/bot/...", "l1": "文件2标题|关键词|摘要|实体|类型|指针"}, {"file_path": "E:/tmp/bot/...", "l1": "文件3标题|关键词|摘要|实体|类型|指针"}]}}</tool_use>
 ```
 
 **返回**：
@@ -199,12 +181,12 @@ store_documents_l1(documents=[
 
 **单张照片**：
 ```
-ingest_photo(file_path="...", category="生活")
+<tool_use>{"name": "photo-server/ingest_photo", "arguments": {"file_path": "...", "category": "生活"}}</tool_use>
 ```
 
 **批量目录**：
 ```
-ingest_photos(source_path="E:/照片/2024旅行", category="旅行")
+<tool_use>{"name": "photo-server/ingest_photos", "arguments": {"source_path": "E:/照片/2024旅行", "category": "旅行"}}</tool_use>
 ```
 
 ---
@@ -242,14 +224,14 @@ ingest_photos(source_path="E:/照片/2024旅行", category="旅行")
 当用户问"有多少人脸"、"未命名人物"、"搜索张三"时：
 
 ```
-get_unnamed_persons()
-search_persons(query="张三")
-name_person(person_id="...", name="张三")
+<tool_use>{"name": "photo-server/get_unnamed_persons", "arguments": {}}</tool_use>
+<tool_use>{"name": "photo-server/search_persons", "arguments": {"query": "张三"}}</tool_use>
+<tool_use>{"name": "photo-server/name_person", "arguments": {"person_id": "...", "name": "张三"}}</tool_use>
 ```
 
 ### 返回数据格式
 
-`get_unnamed_persons()` 返回：
+`get_unnamed_persons` 返回：
 ```json
 {
   "status": "success",
@@ -294,7 +276,7 @@ name_person(person_id="...", name="张三")
 ```
 用户：我把 E:/tmp/bot/2025/ 这个目录删了
 你：好的，我来清理数据库中的残留记录
-    cleanup_deleted_photos()
+    <tool_use>{"name": "photo-server/cleanup_deleted_photos", "arguments": {}}</tool_use>
     返回：清理了 50 张照片记录，120 条人脸记录
 ```
 
