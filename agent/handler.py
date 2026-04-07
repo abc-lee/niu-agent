@@ -19,6 +19,9 @@ from typing import Any, Optional
 # 导入 GenericAgent 基类
 from .generic.agent_loop import BaseHandler, StepOutcome, try_call_generator
 
+# 导入经验总结器
+from .experience_summarizer import ExperienceSummarizer, ToolExecution, ExperienceContext
+
 
 def format_error(e: Exception) -> str:
     """格式化错误信息"""
@@ -224,6 +227,10 @@ class NiuHandler(BaseHandler):
         self.history_info = []
         self._done_hooks = []
 
+        # 经验总结相关
+        self._experience_context: Optional[ExperienceContext] = None
+        self._experience_summarizer = ExperienceSummarizer()
+
     # ========== 工作记忆机制 ==========
 
     def tool_after_callback(self, tool_name, args, response, ret):
@@ -254,6 +261,68 @@ class NiuHandler(BaseHandler):
         if self._should_remember(tool_name, args, ret):
             self.working["suggest_remember"] = True
             self.working["remember_reason"] = self._get_remember_reason(tool_name, args, ret)
+
+        # 追踪工具执行以供经验总结
+        self._track_tool_execution(tool_name, args, ret)
+
+    def _track_tool_execution(self, tool_name: str, args: dict, ret):
+        """追踪工具执行以供经验总结"""
+        # 初始化 experience context（如果需要）
+        if self._experience_context is None:
+            # 从 history_info 提取用户输入（不完美但够用）
+            user_input = ""
+            for h in reversed(self.history_info):
+                if "[Agent]" in h and "调用工具" not in h:
+                    user_input = h.replace("[Agent]", "").strip()
+                    break
+            self._experience_context = ExperienceContext(
+                user_input=user_input,
+                turn_count=0,
+                start_time=time.time()
+            )
+
+        # 更新轮数
+        self._experience_context.turn_count = self.current_turn
+
+        # 记录工具执行
+        result_str = str(ret) if ret else ""
+        success = isinstance(ret, dict) and ret.get("status") == "success" if ret else False
+
+        tool_exec = ToolExecution(
+            tool_name=tool_name,
+            args={k: v for k, v in args.items() if not k.startswith("_")},
+            result=result_str[:500],  # 限制结果长度
+            success=success
+        )
+        self._experience_context.tool_executions.append(tool_exec)
+
+        # 定期检查是否需要总结（每 10 轮）
+        if self.current_turn > 0 and self.current_turn % 10 == 0:
+            self._check_and_summarize_experience()
+
+    def _check_and_summarize_experience(self):
+        """检查并总结经验"""
+        if self._experience_context is None:
+            return
+
+        context = self._experience_context
+        should, reason = self._experience_summarizer.should_summarize(context)
+
+        if should:
+            print(
+                f"[ExperienceSummarizer] Triggered: {reason}",
+                file=sys.stderr,
+                flush=True,
+            )
+            path = self._experience_summarizer.summarize_and_write(context)
+            if path:
+                print(
+                    f"[ExperienceSummarizer] Wrote skill: {path.name}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            # 重置 context
+            self._experience_context = None
 
     def _should_remember(self, tool_name: str, args: dict, ret) -> bool:
         """判断是否值得长期记忆"""

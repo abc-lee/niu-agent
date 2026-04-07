@@ -77,34 +77,54 @@ func LoadContextConfig() *ContextConfig {
 	return cfg
 }
 
-// detectPython finds the bundled Python executable
-// Only uses Python from the current directory (bundled with the application)
+// detectPython finds a suitable Python executable for launching the API server
 func detectPython() string {
 	exePath, _ := os.Executable()
 	exeDir := filepath.Dir(exePath)
 
-	var pythonPath string
+	var candidates []string
 
+	// 根据操作系统选择不同的路径格式
 	if runtime.GOOS == "windows" {
-		// Windows: ./python/Scripts/python.exe
-		pythonPath = filepath.Join(exeDir, "python", "Scripts", "python.exe")
-	} else {
-		// Mac/Linux: ./python/bin/python3
-		pythonPath = filepath.Join(exeDir, "python", "bin", "python3")
-	}
-
-	// Check if Python exists
-	if _, err := os.Stat(pythonPath); err == nil {
-		if absPath, err := filepath.Abs(pythonPath); err == nil {
-			return absPath
+		// Windows 路径
+		candidates = []string{
+			filepath.Join(exeDir, "python", "Scripts", "python.exe"),
+			filepath.Join(".", "python", "Scripts", "python.exe"),
+			"E:/opencode/venv/Scripts/python.exe",
+			filepath.Join(exeDir, ".venv", "Scripts", "python.exe"),
+			"C:/Python311/python.exe",
+			"C:/Python310/python.exe",
+			"python",
+			"python3",
 		}
-		return pythonPath
+	} else {
+		// Mac/Linux 路径 (使用 bin 而不是 Scripts，无 .exe 扩展名)
+		homeDir, _ := os.UserHomeDir()
+		candidates = []string{
+			filepath.Join(homeDir, ".niu-venv", "bin", "python3"),
+			filepath.Join(homeDir, ".venv", "bin", "python3"),
+			filepath.Join(exeDir, "python", "bin", "python3"),
+			filepath.Join(exeDir, ".venv", "bin", "python3"),
+			filepath.Join(".", "python", "bin", "python3"),
+			"/usr/local/bin/python3",
+			"/usr/bin/python3",
+			"python3",
+			"python",
+		}
 	}
 
-	// Python not found - this is a packaging error
-	slog.Error("Python not found in bundled directory", "path", pythonPath)
-	slog.Error("Please download the complete package from the release page")
-	return ""
+	for _, candidate := range candidates {
+		cmd := exec.Command(candidate, "--version")
+		if err := cmd.Run(); err == nil {
+			if absPath, err := filepath.Abs(candidate); err == nil {
+				return absPath
+			}
+			return candidate
+		}
+	}
+
+	slog.Warn("No Python found, using 'python' as fallback")
+	return "python"
 }
 
 // loadMemory loads user memory from ~/.niu/memory.json
@@ -379,10 +399,13 @@ func notifyShutdown(port int) error {
 }
 
 func launchWindow(name string) (*exec.Cmd, error) {
-	windowDir := filepath.Join("ui", name)
+	// 使用可执行文件所在目录作为基准，而不是当前工作目录
+	exePath, _ := os.Executable()
+	exeDir := filepath.Dir(exePath)
+	windowDir := filepath.Join(exeDir, "ui", name)
 
 	cmd := exec.Command("npm", "start")
-	cmd.Dir, _ = filepath.Abs(windowDir)
+	cmd.Dir = windowDir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
