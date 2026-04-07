@@ -18,28 +18,32 @@ class TestDatabaseConnectionManagement:
         db_path = tempfile.mktemp(suffix=".db")
 
         # 创建表
-        with sqlite3.connect(db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                CREATE TABLE scheduled_tasks (
-                    id TEXT PRIMARY KEY,
-                    content TEXT,
-                    status TEXT,
-                    scheduled_at TEXT,
-                    created_at TEXT
-                )
-            """)
-            cursor.execute("""
-                INSERT INTO scheduled_tasks
-                VALUES ('task_1', 'Test task', 'pending', '2024-01-01', '2024-01-01')
-            """)
-            conn.commit()
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE scheduled_tasks (
+                id TEXT PRIMARY KEY,
+                content TEXT,
+                status TEXT,
+                scheduled_at TEXT,
+                created_at TEXT
+            )
+        """)
+        cursor.execute("""
+            INSERT INTO scheduled_tasks
+            VALUES ('task_1', 'Test task', 'pending', '2024-01-01', '2024-01-01')
+        """)
+        conn.commit()
+        conn.close()  # 确保关闭连接
 
         yield db_path
 
-        # 清理
-        if os.path.exists(db_path):
-            os.unlink(db_path)
+        # 清理（忽略错误，Windows 可能暂时无法删除）
+        try:
+            if os.path.exists(db_path):
+                os.unlink(db_path)
+        except PermissionError:
+            pass  # Windows 文件锁定，忽略
 
     def test_with_statement_closes_connection_on_success(self, test_db):
         """测试 with 语句在成功时关闭连接"""

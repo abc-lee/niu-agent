@@ -17,7 +17,8 @@ class TestMessageStoreSorting:
     async def store(self):
         """创建测试 MessageStore"""
         db_path = tempfile.mktemp(suffix=".db")
-        store = MessageStore(db_path)  # 直接初始化，不是 create()
+        store = MessageStore(db_path)
+        await store.init_db()  # 初始化数据库表
 
         # 创建 10 条消息（按顺序）
         for i in range(10):
