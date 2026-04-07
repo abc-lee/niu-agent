@@ -40,10 +40,10 @@ def quick_verify_p0():
         )
 
         if result.returncode == 0:
-            print(f"✓ PASSED")
+            print(f"[PASS] PASSED")
             results.append((name, "PASSED"))
         else:
-            print(f"✗ FAILED")
+            print(f"[FAIL] FAILED")
             print(result.stdout)
             print(result.stderr)
             results.append((name, "FAILED"))
@@ -54,7 +54,7 @@ def quick_verify_p0():
     print("=" * 60)
 
     for name, status in results:
-        symbol = "✓" if status == "PASSED" else "✗"
+        symbol = "[OK]" if status == "PASSED" else "[X]"
         print(f"{symbol} {name}: {status}")
 
     passed = sum(1 for _, status in results if status == "PASSED")
