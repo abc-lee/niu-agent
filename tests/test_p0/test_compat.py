@@ -9,6 +9,7 @@ sys.path.insert(0, "E:/tools/ai-bot")
 from agent.session import MessageStore
 
 
+@pytest.mark.p0
 class TestContextLengthLimit:
     """测试历史消息加载限制"""
 

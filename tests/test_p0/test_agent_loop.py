@@ -7,6 +7,7 @@ sys.path.insert(0, "E:/tools/ai-bot")
 from agent.generic.llmcore import MockResponse, MockToolCall
 
 
+@pytest.mark.p0
 class TestToolCallJSONParsing:
     """测试工具调用参数的 JSON 解析"""
 
