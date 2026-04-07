@@ -39,7 +39,7 @@ class VectorSearchAdapter:
 
     def __init__(self, db_path: str = None):
         self.db_path = db_path or self._default_db_path()
-        self._conn: sqlite3.Connection = None
+        self._conn: Optional[sqlite3.Connection] = None
         self._indexes_created: bool = False  # 索引创建标志
 
     @staticmethod
@@ -61,7 +61,7 @@ class VectorSearchAdapter:
         home = os.path.expanduser("~")
         return os.path.join(home, ".niu", "vectors.db")
 
-    def _get_connection(self) -> sqlite3.Connection:
+    def _get_connection(self) -> Optional[sqlite3.Connection]:
         if self._conn is None:
             if os.path.exists(self.db_path):
                 # check_same_thread=False 允许跨线程使用
@@ -111,7 +111,8 @@ class VectorSearchAdapter:
             return None
 
     def search(
-        self, query: str, limit: int = 10, min_score: float = 0.5, filter: dict = None, level: str = None,
+        self, query: str, limit: int = 10, min_score: float = 0.5,
+        filter: Optional[dict] = None, level: Optional[str] = None,
         max_recursion: int = 3
     ) -> list[SearchResult]:
         """
@@ -130,7 +131,9 @@ class VectorSearchAdapter:
         """
         # 安全限制：硬编码最多递归3次
         if max_recursion <= 0:
-            print(f"[WARNING] Max recursion reached (3/3), returning results", file=sys.stderr, flush=True)
+            recursion_depth = 4 - max_recursion
+            print(f"[WARNING] Max recursion reached ({recursion_depth}/3), returning results",
+                  file=sys.stderr, flush=True)
             return []
 
         # 验证 level 参数
@@ -171,7 +174,8 @@ class VectorSearchAdapter:
         return results
 
     def _search_once(
-        self, query: str, limit: int, min_score: float, filter: dict, level: str
+        self, query: str, limit: int, min_score: float,
+        filter: Optional[dict], level: Optional[str]
     ) -> list[SearchResult]:
         """单次向量检索（内部方法）"""
         conn = self._get_connection()
@@ -230,7 +234,8 @@ class VectorSearchAdapter:
         return results
 
     def _text_search(
-        self, query: str, limit: int, min_score: float, filter: dict, level: str = None
+        self, query: str, limit: int, min_score: float,
+        filter: Optional[dict], level: Optional[str] = None
     ) -> list[SearchResult]:
         """降级的文本搜索"""
         conn = self._get_connection()
@@ -238,7 +243,7 @@ class VectorSearchAdapter:
             return []
 
         sql = "SELECT id, content, metadata FROM documents WHERE content LIKE ?"
-        params = [f"%{query}%"]
+        params: list[Any] = [f"%{query}%"]
 
         if level:
             sql += " AND json_extract(metadata, '$.level') = ?"
@@ -354,7 +359,7 @@ class VectorSearchAdapter:
 _vector_search: Optional[VectorSearchAdapter] = None
 
 
-def get_vector_search(db_path: str = None) -> VectorSearchAdapter:
+def get_vector_search(db_path: Optional[str] = None) -> VectorSearchAdapter:
     """获取全局向量搜索实例"""
     global _vector_search
     if _vector_search is None:
