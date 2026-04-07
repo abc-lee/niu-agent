@@ -103,7 +103,8 @@ def agent_runner_loop(
     handler.max_turns = max_turns
     while turn < handler.max_turns:
         turn += 1
-        yield f"**LLM Running (Turn {turn}) ...**\n\n"
+        if verbose:
+            yield f"**LLM Running (Turn {turn}) ...**\n\n"
         if turn % 10 == 0:
             client.last_tools = ""  # 每10轮重置一次工具描述，避免上下文过大导致的模型性能下降
         response_gen = client.chat(messages=messages, tools=tools_schema)

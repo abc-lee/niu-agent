@@ -67,7 +67,9 @@
       "Bash(dir \"E:\\\\tools\\\\ai-bot\\\\mcp-servers\\\\scheduler-server\\\\src\\\\niu_scheduler_service\")",
       "Bash(tail -100 E:/tools/ai-bot/logs/llm_interaction_*.log)",
       "Bash(grep -rn \"agent_runner_loop\\(\" niu_api/*.py agent/generic/*.py --include=\"*.py\" -A 5)",
-      "Bash(find agent:*)"
+      "Bash(find agent:*)",
+      "Bash(go build:*)",
+      "Bash(find . -name \"*.py\" -not -path \"./.git/*\" -not -path \"./.venv/*\" -exec grep -l \"cleanup\\\\|clean\\\\|purge\\\\|vacuum\" {} ;)"
     ]
   }
 }
