@@ -25,6 +25,8 @@ class Config:
 
     def __init__(self):
         self.llm: Optional[LLMConfig] = None
+        self.storage: Dict[str, str] = {"documentRoot": "", "databasePath": ""}
+        self.first_run: bool = True
 
     @classmethod
     def load(cls, config_path: Optional[str] = None) -> "Config":
@@ -43,10 +45,13 @@ class Config:
 
             if "llm" in data and data["llm"]:
                 cfg.llm = LLMConfig(data["llm"])
-
-            if cfg.llm is None:
-                # Create empty LLM config
+                cfg.first_run = data.get("firstRun", False)
+            else:
+                # Create empty LLM config for first-run scenario
                 cfg.llm = LLMConfig({})
+
+            if "storage" in data:
+                cfg.storage = data["storage"]
 
             logger.info(f"Config loaded from {config_path}")
             logger.info(f"LLM: provider={cfg.llm.provider}, model={cfg.llm.model}")
