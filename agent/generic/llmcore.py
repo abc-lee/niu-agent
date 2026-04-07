@@ -722,9 +722,24 @@ class ClaudeSession(BaseSession):
 
 
 class LLMSession(BaseSession):
-    def raw_ask(self, messages, model=None, temperature=0.5):
+    def raw_ask(self, prompt, model=None, temperature=0.5):
+        """
+        Args:
+            prompt: Can be either:
+                - str: A pre-assembled text prompt (from ToolClient)
+                - list: A list of message dicts (from direct API calls)
+        """
         if model is None:
             model = self.default_model
+
+        # Handle both string prompt and messages list
+        if isinstance(prompt, str):
+            # Prompt is a string, wrap it in messages format
+            messages = [{"role": "user", "content": prompt}]
+        else:
+            # Prompt is already a messages list
+            messages = prompt
+
         return (
             yield from _openai_stream(
                 self.api_base,
