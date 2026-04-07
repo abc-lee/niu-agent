@@ -81,10 +81,10 @@ async def run_server():
 
 示例：
 1. 单次提醒：
-   schedule_task(content="开会", scheduled_at="2026-04-07T15:00:00", event_type="meeting")
+   <tool_use>{"name": "scheduler-server/schedule_task", "arguments": {"content": "开会", "scheduled_at": "2026-04-07T15:00:00", "event_type": "meeting"}}</tool_use>
 
 2. 每天提醒：
-   schedule_task(content="吃药", scheduled_at="2026-04-06T08:00:00", is_recurring=True, cron_expr="0 8 * * *")
+   <tool_use>{"name": "scheduler-server/schedule_task", "arguments": {"content": "吃药", "scheduled_at": "2026-04-06T08:00:00", "is_recurring": true, "cron_expr": "0 8 * * *"}}</tool_use>
 
 重要：相对时间（明天、下周）必须由 Agent 转换为具体的日期时间。""",
                 inputSchema={
