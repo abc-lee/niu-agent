@@ -111,10 +111,11 @@ class VectorSearchAdapter:
             return None
 
     def search(
-        self, query: str, limit: int = 10, min_score: float = 0.5, filter: dict = None, level: str = None
+        self, query: str, limit: int = 10, min_score: float = 0.5, filter: dict = None, level: str = None,
+        max_recursion: int = 3
     ) -> list[SearchResult]:
         """
-        语义搜索
+        语义搜索（支持递归查询）
 
         Args:
             query: 搜索查询
@@ -122,15 +123,57 @@ class VectorSearchAdapter:
             min_score: 最低相似度阈值（默认 0.5，即 50 分）
             filter: 元数据过滤条件
             level: L0/L1/L2 层级过滤（可选：'l0', 'l1', 'l2'）
+            max_recursion: 最大递归次数（默认 3，硬编码上限）
 
         Returns:
             搜索结果列表，按分数降序排列
         """
+        # 安全限制：硬编码最多递归3次
+        if max_recursion <= 0:
+            print(f"[WARNING] Max recursion reached (3/3), returning results", file=sys.stderr, flush=True)
+            return []
+
         # 验证 level 参数
         if level is not None and level not in ('l0', 'l1', 'l2'):
             print(f"[VectorSearch] Invalid level '{level}', ignoring.", file=sys.stderr, flush=True)
             level = None
 
+        # 单次检索
+        results = self._search_once(query, limit, min_score, filter, level)
+
+        # 检查是否有递归查询标记
+        for result in results:
+            if result.metadata.get("is_recursive") == True:
+                # 发现递归查询标记，提取精简查询
+                refined = result.metadata.get("refined_query")
+                if not refined:
+                    continue
+
+                # 构建新的过滤条件
+                new_filter = {"category": result.metadata.get("category")}
+
+                # 记录递归信息
+                recursion_depth = 4 - max_recursion
+                print(f"[Recursive Query] {query} → {refined} (depth: {recursion_depth}/3)",
+                      file=sys.stderr, flush=True)
+
+                # 递归调用（强制递减）
+                return self.search(
+                    query=refined,
+                    limit=limit,
+                    min_score=min_score,
+                    filter=new_filter,
+                    level=level,
+                    max_recursion=max_recursion - 1  # ✅ 强制递减
+                )
+
+        # 没有递归标记，直接返回
+        return results
+
+    def _search_once(
+        self, query: str, limit: int, min_score: float, filter: dict, level: str
+    ) -> list[SearchResult]:
+        """单次向量检索（内部方法）"""
         conn = self._get_connection()
         if conn is None:
             return []

@@ -32,6 +32,8 @@ if sys.platform == "win32":
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from loguru import logger
+import numpy as np
+from agent.vector_search import VectorSearchAdapter
 
 
 def get_vector_db_path() -> str:
@@ -339,6 +341,145 @@ def register_mcp_tools():
     logger.info(f"✓ MCP 工具注册完成: {registered}/{len(tools)}")
 
 
+def register_query_patterns():
+    """注册递归查询模式"""
+    logger.info("注册查询模式...")
+
+    # 查询模式定义
+    patterns = [
+        # 时间提醒（中文）
+        {
+            "id": "query_pattern:reminder_time",
+            "content": "n分钟后提醒我吃药",
+            "metadata": {
+                "type": "query_pattern",
+                "is_recursive": True,
+                "refined_query": "定时任务",
+                "category": "mcp_tool",
+                "description": "X分钟后提醒用户"
+            }
+        },
+        {
+            "id": "query_pattern:reminder_short",
+            "content": "一会儿提醒我",
+            "metadata": {
+                "type": "query_pattern",
+                "is_recursive": True,
+                "refined_query": "定时任务",
+                "category": "mcp_tool"
+            }
+        },
+        {
+            "id": "query_pattern:reminder_daily",
+            "content": "每天提醒我吃药",
+            "metadata": {
+                "type": "query_pattern",
+                "is_recursive": True,
+                "refined_query": "循环任务",
+                "category": "mcp_tool"
+            }
+        },
+        {
+            "id": "query_pattern:reminder_workday",
+            "content": "工作日提醒我打卡",
+            "metadata": {
+                "type": "query_pattern",
+                "is_recursive": True,
+                "refined_query": "工作日提醒 循环任务",
+                "category": "mcp_tool"
+            }
+        },
+
+        # 提醒类（英文）
+        {
+            "id": "query_pattern:reminder_en_time",
+            "content": "remind me in X minutes",
+            "metadata": {
+                "type": "query_pattern",
+                "is_recursive": True,
+                "refined_query": "set reminder",
+                "category": "mcp_tool",
+                "language": "en"
+            }
+        },
+        {
+            "id": "query_pattern:reminder_en_alarm",
+            "content": "set alarm",
+            "metadata": {
+                "type": "query_pattern",
+                "is_recursive": True,
+                "refined_query": "set reminder alarm",
+                "category": "mcp_tool",
+                "language": "en"
+            }
+        },
+
+        # 文档处理类
+        {
+            "id": "query_pattern:document_ingest",
+            "content": "入库这个文件",
+            "metadata": {
+                "type": "query_pattern",
+                "is_recursive": True,
+                "refined_query": "文档入库",
+                "category": "mcp_tool"
+            }
+        },
+        {
+            "id": "query_pattern:photo_ingest",
+            "content": "处理照片",
+            "metadata": {
+                "type": "query_pattern",
+                "is_recursive": True,
+                "refined_query": "照片入库",
+                "category": "mcp_tool"
+            }
+        },
+    ]
+
+    # 获取向量库路径
+    db_path = get_vector_db_path()
+    vs = VectorSearchAdapter(db_path)
+
+    # 连接数据库
+    conn = sqlite3.connect(db_path)
+    registered = 0
+
+    for i, pattern in enumerate(patterns, 1):
+        try:
+            # 获取向量
+            embedding = vs._get_embedding(pattern["content"])
+            if embedding is None:
+                logger.warning(f"[{i}/{len(patterns)}] {pattern['id']} - 向量生成失败")
+                continue
+
+            embedding_blob = np.array(embedding, dtype=np.float32).tobytes()
+
+            # UPSERT
+            conn.execute(
+                """
+                INSERT INTO documents (id, content, embedding, metadata)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    content = excluded.content,
+                    embedding = excluded.embedding,
+                    metadata = excluded.metadata
+                """,
+                (pattern["id"], pattern["content"], embedding_blob,
+                 json.dumps(pattern["metadata"], ensure_ascii=False)),
+            )
+            conn.commit()
+
+            logger.info(f"[{i}/{len(patterns)}] {pattern['id']} - ✓")
+            registered += 1
+            time.sleep(0.3)  # 避免过载
+
+        except Exception as e:
+            logger.error(f"[{i}/{len(patterns)}] {pattern['id']} - ✗ {e}")
+
+    logger.info(f"✓ 查询模式注册完成: {registered}/{len(patterns)}")
+
+
 def inject_system_manual():
     """注入系统说明书 L1 摘要"""
     logger.info("注入系统说明书 L1 摘要...")
@@ -387,7 +528,11 @@ def main():
     print("\n" + "-" * 70)
     register_mcp_tools()
 
-    # 4. 注入系统说明书
+    # 4. 注册查询模式
+    print("\n" + "-" * 70)
+    register_query_patterns()
+
+    # 5. 注入系统说明书
     print("\n" + "-" * 70)
     inject_system_manual()
 
