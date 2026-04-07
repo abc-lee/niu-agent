@@ -656,19 +656,14 @@ class BaseSession:
         self.api_mode = "responses" if mode in ("responses", "response") else "chat_completions"
 
     def ask(self, prompt, model=None, stream=False):
+        # NOTE: BaseSession no longer manages history.
+        # History is managed externally by NiuRunner via MessageStore.
+        # The 'prompt' here is a pre-assembled text prompt from ToolClient,
+        # not raw user input to be accumulated.
         def _ask_gen():
             content = ""
-            with self.lock:
-                self.history.append({"role": "user", "content": [{"type": "text", "text": prompt}]})
-                trim_messages_history(self.history, self.context_win)
-                messages = self.make_messages(self.history)
-
-            # Note: Complete context logging is now done in agent_loop.py
-            # This logging is for session-level history (in-memory accumulation)
-            print(f"[DEBUG BaseSession.ask] session history: {len(self.history)} messages", file=sys.stderr, flush=True)
-
             content_blocks = None
-            gen = self.raw_ask(messages, model)
+            gen = self.raw_ask(prompt, model)
             try:
                 while True:
                     chunk = next(gen)
@@ -682,10 +677,6 @@ class BaseSession:
                 if block.get("type", "") == "tool_use":
                     tu = {"name": block.get("name", ""), "arguments": block.get("input", {})}
                     yield f"<tool_use>{json.dumps(tu, ensure_ascii=False)}</tool_use>"
-            if not content.startswith("Error:"):
-                self.history.append(
-                    {"role": "assistant", "content": [{"type": "text", "text": content}]}
-                )
 
         return _ask_gen() if stream else "".join(list(_ask_gen()))
 
@@ -835,25 +826,15 @@ class NativeClaudeSession(BaseSession):
         return content_blocks or []
 
     def ask(self, msg, tools=None, model=None):
+        # NOTE: NativeClaudeSession no longer manages history internally.
+        # History is managed externally by NiuRunner via MessageStore.
+        # The 'msg' here is the current user message; the caller is responsible
+        # for building the full message list if needed.
         assert type(msg) is dict
-        with self.lock:
-            self.history.append(msg)
-            trim_messages_history(self.history, self.context_win)
-            messages = list(self.history)
-
-        # Note: Complete context logging is now done in agent_loop.py
+        messages = [msg]  # Just pass the single message, no internal history
 
         content_blocks = None
         gen = self.raw_ask(messages, tools, self.system, model)
-        try:
-            while True:
-                yield next(gen)
-        except StopIteration as e:
-            content_blocks = e.value or []
-        if content_blocks and not (
-            len(content_blocks) == 1 and content_blocks[0].get("text", "").startswith("Error:")
-        ):
-            self.history.append({"role": "assistant", "content": content_blocks})
         text_parts = [b["text"] for b in content_blocks if b.get("type") == "text"]
         content = "\n".join(text_parts).strip()
         tool_calls = [
@@ -1375,6 +1356,9 @@ class NativeToolClient:
         self.tools = {}
         self.name = self.backend.name
         self._pending_tool_ids = []
+        # NOTE: NativeToolClient no longer manages history.
+        # History is managed externally by NiuRunner via MessageStore.
+        # We pass messages directly to backend without maintaining internal history.
 
     def set_system(self, extra_system):
         combined = (
@@ -1394,9 +1378,11 @@ class NativeToolClient:
         combined_content = []
         resp = None
         tool_results = []
+        system_content = None
         for msg in messages:
             c = msg.get("content", "")
             if msg["role"] == "system":
+                system_content = c
                 self.set_system(c)
                 continue
             if isinstance(c, str):
@@ -1430,6 +1416,7 @@ class NativeToolClient:
         self._pending_tool_ids = []
         merged = {"role": "user", "content": tool_result_blocks + combined_content}
 
+        # Pass the current message directly - history is managed by NiuRunner via MessageStore
         gen = self.backend.ask(merged, self.tools)
         try:
             while True:
