@@ -1,374 +1,275 @@
-# 向量库初始化和定期清理方案
+# 向量库初始化和定期清理方案（修订版）
 
-## 问题背景
+## 第一部分：自动初始化
 
-### 当前状况
+### 设计思路
 
-1. **初始化机制**
-   - 只有手动脚本 `scripts/init_vector_db.py`
-   - 没有自动初始化，用户首次启动时向量库不存在会导致功能缺失
-   - 需要手动运行 `python scripts/init_vector_db.py`
+**错误方案**：在启动代码里写自动初始化逻辑。
 
-2. **Skills 同步**
-   - 已有实时监听机制（`agent/injector/sync.py` 使用 watchdog）
-   - 文件变化时自动同步到向量库
-   - 但只能增量更新，无法清理已删除文件的残留数据
+**问题**：启动时没有工作目录，需要 Agent 先问用户、拿到工作目录后才能初始化向量库。
 
-3. **定期清理**
-   - 向量库没有定期清理机制
-   - `memory-server` 有 `cleanup_memories()` 方法，但主向量库（`vectors.db`）不在此范围
-   - 可能存在的问题：
-     - 失效的 Skills（文件已删除，向量库仍有记录）
-     - 失效的 MCP 工具描述（服务器已移除，向量库仍有记录）
-     - 过期的记忆（时间久远不再相关）
-     - 重复内容（同一 ID 多条记录）
+**正确方案**：利用现有 firstRun 机制。
 
-### 数据量分析
+### 实施步骤
 
-向量库存储的内容类型：
+#### 1. 修改系统手册
 
-| 类型 | Level | 更新频率 | 失效风险 | 占比估计 |
-|------|-------|---------|---------|---------|
-| Skills | L1 | 低（手动编辑） | 中（文件删除） | 5% |
-| MCP 工具描述 | L1 | 低（服务变更） | 中（服务移除） | 3% |
-| 系统说明书 | L1 | 低（版本更新） | 低 | 2% |
-| L0 记忆 | L0 | 高（每次对话） | 中（遗忘） | 10% |
-| L1 摘要 | L1 | 中（总结时） | 低 | 15% |
-| L2 原文 | L2 | 低（记忆时） | 低 | 65% |
+**文件**：`docs/SYSTEM_MANUAL.md`
 
-**预计增长**：
-- 每次对话：+1 条 L0 记忆（~500 tokens）
-- 每周总结：+10 条 L1 摘要（~2000 tokens）
-- 每月存储：+100 条 L2 原文（~20000 tokens）
+**位置**：首次使用章节
 
-**一年后预估**：~10000 条记录，~50MB 数据库大小
+**内容**：
+```markdown
+## 首次使用流程
+
+当检测到首次启动时（memory.json 中存在 firstRun 字段），执行以下步骤：
+
+### 1. 询问工作目录
+"嗨！我是妞妞。为了帮你管理知识，请告诉我你的工作目录想放在哪里？"
+
+### 2. 创建工作目录
+用户回答后，使用 bash 工具：
+```bash
+mkdir -p <用户指定目录>
+```
+
+### 3. 写入 memory.json
+```bash
+cat > ~/.niu/memory.json << 'EOF'
+{
+  "workspace": {"path": "<用户指定目录>"},
+  "user": {"name": "用户", "role": "个人助手用户"}
+}
+EOF
+```
+注意：删除 firstRun 字段。
+
+### 4. 初始化向量库
+```bash
+cd <项目目录>
+python scripts/init_vector_db.py
+```
+
+等待初始化完成（约 30 秒）。
+
+### 5. 确认完成
+"工作目录已设置，向量库初始化完成。现在可以开始对话了！"
+```
+
+#### 2. 无需修改代码
+
+- `agent/runner.py` 的 firstRun 注入已实现
+- Agent 会自动读取手册并执行
+- 无需编写额外的自动初始化程序
 
 ---
 
-## 方案设计
+## 第二部分：向量库清理
 
-### 第一部分：自动初始化
+### 设计思路
 
-#### 1.1 启动时检测
+**核心问题**：
+1. 不能简单凭时间判断"过期"
+2. 需要检查 L1 指针有效性
+3. 需要记录记忆热度
 
-**位置**：`niu_api/__main__.py` 的 `lifespan()` 函数
+### 解决方案
 
-**逻辑**：
+#### 1. 记录热度指标
+
+**修改向量库结构**：
+
+每次搜索匹配到记忆时，更新：
+- `access_count` - 访问次数（+1）
+- `last_accessed_at` - 最后访问时间
+- `last_score` - 最后匹配分数
+
+**实现位置**：`agent/vector_search.py` 的 `search()` 方法
+
 ```python
-# 2. Preload embedding model（已存在）
-from niu_api.internal.embedding import preload as preload_embedding
-logger.info("Preloading embedding model...")
-preload_embedding()
+def search(self, query: str, ...):
+    # ... 搜索逻辑 ...
 
-# 新增：检测并初始化向量库
-from agent.vector_search import get_vector_search
-vs = get_vector_search()
-if vs._get_connection() is None:
-    logger.info("Vector database not found, initializing...")
-    from scripts.init_vector_db import init_vector_db, sync_skills, register_mcp_tools
-    db_path = vs.db_path
-    init_vector_db(db_path)
-    sync_skills()
-    register_mcp_tools()
-    logger.info("Vector database initialized successfully")
-else:
-    logger.info("Vector database found, skipping initialization")
+    # 更新热度指标
+    for doc_id, content, metadata, score in scored_docs[:limit]:
+        metadata["access_count"] = metadata.get("access_count", 0) + 1
+        metadata["last_accessed_at"] = datetime.now().isoformat()
+        metadata["last_score"] = score
+
+        # 更新到数据库
+        conn.execute(
+            "UPDATE documents SET metadata = ? WHERE id = ?",
+            (json.dumps(metadata, ensure_ascii=False), doc_id)
+        )
 ```
 
-**优点**：
-- 用户无需手动运行脚本
-- 首次启动自动完成初始化
-- 后续启动检测到已存在则跳过
+#### 2. L1 指针有效性检查
 
-**风险**：
-- 初始化耗时较长（~30秒，主要是 embedding）
-- 需要在 Go 启动器的 preload 等待时间内完成
-
-#### 1.2 API 端点
-
-**新增端点**：`POST /api/vector/init`
-
-**用途**：
-- 手动触发重新初始化
-- 修复向量库损坏
-- 更新 MCP 工具描述
+**逻辑**：
+1. 查询所有 L1 记录
+2. 检查 `l2_pointer` 指向的 L2 是否存在
+3. 如果 L2 不存在，删除 L1
 
 **实现**：
 ```python
-# niu_api/compat.py
-
-@router.post("/api/vector/init")
-async def init_vector_db():
-    """重新初始化向量库"""
-    from scripts.init_vector_db import init_vector_db, sync_skills, register_mcp_tools
-    from agent.vector_search import get_vector_search
-
-    try:
-        vs = get_vector_search()
-        init_vector_db(vs.db_path)
-        sync_skills()
-        register_mcp_tools()
-        return {"status": "success", "message": "Vector database initialized"}
-    except Exception as e:
-        logger.error(f"Failed to initialize vector database: {e}")
-        return {"status": "error", "message": str(e)}
-```
-
----
-
-### 第二部分：定期清理
-
-#### 2.1 清理策略
-
-| 清理类型 | 触发条件 | 清理动作 | 执行频率 |
-|---------|---------|---------|---------|
-| 失效 Skills | 文件不存在 | 删除向量库记录 | 每日 |
-| 失效 MCP 工具 | 服务器不在配置中 | 删除向量库记录 | 每日 |
-| 过期记忆 | 创建时间 > 90 天 | 删除所有层级 | 每周 |
-| 重复内容 | 同一 ID 多条记录 | 保留最新 | 每日 |
-
-#### 2.2 清理实现
-
-**新建文件**：`agent/vector_cleanup.py`
-
-核心方法：
-- `cleanup_orphaned_skills()` - 清理失效的 Skills（文件已删除）
-- `cleanup_orphaned_mcp_tools()` - 清理失效的 MCP 工具描述（服务器已移除）
-- `cleanup_expired_memories(days=90)` - 清理过期的记忆
-- `cleanup_duplicates()` - 清理重复内容（同一 ID 多条记录，保留最新）
-- `run_full_cleanup()` - 执行完整清理
-- `start_periodic_cleanup(interval_hours=24)` - 启动后台定期清理线程
-
-#### 2.3 集成到启动流程
-
-**修改**：`niu_api/__main__.py`
-
-```python
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # 启动
-    logger.info("Niu API Server starting...")
-
-    # ... 现有代码 ...
-
-    # 5. 初始化向量库（新增）
-    from agent.vector_search import get_vector_search
-    vs = get_vector_search()
-    if vs._get_connection() is None:
-        logger.info("Vector database not found, initializing...")
-        from scripts.init_vector_db import init_vector_db, sync_skills, register_mcp_tools
-        init_vector_db(vs.db_path)
-        sync_skills()
-        register_mcp_tools()
-        logger.info("Vector database initialized")
-    else:
-        logger.info("Vector database found")
-
-    # 6. 启动定期清理（新增）
-    from agent.vector_cleanup import get_cleanup_service
-    cleanup = get_cleanup_service()
-    cleanup.run_full_cleanup()  # 启动时执行一次
-    cleanup.start_periodic_cleanup(interval_hours=24)  # 后台每天执行
-
-    # 7. 预加载 MCP 工具
-    # ... 现有代码 ...
-
-    yield
-
-    # 关闭
-    logger.info("Niu API Server shutting down...")
-
-    # 停止清理服务（新增）
-    cleanup.stop_periodic_cleanup()
-
-    # ... 现有代码 ...
-```
-
-#### 2.4 API 端点
-
-**新增端点**：`POST /api/vector/cleanup`
-
-```python
-# niu_api/compat.py
-
-@router.post("/api/vector/cleanup")
-async def trigger_cleanup():
-    """手动触发向量库清理"""
-    from agent.vector_cleanup import get_cleanup_service
-
-    try:
-        cleanup = get_cleanup_service()
-        cleanup.run_full_cleanup()
-        return {"status": "success", "message": "Cleanup completed"}
-    except Exception as e:
-        logger.error(f"Cleanup failed: {e}")
-        return {"status": "error", "message": str(e)}
-```
-
----
-
-### 第三部分：监控和统计
-
-#### 3.1 统计端点
-
-**新增端点**：`GET /api/vector/stats`
-
-```python
-@router.get("/api/vector/stats")
-async def get_vector_stats():
-    """获取向量库统计信息"""
-    from agent.vector_search import get_vector_search
-
-    vs = get_vector_search()
-    conn = vs._get_connection()
-    if conn is None:
-        return {"error": "Vector database not initialized"}
-
+def cleanup_invalid_l1_pointers(self):
+    """清理 L1 无效指针"""
+    conn = sqlite3.connect(self.db_path)
     cursor = conn.cursor()
 
-    # 总数
-    cursor.execute("SELECT COUNT(*) FROM documents")
-    total = cursor.fetchone()[0]
-
-    # 按类别统计
+    # 查询所有 L1 记录
     cursor.execute(
-        """
-        SELECT json_extract(metadata, '$.category') as category, COUNT(*) as count
-        FROM documents
-        GROUP BY category
-        """
+        "SELECT id, metadata FROM documents WHERE json_extract(metadata, '$.level') = 'l1'"
     )
-    by_category = {row[0] or "unknown": row[1] for row in cursor.fetchall()}
+    l1_records = cursor.fetchall()
 
-    # 按层级统计
-    cursor.execute(
-        """
-        SELECT json_extract(metadata, '$.level') as level, COUNT(*) as count
-        FROM documents
-        GROUP BY level
-        """
-    )
-    by_level = {row[0] or "unknown": row[1] for row in cursor.fetchall()}
+    deleted = 0
+    for l1_id, metadata_json in l1_records:
+        metadata = json.loads(metadata_json)
+        l2_id = metadata.get("l2_pointer") or metadata.get("pointer")
 
-    # 数据库大小
-    import os
-    db_size_mb = os.path.getsize(vs.db_path) / (1024 * 1024) if os.path.exists(vs.db_path) else 0
+        if not l2_id:
+            continue
 
-    return {
-        "total": total,
-        "by_category": by_category,
-        "by_level": by_level,
-        "db_size_mb": round(db_size_mb, 2),
-        "db_path": vs.db_path,
-    }
+        # 检查 L2 是否存在
+        cursor.execute("SELECT id FROM documents WHERE id = ?", (l2_id,))
+        if not cursor.fetchone():
+            # L2 不存在，删除 L1
+            cursor.execute("DELETE FROM documents WHERE id = ?", (l1_id,))
+            deleted += 1
+            logger.info(f"[Cleanup] Deleted L1 with invalid pointer: {l1_id}")
+
+    conn.commit()
+    conn.close()
+    return deleted
 ```
 
-#### 3.2 配置参数
+#### 3. 热度判断清理
 
-**新增配置**：`~/.niu/preferences.json`
+**逻辑**：
+- 访问次数低（< 3 次）
+- 且长时间未访问（> 60 天）
+- 且匹配分数低（< 0.6）
 
-```json
-{
-  "vector": {
-    "cleanup": {
-      "enabled": true,
-      "interval_hours": 24,
-      "memory_retention_days": 90
-    }
-  }
-}
+**实现**：
+```python
+def cleanup_low_value_memories(self, min_access=3, days=60, min_score=0.6):
+    """清理低价值记忆"""
+    conn = sqlite3.connect(self.db_path)
+    cursor = conn.cursor()
+
+    cutoff_date = (datetime.now() - timedelta(days=days)).isoformat()
+
+    # 查找低价值记忆
+    cursor.execute(
+        """
+        SELECT id, metadata FROM documents
+        WHERE json_extract(metadata, '$.level') IN ('l0', 'l1', 'l2')
+          AND (
+              json_extract(metadata, '$.access_count') < ?
+              OR json_extract(metadata, '$.access_count') IS NULL
+          )
+          AND json_extract(metadata, '$.last_accessed_at') < ?
+          AND json_extract(metadata, '$.last_score') < ?
+        """,
+        (min_access, cutoff_date, min_score)
+    )
+
+    low_value = cursor.fetchall()
+
+    deleted = 0
+    for doc_id, metadata_json in low_value:
+        # 删除所有层级（L0/L1/L2 是一组）
+        memory_base_id = doc_id.split(":l")[0]
+        cursor.execute("DELETE FROM documents WHERE id LIKE ?", (f"{memory_base_id}%",))
+        deleted += cursor.rowcount
+
+    conn.commit()
+    conn.close()
+
+    logger.info(f"[Cleanup] Deleted {len(low_value)} low-value memories ({deleted} records)")
+    return len(low_value)
 ```
+
+#### 4. 清理时机
+
+**定期清理**：
+- 每周执行一次
+- 启动时执行一次（如果上次清理 > 7 天前）
+
+**手动触发**：
+- `POST /api/vector/cleanup`
 
 ---
 
 ## 实施计划
 
-### Phase 1: 自动初始化（优先级：高）
+### Phase 1: 系统手册更新（0.5 小时）
 
-**任务**：
-1. 修改 `niu_api/__main__.py` 添加向量库检测和初始化逻辑
-2. 新增 `POST /api/vector/init` 端点
-3. 测试首次启动自动初始化
+- 在 `docs/SYSTEM_MANUAL.md` 添加首次使用流程
+- 包含向量库初始化指令
 
-**预计时间**：1 小时
+### Phase 2: 热度记录（1 小时）
 
-### Phase 2: 清理服务（优先级：高）
+- 修改 `agent/vector_search.py` 的 `search()` 方法
+- 每次匹配更新 `access_count`、`last_accessed_at`、`last_score`
 
-**任务**：
-1. 创建 `agent/vector_cleanup.py`
-2. 实现 4 种清理逻辑
-3. 修改 `niu_api/__main__.py` 集成清理服务
-4. 新增 `POST /api/vector/cleanup` 端点
+### Phase 3: 清理服务（2 小时）
 
-**预计时间**：2 小时
+- 创建 `agent/vector_cleanup.py`
+- 实现：
+  - `cleanup_invalid_l1_pointers()` - L1 指针有效性检查
+  - `cleanup_low_value_memories()` - 热度判断清理
+  - `cleanup_orphaned_skills()` - 失效 Skills
+  - `cleanup_orphaned_mcp_tools()` - 失效 MCP 工具
+  - `cleanup_duplicates()` - 去重
 
-### Phase 3: 监控和配置（优先级：中）
+### Phase 4: 集成和测试（1 小时）
 
-**任务**：
-1. 新增 `GET /api/vector/stats` 端点
-2. 添加配置参数到 `preferences.json`
-3. 文档更新
+- 添加 `POST /api/vector/cleanup` 端点
+- 添加 `GET /api/vector/stats` 端点（包含热度统计）
+- 测试验证
 
-**预计时间**：1 小时
-
-### Phase 4: 测试和优化（优先级：中）
-
-**任务**：
-1. 单元测试
-2. 集成测试
-3. 性能测试（大数据量场景）
-
-**预计时间**：1 小时
-
-**总计**：5 小时
+**总计**：4.5 小时
 
 ---
 
 ## 验证方案
 
-### 功能测试
+### 热度记录测试
 
-1. **初始化测试**
-   ```bash
-   # 删除向量库
-   rm ~/.niu/vectors.db
+```bash
+# 1. 发送消息，触发记忆
+curl -X POST http://127.0.0.1:9876/api/chat/session \
+  -H "Content-Type: application/json" \
+  -d '{"message": "记住我的生日是3月15日"}'
 
-   # 启动服务
-   ./niu.exe
+# 2. 发送相关查询
+curl -X POST http://127.0.0.1:9876/api/chat/session \
+  -H "Content-Type: application/json" \
+  -d '{"message": "我生日是哪天？"}'
 
-   # 验证向量库已创建
-   python -c "from agent.vector_search import get_vector_search; print(get_vector_search()._get_connection())"
-   ```
+# 3. 检查热度指标
+curl http://127.0.0.1:9876/api/vector/stats | jq '.hot_memories'
+```
 
-2. **清理测试**
-   ```bash
-   # 触发清理
-   curl -X POST http://127.0.0.1:9876/api/vector/cleanup
+### 清理测试
 
-   # 验证结果
-   curl http://127.0.0.1:9876/api/vector/stats
-   ```
+```bash
+# 触发清理
+curl -X POST http://127.0.0.1:9876/api/vector/cleanup
 
-3. **定期清理测试**
-   - 修改清理间隔为 1 分钟
-   - 观察日志输出
-   - 验证清理执行
-
----
-
-## 风险评估
-
-| 风险 | 级别 | 缓解措施 |
-|------|------|----------|
-| 初始化阻塞启动 | 中 | 优化初始化速度，显示进度 |
-| 清理删除重要数据 | 高 | 增加确认机制，先备份 |
-| 数据库锁定冲突 | 低 | 使用 WAL 模式，避免长时间事务 |
-| 清理服务崩溃 | 低 | 异常捕获，自动恢复 |
+# 检查结果
+curl http://127.0.0.1:9876/api/vector/stats
+```
 
 ---
 
-## 参考资料
+## 关键差异对比
 
-- [SQLite WAL 模式](https://www.sqlite.org/wal.html)
-- [向量数据库最佳实践](https://docs.pinecone.io/docs/best-practices)
-- `docs/design-self-evolution-system.md` - Agent Memory System Design
+| 方面 | 原方案 | 修订方案 |
+|------|--------|---------|
+| 初始化时机 | 启动代码自动执行 | Agent 读手册执行 |
+| 过期判断 | 时间（> 90 天） | 热度（访问少 + 时间久） |
+| L1 指针检查 | 无 | 检查并清理无效指针 |
+| 实施复杂度 | 高 | 低 |
