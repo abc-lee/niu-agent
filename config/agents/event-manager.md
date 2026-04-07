@@ -74,7 +74,7 @@ mcpServers:
 示例：
 ```
 用户说："明天下午3点开会"
-你调用：add_document(content="开会", metadata={"type": "event", "event_type": "meeting", "status": "pending", "event_time": "2026-03-31T15:00:00"})
+你输出：<tool_use>{"name": "vector-store/add_document", "arguments": {"content": "开会", "metadata": {"type": "event", "event_type": "meeting", "status": "pending", "event_time": "2026-03-31T15:00:00"}}}</tool_use>
 ```
 
 ---
@@ -145,15 +145,16 @@ mcpServers:
 
 **计算时间的正确方法**：
 ```
-错误：schedule_task(scheduled_at="2026-04-06T{{(new Date()).getHours()...}}")
+错误：在参数中使用模板字符串或代码片段
 
 正确步骤：
 1. 先调用 code_run 计算具体时间：
-   code_run(script="from datetime import datetime, timedelta; dt = datetime.now() + timedelta(minutes=5); print(dt.strftime('%Y-%m-%dT%H:%M:%S'))")
+   <tool_use>{"name": "code_run", "arguments": {"script": "from datetime import datetime, timedelta; dt = datetime.now() + timedelta(minutes=5); print(dt.strftime('%Y-%m-%dT%H:%M:%S'))"}}</tool_use>
 
 2. 获得输出：2026-04-06T09:30:00
 
-3. 再调用：schedule_task(scheduled_at="2026-04-06T09:30:00")
+3. 再调用 schedule_task：
+   <tool_use>{"name": "scheduler-server/schedule_task", "arguments": {"content": "任务内容", "scheduled_at": "2026-04-06T09:30:00"}}</tool_use>
 ```
 
 **示例**：
@@ -173,14 +174,6 @@ mcpServers:
 当用户需要特定时间提醒时或者让我在特定时间完成特定工作时，使用 `schedule_task` 工具创建定时任务。系统会在指定时间自动提醒用户。
 
 ## 创建定时任务
-
-```
-schedule_task(
-    content="开会",
-    scheduled_at="2026-03-30T15:00:00",
-    event_type="meeting"
-)
-```
 
 **参数说明**：
 - `content`（必需）：任务内容，如 "开会"
@@ -235,23 +228,26 @@ schedule_task(
 
 ## 查询定时任务
 
-```
-list_scheduled_tasks(status="pending")
-```
-
 **参数说明**：
 - `status`（可选）：筛选状态，pending/triggered/cancelled
 
+示例：
+```
+<tool_use>{"name": "scheduler-server/list_scheduled_tasks", "arguments": {"status": "pending"}}</tool_use>
+```
+
 ## 取消定时任务
 
+示例：
 ```
-cancel_task(task_id="abc123")
+<tool_use>{"name": "scheduler-server/cancel_task", "arguments": {"task_id": "abc123"}}</tool_use>
 ```
 
 ## 更新定时任务
 
+示例：
 ```
-update_task(task_id="abc123", content="新内容", scheduled_at="2026-03-31T10:00:00")
+<tool_use>{"name": "scheduler-server/update_task", "arguments": {"task_id": "abc123", "content": "新内容", "scheduled_at": "2026-03-31T10:00:00"}}</tool_use>
 ```
 
 ## 重要说明
@@ -306,7 +302,7 @@ update_task(task_id="abc123", content="新内容", scheduled_at="2026-03-31T10:0
 
 主 Agent 请求："生成工作记忆摘要"
 你：
-1. 调用 search_documents(query="当前任务 待办 日程", limit=10, filter={"type": "event", "status": "pending"})
+1. 调用 <tool_use>{"name": "vector-store/search_documents", "arguments": {"query": "当前任务 待办 日程", "limit": 10, "filter": {"type": "event", "status": "pending"}}}</tool_use>
 2. 分析返回的事件
 3. 返回结构化摘要：
 ```
