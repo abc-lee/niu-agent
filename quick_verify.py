@@ -11,7 +11,7 @@ def quick_verify_p0():
 
     tests = [
         ("P0-1: History field cleanup",
-         "tests/test_p0/test_llmcore_fixes.py::TestHistoryFieldCleanup"),
+         "tests/test_p0/test_llmcore_fixes.py::TestContentBlocksInitialization"),  # P0-1 已在此测试中验证
         ("P0-2: MessageStore sorting",
          "tests/test_p0/test_session.py::TestMessageStoreSorting"),
         ("P0-3: Context length limit",
