@@ -315,7 +315,12 @@ def register_mcp_tools():
                 logger.warning(f"[{i}/{len(tools)}] {tool['name']} - 向量生成失败")
                 continue
 
-            embedding_blob = np.array(embedding, dtype=np.float32).tobytes()
+            # ✅ L2归一化（符合L1规范）
+            vec = np.array(embedding, dtype=np.float32)
+            norm = np.linalg.norm(vec)
+            if norm > 0:
+                vec = vec / norm
+            embedding_blob = vec.tobytes()
 
             # UPSERT
             conn.execute(
@@ -345,52 +350,55 @@ def register_query_patterns():
     """注册递归查询模式"""
     logger.info("注册查询模式...")
 
-    # 查询模式定义
+    # 查询模式定义（✅ 英文内容，符合L1规范）
     patterns = [
-        # 时间提醒（中文）
+        # 时间提醒（中文查询 → 英文L1）
         {
             "id": "query_pattern:reminder_time",
-            "content": "n分钟后提醒我吃药",
+            "content": "remind me in X minutes",  # ✅ 英文
             "metadata": {
                 "type": "query_pattern",
                 "is_recursive": True,
-                "refined_query": "定时任务",
+                "refined_query": "set reminder",  # ✅ 英文
                 "category": "mcp_tool",
-                "description": "X分钟后提醒用户"
+                "description": "remind user after X minutes"
             }
         },
         {
             "id": "query_pattern:reminder_short",
-            "content": "一会儿提醒我",
+            "content": "remind me later",  # ✅ 英文
             "metadata": {
                 "type": "query_pattern",
                 "is_recursive": True,
-                "refined_query": "定时任务",
-                "category": "mcp_tool"
+                "refined_query": "set reminder",  # ✅ 英文
+                "category": "mcp_tool",
+                "description": "remind user shortly"
             }
         },
         {
             "id": "query_pattern:reminder_daily",
-            "content": "每天提醒我吃药",
+            "content": "remind me every day",  # ✅ 英文
             "metadata": {
                 "type": "query_pattern",
                 "is_recursive": True,
-                "refined_query": "循环任务",
-                "category": "mcp_tool"
+                "refined_query": "recurring task",  # ✅ 英文
+                "category": "mcp_tool",
+                "description": "daily recurring reminder"
             }
         },
         {
             "id": "query_pattern:reminder_workday",
-            "content": "工作日提醒我打卡",
+            "content": "remind me on workdays",  # ✅ 英文
             "metadata": {
                 "type": "query_pattern",
                 "is_recursive": True,
-                "refined_query": "工作日提醒 循环任务",
-                "category": "mcp_tool"
+                "refined_query": "workday reminder recurring",  # ✅ 英文
+                "category": "mcp_tool",
+                "description": "workday recurring reminder"
             }
         },
 
-        # 提醒类（英文）
+        # 提醒类（英文查询）
         {
             "id": "query_pattern:reminder_en_time",
             "content": "remind me in X minutes",
@@ -414,25 +422,27 @@ def register_query_patterns():
             }
         },
 
-        # 文档处理类
+        # 文档处理类（英文）
         {
             "id": "query_pattern:document_ingest",
-            "content": "入库这个文件",
+            "content": "ingest this document",  # ✅ 英文
             "metadata": {
                 "type": "query_pattern",
                 "is_recursive": True,
-                "refined_query": "文档入库",
-                "category": "mcp_tool"
+                "refined_query": "document ingestion",  # ✅ 英文
+                "category": "mcp_tool",
+                "description": "ingest document to knowledge base"
             }
         },
         {
             "id": "query_pattern:photo_ingest",
-            "content": "处理照片",
+            "content": "process photos",  # ✅ 英文
             "metadata": {
                 "type": "query_pattern",
                 "is_recursive": True,
-                "refined_query": "照片入库",
-                "category": "mcp_tool"
+                "refined_query": "photo ingestion",  # ✅ 英文
+                "category": "mcp_tool",
+                "description": "ingest photos to gallery"
             }
         },
     ]
@@ -453,7 +463,12 @@ def register_query_patterns():
                 logger.warning(f"[{i}/{len(patterns)}] {pattern['id']} - 向量生成失败")
                 continue
 
-            embedding_blob = np.array(embedding, dtype=np.float32).tobytes()
+            # ✅ L2归一化（符合L1规范）
+            vec = np.array(embedding, dtype=np.float32)
+            norm = np.linalg.norm(vec)
+            if norm > 0:
+                vec = vec / norm
+            embedding_blob = vec.tobytes()
 
             # UPSERT
             conn.execute(
