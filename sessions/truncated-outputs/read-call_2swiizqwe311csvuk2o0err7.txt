@@ -1,0 +1,1795 @@
+     1	package main
+     2	
+     3	import (
+     4		"bufio"
+     5		"bytes"
+     6		"context"
+     7		"encoding/json"
+     8		"flag"
+     9		"fmt"
+    10		"log/slog"
+    11		"net/http"
+    12		"os"
+    13		"os/exec"
+    14		"os/signal"
+    15		"path/filepath"
+    16		"strings"
+    17		"sync"
+    18		"syscall"
+    19		"time"
+    20	
+    21		"github.com/niubot/niu/pkg/assistant"
+    22		"github.com/niubot/niu/pkg/config"
+    23		"github.com/niubot/niu/pkg/llm"
+    24		"github.com/niubot/niu/pkg/llm/goai"
+    25		"github.com/niubot/niu/pkg/mcp"
+    26		nanobotRuntime "github.com/niubot/niu/pkg/runtime"
+    27		"github.com/niubot/niu/pkg/scheduler"
+    28		"github.com/niubot/niu/pkg/server"
+    29		"github.com/niubot/niu/pkg/session"
+    30		"github.com/niubot/niu/pkg/supervise"
+    31		"github.com/niubot/niu/pkg/toolloop"
+    32		"github.com/niubot/niu/pkg/types"
+    33		"github.com/niubot/niu/pkg/uuid"
+    34	)
+    35	
+    36	// PendingAlert represents a pending alert for frontend
+    37	type PendingAlert struct {
+    38		Content   string `json:"content"`
+    39		Timestamp int64  `json:"timestamp"`
+    40	}
+    41	
+    42	// ContextConfig represents context window configuration
+    43	type ContextConfig struct {
+    44		WarningThreshold    float64 `json:"warningThreshold"`    // 预警线百分比 (0.80 = 80%)
+    45		TargetThreshold     float64 `json:"targetThreshold"`     // 目标压缩百分比 (0.50 = 50%)
+    46		SleepTriggerMinutes int     `json:"sleepTriggerMinutes"` // 睡眠触发时间（分钟）
+    47		ContextWindowSize   int     `json:"contextWindowSize"`   // 上下文窗口大小
+    48	}
+    49	
+    50	// DefaultContextConfig returns default context configuration
+    51	func DefaultContextConfig() *ContextConfig {
+    52		return &ContextConfig{
+    53			WarningThreshold:    0.80,
+    54			TargetThreshold:     0.50,
+    55			SleepTriggerMinutes: 5,
+    56			ContextWindowSize:   200000,
+    57		}
+    58	}
+    59	
+    60	// LoadContextConfig loads context config from preferences.json
+    61	func LoadContextConfig() *ContextConfig {
+    62		cfg := DefaultContextConfig()
+    63	
+    64		// Try to load from preferences.json
+    65		homeDir, err := os.UserHomeDir()
+    66		if err != nil {
+    67			return cfg
+    68		}
+    69	
+    70		prefsPath := filepath.Join(homeDir, ".niu", "preferences.json")
+    71		data, err := os.ReadFile(prefsPath)
+    72		if err != nil {
+    73			return cfg
+    74		}
+    75	
+    76		var prefs struct {
+    77			Context *ContextConfig `json:"context"`
+    78		}
+    79		if err := json.Unmarshal(data, &prefs); err != nil {
+    80			return cfg
+    81		}
+    82	
+    83		if prefs.Context != nil {
+    84			if prefs.Context.WarningThreshold > 0 {
+    85				cfg.WarningThreshold = prefs.Context.WarningThreshold
+    86			}
+    87			if prefs.Context.TargetThreshold > 0 {
+    88				cfg.TargetThreshold = prefs.Context.TargetThreshold
+    89			}
+    90			if prefs.Context.SleepTriggerMinutes > 0 {
+    91				cfg.SleepTriggerMinutes = prefs.Context.SleepTriggerMinutes
+    92			}
+    93			if prefs.Context.ContextWindowSize > 0 {
+    94				cfg.ContextWindowSize = prefs.Context.ContextWindowSize
+    95			}
+    96		}
+    97	
+    98		return cfg
+    99	}
+   100	
+   101	var (
+   102		pendingAlerts   []PendingAlert
+   103		pendingAlertsMu sync.Mutex
+   104		contextConfig   *ContextConfig
+   105	)
+   106	
+   107	func AddPendingAlert(content string) {
+   108		pendingAlertsMu.Lock()
+   109		defer pendingAlertsMu.Unlock()
+   110		pendingAlerts = append(pendingAlerts, PendingAlert{
+   111			Content:   content,
+   112			Timestamp: time.Now().Unix(),
+   113		})
+   114		if len(pendingAlerts) > 10 {
+   115			pendingAlerts = pendingAlerts[len(pendingAlerts)-10:]
+   116		}
+   117	}
+   118	
+   119	func GetAndClearPendingAlerts() []PendingAlert {
+   120		pendingAlertsMu.Lock()
+   121		defer pendingAlertsMu.Unlock()
+   122		alerts := pendingAlerts
+   123		pendingAlerts = nil
+   124		return alerts
+   125	}
+   126	
+   127	// detectPython finds a suitable Python executable for MCP servers
+   128	func detectPython() string {
+   129		// Get executable directory for relative paths
+   130		exePath, _ := os.Executable()
+   131		exeDir := filepath.Dir(exePath)
+   132	
+   133		// Priority: bundled python > venv > system Python
+   134		candidates := []string{
+   135			// Bundled Python (for packaged release)
+   136			filepath.Join(exeDir, "python", "Scripts", "python.exe"),
+   137			filepath.Join(".", "python", "Scripts", "python.exe"),
+   138			// Development venv
+   139			"E:/opencode/venv/Scripts/python.exe",
+   140			// User's virtualenv
+   141			filepath.Join(exeDir, ".venv", "Scripts", "python.exe"),
+   142			// System Python
+   143			"C:/Python311/python.exe",
+   144			"C:/Python310/python.exe",
+   145			// PATH fallback
+   146			"python",
+   147			"python3",
+   148		}
+   149	
+   150		for _, candidate := range candidates {
+   151			cmd := exec.Command(candidate, "--version")
+   152			if err := cmd.Run(); err == nil {
+   153				if absPath, err := filepath.Abs(candidate); err == nil {
+   154					return absPath
+   155				}
+   156				return candidate
+   157			}
+   158		}
+   159	
+   160		slog.Warn("No Python found, using 'python' as fallback")
+   161		return "python"
+   162	}
+   163	
+   164	// loadMemory loads user memory from ~/.niu/memory.json
+   165	func loadMemory() map[string]any {
+   166		homeDir, err := os.UserHomeDir()
+   167		if err != nil {
+   168			slog.Warn("Failed to get home directory", "error", err)
+   169			return nil
+   170		}
+   171	
+   172		memoryPath := filepath.Join(homeDir, ".niu", "memory.json")
+   173		data, err := os.ReadFile(memoryPath)
+   174		if err != nil {
+   175			slog.Info("No memory file found, will create on first run")
+   176			return nil
+   177		}
+   178	
+   179		var memory map[string]any
+   180		if err := json.Unmarshal(data, &memory); err != nil {
+   181			slog.Warn("Failed to parse memory file", "error", err)
+   182			return nil
+   183		}
+   184	
+   185		return memory
+   186	}
+   187	
+   188	// formatMemoryForPrompt formats memory for system prompt injection
+   189	func formatMemoryForPrompt(memory map[string]any) string {
+   190		var sb strings.Builder
+   191		sb.WriteString("\n\n# 我的重要记忆\n\n")
+   192	
+   193		// Identity
+   194		if identity, ok := memory["identity"].(map[string]any); ok {
+   195			sb.WriteString("## 我的身份\n\n")
+   196			if name, ok := identity["name"].(string); ok && name != "" {
+   197				sb.WriteString(fmt.Sprintf("我的名字是 %s。\n", name))
+   198			}
+   199			if personality, ok := identity["personality"].([]any); ok && len(personality) > 0 {
+   200				var traits []string
+   201				for _, t := range personality {
+   202					if s, ok := t.(string); ok {
+   203						traits = append(traits, s)
+   204					}
+   205				}
+   206				if len(traits) > 0 {
+   207					sb.WriteString(fmt.Sprintf("我的性格：%s。\n", strings.Join(traits, "、")))
+   208				}
+   209			}
+   210			sb.WriteString("\n")
+   211		}
+   212	
+   213		// Workspace
+   214		if workspace, ok := memory["workspace"].(map[string]any); ok {
+   215			if path, ok := workspace["path"].(string); ok && path != "" {
+   216				sb.WriteString("## 工作目录\n\n")
+   217				sb.WriteString(fmt.Sprintf("我的知识库存储在：%s\n\n", path))
+   218			}
+   219		}
+   220	
+   221		// User
+   222		if user, ok := memory["user"].(map[string]any); ok {
+   223			if name, ok := user["name"].(string); ok && name != "" {
+   224				sb.WriteString("## 用户信息\n\n")
+   225				sb.WriteString(fmt.Sprintf("用户称呼：%s\n", name))
+   226			}
+   227			if prefs, ok := user["preferences"].([]any); ok && len(prefs) > 0 {
+   228				var prefStrs []string
+   229				for _, p := range prefs {
+   230					if s, ok := p.(string); ok {
+   231						prefStrs = append(prefStrs, s)
+   232					}
+   233				}
+   234				if len(prefStrs) > 0 {
+   235					sb.WriteString(fmt.Sprintf("用户偏好：%s\n", strings.Join(prefStrs, "、")))
+   236					// 明确指示文件处理时的行为
+   237					for _, pref := range prefStrs {
+   238						if strings.Contains(pref, "年份") || strings.Contains(pref, "year") {
+   239							sb.WriteString("\n**重要**：处理文件时，必须先创建年份目录（如 documents/2025/），再将文件复制到该目录。\n")
+   240						}
+   241					}
+   242				}
+   243			}
+   244		}
+   245	
+   246		// Add configuration file paths info (relative paths)
+   247		homeDir, _ := os.UserHomeDir()
+   248	
+   249		sb.WriteString("\n## 配置文件位置\n\n")
+   250		sb.WriteString("配置文件（相对于程序目录）：\n")
+   251		sb.WriteString("- 主配置（LLM）：`config/user-config.json`\n")
+   252		sb.WriteString("- LLM预设：`config/llm-presets.json`\n")
+   253		sb.WriteString("- Agent定义：`config/agents/niu.md`\n")
+   254		sb.WriteString("- MCP服务器：`config/mcp-servers.yaml`\n")
+   255		if homeDir != "" {
+   256			sb.WriteString(fmt.Sprintf("- 用户记忆：`%s/.niu/memory.json`\n", homeDir))
+   257		}
+   258	
+   259		// First run warning
+   260		if firstRun, ok := memory["firstRun"].(bool); ok && firstRun {
+   261			sb.WriteString("\n**重要**：这是首次运行，请先询问用户设置工作目录。\n")
+   262		}
+   263	
+   264		return sb.String()
+   265	}
+   266	
+   267	var (
+   268		showSettings = flag.Bool("settings", false, "open settings window")
+   269		showGraph    = flag.Bool("graph", false, "open knowledge graph window")
+   270		cliMode      = flag.Bool("cli", false, "run in CLI mode (default is GUI)")
+   271		port         = flag.Int("port", 9876, "port to listen on")
+   272	)
+   273	
+   274	func main() {
+   275		// Handle _exec mode for supervised subprocesses
+   276		if len(os.Args) > 2 && os.Args[1] == "_exec" {
+   277			if err := supervise.Daemon(); err != nil {
+   278				os.Exit(1)
+   279			}
+   280			return
+   281		}
+   282	
+   283		// Parse flags
+   284		configPath := flag.String("config", "./config", "path to configuration directory")
+   285		flag.Parse()
+   286	
+   287		ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+   288		defer cancel()
+   289	
+   290		slog.Info("Niu - Personal Knowledge Assistant starting...")
+   291	
+   292		// If --settings flag, just open settings and exit
+   293		if *showSettings {
+   294			if err := launchWindow("settings"); err != nil {
+   295				slog.Error("Failed to launch settings window", "error", err)
+   296				os.Exit(1)
+   297			}
+   298			return
+   299		}
+   300	
+   301		// If --graph flag, just open graph and exit
+   302		if *showGraph {
+   303			if err := launchWindow("graph"); err != nil {
+   304				slog.Error("Failed to launch graph window", "error", err)
+   305				os.Exit(1)
+   306			}
+   307			return
+   308		}
+   309	
+   310		// Check if LLM is configured
+   311		userConfig, err := assistant.LoadConfig()
+   312		if err != nil {
+   313			slog.Error("Failed to load config", "error", err)
+   314			os.Exit(1)
+   315		}
+   316	
+   317		// Load context configuration
+   318		contextConfig = LoadContextConfig()
+   319		slog.Info("Context configuration loaded",
+   320			"warningThreshold", contextConfig.WarningThreshold,
+   321			"targetThreshold", contextConfig.TargetThreshold,
+   322			"contextWindowSize", contextConfig.ContextWindowSize,
+   323		)
+   324	
+   325		// Initialize LLM interaction logger
+   326		if err := goai.InitLLMLogger("logs"); err != nil {
+   327			slog.Error("Failed to initialize LLM logger", "error", err)
+   328			// Non-fatal, continue without logging
+   329		} else {
+   330			slog.Info("LLM interaction logging enabled", "directory", "logs")
+   331		}
+   332	
+   333		// If not configured, show settings first
+   334		if assistant.NeedsConfiguration(userConfig) {
+   335			slog.Info("LLM configuration required, launching settings window...")
+   336			fmt.Println("\n⚠️  首次使用需要配置大模型")
+   337			fmt.Println("正在打开设置窗口...\n")
+   338	
+   339			if err := launchWindow("settings"); err != nil {
+   340				slog.Error("Failed to launch settings window", "error", err)
+   341				fmt.Println("\n请手动运行: cd ui/settings && npm start")
+   342				os.Exit(1)
+   343			}
+   344	
+   345			// Wait a moment for config file to be written
+   346			time.Sleep(500 * time.Millisecond)
+   347	
+   348			// Reload config
+   349			userConfig, err = assistant.LoadConfig()
+   350			if err != nil {
+   351				slog.Error("Failed to reload config", "error", err)
+   352				os.Exit(1)
+   353			}
+   354		}
+   355	
+   356		// Build LLM config from user settings
+   357		llmConfig := llm.Config{
+   358			DefaultModel: userConfig.LLM.Model,
+   359			APIType:      userConfig.LLM.Type,
+   360		}
+   361	
+   362		if userConfig.LLM.Type == "anthropic" {
+   363			llmConfig.Anthropic.APIKey = userConfig.LLM.APIKey
+   364			llmConfig.Anthropic.BaseURL = userConfig.LLM.APIBase
+   365		} else {
+   366			llmConfig.Responses.APIKey = userConfig.LLM.APIKey
+   367			llmConfig.Responses.BaseURL = userConfig.LLM.APIBase
+   368			llmConfig.Responses.ChatCompletionAPI = true
+   369		}
+   370	
+   371		// Detect Python path for MCP servers
+   372		pythonPath := detectPython()
+   373		slog.Info("Using Python path", "path", pythonPath)
+   374		os.Setenv("PYTHON_PATH", pythonPath)
+   375	
+   376		// Create Nanobot runtime with full Agent framework
+   377		rt, err := nanobotRuntime.NewRuntime(llmConfig, nanobotRuntime.Options{
+   378			ConfigDir: *configPath,
+   379		})
+   380		if err != nil {
+   381			slog.Error("Failed to create runtime", "error", err)
+   382			os.Exit(1)
+   383		}
+   384	
+   385		// Load config from agent definition directory
+   386		slog.Info("Loading config from", "path", *configPath)
+   387		cfg, _, err := config.Load(ctx, *configPath, true)
+   388		if err != nil {
+   389			slog.Error("Failed to read config, using defaults", "error", err)
+   390			cfg = &types.Config{
+   391				Agents: map[string]types.Agent{
+   392					"main": {
+   393						HookAgent: types.HookAgent{
+   394							Name:  "小妞",
+   395							Model: userConfig.LLM.Model,
+   396						},
+   397					},
+   398				},
+   399			}
+   400		}
+   401	
+   402		// Debug: log loaded config
+   403		slog.Info("Config loaded", "agents", len(cfg.Agents), "entrypoints", cfg.Publish.Entrypoint)
+   404		for name, agent := range cfg.Agents {
+   405			slog.Info("Agent", "name", name, "agentName", agent.Name, "hasInstructions", agent.Instructions.IsSet(), "mcpServers", agent.MCPServers, "tools", agent.Tools, "agents", agent.Agents)
+   406		}
+   407		slog.Info("MCP Servers", "count", len(cfg.MCPServers))
+   408		for name, server := range cfg.MCPServers {
+   409			slog.Info("MCP Server", "name", name, "command", server.Command, "args", server.Args, "cwd", server.Cwd, "workdir", server.Workdir)
+   410		}
+   411	
+   412		// Load user memory and inject into agent instructions
+   413		memory := loadMemory()
+   414		memoryPrompt := formatMemoryForPrompt(memory)
+   415		if memoryPrompt != "" {
+   416			slog.Info("Memory loaded, injecting into agent instructions")
+   417			// Inject memory into niu agent instructions
+   418			if niuAgent, ok := cfg.Agents["niu"]; ok {
+   419				if niuAgent.Instructions.IsSet() {
+   420					baseInstructions := niuAgent.Instructions.Instructions
+   421					niuAgent.Instructions.Instructions = baseInstructions + memoryPrompt
+   422	
+   423					// Override agent name from memory if set
+   424					if identity, ok := memory["identity"].(map[string]any); ok {
+   425						if name, ok := identity["name"].(string); ok && name != "" {
+   426							niuAgent.Name = name
+   427							slog.Info("Agent name overridden from memory", "name", name)
+   428						}
+   429					}
+   430	
+   431					cfg.Agents["niu"] = niuAgent
+   432					slog.Info("Memory injected into niu agent")
+   433				}
+   434			}
+   435		}
+   436	
+   437		// Create context with config
+   438		ctx = rt.WithTempSession(ctx, cfg)
+   439	
+   440		slog.Info("Nanobot runtime initialized", "model", userConfig.LLM.Model)
+   441	
+   442		// CLI mode
+   443		if *cliMode {
+   444			runCLI(ctx, rt, cfg)
+   445			return
+   446		}
+   447	
+   448		// GUI mode - start HTTP server for UI
+   449		slog.Info("Starting GUI mode...")
+   450		fmt.Println("\n🌟 小妞启动中...")
+   451	
+   452		// Start HTTP server in background
+   453		go func() {
+   454			if err := startHTTPServer(ctx, cancel, rt, *port, cfg, pythonPath, userConfig); err != nil {
+   455				slog.Error("HTTP server error", "error", err)
+   456			}
+   457		}()
+   458	
+   459		slog.Info("API server started", "port", *port)
+   460		fmt.Printf("✅ 后端服务已启动 (http://127.0.0.1:%d)\n", *port)
+   461	
+   462		// Launch floating assistant window
+   463		if err := launchWindow("assistant"); err != nil {
+   464			slog.Error("Failed to launch assistant window", "error", err)
+   465			fmt.Println("\n请手动运行: cd ui/assistant && npm start")
+   466			os.Exit(1)
+   467		}
+   468	}
+   469	
+   470	func runCLI(ctx context.Context, rt *nanobotRuntime.Runtime, cfg *types.Config) {
+   471		// Simple REPL for CLI mode
+   472		fmt.Println("\n🤖 小妞已就绪！输入你的问题，或输入 'quit' 退出。")
+   473		fmt.Println("支持：直接提问、工具调用\n")
+   474	
+   475		// Find the entrypoint agent
+   476		var agentName string
+   477		if len(cfg.Publish.Entrypoint) > 0 {
+   478			agentName = cfg.Publish.Entrypoint[0]
+   479		} else {
+   480			for name := range cfg.Agents {
+   481				agentName = name
+   482				break
+   483			}
+   484		}
+   485	
+   486		for {
+   487			fmt.Print("\n你: ")
+   488			var input string
+   489			if _, err := fmt.Scanln(&input); err != nil {
+   490				break
+   491			}
+   492	
+   493			if input == "quit" || input == "exit" || input == "q" {
+   494				fmt.Println("\n再见！👋")
+   495				break
+   496			}
+   497	
+   498			if input == "" {
+   499				continue
+   500			}
+   501	
+   502			// Create session context
+   503			session := mcp.NewEmptySession(ctx)
+   504			session.Set(types.ConfigSessionKey, cfg)
+   505			callCtx := mcp.WithSession(types.WithConfig(ctx, *cfg), session)
+   506	
+   507			// Use CallFromCLI with the agent name
+   508			result, err := rt.CallFromCLI(callCtx, agentName, input)
+   509			if err != nil {
+   510				fmt.Printf("\n错误: %v\n", err)
+   511				continue
+   512			}
+   513	
+   514			// Print result
+   515			for _, content := range result.Content {
+   516				if content.Type == "text" {
+   517					fmt.Printf("\n小妞: %s\n", content.Text)
+   518				}
+   519			}
+   520		}
+   521	}
+   522	
+   523	func startHTTPServer(ctx context.Context, cancel context.CancelFunc, rt *nanobotRuntime.Runtime, port int, cfg *types.Config, pythonPath string, userConfig *assistant.UserConfig) error {
+   524		// Load memory to get workspace path
+   525		memory := loadMemory()
+   526		workspacePath := ""
+   527		if memory != nil {
+   528			if ws, ok := memory["workspace"].(map[string]any); ok {
+   529				if path, ok := ws["path"].(string); ok {
+   530					workspacePath = path
+   531				}
+   532			}
+   533		}
+   534	
+   535		// Get project root directory (absolute path)
+   536		// Use the directory of the executable as project root
+   537		execPath, err := os.Executable()
+   538		slog.Info("Executable path", "path", execPath, "error", err)
+   539	
+   540		projectRoot := ""
+   541		if err == nil {
+   542			projectRoot = filepath.Dir(execPath)
+   543			slog.Info("Project root directory", "path", projectRoot)
+   544		} else {
+   545			slog.Warn("Failed to get executable path", "error", err)
+   546		}
+   547	
+   548		// Set workspace path globally for MCP servers (they read from os.Environ())
+   549		// Each MCP server will use WORKSPACE_PATH to determine its own database path:
+   550		// - kg-server: workspace/knowledge.db (Kuzu)
+   551		// - vector-store: workspace/vectors.db (SQLite)
+   552		if workspacePath != "" {
+   553			os.Setenv("WORKSPACE_PATH", workspacePath)
+   554			slog.Info("Workspace configured globally for MCP servers", "path", workspacePath)
+   555		}
+   556	
+   557		// Create environment provider with workspace path
+   558		envProvider := func() (map[string]string, error) {
+   559			env := map[string]string{}
+   560			for _, kv := range os.Environ() {
+   561				k, v, _ := kv, kv[len(kv)-len(kv):], ""
+   562				for i, c := range kv {
+   563					if c == '=' {
+   564						k = kv[:i]
+   565						v = kv[i+1:]
+   566						break
+   567					}
+   568				}
+   569				env[k] = v
+   570			}
+   571			env["NIU_MCP"] = "true"
+   572			env["PYTHON_PATH"] = pythonPath
+   573			// Pass workspace path to MCP servers
+   574			// Each server decides its own database name based on WORKSPACE_PATH
+   575			if workspacePath != "" {
+   576				env["WORKSPACE_PATH"] = workspacePath
+   577				slog.Info("Workspace configured for MCP servers", "path", workspacePath)
+   578			}
+   579			// Pass project root to MCP servers for accessing niu.db
+   580			if projectRoot != "" {
+   581				env["PROJECT_ROOT"] = projectRoot
+   582				slog.Info("Project root configured for MCP servers", "path", projectRoot)
+   583			} else {
+   584				slog.Warn("Project root is empty, not setting PROJECT_ROOT")
+   585			}
+   586			return env, nil
+   587		}
+   588	
+   589		// Create config factory
+   590		configFactory := func(ctx context.Context, profile string) (types.Config, error) {
+   591			return *cfg, nil
+   592		}
+   593	
+   594		// Create session manager
+   595		sessionManager, err := session.NewManager("./niu.db")
+   596		if err != nil {
+   597			return fmt.Errorf("failed to create session manager: %w", err)
+   598		}
+   599	
+   600		// Create MCP server
+   601		var mcpServer mcp.MessageHandler = server.NewServer(rt, configFactory, sessionManager)
+   602	
+   603		// Create HTTP server
+   604		httpServer, err := mcp.NewHTTPServer(ctx, envProvider, mcpServer, mcp.HTTPServerOptions{
+   605			SessionStore: sessionManager,
+   606		})
+   607		if err != nil {
+   608			return fmt.Errorf("failed to create HTTP server: %w", err)
+   609		}
+   610	
+   611		// Create a persistent session for MCP clients (shared across requests)
+   612		persistentSession := mcp.NewEmptySession(ctx)
+   613		persistentSession.Set(types.ConfigSessionKey, cfg)
+   614		sessionEnv := map[string]string{
+   615			"PYTHON_PATH": pythonPath,
+   616		}
+   617		if workspacePath != "" {
+   618			sessionEnv["WORKSPACE_PATH"] = workspacePath
+   619		}
+   620		if projectRoot != "" {
+   621			sessionEnv["PROJECT_ROOT"] = projectRoot
+   622		}
+   623		persistentSession.Set(mcp.SessionEnvMapKey, sessionEnv)
+   624	
+   625		// Start embedding service (shared embedding service for all MCP servers)
+   626		embeddingServiceCmd := exec.CommandContext(ctx, pythonPath, "-m", "niu_embedding_service")
+   627		embeddingServiceCmd.Dir = filepath.Join(projectRoot, "mcp-servers", "embedding-service", "src")
+   628		embeddingServiceCmd.Env = append(os.Environ(),
+   629			"NIU_MODELS_PATH="+filepath.Join(projectRoot, "models"),
+   630			"PYTHONUNBUFFERED=1", // Force unbuffered output for logs
+   631		)
+   632	
+   633		// Capture embedding service output (must be done BEFORE Start)
+   634		embedStdout, err := embeddingServiceCmd.StdoutPipe()
+   635		if err != nil {
+   636			slog.Warn("Failed to create stdout pipe for embedding service", "error", err)
+   637		}
+   638		embedStderr, err := embeddingServiceCmd.StderrPipe()
+   639		if err != nil {
+   640			slog.Warn("Failed to create stderr pipe for embedding service", "error", err)
+   641		}
+   642	
+   643		// Start reading output in goroutines
+   644		if embedStdout != nil {
+   645			go func() {
+   646				scanner := bufio.NewScanner(embedStdout)
+   647				for scanner.Scan() {
+   648					slog.Info("embedding-service", "output", scanner.Text())
+   649				}
+   650			}()
+   651		}
+   652		if embedStderr != nil {
+   653			go func() {
+   654				scanner := bufio.NewScanner(embedStderr)
+   655				for scanner.Scan() {
+   656					slog.Info("embedding-service", "output", scanner.Text())
+   657				}
+   658			}()
+   659		}
+   660	
+   661		// Start the service
+   662		if err := embeddingServiceCmd.Start(); err != nil {
+   663			slog.Warn("Failed to start embedding service", "error", err)
+   664		} else {
+   665			slog.Info("Embedding service starting", "pid", embeddingServiceCmd.Process.Pid)
+   666	
+   667			// Wait for service to exit when context is canceled
+   668			// This fixes the issue where reading goroutines hang if child processes still hold pipe handles
+   669			go func() {
+   670				<-ctx.Done()
+   671				// Kill the process and wait for it to complete to clean up properly
+   672				_ = embeddingServiceCmd.Process.Kill()
+   673				_ = embeddingServiceCmd.Wait()
+   674				// After Wait, all pipes are closed, reading goroutines will exit
+   675			}()
+   676	
+   677			// Wait for service to be ready (poll health endpoint)
+   678			for i := 0; i < 30; i++ {
+   679				time.Sleep(1 * time.Second)
+   680				resp, err := http.Get("http://127.0.0.1:9877/health")
+   681				if err == nil {
+   682					resp.Body.Close()
+   683					slog.Info("Embedding service ready")
+   684					break
+   685				}
+   686				if i == 29 {
+   687					slog.Warn("Embedding service not ready after 30s")
+   688				}
+   689			}
+   690		}
+   691	
+   692		// Preload MCP servers marked with preload:true (e.g., vector-store, config-manager)
+   693		preloadCtx := mcp.WithSession(types.WithConfig(ctx, *cfg), persistentSession)
+   694		if err := rt.PreloadServers(preloadCtx); err != nil {
+   695			slog.Warn("Some MCP servers failed to preload", "error", err)
+   696		} else {
+   697			slog.Info("MCP servers preloaded successfully")
+   698		}
+   699	
+   700		// ========== 定时任务调度器 ==========
+   701		sched := scheduler.InitGlobalScheduler(sessionManager.DB.DB())
+   702		slog.Info("定时任务调度器已初始化")
+   703		defer scheduler.StopGlobalScheduler()
+   704	
+   705		// 后台处理定时任务通知
+   706		go func() {
+   707			notifyCh := sched.GetNotifyChannel()
+   708			for notification := range notifyCh {
+   709				slog.Info("收到定时任务通知", "taskID", notification.TaskID, "content", notification.Content)
+   710	
+   711				agentName := "niu"
+   712				prompt := fmt.Sprintf("定时提醒：该「%s」了。请提醒用户。", notification.Content)
+   713	
+   714				// 从 window-config.json 读取当前 sessionID（不使用创建时存储的旧值）
+   715				sessionID := "default"
+   716				configPath := filepath.Join("ui", "assistant", "window-config.json")
+   717				if data, err := os.ReadFile(configPath); err == nil {
+   718					var windowConfig struct {
+   719						ChatSessionId string `json:"chatSessionId"`
+   720					}
+   721					if json.Unmarshal(data, &windowConfig) == nil && windowConfig.ChatSessionId != "" {
+   722						sessionID = windowConfig.ChatSessionId
+   723						slog.Info("从 window-config.json 读取 sessionID", "sessionID", sessionID)
+   724					}
+   725				}
+   726	
+   727				// 构建 LLM 客户端
+   728				llmConfig := llm.Config{
+   729					DefaultModel: userConfig.LLM.Model,
+   730					APIType:      userConfig.LLM.Type,
+   731				}
+   732				if userConfig.LLM.Type == "anthropic" {
+   733					llmConfig.Anthropic.APIKey = userConfig.LLM.APIKey
+   734					llmConfig.Anthropic.BaseURL = userConfig.LLM.APIBase
+   735				} else {
+   736					llmConfig.Responses.APIKey = userConfig.LLM.APIKey
+   737					llmConfig.Responses.BaseURL = userConfig.LLM.APIBase
+   738					llmConfig.Responses.ChatCompletionAPI = true
+   739				}
+   740				llmClient := llm.NewClient(llmConfig)
+   741	
+   742				// 从 messages 表加载历史
+   743				callCtx, callCancel := context.WithTimeout(context.Background(), 120*time.Second)
+   744				storedMessages, err := sessionManager.DB.GetRecentMessages(callCtx, sessionID, 20)
+   745				callCancel()
+   746				if err != nil {
+   747					slog.Error("加载历史消息失败", "taskID", notification.TaskID, "error", err)
+   748					continue
+   749				}
+   750	
+   751				// 构建输入消息
+   752				var inputMessages []types.Message
+   753				for _, msg := range storedMessages {
+   754					inputMessages = append(inputMessages, types.Message{
+   755						ID:   uuid.String(),
+   756						Role: msg.Role,
+   757						Items: []types.CompletionItem{{
+   758							Content: &mcp.Content{Type: "text", Text: msg.Content},
+   759						}},
+   760					})
+   761				}
+   762				inputMessages = append(inputMessages, types.Message{
+   763					ID:   uuid.String(),
+   764					Role: "user",
+   765					Items: []types.CompletionItem{{
+   766						Content: &mcp.Content{Type: "text", Text: prompt},
+   767					}},
+   768				})
+   769	
+   770				// 获取 Agent 配置
+   771				agentConfig, ok := cfg.Agents[agentName]
+   772				if !ok {
+   773					slog.Error("Agent 配置不存在", "agentName", agentName)
+   774					continue
+   775				}
+   776	
+   777				completionReq := types.CompletionRequest{
+   778					Model:        agentConfig.Model,
+   779					Agent:        agentName,
+   780					Input:        inputMessages,
+   781					SystemPrompt: agentConfig.Instructions.Instructions,
+   782					MaxTokens:    4096,
+   783				}
+   784	
+   785				callCtx, callCancel = context.WithTimeout(context.Background(), 120*time.Second)
+   786				resp, err := toolloop.ChatWithToolLoop(callCtx, llmClient, rt.Service, completionReq, agentConfig, cfg.MCPServers)
+   787				callCancel()
+   788	
+   789				if err != nil {
+   790					slog.Error("调用 Agent 处理定时任务失败", "taskID", notification.TaskID, "error", err)
+   791					continue
+   792				}
+   793	
+   794				// 提取回复
+   795				var reply string
+   796				if resp != nil && len(resp.Output.Items) > 0 {
+   797					for _, item := range resp.Output.Items {
+   798						if item.Content != nil && item.Content.Type == "text" {
+   799							reply += item.Content.Text
+   800						}
+   801					}
+   802				}
+   803	
+   804				slog.Info("Agent 处理定时任务完成", "taskID", notification.TaskID, "reply_len", len(reply))
+   805	
+   806				// 存储消息
+   807				userMsg := &session.Message{SessionID: sessionID, Role: "user", Content: prompt}
+   808				sessionManager.DB.CreateMessage(context.Background(), userMsg)
+   809				assistantMsg := &session.Message{SessionID: sessionID, Role: "assistant", Content: reply}
+   810				sessionManager.DB.CreateMessage(context.Background(), assistantMsg)
+   811	
+   812				// 添加到待推送队列
+   813				AddPendingAlert(reply)
+   814				slog.Info("提醒消息已加入待推送队列", "taskID", notification.TaskID)
+   815			}
+   816		}()
+   817	
+   818		// Create mux and register handlers
+   819		mux := http.NewServeMux()
+   820		mux.Handle("/", httpServer)
+   821	
+   822		// ========== Chat Session API (with persistence) ==========
+   823		mux.HandleFunc("/api/chat/session", func(w http.ResponseWriter, r *http.Request) {
+   824			if r.Method != "POST" {
+   825				http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+   826				return
+   827			}
+   828	
+   829			var req struct {
+   830				SessionID string `json:"sessionId,omitempty"`
+   831				Message   string `json:"message"`
+   832			}
+   833			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+   834				http.Error(w, "Invalid JSON", http.StatusBadRequest)
+   835				return
+   836			}
+   837	
+   838			// ===== 上下文窗口控制 =====
+   839			// 限制对话历史长度，防止 context 膨胀
+   840			// 全量使用历史消息，通过 Token 计算和 Context Manager 实现智能压缩
+   841	
+   842			// Generate or use existing session ID
+   843			sessionID := req.SessionID
+   844			if sessionID == "" {
+   845				sessionID = uuid.String()
+   846			}
+   847	
+   848			slog.Info("Chat session request", "sessionId", sessionID, "msg_len", len(req.Message))
+   849	
+   850			// Load conversation history from database
+   851			var inputMessages []types.Message
+   852			if storedMessages, err := sessionManager.DB.GetRecentMessages(r.Context(), sessionID, 50); err == nil {
+   853				// GetRecentMessages 返回正序（最旧在前），直接使用
+   854				for _, msg := range storedMessages {
+   855					inputMessages = append(inputMessages, types.Message{
+   856						ID:   uuid.String(),
+   857						Role: msg.Role,
+   858						Items: []types.CompletionItem{
+   859							{
+   860								Content: &mcp.Content{
+   861									Type: "text",
+   862									Text: msg.Content,
+   863								},
+   864							},
+   865						},
+   866					})
+   867				}
+   868			}
+   869	
+   870			// Add user message
+   871			inputMessages = append(inputMessages, types.Message{
+   872				ID:   uuid.String(),
+   873				Role: "user",
+   874				Items: []types.CompletionItem{
+   875					{
+   876						Content: &mcp.Content{
+   877							Type: "text",
+   878							Text: req.Message,
+   879						},
+   880					},
+   881				},
+   882			})
+   883	
+   884			// Store user message
+   885			userMsg := &session.Message{
+   886				SessionID: sessionID,
+   887				Role:      "user",
+   888				Content:   req.Message,
+   889			}
+   890			if err := sessionManager.DB.CreateMessage(r.Context(), userMsg); err != nil {
+   891				slog.Error("Failed to store user message", "error", err)
+   892			}
+   893	
+   894			// Prepare LLM request with full history
+   895			ctx := mcp.WithSession(types.WithConfig(r.Context(), *cfg), persistentSession)
+   896	
+   897			// Find the entrypoint agent
+   898			var agentName string
+   899			if len(cfg.Publish.Entrypoint) > 0 {
+   900				agentName = cfg.Publish.Entrypoint[0]
+   901			} else {
+   902				for name := range cfg.Agents {
+   903					agentName = name
+   904					break
+   905				}
+   906			}
+   907	
+   908			// Build system prompt with current time
+   909			now := time.Now()
+   910			timePrompt := fmt.Sprintf("【当前时间】今天是 %s，现在是 %s\n\n", now.Format("2006年1月2日"), now.Format("15:04:05"))
+   911			systemPrompt := timePrompt + cfg.Agents[agentName].Instructions.Instructions
+   912	
+   913			// 收集历史参考内容（L1 摘要），作为独立消息注入
+   914			var historyRefContent strings.Builder
+   915	
+   916			// ===== L1: 工作记忆注入 =====
+   917			// 从向量库检索 L1 摘要（不是原始 L2）
+   918			// 这是核心功能，每次对话都执行
+   919			slog.Info("Searching for L1 summaries")
+   920			l1Result, err := rt.Call(ctx, "vector-store", "search_documents", map[string]any{
+   921				"query":  req.Message,
+   922				"filter": map[string]string{"type": "l1"},
+   923				"limit":  5,
+   924			})
+   925			if err == nil && l1Result != nil && len(l1Result.Content) > 0 {
+   926				l1JSON := l1Result.Content[0].Text
+   927				if l1JSON != "" {
+   928					var eventList []map[string]any
+   929					if json.Unmarshal([]byte(l1JSON), &eventList) == nil && len(eventList) > 0 {
+   930						historyRefContent.WriteString(fmt.Sprintf("## 相关记忆（共 %d 条）\n", len(eventList)))
+   931						for i, event := range eventList {
+   932							if content, ok := event["content"].(string); ok {
+   933								if len(content) > 100 {
+   934									content = content[:100] + "..."
+   935								}
+   936								score := 0.0
+   937								if s, ok := event["score"].(float64); ok {
+   938									score = s
+   939								}
+   940								historyRefContent.WriteString(fmt.Sprintf("%d. %s (相似度: %.2f)\n", i+1, content, score))
+   941							}
+   942						}
+   943						slog.Info("Injected L1 events", "count", len(eventList))
+   944					}
+   945				}
+   946			} else {
+   947				slog.Debug("L1 search failed or empty", "error", err)
+   948			}
+   949	
+   950			// 将历史参考作为独立消息注入（不是系统提示词的一部分）
+   951			// 这样大模型会正确理解这是"参考信息"，而不是"当前任务"
+   952			// 必须插入到消息列表最顶端（第一条），而不是末尾
+   953			if historyRefContent.Len() > 0 {
+   954				historyRefMsg := types.Message{
+   955					ID:   "history-ref-" + uuid.String(),
+   956					Role: "system", // 用 system 角色，但权重低于 System Prompt
+   957					Items: []types.CompletionItem{
+   958						{
+   959							Content: &mcp.Content{
+   960								Type: "text",
+   961								Text: `═══════════════════════════════════════
+   962	【历史参考】
+   963	以下是从向量库中检索到与当前对话相关的内容：
+   964	
+   965	` + historyRefContent.String() + `
+   966	💡 如需更多细节，可调用 search_documents 工具查询向量库
+   967	
+   968	（以上内容供参考，非当前对话）
+   969	═══════════════════════════════════════`,
+   970							},
+   971						},
+   972					},
+   973				}
+   974				// 插入到消息列表最顶端（第一条）
+   975				inputMessages = append([]types.Message{historyRefMsg}, inputMessages...)
+   976			}
+   977	
+   978			// ===== 使用 toolloop.ChatWithToolLoop =====
+   979			// 直接调用 LLM + 工具循环，绕过 nanobot 的 session 历史机制
+   980			// 历史由我们自己的数据库管理
+   981	
+   982			// 简单估算 token 数量（字符数 / 4）
+   983			totalChars := 0
+   984			for _, msg := range inputMessages {
+   985				for _, item := range msg.Items {
+   986					if item.Content != nil {
+   987						totalChars += len(item.Content.Text)
+   988					}
+   989				}
+   990			}
+   991			estimatedTokens := totalChars / 4
+   992	
+   993			// 使用配置的上下文窗口参数
+   994			warningTokens := int(float64(contextConfig.ContextWindowSize) * contextConfig.WarningThreshold)
+   995			if estimatedTokens > warningTokens {
+   996				slog.Warn("Context window approaching limit, triggering async tidy",
+   997					"estimated_tokens", estimatedTokens,
+   998					"warning_threshold", contextConfig.WarningThreshold,
+   999					"warning_tokens", warningTokens,
+  1000					"message_count", len(inputMessages))
+  1001	
+  1002				// 异步触发整理，不阻塞当前对话
+  1003				go func(sid string) {
+  1004					tidyCtx := context.Background()
+  1005					tidyReq := struct {
+  1006						SessionID string `json:"session_id"`
+  1007					}{SessionID: sid}
+  1008	
+  1009					tidyReqBody, _ := json.Marshal(tidyReq)
+  1010					tidyHTTPReq, _ := http.NewRequestWithContext(tidyCtx, "POST",
+  1011						"http://localhost:8080/api/context/tidy",
+  1012						bytes.NewReader(tidyReqBody))
+  1013					tidyHTTPReq.Header.Set("Content-Type", "application/json")
+  1014	
+  1015					client := &http.Client{Timeout: 60 * time.Second}
+  1016					resp, err := client.Do(tidyHTTPReq)
+  1017					if err != nil {
+  1018						slog.Error("Async tidy failed", "error", err)
+  1019						return
+  1020					}
+  1021					defer resp.Body.Close()
+  1022	
+  1023					var tidyResult map[string]any
+  1024					if json.NewDecoder(resp.Body).Decode(&tidyResult) == nil {
+  1025						slog.Info("Async tidy completed", "result", tidyResult)
+  1026					}
+  1027				}(sessionID)
+  1028			} else {
+  1029				slog.Info("Context window: using full history",
+  1030					"estimated_tokens", estimatedTokens,
+  1031					"message_count", len(inputMessages))
+  1032			}
+  1033	
+  1034			// 构建 LLM 客户端
+  1035			llmConfig := llm.Config{
+  1036				DefaultModel: userConfig.LLM.Model,
+  1037				APIType:      userConfig.LLM.Type,
+  1038			}
+  1039			if userConfig.LLM.Type == "anthropic" {
+  1040				llmConfig.Anthropic.APIKey = userConfig.LLM.APIKey
+  1041				llmConfig.Anthropic.BaseURL = userConfig.LLM.APIBase
+  1042			} else {
+  1043				llmConfig.Responses.APIKey = userConfig.LLM.APIKey
+  1044				llmConfig.Responses.BaseURL = userConfig.LLM.APIBase
+  1045				llmConfig.Responses.ChatCompletionAPI = true
+  1046			}
+  1047			llmClient := llm.NewClient(llmConfig)
+  1048	
+  1049			// 构建完成请求
+  1050			completionReq := types.CompletionRequest{
+  1051				Model:        cfg.Agents[agentName].Model,
+  1052				Agent:        agentName,
+  1053				Input:        inputMessages,
+  1054				SystemPrompt: systemPrompt,
+  1055				MaxTokens:    4096,
+  1056			}
+  1057	
+  1058			// 调用 toolloop.ChatWithToolLoop
+  1059			resp, err := toolloop.ChatWithToolLoop(
+  1060				ctx,
+  1061				llmClient,
+  1062				rt.Service,
+  1063				completionReq,
+  1064				cfg.Agents[agentName],
+  1065				cfg.MCPServers,
+  1066			)
+  1067	
+  1068			if err != nil {
+  1069				w.Header().Set("Content-Type", "application/json; charset=utf-8")
+  1070				json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+  1071				return
+  1072			}
+  1073	
+  1074			// Extract reply from response
+  1075			var reply string
+  1076			if resp != nil && len(resp.Output.Items) > 0 {
+  1077				for _, item := range resp.Output.Items {
+  1078					if item.Content != nil && item.Content.Type == "text" {
+  1079						reply += item.Content.Text
+  1080					}
+  1081				}
+  1082			}
+  1083	
+  1084			// Store assistant reply
+  1085			assistantMsg := &session.Message{
+  1086				SessionID: sessionID,
+  1087				Role:      "assistant",
+  1088				Content:   reply,
+  1089			}
+  1090			if err := sessionManager.DB.CreateMessage(r.Context(), assistantMsg); err != nil {
+  1091				slog.Error("Failed to store assistant message", "error", err)
+  1092			}
+  1093	
+  1094			// 每 10 轮对话触发一次整理
+  1095			// 获取当前会话的消息数量
+  1096			msgCount, _ := sessionManager.DB.CountMessages(r.Context(), sessionID)
+  1097			if msgCount > 0 && msgCount%20 == 0 { // 20 = 10轮对话（每轮2条消息）
+  1098				slog.Info("Triggering tidy: 10 rounds reached", "message_count", msgCount)
+  1099				// 异步调用整理 API
+  1100				go func() {
+  1101					tidyReq := fmt.Sprintf(`{"session_id":"%s"}`, sessionID)
+  1102					http.Post("http://127.0.0.1:9876/api/context/tidy", "application/json", strings.NewReader(tidyReq))
+  1103				}()
+  1104			}
+  1105	
+  1106			slog.Info("Chat session response", "sessionId", sessionID, "reply_len", len(reply))
+  1107	
+  1108			// Return response with session ID
+  1109			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+  1110			json.NewEncoder(w).Encode(map[string]string{
+  1111				"sessionId": sessionID,
+  1112				"reply":     reply,
+  1113			})
+  1114		})
+  1115	
+  1116		// Health check endpoint
+  1117		mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+  1118			w.WriteHeader(http.StatusOK)
+  1119			w.Write([]byte("OK"))
+  1120		})
+  1121	
+  1122		// Initialize data store
+  1123		dataStore, err := assistant.NewDataStore("")
+  1124		if err != nil {
+  1125			slog.Warn("Failed to create data store", "error", err)
+  1126		}
+  1127	
+  1128		// Stats endpoint
+  1129		mux.HandleFunc("/api/stats", func(w http.ResponseWriter, r *http.Request) {
+  1130			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+  1131			stats := dataStore.Stats()
+  1132			json.NewEncoder(w).Encode(map[string]int{
+  1133				"files":   stats["files"],
+  1134				"persons": 0, // TODO: 从知识图谱获取
+  1135				"notes":   stats["notes"],
+  1136			})
+  1137		})
+  1138	
+  1139		// Pending alerts endpoint - for frontend polling
+  1140		mux.HandleFunc("/api/pending-alerts", func(w http.ResponseWriter, r *http.Request) {
+  1141			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+  1142			w.Header().Set("Access-Control-Allow-Origin", "*")
+  1143			alerts := GetAndClearPendingAlerts()
+  1144			json.NewEncoder(w).Encode(alerts)
+  1145		})
+  1146	
+  1147		// Context usage endpoint - Token usage statistics
+  1148		mux.HandleFunc("/api/context/usage", func(w http.ResponseWriter, r *http.Request) {
+  1149			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+  1150			w.Header().Set("Access-Control-Allow-Origin", "*")
+  1151	
+  1152			sessionID := r.URL.Query().Get("session_id")
+  1153			if sessionID == "" {
+  1154				http.Error(w, "session_id required", http.StatusBadRequest)
+  1155				return
+  1156			}
+  1157	
+  1158			// Get messages for the session
+  1159			messages, err := sessionManager.DB.GetRecentMessages(r.Context(), sessionID, 1000)
+  1160			if err != nil {
+  1161				http.Error(w, "Failed to get messages", http.StatusInternalServerError)
+  1162				return
+  1163			}
+  1164	
+  1165			// Calculate token usage (simple estimation: chars / 4)
+  1166			totalTokens := 0
+  1167			l0Tokens := 0 // System prompt / core memory
+  1168			l1Tokens := 0 // Recent messages (last 20)
+  1169			l2Tokens := 0 // Older messages
+  1170	
+  1171			for i, msg := range messages {
+  1172				content := msg.Content
+  1173				tokens := len(content) / 4
+  1174				totalTokens += tokens
+  1175	
+  1176				// Simple layer classification by position
+  1177				if i < len(messages)-20 {
+  1178					l2Tokens += tokens // Older messages
+  1179				} else {
+  1180					l1Tokens += tokens // Recent messages
+  1181				}
+  1182			}
+  1183	
+  1184			// L0 is estimated as system prompt size
+  1185			l0Tokens = 2000 // Approximate system prompt tokens
+  1186	
+  1187			// Use configured context window size
+  1188			contextWindowSize := contextConfig.ContextWindowSize
+  1189			availableWindow := contextWindowSize - totalTokens
+  1190			usageRate := float64(totalTokens) / float64(contextWindowSize)
+  1191	
+  1192			json.NewEncoder(w).Encode(map[string]any{
+  1193				"total_tokens":     totalTokens,
+  1194				"available_window": availableWindow,
+  1195				"context_window":   contextWindowSize,
+  1196				"usage_rate":       usageRate,
+  1197				"need_compression": usageRate > contextConfig.WarningThreshold,
+  1198				"config": map[string]any{
+  1199					"warningThreshold": contextConfig.WarningThreshold,
+  1200					"targetThreshold":  contextConfig.TargetThreshold,
+  1201				},
+  1202				"layers": map[string]any{
+  1203					"L0": map[string]any{
+  1204						"tokens":      l0Tokens,
+  1205						"description": "System prompt / Core memory",
+  1206					},
+  1207					"L1": map[string]any{
+  1208						"tokens":      l1Tokens,
+  1209						"count":       min(20, len(messages)),
+  1210						"description": "Recent messages (working memory)",
+  1211					},
+  1212					"L2": map[string]any{
+  1213						"tokens":      l2Tokens,
+  1214						"count":       max(0, len(messages)-20),
+  1215						"description": "Older messages (long-term memory)",
+  1216					},
+  1217				},
+  1218				"message_count": len(messages),
+  1219			})
+  1220		})
+  1221	
+  1222		// Get messages by layer endpoint
+  1223		mux.HandleFunc("/api/context/messages", func(w http.ResponseWriter, r *http.Request) {
+  1224			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+  1225			w.Header().Set("Access-Control-Allow-Origin", "*")
+  1226	
+  1227			if r.Method == "OPTIONS" {
+  1228				w.WriteHeader(http.StatusOK)
+  1229				return
+  1230			}
+  1231	
+  1232			sessionID := r.URL.Query().Get("session_id")
+  1233			beforeID := r.URL.Query().Get("before_id") // 用于加载更早的消息
+  1234			fullContent := r.URL.Query().Get("full") == "true"
+  1235			limit := 20
+  1236			if l := r.URL.Query().Get("limit"); l != "" {
+  1237				fmt.Sscanf(l, "%d", &limit)
+  1238			}
+  1239	
+  1240			if sessionID == "" {
+  1241				http.Error(w, "session_id required", http.StatusBadRequest)
+  1242				return
+  1243			}
+  1244	
+  1245			var messages []session.Message
+  1246			var err error
+  1247	
+  1248			if beforeID != "" {
+  1249				// 加载更早的消息
+  1250				var beforeIDInt uint
+  1251				fmt.Sscanf(beforeID, "%d", &beforeIDInt)
+  1252				messages, err = sessionManager.DB.GetMessagesBefore(r.Context(), sessionID, beforeIDInt, limit)
+  1253			} else {
+  1254				// 加载最近的消息
+  1255				messages, err = sessionManager.DB.GetRecentMessages(r.Context(), sessionID, limit)
+  1256			}
+  1257	
+  1258			if err != nil {
+  1259				http.Error(w, "Failed to get messages", http.StatusInternalServerError)
+  1260				return
+  1261			}
+  1262	
+  1263			// 获取总消息数
+  1264			totalCount, _ := sessionManager.DB.CountMessages(r.Context(), sessionID)
+  1265	
+  1266			// Format response - messages are already in oldest-first order
+  1267			result := make([]map[string]any, len(messages))
+  1268			for i, msg := range messages {
+  1269				content := msg.Content
+  1270				if !fullContent && len(content) > 200 {
+  1271					content = content[:200] + "..."
+  1272				}
+  1273				result[i] = map[string]any{
+  1274					"id":        msg.ID,
+  1275					"role":      msg.Role,
+  1276					"content":   content,
+  1277					"tokens":    len(msg.Content) / 4,
+  1278					"timestamp": msg.CreatedAt,
+  1279				}
+  1280			}
+  1281	
+  1282			json.NewEncoder(w).Encode(map[string]any{
+  1283				"messages":     result,
+  1284				"total_count":  len(messages),
+  1285				"total_in_db":  totalCount,
+  1286				"total_tokens": len(messages) * 50, // Approximate
+  1287			})
+  1288		})
+  1289	
+  1290		// Delete messages endpoint
+  1291		mux.HandleFunc("/api/context/messages/delete", func(w http.ResponseWriter, r *http.Request) {
+  1292			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+  1293			w.Header().Set("Access-Control-Allow-Origin", "*")
+  1294			w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+  1295			w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+  1296	
+  1297			if r.Method == "OPTIONS" {
+  1298				w.WriteHeader(http.StatusOK)
+  1299				return
+  1300			}
+  1301	
+  1302			if r.Method != "POST" {
+  1303				http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+  1304				return
+  1305			}
+  1306	
+  1307			var req struct {
+  1308				SessionID  string   `json:"session_id"`
+  1309				MessageIDs []string `json:"message_ids"`
+  1310				Reason     string   `json:"reason"`
+  1311			}
+  1312	
+  1313			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+  1314				http.Error(w, "Invalid JSON", http.StatusBadRequest)
+  1315				return
+  1316			}
+  1317	
+  1318			if req.SessionID == "" || len(req.MessageIDs) == 0 {
+  1319				http.Error(w, "session_id and message_ids required", http.StatusBadRequest)
+  1320				return
+  1321			}
+  1322	
+  1323			// Delete messages from database
+  1324			deletedCount, err := sessionManager.DB.DeleteMessagesByIDs(r.Context(), req.MessageIDs)
+  1325			if err != nil {
+  1326				slog.Error("Failed to delete messages", "error", err)
+  1327			}
+  1328	
+  1329			slog.Info("Deleted messages", "count", deletedCount, "reason", req.Reason)
+  1330	
+  1331			json.NewEncoder(w).Encode(map[string]any{
+  1332				"deleted_count": deletedCount,
+  1333				"requested":     len(req.MessageIDs),
+  1334			})
+  1335		})
+  1336	
+  1337		// Tidy context endpoint - 闲置整理，不产生新记录
+  1338		mux.HandleFunc("/api/context/tidy", func(w http.ResponseWriter, r *http.Request) {
+  1339			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+  1340			w.Header().Set("Access-Control-Allow-Origin", "*")
+  1341			w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+  1342			w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+  1343	
+  1344			if r.Method == "OPTIONS" {
+  1345				w.WriteHeader(http.StatusOK)
+  1346				return
+  1347			}
+  1348	
+  1349			if r.Method != "POST" {
+  1350				http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+  1351				return
+  1352			}
+  1353	
+  1354			var req struct {
+  1355				SessionID string `json:"session_id"`
+  1356			}
+  1357	
+  1358			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+  1359				http.Error(w, "Invalid JSON", http.StatusBadRequest)
+  1360				return
+  1361			}
+  1362	
+  1363			if req.SessionID == "" {
+  1364				http.Error(w, "session_id required", http.StatusBadRequest)
+  1365				return
+  1366			}
+  1367	
+  1368			slog.Info("Context tidy triggered", "session_id", req.SessionID)
+  1369	
+  1370			// 创建带有 session 的 context（rt.Call 需要）
+  1371			ctx := mcp.WithSession(types.WithConfig(r.Context(), *cfg), persistentSession)
+  1372	
+  1373			// 获取历史消息
+  1374			messages, err := sessionManager.DB.GetRecentMessages(ctx, req.SessionID, 1000)
+  1375			if err != nil {
+  1376				http.Error(w, "Failed to get messages", http.StatusInternalServerError)
+  1377				return
+  1378			}
+  1379	
+  1380			currentMsgCount := len(messages)
+  1381	
+  1382			// 检查上次整理状态，避免重复整理
+  1383			configPath := filepath.Join(os.Getenv("USERPROFILE"), ".niu", "tidy-state.json")
+  1384			var lastTidyState struct {
+  1385				MessageCount int `json:"message_count"`
+  1386			}
+  1387			if data, err := os.ReadFile(configPath); err == nil {
+  1388				json.Unmarshal(data, &lastTidyState)
+  1389			}
+  1390	
+  1391			// 如果消息数量没变化，跳过整理
+  1392			if currentMsgCount == lastTidyState.MessageCount {
+  1393				slog.Info("Skip tidy: no new messages since last tidy",
+  1394					"current", currentMsgCount,
+  1395					"last", lastTidyState.MessageCount)
+  1396				json.NewEncoder(w).Encode(map[string]any{
+  1397					"status":        "skipped",
+  1398					"reason":        "no new messages",
+  1399					"message_count": currentMsgCount,
+  1400				})
+  1401				return
+  1402			}
+  1403	
+  1404			if currentMsgCount < 10 {
+  1405				json.NewEncoder(w).Encode(map[string]any{
+  1406					"status": "skipped",
+  1407					"reason": "messages too few",
+  1408				})
+  1409				return
+  1410			}
+  1411	
+  1412			// 构建消息列表给 Context Manager（整理模式）
+  1413			// 注意：messages 是正序（最旧在前），idx 越大消息越新
+  1414			var msgList strings.Builder
+  1415			msgList.WriteString(fmt.Sprintf("共 %d 条消息（idx 从小到大 = 从旧到新）\n\n", len(messages)))
+  1416			for i, msg := range messages {
+  1417				content := msg.Content
+  1418				if len(content) > 100 {
+  1419					content = content[:100] + "..."
+  1420				}
+  1421				msgList.WriteString(fmt.Sprintf("[idx:%d] %s: %s\n", i, msg.Role, content))
+  1422			}
+  1423	
+  1424			// 调用 Context Manager 子 Agent（整理模式提示词）
+  1425			// 注入当前时间，让 Agent 知道"近期"、"远期"的判断依据
+  1426			now := time.Now()
+  1427			timeInfo := fmt.Sprintf("【当前时间】今天是 %s，现在是 %s\n\n", now.Format("2006年1月2日"), now.Format("15:04:05"))
+  1428	
+  1429			tidyResult, tidyErr := rt.Call(ctx, "context-manager", "chat-with-context-manager", map[string]any{
+  1430				"prompt": timeInfo + fmt.Sprintf(`你是上下文管理器，请分析以下历史消息，执行会话单元压缩。
+  1431	
+  1432	# 消息顺序说明
+  1433	
+  1434	**重要**：idx 从小到大 = 消息从旧到新
+  1435	- idx:0 是最早的消息
+  1436	- idx 越大，消息越新
+  1437	- **不要删除 idx 较大的消息**（这些是近期的对话）
+  1438	
+  1439	# 任务
+  1440	
+  1441	1. **识别会话单元**：判断哪些消息属于同一个完整话题/任务
+  1442	2. **判断是否已结束**：用户说"好的"、"谢谢"、转入新话题，可能是结束信号
+  1443	3. **生成摘要**：已结束的会话单元 → 生成 L0 + L1
+  1444	
+  1445	# L0/L1/L2 定义
+  1446	
+  1447	- **L0** = 对话核心摘要（一句话）
+  1448	- **L1** = 极简格式摘要，格式：{标题}|{关键词}|{摘要}|{实体}|{类型}|{指针}
+  1449	- **L2** = 完整内容（已在向量库）
+  1450	
+  1451	# 输出格式（JSON）
+  1452	
+  1453	{
+  1454	  "to_store": [
+  1455	    {
+  1456	      "l0": "用户修复了 Electron 关闭问题",
+  1457	      "l1": "修复关闭问题|Electron,Go,shutdown|Electron关闭时Go后端不退出的bug修复|shutdown,context|技术文档|session:xxx",
+  1458	      "l2": "完整内容..."
+  1459	    }
+  1460	  ],
+  1461	  "to_delete": [5, 6, 8, 9]
+  1462	}
+  1463	
+  1464	# 保留原则
+  1465	
+  1466	- 近期 L0 尽量保留
+  1467	- 进行中的会话单元不压缩
+  1468	- 已结束的会话单元可以压缩
+  1469	
+  1470	**消息列表**：
+  1471	%s`, msgList.String()),
+  1472			})
+  1473	
+  1474			if tidyErr != nil || tidyResult == nil || len(tidyResult.Content) == 0 {
+  1475				slog.Warn("Context Manager tidy failed", "error", tidyErr)
+  1476				json.NewEncoder(w).Encode(map[string]any{
+  1477					"status": "failed",
+  1478					"error":  tidyErr,
+  1479				})
+  1480				return
+  1481			}
+  1482	
+  1483			// 解析返回的 JSON 结果
+  1484			jsonText := tidyResult.Content[0].Text
+  1485	
+  1486			// 提取 JSON 对象
+  1487			var tidyResponse struct {
+  1488				ToStore []struct {
+  1489					L0 string `json:"l0"`
+  1490					L1 string `json:"l1"`
+  1491					L2 string `json:"l2"`
+  1492				} `json:"to_store"`
+  1493				ToDelete []int `json:"to_delete"`
+  1494			}
+  1495	
+  1496			if strings.Contains(jsonText, "{") {
+  1497				start := strings.Index(jsonText, "{")
+  1498				end := strings.LastIndex(jsonText, "}") + 1
+  1499				if end > start {
+  1500					json.Unmarshal([]byte(jsonText[start:end]), &tidyResponse)
+  1501				}
+  1502			}
+  1503	
+  1504			// 1. 存储重要内容到向量库（L0/L1/L2 格式）
+  1505			storedCount := 0
+  1506			if len(tidyResponse.ToStore) > 0 {
+  1507				for _, item := range tidyResponse.ToStore {
+  1508					// 存储 L1（极简格式摘要）
+  1509					if item.L1 != "" {
+  1510						_, storeErr := rt.Call(ctx, "vector-store", "add_document", map[string]any{
+  1511							"content":  item.L1,
+  1512							"metadata": map[string]string{"type": "l1", "source": "tidy"},
+  1513						})
+  1514						if storeErr == nil {
+  1515							storedCount++
+  1516						}
+  1517					}
+  1518					// 存储 L2（完整内容）
+  1519					if item.L2 != "" {
+  1520						_, storeErr := rt.Call(ctx, "vector-store", "add_document", map[string]any{
+  1521							"content":  item.L2,
+  1522							"metadata": map[string]string{"type": "l2", "source": "tidy"},
+  1523						})
+  1524						if storeErr == nil {
+  1525							storedCount++
+  1526						}
+  1527					}
+  1528				}
+  1529				slog.Info("Stored important content to vector store", "count", storedCount)
+  1530			}
+  1531	
+  1532			// 1.5. L2→L1 生成：遍历 L2 文档，生成 L1 摘要
+  1533			l2ListResult, l2Err := rt.Call(ctx, "vector-store", "list_documents", map[string]any{
+  1534				"limit":  50,
+  1535				"filter": map[string]string{"type": "l2"},
+  1536			})
+  1537			l1GeneratedCount := 0
+  1538			if l2Err == nil && l2ListResult != nil && len(l2ListResult.Content) > 0 {
+  1539				var l2Docs []map[string]any
+  1540				if json.Unmarshal([]byte(l2ListResult.Content[0].Text), &l2Docs) == nil {
+  1541					for _, l2Doc := range l2Docs {
+  1542						l2ID, _ := l2Doc["id"].(string)
+  1543						l2Content, _ := l2Doc["content"].(string)
+  1544	
+  1545						// 检查是否已有对应的 L1
+  1546						l1CheckResult, _ := rt.Call(ctx, "vector-store", "list_documents", map[string]any{
+  1547							"limit":  1,
+  1548							"filter": map[string]string{"type": "l1", "l2_id": l2ID},
+  1549						})
+  1550						if l1CheckResult != nil && len(l1CheckResult.Content) > 0 {
+  1551							var existingL1 []map[string]any
+  1552							if json.Unmarshal([]byte(l1CheckResult.Content[0].Text), &existingL1) == nil && len(existingL1) > 0 {
+  1553								continue // 已有 L1，跳过
+  1554							}
+  1555						}
+  1556	
+  1557						// 调用 Context Manager 生成 L1 摘要（极简格式）
+  1558						// 注入当前时间
+  1559						l1Result, l1Err := rt.Call(ctx, "context-manager", "chat-with-context-manager", map[string]any{
+  1560							"prompt": timeInfo + fmt.Sprintf(`请为以下内容生成 L1 摘要（极简格式）：
+  1561	
+  1562	%s
+  1563	
+  1564	# 格式要求
+  1565	
+  1566	{标题}|{关键词}|{摘要}|{实体}|{类型}|{指针}
+  1567	
+  1568	示例：
+  1569	修复关闭问题|Electron,Go,shutdown|Electron关闭时Go后端不退出的bug修复|shutdown,context|技术文档|session:xxx
+  1570	
+  1571	# 字段说明
+  1572	
+  1573	- 标题：保留原标题
+  1574	- 关键词：3-5个核心概念，用逗号分隔
+  1575	- 摘要：50-80字现代中文
+  1576	- 实体：命名实体（人名、地名、技术名词）
+  1577	- 类型：文档类型/领域分类
+  1578	- 指针：指向原文的指针
+  1579	
+  1580	直接输出极简格式，不要其他解释。`, l2Content),
+  1581						})
+  1582	
+  1583						if l1Err == nil && l1Result != nil && len(l1Result.Content) > 0 {
+  1584							l1Summary := l1Result.Content[0].Text
+  1585							// 截断到 500 tokens（约 2000 字符）
+  1586							if len(l1Summary) > 2000 {
+  1587								l1Summary = l1Summary[:2000] + "..."
+  1588							}
+  1589	
+  1590							// 存储 L1（带 l2_id 指针）
+  1591							l1ID := fmt.Sprintf("l1-%s", l2ID)
+  1592							_, storeErr := rt.Call(ctx, "vector-store", "add_document", map[string]any{
+  1593								"id":      l1ID,
+  1594								"content": l1Summary,
+  1595								"metadata": map[string]string{
+  1596									"type":  "l1",
+  1597									"l2_id": l2ID,
+  1598								},
+  1599							})
+  1600							if storeErr == nil {
+  1601								l1GeneratedCount++
+  1602							}
+  1603						}
+  1604					}
+  1605					if l1GeneratedCount > 0 {
+  1606						slog.Info("Generated L1 summaries from L2", "count", l1GeneratedCount)
+  1607					}
+  1608				}
+  1609			}
+  1610	
+  1611			// 2. 删除冗余消息（保护最近消息）
+  1612			deletedCount := 0
+  1613			deleteIndices := tidyResponse.ToDelete
+  1614			if len(deleteIndices) > 0 {
+  1615				// 保护最近 10 条消息不被删除
+  1616				recentProtectCount := 10
+  1617				totalMessages := len(messages)
+  1618				minKeepIndex := totalMessages - recentProtectCount
+  1619				if minKeepIndex < 0 {
+  1620					minKeepIndex = 0
+  1621				}
+  1622	
+  1623				// 从后往前删除，避免索引变化
+  1624				sortedIndices := make([]int, len(deleteIndices))
+  1625				copy(sortedIndices, deleteIndices)
+  1626				for i, j := 0, len(sortedIndices)-1; i < j; i, j = i+1, j-1 {
+  1627					sortedIndices[i], sortedIndices[j] = sortedIndices[j], sortedIndices[i]
+  1628				}
+  1629	
+  1630				var idsToDelete []string
+  1631				protectedCount := 0
+  1632				for _, idx := range sortedIndices {
+  1633					if idx >= 0 && idx < len(messages) {
+  1634						// 保护最近的消息
+  1635						if idx >= minKeepIndex {
+  1636							protectedCount++
+  1637							continue
+  1638						}
+  1639						idsToDelete = append(idsToDelete, fmt.Sprintf("%d", messages[idx].ID))
+  1640					}
+  1641				}
+  1642	
+  1643				if protectedCount > 0 {
+  1644					slog.Info("Protected recent messages from deletion", "count", protectedCount)
+  1645				}
+  1646	
+  1647				if len(idsToDelete) > 0 {
+  1648					count, _ := sessionManager.DB.DeleteMessagesByIDs(r.Context(), idsToDelete)
+  1649					deletedCount = int(count)
+  1650				}
+  1651			}
+  1652	
+  1653			// 更新整理状态
+  1654			finalMsgCount := currentMsgCount - deletedCount
+  1655			tidyState := struct {
+  1656				MessageCount int `json:"message_count"`
+  1657			}{MessageCount: finalMsgCount}
+  1658			if data, err := json.Marshal(tidyState); err == nil {
+  1659				os.WriteFile(configPath, data, 0644)
+  1660			}
+  1661	
+  1662			slog.Info("Context tidy completed", "stored", storedCount, "deleted", deletedCount, "remaining", finalMsgCount)
+  1663	
+  1664			json.NewEncoder(w).Encode(map[string]any{
+  1665				"status":        "completed",
+  1666				"stored_count":  storedCount,
+  1667				"deleted_count": deletedCount,
+  1668				"message_count": finalMsgCount,
+  1669			})
+  1670		})
+  1671	
+  1672		// ========== 便签 API ==========
+  1673	
+  1674		// List notes
+  1675		mux.HandleFunc("/api/notes", func(w http.ResponseWriter, r *http.Request) {
+  1676			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+  1677			w.Header().Set("Access-Control-Allow-Origin", "*")
+  1678			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+  1679			w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+  1680	
+  1681			if r.Method == "OPTIONS" {
+  1682				w.WriteHeader(http.StatusOK)
+  1683				return
+  1684			}
+  1685	
+  1686			if r.Method == "GET" {
+  1687				notes := dataStore.ListNotes()
+  1688				json.NewEncoder(w).Encode(notes)
+  1689				return
+  1690			}
+  1691	
+  1692			if r.Method == "POST" {
+  1693				var note assistant.Note
+  1694				if err := json.NewDecoder(r.Body).Decode(&note); err != nil {
+  1695					http.Error(w, "Invalid JSON", http.StatusBadRequest)
+  1696					return
+  1697				}
+  1698				created := dataStore.CreateNote(note)
+  1699				json.NewEncoder(w).Encode(created)
+  1700				return
+  1701			}
+  1702	
+  1703			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+  1704		})
+  1705	
+  1706		// Update/Delete note
+  1707		mux.HandleFunc("/api/notes/", func(w http.ResponseWriter, r *http.Request) {
+  1708			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+  1709			w.Header().Set("Access-Control-Allow-Origin", "*")
+  1710			w.Header().Set("Access-Control-Allow-Methods", "PUT, DELETE, OPTIONS")
+  1711			w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+  1712	
+  1713			if r.Method == "OPTIONS" {
+  1714				w.WriteHeader(http.StatusOK)
+  1715				return
+  1716			}
+  1717	
+  1718			// Extract note ID from path
+  1719			noteID := r.URL.Path[len("/api/notes/"):]
+  1720			if noteID == "" {
+  1721				http.Error(w, "Note ID required", http.StatusBadRequest)
+  1722				return
+  1723			}
+  1724	
+  1725			if r.Method == "PUT" {
+  1726				var note assistant.Note
+  1727				if err := json.NewDecoder(r.Body).Decode(&note); err != nil {
+  1728					http.Error(w, "Invalid JSON", http.StatusBadRequest)
+  1729					return
+  1730				}
+  1731				note.ID = noteID
+  1732				if dataStore.UpdateNote(note) {
+  1733					json.NewEncoder(w).Encode(map[string]bool{"success": true})
+  1734				} else {
+  1735					http.Error(w, "Note not found", http.StatusNotFound)
+  1736				}
+  1737				return
+  1738			}
+  1739	
+  1740			if r.Method == "DELETE" {
+  1741				if dataStore.DeleteNote(noteID) {
+  1742					json.NewEncoder(w).Encode(map[string]bool{"success": true})
+  1743				} else {
+  1744					http.Error(w, "Note not found", http.StatusNotFound)
+  1745				}
+  1746				return
+  1747			}
+  1748	
+  1749			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+  1750		})
+  1751	
+  1752		// ========== Shutdown API ==========
+  1753		mux.HandleFunc("/api/shutdown", func(w http.ResponseWriter, r *http.Request) {
+  1754			if r.Method != "POST" {
+  1755				http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+  1756				return
+  1757			}
+  1758			slog.Info("Shutdown requested via API")
+  1759			w.WriteHeader(http.StatusOK)
+  1760			w.Write([]byte("OK"))
+  1761			// Trigger shutdown in a goroutine to allow response to be sent
+  1762			go func() {
+  1763				cancel()
+  1764			}()
+  1765		})
+  1766	
+  1767		// ========== 文件拖拽 API ==========
+  1768		// Create HTTP server
+  1769		s := &http.Server{
+  1770			Addr:    fmt.Sprintf("127.0.0.1:%d", port),
+  1771			Handler: mux,
+  1772		}
+  1773	
+  1774		// Shutdown on context cancel
+  1775		context.AfterFunc(ctx, func() {
+  1776			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+  1777			defer cancel()
+  1778			_ = s.Shutdown(ctx)
+  1779		})
+  1780	
+  1781		slog.Info("Starting HTTP server", "address", s.Addr)
+  1782		return s.ListenAndServe()
+  1783	}
+  1784	
+  1785	func launchWindow(name string) error {
+  1786		windowDir := filepath.Join("ui", name)
+  1787	
+  1788		cmd := exec.Command("npm", "start")
+  1789		cmd.Dir, _ = filepath.Abs(windowDir)
+  1790		cmd.Stdout = os.Stdout
+  1791		cmd.Stderr = os.Stderr
+  1792		cmd.Stdin = os.Stdin
+  1793	
+  1794		return cmd.Run()
+  1795	}
