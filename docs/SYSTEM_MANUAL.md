@@ -80,7 +80,6 @@ MCP 服务器（独立子进程）：
 ├── kg-server       (知识图谱)
 ├── vector-store    (向量存储)
 ├── file-parser     (文档解析)
-├── config-manager  (配置管理)
 ├── memory-server   (记忆提取)
 └── scheduler-server(定时任务 MCP 适配)
 ```
@@ -748,15 +747,19 @@ set CUDA_VISIBLE_DEVICES=-1
 
 ## 七、用户指南
 
-### 7.1 快速上手
+### 7.1 首次启动流程
 
-**首次启动：**
+**第一步：配置 LLM**
 
-1. 双击 `niu-assistant.exe`
-2. 等待 25 秒启动完成
-3. 配置 LLM（可选）：
-   - 本地 Ollama：确保 Ollama 运行在 11434 端口
-   - 云端 API：输入 API Key
+首次启动时，如果未配置大模型，系统会自动弹出设置窗口让你输入 API Key。
+设置完成后点击"测试连接并保存"，窗口关闭，进入下一步。
+
+**第二步：设置工作目录**
+
+大模型配置成功后，主窗口会打开。
+如果是首次使用（memory.json 中存在 `firstRun` 字段），大模型会主动询问你工作目录放在哪里。
+直接告诉大模型路径，例如："E:/我的知识库"
+大模型会自动帮你完成初始化配置。
 
 **基本操作：**
 
@@ -771,50 +774,37 @@ set CUDA_VISIBLE_DEVICES=-1
 
 ### 7.2 LLM 配置
 
-**支持的 LLM：**
-
-| 类型 | 提供商 | 配置方法 |
-|------|--------|---------|
-| **本地** | Ollama | 安装 Ollama，运行 `ollama serve` |
-| **云端** | OpenAI | 输入 API Key |
-| **云端** | Anthropic | 输入 API Key |
-| **其他** | 兼容 OpenAI API | 输入 Base URL + API Key |
-
-**配置示例：**
+**配置文件**：`config/user-config.json`
 
 ```json
-// config/user-config.json
 {
   "llm": {
-    "provider": "openai",
-    "model": "gpt-4o",
-    "api_key": "sk-xxx"
+    "presetId": "openai",
+    "apiKey": "sk-xxx",
+    "apiBase": "https://api.openai.com/v1",
+    "model": "gpt-4o-mini",
+    "type": "openai"
   }
 }
 ```
 
-### 7.3 高级功能
+**字段说明**：
 
-**动态技能：**
+| 字段 | 说明 |
+|------|------|
+| `presetId` | 预设 ID，对应 llm-presets.json 中的预设 |
+| `apiKey` | 你的 API Key |
+| `apiBase` | API 端点地址 |
+| `model` | 模型名称 |
+| `type` | 类型：`openai`（兼容 OpenAI API）或 `anthropic` |
 
-```
-用户可以创建自定义技能，放在 memory/skills/ 目录
+**预设列表**：编辑 `config/llm-presets.json` 查看支持的预设（OpenAI、Anthropic、DeepSeek、Qwen、Ollama 等）。
 
-示例：
-memory/skills/photo-management.md
----
-触发关键词：照片管理、相册管理
+**修改配置方式**：
+- **方式一（推荐）**：告诉大模型"我的 API Key 是 xxx"，大模型用 bash 工具直接写入
+- **方式二**：关闭程序后，手动编辑 `config/user-config.json`
 
-# 照片管理技能
-
-用户提到照片管理时，执行以下流程：
-1. 调用 chat-with-file-processor 查询照片库
-2. 按时间/地点/人物分类
-3. 生成报告
----
-```
-
-**知识图谱：**
+### 7.3 知识图谱
 
 ```
 自动从文档中提取实体和关系，构建知识图谱
@@ -824,7 +814,7 @@ memory/skills/photo-management.md
 - "显示关于 XXX 的知识图谱"
 ```
 
-**记忆管理：**
+### 7.4 记忆管理
 
 ```
 系统会自动记忆用户信息和偏好
@@ -839,7 +829,36 @@ memory/skills/photo-management.md
 说："忘记我的工作单位信息"
 ```
 
-### 7.4 常见问题
+### 7.5 首次使用（firstRun）
+
+**触发条件**：`~/.niu/memory.json` 中存在 `firstRun: true`
+
+**大模型处理流程**：
+
+1. 在 system prompt 中看到"## 首次使用"段落
+2. 主动询问用户工作目录
+3. 用户回答路径（如：E:/我的知识库）
+4. 大模型执行 bash 命令完成设置：
+
+```bash
+python -c "
+import json
+from pathlib import Path
+mem = json.load(open(Path.home() / '.niu' / 'memory.json'))
+mem['workspace'] = {'path': 'E:/我的知识库', 'createdAt': '2026-04-07'}
+del mem['firstRun']
+json.dump(mem, open(Path.home() / '.niu' / 'memory.json', 'w'), indent=2)
+"
+```
+
+5. 完成后，下次对话不再出现首次使用提示
+
+**禁止事项**：
+- 不要使用 config-manager MCP 工具（已删除）
+- 不要询问用户 API Key（由设置窗口处理）
+- 只询问工作目录
+
+### 7.6 常见问题
 
 **Q: 数据存储在哪里？**
 ```
