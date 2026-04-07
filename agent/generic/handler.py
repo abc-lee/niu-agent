@@ -544,7 +544,7 @@ class GenericAgentHandler(BaseHandler):
     def next_prompt_patcher(self, next_prompt, outcome, turn):
         if turn % 35 == 0 and "plan" not in str(self.working.get("related_sop")):
             next_prompt += (
-                f"\n\n[DANGER] 已连续执行第 {turn} 轮。你必须总结情况进行ask_user，不允许继续重试。"
+                f"\n\n[DANGER] 已连续执行第 {turn} 轮。你必须总结情况并直接向用户提问，不允许继续重试。"
             )
         elif turn % 7 == 0:
             next_prompt += f"\n\n[DANGER] 已连续执行第 {turn} 轮。禁止无效重试。若无有效进展，必须切换策略：1. 探测物理边界 2. 请求用户协助。如有需要，可调用 update_working_checkpoint 保存关键上下文。"
