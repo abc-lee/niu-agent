@@ -98,7 +98,7 @@ def register_mcp_tools():
         {
             "server": "scheduler-server",
             "name": "schedule_task",
-            "description": "创建定时任务，支持单次和循环任务。参数：content(任务内容)、scheduled_at(触发时间ISO格式)、event_type(事件类型)、is_recurring(是否循环)、cron_expr(cron表达式)。支持每天、每周、工作日等循环提醒。",
+            "description": "创建定时任务、提醒、闹钟。支持单次和循环提醒。当用户说'提醒我'、'闹钟'、'到时候叫我'、'每天几点'等时使用。参数：content(任务内容)、scheduled_at(触发时间ISO格式)、event_type(事件类型)、is_recurring(是否循环)、cron_expr(cron表达式)。",
             "input_schema": {
                 "type": "object",
                 "properties": {
