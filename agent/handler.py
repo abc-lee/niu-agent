@@ -231,6 +231,9 @@ class NiuHandler(BaseHandler):
         self._experience_context: Optional[ExperienceContext] = None
         self._experience_summarizer = ExperienceSummarizer()
 
+        # P2-1: 工具调用历史追踪（用于重复检测）
+        self._recent_tool_calls: list[str] = []
+
     # ========== 工作记忆机制 ==========
 
     def tool_after_callback(self, tool_name, args, response, ret):
@@ -283,6 +286,13 @@ class NiuHandler(BaseHandler):
 
         # 更新轮数
         self._experience_context.turn_count = self.current_turn
+
+        # P2-1: 记录工具调用（用于重复检测）
+        tool_call_str = f"{tool_name}({str(args)[:50]})"  # 限制长度
+        self._recent_tool_calls.append(tool_call_str)
+        # 只保留最近 10 次调用
+        if len(self._recent_tool_calls) > 10:
+            self._recent_tool_calls = self._recent_tool_calls[-10:]
 
         # 记录工具执行
         result_str = str(ret) if ret else ""
@@ -387,7 +397,34 @@ class NiuHandler(BaseHandler):
         return prompt
 
     def next_prompt_patcher(self, next_prompt, outcome, turn):
-        """周期性警告和全局记忆注入"""
+        """周期性警告、全局记忆注入和重复调用检测"""
+        # P2-1: 工具重复调用检测
+        if turn > 3 and hasattr(self, '_recent_tool_calls'):
+            recent_tools = self._recent_tool_calls[-3:]
+            if len(recent_tools) == 3:
+                # 检查是否连续 3 次调用相同工具
+                if (recent_tools[0] == recent_tools[1] == recent_tools[2]):
+                    tool_name = recent_tools[0].split('(')[0]  # 提取工具名
+                    import sys
+                    print(
+                        f"[P2-1] Detected repeated tool calls: {recent_tools}",
+                        file=sys.stderr,
+                        flush=True
+                    )
+                    next_prompt = (
+                        f"⚠️ **警告：检测到重复工具调用**\n\n"
+                        f"你已连续 3 次调用相同工具（{tool_name}）。这通常表示：\n"
+                        f"1. 参数可能不正确，工具无法正常执行\n"
+                        f"2. 当前方法可能无法解决问题\n"
+                        f"3. 需要用户澄清需求\n\n"
+                        f"**建议行动：**\n"
+                        f"- 检查工具参数是否正确\n"
+                        f"- 尝试不同的方法或工具\n"
+                        f"- 使用 ask_user 请求用户协助\n"
+                        f"- 总结当前进展，说明遇到的困难\n\n"
+                        f"---\n\n原始提示：{next_prompt}"
+                    )
+
         # 每 35 轮强制 ask_user
         if turn % 35 == 0 and "plan" not in str(self.working.get("related_sop")):
             next_prompt += (
