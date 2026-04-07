@@ -129,19 +129,13 @@ async def chat_session(request: ChatRequest) -> ChatResponse:
     # Store user message
     await store.add_message(role="user", content=request.message)
 
-    # Get conversation history (before current message)
-    # P0-3: 限制最近 50 条消息，避免上下文爆炸
-    history = await store.get_messages(limit=50)
-    logger.info(f"Loaded {len(history)} history messages")
+    # P1-1: 使用 ContextManager 加载历史（统一管理）
+    from agent.context_manager import get_context_manager
 
-    # Convert history to format expected by runner
-    # Message objects have: id, role, content, tool_calls, tool_results, created_at
-    history_for_runner = [
-        {"role": msg.role, "content": msg.content}
-        for msg in history[:-1]  # Exclude current message (already stored above)
-        if msg.content  # Skip empty messages
-    ]
-    logger.info(f"Passing {len(history_for_runner)} messages to runner as history")
+    context_manager = await get_context_manager(store)
+    history_for_runner = await context_manager.get_context_for_chat(exclude_last=True)
+
+    logger.info(f"Loaded {len(history_for_runner)} history messages")
 
     # Get runner (uses original GenericAgent from agent/generic/)
     # Use the pre-initialized runner from niu_api/chat.py which has MCP tools
