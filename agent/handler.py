@@ -420,15 +420,14 @@ class NiuHandler(BaseHandler):
                         f"**建议行动：**\n"
                         f"- 检查工具参数是否正确\n"
                         f"- 尝试不同的方法或工具\n"
-                        f"- 使用 ask_user 请求用户协助\n"
-                        f"- 总结当前进展，说明遇到的困难\n\n"
+                        f"- 总结当前进展，说明遇到的困难并直接向用户提问\n\n"
                         f"---\n\n原始提示：{next_prompt}"
                     )
 
-        # 每 35 轮强制 ask_user
+        # 每 35 轮强制询问用户
         if turn % 35 == 0 and "plan" not in str(self.working.get("related_sop")):
             next_prompt += (
-                f"\n\n[DANGER] 已连续执行第 {turn} 轮。你必须总结情况进行 ask_user，"
+                f"\n\n[DANGER] 已连续执行第 {turn} 轮。你必须总结情况并直接向用户提问，"
                 "不允许继续重试。"
             )
         # 每 7 轮警告禁止无效重试
