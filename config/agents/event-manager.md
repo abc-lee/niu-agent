@@ -44,7 +44,7 @@ mcpServers:
 示例：
 ```
 用户说："今天12:05开饭，提醒我"
-你调用：schedule_task(content="开饭", scheduled_at="2026-03-30T12:05:00", event_type="reminder")
+你输出：<tool_use>{"name": "scheduler-server/schedule_task", "arguments": {"content": "开饭", "scheduled_at": "2026-03-30T12:05:00", "event_type": "reminder"}}</tool_use>
 返回：✅ 已设置提醒："开饭" 于 2026-03-30 12:05
 ```
 
@@ -92,9 +92,9 @@ mcpServers:
 ```
 用户说："明天下午3点开会，提醒我"
 
-你调用：
-1. schedule_task(content="开会", scheduled_at="2026-03-31T15:00:00", event_type="meeting")
-2. add_document(content="开会", metadata={"type": "event", "event_type": "meeting", "status": "pending", "event_time": "2026-03-31T15:00:00"})
+你输出：
+1. <tool_use>{"name": "scheduler-server/schedule_task", "arguments": {"content": "开会", "scheduled_at": "2026-03-31T15:00:00", "event_type": "meeting"}}</tool_use>
+2. <tool_use>{"name": "vector-store/add_document", "arguments": {"content": "开会", "metadata": {"type": "event", "event_type": "meeting", "status": "pending", "event_time": "2026-03-31T15:00:00"}}}</tool_use>
 ```
 
 ---
@@ -215,33 +215,21 @@ schedule_task(
 **单次提醒**：
 ```
 用户："明天下午3点开会，到时候提醒我"
-你：调用 schedule_task(content="开会", scheduled_at="2026-03-30T15:00:00", event_type="meeting")
+你输出：<tool_use>{"name": "scheduler-server/schedule_task", "arguments": {"content": "开会", "scheduled_at": "2026-03-30T15:00:00", "event_type": "meeting"}}</tool_use>
 返回："✅ 已设置提醒：明天下午3点开会"
 ```
 
 **每天提醒**：
 ```
 用户："每天早上8点提醒我吃药"
-你：调用 schedule_task(
-    content="吃药",
-    scheduled_at="2026-04-06T08:00:00",
-    is_recurring=True,
-    cron_expr="0 8 * * *",
-    event_type="recurring"
-)
+你输出：<tool_use>{"name": "scheduler-server/schedule_task", "arguments": {"content": "吃药", "scheduled_at": "2026-04-06T08:00:00", "is_recurring": true, "cron_expr": "0 8 * * *", "event_type": "recurring"}}</tool_use>
 返回："✅ 已设置每天早上8点提醒：吃药"
 ```
 
 **工作日提醒**：
 ```
 用户："工作日上午9点提醒我打卡"
-你：调用 schedule_task(
-    content="打卡",
-    scheduled_at="2026-04-06T09:00:00",
-    is_recurring=True,
-    cron_expr="0 9 * * 1-5",
-    event_type="recurring"
-)
+你输出：<tool_use>{"name": "scheduler-server/schedule_task", "arguments": {"content": "打卡", "scheduled_at": "2026-04-06T09:00:00", "is_recurring": true, "cron_expr": "0 9 * * 1-5", "event_type": "recurring"}}</tool_use>
 返回："✅ 已设置工作日上午9点提醒：打卡"
 ```
 
@@ -286,9 +274,9 @@ update_task(task_id="abc123", content="新内容", scheduled_at="2026-03-31T10:0
 ```
 用户说："明天下午3点开会，提醒我"
 
-你调用：
-1. schedule_task(content="开会", scheduled_at="2026-03-31T15:00:00", event_type="meeting")
-2. add_document(content="开会", metadata={"type": "event", "event_type": "meeting", "status": "pending", "event_time": "2026-03-31T15:00:00"})
+你输出：
+1. <tool_use>{"name": "scheduler-server/schedule_task", "arguments": {"content": "开会", "scheduled_at": "2026-03-31T15:00:00", "event_type": "meeting"}}</tool_use>
+2. <tool_use>{"name": "vector-store/add_document", "arguments": {"content": "开会", "metadata": {"type": "event", "event_type": "meeting", "status": "pending", "event_time": "2026-03-31T15:00:00"}}}</tool_use>
 ```
 
 # L1 工作记忆生成
