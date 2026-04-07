@@ -1,0 +1,30 @@
+[
+  {
+    "id": "6bbbd8c1-2c24-4532-94f7-0cf9849a4566",
+    "content": "测试提醒",
+    "status": "pending",
+    "scheduled_at": "2026-04-06T12:10:12",
+    "created_at": "2026-04-06 04:09:08"
+  },
+  {
+    "id": "e191e0ed-8b7d-481e-9bad-40dc425f2a1e",
+    "content": "做饭",
+    "status": "triggered",
+    "scheduled_at": "2026-04-06T11:15:00",
+    "created_at": "2026-04-06 03:00:00"
+  },
+  {
+    "id": "b7cc282d-b52a-466e-8877-df6da298c6ad",
+    "content": "打开洗碗机",
+    "status": "pending",
+    "scheduled_at": "2026-04-06T22:00:00+08:00",
+    "created_at": "2026-04-06 01:33:17"
+  },
+  {
+    "id": "d9e4d239-044f-494b-8923-f9937f51b8e2",
+    "content": "吃药",
+    "status": "pending",
+    "scheduled_at": "2026-04-06T17:28:00+08:00",
+    "created_at": "2026-04-06 01:32:29"
+  }
+]
