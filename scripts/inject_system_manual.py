@@ -47,77 +47,77 @@ def inject_system_manual_l1():
     logger.info("=" * 60)
     logger.info(f"文件位置: {manual_path}")
 
-    # 准备多个L1摘要，覆盖不同场景
+    # 准备多个L1摘要，覆盖不同场景（英文，符合L1规范v2.0）
     l1_summaries = [
         {
-            "title": "系统启动问题解决方案",
-            "keywords": "启动,慢,卡顿,下载模型,端口占用",
-            "summary": "系统启动需要25秒，包括模型加载和MCP工具预加载。首次启动会下载模型，可能需要15-30分钟。如果启动卡住，检查端口9876是否被占用，或尝试禁用GPU加速。",
+            "title": "System Startup Troubleshooting",
+            "keywords": "startup,slow,stuck,model download,port conflict",
+            "summary": "System startup takes 25 seconds including model loading and MCP tool preload. First startup downloads models requiring 15-30 minutes. If startup hangs, check if port 9876 is occupied or try disabling GPU acceleration.",
             "entities": "",
-            "type": "系统手册",
+            "type": "system_manual",
             "pointer": f"file:{manual_path.relative_to(Path(__file__).parent.parent)}",
             "section": "五、故障排查 > 5.1 启动问题"
         },
         {
-            "title": "人脸识别性能优化指南",
-            "keywords": "人脸识别,慢,GPU加速,CUDA,DirectML",
-            "summary": "人脸识别CPU模式每张照片需要2-3秒，GPU加速可提速10倍。安装onnxruntime-gpu（需NVIDIA GPU+CUDA）或onnxruntime-directml（Windows任意GPU）即可启用GPU加速。",
+            "title": "Face Recognition Performance Optimization",
+            "keywords": "face recognition,slow,GPU acceleration,CUDA,DirectML",
+            "summary": "Face recognition CPU mode takes 2-3 seconds per photo. GPU acceleration provides 10x speedup. Install onnxruntime-gpu (NVIDIA GPU+CUDA required) or onnxruntime-directml (any Windows GPU) to enable GPU acceleration.",
             "entities": "",
-            "type": "系统手册",
+            "type": "system_manual",
             "pointer": f"file:{manual_path.relative_to(Path(__file__).parent.parent)}",
             "section": "五、故障排查 > 5.2 人脸识别问题"
         },
         {
-            "title": "GPU加速配置说明",
-            "keywords": "GPU,CUDA,DirectML,性能,加速,配置",
-            "summary": "系统自动检测GPU并选择最佳加速方案：CUDA（NVIDIA GPU）> DirectML（Windows GPU）> CPU。安装对应的onnxruntime版本即可启用，无需额外配置。",
+            "title": "GPU Acceleration Configuration Guide",
+            "keywords": "GPU,CUDA,DirectML,performance,acceleration,configuration",
+            "summary": "System auto-detects GPU and selects optimal acceleration: CUDA (NVIDIA GPU) > DirectML (Windows GPU) > CPU. Install corresponding onnxruntime version to enable. No additional configuration required.",
             "entities": "",
-            "type": "系统手册",
+            "type": "system_manual",
             "pointer": f"file:{manual_path.relative_to(Path(__file__).parent.parent)}",
             "section": "三、依赖管理 > 3.2 GPU支持策略"
         },
         {
-            "title": "定时任务故障排查",
-            "keywords": "定时任务,提醒,失效,循环任务,通知",
-            "summary": "定时任务存储在data/scheduled_tasks.db，后台线程每分钟检查一次。如果提醒未收到，检查任务状态和系统通知设置。循环任务需要正确的cron表达式。",
+            "title": "Scheduled Task Troubleshooting",
+            "keywords": "scheduled task,reminder,failed,recurring task,notification",
+            "summary": "Scheduled tasks stored in data/scheduled_tasks.db. Background thread checks every minute. If reminder not received, check task status and system notification settings. Recurring tasks require correct cron expression.",
             "entities": "",
-            "type": "系统手册",
+            "type": "system_manual",
             "pointer": f"file:{manual_path.relative_to(Path(__file__).parent.parent)}",
             "section": "五、故障排查 > 5.3 定时任务问题"
         },
         {
-            "title": "数据存储与备份",
-            "keywords": "数据,备份,存储,数据库,恢复",
-            "summary": "所有用户数据存储在data/目录，包括历史对话、知识库、知识图谱、定时任务。备份只需复制data/和~/.niu/目录。数据库文件可定期清理和压缩。",
+            "title": "Data Storage and Backup",
+            "keywords": "data,backup,storage,database,recovery",
+            "summary": "All user data stored in data/ directory including chat history, knowledge base, knowledge graph, scheduled tasks. Backup requires only copying data/ and ~/.niu/ directories. Database files can be periodically cleaned and compressed.",
             "entities": "",
-            "type": "系统手册",
+            "type": "system_manual",
             "pointer": f"file:{manual_path.relative_to(Path(__file__).parent.parent)}",
             "section": "五、故障排查 > 5.5 数据问题"
         },
         {
-            "title": "内存优化策略",
-            "keywords": "内存,占用,优化,模型卸载",
-            "summary": "系统内存占用约1.5GB，人脸识别模型空闲5分钟后自动卸载释放326MB。如内存不足可禁用GPU加速或减少MCP服务器数量。推荐内存8GB以上。",
+            "title": "Memory Optimization Strategy",
+            "keywords": "memory,usage,optimization,model unload",
+            "summary": "System memory usage approximately 1.5GB. Face recognition model auto-unloads after 5 minutes idle releasing 326MB. If insufficient memory, disable GPU acceleration or reduce MCP servers. Recommended memory 8GB+.",
             "entities": "",
-            "type": "系统手册",
+            "type": "system_manual",
             "pointer": f"file:{manual_path.relative_to(Path(__file__).parent.parent)}",
             "section": "六、性能优化 > 6.1 内存优化"
         },
         {
-            "title": "LLM配置指南",
-            "keywords": "LLM,配置,API,Ollama,云端",
-            "summary": "支持本地Ollama和云端API（OpenAI/Anthropic等）。配置文件在config/user-config.json，填写provider、model、api_key即可。首次启动会引导配置。",
+            "title": "LLM Configuration Guide",
+            "keywords": "LLM,configuration,API,Ollama,cloud",
+            "summary": "Supports local Ollama and cloud APIs (OpenAI/Anthropic etc). Configuration file at config/user-config.json. Fill in provider, model, api_key. First startup provides guided configuration.",
             "entities": "",
-            "type": "系统手册",
+            "type": "system_manual",
             "pointer": f"file:{manual_path.relative_to(Path(__file__).parent.parent)}",
             "section": "七、用户指南 > 7.2 LLM配置"
         },
         {
-            "title": "系统架构说明",
-            "keywords": "架构,单进程,模块,目录结构",
-            "summary": "采用单进程架构，embedding和scheduler集成到主进程。所有模块运行在端口9876。目录包括主程序、模型、配置、用户数据。",
+            "title": "System Architecture Overview",
+            "keywords": "architecture,single process,module,directory structure",
+            "summary": "Single-process architecture with embedding and scheduler integrated into main process. All modules run on port 9876. Directories include main program, models, config, user data.",
             "entities": "",
-            "type": "系统手册",
+            "type": "system_manual",
             "pointer": f"file:{manual_path.relative_to(Path(__file__).parent.parent)}",
             "section": "二、架构设计"
         },
@@ -166,7 +166,12 @@ def inject_system_manual_l1():
             logger.error(f"向量生成失败: {l1['title']}")
             continue
 
-        embedding_blob = np.array(embedding, dtype=np.float32).tobytes()
+        # ✅ L2归一化（符合L1规范v2.0）
+        vec = np.array(embedding, dtype=np.float32)
+        norm = np.linalg.norm(vec)
+        if norm > 0:
+            vec = vec / norm
+        embedding_blob = vec.tobytes()
 
         # UPSERT
         conn.execute(

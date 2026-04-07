@@ -248,7 +248,12 @@ class SkillSync:
             logger.warning(f"[SkillSync] Failed to get embedding for {doc_id}")
             return
 
-        embedding_blob = np.array(embedding, dtype=np.float32).tobytes()
+        # ✅ L2归一化（符合L1规范v2.0）
+        vec = np.array(embedding, dtype=np.float32)
+        norm = np.linalg.norm(vec)
+        if norm > 0:
+            vec = vec / norm
+        embedding_blob = vec.tobytes()
 
         # 记录 self_write 时间
         source = metadata.get("source", "")
