@@ -77,6 +77,43 @@ async def lifespan(app: FastAPI):
     set_preload_complete()
     logger.info("Preload complete, ready to show window")
 
+    # 7. Run weekly vector cleanup if needed
+    from pathlib import Path
+    from datetime import datetime, timedelta
+
+    cleanup_status_file = Path.home() / ".niu" / "last_cleanup.txt"
+    should_cleanup = False
+
+    if cleanup_status_file.exists():
+        try:
+            last_cleanup_str = cleanup_status_file.read_text().strip()
+            last_cleanup = datetime.fromisoformat(last_cleanup_str)
+            if datetime.now() - last_cleanup > timedelta(days=7):
+                should_cleanup = True
+        except Exception:
+            should_cleanup = True
+    else:
+        should_cleanup = True
+
+    if should_cleanup:
+        logger.info("Scheduling weekly vector cleanup in 3 minutes...")
+        import threading
+
+        def delayed_cleanup():
+            import time
+            time.sleep(180)  # 延时 3 分钟
+            try:
+                from agent.vector_cleanup import get_cleanup_service
+                cleanup = get_cleanup_service()
+                cleanup.run_full_cleanup()
+                cleanup_status_file.write_text(datetime.now().isoformat())
+                logger.info("Vector cleanup completed")
+            except Exception as e:
+                logger.warning(f"Vector cleanup failed: {e}")
+
+        cleanup_thread = threading.Thread(target=delayed_cleanup, daemon=True)
+        cleanup_thread.start()
+
     yield
 
     # Shutdown
