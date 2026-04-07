@@ -28,6 +28,15 @@ vector-store:
   workdir: ../mcp-servers/vector-store/src
   preload: true
 
+# Config Manager - Read/write user configuration and memory
+config-manager:
+  command: ${PYTHON_PATH}
+  args:
+    - "-m"
+    - "niu_config_manager"
+  workdir: ../mcp-servers/config-manager/src
+  preload: true
+
 # Photo Server - File and photo management with face recognition
 photo-server:
   command: ${PYTHON_PATH}
