@@ -105,15 +105,7 @@ def trim_messages_history(history, context_win):
 
 
 def auto_make_url(base, path):
-    b, p = base.rstrip("/"), path.strip("/")
-    if b.endswith("$"):
-        return b[:-1].rstrip("/")
-    if b.endswith(p):
-        return b
-    # 如果 base 已包含 /v\d+，直接追加 path；否则加 /v1 前缀
-    if re.search(r"/v\d+", b):
-        return f"{b}/{p}"
-    return f"{b}/v1/{p}"
+    return base.rstrip("/")
 
 
 def build_multimodal_content(prompt_text, image_paths):
@@ -394,12 +386,12 @@ def _openai_stream(
         "Accept": "text/event-stream",
     }
     if api_mode == "responses":
-        url = auto_make_url(api_base, "responses")
+        url = api_base.rstrip("/")
         payload = {"model": model, "input": _to_responses_input(messages), "stream": True}
         if reasoning_effort:
             payload["reasoning"] = {"effort": reasoning_effort}
     else:
-        url = auto_make_url(api_base, "chat/completions")
+        url = api_base.rstrip("/")
         payload = {
             "model": model,
             "messages": messages,
@@ -680,15 +672,22 @@ class BaseSession:
 
 
 class ClaudeSession(BaseSession):
-    def raw_ask(self, messages, model=None, temperature=0.5, max_tokens=6144):
+    def raw_ask(self, prompt, model=None, temperature=0.5, max_tokens=6144):
         model = model or self.default_model
+
+        # Handle string prompt (from ToolClient)
+        if isinstance(prompt, str):
+            messages = [{"role": "user", "content": prompt}]
+        else:
+            messages = prompt
+
         ml = model.lower()
         if "kimi" in ml or "moonshot" in ml:
             temperature = 1.0  # kimi/moonshot only accepts temp 1.0
         elif "minimax" in ml:
             temperature = max(0.01, min(temperature, 1.0))  # MiniMax requires temp in (0, 1]
         headers = {
-            "x-api-key": self.api_key,
+            "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
             "anthropic-version": "2023-06-01",
             "anthropic-beta": "prompt-caching-2024-07-31",
@@ -707,7 +706,7 @@ class ClaudeSession(BaseSession):
         content_blocks = []
         try:
             with requests.post(
-                auto_make_url(self.api_base, "messages"),
+                self.api_base,
                 headers=headers,
                 json=payload,
                 stream=True,
@@ -821,7 +820,7 @@ class NativeClaudeSession(BaseSession):
         )
         try:
             resp = requests.post(
-                auto_make_url(self.api_base, "messages"),
+                self.api_base,
                 headers=headers,
                 json=payload,
                 stream=True,
