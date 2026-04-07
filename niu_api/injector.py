@@ -50,7 +50,12 @@ def _register_to_vector_db(doc_id: str, content: str, metadata: dict) -> bool:
     if embedding is None:
         return False
 
-    embedding_blob = np.array(embedding, dtype=np.float32).tobytes()
+    # ✅ L2归一化（符合L1规范v2.0）
+    vec = np.array(embedding, dtype=np.float32)
+    norm = np.linalg.norm(vec)
+    if norm > 0:
+        vec = vec / norm
+    embedding_blob = vec.tobytes()
 
     # UPSERT
     conn.execute(

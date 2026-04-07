@@ -100,15 +100,15 @@ def register_mcp_tools():
         {
             "server": "scheduler-server",
             "name": "schedule_task",
-            "description": "创建定时任务、提醒、闹钟。支持单次和循环提醒。当用户说'提醒我'、'闹钟'、'到时候叫我'、'每天几点'等时使用。参数：content(任务内容)、scheduled_at(触发时间ISO格式)、event_type(事件类型)、is_recurring(是否循环)、cron_expr(cron表达式)。",
+            "description": "Create scheduled tasks, reminders, and alarms. Supports one-time and recurring reminders. Use when user says 'remind me', 'alarm', 'call me at', 'every day at'. Parameters: content (task content), scheduled_at (trigger time in ISO format), event_type (event type), is_recurring (recurring task), cron_expr (cron expression for recurring tasks).",
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "content": {"type": "string", "description": "任务内容"},
-                    "scheduled_at": {"type": "string", "description": "触发时间（ISO格式）"},
-                    "event_type": {"type": "string", "description": "事件类型（默认reminder）"},
-                    "is_recurring": {"type": "boolean", "description": "是否循环任务"},
-                    "cron_expr": {"type": "string", "description": "cron表达式（循环任务必填）"}
+                    "content": {"type": "string", "description": "Task content"},
+                    "scheduled_at": {"type": "string", "description": "Trigger time in ISO format"},
+                    "event_type": {"type": "string", "description": "Event type (default: reminder)"},
+                    "is_recurring": {"type": "boolean", "description": "Recurring task"},
+                    "cron_expr": {"type": "string", "description": "Cron expression (required for recurring tasks)"}
                 },
                 "required": ["content", "scheduled_at"]
             }
@@ -116,22 +116,22 @@ def register_mcp_tools():
         {
             "server": "scheduler-server",
             "name": "list_scheduled_tasks",
-            "description": "查询定时任务列表。参数：status(可选，筛选状态pending/triggered/cancelled)。返回任务列表，包含id、content、scheduled_at、is_recurring、cron_expr、status。",
+            "description": "Query scheduled task list. Parameters: status (optional, filter by status pending/triggered/cancelled). Returns task list containing id, content, scheduled_at, is_recurring, cron_expr, status.",
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "status": {"type": "string", "description": "筛选状态（pending/triggered/cancelled）"}
+                    "status": {"type": "string", "description": "Filter by status (pending/triggered/cancelled)"}
                 }
             }
         },
         {
             "server": "scheduler-server",
             "name": "cancel_task",
-            "description": "取消定时任务。参数：task_id(任务ID)。返回取消结果。",
+            "description": "Cancel a scheduled task. Parameters: task_id (task ID). Returns cancellation result.",
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "task_id": {"type": "string", "description": "任务ID"}
+                    "task_id": {"type": "string", "description": "Task ID"}
                 },
                 "required": ["task_id"]
             }
@@ -139,14 +139,14 @@ def register_mcp_tools():
         {
             "server": "scheduler-server",
             "name": "update_task",
-            "description": "更新定时任务。参数：task_id(任务ID)、content(新任务内容)、scheduled_at(新触发时间)、cron_expr(新cron表达式)。返回更新结果。",
+            "description": "Update scheduled task. Parameters: task_id (task ID), content (new task content), scheduled_at (new trigger time), cron_expr (new cron expression). Returns update result.",
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "task_id": {"type": "string", "description": "任务ID"},
-                    "content": {"type": "string", "description": "新任务内容"},
-                    "scheduled_at": {"type": "string", "description": "新触发时间"},
-                    "cron_expr": {"type": "string", "description": "新cron表达式"}
+                    "task_id": {"type": "string", "description": "Task ID"},
+                    "content": {"type": "string", "description": "New task content"},
+                    "scheduled_at": {"type": "string", "description": "New trigger time"},
+                    "cron_expr": {"type": "string", "description": "New cron expression"}
                 },
                 "required": ["task_id"]
             }
@@ -155,12 +155,12 @@ def register_mcp_tools():
         {
             "server": "file-parser",
             "name": "parse_file",
-            "description": "解析文档文件（PDF、Word、PPT、Excel、Markdown、HTML等）。提取文本内容和元数据。返回结构化的文档内容。",
+            "description": "Parse document files (PDF, Word, PPT, Excel, Markdown, HTML). Extracts text content and metadata. Returns structured document content.",
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "file_path": {"type": "string", "description": "文件路径"},
-                    "extract_images": {"type": "boolean", "description": "是否提取图片"}
+                    "file_path": {"type": "string", "description": "File path"},
+                    "extract_images": {"type": "boolean", "description": "Extract images"}
                 },
                 "required": ["file_path"]
             }
@@ -169,12 +169,12 @@ def register_mcp_tools():
         {
             "server": "photo-server",
             "name": "process_photo",
-            "description": "处理照片：入库、人脸识别、自动分类。支持批量处理。返回照片ID、人脸信息、分类结果。",
+            "description": "Process photos: ingest, face recognition, automatic classification. Supports batch processing. Returns photo ID, face information, classification results.",
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "photo_path": {"type": "string", "description": "照片路径"},
-                    "enable_face_recognition": {"type": "boolean", "description": "是否启用人脸识别"}
+                    "photo_path": {"type": "string", "description": "Photo path"},
+                    "enable_face_recognition": {"type": "boolean", "description": "Enable face recognition"}
                 },
                 "required": ["photo_path"]
             }
@@ -182,14 +182,14 @@ def register_mcp_tools():
         {
             "server": "photo-server",
             "name": "search_photos",
-            "description": "搜索照片：按时间、人物、场景、地点等条件搜索。支持组合查询。返回匹配的照片列表。",
+            "description": "Search photos: by time, person, scene, location. Supports combined queries. Returns matching photo list.",
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "搜索查询"},
-                    "person_name": {"type": "string", "description": "人物姓名"},
-                    "start_date": {"type": "string", "description": "开始日期"},
-                    "end_date": {"type": "string", "description": "结束日期"}
+                    "query": {"type": "string", "description": "Search query"},
+                    "person_name": {"type": "string", "description": "Person name"},
+                    "start_date": {"type": "string", "description": "Start date"},
+                    "end_date": {"type": "string", "description": "End date"}
                 }
             }
         },
@@ -197,14 +197,14 @@ def register_mcp_tools():
         {
             "server": "kg-server",
             "name": "add_document",
-            "description": "添加文档到知识图谱。自动提取实体和关系。参数：title(标题)、content(内容)、source(来源)、tags(标签)。",
+            "description": "Add document to knowledge graph. Automatically extracts entities and relations. Parameters: title (document title), content (document content), source (source), tags (tags).",
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "title": {"type": "string", "description": "文档标题"},
-                    "content": {"type": "string", "description": "文档内容"},
-                    "source": {"type": "string", "description": "来源"},
-                    "tags": {"type": "array", "items": {"type": "string"}, "description": "标签"}
+                    "title": {"type": "string", "description": "Document title"},
+                    "content": {"type": "string", "description": "Document content"},
+                    "source": {"type": "string", "description": "Source"},
+                    "tags": {"type": "array", "items": {"type": "string"}, "description": "Tags"}
                 },
                 "required": ["title", "content"]
             }
@@ -212,12 +212,12 @@ def register_mcp_tools():
         {
             "server": "kg-server",
             "name": "search_knowledge",
-            "description": "在知识图谱中搜索。支持语义搜索和关系查询。返回相关文档、实体、关系。",
+            "description": "Search in knowledge graph. Supports semantic search and relation queries. Returns relevant documents, entities, relations.",
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "搜索查询"},
-                    "limit": {"type": "integer", "description": "返回数量限制"}
+                    "query": {"type": "string", "description": "Search query"},
+                    "limit": {"type": "integer", "description": "Number of results"}
                 },
                 "required": ["query"]
             }
@@ -226,13 +226,13 @@ def register_mcp_tools():
         {
             "server": "vector-store",
             "name": "add_document",
-            "description": "添加文档到向量库。参数：id(文档ID)、content(内容)、metadata(元数据)。自动生成向量嵌入。",
+            "description": "Add document to vector store. Parameters: id (document ID), content (content), metadata (metadata). Automatically generates vector embedding.",
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "id": {"type": "string", "description": "文档ID"},
-                    "content": {"type": "string", "description": "文档内容"},
-                    "metadata": {"type": "object", "description": "元数据"}
+                    "id": {"type": "string", "description": "Document ID"},
+                    "content": {"type": "string", "description": "Document content"},
+                    "metadata": {"type": "object", "description": "Metadata"}
                 },
                 "required": ["id", "content"]
             }
@@ -240,14 +240,14 @@ def register_mcp_tools():
         {
             "server": "vector-store",
             "name": "search",
-            "description": "向量语义搜索。参数：query(查询文本)、limit(返回数量)、min_score(最低分数)、filter(元数据过滤)。返回匹配的文档列表。",
+            "description": "Vector semantic search. Parameters: query (query text), limit (number of results), min_score (minimum score), filter (metadata filter). Returns matching document list.",
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "查询文本"},
-                    "limit": {"type": "integer", "description": "返回数量（默认10）"},
-                    "min_score": {"type": "number", "description": "最低相似度（默认0.5）"},
-                    "filter": {"type": "object", "description": "元数据过滤条件"}
+                    "query": {"type": "string", "description": "Query text"},
+                    "limit": {"type": "integer", "description": "Number of results (default: 10)"},
+                    "min_score": {"type": "number", "description": "Minimum similarity (default: 0.5)"},
+                    "filter": {"type": "object", "description": "Metadata filter conditions"}
                 },
                 "required": ["query"]
             }
@@ -256,11 +256,11 @@ def register_mcp_tools():
         {
             "server": "memory-server",
             "name": "extract_memories",
-            "description": "从对话中提取记忆。自动识别重要信息并结构化存储。返回提取的记忆列表。",
+            "description": "Extract memories from conversation. Automatically identifies important information and stores structurally. Returns extracted memory list.",
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "conversation": {"type": "string", "description": "对话内容"}
+                    "conversation": {"type": "string", "description": "Conversation content"}
                 },
                 "required": ["conversation"]
             }
@@ -268,12 +268,12 @@ def register_mcp_tools():
         {
             "server": "memory-server",
             "name": "search_memories",
-            "description": "搜索记忆。支持语义搜索和时间范围查询。返回匹配的记忆列表。",
+            "description": "Search memories. Supports semantic search and time range queries. Returns matching memory list.",
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "搜索查询"},
-                    "limit": {"type": "integer", "description": "返回数量"}
+                    "query": {"type": "string", "description": "Search query"},
+                    "limit": {"type": "integer", "description": "Number of results"}
                 },
                 "required": ["query"]
             }
