@@ -37,7 +37,7 @@ class VectorSearchAdapter:
     直接访问向量数据库，不依赖 MCP 服务器
     """
 
-    def __init__(self, db_path: str = None):
+    def __init__(self, db_path: Optional[str] = None):
         self.db_path = db_path or self._default_db_path()
         self._conn: Optional[sqlite3.Connection] = None
         self._indexes_created: bool = False  # 索引创建标志
