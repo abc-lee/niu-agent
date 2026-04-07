@@ -285,19 +285,19 @@ class NiuRunner:
         返回格式化的提示词扩展
 
         阈值策略：
-        - 初始阈值 0.25（过滤掉明显不相关的）
+        - 提高初始阈值到 0.35，过滤掉更多不相关的结果
         - 如果结果太少，降级到文本搜索
         - 结果数量限制保证不会注入过多内容
         """
         # 搜索 Skills（符合L0/L1/L2规范，使用level字段）
         skills = self.vector_search.search(
-            query=user_input, limit=3, min_score=0.25, filter={"level": "l1", "category": "skill"}
+            query=user_input, limit=3, min_score=0.35, filter={"level": "l1", "category": "skill"}
         )
         print(f"[Debug] Dynamic injection - Skills: {len(skills)} results", file=sys.stderr, flush=True)
 
         # 搜索 MCP 工具描述（符合L0/L1/L2规范，使用level字段）
         mcp_tools = self.vector_search.search(
-            query=user_input, limit=5, min_score=0.25, filter={"level": "l1", "category": "mcp_tool"}
+            query=user_input, limit=5, min_score=0.35, filter={"level": "l1", "category": "mcp_tool"}
         )
         print(f"[Debug] Dynamic injection - MCP tools: {len(mcp_tools)} results", file=sys.stderr, flush=True)
 
@@ -305,7 +305,7 @@ class NiuRunner:
         knowledge = self.vector_search.search(
             query=user_input,
             limit=8,
-            min_score=0.35,
+            min_score=0.45,  # 提高知识搜索阈值
             filter={"level": "l1", "category": "document"},  # L1 文档摘要
         )
         print(f"[Debug] Dynamic injection - Knowledge: {len(knowledge)} results", file=sys.stderr, flush=True)
@@ -322,6 +322,8 @@ class NiuRunner:
         injection = "\n".join(parts)
         if injection:
             print(f"[Debug] Dynamic injection - Total length: {len(injection)} chars", file=sys.stderr, flush=True)
+        else:
+            print(f"[Debug] Dynamic injection - Skipped (no relevant results)", file=sys.stderr, flush=True)
 
         return injection
 
