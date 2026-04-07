@@ -13,7 +13,6 @@ from fastapi.responses import StreamingResponse
 
 from agent.runner import NiuRunner, get_runner
 from agent.session import get_message_store
-from niu_api.config import get_config
 
 router = APIRouter(tags=["chat"])
 
@@ -33,6 +32,25 @@ class ChatResponse(BaseModel):
     reply: str
 
 
+def _load_llm_config():
+    """直接从文件读取 LLM 配置，不走缓存"""
+    import json
+    from pathlib import Path
+
+    config_path = Path(__file__).parent.parent / "config" / "user-config.json"
+    try:
+        data = json.loads(config_path.read_text(encoding="utf-8"))
+        llm = data.get("llm", {})
+        return {
+            "type": llm.get("type", "openai"),
+            "apikey": llm.get("apiKey", ""),
+            "apibase": llm.get("apiBase", ""),
+            "model": llm.get("model", ""),
+        }
+    except Exception:
+        return {"type": "openai", "apikey": "", "apibase": "", "model": ""}
+
+
 def init_runner(mcp_tools: list = None):
     """
     初始化 Runner（从 API 启动时调用）
@@ -40,13 +58,7 @@ def init_runner(mcp_tools: list = None):
     Args:
         mcp_tools: 预加载的 MCP 工具列表
     """
-    config = get_config()
-    llm_config = {
-        "type": config.llm.provider if config.llm else "openai",
-        "apikey": config.llm.api_key if config.llm else "",
-        "apibase": config.llm.api_base if config.llm else "",
-        "model": config.llm.model if config.llm else "gpt-4o",
-    }
+    llm_config = _load_llm_config()
 
     from agent.mcp_client import get_mcp_manager
 
@@ -60,12 +72,24 @@ def init_runner(mcp_tools: list = None):
         runner.set_mcp_tools_schema(mcp_tools)
 
 
-def get_or_create_runner() -> NiuRunner:
-    """Get or create NiuRunner"""
-    runner = get_runner()
-    if runner is None:
-        # 如果还没初始化，用空 MCP 工具列表
+def get_or_create_runner() -> "NiuRunner":
+    """Get or create NiuRunner，配置变更后自动重新初始化"""
+    from agent import runner as runner_module
+
+    existing = get_runner()
+    current = _load_llm_config()
+
+    if existing is not None and current["apikey"] and current["model"]:
+        # Runner 已存在，检查配置是否变更
+        runner_llm = getattr(existing, "llm_config", {})
+        if runner_llm.get("apikey") != current["apikey"] or runner_llm.get("model") != current["model"]:
+            # 配置已变更，重新初始化
+            with runner_module._runner_lock:
+                runner_module._runner = None
+
+    if get_runner() is None:
         init_runner(mcp_tools=[])
+
     return get_runner()
 
 
@@ -74,9 +98,9 @@ async def chat(request: ChatRequest) -> StreamingResponse:
     """
     Main chat endpoint - 使用 NiuRunner 流式响应
     """
-    config = get_config()
+    llm_cfg = _load_llm_config()
 
-    if not config.llm or not config.llm.api_key:
+    if not llm_cfg["apikey"]:
         raise HTTPException(
             status_code=400, detail="LLM not configured. Please set up API key first."
         )
@@ -121,9 +145,9 @@ async def chat_sync(request: ChatRequest) -> ChatResponse:
     """
     Synchronous chat endpoint - waits for complete response
     """
-    config = get_config()
+    llm_cfg = _load_llm_config()
 
-    if not config.llm or not config.llm.api_key:
+    if not llm_cfg["apikey"]:
         raise HTTPException(
             status_code=400, detail="LLM not configured. Please set up API key first."
         )
