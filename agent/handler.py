@@ -226,6 +226,7 @@ class NiuHandler(BaseHandler):
         self.current_turn = 0
         self.history_info = []
         self._done_hooks = []
+        self._disable_memory_recall = False  # 禁用长期记忆检索（子 Agent 使用）
 
         # 经验总结相关
         self._experience_context: Optional[ExperienceContext] = None
@@ -469,6 +470,10 @@ class NiuHandler(BaseHandler):
 
     def _recall_relevant_memories(self, context: str) -> Optional[str]:
         """检索相关长期记忆"""
+        # 子 Agent 禁用记忆检索
+        if getattr(self, "_disable_memory_recall", False):
+            return None
+
         try:
             if not self.mcp_client:
                 return None

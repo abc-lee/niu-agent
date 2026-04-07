@@ -143,8 +143,9 @@ def call_subagent(
     )
     client = ToolClient(session)
 
-    # 4. 创建 handler
+    # 4. 创建 handler（禁用记忆检索，子 Agent 不需要）
     handler = NiuHandler(mcp_client=mcp_client)
+    handler._disable_memory_recall = True
 
     # 5. 获取基础工具 schema（排除子Agent调用工具，避免递归）
     from .runner import get_tools_schema
