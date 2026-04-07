@@ -170,7 +170,7 @@ def call_subagent(
         handler=handler,
         tools_schema=tools_schema,
         max_turns=20,
-        verbose=False,
+        verbose=True,  # 改为 True，便于调试
         initial_user_content=task,
     )
 
