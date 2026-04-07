@@ -108,7 +108,12 @@ def auto_make_url(base, path):
     b, p = base.rstrip("/"), path.strip("/")
     if b.endswith("$"):
         return b[:-1].rstrip("/")
-    return b if b.endswith(p) else f"{b}/{p}" if re.search(r"/v\d+$", b) else f"{b}/v1/{p}"
+    if b.endswith(p):
+        return b
+    # 如果 base 已包含 /v\d+，直接追加 path；否则加 /v1 前缀
+    if re.search(r"/v\d+", b):
+        return f"{b}/{p}"
+    return f"{b}/v1/{p}"
 
 
 def build_multimodal_content(prompt_text, image_paths):
