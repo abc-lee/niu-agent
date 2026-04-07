@@ -404,3 +404,67 @@ async def tidy_context(request: dict):
         import traceback
         logger.error(f"[Tidy] Error: {e}\n{traceback.format_exc()}")
         return {"status": "error", "message": str(e)}
+
+
+@router.post("/api/vector/cleanup")
+async def trigger_vector_cleanup():
+    """手动触发向量库清理"""
+    from agent.vector_cleanup import get_cleanup_service
+
+    try:
+        cleanup = get_cleanup_service()
+        cleanup.run_full_cleanup()
+        return {"status": "success", "message": "Vector database cleanup completed"}
+    except Exception as e:
+        logger.error(f"Vector cleanup failed: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+@router.get("/api/vector/stats")
+async def get_vector_stats():
+    """获取向量库统计信息"""
+    import json
+    import os
+    from agent.vector_search import get_vector_search
+
+    vs = get_vector_search()
+    conn = vs._get_connection()
+    if conn is None:
+        return {"error": "Vector database not initialized"}
+
+    cursor = conn.cursor()
+
+    # 总数
+    cursor.execute("SELECT COUNT(*) FROM documents")
+    total = cursor.fetchone()[0]
+
+    # 按类别统计
+    cursor.execute(
+        """
+        SELECT json_extract(metadata, '$.category') as category, COUNT(*) as count
+        FROM documents
+        GROUP BY category
+        """
+    )
+    by_category = {row[0] or "unknown": row[1] for row in cursor.fetchall()}
+
+    # 按层级统计
+    cursor.execute(
+        """
+        SELECT json_extract(metadata, '$.level') as level, COUNT(*) as count
+        FROM documents
+        GROUP BY level
+        """
+    )
+    by_level = {row[0] or "unknown": row[1] for row in cursor.fetchall()}
+
+    # 数据库大小
+    db_size_mb = os.path.getsize(vs.db_path) / (1024 * 1024) if os.path.exists(vs.db_path) else 0
+
+    return {
+        "total": total,
+        "by_category": by_category,
+        "by_level": by_level,
+        "db_size_mb": round(db_size_mb, 2),
+        "db_path": vs.db_path,
+    }
