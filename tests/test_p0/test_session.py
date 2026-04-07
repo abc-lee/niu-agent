@@ -9,6 +9,7 @@ sys.path.insert(0, "<repo-root>")
 from agent.session import MessageStore
 
 
+@pytest.mark.p0
 class TestMessageStoreSorting:
     """测试 MessageStore 消息排序"""
 
