@@ -107,6 +107,20 @@ def _load_memory_for_prompt() -> str:
             user_str += f"用户偏好：{'、'.join(user['preferences'])}"
         parts.append(user_str)
 
+    # 首次使用引导（firstRun）
+    # 如果 memory.json 中存在 firstRun 字段，说明用户尚未完成初始设置
+    # AI 应主动询问用户工作目录，并帮助用户完成 memory.json 的写入
+    if memory.get("firstRun"):
+        parts.append(
+            "## 首次使用\n\n"
+            "用户尚未完成初始设置。你需要主动询问用户工作目录路径。\n"
+            "请说：\"嗨！我是妞妞。为了帮你管理知识，请告诉我你的工作目录想放在哪里？\"\n\n"
+            "用户回答路径后，你需要用 bash 工具完成以下操作：\n"
+            "1. 创建目录（如果不存在）\n"
+            "2. 写入 ~/.niu/memory.json：设置 workspace.path，删除 firstRun 字段\n\n"
+            "完成后，下次对话不再出现此提示。"
+        )
+
     return "\n\n".join(parts)
 
 
