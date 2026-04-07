@@ -20,7 +20,7 @@ class TestToolCallJSONParsing:
             tool_calls=[
                 MockToolCall(
                     name="test_tool",
-                    arguments='{"param1": "value1", "param2": 123}',
+                    args='{"param1": "value1", "param2": 123}',  # args 是字符串
                     id="tool_1"
                 )
             ],
@@ -60,7 +60,7 @@ class TestToolCallJSONParsing:
             tool_calls=[
                 MockToolCall(
                     name="test_tool",
-                    arguments='{invalid json}',  # 非法 JSON
+                    args='{invalid json}',  # args 是字符串
                     id="tool_1"
                 )
             ],
@@ -99,17 +99,17 @@ class TestToolCallJSONParsing:
             tool_calls=[
                 MockToolCall(
                     name="tool_1",
-                    arguments='{"valid": true}',
+                    args='{"valid": true}',
                     id="tool_1"
                 ),
                 MockToolCall(
                     name="tool_2",
-                    arguments='invalid',
+                    args='invalid',
                     id="tool_2"
                 ),
                 MockToolCall(
                     name="tool_3",
-                    arguments='{"also_valid": 123}',
+                    args='{"also_valid": 123}',
                     id="tool_3"
                 ),
             ],
