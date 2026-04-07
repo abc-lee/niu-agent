@@ -676,16 +676,20 @@ class NiuHandler(BaseHandler):
                             db_path = str(Path(workspace) / "scheduled_tasks.db")
                             if Path(db_path).exists():
                                 # 检查最新的任务
-                                conn = sqlite3.connect(db_path)
-                                cursor = conn.cursor()
-                                cursor.execute("""
-                                    SELECT id, content, status, scheduled_at
-                                    FROM scheduled_tasks
-                                    ORDER BY created_at DESC
-                                    LIMIT 1
-                                """)
-                                latest_task = cursor.fetchone()
-                                conn.close()
+                                # P0-7: 使用 with 管理数据库连接
+                                try:
+                                    with sqlite3.connect(db_path) as conn:
+                                        cursor = conn.cursor()
+                                        cursor.execute("""
+                                            SELECT id, content, status, scheduled_at
+                                            FROM scheduled_tasks
+                                            ORDER BY created_at DESC
+                                            LIMIT 1
+                                        """)
+                                        latest_task = cursor.fetchone()
+                                except sqlite3.Error as e:
+                                    yield f"[SubAgent] ⚠ Database error: {e}\n"
+                                    latest_task = None
 
                                 if latest_task:
                                     yield f"[SubAgent] ✓ Verified task in database: {latest_task[1]} at {latest_task[3]}\n"
