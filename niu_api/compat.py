@@ -65,6 +65,22 @@ def set_preload_complete():
     logger.info("Preload marked as complete")
 
 
+@router.get("/api/llm-status")
+async def get_llm_status() -> dict:
+    """检测 LLM 是否已配置可用"""
+    from niu_api.config import get_config
+
+    config = get_config()
+
+    if not config.llm or not config.llm.api_key:
+        return {"ready": False, "error": "API key not configured"}
+
+    if not config.llm.api_base or not config.llm.model:
+        return {"ready": False, "error": "API base or model not configured"}
+
+    return {"ready": True}
+
+
 @router.get("/api/preload-status")
 async def get_preload_status():
     """Get preload status - used by Go launcher to wait before showing window"""

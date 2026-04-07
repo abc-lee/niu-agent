@@ -331,9 +331,7 @@
       
       // Save config first
       const config = {
-        llm: { presetId, apiKey, apiBase, model, type },
-        storage: {},
-        firstRun: false
+        llm: { presetId, apiKey, apiBase, model, type }
       };
       
       const saveResult = await window.electronAPI.saveConfig(config);
