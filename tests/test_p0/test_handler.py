@@ -8,6 +8,7 @@ from pathlib import Path
 sys.path.insert(0, "E:/tools/ai-bot")
 
 
+@pytest.mark.p0
 class TestDatabaseConnectionManagement:
     """测试数据库连接使用 with 语句管理"""
 

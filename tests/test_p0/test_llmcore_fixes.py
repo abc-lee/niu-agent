@@ -7,6 +7,7 @@ from agent.generic.llmcore import BaseSession, NativeClaudeSession, MockResponse
 import unittest.mock as mock
 
 
+@pytest.mark.p0
 class TestTypeValidation:
     """P0-4: 测试 ask 方法的类型验证"""
 
@@ -66,6 +67,7 @@ class TestTypeValidation:
         assert "NoneType" in str(exc_info.value)
 
 
+@pytest.mark.p0
 class TestContentBlocksInitialization:
     """P0-5: 测试 ask 方法正确处理 content_blocks"""
 
