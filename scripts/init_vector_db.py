@@ -250,32 +250,6 @@ def register_mcp_tools():
                 "required": ["query"]
             }
         },
-        # config-manager
-        {
-            "server": "config-manager",
-            "name": "read_config",
-            "description": "读取用户配置或记忆。参数：config_type(config/preferences/memory)。返回配置内容。",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "config_type": {"type": "string", "description": "配置类型（config/preferences/memory）"}
-                },
-                "required": ["config_type"]
-            }
-        },
-        {
-            "server": "config-manager",
-            "name": "write_config",
-            "description": "写入用户配置或记忆。参数：config_type(config/preferences/memory)、data(配置数据)。返回操作结果。",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "config_type": {"type": "string", "description": "配置类型"},
-                    "data": {"type": "object", "description": "配置数据"}
-                },
-                "required": ["config_type", "data"]
-            }
-        },
         # memory-server
         {
             "server": "memory-server",
