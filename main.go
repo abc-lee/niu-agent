@@ -327,6 +327,69 @@ func main() {
 		slog.Warn("Preload may not be complete, proceeding anyway")
 	}
 
+	// Check LLM configuration status
+	slog.Info("Checking LLM configuration...")
+	llmReady := false
+	for i := 0; i < 10; i++ {
+		resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/api/llm-status", *port))
+		if err == nil {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+
+			var status struct {
+				Ready bool   `json:"ready"`
+				Error string `json:"error,omitempty"`
+			}
+			if err := json.Unmarshal(body, &status); err == nil {
+				llmReady = status.Ready
+				if !llmReady {
+					slog.Info("LLM not configured", "error", status.Error)
+				} else {
+					slog.Info("LLM configured and ready")
+				}
+			}
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	// LLM not ready: open settings window and wait for user to configure
+	if !llmReady {
+		slog.Info("LLM not configured, opening settings window...")
+		settingsCmd, err := launchWindow("settings")
+		if err != nil {
+			slog.Error("Failed to launch settings window", "error", err)
+			fmt.Println("\nFailed to open settings. Please configure LLM in config/user-config.json")
+			os.Exit(1)
+		}
+
+		// Wait for settings window to close
+		settingsCmd.Wait()
+		slog.Info("Settings window closed, rechecking LLM status...")
+
+		// Recheck LLM status
+		resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/api/llm-status", *port))
+		if err == nil {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+
+			var status struct {
+				Ready bool   `json:"ready"`
+				Error string `json:"error,omitempty"`
+			}
+			if err := json.Unmarshal(body, &status); err == nil && status.Ready {
+				llmReady = true
+				slog.Info("LLM configured successfully after settings")
+			} else {
+				slog.Error("LLM still not configured, exiting")
+				os.Exit(0)
+			}
+		} else {
+			slog.Error("Failed to check LLM status after settings, exiting")
+			os.Exit(0)
+		}
+	}
+
 	// If --settings flag, just open settings and exit
 	if *showSettings {
 		if _, err := launchWindow("settings"); err != nil {

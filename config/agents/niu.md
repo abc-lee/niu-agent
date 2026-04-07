@@ -14,7 +14,6 @@ mcpServers:
   - file-parser
   - kg-server
   - vector-store
-  - config-manager
   - photo-server
 ---
 
