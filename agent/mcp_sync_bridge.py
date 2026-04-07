@@ -83,6 +83,64 @@ class MCPSyncBridge:
             logger.error(f"[MCPSyncBridge] Call failed: {e}")
             return {"status": "error", "msg": str(e)}
 
+    def call_tool_with_retry(
+        self,
+        server_name: str,
+        tool_name: str,
+        args: dict,
+        max_retries: int = 2,
+        timeout: float = 60.0,
+        retry_delay: float = 1.0
+    ) -> Dict[str, Any]:
+        """
+        带重试的 MCP 工具调用
+
+        Args:
+            server_name: MCP 服务器名
+            tool_name: 工具名
+            args: 参数
+            max_retries: 最大重试次数（默认 2 次）
+            timeout: 超时秒数
+            retry_delay: 重试延迟（秒）
+
+        Returns:
+            工具执行结果
+        """
+        import time
+
+        last_error = None
+
+        for attempt in range(max_retries + 1):
+            result = self.call_tool(server_name, tool_name, args, timeout)
+
+            # 检查是否成功
+            if result.get("status") != "error":
+                return result
+
+            # 记录错误
+            last_error = result.get("msg", "Unknown error")
+
+            # 如果还有重试机会
+            if attempt < max_retries:
+                logger.warning(
+                    f"[MCPSyncBridge] Tool call failed (attempt {attempt + 1}/{max_retries + 1}), "
+                    f"retrying in {retry_delay}s: {server_name}/{tool_name} - {last_error}"
+                )
+                time.sleep(retry_delay)
+                # 指数退避
+                retry_delay *= 1.5
+
+        # 所有重试失败
+        logger.error(
+            f"[MCPSyncBridge] Tool call failed after {max_retries + 1} attempts: "
+            f"{server_name}/{tool_name} - {last_error}"
+        )
+        return {
+            "status": "error",
+            "msg": f"Failed after {max_retries + 1} attempts: {last_error}",
+            "retries": max_retries
+        }
+
     async def _call_tool_async(
         self, server_name: str, tool_name: str, args: dict
     ) -> Dict[str, Any]:
