@@ -157,7 +157,7 @@ def code_run(code: str, code_type: str = "python", timeout: int = 60, cwd: str =
             try:
                 line = line_bytes.decode("utf-8")
             except UnicodeDecodeError:
-                line = line_bytes.decode("gbk", errors="ignore")
+                line = line_bytes.decode("latin-1", errors="ignore")
             logs.append(line)
 
     try:

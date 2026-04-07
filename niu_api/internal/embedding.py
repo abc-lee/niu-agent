@@ -22,8 +22,8 @@ def get_models_dir() -> Path:
     """Get models directory path."""
     if "NIU_MODELS_PATH" in os.environ:
         return Path(os.environ["NIU_MODELS_PATH"])
-    # 项目根目录/models
-    return Path(__file__).parent.parent.parent.parent / "models"
+    # 项目根目录/models (niu_api/internal/embedding.py -> niu_api/internal -> niu_api -> 项目根)
+    return Path(__file__).parent.parent.parent / "models"
 
 
 def get_device():
