@@ -38,19 +38,25 @@ class MCPServerConfig:
 
 
 def get_python_path() -> str:
-    """获取 Python 解释器路径"""
-    # 1. 打包的 Python
-    packaged = os.path.join(os.path.dirname(__file__), "..", "python", "Scripts", "python.exe")
-    if os.path.exists(packaged):
-        return os.path.abspath(packaged)
+    """获取打包的 Python 解释器路径（跨平台）"""
+    base_dir = os.path.dirname(__file__)
 
-    # 2. 虚拟环境
-    venv = os.path.join(os.path.dirname(__file__), "..", "venv", "Scripts", "python.exe")
-    if os.path.exists(venv):
-        return os.path.abspath(venv)
+    # 根据操作系统选择不同的路径格式
+    if sys.platform == "darwin" or sys.platform == "linux":
+        # Mac/Linux: 使用 bin 目录
+        python_path = os.path.join(base_dir, "..", "python", "bin", "python3")
+    else:
+        # Windows: 使用 Scripts 目录和 python.exe
+        python_path = os.path.join(base_dir, "..", "python", "Scripts", "python.exe")
 
-    # 3. 系统 Python
-    return sys.executable
+    if os.path.exists(python_path):
+        return os.path.abspath(python_path)
+
+    # Python not found - this is a packaging error
+    raise RuntimeError(
+        f"Python not found in bundled directory: {python_path}\n"
+        "Please download the complete package from the release page."
+    )
 
 
 def load_mcp_configs() -> Dict[str, MCPServerConfig]:
@@ -69,8 +75,10 @@ def load_mcp_configs() -> Dict[str, MCPServerConfig]:
     # 添加主项目根目录到 PYTHONPATH，确保 MCP 服务器能找到主项目模块
     project_root = os.path.abspath(os.path.join(base_dir, ".."))
     pythonpath = inherited_env.get("PYTHONPATH", "")
+    # 跨平台路径分隔符：Windows 用 ;，Mac/Linux 用 :
+    path_sep = ";" if sys.platform == "win32" else ":"
     if pythonpath:
-        inherited_env["PYTHONPATH"] = f"{project_root};{pythonpath}"
+        inherited_env["PYTHONPATH"] = f"{project_root}{path_sep}{pythonpath}"
     else:
         inherited_env["PYTHONPATH"] = project_root
 

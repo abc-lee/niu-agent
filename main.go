@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -76,34 +77,34 @@ func LoadContextConfig() *ContextConfig {
 	return cfg
 }
 
-// detectPython finds a suitable Python executable for launching the API server
+// detectPython finds the bundled Python executable
+// Only uses Python from the current directory (bundled with the application)
 func detectPython() string {
 	exePath, _ := os.Executable()
 	exeDir := filepath.Dir(exePath)
 
-	candidates := []string{
-		filepath.Join(exeDir, "python", "Scripts", "python.exe"),
-		filepath.Join(".", "python", "Scripts", "python.exe"),
-		"E:/opencode/venv/Scripts/python.exe",
-		filepath.Join(exeDir, ".venv", "Scripts", "python.exe"),
-		"C:/Python311/python.exe",
-		"C:/Python310/python.exe",
-		"python",
-		"python3",
+	var pythonPath string
+
+	if runtime.GOOS == "windows" {
+		// Windows: ./python/Scripts/python.exe
+		pythonPath = filepath.Join(exeDir, "python", "Scripts", "python.exe")
+	} else {
+		// Mac/Linux: ./python/bin/python3
+		pythonPath = filepath.Join(exeDir, "python", "bin", "python3")
 	}
 
-	for _, candidate := range candidates {
-		cmd := exec.Command(candidate, "--version")
-		if err := cmd.Run(); err == nil {
-			if absPath, err := filepath.Abs(candidate); err == nil {
-				return absPath
-			}
-			return candidate
+	// Check if Python exists
+	if _, err := os.Stat(pythonPath); err == nil {
+		if absPath, err := filepath.Abs(pythonPath); err == nil {
+			return absPath
 		}
+		return pythonPath
 	}
 
-	slog.Warn("No Python found, using 'python' as fallback")
-	return "python"
+	// Python not found - this is a packaging error
+	slog.Error("Python not found in bundled directory", "path", pythonPath)
+	slog.Error("Please download the complete package from the release page")
+	return ""
 }
 
 // loadMemory loads user memory from ~/.niu/memory.json
