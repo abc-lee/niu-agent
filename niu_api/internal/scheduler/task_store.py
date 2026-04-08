@@ -13,7 +13,9 @@ class TaskStore:
 
     def _init_db(self):
         """初始化数据库表"""
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=10.0)
+        # 启用WAL模式，提高并发性能
+        conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS scheduled_tasks (
                 id TEXT PRIMARY KEY,
@@ -47,7 +49,8 @@ class TaskStore:
         """创建任务"""
         task_id = str(uuid.uuid4())
 
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=10.0)
+        conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("""
             INSERT INTO scheduled_tasks
             (id, content, scheduled_at, is_recurring, cron_expr, event_type, status)
@@ -60,7 +63,8 @@ class TaskStore:
 
     def list_tasks(self, status: Optional[str] = None) -> List[Dict[str, Any]]:
         """查询任务列表"""
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=10.0)
+        conn.execute("PRAGMA journal_mode=WAL")
         cursor = conn.cursor()
 
         if status:
@@ -96,7 +100,8 @@ class TaskStore:
 
     def cancel_task(self, task_id: str) -> bool:
         """取消任务"""
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=10.0)
+        conn.execute("PRAGMA journal_mode=WAL")
         cursor = conn.cursor()
         cursor.execute("""
             UPDATE scheduled_tasks
@@ -136,7 +141,8 @@ class TaskStore:
 
         params.append(task_id)
 
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=10.0)
+        conn.execute("PRAGMA journal_mode=WAL")
         cursor = conn.cursor()
         cursor.execute(f"""
             UPDATE scheduled_tasks
@@ -150,7 +156,8 @@ class TaskStore:
 
     def get_task(self, task_id: str) -> Optional[Dict[str, Any]]:
         """获取单个任务"""
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=10.0)
+        conn.execute("PRAGMA journal_mode=WAL")
         cursor = conn.cursor()
         cursor.execute("""
             SELECT id, content, scheduled_at, is_recurring, cron_expr, event_type, status, created_at
