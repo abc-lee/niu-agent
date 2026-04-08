@@ -6,7 +6,7 @@ Any failure to load critical MCP servers will terminate the application.
 """
 
 from typing import List, Tuple
-from agent.tool_registry import ToolRegistry
+from agent.tool_registry import ToolRegistry, set_registry
 
 
 # ============================================================================
@@ -62,5 +62,8 @@ def load_mcp_tools() -> ToolRegistry:
         raise RuntimeError(error_msg)
 
     print(f"[MCP Loader] All {len(REQUIRED_SERVERS)} servers loaded")
+
+    # Set global registry instance
+    set_registry(registry)
 
     return registry

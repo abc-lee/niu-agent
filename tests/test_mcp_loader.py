@@ -67,11 +67,18 @@ class TestMCPLoaderBasics:
 
         try:
             from agent.mcp_loader import load_mcp_tools
-            from agent.tool_registry import ToolRegistry
+            from agent.tool_registry import ToolRegistry, get_registry, reset_registry
+
+            # Reset registry before test
+            reset_registry()
 
             registry = load_mcp_tools()
             assert registry is not None
             assert isinstance(registry, ToolRegistry)
+
+            # Verify global registry is set
+            global_registry = get_registry()
+            assert global_registry is registry
         finally:
             mcp_loader.REQUIRED_SERVERS = original_servers
             if 'niu_test_server' in sys.modules:
@@ -90,6 +97,11 @@ class TestMCPLoaderBasics:
 
         try:
             from agent.mcp_loader import load_mcp_tools
+            from agent.tool_registry import reset_registry
+
+            # Reset registry before test
+            reset_registry()
+
             registry = load_mcp_tools()
 
             # Check that tool was loaded
