@@ -14,14 +14,7 @@ from datetime import datetime
 from typing import Any, Dict, Generator, Optional
 
 from .generic.agent_loop import agent_runner_loop
-from .generic.llmcore import (
-    LLMSession,
-    ClaudeSession,
-    NativeClaudeSession,
-    NativeOAISession,
-    ToolClient,
-    NativeToolClient,
-)
+from .generic.llmcore import ToolClient
 from .handler import NiuHandler
 from .vector_search import get_vector_search
 from .injector.sync import get_skill_sync
@@ -168,35 +161,17 @@ def get_tools_schema() -> list:
 
 
 def create_client(config: Dict[str, Any]):
-    """创建 LLM 客户端"""
-    client_type = config.get("type", "openai")
-
-    # 规范化配置字段名
+    """创建 LLM 客户端（统一使用LiteLLM）"""
     cfg = {
         "apikey": config.get("apikey") or config.get("api_key", ""),
         "apibase": config.get("apibase") or config.get("api_base", ""),
         "model": config.get("model", ""),
+        "api_type": config.get("type", "openai"),
     }
 
-    # 检查是否启用LiteLLM
-    use_litellm = config.get("use_litellm", False)
-    if use_litellm:
-        from .generic.litellm_adapter import create_litellm_client
-        print(f"[Runner] Using LiteLLM adapter for model: {cfg['model']}", file=sys.stderr, flush=True)
-        return create_litellm_client(cfg)
-
-    if client_type in ("native_claude", "native"):
-        session = NativeClaudeSession(cfg)
-        return NativeToolClient(session)
-    elif client_type in ("native_openai", "native_oai"):
-        session = NativeOAISession(cfg)
-        return NativeToolClient(session)
-    elif client_type in ("claude", "anthropic"):
-        session = ClaudeSession(cfg)
-        return ToolClient(session)
-    else:  # openai or default
-        session = LLMSession(cfg)
-        return ToolClient(session)
+    from .generic.litellm_adapter import create_litellm_client
+    print(f"[Runner] Using LiteLLM adapter for model: {cfg['model']}", file=sys.stderr, flush=True)
+    return create_litellm_client(cfg)
 
 
 def format_resources_for_prompt(results: list, title: str = "相关资源") -> str:

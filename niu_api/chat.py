@@ -33,7 +33,7 @@ class ChatResponse(BaseModel):
 
 
 def _load_llm_config():
-    """直接从文件读取 LLM 配置，不走缓存"""
+    """直接从文件读取 LLM 配置，不走缓存，保留所有原始字段"""
     import json
     from pathlib import Path
 
@@ -41,12 +41,22 @@ def _load_llm_config():
     try:
         data = json.loads(config_path.read_text(encoding="utf-8"))
         llm = data.get("llm", {})
-        return {
-            "type": llm.get("type", "openai"),
-            "apikey": llm.get("apiKey", ""),
-            "apibase": llm.get("apiBase", ""),
-            "model": llm.get("model", ""),
-        }
+
+        # 直接返回原始配置，统一键名为小写（兼容不同格式）
+        config = {}
+
+        # 处理所有可能的键名格式（apiKey/apikey/api_key）
+        for key, value in llm.items():
+            # 统一转换为小写
+            config[key.lower()] = value
+
+        # 确保必要字段有默认值
+        config.setdefault("type", "openai")
+        config.setdefault("apikey", "")
+        config.setdefault("apibase", "")
+        config.setdefault("model", "")
+
+        return config
     except Exception:
         return {"type": "openai", "apikey": "", "apibase": "", "model": ""}
 
