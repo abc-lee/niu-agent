@@ -61,10 +61,6 @@ class TestMCPLoaderBasics:
         import sys
         sys.modules['niu_test_server'] = MockMCPModule
 
-        from agent import mcp_loader
-        original_servers = mcp_loader.REQUIRED_SERVERS
-        mcp_loader.REQUIRED_SERVERS = [("test-server", "niu_test_server")]
-
         try:
             from agent.mcp_loader import load_mcp_tools
             from agent.tool_registry import ToolRegistry, get_registry, reset_registry
@@ -72,7 +68,8 @@ class TestMCPLoaderBasics:
             # Reset registry before test
             reset_registry()
 
-            registry = load_mcp_tools()
+            # Use parameter instead of modifying REQUIRED_SERVERS
+            registry = load_mcp_tools([("test-server", "niu_test_server")])
             assert registry is not None
             assert isinstance(registry, ToolRegistry)
 
@@ -80,7 +77,6 @@ class TestMCPLoaderBasics:
             global_registry = get_registry()
             assert global_registry is registry
         finally:
-            mcp_loader.REQUIRED_SERVERS = original_servers
             if 'niu_test_server' in sys.modules:
                 del sys.modules['niu_test_server']
 
@@ -90,11 +86,6 @@ class TestMCPLoaderBasics:
         import sys
         sys.modules['niu_test_server'] = MockMCPModule
 
-        # Temporarily replace REQUIRED_SERVERS with test server
-        from agent import mcp_loader
-        original_servers = mcp_loader.REQUIRED_SERVERS
-        mcp_loader.REQUIRED_SERVERS = [("test-server", "niu_test_server")]
-
         try:
             from agent.mcp_loader import load_mcp_tools
             from agent.tool_registry import reset_registry
@@ -102,7 +93,8 @@ class TestMCPLoaderBasics:
             # Reset registry before test
             reset_registry()
 
-            registry = load_mcp_tools()
+            # Use parameter instead of modifying REQUIRED_SERVERS
+            registry = load_mcp_tools([("test-server", "niu_test_server")])
 
             # Check that tool was loaded
             schemas = registry.get_schemas()
@@ -116,8 +108,6 @@ class TestMCPLoaderBasics:
             assert result == {"status": "success", "param": "hello"}
 
         finally:
-            # Restore original REQUIRED_SERVERS
-            mcp_loader.REQUIRED_SERVERS = original_servers
             # Clean up mock module
             if 'niu_test_server' in sys.modules:
                 del sys.modules['niu_test_server']
@@ -129,24 +119,15 @@ class TestMCPLoaderErrorHandling:
 
     def test_load_mcp_tools_missing_module_raises_runtime_error(self, monkeypatch):
         """Test that missing module raises RuntimeError with details"""
-        from agent import mcp_loader
-        original_servers = mcp_loader.REQUIRED_SERVERS
+        from agent.mcp_loader import load_mcp_tools
 
-        # Use a non-existent module
-        mcp_loader.REQUIRED_SERVERS = [("missing-server", "niu_nonexistent_module")]
+        # Use parameter with non-existent module
+        with pytest.raises(RuntimeError) as exc_info:
+            load_mcp_tools([("missing-server", "niu_nonexistent_module")])
 
-        try:
-            from agent.mcp_loader import load_mcp_tools
-
-            with pytest.raises(RuntimeError) as exc_info:
-                load_mcp_tools()
-
-            # Check error message contains server name
-            assert "missing-server" in str(exc_info.value)
-            assert "import failed" in str(exc_info.value)
-
-        finally:
-            mcp_loader.REQUIRED_SERVERS = original_servers
+        # Check error message contains server name
+        assert "missing-server" in str(exc_info.value)
+        assert "import failed" in str(exc_info.value)
 
     def test_load_mcp_tools_partial_failure_raises_runtime_error(self, monkeypatch):
         """Test that partial module loading failure raises RuntimeError"""
@@ -155,20 +136,15 @@ class TestMCPLoaderErrorHandling:
         # Create one valid mock module
         sys.modules['niu_valid_server'] = MockMCPModule
 
-        from agent import mcp_loader
-        original_servers = mcp_loader.REQUIRED_SERVERS
-
-        # Mix valid and invalid servers
-        mcp_loader.REQUIRED_SERVERS = [
-            ("valid-server", "niu_valid_server"),
-            ("invalid-server", "niu_nonexistent_module")
-        ]
-
         try:
             from agent.mcp_loader import load_mcp_tools
 
+            # Mix valid and invalid servers using parameter
             with pytest.raises(RuntimeError) as exc_info:
-                load_mcp_tools()
+                load_mcp_tools([
+                    ("valid-server", "niu_valid_server"),
+                    ("invalid-server", "niu_nonexistent_module")
+                ])
 
             # Check error message lists the failed server
             error_msg = str(exc_info.value)
@@ -176,7 +152,6 @@ class TestMCPLoaderErrorHandling:
             assert "import failed" in error_msg
 
         finally:
-            mcp_loader.REQUIRED_SERVERS = original_servers
             if 'niu_valid_server' in sys.modules:
                 del sys.modules['niu_valid_server']
 
