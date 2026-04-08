@@ -1029,15 +1029,22 @@ class NiuHandler(BaseHandler):
             return ret
 
         # 检查 MCP 工具（工具名格式：server/tool）
-        if self.mcp_client and "/" in tool_name:
+        if "/" in tool_name:
             try:
-                from agent.mcp_sync_bridge import get_mcp_bridge
+                from agent.tool_registry import get_registry
 
-                server_name, tool_name_part = tool_name.split("/", 1)
+                # 从 ToolRegistry 获取工具函数
+                func = get_registry().get(tool_name)
 
-                # 使用同步桥接器调用异步 MCP
-                bridge = get_mcp_bridge()
-                result = bridge.call_tool(server_name, tool_name_part, args, timeout=60)
+                if func is None:
+                    yield f"[MCP Error] Tool not found: {tool_name}\n"
+                    return StepOutcome(
+                        {"status": "error", "error_code": "TOOL_NOT_FOUND", "msg": f"Tool {tool_name} not found in registry"},
+                        next_prompt=self._get_anchor_prompt()
+                    )
+
+                # 直接调用工具函数
+                result = func(**args)
 
                 yield f"[MCP] {tool_name} executed\n"
 
