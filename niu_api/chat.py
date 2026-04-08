@@ -61,25 +61,22 @@ def _load_llm_config():
         return {"type": "openai", "apikey": "", "apibase": "", "model": ""}
 
 
-def init_runner(mcp_tools: list = None):
+def init_runner(tool_registry):
     """
     初始化 Runner（从 API 启动时调用）
 
     Args:
-        mcp_tools: 预加载的 MCP 工具列表
+        tool_registry: ToolRegistry 实例
     """
     llm_config = _load_llm_config()
 
-    from agent.mcp_client import get_mcp_manager
+    # 不再需要 mcp_client，handler 直接使用 ToolRegistry
+    runner = get_runner(llm_config=llm_config, mcp_client=None)
 
-    mcp_client = get_mcp_manager()
-
-    # 使用 agent.runner 的全局 runner
-    runner = get_runner(llm_config=llm_config, mcp_client=mcp_client)
-
-    # 设置 MCP 工具 Schema
-    if mcp_tools:
-        runner.set_mcp_tools_schema(mcp_tools)
+    # 设置 MCP 工具 Schema（从 ToolRegistry 获取）
+    mcp_tools_schema = tool_registry.get_schemas()
+    if mcp_tools_schema:
+        runner.set_mcp_tools_schema(mcp_tools_schema)
 
 
 def get_or_create_runner() -> "NiuRunner":
