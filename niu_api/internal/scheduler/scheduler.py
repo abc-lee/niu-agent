@@ -26,7 +26,9 @@ class Scheduler:
 
     def _init_db(self):
         """初始化数据库"""
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=10.0)
+        # 启用WAL模式，提高并发性能
+        conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS scheduled_tasks (
                 id TEXT PRIMARY KEY,
@@ -56,7 +58,8 @@ class Scheduler:
         cleanup_threshold = timedelta(days=100)
         cutoff_date = datetime.now() - cleanup_threshold
 
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=10.0)
+        conn.execute("PRAGMA journal_mode=WAL")
         cursor = conn.cursor()
 
         # 删除100天前的已完成/已取消任务
@@ -125,7 +128,8 @@ class Scheduler:
         max_delay = timedelta(minutes=5)
         earliest_time = now - max_delay
 
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=10.0)
+        conn.execute("PRAGMA journal_mode=WAL")
         cursor = conn.cursor()
 
         # 自动标记过期太久的单次任务为triggered（相当于跳过）
