@@ -179,14 +179,26 @@ Zellij使用指南|终端,复用器,Rust|Zellij终端复用器的基本使用方
 
 照片入库会自动生成 L0 摘要，无需额外步骤。
 
-**单张照片**：
+**⚠️ 重要：判断单张还是目录**
+
+- **单张照片路径**（如 `E:/照片/DSC_001.jpg`）→ 调用 `ingest_photo`（单数）
+- **目录路径**（如 `E:/照片/2024旅行`）→ 调用 `ingest_photos`（复数）
+- **多张独立照片**（如 `DSC_001.jpg, DSC_002.jpg`）→ 分别调用 `ingest_photo` 多次
+
+**单张照片示例**：
 ```
-<tool_use>{"name": "photo-server/ingest_photo", "arguments": {"file_path": "...", "category": "生活"}}</tool_use>
+<tool_use>{"name": "photo-server/ingest_photo", "arguments": {"file_path": "E:/照片/DSC_001.jpg", "category": "生活"}}</tool_use>
 ```
 
-**批量目录**：
+**批量目录示例**：
 ```
 <tool_use>{"name": "photo-server/ingest_photos", "arguments": {"source_path": "E:/照片/2024旅行", "category": "旅行"}}</tool_use>
+```
+
+**多张独立照片示例**（调用两次）：
+```
+<tool_use>{"name": "photo-server/ingest_photo", "arguments": {"file_path": "E:/照片/DSC_001.jpg", "category": "旅行"}}</tool_use>
+<tool_use>{"name": "photo-server/ingest_photo", "arguments": {"file_path": "E:/照片/DSC_002.jpg", "category": "旅行"}}</tool_use>
 ```
 
 ---

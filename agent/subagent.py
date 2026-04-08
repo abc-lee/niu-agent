@@ -122,7 +122,6 @@ def call_subagent(
         子 Agent 执行结果
     """
     from .generic.agent_loop import agent_runner_loop
-    from .generic.llmcore import LLMSession, ToolClient
     from .handler import NiuHandler
 
     # 1. 获取子 Agent 提示词（从配置文件）
@@ -133,15 +132,9 @@ def call_subagent(
     now = datetime.now()
     system_prompt += f"\n\nCurrent Time: {now.strftime('%Y-%m-%d %H:%M:%S')}"
 
-    # 3. 创建 LLM 客户端
-    session = LLMSession(
-        {
-            "apikey": llm_config.get("apikey", ""),
-            "apibase": llm_config.get("apibase", ""),
-            "model": llm_config.get("model", ""),
-        }
-    )
-    client = ToolClient(session)
+    # 3. 创建 LLM 客户端（统一使用 LiteLLM）
+    from .runner import create_client
+    client = create_client(llm_config)
 
     # 4. 创建 handler（禁用记忆检索，子 Agent 不需要）
     handler = NiuHandler(mcp_client=mcp_client)
@@ -184,15 +177,26 @@ def call_subagent(
     # 8. 收集结果（包括 return 值）
     result = ""
     return_value = None
-    try:
-        for chunk in gen:
+
+    # 改用 while + next 消费生成器，以捕获 StopIteration
+    # 重要：for 循环会自动捕获 StopIteration，导致无法获取生成器的 return 值
+    while True:
+        try:
+            chunk = next(gen)
             result += chunk
-    except StopIteration as e:
-        # 生成器的 return 值在 StopIteration.value 中
-        return_value = e.value
+        except StopIteration as e:
+            # 生成器的 return 值在 StopIteration.value 中
+            return_value = e.value
+            break
 
     # 优先使用 return 值（包含结构化数据）
     if return_value and isinstance(return_value, dict):
+        # 如果 return_value 中有 data 字段，提取它作为结果
+        if "data" in return_value and return_value["data"] is not None:
+            data = return_value["data"]
+            if isinstance(data, dict):
+                return json.dumps(data, ensure_ascii=False)
+            return str(data)
         return json.dumps(return_value, ensure_ascii=False)
 
     return result

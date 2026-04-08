@@ -139,6 +139,20 @@ def agent_runner_loop(
                         "error": str(e),  # 记录错误信息
                     })
 
+        # 添加assistant消息（如果有工具调用）
+        if response.tool_calls:
+            assistant_msg = {"role": "assistant", "tool_calls": []}
+            for tc in response.tool_calls:
+                assistant_msg["tool_calls"].append({
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {
+                        "name": tc.function.name,
+                        "arguments": tc.function.arguments
+                    }
+                })
+            messages.append(assistant_msg)
+
         tool_results = []
         next_prompts = set()
         should_exit = None
@@ -178,6 +192,15 @@ def agent_runner_loop(
                 )
                 tool_results.append({"tool_use_id": tid, "content": datastr})
             next_prompts.add(outcome.next_prompt)
+
+        # 添加tool消息（工具结果）
+        for tool_result in tool_results:
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tool_result["tool_use_id"],
+                "content": tool_result["content"]
+            })
+
         if len(next_prompts) == 0:
             if len(handler._done_hooks) == 0:
                 return should_exit
@@ -188,7 +211,6 @@ def agent_runner_loop(
         if not next_prompt or not next_prompt.strip():
             return should_exit
 
-        messages.append(
-            {"role": "user", "content": next_prompt, "tool_results": tool_results}
-        )  # append, don't reassign - history managed by NiuRunner via MessageStore
+        # 添加下一个user消息
+        messages.append({"role": "user", "content": next_prompt})
     return {"result": "MAX_TURNS_EXCEEDED"}
