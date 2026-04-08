@@ -56,21 +56,21 @@ async def lifespan(app: FastAPI):
     start_scheduler()
     logger.info("Internal scheduler started")
 
-    # 4. Preload MCP tools
-    logger.info("Preloading MCP tools...")
-    from agent.mcp_client import list_mcp_tools
+    # 4. Load MCP tools using ToolRegistry
+    logger.info("Loading MCP tools...")
+    from agent.mcp_loader import load_mcp_tools
 
-    mcp_tools = []
     try:
-        mcp_tools = await list_mcp_tools()
-        logger.info(f"MCP tools preloaded: {len(mcp_tools)} tools")
+        tool_registry = load_mcp_tools()
+        logger.info(f"MCP tools loaded: {len(tool_registry.get_schemas())} tools")
     except Exception as e:
-        logger.warning(f"Failed to preload MCP tools: {e}")
+        logger.error(f"Failed to load MCP tools: {e}")
+        raise
 
-    # 5. Initialize runner with MCP tools
+    # 5. Initialize runner with ToolRegistry
     logger.info("Initializing NiuRunner...")
     from niu_api.chat import init_runner
-    init_runner(mcp_tools)
+    init_runner(tool_registry)
 
     # 6. Mark preload as complete
     from niu_api.compat import set_preload_complete
