@@ -5,7 +5,8 @@ Loads all required MCP modules at startup with strict validation.
 Any failure to load critical MCP servers will terminate the application.
 """
 
-from typing import List, Tuple
+from typing import List, Tuple, Optional
+from loguru import logger
 from agent.tool_registry import ToolRegistry, set_registry
 
 
@@ -29,9 +30,13 @@ REQUIRED_SERVERS: List[Tuple[str, str]] = [
 # Loader Function
 # ============================================================================
 
-def load_mcp_tools() -> ToolRegistry:
+def load_mcp_tools(required_servers: Optional[List[Tuple[str, str]]] = None) -> ToolRegistry:
     """
     Load all required MCP modules and register their tools.
+
+    Args:
+        required_servers: Optional list of (server_name, module_name) tuples.
+                         If not provided, uses the default REQUIRED_SERVERS list.
 
     Returns:
         ToolRegistry: Registry containing all MCP tool functions and schemas.
@@ -39,10 +44,11 @@ def load_mcp_tools() -> ToolRegistry:
     Raises:
         RuntimeError: If any required MCP server fails to load.
     """
+    servers = required_servers or REQUIRED_SERVERS
     registry = ToolRegistry()
     failed_servers = []
 
-    for server_name, module_name in REQUIRED_SERVERS:
+    for server_name, module_name in servers:
         try:
             module = __import__(module_name, fromlist=["get_tool_schemas"])
 
@@ -61,7 +67,7 @@ def load_mcp_tools() -> ToolRegistry:
         )
         raise RuntimeError(error_msg)
 
-    print(f"[MCP Loader] All {len(REQUIRED_SERVERS)} servers loaded")
+    logger.info(f"All {len(servers)} servers loaded")
 
     # Set global registry instance
     set_registry(registry)
