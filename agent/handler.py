@@ -543,9 +543,7 @@ class NiuHandler(BaseHandler):
             if not self.mcp_client:
                 return None
 
-            from agent.mcp_sync_bridge import get_mcp_bridge
-
-            bridge = get_mcp_bridge()
+            from agent.tool_registry import get_registry
 
             # 从上下文中提取关键词
             keywords = self._extract_keywords(context)
@@ -553,16 +551,15 @@ class NiuHandler(BaseHandler):
                 return None
 
             # 调用 memory-server/recall
-            result = bridge.call_tool(
-                "memory-server",
-                "recall",
-                {
-                    "query": keywords,
-                    "limit": 3,
-                    "level": "l1",
-                },
-                timeout=10,
-            )
+            tool_fn = get_registry().get("memory-server/recall")
+            if tool_fn:
+                result = tool_fn(
+                    query=keywords,
+                    limit=3,
+                    level="l1",
+                )
+            else:
+                return None
 
             if isinstance(result, list) and result:
                 memories = []
