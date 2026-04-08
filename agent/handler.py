@@ -838,20 +838,15 @@ class NiuHandler(BaseHandler):
                 )
 
             # 调用 memory-server/remember
-            if self.mcp_client:
-                from agent.mcp_sync_bridge import get_mcp_bridge
+            from agent.tool_registry import get_registry
 
-                bridge = get_mcp_bridge()
-                result = bridge.call_tool(
-                    "memory-server",
-                    "remember",
-                    {
-                        "content": content,
-                        "memory_type": memory_type,
-                        "title": title,
-                        "importance": importance or self._calculate_importance(memory_type),
-                    },
-                    timeout=30,
+            tool_fn = get_registry().get("memory-server/remember")
+            if tool_fn:
+                result = tool_fn(
+                    content=content,
+                    memory_type=memory_type,
+                    title=title,
+                    importance=importance or self._calculate_importance(memory_type),
                 )
 
                 return StepOutcome(
@@ -860,8 +855,8 @@ class NiuHandler(BaseHandler):
                 )
             else:
                 return StepOutcome(
-                    {"status": "error", "msg": "MCP client not available"},
-                    next_prompt="[System] MCP client not available\n",
+                    {"status": "error", "msg": "memory-server/remember tool not available"},
+                    next_prompt="[System] 记忆工具不可用\n",
                 )
 
         except Exception as e:
@@ -913,20 +908,15 @@ class NiuHandler(BaseHandler):
             title = self._generate_memory_title(history_str, memory_type)
 
             # 调用 memory-server/remember
-            if self.mcp_client:
-                from agent.mcp_sync_bridge import get_mcp_bridge
+            from agent.tool_registry import get_registry
 
-                bridge = get_mcp_bridge()
-                result = bridge.call_tool(
-                    "memory-server",
-                    "remember",
-                    {
-                        "content": memory_content,
-                        "memory_type": memory_type,
-                        "title": title,
-                        "importance": self._calculate_importance(memory_type),
-                    },
-                    timeout=30,
+            tool_fn = get_registry().get("memory-server/remember")
+            if tool_fn:
+                result = tool_fn(
+                    content=memory_content,
+                    memory_type=memory_type,
+                    title=title,
+                    importance=self._calculate_importance(memory_type),
                 )
 
                 yield f"[Memory] 已保存长期记忆: {memory_type} - {title}\n"
@@ -935,9 +925,9 @@ class NiuHandler(BaseHandler):
                     next_prompt=self._get_anchor_prompt(),
                 )
             else:
-                yield "[Memory] MCP client not available\n"
+                yield "[Memory] memory-server/remember tool not available\n"
                 return StepOutcome(
-                    {"status": "error", "msg": "MCP client not available"},
+                    {"status": "error", "msg": "memory-server/remember tool not available"},
                     next_prompt=self._get_anchor_prompt(),
                 )
 
