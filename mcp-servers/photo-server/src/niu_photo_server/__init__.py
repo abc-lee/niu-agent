@@ -1893,7 +1893,6 @@ def store_document_l1(file_path: str, l1: str, l2: str | None = None) -> dict:
         return {
             "status": "success",
             "l1_id": l1_id,
-            "l2_id": l2_id,
             "file_path": file_path,
             "message": "文档摘要已存储到向量库",
         }
