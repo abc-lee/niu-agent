@@ -1,7 +1,52 @@
 # Agent Protocol 重构设计
 
 > 日期：2026-04-08
-> 状态：草稿
+> 状态：已验证（LiteLLM 方案可行）
+
+---
+
+## 验证结论
+
+### LiteLLM + MiniMax Anthropic Endpoint 完全可行
+
+测试确认（通过 `custom_llm_provider="anthropic"` 强制使用 Anthropic handler）：
+
+```
+✅ Turn 1: "What is 2+2?" → tool_calls: calculator("2+2")
+✅ Turn 2: tool_result + "multiply by 3" → tool_calls: calculator("4 * 3") + content "2+2=4"
+✅ System prompt: role=system 被 LiteLLM 正确提取并放到独立 system 参数
+✅ tool_results 格式: 被 Anthropic handler 正确处理
+✅ finish_reason: tool_calls ✓
+```
+
+### 关键配置发现
+
+MiniMax 的 `minimax/...` 模型名前缀在 LiteLLM 里被路由到 OpenAI handler（追加 `/v1/chat/completions`），与我们的 Anthropic endpoint 冲突。
+
+**解决方案**：在 `litellm.completion()` 调用时指定 `custom_llm_provider="anthropic"`，强制使用 Anthropic handler：
+
+```python
+litellm.completion(
+    model=model,
+    messages=messages,
+    tools=tools,
+    custom_llm_provider="anthropic",  # 关键：强制 Anthropic handler
+    api_base=api_base,                # https://api.minimaxi.com/anthropic/v1
+    api_key=api_key,
+)
+```
+
+Anthropic handler 内部正确处理：
+- `{"role": "system"}` → 提取到独立 `system` 参数
+- `{"role": "tool_results"}` → 保持原格式
+- `{"role": "assistant", "tool_calls": [...]}` → 保持原格式
+- tools → `extra_body["reasoning_split"]` 等 MiniMax 特定参数
+
+### 关于 system prompt 的动态注入
+
+当前架构（每轮动态从向量库检索 skills/knowledge 注入 system_prompt）完全兼容：
+- 每轮构建新的 `messages` 数组，system prompt 作为第一个 `{"role": "system"}` 元素
+- LiteLLM 每次调用都正确处理，无需额外适配
 
 ---
 
@@ -61,14 +106,14 @@ agent_runner_loop
 agent_runner_loop
   → ToolClient.chat(messages, tools)
        → LiteLLMSession.chat(messages, tools)  ← 直接传递，不转字符串
-       → litellm.completion(model, messages=[...], tools=[...])  ← 原生调用
+       → litellm.completion(model, messages=[...], tools=[...], custom_llm_provider="anthropic")
+            ↑ 关键：custom_llm_provider="anthropic" 让 LiteLLM 用正确的 handler
 ```
 
-LiteLLM 内部根据模型类型（MiniMax/OpenAI/Claude/DeepSeek 等）自动选择正确的 tool calling 方式：
-- MiniMax → Anthropic 格式 `tools` 参数
-- OpenAI → `tools` 参数
-- Claude → `tools` 参数
-- DeepSeek → `reasoning` + `tools` 参数
+LiteLLM 内部根据 `custom_llm_provider` 选择正确的 handler：
+- `"anthropic"` → Anthropic handler（MiniMax Anthropic endpoint）
+- `"openai"` → OpenAI handler
+- `"deepseek"` → DeepSeek handler
 
 应用层不需要知道这些差异。
 
@@ -86,7 +131,7 @@ def chat(self, messages: List[Dict], tools: Optional[List] = None, **kwargs):
     原生 LiteLLM 调用。
 
     直接将 messages + tools 传给 LiteLLM，不经过文本协议层。
-    LiteLLM 根据模型类型选择正确的 API 格式。
+    LiteLLM 根据 custom_llm_provider 选择正确的 handler。
 
     Returns:
         MockResponse with tool_calls extracted from LiteLLM response
@@ -94,12 +139,19 @@ def chat(self, messages: List[Dict], tools: Optional[List] = None, **kwargs):
     litellm_model = get_litellm_model_name(self.default_model)
     provider_params = get_provider_params(self.default_model)
 
+    # 关键：使用 api_type 配置决定 handler（从 user-config.json 的 llm.type 读取）
+    # "anthropic" → MiniMax Anthropic endpoint
+    # "openai" → OpenAI API
+    # "deepseek" → DeepSeek API
+    custom_provider = getattr(self, 'api_type', 'anthropic')
+
     litellm_tools = _convert_tools_schema(tools)
 
     request_params = {
         "model": litellm_model,
         "messages": messages,
         "stream": True,
+        "custom_llm_provider": custom_provider,
         **provider_params,
     }
     if litellm_tools:
@@ -109,7 +161,7 @@ def chat(self, messages: List[Dict], tools: Optional[List] = None, **kwargs):
     return self._parse_stream_response(response)
 ```
 
-**说明**：不需要 `api_base` 参数（由 `configure_api_base()` 在创建时全局设置）。
+**说明**：`api_base` 和 `api_key` 通过 `configure_api_base()` 全局设置 + 环境变量传递。
 
 ### 2. `ToolClient.chat()` 简化为直接转发
 
@@ -229,12 +281,12 @@ messages = [
 ]
 tools = [{"type": "function", "function": {"name": "chat-with-file-processor", ...}}]
 ↓
-litellm.completion(model, messages=messages, tools=tools)
+litellm.completion(model, messages=messages, tools=tools, custom_llm_provider="anthropic")
 ↓
-LiteLLM 内部：根据模型选择正确格式
-  - MiniMax → Anthropic格式
-  - OpenAI → tools参数
-  - Claude → tools参数
+LiteLLM 内部：custom_llm_provider="anthropic" 强制使用 Anthropic handler
+  → system prompt 正确提取到独立 system 参数
+  → tools JSON 正确传递
+  → tool_results 正确处理
 ```
 
 ---
