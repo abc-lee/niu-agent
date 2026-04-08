@@ -26,7 +26,7 @@ from mcp.types import TextContent, Tool
 
 TOOL_SCHEMAS = {
     "ingest_document": {
-        "name": "photo-server/ingest_document",
+        "name": "ingest_document",
         "description": """文档入库工具
 
 参数:
@@ -63,7 +63,7 @@ TOOL_SCHEMAS = {
         },
     },
     "ingest_documents": {
-        "name": "photo-server/ingest_documents",
+        "name": "ingest_documents",
         "description": """批量文档入库工具
 
 参数:
@@ -97,7 +97,7 @@ TOOL_SCHEMAS = {
         },
     },
     "ingest_photo": {
-        "name": "photo-server/ingest_photo",
+        "name": "ingest_photo",
         "description": """照片入库工具（带人脸识别）
 
 参数:
@@ -129,7 +129,7 @@ TOOL_SCHEMAS = {
         },
     },
     "name_person": {
-        "name": "photo-server/name_person",
+        "name": "name_person",
         "description": """为人物命名
 
 参数:
@@ -151,7 +151,7 @@ TOOL_SCHEMAS = {
         },
     },
     "merge_persons": {
-        "name": "photo-server/merge_persons",
+        "name": "merge_persons",
         "description": """合并两个人物
 
 参数:
@@ -180,7 +180,7 @@ TOOL_SCHEMAS = {
         },
     },
     "ingest_photos": {
-        "name": "photo-server/ingest_photos",
+        "name": "ingest_photos",
         "description": """智能照片入库（自动判断单张/目录）
 
 参数:
@@ -221,7 +221,7 @@ TOOL_SCHEMAS = {
         },
     },
     "search_persons": {
-        "name": "photo-server/search_persons",
+        "name": "search_persons",
         "description": """搜索人物（按名字语义相似度）
 
 参数:
@@ -244,7 +244,7 @@ TOOL_SCHEMAS = {
         },
     },
     "get_unnamed_persons": {
-        "name": "photo-server/get_unnamed_persons",
+        "name": "get_unnamed_persons",
         "description": """获取所有未命名人物
 
 返回:
@@ -256,7 +256,7 @@ TOOL_SCHEMAS = {
         },
     },
     "delete_person": {
-        "name": "photo-server/delete_person",
+        "name": "delete_person",
         "description": """删除人物及其所有关联数据
 
 警告：这会删除人物图谱中的节点，请谨慎使用。
@@ -277,7 +277,7 @@ TOOL_SCHEMAS = {
         },
     },
     "cleanup_deleted_photos": {
-        "name": "photo-server/cleanup_deleted_photos",
+        "name": "cleanup_deleted_photos",
         "description": """清理已删除照片的数据库记录
 
 在删除照片文件/目录后调用，清理数据库中的孤儿记录。
@@ -296,7 +296,7 @@ TOOL_SCHEMAS = {
         },
     },
     "get_person_photos": {
-        "name": "photo-server/get_person_photos",
+        "name": "get_person_photos",
         "description": """获取某人物的多张照片（用于"换一张"场景）
 
 当用户说"看不清"、"换一张"时调用此工具。
@@ -321,7 +321,7 @@ TOOL_SCHEMAS = {
         },
     },
     "store_document_l1": {
-        "name": "photo-server/store_document_l1",
+        "name": "store_document_l1",
         "description": """存储单个文档的 L1 摘要到向量库
 
 当 ingest_document 返回 status="need_l1" 时，调用此工具存储生成的摘要。
@@ -356,7 +356,7 @@ Zellij使用指南|终端,复用器,Rust|Zellij终端复用器的基本使用方
         },
     },
     "store_documents_l1": {
-        "name": "photo-server/store_documents_l1",
+        "name": "store_documents_l1",
         "description": """批量存储文档的 L1 摘要到向量库
 
 当 ingest_documents 返回 status="need_l1" 时，调用此工具一次性存储所有摘要。
@@ -396,7 +396,7 @@ Zellij使用指南|终端,复用器,Rust|Zellij终端复用器的基本使用方
         },
     },
     "unload_face_model": {
-        "name": "photo-server/unload_face_model",
+        "name": "unload_face_model",
         "description": """卸载人脸识别模型，释放内存（约 326MB）
 
 在长时间空闲时调用此工具释放内存。
