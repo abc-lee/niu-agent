@@ -309,17 +309,79 @@ class GenericAgentHandler(BaseHandler):
     def tool_after_callback(self, tool_name, args, response, ret):
         if args.get("_index", 0) > 0:
             return
+
+        # 提取 <summary> 标签（可选优化）
         rsumm = re.search(r"<summary>(.*?)</summary>", response.content, re.DOTALL)
         if rsumm:
+            # LLM 提供了高质量摘要
             summary = rsumm.group(1).strip()[:200]
         else:
-            clean_args = {k: v for k, v in args.items() if not k.startswith("_")}
-            summary = f"调用工具{tool_name}, args: {clean_args}"
-            if tool_name == "no_tool":
-                summary = "直接回答了用户问题"
-            if type(ret.next_prompt) is str:
-                ret.next_prompt += "\nPROTOCOL_VIOLATION: 上一轮遗漏了<summary>。 已根据物理动作自动补全。请务必在下次回复中记得<summary>协议。"
+            # 自动生成结构化摘要（不依赖 <summary> 标签）
+            summary = self._auto_generate_summary(tool_name, args, ret)
+
         self.history_info.append("[Agent] " + smart_format(summary, max_str_len=100))
+
+        # 追踪工具调用（用于重复检测）
+        self._track_tool_call_for_repeat_detection(tool_name, args)
+
+    def _track_tool_call_for_repeat_detection(self, tool_name: str, args: dict):
+        """追踪工具调用用于重复检测"""
+        if not hasattr(self, '_recent_tool_calls'):
+            self._recent_tool_calls = []
+
+        # 构建工具调用字符串表示
+        clean_args = {k: v for k, v in args.items() if not k.startswith("_")}
+        args_preview = str(clean_args)[:50]
+        tool_call_str = f"{tool_name}({args_preview})"
+
+        self._recent_tool_calls.append(tool_call_str)
+
+        # 保留最近 10 次
+        if len(self._recent_tool_calls) > 10:
+            self._recent_tool_calls = self._recent_tool_calls[-10:]
+
+    def _auto_generate_summary(self, tool_name: str, args: dict, ret) -> str:
+        """自动生成结构化摘要（不依赖 <summary> 标签）"""
+
+        import os
+        clean_args = {k: v for k, v in args.items() if not k.startswith("_")}
+
+        # 基于工具类型生成不同格式的摘要
+        if tool_name == "file_read":
+            path = clean_args.get("path", "")
+            filename = os.path.basename(path) if path else "未知文件"
+            return f"读取文件: {filename}"
+
+        elif tool_name == "code_run":
+            code_type = clean_args.get("type", "python")
+            code = clean_args.get("code", clean_args.get("script", ""))
+            preview = code[:30] + "..." if len(code) > 30 else code
+            return f"执行{code_type}代码: {preview}"
+
+        elif tool_name == "file_patch":
+            path = clean_args.get("path", "")
+            filename = os.path.basename(path) if path else "未知文件"
+            return f"修改文件: {filename}"
+
+        elif tool_name == "start_long_term_update":
+            return "保存长期记忆"
+
+        elif tool_name.startswith("chat-with-"):
+            agent = tool_name.replace("chat-with-", "")
+            return f"调用子Agent: {agent}"
+
+        elif "/" in tool_name:  # MCP 工具（格式：server/name）
+            server, name = tool_name.split("/", 1) if "/" in tool_name else ("", tool_name)
+            return f"调用MCP工具: {name}"
+
+        elif tool_name == "no_tool":
+            # 直接回答用户
+            return "直接回答用户问题"
+
+        else:
+            # 默认：工具名 + 参数预览
+            args_preview = str(clean_args)[:50]
+            return f"调用工具: {tool_name}({args_preview})"
 
     def _extract_code_block(self, response, code_type):
         matches = re.findall(rf"```{code_type}\n(.*?)\n```", response.content, re.DOTALL)
