@@ -49,11 +49,38 @@ class Scheduler:
         conn.commit()
         conn.close()
 
+    def _cleanup_old_tasks(self):
+        """清理老旧任务：删除100天前的已完成/已取消任务"""
+        from datetime import timedelta
+
+        cleanup_threshold = timedelta(days=100)
+        cutoff_date = datetime.now() - cleanup_threshold
+
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        # 删除100天前的已完成/已取消任务
+        cursor.execute("""
+            DELETE FROM scheduled_tasks
+            WHERE (status = 'triggered' OR status = 'cancelled')
+            AND datetime(triggered_at) < datetime(?)
+        """, (cutoff_date.isoformat(),))
+
+        deleted_count = cursor.rowcount
+        conn.commit()
+        conn.close()
+
+        if deleted_count > 0:
+            logger.info(f"[SCHEDULER] Cleaned up {deleted_count} old tasks (older than 100 days)")
+
     def start(self):
         """启动调度器"""
         if self.running:
             logger.info("[SCHEDULER] Already running")
             return
+
+        # 启动时清理老旧任务
+        self._cleanup_old_tasks()
 
         self.running = True
         self.thread = threading.Thread(target=self._run_loop, daemon=True)
@@ -100,6 +127,23 @@ class Scheduler:
 
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
+
+        # 自动标记过期太久的单次任务为triggered（相当于跳过）
+        # 过期超过1天的单次任务，直接标记为triggered
+        skip_threshold = timedelta(days=1)
+        skip_cutoff = now - skip_threshold
+
+        cursor.execute("""
+            UPDATE scheduled_tasks
+            SET status = 'triggered', triggered_at = ?
+            WHERE status = 'pending'
+            AND is_recurring = 0
+            AND datetime(scheduled_at) < datetime(?)
+        """, (now.isoformat(), skip_cutoff.isoformat()))
+
+        skipped_count = cursor.rowcount
+        if skipped_count > 0:
+            logger.info(f"[SCHEDULER] Skipped {skipped_count} overdue one-time tasks (older than 1 day)")
 
         # 查询到期任务（只触发最近5分钟内的）
         cursor.execute("""
