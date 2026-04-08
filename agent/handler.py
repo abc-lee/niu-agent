@@ -243,16 +243,16 @@ class NiuHandler(BaseHandler):
         if args.get("_index", 0) > 0:
             return
 
-        # 提取 <summary> 标签或自动生成摘要
+        # 提取 <summary> 标签（可选优化）
         content = getattr(response, "content", "") if response else ""
         rsumm = re.search(r"<summary>(.*?)</summary>", content, re.DOTALL)
+
         if rsumm:
+            # LLM 提供了高质量摘要
             summary = rsumm.group(1).strip()[:200]
         else:
-            clean_args = {k: v for k, v in args.items() if not k.startswith("_")}
-            summary = f"调用工具{tool_name}, args: {clean_args}"
-            if tool_name == "no_tool":
-                summary = "直接回答了用户问题"
+            # 自动生成结构化摘要（不依赖 <summary> 标签）
+            summary = self._auto_generate_summary(tool_name, args, ret)
 
         self.history_info.append("[Agent] " + summary[:100])
         print(
@@ -261,6 +261,9 @@ class NiuHandler(BaseHandler):
             flush=True,
         )
 
+        # 追踪工具调用（用于重复检测）
+        self._track_tool_call_for_repeat_detection(tool_name, args)
+
         # 增强：判断是否值得长期记忆
         if self._should_remember(tool_name, args, ret):
             self.working["suggest_remember"] = True
@@ -268,6 +271,68 @@ class NiuHandler(BaseHandler):
 
         # 追踪工具执行以供经验总结
         self._track_tool_execution(tool_name, args, ret)
+
+    def _track_tool_call_for_repeat_detection(self, tool_name: str, args: dict):
+        """追踪工具调用用于重复检测"""
+        if not hasattr(self, '_recent_tool_calls'):
+            self._recent_tool_calls = []
+
+        # 构建工具调用字符串表示
+        clean_args = {k: v for k, v in args.items() if not k.startswith("_")}
+        args_preview = str(clean_args)[:50]
+        tool_call_str = f"{tool_name}({args_preview})"
+
+        self._recent_tool_calls.append(tool_call_str)
+
+        # 保留最近 10 次
+        if len(self._recent_tool_calls) > 10:
+            self._recent_tool_calls = self._recent_tool_calls[-10:]
+
+    def _auto_generate_summary(self, tool_name: str, args: dict, ret) -> str:
+        """自动生成结构化摘要（不依赖 <summary> 标签）"""
+
+        import os
+        clean_args = {k: v for k, v in args.items() if not k.startswith("_")}
+
+        # 基于工具类型生成不同格式的摘要
+        if tool_name == "file_read":
+            path = clean_args.get("path", "")
+            filename = os.path.basename(path) if path else "未知文件"
+            return f"读取文件: {filename}"
+
+        elif tool_name == "code_run":
+            code_type = clean_args.get("type", "python")
+            code = clean_args.get("code", clean_args.get("script", ""))
+            preview = code[:30] + "..." if len(code) > 30 else code
+            exit_code = ret.get("exit_code", "?") if isinstance(ret, dict) else "?"
+            return f"执行{code_type}代码: {preview} (退出码: {exit_code})"
+
+        elif tool_name == "file_patch":
+            path = clean_args.get("path", "")
+            filename = os.path.basename(path) if path else "未知文件"
+            return f"修改文件: {filename}"
+
+        elif tool_name == "start_long_term_update":
+            return "保存长期记忆"
+
+        elif tool_name.startswith("chat-with-"):
+            agent = tool_name.replace("chat-with-", "")
+            return f"调用子Agent: {agent}"
+
+        elif "/" in tool_name:  # MCP 工具（格式：server/name）
+            server, name = tool_name.split("/", 1) if "/" in tool_name else ("", tool_name)
+            return f"调用MCP工具: {name}"
+
+        elif tool_name == "no_tool":
+            # 直接回答用户，从内容提取第一句
+            content = getattr(ret, "content", "") if ret else ""
+            first_sentence = content.split('。')[0].split('\n')[0]
+            return first_sentence[:100] if first_sentence else "直接回答用户问题"
+
+        else:
+            # 默认：工具名 + 参数预览
+            args_preview = str(clean_args)[:50]
+            return f"调用工具: {tool_name}({args_preview})"
 
     def _track_tool_execution(self, tool_name: str, args: dict, ret):
         """追踪工具执行以供经验总结"""
@@ -675,7 +740,7 @@ class NiuHandler(BaseHandler):
 
         task = args.get("task", "")
 
-        # 获取 LLM 配置（从全局 runner）
+        # 获取完整的 LLM 配置（从全局 runner）
         from .runner import get_runner
 
         runner = get_runner()
@@ -686,11 +751,8 @@ class NiuHandler(BaseHandler):
                 next_prompt="\n[System] Runner not initialized\n",
             )
 
-        llm_config = {
-            "apikey": runner.llm_config.get("apikey", ""),
-            "apibase": runner.llm_config.get("apibase", ""),
-            "model": runner.llm_config.get("model", ""),
-        }
+        # 直接传递完整配置（而不是挑选字段）
+        llm_config = runner.llm_config.copy()  # 复制一份，避免修改原始配置
 
         try:
             yield f"[SubAgent] Calling {agent_name}...\n"
@@ -978,7 +1040,16 @@ class NiuHandler(BaseHandler):
                 result = bridge.call_tool(server_name, tool_name_part, args, timeout=60)
 
                 yield f"[MCP] {tool_name} executed\n"
-                return StepOutcome(result, next_prompt=self._get_anchor_prompt())
+
+                # 判断任务是否完成：
+                # - 如果结果是success且没有要求进一步操作，返回空字符串表示任务完成
+                # - 否则返回anchor prompt继续对话
+                if isinstance(result, dict) and result.get("status") == "success":
+                    # 成功执行，任务完成，返回空字符串
+                    return StepOutcome(result, next_prompt="")
+                else:
+                    # 需要进一步处理，返回anchor prompt
+                    return StepOutcome(result, next_prompt=self._get_anchor_prompt())
             except Exception as e:
                 yield f"[MCP Error] {tool_name}: {e}\n"
                 return StepOutcome(

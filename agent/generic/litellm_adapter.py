@@ -3,83 +3,66 @@ LiteLLM Adapter Module
 
 LiteLLM统一适配器，提供与现有BaseSession/ToolClient接口兼容的LiteLLM封装。
 支持100+ LLM提供商，统一响应格式。
-
-重要：此模块通过配置开关 use_litellm 启用，不影响现有代码。
 """
 
 import json
-import re
+import os
 import sys
-from typing import Any, Dict, Generator, Optional, List
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, Generator, List, Optional
 
 import litellm
 
-# 导入现有类用于类型转换
-from .llmcore import (
-    BaseSession,
-    MockResponse,
-    MockToolCall,
-    MockFunction,
-    ToolClient,
-    _write_full_interaction_log,
-)
+from .llmcore import BaseSession, MockResponse, MockToolCall, ToolClient
 
 
-# 模型名称映射：从当前配置格式到LiteLLM格式
-MODEL_NAME_MAP = {
-    "MiniMax-M2.7-highspeed": "minimax/MiniMax-M2.7-highspeed",
-    "MiniMax-M2.1": "minimax/MiniMax-M2.1",
-    "glm-5": "zhipuai/glm-5",
-    "glm-4": "zhipuai/glm-4",
-    "claude-3-5-sonnet-20241022": "claude-3-5-sonnet-20241022",
-    "claude-3-opus-20240229": "claude-3-opus-20240229",
-    "claude-3-sonnet-20240229": "claude-3-sonnet-20240229",
-    "gpt-4o": "openai/gpt-4o",
-    "gpt-4-turbo": "openai/gpt-4-turbo",
-    "gpt-3.5-turbo": "openai/gpt-3.5-turbo",
-    "deepseek-chat": "deepseek/deepseek-chat",
-    "deepseek-reasoner": "deepseek/deepseek-reasoner",
-}
+def _write_interaction_log(log_entry: Dict[str, Any]):
+    """
+    写入 LLM 交互日志（格式化 JSON）
+
+    Args:
+        log_entry: 日志条目（字典格式）
+    """
+    try:
+        # 确定日志目录
+        log_dir = Path(__file__).parent.parent.parent / "logs"
+        log_dir.mkdir(exist_ok=True)
+
+        # 日志文件名：llm_interaction_YYYYMMDD.log
+        log_file = log_dir / f"llm_interaction_{datetime.now().strftime('%Y%m%d')}.log"
+
+        # 写入格式化 JSON（带换行和缩进）
+        with open(log_file, "a", encoding="utf-8") as f:
+            f.write(json.dumps(log_entry, ensure_ascii=False, indent=2))
+            f.write("\n\n")  # 每个条目之间空两行
+    except Exception as e:
+        print(f"[LiteLLM] Failed to write log: {e}", file=sys.stderr, flush=True)
 
 
-def get_litellm_model_name(model: str) -> str:
-    """将配置中的模型名称转换为LiteLLM格式"""
-    return MODEL_NAME_MAP.get(model, model)
-
-
-def get_provider_params(model: str) -> Dict[str, Any]:
+def get_provider_params(model: str, reasoning_effort: Optional[str] = None) -> Dict[str, Any]:
     """获取提供商特定参数"""
     params: Dict[str, Any] = {}
     model_lower = model.lower()
 
-    # MiniMax: 启用reasoning_split
-    if "minimax" in model_lower:
-        params["extra_body"] = {"reasoning_split": True}
+    # MiniMax: 禁用 reasoning_split（导致tool calling参数丢失）
+    # if "minimax" in model_lower:
+    #     params["extra_body"] = {"reasoning_split": True}
 
     # Claude: 启用prompt caching
     if "claude" in model_lower:
         params["extra_headers"] = {"anthropic-beta": "prompt-caching-2024-07-31"}
 
-    # DeepSeek: 支持reasoning effort
-    if "deepseek" in model_lower:
-        params["reasoning_effort"] = "high"
+    # DeepSeek: 用户配置的 reasoning_effort
+    if "deepseek" in model_lower and reasoning_effort:
+        params["reasoning_effort"] = reasoning_effort
 
     return params
 
 
 def _convert_tools_schema(tools: Optional[List]) -> Optional[List]:
     """
-    将工具schema转换为LiteLLM格式
-
-    LiteLLM接受OpenAI格式的工具定义：
-    {
-        "type": "function",
-        "function": {
-            "name": "...",
-            "description": "...",
-            "parameters": {...}
-        }
-    }
+    将工具schema转换为LiteLLM格式（OpenAI格式）。
     """
     if not tools:
         return None
@@ -89,10 +72,8 @@ def _convert_tools_schema(tools: Optional[List]) -> Optional[List]:
         if not isinstance(tool, dict):
             continue
 
-        # 已经是正确格式
         if "type" in tool and "function" in tool:
             converted.append(tool)
-        # Claude格式: {"name": "...", "input_schema": {...}}
         elif "name" in tool and "input_schema" in tool:
             converted.append({
                 "type": "function",
@@ -102,10 +83,8 @@ def _convert_tools_schema(tools: Optional[List]) -> Optional[List]:
                     "parameters": tool["input_schema"],
                 }
             })
-        # OpenAI格式: {"type": "function", "function": {...}}
         elif tool.get("type") == "function":
             converted.append(tool)
-        # 简单格式: {"name": "...", "parameters": {...}}
         elif "name" in tool and "parameters" in tool:
             converted.append({
                 "type": "function",
@@ -127,140 +106,140 @@ class LiteLLMSession(BaseSession):
     使用LiteLLM统一调用不同提供商的LLM。
     """
 
-    def raw_ask(
+    def __init__(self, cfg):
+        super().__init__(cfg)
+        self.api_type = cfg.get("api_type", "openai")
+
+    def chat(
         self,
-        prompt: Any,
-        model: Optional[str] = None,
-        temperature: float = 0.5,
-        max_tokens: Optional[int] = None,
+        messages: List,
         tools: Optional[List] = None,
-        **kwargs
     ) -> Generator[str, None, MockResponse]:
         """
-        调用LiteLLM并返回响应（生成器版本）
-
-        与BaseSession.raw_ask()接口兼容。
-
-        Args:
-            prompt: 协议提示字符串或消息列表
-            model: 模型名称（可选）
-            temperature: 温度参数
-            max_tokens: 最大token数（可选）
-            tools: 工具schema列表（可选）
+        原生 LiteLLM 调用（Generator版本）。
 
         Yields:
-            字符串块（流式响应）
-
+            文本块（用于流式显示）
+            <tool_use> 标签块
         Returns:
-            MockResponse对象（通过StopIteration）
+            MockResponse（通过 StopIteration）
         """
-        # 解析prompt：如果是字符串，转换为消息列表
-        if isinstance(prompt, str):
-            messages = [{"role": "user", "content": prompt}]
-        elif isinstance(prompt, list):
-            messages = prompt
-        else:
-            messages = [{"role": "user", "content": str(prompt)}]
+        custom_provider = getattr(self, 'api_type', 'openai')
+        provider_params = get_provider_params(self.default_model, getattr(self, 'reasoning_effort', None))
+        litellm_tools = _convert_tools_schema(tools)
 
-        # 获取模型名称
-        model = model or self.default_model
-        litellm_model = get_litellm_model_name(model)
-
-        # 获取提供商特定参数
-        provider_params = get_provider_params(model)
-
-        # 构建完整参数
         request_params: Dict[str, Any] = {
-            "model": litellm_model,
+            "model": self.default_model,
             "messages": messages,
-            "temperature": temperature,
             "stream": True,
+            "custom_llm_provider": custom_provider,
+            "api_base": self.api_base or None,
+            "api_key": self.api_key or None,
             **provider_params,
         }
-
-        if max_tokens:
-            request_params["max_tokens"] = max_tokens
-
-        # 添加工具定义
-        litellm_tools = _convert_tools_schema(tools)
         if litellm_tools:
             request_params["tools"] = litellm_tools
+        if self.proxies:
+            request_params["proxy"] = self.proxies
 
-        print(f"[LiteLLM] Calling {litellm_model}...", file=sys.stderr, flush=True)
+        # 记录完整请求（全量，包含 messages）
+        _write_interaction_log({
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "type": "request",
+            "model": self.default_model,
+            "provider": custom_provider,
+            "messages": messages,  # 完整 messages
+            "tools": tools,        # 完整 tools schema
+            "provider_params": provider_params if provider_params else None
+        })
 
-        try:
-            response = litellm.completion(**request_params)
+        response = litellm.completion(**request_params)
 
-        except Exception as e:
-            print(f"[LiteLLM] Completion error: {e}", file=sys.stderr, flush=True)
-            # 返回错误响应
-            error_content = f"Error: {str(e)}"
-            yield error_content
-            return MockResponse(
-                thinking="",
-                content=error_content,
-                tool_calls=[],
-                raw=error_content,
-            )
-
-        # 流式处理
         full_content = ""
         reasoning_content = ""
         tool_calls: List[MockToolCall] = []
         usage = None
 
         try:
+            chunk_count = 0
+            # 用于累积tool_calls的增量数据（按index分组）
+            tool_calls_accumulator: Dict[int, Dict[str, Any]] = {}
+
             for chunk in response:
-                # chunk是ModelResponseStream对象
-                delta = chunk.choices[0].delta if hasattr(chunk, 'choices') else None
+                chunk_count += 1
+
+                delta = getattr(chunk, 'choices', [None])[0].delta if hasattr(chunk, 'choices') else None
                 if not delta:
                     continue
 
-                # 提取content
                 if hasattr(delta, 'content') and delta.content:
                     full_content += delta.content
                     yield delta.content
 
-                # 提取reasoning_content（如果模型支持）
                 if hasattr(delta, 'reasoning_content') and delta.reasoning_content:
                     reasoning_content += delta.reasoning_content
 
-                # 提取tool_calls（如果模型支持）
                 if hasattr(delta, 'tool_calls') and delta.tool_calls:
                     for tc in delta.tool_calls:
-                        tc_id = getattr(tc, 'id', None) or f"call_{len(tool_calls)}"
-                        tc_name = getattr(tc.function, 'name', None) or ""
-                        tc_args_raw = getattr(tc.function, 'arguments', None) or "{}"
+                        # 获取index（流式响应中同一个tool_call的多个chunk共享同一个index）
+                        tc_index = getattr(tc, 'index', len(tool_calls_accumulator))
 
-                        # 解析arguments
-                        if isinstance(tc_args_raw, str):
-                            try:
-                                tc_args = json.loads(tc_args_raw)
-                            except json.JSONDecodeError:
-                                tc_args = {}
-                        elif isinstance(tc_args_raw, dict):
-                            tc_args = tc_args_raw
-                        else:
-                            tc_args = {}
+                        # 初始化或更新累积器
+                        if tc_index not in tool_calls_accumulator:
+                            tool_calls_accumulator[tc_index] = {
+                                'id': getattr(tc, 'id', None) or f"call_{tc_index}",
+                                'name': '',
+                                'arguments': ''
+                            }
 
-                        tool_calls.append(
-                            MockToolCall(
-                                name=tc_name,
-                                args=tc_args,
-                                id=str(tc_id),
-                            )
-                        )
+                        # 累积数据（增量更新）
+                        if hasattr(tc, 'id') and tc.id:
+                            tool_calls_accumulator[tc_index]['id'] = tc.id
 
-                # 提取usage（最后一个chunk）
+                        if hasattr(tc, 'function') and tc.function:
+                            if hasattr(tc.function, 'name') and tc.function.name:
+                                tool_calls_accumulator[tc_index]['name'] = tc.function.name
+                            if hasattr(tc.function, 'arguments') and tc.function.arguments:
+                                tool_calls_accumulator[tc_index]['arguments'] += tc.function.arguments
+
                 if hasattr(chunk, 'usage') and chunk.usage:
                     usage = chunk.usage
+
+            # 处理累积完成后的tool_calls
+            for idx in sorted(tool_calls_accumulator.keys()):
+                tc_data = tool_calls_accumulator[idx]
+                tc_name = tc_data['name']
+                tc_args_raw = tc_data['arguments'] or "{}"
+
+                # 跳过空工具名（MiniMax会把一个tool_call拆成多个chunk）
+                if not tc_name or tc_name.strip() == "":
+                    print(f"[LiteLLM] Skipping tool_call with empty name at index {idx}: args={tc_args_raw[:100]}", file=sys.stderr, flush=True)
+                    continue
+
+                if isinstance(tc_args_raw, str):
+                    try:
+                        tc_args = json.loads(tc_args_raw)
+                    except json.JSONDecodeError:
+                        tc_args = {}
+                elif isinstance(tc_args_raw, dict):
+                    tc_args = tc_args_raw
+                else:
+                    tc_args = {}
+
+                tool_calls.append(MockToolCall(
+                    name=tc_name,
+                    args=tc_args,
+                    id=str(tc_data['id']),
+                ))
+
+                args_str = json.dumps(tc_args, ensure_ascii=False)
+                yield f'<tool_use>{{"id": "{tc_data["id"]}", "name": "{tc_name}", "arguments": {args_str}}}</tool_use>'
 
         except Exception as e:
             print(f"[LiteLLM] Stream error: {e}", file=sys.stderr, flush=True)
             import traceback
             traceback.print_exc(file=sys.stderr)
 
-        # 构建MockResponse
         mock_resp = MockResponse(
             thinking=reasoning_content,
             content=full_content,
@@ -268,13 +247,29 @@ class LiteLLMSession(BaseSession):
             raw=full_content,
         )
 
-        # 添加usage信息（如果可用）
         if usage:
             mock_resp.usage = {
                 "prompt_tokens": getattr(usage, 'prompt_tokens', 0) or 0,
                 "completion_tokens": getattr(usage, 'completion_tokens', 0) or 0,
                 "total_tokens": getattr(usage, 'total_tokens', 0) or 0,
             }
+
+        # 记录完整响应
+        _write_interaction_log({
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "type": "response_complete",
+            "model": self.default_model,
+            "thinking": reasoning_content,  # 完整思考链
+            "content": full_content,        # 完整内容
+            "tool_calls": [
+                {
+                    "name": tc.function.name,
+                    "arguments": tc.function.arguments  # 完整参数
+                }
+                for tc in tool_calls
+            ] if tool_calls else [],
+            "usage": mock_resp.usage if hasattr(mock_resp, 'usage') else None
+        })
 
         return mock_resp
 
@@ -284,16 +279,20 @@ def create_litellm_client(config: Dict[str, Any]) -> ToolClient:
     创建LiteLLM客户端的便捷函数
 
     Args:
-        config: LLM配置字典，包含apiKey, model等字段
+        config: LLM配置字典，包含apiKey, model, apiBase, type等字段
 
     Returns:
         配置好的LiteLLMToolClient实例
     """
-    # 确保配置有必要的字段
+    api_type = config.get("api_type", config.get("type", "openai"))
+    api_base = config.get("apiBase") or config.get("api_base") or config.get("apibase")
+    api_key = config.get("apiKey") or config.get("apikey", "")
+
     cfg = {
-        "apikey": config.get("apiKey") or config.get("apikey", ""),
-        "apibase": config.get("apiBase") or config.get("apibase", ""),
+        "apikey": api_key,
+        "apibase": api_base or "",
         "model": config.get("model", "gpt-4o"),
+        "api_type": api_type,
     }
 
     session = LiteLLMSession(cfg)
