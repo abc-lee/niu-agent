@@ -61,6 +61,8 @@ def trigger_callback(task: dict) -> str:
 
     由于 scheduler 和 niu_api 在同一进程，直接调用内部接口。
     """
+    from niu_api.alerts import add_pending_alert
+
     logger.info(f"[INTERNAL SCHEDULER] Triggering task: {task['content']}")
 
     # 构建提示词
@@ -95,14 +97,26 @@ def trigger_callback(task: dict) -> str:
             data = response.json()
             agent_reply = data.get("reply", "")
             logger.info(f"[INTERNAL SCHEDULER] Agent replied: {agent_reply[:100] if agent_reply else '(empty)'}")
+
+            # ✅ 把提醒加入 pending-alerts 队列，触发前端小女孩状态机
+            if agent_reply:
+                add_pending_alert(agent_reply)
+                logger.info(f"[INTERNAL SCHEDULER] Added to pending-alerts queue")
+
             return agent_reply if agent_reply else f"定时提醒：{task['content']}"
         else:
             logger.error(f"[INTERNAL SCHEDULER] Chat API error: {response.status_code}")
-            return f"定时提醒：{task['content']}"
+            # 即使API出错，也发送基础提醒
+            fallback_msg = f"定时提醒：{task['content']}"
+            add_pending_alert(fallback_msg)
+            return fallback_msg
 
     except Exception as e:
         logger.error(f"[INTERNAL SCHEDULER] Failed to call chat API: {e}")
-        return f"定时提醒：{task['content']}"
+        # 即使异常，也发送基础提醒
+        fallback_msg = f"定时提醒：{task['content']}"
+        add_pending_alert(fallback_msg)
+        return fallback_msg
 
 
 # ============== 生命周期管理 ==============

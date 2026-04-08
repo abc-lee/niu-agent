@@ -91,19 +91,26 @@ class Scheduler:
 
     def check_and_trigger(self):
         """检查并触发到期任务（public方法）"""
+        from datetime import timedelta
+
         now = datetime.now()
+        # 只触发最近5分钟内的任务，避免重启时触发过期任务
+        max_delay = timedelta(minutes=5)
+        earliest_time = now - max_delay
+
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
 
-        # 查询到期任务
+        # 查询到期任务（只触发最近5分钟内的）
         cursor.execute("""
             SELECT id, content, scheduled_at, is_recurring, cron_expr, event_type
             FROM scheduled_tasks
-            WHERE status = 'pending' AND scheduled_at <= ?
-        """, (now.isoformat(),))
+            WHERE status = 'pending' AND scheduled_at <= ? AND scheduled_at >= ?
+        """, (now.isoformat(), earliest_time.isoformat()))
 
         tasks = cursor.fetchall()
 
+        skipped_count = 0
         for task in tasks:
             task_id, content, scheduled_at, is_recurring, cron_expr, event_type = task
 
@@ -145,6 +152,16 @@ class Scheduler:
                     SET status = 'triggered', triggered_at = ?
                     WHERE id = ?
                 """, (now.isoformat(), task_id))
+
+        # 检查是否有跳过的过期任务
+        cursor.execute("""
+            SELECT COUNT(*) FROM scheduled_tasks
+            WHERE status = 'pending' AND scheduled_at < ?
+        """, (earliest_time.isoformat(),))
+        skipped_count = cursor.fetchone()[0]
+
+        if skipped_count > 0:
+            logger.info(f"Skipped {skipped_count} overdue tasks (older than 5 minutes)")
 
         conn.commit()
         conn.close()
