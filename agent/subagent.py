@@ -162,6 +162,12 @@ def call_subagent(
     if mcp_tools_schema:
         tools_schema = tools_schema + mcp_tools_schema
         print(f"[SubAgent] {agent_name}: {len(tools_schema)} tools ({len(mcp_tools_schema)} MCP)")
+    else:
+        print(f"[SubAgent] {agent_name}: {len(tools_schema)} tools (0 MCP - WARNING: No MCP tools loaded!)")
+
+    # 列出关键工具（调试）
+    tool_names = [t.get("function", {}).get("name", "") for t in tools_schema]
+    print(f"[SubAgent] {agent_name}: Tools = {tool_names}")
 
     # 7. 执行
     gen = agent_runner_loop(
@@ -171,7 +177,7 @@ def call_subagent(
         handler=handler,
         tools_schema=tools_schema,
         max_turns=20,
-        verbose=True,  # 改为 True，便于调试
+        verbose=False,  # 改为 False，避免输出调试信息干扰结果
         initial_user_content=task,
     )
 
