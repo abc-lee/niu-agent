@@ -95,7 +95,8 @@ def get_or_create_runner() -> "NiuRunner":
                 runner_module._runner = None
 
     if get_runner() is None:
-        init_runner(mcp_tools=[])
+        from agent.tool_registry import get_registry
+        init_runner(get_registry())
 
     return get_runner()
 
