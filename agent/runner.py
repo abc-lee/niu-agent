@@ -178,6 +178,13 @@ def create_client(config: Dict[str, Any]):
         "model": config.get("model", ""),
     }
 
+    # 检查是否启用LiteLLM
+    use_litellm = config.get("use_litellm", False)
+    if use_litellm:
+        from .generic.litellm_adapter import create_litellm_client
+        print(f"[Runner] Using LiteLLM adapter for model: {cfg['model']}", file=sys.stderr, flush=True)
+        return create_litellm_client(cfg)
+
     if client_type in ("native_claude", "native"):
         session = NativeClaudeSession(cfg)
         return NativeToolClient(session)
