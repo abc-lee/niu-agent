@@ -1,4 +1,4 @@
-"""
+r"""
 GenericAgent Core - 完整移植自 E:\tools\GenericAgent
 
 这是原始代码，未做任何修改，保持原汁原味。
@@ -24,15 +24,9 @@ from .agent_loop import StepOutcome, BaseHandler, agent_runner_loop, exhaust
 from .handler import GenericAgentHandler, get_global_memory
 from .llmcore import (
     ToolClient,
-    NativeToolClient,
     MockResponse,
     MockToolCall,
     BaseSession,
-    LLMSession,
-    ClaudeSession,
-    NativeClaudeSession,
-    NativeOAISession,
-    trim_messages_history,
 )
 
 __all__ = [
@@ -46,13 +40,7 @@ __all__ = [
     "get_global_memory",
     # llmcore
     "ToolClient",
-    "NativeToolClient",
     "MockResponse",
     "MockToolCall",
     "BaseSession",
-    "LLMSession",
-    "ClaudeSession",
-    "NativeClaudeSession",
-    "NativeOAISession",
-    "trim_messages_history",
 ]
