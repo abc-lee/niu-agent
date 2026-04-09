@@ -224,7 +224,7 @@ def pipeline_for_tool(server: str, tool: str, description: str) -> dict:
 
         # ── Step 1: generate ──────────────────────────────────────────────
         failed_feedback = None
-        if retry > 0 and retry - 1 < retry:
+        if retry > 0:
             # Load failed patterns from the previous attempt for feedback
             failed_path = _SCRIPT_DIR / "failed_patterns.jsonl"
             if failed_path.exists():
