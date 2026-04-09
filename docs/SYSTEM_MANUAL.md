@@ -208,7 +208,97 @@ embedding_blob = vec.tobytes()
 | `skill` | 动态技能 | 技能匹配 |
 | `document` | 系统文档 | 文档检索 |
 
-### 3.4 Metadata规范
+### 3.4 交互习惯库（Interaction Habits）
+
+Interaction Habits 是向量库中的第三类个性化记录，记录用户独特的表达方式和性格特征。
+
+#### 三类内容
+
+| 类型 | metadata.type | 说明 |
+|------|-------------|------|
+| 工具方言 | `tool_dialect` | 用户独特的表达方式 → 工具映射 |
+| 用户状态 | `user_state` | 语气词 → 情绪状态推断 |
+| 用户画像 | `user_profile` | 关于用户的个人事实、偏好、习惯、性格 |
+
+#### 数据结构
+
+```python
+# 工具方言示例
+{
+    "id": "habit:tool_dialect:123456",
+    "content": "赶紧叫下我",
+    "metadata": {
+        "level": "l1",
+        "category": "interaction_habit",
+        "type": "tool_dialect",
+        "target_tool": "scheduler-server/schedule_task",
+        "source": "personal",
+        "confidence": {
+            "success_count": 3,
+            "fail_count": 0,
+            "last_used": "2026-04-09"
+        }
+    }
+}
+
+# 用户状态示例
+{
+    "id": "habit:user_state:789012",
+    "content": "赶紧",
+    "metadata": {
+        "level": "l1",
+        "category": "interaction_habit",
+        "type": "user_state",
+        "state_tags": ["anxious", "impatient"],
+        "source": "inferred"
+    }
+}
+
+# 用户画像示例
+{
+    "id": "habit:user_profile:345678",
+    "content": "用户家里有两只猫",
+    "metadata": {
+        "level": "l1",
+        "category": "interaction_habit",
+        "type": "user_profile",
+        "subtype": "fact",
+        "source": "conversation_extract"
+    }
+}
+```
+
+#### 学习机制
+
+Agent 在睡眠整理（context-manager）时，从对话中学习：
+
+1. **工具方言**：用户纠正 Agent 的工具调用时，学习用户的表达方式
+2. **用户状态**：从语气词推断用户的情绪状态（紧迫、平和等）
+3. **用户画像**：从对话中提取关于用户的个人事实和偏好
+
+#### 置信度机制
+
+每个 Interaction Habit 携带置信度：
+- `success_count`：成功匹配/验证次数
+- `fail_count`：失败次数
+- 当 `fail_count >= 3` 时，自动删除该记录
+
+#### 查询接口
+
+主 Agent 在每轮对话时，通过 `_inject_dynamic_resources()` 查询 relevant 的 Interaction Habits：
+```python
+vs.search_interaction_habits(query=user_input, habit_type=None, limit=3)
+```
+
+#### 主 Agent 职责
+
+主 Agent 可以：
+1. **读取**：对话开始时检索 relevant 的习惯记录
+2. **应用**：根据用户画像选择合适的回复方式
+3. **纠正**：如果推断被用户纠正，主动更新对应记录
+4. **发现**：发现新表达方式时，通过工具调用写入向量库
+
+### 3.5 Metadata规范
 
 #### 基础字段（所有文档必须有）
 
@@ -1428,6 +1518,18 @@ Copyright (c) 2026
 ---
 
 ## 十一、更新日志
+
+### v0.4.0 (2026-04-09)
+
+**重大变更：**
+- ✅ 新增第 3.4 节：交互习惯库（Interaction Habits）
+
+**交互习惯库（Interaction Habits）：**
+- 三类内容：工具方言、用户状态、用户画像
+- 置信度机制：success_count/fail_count，自动删除低置信度记录（fail_count >= 3）
+- context-manager 梦境整理时学习个性化内容
+- 主 Agent 可读取和应用 Interaction Habits
+- 工具调用成功后自动更新对应 dialect 的置信度
 
 ### v0.3.0 (2026-04-09)
 
