@@ -7,7 +7,7 @@ file-parser:
   args:
     - "-m"
     - "niu_file_parser"
-  workdir: ../mcp-servers/file-parser/src
+  workdir: mcp-servers/file-parser/src
   preload: true
 
 # Knowledge Graph - Manage documents, entities, and their relationships
@@ -16,7 +16,7 @@ kg-server:
   args:
     - "-m"
     - "niu_kg_server"
-  workdir: ../mcp-servers/kg-server/src
+  workdir: mcp-servers/kg-server/src
   preload: true
 
 # Vector Store - Semantic search using embeddings
@@ -25,7 +25,7 @@ vector-store:
   args:
     - "-m"
     - "niu_vector_store"
-  workdir: ../mcp-servers/vector-store/src
+  workdir: mcp-servers/vector-store/src
   preload: true
 
 # Config Manager - Read/write user configuration and memory
@@ -34,7 +34,7 @@ config-manager:
   args:
     - "-m"
     - "niu_config_manager"
-  workdir: ../mcp-servers/config-manager/src
+  workdir: mcp-servers/config-manager/src
   preload: true
 
 # Photo Server - File and photo management with face recognition
@@ -43,7 +43,7 @@ photo-server:
   args:
     - "-m"
     - "niu_photo_server"
-  workdir: ../mcp-servers/photo-server/src
+  workdir: mcp-servers/photo-server/src
   preload: true
 
 # Memory Server - Smart memory extraction and retrieval
@@ -52,7 +52,7 @@ memory-server:
   args:
     - "-m"
     - "niu_memory_server"
-  workdir: ../mcp-servers/memory-server/src
+  workdir: mcp-servers/memory-server/src
   preload: true
 
 # Scheduler Server - Scheduled tasks and reminders
@@ -61,7 +61,7 @@ scheduler-server:
   args:
     - "-m"
     - "niu_scheduler_server"
-  workdir: ../mcp-servers/scheduler-server/src
+  workdir: mcp-servers/scheduler-server/src
   preload: true
 
 # Session Manager - Message management for context compression
@@ -70,7 +70,7 @@ session-manager:
   args:
     - "-m"
     - "niu_session_manager"
-  workdir: ../mcp-servers/session-manager/src
+  workdir: mcp-servers/session-manager/src
   preload: false  # 按需启动，不预加载
 
 # Nanobot System - Built-in system tools (not a real MCP server, added programmatically)
