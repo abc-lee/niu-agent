@@ -13,6 +13,7 @@ import json
 import os
 import sqlite3
 import sys
+import time
 from pathlib import Path
 from typing import Any, Optional
 from dataclasses import dataclass
@@ -176,6 +177,136 @@ class VectorSearchAdapter:
 
         # 没有递归标记，直接返回
         return results
+
+    def upsert_interaction_habit(
+        self,
+        habit_type: str,
+        content: str,
+        metadata: dict,
+        habit_id: Optional[str] = None
+    ) -> bool:
+        """
+        写入或更新 Interaction Habit 到向量库
+
+        Args:
+            habit_type: habit type (tool_dialect/user_state/user_profile)
+            content: 习惯内容
+            metadata: 必须包含 confidence, source, level="l1", category="interaction_habit"
+            habit_id: 可选，指定 ID（格式: {type}:{subtype}:{counter}）
+
+        Returns:
+            是否成功
+        """
+        if habit_id is None:
+            counter = int(time.time() * 1000) % 100000
+            habit_id = f"habit:{habit_type}:{counter}"
+
+        full_metadata = {
+            "level": "l1",
+            "category": "interaction_habit",
+            **metadata
+        }
+
+        embedding = self._get_embedding(content)
+        if embedding is None:
+            return False
+
+        vec = np.array(embedding, dtype=np.float32)
+        norm = np.linalg.norm(vec)
+        if norm > 0:
+            vec = vec / norm
+        embedding_blob = vec.tobytes()
+
+        conn = self._get_connection()
+        if conn is None:
+            return False
+
+        conn.execute(
+            """
+            INSERT INTO documents (id, content, embedding, metadata)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                content = excluded.content,
+                embedding = excluded.embedding,
+                metadata = excluded.metadata
+            """,
+            (habit_id, content, embedding_blob, json.dumps(full_metadata, ensure_ascii=False)),
+        )
+        conn.commit()
+        return True
+
+    def search_interaction_habits(
+        self,
+        query: str,
+        habit_type: str = None,
+        limit: int = 5,
+        min_score: float = 0.4
+    ) -> list:
+        """
+        检索 Interaction Habits
+
+        Args:
+            query: 搜索内容
+            habit_type: 筛选特定类型（tool_dialect/user_state/user_profile）
+            limit: 返回数量
+            min_score: 最低分数
+
+        Returns:
+            匹配的 SearchResult 列表
+        """
+        filter_dict = {"level": "l1", "category": "interaction_habit"}
+        if habit_type:
+            filter_dict["type"] = habit_type
+        return self.search(query, limit=limit, min_score=min_score, filter=filter_dict)
+
+    def update_habit_confidence(
+        self,
+        habit_id: str,
+        result: str
+    ) -> bool:
+        """
+        更新 Interaction Habit 的置信度
+
+        Args:
+            habit_id: habit 记录 ID
+            result: 调用结果 ("success" | "fail")
+
+        Returns:
+            是否成功
+        """
+        conn = self._get_connection()
+        if conn is None:
+            return False
+
+        row = conn.execute(
+            "SELECT metadata FROM documents WHERE id = ?", (habit_id,)
+        ).fetchone()
+        if not row:
+            return False
+
+        metadata = json.loads(row[0])
+        conf = metadata.get("confidence", {})
+
+        if result == "success":
+            conf["success_count"] = conf.get("success_count", 0) + 1
+        elif result == "fail":
+            conf["fail_count"] = conf.get("fail_count", 0) + 1
+
+        conf["last_used"] = time.strftime("%Y-%m-%d")
+        metadata["confidence"] = conf
+
+        if conf.get("fail_count", 0) >= 3:
+            conn.execute("DELETE FROM documents WHERE id = ?", (habit_id,))
+            conn.commit()
+            print(f"[InteractionHabits] Deleted low-confidence habit: {habit_id}", flush=True)
+            return True
+
+        conn.execute(
+            "UPDATE documents SET metadata = ? WHERE id = ?",
+            (json.dumps(metadata, ensure_ascii=False), habit_id)
+        )
+        conn.commit()
+        return True
 
     def _search_once(
         self, query: str, limit: int, min_score: float,

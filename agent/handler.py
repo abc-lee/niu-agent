@@ -272,6 +272,34 @@ class NiuHandler(BaseHandler):
         # 追踪工具执行以供经验总结
         self._track_tool_execution(tool_name, args, ret)
 
+        # 更新 Interaction Habits 置信度
+        try:
+            from agent.vector_search import VectorSearchAdapter
+
+            vs = VectorSearchAdapter()
+
+            # 工具调用成功，更新相关 dialect 的置信度
+            if hasattr(ret, 'status') and ret.status == "success":
+                dialect_results = vs.search_interaction_habits(
+                    query=str(args), habit_type="tool_dialect", limit=10, min_score=0.3
+                )
+                for r in dialect_results:
+                    if r.metadata.get("target_tool") == tool_name:
+                        vs.update_habit_confidence(r.id, "success")
+
+            # 工具调用失败
+            elif hasattr(ret, 'status') and ret.status == "error":
+                dialect_results = vs.search_interaction_habits(
+                    query=str(args), habit_type="tool_dialect", limit=5, min_score=0.3
+                )
+                for r in dialect_results:
+                    if r.metadata.get("target_tool") == tool_name:
+                        vs.update_habit_confidence(r.id, "fail")
+
+        except Exception:
+            # 置信度更新失败不影响主流程
+            pass
+
     def _track_tool_call_for_repeat_detection(self, tool_name: str, args: dict):
         """追踪工具调用用于重复检测"""
         if not hasattr(self, '_recent_tool_calls'):

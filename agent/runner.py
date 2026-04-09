@@ -307,6 +307,12 @@ class NiuRunner:
         )
         print(f"[Debug] Dynamic injection - Knowledge: {len(knowledge)} results", file=sys.stderr, flush=True)
 
+        # 搜索 Interaction Habits（用户画像、状态、工具方言）
+        interaction_habits = self.vector_search.search_interaction_habits(
+            query=user_input, limit=3, min_score=0.4
+        )
+        print(f"[Debug] Dynamic injection - Interaction Habits: {len(interaction_habits)} results", file=sys.stderr, flush=True)
+
         # 格式化
         parts = []
         if skills:
@@ -315,6 +321,8 @@ class NiuRunner:
             parts.append(format_resources_for_prompt(mcp_tools, "可用工具"))
         if knowledge:
             parts.append(format_resources_for_prompt(knowledge, "参考知识"))
+        if interaction_habits:
+            parts.append(format_resources_for_prompt(interaction_habits, "交互习惯"))
 
         injection = "\n".join(parts)
         if injection:
