@@ -1,7 +1,7 @@
 # Niu 个人知识助理 - 系统说明书
 
-> **版本：** v0.2.0
-> **最后更新：** 2026-04-06
+> **版本：** v0.3.0
+> **最后更新：** 2026-04-09
 > **适用对象：** 主Agent、用户、开发者
 
 ---
@@ -10,11 +10,14 @@
 
 1. [系统概述](#一系统概述)
 2. [架构设计](#二架构设计)
-3. [依赖管理](#三依赖管理)
-4. [模型文件](#四模型文件)
-5. [故障排查](#五故障排查)
-6. [性能优化](#六性能优化)
-7. [用户指南](#七用户指南)
+3. [向量库系统](#三向量库系统)
+4. [依赖管理](#四依赖管理)
+5. [模型文件](#五模型文件)
+6. [故障排查](#六故障排查)
+7. [性能优化](#七性能优化)
+8. [用户指南](#八用户指南)
+9. [开发者指南](#九开发者指南)
+10. [附录](#十附录)
 
 ---
 
@@ -149,11 +152,232 @@ E:\tools\ai-bot\
 ├── memory/                    # 用户记忆
 │   └── skills/                # 动态技能
 └── docs/                      # 文档
+    ├── SYSTEM_MANUAL.md        # 本文档
+    ├── spec-L1-summary.md     # L1规范
+    └── design-vector-recursive-query.md  # 递归查询设计
 ```
 
 ---
 
-## 三、依赖管理
+## 三、向量库系统
+
+### 3.1 概述
+
+向量库是系统的**语义大脑**，用于：
+- 语义搜索（文档、知识、记忆）
+- 工具匹配（MCP工具描述）
+- 查询模式匹配（递归检索）
+- 技能匹配（Skills）
+
+**向量库路径**：`~/.niu/memory.json` 中的 `workspace.path` + `/vectors.db`
+
+### 3.2 数据结构
+
+#### 数据库表
+
+```sql
+CREATE TABLE documents (
+    id TEXT PRIMARY KEY,      -- 文档ID
+    content TEXT NOT NULL,    -- 内容文本（英文）
+    embedding BLOB,           -- 向量（L2归一化）
+    metadata TEXT             -- JSON元数据
+);
+```
+
+#### 向量归一化
+
+**所有入库向量必须做L2归一化**（标准行为）：
+```python
+import numpy as np
+
+vec = np.array(embedding, dtype=np.float32)
+norm = np.linalg.norm(vec)
+if norm > 0:
+    vec = vec / norm
+embedding_blob = vec.tobytes()
+```
+
+### 3.3 文档类型
+
+向量库中存储4类文档：
+
+| category | 说明 | 用途 |
+|----------|------|------|
+| `mcp_tool` | MCP工具描述 | 工具语义匹配 |
+| `query_pattern` | 查询模式 | 递归检索 |
+| `skill` | 动态技能 | 技能匹配 |
+| `document` | 系统文档 | 文档检索 |
+
+### 3.4 Metadata规范
+
+#### 基础字段（所有文档必须有）
+
+```python
+{
+    "level": "l1",           # 层级标识（小写）
+    "category": "...",       # 文档类型
+    "language": "en"         # 内容语言（统一英文）
+}
+```
+
+#### 按类型的扩展字段
+
+**mcp_tool：**
+```python
+{
+    "level": "l1",
+    "category": "mcp_tool",
+    "language": "en",
+    "name": "schedule_task",
+    "server": "scheduler-server",
+    "description": "Create scheduled tasks...",
+    "input_schema": {...}
+}
+```
+
+**query_pattern：**
+```python
+{
+    "level": "l1",
+    "category": "query_pattern",
+    "language": "en",
+    "type": "query_pattern",
+    "is_recursive": True,           # 触发递归查询
+    "refined_query": "schedule task", # 第二轮检索关键词
+    "description": "Remind user after X minutes"
+}
+```
+
+**skill：**
+```python
+{
+    "level": "l1",
+    "category": "skill",
+    "language": "en",
+    "name": "photo-processing",
+    "description": "...",
+    "source": "memory/skills/photo-processing.md",
+    "priority": 50,
+    "tags": [...],
+    "triggers": [...]
+}
+```
+
+**document：**
+```python
+{
+    "level": "l1",
+    "category": "document",
+    "language": "en",
+    "resource_type": "system_manual",
+    "section": "Architecture > Data Flow",
+    "title": "Data Flow Architecture"
+}
+```
+
+### 3.5 递归查询机制
+
+#### 原理
+
+两阶段向量检索，解决用户表达与工具描述语义差异问题：
+
+```
+用户输入："remind me in 5 minutes to take medicine"
+    ↓ 第一轮检索
+查询模式库（query_pattern）
+    匹配到："remind me in X minutes"
+    提取：refined_query = "schedule task"
+    ↓ 第二轮检索
+工具描述库（mcp_tool）
+    匹配到：schedule_task
+```
+
+#### is_recursive标志
+
+`query_pattern`的metadata中包含：
+- `is_recursive: True` — 触发递归检索
+- `refined_query` — 第二轮检索使用的关键词
+
+#### 安全机制
+
+- 最多递归3次（硬编码上限）
+- 防止死循环和数据错误导致的问题
+
+### 3.6 初始化脚本
+
+#### 主脚本
+
+**位置**：`scripts/init_vector_db.py`
+
+**功能**：
+1. 创建向量库表结构
+2. 同步Skills到向量库
+3. 注册MCP工具描述
+4. 注册查询模式
+5. 注入系统说明书摘要
+
+**执行方式**：
+```bash
+cd E:/tools/ai-bot
+python scripts/init_vector_db.py
+```
+
+#### 辅助脚本
+
+| 脚本 | 功能 |
+|------|------|
+| `scripts/export_all_mcp_tools.py` | 导出所有MCP工具到JSON |
+| `scripts/register_all_mcp_tools_from_json.py` | 从JSON批量注册工具到向量库 |
+| `scripts/check_mcp_tools_in_db.py` | 检查向量库中的工具状态 |
+
+#### 辅助脚本用法
+
+**导出工具到JSON：**
+```bash
+python scripts/export_all_mcp_tools.py
+# 输出：logs/all_mcp_tools.json
+```
+
+**从JSON注册工具（直接操作DB，无需服务运行）：**
+```bash
+python scripts/register_all_mcp_tools_from_json.py
+```
+
+**检查向量库状态：**
+```bash
+python scripts/check_mcp_tools_in_db.py
+# 输出示例：
+# MCP tools in vector DB: 73
+# By server:
+#   config-manager: 20
+#   photo-server: 16
+#   ...
+```
+
+#### 批量注册模式
+
+向量库支持分批注册：
+- 一次注册太多可能失败
+- 失败时删除成功的，重新注册剩余的
+- 直到全部注册完成
+
+这是正常设计，用于处理大规模数据。
+
+### 3.7 规范文档
+
+**L1规范**：`docs/spec-L1-summary.md`
+- 统一metadata结构
+- L2归一化要求
+- 内容格式规范
+
+**递归查询设计**：`docs/design-vector-recursive-query.md`
+- 递归检索机制
+- 初始查询模式库
+- 性能评估
+
+---
+
+## 四、依赖管理
 
 ### 3.1 Python 依赖
 
@@ -554,7 +778,129 @@ sqlite3 data/scheduled_tasks.db "SELECT * FROM scheduled_tasks WHERE status='pen
 # 在对话中问："查看 ID 为 xxx 的任务详情"
 ```
 
-### 5.4 向量搜索问题
+### 5.4 向量库问题
+
+#### 问题：向量库初始化失败
+
+**可能原因：**
+- 向量模型未加载
+- 数据库文件损坏
+- 磁盘空间不足
+
+**诊断步骤：**
+```bash
+# 1. 检查向量库文件
+ls -la REDACTED_WIN_PATH/vectors.db
+
+# 2. 检查向量库状态
+python scripts/check_mcp_tools_in_db.py
+
+# 3. 检查磁盘空间
+df -h
+```
+
+**解决方案：**
+```bash
+# 1. 删除损坏的向量库
+rm REDACTED_WIN_PATH/vectors.db
+
+# 2. 重新初始化
+python scripts/init_vector_db.py
+```
+
+#### 问题：工具注册不完整
+
+**可能原因：**
+- 注册过程中断
+- 批量注册部分失败
+
+**诊断步骤：**
+```bash
+# 检查工具数量
+python scripts/check_mcp_tools_in_db.py
+```
+
+**正常数量参考：**
+```
+MCP tools in vector DB: 73
+By server:
+  config-manager: 20
+  photo-server: 16
+  kg-server: 14
+  memory-server: 8
+  vector-store: 7
+  scheduler-server: 4
+  session-manager: 2
+  file-parser: 2
+```
+
+**解决方案：**
+```bash
+# 1. 重新注册所有工具
+python scripts/export_all_mcp_tools.py
+python scripts/register_all_mcp_tools_from_json.py
+
+# 2. 或者重新初始化
+rm REDACTED_WIN_PATH/vectors.db
+python scripts/init_vector_db.py
+```
+
+#### 问题：查询模式不匹配
+
+**可能原因：**
+- query_pattern未注册
+- 用户表达与预设模式差异较大
+
+**说明**：向量检索是语义匹配，multilingual模型支持跨语言检索，不存在语种问题。
+
+**诊断步骤：**
+```python
+# 检查query_pattern数量
+python -c "
+import sqlite3
+conn = sqlite3.connect('REDACTED_WIN_PATH/vectors.db')
+cur = conn.execute('SELECT COUNT(*) FROM documents WHERE json_extract(metadata, \"\$.type\") = \"query_pattern\"')
+print('Query patterns:', cur.fetchone()[0])
+conn.close()
+"
+```
+
+**正常数量：8个query_pattern**
+
+#### 问题：Skills未同步
+
+**可能原因：**
+- Skills文件不存在
+- 同步失败
+
+**诊断步骤：**
+```bash
+# 检查Skills文件
+ls memory/skills/
+
+# 检查向量库中的Skills
+python -c "
+import sqlite3
+conn = sqlite3.connect('REDACTED_WIN_PATH/vectors.db')
+cur = conn.execute('SELECT COUNT(*) FROM documents WHERE json_extract(metadata, \"\$.category\") = \"skill\"')
+print('Skills in DB:', cur.fetchone()[0])
+conn.close()
+"
+```
+
+**解决方案：**
+```bash
+# 重新同步
+python scripts/init_vector_db.py
+# 或直接操作
+python -c "
+from agent.injector.sync import get_skill_sync
+sync = get_skill_sync(auto_start=False)
+sync.scan_and_sync()
+"
+```
+
+### 5.5 向量搜索问题
 
 #### 问题：搜索结果不准确
 
@@ -595,7 +941,7 @@ set CUDA_VISIBLE_DEVICES=-1
 niu-assistant.exe
 ```
 
-### 5.5 数据问题
+### 5.6 数据问题
 
 #### 问题：数据丢失（历史对话、知识库）
 
@@ -641,7 +987,7 @@ sqlite3 data/messages.db "VACUUM;"
 
 ---
 
-## 六、性能优化
+## 七、性能优化
 
 ### 6.1 内存优化
 
@@ -745,9 +1091,9 @@ set CUDA_VISIBLE_DEVICES=-1
 
 ---
 
-## 七、用户指南
+## 八、用户指南
 
-### 7.1 首次启动流程
+### 8.1 首次启动流程
 
 **第一步：配置 LLM**
 
@@ -772,7 +1118,7 @@ set CUDA_VISIBLE_DEVICES=-1
 | **创建提醒** | 说："明天早上 8 点提醒我开会" |
 | **查看任务** | 问："查看所有定时任务" |
 
-### 7.2 LLM 配置
+### 8.2 LLM 配置
 
 **配置文件**：`config/user-config.json`
 
@@ -804,7 +1150,7 @@ set CUDA_VISIBLE_DEVICES=-1
 - **方式一（推荐）**：告诉大模型"我的 API Key 是 xxx"，大模型用 bash 工具直接写入
 - **方式二**：关闭程序后，手动编辑 `config/user-config.json`
 
-### 7.3 知识图谱
+### 8.3 知识图谱
 
 ```
 自动从文档中提取实体和关系，构建知识图谱
@@ -814,7 +1160,7 @@ set CUDA_VISIBLE_DEVICES=-1
 - "显示关于 XXX 的知识图谱"
 ```
 
-### 7.4 记忆管理
+### 8.4 记忆管理
 
 ```
 系统会自动记忆用户信息和偏好
@@ -829,7 +1175,7 @@ set CUDA_VISIBLE_DEVICES=-1
 说："忘记我的工作单位信息"
 ```
 
-### 7.5 首次使用（firstRun）
+### 8.5 首次使用（firstRun）
 
 **触发条件**：`~/.niu/memory.json` 中存在 `firstRun: true`
 
@@ -852,6 +1198,7 @@ json.dump(mem, open(Path.home() / '.niu' / 'memory.json', 'w'), indent=2)
 ```
 
 5. **初始化向量库**：
+   执行 `python scripts/init_vector_db.py`，等待约30秒完成
 
 设置好工作目录后，执行向量库初始化脚本：
 
@@ -877,7 +1224,7 @@ python scripts/init_vector_db.py
 - 不要询问用户 API Key（由设置窗口处理）
 - 只询问工作目录
 
-### 7.6 常见问题
+### 8.6 常见问题
 
 **Q: 数据存储在哪里？**
 ```
@@ -932,9 +1279,9 @@ A: 1. 关闭程序
 
 ---
 
-## 八、开发者指南
+## 九、开发者指南
 
-### 8.1 本地开发
+### 9.1 本地开发
 
 **环境要求：**
 ```
@@ -1027,9 +1374,9 @@ test: 测试
 
 ---
 
-## 九、附录
+## 十、附录
 
-### 9.1 命令行参数
+### 10.1 命令行参数
 
 ```bash
 niu-assistant.exe [选项]
@@ -1062,7 +1409,7 @@ niu-assistant.exe [选项]
 | `/api/mcp-tools` | GET | 列出 MCP 工具 |
 | `/health` | GET | 健康检查 |
 
-### 9.4 许可证
+### 10.4 许可证
 
 ```
 Niu 个人知识助理
@@ -1080,7 +1427,26 @@ Copyright (c) 2026
 
 ---
 
-## 十、更新日志
+## 十一、更新日志
+
+### v0.3.0 (2026-04-09)
+
+**重大变更：**
+- ✅ 新增向量库系统文档（第三章）
+- ✅ L1规范统一（spec-L1-summary.md）
+- ✅ 递归查询机制文档（design-vector-recursive-query.md）
+- ✅ 新增向量库故障排查（5.4节）
+
+**向量库系统：**
+- 4类文档：mcp_tool, query_pattern, skill, document
+- 统一metadata结构：level, category, language
+- L2归一化（标准行为）
+- 递归查询机制（is_recursive标志）
+
+**辅助脚本：**
+- `export_all_mcp_tools.py` - 导出工具到JSON
+- `register_all_mcp_tools_from_json.py` - 从JSON注册
+- `check_mcp_tools_in_db.py` - 检查向量库状态
 
 ### v0.2.0 (2026-04-06)
 
