@@ -16,6 +16,100 @@ from mcp.types import Tool, TextContent
 
 logger = logging.getLogger(__name__)
 
+# ============== Tool Schemas ==============
+
+TOOL_SCHEMAS = {
+    "schedule_task": {
+        "name": "schedule_task",
+        "description": """创建定时任务，支持单次和循环任务。
+
+参数：
+- content (必填): 任务内容，如 "开会"、"吃药"
+- scheduled_at (必填): 首次触发时间，ISO格式，如 "2026-04-06T08:00:00"
+- event_type (可选): 事件类型，meeting/task/reminder/recurring，默认 reminder
+- is_recurring (可选): 是否循环任务，默认 false
+- cron_expr (可选): cron 表达式（循环任务必填），如 "0 8 * * *"（每天8点）
+
+示例：
+1. 单次提醒：
+   <tool_use>{"name": "scheduler-server/schedule_task", "arguments": {"content": "开会", "scheduled_at": "2026-04-07T15:00:00", "event_type": "meeting"}}</tool_use>
+
+2. 每天提醒：
+   <tool_use>{"name": "scheduler-server/schedule_task", "arguments": {"content": "吃药", "scheduled_at": "2026-04-06T08:00:00", "is_recurring": true, "cron_expr": "0 8 * * *"}}</tool_use>
+
+重要：相对时间（明天、下周）必须由 Agent 转换为具体的日期时间。""",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "content": {"type": "string", "description": "任务内容"},
+                "scheduled_at": {"type": "string", "description": "首次触发时间（ISO格式）"},
+                "event_type": {"type": "string", "enum": ["meeting", "task", "reminder", "recurring"]},
+                "is_recurring": {"type": "boolean", "description": "是否循环任务"},
+                "cron_expr": {"type": "string", "description": "cron 表达式"}
+            },
+            "required": ["content", "scheduled_at"]
+        },
+    },
+    "list_scheduled_tasks": {
+        "name": "list_scheduled_tasks",
+        "description": """查询定时任务列表。
+
+参数：
+- status (可选): 筛选状态，pending/triggered/cancelled
+
+返回：任务列表，包含 id、content、scheduled_at、is_recurring、cron_expr、status""",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "status": {"type": "string", "enum": ["pending", "triggered", "cancelled"]}
+            }
+        },
+    },
+    "cancel_task": {
+        "name": "cancel_task",
+        "description": """取消定时任务。
+
+参数：
+- task_id: 任务ID
+
+返回：取消结果""",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string", "description": "任务ID"}
+            },
+            "required": ["task_id"]
+        },
+    },
+    "update_task": {
+        "name": "update_task",
+        "description": """更新定时任务。
+
+参数：
+- task_id: 任务ID
+- content: 新的任务内容（可选）
+- scheduled_at: 新的触发时间（可选）
+- cron_expr: 新的 cron 表达式（可选）
+
+返回：更新结果""",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string", "description": "任务ID"},
+                "content": {"type": "string", "description": "新的任务内容"},
+                "scheduled_at": {"type": "string", "description": "新的触发时间"},
+                "cron_expr": {"type": "string", "description": "新的 cron 表达式"}
+            },
+            "required": ["task_id"]
+        },
+    },
+}
+
+
+def get_tool_schemas() -> list[dict]:
+    """返回所有工具的 schema 列表（用于 MCP Loader 注册）"""
+    return list(TOOL_SCHEMAS.values())
+
 
 def _get_db_path() -> str:
     """获取数据库路径"""

@@ -22,6 +22,53 @@ server = Server("niu-session-manager")
 # Main API URL
 API_URL = os.environ.get("NIU_API_URL", "http://127.0.0.1:9876")
 
+# ============== Tool Schemas ==============
+
+TOOL_SCHEMAS = {
+    "get_messages": {
+        "name": "get_messages",
+        "description": "Get message list for a session with KB sizes. Returns messages with idx, kb, role, and content preview.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "session_id": {
+                    "type": "string",
+                    "description": "Session ID to get messages for",
+                },
+            },
+            "required": ["session_id"],
+        },
+    },
+    "delete_messages": {
+        "name": "delete_messages",
+        "description": "Delete messages from a session by indices. Returns deleted count and freed KB.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "session_id": {
+                    "type": "string",
+                    "description": "Session ID",
+                },
+                "message_indices": {
+                    "type": "array",
+                    "items": {"type": "integer"},
+                    "description": "List of message indices to delete (0-based)",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Reason for deletion (optional)",
+                },
+            },
+            "required": ["session_id", "message_indices"],
+        },
+    },
+}
+
+
+def get_tool_schemas() -> list[dict]:
+    """返回所有工具的 schema 列表（用于 MCP Loader 注册）"""
+    return list(TOOL_SCHEMAS.values())
+
 
 def call_api(method: str, endpoint: str, data: dict | None = None) -> dict | None:
     """Call the main API."""
