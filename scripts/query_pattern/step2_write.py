@@ -23,7 +23,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from loguru import logger
 
-from tools import upsert_pattern
+from query_pattern.tools import upsert_pattern
 
 
 # refined_query mapping from WRITER.md
@@ -135,7 +135,7 @@ def main() -> None:
     input_path = args.input or (script_dir / "candidates.jsonl")
 
     if args.clean:
-        from tools import get_vector_db_path
+        from query_pattern.tools import get_vector_db_path
         db_path = get_vector_db_path()
         logger.info(f"[Writer] Cleaning patterns from: {db_path}")
         clean_old_patterns(db_path)
