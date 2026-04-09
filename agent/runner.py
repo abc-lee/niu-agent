@@ -390,6 +390,9 @@ class NiuRunner:
         full_resp = re.sub(r"🛠️ \*\*正在调用工具:[\s\S]*?````\n", "", full_resp)
         full_resp = re.sub(r"<summary>[\s\S]*?</summary>\n*", "", full_resp, flags=re.IGNORECASE)
 
+        # 清理内部工具调用标签（LiteLLM 调试输出，不应显示给用户）
+        full_resp = re.sub(r"<tool_use>.*?</tool_use>", "", full_resp, flags=re.DOTALL)
+
         # 清理 LLM 输出的结构化标签（如 <text>, </text>）
         full_resp = re.sub(r"</?text>\n*", "", full_resp)
         full_resp = re.sub(r"</?response>\n*", "", full_resp)
