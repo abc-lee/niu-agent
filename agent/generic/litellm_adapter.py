@@ -19,25 +19,127 @@ from .llmcore import BaseSession, MockResponse, MockToolCall, ToolClient
 
 def _write_interaction_log(log_entry: Dict[str, Any]):
     """
-    写入 LLM 交互日志（格式化 JSON）
+    写入 LLM 交互日志（人类可读格式）
 
-    Args:
-        log_entry: 日志条目（字典格式）
+    格式示例：
+    ========== 19:25:28 [MiniMax-M2.7-highspeed] ==========
+    [系统提示词]
+    # Role: 妞妞...
+    ...
+    [用户输入]
+    用户拖入了以下文件...
+    [可用工具]
+    - kg-server/search_knowledge
+    - photo-server/ingest_photo
+    ...
+    [AI回复]
+    好的，老板！...
+    [工具调用]
+    - chat-with-file-processor({"task": "入库照片：..."})
+    [思考链]
+    <thinking>...</thinking>
     """
     try:
-        # 确定日志目录
         log_dir = Path(__file__).parent.parent.parent / "logs"
         log_dir.mkdir(exist_ok=True)
-
-        # 日志文件名：llm_interaction_YYYYMMDD.log
         log_file = log_dir / f"llm_interaction_{datetime.now().strftime('%Y%m%d')}.log"
 
-        # 写入格式化 JSON（带换行和缩进）
         with open(log_file, "a", encoding="utf-8") as f:
-            f.write(json.dumps(log_entry, ensure_ascii=False, indent=2))
-            f.write("\n\n")  # 每个条目之间空两行
+            if log_entry["type"] == "request":
+                _format_request_log(f, log_entry)
+            elif log_entry["type"] == "response_complete":
+                _format_response_log(f, log_entry)
     except Exception as e:
         print(f"[LiteLLM] Failed to write log: {e}", file=sys.stderr, flush=True)
+
+
+def _format_request_log(f, log_entry: Dict[str, Any]):
+    """格式化请求日志"""
+    ts = log_entry.get("timestamp", "")
+    model = log_entry.get("model", "")
+    messages = log_entry.get("messages", [])
+    tools = log_entry.get("tools", [])
+
+    # 分隔线
+    f.write(f"\n{'=' * 60}\n")
+    f.write(f"[{ts}] {model}\n")
+    f.write(f"{'=' * 60}\n")
+
+    # 系统提示词（只取第一条约500字）
+    for msg in messages:
+        if msg.get("role") == "system":
+            content = msg.get("content", "")
+            # 截断太长内容
+            if len(content) > 600:
+                content = content[:600] + "\n...（已截断）"
+            f.write(f"[系统提示词]\n{content}\n\n")
+            break
+
+    # 用户输入（最后一条 user 消息）
+    for msg in reversed(messages):
+        if msg.get("role") == "user":
+            content = msg.get("content", "")
+            if len(content) > 400:
+                content = content[:400] + "\n...（已截断）"
+            f.write(f"[用户输入]\n{content}\n\n")
+            break
+
+    # 可用工具（只列名称）
+    if tools:
+        tool_names = []
+        for t in tools:
+            if "function" in t:
+                name = t["function"].get("name", "?")
+            elif "name" in t:
+                name = t["name"]
+            else:
+                name = str(t)[:40]
+            tool_names.append(name)
+        f.write(f"[可用工具]\n")
+        for name in tool_names:
+            f.write(f"  - {name}\n")
+        f.write("\n")
+
+
+def _format_response_log(f, log_entry: Dict[str, Any]):
+    """格式化响应日志"""
+    content = log_entry.get("content", "")
+    tool_calls = log_entry.get("tool_calls", [])
+    thinking = log_entry.get("thinking", "")
+    usage = log_entry.get("usage")
+
+    # AI回复
+    if content:
+        if len(content) > 600:
+            content = content[:600] + "\n...（已截断）"
+        f.write(f"[AI回复]\n{content}\n\n")
+
+    # 思考链
+    if thinking:
+        th = thinking if len(thinking) <= 400 else thinking[:400] + "\n...（已截断）"
+        f.write(f"[思考链]\n{th}\n\n")
+
+    # 工具调用
+    if tool_calls:
+        f.write(f"[工具调用]\n")
+        for tc in tool_calls:
+            name = tc.get("name", "?")
+            args = tc.get("arguments", {})
+            args_str = json.dumps(args, ensure_ascii=False)
+            # 截断太长的参数
+            if len(args_str) > 200:
+                args_str = args_str[:200] + "...}"
+            f.write(f"  - {name}({args_str})\n")
+        f.write("\n")
+
+    # Token使用量
+    if usage:
+        pt = usage.get("prompt_tokens", 0)
+        ct = usage.get("completion_tokens", 0)
+        tt = usage.get("total_tokens", 0)
+        f.write(f"[Token] prompt={pt} completion={ct} total={tt}\n")
+
+    f.write("\n")
 
 
 def get_provider_params(model: str, reasoning_effort: Optional[str] = None) -> Dict[str, Any]:
