@@ -151,10 +151,11 @@ def inject_system_manual_l1():
         # 文档ID
         doc_id = f"system_manual:{l1['section'].replace(' > ', '-')}"
 
-        # 元数据
+        # 元数据（符合L1规范 v3.0）
         metadata = {
             "level": "l1",
             "category": "document",
+            "language": "en",
             "resource_type": "system_manual",
             "section": l1["section"],
             "title": l1["title"],
@@ -166,7 +167,7 @@ def inject_system_manual_l1():
             logger.error(f"向量生成失败: {l1['title']}")
             continue
 
-        # ✅ L2归一化（符合L1规范v2.0）
+        # L2归一化
         vec = np.array(embedding, dtype=np.float32)
         norm = np.linalg.norm(vec)
         if norm > 0:
