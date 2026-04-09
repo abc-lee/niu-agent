@@ -523,6 +523,36 @@ def inject_system_manual():
         logger.error(f"✗ 系统说明书注入失败: {result.stderr}")
 
 
+def init_query_patterns():
+    """
+    初始化 Query Patterns（通过 TDD 流水线生成）
+
+    注意：需要 LLM API 支持，会调用 pipeline.py 生成 patterns
+    """
+    from pathlib import Path
+    logger.info("初始化 Query Patterns...")
+
+    # 尝试运行流水线脚本
+    pipeline_path = Path(__file__).parent / "query_pattern" / "pipeline.py"
+    if not pipeline_path.exists():
+        logger.warning("Query Pattern 流水线脚本不存在，跳过")
+        return
+
+    import subprocess
+    result = subprocess.run(
+        [sys.executable, str(pipeline_path)],
+        capture_output=True,
+        text=True,
+        cwd=str(Path(__file__).parent)
+    )
+
+    if result.returncode == 0:
+        logger.info("✓ Query Patterns 初始化完成")
+        print(result.stdout)  # 打印流水线输出
+    else:
+        logger.error(f"✗ Query Patterns 初始化失败: {result.stderr}")
+
+
 def main():
     """主函数"""
     print("=" * 70)
@@ -560,6 +590,13 @@ def main():
     # 5. 注入系统说明书
     print("\n" + "-" * 70)
     inject_system_manual()
+
+    # 6. 初始化 Query Patterns（可选，需要 LLM API，耗时较长）
+    print("\n" + "-" * 70)
+    print("Query Patterns 初始化需要 LLM API，耗时较长（约 5-10 分钟）")
+    confirm = input("是否初始化 Query Patterns？[y/N]: ")
+    if confirm.lower() == 'y':
+        init_query_patterns()
 
     print("\n" + "=" * 70)
     print("✓ 向量库初始化完成")
