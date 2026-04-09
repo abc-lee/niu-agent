@@ -1,0 +1,742 @@
+[32m2026-04-09 16:27:49.062[0m | [1mINFO    [0m | [36m__main__[0m:[36mpipeline_for_tool[0m:[36m220[0m - [1m[Pipeline] scheduler-server/schedule_task — attempt 1 (max 4 total)[0m
+[32m2026-04-09 16:27:49.062[0m | [1mINFO    [0m | [36mquery_pattern.step1_generate[0m:[36mgenerate_patterns_for_tool[0m:[36m82[0m - [1m[Generator] Generating 12 patterns for scheduler-server/schedule_task[0m
+[32m2026-04-09 16:28:12.851[0m | [1mINFO    [0m | [36mquery_pattern.step1_generate[0m:[36mgenerate_patterns_for_tool[0m:[36m110[0m - [1m[Generator] Generated 12 patterns for scheduler-server/schedule_task[0m
+[32m2026-04-09 16:28:12.852[0m | [1mINFO    [0m | [36m__main__[0m:[36mpipeline_for_tool[0m:[36m268[0m - [1m[Pipeline] scheduler-server/schedule_task — wrote 12 candidates[0m
+[32m2026-04-09 16:28:12.858[0m | [1mINFO    [0m | [36m__main__[0m:[36mpipeline_for_tool[0m:[36m274[0m - [1m[Pipeline] scheduler-server/schedule_task — cleaned 0 old DB records[0m
+[32m2026-04-09 16:28:19.310[0m | [1mINFO    [0m | [36mniu_api.internal.embedding[0m:[36mget_device[0m:[36m36[0m - [1mGPU detected: NVIDIA GeForce RTX 4090[0m
+[32m2026-04-09 16:28:19.311[0m | [1mINFO    [0m | [36mniu_api.internal.embedding[0m:[36mget_model[0m:[36m62[0m - [1mLoading multilingual embedding model from: E:\tools\ai-bot\models\paraphrase-multilingual-MiniLM-L12-v2[0m
+
+[Pipeline] Starting Query Pattern TDD Pipeline
+[Pipeline] Server   : scheduler-server
+[Pipeline] Tools    : 4
+[Pipeline] Patterns : 12 per tool
+[Pipeline] Retries  : 3 max
+[Pipeline] Threshold : 0.5
+
+Loading weights:   0%|          | 0/199 [00:00<?, ?it/s]Loading weights: 100%|##########| 199/199 [00:00<00:00, 17312.78it/s]
+[1mBertModel LOAD REPORT[0m from: E:\tools\ai-bot\models\paraphrase-multilingual-MiniLM-L12-v2
+Key                     | Status     |  | 
+------------------------+------------+--+-
+embeddings.position_ids | UNEXPECTED |  | 
+
+[3mNotes:
+- UNEXPECTED[3m	:can be ignored when loading from different task/architecture; not ok if you expect identical arch.[0m
+[32m2026-04-09 16:28:20.631[0m | [1mINFO    [0m | [36mniu_api.internal.embedding[0m:[36mget_model[0m:[36m64[0m - [1mEmbedding model loaded: paraphrase-multilingual-MiniLM-L12-v2[0m
+[32m2026-04-09 16:28:20.632[0m | [1mINFO    [0m | [36mniu_api.internal.embedding[0m:[36mget_model[0m:[36m78[0m - [1mModel running on: CUDA[0m
+[32m2026-04-09 16:28:20.793[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:28:20.807[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:28:20.823[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:28:20.837[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:28:20.853[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:28:20.867[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:28:20.882[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:28:20.900[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:28:20.917[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:28:20.931[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:28:20.947[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:28:20.965[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:28:20.965[0m | [1mINFO    [0m | [36m__main__[0m:[36mpipeline_for_tool[0m:[36m279[0m - [1m[Pipeline] scheduler-server/schedule_task — DB upsert: 12/12 succeeded[0m
+[Recursive Query] \u534a\u5c0f\u65f6\u540e\u63d0\u9192\u6211\u559d\u6c34 \u2192 schedule task (depth: 1/3)
+[Recursive Query] \u660e\u5929\u4e0b\u53483\u70b9\u63d0\u9192\u6211\u5f00\u4f1a \u2192 workday reminder recurring task (depth: 1/3)
+[Recursive Query] \u901a\u77e5\u6211\u660e\u5929\u4e0a\u534810\u70b9\u4ea4\u62a5\u544a \u2192 schedule task (depth: 1/3)
+[Recursive Query] \u6211\u5728\u5f00\u4f1a\uff0c20\u5206\u949f\u540e\u63d0\u9192\u6211\u63a5\u5b69\u5b50 \u2192 schedule task (depth: 1/3)
+[Recursive Query] \u8bb0\u5f97\u63d0\u9192\u6211\u5403\u836f\u54e6 \u2192 schedule task (depth: 1/3)
+[Recursive Query] \u53ef\u4ee5\u63d0\u9192\u6211\u4e0b\u5348\u559d\u836f\u5417 \u2192 schedule task (depth: 1/3)
+[Recursive Query] \u522b\u5fd8\u4e86\u63d0\u9192\u6211\u8dd1\u6b65 \u2192 recurring task (depth: 1/3)
+[Recursive Query] 10\u5206\u949f\u540e\u53eb\u6211\u8d77\u5e8a \u2192 schedule task (depth: 1/3)
+[Recursive Query] \u6bcf\u5468\u4e00\u65e9\u4e0a9\u70b9\u63d0\u9192\u6211\u5f00\u4f1a \u2192 workday reminder recurring task (depth: 1/3)
+[Recursive Query] \u8bf7\u57281\u70b9\u63d0\u9192\u6211\u559d\u6c34 \u2192 schedule task (depth: 1/3)
+[Recursive Query] \u8d76\u7d27\u63d0\u9192\u6211\u4f11\u606f\u4e00\u4e0b \u2192 schedule task (depth: 1/3)
+[Recursive Query] \u63d0\u9192\u621130\u5206\u949f\u540e\u5403\u836f\uff0c\u8981\u5f00\u59cb\u5de5\u4f5c\u4e86 \u2192 schedule task (depth: 1/3)
+[32m2026-04-09 16:28:21.130[0m | [1mINFO    [0m | [36m__main__[0m:[36mpipeline_for_tool[0m:[36m291[0m - [1m[Pipeline] scheduler-server/schedule_task — test: 11/12 passed, 1 failed[0m
+[32m2026-04-09 16:28:21.130[0m | [1mINFO    [0m | [36m__main__[0m:[36mpipeline_for_tool[0m:[36m220[0m - [1m[Pipeline] scheduler-server/schedule_task — attempt 2 (max 4 total)[0m
+[32m2026-04-09 16:28:21.131[0m | [1mINFO    [0m | [36m__main__[0m:[36mpipeline_for_tool[0m:[36m242[0m - [1m[Pipeline] scheduler-server/schedule_task — 1 failed patterns as feedback[0m
+[32m2026-04-09 16:28:21.131[0m | [1mINFO    [0m | [36mquery_pattern.step1_generate[0m:[36mgenerate_patterns_for_tool[0m:[36m82[0m - [1m[Generator] Generating 12 patterns for scheduler-server/schedule_task[0m
+[32m2026-04-09 16:28:55.989[0m | [1mINFO    [0m | [36mquery_pattern.step1_generate[0m:[36mgenerate_patterns_for_tool[0m:[36m110[0m - [1m[Generator] Generated 12 patterns for scheduler-server/schedule_task[0m
+[32m2026-04-09 16:28:55.990[0m | [1mINFO    [0m | [36m__main__[0m:[36mpipeline_for_tool[0m:[36m268[0m - [1m[Pipeline] scheduler-server/schedule_task — wrote 12 candidates[0m
+[32m2026-04-09 16:28:56.067[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:28:56.085[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:28:56.101[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:28:56.119[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:28:56.135[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:28:56.151[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:28:56.167[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:28:56.185[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:28:56.199[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:28:56.215[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:28:56.231[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:28:56.247[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:28:56.247[0m | [1mINFO    [0m | [36m__main__[0m:[36mpipeline_for_tool[0m:[36m279[0m - [1m[Pipeline] scheduler-server/schedule_task — DB upsert: 12/12 succeeded[0m
+[Recursive Query] 10\u5206\u949f\u540e\u63d0\u9192\u6211\u5403\u836f \u2192 schedule task (depth: 1/3)
+[Recursive Query] \u660e\u5929\u4e0b\u5348\u4e09\u70b9\u63d0\u9192\u6211\u5f00\u4f1a \u2192 workday reminder recurring task (depth: 1/3)
+[Recursive Query] \u8bbe\u7f6e\u4e00\u4e2a\u534a\u5c0f\u65f6\u540e\u7684\u95f9\u949f \u2192 schedule alarm (depth: 1/3)
+[Recursive Query] \u6211\u5728\u5f00\u4f1a\uff0c\u4e00\u5c0f\u65f6\u540e\u63d0\u9192\u6211\u63a5\u5b69\u5b50 \u2192 schedule task (depth: 1/3)
+[Recursive Query] \u8d76\u7d27\u63d0\u9192\u6211\u5341\u5206\u949f\u540e\u5403\u836f \u2192 schedule task (depth: 1/3)
+[Recursive Query] \u80fd\u5e2e\u6211\u5b9a\u4e2a\u4e0b\u5348\u8336\u63d0\u9192\u5417 \u2192 schedule task (depth: 1/3)
+[Recursive Query] \u522b\u5fd8\u4e86\u5e2e\u6211\u8bbe\u7f6e\u660e\u65e9\u4e03\u70b9\u7684\u95f9\u949f \u2192 schedule alarm (depth: 1/3)
+[Recursive Query] \u6bcf\u5468\u4e00\u65e9\u4e0a9\u70b9\u63d0\u9192\u6211\u5199\u5468\u62a5 \u2192 workday reminder recurring task (depth: 1/3)
+[Recursive Query] \u4e24\u5c0f\u65f6\u540e\u63d0\u9192\u6211\u505a\u4f38\u5c55\u8fd0\u52a8 \u2192 schedule task (depth: 1/3)
+[Recursive Query] \u5e2e\u6211\u9884\u7ea6\u660e\u5929\u4e0a\u5348\u7684\u745c\u4f3d\u63d0\u9192 \u2192 recurring task (depth: 1/3)
+[Recursive Query] \u8bb0\u5f97\u63d0\u9192\u6211\u4f11\u606f\u773c\u775b\u54e6\uff0c\u534a\u5c0f\u65f6\u540e \u2192 schedule task (depth: 1/3)
+[Recursive Query] \u4e0b\u73ed\u524d\u63d0\u9192\u6211\u5907\u4efd\u91cd\u8981\u6587\u4ef6 \u2192 schedule task (depth: 1/3)
+[32m2026-04-09 16:28:56.452[0m | [1mINFO    [0m | [36m__main__[0m:[36mpipeline_for_tool[0m:[36m291[0m - [1m[Pipeline] scheduler-server/schedule_task — test: 11/12 passed, 1 failed[0m
+[32m2026-04-09 16:28:56.452[0m | [1mINFO    [0m | [36m__main__[0m:[36mpipeline_for_tool[0m:[36m220[0m - [1m[Pipeline] scheduler-server/schedule_task — attempt 3 (max 4 total)[0m
+[32m2026-04-09 16:28:56.452[0m | [1mINFO    [0m | [36m__main__[0m:[36mpipeline_for_tool[0m:[36m242[0m - [1m[Pipeline] scheduler-server/schedule_task — 1 failed patterns as feedback[0m
+[32m2026-04-09 16:28:56.453[0m | [1mINFO    [0m | [36mquery_pattern.step1_generate[0m:[36mgenerate_patterns_for_tool[0m:[36m82[0m - [1m[Generator] Generating 12 patterns for scheduler-server/schedule_task[0m
+[32m2026-04-09 16:29:18.538[0m | [1mINFO    [0m | [36mquery_pattern.step1_generate[0m:[36mgenerate_patterns_for_tool[0m:[36m110[0m - [1m[Generator] Generated 12 patterns for scheduler-server/schedule_task[0m
+[32m2026-04-09 16:29:18.538[0m | [1mINFO    [0m | [36m__main__[0m:[36mpipeline_for_tool[0m:[36m268[0m - [1m[Pipeline] scheduler-server/schedule_task — wrote 12 candidates[0m
+[32m2026-04-09 16:29:18.566[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:29:18.584[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:29:18.600[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:29:18.616[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:29:18.632[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:29:18.648[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:29:18.664[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:29:18.680[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:29:18.694[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:29:18.710[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:29:18.726[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:29:18.744[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:29:18.744[0m | [1mINFO    [0m | [36m__main__[0m:[36mpipeline_for_tool[0m:[36m279[0m - [1m[Pipeline] scheduler-server/schedule_task — DB upsert: 12/12 succeeded[0m
+[Recursive Query] 5\u5206\u949f\u540e\u63d0\u9192\u6211\u559d\u6c34 \u2192 schedule task (depth: 1/3)
+[Recursive Query] \u534a\u5c0f\u65f6\u540e\u53eb\u9192\u6211 \u2192 schedule task (depth: 1/3)
+[Recursive Query] \u660e\u5929\u4e0b\u53483\u70b9\u63d0\u9192\u6211\u5f00\u4f1a \u2192 schedule task (depth: 1/3)
+[Recursive Query] \u660e\u5929\u4e0a\u534810\u70b9\u53eb\u6211 \u2192 schedule task (depth: 1/3)
+[Recursive Query] \u63d0\u9192\u6211\u5403\u836f \u2192 schedule task (depth: 1/3)
+[Recursive Query] \u901a\u77e5\u6211\u8be5\u8fd0\u52a8\u4e86 \u2192 schedule task (depth: 1/3)
+[Recursive Query] \u6211\u5728\u5f00\u4f1a\uff0c20\u5206\u949f\u540e\u63d0\u9192\u6211\u53d1\u8a00 \u2192 schedule task (depth: 1/3)
+[Recursive Query] \u5f00\u8f66\u65f6\u63d0\u9192\u6211\u4e00\u5c0f\u65f6\u540e\u4f11\u606f \u2192 workday reminder recurring task (depth: 1/3)
+[Recursive Query] \u8bb0\u5f97\u63d0\u9192\u6211\u54e6 \u2192 schedule task (depth: 1/3)
+[Recursive Query] \u8d76\u7d27\u53eb\u6211\u8d77\u5e8a \u2192 schedule task (depth: 1/3)
+[Recursive Query] \u80fd\u63d0\u9192\u6211\u660e\u5929\u4ea4\u62a5\u544a\u5417 \u2192 schedule task (depth: 1/3)
+[Recursive Query] \u522b\u5fd8\u4e86\u63d0\u9192\u6211 \u2192 schedule task (depth: 1/3)
+[32m2026-04-09 16:29:18.927[0m | [1mINFO    [0m | [36m__main__[0m:[36mpipeline_for_tool[0m:[36m291[0m - [1m[Pipeline] scheduler-server/schedule_task — test: 12/12 passed, 0 failed[0m
+[32m2026-04-09 16:29:18.927[0m | [1mINFO    [0m | [36m__main__[0m:[36mpipeline_for_tool[0m:[36m300[0m - [1m[Pipeline] scheduler-server/schedule_task — all passed on attempt 3[0m
+[32m2026-04-09 16:29:18.927[0m | [1mINFO    [0m | [36m__main__[0m:[36mpipeline_for_tool[0m:[36m220[0m - [1m[Pipeline] scheduler-server/cancel_task — attempt 1 (max 4 total)[0m
+[32m2026-04-09 16:29:18.928[0m | [1mINFO    [0m | [36mquery_pattern.step1_generate[0m:[36mgenerate_patterns_for_tool[0m:[36m82[0m - [1m[Generator] Generating 12 patterns for scheduler-server/cancel_task[0m
+[32m2026-04-09 16:29:37.740[0m | [1mINFO    [0m | [36mquery_pattern.step1_generate[0m:[36mgenerate_patterns_for_tool[0m:[36m110[0m - [1m[Generator] Generated 12 patterns for scheduler-server/cancel_task[0m
+[32m2026-04-09 16:29:37.742[0m | [1mINFO    [0m | [36m__main__[0m:[36mpipeline_for_tool[0m:[36m268[0m - [1m[Pipeline] scheduler-server/cancel_task — wrote 12 candidates[0m
+[32m2026-04-09 16:29:37.744[0m | [1mINFO    [0m | [36m__main__[0m:[36mpipeline_for_tool[0m:[36m274[0m - [1m[Pipeline] scheduler-server/cancel_task — cleaned 0 old DB records[0m
+[32m2026-04-09 16:29:37.773[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:29:37.791[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:29:37.807[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:29:37.822[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:29:37.839[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:29:37.856[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:29:37.872[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:29:37.888[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:29:37.907[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:29:37.922[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:29:37.938[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:29:37.955[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:29:37.955[0m | [1mINFO    [0m | [36m__main__[0m:[36mpipeline_for_tool[0m:[36m279[0m - [1m[Pipeline] scheduler-server/cancel_task — DB upsert: 12/12 succeeded[0m
+[Recursive Query] \u53d6\u6d88\u63d0\u9192 \u2192 cancel scheduled task (depth: 1/3)
+[Recursive Query] \u5220\u9664\u4e0b\u5348\u4e09\u70b9\u7684\u5b9a\u65f6\u4efb\u52a1 \u2192 cancel scheduled task (depth: 1/3)
+[Recursive Query] \u628a\u521a\u624d\u7684\u63d0\u9192\u5220\u6389 \u2192 cancel scheduled task (depth: 1/3)
+[Recursive Query] \u5173\u6389\u5403\u836f\u63d0\u9192 \u2192 cancel scheduled task (depth: 1/3)
+[Recursive Query] \u4f1a\u8bae\u6539\u65f6\u95f4\u4e86\uff0c\u5220\u6389\u90a3\u4e2a\u63d0\u9192 \u2192 cancel scheduled task (depth: 1/3)
+[Recursive Query] \u4e0d\u9700\u8981\u63d0\u9192\u4e86\uff0c\u53d6\u6d88\u5427 \u2192 cancel scheduled task (depth: 1/3)
+[Recursive Query] \u522b\u63d0\u9192\u6211\u5f00\u4f1a\u4e86 \u2192 cancel scheduled task (depth: 1/3)
+[Recursive Query] \u90a3\u4e2a\u95f9\u949f\u5e2e\u6211\u5173\u4e00\u4e0b \u2192 cancel scheduled task (depth: 1/3)
+[Recursive Query] \u53ef\u4ee5\u53d6\u6d88\u63d0\u9192\u5417 \u2192 cancel scheduled task (depth: 1/3)
+[Recursive Query] \u80fd\u5e2e\u6211\u5220\u6389\u8fd9\u4e2a\u5b9a\u65f6\u4efb\u52a1\u5417 \u2192 cancel scheduled task (depth: 1/3)
+[Recursive Query] \u4e0d\u8981\u63d0\u9192\u6211\u4e86 \u2192 schedule task (depth: 1/3)
+[Recursive Query] cancel the 5pm reminder \u2192 cancel scheduled task (depth: 1/3)
+[32m2026-04-09 16:29:38.141[0m | [1mINFO    [0m | [36m__main__[0m:[36mpipeline_for_tool[0m:[36m291[0m - [1m[Pipeline] scheduler-server/cancel_task — test: 11/12 passed, 1 failed[0m
+[32m2026-04-09 16:29:38.141[0m | [1mINFO    [0m | [36m__main__[0m:[36mpipeline_for_tool[0m:[36m220[0m - [1m[Pipeline] scheduler-server/cancel_task — attempt 2 (max 4 total)[0m
+[32m2026-04-09 16:29:38.141[0m | [1mINFO    [0m | [36m__main__[0m:[36mpipeline_for_tool[0m:[36m242[0m - [1m[Pipeline] scheduler-server/cancel_task — 1 failed patterns as feedback[0m
+[32m2026-04-09 16:29:38.141[0m | [1mINFO    [0m | [36mquery_pattern.step1_generate[0m:[36mgenerate_patterns_for_tool[0m:[36m82[0m - [1m[Generator] Generating 12 patterns for scheduler-server/cancel_task[0m
+[32m2026-04-09 16:30:13.040[0m | [1mINFO    [0m | [36mquery_pattern.step1_generate[0m:[36mgenerate_patterns_for_tool[0m:[36m110[0m - [1m[Generator] Generated 12 patterns for scheduler-server/cancel_task[0m
+[32m2026-04-09 16:30:13.041[0m | [1mINFO    [0m | [36m__main__[0m:[36mpipeline_for_tool[0m:[36m268[0m - [1m[Pipeline] scheduler-server/cancel_task — wrote 12 candidates[0m
+[32m2026-04-09 16:30:13.069[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:30:13.085[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:30:13.101[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:30:13.117[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:30:13.133[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:30:13.149[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:30:13.165[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:30:13.181[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:30:13.197[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:30:13.213[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:30:13.231[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:30:13.249[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:30:13.249[0m | [1mINFO    [0m | [36m__main__[0m:[36mpipeline_for_tool[0m:[36m279[0m - [1m[Pipeline] scheduler-server/cancel_task — DB upsert: 12/12 succeeded[0m
+[Recursive Query] \u53d6\u6d88\u4e0b\u5348\u4e09\u70b9\u7684\u63d0\u9192 \u2192 cancel scheduled task (depth: 1/3)
+[Recursive Query] \u5220\u9664\u90a3\u4e2a\u5b9a\u65f6\u4efb\u52a1 \u2192 cancel scheduled task (depth: 1/3)
+[Recursive Query] \u628a\u521a\u624d\u7684\u63d0\u9192\u64a4\u4e86\u5427 \u2192 cancel scheduled task (depth: 1/3)
+[Recursive Query] \u53ef\u4ee5\u53d6\u6d88\u8fd9\u4e2a\u63d0\u9192\u5417 \u2192 cancel scheduled task (depth: 1/3)
+[Recursive Query] \u4f1a\u8bae\u53d6\u6d88\u4e86\uff0c\u5e2e\u6211\u5220\u6389\u63d0\u9192 \u2192 cancel scheduled task (depth: 1/3)
+[Recursive Query] \u522b\u63d0\u9192\u6211\u4e86 \u2192 cancel scheduled task (depth: 1/3)
+[Recursive Query] \u534a\u5c0f\u65f6\u540e\u7684\u63d0\u9192\u4e0d\u8981\u4e86 \u2192 cancel scheduled task (depth: 1/3)
+[Recursive Query] \u628a\u660e\u5929\u7684\u63d0\u9192\u53d6\u6d88 \u2192 cancel scheduled task (depth: 1/3)
+[Recursive Query] cancel that reminder please \u2192 cancel scheduled task (depth: 1/3)
+[Recursive Query] \u90a3\u4e2a\u63d0\u9192\u4e0d\u8981\u4e86\u554a \u2192 cancel scheduled task (depth: 1/3)
+[Recursive Query] \u80fd\u628a\u63d0\u9192\u5173\u6389\u5417 \u2192 cancel scheduled task (depth: 1/3)
+[Recursive Query] \u4efb\u52a1\u6ca1\u4e86\uff0c\u63d0\u9192\u4e5f\u5220\u4e86\u5427 \u2192 cancel scheduled task (depth: 1/3)
+[32m2026-04-09 16:30:13.458[0m | [1mINFO    [0m | [36m__main__[0m:[36mpipeline_for_tool[0m:[36m291[0m - [1m[Pipeline] scheduler-server/cancel_task — test: 12/12 passed, 0 failed[0m
+[32m2026-04-09 16:30:13.458[0m | [1mINFO    [0m | [36m__main__[0m:[36mpipeline_for_tool[0m:[36m300[0m - [1m[Pipeline] scheduler-server/cancel_task — all passed on attempt 2[0m
+[32m2026-04-09 16:30:13.458[0m | [1mINFO    [0m | [36m__main__[0m:[36mpipeline_for_tool[0m:[36m220[0m - [1m[Pipeline] scheduler-server/update_task — attempt 1 (max 4 total)[0m
+[32m2026-04-09 16:30:13.458[0m | [1mINFO    [0m | [36mquery_pattern.step1_generate[0m:[36mgenerate_patterns_for_tool[0m:[36m82[0m - [1m[Generator] Generating 12 patterns for scheduler-server/update_task[0m
+[32m2026-04-09 16:30:32.158[0m | [1mINFO    [0m | [36mquery_pattern.step1_generate[0m:[36mgenerate_patterns_for_tool[0m:[36m110[0m - [1m[Generator] Generated 12 patterns for scheduler-server/update_task[0m
+[32m2026-04-09 16:30:32.160[0m | [1mINFO    [0m | [36m__main__[0m:[36mpipeline_for_tool[0m:[36m268[0m - [1m[Pipeline] scheduler-server/update_task — wrote 12 candidates[0m
+[32m2026-04-09 16:30:32.161[0m | [1mINFO    [0m | [36m__main__[0m:[36mpipeline_for_tool[0m:[36m274[0m - [1m[Pipeline] scheduler-server/update_task — cleaned 0 old DB records[0m
+[32m2026-04-09 16:30:32.189[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:30:32.205[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:30:32.223[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:30:32.241[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:30:32.259[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:30:32.275[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:30:32.293[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:30:32.311[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:30:32.329[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:30:32.347[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:30:32.363[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:30:32.379[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:30:32.379[0m | [1mINFO    [0m | [36m__main__[0m:[36mpipeline_for_tool[0m:[36m279[0m - [1m[Pipeline] scheduler-server/update_task — DB upsert: 12/12 succeeded[0m
+[Recursive Query] \u628a\u63d0\u9192\u6539\u6210\u534a\u5c0f\u65f6\u540e \u2192 schedule task (depth: 1/3)
+[Recursive Query] \u4fee\u6539\u4efb\u52a1\u65f6\u95f4\u4e3a\u660e\u5929\u4e0b\u53483\u70b9 \u2192 update scheduled task (depth: 1/3)
+[Recursive Query] \u8c03\u6574\u4e00\u4e0b\u521a\u624d\u7684\u63d0\u9192\u65f6\u95f4 \u2192 schedule task (depth: 1/3)
+[Recursive Query] \u4f1a\u8bae\u63d0\u524d\u4e86\uff0c\u628a\u63d0\u9192\u6539\u5230\u4e24\u70b9 \u2192 update scheduled task (depth: 1/3)
+[Recursive Query] \u63d0\u9192\u65f6\u95f4\u6539\u4e00\u4e0b\u54c8 \u2192 update scheduled task (depth: 1/3)
+[Recursive Query] \u53ef\u4ee5\u628a\u63d0\u9192\u6539\u62105\u70b9\u5417 \u2192 schedule task (depth: 1/3)
+[Recursive Query] \u522b\u628a\u63d0\u9192\u65f6\u95f4\u6539\u9519\u4e86 \u2192 schedule task (depth: 1/3)
+[Recursive Query] \u5ef6\u540e\u4e24\u5c0f\u65f6\u53eb\u6211 \u2192 update scheduled task (depth: 1/3)
+[Recursive Query] update the reminder to 4pm \u2192 schedule task (depth: 1/3)
+[Recursive Query] \u91cd\u65b0\u8bbe\u7f6e\u63d0\u9192\u65f6\u95f4 \u2192 schedule task (depth: 1/3)
+[Recursive Query] \u6211\u7761\u8fc7\u5934\u4e86\uff0c\u95f9\u949f\u6539\u665a\u4e00\u70b9 \u2192 schedule alarm (depth: 1/3)
+[Recursive Query] \u80fd\u5e2e\u6211\u6539\u4e0b\u4efb\u52a1\u65f6\u95f4\u5417 \u2192 update scheduled task (depth: 1/3)
+[32m2026-04-09 16:30:32.583[0m | [1mINFO    [0m | [36m__main__[0m:[36mpipeline_for_tool[0m:[36m291[0m - [1m[Pipeline] scheduler-server/update_task — test: 5/12 passed, 7 failed[0m
+[32m2026-04-09 16:30:32.583[0m | [1mINFO    [0m | [36m__main__[0m:[36mpipeline_for_tool[0m:[36m220[0m - [1m[Pipeline] scheduler-server/update_task — attempt 2 (max 4 total)[0m
+[32m2026-04-09 16:30:32.584[0m | [1mINFO    [0m | [36m__main__[0m:[36mpipeline_for_tool[0m:[36m242[0m - [1m[Pipeline] scheduler-server/update_task — 7 failed patterns as feedback[0m
+[32m2026-04-09 16:30:32.584[0m | [1mINFO    [0m | [36mquery_pattern.step1_generate[0m:[36mgenerate_patterns_for_tool[0m:[36m82[0m - [1m[Generator] Generating 12 patterns for scheduler-server/update_task[0m
+[32m2026-04-09 16:31:06.260[0m | [1mINFO    [0m | [36mquery_pattern.step1_generate[0m:[36mgenerate_patterns_for_tool[0m:[36m110[0m - [1m[Generator] Generated 12 patterns for scheduler-server/update_task[0m
+[32m2026-04-09 16:31:06.261[0m | [1mINFO    [0m | [36m__main__[0m:[36mpipeline_for_tool[0m:[36m268[0m - [1m[Pipeline] scheduler-server/update_task — wrote 12 candidates[0m
+[32m2026-04-09 16:31:06.290[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:31:06.306[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:31:06.322[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:31:06.338[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:31:06.354[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:31:06.370[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:31:06.386[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:31:06.402[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:31:06.418[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:31:06.434[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:31:06.450[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:31:06.466[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:31:06.466[0m | [1mINFO    [0m | [36m__main__[0m:[36mpipeline_for_tool[0m:[36m279[0m - [1m[Pipeline] scheduler-server/update_task — DB upsert: 12/12 succeeded[0m
+[Recursive Query] \u628a\u521a\u624d\u521b\u5efa\u7684\u5403\u836f\u63d0\u9192\u6539\u6210\u996d\u540e \u2192 schedule task (depth: 1/3)
+[Recursive Query] \u4e0b\u5348\u4e09\u70b9\u7684\u4f1a\u8bae\u6539\u5230\u660e\u5929\u4e0b\u5348\u56db\u70b9 \u2192 update scheduled task (depth: 1/3)
+[Recursive Query] \u8c03\u6574\u4e00\u4e0b\u6211\u660e\u5929\u65e9\u8d77\u7684\u95f9\u949f\u65f6\u95f4 \u2192 schedule alarm (depth: 1/3)
+[Recursive Query] \u5f00\u5b8c\u4f1a\u4e86\uff0c\u628a\u4f11\u606f\u63d0\u9192\u5ef6\u540e\u4e00\u5c0f\u65f6 \u2192 update scheduled task (depth: 1/3)
+[Recursive Query] \u65f6\u95f4\u5f04\u9519\u4e86\uff0c\u5e2e\u6211\u6539\u4e0b\u90a3\u4e2a\u63d0\u9192\u54c8 \u2192 update scheduled task (depth: 1/3)
+[Recursive Query] \u90a3\u4e2a\u6bcf\u5468\u63d0\u9192\u80fd\u6539\u6210\u5de5\u4f5c\u65e5\u5417 \u2192 workday reminder recurring task (depth: 1/3)
+[Recursive Query] \u522b\u6539\u6210\u65e9\u4e0a\u4e03\u70b9\uff0c\u592a\u65e9\u4e86 \u2192 update scheduled task (depth: 1/3)
+[Recursive Query] \u66f4\u65b0\u4e00\u4e0b\u660e\u5929\u5341\u70b9\u7684\u4efb\u52a1\u63d0\u9192 \u2192 update scheduled task (depth: 1/3)
+[Recursive Query] change the meeting reminder to tomorrow at 2pm \u2192 schedule task (depth: 1/3)
+[Recursive Query] \u628a\u6bcf\u65e5\u63d0\u9192\u5185\u5bb9\u6539\u6210\u559d\u6c34 \u2192 schedule task (depth: 1/3)
+[Recursive Query] \u4e34\u65f6\u6709\u4e8b\uff0c\u9ebb\u70e6\u628a\u4f1a\u8bae\u63d0\u9192\u63d0\u524d \u2192 update scheduled task (depth: 1/3)
+[Recursive Query] \u80fd\u4e0d\u80fd\u628a\u90a3\u4e2a\u63d0\u9192\u6539\u5230\u5468\u672b \u2192 update scheduled task (depth: 1/3)
+[32m2026-04-09 16:31:06.663[0m | [1mINFO    [0m | [36m__main__[0m:[36mpipeline_for_tool[0m:[36m291[0m - [1m[Pipeline] scheduler-server/update_task — test: 7/12 passed, 5 failed[0m
+[32m2026-04-09 16:31:06.663[0m | [1mINFO    [0m | [36m__main__[0m:[36mpipeline_for_tool[0m:[36m220[0m - [1m[Pipeline] scheduler-server/update_task — attempt 3 (max 4 total)[0m
+[32m2026-04-09 16:31:06.663[0m | [1mINFO    [0m | [36m__main__[0m:[36mpipeline_for_tool[0m:[36m242[0m - [1m[Pipeline] scheduler-server/update_task — 5 failed patterns as feedback[0m
+[32m2026-04-09 16:31:06.664[0m | [1mINFO    [0m | [36mquery_pattern.step1_generate[0m:[36mgenerate_patterns_for_tool[0m:[36m82[0m - [1m[Generator] Generating 12 patterns for scheduler-server/update_task[0m
+[32m2026-04-09 16:31:34.972[0m | [1mINFO    [0m | [36mquery_pattern.step1_generate[0m:[36mgenerate_patterns_for_tool[0m:[36m110[0m - [1m[Generator] Generated 12 patterns for scheduler-server/update_task[0m
+[32m2026-04-09 16:31:34.972[0m | [1mINFO    [0m | [36m__main__[0m:[36mpipeline_for_tool[0m:[36m268[0m - [1m[Pipeline] scheduler-server/update_task — wrote 12 candidates[0m
+[32m2026-04-09 16:31:35.000[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:31:35.016[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:31:35.032[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:31:35.048[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:31:35.064[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:31:35.080[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:31:35.098[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:31:35.117[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:31:35.134[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:31:35.150[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:31:35.164[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:31:35.182[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:31:35.182[0m | [1mINFO    [0m | [36m__main__[0m:[36mpipeline_for_tool[0m:[36m279[0m - [1m[Pipeline] scheduler-server/update_task — DB upsert: 12/12 succeeded[0m
+[Recursive Query] \u628a\u5403\u836f\u63d0\u9192\u6539\u5230\u996d\u540e \u2192 update scheduled task (depth: 1/3)
+[Recursive Query] \u4e0b\u5348\u4e09\u70b9\u7684\u4f1a\u8bae\u63d0\u9192\u6539\u5230\u56db\u70b9 \u2192 update scheduled task (depth: 1/3)
+[Recursive Query] \u4fee\u6539\u65e9\u6668\u95f9\u949f\u4e3a\u4e03\u70b9 \u2192 update scheduled task (depth: 1/3)
+[Recursive Query] \u4f1a\u8bae\u63d0\u524d\u4e86\uff0c\u63d0\u9192\u65f6\u95f4\u4e5f\u6539\u4e00\u4e0b \u2192 update scheduled task (depth: 1/3)
+[Recursive Query] \u90a3\u4e2a\u63d0\u9192\u65f6\u95f4\u5e2e\u6211\u8c03\u8c03\u5457 \u2192 update scheduled task (depth: 1/3)
+[Recursive Query] \u80fd\u4e0d\u80fd\u628a\u63d0\u9192\u6539\u6210\u4e0b\u5348 \u2192 update scheduled task (depth: 1/3)
+[Recursive Query] \u65e9\u4e0a\u592a\u5435\u4e86\uff0c\u6539\u6210\u5176\u4ed6\u65f6\u95f4\u5427 \u2192 update scheduled task (depth: 1/3)
+[Recursive Query] \u6bcf\u65e5\u559d\u6c34\u63d0\u9192\u8c03\u6574\u5230\u6574\u70b9 \u2192 recurring task (depth: 1/3)
+[Recursive Query] \u66f4\u65b0\u6bcf\u5468\u6c47\u62a5\u7684\u63d0\u9192\u65f6\u95f4 \u2192 update scheduled task (depth: 1/3)
+[Recursive Query] \u6211\u8981\u7761\u61d2\u89c9\uff0c\u628a\u516b\u70b9\u95f9\u949f\u5ef6\u540e \u2192 update scheduled task (depth: 1/3)
+[Recursive Query] move the meeting reminder to 3pm \u2192 update scheduled task (depth: 1/3)
+[Recursive Query] \u5e2e\u6211\u6539\u4e0b\u521a\u624d\u7684\u5b9a\u65f6\u63d0\u9192 \u2192 update scheduled task (depth: 1/3)
+
+============================================================
+  QUERY PATTERN TESTER SUMMARY
+============================================================
+  Input    : E:\tools\ai-bot\scripts\query_pattern\candidates.jsonl
+  Threshold: 0.5
+  Total    : 12
+  Passed   : 11 (91.7%)
+  Failed   : 1 (8.3%)
+------------------------------------------------------------
+  By Variation Type:
+    [100.0%] action_verb                 2/2    ##########
+    [100.0%] context_embedded            2/2    ##########
+    [100.0%] informal                    2/2    ##########
+    [  0.0%] negative                    0/1    
+    [100.0%] question                    1/1    ##########
+    [100.0%] time_absolute               2/2    ##########
+    [100.0%] time_relative               2/2    ##########
+------------------------------------------------------------
+  Verified : E:\tools\ai-bot\scripts\query_pattern\verified_patterns.jsonl (11 lines)
+  Failed   : E:\tools\ai-bot\scripts\query_pattern\failed_patterns.jsonl (1 lines)
+============================================================
+
+
+============================================================
+  QUERY PATTERN TESTER SUMMARY
+============================================================
+  Input    : E:\tools\ai-bot\scripts\query_pattern\candidates.jsonl
+  Threshold: 0.5
+  Total    : 12
+  Passed   : 11 (91.7%)
+  Failed   : 1 (8.3%)
+------------------------------------------------------------
+  By Variation Type:
+    [ 50.0%] action_verb                 1/2    #####
+    [100.0%] context_embedded            2/2    ##########
+    [100.0%] informal                    2/2    ##########
+    [100.0%] negative                    1/1    ##########
+    [100.0%] question                    1/1    ##########
+    [100.0%] time_absolute               2/2    ##########
+    [100.0%] time_relative               2/2    ##########
+------------------------------------------------------------
+  Verified : E:\tools\ai-bot\scripts\query_pattern\verified_patterns.jsonl (11 lines)
+  Failed   : E:\tools\ai-bot\scripts\query_pattern\failed_patterns.jsonl (1 lines)
+============================================================
+
+
+============================================================
+  QUERY PATTERN TESTER SUMMARY
+============================================================
+  Input    : E:\tools\ai-bot\scripts\query_pattern\candidates.jsonl
+  Threshold: 0.5
+  Total    : 12
+  Passed   : 12 (100.0%)
+  Failed   : 0 (0.0%)
+------------------------------------------------------------
+  By Variation Type:
+    [100.0%] action_verb                 2/2    ##########
+    [100.0%] context_embedded            2/2    ##########
+    [100.0%] informal                    2/2    ##########
+    [100.0%] negative                    1/1    ##########
+    [100.0%] question                    1/1    ##########
+    [100.0%] time_absolute               2/2    ##########
+    [100.0%] time_relative               2/2    ##########
+------------------------------------------------------------
+  Verified : E:\tools\ai-bot\scripts\query_pattern\verified_patterns.jsonl (12 lines)
+  Failed   : E:\tools\ai-bot\scripts\query_pattern\failed_patterns.jsonl (0 lines)
+============================================================
+
+
+============================================================
+  QUERY PATTERN TESTER SUMMARY
+============================================================
+  Input    : E:\tools\ai-bot\scripts\query_pattern\candidates.jsonl
+  Threshold: 0.5
+  Total    : 12
+  Passed   : 11 (91.7%)
+  Failed   : 1 (8.3%)
+------------------------------------------------------------
+  By Variation Type:
+    [100.0%] action_verb                 3/3    ##########
+    [100.0%] context_embedded            2/2    ##########
+    [100.0%] informal                    2/2    ##########
+    [  0.0%] negative                    0/1    
+    [100.0%] question                    2/2    ##########
+    [100.0%] time_absolute               1/1    ##########
+    [100.0%] time_relative               1/1    ##########
+------------------------------------------------------------
+  Verified : E:\tools\ai-bot\scripts\query_pattern\verified_patterns.jsonl (11 lines)
+  Failed   : E:\tools\ai-bot\scripts\query_pattern\failed_patterns.jsonl (1 lines)
+============================================================
+
+
+============================================================
+  QUERY PATTERN TESTER SUMMARY
+============================================================
+  Input    : E:\tools\ai-bot\scripts\query_pattern\candidates.jsonl
+  Threshold: 0.5
+  Total    : 12
+  Passed   : 12 (100.0%)
+  Failed   : 0 (0.0%)
+------------------------------------------------------------
+  By Variation Type:
+    [100.0%] action_verb                 3/3    ##########
+    [100.0%] context_embedded            2/2    ##########
+    [100.0%] informal                    2/2    ##########
+    [100.0%] negative                    1/1    ##########
+    [100.0%] question                    2/2    ##########
+    [100.0%] time_absolute               1/1    ##########
+    [100.0%] time_relative               1/1    ##########
+------------------------------------------------------------
+  Verified : E:\tools\ai-bot\scripts\query_pattern\verified_patterns.jsonl (12 lines)
+  Failed   : E:\tools\ai-bot\scripts\query_pattern\failed_patterns.jsonl (0 lines)
+============================================================
+
+
+============================================================
+  QUERY PATTERN TESTER SUMMARY
+============================================================
+  Input    : E:\tools\ai-bot\scripts\query_pattern\candidates.jsonl
+  Threshold: 0.5
+  Total    : 12
+  Passed   : 5 (41.7%)
+  Failed   : 7 (58.3%)
+------------------------------------------------------------
+  By Variation Type:
+    [  0.0%] action_verb                 0/2    
+    [ 50.0%] context_embedded            1/2    #####
+    [100.0%] informal                    1/1    ##########
+    [  0.0%] negative                    0/1    
+    [ 50.0%] question                    1/2    #####
+    [ 50.0%] time_absolute               1/2    #####
+    [ 50.0%] time_relative               1/2    #####
+------------------------------------------------------------
+  Verified : E:\tools\ai-bot\scripts\query_pattern\verified_patterns.jsonl (5 lines)
+  Failed   : E:\tools\ai-bot\scripts\query_pattern\failed_patterns.jsonl (7 lines)
+============================================================
+
+
+============================================================
+  QUERY PATTERN TESTER SUMMARY
+============================================================
+  Input    : E:\tools\ai-bot\scripts\query_pattern\candidates.jsonl
+  Threshold: 0.5
+  Total    : 12
+  Passed   : 7 (58.3%)
+  Failed   : 5 (41.7%)
+------------------------------------------------------------
+  By Variation Type:
+    [ 50.0%] action_verb                 1/2    #####
+    [ 50.0%] context_embedded            1/2    #####
+    [100.0%] informal                    2/2    ##########
+    [100.0%] negative                    1/1    ##########
+    [ 50.0%] question                    1/2    #####
+    [ 50.0%] time_absolute               1/2    #####
+    [  0.0%] time_relative               0/1    
+------------------------------------------------------------
+  Verified : E:\tools\ai-bot\scripts\query_pattern\verified_patterns.jsonl (7 lines)
+  Failed   : E:\tools\ai-bot\scripts\query_pattern\failed_patterns.jsonl (5 lines)
+============================================================
+
+
+============================================================
+  QUERY PATTERN TESTER SUMMARY
+============================================================
+  Input    : E:\tools\ai-bot\scripts\query_pattern\candidates.jsonl
+  Threshold: 0.5
+  Total    : 12
+  Passed   : 11 (91.7%)
+  Failed   : 1 (8.3%)
+------------------------------------------------------------
+  By Variation Type:
+    [100.0%] action_verb                 2/2    ##########
+    [100.0%] context_embedded            2/2    ##########[32m2026-04-09 16:31:35.393[0m | [1mINFO    [0m | [36m__main__[0m:[36mpipeline_for_tool[0m:[36m291[0m - [1m[Pipeline] scheduler-server/update_task — test: 11/12 passed, 1 failed[0m
+[32m2026-04-09 16:31:35.393[0m | [1mINFO    [0m | [36m__main__[0m:[36mpipeline_for_tool[0m:[36m220[0m - [1m[Pipeline] scheduler-server/update_task — attempt 4 (max 4 total)[0m
+[32m2026-04-09 16:31:35.393[0m | [1mINFO    [0m | [36m__main__[0m:[36mpipeline_for_tool[0m:[36m242[0m - [1m[Pipeline] scheduler-server/update_task — 1 failed patterns as feedback[0m
+[32m2026-04-09 16:31:35.393[0m | [1mINFO    [0m | [36mquery_pattern.step1_generate[0m:[36mgenerate_patterns_for_tool[0m:[36m82[0m - [1m[Generator] Generating 12 patterns for scheduler-server/update_task[0m
+[32m2026-04-09 16:31:56.477[0m | [1mINFO    [0m | [36mquery_pattern.step1_generate[0m:[36mgenerate_patterns_for_tool[0m:[36m110[0m - [1m[Generator] Generated 12 patterns for scheduler-server/update_task[0m
+[32m2026-04-09 16:31:56.480[0m | [1mINFO    [0m | [36m__main__[0m:[36mpipeline_for_tool[0m:[36m268[0m - [1m[Pipeline] scheduler-server/update_task — wrote 12 candidates[0m
+[32m2026-04-09 16:31:56.511[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:31:56.527[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:31:56.543[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:31:56.559[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:31:56.575[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:31:56.593[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:31:56.611[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:31:56.627[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:31:56.641[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:31:56.659[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:31:56.675[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:31:56.691[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:31:56.691[0m | [1mINFO    [0m | [36m__main__[0m:[36mpipeline_for_tool[0m:[36m279[0m - [1m[Pipeline] scheduler-server/update_task — DB upsert: 12/12 succeeded[0m
+[Recursive Query] \u628a\u5403\u836f\u63d0\u9192\u6539\u6210\u534a\u5c0f\u65f6\u540e \u2192 schedule task (depth: 1/3)
+[Recursive Query] \u628a\u95f9\u949f\u4ece\u65e9\u4e0a7\u70b9\u6539\u52306\u70b9 \u2192 schedule alarm (depth: 1/3)
+[Recursive Query] \u5e2e\u6211\u66f4\u65b0\u4e00\u4e0b\u4e0b\u5348\u4f1a\u8bae\u7684\u63d0\u9192\u65f6\u95f4 \u2192 workday reminder recurring task (depth: 1/3)
+[Recursive Query] \u8981\u8fdf\u5230\u4e86\uff0c\u5e2e\u6211\u628a\u63d0\u9192\u63d0\u524d5\u5206\u949f \u2192 schedule task (depth: 1/3)
+[Recursive Query] \u521a\u624d\u90a3\u4e2a\u63d0\u9192\u6539\u4e2a\u65f6\u95f4\u5457 \u2192 schedule task (depth: 1/3)
+[Recursive Query] \u80fd\u628a\u5468\u4f1a\u63d0\u9192\u6539\u5230\u5468\u4e09\u4e0b\u5348\u5417 \u2192 workday reminder recurring task (depth: 1/3)
+[Recursive Query] \u522b\u628a\u63d0\u9192\u65f6\u95f4\u6539\u9519\u4e86\u554a \u2192 update scheduled task (depth: 1/3)
+[Recursive Query] \u4fee\u6539\u521a\u624d\u8bbe\u7f6e\u7684\u559d\u6c34\u63d0\u9192 \u2192 schedule task (depth: 1/3)
+[Recursive Query] remind me to call mom at 6pm instead \u2192 schedule task (depth: 1/3)
+[Recursive Query] \u73b0\u5728\u5728\u5f00\u8f66\uff0c\u628a\u95f9\u949f\u63a8\u8fdf10\u5206\u949f \u2192 schedule alarm (depth: 1/3)
+[Recursive Query] \u8bb0\u5f97\u63d0\u9192\u6211\u6539\u6210\u4e0b\u53483\u70b9\u54e6 \u2192 schedule task (depth: 1/3)
+[Recursive Query] \u4e0d\u8981\u6539\u6211\u7684\u751f\u65e5\u63d0\u9192 \u2192 update scheduled task (depth: 1/3)
+[32m2026-04-09 16:31:56.879[0m | [1mINFO    [0m | [36m__main__[0m:[36mpipeline_for_tool[0m:[36m291[0m - [1m[Pipeline] scheduler-server/update_task — test: 2/12 passed, 10 failed[0m
+[32m2026-04-09 16:31:56.879[0m | [33m[1mWARNING [0m | [36m__main__[0m:[36mpipeline_for_tool[0m:[36m305[0m - [33m[1m[Pipeline] scheduler-server/update_task — exhausted retries (3), moving on[0m
+[32m2026-04-09 16:31:56.880[0m | [1mINFO    [0m | [36m__main__[0m:[36mpipeline_for_tool[0m:[36m220[0m - [1m[Pipeline] scheduler-server/list_scheduled_tasks — attempt 1 (max 4 total)[0m
+[32m2026-04-09 16:31:56.880[0m | [1mINFO    [0m | [36mquery_pattern.step1_generate[0m:[36mgenerate_patterns_for_tool[0m:[36m82[0m - [1m[Generator] Generating 12 patterns for scheduler-server/list_scheduled_tasks[0m
+[32m2026-04-09 16:32:12.653[0m | [1mINFO    [0m | [36mquery_pattern.step1_generate[0m:[36mgenerate_patterns_for_tool[0m:[36m110[0m - [1m[Generator] Generated 12 patterns for scheduler-server/list_scheduled_tasks[0m
+[32m2026-04-09 16:32:12.654[0m | [1mINFO    [0m | [36m__main__[0m:[36mpipeline_for_tool[0m:[36m268[0m - [1m[Pipeline] scheduler-server/list_scheduled_tasks — wrote 12 candidates[0m
+[32m2026-04-09 16:32:12.656[0m | [1mINFO    [0m | [36m__main__[0m:[36mpipeline_for_tool[0m:[36m274[0m - [1m[Pipeline] scheduler-server/list_scheduled_tasks — cleaned 0 old DB records[0m
+[32m2026-04-09 16:32:12.686[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:32:12.704[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:32:12.722[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:32:12.740[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:32:12.756[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:32:12.772[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:32:12.788[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:32:12.804[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:32:12.822[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:32:12.838[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:32:12.854[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:32:12.870[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:32:12.870[0m | [1mINFO    [0m | [36m__main__[0m:[36mpipeline_for_tool[0m:[36m279[0m - [1m[Pipeline] scheduler-server/list_scheduled_tasks — DB upsert: 12/12 succeeded[0m
+[Recursive Query] \u67e5\u770b\u6211\u6240\u6709\u7684\u5b9a\u65f6\u4efb\u52a1 \u2192 list scheduled tasks (depth: 1/3)
+[Recursive Query] \u534a\u5c0f\u65f6\u5185\u7684\u63d0\u9192\u6709\u54ea\u4e9b \u2192 schedule task (depth: 1/3)
+[Recursive Query] \u4eca\u5929\u4e0b\u5348\u7684\u5f85\u529e\u4efb\u52a1\u662f\u4ec0\u4e48 \u2192 workday reminder recurring task (depth: 1/3)
+[Recursive Query] \u6211\u5728\u51c6\u5907\u5f00\u4f1a\uff0c\u5e2e\u6211\u770b\u770b\u6709\u54ea\u4e9b\u63d0\u9192 \u2192 schedule task (depth: 1/3)
+[Recursive Query] \u770b\u770b\u6211\u5b9a\u8fc7\u5565\u63d0\u9192\u6ca1 \u2192 schedule task (depth: 1/3)
+[Recursive Query] \u80fd\u5217\u51fa\u6211\u7684\u5f85\u6267\u884c\u4efb\u52a1\u5417 \u2192 list scheduled tasks (depth: 1/3)
+[Recursive Query] \u522b\u663e\u793a\u5df2\u53d6\u6d88\u7684\u63d0\u9192 \u2192 schedule task (depth: 1/3)
+[Recursive Query] show my pending reminders \u2192 schedule task (depth: 1/3)
+[Recursive Query] \u660e\u5929\u4e0a\u5348\u6709\u4ec0\u4e48\u5b89\u6392 \u2192 workday reminder recurring task (depth: 1/3)
+[Recursive Query] \u6211\u8bbe\u7f6e\u4e86\u54ea\u4e9b\u5b9a\u65f6\u63d0\u9192 \u2192 schedule task (depth: 1/3)
+[Recursive Query] \u5e2e\u6211\u8fc7\u4e00\u904d\u8fd8\u6ca1\u89e6\u53d1\u7684\u4efb\u52a1 \u2192 list scheduled tasks (depth: 1/3)
+[Recursive Query] \u7b5b\u9009\u51fa\u72b6\u6001\u4e3a\u5f85\u89e6\u53d1\u7684\u4efb\u52a1 \u2192 list scheduled tasks (depth: 1/3)
+[32m2026-04-09 16:32:13.057[0m | [1mINFO    [0m | [36m__main__[0m:[36mpipeline_for_tool[0m:[36m291[0m - [1m[Pipeline] scheduler-server/list_scheduled_tasks — test: 4/12 passed, 8 failed[0m
+[32m2026-04-09 16:32:13.057[0m | [1mINFO    [0m | [36m__main__[0m:[36mpipeline_for_tool[0m:[36m220[0m - [1m[Pipeline] scheduler-server/list_scheduled_tasks — attempt 2 (max 4 total)[0m
+[32m2026-04-09 16:32:13.058[0m | [1mINFO    [0m | [36m__main__[0m:[36mpipeline_for_tool[0m:[36m242[0m - [1m[Pipeline] scheduler-server/list_scheduled_tasks — 8 failed patterns as feedback[0m
+[32m2026-04-09 16:32:13.058[0m | [1mINFO    [0m | [36mquery_pattern.step1_generate[0m:[36mgenerate_patterns_for_tool[0m:[36m82[0m - [1m[Generator] Generating 12 patterns for scheduler-server/list_scheduled_tasks[0m
+[32m2026-04-09 16:32:50.733[0m | [1mINFO    [0m | [36mquery_pattern.step1_generate[0m:[36mgenerate_patterns_for_tool[0m:[36m110[0m - [1m[Generator] Generated 12 patterns for scheduler-server/list_scheduled_tasks[0m
+[32m2026-04-09 16:32:50.735[0m | [1mINFO    [0m | [36m__main__[0m:[36mpipeline_for_tool[0m:[36m268[0m - [1m[Pipeline] scheduler-server/list_scheduled_tasks — wrote 12 candidates[0m
+[32m2026-04-09 16:32:50.765[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:32:50.783[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:32:50.801[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:32:50.817[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:32:50.833[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:32:50.851[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:32:50.869[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:32:50.885[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:32:50.901[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:32:50.919[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:32:50.935[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:32:50.951[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:32:50.951[0m | [1mINFO    [0m | [36m__main__[0m:[36mpipeline_for_tool[0m:[36m279[0m - [1m[Pipeline] scheduler-server/list_scheduled_tasks — DB upsert: 12/12 succeeded[0m
+[Recursive Query] \u67e5\u770b\u6211\u6240\u6709\u7684\u5b9a\u65f6\u4efb\u52a1 \u2192 list scheduled tasks (depth: 1/3)
+[Recursive Query] \u672a\u6765\u534a\u5c0f\u65f6\u5185\u6709\u4ec0\u4e48\u63d0\u9192 \u2192 schedule task (depth: 1/3)
+[Recursive Query] \u4eca\u5929\u4e0b\u5348\u7684\u63d0\u9192\u90fd\u6709\u54ea\u4e9b \u2192 workday reminder recurring task (depth: 1/3)
+[Recursive Query] \u9a6c\u4e0a\u8981\u5f00\u4f1a\u4e86\uff0c\u6709\u54ea\u4e9b\u63d0\u9192\u5f85\u6267\u884c \u2192 schedule task (depth: 1/3)
+[Recursive Query] \u8ba9\u6211\u5eb7\u5eb7\u90fd\u6709\u5565\u63d0\u9192 \u2192 recurring task (depth: 1/3)
+[Recursive Query] \u4f60\u80fd\u5e2e\u6211\u770b\u770b\u6709\u54ea\u4e9b\u63d0\u9192\u5417 \u2192 schedule task (depth: 1/3)
+[Recursive Query] \u5f85\u89e6\u53d1\u72b6\u6001\u7684\u63d0\u9192\u6709\u54ea\u4e9b \u2192 schedule task (depth: 1/3)
+[Recursive Query] \u5e2e\u6211\u67e5\u4e00\u4e0b\u4eca\u5929\u7684\u63d0\u9192 \u2192 schedule task (depth: 1/3)
+[Recursive Query] \u660e\u5929\u4e0a\u5348\u6709\u4ec0\u4e48\u5b89\u6392\u5417 \u2192 workday reminder recurring task (depth: 1/3)
+[Recursive Query] \u6709\u6728\u6709\u8bbe\u7f6e\u4ec0\u4e48\u63d0\u9192 \u2192 schedule task (depth: 1/3)
+[Recursive Query] \u8fd8\u6709\u591a\u5c11\u6761\u63d0\u9192\u6ca1\u5230\u65f6\u95f4 \u2192 schedule task (depth: 1/3)
+[Recursive Query] show all my scheduled tasks \u2192 list scheduled tasks (depth: 1/3)
+[32m2026-04-09 16:32:51.159[0m | [1mINFO    [0m | [36m__main__[0m:[36mpipeline_for_tool[0m:[36m291[0m - [1m[Pipeline] scheduler-server/list_scheduled_tasks — test: 2/12 passed, 10 failed[0m
+[32m2026-04-09 16:32:51.159[0m | [1mINFO    [0m | [36m__main__[0m:[36mpipeline_for_tool[0m:[36m220[0m - [1m[Pipeline] scheduler-server/list_scheduled_tasks — attempt 3 (max 4 total)[0m
+[32m2026-04-09 16:32:51.159[0m | [1mINFO    [0m | [36m__main__[0m:[36mpipeline_for_tool[0m:[36m242[0m - [1m[Pipeline] scheduler-server/list_scheduled_tasks — 10 failed patterns as feedback[0m
+[32m2026-04-09 16:32:51.159[0m | [1mINFO    [0m | [36mquery_pattern.step1_generate[0m:[36mgenerate_patterns_for_tool[0m:[36m82[0m - [1m[Generator] Generating 12 patterns for scheduler-server/list_scheduled_tasks[0m
+[32m2026-04-09 16:33:12.487[0m | [1mINFO    [0m | [36mquery_pattern.step1_generate[0m:[36mgenerate_patterns_for_tool[0m:[36m110[0m - [1m[Generator] Generated 12 patterns for scheduler-server/list_scheduled_tasks[0m
+[32m2026-04-09 16:33:12.490[0m | [1mINFO    [0m | [36m__main__[0m:[36mpipeline_for_tool[0m:[36m268[0m - [1m[Pipeline] scheduler-server/list_scheduled_tasks — wrote 12 candidates[0m
+[32m2026-04-09 16:33:12.524[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:33:12.542[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:33:12.558[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:33:12.574[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:33:12.590[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:33:12.608[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:33:12.624[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:33:12.640[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:33:12.656[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:33:12.672[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:33:12.688[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:33:12.704[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:33:12.704[0m | [1mINFO    [0m | [36m__main__[0m:[36mpipeline_for_tool[0m:[36m279[0m - [1m[Pipeline] scheduler-server/list_scheduled_tasks — DB upsert: 12/12 succeeded[0m
+[Recursive Query] \u6211\u7684\u5b9a\u65f6\u4efb\u52a1\u5217\u8868\u662f\u4ec0\u4e48 \u2192 workday reminder recurring task (depth: 1/3)
+[Recursive Query] show me my scheduled tasks \u2192 workday reminder recurring task (depth: 1/3)
+[Recursive Query] \u628a\u6240\u6709\u5f85\u6267\u884c\u7684\u63d0\u9192\u663e\u793a\u51fa\u6765 \u2192 list scheduled tasks (depth: 1/3)
+[Recursive Query] \u6211\u8bbe\u4e86\u54ea\u4e9b\u63d0\u9192 \u2192 list scheduled tasks (depth: 1/3)
+[Recursive Query] \u67e5\u8be2\u6240\u6709\u63d0\u9192 \u2192 list scheduled tasks (depth: 1/3)
+[Recursive Query] \u5217\u51fapending\u72b6\u6001\u7684\u63d0\u9192 \u2192 schedule task (depth: 1/3)
+[Recursive Query] \u770b\u770b\u4eca\u5929\u5b89\u6392\u4e86\u54ea\u4e9b\u63d0\u9192 \u2192 list scheduled tasks (depth: 1/3)
+[Recursive Query] \u6211\u4eca\u5929\u8981\u63d0\u9192\u7684\u4e8b\u60c5\u6709\u54ea\u4e9b \u2192 list scheduled tasks (depth: 1/3)
+[Recursive Query] \u6709\u54ea\u4e9b\u63d0\u9192\u8fd8\u7b49\u7740\u89e6\u53d1 \u2192 list scheduled tasks (depth: 1/3)
+[Recursive Query] \u628a\u5df2\u53d6\u6d88\u7684\u63d0\u9192\u4e5f\u5217\u51fa\u6765 \u2192 schedule task (depth: 1/3)
+[Recursive Query] \u83b7\u53d6\u5f53\u524d\u6240\u6709\u5b9a\u65f6\u4efb\u52a1 \u2192 workday reminder recurring task (depth: 1/3)
+[Recursive Query] \u770b\u770b\u6211\u7684\u63d0\u9192\u6e05\u5355\u90fd\u6709\u5565 \u2192 list scheduled tasks (depth: 1/3)
+[32m2026-04-09 16:33:12.891[0m | [1mINFO    [0m | [36m__main__[0m:[36mpipeline_for_tool[0m:[36m291[0m - [1m[Pipeline] scheduler-server/list_scheduled_tasks — test: 7/12 passed, 5 failed[0m
+[32m2026-04-09 16:33:12.892[0m | [1mINFO    [0m | [36m__main__[0m:[36mpipeline_for_tool[0m:[36m220[0m - [1m[Pipeline] scheduler-server/list_scheduled_tasks — attempt 4 (max 4 total)[0m
+[32m2026-04-09 16:33:12.892[0m | [1mINFO    [0m | [36m__main__[0m:[36mpipeline_for_tool[0m:[36m242[0m - [1m[Pipeline] scheduler-server/list_scheduled_tasks — 5 failed patterns as feedback[0m
+[32m2026-04-09 16:33:12.892[0m | [1mINFO    [0m | [36mquery_pattern.step1_generate[0m:[36mgenerate_patterns_for_tool[0m:[36m82[0m - [1m[Generator] Generating 12 patterns for scheduler-server/list_scheduled_tasks[0m
+[32m2026-04-09 16:33:49.314[0m | [1mINFO    [0m | [36mquery_pattern.step1_generate[0m:[36mgenerate_patterns_for_tool[0m:[36m110[0m - [1m[Generator] Generated 12 patterns for scheduler-server/list_scheduled_tasks[0m
+[32m2026-04-09 16:33:49.316[0m | [1mINFO    [0m | [36m__main__[0m:[36mpipeline_for_tool[0m:[36m268[0m - [1m[Pipeline] scheduler-server/list_scheduled_tasks — wrote 12 candidates[0m
+[32m2026-04-09 16:33:49.347[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:33:49.365[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:33:49.381[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:33:49.397[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:33:49.413[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:33:49.429[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:33:49.447[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:33:49.465[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:33:49.481[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:33:49.497[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:33:49.515[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:33:49.533[0m | [34m[1mDEBUG   [0m | [36m__main__[0m:[36m_write_and_upsert[0m:[36m193[0m - [34m[1m[Pipeline/Writer] Upserted: [0m
+[32m2026-04-09 16:33:49.533[0m | [1mINFO    [0m | [36m__main__[0m:[36mpipeline_for_tool[0m:[36m279[0m - [1m[Pipeline] scheduler-server/list_scheduled_tasks — DB upsert: 12/12 succeeded[0m
+[Recursive Query] \u770b\u770b\u6211\u8bbe\u7f6e\u4e86\u54ea\u4e9b\u63d0\u9192 \u2192 schedule task (depth: 1/3)
+[Recursive Query] \u6211\u7684\u63d0\u9192\u90fd\u6709\u5565 \u2192 recurring task (depth: 1/3)
+[Recursive Query] \u67e5\u8be2\u4e00\u4e0b\u6211\u7684\u5b9a\u65f6\u4efb\u52a1 \u2192 workday reminder recurring task (depth: 1/3)
+[Recursive Query] \u6709\u54ea\u4e9b\u5f85\u5904\u7406\u7684\u63d0\u9192 \u2192 schedule task (depth: 1/3)
+[Recursive Query] \u663e\u793a\u6211\u7684\u65e5\u7a0b\u63d0\u9192 \u2192 workday reminder recurring task (depth: 1/3)
+[Recursive Query] \u6211\u73b0\u5728\u6709\u54ea\u4e9b\u63d0\u9192 \u2192 schedule task (depth: 1/3)
+[Recursive Query] \u4eca\u5929\u5f85\u529e\u63d0\u9192\u6709\u54ea\u4e9b \u2192 schedule task (depth: 1/3)
+[Recursive Query] \u6211\u8bbe\u8fc7\u7684\u63d0\u9192\u8fd8\u80fd\u770b\u5230\u5417 \u2192 list scheduled tasks (depth: 1/3)
+[Recursive Query] \u7ffb\u7ffb\u6211\u7684\u5b9a\u65f6\u4efb\u52a1 \u2192 schedule task (depth: 1/3)
+[Recursive Query] \u5e2e\u6211\u770b\u770b\u63d0\u9192\u60c5\u51b5 \u2192 schedule task (depth: 1/3)
+[Recursive Query] what reminders do I have \u2192 schedule task (depth: 1/3)
+[Recursive Query] \u6ca1\u6709\u770b\u5230\u6211\u7684\u63d0\u9192 \u2192 list scheduled tasks (depth: 1/3)
+[32m2026-04-09 16:33:49.772[0m | [1mINFO    [0m | [36m__main__[0m:[36mpipeline_for_tool[0m:[36m291[0m - [1m[Pipeline] scheduler-server/list_scheduled_tasks — test: 2/12 passed, 10 failed[0m
+[32m2026-04-09 16:33:49.772[0m | [33m[1mWARNING [0m | [36m__main__[0m:[36mpipeline_for_tool[0m:[36m305[0m - [33m[1m[Pipeline] scheduler-server/list_scheduled_tasks — exhausted retries (3), moving on[0m
+
+    [100.0%] informal                    2/2    ##########
+    [100.0%] negative                    1/1    ##########
+    [100.0%] question                    1/1    ##########
+    [ 66.7%] time_absolute               2/3    ######
+    [100.0%] time_relative               1/1    ##########
+------------------------------------------------------------
+  Verified : E:\tools\ai-bot\scripts\query_pattern\verified_patterns.jsonl (11 lines)
+  Failed   : E:\tools\ai-bot\scripts\query_pattern\failed_patterns.jsonl (1 lines)
+============================================================
+
+
+============================================================
+  QUERY PATTERN TESTER SUMMARY
+============================================================
+  Input    : E:\tools\ai-bot\scripts\query_pattern\candidates.jsonl
+  Threshold: 0.5
+  Total    : 12
+  Passed   : 2 (16.7%)
+  Failed   : 10 (83.3%)
+------------------------------------------------------------
+  By Variation Type:
+    [  0.0%] action_verb                 0/2    
+    [  0.0%] context_embedded            0/2    
+    [  0.0%] informal                    0/2    
+    [100.0%] negative                    2/2    ##########
+    [  0.0%] question                    0/1    
+    [  0.0%] time_absolute               0/2    
+    [  0.0%] time_relative               0/1    
+------------------------------------------------------------
+  Verified : E:\tools\ai-bot\scripts\query_pattern\verified_patterns.jsonl (2 lines)
+  Failed   : E:\tools\ai-bot\scripts\query_pattern\failed_patterns.jsonl (10 lines)
+============================================================
+
+
+============================================================
+  QUERY PATTERN TESTER SUMMARY
+============================================================
+  Input    : E:\tools\ai-bot\scripts\query_pattern\candidates.jsonl
+  Threshold: 0.5
+  Total    : 12
+  Passed   : 4 (33.3%)
+  Failed   : 8 (66.7%)
+------------------------------------------------------------
+  By Variation Type:
+    [ 66.7%] action_verb                 2/3    ######
+    [  0.0%] context_embedded            0/1    
+    [ 50.0%] informal                    1/2    #####
+    [  0.0%] negative                    0/1    
+    [ 50.0%] question                    1/2    #####
+    [  0.0%] time_absolute               0/2    
+    [  0.0%] time_relative               0/1    
+------------------------------------------------------------
+  Verified : E:\tools\ai-bot\scripts\query_pattern\verified_patterns.jsonl (4 lines)
+  Failed   : E:\tools\ai-bot\scripts\query_pattern\failed_patterns.jsonl (8 lines)
+============================================================
+
+
+============================================================
+  QUERY PATTERN TESTER SUMMARY
+============================================================
+  Input    : E:\tools\ai-bot\scripts\query_pattern\candidates.jsonl
+  Threshold: 0.5
+  Total    : 12
+  Passed   : 2 (16.7%)
+  Failed   : 10 (83.3%)
+------------------------------------------------------------
+  By Variation Type:
+    [ 66.7%] action_verb                 2/3    ######
+    [  0.0%] context_embedded            0/1    
+    [  0.0%] informal                    0/1    
+    [  0.0%] question                    0/4    
+    [  0.0%] time_absolute               0/2    
+    [  0.0%] time_relative               0/1    
+------------------------------------------------------------
+  Verified : E:\tools\ai-bot\scripts\query_pattern\verified_patterns.jsonl (2 lines)
+  Failed   : E:\tools\ai-bot\scripts\query_pattern\failed_patterns.jsonl (10 lines)
+============================================================
+
+
+============================================================
+  QUERY PATTERN TESTER SUMMARY
+============================================================
+  Input    : E:\tools\ai-bot\scripts\query_pattern\candidates.jsonl
+  Threshold: 0.5
+  Total    : 12
+  Passed   : 7 (58.3%)
+  Failed   : 5 (41.7%)
+------------------------------------------------------------
+  By Variation Type:
+    [ 33.3%] action_verb                 2/6    ###
+    [100.0%] context_embedded            1/1    ##########
+    [100.0%] informal                    2/2    ##########
+    [  0.0%] negative                    0/1    
+    [100.0%] question                    1/1    ##########
+    [100.0%] time_absolute               1/1    ##########
+------------------------------------------------------------
+  Verified : E:\tools\ai-bot\scripts\query_pattern\verified_patterns.jsonl (7 lines)
+  Failed   : E:\tools\ai-bot\scripts\query_pattern\failed_patterns.jsonl (5 lines)
+============================================================
+
+
+============================================================
+  QUERY PATTERN TESTER SUMMARY
+============================================================
+  Input    : E:\tools\ai-bot\scripts\query_pattern\candidates.jsonl
+  Threshold: 0.5
+  Total    : 12
+  Passed   : 2 (16.7%)
+  Failed   : 10 (83.3%)
+------------------------------------------------------------
+  By Variation Type:
+    [  0.0%] action_verb                 0/3    
+    [  0.0%] context_embedded            0/1    
+    [  0.0%] informal                    0/2    
+    [100.0%] negative                    1/1    ##########
+    [ 25.0%] question                    1/4    ##
+    [  0.0%] time_absolute               0/1    
+------------------------------------------------------------
+  Verified : E:\tools\ai-bot\scripts\query_pattern\verified_patterns.jsonl (2 lines)
+  Failed   : E:\tools\ai-bot\scripts\query_pattern\failed_patterns.jsonl (10 lines)
+============================================================
+
+
+======================================================================
+  QUERY PATTERN TDD PIPELINE â€” SUMMARY
+======================================================================
+  Tool                                Verified  Total    Rate Retries     Status
+----------------------------------------------------------------------
+  scheduler-server/schedule_task            34     36   94.4%       2    success
+  scheduler-server/cancel_task              23     24   95.8%       1    success
+  scheduler-server/update_task              25     48   52.1%       4  exhausted
+  scheduler-server/list_scheduled_tasks       15     48   31.2%       4  exhausted
+----------------------------------------------------------------------
+  TOTAL                                     97    156   62.2%
+======================================================================
+
+  Candidates  : E:\tools\ai-bot\scripts\query_pattern\candidates.jsonl
+  Verified    : E:\tools\ai-bot\scripts\query_pattern\verified_patterns.jsonl (2 lines)
+  Failed      : E:\tools\ai-bot\scripts\query_pattern\failed_patterns.jsonl (10 lines)
+
+[Pipeline] 2 tool(s) exhausted retries â€” check output.
