@@ -5,6 +5,8 @@ Loads all required MCP modules at startup with strict validation.
 Any failure to load critical MCP servers will terminate the application.
 """
 
+import sys
+from pathlib import Path
 from typing import List, Tuple, Optional
 from loguru import logger
 from agent.tool_registry import ToolRegistry, set_registry
@@ -27,6 +29,48 @@ REQUIRED_SERVERS: List[Tuple[str, str]] = [
 
 
 # ============================================================================
+# Config Loader
+# ============================================================================
+
+def _load_mcp_config() -> dict:
+    """Load MCP server configuration from config/mcp-servers.yaml"""
+    import yaml
+
+    config_path = Path(__file__).parent.parent / "config" / "mcp-servers.yaml"
+
+    if not config_path.exists():
+        logger.warning(f"MCP config file not found: {config_path}")
+        return {}
+
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            return yaml.safe_load(f) or {}
+    except Exception as e:
+        logger.warning(f"Failed to load MCP config: {e}")
+        return {}
+
+
+def _add_server_workdirs_to_sys_path(config: dict) -> None:
+    """Add server workdirs to sys.path for module imports"""
+    project_root = Path(__file__).parent.parent
+
+    for server_name, server_config in config.items():
+        if not isinstance(server_config, dict):
+            continue
+
+        workdir = server_config.get("workdir")
+        if not workdir:
+            continue
+
+        # Resolve workdir relative to project root
+        workdir_path = (project_root / workdir).resolve()
+
+        if workdir_path.exists() and str(workdir_path) not in sys.path:
+            sys.path.insert(0, str(workdir_path))
+            logger.debug(f"Added to sys.path: {workdir_path}")
+
+
+# ============================================================================
 # Loader Function
 # ============================================================================
 
@@ -45,6 +89,11 @@ def load_mcp_tools(required_servers: Optional[List[Tuple[str, str]]] = None) -> 
         RuntimeError: If any required MCP server fails to load.
     """
     servers = required_servers or REQUIRED_SERVERS
+
+    # Load MCP configuration and add workdirs to sys.path
+    config = _load_mcp_config()
+    _add_server_workdirs_to_sys_path(config)
+
     registry = ToolRegistry()
     failed_servers = []
 
