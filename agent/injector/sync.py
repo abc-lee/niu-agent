@@ -217,14 +217,15 @@ class SkillSync:
             description = self._extract_description(content)
             tags = self._extract_tags(content)
 
-            # 按照L0/L1/L2规范：使用level字段标识层级
+            # 按照L1规范 v3.0：基础字段 + 扩展字段
             metadata = {
-                "level": "l1",  # 小写，符合规范
-                "category": "skill",  # 内容分类
+                "level": "l1",
+                "category": "skill",
+                "language": "en",
                 "name": name,
                 "description": description,
                 "source": str(skill_file),
-                "priority": 50,  # 默认优先级
+                "priority": 50,
                 "tags": tags,
                 "triggers": triggers,
             }
@@ -248,7 +249,7 @@ class SkillSync:
             logger.warning(f"[SkillSync] Failed to get embedding for {doc_id}")
             return
 
-        # ✅ L2归一化（符合L1规范v2.0）
+        # L2归一化
         vec = np.array(embedding, dtype=np.float32)
         norm = np.linalg.norm(vec)
         if norm > 0:
