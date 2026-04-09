@@ -317,9 +317,8 @@ class LiteLLMSession(BaseSession):
                 tc_name = tc_data['name']
                 tc_args_raw = tc_data['arguments'] or "{}"
 
-                # 跳过空工具名（MiniMax会把一个tool_call拆成多个chunk）
+                # 跳过空工具名（MiniMax会把一个tool_call拆成多个chunk，只有name的chunk有name）
                 if not tc_name or tc_name.strip() == "":
-                    print(f"[LiteLLM] Skipping tool_call with empty name at index {idx}: args={tc_args_raw[:100]}", file=sys.stderr, flush=True)
                     continue
 
                 if isinstance(tc_args_raw, str):
