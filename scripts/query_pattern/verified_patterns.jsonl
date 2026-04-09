@@ -1,0 +1,2 @@
+{"pattern_id": "", "content": "我设过的提醒还能看到吗", "target_tool": "scheduler-server/list_scheduled_tasks", "recursion_score": 0.7886, "matched_id": "mcp_tool:scheduler-server:list_scheduled_tasks", "matched_tool_name": "list_scheduled_tasks", "passed": true, "variation_type": "question"}
+{"pattern_id": "", "content": "没有看到我的提醒", "target_tool": "scheduler-server/list_scheduled_tasks", "recursion_score": 0.7886, "matched_id": "mcp_tool:scheduler-server:list_scheduled_tasks", "matched_tool_name": "list_scheduled_tasks", "passed": true, "variation_type": "negative"}
