@@ -18,6 +18,38 @@ from mcp.types import TextContent, Tool
 # Initialize MCP server
 server = Server("niu-file-parser")
 
+# ============== Tool Schemas ==============
+
+TOOL_SCHEMAS = {
+    "parse_file": {
+        "name": "parse_file",
+        "description": "Parse a document file (PDF, Word, PPT, Excel, Markdown, HTML, Text) and extract text content.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "file_path": {
+                    "type": "string",
+                    "description": "Absolute path to the file to parse",
+                },
+            },
+            "required": ["file_path"],
+        },
+    },
+    "list_supported_formats": {
+        "name": "list_supported_formats",
+        "description": "List all supported file formats for parsing.",
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+}
+
+
+def get_tool_schemas() -> list[dict]:
+    """返回所有工具的 schema 列表（用于 MCP Loader 注册）"""
+    return list(TOOL_SCHEMAS.values())
+
 
 def parse_pdf(file_path: str) -> dict[str, Any]:
     """Parse PDF file and extract text content."""

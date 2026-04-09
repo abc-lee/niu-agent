@@ -19,6 +19,124 @@ server = Server("memory-server")
 # 初始化存储
 storage = MemoryStorage()
 
+# ============================================================================
+# Tool Schemas
+# ============================================================================
+
+TOOL_SCHEMAS = {
+    "remember": {
+        "name": "remember",
+        "description": "保存长期记忆（自动生成 L0/L1/L2 三层）",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "content": {"type": "string", "description": "记忆内容"},
+                "memory_type": {
+                    "type": "string",
+                    "description": "记忆类型（environment/preferences/skills/experiences/facts）",
+                    "enum": ["environment", "preferences", "skills", "experiences", "facts"],
+                },
+                "title": {
+                    "type": "string",
+                    "description": "记忆标题（≤20字符），可选，不提供则自动生成",
+                },
+                "importance": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 1,
+                    "description": "重要性评分（0-1），可选，不提供则根据类型自动设置",
+                },
+                "metadata": {
+                    "type": "object",
+                    "description": "可选的元数据",
+                },
+            },
+            "required": ["content", "memory_type"],
+        },
+    },
+    "recall": {
+        "name": "recall",
+        "description": "检索相关记忆（语义搜索）",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "搜索查询"},
+                "limit": {
+                    "type": "integer",
+                    "description": "返回数量限制",
+                    "default": 5,
+                },
+                "memory_type": {
+                    "type": "string",
+                    "description": "可选的记忆类型过滤",
+                },
+                "level": {
+                    "type": "string",
+                    "description": "搜索层级（l0/l1/l2）",
+                    "default": "l1",
+                },
+            },
+            "required": ["query"],
+        },
+    },
+    "update_memory": {
+        "name": "update_memory",
+        "description": "更新已有记忆",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "memory_id": {"type": "string", "description": "记忆 ID"},
+                "content": {"type": "string", "description": "新内容"},
+                "metadata": {
+                    "type": "object",
+                    "description": "可选的元数据更新",
+                },
+            },
+            "required": ["memory_id", "content"],
+        },
+    },
+    "get_memory_stats": {
+        "name": "get_memory_stats",
+        "description": "获取记忆统计信息",
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    "cleanup_memories": {
+        "name": "cleanup_memories",
+        "description": "清理过期记忆",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "days": {
+                    "type": "integer",
+                    "description": "清理多少天前的记忆",
+                    "default": 30,
+                },
+            },
+        },
+    },
+    "link_memories": {
+        "name": "link_memories",
+        "description": "关联两条记忆",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "memory_id_1": {"type": "string", "description": "记忆 ID 1"},
+                "memory_id_2": {"type": "string", "description": "记忆 ID 2"},
+                "relation": {"type": "string", "description": "关系描述"},
+            },
+            "required": ["memory_id_1", "memory_id_2", "relation"],
+        },
+    },
+}
+
+
+def get_tool_schemas() -> list[dict]:
+    """返回所有工具的 schema 列表（用于 MCP Loader 注册）"""
+    return list(TOOL_SCHEMAS.values())
+
 
 # ============================================================================
 # Tool definitions

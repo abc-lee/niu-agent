@@ -47,6 +47,193 @@ server = Server("niu-kg-server")
 _db: kuzu.Database | None = None
 _conn: kuzu.Connection | None = None
 
+# ============== Tool Schemas ==============
+
+TOOL_SCHEMAS = {
+    "create_document": {
+        "name": "create_document",
+        "description": "Create a document node in the knowledge graph. Use file_path to avoid passing large content through JSON.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "uri": {
+                    "type": "string",
+                    "description": "Unique identifier for the document (e.g., file path)",
+                },
+                "title": {"type": "string", "description": "Document title"},
+                "content": {
+                    "type": "string",
+                    "description": "Document content (optional if file_path provided)",
+                },
+                "source": {
+                    "type": "string",
+                    "description": "Source of the document (optional)",
+                },
+                "file_path": {
+                    "type": "string",
+                    "description": "Path to file to read content from (avoids JSON size limits)",
+                },
+            },
+            "required": ["uri", "title"],
+        },
+    },
+    "create_entity": {
+        "name": "create_entity",
+        "description": "Create an entity node (person, organization, etc.) in the knowledge graph.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string",
+                    "description": "Unique identifier for the entity",
+                },
+                "name": {"type": "string", "description": "Entity name"},
+                "type": {
+                    "type": "string",
+                    "description": "Entity type (e.g., person, organization, location)",
+                },
+                "description": {
+                    "type": "string",
+                    "description": "Entity description (optional)",
+                },
+            },
+            "required": ["id", "name", "type"],
+        },
+    },
+    "create_concept": {
+        "name": "create_concept",
+        "description": "Create a concept node in the knowledge graph.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Concept name"},
+                "description": {
+                    "type": "string",
+                    "description": "Concept description (optional)",
+                },
+            },
+            "required": ["name"],
+        },
+    },
+    "link_document_entity": {
+        "name": "link_document_entity",
+        "description": "Link a document to an entity (MENTIONS relation).",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "doc_uri": {"type": "string", "description": "Document URI"},
+                "entity_id": {"type": "string", "description": "Entity ID"},
+            },
+            "required": ["doc_uri", "entity_id"],
+        },
+    },
+    "link_document_concept": {
+        "name": "link_document_concept",
+        "description": "Link a document to a concept (CONTAINS relation).",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "doc_uri": {"type": "string", "description": "Document URI"},
+                "concept_name": {"type": "string", "description": "Concept name"},
+            },
+            "required": ["doc_uri", "concept_name"],
+        },
+    },
+    "link_entities": {
+        "name": "link_entities",
+        "description": "Create a relation between two entities.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "entity1_id": {"type": "string", "description": "First entity ID"},
+                "entity2_id": {"type": "string", "description": "Second entity ID"},
+                "relation": {
+                    "type": "string",
+                    "description": "Relation type (e.g., works_for, knows)",
+                },
+            },
+            "required": ["entity1_id", "entity2_id", "relation"],
+        },
+    },
+    "get_document": {
+        "name": "get_document",
+        "description": "Get a document by URI.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "uri": {"type": "string", "description": "Document URI"},
+            },
+            "required": ["uri"],
+        },
+    },
+    "list_documents": {
+        "name": "list_documents",
+        "description": "List all documents in the knowledge graph.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of documents to return (default: 10)",
+                },
+            },
+        },
+    },
+    "search_documents": {
+        "name": "search_documents",
+        "description": "Search documents by keyword.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "keyword": {"type": "string", "description": "Search keyword"},
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum results (default: 10)",
+                },
+            },
+            "required": ["keyword"],
+        },
+    },
+    "get_related_entities": {
+        "name": "get_related_entities",
+        "description": "Get entities mentioned in a document.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "doc_uri": {"type": "string", "description": "Document URI"},
+            },
+            "required": ["doc_uri"],
+        },
+    },
+    "get_related_concepts": {
+        "name": "get_related_concepts",
+        "description": "Get concepts contained in a document.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "doc_uri": {"type": "string", "description": "Document URI"},
+            },
+            "required": ["doc_uri"],
+        },
+    },
+    "query_graph": {
+        "name": "query_graph",
+        "description": "Execute a Cypher query on the knowledge graph.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "cypher": {"type": "string", "description": "Cypher query string"},
+            },
+            "required": ["cypher"],
+        },
+    },
+}
+
+
+def get_tool_schemas() -> list[dict]:
+    """返回所有工具的 schema 列表（用于 MCP Loader 注册）"""
+    return list(TOOL_SCHEMAS.values())
+
 
 def get_connection() -> kuzu.Connection:
     """Get or create database connection."""
