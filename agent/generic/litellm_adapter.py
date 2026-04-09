@@ -295,14 +295,18 @@ class LiteLLMSession(BaseSession):
                             }
 
                         # 累积数据（增量更新）
+                        # id 只有第一个 chunk 有
                         if hasattr(tc, 'id') and tc.id:
                             tool_calls_accumulator[tc_index]['id'] = tc.id
 
                         if hasattr(tc, 'function') and tc.function:
-                            if hasattr(tc.function, 'name') and tc.function.name:
-                                tool_calls_accumulator[tc_index]['name'] = tc.function.name
-                            if hasattr(tc.function, 'arguments') and tc.function.arguments:
-                                tool_calls_accumulator[tc_index]['arguments'] += tc.function.arguments
+                            fn = tc.function
+                            # name 只有第一个 chunk 有，不要用 None 覆盖已有 name
+                            if hasattr(fn, 'name') and fn.name:
+                                tool_calls_accumulator[tc_index]['name'] = fn.name
+                            # arguments 每个 chunk 都累加
+                            if hasattr(fn, 'arguments') and fn.arguments:
+                                tool_calls_accumulator[tc_index]['arguments'] += fn.arguments
 
                 if hasattr(chunk, 'usage') and chunk.usage:
                     usage = chunk.usage
