@@ -53,8 +53,13 @@ Thumbs.db
 .sisyphus/
 nul
 
-# Data
-data/
+# Runtime logs and generated artifacts (never commit)
+logs/*.log
+logs/*.json
+logs/*.txt
+
+# But keep these
+!logs/.gitkeep
 *.db
 *.sqlite
 .temp-backup/
