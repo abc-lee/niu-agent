@@ -113,7 +113,10 @@ def agent_runner_loop(
             yield "\n\n"
         else:
             response = exhaust(response_gen)
-            yield response.content
+            # 过滤掉 <tool_use> 标签，只返回纯文本
+            content = response.content or ""
+            content = re.sub(r"<tool_use>.*?</tool_use>", "", content, flags=re.DOTALL)
+            yield content
 
         if not response.tool_calls:
             tool_calls = [{"tool_name": "no_tool", "args": {}}]
