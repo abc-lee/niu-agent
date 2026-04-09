@@ -299,10 +299,11 @@ def register_mcp_tools():
             doc_id = f"mcp_tool:{tool['server']}:{tool['name']}"
             content = f"{tool['name']}: {tool['description']}"
 
-            # 元数据（符合L0/L1/L2规范）
+            # 元数据（符合L1规范 v3.0）
             metadata = {
-                "level": "l1",  # 小写
+                "level": "l1",
                 "category": "mcp_tool",
+                "language": "en",
                 "name": tool["name"],
                 "server": tool["server"],
                 "description": tool["description"],
@@ -315,7 +316,7 @@ def register_mcp_tools():
                 logger.warning(f"[{i}/{len(tools)}] {tool['name']} - 向量生成失败")
                 continue
 
-            # ✅ L2归一化（符合L1规范）
+            # L2归一化
             vec = np.array(embedding, dtype=np.float32)
             norm = np.linalg.norm(vec)
             if norm > 0:
@@ -350,99 +351,108 @@ def register_query_patterns():
     """注册递归查询模式"""
     logger.info("注册查询模式...")
 
-    # 查询模式定义（✅ 英文内容，符合L1规范）
+    # 查询模式定义（符合L1规范 v3.0）
     patterns = [
-        # 时间提醒（中文查询 → 英文L1）
         {
             "id": "query_pattern:reminder_time",
-            "content": "remind me in X minutes",  # ✅ 英文
+            "content": "remind me in X minutes",
             "metadata": {
+                "level": "l1",
+                "category": "query_pattern",
+                "language": "en",
                 "type": "query_pattern",
                 "is_recursive": True,
-                "refined_query": "set reminder",  # ✅ 英文
-                "category": "mcp_tool",
-                "description": "remind user after X minutes"
+                "refined_query": "schedule task",
+                "description": "Remind user after X minutes"
             }
         },
         {
             "id": "query_pattern:reminder_short",
-            "content": "remind me later",  # ✅ 英文
+            "content": "remind me later",
             "metadata": {
+                "level": "l1",
+                "category": "query_pattern",
+                "language": "en",
                 "type": "query_pattern",
                 "is_recursive": True,
-                "refined_query": "set reminder",  # ✅ 英文
-                "category": "mcp_tool",
-                "description": "remind user shortly"
+                "refined_query": "schedule task",
+                "description": "Remind user shortly"
             }
         },
         {
             "id": "query_pattern:reminder_daily",
-            "content": "remind me every day",  # ✅ 英文
+            "content": "remind me every day",
             "metadata": {
+                "level": "l1",
+                "category": "query_pattern",
+                "language": "en",
                 "type": "query_pattern",
                 "is_recursive": True,
-                "refined_query": "recurring task",  # ✅ 英文
-                "category": "mcp_tool",
-                "description": "daily recurring reminder"
+                "refined_query": "recurring task",
+                "description": "Daily recurring reminder"
             }
         },
         {
             "id": "query_pattern:reminder_workday",
-            "content": "remind me on workdays",  # ✅ 英文
+            "content": "remind me on workdays",
             "metadata": {
+                "level": "l1",
+                "category": "query_pattern",
+                "language": "en",
                 "type": "query_pattern",
                 "is_recursive": True,
-                "refined_query": "workday reminder recurring",  # ✅ 英文
-                "category": "mcp_tool",
-                "description": "workday recurring reminder"
+                "refined_query": "workday reminder recurring task",
+                "description": "Workday recurring reminder"
             }
         },
-
-        # 提醒类（英文查询）
         {
             "id": "query_pattern:reminder_en_time",
-            "content": "remind me in X minutes",
+            "content": "set a reminder",
             "metadata": {
+                "level": "l1",
+                "category": "query_pattern",
+                "language": "en",
                 "type": "query_pattern",
                 "is_recursive": True,
-                "refined_query": "set reminder",
-                "category": "mcp_tool",
-                "language": "en"
+                "refined_query": "schedule task"
             }
         },
         {
             "id": "query_pattern:reminder_en_alarm",
             "content": "set alarm",
             "metadata": {
+                "level": "l1",
+                "category": "query_pattern",
+                "language": "en",
                 "type": "query_pattern",
                 "is_recursive": True,
-                "refined_query": "set reminder alarm",
-                "category": "mcp_tool",
-                "language": "en"
+                "refined_query": "schedule alarm"
             }
         },
-
-        # 文档处理类（英文）
         {
             "id": "query_pattern:document_ingest",
-            "content": "ingest this document",  # ✅ 英文
+            "content": "ingest this document",
             "metadata": {
+                "level": "l1",
+                "category": "query_pattern",
+                "language": "en",
                 "type": "query_pattern",
                 "is_recursive": True,
-                "refined_query": "document ingestion",  # ✅ 英文
-                "category": "mcp_tool",
-                "description": "ingest document to knowledge base"
+                "refined_query": "document ingestion",
+                "description": "Ingest document to knowledge base"
             }
         },
         {
             "id": "query_pattern:photo_ingest",
-            "content": "process photos",  # ✅ 英文
+            "content": "process photos",
             "metadata": {
+                "level": "l1",
+                "category": "query_pattern",
+                "language": "en",
                 "type": "query_pattern",
                 "is_recursive": True,
-                "refined_query": "photo ingestion",  # ✅ 英文
-                "category": "mcp_tool",
-                "description": "ingest photos to gallery"
+                "refined_query": "photo ingestion",
+                "description": "Ingest photos to gallery"
             }
         },
     ]
@@ -463,7 +473,7 @@ def register_query_patterns():
                 logger.warning(f"[{i}/{len(patterns)}] {pattern['id']} - 向量生成失败")
                 continue
 
-            # ✅ L2归一化（符合L1规范）
+            # L2归一化
             vec = np.array(embedding, dtype=np.float32)
             norm = np.linalg.norm(vec)
             if norm > 0:
