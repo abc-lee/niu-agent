@@ -4,11 +4,13 @@
 import sys
 from pathlib import Path
 
-# UTF-8 wrapper for Windows
+# UTF-8 wrapper for Windows (guard against double-wrapping)
 if sys.platform == "win32":
     import io
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+    if not isinstance(sys.stdout, io.TextIOWrapper):
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+    if not isinstance(sys.stderr, io.TextIOWrapper):
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 
 # Add project root to sys.path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -103,7 +105,13 @@ def upsert_pattern(doc_id: str, content: str, metadata: dict) -> bool:
 
 def call_llm(prompt: str, system: str = "", temperature: float = 0.9) -> str:
     """
-    Call LLM for content generation.
+    Call LLM for content generation via MiniMax Anthropic-compatible API.
+
+    Uses httpx directly since litellm routes MiniMax to the wrong endpoint path
+    (/v1/chat/completions instead of /v1/messages).
+
+    Reads model config from environment variables (MINIMAX_MODEL, MINIMAX_API_KEY,
+    MINIMAX_BASE_URL) or falls back to user-config.json.
 
     Args:
         prompt: User prompt
@@ -112,7 +120,30 @@ def call_llm(prompt: str, system: str = "", temperature: float = 0.9) -> str:
     Returns:
         LLM response text (empty string on error)
     """
-    import litellm
+    import json
+    import os
+    import httpx
+
+    # Resolve model config: env vars take priority
+    model = os.environ.get("MINIMAX_MODEL", "MiniMax-M2.7-highspeed")
+    api_key = os.environ.get("MINIMAX_API_KEY")
+    api_base = os.environ.get("MINIMAX_BASE_URL", "https://api.minimaxi.com/anthropic/v1")
+
+    # Fallback to user-config.json
+    if not api_key:
+        try:
+            config_path = Path(__file__).parent.parent.parent / "config" / "user-config.json"
+            if config_path.exists():
+                cfg = json.loads(config_path.read_text(encoding="utf-8"))
+                llm_cfg = cfg.get("llm", {})
+                if not api_key:
+                    api_key = llm_cfg.get("apiKey")
+                if not api_base or api_base == "https://api.minimaxi.com/anthropic/v1":
+                    api_base = llm_cfg.get("apiBase", api_base)
+                if not model or model == "MiniMax-M2.7-highspeed":
+                    model = llm_cfg.get("model", model)
+        except Exception:
+            pass
 
     messages = []
     if system:
@@ -120,12 +151,31 @@ def call_llm(prompt: str, system: str = "", temperature: float = 0.9) -> str:
     messages.append({"role": "user", "content": prompt})
 
     try:
-        response = litellm.completion(
-            model="minimax/io-optimized",
-            messages=messages,
-            temperature=temperature,
+        resp = httpx.post(
+            f"{api_base.rstrip('/')}/messages",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+                "anthropic-version": "2023-06-01",
+            },
+            json={
+                "model": model,
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": 4096,
+            },
+            timeout=60.0,
         )
-        return response.choices[0].message.content
+        if resp.status_code != 200:
+            logger.error(f"[LLM] HTTP {resp.status_code}: {resp.text[:200]}")
+            return ""
+        data = resp.json()
+        content_list = data.get("content", [])
+        if isinstance(content_list, list):
+            for item in content_list:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    return item.get("text", "")
+        return ""
     except Exception as e:
         logger.error(f"[LLM] Error: {e}")
         return ""
