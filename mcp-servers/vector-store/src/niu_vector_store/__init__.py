@@ -26,6 +26,116 @@ server = Server("niu-vector-store")
 # Shared embedding service URL
 EMBEDDING_SERVICE_URL = os.environ.get("EMBEDDING_SERVICE_URL", "http://127.0.0.1:9877")
 
+# ============== Tool Schemas ==============
+
+TOOL_SCHEMAS = {
+    "add_document": {
+        "name": "add_document",
+        "description": "Add a document to the vector store for semantic search. Use file_path to avoid passing large content through JSON.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "description": "Unique document ID"},
+                "content": {
+                    "type": "string",
+                    "description": "Document content (optional if file_path provided)",
+                },
+                "metadata": {"type": "object", "description": "Optional metadata"},
+                "file_path": {
+                    "type": "string",
+                    "description": "Path to file to read content from (avoids JSON size limits)",
+                },
+            },
+            "required": ["id"],
+        },
+    },
+    "search_documents": {
+        "name": "search_documents",
+        "description": 'Search for similar documents using semantic search. Use filter to narrow results by metadata, e.g. filter={"type": "event", "status": "pending"}.',
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search query"},
+                "limit": {
+                    "type": "integer",
+                    "description": "Max results (default: 5)",
+                },
+                "filter": {
+                    "type": "object",
+                    "description": 'Optional metadata filter, e.g. {"type": "event", "status": "pending"}',
+                },
+            },
+            "required": ["query"],
+        },
+    },
+    "get_document": {
+        "name": "get_document",
+        "description": "Get a document by ID.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "description": "Document ID"},
+            },
+            "required": ["id"],
+        },
+    },
+    "delete_document": {
+        "name": "delete_document",
+        "description": 'Delete documents by ID, query (semantic search), or metadata filter. Use filter to delete by type/status, e.g. filter={"type": "event", "status": "cancelled"}.',
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "doc_id": {
+                    "type": "string",
+                    "description": "Document ID to delete (exact match)",
+                },
+                "query": {
+                    "type": "string",
+                    "description": "Delete documents matching content (semantic search, similarity > 0.7)",
+                },
+                "filter": {
+                    "type": "object",
+                    "description": 'Delete documents matching metadata filter, e.g. {"type": "event", "status": "cancelled"}',
+                },
+            },
+        },
+    },
+    "list_documents": {
+        "name": "list_documents",
+        "description": "List all documents in the vector store, optionally filtered by metadata.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer",
+                    "description": "Max results (default: 10)",
+                },
+                "offset": {
+                    "type": "integer",
+                    "description": "Offset for pagination (default: 0)",
+                },
+                "filter": {
+                    "type": "object",
+                    "description": 'Optional metadata filter, e.g. {"type": "l2"}',
+                },
+            },
+        },
+    },
+    "count_documents": {
+        "name": "count_documents",
+        "description": "Count total documents in the vector store.",
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+}
+
+
+def get_tool_schemas() -> list[dict]:
+    """返回所有工具的 schema 列表（用于 MCP Loader 注册）"""
+    return list(TOOL_SCHEMAS.values())
+
 
 def call_embedding_service(endpoint: str, data: dict) -> dict | None:
     """Call the shared embedding service."""

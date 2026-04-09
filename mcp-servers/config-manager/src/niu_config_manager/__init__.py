@@ -18,6 +18,271 @@ from mcp.types import TextContent, Tool
 
 server = Server("niu-config-manager")
 
+# ============== Tool Schemas ==============
+
+TOOL_SCHEMAS = {
+    "get_llm_config": {
+        "name": "get_llm_config",
+        "description": "Get current LLM configuration (API key is hidden).",
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    "set_llm_config": {
+        "name": "set_llm_config",
+        "description": "Set LLM configuration. Use preset_id to load a preset, or provide individual values.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "preset_id": {
+                    "type": "string",
+                    "description": "Preset ID to load (e.g., 'openai', 'anthropic', 'deepseek')",
+                },
+                "api_key": {"type": "string", "description": "API key"},
+                "api_base": {"type": "string", "description": "API base URL"},
+                "model": {"type": "string", "description": "Model name"},
+                "llm_type": {
+                    "type": "string",
+                    "description": "Provider type: 'openai' or 'anthropic'",
+                },
+            },
+        },
+    },
+    "list_llm_presets": {
+        "name": "list_llm_presets",
+        "description": "List all available LLM presets.",
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    "test_llm_connection": {
+        "name": "test_llm_connection",
+        "description": "Test LLM connection with current configuration.",
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    "get_storage_config": {
+        "name": "get_storage_config",
+        "description": "Get storage configuration (document root, database path).",
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    "set_storage_config": {
+        "name": "set_storage_config",
+        "description": "Set storage configuration.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "document_root": {
+                    "type": "string",
+                    "description": "Root directory for documents",
+                },
+                "database_path": {
+                    "type": "string",
+                    "description": "Path to knowledge database",
+                },
+            },
+        },
+    },
+    "get_identity": {
+        "name": "get_identity",
+        "description": "Get assistant identity settings (name, gender, personality).",
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    "update_identity": {
+        "name": "update_identity",
+        "description": "Update assistant identity. User can change name, personality, etc.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Assistant name"},
+                "gender": {
+                    "type": "string",
+                    "description": "Gender: 'male' or 'female'",
+                },
+                "personality": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Personality traits (e.g., ['warm', 'professional', 'concise'])",
+                },
+                "greeting_style": {
+                    "type": "string",
+                    "description": "How to greet users",
+                },
+            },
+        },
+    },
+    "get_workspace": {
+        "name": "get_workspace",
+        "description": "Get workspace path where documents and database are stored.",
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    "set_workspace": {
+        "name": "set_workspace",
+        "description": "Set workspace path. This is where all documents and knowledge will be stored.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Workspace directory path (e.g., 'D:\\\\MyKnowledge')",
+                }
+            },
+            "required": ["path"],
+        },
+    },
+    "get_user_info": {
+        "name": "get_user_info",
+        "description": "Get user information (name, preferences).",
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    "set_user_info": {
+        "name": "set_user_info",
+        "description": "Set user information.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "User's name or nickname",
+                },
+                "preferences": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "User preferences (e.g., ['concise answers', 'Chinese'])",
+                },
+            },
+        },
+    },
+    "add_user_preference": {
+        "name": "add_user_preference",
+        "description": "Add a user preference to remember.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "preference": {
+                    "type": "string",
+                    "description": "Preference to remember (e.g., 'likes concise answers')",
+                }
+            },
+            "required": ["preference"],
+        },
+    },
+    "is_first_run": {
+        "name": "is_first_run",
+        "description": "Check if this is the first run (need to show setup wizard).",
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    "complete_setup": {
+        "name": "complete_setup",
+        "description": "Complete initial setup with workspace path and optional settings.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "workspace_path": {
+                    "type": "string",
+                    "description": "Workspace directory path",
+                },
+                "user_name": {"type": "string", "description": "User's name"},
+                "assistant_name": {
+                    "type": "string",
+                    "description": "Assistant name",
+                },
+            },
+        },
+    },
+    "get_full_memory": {
+        "name": "get_full_memory",
+        "description": "Get full memory for system prompt (all settings and info).",
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    "mkdir": {
+        "name": "mkdir",
+        "description": "Create a directory (and parent directories if needed). Use this to create year-based directories like 'documents/2025'.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Directory path to create (e.g., 'E:\\\\tmp\\\\bot\\\\documents\\\\2025')",
+                },
+            },
+            "required": ["path"],
+        },
+    },
+    "copy_to_path": {
+        "name": "copy_to_path",
+        "description": "Copy a file to a specific destination path. Use this to organize files by year/category. Example: copy_to_path('C:/file.pdf', 'E:/workspace/documents/2025/file.pdf')",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "source_path": {
+                    "type": "string",
+                    "description": "Source file path",
+                },
+                "dest_path": {
+                    "type": "string",
+                    "description": "Destination file path (absolute path)",
+                },
+            },
+            "required": ["source_path", "dest_path"],
+        },
+    },
+    "move_to_path": {
+        "name": "move_to_path",
+        "description": "Move a file to a specific destination path. Use this to organize files by year/category.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "source_path": {
+                    "type": "string",
+                    "description": "Source file path",
+                },
+                "dest_path": {
+                    "type": "string",
+                    "description": "Destination file path (absolute path)",
+                },
+            },
+            "required": ["source_path", "dest_path"],
+        },
+    },
+    "list_files_in_workspace": {
+        "name": "list_files_in_workspace",
+        "description": "List all files in the workspace documents directory.",
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+}
+
+
+def get_tool_schemas() -> list[dict]:
+    """返回所有工具的 schema 列表（用于 MCP Loader 注册）"""
+    return list(TOOL_SCHEMAS.values())
+
+
 # Config paths
 # Find project root (4 levels up from this file, then into config)
 # __file__ = .../mcp-servers/config-manager/src/niu_config_manager/__init__.py
