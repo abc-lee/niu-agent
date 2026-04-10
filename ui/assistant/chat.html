@@ -631,8 +631,10 @@
     
     // 清空聊天记录
     async function clearChat() {
+      console.log('[Chat] 执行清空命令...');
       try {
         const result = await window.electronAPI.clearChat();
+        console.log('[Chat] 清空结果:', result);
         if (result.success) {
           // 清空消息区域
           messages.innerHTML = '';
@@ -641,11 +643,24 @@
           lastMessageId = null;
           addMessage('system', '✅ 聊天记录已清空');
           console.log('[Chat] 聊天记录已清空，消息 ID 已重置');
-          console.log('[Chat] 提示：清空后发送的新消息仍会被保存');
+
+          // 验证数据库是否真的清空
+          setTimeout(async () => {
+            const verifyResult = await window.electronAPI.getHistory(1);
+            const verifyMessages = verifyResult.messages || [];
+            console.log('[Chat] 验证清空结果：数据库中还有', verifyMessages.length, '条消息');
+            if (verifyMessages.length > 0) {
+              console.error('[Chat] ❌ 清空失败！数据库还有消息');
+              console.log('[Chat] 消息内容:', verifyMessages[0]);
+            } else {
+              console.log('[Chat] ✅ 数据库已真正清空');
+            }
+          }, 1000);
         } else {
           addMessage('system', '❌ 清空失败: ' + (result.error || '未知错误'));
         }
       } catch (err) {
+        console.error('[Chat] 清空失败:', err);
         addMessage('system', '❌ 清空失败: ' + err.message);
       }
       userInput.focus();
@@ -883,6 +898,8 @@
           const result = await window.electronAPI.getHistory(1);
           const messages = result.messages || [];
 
+          console.log('[Polling] 检查新消息：', messages.length, '条，lastMessageId:', lastMessageId);
+
           if (messages.length > 0) {
             const latestMsg = messages[0];  // 最新消息在数组开头
 
@@ -893,12 +910,18 @@
               if (!existing) {
                 // 添加新消息到界面
                 addMessageWithId(latestMsg.role, latestMsg.content, latestMsg.id);
-                console.log('[Chat] 检测到新消息:', latestMsg.id, latestMsg.role);
+                console.log('[Polling] 检测到新消息:', latestMsg.id, latestMsg.role);
               }
             }
 
             // 更新最后消息 ID（无论什么角色，都更新）
             lastMessageId = latestMsg.id;
+          } else {
+            // 数据库为空，重置 lastMessageId
+            if (lastMessageId !== null) {
+              console.log('[Polling] 数据库为空，重置 lastMessageId');
+              lastMessageId = null;
+            }
           }
         } catch (e) {
           console.error('[Chat] 消息轮询失败:', e);
