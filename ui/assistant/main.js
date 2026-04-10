@@ -692,16 +692,11 @@ ipcMain.handle('get-history', async (event, limit, beforeId) => {
 
 // 清空聊天记录
 ipcMain.handle('clear-chat', async () => {
-  const sessionId = config.chatSessionId;
-  if (!sessionId) {
-    return { success: true, message: 'No session to clear' };
-  }
-
   // 清空待推送消息队列
   pendingAlertMessages = [];
 
   return new Promise((resolve) => {
-    const data = JSON.stringify({ sessionId: sessionId });
+    const data = JSON.stringify({ sessionId: 'default' });
     const req = http.request({
       hostname: '127.0.0.1',
       port: 9876,
@@ -717,7 +712,7 @@ ipcMain.handle('clear-chat', async () => {
       res.on('end', () => {
         try {
           const result = JSON.parse(body);
-          console.log('清空聊天记录:', sessionId, result);
+          console.log('清空聊天记录:', result);
           resolve(result);
         } catch (e) {
           resolve({ success: false, error: '解析响应失败' });
