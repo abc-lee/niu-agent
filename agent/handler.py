@@ -759,6 +759,10 @@ class NiuHandler(BaseHandler):
         """调用 context-manager 子 Agent"""
         return (yield from self._call_subagent_gen("context-manager", args))
 
+    def do_chat_with_browser_agent(self, args: dict, response) -> StepOutcome:
+        """调用 browser-agent 子 Agent"""
+        return (yield from self._call_subagent_gen("browser-agent", args))
+
     def _call_subagent_gen(self, agent_name: str, args: dict):
         """调用子 Agent（生成器版本）"""
         from .subagent import call_subagent
