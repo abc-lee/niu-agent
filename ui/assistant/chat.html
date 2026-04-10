@@ -496,17 +496,17 @@
     
     // ========== 发送消息 ==========
     sendBtn.addEventListener('click', sendMessage);
-    
+
     // 自动调整 textarea 高度
     userInput.addEventListener('input', () => {
       userInput.style.height = 'auto';
       userInput.style.height = Math.min(userInput.scrollHeight, 120) + 'px';
     });
-    
+
     userInput.addEventListener('keydown', (e) => {
       // 通知 spirit 用户正在活动（重置空闲计时器）
       window.electronAPI.notifyActivity();
-      
+
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
         sendMessage();
@@ -568,7 +568,7 @@
     async function sendMessage() {
       const text = userInput.value.trim();
       if (!text) return;
-      
+
       // 检测 /new 指令 - 清空聊天记录
       if (text === '/new') {
         userInput.value = '';
@@ -576,7 +576,7 @@
         await clearChat();
         return;
       }
-      
+
       addMessage('user', text);
       userInput.value = '';
       userInput.style.height = 'auto';
@@ -631,10 +631,8 @@
     
     // 清空聊天记录
     async function clearChat() {
-      console.log('[Chat] 执行清空命令...');
       try {
         const result = await window.electronAPI.clearChat();
-        console.log('[Chat] 清空结果:', result);
         if (result.success) {
           // 清空消息区域
           messages.innerHTML = '';
@@ -642,20 +640,7 @@
           oldestMessageId = null;
           lastMessageId = null;
           addMessage('system', '✅ 聊天记录已清空');
-          console.log('[Chat] 聊天记录已清空，消息 ID 已重置');
-
-          // 验证数据库是否真的清空
-          setTimeout(async () => {
-            const verifyResult = await window.electronAPI.getHistory(1);
-            const verifyMessages = verifyResult.messages || [];
-            console.log('[Chat] 验证清空结果：数据库中还有', verifyMessages.length, '条消息');
-            if (verifyMessages.length > 0) {
-              console.error('[Chat] ❌ 清空失败！数据库还有消息');
-              console.log('[Chat] 消息内容:', verifyMessages[0]);
-            } else {
-              console.log('[Chat] ✅ 数据库已真正清空');
-            }
-          }, 1000);
+          console.log('[Chat] 聊天记录已清空');
         } else {
           addMessage('system', '❌ 清空失败: ' + (result.error || '未知错误'));
         }
@@ -898,8 +883,6 @@
           const result = await window.electronAPI.getHistory(1);
           const messages = result.messages || [];
 
-          console.log('[Polling] 检查新消息：', messages.length, '条，lastMessageId:', lastMessageId);
-
           if (messages.length > 0) {
             const latestMsg = messages[0];  // 最新消息在数组开头
 
@@ -910,7 +893,7 @@
               if (!existing) {
                 // 添加新消息到界面
                 addMessageWithId(latestMsg.role, latestMsg.content, latestMsg.id);
-                console.log('[Polling] 检测到新消息:', latestMsg.id, latestMsg.role);
+                console.log('[Chat] 检测到新消息');
               }
             }
 
@@ -918,10 +901,7 @@
             lastMessageId = latestMsg.id;
           } else {
             // 数据库为空，重置 lastMessageId
-            if (lastMessageId !== null) {
-              console.log('[Polling] 数据库为空，重置 lastMessageId');
-              lastMessageId = null;
-            }
+            lastMessageId = null;
           }
         } catch (e) {
           console.error('[Chat] 消息轮询失败:', e);
@@ -1158,7 +1138,6 @@
         const result = await window.electronAPI.getHistory(20);
         const history = result.messages || result;  // 兼容新旧格式
         const totalInDb = result.totalInDb || history.length;
-        console.log('[Chat] API 返回:', history.length, '条消息, 数据库总数:', totalInDb);
         if (history && history.length > 0) {
           history.forEach(msg => {
             addMessageWithId(msg.role, msg.content, msg.id);
@@ -1167,9 +1146,7 @@
           oldestMessageId = history[0].id;
           // 记录最新的消息ID（用于轮询检测新消息）
           lastMessageId = history[history.length - 1].id;
-          console.log('[Chat] 加载了', history.length, '条历史消息，最旧ID:', oldestMessageId, '最新ID:', lastMessageId);
-        } else {
-          console.log('[Chat] 无历史消息，lastMessageId 已重置');
+          console.log('[Chat] 加载了', history.length, '条历史消息');
         }
       } catch (e) {
         console.error('[Chat] 加载历史失败:', e);
