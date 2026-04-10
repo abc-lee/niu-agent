@@ -233,6 +233,7 @@ schemas = registry.get_schemas()
 | `config-manager` | 配置管理（读/写用户配置和记忆） | ✅ |
 | `memory-server` | 智能记忆提取和检索 | ✅ |
 | `session-manager` | 会话管理（消息压缩） | ❌ |
+| `page-agent-server` | 浏览器自动化（AI-native DOM 理解） | ✅ |
 
 ### 子 Agent 架构
 
