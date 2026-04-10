@@ -1,7 +1,7 @@
 # Page-Agent 浏览器自动化集成设计
 
 > 日期：2026-04-10
-> 状态：待实现
+> 状态：设计中
 > 负责人：Claude
 
 ---
@@ -164,6 +164,130 @@ Chrome 扩展（用户已安装）
 
 ---
 
+## 四、典型使用场景
+
+### 4.4 批量表单填写 / 知识竞赛答题
+
+**场景**：用户提供题库，Agent 自动打开网页答题
+
+**题库格式**（推荐 JSON）：
+```json
+{
+  "quiz_url": "https://xxx.com/quiz/123",
+  "questions": [
+    {"id": 1, "type": "choice", "text": "中国的首都是？", "options": ["A. 北京", "B. 上海", "C. 广州"], "answer": "A"},
+    {"id": 2, "type": "fill", "text": "1+1=?", "answer": "2"},
+    {"id": 3, "type": "choice", "text": "2+2=?", "options": ["A. 3", "B. 4", "C. 5"], "answer": "B"}
+  ]
+}
+```
+
+**主 Agent 执行流程**：
+
+```
+用户：帮我去 xxx.com 答题，题库如下：[题库JSON]
+        ↓
+主 Agent：解析题库，验证格式
+        ↓
+主 Agent（第1题）：
+  call_subagent("browser-agent", """
+  当前任务：
+  - 题目：中国的首都是？
+  - 答案：A
+  - 题目类型：单选题
+
+  请执行：
+  1. 打开 https://xxx.com/quiz/123
+  2. 定位到第1题
+  3. 选择选项"A. 北京"
+  4. 点击下一题或确认按钮
+  5. 返回执行结果
+  """)
+        ↓
+browser-agent → page-agent/execute_task → 浏览器执行
+        ↓
+返回：{"success": true, "data": "已选择A，点击了下一题"}
+        ↓
+主 Agent（第2题）：
+  call_subagent("browser-agent", """
+  当前任务：
+  - 题目：1+1=?
+  - 答案：2
+  - 题目类型：填空题
+
+  请执行：
+  1. 确认当前页面是第2题
+  2. 在填空框输入"2"
+  3. 点击下一题或确认按钮
+  4. 返回执行结果
+  """)
+        ↓
+...（循环直到所有题目完成）
+        ↓
+主 Agent：汇总结果，计算正确率
+        ↓
+汇报用户：答题完成，共3题，正确2题，正确率66.7%
+```
+
+**主 Agent 代码示例**：
+
+```python
+def answer_quiz(quiz_url: str, questions: List[dict]):
+    """批量答题主循环"""
+    results = []
+
+    # 第1题需要打开网页
+    first_result = call_subagent("browser-agent", f"""
+    请执行：
+    1. 打开 {quiz_url}
+    2. 确认页面已加载
+    3. 定位到第{questions[0]['id']}题
+    4. 执行答题：
+       - 题目：{questions[0]['text']}
+       - 答案：{questions[0]['answer']}
+       - 类型：{questions[0]['type']}
+    5. 点击下一题
+    6. 返回执行结果
+    """)
+    results.append(parse_result(first_result))
+
+    # 后续题目假设页面已跳转，直接答题
+    for q in questions[1:]:
+        result = call_subagent("browser-agent", f"""
+        当前任务：
+        - 题目：{q['text']}
+        - 答案：{q['answer']}
+        - 类型：{q['type']}
+
+        请执行：
+        1. 确认当前页面是第{q['id']}题
+        2. 执行答题（根据type选择/填空）
+        3. 点击下一题或提交（如果是最后一题）
+        4. 返回执行结果
+        """)
+        results.append(parse_result(result))
+
+    # 汇总
+    success = sum(1 for r in results if r['success'])
+    return {
+        "total": len(results),
+        "success": success,
+        "accuracy": success / len(results),
+        "details": results
+    }
+```
+
+### 4.5 其他典型场景
+
+| 场景 | 主 Agent 输入 | 子 Agent 任务示例 |
+|------|--------------|------------------|
+| 批量注册账号 | 账号信息列表 | "填写邮箱xxx，密码xxx，点击注册" |
+| 信息采集 | 目标网站 + 字段 | "提取页面中的姓名、电话、地址" |
+| 自动填表 | 表单URL + 数据 | "填写姓名、身份证号、联系电话" |
+| 网页测试 | 测试用例 | "点击登录按钮，验证错误提示" |
+
+---
+
 ## 五、实施步骤
 
 ### Step 1: 配置变更
@@ -191,7 +315,69 @@ Chrome 扩展（用户已安装）
 
 ---
 
-## 六、测试计划
+## 六、实施评估
+
+### 6.1 设计评估
+
+**问题：设计是否支持表单填写/批量答题场景？**
+
+✅ **支持**。当前设计通过以下方式支持：
+
+1. **循环调用**：主 Agent 循环调用 `call_subagent("browser-agent", task)`
+2. **自然语言指令**：子 Agent 接收"选择A，点击下一题"等指令
+3. **结构化返回**：`{success, data}` 格式便于主 Agent 判断执行结果
+
+### 6.2 改动范围评估
+
+| 改动项 | 类型 | 工作量 | 说明 |
+|--------|------|--------|------|
+| `config/agents/browser-agent.md` | 新增 | 中 | 子 Agent 提示词配置 |
+| `mcp-servers/page-agent-mcp/src/__main__.py` | 新增 | 小 | Python 入口点 |
+| `mcp-servers/page-agent-mcp/pyproject.toml` | 新增 | 小 | 项目配置 |
+| `mcp-servers/page-agent-mcp/src/index.js` | 修改 | 小 | 增加配置读取（约20行） |
+| `config/user-config.json` | 修改 | 小 | 增加 openaiCompatibleApiBase 字段 |
+| `config/mcp-servers.yaml` | 修改 | 小 | 新增 server 配置 |
+| `config/agents/niu.md` | 修改 | 小 | 引用 browser-agent |
+| `config/llm-presets.json` | 修改 | 小 | 预设增加 openaiCompatibleApiBase |
+
+**总评**：改动范围**中等**，主要是新增文件和少量配置修改
+
+### 6.3 TDD 必要性评估
+
+**结论**：**不需要 TDD**
+
+原因：
+1. **主要是配置变更**：browser-agent.md 是提示词配置，不是复杂逻辑
+2. **核心功能 Page-Agent 已验证**：测试 demo 显示功能正常
+3. **集成测试优先**：先验证端到端流程，单元测试价值有限
+
+**建议**：采用 **集成测试优先** 策略
+1. 先实现最小可用版本
+2. 端到端测试表单填写场景
+3. 根据测试结果调整提示词
+
+### 6.4 实施顺序建议
+
+```
+Phase 1: 基础设施
+├── 创建 page-agent-mcp 目录结构
+├── 创建 Python 入口点
+└── 修改 index.js 增加配置读取
+
+Phase 2: 配置集成
+├── 更新 user-config.json
+├── 更新 mcp-servers.yaml
+└── 创建 browser-agent.md
+
+Phase 3: 端到端测试
+├── 测试单个页面操作
+├── 测试表单填写流程
+└── 测试批量答题场景
+```
+
+---
+
+## 七、测试计划
 
 ### 6.1 单元测试
 
@@ -206,8 +392,9 @@ Chrome 扩展（用户已安装）
 
 ---
 
-## 七、变更记录
+## 八、变更记录
 
 | 日期 | 变更内容 | 负责人 |
 |------|---------|--------|
 | 2026-04-10 | 初始设计 | Claude |
+| 2026-04-10 | 补充表单填写/批量答题场景、实施评估 | Claude |
