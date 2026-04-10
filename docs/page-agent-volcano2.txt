@@ -1,0 +1,55 @@
+Status: Agent initialized: Volcano Engine (火山引擎)
+
+Result:
+{
+  "success": false,
+  "data": "InvokeError: Network request failed",
+  "history": [
+    {
+      "type": "observation",
+      "content": "Page navigated to → file:///E:/tools/ai-bot/scripts/test-page-agent-demo.html"
+    },
+    {
+      "type": "error",
+      "message": "InvokeError: Network request failed"
+    },
+    {
+      "type": "retry",
+      "message": "LLM retry attempt 1 of 2",
+      "attempt": 1,
+      "maxAttempts": 2
+    },
+    {
+      "type": "error",
+      "message": "InvokeError: Network request failed"
+    },
+    {
+      "type": "retry",
+      "message": "LLM retry attempt 2 of 2",
+      "attempt": 2,
+      "maxAttempts": 2
+    },
+    {
+      "type": "error",
+      "message": "InvokeError: Network request failed"
+    },
+    {
+      "type": "error",
+      "message": "InvokeError: Network request failed",
+      "rawResponse": {
+        "type": "network_error",
+        "retryable": true,
+        "rawError": {},
+        "name": "InvokeError"
+      }
+    }
+  ]
+}
+
+Logs:
+[14:45:48] Page loaded, initializing Page-Agent...
+[14:45:48] Checking Page-Agent...
+[14:45:48] Page-Agent found, trying to initialize with GLM (智谱)...
+[14:45:48] Agent initialized with Volcano Engine (火山引擎)
+[14:45:56] Test 1: Click button - Starting...
+[14:45:57] Test 1 PASSED, latency: 1160ms

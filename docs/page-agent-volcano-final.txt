@@ -1,0 +1,62 @@
+Status: Agent initialized: Volcano Engine (火山引擎)
+
+Result:
+{
+  "success": false,
+  "data": "InvokeError: HTTP 404: The model or endpoint ark-code-latest does not exist or you do not have access to it. Request id: 021775803485724930df37d2f7a02cbbda04653213460b9cb5906",
+  "history": [
+    {
+      "type": "observation",
+      "content": "Page navigated to → file:///E:/tools/ai-bot/scripts/test-page-agent-demo.html"
+    },
+    {
+      "type": "error",
+      "message": "InvokeError: HTTP 404: The model or endpoint ark-code-latest does not exist or you do not have access to it. Request id: 021775803485221930df37d2f7a02cbbda04653213460b9472344"
+    },
+    {
+      "type": "retry",
+      "message": "LLM retry attempt 1 of 2",
+      "attempt": 1,
+      "maxAttempts": 2
+    },
+    {
+      "type": "error",
+      "message": "InvokeError: HTTP 404: The model or endpoint ark-code-latest does not exist or you do not have access to it. Request id: 021775803485474930df37d2f7a02cbbda04653213460b99533d8"
+    },
+    {
+      "type": "retry",
+      "message": "LLM retry attempt 2 of 2",
+      "attempt": 2,
+      "maxAttempts": 2
+    },
+    {
+      "type": "error",
+      "message": "InvokeError: HTTP 404: The model or endpoint ark-code-latest does not exist or you do not have access to it. Request id: 021775803485724930df37d2f7a02cbbda04653213460b9cb5906"
+    },
+    {
+      "type": "error",
+      "message": "InvokeError: HTTP 404: The model or endpoint ark-code-latest does not exist or you do not have access to it. Request id: 021775803485724930df37d2f7a02cbbda04653213460b9cb5906",
+      "rawResponse": {
+        "type": "unknown",
+        "retryable": true,
+        "rawError": {
+          "error": {
+            "code": "InvalidEndpointOrModel.NotFound",
+            "message": "The model or endpoint ark-code-latest does not exist or you do not have access to it. Request id: 021775803485724930df37d2f7a02cbbda04653213460b9cb5906",
+            "param": "",
+            "type": "Not Found"
+          }
+        },
+        "name": "InvokeError"
+      }
+    }
+  ]
+}
+
+Logs:
+[14:44:28] Page loaded, initializing Page-Agent...
+[14:44:28] Checking Page-Agent...
+[14:44:28] Page-Agent found, trying to initialize with GLM (智谱)...
+[14:44:28] Agent initialized with Volcano Engine (火山引擎)
+[14:44:36] Test 1: Click button - Starting...
+[14:44:37] Test 1 PASSED, latency: 1206ms

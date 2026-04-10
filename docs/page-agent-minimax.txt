@@ -1,0 +1,50 @@
+Status: Agent initialized: MiniMax
+
+Result:
+{
+  "success": false,
+  "data": "SyntaxError: Unexpected non-whitespace character after JSON at position 4 (line 1 column 5)",
+  "history": [
+    {
+      "type": "observation",
+      "content": "Page navigated to → file:///E:/tools/ai-bot/scripts/test-page-agent-demo.html"
+    },
+    {
+      "type": "error",
+      "message": "SyntaxError: Unexpected non-whitespace character after JSON at position 4 (line 1 column 5)"
+    },
+    {
+      "type": "retry",
+      "message": "LLM retry attempt 1 of 2",
+      "attempt": 1,
+      "maxAttempts": 2
+    },
+    {
+      "type": "error",
+      "message": "SyntaxError: Unexpected non-whitespace character after JSON at position 4 (line 1 column 5)"
+    },
+    {
+      "type": "retry",
+      "message": "LLM retry attempt 2 of 2",
+      "attempt": 2,
+      "maxAttempts": 2
+    },
+    {
+      "type": "error",
+      "message": "SyntaxError: Unexpected non-whitespace character after JSON at position 4 (line 1 column 5)"
+    },
+    {
+      "type": "error",
+      "message": "SyntaxError: Unexpected non-whitespace character after JSON at position 4 (line 1 column 5)",
+      "rawResponse": {}
+    }
+  ]
+}
+
+Logs:
+[14:47:04] Page loaded, initializing Page-Agent...
+[14:47:04] Checking Page-Agent...
+[14:47:04] Page-Agent found, trying to initialize with GLM (智谱)...
+[14:47:04] Agent initialized with MiniMax
+[14:47:12] Test 1: Click button - Starting...
+[14:47:14] Test 1 PASSED, latency: 1624ms

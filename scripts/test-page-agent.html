@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Page-Agent 功能测试</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        h1 {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+
+        .test-section {
+            background: rgba(255, 255, 255, 0.1);
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            backdrop-filter: blur(10px);
+        }
+
+        .test-section h2 {
+            margin-top: 0;
+            border-bottom: 2px solid rgba(255, 255, 255, 0.3);
+            padding-bottom: 10px;
+        }
+
+        form {
+            display: grid;
+            gap: 15px;
+        }
+
+        input, button {
+            padding: 12px;
+            border: none;
+            border-radius: 5px;
+            font-size: 16px;
+        }
+
+        input {
+            background: rgba(255, 255, 255, 0.9);
+            color: #333;
+        }
+
+        button {
+            background: #ff6b6b;
+            color: white;
+            cursor: pointer;
+            transition: all 0.3s;
+            font-weight: bold;
+        }
+
+        button:hover {
+            background: #ee5a5a;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+        }
+
+        .button-group {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 10px;
+            margin-top: 20px;
+        }
+
+        .log-container {
+            background: rgba(0, 0, 0, 0.3);
+            padding: 15px;
+            border-radius: 5px;
+            max-height: 400px;
+            overflow-y: auto;
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+            line-height: 1.6;
+        }
+
+        .log-entry {
+            margin-bottom: 8px;
+            padding: 5px;
+            border-left: 3px solid #4CAF50;
+            background: rgba(255, 255, 255, 0.05);
+        }
+
+        .log-entry.error {
+            border-left-color: #f44336;
+        }
+
+        .log-entry.info {
+            border-left-color: #2196F3;
+        }
+
+        .log-entry.success {
+            border-left-color: #4CAF50;
+        }
+
+        #result-display {
+            background: rgba(255, 255, 255, 0.1);
+            padding: 15px;
+            border-radius: 5px;
+            margin-top: 15px;
+            min-height: 100px;
+        }
+
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+            margin-top: 20px;
+        }
+
+        .stat-card {
+            background: rgba(255, 255, 255, 0.15);
+            padding: 15px;
+            border-radius: 8px;
+            text-align: center;
+        }
+
+        .stat-value {
+            font-size: 24px;
+            font-weight: bold;
+            margin: 10px 0;
+        }
+
+        .stat-label {
+            font-size: 14px;
+            opacity: 0.8;
+        }
+    </style>
+</head>
+<body>
+    <h1>🤖 Page-Agent 功能测试</h1>
+
+    <!-- 测试表单 -->
+    <div class="test-section">
+        <h2>📝 测试表单</h2>
+        <form id="test-form">
+            <input type="text" id="name" placeholder="姓名">
+            <input type="email" id="email" placeholder="邮箱">
+            <input type="tel" id="phone" placeholder="电话">
+            <input type="text" id="address" placeholder="地址">
+            <button type="button" id="submit-btn">提交表单</button>
+        </form>
+    </div>
+
+    <!-- 测试按钮 -->
+    <div class="test-section">
+        <h2>🎯 自动化测试任务</h2>
+        <div class="button-group">
+            <button onclick="testClick()">测试 1: 点击按钮</button>
+            <button onclick="testForm()">测试 2: 填写表单</button>
+            <button onclick="testExtract()">测试 3: 提取信息</button>
+            <button onclick="testComplex()">测试 4: 复杂任务</button>
+        </div>
+
+        <!-- 结果显示 -->
+        <div id="result-display">
+            <p>点击上方按钮开始测试...</p>
+        </div>
+
+        <!-- 统计信息 -->
+        <div class="stats">
+            <div class="stat-card">
+                <div class="stat-label">测试次数</div>
+                <div class="stat-value" id="test-count">0</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">成功率</div>
+                <div class="stat-value" id="success-rate">0%</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">平均延迟</div>
+                <div class="stat-value" id="avg-latency">0ms</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 日志输出 -->
+    <div class="test-section">
+        <h2>📋 测试日志</h2>
+        <div class="log-container" id="log-container"></div>
+    </div>
+
+    <!-- 引入 Page-Agent Demo -->
+    <script src="https://registry.npmmirror.com/page-agent/1.7.1/files/dist/iife/page-agent.demo.js"
+            crossorigin="true"></script>
+
+    <script>
+        // 初始化统计
+        let testCount = 0;
+        let successCount = 0;
+        let totalLatency = 0;
+
+        // 日志函数
+        function log(message, type = 'info') {
+            const container = document.getElementById('log-container');
+            const entry = document.createElement('div');
+            entry.className = `log-entry ${type}`;
+            const timestamp = new Date().toLocaleTimeString();
+            entry.innerHTML = `<strong>[${timestamp}]</strong> ${message}`;
+            container.appendChild(entry);
+            container.scrollTop = container.scrollHeight;
+        }
+
+        // 更新统计
+        function updateStats(success, latency) {
+            testCount++;
+            if (success) successCount++;
+            totalLatency += latency;
+
+            document.getElementById('test-count').textContent = testCount;
+            document.getElementById('success-rate').textContent =
+                Math.round((successCount / testCount) * 100) + '%';
+            document.getElementById('avg-latency').textContent =
+                Math.round(totalLatency / testCount) + 'ms';
+        }
+
+        // 显示结果
+        function showResult(result) {
+            const display = document.getElementById('result-display');
+            display.innerHTML = `<pre>${JSON.stringify(result, null, 2)}</pre>`;
+        }
+
+        // 初始化 Page-Agent
+        log('初始化 Page-Agent...', 'info');
+        const agent = new PageAgent.PageAgent({
+            language: 'zh-CN'
+        });
+        log('Page-Agent 初始化成功', 'success');
+
+        // 测试 1：点击按钮
+        async function testClick() {
+            log('开始测试：点击按钮', 'info');
+            const startTime = Date.now();
+
+            try {
+                const result = await agent.execute('点击"提交表单"按钮');
+                const latency = Date.now() - startTime;
+
+                log(`✅ 点击成功，耗时 ${latency}ms`, 'success');
+                showResult(result);
+                updateStats(true, latency);
+            } catch (error) {
+                const latency = Date.now() - startTime;
+                log(`❌ 点击失败：${error.message}`, 'error');
+                updateStats(false, latency);
+            }
+        }
+
+        // 测试 2：填写表单
+        async function testForm() {
+            log('开始测试：填写表单', 'info');
+            const startTime = Date.now();
+
+            try {
+                const result = await agent.execute(
+                    '填写表单：姓名填"张三"，邮箱填"test@example.com"，电话填"13800138000"，地址填"北京市朝阳区"'
+                );
+                const latency = Date.now() - startTime;
+
+                log(`✅ 填写成功，耗时 ${latency}ms`, 'success');
+                showResult(result);
+                updateStats(true, latency);
+            } catch (error) {
+                const latency = Date.now() - startTime;
+                log(`❌ 填写失败：${error.message}`, 'error');
+                updateStats(false, latency);
+            }
+        }
+
+        // 测试 3：提取信息
+        async function testExtract() {
+            log('开始测试：提取页面信息', 'info');
+            const startTime = Date.now();
+
+            try {
+                const result = await agent.execute('告诉我这个页面有哪些输入框，分别是什么类型');
+                const latency = Date.now() - startTime;
+
+                log(`✅ 提取成功，耗时 ${latency}ms`, 'success');
+                showResult(result);
+                updateStats(true, latency);
+            } catch (error) {
+                const latency = Date.now() - startTime;
+                log(`❌ 提取失败：${error.message}`, 'error');
+                updateStats(false, latency);
+            }
+        }
+
+        // 测试 4：复杂任务
+        async function testComplex() {
+            log('开始测试：复杂任务（填写 + 点击）', 'info');
+            const startTime = Date.now();
+
+            try {
+                const result = await agent.execute(
+                    '先填写表单：姓名"李四"，邮箱"lisi@example.com"，然后点击提交按钮'
+                );
+                const latency = Date.now() - startTime;
+
+                log(`✅ 复杂任务执行成功，耗时 ${latency}ms`, 'success');
+                showResult(result);
+                updateStats(true, latency);
+            } catch (error) {
+                const latency = Date.now() - startTime;
+                log(`❌ 复杂任务执行失败：${error.message}`, 'error');
+                updateStats(false, latency);
+            }
+        }
+
+        // 页面加载完成
+        log('测试页面加载完成，点击按钮开始测试', 'info');
+    </script>
+</body>
+</html>
