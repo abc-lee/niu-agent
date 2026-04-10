@@ -81,3 +81,4 @@ models/paraphrase-multilingual-MiniLM-L12-v2/model.safetensors
 
 # User config files with API keys
 config/user-config*.json
+.gitnexus

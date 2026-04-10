@@ -534,7 +534,11 @@ class GenericAgentHandler(BaseHandler):
         """这是一个特殊工具，由引擎自主调用，不要包含在TOOLS_SCHEMA里。
         当模型在一轮中未显式调用任何工具时，由引擎自动触发。
         二次确认仅在回复几乎只包含<thinking>/<summary>和一段大代码块时触发。"""
+        # 提取 content（支持 MockResponse 对象和普通字符串）
         content = getattr(response, "content", "") or ""
+        # 提取 thinking（如果有）
+        thinking = getattr(response, "thinking", None)
+
         if not response or not content.strip():
             yield "[Warn] LLM returned an empty response. Retrying...\n"
             return StepOutcome({}, next_prompt="[System] Blank response, regenerate and tooluse")
@@ -567,7 +571,11 @@ class GenericAgentHandler(BaseHandler):
                 return StepOutcome({}, next_prompt=next_prompt)
         # 3. 正常情况：直接将回复返回给用户并结束循环
         yield "[Info] Final response to user.\n"
-        return StepOutcome(response, next_prompt=None)
+        # 构造最终响应：如果有 thinking，添加到 content 前面
+        final_content = content
+        if thinking and thinking.strip():
+            final_content = f"<thinking>{thinking}</thinking>\n\n{content}"
+        return StepOutcome(final_content, next_prompt=None)
 
     def do_start_long_term_update(self, args, response):
         """Agent觉得当前任务完成后有重要信息需要记忆时调用此工具。"""

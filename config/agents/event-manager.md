@@ -44,7 +44,7 @@ mcpServers:
 示例：
 ```
 用户说："今天12:05开饭，提醒我"
-你输出：<tool_use>{"name": "scheduler-server/schedule_task", "arguments": {"content": "开饭", "scheduled_at": "2026-03-30T12:05:00", "event_type": "reminder"}}</tool_use>
+你输出：scheduler-server/schedule_task, 参数: content="开饭", scheduled_at="2026-03-30T12:05:00", event_type="reminder"
 返回：✅ 已设置提醒："开饭" 于 2026-03-30 12:05
 ```
 
@@ -74,7 +74,7 @@ mcpServers:
 示例：
 ```
 用户说："明天下午3点开会"
-你输出：<tool_use>{"name": "vector-store/add_document", "arguments": {"content": "开会", "metadata": {"type": "event", "event_type": "meeting", "status": "pending", "event_time": "2026-03-31T15:00:00"}}}</tool_use>
+你输出：vector-store/add_document, 参数: content="开会", metadata={"type": "event", "event_type": "meeting", "status": "pending", "event_time": "2026-03-31T15:00:00"}
 ```
 
 ---
@@ -93,8 +93,8 @@ mcpServers:
 用户说："明天下午3点开会，提醒我"
 
 你输出：
-1. <tool_use>{"name": "scheduler-server/schedule_task", "arguments": {"content": "开会", "scheduled_at": "2026-03-31T15:00:00", "event_type": "meeting"}}</tool_use>
-2. <tool_use>{"name": "vector-store/add_document", "arguments": {"content": "开会", "metadata": {"type": "event", "event_type": "meeting", "status": "pending", "event_time": "2026-03-31T15:00:00"}}}</tool_use>
+1. scheduler-server/schedule_task, 参数: content="开会", scheduled_at="2026-03-31T15:00:00", event_type="meeting"
+2. vector-store/add_document, 参数: content="开会", metadata={"type": "event", "event_type": "meeting", "status": "pending", "event_time": "2026-03-31T15:00:00"}
 ```
 
 ---
@@ -149,12 +149,12 @@ mcpServers:
 
 正确步骤：
 1. 先调用 code_run 计算具体时间：
-   <tool_use>{"name": "code_run", "arguments": {"script": "from datetime import datetime, timedelta; dt = datetime.now() + timedelta(minutes=5); print(dt.strftime('%Y-%m-%dT%H:%M:%S'))"}}</tool_use>
+   code_run, 参数: script="from datetime import datetime, timedelta; dt = datetime.now() + timedelta(minutes=5); print(dt.strftime('%Y-%m-%dT%H:%M:%S'))"
 
 2. 获得输出：2026-04-06T09:30:00
 
 3. 再调用 schedule_task：
-   <tool_use>{"name": "scheduler-server/schedule_task", "arguments": {"content": "任务内容", "scheduled_at": "2026-04-06T09:30:00"}}</tool_use>
+   scheduler-server/schedule_task, 参数: content="任务内容", scheduled_at="2026-04-06T09:30:00"
 ```
 
 **示例**：
@@ -208,21 +208,21 @@ mcpServers:
 **单次提醒**：
 ```
 用户："明天下午3点开会，到时候提醒我"
-你输出：<tool_use>{"name": "scheduler-server/schedule_task", "arguments": {"content": "开会", "scheduled_at": "2026-03-30T15:00:00", "event_type": "meeting"}}</tool_use>
+你输出：scheduler-server/schedule_task, 参数: content="开会", scheduled_at="2026-03-30T15:00:00", event_type="meeting"
 返回："✅ 已设置提醒：明天下午3点开会"
 ```
 
 **每天提醒**：
 ```
 用户："每天早上8点提醒我吃药"
-你输出：<tool_use>{"name": "scheduler-server/schedule_task", "arguments": {"content": "吃药", "scheduled_at": "2026-04-06T08:00:00", "is_recurring": true, "cron_expr": "0 8 * * *", "event_type": "recurring"}}</tool_use>
+你输出：scheduler-server/schedule_task, 参数: content="吃药", scheduled_at="2026-04-06T08:00:00", is_recurring=True, cron_expr="0 8 * * *", event_type="recurring"
 返回："✅ 已设置每天早上8点提醒：吃药"
 ```
 
 **工作日提醒**：
 ```
 用户："工作日上午9点提醒我打卡"
-你输出：<tool_use>{"name": "scheduler-server/schedule_task", "arguments": {"content": "打卡", "scheduled_at": "2026-04-06T09:00:00", "is_recurring": true, "cron_expr": "0 9 * * 1-5", "event_type": "recurring"}}</tool_use>
+你输出：scheduler-server/schedule_task, 参数: content="打卡", scheduled_at="2026-04-06T09:00:00", is_recurring=True, cron_expr="0 9 * * 1-5", event_type="recurring"
 返回："✅ 已设置工作日上午9点提醒：打卡"
 ```
 
@@ -233,21 +233,21 @@ mcpServers:
 
 示例：
 ```
-<tool_use>{"name": "scheduler-server/list_scheduled_tasks", "arguments": {"status": "pending"}}</tool_use>
+scheduler-server/list_scheduled_tasks, 参数: status="pending"
 ```
 
 ## 取消定时任务
 
 示例：
 ```
-<tool_use>{"name": "scheduler-server/cancel_task", "arguments": {"task_id": "abc123"}}</tool_use>
+scheduler-server/cancel_task, 参数: task_id="abc123"
 ```
 
 ## 更新定时任务
 
 示例：
 ```
-<tool_use>{"name": "scheduler-server/update_task", "arguments": {"task_id": "abc123", "content": "新内容", "scheduled_at": "2026-03-31T10:00:00"}}</tool_use>
+scheduler-server/update_task, 参数: task_id="abc123", content="新内容", scheduled_at="2026-03-31T10:00:00"
 ```
 
 ## 重要说明
@@ -271,8 +271,8 @@ mcpServers:
 用户说："明天下午3点开会，提醒我"
 
 你输出：
-1. <tool_use>{"name": "scheduler-server/schedule_task", "arguments": {"content": "开会", "scheduled_at": "2026-03-31T15:00:00", "event_type": "meeting"}}</tool_use>
-2. <tool_use>{"name": "vector-store/add_document", "arguments": {"content": "开会", "metadata": {"type": "event", "event_type": "meeting", "status": "pending", "event_time": "2026-03-31T15:00:00"}}}</tool_use>
+1. scheduler-server/schedule_task, 参数: content="开会", scheduled_at="2026-03-31T15:00:00", event_type="meeting"
+2. vector-store/add_document, 参数: content="开会", metadata={"type": "event", "event_type": "meeting", "status": "pending", "event_time": "2026-03-31T15:00:00"}
 ```
 
 # L1 工作记忆生成
@@ -302,7 +302,7 @@ mcpServers:
 
 主 Agent 请求："生成工作记忆摘要"
 你：
-1. 调用 <tool_use>{"name": "vector-store/search_documents", "arguments": {"query": "当前任务 待办 日程", "limit": 10, "filter": {"type": "event", "status": "pending"}}}</tool_use>
+1. 调用 vector-store/search_documents, 参数: query="当前任务 待办 日程", limit=10, filter={"type": "event", "status": "pending"}
 2. 分析返回的事件
 3. 返回结构化摘要：
 ```
