@@ -18,6 +18,7 @@ mcpServers:
   - config-manager
   - photo-server
   - page-agent-mcp
+  - page-agent-server
 ---
 
 # 核心能力
