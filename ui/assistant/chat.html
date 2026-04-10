@@ -641,6 +641,7 @@
           lastMessageId = null;
           addMessage('system', '✅ 聊天记录已清空');
           console.log('[Chat] 聊天记录已清空，消息 ID 已重置');
+          console.log('[Chat] 提示：清空后发送的新消息仍会被保存');
         } else {
           addMessage('system', '❌ 清空失败: ' + (result.error || '未知错误'));
         }
