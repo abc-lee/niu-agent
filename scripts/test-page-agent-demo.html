@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Page-Agent Demo Test</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        h1 { text-align: center; margin-bottom: 30px; }
+
+        .test-section {
+            background: rgba(255, 255, 255, 0.1);
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            backdrop-filter: blur(10px);
+        }
+
+        .test-section h2 {
+            margin-top: 0;
+            border-bottom: 2px solid rgba(255, 255, 255, 0.3);
+            padding-bottom: 10px;
+        }
+
+        form { display: grid; gap: 15px; }
+
+        input, button {
+            padding: 12px;
+            border: none;
+            border-radius: 5px;
+            font-size: 16px;
+        }
+
+        input { background: rgba(255, 255, 255, 0.9); color: #333; }
+
+        button {
+            background: #ff6b6b;
+            color: white;
+            cursor: pointer;
+            transition: all 0.3s;
+            font-weight: bold;
+        }
+
+        button:hover {
+            background: #ee5a5a;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+        }
+
+        .button-group {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 10px;
+            margin-top: 20px;
+        }
+
+        .log-container {
+            background: rgba(0, 0, 0, 0.3);
+            padding: 15px;
+            border-radius: 5px;
+            max-height: 400px;
+            overflow-y: auto;
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+            line-height: 1.6;
+        }
+
+        .log-entry {
+            margin-bottom: 8px;
+            padding: 5px;
+            border-left: 3px solid #4CAF50;
+            background: rgba(255, 255, 255, 0.05);
+        }
+
+        .log-entry.error { border-left-color: #f44336; }
+        .log-entry.info { border-left-color: #2196F3; }
+        .log-entry.success { border-left-color: #4CAF50; }
+
+        #result-display {
+            background: rgba(255, 255, 255, 0.1);
+            padding: 15px;
+            border-radius: 5px;
+            margin-top: 15px;
+            min-height: 100px;
+            white-space: pre-wrap;
+            font-family: 'Courier New', monospace;
+        }
+
+        #status-display {
+            background: rgba(0, 0, 0, 0.3);
+            padding: 10px;
+            border-radius: 5px;
+            margin-top: 15px;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+        }
+
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+            margin-top: 20px;
+        }
+
+        .stat-card {
+            background: rgba(255, 255, 255, 0.15);
+            padding: 15px;
+            border-radius: 8px;
+            text-align: center;
+        }
+
+        .stat-value {
+            font-size: 24px;
+            font-weight: bold;
+            margin: 10px 0;
+        }
+
+        .stat-label { font-size: 14px; opacity: 0.8; }
+    </style>
+</head>
+<body>
+    <h1>Page-Agent Demo Test</h1>
+
+    <!-- Status Display -->
+    <div class="test-section">
+        <h2>System Status</h2>
+        <div id="status-display">Checking Page-Agent status...</div>
+    </div>
+
+    <!-- Test Form -->
+    <div class="test-section">
+        <h2>Test Form</h2>
+        <form id="test-form">
+            <input type="text" id="name" placeholder="Name">
+            <input type="email" id="email" placeholder="Email">
+            <input type="tel" id="phone" placeholder="Phone">
+            <input type="text" id="address" placeholder="Address">
+            <button type="button" id="submit-btn">Submit</button>
+        </form>
+    </div>
+
+    <!-- Test Buttons -->
+    <div class="test-section">
+        <h2>Automated Test Tasks</h2>
+        <div class="button-group">
+            <button onclick="testClick()">Test 1: Click Button</button>
+            <button onclick="testForm()">Test 2: Fill Form</button>
+            <button onclick="testExtract()">Test 3: Extract Info</button>
+            <button onclick="testComplex()">Test 4: Complex Task</button>
+        </div>
+
+        <div id="result-display">Click a button above to start testing...</div>
+
+        <div class="stats">
+            <div class="stat-card">
+                <div class="stat-label">Test Count</div>
+                <div class="stat-value" id="test-count">0</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Success Rate</div>
+                <div class="stat-value" id="success-rate">0%</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Avg Latency</div>
+                <div class="stat-value" id="avg-latency">0ms</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Log Output -->
+    <div class="test-section">
+        <h2>Test Log</h2>
+        <div class="log-container" id="log-container"></div>
+    </div>
+
+    <!-- Load Page-Agent Demo (must be before our script) -->
+    <script src="https://cdn.jsdelivr.net/npm/page-agent@1.7.1/dist/iife/page-agent.demo.js"
+            crossorigin="anonymous"></script>
+
+    <script>
+        // Stats
+        let testCount = 0;
+        let successCount = 0;
+        let totalLatency = 0;
+        let agent = null;
+
+        // Log function
+        function log(message, type = 'info') {
+            const container = document.getElementById('log-container');
+            const entry = document.createElement('div');
+            entry.className = `log-entry ${type}`;
+            const timestamp = new Date().toLocaleTimeString();
+            entry.innerHTML = `<strong>[${timestamp}]</strong> ${message}`;
+            container.appendChild(entry);
+            container.scrollTop = container.scrollHeight;
+            console.log(`[${type.toUpperCase()}] ${message}`);
+        }
+
+        // Update stats
+        function updateStats(success, latency) {
+            testCount++;
+            if (success) successCount++;
+            totalLatency += latency;
+
+            document.getElementById('test-count').textContent = testCount;
+            document.getElementById('success-rate').textContent =
+                Math.round((successCount / testCount) * 100) + '%';
+            document.getElementById('avg-latency').textContent =
+                Math.round(totalLatency / testCount) + 'ms';
+        }
+
+        // Show result
+        function showResult(result) {
+            const display = document.getElementById('result-display');
+            display.textContent = typeof result === 'object'
+                ? JSON.stringify(result, null, 2)
+                : String(result);
+        }
+
+        // Update status
+        function updateStatus(message) {
+            document.getElementById('status-display').textContent = message;
+        }
+
+        // Initialize Page-Agent with GLM (Zhipu AI) - OpenAI compatible
+        async function initPageAgent() {
+            log('Checking Page-Agent...', 'info');
+            updateStatus('Page-Agent type: ' + typeof PageAgent);
+
+            if (typeof PageAgent === 'undefined') {
+                log('ERROR: Page-Agent not loaded! Check CDN.', 'error');
+                updateStatus('ERROR: Page-Agent not loaded!');
+                return null;
+            }
+
+            log('Page-Agent found, trying to initialize with GLM (智谱)...', 'info');
+
+            // Volcano Engine (火山引擎) - 只需要基础 URL，Page-Agent 会自动加 /chat/completions
+            const API_KEY = '22046eb7-4c69-41ea-8a72-6004785a4b2e';
+            const BASE_URL = 'https://ark.cn-beijing.volces.com/api/coding/v3';
+            const MODEL = 'ark-code-latest';
+
+            try {
+                agent = new PageAgent({
+                    model: MODEL,
+                    baseURL: BASE_URL,
+                    apiKey: API_KEY,
+                    language: 'zh-CN'
+                });
+                log('Agent initialized with Volcano Engine (火山引擎 Coding)', 'success');
+                updateStatus('Agent initialized: Volcano Engine (Coding)');
+                return agent;
+            } catch (e) {
+                log(`GLM init failed: ${e.message}`, 'error');
+                updateStatus('GLM init failed: ' + e.message);
+            }
+
+            updateStatus('All init methods failed!');
+            return null;
+        }
+
+        // Test 1: Click button
+        async function testClick() {
+            if (!agent) {
+                log('ERROR: Agent not initialized', 'error');
+                return;
+            }
+
+            log('Test 1: Click button - Starting...', 'info');
+            const startTime = Date.now();
+
+            try {
+                const result = await agent.execute('Click the "Submit\" button');
+                const latency = Date.now() - startTime;
+
+                log(`Test 1 PASSED, latency: ${latency}ms`, 'success');
+                showResult(result);
+                updateStats(true, latency);
+            } catch (error) {
+                const latency = Date.now() - startTime;
+                log(`Test 1 FAILED: ${error.message}`, 'error');
+                showResult({ error: error.message });
+                updateStats(false, latency);
+            }
+        }
+
+        // Test 2: Fill form
+        async function testForm() {
+            if (!agent) {
+                log('ERROR: Agent not initialized', 'error');
+                return;
+            }
+
+            log('Test 2: Fill form - Starting...', 'info');
+            const startTime = Date.now();
+
+            try {
+                const result = await agent.execute(
+                    'Fill the form: Name="Zhang San", Email="test@example.com", Phone="13800138000", Address="Beijing"'
+                );
+                const latency = Date.now() - startTime;
+
+                // Check if form was filled
+                const name = document.getElementById('name').value;
+                const email = document.getElementById('email').value;
+                const success = name === 'Zhang San' && email === 'test@example.com';
+
+                log(`Test 2 ${success ? 'PASSED' : 'PARTIAL'}, latency: ${latency}ms`, success ? 'success' : 'info');
+                log(`Form values - Name: ${name}, Email: ${email}`, 'info');
+                showResult({ result, name, email, success });
+                updateStats(true, latency);
+            } catch (error) {
+                const latency = Date.now() - startTime;
+                log(`Test 2 FAILED: ${error.message}`, 'error');
+                showResult({ error: error.message });
+                updateStats(false, latency);
+            }
+        }
+
+        // Test 3: Extract info
+        async function testExtract() {
+            if (!agent) {
+                log('ERROR: Agent not initialized', 'error');
+                return;
+            }
+
+            log('Test 3: Extract info - Starting...', 'info');
+            const startTime = Date.now();
+
+            try {
+                const result = await agent.execute(
+                    'Tell me what input fields are on this page and their types'
+                );
+                const latency = Date.now() - startTime;
+
+                log(`Test 3 PASSED, latency: ${latency}ms`, 'success');
+                showResult(result);
+                updateStats(true, latency);
+            } catch (error) {
+                const latency = Date.now() - startTime;
+                log(`Test 3 FAILED: ${error.message}`, 'error');
+                showResult({ error: error.message });
+                updateStats(false, latency);
+            }
+        }
+
+        // Test 4: Complex task
+        async function testComplex() {
+            if (!agent) {
+                log('ERROR: Agent not initialized', 'error');
+                return;
+            }
+
+            log('Test 4: Complex task - Starting...', 'info');
+            const startTime = Date.now();
+
+            try {
+                const result = await agent.execute(
+                    'Fill Name with "Li Si", Email with "lisi@example.com", then click the Submit button'
+                );
+                const latency = Date.now() - startTime;
+
+                const name = document.getElementById('name').value;
+                log(`Test 4 PASSED, Name is now: ${name}`, 'success');
+                showResult({ result, name });
+                updateStats(true, latency);
+            } catch (error) {
+                const latency = Date.now() - startTime;
+                log(`Test 4 FAILED: ${error.message}`, 'error');
+                showResult({ error: error.message });
+                updateStats(false, latency);
+            }
+        }
+
+        // Auto init on page load
+        window.addEventListener('load', async () => {
+            log('Page loaded, initializing Page-Agent...', 'info');
+            await initPageAgent();
+        });
+    </script>
+</body>
+</html>
