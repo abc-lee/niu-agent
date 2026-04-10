@@ -73,6 +73,14 @@ session-manager:
   workdir: mcp-servers/session-manager/src
   preload: false  # 按需启动，不预加载
 
+# Page Agent MCP - Browser automation via Chrome extension
+page-agent-mcp:
+  command: ${NODE_PATH}
+  args:
+    - "mcp-servers/page-agent-mcp/src/index.js"
+  workdir: .
+  preload: true
+
 # Nanobot System - Built-in system tools (not a real MCP server, added programmatically)
 # This entry exists to satisfy validation that references all defined servers
 nanobot.system:

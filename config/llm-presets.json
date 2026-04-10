@@ -21,6 +21,7 @@
       "name": "Anthropic Claude",
       "type": "anthropic",
       "apiBase": "https://api.anthropic.com/v1/messages",
+      "openaiCompatibleApiBase": "https://api.anthropic.com/v1/chat/completions",
       "model": "claude-3-5-sonnet-20241022",
       "description": "Anthropic Claude 3.5 Sonnet"
     },
@@ -29,6 +30,7 @@
       "name": "Anthropic Claude Haiku",
       "type": "anthropic",
       "apiBase": "https://api.anthropic.com/v1/messages",
+      "openaiCompatibleApiBase": "https://api.anthropic.com/v1/chat/completions",
       "model": "claude-3-5-haiku-20241022",
       "description": "Anthropic Claude 3.5 Haiku (快速)"
     },
@@ -101,6 +103,7 @@
       "name": "MiniMax (Anthropic)",
       "type": "anthropic",
       "apiBase": "https://api.minimaxi.com/anthropic/v1/messages",
+      "openaiCompatibleApiBase": "https://ark.cn-beijing.volces.com/api/coding/v3",
       "model": "MiniMax-M2.7",
       "description": "MiniMax M2.7 思维链模型 (Anthropic API)"
     },
@@ -109,6 +112,7 @@
       "name": "MiniMax (Anthropic 高速版)",
       "type": "anthropic",
       "apiBase": "https://api.minimaxi.com/anthropic/v1/messages",
+      "openaiCompatibleApiBase": "https://ark.cn-beijing.volces.com/api/coding/v3",
       "model": "MiniMax-M2.7-highspeed",
       "description": "MiniMax M2.7 思维链模型 (Anthropic API 高速版)"
     },
