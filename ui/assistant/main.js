@@ -539,7 +539,7 @@ ipcMain.handle('get-image-url', async (event, filePath) => {
 ipcMain.handle('process-image', async (event, filePath) => {
   return new Promise((resolve) => {
     const data = JSON.stringify({
-      sessionId: config.chatSessionId || null,
+      session_id: config.chatSessionId || null,
       message: `处理照片: ${filePath}`
     });
     
@@ -558,8 +558,8 @@ ipcMain.handle('process-image', async (event, filePath) => {
       res.on('end', () => {
         try {
           const result = JSON.parse(body);
-          if (result.sessionId) {
-            config.chatSessionId = result.sessionId;
+          if (result.session_id) {
+            config.chatSessionId = result.session_id;
             saveConfig(config);
           }
           resolve(result);
