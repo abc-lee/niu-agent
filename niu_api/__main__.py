@@ -62,29 +62,11 @@ async def lifespan(app: FastAPI):
     logger.info("Internal scheduler started")
 
     # 3.5. Start page-agent-mcp (Node.js browser automation)
-    page_agent_process = None
-    try:
-        project_root = Path(__file__).parent.parent
-        node_script = project_root / "mcp-servers" / "page-agent-mcp" / "src" / "index.js"
-        if node_script.exists():
-            logger.info("Starting page-agent-mcp...")
-            # Start Node.js process
-            page_agent_process = subprocess.Popen(
-                ["node", str(node_script)],
-                cwd=str(project_root),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-            )
-            # Wait a bit for startup
-            time.sleep(2)
-            if page_agent_process.poll() is None:
-                logger.info("page-agent-mcp started successfully")
-            else:
-                logger.warning("page-agent-mcp exited immediately")
-        else:
-            logger.warning(f"page-agent-mcp not found at {node_script}")
-    except Exception as e:
-        logger.warning(f"Failed to start page-agent-mcp: {e}")
+    # NOTE: page-agent-mcp should run as a standalone process, NOT started here.
+    # The hub-bridge.js creates an HTTP server on port 38401, and if started via
+    # subprocess, each MCP call would spawn a new process that can't bind the port.
+    # Instead, page-agent-mcp should be started separately or integrated differently.
+    # Skipping auto-start to avoid EADDRINUSE errors.
 
     # 4. Load MCP tools using ToolRegistry
     logger.info("Loading MCP tools...")
@@ -143,16 +125,6 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     logger.info("Niu API Server shutting down...")
-
-    # Stop page-agent-mcp if running
-    if page_agent_process and page_agent_process.poll() is None:
-        logger.info("Stopping page-agent-mcp...")
-        page_agent_process.terminate()
-        try:
-            page_agent_process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            page_agent_process.kill()
-        logger.info("page-agent-mcp stopped")
 
     from niu_api.internal.scheduler import stop_scheduler
     stop_scheduler()

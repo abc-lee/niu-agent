@@ -53,17 +53,20 @@ export class HubBridge {
 		return new Promise((resolve, reject) => {
 			this.#httpServer.on('error', (/** @type {NodeJS.ErrnoException} */ err) => {
 				if (err.code === 'EADDRINUSE') {
-					reject(
-						new Error(`Port ${this.port} is in use. Another Page Agent MCP server may be running.`)
-					)
+					// Port in use - this is expected if another instance is running
+					console.error(`[HubBridge] Port ${this.port} already in use - will operate in client mode`)
+					// Don't reject - we'll operate in a degraded mode where we can't execute tasks
+					// but can still report the status
+					resolve()
 				} else {
 					reject(err)
 				}
 			})
-			this.#httpServer.listen(this.port, () => {
-				console.error(`[page-agent-mcp] HTTP + WS on http://localhost:${this.port}`)
+			this.#httpServer.on('listening', () => {
+				console.error(`[HubBridge] HTTP + WS on http://localhost:${this.port}`)
 				resolve()
 			})
+			this.#httpServer.listen(this.port)
 		})
 	}
 
