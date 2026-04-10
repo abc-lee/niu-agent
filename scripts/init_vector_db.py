@@ -95,189 +95,168 @@ def register_mcp_tools():
     logger.info("注册 MCP 工具描述...")
 
     # 定义所有 MCP 工具
+    # 分层：
+    # - 主Agent基础工具（11个）：memory-server (6) + vector-store (5)
+    # - 子Agent专用工具：photo-server, scheduler-server, kg-server等
     tools = [
-        # scheduler-server
+        # ==================== 主Agent基础工具 ====================
+        # memory-server (6个)
         {
-            "server": "scheduler-server",
-            "name": "schedule_task",
-            "description": "Create scheduled tasks, reminders, and alarms. Supports one-time and recurring reminders. Use when user says 'remind me', 'alarm', 'call me at', 'every day at'. Parameters: content (task content), scheduled_at (trigger time in ISO format), event_type (event type), is_recurring (recurring task), cron_expr (cron expression for recurring tasks).",
+            "server": "memory-server",
+            "name": "remember",
+            "description": "Save long-term memory with auto-generated L0/L1/L2 layers. Use when user says 'remember this', 'remember what I like', 'keep this in mind'. Parameters: content (memory content), metadata (optional metadata including memory_type, importance).",
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "content": {"type": "string", "description": "Task content"},
-                    "scheduled_at": {"type": "string", "description": "Trigger time in ISO format"},
-                    "event_type": {"type": "string", "description": "Event type (default: reminder)"},
-                    "is_recurring": {"type": "boolean", "description": "Recurring task"},
-                    "cron_expr": {"type": "string", "description": "Cron expression (required for recurring tasks)"}
+                    "content": {"type": "string", "description": "Memory content"},
+                    "metadata": {"type": "object", "description": "Optional metadata"}
                 },
-                "required": ["content", "scheduled_at"]
+                "required": ["content"]
             }
         },
         {
-            "server": "scheduler-server",
-            "name": "list_scheduled_tasks",
-            "description": "Query scheduled task list. Parameters: status (optional, filter by status pending/triggered/cancelled). Returns task list containing id, content, scheduled_at, is_recurring, cron_expr, status.",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "status": {"type": "string", "description": "Filter by status (pending/triggered/cancelled)"}
-                }
-            }
-        },
-        {
-            "server": "scheduler-server",
-            "name": "cancel_task",
-            "description": "Cancel a scheduled task. Parameters: task_id (task ID). Returns cancellation result.",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "task_id": {"type": "string", "description": "Task ID"}
-                },
-                "required": ["task_id"]
-            }
-        },
-        {
-            "server": "scheduler-server",
-            "name": "update_task",
-            "description": "Update scheduled task. Parameters: task_id (task ID), content (new task content), scheduled_at (new trigger time), cron_expr (new cron expression). Returns update result.",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "task_id": {"type": "string", "description": "Task ID"},
-                    "content": {"type": "string", "description": "New task content"},
-                    "scheduled_at": {"type": "string", "description": "New trigger time"},
-                    "cron_expr": {"type": "string", "description": "New cron expression"}
-                },
-                "required": ["task_id"]
-            }
-        },
-        # file-parser
-        {
-            "server": "file-parser",
-            "name": "parse_file",
-            "description": "Parse document files (PDF, Word, PPT, Excel, Markdown, HTML). Extracts text content and metadata. Returns structured document content.",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "file_path": {"type": "string", "description": "File path"},
-                    "extract_images": {"type": "boolean", "description": "Extract images"}
-                },
-                "required": ["file_path"]
-            }
-        },
-        # photo-server
-        {
-            "server": "photo-server",
-            "name": "process_photo",
-            "description": "Process photos: ingest, face recognition, automatic classification. Supports batch processing. Returns photo ID, face information, classification results.",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "photo_path": {"type": "string", "description": "Photo path"},
-                    "enable_face_recognition": {"type": "boolean", "description": "Enable face recognition"}
-                },
-                "required": ["photo_path"]
-            }
-        },
-        {
-            "server": "photo-server",
-            "name": "search_photos",
-            "description": "Search photos: by time, person, scene, location. Supports combined queries. Returns matching photo list.",
+            "server": "memory-server",
+            "name": "recall",
+            "description": "Retrieve memories using semantic search. Use when user says 'recall previous memories', 'what did I say before', 'search memories'. Parameters: query (search query), limit (number of results), memory_type (optional filter).",
             "input_schema": {
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "Search query"},
-                    "person_name": {"type": "string", "description": "Person name"},
-                    "start_date": {"type": "string", "description": "Start date"},
-                    "end_date": {"type": "string", "description": "End date"}
-                }
-            }
-        },
-        # kg-server
-        {
-            "server": "kg-server",
-            "name": "add_document",
-            "description": "Add document to knowledge graph. Automatically extracts entities and relations. Parameters: title (document title), content (document content), source (source), tags (tags).",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "title": {"type": "string", "description": "Document title"},
-                    "content": {"type": "string", "description": "Document content"},
-                    "source": {"type": "string", "description": "Source"},
-                    "tags": {"type": "array", "items": {"type": "string"}, "description": "Tags"}
-                },
-                "required": ["title", "content"]
-            }
-        },
-        {
-            "server": "kg-server",
-            "name": "search_knowledge",
-            "description": "Search in knowledge graph. Supports semantic search and relation queries. Returns relevant documents, entities, relations.",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "Search query"},
-                    "limit": {"type": "integer", "description": "Number of results"}
+                    "limit": {"type": "integer", "description": "Number of results"},
+                    "memory_type": {"type": "string", "description": "Filter by memory type"}
                 },
                 "required": ["query"]
             }
         },
-        # vector-store
+        {
+            "server": "memory-server",
+            "name": "update_memory",
+            "description": "Update existing memory. Parameters: memory_id (memory ID), content (new content), metadata (new metadata).",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "memory_id": {"type": "string", "description": "Memory ID"},
+                    "content": {"type": "string", "description": "New content"},
+                    "metadata": {"type": "object", "description": "New metadata"}
+                },
+                "required": ["memory_id"]
+            }
+        },
+        {
+            "server": "memory-server",
+            "name": "get_memory_stats",
+            "description": "Get memory statistics. Returns total count, count by type, oldest/newest memory info.",
+            "input_schema": {
+                "type": "object",
+                "properties": {}
+            }
+        },
+        {
+            "server": "memory-server",
+            "name": "cleanup_memories",
+            "description": "Cleanup expired or outdated memories. Parameters: older_than_days (days threshold), dry_run (preview mode).",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "older_than_days": {"type": "integer", "description": "Days threshold"},
+                    "dry_run": {"type": "boolean", "description": "Preview mode"}
+                }
+            }
+        },
+        {
+            "server": "memory-server",
+            "name": "link_memories",
+            "description": "Create association between two memories. Parameters: memory_a_id, memory_b_id, relation_type (e.g., 'related_to', 'causes', 'contradicts').",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "memory_a_id": {"type": "string", "description": "First memory ID"},
+                    "memory_b_id": {"type": "string", "description": "Second memory ID"},
+                    "relation_type": {"type": "string", "description": "Relation type"}
+                },
+                "required": ["memory_a_id", "memory_b_id"]
+            }
+        },
+
+        # vector-store (5个)
         {
             "server": "vector-store",
             "name": "add_document",
-            "description": "Add document to vector store. Parameters: id (document ID), content (content), metadata (metadata). Automatically generates vector embedding.",
+            "description": "Add document to vector store with semantic embedding. Use when user says 'add this document', 'save this document'. Parameters: id (document ID), content (content), metadata (optional metadata), file_path (optional file path).",
             "input_schema": {
                 "type": "object",
                 "properties": {
                     "id": {"type": "string", "description": "Document ID"},
                     "content": {"type": "string", "description": "Document content"},
-                    "metadata": {"type": "object", "description": "Metadata"}
+                    "metadata": {"type": "object", "description": "Metadata"},
+                    "file_path": {"type": "string", "description": "File path"}
                 },
                 "required": ["id", "content"]
             }
         },
         {
             "server": "vector-store",
-            "name": "search",
-            "description": "Vector semantic search. Parameters: query (query text), limit (number of results), min_score (minimum score), filter (metadata filter). Returns matching document list.",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "Query text"},
-                    "limit": {"type": "integer", "description": "Number of results (default: 10)"},
-                    "min_score": {"type": "number", "description": "Minimum similarity (default: 0.5)"},
-                    "filter": {"type": "object", "description": "Metadata filter conditions"}
-                },
-                "required": ["query"]
-            }
-        },
-        # memory-server
-        {
-            "server": "memory-server",
-            "name": "extract_memories",
-            "description": "Extract memories from conversation. Automatically identifies important information and stores structurally. Returns extracted memory list.",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "conversation": {"type": "string", "description": "Conversation content"}
-                },
-                "required": ["conversation"]
-            }
-        },
-        {
-            "server": "memory-server",
-            "name": "search_memories",
-            "description": "Search memories. Supports semantic search and time range queries. Returns matching memory list.",
+            "name": "search_documents",
+            "description": "Semantic search in vector store. Use when user says 'search for documents', 'find documents about', 'retrieve knowledge'. Parameters: query (search query), limit (number of results), min_score (minimum similarity), filter (metadata filter).",
             "input_schema": {
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "Search query"},
-                    "limit": {"type": "integer", "description": "Number of results"}
+                    "limit": {"type": "integer", "description": "Number of results"},
+                    "min_score": {"type": "number", "description": "Minimum similarity"},
+                    "filter": {"type": "object", "description": "Metadata filter"}
                 },
                 "required": ["query"]
             }
         },
+        {
+            "server": "vector-store",
+            "name": "get_document",
+            "description": "Get document by ID. Parameters: id (document ID).",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "description": "Document ID"}
+                },
+                "required": ["id"]
+            }
+        },
+        {
+            "server": "vector-store",
+            "name": "delete_document",
+            "description": "Delete document by ID. Parameters: id (document ID).",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "description": "Document ID"}
+                },
+                "required": ["id"]
+            }
+        },
+        {
+            "server": "vector-store",
+            "name": "list_documents",
+            "description": "List all documents, optionally filtered by metadata. Parameters: filter (metadata filter), limit (max results).",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "filter": {"type": "object", "description": "Metadata filter"},
+                    "limit": {"type": "integer", "description": "Max results"}
+                }
+            }
+        },
+
+        # ==================== 以下工具不索引到向量库 ====================
+        # scheduler-server (4个) - 子Agent专用，主Agent通过chat-with-event-manager委托
+        # file-parser (2个) - 底层操作，不暴露
+        # photo-server (14个) - 子Agent专用，主Agent通过chat-with-file-processor委托
+        # kg-server (12个) - 底层操作，不暴露
+        # config-manager (20个) - 已删除，用bash+file操作替代
+
+        # 注意：以上工具不会在向量库中索引，主Agent无法通过向量检索发现这些工具
+        # 这是符合架构设计的：
+        # - 主Agent只直接调用基础工具（memory-server + vector-store）
+        # - 其他操作通过子Agent委托
     ]
 
     # 获取向量库连接
@@ -352,7 +331,199 @@ def register_query_patterns():
     logger.info("注册查询模式...")
 
     # 查询模式定义（符合L1规范 v3.0）
+    # 包含英文和中文查询模式，支持主Agent基础工具
     patterns = [
+        # ==================== 记忆管理类（英文）====================
+        {
+            "id": "query_pattern:recall_memory_1",
+            "content": "recall previous memories",
+            "metadata": {
+                "level": "l1",
+                "category": "query_pattern",
+                "language": "en",
+                "type": "query_pattern",
+                "is_recursive": True,
+                "refined_query": "memory recall remember",
+                "target_category": "mcp_tool",
+                "description": "User wants to recall previous memories"
+            }
+        },
+        {
+            "id": "query_pattern:remember_this",
+            "content": "remember this",
+            "metadata": {
+                "level": "l1",
+                "category": "query_pattern",
+                "language": "en",
+                "type": "query_pattern",
+                "is_recursive": True,
+                "refined_query": "save memory remember",
+                "target_category": "mcp_tool",
+                "description": "User wants to save something to memory"
+            }
+        },
+
+        # ==================== 记忆管理类（中文）====================
+        {
+            "id": "query_pattern:zh_recall_1",
+            "content": "检索之前的记忆",
+            "metadata": {
+                "level": "l1",
+                "category": "query_pattern",
+                "language": "zh",
+                "type": "query_pattern",
+                "is_recursive": True,
+                "refined_query": "memory recall remember",
+                "target_category": "mcp_tool",
+                "description": "用户想检索之前的记忆"
+            }
+        },
+        {
+            "id": "query_pattern:zh_recall_2",
+            "content": "我之前说过什么",
+            "metadata": {
+                "level": "l1",
+                "category": "query_pattern",
+                "language": "zh",
+                "type": "query_pattern",
+                "is_recursive": True,
+                "refined_query": "memory recall",
+                "target_category": "mcp_tool",
+                "description": "用户询问之前说过的话"
+            }
+        },
+        {
+            "id": "query_pattern:zh_remember_1",
+            "content": "记住这个",
+            "metadata": {
+                "level": "l1",
+                "category": "query_pattern",
+                "language": "zh",
+                "type": "query_pattern",
+                "is_recursive": True,
+                "refined_query": "save memory remember",
+                "target_category": "mcp_tool",
+                "description": "用户想记住某些内容"
+            }
+        },
+        {
+            "id": "query_pattern:complex_memory_1",
+            "content": "帮我回忆一下之前的经验",
+            "metadata": {
+                "level": "l1",
+                "category": "query_pattern",
+                "language": "zh",
+                "type": "query_pattern",
+                "is_recursive": True,
+                "refined_query": "memory recall experience",
+                "target_category": "mcp_tool",
+                "description": "用户想回忆之前的经验"
+            }
+        },
+
+        # ==================== 文档检索类（英文）====================
+        {
+            "id": "query_pattern:search_documents",
+            "content": "search for documents",
+            "metadata": {
+                "level": "l1",
+                "category": "query_pattern",
+                "language": "en",
+                "type": "query_pattern",
+                "is_recursive": True,
+                "refined_query": "document search vector",
+                "target_category": "mcp_tool",
+                "description": "User wants to search documents"
+            }
+        },
+        {
+            "id": "query_pattern:add_document",
+            "content": "add this document",
+            "metadata": {
+                "level": "l1",
+                "category": "query_pattern",
+                "language": "en",
+                "type": "query_pattern",
+                "is_recursive": True,
+                "refined_query": "add document vector store",
+                "target_category": "mcp_tool",
+                "description": "User wants to add a document to database"
+            }
+        },
+
+        # ==================== 文档检索类（中文）====================
+        {
+            "id": "query_pattern:zh_search_1",
+            "content": "搜索文档",
+            "metadata": {
+                "level": "l1",
+                "category": "query_pattern",
+                "language": "zh",
+                "type": "query_pattern",
+                "is_recursive": True,
+                "refined_query": "document search vector",
+                "target_category": "mcp_tool",
+                "description": "用户想搜索文档"
+            }
+        },
+        {
+            "id": "query_pattern:zh_search_2",
+            "content": "查找关于XX的文档",
+            "metadata": {
+                "level": "l1",
+                "category": "query_pattern",
+                "language": "zh",
+                "type": "query_pattern",
+                "is_recursive": True,
+                "refined_query": "document search",
+                "target_category": "mcp_tool",
+                "description": "用户想查找特定文档"
+            }
+        },
+        {
+            "id": "query_pattern:zh_retrieve_1",
+            "content": "检索知识库",
+            "metadata": {
+                "level": "l1",
+                "category": "query_pattern",
+                "language": "zh",
+                "type": "query_pattern",
+                "is_recursive": True,
+                "refined_query": "document search knowledge",
+                "target_category": "mcp_tool",
+                "description": "用户想从知识库检索信息"
+            }
+        },
+        {
+            "id": "query_pattern:zh_add_1",
+            "content": "添加这个文档",
+            "metadata": {
+                "level": "l1",
+                "category": "query_pattern",
+                "language": "zh",
+                "type": "query_pattern",
+                "is_recursive": True,
+                "refined_query": "add document vector store",
+                "target_category": "mcp_tool",
+                "description": "用户想添加文档"
+            }
+        },
+        {
+            "id": "query_pattern:complex_search_1",
+            "content": "在知识库里找找相关内容",
+            "metadata": {
+                "level": "l1",
+                "category": "query_pattern",
+                "language": "zh",
+                "type": "query_pattern",
+                "is_recursive": True,
+                "refined_query": "document search knowledge",
+                "target_category": "mcp_tool",
+                "description": "用户想在知识库中查找内容"
+            }
+        },
+
+        # ==================== 原有查询模式（保留）====================
         {
             "id": "query_pattern:reminder_time",
             "content": "remind me in X minutes",
