@@ -624,9 +624,11 @@
         if (result.success) {
           // 清空消息区域
           messages.innerHTML = '';
-          // 重置 oldestMessageId，防止重新加载历史
+          // 重置所有消息 ID，防止重新加载历史和轮询异常
           oldestMessageId = null;
+          lastMessageId = null;
           addMessage('system', '✅ 聊天记录已清空');
+          console.log('[Chat] 聊天记录已清空，消息 ID 已重置');
         } else {
           addMessage('system', '❌ 清空失败: ' + (result.error || '未知错误'));
         }
