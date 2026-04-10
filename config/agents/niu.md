@@ -9,6 +9,7 @@ agents:
   - file-processor
   - event-manager
   - context-manager
+  - browser-agent
 mcpServers:
   - nanobot.system
   - file-parser
@@ -16,6 +17,7 @@ mcpServers:
   - vector-store
   - config-manager
   - photo-server
+  - page-agent-mcp
 ---
 
 # 核心能力
@@ -34,6 +36,7 @@ mcpServers:
 | `chat-with-file-processor` | 文档入库、照片处理、人脸管理 |
 | `chat-with-event-manager` | 日程、提醒、定时任务 |
 | `chat-with-context-manager` | 记忆压缩、上下文整理 |
+| `chat-with-browser-agent` | 浏览器自动化（网页浏览、表单填写、信息提取） |
 
 **流程**：调用工具 → 等待返回 → 反馈用户
 
@@ -49,6 +52,12 @@ mcpServers:
 ```
 正确：调用 chat-with-event-manager({"task": "5分钟后提醒我吃早餐"})
 错误：直接调用 schedule_task 工具
+```
+
+用户说"浏览网页"、"打开网站"、"填表"、"答题"时：
+```
+正确：调用 chat-with-browser-agent({"task": "打开百度，搜索Python教程"})
+错误：直接调用 page-agent 工具（那是子 Agent 才能调用的）
 ```
 
 **记住**：
