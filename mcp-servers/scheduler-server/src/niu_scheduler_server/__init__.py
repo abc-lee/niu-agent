@@ -31,11 +31,8 @@ TOOL_SCHEMAS = {
 - cron_expr (可选): cron 表达式（循环任务必填），如 "0 8 * * *"（每天8点）
 
 示例：
-1. 单次提醒：
-   <tool_use>{"name": "scheduler-server/schedule_task", "arguments": {"content": "开会", "scheduled_at": "2026-04-07T15:00:00", "event_type": "meeting"}}</tool_use>
-
-2. 每天提醒：
-   <tool_use>{"name": "scheduler-server/schedule_task", "arguments": {"content": "吃药", "scheduled_at": "2026-04-06T08:00:00", "is_recurring": true, "cron_expr": "0 8 * * *"}}</tool_use>
+1. 单次提醒：content="开会", scheduled_at="2026-04-07T15:00:00", event_type="meeting"
+2. 每天提醒：content="吃药", scheduled_at="2026-04-06T08:00:00", is_recurring=true, cron_expr="0 8 * * *"
 
 重要：相对时间（明天、下周）必须由 Agent 转换为具体的日期时间。""",
         "input_schema": {
@@ -174,11 +171,8 @@ async def run_server():
 - cron_expr (可选): cron 表达式（循环任务必填），如 "0 8 * * *"（每天8点）
 
 示例：
-1. 单次提醒：
-   <tool_use>{"name": "scheduler-server/schedule_task", "arguments": {"content": "开会", "scheduled_at": "2026-04-07T15:00:00", "event_type": "meeting"}}</tool_use>
-
-2. 每天提醒：
-   <tool_use>{"name": "scheduler-server/schedule_task", "arguments": {"content": "吃药", "scheduled_at": "2026-04-06T08:00:00", "is_recurring": true, "cron_expr": "0 8 * * *"}}</tool_use>
+1. 单次提醒：content="开会", scheduled_at="2026-04-07T15:00:00", event_type="meeting"
+2. 每天提醒：content="吃药", scheduled_at="2026-04-06T08:00:00", is_recurring=true, cron_expr="0 8 * * *"
 
 重要：相对时间（明天、下周）必须由 Agent 转换为具体的日期时间。""",
                 inputSchema={
