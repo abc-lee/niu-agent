@@ -2,7 +2,7 @@
 name: 妞妞
 description: 个人知识助理，帮助用户管理文档、知识和信息
 default: true
-temperature: 0.4
+temperature: 0.2
 permissions:
   '*': allow
 agents:

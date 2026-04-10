@@ -54,7 +54,7 @@ def _write_interaction_log(log_entry: Dict[str, Any]):
 
 
 def _format_request_log(f, log_entry: Dict[str, Any]):
-    """格式化请求日志"""
+    """格式化请求日志（简练但不缺内容）"""
     ts = log_entry.get("timestamp", "")
     model = log_entry.get("model", "")
     messages = log_entry.get("messages", [])
@@ -65,17 +65,38 @@ def _format_request_log(f, log_entry: Dict[str, Any]):
     f.write(f"[{ts}] {model}\n")
     f.write(f"{'=' * 60}\n")
 
-    # 系统提示词（只取第一条约500字）
+    # 系统提示词（完整记录，包含动态注入的历史参考消息和工具描述）
     for msg in messages:
         if msg.get("role") == "system":
             content = msg.get("content", "")
-            # 截断太长内容
-            if len(content) > 600:
-                content = content[:600] + "\n...（已截断）"
             f.write(f"[系统提示词]\n{content}\n\n")
             break
 
-    # 用户输入（最后一条 user 消息）
+    # 历史对话（记录完整上下文）
+    history_msgs = [m for m in messages if m.get("role") in ("user", "assistant", "tool")]
+    if len(history_msgs) > 1:  # 有历史消息
+        f.write(f"[历史对话]（共{len(history_msgs)-1}条历史消息）\n")
+        # 记录最近10条历史（排除当前输入）
+        recent_history = history_msgs[-11:-1] if len(history_msgs) > 11 else history_msgs[:-1]
+        for i, msg in enumerate(recent_history, 1):
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+
+            # 每条消息最多200字
+            if len(content) > 200:
+                content = content[:200] + "..."
+
+            # 标记消息类型
+            if role == "user":
+                f.write(f"{i}. 👤 {content}\n")
+            elif role == "assistant":
+                f.write(f"{i}. 🤖 {content}\n")
+            elif role == "tool":
+                tool_name = msg.get("name", "tool")
+                f.write(f"{i}. 🔧 [{tool_name}] {content}\n")
+        f.write("\n")
+
+    # 当前用户输入（完整记录）
     for msg in reversed(messages):
         if msg.get("role") == "user":
             content = msg.get("content", "")
@@ -337,8 +358,10 @@ class LiteLLMSession(BaseSession):
                     id=str(tc_data['id']),
                 ))
 
-                args_str = json.dumps(tc_args, ensure_ascii=False)
-                yield f'<tool_use>{{"id": "{tc_data["id"]}", "name": "{tc_name}", "arguments": {args_str}}}</tool_use>'
+                # [已注释] MiniMax 工具调用走 tool_calls 字段，不走这个 yield。
+                # 这个 yield 会输出 <tool_use> 文本到流式响应中，被误当成对话内容输出到界面。
+                # 如果 MiniMax 正确使用 tool_calls，本行不需要任何 yield 输出。
+                # yield f'<tool_use>{{"id": "{tc_data["id"]}", "name": "{tc_name}", "arguments": {args_str}}}</tool_use>'
 
         except Exception as e:
             print(f"[LiteLLM] Stream error: {e}", file=sys.stderr, flush=True)

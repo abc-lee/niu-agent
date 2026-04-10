@@ -854,10 +854,58 @@
       }
     });
     
+    // ========== 消息轮询机制 ==========
+    let lastMessageId = null;  // 记录最后一条消息的 ID
+    let pollTimer = null;      // 轮询定时器
+
+    // 启动消息轮询（每 5 秒检查一次新消息）
+    function startMessagePolling() {
+      if (pollTimer) return;  // 防止重复启动
+
+      pollTimer = setInterval(async () => {
+        try {
+          // 获取最新消息（limit=1，只要最新的一条）
+          const result = await window.electronAPI.getHistory(1);
+          const messages = result.messages || [];
+
+          if (messages.length > 0) {
+            const latestMsg = messages[0];  // 最新消息在数组开头
+
+            // 如果是新消息（ID 不同），添加到界面
+            if (lastMessageId && latestMsg.id !== lastMessageId) {
+              // 检查消息是否已在界面中
+              const existing = document.querySelector(`.message[data-id="${latestMsg.id}"]`);
+              if (!existing) {
+                // 添加新消息到界面
+                addMessageWithId(latestMsg.role, latestMsg.content, latestMsg.id);
+                console.log('[Chat] 检测到新消息:', latestMsg.id, latestMsg.role);
+              }
+            }
+
+            // 更新最后消息 ID
+            lastMessageId = latestMsg.id;
+          }
+        } catch (e) {
+          console.error('[Chat] 消息轮询失败:', e);
+        }
+      }, 5000);  // 每 5 秒检查一次
+
+      console.log('[Chat] 消息轮询已启动');
+    }
+
+    // 停止消息轮询
+    function stopMessagePolling() {
+      if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+        console.log('[Chat] 消息轮询已停止');
+      }
+    }
+
     // ========== 初始化 ==========
     let oldestMessageId = null;  // 用于加载更早的消息
     let isLoadingMore = false;   // 防止重复加载
-    
+
     // 先加载历史消息
     loadHistory().then(() => {
       // 如果没有历史消息，显示欢迎语
@@ -868,6 +916,9 @@
       messages.scrollTop = messages.scrollHeight;
       loadStats();
       userInput.focus();
+
+      // 启动消息轮询
+      startMessagePolling();
     });
     
     // ========== 拖放文件/图片处理 ==========
@@ -1052,6 +1103,11 @@
         console.error('[Chat] 获取待通知消息失败:', e);
       }
     });
+
+    // 窗口卸载时停止轮询
+    window.addEventListener('beforeunload', () => {
+      stopMessagePolling();
+    });
     
     // 加载历史消息
     async function loadHistory() {
@@ -1070,7 +1126,9 @@
           });
           // 记录最旧的消息ID（history[0] 是最旧的）
           oldestMessageId = history[0].id;
-          console.log('[Chat] 加载了', history.length, '条历史消息，最旧ID:', oldestMessageId);
+          // 记录最新的消息ID（用于轮询检测新消息）
+          lastMessageId = history[history.length - 1].id;
+          console.log('[Chat] 加载了', history.length, '条历史消息，最旧ID:', oldestMessageId, '最新ID:', lastMessageId);
         }
       } catch (e) {
         console.error('[Chat] 加载历史失败:', e);

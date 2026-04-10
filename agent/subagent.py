@@ -70,9 +70,9 @@ def get_subagent_mcp_tools_schema(agent_name: str) -> List[Dict]:
         agent_name: 子 Agent 名称
 
     Returns:
-        MCP 工具 schema 列表
+        MCP 工具 schema 列表（OpenAI格式）
     """
-    from .mcp_client import get_mcp_tools_for_servers
+    from .tool_registry import get_registry
 
     config = get_subagent_config(agent_name)
     mcp_servers = config.get("mcpServers", [])
@@ -80,23 +80,29 @@ def get_subagent_mcp_tools_schema(agent_name: str) -> List[Dict]:
     if not mcp_servers:
         return []
 
-    # 获取指定服务器的工具
-    tools = get_mcp_tools_for_servers(mcp_servers)
+    # 从 ToolRegistry 获取所有工具
+    registry = get_registry()
+    all_tools = registry.get_schemas()
 
-    # 转换为 OpenAI 工具格式
+    # 过滤出指定服务器的工具，并转换为OpenAI格式
     schema = []
-    for tool in tools:
-        schema.append(
-            {
-                "type": "function",
-                "function": {
-                    "name": tool.get("name", ""),
-                    "description": tool.get("description", ""),
-                    "parameters": tool.get("input_schema", {"type": "object", "properties": {}}),
-                },
-            }
-        )
+    for tool in all_tools:
+        tool_name = tool.get("name", "")
+        # 工具名格式：server_name/tool_name
+        if "/" in tool_name:
+            server = tool_name.split("/")[0]
+            if server in mcp_servers:
+                # 转换为OpenAI工具格式
+                schema.append({
+                    "type": "function",
+                    "function": {
+                        "name": tool_name,
+                        "description": tool.get("description", ""),
+                        "parameters": tool.get("input_schema", {"type": "object", "properties": {}}),
+                    }
+                })
 
+    print(f"[SubAgent] {agent_name}: Found {len(schema)} MCP tools for servers {mcp_servers}")
     return schema
 
 
