@@ -1130,6 +1130,7 @@
         // 清空现有消息，避免重复
         messages.innerHTML = '';
         oldestMessageId = null;
+        lastMessageId = null;  // 重置最新消息ID
 
         const result = await window.electronAPI.getHistory(20);
         const history = result.messages || result;  // 兼容新旧格式
@@ -1144,6 +1145,8 @@
           // 记录最新的消息ID（用于轮询检测新消息）
           lastMessageId = history[history.length - 1].id;
           console.log('[Chat] 加载了', history.length, '条历史消息，最旧ID:', oldestMessageId, '最新ID:', lastMessageId);
+        } else {
+          console.log('[Chat] 无历史消息，lastMessageId 已重置');
         }
       } catch (e) {
         console.error('[Chat] 加载历史失败:', e);
