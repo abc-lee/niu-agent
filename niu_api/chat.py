@@ -28,8 +28,8 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     """Chat response model"""
 
-    session_id: str
     reply: str
+    session_id: Optional[str] = None
 
 
 def _load_llm_config():
