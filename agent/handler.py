@@ -1064,11 +1064,11 @@ class NiuHandler(BaseHandler):
                 yield f"[MCP] {tool_name} executed\n"
 
                 # 判断任务是否完成：
-                # - 如果结果是success且没有要求进一步操作，返回空字符串表示任务完成
-                # - 否则返回anchor prompt继续对话
+                # - 成功后让LLM向用户汇报结果
                 if isinstance(result, dict) and result.get("status") == "success":
-                    # 成功执行，任务完成，返回空字符串
-                    return StepOutcome(result, next_prompt="")
+                    # 成功执行，提示LLM向用户汇报
+                    result_summary = json.dumps(result, ensure_ascii=False)[:500]
+                    return StepOutcome(result, next_prompt=f"工具调用成功。请向用户简洁汇报结果：{result_summary}")
                 else:
                     # 需要进一步处理，返回anchor prompt
                     return StepOutcome(result, next_prompt=self._get_anchor_prompt())

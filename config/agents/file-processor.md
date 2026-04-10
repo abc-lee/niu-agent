@@ -43,7 +43,7 @@ mcpServers:
 
 示例：
 ```
-<tool_use>{"name": "photo-server/ingest_document", "arguments": {"file_path": "...", "category": "...", "mode": "copy"}}</tool_use>
+photo-server/ingest_document, 参数: file_path="...", category="...", mode="copy"
 ```
 
 **返回值可能是**：
@@ -79,14 +79,14 @@ Zellij使用指南|终端,复用器,Rust|Zellij终端复用器的基本使用方
 
 **调用 store_document_l1**：
 ```
-<tool_use>{"name": "photo-server/store_document_l1", "arguments": {"file_path": "从 ingest_document 返回值获取", "l1": "标题|关键词|摘要|实体|类型|指针", "l2": "可选，完整内容"}}</tool_use>
+photo-server/store_document_l1, 参数: file_path="从 ingest_document 返回值获取", l1="标题|关键词|摘要|实体|类型|指针", l2="可选，完整内容"
 ```
 
 ### 完整示例
 
 ```
 第一次调用：
-<tool_use>{"name": "photo-server/ingest_document", "arguments": {"file_path": "E:/tmp/zellij.md", "category": "其他", "mode": "copy"}}</tool_use>
+photo-server/ingest_document, 参数: file_path="E:/tmp/zellij.md", category="其他", mode="copy"
 
 返回：
 {
@@ -97,7 +97,7 @@ Zellij使用指南|终端,复用器,Rust|Zellij终端复用器的基本使用方
 }
 
 第二次调用（必须执行）：
-<tool_use>{"name": "photo-server/store_document_l1", "arguments": {"file_path": "REDACTED_WIN_PATH/2026/其他/zellij.md", "l1": "Zellij使用指南|终端,复用器,Rust|Zellij终端复用器的基本使用方法|Zellij,终端|技术文档|REDACTED_WIN_PATH/2026/其他/zellij.md"}}</tool_use>
+photo-server/store_document_l1, 参数: file_path="REDACTED_WIN_PATH/2026/其他/zellij.md", l1="Zellij使用指南|终端,复用器,Rust|Zellij终端复用器的基本使用方法|Zellij,终端|技术文档|REDACTED_WIN_PATH/2026/其他/zellij.md"
 
 返回：
 {
@@ -117,7 +117,7 @@ Zellij使用指南|终端,复用器,Rust|Zellij终端复用器的基本使用方
 
 示例：
 ```
-<tool_use>{"name": "photo-server/ingest_documents", "arguments": {"file_paths": ["文件1.md", "文件2.md"], "category": "其他", "mode": "copy"}}</tool_use>
+photo-server/ingest_documents, 参数: file_paths=["文件1.md", "文件2.md"], category="其他", mode="copy"
 ```
 
 **返回值**：
@@ -138,7 +138,7 @@ Zellij使用指南|终端,复用器,Rust|Zellij终端复用器的基本使用方
 **一次性为所有文件生成 L1，然后调用 `store_documents_l1`**：
 
 ```
-<tool_use>{"name": "photo-server/store_documents_l1", "arguments": {"documents": [{"file_path": "REDACTED_WIN_PATH/...", "l1": "文件1标题|关键词|摘要|实体|类型|指针"}, {"file_path": "REDACTED_WIN_PATH/...", "l1": "文件2标题|关键词|摘要|实体|类型|指针"}, {"file_path": "REDACTED_WIN_PATH/...", "l1": "文件3标题|关键词|摘要|实体|类型|指针"}]}}</tool_use>
+photo-server/store_documents_l1, 参数: documents=[{"file_path": "REDACTED_WIN_PATH/...", "l1": "文件1标题|关键词|摘要|实体|类型|指针"}, {"file_path": "REDACTED_WIN_PATH/...", "l1": "文件2标题|关键词|摘要|实体|类型|指针"}, {"file_path": "REDACTED_WIN_PATH/...", "l1": "文件3标题|关键词|摘要|实体|类型|指针"}]
 ```
 
 **返回**：
@@ -187,18 +187,18 @@ Zellij使用指南|终端,复用器,Rust|Zellij终端复用器的基本使用方
 
 **单张照片示例**：
 ```
-<tool_use>{"name": "photo-server/ingest_photo", "arguments": {"file_path": "E:/照片/DSC_001.jpg", "category": "生活"}}</tool_use>
+photo-server/ingest_photo, 参数: file_path="E:/照片/DSC_001.jpg", category="生活"
 ```
 
 **批量目录示例**：
 ```
-<tool_use>{"name": "photo-server/ingest_photos", "arguments": {"source_path": "E:/照片/2024旅行", "category": "旅行"}}</tool_use>
+photo-server/ingest_photos, 参数: source_path="E:/照片/2024旅行", category="旅行"
 ```
 
 **多张独立照片示例**（调用两次）：
 ```
-<tool_use>{"name": "photo-server/ingest_photo", "arguments": {"file_path": "E:/照片/DSC_001.jpg", "category": "旅行"}}</tool_use>
-<tool_use>{"name": "photo-server/ingest_photo", "arguments": {"file_path": "E:/照片/DSC_002.jpg", "category": "旅行"}}</tool_use>
+photo-server/ingest_photo, 参数: file_path="E:/照片/DSC_001.jpg", category="旅行"
+photo-server/ingest_photo, 参数: file_path="E:/照片/DSC_002.jpg", category="旅行"
 ```
 
 ---
@@ -236,9 +236,9 @@ Zellij使用指南|终端,复用器,Rust|Zellij终端复用器的基本使用方
 当用户问"有多少人脸"、"未命名人物"、"搜索张三"时：
 
 ```
-<tool_use>{"name": "photo-server/get_unnamed_persons", "arguments": {}}</tool_use>
-<tool_use>{"name": "photo-server/search_persons", "arguments": {"query": "张三"}}</tool_use>
-<tool_use>{"name": "photo-server/name_person", "arguments": {"person_id": "...", "name": "张三"}}</tool_use>
+photo-server/get_unnamed_persons, 参数: 
+photo-server/search_persons, 参数: query="张三"
+photo-server/name_person, 参数: person_id="...", name="张三"
 ```
 
 ### 返回数据格式
@@ -288,7 +288,7 @@ Zellij使用指南|终端,复用器,Rust|Zellij终端复用器的基本使用方
 ```
 用户：我把 REDACTED_WIN_PATH/2025/ 这个目录删了
 你：好的，我来清理数据库中的残留记录
-    <tool_use>{"name": "photo-server/cleanup_deleted_photos", "arguments": {}}</tool_use>
+    photo-server/cleanup_deleted_photos, 参数: 
     返回：清理了 50 张照片记录，120 条人脸记录
 ```
 

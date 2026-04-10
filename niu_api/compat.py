@@ -20,12 +20,14 @@ class ChatRequest(BaseModel):
     """Chat request"""
 
     message: str
+    session_id: Optional[str] = None
 
 
 class ChatResponse(BaseModel):
     """Chat response"""
 
     reply: str
+    session_id: Optional[str] = None
 
 
 class MessageResponse(BaseModel):
@@ -189,7 +191,7 @@ async def chat_session(request: ChatRequest) -> ChatResponse:
     if full_reply.strip():
         await store.add_message(role="assistant", content=full_reply)
 
-    return ChatResponse(reply=full_reply)
+    return ChatResponse(reply=full_reply, session_id="default")
 
 
 @router.get("/api/context/messages")
