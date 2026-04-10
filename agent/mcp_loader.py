@@ -25,6 +25,7 @@ REQUIRED_SERVERS: List[Tuple[str, str]] = [
     ("file-parser", "niu_file_parser"),
     ("session-manager", "niu_session_manager"),
     ("scheduler-server", "niu_scheduler_server"),
+    ("page-agent-mcp", "niu_page_agent"),
 ]
 
 
@@ -68,6 +69,12 @@ def _add_server_workdirs_to_sys_path(config: dict) -> None:
         if workdir_path.exists() and str(workdir_path) not in sys.path:
             sys.path.insert(0, str(workdir_path))
             logger.debug(f"Added to sys.path: {workdir_path}")
+
+    # Special handling for page-agent-mcp: add its src/ directory to sys.path
+    page_agent_src = project_root / "mcp-servers" / "page-agent-mcp" / "src"
+    if page_agent_src.exists() and str(page_agent_src) not in sys.path:
+        sys.path.insert(0, str(page_agent_src))
+        logger.debug(f"Added page-agent-mcp src to sys.path: {page_agent_src}")
 
 
 # ============================================================================
