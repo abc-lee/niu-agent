@@ -8,6 +8,11 @@ HTTP API server for Niu Agent using FastAPI + Uvicorn
 
 import sys
 import os
+import subprocess
+import threading
+import time
+from pathlib import Path
+from datetime import datetime, timedelta
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -56,6 +61,31 @@ async def lifespan(app: FastAPI):
     start_scheduler()
     logger.info("Internal scheduler started")
 
+    # 3.5. Start page-agent-mcp (Node.js browser automation)
+    page_agent_process = None
+    try:
+        project_root = Path(__file__).parent.parent
+        node_script = project_root / "mcp-servers" / "page-agent-mcp" / "src" / "index.js"
+        if node_script.exists():
+            logger.info("Starting page-agent-mcp...")
+            # Start Node.js process
+            page_agent_process = subprocess.Popen(
+                ["node", str(node_script)],
+                cwd=str(project_root),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            # Wait a bit for startup
+            time.sleep(2)
+            if page_agent_process.poll() is None:
+                logger.info("page-agent-mcp started successfully")
+            else:
+                logger.warning("page-agent-mcp exited immediately")
+        else:
+            logger.warning(f"page-agent-mcp not found at {node_script}")
+    except Exception as e:
+        logger.warning(f"Failed to start page-agent-mcp: {e}")
+
     # 4. Load MCP tools using ToolRegistry
     logger.info("Loading MCP tools...")
     from agent.mcp_loader import load_mcp_tools
@@ -78,9 +108,6 @@ async def lifespan(app: FastAPI):
     logger.info("Preload complete, ready to show window")
 
     # 7. Run weekly vector cleanup if needed
-    from pathlib import Path
-    from datetime import datetime, timedelta
-
     cleanup_status_file = Path.home() / ".niu" / "last_cleanup.txt"
     should_cleanup = False
 
@@ -97,10 +124,8 @@ async def lifespan(app: FastAPI):
 
     if should_cleanup:
         logger.info("Scheduling weekly vector cleanup in 3 minutes...")
-        import threading
 
         def delayed_cleanup():
-            import time
             time.sleep(180)  # 延时 3 分钟
             try:
                 from agent.vector_cleanup import get_cleanup_service
@@ -118,6 +143,17 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     logger.info("Niu API Server shutting down...")
+
+    # Stop page-agent-mcp if running
+    if page_agent_process and page_agent_process.poll() is None:
+        logger.info("Stopping page-agent-mcp...")
+        page_agent_process.terminate()
+        try:
+            page_agent_process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            page_agent_process.kill()
+        logger.info("page-agent-mcp stopped")
+
     from niu_api.internal.scheduler import stop_scheduler
     stop_scheduler()
     logger.info("Niu API Server shutdown complete")
