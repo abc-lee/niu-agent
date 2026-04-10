@@ -63,8 +63,9 @@ logs/*.txt
 *.db
 *.sqlite
 .temp-backup/
-ui/assistant/node_modules/eventsource-parser/
-ui/assistant/node_modules/eventsource/
+# Node modules
+node_modules/
+ui/*/node_modules/
 
 # Config with sensitive data
 config/user-config.json
