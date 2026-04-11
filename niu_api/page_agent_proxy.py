@@ -30,14 +30,6 @@ router = APIRouter(prefix="/proxy/v1", tags=["page-agent-proxy"])
 # ============================================================================
 
 
-class OpenAIMessage(BaseModel):
-    """OpenAI message format"""
-
-    role: str
-    content: Optional[str] = None  # Can be None when tool_calls present
-    name: Optional[str] = None
-
-
 class OpenAIToolCallFunction(BaseModel):
     """OpenAI tool call function"""
 
@@ -51,6 +43,15 @@ class OpenAIToolCall(BaseModel):
     id: str
     type: str = "function"
     function: OpenAIToolCallFunction
+
+
+class OpenAIMessage(BaseModel):
+    """OpenAI message format"""
+
+    role: str
+    content: Optional[str] = None  # Can be None when tool_calls present
+    name: Optional[str] = None
+    tool_calls: Optional[List[OpenAIToolCall]] = None
 
 
 class OpenAITool(BaseModel):
@@ -139,12 +140,30 @@ def litellm_to_openai_response(
     choices = []
     for idx, choice in enumerate(litellm_response.get("choices", [])):
         message = choice.get("message", {})
+
+        # Convert tool_calls from dict to OpenAIToolCall if present
+        tool_calls = None
+        if message.get("tool_calls"):
+            tool_calls = []
+            for tc in message["tool_calls"]:
+                tool_calls.append(
+                    OpenAIToolCall(
+                        id=tc["id"],
+                        type=tc.get("type", "function"),
+                        function=OpenAIToolCallFunction(
+                            name=tc["function"]["name"],
+                            arguments=tc["function"]["arguments"],
+                        ),
+                    )
+                )
+
         choices.append(
             OpenAIChatResponseChoice(
                 index=idx,
                 message=OpenAIMessage(
                     role=message.get("role", "assistant"),
-                    content=message.get("content", ""),
+                    content=message.get("content"),
+                    tool_calls=tool_calls,
                 ),
                 finish_reason=choice.get("finish_reason", "stop"),
             )
@@ -247,12 +266,13 @@ async def call_llm_via_litellm(
             tool_calls_list = []
             if mock_response and hasattr(mock_response, 'tool_calls'):
                 for tc in mock_response.tool_calls:
+                    args_str = tc.function.arguments if isinstance(tc.function.arguments, str) else json.dumps(tc.function.arguments)
                     tool_calls_list.append({
                         "id": tc.id,
                         "type": "function",
                         "function": {
                             "name": tc.function.name,
-                            "arguments": tc.function.arguments if isinstance(tc.function.arguments, str) else json.dumps(tc.function.arguments)
+                            "arguments": args_str
                         }
                     })
 
@@ -264,6 +284,7 @@ async def call_llm_via_litellm(
             logger.info(f"[Page-Agent Proxy] Content length: {len(full_text)}")
             if tool_calls_list:
                 logger.info(f"[Page-Agent Proxy] Tool call names: {[tc['function']['name'] for tc in tool_calls_list]}")
+                logger.info(f"[Page-Agent Proxy] First tool call: {json.dumps(tool_calls_list[0], ensure_ascii=False)}")
 
             response = {
                 "choices": [
