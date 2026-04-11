@@ -333,6 +333,44 @@ const apiServer = http.createServer(async (req, res) => {
 
     const url = new URL(req.url, `http://localhost:${API_PORT}`)
 
+    // POST /execute - execute task (async)
+    if (req.method === 'POST' && url.pathname === '/execute') {
+        let body = ''
+        req.on('data', chunk => body += chunk)
+        req.on('end', async () => {
+            try {
+                const { task } = JSON.parse(body)
+
+                // 增强任务：注入知识库内容
+                const enhancedTask = await enhanceTaskWithKnowledge(task)
+
+                // 判断是否需要知识库增强的系统提示词
+                const needsKnowledgeSystemPrompt = enhancedTask !== task
+
+                // 构建配置（注入系统提示词）
+                const config = {
+                    ...(Object.keys(llmConfig).length > 0 ? llmConfig : {}),
+                    systemInstruction: needsKnowledgeSystemPrompt
+                        ? SYSTEM_PROMPTS.knowledge_enhanced
+                        : undefined
+                }
+
+                // 同步执行（等待完成）
+                const result = await hub.executeTask(enhancedTask, config)
+
+                res.writeHead(200, { 'Content-Type': 'application/json' })
+                res.end(JSON.stringify({
+                    success: result.success,
+                    data: result.data
+                }))
+            } catch (err) {
+                res.writeHead(500, { 'Content-Type': 'application/json' })
+                res.end(JSON.stringify({ error: err.message }))
+            }
+        })
+        return
+    }
+
     // GET /status - get hub status
     if (req.method === 'GET' && url.pathname === '/status') {
         res.writeHead(200, { 'Content-Type': 'application/json' })
