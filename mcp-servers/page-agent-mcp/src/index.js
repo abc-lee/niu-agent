@@ -333,7 +333,7 @@ const apiServer = http.createServer(async (req, res) => {
 
     const url = new URL(req.url, `http://localhost:${API_PORT}`)
 
-    // POST /execute - execute task (async)
+    // POST /execute - execute task (sync)
     if (req.method === 'POST' && url.pathname === '/execute') {
         let body = ''
         req.on('data', chunk => body += chunk)
@@ -344,19 +344,16 @@ const apiServer = http.createServer(async (req, res) => {
                 // 增强任务：注入知识库内容
                 const enhancedTask = await enhanceTaskWithKnowledge(task)
 
-                // 判断是否需要知识库增强的系统提示词
-                const needsKnowledgeSystemPrompt = enhancedTask !== task
-
-                // 构建配置（注入系统提示词）
-                const config = {
-                    ...(Object.keys(llmConfig).length > 0 ? llmConfig : {}),
-                    systemInstruction: needsKnowledgeSystemPrompt
-                        ? SYSTEM_PROMPTS.knowledge_enhanced
-                        : undefined
+                // 强制使用本地代理（覆盖扩展自己的配置）
+                const proxyConfig = {
+                    baseURL: 'http://localhost:9876/proxy/v1',
+                    model: 'local',
+                    apiKey: 'local',
+                    systemInstruction: SYSTEM_PROMPTS.knowledge_enhanced
                 }
 
                 // 同步执行（等待完成）
-                const result = await hub.executeTask(enhancedTask, config)
+                const result = await hub.executeTask(enhancedTask, proxyConfig)
 
                 res.writeHead(200, { 'Content-Type': 'application/json' })
                 res.end(JSON.stringify({
@@ -417,19 +414,16 @@ mcpServer.registerTool(
             // 增强任务：注入知识库内容
             const enhancedTask = await enhanceTaskWithKnowledge(task)
 
-            // 判断是否需要知识库增强的系统提示词
-            const needsKnowledgeSystemPrompt = enhancedTask !== task
-
-            // 构建配置（注入系统提示词）
-            const config = {
-                ...(Object.keys(llmConfig).length > 0 ? llmConfig : {}),
-                systemInstruction: needsKnowledgeSystemPrompt
-                    ? SYSTEM_PROMPTS.knowledge_enhanced
-                    : undefined
+            // 强制使用本地代理（覆盖扩展自己的配置）
+            const proxyConfig = {
+                baseURL: 'http://localhost:9876/proxy/v1',
+                model: 'local',
+                apiKey: 'local',
+                systemInstruction: SYSTEM_PROMPTS.knowledge_enhanced
             }
 
             // 异步执行（不等待）
-            hub.executeTask(enhancedTask, config)
+            hub.executeTask(enhancedTask, proxyConfig)
                 .then(result => {
                     // 任务完成，通知主 API
                     notifyTaskComplete(result)
