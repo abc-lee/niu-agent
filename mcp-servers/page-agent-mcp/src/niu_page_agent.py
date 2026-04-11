@@ -25,13 +25,33 @@ API_BASE_URL = f"http://localhost:{API_PORT}"
 
 TOOL_SCHEMAS = {
     "execute_task": {
-        "description": "Execute a task in user's browser. The task description should be specific and include the expected result.",
+        "description": """Execute a browser automation task in interactive mode.
+
+BEHAVIOR:
+- Simple operations (navigate, click, read): usually 5-15 seconds
+- Complex forms: may take 1-2 minutes to complete
+- If initial method fails: browser agent MAY try alternative approaches (this is built-in)
+- Each call: independent with 2-minute timeout (auto-resets per call)
+
+YOU (Main Agent) CONTROL THE WORKFLOW:
+- Break complex tasks into smaller steps
+- Each execute_task call is a checkpoint
+- If timeout or error: analyze result and decide next steps
+- Total control is YOURS through multiple calls
+
+Example MBTI test workflow:
+1. execute_task("Navigate to [URL], get first question") → returns question
+2. [You analyze and decide answer]
+3. execute_task("Click option B, return next question") → returns next question
+4. [Repeat...]
+
+Timeouts are NORMAL - they mean the browser agent tried its best but couldn't complete. You decide whether to retry, use alternative approach, or ask user for help.""",
         "input_schema": {
             "type": "object",
             "properties": {
                 "task": {
                     "type": "string",
-                    "description": "Task description in natural language. Give specific instructions for the task. Steps are preferable. Include the information you want to get after the task is done."
+                    "description": "Natural language task description. Include:\n1. Current context (URL, page state)\n2. What to do\n3. What to return\n\nExamples:\n- 'Navigate to https://example.com, return page title'\n- 'On current MBTI test page, click option A and return next question'\n- 'Fill the form with name=John, email=john@example.com, return success or error'"
                 }
             },
             "required": ["task"]
@@ -79,8 +99,10 @@ def _http_post(endpoint: str, data: dict = None) -> dict:
         req_data = json.dumps(data if data else {}).encode('utf-8')
         req = urllib.request.Request(url, data=req_data, headers=headers, method='POST')
 
-        # 超时时间设置为10分钟，支持复杂浏览器自动化任务
-        with urllib.request.urlopen(req, timeout=600) as response:
+        # 交互模式：2分钟超时，支持复杂表单填写等操作
+        # 如果扩展内部尝试多种方法可能超时，主Agent会收到超时错误并决定下一步
+        # 每个execute_task调用都会重置这个超时计时器
+        with urllib.request.urlopen(req, timeout=120) as response:
             return json.loads(response.read().decode('utf-8'))
     except urllib.error.HTTPError as e:
         error_body = e.read().decode('utf-8')
@@ -127,7 +149,13 @@ def execute_task(task: str) -> str:
     Returns:
         Task result or error message.
     """
-    result = _http_post("/execute", {"task": task})
+    # 添加交互模式提示（扩展可能不完全遵守，但有助于指导行为）
+    interactive_hint = """
+INTERACTIVE MODE: Return results promptly. If you encounter difficulties, report them clearly so Main Agent can decide next steps.
+"""
+    enhanced_task = interactive_hint + "\n" + task
+
+    result = _http_post("/execute", {"task": enhanced_task})
 
     if "error" in result:
         return f"Error: {result['error']}"
