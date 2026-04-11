@@ -25,7 +25,9 @@ REQUIRED_SERVERS: List[Tuple[str, str]] = [
     ("file-parser", "niu_file_parser"),
     ("session-manager", "niu_session_manager"),
     ("scheduler-server", "niu_scheduler_server"),
-    ("page-agent-mcp", "niu_page_agent"),
+    # page-agent-mcp 是 Node.js 服务，不作为 Python 模块加载
+    # 它是独立运行的外部服务，通过 HTTP API 调用
+    # ("page-agent-mcp", "niu_page_agent"),
 ]
 
 
@@ -116,6 +118,14 @@ def load_mcp_tools(required_servers: Optional[List[Tuple[str, str]]] = None) -> 
             f"  - {s}" for s in failed_servers
         )
         raise RuntimeError(error_msg)
+
+    # 手动注册 page-agent-mcp（外部 Node.js 服务）
+    try:
+        import niu_page_agent
+        registry.register_server("page-agent-mcp", niu_page_agent)
+        logger.info("Manually registered page-agent-mcp tools")
+    except Exception as e:
+        logger.warning(f"Failed to register page-agent-mcp: {e}")
 
     logger.info(f"All {len(servers)} servers loaded")
 
