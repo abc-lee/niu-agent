@@ -79,7 +79,8 @@ def _http_post(endpoint: str, data: dict = None) -> dict:
         req_data = json.dumps(data if data else {}).encode('utf-8')
         req = urllib.request.Request(url, data=req_data, headers=headers, method='POST')
 
-        with urllib.request.urlopen(req, timeout=120) as response:
+        # 超时时间设置为10分钟，支持复杂浏览器自动化任务
+        with urllib.request.urlopen(req, timeout=600) as response:
             return json.loads(response.read().decode('utf-8'))
     except urllib.error.HTTPError as e:
         error_body = e.read().decode('utf-8')
