@@ -81,15 +81,6 @@ page-agent-mcp:
   workdir: .
   preload: true
 
-# Page Agent Server - Browser automation via Chrome extension (Python)
-page-agent-server:
-  command: ${PYTHON_PATH}
-  args:
-    - "-m"
-    - "niu_page_agent"
-  workdir: mcp-servers/page-agent-server/src
-  preload: true
-
 # Nanobot System - Built-in system tools (not a real MCP server, added programmatically)
 # This entry exists to satisfy validation that references all defined servers
 nanobot.system:
