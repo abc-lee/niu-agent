@@ -25,7 +25,6 @@ REQUIRED_SERVERS: List[Tuple[str, str]] = [
     ("file-parser", "niu_file_parser"),
     ("session-manager", "niu_session_manager"),
     ("scheduler-server", "niu_scheduler_server"),
-    ("page-agent-server", "niu_page_agent"),  # Python server (新架构)
 ]
 
 
