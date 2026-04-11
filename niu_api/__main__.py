@@ -30,6 +30,7 @@ from niu_api.injector import router as injector_router
 from niu_api.alerts_api import router as alerts_router
 from niu_api.page_agent_proxy import router as page_agent_proxy_router
 from niu_api.kb import router as kb_router
+from niu_api.async_task_api import router as async_task_router
 
 
 # Configure logging
@@ -162,6 +163,7 @@ app.include_router(kb_router)  # Knowledge Base API for Page-Agent
 # Mount scheduler router
 from niu_api.internal.scheduler import scheduler_router
 app.include_router(scheduler_router)
+app.include_router(async_task_router)  # Async Task API (scheduler pattern)
 
 
 @app.get("/health")
