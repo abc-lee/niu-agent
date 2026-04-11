@@ -107,12 +107,18 @@ export class HubBridge {
 				cmd = 'open'
 			} else if (platform() === 'win32') {
 				cmd = 'start ""'
-			} else {
+			} else if (platform() === 'linux') {
 				cmd = 'xdg-open'
+			} else {
+				console.error(`[hub-bridge] Unsupported platform: ${platform()}, please open browser manually: ${url}`)
+				// 继续等待连接（用户可能手动打开）
 			}
-			exec(`${cmd} "${url}"`, (err) => {
-				if (err) console.error('[hub-bridge] Failed to open browser:', err.message)
-			})
+
+			if (cmd) {
+				exec(`${cmd} "${url}"`, (err) => {
+					if (err) console.error('[hub-bridge] Failed to open browser:', err.message)
+				})
+			}
 
 			// 等待连接建立（最多10秒）
 			await this.waitForConnection(10000)

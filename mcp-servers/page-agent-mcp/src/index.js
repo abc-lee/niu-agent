@@ -306,20 +306,7 @@ if (!llmConfig.baseURL) {
 const hub = new HubBridge(port)
 try {
     await hub.start()
-    // Open launcher in default browser (only if we started our own hub)
-    const url = `http://localhost:${port}`
-    let cmd
-    if (platform() === 'darwin') {
-        cmd = 'open'
-    } else if (platform() === 'win32') {
-        // Windows: use start with empty title to avoid "start" being interpreted as window title
-        cmd = 'start ""'
-    } else {
-        cmd = 'xdg-open'
-    }
-    exec(`${cmd} "${url}"`, (err) => {
-        if (err) console.error(`[page-agent-mcp] Could not open browser: ${err.message}`)
-    })
+    // Browser will be opened on-demand by hub-bridge.js when executeTask is called
 } catch (err) {
     if (err.message.includes('EADDRINUSE')) {
         console.error(`[page-agent-mcp] Port ${port} already in use - another instance may be running`)
