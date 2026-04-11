@@ -173,7 +173,7 @@ ${knowledgeParts.join('\n\n---\n\n')}
 /**
  * 通知主 Agent 任务完成（照搬定时任务的 trigger_callback）
  */
-async function notifyTaskComplete(taskId, result) {
+async function notifyTaskComplete(result) {
     try {
         // 调用主 API 的通知接口（类似 trigger_callback 调用 /chat/sync）
         await fetch('http://localhost:9876/api/async-task/notify', {
@@ -181,12 +181,11 @@ async function notifyTaskComplete(taskId, result) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 type: 'task_complete',
-                task_id: taskId,
                 result: result.success ? result.data : null,
                 error: result.success ? null : result.data
             })
         })
-        console.error(`[async-task] Task ${taskId} completed, notified main agent`)
+        console.error(`[async-task] Task completed, notified main agent`)
     } catch (error) {
         console.error(`[async-task] Failed to notify completion: ${error.message}`)
     }
@@ -195,18 +194,17 @@ async function notifyTaskComplete(taskId, result) {
 /**
  * 通知主 Agent 任务失败
  */
-async function notifyTaskFailed(taskId, errorMessage) {
+async function notifyTaskFailed(errorMessage) {
     try {
         await fetch('http://localhost:9876/api/async-task/notify', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 type: 'task_failed',
-                task_id: taskId,
                 error: errorMessage
             })
         })
-        console.error(`[async-task] Task ${taskId} failed: ${errorMessage}`)
+        console.error(`[async-task] Task failed: ${errorMessage}`)
     } catch (error) {
         console.error(`[async-task] Failed to notify failure: ${error.message}`)
     }
@@ -391,9 +389,6 @@ mcpServer.registerTool(
     },
     async ({ task }) => {
         try {
-            // 生成任务 ID
-            const taskId = `task_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
-
             // 增强任务：注入知识库内容
             const enhancedTask = await enhanceTaskWithKnowledge(task)
 
@@ -412,57 +407,22 @@ mcpServer.registerTool(
             hub.executeTask(enhancedTask, config)
                 .then(result => {
                     // 任务完成，通知主 API
-                    notifyTaskComplete(taskId, result)
+                    notifyTaskComplete(result)
                 })
                 .catch(error => {
                     // 任务失败
-                    notifyTaskFailed(taskId, error.message)
+                    notifyTaskFailed(error.message)
                 })
 
-            // 立即返回 task_id
+            // 立即返回
             return {
                 content: [
                     {
                         type: 'text',
                         text: JSON.stringify({
                             success: true,
-                            task_id: taskId,
-                            message: 'Task started in background. Will notify when done.',
-                            status: 'pending'
+                            message: 'Task started in background. Will notify when done.'
                         }, null, 2),
-                    },
-                ],
-            }
-        } catch (err) {
-            return {
-                content: [{ type: 'text', text: `Error: ${err.message}` }],
-                isError: true,
-            }
-        }
-    }
-)
-
-mcpServer.registerTool(
-    'get_task_result',
-    {
-        description: "Get the result of an asynchronous task. Returns task status and result if completed.",
-        inputSchema: {
-            task_id: z
-                .string()
-                .describe('Task ID returned by execute_task')
-        },
-    },
-    async ({ task_id }) => {
-        try {
-            // 查询任务状态（调用主 API）
-            const response = await fetch(`http://localhost:9876/async-task/${task_id}`)
-            const data = await response.json()
-
-            return {
-                content: [
-                    {
-                        type: 'text',
-                        text: JSON.stringify(data, null, 2),
                     },
                 ],
             }

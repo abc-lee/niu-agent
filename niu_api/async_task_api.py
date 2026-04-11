@@ -21,7 +21,6 @@ router = APIRouter(prefix="/api/async-task", tags=["async-tasks"])
 class TaskNotifyRequest(BaseModel):
     """异步任务完成通知请求"""
     type: str  # "task_complete" | "task_failed"
-    task_id: str
     result: Optional[str] = None
     error: Optional[str] = None
 
@@ -33,7 +32,7 @@ async def notify_async_task(request: TaskNotifyRequest):
 
     参考：niu_api/internal/scheduler/service.py:trigger_callback
     """
-    logger.info(f"[ASYNC-TASK] Received notification: type={request.type}, task_id={request.task_id}")
+    logger.info(f"[ASYNC-TASK] Received notification: type={request.type}")
 
     # 1. 构建提示词（照搬定时任务）
     if request.type == "task_complete":
