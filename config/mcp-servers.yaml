@@ -81,7 +81,7 @@ page-agent-mcp:
   args:
     - "mcp-servers/page-agent-mcp/src/index.js"
   workdir: mcp-servers/page-agent-mcp/src
-  preload: false  # 外部服务，不需要预加载
+  preload: true  # 自动启动浏览器自动化服务
 
 # Nanobot System - Built-in system tools (not a real MCP server, added programmatically)
 # This entry exists to satisfy validation that references all defined servers
