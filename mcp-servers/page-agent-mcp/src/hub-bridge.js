@@ -6,6 +6,7 @@ import { WebSocketServer } from 'ws'
 
 const EXT_ID = 'akldabonmimlicnjlflnapfeklbfemhj'
 const STORE_URL = `https://chromewebstore.google.com/detail/page-agent-ext/${EXT_ID}`
+const LOOPBACK_HOST = 'localhost'
 
 const launcherTemplate = readFileSync(
 	fileURLToPath(new URL('./launcher.html', import.meta.url)),
@@ -53,20 +54,17 @@ export class HubBridge {
 		return new Promise((resolve, reject) => {
 			this.#httpServer.on('error', (/** @type {NodeJS.ErrnoException} */ err) => {
 				if (err.code === 'EADDRINUSE') {
-					// Port in use - this is expected if another instance is running
-					console.error(`[HubBridge] Port ${this.port} already in use - will operate in client mode`)
-					// Don't reject - we'll operate in a degraded mode where we can't execute tasks
-					// but can still report the status
-					resolve()
+					reject(
+						new Error(`Port ${this.port} is in use. Another Page Agent MCP server may be running.`)
+					)
 				} else {
 					reject(err)
 				}
 			})
-			this.#httpServer.on('listening', () => {
-				console.error(`[HubBridge] HTTP + WS on http://localhost:${this.port}`)
+			this.#httpServer.listen(this.port, LOOPBACK_HOST, () => {
+				console.error(`[page-agent-mcp] HTTP + WS on http://${LOOPBACK_HOST}:${this.port}`)
 				resolve()
 			})
-			this.#httpServer.listen(this.port)
 		})
 	}
 
@@ -96,6 +94,11 @@ export class HubBridge {
 	stopTask() {
 		if (this.connected) {
 			this.#hub.send(JSON.stringify({ type: 'stop' }))
+		}
+		// 清理 pendingTask，避免 busy 状态卡住
+		if (this.#pendingTask) {
+			this.#pendingTask.reject(new Error('Task stopped by user'))
+			this.#pendingTask = null
 		}
 	}
 
