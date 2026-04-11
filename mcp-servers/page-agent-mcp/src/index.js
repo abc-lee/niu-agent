@@ -10,6 +10,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { exec } from 'node:child_process'
 import { platform, arch } from 'node:os'
+import http from 'node:http'
 import * as z from 'zod/v4'
 import { readFileSync, existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
@@ -136,6 +137,72 @@ try {
         throw err
     }
 }
+
+// ============== HTTP REST API for Python Client ==============
+
+const API_PORT = parseInt(env.API_PORT || '38402')
+const apiServer = http.createServer(async (req, res) => {
+    // CORS headers
+    res.setHeader('Access-Control-Allow-Origin', '*')
+    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS')
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+
+    if (req.method === 'OPTIONS') {
+        res.writeHead(200)
+        res.end()
+        return
+    }
+
+    const url = new URL(req.url, `http://localhost:${API_PORT}`)
+
+    // POST /execute - execute task
+    if (req.method === 'POST' && url.pathname === '/execute') {
+        let body = ''
+        req.on('data', chunk => body += chunk)
+        req.on('end', async () => {
+            try {
+                const { task } = JSON.parse(body)
+                const config = Object.keys(llmConfig).length > 0 ? llmConfig : undefined
+                const result = await hub.executeTask(task, config)
+                res.writeHead(200, { 'Content-Type': 'application/json' })
+                res.end(JSON.stringify({
+                    success: result.success,
+                    data: result.data
+                }))
+            } catch (err) {
+                res.writeHead(500, { 'Content-Type': 'application/json' })
+                res.end(JSON.stringify({ error: err.message }))
+            }
+        })
+        return
+    }
+
+    // GET /status - get hub status
+    if (req.method === 'GET' && url.pathname === '/status') {
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({
+            connected: hub.connected,
+            busy: hub.busy
+        }))
+        return
+    }
+
+    // POST /stop - stop task
+    if (req.method === 'POST' && url.pathname === '/stop') {
+        hub.stopTask()
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ message: 'Stop signal sent' }))
+        return
+    }
+
+    // 404 for unknown routes
+    res.writeHead(404, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ error: 'Not found' }))
+})
+
+apiServer.listen(API_PORT, 'localhost', () => {
+    console.error(`[page-agent-mcp] REST API on http://localhost:${API_PORT}`)
+})
 
 // ============== MCP Server ==============
 
