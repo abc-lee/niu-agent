@@ -397,8 +397,16 @@ mcpServer.registerTool(
             // 增强任务：注入知识库内容
             const enhancedTask = await enhanceTaskWithKnowledge(task)
 
-            // 启动后台任务
-            const config = Object.keys(llmConfig).length > 0 ? llmConfig : undefined
+            // 判断是否需要知识库增强的系统提示词
+            const needsKnowledgeSystemPrompt = enhancedTask !== task
+
+            // 构建配置（注入系统提示词）
+            const config = {
+                ...(Object.keys(llmConfig).length > 0 ? llmConfig : {}),
+                systemInstruction: needsKnowledgeSystemPrompt
+                    ? SYSTEM_PROMPTS.knowledge_enhanced
+                    : undefined
+            }
 
             // 异步执行（不等待）
             hub.executeTask(enhancedTask, config)
@@ -441,7 +449,7 @@ mcpServer.registerTool(
         inputSchema: {
             task_id: z
                 .string()
-                .describe('Task ID returned by execute_task_async')
+                .describe('Task ID returned by execute_task')
         },
     },
     async ({ task_id }) => {
