@@ -3,6 +3,8 @@ import { readFileSync } from 'node:fs'
 import http from 'node:http'
 import { fileURLToPath } from 'node:url'
 import { WebSocketServer } from 'ws'
+import { exec } from 'node:child_process'
+import { platform } from 'node:os'
 
 const EXT_ID = 'akldabonmimlicnjlflnapfeklbfemhj'
 const STORE_URL = `https://chromewebstore.google.com/detail/page-agent-ext/${EXT_ID}`
@@ -99,8 +101,6 @@ export class HubBridge {
 			console.error('[hub-bridge] Hub not connected, attempting to open browser...')
 
 			// 打开浏览器到 launcher 页面
-			const { exec } = require('child_process')
-			const { platform } = require('os')
 			const url = `http://localhost:${this.port}`
 			let cmd
 			if (platform() === 'darwin') {
