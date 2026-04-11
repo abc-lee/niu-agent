@@ -246,6 +246,21 @@ def register_mcp_tools():
             }
         },
 
+        # ==================== Page-Agent 浏览器自动化工具 ====================
+        {
+            "server": "page-agent-server",
+            "name": "browse_web",
+            "description": "Browser automation tool for web browsing, searching, form filling, data extraction, and task automation. Use when user says 'search', 'open webpage', 'browse', 'fill form', 'login', 'scrape data', 'book tickets', 'monitor website'. Supports natural language control of browser operations.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "description": "Browser action to perform"},
+                    "params": {"type": "object", "description": "Action parameters"}
+                },
+                "required": ["action"]
+            }
+        },
+
         # ==================== 以下工具不索引到向量库 ====================
         # scheduler-server (4个) - 子Agent专用，主Agent通过chat-with-event-manager委托
         # file-parser (2个) - 底层操作，不暴露
@@ -624,6 +639,308 @@ def register_query_patterns():
                 "is_recursive": True,
                 "refined_query": "photo ingestion",
                 "description": "Ingest photos to gallery"
+            }
+        },
+
+        # ==================== 任务管理类（英文）====================
+        {
+            "id": "query_pattern:cancel_task",
+            "content": "cancel reminder or task",
+            "metadata": {
+                "level": "l1",
+                "category": "query_pattern",
+                "language": "en",
+                "type": "query_pattern",
+                "is_recursive": True,
+                "refined_query": "cancel scheduled task",
+                "target_category": "mcp_tool",
+                "description": "User wants to cancel a reminder or task"
+            }
+        },
+        {
+            "id": "query_pattern:list_tasks",
+            "content": "list all reminders",
+            "metadata": {
+                "level": "l1",
+                "category": "query_pattern",
+                "language": "en",
+                "type": "query_pattern",
+                "is_recursive": True,
+                "refined_query": "list scheduled tasks",
+                "target_category": "mcp_tool",
+                "description": "User wants to see all reminders or tasks"
+            }
+        },
+        {
+            "id": "query_pattern:update_task",
+            "content": "update or modify reminder",
+            "metadata": {
+                "level": "l1",
+                "category": "query_pattern",
+                "language": "en",
+                "type": "query_pattern",
+                "is_recursive": True,
+                "refined_query": "update scheduled task",
+                "target_category": "mcp_tool",
+                "description": "User wants to modify an existing reminder"
+            }
+        },
+
+        # ==================== 任务管理类（中文）====================
+        {
+            "id": "query_pattern:zh_cancel_1",
+            "content": "取消提醒",
+            "metadata": {
+                "level": "l1",
+                "category": "query_pattern",
+                "language": "zh",
+                "type": "query_pattern",
+                "is_recursive": True,
+                "refined_query": "cancel scheduled task",
+                "target_category": "mcp_tool",
+                "description": "用户想取消提醒"
+            }
+        },
+        {
+            "id": "query_pattern:zh_cancel_2",
+            "content": "删除定时任务",
+            "metadata": {
+                "level": "l1",
+                "category": "query_pattern",
+                "language": "zh",
+                "type": "query_pattern",
+                "is_recursive": True,
+                "refined_query": "cancel scheduled task",
+                "target_category": "mcp_tool",
+                "description": "用户想删除定时任务"
+            }
+        },
+        {
+            "id": "query_pattern:zh_list_1",
+            "content": "查看定时任务",
+            "metadata": {
+                "level": "l1",
+                "category": "query_pattern",
+                "language": "zh",
+                "type": "query_pattern",
+                "is_recursive": True,
+                "refined_query": "list scheduled tasks",
+                "target_category": "mcp_tool",
+                "description": "用户想查看所有定时任务"
+            }
+        },
+        {
+            "id": "query_pattern:zh_list_2",
+            "content": "显示所有提醒",
+            "metadata": {
+                "level": "l1",
+                "category": "query_pattern",
+                "language": "zh",
+                "type": "query_pattern",
+                "is_recursive": True,
+                "refined_query": "list scheduled tasks",
+                "target_category": "mcp_tool",
+                "description": "用户想看所有提醒"
+            }
+        },
+        {
+            "id": "query_pattern:zh_update_1",
+            "content": "修改提醒时间",
+            "metadata": {
+                "level": "l1",
+                "category": "query_pattern",
+                "language": "zh",
+                "type": "query_pattern",
+                "is_recursive": True,
+                "refined_query": "update scheduled task",
+                "target_category": "mcp_tool",
+                "description": "用户想修改提醒时间"
+            }
+        },
+        {
+            "id": "query_pattern:zh_update_2",
+            "content": "更改定时任务",
+            "metadata": {
+                "level": "l1",
+                "category": "query_pattern",
+                "language": "zh",
+                "type": "query_pattern",
+                "is_recursive": True,
+                "refined_query": "update scheduled task",
+                "target_category": "mcp_tool",
+                "description": "用户想更改定时任务"
+            }
+        },
+
+        # ==================== 浏览器自动化类（中文）====================
+        {
+            "id": "query_pattern:zh_search_web",
+            "content": "帮我搜索",
+            "metadata": {
+                "level": "l1",
+                "category": "query_pattern",
+                "language": "zh",
+                "type": "query_pattern",
+                "is_recursive": True,
+                "refined_query": "browser automation search webpage",
+                "target_category": "mcp_tool",
+                "description": "用户想搜索信息"
+            }
+        },
+        {
+            "id": "query_pattern:zh_open_webpage",
+            "content": "打开网页",
+            "metadata": {
+                "level": "l1",
+                "category": "query_pattern",
+                "language": "zh",
+                "type": "query_pattern",
+                "is_recursive": True,
+                "refined_query": "browser automation open webpage",
+                "target_category": "mcp_tool",
+                "description": "用户想打开某个网页"
+            }
+        },
+        {
+            "id": "query_pattern:zh_browse_website",
+            "content": "浏览网站",
+            "metadata": {
+                "level": "l1",
+                "category": "query_pattern",
+                "language": "zh",
+                "type": "query_pattern",
+                "is_recursive": True,
+                "refined_query": "browser automation browse website",
+                "target_category": "mcp_tool",
+                "description": "用户想浏览网站"
+            }
+        },
+        {
+            "id": "query_pattern:zh_fill_form",
+            "content": "填写表单",
+            "metadata": {
+                "level": "l1",
+                "category": "query_pattern",
+                "language": "zh",
+                "type": "query_pattern",
+                "is_recursive": True,
+                "refined_query": "browser automation fill form",
+                "target_category": "mcp_tool",
+                "description": "用户想自动填写表单"
+            }
+        },
+        {
+            "id": "query_pattern:zh_extract_content",
+            "content": "保存网页内容",
+            "metadata": {
+                "level": "l1",
+                "category": "query_pattern",
+                "language": "zh",
+                "type": "query_pattern",
+                "is_recursive": True,
+                "refined_query": "browser automation extract content",
+                "target_category": "mcp_tool",
+                "description": "用户想保存网页内容"
+            }
+        },
+        {
+            "id": "query_pattern:zh_book_ticket",
+            "content": "订票买票",
+            "metadata": {
+                "level": "l1",
+                "category": "query_pattern",
+                "language": "zh",
+                "type": "query_pattern",
+                "is_recursive": True,
+                "refined_query": "browser automation book tickets",
+                "target_category": "mcp_tool",
+                "description": "用户想订购机票车票"
+            }
+        },
+
+        # ==================== 浏览器自动化类（英文）====================
+        {
+            "id": "query_pattern:en_search_web",
+            "content": "search for information",
+            "metadata": {
+                "level": "l1",
+                "category": "query_pattern",
+                "language": "en",
+                "type": "query_pattern",
+                "is_recursive": True,
+                "refined_query": "browser automation search webpage",
+                "target_category": "mcp_tool",
+                "description": "User wants to search for information"
+            }
+        },
+        {
+            "id": "query_pattern:en_open_webpage",
+            "content": "open webpage",
+            "metadata": {
+                "level": "l1",
+                "category": "query_pattern",
+                "language": "en",
+                "type": "query_pattern",
+                "is_recursive": True,
+                "refined_query": "browser automation open webpage",
+                "target_category": "mcp_tool",
+                "description": "User wants to open a webpage"
+            }
+        },
+        {
+            "id": "query_pattern:en_browse_website",
+            "content": "browse website",
+            "metadata": {
+                "level": "l1",
+                "category": "query_pattern",
+                "language": "en",
+                "type": "query_pattern",
+                "is_recursive": True,
+                "refined_query": "browser automation browse website",
+                "target_category": "mcp_tool",
+                "description": "User wants to browse a website"
+            }
+        },
+        {
+            "id": "query_pattern:en_fill_form",
+            "content": "fill out form",
+            "metadata": {
+                "level": "l1",
+                "category": "query_pattern",
+                "language": "en",
+                "type": "query_pattern",
+                "is_recursive": True,
+                "refined_query": "browser automation fill form",
+                "target_category": "mcp_tool",
+                "description": "User wants to fill out a form"
+            }
+        },
+        {
+            "id": "query_pattern:en_extract_content",
+            "content": "save webpage content",
+            "metadata": {
+                "level": "l1",
+                "category": "query_pattern",
+                "language": "en",
+                "type": "query_pattern",
+                "is_recursive": True,
+                "refined_query": "browser automation extract content",
+                "target_category": "mcp_tool",
+                "description": "User wants to save webpage content"
+            }
+        },
+        {
+            "id": "query_pattern:en_book_ticket",
+            "content": "book tickets",
+            "metadata": {
+                "level": "l1",
+                "category": "query_pattern",
+                "language": "en",
+                "type": "query_pattern",
+                "is_recursive": True,
+                "refined_query": "browser automation book tickets",
+                "target_category": "mcp_tool",
+                "description": "User wants to book tickets"
             }
         },
     ]
