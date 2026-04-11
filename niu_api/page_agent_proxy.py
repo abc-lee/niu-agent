@@ -229,30 +229,19 @@ async def call_llm_via_litellm(
             gen = session.chat(messages=messages, tools=tools)
 
             # Consume generator to get MockResponse
+            # IMPORTANT: Must use next() to capture StopIteration return value
+            # for loop will auto-catch StopIteration and we lose the return value
             chunks = []
             mock_response = None
 
             try:
-                for chunk in gen:
+                while True:
+                    chunk = next(gen)
                     if isinstance(chunk, str):
                         chunks.append(chunk)
             except StopIteration as e:
                 # Generator returns MockResponse via StopIteration
                 mock_response = e.value
-
-            # If no StopIteration was raised, try to get the response
-            # (some generators might return directly)
-            if mock_response is None:
-                # Try one more time to get the return value
-                import inspect
-                if inspect.isgenerator(gen):
-                    try:
-                        while True:
-                            chunk = next(gen)
-                            if isinstance(chunk, str):
-                                chunks.append(chunk)
-                    except StopIteration as e:
-                        mock_response = e.value
 
             # Extract tool calls from MockResponse
             tool_calls_list = []
@@ -269,6 +258,12 @@ async def call_llm_via_litellm(
 
             # Build OpenAI-format response
             full_text = "".join(chunks)
+
+            logger.info(f"[Page-Agent Proxy] MockResponse exists: {mock_response is not None}")
+            logger.info(f"[Page-Agent Proxy] Tool calls count: {len(tool_calls_list)}")
+            logger.info(f"[Page-Agent Proxy] Content length: {len(full_text)}")
+            if tool_calls_list:
+                logger.info(f"[Page-Agent Proxy] Tool call names: {[tc['function']['name'] for tc in tool_calls_list]}")
 
             response = {
                 "choices": [
@@ -314,6 +309,9 @@ async def chat_completions(request: OpenAIChatRequest) -> OpenAIChatResponse:
     Used by Page-Agent browser extension.
     """
     logger.info(f"[Page-Agent Proxy] Received request: model={request.model}, messages={len(request.messages)}")
+    logger.info(f"[Page-Agent Proxy] Tools count: {len(request.tools) if request.tools else 0}")
+    if request.tools:
+        logger.info(f"[Page-Agent Proxy] Tool names: {[t.function.get('name') for t in request.tools if hasattr(t, 'function')]}")
 
     # Check LLM configuration
     config = get_llm_config()
