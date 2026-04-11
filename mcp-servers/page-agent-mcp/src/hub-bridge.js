@@ -77,16 +77,70 @@ export class HubBridge {
 	}
 
 	/**
+	 * 等待连接建立
+	 * @param {number} timeoutMs - 超时时间（毫秒）
+	 * @returns {Promise<void>}
+	 */
+	async waitForConnection(timeoutMs) {
+		const startTime = Date.now()
+		while (!this.connected && (Date.now() - startTime) < timeoutMs) {
+			await new Promise(resolve => setTimeout(resolve, 500))
+		}
+	}
+
+	/**
 	 * @param {string} task
 	 * @param {Record<string, unknown>} [config]
 	 * @returns {Promise<{success: boolean, data: string}>}
 	 */
 	async executeTask(task, config) {
-		if (!this.connected) throw new Error('Hub is not connected. Is the extension running?')
+		// 如果未连接，尝试打开浏览器并等待连接
+		if (!this.connected) {
+			console.error('[hub-bridge] Hub not connected, attempting to open browser...')
+
+			// 打开浏览器到 launcher 页面
+			const { exec } = require('child_process')
+			const { platform } = require('os')
+			const url = `http://localhost:${this.port}`
+			let cmd
+			if (platform() === 'darwin') {
+				cmd = 'open'
+			} else if (platform() === 'win32') {
+				cmd = 'start ""'
+			} else {
+				cmd = 'xdg-open'
+			}
+			exec(`${cmd} "${url}"`, (err) => {
+				if (err) console.error('[hub-bridge] Failed to open browser:', err.message)
+			})
+
+			// 等待连接建立（最多10秒）
+			await this.waitForConnection(10000)
+		}
+
+		if (!this.connected) {
+			throw new Error('Hub is not connected after waiting 10s. Is the extension running?')
+		}
+
 		if (this.#pendingTask) throw new Error('Agent is already running a task.')
 
+		// 添加超时保护（2分钟）
 		return new Promise((resolve, reject) => {
-			this.#pendingTask = { resolve, reject }
+			const timeout = setTimeout(() => {
+				this.#pendingTask = null
+				reject(new Error('Task execution timed out after 120s'))
+			}, 120000)
+
+			this.#pendingTask = {
+				resolve: (r) => {
+					clearTimeout(timeout)
+					resolve(r)
+				},
+				reject: (e) => {
+					clearTimeout(timeout)
+					reject(e)
+				}
+			}
 			this.#hub.send(JSON.stringify({ type: 'execute', task, config }))
 		})
 	}
