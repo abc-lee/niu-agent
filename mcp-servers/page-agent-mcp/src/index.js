@@ -348,60 +348,6 @@ const apiServer = http.createServer(async (req, res) => {
 
     const url = new URL(req.url, `http://localhost:${API_PORT}`)
 
-    // POST /execute - execute task
-    if (req.method === 'POST' && url.pathname === '/execute') {
-        let body = ''
-        req.on('data', chunk => body += chunk)
-        req.on('end', async () => {
-            try {
-                const { task } = JSON.parse(body)
-
-                // 强制使用我们的代理配置（覆盖扩展自己的配置）
-                // 注入系统提示词：引导使用本地知识库
-                const proxyConfig = {
-                    baseURL: 'http://localhost:9876/proxy/v1',
-                    model: 'local',
-                    apiKey: 'local',
-                    systemInstruction: `
-你是一个智能浏览器助手，具备本地知识库访问能力。
-
-## 知识库使用（最高优先级）
-
-需要信息时，**优先访问本地知识库**：
-- 检索：http://localhost:9876/kb/search?q={query}
-- 问答：http://localhost:9876/kb/answer?context={context}
-
-只有知识库无结果时，才使用外部搜索。
-
-## 工作原则
-
-1. 快速反馈：每步操作及时返回结果
-2. 遇到困难：立即报告，不要长时间重试
-3. 任务拆分：复杂任务自动分解为小步骤
-4. 本地优先：优先使用本地服务（更快、更准确、保护隐私）
-
-## 语言
-
-Default working language: **中文**
-按用户使用的语言回复。
-`
-                }
-
-                const result = await hub.executeTask(task, proxyConfig)
-
-                res.writeHead(200, { 'Content-Type': 'application/json' })
-                res.end(JSON.stringify({
-                    success: result.success,
-                    data: result.data
-                }))
-            } catch (err) {
-                res.writeHead(500, { 'Content-Type': 'application/json' })
-                res.end(JSON.stringify({ error: err.message }))
-            }
-        })
-        return
-    }
-
     // GET /status - get hub status
     if (req.method === 'GET' && url.pathname === '/status') {
         res.writeHead(200, { 'Content-Type': 'application/json' })
@@ -436,51 +382,11 @@ const mcpServer = new McpServer({ name: 'page-agent', version: '1.5.8-ai-bot' })
 mcpServer.registerTool(
     'execute_task',
     {
-        description: "Execute a task in user's browser. The task description should be specific and include the expected result.",
+        description: "Execute a browser automation task in background. Returns immediately. Will notify main agent when done. Examples: search web, fill forms, complete tests.",
         inputSchema: {
             task: z
                 .string()
-                .describe(
-                    'Task description in natural language. Give specific instructions for the task. Steps are preferable. Include the information you want to get after the task is done.'
-                ),
-        },
-    },
-    async ({ task }) => {
-        try {
-            // 1. 增强任务：注入知识库内容
-            const enhancedTask = await enhanceTaskWithKnowledge(task)
-
-            // 2. 执行任务（注入知识库增强的系统提示词）
-            const config = Object.keys(llmConfig).length > 0 ? llmConfig : undefined
-            const result = await hub.executeTask(enhancedTask, config)
-
-            return {
-                content: [
-                    {
-                        type: 'text',
-                        text: result.success
-                            ? `Task completed.\n\n${result.data}`
-                            : `Task failed.\n\n${result.data}`,
-                    },
-                ],
-            }
-        } catch (err) {
-            return {
-                content: [{ type: 'text', text: `Error: ${err.message}` }],
-                isError: true,
-            }
-        }
-    }
-)
-
-mcpServer.registerTool(
-    'execute_task_async',
-    {
-        description: "Execute a task asynchronously in the background. Returns immediately with a task_id. Use 'get_task_result' to check status and get the result.",
-        inputSchema: {
-            task: z
-                .string()
-                .describe('Task description. The task will run in the background.')
+                .describe('Task description in natural language')
         },
     },
     async ({ task }) => {
@@ -513,7 +419,7 @@ mcpServer.registerTool(
                         text: JSON.stringify({
                             success: true,
                             task_id: taskId,
-                            message: 'Task started in background. Use get_task_result to check status.',
+                            message: 'Task started in background. Will notify when done.',
                             status: 'pending'
                         }, null, 2),
                     },
