@@ -3,7 +3,7 @@
  * Page-Agent MCP Server - ai-bot Integration
  *
  * 修改版：在没有环境变量时，fallback 读取 user-config.json
- * 最小改动原则：只改了这一个文件，其他来自上游包
+ * 支持动态系统提示词注入（多种工作模式）
  */
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
@@ -20,6 +20,199 @@ import { HubBridge } from './hub-bridge.js'
 
 const env = process.env
 const port = parseInt(env.PORT || '38401')
+
+// ============================================================================
+// 系统提示词模板（支持多种工作模式）
+// ============================================================================
+
+const SYSTEM_PROMPTS = {
+    // 知识库增强模式（默认）
+    knowledge_enhanced: `
+你是一个智能浏览器助手，具备本地知识库访问能力。
+
+## 已注入的知识库内容
+
+任务描述中已经包含了相关知识库内容，你可以直接使用这些信息：
+- 知识库内容会以 "【知识库参考】" 开头
+- 包含相关的背景信息、定义、操作指南等
+- 请根据这些信息完成任务
+
+## 工作原则
+
+1. **快速反馈**：每步操作及时返回结果
+2. **遇困即报**：遇到困难立即报告，不要长时间重试
+3. **任务拆分**：复杂任务自动分解为小步骤
+4. **知识优先**：优先使用已注入的知识库内容
+
+## 语言
+
+Default working language: **中文**
+按用户使用的语言回复。
+`
+}
+
+// ============================================================================
+
+/**
+ * 查询知识库并返回相关内容
+ * @param {string} query - 查询关键词
+ * @returns {Promise<string|null>} 知识库内容，失败返回 null
+ */
+async function queryKnowledgeBase(query) {
+    const KB_API_BASE = 'http://localhost:9876/kb'
+
+    try {
+        const url = `${KB_API_BASE}/search?q=${encodeURIComponent(query)}&limit=3`
+        const response = await fetch(url, {
+            method: 'GET',
+            headers: { 'Accept': 'application/json' },
+            signal: AbortSignal.timeout(3000) // 3秒超时
+        })
+
+        if (!response.ok) {
+            console.error(`[kb-query] HTTP ${response.status}`)
+            return null
+        }
+
+        const data = await response.json()
+
+        if (data.success && data.results && data.results.length > 0) {
+            // 格式化知识库结果
+            const knowledge = data.results
+                .map((r, i) => `${i + 1}. ${r.title}\n${r.content}`)
+                .join('\n\n')
+
+            console.error(`[kb-query] Found ${data.results.length} results for: ${query}`)
+            return knowledge
+        }
+
+        console.error(`[kb-query] No results for: ${query}`)
+        return null
+    } catch (error) {
+        console.error(`[kb-query] Failed: ${error.message}`)
+        return null
+    }
+}
+
+/**
+ * 从任务描述中提取知识库查询关键词
+ * @param {string} task - 任务描述
+ * @returns {string[]} 查询关键词列表
+ */
+function extractKnowledgeQueries(task) {
+    const queries = []
+
+    // 常见的专业术语和关键词
+    const patterns = [
+        /MBTI/i,
+        /人格测试/i,
+        /外向|内向/i,
+        /浏览器自动化/i,
+        /Page-Agent/i,
+        /知识库/i,
+        /RAG/i,
+        /向量检索/i
+    ]
+
+    for (const pattern of patterns) {
+        const match = task.match(pattern)
+        if (match) {
+            queries.push(match[0])
+        }
+    }
+
+    return queries
+}
+
+/**
+ * 增强任务描述：注入知识库内容
+ * @param {string} task - 原始任务
+ * @returns {Promise<string>} 增强后的任务
+ */
+async function enhanceTaskWithKnowledge(task) {
+    // 提取查询关键词
+    const queries = extractKnowledgeQueries(task)
+
+    if (queries.length === 0) {
+        return task
+    }
+
+    console.error(`[kb-enhance] Detected knowledge queries: ${queries.join(', ')}`)
+
+    // 查询知识库
+    const knowledgeParts = []
+    for (const query of queries) {
+        const knowledge = await queryKnowledgeBase(query)
+        if (knowledge) {
+            knowledgeParts.push(`【${query}】\n${knowledge}`)
+        }
+    }
+
+    if (knowledgeParts.length === 0) {
+        return task
+    }
+
+    // 注入知识库内容到任务描述
+    const enhancedTask = `
+${task}
+
+---
+
+【知识库参考】
+以下是相关知识库内容，请参考这些信息完成任务：
+
+${knowledgeParts.join('\n\n---\n\n')}
+`
+
+    console.error(`[kb-enhance] Enhanced task with ${knowledgeParts.length} knowledge items`)
+    return enhancedTask
+}
+
+// ============================================================================
+
+/**
+ * 通知主 Agent 任务完成（照搬定时任务的 trigger_callback）
+ */
+async function notifyTaskComplete(taskId, result) {
+    try {
+        // 调用主 API 的通知接口（类似 trigger_callback 调用 /chat/sync）
+        await fetch('http://localhost:9876/api/async-task/notify', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                type: 'task_complete',
+                task_id: taskId,
+                result: result.success ? result.data : null,
+                error: result.success ? null : result.data
+            })
+        })
+        console.error(`[async-task] Task ${taskId} completed, notified main agent`)
+    } catch (error) {
+        console.error(`[async-task] Failed to notify completion: ${error.message}`)
+    }
+}
+
+/**
+ * 通知主 Agent 任务失败
+ */
+async function notifyTaskFailed(taskId, errorMessage) {
+    try {
+        await fetch('http://localhost:9876/api/async-task/notify', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                type: 'task_failed',
+                task_id: taskId,
+                error: errorMessage
+            })
+        })
+        console.error(`[async-task] Task ${taskId} failed: ${errorMessage}`)
+    } catch (error) {
+        console.error(`[async-task] Failed to notify failure: ${error.message}`)
+    }
+}
+
+// ============================================================================
 
 // ============== ai-bot 配置读取 ==============
 
@@ -164,10 +357,34 @@ const apiServer = http.createServer(async (req, res) => {
                 const { task } = JSON.parse(body)
 
                 // 强制使用我们的代理配置（覆盖扩展自己的配置）
+                // 注入系统提示词：引导使用本地知识库
                 const proxyConfig = {
                     baseURL: 'http://localhost:9876/proxy/v1',
                     model: 'local',
-                    apiKey: 'local'
+                    apiKey: 'local',
+                    systemInstruction: `
+你是一个智能浏览器助手，具备本地知识库访问能力。
+
+## 知识库使用（最高优先级）
+
+需要信息时，**优先访问本地知识库**：
+- 检索：http://localhost:9876/kb/search?q={query}
+- 问答：http://localhost:9876/kb/answer?context={context}
+
+只有知识库无结果时，才使用外部搜索。
+
+## 工作原则
+
+1. 快速反馈：每步操作及时返回结果
+2. 遇到困难：立即报告，不要长时间重试
+3. 任务拆分：复杂任务自动分解为小步骤
+4. 本地优先：优先使用本地服务（更快、更准确、保护隐私）
+
+## 语言
+
+Default working language: **中文**
+按用户使用的语言回复。
+`
                 }
 
                 const result = await hub.executeTask(task, proxyConfig)
@@ -230,8 +447,13 @@ mcpServer.registerTool(
     },
     async ({ task }) => {
         try {
+            // 1. 增强任务：注入知识库内容
+            const enhancedTask = await enhanceTaskWithKnowledge(task)
+
+            // 2. 执行任务（注入知识库增强的系统提示词）
             const config = Object.keys(llmConfig).length > 0 ? llmConfig : undefined
-            const result = await hub.executeTask(task, config)
+            const result = await hub.executeTask(enhancedTask, config)
+
             return {
                 content: [
                     {
@@ -239,6 +461,94 @@ mcpServer.registerTool(
                         text: result.success
                             ? `Task completed.\n\n${result.data}`
                             : `Task failed.\n\n${result.data}`,
+                    },
+                ],
+            }
+        } catch (err) {
+            return {
+                content: [{ type: 'text', text: `Error: ${err.message}` }],
+                isError: true,
+            }
+        }
+    }
+)
+
+mcpServer.registerTool(
+    'execute_task_async',
+    {
+        description: "Execute a task asynchronously in the background. Returns immediately with a task_id. Use 'get_task_result' to check status and get the result.",
+        inputSchema: {
+            task: z
+                .string()
+                .describe('Task description. The task will run in the background.')
+        },
+    },
+    async ({ task }) => {
+        try {
+            // 生成任务 ID
+            const taskId = `task_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+
+            // 增强任务：注入知识库内容
+            const enhancedTask = await enhanceTaskWithKnowledge(task)
+
+            // 启动后台任务
+            const config = Object.keys(llmConfig).length > 0 ? llmConfig : undefined
+
+            // 异步执行（不等待）
+            hub.executeTask(enhancedTask, config)
+                .then(result => {
+                    // 任务完成，通知主 API
+                    notifyTaskComplete(taskId, result)
+                })
+                .catch(error => {
+                    // 任务失败
+                    notifyTaskFailed(taskId, error.message)
+                })
+
+            // 立即返回 task_id
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify({
+                            success: true,
+                            task_id: taskId,
+                            message: 'Task started in background. Use get_task_result to check status.',
+                            status: 'pending'
+                        }, null, 2),
+                    },
+                ],
+            }
+        } catch (err) {
+            return {
+                content: [{ type: 'text', text: `Error: ${err.message}` }],
+                isError: true,
+            }
+        }
+    }
+)
+
+mcpServer.registerTool(
+    'get_task_result',
+    {
+        description: "Get the result of an asynchronous task. Returns task status and result if completed.",
+        inputSchema: {
+            task_id: z
+                .string()
+                .describe('Task ID returned by execute_task_async')
+        },
+    },
+    async ({ task_id }) => {
+        try {
+            // 查询任务状态（调用主 API）
+            const response = await fetch(`http://localhost:9876/async-task/${task_id}`)
+            const data = await response.json()
+
+            return {
+                content: [
+                    {
+                        type: 'text',
+                        text: JSON.stringify(data, null, 2),
                     },
                 ],
             }
