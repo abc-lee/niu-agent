@@ -378,503 +378,23 @@ def register_query_patterns():
             }
         },
 
-        # ==================== 记忆管理类（中文）====================
+        # ==================== Browser Automation ====================
         {
-            "id": "query_pattern:zh_recall_1",
-            "content": "检索之前的记忆",
-            "metadata": {
-                "level": "l1",
-                "category": "query_pattern",
-                "language": "zh",
-                "type": "query_pattern",
-                "is_recursive": True,
-                "refined_query": "memory recall remember",
-                "target_category": "mcp_tool",
-                "description": "用户想检索之前的记忆"
-            }
-        },
-        {
-            "id": "query_pattern:zh_recall_2",
-            "content": "我之前说过什么",
-            "metadata": {
-                "level": "l1",
-                "category": "query_pattern",
-                "language": "zh",
-                "type": "query_pattern",
-                "is_recursive": True,
-                "refined_query": "memory recall",
-                "target_category": "mcp_tool",
-                "description": "用户询问之前说过的话"
-            }
-        },
-        {
-            "id": "query_pattern:zh_remember_1",
-            "content": "记住这个",
-            "metadata": {
-                "level": "l1",
-                "category": "query_pattern",
-                "language": "zh",
-                "type": "query_pattern",
-                "is_recursive": True,
-                "refined_query": "save memory remember",
-                "target_category": "mcp_tool",
-                "description": "用户想记住某些内容"
-            }
-        },
-        {
-            "id": "query_pattern:complex_memory_1",
-            "content": "帮我回忆一下之前的经验",
-            "metadata": {
-                "level": "l1",
-                "category": "query_pattern",
-                "language": "zh",
-                "type": "query_pattern",
-                "is_recursive": True,
-                "refined_query": "memory recall experience",
-                "target_category": "mcp_tool",
-                "description": "用户想回忆之前的经验"
-            }
-        },
-
-        # ==================== 文档检索类（英文）====================
-        {
-            "id": "query_pattern:search_documents",
-            "content": "search for documents",
+            "id": "query_pattern:browser_search",
+            "content": "help me search",
             "metadata": {
                 "level": "l1",
                 "category": "query_pattern",
                 "language": "en",
                 "type": "query_pattern",
                 "is_recursive": True,
-                "refined_query": "document search vector",
+                "refined_query": "browser automation search",
                 "target_category": "mcp_tool",
-                "description": "User wants to search documents"
+                "description": "User wants to search on web"
             }
         },
         {
-            "id": "query_pattern:add_document",
-            "content": "add this document",
-            "metadata": {
-                "level": "l1",
-                "category": "query_pattern",
-                "language": "en",
-                "type": "query_pattern",
-                "is_recursive": True,
-                "refined_query": "add document vector store",
-                "target_category": "mcp_tool",
-                "description": "User wants to add a document to database"
-            }
-        },
-
-        # ==================== 文档检索类（中文）====================
-        {
-            "id": "query_pattern:zh_search_1",
-            "content": "搜索文档",
-            "metadata": {
-                "level": "l1",
-                "category": "query_pattern",
-                "language": "zh",
-                "type": "query_pattern",
-                "is_recursive": True,
-                "refined_query": "document search vector",
-                "target_category": "mcp_tool",
-                "description": "用户想搜索文档"
-            }
-        },
-        {
-            "id": "query_pattern:zh_search_2",
-            "content": "查找关于XX的文档",
-            "metadata": {
-                "level": "l1",
-                "category": "query_pattern",
-                "language": "zh",
-                "type": "query_pattern",
-                "is_recursive": True,
-                "refined_query": "document search",
-                "target_category": "mcp_tool",
-                "description": "用户想查找特定文档"
-            }
-        },
-        {
-            "id": "query_pattern:zh_retrieve_1",
-            "content": "检索知识库",
-            "metadata": {
-                "level": "l1",
-                "category": "query_pattern",
-                "language": "zh",
-                "type": "query_pattern",
-                "is_recursive": True,
-                "refined_query": "document search knowledge",
-                "target_category": "mcp_tool",
-                "description": "用户想从知识库检索信息"
-            }
-        },
-        {
-            "id": "query_pattern:zh_add_1",
-            "content": "添加这个文档",
-            "metadata": {
-                "level": "l1",
-                "category": "query_pattern",
-                "language": "zh",
-                "type": "query_pattern",
-                "is_recursive": True,
-                "refined_query": "add document vector store",
-                "target_category": "mcp_tool",
-                "description": "用户想添加文档"
-            }
-        },
-        {
-            "id": "query_pattern:complex_search_1",
-            "content": "在知识库里找找相关内容",
-            "metadata": {
-                "level": "l1",
-                "category": "query_pattern",
-                "language": "zh",
-                "type": "query_pattern",
-                "is_recursive": True,
-                "refined_query": "document search knowledge",
-                "target_category": "mcp_tool",
-                "description": "用户想在知识库中查找内容"
-            }
-        },
-
-        # ==================== 原有查询模式（保留）====================
-        {
-            "id": "query_pattern:reminder_time",
-            "content": "remind me in X minutes",
-            "metadata": {
-                "level": "l1",
-                "category": "query_pattern",
-                "language": "en",
-                "type": "query_pattern",
-                "is_recursive": True,
-                "refined_query": "schedule task",
-                "description": "Remind user after X minutes"
-            }
-        },
-        {
-            "id": "query_pattern:reminder_short",
-            "content": "remind me later",
-            "metadata": {
-                "level": "l1",
-                "category": "query_pattern",
-                "language": "en",
-                "type": "query_pattern",
-                "is_recursive": True,
-                "refined_query": "schedule task",
-                "description": "Remind user shortly"
-            }
-        },
-        {
-            "id": "query_pattern:reminder_daily",
-            "content": "remind me every day",
-            "metadata": {
-                "level": "l1",
-                "category": "query_pattern",
-                "language": "en",
-                "type": "query_pattern",
-                "is_recursive": True,
-                "refined_query": "recurring task",
-                "description": "Daily recurring reminder"
-            }
-        },
-        {
-            "id": "query_pattern:reminder_workday",
-            "content": "remind me on workdays",
-            "metadata": {
-                "level": "l1",
-                "category": "query_pattern",
-                "language": "en",
-                "type": "query_pattern",
-                "is_recursive": True,
-                "refined_query": "workday reminder recurring task",
-                "description": "Workday recurring reminder"
-            }
-        },
-        {
-            "id": "query_pattern:reminder_en_time",
-            "content": "set a reminder",
-            "metadata": {
-                "level": "l1",
-                "category": "query_pattern",
-                "language": "en",
-                "type": "query_pattern",
-                "is_recursive": True,
-                "refined_query": "schedule task"
-            }
-        },
-        {
-            "id": "query_pattern:reminder_en_alarm",
-            "content": "set alarm",
-            "metadata": {
-                "level": "l1",
-                "category": "query_pattern",
-                "language": "en",
-                "type": "query_pattern",
-                "is_recursive": True,
-                "refined_query": "schedule alarm"
-            }
-        },
-        {
-            "id": "query_pattern:document_ingest",
-            "content": "ingest this document",
-            "metadata": {
-                "level": "l1",
-                "category": "query_pattern",
-                "language": "en",
-                "type": "query_pattern",
-                "is_recursive": True,
-                "refined_query": "document ingestion",
-                "description": "Ingest document to knowledge base"
-            }
-        },
-        {
-            "id": "query_pattern:photo_ingest",
-            "content": "process photos",
-            "metadata": {
-                "level": "l1",
-                "category": "query_pattern",
-                "language": "en",
-                "type": "query_pattern",
-                "is_recursive": True,
-                "refined_query": "photo ingestion",
-                "description": "Ingest photos to gallery"
-            }
-        },
-
-        # ==================== 任务管理类（英文）====================
-        {
-            "id": "query_pattern:cancel_task",
-            "content": "cancel reminder or task",
-            "metadata": {
-                "level": "l1",
-                "category": "query_pattern",
-                "language": "en",
-                "type": "query_pattern",
-                "is_recursive": True,
-                "refined_query": "cancel scheduled task",
-                "target_category": "mcp_tool",
-                "description": "User wants to cancel a reminder or task"
-            }
-        },
-        {
-            "id": "query_pattern:list_tasks",
-            "content": "list all reminders",
-            "metadata": {
-                "level": "l1",
-                "category": "query_pattern",
-                "language": "en",
-                "type": "query_pattern",
-                "is_recursive": True,
-                "refined_query": "list scheduled tasks",
-                "target_category": "mcp_tool",
-                "description": "User wants to see all reminders or tasks"
-            }
-        },
-        {
-            "id": "query_pattern:update_task",
-            "content": "update or modify reminder",
-            "metadata": {
-                "level": "l1",
-                "category": "query_pattern",
-                "language": "en",
-                "type": "query_pattern",
-                "is_recursive": True,
-                "refined_query": "update scheduled task",
-                "target_category": "mcp_tool",
-                "description": "User wants to modify an existing reminder"
-            }
-        },
-
-        # ==================== 任务管理类（中文）====================
-        {
-            "id": "query_pattern:zh_cancel_1",
-            "content": "取消提醒",
-            "metadata": {
-                "level": "l1",
-                "category": "query_pattern",
-                "language": "zh",
-                "type": "query_pattern",
-                "is_recursive": True,
-                "refined_query": "cancel scheduled task",
-                "target_category": "mcp_tool",
-                "description": "用户想取消提醒"
-            }
-        },
-        {
-            "id": "query_pattern:zh_cancel_2",
-            "content": "删除定时任务",
-            "metadata": {
-                "level": "l1",
-                "category": "query_pattern",
-                "language": "zh",
-                "type": "query_pattern",
-                "is_recursive": True,
-                "refined_query": "cancel scheduled task",
-                "target_category": "mcp_tool",
-                "description": "用户想删除定时任务"
-            }
-        },
-        {
-            "id": "query_pattern:zh_list_1",
-            "content": "查看定时任务",
-            "metadata": {
-                "level": "l1",
-                "category": "query_pattern",
-                "language": "zh",
-                "type": "query_pattern",
-                "is_recursive": True,
-                "refined_query": "list scheduled tasks",
-                "target_category": "mcp_tool",
-                "description": "用户想查看所有定时任务"
-            }
-        },
-        {
-            "id": "query_pattern:zh_list_2",
-            "content": "显示所有提醒",
-            "metadata": {
-                "level": "l1",
-                "category": "query_pattern",
-                "language": "zh",
-                "type": "query_pattern",
-                "is_recursive": True,
-                "refined_query": "list scheduled tasks",
-                "target_category": "mcp_tool",
-                "description": "用户想看所有提醒"
-            }
-        },
-        {
-            "id": "query_pattern:zh_update_1",
-            "content": "修改提醒时间",
-            "metadata": {
-                "level": "l1",
-                "category": "query_pattern",
-                "language": "zh",
-                "type": "query_pattern",
-                "is_recursive": True,
-                "refined_query": "update scheduled task",
-                "target_category": "mcp_tool",
-                "description": "用户想修改提醒时间"
-            }
-        },
-        {
-            "id": "query_pattern:zh_update_2",
-            "content": "更改定时任务",
-            "metadata": {
-                "level": "l1",
-                "category": "query_pattern",
-                "language": "zh",
-                "type": "query_pattern",
-                "is_recursive": True,
-                "refined_query": "update scheduled task",
-                "target_category": "mcp_tool",
-                "description": "用户想更改定时任务"
-            }
-        },
-
-        # ==================== 浏览器自动化类（中文）====================
-        {
-            "id": "query_pattern:zh_search_web",
-            "content": "帮我搜索",
-            "metadata": {
-                "level": "l1",
-                "category": "query_pattern",
-                "language": "zh",
-                "type": "query_pattern",
-                "is_recursive": True,
-                "refined_query": "browser automation search webpage",
-                "target_category": "mcp_tool",
-                "description": "用户想搜索信息"
-            }
-        },
-        {
-            "id": "query_pattern:zh_open_webpage",
-            "content": "打开网页",
-            "metadata": {
-                "level": "l1",
-                "category": "query_pattern",
-                "language": "zh",
-                "type": "query_pattern",
-                "is_recursive": True,
-                "refined_query": "browser automation open webpage",
-                "target_category": "mcp_tool",
-                "description": "用户想打开某个网页"
-            }
-        },
-        {
-            "id": "query_pattern:zh_browse_website",
-            "content": "浏览网站",
-            "metadata": {
-                "level": "l1",
-                "category": "query_pattern",
-                "language": "zh",
-                "type": "query_pattern",
-                "is_recursive": True,
-                "refined_query": "browser automation browse website",
-                "target_category": "mcp_tool",
-                "description": "用户想浏览网站"
-            }
-        },
-        {
-            "id": "query_pattern:zh_fill_form",
-            "content": "填写表单",
-            "metadata": {
-                "level": "l1",
-                "category": "query_pattern",
-                "language": "zh",
-                "type": "query_pattern",
-                "is_recursive": True,
-                "refined_query": "browser automation fill form",
-                "target_category": "mcp_tool",
-                "description": "用户想自动填写表单"
-            }
-        },
-        {
-            "id": "query_pattern:zh_extract_content",
-            "content": "保存网页内容",
-            "metadata": {
-                "level": "l1",
-                "category": "query_pattern",
-                "language": "zh",
-                "type": "query_pattern",
-                "is_recursive": True,
-                "refined_query": "browser automation extract content",
-                "target_category": "mcp_tool",
-                "description": "用户想保存网页内容"
-            }
-        },
-        {
-            "id": "query_pattern:zh_book_ticket",
-            "content": "订票买票",
-            "metadata": {
-                "level": "l1",
-                "category": "query_pattern",
-                "language": "zh",
-                "type": "query_pattern",
-                "is_recursive": True,
-                "refined_query": "browser automation book tickets",
-                "target_category": "mcp_tool",
-                "description": "用户想订购机票车票"
-            }
-        },
-
-        # ==================== 浏览器自动化类（英文）====================
-        {
-            "id": "query_pattern:en_search_web",
-            "content": "search for information",
-            "metadata": {
-                "level": "l1",
-                "category": "query_pattern",
-                "language": "en",
-                "type": "query_pattern",
-                "is_recursive": True,
-                "refined_query": "browser automation search webpage",
-                "target_category": "mcp_tool",
-                "description": "User wants to search for information"
-            }
-        },
-        {
-            "id": "query_pattern:en_open_webpage",
+            "id": "query_pattern:browser_open",
             "content": "open webpage",
             "metadata": {
                 "level": "l1",
@@ -888,7 +408,7 @@ def register_query_patterns():
             }
         },
         {
-            "id": "query_pattern:en_browse_website",
+            "id": "query_pattern:browser_browse",
             "content": "browse website",
             "metadata": {
                 "level": "l1",
@@ -896,14 +416,14 @@ def register_query_patterns():
                 "language": "en",
                 "type": "query_pattern",
                 "is_recursive": True,
-                "refined_query": "browser automation browse website",
+                "refined_query": "browser automation browse",
                 "target_category": "mcp_tool",
-                "description": "User wants to browse a website"
+                "description": "User wants to browse website"
             }
         },
         {
-            "id": "query_pattern:en_fill_form",
-            "content": "fill out form",
+            "id": "query_pattern:browser_form",
+            "content": "fill form automatically",
             "metadata": {
                 "level": "l1",
                 "category": "query_pattern",
@@ -912,11 +432,11 @@ def register_query_patterns():
                 "is_recursive": True,
                 "refined_query": "browser automation fill form",
                 "target_category": "mcp_tool",
-                "description": "User wants to fill out a form"
+                "description": "User wants to fill a form"
             }
         },
         {
-            "id": "query_pattern:en_extract_content",
+            "id": "query_pattern:browser_extract",
             "content": "save webpage content",
             "metadata": {
                 "level": "l1",
@@ -924,13 +444,13 @@ def register_query_patterns():
                 "language": "en",
                 "type": "query_pattern",
                 "is_recursive": True,
-                "refined_query": "browser automation extract content",
+                "refined_query": "browser automation extract",
                 "target_category": "mcp_tool",
-                "description": "User wants to save webpage content"
+                "description": "User wants to save content from webpage"
             }
         },
         {
-            "id": "query_pattern:en_book_ticket",
+            "id": "query_pattern:browser_book",
             "content": "book tickets",
             "metadata": {
                 "level": "l1",
@@ -940,7 +460,21 @@ def register_query_patterns():
                 "is_recursive": True,
                 "refined_query": "browser automation book tickets",
                 "target_category": "mcp_tool",
-                "description": "User wants to book tickets"
+                "description": "User wants to book tickets online"
+            }
+        },
+        {
+            "id": "query_pattern:browser_news",
+            "content": "find news information",
+            "metadata": {
+                "level": "l1",
+                "category": "query_pattern",
+                "language": "en",
+                "type": "query_pattern",
+                "is_recursive": True,
+                "refined_query": "browser automation news",
+                "target_category": "mcp_tool",
+                "description": "User wants to find news"
             }
         },
     ]
