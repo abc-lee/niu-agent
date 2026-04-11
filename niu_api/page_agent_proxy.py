@@ -227,33 +227,68 @@ async def call_llm_via_litellm(
         # Run in thread to avoid blocking
         def sync_call():
             gen = session.chat(messages=messages, tools=tools)
-            # Consume generator until MockResponse
-            chunks = []
-            for chunk in gen:
-                if isinstance(chunk, str):
-                    chunks.append(chunk)
 
-            # The generator returns MockResponse via StopIteration
-            # But in our case, we just need the text
+            # Consume generator to get MockResponse
+            chunks = []
+            mock_response = None
+
+            try:
+                for chunk in gen:
+                    if isinstance(chunk, str):
+                        chunks.append(chunk)
+            except StopIteration as e:
+                # Generator returns MockResponse via StopIteration
+                mock_response = e.value
+
+            # If no StopIteration was raised, try to get the response
+            # (some generators might return directly)
+            if mock_response is None:
+                # Try one more time to get the return value
+                import inspect
+                if inspect.isgenerator(gen):
+                    try:
+                        while True:
+                            chunk = next(gen)
+                            if isinstance(chunk, str):
+                                chunks.append(chunk)
+                    except StopIteration as e:
+                        mock_response = e.value
+
+            # Extract tool calls from MockResponse
+            tool_calls_list = []
+            if mock_response and hasattr(mock_response, 'tool_calls'):
+                for tc in mock_response.tool_calls:
+                    tool_calls_list.append({
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.function.name,
+                            "arguments": tc.function.arguments if isinstance(tc.function.arguments, str) else json.dumps(tc.function.arguments)
+                        }
+                    })
+
+            # Build OpenAI-format response
             full_text = "".join(chunks)
 
-            # Construct a simple response
-            return {
+            response = {
                 "choices": [
                     {
                         "message": {
                             "role": "assistant",
-                            "content": full_text,
+                            "content": full_text or None,
+                            "tool_calls": tool_calls_list if tool_calls_list else None,
                         },
-                        "finish_reason": "stop",
+                        "finish_reason": "tool_calls" if tool_calls_list else "stop",
                     }
                 ],
                 "usage": {
-                    "prompt_tokens": 0,
-                    "completion_tokens": 0,
-                    "total_tokens": 0,
+                    "prompt_tokens": mock_response.usage.get("prompt_tokens", 0) if mock_response and hasattr(mock_response, 'usage') else 0,
+                    "completion_tokens": mock_response.usage.get("completion_tokens", 0) if mock_response and hasattr(mock_response, 'usage') else 0,
+                    "total_tokens": mock_response.usage.get("total_tokens", 0) if mock_response and hasattr(mock_response, 'usage') else 0,
                 },
             }
+
+            return response
 
         response = await asyncio.to_thread(sync_call)
         return response
