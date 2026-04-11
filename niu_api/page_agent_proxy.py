@@ -34,7 +34,7 @@ class OpenAIMessage(BaseModel):
     """OpenAI message format"""
 
     role: str
-    content: str
+    content: Optional[str] = None  # Can be None when tool_calls present
     name: Optional[str] = None
 
 
