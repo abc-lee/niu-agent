@@ -24,18 +24,14 @@
 ```
 用户: "帮我打开百度搜索Python教程"
     ↓
-主Agent (NiuRunner)
-    ↓ 发现工具: chat-with-browser-agent
+主Agent (直接调用 MCP 工具)
+    ↓ page-agent-mcp/execute_task({"task": "..."})
     ↓
-browser-agent 子Agent (config/agents/browser-agent.md)
-    ↓ MCP工具: page-agent-server 的 5 个工具
-    ↓
-page-agent-server (MCP Server, 已注册)
-    ├─ browser_navigate(url)
-    ├─ browser_click(selector)
-    ├─ browser_input(selector, text)
-    ├─ browser_screenshot()
-    └─ execute_browser_task(task, data)
+Page-Agent MCP Server (Node.js)
+    ↓ 3 个工具
+    ├─ execute_task(task)
+    ├─ get_status()
+    └─ stop_task()
     ↓
 WebSocket 客户端 (ws://localhost:38401)
     ↓
@@ -48,11 +44,8 @@ Page-Agent Chrome 扩展
 
 | 文件 | 状态 | 说明 |
 |------|------|------|
-| `config/agents/browser-agent.md` | ✅ 已配置 | browser-agent 子Agent配置 |
-| `config/mcp-servers.yaml` | ✅ 已配置 | page-agent-server 配置 |
-| `agent/mcp_loader.py` | ✅ 已注册 | REQUIRED_SERVERS 中有 page-agent-server |
-| `agent/tool_registry.py` | ✅ 已注册 | 5 个工具已注册 |
-| `mcp-servers/page-agent-server/` | ✅ 已实现 | Python MCP Server 实现 |
+| `config/mcp-servers.yaml` | ✅ 已配置 | page-agent-mcp (Node.js) 配置 |
+| `mcp-servers/page-agent-mcp/` | ✅ 已实现 | Node.js MCP Server (官方实现) |
 | Chrome 扩展 | ❌ 缺失 | 需要编译并随包发布 |
 
 ---
@@ -361,7 +354,7 @@ grep -n "page-agent-server" E:/tools/ai-bot/agent/mcp_loader.py
 
 Expected: 在 REQUIRED_SERVERS 列表中看到 `("page-agent-server", "niu_page_agent")`
 
-- [ ] **Step 3: 验证工具注册**
+- [ ] **Step 4: 验证工具注册**
 
 Run:
 ```bash
@@ -369,23 +362,24 @@ cd E:/tools/ai-bot && python -c "
 from agent.tool_registry import get_registry
 registry = get_registry()
 tools = registry.get_schemas()
-page_agent_tools = [t for t in tools if 'page-agent' in t.get('name', '')]
-print('Page-Agent 工具数量:', len(page_agent_tools))
-for tool in page_agent_tools:
-    print(f\"  - {tool['name']}\")
+print('已注册的 MCP 工具:')
+for tool in tools:
+    name = tool.get('name', '')
+    if 'page-agent' in name:
+        print(f\"  - {name}\")
 "
 ```
 
-Expected: 看到 5 个 page-agent-server 工具
+Expected: 看到 page-agent-mcp 的工具（execute_task, get_status, stop_task）
 
-- [ ] **Step 4: 验证子Agent工具注册**
+- [ ] **Step 5: 验证主Agent配置**
 
 Run:
 ```bash
-grep -A 5 "chat-with-browser-agent" E:/tools/ai-bot/agent/runner.py
+grep "page-agent-mcp" E:/tools/ai-bot/config/agents/niu.md
 ```
 
-Expected: 看到主Agent注册了 `chat-with-browser-agent` 工具
+Expected: 看到主Agent配置了 page-agent-mcp
 
 ---
 
@@ -473,80 +467,35 @@ git commit -m "docs: add release checklist for Chrome extension packaging"
 
 ## 集成架构说明
 
-### 当前系统架构（已完成）
+### 正确的架构（主Agent直接调用）
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                       用户层                                 │
-│              "帮我打开百度搜索..."                           │
-└────────────────────┬────────────────────────────────────────┘
-                     │
-                     ▼
-┌─────────────────────────────────────────────────────────────┐
-│                    主Agent (niu)                             │
-│                                                              │
-│  工具发现机制:                                               │
-│  1. 工具 Schema: chat-with-browser-agent                    │
-│  2. 向量检索: 语义匹配浏览器相关请求                         │
-│  3. LLM 决策: 选择合适的工具调用                             │
-└────────────────────┬────────────────────────────────────────┘
-                     │
-                     ▼
-┌─────────────────────────────────────────────────────────────┐
-│              browser-agent 子Agent                           │
-│            (config/agents/browser-agent.md)                 │
-│                                                              │
-│  系统提示词: "你是浏览器自动化子Agent..."                    │
-│  MCP 工具: [page-agent-server 的 5 个工具]                  │
-└────────────────────┬────────────────────────────────────────┘
-                     │
-                     ▼
-┌─────────────────────────────────────────────────────────────┐
-│            page-agent-server (MCP Server)                   │
-│        (mcp-servers/page-agent-server/src/niu_page_agent)  │
-│                                                              │
-│  工具列表:                                                   │
-│  ├─ browser_navigate(url) → 导航                            │
-│  ├─ browser_click(selector) → 点击                          │
-│  ├─ browser_input(selector, text) → 输入                    │
-│  ├─ browser_screenshot() → 截图                             │
-│  └─ execute_browser_task(task, data) → 复杂任务             │
-└────────────────────┬────────────────────────────────────────┘
-                     │
-                     ▼
-┌─────────────────────────────────────────────────────────────┐
-│              WebSocket 客户端                                │
-│            (ws://localhost:38401)                            │
-│                                                              │
-│  协议: BrowserCommand → BrowserResponse                     │
-└────────────────────┬────────────────────────────────────────┘
-                     │
-                     ▼
-┌─────────────────────────────────────────────────────────────┐
-│          Page-Agent Chrome 扩展                              │
-│          (dist/chrome-extension/)                            │
-│                                                              │
-│  接收命令 → 执行DOM操作 → 返回结果                           │
-└────────────────────┬────────────────────────────────────────┘
-                     │
-                     ▼
-┌─────────────────────────────────────────────────────────────┐
-│                   浏览器执行                                 │
-│              (Chrome 浏览器)                                 │
-└─────────────────────────────────────────────────────────────┘
+用户: "帮我打开百度搜索Python教程"
+    ↓
+主Agent (niu)
+    ↓ 发现 MCP 工具
+    ↓ 直接调用: page-agent-mcp/execute_task({"task": "打开百度搜索Python教程"})
+    ↓
+Page-Agent MCP Server (Node.js, 官方实现)
+    ├─ execute_task(task) - 执行自然语言浏览器任务
+    ├─ get_status() - 查询连接状态
+    └─ stop_task() - 停止当前任务
+    ↓
+WebSocket 连接 (ws://localhost:38401)
+    ↓
+Page-Agent Chrome 扩展
+    ↓ 接收命令
+    ↓ 执行 DOM 操作
+浏览器执行
 ```
 
 ### 配置文件说明
 
 | 文件 | 作用 | 状态 |
 |------|------|------|
-| `config/agents/browser-agent.md` | browser-agent 子Agent配置 | ✅ 已配置 |
-| `config/mcp-servers.yaml` | page-agent-server MCP配置 | ✅ 已配置 |
-| `agent/mcp_loader.py` | MCP Server 加载和注册 | ✅ 已注册 |
-| `agent/tool_registry.py` | 工具注册中心 | ✅ 已注册 |
-| `agent/runner.py` | 子Agent工具注册 | ✅ 已注册 |
-| `agent/subagent.py` | 子Agent调用逻辑 | ✅ 已实现 |
-| `agent/handler.py` | 工具分发执行 | ✅ 已实现 |
+| `config/mcp-servers.yaml` | page-agent-mcp 配置 | ✅ 已配置 |
+| `config/agents/niu.md` | 主Agent配置，包含 page-agent-mcp | ✅ 已配置 |
+| `mcp-servers/page-agent-mcp/` | Node.js MCP Server (官方) | ✅ 已有 |
 
 ### 调用流程示例
 
@@ -554,15 +503,11 @@ git commit -m "docs: add release checklist for Chrome extension packaging"
 
 **执行流程**:
 1. 主Agent识别浏览器任务
-2. 调用 `chat-with-browser-agent(task="打开百度搜索Python教程")`
-3. browser-agent 子Agent接收任务
-4. 子Agent调用 `browser_navigate(url="https://www.baidu.com")`
-5. page-agent-server 通过 WebSocket 发送命令
-6. Chrome 扩展执行导航操作
-7. 子Agent继续调用 `browser_input(selector="#kw", text="Python教程")`
-8. 子Agent调用 `browser_click(selector="#su")`
-9. 返回结果给主Agent
-10. 主Agent向用户汇报完成
+2. 主Agent调用 `page-agent-mcp/execute_task({"task": "打开百度搜索Python教程"})`
+3. Page-Agent MCP Server 通过 WebSocket 发送命令给 Chrome 扩展
+4. Chrome 扩展执行浏览器操作（导航、输入、点击等）
+5. 返回结果给主Agent
+6. 主Agent向用户汇报完成
 
 ---
 
@@ -570,14 +515,15 @@ git commit -m "docs: add release checklist for Chrome extension packaging"
 
 ### 不需要修改的部分
 
-1. **不需要修改主Agent配置**
-   - `config/agents/niu.md` 已包含 page-agent-server
+1. **不需要修改 Page-Agent MCP Server**
+   - 保持官方 Node.js 实现不变
+   - 3 个工具已正确实现
 
-2. **不需要修改 MCP Server 代码**
-   - page-agent-server 实现已完整
+2. **不需要修改主Agent配置**
+   - `config/agents/niu.md` 已包含 page-agent-mcp
 
 3. **不需要修改工具注册逻辑**
-   - 所有工具已正确注册
+   - Page-Agent 通过 MCP 协议工作
 
 ### 需要补充的部分
 
@@ -595,7 +541,8 @@ git commit -m "docs: add release checklist for Chrome extension packaging"
 
 ### 关键点
 
-- **系统集成已完成**，只需补充插件和文档
-- **主Agent已能发现浏览器工具**，通过 chat-with-browser-agent
+- **使用官方实现**：page-agent-mcp (Node.js 版本)
+- **3 个工具**：execute_task, get_status, stop_task
+- **主Agent直接调用**：不需要子Agent
 - **用户无需手动配置**，插件安装后自动工作
 - **文档是给主Agent看的**，指导用户安装插件
