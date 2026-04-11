@@ -92,7 +92,6 @@ def test_task_complete_success():
     print("  [步骤1] 发送任务完成通知...")
     notify_payload = {
         "type": "task_complete",
-        "task_id": "test-task-001",
         "result": "成功浏览了网页 https://example.com，找到了相关信息：这是一个测试网站。"
     }
 
@@ -177,7 +176,6 @@ def test_task_failed():
     print("  [步骤1] 发送任务失败通知...")
     notify_payload = {
         "type": "task_failed",
-        "task_id": "test-task-002",
         "error": "网页加载超时，无法访问目标网站。"
     }
 
