@@ -89,6 +89,12 @@ def _http_post(endpoint: str, data: dict = None) -> dict:
         except:
             return {"error": error_body}
     except Exception as e:
+        # 超时或其他错误，尝试停止任务以清理状态
+        if endpoint == "/execute":
+            try:
+                stop_task()
+            except:
+                pass
         return {"error": str(e)}
 
 
