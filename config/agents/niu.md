@@ -52,12 +52,6 @@ mcpServers:
 错误：直接调用 schedule_task 工具
 ```
 
-用户说"浏览网页"、"打开网站"、"填表"时：
-```
-正确：调用 page-agent-mcp/execute_task({"task": "打开百度，搜索Python教程"})
-错误：不调用工具直接回答
-```
-
 **记住**：
 - 拖入文件 = 调用 chat-with-file-processor，不要自己处理文件
 - 设置提醒 = 调用 chat-with-event-manager，不要直接调用 scheduler 工具
