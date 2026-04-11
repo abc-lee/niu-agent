@@ -79,9 +79,9 @@ session-manager:
 page-agent-mcp:
   command: ${NODE_PATH}
   args:
-    - "mcp-servers/page-agent-mcp/src/index.js"
-  workdir: mcp-servers/page-agent-mcp/src
-  preload: true  # 自动启动浏览器自动化服务
+    - "src/index.js"
+  workdir: mcp-servers/page-agent-mcp
+  preload: false  # 不自动启动，需要时手动启动或自动打开浏览器
 
 # Nanobot System - Built-in system tools (not a real MCP server, added programmatically)
 # This entry exists to satisfy validation that references all defined servers
