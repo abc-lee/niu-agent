@@ -1,47 +1,22 @@
 """
-Page Agent MCP Server - Python Bridge
+Page Agent MCP Server - Python HTTP Client
 
-This module provides a Python wrapper for page-agent-mcp.
-page-agent-mcp runs as a standalone HTTP+WebSocket server on port 38401.
-
-Architecture:
-- page-agent-mcp must be started separately (not via subprocess)
-- The hub-bridge.js creates an HTTP server on port 38401
-- Chrome extension connects to the hub via WebSocket
-- MCP stdio clients should connect to the existing hub, not create new ones
-
-Usage:
-    Start page-agent-mcp separately:
-        node mcp-servers/page-agent-mcp/src/index.js
-
-    Then the MCP tools will work when called via the ToolRegistry.
+Connects to page-agent-mcp Node.js server via HTTP REST API.
+The Node.js server runs on port 38402 and provides HTTP API endpoints.
 """
 
-import os
-import sys
 import json
 import urllib.request
 import urllib.error
 from typing import Any, Dict, List
-
-# Ensure parent directories are in path for imports
-_current_dir = os.path.dirname(os.path.abspath(__file__))
-_mcp_servers_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-project_root = os.path.dirname(os.path.dirname(_mcp_servers_dir))
-
-# Add project root to path
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
-
-from agent.mcp_sync_bridge import get_mcp_bridge
 
 
 # ============================================================================
 # Configuration
 # ============================================================================
 
-HUB_BRIDGE_PORT = 38401
-HUB_BRIDGE_URL = f"http://localhost:{HUB_BRIDGE_PORT}"
+API_PORT = 38402
+API_BASE_URL = f"http://localhost:{API_PORT}"
 
 
 # ============================================================================
@@ -92,65 +67,90 @@ def get_tool_schemas() -> List[Dict[str, Any]]:
 
 
 # ============================================================================
-# HTTP-based Tool Functions (for direct hub-bridge access)
+# HTTP Client
 # ============================================================================
 
-def _http_get(path: str) -> Dict[str, Any]:
-    """Make HTTP GET request to hub-bridge"""
+def _http_post(endpoint: str, data: dict = None) -> dict:
+    """Send HTTP POST request and return response"""
+    url = f"{API_BASE_URL}{endpoint}"
+    headers = {"Content-Type": "application/json"}
+
     try:
-        url = f"{HUB_BRIDGE_URL}{path}"
-        with urllib.request.urlopen(url, timeout=5) as response:
-            return {"status": "success", "data": response.read().decode("utf-8")}
-    except urllib.error.URLError as e:
-        return {"status": "error", "msg": f"Connection failed: {e}"}
+        req_data = json.dumps(data if data else {}).encode('utf-8')
+        req = urllib.request.Request(url, data=req_data, headers=headers, method='POST')
+
+        with urllib.request.urlopen(req, timeout=120) as response:
+            return json.loads(response.read().decode('utf-8'))
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode('utf-8')
+        try:
+            return json.loads(error_body)
+        except:
+            return {"error": error_body}
     except Exception as e:
-        return {"status": "error", "msg": str(e)}
+        return {"error": str(e)}
+
+
+def _http_get(endpoint: str) -> dict:
+    """Send HTTP GET request and return response"""
+    url = f"{API_BASE_URL}{endpoint}"
+
+    try:
+        req = urllib.request.Request(url, method='GET')
+
+        with urllib.request.urlopen(req, timeout=10) as response:
+            return json.loads(response.read().decode('utf-8'))
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode('utf-8')
+        try:
+            return json.loads(error_body)
+        except:
+            return {"error": error_body}
+    except Exception as e:
+        return {"error": str(e)}
 
 
 def execute_task(task: str) -> str:
     """
-    Execute a task in user's browser via MCP bridge.
+    Execute a task in user's browser via HTTP API.
 
-    This calls page-agent-mcp via the MCP stdio protocol.
-    page-agent-mcp must be running separately.
+    Args:
+        task: Task description in natural language.
+
+    Returns:
+        Task result or error message.
     """
-    bridge = get_mcp_bridge()
-    result = bridge.call_tool("page-agent-mcp", "execute_task", {"task": task}, timeout=120)
+    result = _http_post("/execute", {"task": task})
 
-    # Handle the result format from page-agent-mcp
-    if isinstance(result, dict):
-        content = result.get("content", [])
-        if isinstance(content, list) and len(content) > 0:
-            text = content[0].get("text", "")
-            return text
-    return json.dumps(result, ensure_ascii=False)
+    if "error" in result:
+        return f"Error: {result['error']}"
+    elif result.get("success"):
+        return f"Task completed.\n\n{result.get('data', '')}"
+    else:
+        return f"Task failed.\n\n{result.get('data', '')}"
 
 
 def get_status() -> str:
     """
-    Get the status of Page Agent hub via MCP bridge.
+    Get the status of Page Agent hub via HTTP API.
 
-    Returns whether the Chrome extension is connected.
+    Returns:
+        JSON string with { connected, busy }.
     """
-    bridge = get_mcp_bridge()
-    result = bridge.call_tool("page-agent-mcp", "get_status", {}, timeout=10)
-
-    if isinstance(result, dict):
-        content = result.get("content", [])
-        if isinstance(content, list) and len(content) > 0:
-            return content[0].get("text", "{}")
+    result = _http_get("/status")
     return json.dumps(result, ensure_ascii=False)
 
 
 def stop_task() -> str:
     """
-    Stop the currently running task via MCP bridge.
-    """
-    bridge = get_mcp_bridge()
-    result = bridge.call_tool("page-agent-mcp", "stop_task", {}, timeout=10)
+    Stop the currently running task via HTTP API.
 
-    if isinstance(result, dict):
-        content = result.get("content", [])
-        if isinstance(content, list) and len(content) > 0:
-            return content[0].get("text", "")
-    return json.dumps(result, ensure_ascii=False)
+    Returns:
+        Status message.
+    """
+    result = _http_post("/stop")
+
+    if "error" in result:
+        return f"Error: {result['error']}"
+    else:
+        return result.get("message", "Stop signal sent.")

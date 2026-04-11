@@ -45,6 +45,11 @@ BASE_MCP_TOOLS = [
     "vector-store/get_document",
     "vector-store/delete_document",
     "vector-store/list_documents",
+
+    # page-agent-mcp (3个) - 使用 MCP stdio 协议
+    "page-agent-mcp/execute_task",
+    "page-agent-mcp/get_status",
+    "page-agent-mcp/stop_task",
 ]
 
 
@@ -163,7 +168,6 @@ def get_tools_schema() -> list:
         "file-processor": "【必须调用】处理文件和照片：入库、人脸识别、文档解析。用户拖入文件/照片时必须调用此工具，不要自己处理文件。",
         "event-manager": "处理日程、提醒、定时任务。",
         "context-manager": "记忆压缩、上下文整理。",
-        "browser-agent": "浏览器自动化（网页浏览、表单填写、信息提取）。",
     }
     for agent_name, desc in sub_agent_descriptions.items():
         tools.append(

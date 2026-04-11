@@ -50,11 +50,10 @@ def test_base_tools_schema():
     tools = get_tools_schema()
     print(f"内置工具数量: {len(tools)}")
 
-    # 预期11个内置工具 + 3个子Agent工具 = 14个
+    # 预期9个内置工具 + 3个子Agent工具 = 12个
     expected_builtin = [
         "code_run",
         "file_read", "file_patch", "file_write",
-        "web_scan", "web_execute_js",
         "update_working_checkpoint", "start_long_term_update",
         "chat-with-file-processor",
         "chat-with-event-manager",
@@ -119,9 +118,9 @@ def test_tool_injection():
     print(f"内置工具: {len(get_tools_schema())}")
     print(f"基础MCP工具: {base_mcp_count}")
     print(f"总工具数: {len(tools_schema)}")
-    print(f"预期总工具数: 22 (11 内置 + 11 基础MCP)")
+    print(f"预期总工具数: 23 (9 内置 + 14 基础MCP)")
 
-    if len(tools_schema) == 22:
+    if len(tools_schema) == 23:
         print("✓ 工具注入正确")
     else:
         print("✗ 工具注入不正确")
