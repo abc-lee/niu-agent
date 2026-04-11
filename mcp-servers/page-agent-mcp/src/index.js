@@ -162,8 +162,16 @@ const apiServer = http.createServer(async (req, res) => {
         req.on('end', async () => {
             try {
                 const { task } = JSON.parse(body)
-                const config = Object.keys(llmConfig).length > 0 ? llmConfig : undefined
-                const result = await hub.executeTask(task, config)
+
+                // 强制使用我们的代理配置（覆盖扩展自己的配置）
+                const proxyConfig = {
+                    baseURL: 'http://localhost:9876/proxy/v1',
+                    model: 'local',
+                    apiKey: 'local'
+                }
+
+                const result = await hub.executeTask(task, proxyConfig)
+
                 res.writeHead(200, { 'Content-Type': 'application/json' })
                 res.end(JSON.stringify({
                     success: result.success,
