@@ -45,11 +45,6 @@ BASE_MCP_TOOLS = [
     "vector-store/get_document",
     "vector-store/delete_document",
     "vector-store/list_documents",
-
-    # page-agent-mcp (3个) - 使用 MCP stdio 协议
-    "page-agent-mcp/execute_task",
-    "page-agent-mcp/get_status",
-    "page-agent-mcp/stop_task",
 ]
 
 

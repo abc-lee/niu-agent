@@ -233,7 +233,6 @@ schemas = registry.get_schemas()
 | `config-manager` | 配置管理（读/写用户配置和记忆） | ✅ |
 | `memory-server` | 智能记忆提取和检索 | ✅ |
 | `session-manager` | 会话管理（消息压缩） | ❌ |
-| `page-agent-server` | 浏览器自动化（AI-native DOM 理解） | ✅ |
 
 ### 子 Agent 架构
 
@@ -443,7 +442,7 @@ preload_face_model()
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **ai-bot** (5397 symbols, 9742 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **ai-bot** (5742 symbols, 10058 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 

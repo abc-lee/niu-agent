@@ -16,7 +16,6 @@ mcpServers:
   - vector-store
   - config-manager
   - photo-server
-  - page-agent-mcp
 ---
 
 # 核心能力
