@@ -73,6 +73,15 @@ session-manager:
   workdir: mcp-servers/session-manager/src
   preload: false  # 按需启动，不预加载
 
+# Browser Server - Browser automation using Playwright
+browser-server:
+  command: ${PYTHON_PATH}
+  args:
+    - "-m"
+    - "niu_browser_server"
+  workdir: mcp-servers/browser-server/src
+  preload: false  # 按需启动，首次使用 ~2 秒启动浏览器
+
 # Nanobot System - Built-in system tools (not a real MCP server, added programmatically)
 # This entry exists to satisfy validation that references all defined servers
 nanobot.system:
