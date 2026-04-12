@@ -65,30 +65,41 @@ def test_tool_hit_on_execution(temp_storage, clean_runner):
     import agent.runner as runner_module
     runner_module._runner = runner
 
-    # Execute tool via dispatch
-    gen = handler.dispatch("test-server/test-tool", {"arg": "value"}, Mock())
-
-    # Consume the generator
-    results = []
+    # CRITICAL FIX 3: Use try/finally to ensure cleanup always happens
     try:
-        while True:
-            results.append(next(gen))
-    except StopIteration as e:
-        final_result = e.value
+        # Execute tool via dispatch
+        gen = handler.dispatch("test-server/test-tool", {"arg": "value"}, Mock())
 
-    # Verify tool was hit
-    score = runner.tool_lifecycle.get_tool_score("test-server/test-tool")
-    assert score == 100, f"Expected score 100, got {score}"
+        # Consume the generator
+        results = []
+        try:
+            while True:
+                results.append(next(gen))
+        except StopIteration as e:
+            final_result = e.value
 
-    # Verify persistence
-    scores_file = temp_storage / ".niu" / "tool_scores.json"
-    assert scores_file.exists(), "Scores file should exist"
+        # CRITICAL FIX 1: Verify tool was actually executed
+        mock_func.assert_called_once_with(arg="value")
 
-    scores = json.loads(scores_file.read_text(encoding="utf-8"))
-    assert scores["test-server/test-tool"] == 100, f"Expected persisted score 100, got {scores.get('test-server/test-tool')}"
+        # CRITICAL FIX 2: Verify tool execution result
+        assert isinstance(final_result, StepOutcome), f"Expected StepOutcome, got {type(final_result)}"
+        assert final_result.data == {"status": "success", "data": "test result"}, f"Expected mock result, got {final_result.data}"
 
-    # Cleanup
-    del registry._tools["test-server/test-tool"]
+        # Verify tool was hit
+        score = runner.tool_lifecycle.get_tool_score("test-server/test-tool")
+        assert score == 100, f"Expected score 100, got {score}"
+
+        # Verify persistence
+        scores_file = temp_storage / ".niu" / "tool_scores.json"
+        assert scores_file.exists(), "Scores file should exist"
+
+        scores = json.loads(scores_file.read_text(encoding="utf-8"))
+        assert scores["test-server/test-tool"] == 100, f"Expected persisted score 100, got {scores.get('test-server/test-tool')}"
+    finally:
+        # Cleanup: Always remove test tool from registry
+        if "test-server/test-tool" in registry._tools:
+            del registry._tools["test-server/test-tool"]
+
 
 
 def test_no_hit_on_vector_search(temp_storage, clean_runner):
