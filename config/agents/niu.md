@@ -16,6 +16,7 @@ mcpServers:
   - vector-store
   - config-manager
   - photo-server
+  - browser-server
 ---
 
 # 核心能力
