@@ -2,7 +2,7 @@
 
 **触发关键词**：浏览器、网页、填表、截图、网页操作、表单填写、自动答题
 
-**L1 摘要**：浏览器自动化|浏览器,填表,网页操作|使用 browser_navigate + code_run 执行 Playwright 代码实现浏览器自动化|browser_navigate,Playwright,BrowserManager,code_run|使用指南
+**L1 摘要**：Browser automation|browser,form filling,web operation|Use browser_navigate + code_run to execute Playwright code for browser automation|browser_navigate,Playwright,BrowserManager,code_run|skill|memory/skills/browser-automation.md
 
 ## 概述
 

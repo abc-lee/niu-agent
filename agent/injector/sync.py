@@ -304,23 +304,37 @@ class SkillSync:
         return list(set(triggers))[:10]
 
     def _extract_description(self, content: str) -> str:
-        """从 skill 内容提取描述"""
+        """从 skill 内容提取描述
+
+        L1 摘要格式：{标题}|{关键词}|{摘要}|{实体}|{类型}|{指针}
+        最后一个字段是指针，指向完整内容的位置
+        """
         lines = content.strip().split("\n")
 
-        # 格式 1: 第一个 # 标题作为描述
+        # 优先级 1: 提取 L1 摘要（管道格式，包含指针）
+        match_l1 = re.search(r"\*\*[lL]1 摘要\*\*[：:]\s*(.+)", content)
+        if match_l1:
+            description = match_l1.group(1).strip()
+            if description:
+                return description
+
+        # 优先级 2: 第一个 # 标题（降级，不推荐）
         for line in lines:
             line = line.strip()
             if line.startswith("# "):
                 # 去掉 # 前缀，作为描述
+                logger.warning(f"Skill 缺少 L1 摘要字段，使用标题降级")
                 return line[2:].strip()
 
-        # 格式 2: description: xxx
+        # 优先级 3: description: xxx
         match = re.search(r"description:\s*(.+)", content, re.IGNORECASE)
         if match:
+            logger.warning(f"Skill 缺少 L1 摘要字段，使用 description 降级")
             return match.group(1).strip().strip("\"'")
 
-        # 默认：使用前 100 字符
-        return content.strip()[:100]
+        # 默认：拒绝同步（返回空字符串）
+        logger.error("Skill 缺少任何描述字段，无法同步到向量库")
+        return ""
 
     def _extract_tags(self, content: str) -> list[str]:
         """从 skill 内容提取标签"""

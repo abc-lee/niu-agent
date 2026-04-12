@@ -1,8 +1,8 @@
 # L1 摘要层规范
 
 > 版本：v3.0
-> 日期：2026-04-09
-> 更新：统一metadata结构，移除normalized标记，简化规范
+> 日期：2026-04-12
+> 更新：丰富内容格式规范，明确指针字段定义
 
 ---
 
@@ -39,6 +39,49 @@ score = np.dot(query_vec, doc_vec)  # 归一化后直接点积
 ```
 
 **好处**：计算优化 + 数值稳定
+
+---
+
+## L1 Content 格式规范
+
+### 管道分隔格式（推荐）
+
+**格式**：
+```
+{标题}|{关键词}|{摘要}|{实体}|{类型}|{指针}
+```
+
+**字段说明**：
+
+| 字段 | 说明 | 示例 |
+|------|------|------|
+| 标题 | 简短标题 | `Browser automation` |
+| 关键词 | 逗号分隔的关键词 | `browser,form filling,web operation` |
+| 摘要 | 详细描述 | `Use browser_navigate + code_run to...` |
+| 实体 | 相关实体/工具 | `browser_navigate,Playwright,BrowserManager` |
+| 类型 | 内容类型 | `skill`, `memory`, `document` |
+| 指针 | L2内容位置 | `memory/skills/browser-automation.md` |
+
+**示例**：
+```
+Browser automation|browser,form filling,web operation|Use browser_navigate + code_run to execute Playwright code for browser automation|browser_navigate,Playwright,BrowserManager,code_run|skill|memory/skills/browser-automation.md
+```
+
+### 指针字段类型
+
+**指针指向 L2 完整内容的位置**，可以是：
+
+| 指针类型 | 格式 | 示例 |
+|---------|------|------|
+| 文件路径 | 相对或绝对路径 | `memory/skills/browser-automation.md` |
+| L2 记录ID | 向量库记录ID | `mem-550e8400-e29b-41d4-a716-446655440000:l2` |
+| URL | 网页链接 | `https://docs.example.com/guide` |
+| 数据库ID | 外部数据库ID | `db://knowledge/12345` |
+
+**重要性**：
+- ✅ Agent 通过指针读取完整内容
+- ✅ 实现"先看摘要，按需加载全文"的动态机制
+- ✅ 避免向量库存储大量重复内容
 
 ---
 
@@ -92,74 +135,14 @@ score = np.dot(query_vec, doc_vec)  # 归一化后直接点积
 | `section` | 章节 |
 | `title` | 标题（英文） |
 
----
+#### `category: "memory"` — 记忆
 
-## Content 格式
-
-### MCP工具格式
-
-```
-{tool_name}: {description}
-```
-
-**示例**：
-```
-schedule_task: Create scheduled tasks, reminders, and alarms. Supports one-time and recurring reminders. Use when user says 'remind me', 'alarm', 'set reminder'.
-```
-
-### 查询模式格式
-
-```
-{user_query_pattern}
-```
-
-**示例**：
-```
-remind me in X minutes
-```
-
----
-
-## 向量库记录结构
-
-```python
-{
-    "id": "mcp_tool:scheduler-server:schedule_task",
-    "content": "schedule_task: Create scheduled tasks...",
-    "embedding": <L2归一化后的向量>,
-    "metadata": {
-        "level": "l1",
-        "category": "mcp_tool",
-        "language": "en",
-        "name": "schedule_task",
-        "server": "scheduler-server",
-        "description": "Create scheduled tasks...",
-        "input_schema": {...}
-    }
-}
-```
-
----
-
-## 递归查询模式记录
-
-```python
-{
-    "id": "query_pattern:reminder_time",
-    "content": "remind me in X minutes",
-    "embedding": <L2归一化后的向量>,
-    "metadata": {
-        "level": "l1",
-        "category": "query_pattern",
-        "language": "en",
-        "type": "query_pattern",
-        "is_recursive": True,
-        "refined_query": "schedule task",
-        "category": "mcp_tool",
-        "description": "Remind user after X minutes"
-    }
-}
-```
+| 字段 | 说明 |
+|------|------|
+| `memory_type` | 记忆类型 |
+| `l2_pointer` | L2记录ID（指针） |
+| `importance` | 重要性分数 |
+| `created_at` | 创建时间 |
 
 ---
 
@@ -178,6 +161,90 @@ remind me in X minutes
 2. ✅ embedding L2归一化
 3. ✅ metadata 包含基础字段（level, category, language）
 4. ✅ metadata 包含类型扩展字段
+5. ✅ content 使用管道格式（推荐）
+6. ✅ 最后一个字段是指针（如有 L2 内容）
+
+---
+
+## 代码实现示例
+
+### Skills 同步（agent/injector/sync.py）
+
+```python
+def _extract_description(self, content: str) -> str:
+    """提取 L1 摘要（强制英文）"""
+
+    # 优先级 1: 提取 L1 摘要（管道格式）
+    match_l1 = re.search(r"\*\*[lL]1 摘要\*\*[：:]\s*(.+)", content)
+    if match_l1:
+        description = match_l1.group(1).strip()
+        if description:
+            return description
+
+    # 优先级 2: 标题（降级）
+    # ...
+
+    # 如果没有 L1 摘要，拒绝同步
+    return ""
+```
+
+### Memory Server（mcp-servers/memory-server/）
+
+```python
+def _generate_l1_summary(self, content: str, memory_type: str, title: str = None, l2_pointer: str = None) -> str:
+    """生成 L1 摘要（管道格式，最后一个字段是指针）"""
+
+    # ... 提取字段逻辑
+
+    # 最后一个字段：L2 指针
+    pointer = l2_pointer or "l2"
+
+    return f"{title_str}|{keywords_str}|{summary_str}|{entities_str}|{memory_type}|{pointer}"
+```
+
+---
+
+## 向量库记录结构示例
+
+### Skill 记录
+
+```python
+{
+    "id": "skill:browser-automation",
+    "content": "Browser automation|browser,form filling,web operation|Use browser_navigate + code_run to execute Playwright code for browser automation|browser_navigate,Playwright,BrowserManager,code_run|skill|memory/skills/browser-automation.md",
+    "embedding": <L2归一化后的向量>,
+    "metadata": {
+        "level": "l1",
+        "category": "skill",
+        "language": "en",
+        "name": "browser-automation",
+        "description": "Browser automation|browser,form filling...",
+        "source": "E:\\tools\\ai-bot\\memory\\skills\\browser-automation.md",
+        "priority": 50,
+        "tags": ["browser", "automation", "playwright"],
+        "triggers": ["浏览器", "网页", "填表"]
+    }
+}
+```
+
+### Memory 记录
+
+```python
+{
+    "id": "mem-550e8400-e29b-41d4-a716-446655440000:l1",
+    "content": "User preference|python,testing|User prefers using pytest for testing with 80% coverage|pytest,coverage,testing|preference|mem-550e8400-e29b-41d4-a716-446655440000:l2",
+    "embedding": <L2归一化后的向量>,
+    "metadata": {
+        "level": "l1",
+        "category": "memory",
+        "language": "en",
+        "memory_type": "preference",
+        "l2_pointer": "mem-550e8400-e29b-41d4-a716-446655440000:l2",
+        "importance": 0.8,
+        "created_at": "2026-04-12T10:30:00"
+    }
+}
+```
 
 ---
 
@@ -185,3 +252,4 @@ remind me in X minutes
 
 - 2026-04-07: v2.0 新增L2归一化要求、L1内容强制英文
 - 2026-04-09: v3.0 统一metadata结构，移除normalized标记，精简规范
+- 2026-04-12: v3.0 丰富内容格式规范，明确指针字段定义，添加代码示例

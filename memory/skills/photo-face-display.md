@@ -2,7 +2,7 @@
 
 **触发关键词**：未命名、人脸、照片、改名、命名人物
 
-**L1 摘要**：未命名人物查询|未命名,人脸,照片,命名|查询未命名人物时展示照片和人脸框，用户回答名字后完成命名|未命名人物,人脸框,照片展示,命名工具|使用指南
+**L1 摘要**：Unnamed person query|unnamed,face,photo,naming|Display photo and face bounding box when querying unnamed persons, user answers name to complete naming|unnamed person,face box,photo display,naming tool|skill|memory/skills/photo-face-display.md
 
 ## 概述
 

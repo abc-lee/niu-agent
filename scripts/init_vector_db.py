@@ -91,187 +91,34 @@ def sync_skills():
 
 
 def register_mcp_tools():
-    """注册 MCP 工具描述到向量库（L1级别）"""
-    logger.info("注册 MCP 工具描述...")
+    """注册 MCP 工具描述到向量库（L1级别）
 
-    # 定义所有 MCP 工具
-    # 分层：
-    # - 主Agent基础工具（11个）：memory-server (6) + vector-store (5)
-    # - 子Agent专用工具：photo-server, scheduler-server, kg-server等
+    注意：只注册动态加载的工具，不注册基础工具
+    - 基础工具：通过 BASE_MCP_TOOLS 固定注入（agent/runner.py）
+    - 动态工具：通过向量库语义搜索发现
+    """
+    logger.info("注册 MCP 工具描述（仅动态加载工具）...")
+
+    # 定义动态加载的 MCP 工具
+    # 这些工具不经常使用，需要通过语义搜索发现
+    # 注意：基础工具（memory-server, vector-store）已在 BASE_MCP_TOOLS 固定注入，不在此注册
     tools = [
-        # ==================== 主Agent基础工具 ====================
-        # memory-server (6个)
-        {
-            "server": "memory-server",
-            "name": "remember",
-            "description": "Save long-term memory with auto-generated L0/L1/L2 layers. Use when user says 'remember this', 'remember what I like', 'keep this in mind'. Parameters: content (memory content), metadata (optional metadata including memory_type, importance).",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "content": {"type": "string", "description": "Memory content"},
-                    "metadata": {"type": "object", "description": "Optional metadata"}
-                },
-                "required": ["content"]
-            }
-        },
-        {
-            "server": "memory-server",
-            "name": "recall",
-            "description": "Retrieve memories using semantic search. Use when user says 'recall previous memories', 'what did I say before', 'search memories'. Parameters: query (search query), limit (number of results), memory_type (optional filter).",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "Search query"},
-                    "limit": {"type": "integer", "description": "Number of results"},
-                    "memory_type": {"type": "string", "description": "Filter by memory type"}
-                },
-                "required": ["query"]
-            }
-        },
-        {
-            "server": "memory-server",
-            "name": "update_memory",
-            "description": "Update existing memory. Parameters: memory_id (memory ID), content (new content), metadata (new metadata).",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "memory_id": {"type": "string", "description": "Memory ID"},
-                    "content": {"type": "string", "description": "New content"},
-                    "metadata": {"type": "object", "description": "New metadata"}
-                },
-                "required": ["memory_id"]
-            }
-        },
-        {
-            "server": "memory-server",
-            "name": "get_memory_stats",
-            "description": "Get memory statistics. Returns total count, count by type, oldest/newest memory info.",
-            "input_schema": {
-                "type": "object",
-                "properties": {}
-            }
-        },
-        {
-            "server": "memory-server",
-            "name": "cleanup_memories",
-            "description": "Cleanup expired or outdated memories. Parameters: older_than_days (days threshold), dry_run (preview mode).",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "older_than_days": {"type": "integer", "description": "Days threshold"},
-                    "dry_run": {"type": "boolean", "description": "Preview mode"}
-                }
-            }
-        },
-        {
-            "server": "memory-server",
-            "name": "link_memories",
-            "description": "Create association between two memories. Parameters: memory_a_id, memory_b_id, relation_type (e.g., 'related_to', 'causes', 'contradicts').",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "memory_a_id": {"type": "string", "description": "First memory ID"},
-                    "memory_b_id": {"type": "string", "description": "Second memory ID"},
-                    "relation_type": {"type": "string", "description": "Relation type"}
-                },
-                "required": ["memory_a_id", "memory_b_id"]
-            }
-        },
+        # ==================== 动态加载工具 ====================
+        # browser-server (1个) - 按需启动，浏览器自动化
+        # 注意：browser_navigate 已加入 BASE_MCP_TOOLS（见 agent/runner.py）
+        # 其他浏览器操作通过 code_run + BrowserManager 完成
 
-        # vector-store (5个)
-        {
-            "server": "vector-store",
-            "name": "add_document",
-            "description": "Add document to vector store with semantic embedding. Use when user says 'add this document', 'save this document'. Parameters: id (document ID), content (content), metadata (optional metadata), file_path (optional file path).",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "id": {"type": "string", "description": "Document ID"},
-                    "content": {"type": "string", "description": "Document content"},
-                    "metadata": {"type": "object", "description": "Metadata"},
-                    "file_path": {"type": "string", "description": "File path"}
-                },
-                "required": ["id", "content"]
-            }
-        },
-        {
-            "server": "vector-store",
-            "name": "search_documents",
-            "description": "Semantic search in vector store. Use when user says 'search for documents', 'find documents about', 'retrieve knowledge'. Parameters: query (search query), limit (number of results), min_score (minimum similarity), filter (metadata filter).",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "Search query"},
-                    "limit": {"type": "integer", "description": "Number of results"},
-                    "min_score": {"type": "number", "description": "Minimum similarity"},
-                    "filter": {"type": "object", "description": "Metadata filter"}
-                },
-                "required": ["query"]
-            }
-        },
-        {
-            "server": "vector-store",
-            "name": "get_document",
-            "description": "Get document by ID. Parameters: id (document ID).",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "id": {"type": "string", "description": "Document ID"}
-                },
-                "required": ["id"]
-            }
-        },
-        {
-            "server": "vector-store",
-            "name": "delete_document",
-            "description": "Delete document by ID. Parameters: id (document ID).",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "id": {"type": "string", "description": "Document ID"}
-                },
-                "required": ["id"]
-            }
-        },
-        {
-            "server": "vector-store",
-            "name": "list_documents",
-            "description": "List all documents, optionally filtered by metadata. Parameters: filter (metadata filter), limit (max results).",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "filter": {"type": "object", "description": "Metadata filter"},
-                    "limit": {"type": "integer", "description": "Max results"}
-                }
-            }
-        },
+        # ==================== 子Agent专用工具（不注册）====================
+        # photo-server (14个) - 子Agent专用，主Agent通过 chat-with-file-processor 委托
+        # scheduler-server (4个) - 子Agent专用，主Agent通过 chat-with-event-manager 委托
+        # kg-server (12个) - 底层操作，不暴露给主Agent
+        # file-parser (2个) - 底层操作，不暴露给主Agent
+        # config-manager - 已删除，用 bash + file 操作替代
 
-        # ==================== Page-Agent 浏览器自动化工具 ====================
-        {
-            "server": "page-agent-server",
-            "name": "browse_web",
-            "description": "Browser automation tool for web browsing, searching, form filling, data extraction, and task automation. Use when user says 'search', 'open webpage', 'browse', 'fill form', 'login', 'scrape data', 'book tickets', 'monitor website'. Supports natural language control of browser operations.",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "action": {"type": "string", "description": "Browser action to perform"},
-                    "params": {"type": "object", "description": "Action parameters"}
-                },
-                "required": ["action"]
-            }
-        },
-
-        # ==================== 以下工具不索引到向量库 ====================
-        # scheduler-server (4个) - 子Agent专用，主Agent通过chat-with-event-manager委托
-        # file-parser (2个) - 底层操作，不暴露
-        # photo-server (14个) - 子Agent专用，主Agent通过chat-with-file-processor委托
-        # kg-server (12个) - 底层操作，不暴露
-        # config-manager (20个) - 已删除，用bash+file操作替代
-
-        # 注意：以上工具不会在向量库中索引，主Agent无法通过向量检索发现这些工具
-        # 这是符合架构设计的：
-        # - 主Agent只直接调用基础工具（memory-server + vector-store）
-        # - 其他操作通过子Agent委托
+        # 注意：
+        # 1. 基础工具（memory-server + vector-store）已在 BASE_MCP_TOOLS 固定注入
+        # 2. 子Agent专用工具不在向量库注册，避免主Agent误用
+        # 3. 浏览器自动化架构：browser_navigate (MCP) + code_run + BrowserManager
     ]
 
     # 获取向量库连接
@@ -342,13 +189,17 @@ def register_mcp_tools():
 
 
 def register_query_patterns():
-    """注册递归查询模式"""
+    """注册递归查询模式
+
+    注意：只注册与 Skills 和业务场景相关的模式
+    不注册 MCP 工具相关的模式（工具已在 BASE_MCP_TOOLS 固定注入）
+    """
     logger.info("注册查询模式...")
 
     # 查询模式定义（符合L1规范 v3.0）
-    # 包含英文和中文查询模式，支持主Agent基础工具
+    # 注意：MCP 工具相关的查询模式不需要注册，因为工具已在 BASE_MCP_TOOLS 固定注入
     patterns = [
-        # ==================== 记忆管理类（英文）====================
+        # ==================== 记忆管理类 ====================
         {
             "id": "query_pattern:recall_memory_1",
             "content": "recall previous memories",
@@ -378,105 +229,8 @@ def register_query_patterns():
             }
         },
 
-        # ==================== Browser Automation ====================
-        {
-            "id": "query_pattern:browser_search",
-            "content": "help me search",
-            "metadata": {
-                "level": "l1",
-                "category": "query_pattern",
-                "language": "en",
-                "type": "query_pattern",
-                "is_recursive": True,
-                "refined_query": "browser automation search",
-                "target_category": "mcp_tool",
-                "description": "User wants to search on web"
-            }
-        },
-        {
-            "id": "query_pattern:browser_open",
-            "content": "open webpage",
-            "metadata": {
-                "level": "l1",
-                "category": "query_pattern",
-                "language": "en",
-                "type": "query_pattern",
-                "is_recursive": True,
-                "refined_query": "browser automation open webpage",
-                "target_category": "mcp_tool",
-                "description": "User wants to open a webpage"
-            }
-        },
-        {
-            "id": "query_pattern:browser_browse",
-            "content": "browse website",
-            "metadata": {
-                "level": "l1",
-                "category": "query_pattern",
-                "language": "en",
-                "type": "query_pattern",
-                "is_recursive": True,
-                "refined_query": "browser automation browse",
-                "target_category": "mcp_tool",
-                "description": "User wants to browse website"
-            }
-        },
-        {
-            "id": "query_pattern:browser_form",
-            "content": "fill form automatically",
-            "metadata": {
-                "level": "l1",
-                "category": "query_pattern",
-                "language": "en",
-                "type": "query_pattern",
-                "is_recursive": True,
-                "refined_query": "browser automation fill form",
-                "target_category": "mcp_tool",
-                "description": "User wants to fill a form"
-            }
-        },
-        {
-            "id": "query_pattern:browser_extract",
-            "content": "save webpage content",
-            "metadata": {
-                "level": "l1",
-                "category": "query_pattern",
-                "language": "en",
-                "type": "query_pattern",
-                "is_recursive": True,
-                "refined_query": "browser automation extract",
-                "target_category": "mcp_tool",
-                "description": "User wants to save content from webpage"
-            }
-        },
-        {
-            "id": "query_pattern:browser_book",
-            "content": "book tickets",
-            "metadata": {
-                "level": "l1",
-                "category": "query_pattern",
-                "language": "en",
-                "type": "query_pattern",
-                "is_recursive": True,
-                "refined_query": "browser automation book tickets",
-                "target_category": "mcp_tool",
-                "description": "User wants to book tickets online"
-            }
-        },
-        {
-            "id": "query_pattern:browser_news",
-            "content": "find news information",
-            "metadata": {
-                "level": "l1",
-                "category": "query_pattern",
-                "language": "en",
-                "type": "query_pattern",
-                "is_recursive": True,
-                "refined_query": "browser automation news",
-                "target_category": "mcp_tool",
-                "description": "User wants to find news"
-            }
-        },
+        # 注意：浏览器相关查询模式已移除
+        # browser_navigate 已在 BASE_MCP_TOOLS 固定注入，无需查询模式
     ]
 
     # 获取向量库路径

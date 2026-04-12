@@ -4,6 +4,8 @@ description: 照片处理技能，包括入库、人脸识别、人物命名和�
 tags: [photo, face, image, 照片, 人脸]
 触发关键词：照片、图片、人脸、人物、入库
 
+**L1 摘要**：Photo processing|photo,face,image,ingestion,recognition|Handle photo ingestion, face recognition, person naming and querying via chat-with-file-processor|photo,face,person,naming,chat-with-file-processor|skill|memory/skills/photo-processing.md
+
 ## 单张照片入库
 
 **必须调用工具 chat-with-file-processor**，参数 task="处理照片：路径"
