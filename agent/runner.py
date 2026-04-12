@@ -45,6 +45,9 @@ BASE_MCP_TOOLS = [
     "vector-store/get_document",
     "vector-store/delete_document",
     "vector-store/list_documents",
+
+    # browser-server (1个)
+    "browser-server/browser_navigate",
 ]
 
 
