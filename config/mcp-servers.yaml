@@ -73,16 +73,6 @@ session-manager:
   workdir: mcp-servers/session-manager/src
   preload: false  # 按需启动，不预加载
 
-# Page Agent MCP - Browser automation via Chrome extension (Node.js)
-# 独立的外部服务，通过 WebSocket 通信 (ws://localhost:38401)
-# Python 通过 WebSocket 客户端调用
-page-agent-mcp:
-  command: ${NODE_PATH}
-  args:
-    - "src/index.js"
-  workdir: mcp-servers/page-agent-mcp
-  preload: false  # 不自动启动，需要时手动启动或自动打开浏览器
-
 # Nanobot System - Built-in system tools (not a real MCP server, added programmatically)
 # This entry exists to satisfy validation that references all defined servers
 nanobot.system:

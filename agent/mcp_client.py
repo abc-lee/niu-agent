@@ -195,13 +195,6 @@ def load_mcp_configs() -> Dict[str, MCPServerConfig]:
                 "SCHEDULER_DB_PATH": scheduler_db_path,
             },
         ),
-        "page-agent-mcp": MCPServerConfig(
-            name="page-agent-mcp",
-            command="node",
-            args=["mcp-servers/page-agent-mcp/src/index.js"],
-            workdir=os.path.join(base_dir, ".."),
-            env=inherited_env,
-        ),
     }
 
     return configs
