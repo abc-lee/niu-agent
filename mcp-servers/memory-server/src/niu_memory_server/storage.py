@@ -117,7 +117,7 @@ class MemoryStorage:
             }
 
             # L1: 摘要
-            l1_content = self._generate_l1_summary(content, memory_type, title)
+            l1_content = self._generate_l1_summary(content, memory_type, title, l2_id)
             l1_metadata = {
                 "level": "l1",
                 "memory_type": memory_type,
@@ -204,19 +204,20 @@ class MemoryStorage:
 
         return first_sentence[:47] + "..."
 
-    def _generate_l1_summary(self, content: str, memory_type: str, title: str = None) -> str:
+    def _generate_l1_summary(self, content: str, memory_type: str, title: str = None, l2_pointer: str = None) -> str:
         """
-        生成 L1 摘要（英文，符合L1规范v2.0）
+        生成 L1 摘要（英文，符合L1规范v3.0）
 
         格式：{title}|{keywords}|{summary}|{entities}|{type}|{pointer}
 
-        **重要**：根据L1规范v2.0，L1内容必须是英文。
+        **重要**：根据L1规范v3.0，L1内容必须是英文。
         如果content是中文，应该在外部先翻译成英文再传入。
 
         Args:
             content: 记忆内容（建议英文）
             memory_type: 记忆类型
             title: 可选标题，不提供则自动生成
+            l2_pointer: L2记录的ID（指针）
         """
         import re
 
@@ -238,7 +239,10 @@ class MemoryStorage:
         entities = re.findall(r'\d+(?:GB|MB|TB|MHz|GHz|ms|s)\b', content)
         entities_str = ','.join(set(entities[:5]))
 
-        return f"{title_str}|{keywords_str}|{summary_str}|{entities_str}|{memory_type}|l2"
+        # 最后一个字段：L2 指针
+        pointer = l2_pointer or "l2"
+
+        return f"{title_str}|{keywords_str}|{summary_str}|{entities_str}|{memory_type}|{pointer}"
 
     def search_memories(
         self, query: str, limit: int = 5, filter_dict: dict = None, level: str = "l1"
