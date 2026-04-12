@@ -456,25 +456,10 @@ class NiuRunner:
                 tools_schema.append(schema)
 
         # 动态注入其他工具（基于向量检索）
-        # 1. 向量检索工具（使用上下文，而不是单纯的user_input）
-        matched_tools = self.vector_search.search(
-            query=context,
-            limit=3,
-            min_score=0.5,
-            filter={'category': 'mcp_tool'}
-        )
-
-        # 2. 更新工具生命周期（命中工具设置为100分）
-        for result in matched_tools:
-            tool_name = result.metadata.get('name')
-            server = result.metadata.get('server')
-            full_name = f"{server}/{tool_name}"
-            self.tool_lifecycle.hit_tool(full_name)
-
-        # 3. 获取所有活跃工具（包括命中的 + 之前未衰减完的）
+        # 1. 获取所有活跃工具（之前未衰减完的）
         active_tool_names = self.tool_lifecycle.get_active_tools()
 
-        # 4. 注入活跃工具（排除基础MCP工具，避免重复）
+        # 2. 注入活跃工具（排除基础MCP工具，避免重复）
         for tool_name in active_tool_names:
             # 跳过基础MCP工具（已经注入）
             if tool_name in BASE_MCP_TOOLS:

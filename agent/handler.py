@@ -1058,6 +1058,17 @@ class NiuHandler(BaseHandler):
                         next_prompt=self._get_anchor_prompt()
                     )
 
+                # 记录工具命中（在真正执行前）
+                try:
+                    from agent.runner import get_runner
+                    runner = get_runner()
+                    if runner and hasattr(runner, 'tool_lifecycle'):
+                        runner.tool_lifecycle.hit_tool(tool_name)
+                        print(f"[ToolHit] {tool_name} executed (score: 100)", file=sys.stderr, flush=True)
+                except Exception as e:
+                    # 命中记录失败不影响主流程
+                    print(f"[ToolHit] Failed to record hit: {e}", file=sys.stderr, flush=True)
+
                 # 直接调用工具函数
                 result = func(**args)
 
