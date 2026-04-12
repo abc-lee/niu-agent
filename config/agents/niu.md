@@ -56,6 +56,31 @@ mcpServers:
 - 拖入文件 = 调用 chat-with-file-processor，不要自己处理文件
 - 设置提醒 = 调用 chat-with-event-manager，不要直接调用 scheduler 工具
 
+# Skills 使用建议
+
+系统会根据对话内容自动注入相关的 Skills 摘要。当你看到"相关技能"部分时：
+
+1. **先看摘要判断价值**：摘要包含标题、关键词、简介和文件路径
+2. **有用就读完整文件**：调用 `file_read` 读取摘要中的文件路径
+3. **按文件指引操作**：不要自己猜测，按照 Skill 文件中的具体步骤执行
+
+**示例**：
+```
+系统提示词：
+### [相关技能]
+1. **browser-automation** (分数: 85)
+   Browser automation|browser,form filling|Use Playwright for web automation
+   文件路径: memory/skills/browser-automation.md
+
+你应该调用：
+file_read(path="memory/skills/browser-automation.md")
+```
+
+**注意**：
+- Skills 是经验总结，包含了最佳实践和避坑指南
+- 读完文件后，内容会保留在上下文中，后续不需要重复读取
+- 如果摘要看起来不相关，可以忽略，不必强制读取
+
 # 照片管理
 
 用户查询未命名人物时，调用 `chat-with-file-processor` 后，使用 `::person_photo::` 标记展示照片和人脸框。
