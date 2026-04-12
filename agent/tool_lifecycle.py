@@ -2,13 +2,16 @@
 工具生命周期管理
 
 管理工具在对话单元中的生命周期，实现分数衰减机制。
+支持持久化存储，程序重启后保留工具分数。
 """
 
+import json
+from pathlib import Path
 from typing import Dict, List
 
 
 class ToolLifecycleManager:
-    """管理工具在对话单元中的生命周期"""
+    """管理工具在对话单元中的生命周期（带持久化）"""
 
     def __init__(self, decay_rate: int = 10, min_score: int = 50):
         """
@@ -16,9 +19,28 @@ class ToolLifecycleManager:
             decay_rate: 每轮衰减分数（默认10分/轮）
             min_score: 低于此分数移除工具（默认50分）
         """
-        self.active_tools: Dict[str, int] = {}  # tool_name -> current_score
+        self.scores_path = Path.home() / ".niu" / "tool_scores.json"
         self.decay_rate = decay_rate
         self.min_score = min_score
+        self.active_tools: Dict[str, int] = self._load_scores()
+
+    def _load_scores(self) -> Dict[str, int]:
+        """从 JSON 文件加载工具分数"""
+        if not self.scores_path.exists():
+            return {}
+
+        try:
+            return json.loads(self.scores_path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+
+    def _save_scores(self):
+        """保存工具分数到 JSON 文件"""
+        self.scores_path.parent.mkdir(parents=True, exist_ok=True)
+        self.scores_path.write_text(
+            json.dumps(self.active_tools, indent=2, ensure_ascii=False),
+            encoding="utf-8"
+        )
 
     def hit_tool(self, tool_name: str):
         """
@@ -28,6 +50,7 @@ class ToolLifecycleManager:
             tool_name: 工具名，格式为 "server-name/tool-name"
         """
         self.active_tools[tool_name] = 100
+        self._save_scores()
 
     def decay_tools(self):
         """
@@ -36,6 +59,7 @@ class ToolLifecycleManager:
         规则：
         - 所有工具分数 -decay_rate
         - 分数 < min_score 的工具被移除
+        - 保存到文件
         """
         to_remove = []
         for tool_name, score in self.active_tools.items():
@@ -47,6 +71,8 @@ class ToolLifecycleManager:
 
         for tool_name in to_remove:
             del self.active_tools[tool_name]
+
+        self._save_scores()
 
     def get_active_tools(self) -> List[str]:
         """
@@ -60,6 +86,7 @@ class ToolLifecycleManager:
     def clear(self):
         """清空所有活跃工具"""
         self.active_tools.clear()
+        self._save_scores()
 
     def get_tool_score(self, tool_name: str) -> int:
         """
