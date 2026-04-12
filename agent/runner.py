@@ -254,8 +254,11 @@ def format_resources_for_prompt(results: list, title: str = "相关资源") -> s
                 else:
                     lines.append(f"       {r.content}")
             else:
-                # Skills 等其他类型，注入完整内容
+                # Skills 等其他类型，注入 L1 摘要 + 文件路径（指针）
                 lines.append(f"   {r.content}")
+                source = r.metadata.get("source", "")
+                if source:
+                    lines.append(f"   文件路径: {source}")
         else:
             lines.append(f"{i}. {r.content} (分数: {score_pct})")
 
