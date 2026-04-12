@@ -1,7 +1,0 @@
-[page-agent-mcp] Loaded config from: E:\tools\ai-bot\config\user-config.json
-[page-agent-mcp] Using API key from user-config.json
-[page-agent-mcp] Using base URL from user-config.json
-[page-agent-mcp] Using model from user-config.json
-[page-agent-mcp] HTTP + WS on http://localhost:38401
-[page-agent-mcp] MCP server ready (stdio)
-[page-agent-mcp] REST API on http://localhost:38402
