@@ -19,6 +19,8 @@ class BrowserManager:
 
     Features:
     - Singleton browser instance
+    - Persistent browser context (cookies and login state saved to ~/.niu/browser_data/)
+    - Visible browser window (headless=False)
     - Threading.Lock with timeout for concurrency protection
     - Idle timeout (5 minutes) with background thread
     - Health check + auto-restart (max 3 retries)
@@ -48,17 +50,23 @@ class BrowserManager:
         self._browser: Optional[Browser] = None
         self._page: Optional[Page] = None
         self._playwright: Optional[Playwright] = None
+        self._context = None  # Persistent browser context
         self._last_used: float = 0
         self._idle_timeout = 300  # 5 minutes
         self._error_count = 0
         self._max_retries = 3
         self._initialized = True
 
+        # User data directory for persistent cookies and login state
+        from pathlib import Path
+        self._user_data_dir = Path.home() / ".niu" / "browser_data"
+        self._user_data_dir.mkdir(parents=True, exist_ok=True)
+
         # Start idle timeout monitor thread
         self._monitor_thread = threading.Thread(target=self._idle_monitor, daemon=True)
         self._monitor_thread.start()
 
-        logger.info("BrowserManager initialized")
+        logger.info(f"BrowserManager initialized (user_data_dir: {self._user_data_dir})")
 
     def _idle_monitor(self):
         """Background thread to monitor idle timeout"""
@@ -71,14 +79,27 @@ class BrowserManager:
                     self._close_browser()
 
     def _start_browser(self) -> bool:
-        """Start browser instance"""
+        """Start browser instance with persistent context"""
         try:
             self._playwright = sync_playwright().start()
-            self._browser = self._playwright.chromium.launch(headless=True)
-            self._page = self._browser.new_page()
+
+            # Use persistent context to keep cookies and login state
+            # headless=False to show browser window
+            self._context = self._playwright.chromium.launch_persistent_context(
+                user_data_dir=str(self._user_data_dir),
+                headless=False,  # Show browser window
+                viewport={"width": 1280, "height": 720}
+            )
+
+            # Get or create page
+            if len(self._context.pages) > 0:
+                self._page = self._context.pages[0]
+            else:
+                self._page = self._context.new_page()
+
             self._last_used = time.time()
             self._error_count = 0
-            logger.info("Browser started successfully")
+            logger.info(f"Browser started successfully (headless=False, user_data_dir={self._user_data_dir})")
             return True
         except Exception as e:
             logger.error(f"Failed to start browser: {e}")
@@ -89,26 +110,26 @@ class BrowserManager:
         try:
             if self._page:
                 self._page.close()
-            if self._browser:
-                self._browser.close()
+            if self._context:
+                self._context.close()  # Close persistent context (saves cookies)
             if self._playwright:
                 self._playwright.stop()
         except Exception as e:
             logger.error(f"Error closing browser: {e}")
         finally:
             self._page = None
-            self._browser = None
+            self._context = None
             self._playwright = None
             self._last_used = 0
-            logger.info("Browser closed")
+            logger.info("Browser closed (cookies and login state saved)")
 
     def _health_check(self) -> bool:
         """Check if browser is healthy"""
-        if not self._browser or not self._page:
+        if not self._context or not self._page:
             return False
         try:
-            # Try to access browser context
-            _ = self._browser.contexts
+            # Try to access context pages
+            _ = self._context.pages
             return True
         except:
             return False
@@ -201,7 +222,7 @@ def browser_navigate(
 TOOL_SCHEMAS = {
     "browser_navigate": {
         "name": "browser_navigate",
-        "description": "启动浏览器并导航到指定 URL。**使用场景**：用户要求'打开网页'、'访问网站'、'导航到某个URL'、'浏览页面'时使用此工具。**参数**：url (目标 URL，必需)，wait_until (等待策略，可选)。**返回**：导航结果。**注意**：此工具仅负责导航，如需点击、填充、截图等操作，使用 code_run 调用 BrowserManager。",
+        "description": "启动浏览器并导航到指定 URL。**使用场景**：用户要求'打开网页'、'访问网站'、'导航到某个URL'、'浏览页面'时使用此工具。**特性**：浏览器窗口可见（headless=False），自动保存 cookies 和登录状态到 ~/.niu/browser_data/，关闭后重新打开仍保持登录。**参数**：url (目标 URL，必需)，wait_until (等待策略，可选)。**返回**：导航结果。**注意**：此工具仅负责导航，如需点击、填充、截图等操作，使用 code_run 调用 BrowserManager。",
         "input_schema": {
             "type": "object",
             "properties": {
