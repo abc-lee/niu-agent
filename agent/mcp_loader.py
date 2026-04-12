@@ -25,6 +25,7 @@ REQUIRED_SERVERS: List[Tuple[str, str]] = [
     ("file-parser", "niu_file_parser"),
     ("session-manager", "niu_session_manager"),
     ("scheduler-server", "niu_scheduler_server"),
+    ("browser-server", "niu_browser_server"),
 ]
 
 
