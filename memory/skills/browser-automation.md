@@ -239,8 +239,11 @@ if question_element:
 ### 1. 浏览器生命周期
 
 - **自动启动**：首次调用 `browser_navigate` 时自动启动浏览器
+- **浏览器可见**：默认 `headless=False`，会显示浏览器窗口
 - **自动关闭**：浏览器空闲 5 分钟后自动关闭
 - **单例模式**：全局只有一个浏览器实例，通过 `BrowserManager` 管理
+- **持久化登录**：用户数据保存在 `~/.niu/browser_data/`，包括 cookies、登录状态、浏览历史
+- **非无痕模式**：关闭浏览器后重新打开，仍保持登录状态
 
 ### 2. 并发保护
 
@@ -257,7 +260,7 @@ if question_element:
 
 - **无反爬虫绕过**：CAPTCHA、Cloudflare 可能阻止访问
 - **无代理支持**：不支持 IP 轮换
-- **无会话持久化**：浏览器关闭后 cookies 丢失
+- **会话持久化**：✅ 支持持久化，cookies 和登录状态保存在 `~/.niu/browser_data/`
 
 ## Playwright 选择器语法
 
