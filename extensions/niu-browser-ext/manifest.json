@@ -3,13 +3,10 @@
   "name": "Niu Browser Assistant",
   "description": "AI-driven browser automation - structured page state extraction and interaction",
   "version": "1.0.0",
-  "permissions": ["tabs", "activeTab", "sidePanel"],
+  "permissions": ["tabs", "activeTab"],
   "host_permissions": ["<all_urls>"],
   "action": {
     "default_title": "Niu Browser Assistant"
-  },
-  "side_panel": {
-    "default_path": "hub.html"
   },
   "background": {
     "service_worker": "background.js"

@@ -8,7 +8,18 @@ let lastFlatTree = null;
 let lastSelectorMap = null;
 let lastSimplifiedHTML = '';
 
-// Listen for messages from background
+// Helper: get DOM element from selectorMap entry.
+// selectorMap stores node data objects (with .ref pointing to the real DOM element).
+function getDomElement(index) {
+  const entry = lastSelectorMap?.get(index);
+  if (!entry) return null;
+  // entry may be the DOM element directly, or a node data object with .ref
+  if (entry.ref && entry.ref.nodeType === Node.ELEMENT_NODE) return entry.ref;
+  if (entry.nodeType === Node.ELEMENT_NODE) return entry;
+  return null;
+}
+
+// Listen for messages from background/hub
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   handleMessage(msg).then(sendResponse);
   return true; // Keep channel open for async response
@@ -26,8 +37,6 @@ async function handleMessage(msg) {
       return selectOption(msg.index, msg.option);
     case 'scroll':
       return scroll(msg.direction, msg.amount);
-    case 'navigate':
-      return navigate(msg.url);
     default:
       return { success: false, message: 'Unknown command: ' + msg.type };
   }
@@ -66,10 +75,12 @@ function getBrowserState() {
 
 /**
  * Click element by index (simulate real mouse events)
+ * Returns immediately with the click result. If the click triggers navigation,
+ * the hub will detect it via tab_updated event and get fresh state from the new page.
  */
 function clickElement(index) {
   try {
-    const element = lastSelectorMap?.get(index);
+    const element = getDomElement(index);
     if (!element) {
       return { success: false, message: 'Element ' + index + ' not found. Call get_state first.' };
     }
@@ -95,10 +106,10 @@ function clickElement(index) {
       }));
     }
 
-    // Wait for page response, then return new state
-    return new Promise(resolve => {
-      setTimeout(() => resolve(getBrowserState()), 500);
-    });
+    // Return immediately - don't try to get state after click
+    // because click may trigger navigation (page unload)
+    // Hub will handle getting fresh state after navigation completes
+    return { success: true, message: 'Clicked element ' + index };
   } catch (e) {
     return { success: false, message: 'Click failed: ' + e.message };
   }
@@ -109,7 +120,7 @@ function clickElement(index) {
  */
 function inputText(index, text) {
   try {
-    const element = lastSelectorMap?.get(index);
+    const element = getDomElement(index);
     if (!element) {
       return { success: false, message: 'Element ' + index + ' not found.' };
     }
@@ -142,7 +153,7 @@ function inputText(index, text) {
  */
 function selectOption(index, optionText) {
   try {
-    const element = lastSelectorMap?.get(index);
+    const element = getDomElement(index);
     if (!element || element.tagName !== 'SELECT') {
       return { success: false, message: 'Element ' + index + ' is not a select.' };
     }
@@ -168,16 +179,6 @@ function scroll(direction, amount) {
   return new Promise(resolve => {
     setTimeout(() => resolve(getBrowserState()), 300);
   });
-}
-
-/**
- * Navigate to URL
- */
-function navigate(url) {
-  window.location.href = url;
-  // After navigation, page reloads and content_script re-injects
-  // Return value will be provided by new page's get_state
-  return { success: true, message: 'Navigating to ' + url };
 }
 
 /**
