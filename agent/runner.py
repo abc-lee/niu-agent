@@ -46,10 +46,9 @@ BASE_MCP_TOOLS = [
     "vector-store/delete_document",
     "vector-store/list_documents",
 
-    # browser-server (2个)
-    # NOTE: Playwright async_api in dedicated daemon thread
+    # browser-server (1个)
+    # NOTE: Playwright async_api in dedicated daemon thread, CDP port for code_run
     "browser-server/browser_navigate",
-    "browser-server/browser_get_content",
 ]
 
 
