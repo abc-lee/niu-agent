@@ -252,6 +252,20 @@ schemas = registry.get_schemas()
 - `agent/injector/sync.py` — Skills 定时扫描同步到向量库
 - `niu_api/injector.py` — API 端点手动注册 MCP 工具描述
 - `agent/runner.py` — `_inject_dynamic_resources()` 按语义搜索并注入
+- `agent/runner.py` — `_on_turn_end()` 每轮结束后刷新动态注入（轮次级）
+- `agent/tool_lifecycle.py` — 工具生命周期管理（衰减-覆盖评分模式）
+
+**轮次级刷新机制**：
+- `agent_runner_loop()` 每轮循环末尾调用 `on_turn_end` 回调
+- 回调执行顺序：先衰减(`decay_tools` -10) → 再注入(`_inject_dynamic_resources` 向量检索覆盖分数)
+- 向量检索到的 MCP 工具分数覆盖到 `tool_lifecycle`，实现"衰减-覆盖"模式
+
+**衰减-覆盖评分模式**：
+- 每轮开始：所有活跃工具 -10 分
+- 向量检索命中：覆盖为新分数（`max(min_score, int(similarity * 100))`）
+- 命中工具净效果 ≈ 0（-10 + 新分数），保持稳定
+- 非命中工具持续 -10/轮，低于 min_score(50) 自动移除
+- `hit_tool()` 不再强制设 100 分，改为接受可选 `score` 参数
 
 **向量库标签**：
 - `l1` — L1 摘要
@@ -442,7 +456,7 @@ preload_face_model()
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **ai-bot** (5893 symbols, 10259 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **ai-bot** (6044 symbols, 10468 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
