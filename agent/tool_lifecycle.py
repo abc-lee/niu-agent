@@ -45,14 +45,27 @@ class ToolLifecycleManager:
             encoding="utf-8"
         )
 
-    def hit_tool(self, tool_name: str):
+    def hit_tool(self, tool_name: str, score: int = 0):
         """
-        工具被命中，重置为100分，并检索相关Skills
+        工具被命中，记录激活并检索相关Skills
+
+        不再强制设100分。如果提供了 score（来自向量检索），使用该分数；
+        否则保持现有分数不变（仅记录命中）。
+
+        衰减-覆盖模式：
+        - 每轮开始：所有工具 -10（decay）
+        - 向量检索命中：覆盖为新分数（净效果 ≈ +10）
+        - 未被检索到的工具：持续 -10/轮
 
         Args:
             tool_name: 工具名，格式为 "server-name/tool-name"
+            score: 向量检索分数（0-100），0表示仅记录命中不更新分数
         """
-        self.active_tools[tool_name] = 100
+        if score > 0:
+            self.active_tools[tool_name] = score
+        elif tool_name not in self.active_tools:
+            # 新工具首次命中，给一个初始分数
+            self.active_tools[tool_name] = self.min_score
         self._save_scores()  # 立即保存，保证持久化语义
 
         # 检索相关Skills（临时存储，不持久化）

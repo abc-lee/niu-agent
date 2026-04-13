@@ -369,17 +369,21 @@ class NiuRunner:
         Returns:
             更新后的 tools_schema
         """
-        # 1. 从 messages 中提取最新上下文
+        # 1. 先衰减所有工具分数（每轮 -10）
+        # 衰减在注入之前，这样向量检索到的新分数会覆盖衰减后的低分
+        self.tool_lifecycle.decay_tools()
+
+        # 2. 从 messages 中提取最新上下文
         context = self._extract_context_from_messages(messages)
 
-        # 2. 重新执行动态注入
+        # 3. 重新执行动态注入（向量检索结果会覆盖衰减后的分数）
         injection = self._inject_dynamic_resources(context)
 
-        # 3. 更新 system_prompt（messages[0]）
+        # 4. 更新 system_prompt（messages[0]）
         if injection and messages and messages[0].get("role") == "system":
             messages[0]["content"] = self.base_system_prompt + injection
 
-        # 4. 重新组装 tools_schema（加入新发现的工具）
+        # 5. 重新组装 tools_schema（加入新发现的工具）
         new_schema = self.base_tools_schema.copy()
         for tool_name in BASE_MCP_TOOLS:
             schema = self._get_tool_schema_by_name(tool_name)
@@ -394,9 +398,6 @@ class NiuRunner:
             schema = self._get_tool_schema_by_name(tool_name)
             if schema:
                 new_schema.append(schema)
-
-        # 5. 工具衰减（每轮衰减一次）
-        self.tool_lifecycle.decay_tools()
 
         return new_schema
 
@@ -488,6 +489,19 @@ class NiuRunner:
             query=context, limit=5, min_score=0.15, filter={"level": "l1", "category": "mcp_tool"}
         )
         print(f"[Debug] Dynamic injection - MCP tools: {len(mcp_tools)} results", file=sys.stderr, flush=True)
+
+        # 3.5 向量检索到的 MCP 工具分数覆盖到 tool_lifecycle
+        # 衰减-覆盖模式：衰减(-10) + 向量覆盖(新分数) = 命中工具净效果 ≈ +10
+        for tool_result in mcp_tools:
+            server = tool_result.metadata.get("server", "")
+            name = tool_result.metadata.get("name", "")
+            if server and name:
+                full_name = f"{server}/{name}"
+                # 向量分数 0-1 映射到 min_score-100 范围
+                # 避免低相似度(0.15)映射到15分，低于min_score导致立即逐出
+                raw_score = int(tool_result.score * 100)
+                lifecycle_score = max(self.tool_lifecycle.min_score, raw_score)
+                self.tool_lifecycle.hit_tool(full_name, score=lifecycle_score)
 
         # 4. 搜索知识（基于三轮上下文）
         knowledge = self.vector_search.search(
