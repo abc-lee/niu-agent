@@ -55,7 +55,7 @@ tests/
 **文件：**
 - 创建：`tests/test_dynamic_injection_per_turn.py`
 
-- [ ] **步骤 1：编写失败测试**
+- [x] **步骤 1：编写失败测试**
 
 ```python
 """测试动态注入在每轮循环中刷新。"""
@@ -287,7 +287,7 @@ def test_on_turn_end_not_required():
     assert call_count[0] == 1, "应该正常执行一轮"
 ```
 
-- [ ] **步骤 2：运行测试验证失败**
+- [x] **步骤 2：运行测试验证失败**
 
 运行：`pytest tests/test_dynamic_injection_per_turn.py -v`
 
@@ -300,7 +300,7 @@ def test_on_turn_end_not_required():
 **文件：**
 - 修改：`agent/generic/agent_loop.py`
 
-- [ ] **步骤 3：添加 on_turn_end 参数**
+- [x] **步骤 3：添加 on_turn_end 参数**
 
 在 `agent_runner_loop()` 函数签名中添加 `on_turn_end=None` 参数：
 
@@ -322,7 +322,7 @@ def agent_runner_loop(
 ):
 ```
 
-- [ ] **步骤 4：在每轮循环末尾调用 on_turn_end 回调**
+- [x] **步骤 4：在每轮循环末尾调用 on_turn_end 回调**
 
 在 `agent_runner_loop()` 的 while 循环末尾（`next_prompt` 处理之后、下一次循环之前），添加回调调用：
 
@@ -339,19 +339,19 @@ def agent_runner_loop(
     return {"result": "MAX_TURNS_EXCEEDED"}
 ```
 
-- [ ] **步骤 5：运行测试验证通过**
+- [x] **步骤 5：运行测试验证通过**
 
 运行：`pytest tests/test_dynamic_injection_per_turn.py -v`
 
 预期：3个测试全部通过
 
-- [ ] **步骤 6：运行现有测试确保向后兼容**
+- [x] **步骤 6：运行现有测试确保向后兼容**
 
 运行：`pytest tests/test_agent_loop_tool_results.py tests/test_integration_tool_flow.py -v`
 
 预期：全部通过（不提供 on_turn_end 时行为不变）
 
-- [ ] **步骤 7：提交**
+- [x] **步骤 7：提交**
 
 ```bash
 git add agent/generic/agent_loop.py tests/test_dynamic_injection_per_turn.py
@@ -372,7 +372,7 @@ Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>"
 **文件：**
 - 修改：`agent/runner.py`
 
-- [ ] **步骤 8：实现 _on_turn_end 方法**
+- [x] **步骤 8：实现 _on_turn_end 方法**
 
 在 `NiuRunner` 类中添加 `_on_turn_end()` 方法，作为 `agent_runner_loop()` 的回调：
 
@@ -425,7 +425,7 @@ def _on_turn_end(self, messages: list, tools_schema: list, turn: int) -> list:
     return new_schema
 ```
 
-- [ ] **步骤 9：实现 _extract_context_from_messages 方法**
+- [x] **步骤 9：实现 _extract_context_from_messages 方法**
 
 从 `messages` 列表提取上下文，替代只依赖 `history` 参数的旧方法：
 
@@ -469,7 +469,7 @@ def _extract_context_from_messages(self, messages: list) -> str:
     return " ".join(context_parts) if context_parts else ""
 ```
 
-- [ ] **步骤 10：在 chat() 中传递回调给 agent_runner_loop**
+- [x] **步骤 10：在 chat() 中传递回调给 agent_runner_loop**
 
 修改 `chat()` 方法中调用 `agent_runner_loop()` 的部分，传入 `on_turn_end` 回调：
 
@@ -505,7 +505,7 @@ gen = agent_runner_loop(
 )
 ```
 
-- [ ] **步骤 11：移除 chat() 末尾的 decay_tools() 调用**
+- [x] **步骤 11：移除 chat() 末尾的 decay_tools() 调用**
 
 因为 `decay_tools()` 现在在 `_on_turn_end()` 中每轮调用，不再需要在 `chat()` 末尾单独调用：
 
@@ -515,13 +515,13 @@ gen = agent_runner_loop(
 # 该调用现在在 _on_turn_end() 中每轮执行
 ```
 
-- [ ] **步骤 12：运行所有测试**
+- [x] **步骤 12：运行所有测试**
 
 运行：`pytest tests/ -v -k "agent_loop or tool_registry or integration or dynamic_injection"`
 
 预期：全部通过
 
-- [ ] **步骤 13：提交**
+- [x] **步骤 13：提交**
 
 ```bash
 git add agent/runner.py
