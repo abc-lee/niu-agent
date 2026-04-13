@@ -46,9 +46,10 @@ BASE_MCP_TOOLS = [
     "vector-store/delete_document",
     "vector-store/list_documents",
 
-    # browser-server (1个)
-    # NOTE: Playwright sync_api has asyncio detection, but works in thread pool
+    # browser-server (2个)
+    # NOTE: Playwright async_api in dedicated daemon thread
     "browser-server/browser_navigate",
+    "browser-server/browser_get_content",
 ]
 
 

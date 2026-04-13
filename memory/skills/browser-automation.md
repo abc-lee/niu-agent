@@ -44,7 +44,38 @@ code_run (基础工具)
   - `"networkidle"`: 等待网络空闲
   - `"commit"`: 收到响应头即返回
 
-### 2. 执行浏览器操作
+### 2. 提取页面内容
+
+**调用 `browser_get_content` 工具**：
+
+```json
+{
+  "selector": "body",
+  "max_length": 5000
+}
+```
+
+参数说明：
+- `selector`: CSS 选择器，指定提取哪个元素的内容（默认 `"body"`）
+- `max_length`: 返回文本的最大长度（默认 5000 字符）
+
+返回值：
+```json
+{
+  "status": "success",
+  "data": {
+    "title": "页面标题",
+    "url": "当前URL",
+    "content": "提取的文本内容"
+  }
+}
+```
+
+**典型用法**：导航后直接提取内容，无需 code_run 绕路：
+1. `browser_navigate("https://baidu.com")` → 导航
+2. `browser_get_content()` → 提取页面文本
+
+### 3. 执行浏览器操作
 
 **使用 `code_run` 工具执行 Playwright 代码**：
 
@@ -245,7 +276,18 @@ if question_element:
 - **持久化登录**：用户数据保存在 `~/.niu/browser_data/`，包括 cookies、登录状态、浏览历史
 - **非无痕模式**：关闭浏览器后重新打开，仍保持登录状态
 
-### 2. 并发保护
+### 2. 强制规则（必须遵守）
+
+**禁止自行替换 API**：
+- ❌ 禁止使用 `playwright.sync_api` 或 `playwright.async_api` 直接启动浏览器
+- ❌ 禁止使用 `connect_over_cdp()`、`chromium.launch()` 等原生 Playwright 启动方式
+- ❌ 禁止使用 `chromium.launch(headless=True)` — headless 模式会被反爬虫系统检测
+- ✅ 必须通过 `BrowserManager().get_page()` 获取页面对象
+- ✅ 必须使用 `browser_navigate` 工具进行导航
+
+**原因**：BrowserManager 是单例，管理浏览器生命周期、持久化登录和并发保护。自行启动浏览器会导致实例冲突、登录态丢失、触发反爬虫验证码。
+
+### 3. 并发保护
 
 - 使用 `threading.Lock` 保护浏览器实例
 - 超时时间：30 秒
