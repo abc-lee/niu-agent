@@ -1123,6 +1123,56 @@ sqlite3 data/messages.db "VACUUM;"
 # 在对话中问："重新生成所有知识库向量"
 ```
 
+### 5.7 浏览器自动化插件
+
+#### 插件概述
+
+Niu Browser Assistant 是一个 Chrome Extension，提供结构化网页状态提取和交互操作能力。
+安装后，AI 助手可以：自动读取网页内容、点击按钮、填写表单、滚动页面。
+
+插件随软件包分发，位于 `extensions/niu-browser-ext/` 目录。
+
+#### 安装方法
+
+**方法 1：自动安装（推荐）**
+
+如果系统默认浏览器已关闭，AI 助手会自动启动浏览器并加载插件（通过 `--load-extension` 参数）。
+无需手动操作。
+
+**方法 2：手动安装（浏览器已打开时）**
+
+1. 打开 Chrome/Edge 浏览器
+2. 地址栏输入：`chrome://extensions/`（Chrome）或 `edge://extensions/`（Edge）
+3. 开启"开发者模式"（右上角开关）
+4. 点击"加载已解压的扩展程序"
+5. 选择目录：`[安装目录]/extensions/niu-browser-ext`
+6. 插件安装完成，浏览器右上角出现 Niu 图标
+
+**方法 3：权限不足时**
+
+如果无法写入浏览器扩展目录，请用户执行以下操作：
+
+1. 以管理员身份打开命令提示符
+2. 运行：`start chrome --load-extension="[安装目录]\extensions\niu-browser-ext" --user-data-dir="%USERPROFILE%\.niu\browser_ext_profile"`
+3. 或指导用户按方法 2 手动安装
+
+#### 验证安装
+
+安装成功后，打开任意网页，按 F12 打开开发者工具，在 Console 中输入：
+```javascript
+typeof NiuDomTree !== 'undefined'
+```
+返回 `true` 表示插件工作正常。
+
+#### 故障排查
+
+| 问题 | 原因 | 解决 |
+|------|------|------|
+| browser_navigate 返回 "Extension not connected" | 插件未安装或浏览器未启动 | 按上述方法安装插件 |
+| 页面无交互元素 | 页面是纯图片/Canvas | 使用截图方式判断 |
+| 新标签页无法操作 | content_script 未注入 | 刷新页面或等待自动注入 |
+| WebSocket 连接失败 | Python 服务未启动 | 重启 AI 助手服务 |
+
 ---
 
 ## 七、性能优化
