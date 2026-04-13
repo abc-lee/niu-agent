@@ -123,12 +123,13 @@ class WSBridge:
         elif msg_type == "tab_created":
             logger.debug(f"Tab created: {msg.get('url')}")
 
-    def send_command(self, action: str, **kwargs) -> dict:
+    def send_command(self, action: str, timeout: int = 30, **kwargs) -> dict:
         """
         Send command to Extension, wait for result (synchronous).
 
         Args:
             action: Command type (get_state, click, input_text, select_option, scroll, navigate)
+            timeout: Maximum wait time in seconds (default 30, navigate uses 60)
             **kwargs: Command parameters
 
         Returns:
@@ -158,10 +159,10 @@ class WSBridge:
             return {"success": False, "message": f"Failed to send command: {e}"}
 
         try:
-            result = result_queue.get(timeout=30)
+            result = result_queue.get(timeout=timeout)
         except queue.Empty:
             del self._pending[cmd_id]
-            return {"success": False, "message": f"Command {action} timed out (30s)"}
+            return {"success": False, "message": f"Command {action} timed out ({timeout}s)"}
 
         del self._pending[cmd_id]
         return result

@@ -28,31 +28,37 @@ _browser_proc: subprocess.Popen | None = None
 _ws_bridge: WSBridge | None = None
 
 
-def _ensure_browser_and_connection() -> WSBridge:
-    """Ensure browser is running and Extension is connected."""
-    global _browser_proc, _ws_bridge
-
+def _get_bridge() -> WSBridge:
+    """Get or create WSBridge singleton (auto-starts on first call)."""
+    global _ws_bridge
     if _ws_bridge is None:
         _ws_bridge = WSBridge()
         _ws_bridge.start()
+    return _ws_bridge
+
+
+def _ensure_browser_and_connection() -> WSBridge:
+    """Ensure browser is running and Extension is connected."""
+    global _browser_proc
+
+    bridge = _get_bridge()
 
     # If Extension not connected, try launching browser
-    if not _ws_bridge.connected:
+    if not bridge.connected:
         if _browser_proc is None or _browser_proc.poll() is not None:
             logger.info("Starting browser with extension...")
             _browser_proc = launch_browser()
-            # Wait for Extension to connect (max 10 seconds)
-            for _ in range(20):
-                if _ws_bridge.connected:
+            # Wait for Extension to connect (max 15 seconds)
+            # Browser needs time to start, Extension needs time to load and connect
+            for i in range(30):
+                if bridge.connected:
+                    logger.info(f"Extension connected after {(i+1)*0.5:.1f}s")
                     break
                 time.sleep(0.5)
             else:
-                raise RuntimeError(
-                    "Extension not connected. Please ensure Niu Browser Extension is installed.\n"
-                    "Refer to the system manual for plugin installation instructions."
-                )
+                logger.warning("Extension not connected after 15s, returning bridge anyway for retry")
 
-    return _ws_bridge
+    return bridge
 
 
 def browser_navigate(
@@ -72,17 +78,11 @@ def browser_navigate(
     try:
         bridge = _ensure_browser_and_connection()
 
-        # Send navigate command
-        nav_result = bridge.send_command("navigate", url=url)
+        # Send navigate command (hub.js handles navigation + returns page state)
+        result = bridge.send_command("navigate", url=url, timeout=60)
 
-        # Wait for page load (Extension content_script re-injects)
-        time.sleep(2)
-
-        # Get page state
-        state_result = bridge.send_command("get_state")
-
-        if state_result.get("success"):
-            data = state_result.get("data", {})
+        if result.get("success"):
+            data = result.get("data", {})
             return {
                 "status": "success",
                 "url": data.get("url", url),
@@ -92,8 +92,8 @@ def browser_navigate(
             }
         else:
             return {
-                "status": "success",
-                "message": f"Navigated to {url}, but failed to get page state: {state_result.get('message', '')}",
+                "status": "error",
+                "message": f"Navigation failed: {result.get('message', 'Unknown error')}",
             }
 
     except Exception as e:
