@@ -233,6 +233,14 @@ schemas = registry.get_schemas()
 | `config-manager` | 配置管理（读/写用户配置和记忆） | ✅ |
 | `memory-server` | 智能记忆提取和检索 | ✅ |
 | `session-manager` | 会话管理（消息压缩） | ❌ |
+| `browser-server` | 浏览器自动化（Playwright async_api + 守护线程） | ✅ |
+
+**Browser-Server 架构**：
+- `playwright.async_api` 在独立守护线程中运行（自有 asyncio loop）
+- 主进程通过 `call_async()` 桥接同步调用与异步 Playwright
+- `get_page()` 返回 `SyncPageProxy`：包装 async Page 方法为同步，code_run 代码无需改动
+- `launch_persistent_context()` 返回 BrowserContext，用 `_context` 做状态判断（非 `_browser`）
+- 不修改 pip 安装目录源码，Playwright 升级安全
 
 ### 子 Agent 架构
 
