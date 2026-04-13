@@ -350,7 +350,11 @@ def index_query_patterns():
 
     # 1. 连接向量库数据库
     print("1. 连接向量库...")
-    db_path = Path.home() / ".niu" / "vectors.db"
+    # 使用 agent.vector_search 获取正确路径
+    from agent.vector_search import get_vector_search
+    vs = get_vector_search()
+    db_path = Path(vs.db_path)
+
     if not db_path.exists():
         print(f"   ✗ 数据库不存在: {db_path}")
         return 0, len(QUERY_PATTERNS)

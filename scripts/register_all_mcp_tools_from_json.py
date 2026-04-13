@@ -26,7 +26,7 @@ def main():
     print("=" * 70)
 
     # 读取导出的工具定义
-    json_file = Path(__file__).parent.parent / "logs" / "all_mcp_tools.json"
+    json_file = Path(__file__).parent.parent / "data" / "mcp_tools.json"
     with open(json_file, 'r', encoding='utf-8') as f:
         tools_by_server = json.load(f)
 
