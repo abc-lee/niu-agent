@@ -77,6 +77,7 @@ def agent_runner_loop(
     verbose=True,
     initial_user_content=None,
     history=None,  # Optional: list of {"role": "user/assistant", "content": str}
+    on_turn_end=None,  # Optional: callback(messages, tools_schema, turn) -> tools_schema
 ):
     # Build messages: system + history + current user
     messages = [{"role": "system", "content": system_prompt}]
@@ -223,4 +224,9 @@ def agent_runner_loop(
 
         # 添加下一个user消息
         messages.append({"role": "user", "content": next_prompt})
+
+        # 轮次级刷新回调：允许调用方在每轮结束后更新 system_prompt 和 tools_schema
+        if on_turn_end is not None:
+            tools_schema = on_turn_end(messages, tools_schema, turn)
+
     return {"result": "MAX_TURNS_EXCEEDED"}
