@@ -279,7 +279,8 @@ class BrowserManager:
         if self._initialized:
             return
 
-        self._context = None  # Persistent browser context (async_api)
+        self._browser = None  # Browser instance (async_api)
+        self._context = None  # Browser context (async_api)
         self._async_page = None  # Current page (async_api Page)
         self._playwright = None  # async_playwright instance
         self._last_used: float = 0
@@ -376,18 +377,19 @@ class BrowserManager:
 
             self._playwright = await async_playwright().start()
 
-            # Use persistent context to keep cookies and login state
-            self._context = await self._playwright.chromium.launch_persistent_context(
-                user_data_dir=str(self._user_data_dir),
+            # Launch browser with CDP port for code_run subprocess access
+            self._browser = await self._playwright.chromium.launch(
                 headless=False,  # Show browser window
+                args=["--remote-debugging-port=9222"]
+            )
+
+            # Use persistent context to keep cookies and login state
+            self._context = await self._browser.new_context(
                 viewport={"width": 1280, "height": 720}
             )
 
             # Get or create page
-            if len(self._context.pages) > 0:
-                self._async_page = self._context.pages[0]
-            else:
-                self._async_page = await self._context.new_page()
+            self._async_page = await self._context.new_page()
 
             self._last_used = time.time()
             self._error_count = 0
@@ -404,6 +406,8 @@ class BrowserManager:
                 await self._async_page.close()
             if self._context:
                 await self._context.close()
+            if self._browser:
+                await self._browser.close()
             if self._playwright:
                 await self._playwright.stop()
         except Exception as e:
@@ -411,9 +415,10 @@ class BrowserManager:
         finally:
             self._async_page = None
             self._context = None
+            self._browser = None
             self._playwright = None
             self._last_used = 0
-            logger.info("Browser closed (cookies and login state saved)")
+            logger.info("Browser closed")
 
     async def _health_check_impl(self) -> bool:
         """Check if browser is healthy (async_api)."""
@@ -439,6 +444,7 @@ class BrowserManager:
             logger.error(f"Error in _close_browser: {e}")
             self._async_page = None
             self._context = None
+            self._browser = None
             self._playwright = None
             self._last_used = 0
 
