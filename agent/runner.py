@@ -326,6 +326,80 @@ class NiuRunner:
                 return tool
         return None
 
+    def _extract_context_from_messages(self, messages: list) -> str:
+        """
+        从 agent_runner_loop 的 messages 列表提取上下文。
+
+        包含用户输入、LLM 回复摘要、工具调用结果，比 _extract_context_from_history
+        更全面，因为它能看到循环内的实时交互。
+
+        Args:
+            messages: agent_runner_loop 的消息列表
+
+        Returns:
+            提取的上下文字符串
+        """
+        context_parts = []
+
+        # 取最近的消息（最多10条）
+        recent = messages[-10:] if len(messages) > 10 else messages
+
+        for msg in recent:
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+
+            if role == "user" and content:
+                context_parts.append(content[:300])
+            elif role == "tool" and content:
+                context_parts.append(content[:200])
+            elif role == "assistant" and content:
+                context_parts.append(content[:200])
+
+        return " ".join(context_parts) if context_parts else ""
+
+    def _on_turn_end(self, messages: list, tools_schema: list, turn: int) -> list:
+        """
+        每轮循环结束后刷新动态注入。
+
+        Args:
+            messages: 当前消息列表（可修改 messages[0] 更新 system_prompt）
+            tools_schema: 当前工具 Schema 列表（可修改/返回新列表）
+            turn: 当前轮次
+
+        Returns:
+            更新后的 tools_schema
+        """
+        # 1. 从 messages 中提取最新上下文
+        context = self._extract_context_from_messages(messages)
+
+        # 2. 重新执行动态注入
+        injection = self._inject_dynamic_resources(context)
+
+        # 3. 更新 system_prompt（messages[0]）
+        if injection and messages and messages[0].get("role") == "system":
+            messages[0]["content"] = self.base_system_prompt + injection
+
+        # 4. 重新组装 tools_schema（加入新发现的工具）
+        new_schema = self.base_tools_schema.copy()
+        for tool_name in BASE_MCP_TOOLS:
+            schema = self._get_tool_schema_by_name(tool_name)
+            if schema:
+                new_schema.append(schema)
+
+        # 加入活跃工具（包括本轮新命中的）
+        active_tool_names = self.tool_lifecycle.get_active_tools()
+        for tool_name in active_tool_names:
+            if tool_name in BASE_MCP_TOOLS:
+                continue
+            schema = self._get_tool_schema_by_name(tool_name)
+            if schema:
+                new_schema.append(schema)
+
+        # 5. 工具衰减（每轮衰减一次）
+        self.tool_lifecycle.decay_tools()
+
+        return new_schema
+
     def _extract_context_from_history(self, history: Optional[list], user_input: str) -> str:
         """
         从消息历史中提取上下文用于工具检索
@@ -530,6 +604,7 @@ class NiuRunner:
             verbose=False,
             initial_user_content=user_input,
             history=history,  # Pass history to agent_loop
+            on_turn_end=self._on_turn_end,  # 每轮结束后刷新动态注入
         )
 
         # 累加输出
@@ -622,8 +697,7 @@ class NiuRunner:
         # 清理连续空行（超过2个空行变成2个）
         full_resp = re.sub(r"\n{3,}", "\n\n", full_resp)
 
-        # 对话结束后衰减工具分数
-        self.tool_lifecycle.decay_tools()
+        # 对话结束后工具衰减已由 _on_turn_end 每轮执行，此处不再重复
 
         yield full_resp.strip()
 
