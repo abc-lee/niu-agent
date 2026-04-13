@@ -547,6 +547,51 @@ def browser_navigate(
         return {"status": "error", "message": f"Navigation failed: {str(e)}"}
 
 
+def browser_get_content(
+    selector: str = "body",
+    max_length: int = 5000
+) -> dict:
+    """
+    Extract text content from the current browser page.
+
+    Args:
+        selector: CSS selector to extract content from (default: "body")
+        max_length: Maximum text length to return (default: 5000 chars)
+
+    Returns:
+        {"status": "success/error", "message": ..., "data": {"title": ..., "url": ..., "content": ...}}
+    """
+    page, error = _browser_manager.get_page()
+    if error:
+        return {"status": "error", "message": error}
+
+    if not page:
+        return {"status": "error", "message": "Failed to get browser page"}
+
+    try:
+        title = page.title()
+        url = page.url_property
+        content = page.inner_text(selector, timeout=5000)
+
+        # Truncate if too long
+        if len(content) > max_length:
+            content = content[:max_length] + f"\n... (truncated, total {len(content)} chars)"
+
+        _browser_manager.reset_error_count()
+        return {
+            "status": "success",
+            "message": f"Extracted content from {selector} ({len(content)} chars)",
+            "data": {
+                "title": title,
+                "url": url,
+                "content": content
+            }
+        }
+    except Exception as e:
+        logger.error(f"Get content failed: {e}")
+        return {"status": "error", "message": f"Failed to get content: {str(e)}"}
+
+
 # ============== Tool Schemas ==============
 
 TOOL_SCHEMAS = {
@@ -564,6 +609,26 @@ TOOL_SCHEMAS = {
                 }
             },
             "required": ["url"]
+        }
+    },
+    "browser_get_content": {
+        "name": "browser_get_content",
+        "description": "提取当前浏览器页面的文本内容。**使用场景**：导航到网页后，需要读取页面内容、提取信息、获取搜索结果时使用。**特性**：返回页面标题、URL和指定元素的文本内容。**参数**：selector (CSS选择器，默认body)，max_length (最大文本长度，默认5000)。**返回**：包含title、url、content的字典。**注意**：导航后使用此工具提取内容，避免用code_run绕路。",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "selector": {
+                    "type": "string",
+                    "description": "CSS选择器，指定提取哪个元素的内容",
+                    "default": "body"
+                },
+                "max_length": {
+                    "type": "integer",
+                    "description": "返回文本的最大长度（字符数）",
+                    "default": 5000
+                }
+            },
+            "required": []
         }
     }
 }
