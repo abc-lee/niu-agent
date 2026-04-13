@@ -17,9 +17,13 @@ USER_DATA_DIR = Path.home() / ".niu" / "browser_ext_profile"
 
 
 def _find_default_browser() -> Optional[str]:
-    """Find Windows system default browser executable path."""
+    """Find a suitable Chromium-based browser.
+
+    Prefers Edge over Chrome because Edge is more permissive with
+    --load-extension (developer mode extensions). Chrome requires
+    manual user action to enable unpacked extensions on first run.
+    """
     if sys.platform != "win32":
-        # On non-Windows, try common paths
         for path in ["/usr/bin/google-chrome", "/usr/bin/chromium", "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"]:
             if Path(path).is_file():
                 return path
@@ -27,24 +31,11 @@ def _find_default_browser() -> Optional[str]:
 
     import winreg
 
-    # 1. Get ProgId for HTTPS protocol handler
-    try:
-        with winreg.OpenKey(
-            winreg.HKEY_CURRENT_USER,
-            r"Software\Microsoft\Windows\Shell\Associations\UrlAssociations\https\UserChoice",
-        ) as key:
-            prog_id, _ = winreg.QueryValueEx(key, "ProgId")
-    except (FileNotFoundError, OSError):
-        prog_id = None
-
-    # 2. ProgId -> App Paths registry key
-    progid_to_appkey = {
-        "MSEdgeHTM": r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\msedge.exe",
-        "ChromeHTML": r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe",
-    }
-
-    if prog_id in progid_to_appkey:
-        app_key = progid_to_appkey[prog_id]
+    # Prefer Edge (more lenient with dev-mode extensions), then Chrome
+    for app_key in [
+        r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\msedge.exe",
+        r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe",
+    ]:
         for hive in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
             try:
                 with winreg.OpenKey(hive, app_key) as key:
@@ -54,35 +45,21 @@ def _find_default_browser() -> Optional[str]:
             except (FileNotFoundError, OSError):
                 continue
 
-    # 3. Parse shell\open\command from ProgId
-    if prog_id:
-        try:
-            with winreg.OpenKey(
-                winreg.HKEY_CLASSES_ROOT, f"{prog_id}\\shell\\open\\command"
-            ) as key:
-                command, _ = winreg.QueryValueEx(key, None)
-                if command.startswith('"'):
-                    end = command.index('"', 1)
-                    exe_path = command[1:end]
-                    if Path(exe_path).is_file():
-                        return exe_path
-        except (FileNotFoundError, OSError, ValueError):
-            pass
-
     return None
 
 
-def launch_browser(url: Optional[str] = None) -> subprocess.Popen:
+def launch_browser(url: Optional[str] = None, browser_exe: Optional[str] = None) -> subprocess.Popen:
     """
-    Launch system default browser with Niu Browser Extension loaded.
+    Launch browser with Niu Browser Extension loaded.
 
     Args:
         url: Optional initial URL. If None, opens about:blank.
+        browser_exe: Optional browser executable path. If None, auto-detects default browser.
 
     Returns:
         Browser process handle
     """
-    exe_path = _find_default_browser()
+    exe_path = browser_exe or _find_default_browser()
     if not exe_path:
         raise RuntimeError(
             "Cannot find system default browser. Please install Chrome or Edge."
@@ -100,9 +77,11 @@ def launch_browser(url: Optional[str] = None) -> subprocess.Popen:
     args = [
         exe_path,
         f"--load-extension={extension_path}",
+        f"--disable-extensions-except={extension_path}",
         f"--user-data-dir={USER_DATA_DIR}",
         "--no-first-run",
         "--no-default-browser-check",
+        "--disable-component-extensions-with-background-pages",
         url or "about:blank",
     ]
 
