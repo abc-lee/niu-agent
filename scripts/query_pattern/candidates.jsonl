@@ -1,12 +1,12 @@
-{"target_tool": "scheduler-server/list_scheduled_tasks", "content": "看看我设置了哪些提醒", "variation_type": "action_verb", "generative_note": "使用看看+设置了+提醒，询问已设置的提醒"}
-{"target_tool": "scheduler-server/list_scheduled_tasks", "content": "我的提醒都有啥", "variation_type": "informal", "generative_note": "口语化表达，用有啥代替有什么"}
-{"target_tool": "scheduler-server/list_scheduled_tasks", "content": "查询一下我的定时任务", "variation_type": "action_verb", "generative_note": "正式查询动作，使用查询二字"}
-{"target_tool": "scheduler-server/list_scheduled_tasks", "content": "有哪些待处理的提醒", "variation_type": "question", "generative_note": "疑问句形式，询问待处理状态"}
-{"target_tool": "scheduler-server/list_scheduled_tasks", "content": "显示我的日程提醒", "variation_type": "action_verb", "generative_note": "使用显示动词，关联日程场景"}
-{"target_tool": "scheduler-server/list_scheduled_tasks", "content": "我现在有哪些提醒", "variation_type": "question", "generative_note": "当前时刻视角的疑问"}
-{"target_tool": "scheduler-server/list_scheduled_tasks", "content": "今天待办提醒有哪些", "variation_type": "time_absolute", "generative_note": "今天作为绝对时间点，关联待办场景"}
-{"target_tool": "scheduler-server/list_scheduled_tasks", "content": "我设过的提醒还能看到吗", "variation_type": "question", "generative_note": "疑问形式，带有历史回顾含义"}
-{"target_tool": "scheduler-server/list_scheduled_tasks", "content": "翻翻我的定时任务", "variation_type": "informal", "generative_note": "口语化翻翻，活泼自然"}
-{"target_tool": "scheduler-server/list_scheduled_tasks", "content": "帮我看看提醒情况", "variation_type": "context_embedded", "generative_note": "嵌入请求语境，添加情况后缀"}
-{"target_tool": "scheduler-server/list_scheduled_tasks", "content": "what reminders do I have", "variation_type": "question", "generative_note": "英文表达，疑问句形式"}
-{"target_tool": "scheduler-server/list_scheduled_tasks", "content": "没有看到我的提醒", "variation_type": "negative", "generative_note": "否定表达，间接请求查看"}
+{"target_tool": "scheduler-server/list_scheduled_tasks", "content": "查看我所有的待办任务", "variation_type": "action_verb", "generative_note": "使用「查看」而非「查询」"}
+{"target_tool": "scheduler-server/list_scheduled_tasks", "content": "显示今天的提醒有哪些", "variation_type": "time_absolute", "generative_note": "时间限定词「今天」"}
+{"target_tool": "scheduler-server/list_scheduled_tasks", "content": "列出所有待处理的提醒", "variation_type": "action_verb", "generative_note": "「列出」动词替换"}
+{"target_tool": "scheduler-server/list_scheduled_tasks", "content": "看看半小时内有什么任务", "variation_type": "time_relative", "generative_note": "半小时内相对时间"}
+{"target_tool": "scheduler-server/list_scheduled_tasks", "content": "我刚设的提醒还在吗", "variation_type": "question", "generative_note": "疑问句询问任务存在性"}
+{"target_tool": "scheduler-server/list_scheduled_tasks", "content": "刚才开完会，还有啥提醒", "variation_type": "context_embedded", "generative_note": "嵌入开会场景"}
+{"target_tool": "scheduler-server/list_scheduled_tasks", "content": "有没有什么待办没处理", "variation_type": "question", "generative_note": "反向疑问询问待办"}
+{"target_tool": "scheduler-server/list_scheduled_tasks", "content": "把任务清单调出来看看", "variation_type": "informal", "generative_note": "口语化「调出来」"}
+{"target_tool": "scheduler-server/list_scheduled_tasks", "content": "查一下明天的日程", "variation_type": "time_absolute", "generative_note": "绝对时间明天"}
+{"target_tool": "scheduler-server/list_scheduled_tasks", "content": "show me my pending tasks", "variation_type": "action_verb", "generative_note": "英文表达"}
+{"target_tool": "scheduler-server/list_scheduled_tasks", "content": "已取消的提醒能查到吗", "variation_type": "negative", "generative_note": "查询已取消状态"}
+{"target_tool": "scheduler-server/list_scheduled_tasks", "content": "看看我的提醒列表", "variation_type": "informal", "generative_note": "口语「看看」"}

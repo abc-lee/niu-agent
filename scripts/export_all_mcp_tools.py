@@ -31,7 +31,7 @@ for schema in schemas:
         })
 
 # 保存到JSON
-output_file = Path(__file__).parent.parent / "logs" / "all_mcp_tools.json"
+output_file = Path(__file__).parent.parent / "data" / "mcp_tools.json"
 output_file.parent.mkdir(exist_ok=True)
 
 with open(output_file, 'w', encoding='utf-8') as f:
