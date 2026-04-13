@@ -1059,12 +1059,15 @@ class NiuHandler(BaseHandler):
                     )
 
                 # 记录工具命中（在真正执行前）
+                # hit_tool 不传 score，仅记录命中和激活 Pending Skills
+                # 分数由 _inject_dynamic_resources 中的向量检索覆盖管理
                 try:
                     from agent.runner import get_runner
                     runner = get_runner()
                     if runner and hasattr(runner, 'tool_lifecycle'):
                         runner.tool_lifecycle.hit_tool(tool_name)
-                        print(f"[ToolHit] {tool_name} executed (score: 100)", file=sys.stderr, flush=True)
+                        current_score = runner.tool_lifecycle.get_tool_score(tool_name)
+                        print(f"[ToolHit] {tool_name} executed (lifecycle score: {current_score})", file=sys.stderr, flush=True)
                 except Exception as e:
                     # 命中记录失败不影响主流程
                     print(f"[ToolHit] Failed to record hit: {e}", file=sys.stderr, flush=True)
