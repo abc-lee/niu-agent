@@ -24,6 +24,32 @@ code_run (基础工具)
 
 **关键**：code_run 是子进程，无法直接访问主进程的 BrowserManager。通过 CDP（Chrome DevTools Protocol）连接到同一个浏览器实例，和 Playwright CLI 的架构一样。
 
+## 工作循环（必须遵守）
+
+每次浏览器操作后，**必须用 print() 输出结果**，否则你只能看到 `{"status": "success", "stdout": ""}`，无法判断操作效果。
+
+```
+1. browser_navigate("url")          → 导航到目标页面
+2. code_run: 操作 + print 结果       → 点击/填充/提取，print 输出让你看到结果
+3. 根据结果决定下一步               → 继续操作 or 向用户汇报
+```
+
+**错误示范**（你什么都看不到）：
+```python
+page.click('button')  # 成功了，但 stdout 为空，你不知道页面变成了什么
+```
+
+**正确示范**（操作后立即读取并 print）：
+```python
+page.click('button')
+page.wait_for_load_state('domcontentloaded')
+print(f"标题: {page.title()}")
+print(f"URL: {page.url}")
+print(f"内容: {page.inner_text('body')[:1000]}")
+```
+
+**核心原则**：每一步操作后，都要 `print()` 当前页面状态（标题、URL、关键内容），这样你才能根据结果决定下一步。
+
 ## 使用流程
 
 ### 1. 导航到网页
@@ -74,11 +100,12 @@ with sync_playwright() as p:
     browser = p.chromium.connect_over_cdp("http://127.0.0.1:9222")
     page = browser.contexts[0].pages[0]
 
-    # 提取文本
-    text = page.inner_text('body')
+    # 提取并 print 结果（必须 print，否则看不到）
     title = page.title()
+    text = page.inner_text('body')
     print(f"标题: {title}")
-    print(f"内容: {text[:500]}")
+    print(f"URL: {page.url}")
+    print(f"内容: {text[:2000]}")
 ```
 
 ### 点击元素
@@ -90,14 +117,11 @@ with sync_playwright() as p:
     browser = p.chromium.connect_over_cdp("http://127.0.0.1:9222")
     page = browser.contexts[0].pages[0]
 
-    # 通过文本点击
+    # 点击后等待加载，然后 print 当前状态
     page.click('button:has-text("登录")')
-
-    # 通过 CSS 选择器点击
-    page.click('#submit-button')
-
-    # 通过 role 点击
-    page.click('button[name="submit"]')
+    page.wait_for_load_state('domcontentloaded')
+    print(f"点击后标题: {page.title()}")
+    print(f"点击后URL: {page.url}")
 ```
 
 ### 填充表单
@@ -109,18 +133,17 @@ with sync_playwright() as p:
     browser = p.chromium.connect_over_cdp("http://127.0.0.1:9222")
     page = browser.contexts[0].pages[0]
 
-    # 填充输入框
+    # 填充并 print 每个字段的结果
     page.fill('input[name="name"]', '李四')
+    print("✓ 填充姓名: 李四")
     page.fill('input[name="email"]', 'lisi@example.com')
+    print("✓ 填充邮箱: lisi@example.com")
 
-    # 选择下拉框
-    page.select_option('select#country', 'China')
-
-    # 勾选复选框
-    page.check('input[type="checkbox"]')
-
-    # 点击提交
+    # 提交并 print 结果
     page.click('button[type="submit"]')
+    page.wait_for_load_state('domcontentloaded')
+    print(f"提交后URL: {page.url}")
+    print(f"提交后内容: {page.inner_text('body')[:500]}")
 ```
 
 ### 截图
@@ -133,12 +156,11 @@ with sync_playwright() as p:
     browser = p.chromium.connect_over_cdp("http://127.0.0.1:9222")
     page = browser.contexts[0].pages[0]
 
-    # 截取整个页面
+    # 截图并 print 信息
     screenshot_bytes = page.screenshot()
-
-    # 转换为 base64
-    screenshot_b64 = base64.b64encode(screenshot_bytes).decode()
-    print(f"截图已保存（{len(screenshot_b64)} bytes）")
+    print(f"截图大小: {len(screenshot_bytes)} bytes")
+    print(f"当前URL: {page.url}")
+    print(f"页面标题: {page.title()}")
 ```
 
 ### 提取数据
@@ -150,16 +172,12 @@ with sync_playwright() as p:
     browser = p.chromium.connect_over_cdp("http://127.0.0.1:9222")
     page = browser.contexts[0].pages[0]
 
-    # 提取文本
-    text = page.inner_text('body')
-    title = page.title()
-
-    # 提取链接
+    # 提取链接并 print
     links = page.query_selector_all('a')
-    for link in links:
+    for link in links[:20]:  # 限制数量
         href = link.get_attribute('href')
         text = link.inner_text()
-        print(f"{text}: {href}")
+        print(f"- {text}: {href}")
 ```
 
 ### 等待元素
@@ -171,14 +189,10 @@ with sync_playwright() as p:
     browser = p.chromium.connect_over_cdp("http://127.0.0.1:9222")
     page = browser.contexts[0].pages[0]
 
-    # 等待元素出现
+    # 等待元素出现后 print 内容
     page.wait_for_selector('.result', timeout=5000)
-
-    # 等待元素消失
-    page.wait_for_selector('.loading', state='hidden')
-
-    # 等待导航完成
-    page.wait_for_load_state('networkidle')
+    result = page.inner_text('.result')
+    print(f"结果: {result[:500]}")
 ```
 
 ## 高级用法
@@ -346,20 +360,16 @@ with sync_playwright() as p:
     page.fill('input[name="username"]', 'zhangsan')
     page.fill('input[name="email"]', 'zhangsan@example.com')
     page.fill('input[name="password"]', 'SecurePassword123')
-    page.fill('input[name="confirm_password"]', 'SecurePassword123')
-
-    # 同意条款
-    page.check('input[type="checkbox"]')
+    print("✓ 表单填充完成")
 
     # 提交表单
     page.click('button[type="submit"]')
+    page.wait_for_load_state('domcontentloaded')
 
-    # 等待跳转
-    page.wait_for_load_state('networkidle')
-
-    # 截图确认
-    screenshot_bytes = page.screenshot()
-    print(f"✓ 注册完成（截图 {len(screenshot_bytes)} bytes）")
+    # print 结果判断是否成功
+    print(f"提交后URL: {page.url}")
+    print(f"提交后标题: {page.title()}")
+    print(f"页面内容: {page.inner_text('body')[:500]}")
 ```
 
 ## 关键词
