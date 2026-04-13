@@ -386,10 +386,11 @@ class NiuRunner:
         try:
             for skill_name in pending_skill_names:
                 # 用 search() 方法精确匹配 skill 名称
+                # 注意：embedding 相似度不会达到 0.9，即使精确匹配也只 ~0.7
                 skills = self.vector_search.search(
                     query=skill_name,
                     limit=1,
-                    min_score=0.9,  # 高精度，确保精确匹配
+                    min_score=0.6,  # 降低阈值，允许精确匹配通过
                     filter={"category": "skill", "name": skill_name}
                 )
                 if skills:
