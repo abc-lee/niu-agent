@@ -131,16 +131,86 @@ def _get_db_path() -> str:
     return str(Path.home() / ".niu" / "scheduled_tasks.db")
 
 
-# 导入 TaskStore（需要 niu_api 在 PYTHONPATH 中）
+# Import TaskStore
 try:
     from niu_api.internal.scheduler.task_store import TaskStore
 except ImportError:
-    # 回退到本地导入（如果 niu_api 不可用）
     try:
         from niu_scheduler_server.store import TaskStore
     except ImportError:
         logger.error("Cannot import TaskStore. Ensure PYTHONPATH includes niu_api.")
         TaskStore = None
+
+
+def _get_store():
+    """Get TaskStore instance."""
+    if TaskStore is None:
+        raise RuntimeError("TaskStore not available. Ensure niu_api is in PYTHONPATH.")
+    return TaskStore(_get_db_path())
+
+
+# ============== Tool Functions (for in-process ToolRegistry) ==============
+
+def schedule_task(
+    content: str,
+    scheduled_at: str,
+    event_type: str = "reminder",
+    is_recurring: bool = False,
+    cron_expr: str = None,
+) -> dict:
+    """创建定时任务，支持单次和循环任务。"""
+    try:
+        store = _get_store()
+        task_id = store.create_task(
+            content=content,
+            scheduled_at=scheduled_at,
+            event_type=event_type,
+            is_recurring=is_recurring,
+            cron_expr=cron_expr,
+        )
+        return {"status": "success", "task_id": task_id, "message": f"已创建定时任务：{content}"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+def list_scheduled_tasks(status: str = None) -> dict:
+    """查询定时任务列表。"""
+    try:
+        store = _get_store()
+        tasks = store.list_tasks(status)
+        return {"status": "success", "tasks": tasks, "count": len(tasks)}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+def cancel_task(task_id: str) -> dict:
+    """取消定时任务。"""
+    try:
+        store = _get_store()
+        success = store.cancel_task(task_id)
+        return {"status": "success" if success else "error", "message": "任务已取消" if success else "任务不存在或已完成"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+def update_task(
+    task_id: str,
+    content: str = None,
+    scheduled_at: str = None,
+    cron_expr: str = None,
+) -> dict:
+    """更新定时任务。"""
+    try:
+        store = _get_store()
+        success = store.update_task(
+            task_id=task_id,
+            content=content,
+            scheduled_at=scheduled_at,
+            cron_expr=cron_expr,
+        )
+        return {"status": "success" if success else "error", "message": "任务已更新" if success else "任务不存在或已完成"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 
 async def run_server():
