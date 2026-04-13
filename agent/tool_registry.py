@@ -95,12 +95,25 @@ class ToolRegistry:
                 self._schemas[full_name] = normalized_schema
 
                 # 尝试获取工具函数
-                # 工具函数可能直接在模块中，也可能通过get_tool_function获取
+                # 模式1：模块级函数
+                # 模式2：get_tool_function() 方法
+                # 模式3：call_tool() 处理器（MCP 标准模式）
                 tool_fn = None
                 if hasattr(module, tool_name):
                     tool_fn = getattr(module, tool_name)
                 elif hasattr(module, 'get_tool_function'):
                     tool_fn = module.get_tool_function(tool_name)
+
+                # 模式3：如果没找到单独的函数，包装 call_tool()
+                if tool_fn is None and hasattr(module, 'call_tool'):
+                    # 创建一个包装函数来调用 call_tool
+                    def make_wrapper(server_module, name):
+                        def wrapper(**kwargs):
+                            return server_module.call_tool(name, kwargs)
+                        return wrapper
+
+                    tool_fn = make_wrapper(module, tool_name)
+                    logger.debug(f"Wrapped call_tool() for {full_name}")
 
                 if tool_fn and callable(tool_fn):
                     self._tools[full_name] = tool_fn
