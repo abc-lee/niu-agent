@@ -2,26 +2,27 @@
 
 **触发关键词**：浏览器、网页、填表、截图、网页操作、表单填写、自动答题
 
-**L1 摘要**：Browser automation|browser,form filling,web operation|Use browser_navigate + code_run to execute Playwright code for browser automation|browser_navigate,Playwright,BrowserManager,code_run|skill|memory/skills/browser-automation.md
+**L1 摘要**：Browser automation|browser,form filling,web operation|Use browser_navigate + code_run(CDP) to execute Playwright code for browser automation|browser_navigate,Playwright,CDP,code_run|skill|memory/skills/browser-automation.md
 
 ## 概述
 
-本项目提供浏览器自动化能力，基于 Playwright 实现。采用 **MCP 工具 + code_run** 架构：
+本项目提供浏览器自动化能力，基于 Playwright 实现。采用 **MCP 工具 + code_run(CDP)** 架构：
 
 1. **`browser_navigate` MCP 工具**：启动浏览器并导航到 URL
-2. **`code_run` 工具**：执行 Playwright Python 代码进行其他操作（点击、填充、截图等）
+2. **`code_run` 工具**：通过 CDP 协议连接已有浏览器，执行 Playwright 代码
 
 ## 架构说明
 
 ```
 browser_navigate (MCP 工具)
-    ↓ 启动浏览器
-BrowserManager (单例)
-    ↓ 提供共享 Page 实例
+    ↓ 启动浏览器，开放 CDP 端口 (9222)
 code_run (基础工具)
-    ↓ 执行 Playwright 代码
-完成浏览器操作
+    ↓ connect_over_cdp("http://127.0.0.1:9222")
+    ↓ 连接到同一个浏览器实例
+完成浏览器操作（点击、填充、截图、提取内容等）
 ```
+
+**关键**：code_run 是子进程，无法直接访问主进程的 BrowserManager。通过 CDP（Chrome DevTools Protocol）连接到同一个浏览器实例，和 Playwright CLI 的架构一样。
 
 ## 使用流程
 
@@ -44,69 +45,51 @@ code_run (基础工具)
   - `"networkidle"`: 等待网络空闲
   - `"commit"`: 收到响应头即返回
 
-### 2. 提取页面内容
+### 2. 通过 code_run 操作浏览器
 
-**调用 `browser_get_content` 工具**：
-
-```json
-{
-  "selector": "body",
-  "max_length": 5000
-}
-```
-
-参数说明：
-- `selector`: CSS 选择器，指定提取哪个元素的内容（默认 `"body"`）
-- `max_length`: 返回文本的最大长度（默认 5000 字符）
-
-返回值：
-```json
-{
-  "status": "success",
-  "data": {
-    "title": "页面标题",
-    "url": "当前URL",
-    "content": "提取的文本内容"
-  }
-}
-```
-
-**典型用法**：导航后直接提取内容，无需 code_run 绕路：
-1. `browser_navigate("https://baidu.com")` → 导航
-2. `browser_get_content()` → 提取页面文本
-
-### 3. 执行浏览器操作
-
-**使用 `code_run` 工具执行 Playwright 代码**：
+**使用 `code_run` 工具，通过 CDP 连接已有浏览器**：
 
 ```python
-from niu_browser_server import BrowserManager
+from playwright.sync_api import sync_playwright
 
-# 获取浏览器页面对象
-page, error = BrowserManager().get_page()
-if error:
-    print(f"Error: {error}")
-    exit(1)
+with sync_playwright() as p:
+    # 通过 CDP 连接到 browser_navigate 启动的浏览器
+    browser = p.chromium.connect_over_cdp("http://127.0.0.1:9222")
+    page = browser.contexts[0].pages[0]
 
-if not page:
-    print("Failed to get page")
-    exit(1)
-
-# 执行操作
-page.click('button:has-text("提交")')
-page.fill('input[name="username"]', '张三')
-page.screenshot(path='screenshot.png')
+    # 执行操作
+    page.click('button:has-text("提交")')
+    page.fill('input[name="username"]', '张三')
+    page.screenshot(path='screenshot.png')
 ```
 
 ## 常用操作示例
 
+### 提取页面内容
+
+```python
+from playwright.sync_api import sync_playwright
+
+with sync_playwright() as p:
+    browser = p.chromium.connect_over_cdp("http://127.0.0.1:9222")
+    page = browser.contexts[0].pages[0]
+
+    # 提取文本
+    text = page.inner_text('body')
+    title = page.title()
+    print(f"标题: {title}")
+    print(f"内容: {text[:500]}")
+```
+
 ### 点击元素
 
 ```python
-from niu_browser_server import BrowserManager
+from playwright.sync_api import sync_playwright
 
-page, _ = BrowserManager().get_page()
-if page:
+with sync_playwright() as p:
+    browser = p.chromium.connect_over_cdp("http://127.0.0.1:9222")
+    page = browser.contexts[0].pages[0]
+
     # 通过文本点击
     page.click('button:has-text("登录")')
 
@@ -120,10 +103,12 @@ if page:
 ### 填充表单
 
 ```python
-from niu_browser_server import BrowserManager
+from playwright.sync_api import sync_playwright
 
-page, _ = BrowserManager().get_page()
-if page:
+with sync_playwright() as p:
+    browser = p.chromium.connect_over_cdp("http://127.0.0.1:9222")
+    page = browser.contexts[0].pages[0]
+
     # 填充输入框
     page.fill('input[name="name"]', '李四')
     page.fill('input[name="email"]', 'lisi@example.com')
@@ -141,34 +126,33 @@ if page:
 ### 截图
 
 ```python
-from niu_browser_server import BrowserManager
+from playwright.sync_api import sync_playwright
 import base64
 
-page, _ = BrowserManager().get_page()
-if page:
+with sync_playwright() as p:
+    browser = p.chromium.connect_over_cdp("http://127.0.0.1:9222")
+    page = browser.contexts[0].pages[0]
+
     # 截取整个页面
     screenshot_bytes = page.screenshot()
 
     # 转换为 base64
     screenshot_b64 = base64.b64encode(screenshot_bytes).decode()
-
-    # 返回给用户
     print(f"截图已保存（{len(screenshot_b64)} bytes）")
 ```
 
 ### 提取数据
 
 ```python
-from niu_browser_server import BrowserManager
+from playwright.sync_api import sync_playwright
 
-page, _ = BrowserManager().get_page()
-if page:
+with sync_playwright() as p:
+    browser = p.chromium.connect_over_cdp("http://127.0.0.1:9222")
+    page = browser.contexts[0].pages[0]
+
     # 提取文本
     text = page.inner_text('body')
-
-    # 提取特定元素
     title = page.title()
-    headings = page.query_selector_all('h1, h2, h3')
 
     # 提取链接
     links = page.query_selector_all('a')
@@ -181,10 +165,12 @@ if page:
 ### 等待元素
 
 ```python
-from niu_browser_server import BrowserManager
+from playwright.sync_api import sync_playwright
 
-page, _ = BrowserManager().get_page()
-if page:
+with sync_playwright() as p:
+    browser = p.chromium.connect_over_cdp("http://127.0.0.1:9222")
+    page = browser.contexts[0].pages[0]
+
     # 等待元素出现
     page.wait_for_selector('.result', timeout=5000)
 
@@ -202,7 +188,7 @@ if page:
 **场景**：从知识库中读取用户信息，自动填充表单。
 
 ```python
-from niu_browser_server import BrowserManager
+from playwright.sync_api import sync_playwright
 
 # 1. 从知识库获取用户信息（伪代码）
 user_info = {
@@ -215,26 +201,23 @@ user_info = {
 # ...
 
 # 3. 填充表单
-page, _ = BrowserManager().get_page()
-if page:
-    for field, value in user_info.items():
-        try:
-            # 尝试多种选择器策略
-            selectors = [
-                f'input[name="{field}"]',
-                f'input[placeholder*="{field}"]',
-                f'[aria-label*="{field}"]'
-            ]
+with sync_playwright() as p:
+    browser = p.chromium.connect_over_cdp("http://127.0.0.1:9222")
+    page = browser.contexts[0].pages[0]
 
-            for selector in selectors:
-                try:
-                    page.fill(selector, value, timeout=1000)
-                    print(f"✓ 填充 {field}: {value}")
-                    break
-                except:
-                    continue
-        except Exception as e:
-            print(f"✗ 填充 {field} 失败: {e}")
+    for field, value in user_info.items():
+        selectors = [
+            f'input[name="{field}"]',
+            f'input[placeholder*="{field}"]',
+            f'[aria-label*="{field}"]'
+        ]
+        for selector in selectors:
+            try:
+                page.fill(selector, value, timeout=1000)
+                print(f"✓ 填充 {field}: {value}")
+                break
+            except:
+                continue
 ```
 
 ### 自动答题（结合向量搜索）
@@ -242,27 +225,25 @@ if page:
 **场景**：从网页提取问题，在知识库中搜索答案，自动填写。
 
 ```python
-from niu_browser_server import BrowserManager
+from playwright.sync_api import sync_playwright
 
-# 1. 提取问题
-page, _ = BrowserManager().get_page()
-if not page:
-    exit(1)
+with sync_playwright() as p:
+    browser = p.chromium.connect_over_cdp("http://127.0.0.1:9222")
+    page = browser.contexts[0].pages[0]
 
-question_element = page.query_selector('.question')
-if question_element:
-    question = question_element.inner_text()
+    # 1. 提取问题
+    question_element = page.query_selector('.question')
+    if question_element:
+        question = question_element.inner_text()
 
-    # 2. 在知识库中搜索答案（伪代码）
-    # answer = search_in_knowledge_base(question)
+        # 2. 在知识库中搜索答案（伪代码）
+        # answer = search_in_knowledge_base(question)
 
-    # 3. 填写答案
-    answer_input = page.query_selector('textarea.answer')
-    if answer_input:
-        answer_input.fill("答案内容")
-
-        # 4. 提交
-        page.click('button:has-text("提交")')
+        # 3. 填写答案
+        answer_input = page.query_selector('textarea.answer')
+        if answer_input:
+            answer_input.fill("答案内容")
+            page.click('button:has-text("提交")')
 ```
 
 ## 注意事项
@@ -275,17 +256,18 @@ if question_element:
 - **单例模式**：全局只有一个浏览器实例，通过 `BrowserManager` 管理
 - **持久化登录**：用户数据保存在 `~/.niu/browser_data/`，包括 cookies、登录状态、浏览历史
 - **非无痕模式**：关闭浏览器后重新打开，仍保持登录状态
+- **CDP 端口**：浏览器启动后开放 CDP 端口 9222，供 code_run 子进程连接
 
 ### 2. 强制规则（必须遵守）
 
-**禁止自行替换 API**：
-- ❌ 禁止使用 `playwright.sync_api` 或 `playwright.async_api` 直接启动浏览器
-- ❌ 禁止使用 `connect_over_cdp()`、`chromium.launch()` 等原生 Playwright 启动方式
-- ❌ 禁止使用 `chromium.launch(headless=True)` — headless 模式会被反爬虫系统检测
-- ✅ 必须通过 `BrowserManager().get_page()` 获取页面对象
+**code_run 中连接浏览器的唯一正确方式**：
+- ✅ `p.chromium.connect_over_cdp("http://127.0.0.1:9222")` — 通过 CDP 连接已有浏览器
+- ❌ 禁止 `chromium.launch()` — 会启动新浏览器实例，导致冲突
+- ❌ 禁止 `chromium.launch(headless=True)` — headless 模式会被反爬虫系统检测
+- ❌ 禁止 `BrowserManager().get_page()` — code_run 是子进程，无法访问主进程对象
 - ✅ 必须使用 `browser_navigate` 工具进行导航
 
-**原因**：BrowserManager 是单例，管理浏览器生命周期、持久化登录和并发保护。自行启动浏览器会导致实例冲突、登录态丢失、触发反爬虫验证码。
+**原因**：code_run 是子进程，和主进程不共享内存。通过 CDP 协议连接同一个浏览器实例，和 Playwright CLI 的架构一样。
 
 ### 3. 并发保护
 
@@ -293,12 +275,12 @@ if question_element:
 - 超时时间：30 秒
 - 如果超时，返回错误 `"Browser busy"`
 
-### 3. 错误重试
+### 4. 错误重试
 
 - 浏览器启动失败会自动重试（最多 3 次）
 - 每次操作成功后重置错误计数
 
-### 4. 限制
+### 5. 限制
 
 - **无反爬虫绕过**：CAPTCHA、Cloudflare 可能阻止访问
 - **无代理支持**：不支持 IP 轮换
@@ -354,33 +336,32 @@ page.fill('form >> input[name="email"]', 'test@example.com')
 **步骤 2**：使用 `code_run` 填充表单
 
 ```python
-from niu_browser_server import BrowserManager
+from playwright.sync_api import sync_playwright
 
-page, _ = BrowserManager().get_page()
-if not page:
-    print("Error: Failed to get page")
-    exit(1)
+with sync_playwright() as p:
+    browser = p.chromium.connect_over_cdp("http://127.0.0.1:9222")
+    page = browser.contexts[0].pages[0]
 
-# 填充用户信息
-page.fill('input[name="username"]', 'zhangsan')
-page.fill('input[name="email"]', 'zhangsan@example.com')
-page.fill('input[name="password"]', 'SecurePassword123')
-page.fill('input[name="confirm_password"]', 'SecurePassword123')
+    # 填充用户信息
+    page.fill('input[name="username"]', 'zhangsan')
+    page.fill('input[name="email"]', 'zhangsan@example.com')
+    page.fill('input[name="password"]', 'SecurePassword123')
+    page.fill('input[name="confirm_password"]', 'SecurePassword123')
 
-# 同意条款
-page.check('input[type="checkbox"]')
+    # 同意条款
+    page.check('input[type="checkbox"]')
 
-# 提交表单
-page.click('button[type="submit"]')
+    # 提交表单
+    page.click('button[type="submit"]')
 
-# 等待跳转
-page.wait_for_load_state('networkidle')
+    # 等待跳转
+    page.wait_for_load_state('networkidle')
 
-# 截图确认
-screenshot_bytes = page.screenshot()
-print(f"✓ 注册完成（截图 {len(screenshot_bytes)} bytes）")
+    # 截图确认
+    screenshot_bytes = page.screenshot()
+    print(f"✓ 注册完成（截图 {len(screenshot_bytes)} bytes）")
 ```
 
 ## 关键词
 
-浏览器、网页、填表、截图、自动化、Playwright、表单填写、自动答题
+浏览器、网页、填表、截图、自动化、Playwright、表单填写、自动答题、CDP
