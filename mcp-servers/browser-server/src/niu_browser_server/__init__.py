@@ -3,7 +3,14 @@ Niu Browser MCP Server
 
 Provides browser navigation tool using Playwright.
 Other browser operations can be done via code_run with BrowserManager.
+
+NOTE: Playwright sync API has asyncio compatibility issues.
+We use a workaround to disable asyncio detection in sync context.
 """
+
+import os
+# 禁用 Playwright 的 asyncio 检测（允许在 asyncio loop 中使用 sync API）
+os.environ["PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS"] = "1"
 
 import threading
 import time

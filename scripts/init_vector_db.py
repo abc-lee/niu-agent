@@ -34,6 +34,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from loguru import logger
 import numpy as np
 from agent.vector_search import VectorSearchAdapter
+from agent.runner import BASE_MCP_TOOLS
 
 
 def get_vector_db_path() -> str:
@@ -93,33 +94,40 @@ def sync_skills():
 def register_mcp_tools():
     """注册 MCP 工具描述到向量库（L1级别）
 
-    注意：只注册动态加载的工具，不注册基础工具
-    - 基础工具：通过 BASE_MCP_TOOLS 固定注入（agent/runner.py）
-    - 动态工具：通过向量库语义搜索发现
+    注册策略：
+    - 从 data/mcp_tools.json 读取工具定义
+    - 排除 BASE_MCP_TOOLS 中的基础工具（已在代码中固定注入）
+    - 注册所有其他工具用于递归检索
+
+    参考：docs/VECTOR_DB_INIT_CHECKLIST.md
     """
-    logger.info("注册 MCP 工具描述（仅动态加载工具）...")
+    logger.info("注册 MCP 工具描述...")
 
-    # 定义动态加载的 MCP 工具
-    # 这些工具不经常使用，需要通过语义搜索发现
-    # 注意：基础工具（memory-server, vector-store）已在 BASE_MCP_TOOLS 固定注入，不在此注册
-    tools = [
-        # ==================== 动态加载工具 ====================
-        # browser-server (1个) - 按需启动，浏览器自动化
-        # 注意：browser_navigate 已加入 BASE_MCP_TOOLS（见 agent/runner.py）
-        # 其他浏览器操作通过 code_run + BrowserManager 完成
+    # 读取工具定义
+    json_file = Path(__file__).parent.parent / "data" / "mcp_tools.json"
+    if not json_file.exists():
+        logger.error("✗ 工具定义文件不存在，请先运行: python scripts/export_all_mcp_tools.py")
+        logger.info("提示: 执行 'python scripts/export_all_mcp_tools.py' 生成工具定义")
+        return
 
-        # ==================== 子Agent专用工具（不注册）====================
-        # photo-server (14个) - 子Agent专用，主Agent通过 chat-with-file-processor 委托
-        # scheduler-server (4个) - 子Agent专用，主Agent通过 chat-with-event-manager 委托
-        # kg-server (12个) - 底层操作，不暴露给主Agent
-        # file-parser (2个) - 底层操作，不暴露给主Agent
-        # config-manager - 已删除，用 bash + file 操作替代
+    with open(json_file, 'r', encoding='utf-8') as f:
+        tools_by_server = json.load(f)
 
-        # 注意：
-        # 1. 基础工具（memory-server + vector-store）已在 BASE_MCP_TOOLS 固定注入
-        # 2. 子Agent专用工具不在向量库注册，避免主Agent误用
-        # 3. 浏览器自动化架构：browser_navigate (MCP) + code_run + BrowserManager
+    # 展平为单个列表
+    all_tools = []
+    for server, tools in sorted(tools_by_server.items()):
+        all_tools.extend(tools)
+
+    logger.info(f"从 JSON 读取了 {len(all_tools)} 个工具定义")
+
+    # 排除基础工具
+    base_tool_names = set(BASE_MCP_TOOLS)
+    tools_to_register = [
+        tool for tool in all_tools
+        if f"{tool['server']}/{tool['name']}" not in base_tool_names
     ]
+
+    logger.info(f"需要注册 {len(tools_to_register)} 个工具（排除 {len(base_tool_names)} 个基础工具）")
 
     # 获取向量库连接
     from agent.vector_search import get_vector_search
@@ -130,11 +138,9 @@ def register_mcp_tools():
         logger.error("✗ 向量库连接失败")
         return
 
-    # 导入 numpy
-    import numpy as np
-
+    # 注册每个工具
     registered = 0
-    for i, tool in enumerate(tools, 1):
+    for i, tool in enumerate(tools_to_register, 1):
         try:
             # 构建文档ID和内容
             doc_id = f"mcp_tool:{tool['server']}:{tool['name']}"
@@ -154,7 +160,7 @@ def register_mcp_tools():
             # 获取向量
             embedding = vs._get_embedding(content)
             if embedding is None:
-                logger.warning(f"[{i}/{len(tools)}] {tool['name']} - 向量生成失败")
+                logger.warning(f"[{i}/{len(tools_to_register)}] {tool['name']} - 向量生成失败")
                 continue
 
             # L2归一化
@@ -178,107 +184,41 @@ def register_mcp_tools():
             )
             conn.commit()
 
-            logger.info(f"[{i}/{len(tools)}] {tool['name']} - ✓")
+            logger.info(f"[{i}/{len(tools_to_register)}] {tool['server']}/{tool['name']} - ✓")
             registered += 1
             time.sleep(0.5)  # 避免过载
 
         except Exception as e:
-            logger.error(f"[{i}/{len(tools)}] {tool['name']} - ✗ {e}")
+            logger.error(f"[{i}/{len(tools_to_register)}] {tool['name']} - ✗ {e}")
 
-    logger.info(f"✓ MCP 工具注册完成: {registered}/{len(tools)}")
+    logger.info(f"✓ MCP 工具注册完成: {registered}/{len(tools_to_register)}")
 
 
 def register_query_patterns():
     """注册递归查询模式
 
-    注意：只注册与 Skills 和业务场景相关的模式
-    不注册 MCP 工具相关的模式（工具已在 BASE_MCP_TOOLS 固定注入）
+    调用 scripts/index_query_patterns.py 的逻辑
     """
     logger.info("注册查询模式...")
 
-    # 查询模式定义（符合L1规范 v3.0）
-    # 注意：MCP 工具相关的查询模式不需要注册，因为工具已在 BASE_MCP_TOOLS 固定注入
-    patterns = [
-        # ==================== 记忆管理类 ====================
-        {
-            "id": "query_pattern:recall_memory_1",
-            "content": "recall previous memories",
-            "metadata": {
-                "level": "l1",
-                "category": "query_pattern",
-                "language": "en",
-                "type": "query_pattern",
-                "is_recursive": True,
-                "refined_query": "memory recall remember",
-                "target_category": "mcp_tool",
-                "description": "User wants to recall previous memories"
-            }
-        },
-        {
-            "id": "query_pattern:remember_this",
-            "content": "remember this",
-            "metadata": {
-                "level": "l1",
-                "category": "query_pattern",
-                "language": "en",
-                "type": "query_pattern",
-                "is_recursive": True,
-                "refined_query": "save memory remember",
-                "target_category": "mcp_tool",
-                "description": "User wants to save something to memory"
-            }
-        },
+    # 调用现有的索引脚本
+    import subprocess
+    result = subprocess.run(
+        [sys.executable, str(Path(__file__).parent / "index_query_patterns.py")],
+        capture_output=True,
+        text=True,
+        encoding='utf-8',
+        errors='replace'  # 替换无法解码的字符
+    )
 
-        # 注意：浏览器相关查询模式已移除
-        # browser_navigate 已在 BASE_MCP_TOOLS 固定注入，无需查询模式
-    ]
-
-    # 获取向量库路径
-    db_path = get_vector_db_path()
-    vs = VectorSearchAdapter(db_path)
-
-    # 连接数据库
-    conn = sqlite3.connect(db_path)
-    registered = 0
-
-    for i, pattern in enumerate(patterns, 1):
-        try:
-            # 获取向量
-            embedding = vs._get_embedding(pattern["content"])
-            if embedding is None:
-                logger.warning(f"[{i}/{len(patterns)}] {pattern['id']} - 向量生成失败")
-                continue
-
-            # L2归一化
-            vec = np.array(embedding, dtype=np.float32)
-            norm = np.linalg.norm(vec)
-            if norm > 0:
-                vec = vec / norm
-            embedding_blob = vec.tobytes()
-
-            # UPSERT
-            conn.execute(
-                """
-                INSERT INTO documents (id, content, embedding, metadata)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(id) DO UPDATE SET
-                    content = excluded.content,
-                    embedding = excluded.embedding,
-                    metadata = excluded.metadata
-                """,
-                (pattern["id"], pattern["content"], embedding_blob,
-                 json.dumps(pattern["metadata"], ensure_ascii=False)),
-            )
-            conn.commit()
-
-            logger.info(f"[{i}/{len(patterns)}] {pattern['id']} - ✓")
-            registered += 1
-            time.sleep(0.3)  # 避免过载
-
-        except Exception as e:
-            logger.error(f"[{i}/{len(patterns)}] {pattern['id']} - ✗ {e}")
-
-    logger.info(f"✓ 查询模式注册完成: {registered}/{len(patterns)}")
+    if result.returncode == 0:
+        logger.info("✓ 查询模式注册完成")
+        # 打印输出（不包含模型加载日志）
+        for line in result.stdout.split('\n'):
+            if line.strip() and not line.startswith('Loading') and 'BertModel' not in line:
+                logger.info(line)
+    else:
+        logger.error(f"✗ 查询模式注册失败: {result.stderr}")
 
 
 def inject_system_manual():
@@ -290,7 +230,9 @@ def inject_system_manual():
     result = subprocess.run(
         [sys.executable, str(Path(__file__).parent / "inject_system_manual.py")],
         capture_output=True,
-        text=True
+        text=True,
+        encoding='utf-8',
+        errors='replace'  # 替换无法解码的字符
     )
 
     if result.returncode == 0:
@@ -319,12 +261,17 @@ def init_query_patterns():
         [sys.executable, str(pipeline_path)],
         capture_output=True,
         text=True,
+        encoding='utf-8',
+        errors='replace',  # 替换无法解码的字符
         cwd=str(Path(__file__).parent)
     )
 
     if result.returncode == 0:
         logger.info("✓ Query Patterns 初始化完成")
-        print(result.stdout)  # 打印流水线输出
+        # 打印输出（过滤掉模型加载日志）
+        for line in result.stdout.split('\n'):
+            if line.strip() and not line.startswith('Loading') and 'BertModel' not in line:
+                logger.info(line)
     else:
         logger.error(f"✗ Query Patterns 初始化失败: {result.stderr}")
 

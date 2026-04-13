@@ -6,6 +6,7 @@
 """
 
 import json
+import sys
 from pathlib import Path
 from typing import Dict, List
 
@@ -23,6 +24,8 @@ class ToolLifecycleManager:
         self.decay_rate = decay_rate
         self.min_score = min_score
         self.active_tools: Dict[str, int] = self._load_scores()
+        # 临时存储：工具命中后激活的Skills（不持久化，不衰减）
+        self._pending_skills: List[str] = []
 
     def _load_scores(self) -> Dict[str, int]:
         """从 JSON 文件加载工具分数"""
@@ -44,13 +47,48 @@ class ToolLifecycleManager:
 
     def hit_tool(self, tool_name: str):
         """
-        工具被命中，重置为100分
+        工具被命中，重置为100分，并检索相关Skills
 
         Args:
             tool_name: 工具名，格式为 "server-name/tool-name"
         """
         self.active_tools[tool_name] = 100
-        self._save_scores()
+        self._save_scores()  # 立即保存，保证持久化语义
+
+        # 检索相关Skills（临时存储，不持久化）
+        self._activate_related_skills(tool_name)
+
+    def _activate_related_skills(self, tool_name: str):
+        """
+        用工具名去向量库检索相关Skills（临时存储，不持久化）
+
+        Args:
+            tool_name: 工具名
+        """
+        try:
+            from agent.vector_search import get_vector_search
+
+            vs = get_vector_search()
+            # 用工具名检索Skills
+            skills = vs.search(
+                query=tool_name,
+                limit=2,
+                min_score=0.3,  # 降低阈值，因为工具名可能只匹配部分关键词
+                filter={"category": "skill"}
+            )
+
+            for skill in skills:
+                skill_name = skill.metadata.get("name", "")
+                if skill_name and skill_name not in self._pending_skills:
+                    self._pending_skills.append(skill_name)
+
+            if skills:
+                print(f"[ToolLifecycle] Found skills for {tool_name}: {[s.metadata.get('name') for s in skills]}",
+                      file=sys.stderr, flush=True)
+
+        except Exception as e:
+            # Skills检索失败不影响主流程
+            print(f"[ToolLifecycle] Failed to find skills for {tool_name}: {e}", file=sys.stderr, flush=True)
 
     def decay_tools(self):
         """
@@ -83,9 +121,23 @@ class ToolLifecycleManager:
         """
         return list(self.active_tools.keys())
 
+    def get_pending_skills(self) -> List[str]:
+        """
+        获取待注入的Skills列表（临时，不持久化）
+
+        Returns:
+            Skills名称列表
+        """
+        return self._pending_skills.copy()
+
+    def clear_pending_skills(self):
+        """清空待注入的Skills列表（对话结束后调用）"""
+        self._pending_skills.clear()
+
     def clear(self):
-        """清空所有活跃工具"""
+        """清空所有活跃工具和待注入Skills"""
         self.active_tools.clear()
+        self._pending_skills.clear()
         self._save_scores()
 
     def get_tool_score(self, tool_name: str) -> int:
