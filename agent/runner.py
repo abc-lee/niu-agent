@@ -47,6 +47,7 @@ BASE_MCP_TOOLS = [
     "vector-store/list_documents",
 
     # browser-server (1个)
+    # NOTE: Playwright sync_api has asyncio detection, but works in thread pool
     "browser-server/browser_navigate",
 ]
 
@@ -358,50 +359,93 @@ class NiuRunner:
 
         return "\n".join(context_parts)
 
-    def _inject_dynamic_resources(self, user_input: str) -> str:
+    def _inject_dynamic_resources(self, context: str) -> str:
         """
-        动态注入相关资源（Skills、MCP 工具描述）
+        动态注入相关资源（Skills、MCP 工具描述、知识）
 
-        从向量库搜索 metadata.type in ["skill", "mcp_tool"]
-        返回格式化的提示词扩展
+        从向量库搜索相关资源，返回格式化的提示词扩展
+
+        Args:
+            context: 三轮对话上下文（包含历史消息和当前用户输入）
+
+        注入顺序：
+        1. 活跃Skills（工具命中后激活）
+        2. 语义匹配的Skills
+        3. MCP工具描述
+        4. 知识文档
+        5. 交互习惯
 
         阈值策略：
-        - 提高初始阈值到 0.35，过滤掉更多不相关的结果
-        - 如果结果太少，降级到文本搜索
-        - 结果数量限制保证不会注入过多内容
+        - Skills: 0.35（高精度）
+        - MCP工具: 0.15（低阈值，工具描述短）
+        - 知识: 0.45（高精度）
         """
-        # 搜索 Skills（符合L0/L1/L2规范，使用level字段）
+        # 1. 优先注入待注入的Skills（工具命中后检索到的）
+        pending_skill_names = self.tool_lifecycle.get_pending_skills()
+        pending_skills = []
+        try:
+            for skill_name in pending_skill_names:
+                # 用 search() 方法精确匹配 skill 名称
+                skills = self.vector_search.search(
+                    query=skill_name,
+                    limit=1,
+                    min_score=0.9,  # 高精度，确保精确匹配
+                    filter={"category": "skill", "name": skill_name}
+                )
+                if skills:
+                    pending_skills.append(skills[0])
+
+            if pending_skills:
+                print(f"[Debug] Pending Skills: {len(pending_skills)} results", file=sys.stderr, flush=True)
+        finally:
+            # 无论如何都清空临时列表，避免累积
+            self.tool_lifecycle.clear_pending_skills()
+
+        # 2. 搜索 Skills（基于三轮上下文）
         skills = self.vector_search.search(
-            query=user_input, limit=3, min_score=0.35, filter={"level": "l1", "category": "skill"}
+            query=context, limit=3, min_score=0.35, filter={"level": "l1", "category": "skill"}
         )
         print(f"[Debug] Dynamic injection - Skills: {len(skills)} results", file=sys.stderr, flush=True)
 
-        # 搜索 MCP 工具描述（符合L0/L1/L2规范，使用level字段）
+        # 3. 搜索 MCP 工具描述（基于三轮上下文）
         # 降低阈值到 0.15，因为工具描述较短，语义相似度天然偏低
         mcp_tools = self.vector_search.search(
-            query=user_input, limit=5, min_score=0.15, filter={"level": "l1", "category": "mcp_tool"}
+            query=context, limit=5, min_score=0.15, filter={"level": "l1", "category": "mcp_tool"}
         )
         print(f"[Debug] Dynamic injection - MCP tools: {len(mcp_tools)} results", file=sys.stderr, flush=True)
 
-        # 搜索知识（符合L0/L1/L2规范，使用level字段）
+        # 4. 搜索知识（基于三轮上下文）
         knowledge = self.vector_search.search(
-            query=user_input,
+            query=context,
             limit=8,
             min_score=0.45,  # 提高知识搜索阈值
             filter={"level": "l1", "category": "document"},  # L1 文档摘要
         )
         print(f"[Debug] Dynamic injection - Knowledge: {len(knowledge)} results", file=sys.stderr, flush=True)
 
-        # 搜索 Interaction Habits（用户画像、状态、工具方言）
+        # 5. 搜索 Interaction Habits（基于三轮上下文）
         interaction_habits = self.vector_search.search_interaction_habits(
-            query=user_input, limit=3, min_score=0.4
+            query=context, limit=3, min_score=0.4
         )
         print(f"[Debug] Dynamic injection - Interaction Habits: {len(interaction_habits)} results", file=sys.stderr, flush=True)
 
         # 格式化
         parts = []
-        if skills:
-            parts.append(format_resources_for_prompt(skills, "相关技能"))
+        # 合并待注入Skills和搜索到的Skills（去重）
+        all_skills = pending_skills + skills
+        if all_skills:
+            # 去重：按metadata.name去重
+            seen_names = set()
+            unique_skills = []
+            for skill in all_skills:
+                name = skill.metadata.get("name", "")
+                if name and name not in seen_names:
+                    seen_names.add(name)
+                    unique_skills.append(skill)
+
+            if unique_skills:
+                parts.append(format_resources_for_prompt(unique_skills, "相关技能"))
+
         if mcp_tools:
             parts.append(format_resources_for_prompt(mcp_tools, "可用工具"))
         if knowledge:
