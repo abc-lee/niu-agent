@@ -1,6 +1,7 @@
 /**
  * Niu Browser Extension - Content Script
  * Injected into every web page. Handles DOM state extraction and interaction operations.
+ * Uses SimulatorMask for visual mouse cursor animation during clicks.
  */
 
 // DOM state cache
@@ -8,12 +9,21 @@ let lastFlatTree = null;
 let lastSelectorMap = null;
 let lastSimplifiedHTML = '';
 
+// SimulatorMask instance (lazy init)
+let mask = null;
+
+function getMask() {
+  if (!mask && window.NiuSimulatorMask) {
+    mask = new window.NiuSimulatorMask();
+  }
+  return mask;
+}
+
 // Helper: get DOM element from selectorMap entry.
 // selectorMap stores node data objects (with .ref pointing to the real DOM element).
 function getDomElement(index) {
   const entry = lastSelectorMap?.get(index);
   if (!entry) return null;
-  // entry may be the DOM element directly, or a node data object with .ref
   if (entry.ref && entry.ref.nodeType === Node.ELEMENT_NODE) return entry.ref;
   if (entry.nodeType === Node.ELEMENT_NODE) return entry;
   return null;
@@ -22,7 +32,7 @@ function getDomElement(index) {
 // Listen for messages from background/hub
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   handleMessage(msg).then(sendResponse);
-  return true; // Keep channel open for async response
+  return true;
 });
 
 async function handleMessage(msg) {
@@ -43,20 +53,25 @@ async function handleMessage(msg) {
 }
 
 /**
- * Get structured browser state
- * Returns url, title, elements (indexed interactive element list), pageInfo
+ * Get structured browser state.
+ * Highlights elements briefly to build selectorMap, then cleans up.
  */
 function getBrowserState() {
   try {
-    // Clean up old highlights
+    // Hide mask before extracting DOM (mask elements have data-browser-use-ignore)
+    const m = getMask();
+    if (m) m.hide();
+
     NiuDomTree.cleanUpHighlights();
 
-    // Build new DOM tree
     lastFlatTree = NiuDomTree.buildFlatTree({ doHighlightElements: true });
     lastSelectorMap = NiuDomTree.getSelectorMap(lastFlatTree);
     lastSimplifiedHTML = NiuDomTree.flatTreeToString(lastFlatTree);
 
-    // Get page info
+    // Clean up highlights immediately - numbers only flash briefly
+    // selectorMap keeps .ref pointing to real DOM elements, so cleanup is safe
+    NiuDomTree.cleanUpHighlights();
+
     const pageInfo = getPageInfo();
 
     return {
@@ -74,11 +89,24 @@ function getBrowserState() {
 }
 
 /**
- * Click element by index (simulate real mouse events)
- * Returns immediately with the click result. If the click triggers navigation,
- * the hub will detect it via tab_updated event and get fresh state from the new page.
+ * Wait for specified seconds.
  */
-function clickElement(index) {
+function waitFor(seconds) {
+  return new Promise(resolve => setTimeout(resolve, seconds * 1000));
+}
+
+/**
+ * Click element by index with full visual mouse simulation.
+ * Follows page-agent's action sequence:
+ * 1. scrollIntoView
+ * 2. show mask + move cursor to element
+ * 3. click animation
+ * 4. enable pass-through
+ * 5. dispatch real DOM events (W3C pointer event order)
+ * 6. disable pass-through
+ * 7. hide mask
+ */
+async function clickElement(index) {
   try {
     const element = getDomElement(index);
     if (!element) {
@@ -86,53 +114,110 @@ function clickElement(index) {
     }
 
     // Scroll into view
-    element.scrollIntoView({ behavior: 'smooth', block: 'center' });
-
-    // Simulate mouse event sequence (more realistic than .click())
-    const rect = element.getBoundingClientRect();
-    const x = rect.x + rect.width / 2;
-    const y = rect.y + rect.height / 2;
-
-    const events = ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'];
-    for (const eventType of events) {
-      element.dispatchEvent(new PointerEvent(eventType, {
-        bubbles: true,
-        cancelable: true,
-        clientX: x,
-        clientY: y,
-        pointerId: 1,
-        pointerType: 'mouse',
-        isPrimary: true,
-      }));
+    if (typeof element.scrollIntoViewIfNeeded === 'function') {
+      element.scrollIntoViewIfNeeded();
+    } else {
+      element.scrollIntoView({ behavior: 'auto', block: 'center', inline: 'nearest' });
     }
 
-    // Wait briefly for DOM to update (e.g. checked attribute), then return fresh state
-    return new Promise(resolve => {
-      setTimeout(() => resolve(getBrowserState()), 300);
-    });
+    const rect = element.getBoundingClientRect();
+    const x = rect.left + rect.width / 2;
+    const y = rect.top + rect.height / 2;
+
+    // Show mask and move cursor to element
+    const m = getMask();
+    if (m) {
+      m.show();
+      m.setCursorPosition(x, y);
+      await waitFor(0.3); // Wait for cursor easing animation
+      m.triggerClickAnimation();
+      m.enablePassThrough();
+    }
+
+    // Hit-test to find deepest element at click coordinates (matches real browser behavior)
+    const doc = element.ownerDocument;
+    const hitTarget = doc.elementFromPoint(x, y);
+    const target = (hitTarget instanceof HTMLElement && element.contains(hitTarget)) ? hitTarget : element;
+
+    // Dispatch W3C pointer event sequence:
+    // pointerover/enter → mouseover/enter → pointerdown → mousedown →
+    // [focus] → pointerup → mouseup → click
+    const pointerOpts = {
+      bubbles: true, cancelable: true,
+      clientX: x, clientY: y,
+      pointerType: 'mouse', pointerId: 1, isPrimary: true,
+    };
+    const mouseOpts = {
+      bubbles: true, cancelable: true,
+      clientX: x, clientY: y, button: 0,
+    };
+
+    // Hover
+    target.dispatchEvent(new PointerEvent('pointerover', pointerOpts));
+    target.dispatchEvent(new PointerEvent('pointerenter', { ...pointerOpts, bubbles: false }));
+    target.dispatchEvent(new MouseEvent('mouseover', mouseOpts));
+    target.dispatchEvent(new MouseEvent('mouseenter', { ...mouseOpts, bubbles: false }));
+
+    // Press
+    target.dispatchEvent(new PointerEvent('pointerdown', pointerOpts));
+    target.dispatchEvent(new MouseEvent('mousedown', mouseOpts));
+
+    // Focus
+    element.focus({ preventScroll: true });
+
+    // Release
+    target.dispatchEvent(new PointerEvent('pointerup', pointerOpts));
+    target.dispatchEvent(new MouseEvent('mouseup', mouseOpts));
+
+    // Return success before triggering activation click.
+    // Use setTimeout(0) to put click in macrotask queue - this guarantees
+    // sendResponse (in microtask) runs first, so the channel won't close
+    // if click causes navigation.
+    const maskRef = m;
+    setTimeout(() => {
+      target.click();
+      // Clean up mask after a brief delay
+      setTimeout(() => {
+        if (maskRef) {
+          maskRef.disablePassThrough();
+          maskRef.hide();
+        }
+      }, 100);
+    }, 0);
+
+    return { success: true, message: 'Clicked element ' + index };
   } catch (e) {
+    const m = getMask();
+    if (m) m.hide();
     return { success: false, message: 'Click failed: ' + e.message };
   }
 }
 
 /**
  * Input text (React/Vue compatible)
+ * Focuses the element, then sets the value.
  */
-function inputText(index, text) {
+async function inputText(index, text) {
   try {
     const element = getDomElement(index);
     if (!element) {
       return { success: false, message: 'Element ' + index + ' not found.' };
     }
 
-    element.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    element.focus();
+    // Scroll into view and focus
+    if (typeof element.scrollIntoViewIfNeeded === 'function') {
+      element.scrollIntoViewIfNeeded();
+    } else {
+      element.scrollIntoView({ behavior: 'auto', block: 'center', inline: 'nearest' });
+    }
+    element.focus({ preventScroll: true });
 
     // Use native value setter (React compatible)
     const nativeSetter = Object.getOwnPropertyDescriptor(
       Object.getPrototypeOf(element), 'value'
     )?.set;
     if (nativeSetter) {
+      nativeSetter.call(element, '');
       nativeSetter.call(element, text);
     } else {
       element.value = text;
@@ -142,8 +227,11 @@ function inputText(index, text) {
     element.dispatchEvent(new Event('input', { bubbles: true }));
     element.dispatchEvent(new Event('change', { bubbles: true }));
 
-    return { success: true, message: 'Input "' + text + '" into element ' + index };
+    // Return fresh state so caller has updated element indices
+    return getBrowserState();
   } catch (e) {
+    const m = getMask();
+    if (m) m.hide();
     return { success: false, message: 'Input failed: ' + e.message };
   }
 }
@@ -161,7 +249,7 @@ function selectOption(index, optionText) {
     element.value = optionText;
     element.dispatchEvent(new Event('change', { bubbles: true }));
 
-    return { success: true, message: 'Selected "' + optionText + '" in element ' + index };
+    return getBrowserState();
   } catch (e) {
     return { success: false, message: 'Select failed: ' + e.message };
   }

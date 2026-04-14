@@ -83,7 +83,7 @@ async function handleNavigate(msg, id) {
       // Create a new tab
       const newTab = await chrome.tabs.create({ url: url });
       await waitForTabLoad(newTab.id, 15000);
-      const stateResult = await sendToContentScript(newTab.id, { type: 'get_state', id: id });
+      const stateResult = await sendToContentScriptWithRetry(newTab.id, { type: 'get_state', id: id });
       sendResult(id, stateResult?.success ?? true, stateResult?.message || 'Navigated to ' + url, stateResult?.data);
       return;
     }
@@ -93,8 +93,8 @@ async function handleNavigate(msg, id) {
   await chrome.tabs.update(targetTabId, { url: url });
   await waitForTabLoad(targetTabId, 15000);
 
-  // Get page state from the new page's content_script
-  const stateResult = await sendToContentScript(targetTabId, { type: 'get_state', id: id });
+  // Get page state from the new page's content_script (with retry for injection delay)
+  const stateResult = await sendToContentScriptWithRetry(targetTabId, { type: 'get_state', id: id });
   sendResult(id, stateResult?.success ?? true, stateResult?.message || 'Navigated to ' + url, stateResult?.data);
 }
 
@@ -147,8 +147,8 @@ async function handleClick(msg, id) {
     console.log('[NiuHub] Click caused navigation:', urlBefore, '->', urlAfter);
     await waitForTabLoad(targetTabId, 15000);
 
-    // Get state from new page's content_script
-    const stateResult = await sendToContentScript(targetTabId, { type: 'get_state', id: id });
+    // Get state from new page's content_script (with retry, as injection may be delayed)
+    const stateResult = await sendToContentScriptWithRetry(targetTabId, { type: 'get_state', id: id });
     sendResult(id, stateResult?.success ?? true, stateResult?.message || 'Click caused navigation', stateResult?.data);
   } else {
     // No navigation - get state from current page
@@ -195,9 +195,14 @@ function waitForTabLoad(tabId, timeout) {
   });
 }
 
-function sendToContentScript(tabId, msg) {
+function sendToContentScript(tabId, msg, timeoutMs = 30000) {
   return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      resolve({ success: false, message: 'Content script timeout' });
+    }, timeoutMs);
+
     chrome.tabs.sendMessage(tabId, msg, (response) => {
+      clearTimeout(timer);
       if (chrome.runtime.lastError) {
         resolve({ success: false, message: chrome.runtime.lastError.message });
       } else {
@@ -205,6 +210,20 @@ function sendToContentScript(tabId, msg) {
       }
     });
   });
+}
+
+/**
+ * Send message to content_script with retries.
+ * After navigation, content_script may not be injected yet.
+ */
+async function sendToContentScriptWithRetry(tabId, msg, maxRetries = 5, delayMs = 1000) {
+  for (let i = 0; i < maxRetries; i++) {
+    const result = await sendToContentScript(tabId, msg);
+    if (result?.success) return result;
+    // Content script not ready yet, wait and retry
+    if (i < maxRetries - 1) await sleep(delayMs);
+  }
+  return { success: false, message: 'Content script not responding after ' + maxRetries + ' retries' };
 }
 
 function sendResult(id, success, message, data) {
