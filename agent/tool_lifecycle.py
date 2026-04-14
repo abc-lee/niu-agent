@@ -49,23 +49,22 @@ class ToolLifecycleManager:
         """
         工具被命中，记录激活并检索相关Skills
 
-        不再强制设100分。如果提供了 score（来自向量检索），使用该分数；
-        否则保持现有分数不变（仅记录命中）。
-
-        衰减-覆盖模式：
-        - 每轮开始：所有工具 -10（decay）
-        - 向量检索命中：覆盖为新分数（净效果 ≈ +10）
-        - 未被检索到的工具：持续 -10/轮
+        两种命中来源，分数策略不同：
+        1. LLM 实际调用（score=0）：工具被确认需要，设 80 分
+           80 分能扛 3 轮衰减不命中：80→70→60→50→40(移除)
+        2. 向量检索命中（score>0）：按相似度给分，最低 min_score
 
         Args:
             tool_name: 工具名，格式为 "server-name/tool-name"
-            score: 向量检索分数（0-100），0表示仅记录命中不更新分数
+            score: 向量检索分数（0-100），0表示LLM实际调用
         """
         if score > 0:
+            # 向量检索命中：覆盖为检索分数
             self.active_tools[tool_name] = score
-        elif tool_name not in self.active_tools:
-            # 新工具首次命中，给一个初始分数
-            self.active_tools[tool_name] = self.min_score
+        else:
+            # LLM 实际调用：确认需要，给高分（能扛 3 轮衰减）
+            current = self.active_tools.get(tool_name, 0)
+            self.active_tools[tool_name] = max(current, 80)
         self._save_scores()  # 立即保存，保证持久化语义
 
         # 检索相关Skills（临时存储，不持久化）
@@ -73,20 +72,44 @@ class ToolLifecycleManager:
 
     def _activate_related_skills(self, tool_name: str):
         """
-        用工具名去向量库检索相关Skills（临时存储，不持久化）
+        用工具名去向量库检索相关Skills，并激活同server的其他工具
+
+        当 LLM 调用一个工具时，同 server 的其他工具也应该被激活，
+        因为它们通常需要配合使用（如 browser_navigate → browser_interact）。
 
         Args:
             tool_name: 工具名
         """
+        # 1. 激活同 server 的其他工具（给 80 分，与 LLM 调用同等待遇）
+        if "/" in tool_name:
+            server = tool_name.split("/", 1)[0]
+            try:
+                from agent.runner import get_runner
+                runner = get_runner()
+                if runner and hasattr(runner, '_mcp_tools_schema'):
+                    for schema in runner._mcp_tools_schema:
+                        name = schema.get("name", "")
+                        if "/" in name:
+                            s, _ = name.split("/", 1)
+                        else:
+                            continue
+                        if s == server and name != tool_name and name not in self.active_tools:
+                            self.active_tools[name] = 80
+                            print(f"[ToolLifecycle] Co-activated: {name} (same server: {server})",
+                                  file=sys.stderr, flush=True)
+            except Exception as e:
+                print(f"[ToolLifecycle] Failed to co-activate tools for {tool_name}: {e}",
+                      file=sys.stderr, flush=True)
+
+        # 2. 检索相关 Skills
         try:
             from agent.vector_search import get_vector_search
 
             vs = get_vector_search()
-            # 用工具名检索Skills
             skills = vs.search(
                 query=tool_name,
                 limit=2,
-                min_score=0.3,  # 降低阈值，因为工具名可能只匹配部分关键词
+                min_score=0.3,
                 filter={"category": "skill"}
             )
 
@@ -100,7 +123,6 @@ class ToolLifecycleManager:
                       file=sys.stderr, flush=True)
 
         except Exception as e:
-            # Skills检索失败不影响主流程
             print(f"[ToolLifecycle] Failed to find skills for {tool_name}: {e}", file=sys.stderr, flush=True)
 
     def decay_tools(self):

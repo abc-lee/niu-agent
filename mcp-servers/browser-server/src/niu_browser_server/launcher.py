@@ -88,7 +88,7 @@ def launch_browser(url: Optional[str] = None, browser_exe: Optional[str] = None)
         "--no-first-run",
         "--no-default-browser-check",
         "--disable-component-extensions-with-background-pages",
-        url or "about:blank",
+        url or "https://www.bing.com",
     ]
 
     # Windows: create detached process so browser survives Python exit
