@@ -489,18 +489,22 @@ class NiuRunner:
             # 无论如何都清空临时列表，避免累积
             self.tool_lifecycle.clear_pending_skills()
 
-        # 2. 搜索 Skills（基于三轮上下文）
-        skills = self.vector_search.search(
-            query=context, limit=3, min_score=0.35, filter={"level": "l1", "category": "skill"}
+        # 2. 一次向量检索，按 category 分组返回（避免同一 context 多次 embedding 计算）
+        multi_results = self.vector_search.search_multi(
+            query=context,
+            categories={
+                "skill": {"limit": 3, "min_score": 0.35},
+                "mcp_tool": {"limit": 10, "min_score": 0.25},
+                "document": {"limit": 8, "min_score": 0.45},
+                "interaction_habit": {"limit": 3, "min_score": 0.4},
+            }
         )
-        print(f"[Debug] Dynamic injection - Skills: {len(skills)} results", file=sys.stderr, flush=True)
+        skills = multi_results.get("skill", [])
+        mcp_tools = multi_results.get("mcp_tool", [])
+        knowledge = multi_results.get("document", [])
+        interaction_habits = multi_results.get("interaction_habit", [])
 
-        # 3. 搜索 MCP 工具描述（基于三轮上下文）
-        # 降低阈值到 0.15，因为工具描述较短，语义相似度天然偏低
-        mcp_tools = self.vector_search.search(
-            query=context, limit=10, min_score=0.25, filter={"level": "l1", "category": "mcp_tool"}
-        )
-        print(f"[Debug] Dynamic injection - MCP tools: {len(mcp_tools)} results", file=sys.stderr, flush=True)
+        print(f"[Debug] Dynamic injection - Skills: {len(skills)}, MCP: {len(mcp_tools)}, Knowledge: {len(knowledge)}, Habits: {len(interaction_habits)}", file=sys.stderr, flush=True)
 
         # 3.5 向量检索到的 MCP 工具分数覆盖到 tool_lifecycle
         # 衰减-覆盖模式：衰减(-10) + 向量覆盖(新分数) = 命中工具净效果 ≈ +10
@@ -513,22 +517,7 @@ class NiuRunner:
                 # 避免低相似度(0.15)映射到15分，低于min_score导致立即逐出
                 raw_score = int(tool_result.score * 100)
                 lifecycle_score = max(self.tool_lifecycle.min_score, raw_score)
-                self.tool_lifecycle.hit_tool(full_name, score=lifecycle_score)
-
-        # 4. 搜索知识（基于三轮上下文）
-        knowledge = self.vector_search.search(
-            query=context,
-            limit=8,
-            min_score=0.45,  # 提高知识搜索阈值
-            filter={"level": "l1", "category": "document"},  # L1 文档摘要
-        )
-        print(f"[Debug] Dynamic injection - Knowledge: {len(knowledge)} results", file=sys.stderr, flush=True)
-
-        # 5. 搜索 Interaction Habits（基于三轮上下文）
-        interaction_habits = self.vector_search.search_interaction_habits(
-            query=context, limit=3, min_score=0.4
-        )
-        print(f"[Debug] Dynamic injection - Interaction Habits: {len(interaction_habits)} results", file=sys.stderr, flush=True)
+                self.tool_lifecycle.hit_tool(full_name, score=lifecycle_score, skip_coactivation=True)
 
         # 格式化
         parts = []
