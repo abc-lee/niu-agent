@@ -4,18 +4,18 @@ Niu Browser MCP Server
 Controls browser via Chrome Extension, replacing Playwright architecture.
 
 Architecture:
-- browser_navigate MCP tool -> launch browser (if needed) -> send command to Extension via WSBridge
-- Extension content_script -> extract DOM state, execute operations in page
-- Results returned via WebSocket -> Python -> LLM
+- Check if Extension is connected
+- If connected: operate directly (user's browser is running with extension)
+- If not connected: launch user's default browser with extension loaded
+- Extension's background.js auto-opens hub tab on browser startup
+- Hub connects to Python backend via WebSocket
 
-Advantages over Playwright:
-- LLM directly sees indexed interactive elements, no need for code_run
-- Extension persists in every page, handles new tabs automatically
-- Simulates real mouse events (PointerEvent), harder to detect than Playwright
-- No Playwright/BrowserManager/SyncPageProxy/CDP dependency
+Advantages:
+- Shares user's browser session (cookies, logins)
+- Extension persists across tabs, handles navigation automatically
+- Simulates real mouse events, harder to detect
 """
 
-import subprocess
 import time
 from loguru import logger
 
@@ -24,12 +24,12 @@ from .launcher import launch_browser
 
 
 # Global state
-_browser_proc: subprocess.Popen | None = None
+_browser_proc = None  # Track launched browser process
 _ws_bridge: WSBridge | None = None
 
 
 def _get_bridge() -> WSBridge:
-    """Get or create WSBridge singleton (auto-starts on first call)."""
+    """Get or create WSBridge singleton."""
     global _ws_bridge
     if _ws_bridge is None:
         _ws_bridge = WSBridge()
@@ -37,28 +37,57 @@ def _get_bridge() -> WSBridge:
     return _ws_bridge
 
 
-def _ensure_browser_and_connection() -> WSBridge:
-    """Ensure browser is running and Extension is connected."""
+def _ensure_connection() -> WSBridge:
+    """
+    Ensure Extension is connected.
+
+    Flow:
+    1. If Extension connected → return immediately
+    2. If not connected → launch user's default browser with extension
+    3. Wait for Extension to connect
+
+    Raises:
+        RuntimeError: If Extension doesn't connect after reasonable wait
+    """
     global _browser_proc
 
     bridge = _get_bridge()
 
-    # If Extension not connected, try launching browser
-    if not bridge.connected:
-        if _browser_proc is None or _browser_proc.poll() is not None:
-            logger.info("Starting browser with extension...")
-            _browser_proc = launch_browser()
-            # Wait for Extension to connect (max 15 seconds)
-            # Browser needs time to start, Extension needs time to load and connect
-            for i in range(30):
-                if bridge.connected:
-                    logger.info(f"Extension connected after {(i+1)*0.5:.1f}s")
-                    break
-                time.sleep(0.5)
-            else:
-                logger.warning("Extension not connected after 15s, returning bridge anyway for retry")
+    if bridge.connected:
+        return bridge
 
-    return bridge
+    # Extension not connected - try launching browser
+    logger.info("Extension not connected, launching browser...")
+
+    try:
+        _browser_proc = launch_browser()
+    except Exception as e:
+        logger.error(f"Failed to launch browser: {e}")
+        raise RuntimeError(
+            f"Failed to launch browser: {e}\n"
+            "Please manually load the extension:\n"
+            "1. Open edge://extensions/ (or chrome://extensions/)\n"
+            "2. Enable 'Developer mode'\n"
+            "3. Click 'Load unpacked' → select extensions/niu-browser-ext/"
+        )
+
+    # Wait for Extension to connect
+    logger.info("Waiting for Extension to connect...")
+    for i in range(30):  # 15 seconds
+        if bridge.connected:
+            logger.info(f"Extension connected after {(i+1)*0.5:.1f}s")
+            return bridge
+        time.sleep(0.5)
+
+    # Still not connected
+    raise RuntimeError(
+        "Extension not connected after 15 seconds.\n"
+        "The browser may be using a locked profile (already running).\n"
+        "Please manually load the extension in your browser:\n"
+        "1. Open edge://extensions/ (or chrome://extensions/)\n"
+        "2. Enable 'Developer mode'\n"
+        "3. Click 'Load unpacked' → select extensions/niu-browser-ext/"
+    )
 
 
 def browser_navigate(
@@ -66,7 +95,7 @@ def browser_navigate(
     wait_until: str = "domcontentloaded"
 ) -> dict:
     """
-    Launch browser and navigate to URL. Automatically returns structured page state.
+    Navigate browser to URL. Uses Extension (connects or launches browser if needed).
 
     Args:
         url: Target URL
@@ -76,7 +105,7 @@ def browser_navigate(
         Dict with page state: url, title, elements (indexed interactive elements), pageInfo
     """
     try:
-        bridge = _ensure_browser_and_connection()
+        bridge = _ensure_connection()
 
         # Send navigate command (hub.js handles navigation + returns page state)
         result = bridge.send_command("navigate", url=url, timeout=60)
@@ -124,7 +153,7 @@ def browser_interact(
         Operation result + updated page state
     """
     try:
-        bridge = _ensure_browser_and_connection()
+        bridge = _ensure_connection()
 
         action_map = {
             "click": lambda: bridge.send_command("click", index=index, timeout=60),
@@ -178,7 +207,7 @@ TOOL_SCHEMAS = {
     },
     "browser_interact": {
         "name": "browser_interact",
-        "description": "与页面交互：点击元素、输入文本、选择下拉选项、滚动页面、获取当前页面状态。**使用场景**：在 browser_navigate 之后，根据返回的元素编号执行操作。**参数**：action（click/input/select/scroll/get_state）、index（元素编号，从 elements 列表中获取）、text（输入文本）、option（选择选项）、direction（滚动方向）、amount（滚动量）。**返回**：操作结果 + 更新后的页面状态。",
+        "description": "操作浏览器页面元素（点击、输入、选择、滚动）。通过元素编号操作，每次操作后返回新的页面状态。**核心**：操作串行，每次用最新返回的编号。**返回**：url、title、elements（更新后的编号元素）、pageInfo。",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -187,35 +216,13 @@ TOOL_SCHEMAS = {
                     "enum": ["click", "input", "select", "scroll", "get_state"],
                     "description": "操作类型"
                 },
-                "index": {"type": "integer", "description": "元素编号（从 elements 列表中获取）"},
+                "index": {"type": "integer", "description": "元素编号（从 browser_navigate 返回的 elements 中获取）"},
                 "text": {"type": "string", "description": "输入文本（action=input 时使用）"},
-                "option": {"type": "string", "description": "选择选项（action=select 时使用）"},
-                "direction": {
-                    "type": "string",
-                    "enum": ["up", "down"],
-                    "default": "down",
-                    "description": "滚动方向（action=scroll 时使用）"
-                },
-                "amount": {
-                    "type": "number",
-                    "default": 1.0,
-                    "description": "滚动量（页数，action=scroll 时使用）"
-                }
+                "option": {"type": "string", "description": "下拉选项（action=select 时使用）"},
+                "direction": {"type": "string", "enum": ["up", "down"], "description": "滚动方向"},
+                "amount": {"type": "number", "description": "滚动页数（支持小数，如 0.5=半页）"}
             },
             "required": ["action"]
         }
     }
 }
-
-
-def get_tool_schemas() -> list[dict]:
-    """Return tool schemas for ToolRegistry"""
-    return list(TOOL_SCHEMAS.values())
-
-
-def main():
-    """Entry point for standalone testing"""
-    print("Niu Browser Server - Chrome Extension Architecture")
-    print(f"Available tools: {len(TOOL_SCHEMAS)}")
-    for name in TOOL_SCHEMAS:
-        print(f"  - {name}")

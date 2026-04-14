@@ -129,8 +129,9 @@ async function clickElement(index) {
     if (m) {
       m.show();
       m.setCursorPosition(x, y);
-      await waitFor(0.3); // Wait for cursor easing animation
+      await waitFor(0.6); // Wait for cursor easing animation to reach target
       m.triggerClickAnimation();
+      await waitFor(0.3); // Wait for click ripple animation
       m.enablePassThrough();
     }
 

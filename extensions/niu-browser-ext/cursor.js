@@ -2,12 +2,12 @@
  * Niu Browser Extension - Simulator Mask + AI Cursor
  *
  * Provides visual feedback for browser automation:
- * - Spinning border overlay (CSS conic-gradient animation)
+ * - Thin animated border around page edges (gradient flowing along 4 edges)
  * - AI cursor with SVG mouse icon and easing movement
  * - Click ripple animation
  *
  * Ported from page-agent SimulatorMask.ts, replaces WebGL2 ai-motion
- * with pure CSS animation for broader compatibility.
+ * with pure CSS border animation for broader compatibility.
  */
 
 ;(function () {
@@ -31,10 +31,15 @@
       this.wrapper.setAttribute('data-browser-use-ignore', 'true')
       this.wrapper.setAttribute('data-page-agent-ignore', 'true')
 
-      // Spinning border (fallback version for broader support)
+      // Animated border around page edges (top/bottom via ::before/::after)
       const border = document.createElement('div')
-      border.className = 'niu-mask-border-fallback'
+      border.className = 'niu-mask-border'
       this.wrapper.appendChild(border)
+
+      // Left/right border edges (via separate element's ::before/::after)
+      const borderSides = document.createElement('div')
+      borderSides.className = 'niu-mask-border-sides'
+      this.wrapper.appendChild(borderSides)
 
       // Semi-transparent overlay
       const overlay = document.createElement('div')
@@ -123,13 +128,16 @@
     }
 
     /**
-     * Hide the mask overlay.
+     * Hide the mask overlay with fade-out.
      */
     hide () {
       if (!this.shown) return
       this.shown = false
       this.cursor.classList.remove('clicking')
-      this.wrapper.classList.remove('visible')
+      // Delay removal to allow fade-out (matches original 800ms)
+      setTimeout(() => {
+        this.wrapper.classList.remove('visible')
+      }, 800)
     }
 
     /**
