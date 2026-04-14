@@ -4,6 +4,14 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>妞妞聊天</title>
+  <!-- Markdown 渲染 -->
+  <script src="node_modules/marked/lib/marked.umd.js"></script>
+  <script>
+    // 配置 marked：保留换行，启用 GFM
+    if (typeof marked !== 'undefined' && marked.setOptions) {
+      marked.setOptions({ breaks: true, gfm: true });
+    }
+  </script>
   <!-- 英文手写字体 fallback -->
   <link href="https://fonts.googleapis.com/css2?family=Caveat:wght@400;600&display=swap" rel="stylesheet">
   <style>
@@ -146,6 +154,57 @@
       box-shadow: 2px 2px 5px rgba(0,0,0,0.08);
       /* 铅笔笔迹效果 */
       -webkit-text-stroke: 0.2px rgba(0,0,0,0.35);
+    }
+    /* Markdown 渲染后的表格样式 */
+    .message.assistant .message-text table {
+      border-collapse: collapse;
+      width: 100%;
+      margin: 8px 0;
+      font-size: 14px;
+    }
+    .message.assistant .message-text th,
+    .message.assistant .message-text td {
+      border: 1px solid #ddd;
+      padding: 6px 10px;
+      text-align: left;
+    }
+    .message.assistant .message-text th {
+      background: #f5f5f5;
+      font-weight: bold;
+    }
+    .message.assistant .message-text tr:nth-child(even) td {
+      background: #fafafa;
+    }
+    .message.assistant .message-text code {
+      background: #f0f0f0;
+      padding: 1px 4px;
+      border-radius: 3px;
+      font-size: 13px;
+    }
+    .message.assistant .message-text pre {
+      background: #f5f5f5;
+      padding: 8px;
+      border-radius: 6px;
+      overflow-x: auto;
+      font-size: 13px;
+    }
+    .message.assistant .message-text pre code {
+      background: none;
+      padding: 0;
+    }
+    .message.assistant .message-text ul,
+    .message.assistant .message-text ol {
+      padding-left: 20px;
+      margin: 4px 0;
+    }
+    .message.assistant .message-text {
+      white-space: normal;  /* markdown 渲染需要 normal，不能 pre-wrap */
+    }
+    .message.assistant .message-text blockquote {
+      border-left: 3px solid #ccc;
+      padding-left: 10px;
+      color: #666;
+      margin: 6px 0;
     }
     .message.system {
       background: #e9ecef;
@@ -664,7 +723,15 @@
         if (cleanText) {
           const textDiv = document.createElement('div');
           textDiv.className = 'message-text';
-          textDiv.textContent = cleanText;
+          if (role === 'assistant' && typeof marked !== 'undefined') {
+            try {
+              textDiv.innerHTML = marked.parse(cleanText);
+            } catch (e) {
+              textDiv.textContent = cleanText;
+            }
+          } else {
+            textDiv.textContent = cleanText;
+          }
           div.appendChild(textDiv);
         }
         
@@ -689,7 +756,17 @@
         if (text) {
           const textDiv = document.createElement('div');
           textDiv.className = 'message-text';
-          textDiv.textContent = text;
+          // assistant 消息用 markdown 渲染，其他角色纯文本
+          if (role === 'assistant' && typeof marked !== 'undefined') {
+            try {
+              textDiv.innerHTML = marked.parse(text);
+            } catch (e) {
+              console.warn('[Chat] Markdown 渲染失败，降级为纯文本:', e);
+              textDiv.textContent = text;
+            }
+          } else {
+            textDiv.textContent = text;
+          }
           div.appendChild(textDiv);
         }
       }
@@ -866,6 +943,13 @@
           <span class="stat">👤 <span id="person-count">${personCount.textContent}</span></span>
           <span class="stat">📝 <span id="note-count">${noteCount.textContent}</span></span>
         `;
+      }
+    });
+
+    // 监听提醒通知（scheduler 触发的定时任务，窗口在焦点时直接显示）
+    window.electronAPI.onAlert((message) => {
+      if (message) {
+        addMessage('assistant', message);
       }
     });
     
@@ -1159,7 +1243,18 @@
       const div = document.createElement('div');
       div.className = `message ${role}`;
       div.dataset.id = id;
-      div.textContent = content;
+      const textDiv = document.createElement('div');
+      textDiv.className = 'message-text';
+      if (role === 'assistant' && typeof marked !== 'undefined') {
+        try {
+          textDiv.innerHTML = marked.parse(content);
+        } catch (e) {
+          textDiv.textContent = content;
+        }
+      } else {
+        textDiv.textContent = content;
+      }
+      div.appendChild(textDiv);
       messages.insertBefore(div, messages.firstChild);
     }
   </script>
