@@ -15,7 +15,8 @@
     {
       "matches": ["<all_urls>"],
       "run_at": "document_end",
-      "js": ["dom_tree.js", "content.js"]
+      "js": ["dom_tree.js", "cursor.js", "content.js"],
+      "css": ["cursor.css"]
     }
   ],
   "externally_connectable": {

@@ -82,7 +82,7 @@ def browser_navigate(
         result = bridge.send_command("navigate", url=url, timeout=60)
 
         if result.get("success"):
-            data = result.get("data", {})
+            data = result.get("data") or {}
             return {
                 "status": "success",
                 "url": data.get("url", url),
@@ -127,11 +127,11 @@ def browser_interact(
         bridge = _ensure_browser_and_connection()
 
         action_map = {
-            "click": lambda: bridge.send_command("click", index=index),
-            "input": lambda: bridge.send_command("input_text", index=index, text=text),
-            "select": lambda: bridge.send_command("select_option", index=index, option=option),
-            "scroll": lambda: bridge.send_command("scroll", direction=direction, amount=amount),
-            "get_state": lambda: bridge.send_command("get_state"),
+            "click": lambda: bridge.send_command("click", index=index, timeout=60),
+            "input": lambda: bridge.send_command("input_text", index=index, text=text, timeout=60),
+            "select": lambda: bridge.send_command("select_option", index=index, option=option, timeout=60),
+            "scroll": lambda: bridge.send_command("scroll", direction=direction, amount=amount, timeout=60),
+            "get_state": lambda: bridge.send_command("get_state", timeout=60),
         }
 
         if action not in action_map:
@@ -140,7 +140,7 @@ def browser_interact(
         result = action_map[action]()
 
         if result.get("success"):
-            data = result.get("data", {})
+            data = result.get("data") or {}
             return {
                 "status": "success",
                 "message": result.get("message", "OK"),

@@ -1,0 +1,157 @@
+/**
+ * Niu Browser Extension - AI Cursor & Simulator Mask Styles
+ *
+ * Provides:
+ * 1. Spinning border overlay (CSS conic-gradient animation, replaces WebGL2 ai-motion)
+ * 2. AI cursor with SVG mouse icon
+ * 3. Click ripple animation
+ */
+
+/* ============== Spinning Border Overlay ============== */
+
+.niu-mask-wrapper {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483641;
+  pointer-events: auto;
+  overflow: hidden;
+  display: none;
+  cursor: wait;
+}
+
+.niu-mask-wrapper.visible {
+  display: block;
+}
+
+/* Spinning border - pure CSS conic-gradient animation */
+.niu-mask-border {
+  position: absolute;
+  inset: 0;
+  border: 3px solid transparent;
+  border-radius: 0;
+  background:
+    conic-gradient(from var(--niu-border-angle, 0deg), #39b6ff, #bd45fb, #ff6b9d, #39b6ff) border-box;
+  -webkit-mask:
+    linear-gradient(#fff 0 0) padding-box,
+    linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  animation: niu-spin-border 3s linear infinite;
+  opacity: 0.8;
+}
+
+@property --niu-border-angle {
+  syntax: '<angle>';
+  initial-value: 0deg;
+  inherits: false;
+}
+
+@keyframes niu-spin-border {
+  to {
+    --niu-border-angle: 360deg;
+  }
+}
+
+/* Fallback for browsers without @property: use a rotating pseudo-element */
+.niu-mask-border-fallback {
+  position: absolute;
+  inset: -2px;
+  background: conic-gradient(from 0deg, #39b6ff, #bd45fb, #ff6b9d, #39b6ff);
+  animation: niu-rotate-border 3s linear infinite;
+  opacity: 0.6;
+}
+
+.niu-mask-border-fallback::after {
+  content: '';
+  position: absolute;
+  inset: 3px;
+  background: rgba(0, 0, 0, 0.85);
+}
+
+@keyframes niu-rotate-border {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Semi-transparent overlay behind the border */
+.niu-mask-overlay {
+  position: absolute;
+  inset: 3px;
+  background: rgba(0, 0, 0, 0.3);
+}
+
+/* ============== AI Cursor ============== */
+
+.niu-cursor {
+  position: absolute;
+  width: 75px;
+  height: 75px;
+  pointer-events: none;
+  z-index: 10000;
+  transition: none; /* Movement is handled by JS easing */
+}
+
+/* Cursor border (gradient outline) */
+.niu-cursor-border {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(45deg, rgb(57, 182, 255), rgb(189, 69, 251));
+  mask-image: url(cursor-border.svg);
+  mask-size: 100% 100%;
+  mask-repeat: no-repeat;
+  transform-origin: center;
+  transform: rotate(-135deg) scale(1.2);
+  margin-left: -10px;
+  margin-top: -18px;
+}
+
+/* Cursor fill (white interior) */
+.niu-cursor-filling {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  background: url(cursor-fill.svg);
+  background-size: 100% 100%;
+  background-repeat: no-repeat;
+  transform-origin: center;
+  transform: rotate(-135deg) scale(1.2);
+  margin-left: -10px;
+  margin-top: -18px;
+}
+
+/* Click ripple container */
+.niu-cursor-ripple {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  margin-left: -50%;
+  margin-top: -50%;
+}
+
+.niu-cursor-ripple::after {
+  content: '';
+  opacity: 0;
+  position: absolute;
+  inset: 0;
+  border: 4px solid rgba(57, 182, 255, 1);
+  border-radius: 50%;
+}
+
+/* Click ripple animation */
+.niu-cursor.clicking .niu-cursor-ripple::after {
+  animation: niu-cursor-ripple 300ms ease-out forwards;
+}
+
+@keyframes niu-cursor-ripple {
+  0% {
+    transform: scale(0);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(2);
+    opacity: 0;
+  }
+}
