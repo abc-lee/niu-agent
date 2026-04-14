@@ -65,27 +65,26 @@ class ContextManager:
 
     def count_tokens_simple(self, messages: List[Dict[str, str]]) -> int:
         """
-        简单估算 token 数量（粗略估算，每个词约 1.3 tokens）
+        使用 litellm.token_counter 计算 token 数量（基于 tiktoken）
+
+        回退到字符数估算（约 2 字符/token）。
 
         Args:
             messages: 消息列表
 
         Returns:
-            估算的 token 数量
+            token 数量
         """
-        total_tokens = 0
-
-        for msg in messages:
-            content = msg.get("content", "")
-            # 简单估算：按空格分词，每个词约 1.3 tokens
-            words = len(content.split())
-            tokens = int(words * 1.3)
-            total_tokens += tokens
-
-            # 每条消息的固定开销（role + 格式）
-            total_tokens += 4
-
-        return total_tokens
+        try:
+            from litellm import token_counter
+            return token_counter(model="gpt-4o", messages=messages)
+        except Exception:
+            # 回退：混合文本约 2 字符/token
+            total_tokens = 0
+            for msg in messages:
+                content = msg.get("content", "")
+                total_tokens += max(1, len(content) // 2) + 4
+            return total_tokens
 
     def should_compress(self, messages: List[Dict[str, str]]) -> bool:
         """

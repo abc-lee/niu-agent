@@ -299,9 +299,10 @@ async def clear_chat() -> dict:
 
 
 @router.get("/api/pending-alerts")
-async def get_pending_alerts() -> dict:
-    """Get pending alerts - placeholder for now"""
-    return {"alerts": []}
+async def get_pending_alerts() -> list:
+    """Get pending alerts - delegates to alerts module"""
+    from niu_api.alerts import get_and_clear_pending_alerts
+    return get_and_clear_pending_alerts()
 
 
 @router.post("/api/context/tidy")
@@ -336,18 +337,40 @@ async def tidy_context(request: dict):
             logger.info("[Tidy] No messages to tidy")
             return {"status": "success", "message": "No messages to tidy"}
 
-        # Calculate approximate context size (in KB)
-        total_kb = sum(len(msg.content or "") for msg in messages) / 1024
+        # Calculate context size and usage percentage
+        total_chars = sum(len(msg.content or "") for msg in messages)
+        total_kb = total_chars / 1024
         message_count = len(messages)
 
-        logger.info(f"[Tidy] Current context: {message_count} messages, {total_kb:.1f} KB")
+        # 用 litellm.token_counter 精确计算 token 数（回退到字符估算）
+        msg_dicts = [{"role": msg.role, "content": msg.content or ""} for msg in messages]
+        try:
+            from litellm import token_counter
+            estimated_tokens = token_counter(model="gpt-4o", messages=msg_dicts)
+        except Exception:
+            estimated_tokens = max(1, total_chars // 2)
+
+        # 读取上下文窗口大小（tokens）
+        context_window_tokens = 200000  # 默认值
+        try:
+            import json
+            from pathlib import Path
+            prefs_path = Path.home() / ".niu" / "preferences.json"
+            if prefs_path.exists():
+                prefs = json.loads(prefs_path.read_text(encoding="utf-8"))
+                context_window_tokens = prefs.get("context", {}).get("contextWindowSize", 200000)
+        except Exception:
+            pass
+        usage_percent = (estimated_tokens / context_window_tokens) * 100
+
+        logger.info(f"[Tidy] Current context: {message_count} messages, {total_kb:.1f} KB, {estimated_tokens} tokens, {usage_percent:.1f}%")
 
         # Prepare input for context-manager subagent
         if mode == "sleep":
             # Sleep mode: non-forced tidy
             prompt = f"""系统进入睡眠状态。
 
-当前上下文：{total_kb:.1f} KB
+当前上下文：{total_kb:.1f} KB（{usage_percent:.1f}%）
 
 消息列表：
 共 {message_count} 条消息（idx 从小到大 = 从旧到新）

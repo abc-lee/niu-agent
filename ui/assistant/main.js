@@ -959,20 +959,25 @@ function startPendingAlertsPolling() {
       const alerts = await fetchPendingAlerts();
       if (alerts && alerts.length > 0) {
         console.log('[Alerts] 收到', alerts.length, '条待推送消息');
-        
-        // 判断聊天窗口是否在焦点
-        const chatFocused = chatWindow && chatWindow.isFocused() && chatWindow.isVisible();
-        
-        if (!chatFocused) {
-          // 聊天窗口不在焦点，小女孩蹦高
+
+        const chatVisible = chatWindow && chatWindow.isVisible();
+        const chatFocused = chatVisible && chatWindow.isFocused();
+
+        // 聊天窗口可见时，直接推送所有提醒到聊天窗口显示
+        if (chatVisible) {
+          alerts.forEach(alert => {
+            chatWindow.webContents.send('alert', alert.content);
+          });
+        } else {
+          // 聊天窗口不可见，缓存到 pendingAlertMessages（窗口打开时读取）
           alerts.forEach(alert => {
             pendingAlertMessages.push(alert.content);
           });
-          
-          // 通知小女孩蹦高
-          if (spiritWindow) {
-            spiritWindow.webContents.send('alert', alerts[alerts.length - 1].content);
-          }
+        }
+
+        // 聊天窗口不在焦点时，小女孩蹦高提醒
+        if (!chatFocused && spiritWindow) {
+          spiritWindow.webContents.send('alert', alerts[alerts.length - 1].content);
         }
       }
     } catch (e) {

@@ -47,5 +47,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openWithSystemViewer: (filePath) => ipcRenderer.send('open-with-system-viewer', filePath),
   
   // 清空聊天记录
-  clearChat: () => ipcRenderer.invoke('clear-chat')
+  clearChat: () => ipcRenderer.invoke('clear-chat'),
+
+  // 接收提醒通知（scheduler 触发的定时任务）
+  onAlert: (callback) => ipcRenderer.on('alert', (event, message) => callback(message))
 });
