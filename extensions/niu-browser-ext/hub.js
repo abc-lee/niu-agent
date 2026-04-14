@@ -11,6 +11,14 @@ const statusEl = document.getElementById('status');
 let ws = null;
 let reconnectTimer = null;
 
+function scheduleReconnect(delay) {
+  if (reconnectTimer) return; // Already scheduled
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    connect();
+  }, delay);
+}
+
 function connect() {
   statusEl.textContent = 'Connecting...';
   statusEl.className = '';
@@ -30,19 +38,28 @@ function connect() {
 
   ws.onmessage = (event) => {
     const msg = JSON.parse(event.data);
+    console.log('[NiuHub] Received command:', msg.type, msg.id);
     handleCommand(msg);
   };
 
   ws.onclose = () => {
     statusEl.textContent = 'Disconnected - reconnecting...';
     statusEl.className = 'error';
-    console.log('[NiuHub] WebSocket closed, reconnecting in 2s');
-    reconnectTimer = setTimeout(connect, 2000);
+    console.log('[NiuHub] WebSocket closed, reconnecting in 3s');
+    scheduleReconnect(3000);
   };
 
   ws.onerror = (err) => {
     console.error('[NiuHub] WebSocket error:', err);
+    // onerror is usually followed by onclose, but ensure we reconnect
+    if (!reconnectTimer) {
+      scheduleReconnect(3000);
+    }
   };
+}
+
+function isInternalUrl(url) {
+  return !url || url.startsWith('chrome://') || url.startsWith('edge://') || url.startsWith('chrome-extension://') || url === 'about:blank';
 }
 
 async function handleCommand(msg) {
@@ -53,6 +70,17 @@ async function handleCommand(msg) {
       await handleNavigate(msg, id);
     } else if (type === 'click') {
       await handleClick(msg, id);
+    } else if (type === 'create_tab') {
+      // 创建新标签页（url 必填，不能打开 about:blank）
+      const url = msg.url;
+      if (!url || url === 'about:blank') {
+        sendResult(id, false, 'url is required for new tab');
+        return;
+      }
+      const newTab = await chrome.tabs.create({ url: url, active: msg.active !== false });
+      await waitForTabLoad(newTab.id, 15000);
+      const stateResult = await sendToContentScriptWithRetry(newTab.id, { type: 'get_state', id: id });
+      sendResult(id, stateResult?.success ?? true, 'Tab created: ' + url, stateResult?.data);
     } else {
       // get_state, input_text, select_option, scroll - forward to content_script
       const targetTabId = tabId || await getActiveTabId();
@@ -77,7 +105,7 @@ async function handleNavigate(msg, id) {
 
   if (!targetTabId) {
     const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (tabs[0] && !tabs[0].url.startsWith('chrome://')) {
+    if (tabs[0] && !isInternalUrl(tabs[0].url)) {
       targetTabId = tabs[0].id;
     } else {
       // Create a new tab
@@ -140,7 +168,7 @@ async function handleClick(msg, id) {
     urlAfter = '';
   }
 
-  const navigated = urlAfter !== urlBefore && !urlAfter.startsWith('chrome://');
+  const navigated = urlAfter !== urlBefore && !isInternalUrl(urlAfter);
 
   if (navigated) {
     // Page navigated - wait for new page to finish loading
@@ -160,7 +188,20 @@ async function handleClick(msg, id) {
 // ============== Utility functions ==============
 
 function getActiveTabId() {
-  return chrome.tabs.query({ active: true, currentWindow: true }).then(tabs => tabs[0]?.id || null);
+  return chrome.tabs.query({ active: true, currentWindow: true }).then(async (tabs) => {
+    const tab = tabs[0];
+    if (!tab) return null;
+
+    // Browser internal pages (edge://, chrome://, about:) don't support content scripts.
+    // Navigate to a real page so content_script can be injected.
+    if (tab.url && isInternalUrl(tab.url)) {
+      console.log('[NiuHub] Active tab is internal page, navigating to bing.com');
+      await chrome.tabs.update(tab.id, { url: 'https://www.bing.com' });
+      await waitForTabLoad(tab.id, 10000);
+    }
+
+    return tab.id;
+  });
 }
 
 function sleep(ms) {
@@ -171,7 +212,7 @@ function waitForTabLoad(tabId, timeout) {
   return new Promise((resolve) => {
     // Check if tab is already complete
     chrome.tabs.get(tabId, (tab) => {
-      if (tab && tab.status === 'complete' && !tab.url.startsWith('chrome://')) {
+      if (tab && tab.status === 'complete' && !isInternalUrl(tab.url)) {
         // Already loaded, but give content_script time to initialize
         setTimeout(resolve, 800);
         return;

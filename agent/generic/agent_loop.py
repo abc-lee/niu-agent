@@ -220,6 +220,9 @@ def agent_runner_loop(
 
         # 如果 next_prompt 为空，说明任务完成，应该退出
         if not next_prompt or not next_prompt.strip():
+            # 确保最后一轮的 decay 和保存执行
+            if on_turn_end is not None:
+                on_turn_end(messages, tools_schema, turn)
             return should_exit
 
         # 添加下一个user消息

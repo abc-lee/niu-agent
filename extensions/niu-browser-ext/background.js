@@ -7,31 +7,35 @@
 const HUB_URL = chrome.runtime.getURL('hub.html');
 let hubTabId = null;
 
-// Auto-open hub tab immediately when service worker starts.
-// This is more reliable than onInstalled/onStartup which may not fire
-// when the extension is loaded via --load-extension flag.
-chrome.tabs.query({ url: HUB_URL }, (tabs) => {
-  if (tabs.length > 0) {
-    hubTabId = tabs[0].id;
-    console.log('[NiuBG] Hub tab already exists:', hubTabId);
-  } else {
-    chrome.tabs.create({ url: HUB_URL, active: false }, (tab) => {
-      hubTabId = tab.id;
-      console.log('[NiuBG] Hub tab opened:', hubTabId);
-    });
-  }
-});
-
-// Also open hub on extension install/update (backup)
-chrome.runtime.onInstalled.addListener(() => {
+/**
+ * Ensure hub tab is open. Called on service worker startup and extension icon click.
+ * This is the most reliable way to keep hub alive across service worker restarts.
+ */
+function ensureHubTab() {
   chrome.tabs.query({ url: HUB_URL }, (tabs) => {
-    if (tabs.length === 0) {
+    if (tabs.length > 0) {
+      hubTabId = tabs[0].id;
+      console.log('[NiuBG] Hub tab already exists:', hubTabId);
+    } else {
       chrome.tabs.create({ url: HUB_URL, active: false }, (tab) => {
         hubTabId = tab.id;
-        console.log('[NiuBG] Hub tab opened (onInstalled):', hubTabId);
+        console.log('[NiuBG] Hub tab opened:', hubTabId);
       });
     }
   });
+}
+
+// Open hub on service worker startup (fires when SW wakes up from idle)
+ensureHubTab();
+
+// Also open hub on extension install/update
+chrome.runtime.onInstalled.addListener(() => {
+  ensureHubTab();
+});
+
+// Open hub when extension icon is clicked (user can manually trigger)
+chrome.action.onClicked.addListener(() => {
+  ensureHubTab();
 });
 
 // Track hub tab lifecycle - reopen if closed
@@ -66,7 +70,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
 // Notify hub when tab finishes loading
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-  if (changeInfo.status === 'complete' && tab.url && !tab.url.startsWith('chrome://')) {
+  if (changeInfo.status === 'complete' && tab.url && !tab.url.startsWith('chrome://') && !tab.url.startsWith('edge://')) {
     chrome.runtime.sendMessage({
       type: 'tab_updated',
       tabId: tabId,

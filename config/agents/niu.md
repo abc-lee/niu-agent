@@ -16,6 +16,7 @@ mcpServers:
   - vector-store
   - config-manager
   - photo-server
+  - memory-server
   - browser-server
 ---
 

@@ -2,7 +2,7 @@
 
 **触发关键词**：浏览器、网页、填表、网页操作、表单填写、自动答题、上网查
 
-**L1 摘要**：Browser automation|browser,form filling,web operation|Use browser_navigate + browser_interact to automate browser tasks|browser_navigate,browser_interact,Chrome Extension|skill|memory/skills/browser-automation.md
+**L1 摘要**：Browser automation|browser,form filling,web operation|Use browser_navigate + browser_interact + browser_new_tab to automate browser tasks|browser_navigate,browser_interact,browser_new_tab,Chrome Extension|skill|memory/skills/browser-automation.md
 
 ## 工具
 
@@ -10,16 +10,37 @@
 |------|------|
 | `browser_navigate(url)` | 导航到 URL，返回页面状态（编号的交互元素） |
 | `browser_interact(action, index, ...)` | 操作页面元素，返回新页面状态 |
+| `browser_new_tab(url)` | 在新标签页打开 URL，返回新标签页状态 |
 
 **action 类型**：`click` | `input` | `select` | `scroll` | `get_state`
 
 ## 工作循环
 
 ```
-navigate → 看编号 → 操作 → 看新编号 → 操作 → ... → 汇报
+get_state → 看当前页面 → 操作 → 看新编号 → 操作 → ... → 汇报
 ```
 
 **核心**：操作串行，每次用上一步返回的新索引。
+
+## 接管用户浏览器（最重要）
+
+**扩展共享用户浏览器，不要覆盖用户当前页面！**
+
+1. **先获取当前页面状态**：`browser_interact(action="get_state")` — 返回用户当前页面的 URL、标题和编号元素
+2. **根据当前页面决定操作**：如果用户已经在目标页面，直接操作；如果需要导航，再用 `browser_navigate`
+3. **禁止无脑 navigate**：不要上来就 `browser_navigate(url)`，这会覆盖用户正在看的页面
+
+正确流程：
+```
+browser_interact(action="get_state")  ← 先看用户当前页面
+  → 用户已在百度搜索页
+browser_interact(action="input", index=12, text="查询内容")  ← 直接操作
+```
+
+错误流程：
+```
+❌ browser_navigate("https://www.baidu.com")  ← 覆盖了用户当前页面！
+```
 
 ## 首次使用（只需一次）
 
@@ -110,4 +131,10 @@ browser_navigate("https://www.baidu.com")
 browser_interact(action="input", index=12, text="Claude AI")
 browser_interact(action="click", index=17)   ← 点搜索按钮完成输入
   → 搜索结果页面
+```
+
+新标签页打开链接：
+```
+browser_new_tab("https://news.ycombinator.com")
+  → 新标签页打开，返回页面状态
 ```

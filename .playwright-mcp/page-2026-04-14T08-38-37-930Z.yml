@@ -1,0 +1,14 @@
+- main [ref=e16]:
+  - generic [ref=e18]:
+    - heading "必应上的“实时热点”" [level=1] [ref=e19]
+    - navigation
+  - generic [ref=e20]:
+    - generic [ref=e21]:
+      - generic [ref=e22]: 国内版
+      - generic [ref=e23] [cursor=pointer]: 国际版
+    - generic [ref=e24]:
+      - generic "输入搜索词" [ref=e25]:
+        - searchbox "输入搜索词" [active] [ref=e26]
+      - button "Search"
+      - generic "搜索网页" [ref=e28] [cursor=pointer]:
+        - img [ref=e29]
