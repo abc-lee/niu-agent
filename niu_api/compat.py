@@ -4,7 +4,6 @@ Compatibility API endpoints - matches the original Go API paths
 These endpoints are used by the Electron UI (main.js).
 """
 
-import os
 from datetime import datetime
 from typing import Optional, List
 from pydantic import BaseModel
@@ -120,14 +119,15 @@ async def shutdown():
     except Exception as e:
         logger.warning(f"Failed to close vector search: {e}")
 
-    # Stop embedding-service subprocess
+    # Save tool lifecycle scores before shutdown
     try:
-        from niu_api.__main__ import stop_embedding_service
-
-        stop_embedding_service()
-        logger.info("Embedding-service stopped")
+        from agent.runner import get_runner
+        runner = get_runner()
+        if runner and hasattr(runner, 'tool_lifecycle'):
+            runner.tool_lifecycle._save_scores()
+            logger.info("Tool lifecycle scores saved on shutdown")
     except Exception as e:
-        logger.warning(f"Failed to stop embedding-service: {e}")
+        logger.warning(f"Failed to save tool lifecycle scores: {e}")
 
     logger.info("Python API ready for shutdown")
     return {"status": "shutting down"}
@@ -140,7 +140,6 @@ async def chat_session(request: ChatRequest) -> ChatResponse:
 
     Uses runner.py which correctly imports from agent/generic/
     """
-    from agent.runner import get_runner
     from niu_api.config import get_config
 
     config = get_config()
@@ -288,11 +287,13 @@ async def clear_chat() -> dict:
         if runner.handler:
             runner.handler.reset_working_memory()
 
-        # 重置 LLM session 的 history（内存缓存）
-        if runner.client and hasattr(runner.client, 'backend'):
-            if hasattr(runner.client.backend, 'history'):
-                runner.client.backend.history = []
-                logger.info("Cleared LLM session history")
+        # 重置工具生命周期状态
+        if hasattr(runner, 'tool_lifecycle'):
+            runner.tool_lifecycle.clear()
+
+        # Note: LLM session history is managed by ContextManager,
+        # which reloads from message store each call.
+        # store.clear_messages() above already clears persistent history.
 
     return {"success": True, "deleted_count": count}
 
@@ -367,19 +368,14 @@ async def tidy_context(request: dict):
         # Call context-manager subagent
         from agent.subagent import call_subagent
         from niu_api.chat import get_or_create_runner
-        from niu_api.config import get_config
 
         runner = get_or_create_runner()
         if not runner:
             logger.warning("[Tidy] Runner not initialized")
             return {"status": "error", "message": "Runner not initialized"}
 
-        config = get_config()
-        llm_config = {
-            "apikey": config.llm.api_key if config.llm else "",
-            "apibase": config.llm.api_base if config.llm else "",
-            "model": config.llm.model if config.llm else "",
-        }
+        # 直接使用 runner 的 llm_config（包含 type 等完整字段）
+        llm_config = runner.llm_config
 
         # Run subagent in thread pool (avoid blocking event loop)
         import asyncio
@@ -389,7 +385,7 @@ async def tidy_context(request: dict):
                 agent_name="context-manager",
                 task=prompt,
                 llm_config=llm_config,
-                mcp_client=runner.mcp_client,
+                mcp_client=None,  # Handler uses ToolRegistry, not mcp_client
             )
 
         result = await asyncio.to_thread(run_subagent)
@@ -425,7 +421,6 @@ async def trigger_vector_cleanup():
 @router.get("/api/vector/stats")
 async def get_vector_stats():
     """获取向量库统计信息"""
-    import json
     import os
     from agent.vector_search import get_vector_search
 
