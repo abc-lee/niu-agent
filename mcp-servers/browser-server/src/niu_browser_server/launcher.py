@@ -1,5 +1,8 @@
 """
 Browser Launcher: Find system default browser and launch with our Chrome Extension loaded.
+
+Uses user's default browser profile (shares cookies, logins, history).
+If browser is already running, launch will fail - user must manually load extension.
 """
 
 import subprocess
@@ -11,9 +14,6 @@ from loguru import logger
 
 # Extension path (relative to project root)
 EXTENSION_DIR = Path(__file__).parent.parent.parent.parent.parent / "extensions" / "niu-browser-ext"
-
-# User data directory (separate profile to avoid conflicts with user's regular browser)
-USER_DATA_DIR = Path.home() / ".niu" / "browser_ext_profile"
 
 
 def _find_default_browser() -> Optional[str]:
@@ -52,12 +52,18 @@ def launch_browser(url: Optional[str] = None, browser_exe: Optional[str] = None)
     """
     Launch browser with Niu Browser Extension loaded.
 
+    Uses user's default browser profile (shares cookies, logins).
+    If browser is already running, this will fail - user must manually load extension.
+
     Args:
         url: Optional initial URL. If None, opens about:blank.
         browser_exe: Optional browser executable path. If None, auto-detects default browser.
 
     Returns:
         Browser process handle
+
+    Raises:
+        RuntimeError: If browser launch fails (e.g., already running)
     """
     exe_path = browser_exe or _find_default_browser()
     if not exe_path:
@@ -69,16 +75,16 @@ def launch_browser(url: Optional[str] = None, browser_exe: Optional[str] = None)
     if not Path(extension_path, "manifest.json").is_file():
         raise FileNotFoundError(
             f"Extension not found: {extension_path}\n"
-            "Please refer to the system manual for installing Niu Browser Extension."
+            "Please check the extension directory."
         )
 
-    USER_DATA_DIR.mkdir(parents=True, exist_ok=True)
-
+    # Launch with user's default profile (no --user-data-dir specified)
+    # This shares cookies, logins, history with user's normal browser session.
+    # If browser is already running, this will fail - user must manually load extension.
     args = [
         exe_path,
         f"--load-extension={extension_path}",
         f"--disable-extensions-except={extension_path}",
-        f"--user-data-dir={USER_DATA_DIR}",
         "--no-first-run",
         "--no-default-browser-check",
         "--disable-component-extensions-with-background-pages",

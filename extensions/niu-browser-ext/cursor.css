@@ -2,12 +2,12 @@
  * Niu Browser Extension - AI Cursor & Simulator Mask Styles
  *
  * Provides:
- * 1. Spinning border overlay (CSS conic-gradient animation, replaces WebGL2 ai-motion)
- * 2. AI cursor with SVG mouse icon
+ * 1. Spinning border overlay - thin animated border around page edges (CSS animation)
+ * 2. AI cursor with SVG mouse icon and easing movement
  * 3. Click ripple animation
  */
 
-/* ============== Spinning Border Overlay ============== */
+/* ============== Mask Wrapper ============== */
 
 .niu-mask-wrapper {
   position: fixed;
@@ -23,62 +23,102 @@
   display: block;
 }
 
-/* Spinning border - pure CSS conic-gradient animation */
+/* ============== Spinning Border - Page Edge Animation ============== */
+
+/*
+ * Thin animated border around all four edges of the page.
+ * Uses 4 pseudo-elements positioned at each edge with gradient animation.
+ * This replaces the original ai-motion WebGL2 border with pure CSS.
+ */
+
 .niu-mask-border {
   position: absolute;
   inset: 0;
-  border: 3px solid transparent;
-  border-radius: 0;
-  background:
-    conic-gradient(from var(--niu-border-angle, 0deg), #39b6ff, #bd45fb, #ff6b9d, #39b6ff) border-box;
-  -webkit-mask:
-    linear-gradient(#fff 0 0) padding-box,
-    linear-gradient(#fff 0 0);
-  -webkit-mask-composite: xor;
-  mask-composite: exclude;
-  animation: niu-spin-border 3s linear infinite;
-  opacity: 0.8;
+  pointer-events: none;
 }
 
-@property --niu-border-angle {
-  syntax: '<angle>';
-  initial-value: 0deg;
-  inherits: false;
-}
-
-@keyframes niu-spin-border {
-  to {
-    --niu-border-angle: 360deg;
-  }
-}
-
-/* Fallback for browsers without @property: use a rotating pseudo-element */
-.niu-mask-border-fallback {
-  position: absolute;
-  inset: -2px;
-  background: conic-gradient(from 0deg, #39b6ff, #bd45fb, #ff6b9d, #39b6ff);
-  animation: niu-rotate-border 3s linear infinite;
-  opacity: 0.6;
-}
-
-.niu-mask-border-fallback::after {
+/* Top edge */
+.niu-mask-border::before {
   content: '';
   position: absolute;
-  inset: 3px;
-  background: rgba(0, 0, 0, 0.85);
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: linear-gradient(90deg,
+    #39b6ff, #bd45fb, #ff6b9d, #39b6ff, #bd45fb, #ff6b9d, #39b6ff);
+  background-size: 300% 100%;
+  animation: niu-border-flow 3s linear infinite;
 }
 
-@keyframes niu-rotate-border {
-  to {
-    transform: rotate(360deg);
-  }
+/* Bottom edge */
+.niu-mask-border::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: linear-gradient(90deg,
+    #39b6ff, #bd45fb, #ff6b9d, #39b6ff, #bd45fb, #ff6b9d, #39b6ff);
+  background-size: 300% 100%;
+  animation: niu-border-flow 3s linear infinite;
+  animation-delay: -1.5s;
 }
 
-/* Semi-transparent overlay behind the border */
+/* Left and right edges via child element */
+.niu-mask-border-sides {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+/* Left edge */
+.niu-mask-border-sides::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 3px;
+  background: linear-gradient(180deg,
+    #39b6ff, #bd45fb, #ff6b9d, #39b6ff, #bd45fb, #ff6b9d, #39b6ff);
+  background-size: 100% 300%;
+  animation: niu-border-flow-v 3s linear infinite;
+  animation-delay: -0.75s;
+}
+
+/* Right edge */
+.niu-mask-border-sides::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 0;
+  width: 3px;
+  background: linear-gradient(180deg,
+    #39b6ff, #bd45fb, #ff6b9d, #39b6ff, #bd45fb, #ff6b9d, #39b6ff);
+  background-size: 100% 300%;
+  animation: niu-border-flow-v 3s linear infinite;
+  animation-delay: -2.25s;
+}
+
+@keyframes niu-border-flow {
+  0% { background-position: 0% 0%; }
+  100% { background-position: 300% 0%; }
+}
+
+@keyframes niu-border-flow-v {
+  0% { background-position: 0% 0%; }
+  100% { background-position: 0% 300%; }
+}
+
+/* Semi-transparent overlay (subtle, not blocking) */
 .niu-mask-overlay {
   position: absolute;
   inset: 3px;
-  background: rgba(0, 0, 0, 0.3);
+  background: rgba(0, 0, 0, 0.15);
+  pointer-events: none;
 }
 
 /* ============== AI Cursor ============== */
@@ -98,7 +138,7 @@
   width: 100%;
   height: 100%;
   background: linear-gradient(45deg, rgb(57, 182, 255), rgb(189, 69, 251));
-  mask-image: url(cursor-border.svg);
+  mask-image: url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMDAgMTAwIiBmaWxsPSJub25lIj4NCiAgPGc+PHBhdGggZD0iTSAxNSA0MiBMIDE1IDM2Ljk5IFEgMTUgMzEuOTkgMjMuNyAzMS45OSBMIDI4LjA1IDMxLjk5IFEgMzIuNDEgMzEuOTkgMzIuNDEgMjEuOTkgTCAzMi40MSAxNyBRIDMyLjQxIDEyIDQxLjA5IDE2Ljk1IEwgNzYuMzEgMzcuMDUgUSA4NSA0MiA3Ni4zMSA0Ni45NSBMIDQxLjA5IDY3LjA1IFEgMzIuNDEgNzIgMzIuNDEgNjIuMDEgTCAzMi40MSA1Ny4wMSBRIDMyLjQxIDUyLjAxIDIzLjcgNTIuMDEgTCAxOS4zNSA1Mi4wMSBRIDE1IDUyLjAxIDE1IDQ3LjAxIFoiIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzAwMDAwMCIgc3Ryb2tlLXdpZHRoPSI2IiBzdHJva2UtbWl0ZXJsaW1pdD0iMTAiIHN0eWxlPSJzdHJva2U6IGxpZ2h0LWRhcmsocmdiKDAsIDAsIDApLCByZ2IoMjU1LCAyNTUsIDI1NSkpOyIvPjwvZz4NCjwvc3ZnPg0K');
   mask-size: 100% 100%;
   mask-repeat: no-repeat;
   transform-origin: center;
@@ -112,7 +152,7 @@
   position: absolute;
   width: 100%;
   height: 100%;
-  background: url(cursor-fill.svg);
+  background: url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMDAgMTAwIj4NCiAgPGRlZnM+DQogIDwvZGVmcz4NCiAgPGcgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIiBzdHlsZT0iZmlsdGVyOiBkcm9wLXNoYWRvdyhsaWdodC1kYXJrKHJnYmEoMCwgMCwgMCwgMC40KSwgcmdiYSgyMzcsIDIzNywgMjM3LCAwLjQpKSAzcHggNHB4IDRweCk7Ij48cGF0aCBkPSJNIDE1IDQyIEwgMTUgMzYuOTkgUSAxNSAzMS45OSAyMy43IDMxLjk5IEwgMjguMDUgMzEuOTkgUSAzMi40MSAzMS45OSAzMi40MSAyMS45OSBMIDMyLjQxIDE3IFEgMzIuNDEgMTIgNDEuMDkgMTYuOTUgTCA3Ni4zMSAzNy4wNSBRIDg1IDQyIDc2LjMxIDQ2Ljk1IEwgNDEuMDkgNjcuMDUgUSAzMi40MSA3MiAzMi40MSA2Mi4wMSBMIDMyLjQxIDU3LjAxIFEgMzIuNDEgNTIuMDEgMjMuNyA1Mi4wMSBMIDE5LjM1IDUyLjAxIFEgMTUgNTIuMDEgMTUgNDcuMDEgWiIgZmlsbD0iI2ZmZmZmZiIgc3Ryb2tlPSJub25lIiBzdHlsZT0iZmlsbDogI2ZmZmZmZjsiLz48L2c+DQo8L3N2Zz4NCg==');
   background-size: 100% 100%;
   background-repeat: no-repeat;
   transform-origin: center;
