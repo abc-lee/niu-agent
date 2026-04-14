@@ -1,0 +1,15 @@
+[     220ms] ReferenceError: sj_evt is not defined
+    at https://cn.bing.com/:6:531
+[     234ms] ReferenceError: sj_be is not defined
+    at Object.f [as load] (https://cn.bing.com/rp/bhhdQJeg8xXgunZIeh8xsZViHi0.br.js:1:29)
+    at Object.u [as wireup] (https://cn.bing.com/:8:144)
+    at https://cn.bing.com/rp/bhhdQJeg8xXgunZIeh8xsZViHi0.br.js:1:421
+    at https://cn.bing.com/rp/bhhdQJeg8xXgunZIeh8xsZViHi0.br.js:1:460
+[     234ms] ReferenceError: _w is not defined
+    at https://cn.bing.com/rp/TKi4l388EkPCq20r9kFzAdq3VaI.br.js:2:5038
+    at https://cn.bing.com/rp/TKi4l388EkPCq20r9kFzAdq3VaI.br.js:2:5510
+[     234ms] ReferenceError: _G is not defined
+    at https://cn.bing.com/:10:1
+[    1889ms] [ERROR] Permissions policy violation: unload is not allowed in this document. @ https://assets.msn.cn/bundles/v1/bingHomepage/latest/microsoft.edd09c236eeae714cc11.js:93
+[    1889ms] [ERROR] Permissions policy violation: unload is not allowed in this document. @ https://assets.msn.cn/bundles/v1/bingHomepage/latest/microsoft.edd09c236eeae714cc11.js:93
+[   23060ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_TIMED_OUT @ https://adxrp.admamax.com/adxreport/cookie/sync?userId=382675281CD869240C8462131D0A685C&lang=zh-cn&dgk=chrome&imd=1&pn=widgetfeed&rf=&tp=https://cn.bing.com/&gdpr=1&gdprContent=:0

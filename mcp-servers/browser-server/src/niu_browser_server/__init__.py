@@ -27,6 +27,11 @@ from .launcher import launch_browser
 _browser_proc = None  # Track launched browser process
 _ws_bridge: WSBridge | None = None
 
+# Start WSBridge immediately on module load so Extension can connect
+# (Extension hub.js auto-reconnects every 3s)
+_ws_bridge = WSBridge()
+_ws_bridge.start()
+
 
 def _get_bridge() -> WSBridge:
     """Get or create WSBridge singleton."""
@@ -43,8 +48,9 @@ def _ensure_connection() -> WSBridge:
 
     Flow:
     1. If Extension connected → return immediately
-    2. If not connected → launch user's default browser with extension
-    3. Wait for Extension to connect
+    2. If not connected → wait for Extension to reconnect (hub.js auto-reconnects every 3s)
+    3. If still not connected after wait → try launching browser
+    4. Wait for Extension to connect
 
     Raises:
         RuntimeError: If Extension doesn't connect after reasonable wait
@@ -56,8 +62,16 @@ def _ensure_connection() -> WSBridge:
     if bridge.connected:
         return bridge
 
-    # Extension not connected - try launching browser
-    logger.info("Extension not connected, launching browser...")
+    # Extension not connected - wait for auto-reconnect first (hub.js retries every 3s)
+    logger.info("Extension not connected, waiting for auto-reconnect...")
+    for i in range(10):  # 5 seconds
+        if bridge.connected:
+            logger.info(f"Extension reconnected after {(i+1)*0.5:.1f}s")
+            return bridge
+        time.sleep(0.5)
+
+    # Still not connected - try launching browser
+    logger.info("Extension not reconnecting, launching browser...")
 
     try:
         _browser_proc = launch_browser()
@@ -186,6 +200,46 @@ def browser_interact(
         return {"status": "error", "message": str(e)}
 
 
+def browser_new_tab(
+    url: str,
+) -> dict:
+    """
+    Open a new browser tab and navigate to URL.
+
+    Args:
+        url: URL to open in new tab (required, cannot be empty)
+
+    Returns:
+        Dict with new tab page state
+    """
+    if not url or not url.strip():
+        return {"status": "error", "message": "url is required for browser_new_tab. Cannot open a blank tab (content script cannot inject into about:blank)."}
+
+    try:
+        bridge = _ensure_connection()
+
+        result = bridge.send_command("create_tab", url=url, timeout=60)
+
+        if result.get("success"):
+            data = result.get("data") or {}
+            return {
+                "status": "success",
+                "url": data.get("url", url),
+                "title": data.get("title", ""),
+                "elements": data.get("elements", ""),
+                "pageInfo": data.get("pageInfo", {}),
+            }
+        else:
+            return {
+                "status": "error",
+                "message": f"New tab failed: {result.get('message', 'Unknown error')}",
+            }
+
+    except Exception as e:
+        logger.error(f"browser_new_tab failed: {e}")
+        return {"status": "error", "message": str(e)}
+
+
 # ============== Tool Schemas ==============
 
 TOOL_SCHEMAS = {
@@ -207,7 +261,7 @@ TOOL_SCHEMAS = {
     },
     "browser_interact": {
         "name": "browser_interact",
-        "description": "操作浏览器页面元素（点击、输入、选择、滚动）。通过元素编号操作，每次操作后返回新的页面状态。**核心**：操作串行，每次用最新返回的编号。**返回**：url、title、elements（更新后的编号元素）、pageInfo。",
+        "description": "Interact with page elements by index: click, input text, select option, scroll, or get current state. Each action returns updated page state with re-indexed elements. Actions are serial - always use latest index from previous result.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -224,5 +278,21 @@ TOOL_SCHEMAS = {
             },
             "required": ["action"]
         }
+    },
+    "browser_new_tab": {
+        "name": "browser_new_tab",
+        "description": "Open URL in a new browser tab. Use for browsing multiple pages simultaneously or comparing different websites. URL parameter is required - cannot open blank tab.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "要在新标签页中打开的 URL（必填）"}
+            },
+            "required": ["url"]
+        }
     }
 }
+
+
+def get_tool_schemas() -> list[dict]:
+    """返回所有工具的 schema 列表（用于 MCP Loader 注册）"""
+    return list(TOOL_SCHEMAS.values())
