@@ -172,8 +172,8 @@ function waitForTabLoad(tabId, timeout) {
     // Check if tab is already complete
     chrome.tabs.get(tabId, (tab) => {
       if (tab && tab.status === 'complete' && !tab.url.startsWith('chrome://')) {
-        // Already loaded, but give content_script a moment to initialize
-        setTimeout(resolve, 500);
+        // Already loaded, but give content_script time to initialize
+        setTimeout(resolve, 800);
         return;
       }
 
@@ -181,7 +181,7 @@ function waitForTabLoad(tabId, timeout) {
         if (updatedTabId === tabId && changeInfo.status === 'complete') {
           chrome.tabs.onUpdated.removeListener(listener);
           // Give content_script time to initialize after page load
-          setTimeout(resolve, 500);
+          setTimeout(resolve, 800);
         }
       };
       chrome.tabs.onUpdated.addListener(listener);
