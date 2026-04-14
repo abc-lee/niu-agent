@@ -98,22 +98,21 @@ def trigger_callback(task: dict) -> str:
             agent_reply = data.get("reply", "")
             logger.info(f"[INTERNAL SCHEDULER] Agent replied: {agent_reply[:100] if agent_reply else '(empty)'}")
 
-            # ✅ 把提醒加入 pending-alerts 队列，触发前端小女孩状态机
-            if agent_reply:
-                add_pending_alert(agent_reply)
-                logger.info(f"[INTERNAL SCHEDULER] Added to pending-alerts queue")
+            # Agent 已通过 /chat/sync 处理，回复已存消息数据库
+            # 不再加入 pending-alerts，避免重复显示
+            # 小女孩蹦高由消息轮询检测到新 assistant 消息时触发
 
             return agent_reply if agent_reply else f"定时提醒：{task['content']}"
         else:
             logger.error(f"[INTERNAL SCHEDULER] Chat API error: {response.status_code}")
-            # 即使API出错，也发送基础提醒
+            # API 出错，用 pending-alerts 降级显示基础提醒
             fallback_msg = f"定时提醒：{task['content']}"
             add_pending_alert(fallback_msg)
             return fallback_msg
 
     except Exception as e:
         logger.error(f"[INTERNAL SCHEDULER] Failed to call chat API: {e}")
-        # 即使异常，也发送基础提醒
+        # API 异常，用 pending-alerts 降级显示基础提醒
         fallback_msg = f"定时提醒：{task['content']}"
         add_pending_alert(fallback_msg)
         return fallback_msg
