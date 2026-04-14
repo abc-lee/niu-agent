@@ -126,12 +126,12 @@ async def lifespan(app: FastAPI):
     # Shutdown
     logger.info("Niu API Server shutting down...")
 
-    # 保存工具生命周期分数
+    # 保存工具生命周期分数（不执行 decay，只持久化当前分数）
     try:
         from agent.runner import get_runner
         runner = get_runner()
         if runner and hasattr(runner, 'tool_lifecycle'):
-            runner.tool_lifecycle.decay_tools()
+            runner.tool_lifecycle._save_scores()
             logger.info("Tool lifecycle scores saved on shutdown")
     except Exception as e:
         logger.warning(f"Failed to save tool lifecycle on shutdown: {e}")

@@ -45,7 +45,7 @@ class ToolLifecycleManager:
             encoding="utf-8"
         )
 
-    def hit_tool(self, tool_name: str, score: int = 0):
+    def hit_tool(self, tool_name: str, score: int = 0, skip_coactivation: bool = False):
         """
         工具被命中，记录激活并检索相关Skills
 
@@ -57,18 +57,21 @@ class ToolLifecycleManager:
         Args:
             tool_name: 工具名，格式为 "server-name/tool-name"
             score: 向量检索分数（0-100），0表示LLM实际调用
+            skip_coactivation: 跳过同server工具激活和Skills检索（向量检索命中时用）
         """
         if score > 0:
-            # 向量检索命中：覆盖为检索分数
-            self.active_tools[tool_name] = score
+            # 向量检索命中：只升不降，避免覆盖 LLM 调用给的高分
+            current = self.active_tools.get(tool_name, 0)
+            self.active_tools[tool_name] = max(current, score)
         else:
             # LLM 实际调用：确认需要，给高分（能扛 3 轮衰减）
             current = self.active_tools.get(tool_name, 0)
             self.active_tools[tool_name] = max(current, 80)
         self._save_scores()  # 立即保存，保证持久化语义
 
-        # 检索相关Skills（临时存储，不持久化）
-        self._activate_related_skills(tool_name)
+        # 检索相关Skills（仅 LLM 实际调用时触发，向量检索命中时跳过）
+        if not skip_coactivation:
+            self._activate_related_skills(tool_name)
 
     def _activate_related_skills(self, tool_name: str):
         """
