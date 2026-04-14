@@ -106,10 +106,10 @@ function clickElement(index) {
       }));
     }
 
-    // Return immediately - don't try to get state after click
-    // because click may trigger navigation (page unload)
-    // Hub will handle getting fresh state after navigation completes
-    return { success: true, message: 'Clicked element ' + index };
+    // Wait briefly for DOM to update (e.g. checked attribute), then return fresh state
+    return new Promise(resolve => {
+      setTimeout(() => resolve(getBrowserState()), 300);
+    });
   } catch (e) {
     return { success: false, message: 'Click failed: ' + e.message };
   }
