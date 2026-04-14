@@ -422,6 +422,82 @@ class VectorSearchAdapter:
                     return False
         return True
 
+    def search_multi(
+        self, query: str, categories: dict, level: str = "l1"
+    ) -> dict[str, list[SearchResult]]:
+        """
+        一次向量检索，按 category 分组返回。避免同一 query 多次 embedding 计算。
+
+        Args:
+            query: 搜索查询
+            categories: {category_name: {"limit": int, "min_score": float}, ...}
+            level: 层级过滤（默认 l1）
+
+        Returns:
+            {category_name: [SearchResult, ...], ...}
+
+        Example:
+            results = vs.search_multi(
+                query="上网查新闻",
+                categories={
+                    "skill": {"limit": 3, "min_score": 0.35},
+                    "mcp_tool": {"limit": 10, "min_score": 0.25},
+                    "document": {"limit": 8, "min_score": 0.45},
+                    "interaction_habit": {"limit": 3, "min_score": 0.4},
+                }
+            )
+        """
+        conn = self._get_connection()
+        if conn is None:
+            return {cat: [] for cat in categories}
+
+        # 1. 算一次 embedding
+        query_embedding = self._get_embedding(query)
+        if not query_embedding:
+            return {cat: [] for cat in categories}
+
+        query_vec = np.array(query_embedding, dtype=np.float32)
+        query_norm = np.linalg.norm(query_vec)
+        if query_norm == 0:
+            return {cat: [] for cat in categories}
+
+        # 2. 一次查出所有 l1 记录
+        sql = "SELECT id, content, embedding, metadata FROM documents WHERE embedding IS NOT NULL AND json_extract(metadata, '$.level') = ?"
+        cursor = conn.execute(sql, [level])
+        docs = cursor.fetchall()
+
+        if not docs:
+            return {cat: [] for cat in categories}
+
+        # 3. 计算相似度，按 category 分桶
+        buckets: dict[str, list] = {cat: [] for cat in categories}
+        for doc_id, content, embedding_blob, metadata_json in docs:
+            if not embedding_blob:
+                continue
+            metadata = json.loads(metadata_json) if metadata_json else {}
+            cat = metadata.get("category", "")
+            if cat not in categories:
+                continue
+
+            doc_vec = np.frombuffer(embedding_blob, dtype=np.float32)
+            score = float(np.dot(query_vec, doc_vec) / (query_norm * np.linalg.norm(doc_vec)))
+
+            cfg = categories[cat]
+            if score >= cfg["min_score"]:
+                buckets[cat].append((score, doc_id, content, metadata))
+
+        # 4. 各桶排序 + 截断
+        results: dict[str, list[SearchResult]] = {}
+        for cat, items in buckets.items():
+            items.sort(key=lambda x: -x[0])
+            cfg = categories[cat]
+            results[cat] = [
+                SearchResult(id=doc_id, content=content, score=score, metadata=metadata)
+                for score, doc_id, content, metadata in items[:cfg["limit"]]
+            ]
+
+        return results
+
     def get_l2_content(self, l1_id: str) -> Optional[str]:
         """
         从 L1 记录获取对应的 L2 原文内容

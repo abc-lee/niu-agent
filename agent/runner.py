@@ -46,10 +46,8 @@ BASE_MCP_TOOLS = [
     "vector-store/delete_document",
     "vector-store/list_documents",
 
-    # browser-server (2个)
-    # NOTE: Chrome Extension architecture - navigate returns indexed elements, interact operates by index
+    # browser-server (1个) - 入口工具，使用后触发其他browser工具动态注入
     "browser-server/browser_navigate",
-    "browser-server/browser_interact",
 ]
 
 
@@ -331,8 +329,10 @@ class NiuRunner:
         """
         从 agent_runner_loop 的 messages 列表提取上下文。
 
-        包含用户输入、LLM 回复摘要、工具调用结果，比 _extract_context_from_history
-        更全面，因为它能看到循环内的实时交互。
+        和 _extract_context_from_history 保持一致：
+        - 只取 user/assistant 角色的 content（短截断）
+        - 不取 tool 角色内容（工具返回太长，干扰向量检索）
+        - 从 assistant 的 tool_calls 提取工具名（关键：让向量检索匹配同组工具）
 
         Args:
             messages: agent_runner_loop 的消息列表
@@ -350,11 +350,22 @@ class NiuRunner:
             content = msg.get("content", "")
 
             if role == "user" and content:
-                context_parts.append(content[:300])
-            elif role == "tool" and content:
-                context_parts.append(content[:200])
+                # next_prompt（"工具调用成功。请向用户简洁汇报结果：{...}"）是 user 角色
+                # 包含大量工具返回 JSON，只取前 50 字符
+                if content.startswith("工具调用成功") or content.startswith("Tool call succeeded"):
+                    context_parts.append(content[:50])
+                else:
+                    context_parts.append(content[:200])
             elif role == "assistant" and content:
                 context_parts.append(content[:200])
+
+            # 从 assistant 的 tool_calls 中提取工具名
+            if role == "assistant":
+                for tc in msg.get("tool_calls", []):
+                    fn = tc.get("function", {})
+                    name = fn.get("name", "")
+                    if name:
+                        context_parts.append(name)
 
         return " ".join(context_parts) if context_parts else ""
 
@@ -487,7 +498,7 @@ class NiuRunner:
         # 3. 搜索 MCP 工具描述（基于三轮上下文）
         # 降低阈值到 0.15，因为工具描述较短，语义相似度天然偏低
         mcp_tools = self.vector_search.search(
-            query=context, limit=5, min_score=0.15, filter={"level": "l1", "category": "mcp_tool"}
+            query=context, limit=10, min_score=0.25, filter={"level": "l1", "category": "mcp_tool"}
         )
         print(f"[Debug] Dynamic injection - MCP tools: {len(mcp_tools)} results", file=sys.stderr, flush=True)
 

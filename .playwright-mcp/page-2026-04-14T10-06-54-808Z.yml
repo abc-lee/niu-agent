@@ -1,0 +1,124 @@
+- generic [active] [ref=e1]:
+  - list [ref=e2]:
+    - listitem [ref=e3]:
+      - link "Skip to main content" [ref=e4] [cursor=pointer]:
+        - /url: "#main-content"
+    - listitem [ref=e5]:
+      - link "Skip to search" [ref=e6] [cursor=pointer]:
+        - /url: "#skip-search"
+  - generic [ref=e7]:
+    - generic [ref=e8]:
+      - img "The 16Personalities logo, made up of 16 dots in four different colors -- purple, blue, yellow, and green -- all forming a circle that is arranged in four distinct clusters by color. The dots represent the 16 different personality types. Within the circle are four larger dots of the same colors, representing the broader personality Roles." [ref=e10]
+      - navigation [ref=e11]:
+        - list [ref=e12]:
+          - listitem [ref=e13]:
+            - link "Personality Test" [ref=e14] [cursor=pointer]:
+              - /url: /free-personality-test
+          - listitem [ref=e15]:
+            - link "Personality Types" [ref=e16] [cursor=pointer]:
+              - /url: /personality-types
+              - text: Personality Types
+              - img [ref=e18]
+          - listitem [ref=e20]:
+            - link "Career Suite" [ref=e21] [cursor=pointer]:
+              - /url: /premium/career-suite
+          - listitem [ref=e22]:
+            - link "Teams & Pros" [ref=e23] [cursor=pointer]:
+              - /url: /teams
+              - text: Teams & Pros
+              - img [ref=e25]
+          - listitem [ref=e27]:
+            - link "Resources" [ref=e28] [cursor=pointer]:
+              - /url: /articles?category=list
+              - text: Resources
+              - img [ref=e30]
+      - generic [ref=e32]:
+        - button "Toggle accessibility mode" [ref=e33]:
+          - img [ref=e35]
+        - link "Change language" [ref=e37] [cursor=pointer]:
+          - /url: https://www.16personalities.com/languages
+          - img [ref=e39]
+        - link "Log In" [ref=e41] [cursor=pointer]:
+          - /url: /profile
+          - generic [ref=e42]: Log In
+    - main
+    - contentinfo [ref=e43]:
+      - navigation "Footer" [ref=e44]:
+        - generic [ref=e45]:
+          - heading "Products" [level=3] [ref=e46]
+          - list [ref=e47]:
+            - listitem [ref=e48]:
+              - link "Premium Career Suite" [ref=e49] [cursor=pointer]:
+                - /url: https://www.16personalities.com/premium
+            - listitem [ref=e50]:
+              - link "Team Assessments" [ref=e51] [cursor=pointer]:
+                - /url: https://www.16personalities.com/teams
+            - listitem [ref=e52]:
+              - link "Reports for Professionals" [ref=e53] [cursor=pointer]:
+                - /url: https://www.16personalities.com/professionals
+            - listitem [ref=e54]:
+              - link "Testimonials" [ref=e55] [cursor=pointer]:
+                - /url: https://www.16personalities.com/orders/testimonials
+        - generic [ref=e56]:
+          - heading "Resources" [level=3] [ref=e57]
+          - list [ref=e58]:
+            - listitem [ref=e59]:
+              - link "Personality Test" [ref=e60] [cursor=pointer]:
+                - /url: https://www.16personalities.com/free-personality-test
+            - listitem [ref=e61]:
+              - link "Personality Types" [ref=e62] [cursor=pointer]:
+                - /url: https://www.16personalities.com/personality-types
+            - listitem [ref=e63]:
+              - link "Articles" [ref=e64] [cursor=pointer]:
+                - /url: https://www.16personalities.com/articles
+            - listitem [ref=e65]:
+              - link "Our Framework" [ref=e66] [cursor=pointer]:
+                - /url: https://www.16personalities.com/articles/our-theory
+            - listitem [ref=e67]:
+              - link "Country Profiles" [ref=e68] [cursor=pointer]:
+                - /url: https://www.16personalities.com/country-profiles
+        - generic [ref=e69]:
+          - heading "Help" [level=3] [ref=e70]
+          - list [ref=e71]:
+            - listitem [ref=e72]:
+              - link "Contact Us" [ref=e73] [cursor=pointer]:
+                - /url: https://www.16personalities.com/contact-us
+            - listitem [ref=e74]:
+              - link "FAQ" [ref=e75] [cursor=pointer]:
+                - /url: https://www.16personalities.com/contact-us#faq
+            - listitem [ref=e76]:
+              - link "Report an Issue" [ref=e78] [cursor=pointer]:
+                - /url: https://www.16personalities.com/contact-us
+            - listitem [ref=e79]:
+              - link "Your Orders" [ref=e80] [cursor=pointer]:
+                - /url: https://www.16personalities.com/profile/order-history
+            - listitem [ref=e81]:
+              - link "Change Language" [ref=e82] [cursor=pointer]:
+                - /url: https://www.16personalities.com/languages
+        - generic [ref=e83]:
+          - heading "Our Other Creations" [level=3] [ref=e84]
+          - list [ref=e85]:
+            - listitem [ref=e86]:
+              - link "NPQE®" [ref=e87] [cursor=pointer]:
+                - /url: https://npqe.com
+            - listitem [ref=e88]:
+              - link "MindTrackers®" [ref=e89] [cursor=pointer]:
+                - /url: https://careerchange.mindtrackers.com
+            - listitem [ref=e90]:
+              - link "Leadership by 16Personalities" [ref=e91] [cursor=pointer]:
+                - /url: https://16personalities.substack.com
+            - listitem [ref=e92]:
+              - link "Grow with 16Personalities" [ref=e93] [cursor=pointer]:
+                - /url: https://infjby16personalities.substack.com
+      - generic [ref=e95]:
+        - generic [ref=e96]: ©2011-2026 NERIS Analytics Limited
+        - list [ref=e97]:
+          - listitem [ref=e98]:
+            - link "Terms & Conditions" [ref=e99] [cursor=pointer]:
+              - /url: https://www.16personalities.com/terms
+          - listitem [ref=e100]:
+            - link "Privacy Policy" [ref=e101] [cursor=pointer]:
+              - /url: https://www.16personalities.com/terms/privacy
+          - listitem [ref=e102]:
+            - link "Accessibility" [ref=e103] [cursor=pointer]:
+              - /url: https://www.16personalities.com/terms/accessibility
