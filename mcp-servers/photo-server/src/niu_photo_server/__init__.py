@@ -597,6 +597,101 @@ def sync_to_kg(file_path: str, l1: str, source: str = "document") -> dict:
         return {"status": "error", "reason": str(e)}
 
 
+def sync_photo_to_kg(file_path: str, abstract: str, detected_persons: list) -> dict:
+    """同步照片和人物到知识图谱（KuzuDB）。
+
+    为照片创建 Document 节点，为检测到的人物创建 Entity 节点，
+    建立 MENTIONS 关系，以及同框人物之间的 RELATED_TO 关系。
+    失败不影响主流程（照片入库已成功）。
+    """
+    try:
+        from niu_kg_server import (
+            create_document, create_entity, link_document_entity,
+            link_entities, get_connection,
+        )
+
+        # 1. 创建照片 Document 节点
+        title = Path(file_path).stem
+        create_document(uri=file_path, title=title, content=abstract, source="photo")
+        logger.info(f"[KG] Photo Document created: {file_path}")
+
+        # 2. 清除该照片的旧 MENTIONS 边
+        try:
+            conn = get_connection()
+            conn.execute(
+                "MATCH (d:Document {uri: $uri})-[r:MENTIONS]->() DELETE r",
+                {"uri": file_path},
+            )
+        except Exception as e:
+            logger.warning(f"[KG] Failed to clear old MENTIONS for photo {file_path}: {e}")
+
+        # 3. 为每个检测到的人物创建 Entity + MENTIONS
+        entities_created = []
+        for person in detected_persons:
+            person_id = person.get("id", "")
+            person_name = person.get("name", "")
+            similarity = person.get("similarity", 0.7)
+            if not person_id:
+                continue
+
+            entity_id = f"person:{person_id}"
+            try:
+                create_entity(
+                    id=entity_id,
+                    name=person_name,
+                    entity_type="person",
+                    description=f"Detected in photo: {title}",
+                )
+                link_document_entity(
+                    doc_uri=file_path,
+                    entity_id=entity_id,
+                    confidence=round(similarity, 2),
+                )
+                entities_created.append(entity_id)
+            except Exception as e:
+                logger.warning(f"[KG] Person entity failed for {person_name}: {e}")
+
+        # 4. 同框人物之间建立 RELATED_TO 关系
+        relations_created = 0
+        for i in range(len(detected_persons)):
+            for j in range(i + 1, len(detected_persons)):
+                a_id = detected_persons[i].get("id", "")
+                b_id = detected_persons[j].get("id", "")
+                if not a_id or not b_id:
+                    continue
+                # 排序保证方向一致
+                if a_id > b_id:
+                    a_id, b_id = b_id, a_id
+                try:
+                    link_entities(
+                        entity1_id=f"person:{a_id}",
+                        entity2_id=f"person:{b_id}",
+                        relation="co_appears_with",
+                        confidence=0.3,
+                    )
+                    relations_created += 1
+                except Exception as e:
+                    logger.warning(f"[KG] Co-occurrence link failed: {e}")
+
+        logger.info(
+            f"[KG] Photo sync complete: {len(entities_created)} persons, "
+            f"{relations_created} co-occurrences for {file_path}"
+        )
+        return {
+            "status": "success",
+            "doc_uri": file_path,
+            "entities": entities_created,
+            "relations": relations_created,
+        }
+
+    except ImportError:
+        logger.warning("[KG] niu_kg_server not available, skipping photo KG sync")
+        return {"status": "skipped", "reason": "kg-server not importable"}
+    except Exception as e:
+        logger.warning(f"[KG] Photo sync failed: {e}")
+        return {"status": "error", "reason": str(e)}
+
+
 # ============== 模型路径（人脸识别用） ==============
 
 
@@ -1621,7 +1716,11 @@ def ingest_photo(file_path: str, category: str | None = None) -> dict:
 
         conn.commit()
 
-        # 8. Unload face model to release memory (optional, for single photo)
+        # 8. 同步到知识图谱（失败不影响照片入库）
+        final_path_resolved = str(Path(final_path).resolve())
+        kg_result = sync_photo_to_kg(final_path_resolved, abstract, detected_persons)
+
+        # 9. Unload face model to release memory (optional, for single photo)
         # For batch processing, keep model loaded
         # unload_face_model()
 
@@ -1638,6 +1737,7 @@ def ingest_photo(file_path: str, category: str | None = None) -> dict:
             "detected_persons": detected_persons,
             "abstract": abstract,
             "exif": exif,
+            "kg_sync": kg_result,
         }
 
     except Exception as e:
