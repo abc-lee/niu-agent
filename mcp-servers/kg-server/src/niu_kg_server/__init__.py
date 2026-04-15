@@ -320,6 +320,54 @@ def _init_schema(conn: kuzu.Connection) -> None:
     logger.info("Database schema initialized")
 
 
+def _infer_confidence(confidence: float | None = None) -> float:
+    """Infer confidence level based on call stack or use provided value.
+
+    Confidence levels:
+    - 1.0: User manually created (default for backward compatibility)
+    - 0.7-0.9: LLM extracted from documents
+    - 0.4-0.6: Agent inferred from context
+    - 0.1-0.3: Algorithm discovered (clustering, co-occurrence)
+    """
+    import inspect
+
+    if confidence is not None:
+        return max(0.0, min(1.0, confidence))
+
+    # Inspect call stack to infer source
+    frame = inspect.currentframe()
+    if frame is None:
+        return 1.0
+
+    try:
+        # Go up 2 levels: _infer_confidence -> link_* -> actual caller
+        caller_frame = frame.f_back
+        if caller_frame:
+            caller_frame = caller_frame.f_back
+        if caller_frame is None:
+            return 1.0
+
+        caller_name = caller_frame.f_code.co_name
+
+        # Heuristics based on caller function name
+        if 'user' in caller_name.lower() or 'manual' in caller_name.lower():
+            return 1.0
+        elif 'agent' in caller_name.lower() or 'infer' in caller_name.lower():
+            return 0.5
+        elif 'algorithm' in caller_name.lower() or 'cluster' in caller_name.lower():
+            return 0.3
+        else:
+            return 1.0  # Default: highest confidence for backward compatibility
+    finally:
+        del frame
+
+
+def _get_timestamp() -> str:
+    """Get current UTC timestamp in ISO 8601 format."""
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).isoformat()
+
+
 def create_document(
     uri: str, title: str, content: str = "", source: str = "", file_path: str = ""
 ) -> dict[str, Any]:
@@ -382,58 +430,66 @@ def create_entity(
 ) -> dict[str, Any]:
     """Create an entity node in the graph."""
     conn = get_connection()
+    ts = _get_timestamp()
 
     conn.execute(
-        "MERGE (e:Entity {id: $id}) SET e.name = $name, e.type = $type, e.description = $description",
-        {"id": id, "name": name, "type": entity_type, "description": description},
+        "MERGE (e:Entity {id: $id}) SET e.name = $name, e.type = $type, e.description = $description, e.created_at = $ts, e.updated_at = $ts",
+        {"id": id, "name": name, "type": entity_type, "description": description, "ts": ts},
     )
 
-    return {"status": "created", "id": id, "name": name, "type": entity_type}
+    return {"status": "created", "id": id, "name": name, "type": entity_type, "created_at": ts, "updated_at": ts}
 
 
 def create_concept(name: str, description: str = "") -> dict[str, Any]:
     """Create a concept node in the graph."""
     conn = get_connection()
+    ts = _get_timestamp()
 
     conn.execute(
-        "MERGE (c:Concept {name: $name}) SET c.description = $description",
-        {"name": name, "description": description},
+        "MERGE (c:Concept {name: $name}) SET c.description = $description, c.created_at = $ts, c.updated_at = $ts",
+        {"name": name, "description": description, "ts": ts},
     )
 
-    return {"status": "created", "name": name}
+    return {"status": "created", "name": name, "created_at": ts, "updated_at": ts}
 
 
-def link_document_entity(doc_uri: str, entity_id: str) -> dict[str, Any]:
+def link_document_entity(doc_uri: str, entity_id: str, confidence: float | None = None) -> dict[str, Any]:
     """Link a document to an entity (MENTIONS relation)."""
     conn = get_connection()
+    conf = _infer_confidence(confidence)
+    ts = _get_timestamp()
 
     conn.execute(
-        "MATCH (d:Document {uri: $doc_uri}), (e:Entity {id: $entity_id}) MERGE (d)-[:MENTIONS]->(e)",
-        {"doc_uri": doc_uri, "entity_id": entity_id},
+        "MATCH (d:Document {uri: $doc_uri}), (e:Entity {id: $entity_id}) MERGE (d)-[:MENTIONS {confidence: $conf, created_at: $ts}]->(e)",
+        {"doc_uri": doc_uri, "entity_id": entity_id, "conf": conf, "ts": ts},
     )
 
-    return {"status": "linked", "document": doc_uri, "entity": entity_id}
+    return {"status": "linked", "document": doc_uri, "entity": entity_id, "confidence": conf, "created_at": ts}
 
 
-def link_document_concept(doc_uri: str, concept_name: str) -> dict[str, Any]:
+def link_document_concept(doc_uri: str, concept_name: str, confidence: float | None = None) -> dict[str, Any]:
     """Link a document to a concept (CONTAINS relation)."""
     conn = get_connection()
+    conf = _infer_confidence(confidence)
+    ts = _get_timestamp()
 
     conn.execute(
-        "MATCH (d:Document {uri: $doc_uri}), (c:Concept {name: $concept_name}) MERGE (d)-[:CONTAINS]->(c)",
-        {"doc_uri": doc_uri, "concept_name": concept_name},
+        "MATCH (d:Document {uri: $doc_uri}), (c:Concept {name: $concept_name}) MERGE (d)-[:CONTAINS {confidence: $conf, created_at: $ts}]->(c)",
+        {"doc_uri": doc_uri, "concept_name": concept_name, "conf": conf, "ts": ts},
     )
 
-    return {"status": "linked", "document": doc_uri, "concept": concept_name}
+    return {"status": "linked", "document": doc_uri, "concept": concept_name, "confidence": conf, "created_at": ts}
 
 
-def link_entities(entity1_id: str, entity2_id: str, relation: str) -> dict[str, Any]:
+def link_entities(entity1_id: str, entity2_id: str, relation: str, confidence: float | None = None) -> dict[str, Any]:
     """Create a relation between two entities."""
     conn = get_connection()
+    conf = _infer_confidence(confidence)
+    ts = _get_timestamp()
 
     conn.execute(
-        "MATCH (e1:Entity {id: $e1_id}), (e2:Entity {id: $e2_id}) MERGE (e1)-[:RELATED_TO {relation: $relation}]->(e2)",
-        {"e1_id": entity1_id, "e2_id": entity2_id, "relation": relation},
+        "MATCH (e1:Entity {id: $e1_id}), (e2:Entity {id: $e2_id}) MERGE (e1)-[:RELATED_TO {relation: $relation, confidence: $conf, created_at: $ts}]->(e2)",
+        {"e1_id": entity1_id, "e2_id": entity2_id, "relation": relation, "conf": conf, "ts": ts},
     )
 
     return {
@@ -441,6 +497,8 @@ def link_entities(entity1_id: str, entity2_id: str, relation: str) -> dict[str, 
         "entity1": entity1_id,
         "entity2": entity2_id,
         "relation": relation,
+        "confidence": conf,
+        "created_at": ts,
     }
 
 
