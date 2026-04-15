@@ -633,6 +633,8 @@ def sync_photo_to_kg(file_path: str, abstract: str, detected_persons: list) -> d
             similarity = person.get("similarity", 0.7)
             if not person_id:
                 continue
+            if not person_name:
+                person_name = person_id
 
             entity_id = f"person:{person_id}"
             try:
