@@ -123,6 +123,7 @@ TOOL_SCHEMAS = {
             "properties": {
                 "doc_uri": {"type": "string", "description": "Document URI"},
                 "entity_id": {"type": "string", "description": "Entity ID"},
+                "confidence": {"type": "number", "description": "Confidence score (0.0-1.0), default 1.0"},
             },
             "required": ["doc_uri", "entity_id"],
         },
@@ -135,6 +136,7 @@ TOOL_SCHEMAS = {
             "properties": {
                 "doc_uri": {"type": "string", "description": "Document URI"},
                 "concept_name": {"type": "string", "description": "Concept name"},
+                "confidence": {"type": "number", "description": "Confidence score (0.0-1.0), default 1.0"},
             },
             "required": ["doc_uri", "concept_name"],
         },
@@ -151,6 +153,7 @@ TOOL_SCHEMAS = {
                     "type": "string",
                     "description": "Relation type (e.g., works_for, knows)",
                 },
+                "confidence": {"type": "number", "description": "Confidence score (0.0-1.0), default 1.0"},
             },
             "required": ["entity1_id", "entity2_id", "relation"],
         },
@@ -254,6 +257,48 @@ TOOL_SCHEMAS = {
             "required": ["from_id", "to_id"],
         },
     },
+    "graph_stats": {
+        "name": "graph_stats",
+        "description": "获取知识图谱的统计信息，包括节点数、边数、置信度分布、密度等",
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    "hub_entities": {
+        "name": "hub_entities",
+        "description": "查找图中的枢纽实体（按连接数排序）",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "default": 10, "description": "返回数量上限（默认10）"},
+                "min_confidence": {"type": "number", "default": 0.0, "description": "最小置信度过滤（0.0-1.0）"}
+            },
+        },
+    },
+    "surprising_connections": {
+        "name": "surprising_connections",
+        "description": "发现意外连接：两个实体之间没有直接边但共享很多共同邻居",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "min_shared": {"type": "integer", "default": 2, "description": "最小共同邻居数（默认2）"},
+                "min_confidence": {"type": "number", "default": 0.0, "description": "最小置信度过滤"},
+                "max_entities": {"type": "integer", "default": 200, "description": "最大实体数（默认200，防止O(n²)爆炸）"}
+            },
+        },
+    },
+    "graph_changelog": {
+        "name": "graph_changelog",
+        "description": "获取知识图谱的最近变更日志（按时间倒序）",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "default": 50, "description": "返回数量上限（默认50）"},
+                "since": {"type": "string", "description": "ISO 8601 时间戳，仅返回此时间之后的变更"}
+            },
+        },
+    },
 }
 
 
@@ -275,15 +320,11 @@ def get_connection() -> kuzu.Connection:
 
 
 def _init_schema(conn: kuzu.Connection) -> None:
-    """Initialize database schema with confidence and timestamps."""
-    # Drop existing tables (KuzuDB doesn't support ALTER TABLE)
-    conn.execute("DROP TABLE IF EXISTS RELATED_TO")
-    conn.execute("DROP TABLE IF EXISTS CONTAINS")
-    conn.execute("DROP TABLE IF EXISTS MENTIONS")
-    conn.execute("DROP TABLE IF EXISTS Concept")
-    conn.execute("DROP TABLE IF EXISTS Entity")
-    conn.execute("DROP TABLE IF EXISTS Document")
+    """Initialize database schema with confidence and timestamps.
 
+    Uses IF NOT EXISTS to preserve existing data on restart.
+    Schema migration requires manual DB rebuild (KuzuDB lacks ALTER TABLE).
+    """
     # Create node tables with timestamps
     conn.execute("""
         CREATE NODE TABLE IF NOT EXISTS Document (
@@ -348,45 +389,17 @@ def _init_schema(conn: kuzu.Connection) -> None:
 
 
 def _infer_confidence(confidence: float | None = None) -> float:
-    """Infer confidence level based on call stack or use provided value.
+    """Clamp confidence to [0.0, 1.0], defaulting to 1.0 if not provided.
 
-    Confidence levels:
+    Confidence levels (guideline for callers):
     - 1.0: User manually created (default for backward compatibility)
     - 0.7-0.9: LLM extracted from documents
     - 0.4-0.6: Agent inferred from context
     - 0.1-0.3: Algorithm discovered (clustering, co-occurrence)
     """
-    import inspect
-
     if confidence is not None:
         return max(0.0, min(1.0, confidence))
-
-    # Inspect call stack to infer source
-    frame = inspect.currentframe()
-    if frame is None:
-        return 1.0
-
-    try:
-        # Go up 2 levels: _infer_confidence -> link_* -> actual caller
-        caller_frame = frame.f_back
-        if caller_frame:
-            caller_frame = caller_frame.f_back
-        if caller_frame is None:
-            return 1.0
-
-        caller_name = caller_frame.f_code.co_name
-
-        # Heuristics based on caller function name
-        if 'user' in caller_name.lower() or 'manual' in caller_name.lower():
-            return 1.0
-        elif 'agent' in caller_name.lower() or 'infer' in caller_name.lower():
-            return 0.5
-        elif 'algorithm' in caller_name.lower() or 'cluster' in caller_name.lower():
-            return 0.3
-        else:
-            return 1.0  # Default: highest confidence for backward compatibility
-    finally:
-        del frame
+    return 1.0  # Default: highest confidence for backward compatibility
 
 
 def _get_timestamp() -> str:
@@ -434,9 +447,7 @@ def create_document(
         except Exception as e:
             logger.warning(f"Failed to read file {file_path}: {e}")
 
-    from datetime import datetime
-
-    created_at = datetime.now().isoformat()
+    created_at = _get_timestamp()
 
     conn.execute(
         "MERGE (d:Document {uri: $uri}) SET d.title = $title, d.content = $content, d.source = $source, d.created_at = $created_at",
@@ -532,16 +543,27 @@ def link_entities(entity1_id: str, entity2_id: str, relation: str, confidence: f
 def _validate_cypher_readonly(query: str) -> bool:
     """Validate that Cypher query is read-only.
 
-    Blocks: CREATE, DELETE, SET, REMOVE, MERGE, DROP
+    Strips string literals and comments before checking for write keywords.
+    Blocks: CREATE, DELETE, SET, REMOVE, MERGE, DROP, FOREACH, LOAD, COPY
     Allows: MATCH, RETURN, WITH, WHERE, ORDER BY, LIMIT, COUNT, SUM, etc.
     """
-    blocked_keywords = ['CREATE', 'DELETE', 'SET ', 'REMOVE', 'MERGE', 'DROP']
-    query_upper = query.upper()
+    import re
+    # Strip single-quoted string literals (Cypher uses single quotes)
+    cleaned = re.sub(r"'(?:[^'\\]|\\.)*'", "", query)
+    # Strip double-quoted string literals
+    cleaned = re.sub(r'"(?:[^"\\]|\\.)*"', "", cleaned)
+    # Strip line comments (//)
+    cleaned = re.sub(r"//[^\n]*", "", cleaned)
+    # Strip block comments (/* */)
+    cleaned = re.sub(r"/\*.*?\*/", "", cleaned, flags=re.DOTALL)
 
+    blocked_keywords = [
+        "CREATE", "DELETE", "REMOVE", "MERGE", "DROP", "FOREACH", "LOAD", "COPY", "SET",
+    ]
+    cleaned_upper = cleaned.upper()
     for keyword in blocked_keywords:
-        if keyword in query_upper:
+        if re.search(rf'\b{keyword}\b', cleaned_upper):
             return False
-
     return True
 
 
@@ -588,6 +610,9 @@ def explore_node(entity_id: str, depth: int = 2, min_confidence: float = 0.0, di
     conn = get_connection()
     depth = max(1, min(5, depth))
 
+    if direction not in ("both", "outgoing", "incoming"):
+        return {"error": f"Invalid direction '{direction}', must be one of: both, outgoing, incoming"}
+
     # Find center node (fuzzy match by name or exact ID)
     center_result = conn.execute(
         "MATCH (e:Entity) WHERE e.id = $id OR e.name CONTAINS $id RETURN e.id, e.name, e.type LIMIT 1",
@@ -604,6 +629,8 @@ def explore_node(entity_id: str, depth: int = 2, min_confidence: float = 0.0, di
     }
 
     # BFS traversal with confidence filter
+    # Max 500 nodes to prevent query explosion
+    max_nodes = 500
     nodes = []
     edges = []
     visited = {center["id"]}
@@ -613,15 +640,19 @@ def explore_node(entity_id: str, depth: int = 2, min_confidence: float = 0.0, di
     for d in range(1, depth + 1):
         next_frontier = []
         for node_id in frontier:
+            if len(visited) >= max_nodes:
+                break
             # Get outgoing neighbors
             if direction in ("both", "outgoing"):
                 query = f"""
-                    MATCH (n {{id: $node_id}})-[r]->(neighbor)
+                    MATCH (n:Entity {{id: $node_id}})-[r]->(neighbor:Entity)
                     WHERE r.confidence >= $min_confidence
                     RETURN n.id, n.name, neighbor.id, neighbor.name, neighbor.type, r.relation, r.confidence
                 """
                 result = conn.execute(query, {"node_id": node_id, "min_confidence": min_confidence})
                 for row in result:
+                    if len(visited) >= max_nodes:
+                        break
                     neighbor_id = row[2]
                     if neighbor_id not in visited:
                         visited.add(neighbor_id)
@@ -645,12 +676,14 @@ def explore_node(entity_id: str, depth: int = 2, min_confidence: float = 0.0, di
             # Get incoming neighbors
             if direction in ("both", "incoming"):
                 query = f"""
-                    MATCH (neighbor)-[r]->(n {{id: $node_id}})
+                    MATCH (neighbor:Entity)-[r]->(n:Entity {{id: $node_id}})
                     WHERE r.confidence >= $min_confidence
                     RETURN neighbor.id, neighbor.name, n.id, n.name, neighbor.type, r.relation, r.confidence
                 """
                 result = conn.execute(query, {"node_id": node_id, "min_confidence": min_confidence})
                 for row in result:
+                    if len(visited) >= max_nodes:
+                        break
                     neighbor_id = row[0]
                     if neighbor_id not in visited:
                         visited.add(neighbor_id)
@@ -724,22 +757,31 @@ def find_path(from_id: str, to_id: str, max_depth: int = 5) -> dict[str, Any]:
     source_id = source_rows[0][0]
     target_id = target_rows[0][0]
 
+    # Self-loop: path from node to itself is 0 hops
+    if source_id == target_id:
+        return {"found": True, "hops": 0, "path": [{"id": source_id, "name": source_rows[0][1]}]}
+
     # Use BFS to find shortest path (KuzuDB doesn't have SHORTESTPATH)
+    max_visited = 1000
     visited = {source_id}
     frontier = [(source_id, [source_id])]  # (current_id, path_so_far)
 
     for _ in range(max_depth):
         next_frontier = []
         for current_id, path in frontier:
+            if len(visited) >= max_visited:
+                break
             # Find all neighbors
             result = conn.execute(
                 """
-                MATCH (n {id: $current_id})-[r]->(neighbor)
+                MATCH (n:Entity {id: $current_id})-[r]->(neighbor:Entity)
                 RETURN neighbor.id, neighbor.name, r.relation, r.confidence
                 """,
                 {"current_id": current_id}
             )
             for row in result:
+                if len(visited) >= max_visited:
+                    break
                 neighbor_id = row[0]
                 if neighbor_id not in visited:
                     new_path = path + [neighbor_id]
@@ -759,7 +801,7 @@ def find_path(from_id: str, to_id: str, max_depth: int = 5) -> dict[str, Any]:
                                     "name": node_rows[0][0] if node_rows else node_id
                                 })
                             else:
-                                # Get edge info
+                                # Get edge info (try both directions)
                                 edge_result = conn.execute(
                                     """
                                     MATCH (prev {id: $prev_id})-[r]->(next {id: $next_id})
@@ -768,12 +810,32 @@ def find_path(from_id: str, to_id: str, max_depth: int = 5) -> dict[str, Any]:
                                     {"prev_id": path[i-1], "next_id": node_id}
                                 )
                                 edge_rows = list(edge_result)
+                                if not edge_rows:
+                                    edge_result = conn.execute(
+                                        """
+                                        MATCH (next {id: $next_id})-[r]->(prev {id: $prev_id})
+                                        RETURN r.relation, r.confidence, prev.name
+                                        """,
+                                        {"next_id": node_id, "prev_id": path[i-1]}
+                                    )
+                                    edge_rows = list(edge_result)
                                 if edge_rows:
                                     path_result.append({
                                         "id": node_id,
                                         "name": edge_rows[0][2],
                                         "relation": edge_rows[0][0],
                                         "confidence": edge_rows[0][1]
+                                    })
+                                else:
+                                    # Edge query returned empty — still include node with name fallback
+                                    node_result = conn.execute(
+                                        "MATCH (e {id: $id}) RETURN e.name LIMIT 1",
+                                        {"id": node_id}
+                                    )
+                                    node_rows = list(node_result)
+                                    path_result.append({
+                                        "id": node_id,
+                                        "name": node_rows[0][0] if node_rows else node_id
                                     })
                         return {
                             "found": True,
@@ -787,12 +849,14 @@ def find_path(from_id: str, to_id: str, max_depth: int = 5) -> dict[str, Any]:
             # Also check incoming edges
             result = conn.execute(
                 """
-                MATCH (neighbor)-[r]->(n {id: $current_id})
+                MATCH (neighbor:Entity)-[r]->(n:Entity {id: $current_id})
                 RETURN neighbor.id, neighbor.name, r.relation, r.confidence
                 """,
                 {"current_id": current_id}
             )
             for row in result:
+                if len(visited) >= max_visited:
+                    break
                 neighbor_id = row[0]
                 if neighbor_id not in visited:
                     new_path = path + [neighbor_id]
@@ -811,20 +875,42 @@ def find_path(from_id: str, to_id: str, max_depth: int = 5) -> dict[str, Any]:
                                     "name": node_rows[0][0] if node_rows else node_id
                                 })
                             else:
+                                # Try edge in either direction
                                 edge_result = conn.execute(
                                     """
                                     MATCH (prev {id: $prev_id})-[r]->(next {id: $next_id})
                                     RETURN r.relation, r.confidence, next.name
                                     """,
-                                    {"prev_id": path[i-1], "next_id": node_id}
+                                    {"prev_id": new_path[i-1], "next_id": node_id}
                                 )
                                 edge_rows = list(edge_result)
+                                if not edge_rows:
+                                    # Try reverse direction (incoming edge)
+                                    edge_result = conn.execute(
+                                        """
+                                        MATCH (next {id: $next_id})-[r]->(prev {id: $prev_id})
+                                        RETURN r.relation, r.confidence, prev.name
+                                        """,
+                                        {"next_id": node_id, "prev_id": new_path[i-1]}
+                                    )
+                                    edge_rows = list(edge_result)
                                 if edge_rows:
                                     path_result.append({
                                         "id": node_id,
                                         "name": edge_rows[0][2],
                                         "relation": edge_rows[0][0],
                                         "confidence": edge_rows[0][1]
+                                    })
+                                else:
+                                    # Edge query returned empty — still include node with name fallback
+                                    node_result = conn.execute(
+                                        "MATCH (e {id: $id}) RETURN e.name LIMIT 1",
+                                        {"id": node_id}
+                                    )
+                                    node_rows = list(node_result)
+                                    path_result.append({
+                                        "id": node_id,
+                                        "name": node_rows[0][0] if node_rows else node_id
                                     })
                         return {
                             "found": True,
@@ -838,6 +924,340 @@ def find_path(from_id: str, to_id: str, max_depth: int = 5) -> dict[str, Any]:
         frontier = next_frontier
 
     return {"found": False, "hops": 0, "path": []}
+
+
+def graph_stats() -> dict[str, Any]:
+    """Get knowledge graph statistics.
+
+    Returns:
+        {
+            "nodes": {
+                "total": int,
+                "by_type": {"Entity": N, "Document": N, "Concept": N}
+            },
+            "edges": {
+                "total": int,
+                "by_type": {"RELATED_TO": N, "MENTIONS": N, "CONTAINS": N},
+                "by_confidence": {"high (0.7-1.0)": N, "medium (0.4-0.6)": N, "low (0.0-0.3)": N}
+            },
+            "density": float,
+            "components": int
+        }
+    """
+    conn = get_connection()
+
+    # Count nodes by type (using entity type field, not table name)
+    nodes = {"total": 0, "by_type": {}}
+
+    # Count by table name
+    for label in ("Entity", "Document", "Concept"):
+        result = conn.execute(f"MATCH (n:{label}) RETURN count(n)")
+        rows = list(result)
+        count = rows[0][0] if rows else 0
+        nodes["total"] += count
+
+    # Count by Entity.type field
+    entity_result = conn.execute("MATCH (e:Entity) RETURN e.type, count(e)")
+    for row in entity_result:
+        entity_type = row[0] or "unknown"
+        nodes["by_type"][entity_type] = row[1]
+
+    # Count edges by type and confidence
+    edges = {
+        "total": 0,
+        "by_type": {"RELATED_TO": 0, "MENTIONS": 0, "CONTAINS": 0},
+        "by_confidence": {"high (0.7-1.0)": 0, "medium (0.4-0.6)": 0, "low (0.0-0.3)": 0}
+    }
+
+    for rel_type in ("RELATED_TO", "MENTIONS", "CONTAINS"):
+        result = conn.execute(f"MATCH ()-[r:{rel_type}]->() RETURN count(r)")
+        rows = list(result)
+        count = rows[0][0] if rows else 0
+        edges["total"] += count
+        edges["by_type"][rel_type] = count
+
+    # Confidence distribution (separate queries to avoid consumption)
+    # High bucket: >= 0.699 (slightly below 0.7 to absorb float precision from 0.7 -> 0.699999988)
+    for rel_type in ("RELATED_TO", "MENTIONS", "CONTAINS"):
+        # High: >= 0.699 (covers both 0.7 and 0.9 stored as floats)
+        high_result = conn.execute(
+            f"MATCH ()-[r:{rel_type}]->() WHERE r.confidence >= 0.699 RETURN count(r)"
+        )
+        high_rows = list(high_result)
+        edges["by_confidence"]["high (0.7-1.0)"] += high_rows[0][0] if high_rows else 0
+
+        # Medium: [0.4, 0.699)
+        conf_result = conn.execute(
+            f"MATCH ()-[r:{rel_type}]->() WHERE r.confidence >= 0.4 AND r.confidence < 0.699 RETURN count(r)"
+        )
+        conf_rows = list(conf_result)
+        edges["by_confidence"]["medium (0.4-0.6)"] += conf_rows[0][0] if conf_rows else 0
+
+        # Low: < 0.4
+        low_result = conn.execute(
+            f"MATCH ()-[r:{rel_type}]->() WHERE r.confidence < 0.4 RETURN count(r)"
+        )
+        low_rows = list(low_result)
+        edges["by_confidence"]["low (0.0-0.3)"] += low_rows[0][0] if low_rows else 0
+
+    # Graph density: actual_edges / (possible_edges)
+    # For directed graph: possible = n * (n - 1)
+    n = nodes["total"]
+    density = edges["total"] / (n * (n - 1)) if n > 1 else 0.0
+
+    # Connected components (simplified: Entity nodes via RELATED_TO edges)
+    # Limited to 500 entities to prevent quadratic query explosion
+    components = 0
+    entity_result = conn.execute("MATCH (n:Entity) RETURN n.id LIMIT 500")
+    entity_ids = [row[0] for row in entity_result]
+
+    visited: set[str] = set()
+    max_bfs_nodes = 1000
+    for node_id in entity_ids:
+        if node_id not in visited:
+            # BFS via RELATED_TO edges
+            frontier = [node_id]
+            while frontier and len(visited) < max_bfs_nodes:
+                current = frontier.pop()
+                if current in visited:
+                    continue
+                visited.add(current)
+                for neighbor_result in (
+                    conn.execute(
+                        "MATCH (n {id: $id})-[r:RELATED_TO]->(neighbor) RETURN neighbor.id",
+                        {"id": current}
+                    ),
+                    conn.execute(
+                        "MATCH (neighbor)-[r:RELATED_TO]->(n {id: $id}) RETURN neighbor.id",
+                        {"id": current}
+                    ),
+                ):
+                    for nrow in neighbor_result:
+                        if nrow[0] not in visited:
+                            frontier.append(nrow[0])
+            components += 1
+
+    return {
+        "nodes": nodes,
+        "edges": edges,
+        "density": round(density, 6),
+        "components": components
+    }
+
+
+def hub_entities(limit: int = 10, min_confidence: float = 0.0) -> dict[str, Any]:
+    """Find hub entities by connection count (degree centrality).
+
+    Args:
+        limit: Maximum number of results (default: 10)
+        min_confidence: Minimum confidence filter (0.0-1.0)
+
+    Returns:
+        {
+            "entities": [
+                {"id": "...", "name": "...", "type": "...", "connections": N, "outgoing": N, "incoming": N}
+            ]
+        }
+    """
+    conn = get_connection()
+    limit = max(1, min(100, limit))
+
+    # Count outgoing and incoming connections per entity
+    entities: dict[str, dict] = {}
+
+    # Outgoing
+    result = conn.execute(
+        """
+        MATCH (n:Entity)-[r:RELATED_TO]->(m:Entity)
+        WHERE r.confidence >= $min_conf
+        RETURN n.id, n.name, n.type, count(r)
+        """,
+        {"min_conf": min_confidence}
+    )
+    for row in result:
+        eid, name, etype, cnt = row[0], row[1], row[2], row[3]
+        if eid not in entities:
+            entities[eid] = {"id": eid, "name": name, "type": etype, "outgoing": 0, "incoming": 0, "connections": 0}
+        entities[eid]["outgoing"] = cnt
+        entities[eid]["connections"] += cnt
+
+    # Incoming
+    result = conn.execute(
+        """
+        MATCH (n:Entity)-[r:RELATED_TO]->(m:Entity)
+        WHERE r.confidence >= $min_conf
+        RETURN m.id, m.name, m.type, count(r)
+        """,
+        {"min_conf": min_confidence}
+    )
+    for row in result:
+        eid, name, etype, cnt = row[0], row[1], row[2], row[3]
+        if eid not in entities:
+            entities[eid] = {"id": eid, "name": name, "type": etype, "outgoing": 0, "incoming": 0, "connections": 0}
+        entities[eid]["incoming"] = cnt
+        entities[eid]["connections"] += cnt
+
+    # Sort by connections descending
+    sorted_entities = sorted(entities.values(), key=lambda e: e["connections"], reverse=True)
+    return {"entities": sorted_entities[:limit]}
+
+
+def surprising_connections(min_shared: int = 2, min_confidence: float = 0.0, max_entities: int = 200) -> dict[str, Any]:
+    """Find unexpected connections: two entities share many neighbors but aren't directly linked.
+
+    Algorithm: for each pair of entities (A, B) not directly connected,
+    compute shared neighbors and return pairs with |shared| >= min_shared.
+
+    Args:
+        min_shared: Minimum shared neighbor count (default: 2)
+        min_confidence: Minimum confidence filter for edge filtering
+        max_entities: Maximum entities to consider (default: 200, prevents O(n²) explosion)
+
+    Returns:
+        {
+            "connections": [
+                {
+                    "entity1": {"id": "...", "name": "...", "type": "..."},
+                    "entity2": {"id": "...", "name": "...", "type": "..."},
+                    "shared_neighbors": N,
+                    "neighbors": [{"id": "...", "name": "...", "relation_to_1": "...", "relation_to_2": "..."}]
+                }
+            ]
+        }
+    """
+    conn = get_connection()
+    min_shared = max(1, min_shared)
+
+    # Get all entities (limited to prevent O(n²) explosion)
+    max_entities = max(10, min(500, max_entities))
+    entities_result = conn.execute(f"MATCH (e:Entity) RETURN e.id, e.name, e.type LIMIT {max_entities}")
+    entities = {row[0]: {"id": row[0], "name": row[1], "type": row[2]} for row in entities_result}
+
+    # Get all neighbors per entity (both directions) with edge relations
+    neighbors: dict[str, list[tuple]] = {}
+    for eid in entities:
+        # Outgoing neighbors
+        result = conn.execute(
+            """
+            MATCH (n {id: $eid})-[r:RELATED_TO]->(m:Entity)
+            WHERE r.confidence >= $min_conf
+            RETURN m.id, m.name, r.relation
+            """,
+            {"eid": eid, "min_conf": min_confidence}
+        )
+        neighbor_set: set[tuple] = {(row[0], row[1], row[2]) for row in result}
+        # Incoming neighbors
+        result = conn.execute(
+            """
+            MATCH (m:Entity)-[r:RELATED_TO]->(n {id: $eid})
+            WHERE r.confidence >= $min_conf
+            RETURN m.id, m.name, r.relation
+            """,
+            {"eid": eid, "min_conf": min_confidence}
+        )
+        neighbor_set |= {(row[0], row[1], row[2]) for row in result}
+        neighbors[eid] = list(neighbor_set)
+
+    # Find surprising connections
+    results = []
+    checked: set[tuple] = set()
+
+    for e1_id, e1_neighbors in neighbors.items():
+        e1_neighbor_ids = {n[0] for n in e1_neighbors}
+        for e2_id, e2_neighbors in neighbors.items():
+            if e1_id >= e2_id:
+                continue  # Only check each pair once
+            if e2_id in e1_neighbor_ids:
+                continue  # Already directly connected
+
+            e2_neighbor_ids = {n[0] for n in e2_neighbors}
+            shared = e1_neighbor_ids & e2_neighbor_ids
+            if len(shared) < min_shared:
+                continue
+
+            pair_key = (e1_id, e2_id)
+            if pair_key in checked:
+                continue
+            checked.add(pair_key)
+
+            # Build neighbor details
+            neighbor_details = []
+            for shared_id in shared:
+                rel_to_1 = next((n[2] for n in e1_neighbors if n[0] == shared_id), "")
+                rel_to_2 = next((n[2] for n in e2_neighbors if n[0] == shared_id), "")
+                # Use name from neighbor tuples (n[1]) instead of entities dict fallback
+                shared_name = next((n[1] for n in e1_neighbors if n[0] == shared_id), shared_id)
+                neighbor_details.append({
+                    "id": shared_id,
+                    "name": shared_name,
+                    "relation_to_1": rel_to_1,
+                    "relation_to_2": rel_to_2
+                })
+
+            results.append({
+                "entity1": entities[e1_id],
+                "entity2": entities[e2_id],
+                "shared_neighbors": len(shared),
+                "neighbors": neighbor_details
+            })
+
+    # Sort by shared count descending
+    results.sort(key=lambda x: x["shared_neighbors"], reverse=True)
+    return {"connections": results}
+
+
+def graph_changelog(limit: int = 50, since: str | None = None) -> dict[str, Any]:
+    """Get recent graph changes sorted by timestamp.
+
+    Args:
+        limit: Maximum number of results (default: 50)
+        since: ISO 8601 timestamp, only return changes after this time
+
+    Returns:
+        {
+            "changes": [
+                {
+                    "type": "entity_created" | "edge_created",
+                    "timestamp": "...",
+                    "data": {...}
+                }
+            ]
+        }
+    """
+    conn = get_connection()
+    limit = max(1, min(500, limit))
+
+    changes = []
+
+    # Recent entities - fetch all, sort in Python
+    entity_query = "MATCH (e:Entity) RETURN e.id, e.name, e.type, e.created_at"
+    if since:
+        entity_query = f"MATCH (e:Entity) WHERE e.created_at >= $since RETURN e.id, e.name, e.type, e.created_at"
+    params: dict = {"since": since} if since else {}
+    entity_result = conn.execute(entity_query, params)
+    entity_rows = list(entity_result)
+    for row in entity_rows:
+        changes.append({
+            "type": "entity_created",
+            "timestamp": row[3],
+            "data": {"id": row[0], "name": row[1], "type": row[2]}
+        })
+
+    # Recent edges (RELATED_TO)
+    edge_query = "MATCH ()-[r:RELATED_TO]->() RETURN r.created_at, r.relation, r.confidence"
+    if since:
+        edge_query = f"MATCH ()-[r:RELATED_TO]->() WHERE r.created_at >= $since RETURN r.created_at, r.relation, r.confidence"
+    edge_result = conn.execute(edge_query, params)
+    for row in list(edge_result):
+        changes.append({
+            "type": "edge_created",
+            "timestamp": row[0],
+            "data": {"relation": row[1], "confidence": row[2]}
+        })
+
+    # Sort all changes by timestamp descending
+    changes.sort(key=lambda c: c["timestamp"] or "", reverse=True)
+    return {"changes": changes[:limit]}
 
 
 def get_document(uri: str) -> dict[str, Any] | None:
@@ -863,6 +1283,7 @@ def get_document(uri: str) -> dict[str, Any] | None:
 def list_documents(limit: int = 10) -> list[dict[str, Any]]:
     """List all documents."""
     conn = get_connection()
+    limit = max(1, min(100, int(limit)))
     result = conn.execute(
         f"MATCH (d:Document) RETURN d.uri, d.title, d.source, d.created_at ORDER BY d.created_at DESC LIMIT {limit}"
     )
@@ -879,6 +1300,7 @@ def list_documents(limit: int = 10) -> list[dict[str, Any]]:
 def search_documents(keyword: str, limit: int = 10) -> list[dict[str, Any]]:
     """Search documents by keyword in title or content."""
     conn = get_connection()
+    limit = max(1, min(100, int(limit)))
     result = conn.execute(
         f"MATCH (d:Document) WHERE d.title CONTAINS $keyword OR d.content CONTAINS $keyword RETURN d.uri, d.title, d.source LIMIT {limit}",
         {"keyword": keyword},
@@ -1000,6 +1422,7 @@ async def list_tools() -> list[Tool]:
                 "properties": {
                     "doc_uri": {"type": "string", "description": "Document URI"},
                     "entity_id": {"type": "string", "description": "Entity ID"},
+                    "confidence": {"type": "number", "description": "Confidence score (0.0-1.0), default 1.0"},
                 },
                 "required": ["doc_uri", "entity_id"],
             },
@@ -1012,6 +1435,7 @@ async def list_tools() -> list[Tool]:
                 "properties": {
                     "doc_uri": {"type": "string", "description": "Document URI"},
                     "concept_name": {"type": "string", "description": "Concept name"},
+                    "confidence": {"type": "number", "description": "Confidence score (0.0-1.0), default 1.0"},
                 },
                 "required": ["doc_uri", "concept_name"],
             },
@@ -1028,6 +1452,7 @@ async def list_tools() -> list[Tool]:
                         "type": "string",
                         "description": "Relation type (e.g., works_for, knows)",
                     },
+                    "confidence": {"type": "number", "description": "Confidence score (0.0-1.0), default 1.0"},
                 },
                 "required": ["entity1_id", "entity2_id", "relation"],
             },
@@ -1104,6 +1529,75 @@ async def list_tools() -> list[Tool]:
                 "required": ["cypher"],
             },
         ),
+        Tool(
+            name="explore_node",
+            description="Explore N-layer neighbors from an entity via BFS.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "entity_id": {"type": "string", "description": "Entity ID or name (supports fuzzy match)"},
+                    "depth": {"type": "integer", "description": "Traversal depth 1-5 (default: 2)"},
+                    "min_confidence": {"type": "number", "description": "Minimum confidence filter (default: 0.0)"},
+                    "direction": {"type": "string", "description": "Direction: both, outgoing, incoming (default: both)"},
+                },
+                "required": ["entity_id"],
+            },
+        ),
+        Tool(
+            name="find_path",
+            description="Find shortest path between two entities.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "from_id": {"type": "string", "description": "Source entity ID or name"},
+                    "to_id": {"type": "string", "description": "Target entity ID or name"},
+                    "max_depth": {"type": "integer", "description": "Maximum hops 1-10 (default: 5)"},
+                },
+                "required": ["from_id", "to_id"],
+            },
+        ),
+        Tool(
+            name="graph_stats",
+            description="Get knowledge graph statistics including node/edge counts, confidence distribution, density.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
+        Tool(
+            name="hub_entities",
+            description="Find hub entities by connection count (degree centrality).",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "limit": {"type": "integer", "description": "Maximum results (default: 10)"},
+                    "min_confidence": {"type": "number", "description": "Minimum confidence filter (default: 0.0)"},
+                },
+            },
+        ),
+        Tool(
+            name="surprising_connections",
+            description="Find unexpected connections: two entities share many neighbors but aren't directly linked.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "min_shared": {"type": "integer", "description": "Minimum shared neighbor count (default: 2)"},
+                    "min_confidence": {"type": "number", "description": "Minimum confidence filter (default: 0.0)"},
+                    "max_entities": {"type": "integer", "description": "Maximum entities to consider (default: 200)"},
+                },
+            },
+        ),
+        Tool(
+            name="graph_changelog",
+            description="Get recent graph changes sorted by timestamp.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "limit": {"type": "integer", "description": "Maximum results (default: 50)"},
+                    "since": {"type": "string", "description": "ISO 8601 timestamp to filter changes after this time"},
+                },
+            },
+        ),
     ]
 
 
@@ -1134,17 +1628,20 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             )
         elif name == "link_document_entity":
             result = link_document_entity(
-                doc_uri=arguments["doc_uri"], entity_id=arguments["entity_id"]
+                doc_uri=arguments["doc_uri"], entity_id=arguments["entity_id"],
+                confidence=arguments.get("confidence"),
             )
         elif name == "link_document_concept":
             result = link_document_concept(
-                doc_uri=arguments["doc_uri"], concept_name=arguments["concept_name"]
+                doc_uri=arguments["doc_uri"], concept_name=arguments["concept_name"],
+                confidence=arguments.get("confidence"),
             )
         elif name == "link_entities":
             result = link_entities(
                 entity1_id=arguments["entity1_id"],
                 entity2_id=arguments["entity2_id"],
                 relation=arguments["relation"],
+                confidence=arguments.get("confidence"),
             )
         elif name == "get_document":
             result = get_document(uri=arguments["uri"])
@@ -1160,6 +1657,37 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             result = get_related_concepts(doc_uri=arguments["doc_uri"])
         elif name == "query_graph":
             result = query_graph(cypher=arguments["cypher"])
+        elif name == "explore_node":
+            result = explore_node(
+                entity_id=arguments["entity_id"],
+                depth=arguments.get("depth", 2),
+                min_confidence=arguments.get("min_confidence", 0.0),
+                direction=arguments.get("direction", "both"),
+            )
+        elif name == "find_path":
+            result = find_path(
+                from_id=arguments["from_id"],
+                to_id=arguments["to_id"],
+                max_depth=arguments.get("max_depth", 5),
+            )
+        elif name == "graph_stats":
+            result = graph_stats()
+        elif name == "hub_entities":
+            result = hub_entities(
+                limit=arguments.get("limit", 10),
+                min_confidence=arguments.get("min_confidence", 0.0)
+            )
+        elif name == "surprising_connections":
+            result = surprising_connections(
+                min_shared=arguments.get("min_shared", 2),
+                min_confidence=arguments.get("min_confidence", 0.0),
+                max_entities=arguments.get("max_entities", 200),
+            )
+        elif name == "graph_changelog":
+            result = graph_changelog(
+                limit=arguments.get("limit", 50),
+                since=arguments.get("since")
+            )
         else:
             return [TextContent(type="text", text=f"Unknown tool: {name}")]
 
