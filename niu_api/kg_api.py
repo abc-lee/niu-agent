@@ -4,24 +4,24 @@ Knowledge Graph API endpoints for the graph visualization UI.
 Routes call niu_kg_server functions directly (same-process import, like ToolRegistry).
 """
 
-from typing import Optional
+from typing import Literal, Optional
 from fastapi import APIRouter, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/api/kg", tags=["knowledge-graph"])
 
 
 class ExploreRequest(BaseModel):
     entity_id: str
-    depth: int = 2
-    min_confidence: float = 0.0
-    direction: str = "both"
+    depth: int = Field(default=2, ge=1, le=5)
+    min_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    direction: Literal["both", "outgoing", "incoming"] = "both"
 
 
 class FindPathRequest(BaseModel):
     from_id: str
     to_id: str
-    max_depth: int = 5
+    max_depth: int = Field(default=5, ge=1, le=10)
 
 
 def _get_kg():
