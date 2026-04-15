@@ -153,7 +153,11 @@ KG_SERVER_TOOLS = [
     "kg-server/query_graph",
 ]
 
-> **Note (2026-04-15):** `create_document`, `create_entity`, `link_document_entity` are now called programmatically by `sync_to_kg()` during document ingestion (photo-server → niu_kg_server same-process call). They remain classified as 底层操作 — not exposed to Agent LLM tool calls, but used by internal code paths.
+> **Note (2026-04-15):** `create_document`, `create_entity`, `link_document_entity` are called via two paths:
+> 1. **Programmatically** by `sync_to_kg()` / `sync_photo_to_kg()` during ingestion (same-process call)
+> 2. **By dream-evolver sub-agent** during sleep (LLM-driven, via mcpServers config)
+>
+> They remain classified as 底层操作 for the main Agent — not exposed to main Agent LLM tool calls. The dream-evolver is the only sub-agent authorized to use kg-server write tools.
 ```
 
 **file-parser (2个)**：
