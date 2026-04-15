@@ -310,53 +310,53 @@
       const apiBase = document.getElementById('apiBase').value;
       const model = document.getElementById('model').value;
       const type = document.getElementById('apiType').value;
-      
+
       if (!apiKey) {
         setStatus('请输入 API Key', 'error');
         return;
       }
-      
+
       if (!apiBase) {
         setStatus('请选择预设或填写 API 地址', 'error');
         return;
       }
-      
+
       if (!model) {
         setStatus('请输入模型名称', 'error');
         return;
       }
-      
-      setStatus('保存配置中...', 'loading');
+
+      setStatus('测试模型连接中...', 'loading');
       document.getElementById('testBtn').disabled = true;
-      
-      // Save config first
-      const config = {
-        llm: { presetId, apiKey, apiBase, model, type },
-        storage: {},
-        firstRun: false
-      };
-      
-      const saveResult = await window.electronAPI.saveConfig(config);
-      
-      if (!saveResult.success) {
-        setStatus('❌ 保存失败: ' + saveResult.error, 'error');
-        document.getElementById('testBtn').disabled = false;
-        return;
-      }
-      
-      // Then test connection
-      const result = await window.electronAPI.testConnection({ apiBase, apiKey, type });
-      
+
+      // Test connection FIRST — only save if model responds
+      const result = await window.electronAPI.testConnection({ apiBase, apiKey, type, model });
+
       if (result.success) {
-        setStatus('✅ ' + (result.message || '配置已保存！'), 'success');
-        
+        // Model responded, save config
+        const config = {
+          llm: { presetId, apiKey, apiBase, model, type },
+          storage: {},
+          firstRun: false
+        };
+
+        const saveResult = await window.electronAPI.saveConfig(config);
+
+        if (!saveResult.success) {
+          setStatus('❌ 保存失败: ' + saveResult.error, 'error');
+          document.getElementById('testBtn').disabled = false;
+          return;
+        }
+
+        setStatus('✅ ' + (result.message || '模型测试通过，配置已保存！'), 'success');
+
         setTimeout(() => {
           window.electronAPI.closeWindow();
         }, 1500);
       } else {
-        setStatus('⚠️ 连接测试失败，但配置已保存', 'error');
+        setStatus('❌ ' + (result.message || '模型测试失败，请检查配置'), 'error');
       }
-      
+
       document.getElementById('testBtn').disabled = false;
     }
     
