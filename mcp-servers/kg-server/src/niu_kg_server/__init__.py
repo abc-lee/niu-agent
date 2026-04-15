@@ -241,6 +241,19 @@ TOOL_SCHEMAS = {
             "required": ["entity_id"],
         },
     },
+    "find_path": {
+        "name": "find_path",
+        "description": "查找两个实体之间的最短路径",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "from_id": {"type": "string", "description": "起点实体ID或名称"},
+                "to_id": {"type": "string", "description": "终点实体ID或名称"},
+                "max_depth": {"type": "integer", "default": 5, "description": "最大跳数（1-10）"}
+            },
+            "required": ["from_id", "to_id"],
+        },
+    },
 }
 
 
@@ -644,6 +657,161 @@ def explore_node(entity_id: str, depth: int = 2, min_confidence: float = 0.0, di
             "max_depth": depth
         }
     }
+
+
+def find_path(from_id: str, to_id: str, max_depth: int = 5) -> dict[str, Any]:
+    """Find shortest path between two entities.
+
+    Args:
+        from_id: Source entity ID or name
+        to_id: Target entity ID or name
+        max_depth: Maximum hops to search (1-10)
+
+    Returns:
+        {
+            "found": bool,
+            "hops": int,
+            "path": [{"id": "...", "name": "...", "relation": "...", "confidence": 0.9}]
+        }
+    """
+    conn = get_connection()
+    max_depth = max(1, min(10, max_depth))
+
+    # Find source node
+    source_result = conn.execute(
+        "MATCH (e:Entity) WHERE e.id = $id OR e.name CONTAINS $id RETURN e.id, e.name LIMIT 1",
+        {"id": from_id}
+    )
+    source_rows = list(source_result)
+    if not source_rows:
+        return {"found": False, "error": f"Source entity '{from_id}' not found"}
+
+    # Find target node
+    target_result = conn.execute(
+        "MATCH (e:Entity) WHERE e.id = $id OR e.name CONTAINS $id RETURN e.id, e.name LIMIT 1",
+        {"id": to_id}
+    )
+    target_rows = list(target_result)
+    if not target_rows:
+        return {"found": False, "error": f"Target entity '{to_id}' not found"}
+
+    source_id = source_rows[0][0]
+    target_id = target_rows[0][0]
+
+    # Use BFS to find shortest path (KuzuDB doesn't have SHORTESTPATH)
+    visited = {source_id}
+    frontier = [(source_id, [source_id])]  # (current_id, path_so_far)
+
+    for _ in range(max_depth):
+        next_frontier = []
+        for current_id, path in frontier:
+            # Find all neighbors
+            result = conn.execute(
+                """
+                MATCH (n {id: $current_id})-[r]->(neighbor)
+                RETURN neighbor.id, neighbor.name, r.relation, r.confidence
+                """,
+                {"current_id": current_id}
+            )
+            for row in result:
+                neighbor_id = row[0]
+                if neighbor_id not in visited:
+                    new_path = path + [neighbor_id]
+                    if neighbor_id == target_id:
+                        # Found path!
+                        path_result = []
+                        for i, node_id in enumerate(new_path):
+                            if i == 0:
+                                # Get node name
+                                node_result = conn.execute(
+                                    "MATCH (e {id: $id}) RETURN e.name LIMIT 1",
+                                    {"id": node_id}
+                                )
+                                node_rows = list(node_result)
+                                path_result.append({
+                                    "id": node_id,
+                                    "name": node_rows[0][0] if node_rows else node_id
+                                })
+                            else:
+                                # Get edge info
+                                edge_result = conn.execute(
+                                    """
+                                    MATCH (prev {id: $prev_id})-[r]->(next {id: $next_id})
+                                    RETURN r.relation, r.confidence, next.name
+                                    """,
+                                    {"prev_id": path[i-1], "next_id": node_id}
+                                )
+                                edge_rows = list(edge_result)
+                                if edge_rows:
+                                    path_result.append({
+                                        "id": node_id,
+                                        "name": edge_rows[0][2],
+                                        "relation": edge_rows[0][0],
+                                        "confidence": edge_rows[0][1]
+                                    })
+                        return {
+                            "found": True,
+                            "hops": len(new_path) - 1,
+                            "path": path_result
+                        }
+
+                    visited.add(neighbor_id)
+                    next_frontier.append((neighbor_id, new_path))
+
+            # Also check incoming edges
+            result = conn.execute(
+                """
+                MATCH (neighbor)-[r]->(n {id: $current_id})
+                RETURN neighbor.id, neighbor.name, r.relation, r.confidence
+                """,
+                {"current_id": current_id}
+            )
+            for row in result:
+                neighbor_id = row[0]
+                if neighbor_id not in visited:
+                    new_path = path + [neighbor_id]
+                    if neighbor_id == target_id:
+                        # Found path!
+                        path_result = []
+                        for i, node_id in enumerate(new_path):
+                            if i == 0:
+                                node_result = conn.execute(
+                                    "MATCH (e {id: $id}) RETURN e.name LIMIT 1",
+                                    {"id": node_id}
+                                )
+                                node_rows = list(node_result)
+                                path_result.append({
+                                    "id": node_id,
+                                    "name": node_rows[0][0] if node_rows else node_id
+                                })
+                            else:
+                                edge_result = conn.execute(
+                                    """
+                                    MATCH (prev {id: $prev_id})-[r]->(next {id: $next_id})
+                                    RETURN r.relation, r.confidence, next.name
+                                    """,
+                                    {"prev_id": path[i-1], "next_id": node_id}
+                                )
+                                edge_rows = list(edge_result)
+                                if edge_rows:
+                                    path_result.append({
+                                        "id": node_id,
+                                        "name": edge_rows[0][2],
+                                        "relation": edge_rows[0][0],
+                                        "confidence": edge_rows[0][1]
+                                    })
+                        return {
+                            "found": True,
+                            "hops": len(new_path) - 1,
+                            "path": path_result
+                        }
+
+                    visited.add(neighbor_id)
+                    next_frontier.append((neighbor_id, new_path))
+
+        frontier = next_frontier
+
+    return {"found": False, "hops": 0, "path": []}
 
 
 def get_document(uri: str) -> dict[str, Any] | None:
