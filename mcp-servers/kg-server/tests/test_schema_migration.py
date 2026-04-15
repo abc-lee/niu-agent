@@ -44,3 +44,40 @@ def test_relation_has_confidence():
         columns = {row[1] for row in result}
         assert 'confidence' in columns, f"MENTIONS missing confidence. Columns: {columns}"
         assert 'created_at' in columns, f"MENTIONS missing created_at. Columns: {columns}"
+
+
+def test_contains_has_confidence():
+    """CONTAINS relation must have confidence and created_at."""
+    # Create temporary database
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = Path(tmpdir) / "test.db"
+        db = kuzu.Database(str(db_path))
+        conn = kuzu.Connection(db)
+
+        # Initialize schema
+        _init_schema(conn)
+
+        result = conn.execute("CALL TABLE_INFO('CONTAINS') RETURN *")
+        # row format: [index, property_name, type, default, is_primary]
+        columns = {row[1] for row in result}
+        assert 'confidence' in columns, f"CONTAINS missing confidence. Columns: {columns}"
+        assert 'created_at' in columns, f"CONTAINS missing created_at. Columns: {columns}"
+
+
+def test_related_to_has_all_fields():
+    """RELATED_TO relation must have relation, confidence, and created_at."""
+    # Create temporary database
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = Path(tmpdir) / "test.db"
+        db = kuzu.Database(str(db_path))
+        conn = kuzu.Connection(db)
+
+        # Initialize schema
+        _init_schema(conn)
+
+        result = conn.execute("CALL TABLE_INFO('RELATED_TO') RETURN *")
+        # row format: [index, property_name, type, default, is_primary]
+        columns = {row[1] for row in result}
+        assert 'relation' in columns, f"RELATED_TO missing relation. Columns: {columns}"
+        assert 'confidence' in columns, f"RELATED_TO missing confidence. Columns: {columns}"
+        assert 'created_at' in columns, f"RELATED_TO missing created_at. Columns: {columns}"
