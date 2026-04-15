@@ -299,6 +299,38 @@ TOOL_SCHEMAS = {
             },
         },
     },
+    "list_entities": {
+        "name": "list_entities",
+        "description": "List all entities in the knowledge graph, optionally filtered by type.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "Maximum results (default: 100, max: 500)"},
+                "entity_type": {"type": "string", "description": "Optional entity type filter (e.g., person, organization)"},
+            },
+        },
+    },
+    "list_concepts": {
+        "name": "list_concepts",
+        "description": "List all concepts in the knowledge graph.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "Maximum results (default: 100, max: 500)"},
+            },
+        },
+    },
+    "graph_snapshot": {
+        "name": "graph_snapshot",
+        "description": "Get a full graph snapshot for visualization. Returns nodes and edges across all types.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "Max entity nodes (default: 200)"},
+                "min_confidence": {"type": "number", "description": "Minimum confidence filter (default: 0.0)"},
+            },
+        },
+    },
 }
 
 
@@ -1297,6 +1329,179 @@ def list_documents(limit: int = 10) -> list[dict[str, Any]]:
     return docs
 
 
+def list_entities(limit: int = 100, entity_type: str | None = None) -> list[dict[str, Any]]:
+    """List all entities, optionally filtered by type.
+
+    Args:
+        limit: Maximum results (default: 100, max: 500)
+        entity_type: Optional entity type filter (e.g., "person", "organization")
+
+    Returns:
+        List of entity dicts with id, name, type, description, created_at
+    """
+    conn = get_connection()
+    limit = max(1, min(500, int(limit)))
+
+    if entity_type:
+        result = conn.execute(
+            "MATCH (e:Entity) WHERE e.type = $etype RETURN e.id, e.name, e.type, e.description, e.created_at ORDER BY e.created_at DESC LIMIT $limit",
+            {"etype": entity_type, "limit": limit},
+        )
+    else:
+        result = conn.execute(
+            f"MATCH (e:Entity) RETURN e.id, e.name, e.type, e.description, e.created_at ORDER BY e.created_at DESC LIMIT {limit}"
+        )
+
+    entities = []
+    while result.has_next():
+        row = result.get_next()
+        entities.append({
+            "id": row[0], "name": row[1], "type": row[2],
+            "description": row[3], "created_at": row[4]
+        })
+    return entities
+
+
+def list_concepts(limit: int = 100) -> list[dict[str, Any]]:
+    """List all concepts.
+
+    Args:
+        limit: Maximum results (default: 100, max: 500)
+
+    Returns:
+        List of concept dicts with name, description, created_at
+    """
+    conn = get_connection()
+    limit = max(1, min(500, int(limit)))
+    result = conn.execute(
+        f"MATCH (c:Concept) RETURN c.name, c.description, c.created_at ORDER BY c.created_at DESC LIMIT {limit}"
+    )
+
+    concepts = []
+    while result.has_next():
+        row = result.get_next()
+        concepts.append({"name": row[0], "description": row[1], "created_at": row[2]})
+    return concepts
+
+
+def graph_snapshot(limit: int = 200, min_confidence: float = 0.0) -> dict[str, Any]:
+    """Get a full graph snapshot for visualization.
+
+    Returns Entity nodes with RELATED_TO edges, Document nodes connected
+    via MENTIONS, and Concept nodes connected via CONTAINS.
+
+    Args:
+        limit: Max entity nodes to return (default: 200)
+        min_confidence: Minimum confidence filter (0.0-1.0)
+
+    Returns:
+        {"nodes": [...], "edges": [...], "stats": {"nodes": N, "edges": M}}
+    """
+    conn = get_connection()
+    min_confidence = max(0.0, min(1.0, float(min_confidence)))
+    nodes = []
+    edges = []
+    node_ids = set()
+
+    # 1. Entity nodes
+    entity_result = conn.execute(
+        f"MATCH (e:Entity) RETURN e.id, e.name, e.type, e.description LIMIT {limit}"
+    )
+    while entity_result.has_next():
+        row = entity_result.get_next()
+        node_id = f"entity:{row[0]}"
+        nodes.append({
+            "id": node_id, "label": row[1], "nodeType": "Entity",
+            "entityType": row[2], "description": row[3] or ""
+        })
+        node_ids.add(node_id)
+
+    # 2. RELATED_TO edges (Entity -> Entity)
+    rel_result = conn.execute(
+        "MATCH (e1:Entity)-[r:RELATED_TO]->(e2:Entity) "
+        "WHERE r.confidence >= $min_conf "
+        "RETURN e1.id, e2.id, r.relation, r.confidence",
+        {"min_conf": min_confidence}
+    )
+    while rel_result.has_next():
+        row = rel_result.get_next()
+        src = f"entity:{row[0]}"
+        tgt = f"entity:{row[1]}"
+        if src in node_ids and tgt in node_ids:
+            edges.append({
+                "source": src, "target": tgt,
+                "relation": row[2], "confidence": row[3],
+                "edgeType": "RELATED_TO"
+            })
+
+    # 3. Document nodes (connected to entities via MENTIONS)
+    doc_result = conn.execute(
+        "MATCH (d:Document)-[:MENTIONS]->(e:Entity) "
+        "RETURN DISTINCT d.uri, d.title, d.source"
+    )
+    while doc_result.has_next():
+        row = doc_result.get_next()
+        doc_id = f"doc:{row[0]}"
+        nodes.append({
+            "id": doc_id, "label": row[1] or row[0], "nodeType": "Document",
+            "source": row[2] or ""
+        })
+        node_ids.add(doc_id)
+
+    # 4. MENTIONS edges (Document -> Entity)
+    mentions_result = conn.execute(
+        "MATCH (d:Document)-[r:MENTIONS]->(e:Entity) "
+        "WHERE r.confidence >= $min_conf "
+        "RETURN d.uri, e.id, r.confidence",
+        {"min_conf": min_confidence}
+    )
+    while mentions_result.has_next():
+        row = mentions_result.get_next()
+        src = f"doc:{row[0]}"
+        tgt = f"entity:{row[1]}"
+        if src in node_ids and tgt in node_ids:
+            edges.append({
+                "source": src, "target": tgt,
+                "confidence": row[2], "edgeType": "MENTIONS"
+            })
+
+    # 5. Concept nodes (connected to documents via CONTAINS)
+    concept_result = conn.execute(
+        "MATCH (d:Document)-[:CONTAINS]->(c:Concept) "
+        "RETURN DISTINCT c.name, c.description"
+    )
+    while concept_result.has_next():
+        row = concept_result.get_next()
+        concept_id = f"concept:{row[0]}"
+        nodes.append({
+            "id": concept_id, "label": row[0], "nodeType": "Concept",
+            "description": row[1] or ""
+        })
+        node_ids.add(concept_id)
+
+    # 6. CONTAINS edges (Document -> Concept)
+    contains_result = conn.execute(
+        "MATCH (d:Document)-[r:CONTAINS]->(c:Concept) "
+        "WHERE r.confidence >= $min_conf "
+        "RETURN d.uri, c.name, r.confidence",
+        {"min_conf": min_confidence}
+    )
+    while contains_result.has_next():
+        row = contains_result.get_next()
+        src = f"doc:{row[0]}"
+        tgt = f"concept:{row[1]}"
+        if src in node_ids and tgt in node_ids:
+            edges.append({
+                "source": src, "target": tgt,
+                "confidence": row[2], "edgeType": "CONTAINS"
+            })
+
+    return {
+        "nodes": nodes, "edges": edges,
+        "stats": {"nodes": len(nodes), "edges": len(edges)}
+    }
+
+
 def search_documents(keyword: str, limit: int = 10) -> list[dict[str, Any]]:
     """Search documents by keyword in title or content."""
     conn = get_connection()
@@ -1598,6 +1803,38 @@ async def list_tools() -> list[Tool]:
                 },
             },
         ),
+        Tool(
+            name="list_entities",
+            description="List all entities in the knowledge graph, optionally filtered by type.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "limit": {"type": "integer", "description": "Maximum results (default: 100, max: 500)"},
+                    "entity_type": {"type": "string", "description": "Optional entity type filter"},
+                },
+            },
+        ),
+        Tool(
+            name="list_concepts",
+            description="List all concepts in the knowledge graph.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "limit": {"type": "integer", "description": "Maximum results (default: 100, max: 500)"},
+                },
+            },
+        ),
+        Tool(
+            name="graph_snapshot",
+            description="Get a full graph snapshot for visualization.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "limit": {"type": "integer", "description": "Max entity nodes (default: 200)"},
+                    "min_confidence": {"type": "number", "description": "Minimum confidence filter (default: 0.0)"},
+                },
+            },
+        ),
     ]
 
 
@@ -1687,6 +1924,18 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             result = graph_changelog(
                 limit=arguments.get("limit", 50),
                 since=arguments.get("since")
+            )
+        elif name == "list_entities":
+            result = list_entities(
+                limit=arguments.get("limit", 100),
+                entity_type=arguments.get("entity_type"),
+            )
+        elif name == "list_concepts":
+            result = list_concepts(limit=arguments.get("limit", 100))
+        elif name == "graph_snapshot":
+            result = graph_snapshot(
+                limit=arguments.get("limit", 200),
+                min_confidence=arguments.get("min_confidence", 0.0),
             )
         else:
             return [TextContent(type="text", text=f"Unknown tool: {name}")]
