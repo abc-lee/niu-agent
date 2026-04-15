@@ -1437,14 +1437,17 @@ def graph_snapshot(limit: int = 200, min_confidence: float = 0.0) -> dict[str, A
     # 3. Document nodes (connected to entities via MENTIONS)
     doc_result = conn.execute(
         "MATCH (d:Document)-[:MENTIONS]->(e:Entity) "
-        "RETURN DISTINCT d.uri, d.title, d.source"
+        "RETURN DISTINCT d.uri, d.title, d.source, d.content"
     )
     while doc_result.has_next():
         row = doc_result.get_next()
         doc_id = f"doc:{row[0]}"
+        # Truncate content for description (avoid sending full document text)
+        content = row[3] or ""
+        description = content[:200] + "..." if len(content) > 200 else content
         nodes.append({
             "id": doc_id, "label": row[1] or row[0], "nodeType": "Document",
-            "source": row[2] or ""
+            "source": row[2] or "", "description": description
         })
         node_ids.add(doc_id)
 
