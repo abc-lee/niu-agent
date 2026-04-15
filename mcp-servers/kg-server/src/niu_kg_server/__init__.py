@@ -529,17 +529,43 @@ def link_entities(entity1_id: str, entity2_id: str, relation: str, confidence: f
     }
 
 
-def query_graph(cypher: str) -> list[dict[str, Any]]:
-    """Execute a Cypher query and return results."""
+def _validate_cypher_readonly(query: str) -> bool:
+    """Validate that Cypher query is read-only.
+
+    Blocks: CREATE, DELETE, SET, REMOVE, MERGE, DROP
+    Allows: MATCH, RETURN, WITH, WHERE, ORDER BY, LIMIT, COUNT, SUM, etc.
+    """
+    blocked_keywords = ['CREATE', 'DELETE', 'SET ', 'REMOVE', 'MERGE', 'DROP']
+    query_upper = query.upper()
+
+    for keyword in blocked_keywords:
+        if keyword in query_upper:
+            return False
+
+    return True
+
+
+def query_graph(cypher: str) -> list[dict[str, Any]] | dict[str, Any]:
+    """Execute a read-only Cypher query and return results.
+
+    Only read-only queries (MATCH, RETURN, WITH, WHERE, ORDER BY, LIMIT) are allowed.
+    Write operations (CREATE, DELETE, SET, REMOVE, MERGE, DROP) are blocked.
+    """
+    if not _validate_cypher_readonly(cypher):
+        return {"error": "Only read-only queries are allowed (MATCH, RETURN, WITH, WHERE, ORDER BY, LIMIT)"}
+
     conn = get_connection()
-    result = conn.execute(cypher)
+    try:
+        result = conn.execute(cypher)
 
-    rows = []
-    while result.has_next():
-        row = result.get_next()
-        rows.append(row)
+        rows = []
+        while result.has_next():
+            row = result.get_next()
+            rows.append(row)
 
-    return rows
+        return rows
+    except Exception as e:
+        return {"error": str(e)}
 
 
 def explore_node(entity_id: str, depth: int = 2, min_confidence: float = 0.0, direction: str = "both") -> dict[str, Any]:
