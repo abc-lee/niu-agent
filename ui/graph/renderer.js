@@ -27,6 +27,13 @@ const getIconForType = (type) => {
   return icons[type] || '📌';
 };
 
+// HTML escape for XSS prevention in detail panel
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
+
 // Current graph data (loaded from API)
 let currentData = { nodes: [], edges: [] };
 
@@ -209,11 +216,11 @@ const showDetail = (node) => {
   detailTitle.textContent = `${getIconForType(visualType)} ${orig.label || orig.name || orig.id}`;
 
   let html = '';
-  html += `<div class="detail-row"><span class="detail-label">类型：</span> ${visualType}</div>`;
+  html += `<div class="detail-row"><span class="detail-label">类型：</span> ${escapeHtml(visualType)}</div>`;
 
-  if (orig.entityType) html += `<div class="detail-row"><span class="detail-label">实体类型：</span> ${orig.entityType}</div>`;
-  if (orig.description) html += `<div class="detail-row"><span class="detail-label">描述：</span> ${orig.description}</div>`;
-  if (orig.source) html += `<div class="detail-row"><span class="detail-label">来源：</span> ${orig.source}</div>`;
+  if (orig.entityType) html += `<div class="detail-row"><span class="detail-label">实体类型：</span> ${escapeHtml(orig.entityType)}</div>`;
+  if (orig.description) html += `<div class="detail-row"><span class="detail-label">描述：</span> ${escapeHtml(orig.description)}</div>`;
+  if (orig.source) html += `<div class="detail-row"><span class="detail-label">来源：</span> ${escapeHtml(orig.source)}</div>`;
 
   // Count related edges
   const relatedEdges = currentData.edges.filter(e => e.source === orig.id || e.target === orig.id);
@@ -225,7 +232,7 @@ const showDetail = (node) => {
       const otherNode = currentData.nodes.find(n => n.id === otherId);
       if (otherNode) {
         const otherType = mapNodeType(otherNode);
-        html += `<div class="detail-row">${getIconForType(otherType)} <strong>${edge.relation || edge.edgeType}：</strong> ${otherNode.label || otherNode.name}</div>`;
+        html += `<div class="detail-row">${getIconForType(otherType)} <strong>${escapeHtml(edge.relation || edge.edgeType)}：</strong> ${escapeHtml(otherNode.label || otherNode.name)}</div>`;
       }
     });
     html += `</div>`;
