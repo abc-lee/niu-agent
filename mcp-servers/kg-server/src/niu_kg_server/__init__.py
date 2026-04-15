@@ -1344,8 +1344,8 @@ def list_entities(limit: int = 100, entity_type: str | None = None) -> list[dict
 
     if entity_type:
         result = conn.execute(
-            "MATCH (e:Entity) WHERE e.type = $etype RETURN e.id, e.name, e.type, e.description, e.created_at ORDER BY e.created_at DESC LIMIT $limit",
-            {"etype": entity_type, "limit": limit},
+            f"MATCH (e:Entity) WHERE e.type = $etype RETURN e.id, e.name, e.type, e.description, e.created_at ORDER BY e.created_at DESC LIMIT {limit}",
+            {"etype": entity_type},
         )
     else:
         result = conn.execute(
