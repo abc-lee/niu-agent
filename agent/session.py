@@ -101,26 +101,52 @@ class MessageStore:
         return msg_id
 
     async def get_messages(self, limit: Optional[int] = None, before_id: Optional[str] = None) -> List[Message]:
-        """Get messages (chronological order). If limit is None, return all messages."""
+        """Get messages (chronological order). If limit is None, return all messages.
+
+        Pagination uses created_at timestamp (not UUID) for correct time-order paging.
+        before_id is resolved to its created_at, then used for cursor-based pagination.
+        """
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
 
             if before_id:
-                if limit is not None:
-                    cursor = await db.execute(
-                        """SELECT * FROM messages
-                           WHERE id < ?
-                           ORDER BY created_at DESC
-                           LIMIT ?""",
-                        (before_id, limit),
-                    )
+                # Resolve before_id to its created_at for time-based pagination
+                cursor = await db.execute(
+                    "SELECT created_at FROM messages WHERE id = ?",
+                    (before_id,),
+                )
+                before_row = await cursor.fetchone()
+                if before_row:
+                    before_ts = before_row["created_at"]
+                    if limit is not None:
+                        cursor = await db.execute(
+                            """SELECT * FROM messages
+                               WHERE created_at < ?
+                               ORDER BY created_at DESC
+                               LIMIT ?""",
+                            (before_ts, limit),
+                        )
+                    else:
+                        cursor = await db.execute(
+                            """SELECT * FROM messages
+                               WHERE created_at < ?
+                               ORDER BY created_at DESC""",
+                            (before_ts,),
+                        )
                 else:
-                    cursor = await db.execute(
-                        """SELECT * FROM messages
-                           WHERE id < ?
-                           ORDER BY created_at DESC""",
-                        (before_id,),
-                    )
+                    # before_id not found, fall back to no cursor
+                    if limit is not None:
+                        cursor = await db.execute(
+                            """SELECT * FROM messages
+                               ORDER BY created_at DESC
+                               LIMIT ?""",
+                            (limit,),
+                        )
+                    else:
+                        cursor = await db.execute(
+                            """SELECT * FROM messages
+                               ORDER BY created_at DESC"""
+                        )
             else:
                 if limit is not None:
                     cursor = await db.execute(
