@@ -152,6 +152,8 @@ KG_SERVER_TOOLS = [
     "kg-server/get_related_concepts",
     "kg-server/query_graph",
 ]
+
+> **Note (2026-04-15):** `create_document`, `create_entity`, `link_document_entity` are now called programmatically by `sync_to_kg()` during document ingestion (photo-server → niu_kg_server same-process call). They remain classified as 底层操作 — not exposed to Agent LLM tool calls, but used by internal code paths.
 ```
 
 **file-parser (2个)**：
