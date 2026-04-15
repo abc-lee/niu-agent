@@ -1,135 +1,43 @@
 // Node type configuration
 const nodeConfigs = {
-  人物: {
-    shape: 'circle',
-    size: 50,
-    color: '#78b2be',
-    stroke: '#5a8c96',
-    label: '人物'
-  },
-  文档: {
-    shape: 'rect',
-    size: [60, 40],
-    color: '#e7ca4a',
-    stroke: '#c9af39',
-    label: '文档'
-  },
-  照片: {
-    shape: 'roundedRect',
-    size: [70, 45],
-    color: '#f8a7c8',
-    stroke: '#f07aa8',
-    label: '照片'
-  },
-  便签: {
-    shape: 'polygon',
-    size: 60,
-    color: '#a3f0c2',
-    stroke: '#76d8a0',
-    points: [
-      [0, 0],
-      [100, 0],
-      [100, 70],
-      [15, 80],
-      [0, 70]
-    ],
-    label: '便签'
-  },
-  链接: {
-    shape: 'hexagon',
-    size: 50,
-    color: '#c4ddc8',
-    stroke: '#a3c2a7',
-    label: '链接'
-  },
-  组织: {
-    shape: 'rect',
-    size: [90, 55],
-    color: '#9bc295',
-    stroke: '#7da677',
-    label: '组织'
-  }
+  人物: { shape: 'circle', size: 50, color: '#78b2be', stroke: '#5a8c96', label: '人物' },
+  文档: { shape: 'rect', size: [60, 40], color: '#e7ca4a', stroke: '#c9af39', label: '文档' },
+  照片: { shape: 'roundedRect', size: [70, 45], color: '#f8a7c8', stroke: '#f07aa8', label: '照片' },
+  便签: { shape: 'polygon', size: 60, color: '#a3f0c2', stroke: '#76d8a0',
+    points: [[0,0],[100,0],[100,70],[15,80],[0,70]], label: '便签' },
+  链接: { shape: 'hexagon', size: 50, color: '#c4ddc8', stroke: '#a3c2a7', label: '链接' },
+  组织: { shape: 'rect', size: [90, 55], color: '#9bc295', stroke: '#7da677', label: '组织' }
 };
 
-// Relationship strength to line thickness
-const getEdgeWidth = (strength) => {
-  if (strength >= 5) return 8;
-  if (strength >= 3) return 5;
-  if (strength >= 1) return 3;
-  return 1;
+// Backend type -> Frontend visual type mapping
+const typeMapping = {
+  'person': '人物', 'organization': '组织',
+  'location': '链接', 'event': '便签',
+  'technology': '链接', 'product': '链接',
 };
 
-// Get icon for node type
+function mapNodeType(node) {
+  if (node.nodeType === 'Document') return '文档';
+  if (node.nodeType === 'Concept') return '便签';
+  return typeMapping[node.entityType] || '链接';
+}
+
 const getIconForType = (type) => {
-  const icons = {
-    '人物': '👤',
-    '文档': '📄',
-    '照片': '📷',
-    '便签': '📝',
-    '链接': '🔗',
-    '组织': '🏢'
-  };
+  const icons = { '人物': '👤', '文档': '📄', '照片': '📷', '便签': '📝', '链接': '🔗', '组织': '🏢' };
   return icons[type] || '📌';
 };
 
-// Sample data
-const sampleData = {
-  nodes: [
-    { id: '1', label: '张三', type: '人物', title: '张三', info: { 职务: '产品经理', 组织: 'ABC公司' } },
-    { id: '2', label: '王五', type: '人物', title: '王五', info: { 职务: '部门总监', 组织: 'ABC公司' } },
-    { id: '3', label: '李四', type: '人物', title: '李四', info: { 职务: '工程师', 组织: 'ABC公司' } },
-    { id: '4', label: '小明', type: '人物', title: '小明', info: { 职务: '设计师', 组织: 'ABC公司' } },
-    { id: '5', label: '小红', type: '人物', title: '小红', info: { 职务: '开发', 组织: 'ABC公司' } },
-    { id: '6', label: '需求文档', type: '文档', title: '需求文档', info: { 创建时间: '2024-01-15' } },
-    { id: '7', label: '设计稿', type: '文档', title: '设计稿', info: { 创建时间: '2024-01-20' } },
-    { id: '8', label: '年会合影', type: '照片', title: '年会合影', info: { 日期: '2023-12-25' } },
-    { id: '9', label: '团建照片', type: '照片', title: '团建照片', info: { 日期: '2024-02-10' } },
-    { id: '10', label: '待办', type: '便签', title: '待办', info: { 内容: 'Q2 roadmap 评审' } },
-    { id: '11', label: '笔记', type: '便签', title: '笔记', info: { 内容: '客户访谈记录' } },
-    { id: '12', label: '公司官网', type: '链接', title: '公司官网', info: { url: 'https://abc.com' } },
-    { id: '13', label: 'ABC公司', type: '组织', title: 'ABC公司', info: { 地址: '北京市朝阳区', 规模: '50-100人' } },
-    { id: '14', label: '市场部', type: '组织', title: '市场部', info: { 负责人: '赵六', 人数: '8人' } },
-    { id: '15', label: '技术部', type: '组织', title: '技术部', info: { 负责人: '王五', 人数: '15人' } },
-    { id: '16', label: '产品部', type: '组织', title: '产品部', info: { 负责人: '张三', 人数: '5人' } }
-  ],
-  edges: [
-    { source: '1', target: '2', strength: 3, label: '上级' },
-    { source: '1', target: '4', strength: 6, label: '下级' },
-    { source: '1', target: '5', strength: 5, label: '下级' },
-    { source: '3', target: '1', strength: 2, label: '同事' },
-    { source: '3', target: '2', strength: 1, label: '汇报' },
-    { source: '1', target: '6', strength: 4, label: '撰写' },
-    { source: '4', target: '7', strength: 5, label: '设计' },
-    { source: '1', target: '8', strength: 2, label: '出现' },
-    { source: '2', target: '8', strength: 1, label: '出现' },
-    { source: '3', target: '8', strength: 1, label: '出现' },
-    { source: '1', target: '9', strength: 1, label: '出现' },
-    { source: '3', target: '9', strength: 1, label: '出现' },
-    { source: '4', target: '9', strength: 1, label: '出现' },
-    { source: '5', target: '9', strength: 1, label: '出现' },
-    { source: '1', target: '10', strength: 3, label: '创建' },
-    { source: '5', target: '11', strength: 2, label: '记录' },
-    { source: '13', target: '12', strength: 1, label: '官网' },
-    { source: '1', target: '13', strength: 5, label: '成员' },
-    { source: '2', target: '13', strength: 6, label: '成员' },
-    { source: '3', target: '13', strength: 4, label: '成员' },
-    { source: '4', target: '13', strength: 3, label: '成员' },
-    { source: '5', target: '13', strength: 3, label: '成员' },
-    { source: '13', target: '14', strength: 4, label: '部门' },
-    { source: '13', target: '15', strength: 6, label: '部门' },
-    { source: '13', target: '16', strength: 3, label: '部门' },
-    { source: '15', target: '2', strength: 5, label: '管理' },
-    { source: '16', target: '1', strength: 4, label: '管理' }
-  ]
-};
+// Current graph data (loaded from API)
+let currentData = { nodes: [], edges: [] };
 
 // Process nodes to add styles
 const processNodes = (data) => {
   return data.nodes.map(node => {
-    const config = nodeConfigs[node.type];
+    const visualType = mapNodeType(node);
+    const config = nodeConfigs[visualType];
     const nodeConfig = {
       id: node.id,
-      label: node.label,
+      label: node.label || node.name || node.id,
       type: config.shape,
       size: config.size,
       style: {
@@ -145,7 +53,9 @@ const processNodes = (data) => {
           fill: '#2c2c2c',
           textShadow: '0.5px 0.5px 0.5px rgba(0,0,0,0.2)'
         }
-      }
+      },
+      _originalData: node,
+      _visualType: visualType,
     };
     if (config.shape === 'polygon' && config.points) {
       nodeConfig.points = config.points;
@@ -154,14 +64,14 @@ const processNodes = (data) => {
   });
 };
 
-// Process edges to add styles based on strength
+// Process edges - confidence (0-1) maps to line width (1-6)
 const processEdges = (data) => {
   return data.edges.map(edge => {
-    const width = getEdgeWidth(edge.strength);
+    const width = Math.max(1, Math.round((edge.confidence || 0.5) * 6));
     return {
       source: edge.source,
       target: edge.target,
-      label: edge.label || '',
+      label: edge.relation || '',
       style: {
         stroke: '#888888',
         lineWidth: width,
@@ -183,24 +93,19 @@ const processEdges = (data) => {
     };
   });
 };
+
 // Initialize G6
 const container = document.getElementById('graph-container');
 const width = container.offsetWidth;
 const height = container.offsetHeight;
 
-// Register polygon for sticky note - G6 already has polygon built-in
 const graph = new G6.Graph({
   container: 'graph-container',
   width,
   height,
   renderer: 'canvas',
   modes: {
-    default: [
-      'drag-canvas',
-      'zoom-canvas',
-      'drag-node',
-      'click-select'
-    ]
+    default: ['drag-canvas', 'zoom-canvas', 'drag-node', 'click-select']
   },
   layout: {
     type: 'force',
@@ -211,44 +116,81 @@ const graph = new G6.Graph({
     preventOverlap: true,
     nodeSize: 50
   },
-  defaultNode: {
-    type: 'circle',
-    size: 50
-  },
+  defaultNode: { type: 'circle', size: 50 },
   animate: true,
   enableOptimization: true,
-  optimize: {
-    enable: true,
-    zoomThreshold: 0.5,
-    showLabel: false
-  }
+  optimize: { enable: true, zoomThreshold: 0.5, showLabel: false }
 });
 
-// Process and load data
-const processedData = {
-  nodes: processNodes(sampleData),
-  edges: processEdges(sampleData)
+// Loading state helpers
+const showLoading = () => {
+  const el = document.getElementById('loading-overlay');
+  if (el) el.style.display = 'flex';
+};
+const hideLoading = () => {
+  const el = document.getElementById('loading-overlay');
+  if (el) el.style.display = 'none';
+};
+const showEmpty = () => {
+  const el = document.getElementById('empty-state');
+  if (el) el.style.display = 'flex';
+};
+const hideEmpty = () => {
+  const el = document.getElementById('empty-state');
+  if (el) el.style.display = 'none';
 };
 
-graph.data(processedData);
-graph.render();
+// Load graph data from backend
+async function loadGraphSnapshot() {
+  showLoading();
+  hideEmpty();
+
+  try {
+    const snapshot = await window.electronAPI.getGraphSnapshot(200, 0);
+    currentData = { nodes: snapshot.nodes || [], edges: snapshot.edges || [] };
+
+    if (currentData.nodes.length === 0) {
+      hideLoading();
+      showEmpty();
+      return;
+    }
+
+    const processed = {
+      nodes: processNodes(currentData),
+      edges: processEdges(currentData)
+    };
+
+    graph.data(processed);
+    graph.render();
+    updateStats();
+  } catch (error) {
+    console.error('Failed to load graph:', error);
+    hideLoading();
+    showEmpty();
+    return;
+  }
+
+  hideLoading();
+}
+
+loadGraphSnapshot();
 
 // Update statistics
 const updateStats = () => {
-  const typeCounts = sampleData.nodes.reduce((acc, node) => {
-    acc[node.type] = (acc[node.type] || 0) + 1;
-    return acc;
-  }, {});
-  
+  const typeCounts = {};
+  currentData.nodes.forEach(node => {
+    const visualType = mapNodeType(node);
+    typeCounts[visualType] = (typeCounts[visualType] || 0) + 1;
+  });
+
   const statsEl = document.getElementById('stats');
   let html = '';
   Object.entries(typeCounts).forEach(([type, count]) => {
     html += `<span class="stat-item"><strong>${count}</strong> ${type}</span>`;
   });
-  html += `<span class="stat-item"><strong>${sampleData.edges.length}</strong> 关系</span>`;
+  html += `<span class="stat-item"><strong>${currentData.edges.length}</strong> 关系</span>`;
   statsEl.innerHTML = html;
 };
-updateStats();
 
 // Detail panel handling
 let currentSelectedNode = null;
@@ -260,57 +202,35 @@ const focusNodeBtn = document.getElementById('focus-node');
 
 const showDetail = (node) => {
   currentSelectedNode = node.getModel();
-  const originalNode = sampleData.nodes.find(n => n.id === currentSelectedNode.id);
-  
-  detailTitle.textContent = `${getIconForType(originalNode.type)} ${originalNode.title}`;
-  
+  const orig = currentSelectedNode._originalData;
+  if (!orig) return;
+
+  const visualType = currentSelectedNode._visualType || mapNodeType(orig);
+  detailTitle.textContent = `${getIconForType(visualType)} ${orig.label || orig.name || orig.id}`;
+
   let html = '';
-  html += `<div class="detail-row"><span class="detail-label">类型：</span> ${originalNode.type}</div>`;
-  
-  if (originalNode.info) {
-    Object.entries(originalNode.info).forEach(([key, value]) => {
-      html += `<div class="detail-row"><span class="detail-label">${key}：</span> ${value}</div>`;
-    });
-  }
-  
-  // Count media
-  const relatedEdges = sampleData.edges.filter(e => 
-    e.source === originalNode.id || e.target === originalNode.id
-  );
-  const photoCount = relatedEdges.filter(e => {
-    const otherId = e.source === originalNode.id ? e.target : e.source;
-    const otherNode = sampleData.nodes.find(n => n.id === otherId);
-    return otherNode && otherNode.type === '照片';
-  }).length;
-  const docCount = relatedEdges.filter(e => {
-    const otherId = e.source === originalNode.id ? e.target : e.source;
-    const otherNode = sampleData.nodes.find(n => n.id === otherId);
-    return otherNode && otherNode.type === '文档';
-  }).length;
-  
-  if (photoCount > 0 || docCount > 0) {
-    html += `<div class="detail-row">`;
-    const parts = [];
-    if (photoCount > 0) parts.push(`${photoCount} 张照片`);
-    if (docCount > 0) parts.push(`${docCount} 份文档`);
-    html += `出现：${parts.join('、')}`;
-    html += `</div>`;
-  }
-  
-  // Relationships
+  html += `<div class="detail-row"><span class="detail-label">类型：</span> ${visualType}</div>`;
+
+  if (orig.entityType) html += `<div class="detail-row"><span class="detail-label">实体类型：</span> ${orig.entityType}</div>`;
+  if (orig.description) html += `<div class="detail-row"><span class="detail-label">描述：</span> ${orig.description}</div>`;
+  if (orig.source) html += `<div class="detail-row"><span class="detail-label">来源：</span> ${orig.source}</div>`;
+
+  // Count related edges
+  const relatedEdges = currentData.edges.filter(e => e.source === orig.id || e.target === orig.id);
   if (relatedEdges.length > 0) {
-    html += `<div class="detail-row"><br/><strong>关系：</strong></div>`;
+    html += `<div class="detail-row"><br/><strong>关系 (${relatedEdges.length})：</strong></div>`;
     html += `<div class="relation-list">`;
     relatedEdges.forEach(edge => {
-      const otherId = edge.source === originalNode.id ? edge.target : edge.source;
-      const otherNode = sampleData.nodes.find(n => n.id === otherId);
+      const otherId = edge.source === orig.id ? edge.target : edge.source;
+      const otherNode = currentData.nodes.find(n => n.id === otherId);
       if (otherNode) {
-        html += `<div class="detail-row">${getIconForType(otherNode.type)} <strong>${edge.label}：</strong> ${otherNode.title}</div>`;
+        const otherType = mapNodeType(otherNode);
+        html += `<div class="detail-row">${getIconForType(otherType)} <strong>${edge.relation || edge.edgeType}：</strong> ${otherNode.label || otherNode.name}</div>`;
       }
     });
     html += `</div>`;
   }
-  
+
   detailContent.innerHTML = html;
   detailPanel.classList.remove('hidden');
 };
@@ -329,8 +249,56 @@ focusNodeBtn.addEventListener('click', () => {
 
 // Node click handler
 graph.on('node:click', (e) => {
-  const node = e.item;
-  showDetail(node);
+  showDetail(e.item);
+});
+
+// Double-click to expand neighborhood
+graph.on('node:dblclick', async (e) => {
+  const node = e.item.getModel();
+  const orig = node._originalData;
+  if (!orig || orig.nodeType !== 'Entity') return;
+
+  const entityId = orig.id.replace(/^entity:/, '');
+
+  try {
+    const result = await window.electronAPI.exploreNode(entityId, 2, 0, 'both');
+    if (!result.nodes || result.nodes.length === 0) return;
+
+    const existingIds = new Set(currentData.nodes.map(n => n.id));
+    let addedCount = 0;
+
+    result.nodes.forEach(n => {
+      const nodeId = n.id.startsWith('entity:') ? n.id : `entity:${n.id}`;
+      if (!existingIds.has(nodeId)) {
+        const newNode = {
+          id: nodeId, label: n.name, nodeType: 'Entity',
+          entityType: n.type, description: n.description || ''
+        };
+        currentData.nodes.push(newNode);
+        const processed = processNodes({ nodes: [newNode], edges: [] });
+        graph.addItem('node', processed[0]);
+        existingIds.add(nodeId);
+        addedCount++;
+      }
+    });
+
+    result.edges.forEach(edge => {
+      const srcId = edge.source.startsWith('entity:') ? edge.source : `entity:${edge.source}`;
+      const tgtId = edge.target.startsWith('entity:') ? edge.target : `entity:${edge.target}`;
+      if (!existingIds.has(srcId) || !existingIds.has(tgtId)) return;
+      const edgeExists = currentData.edges.some(e => e.source === srcId && e.target === tgtId);
+      if (!edgeExists) {
+        const newEdge = { source: srcId, target: tgtId, relation: edge.relation, confidence: edge.confidence, edgeType: 'RELATED_TO' };
+        currentData.edges.push(newEdge);
+        const processed = processEdges({ nodes: [], edges: [newEdge] });
+        graph.addItem('edge', processed[0]);
+      }
+    });
+
+    if (addedCount > 0) updateStats();
+  } catch (err) {
+    console.error('Failed to expand node:', err);
+  }
 });
 
 graph.on('canvas:click', () => {
@@ -342,36 +310,33 @@ const searchInput = document.getElementById('searchInput');
 searchInput.addEventListener('input', (e) => {
   const query = e.target.value.toLowerCase();
   if (!query) {
-    // Show all nodes
-    processedData.nodes.forEach(node => {
-      graph.showItem(node.id);
-    });
-    processedData.edges.forEach(edge => {
-      graph.showItem(edge.source + '-' + edge.target);
-    });
+    graph.getNodes().forEach(node => graph.showItem(node.getID()));
+    graph.getEdges().forEach(edge => graph.showItem(edge.getID()));
     return;
   }
-  
-  // Search and filter
-  processedData.nodes.forEach(node => {
-    const originalNode = sampleData.nodes.find(n => n.id === node.id);
-    const label = originalNode.label.toLowerCase();
-    const title = originalNode.title.toLowerCase();
-    if (label.includes(query) || title.includes(query)) {
-      graph.showItem(node.id);
+
+  graph.getNodes().forEach(node => {
+    const model = node.getModel();
+    const orig = model._originalData;
+    const label = (orig?.label || orig?.name || '').toLowerCase();
+    const desc = (orig?.description || '').toLowerCase();
+    if (label.includes(query) || desc.includes(query)) {
+      graph.showItem(node.getID());
     } else {
-      graph.hideItem(node.id);
+      graph.hideItem(node.getID());
     }
   });
-  
-  // Only show edges connected to visible nodes
-  processedData.edges.forEach(edge => {
-    const sourceVisible = !graph.findById(edge.source).getModel().hidden;
-    const targetVisible = !graph.findById(edge.target).getModel().hidden;
+
+  graph.getEdges().forEach(edge => {
+    const model = edge.getModel();
+    const sourceNode = graph.findById(model.source);
+    const targetNode = graph.findById(model.target);
+    const sourceVisible = sourceNode && !sourceNode.getModel().hidden;
+    const targetVisible = targetNode && !targetNode.getModel().hidden;
     if (sourceVisible && targetVisible) {
-      graph.showItem(edge.source + '-' + edge.target);
+      graph.showItem(edge.getID());
     } else {
-      graph.hideItem(edge.source + '-' + edge.target);
+      graph.hideItem(edge.getID());
     }
   });
 });
@@ -380,31 +345,31 @@ searchInput.addEventListener('input', (e) => {
 const filterBtns = document.querySelectorAll('.filter-btn');
 filterBtns.forEach(btn => {
   btn.addEventListener('click', (e) => {
-    // Remove active class from all
     filterBtns.forEach(b => b.classList.remove('active'));
-    // Add active to clicked
     btn.classList.add('active');
-    
+
     const filterType = btn.dataset.type;
-    
-    // Filter by type
-    processedData.nodes.forEach(node => {
-      const originalNode = sampleData.nodes.find(n => n.id === node.id);
-      if (filterType === 'all' || originalNode.type === filterType) {
-        graph.showItem(node.id);
+
+    graph.getNodes().forEach(node => {
+      const model = node.getModel();
+      const visualType = model._visualType;
+      if (filterType === 'all' || visualType === filterType) {
+        graph.showItem(node.getID());
       } else {
-        graph.hideItem(node.id);
+        graph.hideItem(node.getID());
       }
     });
-    
-    // Only show edges connected to visible nodes
-    processedData.edges.forEach(edge => {
-      const sourceVisible = !graph.findById(edge.source).getModel().hidden;
-      const targetVisible = !graph.findById(edge.target).getModel().hidden;
+
+    graph.getEdges().forEach(edge => {
+      const model = edge.getModel();
+      const sourceNode = graph.findById(model.source);
+      const targetNode = graph.findById(model.target);
+      const sourceVisible = sourceNode && !sourceNode.getModel().hidden;
+      const targetVisible = targetNode && !targetNode.getModel().hidden;
       if (sourceVisible && targetVisible) {
-        graph.showItem(edge.source + '-' + edge.target);
+        graph.showItem(edge.getID());
       } else {
-        graph.hideItem(edge.source + '-' + edge.target);
+        graph.hideItem(edge.getID());
       }
     });
   });
