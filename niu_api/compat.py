@@ -388,7 +388,6 @@ async def tidy_context(request: dict):
             logger.warning("[Tidy] Force mode not implemented yet")
             return {"status": "skipped", "message": "Force mode not implemented"}
 
-        # Call context-manager subagent
         from agent.subagent import call_subagent
         from niu_api.chat import get_or_create_runner
 
@@ -403,16 +402,43 @@ async def tidy_context(request: dict):
         # Run subagent in thread pool (avoid blocking event loop)
         import asyncio
 
-        def run_subagent():
+        if mode == "sleep":
+            # 1. 先调梦境进化（增量学习+KG写入）
+            dream_prompt = f"""系统进入睡眠状态，触发梦境进化。
+
+当前上下文：{total_kb:.1f} KB（{usage_percent:.1f}%）
+
+消息列表：
+共 {message_count} 条消息（idx 从小到大 = 从旧到新）
+
+"""
+            for idx, msg in enumerate(messages):
+                kb = len(msg.content or "") / 1024
+                dream_prompt += f"[idx:{idx}] {kb:.1f}KB {msg.role}: {msg.content[:100]}\n"
+
+            dream_prompt += "\n请按照工作项1-6的顺序处理新增消息。"
+
+            def run_dream_evolver():
+                return call_subagent(
+                    agent_name="dream-evolver",
+                    task=dream_prompt,
+                    llm_config=llm_config,
+                    mcp_client=None,
+                )
+
+            dream_result = await asyncio.to_thread(run_dream_evolver)
+            logger.info(f"[Tidy] Dream-evolver result: {dream_result[:200]}")
+
+        # 2. 再调内容管理（压缩删除）
+        def run_context_manager():
             return call_subagent(
                 agent_name="context-manager",
                 task=prompt,
                 llm_config=llm_config,
-                mcp_client=None,  # Handler uses ToolRegistry, not mcp_client
+                mcp_client=None,
             )
 
-        result = await asyncio.to_thread(run_subagent)
-
+        result = await asyncio.to_thread(run_context_manager)
         logger.info(f"[Tidy] Context-manager result: {result[:200]}")
 
         return {
