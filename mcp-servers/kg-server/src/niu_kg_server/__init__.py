@@ -248,8 +248,16 @@ def get_connection() -> kuzu.Connection:
 
 
 def _init_schema(conn: kuzu.Connection) -> None:
-    """Initialize database schema."""
-    # Document node table
+    """Initialize database schema with confidence and timestamps."""
+    # Drop existing tables (KuzuDB doesn't support ALTER TABLE)
+    conn.execute("DROP TABLE IF EXISTS RELATED_TO")
+    conn.execute("DROP TABLE IF EXISTS CONTAINS")
+    conn.execute("DROP TABLE IF EXISTS MENTIONS")
+    conn.execute("DROP TABLE IF EXISTS Concept")
+    conn.execute("DROP TABLE IF EXISTS Entity")
+    conn.execute("DROP TABLE IF EXISTS Document")
+
+    # Create node tables with timestamps
     conn.execute("""
         CREATE NODE TABLE IF NOT EXISTS Document (
             uri STRING,
@@ -261,43 +269,51 @@ def _init_schema(conn: kuzu.Connection) -> None:
         )
     """)
 
-    # Entity node table
     conn.execute("""
         CREATE NODE TABLE IF NOT EXISTS Entity (
             id STRING,
             name STRING,
             type STRING,
             description STRING,
+            created_at STRING,
+            updated_at STRING,
             PRIMARY KEY (id)
         )
     """)
 
-    # Concept node table
     conn.execute("""
         CREATE NODE TABLE IF NOT EXISTS Concept (
             name STRING,
             description STRING,
+            created_at STRING,
+            updated_at STRING,
             PRIMARY KEY (name)
         )
     """)
 
-    # Relation tables
+    # Create relationship tables with confidence + timestamps
     conn.execute("""
         CREATE REL TABLE IF NOT EXISTS MENTIONS (
-            FROM Document TO Entity
+            FROM Document TO Entity,
+            confidence FLOAT,
+            created_at STRING
         )
     """)
 
     conn.execute("""
         CREATE REL TABLE IF NOT EXISTS CONTAINS (
-            FROM Document TO Concept
+            FROM Document TO Concept,
+            confidence FLOAT,
+            created_at STRING
         )
     """)
 
     conn.execute("""
         CREATE REL TABLE IF NOT EXISTS RELATED_TO (
             FROM Entity TO Entity,
-            relation STRING
+            relation STRING,
+            confidence FLOAT,
+            created_at STRING
         )
     """)
 
