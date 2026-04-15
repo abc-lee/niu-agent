@@ -116,7 +116,7 @@
 - [x] **渠道1**（文档→KG）— 已实现：`sync_to_kg()` + 接入 `store_document_l1`/`store_documents_l1`
 - [x] **渠道2**（照片→KG）— 已实现：`sync_photo_to_kg()` + 接入 `ingest_photo`
 - [x] **渠道5**（批量整理）— 已实现：`agent/injector/kg_sync.py` KGSync 服务，6小时周期
-- [ ] **渠道3**（聊天→KG）— 待"梦境进化"子Agent方案，与内容整理Agent分工
+- [x] **渠道3**（聊天→KG）— 已实现：dream-evolver 子Agent，睡眠时增量学习+KG写入
 - [ ] **渠道4**（便利贴→KG）— 待确认便利贴存储位置 + 梦境进化方案
 
 **渠道3/4 方向**：聊天→KG 不在主Agent回调中实现，而是由独立的"梦境进化"子Agent负责。该子Agent定期分析对话内容，提取实体/概念/关系写入KG，同时完成内容整理工作。这样主Agent保持轻量，KG提取有独立上下文和LLM调用能力。
