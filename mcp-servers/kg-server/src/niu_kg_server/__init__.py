@@ -482,7 +482,7 @@ def create_document(
     created_at = _get_timestamp()
 
     conn.execute(
-        "MERGE (d:Document {uri: $uri}) ON CREATE SET d.title = $title, d.content = $content, d.source = $source, d.created_at = $created_at SET d.updated_at = $created_at",
+        "MERGE (d:Document {uri: $uri}) ON CREATE SET d.title = $title, d.content = $content, d.source = $source, d.created_at = $created_at",
         {
             "uri": uri,
             "title": title,
