@@ -536,18 +536,30 @@ def sync_to_kg(file_path: str, l1: str, source: str = "document") -> dict:
     失败不影响主流程（向量库写入已成功）。
     """
     try:
-        from niu_kg_server import create_document, create_entity, link_document_entity
+        from niu_kg_server import create_document, create_entity, link_document_entity, get_connection
 
         # 1. 从 file_path 推算 title
         title = Path(file_path).stem
 
-        # 2. 创建 Document 节点
+        # 2. 创建 Document 节点（MERGE 语义，重复入库会覆盖）
         create_document(uri=file_path, title=title, content=l1, source=source)
         logger.info(f"[KG] Document created: {file_path}")
 
-        # 3. 从 L1 提取实体（第4个字段，格式: name:type,name:type）
+        # 3. 清除该文档的旧 MENTIONS 边（防止重新入库时残留过期实体关系）
+        try:
+            conn = get_connection()
+            conn.execute(
+                "MATCH (d:Document {uri: $uri})-[r:MENTIONS]->() DELETE r",
+                {"uri": file_path},
+            )
+        except Exception as e:
+            logger.warning(f"[KG] Failed to clear old MENTIONS for {file_path}: {e}")
+
+        # 4. 从 L1 提取实体（第4个字段，格式: name:type,name:type）
         entities_created = []
         parts = l1.split("|")
+        if len(parts) != 6:
+            logger.warning(f"[KG] L1 has {len(parts)} fields (expected 6), entity extraction may be inaccurate: {l1[:100]}")
         if len(parts) >= 4:
             entity_str = parts[3].strip()
             if entity_str:
