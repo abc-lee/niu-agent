@@ -7,7 +7,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import kuzu
+import niu_kg_server
 from niu_kg_server import _init_schema, explore_node, link_entities, create_entity
+
+
+def _override_conn(conn):
+    original = niu_kg_server._conn
+    niu_kg_server._conn = conn
+    return original
 
 
 def test_explore_node_basic():
@@ -18,18 +25,22 @@ def test_explore_node_basic():
         conn = kuzu.Connection(db)
         _init_schema(conn)
 
-        # Create test entities
-        create_entity("person_zhang", "张三", "人物")
-        create_entity("person_li", "李四", "人物")
-        link_entities("person_zhang", "person_li", "KNOWS", confidence=0.9)
+        orig = _override_conn(conn)
+        try:
+            # Create test entities
+            create_entity("person_zhang", "张三", "人物")
+            create_entity("person_li", "李四", "人物")
+            link_entities("person_zhang", "person_li", "KNOWS", confidence=0.9)
 
-        # Explore from 张三
-        result = explore_node("person_zhang", depth=1, min_confidence=0.5)
+            # Explore from 张三
+            result = explore_node("person_zhang", depth=1, min_confidence=0.5)
 
-        assert "nodes" in result
-        assert "edges" in result
-        assert len(result["nodes"]) == 1  # 李四
-        assert abs(result["edges"][0]["confidence"] - 0.9) < 0.001, f"Confidence should be ~0.9, got {result['edges'][0]['confidence']}"
+            assert "nodes" in result
+            assert "edges" in result
+            assert len(result["nodes"]) == 1  # 李四
+            assert abs(result["edges"][0]["confidence"] - 0.9) < 0.001, f"Confidence should be ~0.9, got {result['edges'][0]['confidence']}"
+        finally:
+            niu_kg_server._conn = orig
 
 
 def test_explore_node_filters_by_confidence():
@@ -40,18 +51,22 @@ def test_explore_node_filters_by_confidence():
         conn = kuzu.Connection(db)
         _init_schema(conn)
 
-        # Create test entities with low confidence
-        create_entity("person_a", "用户A", "人物")
-        create_entity("person_b", "用户B", "人物")
-        link_entities("person_a", "person_b", "KNOWS", confidence=0.3)
+        orig = _override_conn(conn)
+        try:
+            # Create test entities with low confidence
+            create_entity("person_a", "用户A", "人物")
+            create_entity("person_b", "用户B", "人物")
+            link_entities("person_a", "person_b", "KNOWS", confidence=0.3)
 
-        # Explore with high min_confidence - should return no nodes
-        result = explore_node("person_a", depth=1, min_confidence=0.5)
-        assert len(result["nodes"]) == 0
+            # Explore with high min_confidence - should return no nodes
+            result = explore_node("person_a", depth=1, min_confidence=0.5)
+            assert len(result["nodes"]) == 0
 
-        # Explore with low min_confidence - should return node
-        result = explore_node("person_a", depth=1, min_confidence=0.1)
-        assert len(result["nodes"]) == 1
+            # Explore with low min_confidence - should return node
+            result = explore_node("person_a", depth=1, min_confidence=0.1)
+            assert len(result["nodes"]) == 1
+        finally:
+            niu_kg_server._conn = orig
 
 
 def test_explore_node_not_found():
@@ -62,8 +77,30 @@ def test_explore_node_not_found():
         conn = kuzu.Connection(db)
         _init_schema(conn)
 
-        result = explore_node("nonexistent", depth=1)
-        assert "error" in result
+        orig = _override_conn(conn)
+        try:
+            result = explore_node("nonexistent", depth=1)
+            assert "error" in result
+        finally:
+            niu_kg_server._conn = orig
+
+
+def test_explore_node_invalid_direction():
+    """Explore should return error for invalid direction."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = Path(tmpdir) / "test.db"
+        db = kuzu.Database(str(db_path))
+        conn = kuzu.Connection(db)
+        _init_schema(conn)
+
+        orig = _override_conn(conn)
+        try:
+            create_entity("person_a", "用户A", "人物")
+            result = explore_node("person_a", depth=1, direction="upward")
+            assert "error" in result
+            assert "Invalid direction" in result["error"]
+        finally:
+            niu_kg_server._conn = orig
 
 
 def test_explore_node_depth():
@@ -74,17 +111,21 @@ def test_explore_node_depth():
         conn = kuzu.Connection(db)
         _init_schema(conn)
 
-        # Create chain: A -> B -> C
-        create_entity("node_a", "节点A", "人物")
-        create_entity("node_b", "节点B", "人物")
-        create_entity("node_c", "节点C", "人物")
-        link_entities("node_a", "node_b", "KNOWS", confidence=0.9)
-        link_entities("node_b", "node_c", "KNOWS", confidence=0.9)
+        orig = _override_conn(conn)
+        try:
+            # Create chain: A -> B -> C
+            create_entity("node_a", "节点A", "人物")
+            create_entity("node_b", "节点B", "人物")
+            create_entity("node_c", "节点C", "人物")
+            link_entities("node_a", "node_b", "KNOWS", confidence=0.9)
+            link_entities("node_b", "node_c", "KNOWS", confidence=0.9)
 
-        # Depth 1: should only find B
-        result = explore_node("node_a", depth=1)
-        assert len(result["nodes"]) == 1
+            # Depth 1: should only find B
+            result = explore_node("node_a", depth=1)
+            assert len(result["nodes"]) == 1
 
-        # Depth 2: should find B and C
-        result = explore_node("node_a", depth=2)
-        assert len(result["nodes"]) == 2
+            # Depth 2: should find B and C
+            result = explore_node("node_a", depth=2)
+            assert len(result["nodes"]) == 2
+        finally:
+            niu_kg_server._conn = orig
