@@ -293,7 +293,7 @@ graph.on('node:dblclick', async (e) => {
       const srcId = edge.source.startsWith('entity:') ? edge.source : `entity:${edge.source}`;
       const tgtId = edge.target.startsWith('entity:') ? edge.target : `entity:${edge.target}`;
       if (!existingIds.has(srcId) || !existingIds.has(tgtId)) return;
-      const edgeExists = currentData.edges.some(e => e.source === srcId && e.target === tgtId);
+      const edgeExists = currentData.edges.some(e => e.source === srcId && e.target === tgtId && e.relation === edge.relation);
       if (!edgeExists) {
         const newEdge = { source: srcId, target: tgtId, relation: edge.relation, confidence: edge.confidence, edgeType: 'RELATED_TO' };
         currentData.edges.push(newEdge);
