@@ -10,6 +10,20 @@
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+  <!-- Loading Overlay -->
+  <div id="loading-overlay" style="position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(250,248,240,0.9);display:none;align-items:center;justify-content:center;z-index:1000;">
+    <div style="text-align:center;font-family:'Ma Shan Zheng',cursive;font-size:24px;color:#5a8c96;">加载中...</div>
+  </div>
+
+  <!-- Empty State -->
+  <div id="empty-state" style="position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(250,248,240,0.95);display:none;align-items:center;justify-content:center;z-index:999;">
+    <div style="text-align:center;font-family:'Ma Shan Zheng',cursive;color:#888;">
+      <div style="font-size:48px;margin-bottom:16px;">🕸️</div>
+      <div style="font-size:20px;">知识图谱暂无数据</div>
+      <div style="font-size:14px;margin-top:8px;">开始对话以构建你的知识网络</div>
+    </div>
+  </div>
+
   <!-- Toolbar -->
   <div class="toolbar">
     <div class="search-box">
