@@ -4,23 +4,20 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>知识图谱 - Niu</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Caveat:wght@400;600&family=Ma+Shan+Zheng&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
   <!-- Loading Overlay -->
   <div id="loading-overlay" style="position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(250,248,240,0.9);display:none;align-items:center;justify-content:center;z-index:1000;">
-    <div style="text-align:center;font-family:'Ma Shan Zheng',cursive;font-size:24px;color:#5a8c96;">加载中...</div>
+    <div style="text-align:center;font-size:16px;color:#888;">加载中...</div>
   </div>
 
   <!-- Empty State -->
   <div id="empty-state" style="position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(250,248,240,0.95);display:none;align-items:center;justify-content:center;z-index:999;">
-    <div style="text-align:center;font-family:'Ma Shan Zheng',cursive;color:#888;">
-      <div style="font-size:48px;margin-bottom:16px;">🕸️</div>
-      <div style="font-size:20px;">知识图谱暂无数据</div>
-      <div style="font-size:14px;margin-top:8px;">开始对话以构建你的知识网络</div>
+    <div style="text-align:center;color:#aaa;">
+      <div style="font-size:40px;margin-bottom:12px;">🕸️</div>
+      <div style="font-size:16px;">知识图谱暂无数据</div>
+      <div style="font-size:12px;margin-top:6px;">开始对话以构建你的知识网络</div>
     </div>
   </div>
 
@@ -30,19 +27,19 @@
       <span class="search-icon">🔍</span>
       <input type="text" id="searchInput" placeholder="搜索节点...">
     </div>
-    <div class="filters">
-      <button class="filter-btn active" data-type="all">全部</button>
-      <button class="filter-btn" data-type="人物">人物</button>
-      <button class="filter-btn" data-type="文档">文档</button>
-      <button class="filter-btn" data-type="照片">照片</button>
-      <button class="filter-btn" data-type="便签">便签</button>
-      <button class="filter-btn" data-type="链接">链接</button>
-      <button class="filter-btn" data-type="组织">组织</button>
+    <div class="perspective-btns">
+      <button class="persp-btn" data-core="person">人物</button>
+      <button class="persp-btn" data-core="organization">组织</button>
+      <button class="persp-btn" data-core="document">文档</button>
+      <button class="persp-btn" data-core="concept">概念</button>
     </div>
   </div>
 
   <!-- Graph Container -->
   <div id="graph-container"></div>
+
+  <!-- Node Tooltip -->
+  <div id="node-tooltip" class="tooltip hidden"></div>
 
   <!-- Detail Panel -->
   <div id="detail-panel" class="detail-panel hidden">
