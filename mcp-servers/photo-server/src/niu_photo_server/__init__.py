@@ -504,31 +504,85 @@ def _init_schema(conn: sqlite3.Connection) -> None:
 
 
 # ============== 共享向量服务 ==============
-
-EMBEDDING_SERVICE_URL = os.environ.get("EMBEDDING_SERVICE_URL", "http://127.0.0.1:9877")
+# 同进程架构：直接调用 niu_api.internal.embedding，不走 HTTP
 
 
 def call_embedding_service(endpoint: str, data: dict) -> dict | None:
-    """Call the shared embedding service."""
-    import urllib.request
-    import urllib.error
-
+    """直接调用 niu_api.internal.embedding（同进程，无 HTTP 开销）。"""
     try:
-        url = f"{EMBEDDING_SERVICE_URL}{endpoint}"
-        body = json.dumps(data).encode("utf-8")
-        req = urllib.request.Request(
-            url,
-            data=body,
-            headers={"Content-Type": "application/json"},
-        )
-        with urllib.request.urlopen(req, timeout=30) as response:
-            return json.loads(response.read().decode("utf-8"))
-    except urllib.error.URLError as e:
-        logger.warning(f"Embedding service unavailable: {e}")
-        return None
+        from niu_api.internal.embedding import encode, similarity
+
+        if endpoint == "/encode":
+            text = data.get("text", "")
+            embedding = encode(text)
+            return {"embedding": embedding}
+        elif endpoint == "/similarity":
+            text1 = data.get("text1", "")
+            text2 = data.get("text2", "")
+            sim = similarity(text1, text2)
+            return {"similarity": sim}
     except Exception as e:
-        logger.warning(f"Failed to call embedding service: {e}")
+        logger.warning(f"[Embedding] 同进程调用失败: {e}")
         return None
+
+
+# ============== 知识图谱同步 ==============
+
+
+def sync_to_kg(file_path: str, l1: str, source: str = "document") -> dict:
+    """同步文档和实体到知识图谱（KuzuDB）。
+
+    从 L1 摘要中提取实体，写入 kg-server 的 Document + Entity 节点并建立 MENTIONS 关系。
+    失败不影响主流程（向量库写入已成功）。
+    """
+    try:
+        from niu_kg_server import create_document, create_entity, link_document_entity
+
+        # 1. 从 file_path 推算 title
+        title = Path(file_path).stem
+
+        # 2. 创建 Document 节点
+        create_document(uri=file_path, title=title, content=l1, source=source)
+        logger.info(f"[KG] Document created: {file_path}")
+
+        # 3. 从 L1 提取实体（第4个字段，格式: name:type,name:type）
+        entities_created = []
+        parts = l1.split("|")
+        if len(parts) >= 4:
+            entity_str = parts[3].strip()
+            if entity_str:
+                for pair in entity_str.split(","):
+                    pair = pair.strip()
+                    if ":" in pair:
+                        name, etype = pair.rsplit(":", 1)
+                        name = name.strip()
+                        etype = etype.strip().lower()
+                    else:
+                        name = pair.strip()
+                        etype = "other"
+                    if not name:
+                        continue
+
+                    entity_id = f"{etype}:{name}"
+                    try:
+                        create_entity(
+                            id=entity_id, name=name,
+                            entity_type=etype, description=f"Extracted from {title}",
+                        )
+                        link_document_entity(doc_uri=file_path, entity_id=entity_id, confidence=0.7)
+                        entities_created.append(entity_id)
+                    except Exception as e:
+                        logger.warning(f"[KG] Entity creation failed for {name}: {e}")
+
+        logger.info(f"[KG] Sync complete: {len(entities_created)} entities linked to {file_path}")
+        return {"status": "success", "doc_uri": file_path, "entities": entities_created}
+
+    except ImportError:
+        logger.warning("[KG] niu_kg_server not available, skipping KG sync")
+        return {"status": "skipped", "reason": "kg-server not importable"}
+    except Exception as e:
+        logger.warning(f"[KG] Sync failed: {e}")
+        return {"status": "error", "reason": str(e)}
 
 
 # ============== 模型路径（人脸识别用） ==============
@@ -2264,6 +2318,14 @@ def store_document_l1(file_path: str, l1: str, l2: str | None = None) -> dict:
                 f"[STORE_L1] 向量生成成功，维度: {len(embedding_result['embedding'])}"
             )
 
+        # Embedding 失败则直接返回错误（无向量的记录无法被检索）
+        if embedding_blob is None:
+            return {
+                "status": "error",
+                "reason": "Embedding 服务不可用，无法生成向量。请确保 embedding 服务已启动。",
+                "file_path": file_path,
+            }
+
         # 直接写入向量数据库
         conn = get_vector_db_connection()
 
@@ -2286,11 +2348,15 @@ def store_document_l1(file_path: str, l1: str, l2: str | None = None) -> dict:
 
         logger.info(f"[STORE_L1] L1 存储成功: {l1_id}")
 
+        # 同步到知识图谱（失败不影响向量库写入）
+        kg_result = sync_to_kg(file_path, l1, source="document")
+
         return {
             "status": "success",
             "l1_id": l1_id,
             "file_path": file_path,
             "message": "文档摘要已存储到向量库",
+            "kg_sync": kg_result,
         }
 
     except Exception as e:
@@ -2345,6 +2411,18 @@ def store_documents_l1(documents: list[dict]) -> dict:
                         embedding_result["embedding"], dtype=np.float32
                     ).tobytes()
 
+                # Embedding 失败则跳过（无向量的记录无法被检索，是废数据）
+                if embedding_blob is None:
+                    results.append(
+                        {
+                            "file_path": file_path,
+                            "status": "error",
+                            "reason": "Embedding 服务不可用，无法生成向量",
+                        }
+                    )
+                    failed_count += 1
+                    continue
+
                 # 存储 L1
                 metadata = {
                     "type": "l1",
@@ -2380,12 +2458,16 @@ def store_documents_l1(documents: list[dict]) -> dict:
                         (l2_id, l2, l2_embedding_blob, json.dumps(l2_metadata)),
                     )
 
+                # 同步到知识图谱（失败不影响向量库写入）
+                kg_result = sync_to_kg(file_path, l1, source="document")
+
                 results.append(
                     {
                         "file_path": file_path,
                         "status": "success",
                         "l1_id": l1_id,
                         "l2_id": l2_id,
+                        "kg_sync": kg_result,
                     }
                 )
                 success_count += 1
