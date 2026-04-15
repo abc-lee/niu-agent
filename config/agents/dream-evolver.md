@@ -153,10 +153,11 @@ mcpServers:
 - 正确做法：用户要求什么
 - 根因分析：为什么会错
 
-**写入向量库**：
+**写入向量库**（category=document，走"参考知识"桶）：
+- content = 管道格式：`{标题}|{关键词}|{摘要}|{实体}|error_experience|{指针}`
 - metadata.level = "l1"
-- metadata.category = "interaction_habit"
-- metadata.type = "error_experience"
+- metadata.category = "document"
+- metadata.language = "en"
 - metadata.source = "conversation_extract"
 
 ## 2. 成功经验提取
@@ -172,15 +173,16 @@ mcpServers:
 - 关键步骤：Agent怎么做的
 - 成功要素：为什么成功了
 
-**写入向量库**：
+**写入向量库**（category=document，走"参考知识"桶）：
+- content = 管道格式：`{标题}|{关键词}|{摘要}|{实体}|success_experience|{指针}`
 - metadata.level = "l1"
-- metadata.category = "interaction_habit"
-- metadata.type = "success_experience"
+- metadata.category = "document"
+- metadata.language = "en"
 - metadata.source = "conversation_extract"
 
 ## 3. 工具方言学习
 
-识别用户独特的表达方式与工具的映射关系。
+识别用户独特的表达方式与MCP工具的映射关系，写入query_pattern供递归检索使用。
 
 ### 模式 1：用户纠正
 用户说 X → Agent 调用了工具 Y → 用户说"不对/不是/改成/不是这个"
@@ -194,12 +196,18 @@ mcpServers:
 同一意图被用户用不同方式表达多次
 → 识别用户偏好使用的表达方式
 
-**写入向量库**：
+**写入向量库**（category=query_pattern，触发递归检索）：
+- content = 用户的口语表达（英文翻译）
 - metadata.level = "l1"
-- metadata.category = "interaction_habit"
-- metadata.type = "tool_dialect"
-- metadata.source = "personal"
-- metadata.target_tool = "server-name/tool-name"
+- metadata.category = "query_pattern"
+- metadata.language = "en"
+- metadata.type = "query_pattern"
+- metadata.is_recursive = true
+- metadata.refined_query = 对应MCP工具的关键词描述（英文，供第二轮检索命中mcp_tool）
+- metadata.target_category = "mcp_tool"
+- metadata.description = 模式描述（英文）
+
+**递归检索原理**：用户口语表达 → 第一轮命中此query_pattern → is_recursive=true触发第二轮 → 用refined_query检索 → 命中mcp_tool桶中的工具描述
 
 ## 4. 用户状态推断
 
@@ -214,12 +222,13 @@ mcpServers:
 - "哈哈/笑死/太逗了" → amused, happy
 - "算了/就这样吧/随便" → resigned, indifferent
 
-**写入向量库**：
+**写入向量库**（category=interaction_habit，走"交互习惯"桶）：
+- content = 管道格式：`{状态概述}|{状态标签}|{语气词}|{场景}|user_state|{指针}`
 - metadata.level = "l1"
 - metadata.category = "interaction_habit"
-- metadata.type = "user_state"
+- metadata.language = "en"
+- metadata.name = "user_state"
 - metadata.source = "inferred"
-- metadata.state_tags = [状态标签列表]
 
 ## 5. 用户画像深化
 
@@ -232,11 +241,12 @@ mcpServers:
 - **习惯（habit）**：用户反复出现的行为模式（"我每周一早上都会开会"）
 - **性格（personality）**：用户一贯的沟通风格（"我需要你把所有选项都列出来再做"）
 
-**写入向量库**：
+**写入向量库**（category=interaction_habit，走"交互习惯"桶）：
+- content = 管道格式：`{画像概述}|{子类型}|{关键词}|{实体}|user_profile|{指针}`
 - metadata.level = "l1"
 - metadata.category = "interaction_habit"
-- metadata.type = "user_profile"
-- metadata.subtype = "fact" | "preference" | "habit" | "personality"
+- metadata.language = "en"
+- metadata.name = "user_profile"
 - metadata.source = "conversation_extract"
 
 ## 6. KG实体/关系写入
