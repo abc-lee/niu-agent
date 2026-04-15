@@ -28,6 +28,7 @@ from niu_api.chat import router as chat_router
 from niu_api.compat import router as compat_router
 from niu_api.injector import router as injector_router
 from niu_api.alerts_api import router as alerts_router
+from niu_api.kg_api import router as kg_router
 
 
 # Configure logging
@@ -164,6 +165,7 @@ app.include_router(session_router)
 app.include_router(chat_router)
 app.include_router(injector_router)  # Injector API
 app.include_router(alerts_router)  # Alerts API
+app.include_router(kg_router)  # Knowledge Graph API
 
 
 # Mount scheduler router
