@@ -238,11 +238,18 @@
       syncNotesToBackend(notes);
     }
 
-    // 同步便签到后端（简化版：仅同步最新的便签）
+    // 同步便签到后端（批量同步）
     async function syncNotesToBackend(notes) {
-      // 目前保持 localStorage 作为主存储
-      // 后端用于文件拖拽和其他功能
-      // 未来可以完全迁移到后端
+      try {
+        if (window.electronAPI && window.electronAPI.createNote) {
+          for (const note of notes) {
+            await window.electronAPI.createNote(note);
+          }
+          console.log(`已同步 ${notes.length} 条便签到后端`);
+        }
+      } catch (e) {
+        console.error('批量同步便签到后端失败:', e);
+      }
     }
 
     // 创建便签（调用后端）
@@ -338,6 +345,13 @@
           notes[noteIndex].content = content;
           notes[noteIndex].updatedAt = Date.now();
           saveNotes(notes);
+
+          // 同步更新到后端
+          if (window.electronAPI && window.electronAPI.updateNote) {
+            window.electronAPI.updateNote(notes[noteIndex]).catch(e =>
+              console.error('更新便签到后端失败:', e)
+            );
+          }
         }
       }, 500);
     }
@@ -535,17 +549,48 @@
     });
 
     // ========== 初始化 ==========
-    function init() {
-      // 加载保存的尺寸
-      window.electronAPI.getStickySize().then(size => {
-        if (size && size >= MIN_SIZE && size <= MAX_SIZE) {
-          stickySize = size;
+    async function loadNotesFromBackend() {
+      // 尝试从后端加载便签
+      try {
+        const resp = await fetch('http://127.0.0.1:9876/api/notes');
+        const data = await resp.json();
+        if (data.status === 'ok' && data.notes && data.notes.length > 0) {
+          // 后端有数据，转换为前端格式并覆盖 localStorage
+          const backendNotes = data.notes.map(n => ({
+            id: n.id,
+            content: n.content,
+            createdAt: new Date(n.createdAt).getTime(),
+            updatedAt: n.updatedAt ? new Date(n.updatedAt).getTime() : undefined
+          }));
+          localStorage.setItem('nn_notes', JSON.stringify(backendNotes));
+          console.log(`从后端加载了 ${backendNotes.length} 条便签`);
+          return;
         }
-        applySize();
-        renderOldSticky();
-      }).catch(() => {
-        applySize();
-        renderOldSticky();
+      } catch (e) {
+        console.log('后端便签加载失败，使用本地数据:', e.message);
+      }
+
+      // 后端无数据或加载失败，把 localStorage 数据同步到后端
+      const localNotes = getNotes();
+      if (localNotes.length > 0) {
+        syncNotesToBackend(localNotes);
+      }
+    }
+
+    function init() {
+      // 先从后端加载便签数据
+      loadNotesFromBackend().then(() => {
+        // 加载保存的尺寸
+        window.electronAPI.getStickySize().then(size => {
+          if (size && size >= MIN_SIZE && size <= MAX_SIZE) {
+            stickySize = size;
+          }
+          applySize();
+          renderOldSticky();
+        }).catch(() => {
+          applySize();
+          renderOldSticky();
+        });
       });
     }
 
