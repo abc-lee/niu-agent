@@ -482,7 +482,7 @@ def create_document(
     created_at = _get_timestamp()
 
     conn.execute(
-        "MERGE (d:Document {uri: $uri}) SET d.title = $title, d.content = $content, d.source = $source, d.created_at = $created_at",
+        "MERGE (d:Document {uri: $uri}) ON CREATE SET d.title = $title, d.content = $content, d.source = $source, d.created_at = $created_at SET d.updated_at = $created_at",
         {
             "uri": uri,
             "title": title,
@@ -503,7 +503,7 @@ def create_entity(
     ts = _get_timestamp()
 
     conn.execute(
-        "MERGE (e:Entity {id: $id}) SET e.name = $name, e.type = $type, e.description = $description, e.created_at = $ts, e.updated_at = $ts",
+        "MERGE (e:Entity {id: $id}) ON CREATE SET e.name = $name, e.type = $type, e.description = $description, e.created_at = $ts SET e.type = $type, e.updated_at = $ts",
         {"id": id, "name": name, "type": entity_type, "description": description, "ts": ts},
     )
 
@@ -530,7 +530,7 @@ def link_document_entity(doc_uri: str, entity_id: str, confidence: float | None 
     ts = _get_timestamp()
 
     conn.execute(
-        "MATCH (d:Document {uri: $doc_uri}), (e:Entity {id: $entity_id}) MERGE (d)-[:MENTIONS {confidence: $conf, created_at: $ts}]->(e)",
+        "MATCH (d:Document {uri: $doc_uri}), (e:Entity {id: $entity_id}) MERGE (d)-[r:MENTIONS]->(e) ON CREATE SET r.confidence = $conf, r.created_at = $ts ON MATCH SET r.confidence = $conf",
         {"doc_uri": doc_uri, "entity_id": entity_id, "conf": conf, "ts": ts},
     )
 
@@ -544,7 +544,7 @@ def link_document_concept(doc_uri: str, concept_name: str, confidence: float | N
     ts = _get_timestamp()
 
     conn.execute(
-        "MATCH (d:Document {uri: $doc_uri}), (c:Concept {name: $concept_name}) MERGE (d)-[:CONTAINS {confidence: $conf, created_at: $ts}]->(c)",
+        "MATCH (d:Document {uri: $doc_uri}), (c:Concept {name: $concept_name}) MERGE (d)-[r:CONTAINS]->(c) ON CREATE SET r.confidence = $conf, r.created_at = $ts ON MATCH SET r.confidence = $conf",
         {"doc_uri": doc_uri, "concept_name": concept_name, "conf": conf, "ts": ts},
     )
 
@@ -558,7 +558,7 @@ def link_entities(entity1_id: str, entity2_id: str, relation: str, confidence: f
     ts = _get_timestamp()
 
     conn.execute(
-        "MATCH (e1:Entity {id: $e1_id}), (e2:Entity {id: $e2_id}) MERGE (e1)-[:RELATED_TO {relation: $relation, confidence: $conf, created_at: $ts}]->(e2)",
+        "MATCH (e1:Entity {id: $e1_id}), (e2:Entity {id: $e2_id}) MERGE (e1)-[r:RELATED_TO {relation: $relation}]->(e2) ON CREATE SET r.confidence = $conf, r.created_at = $ts ON MATCH SET r.confidence = $conf",
         {"e1_id": entity1_id, "e2_id": entity2_id, "relation": relation, "conf": conf, "ts": ts},
     )
 
@@ -1447,7 +1447,7 @@ def graph_snapshot(limit: int = 200, min_confidence: float = 0.0) -> dict[str, A
         description = content[:200] + "..." if len(content) > 200 else content
         nodes.append({
             "id": doc_id, "label": row[1] or row[0], "nodeType": "Document",
-            "source": row[2] or "", "description": description
+            "uri": row[0], "source": row[2] or "", "description": description
         })
         node_ids.add(doc_id)
 
