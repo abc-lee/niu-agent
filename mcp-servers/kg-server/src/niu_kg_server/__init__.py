@@ -227,6 +227,20 @@ TOOL_SCHEMAS = {
             "required": ["cypher"],
         },
     },
+    "explore_node": {
+        "name": "explore_node",
+        "description": "从指定实体出发探索N层邻居和边，支持置信度过滤",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "entity_id": {"type": "string", "description": "实体ID或名称（支持模糊匹配）"},
+                "depth": {"type": "integer", "default": 2, "description": "遍历深度（1-5）"},
+                "min_confidence": {"type": "number", "default": 0.0, "description": "最小置信度过滤（0.0-1.0）"},
+                "direction": {"type": "string", "default": "both", "enum": ["both", "outgoing", "incoming"], "description": "方向过滤"}
+            },
+            "required": ["entity_id"],
+        },
+    },
 }
 
 
@@ -513,6 +527,123 @@ def query_graph(cypher: str) -> list[dict[str, Any]]:
         rows.append(row)
 
     return rows
+
+
+def explore_node(entity_id: str, depth: int = 2, min_confidence: float = 0.0, direction: str = "both") -> dict[str, Any]:
+    """Explore graph from entity, returning N-layer neighbors.
+
+    Args:
+        entity_id: Entity ID or name (supports fuzzy matching)
+        depth: Traversal depth (1-5)
+        min_confidence: Minimum confidence filter (0.0-1.0)
+        direction: "both" | "outgoing" | "incoming"
+
+    Returns:
+        {
+            "center": {"id": "...", "name": "...", "type": "..."},
+            "nodes": [{"id": "...", "name": "...", "type": "...", "distance": 1}],
+            "edges": [{"source": "...", "target": "...", "relation": "...", "confidence": 0.9}],
+            "stats": {"nodes": N, "edges": M, "max_depth": D}
+        }
+    """
+    conn = get_connection()
+    depth = max(1, min(5, depth))
+
+    # Find center node (fuzzy match by name or exact ID)
+    center_result = conn.execute(
+        "MATCH (e:Entity) WHERE e.id = $id OR e.name CONTAINS $id RETURN e.id, e.name, e.type LIMIT 1",
+        {"id": entity_id}
+    )
+    center_rows = list(center_result)
+    if not center_rows:
+        return {"error": f"Entity '{entity_id}' not found"}
+
+    center = {
+        "id": center_rows[0][0],
+        "name": center_rows[0][1],
+        "type": center_rows[0][2]
+    }
+
+    # BFS traversal with confidence filter
+    nodes = []
+    edges = []
+    visited = {center["id"]}
+    frontier = [center["id"]]
+    seen_edges = set()
+
+    for d in range(1, depth + 1):
+        next_frontier = []
+        for node_id in frontier:
+            # Get outgoing neighbors
+            if direction in ("both", "outgoing"):
+                query = f"""
+                    MATCH (n {{id: $node_id}})-[r]->(neighbor)
+                    WHERE r.confidence >= $min_confidence
+                    RETURN n.id, n.name, neighbor.id, neighbor.name, neighbor.type, r.relation, r.confidence
+                """
+                result = conn.execute(query, {"node_id": node_id, "min_confidence": min_confidence})
+                for row in result:
+                    neighbor_id = row[2]
+                    if neighbor_id not in visited:
+                        visited.add(neighbor_id)
+                        next_frontier.append(neighbor_id)
+                        nodes.append({
+                            "id": neighbor_id,
+                            "name": row[3],
+                            "type": row[4],
+                            "distance": d
+                        })
+                    edge_key = (row[0], row[2], row[5])
+                    if edge_key not in seen_edges:
+                        seen_edges.add(edge_key)
+                        edges.append({
+                            "source": row[0],
+                            "target": row[2],
+                            "relation": row[5],
+                            "confidence": row[6]
+                        })
+
+            # Get incoming neighbors
+            if direction in ("both", "incoming"):
+                query = f"""
+                    MATCH (neighbor)-[r]->(n {{id: $node_id}})
+                    WHERE r.confidence >= $min_confidence
+                    RETURN neighbor.id, neighbor.name, n.id, n.name, neighbor.type, r.relation, r.confidence
+                """
+                result = conn.execute(query, {"node_id": node_id, "min_confidence": min_confidence})
+                for row in result:
+                    neighbor_id = row[0]
+                    if neighbor_id not in visited:
+                        visited.add(neighbor_id)
+                        next_frontier.append(neighbor_id)
+                        nodes.append({
+                            "id": neighbor_id,
+                            "name": row[1],
+                            "type": row[4],
+                            "distance": d
+                        })
+                    edge_key = (row[0], row[2], row[5])
+                    if edge_key not in seen_edges:
+                        seen_edges.add(edge_key)
+                        edges.append({
+                            "source": row[0],
+                            "target": row[2],
+                            "relation": row[5],
+                            "confidence": row[6]
+                        })
+
+        frontier = next_frontier
+
+    return {
+        "center": center,
+        "nodes": nodes,
+        "edges": edges,
+        "stats": {
+            "nodes": len(nodes),
+            "edges": len(edges),
+            "max_depth": depth
+        }
+    }
 
 
 def get_document(uri: str) -> dict[str, Any] | None:
