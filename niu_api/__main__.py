@@ -122,6 +122,14 @@ async def lifespan(app: FastAPI):
         cleanup_thread = threading.Thread(target=delayed_cleanup, daemon=True)
         cleanup_thread.start()
 
+    # 8. Start KG batch sync (periodic backfill + orphan cleanup)
+    try:
+        from agent.injector import get_kg_sync
+        kg_sync = get_kg_sync(auto_start=True)
+        logger.info("KG batch sync started (interval: 6h)")
+    except Exception as e:
+        logger.warning(f"KG batch sync start failed: {e}")
+
     yield
 
     # Shutdown
