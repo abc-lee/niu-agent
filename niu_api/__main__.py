@@ -29,6 +29,7 @@ from niu_api.compat import router as compat_router
 from niu_api.injector import router as injector_router
 from niu_api.alerts_api import router as alerts_router
 from niu_api.kg_api import router as kg_router
+from niu_api.notes_api import router as notes_router
 
 
 # Configure logging
@@ -50,6 +51,11 @@ async def lifespan(app: FastAPI):
     from agent.session import get_session_store
     store = await get_session_store()
     logger.info("Session store initialized")
+
+    # 1.5. Initialize notes database
+    from niu_api.notes import init_db as notes_init_db
+    await notes_init_db()
+    logger.info("Notes DB initialized")
 
     # 2. Preload embedding model
     from niu_api.internal.embedding import preload as preload_embedding
@@ -183,6 +189,7 @@ app.include_router(chat_router)
 app.include_router(injector_router)  # Injector API
 app.include_router(alerts_router)  # Alerts API
 app.include_router(kg_router)  # Knowledge Graph API
+app.include_router(notes_router)  # Notes API
 
 
 # Mount scheduler router
