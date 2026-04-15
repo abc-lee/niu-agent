@@ -304,6 +304,44 @@ sklearn 是 C 扩展，在 Windows + stdio 通信 + asyncio 事件循环中动�
 
 ## 更新日志
 
+### 2026-04-15
+
+#### 新增：KG数据流入5条渠道全部实现
+
+知识图谱（KuzuDB）从空壳变为有真实数据流入：
+
+| 渠道 | 实现方式 | 关键文件 |
+|------|---------|---------|
+| 1 文档→KG | `sync_to_kg()` 程序化调用 | `photo-server/__init__.py` |
+| 2 照片→KG | `sync_photo_to_kg()` 程序化调用 | `photo-server/__init__.py` |
+| 3 聊天→KG | dream-evolver 子Agent，睡眠时增量学习+KG写入 | `config/agents/dream-evolver.md` |
+| 4 便利贴→KG | notes API + `sync_note_to_kg()` | `niu_api/notes_api.py` |
+| 5 批量整理 | KGSync 服务，6小时周期 | `agent/injector/kg_sync.py` |
+
+#### 新增：梦境进化子Agent（dream-evolver）
+
+从 context-manager 拆出学习/建模职责，新增KG实体/关系写入。
+
+- **执行顺序**：sleep → dream-evolver（增量学习+KG写入）→ context-manager（压缩删除）
+- **6项工作**：错误经验、成功经验、工具方言、用户状态、用户画像、KG实体/关系写入
+- **增量游标**：`~/.niu/last_dream_evolve.json`，避免重复处理
+- **metadata对齐**：工具方言→query_pattern（递归检索），经验→document（参考知识桶），状态/画像→interaction_habit（交互习惯桶）
+- **关键文件**：`config/agents/dream-evolver.md`、`niu_api/compat.py`、`config/agents/context-manager.md`
+
+#### 新增：便利贴后端API + SQLite持久化
+
+便利贴从纯localStorage迁移到后端存储：
+
+- **新建**：`niu_api/notes.py`（SQLite数据层）、`niu_api/notes_api.py`（FastAPI路由）
+- **端点**：POST/GET/PUT/DELETE `/api/notes`
+- **数据库**：`~/.niu/notes.db`
+- **前端迁移**：启动时从后端加载，更新时调updateNote，批量同步实现
+- **KG写入**：便利贴创建/编辑时写入KG Document节点+实体提取（正则规则）
+
+#### 重构：context-manager精简为压缩专用
+
+移除5个学习/建模章节，只保留压缩逻辑：l0/l1/l2压缩、会话单元识别、消息删除规则、强制压缩模式。
+
 ### 2026-04-02
 
 #### 修复：照片拖入卡死问题
