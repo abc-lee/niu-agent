@@ -54,7 +54,7 @@ class KGSync:
 
         # 1. 从 photos.db 补建 KG 节点
         try:
-            p, e = self._sync_photos_db(create_document, create_entity, link_document_entity, link_entities)
+            p, e = self._sync_photos_db(create_document, create_entity, link_document_entity, link_entities, get_connection)
             stats["photos_synced"] = p
             stats["persons_synced"] = e
         except Exception as e:
@@ -88,8 +88,8 @@ class KGSync:
         )
         return stats
 
-    def _sync_photos_db(self, create_document, create_entity, link_document_entity, link_entities) -> tuple[int, int]:
-        """从 photos.db 补建 KG 节点。
+    def _sync_photos_db(self, create_document, create_entity, link_document_entity, link_entities, get_connection) -> tuple[int, int]:
+        """从 photos.db 补建 KG 节点（仅补建缺失的）。
 
         Returns:
             (photos_synced, persons_synced)
@@ -98,82 +98,103 @@ class KGSync:
         if not photos_db_path.exists():
             return 0, 0
 
+        # 获取 KG 中已有节点，避免重复创建
+        kg_conn = get_connection()
+        existing_person_ids = set()
+        existing_doc_uris = set()
+        try:
+            result = kg_conn.execute("MATCH (e:Entity) WHERE e.type = 'person' RETURN e.id")
+            for row in result:
+                existing_person_ids.add(row[0])
+        except Exception:
+            pass
+        try:
+            result = kg_conn.execute("MATCH (d:Document) WHERE d.source = 'photo' RETURN d.uri")
+            for row in result:
+                existing_doc_uris.add(row[0])
+        except Exception:
+            pass
+
         conn = sqlite3.connect(str(photos_db_path))
         conn.row_factory = sqlite3.Row
 
-        # 补建 person Entity 节点
-        persons_synced = 0
-        rows = conn.execute("SELECT id, name, auto_label FROM persons").fetchall()
-        for row in rows:
-            person_id = row["id"]
-            person_name = row["name"] or row["auto_label"] or person_id
-            entity_id = f"person:{person_id}"
-            try:
-                create_entity(
-                    id=entity_id, name=person_name,
-                    entity_type="person", description="Backfilled from photos.db",
-                )
-                persons_synced += 1
-            except Exception as e:
-                logger.debug(f"[KGSync] Person entity failed for {person_name}: {e}")
-
-        # 补建 photo Document 节点 + MENTIONS 边
-        photos_synced = 0
-        rows = conn.execute(
-            "SELECT p.id, p.file_path, p.abstract, f.person_id "
-            "FROM photos p LEFT JOIN faces f ON p.id = f.photo_id"
-        ).fetchall()
-
-        # 按 photo_id 分组
-        photo_map: dict[str, dict] = {}
-        for row in rows:
-            pid = row["id"]
-            if pid not in photo_map:
-                photo_map[pid] = {
-                    "file_path": row["file_path"],
-                    "abstract": row["abstract"] or "",
-                    "person_ids": [],
-                }
-            if row["person_id"]:
-                photo_map[pid]["person_ids"].append(row["person_id"])
-
-        for pid, info in photo_map.items():
-            file_path = info["file_path"]
-            if not file_path:
-                continue
-            try:
-                title = Path(file_path).stem
-                create_document(uri=file_path, title=title, content=info["abstract"], source="photo")
-                for person_id in info["person_ids"]:
-                    link_document_entity(
-                        doc_uri=file_path,
-                        entity_id=f"person:{person_id}",
-                        confidence=0.7,
+        try:
+            # 补建 person Entity 节点（仅缺失的）
+            persons_synced = 0
+            rows = conn.execute("SELECT id, name, auto_label FROM persons").fetchall()
+            for row in rows:
+                person_id = row["id"]
+                entity_id = f"person:{person_id}"
+                if entity_id in existing_person_ids:
+                    continue
+                person_name = row["name"] or row["auto_label"] or person_id
+                try:
+                    create_entity(
+                        id=entity_id, name=person_name,
+                        entity_type="person", description="Backfilled from photos.db",
                     )
-                photos_synced += 1
-            except Exception as e:
-                logger.debug(f"[KGSync] Photo document failed for {file_path}: {e}")
+                    persons_synced += 1
+                except Exception as e:
+                    logger.debug(f"[KGSync] Person entity failed for {person_name}: {e}")
 
-        # 补建 co_occurrence RELATED_TO 边
-        rows = conn.execute(
-            "SELECT person_a_id, person_b_id, count FROM co_occurrences"
-        ).fetchall()
-        for row in rows:
-            a_id = row["person_a_id"]
-            b_id = row["person_b_id"]
-            count = row["count"]
-            try:
-                link_entities(
-                    entity1_id=f"person:{a_id}",
-                    entity2_id=f"person:{b_id}",
-                    relation="co_appears_with",
-                    confidence=min(0.3 + count * 0.05, 0.9),
-                )
-            except Exception as e:
-                logger.debug(f"[KGSync] Co-occurrence link failed: {e}")
+            # 补建 photo Document 节点 + MENTIONS 边（仅缺失的）
+            photos_synced = 0
+            rows = conn.execute(
+                "SELECT p.id, p.file_path, p.abstract, f.person_id "
+                "FROM photos p LEFT JOIN faces f ON p.id = f.photo_id"
+            ).fetchall()
 
-        conn.close()
-        return photos_synced, persons_synced
+            # 按 photo_id 分组
+            photo_map: dict[str, dict] = {}
+            for row in rows:
+                pid = row["id"]
+                if pid not in photo_map:
+                    photo_map[pid] = {
+                        "file_path": row["file_path"],
+                        "abstract": row["abstract"] or "",
+                        "person_ids": [],
+                    }
+                if row["person_id"]:
+                    photo_map[pid]["person_ids"].append(row["person_id"])
+
+            for pid, info in photo_map.items():
+                file_path = info["file_path"]
+                if not file_path or file_path in existing_doc_uris:
+                    continue
+                try:
+                    title = Path(file_path).stem
+                    create_document(uri=file_path, title=title, content=info["abstract"], source="photo")
+                    for person_id in info["person_ids"]:
+                        link_document_entity(
+                            doc_uri=file_path,
+                            entity_id=f"person:{person_id}",
+                            confidence=0.7,
+                        )
+                    photos_synced += 1
+                except Exception as e:
+                    logger.debug(f"[KGSync] Photo document failed for {file_path}: {e}")
+
+            # 补建 co_occurrence RELATED_TO 边
+            rows = conn.execute(
+                "SELECT person_a_id, person_b_id, count FROM co_occurrences"
+            ).fetchall()
+            for row in rows:
+                a_id = row["person_a_id"]
+                b_id = row["person_b_id"]
+                count = row["count"]
+                try:
+                    link_entities(
+                        entity1_id=f"person:{a_id}",
+                        entity2_id=f"person:{b_id}",
+                        relation="co_appears_with",
+                        confidence=min(0.3 + count * 0.05, 0.9),
+                    )
+                except Exception as e:
+                    logger.debug(f"[KGSync] Co-occurrence link failed: {e}")
+
+            return photos_synced, persons_synced
+        finally:
+            conn.close()
 
     def _sync_vectors_db(self, create_document, get_connection) -> int:
         """从 vectors.db 补建 KG Document 节点（仅 category=document 的记录）。
@@ -188,80 +209,86 @@ class KGSync:
         conn = sqlite3.connect(str(vectors_db_path))
         conn.row_factory = sqlite3.Row
 
-        # 查找 category=document 且 KG 中无对应 Document 的记录
-        rows = conn.execute(
-            "SELECT id, content, metadata FROM documents WHERE metadata LIKE '%document%'"
-        ).fetchall()
-
-        # 获取 KG 中已有 Document URI
-        kg_conn = get_connection()
-        existing_uris = set()
         try:
-            result = kg_conn.execute("MATCH (d:Document) RETURN d.uri")
-            for row in result:
-                existing_uris.add(row[0])
-        except Exception:
-            pass
-
-        synced = 0
-        for row in rows:
-            doc_id = row["id"]
-            content = row["content"] or ""
-            metadata_str = row["metadata"] or "{}"
+            # 获取 KG 中已有 Document URI
+            kg_conn = get_connection()
+            existing_uris = set()
             try:
-                metadata = json.loads(metadata_str)
+                result = kg_conn.execute("MATCH (d:Document) RETURN d.uri")
+                for row in result:
+                    existing_uris.add(row[0])
             except Exception:
-                metadata = {}
+                pass
 
-            source = metadata.get("source", "")
-            file_path = metadata.get("file_path", doc_id)
+            # 查找所有向量记录，按 metadata 精确过滤
+            rows = conn.execute(
+                "SELECT id, content, metadata FROM documents"
+            ).fetchall()
 
-            # 跳过 KG 中已有的
-            if file_path in existing_uris:
-                continue
+            synced = 0
+            for row in rows:
+                doc_id = row["id"]
+                content = row["content"] or ""
+                metadata_str = row["metadata"] or "{}"
+                try:
+                    metadata = json.loads(metadata_str)
+                except Exception:
+                    metadata = {}
 
-            title = Path(file_path).stem if file_path else doc_id
-            try:
-                create_document(uri=file_path, title=title, content=content, source=source or "document")
+                # 精确过滤：仅同步 category=document 或 source=document 的记录
+                if metadata.get("category") != "document" and metadata.get("source") != "document":
+                    continue
 
-                # 从 L1 提取实体（同 sync_to_kg 逻辑）
-                parts = content.split("|")
-                if len(parts) >= 4:
-                    entity_str = parts[3].strip()
-                    if entity_str:
-                        from niu_kg_server import create_entity as _create_entity, link_document_entity as _link_de
-                        for pair in entity_str.split(","):
-                            pair = pair.strip()
-                            if ":" in pair:
-                                name, etype = pair.rsplit(":", 1)
-                                name = name.strip()
-                                etype = etype.strip().lower()
-                            else:
-                                name = pair.strip()
-                                etype = "other"
-                            if not name:
-                                continue
-                            entity_id = f"{etype}:{name}"
-                            try:
-                                _create_entity(
-                                    id=entity_id, name=name,
-                                    entity_type=etype, description=f"Backfilled from {title}",
-                                )
-                                _link_de(
-                                    doc_uri=file_path, entity_id=entity_id, confidence=0.7,
-                                )
-                            except Exception:
-                                pass
+                source = metadata.get("source", "")
+                file_path = metadata.get("file_path", doc_id)
 
-                synced += 1
-            except Exception as e:
-                logger.debug(f"[KGSync] Vector document failed for {doc_id}: {e}")
+                # 跳过 KG 中已有的
+                if file_path in existing_uris:
+                    continue
 
-        conn.close()
-        return synced
+                title = Path(file_path).stem if file_path else doc_id
+                try:
+                    create_document(uri=file_path, title=title, content=content, source=source or "document")
+
+                    # 从 L1 提取实体（同 sync_to_kg 逻辑）
+                    parts = content.split("|")
+                    if len(parts) >= 4:
+                        entity_str = parts[3].strip()
+                        if entity_str:
+                            from niu_kg_server import create_entity as _create_entity, link_document_entity as _link_de
+                            for pair in entity_str.split(","):
+                                pair = pair.strip()
+                                if ":" in pair:
+                                    name, etype = pair.rsplit(":", 1)
+                                    name = name.strip()
+                                    etype = etype.strip().lower()
+                                else:
+                                    name = pair.strip()
+                                    etype = "other"
+                                if not name:
+                                    continue
+                                entity_id = f"{etype}:{name}"
+                                try:
+                                    _create_entity(
+                                        id=entity_id, name=name,
+                                        entity_type=etype, description=f"Backfilled from {title}",
+                                    )
+                                    _link_de(
+                                        doc_uri=file_path, entity_id=entity_id, confidence=0.7,
+                                    )
+                                except Exception:
+                                    pass
+
+                    synced += 1
+                except Exception as e:
+                    logger.debug(f"[KGSync] Vector document failed for {doc_id}: {e}")
+
+            return synced
+        finally:
+            conn.close()
 
     def _cleanup_orphans(self, get_connection) -> int:
-        """清理无任何边的孤立节点。
+        """清理无任何边的孤立节点（批量删除）。
 
         Returns:
             removed count
@@ -269,33 +296,41 @@ class KGSync:
         conn = get_connection()
         removed = 0
 
-        # 清理孤立 Entity 节点
+        # 批量清理孤立 Entity 节点
         try:
-            result = conn.execute(
-                "MATCH (e:Entity) WHERE NOT (e)--() RETURN e.id"
-            )
-            orphan_ids = [row[0] for row in result]
-            for oid in orphan_ids:
-                conn.execute("MATCH (e:Entity {id: $id}) DELETE e", {"id": oid})
-                removed += 1
-            if orphan_ids:
-                logger.info(f"[KGSync] Removed {len(orphan_ids)} orphan Entity nodes")
+            result = conn.execute("MATCH (e:Entity) WHERE NOT (e)--() DELETE e")
+            # KuzuDB 返回删除行数
+            removed += len(list(result)) if result else 0
         except Exception as e:
-            logger.warning(f"[KGSync] Entity orphan cleanup failed: {e}")
+            # 如果 NOT (e)--() 语法不支持，降级为逐个删除
+            logger.debug(f"[KGSync] Batch entity delete failed, trying one-by-one: {e}")
+            try:
+                result = conn.execute("MATCH (e:Entity) WHERE NOT (e)--() RETURN e.id")
+                orphan_ids = [row[0] for row in result]
+                for oid in orphan_ids:
+                    conn.execute("MATCH (e:Entity {id: $id}) DELETE e", {"id": oid})
+                    removed += 1
+                if orphan_ids:
+                    logger.info(f"[KGSync] Removed {len(orphan_ids)} orphan Entity nodes")
+            except Exception as e2:
+                logger.warning(f"[KGSync] Entity orphan cleanup failed: {e2}")
 
-        # 清理孤立 Document 节点
+        # 批量清理孤立 Document 节点
         try:
-            result = conn.execute(
-                "MATCH (d:Document) WHERE NOT (d)--() RETURN d.uri"
-            )
-            orphan_uris = [row[0] for row in result]
-            for uri in orphan_uris:
-                conn.execute("MATCH (d:Document {uri: $uri}) DELETE d", {"uri": uri})
-                removed += 1
-            if orphan_uris:
-                logger.info(f"[KGSync] Removed {len(orphan_uris)} orphan Document nodes")
+            result = conn.execute("MATCH (d:Document) WHERE NOT (d)--() DELETE d")
+            removed += len(list(result)) if result else 0
         except Exception as e:
-            logger.warning(f"[KGSync] Document orphan cleanup failed: {e}")
+            logger.debug(f"[KGSync] Batch document delete failed, trying one-by-one: {e}")
+            try:
+                result = conn.execute("MATCH (d:Document) WHERE NOT (d)--() RETURN d.uri")
+                orphan_uris = [row[0] for row in result]
+                for uri in orphan_uris:
+                    conn.execute("MATCH (d:Document {uri: $uri}) DELETE d", {"uri": uri})
+                    removed += 1
+                if orphan_uris:
+                    logger.info(f"[KGSync] Removed {len(orphan_uris)} orphan Document nodes")
+            except Exception as e2:
+                logger.warning(f"[KGSync] Document orphan cleanup failed: {e2}")
 
         return removed
 
@@ -340,15 +375,17 @@ class KGSync:
                 logger.error(f"[KGSync] Sync loop error: {e}")
 
 
-# 全局实例
+# 全局实例 + 线程安全锁
 _kg_sync: Optional[KGSync] = None
+_kg_sync_lock = threading.Lock()
 
 
 def get_kg_sync(sync_interval: int = 21600, auto_start: bool = False) -> KGSync:
     """获取全局 KGSync 实例"""
     global _kg_sync
-    if _kg_sync is None:
-        _kg_sync = KGSync(sync_interval)
-        if auto_start:
-            _kg_sync.start_background_sync()
+    with _kg_sync_lock:
+        if _kg_sync is None:
+            _kg_sync = KGSync(sync_interval)
+            if auto_start:
+                _kg_sync.start_background_sync()
     return _kg_sync

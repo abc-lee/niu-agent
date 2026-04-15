@@ -135,6 +135,15 @@ async def lifespan(app: FastAPI):
     # Shutdown
     logger.info("Niu API Server shutting down...")
 
+    # 停止 KG 批量整理
+    try:
+        from agent.injector import get_kg_sync
+        kg_sync = get_kg_sync()
+        kg_sync.stop_background_sync()
+        logger.info("KG batch sync stopped")
+    except Exception as e:
+        logger.warning(f"Failed to stop KG batch sync: {e}")
+
     # 保存工具生命周期分数（不执行 decay，只持久化当前分数）
     try:
         from agent.runner import get_runner
