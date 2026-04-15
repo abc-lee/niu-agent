@@ -71,14 +71,22 @@ const processNodes = (data) => {
   });
 };
 
+// Edge type to Chinese label mapping
+const edgeTypeLabels = {
+  'MENTIONS': '提及',
+  'CONTAINS': '包含',
+  'RELATED_TO': '',
+};
+
 // Process edges - confidence (0-1) maps to line width (1-6)
 const processEdges = (data) => {
   return data.edges.map(edge => {
     const width = Math.max(1, Math.round((edge.confidence || 0.5) * 6));
+    const label = edge.relation || edgeTypeLabels[edge.edgeType] || '';
     return {
       source: edge.source,
       target: edge.target,
-      label: edge.relation || '',
+      label: label,
       style: {
         stroke: '#888888',
         lineWidth: width,
@@ -232,7 +240,8 @@ const showDetail = (node) => {
       const otherNode = currentData.nodes.find(n => n.id === otherId);
       if (otherNode) {
         const otherType = mapNodeType(otherNode);
-        html += `<div class="detail-row">${getIconForType(otherType)} <strong>${escapeHtml(edge.relation || edge.edgeType)}：</strong> ${escapeHtml(otherNode.label || otherNode.name)}</div>`;
+        const relLabel = edge.relation || edgeTypeLabels[edge.edgeType] || edge.edgeType || '';
+        html += `<div class="detail-row">${getIconForType(otherType)} <strong>${escapeHtml(relLabel)}：</strong> ${escapeHtml(otherNode.label || otherNode.name)}</div>`;
       }
     });
     html += `</div>`;
