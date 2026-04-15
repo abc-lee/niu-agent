@@ -1,5 +1,34 @@
-const { app, BrowserWindow } = require('electron');
+const { app, BrowserWindow, ipcMain } = require('electron');
 const path = require('path');
+const http = require('http');
+
+const API_HOST = '127.0.0.1';
+const API_PORT = 9876;
+
+function apiRequest(method, apiPath, body = null) {
+  return new Promise((resolve, reject) => {
+    const options = {
+      hostname: API_HOST,
+      port: API_PORT,
+      path: apiPath,
+      method: method,
+      headers: { 'Content-Type': 'application/json' },
+      timeout: 30000,
+    };
+    const req = http.request(options, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        try { resolve(JSON.parse(data)); }
+        catch (e) { reject(new Error(`Parse error: ${e.message}`)); }
+      });
+    });
+    req.on('error', reject);
+    req.on('timeout', () => { req.destroy(); reject(new Error('Request timeout')); });
+    if (body) req.write(JSON.stringify(body));
+    req.end();
+  });
+}
 
 function createWindow() {
   const mainWindow = new BrowserWindow({
@@ -10,24 +39,61 @@ function createWindow() {
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
-      nodeIntegration: true
-    }
+      nodeIntegration: false,
+    },
   });
-
   mainWindow.loadFile('index.html');
-  
-  // Open DevTools in development
-  // mainWindow.webContents.openDevTools();
 }
+
+// ========== IPC Handlers ==========
+
+ipcMain.handle('kg-snapshot', async (event, limit, minConfidence) => {
+  const params = new URLSearchParams({ limit: limit || 200, min_confidence: minConfidence || 0 });
+  return apiRequest('GET', `/api/kg/snapshot?${params}`);
+});
+
+ipcMain.handle('kg-stats', async () => {
+  return apiRequest('GET', '/api/kg/stats');
+});
+
+ipcMain.handle('kg-hubs', async (event, limit) => {
+  return apiRequest('GET', `/api/kg/hubs?limit=${limit || 20}`);
+});
+
+ipcMain.handle('kg-explore', async (event, entityId, depth, minConfidence, direction) => {
+  return apiRequest('POST', '/api/kg/explore', {
+    entity_id: entityId, depth: depth || 2,
+    min_confidence: minConfidence || 0, direction: direction || 'both',
+  });
+});
+
+ipcMain.handle('kg-find-path', async (event, fromId, toId) => {
+  return apiRequest('POST', '/api/kg/find-path', { from_id: fromId, to_id: toId });
+});
+
+ipcMain.handle('kg-entities', async (event, limit, entityType) => {
+  const params = new URLSearchParams({ limit: limit || 100 });
+  if (entityType) params.set('entity_type', entityType);
+  return apiRequest('GET', `/api/kg/entities?${params}`);
+});
+
+ipcMain.handle('kg-concepts', async (event, limit) => {
+  return apiRequest('GET', `/api/kg/concepts?limit=${limit || 100}`);
+});
+
+ipcMain.handle('kg-surprising', async (event, minShared) => {
+  return apiRequest('GET', `/api/kg/surprising?min_shared=${minShared || 2}`);
+});
+
+// ========== App Lifecycle ==========
 
 app.whenReady().then(() => {
   createWindow();
-
-  app.on('activate', function () {
+  app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
 });
 
-app.on('window-all-closed', function () {
+app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
