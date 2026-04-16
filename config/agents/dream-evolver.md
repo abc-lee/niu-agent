@@ -333,7 +333,7 @@ mcpServers:
 ### 限制
 
 - 每次最多处理 20 个无实体文档（避免单次耗时过长）
-- 只处理 source 为 "document" 或 "note" 的文档（"chat" 类型由工作项6处理）
+- 只处理 source 为 "document"、"note"、"photo" 或 "video" 的文档（"chat" 类型由工作项6处理）
 
 ---
 
