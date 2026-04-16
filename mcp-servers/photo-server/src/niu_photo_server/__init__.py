@@ -653,6 +653,28 @@ def sync_photo_to_kg(file_path: str, abstract: str, detected_persons: list) -> d
         return {"status": "error", "reason": str(e)}
 
 
+def sync_video_to_kg(file_path: str, abstract: str) -> dict:
+    """同步视频到知识图谱（KuzuDB）。
+
+    为视频创建 Document 节点（source="video"）。
+    视频实体提取待后续实现。
+    """
+    try:
+        from niu_kg_server import create_document
+
+        title = Path(file_path).stem
+        create_document(uri=file_path, title=title, content=abstract, source="video")
+        logger.info(f"[KG] Video Document created: {file_path}")
+        return {"status": "success", "doc_uri": file_path}
+
+    except ImportError:
+        logger.warning("[KG] niu_kg_server not available, skipping video KG sync")
+        return {"status": "skipped", "reason": "kg-server not importable"}
+    except Exception as e:
+        logger.warning(f"[KG] Video sync failed: {e}")
+        return {"status": "error", "reason": str(e)}
+
+
 # ============== 模型路径（人脸识别用） ==============
 
 
@@ -1862,11 +1884,17 @@ def merge_persons(person_a_id: str, person_b_id: str) -> dict:
 # ============== 照片批量处理 ==============
 
 PHOTO_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".heic", ".heif"}
+VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".flv", ".wmv", ".m4v"}
 
 
 def is_photo(file_path: str) -> bool:
     """判断是否为照片文件"""
     return Path(file_path).suffix.lower() in PHOTO_EXTENSIONS
+
+
+def is_video(file_path: str) -> bool:
+    """判断是否为视频文件"""
+    return Path(file_path).suffix.lower() in VIDEO_EXTENSIONS
 
 
 def ingest_photos_batch(source_path: str, category: str | None = None) -> dict:

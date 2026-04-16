@@ -4,6 +4,10 @@ const typeColors = {
   organization: '#5CB85C',
   technology: '#17BECF',
   document: '#E8A838',
+  photo: '#1ABC9C',
+  video: '#8E44AD',
+  note: '#2ECC71',
+  chat: '#7F8C8D',
   concept: '#E06B9E',
   location: '#9B59B6',
   event: '#F39C12',
@@ -12,13 +16,18 @@ const typeColors = {
 
 const typeLabels = {
   person: '人物', organization: '组织', technology: '技术',
-  document: '文档', concept: '概念', location: '地点',
-  event: '事件', other: '其他',
+  document: '文档', photo: '图片', video: '视频',
+  note: '便利贴', chat: '对话', concept: '概念',
+  location: '地点', event: '事件', other: '其他',
 };
 
 // ===== Node Type Mapping =====
 function mapNodeType(node) {
-  if (node.nodeType === 'Document') return 'document';
+  if (node.nodeType === 'Document') {
+    // Document 节点按 source 字段细分
+    const sourceMap = { photo: 'photo', video: 'video', note: 'note', chat: 'chat' };
+    return sourceMap[node.source] || 'document';
+  }
   if (node.nodeType === 'Concept') return 'concept';
   const entityType = node.entityType || '';
   if (typeColors[entityType]) return entityType;
@@ -78,9 +87,13 @@ function isCoreNode(node) {
   const orig = node._originalData;
   if (!orig) return false;
 
-  if (currentPerspective === 'document') return orig.nodeType === 'Document';
+  // Document subtypes (photo, video, note, chat, document)
+  const docSubtypes = ['document', 'photo', 'video', 'note', 'chat'];
+  if (docSubtypes.includes(currentPerspective)) {
+    return orig.nodeType === 'Document' && mapNodeType(orig) === currentPerspective;
+  }
   if (currentPerspective === 'concept') return orig.nodeType === 'Concept';
-  // person, organization, etc.
+  // person, organization, technology, etc.
   return orig.entityType === currentPerspective;
 }
 
@@ -354,7 +367,7 @@ const showDetail = (node) => {
   let html = '';
   html += `<div class="detail-row"><span class="detail-label">类型：</span>${escapeHtml(getNodeLabel(orig))}</div>`;
 
-  if (orig.entityType && visualType !== 'document' && visualType !== 'concept') {
+  if (orig.entityType && orig.nodeType === 'Entity') {
     html += `<div class="detail-row"><span class="detail-label">实体类型：</span>${escapeHtml(orig.entityType)}</div>`;
   }
   if (orig.description) {
