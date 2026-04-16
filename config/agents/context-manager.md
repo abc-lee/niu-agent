@@ -2,7 +2,7 @@
 name: context-manager
 description: 上下文管理器 - 负责智能管理对话上下文，会话单元压缩法
 mode: subagent
-temperature: 0.3
+temperature: 0.2
 mcpServers:
   - vector-store
   - session-manager
@@ -26,7 +26,7 @@ mcpServers:
 
 ## get_messages
 
-获取当前会话的消息列表（每条带 KB 大小）。
+获取当前会话的消息列表（每条带 token 数）。
 
 ```
 参数：
@@ -34,9 +34,9 @@ mcpServers:
 
 返回：
   [
-    {"idx": 0, "kb": 5, "role": "user", "content": "..."},
-    {"idx": 1, "kb": 2, "role": "assistant", "content": "..."},
-    {"idx": 2, "kb": 50, "role": "tool", "content": "..."},  # 大工具输出
+    {"idx": 0, "tokens": 15, "role": "user", "content": "..."},
+    {"idx": 1, "tokens": 8, "role": "assistant", "content": "..."},
+    {"idx": 2, "tokens": 500, "role": "tool", "content": "..."},  # 大工具输出
     ...
   ]
 ```
@@ -53,7 +53,7 @@ mcpServers:
   message_indices: [2, 3, 5]  # 要删除的消息 idx 列表
 
 返回：
-  {"deleted_count": 3, "freed_kb": 55}
+  {"deleted_count": 3, "freed_tokens": 523}
  ```
 
 ## add_document
@@ -82,33 +82,33 @@ mcpServers:
 ```
 系统进入睡眠状态。
 
-当前上下文：18 KB（2.3%）
+当前上下文：18000 tokens（2.3%）
 
 消息列表：
 共 18 条消息（idx 从小到大 = 从旧到新）
 
-[idx:0] 1KB user: 今天天气不错
-[idx:1] 1KB assistant: 是啊，晴天
-[idx:2] 50KB tool: [工具输出 - 文件内容]
+[idx:0] 15tokens user: 今天天气不错
+[idx:1] 8tokens assistant: 是啊，晴天
+[idx:2] 500tokens tool: [工具输出 - 文件内容]
 ...
 ```
 
 **任务**：查找需要整理的内容
 
 **处理规则**：
-1. 找出 > 200 字节的工具输出
-2. 找出 > 100 字节的对话内容
+1. 找出 > 100 tokens 的工具输出
+2. 找出 > 50 tokens 的对话内容
 3. 整理成 l0/l1/l2
 
 **判断标准**：
-- 使用率 < 50%：可选整理
-- 使用率 >= 50%：必须整理
+- 使用率 < 50%：**轻度整理** — 只压缩已结束的会话单元（用户明确确认完成的），保留所有进行中/未确认的对话
+- 使用率 >= 50%：必须整理，可删除更多内容
 
 **执行步骤**：
 1. 识别会话单元（一个完整话题/任务）
 2. 对于工具输出/大段内容：
-   - < 500字节：生成 l1，调用 add_document 存储
-   - >= 500字节：存 l2，生成 l1，都调用 add_document 存储
+   - < 500 tokens：生成 l1，调用 add_document 存储
+   - >= 500 tokens：存 l2，生成 l1，都调用 add_document 存储
 3. 提取 l0（对话核心摘要）
 4. 删除原始消息中已被压缩的部分
 
@@ -124,31 +124,31 @@ mcpServers:
 ```
 系统进入强制压缩模式。
 
-当前上下文：150 KB（75%）
-目标上下文：100 KB（50%）
-需要减少：50 KB
+当前上下文：150000 tokens（75%）
+目标上下文：100000 tokens（50%）
+需要减少：50000 tokens
 
 消息列表：
 共 100 条消息（idx 从小到大 = 从旧到新）
 
-[idx:0] 5KB user: 帮我查文件
-[idx:1] 2KB assistant: [调用工具]
-[idx:2] 30KB tool: [工具输出]
-[idx:3] 1KB user: 谢谢
+[idx:0] 500tokens user: 帮我查文件
+[idx:1] 200tokens assistant: [调用工具]
+[idx:2] 3000tokens tool: [工具输出]
+[idx:3] 15tokens user: 谢谢
 ...
 ```
 
-**任务**：必须减少指定 KB 数量
+**任务**：必须减少指定 token 数量
 
 **执行步骤**：
 1. 调用 get_messages 获取消息列表
 2. 按规则排序（先删早期、已入向量库的、简单确认回复）
-3. 累计 KB 直到达到目标
+3. 累计 tokens 直到达到目标
 4. 调用 delete_messages 删除
 5. 如有需要，调用 add_document 存储被删除内容到向量库
 
 **删除优先级**（从先删到后删）：
-1. 早期的大工具输出（idx 小，KB 大）
+1. 早期的大工具输出（idx 小，tokens 多）
 2. 已入向量库的内容
 3. 简单确认回复（"好的"、"谢谢"）
 4. 早期的 l0（可合并）
@@ -158,7 +158,7 @@ mcpServers:
 2. 当前会话单元
 3. 有价值的历史摘要
 
-**输出**：完成后报告删了多少 KB，无需返回 JSON。
+**输出**：完成后报告删了多少 tokens，无需返回 JSON。
 
 ---
 
@@ -171,7 +171,7 @@ mcpServers:
 会话单元 A（查文件）：
   [idx:0] user: 帮我查文件
   [idx:1] assistant: [调用 read_file]
-  [idx:2] tool: [文件内容 30KB]
+  [idx:2] tool: [文件内容 3000tokens]
   [idx:3] user: 谢谢
   → 已结束，可整体压缩为一条 l0："用户查询了 xxx 文件"
 
@@ -242,4 +242,5 @@ mcpServers:
 2. **会话单元不撕裂**：要么整体保留，要么整体压缩
 3. **保留语义**：压缩不是丢弃，是精简
 4. **一次性完成**：计算要删多少，一次执行完毕，不要反复循环
+5. **低使用率保守原则**：使用率 < 50% 时，只压缩明确已结束的会话单元，不要主动删除大量消息。无价值的闲聊直接删除即可，有价值的内容压缩为 l0 后再删除原文
 

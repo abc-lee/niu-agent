@@ -27,6 +27,7 @@ class ChatResponse(BaseModel):
 
     reply: str
     session_id: Optional[str] = None
+    message_id: Optional[str] = None
 
 
 class MessageResponse(BaseModel):
@@ -187,10 +188,11 @@ async def chat_session(request: ChatRequest) -> ChatResponse:
         full_reply = f"Error: {str(e)}"
 
     # Store assistant response
+    message_id = None
     if full_reply.strip():
-        await store.add_message(role="assistant", content=full_reply)
+        message_id = await store.add_message(role="assistant", content=full_reply)
 
-    return ChatResponse(reply=full_reply, session_id="default")
+    return ChatResponse(reply=full_reply, session_id="default", message_id=message_id)
 
 
 @router.get("/api/context/messages")
@@ -234,42 +236,48 @@ async def delete_context_messages(request: dict) -> dict:
     Returns:
         {
             "deleted_count": int,
-            "freed_kb": float
+            "freed_tokens": int
         }
     """
     message_indices = request.get("message_indices", [])
     reason = request.get("reason", "Context compression")
 
     if not message_indices:
-        return {"deleted_count": 0, "freed_kb": 0}
+        return {"deleted_count": 0, "freed_tokens": 0}
 
     logger.info(f"[Context] Deleting {len(message_indices)} messages, reason: {reason}")
 
     # Get message store
     store = await get_message_store()
 
-    # Get all messages to calculate freed KB and get IDs
+    # Get all messages to calculate freed tokens and get IDs
     all_messages = await store.get_messages(limit=1000)
 
-    # Calculate freed KB and collect IDs to delete
-    freed_kb = 0.0
+    # Calculate freed tokens and collect IDs to delete
+    freed_tokens = 0
     message_ids = []
     for idx in message_indices:
         if 0 <= idx < len(all_messages):
             msg = all_messages[idx]
-            freed_kb += len(msg.content or "") / 1024
+            # Use litellm to calculate tokens
+            try:
+                from litellm import token_counter
+                t = token_counter(model="gpt-4o", messages=[{"role": msg.role, "content": msg.content or ""}])
+            except Exception:
+                t = max(1, len(msg.content or "") // 2) + 4
+            freed_tokens += t
             message_ids.append(msg.id)
 
     # Delete messages by IDs
     if message_ids:
         deleted_count = await store.delete_messages_by_ids(message_ids)
-        logger.info(f"[Context] Deleted {deleted_count} messages, freed {freed_kb:.1f} KB")
+        logger.info(f"[Context] Deleted {deleted_count} messages, freed {freed_tokens} tokens")
         return {
             "deleted_count": deleted_count,
-            "freed_kb": round(freed_kb, 1),
+            "freed_tokens": freed_tokens,
         }
 
-    return {"deleted_count": 0, "freed_kb": 0}
+    return {"deleted_count": 0, "freed_tokens": 0}
 
 
 @router.post("/api/chat/clear")
@@ -320,7 +328,7 @@ async def tidy_context(request: dict):
         {
             "status": "success",
             "message": str,
-            "freed_kb": int (optional)
+            "freed_tokens": int (optional)
         }
     """
     session_id = request.get("session_id", "default")
@@ -337,18 +345,20 @@ async def tidy_context(request: dict):
             logger.info("[Tidy] No messages to tidy")
             return {"status": "success", "message": "No messages to tidy"}
 
-        # Calculate context size and usage percentage
-        total_chars = sum(len(msg.content or "") for msg in messages)
-        total_kb = total_chars / 1024
+        # Calculate per-message token counts
         message_count = len(messages)
-
-        # 用 litellm.token_counter 精确计算 token 数（回退到字符估算）
-        msg_dicts = [{"role": msg.role, "content": msg.content or ""} for msg in messages]
+        msg_tokens = []
         try:
             from litellm import token_counter
-            estimated_tokens = token_counter(model="gpt-4o", messages=msg_dicts)
-        except Exception:
-            estimated_tokens = max(1, total_chars // 2)
+            for msg in messages:
+                try:
+                    t = token_counter(model="gpt-4o", messages=[{"role": msg.role, "content": msg.content or ""}])
+                except Exception:
+                    t = max(1, len(msg.content or "") // 2) + 4
+                msg_tokens.append(t)
+        except ImportError:
+            msg_tokens = [max(1, len(msg.content or "") // 2) + 4 for msg in messages]
+        estimated_tokens = sum(msg_tokens)
 
         # 读取上下文窗口大小（tokens）
         context_window_tokens = 200000  # 默认值
@@ -363,14 +373,14 @@ async def tidy_context(request: dict):
             pass
         usage_percent = (estimated_tokens / context_window_tokens) * 100
 
-        logger.info(f"[Tidy] Current context: {message_count} messages, {total_kb:.1f} KB, {estimated_tokens} tokens, {usage_percent:.1f}%")
+        logger.info(f"[Tidy] Current context: {message_count} messages, {estimated_tokens} tokens, {usage_percent:.1f}%")
 
         # Prepare input for context-manager subagent
         if mode == "sleep":
             # Sleep mode: non-forced tidy
             prompt = f"""系统进入睡眠状态。
 
-当前上下文：{total_kb:.1f} KB（{usage_percent:.1f}%）
+当前上下文：{estimated_tokens} tokens（{usage_percent:.1f}%）
 
 消息列表：
 共 {message_count} 条消息（idx 从小到大 = 从旧到新）
@@ -378,8 +388,8 @@ async def tidy_context(request: dict):
 """
             # Add message details
             for idx, msg in enumerate(messages):
-                kb = len(msg.content or "") / 1024
-                prompt += f"[idx:{idx}] {kb:.1f}KB {msg.role}: {msg.content[:100]}\n"
+                tokens = msg_tokens[idx]
+                prompt += f"[idx:{idx}] {tokens}tokens {msg.role}: {msg.content[:100]}\n"
 
             prompt += "\n请按照【模式一：睡眠整理（非强制）】的规则处理。"
 
@@ -404,19 +414,34 @@ async def tidy_context(request: dict):
 
         if mode == "sleep":
             # 1. 先调梦境进化（增量学习+KG写入）
+            # 读取增量游标
+            import json
+            from pathlib import Path
+            cursor_path = Path.home() / ".niu" / "last_dream_evolve.json"
+            last_message_id = 0
+            if cursor_path.exists():
+                try:
+                    cursor_data = json.loads(cursor_path.read_text(encoding="utf-8"))
+                    last_message_id = cursor_data.get("last_message_id", 0)
+                except Exception as e:
+                    logger.warning(f"[Tidy] Failed to read dream cursor: {e}")
+
             dream_prompt = f"""系统进入睡眠状态，触发梦境进化。
 
-当前上下文：{total_kb:.1f} KB（{usage_percent:.1f}%）
+当前上下文：{estimated_tokens} tokens（{usage_percent:.1f}%）
+
+增量游标：上次处理到 idx={last_message_id}，只处理 idx > {last_message_id} 的新消息。
+如果所有消息 idx 都 <= {last_message_id}，说明没有新消息，直接报告"无新增消息"即可。
 
 消息列表：
 共 {message_count} 条消息（idx 从小到大 = 从旧到新）
 
 """
             for idx, msg in enumerate(messages):
-                kb = len(msg.content or "") / 1024
-                dream_prompt += f"[idx:{idx}] {kb:.1f}KB {msg.role}: {msg.content[:100]}\n"
+                tokens = msg_tokens[idx]
+                dream_prompt += f"[idx:{idx}] {tokens}tokens {msg.role}: {msg.content[:100]}\n"
 
-            dream_prompt += "\n请按照工作项1-6的顺序处理新增消息。"
+            dream_prompt += f"\n请按照工作项1-7的顺序处理新增消息（idx > {last_message_id}）。处理完成后，在报告末尾用 JSON 格式报告处理到的最大 idx，格式：{{\"last_message_id\": <最大idx>}}。禁止使用 code_run 工具。"
 
             def run_dream_evolver():
                 return call_subagent(
@@ -428,6 +453,24 @@ async def tidy_context(request: dict):
 
             dream_result = await asyncio.to_thread(run_dream_evolver)
             logger.info(f"[Tidy] Dream-evolver result: {dream_result[:200]}")
+
+            # 更新增量游标
+            try:
+                import re
+                match = re.search(r'\{"last_message_id"\s*:\s*(\d+)\}', dream_result)
+                if match:
+                    new_last_id = int(match.group(1))
+                else:
+                    new_last_id = max((i for i, m in enumerate(messages)), default=0)
+                cursor_path.parent.mkdir(parents=True, exist_ok=True)
+                cursor_data = {
+                    "last_message_id": new_last_id,
+                    "last_evolve_at": __import__("datetime").datetime.now().isoformat(),
+                }
+                cursor_path.write_text(json.dumps(cursor_data, ensure_ascii=False, indent=2), encoding="utf-8")
+                logger.info(f"[Tidy] Dream cursor updated: last_message_id={new_last_id}")
+            except Exception as e:
+                logger.warning(f"[Tidy] Failed to update dream cursor: {e}")
 
         # 2. 再调内容管理（压缩删除）
         def run_context_manager():
