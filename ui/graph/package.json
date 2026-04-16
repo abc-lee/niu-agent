@@ -10,14 +10,15 @@
   "keywords": [
     "knowledge-graph",
     "visualization",
-    "antv-g6",
+    "force-graph",
     "electron"
   ],
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "@antv/g6": "^4.8.24",
-    "electron": "^28.0.0"
+    "@antv/g6": "^5.1.0",
+    "electron": "^28.0.0",
+    "force-graph": "^1.51.3"
   },
   "devDependencies": {
     "electron-builder": "^24.9.1"
