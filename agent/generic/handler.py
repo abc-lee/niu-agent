@@ -3,7 +3,7 @@ GenericAgent Handler - 完整移植自 E:\tools\GenericAgent\ga.py
 包含 7 个原子工具 + 2 个记忆工具
 """
 
-import sys, os, re, json, time, threading
+import sys, os, re, json, time, threading, signal
 from datetime import datetime
 from pathlib import Path
 import tempfile, traceback, subprocess, itertools, collections
@@ -65,9 +65,29 @@ def code_run(code, code_type="python", timeout=60, cwd=None, code_cwd=None, stop
             except:
                 pass
 
+    def _kill_tree(proc):
+        """杀死整个进程树（包括子进程的子进程）"""
+        try:
+            if os.name == "nt":
+                subprocess.run(
+                    ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+                    capture_output=True, timeout=5,
+                )
+            else:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    proc.kill()
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
     try:
         process = subprocess.Popen(
             cmd,
+            stdin=subprocess.DEVNULL,  # 隔离 stdin，防止 input() 阻塞
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             bufsize=0,
@@ -81,8 +101,8 @@ def code_run(code, code_type="python", timeout=60, cwd=None, code_cwd=None, stop
         while t.is_alive():
             istimeout = time.time() - start_t > timeout
             if istimeout or len(stop_signal) > 0:
-                process.kill()
-                print("[Debug] Process killed due to timeout or stop signal.")
+                _kill_tree(process)
+                print("[Debug] Process tree killed due to timeout or stop signal.")
                 if istimeout:
                     full_stdout.append("\n[Timeout Error] 超时强制终止")
                 else:
@@ -91,6 +111,18 @@ def code_run(code, code_type="python", timeout=60, cwd=None, code_cwd=None, stop
             time.sleep(1)
 
         t.join(timeout=1)
+        # 确保进程已退出并回收资源
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            _kill_tree(process)
+            process.wait(timeout=3)
+        # 关闭 stdout 管道
+        try:
+            if process.stdout:
+                process.stdout.close()
+        except Exception:
+            pass
         exit_code = process.poll()
 
         stdout_str = "".join(full_stdout)
@@ -102,8 +134,6 @@ def code_run(code, code_type="python", timeout=60, cwd=None, code_cwd=None, stop
             stdout_str, max_str_len=600, omit_str="\n\n[omitted long output]\n\n"
         )
         yield f"[Status] {status_icon} Exit Code: {exit_code}\n[Stdout]\n{output_snippet}\n"
-        if process.stdout:
-            threading.Thread(target=process.stdout.close, daemon=True).start()
         return {
             "status": status,
             "stdout": smart_format(
@@ -113,7 +143,7 @@ def code_run(code, code_type="python", timeout=60, cwd=None, code_cwd=None, stop
         }
     except Exception as e:
         if "process" in locals():
-            process.kill()
+            _kill_tree(process)
         return {"status": "error", "msg": str(e)}
     finally:
         if code_type == "python" and tmp_path and os.path.exists(tmp_path):

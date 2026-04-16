@@ -8,9 +8,11 @@ Security: dangerous command blacklist, sensitive data filtering, timeout.
 import os
 import sys
 import re
+import signal
 import asyncio
 import subprocess
 import tempfile
+import threading
 from typing import Dict, Any, List
 from loguru import logger
 
@@ -162,9 +164,29 @@ async def code_run(
             logs.append(line)
             logger.debug(line.rstrip())
 
+    def _kill_tree(proc):
+        """杀死整个进程树（包括子进程的子进程）"""
+        try:
+            if os.name == "nt":
+                subprocess.run(
+                    ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+                    capture_output=True, timeout=5,
+                )
+            else:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    proc.kill()
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
     try:
         process = subprocess.Popen(
             cmd,
+            stdin=subprocess.DEVNULL,  # 隔离 stdin，防止 input() 阻塞
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             bufsize=0,
@@ -174,8 +196,6 @@ async def code_run(
 
         start_t = asyncio.get_event_loop().time()
 
-        import threading
-
         t = threading.Thread(target=stream_reader, args=(process, full_stdout), daemon=True)
         t.start()
 
@@ -184,8 +204,8 @@ async def code_run(
             is_timeout = elapsed > timeout
 
             if is_timeout or len(stop_signal) > 0:
-                process.kill()
-                logger.warning(f"Process killed: timeout={is_timeout}")
+                _kill_tree(process)
+                logger.warning(f"Process tree killed: timeout={is_timeout}")
                 if is_timeout:
                     full_stdout.append("\n[Timeout Error] 超时强制终止")
                 else:
@@ -195,6 +215,18 @@ async def code_run(
             await asyncio.sleep(1)
 
         t.join(timeout=1)
+        # 确保进程已退出并回收资源
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            _kill_tree(process)
+            process.wait(timeout=3)
+        # 关闭 stdout 管道
+        try:
+            if process.stdout:
+                process.stdout.close()
+        except Exception:
+            pass
         exit_code = process.poll() or -1
 
         stdout_str = "".join(full_stdout)
@@ -212,7 +244,7 @@ async def code_run(
 
     except Exception as e:
         if "process" in locals():
-            process.kill()
+            _kill_tree(process)
         logger.error(f"code_run error: {e}")
         return {"status": "error", "msg": str(e), "warnings": warnings}
 

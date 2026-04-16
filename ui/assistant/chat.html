@@ -655,21 +655,15 @@
         if (result && result.error) {
           addMessage('assistant', `出错了: ${result.error}`);
         } else if (result) {
-          addMessage('assistant', result.reply);
+          // 用 addMessageWithId + 更新 lastMessageId 防止轮询重复添加
+          if (result.message_id) {
+            lastMessageId = result.message_id;
+            addMessageWithId('assistant', result.reply, result.message_id);
+          } else {
+            addMessage('assistant', result.reply);
+          }
         } else {
           addMessage('assistant', '连接失败，请检查后台服务');
-        }
-
-        // 发送完成后，立即更新 lastMessageId（避免轮询重复添加）
-        try {
-          const latestResult = await window.electronAPI.getHistory(1);
-          const latestMessages = latestResult.messages || [];
-          if (latestMessages.length > 0) {
-            lastMessageId = latestMessages[0].id;
-            console.log('[Chat] 更新 lastMessageId:', lastMessageId);
-          }
-        } catch (e) {
-          console.error('[Chat] 更新 lastMessageId 失败:', e);
         }
       } catch (err) {
         hideTyping();
