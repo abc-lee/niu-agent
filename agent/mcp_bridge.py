@@ -22,7 +22,6 @@ MCP_PORTS = {
     "vector-store": 9873,
     "config-manager": 9874,
     "file-parser": 9875,
-    "embedding-service": 9877,
     "memory-server": 9878,
     "session-manager": 9879,
 }
