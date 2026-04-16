@@ -171,6 +171,11 @@ class SkillSync:
             logger.warning(f"[SkillSync] Skills directory not found: {self.skills_dir}")
             return 0, 0, 0
 
+        # 首次扫描时，从向量库加载已有 skill 状态，避免重复 "Added"
+        with self._lock:
+            if not self._last_scan:
+                self._load_existing_skills()
+
         current: dict[str, float] = {}
         added, updated, deleted = 0, 0, 0
 
@@ -208,6 +213,27 @@ class SkillSync:
             self._last_scan = current
 
         return added, updated, deleted
+
+    def _load_existing_skills(self):
+        """从向量库加载已有 skill 的状态到 _last_scan，避免启动时重复 Added"""
+        conn = self.vector_search._get_connection()
+        if conn is None:
+            return
+
+        try:
+            cursor = conn.execute(
+                "SELECT id FROM documents WHERE json_extract(metadata, '$.category') = 'skill'"
+            )
+            for (doc_id,) in cursor.fetchall():
+                # doc_id 格式: "skill:name"
+                if doc_id.startswith("skill:"):
+                    name = doc_id[6:]
+                    # 用当前时间作为 mtime（表示已存在，不需要重新添加）
+                    self._last_scan[name] = float('inf')
+            if self._last_scan:
+                logger.info(f"[SkillSync] Loaded {len(self._last_scan)} existing skills from vector DB")
+        except Exception as e:
+            logger.warning(f"[SkillSync] Failed to load existing skills: {e}")
 
     def _sync_skill(self, name: str, skill_file: Path):
         """同步单个 skill 到向量库"""
