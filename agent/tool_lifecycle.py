@@ -47,26 +47,19 @@ class ToolLifecycleManager:
 
     def hit_tool(self, tool_name: str, score: int = 0, skip_coactivation: bool = False):
         """
-        工具被命中，记录激活并检索相关Skills
+        工具被 LLM 实际调用，记录激活并检索相关Skills
 
-        两种命中来源，分数策略不同：
-        1. LLM 实际调用（score=0）：工具被确认需要，设 80 分
-           80 分能扛 3 轮衰减不命中：80→70→60→50→40(移除)
-        2. 向量检索命中（score>0）：按相似度给分，最低 min_score
+        只在 LLM 真正调用工具时触发（handler.dispatch 中调用）。
+        向量检索命中的工具不再通过此方法保分，避免衰减-覆盖死循环。
 
         Args:
             tool_name: 工具名，格式为 "server-name/tool-name"
-            score: 向量检索分数（0-100），0表示LLM实际调用
-            skip_coactivation: 跳过同server工具激活和Skills检索（向量检索命中时用）
+            score: 保留参数（兼容），0表示LLM实际调用
+            skip_coactivation: 跳过同server工具激活和Skills检索
         """
-        if score > 0:
-            # 向量检索命中：只升不降，避免覆盖 LLM 调用给的高分
-            current = self.active_tools.get(tool_name, 0)
-            self.active_tools[tool_name] = max(current, score)
-        else:
-            # LLM 实际调用：确认需要，给高分（能扛 3 轮衰减）
-            current = self.active_tools.get(tool_name, 0)
-            self.active_tools[tool_name] = max(current, 80)
+        # LLM 实际调用：确认需要，给高分（能扛 3 轮衰减）
+        current = self.active_tools.get(tool_name, 0)
+        self.active_tools[tool_name] = max(current, 80)
         self._save_scores()  # 立即保存，保证持久化语义
 
         # 检索相关Skills（仅 LLM 实际调用时触发，向量检索命中时跳过）
