@@ -7,7 +7,6 @@ Routes call niu_kg_server functions directly (same-process import, like ToolRegi
 from typing import Literal, Optional
 from fastapi import APIRouter, Query
 from pydantic import BaseModel, Field
-from loguru import logger
 
 router = APIRouter(prefix="/api/kg", tags=["knowledge-graph"])
 
@@ -121,94 +120,3 @@ async def graph_changelog(
     """Get recent graph changes."""
     kg = _get_kg()
     return kg.graph_changelog(limit=limit, since=since)
-
-
-@router.post("/cleanup")
-async def cleanup_graph():
-    """Clean up test data and fix entity types in the knowledge graph."""
-    kg = _get_kg()
-    conn = kg.get_connection()
-    results = {}
-
-    # 1. Delete test data entities
-    test_ids = [
-        "person_zhang", "person_li", "person_a", "person_b",
-        "entity_a", "entity_b", "node_a", "node_b", "node_c", "org_c",
-    ]
-    deleted = 0
-    for eid in test_ids:
-        try:
-            r = conn.execute(f"MATCH (e:Entity {{id: '{eid}'}}) DETACH DELETE e").get_all()
-            deleted += 1
-        except Exception:
-            pass
-    results["deleted_test_entities"] = deleted
-
-    # 2. Fix Chinese type labels -> English
-    type_fixes = {"人物": "person", "组织": "organization"}
-    fixed = 0
-    for old_type, new_type in type_fixes.items():
-        try:
-            r = conn.execute(
-                f"MATCH (e:Entity {{type: '{old_type}'}}) SET e.type = '{new_type}' RETURN count(e) as cnt"
-            ).get_all()
-            cnt = r[0]["cnt"] if r else 0
-            fixed += cnt
-        except Exception:
-            pass
-    results["fixed_type_labels"] = fixed
-
-    # 2.5. Fix misclassified other -> technology (known tech entities)
-    # ID prefix is wrong (other:xxx should be technology:xxx), need delete+recreate
-    tech_fixes = {
-        "other:PageRank": ("technology:PageRank", "PageRank", "technology"),
-        "other:MCP": ("technology:MCP", "MCP", "technology"),
-        "other:Cypher": ("technology:Cypher", "Cypher", "technology"),
-        "other:NetworkX": ("technology:NetworkX", "NetworkX", "technology"),
-        "other:KuzuDB": ("technology:KuzuDB", "KuzuDB", "technology"),
-    }
-    tech_fixed = 0
-    for old_id, (new_id, name, new_type) in tech_fixes.items():
-        try:
-            # Use list_entities to find the entity (avoids Cypher string matching issues)
-            all_entities = kg.list_entities(limit=500)
-            found = any(e.get("id") == old_id for e in all_entities)
-            if found:
-                # Get description from the entity
-                desc = ""
-                for e in all_entities:
-                    if e.get("id") == old_id:
-                        desc = e.get("description", "") or ""
-                        break
-                # Delete old + recreate with correct ID via kg-server functions
-                kg.delete_entity(old_id)
-                kg.create_entity(new_id, name, new_type, desc)
-                tech_fixed += 1
-                logger.info(f"[KG Cleanup] Fixed: {old_id} -> {new_id}")
-            else:
-                logger.debug(f"[KG Cleanup] Entity not found: {old_id}")
-        except Exception as ex:
-            logger.warning(f"[KG Cleanup] Failed to fix {old_id}: {ex}")
-    results["fixed_other_to_technology"] = tech_fixed
-
-    # 3. Delete misclassified entities
-    misclassified = ["person:游戏", "technology:chat-with-file-processor", "mcp_tool:chat-with-file-processor"]
-    mis_deleted = 0
-    for eid in misclassified:
-        try:
-            conn.execute(f"MATCH (e:Entity {{id: '{eid}'}}) DETACH DELETE e").get_all()
-            mis_deleted += 1
-        except Exception:
-            pass
-    results["deleted_misclassified"] = mis_deleted
-
-    # 4. Delete orphan Document nodes (no MENTIONS edges)
-    try:
-        r = conn.execute(
-            "MATCH (d:Document) WHERE NOT (d)-[:MENTIONS]->() DETACH DELETE d RETURN count(d) as cnt"
-        ).get_all()
-        results["deleted_orphan_documents"] = r[0]["cnt"] if r else 0
-    except Exception:
-        results["deleted_orphan_documents"] = 0
-
-    return {"status": "ok", "results": results}
