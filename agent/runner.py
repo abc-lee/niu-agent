@@ -506,18 +506,9 @@ class NiuRunner:
 
         print(f"[Debug] Dynamic injection - Skills: {len(skills)}, MCP: {len(mcp_tools)}, Knowledge: {len(knowledge)}, Habits: {len(interaction_habits)}", file=sys.stderr, flush=True)
 
-        # 3.5 向量检索到的 MCP 工具分数覆盖到 tool_lifecycle
-        # 衰减-覆盖模式：衰减(-10) + 向量覆盖(新分数) = 命中工具净效果 ≈ +10
-        for tool_result in mcp_tools:
-            server = tool_result.metadata.get("server", "")
-            name = tool_result.metadata.get("name", "")
-            if server and name:
-                full_name = f"{server}/{name}"
-                # 向量分数 0-1 映射到 min_score-100 范围
-                # 避免低相似度(0.15)映射到15分，低于min_score导致立即逐出
-                raw_score = int(tool_result.score * 100)
-                lifecycle_score = max(self.tool_lifecycle.min_score, raw_score)
-                self.tool_lifecycle.hit_tool(full_name, score=lifecycle_score, skip_coactivation=True)
+        # 3.5 向量检索到的 MCP 工具：仅注入 system prompt，不保分
+        # 保分由 LLM 实际调用工具时的 hit_tool() 负责
+        # 这样衰减才能真正生效——不用工具的轮次，分数持续下降直到被移除
 
         # 格式化
         parts = []
