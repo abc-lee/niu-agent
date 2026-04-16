@@ -2,15 +2,13 @@
 Niu Vector Store MCP Server
 
 Provides semantic search capabilities using vector embeddings.
-Uses shared embedding service (http://127.0.0.1:9877) for embeddings.
+Uses niu_api.internal.embedding for in-process embedding (no HTTP).
 """
 
 import asyncio
 import json
 import os
 import sqlite3
-import urllib.request
-import urllib.error
 from pathlib import Path
 from typing import Any
 
@@ -22,9 +20,6 @@ from mcp.types import TextContent, Tool
 
 # Initialize MCP server
 server = Server("niu-vector-store")
-
-# Shared embedding service URL
-EMBEDDING_SERVICE_URL = os.environ.get("EMBEDDING_SERVICE_URL", "http://127.0.0.1:9877")
 
 # ============== Tool Schemas ==============
 
@@ -138,27 +133,29 @@ def get_tool_schemas() -> list[dict]:
 
 
 def call_embedding_service(endpoint: str, data: dict) -> dict | None:
-    """Call the shared embedding service."""
+    """Call embedding service in-process (no HTTP overhead).
+
+    Same-process architecture: directly calls niu_api.internal.embedding.
+    """
     try:
-        url = f"{EMBEDDING_SERVICE_URL}{endpoint}"
-        body = json.dumps(data).encode("utf-8")
-        req = urllib.request.Request(
-            url,
-            data=body,
-            headers={"Content-Type": "application/json"},
-        )
-        with urllib.request.urlopen(req, timeout=30) as response:
-            return json.loads(response.read().decode("utf-8"))
-    except urllib.error.URLError as e:
-        logger.warning(f"Embedding service unavailable: {e}")
+        from niu_api.internal.embedding import encode, similarity
+        if endpoint == "/encode":
+            text = data.get("text", "")
+            embedding = encode(text)
+            return {"vector": embedding}
+        elif endpoint == "/similarity":
+            text1 = data.get("text1", "")
+            text2 = data.get("text2", "")
+            sim = similarity(text1, text2)
+            return {"similarity": sim}
         return None
     except Exception as e:
-        logger.warning(f"Failed to call embedding service: {e}")
+        logger.warning(f"Embedding service call failed: {e}")
         return None
 
 
 def get_embedding(text: str) -> list[float] | None:
-    """Get embedding for text using shared embedding service."""
+    """Get embedding for text using in-process embedding."""
     result = call_embedding_service("/encode", {"text": text})
     if result and "vector" in result:
         return result["vector"]
