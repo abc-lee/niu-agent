@@ -289,7 +289,7 @@ class NiuRunner:
         self._mcp_tools_schema: list = []
 
         # 工具生命周期管理
-        self.tool_lifecycle = ToolLifecycleManager(decay_rate=10, min_score=50)
+        self.tool_lifecycle = ToolLifecycleManager(decay_rate=10, remove_threshold=25)
 
     def set_mcp_tools_schema(self, tools: list):
         """设置 MCP 工具 Schema（从外部调用）"""
@@ -382,14 +382,17 @@ class NiuRunner:
             更新后的 tools_schema
         """
         # 1. 先衰减所有工具分数（每轮 -10）
-        # 衰减在注入之前，这样向量检索到的新分数会覆盖衰减后的低分
         self.tool_lifecycle.decay_tools()
 
         # 2. 从 messages 中提取最新上下文
         context = self._extract_context_from_messages(messages)
 
-        # 3. 重新执行动态注入（向量检索结果会覆盖衰减后的分数）
-        injection = self._inject_dynamic_resources(context)
+        # 3. 重新执行动态注入
+        injection, mcp_tool_scores = self._inject_dynamic_resources(context)
+
+        # 4. 向量检索到的工具分数：和衰减后分数取大值
+        for tool_name, search_score in mcp_tool_scores.items():
+            self.tool_lifecycle.update_from_search(tool_name, search_score)
 
         # 4. 更新 system_prompt（messages[0]）
         if injection and messages and messages[0].get("role") == "system":
@@ -446,7 +449,7 @@ class NiuRunner:
 
         return "\n".join(context_parts)
 
-    def _inject_dynamic_resources(self, context: str) -> str:
+    def _inject_dynamic_resources(self, context: str) -> tuple:
         """
         动态注入相关资源（Skills、MCP 工具描述、知识）
 
@@ -506,9 +509,15 @@ class NiuRunner:
 
         print(f"[Debug] Dynamic injection - Skills: {len(skills)}, MCP: {len(mcp_tools)}, Knowledge: {len(knowledge)}, Habits: {len(interaction_habits)}", file=sys.stderr, flush=True)
 
-        # 3.5 向量检索到的 MCP 工具：仅注入 system prompt，不保分
-        # 保分由 LLM 实际调用工具时的 hit_tool() 负责
-        # 这样衰减才能真正生效——不用工具的轮次，分数持续下降直到被移除
+        # 3.5 向量检索到的 MCP 工具：注入 system prompt + 返回分数供 update_from_search
+        mcp_tool_scores = {}
+        for tool in mcp_tools:
+            name = tool.metadata.get("name", "")
+            server = tool.metadata.get("server", "")
+            full_name = f"{server}/{name}" if server else name
+            score = tool.score if hasattr(tool, "score") else 0
+            if full_name and score > 0:
+                mcp_tool_scores[full_name] = int(score * 100)
 
         # 格式化
         parts = []
@@ -540,7 +549,7 @@ class NiuRunner:
         else:
             print(f"[Debug] Dynamic injection - Skipped (no relevant results)", file=sys.stderr, flush=True)
 
-        return injection
+        return injection, mcp_tool_scores
 
     def chat(
         self, session_id: str, user_input: str, stream: bool = True, max_turns: int = 40, history: list = None
@@ -564,7 +573,11 @@ class NiuRunner:
         context = self._extract_context_from_history(history, user_input)
 
         # 动态注入资源
-        injection = self._inject_dynamic_resources(context)
+        injection, mcp_tool_scores = self._inject_dynamic_resources(context)
+
+        # 向量检索到的工具分数：和当前分数取大值
+        for tool_name, search_score in mcp_tool_scores.items():
+            self.tool_lifecycle.update_from_search(tool_name, search_score)
 
         # 组装 system_prompt
         system_prompt = self.base_system_prompt

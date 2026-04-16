@@ -179,6 +179,8 @@ def agent_runner_loop(
                 outcome = exhaust(gen)
 
             if outcome.should_exit:
+                if on_turn_end is not None:
+                    on_turn_end(messages, tools_schema, turn)
                 return {
                     "result": "EXITED",
                     "data": outcome.data,
@@ -214,6 +216,9 @@ def agent_runner_loop(
 
         if len(next_prompts) == 0:
             if len(handler._done_hooks) == 0:
+                # 纯文本回复：也要执行衰减
+                if on_turn_end is not None:
+                    on_turn_end(messages, tools_schema, turn)
                 return should_exit
             next_prompts.add(handler._done_hooks.pop(0))
         next_prompt = handler.next_prompt_patcher("\n".join(next_prompts), None, turn)
@@ -232,4 +237,7 @@ def agent_runner_loop(
         if on_turn_end is not None:
             tools_schema = on_turn_end(messages, tools_schema, turn)
 
+    # MAX_TURNS_EXCEEDED 退出时也要执行衰减
+    if on_turn_end is not None:
+        on_turn_end(messages, tools_schema, turn)
     return {"result": "MAX_TURNS_EXCEEDED"}
