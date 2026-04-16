@@ -7,6 +7,7 @@ Routes call niu_kg_server functions directly (same-process import, like ToolRegi
 from typing import Literal, Optional
 from fastapi import APIRouter, Query
 from pydantic import BaseModel, Field
+from loguru import logger
 
 router = APIRouter(prefix="/api/kg", tags=["knowledge-graph"])
 
