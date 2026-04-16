@@ -116,7 +116,7 @@ mcpServers:
 
 # 增量处理
 
-**增量游标由调用方（compat.py）管理**：调用时 prompt 中会告知 `last_message_id`，你只处理 idx > last_message_id 的新消息。处理完成后在报告末尾用 JSON 报告处理到的最大 idx：`{"last_message_id": <最大idx>}`。
+**增量游标由调用方（compat.py）管理**：调用时 prompt 中会告知 `last_message_idx`，你只处理 idx > last_message_idx 的新消息。处理完成后在报告末尾用 JSON 报告处理到的最大 idx：`{"last_message_idx": <最大idx>}`。
 
 **禁止使用 code_run 工具**。code_run 会启动子进程，在睡眠整理场景下可能导致幽灵进程。所有文件读写通过 MCP 工具完成。
 
