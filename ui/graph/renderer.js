@@ -2,6 +2,7 @@
 const typeColors = {
   person: '#4A90D9',
   organization: '#5CB85C',
+  technology: '#17BECF',
   document: '#E8A838',
   concept: '#E06B9E',
   location: '#9B59B6',
@@ -10,9 +11,9 @@ const typeColors = {
 };
 
 const typeLabels = {
-  person: '人物', organization: '组织', document: '文档',
-  concept: '概念', location: '地点', event: '事件',
-  other: '其他',
+  person: '人物', organization: '组织', technology: '技术',
+  document: '文档', concept: '概念', location: '地点',
+  event: '事件', other: '其他',
 };
 
 // ===== Node Type Mapping =====
