@@ -169,21 +169,26 @@ async def cleanup_graph():
     tech_fixed = 0
     for old_id, (new_id, name, new_type) in tech_fixes.items():
         try:
-            # Check if old entity exists
+            # Check if old entity exists (use parameterized query to avoid escaping issues)
             r = conn.execute(
-                f"MATCH (e:Entity {{id: '{old_id}'}}) RETURN e.name as name, e.description as desc"
+                "MATCH (e:Entity {id: $id}) RETURN e.name as name, e.description as desc",
+                {"id": old_id},
             ).get_all()
             if r:
                 desc = r[0].get("desc", "") or ""
                 # Delete old
-                conn.execute(f"MATCH (e:Entity {{id: '{old_id}'}}) DETACH DELETE e").get_all()
+                conn.execute(
+                    "MATCH (e:Entity {id: $id}) DETACH DELETE e",
+                    {"id": old_id},
+                ).get_all()
                 # Create new with correct ID
                 conn.execute(
-                    f"CREATE (e:Entity {{id: '{new_id}', name: '{name}', type: '{new_type}', description: '{desc}', created_at: timestamp()}})"
+                    "CREATE (e:Entity {id: $new_id, name: $name, type: $type, description: $desc, created_at: timestamp()})",
+                    {"new_id": new_id, "name": name, "type": new_type, "desc": desc},
                 ).get_all()
                 tech_fixed += 1
-        except Exception:
-            pass
+        except Exception as ex:
+            logger.warning(f"[KG Cleanup] Failed to fix {old_id}: {ex}")
     results["fixed_other_to_technology"] = tech_fixed
 
     # 3. Delete misclassified entities
