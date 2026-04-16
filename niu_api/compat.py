@@ -418,11 +418,11 @@ async def tidy_context(request: dict):
             import json
             from pathlib import Path
             cursor_path = Path.home() / ".niu" / "last_dream_evolve.json"
-            last_message_id = 0
+            last_message_idx = 0
             if cursor_path.exists():
                 try:
                     cursor_data = json.loads(cursor_path.read_text(encoding="utf-8"))
-                    last_message_id = cursor_data.get("last_message_id", 0)
+                    last_message_idx = cursor_data.get("last_message_idx", 0)
                 except Exception as e:
                     logger.warning(f"[Tidy] Failed to read dream cursor: {e}")
 
@@ -430,8 +430,8 @@ async def tidy_context(request: dict):
 
 当前上下文：{estimated_tokens} tokens（{usage_percent:.1f}%）
 
-增量游标：上次处理到 idx={last_message_id}，只处理 idx > {last_message_id} 的新消息。
-如果所有消息 idx 都 <= {last_message_id}，说明没有新消息，直接报告"无新增消息"即可。
+增量游标：上次处理到 idx={last_message_idx}，只处理 idx > {last_message_idx} 的新消息。
+如果所有消息 idx 都 <= {last_message_idx}，说明没有新消息，直接报告"无新增消息"即可。
 
 消息列表：
 共 {message_count} 条消息（idx 从小到大 = 从旧到新）
@@ -441,7 +441,7 @@ async def tidy_context(request: dict):
                 tokens = msg_tokens[idx]
                 dream_prompt += f"[idx:{idx}] {tokens}tokens {msg.role}: {msg.content[:100]}\n"
 
-            dream_prompt += f"\n请按照工作项1-7的顺序处理新增消息（idx > {last_message_id}）。处理完成后，在报告末尾用 JSON 格式报告处理到的最大 idx，格式：{{\"last_message_id\": <最大idx>}}。禁止使用 code_run 工具。"
+            dream_prompt += f"\n请按照工作项1-7的顺序处理新增消息（idx > {last_message_idx}）。处理完成后，在报告末尾用 JSON 格式报告处理到的最大 idx，格式：{{\"last_message_idx\": <最大idx>}}。禁止使用 code_run 工具。"
 
             def run_dream_evolver():
                 return call_subagent(
@@ -457,18 +457,18 @@ async def tidy_context(request: dict):
             # 更新增量游标
             try:
                 import re
-                match = re.search(r'\{"last_message_id"\s*:\s*(\d+)\}', dream_result)
+                match = re.search(r'\{"last_message_idx"\s*:\s*(\d+)\}', dream_result)
                 if match:
-                    new_last_id = int(match.group(1))
+                    new_last_idx = int(match.group(1))
                 else:
-                    new_last_id = max((i for i, m in enumerate(messages)), default=0)
+                    new_last_idx = max((i for i, m in enumerate(messages)), default=0)
                 cursor_path.parent.mkdir(parents=True, exist_ok=True)
                 cursor_data = {
-                    "last_message_id": new_last_id,
+                    "last_message_idx": new_last_idx,
                     "last_evolve_at": __import__("datetime").datetime.now().isoformat(),
                 }
                 cursor_path.write_text(json.dumps(cursor_data, ensure_ascii=False, indent=2), encoding="utf-8")
-                logger.info(f"[Tidy] Dream cursor updated: last_message_id={new_last_id}")
+                logger.info(f"[Tidy] Dream cursor updated: last_message_idx={new_last_idx}")
             except Exception as e:
                 logger.warning(f"[Tidy] Failed to update dream cursor: {e}")
 

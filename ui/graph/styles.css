@@ -96,8 +96,23 @@ body {
 .persp-btn.active[data-core="organization"] {
   background-color: #5CB85C;
 }
+.persp-btn.active[data-core="technology"] {
+  background-color: #17BECF;
+}
 .persp-btn.active[data-core="document"] {
   background-color: #E8A838;
+}
+.persp-btn.active[data-core="photo"] {
+  background-color: #1ABC9C;
+}
+.persp-btn.active[data-core="video"] {
+  background-color: #8E44AD;
+}
+.persp-btn.active[data-core="note"] {
+  background-color: #2ECC71;
+}
+.persp-btn.active[data-core="chat"] {
+  background-color: #7F8C8D;
 }
 .persp-btn.active[data-core="concept"] {
   background-color: #E06B9E;
