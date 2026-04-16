@@ -1,17 +1,11 @@
+// force-graph renderer — based on vasturiano/force-graph (d3-force engine)
+
 // ===== Type Colors =====
 const typeColors = {
-  person: '#4A90D9',
-  organization: '#5CB85C',
-  technology: '#17BECF',
-  document: '#E8A838',
-  photo: '#1ABC9C',
-  video: '#8E44AD',
-  note: '#2ECC71',
-  chat: '#7F8C8D',
-  concept: '#E06B9E',
-  location: '#9B59B6',
-  event: '#F39C12',
-  other: '#95A5A6',
+  person: '#4A90D9', organization: '#5CB85C', technology: '#17BECF',
+  document: '#E8A838', photo: '#1ABC9C', video: '#8E44AD',
+  note: '#2ECC71', chat: '#7F8C8D', concept: '#E06B9E',
+  location: '#9B59B6', event: '#F39C12', other: '#95A5A6',
 };
 
 const typeLabels = {
@@ -24,7 +18,6 @@ const typeLabels = {
 // ===== Node Type Mapping =====
 function mapNodeType(node) {
   if (node.nodeType === 'Document') {
-    // Document 节点按 source 字段细分
     const sourceMap = { photo: 'photo', video: 'video', note: 'note', chat: 'chat' };
     return sourceMap[node.source] || 'document';
   }
@@ -64,7 +57,8 @@ function getMediaType(uri) {
 
 // ===== Current Graph Data =====
 let currentData = { nodes: [], edges: [] };
-let currentPerspective = null; // null = default even layout
+let currentPerspective = null;
+let currentMatchIds = null; // null = no search active
 
 // ===== Edge Count Cache =====
 let edgeCountCache = {};
@@ -84,137 +78,23 @@ function countEdges(nodeId) {
 // ===== Core Node Detection =====
 function isCoreNode(node) {
   if (!currentPerspective) return false;
-  const orig = node._originalData;
+  const orig = node._originalData || node;
   if (!orig) return false;
-
-  // Document subtypes (photo, video, note, chat, document)
   const docSubtypes = ['document', 'photo', 'video', 'note', 'chat'];
   if (docSubtypes.includes(currentPerspective)) {
     return orig.nodeType === 'Document' && mapNodeType(orig) === currentPerspective;
   }
   if (currentPerspective === 'concept') return orig.nodeType === 'Concept';
-  // person, organization, technology, etc.
   return orig.entityType === currentPerspective;
 }
 
 // ===== Node Size Calculation =====
 function getNodeSize(nodeId, asCore) {
   const edgeCount = countEdges(nodeId);
-  const base = asCore ? 18 : 5;
-  const scale = asCore ? 10 : 3;
+  const base = asCore ? 3 : 2;
+  const scale = asCore ? 2 : 1.5;
   return base + Math.log(edgeCount + 1) * scale;
 }
-
-// ===== Process Nodes =====
-const processNodes = (data) => {
-  return data.nodes.map(node => {
-    const visualType = mapNodeType(node);
-    const color = typeColors[visualType] || typeColors.other;
-    const asCore = currentPerspective ? isCoreNode(node) : false;
-    const size = getNodeSize(node.id, asCore);
-
-    return {
-      id: node.id,
-      label: '', // No text labels on nodes
-      type: 'circle',
-      size: size,
-      style: {
-        fill: color,
-        stroke: color,
-        lineWidth: 1,
-        fillOpacity: asCore ? 0.9 : 0.7,
-      },
-      stateStyles: {
-        selected: {
-          fill: color,
-          stroke: color,
-          lineWidth: 3,
-          fillOpacity: 1,
-          shadowColor: color,
-          shadowBlur: 15,
-        },
-      },
-      _originalData: node,
-      _visualType: visualType,
-    };
-  });
-};
-
-// ===== Process Edges — thin lines, no text =====
-const processEdges = (data) => {
-  return data.edges.map(edge => {
-    return {
-      source: edge.source,
-      target: edge.target,
-      label: '',
-      style: {
-        stroke: 'rgba(0,0,0,0.12)',
-        lineWidth: 1,
-        strokeOpacity: 1,
-      },
-    };
-  });
-};
-
-// ===== Layout Config =====
-function getLayoutConfig() {
-  const container = document.getElementById('graph-container');
-  const w = container.offsetWidth;
-  const h = container.offsetHeight;
-
-  if (!currentPerspective) {
-    return {
-      type: 'force',
-      linkDistance: 80,
-      center: [w / 2, h / 2],
-      nodeStrength: -200,
-      edgeStrength: 0.1,
-      preventOverlap: true,
-      nodeSize: 15,
-      collideStrength: 0.8,
-    };
-  }
-
-  return {
-    type: 'force',
-    linkDistance: 100,
-    center: [w / 2, h / 2],
-    nodeStrength: (d) => {
-      return isCoreNode(d) ? -500 : -30;
-    },
-    edgeStrength: 0.1,
-    preventOverlap: true,
-    nodeSize: 15,
-    collideStrength: 0.8,
-  };
-}
-
-// ===== Initialize G6 =====
-const container = document.getElementById('graph-container');
-const width = container.offsetWidth;
-const height = container.offsetHeight;
-
-const graph = new G6.Graph({
-  container: 'graph-container',
-  width,
-  height,
-  renderer: 'canvas',
-  modes: {
-    default: ['drag-canvas', 'zoom-canvas', 'drag-node', 'click-select'],
-  },
-  layout: getLayoutConfig(),
-  defaultNode: {
-    type: 'circle',
-    size: 12,
-    style: { fill: '#95A5A6', stroke: '#95A5A6', lineWidth: 1, fillOpacity: 0.7 },
-  },
-  defaultEdge: {
-    style: { stroke: 'rgba(0,0,0,0.12)', lineWidth: 1 },
-  },
-  animate: true,
-  enableOptimization: true,
-  optimize: { enable: true, zoomThreshold: 0.5, showLabel: false },
-});
 
 // ===== Loading State Helpers =====
 const showLoading = () => {
@@ -234,6 +114,111 @@ const hideEmpty = () => {
   if (el) el.style.display = 'none';
 };
 
+// ===== Build force-graph data from currentData =====
+function buildGraphData() {
+  const nodes = currentData.nodes.map(node => {
+    const visualType = mapNodeType(node);
+    const color = typeColors[visualType] || typeColors.other;
+    const asCore = currentPerspective ? isCoreNode(node) : false;
+    const isMatch = currentMatchIds ? currentMatchIds.has(node.id) : false;
+
+    let val, opacity;
+    if (currentMatchIds) {
+      val = isMatch ? getNodeSize(node.id, true) : getNodeSize(node.id, false);
+      opacity = isMatch ? 1 : 0.35;
+    } else {
+      val = getNodeSize(node.id, asCore);
+      opacity = asCore ? 0.95 : (currentPerspective ? 0.4 : 0.75);
+    }
+
+    return {
+      id: node.id,
+      label: node.label || node.name || node.id,
+      color: color,
+      val: val,
+      opacity: opacity,
+      _originalData: node,
+      _visualType: visualType,
+    };
+  });
+
+  const links = currentData.edges.map(edge => {
+    const isMatch = currentMatchIds
+      ? (currentMatchIds.has(edge.source) || currentMatchIds.has(edge.target))
+      : true;
+    return {
+      source: edge.source,
+      target: edge.target,
+      relation: edge.relation || '',
+      color: isMatch ? 'rgba(0,0,0,0.12)' : 'rgba(0,0,0,0.04)',
+      width: isMatch ? 1 : 0.5,
+    };
+  });
+
+  return { nodes, links };
+}
+
+// ===== Initialize force-graph =====
+const container = document.getElementById('graph-container');
+
+const graph = ForceGraph()(container)
+  .backgroundColor('transparent')
+  .nodeId('id')
+  .nodeLabel('')
+  .nodeVal(d => d.val)
+  .nodeColor(d => d.color)
+  .nodeCanvasObjectMode(() => 'replace')
+  .nodeCanvasObject((node, ctx, globalScale) => {
+    // Custom rendering: circle + label
+    const size = Math.max(2, node.val || 4);
+    const fontSize = Math.max(10 / globalScale, 3);
+
+    // Circle
+    ctx.beginPath();
+    ctx.arc(node.x, node.y, size, 0, 2 * Math.PI);
+    ctx.fillStyle = node.color;
+    ctx.globalAlpha = node.opacity ?? 0.75;
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  })
+  .linkSource('source')
+  .linkTarget('target')
+  .linkColor(d => d.color)
+  .linkWidth(d => d.width)
+  .linkCurvature(0)
+  .d3AlphaDecay(0.02)
+  .d3VelocityDecay(0.3)
+  .warmupTicks(50)
+  .cooldownTime(3000)
+  .onNodeClick(node => {
+    showDetail(node.id);
+  })
+  .onNodeRightClick(node => {
+    // Double-click expand
+    expandNode(node.id);
+  })
+  .onBackgroundClick(() => {
+    hideDetail();
+  })
+  .onNodeHover(node => {
+    if (node) {
+      showTooltip(node);
+    } else {
+      hideTooltip();
+    }
+  });
+
+// Configure d3-force parameters — must be called after graphData() when simulation exists
+function applyForceConfig() {
+  setTimeout(() => {
+    const chargeForce = graph.d3Force('charge');
+    if (chargeForce) chargeForce.strength(-2);
+    const linkForce = graph.d3Force('link');
+    if (linkForce) linkForce.distance(30).strength(0.8);
+    graph.reheatSimulation();
+  }, 100);
+}
+
 // ===== Load Graph Data =====
 async function loadGraphSnapshot() {
   showLoading();
@@ -250,15 +235,15 @@ async function loadGraphSnapshot() {
     }
 
     buildEdgeCountCache();
-
-    const processed = {
-      nodes: processNodes(currentData),
-      edges: processEdges(currentData),
-    };
-
-    graph.data(processed);
-    graph.render();
+    const data = buildGraphData();
+    graph.graphData(data);
+    applyForceConfig();
     updateStats();
+
+    // After simulation settles, zoom to fit
+    graph.onEngineStop(() => {
+      graph.zoomToFit(400, 40);
+    });
   } catch (error) {
     console.error('Failed to load graph:', error);
     hideLoading();
@@ -277,6 +262,20 @@ const updateStats = () => {
   statsEl.innerHTML = `<span class="stat-item"><strong>${currentData.nodes.length}</strong> 节点</span><span class="stat-item"><strong>${currentData.edges.length}</strong> 关系</span>`;
 };
 
+// ===== Re-layout helper =====
+// force-graph: just set new data, d3-force simulation auto-reheats
+// No clear/render needed — smooth animated transition
+function reLayout() {
+  buildEdgeCountCache();
+  const data = buildGraphData();
+  graph.graphData(data);
+  applyForceConfig();
+  // Wait for simulation to settle before zooming to fit
+  graph.onEngineStop(() => {
+    graph.zoomToFit(400, 40);
+  });
+}
+
 // ===== Perspective Mode =====
 const perspBtns = document.querySelectorAll('.persp-btn');
 
@@ -291,10 +290,9 @@ function updatePerspectiveButtons() {
 }
 
 function switchPerspective(coreType) {
-  // Toggle: clicking active perspective deactivates it
   currentPerspective = (currentPerspective === coreType) ? null : coreType;
   updatePerspectiveButtons();
-  reprocessAndRelayout();
+  reLayout();
 }
 
 perspBtns.forEach(btn => {
@@ -303,58 +301,26 @@ perspBtns.forEach(btn => {
   });
 });
 
-function reprocessAndRelayout() {
-  // Update node sizes and styles based on new perspective
-  graph.getNodes().forEach(nodeItem => {
-    const model = nodeItem.getModel();
-    const orig = model._originalData;
-    if (!orig) return;
-
-    const asCore = currentPerspective ? isCoreNode(model) : false;
-    const size = getNodeSize(model.id, asCore);
-    const color = getNodeColor(orig);
-
-    graph.updateItem(nodeItem, {
-      size: size,
-      style: {
-        fill: color,
-        stroke: color,
-        fillOpacity: asCore ? 0.9 : 0.7,
-      },
-    });
-  });
-
-  // Re-layout with animation
-  graph.updateLayout(getLayoutConfig());
-}
-
 // ===== Tooltip =====
 const tooltip = document.getElementById('node-tooltip');
 
-graph.on('node:mouseenter', (e) => {
-  const model = e.item.getModel();
-  const orig = model._originalData;
+function showTooltip(node) {
+  const orig = node._originalData;
   if (!orig) return;
-
   const name = orig.label || orig.name || orig.id;
   const typeLabel = getNodeLabel(orig);
   tooltip.innerHTML = `<div>${escapeHtml(name)}</div><div class="tooltip-type">${escapeHtml(typeLabel)}</div>`;
   tooltip.classList.remove('hidden');
+  // Position near mouse — force-graph doesn't give mouse coords in hover,
+  // so we position near the node's screen coordinates
+  const coords = graph.graph2ScreenCoords(node.x, node.y);
+  tooltip.style.left = (coords.x + 15) + 'px';
+  tooltip.style.top = (coords.y - 10) + 'px';
+}
 
-  // Position near mouse — use graph point converted to canvas
-  const canvasX = graph.getCanvasByPoint(e.x, e.y);
-  const containerRect = container.getBoundingClientRect();
-  tooltip.style.left = (containerRect.left + canvasX.x + 15) + 'px';
-  tooltip.style.top = (containerRect.top + canvasX.y - 10) + 'px';
-});
-
-graph.on('node:mouseleave', () => {
+function hideTooltip() {
   tooltip.classList.add('hidden');
-});
-
-graph.on('node:drag', () => {
-  tooltip.classList.add('hidden');
-});
+}
 
 // ===== Detail Panel =====
 let currentSelectedNode = null;
@@ -364,10 +330,10 @@ const detailContent = document.getElementById('detail-content');
 const closeDetail = document.getElementById('close-detail');
 const focusNodeBtn = document.getElementById('focus-node');
 
-const showDetail = (node) => {
-  currentSelectedNode = node.getModel();
-  const orig = currentSelectedNode._originalData;
+const showDetail = (nodeId) => {
+  const orig = currentData.nodes.find(n => n.id === nodeId);
   if (!orig) return;
+  currentSelectedNode = nodeId;
 
   const visualType = mapNodeType(orig);
   const color = typeColors[visualType] || typeColors.other;
@@ -430,18 +396,18 @@ closeDetail.addEventListener('click', hideDetail);
 
 focusNodeBtn.addEventListener('click', () => {
   if (!currentSelectedNode) return;
-  graph.focusItem(currentSelectedNode.id);
-});
-
-// ===== Node Click =====
-graph.on('node:click', (e) => {
-  showDetail(e.item);
+  // Find node in force-graph data and center on it
+  const fgData = graph.graphData();
+  const node = fgData.nodes.find(n => n.id === currentSelectedNode);
+  if (node && node.x != null) {
+    graph.centerAt(node.x, node.y, 800);
+    graph.zoom(3, 800);
+  }
 });
 
 // ===== Double-click to expand neighborhood =====
-graph.on('node:dblclick', async (e) => {
-  const node = e.item.getModel();
-  const orig = node._originalData;
+async function expandNode(nodeId) {
+  const orig = currentData.nodes.find(n => n.id === nodeId);
   if (!orig || orig.nodeType !== 'Entity') return;
 
   const entityId = orig.id.replace(/^entity:/, '');
@@ -454,16 +420,13 @@ graph.on('node:dblclick', async (e) => {
     let addedCount = 0;
 
     result.nodes.forEach(n => {
-      const nodeId = n.id.startsWith('entity:') ? n.id : `entity:${n.id}`;
-      if (!existingIds.has(nodeId)) {
-        const newNode = {
-          id: nodeId, label: n.name, nodeType: 'Entity',
+      const nid = n.id.startsWith('entity:') ? n.id : `entity:${n.id}`;
+      if (!existingIds.has(nid)) {
+        currentData.nodes.push({
+          id: nid, label: n.name, nodeType: 'Entity',
           entityType: n.type, description: n.description || '',
-        };
-        currentData.nodes.push(newNode);
-        const processed = processNodes({ nodes: [newNode], edges: [] });
-        graph.addItem('node', processed[0]);
-        existingIds.add(nodeId);
+        });
+        existingIds.add(nid);
         addedCount++;
       }
     });
@@ -474,110 +437,49 @@ graph.on('node:dblclick', async (e) => {
       if (!existingIds.has(srcId) || !existingIds.has(tgtId)) return;
       const edgeExists = currentData.edges.some(e => e.source === srcId && e.target === tgtId && e.relation === edge.relation);
       if (!edgeExists) {
-        const newEdge = { source: srcId, target: tgtId, relation: edge.relation, confidence: edge.confidence, edgeType: 'RELATED_TO' };
-        currentData.edges.push(newEdge);
-        const processed = processEdges({ nodes: [], edges: [newEdge] });
-        graph.addItem('edge', processed[0]);
+        currentData.edges.push({ source: srcId, target: tgtId, relation: edge.relation, confidence: edge.confidence, edgeType: 'RELATED_TO' });
       }
     });
 
     if (addedCount > 0) {
-      buildEdgeCountCache();
       updateStats();
+      reLayout();
     }
   } catch (err) {
     console.error('Failed to expand node:', err);
   }
-});
+}
 
-graph.on('canvas:click', () => {
-  hideDetail();
-});
-
-// ===== Search — re-layout with matches as centers =====
+// ===== Search =====
 const searchInput = document.getElementById('searchInput');
-let searchActive = false;
 
 searchInput.addEventListener('input', (e) => {
   const query = e.target.value.toLowerCase().trim();
 
   if (!query) {
-    searchActive = false;
-    // Restore node sizes to current perspective
-    reprocessAndRelayout();
+    currentMatchIds = null;
+    reLayout();
     return;
   }
 
-  searchActive = true;
-  const container = document.getElementById('graph-container');
-  const centerX = container.offsetWidth / 2;
-  const centerY = container.offsetHeight / 2;
-
-  // Find matching nodes
-  const matchIds = new Set();
+  currentMatchIds = new Set();
   currentData.nodes.forEach(node => {
     const label = (node.label || node.name || '').toLowerCase();
     const desc = (node.description || '').toLowerCase();
     if (label.includes(query) || desc.includes(query)) {
-      matchIds.add(node.id);
+      currentMatchIds.add(node.id);
     }
   });
 
-  // Update all nodes: enlarge matches, shrink others
-  graph.getNodes().forEach(nodeItem => {
-    const model = nodeItem.getModel();
-    const isMatch = matchIds.has(model.id);
-    const orig = model._originalData;
-    const color = orig ? getNodeColor(orig) : typeColors.other;
-
-    let size;
-    if (isMatch) {
-      size = getNodeSize(model.id, true) * 1.3;
-    } else {
-      size = getNodeSize(model.id, false);
-    }
-
-    graph.updateItem(nodeItem, {
-      size: size,
-      style: {
-        fill: color,
-        stroke: color,
-        fillOpacity: isMatch ? 1 : 0.4,
-      },
-    });
-  });
-
-  // Fade non-matching edges
-  graph.getEdges().forEach(edgeItem => {
-    const model = edgeItem.getModel();
-    const sourceMatch = matchIds.has(model.source);
-    const targetMatch = matchIds.has(model.target);
-    const connected = sourceMatch || targetMatch;
-
-    graph.updateItem(edgeItem, {
-      style: {
-        stroke: connected ? 'rgba(0,0,0,0.15)' : 'rgba(0,0,0,0.04)',
-        lineWidth: connected ? 1 : 0.5,
-      },
-    });
-  });
-
-  // Re-layout with matches pulled to center
-  graph.updateLayout({
-    type: 'force',
-    linkDistance: 80,
-    center: [centerX, centerY],
-    nodeStrength: (d) => matchIds.has(d.id) ? -400 : -50,
-    edgeStrength: 0.1,
-    preventOverlap: true,
-    nodeSize: 15,
-    collideStrength: 0.8,
-  });
+  reLayout();
 });
 
 // ===== Handle Window Resize =====
+let resizeTimer = null;
 window.addEventListener('resize', () => {
-  const newWidth = container.offsetWidth;
-  const newHeight = container.offsetHeight;
-  graph.changeSize(newWidth, newHeight);
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => {
+    graph.width(container.offsetWidth);
+    graph.height(container.offsetHeight);
+  }, 200);
 });
