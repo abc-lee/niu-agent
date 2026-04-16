@@ -529,6 +529,23 @@ def call_embedding_service(endpoint: str, data: dict) -> dict | None:
 # ============== 知识图谱同步 ==============
 
 
+# 常见技术关键词自动识别为technology类型
+_TECH_KEYWORDS = frozenset({
+    "python", "java", "javascript", "typescript", "go", "golang", "rust", "c++", "csharp",
+    "react", "vue", "next.js", "fastapi", "flask", "django", "sqlite", "postgresql", "redis",
+    "docker", "kubernetes", "git", "node.js", "electron", "playwright", "onnx", "insightface",
+    "kuzudb", "networkx", "cypher", "pagerank", "mcp", "llm", "embedding", "vector",
+    "transformer", "pytorch", "tensorflow", "numpy", "pandas", "ruff", "pytest",
+})
+
+
+def _infer_entity_type(name: str) -> str:
+    """根据名称推断实体类型（L1实体字段缺少:type后缀时使用）"""
+    if name.lower() in _TECH_KEYWORDS:
+        return "technology"
+    return "other"
+
+
 def sync_to_kg(file_path: str, l1: str, source: str = "document") -> dict:
     """同步文档和实体到知识图谱（KuzuDB）。
 
@@ -571,7 +588,7 @@ def sync_to_kg(file_path: str, l1: str, source: str = "document") -> dict:
                         etype = etype.strip().lower()
                     else:
                         name = pair.strip()
-                        etype = "other"
+                        etype = _infer_entity_type(name)
                     if not name:
                         continue
 
