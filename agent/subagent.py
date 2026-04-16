@@ -8,6 +8,7 @@ import os
 import json
 import yaml
 from typing import Optional, Dict, Any, List
+from loguru import logger
 
 
 def get_subagent_config(agent_name: str) -> Dict[str, Any]:
@@ -189,7 +190,16 @@ def call_subagent(
     while True:
         try:
             chunk = next(gen)
-            result += chunk
+            if isinstance(chunk, str):
+                result += chunk
+            else:
+                # chunk 可能是 MockResponse 等对象，提取 content
+                content = getattr(chunk, "content", None)
+                if content and isinstance(content, str):
+                    result += content
+                else:
+                    logger.warning(f"[SubAgent] Non-string chunk from agent_runner_loop: {type(chunk).__name__}")
+                    result += str(chunk)
         except StopIteration as e:
             # 生成器的 return 值在 StopIteration.value 中
             return_value = e.value
