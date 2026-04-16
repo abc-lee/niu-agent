@@ -22,11 +22,12 @@ MCP 服务器集群 (mcp-servers/)
 ```
 1、修改代码必须经过用户同意，说清楚修改的原因
 2、未经同意，不得覆盖仓库内任何备份
-3、代码修改前必须先完成仓库的临时提交
+3、代码修改前必须先完成仓库的临时提交，并使用gitnexus分析影响范围
 4、从仓库恢复代码时，先回忆上次备份的内容。不确定就不能盲目恢复
 5、遍历仓库历史需要测试原历史代码时，先把当前代码做临时提交
 6、代码调试过程中验证无效后，必须马上撤销调试代码，恢复原始干净代码，再增加新的调试代码
 7、目前项目代码量比较大，为了保护自己的上下文窗口，无需长期记忆或大代码量的遍历工作交给子Agent完成
+8、代码质量优先，用户不在乎token消耗
 ```
 
 ## 开发环境设置
@@ -464,7 +465,7 @@ preload_face_model()
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **ai-bot** (5594 symbols, 10710 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **ai-bot** (5730 symbols, 10935 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 

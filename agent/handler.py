@@ -8,6 +8,7 @@ import os
 import sys
 import json
 import re
+import signal
 import tempfile
 import subprocess
 import threading
@@ -163,9 +164,31 @@ def code_run(code: str, code_type: str = "python", timeout: int = 60, cwd: str =
                 line = line_bytes.decode("latin-1", errors="ignore")
             logs.append(line)
 
+    def _kill_tree(proc):
+        """杀死整个进程树（包括子进程的子进程）"""
+        try:
+            if os.name == "nt":
+                # Windows: taskkill /T 杀进程树 /F 强制
+                subprocess.run(
+                    ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+                    capture_output=True, timeout=5,
+                )
+            else:
+                # Linux/Mac: 用进程组杀
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    proc.kill()
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
     try:
         process = subprocess.Popen(
             cmd,
+            stdin=subprocess.DEVNULL,  # 隔离 stdin，防止 input() 阻塞
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             bufsize=0,
@@ -178,12 +201,24 @@ def code_run(code: str, code_type: str = "python", timeout: int = 60, cwd: str =
 
         while t.is_alive():
             if time.time() - start_t > timeout:
-                process.kill()
+                _kill_tree(process)
                 full_stdout.append(f"\n[Timeout Error] Process killed after {timeout}s")
                 break
             time.sleep(0.5)
 
         t.join(timeout=1)
+        # 确保进程已退出并回收资源
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            _kill_tree(process)
+            process.wait(timeout=3)
+        # 关闭 stdout 管道，防止 I/O 线程挂住
+        try:
+            if process.stdout:
+                process.stdout.close()
+        except Exception:
+            pass
         exit_code = process.poll()
         stdout_str = "".join(full_stdout)
 

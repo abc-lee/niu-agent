@@ -67,7 +67,7 @@ class ContextManager:
         """
         使用 litellm.token_counter 计算 token 数量（基于 tiktoken）
 
-        回退到字符数估算（约 2 字符/token）。
+        回退到字符数估算（约 2 字符/token，偏保守避免低估）。
 
         Args:
             messages: 消息列表
@@ -79,7 +79,7 @@ class ContextManager:
             from litellm import token_counter
             return token_counter(model="gpt-4o", messages=messages)
         except Exception:
-            # 回退：混合文本约 2 字符/token
+            # 回退：约 2 字符/token（偏保守，避免低估导致不触发压缩）
             total_tokens = 0
             for msg in messages:
                 content = msg.get("content", "")

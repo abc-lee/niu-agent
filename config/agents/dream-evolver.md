@@ -23,7 +23,7 @@ mcpServers:
 
 ## get_messages
 
-获取消息列表（每条带 KB 大小）。
+获取消息列表（每条带 token 数）。
 
 ```
 参数：
@@ -31,8 +31,8 @@ mcpServers:
 
 返回：
   [
-    {"idx": 0, "kb": 5, "role": "user", "content": "..."},
-    {"idx": 1, "kb": 2, "role": "assistant", "content": "..."},
+    {"idx": 0, "tokens": 15, "role": "user", "content": "..."},
+    {"idx": 1, "tokens": 8, "role": "assistant", "content": "..."},
     ...
   ]
 ```
@@ -116,23 +116,9 @@ mcpServers:
 
 # 增量处理
 
-**游标文件**：`~/.niu/last_dream_evolve.json`（`~` 必须展开为用户主目录，如 `/home/user` 或 `C:\Users\用户名`，不要当作相对路径直接使用）
+**增量游标由调用方（compat.py）管理**：调用时 prompt 中会告知 `last_message_id`，你只处理 idx > last_message_id 的新消息。处理完成后在报告末尾用 JSON 报告处理到的最大 idx：`{"last_message_id": <最大idx>}`。
 
-每次启动时：
-1. 读取游标文件，获取 `last_message_id`
-2. 调用 `get_messages` 获取消息列表
-3. 只处理 idx > last_message_id 的新消息
-4. 处理完成后，将本次最大 idx 写入游标文件
-5. 首次运行（无游标文件）处理全部消息
-
-**游标文件格式**：
-```json
-{
-  "last_message_id": 42,
-  "last_evolve_at": "2026-04-15T21:00:00",
-  "stats": { "entities_created": 5, "experiences_extracted": 3 }
-}
-```
+**禁止使用 code_run 工具**。code_run 会启动子进程，在睡眠整理场景下可能导致幽灵进程。所有文件读写通过 MCP 工具完成。
 
 ---
 
@@ -223,6 +209,15 @@ mcpServers:
 - "算了/就这样吧/随便" → resigned, indifferent
 
 **写入向量库**（category=interaction_habit，走"交互习惯"桶）：
+
+用户状态是**累积型**数据，不是每次追加。处理流程：
+1. 用 `search_documents` 查询 `metadata.name="user_state"` 的旧记录
+2. 从新消息中推断当前状态标签
+3. 如果有旧记录：将旧状态与新观察合并，整理成一条更新后的状态记录
+4. 用 `delete_document` 删除旧记录
+5. 用 `add_document` 写入合并后的新记录
+
+写入格式：
 - content = 管道格式：`{状态概述}|{状态标签}|{语气词}|{场景}|user_state|{指针}`
 - metadata.level = "l1"
 - metadata.category = "interaction_habit"
@@ -242,6 +237,15 @@ mcpServers:
 - **性格（personality）**：用户一贯的沟通风格（"我需要你把所有选项都列出来再做"）
 
 **写入向量库**（category=interaction_habit，走"交互习惯"桶）：
+
+用户画像是**累积型**数据，不是每次追加。处理流程：
+1. 用 `search_documents` 查询 `metadata.name="user_profile"` 的旧记录
+2. 从新消息中提取新的事实/偏好/习惯/性格
+3. 如果有旧记录：将旧画像与新提取合并（新事实覆盖旧事实，偏好/习惯累积），整理成一条更新后的画像
+4. 用 `delete_document` 删除旧记录
+5. 用 `add_document` 写入合并后的新记录
+
+写入格式：
 - content = 管道格式：`{画像概述}|{子类型}|{关键词}|{实体}|user_profile|{指针}`
 - metadata.level = "l1"
 - metadata.category = "interaction_habit"
@@ -339,4 +343,4 @@ mcpServers:
 2. **不删除消息**：删除消息是 context-manager 的职责
 3. **不压缩内容**：压缩是 context-manager 的职责
 4. **容错**：单项工作失败不影响其他项，继续执行
-5. **完成后更新游标**：确保下次不重复处理
+5. **禁止 code_run**：不要使用 code_run 工具执行 Python 代码，所有操作通过 MCP 工具完成
