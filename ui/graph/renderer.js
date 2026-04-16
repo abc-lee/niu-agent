@@ -124,6 +124,16 @@ const processNodes = (data) => {
         lineWidth: 1,
         fillOpacity: asCore ? 0.9 : 0.7,
       },
+      stateStyles: {
+        selected: {
+          fill: color,
+          stroke: color,
+          lineWidth: 3,
+          fillOpacity: 1,
+          shadowColor: color,
+          shadowBlur: 15,
+        },
+      },
       _originalData: node,
       _visualType: visualType,
     };
