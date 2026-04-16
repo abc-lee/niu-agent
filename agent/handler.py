@@ -220,6 +220,8 @@ def code_run(code: str, code_type: str = "python", timeout: int = 60, cwd: str =
         except Exception:
             pass
         exit_code = process.poll()
+        if exit_code is None:
+            exit_code = -1
         stdout_str = "".join(full_stdout)
 
         return {
@@ -415,13 +417,6 @@ class NiuHandler(BaseHandler):
 
         # 更新轮数
         self._experience_context.turn_count = self.current_turn
-
-        # P2-1: 记录工具调用（用于重复检测）
-        tool_call_str = f"{tool_name}({str(args)[:50]})"  # 限制长度
-        self._recent_tool_calls.append(tool_call_str)
-        # 只保留最近 10 次调用
-        if len(self._recent_tool_calls) > 10:
-            self._recent_tool_calls = self._recent_tool_calls[-10:]
 
         # 记录工具执行
         result_str = str(ret) if ret else ""
@@ -653,8 +648,6 @@ class NiuHandler(BaseHandler):
         keywords = list(set(chinese_words + english_words))[:5]
 
         return " ".join(keywords) if keywords else ""
-
-        return next_prompt
 
     def reset_working_memory(self):
         """重置工作记忆（新会话开始时调用）"""
