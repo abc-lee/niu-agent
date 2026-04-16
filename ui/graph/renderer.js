@@ -481,5 +481,6 @@ window.addEventListener('resize', () => {
   resizeTimer = setTimeout(() => {
     graph.width(container.offsetWidth);
     graph.height(container.offsetHeight);
+    graph.zoomToFit(400, 40);
   }, 200);
 });

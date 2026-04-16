@@ -37,16 +37,17 @@ All nodes render as circles with **no text labels**. Type is distinguished by co
 | other Entity | `#95A5A6` (gray) | |
 
 **Size by connection count**:
-- Core type nodes (current perspective): `20-50px` radius, scaled by edge count
-- Non-core nodes: `6-12px` radius, scaled by edge count
-- Formula: `baseRadius + Math.log(connectionCount + 1) * scale`
+- Core type nodes (current perspective): `3 + Math.log(connectionCount + 1) * 2` radius
+- Non-core nodes: `2 + Math.log(connectionCount + 1) * 1.5` radius
+- Search matches: same as core formula, no extra multiplier
 
-**Hover**: Show tooltip with node name + type. Use G6 `tooltip` plugin or custom HTML tooltip positioned at mouse.
+**Hover**: Show tooltip with node name + type. Custom HTML tooltip positioned via `graph.graph2ScreenCoords()`.
 
 ### 3. Edges = Thin Lines
 
-- All edges: `1px` width, `rgba(0,0,0,0.12)` color
+- All edges: `1px` width, `rgba(0,0,0,0.12)` color for connected, `rgba(0,0,0,0.04)` for unconnected
 - No text labels on edges
+- No arrow heads, straight lines (curvature=0)
 - Remove `edgeTypeLabels` rendering
 - Remove confidence-based width variation
 
@@ -66,10 +67,11 @@ All nodes render as circles with **no text labels**. Type is distinguished by co
 | 概念 | Concept | Concept nodes large & spread |
 
 **Implementation**:
-- Each node gets `nodeStrength` based on whether it's core or non-core
-- Core nodes: `nodeStrength = -500`, `size = 20-50px`
-- Non-core nodes: `nodeStrength = -30`, `size = 6-12px`
-- On perspective switch: call `graph.updateLayout(newConfig)` — G6 animates the transition
+- Uses force-graph (vasturiano) with d3-force engine
+- charge strength = -2, link distance = 30, link strength = 0.8
+- Core nodes: larger size + full opacity (0.95)
+- Non-core nodes: smaller size + dimmed opacity (0.4)
+- On perspective switch: `reLayout()` rebuilds data and re-runs simulation
 - Active perspective button highlighted with its type color
 
 **Entity type grouping** (no backend changes): When "人物" perspective is active, all person entities become large hub dots. Other entities (locations, events, etc.) and documents/concepts appear as small dots connected to their related person hubs. This creates a natural "orbiting" visual without needing a Folder node type.
@@ -79,15 +81,14 @@ All nodes render as circles with **no text labels**. Type is distinguished by co
 On search input:
 1. Find matching nodes by label/description
 2. If matches found:
-   - Set matching nodes as layout centers (position them near graph center)
-   - Enlarge matching nodes (size × 1.5)
-   - Call `graph.updateLayout()` to re-flow with new positions
-   - All nodes animate to new positions — no nodes hidden
+   - Matching nodes: core size + full opacity (1)
+   - Non-matching nodes: small size + dimmed opacity (0.35)
+   - Call `reLayout()` to rebuild and re-flow
 3. On clear search: restore previous perspective layout
 
 ### 6. Detail Panel
 
-**Trigger**: Click on a node (not hover).
+**Trigger**: Click on a node (left-click). Right-click expands neighborhood.
 
 **Content**:
 - Node name (title)
@@ -123,7 +124,7 @@ Keep bottom status bar but simplify: show node count + edge count only. Remove p
 | File | Changes |
 |------|---------|
 | `ui/graph/styles.css` | Rewrite: remove pattern, dashed borders, handwritten fonts, pencil shadows. Add dot-node styles, tooltip styles, clean toolbar |
-| `ui/graph/renderer.js` | Major rewrite: perspective mode logic, dot-only nodes, thin edges, hover tooltips, search re-layout, media thumbnails in detail panel |
+| `ui/graph/renderer.js` | Major rewrite: force-graph (vasturiano) replacing G6 v5, perspective mode, dot-only nodes, thin edges, hover tooltips, search re-layout, media thumbnails in detail panel |
 | `ui/graph/index.html` | Remove Google Fonts links, update toolbar HTML for perspective buttons, add tooltip container |
 | `ui/graph/main.js` | Add `autoHideMenuBar: true` |
 
@@ -135,8 +136,8 @@ Keep bottom status bar but simplify: show node count + edge count only. Remove p
 4. Hover a node — tooltip appears with name + type
 5. Click a node — detail panel slides in with info + media thumbnail if applicable
 6. No perspective active by default — all nodes medium-sized, evenly laid out
-7. Click "人物" — person nodes enlarge and spread, others shrink and orbit, animated transition
+7. Click "人物" — person nodes enlarge and spread, others shrink and dim, animated transition
 8. Click "文档" — document nodes enlarge and spread, animated transition
-9. Search for a term — matching nodes move to center and enlarge, all nodes animate
+9. Search for a term — matching nodes enlarge and full opacity, others dim
 10. Clear search — layout returns to current perspective
-11. Edges are all thin lines with no text
+11. Edges are all thin straight lines with no text, no arrows
