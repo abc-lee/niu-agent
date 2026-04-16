@@ -90,7 +90,7 @@ TOOL_SCHEMAS = {
                 "name": {"type": "string", "description": "Entity name"},
                 "type": {
                     "type": "string",
-                    "description": "Entity type (e.g., person, organization, location)",
+                    "description": "Entity type (person, organization, technology, location, concept, other)",
                 },
                 "description": {
                     "type": "string",
@@ -1597,7 +1597,7 @@ async def list_tools() -> list[Tool]:
                     "name": {"type": "string", "description": "Entity name"},
                     "type": {
                         "type": "string",
-                        "description": "Entity type (e.g., person, organization, location)",
+                        "description": "Entity type (person, organization, technology, location, concept, other)",
                     },
                     "description": {
                         "type": "string",
