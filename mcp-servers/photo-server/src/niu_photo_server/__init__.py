@@ -529,82 +529,24 @@ def call_embedding_service(endpoint: str, data: dict) -> dict | None:
 # ============== 知识图谱同步 ==============
 
 
-# 常见技术关键词自动识别为technology类型
-_TECH_KEYWORDS = frozenset({
-    "python", "java", "javascript", "typescript", "go", "golang", "rust", "c++", "csharp",
-    "react", "vue", "next.js", "fastapi", "flask", "django", "sqlite", "postgresql", "redis",
-    "docker", "kubernetes", "git", "node.js", "electron", "playwright", "onnx", "insightface",
-    "kuzudb", "networkx", "cypher", "pagerank", "mcp", "llm", "embedding", "vector",
-    "transformer", "pytorch", "tensorflow", "numpy", "pandas", "ruff", "pytest",
-})
-
-
-def _infer_entity_type(name: str) -> str:
-    """根据名称推断实体类型（L1实体字段缺少:type后缀时使用）"""
-    if name.lower() in _TECH_KEYWORDS:
-        return "technology"
-    return "other"
-
-
 def sync_to_kg(file_path: str, l1: str, source: str = "document") -> dict:
-    """同步文档和实体到知识图谱（KuzuDB）。
+    """同步文档到知识图谱（KuzuDB）。
 
-    从 L1 摘要中提取实体，写入 kg-server 的 Document + Entity 节点并建立 MENTIONS 关系。
+    创建 Document 节点。实体提取由 dream-evolver 在睡眠整理时统一处理
+    （LLM 能正确判断实体类型，避免从 L1 标签字段错误提取 other: 实体）。
     失败不影响主流程（向量库写入已成功）。
     """
     try:
-        from niu_kg_server import create_document, create_entity, link_document_entity, get_connection
+        from niu_kg_server import create_document
 
-        # 1. 从 file_path 推算 title
+        # 从 file_path 推算 title
         title = Path(file_path).stem
 
-        # 2. 创建 Document 节点（MERGE 语义，重复入库会覆盖）
+        # 创建 Document 节点（MERGE 语义，重复入库会覆盖）
         create_document(uri=file_path, title=title, content=l1, source=source)
         logger.info(f"[KG] Document created: {file_path}")
 
-        # 3. 清除该文档的旧 MENTIONS 边（防止重新入库时残留过期实体关系）
-        try:
-            conn = get_connection()
-            conn.execute(
-                "MATCH (d:Document {uri: $uri})-[r:MENTIONS]->() DELETE r",
-                {"uri": file_path},
-            )
-        except Exception as e:
-            logger.warning(f"[KG] Failed to clear old MENTIONS for {file_path}: {e}")
-
-        # 4. 从 L1 提取实体（第4个字段，格式: name:type,name:type）
-        entities_created = []
-        parts = l1.split("|")
-        if len(parts) != 6:
-            logger.warning(f"[KG] L1 has {len(parts)} fields (expected 6), entity extraction may be inaccurate: {l1[:100]}")
-        if len(parts) >= 4:
-            entity_str = parts[3].strip()
-            if entity_str:
-                for pair in entity_str.split(","):
-                    pair = pair.strip()
-                    if ":" in pair:
-                        name, etype = pair.rsplit(":", 1)
-                        name = name.strip()
-                        etype = etype.strip().lower()
-                    else:
-                        name = pair.strip()
-                        etype = _infer_entity_type(name)
-                    if not name:
-                        continue
-
-                    entity_id = f"{etype}:{name}"
-                    try:
-                        create_entity(
-                            id=entity_id, name=name,
-                            entity_type=etype, description=f"Extracted from {title}",
-                        )
-                        link_document_entity(doc_uri=file_path, entity_id=entity_id, confidence=0.7)
-                        entities_created.append(entity_id)
-                    except Exception as e:
-                        logger.warning(f"[KG] Entity creation failed for {name}: {e}")
-
-        logger.info(f"[KG] Sync complete: {len(entities_created)} entities linked to {file_path}")
-        return {"status": "success", "doc_uri": file_path, "entities": entities_created}
+        return {"status": "success", "doc_uri": file_path}
 
     except ImportError:
         logger.warning("[KG] niu_kg_server not available, skipping KG sync")
