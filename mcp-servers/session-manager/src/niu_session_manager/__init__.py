@@ -27,7 +27,7 @@ API_URL = os.environ.get("NIU_API_URL", "http://127.0.0.1:9876")
 TOOL_SCHEMAS = {
     "get_messages": {
         "name": "get_messages",
-        "description": "Get message list for a session with KB sizes. Returns messages with idx, kb, role, and content preview.",
+        "description": "Get message list for a session with token counts. Returns messages with idx, tokens, role, and content preview.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -41,7 +41,7 @@ TOOL_SCHEMAS = {
     },
     "delete_messages": {
         "name": "delete_messages",
-        "description": "Delete messages from a session by indices. Returns deleted count and freed KB.",
+        "description": "Delete messages from a session by indices. Returns deleted count and freed tokens.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -97,7 +97,7 @@ async def list_tools() -> list[Tool]:
     return [
         Tool(
             name="get_messages",
-            description="Get message list for a session with KB sizes. Returns messages with idx, kb, role, and content preview.",
+            description="Get message list for a session with token counts. Returns messages with idx, tokens, role, and content preview.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -111,7 +111,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="delete_messages",
-            description="Delete messages from a session by indices. Returns deleted count and freed KB.",
+            description="Delete messages from a session by indices. Returns deleted count and freed tokens.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -151,20 +151,24 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         if not result:
             return [TextContent(type="text", text="Error: Failed to get messages")]
 
-        # Format messages with KB sizes
+        # Format messages with token counts
         messages = result.get("messages", [])
         formatted = []
-        total_kb = 0
+        total_tokens = 0
 
         for i, msg in enumerate(messages):
             content = msg.get("content", "")
-            kb = max(1, len(content) // 1024)  # At least 1KB
-            total_kb += kb
+            try:
+                from litellm import token_counter
+                tokens = token_counter(model="gpt-4o", messages=[{"role": msg.get("role", "user"), "content": content}])
+            except Exception:
+                tokens = max(1, len(content) // 2) + 4
+            total_tokens += tokens
 
             formatted.append(
                 {
                     "idx": i,
-                    "kb": kb,
+                    "tokens": tokens,
                     "role": msg.get("role", "unknown"),
                     "content": content,  # Full content, no truncation
                 }
@@ -172,7 +176,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
 
         output = {
             "total_messages": len(messages),
-            "total_kb": total_kb,
+            "total_tokens": total_tokens,
             "messages": formatted,
         }
 
