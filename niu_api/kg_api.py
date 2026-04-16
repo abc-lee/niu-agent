@@ -158,15 +158,30 @@ async def cleanup_graph():
     results["fixed_type_labels"] = fixed
 
     # 2.5. Fix misclassified other -> technology (known tech entities)
-    tech_ids = ["other:PageRank", "other:MCP", "other:Cypher", "other:NetworkX", "other:KuzuDB"]
+    # ID prefix is wrong (other:xxx should be technology:xxx), need delete+recreate
+    tech_fixes = {
+        "other:PageRank": ("technology:PageRank", "PageRank", "technology"),
+        "other:MCP": ("technology:MCP", "MCP", "technology"),
+        "other:Cypher": ("technology:Cypher", "Cypher", "technology"),
+        "other:NetworkX": ("technology:NetworkX", "NetworkX", "technology"),
+        "other:KuzuDB": ("technology:KuzuDB", "KuzuDB", "technology"),
+    }
     tech_fixed = 0
-    for eid in tech_ids:
+    for old_id, (new_id, name, new_type) in tech_fixes.items():
         try:
+            # Check if old entity exists
             r = conn.execute(
-                f"MATCH (e:Entity {{id: '{eid}'}}) SET e.type = 'technology' RETURN count(e) as cnt"
+                f"MATCH (e:Entity {{id: '{old_id}'}}) RETURN e.name as name, e.description as desc"
             ).get_all()
-            cnt = r[0]["cnt"] if r else 0
-            tech_fixed += cnt
+            if r:
+                desc = r[0].get("desc", "") or ""
+                # Delete old
+                conn.execute(f"MATCH (e:Entity {{id: '{old_id}'}}) DETACH DELETE e").get_all()
+                # Create new with correct ID
+                conn.execute(
+                    f"CREATE (e:Entity {{id: '{new_id}', name: '{name}', type: '{new_type}', description: '{desc}', created_at: timestamp()}})"
+                ).get_all()
+                tech_fixed += 1
         except Exception:
             pass
     results["fixed_other_to_technology"] = tech_fixed
