@@ -3,6 +3,11 @@
 
 管理工具在对话单元中的生命周期，实现分数衰减机制。
 支持持久化存储，程序重启后保留工具分数。
+
+规则：
+1. 每轮衰减：所有分数 -10，低于 25 移除
+2. 向量检索：检索到工具 → 相似度×100 → 和衰减后分数取大值
+3. 工具被调用：和衰减后分数比 → 高于55用自己的分 → 低于55补到55
 """
 
 import json
@@ -14,15 +19,15 @@ from typing import Dict, List
 class ToolLifecycleManager:
     """管理工具在对话单元中的生命周期（带持久化）"""
 
-    def __init__(self, decay_rate: int = 10, min_score: int = 50):
+    def __init__(self, decay_rate: int = 10, remove_threshold: int = 25):
         """
         Args:
             decay_rate: 每轮衰减分数（默认10分/轮）
-            min_score: 低于此分数移除工具（默认50分）
+            remove_threshold: 低于此分数移除工具（默认25分）
         """
         self.scores_path = Path.home() / ".niu" / "tool_scores.json"
         self.decay_rate = decay_rate
-        self.min_score = min_score
+        self.remove_threshold = remove_threshold
         self.active_tools: Dict[str, int] = self._load_scores()
         # 临时存储：工具命中后激活的Skills（不持久化，不衰减）
         self._pending_skills: List[str] = []
@@ -45,38 +50,51 @@ class ToolLifecycleManager:
             encoding="utf-8"
         )
 
-    def hit_tool(self, tool_name: str, score: int = 0, skip_coactivation: bool = False):
+    def hit_tool(self, tool_name: str, skip_coactivation: bool = False):
         """
-        工具被 LLM 实际调用，记录激活并检索相关Skills
+        工具被 LLM 实际调用
 
-        只在 LLM 真正调用工具时触发（handler.dispatch 中调用）。
-        向量检索命中的工具不再通过此方法保分，避免衰减-覆盖死循环。
+        规则：和衰减后分数比 → 高于55用自己的分 → 低于55补到55
+        设65：同轮衰减后55，用户看到的是55
 
         Args:
             tool_name: 工具名，格式为 "server-name/tool-name"
-            score: 保留参数（兼容），0表示LLM实际调用
             skip_coactivation: 跳过同server工具激活和Skills检索
         """
-        # LLM 实际调用：确认需要，给高分（能扛 3 轮衰减）
         current = self.active_tools.get(tool_name, 0)
-        self.active_tools[tool_name] = max(current, 80)
-        self._save_scores()  # 立即保存，保证持久化语义
+        if current < 65:
+            self.active_tools[tool_name] = 65
+        # 高于65则不动，用自己的分
+        self._save_scores()
 
-        # 检索相关Skills（仅 LLM 实际调用时触发，向量检索命中时跳过）
+        # 检索相关Skills
         if not skip_coactivation:
             self._activate_related_skills(tool_name)
+
+    def update_from_search(self, tool_name: str, search_score: int):
+        """
+        向量检索到工具，和衰减后分数取大值
+
+        规则2：向量检索分和衰减分取大值
+
+        Args:
+            tool_name: 工具名
+            search_score: 向量检索相似度×100
+        """
+        current = self.active_tools.get(tool_name, 0)
+        new_score = max(current, search_score)
+        if new_score != current:
+            self.active_tools[tool_name] = new_score
+            self._save_scores()
 
     def _activate_related_skills(self, tool_name: str):
         """
         用工具名去向量库检索相关Skills，并激活同server的其他工具
 
-        当 LLM 调用一个工具时，同 server 的其他工具也应该被激活，
-        因为它们通常需要配合使用（如 browser_navigate → browser_interact）。
-
         Args:
             tool_name: 工具名
         """
-        # 1. 激活同 server 的其他工具（给 80 分，与 LLM 调用同等待遇）
+        # 1. 激活同 server 的其他工具（低于65补到65）
         if "/" in tool_name:
             server = tool_name.split("/", 1)[0]
             try:
@@ -84,15 +102,18 @@ class ToolLifecycleManager:
                 runner = get_runner()
                 if runner and hasattr(runner, '_mcp_tools_schema'):
                     for schema in runner._mcp_tools_schema:
-                        name = schema.get("name", "")
+                        name = schema.get("function", {}).get("name", "")
                         if "/" in name:
                             s, _ = name.split("/", 1)
                         else:
                             continue
-                        if s == server and name != tool_name and name not in self.active_tools:
-                            self.active_tools[name] = 80
-                            print(f"[ToolLifecycle] Co-activated: {name} (same server: {server})",
-                                  file=sys.stderr, flush=True)
+                        if s == server and name != tool_name:
+                            current = self.active_tools.get(name, 0)
+                            if current < 65:
+                                self.active_tools[name] = 65
+                                print(f"[ToolLifecycle] Co-activated: {name} (same server: {server})",
+                                      file=sys.stderr, flush=True)
+                    self._save_scores()
             except Exception as e:
                 print(f"[ToolLifecycle] Failed to co-activate tools for {tool_name}: {e}",
                       file=sys.stderr, flush=True)
@@ -119,7 +140,8 @@ class ToolLifecycleManager:
                       file=sys.stderr, flush=True)
 
         except Exception as e:
-            print(f"[ToolLifecycle] Failed to find skills for {tool_name}: {e}", file=sys.stderr, flush=True)
+            print(f"[ToolLifecycle] Failed to find skills for {tool_name}: {e}",
+                  file=sys.stderr, flush=True)
 
     def decay_tools(self):
         """
@@ -127,7 +149,7 @@ class ToolLifecycleManager:
 
         规则：
         - 所有工具分数 -decay_rate
-        - 分数 < min_score 的工具被移除
+        - 分数 < remove_threshold 的工具被移除
         - 保存到文件
         """
         to_remove = []
@@ -135,7 +157,7 @@ class ToolLifecycleManager:
             new_score = score - self.decay_rate
             self.active_tools[tool_name] = new_score
 
-            if new_score < self.min_score:
+            if new_score < self.remove_threshold:
                 to_remove.append(tool_name)
 
         for tool_name in to_remove:
