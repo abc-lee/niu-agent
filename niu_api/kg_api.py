@@ -157,6 +157,20 @@ async def cleanup_graph():
             pass
     results["fixed_type_labels"] = fixed
 
+    # 2.5. Fix misclassified other -> technology (known tech entities)
+    tech_ids = ["other:PageRank", "other:MCP", "other:Cypher", "other:NetworkX", "other:KuzuDB"]
+    tech_fixed = 0
+    for eid in tech_ids:
+        try:
+            r = conn.execute(
+                f"MATCH (e:Entity {{id: '{eid}'}}) SET e.type = 'technology' RETURN count(e) as cnt"
+            ).get_all()
+            cnt = r[0]["cnt"] if r else 0
+            tech_fixed += cnt
+        except Exception:
+            pass
+    results["fixed_other_to_technology"] = tech_fixed
+
     # 3. Delete misclassified entities
     misclassified = ["person:游戏", "technology:chat-with-file-processor", "mcp_tool:chat-with-file-processor"]
     mis_deleted = 0
