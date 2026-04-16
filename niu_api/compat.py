@@ -457,11 +457,14 @@ async def tidy_context(request: dict):
             # 更新增量游标
             try:
                 import re
-                match = re.search(r'\{"last_message_idx"\s*:\s*(\d+)\}', dream_result)
+                # 用 re.DOTALL 处理 LLM 可能输出的多行 JSON
+                match = re.search(r'\{"last_message_idx"\s*:\s*(\d+)\}', dream_result, re.DOTALL)
                 if match:
                     new_last_idx = int(match.group(1))
                 else:
-                    new_last_idx = max((i for i, m in enumerate(messages)), default=0)
+                    # regex 未匹配时保留旧游标，避免跳过未处理的消息
+                    new_last_idx = last_message_idx
+                    logger.warning(f"[Tidy] Dream cursor regex not matched, preserving last_message_idx={last_message_idx}")
                 cursor_path.parent.mkdir(parents=True, exist_ok=True)
                 cursor_data = {
                     "last_message_idx": new_last_idx,

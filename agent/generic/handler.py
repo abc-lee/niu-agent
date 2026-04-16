@@ -261,7 +261,7 @@ def file_read(path, start=1, keyword=None, count=200, show_linenos=True):
             else:
                 res = list(itertools.islice(stream, count))
             realcnt = len(res)
-            L_MAX = max(100, 512000 // realcnt)
+            L_MAX = max(100, 512000 // realcnt) if realcnt > 0 else 100
             TAG = " ... [TRUNCATED]"
             remaining = sum(1 for _ in itertools.islice(stream, 5000))
             total_lines = (start - 1) + realcnt + remaining
@@ -341,7 +341,8 @@ class GenericAgentHandler(BaseHandler):
             return
 
         # 提取 <summary> 标签（可选优化）
-        rsumm = re.search(r"<summary>(.*?)</summary>", response.content, re.DOTALL)
+        content = getattr(response, "content", "") if response else ""
+        rsumm = re.search(r"<summary>(.*?)</summary>", content, re.DOTALL)
         if rsumm:
             # LLM 提供了高质量摘要
             summary = rsumm.group(1).strip()[:200]
