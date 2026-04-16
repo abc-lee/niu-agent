@@ -170,20 +170,19 @@ async def cleanup_graph():
     tech_fixed = 0
     for old_id, (new_id, name, new_type) in tech_fixes.items():
         try:
-            # Check if old entity exists
-            r = conn.execute(
-                f"MATCH (e:Entity) WHERE e.id = '{old_id}' RETURN e.name as name, e.description as desc"
-            ).get_all()
-            if r:
-                desc = r[0].get("desc", "") or ""
-                # Delete old (with edges)
-                conn.execute(
-                    f"MATCH (e:Entity) WHERE e.id = '{old_id}' DETACH DELETE e"
-                ).get_all()
-                # Create new with correct ID
-                conn.execute(
-                    f"CREATE (e:Entity {{id: '{new_id}', name: '{name}', type: '{new_type}', description: '{desc}', created_at: timestamp()}})"
-                ).get_all()
+            # Use list_entities to find the entity (avoids Cypher string matching issues)
+            all_entities = kg.list_entities(limit=500)
+            found = any(e.get("id") == old_id for e in all_entities)
+            if found:
+                # Get description from the entity
+                desc = ""
+                for e in all_entities:
+                    if e.get("id") == old_id:
+                        desc = e.get("description", "") or ""
+                        break
+                # Delete old + recreate with correct ID via kg-server functions
+                kg.delete_entity(old_id)
+                kg.create_entity(new_id, name, new_type, desc)
                 tech_fixed += 1
                 logger.info(f"[KG Cleanup] Fixed: {old_id} -> {new_id}")
             else:
