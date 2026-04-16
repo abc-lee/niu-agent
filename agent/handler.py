@@ -1075,6 +1075,20 @@ class NiuHandler(BaseHandler):
                 # 直接调用工具函数
                 result = func(**args)
 
+                # 处理 async 函数返回的 coroutine
+                import asyncio
+                import inspect
+                if inspect.iscoroutine(result):
+                    try:
+                        loop = asyncio.get_running_loop()
+                        # 已有事件循环运行中（不应发生在同步handler），用 to_thread
+                        import concurrent.futures
+                        with concurrent.futures.ThreadPoolExecutor() as pool:
+                            result = pool.submit(asyncio.run, result).result()
+                    except RuntimeError:
+                        # 没有运行中的事件循环，直接 asyncio.run
+                        result = asyncio.run(result)
+
                 yield f"[MCP] {tool_name} executed\n"
 
                 # 判断任务是否完成：
