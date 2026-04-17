@@ -512,6 +512,7 @@ class VectorSearchAdapter:
             refined_query = best_qp_meta.get("refined_query", "")
             # 递归检索只替换 mcp_tool 桶（设计约束：所有 query_pattern 的 target_category 都是 mcp_tool）
             target_category = "mcp_tool"
+            # target_category 必然在 results 中（buckets 从 categories 初始化），此条件仅为防御性检查
             if refined_query and target_category in results:
                 refined_embedding = self._get_embedding(refined_query)
                 if refined_embedding:
