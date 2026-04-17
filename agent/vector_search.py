@@ -349,10 +349,13 @@ class VectorSearchAdapter:
                     continue
 
                 doc_vec = np.frombuffer(embedding_blob, dtype=np.float32)
-                score = float(
-                    np.dot(query_vec, doc_vec)
-                    / (np.linalg.norm(query_vec) * np.linalg.norm(doc_vec))
-                )
+                doc_norm = np.linalg.norm(doc_vec)
+                if doc_norm == 0:
+                    continue
+                query_norm = np.linalg.norm(query_vec)
+                if query_norm == 0:
+                    break
+                score = float(np.dot(query_vec, doc_vec) / (query_norm * doc_norm))
 
                 # 应用阈值
                 if score >= min_score:
@@ -483,13 +486,19 @@ class VectorSearchAdapter:
                 # 递归检索：临时收集 query_pattern 匹配结果（不放入 buckets）
                 if enable_recursion and cat == "query_pattern":
                     doc_vec = np.frombuffer(embedding_blob, dtype=np.float32)
-                    score = float(np.dot(query_vec, doc_vec) / (query_norm * np.linalg.norm(doc_vec)))
+                    doc_norm = np.linalg.norm(doc_vec)
+                    if doc_norm == 0:
+                        continue
+                    score = float(np.dot(query_vec, doc_vec) / (query_norm * doc_norm))
                     if score >= 0.3 and metadata.get("is_recursive") is True:
                         query_pattern_hits.append((score, doc_id, content, metadata))
                 continue
 
             doc_vec = np.frombuffer(embedding_blob, dtype=np.float32)
-            score = float(np.dot(query_vec, doc_vec) / (query_norm * np.linalg.norm(doc_vec)))
+            doc_norm = np.linalg.norm(doc_vec)
+            if doc_norm == 0:
+                continue
+            score = float(np.dot(query_vec, doc_vec) / (query_norm * doc_norm))
 
             cfg = categories[cat]
             if score >= cfg["min_score"]:
@@ -529,7 +538,10 @@ class VectorSearchAdapter:
                             if metadata.get("type") == "query_pattern":
                                 continue
                             doc_vec = np.frombuffer(embedding_blob, dtype=np.float32)
-                            score = float(np.dot(refined_vec, doc_vec) / (refined_norm * np.linalg.norm(doc_vec)))
+                            doc_norm = np.linalg.norm(doc_vec)
+                            if doc_norm == 0:
+                                continue
+                            score = float(np.dot(refined_vec, doc_vec) / (refined_norm * doc_norm))
                             cfg = categories.get(target_category, {})
                             min_score = cfg.get("min_score", 0.0)
                             if score >= min_score:
