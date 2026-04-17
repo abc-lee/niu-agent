@@ -102,7 +102,9 @@ class ToolLifecycleManager:
             server = tool_name.split("/", 1)[0]
             try:
                 from agent.runner import get_runner
+                from agent.tool_registry import get_registry
                 runner = get_runner()
+                registry = get_registry()
                 if runner and hasattr(runner, '_mcp_tools_schema'):
                     for schema in runner._mcp_tools_schema:
                         name = schema.get("function", {}).get("name", "")
@@ -111,6 +113,9 @@ class ToolLifecycleManager:
                         else:
                             continue
                         if s == server and name != tool_name:
+                            # 跳过 visibility=hidden 的工具（主 Agent 不可见）
+                            if registry.get_visibility(name) == "hidden":
+                                continue
                             current = self.active_tools.get(name, 0)
                             if current < 65:
                                 self.active_tools[name] = 65
@@ -147,10 +152,19 @@ class ToolLifecycleManager:
         """
         获取当前应该注入的工具列表
 
+        过滤掉 visibility=hidden 的工具（防御性，防止持久化文件残留）
+
         Returns:
             活跃工具名列表
         """
-        return list(self.active_tools.keys())
+        try:
+            from agent.tool_registry import get_registry
+            registry = get_registry()
+            return [name for name in self.active_tools.keys()
+                    if registry.get_visibility(name) != "hidden"]
+        except Exception:
+            # ToolRegistry 未初始化时，返回全部（向后兼容）
+            return list(self.active_tools.keys())
 
     def reset_session(self):
         """重置会话级状态（新 chat 开始时调用）"""
