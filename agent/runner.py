@@ -470,29 +470,7 @@ class NiuRunner:
         - MCP工具: 0.15（低阈值，工具描述短）
         - 知识: 0.45（高精度）
         """
-        # 1. 优先注入待注入的Skills（工具命中后检索到的）
-        pending_skill_names = self.tool_lifecycle.get_pending_skills()
-        pending_skills = []
-        try:
-            for skill_name in pending_skill_names:
-                # 用 search() 方法精确匹配 skill 名称
-                # 注意：embedding 相似度不会达到 0.9，即使精确匹配也只 ~0.7
-                skills = self.vector_search.search(
-                    query=skill_name,
-                    limit=1,
-                    min_score=0.6,  # 降低阈值，允许精确匹配通过
-                    filter={"category": "skill", "name": skill_name}
-                )
-                if skills:
-                    pending_skills.append(skills[0])
-
-            if pending_skills:
-                print(f"[Debug] Pending Skills: {len(pending_skills)} results", file=sys.stderr, flush=True)
-        finally:
-            # 无论如何都清空临时列表，避免累积
-            self.tool_lifecycle.clear_pending_skills()
-
-        # 2. 一次向量检索，按 category 分组返回（避免同一 context 多次 embedding 计算）
+        # 1. 一次向量检索，按 category 分组返回（避免同一 context 多次 embedding 计算）
         multi_results = self.vector_search.search_multi(
             query=context,
             categories={
@@ -500,14 +478,33 @@ class NiuRunner:
                 "mcp_tool": {"limit": 10, "min_score": 0.25},
                 "document": {"limit": 8, "min_score": 0.45},
                 "interaction_habit": {"limit": 3, "min_score": 0.4},
-            }
+            },
+            enable_recursion=True
         )
         skills = multi_results.get("skill", [])
         mcp_tools = multi_results.get("mcp_tool", [])
         knowledge = multi_results.get("document", [])
         interaction_habits = multi_results.get("interaction_habit", [])
 
-        print(f"[Debug] Dynamic injection - Skills: {len(skills)}, MCP: {len(mcp_tools)}, Knowledge: {len(knowledge)}, Habits: {len(interaction_habits)}", file=sys.stderr, flush=True)
+        # 2. 用本轮工具名做 skill 精确检索（替代原 _activate_related_skills 的即时检索）
+        tool_signal_skills = []
+        recent_tool_names = self.tool_lifecycle.get_recent_hits()
+        for tool_name in recent_tool_names:
+            try:
+                tool_skills = self.vector_search.search(
+                    query=tool_name,
+                    limit=2,
+                    min_score=0.3,
+                    filter={"category": "skill"}
+                )
+                tool_signal_skills.extend(tool_skills)
+            except Exception:
+                pass
+
+        if tool_signal_skills:
+            print(f"[Debug] Tool-signal Skills: {len(tool_signal_skills)} results", file=sys.stderr, flush=True)
+
+        print(f"[Debug] Dynamic injection - Skills: {len(skills)}, MCP: {len(mcp_tools)}, Knowledge: {len(knowledge)}, Habits: {len(interaction_habits)}, ToolSignalSkills: {len(tool_signal_skills)}", file=sys.stderr, flush=True)
 
         # 3.5 向量检索到的 MCP 工具：注入 system prompt + 返回分数供 update_from_search
         mcp_tool_scores = {}
@@ -521,8 +518,8 @@ class NiuRunner:
 
         # 格式化
         parts = []
-        # 合并待注入Skills和搜索到的Skills（去重）
-        all_skills = pending_skills + skills
+        # 合并工具名检索Skills和搜索到的Skills（去重）
+        all_skills = tool_signal_skills + skills
         if all_skills:
             # 去重：按metadata.name去重
             seen_names = set()
