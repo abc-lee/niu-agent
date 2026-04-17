@@ -517,6 +517,7 @@ class VectorSearchAdapter:
         # 5. 递归检索：用 query_pattern 的 refined_query 对 target_category 做递归检索
         #    数据驱动：二次检索结果可能又触发 is_recursive=True，需要继续递归
         #    深度限制：最多 3 轮递归（与旧 search() 的 max_recursion=3 一致）
+        #    合并策略：保留原始基础结果，累积所有递归结果，循环结束后一次性合并截断
         if enable_recursion and query_pattern_hits:
             target_category = "mcp_tool"
             if target_category in results:
@@ -524,6 +525,9 @@ class VectorSearchAdapter:
                 current_query = query
                 current_hits = query_pattern_hits
                 consumed_qp_ids: set[str] = set()
+                # 保存原始基础结果，循环内只累积递归结果
+                base_mcp_results = list(results[target_category])
+                all_recursive_results: list[tuple[float, str, str, dict]] = []
                 for depth in range(1, max_recursion_depth + 1):
                     current_hits.sort(key=lambda x: -x[0])
                     best_doc_id = current_hits[0][1]
@@ -578,30 +582,32 @@ class VectorSearchAdapter:
                         if score >= min_score:
                             second_pass.append((score, doc_id, content, metadata))
 
-                    # 合并基础结果 + 递归结果（去重按 doc_id，按分数排序取 top-N）
-                    existing_ids: set[str] = set()
-                    merged: list[tuple[float, str, str, dict]] = []
-                    for r in results[target_category]:
-                        if r.id not in existing_ids:
-                            existing_ids.add(r.id)
-                            merged.append((r.score, r.id, r.content, r.metadata))
-                    for score, doc_id, content, metadata in second_pass:
-                        if doc_id not in existing_ids:
-                            existing_ids.add(doc_id)
-                            merged.append((score, doc_id, content, metadata))
-                    merged.sort(key=lambda x: -x[0])
-                    limit = categories.get(target_category, {}).get("limit", 10)
-                    results[target_category] = [
-                        SearchResult(id=doc_id, content=content, score=score, metadata=metadata)
-                        for score, doc_id, content, metadata in merged[:limit]
-                    ]
-                    print(f"[Recursive Query] depth={depth}/{max_recursion_depth} query={current_query!r} -> refined_query={refined_query!r} target_category={target_category!r} hits={len(merged[:limit])}", file=sys.stderr, flush=True)
+                    all_recursive_results.extend(second_pass)
+                    print(f"[Recursive Query] depth={depth}/{max_recursion_depth} query={current_query!r} -> refined_query={refined_query!r} target_category={target_category!r} hits={len(second_pass)}", file=sys.stderr, flush=True)
 
                     # 检查是否需要继续递归
                     if not next_qp_hits:
                         break
                     current_query = refined_query
                     current_hits = next_qp_hits
+
+                # 循环结束后：基础结果 + 所有递归结果一次性合并截断
+                existing_ids: set[str] = set()
+                merged: list[tuple[float, str, str, dict]] = []
+                for r in base_mcp_results:
+                    if r.id not in existing_ids:
+                        existing_ids.add(r.id)
+                        merged.append((r.score, r.id, r.content, r.metadata))
+                for score, doc_id, content, metadata in all_recursive_results:
+                    if doc_id not in existing_ids:
+                        existing_ids.add(doc_id)
+                        merged.append((score, doc_id, content, metadata))
+                merged.sort(key=lambda x: -x[0])
+                limit = categories.get(target_category, {}).get("limit", 10)
+                results[target_category] = [
+                    SearchResult(id=doc_id, content=content, score=score, metadata=metadata)
+                    for score, doc_id, content, metadata in merged[:limit]
+                ]
 
         return results
 
