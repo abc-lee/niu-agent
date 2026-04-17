@@ -48,6 +48,10 @@ BASE_MCP_TOOLS = [
 
     # browser-server (1个) - 入口工具，使用后触发其他browser工具动态注入
     "browser-server/browser_navigate",
+
+    # kg-server (2个) - 知识图谱探索，配合知识注入指引使用
+    "kg-server/explore_node",
+    "kg-server/get_related_entities",
 ]
 
 
