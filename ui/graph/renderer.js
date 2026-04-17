@@ -255,9 +255,7 @@ async function loadGraphSnapshot() {
 
     buildEdgeCountCache();
     const data = buildGraphData();
-    graph
-      .warmupTicks(50)  // 预跑50轮力模拟，避免节点随机散落
-      .graphData(data);
+    graph.graphData(data);
     applyForceConfig();
     updateStats();
 
