@@ -72,7 +72,7 @@ class ToolLifecycleManager:
 
         # 激活同 server 的其他工具
         if not skip_coactivation:
-            self._activate_related_skills(tool_name)
+            self._coactivate_same_server_tools(tool_name)
 
     def update_from_search(self, tool_name: str, search_score: int):
         """
@@ -90,9 +90,9 @@ class ToolLifecycleManager:
             self.active_tools[tool_name] = new_score
             self._save_scores()
 
-    def _activate_related_skills(self, tool_name: str):
+    def _coactivate_same_server_tools(self, tool_name: str):
         """
-        用工具名去向量库检索相关Skills，并激活同server的其他工具
+        激活同 server 的其他工具（低于65补到65）
 
         Args:
             tool_name: 工具名
