@@ -335,8 +335,8 @@ class NiuRunner:
         """
         context_parts = []
 
-        # 取最近的消息（最多3轮 = 6条消息，user+assistant各1条为1轮）
-        recent = messages[-6:] if len(messages) > 6 else messages
+        # 取最近3条消息（严格3条，不区分轮次）
+        recent = messages[-3:] if len(messages) > 3 else messages
 
         for msg in recent:
             role = msg.get("role", "")
@@ -348,17 +348,21 @@ class NiuRunner:
                 if content.startswith("工具调用成功") or content.startswith("Tool call succeeded"):
                     context_parts.append(content[:50])
                 else:
-                    context_parts.append(content[:200])
+                    context_parts.append(content[:80])
             elif role == "assistant" and content:
-                context_parts.append(content[:200])
+                context_parts.append(content[:80])
 
-            # 从 assistant 的 tool_calls 中提取工具名
+            # 从 assistant 的 tool_calls 中提取工具名（最多3个）
             if role == "assistant":
+                tool_count = 0
                 for tc in msg.get("tool_calls", []):
                     fn = tc.get("function", {})
                     name = fn.get("name", "")
                     if name:
                         context_parts.append(name)
+                        tool_count += 1
+                        if tool_count >= 3:
+                            break
 
         return " ".join(context_parts) if context_parts else ""
 
@@ -424,8 +428,8 @@ class NiuRunner:
         if not history:
             return user_input
 
-        # 提取最近3轮消息（user+assistant各1条为1轮，共6条）
-        recent_messages = history[-6:] if len(history) > 6 else history
+        # 提取最近3条消息（严格3条，不区分轮次）
+        recent_messages = history[-3:] if len(history) > 3 else history
 
         # 拼接内容
         context_parts = []
@@ -433,9 +437,9 @@ class NiuRunner:
             role = msg.get("role", "")
             content = msg.get("content", "")
             if content and role in ("user", "assistant"):
-                # 截断过长的内容
-                if len(content) > 200:
-                    content = content[:200] + "..."
+                # 截断过长的内容（80字符，保持向量匹配精度）
+                if len(content) > 80:
+                    content = content[:80] + "..."
                 context_parts.append(f"{role}: {content}")
 
         # 添加当前用户输入
@@ -450,7 +454,7 @@ class NiuRunner:
         从向量库搜索相关资源，返回格式化的提示词扩展
 
         Args:
-            context: 三轮对话上下文（包含历史消息和当前用户输入）
+            context: 3条对话上下文（包含历史消息和当前用户输入）
 
         注入顺序：
         1. 活跃Skills（工具命中后激活）
