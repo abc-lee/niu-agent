@@ -592,17 +592,17 @@ class VectorSearchAdapter:
                     current_hits = next_qp_hits
 
                 # 循环结束后：基础结果 + 所有递归结果一次性合并截断
-                existing_ids: set[str] = set()
-                merged: list[tuple[float, str, str, dict]] = []
+                # 同 doc_id 取 max(base_score, recursive_score)
+                best_scores: dict[str, tuple[float, str, str, dict]] = {}
                 for r in base_mcp_results:
-                    if r.id not in existing_ids:
-                        existing_ids.add(r.id)
-                        merged.append((r.score, r.id, r.content, r.metadata))
+                    best_scores[r.id] = (r.score, r.id, r.content, r.metadata)
                 for score, doc_id, content, metadata in all_recursive_results:
-                    if doc_id not in existing_ids:
-                        existing_ids.add(doc_id)
-                        merged.append((score, doc_id, content, metadata))
-                merged.sort(key=lambda x: -x[0])
+                    if doc_id in best_scores:
+                        if score > best_scores[doc_id][0]:
+                            best_scores[doc_id] = (score, doc_id, content, metadata)
+                    else:
+                        best_scores[doc_id] = (score, doc_id, content, metadata)
+                merged = sorted(best_scores.values(), key=lambda x: -x[0])
                 limit = categories.get(target_category, {}).get("limit", 10)
                 results[target_category] = [
                     SearchResult(id=doc_id, content=content, score=score, metadata=metadata)
