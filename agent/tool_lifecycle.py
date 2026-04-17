@@ -33,12 +33,24 @@ class ToolLifecycleManager:
         self._recent_hits: List[str] = []
 
     def _load_scores(self) -> Dict[str, int]:
-        """从 JSON 文件加载工具分数"""
+        """从 JSON 文件加载工具分数
+
+        过滤掉 visibility=hidden 的工具（防御性，清理持久化文件残留）
+        """
         if not self.scores_path.exists():
             return {}
 
         try:
-            return json.loads(self.scores_path.read_text(encoding="utf-8"))
+            scores = json.loads(self.scores_path.read_text(encoding="utf-8"))
+            # 过滤掉 hidden 工具的残留分数
+            try:
+                from agent.tool_registry import get_registry
+                registry = get_registry()
+                return {k: v for k, v in scores.items()
+                        if registry.get_visibility(k) != "hidden"}
+            except Exception:
+                # ToolRegistry 未初始化时，返回全部（向后兼容）
+                return scores
         except Exception:
             return {}
 
