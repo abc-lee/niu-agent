@@ -64,11 +64,18 @@ class MemoryStorage:
     """记忆存储类 - 支持 L0/L1/L2 三层存储"""
 
     def __init__(self):
-        self.db_path = get_db_path()
+        try:
+            self.db_path = get_db_path()
+        except ValueError as e:
+            import logging
+            logging.getLogger(__name__).warning(f"记忆库路径解析失败: {e}")
+            self.db_path = None
         self._init_db()
 
     def _init_db(self):
         """初始化数据库"""
+        if self.db_path is None:
+            return
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
