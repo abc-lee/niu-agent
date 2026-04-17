@@ -94,7 +94,12 @@ class KGSync:
         Returns:
             (photos_synced, persons_synced)
         """
-        photos_db_path = Path.home() / ".niu" / "photos.db"
+        try:
+            from niu_photo_server import get_db_path as get_photo_db_path
+            photos_db_path = Path(get_photo_db_path())
+        except (ImportError, ValueError) as e:
+            logger.warning(f"[KGSync] Cannot resolve photos.db path: {e}")
+            return 0, 0
         if not photos_db_path.exists():
             return 0, 0
 
