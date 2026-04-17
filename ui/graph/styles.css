@@ -270,6 +270,13 @@ body {
   border-color: rgba(0, 0, 0, 0.15);
 }
 
+.action-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+  background-color: #fff;
+  border-color: rgba(0, 0, 0, 0.04);
+}
+
 /* Status Bar */
 .status-bar {
   height: 50px;

@@ -441,6 +441,11 @@ const showDetail = (nodeId) => {
     });
   });
 
+  // Enable/disable file buttons based on whether node has a file URI
+  const hasFile = !!(orig.uri);
+  openFileBtn.disabled = !hasFile;
+  openFolderBtn.disabled = !hasFile;
+
   // Trigger redraw to show selection glow
   const c = graph.centerAt();
   graph.centerAt(c.x, c.y);
@@ -455,6 +460,26 @@ const hideDetail = () => {
 };
 
 closeDetail.addEventListener('click', hideDetail);
+
+// ===== Open File / Open Folder =====
+const openFileBtn = document.getElementById('open-file');
+const openFolderBtn = document.getElementById('open-folder');
+
+openFileBtn.addEventListener('click', () => {
+  if (!currentSelectedNode) return;
+  const orig = currentData.nodes.find(n => n.id === currentSelectedNode);
+  if (orig && orig.uri) {
+    window.electronAPI.openPath(orig.uri);
+  }
+});
+
+openFolderBtn.addEventListener('click', () => {
+  if (!currentSelectedNode) return;
+  const orig = currentData.nodes.find(n => n.id === currentSelectedNode);
+  if (orig && orig.uri) {
+    window.electronAPI.showItemInFolder(orig.uri);
+  }
+});
 
 focusNodeBtn.addEventListener('click', () => {
   if (!currentSelectedNode) return;
