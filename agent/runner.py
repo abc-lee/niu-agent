@@ -398,7 +398,7 @@ class NiuRunner:
         if injection and messages and messages[0].get("role") == "system":
             messages[0]["content"] = self.base_system_prompt + injection
 
-        # 5. 重新组装 tools_schema（加入新发现的工具）
+        # 6. 重新组装 tools_schema（加入新发现的工具）
         new_schema = self.base_tools_schema.copy()
         for tool_name in BASE_MCP_TOOLS:
             schema = self._get_tool_schema_by_name(tool_name)
@@ -489,7 +489,11 @@ class NiuRunner:
         # 2. 用本轮工具名做 skill 精确检索（替代原 _activate_related_skills 的即时检索）
         tool_signal_skills = []
         recent_tool_names = self.tool_lifecycle.consume_recent_hits()
+        seen_tools = set()
         for tool_name in recent_tool_names:
+            if tool_name in seen_tools:
+                continue
+            seen_tools.add(tool_name)
             try:
                 tool_skills = self.vector_search.search(
                     query=tool_name,
@@ -566,8 +570,8 @@ class NiuRunner:
             max_turns: 最大轮次
             history: 可选的历史消息列表 [{"role": "user/assistant", "content": str}, ...]
         """
-        # 清空上一会话残留的工具命中记录
-        self.tool_lifecycle._recent_hits.clear()
+        # 重置会话级状态
+        self.tool_lifecycle.reset_session()
 
         # 从消息历史中提取上下文（用于向量检索）
         context = self._extract_context_from_history(history, user_input)
