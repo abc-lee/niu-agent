@@ -175,6 +175,8 @@ def get_db_path() -> Path:
     # 2. 环境变量（由 Go 启动器 main.go 设置）
     if "WORKSPACE_PATH" in os.environ:
         workspace = Path(os.environ["WORKSPACE_PATH"])
+        if not workspace.exists():
+            raise ValueError(f"WORKSPACE_PATH 指向不存在的目录: {workspace}。请检查配置。")
         return workspace / "vectors.db"
 
     # 3. 从 ~/.niu/memory.json 读取 workspace.path（与 agent.vector_search.resolve_vector_db_path 一致）
@@ -200,13 +202,21 @@ def get_db_path() -> Path:
 
 # Global connection
 _conn: sqlite3.Connection | None = None
+_db_path_failed: bool = False
 
 
 def get_connection() -> sqlite3.Connection:
     """Get or create database connection."""
-    global _conn
+    global _conn, _db_path_failed
+    if _db_path_failed:
+        raise RuntimeError("向量库路径解析失败，无法建立连接。请检查 memory.json 中 workspace.path 配置。")
     if _conn is None:
-        db_path = get_db_path()
+        try:
+            db_path = get_db_path()
+        except ValueError as e:
+            _db_path_failed = True
+            logger.error(f"向量库路径解析失败: {e}")
+            raise RuntimeError(f"向量库路径解析失败: {e}") from e
         db_path.parent.mkdir(parents=True, exist_ok=True)
         _conn = sqlite3.connect(str(db_path))
         _init_schema(_conn)

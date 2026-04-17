@@ -36,7 +36,10 @@ def get_db_path() -> str:
 
     # 2. 环境变量（由 Go 启动器 main.go 设置）
     if "WORKSPACE_PATH" in os.environ:
-        return os.path.join(os.environ["WORKSPACE_PATH"], "vectors.db")
+        ws = os.environ["WORKSPACE_PATH"]
+        if not os.path.exists(ws):
+            raise ValueError(f"WORKSPACE_PATH 指向不存在的目录: {ws}。请检查配置。")
+        return os.path.join(ws, "vectors.db")
 
     # 3. 从 ~/.niu/memory.json 读取 workspace.path（与其他组件一致）
     from pathlib import Path

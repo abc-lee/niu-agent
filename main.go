@@ -258,6 +258,12 @@ func main() {
 		"PYTHONUNBUFFERED=1",
 	}
 	if workspacePath != "" {
+		if _, err := os.Stat(workspacePath); err != nil {
+			slog.Error("WORKSPACE_PATH directory does not exist, skipping", "path", workspacePath, "error", err)
+			workspacePath = ""
+		}
+	}
+	if workspacePath != "" {
 		envVars = append(envVars, fmt.Sprintf("WORKSPACE_PATH=%s", workspacePath))
 		slog.Info("Setting WORKSPACE_PATH for Python API", "path", workspacePath)
 	}
