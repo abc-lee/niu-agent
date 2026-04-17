@@ -476,7 +476,7 @@ class NiuRunner:
             categories={
                 "skill": {"limit": 3, "min_score": 0.35},
                 "mcp_tool": {"limit": 10, "min_score": 0.25},
-                "document": {"limit": 8, "min_score": 0.45},
+                "document": {"limit": 20, "min_score": 0.3},
                 "interaction_habit": {"limit": 3, "min_score": 0.4},
             },
             enable_recursion=True
@@ -541,6 +541,13 @@ class NiuRunner:
             parts.append(format_resources_for_prompt(mcp_tools, "可用工具"))
         if knowledge:
             parts.append(format_resources_for_prompt(knowledge, "参考知识"))
+            parts.append(
+                "\n\n### [知识探索指引]\n"
+                "优先参考上述注入的历史参考信息回答用户问题。"
+                "若命中知识点涉及已知实体（人名、技术、组织等），"
+                "可使用 `kg-server/explore_node` 或 `kg-server/get_related_entities` "
+                "查询知识图谱中的关联信息，获取更完整的上下文。"
+            )
         if interaction_habits:
             parts.append(format_resources_for_prompt(interaction_habits, "交互习惯"))
 
