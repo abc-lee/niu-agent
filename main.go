@@ -234,6 +234,17 @@ func main() {
 	memory := loadMemory()
 	_ = formatMemoryForPrompt(memory) // Memory injection handled by Python API
 
+	// Extract workspace.path from memory and set as WORKSPACE_PATH env var
+	// so all child processes (Python API, MCP servers) use the correct vectors.db path
+	var workspacePath string
+	if memory != nil {
+		if ws, ok := memory["workspace"].(map[string]any); ok {
+			if path, ok := ws["path"].(string); ok && path != "" {
+				workspacePath = path
+			}
+		}
+	}
+
 	// Get project root
 	execPath, _ := os.Executable()
 	projectRoot := filepath.Dir(execPath)
@@ -242,10 +253,15 @@ func main() {
 	slog.Info("Starting Python API server...")
 	apiServerCmd := exec.Command(pythonPath, "-m", "niu_api")
 	apiServerCmd.Dir = projectRoot
-	apiServerCmd.Env = append(os.Environ(),
+	envVars := []string{
 		fmt.Sprintf("NIU_API_PORT=%d", *port),
 		"PYTHONUNBUFFERED=1",
-	)
+	}
+	if workspacePath != "" {
+		envVars = append(envVars, fmt.Sprintf("WORKSPACE_PATH=%s", workspacePath))
+		slog.Info("Setting WORKSPACE_PATH for Python API", "path", workspacePath)
+	}
+	apiServerCmd.Env = append(os.Environ(), envVars...)
 
 	// Capture output
 	if stdout, err := apiServerCmd.StdoutPipe(); err == nil {
