@@ -505,16 +505,23 @@ class NiuRunner:
         print(f"[Debug] Dynamic injection - Skills: {len(skills)}, MCP: {len(mcp_tools)}, Knowledge: {len(knowledge)}, Habits: {len(interaction_habits)}, ToolSignalSkills: {len(tool_signal_skills)}", file=sys.stderr, flush=True)
 
         # 3.5 向量检索到的 MCP 工具：注入 system prompt + 返回分数供 update_from_search
+        # 过滤 hidden（不可见）和 static（已固定注入，不需要动态分数）的工具
         mcp_tool_scores = {}
         from agent.tool_registry import get_registry
         registry = get_registry()
+        filtered_mcp_tools = []
         for tool in mcp_tools:
             name = tool.metadata.get("name", "")
             server = tool.metadata.get("server", "")
             full_name = f"{server}/{name}" if server else name
             score = tool.score if hasattr(tool, "score") else 0
-            if full_name and score > 0 and registry.get_visibility(full_name) != "hidden":
-                mcp_tool_scores[full_name] = int(score * 100)
+            if not full_name or score <= 0:
+                continue
+            vis = registry.get_visibility(full_name)
+            if vis == "hidden" or vis == "static":
+                continue
+            mcp_tool_scores[full_name] = int(score * 100)
+            filtered_mcp_tools.append(tool)
 
         # 格式化
         parts = []
@@ -533,8 +540,8 @@ class NiuRunner:
             if unique_skills:
                 parts.append(format_resources_for_prompt(unique_skills, "相关技能"))
 
-        if mcp_tools:
-            parts.append(format_resources_for_prompt(mcp_tools, "可用工具"))
+        if filtered_mcp_tools:
+            parts.append(format_resources_for_prompt(filtered_mcp_tools, "可用工具"))
         if knowledge:
             parts.append(format_resources_for_prompt(knowledge, "参考知识"))
             parts.append(
