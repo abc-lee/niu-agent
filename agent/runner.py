@@ -352,17 +352,15 @@ class NiuRunner:
             elif role == "assistant" and content:
                 context_parts.append(content[:80])
 
-            # 从 assistant 的 tool_calls 中提取工具名（最多3个）
+            # 从 assistant 的 tool_calls 中提取工具名
+            # 3条消息中assistant最多出现2次（第1、3条），每次最多1个工具名，共最多2个
             if role == "assistant":
-                tool_count = 0
                 for tc in msg.get("tool_calls", []):
                     fn = tc.get("function", {})
                     name = fn.get("name", "")
                     if name:
                         context_parts.append(name)
-                        tool_count += 1
-                        if tool_count >= 3:
-                            break
+                        break  # 每条assistant消息只取1个工具名
 
         return " ".join(context_parts) if context_parts else ""
 
