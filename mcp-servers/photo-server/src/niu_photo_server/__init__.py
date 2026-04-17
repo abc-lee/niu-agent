@@ -432,6 +432,8 @@ def get_db_path() -> Path:
     # 1. NIU_DB_PATH — replace vectors.db suffix with photos.db
     if "NIU_DB_PATH" in os.environ:
         p = Path(os.environ["NIU_DB_PATH"])
+        if not p.parent.exists():
+            raise ValueError(f"NIU_DB_PATH 父目录不存在: {p.parent}。请检查配置。")
         return p.parent / "photos.db"
     # 2. WORKSPACE_PATH env var
     if "WORKSPACE_PATH" in os.environ:
@@ -448,6 +450,10 @@ def get_db_path() -> Path:
             workspace_path = memory.get("workspace", {}).get("path")
             if workspace_path and Path(workspace_path).exists():
                 return Path(workspace_path) / "photos.db"
+            if workspace_path:
+                raise ValueError(f"workspace.path 指向不存在的目录: {workspace_path}。请检查 memory.json 配置。")
+        except ValueError:
+            raise
         except Exception as e:
             raise ValueError(f"无法从 {memory_path} 解析 JSON: {e}。") from e
     raise ValueError(
@@ -986,6 +992,41 @@ def get_memory() -> dict:
         with open(memory_path, "r", encoding="utf-8") as f:
             return json.load(f)
     return {"workspace": {"path": str(Path.home() / "Documents" / "niu")}}
+
+
+def get_workspace_path() -> Path:
+    """获取工作区路径（3 层优先级，与 resolve_vector_db_path 一致）
+
+    Priority:
+    1. WORKSPACE_PATH 环境变量（由 Go 启动器 main.go 设置）
+    2. ~/.niu/memory.json 的 workspace.path
+    不降级、不合成，路径无效时抛出 ValueError。
+    """
+    # 1. WORKSPACE_PATH 环境变量
+    if "WORKSPACE_PATH" in os.environ:
+        ws = Path(os.environ["WORKSPACE_PATH"])
+        if not ws.exists():
+            raise ValueError(f"WORKSPACE_PATH 指向不存在的目录: {ws}。请检查配置。")
+        return ws
+    # 2. 从 ~/.niu/memory.json 读取 workspace.path
+    memory_path = Path.home() / ".niu" / "memory.json"
+    if memory_path.exists():
+        try:
+            with open(memory_path, "r", encoding="utf-8") as f:
+                memory = json.load(f)
+            workspace_path = memory.get("workspace", {}).get("path")
+            if workspace_path and Path(workspace_path).exists():
+                return Path(workspace_path)
+            if workspace_path:
+                raise ValueError(f"workspace.path 指向不存在的目录: {workspace_path}。请检查 memory.json 配置。")
+        except ValueError:
+            raise
+        except Exception as e:
+            raise ValueError(f"无法从 {memory_path} 解析 JSON: {e}。") from e
+    raise ValueError(
+        f"无法确定工作区路径：~/.niu/memory.json 不存在或缺少 workspace.path 配置。"
+        f"请在 ~/.niu/memory.json 中设置 workspace.path，或设置 WORKSPACE_PATH 环境变量。"
+    )
 
 
 def get_preferences() -> dict:
@@ -1670,8 +1711,7 @@ def ingest_photo(file_path: str, category: str | None = None) -> dict:
         conn.commit()
 
         # 4. Copy photo to storage
-        memory = get_memory()
-        workspace = Path(memory["workspace"]["path"])
+        workspace = get_workspace_path()
 
         # 构建存储路径
         relative_dir = build_photo_storage_path(category, source.name)
@@ -1968,8 +2008,7 @@ def ingest_photos_batch(source_path: str, category: str | None = None) -> dict:
         if category is None:
             category = "生活"
 
-        memory = get_memory()
-        workspace = Path(memory["workspace"]["path"])
+        workspace = get_workspace_path()
 
         # 构建目标路径：{year}/{category}/{原目录名}
         now = datetime.now()
@@ -2322,8 +2361,7 @@ def ingest_document(file_path: str, category: str = "其他", mode: str = "copy"
                 }
 
         logger.info("[INGEST] 读取配置...")
-        memory = get_memory()
-        workspace = Path(memory["workspace"]["path"])
+        workspace = get_workspace_path()
 
         logger.info("[INGEST] 构建存储路径...")
         relative_dir = build_storage_path(category, source.name, "documents")
@@ -2412,12 +2450,25 @@ def get_vector_db_path() -> Path:
         if not ws.exists():
             raise ValueError(f"WORKSPACE_PATH 指向不存在的目录: {ws}。请检查配置。")
         return ws / "vectors.db"
-    # 3. 从 ~/.niu/memory.json 读取 workspace.path
-    memory = get_memory()
-    workspace = Path(memory["workspace"]["path"])
-    if not workspace.exists():
-        raise ValueError(f"workspace.path 指向不存在的目录: {workspace}。请检查 memory.json 配置。")
-    return workspace / "vectors.db"
+    # 3. 从 ~/.niu/memory.json 读取 workspace.path（直接读取，不使用 get_memory() 的回退逻辑）
+    memory_path = Path.home() / ".niu" / "memory.json"
+    if memory_path.exists():
+        try:
+            with open(memory_path, "r", encoding="utf-8") as f:
+                memory = json.load(f)
+            workspace_path = memory.get("workspace", {}).get("path")
+            if workspace_path and Path(workspace_path).exists():
+                return Path(workspace_path) / "vectors.db"
+            if workspace_path:
+                raise ValueError(f"workspace.path 指向不存在的目录: {workspace_path}。请检查 memory.json 配置。")
+        except ValueError:
+            raise
+        except Exception as e:
+            raise ValueError(f"无法从 {memory_path} 解析 JSON: {e}。") from e
+    raise ValueError(
+        f"无法确定向量库路径：~/.niu/memory.json 不存在或缺少 workspace.path 配置。"
+        f"请在 ~/.niu/memory.json 中设置 workspace.path，或设置 WORKSPACE_PATH 环境变量。"
+    )
 
 
 _vector_db_failed: bool = False

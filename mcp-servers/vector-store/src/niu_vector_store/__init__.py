@@ -170,7 +170,10 @@ def get_db_path() -> Path:
     """
     # 1. 显式覆盖
     if "NIU_DB_PATH" in os.environ:
-        return Path(os.environ["NIU_DB_PATH"])
+        p = Path(os.environ["NIU_DB_PATH"])
+        if not p.parent.exists():
+            raise ValueError(f"NIU_DB_PATH 父目录不存在: {p.parent}。请检查配置。")
+        return p
 
     # 2. 环境变量（由 Go 启动器 main.go 设置）
     if "WORKSPACE_PATH" in os.environ:
@@ -188,6 +191,10 @@ def get_db_path() -> Path:
             workspace_path = memory.get("workspace", {}).get("path")
             if workspace_path and Path(workspace_path).exists():
                 return Path(workspace_path) / "vectors.db"
+            if workspace_path:
+                raise ValueError(f"workspace.path 指向不存在的目录: {workspace_path}。请检查 memory.json 配置。")
+    except ValueError:
+        raise
     except Exception as e:
         raise ValueError(
             f"无法从 {memory_path} 解析 workspace.path: {e}。"
