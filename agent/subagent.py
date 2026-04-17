@@ -93,6 +93,9 @@ def get_subagent_mcp_tools_schema(agent_name: str) -> List[Dict]:
         if "/" in tool_name:
             server = tool_name.split("/")[0]
             if server in mcp_servers:
+                # 跳过 visibility=hidden 的工具
+                if tool.get("visibility", "dynamic") == "hidden":
+                    continue
                 # 转换为OpenAI工具格式
                 schema.append({
                     "type": "function",
