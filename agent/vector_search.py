@@ -25,30 +25,41 @@ def resolve_vector_db_path() -> str:
     统一向量库路径解析函数（唯一真实来源）。
 
     解析优先级：
-    1. ~/.niu/memory.json 的 workspace.path → {workspace.path}/vectors.db
-    2. 如果无法确定路径，抛出 ValueError（不降级、不创建流氓库）
+    1. NIU_DB_PATH 环境变量（显式覆盖）
+    2. WORKSPACE_PATH 环境变量（由 Go 启动器 main.go 设置）
+    3. ~/.niu/memory.json 的 workspace.path → {workspace.path}/vectors.db
+    4. 如果无法确定路径，抛出 ValueError（不降级、不创建流氓库）
 
     所有需要 vectors.db 路径的组件必须调用此函数，
     禁止各自硬编码或降级到 ~/.niu/vectors.db。
     """
+    # 1. 显式覆盖
+    if "NIU_DB_PATH" in os.environ:
+        return os.environ["NIU_DB_PATH"]
+
+    # 2. 环境变量（由 Go 启动器设置）
+    if "WORKSPACE_PATH" in os.environ:
+        return os.path.join(os.environ["WORKSPACE_PATH"], "vectors.db")
+
+    # 3. 从 ~/.niu/memory.json 读取 workspace.path
     memory_path = os.path.join(os.path.expanduser("~"), ".niu", "memory.json")
     if os.path.exists(memory_path):
         try:
             with open(memory_path, "r", encoding="utf-8") as f:
                 memory = json.load(f)
-                workspace_path = memory.get("workspace", {}).get("path")
-                if workspace_path and os.path.exists(workspace_path):
-                    return os.path.join(workspace_path, "vectors.db")
         except Exception as e:
             raise ValueError(
-                f"无法从 {memory_path} 解析 workspace.path: {e}。"
+                f"无法从 {memory_path} 解析 JSON: {e}。"
                 f"请检查 memory.json 格式是否正确。"
             ) from e
 
+        workspace_path = memory.get("workspace", {}).get("path")
+        if workspace_path and os.path.exists(workspace_path):
+            return os.path.join(workspace_path, "vectors.db")
+
     raise ValueError(
         f"无法确定向量库路径：{memory_path} 不存在或缺少 workspace.path 配置。"
-        f"请在 ~/.niu/memory.json 中设置 workspace.path，例如："
-        f'{{"workspace": {{"path": "E:/tmp/bot"}}}}'
+        f"请设置 WORKSPACE_PATH 环境变量，或在 ~/.niu/memory.json 中设置 workspace.path。"
     )
 
 
@@ -70,7 +81,15 @@ class VectorSearchAdapter:
     """
 
     def __init__(self, db_path: Optional[str] = None):
-        self.db_path = db_path or self._default_db_path()
+        if db_path:
+            self.db_path: Optional[str] = db_path
+        else:
+            try:
+                self.db_path = resolve_vector_db_path()
+            except ValueError as e:
+                import logging
+                logging.getLogger(__name__).warning(f"向量库路径解析失败，向量搜索不可用: {e}")
+                self.db_path = None
         self._conn: Optional[sqlite3.Connection] = None
         self._indexes_created: bool = False  # 索引创建标志
 
@@ -80,6 +99,8 @@ class VectorSearchAdapter:
         return resolve_vector_db_path()
 
     def _get_connection(self) -> Optional[sqlite3.Connection]:
+        if self.db_path is None:
+            return None
         if self._conn is None:
             if os.path.exists(self.db_path):
                 # check_same_thread=False 允许跨线程使用
