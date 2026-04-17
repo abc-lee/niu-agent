@@ -255,19 +255,19 @@ async function loadGraphSnapshot() {
 
     buildEdgeCountCache();
     const data = buildGraphData();
-    graph.graphData(data);
+    // 先用 warmupTicks 静默预跑模拟得到初始布局（不渲染），然后清空位置重新开始
+    // 这样用户只看到第二次模拟的"集中→排斥"动画，和点击标签效果一致
+    graph.warmupTicks(100).graphData(data);
     applyForceConfig();
     updateStats();
 
-    // 初始加载：模拟稳定后重新启动，产生和点击标签一样的"集中→排斥"动画
+    // 第一次模拟静默完成后，清空节点位置重新开始
     graph.onEngineStop(() => {
-      graph.zoomToFit(0, 40);
-      // 清空所有节点的 x/y/fx/fy/vx/vy，让模拟从零开始重新计算位置
       const gData = graph.graphData();
       gData.nodes.forEach(n => {
         delete n.x; delete n.y; delete n.fx; delete n.fy; delete n.vx; delete n.vy;
       });
-      graph.graphData(gData);
+      graph.warmupTicks(0).graphData(gData);
       applyForceConfig();
       graph.onEngineStop(() => {
         graph.zoomToFit(400, 40);
