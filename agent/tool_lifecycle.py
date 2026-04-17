@@ -152,8 +152,8 @@ class ToolLifecycleManager:
         """
         return list(self.active_tools.keys())
 
-    def get_recent_hits(self) -> List[str]:
-        """获取本轮命中的工具名列表（统一注入时调用，调用后清空）"""
+    def consume_recent_hits(self) -> List[str]:
+        """获取并清空本轮命中的工具名列表（一次性，调用后清空）"""
         hits = self._recent_hits.copy()
         self._recent_hits.clear()
         return hits
