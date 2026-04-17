@@ -276,14 +276,23 @@ class NiuRunner:
         return get_registry().get_static_tools()
 
     def set_mcp_tools_schema(self, tools: list):
-        """设置 MCP 工具 Schema（从外部调用）"""
+        """设置 MCP 工具 Schema（从外部调用）
+
+        过滤掉 visibility=hidden 的工具，不注入到 _mcp_tools_schema
+        """
+        from agent.tool_registry import get_registry
+        registry = get_registry()
         schema = []
         for tool in tools:
+            tool_name = tool["name"]
+            # 跳过 visibility=hidden 的工具
+            if registry.get_visibility(tool_name) == "hidden":
+                continue
             schema.append(
                 {
                     "type": "function",
                     "function": {
-                        "name": tool["name"],
+                        "name": tool_name,
                         "description": tool.get("description", ""),
                         "parameters": tool.get(
                             "input_schema", {"type": "object", "properties": {}}
