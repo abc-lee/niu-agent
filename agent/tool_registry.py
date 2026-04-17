@@ -44,7 +44,7 @@ class ToolRegistry:
         # 服务器注册追踪: server_name -> list of tool names
         self._server_tools: Dict[str, List[str]] = {}
 
-    def register_server(self, server_name: str, module, visibility_map: dict = None) -> bool:
+    def register_server(self, server_name: str, module, visibility_map: Optional[dict] = None) -> bool:
         """
         注册MCP服务器的所有工具
 
