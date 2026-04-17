@@ -1087,7 +1087,7 @@ class NiuHandler(BaseHandler):
                     )
 
                 # 记录工具命中（在真正执行前）
-                # hit_tool 不传 score，仅记录命中和激活 Pending Skills
+                # hit_tool 记录命中到 _recent_hits，统一注入时通过 consume_recent_hits 获取
                 # 分数由 _inject_dynamic_resources 中的向量检索覆盖管理
                 try:
                     from agent.runner import get_runner

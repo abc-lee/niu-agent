@@ -523,12 +523,15 @@ class VectorSearchAdapter:
                 max_recursion_depth = 3
                 current_query = query
                 current_hits = query_pattern_hits
+                consumed_qp_ids: set[str] = set()
                 for depth in range(1, max_recursion_depth + 1):
                     current_hits.sort(key=lambda x: -x[0])
-                    _, _, _, best_qp_meta = current_hits[0]
+                    best_doc_id = current_hits[0][1]
+                    best_qp_meta = current_hits[0][3]
                     refined_query = best_qp_meta.get("refined_query", "")
                     if not refined_query:
                         break
+                    consumed_qp_ids.add(best_doc_id)
 
                     refined_embedding = self._get_embedding(refined_query)
                     if not refined_embedding:
@@ -547,8 +550,10 @@ class VectorSearchAdapter:
                         metadata = json.loads(metadata_json) if metadata_json else {}
                         doc_cat = metadata.get("category", "")
 
-                        # 收集下一轮递归的 query_pattern 触发
+                        # 收集下一轮递归的 query_pattern 触发（跳过已消费的）
                         if doc_cat == "query_pattern" and metadata.get("is_recursive") is True:
+                            if doc_id in consumed_qp_ids:
+                                continue
                             doc_vec = np.frombuffer(embedding_blob, dtype=np.float32)
                             doc_norm = np.linalg.norm(doc_vec)
                             if doc_norm == 0:
@@ -573,14 +578,24 @@ class VectorSearchAdapter:
                         if score >= min_score:
                             second_pass.append((score, doc_id, content, metadata))
 
-                    # 替换目标桶
-                    second_pass.sort(key=lambda x: -x[0])
+                    # 合并基础结果 + 递归结果（去重按 doc_id，按分数排序取 top-N）
+                    existing_ids: set[str] = set()
+                    merged: list[tuple[float, str, str, dict]] = []
+                    for r in results[target_category]:
+                        if r.id not in existing_ids:
+                            existing_ids.add(r.id)
+                            merged.append((r.score, r.id, r.content, r.metadata))
+                    for score, doc_id, content, metadata in second_pass:
+                        if doc_id not in existing_ids:
+                            existing_ids.add(doc_id)
+                            merged.append((score, doc_id, content, metadata))
+                    merged.sort(key=lambda x: -x[0])
                     limit = categories.get(target_category, {}).get("limit", 10)
                     results[target_category] = [
                         SearchResult(id=doc_id, content=content, score=score, metadata=metadata)
-                        for score, doc_id, content, metadata in second_pass[:limit]
+                        for score, doc_id, content, metadata in merged[:limit]
                     ]
-                    print(f"[Recursive Query] depth={depth}/{max_recursion_depth} query={current_query!r} -> refined_query={refined_query!r} target_category={target_category!r} hits={len(second_pass[:limit])}", file=sys.stderr, flush=True)
+                    print(f"[Recursive Query] depth={depth}/{max_recursion_depth} query={current_query!r} -> refined_query={refined_query!r} target_category={target_category!r} hits={len(merged[:limit])}", file=sys.stderr, flush=True)
 
                     # 检查是否需要继续递归
                     if not next_qp_hits:
