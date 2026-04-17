@@ -255,11 +255,12 @@ async function loadGraphSnapshot() {
 
     buildEdgeCountCache();
     const data = buildGraphData();
-    graph.graphData(data);
+    // 预跑模拟让节点从随机位置收敛到合理布局，但不渲染
+    graph.warmupTicks(80).graphData(data);
     applyForceConfig();
     updateStats();
 
-    // After simulation settles, zoom to fit
+    // 预跑后节点已分散，将所有节点移到中心点产生"从中心排斥开"的动画
     graph.onEngineStop(() => {
       graph.zoomToFit(400, 40);
     });
