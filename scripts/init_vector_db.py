@@ -121,7 +121,6 @@ def register_mcp_tools():
     logger.info(f"从 JSON 读取了 {len(all_tools)} 个工具定义")
 
     # 从 mcp-servers.yaml 读取 visibility 配置
-    from pathlib import Path
     import yaml
     config_path = Path(__file__).parent.parent / "config" / "mcp-servers.yaml"
     visibility_map = {}  # "server/name" -> visibility
