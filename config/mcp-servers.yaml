@@ -9,6 +9,7 @@ file-parser:
     - "niu_file_parser"
   workdir: mcp-servers/file-parser/src
   preload: true
+  # 全部默认 dynamic
 
 # Knowledge Graph - Manage documents, entities, and their relationships
 kg-server:
@@ -18,6 +19,28 @@ kg-server:
     - "niu_kg_server"
   workdir: mcp-servers/kg-server/src
   preload: true
+  tools:
+    explore_node: {visibility: static}
+    get_related_entities: {visibility: static}
+    search_documents: {visibility: dynamic}
+    get_document: {visibility: dynamic}
+    list_documents: {visibility: dynamic}
+    query_graph: {visibility: dynamic}
+    hub_entities: {visibility: dynamic}
+    find_path: {visibility: dynamic}
+    get_related_concepts: {visibility: dynamic}
+    graph_stats: {visibility: dynamic}
+    create_document: {visibility: hidden}
+    create_entity: {visibility: hidden}
+    create_concept: {visibility: hidden}
+    link_document_entity: {visibility: hidden}
+    link_document_concept: {visibility: hidden}
+    link_entities: {visibility: hidden}
+    surprising_connections: {visibility: hidden}
+    graph_changelog: {visibility: hidden}
+    graph_snapshot: {visibility: hidden}
+    list_entities: {visibility: hidden}
+    list_concepts: {visibility: hidden}
 
 # Vector Store - Semantic search using embeddings
 vector-store:
@@ -27,6 +50,13 @@ vector-store:
     - "niu_vector_store"
   workdir: mcp-servers/vector-store/src
   preload: true
+  tools:
+    add_document: {visibility: static}
+    search_documents: {visibility: static}
+    get_document: {visibility: static}
+    delete_document: {visibility: static}
+    list_documents: {visibility: static}
+    # count_documents 默认 dynamic
 
 # Config Manager - Read/write user configuration and memory
 config-manager:
@@ -36,6 +66,7 @@ config-manager:
     - "niu_config_manager"
   workdir: mcp-servers/config-manager/src
   preload: true
+  # 全部默认 dynamic
 
 # Photo Server - File and photo management with face recognition
 photo-server:
@@ -45,6 +76,7 @@ photo-server:
     - "niu_photo_server"
   workdir: mcp-servers/photo-server/src
   preload: true
+  # 全部默认 dynamic
 
 # Memory Server - Smart memory extraction and retrieval
 memory-server:
@@ -54,6 +86,13 @@ memory-server:
     - "niu_memory_server"
   workdir: mcp-servers/memory-server/src
   preload: true
+  tools:
+    remember: {visibility: static}
+    recall: {visibility: static}
+    update_memory: {visibility: static}
+    get_memory_stats: {visibility: static}
+    cleanup_memories: {visibility: static}
+    link_memories: {visibility: static}
 
 # Scheduler Server - Scheduled tasks and reminders
 scheduler-server:
@@ -63,6 +102,7 @@ scheduler-server:
     - "niu_scheduler_server"
   workdir: mcp-servers/scheduler-server/src
   preload: true
+  # 全部默认 dynamic
 
 # Session Manager - Message management for context compression
 session-manager:
@@ -72,6 +112,7 @@ session-manager:
     - "niu_session_manager"
   workdir: mcp-servers/session-manager/src
   preload: false  # 按需启动，不预加载
+  # 全部默认 dynamic
 
 # Browser Server - Browser automation using Playwright
 browser-server:
@@ -81,6 +122,9 @@ browser-server:
     - "niu_browser_server"
   workdir: mcp-servers/browser-server/src
   preload: false  # 按需启动，首次使用 ~2 秒启动浏览器
+  tools:
+    browser_navigate: {visibility: static}
+    # browser_interact, browser_new_tab 默认 dynamic
 
 # Nanobot System - Built-in system tools (not a real MCP server, added programmatically)
 # This entry exists to satisfy validation that references all defined servers
