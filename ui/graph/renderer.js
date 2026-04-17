@@ -255,6 +255,8 @@ async function loadGraphSnapshot() {
 
     buildEdgeCountCache();
     const data = buildGraphData();
+    // 所有节点初始位置设为中心点(0,0)，模拟"集中到中间再排斥开"的效果
+    data.nodes.forEach(n => { n.x = 0; n.y = 0; });
     graph.graphData(data);
     applyForceConfig();
     updateStats();
