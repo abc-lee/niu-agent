@@ -75,13 +75,25 @@ body {
   background-color: #fff;
   cursor: pointer;
   transition: all 0.2s ease;
-  color: #666;
   letter-spacing: 0.3px;
 }
 
+/* Tag text colors match node colors */
+.persp-btn[data-core="person"] { color: #4A90D9; }
+.persp-btn[data-core="organization"] { color: #5CB85C; }
+.persp-btn[data-core="technology"] { color: #17BECF; }
+.persp-btn[data-core="document"] { color: #E8A838; }
+.persp-btn[data-core="photo"] { color: #1ABC9C; }
+.persp-btn[data-core="video"] { color: #8E44AD; }
+.persp-btn[data-core="note"] { color: #2ECC71; }
+.persp-btn[data-core="chat"] { color: #7F8C8D; }
+.persp-btn[data-core="concept"] { color: #E06B9E; }
+.persp-btn[data-core="location"] { color: #9B59B6; }
+.persp-btn[data-core="event"] { color: #F39C12; }
+
 .persp-btn:hover {
   border-color: rgba(0, 0, 0, 0.15);
-  color: #333;
+  filter: brightness(1.1);
 }
 
 .persp-btn.active {
@@ -116,6 +128,12 @@ body {
 }
 .persp-btn.active[data-core="concept"] {
   background-color: #E06B9E;
+}
+.persp-btn.active[data-core="location"] {
+  background-color: #9B59B6;
+}
+.persp-btn.active[data-core="event"] {
+  background-color: #F39C12;
 }
 
 /* Graph Container */

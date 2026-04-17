@@ -501,6 +501,7 @@ def create_entity(
     """Create an entity node in the graph."""
     conn = get_connection()
     ts = _get_timestamp()
+    entity_type = entity_type.lower()
 
     conn.execute(
         "MERGE (e:Entity {id: $id}) ON CREATE SET e.name = $name, e.type = $type, e.description = $description, e.created_at = $ts SET e.type = $type, e.updated_at = $ts",
@@ -1412,7 +1413,7 @@ def graph_snapshot(limit: int = 200, min_confidence: float = 0.0) -> dict[str, A
         node_id = f"entity:{row[0]}"
         nodes.append({
             "id": node_id, "label": row[1], "nodeType": "Entity",
-            "entityType": row[2], "description": row[3] or ""
+            "entityType": (row[2] or "").lower(), "description": row[3] or ""
         })
         node_ids.add(node_id)
 
