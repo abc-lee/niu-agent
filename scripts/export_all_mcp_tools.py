@@ -27,7 +27,8 @@ for schema in schemas:
             "server": server,
             "name": tool_name,
             "description": schema.get("description", ""),
-            "input_schema": schema.get("input_schema", {})
+            "input_schema": schema.get("input_schema", {}),
+            "visibility": schema.get("visibility", "dynamic")
         })
 
 # 保存到JSON
