@@ -34,7 +34,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from loguru import logger
 import numpy as np
 from agent.vector_search import VectorSearchAdapter
-from agent.runner import BASE_MCP_TOOLS
 
 
 def get_vector_db_path() -> str:
@@ -96,8 +95,9 @@ def register_mcp_tools():
 
     注册策略：
     - 从 data/mcp_tools.json 读取工具定义
-    - 排除 BASE_MCP_TOOLS 中的基础工具（已在代码中固定注入）
-    - 注册所有其他工具用于递归检索
+    - 从 config/mcp-servers.yaml 读取工具 visibility 配置
+    - 只注册 visibility=dynamic 的工具到向量库
+    - static 和 hidden 工具不存入向量库
 
     参考：docs/VECTOR_DB_INIT_CHECKLIST.md
     """
@@ -120,14 +120,33 @@ def register_mcp_tools():
 
     logger.info(f"从 JSON 读取了 {len(all_tools)} 个工具定义")
 
-    # 排除基础工具
-    base_tool_names = set(BASE_MCP_TOOLS)
-    tools_to_register = [
-        tool for tool in all_tools
-        if f"{tool['server']}/{tool['name']}" not in base_tool_names
-    ]
+    # 从 mcp-servers.yaml 读取 visibility 配置
+    from pathlib import Path
+    import yaml
+    config_path = Path(__file__).parent.parent / "config" / "mcp-servers.yaml"
+    visibility_map = {}  # "server/name" -> visibility
+    if config_path.exists():
+        with open(config_path, 'r', encoding='utf-8') as f:
+            mcp_config = yaml.safe_load(f) or {}
+        for server, server_cfg in mcp_config.items():
+            if not isinstance(server_cfg, dict):
+                continue
+            tools_cfg = server_cfg.get("tools", {})
+            for tool_name, tool_cfg in tools_cfg.items():
+                full_name = f"{server}/{tool_name}"
+                visibility_map[full_name] = tool_cfg.get("visibility", "dynamic")
 
-    logger.info(f"需要注册 {len(tools_to_register)} 个工具（排除 {len(base_tool_names)} 个基础工具）")
+    # 只注册 visibility=dynamic 的工具（static 和 hidden 不存入向量库）
+    tools_to_register = []
+    for tool in all_tools:
+        full_name = f"{tool['server']}/{tool['name']}"
+        vis = visibility_map.get(full_name, "dynamic")
+        if vis == "dynamic":
+            tools_to_register.append(tool)
+
+    static_count = sum(1 for v in visibility_map.values() if v == "static")
+    hidden_count = sum(1 for v in visibility_map.values() if v == "hidden")
+    logger.info(f"需要注册 {len(tools_to_register)} 个工具（排除 {static_count} 个 static + {hidden_count} 个 hidden）")
 
     # 获取向量库连接
     from agent.vector_search import get_vector_search
