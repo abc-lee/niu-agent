@@ -103,7 +103,8 @@ def index_mcp_tools():
 
     # 3. 连接向量库数据库
     print("\n3. 连接向量库...")
-    db_path = Path.home() / ".niu" / "vectors.db"
+    from agent.vector_search import resolve_vector_db_path
+    db_path = Path(resolve_vector_db_path())
     if not db_path.exists():
         print(f"   ✗ 数据库不存在: {db_path}")
         return 0, len(main_agent_tools)

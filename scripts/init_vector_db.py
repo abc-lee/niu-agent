@@ -37,20 +37,9 @@ from agent.vector_search import VectorSearchAdapter
 
 
 def get_vector_db_path() -> str:
-    """获取向量库路径"""
-    # 1. 尝试从 memory.json 读取工作目录
-    memory_path = Path.home() / ".niu" / "memory.json"
-    if memory_path.exists():
-        try:
-            memory = json.loads(memory_path.read_text(encoding="utf-8"))
-            workspace_path = memory.get("workspace", {}).get("path")
-            if workspace_path and Path(workspace_path).exists():
-                return str(Path(workspace_path) / "vectors.db")
-        except Exception:
-            pass
-
-    # 2. 降级到 home 目录
-    return str(Path.home() / ".niu" / "vectors.db")
+    """获取向量库路径（委托给统一路径解析函数）"""
+    from agent.vector_search import resolve_vector_db_path
+    return resolve_vector_db_path()
 
 
 def init_vector_db(db_path: str):
