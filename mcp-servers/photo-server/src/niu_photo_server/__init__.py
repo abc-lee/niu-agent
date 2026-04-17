@@ -422,23 +422,56 @@ def get_tool_schemas() -> list[dict]:
 
 
 def get_db_path() -> Path:
-    """Get photo database path."""
+    """Get photo database path (3-level priority, consistent with get_vector_db_path).
+
+    Priority:
+    1. NIU_DB_PATH env var (explicit override, replaces vectors.db with photos.db)
+    2. WORKSPACE_PATH env var (set by Go launcher main.go)
+    3. ~/.niu/memory.json workspace.path
+    """
+    # 1. NIU_DB_PATH — replace vectors.db suffix with photos.db
     if "NIU_DB_PATH" in os.environ:
-        return Path(os.environ["NIU_DB_PATH"])
-    try:
-        return Path.home() / ".niu" / "photos.db"
-    except RuntimeError:
-        return Path("photos.db")
+        p = Path(os.environ["NIU_DB_PATH"])
+        return p.parent / "photos.db"
+    # 2. WORKSPACE_PATH env var
+    if "WORKSPACE_PATH" in os.environ:
+        ws = Path(os.environ["WORKSPACE_PATH"])
+        if not ws.exists():
+            raise ValueError(f"WORKSPACE_PATH 指向不存在的目录: {ws}。请检查配置。")
+        return ws / "photos.db"
+    # 3. ~/.niu/memory.json workspace.path
+    memory_path = Path.home() / ".niu" / "memory.json"
+    if memory_path.exists():
+        try:
+            with open(memory_path, "r", encoding="utf-8") as f:
+                memory = json.load(f)
+            workspace_path = memory.get("workspace", {}).get("path")
+            if workspace_path and Path(workspace_path).exists():
+                return Path(workspace_path) / "photos.db"
+        except Exception as e:
+            raise ValueError(f"无法从 {memory_path} 解析 JSON: {e}。") from e
+    raise ValueError(
+        f"无法确定照片库路径：~/.niu/memory.json 不存在或缺少 workspace.path 配置。"
+        f"请在 ~/.niu/memory.json 中设置 workspace.path，或设置 WORKSPACE_PATH 环境变量。"
+    )
 
 
 _conn: sqlite3.Connection | None = None
+_db_path_failed: bool = False
 
 
 def get_connection() -> sqlite3.Connection:
     """Get or create database connection."""
-    global _conn
+    global _conn, _db_path_failed
+    if _db_path_failed:
+        raise RuntimeError("照片库路径解析失败，无法建立连接。请检查 memory.json 中 workspace.path 配置。")
     if _conn is None:
-        db_path = get_db_path()
+        try:
+            db_path = get_db_path()
+        except ValueError as e:
+            _db_path_failed = True
+            logger.error(f"照片库路径解析失败: {e}")
+            raise RuntimeError(f"照片库路径解析失败: {e}") from e
         db_path.parent.mkdir(parents=True, exist_ok=True)
         _conn = sqlite3.connect(str(db_path))
         _init_schema(_conn)
@@ -2375,16 +2408,32 @@ def get_vector_db_path() -> Path:
         return Path(os.environ["NIU_DB_PATH"])
     # 2. WORKSPACE_PATH 环境变量（由 Go 启动器设置）
     if "WORKSPACE_PATH" in os.environ:
-        return Path(os.environ["WORKSPACE_PATH"]) / "vectors.db"
+        ws = Path(os.environ["WORKSPACE_PATH"])
+        if not ws.exists():
+            raise ValueError(f"WORKSPACE_PATH 指向不存在的目录: {ws}。请检查配置。")
+        return ws / "vectors.db"
     # 3. 从 ~/.niu/memory.json 读取 workspace.path
     memory = get_memory()
     workspace = Path(memory["workspace"]["path"])
+    if not workspace.exists():
+        raise ValueError(f"workspace.path 指向不存在的目录: {workspace}。请检查 memory.json 配置。")
     return workspace / "vectors.db"
+
+
+_vector_db_failed: bool = False
 
 
 def get_vector_db_connection() -> sqlite3.Connection:
     """获取向量数据库连接"""
-    db_path = get_vector_db_path()
+    global _vector_db_failed
+    if _vector_db_failed:
+        raise RuntimeError("向量库路径解析失败，无法建立连接。请检查 memory.json 中 workspace.path 配置。")
+    try:
+        db_path = get_vector_db_path()
+    except ValueError as e:
+        _vector_db_failed = True
+        logger.error(f"向量库路径解析失败: {e}")
+        raise RuntimeError(f"向量库路径解析失败: {e}") from e
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path))
     # 确保表存在
