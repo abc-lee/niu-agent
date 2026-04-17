@@ -335,8 +335,8 @@ class NiuRunner:
         """
         context_parts = []
 
-        # 取最近的消息（最多10条）
-        recent = messages[-10:] if len(messages) > 10 else messages
+        # 取最近的消息（最多3轮 = 6条消息，user+assistant各1条为1轮）
+        recent = messages[-6:] if len(messages) > 6 else messages
 
         for msg in recent:
             role = msg.get("role", "")
@@ -424,8 +424,8 @@ class NiuRunner:
         if not history:
             return user_input
 
-        # 提取最近5条消息
-        recent_messages = history[-5:] if len(history) > 5 else history
+        # 提取最近3轮消息（user+assistant各1条为1轮，共6条）
+        recent_messages = history[-6:] if len(history) > 6 else history
 
         # 拼接内容
         context_parts = []
