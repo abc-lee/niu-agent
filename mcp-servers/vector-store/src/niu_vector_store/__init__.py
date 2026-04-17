@@ -163,19 +163,39 @@ def get_embedding(text: str) -> list[float] | None:
 
 
 def get_db_path() -> Path:
-    """Get database path."""
-    # Priority: NIU_DB_PATH > WORKSPACE_PATH > user home > current dir
+    """Get database path.
+
+    Priority: NIU_DB_PATH env > WORKSPACE_PATH env > memory.json workspace.path
+    If none resolves, raise ValueError instead of silently falling back to a rogue path.
+    """
+    # 1. 显式覆盖
     if "NIU_DB_PATH" in os.environ:
         return Path(os.environ["NIU_DB_PATH"])
 
+    # 2. 环境变量（由 Go 启动器 main.go 设置）
     if "WORKSPACE_PATH" in os.environ:
         workspace = Path(os.environ["WORKSPACE_PATH"])
         return workspace / "vectors.db"
 
+    # 3. 从 ~/.niu/memory.json 读取 workspace.path（与 agent.vector_search.resolve_vector_db_path 一致）
+    memory_path = Path.home() / ".niu" / "memory.json"
     try:
-        return Path.home() / ".niu" / "vectors.db"
-    except RuntimeError:
-        return Path("vectors.db")
+        if memory_path.exists():
+            with open(memory_path, "r", encoding="utf-8") as f:
+                memory = json.load(f)
+            workspace_path = memory.get("workspace", {}).get("path")
+            if workspace_path and Path(workspace_path).exists():
+                return Path(workspace_path) / "vectors.db"
+    except Exception as e:
+        raise ValueError(
+            f"无法从 {memory_path} 解析 workspace.path: {e}。"
+            f"请检查 memory.json 格式是否正确。"
+        ) from e
+
+    raise ValueError(
+        f"无法确定向量库路径：~/.niu/memory.json 不存在或缺少 workspace.path 配置。"
+        f"请在 ~/.niu/memory.json 中设置 workspace.path，或设置 WORKSPACE_PATH 环境变量。"
+    )
 
 
 # Global connection

@@ -22,17 +22,9 @@ from loguru import logger
 
 
 def get_vector_db_path() -> str:
-    """Get vector database path"""
-    memory_path = Path.home() / ".niu" / "memory.json"
-    if memory_path.exists():
-        try:
-            memory = json.loads(memory_path.read_text(encoding="utf-8"))
-            workspace_path = memory.get("workspace", {}).get("path")
-            if workspace_path and Path(workspace_path).exists():
-                return str(Path(workspace_path) / "vectors.db")
-        except Exception:
-            pass
-    return str(Path.home() / ".niu" / "vectors.db")
+    """Get vector database path (delegates to unified resolver)"""
+    from agent.vector_search import resolve_vector_db_path
+    return resolve_vector_db_path()
 
 
 def get_vector_search():
