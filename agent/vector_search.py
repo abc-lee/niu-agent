@@ -510,7 +510,8 @@ class VectorSearchAdapter:
             query_pattern_hits.sort(key=lambda x: -x[0])
             _, _, _, best_qp_meta = query_pattern_hits[0]
             refined_query = best_qp_meta.get("refined_query", "")
-            target_category = best_qp_meta.get("target_category", "mcp_tool")
+            # 递归检索只替换 mcp_tool 桶（设计约束：所有 query_pattern 的 target_category 都是 mcp_tool）
+            target_category = "mcp_tool"
             if refined_query and target_category in results:
                 refined_embedding = self._get_embedding(refined_query)
                 if refined_embedding:

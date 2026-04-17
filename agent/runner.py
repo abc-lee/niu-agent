@@ -394,7 +394,7 @@ class NiuRunner:
         for tool_name, search_score in mcp_tool_scores.items():
             self.tool_lifecycle.update_from_search(tool_name, search_score)
 
-        # 4. 更新 system_prompt（messages[0]）
+        # 5. 更新 system_prompt（messages[0]）
         if injection and messages and messages[0].get("role") == "system":
             messages[0]["content"] = self.base_system_prompt + injection
 
@@ -488,7 +488,7 @@ class NiuRunner:
 
         # 2. 用本轮工具名做 skill 精确检索（替代原 _activate_related_skills 的即时检索）
         tool_signal_skills = []
-        recent_tool_names = self.tool_lifecycle.get_recent_hits()
+        recent_tool_names = self.tool_lifecycle.consume_recent_hits()
         for tool_name in recent_tool_names:
             try:
                 tool_skills = self.vector_search.search(
@@ -521,11 +521,11 @@ class NiuRunner:
         # 合并工具名检索Skills和搜索到的Skills（去重）
         all_skills = tool_signal_skills + skills
         if all_skills:
-            # 去重：按metadata.name去重
+            # 去重：按metadata.name去重，name为空时用id兜底
             seen_names = set()
             unique_skills = []
             for skill in all_skills:
-                name = skill.metadata.get("name", "")
+                name = skill.metadata.get("name", "") or skill.id
                 if name and name not in seen_names:
                     seen_names.add(name)
                     unique_skills.append(skill)
@@ -566,6 +566,9 @@ class NiuRunner:
             max_turns: 最大轮次
             history: 可选的历史消息列表 [{"role": "user/assistant", "content": str}, ...]
         """
+        # 清空上一会话残留的工具命中记录
+        self.tool_lifecycle._recent_hits.clear()
+
         # 从消息历史中提取上下文（用于向量检索）
         context = self._extract_context_from_history(history, user_input)
 
