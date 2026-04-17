@@ -2443,7 +2443,10 @@ def get_vector_db_path() -> Path:
     import os
     # 1. NIU_DB_PATH 环境变量（显式覆盖）
     if "NIU_DB_PATH" in os.environ:
-        return Path(os.environ["NIU_DB_PATH"])
+        p = Path(os.environ["NIU_DB_PATH"])
+        if not p.parent.exists():
+            raise ValueError(f"NIU_DB_PATH 父目录不存在: {p.parent}。请检查配置。")
+        return p
     # 2. WORKSPACE_PATH 环境变量（由 Go 启动器设置）
     if "WORKSPACE_PATH" in os.environ:
         ws = Path(os.environ["WORKSPACE_PATH"])
