@@ -259,14 +259,9 @@ async function loadGraphSnapshot() {
     applyForceConfig();
     updateStats();
 
-    // 初始加载：模拟稳定后缩放到视口，然后重新启动模拟产生排斥动画（只执行一次）
-    let initialSettle = true;
+    // After simulation settles, zoom to fit
     graph.onEngineStop(() => {
       graph.zoomToFit(400, 40);
-      if (initialSettle) {
-        initialSettle = false;
-        graph.reheatSimulation();
-      }
     });
   } catch (error) {
     console.error('Failed to load graph:', error);
