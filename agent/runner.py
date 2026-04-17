@@ -29,31 +29,6 @@ from .vector_search import get_vector_search
 from .injector.sync import get_skill_sync
 from .tool_lifecycle import ToolLifecycleManager
 
-# 主Agent基础MCP工具列表（固定注入）
-BASE_MCP_TOOLS = [
-    # memory-server (6个)
-    "memory-server/remember",
-    "memory-server/recall",
-    "memory-server/update_memory",
-    "memory-server/get_memory_stats",
-    "memory-server/cleanup_memories",
-    "memory-server/link_memories",
-
-    # vector-store (5个)
-    "vector-store/add_document",
-    "vector-store/search_documents",
-    "vector-store/get_document",
-    "vector-store/delete_document",
-    "vector-store/list_documents",
-
-    # browser-server (1个) - 入口工具，使用后触发其他browser工具动态注入
-    "browser-server/browser_navigate",
-
-    # kg-server (2个) - 知识图谱探索，配合知识注入指引使用
-    "kg-server/explore_node",
-    "kg-server/get_related_entities",
-]
-
 
 def get_system_prompt() -> str:
     """获取系统提示词"""
@@ -295,6 +270,11 @@ class NiuRunner:
         # 工具生命周期管理
         self.tool_lifecycle = ToolLifecycleManager(decay_rate=10, remove_threshold=25)
 
+    def _get_static_tools(self) -> list:
+        """获取 visibility=static 的工具名列表（替代硬编码 BASE_MCP_TOOLS）"""
+        from agent.tool_registry import get_registry
+        return get_registry().get_static_tools()
+
     def set_mcp_tools_schema(self, tools: list):
         """设置 MCP 工具 Schema（从外部调用）"""
         schema = []
@@ -404,7 +384,8 @@ class NiuRunner:
 
         # 6. 重新组装 tools_schema（加入新发现的工具）
         new_schema = self.base_tools_schema.copy()
-        for tool_name in BASE_MCP_TOOLS:
+        static_tools = set(self._get_static_tools())
+        for tool_name in static_tools:
             schema = self._get_tool_schema_by_name(tool_name)
             if schema:
                 new_schema.append(schema)
@@ -412,7 +393,7 @@ class NiuRunner:
         # 加入活跃工具（包括本轮新命中的）
         active_tool_names = self.tool_lifecycle.get_active_tools()
         for tool_name in active_tool_names:
-            if tool_name in BASE_MCP_TOOLS:
+            if tool_name in static_tools:
                 continue
             schema = self._get_tool_schema_by_name(tool_name)
             if schema:
@@ -516,12 +497,14 @@ class NiuRunner:
 
         # 3.5 向量检索到的 MCP 工具：注入 system prompt + 返回分数供 update_from_search
         mcp_tool_scores = {}
+        from agent.tool_registry import get_registry
+        registry = get_registry()
         for tool in mcp_tools:
             name = tool.metadata.get("name", "")
             server = tool.metadata.get("server", "")
             full_name = f"{server}/{name}" if server else name
             score = tool.score if hasattr(tool, "score") else 0
-            if full_name and score > 0:
+            if full_name and score > 0 and registry.get_visibility(full_name) != "hidden":
                 mcp_tool_scores[full_name] = int(score * 100)
 
         # 格式化
@@ -602,8 +585,9 @@ class NiuRunner:
         # 组装 tools_schema = 内置工具 + 基础MCP工具
         tools_schema = self.base_tools_schema.copy()
 
-        # 固定注入基础MCP工具（memory-server + vector-store，共11个）
-        for tool_name in BASE_MCP_TOOLS:
+        # 固定注入静态工具（visibility=static）
+        static_tools = set(self._get_static_tools())
+        for tool_name in static_tools:
             schema = self._get_tool_schema_by_name(tool_name)
             if schema:
                 tools_schema.append(schema)
@@ -612,10 +596,10 @@ class NiuRunner:
         # 1. 获取所有活跃工具（之前未衰减完的）
         active_tool_names = self.tool_lifecycle.get_active_tools()
 
-        # 2. 注入活跃工具（排除基础MCP工具，避免重复）
+        # 2. 注入活跃工具（排除静态工具，避免重复）
         for tool_name in active_tool_names:
-            # 跳过基础MCP工具（已经注入）
-            if tool_name in BASE_MCP_TOOLS:
+            # 跳过静态工具（已经注入）
+            if tool_name in static_tools:
                 continue
 
             schema = self._get_tool_schema_by_name(tool_name)
@@ -623,9 +607,9 @@ class NiuRunner:
                 tools_schema.append(schema)
 
         # 调试：打印工具数量
-        base_mcp_count = len([t for t in tools_schema if t.get("function", {}).get("name") in BASE_MCP_TOOLS])
+        base_mcp_count = len([t for t in tools_schema if t.get("function", {}).get("name") in static_tools])
         print(
-            f"[Debug] tools_schema: {len(self.base_tools_schema)} base + {base_mcp_count} base_mcp = {len(tools_schema)} total (from {len(self._mcp_tools_schema)} available mcp tools)"
+            f"[Debug] tools_schema: {len(self.base_tools_schema)} base + {base_mcp_count} static_mcp = {len(tools_schema)} total (from {len(self._mcp_tools_schema)} available mcp tools)"
         )
 
         gen = agent_runner_loop(
