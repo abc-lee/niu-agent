@@ -423,7 +423,8 @@ class VectorSearchAdapter:
         return True
 
     def search_multi(
-        self, query: str, categories: dict, level: str = "l1"
+        self, query: str, categories: dict, level: str = "l1",
+        enable_recursion: bool = False,
     ) -> dict[str, list[SearchResult]]:
         """
         一次向量检索，按 category 分组返回。避免同一 query 多次 embedding 计算。
@@ -432,6 +433,7 @@ class VectorSearchAdapter:
             query: 搜索查询
             categories: {category_name: {"limit": int, "min_score": float}, ...}
             level: 层级过滤（默认 l1）
+            enable_recursion: 是否启用递归检索（query_pattern -> refined_query）
 
         Returns:
             {category_name: [SearchResult, ...], ...}
@@ -471,12 +473,19 @@ class VectorSearchAdapter:
 
         # 3. 计算相似度，按 category 分桶
         buckets: dict[str, list] = {cat: [] for cat in categories}
+        query_pattern_hits: list[tuple[float, str, str, dict]] = []
         for doc_id, content, embedding_blob, metadata_json in docs:
             if not embedding_blob:
                 continue
             metadata = json.loads(metadata_json) if metadata_json else {}
             cat = metadata.get("category", "")
             if cat not in categories:
+                # 递归检索：临时收集 query_pattern 匹配结果（不放入 buckets）
+                if enable_recursion and cat == "query_pattern":
+                    doc_vec = np.frombuffer(embedding_blob, dtype=np.float32)
+                    score = float(np.dot(query_vec, doc_vec) / (query_norm * np.linalg.norm(doc_vec)))
+                    if score >= 0.3 and metadata.get("is_recursive") is True:
+                        query_pattern_hits.append((score, doc_id, content, metadata))
                 continue
 
             doc_vec = np.frombuffer(embedding_blob, dtype=np.float32)
@@ -495,6 +504,41 @@ class VectorSearchAdapter:
                 SearchResult(id=doc_id, content=content, score=score, metadata=metadata)
                 for score, doc_id, content, metadata in items[:cfg["limit"]]
             ]
+
+        # 5. 递归检索：用 query_pattern 的 refined_query 对 target_category 做二次检索
+        if enable_recursion and query_pattern_hits:
+            query_pattern_hits.sort(key=lambda x: -x[0])
+            _, _, _, best_qp_meta = query_pattern_hits[0]
+            refined_query = best_qp_meta.get("refined_query", "")
+            target_category = best_qp_meta.get("target_category", "mcp_tool")
+            if refined_query and target_category in results:
+                refined_embedding = self._get_embedding(refined_query)
+                if refined_embedding:
+                    refined_vec = np.array(refined_embedding, dtype=np.float32)
+                    refined_norm = np.linalg.norm(refined_vec)
+                    if refined_norm > 0:
+                        second_pass: list[tuple[float, str, str, dict]] = []
+                        for doc_id, content, embedding_blob, metadata_json in docs:
+                            if not embedding_blob:
+                                continue
+                            metadata = json.loads(metadata_json) if metadata_json else {}
+                            if metadata.get("category") != target_category:
+                                continue
+                            if metadata.get("type") == "query_pattern":
+                                continue
+                            doc_vec = np.frombuffer(embedding_blob, dtype=np.float32)
+                            score = float(np.dot(refined_vec, doc_vec) / (refined_norm * np.linalg.norm(doc_vec)))
+                            cfg = categories.get(target_category, {})
+                            min_score = cfg.get("min_score", 0.0)
+                            if score >= min_score:
+                                second_pass.append((score, doc_id, content, metadata))
+                        second_pass.sort(key=lambda x: -x[0])
+                        limit = categories.get(target_category, {}).get("limit", 10)
+                        results[target_category] = [
+                            SearchResult(id=doc_id, content=content, score=score, metadata=metadata)
+                            for score, doc_id, content, metadata in second_pass[:limit]
+                        ]
+                        print(f"[Recursive Query] query={query!r} -> refined_query={refined_query!r} target_category={target_category!r} hits={len(second_pass[:limit])}")
 
         return results
 
