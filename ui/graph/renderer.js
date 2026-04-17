@@ -169,9 +169,29 @@ const graph = ForceGraph()(container)
   .nodeColor(d => d.color)
   .nodeCanvasObjectMode(() => 'replace')
   .nodeCanvasObject((node, ctx, globalScale) => {
-    // Custom rendering: circle + label
     const size = Math.max(2, node.val || 4);
-    const fontSize = Math.max(10 / globalScale, 3);
+    const isSelected = node.id === currentSelectedNode;
+    const isFlashing = node.id === flashNodeId;
+
+    // Flash glow (larger pulsing ring)
+    if (isFlashing) {
+      ctx.beginPath();
+      ctx.arc(node.x, node.y, size + 8, 0, 2 * Math.PI);
+      ctx.fillStyle = node.color;
+      ctx.globalAlpha = 0.4;
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+
+    // Glow ring for selected node
+    if (isSelected) {
+      ctx.beginPath();
+      ctx.arc(node.x, node.y, size + 4, 0, 2 * Math.PI);
+      ctx.fillStyle = node.color;
+      ctx.globalAlpha = 0.25;
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    }
 
     // Circle
     ctx.beginPath();
@@ -188,7 +208,6 @@ const graph = ForceGraph()(container)
   .linkCurvature(0)
   .d3AlphaDecay(0.02)
   .d3VelocityDecay(0.3)
-  .warmupTicks(50)
   .cooldownTime(3000)
   .onNodeClick(node => {
     showDetail(node.id);
@@ -318,6 +337,35 @@ function showTooltip(node) {
   tooltip.style.top = (coords.y - 10) + 'px';
 }
 
+// ===== Flash a node (blink effect) =====
+let flashNodeId = null;
+let flashTimer = null;
+
+function flashNode(nodeId) {
+  // Clear previous flash
+  if (flashTimer) clearInterval(flashTimer);
+  flashNodeId = nodeId;
+
+  let count = 0;
+  const maxBlinks = 6; // 3 full blinks (on/off)
+  flashTimer = setInterval(() => {
+    count++;
+    if (count > maxBlinks) {
+      clearInterval(flashTimer);
+      flashTimer = null;
+      flashNodeId = null;
+      // Final redraw to clear
+      const c = graph.centerAt();
+      graph.centerAt(c.x, c.y);
+      return;
+    }
+    // Toggle: even = show flash, odd = hide flash
+    flashNodeId = (count % 2 === 1) ? nodeId : null;
+    const c = graph.centerAt();
+    graph.centerAt(c.x, c.y);
+  }, 200);
+}
+
 function hideTooltip() {
   tooltip.classList.add('hidden');
 }
@@ -375,7 +423,7 @@ const showDetail = (nodeId) => {
         const otherColor = getNodeColor(otherNode);
         const relLabel = edge.relation || '';
         const otherName = otherNode.label || otherNode.name;
-        html += `<div class="detail-row"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${otherColor};margin-right:6px;vertical-align:middle;"></span>`;
+        html += `<div class="relation-item" data-node-id="${escapeHtml(otherId)}" style="cursor:pointer;"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${otherColor};margin-right:6px;vertical-align:middle;"></span>`;
         if (relLabel) html += `<strong>${escapeHtml(relLabel)}：</strong>`;
         html += `${escapeHtml(otherName)}</div>`;
       }
@@ -385,11 +433,25 @@ const showDetail = (nodeId) => {
 
   detailContent.innerHTML = html;
   detailPanel.classList.remove('hidden');
+
+  // Bind click on relation items to flash the target node
+  detailContent.querySelectorAll('.relation-item').forEach(item => {
+    item.addEventListener('click', () => {
+      flashNode(item.dataset.nodeId);
+    });
+  });
+
+  // Trigger redraw to show selection glow
+  const c = graph.centerAt();
+  graph.centerAt(c.x, c.y);
 };
 
 const hideDetail = () => {
   detailPanel.classList.add('hidden');
   currentSelectedNode = null;
+  // Trigger redraw to remove selection glow
+  const c = graph.centerAt();
+  graph.centerAt(c.x, c.y);
 };
 
 closeDetail.addEventListener('click', hideDetail);
