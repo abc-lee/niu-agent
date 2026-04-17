@@ -2368,7 +2368,15 @@ def ingest_document(file_path: str, category: str = "其他", mode: str = "copy"
 
 
 def get_vector_db_path() -> Path:
-    """获取向量数据库路径（在工作目录下）"""
+    """获取向量数据库路径（与 resolve_vector_db_path() 一致的 3 层优先级）"""
+    import os
+    # 1. NIU_DB_PATH 环境变量（显式覆盖）
+    if "NIU_DB_PATH" in os.environ:
+        return Path(os.environ["NIU_DB_PATH"])
+    # 2. WORKSPACE_PATH 环境变量（由 Go 启动器设置）
+    if "WORKSPACE_PATH" in os.environ:
+        return Path(os.environ["WORKSPACE_PATH"]) / "vectors.db"
+    # 3. 从 ~/.niu/memory.json 读取 workspace.path
     memory = get_memory()
     workspace = Path(memory["workspace"]["path"])
     return workspace / "vectors.db"

@@ -77,7 +77,7 @@ class MemoryStorage:
         if self.db_path is None:
             return
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self._get_conn()
             cursor = conn.cursor()
 
             cursor.execute("""
@@ -107,6 +107,12 @@ class MemoryStorage:
 
         except Exception as e:
             logger.error(f"数据库初始化失败: {e}")
+
+    def _get_conn(self):
+        """获取数据库连接，db_path 未解析时抛出 RuntimeError"""
+        if self.db_path is None:
+            raise RuntimeError("记忆库路径未解析，无法操作。请检查 memory.json 中 workspace.path 配置。")
+        return sqlite3.connect(self.db_path)
 
     def store_memory(
         self, content: str, memory_type: str, metadata: dict = None,
@@ -179,7 +185,7 @@ class MemoryStorage:
             }
 
             # 存储三层
-            conn = sqlite3.connect(self.db_path)
+            conn = self._get_conn()
             cursor = conn.cursor()
 
             # L2（原文）
@@ -300,7 +306,7 @@ class MemoryStorage:
             # 获取查询向量
             query_embedding = np.array(get_embedding_sync(query), dtype=np.float32)
 
-            conn = sqlite3.connect(self.db_path)
+            conn = self._get_conn()
             cursor = conn.cursor()
 
             # 使用 level 参数过滤
@@ -352,7 +358,7 @@ class MemoryStorage:
     def list_memories(self, memory_type: str = None, limit: int = 20) -> list[dict]:
         """列出记忆"""
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self._get_conn()
             cursor = conn.cursor()
 
             if memory_type:
@@ -392,7 +398,7 @@ class MemoryStorage:
     def delete_memory(self, memory_id: str):
         """删除记忆（删除所有层级）"""
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self._get_conn()
             cursor = conn.cursor()
 
             # 删除所有层级（L0/L1/L2）
@@ -409,7 +415,7 @@ class MemoryStorage:
         """更新记忆"""
         try:
             # 获取旧记忆的 metadata
-            conn = sqlite3.connect(self.db_path)
+            conn = self._get_conn()
             cursor = conn.cursor()
 
             cursor.execute("SELECT metadata FROM documents WHERE id = ?", (f"{memory_id}:l2",))
@@ -436,7 +442,7 @@ class MemoryStorage:
     def get_memory_stats(self) -> dict:
         """获取记忆统计"""
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self._get_conn()
             cursor = conn.cursor()
 
             # 总数统计
@@ -477,7 +483,7 @@ class MemoryStorage:
         try:
             from datetime import datetime, timedelta
 
-            conn = sqlite3.connect(self.db_path)
+            conn = self._get_conn()
             cursor = conn.cursor()
 
             # 计算截止时间
@@ -511,7 +517,7 @@ class MemoryStorage:
     def link_memories(self, memory_id_1: str, memory_id_2: str, relation: str) -> bool:
         """关联两条记忆"""
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = self._get_conn()
             cursor = conn.cursor()
 
             # 更新 L1 记录的 metadata

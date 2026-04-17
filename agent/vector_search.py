@@ -39,7 +39,13 @@ def resolve_vector_db_path() -> str:
 
     # 2. 环境变量（由 Go 启动器设置）
     if "WORKSPACE_PATH" in os.environ:
-        return os.path.join(os.environ["WORKSPACE_PATH"], "vectors.db")
+        ws = os.environ["WORKSPACE_PATH"]
+        if not os.path.exists(ws):
+            raise ValueError(
+                f"WORKSPACE_PATH 指向不存在的目录: {ws}。"
+                f"请检查目录是否已被删除或移动。"
+            )
+        return os.path.join(ws, "vectors.db")
 
     # 3. 从 ~/.niu/memory.json 读取 workspace.path
     memory_path = os.path.join(os.path.expanduser("~"), ".niu", "memory.json")
@@ -54,8 +60,13 @@ def resolve_vector_db_path() -> str:
             ) from e
 
         workspace_path = memory.get("workspace", {}).get("path")
-        if workspace_path and os.path.exists(workspace_path):
-            return os.path.join(workspace_path, "vectors.db")
+        if workspace_path:
+            if os.path.exists(workspace_path):
+                return os.path.join(workspace_path, "vectors.db")
+            raise ValueError(
+                f"workspace.path 指向不存在的目录: {workspace_path}。"
+                f"请检查目录是否已被删除或移动。"
+            )
 
     raise ValueError(
         f"无法确定向量库路径：{memory_path} 不存在或缺少 workspace.path 配置。"
