@@ -514,45 +514,79 @@ class VectorSearchAdapter:
                 for score, doc_id, content, metadata in items[:cfg["limit"]]
             ]
 
-        # 5. 递归检索：用 query_pattern 的 refined_query 对 target_category 做二次检索
+        # 5. 递归检索：用 query_pattern 的 refined_query 对 target_category 做递归检索
+        #    数据驱动：二次检索结果可能又触发 is_recursive=True，需要继续递归
+        #    深度限制：最多 3 轮递归（与旧 search() 的 max_recursion=3 一致）
         if enable_recursion and query_pattern_hits:
-            query_pattern_hits.sort(key=lambda x: -x[0])
-            _, _, _, best_qp_meta = query_pattern_hits[0]
-            refined_query = best_qp_meta.get("refined_query", "")
-            # 递归检索只替换 mcp_tool 桶（设计约束：所有 query_pattern 的 target_category 都是 mcp_tool）
             target_category = "mcp_tool"
-            # target_category 必然在 results 中（buckets 从 categories 初始化），此条件仅为防御性检查
-            if refined_query and target_category in results:
-                refined_embedding = self._get_embedding(refined_query)
-                if refined_embedding:
+            if target_category in results:
+                max_recursion_depth = 3
+                current_query = query
+                current_hits = query_pattern_hits
+                for depth in range(1, max_recursion_depth + 1):
+                    current_hits.sort(key=lambda x: -x[0])
+                    _, _, _, best_qp_meta = current_hits[0]
+                    refined_query = best_qp_meta.get("refined_query", "")
+                    if not refined_query:
+                        break
+
+                    refined_embedding = self._get_embedding(refined_query)
+                    if not refined_embedding:
+                        break
                     refined_vec = np.array(refined_embedding, dtype=np.float32)
                     refined_norm = np.linalg.norm(refined_vec)
-                    if refined_norm > 0:
-                        second_pass: list[tuple[float, str, str, dict]] = []
-                        for doc_id, content, embedding_blob, metadata_json in docs:
-                            if not embedding_blob:
-                                continue
-                            metadata = json.loads(metadata_json) if metadata_json else {}
-                            if metadata.get("category") != target_category:
-                                continue
-                            if metadata.get("type") == "query_pattern":
-                                continue
+                    if refined_norm == 0:
+                        break
+
+                    # 对 target_category 桶做检索，同时收集新的 query_pattern 触发
+                    second_pass: list[tuple[float, str, str, dict]] = []
+                    next_qp_hits: list[tuple[float, str, str, dict]] = []
+                    for doc_id, content, embedding_blob, metadata_json in docs:
+                        if not embedding_blob:
+                            continue
+                        metadata = json.loads(metadata_json) if metadata_json else {}
+                        doc_cat = metadata.get("category", "")
+
+                        # 收集下一轮递归的 query_pattern 触发
+                        if doc_cat == "query_pattern" and metadata.get("is_recursive") is True:
                             doc_vec = np.frombuffer(embedding_blob, dtype=np.float32)
                             doc_norm = np.linalg.norm(doc_vec)
                             if doc_norm == 0:
                                 continue
                             score = float(np.dot(refined_vec, doc_vec) / (refined_norm * doc_norm))
-                            cfg = categories.get(target_category, {})
-                            min_score = cfg.get("min_score", 0.0)
-                            if score >= min_score:
-                                second_pass.append((score, doc_id, content, metadata))
-                        second_pass.sort(key=lambda x: -x[0])
-                        limit = categories.get(target_category, {}).get("limit", 10)
-                        results[target_category] = [
-                            SearchResult(id=doc_id, content=content, score=score, metadata=metadata)
-                            for score, doc_id, content, metadata in second_pass[:limit]
-                        ]
-                        print(f"[Recursive Query] query={query!r} -> refined_query={refined_query!r} target_category={target_category!r} hits={len(second_pass[:limit])}")
+                            if score >= 0.3:
+                                next_qp_hits.append((score, doc_id, content, metadata))
+                            continue
+
+                        # 只检索 target_category
+                        if doc_cat != target_category:
+                            continue
+                        if metadata.get("type") == "query_pattern":
+                            continue
+                        doc_vec = np.frombuffer(embedding_blob, dtype=np.float32)
+                        doc_norm = np.linalg.norm(doc_vec)
+                        if doc_norm == 0:
+                            continue
+                        score = float(np.dot(refined_vec, doc_vec) / (refined_norm * doc_norm))
+                        cfg = categories.get(target_category, {})
+                        min_score = cfg.get("min_score", 0.0)
+                        if score >= min_score:
+                            second_pass.append((score, doc_id, content, metadata))
+
+                    # 替换目标桶
+                    second_pass.sort(key=lambda x: -x[0])
+                    limit = categories.get(target_category, {}).get("limit", 10)
+                    results[target_category] = [
+                        SearchResult(id=doc_id, content=content, score=score, metadata=metadata)
+                        for score, doc_id, content, metadata in second_pass[:limit]
+                    ]
+                    print(f"[Recursive Query] depth={depth}/{max_recursion_depth} query={current_query!r} -> refined_query={refined_query!r} target_category={target_category!r} hits={len(second_pass[:limit])}", file=sys.stderr, flush=True)
+
+                    # 检查是否需要继续递归
+                    if not next_qp_hits:
+                        break
+                    current_query = refined_query
+                    current_hits = next_qp_hits
 
         return results
 
