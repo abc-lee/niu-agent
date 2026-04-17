@@ -1089,16 +1089,18 @@ class NiuHandler(BaseHandler):
                 # 记录工具命中（在真正执行前）
                 # hit_tool 记录命中到 _recent_hits，统一注入时通过 consume_recent_hits 获取
                 # 分数由 _inject_dynamic_resources 中的向量检索覆盖管理
-                try:
-                    from agent.runner import get_runner
-                    runner = get_runner()
-                    if runner and hasattr(runner, 'tool_lifecycle'):
-                        runner.tool_lifecycle.hit_tool(tool_name)
-                        current_score = runner.tool_lifecycle.get_tool_score(tool_name)
-                        print(f"[ToolHit] {tool_name} executed (lifecycle score: {current_score})", file=sys.stderr, flush=True)
-                except Exception as e:
-                    # 命中记录失败不影响主流程
-                    print(f"[ToolHit] Failed to record hit: {e}", file=sys.stderr, flush=True)
+                # 子 Agent（_is_subagent=True）跳过 hit_tool()，不污染主 Agent 的 tool_lifecycle
+                if not getattr(self, '_is_subagent', False):
+                    try:
+                        from agent.runner import get_runner
+                        runner = get_runner()
+                        if runner and hasattr(runner, 'tool_lifecycle'):
+                            runner.tool_lifecycle.hit_tool(tool_name)
+                            current_score = runner.tool_lifecycle.get_tool_score(tool_name)
+                            print(f"[ToolHit] {tool_name} executed (lifecycle score: {current_score})", file=sys.stderr, flush=True)
+                    except Exception as e:
+                        # 命中记录失败不影响主流程
+                        print(f"[ToolHit] Failed to record hit: {e}", file=sys.stderr, flush=True)
 
                 # 直接调用工具函数
                 result = func(**args)

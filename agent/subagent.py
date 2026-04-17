@@ -146,6 +146,10 @@ def call_subagent(
     # 4. 创建 handler（禁用记忆检索，子 Agent 不需要）
     handler = NiuHandler(mcp_client=mcp_client)
     handler._disable_memory_recall = True
+    # 重要约定：子 Agent 必须标记 _is_subagent = True
+    # 否则子 Agent 的工具调用会通过 hit_tool() 污染主 Agent 的 tool_lifecycle 分数
+    # 新增子 Agent 时必须遵守此约定
+    handler._is_subagent = True
 
     # 5. 获取基础工具 schema（排除子Agent调用工具，避免递归）
     from .runner import get_tools_schema
