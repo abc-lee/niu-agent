@@ -20,25 +20,55 @@ from mcp.types import TextContent, Tool
 
 # Default database path - use environment variable or current directory
 def get_db_path() -> Path:
-    """Get database path from environment or default location."""
-    # Priority: NIU_DB_PATH > WORKSPACE_PATH > user home > current dir
+    """Get database path (3-level priority, consistent with resolve_vector_db_path).
+
+    Priority:
+    1. NIU_DB_PATH env var (explicit override, replaces vectors.db with knowledge.db)
+    2. WORKSPACE_PATH env var (set by Go launcher main.go)
+    3. ~/.niu/memory.json workspace.path
+    不降级、不创建流氓库。
+    """
+    # 1. NIU_DB_PATH — replace vectors.db suffix with knowledge.db
     if "NIU_DB_PATH" in os.environ:
-        return Path(os.environ["NIU_DB_PATH"])
+        p = Path(os.environ["NIU_DB_PATH"])
+        if not p.parent.exists():
+            raise ValueError(f"NIU_DB_PATH 父目录不存在: {p.parent}。请检查配置。")
+        return p.parent / "knowledge.db"
 
+    # 2. WORKSPACE_PATH env var
     if "WORKSPACE_PATH" in os.environ:
-        workspace = Path(os.environ["WORKSPACE_PATH"])
-        return workspace / "knowledge.db"
+        ws = Path(os.environ["WORKSPACE_PATH"])
+        if not ws.exists():
+            raise ValueError(f"WORKSPACE_PATH 指向不存在的目录: {ws}。请检查配置。")
+        return ws / "knowledge.db"
 
-    # Try user home first
-    try:
-        home = Path.home()
-        return home / ".niu" / "knowledge.db"
-    except RuntimeError:
-        # Fallback to current directory
-        return Path(".niu/knowledge.db")
+    # 3. 从 ~/.niu/memory.json 读取 workspace.path
+    memory_path = Path.home() / ".niu" / "memory.json"
+    if memory_path.exists():
+        try:
+            with open(memory_path, "r", encoding="utf-8") as f:
+                memory = json.load(f)
+            workspace_path = memory.get("workspace", {}).get("path")
+            if workspace_path and Path(workspace_path).exists():
+                return Path(workspace_path) / "knowledge.db"
+            if workspace_path:
+                raise ValueError(f"workspace.path 指向不存在的目录: {workspace_path}。请检查 memory.json 配置。")
+        except ValueError:
+            raise
+        except Exception as e:
+            raise ValueError(f"无法从 {memory_path} 解析 JSON: {e}。") from e
+
+    raise ValueError(
+        f"无法确定知识库路径：~/.niu/memory.json 不存在或缺少 workspace.path 配置。"
+        f"请在 ~/.niu/memory.json 中设置 workspace.path，或设置 WORKSPACE_PATH 环境变量。"
+    )
 
 
-DEFAULT_DB_PATH = get_db_path()
+try:
+    DEFAULT_DB_PATH = get_db_path()
+except ValueError as e:
+    logger.warning(f"知识库路径解析失败: {e}")
+    DEFAULT_DB_PATH = None
 
 # Initialize MCP server
 server = Server("niu-kg-server")
@@ -339,11 +369,21 @@ def get_tool_schemas() -> list[dict]:
     return list(TOOL_SCHEMAS.values())
 
 
+_db_path_failed: bool = False
+
+
 def get_connection() -> kuzu.Connection:
     """Get or create database connection."""
-    global _db, _conn
+    global _db, _conn, _db_path_failed
+    if _db_path_failed:
+        raise RuntimeError("知识库路径解析失败，无法建立连接。请检查 memory.json 中 workspace.path 配置。")
     if _conn is None:
-        db_path = get_db_path()
+        try:
+            db_path = get_db_path()
+        except ValueError as e:
+            _db_path_failed = True
+            logger.error(f"知识库路径解析失败: {e}")
+            raise RuntimeError(f"知识库路径解析失败: {e}") from e
         db_path.parent.mkdir(parents=True, exist_ok=True)
         _db = kuzu.Database(str(db_path))
         _conn = kuzu.Connection(_db)
