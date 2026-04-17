@@ -102,7 +102,13 @@ def load_mcp_tools(required_servers: Optional[List[Tuple[str, str]]] = None) -> 
         try:
             module = __import__(module_name, fromlist=["get_tool_schemas"])
 
-            if not registry.register_server(server_name, module):
+            # 从配置中提取该 server 的 tools visibility 映射
+            visibility_map = None
+            server_config = config.get(server_name, {})
+            if isinstance(server_config, dict) and "tools" in server_config:
+                visibility_map = server_config["tools"]
+
+            if not registry.register_server(server_name, module, visibility_map):
                 failed_servers.append(f"{server_name} (registration failed)")
 
         except ImportError as e:
