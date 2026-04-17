@@ -255,16 +255,23 @@ async function loadGraphSnapshot() {
 
     buildEdgeCountCache();
     const data = buildGraphData();
-    // 清空节点位置，让模拟从零开始，产生"集中→排斥"动画效果
-    data.nodes.forEach(n => {
-      delete n.x; delete n.y; delete n.fx; delete n.fy; delete n.vx; delete n.vy;
-    });
     graph.graphData(data);
     applyForceConfig();
     updateStats();
 
+    // 初始加载：模拟稳定后重新启动，产生和点击标签一样的"集中→排斥"动画
     graph.onEngineStop(() => {
-      graph.zoomToFit(400, 40);
+      graph.zoomToFit(0, 40);
+      // 清空所有节点的 x/y/fx/fy/vx/vy，让模拟从零开始重新计算位置
+      const gData = graph.graphData();
+      gData.nodes.forEach(n => {
+        delete n.x; delete n.y; delete n.fx; delete n.fy; delete n.vx; delete n.vy;
+      });
+      graph.graphData(gData);
+      applyForceConfig();
+      graph.onEngineStop(() => {
+        graph.zoomToFit(400, 40);
+      });
     });
   } catch (error) {
     console.error('Failed to load graph:', error);
