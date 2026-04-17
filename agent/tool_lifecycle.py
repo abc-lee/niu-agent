@@ -152,6 +152,10 @@ class ToolLifecycleManager:
         """
         return list(self.active_tools.keys())
 
+    def reset_session(self):
+        """重置会话级状态（新 chat 开始时调用）"""
+        self._recent_hits.clear()
+
     def consume_recent_hits(self) -> List[str]:
         """获取并清空本轮命中的工具名列表（一次性，调用后清空）"""
         hits = self._recent_hits.copy()
