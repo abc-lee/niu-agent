@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, shell } = require('electron');
 const path = require('path');
 const http = require('http');
 
@@ -84,6 +84,15 @@ ipcMain.handle('kg-concepts', async (event, limit) => {
 
 ipcMain.handle('kg-surprising', async (event, minShared) => {
   return apiRequest('GET', `/api/kg/surprising?min_shared=${minShared || 2}`);
+});
+
+// File operations
+ipcMain.handle('open-path', async (event, filePath) => {
+  return shell.openPath(filePath);
+});
+
+ipcMain.handle('show-item-in-folder', async (event, filePath) => {
+  shell.showItemInFolder(filePath);
 });
 
 // ========== App Lifecycle ==========
