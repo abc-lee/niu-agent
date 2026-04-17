@@ -10,10 +10,13 @@ if sys.platform == "win32":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 
-# 使用正确的数据库路径
-db_path = Path("E:/tmp/bot/vectors.db")
-if not db_path.exists():
-    db_path = Path.home() / '.niu' / 'vectors.db'
+# 添加项目根目录到 sys.path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from agent.vector_search import resolve_vector_db_path
+
+# 使用统一路径解析函数
+db_path = Path(resolve_vector_db_path())
 
 print(f"数据库路径: {db_path}")
 

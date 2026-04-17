@@ -202,7 +202,12 @@ class KGSync:
         Returns:
             vectors_synced
         """
-        vectors_db_path = Path.home() / ".niu" / "vectors.db"
+        from agent.vector_search import resolve_vector_db_path
+        try:
+            vectors_db_path = Path(resolve_vector_db_path())
+        except ValueError as e:
+            logger.warning(f"[KGSync] Cannot resolve vectors.db path: {e}")
+            return 0
         if not vectors_db_path.exists():
             return 0
 
