@@ -259,9 +259,12 @@ async function loadGraphSnapshot() {
     applyForceConfig();
     updateStats();
 
-    // After simulation settles, zoom to fit
+    // 初始加载：先让模拟稳定并缩放到视口，然后重新启动力模拟
+    // 产生和点击标签一样的"从中心排斥开"动画效果
     graph.onEngineStop(() => {
       graph.zoomToFit(400, 40);
+      // 稳定后重新启动力模拟，产生排斥动画
+      graph.reheatSimulation();
     });
   } catch (error) {
     console.error('Failed to load graph:', error);
