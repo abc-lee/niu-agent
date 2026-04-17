@@ -12,4 +12,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   listEntities: (limit, entityType) => ipcRenderer.invoke('kg-entities', limit, entityType),
   listConcepts: (limit) => ipcRenderer.invoke('kg-concepts', limit),
   getSurprisingConnections: (minShared) => ipcRenderer.invoke('kg-surprising', minShared),
+  // File operations
+  openPath: (path) => ipcRenderer.invoke('open-path', path),
+  showItemInFolder: (path) => ipcRenderer.invoke('show-item-in-folder', path),
 });
