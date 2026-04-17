@@ -29,8 +29,8 @@ class ToolLifecycleManager:
         self.decay_rate = decay_rate
         self.remove_threshold = remove_threshold
         self.active_tools: Dict[str, int] = self._load_scores()
-        # 临时存储：工具命中后激活的Skills（不持久化，不衰减）
-        self._pending_skills: List[str] = []
+        # 本轮命中的工具名（统一注入时取出并清空）
+        self._recent_hits: List[str] = []
 
     def _load_scores(self) -> Dict[str, int]:
         """从 JSON 文件加载工具分数"""
@@ -59,7 +59,7 @@ class ToolLifecycleManager:
 
         Args:
             tool_name: 工具名，格式为 "server-name/tool-name"
-            skip_coactivation: 跳过同server工具激活和Skills检索
+            skip_coactivation: 跳过同server工具激活
         """
         current = self.active_tools.get(tool_name, 0)
         if current < 65:
@@ -67,7 +67,10 @@ class ToolLifecycleManager:
         # 高于65则不动，用自己的分
         self._save_scores()
 
-        # 检索相关Skills
+        # 记录本轮命中（统一注入时用于 skill 检索）
+        self._recent_hits.append(tool_name)
+
+        # 激活同 server 的其他工具
         if not skip_coactivation:
             self._activate_related_skills(tool_name)
 
@@ -118,31 +121,6 @@ class ToolLifecycleManager:
                 print(f"[ToolLifecycle] Failed to co-activate tools for {tool_name}: {e}",
                       file=sys.stderr, flush=True)
 
-        # 2. 检索相关 Skills
-        try:
-            from agent.vector_search import get_vector_search
-
-            vs = get_vector_search()
-            skills = vs.search(
-                query=tool_name,
-                limit=2,
-                min_score=0.3,
-                filter={"category": "skill"}
-            )
-
-            for skill in skills:
-                skill_name = skill.metadata.get("name", "")
-                if skill_name and skill_name not in self._pending_skills:
-                    self._pending_skills.append(skill_name)
-
-            if skills:
-                print(f"[ToolLifecycle] Found skills for {tool_name}: {[s.metadata.get('name') for s in skills]}",
-                      file=sys.stderr, flush=True)
-
-        except Exception as e:
-            print(f"[ToolLifecycle] Failed to find skills for {tool_name}: {e}",
-                  file=sys.stderr, flush=True)
-
     def decay_tools(self):
         """
         每轮对话后衰减所有工具分数
@@ -174,23 +152,16 @@ class ToolLifecycleManager:
         """
         return list(self.active_tools.keys())
 
-    def get_pending_skills(self) -> List[str]:
-        """
-        获取待注入的Skills列表（临时，不持久化）
-
-        Returns:
-            Skills名称列表
-        """
-        return self._pending_skills.copy()
-
-    def clear_pending_skills(self):
-        """清空待注入的Skills列表（对话结束后调用）"""
-        self._pending_skills.clear()
+    def get_recent_hits(self) -> List[str]:
+        """获取本轮命中的工具名列表（统一注入时调用，调用后清空）"""
+        hits = self._recent_hits.copy()
+        self._recent_hits.clear()
+        return hits
 
     def clear(self):
-        """清空所有活跃工具和待注入Skills"""
+        """清空所有活跃工具"""
         self.active_tools.clear()
-        self._pending_skills.clear()
+        self._recent_hits.clear()
         self._save_scores()
 
     def get_tool_score(self, tool_name: str) -> int:
