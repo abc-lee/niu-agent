@@ -35,7 +35,13 @@ def resolve_vector_db_path() -> str:
     """
     # 1. 显式覆盖
     if "NIU_DB_PATH" in os.environ:
-        return os.environ["NIU_DB_PATH"]
+        db_path = os.environ["NIU_DB_PATH"]
+        parent_dir = os.path.dirname(db_path)
+        if parent_dir and not os.path.exists(parent_dir):
+            raise ValueError(
+                f"NIU_DB_PATH 父目录不存在: {parent_dir}。请检查配置。"
+            )
+        return db_path
 
     # 2. 环境变量（由 Go 启动器设置）
     if "WORKSPACE_PATH" in os.environ:
