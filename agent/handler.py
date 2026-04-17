@@ -264,6 +264,7 @@ class NiuHandler(BaseHandler):
         self.history_info = []
         self._done_hooks = []
         self._disable_memory_recall = False  # 禁用长期记忆检索（子 Agent 使用）
+        self._is_subagent = False  # 子 Agent 标记（True 时跳过 hit_tool，不污染主 Agent 分数）
 
         # 经验总结相关
         self._experience_context: Optional[ExperienceContext] = None
