@@ -162,6 +162,11 @@ function createChatWindow() {
 
   chatWindow.loadFile('chat.html');
   chatWindow.setBackgroundColor('#00000000');
+
+  // 窗口加载完成后触发 sync-messages（补漏窗口不可见期间的消息）
+  chatWindow.webContents.on('did-finish-load', () => {
+    chatWindow.webContents.send('sync-messages');
+  });
   
   // F12 打开开发者工具（调试用）
   chatWindow.webContents.on('before-input-event', (event, input) => {
@@ -538,11 +543,13 @@ ipcMain.handle('get-image-url', async (event, filePath) => {
 // 处理拖入的图片（调用后端 API）
 ipcMain.handle('process-image', async (event, filePath) => {
   return new Promise((resolve) => {
+    const isImage = /\.(jpg|jpeg|png|gif|bmp|webp|tiff?)$/i.test(filePath);
+    const action = isImage ? '入库照片' : '入库文件';
     const data = JSON.stringify({
       session_id: config.chatSessionId || null,
-      message: `处理照片: ${filePath}`
+      message: `${action}：${filePath.replace(/\\/g, '/')}`
     });
-    
+
     const req = http.request({
       hostname: '127.0.0.1',
       port: 9876,
@@ -551,7 +558,8 @@ ipcMain.handle('process-image', async (event, filePath) => {
       headers: {
         'Content-Type': 'application/json',
         'Content-Length': Buffer.byteLength(data)
-      }
+      },
+      timeout: 300000  // 5 分钟超时（图片处理可能较慢）
     }, (res) => {
       let body = '';
       res.on('data', chunk => body += chunk);
@@ -569,6 +577,10 @@ ipcMain.handle('process-image', async (event, filePath) => {
       });
     });
     req.on('error', (e) => resolve({ error: e.message }));
+    req.on('timeout', () => {
+      req.destroy();
+      resolve({ error: '请求超时' });
+    });
     req.write(data);
     req.end();
   });
@@ -578,7 +590,7 @@ ipcMain.handle('send-message', async (event, message) => {
   return new Promise((resolve) => {
     // Load session ID from config
     const data = JSON.stringify({ message: message });
-    
+
     const req = http.request({
       hostname: '127.0.0.1',
       port: 9876,
@@ -587,7 +599,8 @@ ipcMain.handle('send-message', async (event, message) => {
       headers: {
         'Content-Type': 'application/json',
         'Content-Length': Buffer.byteLength(data)
-      }
+      },
+      timeout: 300000  // 5 分钟超时
     }, (res) => {
       let body = '';
       res.on('data', chunk => body += chunk);
@@ -601,6 +614,10 @@ ipcMain.handle('send-message', async (event, message) => {
       });
     });
     req.on('error', (e) => resolve({ error: e.message }));
+    req.on('timeout', () => {
+      req.destroy();
+      resolve({ error: '请求超时' });
+    });
     req.write(data);
     req.end();
   });
@@ -886,7 +903,7 @@ function createTray() {
   
   // 点击托盘图标显示/隐藏小女孩
   tray.on('click', () => {
-    if (spiritWindow) {
+    if (spiritWindow && !spiritWindow.isDestroyed()) {
       if (spiritWindow.isVisible()) {
         spiritWindow.hide();
       } else {
@@ -958,26 +975,20 @@ function startPendingAlertsPolling() {
     try {
       const alerts = await fetchPendingAlerts();
       if (alerts && alerts.length > 0) {
-        console.log('[Alerts] 收到', alerts.length, '条待推送消息');
+        console.log('[Alerts] 收到', alerts.length, '条提醒通知');
 
-        const chatVisible = chatWindow && chatWindow.isVisible();
+        const chatVisible = chatWindow && !chatWindow.isDestroyed() && chatWindow.isVisible();
         const chatFocused = chatVisible && chatWindow.isFocused();
 
-        // 聊天窗口可见时，直接推送所有提醒到聊天窗口显示
+        // 消息已通过数据库+轮询机制显示，alert 仅用于视觉提示
+        // 聊天窗口可见时，通知前端有新提醒（触发视觉提示）
         if (chatVisible) {
-          alerts.forEach(alert => {
-            chatWindow.webContents.send('alert', alert.content);
-          });
-        } else {
-          // 聊天窗口不可见，缓存到 pendingAlertMessages（窗口打开时读取）
-          alerts.forEach(alert => {
-            pendingAlertMessages.push(alert.content);
-          });
+          chatWindow.webContents.send('alert', '⏰');
         }
 
         // 聊天窗口不在焦点时，小女孩蹦高提醒
-        if (!chatFocused && spiritWindow) {
-          spiritWindow.webContents.send('alert', alerts[alerts.length - 1].content);
+        if (!chatFocused && spiritWindow && !spiritWindow.isDestroyed()) {
+          spiritWindow.webContents.send('alert', '⏰');
         }
       }
     } catch (e) {
@@ -1025,3 +1036,81 @@ setTimeout(() => {
   startPendingAlertsPolling();
   console.log('[Alerts] 开始轮询待推送消息');
 }, 10000);
+
+
+// ========== SSE 消息事件流 ==========
+let sseReconnectTimer = null;
+let sseConnectedBefore = false;
+
+function startMessageEventStream() {
+  if (sseReconnectTimer) {
+    clearTimeout(sseReconnectTimer);
+    sseReconnectTimer = null;
+  }
+
+  const options = {
+    hostname: '127.0.0.1',
+    port: 9876,
+    path: '/api/events/stream',
+    method: 'GET',
+    headers: { 'Accept': 'text/event-stream' }
+  };
+
+  const req = http.request(options, (res) => {
+    let buffer = '';
+    res.setEncoding('utf8');  // 正确处理多字节字符跨 TCP 块分割
+    console.log('[SSE] Connected to message event stream');
+
+    // 仅在重连时触发补漏（首次连接时 loadHistory 已加载历史）
+    if (sseConnectedBefore && chatWindow && !chatWindow.isDestroyed() && chatWindow.isVisible()) {
+      chatWindow.webContents.send('sync-messages');
+    }
+    sseConnectedBefore = true;
+
+    res.on('data', (chunk) => {
+      buffer += chunk.toString();
+      // 解析 SSE data: 行
+      const lines = buffer.split('\n');
+      buffer = lines.pop(); // 保留不完整的行
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          const jsonStr = line.slice(6);
+          if (!jsonStr) continue;  // 跳过空 data 行
+          try {
+            const event = JSON.parse(jsonStr);
+            if (event.type === 'new_message') {
+              // 推送给 chat 渲染
+              if (chatWindow && !chatWindow.isDestroyed() && chatWindow.isVisible()) {
+                chatWindow.webContents.send('new-message', event);
+              }
+              // 小女孩蹦高提醒（窗口不在焦点时）
+              if (chatWindow && !chatWindow.isDestroyed() && !chatWindow.isFocused() && spiritWindow && !spiritWindow.isDestroyed()) {
+                spiritWindow.webContents.send('alert', '⏰');
+              }
+            }
+          } catch (e) {
+            // 忽略解析错误（可能是心跳等非 JSON 行）
+          }
+        }
+      }
+    });
+
+    res.on('end', () => {
+      console.log('[SSE] Connection closed, reconnecting in 3s');
+      sseReconnectTimer = setTimeout(startMessageEventStream, 3000);
+    });
+  });
+
+  req.on('error', (e) => {
+    console.log('[SSE] Connection error, reconnecting in 3s:', e.message);
+    sseReconnectTimer = setTimeout(startMessageEventStream, 3000);
+  });
+
+  req.end();
+}
+
+// 延迟启动 SSE（等待后端完全启动）
+setTimeout(() => {
+  startMessageEventStream();
+  console.log('[SSE] Starting message event stream');
+}, 5000);

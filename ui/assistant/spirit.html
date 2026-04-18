@@ -575,30 +575,9 @@
           path: file.path
         });
       }
-      
-      // 构建消息发送给 Agent
-      const fileDescriptions = fileList.map(f => {
-        const safePath = f.path.replace(/\\/g, '/');
-        return `- ${f.name} (${formatSize(f.size)}) 路径: ${safePath}`;
-      }).join('\n');
-      
-      const modeDescriptions = {
-        'move': '移动（文件将移入知识库，原位置删除）',
-        'copy': '复制（复制一份到知识库，原文件保留）',
-        'reference': '引用（仅记录路径，不移动文件）'
-      };
-      
-      const message = `用户拖入了以下文件，请处理入库：
 
-${fileDescriptions}
-
-处理方式：${modeDescriptions[mode]}
-
-请按以下步骤处理：
-1. 解析文件内容
-2. 提取关键信息（人物、组织、概念等）
-3. 存储到知识图谱
-4. 向量化存储`;
+      // 构建入库指令（简洁，避免 Agent 当对话回复而不调用工具）
+      const message = `入库文件（${mode}模式）：${fileList.map(f => f.path.replace(/\\/g, '/')).join('、')}`;
       
       // 发送消息给 Agent
       const result = await window.electronAPI.sendToAgent(message, { files: fileList, mode });

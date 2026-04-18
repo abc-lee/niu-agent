@@ -259,7 +259,6 @@ class NiuHandler(BaseHandler):
     def __init__(self, cwd: str = None, mcp_client=None):
         self.cwd = cwd or os.getcwd()
         self.mcp_client = mcp_client
-        self.working = {}
         self.current_turn = 0
         self.history_info = []
         self._done_hooks = []
@@ -454,7 +453,7 @@ class NiuHandler(BaseHandler):
             self._experience_context = None
 
     def _get_anchor_prompt(self, skip=False):
-        """生成工作记忆提示词"""
+        """生成工作记忆提示词（仅工具调用摘要）"""
         if skip:
             return "\n"
 
@@ -466,12 +465,6 @@ class NiuHandler(BaseHandler):
 
         prompt = f"\n### [WORKING MEMORY]\n<history>\n{h_str}\n</history>"
         prompt += f"\nCurrent turn: {self.current_turn}\n"
-
-        if self.working.get("key_info"):
-            key_info = self.working.get("key_info")[:200]  # 限制长度
-            prompt += f"\n<key_info>{key_info}</key_info>"
-        if self.working.get("related_sop"):
-            prompt += f"\n有不清晰的地方请再次读取{self.working.get('related_sop')}"
 
         return prompt
 
@@ -504,7 +497,7 @@ class NiuHandler(BaseHandler):
                     )
 
         # 每 35 轮强制询问用户
-        if turn % 35 == 0 and "plan" not in str(self.working.get("related_sop")):
+        if turn % 35 == 0:
             next_prompt += (
                 f"\n\n[DANGER] 已连续执行第 {turn} 轮。你必须总结情况并直接向用户提问，"
                 "不允许继续重试。"
@@ -521,7 +514,6 @@ class NiuHandler(BaseHandler):
     def reset_working_memory(self):
         """重置工作记忆（新会话开始时调用）"""
         self.history_info = []
-        self.working = {}
         self.current_turn = 0
 
     def _get_abs_path(self, path: str) -> str:
@@ -797,22 +789,6 @@ class NiuHandler(BaseHandler):
             "facts": 0.75,
         }
         return importance_map.get(memory_type, 0.75)
-
-    def do_update_working_checkpoint(self, args: dict, response) -> StepOutcome:
-        """更新工作记忆检查点"""
-        key_info = args.get("key_info", "")
-        related_sop = args.get("related_sop", "")
-
-        if key_info:
-            self.working["key_info"] = key_info[:500]  # 限制长度
-        if related_sop:
-            self.working["related_sop"] = related_sop
-
-        return StepOutcome(
-            {"status": "success", "msg": "Working memory updated"},
-            next_prompt=self._get_anchor_prompt(),
-        )
-
 
     # ========== MCP 工具（动态） ==========
 
