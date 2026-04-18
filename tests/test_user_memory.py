@@ -294,6 +294,46 @@ def test_normalize_permanent_migration():
     print("PASS: test_normalize_permanent_migration")
 
 
+async def test_forget_task_clears_not_removes():
+    """Forgetting a task item clears content instead of removing it"""
+    with tempfile.TemporaryDirectory() as tmp:
+        memory_path = Path(tmp) / ".niu" / "memory.json"
+        memory_path.parent.mkdir(parents=True, exist_ok=True)
+        data = {"permanent": [_mem("修复登录bug", "task"), _mem("我喜欢Python")]}
+        memory_path.write_text(json.dumps(data), encoding="utf-8")
+
+        _setup_module(memory_path)
+
+        # Forget by index (task is item 1)
+        result = await mod.user_memory_forget_handler(index=1)
+        assert result["status"] == "success"
+        assert "清空" in result["message"]
+        # Task slot still exists with empty content, memory item unchanged
+        assert result["current_memories"] == [_mem("", "task"), _mem("我喜欢Python")]
+
+    mod._reset_memory_json_path()
+    print("PASS: test_forget_task_clears_not_removes")
+
+
+async def test_forget_task_by_keyword_clears():
+    """Forgetting a task by keyword clears content instead of removing"""
+    with tempfile.TemporaryDirectory() as tmp:
+        memory_path = Path(tmp) / ".niu" / "memory.json"
+        memory_path.parent.mkdir(parents=True, exist_ok=True)
+        data = {"permanent": [_mem("重构数据库", "task"), _mem("我喜欢Python")]}
+        memory_path.write_text(json.dumps(data), encoding="utf-8")
+
+        _setup_module(memory_path)
+
+        result = await mod.user_memory_forget_handler(keyword="重构")
+        assert result["status"] == "success"
+        assert "清空" in result["message"]
+        assert result["current_memories"] == [_mem("", "task"), _mem("我喜欢Python")]
+
+    mod._reset_memory_json_path()
+    print("PASS: test_forget_task_by_keyword_clears")
+
+
 if __name__ == "__main__":
     asyncio.run(test_user_memory_remember())
     asyncio.run(test_user_memory_remember_full())
@@ -307,4 +347,6 @@ if __name__ == "__main__":
     asyncio.run(test_dedup_remember())
     asyncio.run(test_multi_keyword_match_warning())
     test_normalize_permanent_migration()
+    asyncio.run(test_forget_task_clears_not_removes())
+    asyncio.run(test_forget_task_by_keyword_clears())
     print("\nAll tests passed!")
