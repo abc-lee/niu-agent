@@ -39,12 +39,14 @@ def _render_permanent_section(permanent: list) -> str:
     if not permanent:
         return ""
     lines = ["### [用户长期记忆]"]
-    # Normalize old string format to dict
+    # Normalize old string format to dict, default missing type to "memory"
     normalized = []
     for item in permanent:
         if isinstance(item, str):
             normalized.append({"type": "memory", "content": item})
         elif isinstance(item, dict):
+            if "type" not in item:
+                item = {**item, "type": "memory"}
             normalized.append(item)
     # Task items first (skip empty content — cleared task slot)
     task_items = [item for item in normalized if item.get("type") == "task" and item.get("content")]
