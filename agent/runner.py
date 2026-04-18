@@ -19,6 +19,8 @@ from pathlib import Path
 def _sanitize_memory_content(content: str) -> str:
     """Sanitize user memory content before injecting into system prompt.
     Prevents prompt injection by removing newlines and sentinel markers."""
+    if content is None:
+        return ""
     if not isinstance(content, str):
         content = str(content)
     # Remove newlines to prevent multi-line injection
@@ -472,13 +474,15 @@ class NiuRunner:
             return
         self._memory_dirty = False
 
-        # Read current permanent memories
+        # Read current permanent memories (use lock to avoid reading partial write)
         memory_path = Path.home() / ".niu" / "memory.json"
         try:
-            data = json.loads(memory_path.read_text(encoding="utf-8"))
-            permanent = data.get("permanent", [])
-            if not isinstance(permanent, list):
-                permanent = []
+            from niu_memory_server import _memory_file_lock
+            with _memory_file_lock:
+                data = json.loads(memory_path.read_text(encoding="utf-8"))
+                permanent = data.get("permanent", [])
+                if not isinstance(permanent, list):
+                    permanent = []
         except Exception:
             return
 
