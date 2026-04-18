@@ -456,6 +456,19 @@ MAX_MEMORY_ITEMS = 4  # MAX_TASK_ITEMS + MAX_MEMORY_ITEMS = MAX_PERMANENT_ITEMS
 MAX_TOKEN_PER_ITEM = 200  # ~300 Chinese chars
 
 
+def _count_tokens(text: str) -> int:
+    """Count tokens using litellm.token_counter (tiktoken-based).
+    Falls back to conservative char-based estimate if litellm unavailable.
+    """
+    try:
+        import litellm
+        return litellm.token_counter(model="gpt-4o", text=text)
+    except Exception:
+        # Fallback: CJK ~1.5 tokens, ASCII ~0.25 tokens (conservative)
+        cjk_count = sum(1 for c in text if '\u4e00' <= c <= '\u9fff')
+        return int(cjk_count * 1.5 + (len(text) - cjk_count) * 0.25)
+
+
 def _get_memory_json_path():
     """Get path to ~/.niu/memory.json"""
     global MEMORY_JSON_PATH
@@ -581,9 +594,8 @@ async def user_memory_remember_handler(content: str, type: str = "memory") -> di
                 "current_memories": permanent,
             }
 
-    # Token estimate: CJK chars ~1.5 tokens each, ASCII ~0.25 tokens each
-    cjk_count = sum(1 for c in content if '\u4e00' <= c <= '\u9fff')
-    estimated_tokens = cjk_count * 1.5 + (len(content) - cjk_count) * 0.25
+    # Token count using litellm (tiktoken-based)
+    estimated_tokens = _count_tokens(content)
     if estimated_tokens > MAX_TOKEN_PER_ITEM:
         return {
             "status": "error",
