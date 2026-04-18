@@ -8,6 +8,7 @@ HTTP API server for Niu Agent using FastAPI + Uvicorn
 
 import sys
 import os
+import asyncio
 import subprocess
 import threading
 import time
@@ -95,6 +96,11 @@ async def lifespan(app: FastAPI):
     from niu_api.compat import set_preload_complete
     set_preload_complete()
     logger.info("Preload complete, ready to show window")
+
+    # 6.5. Save main event loop for SSE sync notifications
+    from niu_api.chat import set_main_event_loop
+    set_main_event_loop(asyncio.get_running_loop())
+    logger.info("SSE event loop captured")
 
     # 7. Run weekly vector cleanup if needed
     cleanup_status_file = Path.home() / ".niu" / "last_cleanup.txt"

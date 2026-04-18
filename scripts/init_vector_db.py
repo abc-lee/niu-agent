@@ -285,6 +285,12 @@ def init_query_patterns():
 
 def main():
     """主函数"""
+    import argparse
+    parser = argparse.ArgumentParser(description="初始化向量库（符合L0/L1/L2规范）")
+    parser.add_argument("-y", "--yes", action="store_true", help="自动确认所有提示（非交互模式）")
+    parser.add_argument("--with-query-patterns", action="store_true", help="初始化 Query Patterns（需要 LLM API，耗时5-10分钟）")
+    args = parser.parse_args()
+
     print("=" * 70)
     print("向量库初始化脚本（符合L0/L1/L2规范）")
     print("=" * 70)
@@ -294,10 +300,11 @@ def main():
         import requests
         resp = requests.get("http://127.0.0.1:9876/health", timeout=1)
         logger.warning("⚠ 检测到服务正在运行，建议先停止服务再执行初始化")
-        confirm = input("\n服务运行中，是否继续？ [y/N]: ")
-        if confirm.lower() != 'y':
-            logger.info("已取消")
-            return
+        if not args.yes:
+            confirm = input("\n服务运行中，是否继续？ [y/N]: ")
+            if confirm.lower() != 'y':
+                logger.info("已取消")
+                return
     except:
         pass  # 服务未运行，继续
 
@@ -322,10 +329,8 @@ def main():
     inject_system_manual()
 
     # 6. 初始化 Query Patterns（可选，需要 LLM API，耗时较长）
-    print("\n" + "-" * 70)
-    print("Query Patterns 初始化需要 LLM API，耗时较长（约 5-10 分钟）")
-    confirm = input("是否初始化 Query Patterns？[y/N]: ")
-    if confirm.lower() == 'y':
+    if args.with_query_patterns:
+        print("\n" + "-" * 70)
         init_query_patterns()
 
     print("\n" + "=" * 70)

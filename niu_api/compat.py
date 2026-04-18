@@ -152,59 +152,66 @@ async def chat_session(request: ChatRequest) -> ChatResponse:
     if not config.llm or not config.llm.api_key:
         return ChatResponse(reply="Error: LLM not configured, please set API Key first")
 
-    # Get message store
-    store = await get_message_store()
-
-    # Store user message
-    await store.add_message(role="user", content=request.message)
-
-    # P1-1: 使用 ContextManager 加载历史（统一管理）
-    from agent.context_manager import get_context_manager
-
-    context_manager = await get_context_manager(store)
-    history_for_runner = await context_manager.get_context_for_chat(exclude_last=True)
-
-    logger.info(f"Loaded {len(history_for_runner)} history messages")
-
-    # Get runner (uses original GenericAgent from agent/generic/)
-    # Use the pre-initialized runner from niu_api/chat.py which has MCP tools
-    from niu_api.chat import get_or_create_runner
-
-    runner = get_or_create_runner()
-
-    # Create a simple session_id (no session concept, but runner needs one)
-    session_id = "default"
-
-    # Run chat using asyncio.to_thread to avoid blocking event loop
-    def sync_chat():
-        chunks = []
-        for chunk in runner.chat(session_id, request.message, stream=False, history=history_for_runner):
-            chunks.append(chunk)
-        return "".join(chunks)
-
+    # Non-blocking acquire: reject if lock already held
     import asyncio
 
-    # Non-blocking acquire: reject if lock already held
     try:
         await asyncio.wait_for(_chat_lock.acquire(), timeout=0.01)
     except asyncio.TimeoutError:
         return ChatResponse(reply="系统正忙，请稍后再试", session_id="default")
 
     try:
-        full_reply = await asyncio.to_thread(sync_chat)
-    except Exception as e:
-        import traceback
-        logger.error(f"Chat error: {e}\n{traceback.format_exc()}")
-        full_reply = f"Error: {str(e)}"
+        # Get message store
+        store = await get_message_store()
+
+        # Store user message
+        user_msg_id = await store.add_message(role="user", content=request.message)
+        # 通知 SSE 推送用户消息（前端用此 ID 给本地渲染的 user 气泡补上 data-id）
+        from niu_api.chat import notify_new_message
+        await notify_new_message(user_msg_id, "user", request.message)
+
+        # P1-1: 使用 ContextManager 加载历史（统一管理）
+        from agent.context_manager import get_context_manager
+
+        context_manager = await get_context_manager(store)
+        history_for_runner = await context_manager.get_context_for_chat(exclude_last=True)
+
+        logger.info(f"Loaded {len(history_for_runner)} history messages")
+
+        # Get runner (uses original GenericAgent from agent/generic/)
+        # Use the pre-initialized runner from niu_api/chat.py which has MCP tools
+        from niu_api.chat import get_or_create_runner
+
+        runner = get_or_create_runner()
+
+        # Create a simple session_id (no session concept, but runner needs one)
+        session_id = "default"
+
+        # Run chat using asyncio.to_thread to avoid blocking event loop
+        def sync_chat():
+            chunks = []
+            for chunk in runner.chat(session_id, request.message, stream=False, history=history_for_runner):
+                chunks.append(chunk)
+            return "".join(chunks)
+
+        try:
+            full_reply = await asyncio.to_thread(sync_chat)
+        except Exception as e:
+            import traceback
+            logger.error(f"Chat error: {e}\n{traceback.format_exc()}")
+            full_reply = f"Error: {str(e)}"
+
+        # Store assistant response
+        message_id = None
+        if full_reply.strip():
+            message_id = await store.add_message(role="assistant", content=full_reply)
+            # 通知 SSE 端点推送给前端
+            from niu_api.chat import notify_new_message
+            await notify_new_message(message_id, "assistant", full_reply)
+
+        return ChatResponse(reply=full_reply, session_id="default", message_id=message_id)
     finally:
         _chat_lock.release()
-
-    # Store assistant response
-    message_id = None
-    if full_reply.strip():
-        message_id = await store.add_message(role="assistant", content=full_reply)
-
-    return ChatResponse(reply=full_reply, session_id="default", message_id=message_id)
 
 
 @router.get("/api/context/messages")
@@ -295,27 +302,43 @@ async def delete_context_messages(request: dict) -> dict:
 @router.post("/api/chat/clear")
 async def clear_chat() -> dict:
     """Clear all messages (for /new command)"""
-    store = await get_message_store()
-    count = await store.clear_messages()
+    # 获取锁，防止与正在进行的 chat 冲突
+    import asyncio
 
-    # 重置 runner 的所有状态
-    from niu_api.chat import get_or_create_runner
+    try:
+        await asyncio.wait_for(_chat_lock.acquire(), timeout=0.01)
+    except asyncio.TimeoutError:
+        # 有 chat 正在进行，等它完成后再清
+        await asyncio.sleep(1)
+        try:
+            await asyncio.wait_for(_chat_lock.acquire(), timeout=5.0)
+        except asyncio.TimeoutError:
+            return {"success": False, "error": "系统正忙，请稍后再试"}
 
-    runner = get_or_create_runner()
-    if runner:
-        # 重置 handler 的工作记忆
-        if runner.handler:
-            runner.handler.reset_working_memory()
+    try:
+        store = await get_message_store()
+        count = await store.clear_messages()
 
-        # 重置工具生命周期状态
-        if hasattr(runner, 'tool_lifecycle'):
-            runner.tool_lifecycle.clear()
+        # 重置 runner 的所有状态
+        from niu_api.chat import get_or_create_runner
 
-        # Note: LLM session history is managed by ContextManager,
-        # which reloads from message store each call.
-        # store.clear_messages() above already clears persistent history.
+        runner = get_or_create_runner()
+        if runner:
+            # 重置 handler 的工作记忆
+            if runner.handler:
+                runner.handler.reset_working_memory()
 
-    return {"success": True, "deleted_count": count}
+            # 重置工具生命周期状态
+            if hasattr(runner, 'tool_lifecycle'):
+                runner.tool_lifecycle.clear()
+
+            # Note: LLM session history is managed by ContextManager,
+            # which reloads from message store each call.
+            # store.clear_messages() above already clears persistent history.
+
+        return {"success": True, "deleted_count": count}
+    finally:
+        _chat_lock.release()
 
 
 @router.get("/api/pending-alerts")
