@@ -17,55 +17,64 @@ mcpServers:
 
 ## 可用工具
 
-### 文档处理
-- `ingest_document` - 单个文档入库（返回 need_l1 时必须继续生成 L1）
-- `ingest_documents` - 批量文档入库
-- `store_document_l1` - 存储单个 L1 摘要到向量库
-- `store_documents_l1` - **批量存储 L1 摘要（推荐）**
+### 统一入库
+- `ingest` - 统一入库工具，自动判断路径类型和内容类型
 
-### 照片处理
-- `ingest_photo` - 单张照片入库（带人脸识别、自动重命名）
-- `ingest_photos` - 智能照片入库（自动判断单张/目录）
+### 人物管理
 - `name_person` - 给未命名人物命名
 - `merge_persons` - 合并重复人物
-
-### 人物查询
 - `search_persons` - 按名字搜索人物（语义相似度）
 - `get_unnamed_persons` - 获取所有未命名人物列表
+- `delete_person` - 删除人物
+- `get_person_photos` - 获取某人物的多张照片
+
+### 维护
+- `cleanup_deleted_photos` - 清理已删除照片的数据库记录
+
+---
+
+## 核心流程：调用 ingest
+
+`ingest` 工具自动判断路径类型和内容类型，你只需要传入路径：
+
+```
+photo-server/ingest, 参数: path="E:/照片/2024旅行", mode="copy"
+```
+
+### 自动判断逻辑
+
+工具内部自动判断：
+- **单张照片** → EXIF + 人脸检测 + L0摘要 + KG同步
+- **照片目录** → 逐张完整处理
+- **单个文档** → 拷贝 + 返回 need_l1（需要你生成L1）
+- **文档目录** → 逐个处理，遇到 need_l1 暂停
+- **混合目录** → 照片走照片流程，文档走文档流程
 
 ---
 
 ## ⚠️ 关键：文档入库是两步流程！
 
-**文档入库不只是一次工具调用，而是工具循环：**
+### 步骤 1：调用 ingest
 
-### 步骤 1：调用 ingest_document
-
-示例：
 ```
-photo-server/ingest_document, 参数: file_path="...", category="...", mode="copy"
+photo-server/ingest, 参数: path="E:/tmp/report.pdf", mode="copy"
 ```
 
-**返回值可能是**：
+**返回值**：
 
-| status | action | 含义 | 下一步 |
-|--------|--------|------|--------|
-| `success` | `skipped` | 文件已存在，跳过 | **结束，直接汇报** |
-| `success` | 其他 | 处理完成 | **结束，直接汇报** |
-| `need_l1` | - | 文件已复制，需要生成 L1 摘要 | **必须继续步骤 2** |
-| `error` | - | 失败 | 报告错误 |
+| status | 含义 | 下一步 |
+|--------|------|--------|
+| `success` | 处理完成（照片入库成功 / 文档已存在跳过） | **结束，直接汇报** |
+| `need_l1` | 文档已复制，需要生成 L1 摘要 | **必须继续步骤 2** |
+| `error` | 失败 | 报告错误 |
 
-**⚠️ 重要：只有 `status: "need_l1"` 时才需要调用 `store_document_l1`！**
-- `status: "success"` → **无论 action 是什么，都直接汇报，不要再调用任何工具**
-- `action: "skipped"` → 文件已存在，无需处理，直接告诉用户
-
-### 步骤 2：生成 L1 并存储
+### 步骤 2：生成 L1 并回传
 
 **当收到 `status: "need_l1"` 时，必须执行：**
 
 1. 读取返回的 `content`（文件内容）
 2. 生成 L1 摘要（极简格式）
-3. 调用 `store_document_l1` 存储
+3. 再次调用 `ingest` 回传 L1
 
 **L1 极简格式**：
 ```
@@ -74,19 +83,14 @@ photo-server/ingest_document, 参数: file_path="...", category="...", mode="cop
 
 **示例**：
 ```
-Zellij使用指南|终端,复用器,Rust|Zellij终端复用器的基本使用方法和配置说明|Zellij,终端|技术文档|/docs/zellij.md
-```
-
-**调用 store_document_l1**：
-```
-photo-server/store_document_l1, 参数: file_path="从 ingest_document 返回值获取", l1="标题|关键词|摘要|实体|类型|指针", l2="可选，完整内容"
+photo-server/ingest, 参数: path="", file_path="REDACTED_WIN_PATH/2026/其他/report.pdf", l1="季度报告|财务,Q1,营收|2026年第一季度财务报告摘要|财务部,Q1|报告|REDACTED_WIN_PATH/2026/其他/report.pdf"
 ```
 
 ### 完整示例
 
 ```
 第一次调用：
-photo-server/ingest_document, 参数: file_path="E:/tmp/zellij.md", category="其他", mode="copy"
+photo-server/ingest, 参数: path="E:/tmp/zellij.md", mode="copy"
 
 返回：
 {
@@ -97,13 +101,12 @@ photo-server/ingest_document, 参数: file_path="E:/tmp/zellij.md", category="�
 }
 
 第二次调用（必须执行）：
-photo-server/store_document_l1, 参数: file_path="REDACTED_WIN_PATH/2026/其他/zellij.md", l1="Zellij使用指南|终端,复用器,Rust|Zellij终端复用器的基本使用方法|Zellij,终端|技术文档|REDACTED_WIN_PATH/2026/其他/zellij.md"
+photo-server/ingest, 参数: path="", file_path="REDACTED_WIN_PATH/2026/其他/zellij.md", l1="Zellij使用指南|终端,复用器,Rust|Zellij终端复用器的基本使用方法|Zellij,终端|技术文档|REDACTED_WIN_PATH/2026/其他/zellij.md"
 
 返回：
 {
     "status": "success",
-    "l1_id": "xxx",
-    "message": "文档摘要已存储到向量库"
+    "file_path": "REDACTED_WIN_PATH/2026/其他/zellij.md"
 }
 
 现在可以向主 Agent 报告成功。
@@ -113,92 +116,21 @@ photo-server/store_document_l1, 参数: file_path="REDACTED_WIN_PATH/2026/其他
 
 ## 批量文件处理
 
-当用户拖入多个文件时，使用 `ingest_documents`：
+当用户拖入多个文件时，有两种方式：
 
-示例：
+### 方式 1：目录路径（推荐）
+
+如果文件来自同一目录，直接传入目录路径：
 ```
-photo-server/ingest_documents, 参数: file_paths=["文件1.md", "文件2.md"], category="其他", mode="copy"
-```
-
-**返回值**：
-
-```json
-{
-    "status": "need_l1",
-    "new_files": 3,
-    "skipped": 1,
-    "files_need_l1": [
-        {"file": "文件1.md", "file_path": "REDACTED_WIN_PATH/...", "content": "..."},
-        {"file": "文件2.md", "file_path": "REDACTED_WIN_PATH/...", "content": "..."},
-        {"file": "文件3.md", "file_path": "REDACTED_WIN_PATH/...", "content": "..."}
-    ]
-}
+photo-server/ingest, 参数: path="E:/照片/2024旅行", mode="copy"
 ```
 
-**一次性为所有文件生成 L1，然后调用 `store_documents_l1`**：
+### 方式 2：逐个调用
 
+如果文件分散在不同位置，逐个调用：
 ```
-photo-server/store_documents_l1, 参数: documents=[{"file_path": "REDACTED_WIN_PATH/...", "l1": "文件1标题|关键词|摘要|实体|类型|指针"}, {"file_path": "REDACTED_WIN_PATH/...", "l1": "文件2标题|关键词|摘要|实体|类型|指针"}, {"file_path": "REDACTED_WIN_PATH/...", "l1": "文件3标题|关键词|摘要|实体|类型|指针"}]
-```
-
-**返回**：
-
-```json
-{
-    "status": "success",
-    "total": 3,
-    "processed": 3,
-    "failed": 0,
-    "message": "已存储 3/3 个文档摘要"
-}
-```
-
-**现在向主 Agent 汇报处理结果。**
-
-⚠️ 注意：批量处理只需要**两次工具调用**：
-1. `ingest_documents` → 返回 `need_l1`
-2. `store_documents_l1` → 返回 `success`
-
-不要多次调用单个文件的工具，那样会打断工具循环。
-
----
-
-## 判断文件类型
-
-**首先判断路径是文件还是目录**：
-- **目录** → 检查是否包含照片，使用 `ingest_photos`
-- **文件** → 根据扩展名判断
-
-**文件扩展名判断**：
-- **文档**：.pdf, .docx, .doc, .txt, .md, .xlsx, .xls, .pptx, .ppt
-- **照片**：.jpg, .jpeg, .png, .gif, .bmp, .webp, .heic, .heif
-
----
-
-## 照片入库
-
-照片入库会自动生成 L0 摘要，无需额外步骤。
-
-**⚠️ 重要：判断单张还是目录**
-
-- **单张照片路径**（如 `E:/照片/DSC_001.jpg`）→ 调用 `ingest_photo`（单数）
-- **目录路径**（如 `E:/照片/2024旅行`）→ 调用 `ingest_photos`（复数）
-- **多张独立照片**（如 `DSC_001.jpg, DSC_002.jpg`）→ 分别调用 `ingest_photo` 多次
-
-**单张照片示例**：
-```
-photo-server/ingest_photo, 参数: file_path="E:/照片/DSC_001.jpg", category="生活"
-```
-
-**批量目录示例**：
-```
-photo-server/ingest_photos, 参数: source_path="E:/照片/2024旅行", category="旅行"
-```
-
-**多张独立照片示例**（调用两次）：
-```
-photo-server/ingest_photo, 参数: file_path="E:/照片/DSC_001.jpg", category="旅行"
-photo-server/ingest_photo, 参数: file_path="E:/照片/DSC_002.jpg", category="旅行"
+photo-server/ingest, 参数: path="E:/照片/DSC_001.jpg", mode="copy"
+photo-server/ingest, 参数: path="E:/docs/report.pdf", mode="copy"
 ```
 
 ---
@@ -208,6 +140,8 @@ photo-server/ingest_photo, 参数: file_path="E:/照片/DSC_002.jpg", category="
 根据~/.niu/preferences.json和文件名判断分类：
 - 文档：财务、合同、报告、方案、其他
 - 照片：生活、工作、旅行、证件、其他
+
+不传 category 参数时，工具会自动推断。
 
 ---
 
@@ -239,57 +173,6 @@ photo-server/ingest_photo, 参数: file_path="E:/照片/DSC_002.jpg", category="
 photo-server/get_unnamed_persons, 参数: 
 photo-server/search_persons, 参数: query="张三"
 photo-server/name_person, 参数: person_id="...", name="张三"
-```
-
-### 返回数据格式
-
-`get_unnamed_persons` 返回：
-```json
-{
-  "status": "success",
-  "count": 3,
-  "persons": [{
-    "id": "uuid-1",
-    "name": null,
-    "auto_label": "未命名人物_8",
-    "photo_count": 5,
-    "photos": [
-      {"file_path": "REDACTED_WIN_PATH/.../photo1.jpg", "bbox": [x1,y1,x2,y2]},
-      {"file_path": "REDACTED_WIN_PATH/.../photo2.jpg", "bbox": [x1,y1,x2,y2]}
-    ]
-  }]
-}
-```
-
-**注意**：返回 `photos` 数组（多张照片），让主 Agent 轮流展示。`has_valid_photos` 标记是否有有效照片。
-
-### 删除人物
-
-`delete_person(person_id)` - 删除人物及其关联数据
-
-**警告**：这会删除人物图谱中的节点，只有在用户明确要求时才调用。
-
-**场景**：用户说"删除这个人物"、"这个人物不要了"
-
-### 清理已删除照片的数据库记录
-
-`cleanup_deleted_photos()` - 清理数据库中文件已删除的照片记录
-
-**使用场景**：
-- 用户删除了照片目录
-- 照片文件被移动或删除
-- 需要清理数据库中的残留记录
-
-**返回**：
-- deleted_photos: 删除的照片记录数
-- deleted_faces: 删除的人脸记录数
-
-**示例**：
-```
-用户：我把 REDACTED_WIN_PATH/2025/ 这个目录删了
-你：好的，我来清理数据库中的残留记录
-    photo-server/cleanup_deleted_photos, 参数: 
-    返回：清理了 50 张照片记录，120 条人脸记录
 ```
 
 ### 向主 Agent 返回格式
