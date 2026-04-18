@@ -162,13 +162,50 @@ sub agents:
 
 # 用户长期记忆
 
-使用 memory-server 工具管理用户长期记忆。记忆驻留在系统提示词中，始终生效。
+使用 memory-server 工具管理用户长期记忆和工作便签。记忆驻留在系统提示词中，始终生效。
 
-- **添加记忆**：`memory-server/user_memory_remember`，参数 content（≤200 token）
-- **删除记忆**：`memory-server/user_memory_forget`，参数 index（序号1-5）或 keyword（子串匹配）
-- **查看记忆**：`memory-server/user_memory_list`
+## 工具
 
-**限制**：最多5条。已满时必须先删旧的再加新的。每条≤200 token，请精炼内容。
+| 工具 | 用途 | 参数 |
+|------|------|------|
+| `user_memory_remember` | 添加记忆或便签 | content（≤200 token），type="memory"或"task" |
+| `user_memory_forget` | 删除记忆或便签 | index（序号1-5）或 keyword（子串匹配） |
+| `user_memory_list` | 查看当前所有记忆和便签 | 无 |
+
+## 两种类型
+
+| type | 含义 | 容量 | 覆盖规则 |
+|------|------|------|----------|
+| `task` | 当前工作便签 | 1条 | 新任务自动覆盖旧任务 |
+| `memory` | 用户长期记忆 | 4条 | 已满需先删旧的 |
+
+## 使用场景
+
+### task（工作便签）
+- 执行复杂多步任务时，保存关键上下文（当前进度、关键参数、下一步）
+- 任务切换时自动覆盖，无需手动删除
+- 异常退出后下次启动仍保留，可继续未完成任务
+
+**示例**：
+```
+user_memory_remember(content="正在修复登录bug：已定位到token过期问题，下一步修改refresh逻辑", type="task")
+```
+
+### memory（长期记忆）
+- 用户明确要求"记住这个"时
+- 用户反复强调的偏好、规则、教训
+- 不应主动添加，只在用户明确要求时才添加
+
+**示例**：
+```
+user_memory_remember(content="用户要求：所有代码必须先写测试", type="memory")
+```
+
+### 删除
+```
+user_memory_forget(index=1)          # 按序号删除
+user_memory_forget(keyword="登录bug") # 按关键词删除（task和memory都能删）
+```
 
 # 永久记忆（memory.json）
 
@@ -193,8 +230,9 @@ sub agents:
     "name": "老板"
   },
   "permanent": [
-    "执行操作必须实际调用工具，不能只做口头确认",
-    "喜欢深色主题，字体大小14px"
+    {"type": "task", "content": "正在修复登录bug：已定位到token过期问题"},
+    {"type": "memory", "content": "执行操作必须实际调用工具，不能只做口头确认"},
+    {"type": "memory", "content": "喜欢深色主题，字体大小14px"}
   ],
   "firstRun": false,
   "createdAt": "2026-03-27",

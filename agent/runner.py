@@ -109,9 +109,16 @@ def _load_memory_for_prompt() -> str:
     # 用户长期记忆（驻留在 system prompt，最多5条，每条≤200 token）
     permanent = memory.get("permanent", [])
     if permanent:
-        lines = ["### [用户长期记忆]", "以下内容用户特别强调，必须始终遵守："]
-        for i, item in enumerate(permanent, 1):
-            lines.append(f"{i}. {item}")
+        lines = ["### [用户长期记忆]"]
+        # Task items first (skip empty content — cleared task slot)
+        task_items = [item for item in permanent if item.get("type") == "task" and item.get("content")]
+        memory_items = [item for item in permanent if item.get("type") == "memory"]
+        if task_items:
+            lines.append(f"📋 当前任务：{task_items[0].get('content', '')}")
+        if memory_items:
+            lines.append("以下内容用户特别强调，必须始终遵守：")
+            for i, item in enumerate(memory_items, 1):
+                lines.append(f"{i}. {item.get('content', item)}")
         lines.append(f"（共{len(permanent)}/5条，使用 memory-server/user_memory_remember 添加，memory-server/user_memory_forget 删除）")
         perm_str = "<!--USER_MEMORY_START-->\n" + "\n".join(lines) + "\n<!--USER_MEMORY_END-->"
         parts.append(perm_str)
@@ -447,9 +454,15 @@ class NiuRunner:
         SECTION_START = "<!--USER_MEMORY_START-->"
         SECTION_END = "<!--USER_MEMORY_END-->"
         if permanent:
-            lines = ["### [用户长期记忆]", "以下内容用户特别强调，必须始终遵守："]
-            for i, item in enumerate(permanent, 1):
-                lines.append(f"{i}. {item}")
+            lines = ["### [用户长期记忆]"]
+            task_items = [item for item in permanent if isinstance(item, dict) and item.get("type") == "task" and item.get("content")]
+            memory_items = [item for item in permanent if isinstance(item, dict) and item.get("type") == "memory"]
+            if task_items:
+                lines.append(f"📋 当前任务：{task_items[0].get('content', '')}")
+            if memory_items:
+                lines.append("以下内容用户特别强调，必须始终遵守：")
+                for i, item in enumerate(memory_items, 1):
+                    lines.append(f"{i}. {item.get('content', item)}")
             lines.append(f"（共{len(permanent)}/5条，使用 memory-server/user_memory_remember 添加，memory-server/user_memory_forget 删除）")
             new_section = SECTION_START + "\n" + "\n".join(lines) + "\n" + SECTION_END
         else:
