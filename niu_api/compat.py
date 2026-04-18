@@ -9,10 +9,14 @@ from typing import Optional, List
 from pydantic import BaseModel
 from fastapi import APIRouter
 from loguru import logger
+import asyncio
 
 from agent.session import get_message_store
 
 router = APIRouter(tags=["compat"])
+
+# 并发锁：串行化所有 chat 请求，防止并发调用 runner.chat() 导致共享状态损坏
+_chat_lock = asyncio.Lock()
 
 
 class ChatRequest(BaseModel):
@@ -181,7 +185,8 @@ async def chat_session(request: ChatRequest) -> ChatResponse:
     import asyncio
 
     try:
-        full_reply = await asyncio.to_thread(sync_chat)
+        async with _chat_lock:
+            full_reply = await asyncio.to_thread(sync_chat)
     except Exception as e:
         import traceback
         logger.error(f"Chat error: {e}\n{traceback.format_exc()}")
