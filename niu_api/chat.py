@@ -13,6 +13,7 @@ from fastapi.responses import StreamingResponse
 
 from agent.runner import NiuRunner, get_runner
 from agent.session import get_message_store
+from niu_api.compat import _chat_lock
 
 router = APIRouter(tags=["chat"])
 
@@ -120,22 +121,26 @@ async def chat(request: ChatRequest) -> StreamingResponse:
 
     # Stream response
     async def generate():
-        reply_chunks = []
+        await _chat_lock.acquire()
+        try:
+            reply_chunks = []
 
-        def sync_chat():
-            return runner.chat(session_id, request.message, stream=True)
+            def sync_chat():
+                return runner.chat(session_id, request.message, stream=True)
 
-        # Run in executor
-        loop = asyncio.get_event_loop()
-        gen = await loop.run_in_executor(None, sync_chat)
+            # Run in executor
+            loop = asyncio.get_event_loop()
+            gen = await loop.run_in_executor(None, sync_chat)
 
-        for chunk in gen:
-            if chunk:
-                reply_chunks.append(chunk)
-                yield f"data: {json.dumps({'chunk': chunk})}\n\n"
+            for chunk in gen:
+                if chunk:
+                    reply_chunks.append(chunk)
+                    yield f"data: {json.dumps({'chunk': chunk})}\n\n"
 
-        # Send final message
-        yield f"data: {json.dumps({'done': True, 'session_id': session_id})}\n\n"
+            # Send final message
+            yield f"data: {json.dumps({'done': True, 'session_id': session_id})}\n\n"
+        finally:
+            _chat_lock.release()
 
     return StreamingResponse(
         generate(),
@@ -171,7 +176,8 @@ async def chat_sync(request: ChatRequest) -> ChatResponse:
         return full_reply
 
     loop = asyncio.get_event_loop()
-    full_reply = await loop.run_in_executor(None, sync_chat)
+    async with _chat_lock:
+        full_reply = await loop.run_in_executor(None, sync_chat)
 
     return ChatResponse(session_id=session_id, reply=full_reply)
 
