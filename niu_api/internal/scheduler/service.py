@@ -60,6 +60,7 @@ def trigger_callback(task: dict) -> str:
     任务触发回调：调用主 API Agent 处理任务
 
     由于 scheduler 和 niu_api 在同一进程，直接调用内部接口。
+    所有消息都写入数据库，前端通过轮询检测新消息。
     """
     from niu_api.alerts import add_pending_alert
 
@@ -82,7 +83,7 @@ def trigger_callback(task: dict) -> str:
             if attempt < 2:
                 time.sleep(2 ** attempt)
 
-    # 调用 /chat/sync
+    # 调用 /chat/sync（已持久化消息到数据库）
     try:
         response = requests.post(
             f"{main_url}/chat/sync",
@@ -98,24 +99,63 @@ def trigger_callback(task: dict) -> str:
             agent_reply = data.get("reply", "")
             logger.info(f"[INTERNAL SCHEDULER] Agent replied: {agent_reply[:100] if agent_reply else '(empty)'}")
 
-            # Agent 已通过 /chat/sync 处理，回复已存消息数据库
-            # 不再加入 pending-alerts，避免重复显示
-            # 小女孩蹦高由消息轮询检测到新 assistant 消息时触发
+            # /chat/sync 已将 user + assistant 消息持久化到数据库
+            # 前端轮询会自动检测到新消息并显示
+
+            # 触发小女孩蹦高提醒（仅用于视觉提示，不传递消息内容）
+            add_pending_alert("⏰")
 
             return agent_reply if agent_reply else f"定时提醒：{task['content']}"
         else:
             logger.error(f"[INTERNAL SCHEDULER] Chat API error: {response.status_code}")
-            # API 出错，用 pending-alerts 降级显示基础提醒
+            # API 出错，直接将降级提醒写入消息数据库
             fallback_msg = f"定时提醒：{task['content']}"
-            add_pending_alert(fallback_msg)
+            _persist_fallback_message(prompt, fallback_msg)
+            add_pending_alert("⏰")
             return fallback_msg
 
     except Exception as e:
         logger.error(f"[INTERNAL SCHEDULER] Failed to call chat API: {e}")
-        # API 异常，用 pending-alerts 降级显示基础提醒
+        # API 异常，直接将降级提醒写入消息数据库
         fallback_msg = f"定时提醒：{task['content']}"
-        add_pending_alert(fallback_msg)
+        _persist_fallback_message(prompt, fallback_msg)
+        add_pending_alert("⏰")
         return fallback_msg
+
+
+def _persist_fallback_message(user_content: str, assistant_content: str):
+    """
+    降级路径：直接将消息写入数据库（绕过 /chat/sync）
+
+    当 /chat/sync 不可用时，用此方法确保消息仍然入库。
+    使用 run_coroutine_threadsafe 在主 event loop 上执行异步 DB 操作，
+    避免创建新 event loop 与 aiosqlite 的 singleton 连接冲突。
+    """
+    try:
+        import asyncio
+        from agent.session import get_message_store
+        from niu_api.chat import _main_loop
+
+        loop = _main_loop
+        if loop is None or loop.is_closed():
+            logger.warning("[INTERNAL SCHEDULER] Main event loop not available, cannot persist fallback message")
+            return
+
+        async def _do_persist():
+            store = await get_message_store()
+            user_msg_id = await store.add_message(role="user", content=user_content)
+            msg_id = await store.add_message(role="assistant", content=assistant_content)
+            # 通知 SSE 推送（已在主 loop 中，可直接用 async 版本）
+            from niu_api.chat import notify_new_message
+            await notify_new_message(user_msg_id, "user", user_content)
+            await notify_new_message(msg_id, "assistant", assistant_content)
+            logger.info("[INTERNAL SCHEDULER] Fallback message persisted to DB")
+
+        future = asyncio.run_coroutine_threadsafe(_do_persist(), loop)
+        # 等待完成（最多 10 秒），避免调度器线程无限阻塞
+        future.result(timeout=10)
+    except Exception as e:
+        logger.error(f"[INTERNAL SCHEDULER] Failed to persist fallback message: {e}")
 
 
 # ============== 生命周期管理 ==============

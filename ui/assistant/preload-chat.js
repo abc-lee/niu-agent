@@ -50,5 +50,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   clearChat: () => ipcRenderer.invoke('clear-chat'),
 
   // 接收提醒通知（scheduler 触发的定时任务）
-  onAlert: (callback) => ipcRenderer.on('alert', (event, message) => callback(message))
+  onAlert: (callback) => ipcRenderer.on('alert', (event, message) => callback(message)),
+
+  // 接收新消息事件（SSE 推送，数据库为唯一真相源）
+  onNewMessage: (callback) => ipcRenderer.on('new-message', (event, msg) => callback(msg)),
+
+  // SSE 重连后补漏消息
+  onSyncMessages: (callback) => ipcRenderer.on('sync-messages', (event) => callback())
 });
