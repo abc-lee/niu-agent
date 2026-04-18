@@ -435,6 +435,8 @@ async def link_memories_handler(
 # ============================================================================
 
 MEMORY_JSON_PATH = None  # Set at first call
+import threading
+_memory_file_lock = threading.Lock()
 
 MAX_PERMANENT_ITEMS = 5
 MAX_TOKEN_PER_ITEM = 200  # ~300 Chinese chars
@@ -449,35 +451,84 @@ def _get_memory_json_path():
     return MEMORY_JSON_PATH
 
 
+def _reset_memory_json_path():
+    """Reset cached path (for testing)"""
+    global MEMORY_JSON_PATH
+    MEMORY_JSON_PATH = None
+
+
 def _read_memory_json() -> dict:
-    """Read memory.json, return dict with at least {permanent: []}"""
+    """Read memory.json, return dict with at least {permanent: []}.
+
+    On parse error, returns the raw file content preserved under a _raw_fallback
+    key so _write_permanent can recover it. Only returns {"permanent": []} if
+    the file doesn't exist at all.
+
+    This is a pure read — no write side effects. Truncation is handled
+    by mutation handlers (remember/forget) if needed.
+    """
     path = _get_memory_json_path()
     if not path.exists():
         return {"permanent": []}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            logger.warning(f"memory.json root is not a dict, resetting permanent only")
+            return {"permanent": [], "_raw_fallback": True}
         if "permanent" not in data:
             data["permanent"] = []
-        # Truncate if over limit (keep first 5, drop from end)
+        if not isinstance(data["permanent"], list):
+            logger.warning(f"memory.json permanent is not a list, treating as empty")
+            data["permanent"] = []
+        # Truncate in-memory only (no write side effect), but flag for handlers
         if len(data["permanent"]) > MAX_PERMANENT_ITEMS:
+            logger.warning(f"memory.json has {len(data['permanent'])} permanent items (max {MAX_PERMANENT_ITEMS}), truncating in-memory")
             data["permanent"] = data["permanent"][:MAX_PERMANENT_ITEMS]
-            path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            data["_truncated"] = True
         return data
-    except Exception:
-        return {"permanent": []}
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning(f"Failed to read memory.json: {e}, preserving file")
+        return {"permanent": [], "_raw_fallback": True}
 
 
-def _write_memory_json(data: dict):
-    """Write memory.json"""
-    path = _get_memory_json_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+def _write_permanent_only(permanent: list):
+    """Read-modify-write: update only the permanent field, preserve all others.
+    Thread-safe via module-level lock.
+    """
+    with _memory_file_lock:
+        path = _get_memory_json_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Read existing file to preserve other fields (identity, workspace, user, etc.)
+        existing = {}
+        if path.exists():
+            try:
+                existing = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(existing, dict):
+                    existing = {}
+            except (json.JSONDecodeError, OSError):
+                existing = {}
+
+        existing["permanent"] = permanent
+        path.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 async def user_memory_remember_handler(content: str) -> dict:
     """添加用户长期记忆到 memory.json permanent 数组"""
     data = _read_memory_json()
+    if data.get("_raw_fallback"):
+        return {"status": "error", "message": "memory.json 文件损坏，请手动修复后重试"}
     permanent = data["permanent"]
+
+    # Dedup: reject case-insensitive duplicate content
+    content_lower = content.lower()
+    for i, existing in enumerate(permanent):
+        if existing.lower() == content_lower:
+            return {
+                "status": "error",
+                "message": f"该记忆已存在(第{i+1}条)，无需重复添加。",
+                "current_memories": permanent,
+            }
 
     if len(permanent) >= MAX_PERMANENT_ITEMS:
         return {
@@ -495,11 +546,15 @@ async def user_memory_remember_handler(content: str) -> dict:
         }
 
     permanent.append(content)
-    _write_memory_json(data)
+    _write_permanent_only(permanent)
+
+    msg = f"✅ 已添加记忆({len(permanent)}/{MAX_PERMANENT_ITEMS})"
+    if data.get("_truncated"):
+        msg += "（⚠️ 注意：memory.json 中有超限记忆已被截断）"
 
     return {
         "status": "success",
-        "message": f"✅ 已添加记忆({len(permanent)}/{MAX_PERMANENT_ITEMS})",
+        "message": msg,
         "current_memories": permanent,
     }
 
@@ -507,6 +562,8 @@ async def user_memory_remember_handler(content: str) -> dict:
 async def user_memory_forget_handler(index: int = None, keyword: str = None) -> dict:
     """删除用户长期记忆"""
     data = _read_memory_json()
+    if data.get("_raw_fallback"):
+        return {"status": "error", "message": "memory.json 文件损坏，请手动修复后重试"}
     permanent = data["permanent"]
 
     if not permanent:
@@ -517,25 +574,35 @@ async def user_memory_forget_handler(index: int = None, keyword: str = None) -> 
         if index < 1 or index > len(permanent):
             return {"status": "error", "message": f"序号超出范围(1-{len(permanent)})"}
         removed = permanent.pop(index - 1)
-        _write_memory_json(data)
+        _write_permanent_only(permanent)
+        msg = f"✅ 已删除第{index}条记忆: {removed}"
+        if data.get("_truncated"):
+            msg += "（⚠️ 注意：memory.json 中有超限记忆已被截断）"
         return {
             "status": "success",
-            "message": f"✅ 已删除第{index}条记忆: {removed}",
+            "message": msg,
             "current_memories": permanent,
         }
 
     if keyword:
         keyword_lower = keyword.lower()
-        for i, item in enumerate(permanent):
-            if keyword_lower in item.lower():
-                removed = permanent.pop(i)
-                _write_memory_json(data)
-                return {
-                    "status": "success",
-                    "message": f"✅ 已删除匹配'{keyword}'的记忆: {removed}",
-                    "current_memories": permanent,
-                }
-        return {"status": "error", "message": f"未找到包含'{keyword}'的记忆", "current_memories": permanent}
+        matches = [(i, item) for i, item in enumerate(permanent) if keyword_lower in item.lower()]
+        if not matches:
+            return {"status": "error", "message": f"未找到包含'{keyword}'的记忆", "current_memories": permanent}
+        # Delete first match
+        i, removed = matches[0]
+        permanent.pop(i)
+        _write_permanent_only(permanent)
+        msg = f"✅ 已删除匹配'{keyword}'的记忆: {removed}"
+        if len(matches) > 1:
+            msg += f"（注意：还有{len(matches)-1}条记忆也匹配该关键词）"
+        if data.get("_truncated"):
+            msg += "（⚠️ 注意：memory.json 中有超限记忆已被截断）"
+        return {
+            "status": "success",
+            "message": msg,
+            "current_memories": permanent,
+        }
 
     return {"status": "error", "message": "请提供 index 或 keyword 参数"}
 
@@ -543,6 +610,8 @@ async def user_memory_forget_handler(index: int = None, keyword: str = None) -> 
 async def user_memory_list_handler() -> dict:
     """查看当前所有用户长期记忆"""
     data = _read_memory_json()
+    if data.get("_raw_fallback"):
+        return {"status": "error", "message": "memory.json 文件损坏，请手动修复后重试"}
     permanent = data["permanent"]
 
     return {
@@ -551,6 +620,22 @@ async def user_memory_list_handler() -> dict:
         "max": MAX_PERMANENT_ITEMS,
         "memories": permanent,
     }
+
+
+# ============================================================================
+# Module-level aliases for ToolRegistry direct function lookup
+# (without these, ToolRegistry falls back to call_tool wrapper which returns
+#  [TextContent] instead of dict, breaking isinstance(result, dict) checks)
+# ============================================================================
+
+def user_memory_remember(**kwargs):
+    return user_memory_remember_handler(**kwargs)
+
+def user_memory_forget(**kwargs):
+    return user_memory_forget_handler(**kwargs)
+
+def user_memory_list(**kwargs):
+    return user_memory_list_handler(**kwargs)
 
 
 # ============================================================================
