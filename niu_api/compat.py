@@ -184,13 +184,20 @@ async def chat_session(request: ChatRequest) -> ChatResponse:
 
     import asyncio
 
+    # Non-blocking acquire: reject if lock already held
     try:
-        async with _chat_lock:
-            full_reply = await asyncio.to_thread(sync_chat)
+        await asyncio.wait_for(_chat_lock.acquire(), timeout=0.01)
+    except asyncio.TimeoutError:
+        return ChatResponse(reply="系统正忙，请稍后再试", session_id="default")
+
+    try:
+        full_reply = await asyncio.to_thread(sync_chat)
     except Exception as e:
         import traceback
         logger.error(f"Chat error: {e}\n{traceback.format_exc()}")
         full_reply = f"Error: {str(e)}"
+    finally:
+        _chat_lock.release()
 
     # Store assistant response
     message_id = None

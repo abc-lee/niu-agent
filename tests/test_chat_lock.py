@@ -59,7 +59,44 @@ async def test_shared_lock_across_modules():
     print("PASS: Same lock object shared across modules")
 
 
+async def test_chat_lock_busy_detection():
+    """Lock.locked() should report True when held"""
+    from niu_api.compat import _chat_lock
+
+    assert not _chat_lock.locked(), "Lock should be free initially"
+
+    async with _chat_lock:
+        assert _chat_lock.locked(), "Lock should report busy when held"
+
+    assert not _chat_lock.locked(), "Lock should be free after release"
+    print("PASS: Lock.locked() correctly reports busy state")
+
+
+async def test_chat_lock_nonblocking_acquire():
+    """wait_for(acquire, timeout=0.01) should fail when lock held, succeed when free"""
+    lock = asyncio.Lock()
+
+    async with lock:
+        # Lock is held — non-blocking acquire should timeout
+        try:
+            await asyncio.wait_for(lock.acquire(), timeout=0.01)
+            assert False, "Should have timed out"
+        except asyncio.TimeoutError:
+            pass  # Expected
+
+    # Lock is free — non-blocking acquire should succeed quickly
+    try:
+        await asyncio.wait_for(lock.acquire(), timeout=0.01)
+    except asyncio.TimeoutError:
+        assert False, "Should have acquired immediately"
+    lock.release()
+
+    print("PASS: Non-blocking acquire works correctly")
+
+
 if __name__ == "__main__":
     asyncio.run(test_chat_lock_serializes())
     asyncio.run(test_chat_lock_uncontended())
     asyncio.run(test_shared_lock_across_modules())
+    asyncio.run(test_chat_lock_busy_detection())
+    asyncio.run(test_chat_lock_nonblocking_acquire())
