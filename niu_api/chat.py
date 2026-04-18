@@ -121,21 +121,47 @@ async def chat(request: ChatRequest) -> StreamingResponse:
 
     # Stream response
     async def generate():
-        await _chat_lock.acquire()
+        # Non-blocking acquire: reject if lock already held
+        try:
+            await asyncio.wait_for(_chat_lock.acquire(), timeout=0.01)
+        except asyncio.TimeoutError:
+            yield f"data: {json.dumps({'error': 'Another request is in progress, please wait'})}\n\n"
+            yield f"data: {json.dumps({'done': True, 'session_id': session_id})}\n\n"
+            return
+
         try:
             reply_chunks = []
 
-            def sync_chat():
-                return runner.chat(session_id, request.message, stream=True)
+            # Run streaming in executor thread, communicate chunks via queue
+            import queue as _queue
 
-            # Run in executor
-            loop = asyncio.get_event_loop()
-            gen = await loop.run_in_executor(None, sync_chat)
+            chunk_queue: _queue.Queue[str | None] = _queue.Queue()
 
-            for chunk in gen:
-                if chunk:
-                    reply_chunks.append(chunk)
-                    yield f"data: {json.dumps({'chunk': chunk})}\n\n"
+            def sync_stream():
+                try:
+                    for chunk in runner.chat(session_id, request.message, stream=True):
+                        if chunk:
+                            chunk_queue.put(chunk)
+                finally:
+                    chunk_queue.put(None)  # sentinel
+
+            loop = asyncio.get_running_loop()
+            stream_future = loop.run_in_executor(None, sync_stream)
+
+            # Drain queue in async context while executor produces chunks
+            while not stream_future.done() or not chunk_queue.empty():
+                try:
+                    chunk = chunk_queue.get_nowait()
+                except _queue.Empty:
+                    await asyncio.sleep(0.01)
+                    continue
+                if chunk is None:
+                    break
+                reply_chunks.append(chunk)
+                yield f"data: {json.dumps({'chunk': chunk})}\n\n"
+
+            # Ensure executor finished
+            await stream_future
 
             # Send final message
             yield f"data: {json.dumps({'done': True, 'session_id': session_id})}\n\n"
@@ -175,9 +201,19 @@ async def chat_sync(request: ChatRequest) -> ChatResponse:
             full_reply += chunk
         return full_reply
 
-    loop = asyncio.get_event_loop()
-    async with _chat_lock:
+    # Non-blocking acquire: reject if lock already held
+    try:
+        await asyncio.wait_for(_chat_lock.acquire(), timeout=0.01)
+    except asyncio.TimeoutError:
+        raise HTTPException(
+            status_code=503, detail="Another request is in progress, please try again later."
+        )
+
+    try:
+        loop = asyncio.get_running_loop()
         full_reply = await loop.run_in_executor(None, sync_chat)
+    finally:
+        _chat_lock.release()
 
     return ChatResponse(session_id=session_id, reply=full_reply)
 
