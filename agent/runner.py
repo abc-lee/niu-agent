@@ -102,13 +102,18 @@ def _load_memory_for_prompt() -> str:
 
     # 用户信息
     user = memory.get("user", {})
-    if user.get("name") or user.get("preferences"):
-        user_str = "## 用户信息\n\n"
-        if user.get("name"):
-            user_str += f"用户称呼：{user['name']}\n"
-        if user.get("preferences"):
-            user_str += f"用户偏好：{'、'.join(user['preferences'])}"
+    if user.get("name"):
+        user_str = f"## 用户信息\n\n用户称呼：{user['name']}"
         parts.append(user_str)
+
+    # 用户长期记忆（驻留在 system prompt，最多5条，每条≤200 token）
+    permanent = memory.get("permanent", [])
+    if permanent:
+        perm_str = "### [用户长期记忆]\n以下内容用户特别强调，必须始终遵守：\n"
+        for i, item in enumerate(permanent, 1):
+            perm_str += f"{i}. {item}\n"
+        perm_str += f"\n（共{len(permanent)}/5条，使用 memory-server/user_memory_remember 添加，memory-server/user_memory_forget 删除）"
+        parts.append(perm_str)
 
     # 首次使用引导（firstRun）
     # 如果 memory.json 中存在 firstRun 字段，说明用户尚未完成初始设置
@@ -270,6 +275,9 @@ class NiuRunner:
         # 工具生命周期管理
         self.tool_lifecycle = ToolLifecycleManager(decay_rate=10, remove_threshold=25)
 
+        # 用户记忆脏标记（remember/forget 工具调用后设为 True）
+        self._memory_dirty = False
+
     def _get_static_tools(self) -> list:
         """获取 visibility=static 的工具名列表（替代硬编码 BASE_MCP_TOOLS）"""
         from agent.tool_registry import get_registry
@@ -379,6 +387,9 @@ class NiuRunner:
         # 1. 先衰减所有工具分数（每轮 -10）
         self.tool_lifecycle.decay_tools()
 
+        # 0. Refresh user memories if dirty
+        self._refresh_user_memories(messages)
+
         # 2. 从 messages 中提取最新上下文
         context = self._extract_context_from_messages(messages)
 
@@ -411,6 +422,55 @@ class NiuRunner:
                 new_schema.append(schema)
 
         return new_schema
+
+    def _refresh_user_memories(self, messages: list):
+        """Refresh the ### [用户长期记忆] section in system prompt if dirty"""
+        if not self._memory_dirty:
+            return
+        self._memory_dirty = False
+
+        import re
+        from pathlib import Path
+
+        # Read current permanent memories
+        memory_path = Path.home() / ".niu" / "memory.json"
+        try:
+            data = json.loads(memory_path.read_text(encoding="utf-8"))
+            permanent = data.get("permanent", [])
+        except Exception:
+            return
+
+        # Build new section
+        if permanent:
+            new_section = "### [用户长期记忆]\n以下内容用户特别强调，必须始终遵守：\n"
+            for i, item in enumerate(permanent, 1):
+                new_section += f"{i}. {item}\n"
+            new_section += f"\n（共{len(permanent)}/5条，使用 memory-server/user_memory_remember 添加，memory-server/user_memory_forget 删除）"
+        else:
+            new_section = ""
+
+        pattern = r'### \[用户长期记忆\]\n.*?(?=\n###|\Z)'
+
+        # Update base_system_prompt so _on_turn_end's overwrite uses fresh memory
+        base = self.base_system_prompt
+        if re.search(pattern, base, re.DOTALL):
+            if new_section:
+                self.base_system_prompt = re.sub(pattern, new_section.rstrip(), base, flags=re.DOTALL)
+            else:
+                self.base_system_prompt = re.sub(r'\n*### \[用户长期记忆\]\n.*?(?=\n###|\Z)', '', base, flags=re.DOTALL)
+        elif new_section:
+            self.base_system_prompt = base + "\n\n" + new_section
+
+        # Also update the live message if it exists
+        if messages and messages[0].get("role") == "system":
+            content = messages[0]["content"]
+            if re.search(pattern, content, re.DOTALL):
+                if new_section:
+                    messages[0]["content"] = re.sub(pattern, new_section.rstrip(), content, flags=re.DOTALL)
+                else:
+                    messages[0]["content"] = re.sub(r'\n*### \[用户长期记忆\]\n.*?(?=\n###|\Z)', '', content, flags=re.DOTALL)
+            elif new_section:
+                messages[0]["content"] = content + "\n\n" + new_section
 
     def _extract_context_from_history(self, history: Optional[list], user_input: str) -> str:
         """
