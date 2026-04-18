@@ -6,20 +6,16 @@ import sys
 import asyncio
 import tempfile
 from pathlib import Path
-from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent / "mcp-servers" / "memory-server" / "src"))
+
+import niu_memory_server as mod
 
 
 def _setup_module(memory_path):
-    """Patch _get_memory_json_path and return the module"""
-    # Import the module
-    sys.path.insert(0, str(Path(__file__).parent.parent / "mcp-servers" / "memory-server" / "src"))
-    import niu_memory_server as mod
-
-    # Reset the global path
-    mod._get_memory_json_path.__code__  # noqa - just accessing to verify it exists
-    # Patch by setting the global
+    """Patch MEMORY_JSON_PATH for test isolation"""
+    mod._reset_memory_json_path()
     mod.MEMORY_JSON_PATH = memory_path
     return mod
 
@@ -31,7 +27,7 @@ async def test_user_memory_remember():
         memory_path.parent.mkdir(parents=True, exist_ok=True)
         memory_path.write_text('{"permanent": []}', encoding="utf-8")
 
-        mod = _setup_module(memory_path)
+        _setup_module(memory_path)
 
         # Add first memory
         result = await mod.user_memory_remember_handler(content="我喜欢Python")
@@ -43,6 +39,7 @@ async def test_user_memory_remember():
         assert result["status"] == "success"
         assert len(result["current_memories"]) == 2
 
+    mod._reset_memory_json_path()
     print("PASS: test_user_memory_remember")
 
 
@@ -53,7 +50,7 @@ async def test_user_memory_remember_full():
         memory_path.parent.mkdir(parents=True, exist_ok=True)
         memory_path.write_text('{"permanent": []}', encoding="utf-8")
 
-        mod = _setup_module(memory_path)
+        _setup_module(memory_path)
 
         # Fill to max
         for i in range(mod.MAX_PERMANENT_ITEMS):
@@ -65,6 +62,7 @@ async def test_user_memory_remember_full():
         assert result["status"] == "error"
         assert "已满" in result["message"]
 
+    mod._reset_memory_json_path()
     print("PASS: test_user_memory_remember_full")
 
 
@@ -76,13 +74,14 @@ async def test_user_memory_forget_by_index():
         data = {"permanent": ["A", "B", "C"]}
         memory_path.write_text(json.dumps(data), encoding="utf-8")
 
-        mod = _setup_module(memory_path)
+        _setup_module(memory_path)
 
         result = await mod.user_memory_forget_handler(index=2)
         assert result["status"] == "success"
         assert "B" in result["message"]
         assert result["current_memories"] == ["A", "C"]
 
+    mod._reset_memory_json_path()
     print("PASS: test_user_memory_forget_by_index")
 
 
@@ -94,12 +93,13 @@ async def test_user_memory_forget_by_keyword():
         data = {"permanent": ["我喜欢Python", "密码是abc", "每周五例会"]}
         memory_path.write_text(json.dumps(data), encoding="utf-8")
 
-        mod = _setup_module(memory_path)
+        _setup_module(memory_path)
 
         result = await mod.user_memory_forget_handler(keyword="密码")
         assert result["status"] == "success"
         assert result["current_memories"] == ["我喜欢Python", "每周五例会"]
 
+    mod._reset_memory_json_path()
     print("PASS: test_user_memory_forget_by_keyword")
 
 
@@ -111,7 +111,7 @@ async def test_user_memory_list():
         data = {"permanent": ["A", "B"]}
         memory_path.write_text(json.dumps(data), encoding="utf-8")
 
-        mod = _setup_module(memory_path)
+        _setup_module(memory_path)
 
         result = await mod.user_memory_list_handler()
         assert result["status"] == "success"
@@ -119,6 +119,7 @@ async def test_user_memory_list():
         assert result["max"] == 5
         assert result["memories"] == ["A", "B"]
 
+    mod._reset_memory_json_path()
     print("PASS: test_user_memory_list")
 
 
@@ -130,7 +131,7 @@ def test_truncate_over_limit():
         data = {"permanent": [f"记忆{i}" for i in range(8)]}
         memory_path.write_text(json.dumps(data), encoding="utf-8")
 
-        mod = _setup_module(memory_path)
+        _setup_module(memory_path)
 
         result = mod._read_memory_json()
         assert len(result["permanent"]) == mod.MAX_PERMANENT_ITEMS
@@ -138,7 +139,106 @@ def test_truncate_over_limit():
         assert result["permanent"][0] == "记忆0"
         assert result["permanent"][4] == "记忆4"
 
+    mod._reset_memory_json_path()
     print("PASS: test_truncate_over_limit")
+
+
+async def test_preserve_other_fields():
+    """_write_permanent_only preserves identity/workspace/user fields"""
+    with tempfile.TemporaryDirectory() as tmp:
+        memory_path = Path(tmp) / ".niu" / "memory.json"
+        memory_path.parent.mkdir(parents=True, exist_ok=True)
+        # Write a full memory.json with other fields
+        full_data = {
+            "identity": {"name": "妞妞", "personality": ["活泼"]},
+            "workspace": {"path": "/tmp/test"},
+            "user": {"name": "测试用户"},
+            "permanent": ["旧记忆"],
+        }
+        memory_path.write_text(json.dumps(full_data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        _setup_module(memory_path)
+
+        # Add a new memory
+        result = await mod.user_memory_remember_handler(content="新记忆")
+        assert result["status"] == "success"
+
+        # Verify other fields are preserved
+        saved = json.loads(memory_path.read_text(encoding="utf-8"))
+        assert saved["identity"]["name"] == "妞妞"
+        assert saved["workspace"]["path"] == "/tmp/test"
+        assert saved["user"]["name"] == "测试用户"
+        assert saved["permanent"] == ["旧记忆", "新记忆"]
+
+    mod._reset_memory_json_path()
+    print("PASS: test_preserve_other_fields")
+
+
+async def test_corrupted_file_rejection():
+    """Corrupted memory.json should be rejected, not overwritten"""
+    with tempfile.TemporaryDirectory() as tmp:
+        memory_path = Path(tmp) / ".niu" / "memory.json"
+        memory_path.parent.mkdir(parents=True, exist_ok=True)
+        memory_path.write_text("NOT VALID JSON{{{", encoding="utf-8")
+
+        _setup_module(memory_path)
+
+        result = await mod.user_memory_remember_handler(content="测试")
+        assert result["status"] == "error"
+        assert "损坏" in result["message"]
+
+        # File should NOT be overwritten
+        assert memory_path.read_text(encoding="utf-8") == "NOT VALID JSON{{{"
+
+    mod._reset_memory_json_path()
+    print("PASS: test_corrupted_file_rejection")
+
+
+async def test_dedup_remember():
+    """Reject case-insensitive duplicate content"""
+    with tempfile.TemporaryDirectory() as tmp:
+        memory_path = Path(tmp) / ".niu" / "memory.json"
+        memory_path.parent.mkdir(parents=True, exist_ok=True)
+        data = {"permanent": ["我喜欢Python"]}
+        memory_path.write_text(json.dumps(data), encoding="utf-8")
+
+        _setup_module(memory_path)
+
+        # Exact duplicate
+        result = await mod.user_memory_remember_handler(content="我喜欢Python")
+        assert result["status"] == "error"
+        assert "已存在" in result["message"]
+
+        # Case-insensitive duplicate
+        result = await mod.user_memory_remember_handler(content="我喜欢python")
+        assert result["status"] == "error"
+        assert "已存在" in result["message"]
+
+        # Should still have only 1 item
+        saved = json.loads(memory_path.read_text(encoding="utf-8"))
+        assert len(saved["permanent"]) == 1
+
+    mod._reset_memory_json_path()
+    print("PASS: test_dedup_remember")
+
+
+async def test_multi_keyword_match_warning():
+    """Warn when multiple items match keyword"""
+    with tempfile.TemporaryDirectory() as tmp:
+        memory_path = Path(tmp) / ".niu" / "memory.json"
+        memory_path.parent.mkdir(parents=True, exist_ok=True)
+        data = {"permanent": ["Python很好", "Python很强大", "Java也不错"]}
+        memory_path.write_text(json.dumps(data), encoding="utf-8")
+
+        _setup_module(memory_path)
+
+        result = await mod.user_memory_forget_handler(keyword="Python")
+        assert result["status"] == "success"
+        assert "还有1条" in result["message"]
+        assert len(result["current_memories"]) == 2
+
+    mod._reset_memory_json_path()
+    print("PASS: test_multi_keyword_match_warning")
 
 
 if __name__ == "__main__":
@@ -148,4 +248,8 @@ if __name__ == "__main__":
     asyncio.run(test_user_memory_forget_by_keyword())
     asyncio.run(test_user_memory_list())
     test_truncate_over_limit()
+    asyncio.run(test_preserve_other_fields())
+    asyncio.run(test_corrupted_file_rejection())
+    asyncio.run(test_dedup_remember())
+    asyncio.run(test_multi_keyword_match_warning())
     print("\nAll tests passed!")

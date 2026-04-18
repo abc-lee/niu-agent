@@ -277,12 +277,7 @@ class NiuHandler(BaseHandler):
 
     def tool_after_callback(self, tool_name, args, response, ret):
         """工具调用后记录摘要到 history_info"""
-        # Set memory dirty flag when user memory tools are called
-        if tool_name in ("memory-server/user_memory_remember", "memory-server/user_memory_forget"):
-            from agent.runner import get_runner
-            runner = get_runner()
-            if runner and hasattr(runner, '_memory_dirty'):
-                runner._memory_dirty = True
+        # Note: memory dirty flag is set in MCP dispatch path (see dispatch() method)
 
         # 跳过同一轮内的多个工具调用（只记录第一个）
         if args.get("_index", 0) > 0:
@@ -890,6 +885,15 @@ class NiuHandler(BaseHandler):
                 # 判断任务是否完成：
                 # - 成功后让LLM向用户汇报结果
                 if isinstance(result, dict) and result.get("status") == "success":
+                    # Set memory dirty flag for user memory tools
+                    if tool_name in ("memory-server/user_memory_remember", "memory-server/user_memory_forget"):
+                        try:
+                            from agent.runner import get_runner
+                            runner = get_runner()
+                            if runner and hasattr(runner, '_memory_dirty'):
+                                runner._memory_dirty = True
+                        except Exception:
+                            pass
                     # 成功执行，提示LLM向用户汇报
                     result_summary = json.dumps(result, ensure_ascii=False)[:500]
                     return StepOutcome(result, next_prompt=f"工具调用成功。请向用户简洁汇报结果：{result_summary}")

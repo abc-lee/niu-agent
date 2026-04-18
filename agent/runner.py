@@ -109,10 +109,11 @@ def _load_memory_for_prompt() -> str:
     # 用户长期记忆（驻留在 system prompt，最多5条，每条≤200 token）
     permanent = memory.get("permanent", [])
     if permanent:
-        perm_str = "### [用户长期记忆]\n以下内容用户特别强调，必须始终遵守：\n"
+        lines = ["### [用户长期记忆]", "以下内容用户特别强调，必须始终遵守："]
         for i, item in enumerate(permanent, 1):
-            perm_str += f"{i}. {item}\n"
-        perm_str += f"\n（共{len(permanent)}/5条，使用 memory-server/user_memory_remember 添加，memory-server/user_memory_forget 删除）"
+            lines.append(f"{i}. {item}")
+        lines.append(f"（共{len(permanent)}/5条，使用 memory-server/user_memory_remember 添加，memory-server/user_memory_forget 删除）")
+        perm_str = "<!--USER_MEMORY_START-->\n" + "\n".join(lines) + "\n<!--USER_MEMORY_END-->"
         parts.append(perm_str)
 
     # 首次使用引导（firstRun）
@@ -400,8 +401,8 @@ class NiuRunner:
         for tool_name, search_score in mcp_tool_scores.items():
             self.tool_lifecycle.update_from_search(tool_name, search_score)
 
-        # 5. 更新 system_prompt（messages[0]）
-        if injection and messages and messages[0].get("role") == "system":
+        # 5. 更新 system_prompt（messages[0]）— always update so dirty refresh takes effect
+        if messages and messages[0].get("role") == "system":
             messages[0]["content"] = self.base_system_prompt + injection
 
         # 6. 重新组装 tools_schema（加入新发现的工具）
@@ -437,27 +438,32 @@ class NiuRunner:
         try:
             data = json.loads(memory_path.read_text(encoding="utf-8"))
             permanent = data.get("permanent", [])
+            if not isinstance(permanent, list):
+                permanent = []
         except Exception:
             return
 
-        # Build new section
+        # Build new section with unique sentinel markers to avoid ### ambiguity
+        SECTION_START = "<!--USER_MEMORY_START-->"
+        SECTION_END = "<!--USER_MEMORY_END-->"
         if permanent:
-            new_section = "### [用户长期记忆]\n以下内容用户特别强调，必须始终遵守：\n"
+            lines = ["### [用户长期记忆]", "以下内容用户特别强调，必须始终遵守："]
             for i, item in enumerate(permanent, 1):
-                new_section += f"{i}. {item}\n"
-            new_section += f"\n（共{len(permanent)}/5条，使用 memory-server/user_memory_remember 添加，memory-server/user_memory_forget 删除）"
+                lines.append(f"{i}. {item}")
+            lines.append(f"（共{len(permanent)}/5条，使用 memory-server/user_memory_remember 添加，memory-server/user_memory_forget 删除）")
+            new_section = SECTION_START + "\n" + "\n".join(lines) + "\n" + SECTION_END
         else:
             new_section = ""
 
-        pattern = r'### \[用户长期记忆\]\n.*?(?=\n###|\Z)'
+        pattern = re.escape(SECTION_START) + r".*?" + re.escape(SECTION_END)
 
         # Update base_system_prompt so _on_turn_end's overwrite uses fresh memory
         base = self.base_system_prompt
         if re.search(pattern, base, re.DOTALL):
             if new_section:
-                self.base_system_prompt = re.sub(pattern, new_section.rstrip(), base, flags=re.DOTALL)
+                self.base_system_prompt = re.sub(pattern, new_section, base, flags=re.DOTALL)
             else:
-                self.base_system_prompt = re.sub(r'\n*### \[用户长期记忆\]\n.*?(?=\n###|\Z)', '', base, flags=re.DOTALL)
+                self.base_system_prompt = re.sub(r'\n*' + pattern + r'\n*', '', base, flags=re.DOTALL)
         elif new_section:
             self.base_system_prompt = base + "\n\n" + new_section
 
@@ -466,9 +472,9 @@ class NiuRunner:
             content = messages[0]["content"]
             if re.search(pattern, content, re.DOTALL):
                 if new_section:
-                    messages[0]["content"] = re.sub(pattern, new_section.rstrip(), content, flags=re.DOTALL)
+                    messages[0]["content"] = re.sub(pattern, new_section, content, flags=re.DOTALL)
                 else:
-                    messages[0]["content"] = re.sub(r'\n*### \[用户长期记忆\]\n.*?(?=\n###|\Z)', '', content, flags=re.DOTALL)
+                    messages[0]["content"] = re.sub(r'\n*' + pattern + r'\n*', '', content, flags=re.DOTALL)
             elif new_section:
                 messages[0]["content"] = content + "\n\n" + new_section
 
