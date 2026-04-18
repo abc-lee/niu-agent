@@ -9,7 +9,9 @@ file-parser:
     - "niu_file_parser"
   workdir: mcp-servers/file-parser/src
   preload: true
-  # 全部默认 dynamic
+  tools:
+    parse_file: {visibility: dynamic}
+    list_supported_formats: {visibility: hidden}
 
 # Knowledge Graph - Manage documents, entities, and their relationships
 kg-server:
@@ -22,14 +24,14 @@ kg-server:
   tools:
     explore_node: {visibility: static}
     get_related_entities: {visibility: static}
-    search_documents: {visibility: dynamic}
-    get_document: {visibility: dynamic}
-    list_documents: {visibility: dynamic}
     query_graph: {visibility: dynamic}
-    hub_entities: {visibility: dynamic}
     find_path: {visibility: dynamic}
+    hub_entities: {visibility: dynamic}
     get_related_concepts: {visibility: dynamic}
-    graph_stats: {visibility: dynamic}
+    search_documents: {visibility: hidden}
+    get_document: {visibility: hidden}
+    list_documents: {visibility: hidden}
+    graph_stats: {visibility: hidden}
     create_document: {visibility: hidden}
     create_entity: {visibility: hidden}
     create_concept: {visibility: hidden}
@@ -59,6 +61,7 @@ vector-store:
     # count_documents 默认 dynamic
 
 # Config Manager - Read/write user configuration and memory
+# 全部工具已隐藏：UI 直接读写 json 文件，LLM 通过 bash/code_run 操作
 config-manager:
   command: ${PYTHON_PATH}
   args:
@@ -66,7 +69,27 @@ config-manager:
     - "niu_config_manager"
   workdir: mcp-servers/config-manager/src
   preload: true
-  # 全部默认 dynamic
+  tools:
+    get_llm_config: {visibility: hidden}
+    set_llm_config: {visibility: hidden}
+    list_llm_presets: {visibility: hidden}
+    test_llm_connection: {visibility: hidden}
+    get_storage_config: {visibility: hidden}
+    set_storage_config: {visibility: hidden}
+    get_identity: {visibility: hidden}
+    update_identity: {visibility: hidden}
+    get_workspace: {visibility: hidden}
+    set_workspace: {visibility: hidden}
+    get_user_info: {visibility: hidden}
+    set_user_info: {visibility: hidden}
+    add_user_preference: {visibility: hidden}
+    is_first_run: {visibility: hidden}
+    complete_setup: {visibility: hidden}
+    get_full_memory: {visibility: hidden}
+    mkdir: {visibility: hidden}
+    copy_to_path: {visibility: hidden}
+    move_to_path: {visibility: hidden}
+    list_files_in_workspace: {visibility: hidden}
 
 # Photo Server - File and photo management with face recognition
 photo-server:
@@ -76,7 +99,22 @@ photo-server:
     - "niu_photo_server"
   workdir: mcp-servers/photo-server/src
   preload: true
-  # 全部默认 dynamic
+  tools:
+    name_person: {visibility: dynamic}
+    merge_persons: {visibility: dynamic}
+    search_persons: {visibility: dynamic}
+    get_unnamed_persons: {visibility: dynamic}
+    delete_person: {visibility: dynamic}
+    cleanup_deleted_photos: {visibility: dynamic}
+    get_person_photos: {visibility: dynamic}
+    ingest: {visibility: hidden}
+    ingest_document: {visibility: hidden}
+    ingest_documents: {visibility: hidden}
+    ingest_photo: {visibility: hidden}
+    ingest_photos: {visibility: hidden}
+    store_document_l1: {visibility: hidden}
+    store_documents_l1: {visibility: hidden}
+    unload_face_model: {visibility: hidden}
 
 # Memory Server - Smart memory extraction and retrieval
 memory-server:
@@ -102,7 +140,11 @@ scheduler-server:
     - "niu_scheduler_server"
   workdir: mcp-servers/scheduler-server/src
   preload: true
-  # 全部默认 dynamic
+  tools:
+    list_scheduled_tasks: {visibility: static}
+    schedule_task: {visibility: hidden}
+    cancel_task: {visibility: hidden}
+    update_task: {visibility: hidden}
 
 # Session Manager - Message management for context compression
 session-manager:
@@ -112,7 +154,9 @@ session-manager:
     - "niu_session_manager"
   workdir: mcp-servers/session-manager/src
   preload: false  # 按需启动，不预加载
-  # 全部默认 dynamic
+  tools:
+    get_messages: {visibility: hidden}
+    delete_messages: {visibility: hidden}
 
 # Browser Server - Browser automation using Playwright
 browser-server:
