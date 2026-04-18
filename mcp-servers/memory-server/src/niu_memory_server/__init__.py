@@ -555,6 +555,10 @@ async def user_memory_remember_handler(content: str, type: str = "memory") -> di
     if type not in ("task", "memory"):
         return {"status": "error", "message": f"type 必须是 'task' 或 'memory'，收到 '{type}'"}
 
+    # Reject empty or whitespace-only content
+    if not content or not content.strip():
+        return {"status": "error", "message": "记忆内容不能为空"}
+
     data = _read_memory_json()
     if data.get("_raw_fallback"):
         return {"status": "error", "message": "memory.json 文件损坏，请手动修复后重试"}
@@ -566,10 +570,11 @@ async def user_memory_remember_handler(content: str, type: str = "memory") -> di
     task_count = sum(1 for item in permanent if item.get("type") == "task")
     memory_count = sum(1 for item in permanent if item.get("type") == "memory")
 
-    # Dedup: reject case-insensitive duplicate content
-    content_lower = content.lower()
+    # Dedup: reject case-insensitive duplicate content (strip whitespace, skip empty)
+    content_stripped_lower = content.strip().lower()
     for i, existing in enumerate(permanent):
-        if existing.get("content", "").lower() == content_lower:
+        existing_content = existing.get("content", "")
+        if existing_content and existing_content.strip().lower() == content_stripped_lower:
             return {
                 "status": "error",
                 "message": f"该内容已存在(第{i+1}条)，无需重复添加。",
@@ -578,16 +583,15 @@ async def user_memory_remember_handler(content: str, type: str = "memory") -> di
 
     # Check capacity by type
     if type == "task" and task_count >= MAX_TASK_ITEMS:
-        # Task slot is full — auto-replace existing task
-        for i, item in enumerate(permanent):
-            if item.get("type") == "task":
-                permanent[i] = {"type": "task", "content": content}
-                _write_permanent_only(permanent)
-                return {
-                    "status": "success",
-                    "message": f"✅ 已更新工作便签（覆盖旧任务）",
-                    "current_memories": permanent,
-                }
+        # Remove ALL existing task items (handles manual edits with multiple tasks)
+        permanent = [item for item in permanent if item.get("type") != "task"]
+        permanent.insert(0, {"type": "task", "content": content})
+        _write_permanent_only(permanent)
+        return {
+            "status": "success",
+            "message": f"✅ 已更新工作便签（覆盖旧任务）",
+            "current_memories": permanent,
+        }
     if type == "memory" and memory_count >= MAX_MEMORY_ITEMS:
         return {
             "status": "error",
@@ -595,8 +599,9 @@ async def user_memory_remember_handler(content: str, type: str = "memory") -> di
             "current_memories": permanent,
         }
 
-    # Rough token estimate: 1 token ≈ 1.5 Chinese chars
-    estimated_tokens = len(content) / 1.5
+    # Token estimate: CJK chars ~1.5 tokens each, ASCII ~0.25 tokens each
+    cjk_count = sum(1 for c in content if '\u4e00' <= c <= '\u9fff')
+    estimated_tokens = cjk_count * 1.5 + (len(content) - cjk_count) * 0.25
     if estimated_tokens > MAX_TOKEN_PER_ITEM:
         return {
             "status": "error",
