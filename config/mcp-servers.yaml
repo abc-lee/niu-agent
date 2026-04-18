@@ -131,6 +131,9 @@ memory-server:
     get_memory_stats: {visibility: static}
     cleanup_memories: {visibility: static}
     link_memories: {visibility: static}
+    user_memory_remember: {visibility: static}
+    user_memory_forget: {visibility: static}
+    user_memory_list: {visibility: static}
 
 # Scheduler Server - Scheduled tasks and reminders
 scheduler-server:
