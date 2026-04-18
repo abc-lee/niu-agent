@@ -15,6 +15,8 @@ import niu_memory_server as mod
 # Inline sanitize/render for testing (same logic as runner.py)
 import re as _re
 def _sanitize_memory_content(content):
+    if content is None:
+        return ""
     if not isinstance(content, str):
         content = str(content)
     content = content.replace("\n", " ").replace("\r", " ")

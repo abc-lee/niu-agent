@@ -316,7 +316,7 @@ def get_tool_definitions() -> list[Tool]:
         ),
         Tool(
             name="user_memory_forget",
-            description="删除用户长期记忆。按序号(index)或关键词(keyword)匹配删除。",
+            description="删除用户长期记忆或工作便签。按序号(index)或关键词(keyword)匹配删除。task和memory类型均可删除。",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -581,6 +581,15 @@ async def user_memory_remember_handler(content: str, type: str = "memory") -> di
                 "current_memories": permanent,
             }
 
+    # Token estimate: CJK chars ~1.5 tokens each, ASCII ~0.25 tokens each
+    cjk_count = sum(1 for c in content if '\u4e00' <= c <= '\u9fff')
+    estimated_tokens = cjk_count * 1.5 + (len(content) - cjk_count) * 0.25
+    if estimated_tokens > MAX_TOKEN_PER_ITEM:
+        return {
+            "status": "error",
+            "message": f"内容过长（约{int(estimated_tokens)} token，上限{MAX_TOKEN_PER_ITEM}），请精简后重试。",
+        }
+
     # Check capacity by type
     if type == "task" and task_count >= MAX_TASK_ITEMS:
         # Remove ALL existing task items (handles manual edits with multiple tasks)
@@ -597,15 +606,6 @@ async def user_memory_remember_handler(content: str, type: str = "memory") -> di
             "status": "error",
             "message": f"记忆已满({memory_count}/{MAX_MEMORY_ITEMS})，请先调用 user_memory_forget 删除旧记忆。",
             "current_memories": permanent,
-        }
-
-    # Token estimate: CJK chars ~1.5 tokens each, ASCII ~0.25 tokens each
-    cjk_count = sum(1 for c in content if '\u4e00' <= c <= '\u9fff')
-    estimated_tokens = cjk_count * 1.5 + (len(content) - cjk_count) * 0.25
-    if estimated_tokens > MAX_TOKEN_PER_ITEM:
-        return {
-            "status": "error",
-            "message": f"内容过长（约{int(estimated_tokens)} token，上限{MAX_TOKEN_PER_ITEM}），请精简后重试。",
         }
 
     permanent.append({"type": type, "content": content})
