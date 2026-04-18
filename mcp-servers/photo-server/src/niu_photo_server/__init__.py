@@ -25,107 +25,45 @@ from mcp.types import TextContent, Tool
 # ============== Tool Schemas ==============
 
 TOOL_SCHEMAS = {
-    "ingest_document": {
-        "name": "ingest_document",
-        "description": """文档入库工具
+    "ingest": {
+        "name": "ingest",
+        "description": """统一入库工具 — 自动判断路径类型和内容类型
 
 参数:
-- file_path: 必填，源文件绝对路径
-- category: 分类名称，从 preferences.json 的 categories.documents 中选取（财务、合同、报告、方案、其他）
-- mode: copy（复制）| move（移动）| reference（引用）
+- path: 必填，文件路径或目录路径
+- mode: copy（复制）| move（移动）| reference（引用），默认 copy
+- category: 分类，不传则自动推断
+- l1: L1 摘要（文档入库第二轮调用时传入）
+- file_path: 文档存储路径（L1 回传时使用）
+
+自动判断逻辑:
+1. 路径类型：is_dir() → 目录模式，is_file() → 文件模式
+2. 内容类型（文件）：按扩展名判断 — 照片(.jpg/.png等) → 照片流程，其他 → 文档流程
+3. 内容类型（目录）：扫描目录 — 全照片 → 批量照片，全文档 → 批量文档，混合 → 分别处理
+
+照片流程: EXIF → 人脸检测 → 人物匹配 → L0摘要 → KG同步
+文档流程: 拷贝 → 返回 need_l1 → 子Agent生成L1 → 调用 ingest(file_path=..., l1=...) 存储
 
 返回:
-- status: success | error
-- action: created | versioned | renamed | referenced | skipped
-- file_path: 存储后的完整路径
-- note: 处理说明
-
-冲突处理:
-- 完全相同文件（哈希相同）→ 跳过
-- 内容相似（语义相似度 > 阈值）→ 版本管理
-- 内容不同 → 自动改名""",
+- 照片: {status, photo_id, detected_persons, abstract, exif, kg_sync}
+- 文档(首轮): {status: "need_l1", file_path, content, hint}
+- 文档(L1回传): {status: "success", file_path}
+- 目录: {status, total, success/need_l1, results/files}""",
         "input_schema": {
             "type": "object",
             "properties": {
-                "file_path": {"type": "string", "description": "源文件绝对路径"},
-                "category": {
-                    "type": "string",
-                    "description": "分类（财务/合同/报告/方案/其他）",
-                    "default": "其他",
-                },
+                "path": {"type": "string", "description": "文件路径或目录路径"},
                 "mode": {
                     "type": "string",
                     "enum": ["copy", "move", "reference"],
                     "default": "copy",
+                    "description": "文件操作模式",
                 },
+                "category": {"type": "string", "description": "分类，不传则自动推断"},
+                "l1": {"type": "string", "description": "L1 摘要（文档入库第二轮调用时传入）"},
+                "file_path": {"type": "string", "description": "文档存储路径（L1 回传时使用）"},
             },
-            "required": ["file_path"],
-        },
-    },
-    "ingest_documents": {
-        "name": "ingest_documents",
-        "description": """批量文档入库工具
-
-参数:
-- file_paths: 必填，源文件路径列表
-- category: 分类名称
-- mode: copy | move | reference
-
-返回:
-- status: success
-- total: 总数
-- processed: 成功数
-- failed: 失败数
-- results: 每个文件的处理结果
-- summary: 总结""",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "file_paths": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "源文件路径列表",
-                },
-                "category": {"type": "string", "default": "其他"},
-                "mode": {
-                    "type": "string",
-                    "enum": ["copy", "move", "reference"],
-                    "default": "copy",
-                },
-            },
-            "required": ["file_paths"],
-        },
-    },
-    "ingest_photo": {
-        "name": "ingest_photo",
-        "description": """照片入库工具（带人脸识别）
-
-参数:
-- file_path: 必填，照片文件绝对路径
-- category: 分类（生活/工作/旅行/证件/其他），默认从 preferences.json 读取
-
-返回:
-- status: success | error
-- photo_id: 照片唯一ID
-- detected_persons: 检测到的人物列表 [{id, name, similarity}]
-- abstract: L0 摘要（人物+时间）
-- exif: EXIF 信息（taken_at, location, camera）
-
-处理流程:
-1. 提取 EXIF 信息（拍摄时间、GPS、相机）
-2. 使用 InsightFace 检测人脸
-3. 匹配已有人物或创建"未命名人物_N"
-4. 生成 L0 摘要""",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "file_path": {"type": "string", "description": "照片文件绝对路径"},
-                "category": {
-                    "type": "string",
-                    "description": "分类（生活/工作/旅行/证件/其他）",
-                },
-            },
-            "required": ["file_path"],
+            "required": ["path"],
         },
     },
     "name_person": {
@@ -177,47 +115,6 @@ TOOL_SCHEMAS = {
                 "person_b_id": {"type": "string", "description": "要合并的人物ID"},
             },
             "required": ["person_a_id", "person_b_id"],
-        },
-    },
-    "ingest_photos": {
-        "name": "ingest_photos",
-        "description": """智能照片入库（自动判断单张/目录）
-
-参数:
-- source_path: 必填，**单个**文件路径或目录路径
-- category: 分类（生活/工作/旅行/证件/其他）
-
-两种模式:
-1. 目录路径 → 批量模式：保持原目录结构，整体搬迁
-2. 单个文件路径 → 单张模式：按模板重命名、人脸识别、分类存储
-
-⚠️ 重要：
-- 此工具只接受**一个路径**（文件或目录）
-- 多个独立文件 → 需要分别调用此工具多次（每个文件一次）
-- 不要提取共同目录路径，而是逐个处理每个文件
-
-批量模式返回:
-- total: 照片总数
-- success: 成功数
-- target_path: 目标目录
-
-单张模式返回:
-- photo_id: 照片ID
-- detected_persons: 检测到的人物
-- file_path: 存储路径""",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "source_path": {
-                    "type": "string",
-                    "description": "文件路径或目录路径",
-                },
-                "category": {
-                    "type": "string",
-                    "description": "分类（生活/工作/旅行/证件/其他）",
-                },
-            },
-            "required": ["source_path"],
         },
     },
     "search_persons": {
@@ -318,81 +215,6 @@ TOOL_SCHEMAS = {
                 },
             },
             "required": ["person_id"],
-        },
-    },
-    "store_document_l1": {
-        "name": "store_document_l1",
-        "description": """存储单个文档的 L1 摘要到向量库
-
-当 ingest_document 返回 status="need_l1" 时，调用此工具存储生成的摘要。
-
-参数:
-- file_path: 必填，文档存储路径（从 ingest_document 返回值获取）
-- l1: 必填，极简格式摘要：标题|关键词|摘要|实体|类型|指针
-- l2: 可选，完整内容（如果不提供则只存储 L1）
-
-返回:
-- status: success | error
-- document_id: 文档ID
-
-L1 格式说明:
-- 标题：文档标题
-- 关键词：3-5个核心概念，用逗号分隔
-- 摘要：50-80字现代中文摘要
-- 实体：命名实体（人名、地名、技术名词）
-- 类型：文档类型（技术文档/合同/报告等）
-- 指针：文件路径或其他定位信息
-
-示例:
-Zellij使用指南|终端,复用器,Rust|Zellij终端复用器的基本使用方法和配置说明|Zellij,终端|技术文档|/docs/zellij.md""",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "file_path": {"type": "string", "description": "文档存储路径"},
-                "l1": {"type": "string", "description": "L1 极简格式摘要"},
-                "l2": {"type": "string", "description": "完整内容（可选）"},
-            },
-            "required": ["file_path", "l1"],
-        },
-    },
-    "store_documents_l1": {
-        "name": "store_documents_l1",
-        "description": """批量存储文档的 L1 摘要到向量库
-
-当 ingest_documents 返回 status="need_l1" 时，调用此工具一次性存储所有摘要。
-
-参数:
-- documents: 必填，文档列表，每个包含：
-  - file_path: 文档存储路径
-  - l1: L1 极简格式摘要
-  - l2: 完整内容（可选）
-
-返回:
-- status: success | error
-- total: 总数
-- processed: 成功数
-- failed: 失败数
-- results: 每个文档的处理结果
-
-这是批量处理的首选方式，一次调用完成所有 L1 存储，然后向主 Agent 汇报。""",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "documents": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "file_path": {"type": "string"},
-                            "l1": {"type": "string"},
-                            "l2": {"type": "string"},
-                        },
-                        "required": ["file_path", "l1"],
-                    },
-                    "description": "文档列表",
-                },
-            },
-            "required": ["documents"],
         },
     },
     "unload_face_model": {
@@ -3213,7 +3035,22 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
     try:
         logger.info(f"[CALL_TOOL] 开始: {name}")
 
-        if name == "ingest_document":
+        if name == "ingest":
+            import sys as _sys
+            # __file__ = .../mcp-servers/photo-server/src/niu_photo_server/__init__.py
+            # 5 parents to reach project root
+            _scripts_dir = str(Path(__file__).parent.parent.parent.parent.parent / "scripts")
+            if _scripts_dir not in _sys.path:
+                _sys.path.insert(0, _scripts_dir)
+            from ingest_unified import ingest as unified_ingest
+            result = unified_ingest(
+                path=arguments["path"],
+                mode=arguments.get("mode", "copy"),
+                category=arguments.get("category"),
+                l1=arguments.get("l1"),
+                file_path=arguments.get("file_path"),
+            )
+        elif name == "ingest_document":
             result = ingest_document(
                 file_path=arguments["file_path"],
                 category=arguments.get("category", "其他"),
