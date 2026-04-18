@@ -33,6 +33,8 @@ def _render_permanent_section(permanent):
         if isinstance(item, str):
             normalized.append({"type": "memory", "content": item})
         elif isinstance(item, dict):
+            if "type" not in item:
+                item = {**item, "type": "memory"}
             normalized.append(item)
     task_items = [item for item in normalized if item.get("type") == "task" and item.get("content")]
     memory_items = [item for item in normalized if item.get("type") == "memory"]
@@ -444,6 +446,21 @@ def test_render_permanent_section_old_format():
     print("PASS: test_render_permanent_section_old_format")
 
 
+def test_render_permanent_section_missing_type():
+    """_render_permanent_section defaults dict items without type to memory"""
+    items = [{"content": "no type field"}, {"type": "task", "content": "has type"}]
+    result = _render_permanent_section(items)
+    assert "no type field" in result
+    assert "has type" in result
+    # "has type" should appear as task (📋 prefix), "no type field" as memory (numbered)
+    task_line = [l for l in result.split("\n") if "📋" in l]
+    assert any("has type" in l for l in task_line)
+    memory_line = [l for l in result.split("\n") if "no type field" in l]
+    assert any(l.strip().startswith("1.") for l in memory_line)
+
+    print("PASS: test_render_permanent_section_missing_type")
+
+
 if __name__ == "__main__":
     asyncio.run(test_user_memory_remember())
     asyncio.run(test_user_memory_remember_full())
@@ -463,5 +480,6 @@ if __name__ == "__main__":
     asyncio.run(test_truncated_allows_forget())
     test_sanitize_memory_content()
     test_render_permanent_section_old_format()
+    test_render_permanent_section_missing_type()
     print("\nAll tests passed!")
     print("\nAll tests passed!")
