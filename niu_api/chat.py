@@ -10,12 +10,69 @@ from typing import Optional
 from pydantic import BaseModel
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
+from loguru import logger
 
 from agent.runner import NiuRunner, get_runner
 from agent.session import get_message_store
 from niu_api.compat import _chat_lock
 
 router = APIRouter(tags=["chat"])
+
+
+# ============== SSE 事件总线（发布-订阅模式） ==============
+
+# 每个 SSE 连接拥有自己的 Queue，notify_new_message 广播到所有订阅者
+_event_subscribers: list[asyncio.Queue] = []
+_main_loop: asyncio.AbstractEventLoop | None = None
+
+
+def set_main_event_loop(loop: asyncio.AbstractEventLoop):
+    """在 uvicorn 启动时调用，保存主事件循环引用"""
+    global _main_loop
+    _main_loop = loop
+
+
+async def notify_new_message(message_id: str, role: str, content: str):
+    """新消息写入数据库后调用，广播给所有 SSE 订阅者"""
+    event = {
+        "type": "new_message",
+        "id": message_id,
+        "role": role,
+        "content": content,
+    }
+    for q in _event_subscribers[:]:  # 复制列表，避免迭代中修改
+        try:
+            q.put_nowait(event)
+        except asyncio.QueueFull:
+            logger.warning("[SSE] Subscriber queue full, skipping event")
+
+
+def notify_new_message_sync(message_id: str, role: str, content: str):
+    """同步版本 — 从非 async 上下文（如 scheduler 线程）调用"""
+    event = {
+        "type": "new_message",
+        "id": message_id,
+        "role": role,
+        "content": content,
+    }
+    loop = _main_loop
+    if loop is None or loop.is_closed():
+        return
+    # 用 call_soon_threadsafe 安全注入到 FastAPI 的事件循环
+    try:
+        loop.call_soon_threadsafe(_sync_broadcast, event)
+    except RuntimeError:
+        pass  # 循环已关闭
+
+
+def _sync_broadcast(event: dict):
+    """在 FastAPI 事件循环中执行广播"""
+    for q in _event_subscribers[:]:  # 复制列表，避免迭代中修改
+        try:
+            q.put_nowait(event)
+        except asyncio.QueueFull:
+            # 队列满说明客户端处理慢，跳过但不移除
+            logger.warning("[SSE] Subscriber queue full, skipping event")
 
 
 class ChatRequest(BaseModel):
@@ -31,6 +88,7 @@ class ChatResponse(BaseModel):
 
     reply: str
     session_id: Optional[str] = None
+    message_id: Optional[str] = None
 
 
 def _load_llm_config():
@@ -131,6 +189,7 @@ async def chat(request: ChatRequest) -> StreamingResponse:
 
         try:
             reply_chunks = []
+            stream_error = None
 
             # Run streaming in executor thread, communicate chunks via queue
             import queue as _queue
@@ -138,10 +197,13 @@ async def chat(request: ChatRequest) -> StreamingResponse:
             chunk_queue: _queue.Queue[str | None] = _queue.Queue()
 
             def sync_stream():
+                nonlocal stream_error
                 try:
                     for chunk in runner.chat(session_id, request.message, stream=True):
                         if chunk:
                             chunk_queue.put(chunk)
+                except Exception as e:
+                    stream_error = str(e)
                 finally:
                     chunk_queue.put(None)  # sentinel
 
@@ -161,7 +223,14 @@ async def chat(request: ChatRequest) -> StreamingResponse:
                 yield f"data: {json.dumps({'chunk': chunk})}\n\n"
 
             # Ensure executor finished
-            await stream_future
+            try:
+                await stream_future
+            except Exception as e:
+                stream_error = stream_error or str(e)
+
+            # Send error if streaming failed
+            if stream_error:
+                yield f"data: {json.dumps({'error': stream_error})}\n\n"
 
             # Send final message
             yield f"data: {json.dumps({'done': True, 'session_id': session_id})}\n\n"
@@ -182,7 +251,8 @@ async def chat(request: ChatRequest) -> StreamingResponse:
 @router.post("/chat/sync")
 async def chat_sync(request: ChatRequest) -> ChatResponse:
     """
-    Synchronous chat endpoint - waits for complete response
+    Synchronous chat endpoint - waits for complete response.
+    Persists both user and assistant messages to the database.
     """
     llm_cfg = _load_llm_config()
 
@@ -190,16 +260,6 @@ async def chat_sync(request: ChatRequest) -> ChatResponse:
         raise HTTPException(
             status_code=400, detail="LLM not configured. Please set up API key first."
         )
-
-    runner = get_or_create_runner()
-    session_id = request.session_id or "default"
-
-    # Run chat (non-streaming)
-    def sync_chat():
-        full_reply = ""
-        for chunk in runner.chat(session_id, request.message, stream=True):
-            full_reply += chunk
-        return full_reply
 
     # Non-blocking acquire: reject if lock already held
     try:
@@ -210,12 +270,87 @@ async def chat_sync(request: ChatRequest) -> ChatResponse:
         )
 
     try:
-        loop = asyncio.get_running_loop()
-        full_reply = await loop.run_in_executor(None, sync_chat)
+        # Persist user message to database
+        store = await get_message_store()
+        user_msg_id = await store.add_message(role="user", content=request.message)
+        # /chat/sync 由 scheduler 调用，用户消息不在前端本地渲染，需要 SSE 推送
+        await notify_new_message(user_msg_id, "user", request.message)
+
+        # Load conversation history via ContextManager (same as /api/chat/session)
+        from agent.context_manager import get_context_manager
+
+        context_manager = await get_context_manager(store)
+        history_for_runner = await context_manager.get_context_for_chat(exclude_last=True)
+
+        runner = get_or_create_runner()
+        session_id = request.session_id or "default"
+
+        # Run chat (non-streaming)
+        def sync_chat():
+            full_reply = ""
+            for chunk in runner.chat(session_id, request.message, stream=True, history=history_for_runner):
+                full_reply += chunk
+            return full_reply
+
+        try:
+            loop = asyncio.get_running_loop()
+            full_reply = await loop.run_in_executor(None, sync_chat)
+        except Exception as e:
+            import traceback
+            from loguru import logger
+            logger.error(f"Chat sync error: {e}\n{traceback.format_exc()}")
+            full_reply = f"Error: {str(e)}"
+
+        # Persist assistant response to database
+        message_id = None
+        if full_reply.strip():
+            message_id = await store.add_message(role="assistant", content=full_reply)
+            await notify_new_message(message_id, "assistant", full_reply)
+
+        return ChatResponse(session_id=session_id, reply=full_reply, message_id=message_id)
     finally:
         _chat_lock.release()
 
-    return ChatResponse(session_id=session_id, reply=full_reply)
+
+@router.get("/api/events/stream")
+async def events_stream():
+    """
+    SSE 事件流 — 实时推送新消息给前端
+
+    前端（main.js）订阅此端点，收到 new_message 事件后
+    通过 Electron IPC 推送给 chat.html 渲染。
+    """
+    async def generate():
+        # 每个连接拥有自己的队列
+        q: asyncio.Queue = asyncio.Queue(maxsize=100)
+        _event_subscribers.append(q)
+        logger.info(f"[SSE] Client connected (total: {len(_event_subscribers)})")
+        try:
+            while True:
+                try:
+                    event = await asyncio.wait_for(q.get(), timeout=30)
+                    yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                except asyncio.TimeoutError:
+                    # 心跳，保持连接
+                    yield ": keepalive\n\n"
+        except asyncio.CancelledError:
+            logger.info("[SSE] Client disconnected")
+            raise
+        finally:
+            try:
+                _event_subscribers.remove(q)
+            except ValueError:
+                pass  # already removed (double-disconnect edge case)
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.post("/chat/session")
