@@ -130,6 +130,45 @@ TOOL_SCHEMAS = {
             "required": ["memory_id_1", "memory_id_2", "relation"],
         },
     },
+    "user_memory_remember": {
+        "name": "user_memory_remember",
+        "description": "添加用户长期记忆（最多5条，每条≤200 token）。记忆将永久驻留在系统提示词中。若已满(5/5)，必须先调用 user_memory_forget 删除旧记忆。",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "content": {
+                    "type": "string",
+                    "description": "记忆内容（≤200 token，约300中文字符）",
+                },
+            },
+            "required": ["content"],
+        },
+    },
+    "user_memory_forget": {
+        "name": "user_memory_forget",
+        "description": "删除用户长期记忆。按序号(index)或关键词(keyword)匹配删除。",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "index": {
+                    "type": "integer",
+                    "description": "记忆序号（1-5），优先于 keyword",
+                },
+                "keyword": {
+                    "type": "string",
+                    "description": "不区分大小写的子串匹配",
+                },
+            },
+        },
+    },
+    "user_memory_list": {
+        "name": "user_memory_list",
+        "description": "查看当前所有用户长期记忆",
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
 }
 
 
@@ -252,6 +291,36 @@ def get_tool_definitions() -> list[Tool]:
                 "required": ["memory_id_1", "memory_id_2", "relation"],
             },
         ),
+        Tool(
+            name="user_memory_remember",
+            description="添加用户长期记忆（最多5条，每条≤200 token）。记忆将永久驻留在系统提示词中。若已满(5/5)，必须先调用 user_memory_forget 删除旧记忆。",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "content": {"type": "string", "description": "记忆内容（≤200 token，约300中文字符）"},
+                },
+                "required": ["content"],
+            },
+        ),
+        Tool(
+            name="user_memory_forget",
+            description="删除用户长期记忆。按序号(index)或关键词(keyword)匹配删除。",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "index": {"type": "integer", "description": "记忆序号（1-5），优先于 keyword"},
+                    "keyword": {"type": "string", "description": "不区分大小写的子串匹配"},
+                },
+            },
+        ),
+        Tool(
+            name="user_memory_list",
+            description="查看当前所有用户长期记忆",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+            },
+        ),
     ]
 
 
@@ -362,6 +431,129 @@ async def link_memories_handler(
 
 
 # ============================================================================
+# User memory tools (memory.json permanent array)
+# ============================================================================
+
+MEMORY_JSON_PATH = None  # Set at first call
+
+MAX_PERMANENT_ITEMS = 5
+MAX_TOKEN_PER_ITEM = 200  # ~300 Chinese chars
+
+
+def _get_memory_json_path():
+    """Get path to ~/.niu/memory.json"""
+    global MEMORY_JSON_PATH
+    if MEMORY_JSON_PATH is None:
+        from pathlib import Path
+        MEMORY_JSON_PATH = Path.home() / ".niu" / "memory.json"
+    return MEMORY_JSON_PATH
+
+
+def _read_memory_json() -> dict:
+    """Read memory.json, return dict with at least {permanent: []}"""
+    path = _get_memory_json_path()
+    if not path.exists():
+        return {"permanent": []}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if "permanent" not in data:
+            data["permanent"] = []
+        # Truncate if over limit (keep first 5, drop from end)
+        if len(data["permanent"]) > MAX_PERMANENT_ITEMS:
+            data["permanent"] = data["permanent"][:MAX_PERMANENT_ITEMS]
+            path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        return data
+    except Exception:
+        return {"permanent": []}
+
+
+def _write_memory_json(data: dict):
+    """Write memory.json"""
+    path = _get_memory_json_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+async def user_memory_remember_handler(content: str) -> dict:
+    """添加用户长期记忆到 memory.json permanent 数组"""
+    data = _read_memory_json()
+    permanent = data["permanent"]
+
+    if len(permanent) >= MAX_PERMANENT_ITEMS:
+        return {
+            "status": "error",
+            "message": f"记忆已满({len(permanent)}/{MAX_PERMANENT_ITEMS})，请先调用 user_memory_forget 删除旧记忆。",
+            "current_memories": permanent,
+        }
+
+    # Rough token estimate: 1 token ≈ 1.5 Chinese chars
+    estimated_tokens = len(content) / 1.5
+    if estimated_tokens > MAX_TOKEN_PER_ITEM:
+        return {
+            "status": "error",
+            "message": f"记忆内容过长（约{int(estimated_tokens)} token，上限{MAX_TOKEN_PER_ITEM}），请精简后重试。",
+        }
+
+    permanent.append(content)
+    _write_memory_json(data)
+
+    return {
+        "status": "success",
+        "message": f"✅ 已添加记忆({len(permanent)}/{MAX_PERMANENT_ITEMS})",
+        "current_memories": permanent,
+    }
+
+
+async def user_memory_forget_handler(index: int = None, keyword: str = None) -> dict:
+    """删除用户长期记忆"""
+    data = _read_memory_json()
+    permanent = data["permanent"]
+
+    if not permanent:
+        return {"status": "error", "message": "没有可删除的记忆"}
+
+    if index is not None:
+        # Index is 1-based
+        if index < 1 or index > len(permanent):
+            return {"status": "error", "message": f"序号超出范围(1-{len(permanent)})"}
+        removed = permanent.pop(index - 1)
+        _write_memory_json(data)
+        return {
+            "status": "success",
+            "message": f"✅ 已删除第{index}条记忆: {removed}",
+            "current_memories": permanent,
+        }
+
+    if keyword:
+        keyword_lower = keyword.lower()
+        for i, item in enumerate(permanent):
+            if keyword_lower in item.lower():
+                removed = permanent.pop(i)
+                _write_memory_json(data)
+                return {
+                    "status": "success",
+                    "message": f"✅ 已删除匹配'{keyword}'的记忆: {removed}",
+                    "current_memories": permanent,
+                }
+        return {"status": "error", "message": f"未找到包含'{keyword}'的记忆", "current_memories": permanent}
+
+    return {"status": "error", "message": "请提供 index 或 keyword 参数"}
+
+
+async def user_memory_list_handler() -> dict:
+    """查看当前所有用户长期记忆"""
+    data = _read_memory_json()
+    permanent = data["permanent"]
+
+    return {
+        "status": "success",
+        "count": len(permanent),
+        "max": MAX_PERMANENT_ITEMS,
+        "memories": permanent,
+    }
+
+
+# ============================================================================
 # MCP handlers
 # ============================================================================
 
@@ -409,6 +601,17 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 memory_id_2=arguments["memory_id_2"],
                 relation=arguments["relation"],
             )
+        elif name == "user_memory_remember":
+            result = await user_memory_remember_handler(
+                content=arguments["content"],
+            )
+        elif name == "user_memory_forget":
+            result = await user_memory_forget_handler(
+                index=arguments.get("index"),
+                keyword=arguments.get("keyword"),
+            )
+        elif name == "user_memory_list":
+            result = await user_memory_list_handler()
         else:
             return [TextContent(type="text", text=f"Unknown tool: {name}")]
 

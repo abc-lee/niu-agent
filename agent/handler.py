@@ -277,6 +277,13 @@ class NiuHandler(BaseHandler):
 
     def tool_after_callback(self, tool_name, args, response, ret):
         """工具调用后记录摘要到 history_info"""
+        # Set memory dirty flag when user memory tools are called
+        if tool_name in ("memory-server/user_memory_remember", "memory-server/user_memory_forget"):
+            from agent.runner import get_runner
+            runner = get_runner()
+            if runner and hasattr(runner, '_memory_dirty'):
+                runner._memory_dirty = True
+
         # 跳过同一轮内的多个工具调用（只记录第一个）
         if args.get("_index", 0) > 0:
             return
@@ -301,11 +308,6 @@ class NiuHandler(BaseHandler):
 
         # 追踪工具调用（用于重复检测）
         self._track_tool_call_for_repeat_detection(tool_name, args)
-
-        # 增强：判断是否值得长期记忆
-        if self._should_remember(tool_name, args, ret):
-            self.working["suggest_remember"] = True
-            self.working["remember_reason"] = self._get_remember_reason(tool_name, args, ret)
 
         # 追踪工具执行以供经验总结
         self._track_tool_execution(tool_name, args, ret)
@@ -377,9 +379,6 @@ class NiuHandler(BaseHandler):
             path = clean_args.get("path", "")
             filename = os.path.basename(path) if path else "未知文件"
             return f"修改文件: {filename}"
-
-        elif tool_name == "start_long_term_update":
-            return "保存长期记忆"
 
         elif tool_name.startswith("chat-with-"):
             agent = tool_name.replace("chat-with-", "")
@@ -459,46 +458,6 @@ class NiuHandler(BaseHandler):
             # 重置 context
             self._experience_context = None
 
-    def _should_remember(self, tool_name: str, args: dict, ret) -> bool:
-        """判断是否值得长期记忆"""
-        # 用户明确要求记住
-        if args.get("explicit_remember"):
-            return True
-
-        # 成功的复杂操作
-        if tool_name in ["code_run", "file_write", "file_patch"]:
-            if isinstance(ret, dict) and ret.get("status") == "success":
-                # 代码执行成功
-                if tool_name == "code_run":
-                    code = args.get("code") or args.get("script", "")
-                    if len(code) > 200:  # 复杂代码
-                        return True
-                # 文件操作
-                elif tool_name in ["file_write", "file_patch"]:
-                    return True
-
-        # MCP 工具调用成功
-        if "/" in tool_name and isinstance(ret, dict) and ret.get("status") == "success":
-            return True
-
-        return False
-
-    def _get_remember_reason(self, tool_name: str, args: dict, ret) -> str:
-        """获取建议记忆的原因"""
-        if args.get("explicit_remember"):
-            return "用户明确要求记住"
-
-        if tool_name == "code_run":
-            return "成功执行了复杂代码"
-
-        if tool_name in ["file_write", "file_patch"]:
-            return f"完成了文件操作: {tool_name}"
-
-        if "/" in tool_name:
-            return f"成功调用了 MCP 工具: {tool_name}"
-
-        return "检测到重要操作"
-
     def _get_anchor_prompt(self, skip=False):
         """生成工作记忆提示词"""
         if skip:
@@ -562,93 +521,7 @@ class NiuHandler(BaseHandler):
                 "若无有效进展，必须切换策略或请求用户协助。"
             )
 
-        # 增强：每 5 轮注入相关长期记忆
-        if turn % 5 == 0 and turn > 0:
-            memories = self._recall_relevant_memories(next_prompt)
-            if memories:
-                next_prompt += f"\n\n### [相关长期记忆]\n{memories}"
-
-        # 增强：如果有建议记忆的标记，提示 LLM
-        if self.working.get("suggest_remember"):
-            reason = self.working.get("remember_reason", "")
-            next_prompt += (
-                f"\n\n[SYSTEM TIP] 检测到值得长期记忆的信息: {reason}。"
-                "建议调用 start_long_term_update 提炼记忆。"
-            )
-            # 清除标记
-            self.working.pop("suggest_remember", None)
-            self.working.pop("remember_reason", None)
-
-        # 每 10 轮注入全局记忆
-        if turn % 10 == 0 and turn > 0:
-            from .generic.handler import get_global_memory
-
-            try:
-                global_mem = get_global_memory()
-                if global_mem:
-                    next_prompt += f"\n\n### [GLOBAL MEMORY]\n{global_mem}"
-            except Exception:
-                pass
-
         return next_prompt
-
-    def _recall_relevant_memories(self, context: str) -> Optional[str]:
-        """检索相关长期记忆"""
-        # 子 Agent 禁用记忆检索
-        if getattr(self, "_disable_memory_recall", False):
-            return None
-
-        try:
-            if not self.mcp_client:
-                return None
-
-            from agent.tool_registry import get_registry
-
-            # 从上下文中提取关键词
-            keywords = self._extract_keywords(context)
-            if not keywords:
-                return None
-
-            # 调用 memory-server/recall
-            tool_fn = get_registry().get("memory-server/recall")
-            if tool_fn:
-                result = tool_fn(
-                    query=keywords,
-                    limit=3,
-                    level="l1",
-                )
-            else:
-                return None
-
-            if isinstance(result, list) and result:
-                memories = []
-                for mem in result[:3]:
-                    content = mem.get("content", "")
-                    memory_type = mem.get("metadata", {}).get("memory_type", "")
-                    memories.append(f"- [{memory_type}] {content[:100]}")
-
-                return "\n".join(memories)
-
-            return None
-
-        except Exception:
-            return None
-
-    def _extract_keywords(self, text: str) -> str:
-        """从文本中提取关键词"""
-        # 简单实现：提取重要词汇
-        import re
-
-        # 提取中文词汇（2-4 字）
-        chinese_words = re.findall(r"[\u4e00-\u9fa5]{2,4}", text)
-
-        # 提取英文单词
-        english_words = re.findall(r"\b[A-Z][a-z]+\b", text)
-
-        # 合并并去重
-        keywords = list(set(chinese_words + english_words))[:5]
-
-        return " ".join(keywords) if keywords else ""
 
     def reset_working_memory(self):
         """重置工作记忆（新会话开始时调用）"""
@@ -919,6 +792,17 @@ class NiuHandler(BaseHandler):
                 next_prompt=f"[System] 保存记忆失败: {e}\n",
             )
 
+    def _calculate_importance(self, memory_type: str) -> float:
+        """根据记忆类型计算重要性"""
+        importance_map = {
+            "environment": 0.9,
+            "preferences": 0.85,
+            "skills": 0.8,
+            "experiences": 0.7,
+            "facts": 0.75,
+        }
+        return importance_map.get(memory_type, 0.75)
+
     def do_update_working_checkpoint(self, args: dict, response) -> StepOutcome:
         """更新工作记忆检查点"""
         key_info = args.get("key_info", "")
@@ -934,125 +818,6 @@ class NiuHandler(BaseHandler):
             next_prompt=self._get_anchor_prompt(),
         )
 
-    def do_start_long_term_update(self, args: dict, response) -> StepOutcome:
-        """
-        提炼长期记忆
-
-        触发条件：
-        1. 用户明确要求'记住这个'
-        2. 发现重要环境事实（第一次探测硬件）
-        3. 学到重要用户偏好
-        4. 完成复杂任务（15+轮）后提炼经验教训
-
-        实现：
-        - 从 history_info 提取关键信息
-        - 调用 memory-server/remember 保存到向量库
-        """
-        try:
-            # 分析 history_info，提取记忆类型和内容
-            history_str = "\n".join(self.history_info[-20:])  # 最近 20 条
-
-            # 推断记忆类型
-            memory_type = self._infer_memory_type(history_str)
-
-            # 生成记忆内容
-            memory_content = self._generate_memory_content(history_str, memory_type)
-
-            # 生成标题
-            title = self._generate_memory_title(history_str, memory_type)
-
-            # 调用 memory-server/remember
-            from agent.tool_registry import get_registry
-
-            tool_fn = get_registry().get("memory-server/remember")
-            if tool_fn:
-                result = tool_fn(
-                    content=memory_content,
-                    memory_type=memory_type,
-                    title=title,
-                    importance=self._calculate_importance(memory_type),
-                )
-
-                yield f"[Memory] 已保存长期记忆: {memory_type} - {title}\n"
-                return StepOutcome(
-                    {"status": "success", "memory_id": result.get("memory_id")},
-                    next_prompt=self._get_anchor_prompt(),
-                )
-            else:
-                yield "[Memory] memory-server/remember tool not available\n"
-                return StepOutcome(
-                    {"status": "error", "msg": "memory-server/remember tool not available"},
-                    next_prompt=self._get_anchor_prompt(),
-                )
-
-        except Exception as e:
-            yield f"[Memory] Failed to save: {e}\n"
-            return StepOutcome(
-                {"status": "error", "msg": str(e)},
-                next_prompt=self._get_anchor_prompt(),
-            )
-
-    def _infer_memory_type(self, history_str: str) -> str:
-        """从历史信息推断记忆类型"""
-        history_lower = history_str.lower()
-
-        # 用户偏好（优先级最高）
-        pref_keywords = ["偏好", "喜欢", "习惯", "设置", "主题", "字体"]
-        if any(kw in history_lower for kw in pref_keywords):
-            return "preferences"
-
-        # 经验教训（优先级次高，因为"问题"可能与其他关键词重叠）
-        exp_keywords = ["失败", "错误", "解决", "教训", "遇到", "修复"]
-        if any(kw in history_lower for kw in exp_keywords):
-            return "experiences"
-
-        # 环境相关
-        env_keywords = ["硬件", "gpu", "cpu", "内存", "cuda", "系统", "配置", "路径"]
-        if any(kw in history_lower for kw in env_keywords):
-            return "environment"
-
-        # 技能
-        skill_keywords = ["学会", "掌握", "实现", "完成", "成功"]
-        if any(kw in history_lower for kw in skill_keywords):
-            return "skills"
-
-        # 默认为事实
-        return "facts"
-
-    def _generate_memory_content(self, history_str: str, memory_type: str) -> str:
-        """生成记忆内容"""
-        # 清理历史信息
-        lines = history_str.split("\n")
-        clean_lines = [line.replace("[Agent] ", "").strip() for line in lines if line.strip()]
-
-        # 拼接为完整内容
-        content = "\n".join(clean_lines[:10])  # 最多 10 条
-
-        # 添加上下文信息
-        content = f"[{memory_type.upper()}] {content}"
-
-        return content
-
-    def _generate_memory_title(self, history_str: str, memory_type: str) -> str:
-        """生成记忆标题"""
-        # 提取第一个非空行
-        lines = [line.strip() for line in history_str.split("\n") if line.strip()]
-        if lines:
-            first_line = lines[0].replace("[Agent] ", "")
-            # 截取前 20 字符
-            return first_line[:20]
-        return f"{memory_type}记录"
-
-    def _calculate_importance(self, memory_type: str) -> float:
-        """根据记忆类型计算重要性（符合设计文档）"""
-        importance_map = {
-            "environment": 0.9,
-            "preferences": 0.85,
-            "skills": 0.8,
-            "experiences": 0.7,
-            "facts": 0.75,
-        }
-        return importance_map.get(memory_type, 0.75)
 
     # ========== MCP 工具（动态） ==========
 
