@@ -303,7 +303,6 @@ class GenericAgentHandler(BaseHandler):
 
     def __init__(self, parent, last_history=None, cwd="./"):
         self.parent = parent
-        self.working = {}
         self.cwd = cwd
         self.current_turn = 0
         self.history_info = last_history if last_history else []
@@ -523,19 +522,6 @@ class GenericAgentHandler(BaseHandler):
             next_prompt += "\n[SYSTEM TIPS] 正在读取记忆或SOP文件，若决定按sop执行请提取sop中的关键点（特别是靠后的）update working memory."
         return StepOutcome(result, next_prompt=next_prompt)
 
-    def do_update_working_checkpoint(self, args, response):
-        """为整个任务设定后续需要临时记忆的重点。"""
-        key_info = args.get("key_info", "")
-        related_sop = args.get("related_sop", "")
-        if "key_info" in args:
-            self.working["key_info"] = key_info
-        if "related_sop" in args:
-            self.working["related_sop"] = related_sop
-        self.working["passed_sessions"] = 0
-        yield f"[Info] Updated key_info and related_sop.\n"
-        next_prompt = self._get_anchor_prompt(skip=args.get("_index", 0) > 0)
-        return StepOutcome({"status": "success"}, next_prompt=next_prompt)
-
     def do_no_tool(self, args, response):
         """这是一个特殊工具，由引擎自主调用，不要包含在TOOLS_SCHEMA里。
         当模型在一轮中未显式调用任何工具时，由引擎自动触发。
@@ -584,26 +570,22 @@ class GenericAgentHandler(BaseHandler):
         return StepOutcome(final_content, next_prompt=None)
 
     def _get_anchor_prompt(self, skip=False):
+        """生成工作记忆提示词（仅工具调用摘要）"""
         if skip:
             return "\n"
-        h_str = "\n".join(self.history_info[-20:])
+        history_items = self.history_info[-10:]
+        h_str = "\n".join(history_items)
+        if len(h_str) > 500:
+            h_str = h_str[:500] + "..."
         prompt = f"\n### [WORKING MEMORY]\n<history>\n{h_str}\n</history>"
         prompt += f"\nCurrent turn: {self.current_turn}\n"
-        if self.working.get("key_info"):
-            prompt += f"\n<key_info>{self.working.get('key_info')}</key_info>"
-        if self.working.get("related_sop"):
-            prompt += f"\n有不清晰的地方请再次读取{self.working.get('related_sop')}"
-        try:
-            print(prompt)
-        except:
-            pass
         return prompt
 
     def next_prompt_patcher(self, next_prompt, outcome, turn):
-        if turn % 35 == 0 and "plan" not in str(self.working.get("related_sop")):
+        if turn % 35 == 0:
             next_prompt += (
                 f"\n\n[DANGER] 已连续执行第 {turn} 轮。你必须总结情况并直接向用户提问，不允许继续重试。"
             )
         elif turn % 7 == 0:
-            next_prompt += f"\n\n[DANGER] 已连续执行第 {turn} 轮。禁止无效重试。若无有效进展，必须切换策略：1. 探测物理边界 2. 请求用户协助。如有需要，可调用 update_working_checkpoint 保存关键上下文。"
+            next_prompt += f"\n\n[DANGER] 已连续执行第 {turn} 轮。禁止无效重试。若无有效进展，必须切换策略：1. 探测物理边界 2. 请求用户协助。如有需要，可调用 user_memory_remember(type='task') 保存关键上下文。"
         return next_prompt
