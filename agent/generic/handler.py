@@ -298,28 +298,6 @@ def smart_format(data, max_depth=2, max_str_len=100, omit_str=" ... "):
     return json.dumps(truncate(data, 0), indent=2, ensure_ascii=False, default=str)
 
 
-def get_global_memory():
-    """获取全局记忆 - L1 索引层"""
-    prompt = "\n"
-    try:
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        with open(
-            os.path.join(script_dir, "memory/global_mem_insight.txt"), "r", encoding="utf-8"
-        ) as f:
-            insight = f.read()
-        with open(
-            os.path.join(script_dir, "assets/insight_fixed_structure.txt"), "r", encoding="utf-8"
-        ) as f:
-            structure = f.read()
-        prompt += f"cwd = {os.path.abspath('./temp')} （用./引用）\n"
-        prompt += f"\n[Memory] (../memory)\n"
-        prompt += structure + "\n../memory/global_mem_insight.txt:\n"
-        prompt += insight + "\n"
-    except FileNotFoundError:
-        pass
-    return prompt
-
-
 class GenericAgentHandler(BaseHandler):
     """Generic Agent 工具库，包含多种工具的实现。工具函数自动加上了 do_ 前缀。实际工具名没有前缀。"""
 
@@ -393,9 +371,6 @@ class GenericAgentHandler(BaseHandler):
             path = clean_args.get("path", "")
             filename = os.path.basename(path) if path else "未知文件"
             return f"修改文件: {filename}"
-
-        elif tool_name == "start_long_term_update":
-            return "保存长期记忆"
 
         elif tool_name.startswith("chat-with-"):
             agent = tool_name.replace("chat-with-", "")
@@ -608,24 +583,6 @@ class GenericAgentHandler(BaseHandler):
             final_content = f"<thinking>{thinking}</thinking>\n\n{content}"
         return StepOutcome(final_content, next_prompt=None)
 
-    def do_start_long_term_update(self, args, response):
-        """Agent觉得当前任务完成后有重要信息需要记忆时调用此工具。"""
-        prompt = """### [总结提炼经验] 既然你觉得当前任务有重要信息需要记忆，请提取最近一次任务中【事实验证成功且长期有效】的环境事实、用户偏好、重要步骤，更新记忆。
-本工具是标记开启结算过程，若已在更新记忆过程或没有值得记忆的点，忽略本次调用。
-**提取行动验证成功的信息**：
-- **环境事实**（路径/凭证/配置）→ `file_patch` 更新 L2，同步 L1
-- **复杂任务经验**（关键坑点/前置条件/重要步骤）→ L3 精简 SOP（只记你被坑得多次重试的核心要点）
-**禁止**：临时变量、具体推理过程、未验证信息、通用常识、你可以轻松复现的细节。
-**操作**：严格遵循提供的L0的记忆更新SOP。先 `file_read` 看现有 → 判断类型 → 最小化更新 → 无新内容跳过，保证对记忆库最小局部修改。\n
-""" + get_global_memory()
-        yield "[Info] Start distilling good memory for long-term storage.\n"
-        path = "./memory/memory_management_sop.md"
-        if os.path.exists(path):
-            result = file_read(path, show_linenos=False)
-        else:
-            result = "Memory Management SOP not found. Do not update memory."
-        return StepOutcome(result, next_prompt=prompt)
-
     def _get_anchor_prompt(self, skip=False):
         if skip:
             return "\n"
@@ -649,6 +606,4 @@ class GenericAgentHandler(BaseHandler):
             )
         elif turn % 7 == 0:
             next_prompt += f"\n\n[DANGER] 已连续执行第 {turn} 轮。禁止无效重试。若无有效进展，必须切换策略：1. 探测物理边界 2. 请求用户协助。如有需要，可调用 update_working_checkpoint 保存关键上下文。"
-        elif turn % 10 == 0:
-            next_prompt += get_global_memory()
         return next_prompt

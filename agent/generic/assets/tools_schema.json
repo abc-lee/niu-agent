@@ -46,10 +46,5 @@
     "parameters": {"type": "object", "properties": {
       "question": {"type": "string", "description": "Question for the user"},
       "candidates": {"type": "array", "items": {"type": "string"}, "description": "Optional quick-select choices for the user"}}}
-  }},
-  {"type": "function", "function": {
-    "name": "start_long_term_update",
-    "description": "Start distilling long-term memory. Call ONLY when: (1) user explicitly asks to save/remember something, OR (2) after completing a complex multi-step task (15+ turns) where user WANTS results preserved. DO NOT call when user only asked to read/check/query something, or memory already updated.",
-    "parameters": {"type": "object", "properties": {}}}
-  }
+  }}
 ]
