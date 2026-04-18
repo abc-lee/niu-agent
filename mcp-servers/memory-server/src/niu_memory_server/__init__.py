@@ -132,7 +132,7 @@ TOOL_SCHEMAS = {
     },
     "user_memory_remember": {
         "name": "user_memory_remember",
-        "description": "添加用户长期记忆或工作便签。type='task'为当前工作便签(最多1条,新任务自动覆盖旧任务); type='memory'为用户长期记忆(最多4条)。记忆将永久驻留在系统提示词中，异常退出后下次继续。",
+        "description": "添加用户长期记忆或工作便签。type='task'为当前工作便签(最多1条,新任务自动覆盖旧任务,用于保存复杂任务的进度/关键参数/下一步); type='memory'为用户长期记忆(最多4条,仅在用户明确要求记住时添加)。记忆永久驻留系统提示词,异常退出后下次继续。",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -143,7 +143,7 @@ TOOL_SCHEMAS = {
                 "type": {
                     "type": "string",
                     "enum": ["task", "memory"],
-                    "description": "task=当前工作便签(1条), memory=用户长期记忆(4条)",
+                    "description": "task=当前工作便签(1条,自动覆盖), memory=用户长期记忆(4条,需手动删)",
                     "default": "memory",
                 },
             },
@@ -152,7 +152,7 @@ TOOL_SCHEMAS = {
     },
     "user_memory_forget": {
         "name": "user_memory_forget",
-        "description": "删除用户长期记忆。按序号(index)或关键词(keyword)匹配删除。",
+        "description": "删除用户长期记忆或工作便签。按序号(index)或关键词(keyword)匹配删除。task和memory类型均可删除。",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -630,9 +630,17 @@ async def user_memory_forget_handler(index: int = None, keyword: str = None) -> 
         # Index is 1-based
         if index < 1 or index > len(permanent):
             return {"status": "error", "message": f"序号超出范围(1-{len(permanent)})"}
-        removed = permanent.pop(index - 1)
-        _write_permanent_only(permanent)
-        msg = f"✅ 已删除第{index}条记忆: {removed}"
+        item = permanent[index - 1]
+        if item.get("type") == "task":
+            # Task slot: clear content instead of removing, to keep slot position stable
+            old_content = item.get("content", "")
+            permanent[index - 1] = {"type": "task", "content": ""}
+            _write_permanent_only(permanent)
+            msg = f"✅ 已清空工作便签(第{index}条): {old_content}"
+        else:
+            removed = permanent.pop(index - 1)
+            _write_permanent_only(permanent)
+            msg = f"✅ 已删除第{index}条记忆: {removed}"
         if data.get("_truncated"):
             msg += "（⚠️ 注意：memory.json 中有超限记忆已被截断）"
         return {
@@ -646,11 +654,18 @@ async def user_memory_forget_handler(index: int = None, keyword: str = None) -> 
         matches = [(i, item) for i, item in enumerate(permanent) if keyword_lower in item.get("content", "").lower()]
         if not matches:
             return {"status": "error", "message": f"未找到包含'{keyword}'的记忆", "current_memories": permanent}
-        # Delete first match
-        i, removed = matches[0]
-        permanent.pop(i)
-        _write_permanent_only(permanent)
-        msg = f"✅ 已删除匹配'{keyword}'的记忆: {removed}"
+        # Handle first match
+        i, item = matches[0]
+        if item.get("type") == "task":
+            # Task slot: clear content instead of removing
+            old_content = item.get("content", "")
+            permanent[i] = {"type": "task", "content": ""}
+            _write_permanent_only(permanent)
+            msg = f"✅ 已清空工作便签: {old_content}"
+        else:
+            removed = permanent.pop(i)
+            _write_permanent_only(permanent)
+            msg = f"✅ 已删除匹配'{keyword}'的记忆: {removed}"
         if len(matches) > 1:
             msg += f"（注意：还有{len(matches)-1}条记忆也匹配该关键词）"
         if data.get("_truncated"):
