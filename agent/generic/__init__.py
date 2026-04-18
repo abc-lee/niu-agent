@@ -21,7 +21,7 @@ Memory (L0/L1/L2/L3):
 """
 
 from .agent_loop import StepOutcome, BaseHandler, agent_runner_loop, exhaust
-from .handler import GenericAgentHandler, get_global_memory
+from .handler import GenericAgentHandler
 from .llmcore import (
     ToolClient,
     MockResponse,
@@ -37,7 +37,6 @@ __all__ = [
     "exhaust",
     # handler
     "GenericAgentHandler",
-    "get_global_memory",
     # llmcore
     "ToolClient",
     "MockResponse",
