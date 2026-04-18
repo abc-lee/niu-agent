@@ -558,6 +558,8 @@ async def user_memory_remember_handler(content: str, type: str = "memory") -> di
     data = _read_memory_json()
     if data.get("_raw_fallback"):
         return {"status": "error", "message": "memory.json 文件损坏，请手动修复后重试"}
+    if data.get("_truncated"):
+        return {"status": "error", "message": f"memory.json 超过{MAX_PERMANENT_ITEMS}条限制，请先调用 user_memory_forget 删除多余记忆后再添加。"}
     permanent = data["permanent"]
 
     # Count by type
@@ -606,8 +608,6 @@ async def user_memory_remember_handler(content: str, type: str = "memory") -> di
 
     type_label = "工作便签" if type == "task" else "记忆"
     msg = f"✅ 已添加{type_label}({len(permanent)}/{MAX_PERMANENT_ITEMS})"
-    if data.get("_truncated"):
-        msg += "（⚠️ 注意：memory.json 中有超限记忆已被截断）"
 
     return {
         "status": "success",
@@ -621,6 +621,9 @@ async def user_memory_forget_handler(index: int = None, keyword: str = None) -> 
     data = _read_memory_json()
     if data.get("_raw_fallback"):
         return {"status": "error", "message": "memory.json 文件损坏，请手动修复后重试"}
+    if data.get("_truncated"):
+        # Allow forget when truncated — deleting is the fix for over-limit
+        pass
     permanent = data["permanent"]
 
     if not permanent:
@@ -641,8 +644,6 @@ async def user_memory_forget_handler(index: int = None, keyword: str = None) -> 
             removed = permanent.pop(index - 1)
             _write_permanent_only(permanent)
             msg = f"✅ 已删除第{index}条记忆: {removed}"
-        if data.get("_truncated"):
-            msg += "（⚠️ 注意：memory.json 中有超限记忆已被截断）"
         return {
             "status": "success",
             "message": msg,
@@ -668,8 +669,6 @@ async def user_memory_forget_handler(index: int = None, keyword: str = None) -> 
             msg = f"✅ 已删除匹配'{keyword}'的记忆: {removed}"
         if len(matches) > 1:
             msg += f"（注意：还有{len(matches)-1}条记忆也匹配该关键词）"
-        if data.get("_truncated"):
-            msg += "（⚠️ 注意：memory.json 中有超限记忆已被截断）"
         return {
             "status": "success",
             "message": msg,

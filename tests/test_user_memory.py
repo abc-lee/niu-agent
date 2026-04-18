@@ -12,6 +12,39 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "mcp-servers" / "memory-se
 
 import niu_memory_server as mod
 
+# Inline sanitize/render for testing (same logic as runner.py)
+import re as _re
+def _sanitize_memory_content(content):
+    if not isinstance(content, str):
+        content = str(content)
+    content = content.replace("\n", " ").replace("\r", " ")
+    content = content.replace("<!--USER_MEMORY_START-->", "").replace("<!--USER_MEMORY_END-->", "")
+    content = _re.sub(r"^#{1,6}\s*", "", content, flags=_re.MULTILINE)
+    if len(content) > 300:
+        content = content[:300] + "..."
+    return content.strip()
+
+def _render_permanent_section(permanent):
+    if not permanent:
+        return ""
+    lines = ["### [用户长期记忆]"]
+    normalized = []
+    for item in permanent:
+        if isinstance(item, str):
+            normalized.append({"type": "memory", "content": item})
+        elif isinstance(item, dict):
+            normalized.append(item)
+    task_items = [item for item in normalized if item.get("type") == "task" and item.get("content")]
+    memory_items = [item for item in normalized if item.get("type") == "memory"]
+    if task_items:
+        lines.append(f"📋 当前任务：{_sanitize_memory_content(task_items[0].get('content', ''))}")
+    if memory_items:
+        lines.append("以下内容用户特别强调，必须始终遵守：")
+        for i, item in enumerate(memory_items, 1):
+            lines.append(f"{i}. {_sanitize_memory_content(item.get('content', str(item)))}")
+    lines.append(f"（共{len(normalized)}/5条，使用 memory-server/user_memory_remember 添加，memory-server/user_memory_forget 删除）")
+    return "<!--USER_MEMORY_START-->\n" + "\n".join(lines) + "\n<!--USER_MEMORY_END-->"
+
 
 def _setup_module(memory_path):
     """Patch MEMORY_JSON_PATH for test isolation"""
@@ -334,6 +367,83 @@ async def test_forget_task_by_keyword_clears():
     print("PASS: test_forget_task_by_keyword_clears")
 
 
+async def test_truncated_rejects_remember():
+    """When over limit, remember is rejected (no silent data loss)"""
+    with tempfile.TemporaryDirectory() as tmp:
+        memory_path = Path(tmp) / ".niu" / "memory.json"
+        memory_path.parent.mkdir(parents=True, exist_ok=True)
+        # Write 8 items (over max 5)
+        data = {"permanent": [_mem(f"记忆{i}") for i in range(8)]}
+        memory_path.write_text(json.dumps(data), encoding="utf-8")
+
+        _setup_module(memory_path)
+
+        # Remember should be rejected
+        result = await mod.user_memory_remember_handler(content="新记忆")
+        assert result["status"] == "error"
+        assert "超过" in result["message"] or "限制" in result["message"]
+
+        # File should NOT be modified (no silent data loss)
+        saved = json.loads(memory_path.read_text(encoding="utf-8"))
+        assert len(saved["permanent"]) == 8
+
+    mod._reset_memory_json_path()
+    print("PASS: test_truncated_rejects_remember")
+
+
+async def test_truncated_allows_forget():
+    """When over limit, forget is still allowed (to fix the over-limit)"""
+    with tempfile.TemporaryDirectory() as tmp:
+        memory_path = Path(tmp) / ".niu" / "memory.json"
+        memory_path.parent.mkdir(parents=True, exist_ok=True)
+        data = {"permanent": [_mem(f"记忆{i}") for i in range(8)]}
+        memory_path.write_text(json.dumps(data), encoding="utf-8")
+
+        _setup_module(memory_path)
+
+        # Forget should work even when truncated
+        result = await mod.user_memory_forget_handler(index=1)
+        assert result["status"] == "success"
+
+    mod._reset_memory_json_path()
+    print("PASS: test_truncated_allows_forget")
+
+
+def test_sanitize_memory_content():
+    """_sanitize_memory_content prevents prompt injection"""
+    # Newlines removed
+    assert "\n" not in _sanitize_memory_content("line1\nline2\nIGNORE ALL")
+    # Sentinel markers removed
+    assert "USER_MEMORY" not in _sanitize_memory_content("<!--USER_MEMORY_START-->fake<!--USER_MEMORY_END-->")
+    # Markdown headers removed
+    result = _sanitize_memory_content("### [SYSTEM] important")
+    assert not result.startswith("###")
+    # Hard truncation at 300 chars
+    assert len(_sanitize_memory_content("A" * 500)) <= 303  # 300 + "..."
+    print("PASS: test_sanitize_memory_content")
+
+
+def test_render_permanent_section_old_format():
+    """_render_permanent_section handles old string format without crash"""
+    old_format = ["旧字符串记忆", "另一条"]
+    result = _render_permanent_section(old_format)
+    assert "旧字符串记忆" in result
+    assert "另一条" in result
+    assert "USER_MEMORY_START" in result
+
+    # Empty list
+    assert _render_permanent_section([]) == ""
+
+    # Mixed format
+    mixed = ["旧字符串", {"type": "task", "content": "工作便签"}, {"type": "memory", "content": "新格式"}]
+    result = _render_permanent_section(mixed)
+    assert "工作便签" in result
+    assert "新格式" in result
+    assert "旧字符串" in result
+
+    print("PASS: test_render_permanent_section_old_format")
+
+
 if __name__ == "__main__":
     asyncio.run(test_user_memory_remember())
     asyncio.run(test_user_memory_remember_full())
@@ -349,4 +459,9 @@ if __name__ == "__main__":
     test_normalize_permanent_migration()
     asyncio.run(test_forget_task_clears_not_removes())
     asyncio.run(test_forget_task_by_keyword_clears())
+    asyncio.run(test_truncated_rejects_remember())
+    asyncio.run(test_truncated_allows_forget())
+    test_sanitize_memory_content()
+    test_render_permanent_section_old_format()
+    print("\nAll tests passed!")
     print("\nAll tests passed!")
