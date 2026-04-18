@@ -13,6 +13,50 @@ import io
 import threading
 from datetime import datetime
 from typing import Any, Dict, Generator, Optional
+from pathlib import Path
+
+
+def _sanitize_memory_content(content: str) -> str:
+    """Sanitize user memory content before injecting into system prompt.
+    Prevents prompt injection by removing newlines and sentinel markers."""
+    if not isinstance(content, str):
+        content = str(content)
+    # Remove newlines to prevent multi-line injection
+    content = content.replace("\n", " ").replace("\r", " ")
+    # Remove sentinel markers to prevent section boundary spoofing
+    content = content.replace("<!--USER_MEMORY_START-->", "").replace("<!--USER_MEMORY_END-->", "")
+    # Remove markdown headers to prevent section injection
+    content = re.sub(r"^#{1,6}\s*", "", content, flags=re.MULTILINE)
+    # Truncate to 300 chars as hard limit
+    if len(content) > 300:
+        content = content[:300] + "..."
+    return content.strip()
+
+
+def _render_permanent_section(permanent: list) -> str:
+    """Render permanent memory items into a system prompt section.
+    Shared by _load_memory_for_prompt and _refresh_user_memories."""
+    if not permanent:
+        return ""
+    lines = ["### [用户长期记忆]"]
+    # Normalize old string format to dict
+    normalized = []
+    for item in permanent:
+        if isinstance(item, str):
+            normalized.append({"type": "memory", "content": item})
+        elif isinstance(item, dict):
+            normalized.append(item)
+    # Task items first (skip empty content — cleared task slot)
+    task_items = [item for item in normalized if item.get("type") == "task" and item.get("content")]
+    memory_items = [item for item in normalized if item.get("type") == "memory"]
+    if task_items:
+        lines.append(f"📋 当前任务：{_sanitize_memory_content(task_items[0].get('content', ''))}")
+    if memory_items:
+        lines.append("以下内容用户特别强调，必须始终遵守：")
+        for i, item in enumerate(memory_items, 1):
+            lines.append(f"{i}. {_sanitize_memory_content(item.get('content', str(item)))}")
+    lines.append(f"（共{len(normalized)}/5条，使用 memory-server/user_memory_remember 添加，memory-server/user_memory_forget 删除）")
+    return "<!--USER_MEMORY_START-->\n" + "\n".join(lines) + "\n<!--USER_MEMORY_END-->"
 
 # 修复Windows控制台编码问题
 if sys.platform == 'win32':
@@ -108,19 +152,8 @@ def _load_memory_for_prompt() -> str:
 
     # 用户长期记忆（驻留在 system prompt，最多5条，每条≤200 token）
     permanent = memory.get("permanent", [])
-    if permanent:
-        lines = ["### [用户长期记忆]"]
-        # Task items first (skip empty content — cleared task slot)
-        task_items = [item for item in permanent if item.get("type") == "task" and item.get("content")]
-        memory_items = [item for item in permanent if item.get("type") == "memory"]
-        if task_items:
-            lines.append(f"📋 当前任务：{task_items[0].get('content', '')}")
-        if memory_items:
-            lines.append("以下内容用户特别强调，必须始终遵守：")
-            for i, item in enumerate(memory_items, 1):
-                lines.append(f"{i}. {item.get('content', item)}")
-        lines.append(f"（共{len(permanent)}/5条，使用 memory-server/user_memory_remember 添加，memory-server/user_memory_forget 删除）")
-        perm_str = "<!--USER_MEMORY_START-->\n" + "\n".join(lines) + "\n<!--USER_MEMORY_END-->"
+    perm_str = _render_permanent_section(permanent)
+    if perm_str:
         parts.append(perm_str)
 
     # 首次使用引导（firstRun）
@@ -437,9 +470,6 @@ class NiuRunner:
             return
         self._memory_dirty = False
 
-        import re
-        from pathlib import Path
-
         # Read current permanent memories
         memory_path = Path.home() / ".niu" / "memory.json"
         try:
@@ -450,24 +480,11 @@ class NiuRunner:
         except Exception:
             return
 
-        # Build new section with unique sentinel markers to avoid ### ambiguity
+        # Use shared renderer (handles normalization, sanitization, empty task skip)
+        new_section = _render_permanent_section(permanent)
+
         SECTION_START = "<!--USER_MEMORY_START-->"
         SECTION_END = "<!--USER_MEMORY_END-->"
-        if permanent:
-            lines = ["### [用户长期记忆]"]
-            task_items = [item for item in permanent if isinstance(item, dict) and item.get("type") == "task" and item.get("content")]
-            memory_items = [item for item in permanent if isinstance(item, dict) and item.get("type") == "memory"]
-            if task_items:
-                lines.append(f"📋 当前任务：{task_items[0].get('content', '')}")
-            if memory_items:
-                lines.append("以下内容用户特别强调，必须始终遵守：")
-                for i, item in enumerate(memory_items, 1):
-                    lines.append(f"{i}. {item.get('content', item)}")
-            lines.append(f"（共{len(permanent)}/5条，使用 memory-server/user_memory_remember 添加，memory-server/user_memory_forget 删除）")
-            new_section = SECTION_START + "\n" + "\n".join(lines) + "\n" + SECTION_END
-        else:
-            new_section = ""
-
         pattern = re.escape(SECTION_START) + r".*?" + re.escape(SECTION_END)
 
         # Update base_system_prompt so _on_turn_end's overwrite uses fresh memory
