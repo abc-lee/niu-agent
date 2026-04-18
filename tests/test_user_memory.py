@@ -461,6 +461,75 @@ def test_render_permanent_section_missing_type():
     print("PASS: test_render_permanent_section_missing_type")
 
 
+async def test_remember_empty_content_rejected():
+    """Reject empty or whitespace-only content"""
+    with tempfile.TemporaryDirectory() as tmp:
+        memory_path = Path(tmp) / ".niu" / "memory.json"
+        memory_path.parent.mkdir(parents=True, exist_ok=True)
+        memory_path.write_text('{"permanent": []}', encoding="utf-8")
+
+        _setup_module(memory_path)
+
+        # Empty string
+        result = await mod.user_memory_remember_handler(content="")
+        assert result["status"] == "error"
+        assert "空" in result["message"]
+
+        # Whitespace only
+        result = await mod.user_memory_remember_handler(content="   ")
+        assert result["status"] == "error"
+
+        # File should not be modified
+        saved = json.loads(memory_path.read_text(encoding="utf-8"))
+        assert len(saved["permanent"]) == 0
+
+    mod._reset_memory_json_path()
+    print("PASS: test_remember_empty_content_rejected")
+
+
+async def test_dedup_whitespace_normalized():
+    """Dedup ignores leading/trailing whitespace"""
+    with tempfile.TemporaryDirectory() as tmp:
+        memory_path = Path(tmp) / ".niu" / "memory.json"
+        memory_path.parent.mkdir(parents=True, exist_ok=True)
+        data = {"permanent": [_mem("我喜欢Python")]}
+        memory_path.write_text(json.dumps(data), encoding="utf-8")
+
+        _setup_module(memory_path)
+
+        # Same content with extra spaces
+        result = await mod.user_memory_remember_handler(content="  我喜欢Python  ")
+        assert result["status"] == "error"
+        assert "已存在" in result["message"]
+
+    mod._reset_memory_json_path()
+    print("PASS: test_dedup_whitespace_normalized")
+
+
+async def test_multiple_task_items_all_removed():
+    """When manually edited file has multiple tasks, remember removes all"""
+    with tempfile.TemporaryDirectory() as tmp:
+        memory_path = Path(tmp) / ".niu" / "memory.json"
+        memory_path.parent.mkdir(parents=True, exist_ok=True)
+        # Manually edited: 2 task items (shouldn't happen but could)
+        data = {"permanent": [_mem("旧任务1", "task"), _mem("旧任务2", "task"), _mem("记忆A")]}
+        memory_path.write_text(json.dumps(data), encoding="utf-8")
+
+        _setup_module(memory_path)
+
+        result = await mod.user_memory_remember_handler(content="新任务", type="task")
+        assert result["status"] == "success"
+        # Should have exactly 1 task and 1 memory
+        tasks = [item for item in result["current_memories"] if item.get("type") == "task"]
+        memories = [item for item in result["current_memories"] if item.get("type") == "memory"]
+        assert len(tasks) == 1
+        assert tasks[0]["content"] == "新任务"
+        assert len(memories) == 1
+
+    mod._reset_memory_json_path()
+    print("PASS: test_multiple_task_items_all_removed")
+
+
 if __name__ == "__main__":
     asyncio.run(test_user_memory_remember())
     asyncio.run(test_user_memory_remember_full())
@@ -481,5 +550,8 @@ if __name__ == "__main__":
     test_sanitize_memory_content()
     test_render_permanent_section_old_format()
     test_render_permanent_section_missing_type()
+    asyncio.run(test_remember_empty_content_rejected())
+    asyncio.run(test_dedup_whitespace_normalized())
+    asyncio.run(test_multiple_task_items_all_removed())
     print("\nAll tests passed!")
     print("\nAll tests passed!")
