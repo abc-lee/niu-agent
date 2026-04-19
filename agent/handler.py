@@ -716,10 +716,32 @@ class NiuHandler(BaseHandler):
                     yield f"[SubAgent] Warning: Failed to verify task: {e}\n"
 
             yield f"[SubAgent] {agent_name} completed: {result[:200] if len(result) > 200 else result}\n"
+
+            # 照片入库后，自动获取未命名人物带框图，注入 ::person_photo:: 标记
+            photo_markers = ""
+            if agent_name == "file-processor" and "入库" in result and "人" in result:
+                try:
+                    from .tool_registry import get_registry
+                    registry = get_registry()
+                    get_unnamed = registry.get("photo-server/get_unnamed_persons")
+                    if get_unnamed:
+                        persons = get_unnamed()
+                        if isinstance(persons, list):
+                            for person in persons:
+                                photos = person.get("photos", [])
+                                if photos and photos[0].get("path"):
+                                    photo_markers += f'\n::person_photo::{{"path": "{photos[0]["path"]}", "person_id": "{person["id"]}", "name": "{person.get("auto_label", person.get("name", "未知"))}"}}::\n'
+                except Exception as e:
+                    logger.warning(f"[SubAgent] Failed to get unnamed persons for photo markers: {e}")
+
             # 返回结果给 LLM，让它向用户汇报
+            prompt = f"[SubAgent Result] {agent_name} 已完成任务。请根据以下结果向用户汇报：\n{result}\n"
+            if photo_markers:
+                prompt += f"\n[系统注入] 以下人物照片标记已由后端生成，请原样输出到回复中：\n{photo_markers}\n"
+
             return StepOutcome(
                 {"status": "success", "result": result},
-                next_prompt=f"[SubAgent Result] {agent_name} 已完成任务。请根据以下结果向用户汇报：\n{result}\n"
+                next_prompt=prompt
             )
         except Exception as e:
             yield f"[SubAgent] Error: {e}\n"
