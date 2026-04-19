@@ -2,7 +2,7 @@
 
 **触发关键词**：未命名、人脸、照片、改名、命名人物
 
-**L1 摘要**：Unnamed person query|unnamed,face,photo,naming|Display photo and face bounding box when querying unnamed persons, user answers name to complete naming|unnamed person,face box,photo display,naming tool|skill|memory/skills/photo-face-display.md
+**L1 摘要**：Unnamed person query|unnamed,face,photo,naming|Display photo with face bounding box (pre-drawn by backend) when querying unnamed persons, user answers name to complete naming|unnamed person,face box,photo display,naming tool,boxed_path|skill|memory/skills/photo-face-display.md
 
 ## 概述
 
@@ -10,17 +10,18 @@
 
 ## 标记格式
 
-使用特殊的 `::person_photo::` 标记来展示图片和人脸框：
+使用特殊的 `::person_photo::` 标记来展示带人脸红框的照片：
 
 ```
-::person_photo::{"path": "照片路径", "bbox": [x1,y1,x2,y2], "person_id": "人物ID", "name": "人物名"}::
+::person_photo::{"path": "带框图路径", "person_id": "人物ID", "name": "人物名"}::
 ```
 
 **参数说明**：
-- `path`: 照片的完整路径（从子 Agent 返回的 file_path）
-- `bbox`: 人脸框坐标 [x1, y1, x2, y2]（左上角和右下角）
+- `path`: 带人脸红框的图片路径（从子 Agent 返回的 `boxed_path`，已画好红框，存于 ~/.niu/tmp/）
 - `person_id`: 人物ID（用于后续命名）
 - `name`: 人物名称（未命名人物通常是 "未命名人物_N"）
+
+**注意**：不再需要 `bbox` 参数，后端已在原图上画好红框并保存到临时目录。
 
 ## 使用场景
 
@@ -37,7 +38,7 @@
 ```
 查询到 3 个未命名人物：
 
-::person_photo::{"path": "REDACTED_WIN_PATH/2026/04/photo.jpg", "bbox": [100,200,300,400], "person_id": "uuid-1", "name": "未命名人物_8"}::
+::person_photo::{"path": "C:/Users/X/.niu/tmp/abc123.png", "person_id": "uuid-1", "name": "未命名人物_8"}::
 
 这是谁？请告诉我名字。
 ```
@@ -63,11 +64,11 @@
 ```
 查询到 3 个未命名人物：
 
-::person_photo::{"path": "REDACTED_WIN_PATH/2026/04/photo1.jpg", "bbox": [100,200,300,400], "person_id": "uuid-1", "name": "未命名人物_8"}::
+::person_photo::{"path": "C:/Users/X/.niu/tmp/img1.png", "person_id": "uuid-1", "name": "未命名人物_8"}::
 
-::person_photo::{"path": "REDACTED_WIN_PATH/2026/04/photo2.jpg", "bbox": [150,250,350,450], "person_id": "uuid-2", "name": "未命名人物_9"}::
+::person_photo::{"path": "C:/Users/X/.niu/tmp/img2.png", "person_id": "uuid-2", "name": "未命名人物_9"}::
 
-::person_photo::{"path": "REDACTED_WIN_PATH/2026/04/photo3.jpg", "bbox": [200,300,400,500], "person_id": "uuid-3", "name": "未命名人物_10"}::
+::person_photo::{"path": "C:/Users/X/.niu/tmp/img3.png", "person_id": "uuid-3", "name": "未命名人物_10"}::
 
 请告诉我这些人的名字。
 ```
@@ -86,7 +87,7 @@
     "auto_label": "未命名人物_8",
     "photo_count": 5,
     "photos": [
-      {"file_path": "REDACTED_WIN_PATH/.../photo.jpg", "bbox": [x1,y1,x2,y2]}
+      {"file_path": "REDACTED_WIN_PATH/.../photo.jpg", "boxed_path": "C:/Users/X/.niu/tmp/abc123.png"}
     ]
   }]
 }
@@ -94,15 +95,14 @@
 
 **注意**：
 - `photos` 数组包含多张代表照片，你可以选择第一张或轮流展示
-- `bbox` 是人脸框坐标，直接传递给标记即可
+- `boxed_path` 是后端已画好红框的图片路径（存于 ~/.niu/tmp/），用这个路径作为 `::person_photo::` 标记的 `path`
 - 使用 `id` 字段作为 `person_id`
 
 ## 前端渲染
 
 前端会自动解析 `::person_photo::` 标记：
-1. 显示照片
-2. 在人脸位置绘制粉色边框
-3. 双击照片可用系统查看器打开
+1. 显示带红框的照片（后端已画好，前端直接显示）
+2. 双击照片可用系统查看器打开
 
 ## 注意事项
 
