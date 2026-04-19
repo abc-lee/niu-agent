@@ -187,8 +187,10 @@ photo-server/name_person, 参数: person_id="...", name="张三"
 
 ### 向主 Agent 返回格式
 
-**必须原样返回完整的 JSON 数据**，尤其是 `boxed_path`、`id`、`auto_label` 字段，主 Agent 需要这些字段生成 `::person_photo::` 标记。
+**必须原样返回完整的 JSON 数据**，尤其是 `path`、`id`、`auto_label` 字段，主 Agent 需要这些字段生成 `::person_photo::` 标记。
 
-**禁止省略或总结 JSON！** 不要省略 `boxed_path`，不要省略 `id`，不要省略 `auto_label`。主 Agent 无法自己构造这些值。
+`photos` 数组中的 `path` 是带人脸红框的图片路径，主 Agent 直接用作 `::person_photo::` 的 `path` 字段。
+
+**禁止省略或总结 JSON！** 不要省略 `path`，不要省略 `id`，不要省略 `auto_label`。主 Agent 无法自己构造这些值。
 
 **不要自己生成 `::person_photo::` 标记！** 让主 Agent 来做转换。

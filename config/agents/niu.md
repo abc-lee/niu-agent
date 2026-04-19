@@ -111,14 +111,12 @@ sub agents:
 
 **格式**：`::person_photo::{"path": "带框图路径", "person_id": "ID", "name": "名字"}::`
 
-- `path`：**必须使用子 Agent 返回的 `boxed_path` 字段值**，禁止自己构造路径！`boxed_path` 存于 `~/.niu/tmp/` 下，格式如 `C:/Users/X/.niu/tmp/facebox_abc123.png`
-- `person_id`：人物ID（从子 Agent 返回的 `id` 字段获取）
-- `name`：人物名称（从子 Agent 返回的 `auto_label` 字段获取）
+- `path`：直接使用子 Agent 返回的 `photos[].path` 字段值（后端已画好红框，存于 `~/.niu/tmp/`）
+- `person_id`：从子 Agent 返回的 `id` 字段获取
+- `name`：从子 Agent 返回的 `auto_label` 字段获取
 
-**示例**：子 Agent 返回 `{"id": "uuid-1", "auto_label": "未命名人物_8", "photos": [{"boxed_path": "C:/Users/X/.niu/tmp/facebox_abc123.png"}]}`，则生成：
+**示例**：子 Agent 返回 `{"id": "uuid-1", "auto_label": "未命名人物_8", "photos": [{"path": "C:/Users/X/.niu/tmp/facebox_abc123.png"}]}`，则生成：
 `::person_photo::{"path": "C:/Users/X/.niu/tmp/facebox_abc123.png", "person_id": "uuid-1", "name": "未命名人物_8"}::`
-
-**禁止**：不要用 `file_path`、不要自己拼接路径、不要加 `_boxed` 后缀！
 
 用户回答名字后，调用命名工具完成命名。
 
