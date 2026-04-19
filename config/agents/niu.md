@@ -109,7 +109,11 @@ sub agents:
 
 用户查询未命名人物时，调用 `chat-with-file-processor` 后，使用 `::person_photo::` 标记展示照片和人脸框。
 
-**格式**：`::person_photo::{"path": "路径", "bbox": [x1,y1,x2,y2], "person_id": "ID", "name": "名字"}::`
+**格式**：`::person_photo::{"path": "带框图路径", "person_id": "ID", "name": "名字"}::`
+
+- `path`：后端已画好红框的图片路径（从子 Agent 返回的 `boxed_path`，存于 ~/.niu/tmp/）
+- `person_id`：人物ID（用于后续命名）
+- `name`：人物名称（未命名人物通常是 "未命名人物_N"）
 
 用户回答名字后，调用命名工具完成命名。
 
