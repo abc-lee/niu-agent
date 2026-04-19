@@ -434,14 +434,17 @@
       spirit.classList.add('hover');
       window.electronAPI.resizeWindow(SIZE.hover.width, SIZE.hover.height);
       window.electronAPI.spiritMouseEnter();
-      
+
       // 1秒后显示便签窗口
       clearTimeout(hoverTimer);
       hoverTimer = setTimeout(() => {
         window.electronAPI.showSticky();
       }, 1000);
-      
-      if (currentState === State.IDLE || currentState === State.SLEEP) {
+
+      // 鼠标移到小女孩身上：清除alert，唤醒
+      if (currentState === State.ALERT) {
+        endAlert();
+      } else if (currentState === State.IDLE || currentState === State.SLEEP) {
         setState(State.WAKE);
       }
     });
