@@ -119,14 +119,14 @@ TOOL_SCHEMAS = {
     },
     "search_persons": {
         "name": "search_persons",
-        "description": """搜索人物（按名字语义相似度）
+        "description": """搜索人物（按名字模糊匹配）
 
 参数:
-- query: 搜索词（人名）
+- query: 搜索词（人名，子串匹配）
 - limit: 返回数量（默认10）
 
 返回:
-- 匹配的人物列表，按相似度排序""",
+- 匹配的人物列表""",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -146,7 +146,9 @@ TOOL_SCHEMAS = {
 
 返回:
 - 未命名人物列表，按出现次数排序
-- 包含：id, auto_label, photo_count, photos""",
+- 包含：id, auto_label, photo_count, has_valid_photos, photos: [{file_path, boxed_path}]
+- boxed_path 是带人脸红框的图片路径，前端用 ::person_photo:: 标记显示
+- has_valid_photos=false 表示该人物的照片文件已不存在""",
         "input_schema": {
             "type": "object",
             "properties": {},
@@ -303,7 +305,7 @@ def get_connection() -> sqlite3.Connection:
             logger.error(f"照片库路径解析失败: {e}")
             raise RuntimeError(f"照片库路径解析失败: {e}") from e
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        _conn = sqlite3.connect(str(db_path))
+        _conn = sqlite3.connect(str(db_path), check_same_thread=False)
         _init_schema(_conn)
     return _conn
 
@@ -586,6 +588,7 @@ def get_models_dir() -> Path:
 # ============== Face recognition model ==============
 _face_model = None
 _last_model_use_time = None
+_model_in_use = False  # 防止卸载定时器在推理期间卸载模型
 MODEL_IDLE_TIMEOUT_SECONDS = 300  # 5 分钟无使用自动卸载
 _model_check_interval = 60  # 每 60 秒检查一次
 
@@ -600,7 +603,7 @@ def _start_model_unload_timer():
         while True:
             time.sleep(_model_check_interval)
 
-            if _face_model is not None and _last_model_use_time is not None:
+            if _face_model is not None and _last_model_use_time is not None and not _model_in_use:
                 idle_seconds = (datetime.now() - _last_model_use_time).total_seconds()
                 if idle_seconds > MODEL_IDLE_TIMEOUT_SECONDS:
                     logger.info(
@@ -694,6 +697,7 @@ def get_face_model():
                 finally:
                     os.dup2(old_stdout, 1)
                     devnull.close()
+                    os.close(old_stdout)
 
             with suppress_stdout():
                 _face_model = FaceAnalysis(
@@ -793,7 +797,7 @@ def update_co_occurrences(persons: list[dict], photo_taken_at: str | None = None
                         (a_id, b_id, now, now),
                     )
 
-        conn.commit()
+        # 不在此处 commit，由调用者控制事务原子性
         logger.info(f"[CO_OCCURRENCE] Updated {len(persons)} persons co-occurrence")
     except Exception as e:
         logger.warning(f"[CO_OCCURRENCE] Failed: {e}")
@@ -980,7 +984,7 @@ def get_next_auto_label() -> str:
         try:
             num = int(row[0].split("_")[-1])
             return f"未命名人物_{num + 1}"
-        except:
+        except (ValueError, IndexError, AttributeError):
             pass
     return "未命名人物_1"
 
@@ -998,12 +1002,13 @@ def search_persons(query: str, limit: int = 10) -> list[dict]:
     """
     try:
         conn = get_connection()
-        # 使用 SQL LIKE 模糊匹配，不再需要 embedding
+        # 使用 SQL LIKE 模糊匹配，转义 LIKE 通配符
+        escaped = query.replace("%", "\\%").replace("_", "\\_")
         cursor = conn.execute(
-            """SELECT id, name, auto_label, photo_count 
-               FROM persons 
-               WHERE name IS NOT NULL AND name LIKE ?""",
-            (f"%{query}%",),
+            """SELECT id, name, auto_label, photo_count
+               FROM persons
+               WHERE name IS NOT NULL AND name LIKE ? ESCAPE '\\'""",
+            (f"%{escaped}%",),
         )
 
         results = []
@@ -1045,9 +1050,9 @@ def get_unnamed_persons() -> list[dict]:
     for row in cursor.fetchall():
         person_id = row[0]
 
-        # 获取该人物的所有照片
+        # 获取该人物的所有照片（去重，同一照片只取第一个bbox）
         photo_cursor = conn.execute(
-            """SELECT p.file_path, f.bounding_box 
+            """SELECT p.file_path, f.bounding_box, p.id
                FROM photos p
                JOIN faces f ON f.photo_id = p.id
                WHERE f.person_id = ?
@@ -1055,20 +1060,25 @@ def get_unnamed_persons() -> list[dict]:
             (person_id,),
         )
 
+        seen_photo_ids = set()
         photos = []
         for photo_row in photo_cursor.fetchall():
+            # 同一照片只取一次（避免多个人脸导致重复）
+            photo_id = photo_row[2]
+            if photo_id in seen_photo_ids:
+                continue
+            seen_photo_ids.add(photo_id)
+
             # 检查照片文件是否存在
             if not Path(photo_row[0]).exists():
                 continue
-
-            import json
 
             bbox = None
             if photo_row[1]:
                 try:
                     bbox = json.loads(photo_row[1])
-                except:
-                    pass
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    logger.warning(f"[UnnamedPersons] Invalid bbox JSON for photo {photo_row[0]}")
 
             # 在原图上画人脸红框
             boxed_path = None
@@ -1120,8 +1130,27 @@ def delete_person(person_id: str) -> dict:
 
     person_name = row[0] if row[0] else row[1]
 
+    # 找出同照片中其他人物（删除 faces 前查询）
+    co_person_ids = conn.execute(
+        """SELECT DISTINCT f2.person_id FROM faces f1
+           JOIN faces f2 ON f1.photo_id = f2.photo_id
+           WHERE f1.person_id = ? AND f2.person_id != ? AND f2.person_id IS NOT NULL""",
+        (person_id, person_id),
+    ).fetchall()
+
     # 删除关联的人脸记录
     conn.execute("DELETE FROM faces WHERE person_id = ?", (person_id,))
+
+    # 重新计算同照片中其他人物的 photo_count
+    for (pid,) in co_person_ids:
+        actual_count = conn.execute(
+            "SELECT COUNT(DISTINCT photo_id) FROM faces WHERE person_id = ?",
+            (pid,),
+        ).fetchone()[0]
+        conn.execute(
+            "UPDATE persons SET photo_count = ? WHERE id = ?",
+            (actual_count, pid),
+        )
 
     # 删除同框关系
     conn.execute(
@@ -1133,6 +1162,17 @@ def delete_person(person_id: str) -> dict:
     conn.execute("DELETE FROM persons WHERE id = ?", (person_id,))
 
     conn.commit()
+
+    # 同步删除知识图谱中的实体
+    try:
+        from niu_kg_server import get_connection as kg_get_connection
+        kg_conn = kg_get_connection()
+        kg_conn.execute(
+            "MATCH (e:Entity {id: $id}) DETACH DELETE e",
+            {"id": f"person:{person_id}"},
+        )
+    except Exception as e:
+        logger.warning(f"[DELETE_PERSON] KG sync failed: {e}")
 
     return {
         "status": "success",
@@ -1173,8 +1213,15 @@ def cleanup_deleted_photos() -> dict:
             "deleted_faces": 0,
         }
 
-    # 删除关联的 faces 记录
     placeholders = ",".join("?" * len(deleted_photo_ids))
+
+    # 找出受影响的 person_id（必须在删除 faces 之前查询）
+    affected_person_ids = conn.execute(
+        f"SELECT DISTINCT person_id FROM faces WHERE photo_id IN ({placeholders}) AND person_id IS NOT NULL",
+        deleted_photo_ids,
+    ).fetchall()
+
+    # 删除关联的 faces 记录
     cursor = conn.execute(
         f"DELETE FROM faces WHERE photo_id IN ({placeholders})",
         deleted_photo_ids,
@@ -1187,6 +1234,17 @@ def cleanup_deleted_photos() -> dict:
         deleted_photo_ids,
     )
     deleted_photos = cursor.rowcount
+
+    # 重新计算受影响人物的 photo_count
+    for (pid,) in affected_person_ids:
+        actual_count = conn.execute(
+            "SELECT COUNT(DISTINCT photo_id) FROM faces WHERE person_id = ?",
+            (pid,),
+        ).fetchone()[0]
+        conn.execute(
+            "UPDATE persons SET photo_count = ? WHERE id = ?",
+            (actual_count, pid),
+        )
 
     conn.commit()
 
@@ -1226,8 +1284,6 @@ def draw_face_boxes_on_image(file_path: str, bbox_list: list[list[float]]) -> st
                 cv2.rectangle(img, (x1, y1), (x2, y2), (0, 0, 255), 3)
 
         # 保存到临时目录（确定性文件名，相同输入复用同一文件）
-        from agent.tmp_dir import save_to_tmp, get_tmp_dir
-        import hashlib
 
         # 编码为 PNG bytes
         success, encoded = cv2.imencode(".png", img)
@@ -1235,16 +1291,27 @@ def draw_face_boxes_on_image(file_path: str, bbox_list: list[list[float]]) -> st
             logger.warning(f"[DrawBox] Failed to encode image: {file_path}")
             return None
 
-        # 用路径+bbox生成确定性文件名，避免重复生成
+        # 用路径+bbox+文件修改时间生成确定性文件名，避免重复生成
         bbox_key = "_".join(str(int(b)) for bbox in bbox_list for b in bbox)
-        name_hash = hashlib.md5(f"{file_path}:{bbox_key}".encode()).hexdigest()[:12]
+        mtime = int(os.path.getmtime(file_path))
+        name_hash = hashlib.md5(f"{file_path}:{bbox_key}:{mtime}".encode()).hexdigest()[:12]
         tmp_name = f"facebox_{name_hash}.png"
 
-        tmp_dir = get_tmp_dir()
+        # 获取临时目录（优先用 agent.tmp_dir，fallback 到 ~/.niu/tmp/）
+        try:
+            from agent.tmp_dir import get_tmp_dir
+            tmp_dir = get_tmp_dir()
+        except ImportError:
+            tmp_dir = os.path.join(os.path.expanduser("~"), ".niu", "tmp")
+            os.makedirs(tmp_dir, exist_ok=True)
+
         tmp_path = os.path.join(tmp_dir, tmp_name)
         if not os.path.exists(tmp_path):
-            with open(tmp_path, "wb") as f:
+            # 先写临时文件，再原子重命名，避免并发写或写失败导致损坏
+            tmp_write_path = tmp_path + ".tmp"
+            with open(tmp_write_path, "wb") as f:
                 f.write(encoded.tobytes())
+            os.replace(tmp_write_path, tmp_path)
         logger.info(f"[DrawBox] Saved boxed image to: {tmp_path}")
         return tmp_path
 
@@ -1271,25 +1338,34 @@ def get_person_photos(person_id: str, limit: int = 5) -> dict:
 
     person_name = row[0] if row[0] else row[1]
 
-    # 获取该人物的所有照片
+    # 获取该人物的所有照片（去重，同一照片只取第一个bbox）
     cursor = conn.execute(
-        """SELECT p.file_path, f.bounding_box, p.taken_at
+        """SELECT p.file_path, f.bounding_box, p.taken_at, p.id
            FROM photos p
            JOIN faces f ON f.photo_id = p.id
            WHERE f.person_id = ?
-           ORDER BY p.taken_at DESC
-           LIMIT ?""",
-        (person_id, limit),
+           ORDER BY p.taken_at DESC""",
+        (person_id,),
     )
 
+    seen_photo_ids = set()
     photos = []
     for photo_row in cursor.fetchall():
+        # 同一照片只取一次
+        photo_id = photo_row[3]
+        if photo_id in seen_photo_ids:
+            continue
+        seen_photo_ids.add(photo_id)
+
+        if len(photos) >= limit:
+            break
+
         bbox = None
         if photo_row[1]:
             try:
                 bbox = json.loads(photo_row[1])
-            except:
-                pass
+            except (json.JSONDecodeError, TypeError, ValueError):
+                logger.warning(f"[PersonPhotos] Invalid bbox JSON for photo {photo_row[0]}")
 
         # 在原图上画人脸红框，保存到临时目录
         boxed_path = None
@@ -1335,8 +1411,13 @@ def match_face_to_person(
     return best_match, best_similarity
 
 
-def update_person_center(person_id: str, new_embedding: np.ndarray) -> None:
-    """Update person center embedding with new face."""
+def update_person_center(person_id: str, new_embedding: np.ndarray, increment_count: bool = True) -> None:
+    """Update person center embedding with new face.
+
+    Args:
+        increment_count: If True, increment photo_count. Set to False when the same
+                         person has multiple faces in the same photo (only count once).
+    """
     conn = get_connection()
 
     # Get existing embedding and face count
@@ -1347,20 +1428,26 @@ def update_person_center(person_id: str, new_embedding: np.ndarray) -> None:
 
     if row and row[0]:
         existing = np.frombuffer(row[0], dtype=np.float32)
-        photo_count = row[1] or 1
+        photo_count = row[1] or 0
 
         # Incremental update: weighted average
-        # New embedding gets weight 1, existing center gets weight (photo_count - 1)
-        updated = (existing * (photo_count - 1) + new_embedding) / photo_count
+        # existing center has weight photo_count, new embedding has weight 1
+        updated = (existing * photo_count + new_embedding) / (photo_count + 1)
     else:
         updated = new_embedding
 
     # Update database
-    conn.execute(
-        "UPDATE persons SET center_embedding = ?, photo_count = photo_count + 1 WHERE id = ?",
-        (updated.tobytes(), person_id),
-    )
-    conn.commit()
+    if increment_count:
+        conn.execute(
+            "UPDATE persons SET center_embedding = ?, photo_count = photo_count + 1, last_seen = ? WHERE id = ?",
+            (updated.tobytes(), datetime.now().isoformat(), person_id),
+        )
+    else:
+        conn.execute(
+            "UPDATE persons SET center_embedding = ?, last_seen = ? WHERE id = ?",
+            (updated.tobytes(), datetime.now().isoformat(), person_id),
+        )
+    # 不在此处 commit，由调用者控制事务原子性
 
 
 def detect_faces(file_path: str) -> list[dict]:
@@ -1371,14 +1458,15 @@ def detect_faces(file_path: str) -> list[dict]:
 
     logger.info(f"[DETECT_FACES] Starting face detection for: {file_path}")
 
-    logger.info("[DETECT_FACES] Getting face model...")
-    print("[DETECT_FACES] Getting face model...", file=sys.stderr, flush=True)
-    face_model = get_face_model()
-    if face_model is None:
-        logger.warning("[DETECT_FACES] Face model not available")
-        return []
-
+    global _model_in_use
+    _model_in_use = True  # 在获取模型之前设置，防止卸载定时器在获取和使用之间卸载
     try:
+        logger.info("[DETECT_FACES] Getting face model...")
+        print("[DETECT_FACES] Getting face model...", file=sys.stderr, flush=True)
+        face_model = get_face_model()
+        if face_model is None:
+            logger.warning("[DETECT_FACES] Face model not available")
+            return []
         logger.info("[DETECT_FACES] Importing cv2...")
         print("[DETECT_FACES] Importing cv2...", file=sys.stderr, flush=True)
         import cv2
@@ -1425,6 +1513,8 @@ def detect_faces(file_path: str) -> list[dict]:
     except Exception as e:
         logger.exception(f"[DETECT_FACES] Face detection failed: {e}")
         return []
+    finally:
+        _model_in_use = False
 
 
 def generate_l0_abstract(person_names: list[str], taken_at: str | None) -> str:
@@ -1442,7 +1532,7 @@ def generate_l0_abstract(person_names: list[str], taken_at: str | None) -> str:
         try:
             dt = datetime.strptime(taken_at, "%Y:%m:%d %H:%M:%S")
             parts.append(dt.strftime("%Y年%m月%d日"))
-        except:
+        except (ValueError, TypeError):
             parts.append(taken_at[:10] if len(taken_at) >= 10 else taken_at)
 
     return "，".join(parts)
@@ -1475,12 +1565,19 @@ def build_photo_file_name(source_name: str, taken_at: str | None = None) -> str:
     # 日期和时间
     if taken_at:
         try:
-            dt = datetime.fromisoformat(taken_at.replace("Z", "+00:00"))
+            # EXIF 格式: "2026:04:19 14:30:00" → 先尝试 strptime
+            dt = datetime.strptime(taken_at, "%Y:%m:%d %H:%M:%S")
             date_str = dt.strftime("%Y%m%d")
             time_str = dt.strftime("%H%M%S")
-        except:
-            date_str = datetime.now().strftime("%Y%m%d")
-            time_str = datetime.now().strftime("%H%M%S")
+        except (ValueError, TypeError):
+            try:
+                # ISO 格式: "2026-04-19T14:30:00" 或 "2026-04-19 14:30:00"
+                dt = datetime.fromisoformat(taken_at.replace("Z", "+00:00"))
+                date_str = dt.strftime("%Y%m%d")
+                time_str = dt.strftime("%H%M%S")
+            except (ValueError, TypeError, AttributeError):
+                date_str = datetime.now().strftime("%Y%m%d")
+                time_str = datetime.now().strftime("%H%M%S")
     else:
         date_str = datetime.now().strftime("%Y%m%d")
         time_str = datetime.now().strftime("%H%M%S")
@@ -1516,6 +1613,8 @@ def handle_photo_conflict(target_path: Path) -> str:
 
 def ingest_photo(file_path: str, category: str | None = None) -> dict:
     """Ingest photo with face detection and person matching."""
+    conn = None
+    final_path = None  # Track for cleanup on failure
     try:
         logger.info(f"[INGEST_PHOTO] Processing: {file_path}")
 
@@ -1532,7 +1631,7 @@ def ingest_photo(file_path: str, category: str | None = None) -> dict:
             try:
                 prefs = get_preferences()
                 category = prefs["categories"]["photos"][0]
-            except:
+            except (KeyError, TypeError, IndexError):
                 category = "生活"
 
         # 确保 category 不为 None
@@ -1554,6 +1653,7 @@ def ingest_photo(file_path: str, category: str | None = None) -> dict:
         conn = get_connection()
         now = datetime.now().isoformat()
 
+        seen_person_ids = set()  # 防止同一人物多张人脸时 photo_count 重复递增
         for face_data in faces:
             face_embedding = face_data["embedding"]
 
@@ -1569,16 +1669,19 @@ def ingest_photo(file_path: str, category: str | None = None) -> dict:
                 # Create new person
                 person_id = str(uuid.uuid4())
                 auto_label = get_next_auto_label()
+                similarity = 1.0  # 新人相似度设为 1.0（完全匹配）
 
                 conn.execute(
                     """INSERT INTO persons (id, auto_label, center_embedding, photo_count, first_seen, last_seen, created_at)
-                       VALUES (?, ?, ?, 1, ?, ?, ?)""",
+                       VALUES (?, ?, ?, 0, ?, ?, ?)""",
                     (person_id, auto_label, face_embedding.tobytes(), now, now, now),
                 )
                 logger.info(f"[INGEST_PHOTO] Created new person: {auto_label}")
 
-            # Update center embedding
-            update_person_center(person_id, face_embedding)
+            # Update center embedding（仅首次出现时递增 photo_count）
+            is_new_photo = person_id not in seen_person_ids
+            update_person_center(person_id, face_embedding, increment_count=is_new_photo)
+            seen_person_ids.add(person_id)
 
             # Get person info for response
             cursor = conn.execute(
@@ -1599,7 +1702,7 @@ def ingest_photo(file_path: str, category: str | None = None) -> dict:
                     }
                 )
 
-        conn.commit()
+        # 不在此处 commit，等文件复制和照片/人脸记录写入后一起提交
 
         # 4. Copy photo to storage
         workspace = get_workspace_path()
@@ -1642,6 +1745,8 @@ def ingest_photo(file_path: str, category: str | None = None) -> dict:
         )
 
         # 6. Create face records
+        if len(faces) != len(detected_persons):
+            logger.error(f"[INGEST_PHOTO] Face/person count mismatch: {len(faces)} vs {len(detected_persons)}")
         for i, (face_data, person) in enumerate(zip(faces, detected_persons)):
             face_id = str(uuid.uuid4())
             bbox_str = json.dumps(face_data["bbox"])
@@ -1658,8 +1763,14 @@ def ingest_photo(file_path: str, category: str | None = None) -> dict:
                 ),
             )
 
-        # 7. Update co-occurrence relations
-        update_co_occurrences(detected_persons, exif.get("taken_at"))
+        # 7. Update co-occurrence relations（去重，防止同一人物多张人脸导致自共现）
+        unique_persons = []
+        seen_pids = set()
+        for p in detected_persons:
+            if p["id"] not in seen_pids:
+                seen_pids.add(p["id"])
+                unique_persons.append(p)
+        update_co_occurrences(unique_persons, exif.get("taken_at"))
 
         conn.commit()
 
@@ -1689,6 +1800,18 @@ def ingest_photo(file_path: str, category: str | None = None) -> dict:
 
     except Exception as e:
         logger.exception(f"[INGEST_PHOTO] Failed: {e}")
+        # Rollback any uncommitted changes on the shared connection
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        # Clean up orphaned file if copy succeeded but DB failed
+        if final_path is not None:
+            try:
+                if os.path.exists(final_path):
+                    os.remove(final_path)
+            except Exception:
+                pass
         return {
             "status": "error",
             "error_code": "UNKNOWN_ERROR",
@@ -1718,6 +1841,18 @@ def name_person(person_id: str, name: str) -> dict:
         conn.execute("UPDATE persons SET name = ? WHERE id = ?", (name, person_id))
         conn.commit()
 
+        # 同步更新知识图谱中的实体名称
+        try:
+            from niu_kg_server import create_entity
+            create_entity(
+                id=f"person:{person_id}",
+                name=name,
+                entity_type="person",
+                description=f"Renamed to: {name}",
+            )
+        except Exception as e:
+            logger.warning(f"[NAME_PERSON] KG sync failed: {e}")
+
         logger.info(f"[NAME_PERSON] Updated person {person_id} name to: {name}")
 
         return {
@@ -1738,12 +1873,13 @@ def name_person(person_id: str, name: str) -> dict:
 
 def merge_persons(person_a_id: str, person_b_id: str) -> dict:
     """Merge two persons into one (keeping person_a's name)."""
+    conn = None
     try:
         conn = get_connection()
 
-        # Get both persons
+        # Get both persons (包含 threshold_adjustment)
         cursor = conn.execute(
-            "SELECT id, name, auto_label, center_embedding, photo_count FROM persons WHERE id IN (?, ?)",
+            "SELECT id, name, auto_label, center_embedding, threshold_adjustment, photo_count FROM persons WHERE id IN (?, ?)",
             (person_a_id, person_b_id),
         )
         rows = cursor.fetchall()
@@ -1781,8 +1917,8 @@ def merge_persons(person_a_id: str, person_b_id: str) -> dict:
 
         if embedding_a is not None and embedding_b is not None:
             # Weighted average based on photo count
-            count_a = person_a[4] or 1
-            count_b = person_b[4] or 1
+            count_a = person_a[5] or 1
+            count_b = person_b[5] or 1
             total = count_a + count_b
             merged_embedding = (embedding_a * count_a + embedding_b * count_b) / total
         elif embedding_a is not None:
@@ -1802,23 +1938,74 @@ def merge_persons(person_a_id: str, person_b_id: str) -> dict:
                 threshold_adjustment = (0.7 - similarity) + 0.05
                 threshold_adjustment = min(threshold_adjustment, 0.3)  # Cap at 0.3
 
-        # Update person_a with merged data
-        if merged_embedding is not None:
-            conn.execute(
-                """UPDATE persons SET center_embedding = ?, photo_count = photo_count + ?,
-                   threshold_adjustment = ? WHERE id = ?""",
-                (
-                    merged_embedding.tobytes(),
-                    person_b[4] or 0,
-                    max(threshold_adjustment, person_a[4] if person_a[4] else 0),
-                    person_a_id,
-                ),
-            )
-
         # Update all faces from person_b to person_a
         conn.execute(
             "UPDATE faces SET person_id = ? WHERE person_id = ?",
             (person_a_id, person_b_id),
+        )
+
+        # Calculate merged_count from actual face records (handles overlapping photos)
+        merged_count = conn.execute(
+            "SELECT COUNT(DISTINCT photo_id) FROM faces WHERE person_id = ?",
+            (person_a_id,),
+        ).fetchone()[0]
+
+        # Update person_a with merged data（始终执行，即使 embedding 为 None）
+        conn.execute(
+            """UPDATE persons SET center_embedding = ?, photo_count = ?,
+               threshold_adjustment = ?, last_seen = ? WHERE id = ?""",
+            (
+                merged_embedding.tobytes() if merged_embedding is not None else None,
+                merged_count,
+                max(threshold_adjustment, person_a[4] if person_a[4] else 0),
+                datetime.now().isoformat(),
+                person_a_id,
+            ),
+        )
+
+        # Clean up co_occurrences referencing person_b
+        # 1. Delete the pair (person_a, person_b) — self-co-occurrence after merge
+        pair = tuple(sorted([person_a_id, person_b_id]))
+        conn.execute(
+            "DELETE FROM co_occurrences WHERE person_a_id = ? AND person_b_id = ?",
+            pair,
+        )
+        # 2. Transfer person_b's co-occurrences to person_a (merge counts)
+        #    For each row where person_b appears with a third person X,
+        #    add the count to person_a's existing row with X (or create new row)
+        b_rows = conn.execute(
+            "SELECT person_a_id, person_b_id, count, first_seen, last_seen FROM co_occurrences WHERE person_a_id = ? OR person_b_id = ?",
+            (person_b_id, person_b_id),
+        ).fetchall()
+        for row_a, row_b, count, first_seen, last_seen in b_rows:
+            # Determine the third person X
+            other_id = row_b if row_a == person_b_id else row_a
+            if other_id == person_a_id:
+                continue  # Skip self-pair (already deleted above)
+            co_pair = tuple(sorted([person_a_id, other_id]))
+            # Try to add count to existing row
+            existing = conn.execute(
+                "SELECT count, first_seen, last_seen FROM co_occurrences WHERE person_a_id = ? AND person_b_id = ?",
+                co_pair,
+            ).fetchone()
+            if existing:
+                existing_first = existing[1]
+                existing_last = existing[2]
+                merged_first = min(existing_first, first_seen) if existing_first and first_seen else (existing_first or first_seen)
+                merged_last = max(existing_last, last_seen) if existing_last and last_seen else (existing_last or last_seen)
+                conn.execute(
+                    "UPDATE co_occurrences SET count = count + ?, first_seen = ?, last_seen = ? WHERE person_a_id = ? AND person_b_id = ?",
+                    (count, merged_first, merged_last, co_pair[0], co_pair[1]),
+                )
+            else:
+                conn.execute(
+                    "INSERT INTO co_occurrences (person_a_id, person_b_id, count, first_seen, last_seen) VALUES (?, ?, ?, ?, ?)",
+                    (co_pair[0], co_pair[1], count, first_seen, last_seen),
+                )
+        # 3. Delete all remaining rows referencing person_b
+        conn.execute(
+            "DELETE FROM co_occurrences WHERE person_a_id = ? OR person_b_id = ?",
+            (person_b_id, person_b_id),
         )
 
         # Delete person_b
@@ -1826,18 +2013,54 @@ def merge_persons(person_a_id: str, person_b_id: str) -> dict:
 
         conn.commit()
 
+        # 同步知识图谱：更新 person_a 名称，转移 person_b 的关系到 person_a，删除 person_b 实体
+        try:
+            from niu_kg_server import create_entity, get_connection as kg_get_connection
+            merged_name = name_a if name_a else auto_label_a
+            create_entity(
+                id=f"person:{person_a_id}",
+                name=merged_name,
+                entity_type="person",
+                description=f"Merged with {person_b_id}",
+            )
+            # 转移 person_b 的关系到 person_a
+            kg_conn = kg_get_connection()
+            # 将 person_b 的出边目标改为 person_a
+            kg_conn.execute(
+                "MATCH (e:Entity {id: $old_id})-[r:MENTIONS]->(target)"
+                " MERGE (a:Entity {id: $new_id})-[:MENTIONS]->(target)",
+                {"old_id": f"person:{person_b_id}", "new_id": f"person:{person_a_id}"},
+            )
+            # 将指向 person_b 的入边源头改为 person_a
+            kg_conn.execute(
+                "MATCH (source)-[r:MENTIONS]->(e:Entity {id: $old_id})"
+                " MERGE (source)-[:MENTIONS]->(a:Entity {id: $new_id})",
+                {"old_id": f"person:{person_b_id}", "new_id": f"person:{person_a_id}"},
+            )
+            # 删除 person_b 的 KG 实体及其所有边
+            kg_conn.execute(
+                "MATCH (e:Entity {id: $id}) DETACH DELETE e",
+                {"id": f"person:{person_b_id}"},
+            )
+        except Exception as e:
+            logger.warning(f"[MERGE_PERSONS] KG sync failed: {e}")
+
         logger.info(f"[MERGE_PERSONS] Merged {person_b_id} into {person_a_id}")
 
         return {
             "status": "success",
             "merged_into": person_a_id,
             "name": name_a if name_a else auto_label_a,
-            "photo_count": (person_a[4] or 0) + (person_b[4] or 0),
+            "photo_count": merged_count,
             "deleted_person_id": person_b_id,
         }
 
     except Exception as e:
         logger.exception(f"[MERGE_PERSONS] Failed: {e}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
         return {
             "status": "error",
             "error_code": "UNKNOWN_ERROR",
@@ -1892,7 +2115,7 @@ def ingest_photos_batch(source_path: str, category: str | None = None) -> dict:
             try:
                 prefs = get_preferences()
                 category = prefs["categories"]["photos"][0]
-            except:
+            except (KeyError, TypeError, IndexError):
                 category = "生活"
 
         # 确保 category 不为 None
@@ -1905,11 +2128,20 @@ def ingest_photos_batch(source_path: str, category: str | None = None) -> dict:
         now = datetime.now()
         target_root = workspace / str(now.year) / category / source_dir.name
 
-        # 收集所有照片文件
+        # 收集所有照片文件（去重，Windows 大小写不敏感会重复）
         photo_files = []
+        seen_paths = set()
         for ext in PHOTO_EXTENSIONS:
-            photo_files.extend(source_dir.rglob(f"*{ext}"))
-            photo_files.extend(source_dir.rglob(f"*{ext.upper()}"))
+            for pf in source_dir.rglob(f"*{ext}"):
+                key = str(pf.resolve()).lower()
+                if key not in seen_paths:
+                    seen_paths.add(key)
+                    photo_files.append(pf)
+            for pf in source_dir.rglob(f"*{ext.upper()}"):
+                key = str(pf.resolve()).lower()
+                if key not in seen_paths:
+                    seen_paths.add(key)
+                    photo_files.append(pf)
 
         if not photo_files:
             return {
@@ -2232,11 +2464,20 @@ def ingest_document(file_path: str, category: str = "其他", mode: str = "copy"
         # 检查是否为目录
         if source.is_dir():
             logger.info(f"[INGEST] 检测到目录，检查是否包含照片...")
-            # 检查目录中是否有照片
+            # 检查目录中是否有照片（去重）
             photo_files = []
+            seen_paths = set()
             for ext in PHOTO_EXTENSIONS:
-                photo_files.extend(source.rglob(f"*{ext}"))
-                photo_files.extend(source.rglob(f"*{ext.upper()}"))
+                for pf in source.rglob(f"*{ext}"):
+                    key = str(pf.resolve()).lower()
+                    if key not in seen_paths:
+                        seen_paths.add(key)
+                        photo_files.append(pf)
+                for pf in source.rglob(f"*{ext.upper()}"):
+                    key = str(pf.resolve()).lower()
+                    if key not in seen_paths:
+                        seen_paths.add(key)
+                        photo_files.append(pf)
 
             if photo_files:
                 logger.info(
@@ -2291,11 +2532,9 @@ def ingest_document(file_path: str, category: str = "其他", mode: str = "copy"
         # 读取文件内容，准备生成 L1
         file_content = None
         try:
-            with open(final_path, "r", encoding="utf-8") as f:
-                file_content = f.read()
-                # 限制内容长度，避免过大
-                if len(file_content) > 10000:
-                    file_content = file_content[:10000] + "\n... [内容已截断]"
+            file_content = read_file_content(str(final_path))
+            if file_content and len(file_content) > 10000:
+                file_content = file_content[:10000] + "\n... [内容已截断]"
         except Exception as e:
             logger.warning(f"[INGEST] 无法读取文件内容: {e}")
             file_content = None
@@ -2369,7 +2608,7 @@ _vector_db_failed: bool = False
 
 
 def get_vector_db_connection() -> sqlite3.Connection:
-    """获取向量数据库连接"""
+    """获取向量数据库连接（已废弃：请使用 get_vector_search()._get_connection() 复用共享连接）"""
     global _vector_db_failed
     if _vector_db_failed:
         raise RuntimeError("向量库路径解析失败，无法建立连接。请检查 memory.json 中 workspace.path 配置。")
@@ -2429,25 +2668,34 @@ def store_document_l1(file_path: str, l1: str, l2: str | None = None) -> dict:
                 "file_path": file_path,
             }
 
-        # 直接写入向量数据库
-        conn = get_vector_db_connection()
+        # 使用 VectorSearchAdapter 的共享连接（避免独立连接与共享连接并发冲突）
+        from agent.vector_search import get_vector_search
+        vs = get_vector_search()
+        conn = vs._get_connection()
+        if conn is None:
+            return {"status": "error", "reason": "向量库不可用", "file_path": file_path}
+        try:
+            # 存储 L1（符合规范：只存L1摘要，文件内容不作为L2）
+            metadata = {
+                "level": "l1",  # 小写，符合规范
+                "category": "document",
+                "file_path": file_path,
+            }
+            conn.execute(
+                "INSERT INTO documents (id, content, embedding, metadata) VALUES (?, ?, ?, ?)",
+                (l1_id, l1, embedding_blob, json.dumps(metadata)),
+            )
 
-        # 存储 L1（符合规范：只存L1摘要，文件内容不作为L2）
-        metadata = {
-            "level": "l1",  # 小写，符合规范
-            "category": "document",
-            "file_path": file_path,
-        }
-        conn.execute(
-            "INSERT INTO documents (id, content, embedding, metadata) VALUES (?, ?, ?, ?)",
-            (l1_id, l1, embedding_blob, json.dumps(metadata)),
-        )
+            # L2不存储到向量库（文件内容保留在原位置，通过L1指针访问）
+            # 根据规范：L2只存储对话产生的内容，文件不应该作为L2
 
-        # L2不存储到向量库（文件内容保留在原位置，通过L1指针访问）
-        # 根据规范：L2只存储对话产生的内容，文件不应该作为L2
-
-        conn.commit()
-        conn.close()
+            conn.commit()
+        except Exception as db_err:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            raise RuntimeError(f"向量库写入失败: {db_err}") from db_err
 
         logger.info(f"[STORE_L1] L1 存储成功: {l1_id}")
 
@@ -2484,110 +2732,123 @@ def store_documents_l1(documents: list[dict]) -> dict:
     failed_count = 0
 
     try:
-        conn = get_vector_db_connection()
+        # 使用 VectorSearchAdapter 的共享连接（避免独立连接与共享连接并发冲突）
+        from agent.vector_search import get_vector_search
+        vs = get_vector_search()
+        conn = vs._get_connection()
+        if conn is None:
+            return {"status": "error", "reason": "向量库不可用", "total": len(documents)}
+        try:
+            for doc in documents:
+                file_path = doc.get("file_path", "")
+                l1 = doc.get("l1", "")
+                l2 = doc.get("l2")
 
-        for doc in documents:
-            file_path = doc.get("file_path", "")
-            l1 = doc.get("l1", "")
-            l2 = doc.get("l2")
-
-            if not file_path or not l1:
-                results.append(
-                    {
-                        "file_path": file_path,
-                        "status": "error",
-                        "reason": "缺少 file_path 或 l1",
-                    }
-                )
-                failed_count += 1
-                continue
-
-            try:
-                # 生成唯一 ID
-                l1_id = f"doc_{uuid.uuid4().hex[:12]}"
-
-                # 生成向量
-                embedding_blob = None
-                embedding_result = call_embedding_service("/encode", {"text": l1})
-                if embedding_result and "embedding" in embedding_result:
-                    embedding_blob = np.array(
-                        embedding_result["embedding"], dtype=np.float32
-                    ).tobytes()
-
-                # Embedding 失败则跳过（无向量的记录无法被检索，是废数据）
-                if embedding_blob is None:
+                if not file_path or not l1:
                     results.append(
                         {
                             "file_path": file_path,
                             "status": "error",
-                            "reason": "Embedding 服务不可用，无法生成向量",
+                            "reason": "缺少 file_path 或 l1",
                         }
                     )
                     failed_count += 1
                     continue
 
-                # 存储 L1
-                metadata = {
-                    "type": "l1",
-                    "source": "document",
-                    "file_path": file_path,
-                }
-                conn.execute(
-                    "INSERT INTO documents (id, content, embedding, metadata) VALUES (?, ?, ?, ?)",
-                    (l1_id, l1, embedding_blob, json.dumps(metadata)),
-                )
+                try:
+                    # 生成唯一 ID
+                    l1_id = f"doc_{uuid.uuid4().hex[:12]}"
 
-                # 存储 L2（如果提供）
-                l2_id = None
-                if l2 and len(l2) <= 10000:
-                    l2_id = f"doc_{uuid.uuid4().hex[:12]}"
-                    l2_embedding_blob = None
-                    l2_embedding_result = call_embedding_service(
-                        "/encode", {"text": l2}
-                    )
-                    if l2_embedding_result and "embedding" in l2_embedding_result:
-                        l2_embedding_blob = np.array(
-                            l2_embedding_result["embedding"], dtype=np.float32
+                    # 生成向量
+                    embedding_blob = None
+                    embedding_result = call_embedding_service("/encode", {"text": l1})
+                    if embedding_result and "embedding" in embedding_result:
+                        embedding_blob = np.array(
+                            embedding_result["embedding"], dtype=np.float32
                         ).tobytes()
 
-                    l2_metadata = {
-                        "type": "l2",
-                        "source": "document",
+                    # Embedding 失败则跳过（无向量的记录无法被检索，是废数据）
+                    if embedding_blob is None:
+                        results.append(
+                            {
+                                "file_path": file_path,
+                                "status": "error",
+                                "reason": "Embedding 服务不可用，无法生成向量",
+                            }
+                        )
+                        failed_count += 1
+                        continue
+
+                    # 存储 L1
+                    metadata = {
+                        "level": "l1",
+                        "category": "document",
                         "file_path": file_path,
-                        "l1_id": l1_id,
                     }
                     conn.execute(
                         "INSERT INTO documents (id, content, embedding, metadata) VALUES (?, ?, ?, ?)",
-                        (l2_id, l2, l2_embedding_blob, json.dumps(l2_metadata)),
+                        (l1_id, l1, embedding_blob, json.dumps(metadata)),
                     )
 
-                # 同步到知识图谱（失败不影响向量库写入）
-                kg_result = sync_to_kg(file_path, l1, source="document")
+                    # 存储 L2（如果提供且 embedding 成功）
+                    l2_id = None
+                    if l2 and len(l2) <= 10000:
+                        l2_embedding_blob = None
+                        l2_embedding_result = call_embedding_service(
+                            "/encode", {"text": l2}
+                        )
+                        if l2_embedding_result and "embedding" in l2_embedding_result:
+                            l2_embedding_blob = np.array(
+                                l2_embedding_result["embedding"], dtype=np.float32
+                            ).tobytes()
 
-                results.append(
-                    {
-                        "file_path": file_path,
-                        "status": "success",
-                        "l1_id": l1_id,
-                        "l2_id": l2_id,
-                        "kg_sync": kg_result,
-                    }
-                )
-                success_count += 1
+                        if l2_embedding_blob is not None:
+                            l2_id = f"doc_{uuid.uuid4().hex[:12]}"
+                            l2_metadata = {
+                                "level": "l2",
+                                "category": "document",
+                                "file_path": file_path,
+                                "l1_id": l1_id,
+                            }
+                            conn.execute(
+                                "INSERT INTO documents (id, content, embedding, metadata) VALUES (?, ?, ?, ?)",
+                                (l2_id, l2, l2_embedding_blob, json.dumps(l2_metadata)),
+                            )
+                        else:
+                            logger.warning(f"[STORE_DOCS_L1] L2 embedding failed for {file_path}, skipping L2")
 
-            except Exception as e:
-                logger.error(f"[STORE_DOCS_L1] 单个文件失败: {file_path}, {e}")
-                results.append(
-                    {
-                        "file_path": file_path,
-                        "status": "error",
-                        "reason": str(e),
-                    }
-                )
-                failed_count += 1
+                    # 同步到知识图谱（失败不影响向量库写入）
+                    kg_result = sync_to_kg(file_path, l1, source="document")
 
-        conn.commit()
-        conn.close()
+                    results.append(
+                        {
+                            "file_path": file_path,
+                            "status": "success",
+                            "l1_id": l1_id,
+                            "l2_id": l2_id,
+                            "kg_sync": kg_result,
+                        }
+                    )
+                    success_count += 1
+
+                except Exception as e:
+                    logger.error(f"[STORE_DOCS_L1] 单个文件失败: {file_path}, {e}")
+                    results.append(
+                        {
+                            "file_path": file_path,
+                            "status": "error",
+                            "reason": str(e),
+                        }
+                    )
+                    failed_count += 1
+
+            conn.commit()
+        except Exception as db_err:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            raise RuntimeError(f"向量库写入失败: {db_err}") from db_err
 
         logger.info(f"[STORE_DOCS_L1] 批量存储完成: {success_count}/{len(documents)}")
 
@@ -2907,14 +3168,14 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="search_persons",
-            description="""搜索人物（按名字语义相似度）
+            description="""搜索人物（按名字模糊匹配）
 
 参数:
-- query: 搜索词（人名）
+- query: 搜索词（人名，子串匹配）
 - limit: 返回数量（默认10）
 
 返回:
-- 匹配的人物列表，按相似度排序""",
+- 匹配的人物列表""",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -2934,7 +3195,9 @@ async def list_tools() -> list[Tool]:
 
 返回:
 - 未命名人物列表，按出现次数排序
-- 包含：id, auto_label, photo_count, photos""",
+- 包含：id, auto_label, photo_count, has_valid_photos, photos: [{file_path, boxed_path}]
+- boxed_path 是带人脸红框的图片路径，前端用 ::person_photo:: 标记显示
+- has_valid_photos=false 表示该人物的照片文件已不存在""",
             inputSchema={
                 "type": "object",
                 "properties": {},
@@ -3020,7 +3283,7 @@ boxed_path 是带人脸红框的图片路径，前端用 ::person_photo:: 标记
 
 返回:
 - status: success | error
-- document_id: 文档ID
+- l1_id: 文档ID
 
 L1 格式说明:
 - 标题：文档标题

@@ -122,6 +122,7 @@ class VectorSearchAdapter:
             if os.path.exists(self.db_path):
                 # check_same_thread=False 允许跨线程使用
                 self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
+                self._conn.execute("PRAGMA journal_mode=WAL")  # 允许并发读写
                 # 只在首次连接时创建索引
                 if not self._indexes_created:
                     self._ensure_indexes()
@@ -225,7 +226,7 @@ class VectorSearchAdapter:
                 # 排除查询模式
                 filtered_results = [
                     r for r in results
-                    if r.metadata.get("type") != "query_pattern"
+                    if r.metadata.get("category") != "query_pattern"
                 ]
 
                 return filtered_results
@@ -259,6 +260,7 @@ class VectorSearchAdapter:
         full_metadata = {
             "level": "l1",
             "category": "interaction_habit",
+            "type": habit_type,
             **metadata
         }
 
@@ -625,7 +627,7 @@ class VectorSearchAdapter:
                         # 只检索 target_category
                         if doc_cat != target_category:
                             continue
-                        if metadata.get("type") == "query_pattern":
+                        if metadata.get("category") == "query_pattern":
                             continue
                         doc_vec = np.frombuffer(embedding_blob, dtype=np.float32)
                         doc_norm = np.linalg.norm(doc_vec)

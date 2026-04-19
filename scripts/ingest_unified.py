@@ -8,6 +8,7 @@
 """
 
 import json
+import os
 import shutil
 import sys
 import uuid
@@ -95,104 +96,139 @@ def _ingest_single_photo(path: str, category: str | None = None, mode: str = "co
 
     conn = ps.get_connection()
     now = datetime.now().isoformat()
+    final_path = None
 
-    # 1. 提取 EXIF
-    exif = ps.extract_exif(str(source))
-    taken_at = exif.get("taken_at")
-    location = exif.get("location")
-    camera = exif.get("camera")
-
-    # 2. 人脸检测
-    detected_persons = []
-    face_embeddings = []  # 保留原始 embedding 用于写入 faces 表
     try:
-        faces = ps.detect_faces(str(source))
-        for face_data in faces:
-            face_embedding = face_data["embedding"]
-            bbox = face_data.get("bbox", [])
-            confidence = face_data.get("confidence", 0)
+        # 1. 提取 EXIF
+        exif = ps.extract_exif(str(source))
+        taken_at = exif.get("taken_at")
+        location = exif.get("location")
+        camera = exif.get("camera")
 
-            # 匹配已有人物
-            match_id, similarity = ps.match_face_to_person(face_embedding)
-            if match_id:
-                person_id = match_id
-            else:
-                # 创建新人物（与原始 ingest_photo 保持一致）
-                person_id = str(uuid.uuid4())
-                auto_label = ps.get_next_auto_label()
-                similarity = 1.0
-                conn.execute(
-                    """INSERT INTO persons (id, auto_label, center_embedding, photo_count, first_seen, last_seen, created_at)
-                       VALUES (?, ?, ?, 1, ?, ?, ?)""",
-                    (person_id, auto_label, face_embedding.tobytes(), now, now, now),
-                )
+        # 2. 人脸检测
+        detected_persons = []
+        face_embeddings = []  # 保留原始 embedding 用于写入 faces 表
+        seen_person_ids = set()  # 防止同一人物多张人脸时 photo_count 重复递增
+        try:
+            faces = ps.detect_faces(str(source))
+            for face_data in faces:
+                face_embedding = face_data["embedding"]
+                bbox = face_data.get("bbox", [])
+                confidence = face_data.get("confidence", 0)
 
-            # 更新中心嵌入
-            ps.update_person_center(person_id, face_embedding)
+                # 匹配已有人物
+                match_id, similarity = ps.match_face_to_person(face_embedding)
+                if match_id:
+                    person_id = match_id
+                else:
+                    # 创建新人物（与原始 ingest_photo 保持一致）
+                    person_id = str(uuid.uuid4())
+                    auto_label = ps.get_next_auto_label()
+                    similarity = 1.0
+                    conn.execute(
+                        """INSERT INTO persons (id, auto_label, center_embedding, photo_count, first_seen, last_seen, created_at)
+                           VALUES (?, ?, ?, 0, ?, ?, ?)""",
+                        (person_id, auto_label, face_embedding.tobytes(), now, now, now),
+                    )
 
-            # 获取人物名称
-            cursor = conn.execute("SELECT name, auto_label FROM persons WHERE id = ?", (person_id,))
-            row = cursor.fetchone()
-            person_name = row[0] if row and row[0] else (row[1] if row else "未知")
+                # 更新中心嵌入（仅首次出现时递增 photo_count）
+                is_new_photo = person_id not in seen_person_ids
+                ps.update_person_center(person_id, face_embedding, increment_count=is_new_photo)
+                seen_person_ids.add(person_id)
 
-            detected_persons.append({
-                "id": person_id,
-                "name": person_name,
-                "similarity": similarity,
-                "bbox": bbox,
-                "confidence": confidence,
-            })
-            face_embeddings.append(face_embedding)
-    except Exception as e:
-        print(f"[ingest] 人脸检测失败: {e}", file=sys.stderr)
+                # 获取人物名称
+                cursor = conn.execute("SELECT name, auto_label FROM persons WHERE id = ?", (person_id,))
+                row = cursor.fetchone()
+                person_name = row[0] if row and row[0] else (row[1] if row else "未知")
 
-    conn.commit()
+                detected_persons.append({
+                    "id": person_id,
+                    "name": person_name,
+                    "similarity": similarity,
+                    "bbox": bbox,
+                    "confidence": confidence,
+                })
+                face_embeddings.append(face_embedding)
+        except Exception as e:
+            print(f"[ingest] 人脸检测失败: {e}", file=sys.stderr)
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            detected_persons = []
+            face_embeddings = []
 
-    # 3. 拷贝到存储目录
-    workspace = ps.get_workspace_path()
-    relative_dir = ps.build_photo_storage_path(category, source.name)
-    target_dir = workspace / relative_dir
-    target_dir.mkdir(parents=True, exist_ok=True)
+        # 不在此处 commit，等文件复制和照片/人脸记录写入后一起提交
 
-    new_name = ps.build_photo_file_name(source.name, taken_at)
-    target_path = target_dir / new_name
+        # 3. 拷贝到存储目录
+        workspace = ps.get_workspace_path()
+        relative_dir = ps.build_photo_storage_path(category, source.name)
+        target_dir = workspace / relative_dir
+        target_dir.mkdir(parents=True, exist_ok=True)
 
-    # 冲突处理：handle_photo_conflict 返回最终路径（重名时自动改名）
-    final_path = ps.handle_photo_conflict(target_path)
+        new_name = ps.build_photo_file_name(source.name, taken_at)
+        target_path = target_dir / new_name
 
-    if mode == "copy":
-        shutil.copy2(str(source), str(final_path))
-    elif mode == "move":
-        shutil.move(str(source), str(final_path))
-    elif mode == "reference":
-        final_path = str(source)
+        # 冲突处理：handle_photo_conflict 返回最终路径（重名时自动改名）
+        final_path = ps.handle_photo_conflict(target_path)
 
-    # 4. 生成 L0 摘要
-    person_names = [p["name"] for p in detected_persons]
-    abstract = ps.generate_l0_abstract(person_names, taken_at)
+        if mode == "copy":
+            shutil.copy2(str(source), str(final_path))
+        elif mode == "move":
+            shutil.move(str(source), str(final_path))
+        elif mode == "reference":
+            final_path = str(source)
 
-    # 5. 写 photos 表
-    photo_id = str(uuid.uuid4())
-    conn.execute(
-        """INSERT INTO photos (id, file_path, taken_at, location, camera, abstract, ingested_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
-        (photo_id, str(Path(final_path).resolve()), taken_at, location, camera, abstract, now),
-    )
+        # 4. 生成 L0 摘要
+        person_names = [p["name"] for p in detected_persons]
+        abstract = ps.generate_l0_abstract(person_names, taken_at)
 
-    # 6. 写 faces 表（存储实际 embedding 字节）
-    for person, face_embedding in zip(detected_persons, face_embeddings):
-        face_id = str(uuid.uuid4())
-        bbox_str = json.dumps(person.get("bbox", []))
+        # 5. 写 photos 表
+        photo_id = str(uuid.uuid4())
         conn.execute(
-            """INSERT INTO faces (id, photo_id, person_id, embedding, bounding_box, confidence)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (face_id, photo_id, person["id"], face_embedding.tobytes(), bbox_str, person.get("confidence", 0)),
+            """INSERT INTO photos (id, file_path, taken_at, location, camera, abstract, ingested_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (photo_id, str(Path(final_path).resolve()), taken_at, location, camera, abstract, now),
         )
-    conn.commit()
 
-    # 7. 共现关系
-    if len(detected_persons) > 1:
-        ps.update_co_occurrences(detected_persons, taken_at)
+        # 6. 写 faces 表（存储实际 embedding 字节）
+        for person, face_embedding in zip(detected_persons, face_embeddings):
+            face_id = str(uuid.uuid4())
+            bbox_str = json.dumps(person.get("bbox", []))
+            conn.execute(
+                """INSERT INTO faces (id, photo_id, person_id, embedding, bounding_box, confidence)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (face_id, photo_id, person["id"], face_embedding.tobytes(), bbox_str, person.get("confidence", 0)),
+            )
+
+        # 7. 共现关系（写入同一事务，单次原子提交）
+        if len(detected_persons) > 1:
+            unique_persons = []
+            seen_pids = set()
+            for p in detected_persons:
+                if p["id"] not in seen_pids:
+                    seen_pids.add(p["id"])
+                    unique_persons.append(p)
+            if len(unique_persons) > 1:
+                ps.update_co_occurrences(unique_persons, taken_at)
+
+        conn.commit()
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        # 清理已复制的孤立文件
+        if final_path and mode != "reference":
+            try:
+                if mode == "move":
+                    # move 模式：将文件移回原位置，防止数据丢失
+                    shutil.move(str(final_path), str(source))
+                else:
+                    os.remove(str(final_path))
+            except OSError:
+                pass
+        return {"status": "error", "error_code": "INGEST_FAILED", "message": str(e)}
 
     # 8. KG 同步
     kg_result = None
@@ -246,26 +282,29 @@ def _ingest_single_document(path: str, category: str = "其他", mode: str = "co
 
     # 如果有 L1，存储到向量库
     if l1:
+        l1_error = None
         try:
             ps.store_document_l1(str(final_path), l1)
         except Exception as e:
             print(f"[ingest] L1 存储失败: {e}", file=sys.stderr)
+            l1_error = str(e)
 
-        # KG 同步
+        # KG 同步（即使 L1 失败也尝试同步）
         try:
             ps.sync_to_kg(str(final_path), l1, source="document")
         except Exception as e:
             print(f"[ingest] KG 同步失败: {e}", file=sys.stderr)
 
+        if l1_error:
+            return {"status": "error", "error_code": "L1_STORE_FAILED", "message": f"L1 存储失败: {l1_error}", "file_path": str(final_path)}
         return {"status": "success", "action": action, "file_path": str(final_path), "category": category}
 
     # 没有 L1，返回 need_l1
     file_content = None
     try:
-        with open(final_path, "r", encoding="utf-8") as f:
-            file_content = f.read()
-            if len(file_content) > 10000:
-                file_content = file_content[:10000] + "\n... [内容已截断]"
+        file_content = ps.read_file_content(str(final_path))
+        if file_content and len(file_content) > 10000:
+            file_content = file_content[:10000] + "\n... [内容已截断]"
     except Exception:
         pass
 

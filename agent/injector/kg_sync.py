@@ -245,11 +245,12 @@ class KGSync:
                 except Exception:
                     metadata = {}
 
-                # 精确过滤：仅同步 category=document 或 source=document 的记录
-                if metadata.get("category") != "document" and metadata.get("source") != "document":
+                # 精确过滤：仅同步 category=document 的记录
+                if metadata.get("category") != "document":
                     continue
 
-                source = metadata.get("source", "")
+                # 已过滤 category=document，KG source 固定为 "document"
+                source = "document"
                 file_path = metadata.get("file_path", doc_id)
 
                 # 跳过 KG 中已有的
