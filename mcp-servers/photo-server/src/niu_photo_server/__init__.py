@@ -204,7 +204,9 @@ TOOL_SCHEMAS = {
 
 返回:
 - person_id, person_name
-- photos: [{file_path, bbox, taken_at}, ...]""",
+- photos: [{file_path, boxed_path, taken_at}, ...]
+
+boxed_path 是带人脸红框的图片路径，前端用 ::person_photo:: 标记显示。""",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -1067,10 +1069,16 @@ def get_unnamed_persons() -> list[dict]:
                     bbox = json.loads(photo_row[1])
                 except:
                     pass
+
+            # 在原图上画人脸红框
+            boxed_path = None
+            if bbox:
+                boxed_path = draw_face_boxes_on_image(photo_row[0], [bbox])
+
             photos.append(
                 {
                     "file_path": photo_row[0],
-                    "bbox": bbox,
+                    "boxed_path": boxed_path,  # 带红框图路径
                 }
             )
 
@@ -1190,10 +1198,56 @@ def cleanup_deleted_photos() -> dict:
     }
 
 
+def draw_face_boxes_on_image(file_path: str, bbox_list: list[list[float]]) -> str | None:
+    """在原图上画人脸红框，保存到临时目录，返回带框图路径。
+
+    Args:
+        file_path: 原图路径
+        bbox_list: 人脸框列表，每个为 [x1, y1, x2, y2]
+
+    Returns:
+        带框图路径（~/.niu/tmp/ 下），失败返回 None
+    """
+    try:
+        import cv2
+
+        # 读取图片（支持中文路径）
+        with open(file_path, "rb") as f:
+            img_bytes = np.frombuffer(f.read(), dtype=np.uint8)
+        img = cv2.imdecode(img_bytes, cv2.IMREAD_COLOR)
+        if img is None:
+            logger.warning(f"[DrawBox] Cannot read image: {file_path}")
+            return None
+
+        # 画红框
+        for bbox in bbox_list:
+            if len(bbox) == 4:
+                x1, y1, x2, y2 = int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])
+                cv2.rectangle(img, (x1, y1), (x2, y2), (0, 0, 255), 3)
+
+        # 保存到临时目录
+        from agent.tmp_dir import save_to_tmp
+
+        # 编码为 PNG bytes
+        success, encoded = cv2.imencode(".png", img)
+        if not success:
+            logger.warning(f"[DrawBox] Failed to encode image: {file_path}")
+            return None
+
+        tmp_path = save_to_tmp(encoded.tobytes(), suffix=".png")
+        logger.info(f"[DrawBox] Saved boxed image to: {tmp_path}")
+        return tmp_path
+
+    except Exception as e:
+        logger.error(f"[DrawBox] Error drawing face boxes: {e}")
+        return None
+
+
 def get_person_photos(person_id: str, limit: int = 5) -> dict:
-    """获取某人物的所有照片（包含人脸框）
+    """获取某人物的所有照片（带人脸红框的图片路径）
 
     用于"换一张照片看看"的场景。
+    在原图上画人脸红框，保存到临时目录，返回带框图路径。
     """
     conn = get_connection()
 
@@ -1227,10 +1281,15 @@ def get_person_photos(person_id: str, limit: int = 5) -> dict:
             except:
                 pass
 
+        # 在原图上画人脸红框，保存到临时目录
+        boxed_path = None
+        if bbox and os.path.exists(photo_row[0]):
+            boxed_path = draw_face_boxes_on_image(photo_row[0], [bbox])
+
         photos.append(
             {
                 "file_path": photo_row[0],
-                "bbox": bbox,
+                "boxed_path": boxed_path,  # 带红框图路径（~/.niu/tmp/），前端直接显示
                 "taken_at": photo_row[2],
             }
         )
@@ -2923,7 +2982,9 @@ async def list_tools() -> list[Tool]:
 
 返回:
 - person_id, person_name
-- photos: [{file_path, bbox, taken_at}, ...]""",
+- photos: [{file_path, boxed_path, taken_at}, ...]
+
+boxed_path 是带人脸红框的图片路径，前端用 ::person_photo:: 标记显示。""",
             inputSchema={
                 "type": "object",
                 "properties": {
