@@ -186,22 +186,51 @@ class MessageStore:
             return result[0] if result else 0
 
     async def clear_messages(self) -> int:
-        """Clear all messages (for /new command)"""
+        """Clear all messages and cleanup referenced temp files"""
+        # Collect all message content before deleting
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute("SELECT content FROM messages")
+            rows = await cursor.fetchall()
+
+        # Extract temp file paths from content
+        tmp_files = _extract_tmp_paths([row["content"] for row in rows if row["content"]])
+
+        # Delete messages
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute("DELETE FROM messages")
             deleted = cursor.rowcount
             await db.commit()
 
-        logger.info(f"Cleared {deleted} messages")
+        # Cleanup temp files
+        cleaned = 0
+        if tmp_files:
+            from agent.tmp_dir import cleanup_tmp_files
+            cleaned = cleanup_tmp_files(tmp_files)
+
+        logger.info(f"Cleared {deleted} messages, cleaned {cleaned} temp files")
         return deleted
 
     async def delete_messages_by_ids(self, message_ids: List[str]) -> int:
-        """Delete messages by IDs"""
+        """Delete messages by IDs and cleanup referenced temp files"""
         if not message_ids:
             return 0
 
+        # Collect content of messages to be deleted
         async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
             placeholders = ",".join("?" * len(message_ids))
+            cursor = await db.execute(
+                f"SELECT content FROM messages WHERE id IN ({placeholders})",
+                message_ids,
+            )
+            rows = await cursor.fetchall()
+
+        # Extract temp file paths
+        tmp_files = _extract_tmp_paths([row["content"] for row in rows if row["content"]])
+
+        # Delete messages
+        async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute(
                 f"DELETE FROM messages WHERE id IN ({placeholders})",
                 message_ids,
@@ -209,8 +238,38 @@ class MessageStore:
             deleted = cursor.rowcount
             await db.commit()
 
-        logger.info(f"Deleted {deleted} messages by IDs")
+        # Cleanup temp files
+        cleaned = 0
+        if tmp_files:
+            from agent.tmp_dir import cleanup_tmp_files
+            cleaned = cleanup_tmp_files(tmp_files)
+
+        logger.info(f"Deleted {deleted} messages by IDs, cleaned {cleaned} temp files")
         return deleted
+
+
+def _extract_tmp_paths(contents: list[str]) -> list[str]:
+    """Extract temp file paths from message content strings.
+
+    Looks for paths that contain /.niu/tmp/ or \\.niu\\tmp\\
+    """
+    import re
+    from agent.tmp_dir import is_tmp_file
+
+    paths = []
+    for content in contents:
+        if not content:
+            continue
+        # Match file paths (Windows or Unix style)
+        # Pattern: drive letter or /home + path containing .niu/tmp
+        found = re.findall(
+            r'(?:[A-Za-z]:[/\\]|/)[^\s"\'<>]+[/\\]\.niu[/\\]tmp[/\\][^\s"\'<>]+',
+            content,
+        )
+        for p in found:
+            if is_tmp_file(p):
+                paths.append(p)
+    return paths
 
 
 # Global instance
