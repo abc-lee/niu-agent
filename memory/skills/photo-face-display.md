@@ -2,7 +2,7 @@
 
 **触发关键词**：未命名、人脸、照片、改名、命名人物
 
-**L1 摘要**：Unnamed person query|unnamed,face,photo,naming|Display photo with face bounding box (pre-drawn by backend) when querying unnamed persons, user answers name to complete naming|unnamed person,face box,photo display,naming tool,boxed_path,chat-with-file-processor,chat-with-photo-processor|skill|memory/skills/photo-face-display.md
+**L1 摘要**：Unnamed person query|unnamed,face,photo,naming|Display photo with face bounding box (pre-drawn by backend) when querying unnamed persons, user answers name to complete naming|unnamed person,face box,photo display,naming tool,chat-with-file-processor,chat-with-photo-processor|skill|memory/skills/photo-face-display.md
 
 ## 概述
 
@@ -17,7 +17,7 @@
 ```
 
 **参数说明**：
-- `path`: 带人脸红框的图片路径（从子 Agent 返回的 `boxed_path`，已画好红框，存于 ~/.niu/tmp/）
+- `path`: 带人脸红框的图片路径（从子 Agent 返回的 `photos[].path`，已画好红框，存于 ~/.niu/tmp/）
 - `person_id`: 人物ID（用于后续命名）
 - `name`: 人物名称（未命名人物通常是 "未命名人物_N"）
 
@@ -87,7 +87,7 @@
     "auto_label": "未命名人物_8",
     "photo_count": 5,
     "photos": [
-      {"file_path": "E:/tmp/bot/.../photo.jpg", "boxed_path": "C:/Users/X/.niu/tmp/abc123.png"}
+      {"path": "C:/Users/X/.niu/tmp/abc123.png"}
     ]
   }]
 }
@@ -95,7 +95,7 @@
 
 **注意**：
 - `photos` 数组包含多张代表照片，你可以选择第一张或轮流展示
-- `boxed_path` 是后端已画好红框的图片路径（存于 ~/.niu/tmp/），用这个路径作为 `::person_photo::` 标记的 `path`
+- `path` 是后端已画好红框的图片路径（存于 ~/.niu/tmp/），直接用作 `::person_photo::` 标记的 `path`
 - 使用 `id` 字段作为 `person_id`
 
 ## 前端渲染
