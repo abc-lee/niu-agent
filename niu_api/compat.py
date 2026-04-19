@@ -336,7 +336,11 @@ async def clear_chat() -> dict:
             # which reloads from message store each call.
             # store.clear_messages() above already clears persistent history.
 
-        return {"success": True, "deleted_count": count}
+        # 清空临时目录（画框图片等）
+        from agent.tmp_dir import cleanup_all_tmp
+        cleaned_tmp = cleanup_all_tmp()
+
+        return {"success": True, "deleted_count": count, "cleaned_tmp": cleaned_tmp}
     finally:
         _chat_lock.release()
 
