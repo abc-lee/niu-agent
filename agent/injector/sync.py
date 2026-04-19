@@ -256,9 +256,17 @@ class SkillSync:
                 "triggers": triggers,
             }
 
-            # Skills 只注册描述，不注册全文
-            # 用于语义匹配，全文从文件读取
-            self._upsert_skill(f"skill:{name}", description, metadata)
+            # 构造自然语言 content（用于 embedding，类似 mcp_tool 的格式）
+            # 管道分隔的 L1 摘要语义编码差，改用自然语言 + 触发词 + 标签
+            search_content = f"{name}: {description}"
+            if triggers:
+                search_content += f" 触发词: {'、'.join(triggers)}"
+            if tags:
+                extra_tags = [t for t in tags if t not in triggers]
+                if extra_tags:
+                    search_content += f" 标签: {'、'.join(extra_tags)}"
+
+            self._upsert_skill(f"skill:{name}", search_content, metadata)
 
         except Exception as e:
             logger.error(f"[SkillSync] Failed to sync skill {name}: {e}")
@@ -314,14 +322,22 @@ class SkillSync:
         """从 skill 内容提取触发词"""
         triggers = []
 
-        # 格式 1: 触发关键词：xxx、yyy
-        match1 = re.search(r"触发关键词[：:]\s*(.+)", content)
-        if match1:
-            keywords = match1.group(1)
+        # 格式 1: **触发关键词**：xxx、yyy (Markdown 加粗)
+        match_bold = re.search(r"\*\*触发关键词\*\*[：:]\s*(.+)", content)
+        if match_bold:
+            keywords = match_bold.group(1)
             triggers.extend(re.split(r"[,，、]", keywords))
             triggers = [t.strip() for t in triggers if t.strip()]
 
-        # 格式 2: triggers: [xxx, yyy]
+        # 格式 2: 触发关键词：xxx、yyy (无加粗)
+        if not triggers:
+            match1 = re.search(r"触发关键词[：:]\s*(.+)", content)
+            if match1:
+                keywords = match1.group(1)
+                triggers.extend(re.split(r"[,，、]", keywords))
+                triggers = [t.strip() for t in triggers if t.strip()]
+
+        # 格式 3: triggers: [xxx, yyy]
         match2 = re.search(r"triggers:\s*\[(.+)\]", content, re.IGNORECASE)
         if match2:
             keywords = match2.group(1)

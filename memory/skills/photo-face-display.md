@@ -2,7 +2,7 @@
 
 **触发关键词**：未命名、人脸、照片、改名、命名人物
 
-**L1 摘要**：Unnamed person query|unnamed,face,photo,naming|Display photo with face bounding box (pre-drawn by backend) when querying unnamed persons, user answers name to complete naming|unnamed person,face box,photo display,naming tool,boxed_path|skill|memory/skills/photo-face-display.md
+**L1 摘要**：Unnamed person query|unnamed,face,photo,naming|Display photo with face bounding box (pre-drawn by backend) when querying unnamed persons, user answers name to complete naming|unnamed person,face box,photo display,naming tool,boxed_path,chat-with-file-processor,chat-with-photo-processor|skill|memory/skills/photo-face-display.md
 
 ## 概述
 
@@ -21,7 +21,7 @@
 - `person_id`: 人物ID（用于后续命名）
 - `name`: 人物名称（未命名人物通常是 "未命名人物_N"）
 
-**注意**：不再需要 `bbox` 参数，后端已在原图上画好红框并保存到临时目录。
+**注意**：后端已在原图上画好红框并保存到临时目录。
 
 ## 使用场景
 
