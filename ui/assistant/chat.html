@@ -906,6 +906,11 @@
               div.remove();
             }
           });
+          // typing 指示器始终保持在最底部
+          const typingEl = document.getElementById('typing-indicator');
+          if (typingEl && typingEl.parentNode === messages) {
+            messages.appendChild(typingEl);
+          }
           messages.scrollTop = messages.scrollHeight;
           // 只在收到 assistant 消息时才隐藏 typing（用户消息入库不应关闭 typing）
           const hasAssistantMsg = msgs.some(msg => !existingIds.has(msg.id) && msg.role === 'assistant');
