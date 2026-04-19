@@ -1225,8 +1225,9 @@ def draw_face_boxes_on_image(file_path: str, bbox_list: list[list[float]]) -> st
                 x1, y1, x2, y2 = int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])
                 cv2.rectangle(img, (x1, y1), (x2, y2), (0, 0, 255), 3)
 
-        # 保存到临时目录
-        from agent.tmp_dir import save_to_tmp
+        # 保存到临时目录（确定性文件名，相同输入复用同一文件）
+        from agent.tmp_dir import save_to_tmp, get_tmp_dir
+        import hashlib
 
         # 编码为 PNG bytes
         success, encoded = cv2.imencode(".png", img)
@@ -1234,10 +1235,16 @@ def draw_face_boxes_on_image(file_path: str, bbox_list: list[list[float]]) -> st
             logger.warning(f"[DrawBox] Failed to encode image: {file_path}")
             return None
 
-        # 生成唯一文件名
-        import uuid
-        tmp_name = f"{uuid.uuid4().hex}.png"
-        tmp_path = save_to_tmp(tmp_name, encoded.tobytes())
+        # 用路径+bbox生成确定性文件名，避免重复生成
+        bbox_key = "_".join(str(int(b)) for bbox in bbox_list for b in bbox)
+        name_hash = hashlib.md5(f"{file_path}:{bbox_key}".encode()).hexdigest()[:12]
+        tmp_name = f"facebox_{name_hash}.png"
+
+        tmp_dir = get_tmp_dir()
+        tmp_path = os.path.join(tmp_dir, tmp_name)
+        if not os.path.exists(tmp_path):
+            with open(tmp_path, "wb") as f:
+                f.write(encoded.tobytes())
         logger.info(f"[DrawBox] Saved boxed image to: {tmp_path}")
         return tmp_path
 

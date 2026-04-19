@@ -891,12 +891,22 @@
         });
 
         if (hasNew) {
-          // 删除没有data-id的临时用户消息（被数据库版本替换）
+          // 只删除已被数据库版本替换的临时用户消息
+          const dbUserTexts = new Set(
+            msgs.filter(m => m.role === 'user').map(m => m.content)
+          );
           document.querySelectorAll('.message.user:not([data-id])').forEach(div => {
-            div.remove();
+            const text = div.querySelector('.message-text')?.textContent;
+            if (dbUserTexts.has(text)) {
+              div.remove();
+            }
           });
           messages.scrollTop = messages.scrollHeight;
-          hideTyping();
+          // 只在收到 assistant 消息时才隐藏 typing（用户消息入库不应关闭 typing）
+          const hasAssistantMsg = msgs.some(msg => !existingIds.has(msg.id) && msg.role === 'assistant');
+          if (hasAssistantMsg) {
+            hideTyping();
+          }
           if (!oldestMessageId && msgs.length > 0) {
             oldestMessageId = msgs[0].id;
           }
@@ -1104,21 +1114,9 @@
       const existing = document.querySelector(`.message[data-id="${id}"]`);
       if (existing) return;
 
-      const div = document.createElement('div');
-      div.className = `message ${role}`;
+      // 复用 addMessage 的渲染逻辑（支持 ::person_photo:: 等标记）
+      const div = addMessage(role, content);
       div.dataset.id = id;
-      const textDiv = document.createElement('div');
-      textDiv.className = 'message-text';
-      if (role === 'assistant' && typeof marked !== 'undefined') {
-        try {
-          textDiv.innerHTML = marked.parse(content);
-        } catch (e) {
-          textDiv.textContent = content;
-        }
-      } else {
-        textDiv.textContent = content;
-      }
-      div.appendChild(textDiv);
       messages.insertBefore(div, messages.firstChild);
     }
   </script>
