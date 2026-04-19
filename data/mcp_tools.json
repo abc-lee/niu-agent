@@ -112,7 +112,7 @@
     {
       "server": "photo-server",
       "name": "get_unnamed_persons",
-      "description": "获取所有未命名人物\n\n返回:\n- 未命名人物列表，按出现次数排序\n- 包含：id, auto_label, photo_count, photos",
+      "description": "获取所有未命名人物\n\n返回:\n- 未命名人物列表，按出现次数排序\n- 包含：id, auto_label, photo_count, photos: [{path}]\n- path 是带人脸红框的图片路径（存于 ~/.niu/tmp/），前端用 ::person_photo:: 标记显示",
       "input_schema": {
         "type": "object",
         "properties": {}
