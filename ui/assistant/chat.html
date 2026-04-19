@@ -648,13 +648,18 @@
       statusBar.querySelector('.stats').innerHTML = '思考中...';
 
       try {
-        await sendMessageWithRetry(text);
+        const result = await sendMessageWithRetry(text);
         // 后端已写数据库 + SSE推送，refreshFromDB() 会用数据库版本替换临时显示
+        // typing 动画由 refreshFromDB 在收到 assistant 消息时关闭
+        // 如果后端返回了错误（如"系统正忙"），没有SSE，需要手动关闭typing
+        if (result && result.reply && result.reply.includes('系统正忙')) {
+          hideTyping();
+        }
       } catch (err) {
         addMessage('system', `连接失败: ${err.message}`);
+        hideTyping();  // 连接失败时需要手动关闭 typing
       }
 
-      hideTyping();
       window.electronAPI.notifyBusy(false, 'chat');
       sendBtn.disabled = false;
       loadStats();
