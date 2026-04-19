@@ -183,7 +183,7 @@ def example():
 
 **照片展示标记**：
 ```
-::person_photo::{"path": "带框图路径", "person_id": "uuid", "name": "人物名"}::
+::person_photo::{"path": "照片路径", "bbox": [x1,y1,x2,y2], "person_id": "uuid", "name": "人物名"}::
 ```
 
 ---
