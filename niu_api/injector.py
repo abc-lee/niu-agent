@@ -2,7 +2,7 @@
 Injector API endpoints
 
 手动注册 MCP 工具到向量库。
-复用 VectorSearchAdapter，通过 metadata.type="mcp_tool" 标签区分。
+复用 VectorSearchAdapter，通过 metadata.category="mcp_tool" 标签区分。
 """
 
 import json
@@ -82,13 +82,13 @@ def _list_by_type(resource_type: str) -> list[dict]:
 
     cursor = conn.execute(
         "SELECT id, content, metadata FROM documents WHERE metadata LIKE ?",
-        (f'%"type": "{resource_type}"%',),
+        (f'%"category": "{resource_type}"%',),
     )
 
     results = []
     for row in cursor.fetchall():
         metadata = json.loads(row[2]) if row[2] else {}
-        if metadata.get("type") == resource_type:
+        if metadata.get("category") == resource_type:
             results.append(
                 {
                     "id": row[0],
@@ -168,7 +168,7 @@ async def list_resources(resource_type: str = None):
         resources=[
             {
                 "id": r["id"],
-                "type": r["metadata"].get("type"),
+                "type": r["metadata"].get("category"),
                 "name": r["metadata"].get("name"),
                 "description": r["metadata"].get("description", "")[:200],
             }
