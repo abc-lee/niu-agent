@@ -489,9 +489,9 @@
     const progressText = document.getElementById('progress-text');
     const progressFill = document.getElementById('progress-fill');
     const progressPercent = document.getElementById('progress-percent');
-    let fileCount = document.getElementById('file-count');
-    let personCount = document.getElementById('person-count');
-    let noteCount = document.getElementById('note-count');
+    const fileCount = document.getElementById('file-count');
+    const personCount = document.getElementById('person-count');
+    const noteCount = document.getElementById('note-count');
     const graphBtn = document.getElementById('graph-btn');
     
     // ========== 拖拽窗口 ==========
@@ -624,79 +624,40 @@
       return null;
     }
     
-    let _isSending = false;  // 并发发送保护（比 sendBtn.disabled 更可靠，因为 onNewMessage 会提前启用按钮）
-
     async function sendMessage() {
       const text = userInput.value.trim();
       if (!text) return;
-      // 防止并发发送（双击 Enter、SSE 提前启用按钮等）
-      if (_isSending) return;
-      _isSending = true;
+      if (sendBtn.disabled) return;  // 防并发
 
-      // 检测 /new 指令 - 清空聊天记录
+      // /new 指令 - 清空聊天记录
       if (text === '/new') {
-        _isSending = false;
         userInput.value = '';
         userInput.style.height = 'auto';
         await clearChat();
         return;
       }
 
-      // 用户消息：即时渲染（UI反馈，不需要数据库ID）
-      const userDiv = addMessage('user', text);
-      userDiv.setAttribute('data-pending', 'true');  // 标记为待确认
+      // 铁律1：用户触发的 → 先刷新页面（即时反馈）
+      addMessage('user', text);
+
       userInput.value = '';
       userInput.style.height = 'auto';
       sendBtn.disabled = true;
-
-      // 显示"正在输入"动画
       showTyping();
-
-      // 通知小女孩进入忙碌状态
       window.electronAPI.notifyBusy(true, 'chat');
-      // 保存当前统计值，然后显示思考状态
-      const savedFileCount = fileCount.textContent;
-      const savedPersonCount = personCount.textContent;
-      const savedNoteCount = noteCount.textContent;
       statusBar.querySelector('.stats').innerHTML = '思考中...';
 
       try {
-        const result = await sendMessageWithRetry(text);
-
-        if (result && result.error) {
-          // 后端返回错误，直接显示（不走数据库）
-          addMessage('assistant', `出错了: ${result.error}`);
-        } else if (result && result.reply && result.reply.includes('系统正忙')) {
-          // 后端锁冲突，提示用户
-          addMessage('assistant', '系统正忙，请稍后再试');
-        } else if (!result) {
-          // 重试耗尽，无响应
-          addMessage('assistant', '请求超时，请重试');
-        }
-        // 后端已返回（无论成功/空回复），隐藏 typing indicator
-        // 如果有 assistant 回复，SSE onNewMessage 也会调 hideTyping()，重复调用无害
-        hideTyping();
+        await sendMessageWithRetry(text);
+        // 后端已写数据库 + SSE推送，refreshFromDB() 会用数据库版本替换临时显示
       } catch (err) {
-        hideTyping();
-        // 连接失败，不走数据库，直接显示
-        addMessage('assistant', `连接失败: ${err.message}`);
+        addMessage('system', `连接失败: ${err.message}`);
       }
 
-      // 通知小女孩退出忙碌状态
+      hideTyping();
       window.electronAPI.notifyBusy(false, 'chat');
-
       sendBtn.disabled = false;
-      // 恢复统计栏（用保存的值重建，因为 innerHTML 替换后引用失效）
-      statusBar.querySelector('.stats').innerHTML = `
-        <span class="stat">📁 <span id="file-count">${savedFileCount}</span></span>
-        <span class="stat">👤 <span id="person-count">${savedPersonCount}</span></span>
-        <span class="stat">📝 <span id="note-count">${savedNoteCount}</span></span>
-      `;
-      // 重新绑定全局引用
-      fileCount = document.getElementById('file-count');
-      personCount = document.getElementById('person-count');
-      noteCount = document.getElementById('note-count');
-      _isSending = false;
+      loadStats();
       userInput.focus();
     }
     
@@ -705,18 +666,13 @@
       try {
         const result = await window.electronAPI.clearChat();
         if (result.success) {
-          // 清空消息区域
           messages.innerHTML = '';
-          // 重置所有消息 ID，防止重新加载历史和轮询异常
           oldestMessageId = null;
-          lastMessageId = null;
           addMessage('system', '✅ 聊天记录已清空');
-          console.log('[Chat] 聊天记录已清空');
         } else {
           addMessage('system', '❌ 清空失败: ' + (result.error || '未知错误'));
         }
       } catch (err) {
-        console.error('[Chat] 清空失败:', err);
         addMessage('system', '❌ 清空失败: ' + err.message);
       }
       userInput.focus();
@@ -832,73 +788,27 @@
       return { cleanText: cleanText.trim(), photos };
     }
     
-    // 创建人物照片元素（图片+人脸框）
+    // 创建人物照片元素（后端已在原图上画好红框，直接显示）
     async function createPersonPhotoElement(data) {
       const container = document.createElement('div');
       container.className = 'image-container';
-      container.dataset.personId = data.person_id;
-      
+      if (data.person_id) container.dataset.personId = data.person_id;
+
       const img = document.createElement('img');
       img.className = 'chat-image';
       img.style.cursor = 'pointer';
-      
-      // 获取图片 URL
+
+      // data.path 是带框图的路径（后端已画好）
       const imageUrl = await window.electronAPI.getImageUrl(data.path);
       img.src = imageUrl;
       img.dataset.filePath = data.path;
-      
-      // 图片加载完成后渲染人脸框
-      img.onload = () => {
-        if (data.bbox && data.bbox.length === 4) {
-          renderFaceBox(container, img, data.bbox, data.name);
-        }
-      };
-      
-      // 双击用系统查看器打开
+
       img.addEventListener('dblclick', () => {
         window.electronAPI.openWithSystemViewer(data.path);
       });
-      
+
       container.appendChild(img);
       return container;
-    }
-    
-    // 渲染人脸框
-    function renderFaceBox(container, img, bbox, name) {
-      if (!bbox || bbox.length !== 4) {
-        console.warn('[renderFaceBox] Invalid bbox:', bbox);
-        return;
-      }
-      
-      const [x1, y1, x2, y2] = bbox;
-      const scaleX = img.clientWidth / img.naturalWidth;
-      const scaleY = img.clientHeight / img.naturalHeight;
-      
-      // 计算后的位置和尺寸
-      let left = x1 * scaleX;
-      let top = y1 * scaleY;
-      let width = (x2 - x1) * scaleX;
-      let height = (y2 - y1) * scaleY;
-      
-      // 设置最小框尺寸（人脸在原图中可能很小，缩放后更小）
-      const MIN_SIZE = 30; // 最小 30x30 像素
-      if (width < MIN_SIZE) {
-        left -= (MIN_SIZE - width) / 2;
-        width = MIN_SIZE;
-      }
-      if (height < MIN_SIZE) {
-        top -= (MIN_SIZE - height) / 2;
-        height = MIN_SIZE;
-      }
-      
-      const box = document.createElement('div');
-      box.className = 'face-box';
-      box.style.left = left + 'px';
-      box.style.top = top + 'px';
-      box.style.width = width + 'px';
-      box.style.height = height + 'px';
-      
-      container.appendChild(box);
     }
     
     // 带消息ID的消息（用于历史加载）
@@ -950,111 +860,55 @@
       if (state === 'busy') {
         statusBar.querySelector('.stats').textContent = '⏳ 处理中...';
       } else if (state === 'idle') {
-        // 读取当前值（引用可能已失效，用 getElementById 兜底）
-        const fc = document.getElementById('file-count');
-        const pc = document.getElementById('person-count');
-        const nc = document.getElementById('note-count');
-        const fv = fc ? fc.textContent : (fileCount ? fileCount.textContent : '0');
-        const pv = pc ? pc.textContent : (personCount ? personCount.textContent : '0');
-        const nv = nc ? nc.textContent : (noteCount ? noteCount.textContent : '0');
-        statusBar.querySelector('.stats').innerHTML = `
-          <span class="stat">📁 <span id="file-count">${fv}</span></span>
-          <span class="stat">👤 <span id="person-count">${pv}</span></span>
-          <span class="stat">📝 <span id="note-count">${nv}</span></span>
-        `;
-        // 重新绑定全局引用
-        fileCount = document.getElementById('file-count');
-        personCount = document.getElementById('person-count');
-        noteCount = document.getElementById('note-count');
+        loadStats();
       }
     });
 
-    // 监听提醒通知（scheduler 触发的定时任务）
-    // alert 仅用于视觉提示（小女孩蹦高），不渲染消息
-    window.electronAPI.onAlert((message) => {
+    // 监听提醒通知（scheduler 触发的定时任务，消息已通过数据库+SSE显示）
+    window.electronAPI.onAlert(() => {
       console.log('[Chat] 收到提醒通知');
     });
 
-    // ========== SSE 消息事件驱动 ==========
-    let lastMessageId = null;  // 记录最后一条消息的 ID（用于补漏时判断哪些消息已渲染）
-
-    // 接收新消息事件（SSE 推送，数据库为唯一真相源）
-    window.electronAPI.onNewMessage((msg) => {
-      if (msg && msg.id) {
-        // 去重：检查 DOM 中是否已有此 ID
-        const existing = document.querySelector(`.message[data-id="${msg.id}"]`);
-        if (existing) return;
-
-        // user 消息：如果 DOM 中有 pending 的 user 消息（本地渲染的），
-        // 给它补上 data-id 而不是再渲染一条
-        if (msg.role === 'user') {
-          const pendingUser = document.querySelector('.message.user[data-pending="true"]');
-          if (pendingUser) {
-            pendingUser.setAttribute('data-id', msg.id);
-            pendingUser.removeAttribute('data-pending');
-            return;
-          }
-        }
-
-        addMessageWithId(msg.role, msg.content, msg.id);
-        lastMessageId = msg.id;
-        if (msg.role === 'assistant') {
-          hideTyping();  // 收到回复，隐藏"正在输入"
-          // 恢复发送按钮和忙碌状态
-          // 注意：不在此重置 _isSending，那是 sendMessage 的责任
-          // scheduler 推送的 assistant 消息不应干扰并发保护
-          if (!_isSending) {
-            sendBtn.disabled = false;
-          }
-          window.electronAPI.notifyBusy(false, 'chat');
-          // 统计栏由 sendMessage 恢复，此处无需更新
-        }
-      }
-    });
-
-    // SSE 重连后补漏消息
-    window.electronAPI.onSyncMessages(async () => {
-      console.log('[Chat] SSE 重连，补漏消息');
+    // ========== 数据库$视图刷新 ==========
+    async function refreshFromDB() {
       try {
+        // 收集DOM中已有的消息ID
+        const existingIds = new Set();
+        document.querySelectorAll('.message[data-id]').forEach(div => {
+          existingIds.add(div.dataset.id);
+        });
+
+        // 从数据库获取最新消息
         const result = await window.electronAPI.getHistory(50);
         const msgs = result.messages || [];
-        // msgs 按时间正序：最旧在前，最新在后
-        // 分离：比 DOM 中最旧消息更旧的 → prepend 到顶部；比 DOM 中最新消息更新的 → append 到底部
-        const oldestInDom = oldestMessageId ? document.querySelector(`.message[data-id="${oldestMessageId}"]`) : null;
-        const newestInDom = lastMessageId ? document.querySelector(`.message[data-id="${lastMessageId}"]`) : null;
 
-        for (let i = 0; i < msgs.length; i++) {
-          const msg = msgs[i];
-          const existing = document.querySelector(`.message[data-id="${msg.id}"]`);
-          if (existing) continue;  // 已在 DOM 中，跳过
-
-          // 判断这条消息应该插入顶部还是底部
-          // 如果 DOM 中没有任何消息，直接追加
-          if (!oldestInDom && !newestInDom) {
+        let hasNew = false;
+        msgs.forEach(msg => {
+          if (!existingIds.has(msg.id)) {
             addMessageWithId(msg.role, msg.content, msg.id);
-          } else if (oldestInDom && msg.id === oldestMessageId) {
-            // 这是最旧消息本身，跳过
-          } else {
-            // 简单策略：如果消息 id 小于 oldestMessageId（更旧），prepend；否则 append
-            // 但 id 是 UUID 无法比较大小，用数组位置判断：
-            // msgs 中在 oldestMessageId 之前的消息是更旧的，之后的消息是更新的
-            const oldestIdx = msgs.findIndex(m => m.id === oldestMessageId);
-            if (oldestIdx >= 0 && i < oldestIdx) {
-              // 更旧的消息，prepend 到顶部
-              prependMessage(msg.role, msg.content, msg.id);
-            } else {
-              // 更新的消息，append 到底部
-              addMessageWithId(msg.role, msg.content, msg.id);
-            }
+            hasNew = true;
+          }
+        });
+
+        if (hasNew) {
+          // 删除没有data-id的临时用户消息（被数据库版本替换）
+          document.querySelectorAll('.message.user:not([data-id])').forEach(div => {
+            div.remove();
+          });
+          messages.scrollTop = messages.scrollHeight;
+          hideTyping();
+          if (!oldestMessageId && msgs.length > 0) {
+            oldestMessageId = msgs[0].id;
           }
         }
-        if (msgs.length > 0) {
-          lastMessageId = msgs[msgs.length - 1].id;  // 最新一条
-          oldestMessageId = msgs[0].id;  // 最旧一条
-        }
       } catch (e) {
-        console.error('[Chat] 补漏消息失败:', e);
+        console.error('[Chat] 刷新消息失败:', e);
       }
+    }
+
+    // SSE通知：有新消息 → 从数据库刷新
+    window.electronAPI.onNewMessage(() => {
+      refreshFromDB();
     });
 
     // ========== 初始化 ==========
@@ -1129,56 +983,39 @@
         console.error('[Chat] 无法获取文件路径');
         return;
       }
-      if (_isSending) return;  // 防止与正在进行的发送冲突
+      if (sendBtn.disabled) return;  // 防并发
 
       console.log('[Chat] 拖入图片:', filePath);
-      
-      // 显示预览（用户消息）
+
+      // 铁律1：先刷新页面（显示预览）
       const previewDiv = document.createElement('div');
       previewDiv.className = 'image-preview uploading';
       const imgEl = document.createElement('img');
       imgEl.src = await window.electronAPI.getImageUrl(filePath);
-      imgEl.dataset.filePath = filePath;  // 保存文件路径用于双击打开
+      imgEl.dataset.filePath = filePath;
       previewDiv.appendChild(imgEl);
-      
-      // 双击用系统查看器打开
       imgEl.addEventListener('dblclick', () => {
         window.electronAPI.openWithSystemViewer(filePath);
       });
-      
       const overlayDiv = document.createElement('div');
       overlayDiv.className = 'upload-overlay';
       overlayDiv.textContent = '处理中...';
       previewDiv.appendChild(overlayDiv);
-      
       const msgDiv = addMessage('user', null);
       msgDiv.appendChild(previewDiv);
-      
+
       try {
-        // 发送给 Agent 处理
-        const result = await window.electronAPI.processImage(filePath);
-        // assistant 回复不在此渲染，由 SSE onNewMessage 事件驱动
-
-        // 检查错误
-        if (result && result.error) {
-          previewDiv.classList.add('error');
-          overlayDiv.textContent = '处理失败: ' + result.error;
-        } else if (result && result.reply && result.reply.includes('系统正忙')) {
-          previewDiv.classList.add('error');
-          overlayDiv.textContent = '系统正忙，请稍后再试';
-        } else {
-          // 移除上传状态
-          previewDiv.classList.remove('uploading');
-          overlayDiv.remove();
-        }
-
+        await window.electronAPI.processImage(filePath);
+        // agent回复由SSE→refreshFromDB()显示
+        previewDiv.classList.remove('uploading');
+        overlayDiv.remove();
       } catch (e) {
         console.error('[Chat] 图片处理失败:', e);
         previewDiv.classList.add('error');
         overlayDiv.textContent = '处理失败';
       }
     }
-    
+
     // 处理拖入的文件（非图片）
     async function handleDroppedFile(file) {
       const filePath = file.path;
@@ -1186,25 +1023,19 @@
         console.error('[Chat] 无法获取文件路径');
         return;
       }
-      if (_isSending) return;  // 防止与正在进行的发送冲突
+      if (sendBtn.disabled) return;  // 防并发
 
       console.log('[Chat] 拖入文件:', filePath);
-      
-      // 显示文件名
-      const msgDiv = addMessage('user', `📄 ${file.name}`);
-      
+
+      // 铁律1：先刷新页面（显示文件名）
+      addMessage('user', `📄 ${file.name}`);
+
       try {
-        // 发送给 Agent 处理
-        const result = await window.electronAPI.processImage(filePath);
-        // assistant 回复不在此渲染，由 SSE onNewMessage 事件驱动
-        if (result && result.error) {
-          addMessage('assistant', `文件处理失败: ${result.error}`);
-        } else if (result && result.reply && result.reply.includes('系统正忙')) {
-          addMessage('assistant', '系统正忙，请稍后再试');
-        }
+        await window.electronAPI.processImage(filePath);
+        // agent回复由SSE→refreshFromDB()显示
       } catch (e) {
         console.error('[Chat] 文件处理失败:', e);
-        addMessage('assistant', '文件处理失败，请重试');
+        addMessage('system', '文件处理失败，请重试');
       }
     }
     
@@ -1241,31 +1072,25 @@
       }
     });
 
-    // 窗口获得焦点时，通知 spirit 用户正在活动
+    // 窗口获得焦点时，刷新消息 + 通知 spirit
     window.addEventListener('focus', async () => {
       window.electronAPI.notifyActivity();
+      refreshFromDB();
     });
 
     // 加载历史消息
     async function loadHistory() {
       try {
-        // 清空现有消息，避免重复
         messages.innerHTML = '';
         oldestMessageId = null;
-        lastMessageId = null;  // 重置最新消息ID
 
         const result = await window.electronAPI.getHistory(20);
-        const history = result.messages || result;  // 兼容新旧格式
-        const totalInDb = result.totalInDb || history.length;
+        const history = result.messages || result;
         if (history && history.length > 0) {
           history.forEach(msg => {
             addMessageWithId(msg.role, msg.content, msg.id);
           });
-          // 记录最旧的消息ID（history[0] 是最旧的）
           oldestMessageId = history[0].id;
-          // 记录最新的消息ID（用于轮询检测新消息）
-          lastMessageId = history[history.length - 1].id;
-          console.log('[Chat] 加载了', history.length, '条历史消息');
         }
       } catch (e) {
         console.error('[Chat] 加载历史失败:', e);

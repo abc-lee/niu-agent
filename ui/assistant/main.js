@@ -163,11 +163,6 @@ function createChatWindow() {
   chatWindow.loadFile('chat.html');
   chatWindow.setBackgroundColor('#00000000');
 
-  // 窗口加载完成后触发 sync-messages（补漏窗口不可见期间的消息）
-  chatWindow.webContents.on('did-finish-load', () => {
-    chatWindow.webContents.send('sync-messages');
-  });
-  
   // F12 打开开发者工具（调试用）
   chatWindow.webContents.on('before-input-event', (event, input) => {
     if (input.key === 'F12') {
@@ -975,19 +970,8 @@ function startPendingAlertsPolling() {
     try {
       const alerts = await fetchPendingAlerts();
       if (alerts && alerts.length > 0) {
-        console.log('[Alerts] 收到', alerts.length, '条提醒通知');
-
-        const chatVisible = chatWindow && !chatWindow.isDestroyed() && chatWindow.isVisible();
-        const chatFocused = chatVisible && chatWindow.isFocused();
-
-        // 消息已通过数据库+轮询机制显示，alert 仅用于视觉提示
-        // 聊天窗口可见时，通知前端有新提醒（触发视觉提示）
-        if (chatVisible) {
-          chatWindow.webContents.send('alert', '⏰');
-        }
-
-        // 聊天窗口不在焦点时，小女孩蹦高提醒
-        if (!chatFocused && spiritWindow && !spiritWindow.isDestroyed()) {
+        // 直接触发小女孩蹦高，不判断任何条件
+        if (spiritWindow && !spiritWindow.isDestroyed()) {
           spiritWindow.webContents.send('alert', '⏰');
         }
       }
@@ -1061,9 +1045,9 @@ function startMessageEventStream() {
     res.setEncoding('utf8');  // 正确处理多字节字符跨 TCP 块分割
     console.log('[SSE] Connected to message event stream');
 
-    // 仅在重连时触发补漏（首次连接时 loadHistory 已加载历史）
+    // 重连时通知 chat 刷新（chat 的 onNewMessage 会触发 refreshFromDB）
     if (sseConnectedBefore && chatWindow && !chatWindow.isDestroyed() && chatWindow.isVisible()) {
-      chatWindow.webContents.send('sync-messages');
+      chatWindow.webContents.send('new-message');
     }
     sseConnectedBefore = true;
 
@@ -1079,13 +1063,9 @@ function startMessageEventStream() {
           try {
             const event = JSON.parse(jsonStr);
             if (event.type === 'new_message') {
-              // 推送给 chat 渲染
+              // 通知 chat 有新消息（不传内容，chat 自己从数据库读取）
               if (chatWindow && !chatWindow.isDestroyed() && chatWindow.isVisible()) {
-                chatWindow.webContents.send('new-message', event);
-              }
-              // 小女孩蹦高提醒（窗口不在焦点时）
-              if (chatWindow && !chatWindow.isDestroyed() && !chatWindow.isFocused() && spiritWindow && !spiritWindow.isDestroyed()) {
-                spiritWindow.webContents.send('alert', '⏰');
+                chatWindow.webContents.send('new-message');
               }
             }
           } catch (e) {
