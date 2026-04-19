@@ -45,7 +45,7 @@ TOOL_SCHEMAS = {
 文档流程: 拷贝 → 返回 need_l1 → 子Agent生成L1 → 调用 ingest(file_path=..., l1=...) 存储
 
 返回:
-- 照片: {status, photo_id, detected_persons: [{id, name, similarity, path, confidence}], abstract, exif, kg_sync}
+- 照片: {status, photo_id, detected_persons, abstract, exif, kg_sync}
 - 文档(首轮): {status: "need_l1", file_path, content, hint}
 - 文档(L1回传): {status: "success", file_path}
 - 目录: {status, total, success/need_l1, results/files}""",
@@ -146,8 +146,7 @@ TOOL_SCHEMAS = {
 
 返回:
 - 未命名人物列表，按出现次数排序
-- 包含：id, auto_label, photo_count, photos: [{path}]
-- path 是带人脸红框的图片路径（存于 ~/.niu/tmp/），前端用 ::person_photo:: 标记显示""",
+- 包含：id, auto_label, photo_count, photos""",
         "input_schema": {
             "type": "object",
             "properties": {},
@@ -205,9 +204,9 @@ TOOL_SCHEMAS = {
 
 返回:
 - person_id, person_name
-- photos: [{path, taken_at}, ...]
+- photos: [{file_path, boxed_path, taken_at}, ...]
 
-path 是带人脸红框的图片路径（存于 ~/.niu/tmp/），前端用 ::person_photo:: 标记显示。""",
+boxed_path 是带人脸红框的图片路径，前端用 ::person_photo:: 标记显示。""",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -1072,15 +1071,16 @@ def get_unnamed_persons() -> list[dict]:
                     pass
 
             # 在原图上画人脸红框
-            path = None
+            boxed_path = None
             if bbox:
-                path = draw_face_boxes_on_image(photo_row[0], [bbox])
+                boxed_path = draw_face_boxes_on_image(photo_row[0], [bbox])
 
-            # 只返回带框图路径，不返回 file_path，防止 LLM 用 file_path 拼造路径
-            photo_info = {}
-            if path:
-                photo_info["path"] = path
-            photos.append(photo_info)
+            photos.append(
+                {
+                    "file_path": photo_row[0],
+                    "boxed_path": boxed_path,  # 带红框图路径
+                }
+            )
 
             # 最多返回3张存在的照片
             if len(photos) >= 3:
@@ -1292,15 +1292,17 @@ def get_person_photos(person_id: str, limit: int = 5) -> dict:
                 pass
 
         # 在原图上画人脸红框，保存到临时目录
-        path = None
+        boxed_path = None
         if bbox and os.path.exists(photo_row[0]):
-            path = draw_face_boxes_on_image(photo_row[0], [bbox])
+            boxed_path = draw_face_boxes_on_image(photo_row[0], [bbox])
 
-        # 只返回带框图路径，不返回 file_path，防止 LLM 用 file_path 拼造路径
-        photo_info = {"taken_at": photo_row[2]}
-        if path:
-            photo_info["path"] = path
-        photos.append(photo_info)
+        photos.append(
+            {
+                "file_path": photo_row[0],
+                "boxed_path": boxed_path,  # 带红框图路径（~/.niu/tmp/），前端直接显示
+                "taken_at": photo_row[2],
+            }
+        )
 
     return {
         "person_id": person_id,
@@ -1585,17 +1587,14 @@ def ingest_photo(file_path: str, category: str | None = None) -> dict:
             row = cursor.fetchone()
             if row:
                 person_name = row[0] if row[0] else row[1]
-                bbox = face_data.get("bbox", [])
-                # 在原图上画人脸红框，生成带框图路径
-                person_path = None
-                if bbox:
-                    person_path = draw_face_boxes_on_image(str(source), [bbox])
                 detected_persons.append(
                     {
                         "id": person_id,
                         "name": person_name,
                         "similarity": similarity,
-                        "path": person_path,  # 带红框图路径（~/.niu/tmp/），前端直接显示
+                        "bbox": face_data.get(
+                            "bbox", []
+                        ),  # 人脸框坐标 [x1, y1, x2, y2]
                         "confidence": face_data.get("confidence", 0.0),
                     }
                 )
@@ -2793,8 +2792,7 @@ async def list_tools() -> list[Tool]:
 返回:
 - status: success | error
 - photo_id: 照片唯一ID
-- detected_persons: 检测到的人物列表 [{id, name, similarity, path, confidence}]
-  path 是带人脸红框的图片路径（存于 ~/.niu/tmp/），前端用 ::person_photo:: 标记显示
+- detected_persons: 检测到的人物列表 [{id, name, similarity}]
 - abstract: L0 摘要（人物+时间）
 - exif: EXIF 信息（taken_at, location, camera）
 
@@ -2890,8 +2888,8 @@ async def list_tools() -> list[Tool]:
 
 单张模式返回:
 - photo_id: 照片ID
-- detected_persons: [{id, name, similarity, path, confidence}]
-  path 是带人脸红框的图片路径（存于 ~/.niu/tmp/）""",
+- detected_persons: 检测到的人物
+- file_path: 存储路径""",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -2936,8 +2934,7 @@ async def list_tools() -> list[Tool]:
 
 返回:
 - 未命名人物列表，按出现次数排序
-- 包含：id, auto_label, photo_count, photos: [{path}]
-- path 是带人脸红框的图片路径（存于 ~/.niu/tmp/），前端用 ::person_photo:: 标记显示""",
+- 包含：id, auto_label, photo_count, photos""",
             inputSchema={
                 "type": "object",
                 "properties": {},
@@ -2995,9 +2992,9 @@ async def list_tools() -> list[Tool]:
 
 返回:
 - person_id, person_name
-- photos: [{path, taken_at}, ...]
+- photos: [{file_path, boxed_path, taken_at}, ...]
 
-path 是带人脸红框的图片路径（存于 ~/.niu/tmp/），前端用 ::person_photo:: 标记显示。""",
+boxed_path 是带人脸红框的图片路径，前端用 ::person_photo:: 标记显示。""",
             inputSchema={
                 "type": "object",
                 "properties": {

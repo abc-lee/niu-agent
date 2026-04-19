@@ -166,10 +166,6 @@ photo-server/ingest, 参数: path="E:/docs/report.pdf", mode="copy"
 - 存储：2026/照片/生活/20260327_未命名人物_1_未命名人物_2.jpg
 ```
 
-**⚠️ 照片入库后必须额外调用 `get_unnamed_persons`**，获取带人脸红框的照片路径，并将返回的 JSON **完整原样**传给主 Agent。主 Agent 需要其中的 `id`、`auto_label`、`photos[].path` 来生成 `::person_photo::` 标记。
-
-**禁止省略 JSON 中的任何字段！** 特别是 `path`、`id`、`auto_label`，主 Agent 无法自己构造这些值。
-
 **处理失败**：
 ```
 ❌ 入库失败
@@ -191,10 +187,6 @@ photo-server/name_person, 参数: person_id="...", name="张三"
 
 ### 向主 Agent 返回格式
 
-**必须原样返回完整的 JSON 数据**，尤其是 `path`、`id`、`auto_label` 字段，主 Agent 需要这些字段生成 `::person_photo::` 标记。
-
-`photos` 数组中的 `path` 是带人脸红框的图片路径，主 Agent 直接用作 `::person_photo::` 的 `path` 字段。
-
-**禁止省略或总结 JSON！** 不要省略 `path`，不要省略 `id`，不要省略 `auto_label`。主 Agent 无法自己构造这些值。
+**直接返回原始 JSON 数据**，主 Agent 会自己转换为 `::person_photo::` 格式。
 
 **不要自己生成 `::person_photo::` 标记！** 让主 Agent 来做转换。
