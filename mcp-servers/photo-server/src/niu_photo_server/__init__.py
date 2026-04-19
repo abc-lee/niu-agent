@@ -1234,7 +1234,10 @@ def draw_face_boxes_on_image(file_path: str, bbox_list: list[list[float]]) -> st
             logger.warning(f"[DrawBox] Failed to encode image: {file_path}")
             return None
 
-        tmp_path = save_to_tmp(encoded.tobytes(), suffix=".png")
+        # 生成唯一文件名
+        import uuid
+        tmp_name = f"{uuid.uuid4().hex}.png"
+        tmp_path = save_to_tmp(tmp_name, encoded.tobytes())
         logger.info(f"[DrawBox] Saved boxed image to: {tmp_path}")
         return tmp_path
 
