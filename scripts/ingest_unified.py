@@ -139,7 +139,7 @@ def _ingest_single_photo(path: str, category: str | None = None, mode: str = "co
                 "id": person_id,
                 "name": person_name,
                 "similarity": similarity,
-                "bbox": bbox,
+                "path": ps.draw_face_boxes_on_image(str(source), [bbox]) if bbox else None,
                 "confidence": confidence,
             })
             face_embeddings.append(face_embedding)
