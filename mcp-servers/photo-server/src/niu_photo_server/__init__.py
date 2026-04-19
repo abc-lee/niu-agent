@@ -146,7 +146,8 @@ TOOL_SCHEMAS = {
 
 返回:
 - 未命名人物列表，按出现次数排序
-- 包含：id, auto_label, photo_count, photos""",
+- 包含：id, auto_label, photo_count, photos: [{path}]
+- path 是带人脸红框的图片路径（存于 ~/.niu/tmp/），前端用 ::person_photo:: 标记显示""",
         "input_schema": {
             "type": "object",
             "properties": {},
@@ -2935,7 +2936,8 @@ async def list_tools() -> list[Tool]:
 
 返回:
 - 未命名人物列表，按出现次数排序
-- 包含：id, auto_label, photo_count, photos""",
+- 包含：id, auto_label, photo_count, photos: [{path}]
+- path 是带人脸红框的图片路径（存于 ~/.niu/tmp/），前端用 ::person_photo:: 标记显示""",
             inputSchema={
                 "type": "object",
                 "properties": {},
