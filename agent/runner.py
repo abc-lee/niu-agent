@@ -572,7 +572,7 @@ class NiuRunner:
         multi_results = self.vector_search.search_multi(
             query=context,
             categories={
-                "skill": {"limit": 3, "min_score": 0.35},
+                "skill": {"limit": 3, "min_score": 0.25},
                 "mcp_tool": {"limit": 10, "min_score": 0.25},
                 "document": {"limit": 20, "min_score": 0.3},
                 "interaction_habit": {"limit": 3, "min_score": 0.4},
