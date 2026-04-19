@@ -166,6 +166,10 @@ photo-server/ingest, 参数: path="E:/docs/report.pdf", mode="copy"
 - 存储：2026/照片/生活/20260327_未命名人物_1_未命名人物_2.jpg
 ```
 
+**⚠️ 照片入库后必须额外调用 `get_unnamed_persons`**，获取带人脸红框的照片路径，并将返回的 JSON **完整原样**传给主 Agent。主 Agent 需要其中的 `id`、`auto_label`、`photos[].path` 来生成 `::person_photo::` 标记。
+
+**禁止省略 JSON 中的任何字段！** 特别是 `path`、`id`、`auto_label`，主 Agent 无法自己构造这些值。
+
 **处理失败**：
 ```
 ❌ 入库失败
