@@ -141,6 +141,7 @@ def _ingest_single_photo(path: str, category: str | None = None, mode: str = "co
                 "similarity": similarity,
                 "path": ps.draw_face_boxes_on_image(str(source), [bbox]) if bbox else None,
                 "confidence": confidence,
+                "_bbox": bbox,  # 内部字段，用于写入 faces 表，不暴露给前端
             })
             face_embeddings.append(face_embedding)
     except Exception as e:
@@ -182,7 +183,7 @@ def _ingest_single_photo(path: str, category: str | None = None, mode: str = "co
     # 6. 写 faces 表（存储实际 embedding 字节）
     for person, face_embedding in zip(detected_persons, face_embeddings):
         face_id = str(uuid.uuid4())
-        bbox_str = json.dumps(person.get("bbox", []))
+        bbox_str = json.dumps(person.get("_bbox", []))
         conn.execute(
             """INSERT INTO faces (id, photo_id, person_id, embedding, bounding_box, confidence)
                VALUES (?, ?, ?, ?, ?, ?)""",
