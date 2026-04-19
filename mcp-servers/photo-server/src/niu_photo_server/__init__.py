@@ -2792,7 +2792,8 @@ async def list_tools() -> list[Tool]:
 返回:
 - status: success | error
 - photo_id: 照片唯一ID
-- detected_persons: 检测到的人物列表 [{id, name, similarity}]
+- detected_persons: 检测到的人物列表 [{id, name, similarity, path, confidence}]
+  path 是带人脸红框的图片路径（存于 ~/.niu/tmp/），前端用 ::person_photo:: 标记显示
 - abstract: L0 摘要（人物+时间）
 - exif: EXIF 信息（taken_at, location, camera）
 
@@ -2888,8 +2889,8 @@ async def list_tools() -> list[Tool]:
 
 单张模式返回:
 - photo_id: 照片ID
-- detected_persons: 检测到的人物
-- file_path: 存储路径""",
+- detected_persons: [{id, name, similarity, path, confidence}]
+  path 是带人脸红框的图片路径（存于 ~/.niu/tmp/）""",
             inputSchema={
                 "type": "object",
                 "properties": {
