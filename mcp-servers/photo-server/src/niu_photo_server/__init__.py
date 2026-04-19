@@ -204,9 +204,9 @@ TOOL_SCHEMAS = {
 
 返回:
 - person_id, person_name
-- photos: [{file_path, boxed_path, taken_at}, ...]
+- photos: [{path, taken_at}, ...]
 
-boxed_path 是带人脸红框的图片路径，前端用 ::person_photo:: 标记显示。""",
+path 是带人脸红框的图片路径（存于 ~/.niu/tmp/），前端用 ::person_photo:: 标记显示。""",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -1071,16 +1071,15 @@ def get_unnamed_persons() -> list[dict]:
                     pass
 
             # 在原图上画人脸红框
-            boxed_path = None
+            path = None
             if bbox:
-                boxed_path = draw_face_boxes_on_image(photo_row[0], [bbox])
+                path = draw_face_boxes_on_image(photo_row[0], [bbox])
 
-            photos.append(
-                {
-                    "file_path": photo_row[0],
-                    "boxed_path": boxed_path,  # 带红框图路径
-                }
-            )
+            # 只返回带框图路径，不返回 file_path，防止 LLM 用 file_path 拼造路径
+            photo_info = {}
+            if path:
+                photo_info["path"] = path
+            photos.append(photo_info)
 
             # 最多返回3张存在的照片
             if len(photos) >= 3:
@@ -1292,17 +1291,15 @@ def get_person_photos(person_id: str, limit: int = 5) -> dict:
                 pass
 
         # 在原图上画人脸红框，保存到临时目录
-        boxed_path = None
+        path = None
         if bbox and os.path.exists(photo_row[0]):
-            boxed_path = draw_face_boxes_on_image(photo_row[0], [bbox])
+            path = draw_face_boxes_on_image(photo_row[0], [bbox])
 
-        photos.append(
-            {
-                "file_path": photo_row[0],
-                "boxed_path": boxed_path,  # 带红框图路径（~/.niu/tmp/），前端直接显示
-                "taken_at": photo_row[2],
-            }
-        )
+        # 只返回带框图路径，不返回 file_path，防止 LLM 用 file_path 拼造路径
+        photo_info = {"taken_at": photo_row[2]}
+        if path:
+            photo_info["path"] = path
+        photos.append(photo_info)
 
     return {
         "person_id": person_id,
@@ -2992,9 +2989,9 @@ async def list_tools() -> list[Tool]:
 
 返回:
 - person_id, person_name
-- photos: [{file_path, boxed_path, taken_at}, ...]
+- photos: [{path, taken_at}, ...]
 
-boxed_path 是带人脸红框的图片路径，前端用 ::person_photo:: 标记显示。""",
+path 是带人脸红框的图片路径（存于 ~/.niu/tmp/），前端用 ::person_photo:: 标记显示。""",
             inputSchema={
                 "type": "object",
                 "properties": {
