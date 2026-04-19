@@ -719,9 +719,7 @@ class NiuHandler(BaseHandler):
 
             # 照片入库后，自动获取未命名人物带框图，注入 ::person_photo:: 标记
             photo_markers = ""
-            # 只在任务涉及照片时触发（文档入库不触发）
-            is_photo_task = any(kw in task for kw in ["照片", "图片", "入库照片", "入库图片", "photo", "image"])
-            if agent_name == "file-processor" and is_photo_task:
+            if agent_name == "file-processor" and "入库" in result and "人" in result:
                 try:
                     from .tool_registry import get_registry
                     registry = get_registry()
