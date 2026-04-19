@@ -45,7 +45,7 @@ TOOL_SCHEMAS = {
 文档流程: 拷贝 → 返回 need_l1 → 子Agent生成L1 → 调用 ingest(file_path=..., l1=...) 存储
 
 返回:
-- 照片: {status, photo_id, detected_persons, abstract, exif, kg_sync}
+- 照片: {status, photo_id, detected_persons: [{id, name, similarity, path, confidence}], abstract, exif, kg_sync}
 - 文档(首轮): {status: "need_l1", file_path, content, hint}
 - 文档(L1回传): {status: "success", file_path}
 - 目录: {status, total, success/need_l1, results/files}""",
@@ -1584,14 +1584,17 @@ def ingest_photo(file_path: str, category: str | None = None) -> dict:
             row = cursor.fetchone()
             if row:
                 person_name = row[0] if row[0] else row[1]
+                bbox = face_data.get("bbox", [])
+                # 在原图上画人脸红框，生成带框图路径
+                person_path = None
+                if bbox:
+                    person_path = draw_face_boxes_on_image(str(source), [bbox])
                 detected_persons.append(
                     {
                         "id": person_id,
                         "name": person_name,
                         "similarity": similarity,
-                        "bbox": face_data.get(
-                            "bbox", []
-                        ),  # 人脸框坐标 [x1, y1, x2, y2]
+                        "path": person_path,  # 带红框图路径（~/.niu/tmp/），前端直接显示
                         "confidence": face_data.get("confidence", 0.0),
                     }
                 )

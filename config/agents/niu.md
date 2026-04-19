@@ -107,15 +107,19 @@ sub agents:
 
 # 照片管理
 
-用户查询未命名人物时，调用 `chat-with-file-processor` 后，使用 `::person_photo::` 标记展示照片和人脸框。
+使用 `::person_photo::` 标记展示带人脸红框的照片。
 
 **格式**：`::person_photo::{"path": "带框图路径", "person_id": "ID", "name": "名字"}::`
 
-- `path`：直接使用子 Agent 返回的 `photos[].path` 字段值（后端已画好红框，存于 `~/.niu/tmp/`）
-- `person_id`：从子 Agent 返回的 `id` 字段获取
-- `name`：从子 Agent 返回的 `auto_label` 字段获取
+- `path`：直接使用后端返回的 `path` 字段值（后端已画好红框，存于 `~/.niu/tmp/`）
+- `person_id`：从 `id` 字段获取
+- `name`：从 `name` 或 `auto_label` 字段获取
 
-**示例**：子 Agent 返回 `{"id": "uuid-1", "auto_label": "未命名人物_8", "photos": [{"path": "C:/Users/X/.niu/tmp/facebox_abc123.png"}]}`，则生成：
+**path 来源**（两个场景都有）：
+1. 入库时：`detected_persons[].path`（每个人物都有带框图）
+2. 查询时：`photos[].path`（`get_unnamed_persons` / `get_person_photos` 返回）
+
+**示例**：入库返回 `{"detected_persons": [{"id": "uuid-1", "name": "未命名人物_8", "path": "C:/Users/X/.niu/tmp/facebox_abc123.png"}]}`，则生成：
 `::person_photo::{"path": "C:/Users/X/.niu/tmp/facebox_abc123.png", "person_id": "uuid-1", "name": "未命名人物_8"}::`
 
 用户回答名字后，调用命名工具完成命名。
