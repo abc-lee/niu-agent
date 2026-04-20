@@ -32,6 +32,8 @@ class VectorCleanup:
     @contextmanager
     def _get_connection(self):
         """获取配置了 WAL 模式的数据库连接（上下文管理器，保证关闭）"""
+        if self.db_path is None:
+            raise ValueError("Vector database path not available")
         conn = sqlite3.connect(self.db_path)
         conn.execute("PRAGMA journal_mode=WAL")
         try:
