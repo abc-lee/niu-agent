@@ -142,6 +142,39 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"KG batch sync start failed: {e}")
 
+    # 8.5. Start KGScanner (entity extraction scanner)
+    try:
+        from agent.injector.kg_scanner import get_kg_scanner
+        get_kg_scanner(auto_start=True)
+        logger.info("KGScanner started (entity extraction daemon)")
+    except Exception as e:
+        logger.warning(f"KGScanner start failed: {e}")
+
+    # 8.6. Ensure kg-enricher daily task exists
+    try:
+        from niu_api.internal.scheduler.task_store import TaskStore
+
+        ts = TaskStore()
+        existing = ts.get_task("kg-enricher-daily")
+        if not existing:
+            # Calculate next 8am
+            now = datetime.now()
+            next_8am = now.replace(hour=8, minute=0, second=0, microsecond=0)
+            if next_8am <= now:
+                next_8am += timedelta(days=1)
+
+            ts.create_task(
+                id="kg-enricher-daily",
+                content="执行知识图谱丰富化：将向量库中的经验、画像、查询模式同步到知识图谱。调用 chat-with-kg-enricher 子 Agent。",
+                scheduled_at=next_8am.isoformat(),
+                is_recurring=True,
+                cron_expr="0 8 * * *",
+                event_type="recurring",
+            )
+            logger.info(f"Created kg-enricher daily task (next run: {next_8am})")
+    except Exception as e:
+        logger.warning(f"Failed to ensure kg-enricher task: {e}")
+
     yield
 
     # Shutdown
@@ -165,6 +198,15 @@ async def lifespan(app: FastAPI):
             logger.info("Tool lifecycle scores saved on shutdown")
     except Exception as e:
         logger.warning(f"Failed to save tool lifecycle on shutdown: {e}")
+
+    # 停止 KGScanner
+    try:
+        from agent.injector.kg_scanner import get_kg_scanner
+        scanner = get_kg_scanner(auto_start=False)
+        scanner.stop()
+        logger.info("KGScanner stopped")
+    except Exception as e:
+        logger.warning(f"Failed to stop KGScanner: {e}")
 
     from niu_api.internal.scheduler import stop_scheduler
     stop_scheduler()
