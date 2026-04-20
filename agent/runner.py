@@ -2,7 +2,7 @@
 Niu Agent Runner
 
 简化的 Agent 入口，直接使用 GenericAgent 组件。
-集成动态注入：Skills 和 MCP 工具描述按语义注入提示词。
+集成动态注入：Skills 按语义注入提示词，MCP 工具按分数动态注入 tools_schema。
 """
 
 import json
@@ -92,7 +92,15 @@ def get_system_prompt() -> str:
             if content.startswith("---"):
                 parts = content.split("---", 2)
                 if len(parts) >= 3:
-                    sys_prompt = parts[2].strip()
+                    # 注入 front matter 中的 description 字段
+                    try:
+                        import yaml as _yaml
+                        config = _yaml.safe_load(parts[1])
+                        if config and config.get("description"):
+                            sys_prompt = config["description"].strip() + "\n\n"
+                    except Exception:
+                        pass
+                    sys_prompt += parts[2].strip()
             else:
                 sys_prompt = content
 
@@ -224,6 +232,8 @@ def create_client(config: Dict[str, Any]):
         "model": config.get("model", ""),
         "api_type": config.get("type", "openai"),
     }
+    if "temperature" in config and config["temperature"] is not None:
+        cfg["temperature"] = config["temperature"]
 
     from .generic.litellm_adapter import create_litellm_client
     logger.info(f"Using LiteLLM adapter for model: {cfg['model']}")
@@ -246,31 +256,14 @@ def format_resources_for_prompt(results: list, title: str = "相关资源") -> s
     for i, r in enumerate(results, 1):
         score_pct = int(r.score * 100)
         name = r.metadata.get("name", "")
-        category = r.metadata.get("category", "")
 
-        # 对于 MCP 工具，显示完整名称 server/name
-        if category == "mcp_tool":
-            server = r.metadata.get("server", "")
-            display_name = f"{server}/{name}" if server else name
-        else:
-            display_name = name
-
-        if display_name:
-            # 对于 MCP 工具，只注入名字+分数+一句话摘要（完整描述在 tools_schema 中已有）
-            if category == "mcp_tool":
-                description = r.metadata.get("description", "")
-                # 取第一句话作为摘要
-                short_desc = description.split("。")[0].split(". ")[0]
-                if len(short_desc) > 80:
-                    short_desc = short_desc[:77] + "..."
-                lines.append(f"{i}. **{display_name}** ({score_pct}) — {short_desc}")
-            else:
-                lines.append(f"{i}. **{display_name}** (分数: {score_pct})")
-                # Skills 等其他类型，注入 L1 摘要 + 文件路径（指针）
-                lines.append(f"   {r.content}")
-                source = r.metadata.get("source", "")
-                if source:
-                    lines.append(f"   文件路径: {source}")
+        if name:
+            lines.append(f"{i}. **{name}** (分数: {score_pct})")
+            # Skills 等其他类型，注入 L1 摘要 + 文件路径（指针）
+            lines.append(f"   {r.content}")
+            source = r.metadata.get("source", "")
+            if source:
+                lines.append(f"   文件路径: {source}")
         else:
             lines.append(f"{i}. {r.content} (分数: {score_pct})")
 
@@ -282,10 +275,16 @@ class NiuRunner:
     Niu Agent Runner
 
     简化的 Agent 运行器，直接使用 GenericAgent 组件。
-    集成动态注入：Skills 和 MCP 工具描述按语义注入提示词。
+    集成动态注入：Skills 按语义注入提示词，MCP 工具按分数动态注入 tools_schema。
     """
 
     def __init__(self, llm_config: Dict[str, Any], mcp_client=None):
+        # 从 niu.md front matter 读取 temperature，覆盖到 llm_config
+        from .subagent import get_subagent_config
+        niu_config = get_subagent_config("niu")
+        if niu_config.get("temperature") is not None:
+            llm_config = {**llm_config, "temperature": niu_config["temperature"]}
+
         self.llm_config = llm_config
         self.mcp_client = mcp_client
         self.client = create_client(llm_config)
@@ -351,6 +350,37 @@ class NiuRunner:
             if tool.get("function", {}).get("name") == tool_name:
                 return tool
         return None
+
+    def _build_dynamic_tools_schema(self, static_tools: set) -> list:
+        """组装动态工具 schema（top-10 按分数降序，同分并列）
+
+        static_tools 不参与排序，单独注入不受限。
+        只对动态工具排序截断，避免 static 占 top-10 名额。
+        """
+        MAX_DYNAMIC_TOOLS = 10
+        active_tool_names = self.tool_lifecycle.get_active_tools()
+
+        # 排除 static 工具，只对动态工具排序截断
+        scored = [(name, self.tool_lifecycle.get_tool_score(name))
+                  for name in active_tool_names if name not in static_tools]
+        scored.sort(key=lambda x: -x[1])
+
+        # top-10，同分数并列不截断
+        top = scored[:MAX_DYNAMIC_TOOLS]
+        if len(scored) > MAX_DYNAMIC_TOOLS:
+            cutoff_score = top[-1][1]
+            for name, score in scored[MAX_DYNAMIC_TOOLS:]:
+                if score == cutoff_score:
+                    top.append((name, score))
+                else:
+                    break
+
+        result = []
+        for tool_name, _ in top:
+            schema = self._get_tool_schema_by_name(tool_name)
+            if schema:
+                result.append(schema)
+        return result
 
     def _extract_context_from_messages(self, messages: list) -> str:
         """
@@ -438,14 +468,9 @@ class NiuRunner:
             if schema:
                 new_schema.append(schema)
 
-        # 加入活跃工具（包括本轮新命中的）
-        active_tool_names = self.tool_lifecycle.get_active_tools()
-        for tool_name in active_tool_names:
-            if tool_name in static_tools:
-                continue
-            schema = self._get_tool_schema_by_name(tool_name)
-            if schema:
-                new_schema.append(schema)
+        # 动态注入其他工具（top-10 按分数降序，同分并列）
+        dynamic_schemas = self._build_dynamic_tools_schema(static_tools)
+        new_schema.extend(dynamic_schemas)
 
         return new_schema
 
@@ -530,9 +555,9 @@ class NiuRunner:
 
     def _inject_dynamic_resources(self, context: str) -> tuple[str, dict[str, int]]:
         """
-        动态注入相关资源（Skills、MCP 工具描述、知识）
+        动态注入相关资源（Skills、知识）+ MCP 工具分数提取
 
-        从向量库搜索相关资源，返回格式化的提示词扩展
+        从向量库搜索相关资源，返回格式化的提示词扩展和 MCP 工具分数
 
         Args:
             context: 3条对话上下文（包含历史消息和当前用户输入）
@@ -540,14 +565,15 @@ class NiuRunner:
         注入顺序：
         1. 活跃Skills（工具命中后激活）
         2. 语义匹配的Skills
-        3. MCP工具描述
+        3. MCP工具 → 仅提取分数供 tool_lifecycle.update_from_search，不注入提示词
         4. 知识文档
         5. 交互习惯
 
         阈值策略：
-        - Skills: 0.35（高精度）
-        - MCP工具: 0.15（低阈值，工具描述短）
-        - 知识: 0.45（高精度）
+        - Skills: 0.25
+        - MCP工具: 0.25
+        - 知识: 0.3
+        - 交互习惯: 0.4
         """
         # 1. 一次向量检索，按 category 分组返回（避免同一 context 多次 embedding 计算）
         multi_results = self.vector_search.search_multi(
@@ -589,11 +615,10 @@ class NiuRunner:
 
         logger.debug(f"Dynamic injection - Skills: {len(skills)}, MCP: {len(mcp_tools)}, Knowledge: {len(knowledge)}, Habits: {len(interaction_habits)}, ToolSignalSkills: {len(tool_signal_skills)}")
 
-        # 3.5 向量检索到的 MCP 工具：注入 system prompt + 返回分数供 update_from_search
+        # 3.5 向量检索到的 MCP 工具：返回分数供 update_from_search（不再注入 system prompt，tools_schema 已有完整描述）
         # 过滤 hidden（不可见）和 static（已固定注入，不需要动态分数）的工具
         mcp_tool_scores = {}
         registry = get_registry()
-        filtered_mcp_tools = []
         for tool in mcp_tools:
             name = tool.metadata.get("name", "")
             server = tool.metadata.get("server", "")
@@ -605,7 +630,6 @@ class NiuRunner:
             if vis == "hidden" or vis == "static":
                 continue
             mcp_tool_scores[full_name] = int(score * 100)
-            filtered_mcp_tools.append(tool)
 
         # 格式化
         parts = []
@@ -624,8 +648,6 @@ class NiuRunner:
             if unique_skills:
                 parts.append(format_resources_for_prompt(unique_skills, "相关技能"))
 
-        if filtered_mcp_tools:
-            parts.append(format_resources_for_prompt(filtered_mcp_tools, "相关工具"))
         if knowledge:
             parts.append(format_resources_for_prompt(knowledge, "参考知识"))
             parts.append(
@@ -682,7 +704,7 @@ class NiuRunner:
         if injection:
             system_prompt += injection
 
-        # 组装 tools_schema = 内置工具 + 基础MCP工具
+        # 组装 tools_schema = 内置工具 + 静态MCP工具 + 动态MCP工具(top-10)
         tools_schema = self.base_tools_schema.copy()
 
         # 固定注入静态工具（visibility=static）
@@ -692,24 +714,13 @@ class NiuRunner:
             if schema:
                 tools_schema.append(schema)
 
-        # 动态注入其他工具（基于向量检索）
-        # 1. 获取所有活跃工具（之前未衰减完的）
-        active_tool_names = self.tool_lifecycle.get_active_tools()
-
-        # 2. 注入活跃工具（排除静态工具，避免重复）
-        for tool_name in active_tool_names:
-            # 跳过静态工具（已经注入）
-            if tool_name in static_tools:
-                continue
-
-            schema = self._get_tool_schema_by_name(tool_name)
-            if schema:
-                tools_schema.append(schema)
+        # 动态注入其他工具（top-10 按分数降序，同分并列）
+        dynamic_schemas = self._build_dynamic_tools_schema(static_tools)
+        tools_schema.extend(dynamic_schemas)
 
         # 调试：打印工具数量
-        base_mcp_count = len([t for t in tools_schema if t.get("function", {}).get("name") in static_tools])
         logger.debug(
-            f"tools_schema: {len(self.base_tools_schema)} base + {base_mcp_count} static_mcp = {len(tools_schema)} total (from {len(self._mcp_tools_schema)} available mcp tools)"
+            f"tools_schema: {len(self.base_tools_schema)} base + {len(static_tools)} static + {len(dynamic_schemas)} dynamic = {len(tools_schema)} total"
         )
 
         gen = agent_runner_loop(

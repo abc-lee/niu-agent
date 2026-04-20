@@ -273,6 +273,8 @@ class LiteLLMSession(BaseSession):
             request_params["tools"] = litellm_tools
         if self.proxies:
             request_params["proxy"] = self.proxies
+        if self.temperature is not None:
+            request_params["temperature"] = self.temperature
 
         # 记录完整请求（全量，包含 messages）
         _write_interaction_log({
@@ -431,6 +433,8 @@ def create_litellm_client(config: Dict[str, Any]) -> ToolClient:
         "model": config.get("model", "gpt-4o"),
         "api_type": api_type,
     }
+    if "temperature" in config and config["temperature"] is not None:
+        cfg["temperature"] = config["temperature"]
 
     # 将当前模型注册到 cost map（置零），避免 LiteLLM 查找费率失败触发 Provider List
     _register_model_cost(cfg["model"])
