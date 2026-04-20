@@ -88,7 +88,7 @@ def get_system_prompt() -> str:
     if os.path.exists(niu_md_path):
         with open(niu_md_path, "r", encoding="utf-8") as f:
             content = f.read()
-            if "---" in content:
+            if content.startswith("---"):
                 parts = content.split("---", 2)
                 if len(parts) >= 3:
                     sys_prompt = parts[2].strip()
@@ -727,7 +727,8 @@ class NiuRunner:
         # 调试：打印工具数量
         base_mcp_count = len([t for t in tools_schema if t.get("function", {}).get("name") in static_tools])
         print(
-            f"[Debug] tools_schema: {len(self.base_tools_schema)} base + {base_mcp_count} static_mcp = {len(tools_schema)} total (from {len(self._mcp_tools_schema)} available mcp tools)"
+            f"[Debug] tools_schema: {len(self.base_tools_schema)} base + {base_mcp_count} static_mcp = {len(tools_schema)} total (from {len(self._mcp_tools_schema)} available mcp tools)",
+            file=sys.stderr, flush=True
         )
 
         gen = agent_runner_loop(
