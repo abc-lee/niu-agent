@@ -93,9 +93,7 @@ def get_subagent_mcp_tools_schema(agent_name: str) -> List[Dict]:
         if "/" in tool_name:
             server = tool_name.split("/")[0]
             if server in mcp_servers:
-                # 跳过 visibility=hidden 的工具
-                if tool.get("visibility", "dynamic") == "hidden":
-                    continue
+                # hidden 只对主 Agent 生效；子 Agent 由 mcpServers 白名单控制工具范围
                 # 转换为OpenAI工具格式
                 schema.append({
                     "type": "function",
@@ -136,6 +134,11 @@ def call_subagent(
 
     # 1. 获取子 Agent 提示词（从配置文件）
     system_prompt = get_subagent_prompt(agent_name)
+
+    # 1.5 从子 Agent 配置读取 temperature，覆盖到 llm_config
+    agent_config = get_subagent_config(agent_name)
+    if agent_config.get("temperature") is not None:
+        llm_config = {**llm_config, "temperature": agent_config["temperature"]}
 
     # 2. 注入当前时间（重要！）
     from datetime import datetime

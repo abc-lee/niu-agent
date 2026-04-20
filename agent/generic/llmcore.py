@@ -60,6 +60,7 @@ class BaseSession:
             print(f"[WARN] Invalid reasoning_effort {effort!r}, ignored.")
         mode = str(cfg.get("api_mode", "chat_completions")).strip().lower().replace("-", "_")
         self.api_mode = "responses" if mode in ("responses", "response") else "chat_completions"
+        self.temperature = cfg.get("temperature")
 
 
 # ===== ToolClient =====
