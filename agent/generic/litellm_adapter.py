@@ -14,6 +14,9 @@ from typing import Any, Dict, Generator, List, Optional
 
 import litellm
 
+# 抑制 LiteLLM 的调试输出（"Provider List" 等提示）
+litellm.suppress_debug_info = True
+
 from .llmcore import BaseSession, MockResponse, MockToolCall, ToolClient
 
 
