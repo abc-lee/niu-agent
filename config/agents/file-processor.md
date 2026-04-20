@@ -1,6 +1,6 @@
 ---
 name: file-processor
-description: "Process files/photos using photo-server tools. Use this tool when user drags files into the assistant."
+description: "【必须调用】处理文件和照片：入库、人脸识别、文档解析。用户拖入文件/照片时必须调用此工具，不要自己处理文件。"
 temperature: 0.2
 mode: subagent
 permissions:

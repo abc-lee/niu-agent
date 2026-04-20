@@ -1,6 +1,6 @@
 ---
 name: event-manager
-description: 事件管理器 - 负责管理用户的重要事件、待办事项和日程
+description: "处理日程、提醒、定时任务。"
 mode: subagent
 temperature: 0.2
 mcpServers:

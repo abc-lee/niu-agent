@@ -194,13 +194,20 @@ def get_tools_schema() -> list:
             all_tools = json.load(f)
         tools = [t for t in all_tools if t.get("function", {}).get("name") not in excluded_tools]
 
-    # 注册子 Agent 工具
-    sub_agent_descriptions = {
-        "file-processor": "【必须调用】处理文件和照片：入库、人脸识别、文档解析。用户拖入文件/照片时必须调用此工具，不要自己处理文件。",
-        "event-manager": "处理日程、提醒、定时任务。",
-        "context-manager": "记忆压缩、上下文整理。",
-    }
-    for agent_name, desc in sub_agent_descriptions.items():
+    # 注册子 Agent 工具（从 niu.md 的 sub agents 字段动态生成）
+    from .subagent import get_subagent_config
+    try:
+        niu_config = get_subagent_config("niu")
+        sub_agents = niu_config.get("sub agents", [])
+    except Exception:
+        sub_agents = []
+
+    for agent_name in sub_agents:
+        try:
+            agent_config = get_subagent_config(agent_name)
+            desc = agent_config.get("description", f"子 Agent: {agent_name}")
+        except Exception:
+            desc = f"子 Agent: {agent_name}"
         tools.append(
             {
                 "type": "function",
