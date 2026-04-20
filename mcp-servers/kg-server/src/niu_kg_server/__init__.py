@@ -559,7 +559,7 @@ def create_document(
         """MERGE (d:Document {uri: $uri})
            ON CREATE SET d.title = $title, d.content = $content, d.source = $source,
                          d.entity_status = $entity_status, d.retry_count = 0, d.created_at = $ts
-           SET d.updated_at = $ts""",
+           ON MATCH SET d.title = $title, d.content = $content, d.source = $source, d.updated_at = $ts""",
         {"uri": uri, "title": title, "content": content, "source": source,
          "entity_status": entity_status, "ts": created_at},
     )
@@ -1437,7 +1437,7 @@ def get_document(uri: str) -> dict[str, Any] | None:
     """Get a document by URI."""
     conn = get_connection()
     result = conn.execute(
-        "MATCH (d:Document {uri: $uri}) RETURN d.uri, d.title, d.content, d.source, d.created_at",
+        "MATCH (d:Document {uri: $uri}) RETURN d.uri, d.title, d.content, d.source, d.entity_status, d.processing_at, d.retry_count, d.created_at, d.updated_at",
         {"uri": uri},
     )
 
@@ -1448,7 +1448,11 @@ def get_document(uri: str) -> dict[str, Any] | None:
             "title": row[1],
             "content": row[2],
             "source": row[3],
-            "created_at": row[4],
+            "entity_status": row[4],
+            "processing_at": row[5],
+            "retry_count": row[6],
+            "created_at": row[7],
+            "updated_at": row[8],
         }
     return None
 
