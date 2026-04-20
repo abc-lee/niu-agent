@@ -875,7 +875,7 @@ class NiuHandler(BaseHandler):
                             from agent.runner import get_runner
                             runner = get_runner()
                             if runner and hasattr(runner, '_memory_dirty'):
-                                runner._memory_dirty = True
+                                runner._memory_dirty.set()
                         except Exception:
                             pass
                     # 成功执行，提示LLM向用户汇报
