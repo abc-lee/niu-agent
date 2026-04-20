@@ -119,17 +119,17 @@ class VectorSearchAdapter:
         if self.db_path is None:
             return None
         if self._conn is None:
-            if os.path.exists(self.db_path):
-                # check_same_thread=False 允许跨线程使用
-                self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
-                self._conn.execute("PRAGMA journal_mode=WAL")  # 允许并发读写
-                # 只在首次连接时创建索引
-                if not self._indexes_created:
-                    self._ensure_indexes()
-                    self._indexes_created = True
-            else:
-                # 数据库不存在，返回 None
-                return None
+            # 确保目录存在
+            db_dir = os.path.dirname(self.db_path)
+            if db_dir and not os.path.exists(db_dir):
+                os.makedirs(db_dir, exist_ok=True)
+            # 连接数据库（不存在则自动创建）
+            self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
+            self._conn.execute("PRAGMA journal_mode=WAL")  # 允许并发读写
+            # 只在首次连接时创建表和索引
+            if not self._indexes_created:
+                self._ensure_indexes()
+                self._indexes_created = True
         return self._conn
 
     def _ensure_indexes(self):
@@ -138,6 +138,16 @@ class VectorSearchAdapter:
             return
 
         try:
+            # 确保表存在（数据库新建时可能还没有表）
+            self._conn.execute("""
+                CREATE TABLE IF NOT EXISTS documents (
+                    id TEXT PRIMARY KEY,
+                    content TEXT NOT NULL,
+                    embedding BLOB,
+                    metadata TEXT
+                )
+            """)
+
             # 为 metadata 中的 level 字段创建索引
             # SQLite 不支持直接在 JSON 字段上创建索引，使用表达式索引
             self._conn.execute(
