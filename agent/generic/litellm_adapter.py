@@ -14,8 +14,9 @@ from typing import Any, Dict, Generator, List, Optional
 
 import litellm
 
-# 抑制 LiteLLM 的调试输出（"Provider List" 等提示）
+# 抑制 LiteLLM 的调试输出和费用追踪（项目使用自定义模型，LiteLLM 无法识别）
 litellm.suppress_debug_info = True
+litellm.disable_end_user_cost_tracking = True
 
 from .llmcore import BaseSession, MockResponse, MockToolCall, ToolClient
 
