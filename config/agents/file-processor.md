@@ -187,6 +187,4 @@ photo-server/name_person, 参数: person_id="...", name="张三"
 
 ### 向主 Agent 返回格式
 
-**直接返回原始 JSON 数据**，主 Agent 会自己转换为 `::person_photo::` 格式。
-
-**不要自己生成 `::person_photo::` 标记！** 让主 Agent 来做转换。
+**直接返回原始 JSON 数据**，不要自己生成 `::person_photo::` 标记，不要自己调用 `get_person_photos`。
