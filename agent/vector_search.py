@@ -12,12 +12,13 @@ Vector Search Adapter
 import json
 import os
 import sqlite3
-import sys
+import threading
 import time
 from typing import Any, Optional
 from dataclasses import dataclass
 
 import numpy as np
+from loguru import logger
 
 
 def resolve_vector_db_path() -> str:
@@ -166,7 +167,7 @@ class VectorSearchAdapter:
 
             self._conn.commit()
         except Exception as e:
-            print(f"[VectorSearch] Failed to create indexes: {e}", file=sys.stderr, flush=True)
+            logger.warning(f"[VectorSearch] Failed to create indexes: {e}")
 
     def _get_embedding(self, text: str) -> Optional[list[float]]:
         """获取向量 - 直接调用内部模块"""
@@ -174,7 +175,7 @@ class VectorSearchAdapter:
             from niu_api.internal.embedding import encode
             return encode(text)
         except Exception as e:
-            print(f"[VectorSearch] Embedding error: {e}", file=sys.stderr, flush=True)
+            logger.warning(f"[VectorSearch] Embedding error: {e}")
             return None
 
     def search(
@@ -199,13 +200,12 @@ class VectorSearchAdapter:
         # 安全限制：硬编码最多递归3次
         if max_recursion <= 0:
             recursion_depth = 4 - max_recursion
-            print(f"[WARNING] Max recursion reached ({recursion_depth}/3), returning results",
-                  file=sys.stderr, flush=True)
+            logger.warning(f"[VectorSearch] Max recursion reached ({recursion_depth}/3), returning results")
             return []
 
         # 验证 level 参数
         if level is not None and level not in ('l0', 'l1', 'l2'):
-            print(f"[VectorSearch] Invalid level '{level}', ignoring.", file=sys.stderr, flush=True)
+            logger.warning(f"[VectorSearch] Invalid level '{level}', ignoring.")
             level = None
 
         # 单次检索
@@ -221,8 +221,7 @@ class VectorSearchAdapter:
 
                 # 记录递归信息
                 recursion_depth = 4 - max_recursion
-                print(f"[Recursive Query] {query} → {refined} (depth: {recursion_depth}/3)",
-                      file=sys.stderr, flush=True)
+                logger.debug(f"[Recursive Query] {query} → {refined} (depth: {recursion_depth}/3)")
 
                 # 第二轮检索，排除查询模式
                 results = self._search_once(
@@ -365,7 +364,7 @@ class VectorSearchAdapter:
         if conf.get("fail_count", 0) >= 3:
             conn.execute("DELETE FROM documents WHERE id = ?", (habit_id,))
             conn.commit()
-            print(f"[InteractionHabits] Deleted low-confidence habit: {habit_id}", flush=True)
+            logger.info(f"[InteractionHabits] Deleted low-confidence habit: {habit_id}")
             return True
 
         conn.execute(
@@ -650,7 +649,7 @@ class VectorSearchAdapter:
                             second_pass.append((score, doc_id, content, metadata))
 
                     all_recursive_results.extend(second_pass)
-                    print(f"[Recursive Query] depth={depth}/{max_recursion_depth} query={current_query!r} -> refined_query={refined_query!r} target_category={target_category!r} hits={len(second_pass)}", file=sys.stderr, flush=True)
+                    logger.debug(f"[Recursive Query] depth={depth}/{max_recursion_depth} query={current_query!r} -> refined_query={refined_query!r} target_category={target_category!r} hits={len(second_pass)}")
 
                     # 检查是否需要继续递归
                     if not next_qp_hits:
@@ -748,13 +747,16 @@ class VectorSearchAdapter:
 
 # 全局实例
 _vector_search: Optional[VectorSearchAdapter] = None
+_vector_search_lock = threading.Lock()
 
 
 def get_vector_search(db_path: Optional[str] = None) -> VectorSearchAdapter:
-    """获取全局向量搜索实例"""
+    """获取全局向量搜索实例（线程安全）"""
     global _vector_search
     if _vector_search is None:
-        _vector_search = VectorSearchAdapter(db_path)
+        with _vector_search_lock:
+            if _vector_search is None:
+                _vector_search = VectorSearchAdapter(db_path)
     return _vector_search
 
 
