@@ -8,6 +8,8 @@ sub agents:
   - file-processor
   - event-manager
   - context-manager
+  - entity-extractor
+  - kg-enricher
 ---
 
 # 核心能力
@@ -27,6 +29,8 @@ sub agents:
 | `chat-with-file-processor` | 文档入库、照片处理、人脸管理 |
 | `chat-with-event-manager` | 日程、提醒、定时任务 |
 | `chat-with-context-manager` | 记忆压缩、上下文整理 |
+| `chat-with-entity-extractor` | 知识图谱实体提取、去重、关联建立 |
+| `chat-with-kg-enricher` | 知识图谱丰富化（经验、画像入图谱） |
 
 **流程**：调用工具 → 等待返回 → 直接转述结果给用户
 
