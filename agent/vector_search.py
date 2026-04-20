@@ -184,7 +184,7 @@ class VectorSearchAdapter:
 
     def search(
         self, query: str, limit: int = 10, min_score: float = 0.5,
-        filter: Optional[dict] = None, level: Optional[str] = None,
+        metadata_filter: Optional[dict] = None, level: Optional[str] = None,
         max_recursion: int = 3
     ) -> list[SearchResult]:
         """
@@ -194,7 +194,7 @@ class VectorSearchAdapter:
             query: 搜索查询
             limit: 最大结果数（默认 10）
             min_score: 最低相似度阈值（默认 0.5，即 50 分）
-            filter: 元数据过滤条件
+            metadata_filter: 元数据过滤条件
             level: L0/L1/L2 层级过滤（可选：'l0', 'l1', 'l2'）
             max_recursion: 最大递归次数（默认 3，硬编码上限）
 
@@ -213,7 +213,7 @@ class VectorSearchAdapter:
             level = None
 
         # 单次检索
-        results = self._search_once(query, limit, min_score, filter, level)
+        results = self._search_once(query, limit, min_score, metadata_filter, level)
 
         # 检查是否有递归查询标记
         for result in results:
@@ -232,7 +232,7 @@ class VectorSearchAdapter:
                     query=refined,
                     limit=limit,
                     min_score=min_score,
-                    filter=None,  # 不过滤，在后面排除
+                    metadata_filter=None,  # 不过滤，在后面排除
                     level=level
                 )
 
@@ -290,7 +290,7 @@ class VectorSearchAdapter:
         # 使用独立连接写入（WAL 模式允许并发读写）
         if self.db_path is None:
             return False
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, isolation_level=None)
         conn.execute("PRAGMA journal_mode=WAL")
         try:
             for attempt in range(3):
@@ -309,6 +309,7 @@ class VectorSearchAdapter:
                     conn.commit()
                     return True
                 except sqlite3.OperationalError as e:
+                    conn.rollback()
                     if "locked" in str(e) and attempt < 2:
                         time.sleep(0.1 * (attempt + 1))
                     else:
@@ -320,10 +321,10 @@ class VectorSearchAdapter:
     def search_interaction_habits(
         self,
         query: str,
-        habit_type: str = None,
+        habit_type: Optional[str] = None,
         limit: int = 5,
         min_score: float = 0.4
-    ) -> list:
+    ) -> list[SearchResult]:
         """
         检索 Interaction Habits
 
@@ -339,7 +340,7 @@ class VectorSearchAdapter:
         filter_dict = {"level": "l1", "category": "interaction_habit"}
         if habit_type:
             filter_dict["type"] = habit_type
-        return self.search(query, limit=limit, min_score=min_score, filter=filter_dict)
+        return self.search(query, limit=limit, min_score=min_score, metadata_filter=filter_dict)
 
     def update_habit_confidence(
         self,
@@ -359,7 +360,7 @@ class VectorSearchAdapter:
         # 使用独立连接 + BEGIN IMMEDIATE 保证读-改-写原子性
         if self.db_path is None:
             return False
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, isolation_level=None)
         conn.execute("PRAGMA journal_mode=WAL")
         try:
             for attempt in range(3):
@@ -410,7 +411,7 @@ class VectorSearchAdapter:
 
     def _search_once(
         self, query: str, limit: int, min_score: float,
-        filter: Optional[dict], level: Optional[str]
+        metadata_filter: Optional[dict], level: Optional[str]
     ) -> list[SearchResult]:
         """单次向量检索（内部方法）"""
         conn = self._get_connection()
@@ -434,10 +435,13 @@ class VectorSearchAdapter:
 
         if not query_embedding or not docs:
             # 降级到文本搜索
-            return self._text_search(query, limit, min_score, filter, level)
+            return self._text_search(query, limit, min_score, metadata_filter, level)
 
         # 向量相似度搜索
         query_vec = np.array(query_embedding, dtype=np.float32)
+        query_norm = np.linalg.norm(query_vec)
+        if query_norm == 0:
+            return []
 
         scored_docs = []
         for doc_id, content, embedding_blob, metadata_json in docs:
@@ -445,16 +449,13 @@ class VectorSearchAdapter:
                 metadata = json.loads(metadata_json) if metadata_json else {}
 
                 # 应用过滤条件
-                if filter and not self._matches_filter(metadata, filter):
+                if metadata_filter and not self._matches_filter(metadata, metadata_filter):
                     continue
 
                 doc_vec = np.frombuffer(embedding_blob, dtype=np.float32)
                 doc_norm = np.linalg.norm(doc_vec)
                 if doc_norm == 0:
                     continue
-                query_norm = np.linalg.norm(query_vec)
-                if query_norm == 0:
-                    break
                 score = float(np.dot(query_vec, doc_vec) / (query_norm * doc_norm))
 
                 # 应用阈值
@@ -473,7 +474,7 @@ class VectorSearchAdapter:
 
     def _text_search(
         self, query: str, limit: int, min_score: float,
-        filter: Optional[dict], level: Optional[str] = None
+        metadata_filter: Optional[dict], level: Optional[str] = None
     ) -> list[SearchResult]:
         """降级的文本搜索"""
         conn = self._get_connection()
@@ -495,7 +496,7 @@ class VectorSearchAdapter:
         results = []
         for row in cursor.fetchall():
             metadata = json.loads(row[2]) if row[2] else {}
-            if filter and not self._matches_filter(metadata, filter):
+            if metadata_filter and not self._matches_filter(metadata, metadata_filter):
                 continue
             results.append(
                 SearchResult(

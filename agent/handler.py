@@ -414,7 +414,7 @@ class NiuHandler(BaseHandler):
 
         # 记录工具执行
         result_str = str(ret) if ret else ""
-        success = isinstance(ret, dict) and ret.get("status") == "success" if ret else False
+        success = (isinstance(ret, dict) and ret.get("status") == "success") if ret is not None else False
 
         tool_exec = ToolExecution(
             tool_name=tool_name,
@@ -798,7 +798,7 @@ class NiuHandler(BaseHandler):
         method_name = f"do_{tool_name.replace('-', '_')}"
         if hasattr(self, method_name):
             # 直接调用方法，不委托给 super（因为 super 会用原始 tool_name 查找）
-            args["_index"] = index
+            args = {**args, "_index": index}
             prer = yield from try_call_generator(
                 self.tool_before_callback, tool_name, args, response
             )
@@ -876,8 +876,8 @@ class NiuHandler(BaseHandler):
                             runner = get_runner()
                             if runner and hasattr(runner, '_memory_dirty'):
                                 runner._memory_dirty.set()
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"Memory dirty flag set failed: {e}")
                     # 成功执行，提示LLM向用户汇报
                     result_summary = json.dumps(result, ensure_ascii=False)[:500]
                     return StepOutcome(result, next_prompt=f"工具调用成功。请向用户简洁汇报结果：{result_summary}")
