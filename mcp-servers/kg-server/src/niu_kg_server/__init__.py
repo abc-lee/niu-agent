@@ -103,6 +103,10 @@ TOOL_SCHEMAS = {
                     "type": "string",
                     "description": "Path to file to read content from (avoids JSON size limits)",
                 },
+                "entity_status": {
+                    "type": "string",
+                    "description": "Entity extraction status (default: pending)",
+                },
             },
             "required": ["uri", "title"],
         },
@@ -361,6 +365,20 @@ TOOL_SCHEMAS = {
             },
         },
     },
+    "update_entity_status": {
+        "name": "update_entity_status",
+        "description": "Update Document node's entity completion status (entity_status, processing_at, retry_count).",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "uri": {"type": "string", "description": "Document URI"},
+                "entity_status": {"type": "string", "description": "New status: pending/processing/completed/failed/failed_permanent"},
+                "processing_at": {"type": "string", "description": "Processing timestamp (optional)"},
+                "retry_count": {"type": "integer", "description": "Retry count (optional)"},
+            },
+            "required": ["uri", "entity_status"],
+        },
+    },
 }
 
 
@@ -404,8 +422,63 @@ def _init_schema(conn: kuzu.Connection) -> None:
             title STRING,
             content STRING,
             source STRING,
+            entity_status STRING,
+            processing_at STRING,
+            retry_count INT64,
             created_at STRING,
+            updated_at STRING,
             PRIMARY KEY (uri)
+        )
+    """)
+
+    # Experience and profile nodes for kg-enricher
+    conn.execute("""
+        CREATE NODE TABLE IF NOT EXISTS ErrorExperience (
+            id STRING,
+            content STRING,
+            category STRING,
+            created_at STRING,
+            PRIMARY KEY (id)
+        )
+    """)
+
+    conn.execute("""
+        CREATE NODE TABLE IF NOT EXISTS SuccessExperience (
+            id STRING,
+            content STRING,
+            category STRING,
+            created_at STRING,
+            PRIMARY KEY (id)
+        )
+    """)
+
+    conn.execute("""
+        CREATE NODE TABLE IF NOT EXISTS InteractionHabit (
+            id STRING,
+            content STRING,
+            category STRING,
+            created_at STRING,
+            PRIMARY KEY (id)
+        )
+    """)
+
+    conn.execute("""
+        CREATE NODE TABLE IF NOT EXISTS QueryPattern (
+            id STRING,
+            content STRING,
+            category STRING,
+            created_at STRING,
+            PRIMARY KEY (id)
+        )
+    """)
+
+    conn.execute("""
+        CREATE NODE TABLE IF NOT EXISTS UserProfile (
+            id STRING,
+            content STRING,
+            category STRING,
+            created_at STRING,
+            PRIMARY KEY (id)
         )
     """)
 
@@ -457,6 +530,39 @@ def _init_schema(conn: kuzu.Connection) -> None:
         )
     """)
 
+    # Experience edges
+    conn.execute("""
+        CREATE REL TABLE IF NOT EXISTS APPLIES_TO (
+            FROM ErrorExperience TO Entity,
+            confidence FLOAT,
+            created_at STRING
+        )
+    """)
+
+    conn.execute("""
+        CREATE REL TABLE IF NOT EXISTS APPLIES_TO_SE (
+            FROM SuccessExperience TO Entity,
+            confidence FLOAT,
+            created_at STRING
+        )
+    """)
+
+    conn.execute("""
+        CREATE REL TABLE IF NOT EXISTS PREFERS (
+            FROM UserProfile TO Entity,
+            confidence FLOAT,
+            created_at STRING
+        )
+    """)
+
+    conn.execute("""
+        CREATE REL TABLE IF NOT EXISTS TRIGGERS (
+            FROM InteractionHabit TO QueryPattern,
+            confidence FLOAT,
+            created_at STRING
+        )
+    """)
+
     logger.info("Database schema initialized")
 
 
@@ -481,7 +587,7 @@ def _get_timestamp() -> str:
 
 
 def create_document(
-    uri: str, title: str, content: str = "", source: str = "", file_path: str = ""
+    uri: str, title: str, content: str = "", source: str = "", file_path: str = "", entity_status: str = "pending"
 ) -> dict[str, Any]:
     """Create a document node in the graph.
 
@@ -491,6 +597,7 @@ def create_document(
         content: Document content (optional if file_path provided)
         source: Source of the document (optional)
         file_path: Path to file to read content from (optional)
+        entity_status: Entity extraction status (default: pending)
 
     If file_path is provided, content will be read from the file.
     This avoids passing large content through JSON parameters.
@@ -522,17 +629,51 @@ def create_document(
     created_at = _get_timestamp()
 
     conn.execute(
-        "MERGE (d:Document {uri: $uri}) ON CREATE SET d.title = $title, d.content = $content, d.source = $source, d.created_at = $created_at ON MATCH SET d.source = $source",
-        {
-            "uri": uri,
-            "title": title,
-            "content": content,
-            "source": source,
-            "created_at": created_at,
-        },
+        """MERGE (d:Document {uri: $uri})
+           ON CREATE SET d.title = $title, d.content = $content, d.source = $source,
+                         d.entity_status = $entity_status, d.retry_count = 0, d.created_at = $ts
+           SET d.updated_at = $ts""",
+        {"uri": uri, "title": title, "content": content, "source": source,
+         "entity_status": entity_status, "ts": created_at},
     )
 
     return {"status": "created", "uri": uri, "title": title}
+
+
+def update_entity_status(uri: str, entity_status: str, processing_at: str | None = None, retry_count: int | None = None) -> dict[str, Any]:
+    """Update Document node's entity completion status.
+
+    Args:
+        uri: Document URI
+        entity_status: Status (pending/processing/completed/failed/failed_permanent)
+        processing_at: Processing timestamp (optional)
+        retry_count: Retry count (optional)
+
+    Returns:
+        {"status": "updated", "uri": ..., "entity_status": ...}
+    """
+    conn = get_connection()
+    ts = _get_timestamp()
+
+    try:
+        if processing_at is not None:
+            conn.execute(
+                "MATCH (d:Document {uri: $uri}) SET d.entity_status = $status, d.processing_at = $pat, d.updated_at = $ts",
+                {"uri": uri, "status": entity_status, "pat": processing_at, "ts": ts},
+            )
+        elif retry_count is not None:
+            conn.execute(
+                "MATCH (d:Document {uri: $uri}) SET d.entity_status = $status, d.retry_count = $rc, d.updated_at = $ts",
+                {"uri": uri, "status": entity_status, "rc": retry_count, "ts": ts},
+            )
+        else:
+            conn.execute(
+                "MATCH (d:Document {uri: $uri}) SET d.entity_status = $status, d.updated_at = $ts",
+                {"uri": uri, "status": entity_status, "ts": ts},
+            )
+        return {"status": "updated", "uri": uri, "entity_status": entity_status}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 
 def create_entity(
@@ -1621,6 +1762,10 @@ async def list_tools() -> list[Tool]:
                         "type": "string",
                         "description": "Path to file to read content from (avoids JSON size limits)",
                     },
+                    "entity_status": {
+                        "type": "string",
+                        "description": "Entity extraction status (default: pending)",
+                    },
                 },
                 "required": ["uri", "title"],
             },
@@ -1879,6 +2024,20 @@ async def list_tools() -> list[Tool]:
                 },
             },
         ),
+        Tool(
+            name="update_entity_status",
+            description="Update Document node's entity completion status.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "uri": {"type": "string", "description": "Document URI"},
+                    "entity_status": {"type": "string", "description": "Status: pending/processing/completed/failed"},
+                    "processing_at": {"type": "string", "description": "Processing timestamp (optional)"},
+                    "retry_count": {"type": "integer", "description": "Retry count (optional)"},
+                },
+                "required": ["uri", "entity_status"],
+            },
+        ),
     ]
 
 
@@ -1895,6 +2054,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 content=arguments.get("content", ""),
                 source=arguments.get("source", ""),
                 file_path=arguments.get("file_path", ""),
+                entity_status=arguments.get("entity_status", "pending"),
             )
         elif name == "create_entity":
             result = create_entity(
@@ -1980,6 +2140,13 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             result = graph_snapshot(
                 limit=arguments.get("limit", 200),
                 min_confidence=arguments.get("min_confidence", 0.0),
+            )
+        elif name == "update_entity_status":
+            result = update_entity_status(
+                uri=arguments["uri"],
+                entity_status=arguments["entity_status"],
+                processing_at=arguments.get("processing_at"),
+                retry_count=arguments.get("retry_count"),
             )
         else:
             return [TextContent(type="text", text=f"Unknown tool: {name}")]
