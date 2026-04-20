@@ -36,6 +36,8 @@ wheels/
 .venv/
 venv/
 ENV/
+.pytest_cache/
+.ruff_cache/
 
 # IDE
 .idea/
@@ -47,6 +49,7 @@ ENV/
 # OS
 .DS_Store
 Thumbs.db
+*.stackdump
 
 # Project specific
 .mnemo/
