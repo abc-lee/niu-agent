@@ -220,23 +220,28 @@ class SkillSync:
 
         # 检测向量库中 skill 被外部删除（需要回写）
         # 只检查 last_scan 中已有但向量库缺失的 skill（跳过本轮新增的）
-        conn = self.vector_search._get_connection()
-        if conn and last_scan:
+        db_path = self.vector_search.db_path
+        if db_path and last_scan:
             try:
-                existing_ids = set()
-                cursor = conn.execute(
-                    "SELECT id FROM documents WHERE json_extract(metadata, '$.category') = 'skill'"
-                )
-                for (doc_id,) in cursor.fetchall():
-                    existing_ids.add(doc_id)
+                conn = sqlite3.connect(db_path)
+                conn.execute("PRAGMA journal_mode=WAL")
+                try:
+                    existing_ids = set()
+                    cursor = conn.execute(
+                        "SELECT id FROM documents WHERE json_extract(metadata, '$.category') = 'skill'"
+                    )
+                    for (doc_id,) in cursor.fetchall():
+                        existing_ids.add(doc_id)
 
-                for name in last_scan:
-                    if name in current and f"skill:{name}" not in existing_ids:
-                        skill_file = self.skills_dir / f"{name}.md"
-                        if skill_file.exists():
-                            self._sync_skill(name, skill_file)
-                            added += 1
-                            logger.info(f"[SkillSync] Re-added missing skill: {name}")
+                    for name in last_scan:
+                        if name in current and f"skill:{name}" not in existing_ids:
+                            skill_file = self.skills_dir / f"{name}.md"
+                            if skill_file.exists():
+                                self._sync_skill(name, skill_file)
+                                added += 1
+                                logger.info(f"[SkillSync] Re-added missing skill: {name}")
+                finally:
+                    conn.close()
             except Exception as e:
                 logger.warning(f"[SkillSync] Failed to check missing skills: {e}")
 
@@ -248,11 +253,13 @@ class SkillSync:
 
     def _load_existing_skills(self):
         """从向量库加载已有 skill，使用磁盘文件的实际 mtime"""
-        conn = self.vector_search._get_connection()
-        if conn is None:
+        db_path = self.vector_search.db_path
+        if db_path is None:
             return
-
+        conn = None
         try:
+            conn = sqlite3.connect(db_path)
+            conn.execute("PRAGMA journal_mode=WAL")
             cursor = conn.execute(
                 "SELECT id FROM documents WHERE json_extract(metadata, '$.category') = 'skill'"
             )
@@ -270,6 +277,9 @@ class SkillSync:
                 logger.info(f"[SkillSync] Loaded {len(self._last_scan)} existing skills from vector DB")
         except Exception as e:
             logger.warning(f"[SkillSync] Failed to load existing skills: {e}")
+        finally:
+            if conn:
+                conn.close()
 
     def _sync_skill(self, name: str, skill_file: Path):
         """同步单个 skill 到向量库"""
@@ -535,13 +545,16 @@ class SkillSync:
 
 # 全局实例
 _skill_sync: Optional[SkillSync] = None
+_skill_sync_lock = threading.Lock()
 
 
 def get_skill_sync(skills_dir: str = None, auto_start: bool = True) -> SkillSync:
-    """获取全局 SkillSync 实例"""
+    """获取全局 SkillSync 实例（线程安全）"""
     global _skill_sync
     if _skill_sync is None:
-        _skill_sync = SkillSync(skills_dir)
-        if auto_start:
-            _skill_sync.start_background_sync()
+        with _skill_sync_lock:
+            if _skill_sync is None:
+                _skill_sync = SkillSync(skills_dir)
+                if auto_start:
+                    _skill_sync.start_background_sync()
     return _skill_sync

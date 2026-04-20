@@ -12,6 +12,7 @@
 
 import json
 import sqlite3
+import threading
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Tuple
@@ -265,11 +266,14 @@ class VectorCleanup:
 
 # 全局实例
 _cleanup_service: VectorCleanup = None
+_cleanup_service_lock = threading.Lock()
 
 
 def get_cleanup_service() -> VectorCleanup:
-    """获取清理服务实例"""
+    """获取清理服务实例（线程安全）"""
     global _cleanup_service
     if _cleanup_service is None:
-        _cleanup_service = VectorCleanup()
+        with _cleanup_service_lock:
+            if _cleanup_service is None:
+                _cleanup_service = VectorCleanup()
     return _cleanup_service
