@@ -7,7 +7,6 @@ KG Scanner
 
 import queue
 import threading
-import time
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -34,6 +33,8 @@ class KGScanner:
         self._scan_thread: Optional[threading.Thread] = None
         self._process_thread: Optional[threading.Thread] = None
         self._processing = False  # 是否正在处理
+        self._db = None  # KuzuDB Database (shared, thread-safe)
+        self._conn = None  # KGScanner's own Connection
 
     def start(self):
         """启动扫描和处理线程"""
@@ -57,7 +58,20 @@ class KGScanner:
             self._scan_thread.join(timeout=5)
         if self._process_thread:
             self._process_thread.join(timeout=5)
+        self._conn = None
+        self._db = None
         logger.info("[KGScanner] Stopped")
+
+    def _get_connection(self):
+        """获取 KGScanner 专属的 KuzuDB 连接（与主线程隔离）"""
+        if self._conn is None:
+            from niu_kg_server import get_db_path, _init_schema
+            import kuzu
+            db_path = get_db_path()
+            self._db = kuzu.Database(str(db_path))
+            self._conn = kuzu.Connection(self._db)
+            # Schema 已由主线程初始化，不需要再调用 _init_schema
+        return self._conn
 
     def _scan_loop(self):
         """扫描循环（异常不会终止线程）"""
@@ -74,21 +88,31 @@ class KGScanner:
         if not pending_docs:
             return
 
+        # 去重：检查队列中已有的 URI
+        existing_uris = set()
+        for item in list(self._queue.queue):
+            if isinstance(item, dict) and "uri" in item:
+                existing_uris.add(item["uri"])
+
+        enqueued = 0
         for doc in pending_docs:
+            if doc["uri"] in existing_uris:
+                continue
             try:
                 self._queue.put_nowait(doc)
+                existing_uris.add(doc["uri"])
+                enqueued += 1
             except queue.Full:
                 logger.warning("[KGScanner] Queue full, skipping pending docs")
                 break
 
-        logger.info(f"[KGScanner] Enqueued {min(len(pending_docs), self._queue.maxsize - self._queue.qsize())} pending docs")
+        if enqueued > 0:
+            logger.info(f"[KGScanner] Enqueued {enqueued} pending docs")
 
     def _query_pending_docs(self) -> list[dict]:
         """查询 KG 中待处理的 Document 节点"""
         try:
-            from niu_kg_server import get_connection
-
-            conn = get_connection()
+            conn = self._get_connection()
             now = datetime.now().isoformat()
             timeout_cutoff = (datetime.now() - timedelta(minutes=self.PROCESSING_TIMEOUT_MINUTES)).isoformat()
 
@@ -157,9 +181,15 @@ class KGScanner:
         try:
             from agent.runner import get_runner
             runner = get_runner()
-            llm_config = runner.llm_config if hasattr(runner, 'llm_config') else {}
+            if runner is None or not hasattr(runner, 'llm_config') or not runner.llm_config:
+                logger.warning("[KGScanner] Runner not initialized, resetting to pending")
+                self._update_status(uri, "pending")
+                return
+            llm_config = runner.llm_config
         except Exception:
-            llm_config = {}
+            logger.warning("[KGScanner] Failed to get runner config, resetting to pending")
+            self._update_status(uri, "pending")
+            return
 
         # 启动子 Agent
         from agent.subagent import call_subagent
@@ -173,30 +203,30 @@ class KGScanner:
         logger.info(f"[KGScanner] entity-extractor result for {uri}: {str(result)[:200]}")
 
         # 子 Agent 应该已经更新了 entity_status，这里做兜底检查
-        # 如果子 Agent 没有更新状态，我们检查是否成功
         try:
-            from niu_kg_server import get_connection
-            conn = get_connection()
+            conn = self._get_connection()
             check = conn.execute(
                 "MATCH (d:Document {uri: $uri}) RETURN d.entity_status",
                 {"uri": uri},
             )
             for row in check:
                 if row[0] == "processing":
-                    # 子 Agent 没有更新状态，标记为 completed（信任子 Agent 执行成功）
-                    self._update_status(uri, "completed")
+                    # 子 Agent 没有更新状态，根据返回值判断
+                    if result and "completed" in str(result).lower():
+                        self._update_status(uri, "completed")
+                    else:
+                        logger.warning(f"[KGScanner] Sub-agent did not complete for {uri}, marking failed")
+                        self._update_status(uri, "failed", retry_increment=True)
         except Exception:
             pass
 
-    @staticmethod
-    def _update_status(uri: str, status: str, processing_at: str = None, retry_increment: bool = False):
+    def _update_status(self, uri: str, status: str, processing_at: str = None, retry_increment: bool = False):
         """更新 Document 的 entity_status"""
         try:
             from niu_kg_server import update_entity_status
             if retry_increment:
                 # 获取当前 retry_count 并 +1
-                from niu_kg_server import get_connection
-                conn = get_connection()
+                conn = self._get_connection()
                 result = conn.execute(
                     "MATCH (d:Document {uri: $uri}) RETURN d.retry_count",
                     {"uri": uri},
