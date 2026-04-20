@@ -199,14 +199,16 @@ def get_tools_schema() -> list:
     try:
         niu_config = get_subagent_config("niu")
         sub_agents = niu_config.get("sub agents", [])
-    except Exception:
+    except Exception as e:
+        logger.warning(f"Failed to load niu.md sub agents config: {e}")
         sub_agents = []
 
     for agent_name in sub_agents:
         try:
             agent_config = get_subagent_config(agent_name)
             desc = agent_config.get("description", f"子 Agent: {agent_name}")
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Failed to load sub-agent '{agent_name}' config: {e}")
             desc = f"子 Agent: {agent_name}"
         tools.append(
             {
