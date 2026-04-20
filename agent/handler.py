@@ -308,9 +308,9 @@ class NiuHandler(BaseHandler):
 
         # 更新 Interaction Habits 置信度
         try:
-            from agent.vector_search import VectorSearchAdapter
+            from agent.vector_search import get_vector_search
 
-            vs = VectorSearchAdapter()
+            vs = get_vector_search()
 
             # 工具调用成功，更新相关 dialect 的置信度
             if hasattr(ret, 'status') and ret.status == "success":

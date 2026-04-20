@@ -287,23 +287,35 @@ class VectorSearchAdapter:
             vec = vec / norm
         embedding_blob = vec.tobytes()
 
-        conn = self._get_connection()
-        if conn is None:
+        # 使用独立连接写入（WAL 模式允许并发读写）
+        if self.db_path is None:
             return False
-
-        conn.execute(
-            """
-            INSERT INTO documents (id, content, embedding, metadata)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET
-                content = excluded.content,
-                embedding = excluded.embedding,
-                metadata = excluded.metadata
-            """,
-            (habit_id, content, embedding_blob, json.dumps(full_metadata, ensure_ascii=False)),
-        )
-        conn.commit()
-        return True
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("PRAGMA journal_mode=WAL")
+        try:
+            for attempt in range(3):
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO documents (id, content, embedding, metadata)
+                        VALUES (?, ?, ?, ?)
+                        ON CONFLICT(id) DO UPDATE SET
+                            content = excluded.content,
+                            embedding = excluded.embedding,
+                            metadata = excluded.metadata
+                        """,
+                        (habit_id, content, embedding_blob, json.dumps(full_metadata, ensure_ascii=False)),
+                    )
+                    conn.commit()
+                    return True
+                except sqlite3.OperationalError as e:
+                    if "locked" in str(e) and attempt < 2:
+                        time.sleep(0.1 * (attempt + 1))
+                    else:
+                        raise
+        finally:
+            conn.close()
+        return False
 
     def search_interaction_habits(
         self,
@@ -344,39 +356,51 @@ class VectorSearchAdapter:
         Returns:
             是否成功
         """
-        conn = self._get_connection()
-        if conn is None:
+        # 使用独立连接写入（WAL 模式允许并发读写）
+        if self.db_path is None:
             return False
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("PRAGMA journal_mode=WAL")
+        try:
+            row = conn.execute(
+                "SELECT metadata FROM documents WHERE id = ?", (habit_id,)
+            ).fetchone()
+            if not row:
+                return False
 
-        row = conn.execute(
-            "SELECT metadata FROM documents WHERE id = ?", (habit_id,)
-        ).fetchone()
-        if not row:
-            return False
+            metadata = json.loads(row[0])
+            conf = metadata.get("confidence", {})
 
-        metadata = json.loads(row[0])
-        conf = metadata.get("confidence", {})
+            if result == "success":
+                conf["success_count"] = conf.get("success_count", 0) + 1
+            elif result == "fail":
+                conf["fail_count"] = conf.get("fail_count", 0) + 1
 
-        if result == "success":
-            conf["success_count"] = conf.get("success_count", 0) + 1
-        elif result == "fail":
-            conf["fail_count"] = conf.get("fail_count", 0) + 1
+            conf["last_used"] = time.strftime("%Y-%m-%d")
+            metadata["confidence"] = conf
 
-        conf["last_used"] = time.strftime("%Y-%m-%d")
-        metadata["confidence"] = conf
+            for attempt in range(3):
+                try:
+                    if conf.get("fail_count", 0) >= 3:
+                        conn.execute("DELETE FROM documents WHERE id = ?", (habit_id,))
+                        conn.commit()
+                        logger.info(f"[InteractionHabits] Deleted low-confidence habit: {habit_id}")
+                        return True
 
-        if conf.get("fail_count", 0) >= 3:
-            conn.execute("DELETE FROM documents WHERE id = ?", (habit_id,))
-            conn.commit()
-            logger.info(f"[InteractionHabits] Deleted low-confidence habit: {habit_id}")
-            return True
-
-        conn.execute(
-            "UPDATE documents SET metadata = ? WHERE id = ?",
-            (json.dumps(metadata, ensure_ascii=False), habit_id)
-        )
-        conn.commit()
-        return True
+                    conn.execute(
+                        "UPDATE documents SET metadata = ? WHERE id = ?",
+                        (json.dumps(metadata, ensure_ascii=False), habit_id)
+                    )
+                    conn.commit()
+                    return True
+                except sqlite3.OperationalError as e:
+                    if "locked" in str(e) and attempt < 2:
+                        time.sleep(0.1 * (attempt + 1))
+                    else:
+                        raise
+        finally:
+            conn.close()
+        return False
 
     def _search_once(
         self, query: str, limit: int, min_score: float,
@@ -725,6 +749,7 @@ class VectorSearchAdapter:
             if self._conn is not None:
                 self._conn.close()
                 self._conn = None
+                self._indexes_created = False
 
     def format_for_prompt(self, results: list[SearchResult]) -> str:
         """
