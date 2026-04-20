@@ -356,31 +356,33 @@ class VectorSearchAdapter:
         Returns:
             是否成功
         """
-        # 使用独立连接写入（WAL 模式允许并发读写）
+        # 使用独立连接 + BEGIN IMMEDIATE 保证读-改-写原子性
         if self.db_path is None:
             return False
         conn = sqlite3.connect(self.db_path)
         conn.execute("PRAGMA journal_mode=WAL")
         try:
-            row = conn.execute(
-                "SELECT metadata FROM documents WHERE id = ?", (habit_id,)
-            ).fetchone()
-            if not row:
-                return False
-
-            metadata = json.loads(row[0])
-            conf = metadata.get("confidence", {})
-
-            if result == "success":
-                conf["success_count"] = conf.get("success_count", 0) + 1
-            elif result == "fail":
-                conf["fail_count"] = conf.get("fail_count", 0) + 1
-
-            conf["last_used"] = time.strftime("%Y-%m-%d")
-            metadata["confidence"] = conf
-
             for attempt in range(3):
                 try:
+                    conn.execute("BEGIN IMMEDIATE")  # 获取写锁，阻止并发写
+                    row = conn.execute(
+                        "SELECT metadata FROM documents WHERE id = ?", (habit_id,)
+                    ).fetchone()
+                    if not row:
+                        conn.execute("ROLLBACK")
+                        return False
+
+                    metadata = json.loads(row[0])
+                    conf = metadata.get("confidence", {})
+
+                    if result == "success":
+                        conf["success_count"] = conf.get("success_count", 0) + 1
+                    elif result == "fail":
+                        conf["fail_count"] = conf.get("fail_count", 0) + 1
+
+                    conf["last_used"] = time.strftime("%Y-%m-%d")
+                    metadata["confidence"] = conf
+
                     if conf.get("fail_count", 0) >= 3:
                         conn.execute("DELETE FROM documents WHERE id = ?", (habit_id,))
                         conn.commit()
@@ -394,6 +396,10 @@ class VectorSearchAdapter:
                     conn.commit()
                     return True
                 except sqlite3.OperationalError as e:
+                    try:
+                        conn.execute("ROLLBACK")
+                    except Exception:
+                        pass
                     if "locked" in str(e) and attempt < 2:
                         time.sleep(0.1 * (attempt + 1))
                     else:
