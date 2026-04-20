@@ -124,7 +124,7 @@ mcpServers:
 
 # 工作项
 
-按顺序执行以下7项工作。每项独立，前一项失败不影响后续。
+按顺序执行以下6项工作。每项独立，前一项失败不影响后续。
 
 ## 1. 错误经验提取
 
@@ -292,48 +292,6 @@ mcpServers:
 - 对话中明确提及的实体：0.5
 - 推断的关系：0.3
 - 用户手动确认：1.0
-
-## 7. 文档实体补全
-
-扫描知识图谱中没有关联实体的 Document 节点，用 LLM 从文档内容中提取实体并建立 MENTIONS 关系。
-
-### 背景
-
-文件入库时（photo-server），只创建 Document 节点，不提取实体（L1 标签字段是关键词而非 name:type 格式，程序无法正确判断实体类型）。实体提取由本工作项在睡眠时统一完成。
-
-### 流程
-
-1. 查询 KG 中没有 MENTIONS 边的 Document 节点：
-   ```
-   MATCH (d:Document) WHERE NOT (d)-[:MENTIONS]->() RETURN d.uri, d.title, d.content LIMIT 20
-   ```
-
-2. 对每个 Document，从 content 中用 LLM 提取命名实体（复用工作项6的实体提取规则）
-
-3. 对每个提取的实体：
-   - id = `type:name`（如 `technology:Python`）
-   - 创建 Entity 节点（MERGE 语义，已存在则跳过）
-   - 建立 Document -[MENTIONS]-> Entity 边（confidence=0.6）
-
-4. 同一文档中共同出现的实体之间建立 RELATED_TO 边（confidence=0.3）
-
-### 实体提取规则
-
-同工作项6的规则：
-
-| 类型 | entity_type | 识别信号 |
-|------|------------|---------|
-| 人物 | person | 人名、代词指代的具体人 |
-| 组织 | organization | 公司名、团队名 |
-| 技术 | technology | 编程语言、框架、工具名 |
-| 地点 | location | 地名、地址 |
-| 概念 | concept | 抽象概念、方法论 |
-| 其他 | other | 无法归入以上类型的命名实体 |
-
-### 限制
-
-- 每次最多处理 20 个无实体文档（避免单次耗时过长）
-- 只处理 source 为 "document"、"note"、"photo" 或 "video" 的文档（"chat" 类型由工作项6处理）
 
 ---
 
