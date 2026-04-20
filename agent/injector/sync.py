@@ -308,13 +308,13 @@ class SkillSync:
             logger.error(f"[SkillSync] Failed to sync skill {name}: {e}")
 
     def _upsert_skill(self, doc_id: str, content: str, metadata: dict):
-        """写入或更新 skill 到向量库"""
-        conn = self.vector_search._get_connection()
-        if conn is None:
-            logger.error(f"[SkillSync] Database connection unavailable, cannot upsert {doc_id}")
+        """写入或更新 skill 到向量库（使用独立连接，避免跨线程共享单例连接）"""
+        db_path = self.vector_search.db_path
+        if db_path is None:
+            logger.error(f"[SkillSync] Database path unavailable, cannot upsert {doc_id}")
             return
 
-        # 获取向量
+        # 获取向量（使用单例连接的 embedding 方法）
         embedding = self.vector_search._get_embedding(content)
         if embedding is None:
             logger.warning(f"[SkillSync] Failed to get embedding for {doc_id}")
@@ -332,44 +332,54 @@ class SkillSync:
         if source:
             self._record_self_write(source)
 
-        # UPSERT（重试 3 次应对 database is locked）
-        for attempt in range(3):
-            try:
-                conn.execute(
-                    """
-                    INSERT INTO documents (id, content, embedding, metadata)
-                    VALUES (?, ?, ?, ?)
-                    ON CONFLICT(id) DO UPDATE SET
-                        content = excluded.content,
-                        embedding = excluded.embedding,
-                        metadata = excluded.metadata
-                    """,
-                    (doc_id, content, embedding_blob, json.dumps(metadata, ensure_ascii=False)),
-                )
-                conn.commit()
-                break
-            except sqlite3.OperationalError as e:
-                if "locked" in str(e) and attempt < 2:
-                    time.sleep(0.1 * (attempt + 1))
-                else:
-                    raise
+        # 使用独立连接写入（WAL 模式允许并发读写）
+        conn = sqlite3.connect(db_path)
+        conn.execute("PRAGMA journal_mode=WAL")
+        try:
+            for attempt in range(3):
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO documents (id, content, embedding, metadata)
+                        VALUES (?, ?, ?, ?)
+                        ON CONFLICT(id) DO UPDATE SET
+                            content = excluded.content,
+                            embedding = excluded.embedding,
+                            metadata = excluded.metadata
+                        """,
+                        (doc_id, content, embedding_blob, json.dumps(metadata, ensure_ascii=False)),
+                    )
+                    conn.commit()
+                    break
+                except sqlite3.OperationalError as e:
+                    if "locked" in str(e) and attempt < 2:
+                        time.sleep(0.1 * (attempt + 1))
+                    else:
+                        raise
+        finally:
+            conn.close()
 
     def _delete_skill(self, name: str):
-        """从向量库删除 skill"""
-        conn = self.vector_search._get_connection()
-        if conn is None:
-            logger.error(f"[SkillSync] Database connection unavailable, cannot delete skill:{name}")
+        """从向量库删除 skill（使用独立连接，避免跨线程共享单例连接）"""
+        db_path = self.vector_search.db_path
+        if db_path is None:
+            logger.error(f"[SkillSync] Database path unavailable, cannot delete skill:{name}")
             return
-        for attempt in range(3):
-            try:
-                conn.execute("DELETE FROM documents WHERE id = ?", (f"skill:{name}",))
-                conn.commit()
-                break
-            except sqlite3.OperationalError as e:
-                if "locked" in str(e) and attempt < 2:
-                    time.sleep(0.1 * (attempt + 1))
-                else:
-                    raise
+        conn = sqlite3.connect(db_path)
+        conn.execute("PRAGMA journal_mode=WAL")
+        try:
+            for attempt in range(3):
+                try:
+                    conn.execute("DELETE FROM documents WHERE id = ?", (f"skill:{name}",))
+                    conn.commit()
+                    break
+                except sqlite3.OperationalError as e:
+                    if "locked" in str(e) and attempt < 2:
+                        time.sleep(0.1 * (attempt + 1))
+                    else:
+                        raise
+        finally:
+            conn.close()
 
     def _extract_triggers(self, content: str) -> list[str]:
         """从 skill 内容提取触发词"""
