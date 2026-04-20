@@ -124,6 +124,18 @@ TOOL_SCHEMAS = {
             "properties": {},
         },
     },
+    "update_metadata": {
+        "name": "update_metadata",
+        "description": "Update document metadata fields (merge update, preserves unmentioned fields)",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "description": "Document ID"},
+                "metadata_updates": {"type": "object", "description": "Metadata fields to update"},
+            },
+            "required": ["id", "metadata_updates"],
+        },
+    },
 }
 
 
@@ -517,6 +529,46 @@ def count_documents() -> int:
     return cursor.fetchone()[0]
 
 
+def update_metadata(doc_id: str, metadata_updates: dict[str, Any]) -> dict[str, Any]:
+    """Update document metadata fields (merge update, preserves unmentioned fields).
+
+    Args:
+        doc_id: Document ID to update
+        metadata_updates: Metadata fields to update (will be merged with existing)
+
+    Returns:
+        Updated document info or error message
+    """
+    conn = get_connection()
+
+    # Get current document
+    cursor = conn.execute(
+        "SELECT id, content, metadata FROM documents WHERE id = ?", (doc_id,)
+    )
+    row = cursor.fetchone()
+    if not row:
+        return {"status": "error", "message": f"Document not found: {doc_id}"}
+
+    # Parse current metadata
+    current_metadata = json.loads(row[2]) if row[2] else {}
+
+    # Merge updates into current metadata
+    current_metadata.update(metadata_updates)
+
+    # Write back
+    metadata_json = json.dumps(current_metadata)
+    conn.execute(
+        "UPDATE documents SET metadata = ? WHERE id = ?", (metadata_json, doc_id)
+    )
+    conn.commit()
+
+    return {
+        "status": "updated",
+        "id": doc_id,
+        "metadata": current_metadata,
+    }
+
+
 @server.list_tools()
 async def list_tools() -> list[Tool]:
     """List available tools."""
@@ -621,6 +673,21 @@ async def list_tools() -> list[Tool]:
                 "properties": {},
             },
         ),
+        Tool(
+            name="update_metadata",
+            description="Update document metadata fields (merge update, preserves unmentioned fields)",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "description": "Document ID"},
+                    "metadata_updates": {
+                        "type": "object",
+                        "description": "Metadata fields to update",
+                    },
+                },
+                "required": ["id", "metadata_updates"],
+            },
+        ),
     ]
 
 
@@ -659,6 +726,11 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             )
         elif name == "count_documents":
             result = {"count": count_documents()}
+        elif name == "update_metadata":
+            result = update_metadata(
+                doc_id=arguments["id"],
+                metadata_updates=arguments["metadata_updates"],
+            )
         else:
             return [TextContent(type="text", text=f"Unknown tool: {name}")]
 
