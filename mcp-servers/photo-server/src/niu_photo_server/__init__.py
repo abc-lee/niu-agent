@@ -408,7 +408,7 @@ def sync_to_kg(file_path: str, l1: str, source: str = "document") -> dict:
         title = Path(file_path).stem
 
         # 创建 Document 节点（MERGE 语义，重复入库会覆盖）
-        create_document(uri=file_path, title=title, content=l1, source=source)
+        create_document(uri=file_path, title=title, content=l1, source=source, entity_status="pending")
         logger.info(f"[KG] Document created: {file_path}")
 
         return {"status": "success", "doc_uri": file_path}
@@ -436,7 +436,7 @@ def sync_photo_to_kg(file_path: str, abstract: str, detected_persons: list) -> d
 
         # 1. 创建照片 Document 节点
         title = Path(file_path).stem
-        create_document(uri=file_path, title=title, content=abstract, source="photo")
+        create_document(uri=file_path, title=title, content=abstract, source="photo", entity_status="pending")
         logger.info(f"[KG] Photo Document created: {file_path}")
 
         # 2. 清除该照片的旧 MENTIONS 边
@@ -528,7 +528,7 @@ def sync_video_to_kg(file_path: str, abstract: str) -> dict:
         from niu_kg_server import create_document
 
         title = Path(file_path).stem
-        create_document(uri=file_path, title=title, content=abstract, source="video")
+        create_document(uri=file_path, title=title, content=abstract, source="video", entity_status="pending")
         logger.info(f"[KG] Video Document created: {file_path}")
         return {"status": "success", "doc_uri": file_path}
 
