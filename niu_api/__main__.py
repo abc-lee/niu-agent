@@ -152,11 +152,14 @@ async def lifespan(app: FastAPI):
 
     # 8.6. Ensure kg-enricher daily task exists
     try:
-        from niu_api.internal.scheduler.task_store import TaskStore
+        from niu_api.internal.scheduler import get_store
 
-        ts = TaskStore()
-        existing = ts.get_task("kg-enricher-daily")
-        if not existing:
+        ts = get_store()
+        # Check if kg-enricher task already exists (search by content)
+        existing_tasks = ts.list_tasks(status="pending")
+        kg_enricher_exists = any("kg-enricher" in task.get("content", "") for task in existing_tasks)
+
+        if not kg_enricher_exists:
             # Calculate next 8am
             now = datetime.now()
             next_8am = now.replace(hour=8, minute=0, second=0, microsecond=0)
@@ -164,7 +167,6 @@ async def lifespan(app: FastAPI):
                 next_8am += timedelta(days=1)
 
             ts.create_task(
-                id="kg-enricher-daily",
                 content="执行知识图谱丰富化：将向量库中的经验、画像、查询模式同步到知识图谱。调用 chat-with-kg-enricher 子 Agent。",
                 scheduled_at=next_8am.isoformat(),
                 is_recurring=True,
