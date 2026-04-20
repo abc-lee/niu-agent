@@ -256,29 +256,16 @@ def format_resources_for_prompt(results: list, title: str = "相关资源") -> s
             display_name = name
 
         if display_name:
-            lines.append(f"{i}. **{display_name}** (分数: {score_pct})")
-
-            # 对于 MCP 工具，组装完整描述（description + input_schema）
+            # 对于 MCP 工具，只注入名字+分数+一句话摘要（完整描述在 tools_schema 中已有）
             if category == "mcp_tool":
-                description = r.metadata.get("description", r.content)
-                input_schema = r.metadata.get("input_schema", {})
-                if input_schema:
-                    # 格式化参数说明
-                    props = input_schema.get("properties", {})
-                    if props:
-                        params = []
-                        for param_name, param_info in props.items():
-                            param_desc = param_info.get("description", "")
-                            param_type = param_info.get("type", "")
-                            params.append(f"         - {param_name} ({param_type}): {param_desc}")
-                        lines.append(f"       {description}")
-                        lines.append(f"       参数:")
-                        lines.extend(params)
-                    else:
-                        lines.append(f"       {description}")
-                else:
-                    lines.append(f"       {r.content}")
+                description = r.metadata.get("description", "")
+                # 取第一句话作为摘要
+                short_desc = description.split("。")[0].split(". ")[0]
+                if len(short_desc) > 80:
+                    short_desc = short_desc[:77] + "..."
+                lines.append(f"{i}. **{display_name}** ({score_pct}) — {short_desc}")
             else:
+                lines.append(f"{i}. **{display_name}** (分数: {score_pct})")
                 # Skills 等其他类型，注入 L1 摘要 + 文件路径（指针）
                 lines.append(f"   {r.content}")
                 source = r.metadata.get("source", "")
@@ -638,7 +625,7 @@ class NiuRunner:
                 parts.append(format_resources_for_prompt(unique_skills, "相关技能"))
 
         if filtered_mcp_tools:
-            parts.append(format_resources_for_prompt(filtered_mcp_tools, "可用工具"))
+            parts.append(format_resources_for_prompt(filtered_mcp_tools, "相关工具"))
         if knowledge:
             parts.append(format_resources_for_prompt(knowledge, "参考知识"))
             parts.append(
