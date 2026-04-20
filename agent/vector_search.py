@@ -110,6 +110,7 @@ class VectorSearchAdapter:
                 self.db_path = None
         self._conn: Optional[sqlite3.Connection] = None
         self._indexes_created: bool = False  # 索引创建标志
+        self._conn_lock = threading.Lock()
 
     @staticmethod
     def _default_db_path() -> str:
@@ -120,17 +121,20 @@ class VectorSearchAdapter:
         if self.db_path is None:
             return None
         if self._conn is None:
-            # 确保目录存在
-            db_dir = os.path.dirname(self.db_path)
-            if db_dir and not os.path.exists(db_dir):
-                os.makedirs(db_dir, exist_ok=True)
-            # 连接数据库（不存在则自动创建）
-            self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
-            self._conn.execute("PRAGMA journal_mode=WAL")  # 允许并发读写
-            # 只在首次连接时创建表和索引
-            if not self._indexes_created:
-                self._ensure_indexes()
-                self._indexes_created = True
+            with self._conn_lock:
+                if self._conn is None:
+                    # 确保目录存在
+                    db_dir = os.path.dirname(self.db_path)
+                    if db_dir and not os.path.exists(db_dir):
+                        os.makedirs(db_dir, exist_ok=True)
+                    # 连接数据库（不存在则自动创建）
+                    self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
+                    self._conn.execute("PRAGMA journal_mode=WAL")  # 允许并发读写
+                    self._conn.execute("PRAGMA wal_autocheckpoint=1000")  # WAL 自动 checkpoint
+                    # 只在首次连接时创建表和索引
+                    if not self._indexes_created:
+                        self._ensure_indexes()
+                        self._indexes_created = True
         return self._conn
 
     def _ensure_indexes(self):
@@ -717,9 +721,10 @@ class VectorSearchAdapter:
 
     def close(self):
         """关闭数据库连接"""
-        if self._conn is not None:
-            self._conn.close()
-            self._conn = None
+        with self._conn_lock:
+            if self._conn is not None:
+                self._conn.close()
+                self._conn = None
 
     def format_for_prompt(self, results: list[SearchResult]) -> str:
         """
