@@ -1,6 +1,6 @@
 ---
 name: context-manager
-description: 上下文管理器 - 负责智能管理对话上下文，会话单元压缩法
+description: "记忆压缩、上下文整理。"
 mode: subagent
 temperature: 0.2
 mcpServers:
