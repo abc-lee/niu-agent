@@ -858,6 +858,14 @@ class NiuHandler(BaseHandler):
 
                 yield f"[MCP] {tool_name} executed\n"
 
+                # 调用 tool_after_callback（工作记忆、重复检测、习惯追踪）
+                try:
+                    _ = yield from try_call_generator(
+                        self.tool_after_callback, tool_name, args, response, result
+                    )
+                except Exception:
+                    pass  # callback 失败不影响主流程
+
                 # 判断任务是否完成：
                 # - 成功后让LLM向用户汇报结果
                 if isinstance(result, dict) and result.get("status") == "success":

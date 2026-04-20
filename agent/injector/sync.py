@@ -179,6 +179,7 @@ class SkillSync:
 
         current: dict[str, float] = {}
         added, updated, deleted = 0, 0, 0
+        synced_names: set[str] = set()  # 本轮已同步的 skill 名称
 
         # 扫描所有 .md 文件
         for skill_file in self.skills_dir.glob("*.md"):
@@ -193,6 +194,7 @@ class SkillSync:
             if name not in last_scan:
                 try:
                     self._sync_skill(name, skill_file)
+                    synced_names.add(name)
                     added += 1
                     logger.info(f"[SkillSync] Added skill: {name}")
                 except Exception as e:
@@ -200,6 +202,7 @@ class SkillSync:
             elif mtime > last_scan[name]:
                 try:
                     self._sync_skill(name, skill_file)
+                    synced_names.add(name)
                     updated += 1
                     logger.info(f"[SkillSync] Updated skill: {name}")
                 except Exception as e:
@@ -234,7 +237,7 @@ class SkillSync:
                         existing_ids.add(doc_id)
 
                     for name in last_scan:
-                        if name in current and f"skill:{name}" not in existing_ids:
+                        if name not in synced_names and name in current and f"skill:{name}" not in existing_ids:
                             skill_file = self.skills_dir / f"{name}.md"
                             if skill_file.exists():
                                 self._sync_skill(name, skill_file)
