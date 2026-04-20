@@ -32,6 +32,7 @@ mcpServers:
 - `search_documents` — 搜索向量库数据
 - `get_document` — 获取单个文档
 - `list_documents` — 列出文档
+- `update_metadata` — 更新文档 metadata（用于标记 kg_synced=true）
 
 # 处理流程
 

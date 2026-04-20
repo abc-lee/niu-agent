@@ -156,7 +156,7 @@ async def lifespan(app: FastAPI):
 
         ts = get_store()
         # Check if kg-enricher task already exists (search by content)
-        existing_tasks = ts.list_tasks(status="pending")
+        existing_tasks = ts.list_tasks()
         kg_enricher_exists = any("kg-enricher" in task.get("content", "") for task in existing_tasks)
 
         if not kg_enricher_exists:
