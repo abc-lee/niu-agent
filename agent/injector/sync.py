@@ -226,7 +226,7 @@ class SkillSync:
         db_path = self.vector_search.db_path
         if db_path and last_scan:
             try:
-                conn = sqlite3.connect(db_path)
+                conn = sqlite3.connect(db_path, isolation_level=None, check_same_thread=False)
                 conn.execute("PRAGMA journal_mode=WAL")
                 try:
                     existing_ids = set()
@@ -261,7 +261,7 @@ class SkillSync:
             return
         conn = None
         try:
-            conn = sqlite3.connect(db_path)
+            conn = sqlite3.connect(db_path, isolation_level=None, check_same_thread=False)
             conn.execute("PRAGMA journal_mode=WAL")
             cursor = conn.execute(
                 "SELECT id FROM documents WHERE json_extract(metadata, '$.category') = 'skill'"
@@ -346,7 +346,7 @@ class SkillSync:
             self._record_self_write(source)
 
         # 使用独立连接写入（WAL 模式允许并发读写）
-        conn = sqlite3.connect(db_path)
+        conn = sqlite3.connect(db_path, isolation_level=None)
         conn.execute("PRAGMA journal_mode=WAL")
         try:
             for attempt in range(3):
@@ -365,6 +365,7 @@ class SkillSync:
                     conn.commit()
                     break
                 except sqlite3.OperationalError as e:
+                    conn.rollback()
                     if "locked" in str(e) and attempt < 2:
                         time.sleep(0.1 * (attempt + 1))
                     else:
@@ -378,7 +379,7 @@ class SkillSync:
         if db_path is None:
             logger.error(f"[SkillSync] Database path unavailable, cannot delete skill:{name}")
             return
-        conn = sqlite3.connect(db_path)
+        conn = sqlite3.connect(db_path, isolation_level=None)
         conn.execute("PRAGMA journal_mode=WAL")
         try:
             for attempt in range(3):
@@ -387,6 +388,7 @@ class SkillSync:
                     conn.commit()
                     break
                 except sqlite3.OperationalError as e:
+                    conn.rollback()
                     if "locked" in str(e) and attempt < 2:
                         time.sleep(0.1 * (attempt + 1))
                     else:
@@ -557,7 +559,8 @@ def get_skill_sync(skills_dir: str = None, auto_start: bool = True) -> SkillSync
     if _skill_sync is None:
         with _skill_sync_lock:
             if _skill_sync is None:
-                _skill_sync = SkillSync(skills_dir)
+                instance = SkillSync(skills_dir)
                 if auto_start:
-                    _skill_sync.start_background_sync()
+                    instance.start_background_sync()
+                _skill_sync = instance
     return _skill_sync

@@ -591,7 +591,7 @@ class NiuRunner:
                     query=tool_name,
                     limit=2,
                     min_score=0.3,
-                    filter={"category": "skill"}
+                    metadata_filter={"category": "skill"}
                 )
                 tool_signal_skills.extend(tool_skills)
             except Exception:
