@@ -431,57 +431,6 @@ def _init_schema(conn: kuzu.Connection) -> None:
         )
     """)
 
-    # Experience and profile nodes for kg-enricher
-    conn.execute("""
-        CREATE NODE TABLE IF NOT EXISTS ErrorExperience (
-            id STRING,
-            content STRING,
-            category STRING,
-            created_at STRING,
-            PRIMARY KEY (id)
-        )
-    """)
-
-    conn.execute("""
-        CREATE NODE TABLE IF NOT EXISTS SuccessExperience (
-            id STRING,
-            content STRING,
-            category STRING,
-            created_at STRING,
-            PRIMARY KEY (id)
-        )
-    """)
-
-    conn.execute("""
-        CREATE NODE TABLE IF NOT EXISTS InteractionHabit (
-            id STRING,
-            content STRING,
-            category STRING,
-            created_at STRING,
-            PRIMARY KEY (id)
-        )
-    """)
-
-    conn.execute("""
-        CREATE NODE TABLE IF NOT EXISTS QueryPattern (
-            id STRING,
-            content STRING,
-            category STRING,
-            created_at STRING,
-            PRIMARY KEY (id)
-        )
-    """)
-
-    conn.execute("""
-        CREATE NODE TABLE IF NOT EXISTS UserProfile (
-            id STRING,
-            content STRING,
-            category STRING,
-            created_at STRING,
-            PRIMARY KEY (id)
-        )
-    """)
-
     conn.execute("""
         CREATE NODE TABLE IF NOT EXISTS Entity (
             id STRING,
@@ -525,39 +474,6 @@ def _init_schema(conn: kuzu.Connection) -> None:
         CREATE REL TABLE IF NOT EXISTS RELATED_TO (
             FROM Entity TO Entity,
             relation STRING,
-            confidence FLOAT,
-            created_at STRING
-        )
-    """)
-
-    # Experience edges
-    conn.execute("""
-        CREATE REL TABLE IF NOT EXISTS APPLIES_TO (
-            FROM ErrorExperience TO Entity,
-            confidence FLOAT,
-            created_at STRING
-        )
-    """)
-
-    conn.execute("""
-        CREATE REL TABLE IF NOT EXISTS APPLIES_TO_SE (
-            FROM SuccessExperience TO Entity,
-            confidence FLOAT,
-            created_at STRING
-        )
-    """)
-
-    conn.execute("""
-        CREATE REL TABLE IF NOT EXISTS PREFERS (
-            FROM UserProfile TO Entity,
-            confidence FLOAT,
-            created_at STRING
-        )
-    """)
-
-    conn.execute("""
-        CREATE REL TABLE IF NOT EXISTS TRIGGERS (
-            FROM InteractionHabit TO QueryPattern,
             confidence FLOAT,
             created_at STRING
         )
