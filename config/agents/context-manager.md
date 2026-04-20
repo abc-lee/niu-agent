@@ -78,6 +78,57 @@ mcpServers:
   {"id": "550e8400-e29b-41d4-a716-446655440000", "status": "added", "has_embedding": true}
 ```
 
+## search_documents
+
+搜索向量库中的文档。
+
+```
+参数：
+  query: 搜索关键词
+  filter: 元数据过滤条件（可选）
+  limit: 返回数量（默认10）
+
+返回：
+  匹配的文档列表
+```
+
+## get_document
+
+获取单个文档。
+
+```
+参数：
+  id: 文档ID
+
+返回：
+  文档内容
+```
+
+## delete_document
+
+删除向量库中的文档。
+
+```
+参数：
+  id: 文档ID
+
+返回：
+  {"status": "deleted"}
+```
+
+## list_documents
+
+列出向量库中的文档。
+
+```
+参数：
+  filter: 元数据过滤条件（可选）
+  limit: 返回数量
+
+返回：
+  文档列表
+```
+
 ---
 
 # 工作模式

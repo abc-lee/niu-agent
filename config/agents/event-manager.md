@@ -119,6 +119,24 @@ mcpServers:
 - limit: 返回数量
 ```
 
+# 向量库工具补充
+
+## vector-store/get_document
+
+获取单个文档：`vector-store/get_document, 参数: id="文档ID"`
+
+## vector-store/delete_document
+
+删除文档：`vector-store/delete_document, 参数: id="文档ID"`
+
+## vector-store/list_documents
+
+列出文档：`vector-store/list_documents, 参数: filter={"type": "event"}, limit=20`
+
+## vector-store/count_documents
+
+统计文档数量：`vector-store/count_documents, 参数: filter={"type": "event"}`
+
 # 工作流程
 
 1. **接收任务**：从用户消息中识别事件信息
