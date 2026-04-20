@@ -14,9 +14,19 @@ from typing import Any, Dict, Generator, List, Optional
 
 import litellm
 
-# 抑制 LiteLLM 的调试输出和费用追踪（项目使用自定义模型，LiteLLM 无法识别）
+# 抑制 LiteLLM 的调试输出（"Provider List" 等提示）
 litellm.suppress_debug_info = True
-litellm.disable_end_user_cost_tracking = True
+
+# 注册自定义模型到 cost map，避免每次调用都触发 "model not found" 查找
+# LiteLLM 会在 model_cost 中查找模型费率，找不到时打印 Provider List 警告
+# 注册后直接命中，跳过无效查找和打印
+_CUSTOM_MODEL_COST = {
+    "minimax-m2.7-highspeed": {"input_cost_per_token": 0, "output_cost_per_token": 0},
+    "deepseek-r1-0528": {"input_cost_per_token": 0, "output_cost_per_token": 0},
+    "deepseek-chat": {"input_cost_per_token": 0, "output_cost_per_token": 0},
+}
+for _model, _cost in _CUSTOM_MODEL_COST.items():
+    litellm.model_cost[_model] = _cost
 
 from .llmcore import BaseSession, MockResponse, MockToolCall, ToolClient
 
