@@ -168,7 +168,7 @@ class KGSync:
                     continue
                 try:
                     title = Path(file_path).stem
-                    create_document(uri=file_path, title=title, content=info["abstract"], source="photo")
+                    create_document(uri=file_path, title=title, content=info["abstract"], source="photo", entity_status="pending")
                     for person_id in info["person_ids"]:
                         link_document_entity(
                             doc_uri=file_path,
@@ -259,7 +259,7 @@ class KGSync:
 
                 title = Path(file_path).stem if file_path else doc_id
                 try:
-                    create_document(uri=file_path, title=title, content=content, source=source or "document")
+                    create_document(uri=file_path, title=title, content=content, source=source or "document", entity_status="pending")
 
                     # 从 L1 提取实体（同 sync_to_kg 逻辑）
                     parts = content.split("|")
