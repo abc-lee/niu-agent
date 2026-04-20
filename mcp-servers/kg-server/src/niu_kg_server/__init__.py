@@ -379,6 +379,17 @@ TOOL_SCHEMAS = {
             "required": ["uri", "entity_status"],
         },
     },
+    "delete_entity": {
+        "name": "delete_entity",
+        "description": "Delete an entity node and all its relationships from the knowledge graph.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "description": "Entity ID to delete"},
+            },
+            "required": ["id"],
+        },
+    },
 }
 
 
@@ -608,6 +619,36 @@ def create_entity(
     )
 
     return {"status": "created", "id": id, "name": name, "type": entity_type, "created_at": ts, "updated_at": ts}
+
+
+def delete_entity(id: str) -> dict[str, Any]:
+    """Delete an entity node and all its relationships.
+
+    Args:
+        id: Entity ID to delete
+
+    Returns:
+        {"status": "deleted", "id": id} or {"status": "not_found", "id": id}
+    """
+    conn = get_connection()
+    try:
+        # Check entity exists
+        result = conn.execute(
+            "MATCH (e:Entity {id: $id}) RETURN e.id",
+            {"id": id},
+        )
+        rows = list(result)
+        if not rows:
+            return {"status": "not_found", "id": id}
+
+        # Delete the entity (cascades to relationships)
+        conn.execute(
+            "MATCH (e:Entity {id: $id}) DELETE e",
+            {"id": id},
+        )
+        return {"status": "deleted", "id": id}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 
 def create_concept(name: str, description: str = "") -> dict[str, Any]:
@@ -1956,6 +1997,17 @@ async def list_tools() -> list[Tool]:
                 "required": ["uri", "entity_status"],
             },
         ),
+        Tool(
+            name="delete_entity",
+            description="Delete an entity node and all its relationships from the knowledge graph.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "description": "Entity ID to delete"},
+                },
+                "required": ["id"],
+            },
+        ),
     ]
 
 
@@ -2066,6 +2118,8 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 processing_at=arguments.get("processing_at"),
                 retry_count=arguments.get("retry_count"),
             )
+        elif name == "delete_entity":
+            result = delete_entity(id=arguments["id"])
         else:
             return [TextContent(type="text", text=f"Unknown tool: {name}")]
 
