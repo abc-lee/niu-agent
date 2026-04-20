@@ -12,8 +12,10 @@ import sys
 import io
 import threading
 from datetime import datetime
-from typing import Any, Dict, Generator, Optional
 from pathlib import Path
+from typing import Any, Dict, Generator, Optional
+
+from loguru import logger
 
 
 def _sanitize_memory_content(content: str) -> str:
@@ -47,9 +49,7 @@ def _render_permanent_section(permanent: list) -> str:
         if isinstance(item, str):
             normalized.append({"type": "memory", "content": item})
         elif isinstance(item, dict):
-            if "type" not in item:
-                item = {**item, "type": "memory"}
-            normalized.append(item)
+            normalized.append({**item, "type": item.get("type", "memory")})
     # Task items first (skip empty content — cleared task slot)
     task_items = [item for item in normalized if item.get("type") == "task" and item.get("content")]
     memory_items = [item for item in normalized if item.get("type") == "memory"]
@@ -76,6 +76,7 @@ from .handler import NiuHandler
 from .vector_search import get_vector_search
 from .injector.sync import get_skill_sync
 from .tool_lifecycle import ToolLifecycleManager
+from agent.tool_registry import get_registry
 
 
 def get_system_prompt() -> str:
@@ -112,9 +113,6 @@ def get_system_prompt() -> str:
 
 def _load_memory_for_prompt() -> str:
     """从 memory.json 加载身份设定和用户偏好，格式化为提示词"""
-    import json
-    from pathlib import Path
-
     memory_path = Path.home() / ".niu" / "memory.json"
     if not memory_path.exists():
         return ""
@@ -228,7 +226,7 @@ def create_client(config: Dict[str, Any]):
     }
 
     from .generic.litellm_adapter import create_litellm_client
-    print(f"[Runner] Using LiteLLM adapter for model: {cfg['model']}", file=sys.stderr, flush=True)
+    logger.info(f"Using LiteLLM adapter for model: {cfg['model']}")
     return create_litellm_client(cfg)
 
 
@@ -318,12 +316,11 @@ class NiuRunner:
         # 工具生命周期管理
         self.tool_lifecycle = ToolLifecycleManager(decay_rate=10, remove_threshold=25)
 
-        # 用户记忆脏标记（remember/forget 工具调用后设为 True）
-        self._memory_dirty = False
+        # 用户记忆脏标记（remember/forget 工具调用后 set）
+        self._memory_dirty = threading.Event()
 
     def _get_static_tools(self) -> list:
         """获取 visibility=static 的工具名列表（替代硬编码 BASE_MCP_TOOLS）"""
-        from agent.tool_registry import get_registry
         return get_registry().get_static_tools()
 
     def set_mcp_tools_schema(self, tools: list):
@@ -331,7 +328,6 @@ class NiuRunner:
 
         过滤掉 visibility=hidden 的工具，不注入到 _mcp_tools_schema
         """
-        from agent.tool_registry import get_registry
         registry = get_registry()
         schema = []
         for tool in tools:
@@ -352,7 +348,7 @@ class NiuRunner:
                 }
             )
         self._mcp_tools_schema = schema
-        print(f"[NiuRunner] Loaded {len(schema)} MCP tools", file=sys.stderr, flush=True)
+        logger.info(f"Loaded {len(schema)} MCP tools")
 
     def _get_tool_schema_by_name(self, tool_name: str) -> Optional[Dict]:
         """
@@ -468,9 +464,9 @@ class NiuRunner:
 
     def _refresh_user_memories(self, messages: list):
         """Refresh the ### [用户长期记忆] section in system prompt if dirty"""
-        if not self._memory_dirty:
+        if not self._memory_dirty.is_set():
             return
-        self._memory_dirty = False
+        self._memory_dirty.clear()
 
         # Read current permanent memories (use lock to avoid reading partial write)
         memory_path = Path.home() / ".niu" / "memory.json"
@@ -545,7 +541,7 @@ class NiuRunner:
 
         return "\n".join(context_parts)
 
-    def _inject_dynamic_resources(self, context: str) -> tuple:
+    def _inject_dynamic_resources(self, context: str) -> tuple[str, dict[str, int]]:
         """
         动态注入相关资源（Skills、MCP 工具描述、知识）
 
@@ -602,14 +598,13 @@ class NiuRunner:
                 pass
 
         if tool_signal_skills:
-            print(f"[Debug] Tool-signal Skills: {len(tool_signal_skills)} results", file=sys.stderr, flush=True)
+            logger.debug(f"Tool-signal Skills: {len(tool_signal_skills)} results")
 
-        print(f"[Debug] Dynamic injection - Skills: {len(skills)}, MCP: {len(mcp_tools)}, Knowledge: {len(knowledge)}, Habits: {len(interaction_habits)}, ToolSignalSkills: {len(tool_signal_skills)}", file=sys.stderr, flush=True)
+        logger.debug(f"Dynamic injection - Skills: {len(skills)}, MCP: {len(mcp_tools)}, Knowledge: {len(knowledge)}, Habits: {len(interaction_habits)}, ToolSignalSkills: {len(tool_signal_skills)}")
 
         # 3.5 向量检索到的 MCP 工具：注入 system prompt + 返回分数供 update_from_search
         # 过滤 hidden（不可见）和 static（已固定注入，不需要动态分数）的工具
         mcp_tool_scores = {}
-        from agent.tool_registry import get_registry
         registry = get_registry()
         filtered_mcp_tools = []
         for tool in mcp_tools:
@@ -658,9 +653,9 @@ class NiuRunner:
 
         injection = "\n".join(parts)
         if injection:
-            print(f"[Debug] Dynamic injection - Total length: {len(injection)} chars", file=sys.stderr, flush=True)
+            logger.debug(f"Dynamic injection - Total length: {len(injection)} chars")
         else:
-            print(f"[Debug] Dynamic injection - Skipped (no relevant results)", file=sys.stderr, flush=True)
+            logger.debug("Dynamic injection - Skipped (no relevant results)")
 
         return injection, mcp_tool_scores
 
@@ -726,9 +721,8 @@ class NiuRunner:
 
         # 调试：打印工具数量
         base_mcp_count = len([t for t in tools_schema if t.get("function", {}).get("name") in static_tools])
-        print(
-            f"[Debug] tools_schema: {len(self.base_tools_schema)} base + {base_mcp_count} static_mcp = {len(tools_schema)} total (from {len(self._mcp_tools_schema)} available mcp tools)",
-            file=sys.stderr, flush=True
+        logger.debug(
+            f"tools_schema: {len(self.base_tools_schema)} base + {base_mcp_count} static_mcp = {len(tools_schema)} total (from {len(self._mcp_tools_schema)} available mcp tools)"
         )
 
         gen = agent_runner_loop(
@@ -795,8 +789,7 @@ class NiuRunner:
 
                 except Exception as e:
                     # 异常保护：记录错误但不崩溃
-                    import sys
-                    print(f"[ERROR] Failed to extract return_value data: {e}", file=sys.stderr)
+                    logger.error(f"Failed to extract return_value data: {e}")
                     full_resp = ""
 
         # 清理 CLI 调试输出
@@ -844,7 +837,7 @@ _runner: Optional[NiuRunner] = None
 _runner_lock = threading.Lock()
 
 
-def get_runner(llm_config: Dict[str, Any] = None, mcp_client=None) -> NiuRunner:
+def get_runner(llm_config: Optional[Dict[str, Any]] = None, mcp_client=None) -> Optional[NiuRunner]:
     """获取全局 Runner 实例（线程安全）"""
     global _runner
     if _runner is None and llm_config:
