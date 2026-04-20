@@ -15,12 +15,17 @@ import sqlite3
 import threading
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Tuple
+from typing import Optional, Tuple
 
 from loguru import logger
 
 from .injector.sync import SkillSync
 from .vector_search import get_vector_search
+
+try:
+    import yaml
+except ImportError:
+    yaml = None  # type: ignore
 
 
 class VectorCleanup:
@@ -34,10 +39,13 @@ class VectorCleanup:
         """获取配置了 WAL 模式的数据库连接（上下文管理器，保证关闭）"""
         if self.db_path is None:
             raise ValueError("Vector database path not available")
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, check_same_thread=False)
         conn.execute("PRAGMA journal_mode=WAL")
         try:
             yield conn
+        except Exception:
+            conn.rollback()
+            raise
         finally:
             conn.close()
 
@@ -135,8 +143,11 @@ class VectorCleanup:
         Returns:
             (删除数量, 保留数量)
         """
+        if yaml is None:
+            logger.warning("[Cleanup] yaml not installed, skipping MCP tools cleanup")
+            return 0, 0
+
         # 获取当前配置的服务器列表
-        import yaml
         config_path = Path(__file__).parent.parent / "config" / "mcp-servers.yaml"
         if not config_path.exists():
             logger.warning("[Cleanup] mcp-servers.yaml not found, skipping MCP tools cleanup")
@@ -267,7 +278,7 @@ class VectorCleanup:
 
 
 # 全局实例
-_cleanup_service: VectorCleanup = None
+_cleanup_service: Optional[VectorCleanup] = None
 _cleanup_service_lock = threading.Lock()
 
 
