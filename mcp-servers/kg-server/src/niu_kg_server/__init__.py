@@ -568,25 +568,27 @@ def update_entity_status(uri: str, entity_status: str, processing_at: str | None
     Returns:
         {"status": "updated", "uri": ..., "entity_status": ...}
     """
+    VALID_STATUSES = {"pending", "processing", "completed", "failed", "failed_permanent"}
+    if entity_status not in VALID_STATUSES:
+        return {"status": "error", "message": f"Invalid entity_status '{entity_status}', must be one of: {sorted(VALID_STATUSES)}"}
+
     conn = get_connection()
     ts = _get_timestamp()
 
     try:
+        set_clauses = ["d.entity_status = $status", "d.updated_at = $ts"]
+        params: dict[str, Any] = {"uri": uri, "status": entity_status, "ts": ts}
+
         if processing_at is not None:
-            conn.execute(
-                "MATCH (d:Document {uri: $uri}) SET d.entity_status = $status, d.processing_at = $pat, d.updated_at = $ts",
-                {"uri": uri, "status": entity_status, "pat": processing_at, "ts": ts},
-            )
-        elif retry_count is not None:
-            conn.execute(
-                "MATCH (d:Document {uri: $uri}) SET d.entity_status = $status, d.retry_count = $rc, d.updated_at = $ts",
-                {"uri": uri, "status": entity_status, "rc": retry_count, "ts": ts},
-            )
-        else:
-            conn.execute(
-                "MATCH (d:Document {uri: $uri}) SET d.entity_status = $status, d.updated_at = $ts",
-                {"uri": uri, "status": entity_status, "ts": ts},
-            )
+            set_clauses.append("d.processing_at = $pat")
+            params["pat"] = processing_at
+
+        if retry_count is not None:
+            set_clauses.append("d.retry_count = $rc")
+            params["rc"] = retry_count
+
+        query = f"MATCH (d:Document {{uri: $uri}}) SET {', '.join(set_clauses)}"
+        conn.execute(query, params)
         return {"status": "updated", "uri": uri, "entity_status": entity_status}
     except Exception as e:
         return {"status": "error", "message": str(e)}
@@ -1947,7 +1949,7 @@ async def list_tools() -> list[Tool]:
                 "type": "object",
                 "properties": {
                     "uri": {"type": "string", "description": "Document URI"},
-                    "entity_status": {"type": "string", "description": "Status: pending/processing/completed/failed"},
+                    "entity_status": {"type": "string", "description": "Status: pending/processing/completed/failed/failed_permanent"},
                     "processing_at": {"type": "string", "description": "Processing timestamp (optional)"},
                     "retry_count": {"type": "integer", "description": "Retry count (optional)"},
                 },
