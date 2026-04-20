@@ -89,7 +89,7 @@
     {
       "server": "photo-server",
       "name": "search_persons",
-      "description": "搜索人物（按名字语义相似度）\n\n参数:\n- query: 搜索词（人名）\n- limit: 返回数量（默认10）\n\n返回:\n- 匹配的人物列表，按相似度排序",
+      "description": "搜索人物（按名字模糊匹配）\n\n参数:\n- query: 搜索词（人名，子串匹配）\n- limit: 返回数量（默认10）\n\n返回:\n- 匹配的人物列表",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -112,7 +112,7 @@
     {
       "server": "photo-server",
       "name": "get_unnamed_persons",
-      "description": "获取所有未命名人物\n\n返回:\n- 未命名人物列表，按出现次数排序\n- 包含：id, auto_label, photo_count, photos: [{path}]\n- path 是带人脸红框的图片路径（存于 ~/.niu/tmp/），前端用 ::person_photo:: 标记显示",
+      "description": "获取所有未命名人物\n\n返回:\n- 未命名人物列表，按出现次数排序\n- 包含：id, auto_label, photo_count, has_valid_photos, photos: [{file_path, boxed_path}]\n- boxed_path 是带人脸红框的图片路径，前端用 ::person_photo:: 标记显示\n- has_valid_photos=false 表示该人物的照片文件已不存在",
       "input_schema": {
         "type": "object",
         "properties": {}
@@ -150,7 +150,7 @@
     {
       "server": "photo-server",
       "name": "get_person_photos",
-      "description": "获取某人物的多张照片（用于\"换一张\"场景）\n\n当用户说\"看不清\"、\"换一张\"时调用此工具。\n\n参数:\n- person_id: 人物ID\n- limit: 最多返回几张照片（默认5）\n\n返回:\n- person_id, person_name\n- photos: [{path, taken_at}, ...]\n\npath 是带人脸红框的图片路径（存于 ~/.niu/tmp/），前端用 ::person_photo:: 标记显示。",
+      "description": "获取某人物的多张照片（用于\"换一张\"场景）\n\n当用户说\"看不清\"、\"换一张\"时调用此工具。\n\n参数:\n- person_id: 人物ID\n- limit: 最多返回几张照片（默认5）\n\n返回:\n- person_id, person_name\n- photos: [{file_path, boxed_path, taken_at}, ...]\n\nboxed_path 是带人脸红框的图片路径，前端用 ::person_photo:: 标记显示。",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -668,13 +668,22 @@
     {
       "server": "memory-server",
       "name": "user_memory_remember",
-      "description": "添加用户长期记忆（最多5条，每条≤200 token）。记忆将永久驻留在系统提示词中。若已满(5/5)，必须先调用 user_memory_forget 删除旧记忆。",
+      "description": "添加用户长期记忆或工作便签。type='task'为当前工作便签(最多1条,新任务自动覆盖旧任务,用于保存复杂任务的进度/关键参数/下一步); type='memory'为用户长期记忆(最多4条,仅在用户明确要求记住时添加)。记忆永久驻留系统提示词,异常退出后下次继续。",
       "input_schema": {
         "type": "object",
         "properties": {
           "content": {
             "type": "string",
             "description": "记忆内容（≤200 token，约300中文字符）"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "task",
+              "memory"
+            ],
+            "description": "task=当前工作便签(1条,自动覆盖), memory=用户长期记忆(4条,需手动删)",
+            "default": "memory"
           }
         },
         "required": [
@@ -686,7 +695,7 @@
     {
       "server": "memory-server",
       "name": "user_memory_forget",
-      "description": "删除用户长期记忆。按序号(index)或关键词(keyword)匹配删除。",
+      "description": "删除用户长期记忆或工作便签。按序号(index)或关键词(keyword)匹配删除。task和memory类型均可删除。",
       "input_schema": {
         "type": "object",
         "properties": {
