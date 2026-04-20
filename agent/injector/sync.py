@@ -7,6 +7,7 @@ Skills 目录同步服务。定时扫描 memory/skills/ 目录，同步变化到
 
 import json
 import re
+import sqlite3
 import threading
 import time
 from pathlib import Path
@@ -208,6 +209,28 @@ class SkillSync:
                 deleted += 1
                 logger.info(f"[SkillSync] Deleted skill: {name}")
 
+        # 检测向量库中 skill 被外部删除（需要回写）
+        # 只检查 last_scan 中已有但向量库缺失的 skill（跳过本轮新增的）
+        conn = self.vector_search._get_connection()
+        if conn and last_scan:
+            try:
+                existing_ids = set()
+                cursor = conn.execute(
+                    "SELECT id FROM documents WHERE json_extract(metadata, '$.category') = 'skill'"
+                )
+                for (doc_id,) in cursor.fetchall():
+                    existing_ids.add(doc_id)
+
+                for name in last_scan:
+                    if name in current and f"skill:{name}" not in existing_ids:
+                        skill_file = self.skills_dir / f"{name}.md"
+                        if skill_file.exists():
+                            self._sync_skill(name, skill_file)
+                            added += 1
+                            logger.info(f"[SkillSync] Re-added missing skill: {name}")
+            except Exception as e:
+                logger.warning(f"[SkillSync] Failed to check missing skills: {e}")
+
         # 更新状态（需要锁保护写入）
         with self._lock:
             self._last_scan = current
@@ -215,7 +238,7 @@ class SkillSync:
         return added, updated, deleted
 
     def _load_existing_skills(self):
-        """从向量库加载已有 skill 的状态到 _last_scan，避免启动时重复 Added"""
+        """从向量库加载已有 skill，使用磁盘文件的实际 mtime"""
         conn = self.vector_search._get_connection()
         if conn is None:
             return
@@ -228,8 +251,12 @@ class SkillSync:
                 # doc_id 格式: "skill:name"
                 if doc_id.startswith("skill:"):
                     name = doc_id[6:]
-                    # 用当前时间作为 mtime（表示已存在，不需要重新添加）
-                    self._last_scan[name] = float('inf')
+                    skill_file = self.skills_dir / f"{name}.md"
+                    if skill_file.exists():
+                        self._last_scan[name] = skill_file.stat().st_mtime
+                    else:
+                        # 文件已删除但向量库中还有，用 inf 标记以便下次检测到删除
+                        self._last_scan[name] = float('inf')
             if self._last_scan:
                 logger.info(f"[SkillSync] Loaded {len(self._last_scan)} existing skills from vector DB")
         except Exception as e:
@@ -275,6 +302,7 @@ class SkillSync:
         """写入或更新 skill 到向量库"""
         conn = self.vector_search._get_connection()
         if conn is None:
+            logger.error(f"[SkillSync] Database connection unavailable, cannot upsert {doc_id}")
             return
 
         # 获取向量
@@ -295,28 +323,44 @@ class SkillSync:
         if source:
             self._record_self_write(source)
 
-        # UPSERT
-        conn.execute(
-            """
-            INSERT INTO documents (id, content, embedding, metadata)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET
-                content = excluded.content,
-                embedding = excluded.embedding,
-                metadata = excluded.metadata
-            """,
-            (doc_id, content, embedding_blob, json.dumps(metadata, ensure_ascii=False)),
-        )
-        conn.commit()
+        # UPSERT（重试 3 次应对 database is locked）
+        for attempt in range(3):
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO documents (id, content, embedding, metadata)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        content = excluded.content,
+                        embedding = excluded.embedding,
+                        metadata = excluded.metadata
+                    """,
+                    (doc_id, content, embedding_blob, json.dumps(metadata, ensure_ascii=False)),
+                )
+                conn.commit()
+                break
+            except sqlite3.OperationalError as e:
+                if "locked" in str(e) and attempt < 2:
+                    time.sleep(0.1 * (attempt + 1))
+                else:
+                    raise
 
     def _delete_skill(self, name: str):
         """从向量库删除 skill"""
         conn = self.vector_search._get_connection()
         if conn is None:
+            logger.error(f"[SkillSync] Database connection unavailable, cannot delete skill:{name}")
             return
-
-        conn.execute("DELETE FROM documents WHERE id = ?", (f"skill:{name}",))
-        conn.commit()
+        for attempt in range(3):
+            try:
+                conn.execute("DELETE FROM documents WHERE id = ?", (f"skill:{name}",))
+                conn.commit()
+                break
+            except sqlite3.OperationalError as e:
+                if "locked" in str(e) and attempt < 2:
+                    time.sleep(0.1 * (attempt + 1))
+                else:
+                    raise
 
     def _extract_triggers(self, content: str) -> list[str]:
         """从 skill 内容提取触发词"""
@@ -461,10 +505,13 @@ class SkillSync:
             self._thread.join(timeout=5)
 
     def _sync_loop(self):
-        """后台同步循环"""
-        self.scan_and_sync()
-        while not self._stop_event.wait(self.scan_interval):
-            self.scan_and_sync()
+        """后台同步循环（异常不会终止线程）"""
+        while not self._stop_event.is_set():
+            try:
+                self.scan_and_sync()
+            except Exception as e:
+                logger.error(f"[SkillSync] scan_and_sync failed: {e}", exc_info=True)
+            self._stop_event.wait(self.scan_interval)
 
 
 # 全局实例

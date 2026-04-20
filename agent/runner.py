@@ -82,15 +82,8 @@ def get_system_prompt() -> str:
     """获取系统提示词"""
     script_dir = os.path.dirname(os.path.abspath(__file__))
 
-    # 1. 读取核心提示词
-    sys_prompt_path = os.path.join(script_dir, "generic", "assets", "sys_prompt.txt")
-    if os.path.exists(sys_prompt_path):
-        with open(sys_prompt_path, "r", encoding="utf-8") as f:
-            sys_prompt = f.read()
-    else:
-        sys_prompt = "# Role: Niu Agent\nYou are a helpful assistant with file and code access."
-
-    # 2. 追加 niu.md 配置
+    # 1. 读取 niu.md 配置（已合并原 sys_prompt.txt 内容）
+    sys_prompt = ""
     niu_md_path = os.path.join(script_dir, "..", "config", "agents", "niu.md")
     if os.path.exists(niu_md_path):
         with open(niu_md_path, "r", encoding="utf-8") as f:
@@ -98,14 +91,19 @@ def get_system_prompt() -> str:
             if "---" in content:
                 parts = content.split("---", 2)
                 if len(parts) >= 3:
-                    sys_prompt += "\n\n" + parts[2].strip()
+                    sys_prompt = parts[2].strip()
+            else:
+                sys_prompt = content
 
-    # 3. 注入 memory.json 中的身份设定和用户偏好
+    if not sys_prompt:
+        sys_prompt = "# Role: Niu Agent\nYou are a helpful assistant with file and code access."
+
+    # 2. 注入 memory.json 中的身份设定和用户偏好
     memory_section = _load_memory_for_prompt()
     if memory_section:
         sys_prompt += "\n\n" + memory_section
 
-    # 4. 添加当前时间
+    # 3. 添加当前时间
     now = datetime.now()
     sys_prompt += f"\n\nCurrent Time: {now.strftime('%Y-%m-%d %H:%M:%S')}"
 
