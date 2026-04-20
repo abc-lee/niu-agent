@@ -10,7 +10,6 @@ GenericAgent Core - 完整移植自 E:\tools\GenericAgent
 
 Assets:
 - assets/tools_schema.json - 工具描述
-- assets/sys_prompt.txt - 系统提示词
 - assets/global_mem_insight_template.txt - 记忆索引模板
 - assets/insight_fixed_structure.txt - 记忆结构
 

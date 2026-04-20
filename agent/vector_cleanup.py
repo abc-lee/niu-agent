@@ -26,6 +26,12 @@ class VectorCleanup:
     def __init__(self, db_path: str = None):
         self.db_path = db_path or get_vector_search().db_path
 
+    def _get_connection(self) -> sqlite3.Connection:
+        """获取配置了 WAL 模式的数据库连接"""
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("PRAGMA journal_mode=WAL")
+        return conn
+
     def cleanup_invalid_l1_pointers(self) -> int:
         """
         清理 L1 无效指针（L2 不存在）
@@ -33,7 +39,7 @@ class VectorCleanup:
         Returns:
             删除的 L1 记录数量
         """
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         cursor = conn.cursor()
 
         # 查询所有 L1 记录
@@ -72,7 +78,7 @@ class VectorCleanup:
         Returns:
             (删除数量, 保留数量)
         """
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         cursor = conn.cursor()
 
         # 查询所有 Skills
@@ -86,13 +92,25 @@ class VectorCleanup:
 
         for doc_id, metadata_json in skills:
             metadata = json.loads(metadata_json) if metadata_json else {}
-            skill_name = metadata.get("name")
-            skill_path = Path("agent/memory/skills") / f"{skill_name}.md"
+            # 优先使用 metadata.source（_sync_skill 写入的绝对路径）
+            source = metadata.get("source", "")
+            if source:
+                skill_path = Path(source)
+            else:
+                # 回退：使用 SkillSync 的默认目录
+                from .injector.sync import SkillSync
+                skills_dir = Path(SkillSync._default_skills_dir())
+                skill_name = metadata.get("name", "")
+                if not skill_name:
+                    logger.warning(f"[Cleanup] Skill record has no source and no name, skipping: {doc_id[:50]}")
+                    kept += 1
+                    continue
+                skill_path = skills_dir / f"{skill_name}.md"
 
             if not skill_path.exists():
                 cursor.execute("DELETE FROM documents WHERE id = ?", (doc_id,))
                 deleted += 1
-                logger.info(f"[Cleanup] Deleted orphaned skill: {skill_name}")
+                logger.info(f"[Cleanup] Deleted orphaned skill: {metadata.get('name', 'unknown')}")
             else:
                 kept += 1
 
@@ -112,7 +130,7 @@ class VectorCleanup:
         """
         # 获取当前配置的服务器列表
         import yaml
-        config_path = Path("config/mcp-servers.yaml")
+        config_path = Path(__file__).parent.parent / "config" / "mcp-servers.yaml"
         if not config_path.exists():
             logger.warning("[Cleanup] mcp-servers.yaml not found, skipping MCP tools cleanup")
             return 0, 0
@@ -123,7 +141,7 @@ class VectorCleanup:
         active_servers = set(config.keys())
 
         # 查询所有 MCP 工具
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         cursor = conn.cursor()
 
         cursor.execute(
@@ -160,7 +178,7 @@ class VectorCleanup:
         Returns:
             删除的记录数量
         """
-        conn = sqlite3.connect(self.db_path)
+        conn = self._get_connection()
         cursor = conn.cursor()
 
         # 查找重复 ID
@@ -199,23 +217,40 @@ class VectorCleanup:
         return deleted_count
 
     def run_full_cleanup(self):
-        """执行完整清理"""
+        """执行完整清理（每个步骤独立 try-except，避免部分失败导致后续步骤不执行）"""
         logger.info("[Cleanup] Starting vector database cleanup...")
 
         import time
         start_time = time.time()
 
+        del_skills = 0
+        del_mcp = 0
+        del_l1 = 0
+        del_duplicates = 0
+
         # 1. 清理失效 Skills
-        del_skills, kept_skills = self.cleanup_orphaned_skills()
+        try:
+            del_skills, _ = self.cleanup_orphaned_skills()
+        except Exception as e:
+            logger.error(f"[Cleanup] cleanup_orphaned_skills failed: {e}")
 
         # 2. 清理失效 MCP 工具
-        del_mcp, kept_mcp = self.cleanup_orphaned_mcp_tools()
+        try:
+            del_mcp, _ = self.cleanup_orphaned_mcp_tools()
+        except Exception as e:
+            logger.error(f"[Cleanup] cleanup_orphaned_mcp_tools failed: {e}")
 
         # 3. 清理 L1 无效指针
-        del_l1 = self.cleanup_invalid_l1_pointers()
+        try:
+            del_l1 = self.cleanup_invalid_l1_pointers()
+        except Exception as e:
+            logger.error(f"[Cleanup] cleanup_invalid_l1_pointers failed: {e}")
 
         # 4. 清理重复内容
-        del_duplicates = self.cleanup_duplicates()
+        try:
+            del_duplicates = self.cleanup_duplicates()
+        except Exception as e:
+            logger.error(f"[Cleanup] cleanup_duplicates failed: {e}")
 
         elapsed = time.time() - start_time
 
