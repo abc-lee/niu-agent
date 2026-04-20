@@ -634,20 +634,6 @@ class NiuHandler(BaseHandler):
         # 正常情况：返回给用户，使用空字符串作为 next_prompt 而不是 None
         return StepOutcome(response, next_prompt="")
 
-    # ========== 子 Agent 调用 ==========
-
-    def do_chat_with_file_processor(self, args: dict, response) -> StepOutcome:
-        """调用 file-processor 子 Agent"""
-        return (yield from self._call_subagent_gen("file-processor", args))
-
-    def do_chat_with_event_manager(self, args: dict, response) -> StepOutcome:
-        """调用 event-manager 子 Agent"""
-        return (yield from self._call_subagent_gen("event-manager", args))
-
-    def do_chat_with_context_manager(self, args: dict, response) -> StepOutcome:
-        """调用 context-manager 子 Agent"""
-        return (yield from self._call_subagent_gen("context-manager", args))
-
     def _call_subagent_gen(self, agent_name: str, args: dict):
         """调用子 Agent（生成器版本）"""
         from .subagent import call_subagent
@@ -794,7 +780,20 @@ class NiuHandler(BaseHandler):
 
     def dispatch(self, tool_name, args, response, index=0):
         """分发工具调用（支持 MCP 工具）- 必须是生成器"""
-        # 先检查内置工具（工具名中的 - 转换为 _）
+        # 先检查 chat-with-* 子 Agent 调用（通配路由）
+        if tool_name.startswith("chat-with-"):
+            agent_name = tool_name[len("chat-with-"):]
+            args = {**args, "_index": index}
+            prer = yield from try_call_generator(
+                self.tool_before_callback, tool_name, args, response
+            )
+            ret = yield from try_call_generator(self._call_subagent_gen, agent_name, args)
+            _ = yield from try_call_generator(
+                self.tool_after_callback, tool_name, args, response, ret
+            )
+            return ret
+
+        # 再检查内置工具（工具名中的 - 转换为 _）
         method_name = f"do_{tool_name.replace('-', '_')}"
         if hasattr(self, method_name):
             # 直接调用方法，不委托给 super（因为 super 会用原始 tool_name 查找）
