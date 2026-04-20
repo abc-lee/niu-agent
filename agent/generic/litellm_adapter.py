@@ -17,16 +17,11 @@ import litellm
 # 抑制 LiteLLM 的调试输出（"Provider List" 等提示）
 litellm.suppress_debug_info = True
 
-# 注册自定义模型到 cost map，避免每次调用都触发 "model not found" 查找
-# LiteLLM 会在 model_cost 中查找模型费率，找不到时打印 Provider List 警告
-# 注册后直接命中，跳过无效查找和打印
-_CUSTOM_MODEL_COST = {
-    "minimax-m2.7-highspeed": {"input_cost_per_token": 0, "output_cost_per_token": 0},
-    "deepseek-r1-0528": {"input_cost_per_token": 0, "output_cost_per_token": 0},
-    "deepseek-chat": {"input_cost_per_token": 0, "output_cost_per_token": 0},
-}
-for _model, _cost in _CUSTOM_MODEL_COST.items():
-    litellm.model_cost[_model] = _cost
+
+def _register_model_cost(model: str):
+    """将模型注册到 litellm.model_cost 并置零，避免查找失败触发 Provider List 警告"""
+    if model and model.lower() not in litellm.model_cost:
+        litellm.model_cost[model.lower()] = {"input_cost_per_token": 0, "output_cost_per_token": 0}
 
 from .llmcore import BaseSession, MockResponse, MockToolCall, ToolClient
 
@@ -436,6 +431,9 @@ def create_litellm_client(config: Dict[str, Any]) -> ToolClient:
         "model": config.get("model", "gpt-4o"),
         "api_type": api_type,
     }
+
+    # 将当前模型注册到 cost map（置零），避免 LiteLLM 查找费率失败触发 Provider List
+    _register_model_cost(cfg["model"])
 
     session = LiteLLMSession(cfg)
     return ToolClient(session)
