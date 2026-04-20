@@ -191,13 +191,19 @@ class SkillSync:
                 last_scan = self._last_scan.copy()
 
             if name not in last_scan:
-                self._sync_skill(name, skill_file)
-                added += 1
-                logger.info(f"[SkillSync] Added skill: {name}")
+                try:
+                    self._sync_skill(name, skill_file)
+                    added += 1
+                    logger.info(f"[SkillSync] Added skill: {name}")
+                except Exception as e:
+                    logger.error(f"[SkillSync] Failed to add skill {name}: {e}")
             elif mtime > last_scan[name]:
-                self._sync_skill(name, skill_file)
-                updated += 1
-                logger.info(f"[SkillSync] Updated skill: {name}")
+                try:
+                    self._sync_skill(name, skill_file)
+                    updated += 1
+                    logger.info(f"[SkillSync] Updated skill: {name}")
+                except Exception as e:
+                    logger.error(f"[SkillSync] Failed to update skill {name}: {e}")
 
         # 检测删除
         with self._lock:
@@ -205,9 +211,12 @@ class SkillSync:
 
         for name in last_scan:
             if name not in current:
-                self._delete_skill(name)
-                deleted += 1
-                logger.info(f"[SkillSync] Deleted skill: {name}")
+                try:
+                    self._delete_skill(name)
+                    deleted += 1
+                    logger.info(f"[SkillSync] Deleted skill: {name}")
+                except Exception as e:
+                    logger.error(f"[SkillSync] Failed to delete skill {name}: {e}")
 
         # 检测向量库中 skill 被外部删除（需要回写）
         # 只检查 last_scan 中已有但向量库缺失的 skill（跳过本轮新增的）

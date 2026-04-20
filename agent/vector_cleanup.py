@@ -12,11 +12,13 @@
 
 import json
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Tuple
 
 from loguru import logger
 
+from .injector.sync import SkillSync
 from .vector_search import get_vector_search
 
 
@@ -26,11 +28,15 @@ class VectorCleanup:
     def __init__(self, db_path: str = None):
         self.db_path = db_path or get_vector_search().db_path
 
-    def _get_connection(self) -> sqlite3.Connection:
-        """获取配置了 WAL 模式的数据库连接"""
+    @contextmanager
+    def _get_connection(self):
+        """获取配置了 WAL 模式的数据库连接（上下文管理器，保证关闭）"""
         conn = sqlite3.connect(self.db_path)
         conn.execute("PRAGMA journal_mode=WAL")
-        return conn
+        try:
+            yield conn
+        finally:
+            conn.close()
 
     def cleanup_invalid_l1_pointers(self) -> int:
         """
@@ -39,33 +45,32 @@ class VectorCleanup:
         Returns:
             删除的 L1 记录数量
         """
-        conn = self._get_connection()
-        cursor = conn.cursor()
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
 
-        # 查询所有 L1 记录
-        cursor.execute(
-            "SELECT id, metadata FROM documents WHERE json_extract(metadata, '$.level') = 'l1'"
-        )
-        l1_records = cursor.fetchall()
+            # 查询所有 L1 记录
+            cursor.execute(
+                "SELECT id, metadata FROM documents WHERE json_extract(metadata, '$.level') = 'l1'"
+            )
+            l1_records = cursor.fetchall()
 
-        deleted = 0
-        for l1_id, metadata_json in l1_records:
-            metadata = json.loads(metadata_json) if metadata_json else {}
-            l2_id = metadata.get("l2_pointer") or metadata.get("pointer")
+            deleted = 0
+            for l1_id, metadata_json in l1_records:
+                metadata = json.loads(metadata_json) if metadata_json else {}
+                l2_id = metadata.get("l2_pointer") or metadata.get("pointer")
 
-            if not l2_id:
-                continue
+                if not l2_id:
+                    continue
 
-            # 检查 L2 是否存在
-            cursor.execute("SELECT id FROM documents WHERE id = ?", (l2_id,))
-            if not cursor.fetchone():
-                # L2 不存在，删除 L1
-                cursor.execute("DELETE FROM documents WHERE id = ?", (l1_id,))
-                deleted += 1
-                logger.info(f"[Cleanup] Deleted L1 with invalid pointer: {l1_id[:50]}...")
+                # 检查 L2 是否存在
+                cursor.execute("SELECT id FROM documents WHERE id = ?", (l2_id,))
+                if not cursor.fetchone():
+                    # L2 不存在，删除 L1
+                    cursor.execute("DELETE FROM documents WHERE id = ?", (l1_id,))
+                    deleted += 1
+                    logger.info(f"[Cleanup] Deleted L1 with invalid pointer: {l1_id[:50]}...")
 
-        conn.commit()
-        conn.close()
+            conn.commit()
 
         if deleted > 0:
             logger.info(f"[Cleanup] Deleted {deleted} L1 records with invalid pointers")
@@ -78,44 +83,43 @@ class VectorCleanup:
         Returns:
             (删除数量, 保留数量)
         """
-        conn = self._get_connection()
-        cursor = conn.cursor()
+        skills_dir = Path(SkillSync._default_skills_dir())
 
-        # 查询所有 Skills
-        cursor.execute(
-            "SELECT id, metadata FROM documents WHERE json_extract(metadata, '$.category') = 'skill'"
-        )
-        skills = cursor.fetchall()
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
 
-        deleted = 0
-        kept = 0
+            # 查询所有 Skills
+            cursor.execute(
+                "SELECT id, metadata FROM documents WHERE json_extract(metadata, '$.category') = 'skill'"
+            )
+            skills = cursor.fetchall()
 
-        for doc_id, metadata_json in skills:
-            metadata = json.loads(metadata_json) if metadata_json else {}
-            # 优先使用 metadata.source（_sync_skill 写入的绝对路径）
-            source = metadata.get("source", "")
-            if source:
-                skill_path = Path(source)
-            else:
-                # 回退：使用 SkillSync 的默认目录
-                from .injector.sync import SkillSync
-                skills_dir = Path(SkillSync._default_skills_dir())
-                skill_name = metadata.get("name", "")
-                if not skill_name:
-                    logger.warning(f"[Cleanup] Skill record has no source and no name, skipping: {doc_id[:50]}")
+            deleted = 0
+            kept = 0
+
+            for doc_id, metadata_json in skills:
+                metadata = json.loads(metadata_json) if metadata_json else {}
+                # 优先使用 metadata.source（_sync_skill 写入的绝对路径）
+                source = metadata.get("source", "")
+                if source:
+                    skill_path = Path(source)
+                else:
+                    # 回退：使用 SkillSync 的默认目录
+                    skill_name = metadata.get("name", "")
+                    if not skill_name:
+                        logger.warning(f"[Cleanup] Skill record has no source and no name, skipping: {doc_id[:50]}")
+                        kept += 1
+                        continue
+                    skill_path = skills_dir / f"{skill_name}.md"
+
+                if not skill_path.exists():
+                    cursor.execute("DELETE FROM documents WHERE id = ?", (doc_id,))
+                    deleted += 1
+                    logger.info(f"[Cleanup] Deleted orphaned skill: {metadata.get('name', 'unknown')}")
+                else:
                     kept += 1
-                    continue
-                skill_path = skills_dir / f"{skill_name}.md"
 
-            if not skill_path.exists():
-                cursor.execute("DELETE FROM documents WHERE id = ?", (doc_id,))
-                deleted += 1
-                logger.info(f"[Cleanup] Deleted orphaned skill: {metadata.get('name', 'unknown')}")
-            else:
-                kept += 1
-
-        conn.commit()
-        conn.close()
+            conn.commit()
 
         if deleted > 0:
             logger.info(f"[Cleanup] Deleted {deleted} orphaned skills, kept {kept}")
@@ -141,31 +145,30 @@ class VectorCleanup:
         active_servers = set(config.keys())
 
         # 查询所有 MCP 工具
-        conn = self._get_connection()
-        cursor = conn.cursor()
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
 
-        cursor.execute(
-            "SELECT id, metadata FROM documents WHERE json_extract(metadata, '$.category') = 'mcp_tool'"
-        )
-        tools = cursor.fetchall()
+            cursor.execute(
+                "SELECT id, metadata FROM documents WHERE json_extract(metadata, '$.category') = 'mcp_tool'"
+            )
+            tools = cursor.fetchall()
 
-        deleted = 0
-        kept = 0
+            deleted = 0
+            kept = 0
 
-        for doc_id, metadata_json in tools:
-            metadata = json.loads(metadata_json) if metadata_json else {}
-            server = metadata.get("server")
+            for doc_id, metadata_json in tools:
+                metadata = json.loads(metadata_json) if metadata_json else {}
+                server = metadata.get("server")
 
-            if server not in active_servers:
-                cursor.execute("DELETE FROM documents WHERE id = ?", (doc_id,))
-                deleted += 1
-                tool_name = metadata.get("name", "unknown")
-                logger.info(f"[Cleanup] Deleted orphaned MCP tool: {tool_name} (server: {server})")
-            else:
-                kept += 1
+                if server not in active_servers:
+                    cursor.execute("DELETE FROM documents WHERE id = ?", (doc_id,))
+                    deleted += 1
+                    tool_name = metadata.get("name", "unknown")
+                    logger.info(f"[Cleanup] Deleted orphaned MCP tool: {tool_name} (server: {server})")
+                else:
+                    kept += 1
 
-        conn.commit()
-        conn.close()
+            conn.commit()
 
         if deleted > 0:
             logger.info(f"[Cleanup] Deleted {deleted} orphaned MCP tools, kept {kept}")
@@ -178,39 +181,38 @@ class VectorCleanup:
         Returns:
             删除的记录数量
         """
-        conn = self._get_connection()
-        cursor = conn.cursor()
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
 
-        # 查找重复 ID
-        cursor.execute(
-            """
-            SELECT id, COUNT(*) as count
-            FROM documents
-            GROUP BY id
-            HAVING count > 1
-            """
-        )
-
-        duplicates = cursor.fetchall()
-        deleted_count = 0
-
-        for doc_id, count in duplicates:
-            # 保留最新的一条（按 rowid）
+            # 查找重复 ID
             cursor.execute(
                 """
-                DELETE FROM documents
-                WHERE id = ?
-                  AND rowid NOT IN (
-                      SELECT rowid FROM documents WHERE id = ? ORDER BY rowid DESC LIMIT 1
-                  )
-                """,
-                (doc_id, doc_id),
+                SELECT id, COUNT(*) as count
+                FROM documents
+                GROUP BY id
+                HAVING count > 1
+                """
             )
-            deleted_count += cursor.rowcount
-            logger.warning(f"[Cleanup] Deleted {cursor.rowcount} duplicate records for ID: {doc_id[:50]}...")
 
-        conn.commit()
-        conn.close()
+            duplicates = cursor.fetchall()
+            deleted_count = 0
+
+            for doc_id, count in duplicates:
+                # 保留最新的一条（按 rowid）
+                cursor.execute(
+                    """
+                    DELETE FROM documents
+                    WHERE id = ?
+                      AND rowid NOT IN (
+                          SELECT rowid FROM documents WHERE id = ? ORDER BY rowid DESC LIMIT 1
+                      )
+                    """,
+                    (doc_id, doc_id),
+                )
+                deleted_count += cursor.rowcount
+                logger.warning(f"[Cleanup] Deleted {cursor.rowcount} duplicate records for ID: {doc_id[:50]}...")
+
+            conn.commit()
 
         if deleted_count > 0:
             logger.info(f"[Cleanup] Deleted {deleted_count} duplicate records")
