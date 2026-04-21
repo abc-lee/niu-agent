@@ -132,6 +132,8 @@ def browser_navigate(
                 "title": data.get("title", ""),
                 "elements": data.get("elements", ""),
                 "pageInfo": data.get("pageInfo", {}),
+                "tabSummary": data.get("tabSummary", ""),
+                "currentTabId": data.get("currentTabId"),
             }
         else:
             return {
@@ -191,6 +193,8 @@ def browser_interact(
                 "title": data.get("title", ""),
                 "elements": data.get("elements", ""),
                 "pageInfo": data.get("pageInfo", {}),
+                "tabSummary": data.get("tabSummary", ""),
+                "currentTabId": data.get("currentTabId"),
             }
         else:
             return {"status": "error", "message": result.get("message", "Unknown error")}
@@ -228,6 +232,8 @@ def browser_new_tab(
                 "title": data.get("title", ""),
                 "elements": data.get("elements", ""),
                 "pageInfo": data.get("pageInfo", {}),
+                "tabSummary": data.get("tabSummary", ""),
+                "currentTabId": data.get("currentTabId"),
             }
         else:
             return {
@@ -237,6 +243,74 @@ def browser_new_tab(
 
     except Exception as e:
         logger.error(f"browser_new_tab failed: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+def browser_switch_tab(
+    tab_id: int,
+) -> dict:
+    """
+    切换到指定标签页。
+
+    Args:
+        tab_id: 要切换到的标签页 ID（来自之前响应中的 tabSummary）
+
+    Returns:
+        切换后标签页的页面状态
+    """
+    try:
+        bridge = _ensure_connection()
+        result = bridge.send_command("switch_tab", tabId=tab_id, timeout=30)
+
+        if result.get("success"):
+            data = result.get("data") or {}
+            return {
+                "status": "success",
+                "message": f"Switched to tab {tab_id}",
+                "url": data.get("url", ""),
+                "title": data.get("title", ""),
+                "elements": data.get("elements", ""),
+                "pageInfo": data.get("pageInfo", {}),
+                "tabSummary": data.get("tabSummary", ""),
+                "currentTabId": data.get("currentTabId"),
+            }
+        else:
+            return {"status": "error", "message": result.get("message", "Unknown error")}
+
+    except Exception as e:
+        logger.error(f"browser_switch_tab failed: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+def browser_close_tab(
+    tab_id: int,
+) -> dict:
+    """
+    关闭指定标签页。不能关闭初始标签页。
+
+    Args:
+        tab_id: 要关闭的标签页 ID（来自之前响应中的 tabSummary）
+
+    Returns:
+        关闭结果和更新后的标签页摘要
+    """
+    try:
+        bridge = _ensure_connection()
+        result = bridge.send_command("close_tab", tabId=tab_id, timeout=30)
+
+        if result.get("success"):
+            data = result.get("data") or {}
+            return {
+                "status": "success",
+                "message": f"Closed tab {tab_id}",
+                "tabSummary": data.get("tabSummary", ""),
+                "currentTabId": data.get("currentTabId"),
+            }
+        else:
+            return {"status": "error", "message": result.get("message", "Unknown error")}
+
+    except Exception as e:
+        logger.error(f"browser_close_tab failed: {e}")
         return {"status": "error", "message": str(e)}
 
 
@@ -288,6 +362,28 @@ TOOL_SCHEMAS = {
                 "url": {"type": "string", "description": "要在新标签页中打开的 URL（必填）"}
             },
             "required": ["url"]
+        }
+    },
+    "browser_switch_tab": {
+        "name": "browser_switch_tab",
+        "description": "切换到指定标签页。当需要操作非当前标签页时使用。tabId 来自之前响应中的 tabSummary 表格。",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "tab_id": {"type": "integer", "description": "要切换到的标签页 ID（来自 tabSummary）"}
+            },
+            "required": ["tab_id"]
+        }
+    },
+    "browser_close_tab": {
+        "name": "browser_close_tab",
+        "description": "关闭指定标签页。不能关闭初始标签页。关闭后自动切换到最后一个剩余标签页。",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "tab_id": {"type": "integer", "description": "要关闭的标签页 ID（来自 tabSummary）"}
+            },
+            "required": ["tab_id"]
         }
     }
 }
