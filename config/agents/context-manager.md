@@ -34,7 +34,7 @@ mcpServers:
 
 ## get_messages
 
-获取当前会话的消息列表（每条带 token 数）。
+获取当前会话的消息列表（每条带 token 数和消息 ID）。
 
 ```
 参数：
@@ -42,14 +42,17 @@ mcpServers:
 
 返回：
   [
-    {"idx": 0, "tokens": 15, "role": "user", "content": "..."},
-    {"idx": 1, "tokens": 8, "role": "assistant", "content": "..."},
-    {"idx": 2, "tokens": 500, "role": "tool", "content": "..."},  # 大工具输出
+    {"id": "uuid-1", "idx": 0, "tokens": 15, "role": "user", "content": "..."},
+    {"id": "uuid-2", "idx": 1, "tokens": 8, "role": "assistant", "content": "..."},
+    {"id": "uuid-3", "idx": 2, "tokens": 500, "role": "tool", "content": "..."},
     ...
   ]
 ```
 
-**idx 说明**：idx 越小消息越旧，idx 越大消息越新。
+**字段说明**：
+- `id`：消息唯一标识（UUID），用于 update_message 和 delete_messages 定位消息
+- `idx`：消息顺序（0=最旧），仅用于判断消息新旧，**不要用于定位消息**
+- `tokens`：该消息的 token 数
 
 ## delete_messages
 
@@ -58,15 +61,16 @@ mcpServers:
 ```
 参数：
   session_id: 会话ID
-  message_indices: [2, 3, 5]  # 要删除的消息 idx 列表
+  message_ids: ["uuid-1", "uuid-2", "uuid-3"]  # 要删除的消息 ID 列表
+  reason: "压缩原因"（可选）
 
 返回：
   {"deleted_count": 3, "freed_tokens": 523}
- ``
+```
 
 ## add_message
 
-向会话中添加一条消息。用于 L0 合并：删除多条旧 L0 后，插入一条合并后的新 L0。
+向会话中追加一条消息（在末尾添加）。
 
 ```
 参数：
@@ -78,6 +82,8 @@ mcpServers:
   {"status": "ok", "message_id": "..."}
 ```
 
+**注意**：add_message 在末尾追加，会改变对话顺序。压缩时用 update_message 改写已有消息，不要用 add_message。
+
 ## update_message
 
 更新已有消息的内容。压缩会话单元时，保留一条旧消息，将其内容改写为合并后的新 L0。
@@ -85,7 +91,7 @@ mcpServers:
 ```
 参数：
   session_id: 会话ID
-  message_index: 消息索引（0-based，来自 get_messages 的 idx）
+  message_id: "uuid-xxx"  # 消息 ID（来自 get_messages 返回的 id 字段）
   content: 新内容
 
 返回：
@@ -199,12 +205,11 @@ mcpServers:
    - >= 500 tokens：存 l2，生成 l1，都调用 add_document 存储
 3. 提取 l0（对话核心摘要）
 4. **压缩会话单元**：
-   - 保留单元中 idx 最小的一条消息（用 `update_message` 改写其 content 为合并后的新 L0）
-   - 调用 `delete_messages` 删除单元中其余消息
+   - 保留单元中 idx 最小的一条消息，记下其 `id`
+   - 调用 `update_message`，用该 `id` 将 content 改写为合并后的新 L0
+   - 调用 `delete_messages`，传入单元中其余消息的 `id` 列表
    - **不要用 `add_message`**，那会在末尾追加，破坏对话顺序
-5. **idx 偏移警告**：`delete_messages` 会改变后续消息的 idx。每次压缩完一个会话单元后，**必须重新调用 `get_messages` 刷新 idx**，再处理下一个单元。绝不能用旧的 idx 继续操作。
-
-**输出**：完成后报告处理结果，无需返回 JSON。
+5. 用 `id` 定位消息，不受删除影响，无需反复刷新 idx
 
 ---
 
@@ -236,9 +241,8 @@ mcpServers:
 1. 调用 get_messages 获取消息列表
 2. 按规则排序（先删早期、已入向量库的、简单确认回复）
 3. 累计 tokens 直到达到目标
-4. 调用 delete_messages 删除
+4. 调用 delete_messages 删除（用消息 `id`，不用 idx）
 5. 如有需要，调用 add_document 存储被删除内容到向量库
-6. **每次 delete_messages 后必须重新 get_messages 刷新 idx**，再继续删除
 
 **删除优先级**（从先删到后删）：
 1. 早期的大工具输出（idx 小，tokens 多）
