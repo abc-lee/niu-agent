@@ -427,8 +427,8 @@ def get_document(id: str) -> dict[str, Any] | None:
 
 
 def delete_document(
-    id: str = "",
-    query: str = "",
+    id: str | None = None,
+    query: str | None = None,
     filter: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Delete documents by ID, query, or filter.
@@ -460,7 +460,7 @@ def delete_document(
                 "SELECT id, content, embedding, metadata FROM documents WHERE embedding IS NOT NULL"
             )
             for row in cursor.fetchall():
-                doc_id, content, embedding_blob, metadata_json = row
+                row_id, content, embedding_blob, metadata_json = row
                 if embedding_blob:
                     # 应用 filter 过滤
                     if filter:
@@ -470,7 +470,7 @@ def delete_document(
                     doc_vec = np.frombuffer(embedding_blob, dtype=np.float32)
                     score = cosine_similarity(query_vec, doc_vec)
                     if score > 0.7:  # 相似度阈值
-                        deleted_ids.append(doc_id)
+                        deleted_ids.append(row_id)
             # 执行删除
             if deleted_ids:
                 placeholders = ",".join("?" * len(deleted_ids))
@@ -718,8 +718,8 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             result = get_document(id=arguments["id"])
         elif name == "delete_document":
             result = delete_document(
-                id=arguments.get("id", ""),
-                query=arguments.get("query", ""),
+                id=arguments.get("id"),
+                query=arguments.get("query"),
                 filter=arguments.get("filter"),
             )
         elif name == "list_documents":
