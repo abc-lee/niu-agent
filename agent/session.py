@@ -212,7 +212,19 @@ class MessageStore:
 
     async def update_message(self, message_id: str, content: str) -> bool:
         """Update message content by ID. Returns True if updated."""
+        # Read old content to cleanup temp file references
+        old_content = None
         async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT content FROM messages WHERE id = ?",
+                (message_id,),
+            )
+            row = await cursor.fetchone()
+            if row:
+                old_content = row["content"]
+
+            # Update
             cursor = await db.execute(
                 "UPDATE messages SET content = ? WHERE id = ?",
                 (content, message_id),
@@ -221,6 +233,12 @@ class MessageStore:
             await db.commit()
 
         if updated:
+            # Cleanup temp files referenced in old content
+            if old_content:
+                tmp_files = _extract_tmp_paths([old_content])
+                if tmp_files:
+                    from agent.tmp_dir import cleanup_tmp_files
+                    cleanup_tmp_files(tmp_files)
             logger.debug(f"Updated message: {message_id}")
         return updated > 0
 

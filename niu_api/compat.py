@@ -323,7 +323,7 @@ async def update_context_message(request: dict) -> dict:
     all_messages = await store.get_messages(limit=1000)
 
     if not (0 <= message_index < len(all_messages)):
-        return {"status": "error", "message": f"Index {message_index} out of range (0-{len(all_messages)-1})"}
+        return {"status": "error", "message": f"Index {message_index} out of range ({len(all_messages)} messages)"}
 
     msg = all_messages[message_index]
     updated = await store.update_message(msg.id, content)

@@ -202,6 +202,7 @@ mcpServers:
    - 保留单元中 idx 最小的一条消息（用 `update_message` 改写其 content 为合并后的新 L0）
    - 调用 `delete_messages` 删除单元中其余消息
    - **不要用 `add_message`**，那会在末尾追加，破坏对话顺序
+5. **idx 偏移警告**：`delete_messages` 会改变后续消息的 idx。每次压缩完一个会话单元后，**必须重新调用 `get_messages` 刷新 idx**，再处理下一个单元。绝不能用旧的 idx 继续操作。
 
 **输出**：完成后报告处理结果，无需返回 JSON。
 
@@ -237,6 +238,7 @@ mcpServers:
 3. 累计 tokens 直到达到目标
 4. 调用 delete_messages 删除
 5. 如有需要，调用 add_document 存储被删除内容到向量库
+6. **每次 delete_messages 后必须重新 get_messages 刷新 idx**，再继续删除
 
 **删除优先级**（从先删到后删）：
 1. 早期的大工具输出（idx 小，tokens 多）
