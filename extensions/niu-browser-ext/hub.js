@@ -110,7 +110,7 @@ function connectTabEvents() {
     } else if (message.action === 'activated') {
       // 用户手动切换标签页，同步 currentTabId
       const { tabId, windowId: evtWindowId } = message.payload;
-      if (evtWindowId === windowId) {
+      if (evtWindowId === windowId && tabs.find(t => t.id === tabId)) {
         currentTabId = tabId;
       }
     }
@@ -129,15 +129,18 @@ async function initTabTracking() {
     if (activeTabs[0]) {
       windowId = activeTabs[0].windowId;
       currentTabId = activeTabs[0].id;
+    }
 
-      // 如果活跃标签页是真实页面，加入跟踪
-      if (isContentScriptAllowed(activeTabs[0].url)) {
+    // 查询窗口中所有标签页（不仅仅是活跃的）
+    const allTabs = await chrome.tabs.query({ currentWindow: true });
+    for (const tab of allTabs) {
+      if (isContentScriptAllowed(tab.url)) {
         addTab({
-          id: activeTabs[0].id,
-          url: activeTabs[0].url,
-          title: activeTabs[0].title,
-          status: activeTabs[0].status,
-          isInitial: true,
+          id: tab.id,
+          url: tab.url,
+          title: tab.title,
+          status: tab.status,
+          isInitial: tab.id === currentTabId,
         });
       }
     }
@@ -230,9 +233,14 @@ async function handleCommand(msg) {
       }
       try {
         await switchToTab(tabId);
-        // 获取切换后标签页的状态
-        const stateResult = await sendToContentScriptWithRetry(tabId, { type: 'get_state', id: id });
-        sendResult(id, true, 'Switched to tab ' + tabId, stateResult?.data);
+        // 获取切换后标签页的状态（仅对支持 content script 的页面）
+        const target = tabs.find(t => t.id === tabId);
+        if (target && isContentScriptAllowed(target.url)) {
+          const stateResult = await sendToContentScriptWithRetry(tabId, { type: 'get_state', id: id });
+          sendResult(id, true, 'Switched to tab ' + tabId, stateResult?.data);
+        } else {
+          sendResult(id, true, 'Switched to tab ' + tabId, { url: target?.url || '', title: target?.title || '' });
+        }
       } catch (e) {
         sendResult(id, false, e.message);
       }
