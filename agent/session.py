@@ -210,6 +210,20 @@ class MessageStore:
         logger.info(f"Cleared {count} messages, cleaned {cleaned} temp files")
         return count
 
+    async def update_message(self, message_id: str, content: str) -> bool:
+        """Update message content by ID. Returns True if updated."""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "UPDATE messages SET content = ? WHERE id = ?",
+                (content, message_id),
+            )
+            updated = cursor.rowcount
+            await db.commit()
+
+        if updated:
+            logger.debug(f"Updated message: {message_id}")
+        return updated > 0
+
     async def delete_messages_by_ids(self, message_ids: List[str]) -> int:
         """Delete messages by IDs and cleanup referenced temp files"""
         if not message_ids:
