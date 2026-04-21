@@ -61,7 +61,7 @@ class TestToolDuplicateDetection:
         # 验证检测到重复调用
         assert "⚠️" in result or "警告" in result
         assert "重复工具调用" in result or "same_tool" in result
-        assert "建议行动" in result or "ask_user" in result
+        assert "建议行动" in result
 
     def test_no_warning_for_different_tools(self, handler):
         """测试不同工具调用不触发警告"""

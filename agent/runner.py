@@ -182,17 +182,14 @@ def _load_memory_for_prompt() -> str:
 
 
 def get_tools_schema() -> list:
-    """获取工具 Schema（排除不支持的工具 + 注册子 Agent 工具）"""
+    """获取工具 Schema（从 JSON 文件加载 + 注册子 Agent 工具）"""
     script_dir = os.path.dirname(os.path.abspath(__file__))
     schema_path = os.path.join(script_dir, "generic", "assets", "tools_schema.json")
-
-    excluded_tools = {"ask_user"}  # 前端不支持的工具
 
     tools = []
     if os.path.exists(schema_path):
         with open(schema_path, "r", encoding="utf-8") as f:
-            all_tools = json.load(f)
-        tools = [t for t in all_tools if t.get("function", {}).get("name") not in excluded_tools]
+            tools = json.load(f)
 
     # 注册子 Agent 工具（从 niu.md 的 sub agents 字段动态生成）
     from .subagent import get_subagent_config
