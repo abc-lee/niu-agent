@@ -633,7 +633,7 @@ async def list_tools() -> list[Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "doc_id": {
+                    "id": {
                         "type": "string",
                         "description": "Document ID to delete (exact match)",
                     },
