@@ -32,7 +32,6 @@ class KGScanner:
         self._stop_event = threading.Event()
         self._scan_thread: Optional[threading.Thread] = None
         self._process_thread: Optional[threading.Thread] = None
-        self._processing = False  # 是否正在处理
         self._db = None  # KuzuDB Database (shared, thread-safe)
         self._conn = None  # KGScanner's own Connection
 
@@ -63,14 +62,15 @@ class KGScanner:
         logger.info("[KGScanner] Stopped")
 
     def _get_connection(self):
-        """获取 KGScanner 专属的 KuzuDB 连接（与主线程隔离）"""
+        """获取 KGScanner 专属的 KuzuDB 连接（与主线程隔离）
+
+        复用主线程的 Database 对象（线程安全），仅创建独立 Connection。
+        """
         if self._conn is None:
-            from niu_kg_server import get_db_path, _init_schema
+            from niu_kg_server import get_db
             import kuzu
-            db_path = get_db_path()
-            self._db = kuzu.Database(str(db_path))
+            self._db = get_db()  # 复用共享 Database 对象
             self._conn = kuzu.Connection(self._db)
-            # Schema 已由主线程初始化，不需要再调用 _init_schema
         return self._conn
 
     def _scan_loop(self):
@@ -110,28 +110,28 @@ class KGScanner:
             logger.info(f"[KGScanner] Enqueued {enqueued} pending docs")
 
     def _query_pending_docs(self) -> list[dict]:
-        """查询 KG 中待处理的 Document 节点"""
+        """查询 KG 中待处理的 Document 节点（不含 content，由子 Agent 按需获取）"""
         try:
             conn = self._get_connection()
-            now = datetime.now().isoformat()
             timeout_cutoff = (datetime.now() - timedelta(minutes=self.PROCESSING_TIMEOUT_MINUTES)).isoformat()
 
             # 1. pending 文档
             result = conn.execute(
-                "MATCH (d:Document) WHERE d.entity_status = 'pending' RETURN d.uri, d.title, d.content, d.source LIMIT 20"
+                "MATCH (d:Document) WHERE d.entity_status = 'pending' RETURN d.uri, d.title, d.source LIMIT 20"
             )
             pending = [self._row_to_dict(row, "pending") for row in result]
 
             # 2. processing 超时
             result = conn.execute(
-                "MATCH (d:Document) WHERE d.entity_status = 'processing' AND d.processing_at < $cutoff RETURN d.uri, d.title, d.content, d.source LIMIT 10",
+                "MATCH (d:Document) WHERE d.entity_status = 'processing' AND d.processing_at < $cutoff RETURN d.uri, d.title, d.source LIMIT 10",
                 {"cutoff": timeout_cutoff},
             )
             timed_out = [self._row_to_dict(row, "pending") for row in result]  # 重置为 pending
 
             # 3. failed 可重试
             result = conn.execute(
-                f"MATCH (d:Document) WHERE d.entity_status = 'failed' AND d.retry_count < {self.MAX_RETRY_COUNT} RETURN d.uri, d.title, d.content, d.source LIMIT 10"
+                "MATCH (d:Document) WHERE d.entity_status = 'failed' AND d.retry_count < $max_retry RETURN d.uri, d.title, d.source LIMIT 10",
+                {"max_retry": self.MAX_RETRY_COUNT},
             )
             retryable = [self._row_to_dict(row, "retry") for row in result]
 
@@ -143,12 +143,11 @@ class KGScanner:
 
     @staticmethod
     def _row_to_dict(row, reason: str) -> dict:
-        """将 KuzuDB 查询结果行转为字典"""
+        """将 KuzuDB 查询结果行转为字典（不含 content，节省内存）"""
         return {
             "uri": row[0],
             "title": row[1] or "",
-            "content": row[2] or "",
-            "source": row[3] or "document",
+            "source": row[2] or "document",
             "reason": reason,
         }
 
@@ -174,8 +173,8 @@ class KGScanner:
         # 标记 processing
         self._update_status(uri, "processing", processing_at=datetime.now().isoformat())
 
-        # 构建任务描述
-        task = f"请处理以下文档的实体提取：\n\nURI: {uri}\n标题: {doc.get('title', '')}\n内容: {doc.get('content', '')}\n来源: {doc.get('source', '')}\n\n请提取实体、建立关联，完成后调用 update_entity_status 更新状态为 completed。"
+        # 构建任务描述（不含 content，子 Agent 通过 query_graph 按需获取）
+        task = f"请处理以下文档的实体提取：\n\nURI: {uri}\n标题: {doc.get('title', '')}\n来源: {doc.get('source', '')}\n\n请用 query_graph 获取文档内容，提取实体、建立关联，完成后调用 update_entity_status 更新状态为 completed。"
 
         # 获取 LLM 配置
         try:
@@ -217,24 +216,29 @@ class KGScanner:
                     else:
                         logger.warning(f"[KGScanner] Sub-agent did not complete for {uri}, marking failed")
                         self._update_status(uri, "failed", retry_increment=True)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"[KGScanner] Fallback status check failed for {uri}: {e}")
 
     def _update_status(self, uri: str, status: str, processing_at: str = None, retry_increment: bool = False):
-        """更新 Document 的 entity_status"""
+        """更新 Document 的 entity_status（原子操作）"""
         try:
             from niu_kg_server import update_entity_status
             if retry_increment:
-                # 获取当前 retry_count 并 +1
+                # 原子递增 retry_count：用单条 Cypher 读取+判断+更新
                 conn = self._get_connection()
+                conn.execute(
+                    "MATCH (d:Document {uri: $uri}) SET d.retry_count = d.retry_count + 1, d.updated_at = $ts RETURN d.retry_count",
+                    {"uri": uri, "ts": datetime.now().isoformat()},
+                )
+                # 读取递增后的值
                 result = conn.execute(
                     "MATCH (d:Document {uri: $uri}) RETURN d.retry_count",
                     {"uri": uri},
                 )
                 retry_count = 0
                 for row in result:
-                    retry_count = (row[0] or 0) + 1
-                if retry_count >= 3:
+                    retry_count = row[0] or 0
+                if retry_count >= self.MAX_RETRY_COUNT:
                     update_entity_status(uri, "failed_permanent", retry_count=retry_count)
                 else:
                     update_entity_status(uri, status, retry_count=retry_count)

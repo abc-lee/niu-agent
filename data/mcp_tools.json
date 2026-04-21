@@ -852,6 +852,29 @@
         "properties": {}
       },
       "visibility": "dynamic"
+    },
+    {
+      "server": "vector-store",
+      "name": "update_metadata",
+      "description": "Update document metadata fields (merge update, preserves unmentioned fields)",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Document ID"
+          },
+          "metadata_updates": {
+            "type": "object",
+            "description": "Metadata fields to update"
+          }
+        },
+        "required": [
+          "id",
+          "metadata_updates"
+        ]
+      },
+      "visibility": "hidden"
     }
   ],
   "kg-server": [
@@ -881,6 +904,10 @@
           "file_path": {
             "type": "string",
             "description": "Path to file to read content from (avoids JSON size limits)"
+          },
+          "entity_status": {
+            "type": "string",
+            "description": "Entity extraction status (default: pending)"
           }
         },
         "required": [
@@ -1332,6 +1359,55 @@
             "description": "Minimum confidence filter (default: 0.0)"
           }
         }
+      },
+      "visibility": "hidden"
+    },
+    {
+      "server": "kg-server",
+      "name": "update_entity_status",
+      "description": "Update Document node's entity completion status (entity_status, processing_at, retry_count).",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "uri": {
+            "type": "string",
+            "description": "Document URI"
+          },
+          "entity_status": {
+            "type": "string",
+            "description": "New status: pending/processing/completed/failed/failed_permanent"
+          },
+          "processing_at": {
+            "type": "string",
+            "description": "Processing timestamp (optional)"
+          },
+          "retry_count": {
+            "type": "integer",
+            "description": "Retry count (optional)"
+          }
+        },
+        "required": [
+          "uri",
+          "entity_status"
+        ]
+      },
+      "visibility": "hidden"
+    },
+    {
+      "server": "kg-server",
+      "name": "delete_entity",
+      "description": "Delete an entity node and all its relationships from the knowledge graph.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Entity ID to delete"
+          }
+        },
+        "required": [
+          "id"
+        ]
       },
       "visibility": "hidden"
     }

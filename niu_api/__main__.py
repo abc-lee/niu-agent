@@ -155,9 +155,15 @@ async def lifespan(app: FastAPI):
         from niu_api.internal.scheduler import get_store
 
         ts = get_store()
-        # Check if kg-enricher task already exists (search by content)
+        # Check if active kg-enricher recurring task exists (precise match)
         existing_tasks = ts.list_tasks()
-        kg_enricher_exists = any("kg-enricher" in task.get("content", "") for task in existing_tasks)
+        kg_enricher_exists = any(
+            task.get("event_type") == "recurring"
+            and task.get("cron_expr") == "0 8 * * *"
+            and "kg-enricher" in task.get("content", "")
+            and task.get("status") != "cancelled"
+            for task in existing_tasks
+        )
 
         if not kg_enricher_exists:
             # Calculate next 8am
@@ -203,10 +209,10 @@ async def lifespan(app: FastAPI):
 
     # 停止 KGScanner
     try:
-        from agent.injector.kg_scanner import get_kg_scanner
-        scanner = get_kg_scanner(auto_start=False)
-        scanner.stop()
-        logger.info("KGScanner stopped")
+        from agent.injector.kg_scanner import _kg_scanner
+        if _kg_scanner is not None:
+            _kg_scanner.stop()
+            logger.info("KGScanner stopped")
     except Exception as e:
         logger.warning(f"Failed to stop KGScanner: {e}")
 
