@@ -627,7 +627,7 @@ def create_entity(
         {"id": id, "name": name, "type": entity_type, "description": description, "ts": ts},
     )
 
-    return {"status": "created", "id": id, "name": name, "type": entity_type, "created_at": ts, "updated_at": ts}
+    return {"status": "created", "id": id, "name": name, "type": entity_type, "description": description, "created_at": ts, "updated_at": ts}
 
 
 def delete_entity(id: str) -> dict[str, Any]:
