@@ -356,9 +356,47 @@ async function pollChangelog() {
     });
 
     if (changed) {
+      // Incremental update: keep existing node/link references, only append new ones
+      // This preserves positions of existing nodes — force-graph matches by id
+      const fgData = graph.graphData();
+      const fgNodeIds = new Set(fgData.nodes.map(n => n.id));
+
+      // Add new nodes to currentData and force-graph
+      currentData.nodes.forEach(node => {
+        if (!fgNodeIds.has(node.id)) {
+          const visualType = mapNodeType(node);
+          const color = typeColors[visualType] || typeColors.other;
+          const edgeCount = countEdges(node.id);
+          const size = 2 + Math.log(edgeCount + 1) * 1.5;
+          fgData.nodes.push({
+            id: node.id,
+            label: node.label || node.name || node.id,
+            color: color,
+            val: size,
+            opacity: 0.75,
+            _originalData: node,
+            _visualType: visualType,
+          });
+        }
+      });
+
+      // Add new links
+      const fgLinkKeys = new Set(fgData.links.map(l => `${l.source.id || l.source}->${l.target.id || l.target}`));
+      currentData.edges.forEach(edge => {
+        const key = `${edge.source}->${edge.target}`;
+        if (!fgLinkKeys.has(key)) {
+          fgData.links.push({
+            source: edge.source,
+            target: edge.target,
+            relation: edge.relation || '',
+            color: 'rgba(0,0,0,0.12)',
+            width: 1,
+          });
+        }
+      });
+
       buildEdgeCountCache();
-      applyForceConfig();
-      graph.graphData(buildGraphData());
+      graph.graphData(fgData); // force-graph preserves positions of existing nodes
       updateStats();
     }
   } catch (err) {
@@ -633,8 +671,46 @@ async function expandNode(nodeId) {
     });
 
     if (addedCount > 0) {
+      // Incremental: append new nodes/links to force-graph data, preserve positions
+      const fgData = graph.graphData();
+      const fgNodeIds = new Set(fgData.nodes.map(n => n.id));
+
+      result.nodes.forEach(n => {
+        const nid = n.id.startsWith('entity:') ? n.id : `entity:${n.id}`;
+        if (!fgNodeIds.has(nid)) {
+          const visualType = mapNodeType({ nodeType: 'Entity', entityType: n.type });
+          const color = typeColors[visualType] || typeColors.other;
+          fgData.nodes.push({
+            id: nid,
+            label: n.name || nid,
+            color: color,
+            val: 2,
+            opacity: 0.75,
+            _originalData: { id: nid, label: n.name, nodeType: 'Entity', entityType: n.type, description: n.description || '' },
+            _visualType: visualType,
+          });
+        }
+      });
+
+      const fgLinkKeys = new Set(fgData.links.map(l => `${l.source.id || l.source}->${l.target.id || l.target}`));
+      result.edges.forEach(edge => {
+        const srcId = edge.source.startsWith('entity:') ? edge.source : `entity:${edge.source}`;
+        const tgtId = edge.target.startsWith('entity:') ? edge.target : `entity:${edge.target}`;
+        const key = `${srcId}->${tgtId}`;
+        if (!fgLinkKeys.has(key) && fgNodeIds.has(srcId) && fgNodeIds.has(tgtId)) {
+          fgData.links.push({
+            source: srcId,
+            target: tgtId,
+            relation: edge.relation || '',
+            color: 'rgba(0,0,0,0.12)',
+            width: 1,
+          });
+        }
+      });
+
+      buildEdgeCountCache();
+      graph.graphData(fgData);
       updateStats();
-      reLayout();
     }
   } catch (err) {
     console.error('Failed to expand node:', err);
