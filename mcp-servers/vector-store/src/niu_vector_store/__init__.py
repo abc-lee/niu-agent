@@ -80,7 +80,7 @@ TOOL_SCHEMAS = {
         "input_schema": {
             "type": "object",
             "properties": {
-                "doc_id": {
+                "id": {
                     "type": "string",
                     "description": "Document ID to delete (exact match)",
                 },
@@ -276,6 +276,7 @@ def add_document(
         metadata: Optional metadata dict
         file_path: Path to file to read content from (avoids JSON size limits)
     """
+    doc_id = id  # avoid shadowing builtin
     # If file_path provided, read content from file
     if file_path and not content:
         try:
@@ -311,11 +312,11 @@ def add_document(
     metadata_json = json.dumps(metadata) if metadata else "{}"
     conn.execute(
         "INSERT OR REPLACE INTO documents (id, content, embedding, metadata) VALUES (?, ?, ?, ?)",
-        (id, content, embedding_blob, metadata_json),
+        (doc_id, content, embedding_blob, metadata_json),
     )
     conn.commit()
 
-    return {"status": "added", "id": id, "has_embedding": embedding is not None}
+    return {"status": "added", "id": doc_id, "has_embedding": embedding is not None}
 
 
 def search_documents(
@@ -410,9 +411,10 @@ def _matches_filter(metadata: dict[str, Any], filter: dict[str, Any]) -> bool:
 
 def get_document(id: str) -> dict[str, Any] | None:
     """Get a document by ID."""
+    doc_id = id  # avoid shadowing builtin
     conn = get_connection()
     cursor = conn.execute(
-        "SELECT id, content, metadata FROM documents WHERE id = ?", (id,)
+        "SELECT id, content, metadata FROM documents WHERE id = ?", (doc_id,)
     )
     row = cursor.fetchone()
     if row:
@@ -425,14 +427,14 @@ def get_document(id: str) -> dict[str, Any] | None:
 
 
 def delete_document(
-    doc_id: str | None = None,
-    query: str | None = None,
+    id: str = "",
+    query: str = "",
     filter: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Delete documents by ID, query, or filter.
 
     Args:
-        doc_id: Delete by document ID (exact match)
+        id: Delete by document ID (exact match)
         query: Delete documents matching content (semantic search)
         filter: Delete documents matching metadata filter, e.g. {"type": "event", "status": "cancelled"}
 
@@ -440,6 +442,7 @@ def delete_document(
         Number of deleted documents and their IDs
     """
     conn = get_connection()
+    doc_id = id  # avoid shadowing builtin
     deleted_ids = []
 
     if doc_id:
@@ -539,15 +542,16 @@ def update_metadata(id: str, metadata_updates: dict[str, Any]) -> dict[str, Any]
     Returns:
         Updated document info or error message
     """
+    doc_id = id  # avoid shadowing builtin
     conn = get_connection()
 
     # Get current document
     cursor = conn.execute(
-        "SELECT id, content, metadata FROM documents WHERE id = ?", (id,)
+        "SELECT id, content, metadata FROM documents WHERE id = ?", (doc_id,)
     )
     row = cursor.fetchone()
     if not row:
-        return {"status": "error", "message": f"Document not found: {id}"}
+        return {"status": "error", "message": f"Document not found: {doc_id}"}
 
     # Parse current metadata
     current_metadata = json.loads(row[2]) if row[2] else {}
@@ -558,13 +562,13 @@ def update_metadata(id: str, metadata_updates: dict[str, Any]) -> dict[str, Any]
     # Write back
     metadata_json = json.dumps(current_metadata)
     conn.execute(
-        "UPDATE documents SET metadata = ? WHERE id = ?", (metadata_json, id)
+        "UPDATE documents SET metadata = ? WHERE id = ?", (metadata_json, doc_id)
     )
     conn.commit()
 
     return {
         "status": "updated",
-        "id": id,
+        "id": doc_id,
         "metadata": current_metadata,
     }
 
@@ -714,8 +718,8 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             result = get_document(id=arguments["id"])
         elif name == "delete_document":
             result = delete_document(
-                doc_id=arguments.get("doc_id"),
-                query=arguments.get("query"),
+                id=arguments.get("id", ""),
+                query=arguments.get("query", ""),
                 filter=arguments.get("filter"),
             )
         elif name == "list_documents":
