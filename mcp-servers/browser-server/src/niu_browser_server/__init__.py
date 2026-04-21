@@ -319,7 +319,7 @@ def browser_close_tab(
 TOOL_SCHEMAS = {
     "browser_navigate": {
         "name": "browser_navigate",
-        "description": "启动浏览器并导航到 URL，自动返回页面结构化状态（编号的交互元素列表）。LLM 根据返回的元素编号决策下一步操作。**使用场景**：用户要求'打开网页'、'访问网站'、'浏览页面'时使用。**返回**：url、title、elements（编号的交互元素，如 [0]<button>登录 />）、pageInfo。",
+        "description": "启动浏览器并导航到 URL，自动返回页面结构化状态和标签页列表。LLM 根据返回的元素编号决策下一步操作，根据 tabSummary 管理多个标签页。**使用场景**：用户要求'打开网页'、'访问网站'、'浏览页面'时使用。**返回**：url、title、elements（编号的交互元素）、tabSummary（标签页列表）、currentTabId。",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -335,7 +335,7 @@ TOOL_SCHEMAS = {
     },
     "browser_interact": {
         "name": "browser_interact",
-        "description": "Interact with page elements by index: click, input text, select option, scroll, or get current state. Each action returns updated page state with re-indexed elements. Actions are serial - always use latest index from previous result.",
+        "description": "与页面元素交互（按索引）：点击、输入文本、选择下拉项、滚动、获取当前状态。每次操作返回更新后的页面状态（含重新编号的元素和标签页摘要）。操作是串行的——始终使用上一次结果的最新索引。",
         "input_schema": {
             "type": "object",
             "properties": {
