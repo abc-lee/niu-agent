@@ -1,58 +1,77 @@
 /**
  * Niu Browser Extension - Background Service Worker
- * Message routing: hub <-> content_script
- * Auto-opens hub tab on startup for WebSocket connection
+ * - 标签页生命周期事件通过 Port 转发（跨 SW 重启可靠）
+ * - 消息路由：hub <-> content_script
+ * - 启动时自动打开 hub 标签页
  */
 
 const HUB_URL = chrome.runtime.getURL('hub.html');
 let hubTabId = null;
 
-/**
- * Ensure hub tab is open. Called on service worker startup and extension icon click.
- * This is the most reliable way to keep hub alive across service worker restarts.
- */
+// ============== Hub 标签页生命周期 ==============
+
 function ensureHubTab() {
   chrome.tabs.query({ url: HUB_URL }, (tabs) => {
     if (tabs.length > 0) {
       hubTabId = tabs[0].id;
-      console.log('[NiuBG] Hub tab already exists:', hubTabId);
     } else {
       chrome.tabs.create({ url: HUB_URL, active: false }, (tab) => {
         hubTabId = tab.id;
-        console.log('[NiuBG] Hub tab opened:', hubTabId);
       });
     }
   });
 }
 
-// Open hub on service worker startup (fires when SW wakes up from idle)
 ensureHubTab();
+chrome.runtime.onInstalled.addListener(() => ensureHubTab());
+chrome.action.onClicked.addListener(() => ensureHubTab());
 
-// Also open hub on extension install/update
-chrome.runtime.onInstalled.addListener(() => {
-  ensureHubTab();
-});
-
-// Open hub when extension icon is clicked (user can manually trigger)
-chrome.action.onClicked.addListener(() => {
-  ensureHubTab();
-});
-
-// Track hub tab lifecycle - reopen if closed
 chrome.tabs.onRemoved.addListener((tabId) => {
   if (tabId === hubTabId) {
     hubTabId = null;
-    console.log('[NiuBG] Hub tab closed, reopening in 1s...');
     setTimeout(() => {
       chrome.tabs.create({ url: HUB_URL, active: false }, (tab) => {
         hubTabId = tab.id;
-        console.log('[NiuBG] Hub tab reopened:', hubTabId);
       });
     }, 1000);
   }
 });
 
-// Listen for messages from hub, forward to content_script
+// ============== 标签页事件 Port ==============
+// Hub 通过 chrome.runtime.connect({ name: 'tab-events' }) 连接
+// 可靠地接收标签页生命周期事件（经受 SW 重启）
+
+const tabEventPorts = new Set();
+
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name !== 'tab-events') return;
+  tabEventPorts.add(port);
+  port.onDisconnect.addListener(() => tabEventPorts.delete(port));
+});
+
+function broadcastTabEvent(message) {
+  for (const port of tabEventPorts) {
+    try { port.postMessage(message); } catch (e) { /* port 已关闭 */ }
+  }
+}
+
+chrome.tabs.onCreated.addListener((tab) => {
+  broadcastTabEvent({ action: 'created', payload: { tab } });
+});
+
+chrome.tabs.onRemoved.addListener((tabId, removeInfo) => {
+  broadcastTabEvent({ action: 'removed', payload: { tabId, removeInfo } });
+});
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  // 只广播有意义的更新（url、title、status 变化）
+  if (changeInfo.url || changeInfo.title || changeInfo.status) {
+    broadcastTabEvent({ action: 'updated', payload: { tabId, changeInfo, tab } });
+  }
+});
+
+// ============== 消息路由 ==============
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.target === 'content') {
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
@@ -66,25 +85,4 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     });
     return true;
   }
-});
-
-// Notify hub when tab finishes loading
-chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-  if (changeInfo.status === 'complete' && tab.url && !tab.url.startsWith('chrome://') && !tab.url.startsWith('edge://')) {
-    chrome.runtime.sendMessage({
-      type: 'tab_updated',
-      tabId: tabId,
-      url: tab.url,
-      title: tab.title,
-    }).catch(() => {});
-  }
-});
-
-// Notify hub when new tab is created
-chrome.tabs.onCreated.addListener((tab) => {
-  chrome.runtime.sendMessage({
-    type: 'tab_created',
-    tabId: tab.id,
-    url: tab.url,
-  }).catch(() => {});
 });
