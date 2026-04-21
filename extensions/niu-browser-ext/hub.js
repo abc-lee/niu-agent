@@ -49,8 +49,8 @@ async function switchToTab(tabId) {
   const target = tabs.find(t => t.id === tabId);
   if (!target) throw new Error('Tab ' + tabId + ' not found in tab list.');
 
-  currentTabId = tabId;
   await chrome.tabs.update(tabId, { active: true });
+  currentTabId = tabId;
 }
 
 /**
@@ -95,11 +95,11 @@ function connectTabEvents() {
       if (existed) {
         removeTab(tabId);
         if (currentTabId === tabId) {
-          // 切换到最后一个剩余标签页
           const newCurrent = tabs[tabs.length - 1] || null;
           currentTabId = newCurrent ? newCurrent.id : null;
         }
       }
+      // 如果 tabId 不在 tabs[] 中，说明已被 close_tab 处理器移除，跳过
     } else if (message.action === 'updated') {
       const { tabId, changeInfo } = message.payload;
       const updates = {};
@@ -107,6 +107,12 @@ function connectTabEvents() {
       if (changeInfo.title) updates.title = changeInfo.title;
       if (changeInfo.status) updates.status = changeInfo.status;
       updateTab(tabId, updates);
+    } else if (message.action === 'activated') {
+      // 用户手动切换标签页，同步 currentTabId
+      const { tabId, windowId: evtWindowId } = message.payload;
+      if (evtWindowId === windowId) {
+        currentTabId = tabId;
+      }
     }
   });
 
@@ -245,13 +251,20 @@ async function handleCommand(msg) {
         sendResult(id, false, 'Cannot close the initial tab');
         return;
       }
-      await chrome.tabs.remove(tabId);
+      // 标记待关闭，防止 onRemoved 事件重复处理
+      const wasCurrent = currentTabId === tabId;
       removeTab(tabId);
-      // 自动切换到最后一个剩余标签页
-      if (currentTabId === tabId) {
+      try {
+        await chrome.tabs.remove(tabId);
+      } catch (e) {
+        // chrome.tabs.remove 可能失败（标签页已关闭），忽略
+      }
+      // 如果关闭的是当前标签页，切换到最后一个剩余标签页
+      if (wasCurrent) {
         const newCurrent = tabs[tabs.length - 1] || null;
         if (newCurrent) {
-          await switchToTab(newCurrent.id);
+          currentTabId = newCurrent.id;
+          try { await chrome.tabs.update(newCurrent.id, { active: true }); } catch (e) {}
         } else {
           currentTabId = null;
         }
@@ -462,8 +475,11 @@ async function sendToContentScriptWithRetry(tabId, msg, maxRetries = 5, delayMs 
 function sendResult(id, success, message, data) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     // 每次响应都包含标签页摘要（page-agent 模式）
-    const enrichedData = data || {};
-    if (typeof enrichedData === 'object' && success) {
+    let enrichedData = data;
+    if (success) {
+      if (!data || typeof data !== 'object') {
+        enrichedData = {};
+      }
       enrichedData.tabSummary = summarizeTabs();
       enrichedData.currentTabId = currentTabId;
     }

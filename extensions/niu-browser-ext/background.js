@@ -70,6 +70,10 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   }
 });
 
+chrome.tabs.onActivated.addListener((activeInfo) => {
+  broadcastTabEvent({ action: 'activated', payload: { tabId: activeInfo.tabId, windowId: activeInfo.windowId } });
+});
+
 // ============== 消息路由 ==============
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
