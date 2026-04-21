@@ -267,27 +267,10 @@ async def delete_context_messages(request: dict) -> dict:
     logger.info(f"[Context] Deleting {len(message_ids)} messages, reason: {reason}")
 
     store = await get_message_store()
+    result = await store.delete_messages_by_ids(message_ids)
+    logger.info(f"[Context] Deleted {result['deleted_count']} messages, freed {result['freed_tokens']} tokens")
 
-    # Estimate freed tokens before deleting
-    freed_tokens = 0
-    all_messages = await store.get_messages(limit=1000)
-    id_set = set(message_ids)
-    for msg in all_messages:
-        if msg.id in id_set:
-            try:
-                from litellm import token_counter
-                t = token_counter(model="gpt-4o", messages=[{"role": msg.role, "content": msg.content or ""}])
-            except Exception:
-                t = max(1, len(msg.content or "") // 2) + 4
-            freed_tokens += t
-
-    deleted_count = await store.delete_messages_by_ids(message_ids)
-    logger.info(f"[Context] Deleted {deleted_count} messages, freed {freed_tokens} tokens")
-
-    return {
-        "deleted_count": deleted_count,
-        "freed_tokens": freed_tokens,
-    }
+    return result
 
 
 @router.post("/api/context/messages/update")
