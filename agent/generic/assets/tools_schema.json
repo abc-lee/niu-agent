@@ -4,7 +4,7 @@
     "description": "Code executor. Prefer python. No concurrent calls. Prefer code in ```python/powershell blocks in reply body to avoid escaping. No hardcoding bulk data",
     "parameters": {"type": "object", "properties": {
       "script": {"type": "string", "description": "[Mutually exclusive] NEVER use this param when use reply code block."},
-      "type": {"type": "string", "enum": ["python", "powershell", "bash"], "description": "Code type", "default": "python"},
+      "type": {"type": "string", "enum": ["python", "powershell"], "description": "Code type", "default": "python"},
       "timeout": {"type": "integer", "description": "in seconds", "default": 60},
       "cwd": {"type": "string", "description": "Working directory, defaults to cwd"}}}
   }},
