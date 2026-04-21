@@ -26,6 +26,7 @@ mcpServers:
 - `query_graph` — 执行 Cypher 查询
 - `update_entity_status` — 更新 Document 的实体补全状态
 - `list_entities` — 列出实体（用于查重）
+- `delete_entity` — 删除实体节点（用于去重后移除旧节点）
 
 # 实体提取规则
 

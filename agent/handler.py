@@ -17,6 +17,8 @@ import traceback
 from pathlib import Path
 from typing import Any, Optional
 
+from loguru import logger
+
 # 导入 GenericAgent 基类
 from .generic.agent_loop import BaseHandler, StepOutcome, try_call_generator
 

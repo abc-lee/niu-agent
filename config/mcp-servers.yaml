@@ -43,6 +43,8 @@ kg-server:
     graph_snapshot: {visibility: hidden}
     list_entities: {visibility: hidden}
     list_concepts: {visibility: hidden}
+    update_entity_status: {visibility: hidden}
+    delete_entity: {visibility: hidden}
 
 # Vector Store - Semantic search using embeddings
 vector-store:
@@ -58,6 +60,7 @@ vector-store:
     get_document: {visibility: static}
     delete_document: {visibility: static}
     list_documents: {visibility: static}
+    update_metadata: {visibility: hidden}
     # count_documents 默认 dynamic
 
 # Config Manager - Read/write user configuration and memory

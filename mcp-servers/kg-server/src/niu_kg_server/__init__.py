@@ -420,6 +420,15 @@ def get_connection() -> kuzu.Connection:
     return _conn
 
 
+def get_db() -> kuzu.Database:
+    """Get or create the shared Database object (thread-safe).
+
+    Used by KGScanner to create its own Connection from the same Database.
+    """
+    get_connection()  # 确保 _db 已初始化
+    return _db
+
+
 def _init_schema(conn: kuzu.Connection) -> None:
     """Initialize database schema with confidence and timestamps.
 
@@ -614,7 +623,7 @@ def create_entity(
     entity_type = entity_type.lower()
 
     conn.execute(
-        "MERGE (e:Entity {id: $id}) ON CREATE SET e.name = $name, e.type = $type, e.description = $description, e.created_at = $ts SET e.type = $type, e.updated_at = $ts",
+        "MERGE (e:Entity {id: $id}) ON CREATE SET e.name = $name, e.type = $type, e.description = $description, e.created_at = $ts ON MATCH SET e.name = $name, e.type = $type, e.description = $description, e.updated_at = $ts",
         {"id": id, "name": name, "type": entity_type, "description": description, "ts": ts},
     )
 
@@ -632,13 +641,12 @@ def delete_entity(id: str) -> dict[str, Any]:
     """
     conn = get_connection()
     try:
-        # Check entity exists
+        # Check existence (KuzuDB 不支持 DELETE ... RETURN)
         result = conn.execute(
             "MATCH (e:Entity {id: $id}) RETURN e.id",
             {"id": id},
         )
-        rows = list(result)
-        if not rows:
+        if not list(result):
             return {"status": "not_found", "id": id}
 
         # Delete the entity (cascades to relationships)

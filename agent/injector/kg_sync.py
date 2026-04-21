@@ -250,7 +250,6 @@ class KGSync:
                     continue
 
                 # 已过滤 category=document，KG source 固定为 "document"
-                source = "document"
                 file_path = metadata.get("file_path", doc_id)
 
                 # 跳过 KG 中已有的
@@ -259,7 +258,7 @@ class KGSync:
 
                 title = Path(file_path).stem if file_path else doc_id
                 try:
-                    create_document(uri=file_path, title=title, content=content, source=source or "document", entity_status="pending")
+                    create_document(uri=file_path, title=title, content=content, source="document", entity_status="pending")
 
                     # 从 L1 提取实体（同 sync_to_kg 逻辑）
                     parts = content.split("|")
