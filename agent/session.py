@@ -245,18 +245,19 @@ class MessageStore:
             logger.debug(f"Updated message: {message_id}")
         return updated > 0
 
-    async def delete_messages_by_ids(self, message_ids: List[str]) -> int:
-        """Delete messages by IDs and cleanup referenced temp files"""
+    async def delete_messages_by_ids(self, message_ids: List[str]) -> dict:
+        """Delete messages by IDs and cleanup referenced temp files.
+        Returns dict with deleted_count and freed_tokens."""
         if not message_ids:
-            return 0
+            return {"deleted_count": 0, "freed_tokens": 0}
 
         # Single connection + transaction
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             placeholders = ",".join("?" * len(message_ids))
-            # Collect content before deleting
+            # Collect content before deleting (for token estimation + temp cleanup)
             cursor = await db.execute(
-                f"SELECT content FROM messages WHERE id IN ({placeholders})",
+                f"SELECT role, content FROM messages WHERE id IN ({placeholders})",
                 message_ids,
             )
             rows = await cursor.fetchall()
@@ -268,6 +269,16 @@ class MessageStore:
             deleted = cursor.rowcount
             await db.commit()
 
+        # Estimate freed tokens from deleted content
+        freed_tokens = 0
+        for row in rows:
+            try:
+                from litellm import token_counter
+                t = token_counter(model="gpt-4o", messages=[{"role": row["role"], "content": row["content"] or ""}])
+            except Exception:
+                t = max(1, len(row["content"] or "") // 2) + 4
+            freed_tokens += t
+
         # Extract temp file paths and cleanup (outside DB transaction)
         tmp_files = _extract_tmp_paths([row["content"] for row in rows if row["content"]])
         cleaned = 0
@@ -275,8 +286,8 @@ class MessageStore:
             from agent.tmp_dir import cleanup_tmp_files
             cleaned = cleanup_tmp_files(tmp_files)
 
-        logger.info(f"Deleted {deleted} messages by IDs, cleaned {cleaned} temp files")
-        return deleted
+        logger.info(f"Deleted {deleted} messages by IDs, freed {freed_tokens} tokens, cleaned {cleaned} temp files")
+        return {"deleted_count": deleted, "freed_tokens": freed_tokens}
 
 
 def _extract_tmp_paths(contents: list[str]) -> list[str]:
