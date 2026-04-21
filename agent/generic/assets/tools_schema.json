@@ -1,0 +1,43 @@
+[
+  {"type": "function", "function": {
+    "name": "code_run",
+    "description": "Code executor. Prefer python. No concurrent calls. Prefer code in ```python/powershell blocks in reply body to avoid escaping. No hardcoding bulk data",
+    "parameters": {"type": "object", "properties": {
+      "script": {"type": "string", "description": "[Mutually exclusive] NEVER use this param when use reply code block."},
+      "type": {"type": "string", "enum": ["python", "powershell", "bash"], "description": "Code type", "default": "python"},
+      "timeout": {"type": "integer", "description": "in seconds", "default": 60},
+      "cwd": {"type": "string", "description": "Working directory, defaults to cwd"}}}
+  }},
+  {"type": "function", "function": {
+    "name": "file_read",
+    "description": "Read file. Read before modify for latest context and line numbers",
+    "parameters": {"type": "object", "properties": {
+      "path": {"type": "string", "description": "Relative or absolute"},
+      "start": {"type": "integer", "description": "Start line number (1-based)", "default": 1},
+      "count": {"type": "integer", "description": "Number of lines to read", "default": 200},
+      "keyword": {"type": "string", "description": "[Optional] If provided, returns first match (case-insensitive) with context"},
+      "show_linenos": {"type": "boolean", "description": "Show line numbers", "default": true}}}
+  }},
+  {"type": "function", "function": {
+    "name": "file_patch",
+    "description": "Replace unique old_content with new_content. Exact match required (whitespace/indentation). On failure, file_read to recheck",
+    "parameters": {"type": "object", "properties": {
+      "path": {"type": "string", "description": "File path"},
+      "old_content": {"type": "string", "description": "Original text block to replace (must be unique)"},
+      "new_content": {"type": "string", "description": "New content. Supports {{file:path:startLine:endLine}} to ref file lines, auto-expanded"}}}
+  }},
+  {"type": "function", "function": {
+    "name": "file_write",
+    "description": "Create/overwrite/append files. ONLY for HUGE edits. Content in <file_content> tags or reply code blocks. Supports {{file:path:startLine:endLine}}, auto-expanded",
+    "parameters": {"type": "object", "properties": {
+      "path": {"type": "string", "description": "File path"},
+      "mode": {"type": "string", "enum": ["overwrite", "append", "prepend"], "description": "Write mode", "default": "append"}}}
+  }},
+  {"type": "function", "function": {
+    "name": "ask_user",
+    "description": "Interrupt task to ask user when needing decisions, extra info, or facing unresolvable blockers",
+    "parameters": {"type": "object", "properties": {
+      "question": {"type": "string", "description": "Question for the user"},
+      "candidates": {"type": "array", "items": {"type": "string"}, "description": "Optional quick-select choices for the user"}}}
+  }}
+]
