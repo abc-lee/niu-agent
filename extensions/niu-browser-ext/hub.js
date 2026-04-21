@@ -84,10 +84,14 @@ function connectTabEvents() {
   tabEventPort.onMessage.addListener((message) => {
     if (message.action === 'created') {
       const tab = message.payload.tab;
-      if (tab.id && tab.windowId === windowId && isContentScriptAllowed(tab.url)) {
+      if (tab.id && isContentScriptAllowed(tab.url) && (windowId === null || tab.windowId === windowId)) {
         addTab({ id: tab.id, url: tab.url, title: tab.title, status: tab.status, isInitial: false });
         // 自动切换到新创建的标签页
         currentTabId = tab.id;
+        // 首次收到标签页事件时确定 windowId
+        if (windowId === null) {
+          windowId = tab.windowId;
+        }
       }
     } else if (message.action === 'removed') {
       const { tabId } = message.payload;
@@ -143,6 +147,11 @@ async function initTabTracking() {
           isInitial: tab.id === currentTabId,
         });
       }
+    }
+
+    // 确保至少有一个 isInitial 标签页（防止所有标签页都被关闭）
+    if (tabs.length > 0 && !tabs.find(t => t.isInitial)) {
+      tabs[0].isInitial = true;
     }
 
     // 连接标签页生命周期事件
@@ -223,8 +232,13 @@ async function handleCommand(msg) {
       addTab({ id: newTab.id, url: url, title: '', status: 'loading', isInitial: false });
       currentTabId = newTab.id;
       await waitForTabLoad(newTab.id, 15000);
-      const stateResult = await sendToContentScriptWithRetry(newTab.id, { type: 'get_state', id: id });
-      sendResult(id, stateResult?.success ?? true, 'Tab created: ' + url, stateResult?.data);
+      // 仅对支持 content script 的页面获取状态
+      if (isContentScriptAllowed(url)) {
+        const stateResult = await sendToContentScriptWithRetry(newTab.id, { type: 'get_state', id: id });
+        sendResult(id, stateResult?.success ?? true, 'Tab created: ' + url, stateResult?.data);
+      } else {
+        sendResult(id, true, 'Tab created: ' + url, { url: url, title: '' });
+      }
     } else if (type === 'switch_tab') {
       const tabId = msg.tabId;
       if (!tabId) {
