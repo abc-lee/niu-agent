@@ -23,6 +23,7 @@
     #targetX = 0
     #targetY = 0
     #rafId = null
+    #disposed = false
 
     constructor () {
       // Create wrapper
@@ -92,6 +93,7 @@
      * Uses the same 0.2 interpolation factor as page-agent.
      */
     #moveCursorToTarget () {
+      if (this.#disposed) return
       const newX = this.#currentX + (this.#targetX - this.#currentX) * 0.2
       const newY = this.#currentY + (this.#targetY - this.#currentY) * 0.2
 
@@ -114,7 +116,7 @@
      * Show the mask overlay with spinning border and cursor.
      */
     show () {
-      if (this.shown) return
+      if (this.shown || this.#disposed) return
       this.shown = true
       this.wrapper.classList.add('visible')
 
@@ -131,7 +133,7 @@
      * Hide the mask overlay with fade-out.
      */
     hide () {
-      if (!this.shown) return
+      if (!this.shown || this.#disposed) return
       this.shown = false
       this.cursor.classList.remove('clicking')
       // Delay removal to allow fade-out (matches original 800ms)
@@ -144,6 +146,7 @@
      * Set the target position for the cursor (it will ease toward it).
      */
     setCursorPosition (x, y) {
+      if (this.#disposed) return
       this.#targetX = x
       this.#targetY = y
     }
@@ -152,6 +155,7 @@
      * Trigger click ripple animation on the cursor.
      */
     triggerClickAnimation () {
+      if (this.#disposed) return
       this.cursor.classList.remove('clicking')
       // Force reflow to restart animation
       void this.cursor.offsetHeight
@@ -176,6 +180,7 @@
      * Clean up and remove from DOM.
      */
     dispose () {
+      this.#disposed = true
       if (this.#rafId) cancelAnimationFrame(this.#rafId)
       this.wrapper.remove()
     }
