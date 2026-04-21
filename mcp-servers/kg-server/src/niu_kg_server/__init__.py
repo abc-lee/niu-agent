@@ -620,14 +620,14 @@ def create_entity(
     """Create an entity node in the graph."""
     conn = get_connection()
     ts = _get_timestamp()
-    type = type.lower()
+    entity_type = type.lower()
 
     conn.execute(
         "MERGE (e:Entity {id: $id}) ON CREATE SET e.name = $name, e.type = $type, e.description = $description, e.created_at = $ts ON MATCH SET e.name = $name, e.type = $type, e.description = $description, e.updated_at = $ts",
-        {"id": id, "name": name, "type": type, "description": description, "ts": ts},
+        {"id": id, "name": name, "type": entity_type, "description": description, "ts": ts},
     )
 
-    return {"status": "created", "id": id, "name": name, "type": type, "created_at": ts, "updated_at": ts}
+    return {"status": "created", "id": id, "name": name, "type": entity_type, "created_at": ts, "updated_at": ts}
 
 
 def delete_entity(id: str) -> dict[str, Any]:
