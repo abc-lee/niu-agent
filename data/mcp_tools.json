@@ -1492,7 +1492,7 @@
     {
       "server": "session-manager",
       "name": "update_message",
-      "description": "Update content of an existing message by index. Used by context-manager to rewrite L0 summaries in-place during compression.",
+      "description": "Update content of an existing message by ID. Used by context-manager to rewrite L0 summaries in-place during compression.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -1500,9 +1500,9 @@
             "type": "string",
             "description": "Session ID"
           },
-          "message_index": {
-            "type": "integer",
-            "description": "Index of the message to update (0-based, from get_messages)"
+          "message_id": {
+            "type": "string",
+            "description": "ID of the message to update (from get_messages response)"
           },
           "content": {
             "type": "string",
@@ -1511,7 +1511,7 @@
         },
         "required": [
           "session_id",
-          "message_index",
+          "message_id",
           "content"
         ]
       },
@@ -1520,7 +1520,7 @@
     {
       "server": "session-manager",
       "name": "delete_messages",
-      "description": "Delete messages from a session by indices. Returns deleted count and freed tokens.",
+      "description": "Delete messages from a session by IDs. Returns deleted count and freed tokens.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -1528,12 +1528,12 @@
             "type": "string",
             "description": "Session ID"
           },
-          "message_indices": {
+          "message_ids": {
             "type": "array",
             "items": {
-              "type": "integer"
+              "type": "string"
             },
-            "description": "List of message indices to delete (0-based)"
+            "description": "List of message IDs to delete (from get_messages response)"
           },
           "reason": {
             "type": "string",
@@ -1542,7 +1542,7 @@
         },
         "required": [
           "session_id",
-          "message_indices"
+          "message_ids"
         ]
       },
       "visibility": "hidden"
