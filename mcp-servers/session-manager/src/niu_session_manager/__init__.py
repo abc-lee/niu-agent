@@ -61,6 +61,28 @@ TOOL_SCHEMAS = {
             "required": ["session_id", "role", "content"],
         },
     },
+    "update_message": {
+        "name": "update_message",
+        "description": "Update content of an existing message by index. Used by context-manager to rewrite L0 summaries in-place during compression.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "session_id": {
+                    "type": "string",
+                    "description": "Session ID",
+                },
+                "message_index": {
+                    "type": "integer",
+                    "description": "Index of the message to update (0-based, from get_messages)",
+                },
+                "content": {
+                    "type": "string",
+                    "description": "New content for the message",
+                },
+            },
+            "required": ["session_id", "message_index", "content"],
+        },
+    },
     "delete_messages": {
         "name": "delete_messages",
         "description": "Delete messages from a session by indices. Returns deleted count and freed tokens.",
@@ -178,6 +200,28 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
+            name="update_message",
+            description="Update content of an existing message by index. Used by context-manager to rewrite L0 summaries in-place during compression.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "session_id": {
+                        "type": "string",
+                        "description": "Session ID",
+                    },
+                    "message_index": {
+                        "type": "integer",
+                        "description": "Index of the message to update (0-based, from get_messages)",
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "New content for the message",
+                    },
+                },
+                "required": ["session_id", "message_index", "content"],
+            },
+        ),
+        Tool(
             name="delete_messages",
             description="Delete messages from a session by indices. Returns deleted count and freed tokens.",
             inputSchema={
@@ -267,6 +311,38 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             return [TextContent(type="text", text="Error: content is required")]
 
         result = _add_message_direct(session_id, role, content)
+        return [
+            TextContent(
+                type="text", text=json.dumps(result, ensure_ascii=False, indent=2)
+            )
+        ]
+
+    elif name == "update_message":
+        session_id = arguments.get("session_id")
+        message_index = arguments.get("message_index")
+        content = arguments.get("content")
+
+        if not session_id:
+            return [TextContent(type="text", text="Error: session_id is required")]
+        if message_index is None:
+            return [TextContent(type="text", text="Error: message_index is required")]
+        if not content:
+            return [TextContent(type="text", text="Error: content is required")]
+
+        # Call main API to update message
+        result = call_api(
+            "POST",
+            "/api/context/messages/update",
+            {
+                "session_id": session_id,
+                "message_index": message_index,
+                "content": content,
+            },
+        )
+
+        if not result:
+            return [TextContent(type="text", text="Error: Failed to update message")]
+
         return [
             TextContent(
                 type="text", text=json.dumps(result, ensure_ascii=False, indent=2)

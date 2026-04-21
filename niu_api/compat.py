@@ -299,6 +299,41 @@ async def delete_context_messages(request: dict) -> dict:
     return {"deleted_count": 0, "freed_tokens": 0}
 
 
+@router.post("/api/context/messages/update")
+async def update_context_message(request: dict) -> dict:
+    """Update message content by index.
+
+    Args:
+        request: {
+            "session_id": str (ignored),
+            "message_index": int,
+            "content": str
+        }
+
+    Returns:
+        {"status": "ok"} or {"status": "error", "message": str}
+    """
+    message_index = request.get("message_index")
+    content = request.get("content")
+
+    if message_index is None or content is None:
+        return {"status": "error", "message": "message_index and content are required"}
+
+    store = await get_message_store()
+    all_messages = await store.get_messages(limit=1000)
+
+    if not (0 <= message_index < len(all_messages)):
+        return {"status": "error", "message": f"Index {message_index} out of range (0-{len(all_messages)-1})"}
+
+    msg = all_messages[message_index]
+    updated = await store.update_message(msg.id, content)
+
+    if updated:
+        logger.info(f"[Context] Updated message idx={message_index} id={msg.id}")
+        return {"status": "ok"}
+    return {"status": "error", "message": "Message not found"}
+
+
 @router.post("/api/chat/clear")
 async def clear_chat() -> dict:
     """Clear all messages (for /new command)"""

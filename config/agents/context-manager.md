@@ -78,6 +78,20 @@ mcpServers:
   {"status": "ok", "message_id": "..."}
 ```
 
+## update_message
+
+更新已有消息的内容。压缩会话单元时，保留一条旧消息，将其内容改写为合并后的新 L0。
+
+```
+参数：
+  session_id: 会话ID
+  message_index: 消息索引（0-based，来自 get_messages 的 idx）
+  content: 新内容
+
+返回：
+  {"status": "ok"}
+```
+
 ## add_document
 
 存储内容到向量库。
@@ -184,7 +198,10 @@ mcpServers:
    - < 500 tokens：生成 l1，调用 add_document 存储
    - >= 500 tokens：存 l2，生成 l1，都调用 add_document 存储
 3. 提取 l0（对话核心摘要）
-4. 删除原始消息中已被压缩的部分
+4. **压缩会话单元**：
+   - 保留单元中 idx 最小的一条消息（用 `update_message` 改写其 content 为合并后的新 L0）
+   - 调用 `delete_messages` 删除单元中其余消息
+   - **不要用 `add_message`**，那会在末尾追加，破坏对话顺序
 
 **输出**：完成后报告处理结果，无需返回 JSON。
 
