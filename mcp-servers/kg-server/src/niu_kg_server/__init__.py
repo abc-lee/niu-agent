@@ -615,19 +615,19 @@ def update_entity_status(uri: str, entity_status: str, processing_at: str | None
 
 
 def create_entity(
-    id: str, name: str, entity_type: str, description: str = ""
+    id: str, name: str, type: str, description: str = ""
 ) -> dict[str, Any]:
     """Create an entity node in the graph."""
     conn = get_connection()
     ts = _get_timestamp()
-    entity_type = entity_type.lower()
+    type = type.lower()
 
     conn.execute(
         "MERGE (e:Entity {id: $id}) ON CREATE SET e.name = $name, e.type = $type, e.description = $description, e.created_at = $ts ON MATCH SET e.name = $name, e.type = $type, e.description = $description, e.updated_at = $ts",
-        {"id": id, "name": name, "type": entity_type, "description": description, "ts": ts},
+        {"id": id, "name": name, "type": type, "description": description, "ts": ts},
     )
 
-    return {"status": "created", "id": id, "name": name, "type": entity_type, "created_at": ts, "updated_at": ts}
+    return {"status": "created", "id": id, "name": name, "type": type, "created_at": ts, "updated_at": ts}
 
 
 def delete_entity(id: str) -> dict[str, Any]:
@@ -2068,7 +2068,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             result = create_entity(
                 id=arguments["id"],
                 name=arguments["name"],
-                entity_type=arguments["type"],
+                type=arguments["type"],
                 description=arguments.get("description", ""),
             )
         elif name == "create_concept":
