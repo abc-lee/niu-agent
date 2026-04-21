@@ -39,6 +39,28 @@ TOOL_SCHEMAS = {
             "required": ["session_id"],
         },
     },
+    "add_message": {
+        "name": "add_message",
+        "description": "Add a message to the session. Used by context-manager to insert consolidated L0 summaries after merging multiple messages.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "session_id": {
+                    "type": "string",
+                    "description": "Session ID",
+                },
+                "role": {
+                    "type": "string",
+                    "description": "Message role: 'user', 'assistant', or 'system'",
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Message content",
+                },
+            },
+            "required": ["session_id", "role", "content"],
+        },
+    },
     "delete_messages": {
         "name": "delete_messages",
         "description": "Delete messages from a session by indices. Returns deleted count and freed tokens.",
@@ -91,6 +113,30 @@ def call_api(method: str, endpoint: str, data: dict | None = None) -> dict | Non
         return None
 
 
+def _add_message_direct(session_id: str, role: str, content: str) -> dict:
+    """Add message directly via MessageStore (in-process, no HTTP)."""
+    import asyncio as _asyncio
+    from agent.session_adapter import get_message_store
+
+    async def _do():
+        store = await get_message_store(session_id)
+        msg_id = await store.add_message(role=role, content=content)
+        return {"status": "ok", "message_id": msg_id}
+
+    try:
+        loop = _asyncio.get_event_loop()
+        if loop.is_running():
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                future = pool.submit(_asyncio.run, _do())
+                return future.result(timeout=10)
+        else:
+            return loop.run_until_complete(_do())
+    except Exception as e:
+        logger.error(f"add_message failed: {e}")
+        return {"status": "error", "message": str(e)}
+
+
 @server.list_tools()
 async def list_tools() -> list[Tool]:
     """List available tools."""
@@ -107,6 +153,28 @@ async def list_tools() -> list[Tool]:
                     },
                 },
                 "required": ["session_id"],
+            },
+        ),
+        Tool(
+            name="add_message",
+            description="Add a message to the session. Used by context-manager to insert consolidated L0 summaries after merging multiple messages.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "session_id": {
+                        "type": "string",
+                        "description": "Session ID",
+                    },
+                    "role": {
+                        "type": "string",
+                        "description": "Message role: 'user', 'assistant', or 'system'",
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "Message content",
+                    },
+                },
+                "required": ["session_id", "role", "content"],
             },
         ),
         Tool(
@@ -183,6 +251,25 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         return [
             TextContent(
                 type="text", text=json.dumps(output, ensure_ascii=False, indent=2)
+            )
+        ]
+
+    elif name == "add_message":
+        session_id = arguments.get("session_id")
+        role = arguments.get("role")
+        content = arguments.get("content")
+
+        if not session_id:
+            return [TextContent(type="text", text="Error: session_id is required")]
+        if not role:
+            return [TextContent(type="text", text="Error: role is required")]
+        if not content:
+            return [TextContent(type="text", text="Error: content is required")]
+
+        result = _add_message_direct(session_id, role, content)
+        return [
+            TextContent(
+                type="text", text=json.dumps(result, ensure_ascii=False, indent=2)
             )
         ]
 

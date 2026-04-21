@@ -62,7 +62,21 @@ mcpServers:
 
 返回：
   {"deleted_count": 3, "freed_tokens": 523}
- ```
+ ``
+
+## add_message
+
+向会话中添加一条消息。用于 L0 合并：删除多条旧 L0 后，插入一条合并后的新 L0。
+
+```
+参数：
+  session_id: 会话ID
+  role: "user" | "assistant" | "system"
+  content: 消息内容
+
+返回：
+  {"status": "ok", "message_id": "..."}
+```
 
 ## add_document
 
