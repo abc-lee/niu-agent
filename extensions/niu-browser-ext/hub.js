@@ -132,7 +132,11 @@ async function initTabTracking() {
     const activeTabs = await chrome.tabs.query({ active: true, currentWindow: true });
     if (activeTabs[0]) {
       windowId = activeTabs[0].windowId;
-      currentTabId = activeTabs[0].id;
+      // 只在活动标签页支持 content script 时设置 currentTabId
+      // 否则 currentTabId 将在遍历 tabs[] 后设置
+      if (isContentScriptAllowed(activeTabs[0].url)) {
+        currentTabId = activeTabs[0].id;
+      }
     }
 
     // 查询窗口中所有标签页（不仅仅是活跃的）
@@ -147,6 +151,11 @@ async function initTabTracking() {
           isInitial: tab.id === currentTabId,
         });
       }
+    }
+
+    // 如果 currentTabId 未设置（活动标签页是内部页面），选择 tabs[] 中第一个
+    if (currentTabId === null && tabs.length > 0) {
+      currentTabId = tabs[0].id;
     }
 
     // 确保至少有一个 isInitial 标签页（防止所有标签页都被关闭）
@@ -312,6 +321,17 @@ async function handleCommand(msg) {
         sendResult(id, false, 'No active tab');
         return;
       }
+      // 检查目标标签页是否支持 content script
+      try {
+        const targetTab = await chrome.tabs.get(targetTabId);
+        if (!isContentScriptAllowed(targetTab.url)) {
+          sendResult(id, false, 'Target tab does not support content scripts: ' + (targetTab.url || 'unknown'));
+          return;
+        }
+      } catch (e) {
+        sendResult(id, false, 'Tab not found: ' + targetTabId);
+        return;
+      }
       const response = await sendToContentScript(targetTabId, msg);
       sendResult(id, response?.success ?? false, response?.message, response?.data);
     }
@@ -338,8 +358,13 @@ async function handleNavigate(msg, id) {
       addTab({ id: newTab.id, url: url, title: '', status: 'loading', isInitial: false });
       currentTabId = newTab.id;
       await waitForTabLoad(newTab.id, 15000);
-      const stateResult = await sendToContentScriptWithRetry(newTab.id, { type: 'get_state', id: id });
-      sendResult(id, stateResult?.success ?? true, stateResult?.message || 'Navigated to ' + url, stateResult?.data);
+      // 仅对支持 content script 的页面获取状态
+      if (isContentScriptAllowed(url)) {
+        const stateResult = await sendToContentScriptWithRetry(newTab.id, { type: 'get_state', id: id });
+        sendResult(id, stateResult?.success ?? true, stateResult?.message || 'Navigated to ' + url, stateResult?.data);
+      } else {
+        sendResult(id, true, 'Navigated to ' + url, { url: url, title: '' });
+      }
       return;
     }
   }
@@ -349,8 +374,13 @@ async function handleNavigate(msg, id) {
   await waitForTabLoad(targetTabId, 15000);
 
   // Get page state from the new page's content_script (with retry for injection delay)
-  const stateResult = await sendToContentScriptWithRetry(targetTabId, { type: 'get_state', id: id });
-  sendResult(id, stateResult?.success ?? true, stateResult?.message || 'Navigated to ' + url, stateResult?.data);
+  // 仅对支持 content script 的页面获取状态
+  if (isContentScriptAllowed(url)) {
+    const stateResult = await sendToContentScriptWithRetry(targetTabId, { type: 'get_state', id: id });
+    sendResult(id, stateResult?.success ?? true, stateResult?.message || 'Navigated to ' + url, stateResult?.data);
+  } else {
+    sendResult(id, true, 'Navigated to ' + url, { url: url, title: '' });
+  }
 }
 
 /**
@@ -403,12 +433,22 @@ async function handleClick(msg, id) {
     await waitForTabLoad(targetTabId, 15000);
 
     // Get state from new page's content_script (with retry, as injection may be delayed)
-    const stateResult = await sendToContentScriptWithRetry(targetTabId, { type: 'get_state', id: id });
-    sendResult(id, stateResult?.success ?? true, stateResult?.message || 'Click caused navigation', stateResult?.data);
+    // 仅对支持 content script 的页面获取状态
+    if (isContentScriptAllowed(urlAfter)) {
+      const stateResult = await sendToContentScriptWithRetry(targetTabId, { type: 'get_state', id: id });
+      sendResult(id, stateResult?.success ?? true, stateResult?.message || 'Click caused navigation', stateResult?.data);
+    } else {
+      sendResult(id, true, 'Click caused navigation', { url: urlAfter, title: '' });
+    }
   } else {
     // No navigation - get state from current page
-    const stateResult = await sendToContentScript(targetTabId, { type: 'get_state', id: id });
-    sendResult(id, stateResult?.success ?? true, stateResult?.message || 'Clicked', stateResult?.data);
+    // 仅对支持 content script 的页面获取状态
+    if (isContentScriptAllowed(urlAfter)) {
+      const stateResult = await sendToContentScript(targetTabId, { type: 'get_state', id: id });
+      sendResult(id, stateResult?.success ?? true, stateResult?.message || 'Clicked', stateResult?.data);
+    } else {
+      sendResult(id, true, 'Clicked', { url: urlAfter, title: '' });
+    }
   }
 }
 
