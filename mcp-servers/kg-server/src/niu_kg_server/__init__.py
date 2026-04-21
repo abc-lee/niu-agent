@@ -1398,7 +1398,7 @@ def graph_changelog(limit: int = 50, since: str | None = None) -> dict[str, Any]
         {
             "changes": [
                 {
-                    "type": "entity_created" | "edge_created",
+                    "type": "entity_created" | "document_created" | "edge_created",
                     "timestamp": "...",
                     "data": {...}
                 }
@@ -1409,32 +1409,58 @@ def graph_changelog(limit: int = 50, since: str | None = None) -> dict[str, Any]
     limit = max(1, min(500, limit))
 
     changes = []
-
-    # Recent entities - fetch all, sort in Python
-    entity_query = "MATCH (e:Entity) RETURN e.id, e.name, e.type, e.created_at"
-    if since:
-        entity_query = f"MATCH (e:Entity) WHERE e.created_at >= $since RETURN e.id, e.name, e.type, e.created_at"
     params: dict = {"since": since} if since else {}
-    entity_result = conn.execute(entity_query, params)
-    entity_rows = list(entity_result)
-    for row in entity_rows:
+
+    # Recent documents
+    doc_query = "MATCH (d:Document) RETURN d.uri, d.title, d.source, d.created_at"
+    if since:
+        doc_query = "MATCH (d:Document) WHERE d.created_at >= $since RETURN d.uri, d.title, d.source, d.created_at"
+    for row in conn.execute(doc_query, params):
+        changes.append({
+            "type": "document_created",
+            "timestamp": row[3],
+            "data": {"uri": row[0], "title": row[1], "source": row[2]}
+        })
+
+    # Recent entities
+    entity_query = "MATCH (e:Entity) RETURN e.id, e.name, e.type, e.description, e.created_at"
+    if since:
+        entity_query = "MATCH (e:Entity) WHERE e.created_at >= $since RETURN e.id, e.name, e.type, e.description, e.created_at"
+    for row in conn.execute(entity_query, params):
         changes.append({
             "type": "entity_created",
-            "timestamp": row[3],
-            "data": {"id": row[0], "name": row[1], "type": row[2]}
+            "timestamp": row[4],
+            "data": {"id": row[0], "name": row[1], "type": row[2], "description": row[3] or ""}
         })
 
-    # Recent edges (RELATED_TO)
-    edge_query = "MATCH ()-[r:RELATED_TO]->() RETURN r.created_at, r.relation, r.confidence"
-    if since:
-        edge_query = f"MATCH ()-[r:RELATED_TO]->() WHERE r.created_at >= $since RETURN r.created_at, r.relation, r.confidence"
-    edge_result = conn.execute(edge_query, params)
-    for row in list(edge_result):
-        changes.append({
-            "type": "edge_created",
-            "timestamp": row[0],
-            "data": {"relation": row[1], "confidence": row[2]}
-        })
+    # Recent edges (query each edge type separately — KuzuDB lacks type() function)
+    edge_types = [
+        ("MENTIONS", "MATCH (a)-[r:MENTIONS]->(b) RETURN a.uri, b.id, r.confidence, r.created_at"),
+        ("CONTAINS", "MATCH (a)-[r:CONTAINS]->(b) RETURN a.uri, b.name, r.confidence, r.created_at"),
+        ("RELATED_TO", "MATCH (a)-[r:RELATED_TO]->(b) RETURN a.id, b.id, r.relation, r.confidence, r.created_at"),
+    ]
+    for edge_type_name, base_query in edge_types:
+        query = base_query
+        if since:
+            if edge_type_name == "RELATED_TO":
+                query = "MATCH (a)-[r:RELATED_TO]->(b) WHERE r.created_at >= $since RETURN a.id, b.id, r.relation, r.confidence, r.created_at"
+            elif edge_type_name == "MENTIONS":
+                query = "MATCH (a)-[r:MENTIONS]->(b) WHERE r.created_at >= $since RETURN a.uri, b.id, r.confidence, r.created_at"
+            else:
+                query = "MATCH (a)-[r:CONTAINS]->(b) WHERE r.created_at >= $since RETURN a.uri, b.name, r.confidence, r.created_at"
+        for row in conn.execute(query, params):
+            if edge_type_name == "RELATED_TO":
+                changes.append({
+                    "type": "edge_created",
+                    "timestamp": row[4],
+                    "data": {"edge_type": edge_type_name, "source": row[0], "target": row[1], "relation": row[2] or "", "confidence": row[3]}
+                })
+            else:
+                changes.append({
+                    "type": "edge_created",
+                    "timestamp": row[3],
+                    "data": {"edge_type": edge_type_name, "source": row[0], "target": row[1], "relation": "", "confidence": row[2]}
+                })
 
     # Sort all changes by timestamp descending
     changes.sort(key=lambda c: c["timestamp"] or "", reverse=True)
