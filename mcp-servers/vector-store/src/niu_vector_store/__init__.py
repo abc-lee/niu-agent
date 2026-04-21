@@ -263,7 +263,7 @@ def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
 
 
 def add_document(
-    doc_id: str,
+    id: str,
     content: str = "",
     metadata: dict[str, Any] | None = None,
     file_path: str = "",
@@ -271,7 +271,7 @@ def add_document(
     """Add a document to the vector store.
 
     Args:
-        doc_id: Unique document ID
+        id: Unique document ID
         content: Document content (optional if file_path provided)
         metadata: Optional metadata dict
         file_path: Path to file to read content from (avoids JSON size limits)
@@ -311,11 +311,11 @@ def add_document(
     metadata_json = json.dumps(metadata) if metadata else "{}"
     conn.execute(
         "INSERT OR REPLACE INTO documents (id, content, embedding, metadata) VALUES (?, ?, ?, ?)",
-        (doc_id, content, embedding_blob, metadata_json),
+        (id, content, embedding_blob, metadata_json),
     )
     conn.commit()
 
-    return {"status": "added", "id": doc_id, "has_embedding": embedding is not None}
+    return {"status": "added", "id": id, "has_embedding": embedding is not None}
 
 
 def search_documents(
@@ -408,11 +408,11 @@ def _matches_filter(metadata: dict[str, Any], filter: dict[str, Any]) -> bool:
     return True
 
 
-def get_document(doc_id: str) -> dict[str, Any] | None:
+def get_document(id: str) -> dict[str, Any] | None:
     """Get a document by ID."""
     conn = get_connection()
     cursor = conn.execute(
-        "SELECT id, content, metadata FROM documents WHERE id = ?", (doc_id,)
+        "SELECT id, content, metadata FROM documents WHERE id = ?", (id,)
     )
     row = cursor.fetchone()
     if row:
@@ -699,7 +699,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
 
         if name == "add_document":
             result = add_document(
-                doc_id=arguments["id"],
+                id=arguments["id"],
                 content=arguments.get("content", ""),
                 metadata=arguments.get("metadata"),
                 file_path=arguments.get("file_path", ""),
@@ -711,7 +711,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 filter=arguments.get("filter"),
             )
         elif name == "get_document":
-            result = get_document(doc_id=arguments["id"])
+            result = get_document(id=arguments["id"])
         elif name == "delete_document":
             result = delete_document(
                 doc_id=arguments.get("doc_id"),
