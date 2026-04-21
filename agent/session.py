@@ -233,12 +233,15 @@ class MessageStore:
             await db.commit()
 
         if updated:
-            # Cleanup temp files referenced in old content
+            # Cleanup temp files that are no longer referenced
+            # (in old content but not in new content)
             if old_content:
-                tmp_files = _extract_tmp_paths([old_content])
-                if tmp_files:
+                old_tmp = set(_extract_tmp_paths([old_content]))
+                new_tmp = set(_extract_tmp_paths([content])) if content else set()
+                to_clean = old_tmp - new_tmp
+                if to_clean:
                     from agent.tmp_dir import cleanup_tmp_files
-                    cleanup_tmp_files(tmp_files)
+                    cleanup_tmp_files(list(to_clean))
             logger.debug(f"Updated message: {message_id}")
         return updated > 0
 

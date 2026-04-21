@@ -319,6 +319,32 @@ async def update_context_message(request: dict) -> dict:
     return {"status": "error", "message": f"Message {message_id} not found"}
 
 
+@router.post("/api/context/messages/add")
+async def add_context_message(request: dict) -> dict:
+    """Add a message to the session.
+
+    Args:
+        request: {
+            "session_id": str (ignored),
+            "role": str,
+            "content": str
+        }
+
+    Returns:
+        {"status": "ok", "message_id": str}
+    """
+    role = request.get("role")
+    content = request.get("content")
+
+    if not role or not content:
+        return {"status": "error", "message": "role and content are required"}
+
+    store = await get_message_store()
+    msg_id = await store.add_message(role=role, content=content)
+
+    return {"status": "ok", "message_id": msg_id}
+
+
 @router.post("/api/chat/clear")
 async def clear_chat() -> dict:
     """Clear all messages (for /new command)"""
