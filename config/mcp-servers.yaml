@@ -162,6 +162,7 @@ session-manager:
   preload: false  # 按需启动，不预加载
   tools:
     get_messages: {visibility: hidden}
+    add_message: {visibility: hidden}
     delete_messages: {visibility: hidden}
 
 # Browser Server - Browser automation using Playwright
