@@ -176,6 +176,8 @@ browser-server:
   preload: false  # 按需启动，首次使用 ~2 秒启动浏览器
   tools:
     browser_navigate: {visibility: static}
+    browser_switch_tab: {visibility: dynamic}
+    browser_close_tab: {visibility: dynamic}
     # browser_interact, browser_new_tab 默认 dynamic
 
 # Nanobot System - Built-in system tools (not a real MCP server, added programmatically)
