@@ -86,6 +86,12 @@ ipcMain.handle('kg-surprising', async (event, minShared) => {
   return apiRequest('GET', `/api/kg/surprising?min_shared=${minShared || 2}`);
 });
 
+ipcMain.handle('kg-changelog', async (event, since) => {
+  const params = new URLSearchParams({ limit: 100 });
+  if (since) params.set('since', since);
+  return apiRequest('GET', `/api/kg/changelog?${params}`);
+});
+
 // File operations
 ipcMain.handle('open-path', async (event, filePath) => {
   return shell.openPath(filePath);

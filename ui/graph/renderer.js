@@ -231,7 +231,7 @@ const graph = ForceGraph()(container)
 // Configure d3-force parameters — apply BEFORE graphData() so simulation uses correct forces from the start
 function applyForceConfig() {
   const chargeForce = graph.d3Force('charge');
-  if (chargeForce) chargeForce.strength(-2);
+  if (chargeForce) chargeForce.strength(-2.5);
   const linkForce = graph.d3Force('link');
   if (linkForce) linkForce.distance(30).strength(0.8);
 }
@@ -272,6 +272,112 @@ async function loadGraphSnapshot() {
 }
 
 loadGraphSnapshot();
+
+// ===== Real-time Sync (1s polling) =====
+let syncSince = null; // timestamp of last seen change
+let syncTimer = null;
+
+function startSync() {
+  if (syncTimer) return;
+  syncTimer = setInterval(pollChangelog, 1000);
+}
+
+function stopSync() {
+  if (syncTimer) {
+    clearInterval(syncTimer);
+    syncTimer = null;
+  }
+}
+
+async function pollChangelog() {
+  try {
+    const result = await window.electronAPI.kgChangelog(syncSince);
+    const changes = result.changes || [];
+    if (changes.length === 0) return;
+
+    // Track latest timestamp for next poll
+    const latestTs = changes.reduce((max, c) => {
+      return (!max || c.timestamp > max) ? c.timestamp : max;
+    }, null);
+    if (latestTs) syncSince = latestTs;
+
+    // Merge incremental changes into currentData
+    let changed = false;
+    const existingIds = new Set(currentData.nodes.map(n => n.id));
+
+    changes.forEach(change => {
+      if (change.type === 'entity_created' && change.data) {
+        const id = change.data.id;
+        if (!existingIds.has(id)) {
+          currentData.nodes.push({
+            id: id,
+            label: change.data.name || id,
+            name: change.data.name || id,
+            nodeType: 'Entity',
+            entityType: change.data.type || 'other',
+            description: change.data.description || '',
+          });
+          existingIds.add(id);
+          changed = true;
+        }
+      } else if (change.type === 'document_created' && change.data) {
+        const id = change.data.uri || change.data.id;
+        if (!existingIds.has(id)) {
+          currentData.nodes.push({
+            id: id,
+            label: change.data.title || id,
+            name: change.data.title || id,
+            nodeType: 'Document',
+            source: change.data.source || 'document',
+            uri: change.data.uri || '',
+          });
+          existingIds.add(id);
+          changed = true;
+        }
+      } else if (change.type === 'edge_created' && change.data) {
+        const src = change.data.source;
+        const tgt = change.data.target;
+        if (src && tgt && existingIds.has(src) && existingIds.has(tgt)) {
+          const edgeExists = currentData.edges.some(
+            e => e.source === src && e.target === tgt && e.relation === (change.data.relation || '')
+          );
+          if (!edgeExists) {
+            currentData.edges.push({
+              source: src,
+              target: tgt,
+              relation: change.data.relation || '',
+              confidence: change.data.confidence || 0.5,
+              edgeType: change.data.edge_type || 'RELATED_TO',
+            });
+            changed = true;
+          }
+        }
+      }
+    });
+
+    if (changed) {
+      buildEdgeCountCache();
+      applyForceConfig();
+      graph.graphData(buildGraphData());
+      updateStats();
+    }
+  } catch (err) {
+    // Silently ignore — next poll will retry
+  }
+}
+
+// Start sync after initial load succeeds
+// (syncSince is set to current time so we only get future changes)
+setTimeout(() => {
+  syncSince = new Date().toISOString();
+  startSync();
+}, 2000);
+
+// Stop sync when page is hidden / window closed
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) stopSync();
+  else startSync();
+});
 
 // ===== Update Stats =====
 const updateStats = () => {

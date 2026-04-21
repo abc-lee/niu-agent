@@ -15,4 +15,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // File operations
   openPath: (path) => ipcRenderer.invoke('open-path', path),
   showItemInFolder: (path) => ipcRenderer.invoke('show-item-in-folder', path),
+  // Real-time sync
+  kgChangelog: (since) => ipcRenderer.invoke('kg-changelog', since),
 });
