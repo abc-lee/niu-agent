@@ -63,7 +63,7 @@ TOOL_SCHEMAS = {
     },
     "update_message": {
         "name": "update_message",
-        "description": "Update content of an existing message by index. Used by context-manager to rewrite L0 summaries in-place during compression.",
+        "description": "Update content of an existing message by ID. Used by context-manager to rewrite L0 summaries in-place during compression.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -71,21 +71,21 @@ TOOL_SCHEMAS = {
                     "type": "string",
                     "description": "Session ID",
                 },
-                "message_index": {
-                    "type": "integer",
-                    "description": "Index of the message to update (0-based, from get_messages)",
+                "message_id": {
+                    "type": "string",
+                    "description": "ID of the message to update (from get_messages response)",
                 },
                 "content": {
                     "type": "string",
                     "description": "New content for the message",
                 },
             },
-            "required": ["session_id", "message_index", "content"],
+            "required": ["session_id", "message_id", "content"],
         },
     },
     "delete_messages": {
         "name": "delete_messages",
-        "description": "Delete messages from a session by indices. Returns deleted count and freed tokens.",
+        "description": "Delete messages from a session by IDs. Returns deleted count and freed tokens.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -93,17 +93,17 @@ TOOL_SCHEMAS = {
                     "type": "string",
                     "description": "Session ID",
                 },
-                "message_indices": {
+                "message_ids": {
                     "type": "array",
-                    "items": {"type": "integer"},
-                    "description": "List of message indices to delete (0-based)",
+                    "items": {"type": "string"},
+                    "description": "List of message IDs to delete (from get_messages response)",
                 },
                 "reason": {
                     "type": "string",
                     "description": "Reason for deletion (optional)",
                 },
             },
-            "required": ["session_id", "message_indices"],
+            "required": ["session_id", "message_ids"],
         },
     },
 }
@@ -201,7 +201,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="update_message",
-            description="Update content of an existing message by index. Used by context-manager to rewrite L0 summaries in-place during compression.",
+            description="Update content of an existing message by ID. Used by context-manager to rewrite L0 summaries in-place during compression.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -209,21 +209,21 @@ async def list_tools() -> list[Tool]:
                         "type": "string",
                         "description": "Session ID",
                     },
-                    "message_index": {
-                        "type": "integer",
-                        "description": "Index of the message to update (0-based, from get_messages)",
+                    "message_id": {
+                        "type": "string",
+                        "description": "ID of the message to update (from get_messages response)",
                     },
                     "content": {
                         "type": "string",
                         "description": "New content for the message",
                     },
                 },
-                "required": ["session_id", "message_index", "content"],
+                "required": ["session_id", "message_id", "content"],
             },
         ),
         Tool(
             name="delete_messages",
-            description="Delete messages from a session by indices. Returns deleted count and freed tokens.",
+            description="Delete messages from a session by IDs. Returns deleted count and freed tokens.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -231,17 +231,17 @@ async def list_tools() -> list[Tool]:
                         "type": "string",
                         "description": "Session ID",
                     },
-                    "message_indices": {
+                    "message_ids": {
                         "type": "array",
-                        "items": {"type": "integer"},
-                        "description": "List of message indices to delete (0-based)",
+                        "items": {"type": "string"},
+                        "description": "List of message IDs to delete (from get_messages response)",
                     },
                     "reason": {
                         "type": "string",
                         "description": "Reason for deletion (optional)",
                     },
                 },
-                "required": ["session_id", "message_indices"],
+                "required": ["session_id", "message_ids"],
             },
         ),
     ]
@@ -279,6 +279,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
 
             formatted.append(
                 {
+                    "id": msg.get("id", ""),
                     "idx": i,
                     "tokens": tokens,
                     "role": msg.get("role", "unknown"),
@@ -319,23 +320,23 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
 
     elif name == "update_message":
         session_id = arguments.get("session_id")
-        message_index = arguments.get("message_index")
+        message_id = arguments.get("message_id")
         content = arguments.get("content")
 
         if not session_id:
             return [TextContent(type="text", text="Error: session_id is required")]
-        if message_index is None:
-            return [TextContent(type="text", text="Error: message_index is required")]
+        if not message_id:
+            return [TextContent(type="text", text="Error: message_id is required")]
         if not content:
             return [TextContent(type="text", text="Error: content is required")]
 
-        # Call main API to update message
+        # Call main API to update message by ID
         result = call_api(
             "POST",
             "/api/context/messages/update",
             {
                 "session_id": session_id,
-                "message_index": message_index,
+                "message_id": message_id,
                 "content": content,
             },
         )
@@ -351,21 +352,21 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
 
     elif name == "delete_messages":
         session_id = arguments.get("session_id")
-        message_indices = arguments.get("message_indices", [])
+        message_ids = arguments.get("message_ids", [])
         reason = arguments.get("reason", "Context compression")
 
         if not session_id:
             return [TextContent(type="text", text="Error: session_id is required")]
-        if not message_indices:
-            return [TextContent(type="text", text="Error: message_indices is required")]
+        if not message_ids:
+            return [TextContent(type="text", text="Error: message_ids is required")]
 
-        # Call main API to delete messages
+        # Call main API to delete messages by IDs
         result = call_api(
             "POST",
             "/api/context/messages/delete",
             {
                 "session_id": session_id,
-                "message_indices": message_indices,
+                "message_ids": message_ids,
                 "reason": reason,
             },
         )

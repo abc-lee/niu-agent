@@ -243,12 +243,12 @@ async def get_context_messages(
 
 @router.post("/api/context/messages/delete")
 async def delete_context_messages(request: dict) -> dict:
-    """Delete messages by indices
+    """Delete messages by IDs
 
     Args:
         request: {
             "session_id": str (ignored),
-            "message_indices": [int],
+            "message_ids": [str],
             "reason": str (optional)
         }
 
@@ -258,80 +258,65 @@ async def delete_context_messages(request: dict) -> dict:
             "freed_tokens": int
         }
     """
-    message_indices = request.get("message_indices", [])
+    message_ids = request.get("message_ids", [])
     reason = request.get("reason", "Context compression")
 
-    if not message_indices:
+    if not message_ids:
         return {"deleted_count": 0, "freed_tokens": 0}
 
-    logger.info(f"[Context] Deleting {len(message_indices)} messages, reason: {reason}")
+    logger.info(f"[Context] Deleting {len(message_ids)} messages, reason: {reason}")
 
-    # Get message store
     store = await get_message_store()
 
-    # Get all messages to calculate freed tokens and get IDs
-    all_messages = await store.get_messages(limit=1000)
-
-    # Calculate freed tokens and collect IDs to delete
+    # Estimate freed tokens before deleting
     freed_tokens = 0
-    message_ids = []
-    for idx in message_indices:
-        if 0 <= idx < len(all_messages):
-            msg = all_messages[idx]
-            # Use litellm to calculate tokens
+    all_messages = await store.get_messages(limit=1000)
+    id_set = set(message_ids)
+    for msg in all_messages:
+        if msg.id in id_set:
             try:
                 from litellm import token_counter
                 t = token_counter(model="gpt-4o", messages=[{"role": msg.role, "content": msg.content or ""}])
             except Exception:
                 t = max(1, len(msg.content or "") // 2) + 4
             freed_tokens += t
-            message_ids.append(msg.id)
 
-    # Delete messages by IDs
-    if message_ids:
-        deleted_count = await store.delete_messages_by_ids(message_ids)
-        logger.info(f"[Context] Deleted {deleted_count} messages, freed {freed_tokens} tokens")
-        return {
-            "deleted_count": deleted_count,
-            "freed_tokens": freed_tokens,
-        }
+    deleted_count = await store.delete_messages_by_ids(message_ids)
+    logger.info(f"[Context] Deleted {deleted_count} messages, freed {freed_tokens} tokens")
 
-    return {"deleted_count": 0, "freed_tokens": 0}
+    return {
+        "deleted_count": deleted_count,
+        "freed_tokens": freed_tokens,
+    }
 
 
 @router.post("/api/context/messages/update")
 async def update_context_message(request: dict) -> dict:
-    """Update message content by index.
+    """Update message content by ID.
 
     Args:
         request: {
             "session_id": str (ignored),
-            "message_index": int,
+            "message_id": str,
             "content": str
         }
 
     Returns:
         {"status": "ok"} or {"status": "error", "message": str}
     """
-    message_index = request.get("message_index")
+    message_id = request.get("message_id")
     content = request.get("content")
 
-    if message_index is None or content is None:
-        return {"status": "error", "message": "message_index and content are required"}
+    if not message_id or not content:
+        return {"status": "error", "message": "message_id and content are required"}
 
     store = await get_message_store()
-    all_messages = await store.get_messages(limit=1000)
-
-    if not (0 <= message_index < len(all_messages)):
-        return {"status": "error", "message": f"Index {message_index} out of range ({len(all_messages)} messages)"}
-
-    msg = all_messages[message_index]
-    updated = await store.update_message(msg.id, content)
+    updated = await store.update_message(message_id, content)
 
     if updated:
-        logger.info(f"[Context] Updated message idx={message_index} id={msg.id}")
+        logger.info(f"[Context] Updated message id={message_id}")
         return {"status": "ok"}
-    return {"status": "error", "message": "Message not found"}
+    return {"status": "error", "message": f"Message {message_id} not found"}
 
 
 @router.post("/api/chat/clear")
