@@ -32,12 +32,5 @@
     "parameters": {"type": "object", "properties": {
       "path": {"type": "string", "description": "File path"},
       "mode": {"type": "string", "enum": ["overwrite", "append", "prepend"], "description": "Write mode", "default": "append"}}}
-  }},
-  {"type": "function", "function": {
-    "name": "ask_user",
-    "description": "Interrupt task to ask user when needing decisions, extra info, or facing unresolvable blockers",
-    "parameters": {"type": "object", "properties": {
-      "question": {"type": "string", "description": "Question for the user"},
-      "candidates": {"type": "array", "items": {"type": "string"}, "description": "Optional quick-select choices for the user"}}}
   }}
 ]

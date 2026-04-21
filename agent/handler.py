@@ -238,15 +238,6 @@ def code_run(code: str, code_type: str = "python", timeout: int = 60, cwd: str =
             os.remove(tmp_path)
 
 
-def ask_user(question: str, candidates: list = None) -> dict:
-    """向用户提问"""
-    return {
-        "status": "INTERRUPT",
-        "intent": "HUMAN_INTERVENTION",
-        "data": {"question": question, "candidates": candidates or []},
-    }
-
-
 class NiuHandler(BaseHandler):
     """
     Niu Agent 工具处理器
@@ -254,7 +245,6 @@ class NiuHandler(BaseHandler):
     继承 GenericAgent 的 BaseHandler，实现：
     - 文件操作（read, write, patch）
     - 代码执行（code_run）
-    - 用户交互（ask_user）
     - MCP 工具调用（动态加载）
     """
 
@@ -583,16 +573,6 @@ class NiuHandler(BaseHandler):
 
         result = code_run(code, code_type=code_type, timeout=timeout, cwd=self.cwd)
         return StepOutcome(result, next_prompt=self._get_anchor_prompt())
-
-    # ========== 用户交互 ==========
-
-    def do_ask_user(self, args: dict, response) -> StepOutcome:
-        """向用户提问"""
-        question = args.get("question", "")
-        candidates = args.get("candidates")
-
-        result = ask_user(question, candidates)
-        return StepOutcome(result, next_prompt=None, should_exit=True)
 
     # ========== 无工具调用 ==========
 
