@@ -4,18 +4,62 @@ Niu Embedding Module - Internal
 Core embedding functions for vector search, consolidated into niu_api.
 No HTTP overhead - direct function calls.
 
-Original: mcp-servers/embedding-service/src/niu_embedding_service/__init__.py
+Supports pluggable embedding models via ~/.niu/preferences.json lightrag config.
 """
 
+import json
 import os
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 from loguru import logger
 
+# ============== Model Config ==============
+
+# Supported models: (local_dir_name, huggingface_id, default_dim)
+SUPPORTED_MODELS = {
+    "bge-m3": {
+        "local_dir": "bge-m3",
+        "hf_id": "BAAI/bge-m3",
+        "dim": 1024,
+        "desc": "BAAI/bge-m3 multilingual (1024d, recommended for LightRAG)",
+    },
+    "minilm-l12": {
+        "local_dir": "paraphrase-multilingual-MiniLM-L12-v2",
+        "hf_id": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+        "dim": 384,
+        "desc": "paraphrase-multilingual-MiniLM-L12-v2 (384d, legacy default)",
+    },
+}
+
+DEFAULT_MODEL = "minilm-l12"  # Keep backward compat until LightRAG is active
+
+
+def _get_embedding_model_name() -> str:
+    """Read embedding model name from preferences.json, fallback to default."""
+    try:
+        prefs_path = Path.home() / ".niu" / "preferences.json"
+        if prefs_path.exists():
+            prefs = json.loads(prefs_path.read_text(encoding="utf-8"))
+            model_name = prefs.get("lightrag", {}).get("embedding_model", "")
+            if model_name and model_name in SUPPORTED_MODELS:
+                return model_name
+    except Exception as e:
+        logger.debug(f"Failed to read embedding model from preferences: {e}")
+    return DEFAULT_MODEL
+
+
+def get_embedding_dim() -> int:
+    """Get the dimension of the current embedding model."""
+    model_name = _get_embedding_model_name()
+    return SUPPORTED_MODELS[model_name]["dim"]
+
+
 # ============== Model Loading ==============
 
 _model = None
+_model_name: Optional[str] = None  # Track which model is loaded
 
 
 def get_models_dir() -> Path:
@@ -43,43 +87,49 @@ def get_device():
 
 
 def get_model():
-    """Get or load the embedding model. Local first, GPU priority."""
-    global _model
-    if _model is None:
-        try:
-            from sentence_transformers import SentenceTransformer
+    """Get or load the embedding model. Config-driven, local first, GPU priority."""
+    global _model, _model_name
 
-            models_dir = get_models_dir()
+    requested_model = _get_embedding_model_name()
 
-            # Detect device
-            device = get_device()
+    # If model already loaded and matches request, return it
+    if _model is not None and _model_name == requested_model:
+        return _model
 
-            # Prefer multilingual model (better for Chinese)
-            multilingual_model = models_dir / "paraphrase-multilingual-MiniLM-L12-v2"
-            legacy_model = models_dir / "all-MiniLM-L6-v2"
+    # If model changed, unload old one
+    if _model is not None and _model_name != requested_model:
+        logger.info(f"Switching embedding model: {_model_name} → {requested_model}")
+        _model = None
+        _model_name = None
 
-            if multilingual_model.exists():
-                logger.info(f"Loading multilingual embedding model from: {multilingual_model}")
-                _model = SentenceTransformer(str(multilingual_model))
-                logger.info("Embedding model loaded: paraphrase-multilingual-MiniLM-L12-v2")
-            elif legacy_model.exists():
-                logger.info(f"Loading legacy embedding model from: {legacy_model}")
-                _model = SentenceTransformer(str(legacy_model))
-                logger.info("Embedding model loaded: all-MiniLM-L6-v2")
-            else:
-                logger.info("No local model found, downloading multilingual model...")
-                os.environ.pop("HF_HUB_OFFLINE", None)
-                _model = SentenceTransformer("sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
-                _model.save(str(multilingual_model))
-                logger.info(f"Model saved to: {multilingual_model}")
+    try:
+        from sentence_transformers import SentenceTransformer
 
-            # Move model to target device
-            _model = _model.to(device)
-            logger.info(f"Model running on: {device.upper()}")
+        models_dir = get_models_dir()
+        model_info = SUPPORTED_MODELS[requested_model]
+        local_path = models_dir / model_info["local_dir"]
 
-        except Exception as e:
-            logger.error(f"Failed to load embedding model: {e}")
-            raise
+        # Detect device
+        device = get_device()
+
+        if local_path.exists():
+            logger.info(f"Loading embedding model from: {local_path}")
+            _model = SentenceTransformer(str(local_path))
+        else:
+            logger.info(f"No local model found at {local_path}, downloading {model_info['hf_id']}...")
+            os.environ.pop("HF_HUB_OFFLINE", None)
+            _model = SentenceTransformer(model_info["hf_id"])
+            _model.save(str(local_path))
+            logger.info(f"Model saved to: {local_path}")
+
+        # Move model to target device
+        _model = _model.to(device)
+        _model_name = requested_model
+        logger.info(f"Embedding model: {model_info['desc']} on {device.upper()}")
+
+    except Exception as e:
+        logger.error(f"Failed to load embedding model: {e}")
+        raise
 
     return _model
 
@@ -141,10 +191,69 @@ def is_ready() -> bool:
     return _model is not None
 
 
+def get_current_model_info() -> dict:
+    """Get current model info (for diagnostics / system management)."""
+    name = _model_name or _get_embedding_model_name()
+    info = SUPPORTED_MODELS.get(name, {})
+    return {
+        "name": name,
+        "dim": info.get("dim", 0),
+        "desc": info.get("desc", ""),
+        "loaded": _model is not None,
+    }
+
+
+def switch_model(new_model: str) -> dict:
+    """Switch embedding model at runtime (for system management agent).
+
+    Updates preferences.json and forces model reload on next get_model() call.
+    Returns status dict. Caller is responsible for re-indexing vectors if dim changed.
+    """
+    global _model, _model_name
+
+    if new_model not in SUPPORTED_MODELS:
+        return {
+            "status": "error",
+            "message": f"Unknown model: {new_model}. Supported: {list(SUPPORTED_MODELS.keys())}",
+        }
+
+    old_name = _model_name or _get_embedding_model_name()
+    old_dim = SUPPORTED_MODELS[old_name]["dim"]
+    new_dim = SUPPORTED_MODELS[new_model]["dim"]
+
+    # Update preferences.json
+    try:
+        prefs_path = Path.home() / ".niu" / "preferences.json"
+        prefs = {}
+        if prefs_path.exists():
+            prefs = json.loads(prefs_path.read_text(encoding="utf-8"))
+        prefs.setdefault("lightrag", {})["embedding_model"] = new_model
+        prefs_path.write_text(json.dumps(prefs, indent=2, ensure_ascii=False), encoding="utf-8")
+    except Exception as e:
+        return {"status": "error", "message": f"Failed to update preferences.json: {e}"}
+
+    # Force unload so next get_model() loads the new one
+    _model = None
+    _model_name = None
+
+    needs_reindex = old_dim != new_dim
+    return {
+        "status": "switched",
+        "old_model": old_name,
+        "new_model": new_model,
+        "old_dim": old_dim,
+        "new_dim": new_dim,
+        "needs_reindex": needs_reindex,
+        "message": f"Switched {old_name}→{new_model}. {'Re-index required (dim changed).' if needs_reindex else 'No re-index needed (same dim).'}",
+    }
+
+
 def preload():
     """Preload the model (call at startup)."""
-    logger.info("Preloading embedding model...")
+    model_name = _get_embedding_model_name()
+    dim = SUPPORTED_MODELS[model_name]["dim"]
+    logger.info(f"Preloading embedding model: {model_name} ({dim}d)...")
     model = get_model()
     # Force load weights by encoding a dummy text
     model.encode("init", convert_to_numpy=True)
-    logger.info("Embedding model ready")
+    logger.info(f"Embedding model ready: {model_name} ({dim}d)")

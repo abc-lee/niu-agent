@@ -31,6 +31,7 @@ from niu_api.injector import router as injector_router
 from niu_api.alerts_api import router as alerts_router
 from niu_api.kg_api import router as kg_router
 from niu_api.notes_api import router as notes_router
+from niu_api.llm_proxy import router as llm_proxy_router
 
 
 # Configure logging
@@ -246,6 +247,7 @@ app.include_router(injector_router)  # Injector API
 app.include_router(alerts_router)  # Alerts API
 app.include_router(kg_router)  # Knowledge Graph API
 app.include_router(notes_router)  # Notes API
+app.include_router(llm_proxy_router)  # LLM Proxy API (/llm/v1/*)
 
 
 # Mount scheduler router
