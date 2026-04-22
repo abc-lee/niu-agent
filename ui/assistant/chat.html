@@ -875,7 +875,10 @@
     });
 
     // ========== 数据库$视图刷新 ==========
+    let _refreshFromDBRunning = false;  // 防止并发调用
     async function refreshFromDB() {
+      if (_refreshFromDBRunning) return;  // 跳过并发调用
+      _refreshFromDBRunning = true;
       try {
         // 收集DOM中已有的消息ID
         const existingIds = new Set();
@@ -887,13 +890,29 @@
         const result = await window.electronAPI.getHistory(50);
         const msgs = result.messages || [];
 
+        // 只添加比DOM中已有消息更新的消息
+        // msgs 是按时间顺序排列（最旧在前），DOM 中已有的是中间某段
+        // 找到第一条在DOM中已存在的消息位置，只处理它之后的消息
+        let firstExistingIdx = -1;
+        for (let i = 0; i < msgs.length; i++) {
+          if (existingIds.has(msgs[i].id)) {
+            firstExistingIdx = i;
+            break;
+          }
+        }
+
+        // 如果没有已存在的消息，说明DOM可能被清空了，全部添加
+        // 如果有已存在的消息，只添加它之后的消息（更新的消息）
+        const startIdx = firstExistingIdx >= 0 ? firstExistingIdx : 0;
+
         let hasNew = false;
-        msgs.forEach(msg => {
+        for (let i = startIdx; i < msgs.length; i++) {
+          const msg = msgs[i];
           if (!existingIds.has(msg.id)) {
             addMessageWithId(msg.role, msg.content, msg.id);
             hasNew = true;
           }
-        });
+        }
 
         if (hasNew) {
           // 只删除已被数据库版本替换的临时用户消息
@@ -913,7 +932,8 @@
           }
           messages.scrollTop = messages.scrollHeight;
           // 只在收到 assistant 消息时才隐藏 typing（用户消息入库不应关闭 typing）
-          const hasAssistantMsg = msgs.some(msg => !existingIds.has(msg.id) && msg.role === 'assistant');
+          // 只检查新添加的消息（startIdx 之后），避免旧消息误触发
+          const hasAssistantMsg = msgs.slice(startIdx).some(msg => !existingIds.has(msg.id) && msg.role === 'assistant');
           if (hasAssistantMsg) {
             hideTyping();
           }
@@ -923,6 +943,8 @@
         }
       } catch (e) {
         console.error('[Chat] 刷新消息失败:', e);
+      } finally {
+        _refreshFromDBRunning = false;
       }
     }
 
@@ -1092,10 +1114,9 @@
       }
     });
 
-    // 窗口获得焦点时，刷新消息 + 通知 spirit
+    // 窗口获得焦点时，仅通知 spirit（不刷新消息，消息由 SSE 驱动）
     window.addEventListener('focus', async () => {
       window.electronAPI.notifyActivity();
-      refreshFromDB();
     });
 
     // 加载历史消息
