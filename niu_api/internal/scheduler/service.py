@@ -6,6 +6,7 @@ Scheduler Service Lifecycle Management
 
 import json
 import os
+import threading
 import time
 from pathlib import Path
 from typing import Optional
@@ -21,6 +22,7 @@ from .task_store import TaskStore
 
 _scheduler: Optional[Scheduler] = None
 _store: Optional[TaskStore] = None
+_init_lock = threading.Lock()
 
 
 # ============== 数据库路径 ==============
@@ -131,29 +133,30 @@ def _persist_fallback_message(user_content: str, assistant_content: str):
     使用 run_coroutine_threadsafe 在主 event loop 上执行异步 DB 操作，
     避免创建新 event loop 与 aiosqlite 的 singleton 连接冲突。
     """
+    import asyncio
+    from agent.session import get_message_store
+    from niu_api.chat import _main_loop
+
+    loop = _main_loop
+    if loop is None or loop.is_closed():
+        logger.warning("[INTERNAL SCHEDULER] Main event loop not available, cannot persist fallback message")
+        return
+
+    async def _do_persist():
+        store = await get_message_store()
+        user_msg_id = await store.add_message(role="user", content=user_content)
+        msg_id = await store.add_message(role="assistant", content=assistant_content)
+        # 通知 SSE 推送（已在主 loop 中，可直接用 async 版本）
+        from niu_api.chat import notify_new_message
+        await notify_new_message(user_msg_id, "user", user_content)
+        await notify_new_message(msg_id, "assistant", assistant_content)
+        logger.info("[INTERNAL SCHEDULER] Fallback message persisted to DB")
+
     try:
-        import asyncio
-        from agent.session import get_message_store
-        from niu_api.chat import _main_loop
-
-        loop = _main_loop
-        if loop is None or loop.is_closed():
-            logger.warning("[INTERNAL SCHEDULER] Main event loop not available, cannot persist fallback message")
-            return
-
-        async def _do_persist():
-            store = await get_message_store()
-            user_msg_id = await store.add_message(role="user", content=user_content)
-            msg_id = await store.add_message(role="assistant", content=assistant_content)
-            # 通知 SSE 推送（已在主 loop 中，可直接用 async 版本）
-            from niu_api.chat import notify_new_message
-            await notify_new_message(user_msg_id, "user", user_content)
-            await notify_new_message(msg_id, "assistant", assistant_content)
-            logger.info("[INTERNAL SCHEDULER] Fallback message persisted to DB")
-
         future = asyncio.run_coroutine_threadsafe(_do_persist(), loop)
-        # 等待完成（最多 10 秒），避免调度器线程无限阻塞
         future.result(timeout=10)
+    except asyncio.TimeoutError:
+        logger.warning("[INTERNAL SCHEDULER] Fallback persistence timed out")
     except Exception as e:
         logger.error(f"[INTERNAL SCHEDULER] Failed to persist fallback message: {e}")
 
@@ -164,35 +167,45 @@ def start_scheduler():
     """启动调度器（延迟启动，等待主服务就绪）"""
     global _scheduler, _store
 
-    db_path = get_db_path()
-    logger.info(f"[INTERNAL SCHEDULER] Initializing with database: {db_path}")
+    with _init_lock:
+        if _scheduler is not None:
+            logger.warning("[INTERNAL SCHEDULER] Already started")
+            return
 
-    _store = TaskStore(db_path)
-    _scheduler = Scheduler(db_path, trigger_callback)
-    # 延迟启动，等待 FastAPI 完全就绪后再开始检查任务
-    _scheduler.start_delayed(delay_seconds=10)
+        db_path = get_db_path()
+        logger.info(f"[INTERNAL SCHEDULER] Initializing with database: {db_path}")
 
-    logger.info("[INTERNAL SCHEDULER] Scheduled to start (delayed 10s)")
+        _store = TaskStore(db_path)
+        _scheduler = Scheduler(db_path, trigger_callback, store=_store)
+        # 延迟启动，等待 FastAPI 完全就绪后再开始检查任务
+        _scheduler.start_delayed(delay_seconds=10)
+
+        logger.info("[INTERNAL SCHEDULER] Scheduled to start (delayed 10s)")
 
 
 def stop_scheduler():
     """停止调度器"""
-    global _scheduler
+    global _scheduler, _store
 
-    if _scheduler:
-        _scheduler.stop()
-        logger.info("[INTERNAL SCHEDULER] Stopped")
+    with _init_lock:
+        if _scheduler:
+            _scheduler.stop()
+            _scheduler = None
+            _store = None
+            logger.info("[INTERNAL SCHEDULER] Stopped")
 
 
 def get_store() -> TaskStore:
     """获取 TaskStore 实例"""
-    if _store is None:
-        raise RuntimeError("Scheduler not initialized")
-    return _store
+    with _init_lock:
+        if _store is None:
+            raise RuntimeError("Scheduler not initialized")
+        return _store
 
 
 def get_scheduler() -> Scheduler:
     """获取 Scheduler 实例"""
-    if _scheduler is None:
-        raise RuntimeError("Scheduler not initialized")
-    return _scheduler
+    with _init_lock:
+        if _scheduler is None:
+            raise RuntimeError("Scheduler not initialized")
+        return _scheduler
