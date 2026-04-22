@@ -246,6 +246,7 @@ class LiteLLMSession(BaseSession):
         self,
         messages: List,
         tools: Optional[List] = None,
+        response_format: Optional[Dict[str, Any]] = None,
     ) -> Generator[str, None, MockResponse]:
         """
         原生 LiteLLM 调用（Generator版本）。
@@ -275,6 +276,8 @@ class LiteLLMSession(BaseSession):
             request_params["proxy"] = self.proxies
         if self.temperature is not None:
             request_params["temperature"] = self.temperature
+        if response_format is not None:
+            request_params["response_format"] = response_format
 
         # 记录完整请求（全量，包含 messages）
         _write_interaction_log({
