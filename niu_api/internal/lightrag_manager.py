@@ -63,32 +63,40 @@ def _get_embedding_dim_for_lightrag() -> int:
 
 _loop: Optional[asyncio.AbstractEventLoop] = None
 _loop_thread: Optional[threading.Thread] = None
+_loop_ready = threading.Event()
+_loop_lock = threading.Lock()
 
 
 def _ensure_loop() -> asyncio.AbstractEventLoop:
-    """Ensure the daemon event loop is running."""
+    """Ensure the daemon event loop is running (thread-safe)."""
     global _loop, _loop_thread
 
+    # Fast path: already running
     if _loop is not None and _loop.is_running():
         return _loop
 
-    def _run_loop():
-        global _loop
-        _loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(_loop)
-        _loop.run_forever()
-
-    _loop_thread = threading.Thread(target=_run_loop, daemon=True, name="lightrag-loop")
-    _loop_thread.start()
-
-    # Wait for loop to be ready
-    import time
-    for _ in range(50):  # 5 seconds max
+    with _loop_lock:
+        # Double-check after acquiring lock
         if _loop is not None and _loop.is_running():
             return _loop
-        time.sleep(0.1)
 
-    raise RuntimeError("LightRAG event loop failed to start")
+        _loop_ready.clear()
+
+        def _run_loop():
+            global _loop
+            _loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(_loop)
+            _loop_ready.set()  # Signal that _loop is assigned
+            _loop.run_forever()
+
+        _loop_thread = threading.Thread(target=_run_loop, daemon=True, name="lightrag-loop")
+        _loop_thread.start()
+
+        # Wait for loop to be ready (Event is set after _loop assignment)
+        if not _loop_ready.wait(timeout=5.0):
+            raise RuntimeError("LightRAG event loop failed to start")
+
+        return _loop
 
 
 def call_async(coro):
@@ -99,7 +107,11 @@ def call_async(coro):
     """
     loop = _ensure_loop()
     future = asyncio.run_coroutine_threadsafe(coro, loop)
-    return future.result(timeout=120)  # 2 minute timeout for LLM calls
+    try:
+        return future.result(timeout=120)  # 2 minute timeout for LLM calls
+    except Exception:
+        future.cancel()
+        raise
 
 
 # ============== LightRAG Instance ==============

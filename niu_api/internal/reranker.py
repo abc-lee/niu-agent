@@ -10,6 +10,8 @@ than bi-encoder embedding similarity).
 """
 
 import json
+import os
+import tempfile
 from pathlib import Path
 from typing import List, Optional
 
@@ -204,14 +206,14 @@ def switch_reranker(new_model: str) -> dict:
 
     old_name = _reranker_name or _get_reranker_model_name()
 
-    # Update preferences.json
+    # Update preferences.json (atomic write to prevent corruption)
     try:
         prefs_path = Path.home() / ".niu" / "preferences.json"
         prefs = {}
         if prefs_path.exists():
             prefs = json.loads(prefs_path.read_text(encoding="utf-8"))
         prefs.setdefault("lightrag", {})["reranker_model"] = new_model
-        prefs_path.write_text(json.dumps(prefs, indent=2, ensure_ascii=False), encoding="utf-8")
+        _atomic_write_json(prefs_path, prefs)
     except Exception as e:
         return {"status": "error", "message": f"Failed to update preferences.json: {e}"}
 
@@ -225,3 +227,26 @@ def switch_reranker(new_model: str) -> dict:
         "new_model": new_model,
         "message": f"Switched reranker: {old_name} → {new_model}. Will load on next use.",
     }
+
+
+def _atomic_write_json(path: Path, data: dict) -> None:
+    """Write JSON file atomically (write to temp, then rename).
+
+    Prevents corruption if the process crashes mid-write.
+    """
+    content = json.dumps(data, indent=2, ensure_ascii=False)
+    fd, tmp_path = tempfile.mkstemp(
+        suffix=".tmp", prefix=path.name, dir=str(path.parent)
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+        if path.exists():
+            path.unlink()
+        os.replace(tmp_path, str(path))
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
