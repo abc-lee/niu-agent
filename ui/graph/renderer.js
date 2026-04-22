@@ -172,7 +172,7 @@ const graph = ForceGraph()(container)
   .nodeCanvasObject((node, ctx, globalScale) => {
     const size = Math.max(2, node.val || 4);
     const isSelected = node.id === currentSelectedNode;
-    const isFlashing = node.id === flashNodeId;
+    const isFlashing = flashNodeIds.has(node.id);
 
     // Flash glow (larger pulsing ring)
     if (isFlashing) {
@@ -479,14 +479,14 @@ function showTooltip(node) {
   tooltip.style.top = (coords.y - 10) + 'px';
 }
 
-// ===== Flash a node (blink effect) =====
-let flashNodeId = null;
+// ===== Flash nodes (blink effect) =====
+let flashNodeIds = new Set(); // currently flashing node IDs
 let flashTimer = null;
 
-function flashNode(nodeId) {
+function flashNodes(nodeIds) {
   // Clear previous flash
   if (flashTimer) clearInterval(flashTimer);
-  flashNodeId = nodeId;
+  flashNodeIds = new Set(nodeIds);
 
   let count = 0;
   const maxBlinks = 6; // 3 full blinks (on/off)
@@ -495,17 +495,21 @@ function flashNode(nodeId) {
     if (count > maxBlinks) {
       clearInterval(flashTimer);
       flashTimer = null;
-      flashNodeId = null;
+      flashNodeIds = new Set();
       // Final redraw to clear
       const c = graph.centerAt();
       graph.centerAt(c.x, c.y);
       return;
     }
     // Toggle: even = show flash, odd = hide flash
-    flashNodeId = (count % 2 === 1) ? nodeId : null;
+    flashNodeIds = (count % 2 === 1) ? new Set(nodeIds) : new Set();
     const c = graph.centerAt();
     graph.centerAt(c.x, c.y);
   }, 200);
+}
+
+function flashNode(nodeId) {
+  flashNodes([nodeId]);
 }
 
 function hideTooltip() {
@@ -725,6 +729,7 @@ searchInput.addEventListener('input', (e) => {
 
   if (!query) {
     currentMatchIds = null;
+    if (flashTimer) { clearInterval(flashTimer); flashTimer = null; flashNodeIds = new Set(); }
     reLayout();
     return;
   }
@@ -739,6 +744,12 @@ searchInput.addEventListener('input', (e) => {
   });
 
   reLayout();
+
+  // 搜索匹配后，所有选中节点同时闪3下（延迟等待布局稳定）
+  if (currentMatchIds.size > 0) {
+    const matchIds = Array.from(currentMatchIds);
+    setTimeout(() => flashNodes(matchIds), 600);
+  }
 });
 
 // ===== Handle Window Resize =====
