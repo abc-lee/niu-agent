@@ -9,6 +9,7 @@ Supports pluggable embedding models via ~/.niu/preferences.json lightrag config.
 
 import json
 import os
+import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -221,14 +222,14 @@ def switch_model(new_model: str) -> dict:
     old_dim = SUPPORTED_MODELS[old_name]["dim"]
     new_dim = SUPPORTED_MODELS[new_model]["dim"]
 
-    # Update preferences.json
+    # Update preferences.json (atomic write to prevent corruption)
     try:
         prefs_path = Path.home() / ".niu" / "preferences.json"
         prefs = {}
         if prefs_path.exists():
             prefs = json.loads(prefs_path.read_text(encoding="utf-8"))
         prefs.setdefault("lightrag", {})["embedding_model"] = new_model
-        prefs_path.write_text(json.dumps(prefs, indent=2, ensure_ascii=False), encoding="utf-8")
+        _atomic_write_json(prefs_path, prefs)
     except Exception as e:
         return {"status": "error", "message": f"Failed to update preferences.json: {e}"}
 
@@ -257,3 +258,28 @@ def preload():
     # Force load weights by encoding a dummy text
     model.encode("init", convert_to_numpy=True)
     logger.info(f"Embedding model ready: {model_name} ({dim}d)")
+
+
+def _atomic_write_json(path: Path, data: dict) -> None:
+    """Write JSON file atomically (write to temp, then rename).
+
+    Prevents corruption if the process crashes mid-write.
+    """
+    content = json.dumps(data, indent=2, ensure_ascii=False)
+    fd, tmp_path = tempfile.mkstemp(
+        suffix=".tmp", prefix=path.name, dir=str(path.parent)
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+        # On Windows, need to remove target first (os.replace fails if target exists)
+        if path.exists():
+            path.unlink()
+        os.replace(tmp_path, str(path))
+    except Exception:
+        # Clean up temp file on failure
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
