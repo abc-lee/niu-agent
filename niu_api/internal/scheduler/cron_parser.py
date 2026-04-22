@@ -19,24 +19,43 @@ class CronParser:
         self.hour = self._parse_field(parts[1], 0, 23)
         self.day_of_month = self._parse_field(parts[2], 1, 31)
         self.month = self._parse_field(parts[3], 1, 12)
-        self.day_of_week = self._parse_field(parts[4], 0, 6)
+        # 标准 cron 中 7 等同于 0（周日），映射后再过滤
+        dow_raw = self._parse_field(parts[4], 0, 7)
+        self.day_of_week = sorted(set(0 if d == 7 else d for d in dow_raw))
+
+        # 记录原始字段是否为通配符 *（用于 _matches OR 逻辑判断）
+        self._dom_wildcard = parts[2] == "*"
+        self._dow_wildcard = parts[4] == "*"
 
     def _parse_field(self, field: str, min_val: int, max_val: int) -> List[int]:
-        """解析单个字段"""
-        if field == '*':
-            return list(range(min_val, max_val + 1))
+        """解析单个 cron 字段（支持 *, */N, N, N-M, N-M/S 格式）"""
+        values = set()
 
-        # 处理范围，如 "1-5"
-        if '-' in field:
-            start, end = field.split('-')
-            return list(range(int(start), int(end) + 1))
+        for part in field.split(","):
+            if "/" in part:
+                # 步进格式：*/N 或 N-M/S
+                range_part, step_str = part.split("/", 1)
+                step = int(step_str)
+                if range_part == "*":
+                    start, end = min_val, max_val
+                elif "-" in range_part:
+                    start_str, end_str = range_part.split("-", 1)
+                    start, end = int(start_str), int(end_str)
+                else:
+                    start, end = int(range_part), max_val
+                for i in range(start, end + 1, step):
+                    values.add(i)
+            elif "-" in part:
+                start_str, end_str = part.split("-", 1)
+                for i in range(int(start_str), int(end_str) + 1):
+                    values.add(i)
+            elif part == "*":
+                for i in range(min_val, max_val + 1):
+                    values.add(i)
+            else:
+                values.add(int(part))
 
-        # 处理列表，如 "1,3,5"
-        if ',' in field:
-            return [int(x) for x in field.split(',')]
-
-        # 处理单个值
-        return [int(field)]
+        return sorted(v for v in values if min_val <= v <= max_val)
 
     def get_next(self, current: datetime) -> Optional[datetime]:
         """
@@ -60,11 +79,22 @@ class CronParser:
         return None
 
     def _matches(self, dt: datetime) -> bool:
-        """检查时间是否匹配 cron 表达式"""
-        return (
-            dt.minute in self.minute and
-            dt.hour in self.hour and
-            dt.day in self.day_of_month and
-            dt.month in self.month and
-            dt.weekday() in self.day_of_week
-        )
+        """检查时间是否匹配 cron 表达式
+
+        标准 cron 语义：当 day_of_month 和 day_of_week 都非 * 时，任一匹配即可（OR 逻辑）
+        注意：cron 的 day_of_week 使用 Sunday=0 约定，Python weekday() 使用 Monday=0，
+        需要转换：(weekday() + 1) % 7 将 Monday=0 → 1, Sunday=6 → 0
+        """
+        time_match = dt.minute in self.minute and dt.hour in self.hour and dt.month in self.month
+        # 将 Python weekday() 转换为 cron 约定（Sunday=0）
+        cron_dow = (dt.weekday() + 1) % 7
+
+        if self._dom_wildcard and self._dow_wildcard:
+            return time_match
+        elif self._dom_wildcard:
+            return time_match and cron_dow in self.day_of_week
+        elif self._dow_wildcard:
+            return time_match and dt.day in self.day_of_month
+        else:
+            # 两者都指定：OR 逻辑（标准 cron 行为）
+            return time_match and (dt.day in self.day_of_month or cron_dow in self.day_of_week)
