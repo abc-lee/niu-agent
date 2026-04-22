@@ -33,11 +33,11 @@
 
 | # | 子工程 | 方案文档 | 状态 | 涉及场景 |
 |---|--------|---------|------|---------|
-| 01 | 数据注入与检索策略 | [01-data-injection-retrieval.md](01-data-injection-retrieval.md) | ✅ 方案完成，已讨论确认 | V1,V3,V4,V5,V6,V7 |
+| 01 | 数据注入与检索策略 | [01-data-injection-retrieval.md](01-data-injection-retrieval.md) | 🔄 实施中（TDD RED完成） | V1,V3,V4,V5,V6,V7 |
 | 02 | 文档入库与实体提取流水线 | [02-document-entity-pipeline.md](02-document-entity-pipeline.md) | ✅ 方案完成，已讨论确认 | K1,K2,K3,K4,K5 |
 | 03 | 记忆脑图设计 | [03-memory-brain-graph.md](03-memory-brain-graph.md) | ✅ 方案完成，已讨论确认 | C1 |
 | 04 | MCP工具接口重设计 | [04-mcp-tool-interface.md](04-mcp-tool-interface.md) | ✅ 方案完成，已讨论确认 | K6,K8 |
-| 05 | LLM代理+Embedding+Reranker | [05-llm-proxy-embedding.md](05-llm-proxy-embedding.md) | ✅ 方案完成，已讨论确认 | 基础设施 |
+| 05 | LLM代理+Embedding+Reranker | [05-llm-proxy-embedding.md](05-llm-proxy-embedding.md) | ✅ 实施完成，91测试通过 | 基础设施 |
 
 ## 场景迁移状态
 
@@ -75,4 +75,8 @@
 - [x] 讨论子工程 03 方案 ✅
 - [x] 讨论子工程 04 方案 ✅
 - [x] 讨论子工程 05 方案 ✅
-- [ ] 确认后开始实施
+- [x] 实施子工程 05（LLM代理+Embedding+Reranker）✅ 91测试通过
+- [ ] 实施子工程 01（数据注入与检索策略）🔄 TDD RED完成
+- [ ] 实施子工程 02（文档入库与实体提取流水线）
+- [ ] 实施子工程 03（记忆脑图设计）
+- [ ] 实施子工程 04（MCP工具接口重设计）
