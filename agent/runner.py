@@ -662,8 +662,8 @@ class NiuRunner:
         # ============== Brain Graph Memory Recall ==============
         brain_memories_text = ""
         try:
-            from niu_api.internal.brain_graph import BrainGraph, format_memories_for_prompt
-            bg = BrainGraph()
+            from niu_api.internal.brain_graph import get_brain_graph, format_memories_for_prompt
+            bg = get_brain_graph()
             brain_memories = bg.recall_memories(context, top_k=10, min_weight=0.3)
             if brain_memories:
                 brain_memories_text = format_memories_for_prompt(brain_memories)

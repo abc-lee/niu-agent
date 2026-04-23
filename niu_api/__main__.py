@@ -146,8 +146,8 @@ async def lifespan(app: FastAPI):
 
     # 8.1. Initialize brain:Niu self entity
     try:
-        from niu_api.internal.brain_graph import BrainGraph
-        brain = BrainGraph()
+        from niu_api.internal.brain_graph import get_brain_graph
+        brain = get_brain_graph()
         brain.ensure_niu_entity()
         logger.info("Brain graph initialized (brain:Niu entity ensured)")
     except Exception as e:
