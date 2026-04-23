@@ -415,7 +415,7 @@ def lightrag_search_entities(
     """Search for entities of a specific type."""
     try:
         adapter = _get_adapter()
-        result = adapter.query_data(query, mode="local", top_k=top_k)
+        result = adapter.query_data(query=query, mode="local", top_k=top_k)
         if result is None:
             return {"status": "ok", "data": []}
         if entity_type:
@@ -439,16 +439,17 @@ def lightrag_get_graph(
     limit: int = 200,
 ):
     """Get a subgraph from the knowledge graph."""
+    valid_actions = {"explore", "snapshot"}
+    if action not in valid_actions:
+        return {"status": "error", "message": f"Invalid action '{action}'. Must be one of: {', '.join(sorted(valid_actions))}", "nodes": [], "edges": [], "center": None, "stats": {}}
     try:
         adapter = _get_adapter()
         if action == "explore":
             if not entity_name:
                 return {"status": "error", "message": "entity_name required for explore", "nodes": [], "edges": [], "center": None, "stats": {}}
             return adapter.explore_node(entity_name=entity_name, depth=depth)
-        elif action == "snapshot":
+        else:  # snapshot
             return adapter.get_graph_snapshot(limit=limit)
-        else:
-            return {"status": "error", "message": f"Unknown action: {action}", "nodes": [], "edges": [], "center": None, "stats": {}}
     except Exception as e:
         logger.error(f"lightrag_get_graph failed: {e}")
         return {"status": "error", "message": str(e), "nodes": [], "edges": [], "center": None, "stats": {}}
@@ -560,6 +561,9 @@ def lightrag_list_entities(
     limit: int = 50,
 ) -> Dict[str, Any]:
     """List entities or documents in the knowledge base."""
+    valid_list_types = {"entities", "documents", "labels"}
+    if list_type not in valid_list_types:
+        return {"status": "error", "message": f"Invalid list_type '{list_type}'. Must be one of: {', '.join(sorted(valid_list_types))}"}
     try:
         adapter = _get_adapter()
         return adapter.list_entities(
