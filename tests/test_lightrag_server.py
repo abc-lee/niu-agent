@@ -234,6 +234,17 @@ class TestLightragGetGraph:
         assert result["status"] == "error"
         assert result["center"] is None
 
+    def test_invalid_action(self):
+        """Invalid action should return error."""
+        mod = _import_module()
+        mock_adapter = MagicMock()
+        mod._adapter = mock_adapter
+
+        result = mod.lightrag_get_graph(action="invalid_action")
+
+        assert result["status"] == "error"
+        assert "Invalid action" in result["message"]
+
 
 class TestLightragInsert:
     """Test lightrag_insert tool function."""
@@ -406,6 +417,17 @@ class TestLightragListEntities:
         result = mod.lightrag_list_entities()
 
         assert result["status"] == "error"
+
+    def test_invalid_list_type(self):
+        """Invalid list_type should return error."""
+        mod = _import_module()
+        mock_adapter = MagicMock()
+        mod._adapter = mock_adapter
+
+        result = mod.lightrag_list_entities(list_type="invalid_type")
+
+        assert result["status"] == "error"
+        assert "Invalid list_type" in result["message"]
 
 
 class TestLightragMergeEntities:
