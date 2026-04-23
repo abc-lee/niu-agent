@@ -85,16 +85,16 @@ def test_tool_hit_on_execution(temp_storage, clean_runner):
         assert isinstance(final_result, StepOutcome), f"Expected StepOutcome, got {type(final_result)}"
         assert final_result.data == {"status": "success", "data": "test result"}, f"Expected mock result, got {final_result.data}"
 
-        # Verify tool was hit
+        # Verify tool was hit (hit_tool default score is 65 in 衰减-覆盖模式)
         score = runner.tool_lifecycle.get_tool_score("test-server/test-tool")
-        assert score == 100, f"Expected score 100, got {score}"
+        assert score == 65, f"Expected score 65, got {score}"
 
         # Verify persistence
         scores_file = temp_storage / ".niu" / "tool_scores.json"
         assert scores_file.exists(), "Scores file should exist"
 
         scores = json.loads(scores_file.read_text(encoding="utf-8"))
-        assert scores["test-server/test-tool"] == 100, f"Expected persisted score 100, got {scores.get('test-server/test-tool')}"
+        assert scores["test-server/test-tool"] == 65, f"Expected persisted score 65, got {scores.get('test-server/test-tool')}"
     finally:
         # Cleanup: Always remove test tool from registry
         if "test-server/test-tool" in registry._tools:
