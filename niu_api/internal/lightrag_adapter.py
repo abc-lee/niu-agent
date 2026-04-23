@@ -27,6 +27,9 @@ class LightRAGAdapter:
     LightRAG retrieval supporting multiple modes.
     """
 
+    # Supported entity types for filtered search
+    ENTITY_TYPES = {"skill", "tool", "knowledge", "person", "photo", "concept"}
+
     def _get_rag(self):
         """Get the LightRAG instance (delegates to lightrag_manager)."""
         return get_lightrag()
@@ -79,6 +82,276 @@ class LightRAGAdapter:
         except Exception as e:
             logger.error(f"LightRAG query failed: {e}")
             return None
+
+    def _query_data(
+        self,
+        query: str,
+        mode: str = "local",
+        top_k: Optional[int] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Query LightRAG returning structured data (entities + relationships).
+
+        Uses aquery_data() instead of aquery() to get structured results with
+        entity_type information, which is needed for type-based filtering.
+
+        Args:
+            query: The search query string.
+            mode: Retrieval mode (default "local" for entity-focused).
+            top_k: Number of top items to retrieve.
+
+        Returns:
+            Structured query result dict, or None on error.
+        """
+        if mode not in VALID_MODES:
+            raise ValueError(
+                f"Invalid mode '{mode}'. Must be one of: {sorted(VALID_MODES)}"
+            )
+
+        rag = self._get_rag()
+        if rag is None:
+            logger.warning("LightRAG not available, _query_data failed")
+            return None
+
+        try:
+            from lightrag import QueryParam
+
+            param = QueryParam(mode=mode)
+            if top_k is not None:
+                param.top_k = top_k
+
+            result = call_async(rag.aquery_data(query, param=param))
+            return result
+
+        except Exception as e:
+            logger.error(f"LightRAG _query_data failed: {e}")
+            return None
+
+    def _filter_by_entity_type(
+        self,
+        query_result: Optional[Dict[str, Any]],
+        entity_type: str,
+    ) -> List[Dict[str, Any]]:
+        """Filter LightRAG query results by entity_type.
+
+        LightRAG's aquery_data() returns structured results containing entities
+        with entity_type fields. This method extracts only entities matching
+        the requested type.
+
+        Args:
+            query_result: Structured result from _query_data(), or None.
+            entity_type: Entity type to filter for (e.g., "skill", "tool").
+
+        Returns:
+            List of entity dicts matching the requested type.
+        """
+        if query_result is None:
+            return []
+
+        # aquery_data returns {status, message, data: {entities, relationships, chunks}}
+        data = query_result.get("data", {})
+        if not data:
+            # Fallback: query_result might be the data dict directly
+            data = query_result
+
+        entities = data.get("entities", [])
+        if not entities:
+            return []
+
+        # Normalize entity_type for case-insensitive comparison
+        target_type = entity_type.lower().strip()
+        filtered = []
+        for entity in entities:
+            et = entity.get("entity_type", "")
+            if et and et.lower().strip() == target_type:
+                filtered.append(entity)
+
+        return filtered
+
+    # ============== Semantic Search Methods ==============
+
+    def search_skills(self, query: str, top_k: int = 10) -> List[Dict[str, Any]]:
+        """Search for skill entities in the knowledge graph.
+
+        Uses local mode (entity-focused) and filters by entity_type="skill".
+
+        Args:
+            query: Search query string.
+            top_k: Maximum number of results to retrieve.
+
+        Returns:
+            List of skill entity dicts.
+        """
+        result = self._query_data(query, mode="local", top_k=top_k)
+        return self._filter_by_entity_type(result, "skill")
+
+    def search_tools(self, query: str, top_k: int = 10) -> List[Dict[str, Any]]:
+        """Search for tool entities in the knowledge graph.
+
+        Uses local mode (entity-focused) and filters by entity_type="tool".
+
+        Args:
+            query: Search query string.
+            top_k: Maximum number of results to retrieve.
+
+        Returns:
+            List of tool entity dicts.
+        """
+        result = self._query_data(query, mode="local", top_k=top_k)
+        return self._filter_by_entity_type(result, "tool")
+
+    def search_knowledge(self, query: str, top_k: int = 10) -> List[Dict[str, Any]]:
+        """Search for knowledge and concept entities in the knowledge graph.
+
+        Uses local mode (entity-focused) and filters by entity_type="knowledge"
+        or entity_type="concept" (both are semantic knowledge).
+
+        Args:
+            query: Search query string.
+            top_k: Maximum number of results to retrieve.
+
+        Returns:
+            List of knowledge/concept entity dicts.
+        """
+        result = self._query_data(query, mode="local", top_k=top_k)
+        knowledge_entities = self._filter_by_entity_type(result, "knowledge")
+        concept_entities = self._filter_by_entity_type(result, "concept")
+        return knowledge_entities + concept_entities
+
+    # ============== Graph Traversal Methods ==============
+
+    def explore_node(self, entity_name: str, depth: int = 2) -> Dict[str, Any]:
+        """Get neighbors of an entity in the knowledge graph.
+
+        Uses LightRAG's built-in get_knowledge_graph() method which performs
+        BFS from the given node and returns a structured subgraph.
+
+        Returns structured data compatible with the kg-server explore_node
+        output format: {center, nodes, edges, stats}.
+
+        Args:
+            entity_name: Entity name to explore from.
+            depth: BFS traversal depth (1-5, default 2).
+
+        Returns:
+            Dict with center, nodes, edges, and stats keys.
+            Returns empty result on error or if entity not found.
+        """
+        rag = self._get_rag()
+        if rag is None:
+            logger.warning("LightRAG not available, explore_node failed")
+            return {"center": None, "nodes": [], "edges": [], "stats": {"nodes": 0, "edges": 0, "max_depth": depth}}
+
+        depth = max(1, min(5, depth))
+
+        try:
+            # LightRAG's get_knowledge_graph performs BFS from node_label
+            # Returns KnowledgeGraph(nodes=[KnowledgeGraphNode], edges=[KnowledgeGraphEdge])
+            kg = call_async(
+                rag.get_knowledge_graph(entity_name, max_depth=depth)
+            )
+
+            if kg is None or (not kg.nodes and not kg.edges):
+                return {"center": None, "nodes": [], "edges": [], "stats": {"nodes": 0, "edges": 0, "max_depth": depth}}
+
+            # Build center from the first node (should be the queried entity)
+            center = None
+            if kg.nodes:
+                first_node = kg.nodes[0]
+                center = {
+                    "id": first_node.id,
+                    "name": first_node.id,
+                    "type": first_node.properties.get("entity_type", "UNKNOWN"),
+                }
+
+            # Convert KnowledgeGraphNode to frontend-compatible format
+            nodes = []
+            for node in kg.nodes:
+                nodes.append({
+                    "id": node.id,
+                    "name": node.id,
+                    "type": node.properties.get("entity_type", "UNKNOWN"),
+                    "description": node.properties.get("description", ""),
+                })
+
+            # Convert KnowledgeGraphEdge to frontend-compatible format
+            edges = []
+            for edge in kg.edges:
+                edges.append({
+                    "source": edge.source,
+                    "target": edge.target,
+                    "relation": edge.properties.get("keywords", ""),
+                    "description": edge.properties.get("description", ""),
+                    "weight": edge.properties.get("weight", 1.0),
+                })
+
+            return {
+                "center": center,
+                "nodes": nodes,
+                "edges": edges,
+                "stats": {
+                    "nodes": len(nodes),
+                    "edges": len(edges),
+                    "max_depth": depth,
+                },
+            }
+
+        except Exception as e:
+            logger.error(f"LightRAG explore_node failed: {e}")
+            return {"center": None, "nodes": [], "edges": [], "stats": {"nodes": 0, "edges": 0, "max_depth": depth}}
+
+    def get_graph_snapshot(self, limit: int = 200) -> Dict[str, Any]:
+        """Return all nodes and edges from LightRAG knowledge graph.
+
+        Uses LightRAG's chunk_entity_relation_graph.get_knowledge_graph("*")
+        with max_nodes limit to return the full graph for frontend visualization.
+        The "*" label triggers the "return all nodes" path in LightRAG.
+
+        Args:
+            limit: Maximum number of nodes to return (default 200).
+
+        Returns:
+            Dict with nodes and edges lists for frontend visualization.
+            Returns empty result on error.
+        """
+        rag = self._get_rag()
+        if rag is None:
+            logger.warning("LightRAG not available, get_graph_snapshot failed")
+            return {"nodes": [], "edges": []}
+
+        try:
+            # Use get_knowledge_graph("*") which returns all nodes sorted by degree
+            # This is more efficient than get_all_nodes() for large graphs
+            kg = call_async(
+                rag.get_knowledge_graph("*", max_depth=1, max_nodes=limit)
+            )
+
+            if kg is None:
+                return {"nodes": [], "edges": []}
+
+            nodes = []
+            for node in kg.nodes:
+                nodes.append({
+                    "id": node.id,
+                    "name": node.id,
+                    "type": node.properties.get("entity_type", "UNKNOWN"),
+                    "description": node.properties.get("description", ""),
+                })
+
+            edges = []
+            for edge in kg.edges:
+                edges.append({
+                    "source": edge.source,
+                    "target": edge.target,
+                    "relation": edge.properties.get("keywords", ""),
+                    "description": edge.properties.get("description", ""),
+                    "weight": edge.properties.get("weight", 1.0),
+                })
+
+            return {"nodes": nodes, "edges": edges}
+
+        except Exception as e:
+            logger.error(f"LightRAG get_graph_snapshot failed: {e}")
+            return {"nodes": [], "edges": []}
 
 
 class LightRAGIngester:

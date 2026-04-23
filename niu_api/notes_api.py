@@ -2,7 +2,7 @@
 Notes API - Sticky notes CRUD endpoints
 """
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 from loguru import logger
 
@@ -24,7 +24,7 @@ class NoteUpdateRequest(BaseModel):
 
 
 @router.post("/notes")
-async def api_create_note(request: NoteCreateRequest):
+async def api_create_note(request: NoteCreateRequest, background_tasks: BackgroundTasks):
     """Create a new sticky note"""
     try:
         from datetime import datetime
@@ -36,11 +36,8 @@ async def api_create_note(request: NoteCreateRequest):
             created_at=created_at,
         )
 
-        # KG 写入（异步，不阻塞响应）
-        try:
-            sync_note_to_kg(request.id, request.content)
-        except Exception as e:
-            logger.warning(f"[Notes] KG sync failed for note {request.id}: {e}")
+        # KG 写入（后台任务，不阻塞响应）
+        background_tasks.add_task(sync_note_to_kg, request.id, request.content)
 
         return {"status": "ok", "result": result}
     except Exception as e:
@@ -69,16 +66,13 @@ async def api_get_note(note_id: str):
 
 
 @router.put("/notes/{note_id}")
-async def api_update_note(note_id: str, request: NoteUpdateRequest):
+async def api_update_note(note_id: str, request: NoteUpdateRequest, background_tasks: BackgroundTasks):
     """Update a sticky note"""
     try:
         result = await update_note(note_id=note_id, content=request.content)
 
-        # KG 写入（更新 Document 内容）
-        try:
-            sync_note_to_kg(note_id, request.content)
-        except Exception as e:
-            logger.warning(f"[Notes] KG sync failed for note {note_id}: {e}")
+        # KG 写入（后台任务，不阻塞响应）
+        background_tasks.add_task(sync_note_to_kg, note_id, request.content)
 
         return {"status": "ok", "result": result}
     except Exception as e:
@@ -98,19 +92,19 @@ async def api_delete_note(note_id: str):
 
 
 def sync_note_to_kg(note_id: str, content: str):
-    """便利贴写入 KG：仅创建 Document 节点 (entity_status='pending')
+    """便利贴写入 LightRAG 知识图谱。
 
-    实体提取由 KGScanner → entity-extractor 子 Agent 统一处理（LLM 推理），
-    不在此处做正则提取，避免误判。
+    使用 ainsert() 进行非结构化注入，LightRAG 内部自动提取实体。
     """
-    from niu_kg_server import create_document
-
-    uri = f"note://{note_id}"
-    create_document(
-        uri=uri,
-        title=content[:50],
-        content=content,
-        source="note",
-        entity_status="pending",
-    )
-    logger.info(f"[Notes] KG sync: {uri} (pending entity extraction)")
+    try:
+        from niu_api.internal.lightrag_manager import call_async, get_lightrag
+        rag = get_lightrag()
+        if rag is None:
+            logger.warning(f"[Notes] LightRAG not available, skipping sync for {note_id}")
+            return
+        uri = f"note://{note_id}"
+        prefixed = f"[Note: {note_id}]\n{content}"
+        call_async(rag.ainsert(prefixed, file_paths=[uri]))
+        logger.info(f"[Notes] LightRAG sync: {uri}")
+    except Exception as e:
+        logger.warning(f"[Notes] LightRAG sync failed for {note_id}: {e}")

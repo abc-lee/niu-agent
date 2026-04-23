@@ -619,11 +619,52 @@ class NiuRunner:
         if tool_signal_skills:
             logger.debug(f"Tool-signal Skills: {len(tool_signal_skills)} results")
 
-        logger.debug(f"Dynamic injection - Skills: {len(skills)}, MCP: {len(mcp_tools)}, Knowledge: {len(knowledge)}, Habits: {len(interaction_habits)}, ToolSignalSkills: {len(tool_signal_skills)}")
+        # Initialize mcp_tool_scores early — LightRAG KG block below writes to it
+        mcp_tool_scores: dict[str, int] = {}
+
+        # 2.5 LightRAG KG search as additional signal source for skills and tools
+        # Supplements vector search with knowledge-graph entity retrieval.
+        # Wrapped in try/except so LightRAG failures never break dynamic injection.
+        lightrag_skill_names: set[str] = set()
+        try:
+            from niu_api.internal.lightrag_adapter import LightRAGAdapter
+
+            adapter = LightRAGAdapter()
+            # Search for relevant skills in LightRAG KG
+            kg_skill_results = adapter.search_skills(context, top_k=5)
+            for entity in kg_skill_results:
+                entity_name = entity.get("entity_name", "")
+                if entity_name.startswith("skill:"):
+                    skill_name = entity_name[6:]  # strip "skill:" prefix
+                    lightrag_skill_names.add(skill_name)
+            # Search for relevant tools in LightRAG KG
+            kg_tool_results = adapter.search_tools(context, top_k=5)
+            for entity in kg_tool_results:
+                entity_name = entity.get("entity_name", "")
+                if entity_name.startswith("tool:"):
+                    tool_full_name = entity_name[5:]  # strip "tool:" prefix
+                    # Add as a score signal for tool lifecycle (moderate score)
+                    vis = get_registry().get_visibility(tool_full_name)
+                    if vis not in ("hidden", "static"):
+                        # Use a moderate score (60) — vector search is primary,
+                        # LightRAG is supplementary confirmation signal
+                        mcp_tool_scores[tool_full_name] = max(
+                            mcp_tool_scores.get(tool_full_name, 0), 60
+                        )
+
+            if lightrag_skill_names:
+                logger.debug(f"LightRAG KG skills: {lightrag_skill_names}")
+            if kg_tool_results:
+                logger.debug(f"LightRAG KG tools: {len(kg_tool_results)}")
+        except Exception:
+            pass  # LightRAG not available or search failed, skip
+
+        logger.debug(f"Dynamic injection - Skills: {len(skills)}, MCP: {len(mcp_tools)}, Knowledge: {len(knowledge)}, Habits: {len(interaction_habits)}, ToolSignalSkills: {len(tool_signal_skills)}, LightRAG-Skills: {len(lightrag_skill_names)}")
 
         # 3.5 向量检索到的 MCP 工具：返回分数供 update_from_search（不再注入 system prompt，tools_schema 已有完整描述）
         # 过滤 hidden（不可见）和 static（已固定注入，不需要动态分数）的工具
-        mcp_tool_scores = {}
+        # NOTE: mcp_tool_scores was initialized above (before LightRAG KG block);
+        # here we only ADD vector search scores — LightRAG scores are preserved.
         registry = get_registry()
         for tool in mcp_tools:
             name = tool.metadata.get("name", "")
@@ -635,15 +676,15 @@ class NiuRunner:
             vis = registry.get_visibility(full_name)
             if vis == "hidden" or vis == "static":
                 continue
-            mcp_tool_scores[full_name] = int(score * 100)
+            mcp_tool_scores[full_name] = max(mcp_tool_scores.get(full_name, 0), int(score * 100))
 
         # 格式化
         parts = []
         # 合并工具名检索Skills和搜索到的Skills（去重）
         all_skills = tool_signal_skills + skills
+        seen_names: set[str] = set()
         if all_skills:
             # 去重：按metadata.name去重，name为空时用id兜底
-            seen_names = set()
             unique_skills = []
             for skill in all_skills:
                 name = skill.metadata.get("name", "") or skill.id
@@ -654,14 +695,22 @@ class NiuRunner:
             if unique_skills:
                 parts.append(format_resources_for_prompt(unique_skills, "相关技能"))
 
+        # Add LightRAG KG skill names not already covered by vector search
+        # These are supplementary — only names found in KG but not in vector results
+        if lightrag_skill_names:
+            # Dedup against already-included skills
+            new_kg_skills = lightrag_skill_names - seen_names
+            if new_kg_skills:
+                kg_lines = [f"{i}. **{name}** (来源: 知识图谱)" for i, name in enumerate(sorted(new_kg_skills), 1)]
+                parts.append("\n\n### [相关技能 (KG)]\n" + "\n".join(kg_lines))
+
         if knowledge:
             parts.append(format_resources_for_prompt(knowledge, "参考知识"))
             parts.append(
                 "\n\n### [知识探索指引]\n"
                 "优先参考上述注入的历史参考信息回答用户问题。"
                 "若命中知识点涉及已知实体（人名、技术、组织等），"
-                "可使用 `kg-server/explore_node` 或 `kg-server/get_related_entities` "
-                "查询知识图谱中的关联信息，获取更完整的上下文。"
+                "可使用 `lightrag-query` 查询知识图谱中的关联信息，获取更完整的上下文。"
             )
         if interaction_habits:
             parts.append(format_resources_for_prompt(interaction_habits, "交互习惯"))

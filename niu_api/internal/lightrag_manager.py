@@ -34,7 +34,7 @@ from loguru import logger
 # ============== Config ==============
 
 PROXY_BASE_URL = "http://localhost:9876/llm/v1"
-PROXY_API_KEY = "not-needed"  # Proxy reads from user-config.json
+PROXY_API_KEY = "not-needed"  # Placeholder — proxy reads real key from user-config.json
 STORAGE_DIR = Path.home() / ".niu" / "lightrag_storage"
 
 

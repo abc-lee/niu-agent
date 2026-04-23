@@ -135,21 +135,13 @@ async def lifespan(app: FastAPI):
         cleanup_thread = threading.Thread(target=delayed_cleanup, daemon=True)
         cleanup_thread.start()
 
-    # 8. Start KG batch sync (periodic backfill + orphan cleanup)
+    # 8. Start LightRAG background sync (periodic photo/document backfill)
     try:
-        from agent.injector import get_kg_sync
-        kg_sync = get_kg_sync(auto_start=True)
-        logger.info("KG batch sync started (interval: 6h)")
+        from agent.injector.lightrag_sync import get_lightrag_sync
+        lightrag_sync = get_lightrag_sync(auto_start=True)
+        logger.info("LightRAG background sync started (interval: 6h)")
     except Exception as e:
-        logger.warning(f"KG batch sync start failed: {e}")
-
-    # 8.5. Start KGScanner (entity extraction scanner)
-    try:
-        from agent.injector.kg_scanner import get_kg_scanner
-        get_kg_scanner(auto_start=True)
-        logger.info("KGScanner started (entity extraction daemon)")
-    except Exception as e:
-        logger.warning(f"KGScanner start failed: {e}")
+        logger.warning(f"LightRAG background sync start failed: {e}")
 
     # 8.6. Ensure kg-enricher daily task exists
     try:
@@ -189,14 +181,14 @@ async def lifespan(app: FastAPI):
     # Shutdown
     logger.info("Niu API Server shutting down...")
 
-    # 停止 KG 批量整理
+    # 停止 LightRAG 后台同步
     try:
-        from agent.injector import get_kg_sync
-        kg_sync = get_kg_sync()
-        kg_sync.stop_background_sync()
-        logger.info("KG batch sync stopped")
+        from agent.injector.lightrag_sync import get_lightrag_sync
+        lightrag_sync = get_lightrag_sync()
+        lightrag_sync.stop_background_sync()
+        logger.info("LightRAG background sync stopped")
     except Exception as e:
-        logger.warning(f"Failed to stop KG batch sync: {e}")
+        logger.warning(f"Failed to stop LightRAG sync: {e}")
 
     # 保存工具生命周期分数（不执行 decay，只持久化当前分数）
     try:
@@ -207,15 +199,6 @@ async def lifespan(app: FastAPI):
             logger.info("Tool lifecycle scores saved on shutdown")
     except Exception as e:
         logger.warning(f"Failed to save tool lifecycle on shutdown: {e}")
-
-    # 停止 KGScanner
-    try:
-        from agent.injector.kg_scanner import _kg_scanner
-        if _kg_scanner is not None:
-            _kg_scanner.stop()
-            logger.info("KGScanner stopped")
-    except Exception as e:
-        logger.warning(f"Failed to stop KGScanner: {e}")
 
     from niu_api.internal.scheduler import stop_scheduler
     stop_scheduler()
