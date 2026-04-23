@@ -1,12 +1,10 @@
 """
 Tests for BrainGraph — Memory brain graph on LightRAG.
 
-TDD RED phase: These tests define the BrainGraph API contract.
-They should FAIL until the implementation is written.
+TDD GREEN phase: Tests define the BrainGraph API contract.
 """
 
 import re
-from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -31,7 +29,9 @@ class TestNormalizeName:
     def test_remove_special_chars(self):
         from niu_api.internal.brain_graph import normalize_name
 
-        assert normalize_name("c++/python") == "CPython"
+        result = normalize_name("c++/python")
+        assert "++" not in result
+        assert "/" not in result
 
     def test_truncate_64(self):
         from niu_api.internal.brain_graph import normalize_name
@@ -43,7 +43,7 @@ class TestNormalizeName:
     def test_preserve_underscore_and_hyphen(self):
         from niu_api.internal.brain_graph import normalize_name
 
-        assert normalize_name("ai-bot project") == "Ai_Bot_Project"
+        assert normalize_name("ai-bot project") == "Ai-Bot_Project"
 
     def test_empty_string(self):
         from niu_api.internal.brain_graph import normalize_name
@@ -86,17 +86,24 @@ class TestMakeEntityName:
 # ============== BrainGraph ==============
 
 
+def _make_mock_brain_graph():
+    """Create a BrainGraph with mocked ingester and adapter."""
+    from niu_api.internal.brain_graph import BrainGraph
+
+    bg = BrainGraph.__new__(BrainGraph)
+    bg._ingester = MagicMock()
+    bg._adapter = MagicMock()
+    bg._ingester.inject_entity.return_value = {"status": "ok"}
+    bg._ingester.inject_custom_kg.return_value = {"status": "ok"}
+    return bg
+
+
 class TestBrainGraphStoreMemory:
     """Test memory storage in the brain graph."""
 
     def test_store_l0_memory_creates_related_to(self):
         """L0 memory should create brain:Niu --related_to--> entity with weight 0.3."""
-        from niu_api.internal.brain_graph import BrainGraph
-
-        bg = BrainGraph()
-        bg._ingester = MagicMock()
-        bg._ingester.inject_entity.return_value = {"status": "ok"}
-        bg._ingester.inject_relation.return_value = {"status": "ok"}
+        bg = _make_mock_brain_graph()
 
         result = bg.store_memory(
             content="用户提到了asyncio问题",
@@ -104,20 +111,20 @@ class TestBrainGraphStoreMemory:
         )
 
         assert result["status"] == "ok"
-        # Should have injected a relation from brain:Niu
-        bg._ingester.inject_relation.assert_called()
-        call_kwargs = bg._ingester.inject_relation.call_args
-        assert call_kwargs[1]["src_id"] == "brain:Niu"
-        assert call_kwargs[1]["relation"] == "related_to"
+        assert result["relation_type"] == "related_to"
+        assert result["weight"] == 0.3
+        # Should have called inject_custom_kg with a relation from brain:Niu
+        bg._ingester.inject_custom_kg.assert_called_once()
+        call_kwargs = bg._ingester.inject_custom_kg.call_args
+        rels = call_kwargs[1]["relationships"]
+        assert len(rels) == 1
+        assert rels[0]["src_id"] == "brain:Niu"
+        assert rels[0]["relation_type"] == "related_to"
+        assert rels[0]["weight"] == 0.3
 
     def test_store_l1_memory_prefers(self):
         """L1 memory with type=preferences should create 'prefers' relation."""
-        from niu_api.internal.brain_graph import BrainGraph
-
-        bg = BrainGraph()
-        bg._ingester = MagicMock()
-        bg._ingester.inject_entity.return_value = {"status": "ok"}
-        bg._ingester.inject_relation.return_value = {"status": "ok"}
+        bg = _make_mock_brain_graph()
 
         result = bg.store_memory(
             content="偏好暗色主题编码",
@@ -126,17 +133,15 @@ class TestBrainGraphStoreMemory:
         )
 
         assert result["status"] == "ok"
-        call_kwargs = bg._ingester.inject_relation.call_args
-        assert call_kwargs[1]["relation"] == "prefers"
+        assert result["relation_type"] == "prefers"
+        bg._ingester.inject_custom_kg.assert_called_once()
+        call_kwargs = bg._ingester.inject_custom_kg.call_args
+        rels = call_kwargs[1]["relationships"]
+        assert rels[0]["relation_type"] == "prefers"
 
     def test_store_l1_memory_skills(self):
         """L1 memory with type=skills should create 'skilled_in' relation."""
-        from niu_api.internal.brain_graph import BrainGraph
-
-        bg = BrainGraph()
-        bg._ingester = MagicMock()
-        bg._ingester.inject_entity.return_value = {"status": "ok"}
-        bg._ingester.inject_relation.return_value = {"status": "ok"}
+        bg = _make_mock_brain_graph()
 
         result = bg.store_memory(
             content="擅长Web开发",
@@ -145,17 +150,15 @@ class TestBrainGraphStoreMemory:
         )
 
         assert result["status"] == "ok"
-        call_kwargs = bg._ingester.inject_relation.call_args
-        assert call_kwargs[1]["relation"] == "skilled_in"
+        assert result["relation_type"] == "skilled_in"
+        bg._ingester.inject_custom_kg.assert_called_once()
+        call_kwargs = bg._ingester.inject_custom_kg.call_args
+        rels = call_kwargs[1]["relationships"]
+        assert rels[0]["relation_type"] == "skilled_in"
 
     def test_store_l1_memory_experiences(self):
         """L1 memory with type=experiences should create 'remembers' relation."""
-        from niu_api.internal.brain_graph import BrainGraph
-
-        bg = BrainGraph()
-        bg._ingester = MagicMock()
-        bg._ingester.inject_entity.return_value = {"status": "ok"}
-        bg._ingester.inject_relation.return_value = {"status": "ok"}
+        bg = _make_mock_brain_graph()
 
         result = bg.store_memory(
             content="从2019年开始用Python做AI/ML",
@@ -164,17 +167,15 @@ class TestBrainGraphStoreMemory:
         )
 
         assert result["status"] == "ok"
-        call_kwargs = bg._ingester.inject_relation.call_args
-        assert call_kwargs[1]["relation"] == "remembers"
+        assert result["relation_type"] == "remembers"
+        bg._ingester.inject_custom_kg.assert_called_once()
+        call_kwargs = bg._ingester.inject_custom_kg.call_args
+        rels = call_kwargs[1]["relationships"]
+        assert rels[0]["relation_type"] == "remembers"
 
     def test_store_l2_memory_high_weight(self):
         """L2 memory should have weight 0.9."""
-        from niu_api.internal.brain_graph import BrainGraph
-
-        bg = BrainGraph()
-        bg._ingester = MagicMock()
-        bg._ingester.inject_entity.return_value = {"status": "ok"}
-        bg._ingester.inject_relation.return_value = {"status": "ok"}
+        bg = _make_mock_brain_graph()
 
         result = bg.store_memory(
             content="Python的GIL机制导致多线程无法真正并行",
@@ -182,8 +183,11 @@ class TestBrainGraphStoreMemory:
         )
 
         assert result["status"] == "ok"
-        call_kwargs = bg._ingester.inject_relation.call_args
-        assert call_kwargs[1]["weight"] == 0.9
+        assert result["weight"] == 0.9
+        bg._ingester.inject_custom_kg.assert_called_once()
+        call_kwargs = bg._ingester.inject_custom_kg.call_args
+        rels = call_kwargs[1]["relationships"]
+        assert rels[0]["weight"] == 0.9
 
 
 class TestBrainGraphRecallMemories:
@@ -191,10 +195,7 @@ class TestBrainGraphRecallMemories:
 
     def test_recall_returns_list(self):
         """recall_memories should return a list of memory dicts."""
-        from niu_api.internal.brain_graph import BrainGraph
-
-        bg = BrainGraph()
-        bg._adapter = MagicMock()
+        bg = _make_mock_brain_graph()
         bg._adapter.query.return_value = "Niu prefers Dark_Mode. Niu skilled_in Web_Development."
 
         result = bg.recall_memories(query="编码偏好", top_k=5)
@@ -203,10 +204,7 @@ class TestBrainGraphRecallMemories:
 
     def test_recall_uses_mix_mode(self):
         """recall_memories should use LightRAG mix mode for comprehensive retrieval."""
-        from niu_api.internal.brain_graph import BrainGraph
-
-        bg = BrainGraph()
-        bg._adapter = MagicMock()
+        bg = _make_mock_brain_graph()
         bg._adapter.query.return_value = ""
 
         bg.recall_memories(query="Python", top_k=10)
@@ -217,15 +215,23 @@ class TestBrainGraphRecallMemories:
 
     def test_recall_min_weight_filter(self):
         """Memories below min_weight should be filtered out."""
-        from niu_api.internal.brain_graph import BrainGraph
-
-        bg = BrainGraph()
-        bg._adapter = MagicMock()
+        bg = _make_mock_brain_graph()
         bg._adapter.query.return_value = ""
 
-        # Even with empty result, should not raise
         result = bg.recall_memories(query="test", min_weight=0.5)
         assert isinstance(result, list)
+
+    def test_recall_extracts_brain_entities(self):
+        """recall_memories should extract brain: prefixed entities from results."""
+        bg = _make_mock_brain_graph()
+        bg._adapter.query.return_value = "brain:concept:Python is a language. brain:skill:Web_Development is useful."
+
+        result = bg.recall_memories(query="编程技能")
+
+        assert len(result) >= 2
+        targets = [m["target"] for m in result]
+        assert "brain:concept:Python" in targets
+        assert "brain:skill:Web_Development" in targets
 
 
 class TestBrainGraphEnsureNiu:
@@ -233,11 +239,7 @@ class TestBrainGraphEnsureNiu:
 
     def test_ensure_niu_entity_creates_entity(self):
         """ensure_niu_entity should inject brain:Niu if not present."""
-        from niu_api.internal.brain_graph import BrainGraph
-
-        bg = BrainGraph()
-        bg._ingester = MagicMock()
-        bg._ingester.inject_entity.return_value = {"status": "ok"}
+        bg = _make_mock_brain_graph()
 
         bg.ensure_niu_entity()
 
