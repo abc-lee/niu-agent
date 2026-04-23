@@ -113,7 +113,10 @@
 - `niu_api/internal/brain_graph.py` — BrainGraph 类 + normalize_name + make_entity_name + format_memories_for_prompt
 - 常量：MEMORY_TYPE_TO_RELATION, LEVEL_DEFAULTS, ENTITY_TYPES, DEFAULT_MIN_WEIGHT, MAX_NAME_LENGTH
 - store_memory: 先 inject_entity 创建目标实体，失败则 early return；再 inject_custom_kg 创建加权关系
-- recall_memories: LightRAG aquery(mode="mix") + 正则提取 brain: 前缀实体
+- store_memory: metadata 嵌入关系描述 `[meta:{json}]`，超200字符跳过，格式化时剥离
+- recall_memories: 优先 _query_data 获取结构化数据+真实权重，fallback 到 aquery 文本提取
+- get_brain_graph(): 模块级单例，线程安全（double-checked locking）
+- _get_attr(): dict/dataclass 兼容属性访问
 - normalize_name: 按 `_` 和 `-` 分割，首字母大写（保留 LiLei），截断 64 字符
 
 ### brain_api 端点
@@ -121,28 +124,28 @@
 - POST /api/brain/remember — 存储记忆
 - POST /api/brain/recall — 检索记忆
 - GET /api/brain/status — 脑图状态检查
-- Pydantic 请求模型：RememberRequest, RecallRequest
+- 所有端点使用 get_brain_graph() 单例
 
 ### handler.py 委托
 - `agent/handler.py` do_save_memory 添加脑图二次写入
 - 非阻塞：try/except 包裹，失败仅 debug 级日志
-- memory-server/remember 成功后调用 BrainGraph().store_memory()
+- 使用 get_brain_graph() 单例
 
 ### runner.py 上下文注入
 - `agent/runner.py` _inject_dynamic_resources 添加脑图记忆提取
 - 非阻塞：try/except 包裹
-- BrainGraph().recall_memories() → format_memories_for_prompt() → 注入系统提示词
+- get_brain_graph().recall_memories() → format_memories_for_prompt() → 注入系统提示词
 
 ### __main__.py 初始化
 - 注册 brain_api 路由
-- 启动时调用 BrainGraph().ensure_niu_entity() 确保 brain:Niu 实体存在
+- 启动时调用 get_brain_graph().ensure_niu_entity() 确保 brain:Niu 实体存在
 
 ### 代码审查
-- 两轮迭代审查，修复所有 CRITICAL 问题
-- 关键修复：capitalize 破坏 camelCase、inject_custom_kg 缺 chunks 参数、relation key 名称错误、正则不匹配下划线、entity 失败时 orphan relation
+- 4轮迭代审查，修复所有 CRITICAL/HIGH 问题
+- 关键修复：capitalize破坏camelCase、inject_custom_kg缺chunks、relation key错误、正则不匹配下划线、orphan relation、硬编码weight、metadata丢弃、每次新建实例、dataclass兼容、线程安全、metadata泄露到提示词、metadata截断无效JSON
 
 ### 测试
-- 32 测试全部通过（normalize_name 7 + make_entity_name 4 + store 5 + recall 4 + ensure_niu 1 + 映射 5 + level 3 + format 3）
+- 39 测试全部通过（normalize_name 7 + make_entity_name 4 + store 5 + recall 5 + ensure_niu 1 + 映射 5 + level 3 + format 3 + singleton 2 + metadata 4）
 
 ---
 
