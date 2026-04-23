@@ -1,6 +1,6 @@
 # LightRAG 融合工程 — 汇总
 
-> 最后更新：2026-04-22
+> 最后更新：2026-04-23
 > 用途：快速了解工程全貌、各子工程进度、关键决策
 
 ## 工程目标
@@ -34,7 +34,7 @@
 | # | 子工程 | 方案文档 | 状态 | 涉及场景 |
 |---|--------|---------|------|---------|
 | 01 | 数据注入与检索策略 | [01-data-in3jection-retrieval.md](01-data-injection-retrieval.md) | ✅ 实施完成，29测试通过 | V1,V3,V4,V5,V6,V7 |
-| 02 | 文档入库与实体提取流水线 | [02-document-entity-pipeline.md](02-document-entity-pipeline.md) | ✅ 方案完成，已讨论确认 | K1,K2,K3,K4,K5 |
+| 02 | 文档入库与实体提取流水线 | [02-document-entity-pipeline.md](02-document-entity-pipeline.md) | ✅ 实施完成，代码审查通过 | K1,K2,K3,K4,K5 |
 | 03 | 记忆脑图设计 | [03-memory-brain-graph.md](03-memory-brain-graph.md) | ✅ 方案完成，已讨论确认 | C1 |
 | 04 | MCP工具接口重设计 | [04-mcp-tool-interface.md](04-mcp-tool-interface.md) | ✅ 方案完成，已讨论确认 | K6,K8 |
 | 05 | LLM代理+Embedding+Reranker | [05-llm-proxy-embedding.md](05-llm-proxy-embedding.md) | ✅ 实施完成，91测试通过 | 基础设施 |

@@ -63,11 +63,12 @@ class LightRAGSync:
         prev_doc_ids = set(prev_state.get("synced_doc_ids", []))
         prev_skill_ids = set(prev_state.get("synced_skill_ids", []))
         prev_tool_ids = set(prev_state.get("synced_tool_ids", []))
+        prev_co_occ_ids = set(prev_state.get("synced_co_occ_ids", []))
 
         # 1. Sync photos from photos.db
         try:
-            p, e, new_photo_ids, new_person_ids = self._sync_photos_db(
-                prev_photo_ids, prev_person_ids
+            p, e, new_photo_ids, new_person_ids, new_co_occ_ids = self._sync_photos_db(
+                prev_photo_ids, prev_person_ids, prev_co_occ_ids
             )
             stats["photos_synced"] = p
             stats["persons_synced"] = e
@@ -76,6 +77,7 @@ class LightRAGSync:
             stats["errors"].append(f"photos: {e}")
             new_photo_ids = set()
             new_person_ids = set()
+            new_co_occ_ids = set()
 
         # 2. Sync documents from vectors.db
         try:
@@ -105,7 +107,8 @@ class LightRAGSync:
         all_doc_ids = prev_doc_ids | new_doc_ids
         all_skill_ids = prev_skill_ids | new_skill_ids
         all_tool_ids = prev_tool_ids | new_tool_ids
-        self._save_status(stats, all_photo_ids, all_person_ids, all_doc_ids, all_skill_ids, all_tool_ids)
+        all_co_occ_ids = prev_co_occ_ids | new_co_occ_ids
+        self._save_status(stats, all_photo_ids, all_person_ids, all_doc_ids, all_skill_ids, all_tool_ids, all_co_occ_ids)
 
         logger.info(
             f"[LightRAGSync] Sync complete: "
@@ -118,8 +121,8 @@ class LightRAGSync:
         return stats
 
     def _sync_photos_db(
-        self, prev_photo_ids: set, prev_person_ids: set
-    ) -> tuple[int, int, set, set]:
+        self, prev_photo_ids: set, prev_person_ids: set, prev_co_occ_ids: set | None = None
+    ) -> tuple[int, int, set, set, set]:
         """Sync photos from photos.db into LightRAG.
 
         Only processes items whose IDs are not in the previous sync state,
@@ -130,16 +133,16 @@ class LightRAGSync:
             prev_person_ids: Person IDs already synced in previous runs.
 
         Returns:
-            (photos_synced, persons_synced, new_photo_ids, new_person_ids)
+            (photos_synced, persons_synced, new_photo_ids, new_person_ids, new_co_occ_ids)
         """
         try:
             from niu_photo_server import get_db_path as get_photo_db_path
             photos_db_path = Path(get_photo_db_path())
         except (ImportError, ValueError) as e:
             logger.warning(f"[LightRAGSync] Cannot resolve photos.db path: {e}")
-            return 0, 0, set(), set()
+            return 0, 0, set(), set(), set()
         if not photos_db_path.exists():
-            return 0, 0, set(), set()
+            return 0, 0, set(), set(), set()
 
         from niu_api.internal.lightrag_adapter import LightRAGIngester
         from niu_api.internal.lightrag_manager import call_async, get_lightrag
@@ -147,7 +150,7 @@ class LightRAGSync:
         rag = get_lightrag()
         if rag is None:
             logger.warning("[LightRAGSync] LightRAG not available")
-            return 0, 0, set(), set()
+            return 0, 0, set(), set(), set()
 
         ingester = LightRAGIngester()
         conn = sqlite3.connect(str(photos_db_path), check_same_thread=False)
@@ -196,7 +199,9 @@ class LightRAGSync:
                 except Exception as e:
                     logger.debug(f"[LightRAGSync] Photo document failed for {file_path}: {e}")
 
-            # Sync co_occurrence relations (always re-inject; LightRAG deduplicates)
+            # Sync co_occurrence relations (delta-tracked to avoid re-injection)
+            prev_co_occ = prev_co_occ_ids or set()
+            new_co_occ_ids: set = set()
             rows = conn.execute(
                 "SELECT person_a_id, person_b_id, count FROM co_occurrences"
             ).fetchall()
@@ -204,6 +209,10 @@ class LightRAGSync:
                 a_id = row["person_a_id"]
                 b_id = row["person_b_id"]
                 count = row["count"]
+                # Stable pair key: always sort so (a,b) == (b,a)
+                pair_key = f"{min(a_id, b_id)}__{max(a_id, b_id)}"
+                if pair_key in prev_co_occ:
+                    continue
                 try:
                     ingester.inject_relation(
                         src_id=f"person:{a_id}",
@@ -211,10 +220,11 @@ class LightRAGSync:
                         relation="co_appears_with",
                         description=f"Co-occurrence count: {count}",
                     )
+                    new_co_occ_ids.add(pair_key)
                 except Exception as e:
                     logger.debug(f"[LightRAGSync] Co-occurrence link failed: {e}")
 
-            return photos_synced, persons_synced, new_photo_ids, new_person_ids
+            return photos_synced, persons_synced, new_photo_ids, new_person_ids, new_co_occ_ids
         finally:
             conn.close()
 
@@ -406,8 +416,8 @@ class LightRAGSync:
 
         Returns:
             Dict with keys: last_sync, stats, synced_photo_ids,
-            synced_person_ids, synced_doc_ids.  Returns empty dict
-            if the file does not exist or cannot be parsed.
+            synced_person_ids, synced_doc_ids, synced_co_occ_ids.
+            Returns empty dict if the file does not exist or cannot be parsed.
         """
         try:
             if self._status_file.exists():
@@ -418,6 +428,7 @@ class LightRAGSync:
                 data.setdefault("synced_doc_ids", [])
                 data.setdefault("synced_skill_ids", [])
                 data.setdefault("synced_tool_ids", [])
+                data.setdefault("synced_co_occ_ids", [])
                 return data
         except (json.JSONDecodeError, OSError) as e:
             logger.warning(f"[LightRAGSync] Failed to load status: {e}")
@@ -431,6 +442,7 @@ class LightRAGSync:
         synced_doc_ids: set,
         synced_skill_ids: set | None = None,
         synced_tool_ids: set | None = None,
+        synced_co_occ_ids: set | None = None,
     ):
         """Save sync status and tracked IDs to file.
 
@@ -441,6 +453,7 @@ class LightRAGSync:
             synced_doc_ids: All document IDs synced so far (previous + new).
             synced_skill_ids: All skill IDs synced so far (previous + new).
             synced_tool_ids: All tool IDs synced so far (previous + new).
+            synced_co_occ_ids: All co-occurrence pair IDs synced so far (previous + new).
         """
         try:
             self._status_file.parent.mkdir(parents=True, exist_ok=True)
@@ -452,6 +465,7 @@ class LightRAGSync:
                 "synced_doc_ids": sorted(synced_doc_ids),
                 "synced_skill_ids": sorted(synced_skill_ids or set()),
                 "synced_tool_ids": sorted(synced_tool_ids or set()),
+                "synced_co_occ_ids": sorted(synced_co_occ_ids or set()),
             }
             self._status_file.write_text(
                 json.dumps(status, ensure_ascii=False, indent=2),
@@ -477,14 +491,20 @@ class LightRAGSync:
             self._thread.join(timeout=5)
 
     def _sync_loop(self):
-        """Background sync loop."""
+        """Background sync loop.
+
+        Runs first sync after 5-minute initial delay (to let other services
+        start), then repeats every sync_interval seconds.
+        """
         # Initial delay: 5 minutes (wait for other services)
         self._stop_event.wait(300)
-        while not self._stop_event.wait(self.sync_interval):
+        while True:
             try:
                 self.run_sync()
             except Exception as e:
                 logger.error(f"[LightRAGSync] Sync loop error: {e}")
+            if self._stop_event.wait(self.sync_interval):
+                break
 
 
 # Global instance + thread-safe lock

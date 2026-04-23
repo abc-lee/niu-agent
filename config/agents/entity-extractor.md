@@ -28,8 +28,8 @@ mcpServers:
 
 ## LightRAG 操作（通过 /api/kg/* 端点）
 
-- 通过 `code_run` 调用 `/api/kg/explore?entity_id=xxx` 探索实体关系
-- 通过 `code_run` 调用 `/api/kg/entities` 列出实体（用于查重）
+- 通过 HTTP 请求调用 `/api/kg/explore?entity_id=xxx` 探索实体关系
+- 通过 HTTP 请求调用 `/api/kg/entities` 列出实体（用于查重）
 
 # 实体提取规则
 
@@ -76,4 +76,4 @@ mcpServers:
 # 重要约束
 
 1. **容错**：单个文档处理失败不影响其他
-2. **KG 操作通过 code_run**：LightRAG 操作需通过 `code_run` 调用 `/api/kg/*` HTTP 端点完成（本子 Agent 未挂载 kg-server MCP 工具）
+2. **KG 操作通过 HTTP**：LightRAG 操作需通过 HTTP 请求调用 `/api/kg/*` 端点完成（本子 Agent 未挂载 kg-server MCP 工具）

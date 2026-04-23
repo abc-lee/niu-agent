@@ -240,7 +240,7 @@ class TestLightRAGSync:
                     mock_ps.get_db_path.return_value = db_path
                     with patch.dict("sys.modules", {"niu_photo_server": mock_ps}):
                         import sys
-                        photos, persons, _, _ = sync._sync_photos_db(set(), set())
+                        photos, persons, _, _, _ = sync._sync_photos_db(set(), set(), set())
                         # Should have synced at least 1 photo and 1 person
                         assert photos >= 1
                         assert persons >= 1
@@ -468,14 +468,14 @@ class TestConfigFilesKgServerHidden:
         # Parse frontmatter
         if "---" in content:
             fm = content.split("---")[1]
-            assert "kg-server" not in fm or "vector-store" in fm
+            assert "kg-server" not in fm, f"kg-server should be removed from {name}'s mcpServers after LightRAG migration"
 
     def test_kg_enricher_no_kg_server_mcp(self):
         """kg-enricher should not list kg-server in mcpServers."""
         content = Path("config/agents/kg-enricher.md").read_text(encoding="utf-8")
         if "---" in content:
             fm = content.split("---")[1]
-            assert "kg-server" not in fm or "vector-store" in fm
+            assert "kg-server" not in fm, f"kg-server should be removed from {name}'s mcpServers after LightRAG migration"
 
     def test_dream_evolver_no_kg_server_mcp(self):
         """dream-evolver should not list kg-server in mcpServers."""
