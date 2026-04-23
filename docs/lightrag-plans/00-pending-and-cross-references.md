@@ -1,6 +1,6 @@
 # LightRAG 融合工程 — 未尽事宜与牵连关系
 
-> 最后更新：2026-04-22
+> 最后更新：2026-04-23
 > 用途：记录子工程完工后的牵连影响、跨工程依赖、需注意的副作用
 
 ## 跨工程依赖关系
@@ -44,6 +44,42 @@
 - **影响**：`niu_api/injector.py` 的工具描述注册不再写向量库，改为 ainsert_custom_kg()
 - **牵连**：`agent/tool_lifecycle.py` 的评分机制需要适配 LightRAG 的 local 模式检索
 - **注意**：USED_FOR 和 OFTEN_WITH 关系需要从工具描述和历史数据中挖掘
+
+---
+
+## 子工程 02 实施完成记录（2026-04-23）
+
+### KGSync → LightRAGSync 委托
+- `agent/injector/kg_sync.py` 的 `KGSync` 类改为委托 `lightrag_sync.LightRAGSync`
+- `_sync_vectors_db()` 废弃，不再同步向量库
+- `_sync_photos_db()` 改为调 LightRAG `ainsert_custom_kg()` 注入人物/地点实体
+- 新增 co_occurrence 关系追踪（`USED_FOR`/`OFTEN_WITH`），用 pair_key 去重
+- delta 追踪：status JSON 记录已同步的 photo_ids/person_ids/co_occ_ids，避免重复处理
+
+### KGScanner 禁用
+- `agent/injector/kg_scanner.py` 的 `KGScanner` 类标记废弃，`scan()` 返回空结果
+- 实体提取改由 LightRAG `ainsert()` 自动完成
+
+### kg_api → LightRAGAdapter
+- `niu_api/kg_api.py` 的端点改用 `LightRAGAdapter` 而非 KuzuDB
+- `entities()` 和 `explore()` 通过 LightRAG `aquery_data()` 实现
+
+### notes_api → ainsert
+- `niu_api/notes_api.py` 的 `sync_note_to_kg` 改用 `call_async(rag.ainsert(prefixed))`
+- `BackgroundTasks.add_task` 改用 `asyncio.to_thread` 包装同步函数，避免阻塞 ASGI 事件循环
+
+### mcp_loader 移除 kg-server
+- `agent/mcp_loader.py` 不再加载 kg-server 模块
+- `config/mcp-servers.yaml` 中 kg-server 标记为 `disabled: true`
+
+### lightrag_pipeline 增强
+- `niu_api/internal/lightrag_pipeline.py` 添加 `threading.Semaphore` 背压控制
+- `_evict_completed_tasks` 同时清理 completed 和 failed 状态
+- `update_document` 在 delete 成功但 insert 失败时追踪 failed task，防止静默数据丢失
+
+### 代码审查
+- 三轮迭代审查，修复所有 CRITICAL/HIGH 问题
+- 关键修复：tuple arity 不匹配、_save_status 参数缺失、Semaphore 死代码、测试断言假阳性
 
 ---
 
