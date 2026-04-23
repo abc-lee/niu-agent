@@ -16,8 +16,6 @@ import threading
 
 from loguru import logger
 
-from niu_api.internal.lightrag_adapter import LightRAGAdapter, LightRAGIngester
-
 
 # ============== Singleton Accessors ==============
 
@@ -27,22 +25,24 @@ _adapter_lock = threading.Lock()
 _ingester_lock = threading.Lock()
 
 
-def _get_adapter() -> LightRAGAdapter:
+def _get_adapter():
     """Get or create the singleton LightRAGAdapter (thread-safe)."""
     global _adapter
     if _adapter is None:
         with _adapter_lock:
             if _adapter is None:
+                from niu_api.internal.lightrag_adapter import LightRAGAdapter
                 _adapter = LightRAGAdapter()
     return _adapter
 
 
-def _get_ingester() -> LightRAGIngester:
+def _get_ingester():
     """Get or create the singleton LightRAGIngester (thread-safe)."""
     global _ingester
     if _ingester is None:
         with _ingester_lock:
             if _ingester is None:
+                from niu_api.internal.lightrag_ingester import LightRAGIngester
                 _ingester = LightRAGIngester()
     return _ingester
 
