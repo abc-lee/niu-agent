@@ -439,3 +439,38 @@ class TestMetadataEmbedding:
         rels = call_kwargs[1]["relationships"]
         desc = rels[0]["description"]
         assert "[meta:" not in desc
+
+    def test_metadata_stripped_from_prompt(self):
+        """format_memories_for_prompt should strip [meta:...] from description."""
+        from niu_api.internal.brain_graph import format_memories_for_prompt
+
+        memories = [
+            {
+                "target": "brain:concept:Python",
+                "relation_type": "remembers",
+                "description": "擅长Python [meta:{\"source\":\"chat\"}]",
+                "weight": 0.9,
+            }
+        ]
+        result = format_memories_for_prompt(memories)
+        assert "擅长Python" in result
+        assert "[meta:" not in result
+        assert "source" not in result
+
+    def test_metadata_too_long_skipped(self):
+        """Metadata exceeding 200 chars should be skipped entirely."""
+        bg = _make_mock_brain_graph()
+
+        big_meta = {"key": "x" * 300}
+        result = bg.store_memory(
+            content="测试内容",
+            level="L0",
+            metadata=big_meta,
+        )
+
+        assert result["status"] == "ok"
+        bg._ingester.inject_custom_kg.assert_called_once()
+        call_kwargs = bg._ingester.inject_custom_kg.call_args
+        rels = call_kwargs[1]["relationships"]
+        desc = rels[0]["description"]
+        assert "[meta:" not in desc
