@@ -4,7 +4,7 @@ description: "记忆压缩、上下文整理。"
 mode: subagent
 temperature: 0.2
 mcpServers:
-  - vector-store
+  - lightrag-server
   - session-manager
 ---
 

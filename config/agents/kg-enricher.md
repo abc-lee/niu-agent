@@ -4,7 +4,7 @@ description: 知识图谱丰富化 - 将向量库中的经验、画像、查询�
 mode: subagent
 temperature: 0.2
 mcpServers:
-  - vector-store
+  - lightrag-server
 ---
 
 你是知识图谱丰富化器，负责将向量库中的经验、画像、查询模式同步到 LightRAG 知识图谱。

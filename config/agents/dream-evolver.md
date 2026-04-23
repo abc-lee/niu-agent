@@ -4,7 +4,7 @@ description: 梦境进化 - 睡眠时从对话中提取知识、学习经验、�
 mode: subagent
 temperature: 0.3
 mcpServers:
-  - vector-store
+  - lightrag-server
   - session-manager
 ---
 

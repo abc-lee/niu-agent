@@ -50,22 +50,43 @@ kg-server:
     update_entity_status: {visibility: hidden}
     delete_entity: {visibility: hidden}
 
-# Vector Store - Semantic search using embeddings
+# LightRAG Unified Server - Replaces vector-store + kg-server with 12 unified tools
+lightrag-server:
+  command: ${PYTHON_PATH}
+  args:
+    - "-m"
+    - "niu_lightrag_server"
+  workdir: mcp-servers/lightrag-server/src
+  preload: true
+  tools:
+    lightrag_query: {visibility: static}
+    lightrag_query_data: {visibility: static}
+    lightrag_search_entities: {visibility: dynamic}
+    lightrag_get_graph: {visibility: dynamic}
+    lightrag_insert: {visibility: static}
+    lightrag_insert_custom_kg: {visibility: dynamic}
+    lightrag_insert_entity: {visibility: dynamic}
+    lightrag_insert_relation: {visibility: dynamic}
+    lightrag_delete_entity: {visibility: dynamic}
+    lightrag_document_status: {visibility: hidden}
+    lightrag_list_entities: {visibility: dynamic}
+    lightrag_merge_entities: {visibility: dynamic}
+
+# Vector Store - Semantic search using embeddings (DISABLED — replaced by lightrag-server)
 vector-store:
   command: ${PYTHON_PATH}
   args:
     - "-m"
     - "niu_vector_store"
   workdir: mcp-servers/vector-store/src
-  preload: true
+  preload: false
   tools:
-    add_document: {visibility: static}
-    search_documents: {visibility: static}
-    get_document: {visibility: static}
-    delete_document: {visibility: static}
-    list_documents: {visibility: static}
+    add_document: {visibility: hidden}
+    search_documents: {visibility: hidden}
+    get_document: {visibility: hidden}
+    delete_document: {visibility: hidden}
+    list_documents: {visibility: hidden}
     update_metadata: {visibility: hidden}
-    # count_documents 默认 dynamic
 
 # Config Manager - Read/write user configuration and memory
 # 全部工具已隐藏：UI 直接读写 json 文件，LLM 通过 bash/code_run 操作

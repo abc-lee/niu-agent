@@ -38,7 +38,7 @@ class LightRAGAdapter:
         self,
         query: str,
         mode: str = "mix",
-        only_need_context: bool = False,
+        only_need_context: bool = True,
         top_k: Optional[int] = None,
         response_type: Optional[str] = None,
     ) -> Optional[str]:
@@ -83,7 +83,7 @@ class LightRAGAdapter:
             logger.error(f"LightRAG query failed: {e}")
             return None
 
-    def _query_data(
+    def query_data(
         self,
         query: str,
         mode: str = "local",
@@ -109,7 +109,7 @@ class LightRAGAdapter:
 
         rag = self._get_rag()
         if rag is None:
-            logger.warning("LightRAG not available, _query_data failed")
+            logger.warning("LightRAG not available, query_data failed")
             return None
 
         try:
@@ -123,10 +123,10 @@ class LightRAGAdapter:
             return result
 
         except Exception as e:
-            logger.error(f"LightRAG _query_data failed: {e}")
+            logger.error(f"LightRAG query_data failed: {e}")
             return None
 
-    def _filter_by_entity_type(
+    def filter_by_entity_type(
         self,
         query_result: Optional[Dict[str, Any]],
         entity_type: str,
@@ -138,7 +138,7 @@ class LightRAGAdapter:
         the requested type.
 
         Args:
-            query_result: Structured result from _query_data(), or None.
+            query_result: Structured result from query_data(), or None.
             entity_type: Entity type to filter for (e.g., "skill", "tool").
 
         Returns:
@@ -181,8 +181,8 @@ class LightRAGAdapter:
         Returns:
             List of skill entity dicts.
         """
-        result = self._query_data(query, mode="local", top_k=top_k)
-        return self._filter_by_entity_type(result, "skill")
+        result = self.query_data(query, mode="local", top_k=top_k)
+        return self.filter_by_entity_type(result, "skill")
 
     def search_tools(self, query: str, top_k: int = 10) -> List[Dict[str, Any]]:
         """Search for tool entities in the knowledge graph.
@@ -196,8 +196,8 @@ class LightRAGAdapter:
         Returns:
             List of tool entity dicts.
         """
-        result = self._query_data(query, mode="local", top_k=top_k)
-        return self._filter_by_entity_type(result, "tool")
+        result = self.query_data(query, mode="local", top_k=top_k)
+        return self.filter_by_entity_type(result, "tool")
 
     def search_knowledge(self, query: str, top_k: int = 10) -> List[Dict[str, Any]]:
         """Search for knowledge and concept entities in the knowledge graph.
@@ -212,9 +212,9 @@ class LightRAGAdapter:
         Returns:
             List of knowledge/concept entity dicts.
         """
-        result = self._query_data(query, mode="local", top_k=top_k)
-        knowledge_entities = self._filter_by_entity_type(result, "knowledge")
-        concept_entities = self._filter_by_entity_type(result, "concept")
+        result = self.query_data(query, mode="local", top_k=top_k)
+        knowledge_entities = self.filter_by_entity_type(result, "knowledge")
+        concept_entities = self.filter_by_entity_type(result, "concept")
         return knowledge_entities + concept_entities
 
     # ============== Graph Traversal Methods ==============
@@ -352,6 +352,123 @@ class LightRAGAdapter:
         except Exception as e:
             logger.error(f"LightRAG get_graph_snapshot failed: {e}")
             return {"nodes": [], "edges": []}
+
+    # ============== Management Methods ==============
+
+    def delete_entity(self, entity_name: str) -> Dict[str, Any]:
+        """Delete an entity and all its relations from the knowledge graph.
+
+        Args:
+            entity_name: Entity name to delete.
+
+        Returns:
+            Dict with status and details.
+        """
+        rag = self._get_rag()
+        if rag is None:
+            return {"status": "error", "message": "LightRAG not available"}
+        try:
+            result = call_async(rag.adelete_by_entity(entity_name))
+            return {"status": "ok", "entity_name": entity_name, "result": str(result)}
+        except Exception as e:
+            logger.error(f"LightRAG delete_entity failed: {e}")
+            return {"status": "error", "message": str(e)}
+
+    def document_status(self) -> Dict[str, Any]:
+        """Get document processing status counts.
+
+        Returns:
+            Dict with pending, processing, processed, failed counts.
+        """
+        rag = self._get_rag()
+        if rag is None:
+            return {"status": "error", "message": "LightRAG not available"}
+        try:
+            return call_async(rag.get_processing_status())
+        except Exception as e:
+            logger.error(f"LightRAG document_status failed: {e}")
+            return {"status": "error", "message": str(e)}
+
+    def list_entities(
+        self,
+        list_type: str = "entities",
+        entity_type: str = "",
+        limit: int = 50,
+    ) -> Dict[str, Any]:
+        """List entities or documents in the knowledge base.
+
+        Args:
+            list_type: "entities", "documents", or "labels".
+            entity_type: Filter by entity type.
+            limit: Max results.
+
+        Returns:
+            Dict with status and data (list of entities/documents/labels).
+        """
+        rag = self._get_rag()
+        if rag is None:
+            return {"status": "error", "message": "LightRAG not available"}
+        try:
+            if list_type == "labels":
+                data = call_async(rag.get_graph_labels())
+                return {"status": "ok", "data": data}
+            elif list_type == "documents":
+                data = call_async(rag.get_docs_by_status("processed"))
+                return {"status": "ok", "data": data}
+            elif list_type == "entities":
+                kg = call_async(
+                    rag.get_knowledge_graph(
+                        entity_type or "",
+                        max_depth=1,
+                        max_nodes=limit,
+                    )
+                )
+                if kg is None:
+                    return {"status": "ok", "data": []}
+                nodes = []
+                for node in kg.nodes:
+                    node_type = node.properties.get("entity_type", "UNKNOWN")
+                    if entity_type and node_type.lower() != entity_type.lower():
+                        continue
+                    nodes.append({
+                        "id": node.id,
+                        "entity_type": node_type,
+                        "description": node.properties.get("description", ""),
+                    })
+                return {"status": "ok", "data": nodes}
+            else:
+                return {"status": "error", "message": f"Unknown list_type: {list_type}"}
+        except Exception as e:
+            logger.error(f"LightRAG list_entities failed: {e}")
+            return {"status": "error", "message": str(e)}
+
+    def merge_entities(
+        self,
+        source_entities: List[str],
+        target_entity: str,
+    ) -> Dict[str, Any]:
+        """Merge multiple entities into one, consolidating all relations.
+
+        Args:
+            source_entities: Entity names to merge.
+            target_entity: Name of the merged target entity.
+
+        Returns:
+            Dict with status and details.
+        """
+        rag = self._get_rag()
+        if rag is None:
+            return {"status": "error", "message": "LightRAG not available"}
+        try:
+            result = call_async(
+                rag.amerge_entities(source_entities, target_entity)
+            )
+            return {"status": "ok", "target_entity": target_entity, "result": str(result)}
+        except AttributeError:
+            return {"status": "error", "message": "Entity merge not supported by this LightRAG version"}
+        except Exception as e:
+            logger.error(f"LightRAG merge_entities failed: {e}")
+            return {"status": "error", "message": str(e)}
 
 
 class LightRAGIngester:

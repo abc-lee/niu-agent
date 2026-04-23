@@ -721,7 +721,7 @@ class NiuRunner:
                 "\n\n### [知识探索指引]\n"
                 "优先参考上述注入的历史参考信息回答用户问题。"
                 "若命中知识点涉及已知实体（人名、技术、组织等），"
-                "可使用 `lightrag-query` 查询知识图谱中的关联信息，获取更完整的上下文。"
+                "可使用 `lightrag_query` 查询知识图谱中的关联信息，获取更完整的上下文。"
             )
         if interaction_habits:
             parts.append(format_resources_for_prompt(interaction_habits, "交互习惯"))

@@ -20,7 +20,8 @@ REQUIRED_SERVERS: List[Tuple[str, str]] = [
     ("photo-server", "niu_photo_server"),
     ("config-manager", "niu_config_manager"),
     ("memory-server", "niu_memory_server"),
-    ("vector-store", "niu_vector_store"),
+    # vector-store removed — replaced by lightrag-server (LightRAG unified tools)
+    ("lightrag-server", "niu_lightrag_server"),
     # kg-server removed — replaced by LightRAG adapter/pipeline
     ("file-parser", "niu_file_parser"),
     ("session-manager", "niu_session_manager"),
@@ -74,53 +75,6 @@ def _add_server_workdirs_to_sys_path(config: dict) -> None:
 # ============================================================================
 # Built-in Tool Registration
 # ============================================================================
-
-def _register_lightrag_query_tool(registry: ToolRegistry) -> None:
-    """Register lightrag-query as a built-in tool wrapping LightRAGAdapter.
-
-    The runner.py _inject_dynamic_resources prompt references this tool,
-    so it must exist in the registry for the LLM to call it successfully.
-    """
-    schema = {
-        "name": "lightrag-query",
-        "description": (
-            "Query the LightRAG knowledge graph for related information. "
-            "Use 'local' for entity-specific queries, 'global' for broad overview, "
-            "'hybrid' for balanced results, 'mix' for combined local+global, "
-            "'naive' for simple keyword search."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "The search query for knowledge graph retrieval",
-                },
-                "mode": {
-                    "type": "string",
-                    "enum": ["naive", "local", "global", "hybrid", "mix"],
-                    "default": "hybrid",
-                    "description": (
-                        "Query mode: naive (simple keyword), local (entity-focused), "
-                        "global (overview), hybrid (balanced), mix (combined local+global)"
-                    ),
-                },
-            },
-            "required": ["query"],
-        },
-    }
-
-    def lightrag_query_fn(query: str, mode: str = "hybrid") -> str:
-        from niu_api.internal.lightrag_adapter import LightRAGAdapter
-
-        adapter = LightRAGAdapter()
-        result = adapter.query(query, mode=mode)
-        if result is None:
-            return "Knowledge graph is not available."
-        return result
-
-    registry.register("lightrag-query", lightrag_query_fn, schema, visibility="static")
-
 
 def _inject_tools_to_lightrag(registry: ToolRegistry, servers: List[Tuple[str, str]]) -> None:
     """Inject MCP tool descriptions into the LightRAG knowledge graph.
@@ -229,8 +183,8 @@ def load_mcp_tools(required_servers: Optional[List[Tuple[str, str]]] = None) -> 
     # Set global registry instance
     set_registry(registry)
 
-    # Register built-in tools (not from MCP server modules)
-    _register_lightrag_query_tool(registry)
+    # lightrag-query is now provided by lightrag-server MCP module
+    # (lightrag-server/lightrag_query). No separate built-in registration needed.
 
     # Inject MCP tool descriptions into LightRAG knowledge graph
     # so that LightRAGAdapter.search_tools() can find them
