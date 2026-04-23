@@ -7,6 +7,12 @@ import pytest
 from agent.tool_lifecycle import ToolLifecycleManager
 
 
+# hit_tool default score is 65 (衰减-覆盖模式: 低于65补到65)
+HIT_DEFAULT_SCORE = 65
+# decay_rate is 10 per round
+DECAY_RATE = 10
+
+
 @pytest.fixture
 def temp_storage(tmp_path):
     """Use temporary directory for tool scores"""
@@ -33,7 +39,7 @@ def test_tool_score_persistence(temp_storage):
 
     # Check content
     scores = json.loads(scores_file.read_text(encoding="utf-8"))
-    assert scores["browser-server/browser_navigate"] == 100
+    assert scores["browser-server/browser_navigate"] == HIT_DEFAULT_SCORE
 
 
 def test_persistence_across_instances(temp_storage):
@@ -44,7 +50,7 @@ def test_persistence_across_instances(temp_storage):
 
     # Second instance (should load from file)
     manager2 = ToolLifecycleManager()
-    assert manager2.get_tool_score("test-server/test-tool") == 100
+    assert manager2.get_tool_score("test-server/test-tool") == HIT_DEFAULT_SCORE
 
 
 def test_decay_saves_to_file(temp_storage):
@@ -57,4 +63,4 @@ def test_decay_saves_to_file(temp_storage):
     # Check file updated
     scores_file = temp_storage / ".niu" / "tool_scores.json"
     scores = json.loads(scores_file.read_text(encoding="utf-8"))
-    assert scores["test-server/test-tool"] == 90
+    assert scores["test-server/test-tool"] == HIT_DEFAULT_SCORE - DECAY_RATE
