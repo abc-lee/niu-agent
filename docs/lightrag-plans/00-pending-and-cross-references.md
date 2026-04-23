@@ -107,12 +107,51 @@
 
 ---
 
+## 子工程 03 实施完成记录（2026-04-23）
+
+### BrainGraph 核心类
+- `niu_api/internal/brain_graph.py` — BrainGraph 类 + normalize_name + make_entity_name + format_memories_for_prompt
+- 常量：MEMORY_TYPE_TO_RELATION, LEVEL_DEFAULTS, ENTITY_TYPES, DEFAULT_MIN_WEIGHT, MAX_NAME_LENGTH
+- store_memory: 先 inject_entity 创建目标实体，失败则 early return；再 inject_custom_kg 创建加权关系
+- recall_memories: LightRAG aquery(mode="mix") + 正则提取 brain: 前缀实体
+- normalize_name: 按 `_` 和 `-` 分割，首字母大写（保留 LiLei），截断 64 字符
+
+### brain_api 端点
+- `niu_api/brain_api.py` — FastAPI 路由
+- POST /api/brain/remember — 存储记忆
+- POST /api/brain/recall — 检索记忆
+- GET /api/brain/status — 脑图状态检查
+- Pydantic 请求模型：RememberRequest, RecallRequest
+
+### handler.py 委托
+- `agent/handler.py` do_save_memory 添加脑图二次写入
+- 非阻塞：try/except 包裹，失败仅 debug 级日志
+- memory-server/remember 成功后调用 BrainGraph().store_memory()
+
+### runner.py 上下文注入
+- `agent/runner.py` _inject_dynamic_resources 添加脑图记忆提取
+- 非阻塞：try/except 包裹
+- BrainGraph().recall_memories() → format_memories_for_prompt() → 注入系统提示词
+
+### __main__.py 初始化
+- 注册 brain_api 路由
+- 启动时调用 BrainGraph().ensure_niu_entity() 确保 brain:Niu 实体存在
+
+### 代码审查
+- 两轮迭代审查，修复所有 CRITICAL 问题
+- 关键修复：capitalize 破坏 camelCase、inject_custom_kg 缺 chunks 参数、relation key 名称错误、正则不匹配下划线、entity 失败时 orphan relation
+
+### 测试
+- 32 测试全部通过（normalize_name 7 + make_entity_name 4 + store 5 + recall 4 + ensure_niu 1 + 映射 5 + level 3 + format 3）
+
+---
+
 ## 子工程 03 完工后的牵连
 
 ### memory-server 替换
-- **影响**：`mcp-servers/memory-server/` 整个模块可能被 brain-server 替代
-- **牵连**：remember/recall 工具接口需要映射到脑图操作
-- **注意**：L0/L1/L2 层级概念需要映射到脑图的实体权重和关系类型
+- **影响**：`mcp-servers/memory-server/` 的 remember/recall 工具委托到脑图
+- **牵连**：handler.py 已实现双写（memory-server + brain graph），过渡期并行
+- **注意**：user_memory 工具（操作 memory.json）不受影响，与脑图是不同层级
 
 ### 向量库依赖解除
 - **影响**：memory-server 不再共享 vectors.db
@@ -122,7 +161,7 @@
 ### 记忆衰减机制
 - **影响**：脑图的遗忘曲线需要定时任务执行衰减
 - **牵连**：需要新增定时任务或在现有定时任务中增加衰减逻辑
-- **注意**：衰减频率和参数需要调优
+- **注意**：衰减频率和参数需要调优，本期不做
 
 ---
 
