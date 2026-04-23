@@ -44,6 +44,38 @@ class ToolRegistry:
         # 服务器注册追踪: server_name -> list of tool names
         self._server_tools: Dict[str, List[str]] = {}
 
+    def register(
+        self,
+        name: str,
+        func: Callable,
+        schema: Dict[str, Any],
+        visibility: str = "static",
+    ) -> None:
+        """Register a single tool directly (not from an MCP server module).
+
+        Use this for built-in tools that wrap internal adapters rather than
+        belonging to an MCP server.
+
+        Args:
+            name: Tool name (e.g. "lightrag-query").
+            func: Callable that implements the tool.
+            schema: Tool schema dict with keys: name, description, input_schema.
+            visibility: "static", "dynamic", or "hidden". Defaults to "static".
+        """
+        self._tools[name] = func
+        normalized_schema = {
+            "name": name,
+            "description": schema.get("description", ""),
+            "input_schema": schema.get("input_schema", schema.get("inputSchema", {})),
+            "visibility": visibility,
+        }
+        self._schemas[name] = normalized_schema
+        # Track under a virtual "__builtin__" server so list_tools / clear work
+        self._server_tools.setdefault("__builtin__", [])
+        if name not in self._server_tools["__builtin__"]:
+            self._server_tools["__builtin__"].append(name)
+        logger.info(f"Registered built-in tool: {name}")
+
     def register_server(self, server_name: str, module, visibility_map: Optional[dict] = None) -> bool:
         """
         注册MCP服务器的所有工具
@@ -158,6 +190,17 @@ class ToolRegistry:
             所有已注册工具的schema列表
         """
         return list(self._schemas.values())
+
+    def get_all_schemas(self) -> Dict[str, Dict[str, Any]]:
+        """Return dict of all tool schemas keyed by full tool name.
+
+        Useful when callers need both the tool name and its schema,
+        e.g. for iterating server/tool pairs to inject into LightRAG.
+
+        Returns:
+            Dict mapping full tool name (e.g. "server/tool") to schema dict.
+        """
+        return dict(self._schemas)
 
     def list_tools(self) -> List[str]:
         """

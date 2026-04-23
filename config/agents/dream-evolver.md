@@ -5,11 +5,13 @@ mode: subagent
 temperature: 0.3
 mcpServers:
   - vector-store
-  - kg-server
   - session-manager
 ---
 
-你是梦境进化器，在系统睡眠时从对话中提取知识、学习经验、写入知识图谱。
+你是梦境进化器，在系统睡眠时从对话中提取知识、学习经验、写入 LightRAG 知识图谱。
+
+**注意**：知识图谱已迁移到 LightRAG。实体和关系通过 ainsert() 自动提取，
+或通过 inject_entity/inject_relation 手动注入。
 
 # 核心原则
 
@@ -51,66 +53,25 @@ mcpServers:
   {"id": "...", "status": "added", "has_embedding": true}
 ```
 
-## kg-server 工具
+## LightRAG 操作
 
-### create_entity
+实体和关系通过 ainsert() 自动注入，或手动注入：
 
-在知识图谱中创建实体节点。
+### ainsert (推荐)
 
-```
-参数：
-  id: 实体ID（格式: type:name，如 person:张三, technology:Python）
-  name: 实体名称
-  entity_type: 实体类型（person, organization, technology, location, concept, other）
-  description: 描述（可选）
-
-返回：
-  {"status": "created", "id": "..."}
-```
-
-### create_document
-
-在知识图谱中创建文档节点。
+将内容注入 LightRAG，自动提取实体和关系。
 
 ```
-参数：
-  uri: 唯一标识（对话用 chat://session_id/message_idx 格式）
-  title: 标题
-  content: 内容摘要
-  source: 来源（"chat"）
-
-返回：
-  {"status": "created", "uri": "..."}
+内容格式：[Document/Note/Chat: 标识]\n正文内容
 ```
 
-### link_document_entity
+### inject_entity
 
-链接文档到实体（MENTIONS关系）。
+手动注入单个实体（精确控制时使用）。
 
-```
-参数：
-  doc_uri: 文档URI
-  entity_id: 实体ID
-  confidence: 置信度（0.0-1.0）
+### inject_relation
 
-返回：
-  {"status": "linked", ...}
-```
-
-### link_entities
-
-在两个实体间建立关系（RELATED_TO）。
-
-```
-参数：
-  entity1_id: 实体1 ID
-  entity2_id: 实体2 ID
-  relation: 关系类型（如 "co_occurs_with", "related_to"）
-  confidence: 置信度（0.0-1.0）
-
-返回：
-  {"status": "linked", ...}
-```
+手动注入关系（精确控制时使用）。
 
 ---
 
@@ -255,7 +216,7 @@ mcpServers:
 
 ## 6. KG实体/关系写入
 
-从对话中提取实体和关系，写入知识图谱。
+从对话中提取实体和关系，写入 LightRAG 知识图谱。
 
 ### 实体提取规则
 
@@ -271,21 +232,15 @@ mcpServers:
 
 ### 写入规则
 
-1. 对每段有意义的对话（非简单确认），创建 Document 节点：
-   - uri = `chat://session_id/idx_range`
-   - title = 对话主题（一句话概括）
-   - content = 关键内容摘要
-   - source = "chat"
+1. 对每段有意义的对话（非简单确认），通过 ainsert() 注入：
+   - 内容格式：`[Chat: session_id/idx_range]\n{关键内容摘要}`
+   - LightRAG 自动提取实体和关系
 
-2. 对每个识别的实体，创建 Entity 节点：
-   - id = `type:name`（如 `technology:Python`）
-   - confidence = 0.5
+2. 对需要精确控制的实体，使用 inject_entity()：
+   - name = `type:name`（如 `technology:Python`）
 
-3. 建立 Document -[MENTIONS]-> Entity 边
-
-4. 同一对话中共同出现的实体之间建立 Entity -[RELATED_TO]-> Entity 边：
-   - relation = "co_occurs_with"
-   - confidence = 0.3
+3. 对需要精确控制的关系，使用 inject_relation()：
+   - relation = "co_occurs_with", "related_to" 等
 
 ### 置信度标准
 

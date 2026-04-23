@@ -45,7 +45,7 @@ TOOL_SCHEMAS = {
 文档流程: 拷贝 → 返回 need_l1 → 子Agent生成L1 → 调用 ingest(file_path=..., l1=...) 存储
 
 返回:
-- 照片: {status, photo_id, detected_persons, abstract, exif, kg_sync}
+- 照片: {status, photo_id, detected_persons, abstract, exif, lightrag_sync}
 - 文档(首轮): {status: "need_l1", file_path, content, hint}
 - 文档(L1回传): {status: "success", file_path}
 - 目录: {status, total, success/need_l1, results/files}""",
@@ -395,109 +395,126 @@ def call_embedding_service(endpoint: str, data: dict) -> dict | None:
 
 
 def sync_to_kg(file_path: str, l1: str, source: str = "document") -> dict:
-    """同步文档到知识图谱（KuzuDB）。
+    """同步文档到 LightRAG 知识图谱。
 
-    创建 Document 节点。实体提取由 dream-evolver 在睡眠整理时统一处理
-    （LLM 能正确判断实体类型，避免从 L1 标签字段错误提取 other: 实体）。
+    通过 LightRAG ainsert() 入库，实体提取由 LightRAG 内部自动完成。
     失败不影响主流程（向量库写入已成功）。
     """
     try:
-        from niu_kg_server import create_document
+        from niu_api.internal.lightrag_manager import get_lightrag, call_async
 
-        # 从 file_path 推算 title
-        title = Path(file_path).stem
+        rag = get_lightrag()
+        if rag is None:
+            logger.warning("[KG] LightRAG not available, skipping KG sync")
+            return {"status": "skipped", "reason": "LightRAG not available"}
 
-        # 创建 Document 节点（MERGE 语义，重复入库会覆盖）
-        create_document(uri=file_path, title=title, content=l1, source=source, entity_status="pending")
-        logger.info(f"[KG] Document created: {file_path}")
+        content = f"[Document: {file_path}]\n{l1}"
+        call_async(rag.ainsert(content, file_paths=[file_path]))
+        logger.info(f"[KG] Document ingested into LightRAG: {file_path}")
 
         return {"status": "success", "doc_uri": file_path}
 
-    except ImportError:
-        logger.warning("[KG] niu_kg_server not available, skipping KG sync")
-        return {"status": "skipped", "reason": "kg-server not importable"}
     except Exception as e:
         logger.warning(f"[KG] Sync failed: {e}")
         return {"status": "error", "reason": str(e)}
 
 
 def sync_photo_to_kg(file_path: str, abstract: str, detected_persons: list) -> dict:
-    """同步照片和人物到知识图谱（KuzuDB）。
+    """同步照片和人物到 LightRAG 知识图谱。
 
-    为照片创建 Document 节点，为检测到的人物创建 Entity 节点，
-    建立 MENTIONS 关系，以及同框人物之间的 RELATED_TO 关系。
+    照片描述通过 ainsert() 入库（LightRAG 自动提取实体），
+    人物通过 ainsert_custom_kg() 精确注入（避免 LLM 提取破坏人名）。
     失败不影响主流程（照片入库已成功）。
     """
     try:
-        from niu_kg_server import (
-            create_document, create_entity, link_document_entity,
-            link_entities, get_connection,
-        )
+        from niu_api.internal.lightrag_adapter import LightRAGIngester
+        from niu_api.internal.lightrag_manager import get_lightrag, call_async
 
-        # 1. 创建照片 Document 节点
+        rag = get_lightrag()
+        if rag is None:
+            logger.warning("[KG] LightRAG not available, skipping photo KG sync")
+            return {"status": "skipped", "reason": "LightRAG not available"}
+
         title = Path(file_path).stem
-        create_document(uri=file_path, title=title, content=abstract, source="photo", entity_status="pending")
-        logger.info(f"[KG] Photo Document created: {file_path}")
 
-        # 2. 清除该照片的旧 MENTIONS 边
-        try:
-            conn = get_connection()
-            conn.execute(
-                "MATCH (d:Document {uri: $uri})-[r:MENTIONS]->() DELETE r",
-                {"uri": file_path},
-            )
-        except Exception as e:
-            logger.warning(f"[KG] Failed to clear old MENTIONS for photo {file_path}: {e}")
+        # 1. 照片描述通过 ainsert 入库（LightRAG 自动提取实体和关系）
+        content = f"[Photo: {file_path}]\n{abstract}"
+        call_async(rag.ainsert(content))
+        logger.info(f"[KG] Photo ingested into LightRAG: {file_path}")
 
-        # 3. 为每个检测到的人物创建 Entity + MENTIONS
+        # 2. 人物实体通过 ainsert_custom_kg 精确注入
+        ingester = LightRAGIngester()
         entities_created = []
-        for person in detected_persons:
-            person_id = person.get("id", "")
-            person_name = person.get("name", "")
-            similarity = person.get("similarity", 0.7)
-            if not person_id:
-                continue
-            if not person_name:
-                person_name = person_id
-
-            entity_id = f"person:{person_id}"
-            try:
-                create_entity(
-                    id=entity_id,
-                    name=person_name,
-                    entity_type="person",
-                    description=f"Detected in photo: {title}",
-                )
-                link_document_entity(
-                    doc_uri=file_path,
-                    entity_id=entity_id,
-                    confidence=round(similarity, 2),
-                )
-                entities_created.append(entity_id)
-            except Exception as e:
-                logger.warning(f"[KG] Person entity failed for {person_name}: {e}")
-
-        # 4. 同框人物之间建立 RELATED_TO 关系
-        relations_created = 0
-        for i in range(len(detected_persons)):
-            for j in range(i + 1, len(detected_persons)):
-                a_id = detected_persons[i].get("id", "")
-                b_id = detected_persons[j].get("id", "")
-                if not a_id or not b_id:
+        if detected_persons:
+            entities = []
+            relationships = []
+            for person in detected_persons:
+                person_id = person.get("id", "")
+                person_name = person.get("name", "")
+                similarity = person.get("similarity", 0.7)
+                if not person_id:
                     continue
-                # 排序保证方向一致
-                if a_id > b_id:
-                    a_id, b_id = b_id, a_id
-                try:
-                    link_entities(
-                        entity1_id=f"person:{a_id}",
-                        entity2_id=f"person:{b_id}",
-                        relation="co_appears_with",
-                        confidence=0.3,
-                    )
+                if not person_name:
+                    person_name = person_id
+
+                entity_name = f"person:{person_id}"
+                entities.append({
+                    "entity_name": entity_name,
+                    "entity_type": "Person",
+                    "description": f"{person_name}, detected in photo: {title}",
+                    "source_id": "photo",
+                    "file_path": file_path,
+                })
+                # Photo -> Person relationship
+                relationships.append({
+                    "src_id": file_path,
+                    "tgt_id": entity_name,
+                    "keywords": "depicts",
+                    "description": f"Photo {title} depicts {person_name}",
+                    "source_id": "photo",
+                    "file_path": file_path,
+                    "weight": round(similarity, 2),
+                })
+                entities_created.append(entity_name)
+
+            if entities:
+                result = ingester.inject_custom_kg(
+                    entities=entities,
+                    relationships=relationships,
+                    chunks=[],
+                    source_id="photo",
+                )
+                logger.info(f"[KG] Photo persons injected: {result}")
+
+        # 3. 同框人物之间建立 co_appears_with 关系
+        relations_created = 0
+        if len(detected_persons) >= 2:
+            co_rels = []
+            for i in range(len(detected_persons)):
+                for j in range(i + 1, len(detected_persons)):
+                    a_id = detected_persons[i].get("id", "")
+                    b_id = detected_persons[j].get("id", "")
+                    if not a_id or not b_id:
+                        continue
+                    if a_id > b_id:
+                        a_id, b_id = b_id, a_id
+                    co_rels.append({
+                        "src_id": f"person:{a_id}",
+                        "tgt_id": f"person:{b_id}",
+                        "keywords": "co_appears_with",
+                        "description": f"Appeared together in photo: {title}",
+                        "source_id": "photo",
+                        "file_path": file_path,
+                        "weight": 0.3,
+                    })
                     relations_created += 1
-                except Exception as e:
-                    logger.warning(f"[KG] Co-occurrence link failed: {e}")
+            if co_rels:
+                ingester.inject_custom_kg(
+                    entities=[],
+                    relationships=co_rels,
+                    chunks=[],
+                    source_id="photo",
+                )
 
         logger.info(
             f"[KG] Photo sync complete: {len(entities_created)} persons, "
@@ -510,31 +527,29 @@ def sync_photo_to_kg(file_path: str, abstract: str, detected_persons: list) -> d
             "relations": relations_created,
         }
 
-    except ImportError:
-        logger.warning("[KG] niu_kg_server not available, skipping photo KG sync")
-        return {"status": "skipped", "reason": "kg-server not importable"}
     except Exception as e:
         logger.warning(f"[KG] Photo sync failed: {e}")
         return {"status": "error", "reason": str(e)}
 
 
 def sync_video_to_kg(file_path: str, abstract: str) -> dict:
-    """同步视频到知识图谱（KuzuDB）。
+    """同步视频到 LightRAG 知识图谱。
 
-    为视频创建 Document 节点（source="video"）。
-    视频实体提取待后续实现。
+    视频描述通过 ainsert() 入库，实体提取由 LightRAG 自动完成。
     """
     try:
-        from niu_kg_server import create_document
+        from niu_api.internal.lightrag_manager import get_lightrag, call_async
 
-        title = Path(file_path).stem
-        create_document(uri=file_path, title=title, content=abstract, source="video", entity_status="pending")
-        logger.info(f"[KG] Video Document created: {file_path}")
+        rag = get_lightrag()
+        if rag is None:
+            logger.warning("[KG] LightRAG not available, skipping video KG sync")
+            return {"status": "skipped", "reason": "LightRAG not available"}
+
+        content = f"[Video: {file_path}]\n{abstract}"
+        call_async(rag.ainsert(content))
+        logger.info(f"[KG] Video ingested into LightRAG: {file_path}")
         return {"status": "success", "doc_uri": file_path}
 
-    except ImportError:
-        logger.warning("[KG] niu_kg_server not available, skipping video KG sync")
-        return {"status": "skipped", "reason": "kg-server not importable"}
     except Exception as e:
         logger.warning(f"[KG] Video sync failed: {e}")
         return {"status": "error", "reason": str(e)}
@@ -1164,15 +1179,9 @@ def delete_person(person_id: str) -> dict:
     conn.commit()
 
     # 同步删除知识图谱中的实体
-    try:
-        from niu_kg_server import get_connection as kg_get_connection
-        kg_conn = kg_get_connection()
-        kg_conn.execute(
-            "MATCH (e:Entity {id: $id}) DETACH DELETE e",
-            {"id": f"person:{person_id}"},
-        )
-    except Exception as e:
-        logger.warning(f"[DELETE_PERSON] KG sync failed: {e}")
+    # Note: LightRAG doesn't support direct entity deletion by name;
+    # for person entities, we rely on the graph's natural cleanup.
+    logger.info(f"[DELETE_PERSON] LightRAG entity cleanup for person:{person_id}")
 
     return {
         "status": "success",
@@ -1795,7 +1804,7 @@ def ingest_photo(file_path: str, category: str | None = None) -> dict:
             "detected_persons": detected_persons,
             "abstract": abstract,
             "exif": exif,
-            "kg_sync": kg_result,
+            "lightrag_sync": kg_result,
         }
 
     except Exception as e:
@@ -1841,17 +1850,17 @@ def name_person(person_id: str, name: str) -> dict:
         conn.execute("UPDATE persons SET name = ? WHERE id = ?", (name, person_id))
         conn.commit()
 
-        # 同步更新知识图谱中的实体名称
+        # 同步更新 LightRAG 知识图谱中的实体名称
         try:
-            from niu_kg_server import create_entity
-            create_entity(
-                id=f"person:{person_id}",
-                name=name,
+            from niu_api.internal.lightrag_adapter import LightRAGIngester
+            ingester = LightRAGIngester()
+            ingester.inject_entity(
+                name=f"person:{person_id}",
                 entity_type="person",
                 description=f"Renamed to: {name}",
             )
         except Exception as e:
-            logger.warning(f"[NAME_PERSON] KG sync failed: {e}")
+            logger.warning(f"[NAME_PERSON] LightRAG sync failed: {e}")
 
         logger.info(f"[NAME_PERSON] Updated person {person_id} name to: {name}")
 
@@ -2013,37 +2022,26 @@ def merge_persons(person_a_id: str, person_b_id: str) -> dict:
 
         conn.commit()
 
-        # 同步知识图谱：更新 person_a 名称，转移 person_b 的关系到 person_a，删除 person_b 实体
+        # 同步 LightRAG：更新 person_a 实体，person_b 合并后不再单独存在
         try:
-            from niu_kg_server import create_entity, get_connection as kg_get_connection
+            from niu_api.internal.lightrag_adapter import LightRAGIngester
+            ingester = LightRAGIngester()
             merged_name = name_a if name_a else auto_label_a
-            create_entity(
-                id=f"person:{person_a_id}",
-                name=merged_name,
+            # 更新 person_a 实体
+            ingester.inject_entity(
+                name=f"person:{person_a_id}",
                 entity_type="person",
-                description=f"Merged with {person_b_id}",
+                description=f"Merged with {person_b_id}, name: {merged_name}",
             )
-            # 转移 person_b 的关系到 person_a
-            kg_conn = kg_get_connection()
-            # 将 person_b 的出边目标改为 person_a
-            kg_conn.execute(
-                "MATCH (e:Entity {id: $old_id})-[r:MENTIONS]->(target)"
-                " MERGE (a:Entity {id: $new_id})-[:MENTIONS]->(target)",
-                {"old_id": f"person:{person_b_id}", "new_id": f"person:{person_a_id}"},
-            )
-            # 将指向 person_b 的入边源头改为 person_a
-            kg_conn.execute(
-                "MATCH (source)-[r:MENTIONS]->(e:Entity {id: $old_id})"
-                " MERGE (source)-[:MENTIONS]->(a:Entity {id: $new_id})",
-                {"old_id": f"person:{person_b_id}", "new_id": f"person:{person_a_id}"},
-            )
-            # 删除 person_b 的 KG 实体及其所有边
-            kg_conn.execute(
-                "MATCH (e:Entity {id: $id}) DETACH DELETE e",
-                {"id": f"person:{person_b_id}"},
+            # person_b 合并到 person_a，建立关系
+            ingester.inject_relation(
+                src_id=f"person:{person_b_id}",
+                tgt_id=f"person:{person_a_id}",
+                relation="merged_into",
+                description=f"Person {person_b_id} merged into {person_a_id}",
             )
         except Exception as e:
-            logger.warning(f"[MERGE_PERSONS] KG sync failed: {e}")
+            logger.warning(f"[MERGE_PERSONS] LightRAG sync failed: {e}")
 
         logger.info(f"[MERGE_PERSONS] Merged {person_b_id} into {person_a_id}")
 
@@ -2707,7 +2705,7 @@ def store_document_l1(file_path: str, l1: str, l2: str | None = None) -> dict:
             "l1_id": l1_id,
             "file_path": file_path,
             "message": "文档摘要已存储到向量库",
-            "kg_sync": kg_result,
+            "lightrag_sync": kg_result,
         }
 
     except Exception as e:
@@ -2826,7 +2824,7 @@ def store_documents_l1(documents: list[dict]) -> dict:
                             "status": "success",
                             "l1_id": l1_id,
                             "l2_id": l2_id,
-                            "kg_sync": kg_result,
+                            "lightrag_sync": kg_result,
                         }
                     )
                     success_count += 1

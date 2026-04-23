@@ -11,6 +11,8 @@ TDD RED phase — these tests define the expected interface.
 import pytest
 from unittest.mock import patch, MagicMock, AsyncMock
 
+from niu_api.internal.lightrag_adapter import LightRAGAdapter, LightRAGIngester
+
 
 # ============== LightRAGAdapter Tests ==============
 
@@ -504,3 +506,444 @@ class TestQueryResultFormat:
             result = adapter.query("List features", response_type="Bullet Points")
             call_args = mock_rag.aquery.call_args
             assert call_args[1]["param"].response_type == "Bullet Points"
+
+
+# ============== Tests for _filter_by_entity_type ==============
+
+
+class TestFilterByEntityType:
+    """Tests for LightRAGAdapter._filter_by_entity_type."""
+
+    def _make_adapter(self):
+        from niu_api.internal.lightrag_adapter import LightRAGAdapter
+        return LightRAGAdapter()
+
+    def test_returns_empty_for_none_input(self):
+        adapter = self._make_adapter()
+        result = adapter._filter_by_entity_type(None, "skill")
+        assert result == []
+
+    def test_returns_empty_for_empty_entities(self):
+        adapter = self._make_adapter()
+        query_result = {"data": {"entities": [], "relationships": []}}
+        result = adapter._filter_by_entity_type(query_result, "skill")
+        assert result == []
+
+    def test_filters_matching_entity_type(self):
+        adapter = self._make_adapter()
+        query_result = {
+            "data": {
+                "entities": [
+                    {"id": "e1", "name": "Python", "entity_type": "skill"},
+                    {"id": "e2", "name": "Docker", "entity_type": "tool"},
+                    {"id": "e3", "name": "FastAPI", "entity_type": "skill"},
+                ],
+            }
+        }
+        result = adapter._filter_by_entity_type(query_result, "skill")
+        assert len(result) == 2
+        assert all(e["entity_type"] == "skill" for e in result)
+
+    def test_filters_case_insensitive(self):
+        adapter = self._make_adapter()
+        query_result = {
+            "data": {
+                "entities": [
+                    {"id": "e1", "name": "Python", "entity_type": "Skill"},
+                    {"id": "e2", "name": "Docker", "entity_type": "TOOL"},
+                ],
+            }
+        }
+        result = adapter._filter_by_entity_type(query_result, "skill")
+        assert len(result) == 1
+        assert result[0]["name"] == "Python"
+
+    def test_handles_missing_entity_type_field(self):
+        adapter = self._make_adapter()
+        query_result = {
+            "data": {
+                "entities": [
+                    {"id": "e1", "name": "Unknown"},
+                    {"id": "e2", "name": "Python", "entity_type": "skill"},
+                ],
+            }
+        }
+        result = adapter._filter_by_entity_type(query_result, "skill")
+        assert len(result) == 1
+        assert result[0]["name"] == "Python"
+
+    def test_handles_flat_dict_fallback(self):
+        """When query_result has no 'data' key, treat it as the data dict directly."""
+        adapter = self._make_adapter()
+        query_result = {
+            "entities": [
+                {"id": "e1", "name": "Python", "entity_type": "skill"},
+            ]
+        }
+        result = adapter._filter_by_entity_type(query_result, "skill")
+        assert len(result) == 1
+
+    def test_returns_empty_when_no_match(self):
+        adapter = self._make_adapter()
+        query_result = {
+            "data": {
+                "entities": [
+                    {"id": "e1", "name": "Docker", "entity_type": "tool"},
+                ],
+            }
+        }
+        result = adapter._filter_by_entity_type(query_result, "skill")
+        assert result == []
+
+
+# ============== Tests for _query_data ==============
+
+
+class TestQueryData:
+    """Tests for LightRAGAdapter._query_data."""
+
+    @patch("niu_api.internal.lightrag_adapter.call_async")
+    @patch.object(LightRAGAdapter, "_get_rag")
+    def test_calls_aquery_data_with_params(self, mock_get_rag, mock_call_async):
+        from niu_api.internal.lightrag_adapter import LightRAGAdapter
+
+        rag = MagicMock()
+        mock_get_rag.return_value = rag
+        mock_call_async.return_value = {"data": {"entities": []}}
+
+        adapter = LightRAGAdapter()
+        result = adapter._query_data("test query", mode="local", top_k=5)
+
+        mock_call_async.assert_called_once()
+        assert result == {"data": {"entities": []}}
+
+    @patch.object(LightRAGAdapter, "_get_rag")
+    def test_returns_none_when_rag_none(self, mock_get_rag):
+        from niu_api.internal.lightrag_adapter import LightRAGAdapter
+
+        mock_get_rag.return_value = None
+        adapter = LightRAGAdapter()
+        result = adapter._query_data("test")
+        assert result is None
+
+    def test_raises_on_invalid_mode(self):
+        from niu_api.internal.lightrag_adapter import LightRAGAdapter
+
+        adapter = LightRAGAdapter()
+        with pytest.raises(ValueError, match="Invalid mode"):
+            adapter._query_data("test", mode="invalid_mode")
+
+    @patch("niu_api.internal.lightrag_adapter.call_async")
+    @patch.object(LightRAGAdapter, "_get_rag")
+    def test_returns_none_on_exception(self, mock_get_rag, mock_call_async):
+        from niu_api.internal.lightrag_adapter import LightRAGAdapter
+
+        rag = MagicMock()
+        mock_get_rag.return_value = rag
+        mock_call_async.side_effect = RuntimeError("query_data error")
+
+        adapter = LightRAGAdapter()
+        result = adapter._query_data("test", mode="local")
+        assert result is None
+
+
+# ============== Tests for search_skills ==============
+
+
+class TestSearchSkills:
+    """Tests for LightRAGAdapter.search_skills."""
+
+    @patch.object(LightRAGAdapter, "_query_data")
+    @patch.object(LightRAGAdapter, "_filter_by_entity_type")
+    def test_calls_query_data_with_local_mode(self, mock_filter, mock_query_data):
+        from niu_api.internal.lightrag_adapter import LightRAGAdapter
+
+        mock_query_data.return_value = {"data": {"entities": []}}
+        mock_filter.return_value = []
+
+        adapter = LightRAGAdapter()
+        adapter.search_skills("python", top_k=5)
+
+        mock_query_data.assert_called_once_with("python", mode="local", top_k=5)
+
+    @patch.object(LightRAGAdapter, "_filter_by_entity_type")
+    @patch.object(LightRAGAdapter, "_query_data")
+    def test_filters_by_skill_type(self, mock_query_data, mock_filter):
+        from niu_api.internal.lightrag_adapter import LightRAGAdapter
+
+        mock_query_data.return_value = {"data": {"entities": [{"entity_type": "skill"}]}}
+        mock_filter.return_value = [{"entity_type": "skill"}]
+
+        adapter = LightRAGAdapter()
+        result = adapter.search_skills("python")
+
+        mock_filter.assert_called_once_with(mock_query_data.return_value, "skill")
+        assert result == [{"entity_type": "skill"}]
+
+    @patch.object(LightRAGAdapter, "_query_data")
+    @patch.object(LightRAGAdapter, "_filter_by_entity_type")
+    def test_default_top_k_is_10(self, mock_filter, mock_query_data):
+        from niu_api.internal.lightrag_adapter import LightRAGAdapter
+
+        mock_query_data.return_value = {}
+        mock_filter.return_value = []
+
+        adapter = LightRAGAdapter()
+        adapter.search_skills("test")
+
+        mock_query_data.assert_called_once_with("test", mode="local", top_k=10)
+
+
+# ============== Tests for search_tools ==============
+
+
+class TestSearchTools:
+    """Tests for LightRAGAdapter.search_tools."""
+
+    @patch.object(LightRAGAdapter, "_query_data")
+    @patch.object(LightRAGAdapter, "_filter_by_entity_type")
+    def test_filters_by_tool_type(self, mock_filter, mock_query_data):
+        from niu_api.internal.lightrag_adapter import LightRAGAdapter
+
+        mock_query_data.return_value = {"data": {"entities": []}}
+        mock_filter.return_value = [{"entity_type": "tool"}]
+
+        adapter = LightRAGAdapter()
+        result = adapter.search_tools("docker", top_k=5)
+
+        mock_query_data.assert_called_once_with("docker", mode="local", top_k=5)
+        mock_filter.assert_called_once_with(mock_query_data.return_value, "tool")
+        assert result == [{"entity_type": "tool"}]
+
+
+# ============== Tests for search_knowledge ==============
+
+
+class TestSearchKnowledge:
+    """Tests for LightRAGAdapter.search_knowledge.
+
+    search_knowledge returns both "knowledge" and "concept" entity types.
+    """
+
+    @patch.object(LightRAGAdapter, "_filter_by_entity_type")
+    @patch.object(LightRAGAdapter, "_query_data")
+    def test_returns_knowledge_and_concept_types(self, mock_query_data, mock_filter):
+        from niu_api.internal.lightrag_adapter import LightRAGAdapter
+
+        mock_query_data.return_value = {"data": {"entities": []}}
+        knowledge_entities = [{"entity_type": "knowledge"}]
+        concept_entities = [{"entity_type": "concept"}]
+        mock_filter.side_effect = [knowledge_entities, concept_entities]
+
+        adapter = LightRAGAdapter()
+        result = adapter.search_knowledge("machine learning")
+
+        assert mock_filter.call_count == 2
+        mock_filter.assert_any_call(mock_query_data.return_value, "knowledge")
+        mock_filter.assert_any_call(mock_query_data.return_value, "concept")
+        assert len(result) == 2
+        assert result[0]["entity_type"] == "knowledge"
+        assert result[1]["entity_type"] == "concept"
+
+    @patch.object(LightRAGAdapter, "_filter_by_entity_type")
+    @patch.object(LightRAGAdapter, "_query_data")
+    def test_uses_local_mode(self, mock_query_data, mock_filter):
+        from niu_api.internal.lightrag_adapter import LightRAGAdapter
+
+        mock_query_data.return_value = {}
+        mock_filter.return_value = []
+
+        adapter = LightRAGAdapter()
+        adapter.search_knowledge("test")
+
+        mock_query_data.assert_called_once_with("test", mode="local", top_k=10)
+
+
+# ============== Tests for explore_node ==============
+
+
+class TestExploreNode:
+    """Tests for LightRAGAdapter.explore_node."""
+
+    @patch.object(LightRAGAdapter, "_get_rag")
+    def test_returns_empty_when_rag_none(self, mock_get_rag):
+        from niu_api.internal.lightrag_adapter import LightRAGAdapter
+
+        mock_get_rag.return_value = None
+        adapter = LightRAGAdapter()
+        result = adapter.explore_node("Python")
+        assert result["nodes"] == []
+        assert result["edges"] == []
+        assert result["stats"]["nodes"] == 0
+
+    @patch("niu_api.internal.lightrag_adapter.call_async")
+    @patch.object(LightRAGAdapter, "_get_rag")
+    def test_returns_empty_when_kg_is_none(self, mock_get_rag, mock_call_async):
+        from niu_api.internal.lightrag_adapter import LightRAGAdapter
+
+        mock_get_rag.return_value = MagicMock()
+        mock_call_async.return_value = None
+
+        adapter = LightRAGAdapter()
+        result = adapter.explore_node("Python")
+        assert result["nodes"] == []
+        assert result["edges"] == []
+
+    @patch("niu_api.internal.lightrag_adapter.call_async")
+    @patch.object(LightRAGAdapter, "_get_rag")
+    def test_returns_structured_subgraph(self, mock_get_rag, mock_call_async):
+        from niu_api.internal.lightrag_adapter import LightRAGAdapter
+
+        rag = MagicMock()
+        mock_get_rag.return_value = rag
+
+        # Build mock KnowledgeGraph with nodes and edges
+        node1 = MagicMock()
+        node1.id = "Python"
+        node1.properties = {"entity_type": "skill", "description": "A programming language"}
+
+        node2 = MagicMock()
+        node2.id = "FastAPI"
+        node2.properties = {"entity_type": "tool", "description": "A web framework"}
+
+        edge1 = MagicMock()
+        edge1.source = "Python"
+        edge1.target = "FastAPI"
+        edge1.properties = {"keywords": "used_by", "description": "Python is used by FastAPI", "weight": 1.0}
+
+        kg = MagicMock()
+        kg.nodes = [node1, node2]
+        kg.edges = [edge1]
+
+        mock_call_async.return_value = kg
+
+        adapter = LightRAGAdapter()
+        result = adapter.explore_node("Python", depth=2)
+
+        assert result["center"]["name"] == "Python"
+        assert result["center"]["type"] == "skill"
+        assert len(result["nodes"]) == 2
+        assert len(result["edges"]) == 1
+        assert result["edges"][0]["source"] == "Python"
+        assert result["edges"][0]["target"] == "FastAPI"
+        assert result["edges"][0]["relation"] == "used_by"
+        assert result["stats"]["nodes"] == 2
+        assert result["stats"]["edges"] == 1
+        assert result["stats"]["max_depth"] == 2
+
+    @patch("niu_api.internal.lightrag_adapter.call_async")
+    @patch.object(LightRAGAdapter, "_get_rag")
+    def test_clamps_depth_to_valid_range(self, mock_get_rag, mock_call_async):
+        from niu_api.internal.lightrag_adapter import LightRAGAdapter
+
+        rag = MagicMock()
+        mock_get_rag.return_value = rag
+
+        kg = MagicMock()
+        kg.nodes = []
+        kg.edges = []
+        mock_call_async.return_value = kg
+
+        adapter = LightRAGAdapter()
+        result = adapter.explore_node("test", depth=10)
+        assert result["stats"]["max_depth"] == 5
+
+        result = adapter.explore_node("test", depth=0)
+        assert result["stats"]["max_depth"] == 1
+
+    @patch("niu_api.internal.lightrag_adapter.call_async")
+    @patch.object(LightRAGAdapter, "_get_rag")
+    def test_handles_exception_gracefully(self, mock_get_rag, mock_call_async):
+        from niu_api.internal.lightrag_adapter import LightRAGAdapter
+
+        rag = MagicMock()
+        mock_get_rag.return_value = rag
+        mock_call_async.side_effect = RuntimeError("graph error")
+
+        adapter = LightRAGAdapter()
+        result = adapter.explore_node("Python")
+        assert result["nodes"] == []
+        assert result["edges"] == []
+        assert result["stats"]["nodes"] == 0
+
+
+# ============== Tests for get_graph_snapshot ==============
+
+
+class TestGetGraphSnapshot:
+    """Tests for LightRAGAdapter.get_graph_snapshot."""
+
+    @patch.object(LightRAGAdapter, "_get_rag")
+    def test_returns_empty_when_rag_none(self, mock_get_rag):
+        from niu_api.internal.lightrag_adapter import LightRAGAdapter
+
+        mock_get_rag.return_value = None
+        adapter = LightRAGAdapter()
+        result = adapter.get_graph_snapshot()
+        assert result["nodes"] == []
+        assert result["edges"] == []
+
+    @patch("niu_api.internal.lightrag_adapter.call_async")
+    @patch.object(LightRAGAdapter, "_get_rag")
+    def test_returns_empty_when_kg_none(self, mock_get_rag, mock_call_async):
+        from niu_api.internal.lightrag_adapter import LightRAGAdapter
+
+        rag = MagicMock()
+        mock_get_rag.return_value = rag
+        mock_call_async.return_value = None
+
+        adapter = LightRAGAdapter()
+        result = adapter.get_graph_snapshot()
+        assert result["nodes"] == []
+        assert result["edges"] == []
+
+    @patch("niu_api.internal.lightrag_adapter.call_async")
+    @patch.object(LightRAGAdapter, "_get_rag")
+    def test_returns_full_graph(self, mock_get_rag, mock_call_async):
+        from niu_api.internal.lightrag_adapter import LightRAGAdapter
+
+        rag = MagicMock()
+        mock_get_rag.return_value = rag
+
+        node1 = MagicMock()
+        node1.id = "Python"
+        node1.properties = {"entity_type": "skill", "description": "A language"}
+
+        node2 = MagicMock()
+        node2.id = "Docker"
+        node2.properties = {"entity_type": "tool", "description": "Container platform"}
+
+        edge1 = MagicMock()
+        edge1.source = "Python"
+        edge1.target = "Docker"
+        edge1.properties = {"keywords": "deployed_with", "description": "", "weight": 1.0}
+
+        kg = MagicMock()
+        kg.nodes = [node1, node2]
+        kg.edges = [edge1]
+
+        mock_call_async.return_value = kg
+
+        adapter = LightRAGAdapter()
+        result = adapter.get_graph_snapshot(limit=100)
+
+        assert len(result["nodes"]) == 2
+        assert len(result["edges"]) == 1
+        assert result["nodes"][0]["id"] == "Python"
+        assert result["nodes"][0]["type"] == "skill"
+        assert result["edges"][0]["source"] == "Python"
+        assert result["edges"][0]["target"] == "Docker"
+
+    @patch("niu_api.internal.lightrag_adapter.call_async")
+    @patch.object(LightRAGAdapter, "_get_rag")
+    def test_handles_exception_gracefully(self, mock_get_rag, mock_call_async):
+        from niu_api.internal.lightrag_adapter import LightRAGAdapter
+
+        rag = MagicMock()
+        mock_get_rag.return_value = rag
+        mock_call_async.side_effect = RuntimeError("snapshot error")
+
+        adapter = LightRAGAdapter()
+        result = adapter.get_graph_snapshot()
+        assert result["nodes"] == []
+        assert result["edges"] == []

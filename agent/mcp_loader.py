@@ -21,7 +21,7 @@ REQUIRED_SERVERS: List[Tuple[str, str]] = [
     ("config-manager", "niu_config_manager"),
     ("memory-server", "niu_memory_server"),
     ("vector-store", "niu_vector_store"),
-    ("kg-server", "niu_kg_server"),
+    # kg-server removed — replaced by LightRAG adapter/pipeline
     ("file-parser", "niu_file_parser"),
     ("session-manager", "niu_session_manager"),
     ("scheduler-server", "niu_scheduler_server"),
@@ -69,6 +69,107 @@ def _add_server_workdirs_to_sys_path(config: dict) -> None:
         if workdir_path.exists() and str(workdir_path) not in sys.path:
             sys.path.insert(0, str(workdir_path))
             logger.debug(f"Added to sys.path: {workdir_path}")
+
+
+# ============================================================================
+# Built-in Tool Registration
+# ============================================================================
+
+def _register_lightrag_query_tool(registry: ToolRegistry) -> None:
+    """Register lightrag-query as a built-in tool wrapping LightRAGAdapter.
+
+    The runner.py _inject_dynamic_resources prompt references this tool,
+    so it must exist in the registry for the LLM to call it successfully.
+    """
+    schema = {
+        "name": "lightrag-query",
+        "description": (
+            "Query the LightRAG knowledge graph for related information. "
+            "Use 'local' for entity-specific queries, 'global' for broad overview, "
+            "'hybrid' for balanced results, 'mix' for combined local+global, "
+            "'naive' for simple keyword search."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "The search query for knowledge graph retrieval",
+                },
+                "mode": {
+                    "type": "string",
+                    "enum": ["naive", "local", "global", "hybrid", "mix"],
+                    "default": "hybrid",
+                    "description": (
+                        "Query mode: naive (simple keyword), local (entity-focused), "
+                        "global (overview), hybrid (balanced), mix (combined local+global)"
+                    ),
+                },
+            },
+            "required": ["query"],
+        },
+    }
+
+    def lightrag_query_fn(query: str, mode: str = "hybrid") -> str:
+        from niu_api.internal.lightrag_adapter import LightRAGAdapter
+
+        adapter = LightRAGAdapter()
+        result = adapter.query(query, mode=mode)
+        if result is None:
+            return "Knowledge graph is not available."
+        return result
+
+    registry.register("lightrag-query", lightrag_query_fn, schema, visibility="static")
+
+
+def _inject_tools_to_lightrag(registry: ToolRegistry, servers: List[Tuple[str, str]]) -> None:
+    """Inject MCP tool descriptions into the LightRAG knowledge graph.
+
+    After tools are registered in ToolRegistry, also inject each tool
+    as an entity with entity_type="tool" into LightRAG so that
+    LightRAGAdapter.search_tools() can find them.
+
+    Wrapped in try/except so LightRAG failures never break startup.
+    """
+    try:
+        from niu_api.internal.lightrag_adapter import LightRAGIngester
+
+        ingester = LightRAGIngester()
+
+        for server_name, _module_name in servers:
+            # Get tool schemas for this server from the registry
+            for full_name, schema in registry.get_all_schemas().items():
+                # Only process tools belonging to this server
+                # full_name format: "server-name/tool-name"
+                if "/" not in full_name:
+                    continue
+                parts = full_name.split("/", 1)
+                if parts[0] != server_name:
+                    continue
+
+                tool_name = parts[1]
+                description = schema.get("description", "")
+                if not description:
+                    continue
+
+                try:
+                    result = ingester.inject_entity(
+                        name=f"tool:{full_name}",
+                        entity_type="tool",
+                        description=description,
+                        source_id=f"tool:{full_name}",
+                        chunk_content=f"{tool_name}: {description}",
+                        file_path=f"mcp://{full_name}",
+                    )
+                    if result.get("status") == "ok":
+                        logger.debug(f"[MCP Loader] Injected tool '{full_name}' into LightRAG")
+                except Exception as e:
+                    logger.debug(f"[MCP Loader] LightRAG inject failed for tool '{full_name}': {e}")
+
+        logger.info("[MCP Loader] Tool descriptions injected into LightRAG")
+    except Exception as e:
+        # LightRAG not available — non-fatal, startup continues
+        logger.debug(f"[MCP Loader] LightRAG tool inject skipped: {e}")
 
 
 # ============================================================================
@@ -127,5 +228,12 @@ def load_mcp_tools(required_servers: Optional[List[Tuple[str, str]]] = None) -> 
 
     # Set global registry instance
     set_registry(registry)
+
+    # Register built-in tools (not from MCP server modules)
+    _register_lightrag_query_tool(registry)
+
+    # Inject MCP tool descriptions into LightRAG knowledge graph
+    # so that LightRAGAdapter.search_tools() can find them
+    _inject_tools_to_lightrag(registry, servers)
 
     return registry

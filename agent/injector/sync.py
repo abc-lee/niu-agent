@@ -285,7 +285,7 @@ class SkillSync:
                 conn.close()
 
     def _sync_skill(self, name: str, skill_file: Path):
-        """同步单个 skill 到向量库"""
+        """同步单个 skill 到向量库 + LightRAG"""
         try:
             content = skill_file.read_text(encoding="utf-8")
             triggers = self._extract_triggers(content)
@@ -317,8 +317,58 @@ class SkillSync:
 
             self._upsert_skill(f"skill:{name}", search_content, metadata)
 
+            # Also inject skill entity into LightRAG knowledge graph
+            # so that search_skills() can find it
+            if description:
+                self._inject_skill_to_lightrag(name, description, tags, triggers, str(skill_file))
+
         except Exception as e:
             logger.error(f"[SkillSync] Failed to sync skill {name}: {e}")
+
+    def _inject_skill_to_lightrag(
+        self,
+        name: str,
+        description: str,
+        tags: list[str],
+        triggers: list[str],
+        file_path: str,
+    ):
+        """Inject a skill entity into the LightRAG knowledge graph.
+
+        Wrapped in try/except so LightRAG failures never break vector-store sync.
+        The skill entity uses entity_type="skill" so that
+        LightRAGAdapter.search_skills() can find it.
+        """
+        try:
+            from niu_api.internal.lightrag_adapter import LightRAGIngester
+
+            ingester = LightRAGIngester()
+
+            # Build a richer description from triggers + tags
+            extra_parts = []
+            if triggers:
+                extra_parts.append(f"触发词: {', '.join(triggers)}")
+            if tags:
+                extra_parts.append(f"标签: {', '.join(tags)}")
+            full_description = description
+            if extra_parts:
+                full_description += " | " + "; ".join(extra_parts)
+
+            result = ingester.inject_entity(
+                name=f"skill:{name}",
+                entity_type="skill",
+                description=full_description,
+                source_id=f"skill:{name}",
+                chunk_content=full_description,
+                file_path=f"skill://{name}",
+            )
+            if result.get("status") == "ok":
+                logger.debug(f"[SkillSync] Injected skill '{name}' into LightRAG")
+            else:
+                logger.debug(f"[SkillSync] LightRAG inject skipped for '{name}': {result.get('message', '')}")
+        except Exception as e:
+            # LightRAG not available or inject failed — non-fatal
+            logger.debug(f"[SkillSync] LightRAG skill inject failed for '{name}': {e}")
 
     def _upsert_skill(self, doc_id: str, content: str, metadata: dict):
         """写入或更新 skill 到向量库（使用独立连接，避免跨线程共享单例连接）"""

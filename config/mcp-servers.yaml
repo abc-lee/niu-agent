@@ -13,21 +13,25 @@ file-parser:
     parse_file: {visibility: dynamic}
     list_supported_formats: {visibility: hidden}
 
-# Knowledge Graph - Manage documents, entities, and their relationships
+# Knowledge Graph - LightRAG-based brain graph (replaces KuzuDB kg-server)
+# NOTE: kg-server tools are now provided by LightRAG adapter/pipeline.
+# The kg-server MCP module is no longer loaded at startup (removed from mcp_loader.py).
+# KG queries go through /api/kg/* endpoints which use LightRAGAdapter.
+# KG ingestion goes through LightRAGPipeline (ainsert/ainsert_custom_kg).
 kg-server:
   command: ${PYTHON_PATH}
   args:
     - "-m"
     - "niu_kg_server"
   workdir: mcp-servers/kg-server/src
-  preload: true
+  preload: false  # No longer preloaded — LightRAG handles KG internally
   tools:
-    explore_node: {visibility: static}
-    get_related_entities: {visibility: static}
-    query_graph: {visibility: dynamic}
-    find_path: {visibility: dynamic}
-    hub_entities: {visibility: dynamic}
-    get_related_concepts: {visibility: dynamic}
+    explore_node: {visibility: hidden}
+    get_related_entities: {visibility: hidden}
+    query_graph: {visibility: hidden}
+    find_path: {visibility: hidden}
+    hub_entities: {visibility: hidden}
+    get_related_concepts: {visibility: hidden}
     search_documents: {visibility: hidden}
     get_document: {visibility: hidden}
     list_documents: {visibility: hidden}
