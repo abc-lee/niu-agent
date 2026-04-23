@@ -512,7 +512,7 @@ class TestQueryResultFormat:
 
 
 class TestFilterByEntityType:
-    """Tests for LightRAGAdapter._filter_by_entity_type."""
+    """Tests for LightRAGAdapter.filter_by_entity_type."""
 
     def _make_adapter(self):
         from niu_api.internal.lightrag_adapter import LightRAGAdapter
@@ -520,13 +520,13 @@ class TestFilterByEntityType:
 
     def test_returns_empty_for_none_input(self):
         adapter = self._make_adapter()
-        result = adapter._filter_by_entity_type(None, "skill")
+        result = adapter.filter_by_entity_type(None, "skill")
         assert result == []
 
     def test_returns_empty_for_empty_entities(self):
         adapter = self._make_adapter()
         query_result = {"data": {"entities": [], "relationships": []}}
-        result = adapter._filter_by_entity_type(query_result, "skill")
+        result = adapter.filter_by_entity_type(query_result, "skill")
         assert result == []
 
     def test_filters_matching_entity_type(self):
@@ -540,7 +540,7 @@ class TestFilterByEntityType:
                 ],
             }
         }
-        result = adapter._filter_by_entity_type(query_result, "skill")
+        result = adapter.filter_by_entity_type(query_result, "skill")
         assert len(result) == 2
         assert all(e["entity_type"] == "skill" for e in result)
 
@@ -554,7 +554,7 @@ class TestFilterByEntityType:
                 ],
             }
         }
-        result = adapter._filter_by_entity_type(query_result, "skill")
+        result = adapter.filter_by_entity_type(query_result, "skill")
         assert len(result) == 1
         assert result[0]["name"] == "Python"
 
@@ -568,7 +568,7 @@ class TestFilterByEntityType:
                 ],
             }
         }
-        result = adapter._filter_by_entity_type(query_result, "skill")
+        result = adapter.filter_by_entity_type(query_result, "skill")
         assert len(result) == 1
         assert result[0]["name"] == "Python"
 
@@ -580,7 +580,7 @@ class TestFilterByEntityType:
                 {"id": "e1", "name": "Python", "entity_type": "skill"},
             ]
         }
-        result = adapter._filter_by_entity_type(query_result, "skill")
+        result = adapter.filter_by_entity_type(query_result, "skill")
         assert len(result) == 1
 
     def test_returns_empty_when_no_match(self):
@@ -592,7 +592,7 @@ class TestFilterByEntityType:
                 ],
             }
         }
-        result = adapter._filter_by_entity_type(query_result, "skill")
+        result = adapter.filter_by_entity_type(query_result, "skill")
         assert result == []
 
 
@@ -600,7 +600,7 @@ class TestFilterByEntityType:
 
 
 class TestQueryData:
-    """Tests for LightRAGAdapter._query_data."""
+    """Tests for LightRAGAdapter.query_data."""
 
     @patch("niu_api.internal.lightrag_adapter.call_async")
     @patch.object(LightRAGAdapter, "_get_rag")
@@ -612,7 +612,7 @@ class TestQueryData:
         mock_call_async.return_value = {"data": {"entities": []}}
 
         adapter = LightRAGAdapter()
-        result = adapter._query_data("test query", mode="local", top_k=5)
+        result = adapter.query_data("test query", mode="local", top_k=5)
 
         mock_call_async.assert_called_once()
         assert result == {"data": {"entities": []}}
@@ -623,7 +623,7 @@ class TestQueryData:
 
         mock_get_rag.return_value = None
         adapter = LightRAGAdapter()
-        result = adapter._query_data("test")
+        result = adapter.query_data("test")
         assert result is None
 
     def test_raises_on_invalid_mode(self):
@@ -631,7 +631,7 @@ class TestQueryData:
 
         adapter = LightRAGAdapter()
         with pytest.raises(ValueError, match="Invalid mode"):
-            adapter._query_data("test", mode="invalid_mode")
+            adapter.query_data("test", mode="invalid_mode")
 
     @patch("niu_api.internal.lightrag_adapter.call_async")
     @patch.object(LightRAGAdapter, "_get_rag")
@@ -643,7 +643,7 @@ class TestQueryData:
         mock_call_async.side_effect = RuntimeError("query_data error")
 
         adapter = LightRAGAdapter()
-        result = adapter._query_data("test", mode="local")
+        result = adapter.query_data("test", mode="local")
         assert result is None
 
 
@@ -653,8 +653,8 @@ class TestQueryData:
 class TestSearchSkills:
     """Tests for LightRAGAdapter.search_skills."""
 
-    @patch.object(LightRAGAdapter, "_query_data")
-    @patch.object(LightRAGAdapter, "_filter_by_entity_type")
+    @patch.object(LightRAGAdapter, "query_data")
+    @patch.object(LightRAGAdapter, "filter_by_entity_type")
     def test_calls_query_data_with_local_mode(self, mock_filter, mock_query_data):
         from niu_api.internal.lightrag_adapter import LightRAGAdapter
 
@@ -666,8 +666,8 @@ class TestSearchSkills:
 
         mock_query_data.assert_called_once_with("python", mode="local", top_k=5)
 
-    @patch.object(LightRAGAdapter, "_filter_by_entity_type")
-    @patch.object(LightRAGAdapter, "_query_data")
+    @patch.object(LightRAGAdapter, "filter_by_entity_type")
+    @patch.object(LightRAGAdapter, "query_data")
     def test_filters_by_skill_type(self, mock_query_data, mock_filter):
         from niu_api.internal.lightrag_adapter import LightRAGAdapter
 
@@ -680,8 +680,8 @@ class TestSearchSkills:
         mock_filter.assert_called_once_with(mock_query_data.return_value, "skill")
         assert result == [{"entity_type": "skill"}]
 
-    @patch.object(LightRAGAdapter, "_query_data")
-    @patch.object(LightRAGAdapter, "_filter_by_entity_type")
+    @patch.object(LightRAGAdapter, "query_data")
+    @patch.object(LightRAGAdapter, "filter_by_entity_type")
     def test_default_top_k_is_10(self, mock_filter, mock_query_data):
         from niu_api.internal.lightrag_adapter import LightRAGAdapter
 
@@ -700,8 +700,8 @@ class TestSearchSkills:
 class TestSearchTools:
     """Tests for LightRAGAdapter.search_tools."""
 
-    @patch.object(LightRAGAdapter, "_query_data")
-    @patch.object(LightRAGAdapter, "_filter_by_entity_type")
+    @patch.object(LightRAGAdapter, "query_data")
+    @patch.object(LightRAGAdapter, "filter_by_entity_type")
     def test_filters_by_tool_type(self, mock_filter, mock_query_data):
         from niu_api.internal.lightrag_adapter import LightRAGAdapter
 
@@ -725,8 +725,8 @@ class TestSearchKnowledge:
     search_knowledge returns both "knowledge" and "concept" entity types.
     """
 
-    @patch.object(LightRAGAdapter, "_filter_by_entity_type")
-    @patch.object(LightRAGAdapter, "_query_data")
+    @patch.object(LightRAGAdapter, "filter_by_entity_type")
+    @patch.object(LightRAGAdapter, "query_data")
     def test_returns_knowledge_and_concept_types(self, mock_query_data, mock_filter):
         from niu_api.internal.lightrag_adapter import LightRAGAdapter
 
@@ -745,8 +745,8 @@ class TestSearchKnowledge:
         assert result[0]["entity_type"] == "knowledge"
         assert result[1]["entity_type"] == "concept"
 
-    @patch.object(LightRAGAdapter, "_filter_by_entity_type")
-    @patch.object(LightRAGAdapter, "_query_data")
+    @patch.object(LightRAGAdapter, "filter_by_entity_type")
+    @patch.object(LightRAGAdapter, "query_data")
     def test_uses_local_mode(self, mock_query_data, mock_filter):
         from niu_api.internal.lightrag_adapter import LightRAGAdapter
 

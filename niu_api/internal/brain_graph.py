@@ -234,17 +234,17 @@ class BrainGraph:
     ) -> List[Dict[str, Any]]:
         """Recall memories from the brain graph.
 
-        Uses LightRAG _query_data(mode="mix") for structured retrieval
+        Uses LightRAG query_data(mode="mix") for structured retrieval
         with real weights from the knowledge graph edges.
         """
         try:
-            result = self._adapter._query_data(
+            result = self._adapter.query_data(
                 query=query,
                 mode="mix",
                 top_k=top_k,
             )
         except Exception:
-            logger.debug("[BRAIN] _query_data failed, falling back to text query")
+            logger.debug("[BRAIN] query_data failed, falling back to text query")
             result = None
 
         if result and isinstance(result, dict):
@@ -296,7 +296,7 @@ class BrainGraph:
     def _extract_brain_memories_from_structured(
         self, relationships: Any, min_weight: float
     ) -> List[Dict[str, Any]]:
-        """Extract brain:Niu memories from structured _query_data relationships.
+        """Extract brain:Niu memories from structured query_data relationships.
 
         Handles both dict and dataclass/object access patterns.
         """
