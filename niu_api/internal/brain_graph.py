@@ -59,9 +59,15 @@ def normalize_name(raw_name: str) -> str:
     name = raw_name.replace(" ", "_")
     name = re.sub(r"[^a-zA-Z0-9_\-]", "", name)
 
-    parts = name.split("_")
-    parts = [p.capitalize() for p in parts if p]
-    name = "_".join(parts)
+    # Split by underscore and hyphen, capitalize first letter of each segment
+    parts = re.split(r"[_\-]+", name)
+    capitalized = []
+    for p in parts:
+        if not p:
+            continue
+        # Capitalize first letter only, preserve rest (LiLei stays LiLei)
+        capitalized.append(p[0].upper() + p[1:] if len(p) > 1 else p.upper())
+    name = "_".join(capitalized)
 
     if len(name) > MAX_NAME_LENGTH:
         name = name[:MAX_NAME_LENGTH]
@@ -162,6 +168,9 @@ class BrainGraph:
             file_path="brain://memory",
         )
 
+        if entity_result.get("status") == "error":
+            return entity_result
+
         # Inject weighted relation via inject_custom_kg
         # inject_relation doesn't support weight, so we use inject_custom_kg directly
         relation_result = self._ingester.inject_custom_kg(
@@ -170,17 +179,16 @@ class BrainGraph:
                 {
                     "src_id": "brain:Niu",
                     "tgt_id": target_name,
-                    "relation_type": relation_type,
+                    "relation": relation_type,
                     "description": content[:200],
                     "weight": weight,
                     "source_id": "brain",
                     "file_path": "brain://memory",
                 }
             ],
+            chunks=[],
         )
 
-        if entity_result.get("status") == "error":
-            return entity_result
         if isinstance(relation_result, dict) and relation_result.get("status") == "error":
             return relation_result
 
@@ -248,7 +256,7 @@ class BrainGraph:
         """Extract brain:Niu memory references from query result text."""
         memories = []
 
-        pattern = r"brain:(\w+):(\w+)"
+        pattern = r"brain:([\w-]+):([\w-]+)"
         for match in re.finditer(pattern, text):
             full_name = match.group(0)
             weight = 0.7  # Default for recalled memories

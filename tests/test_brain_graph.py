@@ -43,7 +43,8 @@ class TestNormalizeName:
     def test_preserve_underscore_and_hyphen(self):
         from niu_api.internal.brain_graph import normalize_name
 
-        assert normalize_name("ai-bot project") == "Ai-Bot_Project"
+        # Hyphens and underscores both become segment separators, joined with _
+        assert normalize_name("ai-bot project") == "Ai_Bot_Project"
 
     def test_empty_string(self):
         from niu_api.internal.brain_graph import normalize_name
@@ -119,7 +120,7 @@ class TestBrainGraphStoreMemory:
         rels = call_kwargs[1]["relationships"]
         assert len(rels) == 1
         assert rels[0]["src_id"] == "brain:Niu"
-        assert rels[0]["relation_type"] == "related_to"
+        assert rels[0]["relation"] == "related_to"
         assert rels[0]["weight"] == 0.3
 
     def test_store_l1_memory_prefers(self):
@@ -137,7 +138,7 @@ class TestBrainGraphStoreMemory:
         bg._ingester.inject_custom_kg.assert_called_once()
         call_kwargs = bg._ingester.inject_custom_kg.call_args
         rels = call_kwargs[1]["relationships"]
-        assert rels[0]["relation_type"] == "prefers"
+        assert rels[0]["relation"] == "prefers"
 
     def test_store_l1_memory_skills(self):
         """L1 memory with type=skills should create 'skilled_in' relation."""
@@ -154,7 +155,7 @@ class TestBrainGraphStoreMemory:
         bg._ingester.inject_custom_kg.assert_called_once()
         call_kwargs = bg._ingester.inject_custom_kg.call_args
         rels = call_kwargs[1]["relationships"]
-        assert rels[0]["relation_type"] == "skilled_in"
+        assert rels[0]["relation"] == "skilled_in"
 
     def test_store_l1_memory_experiences(self):
         """L1 memory with type=experiences should create 'remembers' relation."""
@@ -171,7 +172,7 @@ class TestBrainGraphStoreMemory:
         bg._ingester.inject_custom_kg.assert_called_once()
         call_kwargs = bg._ingester.inject_custom_kg.call_args
         rels = call_kwargs[1]["relationships"]
-        assert rels[0]["relation_type"] == "remembers"
+        assert rels[0]["relation"] == "remembers"
 
     def test_store_l2_memory_high_weight(self):
         """L2 memory should have weight 0.9."""

@@ -659,6 +659,17 @@ class NiuRunner:
         except Exception:
             pass  # LightRAG not available or search failed, skip
 
+        # ============== Brain Graph Memory Recall ==============
+        brain_memories_text = ""
+        try:
+            from niu_api.internal.brain_graph import BrainGraph, format_memories_for_prompt
+            bg = BrainGraph()
+            brain_memories = bg.recall_memories(context, top_k=10, min_weight=0.3)
+            if brain_memories:
+                brain_memories_text = format_memories_for_prompt(brain_memories)
+        except Exception as e:
+            logger.debug(f"Brain graph recall failed (non-blocking): {e}")
+
         logger.debug(f"Dynamic injection - Skills: {len(skills)}, MCP: {len(mcp_tools)}, Knowledge: {len(knowledge)}, Habits: {len(interaction_habits)}, ToolSignalSkills: {len(tool_signal_skills)}, LightRAG-Skills: {len(lightrag_skill_names)}")
 
         # 3.5 向量检索到的 MCP 工具：返回分数供 update_from_search（不再注入 system prompt，tools_schema 已有完整描述）
@@ -714,6 +725,8 @@ class NiuRunner:
             )
         if interaction_habits:
             parts.append(format_resources_for_prompt(interaction_habits, "交互习惯"))
+        if brain_memories_text:
+            parts.append(brain_memories_text)
 
         injection = "\n".join(parts)
         if injection:
