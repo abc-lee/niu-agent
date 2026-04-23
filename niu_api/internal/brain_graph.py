@@ -13,6 +13,7 @@ Core concepts:
 
 import json
 import re
+import threading
 from typing import Any, Dict, List, Optional
 
 from loguru import logger
@@ -85,6 +86,16 @@ def make_entity_name(entity_type: str, name: str) -> str:
         return "brain:Niu"
     normalized = normalize_name(name)
     return f"brain:{entity_type}:{normalized}"
+
+
+# ============== Helpers ==============
+
+
+def _get_attr(obj: Any, key: str, default: Any = None) -> Any:
+    """Get attribute from dict or dataclass/object, with fallback."""
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    return getattr(obj, key, default)
 
 
 # ============== BrainGraph Class ==============
@@ -164,10 +175,11 @@ class BrainGraph:
         if metadata:
             try:
                 meta_str = json.dumps(metadata, ensure_ascii=False, separators=(",", ":"))
-                # Truncate to avoid exceeding reasonable description length
+                # Skip metadata if too long — truncated JSON is irrecoverable
                 if len(meta_str) > 200:
-                    meta_str = meta_str[:200] + "..."
-                description = f"{description} [meta:{meta_str}]"
+                    logger.debug(f"[BRAIN] metadata too long ({len(meta_str)} chars), skipping")
+                else:
+                    description = f"{description} [meta:{meta_str}]"
             except (TypeError, ValueError):
                 pass  # Non-serializable metadata, skip
 
@@ -232,7 +244,7 @@ class BrainGraph:
                 top_k=top_k,
             )
         except Exception:
-            # Fallback to text-based query if _query_data fails
+            logger.debug("[BRAIN] _query_data failed, falling back to text query")
             result = None
 
         if result and isinstance(result, dict):
@@ -286,21 +298,15 @@ class BrainGraph:
     ) -> List[Dict[str, Any]]:
         """Extract brain:Niu memories from structured _query_data relationships.
 
-        Each relationship is expected to have src_id, tgt_id, keywords/relation,
-        description, and weight attributes.
+        Handles both dict and dataclass/object access patterns.
         """
         memories = []
         for rel in relationships:
-            # Handle both dict and object-style access
-            src = rel.get("src_id", "") if isinstance(rel, dict) else getattr(rel, "src_id", "")
-            tgt = rel.get("tgt_id", "") if isinstance(rel, dict) else getattr(rel, "tgt_id", "")
-            relation = (
-                rel.get("keywords", "") or rel.get("relation", "")
-                if isinstance(rel, dict)
-                else getattr(rel, "keywords", "") or getattr(rel, "relation", "")
-            )
-            desc = rel.get("description", "") if isinstance(rel, dict) else getattr(rel, "description", "")
-            weight = rel.get("weight", 1.0) if isinstance(rel, dict) else getattr(rel, "weight", 1.0)
+            src = _get_attr(rel, "src_id", "")
+            tgt = _get_attr(rel, "tgt_id", "")
+            relation = _get_attr(rel, "keywords", "") or _get_attr(rel, "relation", "")
+            desc = _get_attr(rel, "description", "")
+            weight = _get_attr(rel, "weight", 1.0)
 
             # Only include relations involving brain: namespace
             is_brain = src.startswith("brain:") or tgt.startswith("brain:")
@@ -383,7 +389,9 @@ def format_memories_for_prompt(memories: List[Dict[str, Any]]) -> str:
         }.get(relation_type, "")
 
         if description:
-            lines.append(f"- {description}")
+            # Strip embedded metadata from user-visible prompt
+            display_desc = re.sub(r"\s*\[meta:.*?\]", "", description)
+            lines.append(f"- {display_desc}")
         elif relation_display:
             lines.append(f"- 你{relation_display}{display_name}")
         else:
@@ -395,11 +403,14 @@ def format_memories_for_prompt(memories: List[Dict[str, Any]]) -> str:
 # ============== Singleton ==============
 
 _brain_graph_instance: Optional[BrainGraph] = None
+_brain_graph_lock = threading.Lock()
 
 
 def get_brain_graph() -> BrainGraph:
-    """Get the module-level BrainGraph singleton."""
+    """Get the module-level BrainGraph singleton (thread-safe)."""
     global _brain_graph_instance
     if _brain_graph_instance is None:
-        _brain_graph_instance = BrainGraph()
+        with _brain_graph_lock:
+            if _brain_graph_instance is None:
+                _brain_graph_instance = BrainGraph()
     return _brain_graph_instance
