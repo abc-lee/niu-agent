@@ -118,7 +118,8 @@ class TestKgApiUsesLightRAG:
         mock_adapter.get_graph_snapshot.return_value = {"nodes": [], "edges": []}
 
         with patch("niu_api.kg_api._get_adapter", return_value=mock_adapter):
-            result = graph_snapshot()
+            # Pass explicit min_confidence to avoid FastAPI Query object comparison
+            result = graph_snapshot(limit=200, min_confidence=0.0)
             mock_adapter.get_graph_snapshot.assert_called_once()
             assert "nodes" in result
 
@@ -370,10 +371,10 @@ class TestRunnerNoKgServerPrompt:
         assert "kg-server/get_related_entities" not in source
 
     def test_lightrag_query_in_prompt(self):
-        """runner.py should reference lightrag-query instead."""
+        """runner.py should reference lightrag_query instead."""
         import agent.runner as mod
         source = Path(mod.__file__).read_text(encoding="utf-8")
-        assert "lightrag-query" in source
+        assert "lightrag_query" in source
 
 
 # ============== 9. photo-server — no niu_kg_server imports ==============

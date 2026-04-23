@@ -93,8 +93,9 @@ class TestDeleteMessagesByIdsCleansTmp:
         msg_id3 = await store.add_message(role="user", content="hello")
 
         # Delete only the first two messages — should clean their temp files
-        deleted = await store.delete_messages_by_ids([msg_id1, msg_id2])
-        assert deleted == 2
+        result = await store.delete_messages_by_ids([msg_id1, msg_id2])
+        # delete_messages_by_ids returns dict with deleted_count
+        assert result["deleted_count"] == 2
         assert not os.path.exists(boxed1)
         assert not os.path.exists(boxed2)
 
@@ -106,6 +107,7 @@ class TestDeleteMessagesByIdsCleansTmp:
         await store.init_db()
         msg_id = await store.add_message(role="assistant", content="E:/photos/original.jpg")
 
-        deleted = await store.delete_messages_by_ids([msg_id])
-        assert deleted == 1
+        result = await store.delete_messages_by_ids([msg_id])
+        # delete_messages_by_ids returns dict with deleted_count
+        assert result["deleted_count"] == 1
         # Non-tmp path should be ignored
