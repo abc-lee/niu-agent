@@ -231,8 +231,7 @@ class TestLightragGetGraph:
 
         result = mod.lightrag_get_graph(action="explore", entity_name="")
 
-        assert "error" in result
-        assert "center" in result
+        assert result["status"] == "error"
         assert result["center"] is None
 
 
