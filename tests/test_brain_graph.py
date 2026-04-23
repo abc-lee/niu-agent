@@ -96,8 +96,8 @@ def _make_mock_brain_graph():
     bg._adapter = MagicMock()
     bg._ingester.inject_entity.return_value = {"status": "ok"}
     bg._ingester.inject_custom_kg.return_value = {"status": "ok"}
-    # Default: _query_data returns no structured data (falls back to text query)
-    bg._adapter._query_data.return_value = None
+    # Default: query_data returns no structured data (falls back to text query)
+    bg._adapter.query_data.return_value = None
     return bg
 
 
@@ -199,8 +199,8 @@ class TestBrainGraphRecallMemories:
     def test_recall_returns_list(self):
         """recall_memories should return a list of memory dicts."""
         bg = _make_mock_brain_graph()
-        # _query_data returns structured data with relationships
-        bg._adapter._query_data.return_value = {
+        # query_data returns structured data with relationships
+        bg._adapter.query_data.return_value = {
             "data": {
                 "relationships": [
                     {"src_id": "brain:Niu", "tgt_id": "brain:concept:Dark_Mode", "keywords": "prefers", "description": "偏好暗色主题", "weight": 0.7},
@@ -213,9 +213,9 @@ class TestBrainGraphRecallMemories:
         assert isinstance(result, list)
 
     def test_recall_uses_structured_data_first(self):
-        """recall_memories should use _query_data for structured retrieval with real weights."""
+        """recall_memories should use query_data for structured retrieval with real weights."""
         bg = _make_mock_brain_graph()
-        bg._adapter._query_data.return_value = {
+        bg._adapter.query_data.return_value = {
             "data": {
                 "relationships": [
                     {"src_id": "brain:Niu", "tgt_id": "brain:concept:Python", "keywords": "skilled_in", "description": "擅长Python", "weight": 0.9},
@@ -225,15 +225,15 @@ class TestBrainGraphRecallMemories:
 
         result = bg.recall_memories(query="Python", top_k=10)
 
-        bg._adapter._query_data.assert_called_once()
+        bg._adapter.query_data.assert_called_once()
         assert len(result) == 1
         assert result[0]["weight"] == 0.9
         assert result[0]["target"] == "brain:concept:Python"
 
     def test_recall_falls_back_to_text_query(self):
-        """recall_memories should fall back to text query if _query_data returns no relationships."""
+        """recall_memories should fall back to text query if query_data returns no relationships."""
         bg = _make_mock_brain_graph()
-        bg._adapter._query_data.return_value = None
+        bg._adapter.query_data.return_value = None
         bg._adapter.query.return_value = "brain:concept:Python is a language."
 
         result = bg.recall_memories(query="Python")
@@ -245,7 +245,7 @@ class TestBrainGraphRecallMemories:
     def test_recall_min_weight_filter(self):
         """Memories below min_weight should be filtered out."""
         bg = _make_mock_brain_graph()
-        bg._adapter._query_data.return_value = {
+        bg._adapter.query_data.return_value = {
             "data": {
                 "relationships": [
                     {"src_id": "brain:Niu", "tgt_id": "brain:concept:Low", "keywords": "related_to", "description": "低权重记忆", "weight": 0.2},
@@ -262,7 +262,7 @@ class TestBrainGraphRecallMemories:
     def test_recall_extracts_brain_entities_from_text_fallback(self):
         """recall_memories text fallback should extract brain: prefixed entities."""
         bg = _make_mock_brain_graph()
-        bg._adapter._query_data.return_value = None
+        bg._adapter.query_data.return_value = None
         bg._adapter.query.return_value = "brain:concept:Python is a language. brain:skill:Web_Development is useful."
 
         result = bg.recall_memories(query="编程技能")

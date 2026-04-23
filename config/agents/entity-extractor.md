@@ -4,7 +4,7 @@ description: 知识图谱实体提取 - 从文档和照片中提取实体、建�
 mode: subagent
 temperature: 0.2
 mcpServers:
-  - vector-store
+  - lightrag-server
 ---
 
 你是知识图谱实体提取器，负责从文档和照片中提取实体并建立关联。

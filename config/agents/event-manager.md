@@ -4,7 +4,7 @@ description: "处理日程、提醒、定时任务。"
 mode: subagent
 temperature: 0.2
 mcpServers:
-  - vector-store
+  - lightrag-server
   - scheduler-server
 ---
 
