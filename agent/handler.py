@@ -731,6 +731,18 @@ class NiuHandler(BaseHandler):
                     importance=importance or self._calculate_importance(memory_type),
                 )
 
+                # Also store in brain graph (secondary write, don't block on failure)
+                try:
+                    from niu_api.internal.brain_graph import BrainGraph
+                    bg = BrainGraph()
+                    bg.store_memory(
+                        content=content,
+                        level="L1",
+                        memory_type=memory_type,
+                    )
+                except Exception as e:
+                    logger.debug(f"Brain graph write failed (non-blocking): {e}")
+
                 return StepOutcome(
                     {"status": "success", "memory_id": result.get("memory_id")},
                     next_prompt=self._get_anchor_prompt(),

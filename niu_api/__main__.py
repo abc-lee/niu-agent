@@ -30,6 +30,7 @@ from niu_api.compat import router as compat_router
 from niu_api.injector import router as injector_router
 from niu_api.alerts_api import router as alerts_router
 from niu_api.kg_api import router as kg_router
+from niu_api.brain_api import router as brain_router
 from niu_api.notes_api import router as notes_router
 from niu_api.llm_proxy import router as llm_proxy_router
 
@@ -143,6 +144,15 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"LightRAG background sync start failed: {e}")
 
+    # 8.1. Initialize brain:Niu self entity
+    try:
+        from niu_api.internal.brain_graph import BrainGraph
+        brain = BrainGraph()
+        brain.ensure_niu_entity()
+        logger.info("Brain graph initialized (brain:Niu entity ensured)")
+    except Exception as e:
+        logger.warning(f"Brain graph initialization failed: {e}")
+
     # 8.6. Ensure kg-enricher daily task exists
     try:
         from niu_api.internal.scheduler import get_store
@@ -229,6 +239,7 @@ app.include_router(chat_router)
 app.include_router(injector_router)  # Injector API
 app.include_router(alerts_router)  # Alerts API
 app.include_router(kg_router)  # Knowledge Graph API
+app.include_router(brain_router)  # Brain Graph API
 app.include_router(notes_router)  # Notes API
 app.include_router(llm_proxy_router)  # LLM Proxy API (/llm/v1/*)
 
