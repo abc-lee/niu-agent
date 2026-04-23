@@ -1,12 +1,15 @@
 [build-system]
 requires = ["setuptools>=68.0"]
-build-backend = "setuptools.backends._legacy:_Backend"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "niu-lightrag-server"
 version = "0.1.0"
 description = "LightRAG unified MCP server — replaces vector-store and kg-server"
 requires-python = ">=3.11"
+dependencies = [
+    "loguru>=0.7.0",
+]
 
 [tool.setuptools.packages.find]
-where = ["."]
+where = ["src"]
