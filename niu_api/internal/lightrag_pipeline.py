@@ -17,6 +17,7 @@ The pipeline wraps LightRAG's ainsert() with:
 """
 
 import random
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
@@ -118,15 +119,16 @@ class LightRAGPipeline:
 
     def __init__(self, max_concurrent: int = 3, retry_policy: Optional[IngestRetryPolicy] = None):
         self.max_concurrent = max_concurrent
+        self._semaphore = threading.Semaphore(max_concurrent)
         self.retry_policy = retry_policy or IngestRetryPolicy()
         self._tracked_tasks: Dict[str, IngestTask] = {}
 
     def _evict_completed_tasks(self) -> None:
-        """Evict oldest completed tasks when _tracked_tasks exceeds MAX_TRACKED_TASKS."""
+        """Evict oldest completed/failed tasks when _tracked_tasks exceeds MAX_TRACKED_TASKS."""
         if len(self._tracked_tasks) <= self.MAX_TRACKED_TASKS:
             return
-        # Remove completed tasks first (oldest by insertion order — dict preserves order in Python 3.7+)
-        to_remove = [k for k, v in self._tracked_tasks.items() if v.status == "completed"]
+        # Remove completed and failed tasks first (oldest by insertion order — dict preserves order in Python 3.7+)
+        to_remove = [k for k, v in self._tracked_tasks.items() if v.status in ("completed", "failed")]
         excess = len(self._tracked_tasks) - self.MAX_TRACKED_TASKS
         for key in to_remove[:excess]:
             del self._tracked_tasks[key]
@@ -161,26 +163,28 @@ class LightRAGPipeline:
         """Process a single task synchronously (for testing and direct use).
 
         Applies content preprocessing, calls ainsert, and updates status.
+        Uses semaphore to limit concurrent LightRAG operations.
         """
-        rag = self._get_rag()
-        if rag is None:
-            task.status = "failed"
-            task.error = "LightRAG not available"
-            return
+        with self._semaphore:
+            rag = self._get_rag()
+            if rag is None:
+                task.status = "failed"
+                task.error = "LightRAG not available"
+                return
 
-        task.status = "processing"
-        task.attempt += 1
+            task.status = "processing"
+            task.attempt += 1
 
-        try:
-            content = _preprocess_content(task)
-            call_async(rag.ainsert(content))
-            task.status = "completed"
-            task.error = None
-            logger.info(f"[PIPELINE] Task completed: {task.source_id}")
-        except Exception as e:
-            task.status = "failed"
-            task.error = str(e)
-            logger.error(f"[PIPELINE] Task failed (attempt {task.attempt}): {task.source_id}: {e}")
+            try:
+                content = _preprocess_content(task)
+                call_async(rag.ainsert(content))
+                task.status = "completed"
+                task.error = None
+                logger.info(f"[PIPELINE] Task completed: {task.source_id}")
+            except Exception as e:
+                task.status = "failed"
+                task.error = str(e)
+                logger.error(f"[PIPELINE] Task failed (attempt {task.attempt}): {task.source_id}: {e}")
 
     # ============== Status Tracking ==============
 
@@ -238,6 +242,9 @@ class LightRAGPipeline:
         Uses LightRAG's adelete_by_doc_id to remove the old document,
         then ainsert to add the new version.
 
+        If delete succeeds but insert fails, tracks a failed task to
+        prevent silent data loss.
+
         Args:
             doc_id: LightRAG document ID to delete.
             new_content: New document content to insert.
@@ -251,20 +258,23 @@ class LightRAGPipeline:
         if rag is None:
             return {"status": "error", "message": "LightRAG not available"}
 
+        task = IngestTask(
+            content=new_content,
+            source_id=source_id,
+            source_type=source_type,
+        )
+
         # Step 1: Delete old document (best-effort, don't block on failure)
+        delete_ok = False
         try:
             call_async(rag.adelete_by_doc_id(doc_id))
             logger.info(f"[PIPELINE] Deleted old document: {doc_id}")
+            delete_ok = True
         except Exception as e:
             logger.warning(f"[PIPELINE] Delete failed for {doc_id}: {e} (continuing with insert)")
 
         # Step 2: Insert new content
         try:
-            task = IngestTask(
-                content=new_content,
-                source_id=source_id,
-                source_type=source_type,
-            )
             content = _preprocess_content(task)
             track_id = call_async(rag.ainsert(content))
             self._tracked_tasks[source_id] = task
@@ -272,4 +282,8 @@ class LightRAGPipeline:
             return {"status": "ok", "track_id": track_id}
         except Exception as e:
             logger.error(f"[PIPELINE] Re-insert failed for {source_id}: {e}")
-            return {"status": "error", "message": str(e)}
+            # Track as failed so data loss is visible (especially if delete succeeded)
+            task.status = "failed"
+            task.error = f"Re-insert failed after delete (delete_ok={delete_ok}): {e}"
+            self._tracked_tasks[source_id] = task
+            return {"status": "error", "message": task.error}

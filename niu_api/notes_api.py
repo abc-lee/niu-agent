@@ -2,6 +2,8 @@
 Notes API - Sticky notes CRUD endpoints
 """
 
+import asyncio
+
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 from loguru import logger
@@ -37,7 +39,8 @@ async def api_create_note(request: NoteCreateRequest, background_tasks: Backgrou
         )
 
         # KG 写入（后台任务，不阻塞响应）
-        background_tasks.add_task(sync_note_to_kg, request.id, request.content)
+        # sync_note_to_kg is sync — wrap in asyncio.to_thread to avoid blocking ASGI event loop
+        background_tasks.add_task(asyncio.to_thread, sync_note_to_kg, request.id, request.content)
 
         return {"status": "ok", "result": result}
     except Exception as e:
@@ -72,7 +75,8 @@ async def api_update_note(note_id: str, request: NoteUpdateRequest, background_t
         result = await update_note(note_id=note_id, content=request.content)
 
         # KG 写入（后台任务，不阻塞响应）
-        background_tasks.add_task(sync_note_to_kg, note_id, request.content)
+        # sync_note_to_kg is sync — wrap in asyncio.to_thread to avoid blocking ASGI event loop
+        background_tasks.add_task(asyncio.to_thread, sync_note_to_kg, note_id, request.content)
 
         return {"status": "ok", "result": result}
     except Exception as e:
@@ -102,9 +106,8 @@ def sync_note_to_kg(note_id: str, content: str):
         if rag is None:
             logger.warning(f"[Notes] LightRAG not available, skipping sync for {note_id}")
             return
-        uri = f"note://{note_id}"
         prefixed = f"[Note: {note_id}]\n{content}"
-        call_async(rag.ainsert(prefixed, file_paths=[uri]))
-        logger.info(f"[Notes] LightRAG sync: {uri}")
+        call_async(rag.ainsert(prefixed))
+        logger.info(f"[Notes] LightRAG sync: note:{note_id}")
     except Exception as e:
         logger.warning(f"[Notes] LightRAG sync failed for {note_id}: {e}")

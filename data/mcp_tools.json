@@ -3,7 +3,7 @@
     {
       "server": "photo-server",
       "name": "ingest",
-      "description": "统一入库工具 — 自动判断路径类型和内容类型\n\n参数:\n- path: 必填，文件路径或目录路径\n- mode: copy（复制）| move（移动）| reference（引用），默认 copy\n- category: 分类，不传则自动推断\n- l1: L1 摘要（文档入库第二轮调用时传入）\n- file_path: 文档存储路径（L1 回传时使用）\n\n自动判断逻辑:\n1. 路径类型：is_dir() → 目录模式，is_file() → 文件模式\n2. 内容类型（文件）：按扩展名判断 — 照片(.jpg/.png等) → 照片流程，其他 → 文档流程\n3. 内容类型（目录）：扫描目录 — 全照片 → 批量照片，全文档 → 批量文档，混合 → 分别处理\n\n照片流程: EXIF → 人脸检测 → 人物匹配 → L0摘要 → KG同步\n文档流程: 拷贝 → 返回 need_l1 → 子Agent生成L1 → 调用 ingest(file_path=..., l1=...) 存储\n\n返回:\n- 照片: {status, photo_id, detected_persons, abstract, exif, kg_sync}\n- 文档(首轮): {status: \"need_l1\", file_path, content, hint}\n- 文档(L1回传): {status: \"success\", file_path}\n- 目录: {status, total, success/need_l1, results/files}",
+      "description": "统一入库工具 — 自动判断路径类型和内容类型\n\n参数:\n- path: 必填，文件路径或目录路径\n- mode: copy（复制）| move（移动）| reference（引用），默认 copy\n- category: 分类，不传则自动推断\n- l1: L1 摘要（文档入库第二轮调用时传入）\n- file_path: 文档存储路径（L1 回传时使用）\n\n自动判断逻辑:\n1. 路径类型：is_dir() → 目录模式，is_file() → 文件模式\n2. 内容类型（文件）：按扩展名判断 — 照片(.jpg/.png等) → 照片流程，其他 → 文档流程\n3. 内容类型（目录）：扫描目录 — 全照片 → 批量照片，全文档 → 批量文档，混合 → 分别处理\n\n照片流程: EXIF → 人脸检测 → 人物匹配 → L0摘要 → LightRAG同步\n文档流程: 拷贝 → 返回 need_l1 → 子Agent生成L1 → 调用 ingest(file_path=..., l1=...) 存储\n\n返回:\n- 照片: {status, photo_id, detected_persons, abstract, exif, lightrag_sync}\n- 文档(首轮): {status: \"need_l1\", file_path, content, hint}\n- 文档(L1回传): {status: \"success\", file_path}\n- 目录: {status, total, success/need_l1, results/files}",
       "input_schema": {
         "type": "object",
         "properties": {
