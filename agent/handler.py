@@ -733,8 +733,8 @@ class NiuHandler(BaseHandler):
 
                 # Also store in brain graph (secondary write, don't block on failure)
                 try:
-                    from niu_api.internal.brain_graph import BrainGraph
-                    bg = BrainGraph()
+                    from niu_api.internal.brain_graph import get_brain_graph
+                    bg = get_brain_graph()
                     bg.store_memory(
                         content=content,
                         level="L1",

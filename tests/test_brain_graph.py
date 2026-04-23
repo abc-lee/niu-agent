@@ -96,6 +96,8 @@ def _make_mock_brain_graph():
     bg._adapter = MagicMock()
     bg._ingester.inject_entity.return_value = {"status": "ok"}
     bg._ingester.inject_custom_kg.return_value = {"status": "ok"}
+    # Default: _query_data returns no structured data (falls back to text query)
+    bg._adapter._query_data.return_value = None
     return bg
 
 
@@ -197,34 +199,70 @@ class TestBrainGraphRecallMemories:
     def test_recall_returns_list(self):
         """recall_memories should return a list of memory dicts."""
         bg = _make_mock_brain_graph()
-        bg._adapter.query.return_value = "Niu prefers Dark_Mode. Niu skilled_in Web_Development."
+        # _query_data returns structured data with relationships
+        bg._adapter._query_data.return_value = {
+            "data": {
+                "relationships": [
+                    {"src_id": "brain:Niu", "tgt_id": "brain:concept:Dark_Mode", "keywords": "prefers", "description": "偏好暗色主题", "weight": 0.7},
+                ]
+            }
+        }
 
         result = bg.recall_memories(query="编码偏好", top_k=5)
 
         assert isinstance(result, list)
 
-    def test_recall_uses_mix_mode(self):
-        """recall_memories should use LightRAG mix mode for comprehensive retrieval."""
+    def test_recall_uses_structured_data_first(self):
+        """recall_memories should use _query_data for structured retrieval with real weights."""
         bg = _make_mock_brain_graph()
-        bg._adapter.query.return_value = ""
+        bg._adapter._query_data.return_value = {
+            "data": {
+                "relationships": [
+                    {"src_id": "brain:Niu", "tgt_id": "brain:concept:Python", "keywords": "skilled_in", "description": "擅长Python", "weight": 0.9},
+                ]
+            }
+        }
 
-        bg.recall_memories(query="Python", top_k=10)
+        result = bg.recall_memories(query="Python", top_k=10)
 
+        bg._adapter._query_data.assert_called_once()
+        assert len(result) == 1
+        assert result[0]["weight"] == 0.9
+        assert result[0]["target"] == "brain:concept:Python"
+
+    def test_recall_falls_back_to_text_query(self):
+        """recall_memories should fall back to text query if _query_data returns no relationships."""
+        bg = _make_mock_brain_graph()
+        bg._adapter._query_data.return_value = None
+        bg._adapter.query.return_value = "brain:concept:Python is a language."
+
+        result = bg.recall_memories(query="Python")
+
+        # Should have fallen back to text-based extraction
         bg._adapter.query.assert_called_once()
-        call_kwargs = bg._adapter.query.call_args
-        assert call_kwargs[1]["mode"] == "mix"
+        assert isinstance(result, list)
 
     def test_recall_min_weight_filter(self):
         """Memories below min_weight should be filtered out."""
         bg = _make_mock_brain_graph()
-        bg._adapter.query.return_value = ""
+        bg._adapter._query_data.return_value = {
+            "data": {
+                "relationships": [
+                    {"src_id": "brain:Niu", "tgt_id": "brain:concept:Low", "keywords": "related_to", "description": "低权重记忆", "weight": 0.2},
+                    {"src_id": "brain:Niu", "tgt_id": "brain:concept:High", "keywords": "remembers", "description": "高权重记忆", "weight": 0.9},
+                ]
+            }
+        }
 
         result = bg.recall_memories(query="test", min_weight=0.5)
-        assert isinstance(result, list)
 
-    def test_recall_extracts_brain_entities(self):
-        """recall_memories should extract brain: prefixed entities from results."""
+        assert len(result) == 1
+        assert result[0]["target"] == "brain:concept:High"
+
+    def test_recall_extracts_brain_entities_from_text_fallback(self):
+        """recall_memories text fallback should extract brain: prefixed entities."""
         bg = _make_mock_brain_graph()
+        bg._adapter._query_data.return_value = None
         bg._adapter.query.return_value = "brain:concept:Python is a language. brain:skill:Web_Development is useful."
 
         result = bg.recall_memories(query="编程技能")
@@ -346,3 +384,58 @@ class TestFormatMemoriesForPrompt:
         result = format_memories_for_prompt(memories)
         # Higher weight (Python) should appear first
         assert result.index("Python") < result.index("Rust")
+
+
+class TestGetBrainGraphSingleton:
+    """Test get_brain_graph() singleton."""
+
+    def test_returns_same_instance(self):
+        from niu_api.internal.brain_graph import get_brain_graph
+
+        bg1 = get_brain_graph()
+        bg2 = get_brain_graph()
+        assert bg1 is bg2
+
+    def test_returns_brain_graph_instance(self):
+        from niu_api.internal.brain_graph import BrainGraph, get_brain_graph
+
+        bg = get_brain_graph()
+        assert isinstance(bg, BrainGraph)
+
+
+class TestMetadataEmbedding:
+    """Test metadata embedding in store_memory."""
+
+    def test_metadata_embedded_in_description(self):
+        """metadata should be embedded as JSON in the relation description."""
+        bg = _make_mock_brain_graph()
+
+        result = bg.store_memory(
+            content="用户提到了asyncio问题",
+            level="L0",
+            metadata={"source": "chat", "turn": 5},
+        )
+
+        assert result["status"] == "ok"
+        bg._ingester.inject_custom_kg.assert_called_once()
+        call_kwargs = bg._ingester.inject_custom_kg.call_args
+        rels = call_kwargs[1]["relationships"]
+        desc = rels[0]["description"]
+        assert "[meta:" in desc
+        assert "source" in desc
+
+    def test_no_metadata_no_bracket(self):
+        """Without metadata, description should not contain [meta:]."""
+        bg = _make_mock_brain_graph()
+
+        result = bg.store_memory(
+            content="用户提到了asyncio问题",
+            level="L0",
+        )
+
+        assert result["status"] == "ok"
+        bg._ingester.inject_custom_kg.assert_called_once()
+        call_kwargs = bg._ingester.inject_custom_kg.call_args
+        rels = call_kwargs[1]["relationships"]
+        desc = rels[0]["description"]
+        assert "[meta:" not in desc

@@ -10,7 +10,7 @@ from fastapi import APIRouter, HTTPException
 from loguru import logger
 from pydantic import BaseModel, Field
 
-from niu_api.internal.brain_graph import BrainGraph, format_memories_for_prompt
+from niu_api.internal.brain_graph import format_memories_for_prompt, get_brain_graph
 
 router = APIRouter(prefix="/api/brain", tags=["brain"])
 
@@ -38,7 +38,7 @@ class RecallRequest(BaseModel):
 def remember_memory(req: RememberRequest) -> Dict[str, Any]:
     """Store a memory in the brain graph."""
     try:
-        bg = BrainGraph()
+        bg = get_brain_graph()
         result = bg.store_memory(
             content=req.content,
             level=req.level,
@@ -59,7 +59,7 @@ def remember_memory(req: RememberRequest) -> Dict[str, Any]:
 def recall_memories(req: RecallRequest) -> Dict[str, Any]:
     """Recall memories from the brain graph."""
     try:
-        bg = BrainGraph()
+        bg = get_brain_graph()
         memories = bg.recall_memories(
             query=req.query,
             top_k=req.top_k,
@@ -75,7 +75,7 @@ def recall_memories(req: RecallRequest) -> Dict[str, Any]:
 def brain_status() -> Dict[str, Any]:
     """Get brain graph status."""
     try:
-        bg = BrainGraph()
+        bg = get_brain_graph()
         bg.ensure_niu_entity()
         return {
             "status": "ok",

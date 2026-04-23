@@ -11,8 +11,8 @@ Core concepts:
 - Retrieval uses LightRAG aquery(mode="mix") directly
 """
 
+import json
 import re
-from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from loguru import logger
@@ -159,6 +159,18 @@ class BrainGraph:
         entity_label = self._extract_entity_label(content)
         target_name = make_entity_name(entity_type, entity_label)
 
+        # Build relation description, embedding metadata if present
+        description = content[:200]
+        if metadata:
+            try:
+                meta_str = json.dumps(metadata, ensure_ascii=False, separators=(",", ":"))
+                # Truncate to avoid exceeding reasonable description length
+                if len(meta_str) > 200:
+                    meta_str = meta_str[:200] + "..."
+                description = f"{description} [meta:{meta_str}]"
+            except (TypeError, ValueError):
+                pass  # Non-serializable metadata, skip
+
         # Inject target entity
         entity_result = self._ingester.inject_entity(
             name=target_name,
@@ -180,7 +192,7 @@ class BrainGraph:
                     "src_id": "brain:Niu",
                     "tgt_id": target_name,
                     "relation": relation_type,
-                    "description": content[:200],
+                    "description": description,
                     "weight": weight,
                     "source_id": "brain",
                     "file_path": "brain://memory",
@@ -210,8 +222,28 @@ class BrainGraph:
     ) -> List[Dict[str, Any]]:
         """Recall memories from the brain graph.
 
-        Uses LightRAG aquery(mode="mix") for comprehensive retrieval.
+        Uses LightRAG _query_data(mode="mix") for structured retrieval
+        with real weights from the knowledge graph edges.
         """
+        try:
+            result = self._adapter._query_data(
+                query=query,
+                mode="mix",
+                top_k=top_k,
+            )
+        except Exception:
+            # Fallback to text-based query if _query_data fails
+            result = None
+
+        if result and isinstance(result, dict):
+            data = result.get("data", result)
+            relationships = data.get("relationships", [])
+            if relationships:
+                return self._extract_brain_memories_from_structured(
+                    relationships, min_weight
+                )
+
+        # Fallback: text-based extraction from aquery
         result_text = self._adapter.query(
             query=query,
             mode="mix",
@@ -222,8 +254,7 @@ class BrainGraph:
         if not result_text:
             return []
 
-        memories = self._extract_brain_memories_from_text(result_text, min_weight)
-        return sorted(memories, key=lambda m: m.get("weight", 0), reverse=True)
+        return self._extract_brain_memories_from_text(result_text, min_weight)
 
     # ============== Internal Helpers ==============
 
@@ -249,6 +280,42 @@ class BrainGraph:
         if not label:
             label = content.strip()[:30]
         return label if label else "Unknown"
+
+    def _extract_brain_memories_from_structured(
+        self, relationships: Any, min_weight: float
+    ) -> List[Dict[str, Any]]:
+        """Extract brain:Niu memories from structured _query_data relationships.
+
+        Each relationship is expected to have src_id, tgt_id, keywords/relation,
+        description, and weight attributes.
+        """
+        memories = []
+        for rel in relationships:
+            # Handle both dict and object-style access
+            src = rel.get("src_id", "") if isinstance(rel, dict) else getattr(rel, "src_id", "")
+            tgt = rel.get("tgt_id", "") if isinstance(rel, dict) else getattr(rel, "tgt_id", "")
+            relation = (
+                rel.get("keywords", "") or rel.get("relation", "")
+                if isinstance(rel, dict)
+                else getattr(rel, "keywords", "") or getattr(rel, "relation", "")
+            )
+            desc = rel.get("description", "") if isinstance(rel, dict) else getattr(rel, "description", "")
+            weight = rel.get("weight", 1.0) if isinstance(rel, dict) else getattr(rel, "weight", 1.0)
+
+            # Only include relations involving brain: namespace
+            is_brain = src.startswith("brain:") or tgt.startswith("brain:")
+            if not is_brain:
+                continue
+
+            if weight >= min_weight:
+                memories.append({
+                    "target": tgt if tgt.startswith("brain:") else src,
+                    "relation_type": relation,
+                    "description": desc,
+                    "weight": weight,
+                })
+
+        return sorted(memories, key=lambda m: m.get("weight", 0), reverse=True)
 
     def _extract_brain_memories_from_text(
         self, text: str, min_weight: float
@@ -323,3 +390,16 @@ def format_memories_for_prompt(memories: List[Dict[str, Any]]) -> str:
             lines.append(f"- {display_name}")
 
     return "\n".join(lines)
+
+
+# ============== Singleton ==============
+
+_brain_graph_instance: Optional[BrainGraph] = None
+
+
+def get_brain_graph() -> BrainGraph:
+    """Get the module-level BrainGraph singleton."""
+    global _brain_graph_instance
+    if _brain_graph_instance is None:
+        _brain_graph_instance = BrainGraph()
+    return _brain_graph_instance
