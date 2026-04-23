@@ -139,7 +139,27 @@ class ToolRegistry:
                 # 模式3：call_tool() 处理器（MCP 标准模式）
                 tool_fn = None
                 if hasattr(module, tool_name):
-                    tool_fn = getattr(module, tool_name)
+                    raw_fn = getattr(module, tool_name)
+                    # Wrap direct function with argument filtering to prevent
+                    # TypeError from LLM-sent extra arguments
+                    import inspect as _inspect
+                    try:
+                        sig = _inspect.signature(raw_fn)
+                        valid_params = set(sig.parameters.keys())
+                    except (ValueError, TypeError):
+                        valid_params = None
+
+                    if valid_params is not None:
+                        def _make_filtered_fn(fn, params):
+                            def filtered_fn(**kwargs):
+                                filtered = {k: v for k, v in kwargs.items() if k in params}
+                                return fn(**filtered)
+                            # Preserve function identity for hasattr checks
+                            filtered_fn.__wrapped__ = fn
+                            return filtered_fn
+                        tool_fn = _make_filtered_fn(raw_fn, valid_params)
+                    else:
+                        tool_fn = raw_fn
                 elif hasattr(module, 'get_tool_function'):
                     tool_fn = module.get_tool_function(tool_name)
 
