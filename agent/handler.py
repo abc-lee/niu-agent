@@ -871,6 +871,58 @@ class NiuHandler(BaseHandler):
                     {"status": "error", "msg": str(e)}, next_prompt=self._get_anchor_prompt()
                 )
 
+        # Check ToolRegistry for bare tool names (no "/" prefix, e.g. "lightrag-query")
+        from agent.tool_registry import get_registry
+
+        func = get_registry().get(tool_name)
+        if func is not None:
+            try:
+                # Record tool hit (same logic as the "/" path above)
+                if not getattr(self, '_is_subagent', False):
+                    try:
+                        from agent.runner import get_runner
+                        runner = get_runner()
+                        if runner and hasattr(runner, 'tool_lifecycle'):
+                            runner.tool_lifecycle.hit_tool(tool_name)
+                            current_score = runner.tool_lifecycle.get_tool_score(tool_name)
+                            print(f"[ToolHit] {tool_name} executed (lifecycle score: {current_score})", file=sys.stderr, flush=True)
+                    except Exception as e:
+                        print(f"[ToolHit] Failed to record hit: {e}", file=sys.stderr, flush=True)
+
+                result = func(**args)
+
+                # Handle async functions
+                import asyncio
+                import inspect
+                if inspect.iscoroutine(result):
+                    try:
+                        loop = asyncio.get_running_loop()
+                        import concurrent.futures
+                        with concurrent.futures.ThreadPoolExecutor() as pool:
+                            result = pool.submit(asyncio.run, result).result()
+                    except RuntimeError:
+                        result = asyncio.run(result)
+
+                yield f"[MCP] {tool_name} executed\n"
+
+                try:
+                    _ = yield from try_call_generator(
+                        self.tool_after_callback, tool_name, args, response, result
+                    )
+                except Exception:
+                    pass
+
+                if isinstance(result, dict) and result.get("status") == "success":
+                    result_summary = json.dumps(result, ensure_ascii=False)[:500]
+                    return StepOutcome(result, next_prompt=f"工具调用成功。请向用户简洁汇报结果：{result_summary}")
+                else:
+                    return StepOutcome(result, next_prompt=self._get_anchor_prompt())
+            except Exception as e:
+                yield f"[MCP Error] {tool_name}: {e}\n"
+                return StepOutcome(
+                    {"status": "error", "msg": str(e)}, next_prompt=self._get_anchor_prompt()
+                )
+
         # 未知工具
         yield f"Unknown tool: {tool_name}\n"
         return StepOutcome(None, next_prompt=f"Unknown tool: {tool_name}")

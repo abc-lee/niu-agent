@@ -230,12 +230,12 @@ def _ingest_single_photo(path: str, category: str | None = None, mode: str = "co
                 pass
         return {"status": "error", "error_code": "INGEST_FAILED", "message": str(e)}
 
-    # 8. KG 同步
+    # 8. LightRAG 同步
     kg_result = None
     try:
         kg_result = ps.sync_photo_to_kg(str(final_path), abstract, detected_persons)
     except Exception as e:
-        print(f"[ingest] KG 同步失败: {e}", file=sys.stderr)
+        print(f"[ingest] LightRAG 同步失败: {e}", file=sys.stderr)
 
     return {
         "status": "success",
@@ -246,7 +246,7 @@ def _ingest_single_photo(path: str, category: str | None = None, mode: str = "co
         "detected_persons": detected_persons,
         "abstract": abstract,
         "exif": exif,
-        "kg_sync": kg_result,
+        "lightrag_sync": kg_result,
     }
 
 

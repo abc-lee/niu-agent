@@ -96,10 +96,12 @@ class TestMCPLoaderBasics:
             # Use parameter instead of modifying REQUIRED_SERVERS
             registry = load_mcp_tools([("test-server", "niu_test_server")])
 
-            # Check that tool was loaded
+            # Check that tool was loaded (1 mock MCP tool + 1 built-in lightrag-query)
             schemas = registry.get_schemas()
-            assert len(schemas) == 1
-            assert schemas[0]["name"] == "test-server/mock_tool"
+            assert len(schemas) == 2
+            schema_names = [s["name"] for s in schemas]
+            assert "test-server/mock_tool" in schema_names
+            assert "lightrag-query" in schema_names
 
             # Check that tool function works
             tool_fn = registry.get("test-server/mock_tool")

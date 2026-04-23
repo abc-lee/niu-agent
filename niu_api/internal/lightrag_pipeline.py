@@ -17,6 +17,7 @@ The pipeline wraps LightRAG's ainsert() with:
 """
 
 import random
+import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
@@ -113,10 +114,22 @@ class LightRAGPipeline:
     - Update documents via delete-then-reinsert
     """
 
+    MAX_TRACKED_TASKS = 1000  # Evict oldest completed tasks beyond this limit
+
     def __init__(self, max_concurrent: int = 3, retry_policy: Optional[IngestRetryPolicy] = None):
         self.max_concurrent = max_concurrent
         self.retry_policy = retry_policy or IngestRetryPolicy()
         self._tracked_tasks: Dict[str, IngestTask] = {}
+
+    def _evict_completed_tasks(self) -> None:
+        """Evict oldest completed tasks when _tracked_tasks exceeds MAX_TRACKED_TASKS."""
+        if len(self._tracked_tasks) <= self.MAX_TRACKED_TASKS:
+            return
+        # Remove completed tasks first (oldest by insertion order — dict preserves order in Python 3.7+)
+        to_remove = [k for k, v in self._tracked_tasks.items() if v.status == "completed"]
+        excess = len(self._tracked_tasks) - self.MAX_TRACKED_TASKS
+        for key in to_remove[:excess]:
+            del self._tracked_tasks[key]
 
     def _get_rag(self):
         """Get the LightRAG instance (delegates to lightrag_manager)."""
@@ -138,6 +151,7 @@ class LightRAGPipeline:
         """
         task.status = "queued"
         self._tracked_tasks[task.source_id] = task
+        self._evict_completed_tasks()
         logger.info(f"[PIPELINE] Task queued: {task.source_type}/{task.source_id}")
         return task
 
