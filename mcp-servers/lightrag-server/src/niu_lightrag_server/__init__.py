@@ -42,7 +42,7 @@ def _get_ingester():
     if _ingester is None:
         with _ingester_lock:
             if _ingester is None:
-                from niu_api.internal.lightrag_ingester import LightRAGIngester
+                from niu_api.internal.lightrag_adapter import LightRAGIngester
                 _ingester = LightRAGIngester()
     return _ingester
 
@@ -365,8 +365,11 @@ def lightrag_query(
     only_need_context: bool = True,
     top_k: int = 5,
     response_type: str = "Multiple Paragraphs",
-) -> Optional[str]:
+):
     """Search the knowledge base using LightRAG."""
+    valid_modes = {"naive", "local", "global", "hybrid", "mix", "bypass"}
+    if mode not in valid_modes:
+        return {"status": "error", "message": f"Invalid mode '{mode}'. Must be one of: {', '.join(sorted(valid_modes))}"}
     try:
         adapter = _get_adapter()
         return adapter.query(
@@ -378,21 +381,27 @@ def lightrag_query(
         )
     except Exception as e:
         logger.error(f"lightrag_query failed: {e}")
-        return None
+        return {"status": "error", "message": str(e)}
 
 
 def lightrag_query_data(
     query: str,
     mode: str = "local",
     top_k: int = 10,
-) -> Optional[Dict[str, Any]]:
+):
     """Query returning structured data (entities + relationships)."""
+    valid_modes = {"naive", "local", "global", "hybrid", "mix", "bypass"}
+    if mode not in valid_modes:
+        return {"status": "error", "message": f"Invalid mode '{mode}'. Must be one of: {', '.join(sorted(valid_modes))}"}
     try:
         adapter = _get_adapter()
-        return adapter.query_data(query=query, mode=mode, top_k=top_k)
+        result = adapter.query_data(query=query, mode=mode, top_k=top_k)
+        if result is None:
+            return {"status": "ok", "data": {}}
+        return result
     except Exception as e:
         logger.error(f"lightrag_query_data failed: {e}")
-        return None
+        return {"status": "error", "message": str(e)}
 
 
 def lightrag_search_entities(
@@ -425,21 +434,21 @@ def lightrag_get_graph(
     entity_name: str = "",
     depth: int = 2,
     limit: int = 200,
-) -> Dict[str, Any]:
+):
     """Get a subgraph from the knowledge graph."""
     try:
         adapter = _get_adapter()
         if action == "explore":
             if not entity_name:
-                return {"nodes": [], "edges": [], "center": None, "stats": {}, "error": "entity_name required for explore"}
+                return {"status": "error", "message": "entity_name required for explore", "nodes": [], "edges": [], "center": None, "stats": {}}
             return adapter.explore_node(entity_name=entity_name, depth=depth)
         elif action == "snapshot":
             return adapter.get_graph_snapshot(limit=limit)
         else:
-            return {"nodes": [], "edges": [], "center": None, "stats": {}, "error": f"Unknown action: {action}"}
+            return {"status": "error", "message": f"Unknown action: {action}", "nodes": [], "edges": [], "center": None, "stats": {}}
     except Exception as e:
         logger.error(f"lightrag_get_graph failed: {e}")
-        return {"nodes": [], "edges": [], "center": None, "stats": {}, "error": str(e)}
+        return {"status": "error", "message": str(e), "nodes": [], "edges": [], "center": None, "stats": {}}
 
 
 def lightrag_insert(
