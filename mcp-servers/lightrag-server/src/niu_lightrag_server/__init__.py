@@ -372,13 +372,16 @@ def lightrag_query(
         return {"status": "error", "message": f"Invalid mode '{mode}'. Must be one of: {', '.join(sorted(valid_modes))}"}
     try:
         adapter = _get_adapter()
-        return adapter.query(
+        result = adapter.query(
             query=query,
             mode=mode,
             only_need_context=only_need_context,
             top_k=top_k,
             response_type=response_type,
         )
+        if result is None:
+            return {"status": "error", "message": "No results from LightRAG"}
+        return result
     except Exception as e:
         logger.error(f"lightrag_query failed: {e}")
         return {"status": "error", "message": str(e)}
