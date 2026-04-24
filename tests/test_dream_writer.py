@@ -8,7 +8,7 @@ Validates dual-pipeline memory writes:
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, call
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -19,7 +19,6 @@ from agent.injector.dream_writer import (
     DREAM_SOURCE_ID,
     EPISODIC_ENTITY_TYPE,
     EVENT_PREFIX,
-    INVOLVES_RELATION,
     NIU_ENTITY,
     DreamWriter,
 )
