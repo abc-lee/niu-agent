@@ -44,6 +44,7 @@ class RegionPartition:
     entity_types: dict[str, int]  # entity_type → 数量
     edge_count: int  # 社区内部边数
     modularity_score: float  # 局部模块度贡献
+    entity_name_to_type: dict[str, str] | None = None  # entity_name → entity_type mapping
 
 
 @dataclass
@@ -84,10 +85,10 @@ class CommunityDetector:
     用法::
 
         detector = CommunityDetector(lightrag_adapter)
-        result = await detector.detect_communities(resolution=1.0)
+        result = detector.detect_communities(resolution=1.0)
         for partition in result.partitions:
             print(f"{partition.region_name}: {len(partition.entity_names)} entities")
-    """
+"""
 
     def __init__(self, lightrag_adapter: Any) -> None:
         self._adapter = lightrag_adapter
@@ -96,7 +97,7 @@ class CommunityDetector:
     # 公开 API
     # ------------------------------------------------------------------
 
-    async def detect_communities(
+    def detect_communities(
         self, resolution: float = 1.0
     ) -> CommunityDetectionResult:
         """对 LightRAG 知识图谱运行 Leiden 社区检测
@@ -115,7 +116,7 @@ class CommunityDetector:
             CommunityDetectionResult 包含所有检测结果
         """
         # 1. 获取图快照
-        snapshot = await self._adapter.get_graph_snapshot()
+        snapshot = self._adapter.get_graph_snapshot()
         if snapshot is None:
             logger.warning("图快照为空，跳过社区检测")
             return _empty_result()
@@ -256,6 +257,7 @@ class CommunityDetector:
             # 收集实体名称和类型
             entity_names: list[str] = []
             entity_type_counts: dict[str, int] = {}
+            entity_name_to_type: dict[str, str] = {}
 
             for vidx in member_indices:
                 v = graph.vs[vidx]
@@ -264,6 +266,7 @@ class CommunityDetector:
 
                 etype = v["entity_type"] if "entity_type" in v.attributes() else "unknown"
                 entity_type_counts[etype] = entity_type_counts.get(etype, 0) + 1
+                entity_name_to_type[name] = etype
 
             # 计算社区内部边数
             internal_edges = self._count_internal_edges(graph, member_indices)
@@ -283,6 +286,7 @@ class CommunityDetector:
                     entity_types=entity_type_counts,
                     edge_count=internal_edges,
                     modularity_score=round(local_mod, 6),
+                    entity_name_to_type=entity_name_to_type,
                 )
             )
 
@@ -293,15 +297,18 @@ class CommunityDetector:
     def _count_internal_edges(
         self, graph: "igraph.Graph", member_indices: list[int]
     ) -> int:
-        """计算社区内部边数（两端均在社区内的边）"""
+        """计算社区内部边数（两端均在社区内的边）
+
+        Iterates over edges rather than neighbors to correctly handle
+        parallel/directed edges. Each undirected edge is counted twice
+        (once per direction), so divide by 2.
+        """
         member_set = set(member_indices)
         count = 0
-        for vidx in member_indices:
-            for neighbor in graph.neighbors(vidx):
-                if neighbor in member_set and neighbor > vidx:
-                    # 避免重复计数（无向图每条边只计一次）
-                    count += 1
-        return count
+        for edge in graph.es:
+            if edge.source in member_set and edge.target in member_set:
+                count += 1
+        return count // 2
 
     def _handle_small_graph(
         self, nodes: list[dict], _edges: list[dict]
