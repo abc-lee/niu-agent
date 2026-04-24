@@ -5,12 +5,10 @@ Brain Region Activation Manager 测试 — 验证 RegionActivationManager 的
 激活、衰减、强化、溢出和手动控制机制。
 """
 
-import pytest
 import time
 
 from niu_api.internal.region_manager import BrainRegionInfo
 from niu_api.internal.region_activation import (
-    BrainRegionState,
     RegionActivationManager,
     STATUS_LIT,
     STATUS_DIMMING,
@@ -225,7 +223,7 @@ class TestReinforceSteadyState:
         assert manager._regions["community_0"].activation == 0.85
 
         # Simulate 10 turns of continuous tool use
-        for turn in range(10):
+        for _ in range(10):
             # Decay
             manager.decay_all()
             activation_after_decay = manager._regions["community_0"].activation
