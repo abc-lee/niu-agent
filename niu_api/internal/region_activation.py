@@ -105,6 +105,12 @@ class RegionActivationManager:
         # region_id -> set of neighbor region_ids (for spillover)
         self._neighbors: dict[str, set[str]] = {}
 
+        # label -> region_id index for O(1) lookup by label
+        self._label_index: dict[str, str] = {}
+
+        # region_id -> description (from BrainRegionInfo.description)
+        self._descriptions: dict[str, str] = {}
+
     # ------------------------------------------------------------------
     # Initialization
     # ------------------------------------------------------------------
@@ -122,6 +128,8 @@ class RegionActivationManager:
         """
         self._regions.clear()
         self._entity_to_region.clear()
+        self._label_index.clear()
+        self._descriptions.clear()
 
         for region in regions:
             self._regions[region.community_id] = BrainRegionState(
@@ -132,6 +140,8 @@ class RegionActivationManager:
                 activation_count=0,
                 manually_dimmed=False,
             )
+            self._label_index[region.label] = region.community_id
+            self._descriptions[region.community_id] = region.description or ""
 
             # Build entity -> region mapping from members
             for entity_name in region.members:
@@ -273,7 +283,7 @@ class RegionActivationManager:
             region_labels: Human-readable region labels to activate
         """
         for label in region_labels:
-            state = self._find_region_by_label(label)
+            state = self.find_region_by_label(label)
             if state is None:
                 logger.warning("手动激活: 未找到区域 '%s'", label)
                 continue
@@ -297,7 +307,7 @@ class RegionActivationManager:
             region_labels: Human-readable region labels to dim
         """
         for label in region_labels:
-            state = self._find_region_by_label(label)
+            state = self.find_region_by_label(label)
             if state is None:
                 logger.warning("手动调暗: 未找到区域 '%s'", label)
                 continue
@@ -360,6 +370,22 @@ class RegionActivationManager:
         """Get entity_name -> region_id mapping for all known entities."""
         return dict(self._entity_to_region)
 
+    def get_region_state(self, region_id: str) -> BrainRegionState | None:
+        """Get activation state for a specific region by region_id."""
+        return self._regions.get(region_id)
+
+    def get_members_of_region(self, region_id: str) -> list[str]:
+        """Get entity names belonging to a specific region."""
+        return [
+            entity
+            for entity, rid in self._entity_to_region.items()
+            if rid == region_id
+        ]
+
+    def get_region_description(self, region_id: str) -> str:
+        """Get the description for a region (from BrainRegionInfo.description)."""
+        return self._descriptions.get(region_id, "")
+
     # ------------------------------------------------------------------
     # Neighbor relationships
     # ------------------------------------------------------------------
@@ -417,9 +443,9 @@ class RegionActivationManager:
                     spillover_value,
                 )
 
-    def _find_region_by_label(self, label: str) -> BrainRegionState | None:
-        """Find a BrainRegionState by its human-readable label."""
-        for state in self._regions.values():
-            if state.label == label:
-                return state
+    def find_region_by_label(self, label: str) -> BrainRegionState | None:
+        """Find a BrainRegionState by its human-readable label (O(1) via index)."""
+        region_id = self._label_index.get(label)
+        if region_id is not None:
+            return self._regions.get(region_id)
         return None

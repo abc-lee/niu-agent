@@ -308,7 +308,7 @@ class BrainContextInjector:
             region_id = entity_to_region.get(entity_name)
             boost = 0.0
             if region_id:
-                state = self._activation_mgr._regions.get(region_id)
+                state = self._activation_mgr.get_region_state(region_id)
                 if state:
                     boost = state.activation * boost_factor
 
@@ -376,14 +376,8 @@ class BrainContextInjector:
         return "\n".join(parts)
 
     def _get_members(self, region_id: str) -> list[str]:
-        """Get member entity names for a region from internal activation manager state."""
-        # Build reverse mapping from entity_to_region
-        entity_to_region = self._activation_mgr._entity_to_region
-        return [
-            entity
-            for entity, rid in entity_to_region.items()
-            if rid == region_id
-        ]
+        """Get member entity names for a region from activation manager."""
+        return self._activation_mgr.get_members_of_region(region_id)
 
     def _get_member_count(self, region_id: str) -> int:
         """Get member count for a region."""
