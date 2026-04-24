@@ -18,10 +18,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from niu_api.internal.region_detector import (
-    CommunityDetectionResult,
-    RegionPartition,
-)
+from niu_api.internal.region_detector import CommunityDetectionResult
 
 logger = logging.getLogger(__name__)
 
@@ -576,7 +573,6 @@ class RegionManager:
 
         # Add ellipsis if there are more entities
         if len(entity_summaries) > MAX_SUMMARY_ENTITIES:
-            remaining = len(entity_summaries) - MAX_SUMMARY_ENTITIES
             region_summary += f"等{len(entity_summaries)}个实体"
 
         return (region_label, region_summary)
