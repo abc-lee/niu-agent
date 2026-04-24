@@ -17,13 +17,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from niu_api.internal.region_activation import (
-    RegionActivationManager,
-    BrainRegionState,
-    STATUS_LIT,
-    STATUS_DIMMING,
-    STATUS_OFF,
-)
+from niu_api.internal.region_activation import RegionActivationManager
 
 logger = logging.getLogger(__name__)
 
