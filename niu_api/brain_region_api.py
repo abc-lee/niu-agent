@@ -27,13 +27,7 @@ from fastapi import APIRouter, HTTPException, Query
 from loguru import logger
 from pydantic import BaseModel
 
-from niu_api.internal.region_activation import (
-    RegionActivationManager,
-    BrainRegionState,
-    STATUS_LIT,
-    STATUS_DIMMING,
-    STATUS_OFF,
-)
+from niu_api.internal.region_activation import RegionActivationManager
 
 router = APIRouter(prefix="/api/brain", tags=["brain-regions"])
 
@@ -97,7 +91,7 @@ def get_brain_regions(
 
         # get_all_regions is async, run in event loop
         try:
-            loop = asyncio.get_running_loop()
+            _loop = asyncio.get_running_loop()
             # Already in async context — create a task
             import concurrent.futures
 
@@ -183,7 +177,7 @@ def consolidate_brain_regions(
 
         # Step 1: Detect communities
         try:
-            loop = asyncio.get_running_loop()
+            _loop = asyncio.get_running_loop()
             import concurrent.futures
 
             with concurrent.futures.ThreadPoolExecutor() as pool:
@@ -213,7 +207,7 @@ def consolidate_brain_regions(
             return created, removed
 
         try:
-            loop = asyncio.get_running_loop()
+            _loop = asyncio.get_running_loop()
             import concurrent.futures
 
             with concurrent.futures.ThreadPoolExecutor() as pool:
@@ -264,7 +258,7 @@ def get_region_members(name: str) -> dict[str, Any]:
 
         # Get members via RegionManager
         try:
-            loop = asyncio.get_running_loop()
+            _loop = asyncio.get_running_loop()
             import concurrent.futures
 
             with concurrent.futures.ThreadPoolExecutor() as pool:
