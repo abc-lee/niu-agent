@@ -174,13 +174,12 @@ def _create_lightrag_instance():
         chunk_token_size=1200,
     )
 
-    # Add reranker if configured
+    # Add reranker if configured (lightrag-hku 1.4.15 uses rerank_model_func,
+    # not enable_rerank — reranking is implicitly enabled when func is provided)
     if reranker_func is not None:
-        rag_params["enable_rerank"] = True
         rag_params["rerank_model_func"] = reranker_func
         logger.info("LightRAG reranker enabled")
     else:
-        rag_params["enable_rerank"] = False
         logger.info("LightRAG reranker disabled")
 
     rag = LightRAG(**rag_params)
