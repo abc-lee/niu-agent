@@ -185,8 +185,8 @@ def consolidate_brain_regions(
             for region in regions:
                 try:
                     region.members = region_mgr.get_region_members(region.name)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning("Failed to fetch members for region %s: %s", region.name, exc)
             activation_mgr.initialize_from_regions(regions)
             # BUG 3 fix: Set neighbor map for spillover
             neighbor_map: dict[str, set[str]] = {}

@@ -365,17 +365,19 @@ class RegionActivationManager:
 
     def get_active_regions(self) -> list[BrainRegionState]:
         """Get regions with activation > activation_threshold, sorted by activation desc."""
-        active = [
-            state
-            for state in self._regions.values()
-            if state.activation > self._activation_threshold
-        ]
-        active.sort(key=lambda s: s.activation, reverse=True)
-        return active
+        with self._lock:
+            active = [
+                state
+                for state in self._regions.values()
+                if state.activation > self._activation_threshold
+            ]
+            active.sort(key=lambda s: s.activation, reverse=True)
+            return active
 
     def get_region_map(self) -> list[BrainRegionState]:
-        """Get all region states (including dimmed), for full map injection."""
-        return list(self._regions.values())
+        """Get all region states (thread-safe copy)."""
+        with self._lock:
+            return list(self._regions.values())
 
     def get_status_light(self, activation: float) -> str:
         """Three-status light:
@@ -420,13 +422,24 @@ class RegionActivationManager:
     ) -> None:
         """Set the neighbor relationships between regions for spillover calculation.
 
+        Removes self-loops and stores the cleaned map under lock.
+
         Args:
             neighbor_map: region_id -> set of neighbor region_ids
         """
-        self._neighbors = dict(neighbor_map)
+        cleaned: dict[str, set[str]] = {}
+        for region_id, neighbors in neighbor_map.items():
+            neighbor_set = set(neighbors)
+            if region_id in neighbor_set:
+                logger.warning("Self-loop in neighbor map for %s, removing", region_id)
+                neighbor_set.discard(region_id)
+            cleaned[region_id] = neighbor_set
+
+        with self._lock:
+            self._neighbors = cleaned
         logger.info(
             "设置脑区邻居关系: %d 个区域有邻居",
-            len(self._neighbors),
+            len(cleaned),
         )
 
     # ------------------------------------------------------------------

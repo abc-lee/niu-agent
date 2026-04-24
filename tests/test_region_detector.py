@@ -5,7 +5,7 @@ Tests for niu_api/internal/region_detector.py
 """
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 from niu_api.internal.region_detector import (
     CommunityDetectionResult,
@@ -21,7 +21,7 @@ from niu_api.internal.region_detector import (
 def _make_mock_adapter(nodes: list[dict], edges: list[dict]) -> MagicMock:
     """创建一个 mock LightRAGAdapter，其 get_graph_snapshot 返回指定数据"""
     adapter = MagicMock()
-    adapter.get_graph_snapshot = AsyncMock(
+    adapter.get_graph_snapshot = MagicMock(
         return_value={"nodes": nodes, "edges": edges}
     )
     return adapter
@@ -72,13 +72,12 @@ class TestDetectCommunitiesBasic:
     """test_detect_communities_basic — Mock 图快照含 3 个社区，验证分区数量"""
 
     @pytest.mark.skipif(not _HAS_LEIDEN, reason="leidenalg/igraph 未安装")
-    @pytest.mark.asyncio
-    async def test_detects_3_communities(self):
+    def test_detects_3_communities(self):
         nodes, edges = _make_3_community_graph()
         adapter = _make_mock_adapter(nodes, edges)
         detector = CommunityDetector(adapter)
 
-        result = await detector.detect_communities(resolution=1.0)
+        result = detector.detect_communities(resolution=1.0)
 
         assert isinstance(result, CommunityDetectionResult)
         assert result.total_nodes == 9
@@ -89,13 +88,12 @@ class TestDetectCommunitiesBasic:
         assert result.timestamp  # ISO 时间戳非空
 
     @pytest.mark.skipif(not _HAS_LEIDEN, reason="leidenalg/igraph 未安装")
-    @pytest.mark.asyncio
-    async def test_partitions_have_correct_fields(self):
+    def test_partitions_have_correct_fields(self):
         nodes, edges = _make_3_community_graph()
         adapter = _make_mock_adapter(nodes, edges)
         detector = CommunityDetector(adapter)
 
-        result = await detector.detect_communities()
+        result = detector.detect_communities()
 
         for partition in result.partitions:
             assert isinstance(partition, RegionPartition)
@@ -107,14 +105,13 @@ class TestDetectCommunitiesBasic:
             assert isinstance(partition.modularity_score, float)
 
     @pytest.mark.skipif(not _HAS_LEIDEN, reason="leidenalg/igraph 未安装")
-    @pytest.mark.asyncio
-    async def test_all_entities_assigned(self):
+    def test_all_entities_assigned(self):
         """所有实体都应被分配到某个社区"""
         nodes, edges = _make_3_community_graph()
         adapter = _make_mock_adapter(nodes, edges)
         detector = CommunityDetector(adapter)
 
-        result = await detector.detect_communities()
+        result = detector.detect_communities()
 
         all_assigned = set()
         for p in result.partitions:
@@ -130,12 +127,11 @@ class TestDetectCommunitiesBasic:
 class TestDetectCommunitiesEmptyGraph:
     """test_detect_communities_empty_graph — 空图返回空结果"""
 
-    @pytest.mark.asyncio
-    async def test_empty_graph_returns_empty_result(self):
+    def test_empty_graph_returns_empty_result(self):
         adapter = _make_mock_adapter([], [])
         detector = CommunityDetector(adapter)
 
-        result = await detector.detect_communities()
+        result = detector.detect_communities()
 
         assert result.total_nodes == 0
         assert result.total_edges == 0
@@ -143,13 +139,12 @@ class TestDetectCommunitiesEmptyGraph:
         assert result.partitions == []
         assert result.modularity == 0.0
 
-    @pytest.mark.asyncio
-    async def test_none_snapshot_returns_empty_result(self):
+    def test_none_snapshot_returns_empty_result(self):
         adapter = MagicMock()
-        adapter.get_graph_snapshot = AsyncMock(return_value=None)
+        adapter.get_graph_snapshot = MagicMock(return_value=None)
         detector = CommunityDetector(adapter)
 
-        result = await detector.detect_communities()
+        result = detector.detect_communities()
 
         assert result.partitions == []
         assert result.total_nodes == 0
@@ -161,13 +156,12 @@ class TestDetectCommunitiesEmptyGraph:
 class TestDetectCommunitiesSingleNode:
     """test_detect_communities_single_node — 单节点返回 1 个区域含 1 个实体"""
 
-    @pytest.mark.asyncio
-    async def test_single_node_returns_one_region(self):
+    def test_single_node_returns_one_region(self):
         nodes = [{"id": "Python", "name": "Python", "type": "language"}]
         adapter = _make_mock_adapter(nodes, [])
         detector = CommunityDetector(adapter)
 
-        result = await detector.detect_communities()
+        result = detector.detect_communities()
 
         assert result.total_regions == 1
         assert result.total_nodes == 1
@@ -181,14 +175,13 @@ class TestDetectCommunitiesSingleNode:
         assert p.entity_types == {"language": 1}
         assert p.edge_count == 0
 
-    @pytest.mark.asyncio
-    async def test_single_node_with_type_fallback(self):
+    def test_single_node_with_type_fallback(self):
         """节点缺少 type 字段时回退到 unknown"""
         nodes = [{"id": "Lonely", "name": "Lonely"}]
         adapter = _make_mock_adapter(nodes, [])
         detector = CommunityDetector(adapter)
 
-        result = await detector.detect_communities()
+        result = detector.detect_communities()
 
         assert result.partitions[0].entity_types == {"unknown": 1}
 
@@ -350,8 +343,7 @@ class TestCommunityDetectionResultDataclass:
 class TestGracefulDegradation:
     """leidenalg 未安装时的优雅降级"""
 
-    @pytest.mark.asyncio
-    async def test_returns_empty_when_leiden_not_installed(self):
+    def test_returns_empty_when_leiden_not_installed(self):
         """leidenalg 未安装时返回空结果而非抛异常（需 ≥2 节点才触发 Leiden 路径）"""
         nodes = [
             {"id": "A", "name": "A", "type": "x"},
@@ -363,7 +355,7 @@ class TestGracefulDegradation:
 
         # 模拟 leidenalg 未安装
         with patch("niu_api.internal.region_detector._HAS_LEIDEN", False):
-            result = await detector.detect_communities()
+            result = detector.detect_communities()
 
         assert result.partitions == []
         assert result.total_nodes == 0
