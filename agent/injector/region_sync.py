@@ -123,6 +123,11 @@ class RegionSync:
             self._save_status(stats)
             return stats
 
+        # BUG 5 fix: Check stop event between steps
+        if self._stop_event.is_set():
+            self._save_status(stats)
+            return stats
+
         stats["total_regions"] = detection_result.total_regions
         stats["total_nodes"] = detection_result.total_nodes
         stats["total_edges"] = detection_result.total_edges
@@ -130,6 +135,11 @@ class RegionSync:
 
         # Steps 3-5: Region node management
         self._manage_region_nodes(detection_result, stats)
+
+        # BUG 5 fix: Check stop event between steps
+        if self._stop_event.is_set():
+            self._save_status(stats)
+            return stats
 
         # Step 6: Initialize activation manager with new regions
         self._refresh_activation_manager(stats)
@@ -157,13 +167,13 @@ class RegionSync:
         """
         try:
             from niu_api.internal.lightrag_adapter import LightRAGAdapter
-            from niu_api.internal.lightrag_manager import call_async
             from niu_api.internal.region_detector import CommunityDetector
 
             adapter = LightRAGAdapter()
             detector = CommunityDetector(adapter)
             resolution = REGION_CONFIG_DEFAULTS["resolution"]
-            detection_result = call_async(detector.detect_communities(resolution=resolution))
+            # detect_communities is sync — no call_async needed
+            detection_result = detector.detect_communities(resolution=resolution)
             return detection_result
         except Exception as e:
             logger.warning(f"[RegionSync] Community detection failed: {e}")
@@ -181,7 +191,6 @@ class RegionSync:
         """
         try:
             from niu_api.internal.lightrag_adapter import LightRAGAdapter, LightRAGIngester
-            from niu_api.internal.lightrag_manager import call_async
             from niu_api.internal.region_manager import RegionManager
 
             adapter = LightRAGAdapter()
@@ -190,7 +199,7 @@ class RegionSync:
 
             # Step 3: Create region nodes
             try:
-                created = call_async(manager.create_region_nodes(detection_result))
+                created = manager.create_region_nodes(detection_result)
                 stats["regions_created"] = len(created)
             except Exception as e:
                 logger.warning(f"[RegionSync] create_region_nodes failed: {e}")
@@ -198,7 +207,7 @@ class RegionSync:
 
             # Step 4: Cleanup stale regions
             try:
-                removed = call_async(manager.cleanup_stale_regions(detection_result))
+                removed = manager.cleanup_stale_regions(detection_result)
                 stats["regions_removed"] = len(removed)
             except Exception as e:
                 logger.warning(f"[RegionSync] cleanup_stale_regions failed: {e}")
@@ -207,9 +216,9 @@ class RegionSync:
             # Step 5: Update region summaries (if method exists)
             try:
                 if hasattr(manager, "update_region_summaries"):
-                    all_regions = call_async(manager.get_all_regions())
+                    all_regions = manager.get_all_regions()
                     region_names = [r.name for r in all_regions]
-                    call_async(manager.update_region_summaries(region_names))
+                    manager.update_region_summaries(region_names)
                     stats["regions_updated"] = len(region_names)
             except Exception as e:
                 logger.debug(f"[RegionSync] update_region_summaries skipped: {e}")
@@ -221,13 +230,16 @@ class RegionSync:
     def _refresh_activation_manager(self, stats: dict) -> None:
         """Initialize activation manager with current region data.
 
+        After getting all regions, fetch members for each region so that
+        _entity_to_region is properly populated (BUG 2 fix). Also set
+        the neighbor map for spillover activation (BUG 3 fix).
+
         Args:
             stats: Stats dict (updated in place with activation stats).
         """
         try:
             from agent.brain_tools import set_activation_mgr
             from niu_api.internal.lightrag_adapter import LightRAGAdapter, LightRAGIngester
-            from niu_api.internal.lightrag_manager import call_async
             from niu_api.internal.region_activation import RegionActivationManager
             from niu_api.internal.region_manager import RegionManager
 
@@ -235,7 +247,17 @@ class RegionSync:
             ingester = LightRAGIngester()
             manager = RegionManager(adapter, ingester)
 
-            all_regions = call_async(manager.get_all_regions())
+            all_regions = manager.get_all_regions()
+
+            # BUG 2 fix: Fetch members for each region so _entity_to_region
+            # gets populated in initialize_from_regions()
+            for region in all_regions:
+                try:
+                    region.members = manager.get_region_members(region.name)
+                except Exception as e:
+                    logger.debug(
+                        f"[RegionSync] get_region_members failed for {region.name}: {e}"
+                    )
 
             activation_mgr = RegionActivationManager(
                 decay_factor=REGION_CONFIG_DEFAULTS["decay_factor"],
@@ -244,6 +266,19 @@ class RegionSync:
                 tool_reinforce_value=REGION_CONFIG_DEFAULTS["tool_reinforce_value"],
             )
             activation_mgr.initialize_from_regions(all_regions)
+
+            # BUG 3 fix: Set neighbor map for spillover activation.
+            # TODO: Compute actual neighbor map from LightRAG graph edges.
+            # Two regions are neighbors if they share edges between their
+            # member entities. For now, set empty map — spillover will be
+            # non-functional until edge data is computed during sync.
+            neighbor_map: dict[str, set[str]] = {}
+            activation_mgr.set_region_neighbors(neighbor_map)
+            logger.debug(
+                "[RegionSync] Neighbor map set (empty — spillover requires "
+                "graph edge data from future sync)"
+            )
+
             set_activation_mgr(activation_mgr)
 
             logger.info(

@@ -138,11 +138,16 @@ class RegionManager:
     Creates brain:region:{name} entities for each Leiden community,
     serving as semantic pointers, search entries, and metadata containers.
 
+    All public methods are synchronous. Internal adapter/ingester calls
+    are sync methods that themselves use call_async for the LightRAG
+    event loop, so wrapping RegionManager methods in call_async would
+    cause a deadlock.
+
     Usage::
 
         manager = RegionManager(adapter, ingester)
-        region_names = await manager.create_region_nodes(partition_result)
-        regions = await manager.get_all_regions()
+        region_names = manager.create_region_nodes(partition_result)
+        regions = manager.get_all_regions()
     """
 
     def __init__(self, adapter: Any, ingester: Any) -> None:
@@ -153,7 +158,7 @@ class RegionManager:
     # Public API
     # ------------------------------------------------------------------
 
-    async def create_region_nodes(
+    def create_region_nodes(
         self,
         partition_result: CommunityDetectionResult,
     ) -> list[str]:
@@ -194,14 +199,15 @@ class RegionManager:
 
             # Build entity summaries for region naming
             entity_summaries = self._build_entity_summaries(
-                members, partition.entity_types
+                members, partition.entity_types, partition.entity_name_to_type
             )
 
             # Step 2: Generate region name + summary
             region_label, region_summary = self._summarize_region(entity_summaries)
 
             # Pick representative: first entity name (highest-degree in community)
-            representative = members[0] if members else ""
+            # Sanitize: replace | with - to avoid breaking description parsing
+            representative = members[0].replace("|", "-") if members else ""
             community_id = f"community_{partition.region_id}"
             now = time.time()
 
@@ -286,7 +292,7 @@ class RegionManager:
         logger.info("共创建 %d 个脑区节点", len(created_regions))
         return created_regions
 
-    async def update_region_summaries(
+    def update_region_summaries(
         self,
         region_names: list[str],
     ) -> None:
@@ -302,21 +308,40 @@ class RegionManager:
         """
         for region_name in region_names:
             # Step 1: Get current members
-            members = await self.get_region_members(region_name)
+            members = self.get_region_members(region_name)
 
             if not members:
                 logger.debug("脑区 %s 无成员，跳过摘要更新", region_name)
                 continue
 
             # Step 2: Get current region info to preserve metadata
-            explore_result = self._adapter.explore_node(region_name, depth=0)
+            # Use list_entities with entity_type filter to find the region node
+            # (explore_node(depth=0) may return no nodes for newly created regions)
             current_desc = ""
-            if explore_result and explore_result.get("center"):
-                # Try to find the description from nodes
-                for node in explore_result.get("nodes", []):
-                    if node.get("id") == region_name or node.get("name") == region_name:
-                        current_desc = node.get("description", "")
+            list_result = self._adapter.list_entities(
+                list_type="entities", entity_type=REGION_ENTITY_TYPE, limit=1000
+            )
+            if isinstance(list_result, dict) and list_result.get("status") == "ok":
+                for entity in list_result.get("data", []):
+                    if entity.get("id") == region_name or entity.get("entity_name") == region_name:
+                        current_desc = entity.get("description", "")
                         break
+
+            if not current_desc:
+                # Fallback: try explore_node for backward compatibility
+                explore_result = self._adapter.explore_node(region_name, depth=0)
+                if explore_result and explore_result.get("center"):
+                    for node in explore_result.get("nodes", []):
+                        if node.get("id") == region_name or node.get("name") == region_name:
+                            current_desc = node.get("description", "")
+                            break
+
+            if not current_desc:
+                logger.debug(
+                    "脑区 %s 无现有描述，跳过摘要更新（避免覆盖为空）",
+                    region_name,
+                )
+                continue
 
             parsed = _parse_description(current_desc)
             community_id = parsed.get("region_id", "")
@@ -348,10 +373,12 @@ class RegionManager:
                 "更新脑区摘要: %s (%d 成员)", region_name, len(members)
             )
 
-    async def get_all_regions(self) -> list[BrainRegionInfo]:
+    def get_all_regions(self) -> list[BrainRegionInfo]:
         """Query all entity_type=BrainRegion entities from LightRAG
 
-        Uses list_entities(entity_type="BrainRegion")
+        No longer async — internal calls (adapter) are synchronous methods
+        that themselves use call_async for the LightRAG event loop, so wrapping
+        this method in call_async would cause a deadlock.
 
         Returns:
             List of BrainRegionInfo for all region master nodes
@@ -395,8 +422,10 @@ class RegionManager:
 
         return regions
 
-    async def get_region_members(self, region_name: str) -> list[str]:
+    def get_region_members(self, region_name: str) -> list[str]:
         """Get members by following belongs_to relationships from region node
+
+        No longer async — see get_all_regions for rationale.
 
         Uses explore_node(region_name, depth=1) then filter belongs_to edges
 
@@ -430,11 +459,13 @@ class RegionManager:
 
         return members
 
-    async def cleanup_stale_regions(
+    def cleanup_stale_regions(
         self,
         current_partition: CommunityDetectionResult,
     ) -> list[str]:
         """Remove region master nodes that no longer exist in current partition
+
+        No longer async — see get_all_regions for rationale.
 
         Compare current_partition community_ids with existing BrainRegion entities.
         Delete stale nodes and their belongs_to relationships.
@@ -451,7 +482,7 @@ class RegionManager:
             current_community_ids.add(f"community_{partition.region_id}")
 
         # Get all existing regions
-        existing_regions = await self.get_all_regions()
+        existing_regions = self.get_all_regions()
 
         removed: list[str] = []
         for region in existing_regions:
@@ -484,32 +515,43 @@ class RegionManager:
         self,
         members: list[str],
         entity_types: dict[str, int],
+        entity_name_to_type: dict[str, str] | None = None,
     ) -> list[str]:
         """Build entity summary strings from member names and type counts.
+
+        Uses entity_name_to_type mapping for accurate type labels instead of
+        positional assignment from a flat type queue.
 
         Args:
             members: Entity names in the community
             entity_types: entity_type -> count mapping
+            entity_name_to_type: Optional entity_name -> entity_type mapping
+                for accurate per-entity type lookup
 
         Returns:
             List of summary strings like ["Python(skill)", "Django(framework)", ...]
         """
-        # Determine most common type for the community
-        type_counts = entity_types or {}
-        # Sort types by count descending for naming
-        sorted_types = sorted(
-            type_counts.items(), key=lambda x: x[1], reverse=True
-        )
-
-        # Assign types to entities in order of type frequency
         summaries: list[str] = []
-        type_queue: list[str] = []
-        for etype, count in sorted_types:
-            type_queue.extend([etype] * count)
+        type_fallback_queue: list[str] = []
 
-        for i, name in enumerate(members):
-            etype = type_queue[i] if i < len(type_queue) else "unknown"
-            summaries.append(f"{name}({etype})")
+        # Build fallback queue from type counts for entities without a mapping
+        sorted_types = sorted(
+            (entity_types or {}).items(), key=lambda x: x[1], reverse=True
+        )
+        for etype, count in sorted_types:
+            type_fallback_queue.extend([etype] * count)
+
+        fallback_idx = 0
+        for member in members:
+            # Look up actual type from name-to-type mapping
+            if entity_name_to_type and member in entity_name_to_type:
+                etype = entity_name_to_type[member]
+            elif fallback_idx < len(type_fallback_queue):
+                etype = type_fallback_queue[fallback_idx]
+                fallback_idx += 1
+            else:
+                etype = "unknown"
+            summaries.append(f"{member}({etype})")
 
         return summaries
 
@@ -557,6 +599,10 @@ class RegionManager:
 
         # Heuristic 1: Use the first entity (representative) as region label
         region_label = entity_names[0]
+
+        # Sanitize: replace | with - to avoid breaking description parsing
+        # (| is the separator in _encode_description / _parse_description)
+        region_label = region_label.replace("|", "-")
 
         # Heuristic 2: Build summary from top MAX_SUMMARY_ENTITIES entities
         top_summaries = entity_summaries[:MAX_SUMMARY_ENTITIES]

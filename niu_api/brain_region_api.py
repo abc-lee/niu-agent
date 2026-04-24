@@ -87,10 +87,8 @@ def get_brain_regions(
     and RegionActivationManager.get_region_map() for activation scores.
     """
     try:
-        from niu_api.internal.lightrag_manager import call_async
-
         region_mgr = _get_region_mgr()
-        regions = call_async(region_mgr.get_all_regions())
+        regions = region_mgr.get_all_regions()
 
         # Get activation states from ActivationManager
         activation_mgr = _get_activation_mgr()
@@ -156,17 +154,14 @@ def consolidate_brain_regions(
     4. Initialize activation manager with new regions
     """
     try:
-        from niu_api.internal.lightrag_manager import call_async
         from niu_api.internal.region_detector import CommunityDetector
         from niu_api.internal.lightrag_adapter import LightRAGAdapter
 
         adapter = LightRAGAdapter()
         detector = CommunityDetector(adapter)
 
-        # Step 1: Detect communities
-        detection_result = call_async(
-            detector.detect_communities(resolution=req.resolution)
-        )
+        # Step 1: Detect communities (sync method, no await needed)
+        detection_result = detector.detect_communities(resolution=req.resolution)
 
         if not detection_result.partitions:
             return {
@@ -175,18 +170,27 @@ def consolidate_brain_regions(
                 "regions_created": 0,
             }
 
-        # Step 2: Create region master nodes
+        # Step 2: Create region master nodes (sync — no call_async)
         region_mgr = _get_region_mgr()
-        created = call_async(region_mgr.create_region_nodes(detection_result))
+        created = region_mgr.create_region_nodes(detection_result)
 
-        # Step 3: Clean up stale regions
-        removed = call_async(region_mgr.cleanup_stale_regions(detection_result))
+        # Step 3: Clean up stale regions (sync — no call_async)
+        removed = region_mgr.cleanup_stale_regions(detection_result)
 
         # Step 4: Initialize activation manager with new regions
         activation_mgr = _get_activation_mgr()
         if activation_mgr is not None:
-            regions = call_async(region_mgr.get_all_regions())
+            regions = region_mgr.get_all_regions()
+            # BUG 2 fix: Fetch members for each region
+            for region in regions:
+                try:
+                    region.members = region_mgr.get_region_members(region.name)
+                except Exception:
+                    pass
             activation_mgr.initialize_from_regions(regions)
+            # BUG 3 fix: Set neighbor map for spillover
+            neighbor_map: dict[str, set[str]] = {}
+            activation_mgr.set_region_neighbors(neighbor_map)
 
         return {
             "status": "ok",
@@ -211,8 +215,6 @@ def get_region_members(name: str) -> dict[str, Any]:
               added automatically if missing.
     """
     try:
-        from niu_api.internal.lightrag_manager import call_async
-
         region_mgr = _get_region_mgr()
 
         # Normalize name: add prefix if missing
@@ -221,8 +223,8 @@ def get_region_members(name: str) -> dict[str, Any]:
         else:
             region_name = name
 
-        # Get members via RegionManager
-        members = call_async(region_mgr.get_region_members(region_name))
+        # Get members via RegionManager (sync — no call_async)
+        members = region_mgr.get_region_members(region_name)
 
         return {
             "status": "ok",

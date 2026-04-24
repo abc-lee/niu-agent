@@ -200,6 +200,15 @@ async def lifespan(app: FastAPI):
     # Shutdown
     logger.info("Niu API Server shutting down...")
 
+    # 停止 brain region 后台同步 (must stop before LightRAG — depends on it)
+    try:
+        from agent.injector.region_sync import get_region_sync
+        region_sync = get_region_sync()
+        region_sync.stop_background_sync()
+        logger.info("Brain region sync stopped")
+    except Exception as e:
+        logger.warning(f"Failed to stop region sync: {e}")
+
     # 停止 LightRAG 后台同步
     try:
         from agent.injector.lightrag_sync import get_lightrag_sync
@@ -208,15 +217,6 @@ async def lifespan(app: FastAPI):
         logger.info("LightRAG background sync stopped")
     except Exception as e:
         logger.warning(f"Failed to stop LightRAG sync: {e}")
-
-    # 停止 brain region 后台同步
-    try:
-        from agent.injector.region_sync import get_region_sync
-        region_sync = get_region_sync()
-        region_sync.stop_background_sync()
-        logger.info("Brain region sync stopped")
-    except Exception as e:
-        logger.warning(f"Failed to stop region sync: {e}")
 
     # 保存工具生命周期分数（不执行 decay，只持久化当前分数）
     try:

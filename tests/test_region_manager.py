@@ -106,7 +106,7 @@ class TestCreateRegionNodes:
         manager = RegionManager(adapter, ingester)
         result = _make_partition_result()
 
-        region_names = await manager.create_region_nodes(result)
+        region_names = manager.create_region_nodes(result)
 
         # 应创建 2 个脑区
         assert len(region_names) == 2
@@ -129,7 +129,7 @@ class TestCreateRegionNodes:
         manager = RegionManager(adapter, ingester)
         result = _make_partition_result()
 
-        await manager.create_region_nodes(result)
+        manager.create_region_nodes(result)
 
         # inject_custom_kg 被调用：每个社区 1 次锚点 + 1 次成员关系 = 2 次/社区
         # 总共 4 次
@@ -176,7 +176,7 @@ class TestCreateRegionNodes:
         )
         result = _make_partition_result([partition])
 
-        region_names = await manager.create_region_nodes(result)
+        region_names = manager.create_region_nodes(result)
 
         # 应创建 1 个脑区（仅 Python 作为成员）
         assert len(region_names) == 1
@@ -204,7 +204,7 @@ class TestCreateRegionNodes:
             timestamp="2026-04-24T12:00:00+00:00",
         )
 
-        region_names = await manager.create_region_nodes(result)
+        region_names = manager.create_region_nodes(result)
 
         assert region_names == []
         ingester.inject_entity.assert_not_called()
@@ -237,7 +237,7 @@ class TestUpdateRegionSummaries:
             "stats": {"nodes": 3, "edges": 2, "max_depth": 1},
         }
 
-        await manager.update_region_summaries(["brain:region:Python"])
+        manager.update_region_summaries(["brain:region:Python"])
 
         # inject_entity 应被调用一次以更新
         ingester.inject_entity.assert_called_once()
@@ -262,7 +262,7 @@ class TestUpdateRegionSummaries:
             "stats": {"nodes": 0, "edges": 0, "max_depth": 1},
         }
 
-        await manager.update_region_summaries(["brain:region:Empty"])
+        manager.update_region_summaries(["brain:region:Empty"])
 
         # inject_entity 不应被调用
         ingester.inject_entity.assert_not_called()
@@ -297,7 +297,7 @@ class TestGetAllRegions:
             ],
         }
 
-        regions = await manager.get_all_regions()
+        regions = manager.get_all_regions()
 
         assert len(regions) == 2
         assert all(isinstance(r, BrainRegionInfo) for r in regions)
@@ -326,7 +326,7 @@ class TestGetAllRegions:
 
         adapter.list_entities.return_value = {"status": "error", "message": "failed"}
 
-        regions = await manager.get_all_regions()
+        regions = manager.get_all_regions()
 
         assert regions == []
 
@@ -338,7 +338,7 @@ class TestGetAllRegions:
 
         adapter.list_entities.return_value = {"status": "ok", "data": []}
 
-        regions = await manager.get_all_regions()
+        regions = manager.get_all_regions()
 
         assert regions == []
 
@@ -368,7 +368,7 @@ class TestGetRegionMembers:
             "stats": {"nodes": 4, "edges": 4, "max_depth": 1},
         }
 
-        members = await manager.get_region_members("brain:region:Python")
+        members = manager.get_region_members("brain:region:Python")
 
         assert len(members) == 3
         assert "Python" in members
@@ -392,7 +392,7 @@ class TestGetRegionMembers:
             "stats": {"nodes": 2, "edges": 1, "max_depth": 1},
         }
 
-        members = await manager.get_region_members("brain:region:Python")
+        members = manager.get_region_members("brain:region:Python")
 
         assert "Python" in members
 
@@ -409,7 +409,7 @@ class TestGetRegionMembers:
             "stats": {"nodes": 0, "edges": 0, "max_depth": 1},
         }
 
-        members = await manager.get_region_members("brain:region:Empty")
+        members = manager.get_region_members("brain:region:Empty")
 
         assert members == []
 
@@ -455,7 +455,7 @@ class TestCleanupStaleRegions:
             ),
         ])
 
-        removed = await manager.cleanup_stale_regions(current_partition)
+        removed = manager.cleanup_stale_regions(current_partition)
 
         # 只有 OldRegion 应被删除
         assert len(removed) == 1
@@ -490,7 +490,7 @@ class TestCleanupStaleRegions:
             ),
         ])
 
-        removed = await manager.cleanup_stale_regions(current_partition)
+        removed = manager.cleanup_stale_regions(current_partition)
 
         assert removed == []
         adapter.delete_entity.assert_not_called()
@@ -526,7 +526,7 @@ class TestCleanupStaleRegions:
             timestamp="2026-04-24T12:00:00+00:00",
         )
 
-        removed = await manager.cleanup_stale_regions(empty_partition)
+        removed = manager.cleanup_stale_regions(empty_partition)
 
         assert len(removed) == 2
         assert adapter.delete_entity.call_count == 2
