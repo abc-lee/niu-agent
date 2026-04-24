@@ -110,12 +110,15 @@ class DreamWriter:
             Dict with status and details.
         """
         # Step 1: Inject the entity
+        # Encode brain_meta_level in description for semantic entities,
+        # consistent with episodic pipeline pattern
+        enriched_description = f"{description} | brain_meta_level:{level}"
         entity_result = self._ingester.inject_entity(
             name=name,
             entity_type=entity_type,
-            description=description,
+            description=enriched_description,
             source_id=DREAM_SOURCE_ID,
-            chunk_content=description,
+            chunk_content=enriched_description,
             file_path=DREAM_FILE_PATH,
         )
 

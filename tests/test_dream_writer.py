@@ -60,13 +60,13 @@ def test_write_semantic_entity(writer: DreamWriter, mock_ingester: MagicMock) ->
     assert result["entity_type"] == "Skill"
     assert result["niu_relation_keyword"] == "skilled_in"
 
-    # Verify inject_entity called with correct params
+    # Verify inject_entity called with correct params (level encoded in description)
     mock_ingester.inject_entity.assert_called_once_with(
         name="Python",
         entity_type="Skill",
-        description="Programming language",
+        description="Programming language | brain_meta_level:L0",
         source_id=DREAM_SOURCE_ID,
-        chunk_content="Programming language",
+        chunk_content="Programming language | brain_meta_level:L0",
         file_path=DREAM_FILE_PATH,
     )
 
