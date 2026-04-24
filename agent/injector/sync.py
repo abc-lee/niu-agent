@@ -106,8 +106,8 @@ class SkillSync:
     """
     Skills 目录同步服务
 
-    扫描 memory/skills/ 目录，检测文件变化，同步到向量库。
-    复用 VectorSearchAdapter，通过 metadata.type="skill" 标签区分。
+    扫描 memory/skills/ 目录，检测文件变化，同步到 LightRAG 知识图谱。
+    通过 entity_type="skill" 标签区分，供 LightRAGAdapter.search_skills() 检索。
     """
 
     def __init__(self, skills_dir: str = None, scan_interval: int = 60, use_watchdog: bool = True):
@@ -343,7 +343,20 @@ class SkillSync:
             logger.debug(f"[SkillSync] LightRAG skill inject failed for '{name}': {e}")
 
     def _delete_skill(self, name: str):
-        """从向量库删除 skill（使用独立连接，避免跨线程共享单例连接）"""
+        """从 LightRAG 知识图谱和向量库删除 skill"""
+        # 1. 从 LightRAG 删除实体（非阻塞，失败不影响 vectors.db 清理）
+        try:
+            from niu_api.internal.lightrag_adapter import LightRAGAdapter
+            adapter = LightRAGAdapter()
+            result = adapter.delete_entity(f"skill:{name}")
+            if result.get("status") == "ok":
+                logger.debug(f"[SkillSync] Deleted skill '{name}' from LightRAG")
+            else:
+                logger.debug(f"[SkillSync] LightRAG delete skipped for '{name}': {result.get('message', '')}")
+        except Exception as e:
+            logger.debug(f"[SkillSync] LightRAG skill delete failed for '{name}': {e}")
+
+        # 2. 从 vectors.db 清理残留（使用独立连接，避免跨线程共享单例连接）
         db_path = self.vector_search.db_path
         if db_path is None:
             logger.error(f"[SkillSync] Database path unavailable, cannot delete skill:{name}")

@@ -758,11 +758,14 @@ class NiuRunner:
                     lightrag_skill_names.add(entity_name[6:])
         except Exception as e:
             logger.warning(f"LightRAG retrieval failed: {e}")
+            lightrag_available = False
 
-        # 3. tool-signal skills（LightRAG）
+        # Debug: distinguish "no results found" from "LightRAG is down"
+        if lightrag_results and not any(lightrag_results.values()):
+            logger.debug("LightRAG returned empty results — agent will have no dynamic skills/tools/knowledge injection")
         recent_tool_names = self.tool_lifecycle.consume_recent_hits()
         tool_signal_skills_entities: list[dict] = []
-        if recent_tool_names:
+        if lightrag_available and recent_tool_names:
             tool_signal_skills_entities, signal_names = (
                 self._search_tool_signal_skills_lightrag(context, recent_tool_names)
             )
