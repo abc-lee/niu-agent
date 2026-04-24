@@ -559,107 +559,226 @@ class NiuRunner:
 
         return "\n".join(context_parts)
 
-    def _inject_dynamic_resources(self, context: str) -> tuple[str, dict[str, int]]:
-        """
-        动态注入相关资源（Skills、知识）+ MCP 工具分数提取
+    # ============== LightRAG Helper Methods ==============
 
-        从向量库搜索相关资源，返回格式化的提示词扩展和 MCP 工具分数
+    def _apply_query_patterns(self, context: str) -> str:
+        """Apply query_pattern refinement from vectors.db.
+
+        Query patterns are stored in vectors.db and provide known
+        keyword expansions (e.g., "photo" → "photo, image, picture").
+        This is a preprocessing step before LightRAG retrieval.
 
         Args:
-            context: 3条对话上下文（包含历史消息和当前用户输入）
+            context: Original query context.
 
-        注入顺序：
-        1. 活跃Skills（工具命中后激活）
-        2. 语义匹配的Skills
-        3. MCP工具 → 仅提取分数供 tool_lifecycle.update_from_search，不注入提示词
-        4. 知识文档
-        5. 交互习惯
-
-        阈值策略：
-        - Skills: 0.25
-        - MCP工具: 0.25
-        - 知识: 0.3
-        - 交互习惯: 0.4
+        Returns:
+            Refined query if a pattern matches, otherwise original context.
         """
-        # 1. 一次向量检索，按 category 分组返回（避免同一 context 多次 embedding 计算）
-        multi_results = self.vector_search.search_multi(
-            query=context,
-            categories={
-                "skill": {"limit": 3, "min_score": 0.25},
-                "mcp_tool": {"limit": 10, "min_score": 0.25},
-                "document": {"limit": 20, "min_score": 0.3},
-                "interaction_habit": {"limit": 3, "min_score": 0.4},
-            },
-            enable_recursion=True
-        )
-        skills = multi_results.get("skill", [])
-        mcp_tools = multi_results.get("mcp_tool", [])
-        knowledge = multi_results.get("document", [])
-        interaction_habits = multi_results.get("interaction_habit", [])
+        try:
+            pattern_results = self.vector_search.search(
+                query=context,
+                limit=1,
+                min_score=0.5,
+                metadata_filter={"category": "query_pattern"},
+            )
+            if pattern_results:
+                expanded = pattern_results[0].metadata.get("expanded_query", "")
+                if expanded:
+                    return expanded
+        except Exception:
+            pass
+        return context
 
-        # 2. 用本轮工具名做 skill 精确检索（替代原 _activate_related_skills 的即时检索）
-        tool_signal_skills = []
-        recent_tool_names = self.tool_lifecycle.consume_recent_hits()
-        seen_tools = set()
+    def _search_tool_signal_skills_lightrag(
+        self, context: str, recent_tool_names: list[str],
+    ) -> tuple[list[dict], set[str]]:
+        """Search for skills related to recently-used tools via LightRAG.
+
+        Replaces the vector_search.search() tool-signal lookup with
+        LightRAGAdapter.search_skills() when LightRAG is available.
+
+        Args:
+            context: Current conversation context.
+            recent_tool_names: Tool names that were recently hit.
+
+        Returns:
+            Tuple of (skill_entity_list, skill_name_set).
+        """
+        from niu_api.internal.lightrag_adapter import LightRAGAdapter
+
+        adapter = LightRAGAdapter()
+        skill_entities: list[dict] = []
+        skill_names: set[str] = set()
+
+        # Search by context for related skills
+        try:
+            kg_skills = adapter.search_skills(context, top_k=5)
+            for entity in kg_skills:
+                skill_entities.append(entity)
+                entity_name = entity.get("entity_name", "")
+                if entity_name.startswith("skill:"):
+                    skill_names.add(entity_name[6:])
+        except Exception:
+            pass
+
+        # Search by each tool name for tool-signal skills
+        seen_tools: set[str] = set()
         for tool_name in recent_tool_names:
             if tool_name in seen_tools:
                 continue
             seen_tools.add(tool_name)
             try:
-                tool_skills = self.vector_search.search(
-                    query=tool_name,
-                    limit=2,
-                    min_score=0.3,
-                    metadata_filter={"category": "skill"}
-                )
-                tool_signal_skills.extend(tool_skills)
+                tool_skills = adapter.search_skills(tool_name, top_k=2)
+                for entity in tool_skills:
+                    skill_entities.append(entity)
+                    entity_name = entity.get("entity_name", "")
+                    if entity_name.startswith("skill:"):
+                        skill_names.add(entity_name[6:])
             except Exception:
                 pass
 
-        if tool_signal_skills:
-            logger.debug(f"Tool-signal Skills: {len(tool_signal_skills)} results")
+        return skill_entities, skill_names
 
-        # Initialize mcp_tool_scores early — LightRAG KG block below writes to it
-        mcp_tool_scores: dict[str, int] = {}
+    def _build_tool_scores_from_lightrag(
+        self, lightrag_results: dict[str, list[dict]],
+    ) -> dict[str, int]:
+        """Build mcp_tool_scores from LightRAG results.
 
-        # 2.5 LightRAG KG search as additional signal source for skills and tools
-        # Supplements vector search with knowledge-graph entity retrieval.
-        # Wrapped in try/except so LightRAG failures never break dynamic injection.
+        LightRAG doesn't return similarity scores like vector search.
+        Use rank-based proxy scores: top-5 = 70, 6-10 = 55, 11-20 = 40.
+
+        Args:
+            lightrag_results: Result dict from search_multi_lightrag().
+
+        Returns:
+            Dict mapping tool full_name → proxy score.
+        """
+        registry = get_registry()
+        scores: dict[str, int] = {}
+        tool_entities = lightrag_results.get("mcp_tool", [])
+
+        for i, entity in enumerate(tool_entities):
+            entity_name = entity.get("entity_name", "")
+            if not entity_name.startswith("tool:"):
+                continue
+            tool_full_name = entity_name[5:]  # strip "tool:" prefix
+            vis = registry.get_visibility(tool_full_name)
+            if vis in ("hidden", "static"):
+                continue
+            # Rank-based proxy score
+            if i < 5:
+                proxy_score = 70
+            elif i < 10:
+                proxy_score = 55
+            else:
+                proxy_score = 40
+            scores[tool_full_name] = max(scores.get(tool_full_name, 0), proxy_score)
+
+        return scores
+
+    def _format_lightrag_entities_for_prompt(
+        self, entities: list[dict], title: str, seen_names: set[str],
+    ) -> tuple[str, set[str]]:
+        """Format LightRAG entity dicts for prompt injection.
+
+        Similar to format_resources_for_prompt but works with LightRAG
+        entity dicts (entity_name, description) instead of SearchResult objects.
+
+        Args:
+            entities: List of LightRAG entity dicts.
+            title: Section title for the prompt.
+            seen_names: Set of names already included (for dedup).
+
+        Returns:
+            Tuple of (formatted_text, updated_seen_names).
+        """
+        if not entities:
+            return "", seen_names
+
+        lines = [f"\n\n### [{title}]"]
+        added = 0
+        for entity in entities:
+            entity_name = entity.get("entity_name", "")
+            # Strip type prefix for display
+            display_name = entity_name
+            for prefix in ("skill:", "tool:", "knowledge:"):
+                if display_name.startswith(prefix):
+                    display_name = display_name[len(prefix):]
+                    break
+            if display_name in seen_names:
+                continue
+            seen_names.add(display_name)
+            description = entity.get("description", "")
+            if description:
+                lines.append(f"{added + 1}. **{display_name}** (来源: 知识图谱)")
+                lines.append(f"   {description}")
+            else:
+                lines.append(f"{added + 1}. **{display_name}** (来源: 知识图谱)")
+            added += 1
+
+        if added == 0:
+            return "", seen_names
+        return "\n".join(lines), seen_names
+
+    # ============== Dynamic Resource Injection ==============
+
+    def _inject_dynamic_resources(self, context: str) -> tuple[str, dict[str, int]]:
+        """
+        动态注入相关资源（Skills、知识）+ MCP 工具分数提取
+
+        LightRAG 图检索为主检索路径。interaction_habits 和 query_patterns
+        仍从 vectors.db 读取（独立数据源，非 fallback）。
+
+        Args:
+            context: 3条对话上下文（包含历史消息和当前用户输入）
+
+        检索顺序：
+        1. query_pattern 预处理（vectors.db）
+        2. LightRAG 主检索（hybrid 模式）→ skills + mcp_tools + knowledge
+        3. tool-signal skills（LightRAG）
+        4. interaction_habits（vectors.db）
+        5. brain memories（脑图）
+        6. MCP tool scores（LightRAG 排名代理分数）
+        """
+        # 1. query_pattern 预处理（vectors.db，Phase 01 Section 8）
+        effective_query = self._apply_query_patterns(context)
+
+        # 2. LightRAG 主检索
+        lightrag_results: dict[str, list[dict]] = {}
         lightrag_skill_names: set[str] = set()
         try:
             from niu_api.internal.lightrag_adapter import LightRAGAdapter
-
             adapter = LightRAGAdapter()
-            # Search for relevant skills in LightRAG KG
-            kg_skill_results = adapter.search_skills(context, top_k=5)
-            for entity in kg_skill_results:
+            lightrag_results = adapter.search_multi_lightrag(
+                effective_query, mode="hybrid", top_k=20,
+            )
+            for entity in lightrag_results.get("skill", []):
                 entity_name = entity.get("entity_name", "")
                 if entity_name.startswith("skill:"):
-                    skill_name = entity_name[6:]  # strip "skill:" prefix
-                    lightrag_skill_names.add(skill_name)
-            # Search for relevant tools in LightRAG KG
-            kg_tool_results = adapter.search_tools(context, top_k=5)
-            for entity in kg_tool_results:
-                entity_name = entity.get("entity_name", "")
-                if entity_name.startswith("tool:"):
-                    tool_full_name = entity_name[5:]  # strip "tool:" prefix
-                    # Add as a score signal for tool lifecycle (moderate score)
-                    vis = get_registry().get_visibility(tool_full_name)
-                    if vis not in ("hidden", "static"):
-                        # Use a moderate score (60) — vector search is primary,
-                        # LightRAG is supplementary confirmation signal
-                        mcp_tool_scores[tool_full_name] = max(
-                            mcp_tool_scores.get(tool_full_name, 0), 60
-                        )
+                    lightrag_skill_names.add(entity_name[6:])
+        except Exception as e:
+            logger.warning(f"LightRAG retrieval failed: {e}")
 
-            if lightrag_skill_names:
-                logger.debug(f"LightRAG KG skills: {lightrag_skill_names}")
-            if kg_tool_results:
-                logger.debug(f"LightRAG KG tools: {len(kg_tool_results)}")
+        # 3. tool-signal skills（LightRAG）
+        recent_tool_names = self.tool_lifecycle.consume_recent_hits()
+        tool_signal_skills_entities: list[dict] = []
+        if recent_tool_names:
+            tool_signal_skills_entities, signal_names = (
+                self._search_tool_signal_skills_lightrag(context, recent_tool_names)
+            )
+            lightrag_skill_names.update(signal_names)
+
+        # 4. interaction_habits（vectors.db，Phase 01 Section 8）
+        interaction_habits = []
+        try:
+            interaction_habits = self.vector_search.search(
+                query=effective_query, limit=3, min_score=0.4,
+                metadata_filter={"category": "interaction_habit"},
+            )
         except Exception:
-            pass  # LightRAG not available or search failed, skip
+            pass
 
-        # ============== Brain Graph Memory Recall ==============
+        # 5. Brain graph memory recall
         brain_memories_text = ""
         try:
             from niu_api.internal.brain_graph import get_brain_graph, format_memories_for_prompt
@@ -670,61 +789,49 @@ class NiuRunner:
         except Exception as e:
             logger.debug(f"Brain graph recall failed (non-blocking): {e}")
 
-        logger.debug(f"Dynamic injection - Skills: {len(skills)}, MCP: {len(mcp_tools)}, Knowledge: {len(knowledge)}, Habits: {len(interaction_habits)}, ToolSignalSkills: {len(tool_signal_skills)}, LightRAG-Skills: {len(lightrag_skill_names)}")
+        # 6. MCP tool scores（LightRAG 排名代理分数）
+        mcp_tool_scores = self._build_tool_scores_from_lightrag(lightrag_results)
 
-        # 3.5 向量检索到的 MCP 工具：返回分数供 update_from_search（不再注入 system prompt，tools_schema 已有完整描述）
-        # 过滤 hidden（不可见）和 static（已固定注入，不需要动态分数）的工具
-        # NOTE: mcp_tool_scores was initialized above (before LightRAG KG block);
-        # here we only ADD vector search scores — LightRAG scores are preserved.
-        registry = get_registry()
-        for tool in mcp_tools:
-            name = tool.metadata.get("name", "")
-            server = tool.metadata.get("server", "")
-            full_name = f"{server}/{name}" if server else name
-            score = tool.score if hasattr(tool, "score") else 0
-            if not full_name or score <= 0:
-                continue
-            vis = registry.get_visibility(full_name)
-            if vis == "hidden" or vis == "static":
-                continue
-            mcp_tool_scores[full_name] = max(mcp_tool_scores.get(full_name, 0), int(score * 100))
-
-        # 格式化
+        # ============== Format & Inject ==============
         parts = []
-        # 合并工具名检索Skills和搜索到的Skills（去重）
-        all_skills = tool_signal_skills + skills
         seen_names: set[str] = set()
-        if all_skills:
-            # 去重：按metadata.name去重，name为空时用id兜底
-            unique_skills = []
-            for skill in all_skills:
-                name = skill.metadata.get("name", "") or skill.id
-                if name and name not in seen_names:
-                    seen_names.add(name)
-                    unique_skills.append(skill)
 
-            if unique_skills:
-                parts.append(format_resources_for_prompt(unique_skills, "相关技能"))
+        logger.debug(
+            f"Dynamic injection | "
+            f"Skills: {len(lightrag_results.get('skill', []))}, "
+            f"MCP: {len(lightrag_results.get('mcp_tool', []))}, "
+            f"Knowledge: {len(lightrag_results.get('knowledge', []))}, "
+            f"Habits: {len(interaction_habits)}, "
+            f"ToolSignal: {len(tool_signal_skills_entities)}"
+        )
 
-        # Add LightRAG KG skill names not already covered by vector search
-        # These are supplementary — only names found in KG but not in vector results
-        if lightrag_skill_names:
-            # Dedup against already-included skills
-            new_kg_skills = lightrag_skill_names - seen_names
-            if new_kg_skills:
-                kg_lines = [f"{i}. **{name}** (来源: 知识图谱)" for i, name in enumerate(sorted(new_kg_skills), 1)]
-                parts.append("\n\n### [相关技能 (KG)]\n" + "\n".join(kg_lines))
+        # Skills (LightRAG entities + tool-signal entities)
+        lightrag_skills = lightrag_results.get("skill", []) + tool_signal_skills_entities
+        skills_text, seen_names = self._format_lightrag_entities_for_prompt(
+            lightrag_skills, "相关技能", seen_names,
+        )
+        if skills_text:
+            parts.append(skills_text)
 
-        if knowledge:
-            parts.append(format_resources_for_prompt(knowledge, "参考知识"))
+        # Knowledge
+        lightrag_knowledge = lightrag_results.get("knowledge", [])
+        knowledge_text, seen_names = self._format_lightrag_entities_for_prompt(
+            lightrag_knowledge, "参考知识", seen_names,
+        )
+        if knowledge_text:
+            parts.append(knowledge_text)
             parts.append(
                 "\n\n### [知识探索指引]\n"
                 "优先参考上述注入的历史参考信息回答用户问题。"
                 "若命中知识点涉及已知实体（人名、技术、组织等），"
                 "可使用 `lightrag_query` 查询知识图谱中的关联信息，获取更完整的上下文。"
             )
+
+        # Interaction habits (vectors.db)
         if interaction_habits:
             parts.append(format_resources_for_prompt(interaction_habits, "交互习惯"))
+
+        # Brain memories
         if brain_memories_text:
             parts.append(brain_memories_text)
 

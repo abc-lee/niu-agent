@@ -1,15 +1,14 @@
 """
 Injector API endpoints
 
-手动注册 MCP 工具到向量库。
-复用 VectorSearchAdapter，通过 metadata.category="mcp_tool" 标签区分。
+手动注册 MCP 工具到 LightRAG 知识图谱。
+通过 entity_type="tool" 标签区分，供 LightRAGAdapter.search_tools() 检索。
 """
 
 import json
-from typing import Optional
 from pydantic import BaseModel
 from fastapi import APIRouter, HTTPException
-import numpy as np
+from loguru import logger
 
 from agent.vector_search import get_vector_search
 
@@ -36,41 +35,6 @@ class ListResourcesResponse(BaseModel):
     """列出资源响应"""
 
     resources: list[dict]
-
-
-def _register_to_vector_db(doc_id: str, content: str, metadata: dict) -> bool:
-    """写入向量库"""
-    vs = get_vector_search()
-    conn = vs._get_connection()
-    if conn is None:
-        return False
-
-    # 获取向量
-    embedding = vs._get_embedding(content)
-    if embedding is None:
-        return False
-
-    # ✅ L2归一化（符合L1规范v2.0）
-    vec = np.array(embedding, dtype=np.float32)
-    norm = np.linalg.norm(vec)
-    if norm > 0:
-        vec = vec / norm
-    embedding_blob = vec.tobytes()
-
-    # UPSERT
-    conn.execute(
-        """
-        INSERT INTO documents (id, content, embedding, metadata)
-        VALUES (?, ?, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET
-            content = excluded.content,
-            embedding = excluded.embedding,
-            metadata = excluded.metadata
-        """,
-        (doc_id, content, embedding_blob, json.dumps(metadata, ensure_ascii=False)),
-    )
-    conn.commit()
-    return True
 
 
 def _list_by_type(resource_type: str) -> list[dict]:
@@ -102,54 +66,64 @@ def _list_by_type(resource_type: str) -> list[dict]:
 @router.post("/mcp-tool", response_model=RegisterMCPToolResponse)
 async def register_mcp_tool(request: RegisterMCPToolRequest):
     """
-    注册 MCP 工具到向量库
+    注册 MCP 工具到 LightRAG 知识图谱
 
     用法：新增 MCP 服务器后，调用此 API 注册其工具描述。
+    工具以 entity_type="tool" 实体存入图谱，供 search_tools() 检索。
     """
-    doc_id = f"mcp_tool:{request.server_name}:{request.tool_name}"
+    full_name = f"{request.server_name}/{request.tool_name}"
     content = f"{request.tool_name}: {request.description}"
-    metadata = {
-        "level": "l1",  # 小写，符合规范
-        "category": "mcp_tool",  # 内容分类
-        "name": request.tool_name,
-        "server": request.server_name,
-        "description": request.description,
-        "input_schema": request.input_schema,
-    }
 
-    success = _register_to_vector_db(doc_id, content, metadata)
+    try:
+        from niu_api.internal.lightrag_adapter import LightRAGIngester
 
-    if success:
-        return RegisterMCPToolResponse(status="success", resource_id=doc_id)
-    else:
-        raise HTTPException(status_code=500, detail="Failed to register MCP tool")
+        ingester = LightRAGIngester()
+        result = ingester.inject_entity(
+            name=f"tool:{full_name}",
+            entity_type="tool",
+            description=request.description,
+            chunk_content=content,
+            file_path=f"tool://{full_name}",
+        )
+        if result.get("status") == "ok":
+            doc_id = f"mcp_tool:{request.server_name}:{request.tool_name}"
+            return RegisterMCPToolResponse(status="success", resource_id=doc_id)
+    except Exception as e:
+        logger.error(f"Failed to register MCP tool {full_name} to LightRAG: {e}")
+
+    raise HTTPException(status_code=500, detail="Failed to register MCP tool")
 
 
 @router.post("/mcp-tools/batch")
 async def register_mcp_tools_batch(tools: list[RegisterMCPToolRequest]):
-    """批量注册 MCP 工具"""
+    """批量注册 MCP 工具到 LightRAG"""
     results = []
 
     for tool in tools:
-        doc_id = f"mcp_tool:{tool.server_name}:{tool.tool_name}"
+        full_name = f"{tool.server_name}/{tool.tool_name}"
         content = f"{tool.tool_name}: {tool.description}"
-        metadata = {
-            "level": "l1",  # 小写，符合规范
-            "category": "mcp_tool",  # 内容分类
-            "name": tool.tool_name,
-            "server": tool.server_name,
-            "description": tool.description,
-            "input_schema": tool.input_schema,
-        }
 
-        success = _register_to_vector_db(doc_id, content, metadata)
-        results.append(
-            {
-                "tool_name": tool.tool_name,
-                "status": "success" if success else "failed",
-                "resource_id": doc_id,
-            }
-        )
+        try:
+            from niu_api.internal.lightrag_adapter import LightRAGIngester
+
+            ingester = LightRAGIngester()
+            result = ingester.inject_entity(
+                name=f"tool:{full_name}",
+                entity_type="tool",
+                description=tool.description,
+                chunk_content=content,
+                file_path=f"tool://{full_name}",
+            )
+            status = "success" if result.get("status") == "ok" else "failed"
+        except Exception as e:
+            logger.error(f"Failed to register MCP tool {full_name}: {e}")
+            status = "failed"
+
+        results.append({
+            "tool_name": tool.tool_name,
+            "status": status,
+            "resource_id": f"mcp_tool:{tool.server_name}:{tool.tool_name}",
+        })
 
     return {"results": results}
 

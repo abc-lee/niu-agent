@@ -1,8 +1,8 @@
 """
 Skill Sync
 
-Skills 目录同步服务。定时扫描 memory/skills/ 目录，同步变化到向量库。
-复用 VectorSearchAdapter，通过 metadata.type="skill" 标签区分。
+Skills 目录同步服务。定时扫描 memory/skills/ 目录，同步变化到 LightRAG 知识图谱。
+通过 entity_type="skill" 标签区分，供 LightRAGAdapter.search_skills() 检索。
 """
 
 import json
@@ -13,7 +13,6 @@ import time
 from pathlib import Path
 from typing import Optional
 
-import numpy as np
 from loguru import logger
 
 from ..vector_search import get_vector_search
@@ -285,40 +284,13 @@ class SkillSync:
                 conn.close()
 
     def _sync_skill(self, name: str, skill_file: Path):
-        """同步单个 skill 到向量库 + LightRAG"""
+        """同步单个 skill 到 LightRAG 知识图谱"""
         try:
             content = skill_file.read_text(encoding="utf-8")
             triggers = self._extract_triggers(content)
             description = self._extract_description(content)
             tags = self._extract_tags(content)
 
-            # 按照L1规范 v3.0：基础字段 + 扩展字段
-            metadata = {
-                "level": "l1",
-                "category": "skill",
-                "language": "en",
-                "name": name,
-                "description": description,
-                "source": str(skill_file),
-                "priority": 50,
-                "tags": tags,
-                "triggers": triggers,
-            }
-
-            # 构造自然语言 content（用于 embedding，类似 mcp_tool 的格式）
-            # 管道分隔的 L1 摘要语义编码差，改用自然语言 + 触发词 + 标签
-            search_content = f"{name}: {description}"
-            if triggers:
-                search_content += f" 触发词: {'、'.join(triggers)}"
-            if tags:
-                extra_tags = [t for t in tags if t not in triggers]
-                if extra_tags:
-                    search_content += f" 标签: {'、'.join(extra_tags)}"
-
-            self._upsert_skill(f"skill:{name}", search_content, metadata)
-
-            # Also inject skill entity into LightRAG knowledge graph
-            # so that search_skills() can find it
             if description:
                 self._inject_skill_to_lightrag(name, description, tags, triggers, str(skill_file))
 
@@ -369,59 +341,6 @@ class SkillSync:
         except Exception as e:
             # LightRAG not available or inject failed — non-fatal
             logger.debug(f"[SkillSync] LightRAG skill inject failed for '{name}': {e}")
-
-    def _upsert_skill(self, doc_id: str, content: str, metadata: dict):
-        """写入或更新 skill 到向量库（使用独立连接，避免跨线程共享单例连接）"""
-        db_path = self.vector_search.db_path
-        if db_path is None:
-            logger.error(f"[SkillSync] Database path unavailable, cannot upsert {doc_id}")
-            return
-
-        # 获取向量（使用单例连接的 embedding 方法）
-        embedding = self.vector_search._get_embedding(content)
-        if embedding is None:
-            logger.warning(f"[SkillSync] Failed to get embedding for {doc_id}")
-            return
-
-        # L2归一化
-        vec = np.array(embedding, dtype=np.float32)
-        norm = np.linalg.norm(vec)
-        if norm > 0:
-            vec = vec / norm
-        embedding_blob = vec.tobytes()
-
-        # 记录 self_write 时间
-        source = metadata.get("source", "")
-        if source:
-            self._record_self_write(source)
-
-        # 使用独立连接写入（WAL 模式允许并发读写）
-        conn = sqlite3.connect(db_path, isolation_level=None)
-        conn.execute("PRAGMA journal_mode=WAL")
-        try:
-            for attempt in range(3):
-                try:
-                    conn.execute(
-                        """
-                        INSERT INTO documents (id, content, embedding, metadata)
-                        VALUES (?, ?, ?, ?)
-                        ON CONFLICT(id) DO UPDATE SET
-                            content = excluded.content,
-                            embedding = excluded.embedding,
-                            metadata = excluded.metadata
-                        """,
-                        (doc_id, content, embedding_blob, json.dumps(metadata, ensure_ascii=False)),
-                    )
-                    conn.commit()
-                    break
-                except sqlite3.OperationalError as e:
-                    conn.rollback()
-                    if "locked" in str(e) and attempt < 2:
-                        time.sleep(0.1 * (attempt + 1))
-                    else:
-                        raise
-        finally:
-            conn.close()
 
     def _delete_skill(self, name: str):
         """从向量库删除 skill（使用独立连接，避免跨线程共享单例连接）"""
