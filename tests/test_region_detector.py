@@ -352,10 +352,13 @@ class TestGracefulDegradation:
 
     @pytest.mark.asyncio
     async def test_returns_empty_when_leiden_not_installed(self):
-        """leidenalg 未安装时返回空结果而非抛异常"""
-        adapter = _make_mock_adapter(
-            [{"id": "A", "name": "A", "type": "x"}], []
-        )
+        """leidenalg 未安装时返回空结果而非抛异常（需 ≥2 节点才触发 Leiden 路径）"""
+        nodes = [
+            {"id": "A", "name": "A", "type": "x"},
+            {"id": "B", "name": "B", "type": "y"},
+        ]
+        edges = [{"source": "A", "target": "B", "relation": "r", "weight": 1.0}]
+        adapter = _make_mock_adapter(nodes, edges)
         detector = CommunityDetector(adapter)
 
         # 模拟 leidenalg 未安装

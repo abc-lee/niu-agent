@@ -10,7 +10,7 @@ M1 模块：社区检测，LLM 命名在 M2 中实现。
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
@@ -136,12 +136,20 @@ class CommunityDetector:
         graph = self._build_igraph(nodes, edges)
 
         # 3. 运行 Leiden
+        # ModularityVertexPartition 不支持 resolution_parameter；
+        # 如需分辨率控制，应使用 RBConfigurationVertexPartition
         try:
-            partition = leidenalg.find_partition(
-                graph,
-                leidenalg.ModularityVertexPartition,
-                resolution_parameter=resolution,
-            )
+            if resolution != 1.0:
+                partition = leidenalg.find_partition(
+                    graph,
+                    leidenalg.RBConfigurationVertexPartition,
+                    resolution_parameter=resolution,
+                )
+            else:
+                partition = leidenalg.find_partition(
+                    graph,
+                    leidenalg.ModularityVertexPartition,
+                )
         except Exception:
             logger.exception("Leiden 社区检测失败")
             return _empty_result()
@@ -296,7 +304,7 @@ class CommunityDetector:
         return count
 
     def _handle_small_graph(
-        self, nodes: list[dict], edges: list[dict]
+        self, nodes: list[dict], _edges: list[dict]
     ) -> CommunityDetectionResult:
         """处理节点数 < 2 的情况：单节点为一个社区，空图返回空结果"""
         now = datetime.now(timezone.utc).isoformat()
