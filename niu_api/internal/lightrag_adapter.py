@@ -167,6 +167,67 @@ class LightRAGAdapter:
 
         return filtered
 
+    # ============== Multi-Category Search ==============
+
+    # Mapping from LightRAG entity_type to the category keys used by
+    # _inject_dynamic_resources() in runner.py.
+    _ENTITY_TYPE_TO_CATEGORY = {
+        "skill": "skill",
+        "tool": "mcp_tool",
+        "knowledge": "knowledge",
+        "concept": "knowledge",
+    }
+
+    def search_multi_lightrag(
+        self,
+        query: str,
+        mode: str = "hybrid",
+        top_k: int = 20,
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """Single-query multi-category search via LightRAG.
+
+        Performs one query_data() call and groups entities by entity_type
+        into the category buckets used by _inject_dynamic_resources().
+
+        This is the primary retrieval method for dynamic resource injection,
+        replacing vector_search.search_multi() as the main path.
+
+        Args:
+            query: Search query string.
+            mode: LightRAG retrieval mode (default "hybrid").
+            top_k: Total number of entities to retrieve.
+
+        Returns:
+            Dict with keys "skill", "mcp_tool", "knowledge", each mapping
+            to a list of entity dicts. Empty lists on error or no results.
+        """
+        result: Dict[str, List[Dict[str, Any]]] = {
+            "skill": [],
+            "mcp_tool": [],
+            "knowledge": [],
+        }
+
+        query_result = self.query_data(query, mode=mode, top_k=top_k)
+        if query_result is None:
+            return result
+
+        # Extract entities from query_data result
+        data = query_result.get("data", {})
+        if not data:
+            data = query_result
+        entities = data.get("entities", [])
+        if not entities:
+            return result
+
+        # Group by entity_type → category
+        for entity in entities:
+            et = entity.get("entity_type", "").lower().strip()
+            category = self._ENTITY_TYPE_TO_CATEGORY.get(et)
+            if category and category in result:
+                result[category].append(entity)
+
+        return result
+
     # ============== Semantic Search Methods ==============
 
     def search_skills(self, query: str, top_k: int = 10) -> List[Dict[str, Any]]:
