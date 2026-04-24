@@ -1,82 +1,59 @@
-# LightRAG 融合工程 — 汇总
+# LightRAG 迁移方案总览
 
-> 最后更新：2026-04-23
-> 用途：快速了解工程全貌、各子工程进度、关键决策
+## 目标
 
-## 工程目标
+将动态注入架构从 `vector_search` / `vectors.db` 迁移到 LightRAG 知识图谱作为主检索底座。
 
-用 LightRAG 替代现有 vector-store（SQLite + MiniLM-L12）+ kg-server（KuzuDB），统一检索基础设施。
+## 阶段状态
 
-## 关键决策记录
+| 阶段 | 文档 | 状态 | 说明 |
+|------|------|------|------|
+| Phase 01 | 01-phase1-audit-report.md | ✅ 已完成 | 审计报告，已归档 |
+| Phase 02 | 02-lightrag-retrieval-migration.md | ✅ 已完成 | 图检索替代向量检索 |
+| Phase 03 | 03-skill-sync-migration.md | ✅ 已完成 | SkillSync 改为 LightRAG 主写入 |
+| Phase 04 | 04-mcp-tool-registration-migration.md | ✅ 已完成 | MCP 工具注册改为 LightRAG 主写入 |
+| Phase 05 | 05-test-and-validation.md | ✅ 已完成 | 测试验证（148 tests passed） |
+| Phase 06 | 06-brain-region-activation.md | 🔜 待启动 | 脑区激活机制 |
 
-| # | 决策 | 结论 | 理由 |
-|---|------|------|------|
-| D1 | LLM调用 | 恢复 page_agent_proxy.py 为通用 LLM 代理 | LightRAG 支持 OpenAI 格式，代理消解 LLM 适配问题 |
-| D2 | Embedding模型 | 从 MiniLM-L12(384维) 切换到 BAAI/bge-m3(1024维) | LightRAG 推荐，多语言，同规模最优 |
-| D3 | Reranker | BAAI/bge-reranker-v2-m3，初期可不用 | 提升检索精度，作为优化项 |
-| D4 | 数据注入双路径 | 结构化数据→ainsert_custom_kg()，非结构化→ainsert() | Skills/MCP/照片名称必须精确，LLM提取会破坏 |
-| D5 | 交互习惯 | 纠错文档 + ainsert()，替代 SQLite | 一个md文件，人可读可编辑，LLM自动提取意图→工具关系 |
-| D6 | V8递归检索 | 取消，由图谱遍历替代 | LightRAG hybrid模式天然支持多跳检索 |
-| D7 | 记忆系统 | 脑图方案，用 ainsert_custom_kg() 在图谱中建 brain: 命名空间 | 图谱比向量库更像人脑记忆网络 |
-| D8 | MCP工具递归 | 注入时建立 USED_FOR / OFTEN_WITH 关系，检索时图谱遍历 | 不需要预定义 query_pattern |
-| D9 | adelete 安全性 | 信任 LightRAG 自身逻辑，不做引用计数层 | 港大团队开发，有理论基础 |
-| D10 | 实体去重 | 不做模糊匹配，靠手动 same_as 关系 | "小李"vs"李某某"无法自动匹配 |
-| D11 | 脑图主实体 | brain:Niu，所有记忆从它出发 | 类似人脑"自我"节点 |
-| D12 | 脑图检索 | 直接用 LightRAG aquery(mode="mix") | 不自建检索逻辑，LightRAG天然做"点亮" |
-| D13 | 脑图与文档知识 | 共享 LightRAG 实例 | 脑图节点和文档实体需要连接 |
-| D14 | 脑图核心价值 | 上下文注入，让 Agent "显得聪明" | 存储不是目的，注入才是 |
-| D15 | 无数据迁移 | 02和03都没有历史数据迁移 | 直接替换代码 |
-| D16 | Embedding/Reranker可插拔 | 配置文件层切换，不改代码 | 用户电脑性能好时可换更好模型 |
-| D17 | 插拔方式写入系统管理手册 | 主Agent看手册后可帮用户切换 | Agent能指导用户操作 |
+## Phase 01-05 实施结果
 
-## 子工程清单
+**Commit**: `75d7464` feat: migrate dynamic injection from vector_search to LightRAG as primary retrieval
+**Code Review Fix**: `7be6c86` fix: code review fixes for LightRAG migration
 
-| # | 子工程 | 方案文档 | 状态 | 涉及场景 |
-|---|--------|---------|------|---------|
-| 01 | 数据注入与检索策略 | [01-data-in3jection-retrieval.md](01-data-injection-retrieval.md) | ✅ 实施完成，29测试通过 | V1,V3,V4,V5,V6,V7 |
-| 02 | 文档入库与实体提取流水线 | [02-document-entity-pipeline.md](02-document-entity-pipeline.md) | ✅ 实施完成，代码审查通过 | K1,K2,K3,K4,K5 |
-| 03 | 记忆脑图设计 | [03-memory-brain-graph.md](03-memory-brain-graph.md) | ✅ 实施完成，39测试通过，4轮代码审查通过 | C1 |
-| 04 | MCP工具接口重设计 | [04-mcp-tool-interface.md](04-mcp-tool-interface.md) | ✅ 实施完成，35测试通过 | K6,K8 |
-| 05 | LLM代理+Embedding+Reranker | [05-llm-proxy-embedding.md](05-llm-proxy-embedding.md) | ✅ 实施完成，91测试通过 | 基础设施 |
+### 核心变更
 
-## 场景迁移状态
+1. **`agent/runner.py`** — `_inject_dynamic_resources()` 重写
+   - LightRAG `search_multi_lightrag()` 替代 `vector_search.search_multi()` 作为主检索
+   - 无 fallback，LightRAG 不可用时仅保留 `interaction_habits` + `brain memories`
+   - 新增辅助方法：`_apply_query_patterns()`, `_search_tool_signal_skills_lightrag()`, `_build_tool_scores_from_lightrag()`, `_format_lightrag_entities_for_prompt()`
 
-| 场景 | 描述 | 迁移方式 | 目标子工程 |
-|------|------|---------|-----------|
-| V1 | 每轮动态资源注入 | aquery_data(mode="mix") | 01 |
-| V2 | 工具生命周期评分 | aquery_data(mode="local") | 01 |
-| V3 | Skill同步 | ainsert_custom_kg() | 01 |
-| V4 | 交互习惯追踪 | 纠错文档 + ainsert() | 01 |
-| V5 | MCP工具描述索引 | ainsert_custom_kg() + USED_FOR/OFTEN_WITH | 01 |
-| V6 | 系统手册L1注入 | ainsert() (LLM提取) | 01 |
-| V7 | 照片/文档存储 | ainsert_custom_kg() (人物/地点) + ainsert() (场景) | 01 |
-| ~~V8~~ | ~~递归查询模式搜索~~ | ~~已取消~~ | 由图谱遍历替代 |
-| V9 | 向量库清理 | LightRAG 自带数据管理 | 02 |
-| K1 | 文档入库到KG | ainsert() 同步提取 | 02 |
-| K2 | 实体提取(pending文档) | LightRAG 内建，KGScanner废弃 | 02 |
-| K3 | KG丰富化 | ainsert_custom_kg() | 02 |
-| K4 | Dream Evolver知识写入 | ainsert_custom_kg() | 02 |
-| K5 | KG批量回填同步 | vectors→KG同步废弃，photos→LightRAG保留 | 02 |
-| K6 | 图可视化API | LightRAG get_knowledge_graph() + 客户端分析 | 04 |
-| K7 | 知识探索引导 | hybrid模式已含图扩展，引导可简化 | 04 |
-| K8 | LLM直接调用KG工具 | 27工具→12工具重设计 | 04 |
-| C1 | 记忆存取 | 脑图方案(brain:命名空间) | 03 |
+2. **`agent/injector/sync.py`** — SkillSync 改为 LightRAG 主写入
+   - `_sync_skill()` 只调用 `_inject_skill_to_lightrag()`，不写 vectors.db
+   - `_delete_skill()` 只从 LightRAG 删除
+   - Ghost 检测改用 `list_entities(entity_type="skill")`
 
-## 保留独立的场景
+3. **`niu_api/injector.py`** — MCP 工具注册改为 LightRAG 主写入
+   - `register_mcp_tool()` 和 `register_mcp_tools_batch()` 只写 LightRAG
+   - 已删除 `_register_to_vector_db()` 死代码
 
-| 场景 | 理由 |
-|------|------|
-| 无 | 所有场景均已规划迁移方案 |
+4. **`niu_api/internal/lightrag_adapter.py`** — 新增 `search_multi_lightrag()`
+   - 一次 `query_data()` 调用，按 `entity_type` 分组返回
+   - `_ENTITY_TYPE_TO_CATEGORY` 映射：skill / mcp_tool / knowledge
 
-## 下一步
+5. **测试** — 148 tests passed
+   - `test_lightrag_retrieval_migration.py` — 17 个新测试
+   - `test_tool_hit_integration.py` — 重写为 LightRAG mock
 
-- [x] 讨论子工程 01 方案 ✅
-- [x] 讨论子工程 02 方案 ✅
-- [x] 讨论子工程 03 方案 ✅
-- [x] 讨论子工程 04 方案 ✅
-- [x] 讨论子工程 05 方案 ✅
-- [x] 实施子工程 05（LLM代理+Embedding+Reranker）✅ 91测试通过
-- [x] 实施子工程 01（数据注入与检索策略）✅ 29测试通过
-- [x] 实施子工程 02（文档入库与实体提取流水线）✅ 28测试通过
-- [x] 实施子工程 03（记忆脑图设计）✅ 39测试通过，4轮代码审查
-- [ ] 实施子工程 04（MCP工具接口重设计）
+### 已知遗留项（不在 Phase 01-05 范围）
+
+- `vector_cleanup.py` 仍引用 vector_search（独立清理工具，非注入路径）
+- `experience_summarizer.py` 有过时注释
+- `list_resources()` 和 `delete_resource()` 仍读写 vectors.db（独立端点）
+- memory-server L0/L1/L2 recall 迁移（Phase 06 可处理）
+- photo-server vectors.db 依赖解除（Phase 06 可处理）
+
+## Phase 06: 脑区激活
+
+Phase 06 依赖 Phase 01-05 全部完成（LightRAG 作为统一底座），现在可以启动。
+
+详见 [06-brain-region-activation.md](06-brain-region-activation.md)
