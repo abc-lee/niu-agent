@@ -31,6 +31,7 @@ from niu_api.injector import router as injector_router
 from niu_api.alerts_api import router as alerts_router
 from niu_api.kg_api import router as kg_router
 from niu_api.brain_api import router as brain_router
+from niu_api.brain_region_api import router as brain_region_router
 from niu_api.notes_api import router as notes_router
 from niu_api.llm_proxy import router as llm_proxy_router
 
@@ -144,6 +145,14 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"LightRAG background sync start failed: {e}")
 
+    # 8.05. Start brain region periodic sync (community detection + region node refresh)
+    try:
+        from agent.injector.region_sync import get_region_sync
+        region_sync = get_region_sync(auto_start=True)
+        logger.info("Brain region sync started (interval: 24h)")
+    except Exception as e:
+        logger.warning(f"Brain region sync start failed: {e}")
+
     # 8.1. Initialize brain:Niu self entity
     try:
         from niu_api.internal.brain_graph import get_brain_graph
@@ -200,6 +209,15 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Failed to stop LightRAG sync: {e}")
 
+    # 停止 brain region 后台同步
+    try:
+        from agent.injector.region_sync import get_region_sync
+        region_sync = get_region_sync()
+        region_sync.stop_background_sync()
+        logger.info("Brain region sync stopped")
+    except Exception as e:
+        logger.warning(f"Failed to stop region sync: {e}")
+
     # 保存工具生命周期分数（不执行 decay，只持久化当前分数）
     try:
         from agent.runner import get_runner
@@ -240,6 +258,7 @@ app.include_router(injector_router)  # Injector API
 app.include_router(alerts_router)  # Alerts API
 app.include_router(kg_router)  # Knowledge Graph API
 app.include_router(brain_router)  # Brain Graph API
+app.include_router(brain_region_router)  # Brain Region API
 app.include_router(notes_router)  # Notes API
 app.include_router(llm_proxy_router)  # LLM Proxy API (/llm/v1/*)
 

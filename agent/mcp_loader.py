@@ -127,6 +127,43 @@ def _inject_tools_to_lightrag(registry: ToolRegistry, servers: List[Tuple[str, s
 
 
 # ============================================================================
+# Brain Region Tool Registration
+# ============================================================================
+
+def _register_brain_tools(registry: ToolRegistry) -> None:
+    """Register brain region MCP tools with ToolRegistry.
+
+    These are built-in tools (no MCP server module) that wrap
+    RegionActivationManager for manual brain region control.
+    """
+    try:
+        from agent.brain_tools import (
+            BRAIN_TOOL_SCHEMAS,
+            handle_brain_region_activate,
+            handle_brain_region_dim,
+            handle_brain_region_status,
+        )
+
+        handlers = {
+            "brain_region_activate": handle_brain_region_activate,
+            "brain_region_dim": handle_brain_region_dim,
+            "brain_region_status": handle_brain_region_status,
+        }
+
+        for schema in BRAIN_TOOL_SCHEMAS:
+            name = schema["name"]
+            handler = handlers.get(name)
+            if handler:
+                registry.register(name, handler, schema, visibility="static")
+            else:
+                logger.warning(f"Brain tool schema '{name}' has no handler")
+
+        logger.info("[MCP Loader] Brain region tools registered")
+    except Exception as e:
+        logger.warning(f"[MCP Loader] Brain region tool registration failed: {e}")
+
+
+# ============================================================================
 # Loader Function
 # ============================================================================
 
@@ -189,5 +226,8 @@ def load_mcp_tools(required_servers: Optional[List[Tuple[str, str]]] = None) -> 
     # Inject MCP tool descriptions into LightRAG knowledge graph
     # so that LightRAGAdapter.search_tools() can find them
     _inject_tools_to_lightrag(registry, servers)
+
+    # Register brain region MCP tools (brain_region_activate, brain_region_dim, brain_region_status)
+    _register_brain_tools(registry)
 
     return registry
