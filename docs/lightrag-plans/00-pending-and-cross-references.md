@@ -1,6 +1,6 @@
 # LightRAG 融合工程 — 未尽事宜与牵连关系
 
-> 最后更新：2026-04-23
+> 最后更新：2026-04-24
 > 用途：记录子工程完工后的牵连影响、跨工程依赖、需注意的副作用
 
 ## 跨工程依赖关系
@@ -12,74 +12,70 @@
 02 (文档入库流水线) ← 依赖01的注入机制
 03 (记忆脑图) ← 依赖01的注入机制 + 02的流水线
 04 (MCP工具接口) ← 依赖01的检索接口 + 02的流水线
+06 (脑区激活) ← 依赖01-05全部完成，LightRAG作为统一底座
 ```
 
-**实施顺序建议**：05 → 01 → 02 → 03/04（并行）
+**实施顺序建议**：05 → 01 → 02 → 03/04（并行）→ 06
 
 ---
 
-## 子工程 01 完工后的牵连
+## Phase 01-05 实施完成记录（2026-04-24）
 
-### 初始化脚本改造
-- **影响**：`scripts/init_vector_db.py` 和 `scripts/inject_system_manual.py` 需要完全重写
-- **牵连**：所有依赖初始化脚本的启动流程需要适配
-- **注意**：初始化脚本改造是关键，只要注入正确，运行时逻辑基本不用改
+### runner.py 重写
+- `_inject_dynamic_resources()` 从 vector_search 改为 LightRAG 主检索
+- 新增 `search_multi_lightrag()` → 按 entity_type 分桶返回
+- 新增 `_build_tool_scores_from_lightrag()` → 排名代理分数（top-5=70, 6-10=55, 11-20=40）
+- 新增 `_search_tool_signal_skills_lightrag()` → LightRAG 替代 vector_search.search()
+- 新增 `_format_lightrag_entities_for_prompt()` → 格式化 LightRAG entity dict
+- `lightrag_available` 标志避免冗余调用
 
-### Embedding维度变更
-- **影响**：从384维→1024维，所有现有向量数据失效
-- **牵连**：memory-server 共享 vectors.db，维度变更后记忆数据也失效
-- **注意**：需要数据迁移脚本 `scripts/reindex_vectors.py`，迁移期间双模型并行
+### SkillSync 改造
+- `_sync_skill()` 只写 LightRAG，不写 vectors.db
+- `_delete_skill()` 只从 LightRAG 删除
+- Ghost 检测用 `list_entities(entity_type="skill", limit=500)`
+- `_load_existing_skills()` 从 LightRAG 加载已有 skill
 
-### 交互习惯改造
-- **影响**：`handler.py` 的 `tool_after_callback()` 不再写 SQLite，改为更新 md 文件
-- **牵连**：`vector_search.py` 的 `search_interaction_habits()` 需要替换为 LightRAG 查询
-- **注意**：纠错文档格式需要稳定，变更后要触发 LightRAG 重新索引
-
-### Skills注入方式变更
-- **影响**：`agent/injector/sync.py` 的 SkillSync 不再 upsert 向量库，改为 ainsert_custom_kg()
-- **牵连**：Skills 的触发词/标签需要预定义为实体关系，不能依赖 LLM 提取
-- **注意**：Skill 文件格式可能需要调整，增加结构化元数据区域
-
-### MCP工具注入方式变更
-- **影响**：`niu_api/injector.py` 的工具描述注册不再写向量库，改为 ainsert_custom_kg()
-- **牵连**：`agent/tool_lifecycle.py` 的评分机制需要适配 LightRAG 的 local 模式检索
-- **注意**：USED_FOR 和 OFTEN_WITH 关系需要从工具描述和历史数据中挖掘
-
----
-
-## 子工程 02 实施完成记录（2026-04-23）
-
-### KGSync → LightRAGSync 委托
-- `agent/injector/kg_sync.py` 的 `KGSync` 类改为委托 `lightrag_sync.LightRAGSync`
-- `_sync_vectors_db()` 废弃，不再同步向量库
-- `_sync_photos_db()` 改为调 LightRAG `ainsert_custom_kg()` 注入人物/地点实体
-- 新增 co_occurrence 关系追踪（`USED_FOR`/`OFTEN_WITH`），用 pair_key 去重
-- delta 追踪：status JSON 记录已同步的 photo_ids/person_ids/co_occ_ids，避免重复处理
-
-### KGScanner 禁用
-- `agent/injector/kg_scanner.py` 的 `KGScanner` 类标记废弃，`scan()` 返回空结果
-- 实体提取改由 LightRAG `ainsert()` 自动完成
-
-### kg_api → LightRAGAdapter
-- `niu_api/kg_api.py` 的端点改用 `LightRAGAdapter` 而非 KuzuDB
-- `entities()` 和 `explore()` 通过 LightRAG `aquery_data()` 实现
-
-### notes_api → ainsert
-- `niu_api/notes_api.py` 的 `sync_note_to_kg` 改用 `call_async(rag.ainsert(prefixed))`
-- `BackgroundTasks.add_task` 改用 `asyncio.to_thread` 包装同步函数，避免阻塞 ASGI 事件循环
-
-### mcp_loader 移除 kg-server
-- `agent/mcp_loader.py` 不再加载 kg-server 模块
-- `config/mcp-servers.yaml` 中 kg-server 标记为 `disabled: true`
-
-### lightrag_pipeline 增强
-- `niu_api/internal/lightrag_pipeline.py` 添加 `threading.Semaphore` 背压控制
-- `_evict_completed_tasks` 同时清理 completed 和 failed 状态
-- `update_document` 在 delete 成功但 insert 失败时追踪 failed task，防止静默数据丢失
+### MCP 工具注册改造
+- `register_mcp_tool()` / `register_mcp_tools_batch()` 只写 LightRAG
+- 已删除 `_register_to_vector_db()` 死代码
 
 ### 代码审查
-- 三轮迭代审查，修复所有 CRITICAL/HIGH 问题
-- 关键修复：tuple arity 不匹配、_save_status 参数缺失、Semaphore 死代码、测试断言假阳性
+- 两轮迭代审查，修复所有 CRITICAL/IMPORTANT 问题
+- 关键修复：list_entities dict-vs-list、entity key "id" vs "name"、lightrag_available 初始化、silent except、interaction_habit 死映射
+
+### 测试
+- 148 tests passed
+- 17 个新测试覆盖 LightRAG 迁移逻辑
+- test_tool_hit_integration.py 重写为 LightRAG mock
+
+---
+
+## Phase 01-05 完工后的牵连
+
+### vectors.db 清理（Phase 06 前需处理）
+- **影响**：`niu_api/compat.py` 的 `/api/vector/stats` 和 shutdown 路径仍引用 vector_search
+- **牵连**：一旦 vector_search.py 被移除，这些路径会崩溃
+- **注意**：Phase 06 启动前需清理或替换这些残留引用
+
+### autonomous_explorer 仍引用 vector_search
+- **影响**：`agent/autonomous_explorer.py` 仍 import vector_search
+- **牵连**：执行该路径时会用旧 vectors.db 而非 LightRAG
+- **注意**：Phase 06 可一并处理
+
+### format_resources_for_prompt() 死代码
+- **影响**：`agent/runner.py` 的 `format_resources_for_prompt()` 依赖旧 SearchResult 接口，从未被调用
+- **牵连**：新代码用 `_format_lightrag_entities_for_prompt()` 替代
+- **注意**：Phase 06 启动前可清理
+
+### test_tool_lifecycle.py 仍 mock vector_search
+- **影响**：测试注入 mock vector_search module 到 sys.modules
+- **牵连**：runner.py 已不再 import vector_search，mock 无效但无害
+- **注意**：Phase 06 可清理
+
+### API contract key 不一致
+- **影响**：`list_entities()` 返回 `"id"` key，search APIs 返回 `"entity_name"` key
+- **牵连**：下游消费者需分别处理两种 key
+- **注意**：Phase 06 可统一为 `entity_name`（LightRAG canonical key）
 
 ---
 
@@ -100,53 +96,6 @@
 - **牵连**：KuzuDB 字段名→LightRAG 字段名的映射
 - **注意**：置信度字段在 LightRAG 中没有原生支持，需存在描述或元数据中
 
-### photo-server 适配
-- **影响**：photo-server 不再直接写 vectors.db 和 KuzuDB，改为调 LightRAG
-- **牵连**：照片入库流程从"写DB+标记pending"变为"调ainsert"
-- **注意**：人脸识别结果（人名）需要用 ainsert_custom_kg() 精确注入
-
----
-
-## 子工程 03 实施完成记录（2026-04-23）
-
-### BrainGraph 核心类
-- `niu_api/internal/brain_graph.py` — BrainGraph 类 + normalize_name + make_entity_name + format_memories_for_prompt
-- 常量：MEMORY_TYPE_TO_RELATION, LEVEL_DEFAULTS, ENTITY_TYPES, DEFAULT_MIN_WEIGHT, MAX_NAME_LENGTH
-- store_memory: 先 inject_entity 创建目标实体，失败则 early return；再 inject_custom_kg 创建加权关系
-- store_memory: metadata 嵌入关系描述 `[meta:{json}]`，超200字符跳过，格式化时剥离
-- recall_memories: 优先 _query_data 获取结构化数据+真实权重，fallback 到 aquery 文本提取
-- get_brain_graph(): 模块级单例，线程安全（double-checked locking）
-- _get_attr(): dict/dataclass 兼容属性访问
-- normalize_name: 按 `_` 和 `-` 分割，首字母大写（保留 LiLei），截断 64 字符
-
-### brain_api 端点
-- `niu_api/brain_api.py` — FastAPI 路由
-- POST /api/brain/remember — 存储记忆
-- POST /api/brain/recall — 检索记忆
-- GET /api/brain/status — 脑图状态检查
-- 所有端点使用 get_brain_graph() 单例
-
-### handler.py 委托
-- `agent/handler.py` do_save_memory 添加脑图二次写入
-- 非阻塞：try/except 包裹，失败仅 debug 级日志
-- 使用 get_brain_graph() 单例
-
-### runner.py 上下文注入
-- `agent/runner.py` _inject_dynamic_resources 添加脑图记忆提取
-- 非阻塞：try/except 包裹
-- get_brain_graph().recall_memories() → format_memories_for_prompt() → 注入系统提示词
-
-### __main__.py 初始化
-- 注册 brain_api 路由
-- 启动时调用 get_brain_graph().ensure_niu_entity() 确保 brain:Niu 实体存在
-
-### 代码审查
-- 4轮迭代审查，修复所有 CRITICAL/HIGH 问题
-- 关键修复：capitalize破坏camelCase、inject_custom_kg缺chunks、relation key错误、正则不匹配下划线、orphan relation、硬编码weight、metadata丢弃、每次新建实例、dataclass兼容、线程安全、metadata泄露到提示词、metadata截断无效JSON
-
-### 测试
-- 39 测试全部通过（normalize_name 7 + make_entity_name 4 + store 5 + recall 5 + ensure_niu 1 + 映射 5 + level 3 + format 3 + singleton 2 + metadata 4）
-
 ---
 
 ## 子工程 03 完工后的牵连
@@ -156,15 +105,10 @@
 - **牵连**：handler.py 已实现双写（memory-server + brain graph），过渡期并行
 - **注意**：user_memory 工具（操作 memory.json）不受影响，与脑图是不同层级
 
-### 向量库依赖解除
-- **影响**：memory-server 不再共享 vectors.db
-- **牵连**：vectors.db 可以完全废弃（所有场景都已迁移到 LightRAG）
-- **注意**：需要确认没有其他模块直接读 vectors.db
-
 ### 记忆衰减机制
 - **影响**：脑图的遗忘曲线需要定时任务执行衰减
 - **牵连**：需要新增定时任务或在现有定时任务中增加衰减逻辑
-- **注意**：衰减频率和参数需要调优，本期不做
+- **注意**：衰减频率和参数需要调优，Phase 06 会完善
 
 ---
 
@@ -180,11 +124,6 @@
 - **牵连**：前端 Electron 的 KG 窗口需要适配新的 API 格式
 - **注意**：surprising_connections、hub_entities 等分析功能需要客户端实现
 
-### handler.py 调度逻辑
-- **影响**：`agent/generic/handler.py` 的 dispatch() 需要适配新的工具名
-- **牵连**：所有硬编码的工具名引用需要更新
-- **注意**：向后兼容别名期间，新旧工具名都能调度
-
 ---
 
 ## 子工程 05 完工后的牵连
@@ -199,30 +138,20 @@
 - **牵连**：模型文件从 ~120MB 增大到 ~570MB，需要下载
 - **注意**：首次启动时自动下载，需要网络连接和磁盘空间
 
-### Reranker加载
-- **影响**：新增 ~560MB 的 reranker 模型（懒加载）
-- **牵连**：总内存占用增加约 1.1GB（embedding 570MB + reranker 560MB）
-- **注意**：懒加载+空闲卸载可以控制内存峰值
-
 ---
 
-## 全局性未尽事宜
+## Phase 06 启动前提
 
-### 数据迁移
-- 现有 vectors.db 和 knowledge.db 的数据需要完整迁移到 LightRAG
-- 迁移前必须备份，迁移后需要验证数据完整性
-- Embedding 维度变更意味着所有向量需要重新计算
+Phase 06（脑区激活）依赖 Phase 01-05 全部完成。现在所有前置条件已满足：
 
-### 向后兼容过渡期
-- 建议设置过渡期，新旧系统并行运行
-- 过渡期结束后再移除旧代码
-- 旧 MCP 工具名保留别名直到过渡期结束
+- ✅ LightRAG 作为统一检索底座（替代 vector_search）
+- ✅ SkillSync 写入 LightRAG（替代 vectors.db）
+- ✅ MCP 工具注册写入 LightRAG（替代 vectors.db）
+- ✅ 脑图基础架构已就位（BrainGraph + brain_api）
+- ✅ 148 tests passed，两轮代码审查通过
 
-### 性能验证
-- LightRAG 的 LLM 调用频率可能较高（实体提取、查询）
-- 需要监控代理层的 LLM 调用量和延迟
-- 可能需要加缓存/限流
-
-### 前端适配
-- KG 窗口的可视化 API 格式变更
-- 需要确认前端是否有其他直接调用 vector-store/kg-server 的地方
+Phase 06 启动前建议清理的遗留项：
+- `niu_api/compat.py` 的 vector_search 残留引用
+- `agent/autonomous_explorer.py` 的 vector_search 引用
+- `agent/runner.py` 的 `format_resources_for_prompt()` 死代码
+- `tests/test_tool_lifecycle.py` 的 vector_search mock
