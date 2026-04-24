@@ -183,6 +183,8 @@ def _create_lightrag_instance():
         logger.info("LightRAG reranker disabled")
 
     rag = LightRAG(**rag_params)
+    # lightrag-hku 1.4.15 requires explicit storage initialization
+    call_async(rag.initialize_storages())
     return rag
 
 
