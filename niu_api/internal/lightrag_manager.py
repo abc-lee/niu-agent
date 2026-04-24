@@ -127,8 +127,8 @@ def _create_lightrag_instance():
     (pip install lightrag-hku).
     """
     try:
-        from lightrag import LightRAG
-        from lightrag.llm import openai_complete_if_cache, openai_embed
+        from lightrag.lightrag import LightRAG
+        from lightrag.llm.openai import openai_complete_if_cache, openai_embed
     except ImportError:
         raise ImportError(
             "LightRAG is not installed. Run: pip install lightrag-hku"
@@ -190,7 +190,7 @@ def _create_lightrag_instance():
 # We need EmbeddingFunc from lightrag for type annotation
 # Define a placeholder that gets replaced at runtime
 try:
-    from lightrag import EmbeddingFunc
+    from lightrag.lightrag import EmbeddingFunc
 except ImportError:
     # LightRAG not installed yet - create a placeholder
     class EmbeddingFunc:
