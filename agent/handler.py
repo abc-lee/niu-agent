@@ -298,33 +298,42 @@ class NiuHandler(BaseHandler):
         # 追踪工具执行以供经验总结
         self._track_tool_execution(tool_name, args, ret)
 
-        # 更新 Interaction Habits 置信度
+        # 更新 Interaction Habits 置信度（LightRAG）
         try:
-            from agent.vector_search import get_vector_search
+            from niu_api.internal.lightrag_adapter import LightRAGAdapter, LightRAGIngester
 
-            vs = get_vector_search()
+            adapter = LightRAGAdapter()
 
             # 工具调用成功，更新相关 dialect 的置信度
             if hasattr(ret, 'status') and ret.status == "success":
-                dialect_results = vs.search_interaction_habits(
-                    query=str(args), habit_type="tool_dialect", limit=10, min_score=0.3
+                habit_entities = adapter.search_interaction_habits(
+                    query=str(args), top_k=10,
                 )
-                for r in dialect_results:
-                    if r.metadata.get("target_tool") == tool_name:
-                        vs.update_habit_confidence(r.id, "success")
+                for entity in habit_entities:
+                    entity_name = entity.get("entity_name", "")
+                    # Match by target_tool extracted from entity_name "habit:{type}:{tool}"
+                    parts = entity_name.split(":", 2)
+                    target_tool = parts[2] if len(parts) >= 3 else ""
+                    if target_tool == tool_name:
+                        ingester = LightRAGIngester()
+                        ingester.update_habit_confidence(entity_name, "success")
 
             # 工具调用失败
             elif hasattr(ret, 'status') and ret.status == "error":
-                dialect_results = vs.search_interaction_habits(
-                    query=str(args), habit_type="tool_dialect", limit=5, min_score=0.3
+                habit_entities = adapter.search_interaction_habits(
+                    query=str(args), top_k=5,
                 )
-                for r in dialect_results:
-                    if r.metadata.get("target_tool") == tool_name:
-                        vs.update_habit_confidence(r.id, "fail")
+                for entity in habit_entities:
+                    entity_name = entity.get("entity_name", "")
+                    parts = entity_name.split(":", 2)
+                    target_tool = parts[2] if len(parts) >= 3 else ""
+                    if target_tool == tool_name:
+                        ingester = LightRAGIngester()
+                        ingester.update_habit_confidence(entity_name, "fail")
 
         except Exception:
             # 置信度更新失败不影响主流程
-            pass
+            logger.debug("Interaction habit update failed (non-blocking)", exc_info=True)
 
     def _track_tool_call_for_repeat_detection(self, tool_name: str, args: dict):
         """追踪工具调用用于重复检测"""
@@ -874,6 +883,13 @@ class NiuHandler(BaseHandler):
                         # 命中记录失败不影响主流程
                         print(f"[ToolHit] Failed to record hit: {e}", file=sys.stderr, flush=True)
 
+                    # Reinforce brain region on tool use
+                    try:
+                        from agent.brain_tools import reinforce_on_tool_use
+                        reinforce_on_tool_use(tool_name)
+                    except Exception:
+                        pass
+
                 # 直接调用工具函数
                 result = func(**args)
 
@@ -942,6 +958,13 @@ class NiuHandler(BaseHandler):
                             print(f"[ToolHit] {tool_name} executed (lifecycle score: {current_score})", file=sys.stderr, flush=True)
                     except Exception as e:
                         print(f"[ToolHit] Failed to record hit: {e}", file=sys.stderr, flush=True)
+
+                    # Reinforce brain region on tool use
+                    try:
+                        from agent.brain_tools import reinforce_on_tool_use
+                        reinforce_on_tool_use(tool_name)
+                    except Exception:
+                        pass
 
                 result = func(**args)
 
