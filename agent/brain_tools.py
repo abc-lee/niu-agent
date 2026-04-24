@@ -76,8 +76,8 @@ def get_tool_to_region() -> dict[str, str]:
             for entity in result.get("data", []):
                 entity_name = entity.get("id", entity.get("entity_name", ""))
                 description = entity.get("description", "")
-                # Extract community_id from description metadata
-                # Format: "description | brain_meta_community_id:community_3 | ..."
+                # Extract region_id from description metadata
+                # Format: "description | brain_meta_region_id:community_3 | ..."
                 community_id = _extract_community_id(description)
                 if community_id:
                     mapping[entity_name] = community_id
@@ -96,13 +96,13 @@ def get_tool_to_region() -> dict[str, str]:
 
 
 def _extract_community_id(description: str) -> str:
-    """Extract community_id from description metadata.
+    """Extract region_id from description metadata.
 
-    Looks for 'brain_meta_community_id:xxx' pattern.
+    Looks for 'brain_meta_region_id:xxx' pattern.
     """
     import re
 
-    match = re.search(r"brain_meta_community_id:(\S+)", description)
+    match = re.search(r"brain_meta_region_id:(\S+)", description)
     if match:
         return match.group(1)
     return ""
@@ -180,11 +180,12 @@ BRAIN_TOOL_SCHEMAS = [
 # ============== Tool Handler Functions ==============
 
 
-def handle_brain_region_activate(params: dict[str, Any]) -> str:
+def handle_brain_region_activate(regions: list[str], reason: str = "") -> str:
     """Handle brain_region_activate tool call.
 
     Args:
-        params: Tool call parameters with 'regions' and optional 'reason'.
+        regions: List of region names to activate.
+        reason: Optional reason for activation (for memory logging).
 
     Returns:
         Formatted status string showing activated regions.
@@ -192,9 +193,6 @@ def handle_brain_region_activate(params: dict[str, Any]) -> str:
     mgr = get_activation_mgr()
     if mgr is None:
         return "[Brain] Activation manager not initialized. Brain regions are not available."
-
-    regions = params.get("regions", [])
-    reason = params.get("reason", "")
 
     if not regions:
         return "[Brain] No regions specified. Use 'regions' parameter with a list of region names."
@@ -222,11 +220,11 @@ def handle_brain_region_activate(params: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def handle_brain_region_dim(params: dict[str, Any]) -> str:
+def handle_brain_region_dim(regions: list[str]) -> str:
     """Handle brain_region_dim tool call.
 
     Args:
-        params: Tool call parameters with 'regions'.
+        regions: List of region names to dim.
 
     Returns:
         Formatted status string showing dimmed regions.
@@ -234,8 +232,6 @@ def handle_brain_region_dim(params: dict[str, Any]) -> str:
     mgr = get_activation_mgr()
     if mgr is None:
         return "[Brain] Activation manager not initialized. Brain regions are not available."
-
-    regions = params.get("regions", [])
 
     if not regions:
         return "[Brain] No regions specified. Use 'regions' parameter with a list of region names."
@@ -260,11 +256,11 @@ def handle_brain_region_dim(params: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def handle_brain_region_status(params: dict[str, Any]) -> str:
+def handle_brain_region_status(include_dark: bool = False) -> str:
     """Handle brain_region_status tool call.
 
     Args:
-        params: Tool call parameters with optional 'include_dark'.
+        include_dark: Whether to include regions below activation threshold.
 
     Returns:
         Formatted status string showing region states.
@@ -272,8 +268,6 @@ def handle_brain_region_status(params: dict[str, Any]) -> str:
     mgr = get_activation_mgr()
     if mgr is None:
         return "[Brain] Activation manager not initialized. Brain regions are not available."
-
-    include_dark = params.get("include_dark", False)
 
     all_states = mgr.get_region_map()
 
