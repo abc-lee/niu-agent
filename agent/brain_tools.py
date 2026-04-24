@@ -210,7 +210,7 @@ def handle_brain_region_activate(params: dict[str, Any]) -> str:
         lines.append("[Brain] Activated regions:")
 
     for label in regions:
-        state = mgr._find_region_by_label(label)
+        state = mgr.find_region_by_label(label)
         if state is not None:
             light = mgr.get_status_light(state.activation)
             lines.append(
@@ -248,7 +248,7 @@ def handle_brain_region_dim(params: dict[str, Any]) -> str:
     lines.append("[Brain] Dimmed regions:")
 
     for label in regions:
-        state = mgr._find_region_by_label(label)
+        state = mgr.find_region_by_label(label)
         if state is not None:
             light = mgr.get_status_light(state.activation)
             lines.append(
