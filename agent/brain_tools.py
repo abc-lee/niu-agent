@@ -197,24 +197,34 @@ def handle_brain_region_activate(regions: list[str], reason: str = "") -> str:
     if not regions:
         return "[Brain] No regions specified. Use 'regions' parameter with a list of region names."
 
-    # Call manual_activate on the manager
-    mgr.manual_activate(regions)
+    # Call manual_activate on the manager, get activated region_ids
+    activated_ids = mgr.manual_activate(regions)
 
-    # Build formatted status
+    # Build formatted status using the returned set of activated region_ids
     lines: list[str] = []
     if reason:
         lines.append(f"[Brain] Activated regions (reason: {reason}):")
     else:
         lines.append("[Brain] Activated regions:")
 
-    for label in regions:
-        state = mgr.find_region_by_label(label)
+    for region_id in activated_ids:
+        state = mgr.get_region_state(region_id)
         if state is not None:
             light = mgr.get_status_light(state.activation)
             lines.append(
                 f"  {light} {state.label} — activation: {state.activation:.2f}"
             )
         else:
+            lines.append(f"  [?] {region_id} — region state missing")
+
+    # Also report labels that were not found
+    found_labels = set()
+    for region_id in activated_ids:
+        state = mgr.get_region_state(region_id)
+        if state is not None:
+            found_labels.add(state.label)
+    for label in regions:
+        if label not in found_labels:
             lines.append(f"  [?] {label} — region not found")
 
     return "\n".join(lines)
