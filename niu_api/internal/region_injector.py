@@ -235,11 +235,15 @@ class BrainContextInjector:
                 parts.append(knowledge_line)
                 current_chars += len(knowledge_line)
             else:
-                # Truncate knowledge: fill remaining budget
-                remaining = budget_chars - current_chars - len("知识: ")
+                # Truncate knowledge: fill remaining budget (account for "..." suffix)
+                remaining = budget_chars - current_chars - len("知识: ") - len("...")
                 if remaining > 20:
                     truncated = knowledge_line[len("知识: "):][:remaining] + "..."
                     parts.append(f"知识: {truncated}")
+                    current_chars += len(f"知识: {truncated}")
+
+        # Account for newline separators between parts
+        current_chars += max(len(parts) - 1, 0)
 
         # Check if entity line itself exceeds budget (truncate entities)
         if current_chars > budget_chars:
@@ -384,11 +388,9 @@ class BrainContextInjector:
         return len(self._get_members(region_id))
 
     def _get_region_description(self, region_id: str) -> str:
-        """Get region description from activation manager state.
+        """Get region description from activation manager.
 
-        Falls back to empty string if description not available
-        (activation manager only tracks activation, not descriptions).
+        Delegates to RegionActivationManager.get_region_description() which
+        stores descriptions from BrainRegionInfo.
         """
-        # Activation manager does not store description, return empty
-        # The description will be populated from RegionManager when available
-        return ""
+        return self._activation_mgr.get_region_description(region_id)
