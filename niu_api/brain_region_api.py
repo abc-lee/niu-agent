@@ -27,7 +27,11 @@ from fastapi import APIRouter, HTTPException, Query
 from loguru import logger
 from pydantic import BaseModel
 
-from niu_api.internal.region_activation import RegionActivationManager
+from niu_api.internal.region_activation import (
+    RegionActivationManager,
+    STATUS_OFF,
+    BrainRegionState,
+)
 
 router = APIRouter(prefix="/api/brain", tags=["brain-regions"])
 
@@ -55,8 +59,7 @@ def _get_region_mgr():
         if _region_mgr is not None:
             return _region_mgr
         from niu_api.internal.region_manager import RegionManager
-        from niu_api.internal.lightrag_adapter import LightRAGAdapter
-        from niu_api.internal.lightrag_ingester import LightRAGIngester
+        from niu_api.internal.lightrag_adapter import LightRAGAdapter, LightRAGIngester
 
         adapter = LightRAGAdapter()
         ingester = LightRAGIngester()
@@ -84,24 +87,10 @@ def get_brain_regions(
     and RegionActivationManager.get_region_map() for activation scores.
     """
     try:
-        # Get region metadata from RegionManager
-        import asyncio
+        from niu_api.internal.lightrag_manager import call_async
 
         region_mgr = _get_region_mgr()
-
-        # get_all_regions is async, run in event loop
-        try:
-            _loop = asyncio.get_running_loop()
-            # Already in async context — create a task
-            import concurrent.futures
-
-            with concurrent.futures.ThreadPoolExecutor() as pool:
-                regions = pool.submit(
-                    asyncio.run, region_mgr.get_all_regions()
-                ).result()
-        except RuntimeError:
-            # No running event loop
-            regions = asyncio.run(region_mgr.get_all_regions())
+        regions = call_async(region_mgr.get_all_regions())
 
         # Get activation states from ActivationManager
         activation_mgr = _get_activation_mgr()
@@ -167,8 +156,7 @@ def consolidate_brain_regions(
     4. Initialize activation manager with new regions
     """
     try:
-        import asyncio
-
+        from niu_api.internal.lightrag_manager import call_async
         from niu_api.internal.region_detector import CommunityDetector
         from niu_api.internal.lightrag_adapter import LightRAGAdapter
 
@@ -176,19 +164,9 @@ def consolidate_brain_regions(
         detector = CommunityDetector(adapter)
 
         # Step 1: Detect communities
-        try:
-            _loop = asyncio.get_running_loop()
-            import concurrent.futures
-
-            with concurrent.futures.ThreadPoolExecutor() as pool:
-                detection_result = pool.submit(
-                    asyncio.run,
-                    detector.detect_communities(resolution=req.resolution),
-                ).result()
-        except RuntimeError:
-            detection_result = asyncio.run(
-                detector.detect_communities(resolution=req.resolution)
-            )
+        detection_result = call_async(
+            detector.detect_communities(resolution=req.resolution)
+        )
 
         if not detection_result.partitions:
             return {
@@ -199,28 +177,15 @@ def consolidate_brain_regions(
 
         # Step 2: Create region master nodes
         region_mgr = _get_region_mgr()
+        created = call_async(region_mgr.create_region_nodes(detection_result))
 
-        async def _create_and_cleanup():
-            created = await region_mgr.create_region_nodes(detection_result)
-            # Step 3: Clean up stale regions
-            removed = await region_mgr.cleanup_stale_regions(detection_result)
-            return created, removed
-
-        try:
-            _loop = asyncio.get_running_loop()
-            import concurrent.futures
-
-            with concurrent.futures.ThreadPoolExecutor() as pool:
-                created, removed = pool.submit(
-                    asyncio.run, _create_and_cleanup()
-                ).result()
-        except RuntimeError:
-            created, removed = asyncio.run(_create_and_cleanup())
+        # Step 3: Clean up stale regions
+        removed = call_async(region_mgr.cleanup_stale_regions(detection_result))
 
         # Step 4: Initialize activation manager with new regions
         activation_mgr = _get_activation_mgr()
         if activation_mgr is not None:
-            regions = asyncio.run(region_mgr.get_all_regions())
+            regions = call_async(region_mgr.get_all_regions())
             activation_mgr.initialize_from_regions(regions)
 
         return {
@@ -246,7 +211,7 @@ def get_region_members(name: str) -> dict[str, Any]:
               added automatically if missing.
     """
     try:
-        import asyncio
+        from niu_api.internal.lightrag_manager import call_async
 
         region_mgr = _get_region_mgr()
 
@@ -257,16 +222,7 @@ def get_region_members(name: str) -> dict[str, Any]:
             region_name = name
 
         # Get members via RegionManager
-        try:
-            _loop = asyncio.get_running_loop()
-            import concurrent.futures
-
-            with concurrent.futures.ThreadPoolExecutor() as pool:
-                members = pool.submit(
-                    asyncio.run, region_mgr.get_region_members(region_name)
-                ).result()
-        except RuntimeError:
-            members = asyncio.run(region_mgr.get_region_members(region_name))
+        members = call_async(region_mgr.get_region_members(region_name))
 
         return {
             "status": "ok",
