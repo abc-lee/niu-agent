@@ -230,4 +230,10 @@ def load_mcp_tools(required_servers: Optional[List[Tuple[str, str]]] = None) -> 
     # Register brain region MCP tools (brain_region_activate, brain_region_dim, brain_region_status)
     _register_brain_tools(registry)
 
+    # BUG 6 fix: Validate that brain tools were actually registered
+    brain_tool_names = {"brain_region_activate", "brain_region_dim", "brain_region_status"}
+    missing = brain_tool_names - set(registry._tools.keys())
+    if missing:
+        logger.warning(f"[MCP Loader] Brain tools missing from registry: {missing}")
+
     return registry
