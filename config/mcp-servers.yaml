@@ -10,7 +10,7 @@ file-parser:
   workdir: mcp-servers/file-parser/src
   preload: true
   tools:
-    parse_file: {visibility: dynamic}
+    parse_file: {visibility: hidden}
     list_supported_formats: {visibility: hidden}
 
 # Knowledge Graph - LightRAG-based brain graph (replaces KuzuDB kg-server)
@@ -59,18 +59,18 @@ lightrag-server:
   workdir: mcp-servers/lightrag-server/src
   preload: true
   tools:
-    lightrag_query: {visibility: static}
-    lightrag_query_data: {visibility: static}
-    lightrag_search_entities: {visibility: dynamic}
-    lightrag_get_graph: {visibility: dynamic}
-    lightrag_insert: {visibility: static}
-    lightrag_insert_custom_kg: {visibility: dynamic}
-    lightrag_insert_entity: {visibility: dynamic}
-    lightrag_insert_relation: {visibility: dynamic}
-    lightrag_delete_entity: {visibility: dynamic}
+    lightrag_query: {visibility: hidden}
+    lightrag_query_data: {visibility: hidden}
+    lightrag_search_entities: {visibility: hidden}
+    lightrag_get_graph: {visibility: hidden}
+    lightrag_insert: {visibility: hidden}
+    lightrag_insert_custom_kg: {visibility: hidden}
+    lightrag_insert_entity: {visibility: hidden}
+    lightrag_insert_relation: {visibility: hidden}
+    lightrag_delete_entity: {visibility: hidden}
     lightrag_document_status: {visibility: hidden}
-    lightrag_list_entities: {visibility: dynamic}
-    lightrag_merge_entities: {visibility: dynamic}
+    lightrag_list_entities: {visibility: hidden}
+    lightrag_merge_entities: {visibility: hidden}
 
 # Vector Store - Semantic search using embeddings (DISABLED — replaced by lightrag-server)
 vector-store:
@@ -128,13 +128,13 @@ photo-server:
   workdir: mcp-servers/photo-server/src
   preload: true
   tools:
-    name_person: {visibility: dynamic}
-    merge_persons: {visibility: dynamic}
-    search_persons: {visibility: dynamic}
-    get_unnamed_persons: {visibility: dynamic}
-    delete_person: {visibility: dynamic}
-    cleanup_deleted_photos: {visibility: dynamic}
-    get_person_photos: {visibility: dynamic}
+    name_person: {visibility: hidden}
+    merge_persons: {visibility: hidden}
+    search_persons: {visibility: hidden}
+    get_unnamed_persons: {visibility: hidden}
+    delete_person: {visibility: hidden}
+    cleanup_deleted_photos: {visibility: hidden}
+    get_person_photos: {visibility: hidden}
     ingest: {visibility: hidden}
     ingest_document: {visibility: hidden}
     ingest_documents: {visibility: hidden}
@@ -153,15 +153,15 @@ memory-server:
   workdir: mcp-servers/memory-server/src
   preload: true
   tools:
-    remember: {visibility: static}
-    recall: {visibility: static}
-    update_memory: {visibility: static}
-    get_memory_stats: {visibility: static}
-    cleanup_memories: {visibility: static}
-    link_memories: {visibility: static}
-    user_memory_remember: {visibility: static}
-    user_memory_forget: {visibility: static}
-    user_memory_list: {visibility: static}
+    remember: {visibility: hidden}
+    recall: {visibility: hidden}
+    update_memory: {visibility: hidden}
+    get_memory_stats: {visibility: hidden}
+    cleanup_memories: {visibility: hidden}
+    link_memories: {visibility: hidden}
+    user_memory_remember: {visibility: hidden}
+    user_memory_forget: {visibility: hidden}
+    user_memory_list: {visibility: hidden}
 
 # Scheduler Server - Scheduled tasks and reminders
 scheduler-server:
@@ -172,7 +172,7 @@ scheduler-server:
   workdir: mcp-servers/scheduler-server/src
   preload: true
   tools:
-    list_scheduled_tasks: {visibility: static}
+    list_scheduled_tasks: {visibility: hidden}
     schedule_task: {visibility: hidden}
     cancel_task: {visibility: hidden}
     update_task: {visibility: hidden}
@@ -200,9 +200,9 @@ browser-server:
   workdir: mcp-servers/browser-server/src
   preload: false  # 按需启动，首次使用 ~2 秒启动浏览器
   tools:
-    browser_navigate: {visibility: static}
-    browser_switch_tab: {visibility: dynamic}
-    browser_close_tab: {visibility: dynamic}
+    browser_navigate: {visibility: hidden}
+    browser_switch_tab: {visibility: hidden}
+    browser_close_tab: {visibility: hidden}
     # browser_interact, browser_new_tab 默认 dynamic
 
 # Nanobot System - Built-in system tools (not a real MCP server, added programmatically)
