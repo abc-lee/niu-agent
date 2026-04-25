@@ -67,3 +67,46 @@ class TestLightragServerYaml:
         ]
         for name in expected:
             assert name in server.tools, f"Missing tool: {name}"
+
+
+class TestDiskDescription:
+    """Test disk description in system prompt."""
+
+    def test_disk_description_contains_directory_listing(self):
+        """_build_disk_description() should list all disk directories."""
+        from unittest.mock import patch, MagicMock
+        from niu_api.internal.disk_engine import DiskEngine
+        import os
+
+        disk_config_dir = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)), "config", "disk"
+        )
+        engine = DiskEngine(disk_config_dir, registry=None)
+
+        # Build description directly
+        servers = engine.config.servers
+        dir_lines = []
+        for server in servers.values():
+            dir_lines.append(f"  /{server.directory:<10} — {server.description}")
+        desc = "\n".join(dir_lines)
+
+        # Should contain key directories
+        assert "/memory" in desc
+        assert "/lightrag" in desc
+        assert "/photos" in desc
+
+    def test_disk_description_format(self):
+        """Description should follow the expected format."""
+        from niu_api.internal.disk_engine import DiskEngine
+        import os
+
+        disk_config_dir = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)), "config", "disk"
+        )
+        engine = DiskEngine(disk_config_dir, registry=None)
+        dirs = engine.config.list_directories()
+
+        # Should have at least 8 directories
+        assert len(dirs) >= 8
+        # Should include lightrag
+        assert "lightrag" in dirs

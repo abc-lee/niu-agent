@@ -308,6 +308,11 @@ class NiuRunner:
         self.disk_engine = DiskEngine(disk_config_dir, registry=None)
         self.handler = NiuHandler(mcp_client=mcp_client, disk_engine=self.disk_engine)
 
+        # Inject disk description into base system prompt
+        disk_desc = self._build_disk_description()
+        if disk_desc:
+            self.base_system_prompt += disk_desc
+
         # 用户记忆脏标记（remember/forget 工具调用后 set）
         self._memory_dirty = threading.Event()
 
@@ -525,6 +530,27 @@ class NiuRunner:
         if added == 0:
             return "", seen_names
         return "\n".join(lines), seen_names
+
+    # ============== Disk Description ==============
+
+    def _build_disk_description(self) -> str:
+        """Build disk tool description with dynamic directory listing for system prompt."""
+        try:
+            servers = self.disk_engine.config.servers
+        except Exception:
+            return ""
+
+        dir_lines = []
+        for server in servers.values():
+            dir_lines.append(f"  /{server.directory:<10} — {server.description}")
+
+        return (
+            "\n\n### [虚拟磁盘工具]\n"
+            "你有一个虚拟磁盘工具 disk(command)，可以用 Unix 命令探索和调用所有 MCP 工具。\n\n"
+            "命令: ls [path] 列出目录, cat <path> 查看工具说明, /<dir>/<tool> [args] 执行工具\n\n"
+            "当前磁盘目录:\n"
+            + "\n".join(dir_lines)
+        )
 
     # ============== Dynamic Resource Injection ==============
 
