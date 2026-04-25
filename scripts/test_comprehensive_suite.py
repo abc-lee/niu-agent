@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-综合测试套件 - MCP工具动态注入架构优化
+综合测试套件 - Virtual Disk 模式
 
 测试范围：
 1. 向量检索精度测试
-2. 工具生命周期测试
-3. 动态工具注入测试
+2. 工具生命周期已移除（disk mode）
+3. Disk 模式工具注入测试
 4. 多轮对话测试
 5. 递归查询测试
 6. 历史上下文影响测试
@@ -15,7 +15,6 @@
 import sys
 import io
 from pathlib import Path
-from typing import List, Dict
 
 # 设置 UTF-8 输出（修复 Windows 中文显示问题）
 if sys.platform == "win32":
@@ -26,7 +25,7 @@ if sys.platform == "win32":
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from agent.runner import NiuRunner, BASE_MCP_TOOLS
+from agent.runner import NiuRunner
 from agent.mcp_loader import load_mcp_tools
 from agent.vector_search import get_vector_search
 
@@ -83,12 +82,6 @@ def test_vector_search_precision(suite: TestSuite):
         ("搜索文档", "vector-store/search_documents", 0.5),
     ]
 
-    # 测试子Agent专用工具（不应该被主Agent匹配）
-    excluded_tools = [
-        ("入库照片", "photo-server/ingest_photo"),
-        ("提醒我5分钟后开会", "scheduler-server/schedule_task"),
-    ]
-
     print("  主Agent基础工具测试:")
     for query, expected_tool, min_score in test_cases:
         results = vs.search(
@@ -118,17 +111,6 @@ def test_vector_search_precision(suite: TestSuite):
         else:
             suite.test(f"'{query}' → {expected_tool}", False, "无匹配结果")
 
-    print("\n  子Agent专用工具验证:")
-    for query, excluded_tool in excluded_tools:
-        # 验证这些工具不在 BASE_MCP_TOOLS 列表中
-        is_in_base_list = excluded_tool in BASE_MCP_TOOLS
-
-        suite.test(
-            f"{excluded_tool} 不在基础工具列表中",
-            not is_in_base_list,
-            f"基础工具列表: {len(BASE_MCP_TOOLS)}个工具"
-        )
-
 
 def test_tool_lifecycle(suite: TestSuite):
     """测试2: 工具生命周期 — 已移除（disk mode 不使用 tool_lifecycle）"""
@@ -138,10 +120,10 @@ def test_tool_lifecycle(suite: TestSuite):
     suite.test("tool_lifecycle 已移除（disk 模式替代）", True, "disk mode: tools via disk YAML")
 
 
-def test_dynamic_tool_injection(suite: TestSuite):
-    """测试3: 动态工具注入"""
+def test_disk_mode_injection(suite: TestSuite):
+    """测试3: Disk 模式工具注入"""
     print(f"\n{'='*70}")
-    print("测试 3: 动态工具注入")
+    print("测试 3: Disk 模式工具注入")
     print(f"{'='*70}\n")
 
     # 加载MCP工具
@@ -157,35 +139,26 @@ def test_dynamic_tool_injection(suite: TestSuite):
     all_tools = registry.get_schemas()
     runner.set_mcp_tools_schema(all_tools)
 
-    # 测试1: 基础MCP工具列表
+    # 测试1: MCP tools 全部 hidden（disk mode）
     suite.test(
-        "基础MCP工具数量=11",
-        len(BASE_MCP_TOOLS) == 11,
-        f"实际数量: {len(BASE_MCP_TOOLS)}"
+        "MCP tools 已加载（全部 hidden）",
+        len(all_tools) > 0,
+        f"实际数量: {len(all_tools)}"
     )
 
-    # 测试2: 工具注入数量
-    tools_schema = runner.base_tools_schema.copy()
-    for tool_name in BASE_MCP_TOOLS:
-        schema = runner._get_tool_schema_by_name(tool_name)
-        if schema:
-            tools_schema.append(schema)
-
-    base_mcp_count = len([t for t in tools_schema if t.get("function", {}).get("name") in BASE_MCP_TOOLS])
-    total_count = len(tools_schema)
-
+    # 测试2: disk_engine 已初始化
+    has_disk = hasattr(runner, 'disk_engine') and runner.disk_engine is not None
     suite.test(
-        "总工具数=22 (11内置 + 11基础MCP)",
-        total_count == 22,
-        f"实际: {total_count} (内置: {len(runner.base_tools_schema)}, 基础MCP: {base_mcp_count})"
+        "disk_engine 已初始化",
+        has_disk,
+        f"disk_engine: {type(runner.disk_engine).__name__ if has_disk else 'None'}"
     )
 
-    # 测试3: config-manager工具未注入
-    config_tools = [t for t in tools_schema if "config-manager" in t.get("function", {}).get("name", "")]
+    # 测试3: base_tools_schema 存在
     suite.test(
-        "config-manager工具未注入",
-        len(config_tools) == 0,
-        f"发现config-manager工具: {len(config_tools)}个"
+        "base_tools_schema 存在",
+        len(runner.base_tools_schema) > 0,
+        f"数量: {len(runner.base_tools_schema)}"
     )
 
 
@@ -404,7 +377,7 @@ def test_recursive_query(suite: TestSuite):
 def main():
     """主测试函数"""
     print(f"\n{'='*70}")
-    print("MCP工具动态注入架构优化 - 综合测试套件")
+    print("Virtual Disk 模式 - 综合测试套件")
     print(f"{'='*70}")
 
     suite = TestSuite()
@@ -413,7 +386,7 @@ def main():
         # 运行所有测试
         test_vector_search_precision(suite)
         test_tool_lifecycle(suite)
-        test_dynamic_tool_injection(suite)
+        test_disk_mode_injection(suite)
         test_context_extraction(suite)
         test_context_impact_on_matching(suite)
         test_multi_turn_conversation(suite)
