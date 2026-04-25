@@ -319,7 +319,7 @@ def handle_brain_region_status(include_dark: bool = False) -> str:
 def reinforce_on_tool_use(tool_name: str) -> str | None:
     """Reinforce brain region when a tool is successfully called.
 
-    Call this from handler.py after tool_lifecycle.hit_tool(tool_name).
+    Call this from handler.py after a tool is successfully dispatched.
 
     Args:
         tool_name: Name of the tool that was just called.

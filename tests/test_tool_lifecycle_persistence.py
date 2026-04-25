@@ -1,66 +1,15 @@
-import json
-import tempfile
-from pathlib import Path
+"""
+ToolLifecycleManager persistence tests — SKIPPED in disk mode.
+
+tool_lifecycle.py has been deleted. MCP tools are now discovered via
+the virtual disk (DiskEngine), not through decay/override scoring.
+"""
 
 import pytest
 
-from agent.tool_lifecycle import ToolLifecycleManager
 
-
-# hit_tool default score is 65 (衰减-覆盖模式: 低于65补到65)
-HIT_DEFAULT_SCORE = 65
-# decay_rate is 10 per round
-DECAY_RATE = 10
-
-
-@pytest.fixture
-def temp_storage(tmp_path):
-    """Use temporary directory for tool scores"""
-    original_home = Path.home()
-    temp_home = tmp_path / "home"
-    temp_home.mkdir(parents=True)
-
-    original_home_method = Path.home
-    Path.home = lambda: temp_home
-
-    yield temp_home
-
-    Path.home = original_home_method
-
-
-def test_tool_score_persistence(temp_storage):
-    """Test that tool scores persist to JSON file"""
-    manager = ToolLifecycleManager()
-    manager.hit_tool("browser-server/browser_navigate")
-
-    # Check file exists
-    scores_file = temp_storage / ".niu" / "tool_scores.json"
-    assert scores_file.exists()
-
-    # Check content
-    scores = json.loads(scores_file.read_text(encoding="utf-8"))
-    assert scores["browser-server/browser_navigate"] == HIT_DEFAULT_SCORE
-
-
-def test_persistence_across_instances(temp_storage):
-    """Test that scores persist across manager instances"""
-    # First instance
-    manager1 = ToolLifecycleManager()
-    manager1.hit_tool("test-server/test-tool")
-
-    # Second instance (should load from file)
-    manager2 = ToolLifecycleManager()
-    assert manager2.get_tool_score("test-server/test-tool") == HIT_DEFAULT_SCORE
-
-
-def test_decay_saves_to_file(temp_storage):
-    """Test that decay updates the file"""
-    manager = ToolLifecycleManager()
-    manager.hit_tool("test-server/test-tool")
-
-    manager.decay_tools()
-
-    # Check file updated
-    scores_file = temp_storage / ".niu" / "tool_scores.json"
-    scores = json.loads(scores_file.read_text(encoding="utf-8"))
-    assert scores["test-server/test-tool"] == HIT_DEFAULT_SCORE - DECAY_RATE
+def test_tool_lifecycle_persistence_removed():
+    """Verify tool_lifecycle module no longer exists."""
+    import importlib
+    spec = importlib.util.find_spec("agent.tool_lifecycle")
+    assert spec is None, "agent.tool_lifecycle should not exist in disk mode"

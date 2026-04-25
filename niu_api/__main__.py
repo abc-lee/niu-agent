@@ -189,16 +189,6 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Failed to stop LightRAG sync: {e}")
 
-    # 保存工具生命周期分数（不执行 decay，只持久化当前分数）
-    try:
-        from agent.runner import get_runner
-        runner = get_runner()
-        if runner and hasattr(runner, 'tool_lifecycle'):
-            runner.tool_lifecycle._save_scores()
-            logger.info("Tool lifecycle scores saved on shutdown")
-    except Exception as e:
-        logger.warning(f"Failed to save tool lifecycle on shutdown: {e}")
-
     from niu_api.internal.scheduler import stop_scheduler
     stop_scheduler()
     logger.info("Niu API Server shutdown complete")

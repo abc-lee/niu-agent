@@ -124,16 +124,6 @@ async def shutdown():
     except Exception as e:
         logger.warning(f"Failed to close vector search: {e}")
 
-    # Save tool lifecycle scores before shutdown
-    try:
-        from agent.runner import get_runner
-        runner = get_runner()
-        if runner and hasattr(runner, 'tool_lifecycle'):
-            runner.tool_lifecycle._save_scores()
-            logger.info("Tool lifecycle scores saved on shutdown")
-    except Exception as e:
-        logger.warning(f"Failed to save tool lifecycle scores: {e}")
-
     logger.info("Python API ready for shutdown")
     return {"status": "shutting down"}
 
@@ -357,9 +347,7 @@ async def clear_chat() -> dict:
             if runner.handler:
                 runner.handler.reset_working_memory()
 
-            # 重置工具生命周期状态
-            if hasattr(runner, 'tool_lifecycle'):
-                runner.tool_lifecycle.clear()
+            # (tool lifecycle removed — disk mode)
 
             # Note: LLM session history is managed by ContextManager,
             # which reloads from message store each call.

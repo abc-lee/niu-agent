@@ -77,49 +77,8 @@ def _add_server_workdirs_to_sys_path(config: dict) -> None:
 # ============================================================================
 
 def _inject_tools_to_lightrag(registry: ToolRegistry, servers: List[Tuple[str, str]]) -> None:
-    """Inject MCP tool descriptions into the LightRAG knowledge graph.
-
-    Uses inject_entities_batch() for a single ainsert_custom_kg() call
-    instead of one call per tool, avoiding N full persist cycles at startup.
-    """
-    try:
-        from niu_api.internal.lightrag_adapter import LightRAGIngester
-
-        ingester = LightRAGIngester()
-        items = []
-
-        for server_name, _module_name in servers:
-            for full_name, schema in registry.get_all_schemas().items():
-                if "/" not in full_name:
-                    continue
-                parts = full_name.split("/", 1)
-                if parts[0] != server_name:
-                    continue
-
-                tool_name = parts[1]
-                description = schema.get("description", "")
-                if not description:
-                    continue
-
-                items.append({
-                    "name": f"tool:{full_name}",
-                    "entity_type": "tool",
-                    "description": description,
-                    "source_id": f"tool:{full_name}",
-                    "chunk_content": f"{tool_name}: {description}",
-                    "file_path": f"mcp://{full_name}",
-                })
-
-        if items:
-            result = ingester.inject_entities_batch(items)
-            logger.info(
-                f"[MCP Loader] Batch injected {len(items)} tool descriptions into LightRAG "
-                f"({result.get('entities', 0)} entities, {result.get('chunks', 0)} chunks)"
-            )
-        else:
-            logger.info("[MCP Loader] No tool descriptions to inject into LightRAG")
-    except Exception as e:
-        logger.debug(f"[MCP Loader] LightRAG tool inject skipped: {e}")
+    """No-op in disk mode — tools discovered via disk YAML, not LightRAG."""
+    logger.debug("[MCP Loader] Tool injection to LightRAG skipped (disk mode)")
 
 
 # ============================================================================
