@@ -74,7 +74,6 @@ from .generic.agent_loop import agent_runner_loop
 from .generic.llmcore import ToolClient
 from .handler import NiuHandler
 from .injector.sync import get_skill_sync
-from .tool_lifecycle import ToolLifecycleManager
 from agent.tool_registry import get_registry
 
 
@@ -309,46 +308,21 @@ class NiuRunner:
         self.disk_engine = DiskEngine(disk_config_dir, registry=None)
         self.handler = NiuHandler(mcp_client=mcp_client, disk_engine=self.disk_engine)
 
-        # 工具生命周期管理
-        self.tool_lifecycle = ToolLifecycleManager(decay_rate=10, remove_threshold=25)
-
         # 用户记忆脏标记（remember/forget 工具调用后 set）
         self._memory_dirty = threading.Event()
 
-    def _get_static_tools(self) -> list:
-        """获取 visibility=static 的工具名列表（替代硬编码 BASE_MCP_TOOLS）"""
-        return get_registry().get_static_tools()
-
     def set_mcp_tools_schema(self, tools: list):
-        """设置 MCP 工具 Schema（从外部调用）
+        """Set MCP tool schemas — in disk mode, only inject disk() schema.
 
-        过滤掉 visibility=hidden 的工具，不注入到 _mcp_tools_schema
+        All MCP tools are visibility=hidden and accessed via disk().
+        The tools list is stored for _get_tool_schema_by_name lookups.
         """
-        registry = get_registry()
-        schema = []
-        for tool in tools:
-            tool_name = tool["name"]
-            # 跳过 visibility=hidden 的工具
-            if registry.get_visibility(tool_name) == "hidden":
-                continue
-            schema.append(
-                {
-                    "type": "function",
-                    "function": {
-                        "name": tool_name,
-                        "description": tool.get("description", ""),
-                        "parameters": tool.get(
-                            "input_schema", {"type": "object", "properties": {}}
-                        ),
-                    },
-                }
-            )
-        self._mcp_tools_schema = schema
-        logger.info(f"Loaded {len(schema)} MCP tools")
+        self._mcp_tools_schema = tools  # Store for schema lookups
+        logger.info(f"Loaded {len(tools)} MCP tools (all hidden, accessed via disk)")
 
-        # 注入 disk 虚拟磁盘工具 schema
+        # Inject disk schema
         disk_schema = self.disk_engine.get_schema()
-        self._mcp_tools_schema.append(disk_schema)
+        self._mcp_tools_schema_with_disk = tools + [disk_schema]
 
     def _get_tool_schema_by_name(self, tool_name: str) -> Optional[Dict]:
         """
@@ -364,37 +338,6 @@ class NiuRunner:
             if tool.get("function", {}).get("name") == tool_name:
                 return tool
         return None
-
-    def _build_dynamic_tools_schema(self, static_tools: set) -> list:
-        """组装动态工具 schema（top-10 按分数降序，同分并列）
-
-        static_tools 不参与排序，单独注入不受限。
-        只对动态工具排序截断，避免 static 占 top-10 名额。
-        """
-        MAX_DYNAMIC_TOOLS = 10
-        active_tool_names = self.tool_lifecycle.get_active_tools()
-
-        # 排除 static 工具，只对动态工具排序截断
-        scored = [(name, self.tool_lifecycle.get_tool_score(name))
-                  for name in active_tool_names if name not in static_tools]
-        scored.sort(key=lambda x: -x[1])
-
-        # top-10，同分数并列不截断
-        top = scored[:MAX_DYNAMIC_TOOLS]
-        if len(scored) > MAX_DYNAMIC_TOOLS:
-            cutoff_score = top[-1][1]
-            for name, score in scored[MAX_DYNAMIC_TOOLS:]:
-                if score == cutoff_score:
-                    top.append((name, score))
-                else:
-                    break
-
-        result = []
-        for tool_name, _ in top:
-            schema = self._get_tool_schema_by_name(tool_name)
-            if schema:
-                result.append(schema)
-        return result
 
     def _extract_context_from_messages(self, messages: list) -> str:
         """
@@ -443,50 +386,20 @@ class NiuRunner:
         return " ".join(context_parts) if context_parts else ""
 
     def _on_turn_end(self, messages: list, tools_schema: list, turn: int) -> list:
-        """
-        每轮循环结束后刷新动态注入。
-
-        Args:
-            messages: 当前消息列表（可修改 messages[0] 更新 system_prompt）
-            tools_schema: 当前工具 Schema 列表（可修改/返回新列表）
-            turn: 当前轮次
-
-        Returns:
-            更新后的 tools_schema
-        """
-        # 1. 先衰减所有工具分数（每轮 -10）
-        self.tool_lifecycle.decay_tools()
-
-        # 0. Refresh user memories if dirty
+        """每轮循环结束后刷新动态注入（skills/knowledge only, no MCP schema refresh)."""
+        # Refresh user memories if dirty
         self._refresh_user_memories(messages)
 
-        # 2. 从 messages 中提取最新上下文
+        # Extract context and re-inject skills/knowledge
         context = self._extract_context_from_messages(messages)
+        injection, _ = self._inject_dynamic_resources(context)
 
-        # 3. 重新执行动态注入
-        injection, mcp_tool_scores = self._inject_dynamic_resources(context)
-
-        # 4. 向量检索到的工具分数：和衰减后分数取大值
-        for tool_name, search_score in mcp_tool_scores.items():
-            self.tool_lifecycle.update_from_search(tool_name, search_score)
-
-        # 5. 更新 system_prompt（messages[0]）— always update so dirty refresh takes effect
+        # Update system_prompt
         if messages and messages[0].get("role") == "system":
             messages[0]["content"] = self.base_system_prompt + injection
 
-        # 6. 重新组装 tools_schema（加入新发现的工具）
-        new_schema = self.base_tools_schema.copy()
-        static_tools = set(self._get_static_tools()) | {"disk"}
-        for tool_name in static_tools:
-            schema = self._get_tool_schema_by_name(tool_name)
-            if schema:
-                new_schema.append(schema)
-
-        # 动态注入其他工具（top-10 按分数降序，同分并列）
-        dynamic_schemas = self._build_dynamic_tools_schema(static_tools)
-        new_schema.extend(dynamic_schemas)
-
-        return new_schema
+        # No schema refresh — tools_schema stays base + disk
+        return tools_schema
 
     def _refresh_user_memories(self, messages: list):
         """Refresh the ### [用户长期记忆] section in system prompt if dirty"""
@@ -569,90 +482,6 @@ class NiuRunner:
 
     # ============== LightRAG Helper Methods ==============
 
-    def _search_tool_signal_skills_lightrag(
-        self, context: str, recent_tool_names: list[str],
-    ) -> tuple[list[dict], set[str]]:
-        """Search for skills related to recently-used tools via LightRAG.
-
-        Uses LightRAGAdapter.search_skills() to find tool-signal skills.
-
-        Args:
-            context: Current conversation context.
-            recent_tool_names: Tool names that were recently hit.
-
-        Returns:
-            Tuple of (skill_entity_list, skill_name_set).
-        """
-        from niu_api.internal.lightrag_adapter import LightRAGAdapter
-
-        adapter = LightRAGAdapter()
-        skill_entities: list[dict] = []
-        skill_names: set[str] = set()
-
-        # Search by context for related skills
-        try:
-            kg_skills = adapter.search_skills(context, top_k=5)
-            for entity in kg_skills:
-                skill_entities.append(entity)
-                entity_name = entity.get("entity_name", "")
-                if entity_name.startswith("skill:"):
-                    skill_names.add(entity_name[6:])
-        except Exception as e:
-            logger.debug(f"Tool-signal context search failed: {e}")
-        seen_tools: set[str] = set()
-        for tool_name in recent_tool_names:
-            if tool_name in seen_tools:
-                continue
-            seen_tools.add(tool_name)
-            try:
-                tool_skills = adapter.search_skills(tool_name, top_k=2)
-                for entity in tool_skills:
-                    skill_entities.append(entity)
-                    entity_name = entity.get("entity_name", "")
-                    if entity_name.startswith("skill:"):
-                        skill_names.add(entity_name[6:])
-            except Exception as e:
-                logger.debug(f"Tool-signal skill search failed for '{tool_name}': {e}")
-
-        return skill_entities, skill_names
-
-    def _build_tool_scores_from_lightrag(
-        self, lightrag_results: dict[str, list[dict]],
-    ) -> dict[str, int]:
-        """Build mcp_tool_scores from LightRAG results.
-
-        LightRAG doesn't return similarity scores like vector search.
-        Use rank-based proxy scores: top-5 = 70, 6-10 = 55, 11-20 = 40.
-
-        Args:
-            lightrag_results: Result dict from search_multi_lightrag().
-
-        Returns:
-            Dict mapping tool full_name → proxy score.
-        """
-        registry = get_registry()
-        scores: dict[str, int] = {}
-        tool_entities = lightrag_results.get("mcp_tool", [])
-
-        for i, entity in enumerate(tool_entities):
-            entity_name = entity.get("entity_name", "")
-            if not entity_name.startswith("tool:"):
-                continue
-            tool_full_name = entity_name[5:]  # strip "tool:" prefix
-            vis = registry.get_visibility(tool_full_name)
-            if vis in ("hidden", "static"):
-                continue
-            # Rank-based proxy score
-            if i < 5:
-                proxy_score = 70
-            elif i < 10:
-                proxy_score = 55
-            else:
-                proxy_score = 40
-            scores[tool_full_name] = max(scores.get(tool_full_name, 0), proxy_score)
-
-        return scores
-
     def _format_lightrag_entities_for_prompt(
         self, entities: list[dict], title: str, seen_names: set[str],
     ) -> tuple[str, set[str]]:
@@ -700,8 +529,7 @@ class NiuRunner:
     # ============== Dynamic Resource Injection ==============
 
     def _inject_dynamic_resources(self, context: str) -> tuple[str, dict[str, int]]:
-        """
-        动态注入相关资源（Skills、知识）+ MCP 工具分数提取
+        """动态注入相关资源（Skills、知识）— no MCP tool scores.
 
         LightRAG 图检索为主检索路径。interaction_habits
         也从 LightRAG 读取（entity_type="interaction_habit"）。
@@ -710,16 +538,13 @@ class NiuRunner:
             context: 3条对话上下文（包含历史消息和当前用户输入）
 
         检索顺序：
-        1. LightRAG 主检索（hybrid 模式）→ skills + mcp_tools + knowledge
-        2. tool-signal skills（LightRAG）
-        3. interaction_habits（LightRAG）
-        4. brain memories（脑图）
-        5. MCP tool scores（LightRAG 排名代理分数）
+        1. LightRAG 主检索（hybrid 模式）→ skills + knowledge
+        2. interaction_habits（LightRAG）
+        3. brain memories（脑图）
         """
         # 1. LightRAG 主检索
         effective_query = context
         lightrag_results: dict[str, list[dict]] = {}
-        lightrag_skill_names: set[str] = set()
         lightrag_available = True
         try:
             from niu_api.internal.lightrag_adapter import LightRAGAdapter
@@ -727,27 +552,14 @@ class NiuRunner:
             lightrag_results = adapter.search_multi_lightrag(
                 effective_query, mode="hybrid", top_k=20,
             )
-            for entity in lightrag_results.get("skill", []):
-                entity_name = entity.get("entity_name", "")
-                if entity_name.startswith("skill:"):
-                    lightrag_skill_names.add(entity_name[6:])
         except Exception as e:
             logger.warning(f"LightRAG retrieval failed: {e}")
             lightrag_available = False
 
-        # Debug: distinguish "no results found" from "LightRAG is down"
         if lightrag_results and not any(lightrag_results.values()):
-            logger.debug("LightRAG returned empty results — agent will have no dynamic skills/tools/knowledge injection")
-        # 2. tool-signal skills（LightRAG）
-        recent_tool_names = self.tool_lifecycle.consume_recent_hits()
-        tool_signal_skills_entities: list[dict] = []
-        if lightrag_available and recent_tool_names:
-            tool_signal_skills_entities, signal_names = (
-                self._search_tool_signal_skills_lightrag(context, recent_tool_names)
-            )
-            lightrag_skill_names.update(signal_names)
+            logger.debug("LightRAG returned empty results")
 
-        # 3. interaction_habits（LightRAG）
+        # 2. interaction_habits（LightRAG）
         interaction_habits: list[dict] = []
         try:
             from niu_api.internal.lightrag_adapter import LightRAGAdapter
@@ -758,7 +570,7 @@ class NiuRunner:
         except Exception as e:
             logger.debug(f"Interaction habits search failed (non-blocking): {e}")
 
-        # 4. Brain graph memory recall
+        # 3. Brain graph memory recall
         brain_memories_text = ""
         try:
             from niu_api.internal.brain_graph import get_brain_graph, format_memories_for_prompt
@@ -769,9 +581,6 @@ class NiuRunner:
         except Exception as e:
             logger.debug(f"Brain graph recall failed (non-blocking): {e}")
 
-        # 5. MCP tool scores（LightRAG 排名代理分数）
-        mcp_tool_scores = self._build_tool_scores_from_lightrag(lightrag_results)
-
         # ============== Format & Inject ==============
         parts = []
         seen_names: set[str] = set()
@@ -779,14 +588,12 @@ class NiuRunner:
         logger.debug(
             f"Dynamic injection | "
             f"Skills: {len(lightrag_results.get('skill', []))}, "
-            f"MCP: {len(lightrag_results.get('mcp_tool', []))}, "
             f"Knowledge: {len(lightrag_results.get('knowledge', []))}, "
-            f"Habits: {len(interaction_habits)}, "
-            f"ToolSignal: {len(tool_signal_skills_entities)}"
+            f"Habits: {len(interaction_habits)}"
         )
 
-        # Skills (LightRAG entities + tool-signal entities)
-        lightrag_skills = lightrag_results.get("skill", []) + tool_signal_skills_entities
+        # Skills
+        lightrag_skills = lightrag_results.get("skill", [])
         skills_text, seen_names = self._format_lightrag_entities_for_prompt(
             lightrag_skills, "相关技能", seen_names,
         )
@@ -803,8 +610,7 @@ class NiuRunner:
             parts.append(
                 "\n\n### [知识探索指引]\n"
                 "优先参考上述注入的历史参考信息回答用户问题。"
-                "若命中知识点涉及已知实体（人名、技术、组织等），"
-                "可使用 `lightrag_query` 查询知识图谱中的关联信息，获取更完整的上下文。"
+                "若命中知识点涉及已知实体，可使用 disk(\"/lightrag/query <实体名>\") 查询知识图谱。"
             )
 
         # Interaction habits (LightRAG)
@@ -825,61 +631,40 @@ class NiuRunner:
         else:
             logger.debug("Dynamic injection - Skipped (no relevant results)")
 
-        return injection, mcp_tool_scores
+        return injection, {}  # Empty mcp_tool_scores — no dynamic MCP injection
 
     def chat(
         self, session_id: str, user_input: str, stream: bool = True, max_turns: int = 40, history: list = None
     ) -> Generator[str, None, None]:
-        """
-        执行对话
-
-        动态注入：
-        1. 根据用户输入搜索 Skills、MCP 工具描述、知识
-        2. 组装 system_prompt = base_prompt + 动态资源
-        3. 组装 tools_schema = base_tools + mcp_tools
+        """执行对话 — disk mode: base tools + disk only.
 
         Args:
             session_id: 会话ID
             user_input: 用户输入
             stream: 是否流式输出
             max_turns: 最大轮次
-            history: 可选的历史消息列表 [{"role": "user/assistant", "content": str}, ...]
+            history: 可选的历史消息列表
         """
-        # 重置会话级状态
-        self.tool_lifecycle.reset_session()
-
-        # 从消息历史中提取上下文（用于向量检索）
+        # 从消息历史中提取上下文
         context = self._extract_context_from_history(history, user_input)
 
-        # 动态注入资源
-        injection, mcp_tool_scores = self._inject_dynamic_resources(context)
-
-        # 向量检索到的工具分数：和当前分数取大值
-        for tool_name, search_score in mcp_tool_scores.items():
-            self.tool_lifecycle.update_from_search(tool_name, search_score)
+        # 动态注入资源（skills/knowledge only）
+        injection, _ = self._inject_dynamic_resources(context)
 
         # 组装 system_prompt
         system_prompt = self.base_system_prompt
         if injection:
             system_prompt += injection
 
-        # 组装 tools_schema = 内置工具 + 静态MCP工具 + 动态MCP工具(top-10)
+        # 组装 tools_schema = base tools + disk
         tools_schema = self.base_tools_schema.copy()
 
-        # 固定注入静态工具（visibility=static）
-        static_tools = set(self._get_static_tools())
-        for tool_name in static_tools:
-            schema = self._get_tool_schema_by_name(tool_name)
-            if schema:
-                tools_schema.append(schema)
+        # Add disk tool
+        disk_schema = self.disk_engine.get_schema()
+        tools_schema.append(disk_schema)
 
-        # 动态注入其他工具（top-10 按分数降序，同分并列）
-        dynamic_schemas = self._build_dynamic_tools_schema(static_tools)
-        tools_schema.extend(dynamic_schemas)
-
-        # 调试：打印工具数量
         logger.debug(
-            f"tools_schema: {len(self.base_tools_schema)} base + {len(static_tools)} static + {len(dynamic_schemas)} dynamic = {len(tools_schema)} total"
+            f"tools_schema: {len(self.base_tools_schema)} base + 1 disk = {len(tools_schema)} total"
         )
 
         gen = agent_runner_loop(

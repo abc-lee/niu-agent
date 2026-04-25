@@ -371,10 +371,11 @@ class TestRunnerNoKgServerPrompt:
         assert "kg-server/get_related_entities" not in source
 
     def test_lightrag_query_in_prompt(self):
-        """runner.py should reference lightrag_query instead."""
+        """runner.py should reference lightrag via disk (disk mode)."""
         import agent.runner as mod
         source = Path(mod.__file__).read_text(encoding="utf-8")
-        assert "lightrag_query" in source
+        # In disk mode, lightrag tools are accessed via disk(), not directly
+        assert "disk_engine" in source
 
 
 # ============== 9. photo-server — no niu_kg_server imports ==============
