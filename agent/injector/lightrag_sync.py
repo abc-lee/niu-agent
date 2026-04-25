@@ -14,6 +14,7 @@ Architecture:
 """
 
 import json
+import re
 import sqlite3
 import threading
 import time
@@ -168,13 +169,14 @@ class LightRAGSync:
                     continue
                 person_name = row["name"] or row["auto_label"] or person_id
                 try:
-                    ingester.inject_entity(
+                    result = ingester.inject_entity(
                         name=f"person:{person_id}",
                         entity_type="person",
                         description=f"Person: {person_name} (backfilled from photos.db)",
                     )
-                    persons_synced += 1
-                    new_person_ids.add(person_id)
+                    if result.get("status") == "ok":
+                        persons_synced += 1
+                        new_person_ids.add(person_id)
                 except Exception as e:
                     logger.debug(f"[LightRAGSync] Person entity failed for {person_name}: {e}")
 
@@ -214,13 +216,14 @@ class LightRAGSync:
                 if pair_key in prev_co_occ:
                     continue
                 try:
-                    ingester.inject_relation(
+                    result = ingester.inject_relation(
                         src_id=f"person:{a_id}",
                         tgt_id=f"person:{b_id}",
                         relation="co_appears_with",
                         description=f"Co-occurrence count: {count}",
                     )
-                    new_co_occ_ids.add(pair_key)
+                    if result.get("status") == "ok":
+                        new_co_occ_ids.add(pair_key)
                 except Exception as e:
                     logger.debug(f"[LightRAGSync] Co-occurrence link failed: {e}")
 
@@ -301,29 +304,22 @@ class LightRAGSync:
     ) -> tuple[int, int, set, set]:
         """Sync skills and MCP tools into LightRAG knowledge graph.
 
+        Uses inject_entities_batch() for a single persist cycle instead of
+        one inject_entity() call per item (which triggers N full persists).
+
         Only processes items whose IDs are not in the previous sync state,
-        preventing duplicate entity insertion. New IDs are tracked and
-        returned so they can be persisted in the status file.
+        preventing duplicate entity insertion.
 
-        Args:
-            prev_skill_ids: Skill IDs already synced in previous runs.
-            prev_tool_ids: Tool IDs already synced in previous runs.
-
-        Returns:
-            (skills_synced, tools_synced, new_skill_ids, new_tool_ids)
+        ID tracking sets are populated ONLY after successful batch inject,
+        so a failed inject won't cause items to be permanently skipped.
         """
-        skills_synced = 0
-        tools_synced = 0
+        skill_items: list[dict] = []
+        tool_items: list[dict] = []
         new_skill_ids: set = set()
         new_tool_ids: set = set()
 
-        # --- Skills ---
+        # --- Collect Skills ---
         try:
-            from niu_api.internal.lightrag_adapter import LightRAGIngester
-
-            ingester = LightRAGIngester()
-
-            # Read skills from the same directory SkillSync uses
             base_dir = Path(__file__).parent.parent.parent
             skills_dir = base_dir / "memory" / "skills"
 
@@ -335,8 +331,6 @@ class LightRAGSync:
                         continue
                     try:
                         content = skill_file.read_text(encoding="utf-8")
-                        # Extract description (same logic as SkillSync)
-                        import re
                         description = ""
                         match_l1 = re.search(r"\*\*[lL]1 摘要\*\*[：:]\s*(.+)", content)
                         if match_l1:
@@ -352,31 +346,26 @@ class LightRAGSync:
                                 description = match_d.group(1).strip().strip("\"'")
 
                         if description:
-                            result = ingester.inject_entity(
-                                name=f"skill:{name}",
-                                entity_type="skill",
-                                description=description,
-                                source_id=f"skill:{name}",
-                                chunk_content=f"{name}: {description}",
-                                file_path=f"skill://{name}",
-                            )
-                            if result.get("status") == "ok":
-                                skills_synced += 1
-                                new_skill_ids.add(skill_id)
+                            skill_items.append({
+                                "id": skill_id,
+                                "item": {
+                                    "name": f"skill:{name}",
+                                    "entity_type": "skill",
+                                    "description": description,
+                                    "source_id": f"skill:{name}",
+                                    "chunk_content": f"{name}: {description}",
+                                    "file_path": f"skill://{name}",
+                                },
+                            })
                     except Exception as e:
-                        logger.debug(f"[LightRAGSync] Skill inject failed for '{name}': {e}")
-
-            if skills_synced:
-                logger.info(f"[LightRAGSync] Synced {skills_synced} skills into LightRAG")
+                        logger.debug(f"[LightRAGSync] Skill read failed for '{name}': {e}")
         except Exception as e:
-            logger.debug(f"[LightRAGSync] Skills sync skipped: {e}")
+            logger.debug(f"[LightRAGSync] Skills scan skipped: {e}")
 
-        # --- MCP Tools ---
+        # --- Collect MCP Tools ---
         try:
-            from niu_api.internal.lightrag_adapter import LightRAGIngester
             from agent.tool_registry import get_registry
 
-            ingester = LightRAGIngester()
             registry = get_registry()
 
             for full_name, schema in registry.get_all_schemas().items():
@@ -389,27 +378,45 @@ class LightRAGSync:
                 description = schema.get("description", "")
                 if not description:
                     continue
-                try:
-                    result = ingester.inject_entity(
-                        name=f"tool:{full_name}",
-                        entity_type="tool",
-                        description=description,
-                        source_id=f"tool:{full_name}",
-                        chunk_content=f"{tool_name}: {description}",
-                        file_path=f"mcp://{full_name}",
-                    )
-                    if result.get("status") == "ok":
-                        tools_synced += 1
-                        new_tool_ids.add(tool_id)
-                except Exception as e:
-                    logger.debug(f"[LightRAGSync] Tool inject failed for '{full_name}': {e}")
-
-            if tools_synced:
-                logger.info(f"[LightRAGSync] Synced {tools_synced} tools into LightRAG")
+                tool_items.append({
+                    "id": tool_id,
+                    "item": {
+                        "name": f"tool:{full_name}",
+                        "entity_type": "tool",
+                        "description": description,
+                        "source_id": f"tool:{full_name}",
+                        "chunk_content": f"{tool_name}: {description}",
+                        "file_path": f"mcp://{full_name}",
+                    },
+                })
         except Exception as e:
-            logger.debug(f"[LightRAGSync] Tools sync skipped: {e}")
+            logger.debug(f"[LightRAGSync] Tools scan skipped: {e}")
 
-        return skills_synced, tools_synced, new_skill_ids, new_tool_ids
+        # --- Batch inject all collected items in one call ---
+        all_items = skill_items + tool_items
+        if all_items:
+            try:
+                from niu_api.internal.lightrag_adapter import LightRAGIngester
+                ingester = LightRAGIngester()
+                result = ingester.inject_entities_batch([e["item"] for e in all_items])
+                logger.info(
+                    f"[LightRAGSync] Batch injected {len(all_items)} items "
+                    f"({len(skill_items)} skills, {len(tool_items)} tools) — "
+                    f"{result.get('entities', 0)} entities, {result.get('chunks', 0)} chunks"
+                )
+                # Only track IDs after confirmed successful inject
+                if result.get("status") == "ok":
+                    new_skill_ids = {e["id"] for e in skill_items}
+                    new_tool_ids = {e["id"] for e in tool_items}
+                else:
+                    logger.error(
+                        f"[LightRAGSync] Batch inject returned status={result.get('status')}, "
+                        f"not tracking {len(all_items)} item IDs"
+                    )
+            except Exception as e:
+                logger.error(f"[LightRAGSync] Batch inject failed: {e}")
+
+        return len(new_skill_ids), len(new_tool_ids), new_skill_ids, new_tool_ids
 
     def _load_status(self) -> dict:
         """Load previous sync status from file.
