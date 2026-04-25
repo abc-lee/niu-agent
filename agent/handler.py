@@ -256,7 +256,7 @@ class NiuHandler(BaseHandler):
         self.history_info = []
         self._done_hooks = []
         self._disable_memory_recall = False  # 禁用长期记忆检索（子 Agent 使用）
-        self._is_subagent = False  # 子 Agent 标记（True 时跳过 hit_tool，不污染主 Agent 分数）
+        self._is_subagent = False
 
         # 经验总结相关
         self._experience_context: Optional[ExperienceContext] = None
@@ -907,23 +907,8 @@ class NiuHandler(BaseHandler):
                         next_prompt=self._get_anchor_prompt()
                     )
 
-                # 记录工具命中（在真正执行前）
-                # hit_tool 记录命中到 _recent_hits，统一注入时通过 consume_recent_hits 获取
-                # 分数由 _inject_dynamic_resources 中的向量检索覆盖管理
-                # 子 Agent（_is_subagent=True）跳过 hit_tool()，不污染主 Agent 的 tool_lifecycle
+                # Reinforce brain region on tool use
                 if not getattr(self, '_is_subagent', False):
-                    try:
-                        from agent.runner import get_runner
-                        runner = get_runner()
-                        if runner and hasattr(runner, 'tool_lifecycle'):
-                            runner.tool_lifecycle.hit_tool(tool_name)
-                            current_score = runner.tool_lifecycle.get_tool_score(tool_name)
-                            print(f"[ToolHit] {tool_name} executed (lifecycle score: {current_score})", file=sys.stderr, flush=True)
-                    except Exception as e:
-                        # 命中记录失败不影响主流程
-                        print(f"[ToolHit] Failed to record hit: {e}", file=sys.stderr, flush=True)
-
-                    # Reinforce brain region on tool use
                     try:
                         from agent.brain_tools import reinforce_on_tool_use
                         reinforce_on_tool_use(tool_name)
@@ -987,19 +972,8 @@ class NiuHandler(BaseHandler):
         func = get_registry().get(tool_name)
         if func is not None:
             try:
-                # Record tool hit (same logic as the "/" path above)
+                # Reinforce brain region on tool use
                 if not getattr(self, '_is_subagent', False):
-                    try:
-                        from agent.runner import get_runner
-                        runner = get_runner()
-                        if runner and hasattr(runner, 'tool_lifecycle'):
-                            runner.tool_lifecycle.hit_tool(tool_name)
-                            current_score = runner.tool_lifecycle.get_tool_score(tool_name)
-                            print(f"[ToolHit] {tool_name} executed (lifecycle score: {current_score})", file=sys.stderr, flush=True)
-                    except Exception as e:
-                        print(f"[ToolHit] Failed to record hit: {e}", file=sys.stderr, flush=True)
-
-                    # Reinforce brain region on tool use
                     try:
                         from agent.brain_tools import reinforce_on_tool_use
                         reinforce_on_tool_use(tool_name)

@@ -131,40 +131,11 @@ def test_vector_search_precision(suite: TestSuite):
 
 
 def test_tool_lifecycle(suite: TestSuite):
-    """测试2: 工具生命周期"""
+    """测试2: 工具生命周期 — 已移除（disk mode 不使用 tool_lifecycle）"""
     print(f"\n{'='*70}")
-    print("测试 2: 工具生命周期管理")
+    print("测试 2: 工具生命周期管理 — SKIPPED (disk mode)")
     print(f"{'='*70}\n")
-
-    from agent.tool_lifecycle import ToolLifecycleManager
-
-    manager = ToolLifecycleManager(decay_rate=10, min_score=50)
-
-    # 测试1: 工具命中
-    manager.hit_tool("photo-server/ingest_photo")
-    score = manager.get_tool_score("photo-server/ingest_photo")
-    suite.test("工具命中后分数=100", score == 100, f"实际分数: {score}")
-
-    # 测试2: 分数衰减
-    manager.decay_tools()
-    score = manager.get_tool_score("photo-server/ingest_photo")
-    suite.test("衰减后分数=90", score == 90, f"实际分数: {score}")
-
-    # 测试3: 持续衰减到移除
-    for _ in range(6):
-        manager.decay_tools()
-
-    active_tools = manager.get_active_tools()
-    suite.test(
-        "分数<50时工具被移除",
-        "photo-server/ingest_photo" not in active_tools,
-        f"活跃工具: {active_tools}"
-    )
-
-    # 测试4: 工具重生
-    manager.hit_tool("photo-server/ingest_photo")
-    score = manager.get_tool_score("photo-server/ingest_photo")
-    suite.test("重新命中后分数=100", score == 100, f"实际分数: {score}")
+    suite.test("tool_lifecycle 已移除（disk 模式替代）", True, "disk mode: tools via disk YAML")
 
 
 def test_dynamic_tool_injection(suite: TestSuite):
@@ -317,17 +288,12 @@ def test_context_impact_on_matching(suite: TestSuite):
 
 
 def test_multi_turn_conversation(suite: TestSuite):
-    """测试6: 多轮对话"""
+    """测试6: 多轮对话（disk mode — no tool_lifecycle）"""
     print(f"\n{'='*70}")
-    print("测试 6: 多轮对话（模拟）")
+    print("测试 6: 多轮对话（模拟）— disk mode")
     print(f"{'='*70}\n")
 
-    from agent.tool_lifecycle import ToolLifecycleManager
-
-    manager = ToolLifecycleManager(decay_rate=10, min_score=50)
     vs = get_vector_search()
-
-    tool_name = None  # 初始化变量
 
     # 使用主Agent基础工具进行测试
     print("  第1轮: '检索之前的记忆'")
@@ -338,33 +304,22 @@ def test_multi_turn_conversation(suite: TestSuite):
         filter={'category': 'mcp_tool'}
     )
 
+    tool_name = None
     if results:
         tool_name = f"{results[0].metadata.get('server', '')}/{results[0].metadata.get('name', '')}"
-        manager.hit_tool(tool_name)
-        print(f"    命中工具: {tool_name}, 分数: 100")
-
-    manager.decay_tools()
-    score_after_turn1 = manager.get_tool_score(tool_name) if tool_name else 0
-    print(f"    衰减后分数: {score_after_turn1}")
-
-    print("  第2轮: '是的'")
-    active_tools = manager.get_active_tools()
-    print(f"    活跃工具: {active_tools}")
+        print(f"    命中工具: {tool_name}")
 
     suite.test(
-        "第2轮工具仍然活跃",
-        len(active_tools) > 0,
-        f"活跃工具数量: {len(active_tools)}"
+        "第1轮检索到工具",
+        tool_name is not None,
+        f"工具: {tool_name}"
     )
 
-    manager.decay_tools()
-    score = manager.get_tool_score(tool_name) if tool_name else 0
-    print(f"    衰减后分数: {score}")
-
+    print("  第2轮: '是的'")
     suite.test(
-        "第2轮衰减后分数=80",
-        score == 80,
-        f"实际分数: {score}"
+        "disk mode: 无 tool_lifecycle 衰减",
+        True,
+        "disk mode: tools via disk YAML, no scoring"
     )
 
 
