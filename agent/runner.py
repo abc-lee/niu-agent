@@ -73,7 +73,6 @@ if sys.platform == 'win32':
 from .generic.agent_loop import agent_runner_loop
 from .generic.llmcore import ToolClient
 from .handler import NiuHandler
-from .vector_search import get_vector_search
 from .injector.sync import get_skill_sync
 from .tool_lifecycle import ToolLifecycleManager
 from agent.tool_registry import get_registry
@@ -297,7 +296,6 @@ class NiuRunner:
         self.handler = NiuHandler(mcp_client=mcp_client)
         self.base_system_prompt = get_system_prompt()
         self.base_tools_schema = get_tools_schema()
-        self.vector_search = get_vector_search()
 
         # 启动 Skills 后台同步
         get_skill_sync(auto_start=True)
@@ -561,41 +559,12 @@ class NiuRunner:
 
     # ============== LightRAG Helper Methods ==============
 
-    def _apply_query_patterns(self, context: str) -> str:
-        """Apply query_pattern refinement from vectors.db.
-
-        Query patterns are stored in vectors.db and provide known
-        keyword expansions (e.g., "photo" → "photo, image, picture").
-        This is a preprocessing step before LightRAG retrieval.
-
-        Args:
-            context: Original query context.
-
-        Returns:
-            Refined query if a pattern matches, otherwise original context.
-        """
-        try:
-            pattern_results = self.vector_search.search(
-                query=context,
-                limit=1,
-                min_score=0.5,
-                metadata_filter={"category": "query_pattern"},
-            )
-            if pattern_results:
-                expanded = pattern_results[0].metadata.get("expanded_query", "")
-                if expanded:
-                    return expanded
-        except Exception:
-            pass
-        return context
-
     def _search_tool_signal_skills_lightrag(
         self, context: str, recent_tool_names: list[str],
     ) -> tuple[list[dict], set[str]]:
         """Search for skills related to recently-used tools via LightRAG.
 
-        Replaces the vector_search.search() tool-signal lookup with
-        LightRAGAdapter.search_skills() when LightRAG is available.
+        Uses LightRAGAdapter.search_skills() to find tool-signal skills.
 
         Args:
             context: Current conversation context.
@@ -618,10 +587,8 @@ class NiuRunner:
                 entity_name = entity.get("entity_name", "")
                 if entity_name.startswith("skill:"):
                     skill_names.add(entity_name[6:])
-        except Exception:
-            pass
-
-        # Search by each tool name for tool-signal skills
+        except Exception as e:
+            logger.debug(f"Tool-signal context search failed: {e}")
         seen_tools: set[str] = set()
         for tool_name in recent_tool_names:
             if tool_name in seen_tools:
@@ -634,8 +601,8 @@ class NiuRunner:
                     entity_name = entity.get("entity_name", "")
                     if entity_name.startswith("skill:"):
                         skill_names.add(entity_name[6:])
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Tool-signal skill search failed for '{tool_name}': {e}")
 
         return skill_entities, skill_names
 
@@ -701,7 +668,7 @@ class NiuRunner:
             entity_name = entity.get("entity_name", "")
             # Strip type prefix for display
             display_name = entity_name
-            for prefix in ("skill:", "tool:", "knowledge:"):
+            for prefix in ("skill:", "tool:", "knowledge:", "habit:"):
                 if display_name.startswith(prefix):
                     display_name = display_name[len(prefix):]
                     break
@@ -726,26 +693,24 @@ class NiuRunner:
         """
         动态注入相关资源（Skills、知识）+ MCP 工具分数提取
 
-        LightRAG 图检索为主检索路径。interaction_habits 和 query_patterns
-        仍从 vectors.db 读取（独立数据源，非 fallback）。
+        LightRAG 图检索为主检索路径。interaction_habits
+        也从 LightRAG 读取（entity_type="interaction_habit"）。
 
         Args:
             context: 3条对话上下文（包含历史消息和当前用户输入）
 
         检索顺序：
-        1. query_pattern 预处理（vectors.db）
-        2. LightRAG 主检索（hybrid 模式）→ skills + mcp_tools + knowledge
-        3. tool-signal skills（LightRAG）
-        4. interaction_habits（vectors.db）
-        5. brain memories（脑图）
-        6. MCP tool scores（LightRAG 排名代理分数）
+        1. LightRAG 主检索（hybrid 模式）→ skills + mcp_tools + knowledge
+        2. tool-signal skills（LightRAG）
+        3. interaction_habits（LightRAG）
+        4. brain memories（脑图）
+        5. MCP tool scores（LightRAG 排名代理分数）
         """
-        # 1. query_pattern 预处理（vectors.db，Phase 01 Section 8）
-        effective_query = self._apply_query_patterns(context)
-
-        # 2. LightRAG 主检索
+        # 1. LightRAG 主检索
+        effective_query = context
         lightrag_results: dict[str, list[dict]] = {}
         lightrag_skill_names: set[str] = set()
+        lightrag_available = True
         try:
             from niu_api.internal.lightrag_adapter import LightRAGAdapter
             adapter = LightRAGAdapter()
@@ -763,6 +728,7 @@ class NiuRunner:
         # Debug: distinguish "no results found" from "LightRAG is down"
         if lightrag_results and not any(lightrag_results.values()):
             logger.debug("LightRAG returned empty results — agent will have no dynamic skills/tools/knowledge injection")
+        # 2. tool-signal skills（LightRAG）
         recent_tool_names = self.tool_lifecycle.consume_recent_hits()
         tool_signal_skills_entities: list[dict] = []
         if lightrag_available and recent_tool_names:
@@ -771,17 +737,18 @@ class NiuRunner:
             )
             lightrag_skill_names.update(signal_names)
 
-        # 4. interaction_habits（vectors.db，Phase 01 Section 8）
-        interaction_habits = []
+        # 3. interaction_habits（LightRAG）
+        interaction_habits: list[dict] = []
         try:
-            interaction_habits = self.vector_search.search(
-                query=effective_query, limit=3, min_score=0.4,
-                metadata_filter={"category": "interaction_habit"},
+            from niu_api.internal.lightrag_adapter import LightRAGAdapter
+            habit_adapter = LightRAGAdapter()
+            interaction_habits = habit_adapter.search_interaction_habits(
+                query=effective_query, top_k=3,
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Interaction habits search failed (non-blocking): {e}")
 
-        # 5. Brain graph memory recall
+        # 4. Brain graph memory recall
         brain_memories_text = ""
         try:
             from niu_api.internal.brain_graph import get_brain_graph, format_memories_for_prompt
@@ -792,7 +759,7 @@ class NiuRunner:
         except Exception as e:
             logger.debug(f"Brain graph recall failed (non-blocking): {e}")
 
-        # 6. MCP tool scores（LightRAG 排名代理分数）
+        # 5. MCP tool scores（LightRAG 排名代理分数）
         mcp_tool_scores = self._build_tool_scores_from_lightrag(lightrag_results)
 
         # ============== Format & Inject ==============
@@ -830,9 +797,13 @@ class NiuRunner:
                 "可使用 `lightrag_query` 查询知识图谱中的关联信息，获取更完整的上下文。"
             )
 
-        # Interaction habits (vectors.db)
+        # Interaction habits (LightRAG)
         if interaction_habits:
-            parts.append(format_resources_for_prompt(interaction_habits, "交互习惯"))
+            habits_text, seen_names = self._format_lightrag_entities_for_prompt(
+                interaction_habits, "交互习惯", seen_names,
+            )
+            if habits_text:
+                parts.append(habits_text)
 
         # Brain memories
         if brain_memories_text:

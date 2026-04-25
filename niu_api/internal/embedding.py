@@ -10,6 +10,7 @@ Supports pluggable embedding models via ~/.niu/preferences.json lightrag config.
 import json
 import os
 import tempfile
+import threading
 from pathlib import Path
 from typing import Optional
 
@@ -20,11 +21,17 @@ from loguru import logger
 
 # Supported models: (local_dir_name, huggingface_id, default_dim)
 SUPPORTED_MODELS = {
+    "bge-base-zh-v1.5": {
+        "local_dir": "bge-base-zh-v1.5",
+        "hf_id": "BAAI/bge-base-zh-v1.5",
+        "dim": 768,
+        "desc": "BAAI/bge-base-zh-v1.5 (768d, 512 tokens, Chinese optimized)",
+    },
     "bge-m3": {
         "local_dir": "bge-m3",
         "hf_id": "BAAI/bge-m3",
         "dim": 1024,
-        "desc": "BAAI/bge-m3 multilingual (1024d, recommended for LightRAG)",
+        "desc": "BAAI/bge-m3 multilingual (1024d, 8192 tokens, 2.2GB)",
     },
     "minilm-l12": {
         "local_dir": "paraphrase-multilingual-MiniLM-L12-v2",
@@ -34,7 +41,7 @@ SUPPORTED_MODELS = {
     },
 }
 
-DEFAULT_MODEL = "minilm-l12"  # Keep backward compat until LightRAG is active
+DEFAULT_MODEL = "bge-base-zh-v1.5"  # BAAI/bge-base-zh-v1.5 (768d, 512 tokens, ~400MB)
 
 
 def _get_embedding_model_name() -> str:
@@ -57,10 +64,29 @@ def get_embedding_dim() -> int:
     return SUPPORTED_MODELS[model_name]["dim"]
 
 
+def get_embedding_max_seq_length() -> int:
+    """Get the max_seq_length of the loaded embedding model.
+
+    Returns the model's actual max_seq_length (e.g. 512 for bge-base-zh-v1.5).
+    If model is not loaded yet, returns the default from SUPPORTED_MODELS config.
+    """
+    with _model_lock:
+        if _model is not None:
+            return _model.max_seq_length
+    # Model not loaded yet — return a safe default based on model config
+    model_name = _get_embedding_model_name()
+    if model_name == "bge-m3":
+        return 8192
+    if model_name == "minilm-l12":
+        return 128
+    return 512  # bge-base-zh-v1.5
+
+
 # ============== Model Loading ==============
 
 _model = None
 _model_name: Optional[str] = None  # Track which model is loaded
+_model_lock = threading.Lock()  # Protect _model / _model_name access
 
 
 def get_models_dir() -> Path:
@@ -91,48 +117,49 @@ def get_model():
     """Get or load the embedding model. Config-driven, local first, GPU priority."""
     global _model, _model_name
 
-    requested_model = _get_embedding_model_name()
+    with _model_lock:
+        requested_model = _get_embedding_model_name()
 
-    # If model already loaded and matches request, return it
-    if _model is not None and _model_name == requested_model:
+        # If model already loaded and matches request, return it
+        if _model is not None and _model_name == requested_model:
+            return _model
+
+        # If model changed, unload old one
+        if _model is not None and _model_name != requested_model:
+            logger.info(f"Switching embedding model: {_model_name} → {requested_model}")
+            _model = None
+            _model_name = None
+
+        try:
+            from sentence_transformers import SentenceTransformer
+
+            models_dir = get_models_dir()
+            model_info = SUPPORTED_MODELS[requested_model]
+            local_path = models_dir / model_info["local_dir"]
+
+            # Detect device
+            device = get_device()
+
+            if local_path.exists():
+                logger.info(f"Loading embedding model from: {local_path}")
+                _model = SentenceTransformer(str(local_path))
+            else:
+                logger.info(f"No local model found at {local_path}, downloading {model_info['hf_id']}...")
+                os.environ.pop("HF_HUB_OFFLINE", None)
+                _model = SentenceTransformer(model_info["hf_id"])
+                _model.save(str(local_path))
+                logger.info(f"Model saved to: {local_path}")
+
+            # Move model to target device
+            _model = _model.to(device)
+            _model_name = requested_model
+            logger.info(f"Embedding model: {model_info['desc']} on {device.upper()}")
+
+        except Exception as e:
+            logger.error(f"Failed to load embedding model: {e}")
+            raise
+
         return _model
-
-    # If model changed, unload old one
-    if _model is not None and _model_name != requested_model:
-        logger.info(f"Switching embedding model: {_model_name} → {requested_model}")
-        _model = None
-        _model_name = None
-
-    try:
-        from sentence_transformers import SentenceTransformer
-
-        models_dir = get_models_dir()
-        model_info = SUPPORTED_MODELS[requested_model]
-        local_path = models_dir / model_info["local_dir"]
-
-        # Detect device
-        device = get_device()
-
-        if local_path.exists():
-            logger.info(f"Loading embedding model from: {local_path}")
-            _model = SentenceTransformer(str(local_path))
-        else:
-            logger.info(f"No local model found at {local_path}, downloading {model_info['hf_id']}...")
-            os.environ.pop("HF_HUB_OFFLINE", None)
-            _model = SentenceTransformer(model_info["hf_id"])
-            _model.save(str(local_path))
-            logger.info(f"Model saved to: {local_path}")
-
-        # Move model to target device
-        _model = _model.to(device)
-        _model_name = requested_model
-        logger.info(f"Embedding model: {model_info['desc']} on {device.upper()}")
-
-    except Exception as e:
-        logger.error(f"Failed to load embedding model: {e}")
-        raise
-
-    return _model
 
 
 # ============== Core Functions ==============
@@ -189,19 +216,21 @@ def similarity_vectors(vec1: list[float], vec2: list[float]) -> float:
 
 def is_ready() -> bool:
     """Check if model is loaded."""
-    return _model is not None
+    with _model_lock:
+        return _model is not None
 
 
 def get_current_model_info() -> dict:
     """Get current model info (for diagnostics / system management)."""
-    name = _model_name or _get_embedding_model_name()
-    info = SUPPORTED_MODELS.get(name, {})
-    return {
-        "name": name,
-        "dim": info.get("dim", 0),
-        "desc": info.get("desc", ""),
-        "loaded": _model is not None,
-    }
+    with _model_lock:
+        name = _model_name or _get_embedding_model_name()
+        info = SUPPORTED_MODELS.get(name, {})
+        return {
+            "name": name,
+            "dim": info.get("dim", 0),
+            "desc": info.get("desc", ""),
+            "loaded": _model is not None,
+        }
 
 
 def switch_model(new_model: str) -> dict:
@@ -218,24 +247,25 @@ def switch_model(new_model: str) -> dict:
             "message": f"Unknown model: {new_model}. Supported: {list(SUPPORTED_MODELS.keys())}",
         }
 
-    old_name = _model_name or _get_embedding_model_name()
-    old_dim = SUPPORTED_MODELS[old_name]["dim"]
-    new_dim = SUPPORTED_MODELS[new_model]["dim"]
+    with _model_lock:
+        old_name = _model_name or _get_embedding_model_name()
+        old_dim = SUPPORTED_MODELS[old_name]["dim"]
+        new_dim = SUPPORTED_MODELS[new_model]["dim"]
 
-    # Update preferences.json (atomic write to prevent corruption)
-    try:
-        prefs_path = Path.home() / ".niu" / "preferences.json"
-        prefs = {}
-        if prefs_path.exists():
-            prefs = json.loads(prefs_path.read_text(encoding="utf-8"))
-        prefs.setdefault("lightrag", {})["embedding_model"] = new_model
-        _atomic_write_json(prefs_path, prefs)
-    except Exception as e:
-        return {"status": "error", "message": f"Failed to update preferences.json: {e}"}
+        # Update preferences.json (atomic write to prevent corruption)
+        try:
+            prefs_path = Path.home() / ".niu" / "preferences.json"
+            prefs = {}
+            if prefs_path.exists():
+                prefs = json.loads(prefs_path.read_text(encoding="utf-8"))
+            prefs.setdefault("lightrag", {})["embedding_model"] = new_model
+            _atomic_write_json(prefs_path, prefs)
+        except Exception as e:
+            return {"status": "error", "message": f"Failed to update preferences.json: {e}"}
 
-    # Force unload so next get_model() loads the new one
-    _model = None
-    _model_name = None
+        # Force unload so next get_model() loads the new one
+        _model = None
+        _model_name = None
 
     needs_reindex = old_dim != new_dim
     return {

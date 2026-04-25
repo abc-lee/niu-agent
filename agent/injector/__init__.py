@@ -1,7 +1,7 @@
 """
 Injector Module
 
-动态注入架构 - Skills 同步到向量库 + LightRAG 知识图谱同步。
+动态注入架构 - Skills 同步到 LightRAG 知识图谱。
 """
 
 from .sync import SkillSync, get_skill_sync

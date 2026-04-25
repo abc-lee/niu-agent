@@ -7,7 +7,7 @@ as the ai-bot API server.
 
 Architecture:
 - LLM calls: routed through /llm/v1/ proxy (→ LiteLLM → user-config.json)
-- Embedding calls: routed through /llm/v1/ proxy (→ niu_api.internal.embedding)
+- Embedding calls: direct Python callable (→ niu_api.internal.embedding)
 - Reranker: direct Python callable (→ niu_api.internal.reranker)
 - Storage: NanoVectorDB (LightRAG default) in ~/.niu/lightrag_storage/
 
@@ -120,6 +120,23 @@ _rag_instance = None
 _rag_lock = threading.Lock()
 
 
+def _make_local_embedding_func():
+    """Create a direct local embedding callable for LightRAG.
+
+    Bypasses the HTTP proxy entirely — calls model.encode() directly.
+    Returns numpy ndarray (not list) because LightRAG's EmbeddingFunc
+    validates result.size which requires a numpy array.
+    Same pattern as the reranker (direct Python callable, zero overhead).
+    """
+    from niu_api.internal.embedding import get_model
+
+    async def _embed(texts: list[str]):
+        model = get_model()
+        return model.encode(texts, convert_to_numpy=True)
+
+    return _embed
+
+
 def _create_lightrag_instance():
     """Create a LightRAG instance with our proxy and local models.
 
@@ -128,7 +145,7 @@ def _create_lightrag_instance():
     """
     try:
         from lightrag.lightrag import LightRAG
-        from lightrag.llm.openai import openai_complete_if_cache, openai_embed
+        from lightrag.llm.openai import openai_complete_if_cache
     except ImportError:
         raise ImportError(
             "LightRAG is not installed. Run: pip install lightrag-hku"
@@ -148,16 +165,14 @@ def _create_lightrag_instance():
         api_key=PROXY_API_KEY,
     )
 
-    # Build embedding function (routed through our proxy)
+    # Build embedding function (direct local call, no proxy)
+    from niu_api.internal.embedding import get_embedding_max_seq_length
+    max_seq_len = get_embedding_max_seq_length()
+
     embedding_func_config = dict(
         embedding_dim=embedding_dim,
-        max_token_size=8192,
-        func=partial(
-            openai_embed,
-            model="bge-m3",  # Proxy ignores this, uses preferences.json
-            base_url=PROXY_BASE_URL,
-            api_key=PROXY_API_KEY,
-        ),
+        max_token_size=max_seq_len,
+        func=_make_local_embedding_func(),
     )
 
     # Build reranker callable (direct, no proxy)
@@ -199,19 +214,29 @@ except ImportError:
             self.kwargs = kwargs
 
 
+_INIT_FAILED = object()  # Sentinel: init failed, don't retry
+
+
 def get_lightrag():
     """Get the LightRAG instance (lazy-init on first call).
 
     Returns None if LightRAG is not installed.
+    Caches init failures to avoid retry storms.
     """
     global _rag_instance
 
-    if _rag_instance is not None:
+    if _rag_instance is not None and _rag_instance is not _INIT_FAILED:
         return _rag_instance
 
+    if _rag_instance is _INIT_FAILED:
+        return None
+
     with _rag_lock:
-        if _rag_instance is not None:
+        if _rag_instance is not None and _rag_instance is not _INIT_FAILED:
             return _rag_instance
+
+        if _rag_instance is _INIT_FAILED:
+            return None
 
         try:
             logger.info("Initializing LightRAG instance...")
@@ -222,6 +247,7 @@ def get_lightrag():
             return None
         except Exception as e:
             logger.error(f"Failed to initialize LightRAG: {e}")
+            _rag_instance = _INIT_FAILED
             return None
 
     return _rag_instance
@@ -246,12 +272,17 @@ def get_lightrag_status() -> Dict[str, Any]:
     from niu_api.internal.embedding import get_current_model_info
     from niu_api.internal.reranker import get_current_reranker_info
 
+    with _rag_lock:
+        initialized = _rag_instance is not None and _rag_instance is not _INIT_FAILED
+    with _loop_lock:
+        loop_running = _loop is not None and _loop.is_running()
+
     return {
         "installed": is_lightrag_available(),
-        "initialized": _rag_instance is not None,
+        "initialized": initialized,
         "storage_dir": str(STORAGE_DIR),
         "proxy_base_url": PROXY_BASE_URL,
         "embedding": get_current_model_info(),
         "reranker": get_current_reranker_info(),
-        "loop_running": _loop is not None and _loop.is_running(),
+        "loop_running": loop_running,
     }

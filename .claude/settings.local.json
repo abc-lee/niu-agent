@@ -71,5 +71,8 @@
       "Bash(go build:*)",
       "Bash(find . -name \"*.py\" -not -path \"./.git/*\" -not -path \"./.venv/*\" -exec grep -l \"cleanup\\\\|clean\\\\|purge\\\\|vacuum\" {} ;)"
     ]
-  }
+  },
+  "enabledMcpjsonServers": [
+    "MiniMax"
+  ]
 }

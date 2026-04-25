@@ -47,14 +47,17 @@ class TestAvailability:
     def test_get_lightrag_returns_none_when_not_installed(self):
         from niu_api.internal.lightrag_manager import get_lightrag
         import niu_api.internal.lightrag_manager as mgr
-        # Reset instance
-        mgr._rag_instance = None
-
-        with patch("niu_api.internal.lightrag_manager.is_lightrag_available", return_value=False):
-            # Even if available, _create_lightrag_instance will fail
-            with patch("niu_api.internal.lightrag_manager._create_lightrag_instance", side_effect=ImportError("no lightrag")):
-                result = get_lightrag()
-                assert result is None
+        with mgr._rag_lock:
+            old_instance = mgr._rag_instance
+            mgr._rag_instance = None
+        try:
+            with patch("niu_api.internal.lightrag_manager.is_lightrag_available", return_value=False):
+                with patch("niu_api.internal.lightrag_manager._create_lightrag_instance", side_effect=ImportError("no lightrag")):
+                    result = get_lightrag()
+                    assert result is None
+        finally:
+            with mgr._rag_lock:
+                mgr._rag_instance = old_instance
 
 
 # ============== Status Tests ==============
@@ -77,10 +80,15 @@ class TestStatus:
     def test_status_shows_not_initialized(self):
         from niu_api.internal.lightrag_manager import get_lightrag_status
         import niu_api.internal.lightrag_manager as mgr
-        mgr._rag_instance = None
-
-        status = get_lightrag_status()
-        assert status["initialized"] is False
+        with mgr._rag_lock:
+            old_instance = mgr._rag_instance
+            mgr._rag_instance = None
+        try:
+            status = get_lightrag_status()
+            assert status["initialized"] is False
+        finally:
+            with mgr._rag_lock:
+                mgr._rag_instance = old_instance
 
     def test_status_includes_embedding_info(self):
         from niu_api.internal.lightrag_manager import get_lightrag_status
@@ -144,11 +152,11 @@ class TestEmbeddingDimForLightRAG:
         assert isinstance(dim, int)
         assert dim > 0
 
-    def test_default_is_384(self):
+    def test_default_is_bge_base_zh(self):
         from niu_api.internal.lightrag_manager import _get_embedding_dim_for_lightrag
         dim = _get_embedding_dim_for_lightrag()
-        # Default model is minilm-l12
-        assert dim == 384
+        # Default model is bge-base-zh-v1.5 (768d)
+        assert dim == 768
 
 
 # ============== ensure_lightrag Tests ==============
@@ -161,8 +169,13 @@ class TestEnsureLightRAG:
     async def test_returns_none_when_not_available(self):
         from niu_api.internal.lightrag_manager import ensure_lightrag
         import niu_api.internal.lightrag_manager as mgr
-        mgr._rag_instance = None
-
-        with patch("niu_api.internal.lightrag_manager.get_lightrag", return_value=None):
-            result = await ensure_lightrag()
-            assert result is None
+        with mgr._rag_lock:
+            old_instance = mgr._rag_instance
+            mgr._rag_instance = None
+        try:
+            with patch("niu_api.internal.lightrag_manager.get_lightrag", return_value=None):
+                result = await ensure_lightrag()
+                assert result is None
+        finally:
+            with mgr._rag_lock:
+                mgr._rag_instance = old_instance

@@ -293,7 +293,15 @@ class TestFormatSummaryRegion:
 
     def test_summary_region_with_entity_count(self):
         """无描述时显示实体计数"""
-        activation_mgr = _make_activation_manager()
+        # Create a region with no description to trigger the fallback path
+        infos = _make_region_infos()
+        # Remove description from community_1 to test fallback
+        for info in infos:
+            if info.community_id == "community_1":
+                info.description = ""
+
+        activation_mgr = RegionActivationManager()
+        activation_mgr.initialize_from_regions(infos)
         injector = _make_injector(activation_mgr)
 
         region = BrainRegionState(

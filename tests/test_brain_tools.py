@@ -79,7 +79,7 @@ class TestHandleBrainRegionActivate:
         mgr = _make_activation_mgr()
         set_activation_mgr(mgr)
 
-        result = handle_brain_region_activate({"regions": ["Python"]})
+        result = handle_brain_region_activate(regions=["Python"])
 
         # Activation should be set to 1.0
         state = mgr._regions["community_0"]
@@ -91,7 +91,7 @@ class TestHandleBrainRegionActivate:
         mgr = _make_activation_mgr()
         set_activation_mgr(mgr)
 
-        result = handle_brain_region_activate({"regions": ["Python"]})
+        result = handle_brain_region_activate(regions=["Python"])
 
         assert "Python" in result
         assert "1.00" in result
@@ -101,10 +101,10 @@ class TestHandleBrainRegionActivate:
         mgr = _make_activation_mgr()
         set_activation_mgr(mgr)
 
-        result = handle_brain_region_activate({
-            "regions": ["Python"],
-            "reason": "need Python knowledge",
-        })
+        result = handle_brain_region_activate(
+            regions=["Python"],
+            reason="need Python knowledge",
+        )
 
         assert "need Python knowledge" in result
 
@@ -113,7 +113,7 @@ class TestHandleBrainRegionActivate:
         mgr = _make_activation_mgr()
         set_activation_mgr(mgr)
 
-        result = handle_brain_region_activate({"regions": ["Unknown"]})
+        result = handle_brain_region_activate(regions=["Unknown"])
 
         assert "not found" in result
 
@@ -121,7 +121,7 @@ class TestHandleBrainRegionActivate:
         """Returns error message when activation manager is not initialized."""
         set_activation_mgr(None)
 
-        result = handle_brain_region_activate({"regions": ["Python"]})
+        result = handle_brain_region_activate(regions=["Python"])
 
         assert "not initialized" in result
 
@@ -130,7 +130,7 @@ class TestHandleBrainRegionActivate:
         mgr = _make_activation_mgr()
         set_activation_mgr(mgr)
 
-        result = handle_brain_region_activate({"regions": []})
+        result = handle_brain_region_activate(regions=[])
 
         assert "No regions specified" in result
 
@@ -148,7 +148,7 @@ class TestHandleBrainRegionDim:
         mgr.manual_activate(["Python"])
         set_activation_mgr(mgr)
 
-        result = handle_brain_region_dim({"regions": ["Python"]})
+        result = handle_brain_region_dim(regions=["Python"])
 
         state = mgr._regions["community_0"]
         assert state.activation == 0.0
@@ -159,7 +159,7 @@ class TestHandleBrainRegionDim:
         mgr = _make_activation_mgr()
         set_activation_mgr(mgr)
 
-        result = handle_brain_region_dim({"regions": ["Python"]})
+        result = handle_brain_region_dim(regions=["Python"])
 
         assert "Python" in result
         assert "dimmed" in result
@@ -168,7 +168,7 @@ class TestHandleBrainRegionDim:
         """Returns error message when activation manager is not initialized."""
         set_activation_mgr(None)
 
-        result = handle_brain_region_dim({"regions": ["Python"]})
+        result = handle_brain_region_dim(regions=["Python"])
 
         assert "not initialized" in result
 
@@ -177,7 +177,7 @@ class TestHandleBrainRegionDim:
         mgr = _make_activation_mgr()
         set_activation_mgr(mgr)
 
-        result = handle_brain_region_dim({"regions": []})
+        result = handle_brain_region_dim(regions=[])
 
         assert "No regions specified" in result
 
@@ -195,7 +195,7 @@ class TestHandleBrainRegionStatus:
         mgr.manual_activate(["Python"])
         set_activation_mgr(mgr)
 
-        result = handle_brain_region_status({})
+        result = handle_brain_region_status()
 
         assert "Python" in result
         assert "1.00" in result
@@ -206,12 +206,12 @@ class TestHandleBrainRegionStatus:
         set_activation_mgr(mgr)
 
         # Without include_dark, only active regions shown
-        result_no_dark = handle_brain_region_status({"include_dark": False})
+        result_no_dark = handle_brain_region_status()
         # With no active regions (all at 0.0), should say no active regions
         assert "No active" in result_no_dark
 
         # With include_dark, all regions shown
-        result_with_dark = handle_brain_region_status({"include_dark": True})
+        result_with_dark = handle_brain_region_status(include_dark=True)
         assert "Python" in result_with_dark
         assert "React" in result_with_dark
 
@@ -219,7 +219,7 @@ class TestHandleBrainRegionStatus:
         """Returns error message when activation manager is not initialized."""
         set_activation_mgr(None)
 
-        result = handle_brain_region_status({})
+        result = handle_brain_region_status()
 
         assert "not initialized" in result
 
@@ -236,7 +236,7 @@ class TestHandleBrainRegionStatusEmpty:
         # Do NOT call initialize_from_regions — no regions
         set_activation_mgr(mgr)
 
-        result = handle_brain_region_status({})
+        result = handle_brain_region_status()
 
         assert "No brain regions" in result or "not initialized" in result or "No active" in result
 
