@@ -819,7 +819,7 @@ class NiuHandler(BaseHandler):
         "kg-server/search_entities": "lightrag-server/lightrag_search_entities",
     }
 
-    def dispatch(self, tool_name, args, response, index=0):
+    def dispatch(self, tool_name: str, args, response, index=0):
         """分发工具调用（支持 MCP 工具）- 必须是生成器"""
         # Apply backward compatibility aliases
         resolved_name = self._TOOL_ALIASES.get(tool_name, tool_name)
@@ -885,6 +885,13 @@ class NiuHandler(BaseHandler):
                             runner._memory_dirty.set()
                     except Exception as e:
                         logger.debug(f"Memory dirty flag set failed: {e}")
+                # Reinforce brain region on tool use via disk
+                if not getattr(self, '_is_subagent', False):
+                    try:
+                        from agent.brain_tools import reinforce_on_tool_use
+                        reinforce_on_tool_use(real_tool_name)
+                    except Exception:
+                        pass
                 if isinstance(result, dict) and result.get("status") == "success":
                     return StepOutcome(result, next_prompt=f"工具调用成功。请向用户简洁汇报结果。")
                 else:
@@ -928,7 +935,7 @@ class NiuHandler(BaseHandler):
                 import inspect
                 if inspect.iscoroutine(result):
                     try:
-                        loop = asyncio.get_running_loop()
+                        asyncio.get_running_loop()
                         # 已有事件循环运行中（不应发生在同步handler），用 to_thread
                         import concurrent.futures
                         with concurrent.futures.ThreadPoolExecutor() as pool:
