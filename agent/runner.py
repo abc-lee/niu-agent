@@ -322,8 +322,18 @@ class NiuRunner:
 
         All MCP tools are visibility=hidden and accessed via disk().
         The tools list is stored for potential future lookups.
+        Also passes registry to DiskEngine for cross-validation and tool lookup.
         """
         self._mcp_tools_schema = tools  # Store for schema lookups
+        # Pass registry to DiskEngine for cross-validation and tool lookup
+        try:
+            from agent.tool_registry import get_registry
+            registry = get_registry()
+            self.disk_engine.executor.registry = registry
+            self.disk_engine._registry = registry
+            self.disk_engine.config._cross_validate_registry(registry)
+        except Exception as e:
+            logger.warning(f"DiskEngine registry binding failed: {e}")
         logger.info(f"Loaded {len(tools)} MCP tools (all hidden, accessed via disk)")
 
     def _extract_context_from_messages(self, messages: list) -> str:
@@ -529,7 +539,16 @@ class NiuRunner:
         return (
             "\n\n### [虚拟磁盘工具]\n"
             "你有一个虚拟磁盘工具 disk(command)，可以用 Unix 命令探索和调用所有 MCP 工具。\n\n"
-            "命令: ls [path] 列出目录, cat <path> 查看工具说明, /<dir>/<tool> [args] 执行工具\n\n"
+            "命令:\n"
+            "  ls /                列出所有目录\n"
+            "  ls /<dir>           列出目录下的工具\n"
+            "  cat /<dir>/readme.txt  查看目录说明（推荐先看这个再执行）\n"
+            "  cat /<dir>/<tool>   查看工具详细用法\n"
+            "  /<dir>/<tool> <args>  执行工具（位置参数直接写，不加 key=）\n\n"
+            "示例:\n"
+            "  cat /browser/readme.txt           先看 browser 目录说明\n"
+            "  /browser/browser_navigate https://example.com  打开网页\n"
+            "  /lightrag/lightrag_query 什么是知识图谱 --mode hybrid\n\n"
             "当前磁盘目录:\n"
             + "\n".join(dir_lines)
         )

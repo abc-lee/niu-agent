@@ -45,10 +45,15 @@ class DiskEngine:
         if parsed.action == "SHELL_SYNTAX":
             return DiskResult(action="ERROR", text=parsed.error_msg)
 
-        # Navigation commands (ls, cat, help, unknown, empty)
-        if parsed.action in ("LIST", "READ", "HELP", "UNKNOWN", "EMPTY"):
+        # Navigation commands (ls, cat, help)
+        if parsed.action in ("LIST", "READ", "HELP"):
             text = self.navigator.handle(parsed)
             return DiskResult(action=parsed.action, text=text)
+
+        # Unknown/empty commands — these are errors requiring correction
+        if parsed.action in ("UNKNOWN", "EMPTY"):
+            text = self.navigator.handle(parsed)
+            return DiskResult(action="ERROR", text=text)
 
         # Execute directory (E15)
         if parsed.action == "EXECUTE" and parsed.tool_name is None:
@@ -75,10 +80,9 @@ class DiskEngine:
         The description includes directory mapping so LLMs can skip the first
         exploration turn.
         """
-        # Simplify: just use dir=server format
         dirs_short = ", ".join(
-            f"{d}={sn.replace('-server', '')}"
-            for d, sn in sorted(self.config.directory_map.items())
+            f"{d}/"
+            for d in sorted(self.config.directory_map.keys())
         )
         description = (
             f"Virtual tool disk — Unix-like shell to discover and execute tools. "

@@ -25,7 +25,9 @@ class DiskNavigator:
         elif parsed.action == "EMPTY":
             return self.errors.empty_command()
         elif parsed.action == "UNKNOWN":
-            # Check for cd
+            # Use parser's error_msg if available (e.g. cat validation errors)
+            if parsed.error_msg:
+                return parsed.error_msg
             first_word = parsed.raw.split()[0] if parsed.raw else ""
             if first_word == "cd":
                 return self.errors.cd_not_supported()
@@ -54,7 +56,7 @@ class DiskNavigator:
             server = self.config.servers[server_name]
             lines.append(f"  {dir_name + '/':<16s} {server.description}")
         lines.append("")
-        lines.append("Usage: cat /<dir>/<tool> for help, /<dir>/<tool> [args] to execute")
+        lines.append("Usage: cat /<dir>/readme.txt for overview, cat /<dir>/<tool> for details, /<dir>/<tool> [args] to execute")
         return "\n".join(lines)
 
     def _list_subdir(self, path: str, *, show_all: bool = False) -> str:
@@ -73,7 +75,7 @@ class DiskNavigator:
             tools = self.config.list_visible_tools(dir_name)
 
         if not tools:
-            return f"/{dir_name}: (no tools available)"
+            return f"/{dir_name}: (no tools available)\n\nUsage: ls / to list directories"
 
         # Group by category
         categories: dict[str, list[ToolConfig]] = {}
@@ -98,7 +100,7 @@ class DiskNavigator:
                     lines.append(f"    {tool.name:<22s} {tool.summary}")
 
         lines.append("")
-        lines.append("Usage: cat /{0}/<tool> for help, /{0}/<tool> [args] to execute".format(dir_name))
+        lines.append("Usage: cat /{0}/readme.txt for overview, /{0}/<tool> [args] to execute".format(dir_name))
         return "\n".join(lines)
 
     # -------------------------------------------------------------------
@@ -106,24 +108,100 @@ class DiskNavigator:
     # -------------------------------------------------------------------
 
     def read_tool(self, path: str) -> str:
-        """Read tool README (full usage documentation)."""
+        """Read tool README (full usage documentation).
+
+        Supports virtual 'readme.txt' files: cat /<dir>/readme.txt
+        returns a directory overview with tool list and usage hints.
+        """
         parts = [p for p in path.strip("/").split("/") if p]
         if len(parts) == 0:
-            return self.errors.path_not_found(path, sorted(self.config.directory_map.keys()))
+            return self.errors.path_not_found(path, sorted(self.config.directory_map.keys()),
+                                              command="cat")
         if len(parts) == 1:
             # Trying to cat a directory
             dir_name = parts[0]
             if self.config.get_server_by_dir(dir_name):
                 return self.errors.is_directory(f"/{dir_name}")
-            return self.errors.path_not_found(f"/{dir_name}", sorted(self.config.directory_map.keys()))
+            return self.errors.path_not_found(f"/{dir_name}", sorted(self.config.directory_map.keys()),
+                                              command="cat")
 
         dir_name, tool_name = parts[0], parts[1]
+
+        # Virtual readme.txt: cat /<dir>/readme.txt → directory overview
+        if tool_name in ("readme.txt", "README.txt", "readme", "README"):
+            return self._format_dir_readme(dir_name)
+
         tool = self.config.get_tool_config(dir_name, tool_name)
         if tool is None:
             available = [t.name for t in self.config.list_visible_tools(dir_name)]
             return self.errors.tool_not_found(dir_name, tool_name, available)
 
         return self._format_readme(dir_name, tool)
+
+    def _format_dir_readme(self, dir_name: str) -> str:
+        """Format a directory README (virtual readme.txt file).
+
+        Returns an overview with full tool usage (args + options) so the LLM
+        can use tools without needing a separate cat /<dir>/<tool> call.
+        """
+        from niu_api.internal.disk_errors import (
+            _format_usage_line, _format_args_section,
+            _format_options_section, _format_examples_section,
+        )
+
+        server = self.config.get_server_by_dir(dir_name)
+        if server is None:
+            available = sorted(self.config.directory_map.keys())
+            return self.errors.path_not_found(f"/{dir_name}", available)
+
+        tools = self.config.list_visible_tools(dir_name)
+        if not tools:
+            return f"/{dir_name}/readme.txt\n\n(no tools available)"
+
+        lines = [f"/{dir_name}/readme.txt"]
+        lines.append(server.description)
+        lines.append("")
+
+        for tool in tools:
+            # Tool header: name + summary
+            header = f"/{dir_name}/{tool.name}"
+            if tool.summary:
+                header += f" — {tool.summary}"
+            lines.append(header)
+
+            # Usage line
+            lines.append(f"  Usage: {_format_usage_line(dir_name, tool)}")
+
+            # Positional args (inline)
+            positional = [a for a in tool.args if a.position is not None]
+            if positional:
+                for arg in sorted(positional, key=lambda a: a.position):
+                    req = "" if arg.required else " (optional)"
+                    default = f" [default: {arg.default}]" if arg.has_default and arg.default is not None else ""
+                    desc = f" — {arg.description}" if arg.description else ""
+                    lines.append(f"    {arg.name}: {arg.type}{desc}{req}{default}")
+
+            # Flag args (inline)
+            flags = [a for a in tool.args if a.position is None]
+            if flags:
+                for arg in flags:
+                    flag_str = f"--{arg.flag}"
+                    req = " required" if arg.required else ""
+                    default = f" [default: {arg.default}]" if arg.has_default and arg.default is not None else ""
+                    enum_str = f" choices: {arg.enum}" if arg.enum else ""
+                    desc = f" — {arg.description}" if arg.description else ""
+                    lines.append(f"    {flag_str} <{arg.type}>{desc}{req}{default}{enum_str}")
+
+            # Examples
+            examples = _format_examples_section(tool)
+            if examples:
+                for line in examples.split("\n"):
+                    lines.append(f"  {line}")
+
+            lines.append("")
+
+        lines.append(f"Execute: /{dir_name}/<tool> <args>")
+        return "\n".join(lines)
 
     def _format_readme(self, dir_name: str, tool: ToolConfig) -> str:
         """Format a tool README."""
@@ -132,7 +210,10 @@ class DiskNavigator:
             _format_options_section, _format_examples_section,
         )
 
-        sections = [f"/{dir_name}/{tool.name} — {tool.summary}"]
+        title = f"/{dir_name}/{tool.name}"
+        if tool.summary:
+            title += f" — {tool.summary}"
+        sections = [title]
         if tool.description:
             sections.append(tool.description)
         sections.append(f"USAGE:\n  {_format_usage_line(dir_name, tool)}")
