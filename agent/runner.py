@@ -329,21 +329,6 @@ class NiuRunner:
         disk_schema = self.disk_engine.get_schema()
         self._mcp_tools_schema_with_disk = tools + [disk_schema]
 
-    def _get_tool_schema_by_name(self, tool_name: str) -> Optional[Dict]:
-        """
-        根据工具名获取工具Schema
-
-        Args:
-            tool_name: 工具名，格式为 "server-name/tool-name"
-
-        Returns:
-            工具Schema字典，找不到返回None
-        """
-        for tool in self._mcp_tools_schema:
-            if tool.get("function", {}).get("name") == tool_name:
-                return tool
-        return None
-
     def _extract_context_from_messages(self, messages: list) -> str:
         """
         从 agent_runner_loop 的 messages 列表提取上下文。

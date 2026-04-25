@@ -178,8 +178,8 @@ def load_mcp_tools(required_servers: Optional[List[Tuple[str, str]]] = None) -> 
     # lightrag-query is now provided by lightrag-server MCP module
     # (lightrag-server/lightrag_query). No separate built-in registration needed.
 
-    # Inject MCP tool descriptions into LightRAG knowledge graph
-    # so that LightRAGAdapter.search_tools() can find them
+    # Tool injection to LightRAG is a no-op in disk mode
+    # (tools discovered via disk YAML, not LightRAG entities)
     _inject_tools_to_lightrag(registry, servers)
 
     # Register brain region MCP tools (brain_region_activate, brain_region_dim, brain_region_status)

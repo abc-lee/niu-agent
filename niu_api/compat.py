@@ -347,8 +347,6 @@ async def clear_chat() -> dict:
             if runner.handler:
                 runner.handler.reset_working_memory()
 
-            # (tool lifecycle removed — disk mode)
-
             # Note: LLM session history is managed by ContextManager,
             # which reloads from message store each call.
             # store.clear_messages() above already clears persistent history.
