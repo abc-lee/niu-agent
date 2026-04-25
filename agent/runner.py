@@ -303,6 +303,12 @@ class NiuRunner:
         # MCP 工具列表（启动时加载，缓存）
         self._mcp_tools_schema: list = []
 
+        # DiskEngine（虚拟磁盘命令引擎）
+        from niu_api.internal.disk_engine import DiskEngine
+        disk_config_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config", "disk")
+        self.disk_engine = DiskEngine(disk_config_dir, registry=None)
+        self.handler = NiuHandler(mcp_client=mcp_client, disk_engine=self.disk_engine)
+
         # 工具生命周期管理
         self.tool_lifecycle = ToolLifecycleManager(decay_rate=10, remove_threshold=25)
 
@@ -339,6 +345,10 @@ class NiuRunner:
             )
         self._mcp_tools_schema = schema
         logger.info(f"Loaded {len(schema)} MCP tools")
+
+        # 注入 disk 虚拟磁盘工具 schema
+        disk_schema = self.disk_engine.get_schema()
+        self._mcp_tools_schema.append(disk_schema)
 
     def _get_tool_schema_by_name(self, tool_name: str) -> Optional[Dict]:
         """
@@ -466,7 +476,7 @@ class NiuRunner:
 
         # 6. 重新组装 tools_schema（加入新发现的工具）
         new_schema = self.base_tools_schema.copy()
-        static_tools = set(self._get_static_tools())
+        static_tools = set(self._get_static_tools()) | {"disk"}
         for tool_name in static_tools:
             schema = self._get_tool_schema_by_name(tool_name)
             if schema:
