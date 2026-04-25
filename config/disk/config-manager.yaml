@@ -1,0 +1,197 @@
+server: config-manager
+directory: config
+description: "系统配置 — LLM/存储/身份设置"
+
+tools:
+  - name: get_llm_config
+    category: read
+    short: "获取LLM配置"
+    long: "获取当前LLM配置(API key隐藏)"
+    parameters: []
+
+  - name: set_llm_config
+    category: write
+    short: "设置LLM配置"
+    long: "设置LLM配置(预设或逐项)"
+    parameters:
+      - name: preset_id
+        flag: preset
+        type: string
+      - name: api_key
+        flag: api-key
+        type: string
+        sensitive: true
+      - name: api_base
+        flag: api-base
+        type: string
+      - name: model
+        type: string
+      - name: llm_type
+        flag: type
+        type: string
+
+  - name: list_llm_presets
+    category: read
+    short: "列出LLM预设"
+    long: "列出所有LLM预设"
+    parameters: []
+
+  - name: test_llm_connection
+    category: read
+    short: "测试LLM连接"
+    long: "测试LLM连接"
+    parameters: []
+
+  - name: get_storage_config
+    category: read
+    short: "获取存储配置"
+    long: "获取存储配置"
+    parameters: []
+
+  - name: set_storage_config
+    category: write
+    short: "设置存储配置"
+    long: "设置存储配置"
+    parameters:
+      - name: document_root
+        flag: doc-root
+        type: string
+      - name: database_path
+        flag: db-path
+        type: string
+
+  - name: get_identity
+    category: read
+    short: "获取身份设置"
+    long: "获取助手身份设置"
+    parameters: []
+
+  - name: update_identity
+    category: write
+    short: "更新身份"
+    long: "更新助手身份"
+    parameters:
+      - name: name
+        type: string
+      - name: gender
+        type: string
+      - name: personality
+        type: array
+        cli_format: repeatable
+      - name: greeting_style
+        flag: greeting
+        type: string
+
+  - name: get_workspace
+    category: read
+    short: "获取工作区路径"
+    long: "获取工作区路径"
+    parameters: []
+
+  - name: set_workspace
+    category: write
+    short: "设置工作区"
+    long: "设置工作区路径"
+    parameters:
+      - name: path
+        position: 1
+        type: string
+        required: true
+
+  - name: get_user_info
+    category: read
+    short: "获取用户信息"
+    long: "获取用户信息"
+    parameters: []
+
+  - name: set_user_info
+    category: write
+    short: "设置用户信息"
+    long: "设置用户信息"
+    parameters:
+      - name: name
+        type: string
+      - name: preferences
+        type: array
+        cli_format: repeatable
+
+  - name: add_user_preference
+    category: write
+    short: "添加用户偏好"
+    long: "添加用户偏好"
+    parameters:
+      - name: preference
+        position: 1
+        type: string
+        required: true
+
+  - name: is_first_run
+    category: read
+    hidden: true
+    short: "首次运行检查"
+    long: "检查是否首次运行"
+    parameters: []
+
+  - name: complete_setup
+    category: write
+    hidden: true
+    short: "完成初始设置"
+    long: "完成初始设置向导"
+    parameters:
+      - name: workspace_path
+        type: string
+      - name: user_name
+        type: string
+      - name: assistant_name
+        type: string
+
+  - name: get_full_memory
+    category: read
+    hidden: true
+    short: "获取完整记忆"
+    long: "获取系统提示词完整记忆"
+    parameters: []
+
+  - name: mkdir
+    category: admin
+    short: "创建目录"
+    long: "创建目录"
+    parameters:
+      - name: path
+        position: 1
+        type: string
+        required: true
+
+  - name: copy_to_path
+    category: admin
+    short: "复制文件"
+    long: "复制文件到指定路径"
+    parameters:
+      - name: source_path
+        position: 1
+        type: string
+        required: true
+      - name: dest_path
+        position: 2
+        type: string
+        required: true
+
+  - name: move_to_path
+    category: admin
+    short: "移动文件"
+    long: "移动文件到指定路径"
+    parameters:
+      - name: source_path
+        position: 1
+        type: string
+        required: true
+      - name: dest_path
+        position: 2
+        type: string
+        required: true
+
+  - name: list_files_in_workspace
+    category: read
+    short: "列出工作区文件"
+    long: "列出工作区文档目录文件"
+    parameters: []

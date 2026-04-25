@@ -1,0 +1,21 @@
+server: file-parser
+directory: files
+description: "文档解析 — PDF/Word/PPT等文件解析"
+
+tools:
+  - name: parse_file
+    category: write
+    short: "解析文档文件"
+    long: "解析PDF/Word/PPT/Excel/Markdown/HTML/Text等文件提取文本"
+    parameters:
+      - name: file_path
+        position: 1
+        type: string
+        required: true
+
+  - name: list_supported_formats
+    category: read
+    hidden: true
+    short: "列出支持格式"
+    long: "列出所有支持的文件格式"
+    parameters: []

@@ -1,0 +1,347 @@
+server: kg-server
+directory: kg
+description: "知识图谱 — 实体关系探索与图谱查询"
+
+tools:
+  - name: explore_node
+    category: explore
+    short: "探索实体邻居"
+    long: "从指定实体出发探索N层邻居和边"
+    parameters:
+      - name: entity_id
+        position: 1
+        type: string
+        required: true
+      - name: depth
+        type: integer
+        default: 2
+        constraints:
+          minimum: 1
+          maximum: 5
+      - name: min_confidence
+        flag: min-confidence
+        type: number
+        default: 0.0
+        constraints:
+          minimum: 0.0
+          maximum: 1.0
+      - name: direction
+        type: string
+        enum: [both, outgoing, incoming]
+        default: both
+    examples:
+      - "/kg/explore_node Einstein"
+      - "/kg/explore_node Einstein --depth 3 --direction outgoing"
+
+  - name: find_path
+    category: explore
+    short: "查找两实体间最短路径"
+    long: "查找知识图谱中两个实体之间的最短路径"
+    parameters:
+      - name: from_id
+        position: 1
+        type: string
+        required: true
+      - name: to_id
+        position: 2
+        type: string
+        required: true
+      - name: max_depth
+        flag: max-depth
+        type: integer
+        default: 5
+    examples:
+      - "/kg/find_path Einstein Bohr"
+
+  - name: hub_entities
+    category: explore
+    short: "查找枢纽实体"
+    long: "查找图中枢纽实体（按连接数排序）"
+    parameters:
+      - name: limit
+        type: integer
+        default: 10
+      - name: min_confidence
+        flag: min-confidence
+        type: number
+        default: 0.0
+
+  - name: query_graph
+    category: query
+    short: "执行Cypher只读查询"
+    long: "执行只读Cypher查询"
+    parameters:
+      - name: cypher
+        position: 1
+        type: string
+        required: true
+      - name: limit
+        type: integer
+        default: 100
+
+  - name: graph_stats
+    category: query
+    short: "图谱统计信息"
+    long: "获取节点数边数等统计"
+    parameters: []
+
+  - name: get_related_entities
+    category: query
+    short: "获取文档关联实体"
+    long: "获取文档提及的实体"
+    parameters:
+      - name: doc_uri
+        position: 1
+        type: string
+        required: true
+
+  - name: get_related_concepts
+    category: query
+    short: "获取文档包含的概念"
+    long: "获取文档包含的概念"
+    parameters:
+      - name: doc_uri
+        position: 1
+        type: string
+        required: true
+
+  - name: search_documents
+    category: query
+    short: "按关键词搜索文档"
+    long: "按关键词搜索文档"
+    parameters:
+      - name: keyword
+        position: 1
+        type: string
+        required: true
+      - name: limit
+        type: integer
+        default: 10
+
+  - name: get_document
+    category: query
+    short: "获取文档"
+    long: "按URI获取文档"
+    parameters:
+      - name: uri
+        position: 1
+        type: string
+        required: true
+
+  - name: list_documents
+    category: query
+    short: "列出所有文档"
+    long: "列出所有文档"
+    parameters:
+      - name: limit
+        type: integer
+        default: 10
+
+  - name: list_entities
+    category: query
+    short: "列出实体"
+    long: "列出所有实体"
+    parameters:
+      - name: limit
+        type: integer
+        default: 100
+      - name: entity_type
+        flag: type
+        type: string
+
+  - name: list_concepts
+    category: query
+    short: "列出概念"
+    long: "列出所有概念"
+    parameters:
+      - name: limit
+        type: integer
+        default: 100
+
+  - name: graph_changelog
+    category: query
+    short: "图谱变更日志"
+    long: "获取最近变更日志"
+    parameters:
+      - name: limit
+        type: integer
+        default: 50
+      - name: since
+        type: string
+
+  - name: graph_snapshot
+    category: query
+    short: "图快照"
+    long: "获取可视化快照"
+    parameters:
+      - name: limit
+        type: integer
+        default: 200
+      - name: min_confidence
+        flag: min-confidence
+        type: number
+
+  - name: surprising_connections
+    category: query
+    short: "发现意外连接"
+    long: "发现共享邻居但无直接边的实体对"
+    parameters:
+      - name: min_shared
+        flag: min-shared
+        type: integer
+        default: 2
+      - name: min_confidence
+        flag: min-confidence
+        type: number
+        default: 0.0
+      - name: max_entities
+        flag: max-entities
+        type: integer
+        default: 200
+
+  - name: create_document
+    category: admin
+    hidden: true
+    short: "创建文档节点"
+    long: "创建文档节点"
+    parameters:
+      - name: uri
+        position: 1
+        type: string
+        required: true
+      - name: title
+        position: 2
+        type: string
+        required: true
+      - name: content
+        type: string
+      - name: source
+        type: string
+      - name: file_path
+        flag: file-path
+        type: string
+      - name: entity_status
+        flag: entity-status
+        type: string
+
+  - name: create_entity
+    category: admin
+    hidden: true
+    short: "创建实体节点"
+    long: "创建实体节点"
+    parameters:
+      - name: id
+        position: 1
+        type: string
+        required: true
+      - name: name
+        position: 2
+        type: string
+        required: true
+      - name: type
+        position: 3
+        type: string
+        required: true
+        description: "实体类型(person/organization/technology/location/concept/other)"
+      - name: description
+        type: string
+
+  - name: create_concept
+    category: admin
+    hidden: true
+    short: "创建概念节点"
+    long: "创建概念节点"
+    parameters:
+      - name: name
+        position: 1
+        type: string
+        required: true
+      - name: description
+        type: string
+
+  - name: link_document_entity
+    category: admin
+    hidden: true
+    short: "关联文档与实体"
+    long: "建立MENTIONS关系"
+    parameters:
+      - name: doc_uri
+        position: 1
+        type: string
+        required: true
+      - name: entity_id
+        position: 2
+        type: string
+        required: true
+      - name: confidence
+        type: number
+
+  - name: link_document_concept
+    category: admin
+    hidden: true
+    short: "关联文档与概念"
+    long: "建立CONTAINS关系"
+    parameters:
+      - name: doc_uri
+        position: 1
+        type: string
+        required: true
+      - name: concept_name
+        position: 2
+        type: string
+        required: true
+      - name: confidence
+        type: number
+
+  - name: link_entities
+    category: admin
+    hidden: true
+    short: "关联两个实体"
+    long: "创建实体间关系"
+    parameters:
+      - name: entity1_id
+        position: 1
+        type: string
+        required: true
+      - name: entity2_id
+        position: 2
+        type: string
+        required: true
+      - name: relation
+        position: 3
+        type: string
+        required: true
+      - name: confidence
+        type: number
+
+  - name: update_entity_status
+    category: admin
+    hidden: true
+    short: "更新文档提取状态"
+    long: "更新文档实体提取状态"
+    parameters:
+      - name: uri
+        position: 1
+        type: string
+        required: true
+      - name: entity_status
+        flag: status
+        type: string
+        required: true
+        description: "pending/processing/completed/failed/failed_permanent"
+      - name: processing_at
+        type: string
+      - name: retry_count
+        flag: retry
+        type: integer
+
+  - name: delete_entity
+    category: admin
+    hidden: true
+    short: "删除实体"
+    long: "删除实体节点及所有关系"
+    parameters:
+      - name: id
+        position: 1
+        type: string
+        required: true
