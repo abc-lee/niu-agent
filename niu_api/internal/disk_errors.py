@@ -151,20 +151,22 @@ class DiskErrors:
             f"To execute a tool: /<server>/<tool> [args]"
         )
 
-    def path_not_found(self, path: str, available_dirs: list[str]) -> str:
+    def path_not_found(self, path: str, available_dirs: list[str],
+                       command: str = "ls") -> str:
         """E2: Path does not exist."""
         dirs = ", ".join(available_dirs)
         return (
-            f"ls: {path}: No such file or directory.\n"
+            f"{command}: {path}: No such file or directory.\n"
             f"Available directories: {dirs}"
         )
 
     def tool_not_found(self, dir_name: str, tool_name: str,
-                       available_tools: list[str]) -> str:
+                       available_tools: list[str],
+                       command: str = "cat") -> str:
         """E3: Tool not found — list ALL tools, no truncation."""
         tools = ", ".join(available_tools)
         return (
-            f"cat: /{dir_name}/{tool_name}: No such file.\n"
+            f"{command}: /{dir_name}/{tool_name}: No such file.\n"
             f"Available tools in /{dir_name}: {tools}"
         )
 
@@ -266,16 +268,20 @@ class DiskErrors:
 
     def execute_directory(self, path: str) -> str:
         """E15: Trying to execute a directory."""
+        # Normalize: avoid // in suggestion when path is /
+        norm = path.rstrip("/")
         return (
             f"{path}: is a directory, not a tool.\n"
-            f"Use 'ls {path}' to list tools, or '{path}/<tool>' to execute."
+            f"Use 'ls {path}' to list tools, or '{norm}/<tool>' to execute."
         )
 
     def shell_syntax(self, syntax_type: str) -> str:
         """E16: Shell special syntax detected."""
         msgs = {
+            "or_operator": "||: OR operator not supported. This shell executes one tool at a time.",
             "pipe": "|: pipe syntax not supported. This shell executes one tool at a time.",
-            "chaining": "&&: command chaining not supported. Execute one tool at a time.",
+            "and_operator": "&&: command chaining not supported. Execute one tool at a time.",
+            "semicolon": ";: command chaining not supported. Execute one tool at a time.",
             "redirect": ">: redirection not supported in this shell.",
             "wildcard": "*: wildcard not supported. Use exact tool names.",
             "variable": "$: variable expansion not supported. Use literal values.",

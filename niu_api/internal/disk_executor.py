@@ -49,7 +49,9 @@ class DiskExecutor:
         tool = self.config.get_tool_config(dir_name, tool_name)
         if tool is None:
             available = [t.name for t in self.config.list_visible_tools(dir_name)]
-            return ExecutorResult(is_error=True, value=self.errors.tool_not_found(dir_name, tool_name, available))
+            tool_path = f"/{dir_name}/{tool_name}"
+            return ExecutorResult(is_error=True, value=self.errors.tool_not_found(dir_name, tool_name, available,
+                                                                                  command=tool_path))
 
         tool_path = f"/{dir_name}/{tool_name}"
 
@@ -60,9 +62,6 @@ class DiskExecutor:
 
         # Add defaults for args not provided
         kwargs = self._apply_defaults(kwargs, tool)
-
-        # Reset error count on success path
-        self._error_count.pop(tool_path, None)
 
         # Call the real MCP tool
         full_name = f"{server.server_name}/{tool_name}"
@@ -75,6 +74,9 @@ class DiskExecutor:
             if func is None:
                 return ExecutorResult(is_error=True, value=self.errors.execution_failure(tool_path, f"Tool '{full_name}' not found in registry"))
             result = func(**kwargs)
+            # Reset error tracking on success
+            self._error_count.pop(tool_path, None)
+            self._first_error.pop(tool_path, None)
             return ExecutorResult(is_error=False, value=result)
         except Exception as e:
             return ExecutorResult(is_error=True, value=self.errors.execution_failure(tool_path, str(e)))
@@ -124,8 +126,7 @@ class DiskExecutor:
         for arg in positional_args:
             if arg.required and arg.name not in provided_args:
                 return {}, self.errors.missing_required_arg(
-                    tool_path.split("/")[1] if "/" in tool_path else tool_path,
-                    tool, arg.name
+                    parsed.dir_name or "", tool, arg.name
                 )
 
         # Flag args
@@ -135,12 +136,25 @@ class DiskExecutor:
                 # Unknown flag (E7)
                 available_flags = [a.flag for a in tool.args if a.position is None]
                 return {}, self.errors.unknown_flag(
-                    tool_path.split("/")[1] if "/" in tool_path else tool_path,
-                    tool, flag_key, available_flags
+                    parsed.dir_name or "", tool, flag_key, available_flags
                 )
             arg = flag_lookup[flag_key]
 
-            if flag_value is True:
+            if isinstance(flag_value, list):
+                # Repeatable flag: --tag a --tag b → ["a", "b"]
+                if arg.type != "array" or arg.cli_format != "repeatable":
+                    return {}, self.errors.unknown_flag(
+                        parsed.dir_name or "", tool, flag_key,
+                        [a.flag for a in tool.args if a.position is None]
+                    )
+                converted_list = []
+                for v in flag_value:
+                    c, err = self._convert_value(str(v), arg, tool_path)
+                    if err:
+                        return {}, err
+                    converted_list.extend(c if isinstance(c, list) else [c])
+                kwargs[arg.name] = converted_list
+            elif flag_value is True:
                 # Boolean flag
                 if arg.type != "boolean":
                     # Flag needs a value (E14)
@@ -156,8 +170,7 @@ class DiskExecutor:
         # Check required flag args (E5)
         for arg in tool.args:
             if arg.required and arg.position is None and arg.name not in provided_args:
-                dir_name = tool_path.strip("/").split("/")[0] if tool_path else ""
-                return {}, self.errors.missing_required_arg(dir_name, tool, arg.name)
+                return {}, self.errors.missing_required_arg(parsed.dir_name or "", tool, arg.name)
 
         # Check mutually exclusive (E18)
         if tool.mutually_exclusive:
@@ -173,29 +186,28 @@ class DiskExecutor:
     def _convert_value(self, value: str, arg: ArgConfig,
                        tool_path: str) -> tuple[Any, str | None]:
         """Convert a CLI string value to the expected type. Returns (value, error)."""
+        converted: Any = value
         if arg.type == "string":
-            # No conversion needed
             pass
         elif arg.type == "integer":
             try:
-                value = int(value)
+                converted = int(value)
             except ValueError:
                 return None, self.errors.type_mismatch(tool_path, arg.flag or arg.name, "integer", value)
         elif arg.type == "number":
             try:
-                value = float(value)
+                converted = float(value)
             except ValueError:
                 return None, self.errors.type_mismatch(tool_path, arg.flag or arg.name, "number", value)
         elif arg.type == "boolean":
-            value = value.lower() in ("true", "1", "yes")
+            converted = value.lower() in ("true", "1", "yes")
         elif arg.type == "object":
             if arg.cli_format == "json":
                 try:
-                    value = json.loads(value)
+                    converted = json.loads(value)
                 except json.JSONDecodeError:
                     return None, f"{tool_path}: --{arg.flag} invalid JSON: {value}"
             elif arg.cli_format == "key=value":
-                # Parse "key1=val1,key2=val2" into dict
                 result = {}
                 for pair in value.split(","):
                     if "=" in pair:
@@ -203,34 +215,39 @@ class DiskExecutor:
                         result[k.strip()] = v.strip()
                     else:
                         return None, f"{tool_path}: --{arg.flag} invalid key=value format"
-                value = result
+                converted = result
+            else:
+                return None, f"{tool_path}: --{arg.flag} object arg requires cli_format (json or key=value)"
         elif arg.type == "array":
             if arg.cli_format == "json":
                 try:
-                    value = json.loads(value)
+                    converted = json.loads(value)
                 except json.JSONDecodeError:
                     return None, f"{tool_path}: --{arg.flag} invalid JSON array: {value}"
-            # repeatable is handled at the _build_kwargs level
+            elif arg.cli_format == "repeatable":
+                converted = [value]
+            else:
+                return None, f"{tool_path}: --{arg.flag} array arg requires cli_format (json or repeatable)"
         else:
             return None, f"{tool_path}: unsupported arg type '{arg.type}'"
 
         # Enum validation (E8)
-        if arg.enum and value not in arg.enum:
-            return None, self.errors.enum_error(tool_path, arg.flag or arg.name, value, arg.enum)
+        if arg.enum and converted not in arg.enum:
+            return None, self.errors.enum_error(tool_path, arg.flag or arg.name, converted, arg.enum)
 
         # Constraint validation (E9)
         if arg.constraints:
             if arg.type in ("integer", "number"):
                 min_val = arg.constraints.get("minimum")
                 max_val = arg.constraints.get("maximum")
-                if min_val is not None and value < min_val:
-                    return None, self.errors.out_of_range(tool_path, arg.flag or arg.name, value,
+                if min_val is not None and converted < min_val:
+                    return None, self.errors.out_of_range(tool_path, arg.flag or arg.name, converted,
                                                           minimum=min_val, maximum=max_val)
-                if max_val is not None and value > max_val:
-                    return None, self.errors.out_of_range(tool_path, arg.flag or arg.name, value,
+                if max_val is not None and converted > max_val:
+                    return None, self.errors.out_of_range(tool_path, arg.flag or arg.name, converted,
                                                           minimum=min_val, maximum=max_val)
 
-        return value, None
+        return converted, None
 
     def _apply_defaults(self, kwargs: dict[str, Any], tool: ToolConfig) -> dict[str, Any]:
         """Apply default values for args not provided by the user."""

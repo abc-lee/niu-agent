@@ -340,25 +340,37 @@ class DiskConfig:
             return None
         return self._servers.get(server_name)
 
+    def _is_excluded(self, dir_name: str, tool_name: str) -> bool:
+        """Check if a tool is in the exclude_tools list."""
+        server = self.get_server_by_dir(dir_name)
+        if server is None:
+            return False
+        full_name = f"{server.server_name}/{tool_name}"
+        return full_name in self.exclude_tools
+
     def get_tool_config(self, dir_name: str, tool_name: str) -> ToolConfig | None:
         server = self.get_server_by_dir(dir_name)
         if server is None:
             return None
+        if self._is_excluded(dir_name, tool_name):
+            return None
         return server.tools.get(tool_name)
 
     def list_visible_tools(self, dir_name: str) -> list[ToolConfig]:
-        """List non-hidden tools in a directory."""
+        """List non-hidden, non-excluded tools in a directory."""
         server = self.get_server_by_dir(dir_name)
         if server is None:
             return []
-        return [t for t in server.tools.values() if not t.hidden]
+        return [t for t in server.tools.values()
+                if not t.hidden and not self._is_excluded(dir_name, t.name)]
 
     def list_all_tools(self, dir_name: str) -> list[ToolConfig]:
-        """List all tools (including hidden) in a directory."""
+        """List all non-excluded tools (including hidden) in a directory."""
         server = self.get_server_by_dir(dir_name)
         if server is None:
             return []
-        return list(server.tools.values())
+        return [t for t in server.tools.values()
+                if not self._is_excluded(dir_name, t.name)]
 
     def list_directories(self) -> list[str]:
         """List all directory names."""

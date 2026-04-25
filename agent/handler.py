@@ -380,6 +380,10 @@ class NiuHandler(BaseHandler):
             agent = tool_name.replace("chat-with-", "")
             return f"调用子Agent: {agent}"
 
+        elif tool_name == "disk":
+            command = clean_args.get("command", "")
+            return f"磁盘: {command[:40]}"
+
         elif "/" in tool_name:  # MCP 工具（格式：server/name）
             server, name = tool_name.split("/", 1) if "/" in tool_name else ("", tool_name)
             return f"调用MCP工具: {name}"
@@ -883,7 +887,11 @@ class NiuHandler(BaseHandler):
                         reinforce_on_tool_use(real_tool_name)
                     except Exception:
                         pass
-                if isinstance(result, dict) and result.get("status") not in ("error", None):
+                # Determine success: dict with status != error, or any non-dict result (str/list)
+                is_success = (
+                    isinstance(result, dict) and result.get("status") not in ("error", None)
+                ) or not isinstance(result, dict)
+                if is_success:
                     # Set memory dirty flag for user memory tools on success
                     if real_tool_name in ("memory-server/user_memory_remember", "memory-server/user_memory_forget"):
                         try:
@@ -895,9 +903,16 @@ class NiuHandler(BaseHandler):
                             logger.debug(f"Memory dirty flag set failed: {e}")
                     return StepOutcome(result, next_prompt=f"工具调用成功。请向用户简洁汇报结果。")
                 else:
-                    return StepOutcome(result, next_prompt=self._get_anchor_prompt())
+                    return StepOutcome(result, next_prompt="Tool execution returned an error. Read the error message above and adjust accordingly.")
+            elif disk_result.action == "ERROR":
+                # 参数/执行错误 → 提示修正
+                result = disk_result.text
+                _ = yield from try_call_generator(
+                    self.tool_after_callback, tool_name, args, response, result
+                )
+                return StepOutcome(result, next_prompt="Disk command returned an error. Read the error message above and fix the command accordingly.")
             else:
-                # 导航/错误文本
+                # 导航命令 (LIST/READ/HELP/EMPTY) → 继续工作
                 result = disk_result.text
                 _ = yield from try_call_generator(
                     self.tool_after_callback, tool_name, args, response, result

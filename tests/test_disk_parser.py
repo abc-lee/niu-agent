@@ -63,12 +63,12 @@ class TestShellSyntaxDetection:
     def test_and_chaining_rejected(self, parser):
         result = parser.parse("/kg/explore_node Einstein && /memory/remember x")
         assert result.action == "SHELL_SYNTAX"
-        assert "chaining" in result.error_msg.lower()
+        assert "&&" in result.error_msg
 
     def test_semicolon_rejected(self, parser):
         result = parser.parse("/kg/explore_node Einstein ; /memory/remember x")
         assert result.action == "SHELL_SYNTAX"
-        assert "chaining" in result.error_msg.lower()
+        assert ";" in result.error_msg
 
     def test_redirect_rejected(self, parser):
         result = parser.parse("/kg/explore_node Einstein > output.txt")

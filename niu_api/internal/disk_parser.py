@@ -15,9 +15,10 @@ from dataclasses import dataclass, field
 # We scan the raw command string for these and reject them early.
 
 _SHELL_PATTERNS: list[tuple[str, str]] = [
+    (r'(?<!\\)\|\|', "or_operator"),
     (r'(?<!\\)\|', "pipe"),
-    (r'(?<!\\)&&', "chaining"),
-    (r'(?<!\\);', "chaining"),
+    (r'(?<!\\)&&', "and_operator"),
+    (r'(?<!\\);', "semicolon"),
     (r'(?<!\\)>>?', "redirect"),
     (r'(?<!\\)\*', "wildcard"),
     (r'(?<!\\)\?', "wildcard"),
@@ -26,8 +27,10 @@ _SHELL_PATTERNS: list[tuple[str, str]] = [
 ]
 
 _SHELL_ERROR_MSGS = {
+    "or_operator": "||: OR operator not supported. This shell executes one tool at a time.",
     "pipe": "|: pipe syntax not supported. This shell executes one tool at a time.",
-    "chaining": "&&: command chaining not supported. Execute one tool at a time.",
+    "and_operator": "&&: command chaining not supported. Execute one tool at a time.",
+    "semicolon": ";: command chaining not supported. Execute one tool at a time.",
     "redirect": ">: redirection not supported in this shell.",
     "wildcard": "*: wildcard not supported. Use exact tool names.",
     "variable": "$: variable expansion not supported. Use literal values.",
@@ -40,7 +43,15 @@ def _strip_quoted_regions(cmd: str) -> str:
     result = []
     in_single = False
     in_double = False
-    for ch in cmd:
+    i = 0
+    while i < len(cmd):
+        ch = cmd[i]
+        # Handle backslash escapes (outside single quotes)
+        if ch == '\\' and not in_single and i + 1 < len(cmd):
+            result.append(' ')
+            result.append(' ')
+            i += 2
+            continue
         if ch == "'" and not in_double:
             in_single = not in_single
             result.append(" ")
@@ -51,7 +62,27 @@ def _strip_quoted_regions(cmd: str) -> str:
             result.append(" ")  # Replace quoted char with space
         else:
             result.append(ch)
+        i += 1
     return "".join(result)
+
+
+def _is_number(s: str) -> bool:
+    """Check if a string represents a number (including negative)."""
+    try:
+        float(s)
+        return True
+    except ValueError:
+        return False
+
+
+def _looks_like_value(token: str) -> bool:
+    """Check if a token looks like a flag value rather than another flag."""
+    if not token.startswith("-"):
+        return True
+    # Negative numbers are values
+    if _is_number(token):
+        return True
+    return False
 
 
 def _check_shell_syntax(cmd: str) -> str | None:
@@ -76,7 +107,7 @@ class ParsedCommand:
     dir_name: str | None = None
     tool_name: str | None = None
     positional_args: list[str] = field(default_factory=list)
-    flag_args: dict[str, str | bool] = field(default_factory=dict)
+    flag_args: dict[str, str | bool | list[str]] = field(default_factory=dict)
     flags: dict[str, bool] = field(default_factory=dict)  # ls --all etc.
     error_msg: str = ""
 
@@ -142,14 +173,15 @@ class DiskParser:
         return None
 
     def _parse_args(self, tokens: list[str], terminator_at: int | None = None
-                    ) -> tuple[list[str], dict[str, str | bool]]:
+                    ) -> tuple[list[str], dict[str, str | bool | list[str]]]:
         """Parse positional args and --flag args from token list.
 
         If terminator_at is given, tokens at index >= terminator_at-1
         (adjusted for being in the 'rest' slice) are treated as positional.
+        Repeatable flags (--tag a --tag b) accumulate into list[str].
         """
         positional = []
-        flag_args = {}
+        flag_args: dict[str, str | bool | list[str]] = {}
 
         # Calculate the boundary: after --, everything is positional
         # terminator_at is the index in the full token list where -- was.
@@ -157,6 +189,17 @@ class DiskParser:
         post_term_start = None
         if terminator_at is not None and terminator_at > 0:
             post_term_start = terminator_at - 1  # adjust for rest slice
+
+        def _set_flag(key: str, val: str | bool) -> None:
+            """Set a flag value, accumulating into list on repeat."""
+            if key in flag_args:
+                existing = flag_args[key]
+                if isinstance(existing, list):
+                    existing.append(val)  # type: ignore[arg-type]
+                else:
+                    flag_args[key] = [existing, val]
+            else:
+                flag_args[key] = val
 
         i = 0
         while i < len(tokens):
@@ -172,21 +215,21 @@ class DiskParser:
                 flag_part = token[2:]
                 if "=" in flag_part:
                     key, val = flag_part.split("=", 1)
-                    flag_args[key] = val
-                elif i + 1 < len(tokens) and not tokens[i + 1].startswith("-"):
-                    flag_args[flag_part] = tokens[i + 1]
+                    _set_flag(key, val)
+                elif i + 1 < len(tokens) and _looks_like_value(tokens[i + 1]):
+                    _set_flag(flag_part, tokens[i + 1])
                     i += 1
                 else:
                     # Boolean flag
-                    flag_args[flag_part] = True
-            elif token.startswith("-") and len(token) > 1 and not token[1:].isdigit():
-                # Short flag
+                    _set_flag(flag_part, True)
+            elif token.startswith("-") and len(token) > 1 and not _is_number(token):
+                # Short flag (not a negative number)
                 flag_part = token[1:]
-                if i + 1 < len(tokens) and not tokens[i + 1].startswith("-"):
-                    flag_args[flag_part] = tokens[i + 1]
+                if i + 1 < len(tokens) and _looks_like_value(tokens[i + 1]):
+                    _set_flag(flag_part, tokens[i + 1])
                     i += 1
                 else:
-                    flag_args[flag_part] = True
+                    _set_flag(flag_part, True)
             else:
                 positional.append(token)
             i += 1
@@ -243,6 +286,8 @@ class DiskParser:
         if first == "cat":
             if not rest:
                 return ParsedCommand(action="UNKNOWN", raw=command, error_msg="cat: missing path argument")
+            if len(rest) > 1:
+                return ParsedCommand(action="UNKNOWN", raw=command, error_msg="cat: too many arguments. Usage: cat /<dir>/<tool>")
             path = rest[0] if rest[0].startswith("/") else f"/{rest[0]}"
             return ParsedCommand(action="READ", raw=command, path=path)
 
