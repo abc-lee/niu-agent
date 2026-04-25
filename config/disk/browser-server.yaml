@@ -1,0 +1,71 @@
+server: browser-server
+directory: browser
+description: "浏览器 — 网页导航与交互"
+
+tools:
+  - name: browser_navigate
+    category: write
+    short: "导航到URL"
+    long: "启动浏览器导航到URL返回页面状态"
+    parameters:
+      - name: url
+        position: 1
+        type: string
+        required: true
+      - name: wait_until
+        flag: wait
+        type: string
+        enum: [load, domcontentloaded, networkidle, commit]
+        default: domcontentloaded
+
+  - name: browser_interact
+    category: write
+    short: "与页面交互"
+    long: "与页面元素交互(点击/输入/选择/滚动)"
+    parameters:
+      - name: action
+        position: 1
+        type: string
+        required: true
+        enum: [click, input, select, scroll, get_state]
+      - name: index
+        type: integer
+      - name: text
+        type: string
+      - name: option
+        type: string
+      - name: direction
+        type: string
+        enum: [up, down]
+      - name: amount
+        type: number
+
+  - name: browser_new_tab
+    category: write
+    short: "新标签页打开URL"
+    long: "在新标签页打开URL"
+    parameters:
+      - name: url
+        position: 1
+        type: string
+        required: true
+
+  - name: browser_switch_tab
+    category: write
+    short: "切换标签页"
+    long: "切换到指定标签页"
+    parameters:
+      - name: tab_id
+        position: 1
+        type: integer
+        required: true
+
+  - name: browser_close_tab
+    category: write
+    short: "关闭标签页"
+    long: "关闭指定标签页"
+    parameters:
+      - name: tab_id
+        position: 1
+        type: integer
+        required: true

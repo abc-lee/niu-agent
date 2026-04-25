@@ -1,0 +1,67 @@
+server: scheduler-server
+directory: scheduler
+description: "任务调度 — 定时任务管理"
+
+tools:
+  - name: schedule_task
+    category: write
+    hidden: true
+    short: "创建定时任务"
+    long: "创建定时任务(单次或循环)"
+    parameters:
+      - name: content
+        position: 1
+        type: string
+        required: true
+      - name: scheduled_at
+        position: 2
+        type: string
+        required: true
+      - name: event_type
+        flag: type
+        type: string
+        enum: [meeting, task, reminder, recurring]
+      - name: is_recurring
+        flag: recurring
+        type: boolean
+      - name: cron_expr
+        flag: cron
+        type: string
+
+  - name: list_scheduled_tasks
+    category: read
+    short: "查询定时任务"
+    long: "查询定时任务列表"
+    parameters:
+      - name: status
+        type: string
+        enum: [pending, triggered, cancelled]
+
+  - name: cancel_task
+    category: admin
+    hidden: true
+    short: "取消定时任务"
+    long: "取消定时任务"
+    parameters:
+      - name: task_id
+        position: 1
+        type: string
+        required: true
+
+  - name: update_task
+    category: write
+    hidden: true
+    short: "更新定时任务"
+    long: "更新定时任务"
+    parameters:
+      - name: task_id
+        position: 1
+        type: string
+        required: true
+      - name: content
+        type: string
+      - name: scheduled_at
+        type: string
+      - name: cron_expr
+        flag: cron
+        type: string
