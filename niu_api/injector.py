@@ -50,7 +50,7 @@ _CATEGORY_TO_ENTITY_TYPE: dict[str, str] = {
 async def register_mcp_tool(request: RegisterMCPToolRequest):
     """No-op in disk mode — tools are discovered via disk YAML, not LightRAG."""
     doc_id = f"mcp_tool:{request.server_name}:{request.tool_name}"
-    return RegisterMCPToolResponse(status="success", resource_id=doc_id)
+    return RegisterMCPToolResponse(status="skipped", resource_id=doc_id)
 
 
 @router.post("/mcp-tools/batch")
@@ -62,7 +62,7 @@ async def register_mcp_tools_batch(tools: list[RegisterMCPToolRequest]):
     for tool in tools:
         results.append({
             "tool_name": tool.tool_name,
-            "status": "success",
+            "status": "skipped",
             "resource_id": f"mcp_tool:{tool.server_name}:{tool.tool_name}",
         })
     return {"results": results}
