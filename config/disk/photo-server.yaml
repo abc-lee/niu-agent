@@ -1,0 +1,110 @@
+server: photo-server
+directory: photos
+description: "照片管理 — 人物识别与照片检索"
+
+tools:
+  - name: ingest
+    category: write
+    short: "统一入库(照片/文档)"
+    long: "统一入库(照片/文档)"
+    parameters:
+      - name: path
+        position: 1
+        type: string
+        required: true
+      - name: mode
+        type: string
+        enum: [copy, move, reference]
+        default: copy
+      - name: category
+        type: string
+      - name: l1
+        type: string
+      - name: file_path
+        flag: file-path
+        type: string
+
+  - name: name_person
+    category: write
+    short: "为人物命名"
+    long: "为人物命名"
+    parameters:
+      - name: person_id
+        position: 1
+        type: string
+        required: true
+      - name: name
+        position: 2
+        type: string
+        required: true
+
+  - name: merge_persons
+    category: write
+    short: "合并两个人物"
+    long: "合并两个人物记录"
+    parameters:
+      - name: person_a_id
+        position: 1
+        type: string
+        required: true
+      - name: person_b_id
+        position: 2
+        type: string
+        required: true
+
+  - name: search_persons
+    category: read
+    short: "搜索人物"
+    long: "按名字模糊搜索人物"
+    parameters:
+      - name: query
+        position: 1
+        type: string
+        required: true
+      - name: limit
+        type: integer
+        default: 10
+
+  - name: get_unnamed_persons
+    category: read
+    short: "获取未命名人物"
+    long: "获取所有未命名人物按出现次数排序"
+    parameters: []
+
+  - name: get_person_photos
+    category: read
+    short: "获取人物照片"
+    long: "获取某人物的多张照片"
+    parameters:
+      - name: person_id
+        position: 1
+        type: string
+        required: true
+      - name: limit
+        type: integer
+        default: 5
+
+  - name: delete_person
+    category: admin
+    hidden: true
+    short: "删除人物"
+    long: "删除人物及所有关联数据"
+    parameters:
+      - name: person_id
+        position: 1
+        type: string
+        required: true
+
+  - name: cleanup_deleted_photos
+    category: admin
+    hidden: true
+    short: "清理已删除照片"
+    long: "清理已删除照片的数据库记录"
+    parameters: []
+
+  - name: unload_face_model
+    category: admin
+    hidden: true
+    short: "卸载人脸模型"
+    long: "卸载人脸识别模型释放内存"
+    parameters: []

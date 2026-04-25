@@ -1,0 +1,101 @@
+server: vector-store
+directory: vectors
+description: "向量存储 — 语义搜索与文档管理"
+
+tools:
+  - name: add_document
+    category: write
+    short: "添加文档"
+    long: "添加文档到向量存储"
+    parameters:
+      - name: id
+        position: 1
+        type: string
+        required: true
+      - name: content
+        type: string
+      - name: metadata
+        type: object
+        cli_format: json
+      - name: file_path
+        flag: file-path
+        type: string
+
+  - name: search_documents
+    category: read
+    short: "语义搜索文档"
+    long: "语义搜索相似文档"
+    parameters:
+      - name: query
+        position: 1
+        type: string
+        required: true
+      - name: limit
+        type: integer
+        default: 5
+      - name: filter
+        type: object
+        cli_format: json
+
+  - name: get_document
+    category: read
+    short: "获取文档"
+    long: "按ID获取文档"
+    parameters:
+      - name: id
+        position: 1
+        type: string
+        required: true
+
+  - name: delete_document
+    category: admin
+    hidden: true
+    short: "删除文档"
+    long: "按ID/查询/过滤器删除文档"
+    parameters:
+      - name: id
+        type: string
+      - name: query
+        type: string
+      - name: filter
+        type: object
+        cli_format: json
+    mutually_exclusive:
+      - [id, query, filter]
+
+  - name: list_documents
+    category: read
+    short: "列出文档"
+    long: "列出所有文档"
+    parameters:
+      - name: limit
+        type: integer
+        default: 10
+      - name: offset
+        type: integer
+        default: 0
+      - name: filter
+        type: object
+        cli_format: json
+
+  - name: count_documents
+    category: read
+    short: "统计文档数"
+    long: "统计文档总数"
+    parameters: []
+
+  - name: update_metadata
+    category: admin
+    hidden: true
+    short: "更新文档元数据"
+    long: "合并更新文档元数据"
+    parameters:
+      - name: id
+        position: 1
+        type: string
+        required: true
+      - name: metadata_updates
+        flag: updates
+        type: object
+        required: true
+        cli_format: json

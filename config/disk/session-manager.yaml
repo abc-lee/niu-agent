@@ -1,0 +1,70 @@
+server: session-manager
+directory: session
+description: "会话管理 — 消息记录查询"
+
+tools:
+  - name: get_messages
+    category: read
+    short: "获取会话消息"
+    long: "获取会话消息列表(含token统计)"
+    parameters:
+      - name: session_id
+        position: 1
+        type: string
+        required: true
+
+  - name: add_message
+    category: write
+    hidden: true
+    short: "添加消息"
+    long: "添加消息到会话"
+    parameters:
+      - name: session_id
+        position: 1
+        type: string
+        required: true
+      - name: role
+        position: 2
+        type: string
+        required: true
+      - name: content
+        position: 3
+        type: string
+        required: true
+
+  - name: update_message
+    category: write
+    hidden: true
+    short: "更新消息"
+    long: "更新消息内容"
+    parameters:
+      - name: session_id
+        position: 1
+        type: string
+        required: true
+      - name: message_id
+        position: 2
+        type: string
+        required: true
+      - name: content
+        position: 3
+        type: string
+        required: true
+
+  - name: delete_messages
+    category: admin
+    hidden: true
+    short: "删除消息"
+    long: "按ID删除消息"
+    parameters:
+      - name: session_id
+        position: 1
+        type: string
+        required: true
+      - name: message_ids
+        position: 2
+        type: array
+        required: true
+        cli_format: json
+      - name: reason
+        type: string

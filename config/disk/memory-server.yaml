@@ -1,0 +1,128 @@
+server: memory-server
+directory: memory
+description: "记忆系统 — 长期记忆存取与检索"
+
+tools:
+  - name: remember
+    category: write
+    short: "保存长期记忆"
+    long: "保存长期记忆（自动生成L0/L1/L2三层）"
+    parameters:
+      - name: content
+        position: 1
+        type: string
+        required: true
+      - name: memory_type
+        flag: type
+        type: string
+        required: true
+        enum: [environment, preferences, skills, experiences, facts]
+      - name: title
+        type: string
+      - name: importance
+        type: number
+        constraints:
+          minimum: 0
+          maximum: 1
+      - name: metadata
+        type: object
+        cli_format: json
+
+  - name: recall
+    category: read
+    short: "检索相关记忆"
+    long: "语义搜索相关记忆"
+    parameters:
+      - name: query
+        position: 1
+        type: string
+        required: true
+      - name: limit
+        type: integer
+        default: 5
+      - name: memory_type
+        flag: type
+        type: string
+      - name: level
+        type: string
+        default: l1
+
+  - name: update_memory
+    category: write
+    short: "更新已有记忆"
+    long: "更新已有记忆"
+    parameters:
+      - name: memory_id
+        position: 1
+        type: string
+        required: true
+      - name: content
+        position: 2
+        type: string
+        required: true
+      - name: metadata
+        type: object
+        cli_format: json
+
+  - name: get_memory_stats
+    category: read
+    short: "记忆统计"
+    long: "获取记忆统计信息"
+    parameters: []
+
+  - name: cleanup_memories
+    category: admin
+    short: "清理过期记忆"
+    long: "清理过期记忆"
+    parameters:
+      - name: days
+        type: integer
+        default: 30
+
+  - name: link_memories
+    category: write
+    short: "关联两条记忆"
+    long: "关联两条记忆"
+    parameters:
+      - name: memory_id_1
+        position: 1
+        type: string
+        required: true
+      - name: memory_id_2
+        position: 2
+        type: string
+        required: true
+      - name: relation
+        position: 3
+        type: string
+        required: true
+
+  - name: user_memory_remember
+    category: write
+    short: "添加便签或长期记忆(task最多1条,memory最多4条)"
+    long: "添加便签或长期记忆(task最多1条,memory最多4条)"
+    parameters:
+      - name: content
+        position: 1
+        type: string
+        required: true
+      - name: type
+        type: string
+        enum: [task, memory]
+        default: memory
+
+  - name: user_memory_forget
+    category: admin
+    short: "删除便签或记忆"
+    long: "按序号或关键词删除"
+    parameters:
+      - name: index
+        type: integer
+      - name: keyword
+        type: string
+
+  - name: user_memory_list
+    category: read
+    short: "查看所有记忆"
+    long: "查看当前所有用户长期记忆"
+    parameters: []

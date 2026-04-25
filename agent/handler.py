@@ -248,9 +248,10 @@ class NiuHandler(BaseHandler):
     - MCP 工具调用（动态加载）
     """
 
-    def __init__(self, cwd: str = None, mcp_client=None):
+    def __init__(self, cwd: str = None, mcp_client=None, disk_engine=None):
         self.cwd = cwd or os.getcwd()
         self.mcp_client = mcp_client
+        self.disk_engine = disk_engine
         self.current_turn = 0
         self.history_info = []
         self._done_hooks = []
@@ -851,6 +852,45 @@ class NiuHandler(BaseHandler):
                 self.tool_after_callback, tool_name, args, response, ret
             )
             return ret
+
+        # 检查 disk 虚拟磁盘命令
+        if tool_name == "disk" and self.disk_engine is not None:
+            command = args.get("command", "")
+            prer = yield from try_call_generator(
+                self.tool_before_callback, tool_name, args, response
+            )
+            from niu_api.internal.disk_engine import DiskResult
+            disk_result = self.disk_engine.execute(command)
+            if disk_result.action == "EXECUTE":
+                # 返回原始 MCP 结果，保留 status 检查和 memory dirty flag
+                result = disk_result.raw_result
+                # 用真实工具路径做 after_callback
+                real_tool_name = disk_result.tool_path.replace("/", "-", 1).replace("/", "/")
+                # 映射 /kg/explore_node → kg-server/explore_node
+                parts = disk_result.tool_path.strip("/").split("/", 1)
+                if len(parts) == 2:
+                    dir_name, tool = parts
+                    from agent.tool_registry import get_registry
+                    reg = get_registry()
+                    for sn in reg._server_tools:
+                        if sn.startswith(dir_name):
+                            real_tool_name = f"{sn}/{tool}"
+                            break
+                _ = yield from try_call_generator(
+                    self.tool_after_callback, real_tool_name if real_tool_name != tool_name else tool_name,
+                    args, response, result
+                )
+                if isinstance(result, dict) and result.get("status") == "success":
+                    return StepOutcome(result, next_prompt=f"工具调用成功。请向用户简洁汇报结果。")
+                else:
+                    return StepOutcome(result, next_prompt=self._get_anchor_prompt())
+            else:
+                # 导航/错误文本
+                result = disk_result.text
+                _ = yield from try_call_generator(
+                    self.tool_after_callback, tool_name, args, response, result
+                )
+                return StepOutcome(result, next_prompt=self._get_anchor_prompt())
 
         # 检查 MCP 工具（工具名格式：server/tool）
         if "/" in tool_name:
