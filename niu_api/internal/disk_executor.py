@@ -56,7 +56,11 @@ class DiskExecutor:
         # Call the real MCP tool
         full_name = f"{server.server_name}/{tool_name}"
         try:
-            func = self.registry.get(full_name)
+            registry = self.registry
+            if registry is None:
+                from agent.tool_registry import get_registry
+                registry = get_registry()
+            func = registry.get(full_name)
             if func is None:
                 return self.errors.execution_failure(tool_path, f"Tool '{full_name}' not found in registry")
             result = func(**kwargs)

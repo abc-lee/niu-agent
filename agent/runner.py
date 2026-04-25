@@ -2,7 +2,8 @@
 Niu Agent Runner
 
 简化的 Agent 入口，直接使用 GenericAgent 组件。
-集成动态注入：Skills 按语义注入提示词，MCP 工具按分数动态注入 tools_schema。
+Disk mode: MCP 工具通过虚拟磁盘 disk() 发现和调用，
+Skills/知识通过 LightRAG 动态注入提示词。
 """
 
 import json
@@ -320,7 +321,7 @@ class NiuRunner:
         """Set MCP tool schemas — in disk mode, only inject disk() schema.
 
         All MCP tools are visibility=hidden and accessed via disk().
-        The tools list is stored for _get_tool_schema_by_name lookups.
+        The tools list is stored for potential future lookups.
         """
         self._mcp_tools_schema = tools  # Store for schema lookups
         logger.info(f"Loaded {len(tools)} MCP tools (all hidden, accessed via disk)")

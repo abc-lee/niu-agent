@@ -864,22 +864,27 @@ class NiuHandler(BaseHandler):
             if disk_result.action == "EXECUTE":
                 # 返回原始 MCP 结果，保留 status 检查和 memory dirty flag
                 result = disk_result.raw_result
-                # 用真实工具路径做 after_callback
-                real_tool_name = disk_result.tool_path.replace("/", "-", 1).replace("/", "/")
-                # 映射 /kg/explore_node → kg-server/explore_node
+                # Map /dir/tool → server-name/tool using DiskConfig
+                real_tool_name = tool_name
                 parts = disk_result.tool_path.strip("/").split("/", 1)
                 if len(parts) == 2:
                     dir_name, tool = parts
-                    from agent.tool_registry import get_registry
-                    reg = get_registry()
-                    for sn in reg._server_tools:
-                        if sn.startswith(dir_name):
-                            real_tool_name = f"{sn}/{tool}"
-                            break
+                    server = self.disk_engine.config.get_server_by_dir(dir_name)
+                    if server is not None:
+                        real_tool_name = f"{server.server_name}/{tool}"
                 _ = yield from try_call_generator(
-                    self.tool_after_callback, real_tool_name if real_tool_name != tool_name else tool_name,
+                    self.tool_after_callback, real_tool_name,
                     args, response, result
                 )
+                # Set memory dirty flag for user memory tools via disk
+                if real_tool_name in ("memory-server/user_memory_remember", "memory-server/user_memory_forget"):
+                    try:
+                        from agent.runner import get_runner
+                        runner = get_runner()
+                        if runner and hasattr(runner, '_memory_dirty'):
+                            runner._memory_dirty.set()
+                    except Exception as e:
+                        logger.debug(f"Memory dirty flag set failed: {e}")
                 if isinstance(result, dict) and result.get("status") == "success":
                     return StepOutcome(result, next_prompt=f"工具调用成功。请向用户简洁汇报结果。")
                 else:
