@@ -5,7 +5,6 @@ Validates:
 - search_multi_lightrag() groups entities correctly
 - _format_lightrag_entities_for_prompt() formats properly
 - _build_tool_scores_from_lightrag() assigns rank-based proxy scores
-- _apply_query_patterns() delegates to vector_search
 - _search_tool_signal_skills_lightrag() searches by tool names
 """
 
@@ -143,8 +142,7 @@ class TestFormatLightragEntities:
         """Create a minimal NiuRunner mock for testing."""
         from agent.runner import NiuRunner
 
-        with patch("agent.runner.get_vector_search"), \
-             patch("agent.runner.get_skill_sync"), \
+        with patch("agent.runner.get_skill_sync"), \
              patch("agent.runner.create_client"), \
              patch("agent.runner.get_system_prompt", return_value=""), \
              patch("agent.runner.get_tools_schema", return_value=[]), \
@@ -203,8 +201,7 @@ class TestBuildToolScoresFromLightrag:
     def runner(self):
         from agent.runner import NiuRunner
 
-        with patch("agent.runner.get_vector_search"), \
-             patch("agent.runner.get_skill_sync"), \
+        with patch("agent.runner.get_skill_sync"), \
              patch("agent.runner.create_client"), \
              patch("agent.runner.get_system_prompt", return_value=""), \
              patch("agent.runner.get_tools_schema", return_value=[]), \
@@ -266,42 +263,189 @@ class TestBuildToolScoresFromLightrag:
         assert len(scores) == 0
 
 
-# ============== _apply_query_patterns tests ==============
+# ============== Injector list_resources / delete_resource migration tests ==============
 
 
-class TestApplyQueryPatterns:
-    """Test NiuRunner._apply_query_patterns()."""
+class TestInjectorListResources:
+    """Test list_resources endpoint after migration to LightRAG."""
 
     @pytest.fixture
-    def runner(self):
-        from agent.runner import NiuRunner
+    def mock_adapter(self):
+        """Create a mocked LightRAGAdapter for testing."""
+        with patch("niu_api.internal.lightrag_adapter.LightRAGAdapter") as cls:
+            instance = MagicMock()
+            cls.return_value = instance
+            yield instance
 
-        with patch("agent.runner.get_vector_search") as mock_vs, \
-             patch("agent.runner.get_skill_sync"), \
-             patch("agent.runner.create_client"), \
-             patch("agent.runner.get_system_prompt", return_value=""), \
-             patch("agent.runner.get_tools_schema", return_value=[]), \
-             patch("agent.runner.NiuHandler"):
-            r = NiuRunner.__new__(NiuRunner)
-            r.vector_search = MagicMock()
-            return r
+    @pytest.mark.asyncio
+    async def test_list_all_resources(self, mock_adapter):
+        """Listing without resource_type queries both skill and tool."""
+        from niu_api.injector import list_resources
 
-    def test_returns_original_when_no_pattern(self, runner):
-        """Returns original context when no query_pattern matches."""
-        runner.vector_search.search.return_value = []
-        result = runner._apply_query_patterns("hello world")
-        assert result == "hello world"
+        # list_entities is called once per category
+        mock_adapter.list_entities.side_effect = [
+            {
+                "status": "ok",
+                "data": [
+                    {"id": "skill:python", "entity_type": "skill", "description": "Python programming"},
+                ],
+            },
+            {
+                "status": "ok",
+                "data": [
+                    {"id": "tool:file-parser/parse", "entity_type": "tool", "description": "Parse files"},
+                ],
+            },
+        ]
 
-    def test_returns_expanded_when_pattern_matches(self, runner):
-        """Returns expanded_query when a pattern matches."""
-        mock_result = MagicMock()
-        mock_result.metadata = {"expanded_query": "photo, image, picture"}
-        runner.vector_search.search.return_value = [mock_result]
-        result = runner._apply_query_patterns("photo")
-        assert result == "photo, image, picture"
+        result = await list_resources()
+        assert len(result.resources) == 2
+        types = {r["type"] for r in result.resources}
+        assert types == {"skill", "mcp_tool"}
 
-    def test_returns_original_on_exception(self, runner):
-        """Returns original context when vector_search raises."""
-        runner.vector_search.search.side_effect = Exception("db error")
-        result = runner._apply_query_patterns("test")
-        assert result == "test"
+    @pytest.mark.asyncio
+    async def test_list_by_type_skill(self, mock_adapter):
+        """Filtering by resource_type=skill only queries skill entities."""
+        from niu_api.injector import list_resources
+
+        mock_adapter.list_entities.return_value = {
+            "status": "ok",
+            "data": [
+                {"id": "skill:git", "entity_type": "skill", "description": "Git version control"},
+            ],
+        }
+
+        result = await list_resources(resource_type="skill")
+        assert len(result.resources) == 1
+        assert result.resources[0]["type"] == "skill"
+        assert result.resources[0]["name"] == "skill:git"
+        # list_entities should be called with entity_type="skill"
+        mock_adapter.list_entities.assert_called_once_with(
+            list_type="entities", entity_type="skill", limit=100,
+        )
+
+    @pytest.mark.asyncio
+    async def test_list_by_type_mcp_tool_maps_to_tool(self, mock_adapter):
+        """resource_type=mcp_tool maps to LightRAG entity_type=tool."""
+        from niu_api.injector import list_resources
+
+        mock_adapter.list_entities.return_value = {
+            "status": "ok",
+            "data": [
+                {"id": "tool:kg-server/query", "entity_type": "tool", "description": "Query KG"},
+            ],
+        }
+
+        result = await list_resources(resource_type="mcp_tool")
+        assert len(result.resources) == 1
+        assert result.resources[0]["type"] == "mcp_tool"
+        mock_adapter.list_entities.assert_called_once_with(
+            list_type="entities", entity_type="tool", limit=100,
+        )
+
+    @pytest.mark.asyncio
+    async def test_list_unmapped_type_returns_empty(self, mock_adapter):
+        """Unmapped category like 'l1' returns empty results."""
+        from niu_api.injector import list_resources
+
+        result = await list_resources(resource_type="l1")
+        assert result.resources == []
+        # list_entities should NOT be called for unmapped types
+        mock_adapter.list_entities.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_list_handles_lightrag_error(self, mock_adapter):
+        """Gracefully handles LightRAG errors by returning empty list."""
+        from niu_api.injector import list_resources
+
+        mock_adapter.list_entities.side_effect = Exception("LightRAG down")
+
+        result = await list_resources(resource_type="skill")
+        assert result.resources == []
+
+    @pytest.mark.asyncio
+    async def test_list_handles_status_error(self, mock_adapter):
+        """Gracefully handles list_entities returning error status."""
+        from niu_api.injector import list_resources
+
+        mock_adapter.list_entities.return_value = {
+            "status": "error",
+            "message": "LightRAG not available",
+        }
+
+        result = await list_resources(resource_type="skill")
+        assert result.resources == []
+
+    @pytest.mark.asyncio
+    async def test_description_truncated_to_200(self, mock_adapter):
+        """Description is truncated to 200 chars."""
+        from niu_api.injector import list_resources
+
+        long_desc = "x" * 300
+        mock_adapter.list_entities.return_value = {
+            "status": "ok",
+            "data": [
+                {"id": "skill:long", "entity_type": "skill", "description": long_desc},
+            ],
+        }
+
+        result = await list_resources(resource_type="skill")
+        assert len(result.resources[0]["description"]) == 200
+
+
+class TestInjectorDeleteResource:
+    """Test delete_resource endpoint after migration to LightRAG."""
+
+    @pytest.fixture
+    def mock_adapter(self):
+        """Create a mocked LightRAGAdapter for testing."""
+        with patch("niu_api.internal.lightrag_adapter.LightRAGAdapter") as cls:
+            instance = MagicMock()
+            cls.return_value = instance
+            yield instance
+
+    @pytest.mark.asyncio
+    async def test_delete_success(self, mock_adapter):
+        """Successful deletion returns success status."""
+        from niu_api.injector import delete_resource
+
+        mock_adapter.delete_entity.return_value = {
+            "status": "ok",
+            "entity_name": "tool:server/tool1",
+            "result": "deleted",
+        }
+
+        result = await delete_resource("tool:server/tool1")
+        assert result["status"] == "success"
+        assert result["resource_id"] == "tool:server/tool1"
+        mock_adapter.delete_entity.assert_called_once_with("tool:server/tool1")
+
+    @pytest.mark.asyncio
+    async def test_delete_lightrag_error_raises_500(self, mock_adapter):
+        """LightRAG deletion failure raises HTTP 500."""
+        from niu_api.injector import delete_resource
+        from fastapi import HTTPException
+
+        mock_adapter.delete_entity.return_value = {
+            "status": "error",
+            "message": "Entity not found",
+        }
+
+        with pytest.raises(HTTPException) as exc_info:
+            await delete_resource("nonexistent")
+        assert exc_info.value.status_code == 500
+        assert "Entity not found" in exc_info.value.detail
+
+    @pytest.mark.asyncio
+    async def test_delete_exception_raises_500(self, mock_adapter):
+        """Unexpected exception raises HTTP 500."""
+        from niu_api.injector import delete_resource
+        from fastapi import HTTPException
+
+        mock_adapter.delete_entity.side_effect = RuntimeError("boom")
+
+        with pytest.raises(HTTPException) as exc_info:
+            await delete_resource("something")
+        assert exc_info.value.status_code == 500
+
+

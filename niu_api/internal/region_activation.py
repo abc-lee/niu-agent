@@ -394,23 +394,27 @@ class RegionActivationManager:
 
     def get_entity_to_region_map(self) -> dict[str, str]:
         """Get entity_name -> region_id mapping for all known entities."""
-        return dict(self._entity_to_region)
+        with self._lock:
+            return dict(self._entity_to_region)
 
     def get_region_state(self, region_id: str) -> BrainRegionState | None:
         """Get activation state for a specific region by region_id."""
-        return self._regions.get(region_id)
+        with self._lock:
+            return self._regions.get(region_id)
 
     def get_members_of_region(self, region_id: str) -> list[str]:
         """Get entity names belonging to a specific region."""
-        return [
-            entity
-            for entity, rid in self._entity_to_region.items()
-            if rid == region_id
-        ]
+        with self._lock:
+            return [
+                entity
+                for entity, rid in self._entity_to_region.items()
+                if rid == region_id
+            ]
 
     def get_region_description(self, region_id: str) -> str:
         """Get the description for a region (from BrainRegionInfo.description)."""
-        return self._descriptions.get(region_id, "")
+        with self._lock:
+            return self._descriptions.get(region_id, "")
 
     # ------------------------------------------------------------------
     # Neighbor relationships

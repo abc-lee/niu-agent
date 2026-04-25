@@ -5,17 +5,13 @@ Skills 目录同步服务。定时扫描 memory/skills/ 目录，同步变化到
 通过 entity_type="skill" 标签区分，供 LightRAGAdapter.search_skills() 检索。
 """
 
-import json
 import re
-import sqlite3
 import threading
 import time
 from pathlib import Path
 from typing import Optional
 
 from loguru import logger
-
-from ..vector_search import get_vector_search
 
 # watchdog 相关导入
 try:
@@ -112,7 +108,6 @@ class SkillSync:
 
     def __init__(self, skills_dir: str = None, scan_interval: int = 60, use_watchdog: bool = True):
         self.skills_dir = Path(skills_dir or self._default_skills_dir())
-        self.vector_search = get_vector_search()
         self.scan_interval = scan_interval
         self.use_watchdog = use_watchdog and WATCHDOG_AVAILABLE
 
@@ -162,7 +157,7 @@ class SkillSync:
 
     def scan_and_sync(self) -> tuple[int, int, int]:
         """
-        扫描目录，同步变化的 skills 到向量库
+        扫描目录，同步变化的 skills 到 LightRAG 知识图谱
 
         Returns:
             (added, updated, deleted) 计数
@@ -171,7 +166,7 @@ class SkillSync:
             logger.warning(f"[SkillSync] Skills directory not found: {self.skills_dir}")
             return 0, 0, 0
 
-        # 首次扫描时，从向量库加载已有 skill 状态，避免重复 "Added"
+        # 首次扫描时，从 LightRAG 加载已有 skill 状态，避免重复 "Added"
         with self._lock:
             if not self._last_scan:
                 self._load_existing_skills()
@@ -220,32 +215,31 @@ class SkillSync:
                 except Exception as e:
                     logger.error(f"[SkillSync] Failed to delete skill {name}: {e}")
 
-        # 检测向量库中 skill 被外部删除（需要回写）
-        # 只检查 last_scan 中已有但向量库缺失的 skill（跳过本轮新增的）
-        db_path = self.vector_search.db_path
-        if db_path and last_scan:
+        # 检测 LightRAG 中 skill 被外部删除（需要回写）
+        # 只检查 last_scan 中已有但 LightRAG 缺失的 skill（跳过本轮新增的）
+        if last_scan:
             try:
-                conn = sqlite3.connect(db_path, isolation_level=None, check_same_thread=False)
-                conn.execute("PRAGMA journal_mode=WAL")
-                try:
-                    existing_ids = set()
-                    cursor = conn.execute(
-                        "SELECT id FROM documents WHERE json_extract(metadata, '$.category') = 'skill'"
-                    )
-                    for (doc_id,) in cursor.fetchall():
-                        existing_ids.add(doc_id)
+                from niu_api.internal.lightrag_adapter import LightRAGAdapter
+                adapter = LightRAGAdapter()
+                result = adapter.list_entities(entity_type="skill", limit=500)
+                if result.get("status") != "ok":
+                    logger.debug(f"[SkillSync] list_entities unavailable: {result.get('message', '')}")
+                else:
+                    existing_names = set()
+                    for entity in result.get("data", []):
+                        ename = entity.get("id", "")
+                        if ename.startswith("skill:"):
+                            existing_names.add(ename[6:])
 
                     for name in last_scan:
-                        if name not in synced_names and name in current and f"skill:{name}" not in existing_ids:
+                        if name not in synced_names and name in current and name not in existing_names:
                             skill_file = self.skills_dir / f"{name}.md"
                             if skill_file.exists():
                                 self._sync_skill(name, skill_file)
                                 added += 1
                                 logger.info(f"[SkillSync] Re-added missing skill: {name}")
-                finally:
-                    conn.close()
             except Exception as e:
-                logger.warning(f"[SkillSync] Failed to check missing skills: {e}")
+                logger.debug(f"[SkillSync] Failed to check missing skills in LightRAG: {e}")
 
         # 更新状态（需要锁保护写入）
         with self._lock:
@@ -254,34 +248,28 @@ class SkillSync:
         return added, updated, deleted
 
     def _load_existing_skills(self):
-        """从向量库加载已有 skill，使用磁盘文件的实际 mtime"""
-        db_path = self.vector_search.db_path
-        if db_path is None:
-            return
-        conn = None
+        """从 LightRAG 加载已有 skill，使用磁盘文件的实际 mtime"""
         try:
-            conn = sqlite3.connect(db_path, isolation_level=None, check_same_thread=False)
-            conn.execute("PRAGMA journal_mode=WAL")
-            cursor = conn.execute(
-                "SELECT id FROM documents WHERE json_extract(metadata, '$.category') = 'skill'"
-            )
-            for (doc_id,) in cursor.fetchall():
-                # doc_id 格式: "skill:name"
-                if doc_id.startswith("skill:"):
-                    name = doc_id[6:]
+            from niu_api.internal.lightrag_adapter import LightRAGAdapter
+            adapter = LightRAGAdapter()
+            result = adapter.list_entities(entity_type="skill", limit=500)
+            if result.get("status") != "ok":
+                logger.debug(f"[SkillSync] list_entities unavailable: {result.get('message', '')}")
+                return
+            for entity in result.get("data", []):
+                ename = entity.get("id", "")
+                if ename.startswith("skill:"):
+                    name = ename[6:]
                     skill_file = self.skills_dir / f"{name}.md"
                     if skill_file.exists():
                         self._last_scan[name] = skill_file.stat().st_mtime
                     else:
-                        # 文件已删除但向量库中还有，用 inf 标记以便下次检测到删除
+                        # 文件已删除但 LightRAG 中还有，用 inf 标记以便下次检测到删除
                         self._last_scan[name] = float('inf')
             if self._last_scan:
-                logger.info(f"[SkillSync] Loaded {len(self._last_scan)} existing skills from vector DB")
+                logger.info(f"[SkillSync] Loaded {len(self._last_scan)} existing skills from LightRAG")
         except Exception as e:
-            logger.warning(f"[SkillSync] Failed to load existing skills: {e}")
-        finally:
-            if conn:
-                conn.close()
+            logger.debug(f"[SkillSync] Failed to load existing skills from LightRAG: {e}")
 
     def _sync_skill(self, name: str, skill_file: Path):
         """同步单个 skill 到 LightRAG 知识图谱"""
@@ -292,7 +280,7 @@ class SkillSync:
             tags = self._extract_tags(content)
 
             if description:
-                self._inject_skill_to_lightrag(name, description, tags, triggers, str(skill_file))
+                self._inject_skill_to_lightrag(name, description, tags, triggers)
 
         except Exception as e:
             logger.error(f"[SkillSync] Failed to sync skill {name}: {e}")
@@ -303,11 +291,10 @@ class SkillSync:
         description: str,
         tags: list[str],
         triggers: list[str],
-        file_path: str,
     ):
         """Inject a skill entity into the LightRAG knowledge graph.
 
-        Wrapped in try/except so LightRAG failures never break vector-store sync.
+        Wrapped in try/except so LightRAG failures never break skill sync.
         The skill entity uses entity_type="skill" so that
         LightRAGAdapter.search_skills() can find it.
         """
@@ -343,8 +330,7 @@ class SkillSync:
             logger.debug(f"[SkillSync] LightRAG skill inject failed for '{name}': {e}")
 
     def _delete_skill(self, name: str):
-        """从 LightRAG 知识图谱和向量库删除 skill"""
-        # 1. 从 LightRAG 删除实体（非阻塞，失败不影响 vectors.db 清理）
+        """从 LightRAG 知识图谱删除 skill"""
         try:
             from niu_api.internal.lightrag_adapter import LightRAGAdapter
             adapter = LightRAGAdapter()
@@ -355,28 +341,6 @@ class SkillSync:
                 logger.debug(f"[SkillSync] LightRAG delete skipped for '{name}': {result.get('message', '')}")
         except Exception as e:
             logger.debug(f"[SkillSync] LightRAG skill delete failed for '{name}': {e}")
-
-        # 2. 从 vectors.db 清理残留（使用独立连接，避免跨线程共享单例连接）
-        db_path = self.vector_search.db_path
-        if db_path is None:
-            logger.error(f"[SkillSync] Database path unavailable, cannot delete skill:{name}")
-            return
-        conn = sqlite3.connect(db_path, isolation_level=None)
-        conn.execute("PRAGMA journal_mode=WAL")
-        try:
-            for attempt in range(3):
-                try:
-                    conn.execute("DELETE FROM documents WHERE id = ?", (f"skill:{name}",))
-                    conn.commit()
-                    break
-                except sqlite3.OperationalError as e:
-                    conn.rollback()
-                    if "locked" in str(e) and attempt < 2:
-                        time.sleep(0.1 * (attempt + 1))
-                    else:
-                        raise
-        finally:
-            conn.close()
 
     def _extract_triggers(self, content: str) -> list[str]:
         """从 skill 内容提取触发词"""
@@ -435,7 +399,7 @@ class SkillSync:
             return match.group(1).strip().strip("\"'")
 
         # 默认：拒绝同步（返回空字符串）
-        logger.error("Skill 缺少任何描述字段，无法同步到向量库")
+        logger.error("Skill 缺少任何描述字段，无法同步到 LightRAG")
         return ""
 
     def _extract_tags(self, content: str) -> list[str]:

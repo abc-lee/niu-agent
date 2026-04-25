@@ -105,37 +105,8 @@ async def lifespan(app: FastAPI):
     set_main_event_loop(asyncio.get_running_loop())
     logger.info("SSE event loop captured")
 
-    # 7. Run weekly vector cleanup if needed
-    cleanup_status_file = Path.home() / ".niu" / "last_cleanup.txt"
-    should_cleanup = False
-
-    if cleanup_status_file.exists():
-        try:
-            last_cleanup_str = cleanup_status_file.read_text().strip()
-            last_cleanup = datetime.fromisoformat(last_cleanup_str)
-            if datetime.now() - last_cleanup > timedelta(days=7):
-                should_cleanup = True
-        except Exception:
-            should_cleanup = True
-    else:
-        should_cleanup = True
-
-    if should_cleanup:
-        logger.info("Scheduling weekly vector cleanup in 3 minutes...")
-
-        def delayed_cleanup():
-            time.sleep(180)  # 延时 3 分钟
-            try:
-                from agent.vector_cleanup import get_cleanup_service
-                cleanup = get_cleanup_service()
-                cleanup.run_full_cleanup()
-                cleanup_status_file.write_text(datetime.now().isoformat())
-                logger.info("Vector cleanup completed")
-            except Exception as e:
-                logger.warning(f"Vector cleanup failed: {e}")
-
-        cleanup_thread = threading.Thread(target=delayed_cleanup, daemon=True)
-        cleanup_thread.start()
+    # 7. (Removed) Weekly vector cleanup — vectors.db is deprecated,
+    #    LightRAG manages its own storage. Cleanup is no longer needed.
 
     # 8. Start LightRAG background sync (periodic photo/document backfill)
     try:
