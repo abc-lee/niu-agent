@@ -876,15 +876,6 @@ class NiuHandler(BaseHandler):
                     self.tool_after_callback, real_tool_name,
                     args, response, result
                 )
-                # Set memory dirty flag for user memory tools via disk
-                if real_tool_name in ("memory-server/user_memory_remember", "memory-server/user_memory_forget"):
-                    try:
-                        from agent.runner import get_runner
-                        runner = get_runner()
-                        if runner and hasattr(runner, '_memory_dirty'):
-                            runner._memory_dirty.set()
-                    except Exception as e:
-                        logger.debug(f"Memory dirty flag set failed: {e}")
                 # Reinforce brain region on tool use via disk
                 if not getattr(self, '_is_subagent', False):
                     try:
@@ -892,7 +883,16 @@ class NiuHandler(BaseHandler):
                         reinforce_on_tool_use(real_tool_name)
                     except Exception:
                         pass
-                if isinstance(result, dict) and result.get("status") == "success":
+                if isinstance(result, dict) and result.get("status") not in ("error", None):
+                    # Set memory dirty flag for user memory tools on success
+                    if real_tool_name in ("memory-server/user_memory_remember", "memory-server/user_memory_forget"):
+                        try:
+                            from agent.runner import get_runner
+                            runner = get_runner()
+                            if runner and hasattr(runner, '_memory_dirty'):
+                                runner._memory_dirty.set()
+                        except Exception as e:
+                            logger.debug(f"Memory dirty flag set failed: {e}")
                     return StepOutcome(result, next_prompt=f"工具调用成功。请向用户简洁汇报结果。")
                 else:
                     return StepOutcome(result, next_prompt=self._get_anchor_prompt())
@@ -956,7 +956,7 @@ class NiuHandler(BaseHandler):
 
                 # 判断任务是否完成：
                 # - 成功后让LLM向用户汇报结果
-                if isinstance(result, dict) and result.get("status") == "success":
+                if isinstance(result, dict) and result.get("status") not in ("error", None):
                     # Set memory dirty flag for user memory tools
                     if tool_name in ("memory-server/user_memory_remember", "memory-server/user_memory_forget"):
                         try:
@@ -1015,7 +1015,7 @@ class NiuHandler(BaseHandler):
                 except Exception:
                     pass
 
-                if isinstance(result, dict) and result.get("status") == "success":
+                if isinstance(result, dict) and result.get("status") not in ("error", None):
                     result_summary = json.dumps(result, ensure_ascii=False)[:500]
                     return StepOutcome(result, next_prompt=f"工具调用成功。请向用户简洁汇报结果：{result_summary}")
                 else:
