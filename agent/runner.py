@@ -326,10 +326,6 @@ class NiuRunner:
         self._mcp_tools_schema = tools  # Store for schema lookups
         logger.info(f"Loaded {len(tools)} MCP tools (all hidden, accessed via disk)")
 
-        # Inject disk schema
-        disk_schema = self.disk_engine.get_schema()
-        self._mcp_tools_schema_with_disk = tools + [disk_schema]
-
     def _extract_context_from_messages(self, messages: list) -> str:
         """
         从 agent_runner_loop 的 messages 列表提取上下文。
