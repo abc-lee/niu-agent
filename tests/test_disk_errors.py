@@ -253,9 +253,13 @@ class TestE16:
         msg = errors.shell_syntax("pipe")
         assert "pipe" in msg.lower()
 
-    def test_chaining_error(self, errors):
-        msg = errors.shell_syntax("chaining")
-        assert "chaining" in msg.lower()
+    def test_and_operator_error(self, errors):
+        msg = errors.shell_syntax("and_operator")
+        assert "&&" in msg
+
+    def test_semicolon_error(self, errors):
+        msg = errors.shell_syntax("semicolon")
+        assert ";" in msg
 
 
 # ---------------------------------------------------------------------------

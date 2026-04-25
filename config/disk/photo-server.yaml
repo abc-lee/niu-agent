@@ -1,6 +1,6 @@
 server: photo-server
 directory: photos
-description: "照片管理 — 人物识别与照片检索"
+description: "照片与文档管理 — 照片入库/人脸识别/人物检索，文档(PDF/Word/PPT/Excel)入库与解析"
 
 tools:
   - name: ingest

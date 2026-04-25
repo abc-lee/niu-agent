@@ -192,4 +192,4 @@ class TestShellSyntaxRejection:
     def test_chaining_rejected(self, engine):
         result = engine.execute("/kg/explore_node Einstein && /memory/remember x")
         assert result.action == "ERROR"
-        assert "chaining" in result.text.lower()
+        assert "&&" in result.text

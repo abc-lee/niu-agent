@@ -16,6 +16,7 @@ Advantages:
 - Simulates real mouse events, harder to detect
 """
 
+import re
 import time
 from loguru import logger
 
@@ -104,6 +105,23 @@ def _ensure_connection() -> WSBridge:
     )
 
 
+def _normalize_url(url: str) -> str:
+    """Ensure URL has a valid scheme.
+
+    Without a scheme, Chrome resolves the URL as a relative path against the
+    current page. If the active tab is an extension page (hub.html), this
+    produces extension://<id>/url=... instead of navigating to the website.
+    """
+    url = url.strip()
+    if url.startswith(("http://", "https://", "ftp://", "file://")):
+        return url
+    if url.lower().startswith("url="):
+        url = url[4:].strip()
+    if re.match(r"^[\w.-]+\.\w{2,}", url):
+        return "https://" + url
+    return url
+
+
 def browser_navigate(
     url: str,
     wait_until: str = "domcontentloaded"
@@ -119,6 +137,7 @@ def browser_navigate(
         Dict with page state: url, title, elements (indexed interactive elements), pageInfo
     """
     try:
+        url = _normalize_url(url)
         bridge = _ensure_connection()
 
         # Send navigate command (hub.js handles navigation + returns page state)
@@ -220,6 +239,7 @@ def browser_new_tab(
         return {"status": "error", "message": "url is required for browser_new_tab. Cannot open a blank tab (content script cannot inject into about:blank)."}
 
     try:
+        url = _normalize_url(url)
         bridge = _ensure_connection()
 
         result = bridge.send_command("create_tab", url=url, timeout=60)
