@@ -106,7 +106,7 @@ def check_runner_instance():
 
     print(f"\n✅ Runner 初始化成功")
     print(f"向量搜索: {'✅' if runner.vector_search else '❌'}")
-    print(f"ToolLifecycle: {'✅' if runner.tool_lifecycle else '❌'}")
+    print(f"DiskEngine: {'✅' if runner.disk_engine else '❌'}")
 
     return True
 

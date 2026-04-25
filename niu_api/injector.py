@@ -1,8 +1,9 @@
 """
 Injector API endpoints
 
-手动注册 MCP 工具到 LightRAG 知识图谱。
-通过 entity_type="tool" 标签区分，供 LightRAGAdapter.search_tools() 检索。
+Disk mode: MCP tools are discovered via disk YAML configs, not injected into LightRAG.
+The register endpoints are kept as no-ops for backward compatibility.
+List/delete still query LightRAG for skill entities.
 """
 
 import json
@@ -47,72 +48,24 @@ _CATEGORY_TO_ENTITY_TYPE: dict[str, str] = {
 
 @router.post("/mcp-tool", response_model=RegisterMCPToolResponse)
 async def register_mcp_tool(request: RegisterMCPToolRequest):
-    """
-    注册 MCP 工具到 LightRAG 知识图谱
-
-    用法：新增 MCP 服务器后，调用此 API 注册其工具描述。
-    工具以 entity_type="tool" 实体存入图谱，供 search_tools() 检索。
-    """
-    full_name = f"{request.server_name}/{request.tool_name}"
-    content = f"{request.tool_name}: {request.description}"
-
-    try:
-        from niu_api.internal.lightrag_adapter import LightRAGIngester
-
-        ingester = LightRAGIngester()
-        result = ingester.inject_entity(
-            name=f"tool:{full_name}",
-            entity_type="tool",
-            description=request.description,
-            chunk_content=content,
-            file_path=f"tool://{full_name}",
-        )
-        if result.get("status") == "ok":
-            doc_id = f"mcp_tool:{request.server_name}:{request.tool_name}"
-            return RegisterMCPToolResponse(status="success", resource_id=doc_id)
-    except Exception as e:
-        logger.error(f"Failed to register MCP tool {full_name} to LightRAG: {e}")
-
-    raise HTTPException(status_code=500, detail="Failed to register MCP tool")
+    """No-op in disk mode — tools are discovered via disk YAML, not LightRAG."""
+    doc_id = f"mcp_tool:{request.server_name}:{request.tool_name}"
+    return RegisterMCPToolResponse(status="success", resource_id=doc_id)
 
 
 @router.post("/mcp-tools/batch")
 async def register_mcp_tools_batch(tools: list[RegisterMCPToolRequest]):
-    """Batch register MCP tools to LightRAG (single persist cycle)."""
+    """No-op in disk mode — tools are discovered via disk YAML, not LightRAG."""
     if not tools:
         return {"results": []}
-
-    try:
-        from niu_api.internal.lightrag_adapter import LightRAGIngester
-
-        ingester = LightRAGIngester()
-        items = []
-        for tool in tools:
-            full_name = f"{tool.server_name}/{tool.tool_name}"
-            content = f"{tool.tool_name}: {tool.description}"
-            items.append({
-                "name": f"tool:{full_name}",
-                "entity_type": "tool",
-                "description": tool.description,
-                "source_id": f"tool:{full_name}",
-                "chunk_content": content,
-                "file_path": f"tool://{full_name}",
-            })
-
-        result = ingester.inject_entities_batch(items)
-        batch_ok = result.get("status") == "ok"
-        results = []
-        for tool in tools:
-            results.append({
-                "tool_name": tool.tool_name,
-                "status": "success" if batch_ok else "failed",
-                "resource_id": f"mcp_tool:{tool.server_name}:{tool.tool_name}",
-            })
-        return {"results": results}
-    except Exception as e:
-        logger.error(f"Failed to batch register MCP tools: {e}")
-
-    raise HTTPException(status_code=500, detail="Failed to batch register MCP tools")
+    results = []
+    for tool in tools:
+        results.append({
+            "tool_name": tool.tool_name,
+            "status": "success",
+            "resource_id": f"mcp_tool:{tool.server_name}:{tool.tool_name}",
+        })
+    return {"results": results}
 
 
 @router.get("/resources", response_model=ListResourcesResponse)
