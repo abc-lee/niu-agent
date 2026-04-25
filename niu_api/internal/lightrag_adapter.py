@@ -768,6 +768,67 @@ class LightRAGIngester:
             logger.error(f"LightRAG update_habit_confidence failed: {e}")
             return {"status": "error", "message": str(e)}
 
+    def inject_entities_batch(
+        self,
+        items: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Batch inject multiple entities in a single ainsert_custom_kg() call.
+
+        Each item dict should have keys matching inject_entity() params:
+            name, entity_type, description, source_id, chunk_content, file_path
+
+        This is dramatically faster than calling inject_entity() in a loop
+        because each inject_entity() triggers a full LightRAG persist cycle
+        (embedding + graph write + disk flush). Batch inject does one persist.
+
+        Args:
+            items: List of entity dicts.
+
+        Returns:
+            Dict with status, entities count, chunks count.
+        """
+        if not items:
+            return {"status": "ok", "entities": 0, "chunks": 0}
+
+        entities = []
+        chunks = []
+
+        for item in items:
+            name = item.get("name")
+            if not name:
+                logger.warning(f"inject_entities_batch: skipping item missing 'name': {item}")
+                continue
+            entity_type = item.get("entity_type", "UNKNOWN")
+            description = item.get("description", "")
+            source_id = item.get("source_id", "custom_kg")
+            file_path = item.get("file_path", "custom_kg")
+            chunk_content = item.get("chunk_content")
+
+            entities.append({
+                "entity_name": name,
+                "entity_type": entity_type,
+                "description": description,
+                "source_id": source_id,
+                "file_path": file_path,
+            })
+
+            if chunk_content:
+                chunks.append({
+                    "content": chunk_content,
+                    "source_id": source_id,
+                    "file_path": file_path,
+                })
+
+        if not entities and not chunks:
+            return {"status": "ok", "entities": 0, "chunks": 0}
+
+        return self.inject_custom_kg(
+            entities=entities,
+            relationships=[],
+            chunks=chunks,
+            source_id="batch_inject",
+        )
+
     def inject_relation(
         self,
         src_id: str,
