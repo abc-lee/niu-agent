@@ -322,12 +322,12 @@ class SkillSync:
                 file_path=f"skill://{name}",
             )
             if result.get("status") == "ok":
-                logger.debug(f"[SkillSync] Injected skill '{name}' into LightRAG")
+                logger.info(f"[SkillSync] Injected skill '{name}' into LightRAG")
             else:
-                logger.debug(f"[SkillSync] LightRAG inject skipped for '{name}': {result.get('message', '')}")
+                logger.warning(f"[SkillSync] LightRAG inject failed for '{name}': {result.get('message', '')}")
         except Exception as e:
-            # LightRAG not available or inject failed — non-fatal
-            logger.debug(f"[SkillSync] LightRAG skill inject failed for '{name}': {e}")
+            # LightRAG not available or inject failed — non-fatal but visible
+            logger.warning(f"[SkillSync] LightRAG skill inject failed for '{name}': {e}")
 
     def _delete_skill(self, name: str):
         """从 LightRAG 知识图谱删除 skill"""
@@ -338,9 +338,9 @@ class SkillSync:
             if result.get("status") == "ok":
                 logger.debug(f"[SkillSync] Deleted skill '{name}' from LightRAG")
             else:
-                logger.debug(f"[SkillSync] LightRAG delete skipped for '{name}': {result.get('message', '')}")
+                logger.warning(f"[SkillSync] LightRAG delete failed for '{name}': {result.get('message', '')}")
         except Exception as e:
-            logger.debug(f"[SkillSync] LightRAG skill delete failed for '{name}': {e}")
+            logger.warning(f"[SkillSync] LightRAG skill delete failed for '{name}': {e}")
 
     def _extract_triggers(self, content: str) -> list[str]:
         """从 skill 内容提取触发词"""
