@@ -1,0 +1,217 @@
+server: lightrag-server
+directory: lightrag
+description: "LightRAG 知识图谱 — 查询、插入与图谱管理"
+
+tools:
+  - name: lightrag_query
+    category: query
+    short: "查询知识图谱"
+    long: "搜索知识库。模式: local(实体), global(概览), hybrid(平衡), mix(图+向量), naive(仅向量)"
+    parameters:
+      - name: query
+        position: 1
+        type: string
+        required: true
+      - name: mode
+        flag: mode
+        type: string
+        default: mix
+        enum: [naive, local, global, hybrid, mix, bypass]
+      - name: only_need_context
+        flag: context-only
+        type: boolean
+        default: true
+      - name: top_k
+        flag: top-k
+        type: integer
+        default: 5
+      - name: response_type
+        flag: response-type
+        type: string
+        default: "Multiple Paragraphs"
+
+  - name: lightrag_query_data
+    category: query
+    short: "结构化查询"
+    long: "查询知识库返回结构化数据(实体+关系)，而非文本"
+    parameters:
+      - name: query
+        position: 1
+        type: string
+        required: true
+      - name: mode
+        flag: mode
+        type: string
+        default: local
+        enum: [naive, local, global, hybrid, mix, bypass]
+      - name: top_k
+        flag: top-k
+        type: integer
+        default: 10
+
+  - name: lightrag_search_entities
+    category: query
+    short: "搜索实体"
+    long: "按类型搜索知识图谱中的实体"
+    parameters:
+      - name: query
+        position: 1
+        type: string
+        required: true
+      - name: entity_type
+        flag: type
+        type: string
+      - name: top_k
+        flag: top-k
+        type: integer
+        default: 10
+
+  - name: lightrag_get_graph
+    category: query
+    short: "获取子图"
+    long: "获取知识图谱子图。explore=实体邻居, snapshot=全图"
+    parameters:
+      - name: action
+        position: 1
+        type: string
+        required: true
+        enum: [explore, snapshot]
+      - name: entity_name
+        flag: entity
+        type: string
+      - name: depth
+        flag: depth
+        type: integer
+        default: 2
+      - name: limit
+        flag: limit
+        type: integer
+        default: 200
+
+  - name: lightrag_insert
+    category: write
+    short: "插入文档"
+    long: "插入文档到知识库，LightRAG自动提取实体和关系"
+    parameters:
+      - name: content
+        position: 1
+        type: string
+        required: true
+      - name: doc_id
+        flag: doc-id
+        type: string
+      - name: file_path
+        flag: file-path
+        type: string
+
+  - name: lightrag_insert_custom_kg
+    category: write
+    short: "注入结构化知识"
+    long: "直接注入结构化知识(实体+关系+块)，绕过LLM提取"
+    parameters:
+      - name: entities
+        flag: entities
+        type: array
+        cli_format: json
+      - name: relationships
+        flag: relationships
+        type: array
+        cli_format: json
+      - name: chunks
+        flag: chunks
+        type: array
+        cli_format: json
+      - name: source_id
+        flag: source-id
+        type: string
+        default: custom_kg
+
+  - name: lightrag_insert_entity
+    category: write
+    short: "插入实体"
+    long: "插入单个实体到知识图谱"
+    parameters:
+      - name: name
+        position: 1
+        type: string
+        required: true
+      - name: entity_type
+        flag: type
+        type: string
+        required: true
+      - name: description
+        type: string
+      - name: source_id
+        flag: source-id
+        type: string
+        default: custom_kg
+
+  - name: lightrag_insert_relation
+    category: write
+    short: "插入关系"
+    long: "在两个实体间插入关系"
+    parameters:
+      - name: src_id
+        position: 1
+        type: string
+        required: true
+      - name: tgt_id
+        position: 2
+        type: string
+        required: true
+      - name: relation
+        position: 3
+        type: string
+        required: true
+      - name: description
+        type: string
+
+  - name: lightrag_delete_entity
+    category: admin
+    short: "删除实体"
+    long: "从知识图谱删除实体及其所有关系"
+    parameters:
+      - name: entity_name
+        position: 1
+        type: string
+        required: true
+
+  - name: lightrag_document_status
+    category: read
+    short: "文档状态"
+    long: "获取文档处理状态统计"
+    hidden: true
+    parameters: []
+
+  - name: lightrag_list_entities
+    category: read
+    short: "列出实体"
+    long: "列出知识库中的实体、文档或标签"
+    parameters:
+      - name: list_type
+        flag: type
+        type: string
+        default: entities
+        enum: [entities, documents, labels]
+      - name: entity_type
+        flag: entity-type
+        type: string
+      - name: limit
+        flag: limit
+        type: integer
+        default: 50
+
+  - name: lightrag_merge_entities
+    category: admin
+    short: "合并实体"
+    long: "合并多个实体为一个，整合所有关系"
+    parameters:
+      - name: source_entities
+        flag: sources
+        type: array
+        cli_format: json
+        required: true
+      - name: target_entity
+        flag: target
+        type: string
+        required: true
