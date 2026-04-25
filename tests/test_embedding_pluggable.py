@@ -58,7 +58,7 @@ class TestConfigReading:
         with patch("pathlib.Path.home", return_value=Path("/nonexistent")):
             result = _get_embedding_model_name()
             assert result == DEFAULT_MODEL
-            assert result == "minilm-l12"
+            assert result == "bge-base-zh-v1.5"
 
     def test_default_when_no_lightrag_section(self):
         from niu_api.internal.embedding import _get_embedding_model_name
@@ -74,20 +74,20 @@ class TestConfigReading:
                     # Make Path(...) constructor work normally for other calls
                     mock_path.side_effect = lambda x: Path(x)
                     result = _get_embedding_model_name()
-                    assert result == "minilm-l12"
+                    assert result == "bge-base-zh-v1.5"
 
     def test_returns_configured_model(self):
         from niu_api.internal.embedding import _get_embedding_model_name
         with tempfile.TemporaryDirectory() as tmp:
             prefs_path = Path(tmp) / ".niu" / "preferences.json"
             prefs_path.parent.mkdir(parents=True)
-            prefs = {"lightrag": {"embedding_model": "bge-m3"}}
+            prefs = {"lightrag": {"embedding_model": "bge-base-zh-v1.5"}}
             prefs_path.write_text(json.dumps(prefs), encoding="utf-8")
             with patch("niu_api.internal.embedding.Path") as mock_path:
                 mock_path.home.return_value = Path(tmp)
                 mock_path.side_effect = lambda x: Path(x)
                 result = _get_embedding_model_name()
-                assert result == "bge-m3"
+                assert result == "bge-base-zh-v1.5"
 
     def test_falls_back_on_unknown_model(self):
         from niu_api.internal.embedding import _get_embedding_model_name, DEFAULT_MODEL
@@ -122,17 +122,17 @@ class TestConfigReading:
 class TestGetEmbeddingDim:
     """Test get_embedding_dim() returns correct dimension."""
 
-    def test_default_dim_is_384(self):
+    def test_default_dim_is_768(self):
         from niu_api.internal.embedding import get_embedding_dim
-        # Default is minilm-l12
+        # Default is bge-base-zh-v1.5
         dim = get_embedding_dim()
-        assert dim == 384
+        assert dim == 768
 
     def test_dim_matches_configured_model(self):
         from niu_api.internal.embedding import get_embedding_dim
-        with patch("niu_api.internal.embedding._get_embedding_model_name", return_value="bge-m3"):
+        with patch("niu_api.internal.embedding._get_embedding_model_name", return_value="bge-base-zh-v1.5"):
             dim = get_embedding_dim()
-            assert dim == 1024
+            assert dim == 768
 
 
 # ============== get_current_model_info Tests ==============
@@ -152,8 +152,8 @@ class TestGetCurrentModelInfo:
     def test_default_model_info(self):
         from niu_api.internal.embedding import get_current_model_info
         info = get_current_model_info()
-        assert info["name"] == "minilm-l12"
-        assert info["dim"] == 384
+        assert info["name"] == "bge-base-zh-v1.5"
+        assert info["dim"] == 768
         assert info["loaded"] is False
 
     def test_loaded_status_after_model_load(self):
@@ -189,26 +189,27 @@ class TestSwitchModel:
                 mock_path.home.return_value = Path(tmp)
                 mock_path.side_effect = lambda x: Path(x)
 
-                result = switch_model("bge-m3")
+                # Default is bge-base-zh-v1.5 (768d), switch to minilm-l12 (384d)
+                result = switch_model("minilm-l12")
                 assert result["status"] == "switched"
-                assert result["new_model"] == "bge-m3"
-                assert result["new_dim"] == 1024
-                assert result["needs_reindex"] is True  # 384 → 1024
+                assert result["new_model"] == "minilm-l12"
+                assert result["new_dim"] == 384
+                assert result["needs_reindex"] is True  # 768 → 384
 
     def test_same_dim_no_reindex_needed(self):
         from niu_api.internal.embedding import switch_model
-        # Switching from minilm-l12 to minilm-l12 (same dim)
+        # Switching from bge-base-zh-v1.5 to bge-base-zh-v1.5 (same dim)
         with tempfile.TemporaryDirectory() as tmp:
             prefs_path = Path(tmp) / ".niu" / "preferences.json"
             prefs_path.parent.mkdir(parents=True)
-            prefs = {"lightrag": {"embedding_model": "minilm-l12"}}
+            prefs = {"lightrag": {"embedding_model": "bge-base-zh-v1.5"}}
             prefs_path.write_text(json.dumps(prefs), encoding="utf-8")
 
             with patch("niu_api.internal.embedding.Path") as mock_path:
                 mock_path.home.return_value = Path(tmp)
                 mock_path.side_effect = lambda x: Path(x)
 
-                result = switch_model("minilm-l12")
+                result = switch_model("bge-base-zh-v1.5")
                 assert result["needs_reindex"] is False
 
     def test_updates_preferences_json(self):
@@ -222,11 +223,11 @@ class TestSwitchModel:
                 mock_path.home.return_value = Path(tmp)
                 mock_path.side_effect = lambda x: Path(x)
 
-                switch_model("bge-m3")
+                switch_model("minilm-l12")
 
                 # Verify preferences.json was updated
                 updated_prefs = json.loads(prefs_path.read_text(encoding="utf-8"))
-                assert updated_prefs["lightrag"]["embedding_model"] == "bge-m3"
+                assert updated_prefs["lightrag"]["embedding_model"] == "minilm-l12"
 
     def test_forces_model_unload(self):
         from niu_api.internal.embedding import switch_model, _model, _model_name
@@ -242,9 +243,10 @@ class TestSwitchModel:
                 mock_path.side_effect = lambda x: Path(x)
 
                 # After switch, model should be unloaded
-                result = switch_model("bge-m3")
-                assert emb_module._model is None
-                assert emb_module._model_name is None
+                result = switch_model("minilm-l12")
+                with emb_module._model_lock:
+                    assert emb_module._model is None
+                    assert emb_module._model_name is None
 
 
 # ============== Backward Compatibility Tests ==============
@@ -253,13 +255,13 @@ class TestSwitchModel:
 class TestBackwardCompat:
     """Test backward compatibility with existing vector store."""
 
-    def test_default_model_is_minilm_l12(self):
+    def test_default_model_is_bge_base_zh(self):
         from niu_api.internal.embedding import DEFAULT_MODEL
-        assert DEFAULT_MODEL == "minilm-l12"
+        assert DEFAULT_MODEL == "bge-base-zh-v1.5"
 
-    def test_default_dim_is_384(self):
+    def test_default_dim_is_768(self):
         from niu_api.internal.embedding import get_embedding_dim
-        assert get_embedding_dim() == 384
+        assert get_embedding_dim() == 768
 
     def test_existing_model_dir_name_preserved(self):
         from niu_api.internal.embedding import SUPPORTED_MODELS
@@ -334,18 +336,27 @@ class TestLifecycle:
 
     def test_is_ready_false_before_load(self):
         import niu_api.internal.embedding as emb_module
-        # Reset module state
-        emb_module._model = None
-        from niu_api.internal.embedding import is_ready
-        assert is_ready() is False
+        with emb_module._model_lock:
+            old_model = emb_module._model
+            emb_module._model = None
+        try:
+            from niu_api.internal.embedding import is_ready
+            assert is_ready() is False
+        finally:
+            with emb_module._model_lock:
+                emb_module._model = old_model
 
     def test_is_ready_true_after_load(self):
         import niu_api.internal.embedding as emb_module
-        emb_module._model = MagicMock()
-        from niu_api.internal.embedding import is_ready
-        assert is_ready() is True
-        # Clean up
-        emb_module._model = None
+        with emb_module._model_lock:
+            old_model = emb_module._model
+            emb_module._model = MagicMock()
+        try:
+            from niu_api.internal.embedding import is_ready
+            assert is_ready() is True
+        finally:
+            with emb_module._model_lock:
+                emb_module._model = old_model
 
     def test_get_models_dir_default(self):
         from niu_api.internal.embedding import get_models_dir

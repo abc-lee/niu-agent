@@ -28,7 +28,7 @@ class LightRAGAdapter:
     """
 
     # Supported entity types for filtered search
-    ENTITY_TYPES = {"skill", "tool", "knowledge", "person", "photo", "concept"}
+    ENTITY_TYPES = {"skill", "tool", "knowledge", "person", "photo", "concept", "interaction_habit"}
 
     def _get_rag(self):
         """Get the LightRAG instance (delegates to lightrag_manager)."""
@@ -277,6 +277,29 @@ class LightRAGAdapter:
         knowledge_entities = self.filter_by_entity_type(result, "knowledge")
         concept_entities = self.filter_by_entity_type(result, "concept")
         return knowledge_entities + concept_entities
+
+    def search_interaction_habits(
+        self,
+        query: str,
+        top_k: int = 10,
+    ) -> List[Dict[str, Any]]:
+        """Search for interaction_habit entities in the knowledge graph.
+
+        Interaction habits store tool usage patterns (e.g. dialect preferences,
+        success/failure counts) as LightRAG entities with entity_type="interaction_habit".
+
+        The entity name follows the pattern "habit:{habit_type}:{target_tool}"
+        and the description contains the habit content plus confidence data.
+
+        Args:
+            query: Search query string (typically tool args or context).
+            top_k: Maximum number of results to retrieve.
+
+        Returns:
+            List of interaction_habit entity dicts.
+        """
+        result = self.query_data(query, mode="local", top_k=top_k)
+        return self.filter_by_entity_type(result, "interaction_habit")
 
     # ============== Graph Traversal Methods ==============
 
@@ -592,6 +615,158 @@ class LightRAGIngester:
             chunks=chunks,
             source_id=source_id,
         )
+
+    def upsert_interaction_habit(
+        self,
+        habit_type: str,
+        content: str,
+        target_tool: str,
+        confidence: Optional[Dict[str, Any]] = None,
+        source_id: str = "custom_kg",
+    ) -> Dict[str, Any]:
+        """Upsert an interaction habit entity into the knowledge graph.
+
+        Interaction habits are stored as LightRAG entities with
+        entity_type="interaction_habit". The entity name follows the pattern
+        "habit:{habit_type}:{target_tool}" for deterministic upsert.
+
+        If the entity already exists, it will be updated (LightRAG upsert
+        semantics: delete old + re-insert with new data).
+
+        Args:
+            habit_type: Habit type (e.g., "tool_dialect", "user_state").
+            content: Habit content description.
+            target_tool: The tool this habit relates to.
+            confidence: Dict with success/fail counts, e.g.
+                {"success_count": 3, "fail_count": 0, "last_used": "2026-04-24"}.
+                Defaults to {"success_count": 0, "fail_count": 0}.
+            source_id: Source document/chunk ID.
+
+        Returns:
+            Dict with status and details.
+        """
+        if confidence is None:
+            confidence = {"success_count": 0, "fail_count": 0}
+
+        entity_name = f"habit:{habit_type}:{target_tool}"
+        description = f"{content} | confidence: {confidence}"
+
+        chunks = [{
+            "content": f"{content} target_tool={target_tool} confidence={confidence}",
+            "source_id": source_id,
+            "file_path": "interaction_habit",
+        }]
+
+        entities = [{
+            "entity_name": entity_name,
+            "entity_type": "interaction_habit",
+            "description": description,
+            "source_id": source_id,
+            "file_path": "interaction_habit",
+        }]
+
+        return self.inject_custom_kg(
+            entities=entities,
+            relationships=[],
+            chunks=chunks,
+            source_id=source_id,
+        )
+
+    def update_habit_confidence(
+        self,
+        entity_name: str,
+        result: str,
+    ) -> Dict[str, Any]:
+        """Update confidence for an interaction habit entity.
+
+        Reads the current entity, updates success/fail counts, and re-injects
+        it (LightRAG upsert). If fail_count >= 3, deletes the entity instead.
+
+        This replaces vector_search.update_habit_confidence() which used
+        direct SQLite operations on vectors.db.
+
+        Args:
+            entity_name: Entity name (e.g., "habit:tool_dialect:kg-server").
+            result: "success" or "fail".
+
+        Returns:
+            Dict with status and details.
+        """
+        rag = self._get_rag()
+        if rag is None:
+            return {"status": "error", "message": "LightRAG not available"}
+
+        try:
+            # Read current entity via graph traversal
+            kg = call_async(rag.get_knowledge_graph(entity_name, max_depth=1, max_nodes=1))
+
+            if kg is None or not kg.nodes:
+                return {"status": "error", "message": f"Habit entity not found: {entity_name}"}
+
+            # Find the matching node
+            target_node = None
+            for node in kg.nodes:
+                if node.id == entity_name:
+                    target_node = node
+                    break
+
+            if target_node is None:
+                return {"status": "error", "message": f"Habit entity not found: {entity_name}"}
+
+            # Parse current confidence from description
+            description = target_node.properties.get("description", "")
+            import json as _json
+            import re as _re
+
+            # Extract confidence dict from description (format: "... | confidence: {...}")
+            confidence = {"success_count": 0, "fail_count": 0}
+            conf_match = _re.search(r'confidence:\s*(\{[^}]+\})', description)
+            if conf_match:
+                try:
+                    confidence = _json.loads(conf_match.group(1))
+                except (_json.JSONDecodeError, ValueError):
+                    pass
+
+            # Extract the content part (before "| confidence:")
+            content = _re.sub(r'\s*\|\s*confidence:\s*\{[^}]+\}\s*$', '', description).strip()
+
+            # Extract entity_type and source info
+            entity_type = target_node.properties.get("entity_type", "interaction_habit")
+
+            # Update counts
+            if result == "success":
+                confidence["success_count"] = confidence.get("success_count", 0) + 1
+            elif result == "fail":
+                confidence["fail_count"] = confidence.get("fail_count", 0) + 1
+
+            import time as _time
+            confidence["last_used"] = _time.strftime("%Y-%m-%d")
+
+            # Delete if too many failures
+            if confidence.get("fail_count", 0) >= 3:
+                try:
+                    call_async(rag.adelete_by_entity(entity_name))
+                    logger.info(f"[InteractionHabits] Deleted low-confidence habit: {entity_name}")
+                except Exception as del_e:
+                    logger.warning(f"[InteractionHabits] Failed to delete habit {entity_name}: {del_e}")
+                return {"status": "ok", "action": "deleted", "entity_name": entity_name}
+
+            # Re-inject with updated confidence (upsert)
+            # Parse habit_type and target_tool from entity_name "habit:{type}:{tool}"
+            parts = entity_name.split(":", 2)
+            habit_type = parts[1] if len(parts) >= 2 else "unknown"
+            target_tool = parts[2] if len(parts) >= 3 else "unknown"
+
+            return self.upsert_interaction_habit(
+                habit_type=habit_type,
+                content=content,
+                target_tool=target_tool,
+                confidence=confidence,
+            )
+
+        except Exception as e:
+            logger.error(f"LightRAG update_habit_confidence failed: {e}")
+            return {"status": "error", "message": str(e)}
 
     def inject_relation(
         self,
