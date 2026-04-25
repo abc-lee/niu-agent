@@ -78,36 +78,41 @@ async def register_mcp_tool(request: RegisterMCPToolRequest):
 
 @router.post("/mcp-tools/batch")
 async def register_mcp_tools_batch(tools: list[RegisterMCPToolRequest]):
-    """批量注册 MCP 工具到 LightRAG"""
-    results = []
+    """Batch register MCP tools to LightRAG (single persist cycle)."""
+    if not tools:
+        return {"results": []}
 
-    for tool in tools:
-        full_name = f"{tool.server_name}/{tool.tool_name}"
-        content = f"{tool.tool_name}: {tool.description}"
+    try:
+        from niu_api.internal.lightrag_adapter import LightRAGIngester
 
-        try:
-            from niu_api.internal.lightrag_adapter import LightRAGIngester
+        ingester = LightRAGIngester()
+        items = []
+        for tool in tools:
+            full_name = f"{tool.server_name}/{tool.tool_name}"
+            content = f"{tool.tool_name}: {tool.description}"
+            items.append({
+                "name": f"tool:{full_name}",
+                "entity_type": "tool",
+                "description": tool.description,
+                "source_id": f"tool:{full_name}",
+                "chunk_content": content,
+                "file_path": f"tool://{full_name}",
+            })
 
-            ingester = LightRAGIngester()
-            result = ingester.inject_entity(
-                name=f"tool:{full_name}",
-                entity_type="tool",
-                description=tool.description,
-                chunk_content=content,
-                file_path=f"tool://{full_name}",
-            )
-            status = "success" if result.get("status") == "ok" else "failed"
-        except Exception as e:
-            logger.error(f"Failed to register MCP tool {full_name}: {e}")
-            status = "failed"
+        result = ingester.inject_entities_batch(items)
+        batch_ok = result.get("status") == "ok"
+        results = []
+        for tool in tools:
+            results.append({
+                "tool_name": tool.tool_name,
+                "status": "success" if batch_ok else "failed",
+                "resource_id": f"mcp_tool:{tool.server_name}:{tool.tool_name}",
+            })
+        return {"results": results}
+    except Exception as e:
+        logger.error(f"Failed to batch register MCP tools: {e}")
 
-        results.append({
-            "tool_name": tool.tool_name,
-            "status": status,
-            "resource_id": f"mcp_tool:{tool.server_name}:{tool.tool_name}",
-        })
-
-    return {"results": results}
+    raise HTTPException(status_code=500, detail="Failed to batch register MCP tools")
 
 
 @router.get("/resources", response_model=ListResourcesResponse)
