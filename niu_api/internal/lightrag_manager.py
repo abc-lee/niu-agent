@@ -158,12 +158,30 @@ def _create_lightrag_instance():
     STORAGE_DIR.mkdir(parents=True, exist_ok=True)
 
     # Build LLM function (routed through our proxy)
-    llm_model_func = partial(
-        openai_complete_if_cache,
-        model="proxy-model",  # Proxy ignores this, uses user-config.json
-        base_url=PROXY_BASE_URL,
-        api_key=PROXY_API_KEY,
-    )
+    # LightRAG calls llm_model_func(prompt, system_prompt=..., **kwargs).
+    # openai_complete_if_cache(model, prompt, ...) expects model as the first
+    # positional arg. Using partial(model=...) binds model as a keyword arg,
+    # which conflicts when LightRAG passes prompt as a positional arg (Python
+    # maps it to the first unbound param = model, then finds model= already
+    # set by partial → "got multiple values for argument 'model'").
+    # Fix: wrapper function whose first param is prompt (matching LightRAG's
+    # convention), passing model as a positional arg to openai_complete_if_cache.
+    async def _llm_model_func(
+        prompt, system_prompt=None, history_messages=None,
+        keyword_extraction=False, **kwargs,
+    ) -> str:
+        return await openai_complete_if_cache(
+            "proxy-model",  # model as positional arg (proxy ignores, uses user-config.json)
+            prompt,
+            system_prompt=system_prompt,
+            history_messages=history_messages,
+            base_url=PROXY_BASE_URL,
+            api_key=PROXY_API_KEY,
+            keyword_extraction=keyword_extraction,
+            **kwargs,
+        )
+
+    llm_model_func = _llm_model_func
 
     # Build embedding function (direct local call, no proxy)
     from niu_api.internal.embedding import get_embedding_max_seq_length
