@@ -6,7 +6,6 @@ The register endpoints are kept as no-ops for backward compatibility.
 List/delete still query LightRAG for skill entities.
 """
 
-import json
 from pydantic import BaseModel
 from fastapi import APIRouter, HTTPException
 from loguru import logger
@@ -42,7 +41,7 @@ class ListResourcesResponse(BaseModel):
 # "l1" category has no direct LightRAG equivalent; listing it returns empty.
 _CATEGORY_TO_ENTITY_TYPE: dict[str, str] = {
     "skill": "skill",
-    "mcp_tool": "tool",
+    # mcp_tool removed: in disk mode, tools are discovered via disk YAML, not LightRAG
 }
 
 

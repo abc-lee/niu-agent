@@ -211,29 +211,19 @@ class TestInjectorListResources:
 
     @pytest.mark.asyncio
     async def test_list_all_resources(self, mock_adapter):
-        """Listing without resource_type queries both skill and tool."""
+        """Listing without resource_type queries skill only (disk mode: mcp_tool removed)."""
         from niu_api.injector import list_resources
 
-        # list_entities is called once per category
-        mock_adapter.list_entities.side_effect = [
-            {
-                "status": "ok",
-                "data": [
-                    {"id": "skill:python", "entity_type": "skill", "description": "Python programming"},
-                ],
-            },
-            {
-                "status": "ok",
-                "data": [
-                    {"id": "tool:file-parser/parse", "entity_type": "tool", "description": "Parse files"},
-                ],
-            },
-        ]
+        mock_adapter.list_entities.return_value = {
+            "status": "ok",
+            "data": [
+                {"id": "skill:python", "entity_type": "skill", "description": "Python programming"},
+            ],
+        }
 
         result = await list_resources()
-        assert len(result.resources) == 2
-        types = {r["type"] for r in result.resources}
-        assert types == {"skill", "mcp_tool"}
+        assert len(result.resources) == 1
+        assert result.resources[0]["type"] == "skill"
 
     @pytest.mark.asyncio
     async def test_list_by_type_skill(self, mock_adapter):
@@ -257,23 +247,13 @@ class TestInjectorListResources:
         )
 
     @pytest.mark.asyncio
-    async def test_list_by_type_mcp_tool_maps_to_tool(self, mock_adapter):
-        """resource_type=mcp_tool maps to LightRAG entity_type=tool."""
+    async def test_list_by_type_mcp_tool_returns_empty(self, mock_adapter):
+        """resource_type=mcp_tool returns empty in disk mode (no longer mapped to LightRAG)."""
         from niu_api.injector import list_resources
 
-        mock_adapter.list_entities.return_value = {
-            "status": "ok",
-            "data": [
-                {"id": "tool:kg-server/query", "entity_type": "tool", "description": "Query KG"},
-            ],
-        }
-
         result = await list_resources(resource_type="mcp_tool")
-        assert len(result.resources) == 1
-        assert result.resources[0]["type"] == "mcp_tool"
-        mock_adapter.list_entities.assert_called_once_with(
-            list_type="entities", entity_type="tool", limit=100,
-        )
+        assert result.resources == []
+        mock_adapter.list_entities.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_list_unmapped_type_returns_empty(self, mock_adapter):
