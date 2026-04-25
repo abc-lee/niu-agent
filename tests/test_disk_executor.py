@@ -7,7 +7,7 @@ import pytest
 import yaml
 
 from niu_api.internal.disk_config import DiskConfig
-from niu_api.internal.disk_executor import DiskExecutor
+from niu_api.internal.disk_executor import DiskExecutor, ExecutorResult
 from niu_api.internal.disk_parser import ParsedCommand, DiskParser
 
 
@@ -99,7 +99,7 @@ class TestCorrectExecution:
     def test_positional_arg(self, executor, parser, mock_registry):
         parsed = parser.parse("/kg/explore_node Einstein")
         result = executor.execute(parsed)
-        # Should call the real MCP function
+        assert result.is_error is False
         mock_registry.get.assert_called_once()
         call_kwargs = mock_registry.get.return_value.call_args[1]
         assert call_kwargs["entity_id"] == "Einstein"
@@ -122,13 +122,13 @@ class TestCorrectExecution:
     def test_no_args_tool(self, executor, parser, mock_registry):
         parsed = parser.parse("/kg/graph_stats")
         result = executor.execute(parsed)
+        assert result.is_error is False
         mock_registry.get.assert_called_once()
 
     def test_default_values_applied(self, executor, parser, mock_registry):
         parsed = parser.parse("/kg/explore_node Einstein")
         executor.execute(parsed)
         call_kwargs = mock_registry.get.return_value.call_args[1]
-        # Defaults should be sent
         assert call_kwargs["depth"] == 2
         assert call_kwargs["min_confidence"] == 0.0
         assert call_kwargs["direction"] == "both"
@@ -136,9 +136,17 @@ class TestCorrectExecution:
     def test_object_arg_json(self, executor, parser, mock_registry):
         parsed = parser.parse('/memory/remember "hello" --metadata \'{"source":"chat"}\'')
         result = executor.execute(parsed)
-        # Should parse JSON and pass as dict
+        assert result.is_error is False
         call_kwargs = mock_registry.get.return_value.call_args[1]
         assert call_kwargs["metadata"] == {"source": "chat"}
+
+    def test_string_result_not_misidentified_as_error(self, executor, parser, mock_registry):
+        """MCP tools returning strings (e.g. lightrag_query) must not be treated as errors."""
+        mock_registry.get.return_value = MagicMock(return_value="query result text")
+        parsed = parser.parse("/kg/explore_node Einstein")
+        result = executor.execute(parsed)
+        assert result.is_error is False
+        assert result.value == "query result text"
 
 
 # ---------------------------------------------------------------------------
@@ -149,61 +157,62 @@ class TestParameterErrors:
     def test_e5_missing_required(self, executor, parser):
         parsed = parser.parse("/kg/explore_node")
         result = executor.execute(parsed)
-        assert isinstance(result, str)  # Error message
-        assert "entity_id" in result
+        assert result.is_error is True
+        assert isinstance(result.value, str)
+        assert "entity_id" in result.value
 
     def test_e5_self_contained(self, executor, parser):
         """E5 must include ALL parameters."""
         parsed = parser.parse("/kg/explore_node")
         result = executor.execute(parsed)
-        assert "--depth" in result
-        assert "--min-confidence" in result
-        assert "--direction" in result
+        assert "--depth" in result.value
+        assert "--min-confidence" in result.value
+        assert "--direction" in result.value
 
     def test_e6_type_mismatch(self, executor, parser):
         parsed = parser.parse("/kg/explore_node Einstein --depth abc")
         result = executor.execute(parsed)
-        assert isinstance(result, str)
-        assert "depth" in result
-        assert "integer" in result.lower()
+        assert result.is_error is True
+        assert "depth" in result.value
+        assert "integer" in result.value.lower()
 
     def test_e7_unknown_flag_with_suggestion(self, executor, parser):
         parsed = parser.parse("/kg/explore_node Einstein --depht 3")
         result = executor.execute(parsed)
-        assert isinstance(result, str)
-        assert "depht" in result
-        assert "depth" in result
+        assert result.is_error is True
+        assert "depht" in result.value
+        assert "depth" in result.value
 
     def test_e8_enum_error(self, executor, parser):
         parsed = parser.parse("/kg/explore_node Einstein --direction sideways")
         result = executor.execute(parsed)
-        assert isinstance(result, str)
-        assert "sideways" in result
-        assert "both" in result
+        assert result.is_error is True
+        assert "sideways" in result.value
+        assert "both" in result.value
 
     def test_e9_out_of_range(self, executor, parser):
         parsed = parser.parse("/kg/explore_node Einstein --depth 10")
         result = executor.execute(parsed)
-        assert isinstance(result, str)
-        assert "10" in result
+        assert result.is_error is True
+        assert "10" in result.value
 
     def test_e10_too_many_args(self, executor, parser):
         parsed = parser.parse("/kg/explore_node Einstein ExtraArg")
         result = executor.execute(parsed)
-        assert isinstance(result, str)
-        assert "too many" in result.lower()
+        assert result.is_error is True
+        assert "too many" in result.value.lower()
 
     def test_e14_flag_missing_value(self, executor, parser):
         parsed = parser.parse("/kg/explore_node Einstein --depth")
         result = executor.execute(parsed)
-        assert isinstance(result, str)
-        assert "depth" in result
+        assert result.is_error is True
+        assert "depth" in result.value
 
     def test_e18_mutually_exclusive(self, executor, parser):
         parsed = parser.parse("/kg/delete_doc --uri x --title y")
         result = executor.execute(parsed)
-        assert isinstance(result, str)
-        assert "mutually exclusive" in result.lower()
+        assert result.is_error is True
+        assert "mutually exclusive" in result.value.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -214,24 +223,22 @@ class TestE17Escalation:
     def test_first_error_no_escalation(self, executor, parser):
         parsed = parser.parse("/kg/explore_node")
         result = executor.execute(parsed)
-        assert "repeated" not in result.lower()
+        assert "repeated" not in result.value.lower()
 
     def test_third_error_escalates(self, executor, parser):
-        # First two errors
         parsed = parser.parse("/kg/explore_node")
         executor.execute(parsed)
         executor.execute(parsed)
-        # Third error
         result = executor.execute(parsed)
-        assert "repeated" in result.lower()
+        assert "repeated" in result.value.lower()
 
     def test_escalation_includes_full_usage(self, executor, parser):
         parsed = parser.parse("/kg/explore_node")
         executor.execute(parsed)
         executor.execute(parsed)
         result = executor.execute(parsed)
-        assert "entity_id" in result
-        assert "--depth" in result
+        assert "entity_id" in result.value
+        assert "--depth" in result.value
 
 
 # ---------------------------------------------------------------------------
@@ -243,16 +250,17 @@ class TestMCPErrorPassthrough:
         mock_registry.get.return_value = MagicMock(side_effect=ValueError("Entity not found"))
         parsed = parser.parse("/kg/explore_node Einstein")
         result = executor.execute(parsed)
-        assert isinstance(result, str)
-        assert "execution failed" in result.lower()
+        assert result.is_error is True
+        assert "execution failed" in result.value.lower()
 
     def test_tool_returns_error_status(self, executor, parser, mock_registry):
         mock_registry.get.return_value = MagicMock(return_value={"status": "error", "message": "Not found"})
         parsed = parser.parse("/kg/explore_node Einstein")
         result = executor.execute(parsed)
-        # Error dict is returned as-is (raw result)
-        assert isinstance(result, dict)
-        assert result["status"] == "error"
+        # Error dict is returned as-is (raw result, not an executor error)
+        assert result.is_error is False
+        assert isinstance(result.value, dict)
+        assert result.value["status"] == "error"
 
 
 # ---------------------------------------------------------------------------
@@ -263,14 +271,14 @@ class TestFirstErrorTip:
     def test_first_error_includes_tip(self, executor, parser):
         parsed = parser.parse("/kg/explore_node")
         result = executor.execute(parsed)
-        assert "Tip" in result
-        assert "cat /kg/explore_node" in result
+        assert "Tip" in result.value
+        assert "cat /kg/explore_node" in result.value
 
     def test_second_error_no_tip(self, executor, parser):
         parsed = parser.parse("/kg/explore_node")
         executor.execute(parsed)
         result = executor.execute(parsed)
-        assert "Tip" not in result or "cat" not in result.split("Tip")[0]
+        assert "Tip" not in result.value or "cat" not in result.value.split("Tip")[0]
 
 
 # ---------------------------------------------------------------------------
@@ -281,14 +289,14 @@ class TestEdgeCases:
     def test_unknown_directory_in_execute(self, executor, parser):
         parsed = parser.parse("/nonexist/tool arg1")
         result = executor.execute(parsed)
-        assert isinstance(result, str)
-        assert "nonexist" in result.lower() or "No such" in result
+        assert result.is_error is True
+        assert "nonexist" in result.value.lower() or "No such" in result.value
 
     def test_unknown_tool_in_execute(self, executor, parser):
         parsed = parser.parse("/kg/nonexist_tool arg1")
         result = executor.execute(parsed)
-        assert isinstance(result, str)
-        assert "nonexist_tool" in result.lower() or "No such" in result
+        assert result.is_error is True
+        assert "nonexist_tool" in result.value.lower() or "No such" in result.value
 
     def test_kebab_flag_to_snake_case(self, executor, parser, mock_registry):
         parsed = parser.parse("/kg/explore_node Einstein --min-confidence 0.5")

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass
 from typing import Any
 
 from niu_api.internal.disk_config import DiskConfig, ToolConfig, ArgConfig
@@ -11,6 +12,16 @@ from niu_api.internal.disk_errors import DiskErrors
 from niu_api.internal.disk_parser import ParsedCommand
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ExecutorResult:
+    """Structured return from DiskExecutor.execute().
+
+    Separates error text from successful MCP tool results (which may be str, dict, or list).
+    """
+    is_error: bool
+    value: Any  # Error text (str) on error, or raw MCP result on success
 
 
 class DiskExecutor:
@@ -23,8 +34,8 @@ class DiskExecutor:
         self._error_count: dict[str, int] = {}  # tool_path → consecutive errors
         self._first_error: dict[str, bool] = {}  # tool_path → has shown first error
 
-    def execute(self, parsed: ParsedCommand) -> str | dict | list:
-        """Execute a tool call. Returns error text (str) or raw MCP result."""
+    def execute(self, parsed: ParsedCommand) -> ExecutorResult:
+        """Execute a tool call. Returns ExecutorResult with is_error flag."""
         dir_name = parsed.dir_name
         tool_name = parsed.tool_name
 
@@ -32,20 +43,20 @@ class DiskExecutor:
         server = self.config.get_server_by_dir(dir_name)
         if server is None:
             available = sorted(self.config.directory_map.keys())
-            return self.errors.path_not_found(f"/{dir_name}", available)
+            return ExecutorResult(is_error=True, value=self.errors.path_not_found(f"/{dir_name}", available))
 
         # Validate tool exists
         tool = self.config.get_tool_config(dir_name, tool_name)
         if tool is None:
             available = [t.name for t in self.config.list_visible_tools(dir_name)]
-            return self.errors.tool_not_found(dir_name, tool_name, available)
+            return ExecutorResult(is_error=True, value=self.errors.tool_not_found(dir_name, tool_name, available))
 
         tool_path = f"/{dir_name}/{tool_name}"
 
         # Build and validate kwargs from CLI args
         kwargs, error = self._build_kwargs(parsed, tool, tool_path)
         if error:
-            return self._handle_param_error(tool_path, dir_name, tool, error)
+            return ExecutorResult(is_error=True, value=self._handle_param_error(tool_path, dir_name, tool, error))
 
         # Add defaults for args not provided
         kwargs = self._apply_defaults(kwargs, tool)
@@ -62,11 +73,11 @@ class DiskExecutor:
                 registry = get_registry()
             func = registry.get(full_name)
             if func is None:
-                return self.errors.execution_failure(tool_path, f"Tool '{full_name}' not found in registry")
+                return ExecutorResult(is_error=True, value=self.errors.execution_failure(tool_path, f"Tool '{full_name}' not found in registry"))
             result = func(**kwargs)
-            return result
+            return ExecutorResult(is_error=False, value=result)
         except Exception as e:
-            return self.errors.execution_failure(tool_path, str(e))
+            return ExecutorResult(is_error=True, value=self.errors.execution_failure(tool_path, str(e)))
 
     def _handle_param_error(self, tool_path: str, dir_name: str,
                             tool: ToolConfig, error: str) -> str:

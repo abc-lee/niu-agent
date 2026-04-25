@@ -57,14 +57,14 @@ class DiskEngine:
 
         # Tool execution
         if parsed.action == "EXECUTE":
-            result = self.executor.execute(parsed)
-            if isinstance(result, str):
-                # Parameter error → text
-                return DiskResult(action="ERROR", text=result,
+            exec_result = self.executor.execute(parsed)
+            if exec_result.is_error:
+                # Parameter/execution error → text
+                return DiskResult(action="ERROR", text=exec_result.value,
                                   tool_path=f"/{parsed.dir_name}/{parsed.tool_name}")
             else:
                 # MCP success/failure → raw result
-                return DiskResult(action="EXECUTE", raw_result=result,
+                return DiskResult(action="EXECUTE", raw_result=exec_result.value,
                                   tool_path=f"/{parsed.dir_name}/{parsed.tool_name}")
 
         return DiskResult(action="ERROR", text=f"Unknown action: {parsed.action}")
@@ -75,10 +75,6 @@ class DiskEngine:
         The description includes directory mapping so LLMs can skip the first
         exploration turn.
         """
-        dirs_desc = ", ".join(
-            f"{d}={self.config.servers[sn].description.split('—')[0].strip()}"
-            for d, sn in sorted(self.config.directory_map.items())
-        )
         # Simplify: just use dir=server format
         dirs_short = ", ".join(
             f"{d}={sn.replace('-server', '')}"
