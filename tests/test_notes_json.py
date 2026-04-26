@@ -416,3 +416,28 @@ class TestNotesDeleteFailure:
         assert result["status"] == "deleted"
         notes = read_notes()
         assert len(notes) == 0
+
+
+class TestNotesIdValidation:
+    """Tests for note ID format validation."""
+
+    def test_valid_note_ids(self, tmp_workspace):
+        for nid in ["abc", "note-1", "my_note", "A1_b2-C3", "x" * 128]:
+            result = create_note(note_id=nid, content="test")
+            assert result["status"] == "created", f"Expected 'created' for id={nid!r}, got {result['status']}"
+
+    def test_invalid_note_id_special_chars(self, tmp_workspace):
+        result = create_note(note_id="bad id", content="test")
+        assert result["status"] == "invalid_id"
+
+    def test_invalid_note_id_path_traversal(self, tmp_workspace):
+        result = create_note(note_id="../etc/passwd", content="test")
+        assert result["status"] == "invalid_id"
+
+    def test_invalid_note_id_empty(self, tmp_workspace):
+        result = create_note(note_id="", content="test")
+        assert result["status"] == "invalid_id"
+
+    def test_invalid_note_id_too_long(self, tmp_workspace):
+        result = create_note(note_id="x" * 129, content="test")
+        assert result["status"] == "invalid_id"
