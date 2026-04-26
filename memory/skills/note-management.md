@@ -17,6 +17,10 @@ description: Use when user asks to create, read, update, or delete sticky notes,
 bash(command="curl -s http://localhost:9876/api/notes")
 ```
 
+> **注意**：Windows 环境下 PowerShell 的 `curl` 是 `Invoke-WebRequest` 别名，需改用：
+> `bash(command="Invoke-RestMethod -Uri http://localhost:9876/api/notes | ConvertTo-Json")`
+> 或通过 `code_run` 用 Python `requests` 调用。
+
 ## Core Operations
 
 ### 创建便签
