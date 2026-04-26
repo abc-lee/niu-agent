@@ -422,10 +422,13 @@ class SkillSync:
                 adapter = LightRAGAdapter()
                 for note_id in deleted_ids:
                     try:
-                        adapter.delete_entity(f"note:{note_id}")
-                        with self._lock:
-                            self._last_notes_scan.pop(note_id, None)
-                        logger.info(f"[SkillSync] Deleted note: {note_id}")
+                        result = adapter.delete_entity(f"note:{note_id}")
+                        if result.get("status") == "ok":
+                            with self._lock:
+                                self._last_notes_scan.pop(note_id, None)
+                            logger.info(f"[SkillSync] Deleted note: {note_id}")
+                        else:
+                            logger.warning(f"[SkillSync] Note deletion returned error for {note_id}: {result.get('message', '')}")
                     except Exception as e:
                         # Keep hash so deletion is retried on next scan
                         logger.warning(f"[SkillSync] Failed to delete note {note_id}: {e}")
