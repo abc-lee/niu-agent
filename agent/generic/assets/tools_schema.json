@@ -1,5 +1,13 @@
 [
   {"type": "function", "function": {
+    "name": "bash",
+    "description": "Execute a shell command and return its output. Use for system operations, file management, running scripts, curl, and any command-line tasks. Prefer this over code_run(python) for simple shell operations like curl, ls, cat, grep, etc.",
+    "parameters": {"type": "object", "properties": {
+      "command": {"type": "string", "description": "The shell command to execute"},
+      "timeout": {"type": "integer", "description": "Timeout in seconds (default: 30, max: 300)", "default": 30}
+    }, "required": ["command"]}
+  }},
+  {"type": "function", "function": {
     "name": "code_run",
     "description": "Code executor. Prefer python. No concurrent calls. Prefer code in ```python/powershell blocks in reply body to avoid escaping. No hardcoding bulk data",
     "parameters": {"type": "object", "properties": {

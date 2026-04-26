@@ -569,6 +569,18 @@ class NiuHandler(BaseHandler):
         matches = re.findall(rf"```{code_type}\n(.*?)\n```", content, re.DOTALL)
         return matches[-1].strip() if matches else None
 
+    def do_bash(self, args: dict, response) -> StepOutcome:
+        """Execute a shell command."""
+        command = args.get("command", "")
+        timeout = min(args.get("timeout", 30), 300)
+
+        if not command:
+            return StepOutcome("[Error] Command missing.", next_prompt="\n")
+
+        code_type = "bash" if os.name != "nt" else "powershell"
+        result = code_run(command, code_type=code_type, timeout=timeout, cwd=self.cwd)
+        return StepOutcome(result, next_prompt=self._get_anchor_prompt())
+
     def do_code_run(self, args: dict, response) -> StepOutcome:
         """执行代码"""
         # 兼容两种参数名
