@@ -8,7 +8,6 @@ import json
 import os
 import tempfile
 from datetime import datetime
-from pathlib import Path
 from typing import Dict, List, Optional
 
 from loguru import logger
@@ -46,10 +45,8 @@ def _atomic_write(data: list) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
-        # Windows: os.rename fails if target exists
-        if os.path.exists(notes_path):
-            os.remove(notes_path)
-        os.rename(tmp_path, notes_path)
+        # os.replace() atomically replaces target on both Linux and Windows
+        os.replace(tmp_path, notes_path)
     except BaseException:
         # Clean up temp file on any error
         if os.path.exists(tmp_path):
