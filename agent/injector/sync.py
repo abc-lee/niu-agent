@@ -376,13 +376,18 @@ class SkillSync:
                 logger.debug(f"YAML frontmatter parse failed: {e}")
 
         # Fallback: 简单正则解析（无 PyYAML 时）
-        # 注意：仅支持标量值，列表值需安装 PyYAML
+        # 注意：仅支持标量值和内联列表 [a, b]，多行列表需安装 PyYAML
         parsed = {}
         for line in yaml_text.split("\n"):
             match = re.match(r"^(\w+)\s*:\s*(.+)$", line.strip())
             if match:
                 key, value = match.group(1), match.group(2).strip().strip("\"'")
-                parsed[key] = value
+                # Handle inline list syntax: [a, b, c]
+                if value.startswith("[") and value.endswith("]"):
+                    items = [v.strip().strip("\"'") for v in value[1:-1].split(",") if v.strip()]
+                    parsed[key] = items
+                else:
+                    parsed[key] = value
         if not YAML_AVAILABLE and any(k in ("triggers", "tags") for k in parsed):
             logger.warning("PyYAML not installed, YAML list fields (triggers/tags) may not parse correctly")
         return parsed
@@ -398,8 +403,8 @@ class SkillSync:
         if fm is None:
             fm = self._parse_yaml_frontmatter(content)
         fm_triggers = fm.get("triggers")
-        if fm_triggers:
-            if isinstance(fm_triggers, list):
+        if fm_triggers is not None:
+            if isinstance(fm_triggers, list) and fm_triggers:
                 triggers.extend(str(t) for t in fm_triggers)
             elif isinstance(fm_triggers, str):
                 triggers.extend(re.split(r"[,，、]", fm_triggers))
@@ -446,11 +451,19 @@ class SkillSync:
             return fm_desc.strip()
 
         # 优先级 2: 第一个 # 标题（降级）
-        lines = content.strip().split("\n")
+        # Strip frontmatter before scanning for titles
+        scan_content = content
+        stripped = content.strip()
+        if stripped.startswith("---"):
+            end = stripped.find("---", 3)
+            if end != -1:
+                scan_content = stripped[end + 3:]
+
+        lines = scan_content.strip().split("\n")
         for line in lines:
             line = line.strip()
             if line.startswith("# "):
-                logger.warning(f"Skill 缺少 YAML frontmatter description，使用标题降级")
+                logger.warning("Skill 缺少 YAML frontmatter description，使用标题降级")
                 return line[2:].strip()
 
         # 默认：拒绝同步
@@ -468,8 +481,8 @@ class SkillSync:
         if fm is None:
             fm = self._parse_yaml_frontmatter(content)
         fm_tags = fm.get("tags")
-        if fm_tags:
-            if isinstance(fm_tags, list):
+        if fm_tags is not None:
+            if isinstance(fm_tags, list) and fm_tags:
                 tags.extend(str(t) for t in fm_tags)
             elif isinstance(fm_tags, str):
                 tags.extend(re.split(r"[,，、]", fm_tags))
