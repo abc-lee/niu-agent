@@ -1,14 +1,15 @@
 """
-Notes API - Sticky notes CRUD endpoints
+Notes API - Sticky notes CRUD endpoints (JSON storage + LightRAGIngester sync)
 """
 
 import asyncio
+from datetime import datetime
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
-from pydantic import BaseModel
 from loguru import logger
+from pydantic import BaseModel
 
-from niu_api.notes import create_note, update_note, delete_note, list_notes, get_note
+from niu_api.notes import create_note, delete_note, get_note, list_notes, update_note
 
 router = APIRouter(prefix="/api", tags=["notes"])
 
@@ -16,12 +17,14 @@ router = APIRouter(prefix="/api", tags=["notes"])
 class NoteCreateRequest(BaseModel):
     id: str
     content: str
+    tags: list[str] = []
     createdAt: float  # 前端传 ms 时间戳
 
 
 class NoteUpdateRequest(BaseModel):
     id: str
     content: str
+    tags: list[str] = []
     updatedAt: float  # 前端传 ms 时间戳
 
 
@@ -29,18 +32,19 @@ class NoteUpdateRequest(BaseModel):
 async def api_create_note(request: NoteCreateRequest, background_tasks: BackgroundTasks):
     """Create a new sticky note"""
     try:
-        from datetime import datetime
         created_at = datetime.fromtimestamp(request.createdAt / 1000).isoformat()
 
-        result = await create_note(
+        result = create_note(
             note_id=request.id,
             content=request.content,
+            tags=request.tags,
             created_at=created_at,
         )
 
-        # KG 写入（后台任务，不阻塞响应）
-        # sync_note_to_kg is sync — wrap in asyncio.to_thread to avoid blocking ASGI event loop
-        background_tasks.add_task(asyncio.to_thread, sync_note_to_kg, request.id, request.content)
+        # LightRAG 写入（后台任务，不阻塞响应）
+        background_tasks.add_task(
+            asyncio.to_thread, sync_note_to_lightrag, request.id, request.content, request.tags
+        )
 
         return {"status": "ok", "result": result}
     except Exception as e:
@@ -52,7 +56,7 @@ async def api_create_note(request: NoteCreateRequest, background_tasks: Backgrou
 async def api_list_notes():
     """List all sticky notes"""
     try:
-        notes = await list_notes()
+        notes = list_notes()
         return {"status": "ok", "notes": notes}
     except Exception as e:
         logger.error(f"[Notes] List failed: {e}")
@@ -62,7 +66,7 @@ async def api_list_notes():
 @router.get("/notes/{note_id}")
 async def api_get_note(note_id: str):
     """Get a single note"""
-    note = await get_note(note_id)
+    note = get_note(note_id)
     if note is None:
         raise HTTPException(status_code=404, detail="Note not found")
     return {"status": "ok", "note": note}
@@ -72,13 +76,19 @@ async def api_get_note(note_id: str):
 async def api_update_note(note_id: str, request: NoteUpdateRequest, background_tasks: BackgroundTasks):
     """Update a sticky note"""
     try:
-        result = await update_note(note_id=note_id, content=request.content)
+        result = update_note(note_id=note_id, content=request.content, tags=request.tags)
 
-        # KG 写入（后台任务，不阻塞响应）
-        # sync_note_to_kg is sync — wrap in asyncio.to_thread to avoid blocking ASGI event loop
-        background_tasks.add_task(asyncio.to_thread, sync_note_to_kg, note_id, request.content)
+        if result["status"] == "not_found":
+            raise HTTPException(status_code=404, detail="Note not found")
+
+        # LightRAG 写入（后台任务，不阻塞响应）
+        background_tasks.add_task(
+            asyncio.to_thread, sync_note_to_lightrag, note_id, request.content, request.tags
+        )
 
         return {"status": "ok", "result": result}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"[Notes] Update failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -88,26 +98,39 @@ async def api_update_note(note_id: str, request: NoteUpdateRequest, background_t
 async def api_delete_note(note_id: str):
     """Delete a sticky note"""
     try:
-        result = await delete_note(note_id=note_id)
+        result = delete_note(note_id=note_id)
+
+        if result["status"] == "not_found":
+            raise HTTPException(status_code=404, detail="Note not found")
+
         return {"status": "ok", "result": result}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"[Notes] Delete failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
-def sync_note_to_kg(note_id: str, content: str):
+def sync_note_to_lightrag(note_id: str, content: str, tags: list[str]):
     """便利贴写入 LightRAG 知识图谱。
 
-    使用 ainsert() 进行非结构化注入，LightRAG 内部自动提取实体。
+    使用 LightRAGIngester.inject_entity() 注入实体，
+    替代旧的 ainsert() 非结构化注入方式。
     """
     try:
-        from niu_api.internal.lightrag_manager import call_async, get_lightrag
-        rag = get_lightrag()
-        if rag is None:
-            logger.warning(f"[Notes] LightRAG not available, skipping sync for {note_id}")
-            return
-        prefixed = f"[Note: {note_id}]\n{content}"
-        call_async(rag.ainsert(prefixed))
+        from niu_api.internal.lightrag_adapter import LightRAGIngester
+
+        description = content + (" | 标签: " + ", ".join(tags) if tags else "")
+
+        ingester = LightRAGIngester()
+        ingester.inject_entity(
+            name=f"note:{note_id}",
+            entity_type="knowledge",
+            description=description,
+            source_id=f"note:{note_id}",
+            chunk_content=description,
+            file_path=f"note://{note_id}",
+        )
         logger.info(f"[Notes] LightRAG sync: note:{note_id}")
     except Exception as e:
         logger.warning(f"[Notes] LightRAG sync failed for {note_id}: {e}")
