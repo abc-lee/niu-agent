@@ -101,6 +101,9 @@ def create_note(note_id: str, content: str, tags: Optional[List[str]] = None, cr
 
     with _notes_lock:
         notes = read_notes()
+        for existing in notes:
+            if existing["id"] == note_id:
+                return {"id": note_id, "status": "duplicate"}
         notes.append(note)
         _atomic_write(notes)
     logger.info(f"Note created: {note_id}")

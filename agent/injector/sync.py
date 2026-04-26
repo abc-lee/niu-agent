@@ -392,19 +392,22 @@ class SkillSync:
                 continue
             current_ids.add(note_id)
 
-            content_hash = hashlib.sha256(note.get("content", "").encode()).hexdigest()
+            content_hash = hashlib.sha256((note.get("content") or "").encode()).hexdigest()
             last_hash = self._last_notes_scan.get(note_id)
 
             if last_hash is None:
-                self._inject_note_to_lightrag(note_id, note.get("content", ""), note.get("tags", []))
-                added += 1
-                logger.info(f"[SkillSync] Added note: {note_id}")
+                if self._inject_note_to_lightrag(note_id, note.get("content") or "", note.get("tags") or []):
+                    added += 1
+                    self._last_notes_scan[note_id] = content_hash
+                    logger.info(f"[SkillSync] Added note: {note_id}")
             elif last_hash != content_hash:
-                self._inject_note_to_lightrag(note_id, note.get("content", ""), note.get("tags", []))
-                updated += 1
-                logger.info(f"[SkillSync] Updated note: {note_id}")
-
-            self._last_notes_scan[note_id] = content_hash
+                if self._inject_note_to_lightrag(note_id, note.get("content") or "", note.get("tags") or []):
+                    updated += 1
+                    self._last_notes_scan[note_id] = content_hash
+                    logger.info(f"[SkillSync] Updated note: {note_id}")
+            else:
+                # Unchanged — already synced
+                self._last_notes_scan[note_id] = content_hash
 
         # Detect deleted notes
         for note_id in list(self._last_notes_scan.keys()):
@@ -420,8 +423,8 @@ class SkillSync:
 
         return added, updated
 
-    def _inject_note_to_lightrag(self, note_id: str, content: str, tags: list[str]):
-        """注入便签到 LightRAG 知识图谱"""
+    def _inject_note_to_lightrag(self, note_id: str, content: str, tags: list[str]) -> bool:
+        """注入便签到 LightRAG 知识图谱。返回是否成功。"""
         try:
             from niu_api.internal.lightrag_adapter import LightRAGIngester
 
@@ -438,10 +441,13 @@ class SkillSync:
                 chunk_content=description,
                 file_path=f"note://{note_id}",
             )
-            if result.get("status") != "ok":
-                logger.warning(f"[SkillSync] Note inject failed for {note_id}: {result.get('message', '')}")
+            if result.get("status") == "ok":
+                return True
+            logger.warning(f"[SkillSync] Note inject failed for {note_id}: {result.get('message', '')}")
+            return False
         except Exception as e:
             logger.warning(f"[SkillSync] Note inject failed for {note_id}: {e}")
+            return False
 
     def _parse_yaml_frontmatter(self, content: str) -> dict:
         """解析 YAML frontmatter（--- 包裹的头部区域）
