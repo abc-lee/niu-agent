@@ -6,7 +6,7 @@ Validates the JSON-based sticky notes storage layer.
 
 import json
 import os
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -180,3 +180,128 @@ class TestNotesJsonStorage:
 
         result = read_notes()
         assert result == []
+
+
+class TestSkillSyncNotes:
+    """Tests for SkillSync._scan_notes() change detection."""
+
+    def test_scan_notes_detects_new_note(self, tmp_workspace):
+        """New note should be injected to LightRAG."""
+        from agent.injector.sync import SkillSync
+
+        notes_dir = tmp_workspace / "notes"
+        notes_dir.mkdir()
+        notes_file = notes_dir / "notes.json"
+        notes_file.write_text(
+            json.dumps([{"id": "n1", "content": "Hello", "tags": []}]),
+            encoding="utf-8",
+        )
+
+        sync = SkillSync(skills_dir=str(tmp_workspace / "skills"), use_watchdog=False)
+        with patch.dict(os.environ, {"WORKSPACE_PATH": str(tmp_workspace)}):
+            with patch.object(sync, "_inject_note_to_lightrag") as mock_inject:
+                added, updated = sync._scan_notes()
+                assert added == 1
+                assert updated == 0
+                mock_inject.assert_called_once_with("n1", "Hello", [])
+
+    def test_scan_notes_detects_changed_note(self, tmp_workspace):
+        """Changed content should trigger re-injection."""
+        from agent.injector.sync import SkillSync
+
+        notes_dir = tmp_workspace / "notes"
+        notes_dir.mkdir()
+        notes_file = notes_dir / "notes.json"
+
+        sync = SkillSync(skills_dir=str(tmp_workspace / "skills"), use_watchdog=False)
+        with patch.dict(os.environ, {"WORKSPACE_PATH": str(tmp_workspace)}):
+            # First scan — note is new
+            notes_file.write_text(
+                json.dumps([{"id": "n1", "content": "Original", "tags": []}]),
+                encoding="utf-8",
+            )
+            with patch.object(sync, "_inject_note_to_lightrag"):
+                sync._scan_notes()
+
+            # Second scan — content changed
+            notes_file.write_text(
+                json.dumps([{"id": "n1", "content": "Changed", "tags": []}]),
+                encoding="utf-8",
+            )
+            with patch.object(sync, "_inject_note_to_lightrag") as mock_inject:
+                added, updated = sync._scan_notes()
+                assert added == 0
+                assert updated == 1
+                mock_inject.assert_called_once_with("n1", "Changed", [])
+
+    def test_scan_notes_skips_unchanged(self, tmp_workspace):
+        """Unchanged content should not trigger injection."""
+        from agent.injector.sync import SkillSync
+
+        notes_dir = tmp_workspace / "notes"
+        notes_dir.mkdir()
+        notes_file = notes_dir / "notes.json"
+        notes_file.write_text(
+            json.dumps([{"id": "n1", "content": "Same", "tags": []}]),
+            encoding="utf-8",
+        )
+
+        sync = SkillSync(skills_dir=str(tmp_workspace / "skills"), use_watchdog=False)
+        with patch.dict(os.environ, {"WORKSPACE_PATH": str(tmp_workspace)}):
+            with patch.object(sync, "_inject_note_to_lightrag"):
+                sync._scan_notes()
+
+            # Second scan — same content
+            with patch.object(sync, "_inject_note_to_lightrag") as mock_inject:
+                added, updated = sync._scan_notes()
+                assert added == 0
+                assert updated == 0
+                mock_inject.assert_not_called()
+
+    def test_scan_notes_detects_deletion(self, tmp_workspace):
+        """Deleted note should be removed from LightRAG."""
+        from agent.injector.sync import SkillSync
+
+        notes_dir = tmp_workspace / "notes"
+        notes_dir.mkdir()
+        notes_file = notes_dir / "notes.json"
+
+        sync = SkillSync(skills_dir=str(tmp_workspace / "skills"), use_watchdog=False)
+        with patch.dict(os.environ, {"WORKSPACE_PATH": str(tmp_workspace)}):
+            # First scan — two notes
+            notes_file.write_text(
+                json.dumps([
+                    {"id": "n1", "content": "Keep", "tags": []},
+                    {"id": "n2", "content": "Delete", "tags": []},
+                ]),
+                encoding="utf-8",
+            )
+            with patch.object(sync, "_inject_note_to_lightrag"):
+                sync._scan_notes()
+
+            # Second scan — n2 removed
+            notes_file.write_text(
+                json.dumps([{"id": "n1", "content": "Keep", "tags": []}]),
+                encoding="utf-8",
+            )
+            with patch.object(sync, "_inject_note_to_lightrag"):
+                with patch("niu_api.internal.lightrag_adapter.LightRAGAdapter") as mock_cls:
+                    mock_adapter = MagicMock()
+                    mock_cls.return_value = mock_adapter
+                    added, updated = sync._scan_notes()
+                    mock_adapter.delete_entity.assert_called_once_with("note:n2")
+
+    def test_scan_notes_handles_corrupt_json(self, tmp_workspace):
+        """Corrupt JSON should not crash."""
+        from agent.injector.sync import SkillSync
+
+        notes_dir = tmp_workspace / "notes"
+        notes_dir.mkdir()
+        notes_file = notes_dir / "notes.json"
+        notes_file.write_text("NOT JSON{{{", encoding="utf-8")
+
+        sync = SkillSync(skills_dir=str(tmp_workspace / "skills"), use_watchdog=False)
+        with patch.dict(os.environ, {"WORKSPACE_PATH": str(tmp_workspace)}):
+            added, updated = sync._scan_notes()
+            assert added == 0
+            assert updated == 0

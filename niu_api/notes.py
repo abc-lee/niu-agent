@@ -7,10 +7,14 @@ Notes Store - JSON-based sticky notes storage
 import json
 import os
 import tempfile
+import threading
 from datetime import datetime
 from typing import Dict, List, Optional
 
 from loguru import logger
+
+# Lock for read-modify-write atomicity across concurrent API requests
+_notes_lock = threading.Lock()
 
 
 def _get_notes_path() -> str:
@@ -95,9 +99,10 @@ def create_note(note_id: str, content: str, tags: Optional[List[str]] = None, cr
         "updated_at": None,
     }
 
-    notes = read_notes()
-    notes.append(note)
-    _atomic_write(notes)
+    with _notes_lock:
+        notes = read_notes()
+        notes.append(note)
+        _atomic_write(notes)
     logger.info(f"Note created: {note_id}")
     return {"id": note_id, "status": "created"}
 
@@ -107,17 +112,18 @@ def update_note(note_id: str, content: Optional[str] = None, tags: Optional[List
 
     Return {"id": note_id, "status": "updated"} or {"id": note_id, "status": "not_found"}.
     """
-    notes = read_notes()
-    for note in notes:
-        if note["id"] == note_id:
-            if content is not None:
-                note["content"] = content
-            if tags is not None:
-                note["tags"] = tags
-            note["updated_at"] = datetime.now().isoformat()
-            _atomic_write(notes)
-            logger.info(f"Note updated: {note_id}")
-            return {"id": note_id, "status": "updated"}
+    with _notes_lock:
+        notes = read_notes()
+        for note in notes:
+            if note["id"] == note_id:
+                if content is not None:
+                    note["content"] = content
+                if tags is not None:
+                    note["tags"] = tags
+                note["updated_at"] = datetime.now().isoformat()
+                _atomic_write(notes)
+                logger.info(f"Note updated: {note_id}")
+                return {"id": note_id, "status": "updated"}
 
     return {"id": note_id, "status": "not_found"}
 
@@ -127,14 +133,15 @@ def delete_note(note_id: str) -> Dict:
 
     Return {"id": note_id, "status": "deleted"} or {"id": note_id, "status": "not_found"}.
     """
-    notes = read_notes()
-    original_len = len(notes)
-    notes = [n for n in notes if n["id"] != note_id]
+    with _notes_lock:
+        notes = read_notes()
+        original_len = len(notes)
+        notes = [n for n in notes if n["id"] != note_id]
 
-    if len(notes) == original_len:
-        return {"id": note_id, "status": "not_found"}
+        if len(notes) == original_len:
+            return {"id": note_id, "status": "not_found"}
 
-    _atomic_write(notes)
+        _atomic_write(notes)
     logger.info(f"Note deleted: {note_id}")
 
     # Sync deletion to knowledge graph
