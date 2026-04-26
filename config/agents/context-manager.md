@@ -21,7 +21,7 @@ mcpServers:
 - 低于 compress 游标的消息：已整理过，不重复处理
 - 高于 dream 游标的消息：dream-evolver 尚未提取知识，**不得删除**
 
-**游标获取**：通过 `get_messages(session_id)` 获取消息列表，从消息元数据中读取游标值。每条消息的 `id` 字段即为 UUID。
+**游标获取**：游标值（`last_compress_id` 和 `last_dream_evolve_id`）由调用方在子 Agent 调用提示中传入。通过 `get_messages(session_id)` 获取消息列表，根据游标值确定处理范围。每条消息的 `id` 字段即为 UUID。
 
 ## 模式一：睡眠整理（非破坏性，上下文 <50%）
 
@@ -62,7 +62,7 @@ mcpServers:
 4. 对要删除的内容：直接 `delete_messages`（知识已由 dream-evolver 保存）
 5. **双游标范围外的消息不动**
 
-**紧急逃逸**：如果双游标范围内可删除的消息不足以将上下文降到80%以下，允许扩展到 `last_dream_evolve_id` 之后的消息（这些消息的知识尚未保存，删除前必须先用 `update_message` 压缩为L0摘要，而非直接删除）。
+**紧急逃逸**：如果双游标范围内可删除的消息不足以将上下文降到50%目标，允许扩展到 `last_dream_evolve_id` 之后的消息（这些消息的知识尚未保存，删除前必须先用 `update_message` 压缩为L0摘要，而非直接删除）。至少将上下文降到80%以下以避免立即再次触发强制压缩。
 
 ## 游标报告
 
