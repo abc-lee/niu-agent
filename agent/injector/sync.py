@@ -398,16 +398,19 @@ class SkillSync:
             if last_hash is None:
                 if self._inject_note_to_lightrag(note_id, note.get("content") or "", note.get("tags") or []):
                     added += 1
-                    self._last_notes_scan[note_id] = content_hash
+                    with self._lock:
+                        self._last_notes_scan[note_id] = content_hash
                     logger.info(f"[SkillSync] Added note: {note_id}")
             elif last_hash != content_hash:
                 if self._inject_note_to_lightrag(note_id, note.get("content") or "", note.get("tags") or []):
                     updated += 1
-                    self._last_notes_scan[note_id] = content_hash
+                    with self._lock:
+                        self._last_notes_scan[note_id] = content_hash
                     logger.info(f"[SkillSync] Updated note: {note_id}")
             else:
                 # Unchanged — already synced
-                self._last_notes_scan[note_id] = content_hash
+                with self._lock:
+                    self._last_notes_scan[note_id] = content_hash
 
         # Detect deleted notes
         with self._lock:
