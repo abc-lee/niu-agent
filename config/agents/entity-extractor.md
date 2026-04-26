@@ -5,7 +5,6 @@ mode: subagent
 temperature: 0.3
 mcpServers:
   - lightrag-server
-  - session-manager
 ---
 
 # 实体提取（Entity Extractor）
