@@ -305,3 +305,63 @@ class TestSkillSyncNotes:
             added, updated = sync._scan_notes()
             assert added == 0
             assert updated == 0
+
+    def test_scan_notes_null_content_does_not_crash(self, tmp_workspace):
+        """Note with null content should be handled gracefully."""
+        from agent.injector.sync import SkillSync
+
+        notes_dir = tmp_workspace / "notes"
+        notes_dir.mkdir()
+        notes_file = notes_dir / "notes.json"
+        notes_file.write_text(
+            json.dumps([{"id": "n1", "content": None, "tags": None}]),
+            encoding="utf-8",
+        )
+
+        sync = SkillSync(skills_dir=str(tmp_workspace / "skills"), use_watchdog=False)
+        with patch.dict(os.environ, {"WORKSPACE_PATH": str(tmp_workspace)}):
+            with patch.object(sync, "_inject_note_to_lightrag") as mock_inject:
+                added, updated = sync._scan_notes()
+                assert added == 1
+                mock_inject.assert_called_once_with("n1", "", [])
+
+    def test_scan_notes_failed_injection_not_recorded(self, tmp_workspace):
+        """Failed injection should not record hash — note will be retried next scan."""
+        from agent.injector.sync import SkillSync
+
+        notes_dir = tmp_workspace / "notes"
+        notes_dir.mkdir()
+        notes_file = notes_dir / "notes.json"
+        notes_file.write_text(
+            json.dumps([{"id": "n1", "content": "Hello", "tags": []}]),
+            encoding="utf-8",
+        )
+
+        sync = SkillSync(skills_dir=str(tmp_workspace / "skills"), use_watchdog=False)
+        with patch.dict(os.environ, {"WORKSPACE_PATH": str(tmp_workspace)}):
+            # First scan — injection fails
+            with patch.object(sync, "_inject_note_to_lightrag", return_value=False):
+                added, updated = sync._scan_notes()
+                assert added == 0  # not counted because injection failed
+                assert "n1" not in sync._last_notes_scan  # hash not recorded
+
+            # Second scan — injection succeeds, note is retried
+            with patch.object(sync, "_inject_note_to_lightrag", return_value=True):
+                added, updated = sync._scan_notes()
+                assert added == 1  # now counted as new
+                assert "n1" in sync._last_notes_scan
+
+
+class TestNotesDuplicateId:
+    """Tests for duplicate note ID handling."""
+
+    def test_create_duplicate_note_returns_duplicate_status(self, tmp_workspace):
+        """Creating a note with same ID should return 'duplicate' status."""
+        create_note(note_id="n1", content="First")
+        result = create_note(note_id="n1", content="Second")
+        assert result == {"id": "n1", "status": "duplicate"}
+
+        # Only one note in file
+        notes = read_notes()
+        assert len(notes) == 1
+        assert notes[0]["content"] == "First"
