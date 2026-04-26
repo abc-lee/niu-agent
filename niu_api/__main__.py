@@ -138,24 +138,27 @@ async def lifespan(app: FastAPI):
         from niu_api.internal.scheduler import get_store
 
         ts = get_store()
-        # Cancel any stale kg-enricher tasks
         existing_tasks = ts.list_tasks()
+
+        # Cancel any stale kg-enricher tasks (any status, any content match)
         for task in existing_tasks:
             if (
                 task.get("event_type") == "recurring"
-                and "kg-enricher" in task.get("content", "")
-                and task.get("status") != "cancelled"
+                and "chat-with-kg-enricher" in task.get("content", "")
             ):
-                ts.cancel_task(task["id"])
-                logger.info(f"Cancelled stale kg-enricher task: {task['id']}")
+                try:
+                    ts.cancel_task(task["id"])
+                    logger.info(f"Cancelled stale kg-enricher task: {task['id']} (status={task.get('status')})")
+                except Exception as cancel_err:
+                    logger.warning(f"Could not cancel kg-enricher task {task['id']}: {cancel_err}")
 
         # Check if entity-extractor task already exists
         extractor_exists = any(
             task.get("event_type") == "recurring"
             and task.get("cron_expr") == "0 8 * * *"
-            and "entity-extractor" in task.get("content", "")
+            and "chat-with-entity-extractor" in task.get("content", "")
             and task.get("status") != "cancelled"
-            for task in ts.list_tasks()
+            for task in existing_tasks
         )
 
         if not extractor_exists:

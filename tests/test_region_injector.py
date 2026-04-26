@@ -484,8 +484,7 @@ class TestContextBudgetControl:
 class TestInjectBrainContextReturnsText:
     """验证 inject_brain_context 主入口返回格式化文本"""
 
-    @pytest.mark.asyncio
-    async def test_returns_formatted_text_on_activation(self):
+    def test_returns_formatted_text_on_activation(self):
         """查询命中实体时返回包含区域地图的文本"""
         activation_mgr = _make_activation_manager()
         injector = _make_injector(activation_mgr)
@@ -501,22 +500,20 @@ class TestInjectBrainContextReturnsText:
         })
         injector._adapter.query = MagicMock(return_value="")
 
-        text = await injector.inject_brain_context("Python数据分析")
+        text = injector.inject_brain_context("Python数据分析")
 
         # Should contain region map header
         assert "## 脑区状态" in text
         # Should contain the activated region
         assert "编程开发" in text
 
-    @pytest.mark.asyncio
-    async def test_returns_empty_on_empty_query(self):
+    def test_returns_empty_on_empty_query(self):
         """空查询返回空字符串"""
         injector = _make_injector()
-        result = await injector.inject_brain_context("")
+        result = injector.inject_brain_context("")
         assert result == ""
 
-    @pytest.mark.asyncio
-    async def test_returns_text_on_no_hits(self):
+    def test_returns_text_on_no_hits(self):
         """无命中实体时仍返回区域地图"""
         activation_mgr = _make_activation_manager()
         injector = _make_injector(activation_mgr)
@@ -526,7 +523,7 @@ class TestInjectBrainContextReturnsText:
             "data": {"entities": []}
         })
 
-        result = await injector.inject_brain_context("unknown query")
+        result = injector.inject_brain_context("unknown query")
 
         # Should still have region map (all off/dimming)
         assert "## 脑区状态" in result
