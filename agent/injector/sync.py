@@ -281,9 +281,10 @@ class SkillSync:
         """同步单个 skill 到 LightRAG 知识图谱"""
         try:
             content = skill_file.read_text(encoding="utf-8")
-            triggers = self._extract_triggers(content)
-            description = self._extract_description(content)
-            tags = self._extract_tags(content)
+            fm = self._parse_yaml_frontmatter(content)
+            triggers = self._extract_triggers(content, fm)
+            description = self._extract_description(content, fm)
+            tags = self._extract_tags(content, fm, triggers)
 
             if description:
                 self._inject_skill_to_lightrag(name, description, tags, triggers)
@@ -375,15 +376,18 @@ class SkillSync:
                 logger.debug(f"YAML frontmatter parse failed: {e}")
 
         # Fallback: 简单正则解析（无 PyYAML 时）
+        # 注意：仅支持标量值，列表值需安装 PyYAML
         parsed = {}
         for line in yaml_text.split("\n"):
             match = re.match(r"^(\w+)\s*:\s*(.+)$", line.strip())
             if match:
                 key, value = match.group(1), match.group(2).strip().strip("\"'")
                 parsed[key] = value
+        if not YAML_AVAILABLE and any(k in ("triggers", "tags") for k in parsed):
+            logger.warning("PyYAML not installed, YAML list fields (triggers/tags) may not parse correctly")
         return parsed
 
-    def _extract_triggers(self, content: str) -> list[str]:
+    def _extract_triggers(self, content: str, fm: dict | None = None) -> list[str]:
         """从 skill 内容提取触发词
 
         优先级：YAML frontmatter triggers > Markdown 触发关键词 > triggers: []
@@ -391,7 +395,8 @@ class SkillSync:
         triggers = []
 
         # 优先级 1: YAML frontmatter triggers
-        fm = self._parse_yaml_frontmatter(content)
+        if fm is None:
+            fm = self._parse_yaml_frontmatter(content)
         fm_triggers = fm.get("triggers")
         if fm_triggers:
             if isinstance(fm_triggers, list):
@@ -425,7 +430,7 @@ class SkillSync:
 
         return list(set(triggers))[:10]
 
-    def _extract_description(self, content: str) -> str:
+    def _extract_description(self, content: str, fm: dict | None = None) -> str:
         """从 skill 内容提取描述
 
         优先级：
@@ -434,7 +439,8 @@ class SkillSync:
         3. 默认：拒绝同步
         """
         # 优先级 1: YAML frontmatter description
-        fm = self._parse_yaml_frontmatter(content)
+        if fm is None:
+            fm = self._parse_yaml_frontmatter(content)
         fm_desc = fm.get("description", "")
         if fm_desc and isinstance(fm_desc, str) and fm_desc.strip():
             return fm_desc.strip()
@@ -451,7 +457,7 @@ class SkillSync:
         logger.error("Skill 缺少 YAML frontmatter description，无法同步到 LightRAG")
         return ""
 
-    def _extract_tags(self, content: str) -> list[str]:
+    def _extract_tags(self, content: str, fm: dict | None = None, triggers: list[str] | None = None) -> list[str]:
         """从 skill 内容提取标签
 
         优先级：YAML frontmatter tags > tags: [] > 标签：xxx
@@ -459,7 +465,8 @@ class SkillSync:
         tags = []
 
         # 优先级 1: YAML frontmatter tags
-        fm = self._parse_yaml_frontmatter(content)
+        if fm is None:
+            fm = self._parse_yaml_frontmatter(content)
         fm_tags = fm.get("tags")
         if fm_tags:
             if isinstance(fm_tags, list):
@@ -484,7 +491,8 @@ class SkillSync:
                 tags = [t.strip() for t in tags if t.strip()]
 
         # 从触发词中提取标签（触发词也可以作为标签）
-        triggers = self._extract_triggers(content)
+        if triggers is None:
+            triggers = self._extract_triggers(content, fm)
         for t in triggers:
             if t not in tags:
                 tags.append(t)
