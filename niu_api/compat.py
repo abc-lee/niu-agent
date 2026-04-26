@@ -429,29 +429,6 @@ async def tidy_context(request: dict):
 
         logger.info(f"[Tidy] Current context: {message_count} messages, {estimated_tokens} tokens, {usage_percent:.1f}%")
 
-        # Prepare input for context-manager subagent
-        if mode == "sleep":
-            # Sleep mode: non-forced tidy
-            prompt = f"""系统进入睡眠状态。
-
-当前上下文：{estimated_tokens} tokens（{usage_percent:.1f}%）
-
-消息列表：
-共 {message_count} 条消息（idx 从小到大 = 从旧到新）
-
-"""
-            # Add message details
-            for idx, msg in enumerate(messages):
-                tokens = msg_tokens[idx]
-                prompt += f"[idx:{idx}] {tokens}tokens {msg.role}: {msg.content[:100]}\n"
-
-            prompt += "\n请按照【模式一：睡眠整理（非强制）】的规则处理。"
-
-        else:
-            # Force mode: not implemented yet
-            logger.warning("[Tidy] Force mode not implemented yet")
-            return {"status": "skipped", "message": "Force mode not implemented"}
-
         from agent.subagent import call_subagent
         from niu_api.chat import get_or_create_runner
 
@@ -460,42 +437,77 @@ async def tidy_context(request: dict):
             logger.warning("[Tidy] Runner not initialized")
             return {"status": "error", "message": "Runner not initialized"}
 
-        # 直接使用 runner 的 llm_config（包含 type 等完整字段）
         llm_config = runner.llm_config
 
-        # Run subagent in thread pool (avoid blocking event loop)
-        import asyncio
+        import json
+        import re
+        from pathlib import Path
+
+        # 读取双游标（UUID 基准）
+        dream_cursor_path = Path.home() / ".niu" / "last_dream_evolve.json"
+        last_dream_evolve_id = ""
+        if dream_cursor_path.exists():
+            try:
+                cursor_data = json.loads(dream_cursor_path.read_text(encoding="utf-8"))
+                # 兼容旧格式（idx-based）和新格式（UUID-based）
+                last_dream_evolve_id = cursor_data.get("last_dream_evolve_id", "")
+                if not last_dream_evolve_id:
+                    # 旧格式 fallback：last_message_idx → 留空，全量处理
+                    logger.info("[Tidy] Old idx-based cursor detected, will do full processing")
+            except Exception as e:
+                logger.warning(f"[Tidy] Failed to read dream cursor: {e}")
+
+        compress_cursor_path = Path.home() / ".niu" / "last_compress.json"
+        last_compress_id = ""
+        if compress_cursor_path.exists():
+            try:
+                cursor_data = json.loads(compress_cursor_path.read_text(encoding="utf-8"))
+                last_compress_id = cursor_data.get("last_compress_id", "")
+            except Exception as e:
+                logger.warning(f"[Tidy] Failed to read compress cursor: {e}")
+
+        # 构建消息列表（包含 UUID）
+        msg_lines = []
+        for idx, msg in enumerate(messages):
+            tokens = msg_tokens[idx]
+            msg_id = getattr(msg, "id", "") or ""
+            msg_lines.append(f"[id:{msg_id}] [idx:{idx}] {tokens}tokens {msg.role}: {msg.content[:100]}")
+
+        msg_list_text = "\n".join(msg_lines)
 
         if mode == "sleep":
-            # 1. 先调梦境进化（增量学习+KG写入）
-            # 读取增量游标
-            import json
-            from pathlib import Path
-            cursor_path = Path.home() / ".niu" / "last_dream_evolve.json"
-            last_message_idx = 0
-            if cursor_path.exists():
-                try:
-                    cursor_data = json.loads(cursor_path.read_text(encoding="utf-8"))
-                    last_message_idx = cursor_data.get("last_message_idx", 0)
-                except Exception as e:
-                    logger.warning(f"[Tidy] Failed to read dream cursor: {e}")
+            # Sleep mode: dream-evolver (增量) → context-manager (增量)
 
-            dream_prompt = f"""系统进入睡眠状态，触发梦境进化。
+            # 1. dream-evolver prompt（UUID 游标）
+            if last_dream_evolve_id:
+                dream_prompt = f"""系统进入睡眠状态，触发梦境进化。
 
 当前上下文：{estimated_tokens} tokens（{usage_percent:.1f}%）
 
-增量游标：上次处理到 idx={last_message_idx}，只处理 idx > {last_message_idx} 的新消息。
-如果所有消息 idx 都 <= {last_message_idx}，说明没有新消息，直接报告"无新增消息"即可。
+增量游标：上次处理到消息ID={last_dream_evolve_id}，只处理该ID之后的新消息。
+如果所有消息ID都 <= {last_dream_evolve_id}，说明没有新消息，直接报告"无新增消息"即可。
 
 消息列表：
-共 {message_count} 条消息（idx 从小到大 = 从旧到新）
+共 {message_count} 条消息
 
-"""
-            for idx, msg in enumerate(messages):
-                tokens = msg_tokens[idx]
-                dream_prompt += f"[idx:{idx}] {tokens}tokens {msg.role}: {msg.content[:100]}\n"
+{msg_list_text}
 
-            dream_prompt += f"\n请按照工作项1-7的顺序处理新增消息（idx > {last_message_idx}）。处理完成后，在报告末尾用 JSON 格式报告处理到的最大 idx，格式：{{\"last_message_idx\": <最大idx>}}。禁止使用 code_run 工具。"
+处理完成后，在报告末尾用 JSON 格式报告：{{"last_dream_evolve_id": "<最后处理的消息UUID>"}}
+禁止使用 code_run 工具。"""
+            else:
+                dream_prompt = f"""系统进入睡眠状态，触发梦境进化。
+
+当前上下文：{estimated_tokens} tokens（{usage_percent:.1f}%）
+
+全量处理所有消息（无增量游标）。
+
+消息列表：
+共 {message_count} 条消息
+
+{msg_list_text}
+
+处理完成后，在报告末尾用 JSON 格式报告：{{"last_dream_evolve_id": "<最后处理的消息UUID>"}}
+禁止使用 code_run 工具。"""
 
             def run_dream_evolver():
                 return call_subagent(
@@ -508,44 +520,145 @@ async def tidy_context(request: dict):
             dream_result = await asyncio.to_thread(run_dream_evolver)
             logger.info(f"[Tidy] Dream-evolver result: {dream_result[:200]}")
 
-            # 更新增量游标
-            try:
-                import re
-                # 用 re.DOTALL 处理 LLM 可能输出的多行 JSON
-                match = re.search(r'\{"last_message_idx"\s*:\s*(\d+)\}', dream_result, re.DOTALL)
-                if match:
-                    new_last_idx = int(match.group(1))
-                else:
-                    # regex 未匹配时保留旧游标，避免跳过未处理的消息
-                    new_last_idx = last_message_idx
-                    logger.warning(f"[Tidy] Dream cursor regex not matched, preserving last_message_idx={last_message_idx}")
-                cursor_path.parent.mkdir(parents=True, exist_ok=True)
-                cursor_data = {
-                    "last_message_idx": new_last_idx,
-                    "last_evolve_at": __import__("datetime").datetime.now().isoformat(),
-                }
-                cursor_path.write_text(json.dumps(cursor_data, ensure_ascii=False, indent=2), encoding="utf-8")
-                logger.info(f"[Tidy] Dream cursor updated: last_message_idx={new_last_idx}")
-            except Exception as e:
-                logger.warning(f"[Tidy] Failed to update dream cursor: {e}")
+            # 提取并写入 dream 游标（UUID）
+            match = re.search(r'\{"last_dream_evolve_id"\s*:\s*"([^"]+)"\}', dream_result, re.DOTALL)
+            new_dream_id = match.group(1) if match else last_dream_evolve_id
+            if not match:
+                logger.warning("[Tidy] Dream cursor UUID regex not matched, preserving old cursor")
+            dream_cursor_path.parent.mkdir(parents=True, exist_ok=True)
+            dream_cursor_path.write_text(json.dumps({
+                "last_dream_evolve_id": new_dream_id,
+                "last_evolve_at": datetime.now().isoformat(),
+            }, ensure_ascii=False, indent=2), encoding="utf-8")
+            logger.info(f"[Tidy] Dream cursor updated: last_dream_evolve_id={new_dream_id}")
 
-        # 2. 再调内容管理（压缩删除）
-        def run_context_manager():
-            return call_subagent(
-                agent_name="context-manager",
-                task=prompt,
-                llm_config=llm_config,
-                mcp_client=None,
-            )
+            # 2. context-manager prompt（双游标）
+            prompt = f"""系统进入睡眠状态。
 
-        result = await asyncio.to_thread(run_context_manager)
-        logger.info(f"[Tidy] Context-manager result: {result[:200]}")
+当前上下文：{estimated_tokens} tokens（{usage_percent:.1f}%）
 
-        return {
-            "status": "success",
-            "message": f"Context tidied: {message_count} messages processed",
-            "result": result,
-        }
+双游标：last_compress_id={last_compress_id}，last_dream_evolve_id={new_dream_id}
+只处理 last_compress_id 之后、last_dream_evolve_id 之前范围内的消息。
+
+消息列表：
+共 {message_count} 条消息
+
+{msg_list_text}
+
+请按照【模式一：睡眠整理】的规则处理。处理完成后，在报告末尾用 JSON 格式报告：{{"last_compress_id": "<最后压缩的消息UUID>"}}"""
+
+            def run_context_manager():
+                return call_subagent(
+                    agent_name="context-manager",
+                    task=prompt,
+                    llm_config=llm_config,
+                    mcp_client=None,
+                )
+
+            result = await asyncio.to_thread(run_context_manager)
+            logger.info(f"[Tidy] Context-manager result: {result[:200]}")
+
+            # 提取并写入 compress 游标（UUID）
+            match = re.search(r'\{"last_compress_id"\s*:\s*"([^"]+)"\}', result, re.DOTALL)
+            if match:
+                new_compress_id = match.group(1)
+                compress_cursor_path.parent.mkdir(parents=True, exist_ok=True)
+                compress_cursor_path.write_text(json.dumps({
+                    "last_compress_id": new_compress_id,
+                    "last_compress_at": datetime.now().isoformat(),
+                }, ensure_ascii=False, indent=2), encoding="utf-8")
+                logger.info(f"[Tidy] Compress cursor updated: last_compress_id={new_compress_id}")
+
+            return {
+                "status": "success",
+                "message": f"Context tidied: {message_count} messages processed",
+                "result": result,
+            }
+
+        elif mode == "force":
+            # Force mode: dream-evolver 全量 → context-manager 强制压缩
+            logger.info("[Tidy] Force mode: starting dream-evolver (full processing)")
+
+            dream_prompt = f"""系统上下文超过阈值，触发强制压缩。
+
+当前上下文：{estimated_tokens} tokens（{usage_percent:.1f}%）
+
+全量处理所有消息（不使用增量游标）。
+
+消息列表：
+共 {message_count} 条消息
+
+{msg_list_text}
+
+处理完成后，在报告末尾用 JSON 格式报告：{{"last_dream_evolve_id": "<最后处理的消息UUID>"}}。禁止使用 code_run 工具。"""
+
+            def run_dream_evolver_force():
+                return call_subagent(
+                    agent_name="dream-evolver",
+                    task=dream_prompt,
+                    llm_config=llm_config,
+                    mcp_client=None,
+                )
+
+            dream_result = await asyncio.to_thread(run_dream_evolver_force)
+            logger.info(f"[Tidy] Force: dream-evolver completed, length={len(dream_result)}")
+
+            # 提取并写入 dream 游标
+            match = re.search(r'\{"last_dream_evolve_id"\s*:\s*"([^"]+)"\}', dream_result, re.DOTALL)
+            new_dream_id = match.group(1) if match else ""
+            if new_dream_id:
+                dream_cursor_path.parent.mkdir(parents=True, exist_ok=True)
+                dream_cursor_path.write_text(json.dumps({
+                    "last_dream_evolve_id": new_dream_id,
+                    "last_evolve_at": datetime.now().isoformat(),
+                }, ensure_ascii=False, indent=2), encoding="utf-8")
+
+            # context-manager force prompt
+            # 重新读取 compress 游标
+            last_compress_id = ""
+            if compress_cursor_path.exists():
+                try:
+                    cdata = json.loads(compress_cursor_path.read_text(encoding="utf-8"))
+                    last_compress_id = cdata.get("last_compress_id", "")
+                except Exception:
+                    pass
+
+            prompt = f"""系统上下文超过阈值，触发强制压缩。
+
+当前上下文：{estimated_tokens} tokens（{usage_percent:.1f}%）
+
+双游标：last_compress_id={last_compress_id}，last_dream_evolve_id={new_dream_id}
+只处理 last_compress_id 之后、last_dream_evolve_id 之前范围内的消息。
+
+消息列表：
+共 {message_count} 条消息
+
+{msg_list_text}
+
+请按照【模式三：强制压缩】的规则处理。处理完成后，在报告末尾用 JSON 格式报告：{{"last_compress_id": "<最后压缩的消息UUID>"}}"""
+
+            def run_context_manager_force():
+                return call_subagent(
+                    agent_name="context-manager",
+                    task=prompt,
+                    llm_config=llm_config,
+                    mcp_client=None,
+                )
+
+            result = await asyncio.to_thread(run_context_manager_force)
+            logger.info(f"[Tidy] Force: context-manager completed, length={len(result)}")
+
+            # 提取并写入 compress 游标
+            match = re.search(r'\{"last_compress_id"\s*:\s*"([^"]+)"\}', result, re.DOTALL)
+            if match:
+                new_compress_id = match.group(1)
+                compress_cursor_path.parent.mkdir(parents=True, exist_ok=True)
+                compress_cursor_path.write_text(json.dumps({
+                    "last_compress_id": new_compress_id,
+                    "last_compress_at": datetime.now().isoformat(),
+                }, ensure_ascii=False, indent=2), encoding="utf-8")
+
+            return {"status": "ok", "mode": "force", "tokens_before": estimated_tokens}
 
     except Exception as e:
         import traceback
