@@ -351,6 +351,40 @@ class TestSkillSyncNotes:
                 assert added == 1  # now counted as new
                 assert "n1" in sync._last_notes_scan
 
+    def test_scan_notes_failed_deletion_keeps_hash(self, tmp_workspace):
+        """Failed LightRAG deletion should keep hash so it's retried next scan."""
+        from agent.injector.sync import SkillSync
+
+        notes_dir = tmp_workspace / "notes"
+        notes_dir.mkdir()
+        notes_file = notes_dir / "notes.json"
+
+        sync = SkillSync(skills_dir=str(tmp_workspace / "skills"), use_watchdog=False)
+        with patch.dict(os.environ, {"WORKSPACE_PATH": str(tmp_workspace)}):
+            # First scan — two notes
+            notes_file.write_text(
+                json.dumps([
+                    {"id": "n1", "content": "Keep", "tags": []},
+                    {"id": "n2", "content": "Delete", "tags": []},
+                ]),
+                encoding="utf-8",
+            )
+            with patch.object(sync, "_inject_note_to_lightrag"):
+                sync._scan_notes()
+            assert "n2" in sync._last_notes_scan
+
+            # Second scan — n2 removed, but LightRAG delete fails
+            notes_file.write_text(
+                json.dumps([{"id": "n1", "content": "Keep", "tags": []}]),
+                encoding="utf-8",
+            )
+            with patch("niu_api.internal.lightrag_adapter.LightRAGAdapter") as mock_cls:
+                mock_cls.return_value.delete_entity.side_effect = RuntimeError("LightRAG down")
+                added, updated = sync._scan_notes()
+
+            # Hash should still be present for retry
+            assert "n2" in sync._last_notes_scan
+
 
 class TestNotesDuplicateId:
     """Tests for duplicate note ID handling."""

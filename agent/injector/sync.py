@@ -416,10 +416,11 @@ class SkillSync:
                     from niu_api.internal.lightrag_adapter import LightRAGAdapter
                     adapter = LightRAGAdapter()
                     adapter.delete_entity(f"note:{note_id}")
+                    self._last_notes_scan.pop(note_id, None)
                     logger.info(f"[SkillSync] Deleted note: {note_id}")
                 except Exception as e:
+                    # Keep hash so deletion is retried on next scan
                     logger.warning(f"[SkillSync] Failed to delete note {note_id}: {e}")
-                self._last_notes_scan.pop(note_id, None)
 
         return added, updated
 
