@@ -293,7 +293,8 @@ class NiuRunner:
         self.llm_config = llm_config
         self.mcp_client = mcp_client
         self.client = create_client(llm_config)
-        self.handler = NiuHandler(mcp_client=mcp_client)
+        project_root = os.path.dirname(os.path.dirname(__file__))
+        self.handler = NiuHandler(cwd=project_root, mcp_client=mcp_client)
         self.base_system_prompt = get_system_prompt()
         self.base_tools_schema = get_tools_schema()
 
@@ -307,7 +308,7 @@ class NiuRunner:
         from niu_api.internal.disk_engine import DiskEngine
         disk_config_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config", "disk")
         self.disk_engine = DiskEngine(disk_config_dir, registry=None)
-        self.handler = NiuHandler(mcp_client=mcp_client, disk_engine=self.disk_engine)
+        self.handler = NiuHandler(cwd=project_root, mcp_client=mcp_client, disk_engine=self.disk_engine)
 
         # Inject disk description into base system prompt
         disk_desc = self._build_disk_description()
@@ -498,6 +499,9 @@ class NiuRunner:
         if not entities:
             return "", seen_names
 
+        # Detect if this is a skill section (for path annotation)
+        is_skill_section = title == "相关技能"
+
         lines = [f"\n\n### [{title}]"]
         added = 0
         for entity in entities:
@@ -517,6 +521,9 @@ class NiuRunner:
                 lines.append(f"   {description}")
             else:
                 lines.append(f"{added + 1}. **{display_name}** (来源: 知识图谱)")
+            # For skill entities, append file path so LLM can read the full file
+            if is_skill_section:
+                lines.append(f"   路径: memory/skills/{display_name}.md")
             added += 1
 
         if added == 0:
