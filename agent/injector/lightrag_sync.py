@@ -14,10 +14,8 @@ Architecture:
 """
 
 import json
-import re
 import sqlite3
 import threading
-import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -320,6 +318,9 @@ class LightRAGSync:
 
         # --- Collect Skills ---
         try:
+            from agent.injector.sync import SkillSync
+            _skill_sync_helper = SkillSync.__new__(SkillSync)
+
             base_dir = Path(__file__).parent.parent.parent
             skills_dir = base_dir / "memory" / "skills"
 
@@ -331,19 +332,8 @@ class LightRAGSync:
                         continue
                     try:
                         content = skill_file.read_text(encoding="utf-8")
-                        description = ""
-                        match_l1 = re.search(r"\*\*[lL]1 摘要\*\*[：:]\s*(.+)", content)
-                        if match_l1:
-                            description = match_l1.group(1).strip()
-                        if not description:
-                            for line in content.strip().split("\n"):
-                                if line.strip().startswith("# "):
-                                    description = line.strip()[2:].strip()
-                                    break
-                        if not description:
-                            match_d = re.search(r"description:\s*(.+)", content, re.IGNORECASE)
-                            if match_d:
-                                description = match_d.group(1).strip().strip("\"'")
+                        fm = _skill_sync_helper._parse_yaml_frontmatter(content)
+                        description = _skill_sync_helper._extract_description(content, fm)
 
                         if description:
                             skill_items.append({

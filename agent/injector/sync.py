@@ -338,6 +338,10 @@ class SkillSync:
 
     def _delete_skill(self, name: str):
         """从 LightRAG 知识图谱删除 skill"""
+        # Clean up internal state to prevent redundant delete attempts
+        with self._lock:
+            self._last_scan.pop(name, None)
+
         try:
             from niu_api.internal.lightrag_adapter import LightRAGAdapter
             adapter = LightRAGAdapter()
