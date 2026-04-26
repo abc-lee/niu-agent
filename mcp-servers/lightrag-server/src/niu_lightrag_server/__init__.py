@@ -1,13 +1,13 @@
 """
 LightRAG Unified MCP Server
 
-Replaces vector-store (7 tools) and kg-server (20 tools) with 13 unified tools
+Replaces vector-store (7 tools) and kg-server (20 tools) with 14 unified tools
 that delegate to LightRAGAdapter and LightRAGIngester.
 
 Tool groups:
 - Query (4): lightrag_query, lightrag_query_data, lightrag_search_entities, lightrag_get_graph
 - Insert (4): lightrag_insert, lightrag_insert_custom_kg, lightrag_insert_entity, lightrag_insert_relation
-- Manage (5): lightrag_delete_entity, lightrag_document_status, lightrag_get_document, lightrag_list_entities, lightrag_merge_entities
+- Manage (6): lightrag_delete_document, lightrag_delete_entity, lightrag_document_status, lightrag_get_document, lightrag_list_entities, lightrag_merge_entities
 """
 
 from typing import Any, Dict, List, Optional
@@ -307,6 +307,18 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
         }
     },
 
+    "lightrag_delete_document": {
+        "name": "lightrag_delete_document",
+        "description": "级联删除文档及其关联的 chunks、entities、relationships。对应旧 vector-store/delete_document，但执行完整级联删除而非仅删实体。",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "doc_id": {"type": "string", "description": "要删除的文档ID"}
+            },
+            "required": ["doc_id"]
+        }
+    },
+
     "lightrag_list_entities": {
         "name": "lightrag_list_entities",
         "description": (
@@ -593,6 +605,22 @@ def lightrag_get_document(doc_id: str) -> Dict[str, Any]:
         return {"status": "error", "message": str(e)}
 
 
+def lightrag_delete_document(doc_id: str) -> Dict[str, Any]:
+    """Cascade delete a document and its associated chunks, entities, relationships."""
+    try:
+        from niu_api.internal.lightrag_manager import call_async
+
+        adapter = _get_adapter()
+        rag = adapter._get_rag()
+        if rag is None:
+            return {"status": "error", "message": "LightRAG not initialized"}
+        result = call_async(rag.adelete_by_doc_id(doc_id))
+        return {"status": "ok", "doc_id": doc_id, "result": result}
+    except Exception as e:
+        logger.error(f"lightrag_delete_document failed: {e}")
+        return {"status": "error", "message": str(e)}
+
+
 def lightrag_list_entities(
     list_type: str = "entities",
     entity_type: str = "",
@@ -642,6 +670,7 @@ _TOOL_FUNCTIONS = {
     "lightrag_insert_entity": lightrag_insert_entity,
     "lightrag_insert_relation": lightrag_insert_relation,
     "lightrag_delete_entity": lightrag_delete_entity,
+    "lightrag_delete_document": lightrag_delete_document,
     "lightrag_document_status": lightrag_document_status,
     "lightrag_get_document": lightrag_get_document,
     "lightrag_list_entities": lightrag_list_entities,
