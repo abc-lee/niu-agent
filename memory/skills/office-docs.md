@@ -1,14 +1,16 @@
-# Office 文档生成 Skill
+---
+name: office-docs
+description: Use when user asks to create or edit Word documents, Excel spreadsheets, or PowerPoint presentations
+---
 
-description: 生成和编辑 Office 文档（Word/Excel/PPT），使用 python-docx、openpyxl、python-pptx
-tags: [office, word, excel, ppt, docx, xlsx, pptx, 文档, 表格, 演示]
-触发关键词：写文档、生成Word、写报告、做表格、创建Excel、做PPT、生成演示文稿
+# Office Document Generation
 
-**L1 摘要**：Office document generation|word,excel,ppt,docx,xlsx,pptx,python-docx,openpyxl,python-pptx|Generate and edit Word Excel PPT files using python-docx openpyxl python-pptx via bash tool|python-docx,openpyxl,python-pptx,bash,docx,xlsx,pptx|skill|memory/skills/office-docs.md
+## Overview
 
-## 执行方式
+生成和编辑 Office 文档（Word/Excel/PPT），使用 python-docx、openpyxl、python-pptx，通过 bash 工具执行 Python 脚本。
 
-通过 bash 工具执行 Python 脚本，三个库项目已安装：
+## Quick Start
+
 ```bash
 python -c "
 from docx import Document
@@ -175,3 +177,11 @@ for r, row in enumerate([['项目A', '80%', '张三'], ['项目B', '60%', '李�
     for c, val in enumerate(row):
         table.cell(r, c).text = val
 ```
+
+## Common Mistakes
+
+| 问题 | 解决方案 |
+|------|---------|
+| 中文乱码 | 设置 `style.font.name = '宋体'` |
+| 表格无边框 | 使用 `style='Table Grid'` |
+| 列宽不合适 | 手动设置 `ws.column_dimensions['A'].width = 12` |

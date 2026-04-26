@@ -1,4 +1,9 @@
-# Browser Automation Skill
+---
+name: browser-automation
+description: Use when user asks to browse websites, fill web forms, click buttons, automate browser tasks, or interact with web pages
+---
+
+# Browser Automation
 
 ## Overview
 
@@ -78,7 +83,7 @@ cat /browser/readme.txt           # 先看目录说明，了解所有工具用�
 /browser/browser_interact click --index 4        # 提交
 ```
 
-## Troubleshooting
+## Common Mistakes
 
 | 问题 | 解决方案 |
 |------|---------|
