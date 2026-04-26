@@ -365,3 +365,20 @@ class TestNotesDuplicateId:
         notes = read_notes()
         assert len(notes) == 1
         assert notes[0]["content"] == "First"
+
+
+class TestNotesDeleteFailure:
+    """Tests for delete_note behavior when LightRAG fails."""
+
+    def test_delete_note_succeeds_even_if_lightrag_fails(self, tmp_workspace):
+        """Note should be deleted from JSON even if LightRAG delete_entity raises."""
+        create_note(note_id="n1", content="Delete me")
+
+        with patch("niu_api.internal.lightrag_adapter.LightRAGAdapter") as mock_cls:
+            mock_cls.return_value.delete_entity.side_effect = RuntimeError("LightRAG down")
+            result = delete_note(note_id="n1")
+
+        # Note is still deleted from JSON despite LightRAG failure
+        assert result["status"] == "deleted"
+        notes = read_notes()
+        assert len(notes) == 0

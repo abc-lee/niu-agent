@@ -41,10 +41,11 @@ async def api_create_note(request: NoteCreateRequest, background_tasks: Backgrou
             created_at=created_at,
         )
 
-        # LightRAG 写入（后台任务，不阻塞响应）
-        background_tasks.add_task(
-            asyncio.to_thread, sync_note_to_lightrag, request.id, request.content, request.tags
-        )
+        # LightRAG 写入（后台任务，不阻塞响应）— 仅在创建成功时
+        if result["status"] == "created":
+            background_tasks.add_task(
+                asyncio.to_thread, sync_note_to_lightrag, request.id, request.content, request.tags
+            )
 
         return {"status": "ok", "result": result}
     except Exception as e:
