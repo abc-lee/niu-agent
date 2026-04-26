@@ -67,11 +67,11 @@ class TestSubagentMigrationIntegration:
             assert cfg["name"] == name
             assert "mcpServers" in cfg
 
-    def test_context_manager_has_lightrag(self):
-        """context-manager should have lightrag-server."""
+    def test_context_manager_no_lightrag(self):
+        """context-manager should NOT have lightrag-server (pure compressor)."""
         from agent.subagent import get_subagent_config
         cfg = get_subagent_config("context-manager")
-        assert "lightrag-server" in cfg["mcpServers"]
+        assert "lightrag-server" not in cfg["mcpServers"]
 
     def test_dream_evolver_has_lightrag(self):
         """dream-evolver should have lightrag-server."""
