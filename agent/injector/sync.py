@@ -5,6 +5,7 @@ Skills 目录同步服务。定时扫描 memory/skills/ 目录，同步变化到
 通过 entity_type="skill" 标签区分，供 LightRAGAdapter.search_skills() 检索。
 """
 
+import hashlib
 import json
 import os
 import re
@@ -121,7 +122,7 @@ class SkillSync:
 
         # 记录上次扫描状态 {skill_name: mtime}
         self._last_scan: dict[str, float] = {}
-        self._last_notes_scan: dict[str, int] = {}  # note_id -> content hash
+        self._last_notes_scan: dict[str, str] = {}  # note_id -> content hash (sha256 hex)
         self._lock = threading.Lock()  # 线程锁
 
         # 后台线程
@@ -375,6 +376,9 @@ class SkillSync:
 
         try:
             notes = json.loads(notes_path.read_text(encoding="utf-8"))
+            if not isinstance(notes, list):
+                logger.warning(f"[SkillSync] notes.json is not a list")
+                return 0, 0
         except (json.JSONDecodeError, OSError) as e:
             logger.warning(f"[SkillSync] Failed to read notes.json: {e}")
             return 0, 0
@@ -388,7 +392,7 @@ class SkillSync:
                 continue
             current_ids.add(note_id)
 
-            content_hash = hash(note.get("content", ""))
+            content_hash = hashlib.sha256(note.get("content", "").encode()).hexdigest()
             last_hash = self._last_notes_scan.get(note_id)
 
             if last_hash is None:
