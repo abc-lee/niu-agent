@@ -1,13 +1,13 @@
 """
 LightRAG Unified MCP Server
 
-Replaces vector-store (7 tools) and kg-server (20 tools) with 12 unified tools
+Replaces vector-store (7 tools) and kg-server (20 tools) with 13 unified tools
 that delegate to LightRAGAdapter and LightRAGIngester.
 
 Tool groups:
 - Query (4): lightrag_query, lightrag_query_data, lightrag_search_entities, lightrag_get_graph
 - Insert (4): lightrag_insert, lightrag_insert_custom_kg, lightrag_insert_entity, lightrag_insert_relation
-- Manage (4): lightrag_delete_entity, lightrag_document_status, lightrag_list_entities, lightrag_merge_entities
+- Manage (5): lightrag_delete_entity, lightrag_document_status, lightrag_get_document, lightrag_list_entities, lightrag_merge_entities
 """
 
 from typing import Any, Dict, List, Optional
@@ -295,6 +295,18 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
         },
     },
 
+    "lightrag_get_document": {
+        "name": "lightrag_get_document",
+        "description": "获取完整文档内容及其处理状态。对应旧 vector-store/get_document。",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "doc_id": {"type": "string", "description": "文档ID"}
+            },
+            "required": ["doc_id"]
+        }
+    },
+
     "lightrag_list_entities": {
         "name": "lightrag_list_entities",
         "description": (
@@ -555,6 +567,32 @@ def lightrag_document_status() -> Dict[str, Any]:
         return {"status": "error", "message": str(e)}
 
 
+def lightrag_get_document(doc_id: str) -> Dict[str, Any]:
+    """Get full document content and its processing status."""
+    try:
+        from niu_api.internal.lightrag_manager import call_async
+
+        adapter = _get_adapter()
+        rag = adapter._get_rag()
+        if rag is None:
+            return {"status": "error", "message": "LightRAG not initialized"}
+        full_doc = call_async(rag.full_docs.get_by_id(doc_id))
+        if full_doc is None:
+            return {"status": "not_found", "doc_id": doc_id}
+        doc_status_obj = call_async(rag.doc_status.get_by_id(doc_id))
+        content = getattr(full_doc, "content", None) or str(full_doc)
+        status_str = getattr(doc_status_obj, "status", "unknown") if doc_status_obj else "unknown"
+        return {
+            "status": "ok",
+            "doc_id": doc_id,
+            "content": content,
+            "doc_status": status_str,
+        }
+    except Exception as e:
+        logger.error(f"lightrag_get_document failed: {e}")
+        return {"status": "error", "message": str(e)}
+
+
 def lightrag_list_entities(
     list_type: str = "entities",
     entity_type: str = "",
@@ -605,6 +643,7 @@ _TOOL_FUNCTIONS = {
     "lightrag_insert_relation": lightrag_insert_relation,
     "lightrag_delete_entity": lightrag_delete_entity,
     "lightrag_document_status": lightrag_document_status,
+    "lightrag_get_document": lightrag_get_document,
     "lightrag_list_entities": lightrag_list_entities,
     "lightrag_merge_entities": lightrag_merge_entities,
 }
