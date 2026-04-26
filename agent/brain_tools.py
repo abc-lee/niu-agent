@@ -15,7 +15,7 @@ M5 module: MCP tools + API endpoints + tool dispatch reinforce.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING
 
 from niu_api.internal.region_activation import RegionActivationManager
 
@@ -316,13 +316,17 @@ def handle_brain_region_status(include_dark: bool = False) -> str:
 # ============== Tool Dispatch Reinforce ==============
 
 
-def reinforce_on_tool_use(tool_name: str) -> str | None:
+def reinforce_on_tool_use(tool_name: str, reinforce_delta: float = 0.1) -> str | None:
     """Reinforce brain region when a tool is successfully called.
+
+    Also boosts weight of structural edges (_region: prefix) in the
+    LightRAG knowledge graph, creating a dynamic balance with edge decay.
 
     Call this from handler.py after a tool is successfully dispatched.
 
     Args:
         tool_name: Name of the tool that was just called.
+        reinforce_delta: Edge weight boost value (default 0.1).
 
     Returns:
         The reinforced region_id, or None.
@@ -335,4 +339,57 @@ def reinforce_on_tool_use(tool_name: str) -> str | None:
     if not tool_to_region:
         return None
 
-    return mgr.reinforce_by_tool_use(tool_name, tool_to_region)
+    region_id = mgr.reinforce_by_tool_use(tool_name, tool_to_region)
+
+    # Boost structural edge weights in LightRAG graph
+    if region_id:
+        _reinforce_edge_weight(region_id, reinforce_delta)
+
+    return region_id
+
+
+def _reinforce_edge_weight(region_id: str, delta: float = 0.1) -> None:
+    """Boost weight of structural edges for a brain region node.
+
+    Only boosts edges with _region: prefix keywords.
+    Semantic edges (no prefix) are never boosted by tool usage.
+    """
+    try:
+        from niu_api.internal.lightrag_adapter import LightRAGAdapter
+
+        adapter = LightRAGAdapter()
+        rag = adapter._get_rag()
+        if rag is None:
+            return
+
+        kg = rag.chunk_entity_relation_graph
+        if kg is None:
+            return
+
+        region_node = kg.get_node(region_id)
+        if region_node is None:
+            return
+
+        # get_neighbors may not exist on all graph storage backends
+        try:
+            neighbors = kg.get_neighbors(region_id)
+        except AttributeError:
+            return
+        if not neighbors:
+            return
+
+        for neighbor_id, edge_data in list(neighbors.items()):
+            if not isinstance(edge_data, dict):
+                continue
+            keywords = edge_data.get("keywords", "")
+            if keywords.startswith("_region:"):
+                old_weight = edge_data.get("weight", 1.0)
+                new_weight = min(1.0, float(old_weight) + delta)
+                if new_weight > float(old_weight):
+                    edge_data["weight"] = new_weight
+                    logger.debug(
+                        "Edge weight reinforced: %s -> %s (%s): %.2f -> %.2f",
+                        region_id, neighbor_id, keywords, float(old_weight), new_weight,
+                    )
+    except Exception as e:
+        logger.debug("Edge weight reinforce failed: %s", e)
