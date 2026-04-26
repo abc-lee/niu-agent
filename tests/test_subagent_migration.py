@@ -26,3 +26,31 @@ class TestLightragGetDocument:
         """lightrag_get_document should be in _TOOL_FUNCTIONS."""
         from niu_lightrag_server import _TOOL_FUNCTIONS
         assert "lightrag_get_document" in _TOOL_FUNCTIONS
+
+
+class TestLightragDeleteDocument:
+    """Test lightrag_delete_document tool."""
+
+    def test_delete_document_schema_exists(self):
+        """lightrag_delete_document should be in TOOL_SCHEMAS."""
+        from niu_lightrag_server import TOOL_SCHEMAS
+        assert "lightrag_delete_document" in TOOL_SCHEMAS
+
+    def test_delete_document_schema_has_required_params(self):
+        """lightrag_delete_document should require doc_id parameter."""
+        from niu_lightrag_server import TOOL_SCHEMAS
+        schema = TOOL_SCHEMAS["lightrag_delete_document"]
+        assert "doc_id" in schema["input_schema"]["properties"]
+        assert "doc_id" in schema["input_schema"]["required"]
+
+    def test_delete_document_schema_description(self):
+        """lightrag_delete_document should mention cascade deletion."""
+        from niu_lightrag_server import TOOL_SCHEMAS
+        schema = TOOL_SCHEMAS["lightrag_delete_document"]
+        desc = schema["description"].lower()
+        assert "级联" in desc or "cascade" in desc or "文档" in desc
+
+    def test_delete_document_in_tool_functions(self):
+        """lightrag_delete_document should be in _TOOL_FUNCTIONS."""
+        from niu_lightrag_server import _TOOL_FUNCTIONS
+        assert "lightrag_delete_document" in _TOOL_FUNCTIONS
