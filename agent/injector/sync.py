@@ -13,6 +13,12 @@ from typing import Optional
 
 from loguru import logger
 
+try:
+    import yaml
+    YAML_AVAILABLE = True
+except ImportError:
+    YAML_AVAILABLE = False
+
 # watchdog 相关导入
 try:
     from watchdog.observers import Observer
@@ -342,18 +348,67 @@ class SkillSync:
         except Exception as e:
             logger.warning(f"[SkillSync] LightRAG skill delete failed for '{name}': {e}")
 
+    def _parse_yaml_frontmatter(self, content: str) -> dict:
+        """解析 YAML frontmatter（--- 包裹的头部区域）
+
+        Returns:
+            解析后的字典，解析失败返回空字典
+        """
+        stripped = content.strip()
+        if not stripped.startswith("---"):
+            return {}
+
+        end = stripped.find("---", 3)
+        if end == -1:
+            return {}
+
+        yaml_text = stripped[3:end].strip()
+        if not yaml_text:
+            return {}
+
+        if YAML_AVAILABLE:
+            try:
+                result = yaml.safe_load(yaml_text)
+                if isinstance(result, dict):
+                    return result
+            except Exception as e:
+                logger.debug(f"YAML frontmatter parse failed: {e}")
+
+        # Fallback: 简单正则解析（无 PyYAML 时）
+        parsed = {}
+        for line in yaml_text.split("\n"):
+            match = re.match(r"^(\w+)\s*:\s*(.+)$", line.strip())
+            if match:
+                key, value = match.group(1), match.group(2).strip().strip("\"'")
+                parsed[key] = value
+        return parsed
+
     def _extract_triggers(self, content: str) -> list[str]:
-        """从 skill 内容提取触发词"""
+        """从 skill 内容提取触发词
+
+        优先级：YAML frontmatter triggers > Markdown 触发关键词 > triggers: []
+        """
         triggers = []
 
-        # 格式 1: **触发关键词**：xxx、yyy (Markdown 加粗)
-        match_bold = re.search(r"\*\*触发关键词\*\*[：:]\s*(.+)", content)
-        if match_bold:
-            keywords = match_bold.group(1)
-            triggers.extend(re.split(r"[,，、]", keywords))
-            triggers = [t.strip() for t in triggers if t.strip()]
+        # 优先级 1: YAML frontmatter triggers
+        fm = self._parse_yaml_frontmatter(content)
+        fm_triggers = fm.get("triggers")
+        if fm_triggers:
+            if isinstance(fm_triggers, list):
+                triggers.extend(str(t) for t in fm_triggers)
+            elif isinstance(fm_triggers, str):
+                triggers.extend(re.split(r"[,，、]", fm_triggers))
+                triggers = [t.strip() for t in triggers if t.strip()]
 
-        # 格式 2: 触发关键词：xxx、yyy (无加粗)
+        # 优先级 2: **触发关键词**：xxx、yyy (Markdown 加粗)
+        if not triggers:
+            match_bold = re.search(r"\*\*触发关键词\*\*[：:]\s*(.+)", content)
+            if match_bold:
+                keywords = match_bold.group(1)
+                triggers.extend(re.split(r"[,，、]", keywords))
+                triggers = [t.strip() for t in triggers if t.strip()]
+
+        # 优先级 3: 触发关键词：xxx、yyy (无加粗)
         if not triggers:
             match1 = re.search(r"触发关键词[：:]\s*(.+)", content)
             if match1:
@@ -361,63 +416,72 @@ class SkillSync:
                 triggers.extend(re.split(r"[,，、]", keywords))
                 triggers = [t.strip() for t in triggers if t.strip()]
 
-        # 格式 3: triggers: [xxx, yyy]
-        match2 = re.search(r"triggers:\s*\[(.+)\]", content, re.IGNORECASE)
-        if match2:
-            keywords = match2.group(1)
-            triggers.extend([t.strip().strip("\"'") for t in keywords.split(",")])
+        # 优先级 4: triggers: [xxx, yyy]
+        if not triggers:
+            match2 = re.search(r"triggers:\s*\[(.+)\]", content, re.IGNORECASE)
+            if match2:
+                keywords = match2.group(1)
+                triggers.extend([t.strip().strip("\"'") for t in keywords.split(",")])
 
         return list(set(triggers))[:10]
 
     def _extract_description(self, content: str) -> str:
         """从 skill 内容提取描述
 
-        L1 摘要格式：{标题}|{关键词}|{摘要}|{实体}|{类型}|{指针}
-        最后一个字段是指针，指向完整内容的位置
+        优先级：
+        1. YAML frontmatter description（"Use when..." 格式，CSO 最佳实践）
+        2. 第一个 # 标题（降级）
+        3. 默认：拒绝同步
         """
+        # 优先级 1: YAML frontmatter description
+        fm = self._parse_yaml_frontmatter(content)
+        fm_desc = fm.get("description", "")
+        if fm_desc and isinstance(fm_desc, str) and fm_desc.strip():
+            return fm_desc.strip()
+
+        # 优先级 2: 第一个 # 标题（降级）
         lines = content.strip().split("\n")
-
-        # 优先级 1: 提取 L1 摘要（管道格式，包含指针）
-        match_l1 = re.search(r"\*\*[lL]1 摘要\*\*[：:]\s*(.+)", content)
-        if match_l1:
-            description = match_l1.group(1).strip()
-            if description:
-                return description
-
-        # 优先级 2: 第一个 # 标题（降级，不推荐）
         for line in lines:
             line = line.strip()
             if line.startswith("# "):
-                # 去掉 # 前缀，作为描述
-                logger.warning(f"Skill 缺少 L1 摘要字段，使用标题降级")
+                logger.warning(f"Skill 缺少 YAML frontmatter description，使用标题降级")
                 return line[2:].strip()
 
-        # 优先级 3: description: xxx
-        match = re.search(r"description:\s*(.+)", content, re.IGNORECASE)
-        if match:
-            logger.warning(f"Skill 缺少 L1 摘要字段，使用 description 降级")
-            return match.group(1).strip().strip("\"'")
-
-        # 默认：拒绝同步（返回空字符串）
-        logger.error("Skill 缺少任何描述字段，无法同步到 LightRAG")
+        # 默认：拒绝同步
+        logger.error("Skill 缺少 YAML frontmatter description，无法同步到 LightRAG")
         return ""
 
     def _extract_tags(self, content: str) -> list[str]:
-        """从 skill 内容提取标签"""
+        """从 skill 内容提取标签
+
+        优先级：YAML frontmatter tags > tags: [] > 标签：xxx
+        """
         tags = []
 
-        # 格式 1: tags: [xxx, yyy]
-        match1 = re.search(r"tags:\s*\[(.+)\]", content, re.IGNORECASE)
-        if match1:
-            keywords = match1.group(1)
-            tags.extend([t.strip().strip("\"'") for t in keywords.split(",")])
+        # 优先级 1: YAML frontmatter tags
+        fm = self._parse_yaml_frontmatter(content)
+        fm_tags = fm.get("tags")
+        if fm_tags:
+            if isinstance(fm_tags, list):
+                tags.extend(str(t) for t in fm_tags)
+            elif isinstance(fm_tags, str):
+                tags.extend(re.split(r"[,，、]", fm_tags))
+                tags = [t.strip() for t in tags if t.strip()]
 
-        # 格式 2: 标签：xxx、yyy
-        match2 = re.search(r"标签[：:]\s*(.+)", content)
-        if match2:
-            keywords = match2.group(1)
-            tags.extend(re.split(r"[,，、]", keywords))
-            tags = [t.strip() for t in tags if t.strip()]
+        # 优先级 2: tags: [xxx, yyy]
+        if not tags:
+            match1 = re.search(r"tags:\s*\[(.+)\]", content, re.IGNORECASE)
+            if match1:
+                keywords = match1.group(1)
+                tags.extend([t.strip().strip("\"'") for t in keywords.split(",")])
+
+        # 优先级 3: 标签：xxx、yyy
+        if not tags:
+            match2 = re.search(r"标签[：:]\s*(.+)", content)
+            if match2:
+                keywords = match2.group(1)
+                tags.extend(re.split(r"[,，、]", keywords))
+                tags = [t.strip() for t in tags if t.strip()]
 
         # 从触发词中提取标签（触发词也可以作为标签）
         triggers = self._extract_triggers(content)
