@@ -68,10 +68,10 @@ mcpServers:
 ## 工具使用
 
 ### scheduler-server 工具
-- `scheduler_create_event`：创建事件
-- `scheduler_list_events`：列出事件
-- `scheduler_update_event`：更新事件
-- `scheduler_delete_event`：删除事件
+- `schedule_task`：创建事件
+- `list_scheduled_tasks`：列出事件
+- `update_task`：更新事件
+- `cancel_task`：删除事件
 
 ### lightrag-server 工具
 - `lightrag_insert`：写入事件到知识图谱

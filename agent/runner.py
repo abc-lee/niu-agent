@@ -656,7 +656,6 @@ class NiuRunner:
         try:
             from niu_api.internal.region_injector import BrainContextInjector
             from niu_api.internal.lightrag_adapter import LightRAGAdapter, LightRAGIngester
-            from niu_api.internal.lightrag_manager import call_async
             from agent.brain_tools import get_activation_mgr
             from niu_api.internal.region_manager import RegionManager
 
@@ -670,7 +669,7 @@ class NiuRunner:
                     activation_mgr=_activation_mgr,
                     region_mgr=_region_mgr,
                 )
-                brain_context = call_async(_brain_injector.inject_brain_context(context))
+                brain_context = _brain_injector.inject_brain_context(context)
                 if brain_context:
                     parts.append(f"\n## 脑区激活上下文\n{brain_context}")
                     logger.debug(f"Brain context injected: {len(brain_context)} chars")
