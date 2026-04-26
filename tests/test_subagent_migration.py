@@ -54,3 +54,70 @@ class TestLightragDeleteDocument:
         """lightrag_delete_document should be in _TOOL_FUNCTIONS."""
         from niu_lightrag_server import _TOOL_FUNCTIONS
         assert "lightrag_delete_document" in _TOOL_FUNCTIONS
+
+
+class TestSubagentMigrationIntegration:
+    """Integration tests for the complete migration."""
+
+    def test_all_subagent_configs_valid(self):
+        """All sub-agent config files should parse correctly."""
+        from agent.subagent import get_subagent_config
+        for name in ["dream-evolver", "entity-extractor", "context-manager", "event-manager"]:
+            cfg = get_subagent_config(name)
+            assert cfg["name"] == name
+            assert "mcpServers" in cfg
+
+    def test_context_manager_has_lightrag(self):
+        """context-manager should have lightrag-server."""
+        from agent.subagent import get_subagent_config
+        cfg = get_subagent_config("context-manager")
+        assert "lightrag-server" in cfg["mcpServers"]
+
+    def test_dream_evolver_has_lightrag(self):
+        """dream-evolver should have lightrag-server."""
+        from agent.subagent import get_subagent_config
+        cfg = get_subagent_config("dream-evolver")
+        assert "lightrag-server" in cfg["mcpServers"]
+
+    def test_kg_enricher_removed(self):
+        """kg-enricher config file should not exist."""
+        from pathlib import Path
+        assert not Path("config/agents/kg-enricher.md").exists()
+
+    def test_handler_aliases_correct(self):
+        """handler.py _TOOL_ALIASES should use correct new mappings."""
+        from agent.handler import NiuHandler
+        aliases = NiuHandler._TOOL_ALIASES
+        assert aliases.get("vector-store/get_document") == "lightrag-server/lightrag_get_document"
+        assert aliases.get("vector-store/delete_document") == "lightrag-server/lightrag_delete_document"
+        assert "vector-store/update_metadata" not in aliases
+
+    def test_deprecated_aliases_correct(self):
+        """DEPRECATED_ALIASES should use correct new mappings."""
+        from niu_lightrag_server import DEPRECATED_ALIASES
+        assert DEPRECATED_ALIASES.get("get_document") == "lightrag_get_document"
+        assert DEPRECATED_ALIASES.get("delete_document") == "lightrag_delete_document"
+        assert "update_metadata" not in DEPRECATED_ALIASES
+
+    def test_lightrag_new_tools_in_schemas(self):
+        """lightrag_get_document and lightrag_delete_document should be in TOOL_SCHEMAS."""
+        from niu_lightrag_server import TOOL_SCHEMAS
+        assert "lightrag_get_document" in TOOL_SCHEMAS
+        assert "lightrag_delete_document" in TOOL_SCHEMAS
+
+    def test_reinforce_on_tool_use_has_reinforce_delta(self):
+        """reinforce_on_tool_use should accept reinforce_delta parameter."""
+        import inspect
+        from agent.brain_tools import reinforce_on_tool_use
+        sig = inspect.signature(reinforce_on_tool_use)
+        assert "reinforce_delta" in sig.parameters
+
+    def test_region_manager_has_incremental_update(self):
+        """RegionManager should have incremental_update method."""
+        from niu_api.internal.region_manager import RegionManager
+        assert hasattr(RegionManager, "incremental_update")
+
+    def test_region_manager_has_decay_structural_edges(self):
+        """RegionManager should have _decay_structural_edges method."""
+        from niu_api.internal.region_manager import RegionManager
+        assert hasattr(RegionManager, "_decay_structural_edges")
