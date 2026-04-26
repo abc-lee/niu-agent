@@ -53,24 +53,24 @@ async def api_create_note(request: NoteCreateRequest, background_tasks: Backgrou
         return {"status": "ok", "result": result}
     except Exception as e:
         logger.error(f"[Notes] Create failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal error")
 
 
 @router.get("/notes")
 async def api_list_notes():
     """List all sticky notes"""
     try:
-        notes = list_notes()
+        notes = await asyncio.to_thread(list_notes)
         return {"status": "ok", "notes": notes}
     except Exception as e:
         logger.error(f"[Notes] List failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal error")
 
 
 @router.get("/notes/{note_id}")
 async def api_get_note(note_id: str):
     """Get a single note"""
-    note = get_note(note_id)
+    note = await asyncio.to_thread(get_note, note_id)
     if note is None:
         raise HTTPException(status_code=404, detail="Note not found")
     return {"status": "ok", "note": note}
@@ -95,14 +95,14 @@ async def api_update_note(note_id: str, request: NoteUpdateRequest, background_t
         raise
     except Exception as e:
         logger.error(f"[Notes] Update failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal error")
 
 
 @router.delete("/notes/{note_id}")
 async def api_delete_note(note_id: str):
     """Delete a sticky note"""
     try:
-        result = delete_note(note_id=note_id)
+        result = await asyncio.to_thread(delete_note, note_id=note_id)
 
         if result["status"] == "not_found":
             raise HTTPException(status_code=404, detail="Note not found")
@@ -112,7 +112,7 @@ async def api_delete_note(note_id: str):
         raise
     except Exception as e:
         logger.error(f"[Notes] Delete failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal error")
 
 
 def sync_note_to_lightrag(note_id: str, content: str, tags: list[str]):
