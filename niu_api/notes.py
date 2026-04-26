@@ -6,12 +6,15 @@ Notes Store - JSON-based sticky notes storage
 
 import json
 import os
+import re
 import tempfile
 import threading
 from datetime import datetime
 from typing import Dict, List, Optional
 
 from loguru import logger
+
+_VALID_NOTE_ID = re.compile(r"^[a-zA-Z0-9_-]{1,128}$")
 
 # Lock for read-modify-write atomicity across concurrent API requests
 _notes_lock = threading.Lock()
@@ -37,10 +40,7 @@ def _ensure_dir() -> None:
 
 
 def _atomic_write(data: list) -> None:
-    """Write JSON via temp file + rename (Windows-safe).
-
-    On Windows, rename fails if target exists, so delete first.
-    """
+    """Write JSON via temp file + os.replace (atomic on same volume)."""
     notes_path = _get_notes_path()
     _ensure_dir()
     dir_path = os.path.dirname(notes_path)
@@ -86,8 +86,11 @@ def write_notes(notes: List[Dict]) -> None:
 def create_note(note_id: str, content: str, tags: Optional[List[str]] = None, created_at: Optional[str] = None) -> Dict:
     """Append a note. Auto-generate created_at if None.
 
-    Return {"id": note_id, "status": "created"}.
+    Return {"id": note_id, "status": "created"} or {"id": note_id, "status": "invalid_id"}.
     """
+    if not _VALID_NOTE_ID.match(note_id):
+        return {"id": note_id, "status": "invalid_id"}
+
     if created_at is None:
         created_at = datetime.now().isoformat()
 
@@ -161,7 +164,7 @@ def delete_note(note_id: str) -> Dict:
 def list_notes() -> List[Dict]:
     """Return all notes sorted by created_at DESC."""
     notes = read_notes()
-    return sorted(notes, key=lambda n: n.get("created_at", ""), reverse=True)
+    return sorted([dict(n) for n in notes], key=lambda n: n.get("created_at", ""), reverse=True)
 
 
 def get_note(note_id: str) -> Optional[Dict]:
@@ -169,7 +172,7 @@ def get_note(note_id: str) -> Optional[Dict]:
     notes = read_notes()
     for note in notes:
         if note["id"] == note_id:
-            return note
+            return dict(note)
     return None
 
 

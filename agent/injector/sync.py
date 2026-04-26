@@ -410,17 +410,24 @@ class SkillSync:
                 self._last_notes_scan[note_id] = content_hash
 
         # Detect deleted notes
-        for note_id in list(self._last_notes_scan.keys()):
-            if note_id not in current_ids:
-                try:
-                    from niu_api.internal.lightrag_adapter import LightRAGAdapter
-                    adapter = LightRAGAdapter()
-                    adapter.delete_entity(f"note:{note_id}")
-                    self._last_notes_scan.pop(note_id, None)
-                    logger.info(f"[SkillSync] Deleted note: {note_id}")
-                except Exception as e:
-                    # Keep hash so deletion is retried on next scan
-                    logger.warning(f"[SkillSync] Failed to delete note {note_id}: {e}")
+        with self._lock:
+            deleted_ids = [nid for nid in self._last_notes_scan if nid not in current_ids]
+
+        if deleted_ids:
+            try:
+                from niu_api.internal.lightrag_adapter import LightRAGAdapter
+                adapter = LightRAGAdapter()
+                for note_id in deleted_ids:
+                    try:
+                        adapter.delete_entity(f"note:{note_id}")
+                        with self._lock:
+                            self._last_notes_scan.pop(note_id, None)
+                        logger.info(f"[SkillSync] Deleted note: {note_id}")
+                    except Exception as e:
+                        # Keep hash so deletion is retried on next scan
+                        logger.warning(f"[SkillSync] Failed to delete note {note_id}: {e}")
+            except Exception as e:
+                logger.warning(f"[SkillSync] LightRAG unavailable for note deletion: {e}")
 
         return added, updated
 
