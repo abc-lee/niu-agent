@@ -11,14 +11,10 @@ description: Use when user asks to create, read, update, or delete sticky notes,
 
 ## Quick Start
 
-```bash
-# 查看所有便签
-curl http://localhost:9876/api/notes
+使用 `bash` 工具调用 API：
 
-# 创建便签
-curl -X POST http://localhost:9876/api/notes \
-  -H "Content-Type: application/json" \
-  -d '{"id": "shopping", "content": "买牛奶和鸡蛋", "tags": ["购物"], "createdAt": 1700000000000}'
+```
+bash(command="curl -s http://localhost:9876/api/notes")
 ```
 
 ## Core Operations
@@ -26,11 +22,10 @@ curl -X POST http://localhost:9876/api/notes \
 ### 创建便签
 
 ```
-POST /api/notes
-Body: {"id": "<note_id>", "content": "<text>", "tags": ["tag1"], "createdAt": <ms_timestamp>}
+bash(command='curl -s -X POST http://localhost:9876/api/notes -H "Content-Type: application/json" -d "{\"id\": \"shopping\", \"content\": \"买牛奶和鸡蛋\", \"tags\": [\"购物\"], \"createdAt\": 1700000000000}"')
 ```
 
-- `id`: 便签唯一标识（字符串）
+- `id`: 便签唯一标识（字符串，重复创建返回 `duplicate`）
 - `content`: 便签内容
 - `tags`: 标签列表（可选）
 - `createdAt`: 创建时间（前端传 ms 时间戳）
@@ -38,21 +33,20 @@ Body: {"id": "<note_id>", "content": "<text>", "tags": ["tag1"], "createdAt": <m
 ### 查看便签
 
 ```
-GET /api/notes          # 列出所有便签
-GET /api/notes/<id>     # 查看单个便签
+bash(command="curl -s http://localhost:9876/api/notes")          # 列出所有
+bash(command="curl -s http://localhost:9876/api/notes/shopping") # 查看单个
 ```
 
 ### 更新便签
 
 ```
-PUT /api/notes/<id>
-Body: {"id": "<note_id>", "content": "<new_text>", "tags": ["tag1", "tag2"], "updatedAt": <ms_timestamp>}
+bash(command='curl -s -X PUT http://localhost:9876/api/notes/shopping -H "Content-Type: application/json" -d "{\"id\": \"shopping\", \"content\": \"新内容\", \"tags\": [\"购物\"], \"updatedAt\": 1700000000000}"')
 ```
 
 ### 删除便签
 
 ```
-DELETE /api/notes/<id>
+bash(command="curl -s -X DELETE http://localhost:9876/api/notes/shopping")
 ```
 
 删除便签时会自动从 LightRAG 知识图谱中移除对应实体。
