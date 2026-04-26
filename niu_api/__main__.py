@@ -133,38 +133,47 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Brain graph initialization failed: {e}")
 
-    # 8.6. Ensure kg-enricher daily task exists
+    # 8.6. Ensure entity-extractor daily task exists (replaces deleted kg-enricher)
     try:
         from niu_api.internal.scheduler import get_store
 
         ts = get_store()
-        # Check if active kg-enricher recurring task exists (precise match)
+        # Cancel any stale kg-enricher tasks
         existing_tasks = ts.list_tasks()
-        kg_enricher_exists = any(
+        for task in existing_tasks:
+            if (
+                task.get("event_type") == "recurring"
+                and "kg-enricher" in task.get("content", "")
+                and task.get("status") != "cancelled"
+            ):
+                ts.cancel_task(task["id"])
+                logger.info(f"Cancelled stale kg-enricher task: {task['id']}")
+
+        # Check if entity-extractor task already exists
+        extractor_exists = any(
             task.get("event_type") == "recurring"
             and task.get("cron_expr") == "0 8 * * *"
-            and "kg-enricher" in task.get("content", "")
+            and "entity-extractor" in task.get("content", "")
             and task.get("status") != "cancelled"
-            for task in existing_tasks
+            for task in ts.list_tasks()
         )
 
-        if not kg_enricher_exists:
-            # Calculate next 8am
+        if not extractor_exists:
             now = datetime.now()
             next_8am = now.replace(hour=8, minute=0, second=0, microsecond=0)
             if next_8am <= now:
                 next_8am += timedelta(days=1)
 
             ts.create_task(
-                content="执行知识图谱丰富化：将向量库中的经验、画像、查询模式同步到知识图谱。调用 chat-with-kg-enricher 子 Agent。",
+                content="执行知识图谱实体提取：从对话中提取实体和关系，写入LightRAG知识图谱。调用 chat-with-entity-extractor 子 Agent。",
                 scheduled_at=next_8am.isoformat(),
                 is_recurring=True,
                 cron_expr="0 8 * * *",
                 event_type="recurring",
             )
-            logger.info(f"Created kg-enricher daily task (next run: {next_8am})")
+            logger.info(f"Created entity-extractor daily task (next run: {next_8am})")
     except Exception as e:
-        logger.warning(f"Failed to ensure kg-enricher task: {e}")
+        logger.warning(f"Failed to ensure entity-extractor task: {e}")
 
     yield
 

@@ -49,7 +49,7 @@ class BrainContextInjector:
     Usage::
 
         injector = BrainContextInjector(adapter, activation_mgr, region_mgr)
-        injection_text = await injector.inject_brain_context("Python数据分析")
+        injection_text = injector.inject_brain_context("Python数据分析")
     """
 
     CONTEXT_BUDGET = {
@@ -74,7 +74,7 @@ class BrainContextInjector:
     # Main entry
     # ------------------------------------------------------------------
 
-    async def inject_brain_context(
+    def inject_brain_context(
         self,
         query_context: str,
     ) -> str:
@@ -88,6 +88,10 @@ class BrainContextInjector:
         5. Format injection content by activation level
 
         Returns injection text (empty string if no active regions or on error).
+
+        Note: This method is synchronous — all adapter calls (query_data, query)
+        are sync wrappers that internally handle their own async bridging via
+        call_async. Declaring this as async would cause nested call_async deadlock.
         """
         if not query_context:
             return ""
