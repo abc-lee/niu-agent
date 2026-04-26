@@ -140,7 +140,7 @@ async def lifespan(app: FastAPI):
         ts = get_store()
         existing_tasks = ts.list_tasks()
 
-        # Cancel any stale kg-enricher tasks (any status, any content match)
+        # Cancel any stale kg-enricher tasks (cancel_task only transitions pending→cancelled)
         for task in existing_tasks:
             if (
                 task.get("event_type") == "recurring"
