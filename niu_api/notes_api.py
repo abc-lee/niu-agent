@@ -11,6 +11,8 @@ from pydantic import BaseModel
 
 from niu_api.notes import create_note, delete_note, get_note, list_notes, update_note
 
+_INVALID_ID_MSG = "Invalid note ID: use 1-128 alphanumeric, hyphen or underscore characters"
+
 router = APIRouter(prefix="/api", tags=["notes"])
 
 
@@ -42,7 +44,7 @@ async def api_create_note(request: NoteCreateRequest, background_tasks: Backgrou
         )
 
         if result["status"] == "invalid_id":
-            raise HTTPException(status_code=400, detail="Invalid note ID: use 1-128 alphanumeric, hyphen or underscore characters")
+            raise HTTPException(status_code=400, detail=_INVALID_ID_MSG)
 
         # LightRAG 写入（后台任务，不阻塞响应）— 仅在创建成功时
         if result["status"] == "created":
@@ -51,6 +53,8 @@ async def api_create_note(request: NoteCreateRequest, background_tasks: Backgrou
             )
 
         return {"status": "ok", "result": result}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"[Notes] Create failed: {e}")
         raise HTTPException(status_code=500, detail="Internal error")
@@ -82,6 +86,8 @@ async def api_update_note(note_id: str, request: NoteUpdateRequest, background_t
     try:
         result = update_note(note_id=note_id, content=request.content, tags=request.tags)
 
+        if result["status"] == "invalid_id":
+            raise HTTPException(status_code=400, detail=_INVALID_ID_MSG)
         if result["status"] == "not_found":
             raise HTTPException(status_code=404, detail="Note not found")
 
@@ -104,6 +110,8 @@ async def api_delete_note(note_id: str):
     try:
         result = await asyncio.to_thread(delete_note, note_id=note_id)
 
+        if result["status"] == "invalid_id":
+            raise HTTPException(status_code=400, detail=_INVALID_ID_MSG)
         if result["status"] == "not_found":
             raise HTTPException(status_code=404, detail="Note not found")
 
@@ -127,7 +135,7 @@ def sync_note_to_lightrag(note_id: str, content: str, tags: list[str]):
         description = content + (" | 标签: " + ", ".join(tags) if tags else "")
 
         ingester = LightRAGIngester()
-        ingester.inject_entity(
+        result = ingester.inject_entity(
             name=f"note:{note_id}",
             entity_type="knowledge",
             description=description,
@@ -135,6 +143,9 @@ def sync_note_to_lightrag(note_id: str, content: str, tags: list[str]):
             chunk_content=description,
             file_path=f"note://{note_id}",
         )
-        logger.info(f"[Notes] LightRAG sync: note:{note_id}")
+        if result.get("status") == "ok":
+            logger.info(f"[Notes] LightRAG sync: note:{note_id}")
+        else:
+            logger.warning(f"[Notes] LightRAG sync failed for {note_id}: {result.get('message', '')}")
     except Exception as e:
         logger.warning(f"[Notes] LightRAG sync failed for {note_id}: {e}")

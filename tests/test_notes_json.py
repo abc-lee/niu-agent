@@ -441,3 +441,11 @@ class TestNotesIdValidation:
     def test_invalid_note_id_too_long(self, tmp_workspace):
         result = create_note(note_id="x" * 129, content="test")
         assert result["status"] == "invalid_id"
+
+    def test_invalid_delete_note_id(self, tmp_workspace):
+        result = delete_note(note_id="bad id")
+        assert result["status"] == "invalid_id"
+
+    def test_invalid_update_note_id(self, tmp_workspace):
+        result = update_note(note_id="../etc/passwd", content="test")
+        assert result["status"] == "invalid_id"

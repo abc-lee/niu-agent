@@ -116,17 +116,21 @@ def create_note(note_id: str, content: str, tags: Optional[List[str]] = None, cr
 def update_note(note_id: str, content: Optional[str] = None, tags: Optional[List[str]] = None) -> Dict:
     """Update note content/tags + set updated_at.
 
-    Return {"id": note_id, "status": "updated"} or {"id": note_id, "status": "not_found"}.
+    Return {"id": note_id, "status": "updated|not_found|invalid_id"}.
     """
+    if not _VALID_NOTE_ID.match(note_id):
+        return {"id": note_id, "status": "invalid_id"}
     with _notes_lock:
         notes = read_notes()
-        for note in notes:
+        for i, note in enumerate(notes):
             if note["id"] == note_id:
+                updated_note = {**note}
                 if content is not None:
-                    note["content"] = content
+                    updated_note["content"] = content
                 if tags is not None:
-                    note["tags"] = tags
-                note["updated_at"] = datetime.now().isoformat()
+                    updated_note["tags"] = tags
+                updated_note["updated_at"] = datetime.now().isoformat()
+                notes[i] = updated_note
                 _atomic_write(notes)
                 logger.info(f"Note updated: {note_id}")
                 return {"id": note_id, "status": "updated"}
@@ -137,8 +141,10 @@ def update_note(note_id: str, content: Optional[str] = None, tags: Optional[List
 def delete_note(note_id: str) -> Dict:
     """Remove note from JSON + call LightRAGAdapter().delete_entity().
 
-    Return {"id": note_id, "status": "deleted"} or {"id": note_id, "status": "not_found"}.
+    Return {"id": note_id, "status": "deleted|not_found|invalid_id"}.
     """
+    if not _VALID_NOTE_ID.match(note_id):
+        return {"id": note_id, "status": "invalid_id"}
     with _notes_lock:
         notes = read_notes()
         original_len = len(notes)
