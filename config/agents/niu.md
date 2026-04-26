@@ -9,7 +9,6 @@ sub agents:
   - event-manager
   - context-manager
   - entity-extractor
-  - kg-enricher
 ---
 
 # 核心能力
