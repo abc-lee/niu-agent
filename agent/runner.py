@@ -626,6 +626,12 @@ class NiuRunner:
         )
         if skills_text:
             parts.append(skills_text)
+            parts.append(
+                "\n\n### [技能使用指引]\n"
+                "上述技能仅展示了名称和触发描述。当你判断某个技能与当前任务相关时，"
+                "必须使用 disk(\"cat /skills/<技能名>.md\") 读取完整技能文件后再执行，"
+                "不要仅凭描述猜测技能用法。"
+            )
 
         # Knowledge
         lightrag_knowledge = lightrag_results.get("knowledge", [])
