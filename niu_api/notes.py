@@ -1,128 +1,177 @@
 """
-Notes Store - SQLite-based sticky notes storage
+Notes Store - JSON-based sticky notes storage
 
-便利贴数据持久化，数据库位于 ~/.niu/notes.db
+便签数据持久化，JSON 文件位于 {workspace}/notes/notes.json
 """
 
+import json
 import os
-import aiosqlite
+import tempfile
 from datetime import datetime
-from typing import Optional, List, Dict
+from pathlib import Path
+from typing import Dict, List, Optional
+
 from loguru import logger
 
 
-_db_path: Optional[str] = None
+def _get_notes_path() -> str:
+    """Return the path to notes.json.
+
+    Workspace from WORKSPACE_PATH env var, fallback ~/.niu/notes/notes.json.
+    """
+    workspace = os.environ.get("WORKSPACE_PATH")
+    if workspace:
+        return os.path.join(workspace, "notes", "notes.json")
+    home = os.path.expanduser("~")
+    return os.path.join(home, ".niu", "notes", "notes.json")
 
 
-def _get_db_path() -> str:
-    global _db_path
-    if _db_path is None:
-        home = os.path.expanduser("~")
-        niu_dir = os.path.join(home, ".niu")
-        os.makedirs(niu_dir, exist_ok=True)
-        _db_path = os.path.join(niu_dir, "notes.db")
-    return _db_path
+def _ensure_dir() -> None:
+    """Create notes directory if missing."""
+    notes_path = _get_notes_path()
+    notes_dir = os.path.dirname(notes_path)
+    os.makedirs(notes_dir, exist_ok=True)
 
 
-async def init_db():
-    """Initialize notes database"""
-    db_path = _get_db_path()
-    async with aiosqlite.connect(db_path) as db:
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS notes (
-                id TEXT PRIMARY KEY,
-                content TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT
-            )
-        """)
-        await db.commit()
-    logger.info(f"Notes DB initialized: {db_path}")
+def _atomic_write(data: list) -> None:
+    """Write JSON via temp file + rename (Windows-safe).
+
+    On Windows, rename fails if target exists, so delete first.
+    """
+    notes_path = _get_notes_path()
+    _ensure_dir()
+    dir_path = os.path.dirname(notes_path)
+
+    fd, tmp_path = tempfile.mkstemp(suffix=".tmp", dir=dir_path)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        # Windows: os.rename fails if target exists
+        if os.path.exists(notes_path):
+            os.remove(notes_path)
+        os.rename(tmp_path, notes_path)
+    except BaseException:
+        # Clean up temp file on any error
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        raise
 
 
-async def create_note(note_id: str, content: str, created_at: str = None) -> Dict:
-    """Create a new note"""
+def read_notes() -> List[Dict]:
+    """Read all notes from JSON file.
+
+    Return [] if file missing or corrupt.
+    """
+    notes_path = _get_notes_path()
+    if not os.path.exists(notes_path):
+        return []
+    try:
+        with open(notes_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, list):
+            return data
+        logger.warning(f"Notes file has unexpected format, returning empty list: {notes_path}")
+        return []
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning(f"Failed to read notes file: {e}")
+        return []
+
+
+def write_notes(notes: List[Dict]) -> None:
+    """Atomic write all notes."""
+    _atomic_write(notes)
+
+
+def create_note(note_id: str, content: str, tags: Optional[List[str]] = None, created_at: Optional[str] = None) -> Dict:
+    """Append a note. Auto-generate created_at if None.
+
+    Return {"id": note_id, "status": "created"}.
+    """
     if created_at is None:
         created_at = datetime.now().isoformat()
 
-    db_path = _get_db_path()
-    async with aiosqlite.connect(db_path) as db:
-        await db.execute(
-            "INSERT OR REPLACE INTO notes (id, content, created_at) VALUES (?, ?, ?)",
-            (note_id, content, created_at)
-        )
-        await db.commit()
+    note = {
+        "id": note_id,
+        "content": content,
+        "tags": tags if tags is not None else [],
+        "created_at": created_at,
+        "updated_at": None,
+    }
 
+    notes = read_notes()
+    notes.append(note)
+    _atomic_write(notes)
+    logger.info(f"Note created: {note_id}")
     return {"id": note_id, "status": "created"}
 
 
-async def update_note(note_id: str, content: str) -> Dict:
-    """Update an existing note"""
-    updated_at = datetime.now().isoformat()
+def update_note(note_id: str, content: Optional[str] = None, tags: Optional[List[str]] = None) -> Dict:
+    """Update note content/tags + set updated_at.
 
-    db_path = _get_db_path()
-    async with aiosqlite.connect(db_path) as db:
-        cursor = await db.execute(
-            "UPDATE notes SET content = ?, updated_at = ? WHERE id = ?",
-            (content, updated_at, note_id)
-        )
-        await db.commit()
-        if cursor.rowcount == 0:
-            return {"id": note_id, "status": "not_found"}
+    Return {"id": note_id, "status": "updated"} or {"id": note_id, "status": "not_found"}.
+    """
+    notes = read_notes()
+    for note in notes:
+        if note["id"] == note_id:
+            if content is not None:
+                note["content"] = content
+            if tags is not None:
+                note["tags"] = tags
+            note["updated_at"] = datetime.now().isoformat()
+            _atomic_write(notes)
+            logger.info(f"Note updated: {note_id}")
+            return {"id": note_id, "status": "updated"}
 
-    return {"id": note_id, "status": "updated"}
+    return {"id": note_id, "status": "not_found"}
 
 
-async def delete_note(note_id: str) -> Dict:
-    """Delete a note"""
-    db_path = _get_db_path()
-    async with aiosqlite.connect(db_path) as db:
-        cursor = await db.execute("DELETE FROM notes WHERE id = ?", (note_id,))
-        await db.commit()
-        if cursor.rowcount == 0:
-            return {"id": note_id, "status": "not_found"}
+def delete_note(note_id: str) -> Dict:
+    """Remove note from JSON + call LightRAGAdapter().delete_entity().
+
+    Return {"id": note_id, "status": "deleted"} or {"id": note_id, "status": "not_found"}.
+    """
+    notes = read_notes()
+    original_len = len(notes)
+    notes = [n for n in notes if n["id"] != note_id]
+
+    if len(notes) == original_len:
+        return {"id": note_id, "status": "not_found"}
+
+    _atomic_write(notes)
+    logger.info(f"Note deleted: {note_id}")
+
+    # Sync deletion to knowledge graph
+    try:
+        from niu_api.internal.lightrag_adapter import LightRAGAdapter
+        adapter = LightRAGAdapter()
+        adapter.delete_entity(f"note:{note_id}")
+    except Exception as e:
+        logger.warning(f"LightRAG delete_entity failed for note:{note_id}: {e}")
 
     return {"id": note_id, "status": "deleted"}
 
 
-async def list_notes() -> List[Dict]:
-    """List all notes"""
-    db_path = _get_db_path()
-    async with aiosqlite.connect(db_path) as db:
-        db.row_factory = aiosqlite.Row
-        cursor = await db.execute(
-            "SELECT id, content, created_at, updated_at FROM notes ORDER BY created_at DESC"
-        )
-        rows = await cursor.fetchall()
-
-    return [
-        {
-            "id": row["id"],
-            "content": row["content"],
-            "createdAt": row["created_at"],
-            "updatedAt": row["updated_at"],
-        }
-        for row in rows
-    ]
+def list_notes() -> List[Dict]:
+    """Return all notes sorted by created_at DESC."""
+    notes = read_notes()
+    return sorted(notes, key=lambda n: n.get("created_at", ""), reverse=True)
 
 
-async def get_note(note_id: str) -> Optional[Dict]:
-    """Get a single note by ID"""
-    db_path = _get_db_path()
-    async with aiosqlite.connect(db_path) as db:
-        db.row_factory = aiosqlite.Row
-        cursor = await db.execute(
-            "SELECT id, content, created_at, updated_at FROM notes WHERE id = ?",
-            (note_id,)
-        )
-        row = await cursor.fetchone()
+def get_note(note_id: str) -> Optional[Dict]:
+    """Return single note dict or None."""
+    notes = read_notes()
+    for note in notes:
+        if note["id"] == note_id:
+            return note
+    return None
 
-    if row is None:
-        return None
 
-    return {
-        "id": row["id"],
-        "content": row["content"],
-        "createdAt": row["created_at"],
-        "updatedAt": row["updated_at"],
-    }
+# Backward-compatible init_db for __main__.py (no-op for JSON storage)
+async def init_db():
+    """No-op initializer for backward compatibility.
+
+    JSON storage creates the directory on first write, so no
+    initialization is needed at startup.
+    """
+    _ensure_dir()
+    logger.info(f"Notes JSON storage ready: {_get_notes_path()}")
