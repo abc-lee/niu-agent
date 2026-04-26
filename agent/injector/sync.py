@@ -5,6 +5,8 @@ Skills 目录同步服务。定时扫描 memory/skills/ 目录，同步变化到
 通过 entity_type="skill" 标签区分，供 LightRAGAdapter.search_skills() 检索。
 """
 
+import json
+import os
 import re
 import threading
 import time
@@ -119,6 +121,7 @@ class SkillSync:
 
         # 记录上次扫描状态 {skill_name: mtime}
         self._last_scan: dict[str, float] = {}
+        self._last_notes_scan: dict[str, int] = {}  # note_id -> content hash
         self._lock = threading.Lock()  # 线程锁
 
         # 后台线程
@@ -207,6 +210,14 @@ class SkillSync:
                     logger.info(f"[SkillSync] Updated skill: {name}")
                 except Exception as e:
                     logger.error(f"[SkillSync] Failed to update skill {name}: {e}")
+
+        # Scan notes
+        try:
+            note_added, note_updated = self._scan_notes()
+            added += note_added
+            updated += note_updated
+        except Exception as e:
+            logger.error(f"[SkillSync] Notes scan failed: {e}")
 
         # 检测删除
         with self._lock:
@@ -352,6 +363,81 @@ class SkillSync:
                 logger.warning(f"[SkillSync] LightRAG delete failed for '{name}': {result.get('message', '')}")
         except Exception as e:
             logger.warning(f"[SkillSync] LightRAG skill delete failed for '{name}': {e}")
+
+    def _scan_notes(self) -> tuple[int, int]:
+        """扫描 workspace/notes/notes.json，将变化同步到 LightRAG"""
+        ws = os.environ.get("WORKSPACE_PATH", "")
+        if not ws:
+            return 0, 0
+        notes_path = Path(ws) / "notes" / "notes.json"
+        if not notes_path.exists():
+            return 0, 0
+
+        try:
+            notes = json.loads(notes_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning(f"[SkillSync] Failed to read notes.json: {e}")
+            return 0, 0
+
+        added, updated = 0, 0
+        current_ids: set[str] = set()
+
+        for note in notes:
+            note_id = note.get("id", "")
+            if not note_id:
+                continue
+            current_ids.add(note_id)
+
+            content_hash = hash(note.get("content", ""))
+            last_hash = self._last_notes_scan.get(note_id)
+
+            if last_hash is None:
+                self._inject_note_to_lightrag(note_id, note.get("content", ""), note.get("tags", []))
+                added += 1
+                logger.info(f"[SkillSync] Added note: {note_id}")
+            elif last_hash != content_hash:
+                self._inject_note_to_lightrag(note_id, note.get("content", ""), note.get("tags", []))
+                updated += 1
+                logger.info(f"[SkillSync] Updated note: {note_id}")
+
+            self._last_notes_scan[note_id] = content_hash
+
+        # Detect deleted notes
+        for note_id in list(self._last_notes_scan.keys()):
+            if note_id not in current_ids:
+                try:
+                    from niu_api.internal.lightrag_adapter import LightRAGAdapter
+                    adapter = LightRAGAdapter()
+                    adapter.delete_entity(f"note:{note_id}")
+                    logger.info(f"[SkillSync] Deleted note: {note_id}")
+                except Exception as e:
+                    logger.warning(f"[SkillSync] Failed to delete note {note_id}: {e}")
+                self._last_notes_scan.pop(note_id, None)
+
+        return added, updated
+
+    def _inject_note_to_lightrag(self, note_id: str, content: str, tags: list[str]):
+        """注入便签到 LightRAG 知识图谱"""
+        try:
+            from niu_api.internal.lightrag_adapter import LightRAGIngester
+
+            ingester = LightRAGIngester()
+            description = content
+            if tags:
+                description += f" | 标签: {', '.join(tags)}"
+
+            result = ingester.inject_entity(
+                name=f"note:{note_id}",
+                entity_type="knowledge",
+                description=description,
+                source_id=f"note:{note_id}",
+                chunk_content=description,
+                file_path=f"note://{note_id}",
+            )
+            if result.get("status") != "ok":
+                logger.warning(f"[SkillSync] Note inject failed for {note_id}: {result.get('message', '')}")
+        except Exception as e:
+            logger.warning(f"[SkillSync] Note inject failed for {note_id}: {e}")
 
     def _parse_yaml_frontmatter(self, content: str) -> dict:
         """解析 YAML frontmatter（--- 包裹的头部区域）

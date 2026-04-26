@@ -91,9 +91,6 @@ def _preprocess_content(task: IngestTask) -> str:
         # Extract ID from source_id (e.g., "photo:123" -> "123")
         photo_id = task.source_id.split(":", 1)[1] if ":" in task.source_id else task.source_id
         return f"[Photo: {photo_id}]\n{task.content}"
-    elif task.source_type == "note":
-        note_id = task.source_id.split(":", 1)[1] if ":" in task.source_id else task.source_id
-        return f"[Note: {note_id}]\n{task.content}"
     elif task.source_type == "document":
         doc_id = task.source_id.split(":", 1)[1] if ":" in task.source_id else task.source_id
         return f"[Document: {doc_id}]\n{task.content}"
