@@ -622,3 +622,102 @@ class RegionManager:
             region_summary += f"等{len(entity_summaries)}个实体"
 
         return (region_label, region_summary)
+
+    # ------------------------------------------------------------------
+    # Incremental update + edge decay
+    # ------------------------------------------------------------------
+
+    def incremental_update(self) -> dict:
+        """Incremental update: detect new communities → create regions → update summaries → decay edges.
+
+        Returns:
+            dict with keys: regions_created, regions_removed, regions_updated, edges_disconnected
+        """
+        try:
+            from niu_api.internal.region_detector import CommunityDetector
+
+            detector = CommunityDetector(self._adapter)
+            partition = detector.detect_communities(
+                resolution=REGION_CONFIG_DEFAULTS.get("resolution", 1.0) if "REGION_CONFIG_DEFAULTS" in dir() else 1.0,
+            )
+            if partition is None or partition.total_regions < 1:
+                return {"regions_created": 0, "regions_removed": 0, "regions_updated": 0, "edges_disconnected": 0}
+
+            # Create new region nodes
+            created = self.create_region_nodes(partition)
+
+            # Cleanup stale regions
+            removed = self.cleanup_stale_regions(partition)
+
+            # Update summaries for all current regions
+            all_regions = self.get_all_regions()
+            region_names = [r.name for r in all_regions]
+            self.update_region_summaries(region_names)
+
+            # Decay structural edges
+            disconnected = self._decay_structural_edges(all_regions)
+
+            return {
+                "regions_created": len(created),
+                "regions_removed": len(removed),
+                "regions_updated": len(all_regions),
+                "edges_disconnected": disconnected,
+            }
+        except Exception as e:
+            logger.warning("incremental_update failed: %s", e)
+            return {"regions_created": 0, "regions_removed": 0, "regions_updated": 0, "edges_disconnected": 0}
+
+    def _decay_structural_edges(
+        self,
+        regions: list[BrainRegionInfo],
+        decay_factor: float = 0.5,
+        threshold: float = 0.1,
+    ) -> int:
+        """Decay and disconnect low-weight structural edges (_region: and _session: prefixes).
+
+        Args:
+            regions: List of BrainRegionInfo to process.
+            decay_factor: Weight multiplier per decay cycle (default 0.5).
+            threshold: Minimum weight before disconnect (default 0.1).
+
+        Returns:
+            Number of disconnected edges.
+        """
+        disconnected = 0
+        try:
+            rag = self._adapter._get_rag()
+            if rag is None:
+                return 0
+
+            kg = rag.chunk_entity_relation_graph
+            if kg is None:
+                return 0
+
+            for region in regions:
+                try:
+                    neighbors = kg.get_neighbors(region.name)
+                except AttributeError:
+                    return 0
+
+                if not neighbors:
+                    continue
+
+                for neighbor_id, edge_data in list(neighbors.items()):
+                    if not isinstance(edge_data, dict):
+                        continue
+                    keywords = edge_data.get("keywords", "")
+                    if keywords.startswith("_region:") or keywords.startswith("_session:"):
+                        old_weight = float(edge_data.get("weight", 1.0))
+                        new_weight = old_weight * decay_factor
+                        if new_weight < threshold:
+                            try:
+                                kg.remove_edge(region.name, neighbor_id)
+                            except Exception:
+                                pass
+                            disconnected += 1
+                        else:
+                            edge_data["weight"] = new_weight
+        except Exception as e:
+            logger.warning("Edge decay failed: %s", e)
+
+        return disconnected
