@@ -712,11 +712,10 @@ DEPRECATED_ALIASES: Dict[str, str] = {
     # vector-store aliases
     "add_document": "lightrag_insert",
     "search_documents": "lightrag_query",
-    "get_document": "lightrag_document_status",
-    "delete_document": "lightrag_delete_entity",
+    "get_document": "lightrag_get_document",
+    "delete_document": "lightrag_delete_document",
     "list_documents": "lightrag_list_entities",
     "count_documents": "lightrag_document_status",
-    "update_metadata": "lightrag_document_status",
 
     # kg-server aliases
     "create_document": "lightrag_insert",

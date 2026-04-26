@@ -791,11 +791,10 @@ class NiuHandler(BaseHandler):
         # vector-store aliases
         "vector-store/search_documents": "lightrag-server/lightrag_query",
         "vector-store/add_document": "lightrag-server/lightrag_insert",
-        "vector-store/get_document": "lightrag-server/lightrag_document_status",
-        "vector-store/delete_document": "lightrag-server/lightrag_delete_entity",
+        "vector-store/get_document": "lightrag-server/lightrag_get_document",
+        "vector-store/delete_document": "lightrag-server/lightrag_delete_document",
         "vector-store/list_documents": "lightrag-server/lightrag_list_entities",
         "vector-store/count_documents": "lightrag-server/lightrag_document_status",
-        "vector-store/update_metadata": "lightrag-server/lightrag_document_status",
         # kg-server aliases
         "kg-server/explore_node": "lightrag-server/lightrag_get_graph",
         "kg-server/get_related_entities": "lightrag-server/lightrag_query_data",
