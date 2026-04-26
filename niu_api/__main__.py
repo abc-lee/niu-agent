@@ -56,10 +56,9 @@ async def lifespan(app: FastAPI):
     store = await get_session_store()
     logger.info("Session store initialized")
 
-    # 1.5. Initialize notes database
+    # 1.5. Notes use JSON storage (no DB init needed)
     from niu_api.notes import init_db as notes_init_db
-    await notes_init_db()
-    logger.info("Notes DB initialized")
+    await notes_init_db()  # Creates notes directory if missing
 
     # 2. Preload embedding model
     from niu_api.internal.embedding import preload as preload_embedding

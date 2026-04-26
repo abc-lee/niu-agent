@@ -146,11 +146,11 @@ class TestKgApiUsesLightRAG:
             assert result["installed"] is True
 
 
-# ============== 4. notes_api.py → LightRAG ainsert ==============
+# ============== 4. notes_api.py → LightRAGIngester ==============
 
 
 class TestNotesApiUsesLightRAG:
-    """notes_api sync_note_to_kg should use LightRAG ainsert."""
+    """notes_api sync_note_to_lightrag should use LightRAGIngester.inject_entity."""
 
     def test_no_niu_kg_server_import_in_notes_api(self):
         """notes_api.py should NOT import niu_kg_server."""
@@ -158,26 +158,41 @@ class TestNotesApiUsesLightRAG:
         source = Path(mod.__file__).read_text(encoding="utf-8")
         assert "niu_kg_server" not in source
 
-    def test_sync_note_to_kg_calls_ainsert(self):
-        """sync_note_to_kg should call rag.ainsert()."""
-        from niu_api.notes_api import sync_note_to_kg
+    def test_sync_note_to_lightrag_calls_inject_entity(self):
+        """sync_note_to_lightrag should call LightRAGIngester.inject_entity()."""
+        from niu_api.notes_api import sync_note_to_lightrag
 
-        mock_rag = MagicMock()
-        mock_rag.ainsert = AsyncMock(return_value=None)
+        with patch("niu_api.internal.lightrag_adapter.LightRAGIngester") as mock_cls:
+            mock_ingester = MagicMock()
+            mock_cls.return_value = mock_ingester
+            mock_ingester.inject_entity.return_value = {"status": "ok"}
 
-        with patch("niu_api.internal.lightrag_manager.get_lightrag", return_value=mock_rag):
-            with patch("niu_api.internal.lightrag_manager.call_async", return_value=None) as mock_call:
-                sync_note_to_kg("note-1", "Shopping list: milk, eggs")
-                # call_async should have been called
-                mock_call.assert_called_once()
+            sync_note_to_lightrag("note-1", "Shopping list: milk, eggs", ["shopping"])
 
-    def test_sync_note_to_kg_handles_no_lightrag(self):
-        """sync_note_to_kg should handle LightRAG not available."""
-        from niu_api.notes_api import sync_note_to_kg
+            mock_ingester.inject_entity.assert_called_once()
+            call_args = mock_ingester.inject_entity.call_args
+            assert call_args.kwargs["name"] == "note:note-1"
+            assert call_args.kwargs["entity_type"] == "knowledge"
 
-        with patch("niu_api.internal.lightrag_manager.get_lightrag", return_value=None):
+    def test_sync_note_to_lightrag_handles_failure(self):
+        """sync_note_to_lightrag should handle LightRAG failure gracefully."""
+        from niu_api.notes_api import sync_note_to_lightrag
+
+        with patch("niu_api.internal.lightrag_adapter.LightRAGIngester") as mock_cls:
+            mock_ingester = MagicMock()
+            mock_cls.return_value = mock_ingester
+            mock_ingester.inject_entity.return_value = {"status": "error", "message": "down"}
+
             # Should not raise, just log warning
-            sync_note_to_kg("note-1", "test content")
+            sync_note_to_lightrag("note-1", "test content", [])
+
+    def test_notes_json_storage_no_sqlite(self):
+        """notes.py should NOT use aiosqlite."""
+        import niu_api.notes as mod
+        source = Path(mod.__file__).read_text(encoding="utf-8")
+        assert "aiosqlite" not in source
+        assert "sqlite" not in source.lower()
+        assert "notes.db" not in source
 
 
 # ============== 5. LightRAGSync ==============
