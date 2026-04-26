@@ -572,7 +572,7 @@ class NiuHandler(BaseHandler):
     def do_bash(self, args: dict, response) -> StepOutcome:
         """Execute a shell command."""
         command = args.get("command", "")
-        timeout = min(args.get("timeout", 30), 300)
+        timeout = max(1, min(args.get("timeout", 30), 300))
 
         if not command:
             return StepOutcome("[Error] Command missing.", next_prompt="\n")

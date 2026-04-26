@@ -392,7 +392,9 @@ class SkillSync:
                 continue
             current_ids.add(note_id)
 
-            content_hash = hashlib.sha256((note.get("content") or "").encode()).hexdigest()
+            content_hash = hashlib.sha256(
+                json.dumps({"c": note.get("content") or "", "t": note.get("tags") or []}, sort_keys=True).encode()
+            ).hexdigest()
             last_hash = self._last_notes_scan.get(note_id)
 
             if last_hash is None:
