@@ -652,6 +652,30 @@ class NiuRunner:
         if brain_memories_text:
             parts.append(brain_memories_text)
 
+        # Brain region activation context
+        try:
+            from niu_api.internal.region_injector import BrainContextInjector
+            from niu_api.internal.lightrag_adapter import LightRAGAdapter, LightRAGIngester
+            from agent.brain_tools import get_activation_mgr
+            from niu_api.internal.region_manager import RegionManager
+
+            _lightrag_adapter = LightRAGAdapter()
+            _activation_mgr = get_activation_mgr()
+            if _lightrag_adapter and _activation_mgr:
+                _ingester = LightRAGIngester()
+                _region_mgr = RegionManager(_lightrag_adapter, _ingester)
+                _brain_injector = BrainContextInjector(
+                    adapter=_lightrag_adapter,
+                    activation_mgr=_activation_mgr,
+                    region_mgr=_region_mgr,
+                )
+                brain_context = _brain_injector.inject_brain_context(context)
+                if brain_context:
+                    parts.append(f"\n## 脑区激活上下文\n{brain_context}")
+                    logger.debug(f"Brain context injected: {len(brain_context)} chars")
+        except Exception as e:
+            logger.debug(f"BrainContextInjector not available: {e}")
+
         injection = "\n".join(parts)
         if injection:
             logger.debug(f"Dynamic injection - Total length: {len(injection)} chars")
