@@ -151,7 +151,7 @@ class TestFormatLightragEntities:
             return r
 
     def test_formats_skill_entities(self, runner):
-        """Skill entities are formatted with (来源: 知识图谱) marker."""
+        """Skill entities are formatted with (来源: 知识图谱) marker and file path."""
         entities = [
             {"entity_name": "skill:python", "description": "Python programming"},
         ]
@@ -161,6 +161,7 @@ class TestFormatLightragEntities:
         assert "python" in text
         assert "来源: 知识图谱" in text
         assert "Python programming" in text
+        assert "memory/skills/python.md" in text  # skill path annotation
 
     def test_strips_type_prefix(self, runner):
         """Type prefixes (skill:, tool:, knowledge:) are stripped for display."""
