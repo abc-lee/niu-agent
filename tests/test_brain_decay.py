@@ -28,6 +28,17 @@ class TestBrainDecay:
         assert "promoted" in result
 
     @patch("niu_api.internal.brain_graph.LightRAGAdapter")
+    def test_consolidate_l1_to_l2_returns_count(self, mock_adapter_cls):
+        """consolidate_l1_to_l2 应返回升级计数"""
+        from niu_api.internal.brain_graph import BrainGraph
+        brain = BrainGraph()
+        mock_adapter = MagicMock()
+        mock_adapter_cls.return_value = mock_adapter
+
+        result = brain.consolidate_l1_to_l2()
+        assert "promoted" in result
+
+    @patch("niu_api.internal.brain_graph.LightRAGAdapter")
     def test_cleanup_low_weight_returns_counts(self, mock_adapter_cls):
         """cleanup_low_weight 应返回移除计数"""
         from niu_api.internal.brain_graph import BrainGraph

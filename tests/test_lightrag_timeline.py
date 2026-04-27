@@ -26,7 +26,6 @@ class TestTimelineQuery:
 
     def test_returns_timeline_results_sorted_by_timestamp(self, mock_adapter):
         """返回时间线结果，按时间戳排序（最近优先）"""
-        # Mock query_data returning one entity
         mock_adapter.query_data = MagicMock(
             return_value={
                 "status": "success",
@@ -40,7 +39,6 @@ class TestTimelineQuery:
                 },
             }
         )
-        # Mock explore_node for time chain traversal
         mock_adapter.explore_node = MagicMock(
             return_value={
                 "center": {"id": "Rust语言", "name": "Rust语言", "type": "UNKNOWN"},
@@ -66,7 +64,6 @@ class TestTimelineQuery:
         )
         result = mock_adapter.timeline_query("Rust")
         assert len(result) >= 1
-        # Results should contain entity info with timestamps
         assert any("Rust" in str(r) for r in result)
 
     def test_filters_non_timeline_edges(self, mock_adapter):
@@ -106,7 +103,7 @@ class TestTimelineQuery:
                     {
                         "source": "Python",
                         "target": "编程语言",
-                        "relation": "related_to",  # 语义边，应被过滤
+                        "relation": "related_to",
                         "description": "L1|编程语言分类",
                         "weight": 1.0,
                     },
@@ -115,7 +112,6 @@ class TestTimelineQuery:
             }
         )
         result = mock_adapter.timeline_query("Python")
-        # Should only include timeline edges, not semantic ones
         for item in result:
             if "relation" in item and item["relation"] != "match":
                 assert item["relation"] in (
@@ -124,3 +120,76 @@ class TestTimelineQuery:
                     "led_to",
                     "resolved_by",
                 )
+
+    def test_start_entities_skips_vector_search(self, mock_adapter):
+        """start_entities 参数跳过向量搜索，直接从指定实体开始"""
+        mock_adapter.explore_node = MagicMock(
+            return_value={
+                "center": {"id": "Go语言", "name": "Go语言", "type": "UNKNOWN"},
+                "nodes": [
+                    {
+                        "id": "Go语言",
+                        "name": "Go语言",
+                        "type": "UNKNOWN",
+                        "description": "L2|created_at=2026-04-26T10:00:00|偏好Go",
+                    }
+                ],
+                "edges": [],
+                "stats": {"nodes": 1, "edges": 0, "max_depth": 2},
+            }
+        )
+        result = mock_adapter.timeline_query(
+            query="", start_entities=["Go语言"]
+        )
+        assert len(result) >= 1
+        assert result[0]["entity_name"] == "Go语言"
+
+    def test_direction_forward_sorts_earliest_first(self, mock_adapter):
+        """direction=forward 按最早优先排序"""
+        mock_adapter.query_data = MagicMock(
+            return_value={
+                "status": "success",
+                "data": {
+                    "entities": [
+                        {"entity_name": "Event1", "description": "L1|created_at=2026-04-20|"},
+                        {"entity_name": "Event2", "description": "L1|created_at=2026-04-25|"},
+                    ]
+                },
+            }
+        )
+        mock_adapter.explore_node = MagicMock(
+            return_value={
+                "center": {},
+                "nodes": [],
+                "edges": [],
+                "stats": {"nodes": 0, "edges": 0, "max_depth": 2},
+            }
+        )
+        result = mock_adapter.timeline_query("events", direction="forward")
+        if len(result) >= 2:
+            # Earlier timestamp should come first in forward mode
+            assert result[0].get("timestamp", "") <= result[1].get("timestamp", "")
+
+    def test_max_results_limits_output(self, mock_adapter):
+        """max_results 限制返回数量"""
+        mock_adapter.query_data = MagicMock(
+            return_value={
+                "status": "success",
+                "data": {
+                    "entities": [
+                        {"entity_name": f"Event{i}", "description": f"L1|created_at=2026-04-{20+i:02d}|"}
+                        for i in range(5)
+                    ]
+                },
+            }
+        )
+        mock_adapter.explore_node = MagicMock(
+            return_value={
+                "center": {},
+                "nodes": [],
+                "edges": [],
+                "stats": {"nodes": 0, "edges": 0, "max_depth": 2},
+            }
+        )
+        result = mock_adapter.timeline_query("events", max_results=2)
+        assert len(result) <= 2
