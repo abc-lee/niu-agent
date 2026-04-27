@@ -71,6 +71,7 @@ lightrag-server:
     lightrag_document_status: {visibility: hidden}
     lightrag_list_entities: {visibility: hidden}
     lightrag_merge_entities: {visibility: hidden}
+    lightrag_timeline_query: {visibility: hidden}
 
 # Vector Store - Semantic search using embeddings (DISABLED — replaced by lightrag-server)
 vector-store:
