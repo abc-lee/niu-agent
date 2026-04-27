@@ -19,6 +19,12 @@ from niu_api.internal.lightrag_manager import call_async, get_lightrag
 # Valid query modes for LightRAG
 VALID_MODES = {"naive", "local", "global", "hybrid", "mix", "bypass"}
 
+# LightRAG's fail_response constant substring markers.
+# Used to detect the canned error text that LightRAG returns when queries
+# produce no results.  These are not LLM-generated responses — they are
+# hard-coded fallback strings that must never leak into system prompts.
+_LIGHTRAG_ERROR_MARKERS = ("not able to provide", "[no-context]")
+
 
 class LightRAGAdapter:
     """Query interface for LightRAG.
@@ -29,6 +35,78 @@ class LightRAGAdapter:
 
     # Supported entity types for filtered search
     ENTITY_TYPES = {"skill", "tool", "knowledge", "person", "photo", "concept", "interaction_habit"}
+
+    @staticmethod
+    def _is_no_result(result: Optional[Dict[str, Any]]) -> bool:
+        """Check whether a LightRAG query_data result is effectively empty.
+
+        Detects all documented "no result" scenarios from aquery_data:
+        - None (adapter caught an exception)
+        - {} empty dict (tokenizer missing, empty keywords, etc.)
+        - {"status": "failure", ...} (KG search found nothing)
+        - {"status": "success", "data": {"entities": [], ...}} (bypass mode,
+          all inner lists empty)
+
+        Prioritises structural fields (status, data content) over string
+        matching so the check is robust against LightRAG version changes.
+
+        Args:
+            result: Return value from query_data().
+
+        Returns:
+            True if the result contains no usable data.
+        """
+        if result is None:
+            return True
+
+        if not isinstance(result, dict):
+            return True
+
+        if not result:
+            # Empty dict — tokenizer missing, empty keywords, etc.
+            return True
+
+        # Structural check: explicit failure status from LightRAG
+        status = result.get("status")
+        if status == "failure":
+            return True
+
+        # Check data payload: if all list-valued fields are empty, treat as
+        # no result (covers bypass mode with empty entities/relationships/chunks)
+        data = result.get("data")
+        if isinstance(data, dict):
+            if data:
+                # Data dict exists but all list values are empty
+                list_values = [v for v in data.values() if isinstance(v, list)]
+                if list_values and all(not v for v in list_values):
+                    return True
+            else:
+                # Empty data dict with success status — still no results
+                return True
+
+        return False
+
+    @staticmethod
+    def _is_error_text(text: Optional[str]) -> bool:
+        """Check whether a text result is a LightRAG canned error message.
+
+        Detects the fail_response constant that LightRAG returns via the
+        aquery() string path:
+            "Sorry, I'm not able to provide an answer to that question.[no-context]"
+
+        This is NOT an LLM-generated response — it is a hard-coded fallback
+        that must never leak into system prompts.
+
+        Args:
+            text: A string query result from query() / aquery().
+
+        Returns:
+            True if the text is a LightRAG error/fail response.
+        """
+        if not text or not isinstance(text, str):
+            return False
+        lower = text.lower()
+        return any(marker in lower for marker in _LIGHTRAG_ERROR_MARKERS)
 
     def _get_rag(self):
         """Get the LightRAG instance (delegates to lightrag_manager)."""
@@ -77,6 +155,13 @@ class LightRAGAdapter:
                 param.response_type = response_type
 
             result = call_async(rag.aquery(query, param=param))
+            # aquery() type is str | AsyncIterator[str]; with only_need_context=True
+            # it always returns str. Guard against non-string just in case.
+            if not isinstance(result, str):
+                return None
+            if self._is_error_text(result):
+                logger.debug("LightRAG query() returned fail_response, filtering out")
+                return ""
             return result
 
         except Exception as e:
@@ -88,16 +173,24 @@ class LightRAGAdapter:
         query: str,
         mode: str = "local",
         top_k: Optional[int] = None,
+        keywords: Optional[List[str]] = None,
     ) -> Optional[Dict[str, Any]]:
         """Query LightRAG returning structured data (entities + relationships).
 
         Uses aquery_data() instead of aquery() to get structured results with
         entity_type information, which is needed for type-based filtering.
 
+        When keywords are provided, skips LLM keyword extraction for near-instant
+        results while keeping full graph traversal. Without keywords, LLM extraction
+        adds 5-30s latency.
+
         Args:
             query: The search query string.
             mode: Retrieval mode (default "local" for entity-focused).
             top_k: Number of top items to retrieve.
+            keywords: Pre-provided search keywords to skip LLM extraction.
+                For "local" mode: used as ll_keywords (entity search).
+                For "global"/"hybrid"/"mix": used as both hl and ll keywords.
 
         Returns:
             Structured query result dict, or None on error.
@@ -118,6 +211,10 @@ class LightRAGAdapter:
             param = QueryParam(mode=mode)
             if top_k is not None:
                 param.top_k = top_k
+            if keywords:
+                param.ll_keywords = keywords
+                if mode in ("global", "hybrid", "mix"):
+                    param.hl_keywords = keywords
 
             result = call_async(rag.aquery_data(query, param=param))
             return result
@@ -181,8 +278,9 @@ class LightRAGAdapter:
     def search_multi_lightrag(
         self,
         query: str,
-        mode: str = "hybrid",
+        mode: str = "local",
         top_k: int = 20,
+        keywords: Optional[List[str]] = None,
     ) -> Dict[str, List[Dict[str, Any]]]:
         """Single-query multi-category search via LightRAG.
 
@@ -192,10 +290,17 @@ class LightRAGAdapter:
         This is the primary retrieval method for dynamic resource injection,
         replacing vector_search.search_multi() as the main path.
 
+        When keywords are provided, skips LLM keyword extraction for near-instant
+        results while keeping full graph traversal. Without keywords, LLM extraction
+        adds 5-30s latency.
+
         Args:
             query: Search query string.
-            mode: LightRAG retrieval mode (default "hybrid").
+            mode: LightRAG retrieval mode (default "local" for entity-focused).
             top_k: Total number of entities to retrieve.
+            keywords: Pre-provided search keywords to skip LLM extraction.
+                For "local" mode: used as ll_keywords (entity search).
+                For "global"/"hybrid"/"mix": used as both hl and ll keywords.
 
         Returns:
             Dict with keys "skill", "mcp_tool", "knowledge", each mapping
@@ -207,8 +312,11 @@ class LightRAGAdapter:
             "knowledge": [],
         }
 
-        query_result = self.query_data(query, mode=mode, top_k=top_k)
-        if query_result is None:
+        query_result = self.query_data(
+            query, mode=mode, top_k=top_k, keywords=keywords,
+        )
+        if self._is_no_result(query_result):
+            logger.debug("LightRAG search_multi_lightrag: query_data returned no results")
             return result
 
         # Extract entities from query_data result
@@ -230,7 +338,12 @@ class LightRAGAdapter:
 
     # ============== Semantic Search Methods ==============
 
-    def search_skills(self, query: str, top_k: int = 10) -> List[Dict[str, Any]]:
+    def search_skills(
+        self,
+        query: str,
+        top_k: int = 10,
+        keywords: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
         """Search for skill entities in the knowledge graph.
 
         Uses local mode (entity-focused) and filters by entity_type="skill".
@@ -238,14 +351,20 @@ class LightRAGAdapter:
         Args:
             query: Search query string.
             top_k: Maximum number of results to retrieve.
+            keywords: Pre-provided keywords to skip LLM extraction.
 
         Returns:
             List of skill entity dicts.
         """
-        result = self.query_data(query, mode="local", top_k=top_k)
+        result = self.query_data(query, mode="local", top_k=top_k, keywords=keywords)
         return self.filter_by_entity_type(result, "skill")
 
-    def search_tools(self, query: str, top_k: int = 10) -> List[Dict[str, Any]]:
+    def search_tools(
+        self,
+        query: str,
+        top_k: int = 10,
+        keywords: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
         """Search for tool entities in the knowledge graph.
 
         Uses local mode (entity-focused) and filters by entity_type="tool".
@@ -253,14 +372,20 @@ class LightRAGAdapter:
         Args:
             query: Search query string.
             top_k: Maximum number of results to retrieve.
+            keywords: Pre-provided keywords to skip LLM extraction.
 
         Returns:
             List of tool entity dicts.
         """
-        result = self.query_data(query, mode="local", top_k=top_k)
+        result = self.query_data(query, mode="local", top_k=top_k, keywords=keywords)
         return self.filter_by_entity_type(result, "tool")
 
-    def search_knowledge(self, query: str, top_k: int = 10) -> List[Dict[str, Any]]:
+    def search_knowledge(
+        self,
+        query: str,
+        top_k: int = 10,
+        keywords: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
         """Search for knowledge and concept entities in the knowledge graph.
 
         Uses local mode (entity-focused) and filters by entity_type="knowledge"
@@ -269,11 +394,12 @@ class LightRAGAdapter:
         Args:
             query: Search query string.
             top_k: Maximum number of results to retrieve.
+            keywords: Pre-provided keywords to skip LLM extraction.
 
         Returns:
             List of knowledge/concept entity dicts.
         """
-        result = self.query_data(query, mode="local", top_k=top_k)
+        result = self.query_data(query, mode="local", top_k=top_k, keywords=keywords)
         knowledge_entities = self.filter_by_entity_type(result, "knowledge")
         concept_entities = self.filter_by_entity_type(result, "concept")
         return knowledge_entities + concept_entities
@@ -282,6 +408,7 @@ class LightRAGAdapter:
         self,
         query: str,
         top_k: int = 10,
+        keywords: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         """Search for interaction_habit entities in the knowledge graph.
 
@@ -294,11 +421,12 @@ class LightRAGAdapter:
         Args:
             query: Search query string (typically tool args or context).
             top_k: Maximum number of results to retrieve.
+            keywords: Pre-provided keywords to skip LLM extraction.
 
         Returns:
             List of interaction_habit entity dicts.
         """
-        result = self.query_data(query, mode="local", top_k=top_k)
+        result = self.query_data(query, mode="local", top_k=top_k, keywords=keywords)
         return self.filter_by_entity_type(result, "interaction_habit")
 
     # ============== Graph Traversal Methods ==============

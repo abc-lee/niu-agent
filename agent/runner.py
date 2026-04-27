@@ -18,6 +18,8 @@ from typing import Any, Dict, Generator, Optional
 
 from loguru import logger
 
+from niu_api.internal.lightrag_adapter import _LIGHTRAG_ERROR_MARKERS
+
 
 def _sanitize_memory_content(content: str) -> str:
     """Sanitize user memory content before injecting into system prompt.
@@ -36,6 +38,36 @@ def _sanitize_memory_content(content: str) -> str:
     if len(content) > 300:
         content = content[:300] + "..."
     return content.strip()
+
+
+def _strip_lightrag_error_lines(text: str) -> str:
+    """Remove lines containing LightRAG fail_response markers from text.
+
+    Filters out any line that contains LightRAG's canned error markers
+    (e.g. "not able to provide" or "[no-context]"), which indicate the
+    query returned no results.  These are NOT LLM-generated content and
+    must not appear in the system prompt.
+
+    Args:
+        text: Multi-line text that may contain LightRAG error lines.
+
+    Returns:
+        The text with error lines removed.  Returns empty string if all
+        lines are error lines or the result is whitespace-only.
+    """
+    if not text or not isinstance(text, str):
+        return ""
+    lower = text.lower()
+    # Fast path: if no markers present, return as-is
+    if not any(marker in lower for marker in _LIGHTRAG_ERROR_MARKERS):
+        return text
+    # Filter out lines containing any marker
+    filtered_lines = [
+        line for line in text.split("\n")
+        if not any(marker in line.lower() for marker in _LIGHTRAG_ERROR_MARKERS)
+    ]
+    result = "\n".join(filtered_lines).strip()
+    return result
 
 
 def _render_permanent_section(permanent: list) -> str:
@@ -565,41 +597,41 @@ class NiuRunner:
     def _inject_dynamic_resources(self, context: str) -> tuple[str, dict[str, int]]:
         """动态注入相关资源（Skills、知识）— no MCP tool scores.
 
-        LightRAG 图检索为主检索路径。interaction_habits
-        也从 LightRAG 读取（entity_type="interaction_habit"）。
+        LightRAG 图检索为主检索路径，使用 local + keywords 模式
+        实现 0 LLM 调用、完整图遍历的快速检索。
+        interaction_habits 也从 LightRAG 读取。
 
         Args:
             context: 3条对话上下文（包含历史消息和当前用户输入）
 
         检索顺序：
-        1. LightRAG 主检索（hybrid 模式）→ skills + knowledge
-        2. interaction_habits（LightRAG）
+        1. LightRAG 主检索（local + keywords 模式）→ skills + knowledge
+        2. interaction_habits（LightRAG + keywords）
         3. brain memories（脑图）
         """
-        # 1. LightRAG 主检索
+        # 1. LightRAG 主检索 — local + keywords = 0 LLM calls
         effective_query = context
+        keywords = [effective_query]
         lightrag_results: dict[str, list[dict]] = {}
-        lightrag_available = True
         try:
             from niu_api.internal.lightrag_adapter import LightRAGAdapter
             adapter = LightRAGAdapter()
             lightrag_results = adapter.search_multi_lightrag(
-                effective_query, mode="hybrid", top_k=20,
+                effective_query, mode="local", top_k=20, keywords=keywords,
             )
         except Exception as e:
             logger.warning(f"LightRAG retrieval failed: {e}")
-            lightrag_available = False
 
         if lightrag_results and not any(lightrag_results.values()):
             logger.debug("LightRAG returned empty results")
 
-        # 2. interaction_habits（LightRAG）
+        # 2. interaction_habits（LightRAG + keywords）
         interaction_habits: list[dict] = []
         try:
             from niu_api.internal.lightrag_adapter import LightRAGAdapter
             habit_adapter = LightRAGAdapter()
             interaction_habits = habit_adapter.search_interaction_habits(
-                query=effective_query, top_k=3,
+                query=effective_query, top_k=3, keywords=keywords,
             )
         except Exception as e:
             logger.debug(f"Interaction habits search failed (non-blocking): {e}")
@@ -662,6 +694,7 @@ class NiuRunner:
                 parts.append(habits_text)
 
         # Brain memories
+        brain_memories_text = _strip_lightrag_error_lines(brain_memories_text)
         if brain_memories_text:
             parts.append(brain_memories_text)
 

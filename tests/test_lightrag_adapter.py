@@ -664,7 +664,7 @@ class TestSearchSkills:
         adapter = LightRAGAdapter()
         adapter.search_skills("python", top_k=5)
 
-        mock_query_data.assert_called_once_with("python", mode="local", top_k=5)
+        mock_query_data.assert_called_once_with("python", mode="local", top_k=5, keywords=None)
 
     @patch.object(LightRAGAdapter, "filter_by_entity_type")
     @patch.object(LightRAGAdapter, "query_data")
@@ -691,7 +691,7 @@ class TestSearchSkills:
         adapter = LightRAGAdapter()
         adapter.search_skills("test")
 
-        mock_query_data.assert_called_once_with("test", mode="local", top_k=10)
+        mock_query_data.assert_called_once_with("test", mode="local", top_k=10, keywords=None)
 
 
 # ============== Tests for search_tools ==============
@@ -711,7 +711,7 @@ class TestSearchTools:
         adapter = LightRAGAdapter()
         result = adapter.search_tools("docker", top_k=5)
 
-        mock_query_data.assert_called_once_with("docker", mode="local", top_k=5)
+        mock_query_data.assert_called_once_with("docker", mode="local", top_k=5, keywords=None)
         mock_filter.assert_called_once_with(mock_query_data.return_value, "tool")
         assert result == [{"entity_type": "tool"}]
 
@@ -756,7 +756,7 @@ class TestSearchKnowledge:
         adapter = LightRAGAdapter()
         adapter.search_knowledge("test")
 
-        mock_query_data.assert_called_once_with("test", mode="local", top_k=10)
+        mock_query_data.assert_called_once_with("test", mode="local", top_k=10, keywords=None)
 
 
 # ============== Tests for explore_node ==============

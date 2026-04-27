@@ -33,7 +33,7 @@ tools:
   - name: lightrag_query_data
     category: query
     short: "结构化查询"
-    long: "查询知识库返回结构化数据(实体+关系)，而非文本"
+    long: "查询知识库返回结构化数据(实体+关系)。提供keywords可跳过LLM关键词提取，速度从10-100s降至<1s"
     parameters:
       - name: query
         position: 1
@@ -44,6 +44,10 @@ tools:
         type: string
         default: local
         enum: [naive, local, global, hybrid, mix, bypass]
+      - name: keywords
+        flag: keywords
+        type: array
+        cli_format: repeatable
       - name: top_k
         flag: top-k
         type: integer
