@@ -614,7 +614,8 @@ class LightRAGAdapter:
                 edge_desc = edge.get("description", "")
                 edge_timestamp = self._extract_timestamp(edge_desc)
                 target_name = edge.get("target", "")
-                if target_name not in seen_entities:
+                if target_name and target_name not in seen_entities:
+                    seen_entities.add(target_name)
                     timeline_items.append({
                         "entity_name": target_name,
                         "description": edge_desc,
