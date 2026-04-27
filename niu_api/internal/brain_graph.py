@@ -433,6 +433,49 @@ class BrainGraph:
 
         return {"promoted": promoted}
 
+    def consolidate_l1_to_l2(self) -> dict:
+        """Promote L1 entities accessed 7+ times to L2.
+
+        L1 entities with access_count >= 7 get upgraded to L2
+        (highest weight, lowest decay rate).
+
+        Returns:
+            Dict with promoted count.
+        """
+        ACCESS_THRESHOLD = 7
+        promoted = 0
+
+        try:
+            snapshot = self._adapter.get_graph_snapshot(limit=10000)
+            nodes = snapshot.get("nodes", [])
+
+            for node in nodes:
+                desc = node.get("description", "")
+                level = self._extract_level(desc)
+                if level != "L1":
+                    continue
+
+                access_count = self._extract_access_count(desc)
+                if access_count < ACCESS_THRESHOLD:
+                    continue
+
+                new_desc = desc.replace("L1|", "L2|", 1)
+                name = node.get("name", node.get("id", ""))
+                etype = node.get("type", "UNKNOWN")
+                self._ingester.inject_entity(
+                    name=name,
+                    entity_type=etype,
+                    description=new_desc,
+                    source_id="brain_consolidate",
+                    file_path="brain://consolidate",
+                )
+                promoted += 1
+
+        except Exception as e:
+            logger.error(f"consolidate_l1_to_l2 failed: {e}")
+
+        return {"promoted": promoted}
+
     def cleanup_low_weight(self) -> dict:
         """Remove entities and edges with weight below MIN_WEIGHT.
 
