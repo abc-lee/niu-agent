@@ -431,7 +431,7 @@ class LightRAGAdapter:
 
     # ============== Graph Traversal Methods ==============
 
-    def explore_node(self, entity_name: str, depth: int = 2) -> Dict[str, Any]:
+    def explore_node(self, entity_name: str, depth: int = 2, edge_types: Optional[List[str]] = None) -> Dict[str, Any]:
         """Get neighbors of an entity in the knowledge graph.
 
         Uses LightRAG's built-in get_knowledge_graph() method which performs
@@ -443,6 +443,8 @@ class LightRAGAdapter:
         Args:
             entity_name: Entity name to explore from.
             depth: BFS traversal depth (1-5, default 2).
+            edge_types: Optional filter — only return edges whose relation
+                        is in this list. None returns all edges.
 
         Returns:
             Dict with center, nodes, edges, and stats keys.
@@ -496,6 +498,11 @@ class LightRAGAdapter:
                     "weight": edge.properties.get("weight", 1.0),
                 })
 
+            # Filter edges by edge_types if specified
+            if edge_types is not None:
+                edge_type_set = set(edge_types)
+                edges = [e for e in edges if e.get("relation") in edge_type_set]
+
             return {
                 "center": center,
                 "nodes": nodes,
@@ -510,6 +517,114 @@ class LightRAGAdapter:
         except Exception as e:
             logger.error(f"LightRAG explore_node failed: {e}")
             return {"center": None, "nodes": [], "edges": [], "stats": {"nodes": 0, "edges": 0, "max_depth": depth}}
+
+    def timeline_query(
+        self,
+        query: str,
+        max_depth: int = 2,
+        top_k: int = 5,
+    ) -> List[Dict[str, Any]]:
+        """时间线查询：向量匹配内容 → 遍历时间链 → 按时间戳排序。
+
+        Uses query_data() for vector search to find matching entities,
+        then explore_node() to traverse time-chain relations from those entities.
+        Only edges with timeline relation types are included in results.
+
+        Args:
+            query: 查询文本。
+            max_depth: 时间链遍历深度。
+            top_k: 向量搜索返回的实体数。
+
+        Returns:
+            按时间戳排序的时间线结果列表（最近优先）。
+        """
+        TIMELINE_EDGE_TYPES = {"followed_by", "corrected_by", "led_to", "resolved_by"}
+
+        # Step 1: Vector search to find matching entities
+        query_result = self.query_data(
+            query, mode="local", top_k=top_k, keywords=[query]
+        )
+
+        if query_result is None:
+            return []
+
+        # Extract entities from the structured result
+        data = query_result.get("data", {}) if isinstance(query_result, dict) else {}
+        if not data:
+            data = query_result
+        entities = data.get("entities", [])
+        if not entities:
+            return []
+
+        # Step 2: Traverse time-chain relations from matched entities
+        timeline_items: List[Dict[str, Any]] = []
+        seen_entities: set = set()
+
+        for entity in entities[:top_k]:
+            entity_name = entity.get("entity_name", "") if isinstance(entity, dict) else str(entity)
+            if not entity_name or entity_name in seen_entities:
+                continue
+            seen_entities.add(entity_name)
+
+            # Add the matched entity itself
+            entity_desc = entity.get("description", "") if isinstance(entity, dict) else ""
+            timestamp = self._extract_timestamp(entity_desc)
+            timeline_items.append({
+                "entity_name": entity_name,
+                "description": entity_desc,
+                "timestamp": timestamp,
+                "relation": "match",
+            })
+
+            # Traverse edges via explore_node, keeping only timeline edges
+            try:
+                node_data = self.explore_node(entity_name, depth=max_depth)
+            except Exception:
+                continue
+
+            # explore_node returns edges at top level, not nested in nodes
+            sub_edges = node_data.get("edges", []) if isinstance(node_data, dict) else []
+            for edge in sub_edges:
+                relation = edge.get("relation", "")
+                if relation not in TIMELINE_EDGE_TYPES:
+                    continue
+                edge_desc = edge.get("description", "")
+                edge_timestamp = self._extract_timestamp(edge_desc)
+                target_name = edge.get("target", "")
+                if target_name not in seen_entities:
+                    timeline_items.append({
+                        "entity_name": target_name,
+                        "description": edge_desc,
+                        "timestamp": edge_timestamp,
+                        "relation": relation,
+                    })
+
+        # Step 3: Sort by timestamp (nearest first), None/empty timestamps last
+        timeline_items.sort(
+            key=lambda x: x.get("timestamp") or "",
+            reverse=True,
+        )
+
+        return timeline_items
+
+    @staticmethod
+    def _extract_timestamp(description: str) -> str:
+        """从 brain_meta 描述前缀中提取 created_at 时间戳。
+
+        格式: L2|created_at=2026-04-27T14:00:00|其他内容
+
+        Args:
+            description: Entity/edge description string with brain_meta prefix.
+
+        Returns:
+            Extracted timestamp string, or empty string if not found.
+        """
+        if not description:
+            return ""
+        for part in description.split("|"):
+            if part.startswith("created_at="):
+                return part[len("created_at="):]
+        return ""
 
     def get_graph_snapshot(self, limit: int = 200) -> Dict[str, Any]:
         """Return all nodes and edges from LightRAG knowledge graph.

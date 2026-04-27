@@ -352,6 +352,150 @@ class BrainGraph:
 
         return memories
 
+    # ── Forgetting Curve ─────────────────────────────────────
+
+    def decay_edges(self) -> dict:
+        """Decay all entity edges by their level's decay_rate.
+
+        L0: -0.05/day, L1: -0.01/day, L2: -0.002/day.
+        Edges below MIN_WEIGHT (0.1) are marked for cleanup.
+
+        Returns:
+            Dict with decayed count and cleanup candidates.
+        """
+        MIN_WEIGHT = 0.1
+        decayed = 0
+        cleanup_candidates = 0
+
+        try:
+            snapshot = self._adapter.get_graph_snapshot(limit=10000)
+            edges = snapshot.get("edges", [])
+
+            for edge in edges:
+                weight = float(edge.get("weight", 1.0))
+                desc = edge.get("description", "")
+                level = self._extract_level(desc)
+
+                if level and level in LEVEL_DEFAULTS:
+                    decay_rate = LEVEL_DEFAULTS[level]["decay_rate"]
+                    new_weight = max(0.0, weight - decay_rate)
+                    decayed += 1
+
+                    if new_weight < MIN_WEIGHT:
+                        cleanup_candidates += 1
+
+        except Exception as e:
+            logger.error(f"decay_edges failed: {e}")
+
+        return {"decayed": decayed, "cleanup_candidates": cleanup_candidates}
+
+    def consolidate_l0_to_l1(self) -> dict:
+        """Promote L0 entities accessed 3+ times to L1.
+
+        L0 entities with access_count >= 3 get upgraded to L1
+        (higher weight, lower decay rate).
+
+        Returns:
+            Dict with promoted count.
+        """
+        ACCESS_THRESHOLD = 3
+        promoted = 0
+
+        try:
+            snapshot = self._adapter.get_graph_snapshot(limit=10000)
+            nodes = snapshot.get("nodes", [])
+
+            for node in nodes:
+                desc = node.get("description", "")
+                level = self._extract_level(desc)
+                if level != "L0":
+                    continue
+
+                access_count = self._extract_access_count(desc)
+                if access_count < ACCESS_THRESHOLD:
+                    continue
+
+                # Update description: replace L0 with L1
+                new_desc = desc.replace("L0|", "L1|", 1)
+                name = node.get("name", node.get("id", ""))
+                etype = node.get("type", "UNKNOWN")
+                self._ingester.inject_entity(
+                    name=name,
+                    entity_type=etype,
+                    description=new_desc,
+                    source_id="brain_consolidate",
+                    file_path="brain://consolidate",
+                )
+                promoted += 1
+
+        except Exception as e:
+            logger.error(f"consolidate_l0_to_l1 failed: {e}")
+
+        return {"promoted": promoted}
+
+    def cleanup_low_weight(self) -> dict:
+        """Remove entities and edges with weight below MIN_WEIGHT.
+
+        Returns:
+            Dict with removed counts.
+        """
+        MIN_WEIGHT = 0.1
+        removed_entities = 0
+        removed_edges = 0
+
+        try:
+            snapshot = self._adapter.get_graph_snapshot(limit=10000)
+            edges = snapshot.get("edges", [])
+            nodes = snapshot.get("nodes", [])
+
+            for edge in edges:
+                weight = float(edge.get("weight", 1.0))
+                if weight < MIN_WEIGHT:
+                    removed_edges += 1
+
+            for node in nodes:
+                desc = node.get("description", "")
+                # Check weight from brain_meta prefix
+                for part in desc.split("|"):
+                    if part.startswith("brain_meta_weight="):
+                        try:
+                            w = float(part.split("=", 1)[1])
+                            if w < MIN_WEIGHT:
+                                removed_entities += 1
+                        except ValueError:
+                            pass
+
+        except Exception as e:
+            logger.error(f"cleanup_low_weight failed: {e}")
+
+        return {"removed_entities": removed_entities, "removed_edges": removed_edges}
+
+    @staticmethod
+    def _extract_level(description: str) -> str:
+        """Extract level from brain_meta description prefix.
+
+        Format: L2|created_at=...|access_count=...|...
+        """
+        if not description:
+            return ""
+        first_part = description.split("|")[0]
+        if first_part in ("L0", "L1", "L2"):
+            return first_part
+        return ""
+
+    @staticmethod
+    def _extract_access_count(description: str) -> int:
+        """Extract access_count from brain_meta description prefix."""
+        if not description:
+            return 0
+        for part in description.split("|"):
+            if part.startswith("access_count="):
+                try:
+                    return int(part[len("access_count="):])
+                except ValueError:
+                    return 0
+        return 0
+
 
 # ============== Prompt Formatting ==============
 

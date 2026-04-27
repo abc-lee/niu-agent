@@ -1,11 +1,11 @@
 """
 LightRAG Unified MCP Server
 
-Replaces vector-store (7 tools) and kg-server (20 tools) with 14 unified tools
+Replaces vector-store (7 tools) and kg-server (20 tools) with 15 unified tools
 that delegate to LightRAGAdapter and LightRAGIngester.
 
 Tool groups:
-- Query (4): lightrag_query, lightrag_query_data, lightrag_search_entities, lightrag_get_graph
+- Query (5): lightrag_query, lightrag_query_data, lightrag_search_entities, lightrag_get_graph, lightrag_timeline_query
 - Insert (4): lightrag_insert, lightrag_insert_custom_kg, lightrag_insert_entity, lightrag_insert_relation
 - Manage (6): lightrag_delete_document, lightrag_delete_entity, lightrag_document_status, lightrag_get_document, lightrag_list_entities, lightrag_merge_entities
 """
@@ -15,6 +15,8 @@ import inspect
 import threading
 
 from loguru import logger
+
+from niu_api.internal.lightrag_adapter import LightRAGAdapter
 
 
 # ============== Singleton Accessors ==============
@@ -92,9 +94,15 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
     "lightrag_query_data": {
         "name": "lightrag_query_data",
         "description": (
-            "Query the knowledge base returning structured data (entities + relationships). "
-            "Unlike lightrag_query which returns text, this returns structured JSON "
-            "with entity_type, description, and relationship details."
+            "Query the knowledge base returning structured data (entities + relationships + chunks). "
+            "MODES: 'local' (entity-centric graph traversal, RECOMMENDED for most queries), "
+            "'global' (community-level overview), 'hybrid' (local+global combined, slower), "
+            "'naive' (vector-only, NO graph data), 'mix' (all combined, slowest). "
+            "KEY OPTIMIZATION: When you provide 'keywords', the query skips LLM keyword extraction "
+            "and uses your keywords directly — this eliminates LLM latency (~10-100s -> <1s) while "
+            "keeping full graph traversal capability. ALWAYS provide keywords when you know the search "
+            "terms (e.g., query='便签' keywords=['便签']). Only omit keywords for complex natural "
+            "language queries that need LLM interpretation."
         ),
         "input_schema": {
             "type": "object",
@@ -104,7 +112,13 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
                     "type": "string",
                     "enum": ["naive", "local", "global", "hybrid", "mix", "bypass"],
                     "default": "local",
-                    "description": "Retrieval mode (default: local for entity-focused; 'bypass' skips retrieval)",
+                    "description": "Retrieval mode. 'local' is best for finding specific entities. 'hybrid' adds community context but is slower. 'naive' skips graph entirely.",
+                },
+                "keywords": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "default": [],
+                    "description": "Pre-provided keywords to skip LLM extraction. DRAMATICALLY faster. Use the core nouns/terms from your query. E.g., query='查看便签' -> keywords=['便签']. For 'local' mode these become ll_keywords; for 'global'/'hybrid' they become both hl and ll keywords.",
                 },
                 "top_k": {
                     "type": "integer",
@@ -173,8 +187,42 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
                     "default": 200,
                     "description": "Max nodes to return (for snapshot)",
                 },
+                "edge_types": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Filter edges by relation type (e.g., ['followed_by', 'corrected_by']). None returns all.",
+                },
             },
             "required": ["action"],
+        },
+    },
+
+    "lightrag_timeline_query": {
+        "name": "lightrag_timeline_query",
+        "description": (
+            "Query timeline: vector-match content first, then traverse "
+            "time-chain relations (followed_by, corrected_by, led_to, resolved_by) "
+            "and sort by timestamp (nearest first)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Query text for vector matching",
+                },
+                "max_depth": {
+                    "type": "integer",
+                    "default": 2,
+                    "description": "Time-chain traversal depth",
+                },
+                "top_k": {
+                    "type": "integer",
+                    "default": 5,
+                    "description": "Max entities from vector search",
+                },
+            },
+            "required": ["query"],
         },
     },
 
@@ -414,17 +462,25 @@ def lightrag_query(
 def lightrag_query_data(
     query: str,
     mode: str = "local",
+    keywords: Optional[list] = None,
     top_k: int = 10,
 ):
-    """Query returning structured data (entities + relationships)."""
+    """Query returning structured data (entities + relationships + chunks).
+
+    When keywords are provided, skips LLM keyword extraction for near-instant
+    results while keeping full graph traversal. Without keywords, LLM extraction
+    adds 5-30s latency.
+    """
     valid_modes = {"naive", "local", "global", "hybrid", "mix", "bypass"}
     if mode not in valid_modes:
         return {"status": "error", "message": f"Invalid mode '{mode}'. Must be one of: {', '.join(sorted(valid_modes))}"}
     try:
         adapter = _get_adapter()
-        result = adapter.query_data(query=query, mode=mode, top_k=top_k)
-        if result is None:
-            return {"status": "ok", "data": {}}
+        result = adapter.query_data(
+            query=query, mode=mode, top_k=top_k, keywords=keywords,
+        )
+        if LightRAGAdapter._is_no_result(result):
+            return {"status": "no_results", "message": "No relevant results found in knowledge graph"}
         return result
     except Exception as e:
         logger.error(f"lightrag_query_data failed: {e}")
@@ -440,8 +496,8 @@ def lightrag_search_entities(
     try:
         adapter = _get_adapter()
         result = adapter.query_data(query=query, mode="local", top_k=top_k)
-        if result is None:
-            return {"status": "ok", "data": []}
+        if LightRAGAdapter._is_no_result(result):
+            return {"status": "no_results", "message": "No relevant results found in knowledge graph"}
         if entity_type:
             entities = adapter.filter_by_entity_type(result, entity_type)
             return {"status": "ok", "data": entities}
@@ -461,6 +517,7 @@ def lightrag_get_graph(
     entity_name: str = "",
     depth: int = 2,
     limit: int = 200,
+    edge_types: Optional[List[str]] = None,
 ):
     """Get a subgraph from the knowledge graph."""
     valid_actions = {"explore", "snapshot"}
@@ -471,12 +528,27 @@ def lightrag_get_graph(
         if action == "explore":
             if not entity_name:
                 return {"status": "error", "message": "entity_name required for explore", "nodes": [], "edges": [], "center": None, "stats": {}}
-            return adapter.explore_node(entity_name=entity_name, depth=depth)
+            return adapter.explore_node(entity_name=entity_name, depth=depth, edge_types=edge_types)
         else:  # snapshot
             return adapter.get_graph_snapshot(limit=limit)
     except Exception as e:
         logger.error(f"lightrag_get_graph failed: {e}")
-        return {"status": "error", "message": str(e), "nodes": [], "edges": [], "center": None, "stats": {}}
+        return {"status": "error", "message": str(e), "nodes": [], "edges": [], "center": None, "stats": {}
+
+
+def lightrag_timeline_query(
+    query: str,
+    max_depth: int = 2,
+    top_k: int = 5,
+) -> Dict[str, Any]:
+    """Query timeline: vector-match then traverse time-chain relations."""
+    try:
+        adapter = _get_adapter()
+        result = adapter.timeline_query(query=query, max_depth=max_depth, top_k=top_k)
+        return {"status": "ok", "timeline": result}
+    except Exception as e:
+        logger.error(f"lightrag_timeline_query failed: {e}")
+        return {"status": "error", "message": str(e), "timeline": []}
 
 
 def lightrag_insert(
@@ -675,6 +747,7 @@ _TOOL_FUNCTIONS = {
     "lightrag_get_document": lightrag_get_document,
     "lightrag_list_entities": lightrag_list_entities,
     "lightrag_merge_entities": lightrag_merge_entities,
+    "lightrag_timeline_query": lightrag_timeline_query,
 }
 
 
