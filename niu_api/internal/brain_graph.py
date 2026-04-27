@@ -393,8 +393,14 @@ class BrainGraph:
 
             for edge in edges:
                 weight = float(edge.get("weight", 1.0))
-                # Get level from target entity, not from edge description
+                src = edge.get("source", "")
                 tgt = edge.get("target", "")
+
+                # Only decay edges originating from brain:Niu (memory relations)
+                if not src.startswith("brain:"):
+                    continue
+
+                # Get level from target entity, not from edge description
                 level = entity_levels.get(tgt, "")
 
                 if level and level in LEVEL_DEFAULTS:
@@ -446,6 +452,15 @@ class BrainGraph:
         try:
             snapshot = self._adapter.get_graph_snapshot(limit=10000)
             nodes = snapshot.get("nodes", [])
+            edges = snapshot.get("edges", [])
+
+            # Build entity_name → relation lookup from brain:Niu edges
+            entity_relations: Dict[str, str] = {}
+            for edge in edges:
+                src = edge.get("source", "")
+                if src == "brain:Niu":
+                    tgt = edge.get("target", "")
+                    entity_relations[tgt] = edge.get("relation", "remembers")
 
             for node in nodes:
                 desc = node.get("description", "")
@@ -471,13 +486,14 @@ class BrainGraph:
                     file_path="brain://consolidate",
                 )
 
-                # Update relation weight from brain:Niu to this entity
+                # Update relation weight from brain:Niu, preserving original relation type
+                original_relation = entity_relations.get(name, "remembers")
                 self._ingester.inject_custom_kg(
                     entities=[],
                     relationships=[{
                         "src_id": "brain:Niu",
                         "tgt_id": name,
-                        "relation": "remembers",
+                        "relation": original_relation,
                         "description": new_desc,
                         "weight": L1_WEIGHT,
                         "source_id": "brain_consolidate",
@@ -509,6 +525,15 @@ class BrainGraph:
         try:
             snapshot = self._adapter.get_graph_snapshot(limit=10000)
             nodes = snapshot.get("nodes", [])
+            edges = snapshot.get("edges", [])
+
+            # Build entity_name → relation lookup from brain:Niu edges
+            entity_relations: Dict[str, str] = {}
+            for edge in edges:
+                src = edge.get("source", "")
+                if src == "brain:Niu":
+                    tgt = edge.get("target", "")
+                    entity_relations[tgt] = edge.get("relation", "remembers")
 
             for node in nodes:
                 desc = node.get("description", "")
@@ -533,13 +558,14 @@ class BrainGraph:
                     file_path="brain://consolidate",
                 )
 
-                # Update relation weight from brain:Niu to this entity
+                # Update relation weight from brain:Niu, preserving original relation type
+                original_relation = entity_relations.get(name, "remembers")
                 self._ingester.inject_custom_kg(
                     entities=[],
                     relationships=[{
                         "src_id": "brain:Niu",
                         "tgt_id": name,
-                        "relation": "remembers",
+                        "relation": original_relation,
                         "description": new_desc,
                         "weight": L2_WEIGHT,
                         "source_id": "brain_consolidate",
