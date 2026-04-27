@@ -49,7 +49,7 @@ class TestToolSchemas:
     def test_schemas_count(self):
         """Should have exactly 12 tool schemas."""
         mod = _import_module()
-        assert len(mod.TOOL_SCHEMAS) == 12
+        assert len(mod.TOOL_SCHEMAS) == 14
 
     def test_all_tools_have_required_fields(self):
         """Each schema must have name, description, input_schema."""
@@ -92,7 +92,7 @@ class TestToolSchemas:
         mod = _import_module()
         schemas = mod.get_tool_schemas()
         assert isinstance(schemas, list)
-        assert len(schemas) == 12
+        assert len(schemas) == 14
 
 
 # ============== Tool Functions ==============
@@ -150,7 +150,7 @@ class TestLightragQueryData:
         result = mod.lightrag_query_data(query="test", mode="local", top_k=10)
 
         mock_adapter.query_data.assert_called_once_with(
-            query="test", mode="local", top_k=10,
+            query="test", mode="local", top_k=10, keywords=None,
         )
 
 
@@ -161,9 +161,10 @@ class TestLightragSearchEntities:
         """Should filter by entity_type when provided."""
         mod = _import_module()
         mock_adapter = MagicMock()
-        mock_adapter.query_data.return_value = {"data": {"entities": []}}
+        mock_adapter.query_data.return_value = {"data": {"entities": [{"name": "Python", "entity_type": "skill"}]}}
         mock_adapter.filter_by_entity_type.return_value = [{"name": "Python", "entity_type": "skill"}]
         mod._adapter = mock_adapter
+        mod.LightRAGAdapter._is_no_result = MagicMock(return_value=False)
 
         result = mod.lightrag_search_entities(query="python", entity_type="skill")
 
@@ -179,6 +180,7 @@ class TestLightragSearchEntities:
             "data": {"entities": [{"name": "Python"}]}
         }
         mod._adapter = mock_adapter
+        mod.LightRAGAdapter._is_no_result = MagicMock(return_value=False)
 
         result = mod.lightrag_search_entities(query="python")
 
@@ -186,16 +188,16 @@ class TestLightragSearchEntities:
         assert result["status"] == "ok"
 
     def test_search_no_results(self):
-        """Should return ok with empty data when no results."""
+        """Should return no_results when no results found."""
         mod = _import_module()
         mock_adapter = MagicMock()
         mock_adapter.query_data.return_value = None
         mod._adapter = mock_adapter
+        mod.LightRAGAdapter._is_no_result = MagicMock(return_value=True)
 
         result = mod.lightrag_search_entities(query="nonexistent")
 
-        assert result["status"] == "ok"
-        assert result["data"] == []
+        assert result["status"] == "no_results"
 
 
 class TestLightragGetGraph:
