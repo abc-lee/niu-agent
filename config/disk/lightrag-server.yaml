@@ -231,3 +231,21 @@ tools:
         flag: target
         type: string
         required: true
+
+  - name: lightrag_timeline_query
+    category: query
+    short: "时间线查询"
+    long: "向量匹配内容后沿时间链遍历，按时间戳排序返回"
+    parameters:
+      - name: query
+        position: 1
+        type: string
+        required: true
+      - name: max_depth
+        flag: max-depth
+        type: integer
+        default: 2
+      - name: top_k
+        flag: top-k
+        type: integer
+        default: 5

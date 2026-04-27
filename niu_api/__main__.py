@@ -132,7 +132,24 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Brain graph initialization failed: {e}")
 
+    # 8.2. Create default brain regions (聊天历史, 文档库, 知识体系)
+    try:
+        from niu_api.internal.region_manager import create_default_regions
+        from niu_api.internal.lightrag_adapter import LightRAGAdapter, LightRAGIngester
+        region_result = create_default_regions(
+            adapter=LightRAGAdapter(),
+            ingester=LightRAGIngester(),
+        )
+        logger.info(f"Default brain regions: created={region_result['created']}, existing={region_result['existing']}")
+    except Exception as e:
+        logger.warning(f"Default brain region creation failed: {e}")
+
     # 8.6. Ensure entity-extractor daily task exists (replaces deleted kg-enricher)
+    _ENTITY_EXTRACTOR_TASK_CONTENT = (
+        "调用 chat-with-entity-extractor 子 Agent，task 参数为："
+        "\"提炼有价值内容：扫描近期对话，筛选偏好/技能/经验，形成精炼文档通过 lightrag_insert 增量注入 LightRAG。\" "
+        "不要从对话历史中提取内容，只执行此 task。"
+    )
     try:
         from niu_api.internal.scheduler import get_store
 
@@ -151,31 +168,88 @@ async def lifespan(app: FastAPI):
                 except Exception as cancel_err:
                     logger.warning(f"Could not cancel kg-enricher task {task['id']}: {cancel_err}")
 
-        # Check if entity-extractor task already exists
-        extractor_exists = any(
-            task.get("event_type") == "recurring"
-            and task.get("cron_expr") == "0 8 * * *"
-            and "chat-with-entity-extractor" in task.get("content", "")
-            and task.get("status") != "cancelled"
-            for task in existing_tasks
+        # Find existing entity-extractor task
+        extractor_task = next(
+            (
+                task for task in existing_tasks
+                if task.get("event_type") == "recurring"
+                and task.get("cron_expr") == "0 8 * * *"
+                and "chat-with-entity-extractor" in task.get("content", "")
+                and task.get("status") != "cancelled"
+            ),
+            None,
         )
 
-        if not extractor_exists:
+        if extractor_task is None:
+            # Create new task
             now = datetime.now()
             next_8am = now.replace(hour=8, minute=0, second=0, microsecond=0)
             if next_8am <= now:
                 next_8am += timedelta(days=1)
 
             ts.create_task(
-                content="执行知识图谱实体提取：从对话中提取实体和关系，写入LightRAG知识图谱。调用 chat-with-entity-extractor 子 Agent。",
+                content=_ENTITY_EXTRACTOR_TASK_CONTENT,
                 scheduled_at=next_8am.isoformat(),
                 is_recurring=True,
                 cron_expr="0 8 * * *",
                 event_type="recurring",
             )
             logger.info(f"Created entity-extractor daily task (next run: {next_8am})")
+        elif extractor_task.get("content") != _ENTITY_EXTRACTOR_TASK_CONTENT:
+            # Update existing task with new content
+            ts.update_task(extractor_task["id"], content=_ENTITY_EXTRACTOR_TASK_CONTENT)
+            logger.info(f"Updated entity-extractor task content (id={extractor_task['id']})")
     except Exception as e:
         logger.warning(f"Failed to ensure entity-extractor task: {e}")
+
+    # 8.3. Register forgetting curve scheduled tasks
+    _BRAIN_DECAY_TASKS = [
+        {
+            "content": "执行遗忘曲线衰减：brain_decay — 所有权重按 decay_rate 衰减",
+            "cron_expr": "0 3 * * *",
+            "task_id_suffix": "brain_decay",
+        },
+        {
+            "content": "执行 L0→L1 记忆巩固：brain_consolidate_l0_to_l1 — access_count≥3 的 L0 升级",
+            "cron_expr": "0 4 * * *",
+            "task_id_suffix": "brain_consolidate_l0",
+        },
+        {
+            "content": "执行 L1→L2 记忆巩固：brain_consolidate_l1_to_l2 — access_count≥10 的 L1 升级",
+            "cron_expr": "0 5 * * 0",
+            "task_id_suffix": "brain_consolidate_l1",
+        },
+        {
+            "content": "执行低权重清理：brain_cleanup — weight<0.1 的实体标记待删除",
+            "cron_expr": "0 6 * * 0",
+            "task_id_suffix": "brain_cleanup",
+        },
+    ]
+    try:
+        from niu_api.internal.scheduler import get_store
+        ts = get_store()
+        existing_tasks = ts.list_tasks()
+
+        for task_def in _BRAIN_DECAY_TASKS:
+            already_exists = any(
+                t.get("event_type") == "recurring"
+                and t.get("cron_expr") == task_def["cron_expr"]
+                and task_def["task_id_suffix"] in t.get("content", "")
+                and t.get("status") != "cancelled"
+                for t in existing_tasks
+            )
+            if not already_exists:
+                now = datetime.now()
+                ts.create_task(
+                    content=task_def["content"],
+                    scheduled_at=now.isoformat(),
+                    is_recurring=True,
+                    cron_expr=task_def["cron_expr"],
+                    event_type="recurring",
+                )
+                logger.info(f"Created brain task: {task_def['task_id_suffix']}")
+    except Exception as e:
+        logger.warning(f"Failed to register brain decay tasks: {e}")
 
     yield
 

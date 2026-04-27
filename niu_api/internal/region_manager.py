@@ -721,3 +721,78 @@ class RegionManager:
             logger.warning("Edge decay failed: %s", e)
 
         return disconnected
+
+
+# ── Default Region Definitions ──────────────────────────────────
+
+DEFAULT_REGIONS: dict[str, dict] = {
+    "聊天历史": {
+        "description": "日常对话中提炼的偏好、技能和经验记忆",
+    },
+    "文档库": {
+        "description": "用户导入的文档和资料，经解析后入库的知识",
+    },
+    "知识体系": {
+        "description": "系统化组织的概念、关系和理论体系",
+    },
+}
+
+
+def create_default_regions(adapter: Any, ingester: Any) -> dict:
+    """Create default brain region master nodes.
+
+    If a region already exists, skip it. Each region is linked to
+    brain:Niu via brain_region_anchor relation.
+
+    Args:
+        adapter: LightRAGAdapter instance.
+        ingester: LightRAGIngester instance.
+
+    Returns:
+        Dict with created and existing counts.
+    """
+    created = 0
+    existing = 0
+
+    for region_label, config in DEFAULT_REGIONS.items():
+        region_name = f"{REGION_PREFIX}{region_label}"
+
+        # Check if region already exists
+        try:
+            search_result = adapter.query_data(
+                query=region_label, mode="local", top_k=3,
+            )
+            found = False
+            if search_result and isinstance(search_result, dict):
+                data = search_result.get("data", {})
+                entities = data.get("entities", []) if isinstance(data, dict) else []
+                found = any(e.get("entity_name", "") == region_name for e in entities)
+            if found:
+                existing += 1
+                continue
+        except Exception:
+            pass  # Proceed to create
+
+        # Create region entity
+        try:
+            ingester.inject_entity(
+                name=region_name,
+                entity_type=REGION_ENTITY_TYPE,
+                description=config["description"],
+                source_id=REGION_SOURCE_ID,
+                file_path=REGION_FILE_PATH,
+            )
+            # Link to brain:Niu via brain_region_anchor
+            ingester.inject_relation(
+                src_id=NIU_ENTITY,
+                tgt_id=region_name,
+                relation=ANCHOR_RELATION,
+                description=f"缺省脑区锚点: {region_label}",
+                source_id=REGION_SOURCE_ID,
+                file_path=REGION_FILE_PATH,
+            )
+            created += 1
+        except Exception as e:
+            logger.warning(f"Failed to create default region {region_label}: {e}")
+
+    return {"created": created, "existing": existing}
