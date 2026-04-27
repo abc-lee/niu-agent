@@ -87,6 +87,10 @@ tools:
         flag: depth
         type: integer
         default: 2
+      - name: edge_types
+        flag: edge-types
+        type: list
+        default: null
       - name: limit
         flag: limit
         type: integer
@@ -240,7 +244,16 @@ tools:
       - name: query
         position: 1
         type: string
-        required: true
+        required: false
+      - name: start_entities
+        flag: start-entities
+        type: array
+        cli_format: json
+      - name: direction
+        flag: direction
+        type: string
+        default: backward
+        enum: [backward, forward]
       - name: max_depth
         flag: max-depth
         type: integer
@@ -249,3 +262,7 @@ tools:
         flag: top-k
         type: integer
         default: 5
+      - name: max_results
+        flag: max-results
+        type: integer
+        default: 10

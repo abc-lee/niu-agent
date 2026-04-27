@@ -200,29 +200,44 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
     "lightrag_timeline_query": {
         "name": "lightrag_timeline_query",
         "description": (
-            "Query timeline: vector-match content first, then traverse "
-            "time-chain relations (followed_by, corrected_by, led_to, resolved_by) "
-            "and sort by timestamp (nearest first)."
+            "时间线查询：向量匹配内容 → 遍历时间链 → 按时间戳排序。"
+            "用于追踪事件演变、纠正链、因果关系。"
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "Query text for vector matching",
+                    "description": "查询文本（与 start_entities 二选一）",
+                },
+                "start_entities": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "直接指定起始实体名列表，跳过向量匹配",
+                },
+                "direction": {
+                    "type": "string",
+                    "enum": ["backward", "forward"],
+                    "default": "backward",
+                    "description": "排序方向：backward=最近优先，forward=最早优先",
                 },
                 "max_depth": {
                     "type": "integer",
                     "default": 2,
-                    "description": "Time-chain traversal depth",
+                    "description": "时间链遍历深度",
                 },
                 "top_k": {
                     "type": "integer",
                     "default": 5,
-                    "description": "Max entities from vector search",
+                    "description": "向量搜索返回实体数",
+                },
+                "max_results": {
+                    "type": "integer",
+                    "default": 10,
+                    "description": "返回结果最大数量",
                 },
             },
-            "required": ["query"],
+            "required": [],
         },
     },
 
@@ -533,18 +548,28 @@ def lightrag_get_graph(
             return adapter.get_graph_snapshot(limit=limit)
     except Exception as e:
         logger.error(f"lightrag_get_graph failed: {e}")
-        return {"status": "error", "message": str(e), "nodes": [], "edges": [], "center": None, "stats": {}
+        return {"status": "error", "message": str(e), "nodes": [], "edges": [], "center": None, "stats": {}}
 
 
 def lightrag_timeline_query(
-    query: str,
+    query: str = "",
+    start_entities: Optional[List[str]] = None,
+    direction: str = "backward",
     max_depth: int = 2,
     top_k: int = 5,
+    max_results: int = 10,
 ) -> Dict[str, Any]:
     """Query timeline: vector-match then traverse time-chain relations."""
     try:
         adapter = _get_adapter()
-        result = adapter.timeline_query(query=query, max_depth=max_depth, top_k=top_k)
+        result = adapter.timeline_query(
+            query=query,
+            start_entities=start_entities,
+            direction=direction,
+            max_depth=max_depth,
+            top_k=top_k,
+            max_results=max_results,
+        )
         return {"status": "ok", "timeline": result}
     except Exception as e:
         logger.error(f"lightrag_timeline_query failed: {e}")

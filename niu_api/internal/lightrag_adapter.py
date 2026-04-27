@@ -521,8 +521,11 @@ class LightRAGAdapter:
     def timeline_query(
         self,
         query: str,
+        start_entities: Optional[List[str]] = None,
+        direction: str = "backward",
         max_depth: int = 2,
         top_k: int = 5,
+        max_results: int = 10,
     ) -> List[Dict[str, Any]]:
         """时间线查询：向量匹配内容 → 遍历时间链 → 按时间戳排序。
 
@@ -532,42 +535,62 @@ class LightRAGAdapter:
 
         Args:
             query: 查询文本。
+            start_entities: 直接指定起始实体名，跳过向量匹配步骤。
+            direction: 排序方向 — "backward"（最近优先）或 "forward"（最早优先）。
             max_depth: 时间链遍历深度。
             top_k: 向量搜索返回的实体数。
+            max_results: 返回结果最大数量。
 
         Returns:
-            按时间戳排序的时间线结果列表（最近优先）。
+            按时间戳排序的时间线结果列表。
         """
         TIMELINE_EDGE_TYPES = {"followed_by", "corrected_by", "led_to", "resolved_by"}
 
-        # Step 1: Vector search to find matching entities
-        query_result = self.query_data(
-            query, mode="local", top_k=top_k, keywords=[query]
-        )
+        # Step 1: Determine starting entities
+        if start_entities:
+            entity_names = start_entities
+        else:
+            # Vector search to find matching entities
+            query_result = self.query_data(
+                query, mode="local", top_k=top_k, keywords=[query]
+            )
 
-        if query_result is None:
-            return []
+            if query_result is None:
+                return []
 
-        # Extract entities from the structured result
-        data = query_result.get("data", {}) if isinstance(query_result, dict) else {}
-        if not data:
-            data = query_result
-        entities = data.get("entities", [])
-        if not entities:
-            return []
+            data = query_result.get("data", {}) if isinstance(query_result, dict) else {}
+            if not data:
+                data = query_result
+            entities = data.get("entities", [])
+            if not entities:
+                return []
+
+            entity_names = [
+                e.get("entity_name", "") if isinstance(e, dict) else str(e)
+                for e in entities[:top_k]
+            ]
 
         # Step 2: Traverse time-chain relations from matched entities
         timeline_items: List[Dict[str, Any]] = []
         seen_entities: set = set()
 
-        for entity in entities[:top_k]:
-            entity_name = entity.get("entity_name", "") if isinstance(entity, dict) else str(entity)
+        for entity_name in entity_names:
             if not entity_name or entity_name in seen_entities:
                 continue
             seen_entities.add(entity_name)
 
             # Add the matched entity itself
-            entity_desc = entity.get("description", "") if isinstance(entity, dict) else ""
+            # Try to get entity description from explore_node(depth=0)
+            entity_desc = ""
+            try:
+                node_data = self.explore_node(entity_name, depth=0)
+                for node in node_data.get("nodes", []):
+                    if node.get("id") == entity_name or node.get("name") == entity_name:
+                        entity_desc = node.get("description", "")
+                        break
+            except Exception:
+                pass
+
             timestamp = self._extract_timestamp(entity_desc)
             timeline_items.append({
                 "entity_name": entity_name,
@@ -599,13 +622,14 @@ class LightRAGAdapter:
                         "relation": relation,
                     })
 
-        # Step 3: Sort by timestamp (nearest first), None/empty timestamps last
+        # Step 3: Sort by timestamp based on direction
+        reverse_sort = direction == "backward"
         timeline_items.sort(
             key=lambda x: x.get("timestamp") or "",
-            reverse=True,
+            reverse=reverse_sort,
         )
 
-        return timeline_items
+        return timeline_items[:max_results]
 
     @staticmethod
     def _extract_timestamp(description: str) -> str:
