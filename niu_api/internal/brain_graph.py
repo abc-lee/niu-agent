@@ -367,6 +367,9 @@ class BrainGraph:
         Edges below MIN_WEIGHT (0.1) are marked for cleanup.
         Writes updated weights back to the graph via inject_custom_kg.
 
+        The level is read from the target entity's description (which has
+        the brain_meta prefix), not from the edge description.
+
         Returns:
             Dict with decayed count and cleanup candidates.
         """
@@ -377,11 +380,22 @@ class BrainGraph:
         try:
             snapshot = self._adapter.get_graph_snapshot(limit=10000)
             edges = snapshot.get("edges", [])
+            nodes = snapshot.get("nodes", [])
+
+            # Build entity_name → level lookup from node descriptions
+            entity_levels: Dict[str, str] = {}
+            for node in nodes:
+                name = node.get("name", node.get("id", ""))
+                desc = node.get("description", "")
+                level = self._extract_level(desc)
+                if level:
+                    entity_levels[name] = level
 
             for edge in edges:
                 weight = float(edge.get("weight", 1.0))
-                desc = edge.get("description", "")
-                level = self._extract_level(desc)
+                # Get level from target entity, not from edge description
+                tgt = edge.get("target", "")
+                level = entity_levels.get(tgt, "")
 
                 if level and level in LEVEL_DEFAULTS:
                     decay_rate = LEVEL_DEFAULTS[level]["decay_rate"]
@@ -390,8 +404,8 @@ class BrainGraph:
 
                     # Write updated weight back to graph
                     src = edge.get("source", "")
-                    tgt = edge.get("target", "")
                     relation = edge.get("relation", "")
+                    desc = edge.get("description", "")
                     if src and tgt:
                         self._ingester.inject_custom_kg(
                             entities=[],
