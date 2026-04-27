@@ -14,6 +14,7 @@ Core concepts:
 import json
 import re
 import threading
+import time
 from typing import Any, Dict, List, Optional
 
 from loguru import logger
@@ -183,11 +184,16 @@ class BrainGraph:
             except (TypeError, ValueError):
                 pass  # Non-serializable metadata, skip
 
+        # Build entity description with brain_meta prefix for forgetting curve
+        created_at = time.strftime("%Y-%m-%dT%H:%M:%S")
+        brain_meta = f"{level}|created_at={created_at}|access_count=0|weight={weight}|decay_rate={level_config['decay_rate']}"
+        entity_description = f"{brain_meta}|{content[:200]}"
+
         # Inject target entity
         entity_result = self._ingester.inject_entity(
             name=target_name,
             entity_type=entity_type,
-            description=content[:200],
+            description=entity_description,
             source_id="brain",
             file_path="brain://memory",
         )
@@ -359,6 +365,7 @@ class BrainGraph:
 
         L0: -0.05/day, L1: -0.01/day, L2: -0.002/day.
         Edges below MIN_WEIGHT (0.1) are marked for cleanup.
+        Writes updated weights back to the graph via inject_custom_kg.
 
         Returns:
             Dict with decayed count and cleanup candidates.
@@ -381,6 +388,25 @@ class BrainGraph:
                     new_weight = max(0.0, weight - decay_rate)
                     decayed += 1
 
+                    # Write updated weight back to graph
+                    src = edge.get("source", "")
+                    tgt = edge.get("target", "")
+                    relation = edge.get("relation", "")
+                    if src and tgt:
+                        self._ingester.inject_custom_kg(
+                            entities=[],
+                            relationships=[{
+                                "src_id": src,
+                                "tgt_id": tgt,
+                                "relation": relation,
+                                "description": desc,
+                                "weight": new_weight,
+                                "source_id": "brain_decay",
+                                "file_path": "brain://decay",
+                            }],
+                            chunks=[],
+                        )
+
                     if new_weight < MIN_WEIGHT:
                         cleanup_candidates += 1
 
@@ -393,12 +419,14 @@ class BrainGraph:
         """Promote L0 entities accessed 3+ times to L1.
 
         L0 entities with access_count >= 3 get upgraded to L1
-        (higher weight, lower decay rate).
+        (higher weight, lower decay rate). Also updates the weight
+        on the relation from brain:Niu to the promoted entity.
 
         Returns:
             Dict with promoted count.
         """
         ACCESS_THRESHOLD = 3
+        L1_WEIGHT = LEVEL_DEFAULTS["L1"]["weight"]
         promoted = 0
 
         try:
@@ -415,8 +443,10 @@ class BrainGraph:
                 if access_count < ACCESS_THRESHOLD:
                     continue
 
-                # Update description: replace L0 with L1
+                # Update description: replace L0 with L1, update weight
                 new_desc = desc.replace("L0|", "L1|", 1)
+                new_desc = re.sub(r"weight=[\d.]+", f"weight={L1_WEIGHT}", new_desc)
+                new_desc = re.sub(r"decay_rate=[\d.]+", f"decay_rate={LEVEL_DEFAULTS['L1']['decay_rate']}", new_desc)
                 name = node.get("name", node.get("id", ""))
                 etype = node.get("type", "UNKNOWN")
                 self._ingester.inject_entity(
@@ -425,6 +455,21 @@ class BrainGraph:
                     description=new_desc,
                     source_id="brain_consolidate",
                     file_path="brain://consolidate",
+                )
+
+                # Update relation weight from brain:Niu to this entity
+                self._ingester.inject_custom_kg(
+                    entities=[],
+                    relationships=[{
+                        "src_id": "brain:Niu",
+                        "tgt_id": name,
+                        "relation": "remembers",
+                        "description": new_desc,
+                        "weight": L1_WEIGHT,
+                        "source_id": "brain_consolidate",
+                        "file_path": "brain://consolidate",
+                    }],
+                    chunks=[],
                 )
                 promoted += 1
 
@@ -437,12 +482,14 @@ class BrainGraph:
         """Promote L1 entities accessed 7+ times to L2.
 
         L1 entities with access_count >= 7 get upgraded to L2
-        (highest weight, lowest decay rate).
+        (highest weight, lowest decay rate). Also updates the weight
+        on the relation from brain:Niu to the promoted entity.
 
         Returns:
             Dict with promoted count.
         """
         ACCESS_THRESHOLD = 7
+        L2_WEIGHT = LEVEL_DEFAULTS["L2"]["weight"]
         promoted = 0
 
         try:
@@ -460,6 +507,8 @@ class BrainGraph:
                     continue
 
                 new_desc = desc.replace("L1|", "L2|", 1)
+                new_desc = re.sub(r"weight=[\d.]+", f"weight={L2_WEIGHT}", new_desc)
+                new_desc = re.sub(r"decay_rate=[\d.]+", f"decay_rate={LEVEL_DEFAULTS['L2']['decay_rate']}", new_desc)
                 name = node.get("name", node.get("id", ""))
                 etype = node.get("type", "UNKNOWN")
                 self._ingester.inject_entity(
@@ -469,6 +518,21 @@ class BrainGraph:
                     source_id="brain_consolidate",
                     file_path="brain://consolidate",
                 )
+
+                # Update relation weight from brain:Niu to this entity
+                self._ingester.inject_custom_kg(
+                    entities=[],
+                    relationships=[{
+                        "src_id": "brain:Niu",
+                        "tgt_id": name,
+                        "relation": "remembers",
+                        "description": new_desc,
+                        "weight": L2_WEIGHT,
+                        "source_id": "brain_consolidate",
+                        "file_path": "brain://consolidate",
+                    }],
+                    chunks=[],
+                )
                 promoted += 1
 
         except Exception as e:
@@ -477,7 +541,7 @@ class BrainGraph:
         return {"promoted": promoted}
 
     def cleanup_low_weight(self) -> dict:
-        """Remove entities and edges with weight below MIN_WEIGHT.
+        """Remove edges with weight below MIN_WEIGHT and their orphaned entities.
 
         Returns:
             Dict with removed counts.
@@ -489,24 +553,30 @@ class BrainGraph:
         try:
             snapshot = self._adapter.get_graph_snapshot(limit=10000)
             edges = snapshot.get("edges", [])
-            nodes = snapshot.get("nodes", [])
 
             for edge in edges:
                 weight = float(edge.get("weight", 1.0))
                 if weight < MIN_WEIGHT:
+                    # Delete the low-weight edge via delete_entity on source
+                    # (LightRAG doesn't have a direct delete_edge API)
+                    src = edge.get("source", "")
+                    tgt = edge.get("target", "")
+                    if src and tgt:
+                        # Re-inject the edge with weight=0 to effectively remove it
+                        self._ingester.inject_custom_kg(
+                            entities=[],
+                            relationships=[{
+                                "src_id": src,
+                                "tgt_id": tgt,
+                                "relation": edge.get("relation", ""),
+                                "description": edge.get("description", ""),
+                                "weight": 0.0,
+                                "source_id": "brain_cleanup",
+                                "file_path": "brain://cleanup",
+                            }],
+                            chunks=[],
+                        )
                     removed_edges += 1
-
-            for node in nodes:
-                desc = node.get("description", "")
-                # Check weight from brain_meta prefix
-                for part in desc.split("|"):
-                    if part.startswith("brain_meta_weight="):
-                        try:
-                            w = float(part.split("=", 1)[1])
-                            if w < MIN_WEIGHT:
-                                removed_entities += 1
-                        except ValueError:
-                            pass
 
         except Exception as e:
             logger.error(f"cleanup_low_weight failed: {e}")

@@ -215,12 +215,12 @@ async def lifespan(app: FastAPI):
             "task_id_suffix": "brain_consolidate_l0",
         },
         {
-            "content": "执行 L1→L2 记忆巩固：brain_consolidate_l1_to_l2 — access_count≥10 的 L1 升级",
+            "content": "执行 L1→L2 记忆巩固：brain_consolidate_l1_to_l2 — access_count≥7 的 L1 升级",
             "cron_expr": "0 5 * * 0",
             "task_id_suffix": "brain_consolidate_l1",
         },
         {
-            "content": "执行低权重清理：brain_cleanup — weight<0.1 的实体标记待删除",
+            "content": "执行低权重清理：brain_cleanup — weight<0.1 的边降权归零",
             "cron_expr": "0 6 * * 0",
             "task_id_suffix": "brain_cleanup",
         },
