@@ -423,8 +423,9 @@ async def tidy_context(request: dict):
             if prefs_path.exists():
                 prefs = json.loads(prefs_path.read_text(encoding="utf-8"))
                 context_window_tokens = prefs.get("context", {}).get("contextWindowSize", 200000)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"[Tidy] Failed to read compress cursor: {e}")
+            last_compress_id = ""
         usage_percent = (estimated_tokens / context_window_tokens) * 100
 
         logger.info(f"[Tidy] Current context: {message_count} messages, {estimated_tokens} tokens, {usage_percent:.1f}%")
@@ -471,7 +472,7 @@ async def tidy_context(request: dict):
         for idx, msg in enumerate(messages, 1):
             tokens = msg_tokens[idx - 1]
             msg_id = getattr(msg, "id", "") or ""
-            msg_lines.append(f"[id:{msg_id}] [idx:{idx}] {tokens}tokens {msg.role}: {msg.content[:100]}")
+            msg_lines.append(f"[id:{msg_id}] [idx:{idx}] {tokens}tokens {msg.role}: {msg.content[:100]}{'...' if len(msg.content) > 100 else ''}")
 
         msg_list_text = "\n".join(msg_lines)
 
@@ -526,12 +527,13 @@ async def tidy_context(request: dict):
             new_dream_id = match.group(1) if match else last_dream_evolve_id
             if not match:
                 logger.warning("[Tidy] Dream cursor UUID regex not matched, preserving old cursor")
-            dream_cursor_path.parent.mkdir(parents=True, exist_ok=True)
-            dream_cursor_path.write_text(json.dumps({
-                "last_dream_evolve_id": new_dream_id,
-                "last_evolve_at": datetime.now().isoformat(),
-            }, ensure_ascii=False, indent=2), encoding="utf-8")
-            logger.info(f"[Tidy] Dream cursor updated: last_dream_evolve_id={new_dream_id}")
+            if new_dream_id:
+                dream_cursor_path.parent.mkdir(parents=True, exist_ok=True)
+                dream_cursor_path.write_text(json.dumps({
+                    "last_dream_evolve_id": new_dream_id,
+                    "last_evolve_at": datetime.now().isoformat(),
+                }, ensure_ascii=False, indent=2), encoding="utf-8")
+                logger.info(f"[Tidy] Dream cursor updated: last_dream_evolve_id={new_dream_id}")
 
             # 2. context-manager prompt（双游标，UUID 存储 + idx 判断时间顺序）
             prompt = f"""系统进入睡眠状态。
