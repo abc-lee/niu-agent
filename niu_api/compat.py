@@ -469,7 +469,7 @@ async def tidy_context(request: dict):
         # 构建消息列表（包含 UUID）
         msg_lines = []
         for idx, msg in enumerate(messages, 1):
-            tokens = msg_tokens[idx]
+            tokens = msg_tokens[idx - 1]
             msg_id = getattr(msg, "id", "") or ""
             msg_lines.append(f"[id:{msg_id}] [idx:{idx}] {tokens}tokens {msg.role}: {msg.content[:100]}")
 
