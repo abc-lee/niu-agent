@@ -409,7 +409,6 @@ def call_subagent(
             handler.history_info = []
             handler._recent_tool_calls = []
             handler.current_turn = 0
-            handler._experience_context = None
 
         # 非首片：在 system_prompt 中注入续接上下文
         current_system_prompt = system_prompt
