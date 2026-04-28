@@ -1,345 +1,221 @@
-"""定时任务调度器"""
-import logging
+"""
+Task Scheduler - Single-loop architecture
+
+Periodically scans for due tasks and executes them via trigger_callback.
+Overdue tasks are handled by the same loop with stagger intervals to prevent
+simultaneous execution on startup.
+"""
+
 import threading
 import time
-import sqlite3
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from datetime import datetime
-from typing import TYPE_CHECKING, Optional, Callable
+from typing import Callable, Optional, TYPE_CHECKING
+
+from loguru import logger
 
 if TYPE_CHECKING:
-    from .task_store import TaskStore
+    from niu_api.internal.scheduler.task_store import TaskStore
 
-logger = logging.getLogger(__name__)
+
+_CALLBACK_TIMEOUT = 120  # 2 minutes
 
 
 class Scheduler:
-    """定时任务调度器"""
-
-    def __init__(self, db_path: str, trigger_callback: Callable[[dict], str], store: "TaskStore"):
-        """
-        Args:
-            db_path: 数据库路径
-            trigger_callback: 触发回调函数，接收 task 字典，返回 Agent 回复
-            store: TaskStore 实例（用于过期任务处理）
-        """
+    def __init__(
+        self,
+        db_path: str,
+        trigger_callback: Callable,
+        store: Optional["TaskStore"] = None,
+    ):
         self.db_path = db_path
         self.trigger_callback = trigger_callback
-        self.store = store
         self.running = False
         self.thread: Optional[threading.Thread] = None
-        self._delayed_thread: Optional[threading.Thread] = None
-        self._overdue_thread: Optional[threading.Thread] = None
+        # 过期任务顺序执行间隔（秒），防止启动时多个过期任务同时触发
+        self._overdue_stagger_interval = 600  # 10 分钟
         # 保护 running 标志和任务查询/标记操作
         self._lock = threading.RLock()
-        # trigger_callback HTTP 调用可能很慢，用单独的线程池加超时保护
-        self._executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="scheduler_cb_")
-        self._init_db()
+        # 防止 check_and_trigger 并发执行
+        self._check_lock = threading.Lock()
 
-    def __repr__(self) -> str:
-        return f"Scheduler(db_path={self.db_path!r}, running={self.running})"
+        # Initialize store
+        if store is not None:
+            self.store = store
+        else:
+            from niu_api.internal.scheduler.task_store import TaskStore
+            self.store = TaskStore(db_path)
 
-    def _init_db(self):
-        """初始化数据库"""
-        conn = sqlite3.connect(self.db_path, timeout=10.0)
-        recovered = 0
-        try:
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS scheduled_tasks (
-                    id TEXT PRIMARY KEY,
-                    content TEXT NOT NULL,
-                    scheduled_at DATETIME NOT NULL,
-                    is_recurring INTEGER DEFAULT 0,
-                    cron_expr TEXT,
-                    event_type TEXT,
-                    status TEXT DEFAULT 'pending',
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    triggered_at DATETIME,
-                    last_triggered_at DATETIME,
-                    last_executed_date TEXT
-                )
-            """)
-            conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_pending
-                ON scheduled_tasks(scheduled_at)
-                WHERE status = 'pending'
-            """)
-            # 迁移：老数据库可能没有 last_executed_date 列
-            try:
-                conn.execute("ALTER TABLE scheduled_tasks ADD COLUMN last_executed_date TEXT")
-            except sqlite3.OperationalError:
-                pass  # 列已存在
-            # 恢复崩溃遗留的 in_progress 任务为 pending
-            cursor = conn.cursor()
-            cursor.execute("""
-                UPDATE scheduled_tasks SET status = 'pending'
-                WHERE status = 'in_progress'
-            """)
-            recovered = cursor.rowcount
-            conn.commit()
-        finally:
-            conn.close()
+        # Thread pool for executing trigger callbacks (non-blocking)
+        self._executor = ThreadPoolExecutor(max_workers=3)
 
+        # Track whether delayed start has been cancelled
+        self._delayed_start_cancelled = False
+
+        # Recover orphaned in_progress tasks from crashes
+        self._recover_orphaned_tasks()
+
+    def _recover_orphaned_tasks(self):
+        """Recover orphaned in_progress tasks from crashes"""
+        recovered = self.store.recover_orphaned_tasks()
         if recovered > 0:
             logger.info(f"[SCHEDULER] Recovered {recovered} orphaned in_progress tasks")
 
     def _cleanup_old_tasks(self):
-        """清理老旧任务：删除100天前的已完成/已取消/已失败任务"""
-        from datetime import timedelta
-
-        cleanup_threshold = timedelta(days=100)
-        cutoff_date = datetime.now() - cleanup_threshold
-
-        conn = sqlite3.connect(self.db_path, timeout=10.0)
-        deleted_count = 0
-        try:
-            conn.execute("PRAGMA journal_mode=WAL")
-            cursor = conn.cursor()
-            cursor.execute("""
-                DELETE FROM scheduled_tasks
-                WHERE status IN ('completed', 'cancelled', 'failed')
-                AND datetime(created_at) < datetime(?)
-            """, (cutoff_date.isoformat(),))
-            deleted_count = cursor.rowcount
-            conn.commit()
-        finally:
-            conn.close()
-
-        if deleted_count > 0:
-            logger.info(f"[SCHEDULER] Cleaned up {deleted_count} old tasks (older than 100 days)")
+        """Delete completed/cancelled/failed tasks older than 100 days"""
+        deleted = self.store.cleanup_old_tasks(days=100)
+        if deleted > 0:
+            logger.info(f"[SCHEDULER] Cleaned up {deleted} old tasks (older than 100 days)")
 
     def start(self):
-        """启动调度器"""
+        """Start the scheduler loop in a background thread"""
         with self._lock:
             if self.running:
-                logger.info("[SCHEDULER] Already running")
                 return
             self.running = True
             self._cleanup_old_tasks()
             self.thread = threading.Thread(target=self._run_loop, daemon=True)
             self.thread.start()
-        logger.info("[SCHEDULER] Background thread started successfully")
+        logger.info("[SCHEDULER] Started (single-loop, 10s interval)")
 
     def start_delayed(self, delay_seconds: int = 10):
-        """延迟启动调度器（等待主服务就绪）"""
-        with self._lock:
-            if self.running:
-                logger.info("[SCHEDULER] Already running, skip start_delayed")
-                return
-            self._delayed_thread = threading.Thread(
-                target=self._delayed_start_inner, args=(delay_seconds,), daemon=True
-            )
-            self._delayed_thread.start()
-        logger.info(f"[SCHEDULER] Scheduled to start in {delay_seconds}s, overdue scan in 3m")
+        """Start the scheduler after a delay (wait for main service readiness)"""
+        self._delayed_start_cancelled = False
 
-    def _delayed_start_inner(self, delay_seconds: int):
-        """start_delayed 的内部逻辑"""
-        time.sleep(delay_seconds)
-        with self._lock:
-            if self.running:
-                logger.info("[SCHEDULER] Already started via start(), skipping delayed start")
-                return
-            self.running = True
-            self._cleanup_old_tasks()
-            self.thread = threading.Thread(target=self._run_loop, daemon=True)
-            self.thread.start()
-            logger.info("[SCHEDULER] Background thread started (delayed)")
-        self._handle_overdue_tasks_delayed(delay_minutes=3)
+        def _delayed_start():
+            remaining = delay_seconds
+            while remaining > 0:
+                if self._delayed_start_cancelled:
+                    logger.info("[SCHEDULER] Delayed start cancelled")
+                    return
+                chunk = min(remaining, 1)
+                time.sleep(chunk)
+                remaining -= chunk
+            with self._lock:
+                if self.running or self._delayed_start_cancelled:
+                    return
+            self.start()
+
+        threading.Thread(target=_delayed_start, daemon=True).start()
+        logger.info(f"[SCHEDULER] Delayed start scheduled ({delay_seconds}s)")
 
     def stop(self):
-        """停止调度器"""
+        """Stop the scheduler"""
         with self._lock:
             self.running = False
-        if self.thread:
+            self._delayed_start_cancelled = True
+
+        if self.thread and self.thread.is_alive():
             self.thread.join(timeout=5)
-        if self._delayed_thread:
-            self._delayed_thread.join(timeout=5)
-        if self._overdue_thread:
-            self._overdue_thread.join(timeout=5)
         self._executor.shutdown(wait=False)
-        logger.info("Scheduler stopped")
+        logger.info("[SCHEDULER] Stopped")
 
     def _run_loop(self):
-        """主循环：每10秒检查一次（快速响应 stop）"""
-        last_overdue_scan = 0  # 上次过期扫描的时间戳
-        overdue_interval = 30 * 60  # 30分钟扫描一次过期任务
-
+        """Main scheduler loop - scans for due tasks every 10 seconds"""
         while True:
             with self._lock:
                 if not self.running:
-                    break
+                    return
+
             try:
                 self.check_and_trigger()
-
-                # 周期性扫描过期任务
-                now_ts = time.time()
-                if now_ts - last_overdue_scan >= overdue_interval:
-                    last_overdue_scan = now_ts
-                    try:
-                        self._handle_overdue_tasks()
-                    except Exception as e:
-                        logger.error(f"[SCHEDULER] Periodic overdue scan error: {e}", exc_info=True)
-
             except Exception as e:
-                logger.error(f"Scheduler error: {e}", exc_info=True)
-            # 每10秒检查一次 running 标志，确保 stop() 后最多等 10 秒
-            for _ in range(6):
+                logger.error(f"[SCHEDULER] Error in check_and_trigger: {e}")
+
+            # Sleep in small chunks so stop() can interrupt quickly
+            for _ in range(10):
                 with self._lock:
                     if not self.running:
                         return
-                time.sleep(10)
+                time.sleep(1)
 
     def check_and_trigger(self):
-        """检查并触发到期任务（5分钟窗口内）"""
-        from datetime import timedelta, date
+        """Scan for due tasks and execute them sequentially with stagger intervals
 
-        now = datetime.now()
-        max_delay = timedelta(minutes=5)
-        earliest_time = now - max_delay
-        today = date.today().isoformat()
+        Queries all tasks where scheduled_at <= now (no time window limit),
+        so both on-time and overdue tasks are handled by this single path.
+        Multiple overdue tasks are executed with stagger intervals to prevent
+        simultaneous execution on startup.
 
-        # 1. 锁内：查询 + CAS 标记为 in_progress
-        with self._lock:
-            conn = sqlite3.connect(self.db_path, timeout=10.0)
-            try:
-                conn.execute("PRAGMA journal_mode=WAL")
-                cursor = conn.cursor()
-                cursor.execute("""
-                    SELECT id, content, scheduled_at, is_recurring, cron_expr, event_type
-                    FROM scheduled_tasks
-                    WHERE status = 'pending' AND scheduled_at <= ? AND scheduled_at >= ?
-                    LIMIT 100
-                """, (now.isoformat(), earliest_time.isoformat()))
-
-                tasks_to_fire = []
-                for row in cursor:
-                    task_id = row[0]
-                    # CAS: pending -> in_progress，防止其他线程重复触发
-                    if self.store.update_task(task_id, status="in_progress", expected_status="pending"):
-                        tasks_to_fire.append(row)
-            finally:
-                conn.close()
-
-        # 2. 锁外：执行回调（不持锁，不阻塞 stop/overdue）
-        for task_row in tasks_to_fire:
-            task_id, content, scheduled_at, is_recurring, cron_expr, event_type = task_row
-
-            # CAS 后重新读取最新状态（防止与 _handle_overdue_tasks 竞态）
-            fresh_task = self.store.get_task(task_id)
-            if not fresh_task or fresh_task["status"] != "in_progress":
-                continue  # 已被其他路径处理
-            scheduled_at = fresh_task["scheduled_at"]
-
-            task_dict = {
-                "id": task_id,
-                "content": content,
-                "event_type": event_type,
-                "scheduled_at": scheduled_at,
-                "is_recurring": bool(is_recurring)
-            }
-
-            agent_reply = self._call_trigger_callback(task_dict)
-            if agent_reply is None:
-                logger.error(f"Failed to trigger task {task_id}: timeout or error")
-                self.store.update_task(task_id, status="failed", expected_status="in_progress")
-                continue
-            logger.info(f"Task triggered: {task_id} - {content}, Agent replied: {agent_reply[:100]}")
-
-            if is_recurring:
-                # 检查当天是否已执行（防止崩溃恢复后重复触发）
-                last_executed = fresh_task.get("last_executed_date")
-                if last_executed == today:
-                    next_time = self._calc_next_trigger(scheduled_at, cron_expr)
-                    if next_time:
-                        self.store.update_task(task_id, scheduled_at=next_time.isoformat(), status="pending", expected_status="in_progress")
-                    else:
-                        self.store.update_task(task_id, status="failed", expected_status="in_progress")
-                    continue
-
-                self.store.update_last_executed_date(task_id, today)
-                next_time = self._calc_next_trigger(scheduled_at, cron_expr)
-                if next_time:
-                    self.store.update_task(task_id, scheduled_at=next_time.isoformat(), status="pending", expected_status="in_progress")
-                else:
-                    logger.warning(f"[SCHEDULER] Cannot calculate next trigger for {task_id}, marking failed")
-                    self.store.update_task(task_id, status="failed", expected_status="in_progress")
-            else:
-                self.store.delete_task_permanent(task_id)
-
-    def _call_trigger_callback(self, task: dict) -> Optional[str]:
-        """带超时的 trigger_callback 包装（60秒超时）"""
-        try:
-            future = self._executor.submit(self.trigger_callback, task)
-            return future.result(timeout=60)
-        except FuturesTimeoutError:
-            logger.error(f"trigger_callback timed out after 60s for task {task.get('id')}")
-            return None
-        except Exception as e:
-            logger.error(f"trigger_callback error for task {task.get('id')}: {e}")
-            return None
-
-    def _calc_next_trigger(self, scheduled_at: str, cron_expr: str) -> Optional[datetime]:
-        """计算下次触发时间"""
-        from .cron_parser import CronParser
+        Protected by _check_lock to prevent concurrent invocations from _run_loop.
+        The lock is released during stagger waits so new on-time tasks can be
+        triggered without waiting for the entire stagger queue to complete.
+        """
+        if not self._check_lock.acquire(blocking=False):
+            logger.debug("[SCHEDULER] check_and_trigger already running, skipping")
+            return
 
         try:
-            parser = CronParser(cron_expr)
-            current = datetime.fromisoformat(scheduled_at)
-            next_time = parser.get_next(current)
-            return next_time
-        except Exception as e:
-            logger.error(f"Failed to calculate next trigger: {e}")
-            return None
+            self._check_and_trigger_impl()
+        finally:
+            self._check_lock.release()
 
-    def _handle_overdue_tasks_delayed(self, delay_minutes: int = 3):
-        """延时处理过期任务（避免启动时系统太忙）"""
-        def delayed_handler():
-            time.sleep(delay_minutes * 60)
-            with self._lock:
-                if not self.running:
-                    return
-            logger.info("[SCHEDULER] Scanning for overdue tasks...")
-            try:
-                self._handle_overdue_tasks()
-            except Exception as e:
-                logger.error(f"[SCHEDULER] Failed to handle overdue tasks: {e}", exc_info=True)
+    def _check_and_trigger_impl(self):
+        """Implementation of check_and_trigger, called under _check_lock
 
-        self._overdue_thread = threading.Thread(target=delayed_handler, daemon=True)
-        self._overdue_thread.start()
-        logger.info(f"[SCHEDULER] Overdue task scan scheduled in {delay_minutes} minutes")
-
-    def _handle_overdue_tasks(self):
-        """处理所有过期的待执行任务"""
+        Releases _check_lock during stagger waits so new check_and_trigger
+        calls can process newly-arrived on-time tasks.
+        """
         from datetime import date
 
         today = date.today().isoformat()
 
-        # 1. 锁内：查询 + CAS 标记为 in_progress
-        with self._lock:
-            overdue_tasks = self.store.get_overdue_tasks()
-            if not overdue_tasks:
-                logger.info("[SCHEDULER] No overdue tasks found")
-                return
+        # 1. 查询所有到期任务（scheduled_at <= now）
+        due_tasks = self.store.get_overdue_tasks()
+        if not due_tasks:
+            return
 
-            logger.info(f"[SCHEDULER] Found {len(overdue_tasks)} overdue tasks")
+        logger.debug(f"[SCHEDULER] Found {len(due_tasks)} due tasks")
 
-            tasks_to_fire = []
-            for task in overdue_tasks:
-                task_id = task["id"]
-                # CAS: pending -> in_progress
-                if self.store.update_task(task_id, status="in_progress", expected_status="pending"):
-                    tasks_to_fire.append(task)
-
-        # 2. 锁外：执行回调
-        for task in tasks_to_fire:
+        # 2. 顺序执行，每个任务之间间隔 stagger_interval
+        for i, task in enumerate(due_tasks):
             task_id = task["id"]
             is_recurring = task["is_recurring"]
 
-            # CAS 后重新读取最新 scheduled_at（防止与 check_and_trigger 竞态导致双重触发）
+            # 间隔等待（第一个任务不等待）
+            # 释放 _check_lock 让新任务可以被触发
+            if i > 0:
+                self._check_lock.release()
+                stopped = False
+                try:
+                    logger.info(
+                        f"[SCHEDULER] Waiting {self._overdue_stagger_interval}s "
+                        f"before next due task ({i+1}/{len(due_tasks)})"
+                    )
+                    remaining = self._overdue_stagger_interval
+                    while remaining > 0:
+                        with self._lock:
+                            if not self.running:
+                                logger.info("[SCHEDULER] Stopped during stagger wait")
+                                stopped = True
+                                break
+                        chunk = min(remaining, 10)
+                        time.sleep(chunk)
+                        remaining -= chunk
+                finally:
+                    # 重新获取 _check_lock（阻塞等待，因为可能有其他调用正在执行）
+                    self._check_lock.acquire()
+                if stopped:
+                    return
+
+            # Stagger 后重新检查任务是否仍然到期（可能已被并发调用 reschedule 到未来）
+            fresh = self.store.get_task(task_id)
+            if not fresh:
+                continue
+            try:
+                if datetime.fromisoformat(fresh["scheduled_at"]) > datetime.now():
+                    continue
+            except (ValueError, TypeError):
+                pass
+
+            # CAS: pending -> in_progress
+            if not self.store.update_task(task_id, status="in_progress", expected_status="pending"):
+                continue
+
+            # CAS 后重新读取最新状态（防止竞态导致双重触发）
             fresh_task = self.store.get_task(task_id)
             if not fresh_task or fresh_task["status"] != "in_progress":
-                continue  # 已被其他路径处理
+                continue
             scheduled_at = fresh_task["scheduled_at"]
 
             if is_recurring:
@@ -362,14 +238,13 @@ class Scheduler:
                 # 检查是否已被 reschedule 到未来
                 try:
                     if datetime.fromisoformat(scheduled_at) > datetime.now():
-                        # 重新标记为 pending
                         self.store.update_task(task_id, status="pending", expected_status="in_progress")
                         continue
                 except (ValueError, TypeError):
                     pass
 
                 # 执行任务
-                logger.info(f"[SCHEDULER] Executing overdue recurring task: {task['content'][:50]}")
+                logger.info(f"[SCHEDULER] Executing recurring task ({i+1}/{len(due_tasks)}): {task['content'][:50]}")
                 result = self._call_trigger_callback(task)
                 if result is None:
                     self.store.update_task(task_id, status="failed", expected_status="in_progress")
@@ -384,9 +259,57 @@ class Scheduler:
                     self.store.update_task(task_id, status="failed", expected_status="in_progress")
             else:
                 # 一次性任务：执行后删除
-                logger.info(f"[SCHEDULER] Executing overdue one-time task: {task['content'][:50]}")
+                logger.info(f"[SCHEDULER] Executing one-time task ({i+1}/{len(due_tasks)}): {task['content'][:50]}")
                 result = self._call_trigger_callback(task)
                 if result is None:
                     self.store.update_task(task_id, status="failed", expected_status="in_progress")
                     continue
-                self.store.delete_task_permanent(task_id)
+                if not self.store.delete_task_permanent(task_id):
+                    # 删除失败时标记为 completed，防止恢复后重复执行
+                    self.store.update_task(task_id, status="completed", expected_status="in_progress")
+
+    def _call_trigger_callback(self, task: dict) -> Optional[str]:
+        """Call the trigger callback in thread pool, return result or None on failure"""
+        try:
+            future = self._executor.submit(self.trigger_callback, task)
+            result = future.result(timeout=_CALLBACK_TIMEOUT)
+            return result
+        except FuturesTimeoutError:
+            logger.error(f"[SCHEDULER] Trigger callback timed out for task {task['id']} ({_CALLBACK_TIMEOUT}s)")
+            return None
+        except Exception as e:
+            logger.error(f"[SCHEDULER] Trigger callback failed for task {task['id']}: {e}")
+            return None
+
+    @staticmethod
+    def _calc_next_trigger(scheduled_at: str, cron_expr: str) -> Optional[datetime]:
+        """Calculate the next trigger time based on cron expression"""
+        from .cron_parser import CronParser
+
+        try:
+            parser = CronParser(cron_expr)
+            base = datetime.fromisoformat(scheduled_at)
+            return parser.get_next(base)
+        except Exception as e:
+            logger.error(f"[SCHEDULER] Failed to calculate next trigger: {e}")
+            return None
+
+    # --- Convenience methods ---
+
+    def create_task(self, **kwargs) -> str:
+        return self.store.create_task(**kwargs)
+
+    def list_tasks(self) -> list:
+        return self.store.list_tasks()
+
+    def get_task(self, task_id: str) -> Optional[dict]:
+        return self.store.get_task(task_id)
+
+    def update_task(self, task_id: str, **kwargs) -> bool:
+        return self.store.update_task(task_id, **kwargs)
+
+    def cancel_task(self, task_id: str) -> bool:
+        return self.store.update_task(task_id, status="cancelled", expected_status="pending")
+
+    def delete_task(self, task_id: str) -> bool:
+        return self.store.delete_task_permanent(task_id)

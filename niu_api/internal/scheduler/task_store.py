@@ -251,7 +251,7 @@ class TaskStore:
         return affected > 0
 
     def get_overdue_tasks(self) -> List[Dict[str, Any]]:
-        """获取所有过期的待执行任务"""
+        """获取所有到期和过期的待执行任务（scheduled_at <= now）"""
         from datetime import datetime
 
         now = datetime.now().isoformat()
@@ -262,7 +262,9 @@ class TaskStore:
             cursor.execute("""
                 SELECT id, content, scheduled_at, is_recurring, cron_expr, event_type, status, last_executed_date
                 FROM scheduled_tasks
-                WHERE status = 'pending' AND datetime(scheduled_at) < datetime(?)
+                WHERE status = 'pending' AND datetime(scheduled_at) <= datetime(?)
+                ORDER BY scheduled_at
+                LIMIT 50
             """, (now,))
             rows = cursor.fetchall()
         finally:
@@ -280,3 +282,41 @@ class TaskStore:
             }
             for row in rows
         ]
+
+    def recover_orphaned_tasks(self) -> int:
+        """恢复崩溃遗留的 in_progress 任务（重置为 pending）"""
+        conn = sqlite3.connect(self.db_path, timeout=10.0)
+        recovered = 0
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE scheduled_tasks SET status = 'pending'
+                WHERE status = 'in_progress'
+            """)
+            recovered = cursor.rowcount
+            conn.commit()
+        finally:
+            conn.close()
+        return recovered
+
+    def cleanup_old_tasks(self, days: int = 100) -> int:
+        """删除超过指定天数的已完成/取消/失败任务"""
+        from datetime import datetime, timedelta
+
+        cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+        conn = sqlite3.connect(self.db_path, timeout=10.0)
+        deleted = 0
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            cursor = conn.cursor()
+            cursor.execute("""
+                DELETE FROM scheduled_tasks
+                WHERE status IN ('completed', 'cancelled', 'failed')
+                AND datetime(created_at) < datetime(?)
+            """, (cutoff,))
+            deleted = cursor.rowcount
+            conn.commit()
+        finally:
+            conn.close()
+        return deleted
