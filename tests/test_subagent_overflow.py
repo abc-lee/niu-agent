@@ -63,3 +63,283 @@ class TestSplitPromptByTokens:
         chunks = split_prompt_by_tokens(prompt, max_tokens_per_chunk=200)
         rejoined = "\n".join(chunks)
         assert rejoined == prompt
+
+
+class TestAgentLoopTokenThreshold:
+    """Test that agent_runner_loop exits at 85% token usage."""
+
+    def test_overflow_returns_structured_report(self, monkeypatch):
+        """When token usage exceeds 85%, agent_runner_loop should return CONTEXT_OVERFLOW."""
+        from agent.generic.agent_loop import agent_runner_loop
+        from agent.generic.llmcore import MockResponse
+
+        class MockClient:
+            name = "mock"
+            last_tools = ""
+            total_cd_tokens = 0
+            _call_count = 0
+
+            def chat(self, messages, tools=None):
+                self._call_count += 1
+                resp = MockResponse(
+                    thinking=None,
+                    content="work result",
+                    tool_calls=None,
+                    raw=None,
+                )
+                def gen():
+                    yield resp
+                    return resp
+                return gen()
+
+        class MockHandler:
+            _done_hooks = []
+            max_turns = 40
+            current_turn = 0
+
+            def dispatch(self, tool_name, args, response, index=0):
+                from agent.generic.agent_loop import StepOutcome
+                def gen():
+                    yield ""
+                    return StepOutcome(None, next_prompt="continue", should_exit=False)
+                return gen()
+
+            def next_prompt_patcher(self, next_prompt, outcome, turn):
+                return next_prompt
+
+        client = MockClient()
+        handler = MockHandler()
+
+        # Use a very small context window to force overflow quickly
+        gen = agent_runner_loop(
+            client=client,
+            system_prompt="system",
+            user_input="x" * 10000,  # Large input
+            handler=handler,
+            tools_schema=[],
+            max_turns=40,
+            verbose=False,
+            context_window_tokens=100,  # Very small → immediate overflow
+        )
+
+        result_text = ""
+        return_value = None
+        while True:
+            try:
+                chunk = next(gen)
+                if isinstance(chunk, str):
+                    result_text += chunk
+            except StopIteration as e:
+                return_value = e.value
+                break
+
+        assert return_value is not None
+        assert isinstance(return_value, dict)
+        assert return_value.get("result") == "CONTEXT_OVERFLOW"
+        assert return_value["data"]["overflow"] is True
+        assert return_value["data"]["tokens_limit"] == 100
+
+    def test_no_overflow_with_large_window(self, monkeypatch):
+        """When context window is large enough, no overflow should occur."""
+        from agent.generic.agent_loop import agent_runner_loop
+        from agent.generic.llmcore import MockResponse
+
+        class MockClient:
+            name = "mock"
+            last_tools = ""
+            total_cd_tokens = 0
+
+            def chat(self, messages, tools=None):
+                resp = MockResponse(
+                    thinking=None,
+                    content="Done",
+                    tool_calls=None,
+                    raw=None,
+                )
+                def gen():
+                    yield resp
+                    return resp
+                return gen()
+
+        class MockHandler:
+            _done_hooks = []
+            max_turns = 40
+            current_turn = 0
+
+            def dispatch(self, tool_name, args, response, index=0):
+                from agent.generic.agent_loop import StepOutcome
+                def gen():
+                    yield ""
+                    return StepOutcome(None, next_prompt="continue", should_exit=False)
+                return gen()
+
+            def next_prompt_patcher(self, next_prompt, outcome, turn):
+                return next_prompt
+
+        client = MockClient()
+        handler = MockHandler()
+
+        gen = agent_runner_loop(
+            client=client,
+            system_prompt="system",
+            user_input="small task",
+            handler=handler,
+            tools_schema=[],
+            max_turns=40,
+            verbose=False,
+            context_window_tokens=200000,  # Large → no overflow
+        )
+
+        result_text = ""
+        return_value = None
+        while True:
+            try:
+                chunk = next(gen)
+                if isinstance(chunk, str):
+                    result_text += chunk
+            except StopIteration as e:
+                return_value = e.value
+                break
+
+        # Should NOT be overflow
+        if isinstance(return_value, dict):
+            assert return_value.get("result") != "CONTEXT_OVERFLOW"
+
+    def test_zero_context_window_disables_check(self, monkeypatch):
+        """When context_window_tokens=0, no overflow check should occur."""
+        from agent.generic.agent_loop import agent_runner_loop
+        from agent.generic.llmcore import MockResponse
+
+        class MockClient:
+            name = "mock"
+            last_tools = ""
+            total_cd_tokens = 0
+
+            def chat(self, messages, tools=None):
+                resp = MockResponse(
+                    thinking=None,
+                    content="Done",
+                    tool_calls=None,
+                    raw=None,
+                )
+                def gen():
+                    yield resp
+                    return resp
+                return gen()
+
+        class MockHandler:
+            _done_hooks = []
+            max_turns = 40
+            current_turn = 0
+
+            def dispatch(self, tool_name, args, response, index=0):
+                from agent.generic.agent_loop import StepOutcome
+                def gen():
+                    yield ""
+                    return StepOutcome(None, next_prompt="continue", should_exit=False)
+                return gen()
+
+            def next_prompt_patcher(self, next_prompt, outcome, turn):
+                return next_prompt
+
+        client = MockClient()
+        handler = MockHandler()
+
+        gen = agent_runner_loop(
+            client=client,
+            system_prompt="system",
+            user_input="x" * 10000,
+            handler=handler,
+            tools_schema=[],
+            max_turns=40,
+            verbose=False,
+            context_window_tokens=0,  # Disabled
+        )
+
+        result_text = ""
+        return_value = None
+        while True:
+            try:
+                chunk = next(gen)
+                if isinstance(chunk, str):
+                    result_text += chunk
+            except StopIteration as e:
+                return_value = e.value
+                break
+
+        # Should NOT be overflow even with large input
+        if isinstance(return_value, dict):
+            assert return_value.get("result") != "CONTEXT_OVERFLOW"
+
+
+class TestOverflowResultPropagation:
+    """Test that call_subagent properly handles CONTEXT_OVERFLOW from agent_runner_loop."""
+
+    def test_overflow_result_includes_progress(self, monkeypatch):
+        from agent import subagent
+
+        def mock_run_agent_loop(agent_name, client, system_prompt, user_input, handler, tools_schema, max_turns=20, initial_user_content=None, context_window_tokens=0):
+            return (
+                "partial work done",
+                {
+                    "result": "CONTEXT_OVERFLOW",
+                    "data": {
+                        "overflow": True,
+                        "turns_completed": 5,
+                        "tokens_used": 170000,
+                        "tokens_limit": 200000,
+                    },
+                },
+            )
+
+        monkeypatch.setattr(subagent, "_run_agent_loop", mock_run_agent_loop)
+        monkeypatch.setattr(subagent, "get_subagent_prompt", lambda name: "system")
+        monkeypatch.setattr(subagent, "get_subagent_config", lambda name: {})
+        monkeypatch.setattr(subagent, "get_subagent_mcp_tools_schema", lambda name: [])
+
+        # Patch the lazy imports inside call_subagent
+        import agent.runner as runner_mod
+        monkeypatch.setattr(runner_mod, "create_client", lambda cfg: None)
+        monkeypatch.setattr(runner_mod, "get_tools_schema", lambda: [])
+
+        result = subagent.call_subagent(
+            agent_name="test-agent",
+            task="task that overflows",
+            llm_config={"apikey": "test", "apibase": "http://test", "model": "test"},
+        )
+
+        assert "overflow" in result.lower()
+        assert "170000" in result or "turns_completed" in result
+
+
+class TestSubagentContextWindowConfig:
+    """Test that sub-agent receives context_window_tokens from preferences."""
+
+    def test_context_window_tokens_passed_to_loop(self, monkeypatch):
+        from agent import subagent
+
+        captured_kwargs = {}
+
+        def mock_run(agent_name, client, system_prompt, user_input, handler, tools_schema, max_turns=20, initial_user_content=None, context_window_tokens=0):
+            captured_kwargs["context_window_tokens"] = context_window_tokens
+            return ("done", {"result": "CURRENT_TASK_DONE", "data": "ok"})
+
+        monkeypatch.setattr(subagent, "_run_agent_loop", mock_run)
+        monkeypatch.setattr(subagent, "get_subagent_prompt", lambda name: "system")
+        monkeypatch.setattr(subagent, "get_subagent_config", lambda name: {})
+        monkeypatch.setattr(subagent, "get_subagent_mcp_tools_schema", lambda name: [])
+
+        # Patch the lazy imports inside call_subagent
+        import agent.runner as runner_mod
+        monkeypatch.setattr(runner_mod, "create_client", lambda cfg: None)
+        monkeypatch.setattr(runner_mod, "get_tools_schema", lambda: [])
+
+        monkeypatch.setattr(subagent, "_read_context_window_tokens", lambda: 128000)
+
+        result = subagent.call_subagent(
+            agent_name="test-agent",
+            task="test",
+            llm_config={"apikey": "test", "apibase": "http://test", "model": "test"},
+        )
+
+        assert captured_kwargs.get("context_window_tokens") == 128000
