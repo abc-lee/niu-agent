@@ -345,6 +345,62 @@ class TestSubagentContextWindowConfig:
         assert captured_kwargs.get("context_window_tokens") == 128000
 
 
+class TestExtractResultFromReturnValue:
+    """Test _extract_result_from_return_value handles control flow dicts correctly."""
+
+    def test_control_flow_context_overflow_returns_none(self):
+        from agent.subagent import _extract_result_from_return_value
+        result = _extract_result_from_return_value({
+            "result": "CONTEXT_OVERFLOW",
+            "data": {"overflow": True, "turns_completed": 5},
+        })
+        assert result is None
+
+    def test_control_flow_exited_returns_none(self):
+        from agent.subagent import _extract_result_from_return_value
+        result = _extract_result_from_return_value({
+            "result": "EXITED",
+            "data": None,
+        })
+        assert result is None
+
+    def test_control_flow_max_turns_returns_none(self):
+        from agent.subagent import _extract_result_from_return_value
+        result = _extract_result_from_return_value({
+            "result": "MAX_TURNS_EXCEEDED",
+            "data": None,
+        })
+        assert result is None
+
+    def test_control_flow_current_task_done_returns_none(self):
+        from agent.subagent import _extract_result_from_return_value
+        result = _extract_result_from_return_value({
+            "result": "CURRENT_TASK_DONE",
+            "data": "task completed",
+        })
+        assert result is None
+
+    def test_data_dict_returns_json(self):
+        from agent.subagent import _extract_result_from_return_value
+        result = _extract_result_from_return_value({
+            "data": {"key": "value", "count": 42},
+        })
+        assert result is not None
+        import json
+        parsed = json.loads(result)
+        assert parsed["key"] == "value"
+        assert parsed["count"] == 42
+
+    def test_none_return_value_returns_none(self):
+        from agent.subagent import _extract_result_from_return_value
+        assert _extract_result_from_return_value(None) is None
+
+    def test_non_dict_return_value_returns_none(self):
+        from agent.subagent import _extract_result_from_return_value
+        assert _extract_result_from_return_value("just a string") is None
+        assert _extract_result_from_return_value(42) is None
+
+
 class TestCompatOverflowHandling:
     """Test that compat.py handles sub-agent overflow results."""
 

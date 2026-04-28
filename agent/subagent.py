@@ -171,6 +171,9 @@ def _extract_result_from_return_value(return_value: Any) -> Optional[str]:
     """
     从 agent_runner_loop 的 return 值中提取结构化结果文本
 
+    控制流 dict（如 CONTEXT_OVERFLOW, EXITED, MAX_TURNS_EXCEEDED, CURRENT_TASK_DONE）
+    不应被序列化为结果文本，应返回 None 让调用者回退到 result_text。
+
     Args:
         return_value: agent_runner_loop 的 StopIteration.value
 
@@ -178,6 +181,11 @@ def _extract_result_from_return_value(return_value: Any) -> Optional[str]:
         提取的结果字符串，如果无法提取则返回 None
     """
     if return_value and isinstance(return_value, dict):
+        # 控制流 dict 不应被序列化为结果 — 返回 None
+        control_flow_results = {"CONTEXT_OVERFLOW", "EXITED", "MAX_TURNS_EXCEEDED", "CURRENT_TASK_DONE"}
+        if return_value.get("result") in control_flow_results:
+            return None
+
         if "data" in return_value and return_value["data"] is not None:
             data = return_value["data"]
             if isinstance(data, dict):

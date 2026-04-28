@@ -622,6 +622,14 @@ async def tidy_context(request: dict):
                 else:
                     new_compress_id = msg_ids[-1] if msg_ids else last_compress_id
                     logger.warning(f"[Tidy] Compress cursor advanced to latest message to prevent re-processing: {new_compress_id}")
+                # 溢出时也写入游标（推进到已处理位置）
+                if new_compress_id:
+                    compress_cursor_path.parent.mkdir(parents=True, exist_ok=True)
+                    compress_cursor_path.write_text(json.dumps({
+                        "last_compress_id": new_compress_id,
+                        "last_compress_at": datetime.now().isoformat(),
+                    }, ensure_ascii=False, indent=2), encoding="utf-8")
+                    logger.info(f"[Tidy] Compress cursor updated on overflow: last_compress_id={new_compress_id}")
             else:
                 # 提取并写入 compress 游标（UUID）
                 match = re.search(r'\{"last_compress_id"\s*:\s*"([^"]+)"\}', result, re.DOTALL)
@@ -754,6 +762,15 @@ async def tidy_context(request: dict):
                 new_compress_id = match.group(1) if match else last_compress_id
                 if not match:
                     logger.warning("[Tidy] Force: Compress cursor UUID regex not matched, preserving old cursor")
+
+            # 写入 compress 游标（无论正常还是溢出都需要写入）
+            if new_compress_id:
+                compress_cursor_path.parent.mkdir(parents=True, exist_ok=True)
+                compress_cursor_path.write_text(json.dumps({
+                    "last_compress_id": new_compress_id,
+                    "last_compress_at": datetime.now().isoformat(),
+                }, ensure_ascii=False, indent=2), encoding="utf-8")
+                logger.info(f"[Tidy] Force: Compress cursor updated: last_compress_id={new_compress_id}")
 
             return {"status": "ok", "mode": "force", "tokens_before": estimated_tokens}
 
