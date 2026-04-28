@@ -89,9 +89,9 @@ config/user-config*.json
 /data/mcp_tools.json
 
 # Tool-generated directories (not project code)
-.claude/
-.plans/
-.playwright-mcp/
+/.claude/
+/.plans/
+/.playwright-mcp/
 memory/skills/
 
 # Temporary data files
