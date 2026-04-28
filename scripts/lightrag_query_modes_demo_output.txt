@@ -1,0 +1,339 @@
+Output also being written to: scripts\lightrag_query_modes_demo_output.txt
+Query: '便签' | top_k: 20
+Project root: E:\tools\ai-bot
+
+--- Initializing LightRAG ---
+LightRAG initialized successfully
+  Working dir: REDACTED_USER_HOME\.niu\lightrag_storage
+
+--- Knowledge Graph Status ---
+  Processing status: {"pending": 0, "processing": 0, "preprocessed": 0, "processed": 12, "failed": 7}
+  Graph labels: ["09:23:16", "20090603 092316", "20090603_092316", "20090603_092316_1", "20090603_092316_2", "20090603_092316_3", "2009:06:03", "2009:06:03 09:23:16", "2009年6月3日", "25个业务场景", "AI-Bot", "REDACTED_WIN_PATH/2026/其他/plan-lightrag-integration.md", "E:\\tmp\\bot\\2026\\04\\2026-04-25\\20090603_092316.jpg", "E:\\tmp\\bot\\2026\\04\\2026-04-26\\20090603_092316_2.jpg", "Group Photo", "Hybrid检索", "JPG", "June 3 2009", "June 3, 2009", "KG", "KuzuDB", "KuzuDB知识图谱", "LightRAG", "LightRAG融合方案", "NiuRunner", "Photo File", "Ren Fei", "SQLite", "SQLite向量库", "The Photograph", "Unnamed Person 1", "brain:Niu", "brain:event:photo_import_naming_flow_success", "brain:region:REDACTED_WIN_PATH/2026/其他/plan-lightrag-integration.md", "brain:region:KG", "brain:region:LightRAG", "brain:region:Unnamed Person 1", "brain:region:brain:Niu", "brain:region:brain:event:photo_import_naming_flow_success", "brain:region:hybrid检索", "brain:region:note:1776579246758", "brain:region:person:eb34c17c-cb45-4353-8b66-0aee110ad59f", "brain:region:plan-lightrag-integration", "brain:region:skill:browser-automation", "brain:region:skill:note-management", "brain:region:skill:office-docs", "brain:region:skill:photo-face-display", "brain:region:tool:browser-server/browser_close_tab", "brain:region:tool:browser-server/browser_interact", "brain:region:tool:browser-server/browser_navigate", "brain:region:tool:browser-server/browser_new_tab", "brain:region:tool:browser-server/browser_switch_tab", "brain:region:tool:config-manager/add_user_preference", "brain:region:tool:config-manager/complete_setup", "brain:region:tool:config-manager/copy_to_path", "brain:region:tool:config-manager/get_full_memory", "brain:region:tool:config-manager/get_identity", "brain:region:tool:config-manager/get_llm_config", "brain:region:tool:config-manager/get_storage_config", "brain:region:tool:config-manager/get_user_info", "brain:region:tool:config-manager/get_workspace", "brain:region:tool:config-manager/is_first_run", "brain:region:tool:config-manager/list_files_in_workspace", "brain:region:tool:config-manager/list_llm_presets", "brain:region:tool:config-manager/mkdir", "brain:region:tool:config-manager/move_to_path", "brain:region:tool:config-manager/set_llm_config", "brain:region:tool:config-manager/set_storage_config", "brain:region:tool:config-manager/set_user_info", "brain:region:tool:config-manager/set_workspace", "brain:region:tool:config-manager/test_llm_connection", "brain:region:tool:config-manager/update_identity", "brain:region:tool:file-parser/list_supported_formats", "brain:region:tool:file-parser/parse_file", "brain:region:tool:lightrag-server/lightrag_delete_entity", "brain:region:tool:lightrag-server/lightrag_document_status", "brain:region:tool:lightrag-server/lightrag_get_graph", "brain:region:tool:lightrag-server/lightrag_insert", "brain:region:tool:lightrag-server/lightrag_insert_custom_kg", "brain:region:tool:lightrag-server/lightrag_insert_entity", "brain:region:tool:lightrag-server/lightrag_insert_relation", "brain:region:tool:lightrag-server/lightrag_list_entities", "brain:region:tool:lightrag-server/lightrag_merge_entities", "brain:region:tool:lightrag-server/lightrag_query", "brain:region:tool:lightrag-server/lightrag_query_data", "brain:region:tool:lightrag-server/lightrag_search_entities", "brain:region:tool:memory-server/cleanup_memories", "brain:region:tool:memory-server/get_memory_stats", "brain:region:tool:memory-server/link_memories", "brain:region:tool:memory-server/recall", "brain:region:tool:memory-server/remember", "brain:region:tool:memory-server/update_memory", "brain:region:tool:memory-server/user_memory_forget", "brain:region:tool:memory-server/user_memory_list", "brain:region:tool:memory-server/user_memory_remember", "brain:region:tool:photo-server/cleanup_deleted_photos", "brain:region:tool:photo-server/delete_person", "brain:region:tool:photo-server/get_person_photos", "brain:region:tool:photo-server/get_unnamed_persons", "brain:region:tool:photo-server/ingest", "brain:region:tool:photo-server/merge_persons", "brain:region:tool:photo-server/name_person", "brain:region:tool:photo-server/search_persons", "brain:region:tool:photo-server/unload_face_model", "brain:region:tool:scheduler-server/cancel_task", "brain:region:tool:scheduler-server/list_scheduled_tasks", "brain:region:tool:scheduler-server/schedule_task", "brain:region:tool:scheduler-server/update_task", "brain:region:tool:session-manager/add_message", "brain:region:tool:session-manager/delete_messages", "brain:region:tool:session-manager/get_messages", "brain:region:tool:session-manager/update_message", "brain:region:向量化", "brain:region:技术架构设计", "brain:region:替代升级", "hybrid检索", "note:1776579246758", "person:eb34c17c-cb45-4353-8b66-0aee110ad59f", "plan-lightrag-integration", "skill:browser-automation", "skill:note-management", "skill:office-docs", "skill:photo-face-display", "tool:browser-server/browser_close_tab", "tool:browser-server/browser_interact", "tool:browser-server/browser_navigate", "tool:browser-server/browser_new_tab", "tool:browser-server/browser_switch_tab", "tool:config-manager/add_user_preference", "tool:config-manager/complete_setup", "tool:config-manager/copy_to_path", "tool:config-manager/get_full_memory", "tool:config-manager/get_identity", "tool:config-manager/get_llm_config", "tool:config-manager/get_storage_config", "tool:config-manager/get_user_info", "tool:config-manager/get_workspace", "tool:config-manager/is_first_run", "tool:config-manager/list_files_in_workspace", "tool:config-manager/list_llm_presets", "tool:config-manager/mkdir", "tool:config-manager/move_to_path", "tool:config-manager/set_llm_config", "tool:config-manager/set_storage_config", "tool:config-manager/set_user_info", "tool:config-manager/set_workspace", "tool:config-manager/test_llm_connection", "tool:config-manager/update_identity", "tool:file-parser/list_supported_formats", "tool:file-parser/parse_file", "tool:lightrag-server/lightrag_delete_document", "tool:lightrag-server/lightrag_delete_entity", "tool:lightrag-server/lightrag_document_status", "tool:lightrag-server/lightrag_get_document", "tool:lightrag-server/lightrag_get_graph", "tool:lightrag-server/lightrag_insert", "tool:lightrag-server/lightrag_insert_custom_kg", "tool:lightrag-server/lightrag_insert_entity", "tool:lightrag-server/lightrag_insert_relation", "tool:lightrag-server/lightrag_list_entities", "tool:lightrag-server/lightrag_merge_entities", "tool:lightrag-server/lightrag_query", "tool:lightrag-server/lightrag_query_data", "tool:lightrag-server/lightrag_search_entities", "tool:memory-server/cleanup_memories", "tool:memory-server/get_memory_stats", "tool:memory-server/link_memories", "tool:memory-server/recall", "tool:memory-server/remember", "tool:memory-server/update_memory", "tool:memory-server/user_memory_forget", "tool:memory-server/user_memory_list", "tool:memory-server/user_memory_remember", "tool:photo-server/cleanup_deleted_photos", "tool:photo-server/delete_person", "tool:photo-server/get_person_photos", "tool:photo-server/get_unnamed_persons", "tool:photo-server/ingest", "tool:photo-server/merge_persons", "tool:photo-server/name_person", "tool:photo-server/search_persons", "tool:photo-server/unload_face_model", "tool:scheduler-server/cancel_task", "tool:scheduler-server/list_scheduled_tasks", "tool:scheduler-server/schedule_task", "tool:scheduler-server/update_task", "tool:session-manager/add_message", "tool:session-manager/delete_messages", "tool:session-manager/get_messages", "tool:session-manager/update_message", "任飞", "任飞合影", "向量化", "向量库", "技术方案", "技术架构设计", "替代升级", "未命名人物_1", "照片入库流程", "知识图谱", "迁移策略"]
+
+--- Querying all 6 modes with: '便签' ---
+
+================================================================================
+  MODE: local | Query: '便签'
+================================================================================
+  EXCEPTION: RetryError: RetryError[<Future at 0x22a0362ead0 state=finished raised APIConnectionError>]
+  Elapsed time: 33.80s
+  Result: None (LightRAG not available or error)
+
+================================================================================
+  MODE: global | Query: '便签'
+================================================================================
+  EXCEPTION: RetryError: RetryError[<Future at 0x22a0354c830 state=finished raised APIConnectionError>]
+  Elapsed time: 33.64s
+  Result: None (LightRAG not available or error)
+
+================================================================================
+  MODE: hybrid | Query: '便签'
+================================================================================
+  EXCEPTION: RetryError: RetryError[<Future at 0x22a03bcc950 state=finished raised APIConnectionError>]
+  Elapsed time: 33.54s
+  Result: None (LightRAG not available or error)
+
+================================================================================
+  MODE: naive | Query: '便签'
+================================================================================
+  Elapsed time: 7.29s
+
+  [Full JSON Structure]
+  (JSON too long: 8542 chars, showing first 5000)
+{
+  "status": "success",
+  "message": "Query processed successfully",
+  "data": {
+    "entities": [],
+    "relationships": [],
+    "chunks": [
+      {
+        "reference_id": "2",
+        "content": "user_memory_forget: 删除用户长期记忆或工作便签。按序号(index)或关键词(keyword)匹配删除。task和memory类型均可删除。",
+        "file_path": "mcp://memory-server/user_memory_forget",
+        "chunk_id": "chunk-1073a50dc29e8c4577b3a1054af402f7"
+      },
+      {
+        "reference_id": "1",
+        "content": "note-management: Use when user asks to create, read, update, or delete sticky notes, or when user mentions notes, 便签, or reminders",
+        "file_path": "skill://note-management",
+        "chunk_id": "chunk-4aebeed9675e86906ea01eb9bec486d4"
+      },
+      {
+        "reference_id": "1",
+        "content": "Use when user asks to create, read, update, or delete sticky notes, or when user mentions notes, 便签, or reminders",
+        "file_path": "skill://note-management",
+        "chunk_id": "chunk-9356265961c5cae386a4199a0e94f923"
+      },
+      {
+        "reference_id": "3",
+        "content": "user_memory_remember: 添加用户长期记忆或工作便签。type='task'为当前工作便签(最多1条,新任务自动覆盖旧任务,用于保存复杂任务的进度/关键参数/下一步); type='memory'为用户长期记忆(最多4条,仅在用户明确要求记住时添加)。记忆永久驻留系统提示词,异常退出后下次继续。",
+        "file_path": "mcp://memory-server/user_memory_remember",
+        "chunk_id": "chunk-93c055b0707a5d1a60ef537cac802785"
+      },
+      {
+        "reference_id": "4",
+        "content": "browser_close_tab: 关闭指定标签页。不能关闭初始标签页。关闭后自动切换到最后一个剩余标签页。",
+        "file_path": "mcp://browser-server/browser_close_tab",
+        "chunk_id": "chunk-0f87c5edb6a7cbf6928aa96b8d68b419"
+      },
+      {
+        "reference_id": "5",
+        "content": "browser_switch_tab: 切换到指定标签页。当需要操作非当前标签页时使用。tabId 来自之前响应中的 tabSummary 表格。",
+        "file_path": "mcp://browser-server/browser_switch_tab",
+        "chunk_id": "chunk-7f7b86273ca9896489afce6750b142db"
+      },
+      {
+        "reference_id": "6",
+        "content": "list_files_in_workspace: List all files in the workspace documents directory.",
+        "file_path": "mcp://config-manager/list_files_in_workspace",
+        "chunk_id": "chunk-73c3bb9779da8404aed74bc8aeb7691c"
+      },
+      {
+        "reference_id": "7",
+        "content": "parse_file: Parse a document file (PDF, Word, PPT, Excel, Markdown, HTML, Text) and extract text content.",
+        "file_path": "mcp://file-parser/parse_file",
+        "chunk_id": "chunk-8cee87e0b16b31d540308658290f85ab"
+      },
+      {
+        "reference_id": "8",
+        "content": "list_supported_formats: List all supported file formats for parsing.",
+        "file_path": "mcp://file-parser/list_supported_formats",
+        "chunk_id": "chunk-e945a72fe1bfc6609bad1e4c647cce08"
+      },
+      {
+        "reference_id": "9",
+        "content": "set_workspace: Set workspace path. This is where all documents and knowledge will be stored.",
+        "file_path": "mcp://config-manager/set_workspace",
+        "chunk_id": "chunk-44522e7d8f9e96d790eff68c50f05da2"
+      },
+      {
+        "reference_id": "10",
+        "content": "browser_navigate: 启动浏览器并导航到 URL，自动返回页面结构化状态和标签页列表。LLM 根据返回的元素编号决策下一步操作，根据 tabSummary 管理多个标签页。**使用场景**：用户要求'打开网页'、'访问网站'、'浏览页面'时使用。**返回**：url、title、elements（编号的交互元素）、tabSummary（标签页列表）、currentTabId。",
+        "file_path": "mcp://browser-server/browser_navigate",
+        "chunk_id": "chunk-bbd07f03333129a5d858c8c4e73e7efe"
+      },
+      {
+        "reference_id": "11",
+        "content": "get_workspace: Get workspace path where documents and database are stored.",
+        "file_path": "mcp://config-manager/get_workspace",
+        "chunk_id": "chunk-61f6e940300c858a13c3c762f390d0fc"
+      },
+      {
+        "reference_id": "12",
+        "content": "lightrag_list_entities: List entities or documents in the knowledge base. list_type='entities' lists graph entities; 'documents' lists indexed documents; 'labels' lists all entity type labels.",
+        "file_path": "mcp://lightrag-server/lightrag_list_entities",
+        "chunk_id": "chunk-2d234cb751bf9cbbbd35b12c4cba49e0"
+      },
+      {
+        "reference_id": "13",
+        "content": "browser_new_tab: Open URL in a new browser tab. Use for browsing multiple pages simultaneously or comparing different websites. URL parameter is required - cannot open blank tab.",
+        "file_path": "mcp://browser-server/browser_new_tab",
+        "chunk_id": "chunk-c0e371465cdb41a5105b5e25b74122ce"
+      },
+      {
+        "reference_id": "14",
+        "content": "Use when user asks to browse websites, fill web forms, click buttons, automate browser tasks, or interact with web pages",
+        "file_path": "skill://browser-automation",
+        "chunk_id": "chunk-1006546001eb1e280a600165217c533b"
+      },
+      {
+        "reference_id": "15",
+        "content": "lightrag_delete_document: 级联删除文档及其关联的 chunks、entities、relationships。对应旧 vector-store/delete_document，但执行完整级联删除而非仅删实体。",
+        "file_path": "mcp://lightrag-server/lightrag_delete_document",
+        "chunk_id": "chunk-de83e92559dcbb9a0
+  ... (truncated)
+
+  [Top-Level Summary]
+    status:    success
+    message:   Query processed successfully
+    metadata keys: ['keywords', 'processing_info', 'query_mode']
+      query_mode: naive
+      high_level_keywords: []
+      low_level_keywords:  []
+      processing_info: {"total_chunks_found": 20, "final_chunks_count": 20}
+
+  [Entities] count: 0
+
+  [Relationships] count: 0
+
+  [Chunks] count: 20
+    [0] chunk_id:    chunk-1073a50dc29e8c4577b3a1054af402f7
+        file_path:   mcp://memory-server/user_memory_forget
+        reference_id: 2
+        content (first 200 chars): user_memory_forget: 删除用户长期记忆或工作便签。按序号(index)或关键词(keyword)匹配删除。task和memory类型均可删除。
+    [1] chunk_id:    chunk-4aebeed9675e86906ea01eb9bec486d4
+        file_path:   skill://note-management
+        reference_id: 1
+        content (first 200 chars): note-management: Use when user asks to create, read, update, or delete sticky notes, or when user mentions notes, 便签, or reminders
+    [2] chunk_id:    chunk-9356265961c5cae386a4199a0e94f923
+        file_path:   skill://note-management
+        reference_id: 1
+        content (first 200 chars): Use when user asks to create, read, update, or delete sticky notes, or when user mentions notes, 便签, or reminders
+    [3] chunk_id:    chunk-93c055b0707a5d1a60ef537cac802785
+        file_path:   mcp://memory-server/user_memory_remember
+        reference_id: 3
+        content (first 200 chars): user_memory_remember: 添加用户长期记忆或工作便签。type='task'为当前工作便签(最多1条,新任务自动覆盖旧任务,用于保存复杂任务的进度/关键参数/下一步); type='memory'为用户长期记忆(最多4条,仅在用户明确要求记住时添加)。记忆永久驻留系统提示词,异常退出后下次继续。
+    [4] chunk_id:    chunk-0f87c5edb6a7cbf6928aa96b8d68b419
+        file_path:   mcp://browser-server/browser_close_tab
+        reference_id: 4
+        content (first 200 chars): browser_close_tab: 关闭指定标签页。不能关闭初始标签页。关闭后自动切换到最后一个剩余标签页。
+    [5] chunk_id:    chunk-7f7b86273ca9896489afce6750b142db
+        file_path:   mcp://browser-server/browser_switch_tab
+        reference_id: 5
+        content (first 200 chars): browser_switch_tab: 切换到指定标签页。当需要操作非当前标签页时使用。tabId 来自之前响应中的 tabSummary 表格。
+    [6] chunk_id:    chunk-73c3bb9779da8404aed74bc8aeb7691c
+        file_path:   mcp://config-manager/list_files_in_workspace
+        reference_id: 6
+        content (first 200 chars): list_files_in_workspace: List all files in the workspace documents directory.
+    [7] chunk_id:    chunk-8cee87e0b16b31d540308658290f85ab
+        file_path:   mcp://file-parser/parse_file
+        reference_id: 7
+        content (first 200 chars): parse_file: Parse a document file (PDF, Word, PPT, Excel, Markdown, HTML, Text) and extract text content.
+    [8] chunk_id:    chunk-e945a72fe1bfc6609bad1e4c647cce08
+        file_path:   mcp://file-parser/list_supported_formats
+        reference_id: 8
+        content (first 200 chars): list_supported_formats: List all supported file formats for parsing.
+    [9] chunk_id:    chunk-44522e7d8f9e96d790eff68c50f05da2
+        file_path:   mcp://config-manager/set_workspace
+        reference_id: 9
+        content (first 200 chars): set_workspace: Set workspace path. This is where all documents and knowledge will be stored.
+    [10] chunk_id:    chunk-bbd07f03333129a5d858c8c4e73e7efe
+        file_path:   mcp://browser-server/browser_navigate
+        reference_id: 10
+        content (first 200 chars): browser_navigate: 启动浏览器并导航到 URL，自动返回页面结构化状态和标签页列表。LLM 根据返回的元素编号决策下一步操作，根据 tabSummary 管理多个标签页。**使用场景**：用户要求'打开网页'、'访问网站'、'浏览页面'时使用。**返回**：url、title、elements（编号的交互元素）、tabSummary（标签页列表）、currentTabId。
+    [11] chunk_id:    chunk-61f6e940300c858a13c3c762f390d0fc
+        file_path:   mcp://config-manager/get_workspace
+        reference_id: 11
+        content (first 200 chars): get_workspace: Get workspace path where documents and database are stored.
+    [12] chunk_id:    chunk-2d234cb751bf9cbbbd35b12c4cba49e0
+        file_path:   mcp://lightrag-server/lightrag_list_entities
+        reference_id: 12
+        content (first 200 chars): lightrag_list_entities: List entities or documents in the knowledge base. list_type='entities' lists graph entities; 'documents' lists indexed documents; 'labels' lists all entity type labels.
+    [13] chunk_id:    chunk-c0e371465cdb41a5105b5e25b74122ce
+        file_path:   mcp://browser-server/browser_new_tab
+        reference_id: 13
+        content (first 200 chars): browser_new_tab: Open URL in a new browser tab. Use for browsing multiple pages simultaneously or comparing different websites. URL parameter is required - cannot open blank tab.
+    [14] chunk_id:    chunk-1006546001eb1e280a600165217c533b
+        file_path:   skill://browser-automation
+        reference_id: 14
+        content (first 200 chars): Use when user asks to browse websites, fill web forms, click buttons, automate browser tasks, or interact with web pages
+    [15] chunk_id:    chunk-de83e92559dcbb9a011c75a8ff49164c
+        file_path:   mcp://lightrag-server/lightrag_delete_document
+        reference_id: 15
+        content (first 200 chars): lightrag_delete_document: 级联删除文档及其关联的 chunks、entities、relationships。对应旧 vector-store/delete_document，但执行完整级联删除而非仅删实体。
+    [16] chunk_id:    chunk-be9021d05d87da1c0f2b8a5be2b3b922
+        file_path:   mcp://config-manager/copy_to_path
+        reference_id: 16
+        content (first 200 chars): copy_to_path: Copy a file to a specific destination path. Use this to organize files by year/category. Example: copy_to_path('C:/file.pdf', 'E:/workspace/documents/2025/file.pdf')
+    [17] chunk_id:    chunk-8e408bc75c9b6f8ad013dbbaeb18cba6
+        file_path:   mcp://lightrag-server/lightrag_delete_entity
+        reference_id: 17
+        content (first 200 chars): lightrag_delete_entity: Delete an entity and all its relations from the knowledge graph.
+    [18] chunk_id:    chunk-3c1b35a5635dfdb1d57ab4ec6900680a
+        file_path:   mcp://lightrag-server/lightrag_document_status
+        reference_id: 18
+        content (first 200 chars): lightrag_document_status: Get document processing status counts (pending, processing, processed, failed).
+    [19] chunk_id:    chunk-f69e3a7033aecd823148573a7981c72c
+        file_path:   skill://office-docs
+        reference_id: 19
+        content (first 200 chars): Use when user asks to create or edit Word documents, Excel spreadsheets, or PowerPoint presentations
+
+  [References] count: 19
+    [0] reference_id: 1
+        file_path:    skill://note-management
+    [1] reference_id: 2
+        file_path:    mcp://memory-server/user_memory_forget
+    [2] reference_id: 3
+        file_path:    mcp://memory-server/user_memory_remember
+    [3] reference_id: 4
+        file_path:    mcp://browser-server/browser_close_tab
+    [4] reference_id: 5
+        file_path:    mcp://browser-server/browser_switch_tab
+    [5] reference_id: 6
+        file_path:    mcp://config-manager/list_files_in_workspace
+    [6] reference_id: 7
+        file_path:    mcp://file-parser/parse_file
+    [7] reference_id: 8
+        file_path:    mcp://file-parser/list_supported_formats
+    [8] reference_id: 9
+        file_path:    mcp://config-manager/set_workspace
+    [9] reference_id: 10
+        file_path:    mcp://browser-server/browser_navigate
+    [10] reference_id: 11
+        file_path:    mcp://config-manager/get_workspace
+    [11] reference_id: 12
+        file_path:    mcp://lightrag-server/lightrag_list_entities
+    [12] reference_id: 13
+        file_path:    mcp://browser-server/browser_new_tab
+    [13] reference_id: 14
+        file_path:    skill://browser-automation
+    [14] reference_id: 15
+        file_path:    mcp://lightrag-server/lightrag_delete_document
+    [15] reference_id: 16
+        file_path:    mcp://config-manager/copy_to_path
+    [16] reference_id: 17
+        file_path:    mcp://lightrag-server/lightrag_delete_entity
+    [17] reference_id: 18
+        file_path:    mcp://lightrag-server/lightrag_document_status
+    [18] reference_id: 19
+        file_path:    skill://office-docs
+
+================================================================================
+  MODE: mix | Query: '便签'
+================================================================================
+  EXCEPTION: RetryError: RetryError[<Future at 0x22a8ac0d4f0 state=finished raised APIConnectionError>]
+  Elapsed time: 33.80s
+  Result: None (LightRAG not available or error)
+
+================================================================================
+  MODE: bypass | Query: '便签'
+================================================================================
+  Elapsed time: 0.00s
+
+  [Full JSON Structure]
+{
+  "status": "success",
+  "message": "Query processed successfully",
+  "data": {
+    "entities": [],
+    "relationships": [],
+    "chunks": [],
+    "references": []
+  },
+  "metadata": {
+    "query_mode": "bypass",
+    "keywords": {
+      "high_level": [],
+      "low_level": []
+    }
+  }
+}
+
+  [Top-Level Summary]
+    status:    success
+    message:   Query processed successfully
+    metadata keys: ['keywords', 'query_mode']
+      query_mode: bypass
+      high_level_keywords: []
+      low_level_keywords:  []
+
+  [Entities] count: 0
+
+  [Relationships] count: 0
+
+  [Chunks] count: 0
+
+  [References] count: 0
+
+================================================================================
+  EXTRA: aquery() (string result) | only_need_context=True | mode: mix
+================================================================================
+  Elapsed time: 33.42s
+  Result type: NoneType
+  Result value: None
+
+--------------------------------------------------------------------------------
+  DONE
+--------------------------------------------------------------------------------
+All 6 modes queried with: '便签'
