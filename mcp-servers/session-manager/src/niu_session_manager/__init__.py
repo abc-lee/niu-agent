@@ -244,7 +244,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         formatted = []
         total_tokens = 0
 
-        for i, msg in enumerate(messages):
+        for i, msg in enumerate(messages, 1):
             content = msg.get("content", "")
             try:
                 from litellm import token_counter
