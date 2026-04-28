@@ -19,7 +19,8 @@ mcpServers:
 对 entity-extractor 提炼入库的内容做精加工：
 
 1. **brain_meta 标签**：给关键实体打标签
-   - `lightrag_insert_entity(name, entity_type, description="brain_meta_weight=X;brain_meta_decay_rate=Y;brain_meta_created_at=...;brain_meta_access_count=0;...")`
+   - `lightrag_insert_entity(name, entity_type, description="L1|created_at=2026-04-27T14:00:00|access_count=0|weight=0.7|decay_rate=0.01|实体描述内容")`
+   - 格式规则：第一段必须是 level（L0/L1/L2），后续用管道符 `|` 分隔，键名无前缀，用 `=` 赋值
    - L0（即时印象）：weight=0.3, decay_rate=0.05
    - L1（精炼摘要）：weight=0.7, decay_rate=0.01
    - L2（完整内容）：weight=0.9, decay_rate=0.002
@@ -96,7 +97,7 @@ mcpServers:
 
 - 实体注入：`lightrag_insert_entity(name, entity_type, description, source_id, file_path)`
   - `name`：实体名称（必填）
-  - `entity_type`：实体类型（必填，如 "CONCEPT"/"PERSON"/"EVENT"）
+  - `entity_type`：实体类型（必填，小写格式，如 "concept"/"person"/"event"/"skill"）
   - `description`：描述（可含 brain_meta 标签）
 - 关系注入：`lightrag_insert_relation(src_id, tgt_id, relation, description, source_id, file_path)`
   - `src_id`/`tgt_id`：源/目标实体名称（必填）
