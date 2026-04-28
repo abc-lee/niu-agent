@@ -92,7 +92,7 @@ config/user-config*.json
 .claude/
 .plans/
 .playwright-mcp/
-memory/
+memory/skills/
 
 # Temporary data files
 kv_end.txt
