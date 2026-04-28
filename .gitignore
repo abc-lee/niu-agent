@@ -87,3 +87,12 @@ models/paraphrase-multilingual-MiniLM-L12-v2/model.safetensors
 config/user-config*.json
 .gitnexus
 /data/mcp_tools.json
+
+# Tool-generated directories (not project code)
+.claude/
+.plans/
+.playwright-mcp/
+memory/
+
+# Temporary data files
+kv_end.txt
