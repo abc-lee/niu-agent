@@ -14,24 +14,32 @@ mcpServers:
 ## 游标机制
 
 调用方会在 prompt 中传入两个游标值：
-- `last_dream_evolve_id`：dream-evolver 已处理到的消息UUID
-- `last_compress_id`：上次压缩整理到的消息UUID
+- `last_dream_evolve_id`：dream-evolver 已处理到的消息 UUID
+- `last_compress_id`：上次压缩整理到的消息 UUID
 
-通过 `get_messages(session_id)` 获取消息列表（session_id 传 `"default"`）。每条消息有 `id`（UUID）和 `idx`（位置索引，按时间递增）。
+通过 `get_messages(session_id)` 获取消息列表（session_id 传 `"default"`）。每条消息有 `id`（UUID，持久化）和 `idx`（位置索引，动态生成，从1开始）。
 
-**重要**：UUID v4 是随机生成的，字典序不代表时间先后。**用 idx 判断时间顺序，不要用 UUID 比较大小**。
+**重要**：
+- **游标用 id（UUID）存储**：因为 id 是数据库中持久化的，删除消息不影响其他消息的 id
+- **时间顺序用 idx 判断**：idx 是消息在列表中的位置，代表时间先后。但 idx 是动态的（删除消息后后续 idx 会前移），不能当游标存储
+- **UUID v4 字典序不代表时间先后**：不要用 id 比较大小来判断先后
+
+**操作步骤**：
+1. 从消息列表中找到游标 UUID 对应的消息，记录其 idx
+2. 用 idx 确定操作范围（idx 大的 = 更新的消息）
+3. 操作完成后，用 id（UUID）报告游标位置
 
 **游标含义**：
-- idx ≤ last_compress_idx 的消息：已整理过，不重复处理
+- idx ≤ 游标idx 的消息：已处理过，不重复处理
 - idx > last_dream_evolve_idx 的消息：dream-evolver 尚未提取知识
 
-调用方在 prompt 中会附带消息列表，格式为 `[id:UUID] [idx:N] Xtokens role: content...`。你需要根据游标 UUID 找到对应的 idx，然后用 idx 确定操作范围。
+调用方在 prompt 中会附带消息列表，格式为 `[id:UUID] [idx:N] Xtokens role: content...`。
 
 ## 模式一：睡眠整理（非破坏性）
 
 **触发条件**：由调用方决定，prompt 中会指明使用模式一
 **目标**：轻度整理，减少冗余，不丢失信息
-**操作范围**：只处理 last_compress_idx < idx ≤ last_dream_evolve_idx 范围内的消息
+**操作范围**：只处理 last_compress_idx < idx ≤ last_dream_evolve_idx 范围内的消息（先从消息列表中找到游标UUID对应的idx，再用idx确定范围）
 **操作**：
 1. 合并连续的简单确认回复（"好的"、"明白了"、"谢谢"）为一条摘要
 2. 精简大工具输出（保留关键结果，删除中间过程）
@@ -43,7 +51,7 @@ mcpServers:
 ## 模式二：睡眠整理（半破坏性）
 
 **触发条件**：由调用方决定，prompt 中会指明使用模式二
-**操作范围**：只处理 last_compress_idx < idx ≤ last_dream_evolve_idx 范围内的消息
+**操作范围**：只处理 last_compress_idx < idx ≤ last_dream_evolve_idx 范围内的消息（先从消息列表中找到游标UUID对应的idx，再用idx确定范围）
 **操作**：
 1. 识别范围内的会话单元（一个完整话题/任务）
 2. 对单元内的消息：
@@ -65,14 +73,16 @@ mcpServers:
 4. 对要删除的内容：直接 `delete_messages`
 
 **安全边界**：
-- idx > last_dream_evolve_idx 的消息：dream-evolver 尚未提取知识，不得直接删除；如需删除，必须先用 `update_message` 压缩为 L0 摘要
+- idx > last_dream_evolve_idx 的消息：dream-evolver 尚未提取知识，不得直接删除；如需删除，必须先用 `update_message` 压缩为 L0 摘要（先从消息列表中找到 last_dream_evolve_id 对应的 idx）
 - 绝不删除 idx 最大的 10 条消息（即最近的消息）
 
 ## 游标报告
 
-处理完成后，在报告末尾用 JSON 格式报告：`{"last_compress_id": "<操作范围内 idx 最大的消息UUID>"}`
+处理完成后，在报告末尾用 JSON 格式报告：`{"last_compress_id": "<操作范围内 idx 最大的消息的 id（UUID）>"}`
 
-注意：游标应推进到操作范围的终点（范围内 idx 最大的那条消息的 UUID），而不是最后被操作的那条。这样下次整理时，游标之前的所有消息都被标记为"已处理"。
+注意：
+- 游标用 id（UUID）存储，因为 id 是持久化的，不受删除操作影响
+- 游标应推进到操作范围的终点（范围内 idx 最大的那条消息的 id），而不是最后被操作的那条
 
 ## 重要约束
 
