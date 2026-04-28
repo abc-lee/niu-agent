@@ -16,12 +16,17 @@ from agent.session import get_message_store
 
 
 def _is_subagent_overflow(result: str) -> bool:
-    """检查子 Agent 返回结果是否为上下文溢出报告"""
+    """检测子 Agent 是否因上下文溢出而退出（需匹配 overflow + agent + tokens_used 三个特征键）"""
     if not result or not result.strip().startswith("{"):
         return False
     try:
         data = json.loads(result)
-        return isinstance(data, dict) and data.get("overflow") is True
+        return (
+            isinstance(data, dict)
+            and data.get("overflow") is True
+            and "agent" in data
+            and "tokens_used" in data
+        )
     except (json.JSONDecodeError, ValueError):
         return False
 
