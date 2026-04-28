@@ -632,7 +632,7 @@ async def tidy_context(request: dict):
 目标上下文：{target_tokens} tokens（需要删除至少 {estimated_tokens - target_tokens} tokens）
 
 强制压缩不受双游标范围限制，可以操作所有消息。
-安全边界：先从消息列表中找到 last_dream_evolve_id={new_dream_id} 对应的 idx，idx > 该idx 的消息（dream-evolver 未提取知识），删除前必须先用 update_message 压缩为L0摘要。
+安全边界：先从消息列表中找到 last_dream_evolve_id={new_dream_id} 对应的 idx，idx > 该idx 的消息（dream-evolver 未提取知识），不得直接删除，必须用 update_message 压缩为L0摘要后保留（不删除）。
 保护规则：操作开始时记录 idx 最大的 10 条消息的 id（UUID），这些消息绝不删除（按 id 判断，不受后续 idx 变化影响）。
 游标用 id（UUID）存储（持久化），时间顺序用 idx 判断（idx 是动态位置索引，删除消息后会变，不能当游标存储）。UUID v4 字典序不代表时间先后。
 
