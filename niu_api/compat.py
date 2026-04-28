@@ -10,8 +10,29 @@ from pydantic import BaseModel
 from fastapi import APIRouter
 from loguru import logger
 import asyncio
+import json
 
 from agent.session import get_message_store
+
+
+def _is_subagent_overflow(result: str) -> bool:
+    """检查子 Agent 返回结果是否为上下文溢出报告"""
+    if not result or not result.strip().startswith("{"):
+        return False
+    try:
+        data = json.loads(result)
+        return isinstance(data, dict) and data.get("overflow") is True
+    except (json.JSONDecodeError, ValueError):
+        return False
+
+
+def _extract_overflow_info(result: str) -> dict:
+    """从子 Agent 溢出报告中提取信息"""
+    try:
+        return json.loads(result)
+    except (json.JSONDecodeError, ValueError):
+        return {"overflow": True, "raw": result}
+
 
 router = APIRouter(tags=["compat"])
 
@@ -522,6 +543,10 @@ async def tidy_context(request: dict):
             dream_result = await asyncio.to_thread(run_dream_evolver)
             logger.info(f"[Tidy] Dream-evolver result: {dream_result[:200]}")
 
+            if _is_subagent_overflow(dream_result):
+                overflow_info = _extract_overflow_info(dream_result)
+                logger.warning(f"[Tidy] Dream-evolver overflow: {overflow_info.get('turns_completed', 0)} turns, {overflow_info.get('tokens_used', 0)} tokens")
+
             # 提取并写入 dream 游标（UUID）
             match = re.search(r'\{"last_dream_evolve_id"\s*:\s*"([^"]+)"\}', dream_result, re.DOTALL)
             new_dream_id = match.group(1) if match else last_dream_evolve_id
@@ -536,6 +561,12 @@ async def tidy_context(request: dict):
                 logger.info(f"[Tidy] Dream cursor updated: last_dream_evolve_id={new_dream_id}")
 
             # 2. context-manager prompt（双游标，UUID 存储 + idx 判断时间顺序）
+            # 根据 usage_percent 自动选择压缩模式：
+            #   < 50% → 模式一（轻度整理）
+            #   >= 50% → 模式二（半破坏性压缩）
+            compress_mode = "模式二：睡眠整理（半破坏性）" if usage_percent >= 50 else "模式一：睡眠整理（非破坏性）"
+            logger.info(f"[Tidy] Sleep: usage={usage_percent:.1f}%, selecting {compress_mode}")
+
             prompt = f"""系统进入睡眠状态。
 
 当前上下文：{estimated_tokens} tokens（{usage_percent:.1f}%）
@@ -549,7 +580,7 @@ async def tidy_context(request: dict):
 
 {msg_list_text}
 
-请按照【模式一：睡眠整理】的规则处理。处理完成后，在报告末尾用 JSON 格式报告：{{"last_compress_id": "<操作范围内 idx 最大的、且仍存在的消息的 id（UUID）>"}}"""
+请按照【{compress_mode}】的规则处理。处理完成后，在报告末尾用 JSON 格式报告：{{"last_compress_id": "<操作范围内 idx 最大的、且仍存在的消息的 id（UUID）>"}}"""
 
             def run_context_manager():
                 return call_subagent(
@@ -561,6 +592,10 @@ async def tidy_context(request: dict):
 
             result = await asyncio.to_thread(run_context_manager)
             logger.info(f"[Tidy] Context-manager result: {result[:200]}")
+
+            if _is_subagent_overflow(result):
+                overflow_info = _extract_overflow_info(result)
+                logger.warning(f"[Tidy] Context-manager overflow: {overflow_info.get('turns_completed', 0)} turns, {overflow_info.get('tokens_used', 0)} tokens")
 
             # 提取并写入 compress 游标（UUID）
             match = re.search(r'\{"last_compress_id"\s*:\s*"([^"]+)"\}', result, re.DOTALL)
@@ -609,6 +644,10 @@ async def tidy_context(request: dict):
             dream_result = await asyncio.to_thread(run_dream_evolver_force)
             logger.info(f"[Tidy] Force: dream-evolver completed, length={len(dream_result)}")
 
+            if _is_subagent_overflow(dream_result):
+                overflow_info = _extract_overflow_info(dream_result)
+                logger.warning(f"[Tidy] Force: Dream-evolver overflow: {overflow_info.get('turns_completed', 0)} turns, {overflow_info.get('tokens_used', 0)} tokens")
+
             # 提取并写入 dream 游标
             match = re.search(r'\{"last_dream_evolve_id"\s*:\s*"([^"]+)"\}', dream_result, re.DOTALL)
             new_dream_id = match.group(1) if match else last_dream_evolve_id
@@ -638,7 +677,7 @@ async def tidy_context(request: dict):
 目标上下文：{target_tokens} tokens（需要删除至少 {estimated_tokens - target_tokens} tokens）
 
 强制压缩不受双游标范围限制，可以操作所有消息。
-安全边界：先从消息列表中找到 last_dream_evolve_id={new_dream_id} 对应的 idx，idx > 该idx 的消息（dream-evolver 未提取知识），不得直接删除，必须用 update_message 压缩为L0摘要后保留（不删除）。
+安全边界：先从消息列表中找到 last_dream_evolve_id={new_dream_id} 对应的 idx，idx > 该idx 的消息（dream-evolver 未提取知识），不得直接删除，必须用 update_message 压缩为[摘要]格式后保留（不删除）。
 保护规则：操作开始时记录 idx 最大的 10 条消息的 id（UUID），这些消息绝不删除（按 id 判断，不受后续 idx 变化影响）。
 游标用 id（UUID）存储（持久化），时间顺序用 idx 判断（idx 是动态位置索引，删除消息后会变，不能当游标存储）。UUID v4 字典序不代表时间先后。
 
@@ -659,6 +698,10 @@ async def tidy_context(request: dict):
 
             result = await asyncio.to_thread(run_context_manager_force)
             logger.info(f"[Tidy] Force: context-manager completed, length={len(result)}")
+
+            if _is_subagent_overflow(result):
+                overflow_info = _extract_overflow_info(result)
+                logger.warning(f"[Tidy] Force: Context-manager overflow: {overflow_info.get('turns_completed', 0)} turns, {overflow_info.get('tokens_used', 0)} tokens")
 
             # 提取并写入 compress 游标
             match = re.search(r'\{"last_compress_id"\s*:\s*"([^"]+)"\}', result, re.DOTALL)
