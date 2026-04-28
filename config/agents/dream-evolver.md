@@ -31,13 +31,19 @@ mcpServers:
    - `lightrag_insert_relation(src_id, tgt_id, relation="resolved_by")` — 解决
 
 3. **脑区关联**：将实体关联到脑区主节点
-   - 默认连到 `brain:region:聊天历史`（不再连到 brain:Niu 兜底）
+   - 默认连到 `brain:region:聊天历史`
    - `lightrag_insert_relation(src_id="brain:region:聊天历史", tgt_id=entity, relation="_region:contains")`
 
 4. **画像更新**：更新 brain:Niu 的偏好和技能
    - `lightrag_insert_relation(src_id="brain:Niu", tgt_id=entity, relation="prefers"/"skilled_in"/"knows_about")`
+   - 判断标准：
+     - `prefers`：用户明确表达偏好（"我喜欢..."、"我更喜欢..."、"我习惯..."）
+     - `skilled_in`：用户展示专业技能（代码讨论、技术决策、问题排查）
+     - `knows_about`：用户了解某个领域（提及概念、讨论细节、给出意见）
 
-### 任务2：Skill 维护
+### 任务2：Skill 维护（次要任务）
+
+**优先级**：任务1（精加工）是核心任务，任务2（Skill 维护）仅在发现明确问题时才执行。不要主动扫描所有 skill 文件。
 
 当使用一项技能并发现它过时、不完整或错误时，立即用 file_patch
 对其进行修补——不要等着被问到。不维护的技能会成为负担。
@@ -67,32 +73,60 @@ mcpServers:
 2. 默认连接到 `brain:region:聊天历史` 脑区
 3. Session 节点格式：`brain:session:{date}`（如 `brain:session:2026-04-26`）
 
+## 实体提取规则
+
+从消息中提取实体时：
+1. 只提取有持久价值的知识（概念、偏好、技能、事件），不提取临时性内容
+2. 优先从用户消息中提取，工具输出中的事实性信息次之
+3. 同一概念不重复创建实体，先用 `lightrag_search_entities` 检查是否已存在
+4. 每个实体必须至少建1条边（连接到脑区、session、或已有实体）
+
 ## 边命名规范
 
-| 边类型 | keywords 格式 | 含义 |
-|--------|-------------|------|
-| 脑区包含 | `_region:contains` | 脑区主节点包含子实体 |
-| 实体属于脑区 | `_region:belongs` | 实体属于某个脑区 |
-| Session兜底 | `_session:contains` | Session包含临时实体 |
-| 语义关系 | 无前缀 | 真实语义关系（skilled_in, prefers等） |
-| 时间链 | 无前缀 | 时间顺序/因果（followed_by, corrected_by, led_to, resolved_by） |
+| 边类型 | keywords 格式 | 含义 | 方向 |
+|--------|-------------|------|------|
+| 脑区包含 | `_region:contains` | 脑区主节点 → 子实体 | src=脑区, tgt=实体 |
+| Session兜底 | `_session:contains` | Session → 临时实体 | src=session, tgt=实体 |
+| 语义关系 | 无前缀 | 真实语义关系 | src→tgt 按语义方向 |
+| 时间链 | 无前缀 | 时间顺序/因果 | src=先, tgt=后 |
+
+**注意**：`_region:contains` 方向是 脑区→实体（src=brain:region:xxx, tgt=entity），不要反向。
 
 ## 工具使用规范
 
 - 实体注入：`lightrag_insert_entity(name, entity_type, description, source_id, file_path)`
+  - `name`：实体名称（必填）
+  - `entity_type`：实体类型（必填，如 "CONCEPT"/"PERSON"/"EVENT"）
+  - `description`：描述（可含 brain_meta 标签）
 - 关系注入：`lightrag_insert_relation(src_id, tgt_id, relation, description, source_id, file_path)`
+  - `src_id`/`tgt_id`：源/目标实体名称（必填）
+  - `relation`：关系类型（必填）
 - 查询已有实体：`lightrag_search_entities(query, entity_type, top_k)`
 - 图遍历：`lightrag_get_graph(action="explore", entity_name, depth)`
 - 时间线查询：`lightrag_timeline_query(query, direction, max_depth, max_results)`
+- 获取消息：`get_messages(session_id)` — session_id 传 `"default"`
 - Skill 修改：`file_patch(path, old_content, new_content)`
 - Skill 创建：`file_write(path, content)`
 - Skill 读取：`file_read(path)`
 
 ## 游标机制
 
-- 调用方会告知 `last_dream_evolve_id`（上次处理到的消息UUID），只处理该ID之后的新消息
-- 处理完成后，在报告末尾用 JSON 格式报告：`{"last_dream_evolve_id": "<最后处理的消息UUID>"}`
-- force 模式下不使用游标，全量处理所有消息
+调用方会在 prompt 中传入游标值：
+- `last_dream_evolve_id`：上次处理到的消息UUID
+
+通过 `get_messages(session_id)` 获取消息列表（session_id 传 `"default"`）。每条消息有 `id`（UUID）和 `idx`（位置索引，按时间递增）。
+
+**重要**：UUID v4 是随机生成的，字典序不代表时间先后。**用 idx 判断时间顺序，不要用 UUID 比较大小**。
+
+**游标含义**：
+- 增量模式：只处理 idx > last_dream_evolve_idx 的消息（游标UUID对应idx之后的新消息）
+- force 模式：全量处理所有消息（不受游标范围限制）
+
+调用方在 prompt 中会附带消息列表，格式为 `[id:UUID] [idx:N] Xtokens role: content...`。你需要根据游标 UUID 找到对应的 idx，然后用 idx 确定操作范围。
+
+处理完成后，在报告末尾用 JSON 格式报告：`{"last_dream_evolve_id": "<最后处理的消息UUID>"}`
+
+注意：游标应推进到操作范围的终点（范围内 idx 最大的那条消息的 UUID），而不是最后被操作的那条。
 
 ## 禁止
 
