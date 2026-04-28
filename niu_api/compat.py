@@ -628,8 +628,8 @@ async def tidy_context(request: dict):
                 try:
                     cdata = json.loads(compress_cursor_path.read_text(encoding="utf-8"))
                     last_compress_id = cdata.get("last_compress_id", "")
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning(f"[Tidy] Failed to read compress cursor in force mode: {e}")
 
             target_tokens = int(estimated_tokens * 0.5)
             prompt = f"""系统上下文超过阈值，触发强制压缩。
