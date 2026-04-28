@@ -1,6 +1,25 @@
-import json, re, sys
+import json, logging, re, sys
 from dataclasses import dataclass
 from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
+
+
+def count_messages_tokens(messages: list) -> int:
+    """
+    估算消息列表的 token 数量
+
+    使用 litellm.token_counter，回退到字符数估算。
+    """
+    try:
+        from litellm import token_counter
+        return token_counter(model="gpt-4o", messages=messages)
+    except Exception:
+        total = 0
+        for msg in messages:
+            content = msg.get("content", "") or ""
+            total += max(1, len(content) // 2) + 4
+        return total
 
 
 @dataclass
@@ -78,6 +97,7 @@ def agent_runner_loop(
     initial_user_content=None,
     history=None,  # Optional: list of {"role": "user/assistant", "content": str}
     on_turn_end=None,  # Optional: callback(messages, tools_schema, turn) -> tools_schema
+    context_window_tokens=0,  # 0 means no limit check (backward compatible)
 ):
     # Build messages: system + history + current user
     messages = [{"role": "system", "content": system_prompt}]
@@ -104,6 +124,23 @@ def agent_runner_loop(
     handler.max_turns = max_turns
     while turn < handler.max_turns:
         turn += 1
+        # 上下文溢出保护：检查 token 使用率
+        if context_window_tokens > 0:
+            current_tokens = count_messages_tokens(messages)
+            usage_ratio = current_tokens / context_window_tokens
+            if usage_ratio > 0.85:
+                logger.warning(f"[Overflow] Context {current_tokens}/{context_window_tokens} tokens ({usage_ratio:.1%}) exceeds 85% threshold")
+                if on_turn_end is not None:
+                    on_turn_end(messages, tools_schema, turn)
+                return {
+                    "result": "CONTEXT_OVERFLOW",
+                    "data": {
+                        "overflow": True,
+                        "turns_completed": turn - 1,
+                        "tokens_used": current_tokens,
+                        "tokens_limit": context_window_tokens,
+                    },
+                }
         if verbose:
             yield f"**LLM Running (Turn {turn}) ...**\n\n"
         if turn % 10 == 0:
