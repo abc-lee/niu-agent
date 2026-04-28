@@ -1,0 +1,306 @@
+"""Tests for Scheduler.check_and_trigger with sequential execution"""
+import time
+from datetime import datetime, timedelta
+from unittest.mock import MagicMock
+
+import pytest
+
+
+def _make_scheduler(db_path, callback, mock_store):
+    """Construct a Scheduler bypassing __init__ to avoid DB/TaskStore dependency"""
+    from niu_api.internal.scheduler.scheduler import Scheduler, _CALLBACK_TIMEOUT
+    scheduler = Scheduler.__new__(Scheduler)
+    scheduler.db_path = db_path
+    scheduler.trigger_callback = callback
+    scheduler.store = mock_store
+    scheduler.running = True
+    scheduler.thread = None
+    scheduler._overdue_stagger_interval = 2  # 2s for fast tests
+    scheduler._lock = __import__("threading").RLock()
+    scheduler._check_lock = __import__("threading").Lock()
+    scheduler._executor = __import__("concurrent.futures").futures.ThreadPoolExecutor(max_workers=2)
+    scheduler._delayed_start_cancelled = False
+    return scheduler, _CALLBACK_TIMEOUT
+
+
+@pytest.fixture
+def mock_scheduler(tmp_path):
+    db_path = str(tmp_path / "scheduler.db")
+    callback = MagicMock(return_value="ok")
+    mock_store = MagicMock()
+    scheduler, timeout = _make_scheduler(db_path, callback, mock_store)
+    return scheduler, callback, mock_store, timeout
+
+
+class TestCheckAndTriggerSequential:
+    def test_multiple_due_tasks_execute_sequentially(self, mock_scheduler):
+        """多个到期任务顺序执行，不是同时触发"""
+        scheduler, callback, mock_store, _ = mock_scheduler
+
+        due_tasks = [
+            {
+                "id": f"task-{i}",
+                "content": f"task{i}",
+                "is_recurring": True,
+                "cron_expr": "0 3 * * *",
+                "scheduled_at": (datetime.now() - timedelta(hours=5 - i)).isoformat(),
+            }
+            for i in range(4)
+        ]
+
+        mock_store.get_overdue_tasks.return_value = due_tasks
+        mock_store.update_task.return_value = True
+        mock_store.get_task.return_value = {
+            "id": "task-0",
+            "status": "in_progress",
+            "scheduled_at": due_tasks[0]["scheduled_at"],
+            "last_executed_date": None,
+        }
+        mock_store.update_last_executed_date.return_value = True
+
+        start_time = time.time()
+        scheduler.check_and_trigger()
+        elapsed = time.time() - start_time
+
+        # 4 tasks with 2s stagger = ~6s minimum (3 intervals)
+        assert elapsed >= scheduler._overdue_stagger_interval * 3 - 1
+        assert callback.call_count == 4
+
+    def test_single_due_task_no_stagger_wait(self, mock_scheduler):
+        """单个到期任务不需要间隔等待"""
+        scheduler, callback, mock_store, _ = mock_scheduler
+
+        mock_store.get_overdue_tasks.return_value = [
+            {
+                "id": "task-1",
+                "content": "brain_decay",
+                "is_recurring": True,
+                "cron_expr": "0 3 * * *",
+                "scheduled_at": (datetime.now() - timedelta(hours=5)).isoformat(),
+            }
+        ]
+        mock_store.update_task.return_value = True
+        mock_store.get_task.return_value = {
+            "id": "task-1",
+            "status": "in_progress",
+            "scheduled_at": (datetime.now() - timedelta(hours=5)).isoformat(),
+            "last_executed_date": None,
+        }
+        mock_store.update_last_executed_date.return_value = True
+
+        start_time = time.time()
+        scheduler.check_and_trigger()
+        elapsed = time.time() - start_time
+
+        assert elapsed < scheduler._overdue_stagger_interval
+        assert callback.call_count == 1
+
+    def test_no_due_tasks_returns_immediately(self, mock_scheduler):
+        """没有到期任务时立即返回"""
+        scheduler, callback, mock_store, _ = mock_scheduler
+        mock_store.get_overdue_tasks.return_value = []
+        scheduler.check_and_trigger()
+        assert callback.call_count == 0
+
+    def test_stagger_wait_interruptible_by_stop(self, mock_scheduler):
+        """间隔等待可被 stop() 中断"""
+        scheduler, callback, mock_store, _ = mock_scheduler
+
+        mock_store.get_overdue_tasks.return_value = [
+            {
+                "id": "task-1",
+                "content": "task1",
+                "is_recurring": True,
+                "cron_expr": "0 3 * * *",
+                "scheduled_at": (datetime.now() - timedelta(hours=5)).isoformat(),
+            },
+            {
+                "id": "task-2",
+                "content": "task2",
+                "is_recurring": True,
+                "cron_expr": "0 4 * * *",
+                "scheduled_at": (datetime.now() - timedelta(hours=4)).isoformat(),
+            },
+        ]
+        mock_store.update_task.return_value = True
+        mock_store.get_task.return_value = {
+            "id": "task-1",
+            "status": "in_progress",
+            "scheduled_at": (datetime.now() - timedelta(hours=5)).isoformat(),
+            "last_executed_date": None,
+        }
+        mock_store.update_last_executed_date.return_value = True
+
+        def stop_after_first(task_id, **_kwargs):
+            if task_id == "task-1":
+                scheduler.running = False
+            return True
+
+        mock_store.update_task.side_effect = stop_after_first
+
+        start_time = time.time()
+        scheduler.check_and_trigger()
+        elapsed = time.time() - start_time
+
+        assert elapsed < 15
+        assert callback.call_count <= 1
+
+    def test_cas_prevents_double_trigger(self, mock_scheduler):
+        """CAS 机制防止同一任务被重复触发"""
+        scheduler, callback, mock_store, _ = mock_scheduler
+
+        mock_store.get_overdue_tasks.return_value = [
+            {
+                "id": "task-1",
+                "content": "task1",
+                "is_recurring": True,
+                "cron_expr": "0 3 * * *",
+                "scheduled_at": (datetime.now() - timedelta(hours=1)).isoformat(),
+            }
+        ]
+        mock_store.update_task.return_value = False
+
+        scheduler.check_and_trigger()
+        assert callback.call_count == 0
+
+    def test_already_executed_today_skips_and_reschedules(self, mock_scheduler):
+        """当天已执行的循环任务跳过执行，reschedule 到下次"""
+        scheduler, callback, mock_store, _ = mock_scheduler
+
+        today = __import__("datetime").date.today().isoformat()
+        mock_store.get_overdue_tasks.return_value = [
+            {
+                "id": "task-1",
+                "content": "task1",
+                "is_recurring": True,
+                "cron_expr": "0 3 * * *",
+                "scheduled_at": (datetime.now() - timedelta(hours=1)).isoformat(),
+            }
+        ]
+        mock_store.update_task.return_value = True
+        mock_store.get_task.return_value = {
+            "id": "task-1",
+            "status": "in_progress",
+            "scheduled_at": (datetime.now() - timedelta(hours=1)).isoformat(),
+            "last_executed_date": today,
+        }
+
+        scheduler.check_and_trigger()
+        assert callback.call_count == 0
+        mock_store.update_task.assert_called()
+
+    def test_callback_timeout_is_120s(self, mock_scheduler):
+        """回调超时为120秒"""
+        _, _, _, timeout = mock_scheduler
+        assert timeout == 120
+
+    def test_one_time_task_executed_and_deleted(self, mock_scheduler):
+        """一次性任务执行后删除"""
+        scheduler, callback, mock_store, _ = mock_scheduler
+
+        mock_store.get_overdue_tasks.return_value = [
+            {
+                "id": "task-1",
+                "content": "remind me",
+                "is_recurring": False,
+                "scheduled_at": (datetime.now() - timedelta(hours=1)).isoformat(),
+            }
+        ]
+        mock_store.update_task.return_value = True
+        mock_store.get_task.return_value = {
+            "id": "task-1",
+            "status": "in_progress",
+            "scheduled_at": (datetime.now() - timedelta(hours=1)).isoformat(),
+        }
+
+        scheduler.check_and_trigger()
+        assert callback.call_count == 1
+        mock_store.delete_task_permanent.assert_called_once_with("task-1")
+
+    def test_callback_failure_marks_task_failed(self, mock_scheduler):
+        """回调失败时任务标记为 failed"""
+        scheduler, callback, mock_store, _ = mock_scheduler
+
+        callback.return_value = None
+
+        mock_store.get_overdue_tasks.return_value = [
+            {
+                "id": "task-1",
+                "content": "task1",
+                "is_recurring": True,
+                "cron_expr": "0 3 * * *",
+                "scheduled_at": (datetime.now() - timedelta(hours=1)).isoformat(),
+            }
+        ]
+        mock_store.update_task.return_value = True
+        mock_store.get_task.return_value = {
+            "id": "task-1",
+            "status": "in_progress",
+            "scheduled_at": (datetime.now() - timedelta(hours=1)).isoformat(),
+            "last_executed_date": None,
+        }
+
+        scheduler.check_and_trigger()
+        failed_calls = [c for c in mock_store.update_task.call_args_list
+                        if "failed" in str(c)]
+        assert len(failed_calls) >= 1
+
+    def test_start_and_stop_with_lock_protection(self, tmp_path):
+        """start() 和 stop() 使用锁保护 running 标志"""
+        from niu_api.internal.scheduler.scheduler import Scheduler
+        from niu_api.internal.scheduler.task_store import TaskStore
+
+        db_path = str(tmp_path / "test.db")
+        # Create real DB so _cleanup_old_tasks doesn't crash
+        real_store = TaskStore(db_path)
+        scheduler = Scheduler(db_path=db_path, trigger_callback=lambda t: "ok", store=real_store)
+        scheduler._overdue_stagger_interval = 600
+
+        # start() should set running = True under lock
+        scheduler.start()
+        assert scheduler.running is True
+
+        # stop() should set running = False under lock
+        scheduler.stop()
+        assert scheduler.running is False
+
+    def test_concurrent_check_and_trigger_skipped(self, mock_scheduler):
+        """并发调用 check_and_trigger 时，第二次调用被跳过"""
+        scheduler, callback, mock_store, _ = mock_scheduler
+
+        mock_store.get_overdue_tasks.return_value = [
+            {
+                "id": "task-1",
+                "content": "task1",
+                "is_recurring": True,
+                "cron_expr": "0 3 * * *",
+                "scheduled_at": (datetime.now() - timedelta(hours=1)).isoformat(),
+            }
+        ]
+        mock_store.update_task.return_value = True
+        mock_store.get_task.return_value = {
+            "id": "task-1",
+            "status": "in_progress",
+            "scheduled_at": (datetime.now() - timedelta(hours=1)).isoformat(),
+            "last_executed_date": None,
+        }
+        mock_store.update_last_executed_date.return_value = True
+
+        # First call acquires _check_lock
+        import threading
+        results = []
+
+        def call_in_thread():
+            r = scheduler.check_and_trigger()
+            results.append(r)
+
+        # Manually hold the lock to simulate a long-running check_and_trigger
+        scheduler._check_lock.acquire()
+        # Second call should be skipped (lock already held)
+        scheduler.check_and_trigger()
+        assert callback.call_count == 0  # Skipped because lock is held
+
+        # Release lock and verify normal call works
+        scheduler._check_lock.release()
+        scheduler.check_and_trigger()
+        assert callback.call_count == 1
