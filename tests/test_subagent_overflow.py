@@ -343,3 +343,25 @@ class TestSubagentContextWindowConfig:
         )
 
         assert captured_kwargs.get("context_window_tokens") == 128000
+
+
+class TestCompatOverflowHandling:
+    """Test that compat.py handles sub-agent overflow results."""
+
+    def test_detects_overflow_in_subagent_result(self):
+        from niu_api.compat import _is_subagent_overflow
+        overflow_json = '{"overflow": true, "agent": "context-manager", "turns_completed": 5, "tokens_used": 170000, "tokens_limit": 200000}'
+        assert _is_subagent_overflow(overflow_json) is True
+
+    def test_normal_result_not_overflow(self):
+        from niu_api.compat import _is_subagent_overflow
+        assert _is_subagent_overflow("normal result text") is False
+        assert _is_subagent_overflow('{"status": "ok"}') is False
+
+    def test_extract_overflow_info(self):
+        from niu_api.compat import _extract_overflow_info
+        overflow_json = '{"overflow": true, "agent": "context-manager", "turns_completed": 5, "tokens_used": 170000, "tokens_limit": 200000, "partial_result": "some work"}'
+        info = _extract_overflow_info(overflow_json)
+        assert info["overflow"] is True
+        assert info["agent"] == "context-manager"
+        assert info["turns_completed"] == 5
