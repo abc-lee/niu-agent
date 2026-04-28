@@ -33,6 +33,50 @@ def count_tokens_for_text(text: str) -> int:
         return max(1, len(text) // 2)
 
 
+def split_prompt_by_tokens(text: str, max_tokens_per_chunk: int = 50000) -> list[str]:
+    """
+    按 token 限制将 prompt 分片（按行分割，不拆行内）
+
+    Args:
+        text: 完整 prompt 文本
+        max_tokens_per_chunk: 每片最大 token 数（默认 50K）
+
+    Returns:
+        分片列表（每个元素是一个完整的 prompt 片段）
+    """
+    if not text:
+        return []
+
+    # 先检查整体是否超限
+    total_tokens = count_tokens_for_text(text)
+    if total_tokens <= max_tokens_per_chunk:
+        return [text]
+
+    # 按行分割
+    lines = text.split("\n")
+    chunks: list[str] = []
+    current_lines: list[str] = []
+    current_tokens = 0
+
+    for line in lines:
+        line_tokens = count_tokens_for_text(line) if line else 1
+
+        # 如果加入这行会超限，且当前片非空，先保存当前片
+        if current_lines and (current_tokens + line_tokens > max_tokens_per_chunk):
+            chunks.append("\n".join(current_lines))
+            current_lines = []
+            current_tokens = 0
+
+        current_lines.append(line)
+        current_tokens += line_tokens
+
+    # 保存最后一片
+    if current_lines:
+        chunks.append("\n".join(current_lines))
+
+    return chunks if chunks else [text]
+
+
 def get_subagent_config(agent_name: str) -> Dict[str, Any]:
     """
     获取子 Agent 配置
