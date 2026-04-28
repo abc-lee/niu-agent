@@ -468,7 +468,7 @@ async def tidy_context(request: dict):
 
         # 构建消息列表（包含 UUID）
         msg_lines = []
-        for idx, msg in enumerate(messages):
+        for idx, msg in enumerate(messages, 1):
             tokens = msg_tokens[idx]
             msg_id = getattr(msg, "id", "") or ""
             msg_lines.append(f"[id:{msg_id}] [idx:{idx}] {tokens}tokens {msg.role}: {msg.content[:100]}")
@@ -493,7 +493,7 @@ async def tidy_context(request: dict):
 
 {msg_list_text}
 
-处理完成后，在报告末尾用 JSON 格式报告：{{"last_dream_evolve_id": "<操作范围内 idx 最大的消息的 id（UUID）>"}}
+处理完成后，在报告末尾用 JSON 格式报告：{{"last_dream_evolve_id": "<操作范围内 idx 最大的、且仍存在的消息的 id（UUID）>"}}
 禁止使用 code_run 工具。"""
             else:
                 dream_prompt = f"""系统进入睡眠状态，触发梦境进化。
@@ -547,7 +547,7 @@ async def tidy_context(request: dict):
 
 {msg_list_text}
 
-请按照【模式一：睡眠整理】的规则处理。处理完成后，在报告末尾用 JSON 格式报告：{{"last_compress_id": "<操作范围内 idx 最大的消息的 id（UUID）>"}}"""
+请按照【模式一：睡眠整理】的规则处理。处理完成后，在报告末尾用 JSON 格式报告：{{"last_compress_id": "<操作范围内 idx 最大的、且仍存在的消息的 id（UUID）>"}}"""
 
             def run_context_manager():
                 return call_subagent(
@@ -633,6 +633,7 @@ async def tidy_context(request: dict):
 
 强制压缩不受双游标范围限制，可以操作所有消息。
 安全边界：先从消息列表中找到 last_dream_evolve_id={new_dream_id} 对应的 idx，idx > 该idx 的消息（dream-evolver 未提取知识），删除前必须先用 update_message 压缩为L0摘要。
+保护规则：操作开始时记录 idx 最大的 10 条消息的 id（UUID），这些消息绝不删除（按 id 判断，不受后续 idx 变化影响）。
 游标用 id（UUID）存储（持久化），时间顺序用 idx 判断（idx 是动态位置索引，删除消息后会变，不能当游标存储）。UUID v4 字典序不代表时间先后。
 
 消息列表：
@@ -640,7 +641,7 @@ async def tidy_context(request: dict):
 
 {msg_list_text}
 
-请按照【模式三：强制压缩】的规则处理。处理完成后，在报告末尾用 JSON 格式报告：{{"last_compress_id": "<操作范围内 idx 最大的消息的 id（UUID）>"}}"""
+请按照【模式三：强制压缩】的规则处理。处理完成后，在报告末尾用 JSON 格式报告：{{"last_compress_id": "<操作范围内 idx 最大的、且仍存在的消息的 id（UUID）>"}}"""
 
             def run_context_manager_force():
                 return call_subagent(
