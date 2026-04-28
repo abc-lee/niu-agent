@@ -551,12 +551,22 @@ async def tidy_context(request: dict):
             if _is_subagent_overflow(dream_result):
                 overflow_info = _extract_overflow_info(dream_result)
                 logger.warning(f"[Tidy] Dream-evolver overflow: {overflow_info.get('turns_completed', 0)} turns, {overflow_info.get('tokens_used', 0)} tokens")
-
-            # 提取并写入 dream 游标（UUID）
-            match = re.search(r'\{"last_dream_evolve_id"\s*:\s*"([^"]+)"\}', dream_result, re.DOTALL)
-            new_dream_id = match.group(1) if match else last_dream_evolve_id
-            if not match:
-                logger.warning("[Tidy] Dream cursor UUID regex not matched, preserving old cursor")
+                # 溢出时尝试从 partial_result 提取游标，避免游标停滞导致无限重复处理
+                partial = overflow_info.get("partial_result", "")
+                partial_match = re.search(r'\{"last_dream_evolve_id"\s*:\s*"([^"]+)"\}', partial, re.DOTALL)
+                if partial_match:
+                    new_dream_id = partial_match.group(1)
+                    logger.info(f"[Tidy] Dream cursor recovered from partial_result: {new_dream_id}")
+                else:
+                    # 无法提取游标 → 推进到消息列表最新消息，避免下次重复处理同一范围
+                    new_dream_id = msg_ids[-1] if msg_ids else last_dream_evolve_id
+                    logger.warning(f"[Tidy] Dream cursor advanced to latest message to prevent re-processing: {new_dream_id}")
+            else:
+                # 提取并写入 dream 游标（UUID）
+                match = re.search(r'\{"last_dream_evolve_id"\s*:\s*"([^"]+)"\}', dream_result, re.DOTALL)
+                new_dream_id = match.group(1) if match else last_dream_evolve_id
+                if not match:
+                    logger.warning("[Tidy] Dream cursor UUID regex not matched, preserving old cursor")
             if new_dream_id:
                 dream_cursor_path.parent.mkdir(parents=True, exist_ok=True)
                 dream_cursor_path.write_text(json.dumps({
@@ -601,19 +611,28 @@ async def tidy_context(request: dict):
             if _is_subagent_overflow(result):
                 overflow_info = _extract_overflow_info(result)
                 logger.warning(f"[Tidy] Context-manager overflow: {overflow_info.get('turns_completed', 0)} turns, {overflow_info.get('tokens_used', 0)} tokens")
-
-            # 提取并写入 compress 游标（UUID）
-            match = re.search(r'\{"last_compress_id"\s*:\s*"([^"]+)"\}', result, re.DOTALL)
-            if match:
-                new_compress_id = match.group(1)
-                compress_cursor_path.parent.mkdir(parents=True, exist_ok=True)
-                compress_cursor_path.write_text(json.dumps({
-                    "last_compress_id": new_compress_id,
-                    "last_compress_at": datetime.now().isoformat(),
-                }, ensure_ascii=False, indent=2), encoding="utf-8")
-                logger.info(f"[Tidy] Compress cursor updated: last_compress_id={new_compress_id}")
+                # 溢出时尝试从 partial_result 提取游标，避免游标停滞导致无限重复处理
+                partial = overflow_info.get("partial_result", "")
+                partial_match = re.search(r'\{"last_compress_id"\s*:\s*"([^"]+)"\}', partial, re.DOTALL)
+                if partial_match:
+                    new_compress_id = partial_match.group(1)
+                    logger.info(f"[Tidy] Compress cursor recovered from partial_result: {new_compress_id}")
+                else:
+                    new_compress_id = msg_ids[-1] if msg_ids else last_compress_id
+                    logger.warning(f"[Tidy] Compress cursor advanced to latest message to prevent re-processing: {new_compress_id}")
             else:
-                logger.warning("[Tidy] Sleep: Compress cursor UUID regex not matched, cursor not updated")
+                # 提取并写入 compress 游标（UUID）
+                match = re.search(r'\{"last_compress_id"\s*:\s*"([^"]+)"\}', result, re.DOTALL)
+                if match:
+                    new_compress_id = match.group(1)
+                    compress_cursor_path.parent.mkdir(parents=True, exist_ok=True)
+                    compress_cursor_path.write_text(json.dumps({
+                        "last_compress_id": new_compress_id,
+                        "last_compress_at": datetime.now().isoformat(),
+                    }, ensure_ascii=False, indent=2), encoding="utf-8")
+                    logger.info(f"[Tidy] Compress cursor updated: last_compress_id={new_compress_id}")
+                else:
+                    logger.warning("[Tidy] Sleep: Compress cursor UUID regex not matched, cursor not updated")
 
             return {
                 "status": "success",
@@ -652,12 +671,22 @@ async def tidy_context(request: dict):
             if _is_subagent_overflow(dream_result):
                 overflow_info = _extract_overflow_info(dream_result)
                 logger.warning(f"[Tidy] Force: Dream-evolver overflow: {overflow_info.get('turns_completed', 0)} turns, {overflow_info.get('tokens_used', 0)} tokens")
-
-            # 提取并写入 dream 游标
-            match = re.search(r'\{"last_dream_evolve_id"\s*:\s*"([^"]+)"\}', dream_result, re.DOTALL)
-            new_dream_id = match.group(1) if match else last_dream_evolve_id
-            if not match:
-                logger.warning("[Tidy] Force: Dream cursor UUID regex not matched, preserving old cursor")
+                # 溢出时尝试从 partial_result 提取游标，避免游标停滞导致无限重复处理
+                partial = overflow_info.get("partial_result", "")
+                partial_match = re.search(r'\{"last_dream_evolve_id"\s*:\s*"([^"]+)"\}', partial, re.DOTALL)
+                if partial_match:
+                    new_dream_id = partial_match.group(1)
+                    logger.info(f"[Tidy] Force: Dream cursor recovered from partial_result: {new_dream_id}")
+                else:
+                    # force 模式无 msg_ids，保留旧游标（force 是手动触发不会自动循环）
+                    new_dream_id = last_dream_evolve_id
+                    logger.warning(f"[Tidy] Force: Dream cursor preserved at {last_dream_evolve_id} (force mode, no automatic re-processing)")
+            else:
+                # 提取并写入 dream 游标
+                match = re.search(r'\{"last_dream_evolve_id"\s*:\s*"([^"]+)"\}', dream_result, re.DOTALL)
+                new_dream_id = match.group(1) if match else last_dream_evolve_id
+                if not match:
+                    logger.warning("[Tidy] Force: Dream cursor UUID regex not matched, preserving old cursor")
             if new_dream_id:
                 dream_cursor_path.parent.mkdir(parents=True, exist_ok=True)
                 dream_cursor_path.write_text(json.dumps({
@@ -707,18 +736,22 @@ async def tidy_context(request: dict):
             if _is_subagent_overflow(result):
                 overflow_info = _extract_overflow_info(result)
                 logger.warning(f"[Tidy] Force: Context-manager overflow: {overflow_info.get('turns_completed', 0)} turns, {overflow_info.get('tokens_used', 0)} tokens")
-
-            # 提取并写入 compress 游标
-            match = re.search(r'\{"last_compress_id"\s*:\s*"([^"]+)"\}', result, re.DOTALL)
-            if match:
-                new_compress_id = match.group(1)
-                compress_cursor_path.parent.mkdir(parents=True, exist_ok=True)
-                compress_cursor_path.write_text(json.dumps({
-                    "last_compress_id": new_compress_id,
-                    "last_compress_at": datetime.now().isoformat(),
-                }, ensure_ascii=False, indent=2), encoding="utf-8")
+                # 溢出时尝试从 partial_result 提取游标，避免游标停滞导致无限重复处理
+                partial = overflow_info.get("partial_result", "")
+                partial_match = re.search(r'\{"last_compress_id"\s*:\s*"([^"]+)"\}', partial, re.DOTALL)
+                if partial_match:
+                    new_compress_id = partial_match.group(1)
+                    logger.info(f"[Tidy] Force: Compress cursor recovered from partial_result: {new_compress_id}")
+                else:
+                    # force 模式无 msg_ids，保留旧游标（force 是手动触发不会自动循环）
+                    new_compress_id = last_compress_id
+                    logger.warning(f"[Tidy] Force: Compress cursor preserved at {last_compress_id} (force mode, no automatic re-processing)")
             else:
-                logger.warning("[Tidy] Force: Compress cursor UUID regex not matched, cursor not updated")
+                # 提取并写入 compress 游标
+                match = re.search(r'\{"last_compress_id"\s*:\s*"([^"]+)"\}', result, re.DOTALL)
+                new_compress_id = match.group(1) if match else last_compress_id
+                if not match:
+                    logger.warning("[Tidy] Force: Compress cursor UUID regex not matched, preserving old cursor")
 
             return {"status": "ok", "mode": "force", "tokens_before": estimated_tokens}
 
