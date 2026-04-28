@@ -68,22 +68,32 @@ def trigger_callback(task: dict) -> str:
 
     logger.info(f"[INTERNAL SCHEDULER] Triggering task: {task['content']}")
 
-    # 构建提示词
-    prompt = f"⏰ 定时提醒：该「{task['content']}」了。请根据情况提醒用户或执行相关操作。"
+    # 构建提示词（固定前缀标识定时任务，避免主Agent误认为用户对话）
+    prompt = f"[定时任务自动提醒，不是用户对话] {task['content']}"
 
     # 获取主 API URL（虽然在同一进程，但仍可通过 HTTP 调用 /chat/sync）
     main_url = os.environ.get("MAIN_API_URL", "http://127.0.0.1:9876")
 
     # 检查主 API 可用性（带重试）
+    api_healthy = False
     for attempt in range(3):
         try:
             resp = requests.get(f"{main_url}/health", timeout=5)
             if resp.status_code == 200:
+                api_healthy = True
                 break
+            logger.warning(f"Main API returned {resp.status_code} (attempt {attempt + 1}/3)")
         except requests.RequestException as e:
             logger.warning(f"Main API unavailable (attempt {attempt + 1}/3): {e}")
-            if attempt < 2:
-                time.sleep(2 ** attempt)
+        if attempt < 2:
+            time.sleep(2 ** attempt)
+
+    if not api_healthy:
+        logger.error("[INTERNAL SCHEDULER] All health checks failed, using fallback")
+        fallback_msg = f"定时提醒：{task['content']}"
+        _persist_fallback_message(prompt, fallback_msg)
+        add_pending_alert("⏰")
+        return fallback_msg
 
     # 调用 /chat/sync（已持久化消息到数据库）
     try:
@@ -93,7 +103,7 @@ def trigger_callback(task: dict) -> str:
                 "session_id": "default",
                 "message": prompt
             },
-            timeout=30
+            timeout=90
         )
 
         if response.status_code == 200:
