@@ -112,9 +112,9 @@ mcpServers:
 ## 游标机制
 
 调用方会在 prompt 中传入游标值：
-- `last_dream_evolve_id`：上次处理到的消息 UUID
+- `last_dream_evolve_id`：上次处理到的消息 UUID（首次为空）
 
-通过 `get_messages(session_id)` 获取消息列表（session_id 传 `"default"`）。每条消息有 `id`（UUID，持久化）和 `idx`（位置索引，动态生成，从1开始）。
+通过 `get_messages(session_id)` 获取消息列表（session_id 传 `"default"`）。每条消息有 `id`（UUID，持久化）和 `idx`（位置索引，从1开始，动态生成）。
 
 **重要**：
 - **游标用 id（UUID）存储**：因为 id 是数据库中持久化的，删除消息不影响其他消息的 id
@@ -127,14 +127,17 @@ mcpServers:
 3. 操作完成后，用 id（UUID）报告游标位置
 
 **游标含义**：
-- 增量模式：只处理 idx > 游标idx 的消息（先从消息列表中找到游标UUID对应的idx，再用idx确定范围）
+- 增量模式：只处理 idx > 游标id对应idx 的消息（先从消息列表中找到游标UUID对应的idx，再用idx确定范围）
 - force 模式：全量处理所有消息（不受游标范围限制）
+
+**空游标处理**：
+- `last_dream_evolve_id` 为空：视为从 idx=0 开始（即处理所有消息）
 
 调用方在 prompt 中会附带消息列表，格式为 `[id:UUID] [idx:N] Xtokens role: content...`。
 
-处理完成后，在报告末尾用 JSON 格式报告：`{"last_dream_evolve_id": "<操作范围内 idx 最大的消息的 id（UUID）>"}`
+处理完成后，在报告末尾用 JSON 格式报告：`{"last_dream_evolve_id": "<操作范围内 idx 最大的、且仍存在的消息的 id（UUID）>"}`
 
-注意：游标用 id（UUID）存储，应推进到操作范围的终点（范围内 idx 最大的那条消息的 id），而不是最后被操作的那条。
+注意：游标用 id（UUID）存储，应推进到操作范围的终点（范围内 idx 最大的那条消息的 id），而不是最后被操作的那条。游标指向的消息必须仍存在。
 
 ## 禁止
 
