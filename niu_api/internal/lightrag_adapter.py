@@ -550,9 +550,9 @@ class LightRAGAdapter:
         if start_entities:
             entity_names = start_entities
         else:
-            # Vector search to find matching entities
+            # Vector search to find matching entities (Agent-initiated, let LLM extract keywords)
             query_result = self.query_data(
-                query, mode="local", top_k=top_k, keywords=[query]
+                query, mode="local", top_k=top_k,
             )
 
             if query_result is None:

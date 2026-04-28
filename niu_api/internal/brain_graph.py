@@ -237,17 +237,23 @@ class BrainGraph:
         query: str,
         top_k: int = 10,
         min_weight: float = DEFAULT_MIN_WEIGHT,
+        keywords: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         """Recall memories from the brain graph.
 
         Uses LightRAG query_data(mode="mix") for structured retrieval
         with real weights from the knowledge graph edges.
+
+        Args:
+            keywords: If provided, skip LLM keyword extraction (program auto-call).
+                      If None, let LLM extract keywords (Agent-initiated call).
         """
         try:
             result = self._adapter.query_data(
                 query=query,
                 mode="mix",
                 top_k=top_k,
+                keywords=keywords,
             )
         except Exception:
             logger.debug("[BRAIN] query_data failed, falling back to text query")
@@ -261,7 +267,10 @@ class BrainGraph:
                     relationships, min_weight
                 )
 
-        # Fallback: text-based extraction from aquery
+        # Fallback: text-based extraction from aquery.
+        # query() always invokes LLM for text generation, so keywords bypass
+        # is not applicable here. This fallback is a quality-over-speed path
+        # triggered only when query_data() fails.
         result_text = self._adapter.query(
             query=query,
             mode="mix",

@@ -101,8 +101,12 @@ class BrainContextInjector:
         region_knowledge: dict[str, str] = {}  # region_label -> knowledge text
 
         try:
+            # Program auto-call: keywords=[query_context] skips LLM extraction.
+            # The full context as keyword is a deliberate trade-off: it avoids
+            # 5-30s LLM latency per turn. Vector search still returns results
+            # by semantic similarity; keywords only boost graph-traversal matches.
             query_result = self._adapter.query_data(
-                query_context, mode="local", top_k=20
+                query_context, mode="local", top_k=20, keywords=[query_context]
             )
 
             if query_result and isinstance(query_result, dict):
