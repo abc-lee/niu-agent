@@ -393,7 +393,7 @@ async def tidy_context(request: dict):
     try:
         # Get message store
         store = await get_message_store()
-        messages = await store.get_messages(limit=100)
+        messages = await store.get_messages()
 
         if not messages:
             logger.info("[Tidy] No messages to tidy")
@@ -424,8 +424,8 @@ async def tidy_context(request: dict):
                 prefs = json.loads(prefs_path.read_text(encoding="utf-8"))
                 context_window_tokens = prefs.get("context", {}).get("contextWindowSize", 200000)
         except Exception as e:
-            logger.warning(f"[Tidy] Failed to read compress cursor: {e}")
-            last_compress_id = ""
+            logger.warning(f"[Tidy] Failed to read preferences for context window size: {e}")
+            # 保留默认 context_window_tokens = 200000，不影响游标
         usage_percent = (estimated_tokens / context_window_tokens) * 100
 
         logger.info(f"[Tidy] Current context: {message_count} messages, {estimated_tokens} tokens, {usage_percent:.1f}%")
