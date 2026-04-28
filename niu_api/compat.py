@@ -478,14 +478,15 @@ async def tidy_context(request: dict):
         if mode == "sleep":
             # Sleep mode: dream-evolver (增量) → context-manager (增量)
 
-            # 1. dream-evolver prompt（UUID 游标）
+            # 1. dream-evolver prompt（idx 游标）
             if last_dream_evolve_id:
                 dream_prompt = f"""系统进入睡眠状态，触发梦境进化。
 
 当前上下文：{estimated_tokens} tokens（{usage_percent:.1f}%）
 
-增量游标：上次处理到消息ID={last_dream_evolve_id}，只处理该ID之后的新消息。
-如果所有消息ID都 <= {last_dream_evolve_id}，说明没有新消息，直接报告"无新增消息"即可。
+增量游标：上次处理到消息UUID={last_dream_evolve_id}，只处理该UUID对应idx之后的新消息。
+用 idx 判断时间顺序，不要用 UUID 比较大小（UUID v4 字典序不代表时间先后）。
+如果在消息列表中找不到该UUID，或所有消息idx都 <= 游标idx，说明没有新消息，直接报告"无新增消息"即可。
 
 消息列表：
 共 {message_count} 条消息
@@ -532,20 +533,21 @@ async def tidy_context(request: dict):
             }, ensure_ascii=False, indent=2), encoding="utf-8")
             logger.info(f"[Tidy] Dream cursor updated: last_dream_evolve_id={new_dream_id}")
 
-            # 2. context-manager prompt（双游标）
+            # 2. context-manager prompt（双游标，idx 范围）
             prompt = f"""系统进入睡眠状态。
 
 当前上下文：{estimated_tokens} tokens（{usage_percent:.1f}%）
 
 双游标：last_compress_id={last_compress_id}，last_dream_evolve_id={new_dream_id}
-只处理 last_compress_id 之后、last_dream_evolve_id 之前范围内的消息。
+操作范围：last_compress_idx < idx ≤ last_dream_evolve_idx 的消息。
+用 idx 判断时间顺序，不要用 UUID 比较大小（UUID v4 字典序不代表时间先后）。
 
 消息列表：
 共 {message_count} 条消息
 
 {msg_list_text}
 
-请按照【模式一：睡眠整理】的规则处理。处理完成后，在报告末尾用 JSON 格式报告：{{"last_compress_id": "<最后压缩的消息UUID>"}}"""
+请按照【模式一：睡眠整理】的规则处理。处理完成后，在报告末尾用 JSON 格式报告：{{"last_compress_id": "<操作范围内 idx 最大的消息UUID>"}}"""
 
             def run_context_manager():
                 return call_subagent(
@@ -623,19 +625,22 @@ async def tidy_context(request: dict):
                 except Exception:
                     pass
 
+            target_tokens = int(estimated_tokens * 0.5)
             prompt = f"""系统上下文超过阈值，触发强制压缩。
 
 当前上下文：{estimated_tokens} tokens（{usage_percent:.1f}%）
+目标上下文：{target_tokens} tokens（需要删除至少 {estimated_tokens - target_tokens} tokens）
 
-双游标：last_compress_id={last_compress_id}，last_dream_evolve_id={new_dream_id}
-只处理 last_compress_id 之后、last_dream_evolve_id 之前范围内的消息。
+强制压缩不受双游标范围限制，可以操作所有消息。
+安全边界：idx > last_dream_evolve_idx 的消息（dream-evolver 未提取知识，last_dream_evolve_id={new_dream_id}），删除前必须先用 update_message 压缩为L0摘要。
+用 idx 判断时间顺序，不要用 UUID 比较大小（UUID v4 字典序不代表时间先后）。
 
 消息列表：
 共 {message_count} 条消息
 
 {msg_list_text}
 
-请按照【模式三：强制压缩】的规则处理。处理完成后，在报告末尾用 JSON 格式报告：{{"last_compress_id": "<最后压缩的消息UUID>"}}"""
+请按照【模式三：强制压缩】的规则处理。处理完成后，在报告末尾用 JSON 格式报告：{{"last_compress_id": "<操作范围内 idx 最大的消息UUID>"}}"""
 
             def run_context_manager_force():
                 return call_subagent(
