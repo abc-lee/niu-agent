@@ -182,7 +182,7 @@ def _extract_result_from_return_value(return_value: Any) -> Optional[str]:
             data = return_value["data"]
             if isinstance(data, dict):
                 return json.dumps(data, ensure_ascii=False)
-            return str(data)
+            return json.dumps(data, ensure_ascii=False, default=str)
         return json.dumps(return_value, ensure_ascii=False)
     return None
 
@@ -398,7 +398,7 @@ def call_subagent(
     logger.info(f"[SubAgent] {agent_name}: Task exceeds {PROMPT_CHUNK_TOKEN_LIMIT} tokens "
                 f"({task_tokens}), split into {len(chunks)} chunks")
 
-    accumulated_result = ""
+    accumulated_parts: list[str] = []
 
     for i, chunk_text in enumerate(chunks):
         is_first = (i == 0)
@@ -409,11 +409,12 @@ def call_subagent(
             handler.history_info = []
             handler._recent_tool_calls = []
             handler.current_turn = 0
+            handler._experience_context = None
 
         # 非首片：在 system_prompt 中注入续接上下文
         current_system_prompt = system_prompt
-        if not is_first and accumulated_result:
-            continuation_context = accumulated_result[:500]
+        if not is_first and accumulated_parts:
+            continuation_context = accumulated_parts[-1][:500]
             current_system_prompt = (
                 system_prompt
                 + f"\n\n[续接上下文] 之前已处理的内容摘要：{continuation_context}...\n请继续处理以下内容："
@@ -436,13 +437,14 @@ def call_subagent(
         # CONTEXT_OVERFLOW：立即返回进度报告
         if return_value and isinstance(return_value, dict) and return_value.get("result") == "CONTEXT_OVERFLOW":
             data = return_value.get("data", {})
+            all_results = "".join(accumulated_parts) + result_text
             overflow_report = {
                 "overflow": True,
                 "agent": agent_name,
                 "turns_completed": data.get("turns_completed", 0),
                 "tokens_used": data.get("tokens_used", 0),
                 "tokens_limit": data.get("tokens_limit", 0),
-                "partial_result": (accumulated_result + result_text)[-2000:] if (accumulated_result or result_text) else "",
+                "partial_result": all_results[-2000:] if all_results else "",
             }
             logger.warning(f"[SubAgent] {agent_name}: Context overflow at {data.get('tokens_used', 0)} tokens "
                           f"(chunk {i + 1}/{len(chunks)})")
@@ -452,6 +454,6 @@ def call_subagent(
         extracted = _extract_result_from_return_value(return_value)
         chunk_result = extracted if extracted is not None else result_text
 
-        accumulated_result += chunk_result + "\n"
+        accumulated_parts.append(chunk_result)
 
-    return accumulated_result.strip()
+    return "\n".join(accumulated_parts).strip()
