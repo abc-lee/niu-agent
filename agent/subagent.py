@@ -95,8 +95,8 @@ def _read_context_window_tokens() -> int:
         if prefs_path.exists():
             prefs = _json.loads(prefs_path.read_text(encoding="utf-8"))
             return prefs.get("context", {}).get("contextWindowSize", 200000)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"[SubAgent] Failed to read context window size from preferences: {e}")
     return 200000
 
 
@@ -280,7 +280,7 @@ def get_subagent_mcp_tools_schema(agent_name: str) -> List[Dict]:
                     }
                 })
 
-    print(f"[SubAgent] {agent_name}: Found {len(schema)} MCP tools for servers {mcp_servers}")
+    logger.info(f"[SubAgent] {agent_name}: Found {len(schema)} MCP tools for servers {mcp_servers}")
     return schema
 
 
@@ -346,13 +346,13 @@ def call_subagent(
     mcp_tools_schema = get_subagent_mcp_tools_schema(agent_name)
     if mcp_tools_schema:
         tools_schema = tools_schema + mcp_tools_schema
-        print(f"[SubAgent] {agent_name}: {len(tools_schema)} tools ({len(mcp_tools_schema)} MCP)")
+        logger.info(f"[SubAgent] {agent_name}: {len(tools_schema)} tools ({len(mcp_tools_schema)} MCP)")
     else:
-        print(f"[SubAgent] {agent_name}: {len(tools_schema)} tools (0 MCP - WARNING: No MCP tools loaded!)")
+        logger.warning(f"[SubAgent] {agent_name}: {len(tools_schema)} tools (0 MCP - WARNING: No MCP tools loaded!)")
 
     # 列出关键工具（调试）
     tool_names = [t.get("function", {}).get("name", "") for t in tools_schema]
-    print(f"[SubAgent] {agent_name}: Tools = {tool_names}")
+    logger.debug(f"[SubAgent] {agent_name}: Tools = {tool_names}")
 
     # 7. 执行（支持 prompt 分片）
     context_window_tokens = _read_context_window_tokens()
@@ -403,6 +403,12 @@ def call_subagent(
     for i, chunk_text in enumerate(chunks):
         is_first = (i == 0)
         chunk_label = f"chunk {i + 1}/{len(chunks)}"
+
+        # 非首片：重置 handler 可变状态，避免前一片的工作记忆污染当前片
+        if not is_first:
+            handler.history_info = []
+            handler._recent_tool_calls = []
+            handler.current_turn = 0
 
         # 非首片：在 system_prompt 中注入续接上下文
         current_system_prompt = system_prompt
