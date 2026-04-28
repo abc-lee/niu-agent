@@ -570,6 +570,8 @@ async def tidy_context(request: dict):
                     "last_compress_at": datetime.now().isoformat(),
                 }, ensure_ascii=False, indent=2), encoding="utf-8")
                 logger.info(f"[Tidy] Compress cursor updated: last_compress_id={new_compress_id}")
+            else:
+                logger.warning("[Tidy] Sleep: Compress cursor UUID regex not matched, cursor not updated")
 
             return {
                 "status": "success",
@@ -607,7 +609,9 @@ async def tidy_context(request: dict):
 
             # 提取并写入 dream 游标
             match = re.search(r'\{"last_dream_evolve_id"\s*:\s*"([^"]+)"\}', dream_result, re.DOTALL)
-            new_dream_id = match.group(1) if match else ""
+            new_dream_id = match.group(1) if match else last_dream_evolve_id
+            if not match:
+                logger.warning("[Tidy] Force: Dream cursor UUID regex not matched, preserving old cursor")
             if new_dream_id:
                 dream_cursor_path.parent.mkdir(parents=True, exist_ok=True)
                 dream_cursor_path.write_text(json.dumps({
@@ -663,8 +667,14 @@ async def tidy_context(request: dict):
                     "last_compress_id": new_compress_id,
                     "last_compress_at": datetime.now().isoformat(),
                 }, ensure_ascii=False, indent=2), encoding="utf-8")
+            else:
+                logger.warning("[Tidy] Force: Compress cursor UUID regex not matched, cursor not updated")
 
             return {"status": "ok", "mode": "force", "tokens_before": estimated_tokens}
+
+        else:
+            logger.warning(f"[Tidy] Unknown mode: {mode}, skipping")
+            return {"status": "error", "message": f"Unknown mode: {mode}. Use 'sleep' or 'force'."}
 
     except Exception as e:
         import traceback

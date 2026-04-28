@@ -53,6 +53,7 @@ mcpServers:
 **合并规则**：
 - 合并多条消息时，保留 idx 最小的那条消息的 id，用 `update_message` 改写为合并摘要
 - 被合并的其他消息用 `delete_messages` 删除
+- 合并摘要格式：`[合并] 原始消息1摘要 + 原始消息2摘要 + ...`（每条原始消息用一句话概括，总长 ≤ 50 tokens）
 
 **安全边界**：
 - idx > last_dream_evolve_id 对应idx 的消息：dream-evolver 尚未提取知识，不得修改或删除
@@ -67,6 +68,7 @@ mcpServers:
 1. 识别范围内的会话单元（一个完整话题/任务）
    - 判断依据：连续讨论同一主题的消息属于同一单元；角色切换（用户→助手→用户）构成一个交互轮次
    - 单元边界：话题明显转换处（如从"帮我写代码"转为"今天天气怎么样"）
+   - 单元大小：每个单元至少 2 条消息（单条消息无需压缩），最多 15 条消息（超过则拆分为多个单元）
 2. 对单元内的消息：
    - 保留 idx 最小的一条消息（保留其 id）
    - 用 `update_message` 将其 content 改写为话题摘要（一句话，~100 tokens）
@@ -94,6 +96,10 @@ mcpServers:
    - 累加待删除消息的 token 数，当 初始token数 - 累计待删除 ≤ 目标token数 时停止收集
 5. 一次性批量执行：用 `delete_messages` 删除所有标记为待删除的消息
 
+**可删除消息不足**：
+- 若遍历完所有非保护消息后，累计可释放 token 仍不足以达到目标：接受当前结果，绝不突破保护边界
+- 报告中注明实际释放 token 数和目标 token 数的差异
+
 **安全边界**：
 - 绝不删除操作开始时记录的 10 条保护消息（按 id 判断，不受后续 idx 变化影响）
 
@@ -113,15 +119,19 @@ mcpServers:
 ## 重要约束
 
 - 绝不删除操作开始时 idx 最大的 10 条消息（按 id 锚定，不受后续 idx 变化影响）
+  - 若总消息数 ≤ 10：保护所有消息，仅允许 update_message 压缩，不允许 delete_messages
 - 会话单元不撕裂（属于同一话题的消息要么全处理，要么全不处理）
 - 一次性完成，不中途暂停
 - **知识保存不是你的职责** — 不要尝试将内容保存到知识图谱或向量库
+- **prompt中的消息列表是权威数据源** — 不要重新调用 get_messages，以 prompt 中附带的列表为准
 
 ## 工具使用规范
 
 - 获取消息：`get_messages(session_id)` — session_id 传 `"default"`
 - 更新消息：`update_message(session_id, message_id, content)`
 - 删除消息：`delete_messages(session_id, message_ids, reason)`
+
+> **注意**：实际调用时工具名可能带 server 前缀（如 `session-manager/get_messages`），以运行时工具列表为准。
 
 ## 禁止
 
