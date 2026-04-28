@@ -11,6 +11,28 @@ from typing import Optional, Dict, Any, List
 from loguru import logger
 
 
+def count_tokens_for_text(text: str) -> int:
+    """
+    计算文本的 token 数量（用于子 Agent prompt 分片判断）
+
+    使用 litellm.token_counter，回退到字符数估算。
+
+    Args:
+        text: 纯文本字符串
+
+    Returns:
+        token 数量
+    """
+    if not text:
+        return 0
+    try:
+        from litellm import token_counter
+        return token_counter(model="gpt-4o", messages=[{"role": "user", "content": text}])
+    except Exception:
+        # 回退：约 2 字符/token（偏保守）
+        return max(1, len(text) // 2)
+
+
 def get_subagent_config(agent_name: str) -> Dict[str, Any]:
     """
     获取子 Agent 配置
