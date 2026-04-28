@@ -134,7 +134,14 @@ mcpServers:
 **空游标处理**：
 - `last_dream_evolve_id` 为空：视为从 idx=0 开始（即处理所有消息）
 
-调用方在 prompt 中会附带消息列表，格式为 `[id:UUID] [idx:N] Xtokens role: content...`。
+调用方在 prompt 中会附带消息列表，格式为 `[id:UUID] [idx:N] Xtokens role: content`。
+
+**输入规范**：
+- 消息内容为**完整原文**，不做截断
+- `Xtokens` 为该条消息的 token 估算值（基于完整内容计算）
+- `role` 为消息角色（user / assistant / tool）
+- prompt 同时包含游标信息和处理模式指示（增量/全量）
+- 消息列表是权威数据源，不需要重新调用 `get_messages`
 
 处理完成后，在报告末尾用 JSON 格式报告：`{"last_dream_evolve_id": "<操作范围内 idx 最大的、且仍存在的消息的 id（UUID）>"}`
 

@@ -125,6 +125,12 @@ mcpServers:
 - **知识保存不是你的职责** — 不要尝试将内容保存到知识图谱或向量库
 - **prompt中的消息列表是权威数据源** — 不要重新调用 get_messages，以 prompt 中附带的列表为准
 
+**输入规范**：
+- 消息格式：`[id:UUID] [idx:N] Xtokens role: content`
+- 消息内容为**完整原文**，不做截断
+- `Xtokens` 为该条消息的 token 估算值（基于完整内容计算）
+- prompt 同时包含游标信息和压缩模式指示
+
 ## 工具使用规范
 
 - 获取消息：`get_messages(session_id)` — session_id 传 `"default"`
