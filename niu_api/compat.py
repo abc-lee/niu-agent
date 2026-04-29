@@ -1249,7 +1249,7 @@ async def _tidy_context_impl(request: dict):
                         if cursor_id in valid_deletes:
                             valid_deletes.remove(cursor_id)
                             logger.warning(f"[Tidy] Force: Protected cursor message {cursor_id} from deletion")
-                    valid_updates = [u for u in updates if isinstance(u, dict) and u.get("message_id", "") in existing_ids]
+                    valid_updates = [u for u in updates if isinstance(u, dict) and u.get("message_id") and u["message_id"] in existing_ids]
                     # 游标保护也覆盖 updates：禁止压缩游标指向的消息（内容被替换会导致边界标记丢失）
                     cursor_updates = [u for u in valid_updates if u.get("message_id", "") in cursor_ids_set]
                     if cursor_updates:
