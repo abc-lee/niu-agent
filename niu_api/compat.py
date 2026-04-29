@@ -164,11 +164,9 @@ async def _check_and_trigger_auto_tidy(store):
 
     在每次 assistant 消息写入后调用。
     整理以 sleep 模式异步执行，不阻塞 chat 响应。
+    不做 locked() 前置检查 — _run_auto_tidy 内部的锁机制处理重入保护。
     """
     try:
-        if _tidy_lock.locked():
-            return
-
         messages = await store.get_messages()
         if not messages:
             return
@@ -184,7 +182,7 @@ async def _check_and_trigger_auto_tidy(store):
 
         logger.info(f"[AutoTidy] Increment {current_tokens - last_tidy_tokens} tokens exceeds threshold, triggering sleep tidy")
 
-        # 异步触发 sleep 模式整理
+        # 异步触发 sleep 模式整理（_run_auto_tidy 内部有 _tidy_lock 防重入）
         asyncio.create_task(_run_auto_tidy())
     except Exception as e:
         logger.warning(f"[AutoTidy] Check failed: {e}")
@@ -222,10 +220,14 @@ _tidy_lock = asyncio.Lock()
 
 async def _run_auto_tidy():
     """执行自动增量整理（sleep 模式），防重入。"""
-    if _tidy_lock.locked():
-        logger.info("[AutoTidy] Already running, skipping")
-        return
-    async with _tidy_lock:
+    # 非阻塞获取锁：如果已有整理在运行，直接跳过
+    if not _tidy_lock.locked():
+        try:
+            # 尝试立即获取锁（超时 0.01s），避免竞态窗口
+            await asyncio.wait_for(_tidy_lock.acquire(), timeout=0.01)
+        except asyncio.TimeoutError:
+            logger.info("[AutoTidy] Lock contention, skipping")
+            return
         try:
             await tidy_context(request={"session_id": "default", "mode": "sleep"})
             # 整理完成后更新 last_tidy_tokens
@@ -238,6 +240,10 @@ async def _run_auto_tidy():
             logger.info(f"[AutoTidy] Completed, last_tidy_tokens updated to {current_tokens}")
         except Exception as e:
             logger.warning(f"[AutoTidy] Failed: {e}")
+        finally:
+            _tidy_lock.release()
+    else:
+        logger.info("[AutoTidy] Already running, skipping")
 
 
 router = APIRouter(tags=["compat"])
@@ -743,9 +749,16 @@ async def tidy_context(request: dict):
                 if _is_subagent_overflow(entity_result):
                     overflow_info = _extract_overflow_info(entity_result)
                     logger.warning(f"[Tidy] entity-extractor overflow: {overflow_info.get('turns_completed', 0)} turns, {overflow_info.get('tokens_used', 0)} tokens")
-                    # 溢出时推进游标到最新消息，避免下次重复处理
-                    new_entity_id = msg_ids[-1] if msg_ids else last_entity_extract_id
-                    logger.warning(f"[Tidy] entity cursor advanced to latest: {new_entity_id}")
+                    # 溢出时尝试从 partial_result 提取游标，避免游标停滞导致无限重复处理
+                    partial = overflow_info.get("partial_result", "")
+                    partial_match = re.search(r'\{"last_entity_extract_id"\s*:\s*"([^"]+)"\}', partial, re.DOTALL)
+                    if partial_match:
+                        new_entity_id = partial_match.group(1)
+                        logger.info(f"[Tidy] Entity cursor recovered from partial_result: {new_entity_id}")
+                    else:
+                        # 无法提取游标 → 保留旧游标（宁可重复处理也不丢失知识）
+                        new_entity_id = last_entity_extract_id
+                        logger.warning(f"[Tidy] Entity cursor preserved at {last_entity_extract_id} to prevent knowledge loss")
                 else:
                     # 成功：推进游标到最后处理的增量消息
                     new_entity_id = entity_msg_ids[-1] if entity_msg_ids else last_entity_extract_id
@@ -813,9 +826,9 @@ async def tidy_context(request: dict):
                     new_dream_id = partial_match.group(1)
                     logger.info(f"[Tidy] Dream cursor recovered from partial_result: {new_dream_id}")
                 else:
-                    # 无法提取游标 → 推进到消息列表最新消息，避免下次重复处理同一范围
-                    new_dream_id = msg_ids[-1] if msg_ids else last_dream_evolve_id
-                    logger.warning(f"[Tidy] Dream cursor advanced to latest message to prevent re-processing: {new_dream_id}")
+                    # 无法提取游标 → 保留旧游标（宁可重复处理也不丢失知识）
+                    new_dream_id = last_dream_evolve_id
+                    logger.warning(f"[Tidy] Dream cursor preserved at {last_dream_evolve_id} to prevent knowledge loss")
             else:
                 # 提取并写入 dream 游标（UUID）
                 match = re.search(r'\{"last_dream_evolve_id"\s*:\s*"([^"]+)"\}', dream_result, re.DOTALL)
@@ -873,8 +886,8 @@ async def tidy_context(request: dict):
                     new_compress_id = partial_match.group(1)
                     logger.info(f"[Tidy] Compress cursor recovered from partial_result: {new_compress_id}")
                 else:
-                    new_compress_id = msg_ids[-1] if msg_ids else last_compress_id
-                    logger.warning(f"[Tidy] Compress cursor advanced to latest message to prevent re-processing: {new_compress_id}")
+                    new_compress_id = last_compress_id
+                    logger.warning(f"[Tidy] Compress cursor preserved at {last_compress_id} to prevent knowledge loss")
                 # 溢出时也写入游标（推进到已处理位置）
                 if new_compress_id:
                     compress_cursor_path.parent.mkdir(parents=True, exist_ok=True)
@@ -935,9 +948,15 @@ async def tidy_context(request: dict):
             if _is_subagent_overflow(entity_result):
                 overflow_info = _extract_overflow_info(entity_result)
                 logger.warning(f"[Tidy] Force: entity-extractor overflow: {overflow_info.get('turns_completed', 0)} turns, {overflow_info.get('tokens_used', 0)} tokens")
-                # force 模式保留旧游标（手动触发不会自动循环）
-                new_entity_id = last_entity_extract_id
-                logger.warning(f"[Tidy] Force: entity cursor preserved at {last_entity_extract_id}")
+                # 溢出时尝试从 partial_result 提取游标
+                partial = overflow_info.get("partial_result", "")
+                partial_match = re.search(r'\{"last_entity_extract_id"\s*:\s*"([^"]+)"\}', partial, re.DOTALL)
+                if partial_match:
+                    new_entity_id = partial_match.group(1)
+                    logger.info(f"[Tidy] Force: Entity cursor recovered from partial_result: {new_entity_id}")
+                else:
+                    new_entity_id = last_entity_extract_id
+                    logger.warning(f"[Tidy] Force: Entity cursor preserved at {last_entity_extract_id} to prevent knowledge loss")
             else:
                 # 提取并写入 entity 游标
                 match = re.search(r'\{"last_entity_extract_id"\s*:\s*"([^"]+)"\}', entity_result, re.DOTALL)
@@ -988,9 +1007,9 @@ async def tidy_context(request: dict):
                     new_dream_id = partial_match.group(1)
                     logger.info(f"[Tidy] Force: Dream cursor recovered from partial_result: {new_dream_id}")
                 else:
-                    # force 模式无 msg_ids，保留旧游标（force 是手动触发不会自动循环）
+                    # 无法提取游标 → 保留旧游标（宁可重复处理也不丢失知识）
                     new_dream_id = last_dream_evolve_id
-                    logger.warning(f"[Tidy] Force: Dream cursor preserved at {last_dream_evolve_id} (force mode, no automatic re-processing)")
+                    logger.warning(f"[Tidy] Force: Dream cursor preserved at {last_dream_evolve_id} to prevent knowledge loss")
             else:
                 # 提取并写入 dream 游标
                 match = re.search(r'\{"last_dream_evolve_id"\s*:\s*"([^"]+)"\}', dream_result, re.DOTALL)

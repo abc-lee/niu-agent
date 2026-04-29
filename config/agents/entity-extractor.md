@@ -70,8 +70,8 @@ mcpServers:
 
 ## 游标机制
 
-- 调用方会告知 `last_dream_evolve_id`（上次处理到的消息UUID），只处理该ID之后的新消息
-- 处理完成后，在报告末尾用 JSON 格式报告：`{"last_dream_evolve_id": "<最后处理的消息UUID>"}`
+- 调用方会告知 `last_entity_extract_id`（上次处理到的消息UUID），只处理该ID之后的新消息
+- 处理完成后，在报告末尾用 JSON 格式报告：`{"last_entity_extract_id": "<最后处理的消息UUID>"}`
 - force 模式下不使用游标，全量处理所有消息
 
 ## 禁止
