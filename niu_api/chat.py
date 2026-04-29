@@ -245,6 +245,13 @@ async def chat(request: ChatRequest) -> StreamingResponse:
                     tidy_result = await _tidy_context_impl(request={"session_id": session_id, "mode": "force"})
                 logger.info(f"[Chat SSE] Force compression result: {tidy_result.get('status')}")
                 yield f"data: {json.dumps({'force_compression_done': True, 'status': tidy_result.get('status')})}\n\n"
+            else:
+                # 正常：异步触发增量整理检查（不阻塞）
+                full_reply = "".join(reply_chunks)
+                if full_reply.strip():
+                    from niu_api.compat import _check_and_trigger_auto_tidy
+                    store = await get_message_store()
+                    await _check_and_trigger_auto_tidy(store)
 
             # Send final message
             yield f"data: {json.dumps({'done': True, 'session_id': session_id})}\n\n"

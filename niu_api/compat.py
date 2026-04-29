@@ -42,7 +42,7 @@ def _extract_cursor_id(text: str, field_name: str, valid_ids: set) -> str | None
     if not match:
         return None
     candidate = match.group(1)
-    if valid_ids and candidate not in valid_ids:
+    if valid_ids is not None and candidate not in valid_ids:
         logger.warning(f"[Tidy] Extracted {field_name}={candidate} not in message list, discarding")
         return None
     return candidate
@@ -460,8 +460,21 @@ async def chat_session(request: ChatRequest) -> ChatResponse:
             from niu_api.chat import notify_new_message
             await notify_new_message(message_id, "assistant", full_reply)
 
-            # 自动增量整理检查
-            await _check_and_trigger_auto_tidy(store)
+        # 检测主 Agent 上下文溢出 → 同步触发 force 压缩（阻塞）
+        rv = getattr(runner, "last_return_value", None)
+        if rv and isinstance(rv, dict) and rv.get("result") == "CONTEXT_OVERFLOW":
+            overflow_data = rv.get("data", {})
+            logger.warning(
+                f"[Chat Session] Main agent CONTEXT_OVERFLOW at {overflow_data.get('tokens_used', 0)} tokens, "
+                f"triggering force compression (blocking)"
+            )
+            async with _tidy_lock:
+                tidy_result = await _tidy_context_impl(request={"session_id": session_id, "mode": "force"})
+            logger.info(f"[Chat Session] Force compression result: {tidy_result.get('status')}")
+        else:
+            # 正常：异步触发增量整理检查（不阻塞）
+            if full_reply.strip():
+                await _check_and_trigger_auto_tidy(store)
 
         return ChatResponse(reply=full_reply, session_id="default", message_id=message_id)
     finally:
@@ -1145,9 +1158,10 @@ async def _tidy_context_impl(request: dict):
                     existing_ids = {getattr(m, "id", "") for m in fresh_messages}
                     valid_deletes = [mid for mid in deletes if mid in existing_ids]
                     # 保护游标：禁止删除游标指向的消息，避免悬空游标
-                    if new_compress_id and new_compress_id in valid_deletes:
-                        valid_deletes.remove(new_compress_id)
-                        logger.warning(f"[Tidy] Force: Protected cursor message {new_compress_id} from deletion")
+                    for cursor_id in [new_compress_id, new_entity_id, new_dream_id]:
+                        if cursor_id and cursor_id in valid_deletes:
+                            valid_deletes.remove(cursor_id)
+                            logger.warning(f"[Tidy] Force: Protected cursor message {cursor_id} from deletion")
                     valid_updates = [u for u in updates if u.get("message_id", "") in existing_ids]
                     if len(valid_deletes) < len(deletes):
                         logger.warning(f"[Tidy] Force: Filtered {len(deletes) - len(valid_deletes)} invalid delete IDs")

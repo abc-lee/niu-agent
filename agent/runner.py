@@ -764,6 +764,10 @@ class NiuRunner:
             f"tools_schema: {len(self.base_tools_schema)} base + 1 disk = {len(tools_schema)} total"
         )
 
+        # 读取上下文窗口大小，用于主 Agent 85% 溢出检测
+        from agent.subagent import _read_context_window_tokens
+        context_window_tokens = _read_context_window_tokens()
+
         gen = agent_runner_loop(
             client=self.client,
             system_prompt=system_prompt,
@@ -775,6 +779,7 @@ class NiuRunner:
             initial_user_content=user_input,
             history=history,  # Pass history to agent_loop
             on_turn_end=self._on_turn_end,  # 每轮结束后刷新动态注入
+            context_window_tokens=context_window_tokens,  # 主 Agent 溢出检测
         )
 
         # 累加输出
