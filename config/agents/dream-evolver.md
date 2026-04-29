@@ -226,10 +226,10 @@ lightrag_get_graph(entity_name="FastAPI", depth=1)
 
 ## 游标机制
 
-调用方会在 prompt 中传入游标值：
+调用方会传入消息列表和游标信息：
 - `last_dream_evolve_id`：上次处理到的消息 UUID（首次为空）
 
-通过 `get_messages(session_id)` 获取消息列表（session_id 传 `"default"`）。每条消息有 `id`（UUID，持久化）和 `idx`（位置索引，从1开始，动态生成）。
+每条消息格式为 `[id:UUID] [idx:N] Xtokens role: content`。
 
 **重要**：
 - **游标用 id（UUID）存储**：因为 id 是数据库中持久化的，删除消息不影响其他消息的 id
@@ -237,24 +237,14 @@ lightrag_get_graph(entity_name="FastAPI", depth=1)
 - **UUID v4 字典序不代表时间先后**：不要用 id 比较大小来判断先后
 
 **操作步骤**：
-1. 从消息列表中找到游标 UUID 对应的消息，记录其 idx
-2. 用 idx 确定操作范围（idx 大的 = 更新的消息）
+1. 如果有游标 UUID，找到其在消息列表中的 idx，只处理 idx 更大的消息
+2. 如果游标 UUID 不在消息列表中，或没有游标，处理所有消息
 3. 操作完成后，用 id（UUID）报告游标位置
-
-**游标含义**：
-- 增量模式：只处理 idx > 游标id对应idx 的消息（先从消息列表中找到游标UUID对应的idx，再用idx确定范围）
-- force 模式：全量处理所有消息（不受游标范围限制）
-
-**空游标处理**：
-- `last_dream_evolve_id` 为空：视为从第一条消息开始（即处理所有消息）
-
-调用方在 prompt 中会附带消息列表，格式为 `[id:UUID] [idx:N] Xtokens role: content`。
 
 **输入规范**：
 - 消息内容为**完整原文**，不做截断
 - `Xtokens` 为该条消息的 token 估算值（基于完整内容计算）
 - `role` 为消息角色（user / assistant / tool）
-- prompt 同时包含游标信息和处理模式指示（增量/全量）
 - 消息列表是权威数据源，不需要重新调用 `get_messages`
 
 ## 输出格式
@@ -277,7 +267,7 @@ Skill 维护：{n5} 个 skill 检查
 
 处理完成后，在报告末尾用 JSON 格式报告：`{"last_dream_evolve_id": "<操作范围内 idx 最大的、且仍存在的消息的 id（UUID）>"}`
 
-注意：游标用 id（UUID）存储，应推进到操作范围的终点（范围内 idx 最大的那条消息的 id），而不是最后被操作的那条。游标指向的消息必须仍存在。
+注意：游标应推进到操作范围的终点（范围内 idx 最大的那条消息的 id），而不是最后被操作的那条。游标指向的消息必须仍存在。
 
 ## 禁止
 
