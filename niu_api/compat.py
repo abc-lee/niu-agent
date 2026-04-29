@@ -175,6 +175,22 @@ def build_truncated_msg_list_text(
     return "\n".join(lines)
 
 
+def _estimate_total_tokens(messages) -> int:
+    """估算消息列表的总 token 数（逐条计算，含角色开销）。"""
+    try:
+        from litellm import token_counter
+        total = 0
+        for msg in messages:
+            content = getattr(msg, "content", "") or ""
+            role = getattr(msg, "role", "user") or "user"
+            total += token_counter(model="gpt-4o", messages=[{"role": role, "content": content}])
+        return total
+    except Exception:
+        from agent.subagent import count_tokens_for_text
+        total_content = "".join(getattr(m, "content", "") or "" for m in messages)
+        return count_tokens_for_text(total_content)
+
+
 def _should_auto_tidy(current_tokens: int, last_tidy_tokens: int, threshold: int = 50000) -> bool:
     """
     判断是否应该触发自动增量整理。
@@ -209,9 +225,7 @@ async def _check_and_trigger_auto_tidy(store):
         if not messages:
             return
 
-        from agent.subagent import count_tokens_for_text
-        total_content = "".join(getattr(m, "content", "") or "" for m in messages)
-        current_tokens = count_tokens_for_text(total_content)
+        current_tokens = _estimate_total_tokens(messages)
 
         last_tidy_tokens = _read_last_tidy_tokens()
 
@@ -259,24 +273,26 @@ _tidy_lock = asyncio.Lock()
 async def _run_auto_tidy():
     """自动整理：非阻塞获取锁，避免与手动触发竞争或无限阻塞。"""
     try:
-        # 前置检查：锁已被占用则直接跳过
-        if _tidy_lock.locked():
+        # 非阻塞获取锁：如果锁已被占用（force tidy 或手动触发），直接跳过
+        try:
+            await asyncio.wait_for(_tidy_lock.acquire(), timeout=0.01)
+        except TimeoutError:
             logger.info("[AutoTidy] Tidy already running, skipping")
             return
-        # 极小概率竞态：locked() 返回 False 但获取前被抢占
-        # 此时 async with 会阻塞直到锁释放，但不会死锁
-        async with _tidy_lock:
+
+        try:
             result = await _tidy_context_impl(request={"session_id": "default", "mode": "sleep"})
+            # 无论成功失败都更新 last_tidy_tokens，避免失败后无限重触发
+            store = await get_message_store()
+            messages = await store.get_messages()
+            current_tokens = _estimate_total_tokens(messages)
+            _write_last_tidy_tokens(current_tokens)
             if result.get("status") != "error":
-                store = await get_message_store()
-                messages = await store.get_messages()
-                from agent.subagent import count_tokens_for_text
-                total_content = "".join(getattr(m, "content", "") or "" for m in messages)
-                current_tokens = count_tokens_for_text(total_content)
-                _write_last_tidy_tokens(current_tokens)
                 logger.info(f"[AutoTidy] Completed, last_tidy_tokens updated to {current_tokens}")
             else:
-                logger.warning(f"[AutoTidy] tidy_context returned error: {result}")
+                logger.warning(f"[AutoTidy] tidy_context returned error: {result}, but last_tidy_tokens updated to prevent re-triggering")
+        finally:
+            _tidy_lock.release()
     except Exception as e:
         logger.warning(f"[AutoTidy] Failed: {e}")
 
