@@ -232,6 +232,20 @@ async def chat(request: ChatRequest) -> StreamingResponse:
             if stream_error:
                 yield f"data: {json.dumps({'error': stream_error})}\n\n"
 
+            # 检测主 Agent 上下文溢出 → 同步触发 force 压缩（阻塞）
+            rv = getattr(runner, "last_return_value", None)
+            if rv and isinstance(rv, dict) and rv.get("result") == "CONTEXT_OVERFLOW":
+                overflow_data = rv.get("data", {})
+                logger.warning(
+                    f"[Chat SSE] Main agent CONTEXT_OVERFLOW at {overflow_data.get('tokens_used', 0)} tokens, "
+                    f"triggering force compression (blocking)"
+                )
+                from niu_api.compat import _tidy_context_impl, _tidy_lock
+                async with _tidy_lock:
+                    tidy_result = await _tidy_context_impl(request={"session_id": session_id, "mode": "force"})
+                logger.info(f"[Chat SSE] Force compression result: {tidy_result.get('status')}")
+                yield f"data: {json.dumps({'force_compression_done': True, 'status': tidy_result.get('status')})}\n\n"
+
             # Send final message
             yield f"data: {json.dumps({'done': True, 'session_id': session_id})}\n\n"
         finally:
@@ -307,9 +321,25 @@ async def chat_sync(request: ChatRequest) -> ChatResponse:
             message_id = await store.add_message(role="assistant", content=full_reply)
             await notify_new_message(message_id, "assistant", full_reply)
 
-            # 自动增量整理检查
-            from niu_api.compat import _check_and_trigger_auto_tidy
-            await _check_and_trigger_auto_tidy(store)
+        # 检测主 Agent 上下文溢出 → 同步触发 force 压缩（阻塞，压缩完再继续）
+        rv = getattr(runner, "last_return_value", None)
+        if rv and isinstance(rv, dict) and rv.get("result") == "CONTEXT_OVERFLOW":
+            from loguru import logger
+            overflow_data = rv.get("data", {})
+            logger.warning(
+                f"[Chat] Main agent CONTEXT_OVERFLOW at {overflow_data.get('tokens_used', 0)} tokens, "
+                f"triggering force compression (blocking)"
+            )
+            from niu_api.compat import _tidy_context_impl, _tidy_lock
+            async with _tidy_lock:
+                tidy_result = await _tidy_context_impl(request={"session_id": session_id, "mode": "force"})
+            logger.info(f"[Chat] Force compression result: {tidy_result.get('status')}")
+            # 压缩完成后不触发 auto_tidy（force 已包含完整3步整理）
+        else:
+            # 正常：异步触发增量整理检查（不阻塞）
+            if full_reply.strip():
+                from niu_api.compat import _check_and_trigger_auto_tidy
+                await _check_and_trigger_auto_tidy(store)
 
         return ChatResponse(session_id=session_id, reply=full_reply, message_id=message_id)
     finally:

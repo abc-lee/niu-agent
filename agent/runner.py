@@ -780,6 +780,7 @@ class NiuRunner:
         # 累加输出
         full_resp = ""
         return_value = None
+        self.last_return_value = None  # 重置，避免复用残留
         while True:
             try:
                 chunk = next(gen)
@@ -787,6 +788,9 @@ class NiuRunner:
             except StopIteration as e:
                 return_value = e.value
                 break
+
+        # 暴露 return_value 给调用方（用于检测 CONTEXT_OVERFLOW 等控制流）
+        self.last_return_value = return_value
 
         # 如果 full_resp 为空但有返回值数据，使用返回值
         if not full_resp.strip() and return_value:
