@@ -20,7 +20,7 @@ mcpServers:
 
 ## 核心任务
 
-回顾上方对话，筛选出有价值的内容：
+处理传入的消息，筛选出有价值的内容：
 
 ### 记忆提炼
 用户是否透露了偏好、期望等信息？
@@ -62,20 +62,13 @@ mcpServers:
 - 查询已有实体：`lightrag_search_entities(query, entity_type, top_k)`
 - 图遍历：`lightrag_get_graph(action="explore", entity_name, depth)`
 
-**关键变化**：
-- 旧方式：逐条提取实体和关系，手动调用 `lightrag_insert_entity`/`lightrag_insert_relation`
-- 新方式：提炼有价值内容形成精炼文档，调用 `lightrag_insert` 整体入库
-- LightRAG 对精炼文档做 ainsert，自动提取实体和关系，建立语义连接
-- 精炼文档质量远高于原始聊天记录，LightRAG 的提取效果更好
-
 ## 游标机制
 
-- 调用方会告知 `last_entity_extract_id`（上次处理到的消息UUID），只处理该ID之后的新消息
-- 处理完成后，在报告末尾用 JSON 格式报告：`{"last_entity_extract_id": "<最后处理的消息UUID>"}`
-- force 模式下不使用游标，全量处理所有消息
+- 调用方会传入消息列表，你只需处理传入的消息
+- 每条消息带有 `[idx:N]` 序号，处理完成后报告 idx 最大的那条消息的 UUID
+- 在报告末尾输出：`{"last_entity_extract_id": "<idx最大的消息的UUID>"}`
+- 如果传入的消息为空，输出 `{"last_entity_extract_id": null}`
 
 ## 禁止
 
-- 禁止使用 `code_run` 工具
 - 禁止使用 `lightrag_insert_entity` 或 `lightrag_insert_relation`（精炼文档通过 lightrag_insert 整体入库，实体和关系由 LightRAG 自动提取）
-- 禁止使用 `add_document`、`search_documents`、`get_document`、`delete_document`、`list_documents`（已废弃的 vector-store 工具）

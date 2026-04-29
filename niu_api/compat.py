@@ -72,7 +72,7 @@ def _extract_overflow_info(result: str) -> dict:
         return {"overflow": True, "raw": result}
 
 
-def _build_incremental_msg_text(messages, last_cursor_id: str, out_msg_ids: list) -> str:
+def _build_incremental_msg_text(messages, last_cursor_id: str, out_msg_ids: list, msg_tokens: list | None = None) -> str:
     """
     构建增量消息文本：只包含游标之后的新消息。
 
@@ -80,6 +80,7 @@ def _build_incremental_msg_text(messages, last_cursor_id: str, out_msg_ids: list
         messages: 全量消息列表
         last_cursor_id: 上次处理到的消息 UUID（空字符串表示全量）
         out_msg_ids: 输出参数，收集增量消息的 UUID 列表
+        msg_tokens: 每条消息的 token 数列表（与 messages 等长），None 则不注解
 
     Returns:
         格式化的消息文本
@@ -92,6 +93,8 @@ def _build_incremental_msg_text(messages, last_cursor_id: str, out_msg_ids: list
             if msg_id == last_cursor_id:
                 cursor_idx = i
                 break
+        if cursor_idx < 0:
+            logger.warning(f"[Tidy] Cursor UUID {last_cursor_id} not found in message list, degrading to full processing")
 
     # 只取游标之后的消息
     start = cursor_idx + 1 if cursor_idx >= 0 else 0
@@ -100,7 +103,10 @@ def _build_incremental_msg_text(messages, last_cursor_id: str, out_msg_ids: list
         msg_id = getattr(msg, "id", "") or ""
         out_msg_ids.append(msg_id)
         content = msg.content or ""
-        lines.append(f"[id:{msg_id}] [idx:{idx}] {msg.role}: {content}")
+        token_annotation = ""
+        if msg_tokens and (idx - 1) < len(msg_tokens):
+            token_annotation = f"{msg_tokens[idx - 1]}tokens "
+        lines.append(f"[id:{msg_id}] [idx:{idx}] {token_annotation}{msg.role}: {content}")
 
     if not lines:
         return "（无新增消息）"
@@ -779,8 +785,12 @@ async def _tidy_context_impl(request: dict):
 
             # 1/3. entity-extractor（增量，非破坏性）
             entity_msg_ids = []
-            entity_prompt = "请从以下消息中提取实体和关系，写入知识图谱。\n\n"
-            entity_prompt += _build_incremental_msg_text(messages, last_entity_extract_id, entity_msg_ids)
+            entity_incremental_text = _build_incremental_msg_text(messages, last_entity_extract_id, entity_msg_ids, msg_tokens)
+            entity_prompt = f"""请从以下消息中提取有价值的内容，形成精炼文档提交给 LightRAG 入库。
+
+{entity_incremental_text}
+
+处理完成后，在报告末尾用 JSON 格式报告：{{"last_entity_extract_id": "<操作范围内 idx 最大的、且仍存在的消息的 id（UUID）>"}}"""
             if entity_msg_ids:
                 logger.info(f"[Tidy] entity-extractor: {len(entity_msg_ids)} new messages since cursor")
 
@@ -809,8 +819,14 @@ async def _tidy_context_impl(request: dict):
                         new_entity_id = last_entity_extract_id
                         logger.warning(f"[Tidy] Entity cursor preserved at {last_entity_extract_id} to prevent knowledge loss")
                 else:
-                    # 成功：推进游标到最后处理的增量消息
-                    new_entity_id = entity_msg_ids[-1] if entity_msg_ids else last_entity_extract_id
+                    # 成功：从子 Agent 输出提取实际处理位置
+                    extracted = _extract_cursor_id(entity_result, "last_entity_extract_id", msg_id_set)
+                    if extracted:
+                        new_entity_id = extracted
+                    else:
+                        # 提取失败 → 保留旧游标（重复处理优于知识丢失，与 force 模式一致）
+                        new_entity_id = last_entity_extract_id
+                        logger.warning("[Tidy] Entity cursor regex not matched, preserving old cursor to prevent knowledge loss")
 
                 if new_entity_id:
                     entity_cursor_path.parent.mkdir(parents=True, exist_ok=True)
@@ -824,9 +840,7 @@ async def _tidy_context_impl(request: dict):
 
             # 2/3. dream-evolver prompt（UUID 游标，idx 判断时间顺序）
             if last_dream_evolve_id:
-                dream_prompt = f"""系统进入睡眠状态，触发梦境进化。
-
-    当前上下文：{estimated_tokens} tokens（{usage_percent:.1f}%）
+                dream_prompt = f"""请对以下消息中涉及的实体进行精加工（打标签、建关系、关联脑区、更新画像），并维护 skill 文件。
 
     增量游标：上次处理到消息UUID={last_dream_evolve_id}，只处理该UUID对应idx之后的新消息。
     游标用 id（UUID）存储（持久化），时间顺序用 idx 判断（idx 是动态位置索引，删除消息后会变，不能当游标存储）。UUID v4 字典序不代表时间先后。
@@ -837,12 +851,9 @@ async def _tidy_context_impl(request: dict):
 
     {msg_list_text}
 
-    处理完成后，在报告末尾用 JSON 格式报告：{{"last_dream_evolve_id": "<操作范围内 idx 最大的、且仍存在的消息的 id（UUID）>"}}
-    禁止使用 code_run 工具。"""
+    处理完成后，在报告末尾用 JSON 格式报告：{{"last_dream_evolve_id": "<操作范围内 idx 最大的、且仍存在的消息的 id（UUID）>"}}"""
             else:
-                dream_prompt = f"""系统进入睡眠状态，触发梦境进化。
-
-    当前上下文：{estimated_tokens} tokens（{usage_percent:.1f}%）
+                dream_prompt = f"""请对以下消息中涉及的实体进行精加工（打标签、建关系、关联脑区、更新画像），并维护 skill 文件。
 
     全量处理所有消息（无增量游标）。
 
@@ -851,8 +862,7 @@ async def _tidy_context_impl(request: dict):
 
     {msg_list_text}
 
-    处理完成后，在报告末尾用 JSON 格式报告：{{"last_dream_evolve_id": "<最后处理的消息UUID>"}}
-    禁止使用 code_run 工具。"""
+    处理完成后，在报告末尾用 JSON 格式报告：{{"last_dream_evolve_id": "<操作范围内 idx 最大的、且仍存在的消息的 id（UUID）>"}}"""
 
             def run_dream_evolver():
                 return call_subagent(
@@ -970,18 +980,14 @@ async def _tidy_context_impl(request: dict):
             logger.info("[Tidy] Force mode: starting entity-extractor (full processing)")
 
             # 1/3. entity-extractor（全量，非破坏性，不能截断内容）
-            entity_prompt_force = f"""系统上下文超过阈值，触发强制整理。
-
-    当前上下文：{estimated_tokens} tokens（{usage_percent:.1f}%）
-
-    全量处理所有消息（不使用增量游标），提取实体和关系写入知识图谱。
+            entity_prompt_force = f"""请从以下消息中提取有价值的内容，形成精炼文档提交给 LightRAG 入库。
 
     消息列表：
     共 {message_count} 条消息
 
     {msg_list_text}
 
-    处理完成后，在报告末尾用 JSON 格式报告：{{"last_entity_extract_id": "<最后处理的消息UUID>"}}。禁止使用 code_run 工具。"""
+    处理完成后，在报告末尾用 JSON 格式报告：{{"last_entity_extract_id": "<操作范围内 idx 最大的、且仍存在的消息的 id（UUID）>"}}"""
 
             def run_entity_extractor_force():
                 return call_subagent(
@@ -1023,18 +1029,14 @@ async def _tidy_context_impl(request: dict):
             # 2/3. dream-evolver（全量，非破坏性，不能截断内容）
             logger.info("[Tidy] Force mode: starting dream-evolver (full processing)")
 
-            dream_prompt = f"""系统上下文超过阈值，触发强制整理。
-
-    当前上下文：{estimated_tokens} tokens（{usage_percent:.1f}%）
-
-    全量处理所有消息（不使用增量游标），基于知识图谱做梦境整理/知识进化。
+            dream_prompt = f"""请对以下消息中涉及的实体进行精加工（打标签、建关系、关联脑区、更新画像），并维护 skill 文件。
 
     消息列表：
     共 {message_count} 条消息
 
     {msg_list_text}
 
-    处理完成后，在报告末尾用 JSON 格式报告：{{"last_dream_evolve_id": "<最后处理的消息UUID>"}}。禁止使用 code_run 工具。"""
+    处理完成后，在报告末尾用 JSON 格式报告：{{"last_dream_evolve_id": "<操作范围内 idx 最大的、且仍存在的消息的 id（UUID）>"}}"""
 
             def run_dream_evolver_force():
                 return call_subagent(
