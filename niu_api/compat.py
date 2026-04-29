@@ -99,13 +99,14 @@ def _build_incremental_msg_text(messages, last_cursor_id: str, out_msg_ids: list
     # 只取游标之后的消息
     start = cursor_idx + 1 if cursor_idx >= 0 else 0
     lines = []
-    for idx, msg in enumerate(messages[start:], start + 1):
+    for i, msg in enumerate(messages[start:]):
+        idx = start + i + 1  # 1-based display index
         msg_id = getattr(msg, "id", "") or ""
         out_msg_ids.append(msg_id)
         content = msg.content or ""
         token_annotation = ""
-        if msg_tokens and (idx - 1) < len(msg_tokens):
-            token_annotation = f"{msg_tokens[idx - 1]}tokens "
+        if msg_tokens and (start + i) < len(msg_tokens):
+            token_annotation = f"{msg_tokens[start + i]}tokens "
         lines.append(f"[id:{msg_id}] [idx:{idx}] {token_annotation}{msg.role}: {content}")
 
     if not lines:
@@ -1159,7 +1160,17 @@ async def _tidy_context_impl(request: dict):
                     fresh_messages = await store.get_messages()
                     existing_ids = {getattr(m, "id", "") for m in fresh_messages}
                     valid_deletes = [mid for mid in deletes if mid in existing_ids]
+                    # 校验游标有效性
+                    if new_compress_id and new_compress_id not in existing_ids:
+                        logger.warning(f"[Tidy] Force: last_compress_id {new_compress_id} not in messages, reverting to {last_compress_id}")
+                        new_compress_id = last_compress_id
+                    # 二次校验：回退值也必须有效，否则置空（避免悬空游标）
+                    if new_compress_id and new_compress_id not in existing_ids:
+                        logger.warning(f"[Tidy] Force: Fallback last_compress_id {new_compress_id} also invalid, clearing cursor")
+                        new_compress_id = ""
+
                     # 保护游标：禁止删除游标指向的消息，避免悬空游标
+                    # 在游标回退解决后再做保护，确保回退值也在保护列表中
                     for cursor_id in [new_compress_id, new_entity_id, new_dream_id]:
                         if cursor_id and cursor_id in valid_deletes:
                             valid_deletes.remove(cursor_id)
@@ -1169,11 +1180,6 @@ async def _tidy_context_impl(request: dict):
                         logger.warning(f"[Tidy] Force: Filtered {len(deletes) - len(valid_deletes)} invalid delete IDs")
                     if len(valid_updates) < len(updates):
                         logger.warning(f"[Tidy] Force: Filtered {len(updates) - len(valid_updates)} invalid update IDs")
-
-                    # 校验游标有效性
-                    if new_compress_id and new_compress_id not in existing_ids:
-                        logger.warning(f"[Tidy] Force: last_compress_id {new_compress_id} not in messages, reverting to {last_compress_id}")
-                        new_compress_id = last_compress_id
 
                     # 执行删除
                     if valid_deletes:
