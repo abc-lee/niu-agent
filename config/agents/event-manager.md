@@ -83,7 +83,3 @@ mcpServers:
 - `lightrag_delete_document`：从知识图谱删除事件（需 doc_id，级联删除关联实体和关系）
 - `lightrag_insert_entity`：创建事件实体
 - `lightrag_insert_relation`：创建时间链关系
-
-## 禁止
-
-- 禁止使用 `add_document`、`search_documents`、`get_document`、`delete_document`（已废弃的 vector-store 工具）
