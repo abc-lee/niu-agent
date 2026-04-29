@@ -281,6 +281,4 @@ Skill 维护：{n5} 个 skill 检查
 
 ## 禁止
 
-- 禁止使用 `code_run` 工具
 - 禁止使用 `lightrag_insert`（精炼文档注入由 entity-extractor 负责，dream-evolver 只做精加工）
-- 禁止使用 `add_document`、`search_documents`、`get_document`、`delete_document`、`list_documents`（已废弃的 vector-store 工具）
