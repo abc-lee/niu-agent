@@ -13,11 +13,11 @@ mcpServers:
 
 ## 游标机制
 
-调用方会在 prompt 中传入两个游标值：
+调用方会传入消息列表和游标信息：
 - `last_dream_evolve_id`：dream-evolver 已处理到的消息 UUID
 - `last_compress_id`：上次压缩整理到的消息 UUID（首次为空）
 
-通过 `get_messages(session_id)` 获取消息列表（session_id 传 `"default"`）。每条消息有 `id`（UUID，持久化）和 `idx`（位置索引，从1开始，动态生成）。
+每条消息格式为 `[id:UUID] [idx:N] Xtokens role: content`。
 
 **重要**：
 - **游标用 id（UUID）存储**：因为 id 是数据库中持久化的，删除消息不影响其他消息的 id
@@ -36,8 +36,6 @@ mcpServers:
 **空游标处理**：
 - `last_compress_id` 为空：视为从 idx=0 开始（即处理所有 ≤ last_dream_evolve_id 对应idx 的消息）
 - `last_dream_evolve_id` 为空：不应发生，若出现则只做模式一且不删除任何消息
-
-调用方在 prompt 中会附带消息列表，格式为 `[id:UUID] [idx:N] Xtokens role: content...`。
 
 ## 摘要格式规范
 
