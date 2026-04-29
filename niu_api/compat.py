@@ -659,8 +659,11 @@ async def clear_chat() -> dict:
         from pathlib import Path
         for cursor_name in ["last_entity_extract.json", "last_dream_evolve.json", "last_compress.json", "last_tidy_tokens.json"]:
             cursor_p = Path.home() / ".niu" / cursor_name
-            if cursor_p.exists():
-                cursor_p.unlink()
+            try:
+                if cursor_p.exists():
+                    cursor_p.unlink()
+            except OSError as e:
+                logger.warning(f"[clear_chat] Failed to reset cursor file {cursor_name}: {e}")
 
         return {"success": True, "deleted_count": count, "cleaned_tmp": cleaned_tmp}
     finally:
@@ -920,6 +923,15 @@ async def _tidy_context_impl(request: dict):
                 new_dream_id = extracted or last_dream_evolve_id
                 if not extracted:
                     logger.warning("[Tidy] Dream cursor UUID regex not matched, preserving old cursor")
+                # 校验游标：子 Agent 可能已删除游标指向的消息
+                if new_dream_id:
+                    fresh_msgs = await store.get_messages()
+                    fresh_ids = {getattr(m, "id", "") for m in fresh_msgs}
+                    if new_dream_id not in fresh_ids:
+                        logger.warning(f"[Tidy] Dream cursor {new_dream_id} deleted by sub-agent, reverting to {last_dream_evolve_id}")
+                        new_dream_id = last_dream_evolve_id
+                        if new_dream_id and new_dream_id not in fresh_ids:
+                            new_dream_id = ""
             if new_dream_id:
                 dream_cursor_path.parent.mkdir(parents=True, exist_ok=True)
                 dream_cursor_path.write_text(json.dumps({
@@ -974,6 +986,15 @@ async def _tidy_context_impl(request: dict):
                     new_compress_id = last_compress_id
                     logger.warning(f"[Tidy] Compress cursor preserved at {last_compress_id} to prevent knowledge loss")
                 # 溢出时也写入游标（推进到已处理位置）
+                # 校验游标：子 Agent 可能已删除游标指向的消息，需根据最新消息验证
+                if new_compress_id:
+                    fresh_msgs = await store.get_messages()
+                    fresh_ids = {getattr(m, "id", "") for m in fresh_msgs}
+                    if new_compress_id not in fresh_ids:
+                        logger.warning(f"[Tidy] Sleep overflow: Compress cursor {new_compress_id} deleted by sub-agent, reverting to {last_compress_id}")
+                        new_compress_id = last_compress_id
+                        if new_compress_id and new_compress_id not in fresh_ids:
+                            new_compress_id = ""
                 if new_compress_id:
                     compress_cursor_path.parent.mkdir(parents=True, exist_ok=True)
                     compress_cursor_path.write_text(json.dumps({
