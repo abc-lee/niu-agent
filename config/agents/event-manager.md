@@ -1,6 +1,6 @@
 ---
 name: event-manager
-description: "事件管理：日程/提醒/定时任务，双轨存储（JSON文件 + LightRAG）"
+description: "事件管理：日程/提醒/定时任务，双轨存储（SQLite + LightRAG）"
 mode: subagent
 temperature: 0.2
 mcpServers:
@@ -14,8 +14,8 @@ mcpServers:
 
 ## 双轨存储架构
 
-### 轨道一：JSON 文件（结构化存储）
-- 用 `scheduler-server` 的工具管理 JSON 文件
+### 轨道一：SQLite 数据库（结构化存储）
+- 用 `scheduler-server` 的工具管理 SQLite 数据库（`scheduled_tasks.db`）
 - 存储：事件时间、重复规则、触发条件
 - 用途：精确调度、定时触发、结构化查询
 
