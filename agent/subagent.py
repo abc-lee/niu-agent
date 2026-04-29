@@ -338,7 +338,7 @@ def call_subagent(
             "turns_completed": data.get("turns_completed", 0),
             "tokens_used": data.get("tokens_used", 0),
             "tokens_limit": data.get("tokens_limit", 0),
-            "partial_result": result_text[-2000:] if result_text else "",
+            "partial_result": result_text[-8000:] if result_text else "",
         }
         logger.warning(f"[SubAgent] {agent_name}: Context overflow at {data.get('tokens_used', 0)} tokens")
         return json.dumps(overflow_report, ensure_ascii=False)

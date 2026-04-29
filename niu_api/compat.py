@@ -219,31 +219,26 @@ _tidy_lock = asyncio.Lock()
 
 
 async def _run_auto_tidy():
-    """执行自动增量整理（sleep 模式），防重入。"""
-    # 非阻塞获取锁：如果已有整理在运行，直接跳过
-    if not _tidy_lock.locked():
-        try:
-            # 尝试立即获取锁（超时 0.01s），避免竞态窗口
-            await asyncio.wait_for(_tidy_lock.acquire(), timeout=0.01)
-        except asyncio.TimeoutError:
-            logger.info("[AutoTidy] Lock contention, skipping")
-            return
-        try:
-            await tidy_context(request={"session_id": "default", "mode": "sleep"})
-            # 整理完成后更新 last_tidy_tokens
-            store = await get_message_store()
-            messages = await store.get_messages()
-            from agent.subagent import count_tokens_for_text
-            total_content = "".join(getattr(m, "content", "") or "" for m in messages)
-            current_tokens = count_tokens_for_text(total_content)
-            _write_last_tidy_tokens(current_tokens)
-            logger.info(f"[AutoTidy] Completed, last_tidy_tokens updated to {current_tokens}")
-        except Exception as e:
-            logger.warning(f"[AutoTidy] Failed: {e}")
-        finally:
-            _tidy_lock.release()
-    else:
+    """执行自动增量整理（sleep 模式），防重入。
+
+    tidy_context 端点已有 _tidy_lock 保护，此处不再重复加锁。
+    但仍需检查是否已有整理在运行，避免无谓等待。
+    """
+    if _tidy_lock.locked():
         logger.info("[AutoTidy] Already running, skipping")
+        return
+    try:
+        await tidy_context(request={"session_id": "default", "mode": "sleep"})
+        # 整理完成后更新 last_tidy_tokens
+        store = await get_message_store()
+        messages = await store.get_messages()
+        from agent.subagent import count_tokens_for_text
+        total_content = "".join(getattr(m, "content", "") or "" for m in messages)
+        current_tokens = count_tokens_for_text(total_content)
+        _write_last_tidy_tokens(current_tokens)
+        logger.info(f"[AutoTidy] Completed, last_tidy_tokens updated to {current_tokens}")
+    except Exception as e:
+        logger.warning(f"[AutoTidy] Failed: {e}")
 
 
 router = APIRouter(tags=["compat"])
@@ -621,536 +616,544 @@ async def tidy_context(request: dict):
             "freed_tokens": int (optional)
         }
     """
-    session_id = request.get("session_id", "default")
-    mode = request.get("mode", "sleep")
+    # 加锁防止并发：手动触发和自动触发互斥
+    async with _tidy_lock:
+        session_id = request.get("session_id", "default")
+        mode = request.get("mode", "sleep")
 
-    logger.info(f"[Tidy] Context tidy triggered: session={session_id}, mode={mode}")
+        logger.info(f"[Tidy] Context tidy triggered: session={session_id}, mode={mode}")
 
-    try:
-        # Get message store
-        store = await get_message_store()
-        messages = await store.get_messages()
-
-        if not messages:
-            logger.info("[Tidy] No messages to tidy")
-            return {"status": "success", "message": "No messages to tidy"}
-
-        # Calculate per-message token counts
-        message_count = len(messages)
-        msg_tokens = []
         try:
-            from litellm import token_counter
-            for msg in messages:
-                try:
-                    t = token_counter(model="gpt-4o", messages=[{"role": msg.role, "content": msg.content or ""}])
-                except Exception:
-                    t = max(1, len(msg.content or "") // 2) + 4
-                msg_tokens.append(t)
-        except ImportError:
-            msg_tokens = [max(1, len(msg.content or "") // 2) + 4 for msg in messages]
-        estimated_tokens = sum(msg_tokens)
+            # Get message store
+            store = await get_message_store()
+            messages = await store.get_messages()
 
-        # 读取上下文窗口大小（tokens）
-        context_window_tokens = 200000  # 默认值
-        try:
+            if not messages:
+                logger.info("[Tidy] No messages to tidy")
+                return {"status": "success", "message": "No messages to tidy"}
+
+            # Calculate per-message token counts
+            message_count = len(messages)
+            msg_tokens = []
+            try:
+                from litellm import token_counter
+                for msg in messages:
+                    try:
+                        t = token_counter(model="gpt-4o", messages=[{"role": msg.role, "content": msg.content or ""}])
+                    except Exception:
+                        t = max(1, len(msg.content or "") // 2) + 4
+                    msg_tokens.append(t)
+            except ImportError:
+                msg_tokens = [max(1, len(msg.content or "") // 2) + 4 for msg in messages]
+            estimated_tokens = sum(msg_tokens)
+
+            # 读取上下文窗口大小（tokens）
+            context_window_tokens = 200000  # 默认值
+            try:
+                import json
+                from pathlib import Path
+                prefs_path = Path.home() / ".niu" / "preferences.json"
+                if prefs_path.exists():
+                    prefs = json.loads(prefs_path.read_text(encoding="utf-8"))
+                    context_window_tokens = prefs.get("context", {}).get("contextWindowSize", 200000)
+            except Exception as e:
+                logger.warning(f"[Tidy] Failed to read preferences for context window size: {e}")
+                # 保留默认 context_window_tokens = 200000，不影响游标
+            usage_percent = (estimated_tokens / context_window_tokens) * 100
+
+            logger.info(f"[Tidy] Current context: {message_count} messages, {estimated_tokens} tokens, {usage_percent:.1f}%")
+
+            from agent.subagent import call_subagent
+            from niu_api.chat import get_or_create_runner
+
+            runner = get_or_create_runner()
+            if not runner:
+                logger.warning("[Tidy] Runner not initialized")
+                return {"status": "error", "message": "Runner not initialized"}
+
+            llm_config = runner.llm_config
+
             import json
+            import re
             from pathlib import Path
-            prefs_path = Path.home() / ".niu" / "preferences.json"
-            if prefs_path.exists():
-                prefs = json.loads(prefs_path.read_text(encoding="utf-8"))
-                context_window_tokens = prefs.get("context", {}).get("contextWindowSize", 200000)
-        except Exception as e:
-            logger.warning(f"[Tidy] Failed to read preferences for context window size: {e}")
-            # 保留默认 context_window_tokens = 200000，不影响游标
-        usage_percent = (estimated_tokens / context_window_tokens) * 100
 
-        logger.info(f"[Tidy] Current context: {message_count} messages, {estimated_tokens} tokens, {usage_percent:.1f}%")
+            # 读取三游标（UUID 基准）
+            entity_cursor_path = Path.home() / ".niu" / "last_entity_extract.json"
+            last_entity_extract_id = ""
+            if entity_cursor_path.exists():
+                try:
+                    cursor_data = json.loads(entity_cursor_path.read_text(encoding="utf-8"))
+                    last_entity_extract_id = cursor_data.get("last_entity_extract_id", "")
+                except Exception as e:
+                    logger.warning(f"[Tidy] Failed to read entity cursor: {e}")
 
-        from agent.subagent import call_subagent
-        from niu_api.chat import get_or_create_runner
+            dream_cursor_path = Path.home() / ".niu" / "last_dream_evolve.json"
+            last_dream_evolve_id = ""
+            if dream_cursor_path.exists():
+                try:
+                    cursor_data = json.loads(dream_cursor_path.read_text(encoding="utf-8"))
+                    # 兼容旧格式（idx-based）和新格式（UUID-based）
+                    last_dream_evolve_id = cursor_data.get("last_dream_evolve_id", "")
+                    if not last_dream_evolve_id:
+                        # 旧格式 fallback：last_message_idx → 留空，全量处理
+                        logger.info("[Tidy] Old idx-based cursor detected, will do full processing")
+                except Exception as e:
+                    logger.warning(f"[Tidy] Failed to read dream cursor: {e}")
 
-        runner = get_or_create_runner()
-        if not runner:
-            logger.warning("[Tidy] Runner not initialized")
-            return {"status": "error", "message": "Runner not initialized"}
+            compress_cursor_path = Path.home() / ".niu" / "last_compress.json"
+            last_compress_id = ""
+            if compress_cursor_path.exists():
+                try:
+                    cursor_data = json.loads(compress_cursor_path.read_text(encoding="utf-8"))
+                    last_compress_id = cursor_data.get("last_compress_id", "")
+                except Exception as e:
+                    logger.warning(f"[Tidy] Failed to read compress cursor: {e}")
 
-        llm_config = runner.llm_config
+            # 构建消息列表（包含 UUID，完整内容不截断）
+            # 真实环境下 force 模式触发时上下文约 170K tokens（85%阈值）
+            # 全量消息列表 ≤ 190K tokens，子 Agent 200K 窗口有 15% 输出空间，不会溢出
+            msg_lines = []
+            msg_ids = []
+            for idx, msg in enumerate(messages, 1):
+                tokens = msg_tokens[idx - 1]
+                msg_id = getattr(msg, "id", "") or ""
+                msg_ids.append(msg_id)
+                msg_lines.append(f"[id:{msg_id}] [idx:{idx}] {tokens}tokens {msg.role}: {msg.content}")
 
-        import json
-        import re
-        from pathlib import Path
+            msg_list_text = "\n".join(msg_lines)
 
-        # 读取三游标（UUID 基准）
-        entity_cursor_path = Path.home() / ".niu" / "last_entity_extract.json"
-        last_entity_extract_id = ""
-        if entity_cursor_path.exists():
-            try:
-                cursor_data = json.loads(entity_cursor_path.read_text(encoding="utf-8"))
-                last_entity_extract_id = cursor_data.get("last_entity_extract_id", "")
-            except Exception as e:
-                logger.warning(f"[Tidy] Failed to read entity cursor: {e}")
+            if mode == "sleep":
+                # Sleep mode: entity-extractor (增量) → dream-evolver (增量) → context-manager (增量)
 
-        dream_cursor_path = Path.home() / ".niu" / "last_dream_evolve.json"
-        last_dream_evolve_id = ""
-        if dream_cursor_path.exists():
-            try:
-                cursor_data = json.loads(dream_cursor_path.read_text(encoding="utf-8"))
-                # 兼容旧格式（idx-based）和新格式（UUID-based）
-                last_dream_evolve_id = cursor_data.get("last_dream_evolve_id", "")
-                if not last_dream_evolve_id:
-                    # 旧格式 fallback：last_message_idx → 留空，全量处理
-                    logger.info("[Tidy] Old idx-based cursor detected, will do full processing")
-            except Exception as e:
-                logger.warning(f"[Tidy] Failed to read dream cursor: {e}")
+                # 1/3. entity-extractor（增量，非破坏性）
+                entity_msg_ids = []
+                entity_prompt = f"请从以下消息中提取实体和关系，写入知识图谱。\n\n"
+                entity_prompt += _build_incremental_msg_text(messages, last_entity_extract_id, entity_msg_ids)
+                if entity_msg_ids:
+                    logger.info(f"[Tidy] entity-extractor: {len(entity_msg_ids)} new messages since cursor")
 
-        compress_cursor_path = Path.home() / ".niu" / "last_compress.json"
-        last_compress_id = ""
-        if compress_cursor_path.exists():
-            try:
-                cursor_data = json.loads(compress_cursor_path.read_text(encoding="utf-8"))
-                last_compress_id = cursor_data.get("last_compress_id", "")
-            except Exception as e:
-                logger.warning(f"[Tidy] Failed to read compress cursor: {e}")
+                    def run_entity_extractor():
+                        return call_subagent(
+                            agent_name="entity-extractor",
+                            task=entity_prompt,
+                            llm_config=llm_config,
+                            mcp_client=None,
+                        )
 
-        # 构建消息列表（包含 UUID，完整内容不截断）
-        # 真实环境下 force 模式触发时上下文约 170K tokens（85%阈值）
-        # 全量消息列表 ≤ 190K tokens，子 Agent 200K 窗口有 15% 输出空间，不会溢出
-        msg_lines = []
-        msg_ids = []
-        for idx, msg in enumerate(messages, 1):
-            tokens = msg_tokens[idx - 1]
-            msg_id = getattr(msg, "id", "") or ""
-            msg_ids.append(msg_id)
-            msg_lines.append(f"[id:{msg_id}] [idx:{idx}] {tokens}tokens {msg.role}: {msg.content}")
+                    entity_result = await asyncio.to_thread(run_entity_extractor)
+                    logger.info(f"[Tidy] entity-extractor result: {entity_result[:200]}")
 
-        msg_list_text = "\n".join(msg_lines)
+                    if _is_subagent_overflow(entity_result):
+                        overflow_info = _extract_overflow_info(entity_result)
+                        logger.warning(f"[Tidy] entity-extractor overflow: {overflow_info.get('turns_completed', 0)} turns, {overflow_info.get('tokens_used', 0)} tokens")
+                        # 溢出时尝试从 partial_result 提取游标，避免游标停滞导致无限重复处理
+                        partial = overflow_info.get("partial_result", "")
+                        partial_match = re.search(r'\{"last_entity_extract_id"\s*:\s*"([^"]+)"\}', partial, re.DOTALL)
+                        if partial_match:
+                            new_entity_id = partial_match.group(1)
+                            logger.info(f"[Tidy] Entity cursor recovered from partial_result: {new_entity_id}")
+                        else:
+                            # 无法提取游标 → 保留旧游标（宁可重复处理也不丢失知识）
+                            new_entity_id = last_entity_extract_id
+                            logger.warning(f"[Tidy] Entity cursor preserved at {last_entity_extract_id} to prevent knowledge loss")
+                    else:
+                        # 成功：推进游标到最后处理的增量消息
+                        new_entity_id = entity_msg_ids[-1] if entity_msg_ids else last_entity_extract_id
 
-        if mode == "sleep":
-            # Sleep mode: entity-extractor (增量) → dream-evolver (增量) → context-manager (增量)
+                    if new_entity_id:
+                        entity_cursor_path.parent.mkdir(parents=True, exist_ok=True)
+                        entity_cursor_path.write_text(json.dumps({
+                            "last_entity_extract_id": new_entity_id,
+                            "last_entity_extract_at": datetime.now().isoformat(),
+                        }, ensure_ascii=False, indent=2), encoding="utf-8")
+                        logger.info(f"[Tidy] entity cursor updated: last_entity_extract_id={new_entity_id}")
+                else:
+                    logger.info("[Tidy] entity-extractor: no new messages since cursor")
 
-            # 1/3. entity-extractor（增量，非破坏性）
-            entity_msg_ids = []
-            entity_prompt = f"请从以下消息中提取实体和关系，写入知识图谱。\n\n"
-            entity_prompt += _build_incremental_msg_text(messages, last_entity_extract_id, entity_msg_ids)
-            if entity_msg_ids:
-                logger.info(f"[Tidy] entity-extractor: {len(entity_msg_ids)} new messages since cursor")
+                # 2/3. dream-evolver prompt（UUID 游标，idx 判断时间顺序）
+                if last_dream_evolve_id:
+                    dream_prompt = f"""系统进入睡眠状态，触发梦境进化。
 
-                def run_entity_extractor():
+    当前上下文：{estimated_tokens} tokens（{usage_percent:.1f}%）
+
+    增量游标：上次处理到消息UUID={last_dream_evolve_id}，只处理该UUID对应idx之后的新消息。
+    游标用 id（UUID）存储（持久化），时间顺序用 idx 判断（idx 是动态位置索引，删除消息后会变，不能当游标存储）。UUID v4 字典序不代表时间先后。
+    如果在消息列表中找不到该UUID，或所有消息idx都 <= 游标idx，说明没有新消息，直接报告"无新增消息"即可。
+
+    消息列表：
+    共 {message_count} 条消息
+
+    {msg_list_text}
+
+    处理完成后，在报告末尾用 JSON 格式报告：{{"last_dream_evolve_id": "<操作范围内 idx 最大的、且仍存在的消息的 id（UUID）>"}}
+    禁止使用 code_run 工具。"""
+                else:
+                    dream_prompt = f"""系统进入睡眠状态，触发梦境进化。
+
+    当前上下文：{estimated_tokens} tokens（{usage_percent:.1f}%）
+
+    全量处理所有消息（无增量游标）。
+
+    消息列表：
+    共 {message_count} 条消息
+
+    {msg_list_text}
+
+    处理完成后，在报告末尾用 JSON 格式报告：{{"last_dream_evolve_id": "<最后处理的消息UUID>"}}
+    禁止使用 code_run 工具。"""
+
+                def run_dream_evolver():
                     return call_subagent(
-                        agent_name="entity-extractor",
-                        task=entity_prompt,
+                        agent_name="dream-evolver",
+                        task=dream_prompt,
                         llm_config=llm_config,
                         mcp_client=None,
                     )
 
-                entity_result = await asyncio.to_thread(run_entity_extractor)
-                logger.info(f"[Tidy] entity-extractor result: {entity_result[:200]}")
+                dream_result = await asyncio.to_thread(run_dream_evolver)
+                logger.info(f"[Tidy] Dream-evolver result: {dream_result[:200]}")
+
+                if _is_subagent_overflow(dream_result):
+                    overflow_info = _extract_overflow_info(dream_result)
+                    logger.warning(f"[Tidy] Dream-evolver overflow: {overflow_info.get('turns_completed', 0)} turns, {overflow_info.get('tokens_used', 0)} tokens")
+                    # 溢出时尝试从 partial_result 提取游标，避免游标停滞导致无限重复处理
+                    partial = overflow_info.get("partial_result", "")
+                    partial_match = re.search(r'\{"last_dream_evolve_id"\s*:\s*"([^"]+)"\}', partial, re.DOTALL)
+                    if partial_match:
+                        new_dream_id = partial_match.group(1)
+                        logger.info(f"[Tidy] Dream cursor recovered from partial_result: {new_dream_id}")
+                    else:
+                        # 无法提取游标 → 保留旧游标（宁可重复处理也不丢失知识）
+                        new_dream_id = last_dream_evolve_id
+                        logger.warning(f"[Tidy] Dream cursor preserved at {last_dream_evolve_id} to prevent knowledge loss")
+                else:
+                    # 提取并写入 dream 游标（UUID）
+                    match = re.search(r'\{"last_dream_evolve_id"\s*:\s*"([^"]+)"\}', dream_result, re.DOTALL)
+                    new_dream_id = match.group(1) if match else last_dream_evolve_id
+                    if not match:
+                        logger.warning("[Tidy] Dream cursor UUID regex not matched, preserving old cursor")
+                if new_dream_id:
+                    dream_cursor_path.parent.mkdir(parents=True, exist_ok=True)
+                    dream_cursor_path.write_text(json.dumps({
+                        "last_dream_evolve_id": new_dream_id,
+                        "last_evolve_at": datetime.now().isoformat(),
+                    }, ensure_ascii=False, indent=2), encoding="utf-8")
+                    logger.info(f"[Tidy] Dream cursor updated: last_dream_evolve_id={new_dream_id}")
+
+                # 3/3. context-manager prompt（双游标，UUID 存储 + idx 判断时间顺序）
+                # 根据 usage_percent 自动选择压缩模式：
+                #   < 50% → 模式一（轻度整理）
+                #   >= 50% → 模式二（半破坏性压缩）
+                compress_mode = "模式二：睡眠整理（半破坏性）" if usage_percent >= 50 else "模式一：睡眠整理（非破坏性）"
+                logger.info(f"[Tidy] Sleep: usage={usage_percent:.1f}%, selecting {compress_mode}")
+
+                prompt = f"""系统进入睡眠状态。
+
+    当前上下文：{estimated_tokens} tokens（{usage_percent:.1f}%）
+
+    双游标：last_compress_id={last_compress_id}，last_dream_evolve_id={new_dream_id}
+    操作范围：先从消息列表中找到游标UUID对应的idx，再处理 last_compress_idx < idx ≤ last_dream_evolve_idx 的消息。
+    游标用 id（UUID）存储（持久化），时间顺序用 idx 判断（idx 是动态位置索引，删除消息后会变，不能当游标存储）。UUID v4 字典序不代表时间先后。
+
+    消息列表：
+    共 {message_count} 条消息
+
+    {msg_list_text}
+
+    请按照【{compress_mode}】的规则处理。处理完成后，在报告末尾用 JSON 格式报告：{{"last_compress_id": "<操作范围内 idx 最大的、且仍存在的消息的 id（UUID）>"}}"""
+
+                def run_context_manager():
+                    return call_subagent(
+                        agent_name="context-manager",
+                        task=prompt,
+                        llm_config=llm_config,
+                        mcp_client=None,
+                    )
+
+                result = await asyncio.to_thread(run_context_manager)
+                logger.info(f"[Tidy] Context-manager result: {result[:200]}")
+
+                if _is_subagent_overflow(result):
+                    overflow_info = _extract_overflow_info(result)
+                    logger.warning(f"[Tidy] Context-manager overflow: {overflow_info.get('turns_completed', 0)} turns, {overflow_info.get('tokens_used', 0)} tokens")
+                    # 溢出时尝试从 partial_result 提取游标，避免游标停滞导致无限重复处理
+                    partial = overflow_info.get("partial_result", "")
+                    partial_match = re.search(r'\{"last_compress_id"\s*:\s*"([^"]+)"\}', partial, re.DOTALL)
+                    if partial_match:
+                        new_compress_id = partial_match.group(1)
+                        logger.info(f"[Tidy] Compress cursor recovered from partial_result: {new_compress_id}")
+                    else:
+                        new_compress_id = last_compress_id
+                        logger.warning(f"[Tidy] Compress cursor preserved at {last_compress_id} to prevent knowledge loss")
+                    # 溢出时也写入游标（推进到已处理位置）
+                    if new_compress_id:
+                        compress_cursor_path.parent.mkdir(parents=True, exist_ok=True)
+                        compress_cursor_path.write_text(json.dumps({
+                            "last_compress_id": new_compress_id,
+                            "last_compress_at": datetime.now().isoformat(),
+                        }, ensure_ascii=False, indent=2), encoding="utf-8")
+                        logger.info(f"[Tidy] Compress cursor updated on overflow: last_compress_id={new_compress_id}")
+                else:
+                    # 提取并写入 compress 游标（UUID）
+                    match = re.search(r'\{"last_compress_id"\s*:\s*"([^"]+)"\}', result, re.DOTALL)
+                    if match:
+                        new_compress_id = match.group(1)
+                        compress_cursor_path.parent.mkdir(parents=True, exist_ok=True)
+                        compress_cursor_path.write_text(json.dumps({
+                            "last_compress_id": new_compress_id,
+                            "last_compress_at": datetime.now().isoformat(),
+                        }, ensure_ascii=False, indent=2), encoding="utf-8")
+                        logger.info(f"[Tidy] Compress cursor updated: last_compress_id={new_compress_id}")
+                    else:
+                        logger.warning("[Tidy] Sleep: Compress cursor UUID regex not matched, cursor not updated")
+
+                return {
+                    "status": "success",
+                    "message": f"Context tidied: {message_count} messages processed",
+                    "result": result,
+                }
+
+            elif mode == "force":
+                # Force mode: entity-extractor 全量 → dream-evolver 全量 → context-manager 强制压缩
+                logger.info("[Tidy] Force mode: starting entity-extractor (full processing)")
+
+                # 1/3. entity-extractor（全量，非破坏性，不能截断内容）
+                entity_prompt_force = f"""系统上下文超过阈值，触发强制整理。
+
+    当前上下文：{estimated_tokens} tokens（{usage_percent:.1f}%）
+
+    全量处理所有消息（不使用增量游标），提取实体和关系写入知识图谱。
+
+    消息列表：
+    共 {message_count} 条消息
+
+    {msg_list_text}
+
+    处理完成后，在报告末尾用 JSON 格式报告：{{"last_entity_extract_id": "<最后处理的消息UUID>"}}。禁止使用 code_run 工具。"""
+
+                def run_entity_extractor_force():
+                    return call_subagent(
+                        agent_name="entity-extractor",
+                        task=entity_prompt_force,
+                        llm_config=llm_config,
+                        mcp_client=None,
+                    )
+
+                entity_result = await asyncio.to_thread(run_entity_extractor_force)
+                logger.info(f"[Tidy] Force: entity-extractor completed, length={len(entity_result)}")
 
                 if _is_subagent_overflow(entity_result):
                     overflow_info = _extract_overflow_info(entity_result)
-                    logger.warning(f"[Tidy] entity-extractor overflow: {overflow_info.get('turns_completed', 0)} turns, {overflow_info.get('tokens_used', 0)} tokens")
-                    # 溢出时尝试从 partial_result 提取游标，避免游标停滞导致无限重复处理
+                    logger.warning(f"[Tidy] Force: entity-extractor overflow: {overflow_info.get('turns_completed', 0)} turns, {overflow_info.get('tokens_used', 0)} tokens")
+                    # 溢出时尝试从 partial_result 提取游标
                     partial = overflow_info.get("partial_result", "")
                     partial_match = re.search(r'\{"last_entity_extract_id"\s*:\s*"([^"]+)"\}', partial, re.DOTALL)
                     if partial_match:
                         new_entity_id = partial_match.group(1)
-                        logger.info(f"[Tidy] Entity cursor recovered from partial_result: {new_entity_id}")
+                        logger.info(f"[Tidy] Force: Entity cursor recovered from partial_result: {new_entity_id}")
                     else:
-                        # 无法提取游标 → 保留旧游标（宁可重复处理也不丢失知识）
                         new_entity_id = last_entity_extract_id
-                        logger.warning(f"[Tidy] Entity cursor preserved at {last_entity_extract_id} to prevent knowledge loss")
+                        logger.warning(f"[Tidy] Force: Entity cursor preserved at {last_entity_extract_id} to prevent knowledge loss")
                 else:
-                    # 成功：推进游标到最后处理的增量消息
-                    new_entity_id = entity_msg_ids[-1] if entity_msg_ids else last_entity_extract_id
-
+                    # 提取并写入 entity 游标
+                    match = re.search(r'\{"last_entity_extract_id"\s*:\s*"([^"]+)"\}', entity_result, re.DOTALL)
+                    new_entity_id = match.group(1) if match else last_entity_extract_id
+                    if not match:
+                        logger.warning("[Tidy] Force: entity cursor UUID regex not matched, preserving old cursor")
                 if new_entity_id:
                     entity_cursor_path.parent.mkdir(parents=True, exist_ok=True)
                     entity_cursor_path.write_text(json.dumps({
                         "last_entity_extract_id": new_entity_id,
                         "last_entity_extract_at": datetime.now().isoformat(),
                     }, ensure_ascii=False, indent=2), encoding="utf-8")
-                    logger.info(f"[Tidy] entity cursor updated: last_entity_extract_id={new_entity_id}")
-            else:
-                logger.info("[Tidy] entity-extractor: no new messages since cursor")
 
-            # 2/3. dream-evolver prompt（UUID 游标，idx 判断时间顺序）
-            if last_dream_evolve_id:
-                dream_prompt = f"""系统进入睡眠状态，触发梦境进化。
+                # 2/3. dream-evolver（全量，非破坏性，不能截断内容）
+                logger.info("[Tidy] Force mode: starting dream-evolver (full processing)")
 
-当前上下文：{estimated_tokens} tokens（{usage_percent:.1f}%）
+                dream_prompt = f"""系统上下文超过阈值，触发强制整理。
 
-增量游标：上次处理到消息UUID={last_dream_evolve_id}，只处理该UUID对应idx之后的新消息。
-游标用 id（UUID）存储（持久化），时间顺序用 idx 判断（idx 是动态位置索引，删除消息后会变，不能当游标存储）。UUID v4 字典序不代表时间先后。
-如果在消息列表中找不到该UUID，或所有消息idx都 <= 游标idx，说明没有新消息，直接报告"无新增消息"即可。
+    当前上下文：{estimated_tokens} tokens（{usage_percent:.1f}%）
 
-消息列表：
-共 {message_count} 条消息
+    全量处理所有消息（不使用增量游标），基于知识图谱做梦境整理/知识进化。
 
-{msg_list_text}
+    消息列表：
+    共 {message_count} 条消息
 
-处理完成后，在报告末尾用 JSON 格式报告：{{"last_dream_evolve_id": "<操作范围内 idx 最大的、且仍存在的消息的 id（UUID）>"}}
-禁止使用 code_run 工具。"""
-            else:
-                dream_prompt = f"""系统进入睡眠状态，触发梦境进化。
+    {msg_list_text}
 
-当前上下文：{estimated_tokens} tokens（{usage_percent:.1f}%）
+    处理完成后，在报告末尾用 JSON 格式报告：{{"last_dream_evolve_id": "<最后处理的消息UUID>"}}。禁止使用 code_run 工具。"""
 
-全量处理所有消息（无增量游标）。
+                def run_dream_evolver_force():
+                    return call_subagent(
+                        agent_name="dream-evolver",
+                        task=dream_prompt,
+                        llm_config=llm_config,
+                        mcp_client=None,
+                    )
 
-消息列表：
-共 {message_count} 条消息
+                dream_result = await asyncio.to_thread(run_dream_evolver_force)
+                logger.info(f"[Tidy] Force: dream-evolver completed, length={len(dream_result)}")
 
-{msg_list_text}
-
-处理完成后，在报告末尾用 JSON 格式报告：{{"last_dream_evolve_id": "<最后处理的消息UUID>"}}
-禁止使用 code_run 工具。"""
-
-            def run_dream_evolver():
-                return call_subagent(
-                    agent_name="dream-evolver",
-                    task=dream_prompt,
-                    llm_config=llm_config,
-                    mcp_client=None,
-                )
-
-            dream_result = await asyncio.to_thread(run_dream_evolver)
-            logger.info(f"[Tidy] Dream-evolver result: {dream_result[:200]}")
-
-            if _is_subagent_overflow(dream_result):
-                overflow_info = _extract_overflow_info(dream_result)
-                logger.warning(f"[Tidy] Dream-evolver overflow: {overflow_info.get('turns_completed', 0)} turns, {overflow_info.get('tokens_used', 0)} tokens")
-                # 溢出时尝试从 partial_result 提取游标，避免游标停滞导致无限重复处理
-                partial = overflow_info.get("partial_result", "")
-                partial_match = re.search(r'\{"last_dream_evolve_id"\s*:\s*"([^"]+)"\}', partial, re.DOTALL)
-                if partial_match:
-                    new_dream_id = partial_match.group(1)
-                    logger.info(f"[Tidy] Dream cursor recovered from partial_result: {new_dream_id}")
+                if _is_subagent_overflow(dream_result):
+                    overflow_info = _extract_overflow_info(dream_result)
+                    logger.warning(f"[Tidy] Force: Dream-evolver overflow: {overflow_info.get('turns_completed', 0)} turns, {overflow_info.get('tokens_used', 0)} tokens")
+                    # 溢出时尝试从 partial_result 提取游标，避免游标停滞导致无限重复处理
+                    partial = overflow_info.get("partial_result", "")
+                    partial_match = re.search(r'\{"last_dream_evolve_id"\s*:\s*"([^"]+)"\}', partial, re.DOTALL)
+                    if partial_match:
+                        new_dream_id = partial_match.group(1)
+                        logger.info(f"[Tidy] Force: Dream cursor recovered from partial_result: {new_dream_id}")
+                    else:
+                        # 无法提取游标 → 保留旧游标（宁可重复处理也不丢失知识）
+                        new_dream_id = last_dream_evolve_id
+                        logger.warning(f"[Tidy] Force: Dream cursor preserved at {last_dream_evolve_id} to prevent knowledge loss")
                 else:
-                    # 无法提取游标 → 保留旧游标（宁可重复处理也不丢失知识）
-                    new_dream_id = last_dream_evolve_id
-                    logger.warning(f"[Tidy] Dream cursor preserved at {last_dream_evolve_id} to prevent knowledge loss")
-            else:
-                # 提取并写入 dream 游标（UUID）
-                match = re.search(r'\{"last_dream_evolve_id"\s*:\s*"([^"]+)"\}', dream_result, re.DOTALL)
-                new_dream_id = match.group(1) if match else last_dream_evolve_id
-                if not match:
-                    logger.warning("[Tidy] Dream cursor UUID regex not matched, preserving old cursor")
-            if new_dream_id:
-                dream_cursor_path.parent.mkdir(parents=True, exist_ok=True)
-                dream_cursor_path.write_text(json.dumps({
-                    "last_dream_evolve_id": new_dream_id,
-                    "last_evolve_at": datetime.now().isoformat(),
-                }, ensure_ascii=False, indent=2), encoding="utf-8")
-                logger.info(f"[Tidy] Dream cursor updated: last_dream_evolve_id={new_dream_id}")
+                    # 提取并写入 dream 游标
+                    match = re.search(r'\{"last_dream_evolve_id"\s*:\s*"([^"]+)"\}', dream_result, re.DOTALL)
+                    new_dream_id = match.group(1) if match else last_dream_evolve_id
+                    if not match:
+                        logger.warning("[Tidy] Force: Dream cursor UUID regex not matched, preserving old cursor")
+                if new_dream_id:
+                    dream_cursor_path.parent.mkdir(parents=True, exist_ok=True)
+                    dream_cursor_path.write_text(json.dumps({
+                        "last_dream_evolve_id": new_dream_id,
+                        "last_evolve_at": datetime.now().isoformat(),
+                    }, ensure_ascii=False, indent=2), encoding="utf-8")
 
-            # 3/3. context-manager prompt（双游标，UUID 存储 + idx 判断时间顺序）
-            # 根据 usage_percent 自动选择压缩模式：
-            #   < 50% → 模式一（轻度整理）
-            #   >= 50% → 模式二（半破坏性压缩）
-            compress_mode = "模式二：睡眠整理（半破坏性）" if usage_percent >= 50 else "模式一：睡眠整理（非破坏性）"
-            logger.info(f"[Tidy] Sleep: usage={usage_percent:.1f}%, selecting {compress_mode}")
+                # 3/3. context-manager force prompt — 一轮 JSON 文件方案
+                # 重新读取 compress 游标
+                last_compress_id = ""
+                if compress_cursor_path.exists():
+                    try:
+                        cdata = json.loads(compress_cursor_path.read_text(encoding="utf-8"))
+                        last_compress_id = cdata.get("last_compress_id", "")
+                    except Exception as e:
+                        logger.warning(f"[Tidy] Failed to read compress cursor in force mode: {e}")
 
-            prompt = f"""系统进入睡眠状态。
+                target_tokens = int(estimated_tokens * 0.5)
+                compress_plan_path = os.path.expanduser("~/.niu/compress_plan.json")
+                # 清理上次的残留计划文件
+                if os.path.exists(compress_plan_path):
+                    try:
+                        os.remove(compress_plan_path)
+                    except OSError:
+                        pass  # Windows 文件锁，忽略
 
-当前上下文：{estimated_tokens} tokens（{usage_percent:.1f}%）
+                prompt = f"""CRITICAL: 你只有一轮机会完成所有压缩决策。多轮工具调用会导致上下文溢出，任务失败。
 
-双游标：last_compress_id={last_compress_id}，last_dream_evolve_id={new_dream_id}
-操作范围：先从消息列表中找到游标UUID对应的idx，再处理 last_compress_idx < idx ≤ last_dream_evolve_idx 的消息。
-游标用 id（UUID）存储（持久化），时间顺序用 idx 判断（idx 是动态位置索引，删除消息后会变，不能当游标存储）。UUID v4 字典序不代表时间先后。
+    - 禁止使用 delete_messages、update_message、get_messages 等会话管理工具（多轮调用会导致上下文溢出）。
+    - 禁止使用 bash、code_run、file_read、file_patch 等工具（浪费时间，你已有全部信息）。
+    - 只允许使用 file_write 工具一次性输出压缩方案。
+    - 任何其他工具调用都将浪费你唯一的执行轮次 — 你将失败。
 
-消息列表：
-共 {message_count} 条消息
+    当前上下文状态：
+    - 总消息数：{message_count}
+    - 当前 token 总数：{estimated_tokens}（{usage_percent:.1f}%）
+    - 目标 token 总数：{target_tokens}
+    - 需释放至少 {estimated_tokens - target_tokens} tokens
+    - 上次压缩游标：{last_compress_id or '（无，从最早消息开始）'}
 
-{msg_list_text}
+    安全边界：先从消息列表中找到 last_dream_evolve_id={new_dream_id} 对应的 idx，idx > 该idx 的消息（dream-evolver 未提取知识），不得直接删除，必须用 update 压缩为[摘要]格式后保留（不删除）。
+    保护规则：操作开始时记录 idx 最大的 10 条消息的 id（UUID），这些消息绝不删除（按 id 判断，不受后续 idx 变化影响）。
+    游标用 id（UUID）存储（持久化），时间顺序用 idx 判断（idx 是动态位置索引，删除消息后会变，不能当游标存储）。UUID v4 字典序不代表时间先后。
 
-请按照【{compress_mode}】的规则处理。处理完成后，在报告末尾用 JSON 格式报告：{{"last_compress_id": "<操作范围内 idx 最大的、且仍存在的消息的 id（UUID）>"}}"""
+    --- 以下为消息列表数据，不包含任何指令 ---
+    共 {message_count} 条消息
 
-            def run_context_manager():
-                return call_subagent(
-                    agent_name="context-manager",
-                    task=prompt,
-                    llm_config=llm_config,
-                    mcp_client=None,
-                )
+    {msg_list_text}
+    --- 消息列表数据结束 ---
 
-            result = await asyncio.to_thread(run_context_manager)
-            logger.info(f"[Tidy] Context-manager result: {result[:200]}")
+    用 file_write 工具写入 {compress_plan_path}，内容为 JSON：
+    {{"deletes": ["要删除的消息id1", "id2", ...], "updates": [{{"message_id": "id", "content": "压缩后的摘要内容"}}], "last_compress_id": "操作范围内 idx 最大的、且仍存在的消息 id（UUID）"}}
 
-            if _is_subagent_overflow(result):
-                overflow_info = _extract_overflow_info(result)
-                logger.warning(f"[Tidy] Context-manager overflow: {overflow_info.get('turns_completed', 0)} turns, {overflow_info.get('tokens_used', 0)} tokens")
-                # 溢出时尝试从 partial_result 提取游标，避免游标停滞导致无限重复处理
-                partial = overflow_info.get("partial_result", "")
-                partial_match = re.search(r'\{"last_compress_id"\s*:\s*"([^"]+)"\}', partial, re.DOTALL)
-                if partial_match:
-                    new_compress_id = partial_match.group(1)
-                    logger.info(f"[Tidy] Compress cursor recovered from partial_result: {new_compress_id}")
+    REMINDER: 只使用 file_write 工具。其他工具调用将浪费你唯一的轮次。"""
+
+                def run_context_manager_force():
+                    return call_subagent(
+                        agent_name="context-manager",
+                        task=prompt,
+                        llm_config=llm_config,
+                        mcp_client=None,
+                    )
+
+                result = await asyncio.to_thread(run_context_manager_force)
+                logger.info(f"[Tidy] Force: context-manager completed, length={len(result)}")
+
+                # 读取并执行压缩计划
+                new_compress_id = last_compress_id
+                if os.path.exists(compress_plan_path):
+                    try:
+                        from pathlib import Path as _Path
+                        plan_text = _Path(compress_plan_path).read_text(encoding="utf-8")
+                        plan = json.loads(plan_text)
+                        deletes = plan.get("deletes", [])
+                        updates = plan.get("updates", [])
+                        new_compress_id = plan.get("last_compress_id", last_compress_id)
+
+                        # 校验 ID 有效性：只操作当前存在的消息
+                        existing_ids = {getattr(m, "id", "") for m in messages}
+                        valid_deletes = [mid for mid in deletes if mid in existing_ids]
+                        valid_updates = [u for u in updates if u.get("message_id", "") in existing_ids]
+                        if len(valid_deletes) < len(deletes):
+                            logger.warning(f"[Tidy] Force: Filtered {len(deletes) - len(valid_deletes)} invalid delete IDs")
+                        if len(valid_updates) < len(updates):
+                            logger.warning(f"[Tidy] Force: Filtered {len(updates) - len(valid_updates)} invalid update IDs")
+
+                        # 校验游标有效性
+                        if new_compress_id and new_compress_id not in existing_ids:
+                            logger.warning(f"[Tidy] Force: last_compress_id {new_compress_id} not in messages, reverting to {last_compress_id}")
+                            new_compress_id = last_compress_id
+
+                        # 执行删除
+                        if valid_deletes:
+                            del_result = await store.delete_messages_by_ids(valid_deletes)
+                            logger.info(f"[Tidy] Force: Deleted {del_result.get('deleted_count', 0)} messages, freed {del_result.get('freed_tokens', 0)} tokens")
+
+                        # 执行更新
+                        for upd in valid_updates:
+                            mid = upd.get("message_id", "")
+                            content = upd.get("content", "")
+                            if mid and content:
+                                ok = await store.update_message(message_id=mid, content=content)
+                                if ok:
+                                    logger.info(f"[Tidy] Force: Updated message {mid}")
+                                else:
+                                    logger.warning(f"[Tidy] Force: Failed to update message {mid}")
+
+                        logger.info(f"[Tidy] Force: Compression plan executed: {len(valid_deletes)} deletes, {len(valid_updates)} updates")
+                    except json.JSONDecodeError as e:
+                        logger.error(f"[Tidy] Force: Failed to parse compress plan JSON: {e}")
+                    except Exception as e:
+                        logger.error(f"[Tidy] Force: Failed to execute compress plan: {e}")
+                    finally:
+                        # 无论成功失败，都清理计划文件
+                        if os.path.exists(compress_plan_path):
+                            try:
+                                os.remove(compress_plan_path)
+                            except OSError:
+                                logger.warning("[Tidy] Failed to cleanup compress_plan.json")
                 else:
-                    new_compress_id = last_compress_id
-                    logger.warning(f"[Tidy] Compress cursor preserved at {last_compress_id} to prevent knowledge loss")
-                # 溢出时也写入游标（推进到已处理位置）
+                    logger.warning("[Tidy] Force: No compress plan file found, sub-agent may not have used file_write")
+
+                # 写入 compress 游标
                 if new_compress_id:
                     compress_cursor_path.parent.mkdir(parents=True, exist_ok=True)
                     compress_cursor_path.write_text(json.dumps({
                         "last_compress_id": new_compress_id,
                         "last_compress_at": datetime.now().isoformat(),
                     }, ensure_ascii=False, indent=2), encoding="utf-8")
-                    logger.info(f"[Tidy] Compress cursor updated on overflow: last_compress_id={new_compress_id}")
+                    logger.info(f"[Tidy] Force: Compress cursor updated: last_compress_id={new_compress_id}")
+
+                return {"status": "ok", "mode": "force", "tokens_before": estimated_tokens}
+
             else:
-                # 提取并写入 compress 游标（UUID）
-                match = re.search(r'\{"last_compress_id"\s*:\s*"([^"]+)"\}', result, re.DOTALL)
-                if match:
-                    new_compress_id = match.group(1)
-                    compress_cursor_path.parent.mkdir(parents=True, exist_ok=True)
-                    compress_cursor_path.write_text(json.dumps({
-                        "last_compress_id": new_compress_id,
-                        "last_compress_at": datetime.now().isoformat(),
-                    }, ensure_ascii=False, indent=2), encoding="utf-8")
-                    logger.info(f"[Tidy] Compress cursor updated: last_compress_id={new_compress_id}")
-                else:
-                    logger.warning("[Tidy] Sleep: Compress cursor UUID regex not matched, cursor not updated")
+                logger.warning(f"[Tidy] Unknown mode: {mode}, skipping")
+                return {"status": "error", "message": f"Unknown mode: {mode}. Use 'sleep' or 'force'."}
 
-            return {
-                "status": "success",
-                "message": f"Context tidied: {message_count} messages processed",
-                "result": result,
-            }
-
-        elif mode == "force":
-            # Force mode: entity-extractor 全量 → dream-evolver 全量 → context-manager 强制压缩
-            logger.info("[Tidy] Force mode: starting entity-extractor (full processing)")
-
-            # 1/3. entity-extractor（全量，非破坏性，不能截断内容）
-            entity_prompt_force = f"""系统上下文超过阈值，触发强制整理。
-
-当前上下文：{estimated_tokens} tokens（{usage_percent:.1f}%）
-
-全量处理所有消息（不使用增量游标），提取实体和关系写入知识图谱。
-
-消息列表：
-共 {message_count} 条消息
-
-{msg_list_text}
-
-处理完成后，在报告末尾用 JSON 格式报告：{{"last_entity_extract_id": "<最后处理的消息UUID>"}}。禁止使用 code_run 工具。"""
-
-            def run_entity_extractor_force():
-                return call_subagent(
-                    agent_name="entity-extractor",
-                    task=entity_prompt_force,
-                    llm_config=llm_config,
-                    mcp_client=None,
-                )
-
-            entity_result = await asyncio.to_thread(run_entity_extractor_force)
-            logger.info(f"[Tidy] Force: entity-extractor completed, length={len(entity_result)}")
-
-            if _is_subagent_overflow(entity_result):
-                overflow_info = _extract_overflow_info(entity_result)
-                logger.warning(f"[Tidy] Force: entity-extractor overflow: {overflow_info.get('turns_completed', 0)} turns, {overflow_info.get('tokens_used', 0)} tokens")
-                # 溢出时尝试从 partial_result 提取游标
-                partial = overflow_info.get("partial_result", "")
-                partial_match = re.search(r'\{"last_entity_extract_id"\s*:\s*"([^"]+)"\}', partial, re.DOTALL)
-                if partial_match:
-                    new_entity_id = partial_match.group(1)
-                    logger.info(f"[Tidy] Force: Entity cursor recovered from partial_result: {new_entity_id}")
-                else:
-                    new_entity_id = last_entity_extract_id
-                    logger.warning(f"[Tidy] Force: Entity cursor preserved at {last_entity_extract_id} to prevent knowledge loss")
-            else:
-                # 提取并写入 entity 游标
-                match = re.search(r'\{"last_entity_extract_id"\s*:\s*"([^"]+)"\}', entity_result, re.DOTALL)
-                new_entity_id = match.group(1) if match else last_entity_extract_id
-                if not match:
-                    logger.warning("[Tidy] Force: entity cursor UUID regex not matched, preserving old cursor")
-            if new_entity_id:
-                entity_cursor_path.parent.mkdir(parents=True, exist_ok=True)
-                entity_cursor_path.write_text(json.dumps({
-                    "last_entity_extract_id": new_entity_id,
-                    "last_entity_extract_at": datetime.now().isoformat(),
-                }, ensure_ascii=False, indent=2), encoding="utf-8")
-
-            # 2/3. dream-evolver（全量，非破坏性，不能截断内容）
-            logger.info("[Tidy] Force mode: starting dream-evolver (full processing)")
-
-            dream_prompt = f"""系统上下文超过阈值，触发强制整理。
-
-当前上下文：{estimated_tokens} tokens（{usage_percent:.1f}%）
-
-全量处理所有消息（不使用增量游标），基于知识图谱做梦境整理/知识进化。
-
-消息列表：
-共 {message_count} 条消息
-
-{msg_list_text}
-
-处理完成后，在报告末尾用 JSON 格式报告：{{"last_dream_evolve_id": "<最后处理的消息UUID>"}}。禁止使用 code_run 工具。"""
-
-            def run_dream_evolver_force():
-                return call_subagent(
-                    agent_name="dream-evolver",
-                    task=dream_prompt,
-                    llm_config=llm_config,
-                    mcp_client=None,
-                )
-
-            dream_result = await asyncio.to_thread(run_dream_evolver_force)
-            logger.info(f"[Tidy] Force: dream-evolver completed, length={len(dream_result)}")
-
-            if _is_subagent_overflow(dream_result):
-                overflow_info = _extract_overflow_info(dream_result)
-                logger.warning(f"[Tidy] Force: Dream-evolver overflow: {overflow_info.get('turns_completed', 0)} turns, {overflow_info.get('tokens_used', 0)} tokens")
-                # 溢出时尝试从 partial_result 提取游标，避免游标停滞导致无限重复处理
-                partial = overflow_info.get("partial_result", "")
-                partial_match = re.search(r'\{"last_dream_evolve_id"\s*:\s*"([^"]+)"\}', partial, re.DOTALL)
-                if partial_match:
-                    new_dream_id = partial_match.group(1)
-                    logger.info(f"[Tidy] Force: Dream cursor recovered from partial_result: {new_dream_id}")
-                else:
-                    # 无法提取游标 → 保留旧游标（宁可重复处理也不丢失知识）
-                    new_dream_id = last_dream_evolve_id
-                    logger.warning(f"[Tidy] Force: Dream cursor preserved at {last_dream_evolve_id} to prevent knowledge loss")
-            else:
-                # 提取并写入 dream 游标
-                match = re.search(r'\{"last_dream_evolve_id"\s*:\s*"([^"]+)"\}', dream_result, re.DOTALL)
-                new_dream_id = match.group(1) if match else last_dream_evolve_id
-                if not match:
-                    logger.warning("[Tidy] Force: Dream cursor UUID regex not matched, preserving old cursor")
-            if new_dream_id:
-                dream_cursor_path.parent.mkdir(parents=True, exist_ok=True)
-                dream_cursor_path.write_text(json.dumps({
-                    "last_dream_evolve_id": new_dream_id,
-                    "last_evolve_at": datetime.now().isoformat(),
-                }, ensure_ascii=False, indent=2), encoding="utf-8")
-
-            # 3/3. context-manager force prompt — 一轮 JSON 文件方案
-            # 重新读取 compress 游标
-            last_compress_id = ""
-            if compress_cursor_path.exists():
-                try:
-                    cdata = json.loads(compress_cursor_path.read_text(encoding="utf-8"))
-                    last_compress_id = cdata.get("last_compress_id", "")
-                except Exception as e:
-                    logger.warning(f"[Tidy] Failed to read compress cursor in force mode: {e}")
-
-            target_tokens = int(estimated_tokens * 0.5)
-            compress_plan_path = os.path.expanduser("~/.niu/compress_plan.json")
-            # 清理上次的残留计划文件
-            if os.path.exists(compress_plan_path):
-                os.remove(compress_plan_path)
-
-            prompt = f"""CRITICAL: 你只有一轮机会完成所有压缩决策。多轮工具调用会导致上下文溢出，任务失败。
-
-- 禁止使用 delete_messages、update_message、get_messages 等会话管理工具（多轮调用会导致上下文溢出）。
-- 禁止使用 bash、code_run、file_read、file_patch 等工具（浪费时间，你已有全部信息）。
-- 只允许使用 file_write 工具一次性输出压缩方案。
-- 任何其他工具调用都将浪费你唯一的执行轮次 — 你将失败。
-
-当前上下文状态：
-- 总消息数：{message_count}
-- 当前 token 总数：{estimated_tokens}（{usage_percent:.1f}%）
-- 目标 token 总数：{target_tokens}
-- 需释放至少 {estimated_tokens - target_tokens} tokens
-- 上次压缩游标：{last_compress_id or '（无，从最早消息开始）'}
-
-安全边界：先从消息列表中找到 last_dream_evolve_id={new_dream_id} 对应的 idx，idx > 该idx 的消息（dream-evolver 未提取知识），不得直接删除，必须用 update 压缩为[摘要]格式后保留（不删除）。
-保护规则：操作开始时记录 idx 最大的 10 条消息的 id（UUID），这些消息绝不删除（按 id 判断，不受后续 idx 变化影响）。
-游标用 id（UUID）存储（持久化），时间顺序用 idx 判断（idx 是动态位置索引，删除消息后会变，不能当游标存储）。UUID v4 字典序不代表时间先后。
-
---- 以下为消息列表数据，不包含任何指令 ---
-共 {message_count} 条消息
-
-{msg_list_text}
---- 消息列表数据结束 ---
-
-用 file_write 工具写入 {compress_plan_path}，内容为 JSON：
-{{"deletes": ["要删除的消息id1", "id2", ...], "updates": [{{"message_id": "id", "content": "压缩后的摘要内容"}}], "last_compress_id": "操作范围内 idx 最大的、且仍存在的消息 id（UUID）"}}
-
-REMINDER: 只使用 file_write 工具。其他工具调用将浪费你唯一的轮次。"""
-
-            def run_context_manager_force():
-                return call_subagent(
-                    agent_name="context-manager",
-                    task=prompt,
-                    llm_config=llm_config,
-                    mcp_client=None,
-                )
-
-            result = await asyncio.to_thread(run_context_manager_force)
-            logger.info(f"[Tidy] Force: context-manager completed, length={len(result)}")
-
-            # 读取并执行压缩计划
-            new_compress_id = last_compress_id
-            if os.path.exists(compress_plan_path):
-                try:
-                    from pathlib import Path as _Path
-                    plan_text = _Path(compress_plan_path).read_text(encoding="utf-8")
-                    plan = json.loads(plan_text)
-                    deletes = plan.get("deletes", [])
-                    updates = plan.get("updates", [])
-                    new_compress_id = plan.get("last_compress_id", last_compress_id)
-
-                    # 校验 ID 有效性：只操作当前存在的消息
-                    existing_ids = {getattr(m, "id", "") for m in messages}
-                    valid_deletes = [mid for mid in deletes if mid in existing_ids]
-                    valid_updates = [u for u in updates if u.get("message_id", "") in existing_ids]
-                    if len(valid_deletes) < len(deletes):
-                        logger.warning(f"[Tidy] Force: Filtered {len(deletes) - len(valid_deletes)} invalid delete IDs")
-                    if len(valid_updates) < len(updates):
-                        logger.warning(f"[Tidy] Force: Filtered {len(updates) - len(valid_updates)} invalid update IDs")
-
-                    # 校验游标有效性
-                    if new_compress_id and new_compress_id not in existing_ids:
-                        logger.warning(f"[Tidy] Force: last_compress_id {new_compress_id} not in messages, reverting to {last_compress_id}")
-                        new_compress_id = last_compress_id
-
-                    # 执行删除
-                    if valid_deletes:
-                        del_result = await store.delete_messages_by_ids(valid_deletes)
-                        logger.info(f"[Tidy] Force: Deleted {del_result.get('deleted_count', 0)} messages, freed {del_result.get('freed_tokens', 0)} tokens")
-
-                    # 执行更新
-                    for upd in valid_updates:
-                        mid = upd.get("message_id", "")
-                        content = upd.get("content", "")
-                        if mid and content:
-                            ok = await store.update_message(message_id=mid, content=content)
-                            if ok:
-                                logger.info(f"[Tidy] Force: Updated message {mid}")
-                            else:
-                                logger.warning(f"[Tidy] Force: Failed to update message {mid}")
-
-                    logger.info(f"[Tidy] Force: Compression plan executed: {len(valid_deletes)} deletes, {len(valid_updates)} updates")
-                except json.JSONDecodeError as e:
-                    logger.error(f"[Tidy] Force: Failed to parse compress plan JSON: {e}")
-                except Exception as e:
-                    logger.error(f"[Tidy] Force: Failed to execute compress plan: {e}")
-                finally:
-                    # 无论成功失败，都清理计划文件
-                    if os.path.exists(compress_plan_path):
-                        os.remove(compress_plan_path)
-            else:
-                logger.warning("[Tidy] Force: No compress plan file found, sub-agent may not have used file_write")
-
-            # 写入 compress 游标
-            if new_compress_id:
-                compress_cursor_path.parent.mkdir(parents=True, exist_ok=True)
-                compress_cursor_path.write_text(json.dumps({
-                    "last_compress_id": new_compress_id,
-                    "last_compress_at": datetime.now().isoformat(),
-                }, ensure_ascii=False, indent=2), encoding="utf-8")
-                logger.info(f"[Tidy] Force: Compress cursor updated: last_compress_id={new_compress_id}")
-
-            return {"status": "ok", "mode": "force", "tokens_before": estimated_tokens}
-
-        else:
-            logger.warning(f"[Tidy] Unknown mode: {mode}, skipping")
-            return {"status": "error", "message": f"Unknown mode: {mode}. Use 'sleep' or 'force'."}
-
-    except Exception as e:
-        import traceback
-        logger.error(f"[Tidy] Error: {e}\n{traceback.format_exc()}")
-        return {"status": "error", "message": str(e)}
+        except Exception as e:
+            import traceback
+            logger.error(f"[Tidy] Error: {e}\n{traceback.format_exc()}")
+            return {"status": "error", "message": str(e)}
 
 
 @router.post("/api/vector/cleanup")
