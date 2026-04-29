@@ -1178,6 +1178,8 @@ async def _tidy_context_impl(request: dict):
                     fresh_messages = await store.get_messages()
                     existing_ids = {getattr(m, "id", "") for m in fresh_messages}
                     valid_deletes = [mid for mid in deletes if mid in existing_ids]
+                    # 去重：防止 LLM 输出重复 ID 绕过游标保护（list.remove 只删第一个）
+                    valid_deletes = list(dict.fromkeys(valid_deletes))
                     # 校验游标有效性
                     if new_compress_id and new_compress_id not in existing_ids:
                         logger.warning(f"[Tidy] Force: last_compress_id {new_compress_id} not in messages, reverting to {last_compress_id}")
@@ -1193,7 +1195,14 @@ async def _tidy_context_impl(request: dict):
                         if cursor_id and cursor_id in valid_deletes:
                             valid_deletes.remove(cursor_id)
                             logger.warning(f"[Tidy] Force: Protected cursor message {cursor_id} from deletion")
-                    valid_updates = [u for u in updates if u.get("message_id", "") in existing_ids]
+                    valid_updates = [u for u in updates if isinstance(u, dict) and u.get("message_id", "") in existing_ids]
+                    # 防止 delete/update 重叠：同一 ID 同时出现在 deletes 和 updates 中时，
+                    # 保留 update（摘要），从 deletes 中移除（否则先删后更新，消息丢失）
+                    update_ids = {u.get("message_id", "") for u in valid_updates}
+                    overlap_ids = update_ids & set(valid_deletes)
+                    if overlap_ids:
+                        logger.warning(f"[Tidy] Force: Removing {len(overlap_ids)} IDs from deletes that also appear in updates: {overlap_ids}")
+                        valid_deletes = [mid for mid in valid_deletes if mid not in overlap_ids]
                     if len(valid_deletes) < len(deletes):
                         logger.warning(f"[Tidy] Force: Filtered {len(deletes) - len(valid_deletes)} invalid delete IDs")
                     if len(valid_updates) < len(updates):
