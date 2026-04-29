@@ -421,15 +421,15 @@ class TestTidyFlowOrder:
         # by checking the source code contains entity-extractor calls
         import inspect
         from niu_api import compat
-        source = inspect.getsource(compat.tidy_context)
+        source = inspect.getsource(compat._tidy_context_impl)
         # entity-extractor must appear before dream-evolver in sleep mode
         entity_pos = source.find("entity-extractor")
         dream_pos = source.find("dream-evolver")
         context_pos = source.find("context-manager")
         # All three should be present
-        assert entity_pos > 0, "entity-extractor not found in tidy_context"
-        assert dream_pos > 0, "dream-evolver not found in tidy_context"
-        assert context_pos > 0, "context-manager not found in tidy_context"
+        assert entity_pos > 0, "entity-extractor not found in _tidy_context_impl"
+        assert dream_pos > 0, "dream-evolver not found in _tidy_context_impl"
+        assert context_pos > 0, "context-manager not found in _tidy_context_impl"
         # entity-extractor must come before dream-evolver
         assert entity_pos < dream_pos, "entity-extractor must be called before dream-evolver"
         # dream-evolver must come before context-manager
