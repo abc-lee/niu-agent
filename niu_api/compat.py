@@ -787,6 +787,7 @@ async def _tidy_context_impl(request: dict):
             # 1/3. entity-extractor（增量，非破坏性）
             entity_msg_ids = []
             entity_incremental_text = _build_incremental_msg_text(messages, last_entity_extract_id, entity_msg_ids, msg_tokens)
+            new_entity_id = last_entity_extract_id  # 默认保留旧游标
             entity_prompt = f"""请从以下消息中提取有价值的内容，形成精炼文档提交给 LightRAG 入库。
 
 {entity_incremental_text}
@@ -840,6 +841,7 @@ async def _tidy_context_impl(request: dict):
                 logger.info("[Tidy] entity-extractor: no new messages since cursor")
 
             # 2/3. dream-evolver prompt（UUID 游标，idx 判断时间顺序）
+            new_dream_id = last_dream_evolve_id  # 默认保留旧游标
             if last_dream_evolve_id:
                 dream_prompt = f"""请对以下消息中涉及的实体进行精加工（打标签、建关系、关联脑区、更新画像），并维护 skill 文件。
 
