@@ -855,6 +855,15 @@ async def _tidy_context_impl(request: dict):
                         # 提取失败 → 保留旧游标（重复处理优于知识丢失，与 force 模式一致）
                         new_entity_id = last_entity_extract_id
                         logger.warning("[Tidy] Entity cursor regex not matched, preserving old cursor to prevent knowledge loss")
+                # 校验游标：子 Agent 可能已删除游标指向的消息
+                if new_entity_id:
+                    fresh_msgs = await store.get_messages()
+                    fresh_ids = {getattr(m, "id", "") for m in fresh_msgs}
+                    if new_entity_id not in fresh_ids:
+                        logger.warning(f"[Tidy] Entity cursor {new_entity_id} deleted by sub-agent, reverting to {last_entity_extract_id}")
+                        new_entity_id = last_entity_extract_id
+                        if new_entity_id and new_entity_id not in fresh_ids:
+                            new_entity_id = ""
 
                 if new_entity_id:
                     entity_cursor_path.parent.mkdir(parents=True, exist_ok=True)
