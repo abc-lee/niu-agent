@@ -932,15 +932,15 @@ async def _tidy_context_impl(request: dict):
                 new_dream_id = extracted or last_dream_evolve_id
                 if not extracted:
                     logger.warning("[Tidy] Dream cursor UUID regex not matched, preserving old cursor")
-                # 校验游标：子 Agent 可能已删除游标指向的消息
-                if new_dream_id:
-                    fresh_msgs = await store.get_messages()
-                    fresh_ids = {getattr(m, "id", "") for m in fresh_msgs}
-                    if new_dream_id not in fresh_ids:
-                        logger.warning(f"[Tidy] Dream cursor {new_dream_id} deleted by sub-agent, reverting to {last_dream_evolve_id}")
-                        new_dream_id = last_dream_evolve_id
-                        if new_dream_id and new_dream_id not in fresh_ids:
-                            new_dream_id = ""
+            # 校验游标：子 Agent 可能已删除游标指向的消息（溢出和正常路径都需要）
+            if new_dream_id:
+                fresh_msgs = await store.get_messages()
+                fresh_ids = {getattr(m, "id", "") for m in fresh_msgs}
+                if new_dream_id not in fresh_ids:
+                    logger.warning(f"[Tidy] Dream cursor {new_dream_id} deleted by sub-agent, reverting to {last_dream_evolve_id}")
+                    new_dream_id = last_dream_evolve_id
+                    if new_dream_id and new_dream_id not in fresh_ids:
+                        new_dream_id = ""
             if new_dream_id:
                 dream_cursor_path.parent.mkdir(parents=True, exist_ok=True)
                 dream_cursor_path.write_text(json.dumps({
@@ -1033,6 +1033,13 @@ async def _tidy_context_impl(request: dict):
                         "last_compress_at": datetime.now().isoformat(),
                     }, ensure_ascii=False, indent=2), encoding="utf-8")
                     logger.info(f"[Tidy] Compress cursor updated: last_compress_id={new_compress_id}")
+
+            # 整理完成后更新 last_tidy_tokens，防止自动整理阈值失效
+            try:
+                post_tidy_msgs = await store.get_messages()
+                _write_last_tidy_tokens(_estimate_total_tokens(post_tidy_msgs))
+            except Exception as e:
+                logger.warning(f"[Tidy] Sleep: Failed to update last_tidy_tokens: {e}")
 
             return {
                 "status": "success",
@@ -1299,6 +1306,13 @@ async def _tidy_context_impl(request: dict):
                     "last_compress_at": datetime.now().isoformat(),
                 }, ensure_ascii=False, indent=2), encoding="utf-8")
                 logger.info(f"[Tidy] Force: Compress cursor updated: last_compress_id={new_compress_id}")
+
+            # 整理完成后更新 last_tidy_tokens，防止自动整理阈值失效
+            try:
+                post_tidy_msgs = await store.get_messages()
+                _write_last_tidy_tokens(_estimate_total_tokens(post_tidy_msgs))
+            except Exception as e:
+                logger.warning(f"[Tidy] Force: Failed to update last_tidy_tokens: {e}")
 
             return {"status": "ok", "mode": "force", "tokens_before": estimated_tokens}
 
