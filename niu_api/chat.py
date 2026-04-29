@@ -307,6 +307,10 @@ async def chat_sync(request: ChatRequest) -> ChatResponse:
             message_id = await store.add_message(role="assistant", content=full_reply)
             await notify_new_message(message_id, "assistant", full_reply)
 
+            # 自动增量整理检查
+            from niu_api.compat import _check_and_trigger_auto_tidy
+            await _check_and_trigger_auto_tidy(store)
+
         return ChatResponse(session_id=session_id, reply=full_reply, message_id=message_id)
     finally:
         _chat_lock.release()
