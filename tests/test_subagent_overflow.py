@@ -28,41 +28,51 @@ class TestCountTokensForText:
         assert count_tokens_for_text(long) > count_tokens_for_text(short)
 
 
-class TestSplitPromptByTokens:
-    """Test prompt splitting for sub-agent overflow protection."""
+class TestNoPromptChunking:
+    """Verify prompt chunking has been removed — call_subagent always executes in one pass."""
 
-    def test_short_prompt_no_split(self):
-        from agent.subagent import split_prompt_by_tokens
-        chunks = split_prompt_by_tokens("Hello world", max_tokens_per_chunk=50000)
-        assert len(chunks) == 1
-        assert chunks[0] == "Hello world"
+    def test_split_prompt_by_tokens_not_exported(self):
+        """split_prompt_by_tokens should no longer be importable."""
+        import agent.subagent as subagent_mod
+        assert not hasattr(subagent_mod, "split_prompt_by_tokens")
 
-    def test_long_prompt_splits(self):
-        from agent.subagent import split_prompt_by_tokens
-        lines = [f"消息 {i}: 这是一段测试内容用于验证分片功能" for i in range(200)]
-        prompt = "\n".join(lines)
-        chunks = split_prompt_by_tokens(prompt, max_tokens_per_chunk=200)
-        assert len(chunks) >= 2
+    def test_prompt_chunk_limit_not_exported(self):
+        """PROMPT_CHUNK_TOKEN_LIMIT should no longer exist."""
+        import agent.subagent as subagent_mod
+        assert not hasattr(subagent_mod, "PROMPT_CHUNK_TOKEN_LIMIT")
 
-    def test_empty_prompt_returns_empty_list(self):
-        from agent.subagent import split_prompt_by_tokens
-        chunks = split_prompt_by_tokens("", max_tokens_per_chunk=50000)
-        assert chunks == []
+    def test_call_subagent_executes_long_task_in_one_pass(self, monkeypatch):
+        """Even with a very long task, call_subagent should call _run_agent_loop exactly once."""
+        from agent import subagent
 
-    def test_single_long_line_not_split(self):
-        from agent.subagent import split_prompt_by_tokens
-        long_line = "测试" * 10000
-        chunks = split_prompt_by_tokens(long_line, max_tokens_per_chunk=100)
-        assert len(chunks) == 1
-        assert chunks[0] == long_line
+        call_count = 0
 
-    def test_chunks_preserve_content(self):
-        from agent.subagent import split_prompt_by_tokens
-        lines = [f"消息 {i}: 内容" for i in range(50)]
-        prompt = "\n".join(lines)
-        chunks = split_prompt_by_tokens(prompt, max_tokens_per_chunk=200)
-        rejoined = "\n".join(chunks)
-        assert rejoined == prompt
+        def mock_run(agent_name, client, system_prompt, user_input, handler, tools_schema,
+                      max_turns=20, initial_user_content=None, context_window_tokens=0):
+            nonlocal call_count
+            call_count += 1
+            return ("done", {"result": "CURRENT_TASK_DONE", "data": "ok"})
+
+        monkeypatch.setattr(subagent, "_run_agent_loop", mock_run)
+        monkeypatch.setattr(subagent, "get_subagent_prompt", lambda name: "system")
+        monkeypatch.setattr(subagent, "get_subagent_config", lambda name: {})
+        monkeypatch.setattr(subagent, "get_subagent_mcp_tools_schema", lambda name: [])
+
+        import agent.runner as runner_mod
+        monkeypatch.setattr(runner_mod, "create_client", lambda cfg: None)
+        monkeypatch.setattr(runner_mod, "get_tools_schema", lambda: [])
+
+        monkeypatch.setattr(subagent, "_read_context_window_tokens", lambda: 200000)
+
+        # Very long task that would have been chunked before
+        long_task = "消息内容 " * 50000  # ~100K chars, would exceed old 50K limit
+        result = subagent.call_subagent(
+            agent_name="test-agent",
+            task=long_task,
+            llm_config={"apikey": "test", "apibase": "http://test", "model": "test"},
+        )
+
+        assert call_count == 1  # Single pass, no chunking
 
 
 class TestAgentLoopTokenThreshold:
@@ -401,6 +411,31 @@ class TestExtractResultFromReturnValue:
         assert _extract_result_from_return_value(42) is None
 
 
+class TestTidyFlowOrder:
+    """Verify tidy_context calls entity-extractor → dream-evolver → context-manager in order."""
+
+    def test_sleep_mode_calls_three_agents_in_order(self):
+        """Sleep mode should call entity-extractor, then dream-evolver, then context-manager."""
+        from niu_api.compat import _is_subagent_overflow, _extract_overflow_info
+        # This is a structural test: verify the code path exists
+        # by checking the source code contains entity-extractor calls
+        import inspect
+        from niu_api import compat
+        source = inspect.getsource(compat.tidy_context)
+        # entity-extractor must appear before dream-evolver in sleep mode
+        entity_pos = source.find("entity-extractor")
+        dream_pos = source.find("dream-evolver")
+        context_pos = source.find("context-manager")
+        # All three should be present
+        assert entity_pos > 0, "entity-extractor not found in tidy_context"
+        assert dream_pos > 0, "dream-evolver not found in tidy_context"
+        assert context_pos > 0, "context-manager not found in tidy_context"
+        # entity-extractor must come before dream-evolver
+        assert entity_pos < dream_pos, "entity-extractor must be called before dream-evolver"
+        # dream-evolver must come before context-manager
+        assert dream_pos < context_pos, "dream-evolver must be called before context-manager"
+
+
 class TestCompatOverflowHandling:
     """Test that compat.py handles sub-agent overflow results."""
 
@@ -421,3 +456,95 @@ class TestCompatOverflowHandling:
         assert info["overflow"] is True
         assert info["agent"] == "context-manager"
         assert info["turns_completed"] == 5
+
+
+class TestTruncateMessageContent:
+    """Test truncate_message_content for snowball compression."""
+
+    def test_short_content_not_truncated(self):
+        from niu_api.compat import truncate_message_content
+        content = "这是一条短消息"
+        result = truncate_message_content(content, max_chars=500)
+        assert result == content
+
+    def test_long_content_truncated(self):
+        from niu_api.compat import truncate_message_content
+        content = "x" * 1000
+        result = truncate_message_content(content, max_chars=500)
+        assert len(result) < len(content)
+        assert result.startswith(content[:500])
+        assert "截断" in result
+
+    def test_empty_content_returns_empty(self):
+        from niu_api.compat import truncate_message_content
+        assert truncate_message_content("", max_chars=500) == ""
+
+    def test_truncation_includes_original_length_info(self):
+        from niu_api.compat import truncate_message_content
+        content = "a" * 2000
+        result = truncate_message_content(content, max_chars=500)
+        assert "2000" in result  # 原始长度信息
+
+
+class TestBuildTruncatedMsgListText:
+    """Test build_truncated_msg_list_text for force-mode snowball compression."""
+
+    def test_truncated_list_shorter_than_full(self):
+        from niu_api.compat import build_truncated_msg_list_text
+        # 构造长消息列表
+        messages = []
+        for i in range(20):
+            msg = type("Msg", (), {
+                "id": f"msg-{i}",
+                "role": "user",
+                "content": "内容" * 500,  # 每条 1000 字符
+            })()
+            messages.append(msg)
+        full = build_truncated_msg_list_text(messages, truncate=False)
+        truncated = build_truncated_msg_list_text(messages, truncate=True, max_chars=500)
+        assert len(truncated) < len(full)
+
+    def test_truncated_preserves_uuid_and_metadata(self):
+        from niu_api.compat import build_truncated_msg_list_text
+        msg = type("Msg", (), {
+            "id": "test-uuid-123",
+            "role": "user",
+            "content": "x" * 2000,
+        })()
+        result = build_truncated_msg_list_text([msg], truncate=True, max_chars=500)
+        assert "test-uuid-123" in result
+        assert "user" in result
+
+    def test_no_truncate_returns_full_content(self):
+        from niu_api.compat import build_truncated_msg_list_text
+        msg = type("Msg", (), {
+            "id": "msg-1",
+            "role": "assistant",
+            "content": "完整内容",
+        })()
+        result = build_truncated_msg_list_text([msg], truncate=False)
+        assert "完整内容" in result
+
+
+class TestAutoTidyTrigger:
+    """Test _check_auto_tidy incremental trigger mechanism."""
+
+    def test_increment_exceeds_threshold_triggers_tidy(self):
+        from niu_api.compat import _should_auto_tidy
+        # 增量超过阈值 → 应触发
+        assert _should_auto_tidy(current_tokens=200000, last_tidy_tokens=100000, threshold=50000) is True
+
+    def test_increment_below_threshold_no_tidy(self):
+        from niu_api.compat import _should_auto_tidy
+        # 增量未超过阈值 → 不触发
+        assert _should_auto_tidy(current_tokens=120000, last_tidy_tokens=100000, threshold=50000) is False
+
+    def test_zero_last_tidy_always_triggers(self):
+        from niu_api.compat import _should_auto_tidy
+        # 从未整理过 → 总量超阈值就触发
+        assert _should_auto_tidy(current_tokens=60000, last_tidy_tokens=0, threshold=50000) is True
+
+    def test_zero_current_tokens_no_tidy(self):
+        from niu_api.compat import _should_auto_tidy
+        # 无消息 → 不触发
+        assert _should_auto_tidy(current_tokens=0, last_tidy_tokens=0, threshold=50000) is False

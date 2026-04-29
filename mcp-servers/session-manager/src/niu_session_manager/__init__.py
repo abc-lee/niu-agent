@@ -2,6 +2,11 @@
 Niu Session Manager MCP Server
 
 Provides session message management tools for context compression.
+
+Architecture:
+- Module-level functions (get_messages, add_message, update_message, delete_messages)
+  use MessageStore directly (同进程调用, no HTTP API dependency).
+- MCP stdio handlers preserved for backward compatibility.
 """
 
 import asyncio
@@ -19,7 +24,7 @@ from mcp.types import TextContent, Tool
 # Initialize MCP server
 server = Server("niu-session-manager")
 
-# Main API URL
+# Main API URL (fallback for stdio mode)
 API_URL = os.environ.get("NIU_API_URL", "http://127.0.0.1:9876")
 
 # ============== Tool Schemas ==============
@@ -113,6 +118,122 @@ def get_tool_schemas() -> list[dict]:
     """返回所有工具的 schema 列表（用于 MCP Loader 注册）"""
     return list(TOOL_SCHEMAS.values())
 
+
+def _get_store():
+    """Get or create MessageStore instance (sync wrapper)."""
+    from agent.session import get_message_store
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop and loop.is_running():
+        # Already in async context — create a new event loop in a thread
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            return pool.submit(asyncio.run, get_message_store()).result()
+    else:
+        return asyncio.run(get_message_store())
+
+
+def _run_async(coro):
+    """Run an async coroutine synchronously."""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop and loop.is_running():
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            return pool.submit(asyncio.run, coro).result()
+    else:
+        return asyncio.run(coro)
+
+
+# ============================================================================
+# Module-level functions for ToolRegistry direct function lookup
+# (同进程调用, no HTTP API dependency — snowball compression depends on these)
+# ============================================================================
+
+def get_messages(session_id: str, **kwargs) -> dict:
+    """Get message list with token counts via MessageStore (direct call)."""
+    try:
+        store = _get_store()
+        messages = _run_async(store.get_messages())
+
+        formatted = []
+        total_tokens = 0
+        for i, msg in enumerate(messages, 1):
+            content = getattr(msg, "content", "") or ""
+            try:
+                from litellm import token_counter
+                tokens = token_counter(model="gpt-4o", messages=[{"role": getattr(msg, "role", "user"), "content": content}])
+            except Exception:
+                tokens = max(1, len(content) // 2) + 4
+            total_tokens += tokens
+
+            formatted.append({
+                "id": getattr(msg, "id", ""),
+                "idx": i,
+                "tokens": tokens,
+                "role": getattr(msg, "role", "unknown"),
+                "content": content,
+            })
+
+        return {
+            "total_messages": len(messages),
+            "total_tokens": total_tokens,
+            "messages": formatted,
+        }
+    except Exception as e:
+        logger.error(f"get_messages direct call failed: {e}")
+        return {"error": str(e), "total_messages": 0, "total_tokens": 0, "messages": []}
+
+
+def add_message(session_id: str, role: str, content: str, **kwargs) -> dict:
+    """Add a message via MessageStore (direct call)."""
+    try:
+        store = _get_store()
+        msg_id = _run_async(store.add_message(role=role, content=content))
+        return {"status": "ok", "message_id": msg_id}
+    except Exception as e:
+        logger.error(f"add_message direct call failed: {e}")
+        return {"status": "error", "error": str(e)}
+
+
+def update_message(session_id: str, message_id: str, content: str, **kwargs) -> dict:
+    """Update message content via MessageStore (direct call)."""
+    try:
+        store = _get_store()
+        updated = _run_async(store.update_message(message_id=message_id, content=content))
+        if updated:
+            return {"status": "ok", "message_id": message_id}
+        else:
+            return {"status": "error", "error": f"Message {message_id} not found"}
+    except Exception as e:
+        logger.error(f"update_message direct call failed: {e}")
+        return {"status": "error", "error": str(e)}
+
+
+def delete_messages(session_id: str, message_ids: list, reason: str = "Context compression", **kwargs) -> dict:
+    """Delete messages by IDs via MessageStore (direct call)."""
+    try:
+        store = _get_store()
+        result = _run_async(store.delete_messages_by_ids(message_ids))
+        return {
+            "status": "ok",
+            "deleted_count": result.get("deleted_count", 0),
+            "freed_tokens": result.get("freed_tokens", 0),
+        }
+    except Exception as e:
+        logger.error(f"delete_messages direct call failed: {e}")
+        return {"status": "error", "error": str(e), "deleted_count": 0, "freed_tokens": 0}
+
+
+# ============================================================================
+# HTTP API fallback (for stdio MCP mode when API server is running)
+# ============================================================================
 
 def call_api(method: str, endpoint: str, data: dict | None = None) -> dict | None:
     """Call the main API."""

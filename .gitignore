@@ -96,4 +96,6 @@ memory/skills/
 
 # Temporary data files
 kv_end.txt
+/config/.obsidian
+/docs/.obsidian
 /.claude/skills/gitnexus/gitnexus-cli

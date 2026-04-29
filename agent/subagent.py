@@ -33,54 +33,6 @@ def count_tokens_for_text(text: str) -> int:
         return max(1, len(text) // 2)
 
 
-def split_prompt_by_tokens(text: str, max_tokens_per_chunk: int = 50000) -> list[str]:
-    """
-    按 token 限制将 prompt 分片（按行分割，不拆行内）
-
-    Args:
-        text: 完整 prompt 文本
-        max_tokens_per_chunk: 每片最大 token 数（默认 50K）
-
-    Returns:
-        分片列表（每个元素是一个完整的 prompt 片段）
-    """
-    if not text:
-        return []
-
-    # 先检查整体是否超限
-    total_tokens = count_tokens_for_text(text)
-    if total_tokens <= max_tokens_per_chunk:
-        return [text]
-
-    # 按行分割
-    lines = text.split("\n")
-    chunks: list[str] = []
-    current_lines: list[str] = []
-    current_tokens = 0
-
-    for line in lines:
-        line_tokens = count_tokens_for_text(line) if line else 1
-
-        # 如果加入这行会超限，且当前片非空，先保存当前片
-        if current_lines and (current_tokens + line_tokens > max_tokens_per_chunk):
-            chunks.append("\n".join(current_lines))
-            current_lines = []
-            current_tokens = 0
-
-        current_lines.append(line)
-        current_tokens += line_tokens
-
-    # 保存最后一片
-    if current_lines:
-        chunks.append("\n".join(current_lines))
-
-    return chunks if chunks else [text]
-
-
-# 子 Agent prompt 分片阈值（token 数）
-PROMPT_CHUNK_TOKEN_LIMIT = 50000
-
-
 def _read_context_window_tokens() -> int:
     """
     从 ~/.niu/preferences.json 读取上下文窗口大小
@@ -362,105 +314,38 @@ def call_subagent(
     tool_names = [t.get("function", {}).get("name", "") for t in tools_schema]
     logger.debug(f"[SubAgent] {agent_name}: Tools = {tool_names}")
 
-    # 7. 执行（支持 prompt 分片）
+    # 7. 执行（单次，不分片）
     context_window_tokens = _read_context_window_tokens()
-    task_tokens = count_tokens_for_text(task)
 
-    if task_tokens <= PROMPT_CHUNK_TOKEN_LIMIT:
-        # 单次执行：task 未超限
-        result_text, return_value = _run_agent_loop(
-            agent_name=agent_name,
-            client=client,
-            system_prompt=system_prompt,
-            user_input=task,
-            handler=handler,
-            tools_schema=tools_schema,
-            max_turns=20,
-            initial_user_content=task,
-            context_window_tokens=context_window_tokens,
-        )
+    result_text, return_value = _run_agent_loop(
+        agent_name=agent_name,
+        client=client,
+        system_prompt=system_prompt,
+        user_input=task,
+        handler=handler,
+        tools_schema=tools_schema,
+        max_turns=20,
+        initial_user_content=task,
+        context_window_tokens=context_window_tokens,
+    )
 
-        # CONTEXT_OVERFLOW：返回结构化进度报告
-        if return_value and isinstance(return_value, dict) and return_value.get("result") == "CONTEXT_OVERFLOW":
-            data = return_value.get("data", {})
-            overflow_report = {
-                "overflow": True,
-                "agent": agent_name,
-                "turns_completed": data.get("turns_completed", 0),
-                "tokens_used": data.get("tokens_used", 0),
-                "tokens_limit": data.get("tokens_limit", 0),
-                "partial_result": result_text[-2000:] if result_text else "",
-            }
-            logger.warning(f"[SubAgent] {agent_name}: Context overflow at {data.get('tokens_used', 0)} tokens")
-            return json.dumps(overflow_report, ensure_ascii=False)
+    # CONTEXT_OVERFLOW：返回结构化进度报告
+    if return_value and isinstance(return_value, dict) and return_value.get("result") == "CONTEXT_OVERFLOW":
+        data = return_value.get("data", {})
+        overflow_report = {
+            "overflow": True,
+            "agent": agent_name,
+            "turns_completed": data.get("turns_completed", 0),
+            "tokens_used": data.get("tokens_used", 0),
+            "tokens_limit": data.get("tokens_limit", 0),
+            "partial_result": result_text[-2000:] if result_text else "",
+        }
+        logger.warning(f"[SubAgent] {agent_name}: Context overflow at {data.get('tokens_used', 0)} tokens")
+        return json.dumps(overflow_report, ensure_ascii=False)
 
-        # 优先从 return 值提取结构化结果
-        extracted = _extract_result_from_return_value(return_value)
-        if extracted is not None:
-            return extracted
+    # 优先从 return 值提取结构化结果
+    extracted = _extract_result_from_return_value(return_value)
+    if extracted is not None:
+        return extracted
 
-        return result_text
-
-    # 分片执行：task 超过 token 限制
-    chunks = split_prompt_by_tokens(task, max_tokens_per_chunk=PROMPT_CHUNK_TOKEN_LIMIT)
-    logger.info(f"[SubAgent] {agent_name}: Task exceeds {PROMPT_CHUNK_TOKEN_LIMIT} tokens "
-                f"({task_tokens}), split into {len(chunks)} chunks")
-
-    accumulated_parts: list[str] = []
-
-    for i, chunk_text in enumerate(chunks):
-        is_first = (i == 0)
-        chunk_label = f"chunk {i + 1}/{len(chunks)}"
-
-        # 非首片：重置 handler 可变状态，避免前一片的工作记忆污染当前片
-        if not is_first:
-            handler.history_info = []
-            handler._recent_tool_calls = []
-            handler.current_turn = 0
-
-        # 非首片：在 system_prompt 中注入续接上下文
-        current_system_prompt = system_prompt
-        if not is_first and accumulated_parts:
-            continuation_context = accumulated_parts[-1][:500]
-            current_system_prompt = (
-                system_prompt
-                + f"\n\n[续接上下文] 之前已处理的内容摘要：{continuation_context}...\n请继续处理以下内容："
-            )
-
-        logger.info(f"[SubAgent] {agent_name}: Executing {chunk_label}")
-
-        result_text, return_value = _run_agent_loop(
-            agent_name=agent_name,
-            client=client,
-            system_prompt=current_system_prompt,
-            user_input=chunk_text,
-            handler=handler,
-            tools_schema=tools_schema,
-            max_turns=20,
-            initial_user_content=chunk_text,
-            context_window_tokens=context_window_tokens,
-        )
-
-        # CONTEXT_OVERFLOW：立即返回进度报告
-        if return_value and isinstance(return_value, dict) and return_value.get("result") == "CONTEXT_OVERFLOW":
-            data = return_value.get("data", {})
-            all_results = "".join(accumulated_parts) + result_text
-            overflow_report = {
-                "overflow": True,
-                "agent": agent_name,
-                "turns_completed": data.get("turns_completed", 0),
-                "tokens_used": data.get("tokens_used", 0),
-                "tokens_limit": data.get("tokens_limit", 0),
-                "partial_result": all_results[-2000:] if all_results else "",
-            }
-            logger.warning(f"[SubAgent] {agent_name}: Context overflow at {data.get('tokens_used', 0)} tokens "
-                          f"(chunk {i + 1}/{len(chunks)})")
-            return json.dumps(overflow_report, ensure_ascii=False)
-
-        # 优先从 return 值提取结构化结果
-        extracted = _extract_result_from_return_value(return_value)
-        chunk_result = extracted if extracted is not None else result_text
-
-        accumulated_parts.append(chunk_result)
-
-    return "\n".join(accumulated_parts).strip()
+    return result_text
