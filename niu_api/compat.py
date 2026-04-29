@@ -655,6 +655,13 @@ async def clear_chat() -> dict:
         from agent.tmp_dir import cleanup_all_tmp
         cleaned_tmp = cleanup_all_tmp()
 
+        # 重置游标文件（消息已清空，旧游标指向不存在的消息）
+        from pathlib import Path
+        for cursor_name in ["last_entity_extract.json", "last_dream_evolve.json", "last_compress.json", "last_tidy_tokens.json"]:
+            cursor_p = Path.home() / ".niu" / cursor_name
+            if cursor_p.exists():
+                cursor_p.unlink()
+
         return {"success": True, "deleted_count": count, "cleaned_tmp": cleaned_tmp}
     finally:
         _chat_lock.release()
@@ -980,6 +987,15 @@ async def _tidy_context_impl(request: dict):
                 new_compress_id = extracted or last_compress_id
                 if not extracted:
                     logger.warning("[Tidy] Sleep: Compress cursor UUID regex not matched, cursor not updated")
+                # 校验游标：子 Agent 可能已删除游标指向的消息，需根据最新消息验证
+                if new_compress_id:
+                    fresh_msgs = await store.get_messages()
+                    fresh_ids = {getattr(m, "id", "") for m in fresh_msgs}
+                    if new_compress_id not in fresh_ids:
+                        logger.warning(f"[Tidy] Sleep: Compress cursor {new_compress_id} deleted by sub-agent, reverting to {last_compress_id}")
+                        new_compress_id = last_compress_id
+                        if new_compress_id and new_compress_id not in fresh_ids:
+                            new_compress_id = ""
                 if new_compress_id:
                     compress_cursor_path.parent.mkdir(parents=True, exist_ok=True)
                     compress_cursor_path.write_text(json.dumps({
@@ -1191,11 +1207,17 @@ async def _tidy_context_impl(request: dict):
 
                     # 保护游标：禁止删除游标指向的消息，避免悬空游标
                     # 在游标回退解决后再做保护，确保回退值也在保护列表中
-                    for cursor_id in [new_compress_id, new_entity_id, new_dream_id]:
-                        if cursor_id and cursor_id in valid_deletes:
+                    cursor_ids_set = {cid for cid in [new_compress_id, new_entity_id, new_dream_id] if cid}
+                    for cursor_id in cursor_ids_set:
+                        if cursor_id in valid_deletes:
                             valid_deletes.remove(cursor_id)
                             logger.warning(f"[Tidy] Force: Protected cursor message {cursor_id} from deletion")
                     valid_updates = [u for u in updates if isinstance(u, dict) and u.get("message_id", "") in existing_ids]
+                    # 游标保护也覆盖 updates：禁止压缩游标指向的消息（内容被替换会导致边界标记丢失）
+                    cursor_updates = [u for u in valid_updates if u.get("message_id", "") in cursor_ids_set]
+                    if cursor_updates:
+                        logger.warning(f"[Tidy] Force: Removing cursor messages from updates: {[u.get('message_id') for u in cursor_updates]}")
+                        valid_updates = [u for u in valid_updates if u.get("message_id", "") not in cursor_ids_set]
                     # 防止 delete/update 重叠：同一 ID 同时出现在 deletes 和 updates 中时，
                     # 保留 update（摘要），从 deletes 中移除（否则先删后更新，消息丢失）
                     update_ids = {u.get("message_id", "") for u in valid_updates}
