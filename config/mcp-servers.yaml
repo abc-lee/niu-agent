@@ -50,7 +50,7 @@ kg-server:
     update_entity_status: {visibility: hidden}
     delete_entity: {visibility: hidden}
 
-# LightRAG Unified Server - Replaces vector-store + kg-server with 12 unified tools
+# LightRAG Unified Server - Replaces vector-store + kg-server with 15 unified tools (5 query + 4 insert + 6 management)
 lightrag-server:
   command: ${PYTHON_PATH}
   args:
@@ -68,6 +68,8 @@ lightrag-server:
     lightrag_insert_entity: {visibility: hidden}
     lightrag_insert_relation: {visibility: hidden}
     lightrag_delete_entity: {visibility: hidden}
+    lightrag_get_document: {visibility: hidden}
+    lightrag_delete_document: {visibility: hidden}
     lightrag_document_status: {visibility: hidden}
     lightrag_list_entities: {visibility: hidden}
     lightrag_merge_entities: {visibility: hidden}
