@@ -1,0 +1,294 @@
+# 开发者参考手册
+
+> 本文档从 SYSTEM_MANUAL.md 拆分而来，包含开发者指南、附录和更新日志。
+> 如需系统概述和架构信息，请参阅 [SYSTEM_MANUAL.md](SYSTEM_MANUAL.md)。
+
+## 一、开发者指南
+
+### 1.1 本地开发
+
+**环境要求：**
+```
+- Python 3.11+
+- Go 1.26+
+- Node.js 18+（含 Electron 28+）
+- SQLite
+```
+
+**启动开发环境：**
+
+```bash
+# 1. 安装依赖
+pip install -r requirements.txt
+cd agent && pip install -e .
+cd ../mcp-servers/photo-server && pip install -e .
+cd ../mcp-servers/lightrag-server && pip install -e .
+# ... 安装其他 MCP 服务器（config-manager, memory-server, file-parser 等）
+# 注意：kg-server 和 vector-store 已废弃，由 lightrag-server 替代
+
+# 2. 启动 API
+python -m niu_api
+
+# 3. 启动前端（另一个终端）
+cd ui/assistant
+npm install
+npm start
+
+# 或使用 Go 启动器（自动启动 API + 前端）
+go run main.go
+```
+
+**Go 启动器启动流程：**
+1. 检测 Python 路径（Windows: `python/Scripts/python.exe` 等；Mac/Linux: `~/.niu-venv/bin/python3` 等）
+2. 从 `~/.niu/memory.json` 加载 workspace.path，设为 `WORKSPACE_PATH` 环境变量
+3. 启动 Python API（`python -m niu_api`），传入 `NIU_API_PORT`、`PYTHONUNBUFFERED`、`LITELLM_LOCAL_MODEL_COST_MAP`、`WORKSPACE_PATH`
+4. 等待 `/health` 返回 200（最多 30 秒）
+5. 等待 `/api/preload-status` 返回 `ready=true`（最多 60 秒）
+6. 根据 `--settings` 或 `--graph` 标志启动对应窗口，否则启动 assistant 窗口
+7. 监控 Electron 进程退出，触发关闭流程：POST `/api/shutdown` → Kill API 进程
+
+### 1.2 调试技巧
+
+**查看日志：**
+```bash
+# LLM 交互日志（每日轮转）
+tail -f logs/llm_interaction_*.log
+
+# API 日志（Go 启动器通过 Pipe 捕获 stdout/stderr，无独立文件）
+# 直接运行 python -m niu_api 可在控制台看到输出
+```
+
+**测试 MCP 工具（同进程架构）：**
+```python
+# 列出所有 MCP 工具 schema（通过 ToolRegistry）
+from agent.tool_registry import get_registry
+registry = get_registry()
+for name in registry.list_tools():
+    print(name)
+```
+
+```bash
+# 列出注入的 skill 资源（注意：disk mode 下不返回 MCP 工具，只返回 skill）
+curl http://127.0.0.1:9876/api/inject/resources
+
+# 同进程调用 MCP 工具（不通过 HTTP，使用 ToolRegistry 直接调用）
+# 代码示例：
+from agent.tool_registry import get_registry
+registry = get_registry()
+tool_fn = registry.get("photo-server/ingest_photo")
+result = tool_fn(photo_path="test.jpg")
+```
+
+**数据库调试：**
+```bash
+# 查看消息历史（路径：~/.niu/messages.db）
+sqlite3 ~/.niu/messages.db "SELECT id, role, content, created_at FROM messages ORDER BY created_at DESC LIMIT 10;"
+
+# 查看向量数据（路径由 WORKSPACE_PATH 或 memory.json workspace.path 决定）
+sqlite3 <workspace>/vectors.db "SELECT id, content FROM documents LIMIT 10;"
+
+# 查看定时任务（路径：~/.niu/scheduled_tasks.db 或 <workspace>/scheduled_tasks.db）
+sqlite3 ~/.niu/scheduled_tasks.db "SELECT * FROM scheduled_tasks;"
+
+# 查看 LightRAG 存储状态
+ls ~/.niu/lightrag_storage/
+```
+
+### 1.3 贡献代码
+
+**代码风格：**
+```
+Python: ruff format + ruff check
+Go: go fmt
+```
+
+**提交规范：**
+```
+feat: 新功能
+fix: 修复 bug
+docs: 文档更新
+refactor: 重构
+test: 测试
+```
+
+**Pull Request 流程：**
+```
+1. Fork 仓库
+2. 创建分支：git checkout -b feature/xxx
+3. 提交代码：git commit -m "feat: xxx"
+4. 推送分支：git push origin feature/xxx
+5. 创建 Pull Request
+```
+
+---
+
+## 二、附录
+
+### 2.1 命令行参数
+
+```bash
+niu.exe [选项]
+
+选项：
+  --port=9876       API 端口（默认 9876）
+  --settings        打开设置窗口（ui/settings）
+  --graph           打开知识图谱窗口（ui/graph）
+  --config=path     配置目录路径（默认 ./config，保留兼容）
+```
+
+注意：Go 启动器使用 `flag` 包解析参数，不支持 `--help`。可运行 `niu.exe` 查看默认启动行为。
+
+### 2.2 环境变量
+
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
+| `NIU_API_PORT` | Python API 端口 | `9876` |
+| `NIU_MODELS_PATH` | 模型文件目录（覆盖默认 `{项目根}/models`） | 项目根目录下 `models/` |
+| `WORKSPACE_PATH` | 工作空间根目录（向量库、定时任务等数据存储位置） | 从 `~/.niu/memory.json` 的 `workspace.path` 读取 |
+| `NIU_DB_PATH` | 向量库数据库路径（显式覆盖，最高优先级） | 由 `WORKSPACE_PATH` 或 `workspace.path` 推导 |
+| `LITELLM_LOCAL_MODEL_COST_MAP` | LiteLLM 本地模型费用映射开关 | Go 启动器设为 `True` |
+| `CUDA_VISIBLE_DEVICES` | GPU 设备选择 | 所有可用 GPU |
+| `PYTHONUNBUFFERED` | Python 输出无缓冲 | Go 启动器设为 `1` |
+
+### 2.3 API 端点
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/chat` | POST | 主对话接口（SSE 流式） |
+| `/chat/sync` | POST | 同步对话（定时任务用） |
+| `/api/events/stream` | GET | SSE 事件流（新消息推送） |
+| `/api/context/messages` | GET | 获取上下文消息（含分页） |
+| `/api/context/messages/delete` | POST | 按 ID 删除消息 |
+| `/api/context/messages/update` | POST | 更新单条消息内容 |
+| `/api/context/messages/add` | POST | 添加消息 |
+| `/api/context/tidy` | POST | 上下文整理（sleep/force 模式） |
+| `/api/chat/clear` | POST | 清空当前会话 |
+| `/api/chat/session` | POST | 同步对话（兼容旧 UI） |
+| `/api/shutdown` | POST | 关闭服务 |
+| `/api/preload-status` | GET | 预加载状态（Go 启动器用） |
+| `/api/llm-status` | GET | LLM 配置可用状态 |
+| `/api/stats` | GET | 系统统计（消息数、运行时间） |
+| `/api/pending-alerts` | GET | 获取待处理提醒 |
+| `/api/vector/stats` | GET | 向量库统计 |
+| `/api/vector/cleanup` | POST | 触发向量库清理 |
+| `/api/inject/mcp-tool` | POST | 注册单个 MCP 工具 |
+| `/api/inject/mcp-tools/batch` | POST | 批量注册 MCP 工具 |
+| `/api/inject/resources` | GET | 列出注入资源 |
+| `/api/inject/skills/sync` | POST | 触发 Skills 同步 |
+| `/api/kg/*` | 多种 | 知识图谱端点 |
+| `/api/brain/*` | 多种 | 脑图端点（remember/recall/status） |
+| `/api/brain/regions/*` | 多种 | 脑区端点 |
+| `/api/notes/*` | 多种 | 笔记端点 |
+| `/llm/v1/chat/completions` | POST | LLM 代理端点 |
+| `/llm/v1/models` | GET | 可用模型列表 |
+| `/llm/v1/embeddings` | POST | 嵌入计算端点 |
+| `/scheduler/tasks` | GET/POST/PUT/DELETE | 定时任务管理 |
+| `/health` | GET | 健康检查 |
+
+### 2.4 许可证
+
+```
+Niu 个人知识助理
+Copyright (c) 2026
+
+本软件供个人学习和研究使用。
+商业使用请联系开发者获取授权。
+
+第三方库许可：
+- InsightFace: MIT License (非商业)
+- Sentence Transformers: Apache 2.0
+- ONNX Runtime: MIT License
+- FastAPI: MIT License
+- LightRAG: MIT License
+```
+
+---
+
+## 三、更新日志
+
+### v0.5.0 (2026-04-30)
+
+**重大变更：**
+- KG 实体架构重构：人物实体只存名字，文档入库全自动
+- LightRAG 替代向量库作为主要知识检索引擎
+- 脑图系统（Brain Graph）：记忆分级（L0/L1/L2）、遗忘曲线衰减
+- 脑区（Brain Region）：社区检测 + 区域节点刷新
+- 上下文整理管道升级：entity-extractor + dream-evolver + context-manager 三游标机制
+- 子 Agent 新增：entity-extractor、dream-evolver
+
+### v0.4.0 (2026-04-09)
+
+**重大变更：**
+- 新增交互习惯库（Interaction Habits）
+
+**交互习惯库（Interaction Habits）：**
+- 三类内容：工具方言、用户状态、用户画像
+- 置信度机制：success_count/fail_count，自动删除低置信度记录（fail_count >= 3）
+- context-manager 梦境整理时学习个性化内容
+- 主 Agent 可读取和应用 Interaction Habits
+- 工具调用成功后自动更新对应 dialect 的置信度
+
+### v0.3.0 (2026-04-09)
+
+**重大变更：**
+- 新增向量库系统文档（第三章）
+- L1规范统一（spec-L1-summary.md）
+- 递归查询机制文档（design-vector-recursive-query.md）
+- 新增向量库故障排查（5.4节）
+
+**向量库系统：**
+- 4类文档：mcp_tool, query_pattern, skill, document
+- 统一metadata结构：level, category, language
+- L2归一化（标准行为）
+- 递归查询机制（is_recursive标志）
+
+**辅助脚本：**
+- `export_all_mcp_tools.py` - 导出工具到JSON
+- `register_all_mcp_tools_from_json.py` - 从JSON注册
+- `check_mcp_tools_in_db.py` - 检查向量库状态
+
+### v0.2.0 (2026-04-06)
+
+**重大变更：**
+- 单进程架构：整合 embedding 和 scheduler 到主进程
+- GPU 自动检测：自动选择 CUDA/CPU
+- 依赖打包：所有依赖预下载，无网络要求
+
+**新增功能：**
+- 动态技能系统（watchdog 监控）
+- 定时任务优化（延迟启动避免时序问题）
+- 完整的系统说明书
+
+**修复问题：**
+- 移除重复日志
+- 修复依赖声明缺失
+- 优化启动速度
+
+**已知问题：**
+- macOS/Linux 版本未测试
+- 多用户支持未实现
+
+---
+
+## 验证记录
+
+本次验证对比了 `docs/manual-developer.md` 与当前代码，以下为修正内容：
+
+| 项目 | 原文 | 修正后 | 依据 |
+|------|------|--------|------|
+| 章节编号 | 8.2/8.3 与 9.2/9.3 混用 | 统一为 9.x（开发者指南）和 10.x（附录） | 逻辑一致性 |
+| Go 版本 | Go 1.26+ | Go 1.26+（原文正确，未修改） | `go.mod` 实际要求 `go 1.26.1` |
+| Node.js | Node.js 18+ | Node.js 18+（含 Electron 28+） | `ui/assistant/package.json` 依赖 electron ^28 |
+| 日志路径 | `logs/api_stderr.log` | `logs/llm_interaction_*.log` + 控制台输出 | Go 启动器通过 Pipe 捕获，API 无独立 stderr 文件 |
+| MCP 工具测试 | `/api/mcp-tools` 和 `/api/mcp-call` HTTP 端点 | ToolRegistry 同进程调用（旧 HTTP 端点已不存在） | `niu_api/` 中无 mcp-tools/mcp-call 路由定义 |
+| 数据库路径 | `data/messages.db` 等 | `~/.niu/messages.db`、`<workspace>/vectors.db`、`~/.niu/scheduled_tasks.db` | `agent/session.py` 和 `agent/vector_search.py` 实际路径逻辑 |
+| 命令行参数 | `--help` | `--config=path`（保留兼容），移除 `--help` | `main.go` flag 定义中无 help flag |
+| 环境变量 | 仅列出 4 个 | 补充 `WORKSPACE_PATH`、`NIU_DB_PATH`、`LITELLM_LOCAL_MODEL_COST_MAP` | `main.go` 和 `niu_api/internal/embedding.py` 实际使用的变量 |
+| API 端点 | 7 个端点 | 扩展为完整列表（含 `/api/context/*`、`/api/brain/*`、`/llm/v1/*`、`/scheduler/*` 等） | `niu_api/__main__.py` 注册的所有路由 |
+| `/session/messages` | GET | 不存在（实际为 `/api/context/messages`） | `niu_api/session.py` 路径为 `/{session_id}/messages`，UI 使用 `/api/context/messages` |
+| `/api/inject/resources` | POST | GET（列出资源）+ POST（注册工具）分离为多个端点 | `niu_api/injector.py` 路由定义 |
+| MCP 服务器列表 | 无 lightrag-server | 补充 lightrag-server、scheduler-server；embedding-service 已整合为 API 内部模块 | `mcp-servers/` 目录实际结构 |
+| UI 窗口 | 仅 `ui/assistant` | 补充 `ui/settings`、`ui/graph` | `ui/` 目录实际结构 |
+| GPU 检测 | CUDA/DirectML/CPU | CUDA/CPU（DirectML 已移除） | `niu_api/internal/embedding.py` 的 `get_device()` 仅检测 CUDA 和 CPU |
+| 许可证 | 无 LightRAG | 补充 LightRAG: MIT License | 项目实际使用 LightRAG |
+| 更新日志 | 最新 v0.4.0 | 补充 v0.5.0（KG重构、LightRAG、脑图系统） | 近期 commit 记录 |
