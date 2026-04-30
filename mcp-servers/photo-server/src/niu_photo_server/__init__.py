@@ -2040,8 +2040,6 @@ def merge_persons(person_a_id: str, person_b_id: str) -> dict:
             )
 
             # 2. 迁移 person_b 的边到 person_a，然后删除 person_b 实体
-            # 注意：直接修改 NetworkX 图不会持久化到磁盘，LightRAG 重启后
-            # entity_b 会重新出现。inject_relation 通过 ainsert_custom_kg 持久化新边。
             rag = get_lightrag()
             if rag is not None:
                 nx = rag.chunk_entity_relation_graph._graph
@@ -2060,8 +2058,12 @@ def merge_persons(person_a_id: str, person_b_id: str) -> dict:
                             description=edge_desc,
                         )
                     # 删除 person_b 节点（自动删除关联边）
-                    # 注意：仅修改内存图，未持久化删除操作
                     nx.remove_node(entity_b)
+                    # 持久化删除到 LightRAG 存储
+                    try:
+                        ingester.delete_entity(entity_b)
+                    except Exception as e:
+                        logger.warning(f"[MERGE_PERSONS] Failed to persist delete of {entity_b}: {e}")
                     logger.info(f"[MERGE_PERSONS] Deleted KG entity: {entity_b}")
                 else:
                     logger.info(f"[MERGE_PERSONS] {entity_b} not in KG, skip edge migration")
