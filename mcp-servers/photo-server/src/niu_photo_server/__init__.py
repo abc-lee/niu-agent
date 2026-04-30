@@ -461,9 +461,7 @@ def sync_photo_to_kg(file_path: str, abstract: str, detected_persons: list) -> d
                 entities.append({
                     "entity_name": entity_name,
                     "entity_type": "Person",
-                    "description": f"{person_name}, detected in photo: {title}",
-                    "source_id": "photo",
-                    "file_path": file_path,
+                    "description": person_name,
                 })
                 # Photo -> Person relationship
                 relationships.append({
@@ -1856,8 +1854,9 @@ def name_person(person_id: str, name: str) -> dict:
             ingester = LightRAGIngester()
             ingester.inject_entity(
                 name=f"person:{person_id}",
-                entity_type="person",
-                description=f"Renamed to: {name}",
+                entity_type="Person",
+                description=name,
+                file_path="",
             )
         except Exception as e:
             logger.warning(f"[NAME_PERSON] LightRAG sync failed: {e}")
@@ -2022,24 +2021,45 @@ def merge_persons(person_a_id: str, person_b_id: str) -> dict:
 
         conn.commit()
 
-        # 同步 LightRAG：更新 person_a 实体，person_b 合并后不再单独存在
+        # 同步 LightRAG：更新 person_a 实体，迁移 person_b 的边，删除 person_b
         try:
             from niu_api.internal.lightrag_adapter import LightRAGIngester
+            from niu_api.internal.lightrag_manager import get_lightrag
+
             ingester = LightRAGIngester()
             merged_name = name_a if name_a else auto_label_a
-            # 更新 person_a 实体
+            entity_a = f"person:{person_a_id}"
+            entity_b = f"person:{person_b_id}"
+
+            # 1. 更新 person_a 实体
             ingester.inject_entity(
-                name=f"person:{person_a_id}",
-                entity_type="person",
-                description=f"Merged with {person_b_id}, name: {merged_name}",
+                name=entity_a,
+                entity_type="Person",
+                description=merged_name,
+                file_path="",
             )
-            # person_b 合并到 person_a，建立关系
-            ingester.inject_relation(
-                src_id=f"person:{person_b_id}",
-                tgt_id=f"person:{person_a_id}",
-                relation="merged_into",
-                description=f"Person {person_b_id} merged into {person_a_id}",
-            )
+
+            # 2. 迁移 person_b 的边到 person_a，然后删除 person_b 实体
+            rag = get_lightrag()
+            if rag is not None:
+                nx = rag.chunk_entity_relation_graph._graph
+                if entity_b in nx.nodes():
+                    # 迁移边
+                    for src, tgt, data in list(nx.edges(entity_b, data=True)):
+                        other = tgt if src == entity_b else src
+                        if other == entity_a:
+                            continue  # 跳过自引用
+                        kw = data.get("keywords", "")
+                        desc = data.get("description", "")
+                        ingester.inject_relation(
+                            src_id=entity_a,
+                            tgt_id=other,
+                            relation=kw,
+                            description=desc,
+                        )
+                    # 删除 person_b 节点（自动删除关联边）
+                    nx.remove_node(entity_b)
+                    logger.info(f"[MERGE_PERSONS] Deleted KG entity: {entity_b}")
         except Exception as e:
             logger.warning(f"[MERGE_PERSONS] LightRAG sync failed: {e}")
 
@@ -2527,7 +2547,7 @@ def ingest_document(file_path: str, category: str = "其他", mode: str = "copy"
 
         logger.info(f"[INGEST] 完成: {final_path}")
 
-        # 读取文件内容，准备生成 L1
+        # 读取文件内容
         file_content = None
         try:
             file_content = read_file_content(str(final_path))
@@ -2537,15 +2557,32 @@ def ingest_document(file_path: str, category: str = "其他", mode: str = "copy"
             logger.warning(f"[INGEST] 无法读取文件内容: {e}")
             file_content = None
 
-        # 返回 need_l1 状态，驱动工具循环
+        # 自动完成向量库 + 知识图谱写入（不再返回 need_l1）
+        vector_result = None
+        kg_result = None
+        if file_content:
+            # 向量库写入（用原文截断版做 embedding）
+            vector_result = store_document_l1(
+                file_path=str(Path(final_path).resolve()),
+                l1=file_content,
+            )
+            logger.info(f"[INGEST] 向量库写入: {vector_result.get('status', 'unknown')}")
+
+            # 知识图谱写入已由 store_document_l1 内部的 sync_to_kg 自动完成
+            kg_result = vector_result.get("lightrag_sync")
+        else:
+            # 无内容（如二进制文件），仅做文件搬运
+            logger.info(f"[INGEST] 无文本内容，跳过向量库和知识图谱写入")
+
         return {
-            "status": "need_l1",
+            "status": "success",
             "action": action,
             "file_path": str(Path(final_path).resolve()),
             "original_path": str(source),
             "category": category,
-            "content": file_content,
-            "hint": "请生成 L1 摘要（极简格式：标题|关键词|摘要|实体|类型|指针），然后调用 store_document_l1 存储",
+            "content_length": len(file_content) if file_content else 0,
+            "vector_db": "written" if vector_result and vector_result.get("status") == "success" else "skipped",
+            "knowledge_graph": "synced" if kg_result and kg_result.get("status") == "success" else "skipped",
         }
 
     except PermissionError as e:
@@ -2971,18 +3008,21 @@ async def list_tools() -> list[Tool]:
     return [
         Tool(
             name="ingest_document",
-            description="""文档入库工具
+            description="""文档入库工具（全自动）
 
 参数:
 - file_path: 必填，源文件绝对路径
 - category: 分类名称，从 preferences.json 的 categories.documents 中选取（财务、合同、报告、方案、其他）
 - mode: copy（复制）| move（移动）| reference（引用）
 
+自动完成: 文件搬运 + 向量库写入 + 知识图谱写入（LightRAG 自动抽取实体和建链）
+
 返回:
 - status: success | error
 - action: created | versioned | renamed | referenced | skipped
 - file_path: 存储后的完整路径
-- note: 处理说明
+- vector_db: written | skipped
+- knowledge_graph: synced | skipped
 
 冲突处理:
 - 完全相同文件（哈希相同）→ 跳过

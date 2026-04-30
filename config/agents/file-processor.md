@@ -41,24 +41,14 @@ ingest 内部自动完成：人脸检测 → 人物识别 → 知识图谱同步
 
 ### 入库
 
-**步骤 1**：调用 `photo-server/ingest` 复制文件
-```
-photo-server/ingest, 参数: path="E:/tmp/report.pdf", mode="copy"
-```
+调用 `photo-server/ingest_document`，参数: path, mode="copy"
+
+`ingest_document` 自动完成：文件搬运 + 向量库写入 + 知识图谱写入（LightRAG 自动抽取实体和建链）。无需额外操作。
 
 | status | 含义 | 下一步 |
 |--------|------|--------|
-| `success` | 处理完成（文档已存在跳过） | **结束，直接汇报** |
-| `need_l1` | 文档已复制，返回了原文内容和存储路径 | **必须继续步骤 2** |
+| `success` | 处理完成 | **结束，直接汇报** |
 | `error` | 失败 | 报告错误 |
-
-**步骤 2**：将文档内容写入知识图谱
-
-步骤 1 返回 `need_l1` 时，会同时返回 `content`（文档原文）和 `file_path`（存储路径）。用这两个值调用：
-```
-lightrag-server/lightrag_insert, 参数: content="<步骤1返回的content>", doc_id="<步骤1返回的file_path>"
-```
-LightRAG 会自动调大模型抽取实体和关系，并与图谱中已有实体自动合并。
 
 ## 批量文件处理
 
