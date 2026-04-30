@@ -1856,7 +1856,6 @@ def name_person(person_id: str, name: str) -> dict:
                 name=f"person:{person_id}",
                 entity_type="Person",
                 description=name,
-                file_path="",
             )
         except Exception as e:
             logger.warning(f"[NAME_PERSON] LightRAG sync failed: {e}")
@@ -2036,7 +2035,6 @@ def merge_persons(person_a_id: str, person_b_id: str) -> dict:
                 name=entity_a,
                 entity_type="Person",
                 description=merged_name,
-                file_path="",
             )
 
             # 2. 迁移 person_b 的边到 person_a，然后删除 person_b 实体
