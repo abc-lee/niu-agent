@@ -2040,6 +2040,8 @@ def merge_persons(person_a_id: str, person_b_id: str) -> dict:
             )
 
             # 2. 迁移 person_b 的边到 person_a，然后删除 person_b 实体
+            # 注意：直接修改 NetworkX 图不会持久化到磁盘，LightRAG 重启后
+            # entity_b 会重新出现。inject_relation 通过 ainsert_custom_kg 持久化新边。
             rag = get_lightrag()
             if rag is not None:
                 nx = rag.chunk_entity_relation_graph._graph
@@ -2049,15 +2051,16 @@ def merge_persons(person_a_id: str, person_b_id: str) -> dict:
                         other = tgt if src == entity_b else src
                         if other == entity_a:
                             continue  # 跳过自引用
-                        kw = data.get("keywords", "")
-                        desc = data.get("description", "")
+                        edge_kw = data.get("keywords", "")
+                        edge_desc = data.get("description", "")
                         ingester.inject_relation(
                             src_id=entity_a,
                             tgt_id=other,
-                            relation=kw,
-                            description=desc,
+                            relation=edge_kw,
+                            description=edge_desc,
                         )
                     # 删除 person_b 节点（自动删除关联边）
+                    # 注意：仅修改内存图，未持久化删除操作
                     nx.remove_node(entity_b)
                     logger.info(f"[MERGE_PERSONS] Deleted KG entity: {entity_b}")
         except Exception as e:
@@ -2533,6 +2536,9 @@ def ingest_document(file_path: str, category: str = "其他", mode: str = "copy"
                 "file_path": str(Path(final_path).resolve()),
                 "original_path": str(source),
                 "category": category,
+                "content_length": 0,
+                "vector_db": "skipped",
+                "knowledge_graph": "skipped",
                 "note": "文件已存在，跳过重复入库",
             }
 
