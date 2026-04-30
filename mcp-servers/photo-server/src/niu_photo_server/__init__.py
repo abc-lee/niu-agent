@@ -2063,6 +2063,8 @@ def merge_persons(person_a_id: str, person_b_id: str) -> dict:
                     # 注意：仅修改内存图，未持久化删除操作
                     nx.remove_node(entity_b)
                     logger.info(f"[MERGE_PERSONS] Deleted KG entity: {entity_b}")
+                else:
+                    logger.info(f"[MERGE_PERSONS] {entity_b} not in KG, skip edge migration")
         except Exception as e:
             logger.warning(f"[MERGE_PERSONS] LightRAG sync failed: {e}")
 
@@ -2586,7 +2588,7 @@ def ingest_document(file_path: str, category: str = "其他", mode: str = "copy"
             "file_path": str(Path(final_path).resolve()),
             "original_path": str(source),
             "category": category,
-            "content_length": len(file_content) if file_content else 0,
+            "content_length": raw_length,
             "vector_db": "written" if vector_result and vector_result.get("status") == "success" else "skipped",
             "knowledge_graph": "synced" if kg_result and kg_result.get("status") == "success" else "skipped",
         }
