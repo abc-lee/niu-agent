@@ -205,7 +205,7 @@ def _load_memory_for_prompt() -> str:
             "请说：\"嗨！我是妞妞。为了帮你管理知识，请告诉我你的工作目录想放在哪里？\"\n\n"
             "用户回答路径后，你需要用 bash 工具完成以下操作：\n"
             "1. 创建目录（如果不存在）\n"
-            "2. 写入 ~/.niu/memory.json：设置 workspace.path，删除 firstRun 字段\n\n"
+            "2. 写入 ~/.niu/memory.json：设置 workspace.path，将 firstRun 设为 false\n\n"
             "完成后，下次对话不再出现此提示。"
         )
 
