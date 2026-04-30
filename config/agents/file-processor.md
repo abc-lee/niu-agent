@@ -14,8 +14,8 @@ mcpServers:
 
 ## 核心职责
 
-1. **照片**：人脸识别 + 人物管理 + 照片信息入库到知识图谱
-2. **文档**：解析内容 + 入库到知识图谱（LightRAG 自动抽取实体和建链）
+1. **照片**：人脸识别 + 人物管理 + 照片入库
+2. **文档**：文件入库 + 内容写入知识图谱（LightRAG 自动抽取实体和建链）
 
 ## 照片处理
 
@@ -24,7 +24,6 @@ mcpServers:
 ```
 photo-server/ingest, 参数: path="E:/照片/2024旅行", mode="copy"
 ```
-返回 `lightrag_sync` 字段表示知识图谱同步结果。
 
 ### 人物管理
 - `name_person` - 给未命名人物命名
@@ -39,9 +38,9 @@ photo-server/ingest, 参数: path="E:/照片/2024旅行", mode="copy"
 
 ## 文档处理
 
-### 入库（两步流程）
+### 入库
 
-**步骤 1**：调用 `photo-server/ingest`
+**步骤 1**：调用 `photo-server/ingest` 复制文件
 ```
 photo-server/ingest, 参数: path="E:/tmp/report.pdf", mode="copy"
 ```
@@ -49,19 +48,14 @@ photo-server/ingest, 参数: path="E:/tmp/report.pdf", mode="copy"
 | status | 含义 | 下一步 |
 |--------|------|--------|
 | `success` | 处理完成（文档已存在跳过） | **结束，直接汇报** |
-| `need_l1` | 文档已复制，需要生成 L1 摘要 | **必须继续步骤 2** |
+| `need_l1` | 文档已复制，返回了文件内容和存储路径 | **必须继续步骤 2** |
 | `error` | 失败 | 报告错误 |
 
-**步骤 2**：生成 L1 并回传
-```
-photo-server/ingest, 参数: path="", file_path="REDACTED_WIN_PATH/2026/其他/report.pdf", l1="季度报告|财务,Q1,营收|2026年第一季度财务报告摘要|财务部,Q1|报告|REDACTED_WIN_PATH/2026/其他/report.pdf"
-```
+**步骤 2**：将文档内容写入知识图谱
 
-### 文档知识图谱入库
-
-文档内容需要同时写入知识图谱，用 `lightrag_insert`：
+步骤 1 返回 `need_l1` 时，会同时返回 `content`（文档文本）和 `file_path`（存储路径）。用这两个值调用：
 ```
-lightrag-server/lightrag_insert, 参数: content="文档内容", doc_id="文档存储路径"
+lightrag-server/lightrag_insert, 参数: content="<步骤1返回的content>", doc_id="<步骤1返回的file_path>"
 ```
 LightRAG 会自动抽取实体和关系，并与图谱中已有实体自动合并。
 
@@ -84,7 +78,7 @@ LightRAG 会自动抽取实体和关系，并与图谱中已有实体自动合�
 - 原始文件：E:/tmp/report.pdf（复制模式）
 - 存储位置：2026/报告/report.pdf
 - 分类：报告
-- 摘要：已生成并存储到向量库
+- 知识图谱：已写入
 ```
 
 **照片成功**：
