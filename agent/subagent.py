@@ -62,6 +62,7 @@ def _run_agent_loop(
     max_turns: int = 20,
     initial_user_content: Optional[str] = None,
     context_window_tokens: int = 0,
+    context_fifo_threshold: int = 0,
 ) -> Tuple[str, Any]:
     """
     执行 agent_runner_loop 并收集结果（提取自 call_subagent）
@@ -95,6 +96,7 @@ def _run_agent_loop(
         verbose=False,
         initial_user_content=initial_user_content,
         context_window_tokens=context_window_tokens,
+        context_fifo_threshold=context_fifo_threshold,
     )
 
     result = ""
@@ -316,6 +318,8 @@ def call_subagent(
 
     # 7. 执行（单次，不分片）
     context_window_tokens = _read_context_window_tokens()
+    # FIFO 截断阈值：75% 的上下文窗口，比溢出检测(85%)低，留出缓冲空间
+    context_fifo_threshold = int(context_window_tokens * 0.75)
 
     result_text, return_value = _run_agent_loop(
         agent_name=agent_name,
@@ -327,6 +331,7 @@ def call_subagent(
         max_turns=20,
         initial_user_content=task,
         context_window_tokens=context_window_tokens,
+        context_fifo_threshold=context_fifo_threshold,
     )
 
     # CONTEXT_OVERFLOW：返回结构化进度报告
