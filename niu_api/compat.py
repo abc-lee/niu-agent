@@ -1342,10 +1342,12 @@ async def get_vector_stats():
         if rag is None:
             return {"error": "LightRAG not initialized"}
 
-        # LightRAG 知识图谱统计
+        # LightRAG 知识图谱统计（使用公开 API，避免访问 _graph 私有属性）
         graph = rag.chunk_entity_relation_graph
-        node_count = len(graph._graph.nodes) if hasattr(graph, '_graph') else 0
-        edge_count = len(graph._graph.edges) if hasattr(graph, '_graph') else 0
+        nodes = await graph.get_all_nodes()
+        edges = await graph.get_all_edges()
+        node_count = len(nodes)
+        edge_count = len(edges)
 
         return {
             "status": "lightrag",
