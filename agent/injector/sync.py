@@ -332,13 +332,19 @@ class SkillSync:
             if extra_parts:
                 full_description += " | " + "; ".join(extra_parts)
 
-            result = ingester.inject_entity(
-                name=f"skill:{name}",
-                entity_type="skill",
-                description=full_description,
+            result = ingester.inject_custom_kg(
+                entities=[{
+                    "entity_name": f"skill:{name}",
+                    "entity_type": "skill",
+                    "description": full_description,
+                }],
+                relationships=[],
+                chunks=[{
+                    "content": full_description,
+                    "source_id": f"skill:{name}",
+                    "file_path": f"skill://{name}",
+                }],
                 source_id=f"skill:{name}",
-                chunk_content=full_description,
-                file_path=f"skill://{name}",
             )
             if result.get("status") == "ok":
                 logger.info(f"[SkillSync] Injected skill '{name}' into LightRAG")
@@ -386,6 +392,9 @@ class SkillSync:
         added, updated = 0, 0
         current_ids: set[str] = set()
 
+        # Collect changed notes for full-file injection
+        changed_notes: list[dict] = []
+
         for note in notes:
             note_id = note.get("id", "")
             if not note_id:
@@ -398,21 +407,34 @@ class SkillSync:
             last_hash = self._last_notes_scan.get(note_id)
 
             if last_hash is None:
-                if self._inject_note_to_lightrag(note_id, note.get("content") or "", note.get("tags") or []):
-                    added += 1
-                    with self._lock:
-                        self._last_notes_scan[note_id] = content_hash
-                    logger.info(f"[SkillSync] Added note: {note_id}")
+                changed_notes.append(note)
+                with self._lock:
+                    self._last_notes_scan[note_id] = content_hash
+                added += 1
+                logger.info(f"[SkillSync] Added note: {note_id}")
             elif last_hash != content_hash:
-                if self._inject_note_to_lightrag(note_id, note.get("content") or "", note.get("tags") or []):
-                    updated += 1
-                    with self._lock:
-                        self._last_notes_scan[note_id] = content_hash
-                    logger.info(f"[SkillSync] Updated note: {note_id}")
+                changed_notes.append(note)
+                with self._lock:
+                    self._last_notes_scan[note_id] = content_hash
+                updated += 1
+                logger.info(f"[SkillSync] Updated note: {note_id}")
             else:
                 # Unchanged — already synced
                 with self._lock:
                     self._last_notes_scan[note_id] = content_hash
+
+        # Inject all changed notes as a single full-file document
+        if changed_notes:
+            if not self._inject_note_to_lightrag(changed_notes):
+                # Rollback: remove hashes for failed notes so they are retried
+                with self._lock:
+                    for note in changed_notes:
+                        nid = note.get("id", "")
+                        if nid:
+                            self._last_notes_scan.pop(nid, None)
+                # Don't count as added/updated if injection failed
+                added = 0
+                updated = 0
 
         # Detect deleted notes
         with self._lock:
@@ -439,30 +461,33 @@ class SkillSync:
 
         return added, updated
 
-    def _inject_note_to_lightrag(self, note_id: str, content: str, tags: list[str]) -> bool:
-        """注入便签到 LightRAG 知识图谱。返回是否成功。"""
+    def _inject_note_to_lightrag(self, notes_data: list[dict]) -> bool:
+        """将便签 JSON 整文件传给 LightRAG ainsert
+
+        Args:
+            notes_data: 便签数据列表，每项包含 id/content/tags 等字段
+
+        Returns:
+            True 插入成功, False 失败
+        """
+        if not notes_data:
+            return True
+
         try:
-            from niu_api.internal.lightrag_adapter import LightRAGIngester
+            import json
 
-            ingester = LightRAGIngester()
-            description = content
-            if tags:
-                description += f" | 标签: {', '.join(tags)}"
+            from agent.tool_registry import get_registry
 
-            result = ingester.inject_entity(
-                name=f"note:{note_id}",
-                entity_type="knowledge",
-                description=description,
-                source_id=f"note:{note_id}",
-                chunk_content=description,
-                file_path=f"note://{note_id}",
-            )
-            if result.get("status") == "ok":
+            content = json.dumps(notes_data, ensure_ascii=False, indent=2)
+            registry = get_registry()
+            insert_tool = registry.get("lightrag-server/lightrag_insert")
+            result = insert_tool(content=content, source="notes")
+            if isinstance(result, dict) and result.get("status") == "ok":
                 return True
-            logger.warning(f"[SkillSync] Note inject failed for {note_id}: {result.get('message', '')}")
+            logger.warning("lightrag_insert returned non-ok: %s", result)
             return False
-        except Exception as e:
-            logger.warning(f"[SkillSync] Note inject failed for {note_id}: {e}")
+        except Exception:
+            logger.exception("Failed to inject notes to LightRAG")
             return False
 
     def _parse_yaml_frontmatter(self, content: str) -> dict:

@@ -120,12 +120,15 @@ class BrainGraph:
 
         Idempotent — safe to call on every startup.
         """
-        return self._ingester.inject_entity(
-            name="brain:Niu",
-            entity_type="Niu",
-            description="Self entity — all memory relations start from here",
+        return self._ingester.inject_custom_kg(
+            entities=[{
+                "entity_name": "brain:Niu",
+                "entity_type": "Niu",
+                "description": "Self entity — all memory relations start from here",
+            }],
+            relationships=[],
+            chunks=[],
             source_id="brain",
-            file_path="brain://Niu",
         )
 
     # ============== Memory Storage ==============
@@ -190,12 +193,15 @@ class BrainGraph:
         entity_description = f"{brain_meta}|{content[:200]}"
 
         # Inject target entity
-        entity_result = self._ingester.inject_entity(
-            name=target_name,
-            entity_type=entity_type,
-            description=entity_description,
+        entity_result = self._ingester.inject_custom_kg(
+            entities=[{
+                "entity_name": target_name,
+                "entity_type": entity_type,
+                "description": entity_description,
+            }],
+            relationships=[],
+            chunks=[],
             source_id="brain",
-            file_path="brain://memory",
         )
 
         if entity_result.get("status") == "error":
@@ -487,12 +493,15 @@ class BrainGraph:
                 new_desc = re.sub(r"decay_rate=[\d.]+", f"decay_rate={LEVEL_DEFAULTS['L1']['decay_rate']}", new_desc)
                 name = node.get("name", node.get("id", ""))
                 etype = node.get("type", "UNKNOWN")
-                self._ingester.inject_entity(
-                    name=name,
-                    entity_type=etype,
-                    description=new_desc,
+                self._ingester.inject_custom_kg(
+                    entities=[{
+                        "entity_name": name,
+                        "entity_type": etype,
+                        "description": new_desc,
+                    }],
+                    relationships=[],
+                    chunks=[],
                     source_id="brain_consolidate",
-                    file_path="brain://consolidate",
                 )
 
                 # Update relation weight from brain:Niu, preserving original relation type
@@ -559,12 +568,15 @@ class BrainGraph:
                 new_desc = re.sub(r"decay_rate=[\d.]+", f"decay_rate={LEVEL_DEFAULTS['L2']['decay_rate']}", new_desc)
                 name = node.get("name", node.get("id", ""))
                 etype = node.get("type", "UNKNOWN")
-                self._ingester.inject_entity(
-                    name=name,
-                    entity_type=etype,
-                    description=new_desc,
+                self._ingester.inject_custom_kg(
+                    entities=[{
+                        "entity_name": name,
+                        "entity_type": etype,
+                        "description": new_desc,
+                    }],
+                    relationships=[],
+                    chunks=[],
                     source_id="brain_consolidate",
-                    file_path="brain://consolidate",
                 )
 
                 # Update relation weight from brain:Niu, preserving original relation type

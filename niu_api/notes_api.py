@@ -135,13 +135,19 @@ def sync_note_to_lightrag(note_id: str, content: str, tags: list[str]):
         description = content + (" | 标签: " + ", ".join(tags) if tags else "")
 
         ingester = LightRAGIngester()
-        result = ingester.inject_entity(
-            name=f"note:{note_id}",
-            entity_type="knowledge",
-            description=description,
+        result = ingester.inject_custom_kg(
+            entities=[{
+                "entity_name": f"note:{note_id}",
+                "entity_type": "knowledge",
+                "description": description,
+            }],
+            relationships=[],
+            chunks=[{
+                "content": description,
+                "source_id": f"note:{note_id}",
+                "file_path": f"note://{note_id}",
+            }],
             source_id=f"note:{note_id}",
-            chunk_content=description,
-            file_path=f"note://{note_id}",
         )
         if result.get("status") == "ok":
             logger.info(f"[Notes] LightRAG sync: note:{note_id}")

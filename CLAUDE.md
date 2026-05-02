@@ -51,8 +51,7 @@ pip install -e .
 
 # Python 依赖（各个 MCP 服务器）
 cd mcp-servers/photo-server && pip install -e .
-cd mcp-servers/kg-server && pip install -e .
-cd mcp-servers/vector-store && pip install -e .
+cd mcp-servers/lightrag-server && pip install -e .
 cd mcp-servers/file-parser && pip install -e .
 cd mcp-servers/config-manager && pip install -e .
 cd mcp-servers/memory-server && pip install -e .
@@ -228,8 +227,7 @@ schemas = registry.get_schemas()
 | 服务器 | 功能 | 预加载 |
 |--------|------|--------|
 | `file-parser` | 文档解析（PDF/Word/PPT/Excel/MD/HTML） | ✅ |
-| `kg-server` | 知识图谱（文档/实体/关系管理） | ✅ |
-| `vector-store` | 向量存储（语义搜索） | ✅ |
+| `lightrag-server` | 知识图谱 + 向量检索（LightRAG 统一管理） | ✅ |
 | `photo-server` | 照片管理 + 人脸识别（InsightFace） | ✅ |
 | `config-manager` | 配置管理（读/写用户配置和记忆） | ✅ |
 | `memory-server` | 智能记忆提取和检索 | ✅ |
@@ -276,7 +274,7 @@ schemas = registry.get_schemas()
 - 非命中工具持续 -10/轮，低于 min_score(50) 自动移除
 - `hit_tool()` 不再强制设 100 分，改为接受可选 `score` 参数
 
-**向量库标签**：
+**知识库标签**（LightRAG 统一管理）：
 - `l1` — L1 摘要
 - `l2` — L2 原文
 - `skill` — Skills 文件
@@ -426,12 +424,12 @@ preload_face_model()
 ### 记忆无法保存或检索
 
 **检查**：
-1. 向量库是否初始化：`python scripts/test_l0l1l2.py`
+1. LightRAG 是否初始化：检查日志中是否有 "LightRAG initialized" 
 2. Memory Server 是否正常：`python scripts/test_memory_server.py`
-3. 日志中是否有错误：`tail -f logs/api_stderr.log | grep "记忆|MEMORY"`
+3. 日志中是否有错误：`tail -f logs/api_stderr.log | grep "记忆|MEMORY|LightRAG"`
 
 **解决**：
-- 重新初始化向量库：`python scripts/init_vector_db.py`
+- 检查 LightRAG 工作目录：`~/.niu/lightrag/`
 - 检查数据库路径：`~/.niu/memory.json` 中的 `workspace.path`
 
 ### MCP stdio 通信错误（旧架构问题）
@@ -465,7 +463,7 @@ preload_face_model()
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **niu-agent** (13311 symbols, 19686 relationships, 292 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **niu-agent** (13597 symbols, 20103 relationships, 292 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
