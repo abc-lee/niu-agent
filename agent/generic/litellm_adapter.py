@@ -385,7 +385,7 @@ class LiteLLMSession(BaseSession):
             is_socket_error = "10038" in error_msg or "10054" in error_msg or "non-socket" in error_msg.lower()
 
             if is_socket_error and not full_content:
-                # WinError 10038: Windows socket 在流式传输中被关闭，尝试非流式 fallback
+                # WinError 10038/10054: Windows socket 在流式传输中被关闭，尝试非流式 fallback
                 logger.warning(f"[STREAM] Socket error with empty content, trying non-stream fallback: {e}")
                 try:
                     fallback_params = {**request_params, "stream": False}
@@ -393,11 +393,28 @@ class LiteLLMSession(BaseSession):
                     if fallback_response and fallback_response.choices:
                         choice = fallback_response.choices[0]
                         full_content = choice.message.content or ""
+                        if full_content:
+                            yield full_content
                         if hasattr(choice.message, "reasoning_content") and choice.message.reasoning_content:
                             reasoning_content = choice.message.reasoning_content
+                        # 提取 tool_calls（非流式响应直接在 message 上）
+                        if hasattr(choice.message, "tool_calls") and choice.message.tool_calls:
+                            for tc in choice.message.tool_calls:
+                                tc_args = {}
+                                if hasattr(tc, "function") and tc.function:
+                                    if hasattr(tc.function, "arguments") and tc.function.arguments:
+                                        try:
+                                            tc_args = json.loads(tc.function.arguments)
+                                        except json.JSONDecodeError:
+                                            tc_args = {}
+                                    tool_calls.append(MockToolCall(
+                                        name=getattr(tc.function, "name", ""),
+                                        args=tc_args,
+                                        id=getattr(tc, "id", f"call_fallback_{len(tool_calls)}"),
+                                    ))
                         if hasattr(fallback_response, "usage") and fallback_response.usage:
                             usage = fallback_response.usage
-                        logger.info(f"[STREAM] Non-stream fallback succeeded ({len(full_content)} chars)")
+                        logger.info(f"[STREAM] Non-stream fallback succeeded ({len(full_content)} chars, {len(tool_calls)} tool_calls)")
                 except Exception as fb_err:
                     logger.error(f"[STREAM] Non-stream fallback also failed: {fb_err}")
             else:

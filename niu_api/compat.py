@@ -1342,10 +1342,12 @@ async def get_vector_stats():
         if rag is None:
             return {"error": "LightRAG not initialized"}
 
-        # LightRAG 知识图谱统计（使用公开 API，避免访问 _graph 私有属性）
+        # LightRAG 知识图谱统计（通过 call_async 桥接，与项目其他代码保持一致）
+        from niu_api.internal.lightrag_manager import call_async
+
         graph = rag.chunk_entity_relation_graph
-        nodes = await graph.get_all_nodes()
-        edges = await graph.get_all_edges()
+        nodes = await asyncio.to_thread(call_async, graph.get_all_nodes())
+        edges = await asyncio.to_thread(call_async, graph.get_all_edges())
         node_count = len(nodes)
         edge_count = len(edges)
 
