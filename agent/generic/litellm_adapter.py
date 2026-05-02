@@ -382,7 +382,7 @@ class LiteLLMSession(BaseSession):
 
         except Exception as e:
             error_msg = str(e)
-            is_socket_error = "10038" in error_msg or "non-socket" in error_msg.lower()
+            is_socket_error = "10038" in error_msg or "10054" in error_msg or "non-socket" in error_msg.lower()
 
             if is_socket_error and not full_content:
                 # WinError 10038: Windows socket 在流式传输中被关闭，尝试非流式 fallback
