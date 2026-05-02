@@ -33,8 +33,6 @@ TOOL_SCHEMAS = {
 - path: 必填，文件路径或目录路径
 - mode: copy（复制）| move（移动）| reference（引用），默认 copy
 - category: 分类，不传则自动推断
-- l1: L1 摘要（文档入库第二轮调用时传入）
-- file_path: 文档存储路径（L1 回传时使用）
 
 自动判断逻辑:
 1. 路径类型：is_dir() → 目录模式，is_file() → 文件模式
@@ -42,13 +40,12 @@ TOOL_SCHEMAS = {
 3. 内容类型（目录）：扫描目录 — 全照片 → 批量照片，全文档 → 批量文档，混合 → 分别处理
 
 照片流程: EXIF → 人脸检测 → 人物匹配 → L0摘要 → KG同步
-文档流程: 拷贝 → 返回 need_l1 → 子Agent生成L1 → 调用 ingest(file_path=..., l1=...) 存储
+文档流程: 全自动 — 文件搬运 + LightRAG 全文 ainsert（自动抽取实体和建链）
 
 返回:
-- 照片: {status, photo_id, detected_persons, abstract, exif, lightrag_sync}
-- 文档(首轮): {status: "need_l1", file_path, content, hint}
-- 文档(L1回传): {status: "success", file_path}
-- 目录: {status, total, success/need_l1, results/files}""",
+- 照片: {status, photo_id, detected_persons, abstract, exif}
+- 文档: {status, action, file_path, lightrag}
+- 目录: {status, total, processed, results}""",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -60,8 +57,6 @@ TOOL_SCHEMAS = {
                     "description": "文件操作模式",
                 },
                 "category": {"type": "string", "description": "分类，不传则自动推断"},
-                "l1": {"type": "string", "description": "L1 摘要（文档入库第二轮调用时传入）"},
-                "file_path": {"type": "string", "description": "文档存储路径（L1 回传时使用）"},
             },
             "required": ["path"],
         },
@@ -394,56 +389,27 @@ def call_embedding_service(endpoint: str, data: dict) -> dict | None:
 # ============== 知识图谱同步 ==============
 
 
-def sync_to_kg(file_path: str, l1: str, source: str = "document") -> dict:
-    """同步文档到 LightRAG 知识图谱。
-
-    通过 LightRAG ainsert() 入库，实体提取由 LightRAG 内部自动完成。
-    失败不影响主流程（向量库写入已成功）。
-    """
-    try:
-        from niu_api.internal.lightrag_manager import get_lightrag, call_async
-
-        rag = get_lightrag()
-        if rag is None:
-            logger.warning("[KG] LightRAG not available, skipping KG sync")
-            return {"status": "skipped", "reason": "LightRAG not available"}
-
-        content = f"[Document: {file_path}]\n{l1}"
-        call_async(rag.ainsert(content, file_paths=[file_path]))
-        logger.info(f"[KG] Document ingested into LightRAG: {file_path}")
-
-        return {"status": "success", "doc_uri": file_path}
-
-    except Exception as e:
-        logger.warning(f"[KG] Sync failed: {e}")
-        return {"status": "error", "reason": str(e)}
-
-
 def sync_photo_to_kg(file_path: str, abstract: str, detected_persons: list) -> dict:
     """同步照片和人物到 LightRAG 知识图谱。
 
-    照片描述通过 ainsert() 入库（LightRAG 自动提取实体），
-    人物通过 ainsert_custom_kg() 精确注入（避免 LLM 提取破坏人名）。
+    照片描述通过 lightrag_insert() 入库（LightRAG 自动提取实体），
+    人物通过 lightrag_insert_custom_kg() 精确注入（避免 LLM 提取破坏人名）。
     失败不影响主流程（照片入库已成功）。
     """
     try:
-        from niu_api.internal.lightrag_adapter import LightRAGIngester
-        from niu_api.internal.lightrag_manager import get_lightrag, call_async
+        from agent.tool_registry import get_registry
 
-        rag = get_lightrag()
-        if rag is None:
-            logger.warning("[KG] LightRAG not available, skipping photo KG sync")
-            return {"status": "skipped", "reason": "LightRAG not available"}
-
+        registry = get_registry()
         title = Path(file_path).stem
 
-        # 1. 照片描述通过 ainsert 入库（LightRAG 自动提取实体和关系）
+        # 1. 照片描述通过 lightrag_insert 入库（LightRAG 自动提取实体和关系）
         content = f"[Photo: {file_path}]\n{abstract}"
-        call_async(rag.ainsert(content))
+        lightrag_insert = registry.get("lightrag-server/lightrag_insert")
+        lightrag_insert(content=content)
         logger.info(f"[KG] Photo ingested into LightRAG: {file_path}")
 
-        # 2. 人物实体通过 ainsert_custom_kg 精确注入
-        ingester = LightRAGIngester()
+        # 2. 人物实体通过 lightrag_insert_custom_kg 精确注入
+        insert_custom_kg = registry.get("lightrag-server/lightrag_insert_custom_kg")
         entities_created = []
         if detected_persons:
             entities = []
@@ -476,7 +442,7 @@ def sync_photo_to_kg(file_path: str, abstract: str, detected_persons: list) -> d
                 entities_created.append(entity_name)
 
             if entities:
-                result = ingester.inject_custom_kg(
+                result = insert_custom_kg(
                     entities=entities,
                     relationships=relationships,
                     chunks=[],
@@ -507,7 +473,7 @@ def sync_photo_to_kg(file_path: str, abstract: str, detected_persons: list) -> d
                     })
                     relations_created += 1
             if co_rels:
-                ingester.inject_custom_kg(
+                insert_custom_kg(
                     entities=[],
                     relationships=co_rels,
                     chunks=[],
@@ -1850,9 +1816,10 @@ def name_person(person_id: str, name: str) -> dict:
 
         # 同步更新 LightRAG 知识图谱中的实体名称
         try:
-            from niu_api.internal.lightrag_adapter import LightRAGIngester
-            ingester = LightRAGIngester()
-            ingester.inject_entity(
+            from agent.tool_registry import get_registry
+            registry = get_registry()
+            insert_entity = registry.get("lightrag-server/lightrag_insert_entity")
+            insert_entity(
                 name=f"person:{person_id}",
                 entity_type="Person",
                 description=name,
@@ -2020,51 +1987,30 @@ def merge_persons(person_a_id: str, person_b_id: str) -> dict:
 
         conn.commit()
 
-        # 同步 LightRAG：更新 person_a 实体，迁移 person_b 的边，删除 person_b
+        # 同步 LightRAG：更新 person_a 实体，合并 person_b 的关系到 person_a
         try:
-            from niu_api.internal.lightrag_adapter import LightRAGIngester
-            from niu_api.internal.lightrag_manager import get_lightrag
+            from agent.tool_registry import get_registry
 
-            ingester = LightRAGIngester()
+            registry = get_registry()
             merged_name = name_a if name_a else auto_label_a
             entity_a = f"person:{person_a_id}"
             entity_b = f"person:{person_b_id}"
 
             # 1. 更新 person_a 实体
-            ingester.inject_entity(
+            insert_entity = registry.get("lightrag-server/lightrag_insert_entity")
+            insert_entity(
                 name=entity_a,
                 entity_type="Person",
                 description=merged_name,
             )
 
-            # 2. 迁移 person_b 的边到 person_a，然后删除 person_b 实体
-            rag = get_lightrag()
-            if rag is not None:
-                nx = rag.chunk_entity_relation_graph._graph
-                if entity_b in nx.nodes():
-                    # 迁移边
-                    for src, tgt, data in list(nx.edges(entity_b, data=True)):
-                        other = tgt if src == entity_b else src
-                        if other == entity_a:
-                            continue  # 跳过自引用
-                        edge_kw = data.get("keywords", "")
-                        edge_desc = data.get("description", "")
-                        ingester.inject_relation(
-                            src_id=entity_a,
-                            tgt_id=other,
-                            relation=edge_kw,
-                            description=edge_desc,
-                        )
-                    # 删除 person_b 节点（自动删除关联边）
-                    nx.remove_node(entity_b)
-                    # 持久化删除到 LightRAG 存储
-                    try:
-                        ingester.delete_entity(entity_b)
-                    except Exception as e:
-                        logger.warning(f"[MERGE_PERSONS] Failed to persist delete of {entity_b}: {e}")
-                    logger.info(f"[MERGE_PERSONS] Deleted KG entity: {entity_b}")
-                else:
-                    logger.info(f"[MERGE_PERSONS] {entity_b} not in KG, skip edge migration")
+            # 2. 合并：person_b 的边迁移到 person_a，然后删除 person_b
+            merge_entities = registry.get("lightrag-server/lightrag_merge_entities")
+            merge_entities(
+                source_entities=[entity_b],
+                target_entity=entity_a,
+            )
+            logger.info(f"[MERGE_PERSONS] Merged KG entity {entity_b} into {entity_a}")
         except Exception as e:
             logger.warning(f"[MERGE_PERSONS] LightRAG sync failed: {e}")
 
@@ -2471,7 +2417,13 @@ def rename_file(file_path: Path) -> str:
 
 
 def ingest_document(file_path: str, category: str = "其他", mode: str = "copy") -> dict:
-    """文档入库工具"""
+    """文档入库工具 — 全文 ainsert 到 LightRAG
+
+    自动检测路径类型（目录/照片/文档）：
+    - 目录：检查是否包含照片，转到照片批量处理
+    - 照片：转到照片入库流程
+    - 文档：读取全文（限 <20K），调用 lightrag_insert 全文 ainsert
+    """
     try:
         logger.info(f"[INGEST] 开始处理: {file_path}")
         source = Path(file_path)
@@ -2484,10 +2436,9 @@ def ingest_document(file_path: str, category: str = "其他", mode: str = "copy"
                 "suggestion": "请检查文件路径是否正确",
             }
 
-        # 检查是否为目录
+        # 自动检测文件类型：目录 → 照片 → 文档
         if source.is_dir():
-            logger.info(f"[INGEST] 检测到目录，检查是否包含照片...")
-            # 检查目录中是否有照片（去重）
+            logger.info("[INGEST] 检测到目录，检查是否包含照片...")
             photo_files = []
             seen_paths = set()
             for ext in PHOTO_EXTENSIONS:
@@ -2515,6 +2466,12 @@ def ingest_document(file_path: str, category: str = "其他", mode: str = "copy"
                     "suggestion": "请确认目录中包含照片（.jpg, .png 等）",
                 }
 
+        if is_photo(str(source)):
+            logger.info("[INGEST] 检测到照片文件，转到照片入库")
+            from niu_photo_server import ingest_photo
+            return ingest_photo(str(source), category)
+
+        # ---- 文档文件处理 ----
         logger.info("[INGEST] 读取配置...")
         workspace = get_workspace_path()
 
@@ -2539,8 +2496,6 @@ def ingest_document(file_path: str, category: str = "其他", mode: str = "copy"
                 "original_path": str(source),
                 "category": category,
                 "content_length": 0,
-                "vector_db": "skipped",
-                "knowledge_graph": "skipped",
                 "note": "文件已存在，跳过重复入库",
             }
 
@@ -2553,34 +2508,35 @@ def ingest_document(file_path: str, category: str = "其他", mode: str = "copy"
             final_path = str(source)
             action = "referenced"
 
-        logger.info(f"[INGEST] 完成: {final_path}")
+        logger.info(f"[INGEST] 文件操作完成: {final_path}")
 
-        # 读取文件内容
-        file_content = None
+        # 读取文件全文（不截断，用于 LightRAG ainsert）
+        content_length = 0
+        lightrag_result = None
         try:
             file_content = read_file_content(str(final_path))
-            if file_content and len(file_content) > 10000:
-                file_content = file_content[:10000] + "\n... [内容已截断]"
+            if file_content:
+                content_length = len(file_content)
+
+                # 全文 ainsert 到 LightRAG（不截断）
+                try:
+                    from agent.tool_registry import get_registry
+
+                    registry = get_registry()
+                    insert_tool = registry.get("lightrag-server/lightrag_insert")
+                    lightrag_result = insert_tool(
+                        content=file_content,
+                        file_path=str(Path(final_path).resolve()),
+                    )
+                    logger.info(
+                        f"[INGEST] LightRAG ainsert: {lightrag_result.get('status', 'unknown')}"
+                    )
+                except Exception as lr_err:
+                    logger.warning(f"[INGEST] LightRAG ainsert 失败（不影响文件入库）: {lr_err}")
+            else:
+                logger.info("[INGEST] 无文本内容，跳过 LightRAG ainsert")
         except Exception as e:
             logger.warning(f"[INGEST] 无法读取文件内容: {e}")
-            file_content = None
-
-        # 自动完成向量库 + 知识图谱写入（不再返回 need_l1）
-        vector_result = None
-        kg_result = None
-        if file_content:
-            # 向量库写入（用原文截断版做 embedding）
-            vector_result = store_document_l1(
-                file_path=str(Path(final_path).resolve()),
-                l1=file_content,
-            )
-            logger.info(f"[INGEST] 向量库写入: {vector_result.get('status', 'unknown')}")
-
-            # 知识图谱写入已由 store_document_l1 内部的 sync_to_kg 自动完成
-            kg_result = vector_result.get("lightrag_sync")
-        else:
-            # 无内容（如二进制文件），仅做文件搬运
-            logger.info(f"[INGEST] 无文本内容，跳过向量库和知识图谱写入")
 
         return {
             "status": "success",
@@ -2588,9 +2544,8 @@ def ingest_document(file_path: str, category: str = "其他", mode: str = "copy"
             "file_path": str(Path(final_path).resolve()),
             "original_path": str(source),
             "category": category,
-            "content_length": raw_length,
-            "vector_db": "written" if vector_result and vector_result.get("status") == "success" else "skipped",
-            "knowledge_graph": "synced" if kg_result and kg_result.get("status") == "success" else "skipped",
+            "content_length": content_length,
+            "lightrag": "inserted" if lightrag_result and lightrag_result.get("status") == "success" else "skipped",
         }
 
     except PermissionError as e:
@@ -2611,354 +2566,37 @@ def ingest_document(file_path: str, category: str = "其他", mode: str = "copy"
         }
 
 
-def get_vector_db_path() -> Path:
-    """获取向量数据库路径（与 resolve_vector_db_path() 一致的 3 层优先级）"""
-    import os
-    # 1. NIU_DB_PATH 环境变量（显式覆盖）
-    if "NIU_DB_PATH" in os.environ:
-        p = Path(os.environ["NIU_DB_PATH"])
-        if not p.parent.exists():
-            raise ValueError(f"NIU_DB_PATH 父目录不存在: {p.parent}。请检查配置。")
-        return p
-    # 2. WORKSPACE_PATH 环境变量（由 Go 启动器设置）
-    if "WORKSPACE_PATH" in os.environ:
-        ws = Path(os.environ["WORKSPACE_PATH"])
-        if not ws.exists():
-            raise ValueError(f"WORKSPACE_PATH 指向不存在的目录: {ws}。请检查配置。")
-        return ws / "vectors.db"
-    # 3. 从 ~/.niu/memory.json 读取 workspace.path（直接读取，不使用 get_memory() 的回退逻辑）
-    memory_path = Path.home() / ".niu" / "memory.json"
-    if memory_path.exists():
-        try:
-            with open(memory_path, "r", encoding="utf-8") as f:
-                memory = json.load(f)
-            workspace_path = memory.get("workspace", {}).get("path")
-            if workspace_path and Path(workspace_path).exists():
-                return Path(workspace_path) / "vectors.db"
-            if workspace_path:
-                raise ValueError(f"workspace.path 指向不存在的目录: {workspace_path}。请检查 memory.json 配置。")
-        except ValueError:
-            raise
-        except Exception as e:
-            raise ValueError(f"无法从 {memory_path} 解析 JSON: {e}。") from e
-    raise ValueError(
-        f"无法确定向量库路径：~/.niu/memory.json 不存在或缺少 workspace.path 配置。"
-        f"请在 ~/.niu/memory.json 中设置 workspace.path，或设置 WORKSPACE_PATH 环境变量。"
-    )
-
-
-_vector_db_failed: bool = False
-
-
-def get_vector_db_connection() -> sqlite3.Connection:
-    """获取向量数据库连接（已废弃：请使用 get_vector_search()._get_connection() 复用共享连接）"""
-    global _vector_db_failed
-    if _vector_db_failed:
-        raise RuntimeError("向量库路径解析失败，无法建立连接。请检查 memory.json 中 workspace.path 配置。")
-    try:
-        db_path = get_vector_db_path()
-    except ValueError as e:
-        _vector_db_failed = True
-        logger.error(f"向量库路径解析失败: {e}")
-        raise RuntimeError(f"向量库路径解析失败: {e}") from e
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db_path))
-    # 确保表存在
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS documents (
-            id TEXT PRIMARY KEY,
-            content TEXT NOT NULL,
-            embedding BLOB,
-            metadata TEXT
-        )
-    """)
-    conn.commit()
-    return conn
-
-
-def store_document_l1(file_path: str, l1: str, l2: str | None = None) -> dict:
-    """存储文档的 L1 摘要到向量库
-
-    参数:
-    - file_path: 文档存储路径
-    - l1: 极简格式摘要（标题|关键词|摘要|实体|类型|指针）
-    - l2: 完整内容（可选）
-    """
-    try:
-        logger.info(f"[STORE_L1] 存储 L1: {file_path}")
-
-        # 生成唯一 ID
-        import uuid
-
-        l1_id = f"doc_{uuid.uuid4().hex[:12]}"
-
-        # 调用 embedding-service 生成向量
-        embedding_blob = None
-        embedding_result = call_embedding_service("/encode", {"text": l1})
-        if embedding_result and "embedding" in embedding_result:
-            embedding_blob = np.array(
-                embedding_result["embedding"], dtype=np.float32
-            ).tobytes()
-            logger.info(
-                f"[STORE_L1] 向量生成成功，维度: {len(embedding_result['embedding'])}"
-            )
-
-        # Embedding 失败则直接返回错误（无向量的记录无法被检索）
-        if embedding_blob is None:
-            return {
-                "status": "error",
-                "reason": "Embedding 服务不可用，无法生成向量。请确保 embedding 服务已启动。",
-                "file_path": file_path,
-            }
-
-        # 使用 VectorSearchAdapter 的共享连接（避免独立连接与共享连接并发冲突）
-        from agent.vector_search import get_vector_search
-        vs = get_vector_search()
-        conn = vs._get_connection()
-        if conn is None:
-            return {"status": "error", "reason": "向量库不可用", "file_path": file_path}
-        try:
-            # 存储 L1（符合规范：只存L1摘要，文件内容不作为L2）
-            metadata = {
-                "level": "l1",  # 小写，符合规范
-                "category": "document",
-                "file_path": file_path,
-            }
-            conn.execute(
-                "INSERT INTO documents (id, content, embedding, metadata) VALUES (?, ?, ?, ?)",
-                (l1_id, l1, embedding_blob, json.dumps(metadata)),
-            )
-
-            # L2不存储到向量库（文件内容保留在原位置，通过L1指针访问）
-            # 根据规范：L2只存储对话产生的内容，文件不应该作为L2
-
-            conn.commit()
-        except Exception as db_err:
-            try:
-                conn.rollback()
-            except Exception:
-                pass
-            raise RuntimeError(f"向量库写入失败: {db_err}") from db_err
-
-        logger.info(f"[STORE_L1] L1 存储成功: {l1_id}")
-
-        # 同步到知识图谱（失败不影响向量库写入）
-        kg_result = sync_to_kg(file_path, l1, source="document")
-
-        return {
-            "status": "success",
-            "l1_id": l1_id,
-            "file_path": file_path,
-            "message": "文档摘要已存储到向量库",
-            "lightrag_sync": kg_result,
-        }
-
-    except Exception as e:
-        logger.exception(f"[STORE_L1] 失败: {e}")
-        return {
-            "status": "error",
-            "error_code": "STORE_FAILED",
-            "message": str(e),
-        }
-
-
-def store_documents_l1(documents: list[dict]) -> dict:
-    """批量存储文档的 L1 摘要到向量库
-
-    参数:
-    - documents: 文档列表，每个包含 file_path, l1, l2(可选)
-    """
-    import uuid
-
-    results = []
-    success_count = 0
-    failed_count = 0
-
-    try:
-        # 使用 VectorSearchAdapter 的共享连接（避免独立连接与共享连接并发冲突）
-        from agent.vector_search import get_vector_search
-        vs = get_vector_search()
-        conn = vs._get_connection()
-        if conn is None:
-            return {"status": "error", "reason": "向量库不可用", "total": len(documents)}
-        try:
-            for doc in documents:
-                file_path = doc.get("file_path", "")
-                l1 = doc.get("l1", "")
-                l2 = doc.get("l2")
-
-                if not file_path or not l1:
-                    results.append(
-                        {
-                            "file_path": file_path,
-                            "status": "error",
-                            "reason": "缺少 file_path 或 l1",
-                        }
-                    )
-                    failed_count += 1
-                    continue
-
-                try:
-                    # 生成唯一 ID
-                    l1_id = f"doc_{uuid.uuid4().hex[:12]}"
-
-                    # 生成向量
-                    embedding_blob = None
-                    embedding_result = call_embedding_service("/encode", {"text": l1})
-                    if embedding_result and "embedding" in embedding_result:
-                        embedding_blob = np.array(
-                            embedding_result["embedding"], dtype=np.float32
-                        ).tobytes()
-
-                    # Embedding 失败则跳过（无向量的记录无法被检索，是废数据）
-                    if embedding_blob is None:
-                        results.append(
-                            {
-                                "file_path": file_path,
-                                "status": "error",
-                                "reason": "Embedding 服务不可用，无法生成向量",
-                            }
-                        )
-                        failed_count += 1
-                        continue
-
-                    # 存储 L1
-                    metadata = {
-                        "level": "l1",
-                        "category": "document",
-                        "file_path": file_path,
-                    }
-                    conn.execute(
-                        "INSERT INTO documents (id, content, embedding, metadata) VALUES (?, ?, ?, ?)",
-                        (l1_id, l1, embedding_blob, json.dumps(metadata)),
-                    )
-
-                    # 存储 L2（如果提供且 embedding 成功）
-                    l2_id = None
-                    if l2 and len(l2) <= 10000:
-                        l2_embedding_blob = None
-                        l2_embedding_result = call_embedding_service(
-                            "/encode", {"text": l2}
-                        )
-                        if l2_embedding_result and "embedding" in l2_embedding_result:
-                            l2_embedding_blob = np.array(
-                                l2_embedding_result["embedding"], dtype=np.float32
-                            ).tobytes()
-
-                        if l2_embedding_blob is not None:
-                            l2_id = f"doc_{uuid.uuid4().hex[:12]}"
-                            l2_metadata = {
-                                "level": "l2",
-                                "category": "document",
-                                "file_path": file_path,
-                                "l1_id": l1_id,
-                            }
-                            conn.execute(
-                                "INSERT INTO documents (id, content, embedding, metadata) VALUES (?, ?, ?, ?)",
-                                (l2_id, l2, l2_embedding_blob, json.dumps(l2_metadata)),
-                            )
-                        else:
-                            logger.warning(f"[STORE_DOCS_L1] L2 embedding failed for {file_path}, skipping L2")
-
-                    # 同步到知识图谱（失败不影响向量库写入）
-                    kg_result = sync_to_kg(file_path, l1, source="document")
-
-                    results.append(
-                        {
-                            "file_path": file_path,
-                            "status": "success",
-                            "l1_id": l1_id,
-                            "l2_id": l2_id,
-                            "lightrag_sync": kg_result,
-                        }
-                    )
-                    success_count += 1
-
-                except Exception as e:
-                    logger.error(f"[STORE_DOCS_L1] 单个文件失败: {file_path}, {e}")
-                    results.append(
-                        {
-                            "file_path": file_path,
-                            "status": "error",
-                            "reason": str(e),
-                        }
-                    )
-                    failed_count += 1
-
-            conn.commit()
-        except Exception as db_err:
-            try:
-                conn.rollback()
-            except Exception:
-                pass
-            raise RuntimeError(f"向量库写入失败: {db_err}") from db_err
-
-        logger.info(f"[STORE_DOCS_L1] 批量存储完成: {success_count}/{len(documents)}")
-
-        return {
-            "status": "success" if failed_count == 0 else "partial_success",
-            "total": len(documents),
-            "processed": success_count,
-            "failed": failed_count,
-            "results": results,
-            "message": f"已存储 {success_count}/{len(documents)} 个文档摘要",
-        }
-
-    except Exception as e:
-        logger.exception(f"[STORE_DOCS_L1] 失败: {e}")
-        return {
-            "status": "error",
-            "error_code": "BATCH_STORE_FAILED",
-            "message": str(e),
-            "results": results,
-        }
-
-
 def ingest_documents(
     file_paths: list[str], category: str = "其他", mode: str = "copy"
 ) -> dict:
     """批量文档入库
 
-    返回 need_l1 时，需要为每个新文件调用 store_document_l1 存储 L1 摘要。
+    每个文件自动完成：文件搬运 + LightRAG 全文 ainsert。
+    不再返回 need_l1，无需后续手动调用 store_document_l1。
     """
     results = []
-    need_l1_files = []  # 需要生成 L1 的文件
+    success_files = []  # 成功的文件
     skipped_files = []  # 跳过的文件
     failed_files = []  # 失败的文件
 
     for file_path in file_paths:
         result = ingest_document(file_path, category, mode)
 
-        if result["status"] == "need_l1":
-            # 新文件，需要 L1
-            need_l1_files.append(
-                {
-                    "file": Path(file_path).name,
-                    "file_path": result["file_path"],
-                    "content": result.get("content"),
-                }
-            )
-            results.append(
-                {
-                    "file": Path(file_path).name,
-                    "status": "need_l1",
-                    "action": result.get("action", ""),
-                    "path": result.get("file_path", ""),
-                }
-            )
-        elif result["status"] == "success":
-            # 跳过的文件
-            skipped_files.append(Path(file_path).name)
+        if result["status"] == "success":
+            if result.get("action") == "skipped":
+                skipped_files.append(Path(file_path).name)
+            else:
+                success_files.append(Path(file_path).name)
             results.append(
                 {
                     "file": Path(file_path).name,
                     "status": "success",
                     "action": result.get("action", ""),
                     "path": result.get("file_path", ""),
+                    "lightrag": result.get("lightrag", "skipped"),
                 }
             )
         else:
-            # 失败
             failed_files.append(
                 {
                     "file": Path(file_path).name,
@@ -2973,35 +2611,15 @@ def ingest_documents(
                 }
             )
 
-    # 如果有需要 L1 的文件，返回 need_l1 状态驱动工具循环
-    if need_l1_files:
-        return {
-            "status": "need_l1",
-            "total": len(file_paths),
-            "new_files": len(need_l1_files),
-            "skipped": len(skipped_files),
-            "failed": len(failed_files),
-            "files_need_l1": need_l1_files,
-            "hint": f"有 {len(need_l1_files)} 个新文件需要生成 L1 摘要。请一次性为所有文件生成 L1，然后调用 store_documents_l1 批量存储。",
-            "example": {
-                "tool": "store_documents_l1",
-                "documents": [
-                    {
-                        "file_path": "<file_path>",
-                        "l1": "标题|关键词|摘要|实体|类型|指针",
-                    }
-                ],
-            },
-        }
-
-    # 全部完成（都是跳过或失败）
     return {
         "status": "success",
         "total": len(file_paths),
-        "processed": len(skipped_files),
+        "processed": len(success_files) + len(skipped_files),
+        "new_files": len(success_files),
+        "skipped": len(skipped_files),
         "failed": len(failed_files),
         "results": results,
-        "summary": f"已处理 {len(skipped_files)}/{len(file_paths)} 文件，{len(failed_files)} 个失败",
+        "summary": f"已处理 {len(success_files) + len(skipped_files)}/{len(file_paths)} 文件，{len(failed_files)} 个失败",
     }
 
 
@@ -3016,21 +2634,25 @@ async def list_tools() -> list[Tool]:
     return [
         Tool(
             name="ingest_document",
-            description="""文档入库工具（全自动）
+            description="""文档入库工具（全自动 + 全文 ainsert）
 
 参数:
 - file_path: 必填，源文件绝对路径
 - category: 分类名称，从 preferences.json 的 categories.documents 中选取（财务、合同、报告、方案、其他）
 - mode: copy（复制）| move（移动）| reference（引用）
 
-自动完成: 文件搬运 + 向量库写入 + 知识图谱写入（LightRAG 自动抽取实体和建链）
+自动检测路径类型:
+- 目录 → 检查是否包含照片，转到照片批量处理
+- 照片 → 转到照片入库流程
+- 文档 → 读取全文，LightRAG ainsert 全文入库
+
+自动完成: 文件搬运 + LightRAG 全文 ainsert（自动抽取实体和建链）
 
 返回:
 - status: success | error
 - action: created | versioned | renamed | referenced | skipped
 - file_path: 存储后的完整路径
-- vector_db: written | skipped
-- knowledge_graph: synced | skipped
+- lightrag: inserted | skipped
 
 冲突处理:
 - 完全相同文件（哈希相同）→ 跳过
@@ -3056,19 +2678,23 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="ingest_documents",
-            description="""批量文档入库工具
+            description="""批量文档入库（全自动 + 全文 ainsert）
 
 参数:
 - file_paths: 必填，源文件路径列表
 - category: 分类名称
 - mode: copy | move | reference
 
+每个文件自动完成：文件搬运 + LightRAG 全文 ainsert。
+
 返回:
 - status: success
 - total: 总数
 - processed: 成功数
+- new_files: 新文件数
+- skipped: 跳过数
 - failed: 失败数
-- results: 每个文件的处理结果
+- results: 每个文件的处理结果（含 lightrag 字段）
 - summary: 总结""",
             inputSchema={
                 "type": "object",
@@ -3317,81 +2943,6 @@ boxed_path 是带人脸红框的图片路径，前端用 ::person_photo:: 标记
             },
         ),
         Tool(
-            name="store_document_l1",
-            description="""存储单个文档的 L1 摘要到向量库
-
-当 ingest_document 返回 status="need_l1" 时，调用此工具存储生成的摘要。
-
-参数:
-- file_path: 必填，文档存储路径（从 ingest_document 返回值获取）
-- l1: 必填，极简格式摘要：标题|关键词|摘要|实体|类型|指针
-- l2: 可选，完整内容（如果不提供则只存储 L1）
-
-返回:
-- status: success | error
-- l1_id: 文档ID
-
-L1 格式说明:
-- 标题：文档标题
-- 关键词：3-5个核心概念，用逗号分隔
-- 摘要：50-80字现代中文摘要
-- 实体：命名实体（人名、地名、技术名词）
-- 类型：文档类型（技术文档/合同/报告等）
-- 指针：文件路径或其他定位信息
-
-示例:
-Zellij使用指南|终端,复用器,Rust|Zellij终端复用器的基本使用方法和配置说明|Zellij,终端|技术文档|/docs/zellij.md""",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "file_path": {"type": "string", "description": "文档存储路径"},
-                    "l1": {"type": "string", "description": "L1 极简格式摘要"},
-                    "l2": {"type": "string", "description": "完整内容（可选）"},
-                },
-                "required": ["file_path", "l1"],
-            },
-        ),
-        Tool(
-            name="store_documents_l1",
-            description="""批量存储文档的 L1 摘要到向量库
-
-当 ingest_documents 返回 status="need_l1" 时，调用此工具一次性存储所有摘要。
-
-参数:
-- documents: 必填，文档列表，每个包含：
-  - file_path: 文档存储路径
-  - l1: L1 极简格式摘要
-  - l2: 完整内容（可选）
-
-返回:
-- status: success | error
-- total: 总数
-- processed: 成功数
-- failed: 失败数
-- results: 每个文档的处理结果
-
-这是批量处理的首选方式，一次调用完成所有 L1 存储，然后向主 Agent 汇报。""",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "documents": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "file_path": {"type": "string"},
-                                "l1": {"type": "string"},
-                                "l2": {"type": "string"},
-                            },
-                            "required": ["file_path", "l1"],
-                        },
-                        "description": "文档列表",
-                    },
-                },
-                "required": ["documents"],
-            },
-        ),
-        Tool(
             name="unload_face_model",
             description="""卸载人脸识别模型，释放内存（约 326MB）
 
@@ -3416,19 +2967,11 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         logger.info(f"[CALL_TOOL] 开始: {name}")
 
         if name == "ingest":
-            import sys as _sys
-            # __file__ = .../mcp-servers/photo-server/src/niu_photo_server/__init__.py
-            # 5 parents to reach project root
-            _scripts_dir = str(Path(__file__).parent.parent.parent.parent.parent / "scripts")
-            if _scripts_dir not in _sys.path:
-                _sys.path.insert(0, _scripts_dir)
-            from ingest_unified import ingest as unified_ingest
-            result = unified_ingest(
-                path=arguments["path"],
+            # ingest 统一入口，委托给 ingest_document
+            result = ingest_document(
+                file_path=arguments["path"],
+                category=arguments.get("category", "其他"),
                 mode=arguments.get("mode", "copy"),
-                category=arguments.get("category"),
-                l1=arguments.get("l1"),
-                file_path=arguments.get("file_path"),
             )
         elif name == "ingest_document":
             result = ingest_document(
@@ -3483,16 +3026,6 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             result = get_person_photos(
                 person_id=arguments["person_id"],
                 limit=arguments.get("limit", 5),
-            )
-        elif name == "store_document_l1":
-            result = store_document_l1(
-                file_path=arguments["file_path"],
-                l1=arguments["l1"],
-                l2=arguments.get("l2"),
-            )
-        elif name == "store_documents_l1":
-            result = store_documents_l1(
-                documents=arguments["documents"],
             )
         elif name == "unload_face_model":
             result = unload_face_model()

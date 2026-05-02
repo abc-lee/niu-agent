@@ -306,6 +306,146 @@ class TestInjectorListResources:
         assert len(result.resources[0]["description"]) == 200
 
 
+
+class TestInjectDynamicResourcesUsesLightRAG:
+    """Verify _inject_dynamic_resources uses LightRAG graph retrieval, NOT vector_search."""
+
+    @pytest.fixture
+    def runner(self):
+        """Create a minimal NiuRunner mock for testing."""
+        from agent.runner import NiuRunner
+
+        with patch("agent.runner.get_skill_sync"), \
+             patch("agent.runner.create_client"), \
+             patch("agent.runner.get_system_prompt", return_value=""), \
+             patch("agent.runner.get_tools_schema", return_value=[]), \
+             patch("agent.runner.NiuHandler"):
+            r = NiuRunner.__new__(NiuRunner)
+            return r
+
+    def test_no_vector_search_import_in_runner(self):
+        """runner.py must NOT import vector_search or VectorSearchAdapter."""
+        import ast
+        from pathlib import Path
+
+        runner_path = Path("E:/tools/ai-bot/agent/runner.py")
+        source = runner_path.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                assert "vector_search" not in (node.module or ""), (
+                    f"runner.py must not import from vector_search, "
+                    f"found: from {node.module}"
+                )
+                for alias in node.names:
+                    assert alias.name != "VectorSearchAdapter", (
+                        f"runner.py must not import VectorSearchAdapter, "
+                        f"found in: from {node.module}"
+                    )
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    assert "vector_search" not in alias.name, (
+                        f"runner.py must not import vector_search, "
+                        f"found: import {alias.name}"
+                    )
+
+    def test_calls_search_multi_lightrag(self, runner):
+        """_inject_dynamic_resources must call LightRAGAdapter.search_multi_lightrag."""
+        with patch("niu_api.internal.lightrag_adapter.LightRAGAdapter") as mock_adapter_cls, \
+             patch("niu_api.internal.brain_graph.get_brain_graph", side_effect=Exception("no brain")), \
+             patch("niu_api.internal.region_injector.BrainContextInjector", side_effect=Exception("no region")):
+            mock_adapter = MagicMock()
+            mock_adapter.search_multi_lightrag.return_value = {"skill": [], "knowledge": [], "mcp_tool": []}
+            mock_adapter.search_interaction_habits.return_value = []
+            mock_adapter_cls.return_value = mock_adapter
+
+            runner._inject_dynamic_resources("test query")
+
+            mock_adapter.search_multi_lightrag.assert_called_once()
+            call_kwargs = mock_adapter.search_multi_lightrag.call_args
+            assert call_kwargs[0][0] == "test query" or call_kwargs.kwargs.get("query") == "test query"
+
+    def test_calls_search_interaction_habits(self, runner):
+        """_inject_dynamic_resources must call LightRAGAdapter.search_interaction_habits."""
+        with patch("niu_api.internal.lightrag_adapter.LightRAGAdapter") as mock_adapter_cls, \
+             patch("niu_api.internal.brain_graph.get_brain_graph", side_effect=Exception("no brain")), \
+             patch("niu_api.internal.region_injector.BrainContextInjector", side_effect=Exception("no region")):
+            mock_adapter = MagicMock()
+            mock_adapter.search_multi_lightrag.return_value = {"skill": [], "knowledge": [], "mcp_tool": []}
+            mock_adapter.search_interaction_habits.return_value = []
+            mock_adapter_cls.return_value = mock_adapter
+
+            runner._inject_dynamic_resources("test query")
+
+            mock_adapter.search_interaction_habits.assert_called_once()
+
+    def test_brain_region_uses_lightrag_adapter(self, runner):
+        """Brain region activation must use LightRAGAdapter (not vector_search)."""
+        with patch("niu_api.internal.lightrag_adapter.LightRAGAdapter") as mock_adapter_cls, \
+             patch("niu_api.internal.lightrag_adapter.LightRAGIngester") as mock_ingester_cls, \
+             patch("agent.brain_tools.get_activation_mgr") as mock_get_mgr, \
+             patch("niu_api.internal.region_manager.RegionManager") as mock_rm_cls, \
+             patch("niu_api.internal.region_injector.BrainContextInjector") as mock_injector_cls, \
+             patch("niu_api.internal.brain_graph.get_brain_graph", side_effect=Exception("no brain")):
+            mock_adapter = MagicMock()
+            mock_adapter.search_multi_lightrag.return_value = {"skill": [], "knowledge": [], "mcp_tool": []}
+            mock_adapter.search_interaction_habits.return_value = []
+            mock_adapter_cls.return_value = mock_adapter
+
+            mock_ingester = MagicMock()
+            mock_ingester_cls.return_value = mock_ingester
+
+            mock_get_mgr.return_value = MagicMock()
+
+            mock_injector = MagicMock()
+            mock_injector.inject_brain_context.return_value = "brain context text"
+            mock_injector_cls.return_value = mock_injector
+
+            injection, _ = runner._inject_dynamic_resources("test query")
+
+            # LightRAGAdapter must have been instantiated (at least once for main search + brain)
+            assert mock_adapter_cls.call_count >= 1
+            # BrainContextInjector must have been constructed with LightRAGAdapter
+            mock_injector_cls.assert_called_once()
+            call_kwargs = mock_injector_cls.call_args.kwargs
+            assert "adapter" in call_kwargs
+            # RegionManager must have been constructed with LightRAGAdapter (positional args)
+            mock_rm_cls.assert_called_once()
+            rm_args = mock_rm_cls.call_args.args
+            assert len(rm_args) >= 1, "RegionManager must receive at least 1 positional arg (adapter)"
+            # Brain context text must appear in injection
+            assert "脑区激活上下文" in injection
+
+    def test_does_not_call_vector_search(self, runner):
+        """_inject_dynamic_resources must NOT use VectorSearchAdapter or vector_search."""
+        with patch("niu_api.internal.lightrag_adapter.LightRAGAdapter") as mock_adapter_cls, \
+             patch("niu_api.internal.brain_graph.get_brain_graph", side_effect=Exception("no brain")):
+            mock_adapter = MagicMock()
+            mock_adapter.search_multi_lightrag.return_value = {"skill": [], "knowledge": [], "mcp_tool": []}
+            mock_adapter.search_interaction_habits.return_value = []
+            mock_adapter_cls.return_value = mock_adapter
+
+            runner._inject_dynamic_resources("test query")
+
+            # The function should complete without error even though vector_search
+            # module no longer exists — it must not depend on vector_search at all.
+
+    def test_on_turn_end_uses_lightrag(self, runner):
+        """_on_turn_end must call _inject_dynamic_resources (which uses LightRAG)."""
+        runner.base_system_prompt = "system prompt"
+        runner._memory_dirty = MagicMock()
+        runner._memory_dirty.is_set.return_value = False
+
+        with patch.object(runner, "_inject_dynamic_resources", return_value=("injected text", {})) as mock_inject, \
+             patch.object(runner, "_extract_context_from_messages", return_value="context"):
+            messages = [{"role": "system", "content": "system prompt"}]
+            runner._on_turn_end(messages, [], 1)
+
+            mock_inject.assert_called_once_with("context")
+            assert "injected text" in messages[0]["content"]
+
+
 class TestInjectorDeleteResource:
     """Test delete_resource endpoint after migration to LightRAG."""
 

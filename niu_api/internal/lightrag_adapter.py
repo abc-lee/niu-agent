@@ -826,7 +826,7 @@ class LightRAGAdapter:
 class LightRAGIngester:
     """Dual-path data injection for LightRAG.
 
-    Structured path: inject_entity, inject_relation, inject_custom_kg
+    Structured path: inject_custom_kg
     → calls ainsert_custom_kg() for precise entity/relation insertion.
 
     Unstructured path: inject_document, inject_documents
@@ -838,51 +838,6 @@ class LightRAGIngester:
         return get_lightrag()
 
     # ============== Structured Path ==============
-
-    def inject_entity(
-        self,
-        name: str,
-        entity_type: str,
-        description: str = "",
-        source_id: str = "custom_kg",
-        chunk_content: Optional[str] = None,
-        file_path: str = "custom_kg",
-    ) -> Dict[str, Any]:
-        """Inject a single entity into the brain graph.
-
-        Args:
-            name: Entity name (also used as entity_id in the graph).
-            entity_type: Type classification (e.g., "ProgrammingLanguage").
-            description: Entity description for retrieval.
-            source_id: Source document/chunk ID.
-            chunk_content: Optional chunk text for vector retrieval.
-            file_path: File path for citation.
-
-        Returns:
-            Dict with status and details.
-        """
-        chunks = []
-        if chunk_content:
-            chunks.append({
-                "content": chunk_content,
-                "source_id": source_id,
-                "file_path": file_path,
-            })
-
-        entities = [{
-            "entity_name": name,
-            "entity_type": entity_type,
-            "description": description,
-            "source_id": source_id,
-            "file_path": file_path,
-        }]
-
-        return self.inject_custom_kg(
-            entities=entities,
-            relationships=[],
-            chunks=chunks,
-            source_id=source_id,
-        )
 
     def upsert_interaction_habit(
         self,
@@ -1095,44 +1050,6 @@ class LightRAGIngester:
             relationships=[],
             chunks=chunks,
             source_id="batch_inject",
-        )
-
-    def inject_relation(
-        self,
-        src_id: str,
-        tgt_id: str,
-        relation: str,
-        description: str = "",
-        source_id: str = "custom_kg",
-        file_path: str = "custom_kg",
-    ) -> Dict[str, Any]:
-        """Inject a relation between two entities.
-
-        Args:
-            src_id: Source entity name/ID.
-            tgt_id: Target entity name/ID.
-            relation: Relation type (e.g., "has_framework").
-            description: Relation description.
-            source_id: Source document/chunk ID.
-            file_path: File path for citation.
-
-        Returns:
-            Dict with status and details.
-        """
-        relationships = [{
-            "src_id": src_id,
-            "tgt_id": tgt_id,
-            "keywords": relation,
-            "description": description,
-            "source_id": source_id,
-            "file_path": file_path,
-        }]
-
-        return self.inject_custom_kg(
-            entities=[],
-            relationships=relationships,
-            chunks=[],
-            source_id=source_id,
         )
 
     def inject_custom_kg(

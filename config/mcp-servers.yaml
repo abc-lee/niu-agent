@@ -1,214 +1,209 @@
-# Niu MCP Servers Configuration
-# These servers provide tools for the Niu assistant
-
-# File Parser - Parse various document formats (PDF, Word, PPT, Excel, MD, HTML)
 file-parser:
   command: ${PYTHON_PATH}
   args:
-    - "-m"
-    - "niu_file_parser"
+  - -m
+  - niu_file_parser
   workdir: mcp-servers/file-parser/src
   preload: true
   tools:
-    parse_file: {visibility: hidden}
-    list_supported_formats: {visibility: hidden}
-
-# Knowledge Graph - LightRAG-based brain graph (replaces KuzuDB kg-server)
-# NOTE: kg-server tools are now provided by LightRAG adapter/pipeline.
-# The kg-server MCP module is no longer loaded at startup (removed from mcp_loader.py).
-# KG queries go through /api/kg/* endpoints which use LightRAGAdapter.
-# KG ingestion goes through LightRAGPipeline (ainsert/ainsert_custom_kg).
-kg-server:
-  command: ${PYTHON_PATH}
-  args:
-    - "-m"
-    - "niu_kg_server"
-  workdir: mcp-servers/kg-server/src
-  preload: false  # No longer preloaded — LightRAG handles KG internally
-  tools:
-    explore_node: {visibility: hidden}
-    get_related_entities: {visibility: hidden}
-    query_graph: {visibility: hidden}
-    find_path: {visibility: hidden}
-    hub_entities: {visibility: hidden}
-    get_related_concepts: {visibility: hidden}
-    search_documents: {visibility: hidden}
-    get_document: {visibility: hidden}
-    list_documents: {visibility: hidden}
-    graph_stats: {visibility: hidden}
-    create_document: {visibility: hidden}
-    create_entity: {visibility: hidden}
-    create_concept: {visibility: hidden}
-    link_document_entity: {visibility: hidden}
-    link_document_concept: {visibility: hidden}
-    link_entities: {visibility: hidden}
-    surprising_connections: {visibility: hidden}
-    graph_changelog: {visibility: hidden}
-    graph_snapshot: {visibility: hidden}
-    list_entities: {visibility: hidden}
-    list_concepts: {visibility: hidden}
-    update_entity_status: {visibility: hidden}
-    delete_entity: {visibility: hidden}
-
-# LightRAG Unified Server - Replaces vector-store + kg-server with 15 unified tools (5 query + 4 insert + 6 management)
+    parse_file:
+      visibility: hidden
+    list_supported_formats:
+      visibility: hidden
 lightrag-server:
   command: ${PYTHON_PATH}
   args:
-    - "-m"
-    - "niu_lightrag_server"
+  - -m
+  - niu_lightrag_server
   workdir: mcp-servers/lightrag-server/src
   preload: true
   tools:
-    lightrag_query: {visibility: hidden}
-    lightrag_query_data: {visibility: hidden}
-    lightrag_search_entities: {visibility: hidden}
-    lightrag_get_graph: {visibility: hidden}
-    lightrag_insert: {visibility: hidden}
-    lightrag_insert_custom_kg: {visibility: hidden}
-    lightrag_insert_entity: {visibility: hidden}
-    lightrag_insert_relation: {visibility: hidden}
-    lightrag_delete_entity: {visibility: hidden}
-    lightrag_get_document: {visibility: hidden}
-    lightrag_delete_document: {visibility: hidden}
-    lightrag_document_status: {visibility: hidden}
-    lightrag_list_entities: {visibility: hidden}
-    lightrag_merge_entities: {visibility: hidden}
-    lightrag_timeline_query: {visibility: hidden}
-
-# Vector Store - Semantic search using embeddings (DISABLED — replaced by lightrag-server)
-vector-store:
-  command: ${PYTHON_PATH}
-  args:
-    - "-m"
-    - "niu_vector_store"
-  workdir: mcp-servers/vector-store/src
-  preload: false
-  tools:
-    add_document: {visibility: hidden}
-    search_documents: {visibility: hidden}
-    get_document: {visibility: hidden}
-    delete_document: {visibility: hidden}
-    list_documents: {visibility: hidden}
-    update_metadata: {visibility: hidden}
-
-# Config Manager - Read/write user configuration and memory
-# 全部工具已隐藏：UI 直接读写 json 文件，LLM 通过 bash/code_run 操作
+    lightrag_query:
+      visibility: hidden
+    lightrag_query_data:
+      visibility: hidden
+    lightrag_search_entities:
+      visibility: hidden
+    lightrag_get_graph:
+      visibility: hidden
+    lightrag_insert:
+      visibility: hidden
+    lightrag_insert_custom_kg:
+      visibility: hidden
+    lightrag_insert_entity:
+      visibility: hidden
+    lightrag_insert_relation:
+      visibility: hidden
+    lightrag_delete_entity:
+      visibility: hidden
+    lightrag_get_document:
+      visibility: hidden
+    lightrag_delete_document:
+      visibility: hidden
+    lightrag_document_status:
+      visibility: hidden
+    lightrag_list_entities:
+      visibility: hidden
+    lightrag_merge_entities:
+      visibility: hidden
+    lightrag_timeline_query:
+      visibility: hidden
 config-manager:
   command: ${PYTHON_PATH}
   args:
-    - "-m"
-    - "niu_config_manager"
+  - -m
+  - niu_config_manager
   workdir: mcp-servers/config-manager/src
   preload: true
   tools:
-    get_llm_config: {visibility: hidden}
-    set_llm_config: {visibility: hidden}
-    list_llm_presets: {visibility: hidden}
-    test_llm_connection: {visibility: hidden}
-    get_storage_config: {visibility: hidden}
-    set_storage_config: {visibility: hidden}
-    get_identity: {visibility: hidden}
-    update_identity: {visibility: hidden}
-    get_workspace: {visibility: hidden}
-    set_workspace: {visibility: hidden}
-    get_user_info: {visibility: hidden}
-    set_user_info: {visibility: hidden}
-    add_user_preference: {visibility: hidden}
-    is_first_run: {visibility: hidden}
-    complete_setup: {visibility: hidden}
-    get_full_memory: {visibility: hidden}
-    mkdir: {visibility: hidden}
-    copy_to_path: {visibility: hidden}
-    move_to_path: {visibility: hidden}
-    list_files_in_workspace: {visibility: hidden}
-
-# Photo Server - File and photo management with face recognition
+    get_llm_config:
+      visibility: hidden
+    set_llm_config:
+      visibility: hidden
+    list_llm_presets:
+      visibility: hidden
+    test_llm_connection:
+      visibility: hidden
+    get_storage_config:
+      visibility: hidden
+    set_storage_config:
+      visibility: hidden
+    get_identity:
+      visibility: hidden
+    update_identity:
+      visibility: hidden
+    get_workspace:
+      visibility: hidden
+    set_workspace:
+      visibility: hidden
+    get_user_info:
+      visibility: hidden
+    set_user_info:
+      visibility: hidden
+    add_user_preference:
+      visibility: hidden
+    is_first_run:
+      visibility: hidden
+    complete_setup:
+      visibility: hidden
+    get_full_memory:
+      visibility: hidden
+    mkdir:
+      visibility: hidden
+    copy_to_path:
+      visibility: hidden
+    move_to_path:
+      visibility: hidden
+    list_files_in_workspace:
+      visibility: hidden
 photo-server:
   command: ${PYTHON_PATH}
   args:
-    - "-m"
-    - "niu_photo_server"
+  - -m
+  - niu_photo_server
   workdir: mcp-servers/photo-server/src
   preload: true
   tools:
-    name_person: {visibility: hidden}
-    merge_persons: {visibility: hidden}
-    search_persons: {visibility: hidden}
-    get_unnamed_persons: {visibility: hidden}
-    delete_person: {visibility: hidden}
-    cleanup_deleted_photos: {visibility: hidden}
-    get_person_photos: {visibility: hidden}
-    ingest: {visibility: hidden}
-    ingest_document: {visibility: hidden}
-    ingest_documents: {visibility: hidden}
-    ingest_photo: {visibility: hidden}
-    ingest_photos: {visibility: hidden}
-    store_document_l1: {visibility: hidden}
-    store_documents_l1: {visibility: hidden}
-    unload_face_model: {visibility: hidden}
-
-# Memory Server - Smart memory extraction and retrieval
+    name_person:
+      visibility: hidden
+    merge_persons:
+      visibility: hidden
+    search_persons:
+      visibility: hidden
+    get_unnamed_persons:
+      visibility: hidden
+    delete_person:
+      visibility: hidden
+    cleanup_deleted_photos:
+      visibility: hidden
+    get_person_photos:
+      visibility: hidden
+    ingest:
+      visibility: hidden
+    ingest_document:
+      visibility: hidden
+    ingest_documents:
+      visibility: hidden
+    ingest_photo:
+      visibility: hidden
+    ingest_photos:
+      visibility: hidden
+    store_document_l1:
+      visibility: hidden
+    store_documents_l1:
+      visibility: hidden
+    unload_face_model:
+      visibility: hidden
 memory-server:
   command: ${PYTHON_PATH}
   args:
-    - "-m"
-    - "niu_memory_server"
+  - -m
+  - niu_memory_server
   workdir: mcp-servers/memory-server/src
   preload: true
   tools:
-    remember: {visibility: hidden}
-    recall: {visibility: hidden}
-    update_memory: {visibility: hidden}
-    get_memory_stats: {visibility: hidden}
-    cleanup_memories: {visibility: hidden}
-    link_memories: {visibility: hidden}
-    user_memory_remember: {visibility: hidden}
-    user_memory_forget: {visibility: hidden}
-    user_memory_list: {visibility: hidden}
-
-# Scheduler Server - Scheduled tasks and reminders
+    remember:
+      visibility: hidden
+    recall:
+      visibility: hidden
+    update_memory:
+      visibility: hidden
+    get_memory_stats:
+      visibility: hidden
+    cleanup_memories:
+      visibility: hidden
+    link_memories:
+      visibility: hidden
+    user_memory_remember:
+      visibility: hidden
+    user_memory_forget:
+      visibility: hidden
+    user_memory_list:
+      visibility: hidden
 scheduler-server:
   command: ${PYTHON_PATH}
   args:
-    - "-m"
-    - "niu_scheduler_server"
+  - -m
+  - niu_scheduler_server
   workdir: mcp-servers/scheduler-server/src
   preload: true
   tools:
-    list_scheduled_tasks: {visibility: hidden}
-    schedule_task: {visibility: hidden}
-    cancel_task: {visibility: hidden}
-    update_task: {visibility: hidden}
-
-# Session Manager - Message management for context compression
+    list_scheduled_tasks:
+      visibility: hidden
+    schedule_task:
+      visibility: hidden
+    cancel_task:
+      visibility: hidden
+    update_task:
+      visibility: hidden
 session-manager:
   command: ${PYTHON_PATH}
   args:
-    - "-m"
-    - "niu_session_manager"
+  - -m
+  - niu_session_manager
   workdir: mcp-servers/session-manager/src
-  preload: false  # 按需启动，不预加载
+  preload: false
   tools:
-    get_messages: {visibility: hidden}
-    add_message: {visibility: hidden}
-    update_message: {visibility: hidden}
-    delete_messages: {visibility: hidden}
-
-# Browser Server - Browser automation using Playwright
+    get_messages:
+      visibility: hidden
+    add_message:
+      visibility: hidden
+    update_message:
+      visibility: hidden
+    delete_messages:
+      visibility: hidden
 browser-server:
   command: ${PYTHON_PATH}
   args:
-    - "-m"
-    - "niu_browser_server"
+  - -m
+  - niu_browser_server
   workdir: mcp-servers/browser-server/src
-  preload: false  # 按需启动，首次使用 ~2 秒启动浏览器
+  preload: false
   tools:
-    browser_navigate: {visibility: hidden}
-    browser_switch_tab: {visibility: hidden}
-    browser_close_tab: {visibility: hidden}
-    # browser_interact, browser_new_tab 默认 dynamic
-
-# Nanobot System - Built-in system tools (not a real MCP server, added programmatically)
-# This entry exists to satisfy validation that references all defined servers
-nanobot.system:
-  # No command - this is a built-in server added via registry.AddServer in code
+    browser_navigate:
+      visibility: hidden
+    browser_switch_tab:
+      visibility: hidden
+    browser_close_tab:
+      visibility: hidden
+nanobot.system: null

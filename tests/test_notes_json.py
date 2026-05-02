@@ -203,7 +203,13 @@ class TestSkillSyncNotes:
                 added, updated = sync._scan_notes()
                 assert added == 1
                 assert updated == 0
-                mock_inject.assert_called_once_with("n1", "Hello", [])
+                mock_inject.assert_called_once()
+                # Called with list of changed notes
+                notes_arg = mock_inject.call_args[0][0]
+                assert isinstance(notes_arg, list)
+                assert len(notes_arg) == 1
+                assert notes_arg[0]["id"] == "n1"
+                assert notes_arg[0]["content"] == "Hello"
 
     def test_scan_notes_detects_changed_note(self, tmp_workspace):
         """Changed content should trigger re-injection."""
@@ -232,7 +238,12 @@ class TestSkillSyncNotes:
                 added, updated = sync._scan_notes()
                 assert added == 0
                 assert updated == 1
-                mock_inject.assert_called_once_with("n1", "Changed", [])
+                mock_inject.assert_called_once()
+                notes_arg = mock_inject.call_args[0][0]
+                assert isinstance(notes_arg, list)
+                assert len(notes_arg) == 1
+                assert notes_arg[0]["id"] == "n1"
+                assert notes_arg[0]["content"] == "Changed"
 
     def test_scan_notes_skips_unchanged(self, tmp_workspace):
         """Unchanged content should not trigger injection."""
@@ -323,7 +334,11 @@ class TestSkillSyncNotes:
             with patch.object(sync, "_inject_note_to_lightrag") as mock_inject:
                 added, updated = sync._scan_notes()
                 assert added == 1
-                mock_inject.assert_called_once_with("n1", "", [])
+                mock_inject.assert_called_once()
+                notes_arg = mock_inject.call_args[0][0]
+                assert isinstance(notes_arg, list)
+                assert len(notes_arg) == 1
+                assert notes_arg[0]["id"] == "n1"
 
     def test_scan_notes_failed_injection_not_recorded(self, tmp_workspace):
         """Failed injection should not record hash — note will be retried next scan."""

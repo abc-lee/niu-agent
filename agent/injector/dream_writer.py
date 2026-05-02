@@ -113,13 +113,19 @@ class DreamWriter:
         # Encode brain_meta_level in description for semantic entities,
         # consistent with episodic pipeline pattern
         enriched_description = f"{description} | brain_meta_level:{level}"
-        entity_result = self._ingester.inject_entity(
-            name=name,
-            entity_type=entity_type,
-            description=enriched_description,
+        entity_result = self._ingester.inject_custom_kg(
+            entities=[{
+                "entity_name": name,
+                "entity_type": entity_type,
+                "description": enriched_description,
+            }],
+            relationships=[],
+            chunks=[{
+                "content": enriched_description,
+                "source_id": DREAM_SOURCE_ID,
+                "file_path": DREAM_FILE_PATH,
+            }],
             source_id=DREAM_SOURCE_ID,
-            chunk_content=enriched_description,
-            file_path=DREAM_FILE_PATH,
         )
 
         if isinstance(entity_result, dict) and entity_result.get("status") == "error":
@@ -266,13 +272,19 @@ class DreamWriter:
         full_description = " | ".join(desc_parts)
 
         # Step 1: Inject the event entity
-        entity_result = self._ingester.inject_entity(
-            name=full_event_name,
-            entity_type=EPISODIC_ENTITY_TYPE,
-            description=full_description,
+        entity_result = self._ingester.inject_custom_kg(
+            entities=[{
+                "entity_name": full_event_name,
+                "entity_type": EPISODIC_ENTITY_TYPE,
+                "description": full_description,
+            }],
+            relationships=[],
+            chunks=[{
+                "content": description,
+                "source_id": DREAM_SOURCE_ID,
+                "file_path": DREAM_FILE_PATH,
+            }],
             source_id=DREAM_SOURCE_ID,
-            chunk_content=description,
-            file_path=DREAM_FILE_PATH,
         )
 
         if isinstance(entity_result, dict) and entity_result.get("status") == "error":

@@ -617,15 +617,18 @@ def lightrag_insert_entity(
     source_id: str = "custom_kg",
     file_path: str = "custom_kg",
 ) -> Dict[str, Any]:
-    """Insert a single entity."""
+    """Insert a single entity via inject_custom_kg (inject_entity removed)."""
     try:
         ingester = _get_ingester()
-        return ingester.inject_entity(
-            name=name,
-            entity_type=entity_type,
-            description=description,
+        return ingester.inject_custom_kg(
+            entities=[{
+                "entity_name": name,
+                "entity_type": entity_type,
+                "description": description,
+            }],
+            relationships=[],
+            chunks=[],
             source_id=source_id,
-            file_path=file_path,
         )
     except Exception as e:
         logger.error(f"lightrag_insert_entity failed: {e}")
@@ -640,16 +643,21 @@ def lightrag_insert_relation(
     source_id: str = "custom_kg",
     file_path: str = "custom_kg",
 ) -> Dict[str, Any]:
-    """Insert a relation between two entities."""
+    """Insert a single relation via inject_custom_kg (inject_relation removed)."""
     try:
         ingester = _get_ingester()
-        return ingester.inject_relation(
-            src_id=src_id,
-            tgt_id=tgt_id,
-            relation=relation,
-            description=description,
+        return ingester.inject_custom_kg(
+            entities=[],
+            relationships=[{
+                "src_id": src_id,
+                "tgt_id": tgt_id,
+                "keywords": relation,
+                "description": description,
+                "source_id": source_id,
+                "file_path": file_path,
+            }],
+            chunks=[],
             source_id=source_id,
-            file_path=file_path,
         )
     except Exception as e:
         logger.error(f"lightrag_insert_relation failed: {e}")

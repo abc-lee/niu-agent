@@ -398,15 +398,7 @@ async def shutdown():
     """Shutdown the server gracefully"""
     logger.info("Shutdown requested via API")
 
-    # Close vector search database connection
-    from agent.vector_search import get_vector_search
-
-    try:
-        vector_search = get_vector_search()
-        vector_search.close()
-        logger.info("Vector search connection closed")
-    except Exception as e:
-        logger.warning(f"Failed to close vector search: {e}")
+    # vector_search removed — no cleanup needed
 
     logger.info("Python API ready for shutdown")
     return {"status": "shutting down"}
@@ -1342,49 +1334,24 @@ async def trigger_vector_cleanup():
 
 @router.get("/api/vector/stats")
 async def get_vector_stats():
-    """获取向量库统计信息"""
-    import os
+    """获取知识库统计信息（已迁移到 LightRAG）"""
+    try:
+        from niu_api.internal.lightrag_manager import get_lightrag
 
-    from agent.vector_search import get_vector_search
+        rag = get_lightrag()
+        if rag is None:
+            return {"error": "LightRAG not initialized"}
 
-    vs = get_vector_search()
-    conn = vs._get_connection()
-    if conn is None:
-        return {"error": "Vector database not initialized"}
+        # LightRAG 知识图谱统计
+        graph = rag.chunk_entity_relation_graph
+        node_count = len(graph._graph.nodes) if hasattr(graph, '_graph') else 0
+        edge_count = len(graph._graph.edges) if hasattr(graph, '_graph') else 0
 
-    cursor = conn.cursor()
-
-    # 总数
-    cursor.execute("SELECT COUNT(*) FROM documents")
-    total = cursor.fetchone()[0]
-
-    # 按类别统计
-    cursor.execute(
-        """
-        SELECT json_extract(metadata, '$.category') as category, COUNT(*) as count
-        FROM documents
-        GROUP BY category
-        """
-    )
-    by_category = {row[0] or "unknown": row[1] for row in cursor.fetchall()}
-
-    # 按层级统计
-    cursor.execute(
-        """
-        SELECT json_extract(metadata, '$.level') as level, COUNT(*) as count
-        FROM documents
-        GROUP BY level
-        """
-    )
-    by_level = {row[0] or "unknown": row[1] for row in cursor.fetchall()}
-
-    # 数据库大小
-    db_size_mb = os.path.getsize(vs.db_path) / (1024 * 1024) if os.path.exists(vs.db_path) else 0
-
-    return {
-        "total": total,
-        "by_category": by_category,
-        "by_level": by_level,
-        "db_size_mb": round(db_size_mb, 2),
-        "db_path": vs.db_path,
-    }
+        return {
+            "status": "lightrag",
+            "node_count": node_count,
+            "edge_count": edge_count,
+            "message": "向量库已迁移到 LightRAG，旧 vectors.db 统计不再可用",
+        }
+    except Exception as e:
+        return {"error": str(e)}
