@@ -6,6 +6,7 @@ LiteLLM统一适配器，提供与现有BaseSession/ToolClient接口兼容的Lit
 """
 
 import json
+import logging
 import os
 import sys
 from datetime import datetime
@@ -13,6 +14,8 @@ from pathlib import Path
 from typing import Any, Dict, Generator, List, Optional
 
 import litellm
+
+logger = logging.getLogger(__name__)
 
 # 抑制 LiteLLM 的调试输出（"Provider List" 等提示）
 litellm.suppress_debug_info = True
@@ -378,9 +381,29 @@ class LiteLLMSession(BaseSession):
                 # yield f'<tool_use>{{"id": "{tc_data["id"]}", "name": "{tc_name}", "arguments": {args_str}}}</tool_use>'
 
         except Exception as e:
-            print(f"[LiteLLM] Stream error: {e}", file=sys.stderr, flush=True)
-            import traceback
-            traceback.print_exc(file=sys.stderr)
+            error_msg = str(e)
+            is_socket_error = "10038" in error_msg or "non-socket" in error_msg.lower()
+
+            if is_socket_error and not full_content:
+                # WinError 10038: Windows socket 在流式传输中被关闭，尝试非流式 fallback
+                logger.warning(f"[STREAM] Socket error with empty content, trying non-stream fallback: {e}")
+                try:
+                    fallback_params = {**request_params, "stream": False}
+                    fallback_response = litellm.completion(**fallback_params)
+                    if fallback_response and fallback_response.choices:
+                        choice = fallback_response.choices[0]
+                        full_content = choice.message.content or ""
+                        if hasattr(choice.message, "reasoning_content") and choice.message.reasoning_content:
+                            reasoning_content = choice.message.reasoning_content
+                        if hasattr(fallback_response, "usage") and fallback_response.usage:
+                            usage = fallback_response.usage
+                        logger.info(f"[STREAM] Non-stream fallback succeeded ({len(full_content)} chars)")
+                except Exception as fb_err:
+                    logger.error(f"[STREAM] Non-stream fallback also failed: {fb_err}")
+            else:
+                logger.error(f"[STREAM] Stream error: {e}")
+                if full_content:
+                    logger.warning(f"[STREAM] Using partial content ({len(full_content)} chars)")
 
         mock_resp = MockResponse(
             thinking=reasoning_content,
