@@ -211,7 +211,7 @@ Copyright (c) 2026
 **重大变更：**
 - KG 实体架构重构：人物实体只存名字，文档入库全自动
 - LightRAG 替代向量库作为主要知识检索引擎
-- 脑图系统（Brain Graph）：记忆分级（L0/L1/L2）、遗忘曲线衰减
+- 脑图系统（Brain Graph）：记忆存取（store/recall via LightRAG）
 - 脑区（Brain Region）：社区检测 + 区域节点刷新
 - 上下文整理管道升级：entity-extractor + dream-evolver + context-manager 三游标机制
 - 子 Agent 新增：entity-extractor、dream-evolver
