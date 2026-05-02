@@ -38,7 +38,7 @@ def _write_interaction_log(log_entry: Dict[str, Any]):
     [用户输入]
     用户拖入了以下文件...
     [可用工具]
-    - kg-server/search_knowledge
+    - lightrag-server/lightrag_query
     - photo-server/ingest_photo
     ...
     [AI回复]

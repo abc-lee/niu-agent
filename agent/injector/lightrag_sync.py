@@ -167,10 +167,14 @@ class LightRAGSync:
                     continue
                 person_name = row["name"] or row["auto_label"] or person_id
                 try:
-                    result = ingester.inject_entity(
-                        name=f"person:{person_id}",
-                        entity_type="person",
-                        description=f"Person: {person_name} (backfilled from photos.db)",
+                    result = ingester.inject_custom_kg(
+                        entities=[{
+                            "entity_name": f"person:{person_id}",
+                            "entity_type": "person",
+                            "description": f"Person: {person_name} (backfilled from photos.db)",
+                        }],
+                        relationships=[],
+                        chunks=[],
                     )
                     if result.get("status") == "ok":
                         persons_synced += 1
@@ -214,11 +218,15 @@ class LightRAGSync:
                 if pair_key in prev_co_occ:
                     continue
                 try:
-                    result = ingester.inject_relation(
-                        src_id=f"person:{a_id}",
-                        tgt_id=f"person:{b_id}",
-                        relation="co_appears_with",
-                        description=f"Co-occurrence count: {count}",
+                    result = ingester.inject_custom_kg(
+                        entities=[],
+                        relationships=[{
+                            "src_id": f"person:{a_id}",
+                            "tgt_id": f"person:{b_id}",
+                            "keywords": "co_appears_with",
+                            "description": f"Co-occurrence count: {count}",
+                        }],
+                        chunks=[],
                     )
                     if result.get("status") == "ok":
                         new_co_occ_ids.add(pair_key)
@@ -241,62 +249,10 @@ class LightRAGSync:
         Returns:
             (documents_synced, new_doc_ids)
         """
-        from agent.vector_search import resolve_vector_db_path
-        try:
-            vectors_db_path = Path(resolve_vector_db_path())
-        except ValueError as e:
-            logger.warning(f"[LightRAGSync] Cannot resolve vectors.db path: {e}")
-            return 0, set()
-        if not vectors_db_path.exists():
-            return 0, set()
-
-        from niu_api.internal.lightrag_manager import call_async, get_lightrag
-
-        rag = get_lightrag()
-        if rag is None:
-            return 0, set()
-
-        conn = sqlite3.connect(str(vectors_db_path), check_same_thread=False)
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.row_factory = sqlite3.Row
-
-        try:
-            rows = conn.execute(
-                "SELECT id, content, metadata FROM documents"
-            ).fetchall()
-
-            synced = 0
-            new_doc_ids: set = set()
-            for row in rows:
-                doc_id = row["id"]
-                if doc_id in prev_doc_ids:
-                    continue
-                content = row["content"] or ""
-                metadata_str = row["metadata"] or "{}"
-                try:
-                    metadata = json.loads(metadata_str)
-                except Exception:
-                    metadata = {}
-
-                # Only sync category=document
-                if metadata.get("category") != "document":
-                    continue
-
-                file_path = metadata.get("file_path", doc_id)
-                title = Path(file_path).stem if file_path else doc_id
-
-                try:
-                    prefixed = f"[Document: {title}]\n{content}"
-                    call_async(rag.ainsert(prefixed, file_paths=[file_path]))
-                    synced += 1
-                    new_doc_ids.add(doc_id)
-                except Exception as e:
-                    logger.debug(f"[LightRAGSync] Vector document failed for {doc_id}: {e}")
-
-            return synced, new_doc_ids
-        finally:
-            conn.close()
-
+        # vector-store deleted — vectors.db sync no longer available
+        logger.info("[LightRAGSync] vectors.db sync skipped (vector-store removed)")
+        return 0, set()  # removed: vector-store deleted
+        
     def _sync_skills_and_tools(
         self, prev_skill_ids: set, prev_tool_ids: set
     ) -> tuple[int, int, set, set]:

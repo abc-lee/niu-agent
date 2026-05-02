@@ -17,12 +17,10 @@ Autonomous Explorer - 自主探索器
 
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Optional, Callable
 from loguru import logger
-
-from .experience_summarizer import get_experience_summarizer
 
 
 class AutonomousExplorer:
@@ -176,15 +174,7 @@ class AutonomousExplorer:
 
     def _get_memory_stats(self) -> str:
         """获取记忆统计"""
-        try:
-            # 尝试从 vector_search 获取统计
-            from .vector_search import get_vector_search
-            vs = get_vector_search()
-            stats = vs.get_memory_stats()
-            if stats:
-                return f"total={stats.get('total', 0)}"
-        except Exception:
-            pass
+        # vector_search removed — memory stats no longer available via adapter
         return "unknown"
 
     def _count_pending_experiences(self) -> int:

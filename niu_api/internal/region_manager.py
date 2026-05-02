@@ -223,12 +223,15 @@ class RegionManager:
                 updated_at=now,
             )
 
-            entity_result = self._ingester.inject_entity(
-                name=region_name,
-                entity_type=REGION_ENTITY_TYPE,
-                description=description,
+            entity_result = self._ingester.inject_custom_kg(
+                entities=[{
+                    "entity_name": region_name,
+                    "entity_type": REGION_ENTITY_TYPE,
+                    "description": description,
+                }],
+                relationships=[],
+                chunks=[],
                 source_id=REGION_SOURCE_ID,
-                file_path=REGION_FILE_PATH,
             )
 
             if isinstance(entity_result, dict) and entity_result.get("status") == "error":
@@ -361,12 +364,15 @@ class RegionManager:
             )
 
             # Step 3: Update (overwrite) region master node
-            self._ingester.inject_entity(
-                name=region_name,
-                entity_type=REGION_ENTITY_TYPE,
-                description=description,
+            self._ingester.inject_custom_kg(
+                entities=[{
+                    "entity_name": region_name,
+                    "entity_type": REGION_ENTITY_TYPE,
+                    "description": description,
+                }],
+                relationships=[],
+                chunks=[],
                 source_id=REGION_SOURCE_ID,
-                file_path=REGION_FILE_PATH,
             )
 
             logger.info(
@@ -775,21 +781,29 @@ def create_default_regions(adapter: Any, ingester: Any) -> dict:
 
         # Create region entity
         try:
-            ingester.inject_entity(
-                name=region_name,
-                entity_type=REGION_ENTITY_TYPE,
-                description=config["description"],
+            ingester.inject_custom_kg(
+                entities=[{
+                    "entity_name": region_name,
+                    "entity_type": REGION_ENTITY_TYPE,
+                    "description": config["description"],
+                }],
+                relationships=[],
+                chunks=[],
                 source_id=REGION_SOURCE_ID,
-                file_path=REGION_FILE_PATH,
             )
             # Link to brain:Niu via brain_region_anchor
-            ingester.inject_relation(
-                src_id=NIU_ENTITY,
-                tgt_id=region_name,
-                relation=ANCHOR_RELATION,
-                description=f"缺省脑区锚点: {region_label}",
+            ingester.inject_custom_kg(
+                entities=[],
+                relationships=[{
+                    "src_id": NIU_ENTITY,
+                    "tgt_id": region_name,
+                    "keywords": ANCHOR_RELATION,
+                    "description": f"缺省脑区锚点: {region_label}",
+                    "source_id": REGION_SOURCE_ID,
+                    "file_path": REGION_FILE_PATH,
+                }],
+                chunks=[],
                 source_id=REGION_SOURCE_ID,
-                file_path=REGION_FILE_PATH,
             )
             created += 1
         except Exception as e:

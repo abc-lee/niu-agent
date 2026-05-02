@@ -800,38 +800,6 @@ class NiuHandler(BaseHandler):
 
     # Backward compatibility aliases: old tool names → new lightrag-server tools
     _TOOL_ALIASES = {
-        # vector-store aliases
-        "vector-store/search_documents": "lightrag-server/lightrag_query",
-        "vector-store/add_document": "lightrag-server/lightrag_insert",
-        "vector-store/get_document": "lightrag-server/lightrag_get_document",
-        "vector-store/delete_document": "lightrag-server/lightrag_delete_document",
-        "vector-store/list_documents": "lightrag-server/lightrag_list_entities",
-        "vector-store/count_documents": "lightrag-server/lightrag_document_status",
-        # kg-server aliases
-        "kg-server/explore_node": "lightrag-server/lightrag_get_graph",
-        "kg-server/get_related_entities": "lightrag-server/lightrag_query_data",
-        "kg-server/query_graph": "lightrag-server/lightrag_query",
-        "kg-server/find_path": "lightrag-server/lightrag_get_graph",
-        "kg-server/hub_entities": "lightrag-server/lightrag_get_graph",
-        "kg-server/get_related_concepts": "lightrag-server/lightrag_query_data",
-        "kg-server/search_documents": "lightrag-server/lightrag_query",
-        "kg-server/get_document": "lightrag-server/lightrag_document_status",
-        "kg-server/list_documents": "lightrag-server/lightrag_list_entities",
-        "kg-server/graph_stats": "lightrag-server/lightrag_document_status",
-        "kg-server/create_document": "lightrag-server/lightrag_insert",
-        "kg-server/create_entity": "lightrag-server/lightrag_insert_entity",
-        "kg-server/create_concept": "lightrag-server/lightrag_insert_entity",
-        "kg-server/link_document_entity": "lightrag-server/lightrag_insert_relation",
-        "kg-server/link_document_concept": "lightrag-server/lightrag_insert_relation",
-        "kg-server/link_entities": "lightrag-server/lightrag_insert_relation",
-        "kg-server/surprising_connections": "lightrag-server/lightrag_get_graph",
-        "kg-server/graph_changelog": "lightrag-server/lightrag_document_status",
-        "kg-server/graph_snapshot": "lightrag-server/lightrag_get_graph",
-        "kg-server/list_entities": "lightrag-server/lightrag_list_entities",
-        "kg-server/list_concepts": "lightrag-server/lightrag_list_entities",
-        "kg-server/update_entity_status": "lightrag-server/lightrag_document_status",
-        "kg-server/delete_entity": "lightrag-server/lightrag_delete_entity",
-        "kg-server/search_entities": "lightrag-server/lightrag_search_entities",
     }
 
     def dispatch(self, tool_name: str, args, response, index=0):

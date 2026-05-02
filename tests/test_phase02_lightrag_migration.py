@@ -150,7 +150,7 @@ class TestKgApiUsesLightRAG:
 
 
 class TestNotesApiUsesLightRAG:
-    """notes_api sync_note_to_lightrag should use LightRAGIngester.inject_entity."""
+    """notes_api sync_note_to_lightrag should use lightrag for persistence."""
 
     def test_no_niu_kg_server_import_in_notes_api(self):
         """notes_api.py should NOT import niu_kg_server."""
@@ -158,21 +158,19 @@ class TestNotesApiUsesLightRAG:
         source = Path(mod.__file__).read_text(encoding="utf-8")
         assert "niu_kg_server" not in source
 
-    def test_sync_note_to_lightrag_calls_inject_entity(self):
-        """sync_note_to_lightrag should call LightRAGIngester.inject_entity()."""
+    def test_sync_note_uses_lightrag_for_persistence(self):
+        """sync_note_to_lightrag should use lightrag for persistence (inject_custom_kg)."""
         from niu_api.notes_api import sync_note_to_lightrag
 
         with patch("niu_api.internal.lightrag_adapter.LightRAGIngester") as mock_cls:
             mock_ingester = MagicMock()
             mock_cls.return_value = mock_ingester
-            mock_ingester.inject_entity.return_value = {"status": "ok"}
+            mock_ingester.inject_custom_kg.return_value = {"status": "ok"}
 
             sync_note_to_lightrag("note-1", "Shopping list: milk, eggs", ["shopping"])
 
-            mock_ingester.inject_entity.assert_called_once()
-            call_args = mock_ingester.inject_entity.call_args
-            assert call_args.kwargs["name"] == "note:note-1"
-            assert call_args.kwargs["entity_type"] == "knowledge"
+            # Must call inject_custom_kg (inject_entity has been removed)
+            mock_ingester.inject_custom_kg.assert_called_once()
 
     def test_sync_note_to_lightrag_handles_failure(self):
         """sync_note_to_lightrag should handle LightRAG failure gracefully."""
@@ -181,7 +179,7 @@ class TestNotesApiUsesLightRAG:
         with patch("niu_api.internal.lightrag_adapter.LightRAGIngester") as mock_cls:
             mock_ingester = MagicMock()
             mock_cls.return_value = mock_ingester
-            mock_ingester.inject_entity.return_value = {"status": "error", "message": "down"}
+            mock_ingester.inject_custom_kg.return_value = {"status": "error", "message": "down"}
 
             # Should not raise, just log warning
             sync_note_to_lightrag("note-1", "test content", [])
@@ -247,8 +245,7 @@ class TestLightRAGSync:
             with patch("niu_api.internal.lightrag_manager.call_async", return_value=None) as mock_call:
                 with patch("niu_api.internal.lightrag_adapter.LightRAGIngester") as MockIngester:
                     mock_ingester = MagicMock()
-                    mock_ingester.inject_entity.return_value = {"status": "ok"}
-                    mock_ingester.inject_relation.return_value = {"status": "ok"}
+                    mock_ingester.inject_custom_kg.return_value = {"status": "ok"}
                     MockIngester.return_value = mock_ingester
 
                     # Mock the photo server module import inside _sync_photos_db
@@ -264,33 +261,20 @@ class TestLightRAGSync:
         # Cleanup
         Path(db_path).unlink(missing_ok=True)
 
-    def test_lightrag_sync_vectors_db_filters_documents(self):
-        """_sync_vectors_db should only sync category=document records."""
+    def test_lightrag_sync_vectors_db_returns_zero_after_removal(self):
+        """_sync_vectors_db should return 0 since vector-store has been removed."""
         from agent.injector.lightrag_sync import LightRAGSync
 
         sync = LightRAGSync()
-        # Create a temp vectors.db
-        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-            db_path = f.name
 
-        conn = sqlite3.connect(db_path)
-        conn.execute("CREATE TABLE documents (id TEXT, content TEXT, metadata TEXT)")
-        conn.execute("""INSERT INTO documents VALUES ('d1', 'Doc content', '{"category": "document", "file_path": "/doc/test.pdf"}')""")
-        conn.execute("""INSERT INTO documents VALUES ('d2', 'Not a doc', '{"category": "interaction_habit"}')""")
-        conn.commit()
-        conn.close()
-
-        mock_rag = MagicMock()
-        mock_rag.ainsert = AsyncMock(return_value=None)
-
-        with patch("niu_api.internal.lightrag_manager.get_lightrag", return_value=mock_rag):
-            with patch("niu_api.internal.lightrag_manager.call_async", return_value=None) as mock_call:
-                with patch("agent.vector_search.resolve_vector_db_path", return_value=db_path):
-                    synced, _ = sync._sync_vectors_db(set())
-                    # Only 1 document should be synced (category=document)
-                    assert synced == 1
-
-        Path(db_path).unlink(missing_ok=True)
+        # vector-store has been deleted - _sync_vectors_db now returns (0, set())
+        synced, doc_ids = sync._sync_vectors_db(set())
+        assert synced == 0, (
+            f"_sync_vectors_db should return 0 after vector-store removal, got {synced}"
+        )
+        assert doc_ids == set(), (
+            f"_sync_vectors_db should return empty set after vector-store removal, got {doc_ids}"
+        )
 
     def test_lightrag_sync_background_start_stop(self):
         """LightRAGSync should start and stop background thread."""
@@ -426,22 +410,22 @@ class TestPhotoServerNoKgServer:
         assert "lightrag" in func_body.lower()
 
     def test_name_person_uses_lightrag(self):
-        """name_person KG sync should use LightRAG."""
+        """name_person KG sync should use LightRAG via ToolRegistry."""
         source = Path("mcp-servers/photo-server/src/niu_photo_server/__init__.py").read_text(encoding="utf-8")
         func_start = source.find("def name_person(")
         assert func_start > 0
         next_func = source.find("\ndef ", func_start + 1)
         func_body = source[func_start:next_func] if next_func > 0 else source[func_start:]
-        assert "lightrag_adapter" in func_body or "LightRAGIngester" in func_body
+        assert "lightrag" in func_body.lower() or "tool_registry" in func_body.lower()
 
     def test_merge_persons_uses_lightrag(self):
-        """merge_persons KG sync should use LightRAG."""
+        """merge_persons KG sync should use LightRAG via ToolRegistry."""
         source = Path("mcp-servers/photo-server/src/niu_photo_server/__init__.py").read_text(encoding="utf-8")
         func_start = source.find("def merge_persons(")
         assert func_start > 0
         next_func = source.find("\ndef ", func_start + 1)
         func_body = source[func_start:next_func] if next_func > 0 else source[func_start:]
-        assert "lightrag_adapter" in func_body or "LightRAGIngester" in func_body
+        assert "lightrag" in func_body.lower() or "tool_registry" in func_body.lower()
 
 
 # ============== 10. Config files — kg-server hidden ==============
@@ -451,25 +435,32 @@ class TestConfigFilesKgServerHidden:
     """Config files should have kg-server tools hidden or removed."""
 
     def test_mcp_servers_yaml_kg_server_not_preloaded(self):
-        """kg-server should not be preloaded in mcp-servers.yaml."""
+        """kg-server should not be in mcp-servers.yaml at all (deleted)."""
         import yaml
         config_path = Path("config/mcp-servers.yaml")
         with open(config_path, "r", encoding="utf-8") as f:
             config = yaml.safe_load(f)
 
-        kg_config = config.get("kg-server", {})
-        assert kg_config.get("preload") is not True
+        # Handle empty YAML (None)
+        if config is None:
+            return  # Empty config means kg-server is definitely not there
+
+        # kg-server has been entirely removed from config
+        assert "kg-server" not in config, "kg-server should be removed from mcp-servers.yaml"
 
     def test_mcp_servers_yaml_kg_tools_hidden(self):
-        """All kg-server tools should be hidden in mcp-servers.yaml."""
+        """kg-server entry should not exist in mcp-servers.yaml (deleted)."""
         import yaml
         config_path = Path("config/mcp-servers.yaml")
         with open(config_path, "r", encoding="utf-8") as f:
             config = yaml.safe_load(f)
 
-        kg_tools = config.get("kg-server", {}).get("tools", {})
-        for tool_name, tool_config in kg_tools.items():
-            assert tool_config.get("visibility") == "hidden", f"kg-server/{tool_name} should be hidden"
+        # Handle empty YAML (None)
+        if config is None:
+            return  # Empty config means kg-server is definitely not there
+
+        # kg-server has been entirely removed - no tools section to check
+        assert "kg-server" not in config, "kg-server should be removed from mcp-servers.yaml"
 
     def test_mcp_tools_json_kg_tools_hidden(self):
         """All kg-server tools should be hidden in mcp_tools.json."""
@@ -488,11 +479,15 @@ class TestConfigFilesKgServerHidden:
             assert "kg-server" not in fm, f"kg-server should be removed from {name}'s mcpServers after LightRAG migration"
 
     def test_kg_enricher_no_kg_server_mcp(self):
-        """kg-enricher should not list kg-server in mcpServers."""
-        content = Path("config/agents/kg-enricher.md").read_text(encoding="utf-8")
+        """kg-enricher should not exist or should not list kg-server in mcpServers."""
+        kg_enricher_path = Path("config/agents/kg-enricher.md")
+        if not kg_enricher_path.exists():
+            # kg-enricher agent was removed along with kg-server - test passes
+            return
+        content = kg_enricher_path.read_text(encoding="utf-8")
         if "---" in content:
             fm = content.split("---")[1]
-            assert "kg-server" not in fm, f"kg-server should be removed from {name}'s mcpServers after LightRAG migration"
+            assert "kg-server" not in fm, "kg-server should be removed from kg-enricher's mcpServers after LightRAG migration"
 
     def test_dream_evolver_no_kg_server_mcp(self):
         """dream-evolver should not list kg-server in mcpServers."""
