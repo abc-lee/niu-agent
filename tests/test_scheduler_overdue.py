@@ -73,7 +73,7 @@ class TestCheckAndTriggerSequential:
         mock_store.get_overdue_tasks.return_value = [
             {
                 "id": "task-1",
-                "content": "brain_decay",
+                "content": "测试定时提醒：请检查系统状态",
                 "is_recurring": True,
                 "cron_expr": "0 3 * * *",
                 "scheduled_at": (datetime.now() - timedelta(hours=5)).isoformat(),

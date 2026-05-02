@@ -202,55 +202,6 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Failed to ensure entity-extractor task: {e}")
 
-    # 8.3. Register forgetting curve scheduled tasks
-    _BRAIN_DECAY_TASKS = [
-        {
-            "content": "执行遗忘曲线衰减：brain_decay — 所有权重按 decay_rate 衰减",
-            "cron_expr": "0 3 * * *",
-            "task_id_suffix": "brain_decay",
-        },
-        {
-            "content": "执行 L0→L1 记忆巩固：brain_consolidate_l0_to_l1 — access_count≥3 的 L0 升级",
-            "cron_expr": "0 4 * * *",
-            "task_id_suffix": "brain_consolidate_l0",
-        },
-        {
-            "content": "执行 L1→L2 记忆巩固：brain_consolidate_l1_to_l2 — access_count≥7 的 L1 升级",
-            "cron_expr": "0 5 * * 0",
-            "task_id_suffix": "brain_consolidate_l1",
-        },
-        {
-            "content": "执行低权重清理：brain_cleanup — weight<0.1 的边降权归零",
-            "cron_expr": "0 6 * * 0",
-            "task_id_suffix": "brain_cleanup",
-        },
-    ]
-    try:
-        from niu_api.internal.scheduler import get_store
-        ts = get_store()
-        existing_tasks = ts.list_tasks()
-
-        for task_def in _BRAIN_DECAY_TASKS:
-            already_exists = any(
-                t.get("event_type") == "recurring"
-                and t.get("cron_expr") == task_def["cron_expr"]
-                and task_def["task_id_suffix"] in t.get("content", "")
-                and t.get("status") != "cancelled"
-                for t in existing_tasks
-            )
-            if not already_exists:
-                now = datetime.now()
-                ts.create_task(
-                    content=task_def["content"],
-                    scheduled_at=now.isoformat(),
-                    is_recurring=True,
-                    cron_expr=task_def["cron_expr"],
-                    event_type="recurring",
-                )
-                logger.info(f"Created brain task: {task_def['task_id_suffix']}")
-    except Exception as e:
-        logger.warning(f"Failed to register brain decay tasks: {e}")
-
     yield
 
     # Shutdown
