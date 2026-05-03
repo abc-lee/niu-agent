@@ -267,8 +267,28 @@ class NiuHandler(BaseHandler):
 
     # ========== 工作记忆机制 ==========
 
+    def tool_before_callback(self, tool_name, args, response):
+        """工具调用前：推送状态到前端"""
+        # 子 Agent 的工具调用不推送前端状态
+        if getattr(self, '_is_subagent', False):
+            return
+        try:
+            from niu_api.chat import notify_tool_status_sync
+            short_name = tool_name.split("/")[-1] if "/" in tool_name else tool_name
+            notify_tool_status_sync(short_name, "start")
+        except Exception:
+            pass  # 推送失败不影响工具调用
+
     def tool_after_callback(self, tool_name, args, response, ret):
         """工具调用后记录摘要到 history_info"""
+        # 推送工具完成状态到前端（子 Agent 除外）
+        if not getattr(self, '_is_subagent', False):
+            try:
+                from niu_api.chat import notify_tool_status_sync
+                short_name = tool_name.split("/")[-1] if "/" in tool_name else tool_name
+                notify_tool_status_sync(short_name, "end")
+            except Exception:
+                pass
         # Note: memory dirty flag is set in MCP dispatch path (see dispatch() method)
 
         # 跳过同一轮内的多个工具调用（只记录第一个）
