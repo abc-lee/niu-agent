@@ -239,7 +239,7 @@ class SkillSync:
             try:
                 from niu_api.internal.lightrag_adapter import LightRAGAdapter
                 adapter = LightRAGAdapter()
-                result = adapter.list_entities(entity_type="skill", limit=500)
+                result = adapter.list_entities(entity_type="Skill", limit=500)
                 if result.get("status") != "ok":
                     logger.debug(f"[SkillSync] list_entities unavailable: {result.get('message', '')}")
                 else:
@@ -270,7 +270,7 @@ class SkillSync:
         try:
             from niu_api.internal.lightrag_adapter import LightRAGAdapter
             adapter = LightRAGAdapter()
-            result = adapter.list_entities(entity_type="skill", limit=500)
+            result = adapter.list_entities(entity_type="Skill", limit=500)
             if result.get("status") != "ok":
                 logger.debug(f"[SkillSync] list_entities unavailable: {result.get('message', '')}")
                 return
@@ -335,7 +335,7 @@ class SkillSync:
             result = ingester.inject_custom_kg(
                 entities=[{
                     "entity_name": f"skill:{name}",
-                    "entity_type": "skill",
+                    "entity_type": "Skill",
                     "description": full_description,
                 }],
                 relationships=[],

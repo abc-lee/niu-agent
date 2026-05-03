@@ -198,6 +198,16 @@ def _create_lightrag_instance():
     reranker_func = make_lightrag_reranker_callable()
 
     # Create LightRAG instance
+    # Custom entity_types: constrain LLM extraction to these categories.
+    # If none match, LLM classifies as "Other" (LightRAG prompt convention).
+    # This ensures frontend category buttons match actual graph data.
+    CUSTOM_ENTITY_TYPES = [
+        "Person", "Organization", "Technology", "Concept",
+        "Location", "Event", "Document", "Photo", "Video",
+        "Note", "Chat", "Skill", "Tool", "Knowledge",
+        "InteractionHabit", "EpisodicEvent", "BrainRegion", "Other",
+    ]
+
     rag_params = dict(
         working_dir=str(STORAGE_DIR),
         llm_model_func=llm_model_func,
@@ -205,6 +215,10 @@ def _create_lightrag_instance():
         embedding_func=EmbeddingFunc(**embedding_func_config),
         chunk_overlap_token_size=50,
         chunk_token_size=1200,
+        addon_params={
+            "entity_types": CUSTOM_ENTITY_TYPES,
+            "language": "Chinese",
+        },
     )
 
     # Add reranker if configured (lightrag-hku 1.4.15 uses rerank_model_func,

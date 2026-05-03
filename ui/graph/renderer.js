@@ -3,16 +3,20 @@
 // ===== Type Colors =====
 const typeColors = {
   person: '#4A90D9', organization: '#5CB85C', technology: '#17BECF',
+  concept: '#E06B9E', location: '#9B59B6', event: '#F39C12',
   document: '#E8A838', photo: '#1ABC9C', video: '#8E44AD',
-  note: '#2ECC71', chat: '#7F8C8D', concept: '#E06B9E',
-  location: '#9B59B6', event: '#F39C12', other: '#95A5A6',
+  note: '#2ECC71', chat: '#7F8C8D', skill: '#3498DB',
+  tool: '#27AE60', knowledge: '#F1C40F', interactionhabit: '#95A5A6', episodicevent: '#E74C3C',
+  brainregion: '#6C5CE7', other: '#95A5A6',
 };
 
 const typeLabels = {
   person: '人物', organization: '组织', technology: '技术',
+  concept: '概念', location: '地点', event: '事件',
   document: '文档', photo: '图片', video: '视频',
-  note: '便利贴', chat: '对话', concept: '概念',
-  location: '地点', event: '事件', other: '其他',
+  note: '便利贴', chat: '对话', skill: '技能',
+  tool: '工具', knowledge: '知识', interactionhabit: '习惯', episodicevent: '情景记忆',
+  brainregion: '脑区', other: '其他',
 };
 
 // ===== Node Type Mapping =====
@@ -80,13 +84,9 @@ function isCoreNode(node) {
   if (!currentPerspective) return false;
   const orig = node._originalData || node;
   if (!orig) return false;
-  const docSubtypes = ['document', 'photo', 'video', 'note', 'chat'];
-  if (docSubtypes.includes(currentPerspective)) {
-    return orig.nodeType === 'Document' && mapNodeType(orig) === currentPerspective;
-  }
-  // All entity types (person, organization, technology, concept, location, event, etc.)
-  // use entityType field for matching
-  return (orig.entityType || '').toLowerCase() === currentPerspective;
+  // Unified matching: use mapNodeType() for all types
+  // This handles both Entity types (Photo, Person, etc.) and Document subtypes
+  return mapNodeType(orig) === currentPerspective;
 }
 
 // ===== Node Size Calculation =====
@@ -547,8 +547,8 @@ const showDetail = (nodeId) => {
     html += `<div class="detail-row"><span class="detail-label">来源：</span>${escapeHtml(orig.source)}</div>`;
   }
 
-  // Media thumbnail for documents
-  if (orig.nodeType === 'Document' && orig.uri) {
+  // Media thumbnail for nodes with file URI (documents, photos, videos, etc.)
+  if (orig.uri) {
     const mediaType = getMediaType(orig.uri);
     if (mediaType === 'image') {
       html += `<div class="detail-media"><img src="file:///${escapeHtml(orig.uri.replace(/\\/g, '/'))}" alt="preview"></div>`;
@@ -656,8 +656,9 @@ async function expandNode(nodeId) {
       const nid = n.id.startsWith('entity:') ? n.id : `entity:${n.id}`;
       if (!existingIds.has(nid)) {
         currentData.nodes.push({
-          id: nid, label: n.name, nodeType: 'Entity',
-          entityType: n.type, description: n.description || '',
+          id: nid, label: n.label || n.name, nodeType: n.nodeType || 'Entity',
+          entityType: n.entityType, description: n.description || '',
+          uri: n.uri || '', source: n.source || '',
         });
         existingIds.add(nid);
         addedCount++;
@@ -682,15 +683,15 @@ async function expandNode(nodeId) {
       result.nodes.forEach(n => {
         const nid = n.id.startsWith('entity:') ? n.id : `entity:${n.id}`;
         if (!fgNodeIds.has(nid)) {
-          const visualType = mapNodeType({ nodeType: 'Entity', entityType: n.type });
+          const visualType = mapNodeType({ nodeType: n.nodeType || 'Entity', entityType: n.entityType });
           const color = typeColors[visualType] || typeColors.other;
           fgData.nodes.push({
             id: nid,
-            label: n.name || nid,
+            label: n.label || n.name || nid,
             color: color,
             val: 2,
             opacity: 0.75,
-            _originalData: { id: nid, label: n.name, nodeType: 'Entity', entityType: n.type, description: n.description || '' },
+            _originalData: { id: nid, label: n.label || n.name, nodeType: n.nodeType || 'Entity', entityType: n.entityType, description: n.description || '', uri: n.uri || '', source: n.source || '' },
             _visualType: visualType,
           });
         }

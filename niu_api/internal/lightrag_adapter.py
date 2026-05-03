@@ -33,8 +33,13 @@ class LightRAGAdapter:
     LightRAG retrieval supporting multiple modes.
     """
 
-    # Supported entity types for filtered search
-    ENTITY_TYPES = {"skill", "tool", "knowledge", "person", "photo", "concept", "interaction_habit"}
+    # Supported entity types for filtered search (must match CUSTOM_ENTITY_TYPES in lightrag_manager.py)
+    ENTITY_TYPES = {
+        "Person", "Organization", "Technology", "Concept",
+        "Location", "Event", "Document", "Photo", "Video",
+        "Note", "Chat", "Skill", "Tool", "Knowledge",
+        "InteractionHabit", "EpisodicEvent", "BrainRegion", "Other",
+    }
 
     @staticmethod
     def _is_no_result(result: Optional[Dict[str, Any]]) -> bool:
@@ -268,11 +273,26 @@ class LightRAGAdapter:
 
     # Mapping from LightRAG entity_type to the category keys used by
     # _inject_dynamic_resources() in runner.py.
+    # Keys use lowercase for case-insensitive matching (.lower() applied at lookup).
     _ENTITY_TYPE_TO_CATEGORY = {
         "skill": "skill",
-        "tool": "mcp_tool",
+        "tool": "tool",
         "knowledge": "knowledge",
-        "concept": "knowledge",
+        "concept": "concept",
+        "interactionhabit": "interaction_habit",
+        "person": "person",
+        "photo": "photo",
+        "organization": "organization",
+        "technology": "technology",
+        "location": "location",
+        "event": "event",
+        "document": "document",
+        "video": "video",
+        "note": "note",
+        "chat": "chat",
+        "episodicevent": "episodic_event",
+        "brainregion": "brain_region",
+        "other": "other",
     }
 
     def search_multi_lightrag(
@@ -303,13 +323,12 @@ class LightRAGAdapter:
                 For "global"/"hybrid"/"mix": used as both hl and ll keywords.
 
         Returns:
-            Dict with keys "skill", "mcp_tool", "knowledge", each mapping
-            to a list of entity dicts. Empty lists on error or no results.
+            Dict with category keys matching _ENTITY_TYPE_TO_CATEGORY values,
+            each mapping to a list of entity dicts. Empty lists on error or no results.
         """
+        # Initialize result dict with all category buckets from the mapping
         result: Dict[str, List[Dict[str, Any]]] = {
-            "skill": [],
-            "mcp_tool": [],
-            "knowledge": [],
+            cat: [] for cat in self._ENTITY_TYPE_TO_CATEGORY.values()
         }
 
         query_result = self.query_data(
@@ -357,7 +376,7 @@ class LightRAGAdapter:
             List of skill entity dicts.
         """
         result = self.query_data(query, mode="local", top_k=top_k, keywords=keywords)
-        return self.filter_by_entity_type(result, "skill")
+        return self.filter_by_entity_type(result, "Skill")
 
     def search_tools(
         self,
@@ -378,7 +397,7 @@ class LightRAGAdapter:
             List of tool entity dicts.
         """
         result = self.query_data(query, mode="local", top_k=top_k, keywords=keywords)
-        return self.filter_by_entity_type(result, "tool")
+        return self.filter_by_entity_type(result, "Tool")
 
     def search_knowledge(
         self,
@@ -400,8 +419,8 @@ class LightRAGAdapter:
             List of knowledge/concept entity dicts.
         """
         result = self.query_data(query, mode="local", top_k=top_k, keywords=keywords)
-        knowledge_entities = self.filter_by_entity_type(result, "knowledge")
-        concept_entities = self.filter_by_entity_type(result, "concept")
+        knowledge_entities = self.filter_by_entity_type(result, "Knowledge")
+        concept_entities = self.filter_by_entity_type(result, "Concept")
         return knowledge_entities + concept_entities
 
     def search_interaction_habits(
@@ -427,7 +446,7 @@ class LightRAGAdapter:
             List of interaction_habit entity dicts.
         """
         result = self.query_data(query, mode="local", top_k=top_k, keywords=keywords)
-        return self.filter_by_entity_type(result, "interaction_habit")
+        return self.filter_by_entity_type(result, "InteractionHabit")
 
     # ============== Graph Traversal Methods ==============
 
@@ -474,7 +493,7 @@ class LightRAGAdapter:
                 center = {
                     "id": first_node.id,
                     "name": first_node.id,
-                    "type": first_node.properties.get("entity_type", "UNKNOWN"),
+                    "type": first_node.properties.get("entity_type", "Other"),
                 }
 
             # Convert KnowledgeGraphNode to frontend-compatible format
@@ -483,8 +502,10 @@ class LightRAGAdapter:
                 nodes.append({
                     "id": node.id,
                     "name": node.id,
-                    "type": node.properties.get("entity_type", "UNKNOWN"),
+                    "type": node.properties.get("entity_type", "Other"),
                     "description": node.properties.get("description", ""),
+                    "file_path": node.properties.get("file_path", ""),
+                    "source_id": node.properties.get("source_id", ""),
                 })
 
             # Convert KnowledgeGraphEdge to frontend-compatible format
@@ -685,8 +706,10 @@ class LightRAGAdapter:
                 nodes.append({
                     "id": node.id,
                     "name": node.id,
-                    "type": node.properties.get("entity_type", "UNKNOWN"),
+                    "type": node.properties.get("entity_type", "Other"),
                     "description": node.properties.get("description", ""),
+                    "file_path": node.properties.get("file_path", ""),
+                    "source_id": node.properties.get("source_id", ""),
                 })
 
             edges = []
@@ -768,26 +791,43 @@ class LightRAGAdapter:
                 data = call_async(rag.get_docs_by_status("processed"))
                 return {"status": "ok", "data": data}
             elif list_type == "entities":
-                kg = call_async(
-                    rag.get_knowledge_graph(
-                        entity_type or "",
-                        max_depth=1,
-                        max_nodes=limit,
+                if entity_type:
+                    # 按 entity_type 过滤：直接遍历 NetworkX 图节点
+                    # 不能用 get_knowledge_graph(entity_type)，因为那是按节点名搜索
+                    nx_graph = getattr(rag.chunk_entity_relation_graph, "_graph", None)
+                    if nx_graph is None:
+                        return {"status": "ok", "data": []}
+                    nodes = []
+                    for node_id, node_data in nx_graph.nodes(data=True):
+                        nt = node_data.get("entity_type", "Other")
+                        if nt.lower() == entity_type.lower():
+                            nodes.append({
+                                "id": node_id,
+                                "entity_type": nt,
+                                "description": node_data.get("description", ""),
+                            })
+                            if len(nodes) >= limit:
+                                break
+                    return {"status": "ok", "data": nodes}
+                else:
+                    # 无过滤：用 get_knowledge_graph 全图搜索
+                    kg = call_async(
+                        rag.get_knowledge_graph(
+                            "*",
+                            max_depth=1,
+                            max_nodes=limit,
+                        )
                     )
-                )
-                if kg is None:
-                    return {"status": "ok", "data": []}
-                nodes = []
-                for node in kg.nodes:
-                    node_type = node.properties.get("entity_type", "UNKNOWN")
-                    if entity_type and node_type.lower() != entity_type.lower():
-                        continue
-                    nodes.append({
-                        "id": node.id,
-                        "entity_type": node_type,
-                        "description": node.properties.get("description", ""),
-                    })
-                return {"status": "ok", "data": nodes}
+                    if kg is None:
+                        return {"status": "ok", "data": []}
+                    nodes = []
+                    for node in kg.nodes:
+                        nodes.append({
+                            "id": node.id,
+                            "entity_type": node.properties.get("entity_type", "Other"),
+                            "description": node.properties.get("description", ""),
+                        })
+                    return {"status": "ok", "data": nodes}
             else:
                 return {"status": "error", "message": f"Unknown list_type: {list_type}"}
         except Exception as e:
@@ -882,7 +922,7 @@ class LightRAGIngester:
 
         entities = [{
             "entity_name": entity_name,
-            "entity_type": "interaction_habit",
+            "entity_type": "InteractionHabit",
             "description": description,
             "source_id": source_id,
             "file_path": "interaction_habit",
@@ -954,7 +994,7 @@ class LightRAGIngester:
             content = _re.sub(r'\s*\|\s*confidence:\s*\{[^}]+\}\s*$', '', description).strip()
 
             # Extract entity_type and source info
-            entity_type = target_node.properties.get("entity_type", "interaction_habit")
+            entity_type = target_node.properties.get("entity_type", "InteractionHabit")
 
             # Update counts
             if result == "success":
@@ -1021,7 +1061,7 @@ class LightRAGIngester:
             if not name:
                 logger.warning(f"inject_entities_batch: skipping item missing 'name': {item}")
                 continue
-            entity_type = item.get("entity_type", "UNKNOWN")
+            entity_type = item.get("entity_type", "Other")
             description = item.get("description", "")
             source_id = item.get("source_id", "custom_kg")
             file_path = item.get("file_path", "custom_kg")
@@ -1097,8 +1137,8 @@ class LightRAGIngester:
 
         for entity in entities:
             custom_kg["entities"].append({
-                "entity_name": entity.get("entity_name") or entity.get("name", "UNKNOWN"),
-                "entity_type": entity.get("entity_type", "UNKNOWN"),
+                "entity_name": entity.get("entity_name") or entity.get("name", "Other"),
+                "entity_type": entity.get("entity_type", "Other"),
                 "description": entity.get("description", ""),
                 "source_id": entity.get("source_id", source_id),
                 "file_path": entity.get("file_path", "custom_kg"),

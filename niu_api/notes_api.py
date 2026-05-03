@@ -138,7 +138,7 @@ def sync_note_to_lightrag(note_id: str, content: str, tags: list[str]):
         result = ingester.inject_custom_kg(
             entities=[{
                 "entity_name": f"note:{note_id}",
-                "entity_type": "knowledge",
+                "entity_type": "Note",
                 "description": description,
             }],
             relationships=[],

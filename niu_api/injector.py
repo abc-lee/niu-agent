@@ -36,11 +36,10 @@ class ListResourcesResponse(BaseModel):
 
 
 # Mapping from injector category names to LightRAG entity_type values.
-# "mcp_tool" category maps to "tool" entity_type in LightRAG (tools are
-# registered via inject_entity with entity_type="tool").
+# Entity types use title case to match LightRAG's entity_types prompt convention.
 # "l1" category has no direct LightRAG equivalent; listing it returns empty.
 _CATEGORY_TO_ENTITY_TYPE: dict[str, str] = {
-    "skill": "skill",
+    "skill": "Skill",
     # mcp_tool removed: in disk mode, tools are discovered via disk YAML, not LightRAG
 }
 

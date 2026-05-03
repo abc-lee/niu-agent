@@ -82,14 +82,20 @@ body {
 .persp-btn[data-core="person"] { color: #4A90D9; }
 .persp-btn[data-core="organization"] { color: #5CB85C; }
 .persp-btn[data-core="technology"] { color: #17BECF; }
+.persp-btn[data-core="concept"] { color: #E06B9E; }
+.persp-btn[data-core="location"] { color: #9B59B6; }
+.persp-btn[data-core="event"] { color: #F39C12; }
 .persp-btn[data-core="document"] { color: #E8A838; }
 .persp-btn[data-core="photo"] { color: #1ABC9C; }
 .persp-btn[data-core="video"] { color: #8E44AD; }
 .persp-btn[data-core="note"] { color: #2ECC71; }
 .persp-btn[data-core="chat"] { color: #7F8C8D; }
-.persp-btn[data-core="concept"] { color: #E06B9E; }
-.persp-btn[data-core="location"] { color: #9B59B6; }
-.persp-btn[data-core="event"] { color: #F39C12; }
+.persp-btn[data-core="skill"] { color: #3498DB; }
+.persp-btn[data-core="tool"] { color: #27AE60; }
+.persp-btn[data-core="knowledge"] { color: #F1C40F; }
+.persp-btn[data-core="interactionhabit"] { color: #95A5A6; }
+.persp-btn[data-core="episodicevent"] { color: #E74C3C; }
+.persp-btn[data-core="brainregion"] { color: #6C5CE7; }
 
 .persp-btn:hover {
   border-color: rgba(0, 0, 0, 0.15);
@@ -111,6 +117,15 @@ body {
 .persp-btn.active[data-core="technology"] {
   background-color: #17BECF;
 }
+.persp-btn.active[data-core="concept"] {
+  background-color: #E06B9E;
+}
+.persp-btn.active[data-core="location"] {
+  background-color: #9B59B6;
+}
+.persp-btn.active[data-core="event"] {
+  background-color: #F39C12;
+}
 .persp-btn.active[data-core="document"] {
   background-color: #E8A838;
 }
@@ -126,14 +141,23 @@ body {
 .persp-btn.active[data-core="chat"] {
   background-color: #7F8C8D;
 }
-.persp-btn.active[data-core="concept"] {
-  background-color: #E06B9E;
+.persp-btn.active[data-core="skill"] {
+  background-color: #3498DB;
 }
-.persp-btn.active[data-core="location"] {
-  background-color: #9B59B6;
+.persp-btn.active[data-core="tool"] {
+  background-color: #27AE60;
 }
-.persp-btn.active[data-core="event"] {
-  background-color: #F39C12;
+.persp-btn.active[data-core="knowledge"] {
+  background-color: #F1C40F;
+}
+.persp-btn.active[data-core="interactionhabit"] {
+  background-color: #95A5A6;
+}
+.persp-btn.active[data-core="episodicevent"] {
+  background-color: #E74C3C;
+}
+.persp-btn.active[data-core="brainregion"] {
+  background-color: #6C5CE7;
 }
 
 /* Graph Container */

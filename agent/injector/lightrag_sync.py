@@ -170,7 +170,7 @@ class LightRAGSync:
                     result = ingester.inject_custom_kg(
                         entities=[{
                             "entity_name": f"person:{person_id}",
-                            "entity_type": "person",
+                            "entity_type": "Person",
                             "description": f"Person: {person_name} (backfilled from photos.db)",
                         }],
                         relationships=[],
@@ -296,7 +296,7 @@ class LightRAGSync:
                                 "id": skill_id,
                                 "item": {
                                     "name": f"skill:{name}",
-                                    "entity_type": "skill",
+                                    "entity_type": "Skill",
                                     "description": description,
                                     "source_id": f"skill:{name}",
                                     "chunk_content": f"{name}: {description}",
@@ -328,7 +328,7 @@ class LightRAGSync:
                     "id": tool_id,
                     "item": {
                         "name": f"tool:{full_name}",
-                        "entity_type": "tool",
+                        "entity_type": "Tool",
                         "description": description,
                         "source_id": f"tool:{full_name}",
                         "chunk_content": f"{tool_name}: {description}",
