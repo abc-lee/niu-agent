@@ -18,10 +18,10 @@ router = APIRouter(prefix="/api/kg", tags=["knowledge-graph"])
 
 
 def _normalize_nodes(nodes: list) -> list:
-    """Convert adapter node format {id, name, type, description} to frontend-expected format.
+    """Convert adapter node format {id, name, type, description, file_path, source_id} to frontend-expected format.
 
-    Frontend expects: {id, label, name, nodeType, entityType, description}
-    Adapter returns:  {id, name, type, description}
+    Frontend expects: {id, label, name, nodeType, entityType, description, uri, source}
+    Adapter returns:  {id, name, type, description, file_path, source_id}
     """
     result = []
     for n in nodes:
@@ -29,9 +29,11 @@ def _normalize_nodes(nodes: list) -> list:
             "id": n.get("id", ""),
             "label": n.get("name", n.get("id", "")),
             "name": n.get("name", ""),
-            "nodeType": n.get("type", "entity"),
-            "entityType": n.get("type", "entity"),
+            "nodeType": n.get("type", "Other"),
+            "entityType": n.get("type", "Other"),
             "description": n.get("description", ""),
+            "uri": n.get("file_path", ""),
+            "source": n.get("source_id", ""),
         })
     return result
 
@@ -168,8 +170,10 @@ def hub_entities(
                     "label": node_name,
                     "name": node_name,
                     "nodeType": "Entity",
-                    "entityType": attrs.get("entity_type", "other"),
+                    "entityType": attrs.get("entity_type", "Other"),
                     "description": attrs.get("description", ""),
+                    "uri": attrs.get("file_path", ""),
+                    "source": attrs.get("source_id", ""),
                 }
             )
 
@@ -224,8 +228,8 @@ def explore_node(request: ExploreRequest):
             "id": c.get("id", ""),
             "label": c.get("name", c.get("id", "")),
             "name": c.get("name", ""),
-            "nodeType": c.get("type", "entity"),
-            "entityType": c.get("type", "entity"),
+            "nodeType": c.get("type", "Other"),
+            "entityType": c.get("type", "Other"),
             "description": c.get("description", ""),
         }
     return result
@@ -265,8 +269,10 @@ def find_path(request: FindPathRequest):
                     "label": node_name,
                     "name": node_name,
                     "nodeType": "Entity",
-                    "entityType": attrs.get("entity_type", "other"),
+                    "entityType": attrs.get("entity_type", "Other"),
                     "description": attrs.get("description", ""),
+                    "uri": attrs.get("file_path", ""),
+                    "source": attrs.get("source_id", ""),
                 }
             )
 
@@ -338,8 +344,10 @@ def list_entities(
                     "label": node_name,
                     "name": node_name,
                     "nodeType": "Entity",
-                    "entityType": attrs.get("entity_type", "other"),
+                    "entityType": attrs.get("entity_type", "Other"),
                     "description": attrs.get("description", ""),
+                    "uri": attrs.get("file_path", ""),
+                    "source": attrs.get("source_id", ""),
                 }
             )
 
@@ -391,7 +399,7 @@ def list_concepts(limit: int = Query(default=100, ge=1, le=500)):
                     "label": node_name,
                     "name": node_name,
                     "nodeType": "Concept",
-                    "entityType": "concept",
+                    "entityType": attrs.get("entity_type", "Other"),
                     "description": attrs.get("description", ""),
                 }
             )
@@ -460,8 +468,10 @@ def surprising_connections(
                     "label": node_name,
                     "name": node_name,
                     "nodeType": "Entity",
-                    "entityType": attrs.get("entity_type", "other"),
+                    "entityType": attrs.get("entity_type", "Other"),
                     "description": attrs.get("description", ""),
+                    "uri": attrs.get("file_path", ""),
+                    "source": attrs.get("source_id", ""),
                 }
             )
 

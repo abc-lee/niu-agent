@@ -97,3 +97,5 @@ photo-server/name_person, 参数: person_id="...", name="张三"
 ```
 
 直接返回原始 JSON 数据，不要自己生成 `::person_photo::` 标记，不要自己调用 `get_person_photos`。
+
+**重要**：返回 `get_unnamed_persons` 结果时，必须保留每个人的 `id` 字段（UUID格式），这是后续 `name_person` 调用必需的参数。不要用 `boxed_path` 文件名中的 facebox hash 代替 `id`。
