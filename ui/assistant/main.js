@@ -1067,6 +1067,11 @@ function startMessageEventStream() {
               if (chatWindow && !chatWindow.isDestroyed() && chatWindow.isVisible()) {
                 chatWindow.webContents.send('new-message');
               }
+            } else if (event.type === 'tool_status') {
+              // 转发工具调用状态到聊天窗口
+              if (chatWindow && !chatWindow.isDestroyed()) {
+                chatWindow.webContents.send('tool-status', event);
+              }
             }
           } catch (e) {
             // 忽略解析错误（可能是心跳等非 JSON 行）

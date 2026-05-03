@@ -55,4 +55,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 接收新消息通知（SSE 推送，前端从数据库读取）
   onNewMessage: (callback) => ipcRenderer.on('new-message', (event) => callback()),
 
+  // 接收工具调用状态通知（SSE 推送，实时显示 Agent 正在做什么）
+  onToolStatus: (callback) => ipcRenderer.on('tool-status', (event, data) => callback(data)),
+
 });

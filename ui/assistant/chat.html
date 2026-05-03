@@ -438,6 +438,23 @@
     .image-preview.error .upload-overlay {
       background: rgba(200, 50, 50, 0.7);
     }
+
+    /* ========== 状态气泡（工具调用实时显示） ========== */
+    .status-bubble {
+      background: white;
+      color: #666;
+      font-style: italic;
+      padding: 10px 14px;
+      border-bottom-left-radius: 4px;
+      box-shadow: 2px 2px 5px rgba(0,0,0,0.08);
+      animation: status-pulse 1.5s ease-in-out infinite;
+      max-width: 80%;
+      word-break: break-word;
+    }
+    @keyframes status-pulse {
+      0%, 100% { opacity: 0.6; }
+      50% { opacity: 1; }
+    }
   </style>
 </head>
 <body>
@@ -573,19 +590,39 @@
       // Shift+Enter 允许换行（默认行为）
     });
     
-    // 显示"正在输入"动画（3个点）
+    // 显示状态气泡（替代 typing 动画，可被工具状态更新）
     function showTyping() {
-      const div = document.createElement('div');
-      div.className = 'message assistant typing';
-      div.id = 'typing-indicator';
-      div.innerHTML = '<div class="typing-dots"><span></span><span></span><span></span></div>';
-      messages.appendChild(div);
+      let bubble = document.getElementById('status-bubble');
+      if (!bubble) {
+        bubble = document.createElement('div');
+        bubble.id = 'status-bubble';
+        bubble.className = 'message assistant status-bubble';
+        messages.appendChild(bubble);
+      }
+      bubble.textContent = '正在思考...';
       messages.scrollTop = messages.scrollHeight;
     }
-    
+
     function hideTyping() {
-      const typing = document.getElementById('typing-indicator');
-      if (typing) typing.remove();
+      const bubble = document.getElementById('status-bubble');
+      if (bubble) bubble.remove();
+    }
+
+    // 更新状态气泡内容（工具调用状态推送时调用）
+    function updateStatusBubble(data) {
+      let bubble = document.getElementById('status-bubble');
+      if (!bubble) {
+        bubble = document.createElement('div');
+        bubble.id = 'status-bubble';
+        bubble.className = 'message assistant status-bubble';
+        messages.appendChild(bubble);
+      }
+      if (data.status === 'start') {
+        bubble.textContent = '🔧 正在调用 ' + data.tool_name + '...';
+      } else if (data.status === 'end') {
+        bubble.textContent = '✅ ' + data.tool_name + ' 完成，正在思考...';
+      }
+      messages.scrollTop = messages.scrollHeight;
     }
     
     // 重试发送消息（自动重连）
@@ -627,7 +664,7 @@
     async function sendMessage() {
       const text = userInput.value.trim();
       if (!text) return;
-      if (sendBtn.disabled) return;  // 防并发
+      if (isProcessing) return;  // 防并发
 
       // /new 指令 - 清空聊天记录
       if (text === '/new') {
@@ -642,10 +679,11 @@
 
       userInput.value = '';
       userInput.style.height = 'auto';
+      isProcessing = true;
       sendBtn.disabled = true;
       showTyping();
       window.electronAPI.notifyBusy(true, 'chat');
-      statusBar.querySelector('.stats').innerHTML = '思考中...';
+      statusBar.querySelector('.stats').textContent = '思考中...';
 
       try {
         const result = await sendMessageWithRetry(text);
@@ -653,17 +691,18 @@
         // typing 动画由 refreshFromDB 在收到 assistant 消息时关闭
         // 如果后端返回了错误（如"系统正忙"），没有SSE，需要手动关闭typing
         if (result && result.reply && result.reply.includes('系统正忙')) {
-          hideTyping();
+          addMessage('system', '系统正忙，请稍后再试');
         }
       } catch (err) {
         addMessage('system', `连接失败: ${err.message}`);
-        hideTyping();  // 连接失败时需要手动关闭 typing
+      } finally {
+        hideTyping();
+        window.electronAPI.notifyBusy(false, 'chat');
+        sendBtn.disabled = false;
+        isProcessing = false;
+        loadStats();
+        userInput.focus();
       }
-
-      window.electronAPI.notifyBusy(false, 'chat');
-      sendBtn.disabled = false;
-      loadStats();
-      userInput.focus();
     }
     
     // 清空聊天记录
@@ -863,8 +902,21 @@
     // ========== 接收小女孩状态 ==========
     window.electronAPI.onSpiritState((state) => {
       if (state === 'busy') {
-        statusBar.querySelector('.stats').textContent = '⏳ 处理中...';
+        // 隐藏统计数据，显示处理中（不销毁子元素）
+        const statsDiv = statusBar.querySelector('.stats');
+        statsDiv.style.display = 'none';
+        let busyEl = document.getElementById('stats-busy');
+        if (!busyEl) {
+          busyEl = document.createElement('span');
+          busyEl.id = 'stats-busy';
+          busyEl.textContent = '⏳ 处理中...';
+          statusBar.insertBefore(busyEl, statusBar.firstChild);
+        }
       } else if (state === 'idle') {
+        // 恢复统计数据
+        const busyEl = document.getElementById('stats-busy');
+        if (busyEl) busyEl.remove();
+        statusBar.querySelector('.stats').style.display = '';
         loadStats();
       }
     });
@@ -872,6 +924,11 @@
     // 监听提醒通知（scheduler 触发的定时任务，消息已通过数据库+SSE显示）
     window.electronAPI.onAlert(() => {
       console.log('[Chat] 收到提醒通知');
+    });
+
+    // 监听工具调用状态（实时显示 Agent 正在做什么）
+    window.electronAPI.onToolStatus((data) => {
+      updateStatusBubble(data);
     });
 
     // ========== 数据库$视图刷新 ==========
@@ -925,10 +982,10 @@
               div.remove();
             }
           });
-          // typing 指示器始终保持在最底部
-          const typingEl = document.getElementById('typing-indicator');
-          if (typingEl && typingEl.parentNode === messages) {
-            messages.appendChild(typingEl);
+          // 状态气泡始终保持在最底部
+          const bubbleEl = document.getElementById('status-bubble');
+          if (bubbleEl && bubbleEl.parentNode === messages) {
+            messages.appendChild(bubbleEl);
           }
           messages.scrollTop = messages.scrollHeight;
           // 只在收到 assistant 消息时才隐藏 typing（用户消息入库不应关闭 typing）
@@ -956,6 +1013,7 @@
     // ========== 初始化 ==========
     let oldestMessageId = null;  // 用于加载更早的消息
     let isLoadingMore = false;   // 防止重复加载
+    let isProcessing = false;    // 防止拖入文件/发送消息时的并发竞态
 
     // 先加载历史消息
     loadHistory().then(() => {
@@ -1025,36 +1083,53 @@
         console.error('[Chat] 无法获取文件路径');
         return;
       }
-      if (sendBtn.disabled) return;  // 防并发
+      if (isProcessing) {
+        addMessage('system', '正在处理其他任务，请稍后再试');
+        return;
+      }
 
-      console.log('[Chat] 拖入图片:', filePath);
-
-      // 铁律1：先刷新页面（显示预览）
-      const previewDiv = document.createElement('div');
-      previewDiv.className = 'image-preview uploading';
-      const imgEl = document.createElement('img');
-      imgEl.src = await window.electronAPI.getImageUrl(filePath);
-      imgEl.dataset.filePath = filePath;
-      previewDiv.appendChild(imgEl);
-      imgEl.addEventListener('dblclick', () => {
-        window.electronAPI.openWithSystemViewer(filePath);
-      });
-      const overlayDiv = document.createElement('div');
-      overlayDiv.className = 'upload-overlay';
-      overlayDiv.textContent = '处理中...';
-      previewDiv.appendChild(overlayDiv);
-      const msgDiv = addMessage('user', null);
-      msgDiv.appendChild(previewDiv);
+      // 在任何 await 之前设置，防止竞态
+      isProcessing = true;
+      sendBtn.disabled = true;
 
       try {
-        await window.electronAPI.processImage(filePath);
+        console.log('[Chat] 拖入图片:', filePath);
+
+        // 铁律1：先刷新页面（显示预览）
+        const previewDiv = document.createElement('div');
+        previewDiv.className = 'image-preview uploading';
+        const imgEl = document.createElement('img');
+        imgEl.src = await window.electronAPI.getImageUrl(filePath);
+        imgEl.dataset.filePath = filePath;
+        previewDiv.appendChild(imgEl);
+        imgEl.addEventListener('dblclick', () => {
+          window.electronAPI.openWithSystemViewer(filePath);
+        });
+        const overlayDiv = document.createElement('div');
+        overlayDiv.className = 'upload-overlay';
+        overlayDiv.textContent = '处理中...';
+        previewDiv.appendChild(overlayDiv);
+        const msgDiv = addMessage('user', null);
+        msgDiv.appendChild(previewDiv);
+
+        showTyping();
+        window.electronAPI.notifyBusy(true, 'chat');
+
+        const result = await window.electronAPI.processImage(filePath);
         // agent回复由SSE→refreshFromDB()显示
         previewDiv.classList.remove('uploading');
         overlayDiv.remove();
+        if (result && result.reply && result.reply.includes('系统正忙')) {
+          addMessage('system', '系统正忙，请稍后再试');
+        }
       } catch (e) {
         console.error('[Chat] 图片处理失败:', e);
-        previewDiv.classList.add('error');
-        overlayDiv.textContent = '处理失败';
+        addMessage('system', '图片处理失败，请重试');
+      } finally {
+        hideTyping();
+        window.electronAPI.notifyBusy(false, 'chat');
+        sendBtn.disabled = false;
+        isProcessing = false;
       }
     }
 
@@ -1065,19 +1140,35 @@
         console.error('[Chat] 无法获取文件路径');
         return;
       }
-      if (sendBtn.disabled) return;  // 防并发
+      if (isProcessing) {
+        addMessage('system', '正在处理其他任务，请稍后再试');
+        return;
+      }
 
       console.log('[Chat] 拖入文件:', filePath);
 
       // 铁律1：先刷新页面（显示文件名）
       addMessage('user', `📄 ${file.name}`);
 
+      isProcessing = true;
+      sendBtn.disabled = true;
+      showTyping();
+      window.electronAPI.notifyBusy(true, 'chat');
+
       try {
-        await window.electronAPI.processImage(filePath);
+        const result = await window.electronAPI.processImage(filePath);
         // agent回复由SSE→refreshFromDB()显示
+        if (result && result.reply && result.reply.includes('系统正忙')) {
+          addMessage('system', '系统正忙，请稍后再试');
+        }
       } catch (e) {
         console.error('[Chat] 文件处理失败:', e);
         addMessage('system', '文件处理失败，请重试');
+      } finally {
+        hideTyping();
+        window.electronAPI.notifyBusy(false, 'chat');
+        sendBtn.disabled = false;
+        isProcessing = false;
       }
     }
     

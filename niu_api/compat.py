@@ -418,12 +418,14 @@ async def chat_session(request: ChatRequest) -> ChatResponse:
     if not config.llm or not config.llm.api_key:
         return ChatResponse(reply="Error: LLM not configured, please set API Key first")
 
-    # Non-blocking acquire: reject if lock already held
+    # 排队等待锁：最多等 60 秒，而非直接拒绝
+    # 之前 timeout=0.01 导致文件拖入等请求被直接丢弃
     import asyncio
 
     try:
-        await asyncio.wait_for(_chat_lock.acquire(), timeout=0.01)
+        await asyncio.wait_for(_chat_lock.acquire(), timeout=60.0)
     except TimeoutError:
+        logger.warning("[chat_session] _chat_lock 60s timeout, request rejected")
         return ChatResponse(reply="系统正忙，请稍后再试", session_id="default")
 
     try:
@@ -616,15 +618,12 @@ async def clear_chat() -> dict:
     # 获取锁，防止与正在进行的 chat 冲突
     import asyncio
 
+    # 排队等待锁：最多等 5 秒（清除操作不需要等太久）
     try:
-        await asyncio.wait_for(_chat_lock.acquire(), timeout=0.01)
+        await asyncio.wait_for(_chat_lock.acquire(), timeout=5.0)
     except TimeoutError:
-        # 有 chat 正在进行，等它完成后再清
-        await asyncio.sleep(1)
-        try:
-            await asyncio.wait_for(_chat_lock.acquire(), timeout=5.0)
-        except TimeoutError:
-            return {"success": False, "error": "系统正忙，请稍后再试"}
+        logger.warning("[clear_chat] _chat_lock 5s timeout, clear rejected")
+        return {"success": False, "error": "系统正忙，请稍后再试"}
 
     try:
         store = await get_message_store()
