@@ -61,6 +61,37 @@ TOOL_SCHEMAS = {
             "required": ["path"],
         },
     },
+    "ingest_document": {
+        "name": "ingest_document",
+        "description": """文档入库工具 — 文件搬运 + LightRAG 全文 ainsert
+
+参数:
+- file_path: 必填，文档文件路径
+- category: 分类，默认 "其他"
+- mode: copy（复制）| move（移动）| reference（引用），默认 copy
+
+自动完成：文件搬运 + LightRAG 全文 ainsert（自动抽取实体和建链）
+
+返回:
+- status: success | error
+- action: copied | moved | referenced | skipped
+- file_path: 存储路径
+- lightrag: inserted | skipped""",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "file_path": {"type": "string", "description": "文档文件路径"},
+                "category": {"type": "string", "description": "分类，默认自动推断", "default": "其他"},
+                "mode": {
+                    "type": "string",
+                    "enum": ["copy", "move", "reference"],
+                    "default": "copy",
+                    "description": "文件操作模式",
+                },
+            },
+            "required": ["file_path"],
+        },
+    },
     "name_person": {
         "name": "name_person",
         "description": """为人物命名
@@ -2488,15 +2519,43 @@ def ingest_document(file_path: str, category: str = "其他", mode: str = "copy"
         logger.info(f"[INGEST] 冲突处理结果: {action}")
 
         if action == "skipped":
-            logger.info("[INGEST] 文件已存在，跳过")
+            logger.info("[INGEST] 文件已存在，检查 LightRAG 写入状态...")
+            # File already exists, but LightRAG may not have been written successfully.
+            # Attempt LightRAG ainsert to ensure graph has the content.
+            content_length = 0
+            lightrag_result = None
+            try:
+                file_content = read_file_content(str(final_path))
+                if file_content:
+                    content_length = len(file_content)
+                    try:
+                        from agent.tool_registry import get_registry
+
+                        registry = get_registry()
+                        insert_tool = registry.get("lightrag-server/lightrag_insert")
+                        lightrag_result = insert_tool(
+                            content=file_content,
+                            file_path=str(Path(final_path).resolve()),
+                        )
+                        logger.info(
+                            f"[INGEST] LightRAG ainsert (skipped path): {lightrag_result.get('status', 'unknown')}"
+                        )
+                    except Exception as lr_err:
+                        logger.warning(f"[INGEST] LightRAG ainsert 失败（不影响文件入库）: {lr_err}")
+                else:
+                    logger.info("[INGEST] 无文本内容，跳过 LightRAG ainsert")
+            except Exception as e:
+                logger.warning(f"[INGEST] 无法读取文件内容: {e}")
+
             return {
                 "status": "success",
                 "action": "skipped",
                 "file_path": str(Path(final_path).resolve()),
                 "original_path": str(source),
                 "category": category,
-                "content_length": 0,
-                "note": "文件已存在，跳过重复入库",
+                "content_length": content_length,
+                "lightrag": "inserted" if lightrag_result and lightrag_result.get("status") == "success" else "skipped",
+                "note": "文件已存在，已补全 LightRAG 写入",
             }
 
         logger.info(f"[INGEST] 执行文件操作: {mode}")
