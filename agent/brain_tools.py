@@ -60,14 +60,14 @@ def get_tool_to_region() -> dict[str, str]:
     if _tool_to_region is not None:
         return _tool_to_region
 
-    # Lazy build from LightRAG entities with entity_type="mcp_tool"
+    # Lazy build from LightRAG entities with entity_type="Tool"
     try:
         from niu_api.internal.lightrag_adapter import LightRAGAdapter
 
         adapter = LightRAGAdapter()
         result = adapter.list_entities(
             list_type="entities",
-            entity_type="mcp_tool",
+            entity_type="Tool",
             limit=1000,
         )
 

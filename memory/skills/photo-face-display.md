@@ -96,7 +96,8 @@ description: Use when user asks about unnamed persons, wants to name someone in 
 | 问题 | 解决方案 |
 |------|---------|
 | 自己生成标记 | 等待子 Agent 返回数据后再转换 |
-| person_id 丢失 | 用户回答名字后，使用正确的 `person_id` 调用命名工具 |
+| person_id 丢失 | **必须使用子Agent返回的 `id` 字段（UUID格式）作为 `person_id`**。绝对不能用 `boxed_path` 文件名中的 `facebox_xxx` hash 代替 UUID，那只是临时文件名的哈希值，不是数据库ID |
+| 用facebox_hash当person_id | `facebox_88ce85b64781` 是临时文件哈希，不是 person_id。正确的 person_id 格式是 UUID 如 `a4317e63-23fd-4edd-b543-3600e8c5c52e`。使用 facebox hash 会导致 PERSON_NOT_FOUND 错误 |
 | 多人照没有红框 | 必须用 `boxed_path`，不能直接用 `file_path` |
 
 ## Frontend Rendering
