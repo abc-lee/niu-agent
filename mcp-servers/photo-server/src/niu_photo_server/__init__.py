@@ -2554,7 +2554,7 @@ def ingest_document(file_path: str, category: str = "其他", mode: str = "copy"
                 "original_path": str(source),
                 "category": category,
                 "content_length": content_length,
-                "lightrag": "inserted" if lightrag_result and lightrag_result.get("status") == "success" else "skipped",
+                "lightrag": "inserted" if lightrag_result and lightrag_result.get("status") in ("success", "ok") else "skipped",
                 "note": "文件已存在，已补全 LightRAG 写入",
             }
 
@@ -2604,7 +2604,7 @@ def ingest_document(file_path: str, category: str = "其他", mode: str = "copy"
             "original_path": str(source),
             "category": category,
             "content_length": content_length,
-            "lightrag": "inserted" if lightrag_result and lightrag_result.get("status") == "success" else "skipped",
+            "lightrag": "inserted" if lightrag_result and lightrag_result.get("status") in ("success", "ok") else "skipped",
         }
 
     except PermissionError as e:
