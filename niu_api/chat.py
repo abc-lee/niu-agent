@@ -65,6 +65,29 @@ def notify_new_message_sync(message_id: str, role: str, content: str):
         pass  # 循环已关闭
 
 
+def notify_tool_status_sync(tool_name: str, status: str, summary: str = ""):
+    """从同步线程推送工具调用状态到 SSE 事件总线
+
+    Args:
+        tool_name: 工具名称（短名，如 detect_faces）
+        status: "start" 或 "end"
+        summary: 可选的简短描述
+    """
+    event = {
+        "type": "tool_status",
+        "tool_name": tool_name,
+        "status": status,
+        "summary": summary,
+    }
+    loop = _main_loop
+    if loop is None or loop.is_closed():
+        return
+    try:
+        loop.call_soon_threadsafe(_sync_broadcast, event)
+    except RuntimeError:
+        pass
+
+
 def _sync_broadcast(event: dict):
     """在 FastAPI 事件循环中执行广播"""
     for q in _event_subscribers[:]:  # 复制列表，避免迭代中修改
@@ -179,10 +202,11 @@ async def chat(request: ChatRequest) -> StreamingResponse:
 
     # Stream response
     async def generate():
-        # Non-blocking acquire: reject if lock already held
+        # 排队等待锁：最多等 60 秒
         try:
-            await asyncio.wait_for(_chat_lock.acquire(), timeout=0.01)
+            await asyncio.wait_for(_chat_lock.acquire(), timeout=60.0)
         except asyncio.TimeoutError:
+            logger.warning("[/chat] _chat_lock 60s timeout, request rejected")
             yield f"data: {json.dumps({'error': 'Another request is in progress, please wait'})}\n\n"
             yield f"data: {json.dumps({'done': True, 'session_id': session_id})}\n\n"
             return
@@ -256,6 +280,13 @@ async def chat(request: ChatRequest) -> StreamingResponse:
             # Send final message
             yield f"data: {json.dumps({'done': True, 'session_id': session_id})}\n\n"
         finally:
+            # 确保执行器线程完成后再释放锁，防止 runner.chat() 并发
+            sf = locals().get("stream_future")
+            if sf and not sf.done():
+                try:
+                    await asyncio.wait_for(sf, timeout=30.0)
+                except (asyncio.TimeoutError, Exception):
+                    logger.warning("[/chat] Executor thread did not finish after client disconnect")
             _chat_lock.release()
 
     return StreamingResponse(
@@ -282,10 +313,11 @@ async def chat_sync(request: ChatRequest) -> ChatResponse:
             status_code=400, detail="LLM not configured. Please set up API key first."
         )
 
-    # Non-blocking acquire: reject if lock already held
+    # 排队等待锁：最多等 60 秒
     try:
-        await asyncio.wait_for(_chat_lock.acquire(), timeout=0.01)
+        await asyncio.wait_for(_chat_lock.acquire(), timeout=60.0)
     except asyncio.TimeoutError:
+        logger.warning("[/chat/sync] _chat_lock 60s timeout, request rejected")
         raise HTTPException(
             status_code=503, detail="Another request is in progress, please try again later."
         )
