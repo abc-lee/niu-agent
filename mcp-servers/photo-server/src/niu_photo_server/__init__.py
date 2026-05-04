@@ -423,8 +423,9 @@ def call_embedding_service(endpoint: str, data: dict) -> dict | None:
 def sync_photo_to_kg(file_path: str, abstract: str, detected_persons: list) -> dict:
     """同步照片和人物到 LightRAG 知识图谱。
 
-    照片描述通过 lightrag_insert() 入库（LightRAG 自动提取实体），
-    人物通过 lightrag_insert_custom_kg() 精确注入（避免 LLM 提取破坏人名）。
+    照片和人物实体全部通过 lightrag_insert_custom_kg() 精确注入，
+    避免 lightrag_insert 的 LLM 自动提取创建重复/错误实体。
+    照片描述作为 chunk 注入供向量检索。
     失败不影响主流程（照片入库已成功）。
     """
     try:
@@ -432,19 +433,40 @@ def sync_photo_to_kg(file_path: str, abstract: str, detected_persons: list) -> d
 
         registry = get_registry()
         title = Path(file_path).stem
+        photo_entity_name = f"photo:{file_path}"
 
-        # 1. 照片描述通过 lightrag_insert 入库（LightRAG 自动提取实体和关系）
-        content = f"[Photo: {file_path}]\n{abstract}"
-        lightrag_insert = registry.get("lightrag-server/lightrag_insert")
-        lightrag_insert(content=content)
-        logger.info(f"[KG] Photo ingested into LightRAG: {file_path}")
-
-        # 2. 人物实体通过 lightrag_insert_custom_kg 精确注入
+        # 通过 lightrag_insert_custom_kg 精确注入所有实体和文档
         insert_custom_kg = registry.get("lightrag-server/lightrag_insert_custom_kg")
         entities_created = []
+        entities = []
+        relationships = []
+        chunks = []
+
+        # 1a. 照片描述作为 chunk（供向量检索）
+        # content 不包含人物名称，避免 LLM 自动提取创建"未命名人物"实体
+        chunk_content = f"[Photo: {file_path}]"
+        if abstract:
+            # abstract 格式: "未命名人物_1合影，2009年06月04日"
+            # 只保留日期等元信息，去除人物名称部分
+            parts = abstract.split("，")
+            if len(parts) > 1:
+                chunk_content += f"\n{parts[-1]}"
+        chunks.append({
+            "content": chunk_content,
+            "source_id": "photo",
+            "file_path": file_path,
+        })
+
+        # 1b. 照片实体
+        entities.append({
+            "entity_name": photo_entity_name,
+            "entity_type": "Photo",
+            "description": abstract,
+        })
+        entities_created.append(photo_entity_name)
+
+        # 1c. 人物实体
         if detected_persons:
-            entities = []
-            relationships = []
             for person in detected_persons:
                 person_id = person.get("id", "")
                 person_name = person.get("name", "")
@@ -462,7 +484,7 @@ def sync_photo_to_kg(file_path: str, abstract: str, detected_persons: list) -> d
                 })
                 # Photo -> Person relationship
                 relationships.append({
-                    "src_id": file_path,
+                    "src_id": photo_entity_name,
                     "tgt_id": entity_name,
                     "keywords": "depicts",
                     "description": f"Photo {title} depicts {person_name}",
@@ -472,16 +494,18 @@ def sync_photo_to_kg(file_path: str, abstract: str, detected_persons: list) -> d
                 })
                 entities_created.append(entity_name)
 
-            if entities:
-                result = insert_custom_kg(
-                    entities=entities,
-                    relationships=relationships,
-                    chunks=[],
-                    source_id="photo",
-                )
-                logger.info(f"[KG] Photo persons injected: {result}")
+        if insert_custom_kg and entities:
+            result = insert_custom_kg(
+                entities=entities,
+                relationships=relationships,
+                chunks=chunks,
+                source_id="photo",
+            )
+            logger.info(f"[KG] Photo entities injected: {result}")
+        elif not insert_custom_kg:
+            logger.warning("[KG] lightrag_insert_custom_kg not available in registry")
 
-        # 3. 同框人物之间建立 co_appears_with 关系
+        # 2. 同框人物之间建立 co_appears_with 关系
         relations_created = 0
         if len(detected_persons) >= 2:
             co_rels = []
@@ -503,7 +527,7 @@ def sync_photo_to_kg(file_path: str, abstract: str, detected_persons: list) -> d
                         "weight": 0.3,
                     })
                     relations_created += 1
-            if co_rels:
+            if co_rels and insert_custom_kg:
                 insert_custom_kg(
                     entities=[],
                     relationships=co_rels,
@@ -512,7 +536,7 @@ def sync_photo_to_kg(file_path: str, abstract: str, detected_persons: list) -> d
                 )
 
         logger.info(
-            f"[KG] Photo sync complete: {len(entities_created)} persons, "
+            f"[KG] Photo sync complete: {len(entities_created)} entities, "
             f"{relations_created} co-occurrences for {file_path}"
         )
         return {
@@ -1850,11 +1874,31 @@ def name_person(person_id: str, name: str) -> dict:
             from agent.tool_registry import get_registry
             registry = get_registry()
             insert_entity = registry.get("lightrag-server/lightrag_insert_entity")
-            insert_entity(
-                name=f"person:{person_id}",
-                entity_type="Person",
-                description=name,
-            )
+            if insert_entity:
+                insert_entity(
+                    name=f"person:{person_id}",
+                    entity_type="Person",
+                    description=name,
+                )
+            else:
+                logger.warning("[NAME_PERSON] lightrag_insert_entity not available")
+
+            # 合并旧 auto_label 实体到 person:{uuid} 实体
+            auto_label = row[1]  # "未命名人物_X"
+            if auto_label and auto_label.startswith("未命名人物"):
+                merge_entities = registry.get("lightrag-server/lightrag_merge_entities")
+                if merge_entities:
+                    merge_result = merge_entities(
+                        source_entities=[auto_label],
+                        target_entity=f"person:{person_id}",
+                    )
+                    logger.info(f"[NAME_PERSON] Merged old KG entity '{auto_label}' into 'person:{person_id}': {merge_result}")
+                else:
+                    # fallback: 尝试删除旧实体
+                    delete_entity = registry.get("lightrag-server/lightrag_delete_entity")
+                    if delete_entity:
+                        delete_entity(entity_name=auto_label)
+                        logger.info(f"[NAME_PERSON] Deleted old KG entity '{auto_label}'")
         except Exception as e:
             logger.warning(f"[NAME_PERSON] LightRAG sync failed: {e}")
 
