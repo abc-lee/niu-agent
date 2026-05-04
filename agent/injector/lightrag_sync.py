@@ -144,7 +144,7 @@ class LightRAGSync:
             return 0, 0, set(), set(), set()
 
         from niu_api.internal.lightrag_adapter import LightRAGIngester
-        from niu_api.internal.lightrag_manager import call_async, get_lightrag
+        from niu_api.internal.lightrag_manager import get_lightrag
 
         rag = get_lightrag()
         if rag is None:
@@ -166,12 +166,16 @@ class LightRAGSync:
                 if person_id in prev_person_ids:
                     continue
                 person_name = row["name"] or row["auto_label"] or person_id
+                # 未命名人物用 entity_name 作为 description，避免 LLM 提取创建重复实体
+                entity_name = f"person:{person_id}"
+                person_desc = entity_name if person_name.startswith("未命名人物") else person_name
                 try:
                     result = ingester.inject_custom_kg(
                         entities=[{
-                            "entity_name": f"person:{person_id}",
+                            "entity_name": entity_name,
                             "entity_type": "Person",
-                            "description": f"Person: {person_name} (backfilled from photos.db)",
+                            "description": person_desc,
+                            "source_id": "photo",
                         }],
                         relationships=[],
                         chunks=[],
@@ -182,10 +186,15 @@ class LightRAGSync:
                 except Exception as e:
                     logger.debug(f"[LightRAGSync] Person entity failed for {person_name}: {e}")
 
-            # Sync photo documents (only new ones with abstracts)
+            # Sync photo documents (only new ones with abstracts, skip already KG-synced)
+            # Also create photo→person relationships by joining faces table
             photos_synced = 0
             new_photo_ids: set = set()
-            rows = conn.execute("SELECT id, file_path, abstract FROM photos").fetchall()
+            # Filter kg_synced=0 at SQL level to leverage SQLite WAL read consistency
+            # and avoid race window with sync_photo_to_kg writing kg_synced=1
+            rows = conn.execute(
+                "SELECT p.id, p.file_path, p.abstract FROM photos p WHERE p.kg_synced = 0"
+            ).fetchall()
             for row in rows:
                 photo_id = row["id"]
                 if photo_id in prev_photo_ids:
@@ -196,10 +205,61 @@ class LightRAGSync:
                     continue
                 try:
                     title = Path(file_path).stem
-                    content = f"[Photo: {title}]\n{abstract}"
-                    call_async(rag.ainsert(content, file_paths=[file_path]))
-                    photos_synced += 1
-                    new_photo_ids.add(photo_id)
+                    # abstract 可能包含"未命名人物_X"名称，需净化避免 LLM 提取创建重复实体
+                    safe_abstract = abstract
+                    if abstract:
+                        parts = abstract.split("，")
+                        if len(parts) > 1 and "未命名人物" in parts[0]:
+                            safe_abstract = "，".join(parts[1:])
+                    # Use ainsert_custom_kg instead of rag.ainsert() to prevent
+                    # LLM auto-extraction from creating duplicate entities
+                    photo_entity_name = f"photo:{file_path}"
+                    entities = [{
+                        "entity_name": photo_entity_name,
+                        "entity_type": "Photo",
+                        "description": f"Photo: {title}，{safe_abstract}" if safe_abstract else f"Photo: {title}",
+                        "file_path": file_path,
+                        "source_id": "photo",
+                    }]
+                    relationships = []
+                    # Create photo→person relationships from faces table
+                    face_rows = conn.execute(
+                        "SELECT person_id FROM faces WHERE photo_id = ?",
+                        (photo_id,),
+                    ).fetchall()
+                    for face_row in face_rows:
+                        person_id = face_row["person_id"]
+                        relationships.append({
+                            "src_id": photo_entity_name,
+                            "tgt_id": f"person:{person_id}",
+                            "keywords": "depicts",
+                            "description": f"Photo {title} depicts person:{person_id}",
+                            "source_id": "photo",
+                            "file_path": file_path,
+                            "weight": 0.7,
+                        })
+                    chunks = [{
+                        "content": f"[Photo: {title}]\n{safe_abstract}" if safe_abstract else f"[Photo: {title}]",
+                        "source_id": "photo",
+                        "file_path": file_path,
+                    }]
+                    result = ingester.inject_custom_kg(
+                        entities=entities,
+                        relationships=relationships,
+                        chunks=chunks,
+                    )
+                    if result.get("status") == "ok":
+                        photos_synced += 1
+                        new_photo_ids.add(photo_id)
+                        # Mark kg_synced=1 to prevent re-processing
+                        try:
+                            conn.execute(
+                                "UPDATE photos SET kg_synced = 1 WHERE id = ?",
+                                (photo_id,),
+                            )
+                            conn.commit()
+                        except Exception as kg_err:
+                            logger.warning(f"[LightRAGSync] Failed to mark kg_synced for photo {photo_id}: {kg_err}")
                 except Exception as e:
                     logger.debug(f"[LightRAGSync] Photo document failed for {file_path}: {e}")
 

@@ -99,16 +99,17 @@ def _ensure_loop() -> asyncio.AbstractEventLoop:
         return _loop
 
 
-def call_async(coro):
+def call_async(coro, timeout: int = 120):
     """Run an async coroutine in the LightRAG event loop (blocking).
 
     Usage:
         result = call_async(rag.aquery("hello"))
+        result = call_async(rag.ainsert(content), timeout=600)  # 10 min for large docs
     """
     loop = _ensure_loop()
     future = asyncio.run_coroutine_threadsafe(coro, loop)
     try:
-        return future.result(timeout=120)  # 2 minute timeout for LLM calls
+        return future.result(timeout=timeout)
     except Exception:
         future.cancel()
         raise
@@ -231,7 +232,7 @@ def _create_lightrag_instance():
 
     rag = LightRAG(**rag_params)
     # lightrag-hku 1.4.15 requires explicit storage initialization
-    call_async(rag.initialize_storages())
+    call_async(rag.initialize_storages(), timeout=300)
     return rag
 
 
