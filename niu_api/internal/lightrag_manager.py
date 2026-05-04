@@ -25,6 +25,8 @@ import asyncio
 import json
 import os
 import threading
+from collections import deque
+from datetime import datetime
 from functools import partial
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -65,6 +67,39 @@ _loop: Optional[asyncio.AbstractEventLoop] = None
 _loop_thread: Optional[threading.Thread] = None
 _loop_ready = threading.Event()
 _loop_lock = threading.Lock()
+
+# Read-write lock for the NetworkX knowledge graph.
+# - Write lock: acquired by inject_custom_kg, delete_entity, merge_entities,
+#   _decay_structural_edges (any operation that mutates the graph).
+# - Read lock: acquired by get_graph_snapshot, list_entities (entity_type path),
+#   and any other direct NetworkX graph traversal.
+# Multiple readers can proceed concurrently; writers have exclusive access.
+# This prevents RuntimeError("Graph changed during iteration") and silent
+# data corruption when background sync writes while API requests read.
+_graph_rwlock = threading.RLock()  # Simplified: use RLock for now (exclusive only)
+# TODO: Upgrade to proper R/W lock (e.g. readerwriterlock) if read contention
+# becomes measurable. For now, exclusive access is sufficient — reads are fast
+# (<10ms for ~200 nodes) and writes are infrequent (every 6h sync cycle).
+
+
+def graph_read_lock():
+    """Context manager for read access to the NetworkX graph.
+
+    Usage:
+        with graph_read_lock():
+            nodes = list(nx_graph.nodes())
+    """
+    return _graph_rwlock
+
+
+def graph_write_lock():
+    """Context manager for write access to the NetworkX graph.
+
+    Usage:
+        with graph_write_lock():
+            result = call_async(rag.ainsert_custom_kg(...))
+    """
+    return _graph_rwlock
 
 
 def _ensure_loop() -> asyncio.AbstractEventLoop:
@@ -319,3 +354,48 @@ def get_lightrag_status() -> Dict[str, Any]:
         "reranker": get_current_reranker_info(),
         "loop_running": loop_running,
     }
+
+
+# ============== Graph Change Log ==============
+
+class GraphChangeLog:
+    """In-memory change buffer for graph write operations.
+
+    Records entity_created, edge_created, entity_deleted, entity_merged
+    events so the frontend can poll /api/kg/changelog for incremental
+    updates instead of re-fetching the full snapshot.
+
+    Uses deque with maxlen to bound memory; old entries auto-evict.
+    Thread-safe via internal lock.
+    """
+
+    def __init__(self, max_size: int = 2000) -> None:
+        self._changes: deque = deque(maxlen=max_size)
+        self._lock = threading.Lock()
+
+    def record_change(self, change_type: str, data: dict) -> None:
+        with self._lock:
+            self._changes.append({
+                "type": change_type,
+                "timestamp": datetime.now().isoformat(),
+                "data": data,
+            })
+
+    def get_changes(self, since: str = "", limit: int = 200) -> list[dict]:
+        """Return changes after *since* timestamp (ISO 8601).
+
+        Does NOT drain — the buffer is preserved so late-arriving polls
+        can still catch up.  Old entries are auto-evicted by deque maxlen.
+        """
+        with self._lock:
+            if not since:
+                return list(self._changes)[-limit:]
+            result = [c for c in self._changes if c["timestamp"] > since]
+            return result[-limit:]
+
+
+_change_log = GraphChangeLog()
+
+
+def get_change_log() -> GraphChangeLog:
+    return _change_log
