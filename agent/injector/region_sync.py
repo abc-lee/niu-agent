@@ -356,8 +356,9 @@ class RegionSync:
         Runs first sync after 5-minute initial delay (to let other services
         start), then repeats every sync_interval seconds.
         """
-        # Initial delay: 5 minutes (wait for other services)
-        self._stop_event.wait(300)
+        # Initial delay: 180s (staggered vs lightrag_sync's 420s to avoid
+        # both services competing for the LightRAG event loop simultaneously)
+        self._stop_event.wait(180)
         while True:
             try:
                 self.run_sync()

@@ -124,6 +124,11 @@ class LightRAGSync:
     ) -> tuple[int, int, set, set, set]:
         """Sync photos from photos.db into LightRAG.
 
+        Uses batch injection: collects all entities, relationships, and chunks
+        first, then calls inject_custom_kg once. This avoids serially blocking
+        the LightRAG event loop with N individual calls (which freezes the
+        frontend graph UI).
+
         Only processes items whose IDs are not in the previous sync state,
         preventing duplicate entity/relationship insertion.
 
@@ -157,44 +162,37 @@ class LightRAGSync:
         conn.row_factory = sqlite3.Row
 
         try:
-            # Sync person entities (only new ones)
-            persons_synced = 0
+            # --- Collect all data first, then batch inject once ---
+            all_entities: list[dict] = []
+            all_relationships: list[dict] = []
+            all_chunks: list[dict] = []
             new_person_ids: set = set()
+            new_photo_ids: set = set()
+            new_co_occ_ids: set = set()
+
+            # 1. Collect person entities (only new ones)
             rows = conn.execute("SELECT id, name, auto_label FROM persons").fetchall()
             for row in rows:
                 person_id = row["id"]
                 if person_id in prev_person_ids:
                     continue
                 person_name = row["name"] or row["auto_label"] or person_id
-                # 未命名人物用 entity_name 作为 description，避免 LLM 提取创建重复实体
                 entity_name = f"person:{person_id}"
                 person_desc = entity_name if person_name.startswith("未命名人物") else person_name
-                try:
-                    result = ingester.inject_custom_kg(
-                        entities=[{
-                            "entity_name": entity_name,
-                            "entity_type": "Person",
-                            "description": person_desc,
-                            "source_id": "photo",
-                        }],
-                        relationships=[],
-                        chunks=[],
-                    )
-                    if result.get("status") == "ok":
-                        persons_synced += 1
-                        new_person_ids.add(person_id)
-                except Exception as e:
-                    logger.debug(f"[LightRAGSync] Person entity failed for {person_name}: {e}")
+                all_entities.append({
+                    "entity_name": entity_name,
+                    "entity_type": "Person",
+                    "description": person_desc,
+                    "source_id": "photo",
+                })
+                new_person_ids.add(person_id)
 
-            # Sync photo documents (only new ones with abstracts, skip already KG-synced)
-            # Also create photo→person relationships by joining faces table
-            photos_synced = 0
-            new_photo_ids: set = set()
+            # 2. Collect photo entities + photo→person relationships
             # Filter kg_synced=0 at SQL level to leverage SQLite WAL read consistency
-            # and avoid race window with sync_photo_to_kg writing kg_synced=1
             rows = conn.execute(
                 "SELECT p.id, p.file_path, p.abstract FROM photos p WHERE p.kg_synced = 0"
             ).fetchall()
+            photo_ids_to_mark: list[int] = []
             for row in rows:
                 photo_id = row["id"]
                 if photo_id in prev_photo_ids:
@@ -203,69 +201,47 @@ class LightRAGSync:
                 abstract = row["abstract"] or ""
                 if not file_path or not abstract:
                     continue
-                try:
-                    title = Path(file_path).stem
-                    # abstract 可能包含"未命名人物_X"名称，需净化避免 LLM 提取创建重复实体
-                    safe_abstract = abstract
-                    if abstract:
-                        parts = abstract.split("，")
-                        if len(parts) > 1 and "未命名人物" in parts[0]:
-                            safe_abstract = "，".join(parts[1:])
-                    # Use ainsert_custom_kg instead of rag.ainsert() to prevent
-                    # LLM auto-extraction from creating duplicate entities
-                    photo_entity_name = f"photo:{file_path}"
-                    entities = [{
-                        "entity_name": photo_entity_name,
-                        "entity_type": "Photo",
-                        "description": f"Photo: {title}，{safe_abstract}" if safe_abstract else f"Photo: {title}",
-                        "file_path": file_path,
-                        "source_id": "photo",
-                    }]
-                    relationships = []
-                    # Create photo→person relationships from faces table
-                    face_rows = conn.execute(
-                        "SELECT person_id FROM faces WHERE photo_id = ?",
-                        (photo_id,),
-                    ).fetchall()
-                    for face_row in face_rows:
-                        person_id = face_row["person_id"]
-                        relationships.append({
-                            "src_id": photo_entity_name,
-                            "tgt_id": f"person:{person_id}",
-                            "keywords": "depicts",
-                            "description": f"Photo {title} depicts person:{person_id}",
-                            "source_id": "photo",
-                            "file_path": file_path,
-                            "weight": 0.7,
-                        })
-                    chunks = [{
-                        "content": f"[Photo: {title}]\n{safe_abstract}" if safe_abstract else f"[Photo: {title}]",
+                title = Path(file_path).stem
+                # abstract 可能包含"未命名人物_X"名称，需净化避免 LLM 提取创建重复实体
+                safe_abstract = abstract
+                if abstract:
+                    parts = abstract.split("，")
+                    if len(parts) > 1 and "未命名人物" in parts[0]:
+                        safe_abstract = "，".join(parts[1:])
+                photo_entity_name = f"photo:{file_path}"
+                all_entities.append({
+                    "entity_name": photo_entity_name,
+                    "entity_type": "Photo",
+                    "description": f"Photo: {title}，{safe_abstract}" if safe_abstract else f"Photo: {title}",
+                    "file_path": file_path,
+                    "source_id": "photo",
+                })
+                # Collect photo→person relationships from faces table
+                face_rows = conn.execute(
+                    "SELECT person_id FROM faces WHERE photo_id = ?",
+                    (photo_id,),
+                ).fetchall()
+                for face_row in face_rows:
+                    person_id = face_row["person_id"]
+                    all_relationships.append({
+                        "src_id": photo_entity_name,
+                        "tgt_id": f"person:{person_id}",
+                        "keywords": "depicts",
+                        "description": f"Photo {title} depicts person:{person_id}",
                         "source_id": "photo",
                         "file_path": file_path,
-                    }]
-                    result = ingester.inject_custom_kg(
-                        entities=entities,
-                        relationships=relationships,
-                        chunks=chunks,
-                    )
-                    if result.get("status") == "ok":
-                        photos_synced += 1
-                        new_photo_ids.add(photo_id)
-                        # Mark kg_synced=1 to prevent re-processing
-                        try:
-                            conn.execute(
-                                "UPDATE photos SET kg_synced = 1 WHERE id = ?",
-                                (photo_id,),
-                            )
-                            conn.commit()
-                        except Exception as kg_err:
-                            logger.warning(f"[LightRAGSync] Failed to mark kg_synced for photo {photo_id}: {kg_err}")
-                except Exception as e:
-                    logger.debug(f"[LightRAGSync] Photo document failed for {file_path}: {e}")
+                        "weight": 0.7,
+                    })
+                all_chunks.append({
+                    "content": f"[Photo: {title}]\n{safe_abstract}" if safe_abstract else f"[Photo: {title}]",
+                    "source_id": "photo",
+                    "file_path": file_path,
+                })
+                new_photo_ids.add(photo_id)
+                photo_ids_to_mark.append(photo_id)
 
-            # Sync co_occurrence relations (delta-tracked to avoid re-injection)
+            # 3. Collect co_occurrence relationships (delta-tracked)
             prev_co_occ = prev_co_occ_ids or set()
-            new_co_occ_ids: set = set()
             rows = conn.execute(
                 "SELECT person_a_id, person_b_id, count FROM co_occurrences"
             ).fetchall()
@@ -273,25 +249,58 @@ class LightRAGSync:
                 a_id = row["person_a_id"]
                 b_id = row["person_b_id"]
                 count = row["count"]
-                # Stable pair key: always sort so (a,b) == (b,a)
                 pair_key = f"{min(a_id, b_id)}__{max(a_id, b_id)}"
                 if pair_key in prev_co_occ:
                     continue
+                all_relationships.append({
+                    "src_id": f"person:{a_id}",
+                    "tgt_id": f"person:{b_id}",
+                    "keywords": "co_appears_with",
+                    "description": f"Co-occurrence count: {count}",
+                })
+                new_co_occ_ids.add(pair_key)
+
+            # 4. Batch inject all collected data in one call
+            persons_synced = 0
+            photos_synced = 0
+            if all_entities or all_relationships or all_chunks:
                 try:
                     result = ingester.inject_custom_kg(
-                        entities=[],
-                        relationships=[{
-                            "src_id": f"person:{a_id}",
-                            "tgt_id": f"person:{b_id}",
-                            "keywords": "co_appears_with",
-                            "description": f"Co-occurrence count: {count}",
-                        }],
-                        chunks=[],
+                        entities=all_entities,
+                        relationships=all_relationships,
+                        chunks=all_chunks,
                     )
                     if result.get("status") == "ok":
-                        new_co_occ_ids.add(pair_key)
+                        persons_synced = len(new_person_ids)
+                        photos_synced = len(new_photo_ids)
+                        # Mark kg_synced=1 for all synced photos
+                        for pid in photo_ids_to_mark:
+                            try:
+                                conn.execute(
+                                    "UPDATE photos SET kg_synced = 1 WHERE id = ?",
+                                    (pid,),
+                                )
+                            except Exception as kg_err:
+                                logger.warning(f"[LightRAGSync] Failed to mark kg_synced for photo {pid}: {kg_err}")
+                        conn.commit()
+                        logger.info(
+                            f"[LightRAGSync] Batch injected {len(all_entities)} entities, "
+                            f"{len(all_relationships)} relationships, {len(all_chunks)} chunks"
+                        )
+                    else:
+                        logger.warning(
+                            f"[LightRAGSync] Batch inject returned status={result.get('status')}, "
+                            f"not tracking {len(all_entities)} entities"
+                        )
+                        # Clear new IDs since inject failed — items will be retried next run
+                        new_person_ids.clear()
+                        new_photo_ids.clear()
+                        new_co_occ_ids.clear()
                 except Exception as e:
-                    logger.debug(f"[LightRAGSync] Co-occurrence link failed: {e}")
+                    logger.error(f"[LightRAGSync] Batch inject failed: {e}")
+                    new_person_ids.clear()
+                    new_photo_ids.clear()
+                    new_co_occ_ids.clear()
 
             return photos_synced, persons_synced, new_photo_ids, new_person_ids, new_co_occ_ids
         finally:
@@ -509,8 +518,9 @@ class LightRAGSync:
         Runs first sync after 5-minute initial delay (to let other services
         start), then repeats every sync_interval seconds.
         """
-        # Initial delay: 5 minutes (wait for other services)
-        self._stop_event.wait(300)
+        # Initial delay: 420s (staggered vs region_sync's 180s to avoid
+        # both services competing for the LightRAG event loop simultaneously)
+        self._stop_event.wait(420)
         while True:
             try:
                 self.run_sync()
