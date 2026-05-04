@@ -154,6 +154,35 @@ class TestLightragInsertFileFunction:
                     sys.modules.pop(mod_key, None)
 
 
+# ============== Integration: real import chain ==============
+
+
+class TestLightragInsertFileIntegration:
+    """Verify lightrag_insert_file works with real imports (no mocking of lightrag)."""
+
+    def test_pipeline_enqueue_file_importable(self):
+        """pipeline_enqueue_file must be importable in real environment."""
+        from lightrag.api.routers.document_routes import pipeline_enqueue_file
+        assert callable(pipeline_enqueue_file)
+
+    def test_lightrag_insert_file_file_not_found(self):
+        """lightrag_insert_file returns error for nonexistent file (real, no mock)."""
+        mod = _import_lightrag_module()
+        result = mod.lightrag_insert_file(file_path="/nonexistent/test.docx")
+        assert result["status"] == "error"
+        assert "not found" in result["message"].lower()
+
+    def test_lightrag_insert_file_schema_matches_function(self):
+        """TOOL_SCHEMAS and _TOOL_FUNCTIONS must both contain lightrag_insert_file."""
+        mod = _import_lightrag_module()
+        assert "lightrag_insert_file" in mod.TOOL_SCHEMAS
+        assert "lightrag_insert_file" in mod._TOOL_FUNCTIONS
+        fn = mod._TOOL_FUNCTIONS["lightrag_insert_file"]
+        schema = mod.TOOL_SCHEMAS["lightrag_insert_file"]
+        assert fn.__name__ == "lightrag_insert_file"
+        assert schema["name"] == "lightrag_insert_file"
+
+
 # ============== ingest_document uses lightrag_insert_file ==============
 
 
