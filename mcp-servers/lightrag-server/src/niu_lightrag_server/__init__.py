@@ -1,12 +1,12 @@
 """
 LightRAG Unified MCP Server
 
-Replaces vector-store (7 tools) and kg-server (20 tools) with 15 unified tools
+Replaces vector-store (7 tools) and kg-server (20 tools) with 16 unified tools
 that delegate to LightRAGAdapter and LightRAGIngester.
 
 Tool groups:
 - Query (5): lightrag_query, lightrag_query_data, lightrag_search_entities, lightrag_get_graph, lightrag_timeline_query
-- Insert (4): lightrag_insert, lightrag_insert_custom_kg, lightrag_insert_entity, lightrag_insert_relation
+- Insert (5): lightrag_insert, lightrag_insert_file, lightrag_insert_custom_kg, lightrag_insert_entity, lightrag_insert_relation
 - Manage (6): lightrag_delete_document, lightrag_delete_entity, lightrag_document_status, lightrag_get_document, lightrag_list_entities, lightrag_merge_entities
 """
 
@@ -265,6 +265,29 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
                 },
             },
             "required": ["content"],
+        },
+    },
+
+    "lightrag_insert_file": {
+        "name": "lightrag_insert_file",
+        "description": (
+            "Insert a file into the knowledge base by file path. "
+            "LightRAG reads and parses the file automatically (supports DOCX, PDF, PPTX, XLSX, TXT, MD, etc.), "
+            "then extracts entities and builds the knowledge graph asynchronously."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "file_path": {
+                    "type": "string",
+                    "description": "Absolute path to the file to insert into the knowledge base",
+                },
+                "doc_id": {
+                    "type": "string",
+                    "description": "Optional unique document ID for dedup",
+                },
+            },
+            "required": ["file_path"],
         },
     },
 
@@ -590,6 +613,48 @@ def lightrag_insert(
         return {"status": "error", "message": str(e)}
 
 
+def lightrag_insert_file(
+    file_path: str,
+    doc_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Insert a file into the knowledge base by file path.
+
+    LightRAG reads the file, extracts text (supports DOCX/PDF/PPTX/XLSX/txt/md etc.),
+    chunks it, and builds the knowledge graph asynchronously.
+    """
+    try:
+        from niu_api.internal.lightrag_manager import get_lightrag, call_async
+        from pathlib import Path as _Path
+
+        rag = get_lightrag()
+        if rag is None:
+            return {"status": "error", "message": "LightRAG not available"}
+
+        from lightrag.api.routers.document_routes import pipeline_enqueue_file
+
+        success, track_id = call_async(
+            pipeline_enqueue_file(rag, _Path(file_path), track_id=doc_id or ""),
+            timeout=600,
+        )
+
+        # Record changelog
+        try:
+            from niu_api.internal.lightrag_manager import get_change_log
+            get_change_log().record_change("document_created", {
+                "id": doc_id or "",
+                "uri": file_path,
+                "title": _Path(file_path).name,
+                "source": "lightrag_insert_file",
+            })
+        except Exception:
+            pass
+
+        return {"status": "ok" if success else "error", "track_id": track_id}
+    except Exception as e:
+        logger.error(f"lightrag_insert_file failed: {e}")
+        return {"status": "error", "message": str(e)}
+
+
 def lightrag_insert_custom_kg(
     entities: Optional[List[Dict[str, Any]]] = None,
     relationships: Optional[List[Dict[str, Any]]] = None,
@@ -771,6 +836,7 @@ _TOOL_FUNCTIONS = {
     "lightrag_search_entities": lightrag_search_entities,
     "lightrag_get_graph": lightrag_get_graph,
     "lightrag_insert": lightrag_insert,
+    "lightrag_insert_file": lightrag_insert_file,
     "lightrag_insert_custom_kg": lightrag_insert_custom_kg,
     "lightrag_insert_entity": lightrag_insert_entity,
     "lightrag_insert_relation": lightrag_insert_relation,

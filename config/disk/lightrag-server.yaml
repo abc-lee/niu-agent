@@ -112,6 +112,20 @@ tools:
         flag: file-path
         type: string
 
+  - name: lightrag_insert_file
+    category: write
+    hidden: true
+    short: "文件入库"
+    long: "将文件直接交给 LightRAG 处理入库。LightRAG 自动读取文件、提取文本、分块、建立知识图谱。支持 DOCX、PDF、PPTX、XLSX、TXT、MD 等格式。"
+    parameters:
+      - name: file_path
+        position: 1
+        type: string
+        required: true
+      - name: doc_id
+        flag: doc-id
+        type: string
+
   - name: lightrag_insert_custom_kg
     category: write
     short: "注入结构化知识"

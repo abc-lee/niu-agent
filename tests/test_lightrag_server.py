@@ -47,9 +47,9 @@ class TestToolSchemas:
     """Test TOOL_SCHEMAS structure and completeness."""
 
     def test_schemas_count(self):
-        """Should have exactly 12 tool schemas."""
+        """Should have exactly 16 tool schemas."""
         mod = _import_module()
-        assert len(mod.TOOL_SCHEMAS) == 14
+        assert len(mod.TOOL_SCHEMAS) == 16
 
     def test_all_tools_have_required_fields(self):
         """Each schema must have name, description, input_schema."""
@@ -88,11 +88,11 @@ class TestToolSchemas:
         assert "chunks" in props
 
     def test_get_tool_schemas_returns_list(self):
-        """get_tool_schemas() must return a list of 12 schemas."""
+        """get_tool_schemas() must return a list of 16 schemas."""
         mod = _import_module()
         schemas = mod.get_tool_schemas()
         assert isinstance(schemas, list)
-        assert len(schemas) == 14
+        assert len(schemas) == 16
 
 
 # ============== Tool Functions ==============

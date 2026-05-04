@@ -108,10 +108,18 @@ class TestLightragInsertFileFunction:
         """lightrag_insert_file should return dict with status field."""
         mod = _import_lightrag_module()
 
-        # Mock pipeline_enqueue_file to return success
-        with patch("niu_api.internal.lightrag_manager.get_lightrag", return_value=MagicMock()):
+        # Mock at the import site inside the function
+        mock_rag = MagicMock()
+        mock_enqueue = AsyncMock(return_value=(True, "track-1"))
+
+        with patch("niu_api.internal.lightrag_manager.get_lightrag", return_value=mock_rag):
             with patch("niu_api.internal.lightrag_manager.call_async", return_value=(True, "track-1")):
-                with patch("lightrag.api.routers.document_routes.pipeline_enqueue_file", new=AsyncMock(return_value=(True, "track-1"))):
+                # Patch the import inside the function body
+                with patch.dict("sys.modules", {
+                    "lightrag.api.routers.document_routes": MagicMock(
+                        pipeline_enqueue_file=mock_enqueue
+                    ),
+                }):
                     result = mod.lightrag_insert_file(file_path="/tmp/test.docx")
                     assert isinstance(result, dict)
                     assert "status" in result
@@ -120,10 +128,30 @@ class TestLightragInsertFileFunction:
         """Should return error when LightRAG is not available."""
         mod = _import_lightrag_module()
 
-        with patch("niu_api.internal.lightrag_manager.get_lightrag", return_value=None):
+        # lightrag_insert_file does lazy import from niu_api.internal.lightrag_manager
+        # We need the full module chain mocked during the function call.
+        key = "niu_api.internal.lightrag_manager"
+        saved = {}
+        mock_mgr = MagicMock()
+        mock_mgr.get_lightrag = MagicMock(return_value=None)
+        mock_mgr.call_async = MagicMock()
+        # Ensure parent modules exist in sys.modules
+        for mod_key in ["niu_api", "niu_api.internal", key]:
+            saved[mod_key] = sys.modules.get(mod_key)
+            if mod_key == key:
+                sys.modules[mod_key] = mock_mgr
+            else:
+                sys.modules.setdefault(mod_key, MagicMock())
+        try:
             result = mod.lightrag_insert_file(file_path="/tmp/test.docx")
             assert result["status"] == "error"
             assert "not available" in result["message"].lower()
+        finally:
+            for mod_key, orig in saved.items():
+                if orig is not None:
+                    sys.modules[mod_key] = orig
+                else:
+                    sys.modules.pop(mod_key, None)
 
 
 # ============== ingest_document uses lightrag_insert_file ==============

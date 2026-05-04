@@ -2625,31 +2625,23 @@ def ingest_document(file_path: str, category: str = "其他", mode: str = "copy"
         if action == "skipped":
             logger.info("[INGEST] 文件已存在，检查 LightRAG 写入状态...")
             # File already exists, but LightRAG may not have been written successfully.
-            # Attempt LightRAG ainsert to ensure graph has the content.
+            # Pass file path to LightRAG so it reads and parses the file itself.
             content_length = 0
             lightrag_result = None
             try:
-                file_content = read_file_content(str(final_path))
-                if file_content:
-                    content_length = len(file_content)
-                    try:
-                        from agent.tool_registry import get_registry
+                from agent.tool_registry import get_registry
 
-                        registry = get_registry()
-                        insert_tool = registry.get("lightrag-server/lightrag_insert")
-                        lightrag_result = insert_tool(
-                            content=file_content,
-                            file_path=str(Path(final_path).resolve()),
-                        )
-                        logger.info(
-                            f"[INGEST] LightRAG ainsert (skipped path): {lightrag_result.get('status', 'unknown')}"
-                        )
-                    except Exception as lr_err:
-                        logger.warning(f"[INGEST] LightRAG ainsert 失败（不影响文件入库）: {lr_err}")
-                else:
-                    logger.info("[INGEST] 无文本内容，跳过 LightRAG ainsert")
-            except Exception as e:
-                logger.warning(f"[INGEST] 无法读取文件内容: {e}")
+                registry = get_registry()
+                insert_file_tool = registry.get("lightrag-server/lightrag_insert_file")
+                lightrag_result = insert_file_tool(
+                    file_path=str(Path(final_path).resolve()),
+                    doc_id=str(Path(final_path).resolve()),
+                )
+                lr_status = lightrag_result.get("status", "unknown")
+                logger.info(f"[INGEST] LightRAG insert_file (skipped path): {lr_status}")
+                content_length = Path(final_path).stat().st_size
+            except Exception as lr_err:
+                logger.warning(f"[INGEST] LightRAG insert_file 失败（不影响文件入库）: {lr_err}")
 
             return {
                 "status": "success",
@@ -2673,38 +2665,29 @@ def ingest_document(file_path: str, category: str = "其他", mode: str = "copy"
 
         logger.info(f"[INGEST] 文件操作完成: {final_path}")
 
-        # 读取文件全文（不截断，用于 LightRAG ainsert）
+        # 将文件直接交给 LightRAG 处理入库
         content_length = 0
         lightrag_result = None
         try:
-            file_content = read_file_content(str(final_path))
-            if file_content:
-                content_length = len(file_content)
+            from agent.tool_registry import get_registry
 
-                # 全文 ainsert 到 LightRAG（不截断）
-                try:
-                    from agent.tool_registry import get_registry
-
-                    registry = get_registry()
-                    insert_tool = registry.get("lightrag-server/lightrag_insert")
-                    lightrag_result = insert_tool(
-                        content=file_content,
-                        file_path=str(Path(final_path).resolve()),
-                    )
-                    lr_status = lightrag_result.get("status", "unknown")
-                    if lr_status == "ok":
-                        logger.info(f"[INGEST] LightRAG ainsert: ok")
-                    else:
-                        lr_msg = lightrag_result.get("message", "")
-                        logger.warning(
-                            f"[INGEST] LightRAG ainsert failed: status={lr_status}, message={lr_msg}"
-                        )
-                except Exception as lr_err:
-                    logger.warning(f"[INGEST] LightRAG ainsert 失败（不影响文件入库）: {lr_err}")
+            registry = get_registry()
+            insert_file_tool = registry.get("lightrag-server/lightrag_insert_file")
+            lightrag_result = insert_file_tool(
+                file_path=str(Path(final_path).resolve()),
+                doc_id=str(Path(final_path).resolve()),
+            )
+            lr_status = lightrag_result.get("status", "unknown")
+            if lr_status == "ok":
+                logger.info(f"[INGEST] LightRAG insert_file: ok")
             else:
-                logger.info("[INGEST] 无文本内容，跳过 LightRAG ainsert")
-        except Exception as e:
-            logger.warning(f"[INGEST] 无法读取文件内容: {e}")
+                lr_msg = lightrag_result.get("message", "")
+                logger.warning(
+                    f"[INGEST] LightRAG insert_file failed: status={lr_status}, message={lr_msg}"
+                )
+            content_length = Path(final_path).stat().st_size
+        except Exception as lr_err:
+            logger.warning(f"[INGEST] LightRAG insert_file 失败（不影响文件入库）: {lr_err}")
 
         # Determine lightrag status for return value
         lr_msg = ""
