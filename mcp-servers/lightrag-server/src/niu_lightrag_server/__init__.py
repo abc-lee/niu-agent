@@ -626,14 +626,22 @@ def lightrag_insert_file(
         from niu_api.internal.lightrag_manager import get_lightrag, call_async
         from pathlib import Path as _Path
 
+        file = _Path(file_path)
+        if not file.is_file():
+            return {"status": "error", "message": f"File not found: {file_path}"}
+
         rag = get_lightrag()
         if rag is None:
             return {"status": "error", "message": "LightRAG not available"}
 
         from lightrag.api.routers.document_routes import pipeline_enqueue_file
 
+        enqueue_kwargs: dict[str, Any] = {"rag": rag, "file_path": file}
+        if doc_id is not None:
+            enqueue_kwargs["track_id"] = doc_id
+
         success, track_id = call_async(
-            pipeline_enqueue_file(rag, _Path(file_path), track_id=doc_id or ""),
+            pipeline_enqueue_file(**enqueue_kwargs),
             timeout=600,
         )
 
@@ -641,9 +649,9 @@ def lightrag_insert_file(
         try:
             from niu_api.internal.lightrag_manager import get_change_log
             get_change_log().record_change("document_created", {
-                "id": doc_id or "",
+                "id": doc_id or track_id or "",
                 "uri": file_path,
-                "title": _Path(file_path).name,
+                "title": file.name,
                 "source": "lightrag_insert_file",
             })
         except Exception:
