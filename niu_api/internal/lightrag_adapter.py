@@ -159,7 +159,7 @@ class LightRAGAdapter:
             if response_type is not None:
                 param.response_type = response_type
 
-            result = call_async(rag.aquery(query, param=param))
+            result = call_async(rag.aquery(query, param=param), timeout=120)
             # aquery() type is str | AsyncIterator[str]; with only_need_context=True
             # it always returns str. Guard against non-string just in case.
             if not isinstance(result, str):
@@ -221,7 +221,7 @@ class LightRAGAdapter:
                 if mode in ("global", "hybrid", "mix"):
                     param.hl_keywords = keywords
 
-            result = call_async(rag.aquery_data(query, param=param))
+            result = call_async(rag.aquery_data(query, param=param), timeout=120)
             return result
 
         except Exception as e:
@@ -480,7 +480,8 @@ class LightRAGAdapter:
             # LightRAG's get_knowledge_graph performs BFS from node_label
             # Returns KnowledgeGraph(nodes=[KnowledgeGraphNode], edges=[KnowledgeGraphEdge])
             kg = call_async(
-                rag.get_knowledge_graph(entity_name, max_depth=depth)
+                rag.get_knowledge_graph(entity_name, max_depth=depth),
+                timeout=120,
             )
 
             if kg is None or (not kg.nodes and not kg.edges):
@@ -695,7 +696,8 @@ class LightRAGAdapter:
             # Use get_knowledge_graph("*") which returns all nodes sorted by degree
             # This is more efficient than get_all_nodes() for large graphs
             kg = call_async(
-                rag.get_knowledge_graph("*", max_depth=1, max_nodes=limit)
+                rag.get_knowledge_graph("*", max_depth=1, max_nodes=limit),
+                timeout=120,
             )
 
             if kg is None:
@@ -743,7 +745,7 @@ class LightRAGAdapter:
         if rag is None:
             return {"status": "error", "message": "LightRAG not available"}
         try:
-            result = call_async(rag.adelete_by_entity(entity_name))
+            result = call_async(rag.adelete_by_entity(entity_name), timeout=300)
             return {"status": "ok", "entity_name": entity_name, "result": str(result)}
         except Exception as e:
             logger.error(f"LightRAG delete_entity failed: {e}")
@@ -759,7 +761,7 @@ class LightRAGAdapter:
         if rag is None:
             return {"status": "error", "message": "LightRAG not available"}
         try:
-            return call_async(rag.get_processing_status())
+            return call_async(rag.get_processing_status(), timeout=30)
         except Exception as e:
             logger.error(f"LightRAG document_status failed: {e}")
             return {"status": "error", "message": str(e)}
@@ -785,10 +787,10 @@ class LightRAGAdapter:
             return {"status": "error", "message": "LightRAG not available"}
         try:
             if list_type == "labels":
-                data = call_async(rag.get_graph_labels())
+                data = call_async(rag.get_graph_labels(), timeout=30)
                 return {"status": "ok", "data": data}
             elif list_type == "documents":
-                data = call_async(rag.get_docs_by_status("processed"))
+                data = call_async(rag.get_docs_by_status("processed"), timeout=30)
                 return {"status": "ok", "data": data}
             elif list_type == "entities":
                 if entity_type:
@@ -816,7 +818,8 @@ class LightRAGAdapter:
                             "*",
                             max_depth=1,
                             max_nodes=limit,
-                        )
+                        ),
+                        timeout=120,
                     )
                     if kg is None:
                         return {"status": "ok", "data": []}
@@ -853,7 +856,8 @@ class LightRAGAdapter:
             return {"status": "error", "message": "LightRAG not available"}
         try:
             result = call_async(
-                rag.amerge_entities(source_entities, target_entity)
+                rag.amerge_entities(source_entities, target_entity),
+                timeout=300,
             )
             return {"status": "ok", "target_entity": target_entity, "result": str(result)}
         except AttributeError:
@@ -961,7 +965,7 @@ class LightRAGIngester:
 
         try:
             # Read current entity via graph traversal
-            kg = call_async(rag.get_knowledge_graph(entity_name, max_depth=1, max_nodes=1))
+            kg = call_async(rag.get_knowledge_graph(entity_name, max_depth=1, max_nodes=1), timeout=120)
 
             if kg is None or not kg.nodes:
                 return {"status": "error", "message": f"Habit entity not found: {entity_name}"}
@@ -1008,7 +1012,7 @@ class LightRAGIngester:
             # Delete if too many failures
             if confidence.get("fail_count", 0) >= 3:
                 try:
-                    call_async(rag.adelete_by_entity(entity_name))
+                    call_async(rag.adelete_by_entity(entity_name), timeout=300)
                     logger.info(f"[InteractionHabits] Deleted low-confidence habit: {entity_name}")
                 except Exception as del_e:
                     logger.warning(f"[InteractionHabits] Failed to delete habit {entity_name}: {del_e}")
@@ -1160,7 +1164,7 @@ class LightRAGIngester:
             })
 
         try:
-            call_async(rag.ainsert_custom_kg(custom_kg))
+            call_async(rag.ainsert_custom_kg(custom_kg), timeout=600)
             return {
                 "status": "ok",
                 "entities": len(custom_kg["entities"]),
@@ -1168,8 +1172,9 @@ class LightRAGIngester:
                 "chunks": len(custom_kg["chunks"]),
             }
         except Exception as e:
-            logger.error(f"LightRAG custom_kg injection failed: {e}")
-            return {"status": "error", "message": str(e)}
+            err_msg = str(e) or f"{type(e).__name__}: (no message)"
+            logger.error(f"LightRAG custom_kg injection failed: {err_msg}", exc_info=True)
+            return {"status": "error", "message": err_msg}
 
     # ============== Unstructured Path ==============
 
@@ -1200,11 +1205,12 @@ class LightRAGIngester:
             if file_path is not None:
                 kwargs["file_paths"] = file_path
 
-            track_id = call_async(rag.ainsert(content, **kwargs))
+            track_id = call_async(rag.ainsert(content, **kwargs), timeout=600)
             return {"status": "ok", "track_id": track_id}
         except Exception as e:
-            logger.error(f"LightRAG document injection failed: {e}")
-            return {"status": "error", "message": str(e)}
+            err_msg = str(e) or f"{type(e).__name__}: (no message)"
+            logger.error(f"LightRAG document injection failed: {err_msg}", exc_info=True)
+            return {"status": "error", "message": err_msg}
 
     def inject_documents(
         self,
@@ -1233,8 +1239,9 @@ class LightRAGIngester:
             if file_paths is not None:
                 kwargs["file_paths"] = file_paths
 
-            track_id = call_async(rag.ainsert(documents, **kwargs))
+            track_id = call_async(rag.ainsert(documents, **kwargs), timeout=600)
             return {"status": "ok", "track_id": track_id, "count": len(documents)}
         except Exception as e:
-            logger.error(f"LightRAG batch document injection failed: {e}")
-            return {"status": "error", "message": str(e)}
+            err_msg = str(e) or f"{type(e).__name__}: (no message)"
+            logger.error(f"LightRAG batch document injection failed: {err_msg}", exc_info=True)
+            return {"status": "error", "message": err_msg}

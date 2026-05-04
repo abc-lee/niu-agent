@@ -719,7 +719,7 @@ def lightrag_delete_document(doc_id: str) -> Dict[str, Any]:
         rag = adapter._get_rag()
         if rag is None:
             return {"status": "error", "message": "LightRAG not initialized"}
-        result = call_async(rag.adelete_by_doc_id(doc_id))
+        result = call_async(rag.adelete_by_doc_id(doc_id), timeout=600)
         return {"status": "ok", "doc_id": doc_id, "result": result}
     except Exception as e:
         logger.error(f"lightrag_delete_document failed: {e}")

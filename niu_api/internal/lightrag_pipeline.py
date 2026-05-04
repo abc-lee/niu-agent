@@ -174,7 +174,7 @@ class LightRAGPipeline:
 
             try:
                 content = _preprocess_content(task)
-                call_async(rag.ainsert(content))
+                call_async(rag.ainsert(content), timeout=600)
                 task.status = "completed"
                 task.error = None
                 logger.info(f"[PIPELINE] Task completed: {task.source_id}")
@@ -264,7 +264,7 @@ class LightRAGPipeline:
         # Step 1: Delete old document (best-effort, don't block on failure)
         delete_ok = False
         try:
-            call_async(rag.adelete_by_doc_id(doc_id))
+            call_async(rag.adelete_by_doc_id(doc_id), timeout=600)
             logger.info(f"[PIPELINE] Deleted old document: {doc_id}")
             delete_ok = True
         except Exception as e:
@@ -273,7 +273,7 @@ class LightRAGPipeline:
         # Step 2: Insert new content
         try:
             content = _preprocess_content(task)
-            track_id = call_async(rag.ainsert(content))
+            track_id = call_async(rag.ainsert(content), timeout=600)
             self._tracked_tasks[source_id] = task
             task.status = "completed"
             return {"status": "ok", "track_id": track_id}
