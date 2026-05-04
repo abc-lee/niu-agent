@@ -164,15 +164,9 @@ class RegionManager:
     ) -> list[str]:
         """Create master nodes + relationships for each community
 
-        For each community:
-        1. Collect entity names+descriptions (skip brain:region:* nodes)
-        2. Generate region name + summary via _summarize_region()
-        3. inject_entity("brain:region:{name}", "BrainRegion", summary)
-           with brain_meta_* attributes in description
-        4. inject_relation("brain:Niu" -> "brain:region:{name}",
-           keywords="brain_region_anchor", weight=1.0)
-        5. For each member: inject_relation("brain:region:{name}" -> entity,
-           keywords="belongs_to", weight=0.8)
+        Uses batch injection: collects all entities and relationships first,
+        then calls inject_custom_kg once. This avoids serially blocking
+        the LightRAG event loop with N individual calls per community.
 
         Args:
             partition_result: Community detection result from M1
@@ -180,6 +174,8 @@ class RegionManager:
         Returns:
             List of created region names (e.g. ["brain:region:Python", ...])
         """
+        all_entities: list[dict] = []
+        all_relationships: list[dict] = []
         created_regions: list[str] = []
 
         for partition in partition_result.partitions:
@@ -214,7 +210,7 @@ class RegionManager:
             # Full region entity name
             region_name = f"{REGION_PREFIX}{region_label}"
 
-            # Step 3: Inject region master node
+            # Step 3: Collect region master node entity
             description = _encode_description(
                 summary=region_summary,
                 region_id=community_id,
@@ -223,73 +219,63 @@ class RegionManager:
                 updated_at=now,
             )
 
-            entity_result = self._ingester.inject_custom_kg(
-                entities=[{
-                    "entity_name": region_name,
-                    "entity_type": REGION_ENTITY_TYPE,
-                    "description": description,
-                }],
-                relationships=[],
-                chunks=[],
-                source_id=REGION_SOURCE_ID,
-            )
+            all_entities.append({
+                "entity_name": region_name,
+                "entity_type": REGION_ENTITY_TYPE,
+                "description": description,
+            })
 
-            if isinstance(entity_result, dict) and entity_result.get("status") == "error":
-                logger.warning(
-                    "注入脑区实体失败: %s — %s",
-                    region_name,
-                    entity_result.get("message", "unknown"),
-                )
-                continue
+            # Step 4: Collect anchor relation from brain:Niu to region
+            all_relationships.append({
+                "src_id": NIU_ENTITY,
+                "tgt_id": region_name,
+                "keywords": ANCHOR_RELATION,
+                "description": f"Brain region anchor: {region_label}",
+                "weight": 1.0,
+                "source_id": REGION_SOURCE_ID,
+                "file_path": REGION_FILE_PATH,
+            })
 
-            # Step 4: Anchor relation from brain:Niu to region
-            self._ingester.inject_custom_kg(
-                entities=[],
-                relationships=[
-                    {
-                        "src_id": NIU_ENTITY,
-                        "tgt_id": region_name,
-                        "keywords": ANCHOR_RELATION,
-                        "description": f"Brain region anchor: {region_label}",
-                        "weight": 1.0,
-                        "source_id": REGION_SOURCE_ID,
-                        "file_path": REGION_FILE_PATH,
-                    }
-                ],
-                chunks=[],
-                source_id=REGION_SOURCE_ID,
-            )
-
-            # Step 5: belongs_to relations from region to each member
-            member_relations = []
+            # Step 5: Collect belongs_to relations from region to each member
             for member in members:
-                member_relations.append(
-                    {
-                        "src_id": region_name,
-                        "tgt_id": member,
-                        "keywords": BELONGS_TO_RELATION,
-                        "description": f"{member} belongs to region {region_label}",
-                        "weight": 0.8,
-                        "source_id": REGION_SOURCE_ID,
-                        "file_path": REGION_FILE_PATH,
-                    }
-                )
-
-            if member_relations:
-                self._ingester.inject_custom_kg(
-                    entities=[],
-                    relationships=member_relations,
-                    chunks=[],
-                    source_id=REGION_SOURCE_ID,
-                )
+                all_relationships.append({
+                    "src_id": region_name,
+                    "tgt_id": member,
+                    "keywords": BELONGS_TO_RELATION,
+                    "description": f"{member} belongs to region {region_label}",
+                    "weight": 0.8,
+                    "source_id": REGION_SOURCE_ID,
+                    "file_path": REGION_FILE_PATH,
+                })
 
             created_regions.append(region_name)
             logger.info(
-                "创建脑区节点: %s (社区 %d, %d 成员, 代表: %s)",
+                "收集脑区节点: %s (社区 %d, %d 成员, 代表: %s)",
                 region_name,
                 partition.region_id,
                 len(members),
                 representative,
+            )
+
+        # Batch inject all collected data in one call
+        if all_entities or all_relationships:
+            result = self._ingester.inject_custom_kg(
+                entities=all_entities,
+                relationships=all_relationships,
+                chunks=[],
+                source_id=REGION_SOURCE_ID,
+            )
+            if isinstance(result, dict) and result.get("status") == "error":
+                logger.warning(
+                    "批量注入脑区实体失败: %s (collected %d regions)",
+                    result.get("message", "unknown"),
+                    len(created_regions),
+                )
+                return []
+            logger.info(
+                "批量注入 %d 个脑区实体, %d 条关系",
+                len(all_entities),
+                len(all_relationships),
             )
 
         logger.info("共创建 %d 个脑区节点", len(created_regions))
@@ -309,6 +295,19 @@ class RegionManager:
         Args:
             region_names: List of region entity names to update
         """
+        all_entities: list[dict] = []
+
+        # Pre-fetch all region entities once (avoids N+1 list_entities calls)
+        region_desc_map: dict[str, str] = {}
+        list_result = self._adapter.list_entities(
+            list_type="entities", entity_type=REGION_ENTITY_TYPE, limit=1000
+        )
+        if isinstance(list_result, dict) and list_result.get("status") == "ok":
+            for entity in list_result.get("data", []):
+                name = entity.get("id") or entity.get("entity_name", "")
+                if name:
+                    region_desc_map[name] = entity.get("description", "")
+
         for region_name in region_names:
             # Step 1: Get current members
             members = self.get_region_members(region_name)
@@ -317,18 +316,8 @@ class RegionManager:
                 logger.debug("脑区 %s 无成员，跳过摘要更新", region_name)
                 continue
 
-            # Step 2: Get current region info to preserve metadata
-            # Use list_entities with entity_type filter to find the region node
-            # (explore_node(depth=0) may return no nodes for newly created regions)
-            current_desc = ""
-            list_result = self._adapter.list_entities(
-                list_type="entities", entity_type=REGION_ENTITY_TYPE, limit=1000
-            )
-            if isinstance(list_result, dict) and list_result.get("status") == "ok":
-                for entity in list_result.get("data", []):
-                    if entity.get("id") == region_name or entity.get("entity_name") == region_name:
-                        current_desc = entity.get("description", "")
-                        break
+            # Step 2: Get current region description from pre-fetched map
+            current_desc = region_desc_map.get(region_name, "")
 
             if not current_desc:
                 # Fallback: try explore_node for backward compatibility
@@ -350,8 +339,8 @@ class RegionManager:
             community_id = parsed.get("region_id", "")
             representative = members[0] if members else ""
 
-            # Build entity summaries for re-generation
-            entity_summaries = [f"{m}" for m in members]
+            # Build entity summaries with type labels from graph
+            entity_summaries = self._build_entity_summaries(members, set(), {})
             _, region_summary = self._summarize_region(entity_summaries)
 
             now = time.time()
@@ -363,20 +352,24 @@ class RegionManager:
                 updated_at=now,
             )
 
-            # Step 3: Update (overwrite) region master node
-            self._ingester.inject_custom_kg(
-                entities=[{
-                    "entity_name": region_name,
-                    "entity_type": REGION_ENTITY_TYPE,
-                    "description": description,
-                }],
-                relationships=[],
-                chunks=[],
-                source_id=REGION_SOURCE_ID,
-            )
+            # Collect updated entity for batch inject
+            all_entities.append({
+                "entity_name": region_name,
+                "entity_type": REGION_ENTITY_TYPE,
+                "description": description,
+            })
 
             logger.info(
                 "更新脑区摘要: %s (%d 成员)", region_name, len(members)
+            )
+
+        # Batch inject all updated entities in one call
+        if all_entities:
+            self._ingester.inject_custom_kg(
+                entities=all_entities,
+                relationships=[],
+                chunks=[],
+                source_id=REGION_SOURCE_ID,
             )
 
     def get_all_regions(self) -> list[BrainRegionInfo]:
@@ -491,6 +484,10 @@ class RegionManager:
         existing_regions = self.get_all_regions()
 
         removed: list[str] = []
+        # NOTE: delete_entity calls call_async individually. This is acceptable
+        # because stale regions are typically very few (0-3), and delete is fast
+        # (just node/edge removal, no embedding computation). If this becomes a
+        # bottleneck, a batch delete API would be needed in LightRAG.
         for region in existing_regions:
             if region.community_id not in current_community_ids:
                 # Delete stale region
@@ -691,6 +688,8 @@ class RegionManager:
         """
         disconnected = 0
         try:
+            from niu_api.internal.lightrag_manager import graph_write_lock
+
             rag = self._adapter._get_rag()
             if rag is None:
                 return 0
@@ -699,30 +698,31 @@ class RegionManager:
             if kg is None:
                 return 0
 
-            for region in regions:
-                try:
-                    neighbors = kg.get_neighbors(region.name)
-                except AttributeError:
-                    return 0
+            with graph_write_lock():
+                for region in regions:
+                    try:
+                        neighbors = kg.get_neighbors(region.name)
+                    except AttributeError:
+                        return 0
 
-                if not neighbors:
-                    continue
-
-                for neighbor_id, edge_data in list(neighbors.items()):
-                    if not isinstance(edge_data, dict):
+                    if not neighbors:
                         continue
-                    keywords = edge_data.get("keywords", "")
-                    if keywords.startswith("_region:") or keywords.startswith("_session:"):
-                        old_weight = float(edge_data.get("weight", 1.0))
-                        new_weight = old_weight * decay_factor
-                        if new_weight < threshold:
-                            try:
-                                kg.remove_edge(region.name, neighbor_id)
-                            except Exception:
-                                pass
-                            disconnected += 1
-                        else:
-                            edge_data["weight"] = new_weight
+
+                    for neighbor_id, edge_data in list(neighbors.items()):
+                        if not isinstance(edge_data, dict):
+                            continue
+                        keywords = edge_data.get("keywords", "")
+                        if keywords.startswith("_region:") or keywords.startswith("_session:"):
+                            old_weight = float(edge_data.get("weight", 1.0))
+                            new_weight = old_weight * decay_factor
+                            if new_weight < threshold:
+                                try:
+                                    kg.remove_edge(region.name, neighbor_id)
+                                except Exception:
+                                    pass
+                                disconnected += 1
+                            else:
+                                edge_data["weight"] = new_weight
         except Exception as e:
             logger.warning("Edge decay failed: %s", e)
 
@@ -757,6 +757,8 @@ def create_default_regions(adapter: Any, ingester: Any) -> dict:
     Returns:
         Dict with created and existing counts.
     """
+    all_entities: list[dict] = []
+    all_relationships: list[dict] = []
     created = 0
     existing = 0
 
@@ -779,34 +781,44 @@ def create_default_regions(adapter: Any, ingester: Any) -> dict:
         except Exception:
             pass  # Proceed to create
 
-        # Create region entity
+        # Collect region entity and anchor relation for batch inject
+        all_entities.append({
+            "entity_name": region_name,
+            "entity_type": REGION_ENTITY_TYPE,
+            "description": config["description"],
+        })
+        all_relationships.append({
+            "src_id": NIU_ENTITY,
+            "tgt_id": region_name,
+            "keywords": ANCHOR_RELATION,
+            "description": f"缺省脑区锚点: {region_label}",
+            "source_id": REGION_SOURCE_ID,
+            "file_path": REGION_FILE_PATH,
+        })
+        created += 1
+
+    # Batch inject all default regions in one call
+    if all_entities or all_relationships:
         try:
-            ingester.inject_custom_kg(
-                entities=[{
-                    "entity_name": region_name,
-                    "entity_type": REGION_ENTITY_TYPE,
-                    "description": config["description"],
-                }],
-                relationships=[],
+            result = ingester.inject_custom_kg(
+                entities=all_entities,
+                relationships=all_relationships,
                 chunks=[],
                 source_id=REGION_SOURCE_ID,
             )
-            # Link to brain:Niu via brain_region_anchor
-            ingester.inject_custom_kg(
-                entities=[],
-                relationships=[{
-                    "src_id": NIU_ENTITY,
-                    "tgt_id": region_name,
-                    "keywords": ANCHOR_RELATION,
-                    "description": f"缺省脑区锚点: {region_label}",
-                    "source_id": REGION_SOURCE_ID,
-                    "file_path": REGION_FILE_PATH,
-                }],
-                chunks=[],
-                source_id=REGION_SOURCE_ID,
+            if isinstance(result, dict) and result.get("status") == "error":
+                logger.warning(
+                    "批量注入默认脑区失败: %s",
+                    result.get("message", "unknown"),
+                )
+                return {"created": 0, "existing": existing}
+            logger.info(
+                "批量注入 %d 个默认脑区, %d 条锚点关系",
+                len(all_entities),
+                len(all_relationships),
             )
-            created += 1
         except Exception as e:
-            logger.warning(f"Failed to create default region {region_label}: {e}")
+            logger.warning(f"批量注入默认脑区失败: {e}")
+            return {"created": 0, "existing": existing}
 
     return {"created": created, "existing": existing}

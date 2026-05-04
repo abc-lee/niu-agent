@@ -501,13 +501,19 @@ def surprising_connections(
 
 @router.get("/changelog")
 def graph_changelog(
-    limit: int = Query(default=50, ge=1, le=200),
+    limit: int = Query(default=200, ge=1, le=500),
     since: Optional[str] = Query(default=None),
 ):
-    """Get recent graph changes.
+    """Get recent graph changes for incremental frontend updates.
 
-    Returns ``{changes: [...]}``.  LightRAG does not natively track
-    a changelog, so this always returns an empty list for now.
-    The frontend polls this endpoint for incremental updates.
+    Returns ``{changes: [...]}`` — a list of entity_created, edge_created,
+    entity_deleted, and entity_merged events since the given timestamp.
+
+    The frontend polls this endpoint every 1 second to merge new nodes/edges
+    into the force-graph visualization without re-fetching the full snapshot.
     """
-    return {"changes": []}
+    from niu_api.internal.lightrag_manager import get_change_log
+
+    change_log = get_change_log()
+    changes = change_log.get_changes(since=since or "", limit=limit)
+    return {"changes": changes}
