@@ -359,7 +359,8 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             location TEXT,
             camera TEXT,
             abstract TEXT,
-            ingested_at TEXT
+            ingested_at TEXT,
+            kg_synced INTEGER DEFAULT 0
         );
         
         CREATE TABLE IF NOT EXISTS faces (
@@ -390,6 +391,12 @@ def _init_schema(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_photos_taken ON photos(taken_at);
         CREATE INDEX IF NOT EXISTS idx_co_occurrences ON co_occurrences(person_a_id, person_b_id);
     """)
+    # Migration: add kg_synced column if missing (existing DBs)
+    try:
+        conn.execute("ALTER TABLE photos ADD COLUMN kg_synced INTEGER DEFAULT 0")
+    except sqlite3.OperationalError as e:
+        if "duplicate column" not in str(e).lower():
+            raise
     conn.commit()
     logger.info("Photo database schema initialized")
 
@@ -443,14 +450,17 @@ def sync_photo_to_kg(file_path: str, abstract: str, detected_persons: list) -> d
         chunks = []
 
         # 1a. 照片描述作为 chunk（供向量检索）
-        # content 不包含人物名称，避免 LLM 自动提取创建"未命名人物"实体
+        # content 不包含"未命名人物"名称，避免 LLM 自动提取创建重复实体
+        # 已知人物名称（用户命名）保留在描述中，因为它们在 KG 中有对应实体
         chunk_content = f"[Photo: {file_path}]"
         if abstract:
-            # abstract 格式: "未命名人物_1合影，2009年06月04日"
-            # 只保留日期等元信息，去除人物名称部分
+            # abstract 格式: "未命名人物_1合影，2009年06月04日" 或 "任飞合影，2009年06月04日"
+            # 仅当第一段包含"未命名人物"时才去除，保留已知人物名称
             parts = abstract.split("，")
-            if len(parts) > 1:
-                chunk_content += f"\n{parts[-1]}"
+            if len(parts) > 1 and "未命名人物" in parts[0]:
+                chunk_content += f"\n{'，'.join(parts[1:])}"
+            else:
+                chunk_content += f"\n{abstract}"
         chunks.append({
             "content": chunk_content,
             "source_id": "photo",
@@ -458,10 +468,21 @@ def sync_photo_to_kg(file_path: str, abstract: str, detected_persons: list) -> d
         })
 
         # 1b. 照片实体
+        # description 不包含"未命名人物"名称，避免 LLM 异步提取时从中创建重复实体
+        # 已知人物名称（用户命名）保留，因为它们在 KG 中有对应 person:{uuid} 实体
+        photo_description = f"Photo: {title}"
+        if abstract:
+            parts = abstract.split("，")
+            if len(parts) > 1 and "未命名人物" in parts[0]:
+                photo_description += f"，{'，'.join(parts[1:])}"
+            else:
+                photo_description += f"，{abstract}"
         entities.append({
             "entity_name": photo_entity_name,
             "entity_type": "Photo",
-            "description": abstract,
+            "description": photo_description,
+            "file_path": file_path,
+            "source_id": "photo",
         })
         entities_created.append(photo_entity_name)
 
@@ -477,17 +498,23 @@ def sync_photo_to_kg(file_path: str, abstract: str, detected_persons: list) -> d
                     person_name = person_id
 
                 entity_name = f"person:{person_id}"
+                # 未命名人物用 entity_name 作为 description，避免 LLM 提取创建重复实体
+                # 已命名人物保留真实名称，因为 KG 中有对应 person:{uuid} 实体
+                person_desc = entity_name if person_name.startswith("未命名人物") else person_name
                 entities.append({
                     "entity_name": entity_name,
                     "entity_type": "Person",
-                    "description": person_name,
+                    "description": person_desc,
+                    "file_path": file_path,
+                    "source_id": "photo",
                 })
                 # Photo -> Person relationship
+                # description 不包含人物名称，避免 LLM 提取创建重复实体
                 relationships.append({
                     "src_id": photo_entity_name,
                     "tgt_id": entity_name,
                     "keywords": "depicts",
-                    "description": f"Photo {title} depicts {person_name}",
+                    "description": f"Photo {title} depicts person:{person_id}",
                     "source_id": "photo",
                     "file_path": file_path,
                     "weight": round(similarity, 2),
@@ -535,6 +562,17 @@ def sync_photo_to_kg(file_path: str, abstract: str, detected_persons: list) -> d
                     source_id="photo",
                 )
 
+        # Mark photo as KG-synced to prevent lightrag_sync re-processing
+        try:
+            conn = get_connection()
+            conn.execute(
+                "UPDATE photos SET kg_synced = 1 WHERE file_path = ?",
+                (file_path,),
+            )
+            conn.commit()
+        except Exception as e:
+            logger.warning(f"[KG] Failed to mark kg_synced for {file_path}: {e}")
+
         logger.info(
             f"[KG] Photo sync complete: {len(entities_created)} entities, "
             f"{relations_created} co-occurrences for {file_path}"
@@ -565,7 +603,7 @@ def sync_video_to_kg(file_path: str, abstract: str) -> dict:
             return {"status": "skipped", "reason": "LightRAG not available"}
 
         content = f"[Video: {file_path}]\n{abstract}"
-        call_async(rag.ainsert(content))
+        call_async(rag.ainsert(content), timeout=600)
         logger.info(f"[KG] Video ingested into LightRAG: {file_path}")
         return {"status": "success", "doc_uri": file_path}
 
@@ -1883,22 +1921,44 @@ def name_person(person_id: str, name: str) -> dict:
             else:
                 logger.warning("[NAME_PERSON] lightrag_insert_entity not available")
 
-            # 合并旧 auto_label 实体到 person:{uuid} 实体
+            # KG 清理: 合并/删除所有"未命名人物"实体
+            # LLM 异步提取可能在 ingest 后几分钟才创建"未命名人物"实体，
+            # 所以搜索 KG 中所有以"未命名人物"开头的实体并合并到 person:{uuid}
             auto_label = row[1]  # "未命名人物_X"
-            if auto_label and auto_label.startswith("未命名人物"):
-                merge_entities = registry.get("lightrag-server/lightrag_merge_entities")
-                if merge_entities:
-                    merge_result = merge_entities(
-                        source_entities=[auto_label],
-                        target_entity=f"person:{person_id}",
-                    )
-                    logger.info(f"[NAME_PERSON] Merged old KG entity '{auto_label}' into 'person:{person_id}': {merge_result}")
-                else:
-                    # fallback: 尝试删除旧实体
-                    delete_entity = registry.get("lightrag-server/lightrag_delete_entity")
-                    if delete_entity:
-                        delete_entity(entity_name=auto_label)
-                        logger.info(f"[NAME_PERSON] Deleted old KG entity '{auto_label}'")
+            list_fn = registry.get("lightrag-server/lightrag_list_entities")
+            merge_fn = registry.get("lightrag-server/lightrag_merge_entities")
+            delete_fn = registry.get("lightrag-server/lightrag_delete_entity")
+            target_entity = f"person:{person_id}"
+
+            if list_fn and merge_fn:
+                try:
+                    kg_result = list_fn(list_type="entities", entity_type="Person", limit=1000)
+                    if kg_result.get("status") == "ok":
+                        kg_entities = kg_result.get("data", [])
+                        # 排除 auto_label，避免重复合并（auto_label 在后面单独处理）
+                        unnamed = [e["id"] for e in kg_entities
+                                   if e.get("id", "").startswith("未命名人物") and e["id"] != auto_label]
+                        if unnamed:
+                            logger.info(f"[NAME_PERSON] Merging {len(unnamed)} unnamed entities into {target_entity}: {unnamed}")
+                            merge_fn(source_entities=unnamed, target_entity=target_entity)
+                        else:
+                            logger.info(f"[NAME_PERSON] No unnamed entities found in KG")
+                except Exception as e:
+                    logger.debug(f"[NAME_PERSON] KG unnamed scan failed: {e}")
+
+            # 合并原始 auto_label（可能不以"未命名人物"开头，如已命名人物改名）
+            if auto_label and merge_fn:
+                try:
+                    merge_fn(source_entities=[auto_label], target_entity=target_entity)
+                    logger.info(f"[NAME_PERSON] Merged auto_label '{auto_label}' into {target_entity}")
+                except Exception as e:
+                    logger.debug(f"[NAME_PERSON] Merge auto_label failed: {e}")
+                    if delete_fn:
+                        try:
+                            delete_fn(entity_name=auto_label)
+                            logger.info(f"[NAME_PERSON] Deleted auto_label entity: {auto_label}")
+                        except Exception:
+                            pass
         except Exception as e:
             logger.warning(f"[NAME_PERSON] LightRAG sync failed: {e}")
 
@@ -2631,15 +2691,30 @@ def ingest_document(file_path: str, category: str = "其他", mode: str = "copy"
                         content=file_content,
                         file_path=str(Path(final_path).resolve()),
                     )
-                    logger.info(
-                        f"[INGEST] LightRAG ainsert: {lightrag_result.get('status', 'unknown')}"
-                    )
+                    lr_status = lightrag_result.get("status", "unknown")
+                    if lr_status == "ok":
+                        logger.info(f"[INGEST] LightRAG ainsert: ok")
+                    else:
+                        lr_msg = lightrag_result.get("message", "")
+                        logger.warning(
+                            f"[INGEST] LightRAG ainsert failed: status={lr_status}, message={lr_msg}"
+                        )
                 except Exception as lr_err:
                     logger.warning(f"[INGEST] LightRAG ainsert 失败（不影响文件入库）: {lr_err}")
             else:
                 logger.info("[INGEST] 无文本内容，跳过 LightRAG ainsert")
         except Exception as e:
             logger.warning(f"[INGEST] 无法读取文件内容: {e}")
+
+        # Determine lightrag status for return value
+        lr_msg = ""
+        if lightrag_result and lightrag_result.get("status") == "ok":
+            lr_status = "inserted"
+        elif lightrag_result and lightrag_result.get("status") == "error":
+            lr_status = "error"
+            lr_msg = lightrag_result.get("message", "")
+        else:
+            lr_status = "skipped"
 
         return {
             "status": "success",
@@ -2648,7 +2723,8 @@ def ingest_document(file_path: str, category: str = "其他", mode: str = "copy"
             "original_path": str(source),
             "category": category,
             "content_length": content_length,
-            "lightrag": "inserted" if lightrag_result and lightrag_result.get("status") in ("success", "ok") else "skipped",
+            "lightrag": lr_status,
+            "lightrag_message": lr_msg or None,
         }
 
     except PermissionError as e:
