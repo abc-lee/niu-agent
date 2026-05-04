@@ -1,9 +1,9 @@
 """Tests for ingest_document modifications:
 1. Returns status: "success" without need_l1
-2. Calls lightrag-server/lightrag_insert with full text content
+2. Calls lightrag-server/lightrag_insert_file with file path
 3. No calls to vector-store or kg-server tools
 4. Auto-detects file type (directory/photo/document)
-5. Full-text to ainsert, no truncation for LightRAG
+5. File path passed to LightRAG, not text content
 """
 
 import os
@@ -83,14 +83,14 @@ class TestNoNeedL1:
 
 
 # ---------------------------------------------------------------------------
-# 2. ingest_document calls lightrag-server/lightrag_insert with full text
+# 2. ingest_document calls lightrag-server/lightrag_insert_file with file path
 # ---------------------------------------------------------------------------
 
 
 class TestLightragInsertCall:
-    """Verify that lightrag_insert is called with full content."""
+    """Verify that lightrag_insert_file is called with file path."""
 
-    def test_calls_lightrag_insert_with_full_content(self, mock_registry, mock_preferences, tmp_path):
+    def test_calls_lightrag_insert_file_with_file_path(self, mock_registry, mock_preferences, tmp_path):
         from niu_photo_server import ingest_document
 
         mock_reg, mock_insert = mock_registry
@@ -102,19 +102,16 @@ class TestLightragInsertCall:
 
         result = ingest_document(str(doc), category="其他", mode="copy")
 
-        # lightrag_insert should have been called
-        mock_reg.get.assert_called_with("lightrag-server/lightrag_insert")
+        # lightrag_insert_file should have been called (not lightrag_insert)
+        mock_reg.get.assert_called_with("lightrag-server/lightrag_insert_file")
         mock_insert.assert_called_once()
 
-        call_kwargs = mock_insert.call_args
-        # Verify content is passed (not truncated)
-        passed_content = call_kwargs.kwargs.get("content") or call_kwargs[1].get("content")
-        if passed_content is None and call_kwargs[0]:
-            passed_content = call_kwargs[0][0]
-        assert passed_content is not None
-        assert len(passed_content) == len(content), "Content should not be truncated for LightRAG"
+        call_kwargs = mock_insert.call_args.kwargs
+        # Verify file_path is passed (not content)
+        assert "file_path" in call_kwargs, "lightrag_insert_file should receive file_path"
+        assert "content" not in call_kwargs, "lightrag_insert_file should NOT receive content"
 
-    def test_lightrag_insert_receives_file_path(self, mock_registry, mock_preferences, tmp_path):
+    def test_lightrag_insert_file_receives_file_path(self, mock_registry, mock_preferences, tmp_path):
         from niu_photo_server import ingest_document
 
         mock_reg, mock_insert = mock_registry
@@ -127,7 +124,7 @@ class TestLightragInsertCall:
 
         mock_insert.assert_called_once()
         call_kwargs = mock_insert.call_args.kwargs
-        assert "file_path" in call_kwargs, "lightrag_insert should receive file_path"
+        assert "file_path" in call_kwargs, "lightrag_insert_file should receive file_path"
 
     def test_lightrag_field_in_result(self, mock_registry, mock_preferences, tmp_path):
         from niu_photo_server import ingest_document
@@ -143,22 +140,26 @@ class TestLightragInsertCall:
         assert "lightrag" in result
         assert result["lightrag"] in ("inserted", "skipped")
 
-    def test_lightrag_skipped_when_no_content(self, mock_registry, mock_preferences, tmp_path):
+    def test_lightrag_insert_file_always_called(self, mock_registry, mock_preferences, tmp_path):
+        """lightrag_insert_file is always called, even for binary files.
+
+        Unlike the old lightrag_insert which skipped when no text content,
+        lightrag_insert_file passes the file to LightRAG which handles parsing.
+        """
         from niu_photo_server import ingest_document
 
         mock_reg, mock_insert = mock_registry
 
-        # Create a binary file that read_file_content cannot parse
+        # Create a binary file
         doc = tmp_path / "source" / "binary.dat"
         doc.parent.mkdir(parents=True, exist_ok=True)
         doc.write_bytes(b"\x00\x01\x02\x03\xff\xfe")
 
-        with patch("niu_photo_server.read_file_content", return_value=None):
-            result = ingest_document(str(doc), category="其他", mode="copy")
+        result = ingest_document(str(doc), category="其他", mode="copy")
 
-        # insert should not be called when there's no content
-        mock_insert.assert_not_called()
-        assert result.get("lightrag") == "skipped"
+        # insert_file should be called even for binary files
+        mock_reg.get.assert_called_with("lightrag-server/lightrag_insert_file")
+        mock_insert.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -241,7 +242,8 @@ class TestFileTypeDetection:
         with patch("niu_photo_server.ingest_photo") as mock_photo:
             mock_photo.return_value = {"status": "success", "action": "created"}
             result = ingest_document(str(photo), category="其他", mode="copy")
-            mock_photo.assert_called_once_with(str(photo), "其他", "copy")
+            # ingest_photo is called with (path, category) — mode is not passed
+            mock_photo.assert_called_once_with(str(photo), "其他")
 
     def test_document_file_is_processed_as_document(self, mock_registry, mock_preferences, tmp_path):
         from niu_photo_server import ingest_document
@@ -259,14 +261,14 @@ class TestFileTypeDetection:
 
 
 # ---------------------------------------------------------------------------
-# 5. Full-text to ainsert, no truncation for LightRAG
+# 5. File path passed to LightRAG (no truncation — LightRAG reads the file)
 # ---------------------------------------------------------------------------
 
 
 class TestNoTruncation:
-    """Verify that content is NOT truncated when sent to LightRAG."""
+    """Verify that file_path is passed to LightRAG (no content truncation)."""
 
-    def test_long_content_not_truncated(self, mock_registry, mock_preferences, tmp_path):
+    def test_file_path_passed_not_content(self, mock_registry, mock_preferences, tmp_path):
         from niu_photo_server import ingest_document
 
         mock_reg, mock_insert = mock_registry
@@ -281,14 +283,11 @@ class TestNoTruncation:
 
         mock_insert.assert_called_once()
         call_kwargs = mock_insert.call_args.kwargs
-        passed_content = call_kwargs.get("content")
-        assert passed_content is not None
-        assert len(passed_content) == 15000, (
-            f"Full content should be passed to LightRAG without truncation, "
-            f"got {len(passed_content)} chars instead of 15000"
-        )
+        # file_path should be passed, NOT content
+        assert "file_path" in call_kwargs
+        assert "content" not in call_kwargs
 
-    def test_content_length_reflects_full_size(self, mock_registry, mock_preferences, tmp_path):
+    def test_content_length_reflects_file_size(self, mock_registry, mock_preferences, tmp_path):
         from niu_photo_server import ingest_document
 
         content = "Hello world! " * 500  # ~6500 chars
@@ -298,10 +297,8 @@ class TestNoTruncation:
 
         result = ingest_document(str(doc), category="其他", mode="copy")
 
-        assert result["content_length"] == len(content), (
-            f"content_length should reflect full content size, "
-            f"got {result['content_length']} instead of {len(content)}"
-        )
+        # content_length is now file size in bytes, not text char count
+        assert result["content_length"] == doc.stat().st_size
 
 
 # ---------------------------------------------------------------------------
