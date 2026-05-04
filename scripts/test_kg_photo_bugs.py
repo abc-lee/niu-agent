@@ -41,16 +41,24 @@ _lightrag_inited = False
 
 
 def _init_lightrag():
-    """初始化 LightRAG（只做一次）"""
+    """初始化 LightRAG + ToolRegistry（只做一次）"""
     global _lightrag_inited
     if _lightrag_inited:
         return
+
+    # 1. 初始化 LightRAG
     from niu_api.internal.lightrag_manager import get_lightrag
     rag = get_lightrag()
     if rag is None:
         print("ERROR: LightRAG not available, cannot run tests")
         sys.exit(1)
     print(f"[INIT] LightRAG initialized")
+
+    # 2. 初始化 ToolRegistry（sync_photo_to_kg 依赖 registry 中的 lightrag 工具）
+    from agent.mcp_loader import load_mcp_tools
+    registry = load_mcp_tools()
+    print(f"[INIT] ToolRegistry loaded: {len(registry._tools)} tools")
+
     _lightrag_inited = True
 
 
@@ -158,8 +166,8 @@ def test_ingest_photo_kg_entities():
     print(f"[TEST] file_path: {test_file_path}")
     print(f"[TEST] detected_persons: {json.dumps(detected_persons, ensure_ascii=False, default=str)[:200]}")
 
-    # 等待 LightRAG 处理完成
-    time.sleep(5)
+    # 等待 LightRAG 处理完成（lightrag_insert_custom_kg 是同步的，不需要等待）
+    time.sleep(2)
 
     # 2. 获取 KG 中的实体列表
     kg_entities = _list_kg_entities()
