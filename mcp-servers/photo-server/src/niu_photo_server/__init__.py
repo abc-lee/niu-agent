@@ -81,7 +81,7 @@ TOOL_SCHEMAS = {
             "type": "object",
             "properties": {
                 "file_path": {"type": "string", "description": "文档文件路径"},
-                "category": {"type": "string", "description": "分类，仅填写用户明确要求的分类，否则留空不填"},
+                "category": {"type": "string", "description": "分类，仅填写用户明确要求的分类，否则不填", "default": "其他"},
                 "mode": {
                     "type": "string",
                     "enum": ["copy", "move", "reference"],
@@ -2635,39 +2635,15 @@ def rename_file(file_path: Path) -> str:
 # ============== 工具实现 ==============
 
 
-def ingest_document(file_path: str, category: Optional[str] = None, mode: str = "copy") -> dict:
+def ingest_document(file_path: str, category: str = "其他", mode: str = "copy") -> dict:
     """文档入库工具 — 全文 ainsert 到 LightRAG
 
     自动检测路径类型（目录/照片/文档）：
     - 目录：检查是否包含照片，转到照片批量处理
     - 照片：转到照片入库流程
     - 文档：读取全文（限 <20K），调用 lightrag_insert 全文 ainsert
-
-    如果不传 category，会读取文件内容返回给你，请你判断分类后再次调用本工具。
     """
     try:
-        # No category → read file content and ask caller to classify
-        if category is None:
-            content = read_file_content(file_path)
-            if content:
-                preview = content[:3000] if len(content) > 3000 else content
-                return {
-                    "status": "need_category",
-                    "message": f"请根据以下内容判断文档分类，然后再次调用 ingest_document 并传入 category 参数。\n\n文件: {file_path}\n内容预览:\n{preview}",
-                    "file_path": file_path,
-                    "mode": mode,
-                    "content_length": len(content),
-                }
-            else:
-                # Binary file or unreadable — return file info for classification
-                ext = Path(file_path).suffix.lower()
-                return {
-                    "status": "need_category",
-                    "message": f"请根据文件信息判断文档分类，然后再次调用 ingest_document 并传入 category 参数。\n\n文件: {file_path}\n格式: {ext}",
-                    "file_path": file_path,
-                    "mode": mode,
-                }
-
         logger.info(f"[INGEST] 开始处理: {file_path}")
         source = Path(file_path)
         if not source.exists():
