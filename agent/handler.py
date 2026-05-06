@@ -43,8 +43,11 @@ def file_read(
     """读取文件内容"""
     import itertools
     import collections
+    import os
 
     try:
+        if os.path.isdir(path):
+            return f"Error: '{path}' is a directory, not a file. Please provide a file path, e.g. 'memory/skills/photo-face-display.md'"
         with open(path, "r", encoding="utf-8", errors="replace") as f:
             stream = ((i, l.rstrip("\r\n")) for i, l in enumerate(f, 1))
             stream = itertools.dropwhile(lambda x: x[0] < start, stream)
@@ -76,6 +79,8 @@ def file_read(
                 result = f"[FILE] Showing {len(res)} lines from line {start}\n" + result
 
             return result
+    except FileNotFoundError:
+        return f"Error: File not found: '{path}'. Please check the file path."
     except Exception as e:
         return f"Error: {str(e)}"
 
@@ -783,7 +788,6 @@ class NiuHandler(BaseHandler):
                     bg = get_brain_graph()
                     bg.store_memory(
                         content=content,
-                        level="L1",
                         memory_type=memory_type,
                     )
                 except Exception as e:

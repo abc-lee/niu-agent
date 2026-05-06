@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException
 from loguru import logger
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from niu_api.internal.brain_graph import format_memories_for_prompt, get_brain_graph
 
@@ -20,9 +20,16 @@ router = APIRouter(prefix="/api/brain", tags=["brain"])
 
 class RememberRequest(BaseModel):
     content: str = Field(..., min_length=1, max_length=2000)
-    level: str = Field(default="L0", pattern=r"^(L0|L1|L2)$")
     memory_type: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
+
+    @field_validator("memory_type")
+    @classmethod
+    def validate_memory_type(cls, v):
+        valid = {"environment", "preferences", "skills", "experiences", "facts"}
+        if v is not None and v not in valid:
+            raise ValueError(f"Invalid memory_type '{v}', must be one of: {', '.join(sorted(valid))}")
+        return v
 
 
 class RecallRequest(BaseModel):
@@ -41,7 +48,6 @@ def remember_memory(req: RememberRequest) -> Dict[str, Any]:
         bg = get_brain_graph()
         result = bg.store_memory(
             content=req.content,
-            level=req.level,
             memory_type=req.memory_type,
             metadata=req.metadata,
         )

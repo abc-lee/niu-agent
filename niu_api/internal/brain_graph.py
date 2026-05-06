@@ -1,13 +1,13 @@
 """
 Brain Graph — Memory system on LightRAG knowledge graph.
 
-Replaces the flat L0/L1/L2 vector-based memory system with a structured
-knowledge graph where memories are relations between entities.
+Memories are stored as weighted relations from brain:Niu to typed entities,
+and retrieved via LightRAG query_data(mode="mix").
 
 Core concepts:
 - brain:Niu — the "self" entity, all memory relations start from it
 - brain:{type}:{name} — namespaced entity names (Person, Concept, Skill, Event, Project)
-- Memory levels (L0/L1/L2) map to relation types and weights
+- memory_type drives relation type (MEMORY_TYPE_TO_RELATION) and entity type; weight defaults to DEFAULT_WEIGHT
 - Retrieval uses LightRAG aquery(mode="mix") directly
 """
 
@@ -33,11 +33,9 @@ MEMORY_TYPE_TO_RELATION: Dict[str, str] = {
     "facts": "remembers",
 }
 
-LEVEL_DEFAULTS: Dict[str, Dict[str, Any]] = {
-    "L0": {"weight": 0.3, "relation_type": "related_to"},
-    "L1": {"weight": 0.7, "relation_type": "remembers"},
-    "L2": {"weight": 0.9, "relation_type": "remembers"},
-}
+# Default weight and relation type when memory_type is not specified
+DEFAULT_WEIGHT = 0.7
+DEFAULT_RELATION_TYPE = "remembers"
 
 DEFAULT_MIN_WEIGHT = 0.3
 MAX_NAME_LENGTH = 64
@@ -93,10 +91,16 @@ def make_entity_name(entity_type: str, name: str) -> str:
 
 
 def _get_attr(obj: Any, key: str, default: Any = None) -> Any:
-    """Get attribute from dict or dataclass/object, with fallback."""
+    """Get attribute from dict or dataclass/object, with fallback.
+
+    Returns `default` when the key is missing OR explicitly None,
+    preventing None from leaking into comparisons (e.g. weight >= min_weight).
+    """
     if isinstance(obj, dict):
-        return obj.get(key, default)
-    return getattr(obj, key, default)
+        val = obj.get(key, default)
+        return val if val is not None else default
+    val = getattr(obj, key, default)
+    return val if val is not None else default
 
 
 # ============== BrainGraph Class ==============
@@ -136,39 +140,33 @@ class BrainGraph:
     def store_memory(
         self,
         content: str,
-        level: str = "L0",
         memory_type: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Store a memory in the brain graph.
 
         Creates:
-        1. A target entity via inject_entity
+        1. A target entity via inject_custom_kg
         2. A weighted relation from brain:Niu to the target via inject_custom_kg
 
         Args:
             content: The memory content to store.
-            level: Memory level — L0 (raw), L1 (summary), L2 (insight).
             memory_type: Memory category (environment/preferences/skills/experiences/facts).
             metadata: Optional additional metadata.
 
         Returns:
             Dict with status and details.
         """
-        if level not in LEVEL_DEFAULTS:
-            level = "L0"
-
-        level_config = LEVEL_DEFAULTS[level]
-        weight = level_config["weight"]
-
-        # Determine relation type
+        # Determine relation type and weight from memory_type
         if memory_type and memory_type in MEMORY_TYPE_TO_RELATION:
             relation_type = MEMORY_TYPE_TO_RELATION[memory_type]
         else:
-            relation_type = level_config["relation_type"]
+            relation_type = DEFAULT_RELATION_TYPE
+
+        weight = DEFAULT_WEIGHT
 
         # Determine entity type from memory_type
-        entity_type = self._infer_entity_type(memory_type, level)
+        entity_type = self._infer_entity_type(memory_type)
 
         # Create target entity name
         entity_label = self._extract_entity_label(content)
@@ -187,10 +185,9 @@ class BrainGraph:
             except (TypeError, ValueError):
                 pass  # Non-serializable metadata, skip
 
-        # Build entity description with brain_meta prefix
+        # Build entity description with created_at timestamp only
         created_at = time.strftime("%Y-%m-%dT%H:%M:%S")
-        brain_meta = f"{level}|created_at={created_at}|access_count=0|weight={weight}"
-        entity_description = f"{brain_meta}|{content[:200]}"
+        entity_description = f"created_at={created_at}|{content[:200]}"
 
         # Inject target entity
         entity_result = self._ingester.inject_custom_kg(
@@ -204,7 +201,7 @@ class BrainGraph:
             source_id="brain",
         )
 
-        if entity_result.get("status") == "error":
+        if isinstance(entity_result, dict) and entity_result.get("status") == "error":
             return entity_result
 
         # Inject weighted relation via inject_custom_kg
@@ -230,10 +227,11 @@ class BrainGraph:
 
         return {
             "status": "ok",
-            "level": level,
+            "entity_name": target_name,
+            "entity_type": entity_type,
             "relation_type": relation_type,
-            "target_entity": target_name,
             "weight": weight,
+            "memory_type": memory_type,
         }
 
     # ============== Memory Recall ==============
@@ -267,7 +265,7 @@ class BrainGraph:
 
         if result and isinstance(result, dict):
             data = result.get("data", result)
-            relationships = data.get("relationships", [])
+            relationships = data.get("relationships") or []
             if relationships:
                 return self._extract_brain_memories_from_structured(
                     relationships, min_weight
@@ -291,8 +289,8 @@ class BrainGraph:
 
     # ============== Internal Helpers ==============
 
-    def _infer_entity_type(self, memory_type: Optional[str], level: str) -> str:
-        """Infer entity type from memory_type and level."""
+    def _infer_entity_type(self, memory_type: Optional[str]) -> str:
+        """Infer entity type from memory_type."""
         type_to_entity = {
             "skills": "Skill",
             "preferences": "Concept",
@@ -308,7 +306,9 @@ class BrainGraph:
         """Extract a short entity label from content."""
         if not content:
             return "Unknown"
-        first_sentence = re.split(r"[。.！!？?；;]", content)[0]
+        # Split by Chinese sentence-enders first, then English period
+        # but only when followed by space or end (avoid splitting "Python 3.12")
+        first_sentence = re.split(r"[。！？；]|(?<=[a-zA-Z])\.\s|\.\s", content)[0]
         label = first_sentence.strip()[:30]
         if not label:
             label = content.strip()[:30]
@@ -350,7 +350,8 @@ class BrainGraph:
         """Extract brain:Niu memory references from query result text."""
         memories = []
 
-        pattern = r"brain:([\w-]+):([\w-]+)"
+        # Match both brain:Niu (2-segment) and brain:Concept:Name (3-segment)
+        pattern = r"\bbrain:[\w-]+(?::[\w-]+)?"
         for match in re.finditer(pattern, text):
             full_name = match.group(0)
             weight = 0.7  # Default for recalled memories
@@ -407,6 +408,7 @@ def format_memories_for_prompt(memories: List[Dict[str, Any]]) -> str:
             "learned_from": "从...学到",
             "participated_in": "参与",
             "related_to": "",
+            "knows_about": "了解",
         }.get(relation_type, "")
 
         if description:

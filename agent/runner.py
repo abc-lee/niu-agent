@@ -617,7 +617,7 @@ class NiuRunner:
             from niu_api.internal.lightrag_adapter import LightRAGAdapter
             adapter = LightRAGAdapter()
             lightrag_results = adapter.search_multi_lightrag(
-                effective_query, mode="local", top_k=20, keywords=keywords,
+                effective_query, mode="local", top_k=10, keywords=keywords,
             )
         except Exception as e:
             logger.warning(f"LightRAG retrieval failed: {e}")

@@ -6,6 +6,8 @@
   <title>妞妞聊天</title>
   <!-- Markdown 渲染 -->
   <script src="node_modules/marked/lib/marked.umd.js"></script>
+  <!-- HTML 净化 — 防止 XSS (marked 不自带 sanitize) -->
+  <script src="node_modules/dompurify/dist/purify.js"></script>
   <script>
     // 配置 marked：保留换行，启用 GFM
     if (typeof marked !== 'undefined' && marked.setOptions) {
@@ -512,6 +514,25 @@
     const graphBtn = document.getElementById('graph-btn');
     
     // ========== 拖拽窗口 ==========
+    // 拦截消息区域中的链接点击，用系统默认浏览器打开
+    messages.addEventListener('click', (e) => {
+      const link = e.target.closest('a[href]');
+      if (link) {
+        const href = link.getAttribute('href');
+        if (!href) return;
+        const lowerHref = href.toLowerCase();
+        if (lowerHref.startsWith('#')) return; // 锚点链接，浏览器自行处理
+        // 仅允许 http/https 协议，阻止 javascript:/data:/vbscript: 等危险协议
+        if (!lowerHref.startsWith('http://') && !lowerHref.startsWith('https://')) {
+          e.preventDefault();
+          return;
+        }
+        e.preventDefault();
+        e.stopPropagation();
+        window.electronAPI.openExternal(href);
+      }
+    });
+
     let isDragging = false;
     let dragOffset = { x: 0, y: 0 };
     
@@ -551,8 +572,8 @@
       if (!isResizing) return;
       const dx = e.screenX - resizeStart.x;
       const dy = e.screenY - resizeStart.y;
-      const newWidth = Math.max(300, Math.min(800, resizeStart.width + dx));
-      const newHeight = Math.max(400, Math.min(900, resizeStart.height + dy));
+      const newWidth = Math.max(300, resizeStart.width + dx);
+      const newHeight = Math.max(400, resizeStart.height + dy);
       window.electronAPI.resizeWindow(newWidth, newHeight);
     });
     
@@ -683,7 +704,6 @@
       sendBtn.disabled = true;
       showTyping();
       window.electronAPI.notifyBusy(true, 'chat');
-      statusBar.querySelector('.stats').textContent = '思考中...';
 
       try {
         const result = await sendMessageWithRetry(text);
@@ -737,7 +757,18 @@
           textDiv.className = 'message-text';
           if (role === 'assistant' && typeof marked !== 'undefined') {
             try {
-              textDiv.innerHTML = marked.parse(cleanText);
+              const safeCleanText = cleanText.replace(/(!\[[^\]]*\]\()([A-Za-z]:[\\\/][^)]+)(\))/g,
+                (match, prefix, path, suffix) => prefix + path.replace(/\\/g, '/') + suffix
+              );
+              textDiv.innerHTML = typeof DOMPurify !== 'undefined'
+                ? DOMPurify.sanitize(marked.parse(safeCleanText))
+                : marked.parse(safeCleanText);
+              textDiv.querySelectorAll('img').forEach(img => {
+                const src = img.getAttribute('src');
+                if (src && /^[A-Za-z]:[\/]/.test(src)) {
+                  img.setAttribute('src', encodeURI('file:///' + src));
+                }
+              });
             } catch (e) {
               textDiv.textContent = cleanText;
             }
@@ -771,7 +802,23 @@
           // assistant 消息用 markdown 渲染，其他角色纯文本
           if (role === 'assistant' && typeof marked !== 'undefined') {
             try {
-              textDiv.innerHTML = marked.parse(text);
+              // Pre-process: normalize Windows backslash paths in image links
+              // Markdown treats \t \n \f etc. as escape sequences, breaking paths like
+              // ![alt](C:\Users\.niu\tmp\facebox.png) — \t becomes tab, \n becomes newline
+              const safeText = text.replace(/(!\[[^\]]*\]\()([A-Za-z]:[\\\/][^)]+)(\))/g,
+                (match, prefix, path, suffix) => prefix + path.replace(/\\/g, '/') + suffix
+              );
+              const htmlContent = typeof DOMPurify !== 'undefined'
+                ? DOMPurify.sanitize(marked.parse(safeText))
+                : marked.parse(safeText);
+              textDiv.innerHTML = htmlContent;
+              // Convert local file paths to file:/// URLs for Electron
+              textDiv.querySelectorAll('img').forEach(img => {
+                const src = img.getAttribute('src');
+                if (src && /^[A-Za-z]:[\/]/.test(src)) {
+                  img.setAttribute('src', encodeURI('file:///' + src));
+                }
+              });
             } catch (e) {
               console.warn('[Chat] Markdown 渲染失败，降级为纯文本:', e);
               textDiv.textContent = text;
@@ -993,6 +1040,11 @@
           const hasAssistantMsg = msgs.slice(startIdx).some(msg => !existingIds.has(msg.id) && msg.role === 'assistant');
           if (hasAssistantMsg) {
             hideTyping();
+            // Agent 已回复 → 强制恢复所有忙碌状态
+            // 不管 HTTP 响应是否回来，SSE 推送 assistant 消息就意味着处理完成
+            isProcessing = false;
+            sendBtn.disabled = false;
+            window.electronAPI.notifyBusy(false, 'chat');
           }
           if (!oldestMessageId && msgs.length > 0) {
             oldestMessageId = msgs[0].id;

@@ -190,8 +190,8 @@ class TestPipelineEnqueueFileImportAndNoFileMove:
 
 
     def test_lightrag_insert_file_triggers_processing_after_enqueue(self, tmp_path):
-        """After enqueue succeeds, lightrag_insert_file must trigger
-        apipeline_process_enqueue_documents to actually extract entities."""
+        """After enqueue succeeds, lightrag_insert_file must schedule
+        apipeline_process_enqueue_documents via fire_and_forget (non-blocking)."""
         mod = _import_lightrag_module()
 
         txt = tmp_path / "test.txt"
@@ -199,17 +199,21 @@ class TestPipelineEnqueueFileImportAndNoFileMove:
 
         mock_rag = MagicMock()
         mock_rag.apipeline_process_enqueue_documents = AsyncMock()
+        mock_rag.doc_status = MagicMock()
+        mock_rag.full_docs = MagicMock()
 
         key = "niu_api.internal.lightrag_manager"
         saved = {}
         mock_mgr = MagicMock()
         mock_mgr.get_lightrag = MagicMock(return_value=mock_rag)
-        # First call: pipeline_enqueue_file returns (True, track_id)
-        # Second call: apipeline_process_enqueue_documents
+        # call_async sequence (fire-and-forget no longer uses call_async):
+        # 1. pipeline_enqueue_file -> (True, track_id)
+        # 2. doc_status.get_docs_by_track_id -> {}
         mock_mgr.call_async = MagicMock(side_effect=[
             (True, "track-123"),  # enqueue succeeds
-            None,                  # process completes
+            {},                   # get_docs_by_track_id returns empty
         ])
+        mock_mgr.fire_and_forget = MagicMock()
         for mod_key in ["niu_api", "niu_api.internal", key]:
             saved[mod_key] = sys.modules.get(mod_key)
             if mod_key == key:
@@ -219,9 +223,27 @@ class TestPipelineEnqueueFileImportAndNoFileMove:
         try:
             result = mod.lightrag_insert_file(file_path=str(txt))
             assert result["status"] == "ok"
-            # call_async should be called twice: enqueue + process
+            # call_async should be called 2 times: enqueue + patch
+            # (process is now fire_and_forget, not call_async)
             assert mock_mgr.call_async.call_count == 2, \
-                "call_async should be called twice (enqueue + process)"
+                "call_async should be called exactly 2 times (enqueue + patch)"
+            # fire_and_forget should be called once for the processing pipeline
+            assert mock_mgr.fire_and_forget.call_count == 1, \
+                "fire_and_forget should be called once for apipeline_process_enqueue_documents"
+            # Verify the coroutine passed to fire_and_forget is a coroutine
+            ff_args = mock_mgr.fire_and_forget.call_args
+            coro = ff_args[0][0]
+            assert coro is not None, "fire_and_forget should receive a coroutine"
+            coro_name = type(coro).__name__
+            assert "coroutine" in coro_name.lower(), \
+                f"Expected a coroutine object, got {coro_name}"
+            # Verify context kwarg is passed
+            assert "context" in ff_args[1], \
+                "fire_and_forget should receive a context kwarg"
+            # Verify the coroutine is _process_and_handle_failure wrapper
+            # (not a bare apipeline_process_enqueue_documents call)
+            assert coro.cr_code is not mock_rag.apipeline_process_enqueue_documents.__code__, \
+                "fire_and_forget should receive _process_and_handle_failure wrapper, not bare pipeline call"
         finally:
             for mod_key, orig in saved.items():
                 if orig is not None:
@@ -369,3 +391,115 @@ class TestIngestDocumentUsesInsertFile:
         # Should call lightrag_insert_file even for skipped files
         mock_reg.get.assert_called_with("lightrag-server/lightrag_insert_file")
         mock_insert_file.assert_called_once()
+
+
+# ============== shutdown_pending_futures and CancelledError ==============
+
+
+class TestShutdownPendingFutures:
+    """Test shutdown_pending_futures logic."""
+
+    def test_no_pending_futures(self):
+        """shutdown_pending_futures should return immediately when no futures."""
+        from niu_api.internal.lightrag_manager import (
+            shutdown_pending_futures,
+            _pending_futures,
+            _pending_lock,
+        )
+        with _pending_lock:
+            _pending_futures.clear()
+        # Should not raise
+        shutdown_pending_futures(timeout=0.1)
+
+    def test_cancels_timed_out_futures(self):
+        """shutdown_pending_futures should cancel futures that don't complete in time."""
+        from niu_api.internal.lightrag_manager import (
+            shutdown_pending_futures,
+            _pending_futures,
+            _pending_lock,
+        )
+        import concurrent.futures
+
+        # Create a future that will never complete
+        fake_future = concurrent.futures.Future()
+        with _pending_lock:
+            _pending_futures.append(fake_future)
+
+        try:
+            shutdown_pending_futures(timeout=0.1)
+            # The fake future should be cancelled
+            assert fake_future.cancelled(), "Timed-out future should be cancelled"
+        finally:
+            with _pending_lock:
+                _pending_futures[:] = [f for f in _pending_futures if f is not fake_future]
+
+    def test_clears_pending_list(self):
+        """shutdown_pending_futures should clear _pending_futures."""
+        from niu_api.internal.lightrag_manager import (
+            shutdown_pending_futures,
+            _pending_futures,
+            _pending_lock,
+        )
+        import concurrent.futures
+
+        done_future = concurrent.futures.Future()
+        done_future.set_result("done")
+        with _pending_lock:
+            _pending_futures.clear()
+            _pending_futures.append(done_future)
+
+        try:
+            shutdown_pending_futures(timeout=0.1)
+            with _pending_lock:
+                assert len(_pending_futures) == 0, "_pending_futures should be cleared"
+        finally:
+            with _pending_lock:
+                _pending_futures[:] = [f for f in _pending_futures if f is not done_future]
+
+
+class TestFireAndForgetCancellation:
+    """Test fire_and_forget handles CancelledError correctly."""
+
+    def test_wrapped_catches_exception(self):
+        """_wrapped should catch Exception and log it, not let it propagate."""
+        from niu_api.internal.lightrag_manager import fire_and_forget, _pending_futures, _pending_lock
+
+        async def failing_coro():
+            raise RuntimeError("test error")
+
+        # This should not raise even though the coroutine fails
+        fire_and_forget(failing_coro(), context="test-cancellation")
+        # Poll for the future to complete instead of fixed sleep
+        import time
+        deadline = time.monotonic() + 2.0
+        with _pending_lock:
+            futures_snapshot = list(_pending_futures)
+        for f in futures_snapshot:
+            while not f.done() and time.monotonic() < deadline:
+                time.sleep(0.05)
+        # Clean up
+        with _pending_lock:
+            _pending_futures.clear()
+
+    def test_future_removed_after_completion(self):
+        """_pending_futures should be cleaned up after coroutine completes."""
+        from niu_api.internal.lightrag_manager import fire_and_forget, _pending_futures, _pending_lock
+
+        async def quick_coro():
+            pass
+
+        fire_and_forget(quick_coro(), context="test-cleanup")
+        # Poll for the future to complete instead of fixed sleep
+        import time
+        deadline = time.monotonic() + 2.0
+        with _pending_lock:
+            futures_snapshot = list(_pending_futures)
+        for f in futures_snapshot:
+            while not f.done() and time.monotonic() < deadline:
+                time.sleep(0.05)
+        # The future should have been removed by the finally block
+        with _pending_lock:
+            for f in _pending_futures:
+                assert f.done(), "Pending future should be done after coroutine completes"
+        with _pending_lock:
+            _pending_futures.clear()

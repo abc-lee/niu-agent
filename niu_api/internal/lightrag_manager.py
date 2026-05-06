@@ -161,13 +161,110 @@ def call_async(coro, timeout: int = 120):
         result = call_async(rag.aquery("hello"))
         result = call_async(rag.ainsert(content), timeout=600)  # 10 min for large docs
     """
+    import concurrent.futures as _cf
+
     loop = _ensure_loop()
     future = asyncio.run_coroutine_threadsafe(coro, loop)
     try:
         return future.result(timeout=timeout)
+    except _cf.TimeoutError:
+        future.cancel()
+        raise
+    except asyncio.CancelledError:
+        future.cancel()
+        raise
     except Exception:
         future.cancel()
         raise
+
+
+# Track pending fire-and-forget futures for graceful shutdown.
+_pending_futures: list = []
+_pending_lock = threading.Lock()
+
+
+def fire_and_forget(coro, context: str = ""):
+    """Submit an async coroutine to the LightRAG event loop without waiting.
+
+    The coroutine runs in the background and any exception is logged.
+    Use for long-running operations (e.g. entity extraction pipeline)
+    where the caller should not block.
+
+    Args:
+        coro: The async coroutine to submit.
+        context: Optional context string for error logging (e.g. track_id, file name).
+
+    Usage:
+        fire_and_forget(rag.apipeline_process_enqueue_documents(), context="track-123")
+    """
+    loop = _ensure_loop()
+
+    # Capture future ref so _wrapped can remove only its own entry.
+    future_ref: list = [None]
+
+    async def _wrapped():
+        try:
+            await coro
+        except asyncio.CancelledError:
+            ctx = f" context={context}" if context else ""
+            logger.debug(f"[fire_and_forget] coroutine cancelled:{ctx}")
+        except Exception as e:
+            ctx = f" context={context}" if context else ""
+            logger.error(f"[fire_and_forget] coroutine failed:{ctx} error={e}")
+        finally:
+            with _pending_lock:
+                f = future_ref[0]
+                if f is not None and f in _pending_futures:
+                    _pending_futures.remove(f)
+
+    future = asyncio.run_coroutine_threadsafe(_wrapped(), loop)
+    future_ref[0] = future
+    with _pending_lock:
+        _pending_futures.append(future)
+
+
+def shutdown_pending_futures(timeout: float = 10.0):
+    """Wait for pending fire-and-forget futures to complete, then cancel remaining.
+
+    Called during application shutdown to prevent documents stuck in PENDING state.
+    Uses a total deadline across all futures, not per-future timeout.
+    """
+    import concurrent.futures
+    import time
+
+    with _pending_lock:
+        futures = list(_pending_futures)
+
+    if not futures:
+        return
+
+    logger.info(f"[fire_and_forget] shutdown: waiting for {len(futures)} pending futures")
+
+    deadline = time.monotonic() + timeout
+    for future in futures:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            future.cancel()
+            continue
+        try:
+            future.result(timeout=remaining)
+        except concurrent.futures.TimeoutError:
+            logger.info("[fire_and_forget] shutdown: future timed out, cancelling")
+            future.cancel()
+        except Exception:
+            future.cancel()
+        except BaseException:  # KeyboardInterrupt, SystemExit — re-raise
+            future.cancel()
+            raise
+
+    # Remove only the futures we managed (waited/cancelled), not any
+    # that were added to _pending_futures after our snapshot was taken.
+    with _pending_lock:
+        for f in futures:
+            if f in _pending_futures:
+                _pending_futures.remove(f)
+
+    logger.info("[fire_and_forget] shutdown: all futures resolved")
 
 
 # ============== LightRAG Instance ==============
@@ -406,11 +503,29 @@ class GraphChangeLog:
 
         Does NOT drain — the buffer is preserved so late-arriving polls
         can still catch up.  Old entries are auto-evicted by deque maxlen.
+
+        If *since* is older than the earliest entry in the deque, some
+        changes have been evicted and the incremental result is incomplete.
+        In that case, a snapshot_refresh event is appended so the frontend
+        re-fetches the full snapshot instead of relying on partial data.
         """
         with self._lock:
             if not since:
                 return list(self._changes)[-limit:]
             result = [c for c in self._changes if c["timestamp"] > since]
+            # Detect overflow: if since is strictly older than the earliest
+            # deque entry, some changes were evicted between the frontend's
+            # last poll and now, and the incremental result is incomplete.
+            # Use strict < (not <=): when since equals the earliest entry's
+            # timestamp, the frontend has already processed that entry
+            # (syncSince was set to that timestamp), so > since correctly
+            # excludes it. Only < means entries were lost before since.
+            if self._changes and since < self._changes[0]["timestamp"]:
+                result.append({
+                    "type": "snapshot_refresh",
+                    "timestamp": datetime.now().isoformat(),
+                    "data": {"reason": "changelog_overflow"},
+                })
             return result[-limit:]
 
 

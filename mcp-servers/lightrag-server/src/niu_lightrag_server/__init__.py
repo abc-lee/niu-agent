@@ -13,10 +13,41 @@ Tool groups:
 from typing import Any, Dict, List, Optional
 import inspect
 import threading
+import sys as _sys
 
 from loguru import logger
 
 from niu_api.internal.lightrag_adapter import LightRAGAdapter
+
+
+# ============== Eager Import (module load, single-threaded) ==============
+# pipeline_enqueue_file requires sys.argv=["lightrag"] workaround.
+# LightRAG's auth.py → config.py → parse_args() parses sys.argv and exits
+# with SystemExit:2 when called outside the API server.
+# We import at module load time to avoid the race condition of modifying
+# sys.argv in a multi-threaded API server at runtime. A global lock guards
+# the sys.argv swap in case this module is imported after threads start.
+
+_argv_swap_lock = threading.Lock()
+
+_pipeline_enqueue_file = None
+
+with _argv_swap_lock:
+    _saved_argv = _sys.argv[:]
+    _sys.argv = ["lightrag"]
+    try:
+        from lightrag.api.routers.document_routes import pipeline_enqueue_file
+        _pipeline_enqueue_file = pipeline_enqueue_file
+    finally:
+        _sys.argv = _saved_argv
+        del _saved_argv
+
+
+def _get_pipeline_enqueue_file():
+    """Return the eagerly-imported pipeline_enqueue_file (no runtime sys.argv swap)."""
+    if _pipeline_enqueue_file is None:
+        raise RuntimeError("pipeline_enqueue_file was not imported at module load time")
+    return _pipeline_enqueue_file
 
 
 # ============== Singleton Accessors ==============
@@ -620,83 +651,222 @@ def lightrag_insert_file(
     """Insert a file into the knowledge base by file path.
 
     LightRAG reads the file, extracts text (supports DOCX/PDF/PPTX/XLSX/txt/md etc.),
-    chunks it, and builds the knowledge graph asynchronously.
+    chunks it, and builds the knowledge graph.
     The original file is never modified or moved — a temp copy is used.
+    After enqueuing, file_path in doc_status/full_docs is patched to the original
+    path so that entities/relations in the KG carry the correct source reference.
     """
+    from niu_api.internal.lightrag_manager import get_lightrag, call_async
+    from pathlib import Path as _Path
+    import tempfile
+    import shutil
+
+    original_path = str(_Path(file_path).resolve())
+    file = _Path(file_path)
+    if not file.is_file():
+        return {"status": "error", "message": f"File not found: {file_path}"}
+
+    rag = get_lightrag()
+    if rag is None:
+        return {"status": "error", "message": "LightRAG not available"}
+
+    # Copy file to a temp directory so pipeline_enqueue_file moves
+    # the copy (not the user's original file).
+    tmp_dir = _Path(tempfile.mkdtemp(prefix="lightrag_ingest_"))
+    tmp_file = tmp_dir / file.name
     try:
-        from niu_api.internal.lightrag_manager import get_lightrag, call_async
-        from pathlib import Path as _Path
-        import tempfile
-        import shutil
-
-        file = _Path(file_path)
-        if not file.is_file():
-            return {"status": "error", "message": f"File not found: {file_path}"}
-
-        rag = get_lightrag()
-        if rag is None:
-            return {"status": "error", "message": "LightRAG not available"}
-
-        # Copy file to a temp directory so pipeline_enqueue_file moves
-        # the copy (not the user's original file).
-        tmp_dir = _Path(tempfile.mkdtemp(prefix="lightrag_ingest_"))
-        tmp_file = tmp_dir / file.name
         shutil.copy2(str(file), str(tmp_file))
+    except Exception:
+        shutil.rmtree(str(tmp_dir), ignore_errors=True)
+        raise
 
-        # Import pipeline_enqueue_file with sys.argv workaround.
-        # LightRAG's auth.py → config.py → parse_args() parses sys.argv
-        # and exits with SystemExit:2 when called outside the API server.
-        import sys as _sys
-        _saved_argv = _sys.argv
-        _sys.argv = ["lightrag"]
-        try:
-            from lightrag.api.routers.document_routes import pipeline_enqueue_file
-        finally:
-            _sys.argv = _saved_argv
+    try:
+        pipeline_fn = _get_pipeline_enqueue_file()
 
-        enqueue_kwargs: dict[str, Any] = {"rag": rag, "file_path": tmp_file}
-        if doc_id is not None:
-            enqueue_kwargs["track_id"] = doc_id
+        # Use original path as track_id so we can find the doc later.
+        effective_track_id = doc_id or original_path
+
+        enqueue_kwargs: dict[str, Any] = {
+            "rag": rag,
+            "file_path": tmp_file,
+            "track_id": effective_track_id,
+        }
 
         success, track_id = call_async(
-            pipeline_enqueue_file(**enqueue_kwargs),
+            pipeline_fn(**enqueue_kwargs),
             timeout=600,
         )
 
-        # Trigger entity extraction pipeline after enqueuing.
-        # pipeline_enqueue_file only stores the document (PENDING status).
-        # apipeline_process_enqueue_documents splits, calls LLM for
-        # entity/relation extraction, and builds the knowledge graph.
+        # Patch file_path in doc_status and full_docs to the original path.
+        # pipeline_enqueue_file stores only file_path.name (basename),
+        # but we want the full original path for source traceability.
+        #
+        # Timing is safe: both the patch coroutine and the pipeline coroutine
+        # are submitted to the same asyncio event loop via run_coroutine_threadsafe.
+        # asyncio schedules coroutines in FIFO order, so the patch (submitted
+        # first) completes before the pipeline (submitted later via fire_and_forget).
         if success:
             try:
-                call_async(
-                    rag.apipeline_process_enqueue_documents(),
-                    timeout=600,
+                docs = call_async(
+                    rag.doc_status.get_docs_by_track_id(effective_track_id),
+                    timeout=30,
+                )
+                for doc_key, doc_data in docs.items():
+                    # Patch file_path on the dataclass instance first,
+                    # then convert to dict for upsert. This preserves
+                    # enum types (e.g. DocStatus) that asdict() would
+                    # serialize correctly from the dataclass but might
+                    # break if constructed from a plain dict.
+                    doc_data.file_path = original_path
+                    from dataclasses import asdict as _asdict
+                    status_dict = _asdict(doc_data)
+                    call_async(rag.doc_status.upsert({doc_key: status_dict}), timeout=30)
+
+                    # Update full_docs file_path
+                    full_doc = call_async(rag.full_docs.get_by_id(doc_key), timeout=30)
+                    if full_doc:
+                        if isinstance(full_doc, dict):
+                            full_doc["file_path"] = original_path
+                            call_async(rag.full_docs.upsert({doc_key: full_doc}), timeout=30)
+                        else:
+                            full_doc.file_path = original_path
+                            from dataclasses import asdict as _asdict2
+                            full_doc_dict = _asdict2(full_doc)
+                            call_async(rag.full_docs.upsert({doc_key: full_doc_dict}), timeout=30)
+            except Exception as patch_err:
+                logger.warning(
+                    f"[lightrag_insert_file] file_path patch failed: {patch_err}"
+                )
+
+            # Trigger entity extraction pipeline after enqueuing.
+            # pipeline_enqueue_file only stores the document (PENDING status).
+            # apipeline_process_enqueue_documents splits, calls LLM for
+            # entity/relation extraction, and builds the knowledge graph.
+            #
+            # Fire-and-forget: the pipeline runs in LightRAG's event loop
+            # and can take minutes (LLM calls for entity extraction).
+            # We must NOT block the caller (sub-agent → main agent → _chat_lock)
+            # waiting for this to complete. The enqueue + patch above is
+            # sufficient to guarantee the document will be processed.
+            try:
+                from niu_api.internal.lightrag_manager import fire_and_forget
+
+                async def _process_and_handle_failure(rag_instance, tid, cleanup_dir=None):
+                    """Run pipeline and mark docs as FAILED on error or cancellation."""
+                    import asyncio as _asyncio
+                    try:
+                        await rag_instance.apipeline_process_enqueue_documents()
+                        # Pipeline succeeded — LLM extracted entities/edges that are
+                        # NOT reported via changelog (they go through LightRAG's
+                        # internal merge_nodes_and_edges, not our wrapper).
+                        # Signal the frontend to re-fetch the full snapshot.
+                        try:
+                            from niu_api.internal.lightrag_manager import get_change_log
+                            get_change_log().record_change("snapshot_refresh", {
+                                "reason": "pipeline_completed",
+                                "track_id": tid,
+                            })
+                        except Exception as _cl_err:
+                            logger.debug(
+                                f"[lightrag_insert_file] snapshot_refresh changelog skipped: {_cl_err}"
+                            )
+                    except (_asyncio.CancelledError, Exception) as pipeline_err:
+                        is_cancelled = isinstance(pipeline_err, _asyncio.CancelledError)
+                        if is_cancelled:
+                            logger.warning(
+                                f"[lightrag_insert_file] pipeline cancelled: track_id={tid}"
+                            )
+                        else:
+                            logger.error(
+                                f"[lightrag_insert_file] pipeline processing failed: "
+                                f"track_id={tid} error={pipeline_err}"
+                            )
+                        # Mark documents as FAILED so they don't stay PENDING forever.
+                        # When the outer task is cancelled, bare await re-raises
+                        # CancelledError immediately. We use create_task to spawn
+                        # the marking as a separate task, then await it directly.
+                        # If the event loop is shutting down, the marking may not
+                        # complete — this is best-effort.
+                        try:
+                            from dataclasses import asdict as _asdict
+                            from lightrag.api.routers.document_routes import DocStatus
+
+                            async def _mark_failed():
+                                docs = await rag_instance.doc_status.get_docs_by_track_id(tid)
+                                for dk, dd in docs.items():
+                                    dd.status = DocStatus.FAILED
+                                    status_dict = _asdict(dd)
+                                    await rag_instance.doc_status.upsert({dk: status_dict})
+
+                            inner = _asyncio.create_task(_mark_failed())
+                            try:
+                                await inner
+                            except _asyncio.CancelledError:
+                                # Outer task cancelled while waiting for marking.
+                                # inner is an independent Task — it continues
+                                # running in the background regardless.
+                                pass
+                        except (_asyncio.CancelledError, Exception) as mark_err:
+                            logger.debug(
+                                f"[lightrag_insert_file] mark-failed skipped "
+                                f"(best-effort): track_id={tid} error={mark_err}"
+                            )
+                        if is_cancelled:
+                            raise pipeline_err
+                    finally:
+                        # Clean up temp directory after pipeline completes (or fails).
+                        # The file may have been moved to __enqueued__/ by
+                        # pipeline_enqueue_file, so we remove the entire temp dir.
+                        if cleanup_dir:
+                            try:
+                                shutil.rmtree(str(cleanup_dir), ignore_errors=True)
+                            except Exception:
+                                pass
+
+                fire_and_forget(
+                    _process_and_handle_failure(rag, effective_track_id, cleanup_dir=tmp_dir),
+                    context=f"track_id={track_id}",
+                )
+                logger.info(
+                    f"[lightrag_insert_file] pipeline processing scheduled "
+                    f"(fire-and-forget), track_id={track_id}"
                 )
             except Exception as proc_err:
-                logger.warning(f"[lightrag_insert_file] process_enqueue failed: {proc_err}")
+                logger.warning(
+                    f"[lightrag_insert_file] process_enqueue schedule failed: {proc_err}"
+                )
+                # fire_and_forget failed — pipeline won't run, so clean up temp dir now.
+                try:
+                    shutil.rmtree(str(tmp_dir), ignore_errors=True)
+                except Exception:
+                    pass
 
-        # Clean up temp directory (pipeline_enqueue_file may have moved
-        # the file to its own __enqueued__ subdir, so remove what remains)
+            # Record changelog only on successful enqueue
+            try:
+                from niu_api.internal.lightrag_manager import get_change_log
+                get_change_log().record_change("document_created", {
+                    "id": effective_track_id,
+                    "uri": file_path,
+                    "title": file.name,
+                    "source": "lightrag_insert_file",
+                })
+            except Exception as e:
+                logger.debug(f"[lightrag_insert_file] changelog skipped: {e}")
+        else:
+            # Enqueue returned success=False (not exception) — pipeline won't
+            # run, so clean up the temp copy now.
+            try:
+                shutil.rmtree(str(tmp_dir), ignore_errors=True)
+            except Exception:
+                pass
+
+        return {"status": "ok" if success else "error", "track_id": track_id}
+    except Exception as e:
+        # Enqueue failed — pipeline won't run, so clean up temp dir now.
         try:
             shutil.rmtree(str(tmp_dir), ignore_errors=True)
         except Exception:
             pass
-
-        # Record changelog
-        try:
-            from niu_api.internal.lightrag_manager import get_change_log
-            get_change_log().record_change("document_created", {
-                "id": doc_id or track_id or "",
-                "uri": file_path,
-                "title": file.name,
-                "source": "lightrag_insert_file",
-            })
-        except Exception:
-            pass
-
-        return {"status": "ok" if success else "error", "track_id": track_id}
-    except Exception as e:
         logger.error(f"lightrag_insert_file failed: {e}")
         return {"status": "error", "message": str(e)}
 
@@ -736,6 +906,8 @@ def lightrag_insert_entity(
                 "entity_name": name,
                 "entity_type": entity_type,
                 "description": description,
+                "source_id": source_id,
+                "file_path": file_path,
             }],
             relationships=[],
             chunks=[],
@@ -804,10 +976,10 @@ def lightrag_get_document(doc_id: str) -> Dict[str, Any]:
         rag = adapter._get_rag()
         if rag is None:
             return {"status": "error", "message": "LightRAG not initialized"}
-        full_doc = call_async(rag.full_docs.get_by_id(doc_id))
+        full_doc = call_async(rag.full_docs.get_by_id(doc_id), timeout=30)
         if full_doc is None:
             return {"status": "not_found", "doc_id": doc_id}
-        doc_status_obj = call_async(rag.doc_status.get_by_id(doc_id))
+        doc_status_obj = call_async(rag.doc_status.get_by_id(doc_id), timeout=30)
         content = getattr(full_doc, "content", None) or str(full_doc)
         status_str = getattr(doc_status_obj, "status", "unknown") if doc_status_obj else "unknown"
         return {
