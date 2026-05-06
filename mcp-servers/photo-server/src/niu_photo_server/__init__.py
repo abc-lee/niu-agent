@@ -2407,7 +2407,7 @@ def read_file_content(path: str, max_chars: int = 20000) -> str:
         except Exception as e:
             logger.warning(f"[READ] PDF读取失败: {e}")
 
-    elif suffix in {".docx", ".doc"}:
+    elif suffix == ".docx":
         try:
             from docx import Document
             doc = Document(path)
@@ -2444,7 +2444,7 @@ def read_file_content(path: str, max_chars: int = 20000) -> str:
         except Exception as e:
             logger.warning(f"[READ] PPTX读取失败: {e}")
 
-    elif suffix in {".xlsx", ".xls"}:
+    elif suffix == ".xlsx":
         try:
             from openpyxl import load_workbook
             wb = load_workbook(path, data_only=True)
