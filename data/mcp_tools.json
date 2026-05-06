@@ -3,7 +3,7 @@
     {
       "server": "photo-server",
       "name": "ingest",
-      "description": "统一入库工具 — 自动判断路径类型和内容类型\n\n参数:\n- path: 必填，文件路径或目录路径\n- mode: copy（复制）| move（移动）| reference（引用），默认 copy\n- category: 分类，不传则自动推断\n- l1: L1 摘要（文档入库第二轮调用时传入）\n- file_path: 文档存储路径（L1 回传时使用）\n\n自动判断逻辑:\n1. 路径类型：is_dir() → 目录模式，is_file() → 文件模式\n2. 内容类型（文件）：按扩展名判断 — 照片(.jpg/.png等) → 照片流程，其他 → 文档流程\n3. 内容类型（目录）：扫描目录 — 全照片 → 批量照片，全文档 → 批量文档，混合 → 分别处理\n\n照片流程: EXIF → 人脸检测 → 人物匹配 → L0摘要 → LightRAG同步\n文档流程: 拷贝 → 返回 need_l1 → 子Agent生成L1 → 调用 ingest(file_path=..., l1=...) 存储\n\n返回:\n- 照片: {status, photo_id, detected_persons, abstract, exif, lightrag_sync}\n- 文档(首轮): {status: \"need_l1\", file_path, content, hint}\n- 文档(L1回传): {status: \"success\", file_path}\n- 目录: {status, total, success/need_l1, results/files}",
+      "description": "统一入库工具 — 自动判断路径类型和内容类型\n\n参数:\n- path: 必填，文件路径或目录路径\n- mode: copy（复制）| move（移动）| reference（引用），默认 copy\n- category: 分类，不传则自动推断\n\n自动判断逻辑:\n1. 路径类型：is_dir() → 目录模式，is_file() → 文件模式\n2. 内容类型（文件）：按扩展名判断 — 照片(.jpg/.png等) → 照片流程，其他 → 文档流程\n3. 内容类型（目录）：扫描目录 — 全照片 → 批量照片，全文档 → 批量文档，混合 → 分别处理\n\n照片流程: EXIF → 人脸检测 → 人物匹配 → 摘要 → KG同步\n文档流程: 文件搬运 + 提交LightRAG异步分析存入知识图谱（处理时间较长）\n\n返回:\n- 照片: {status, photo_id, detected_persons, abstract, exif}\n- 文档: {status, action, file_path, lightrag}\n- 目录: {status, total, processed, results}",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -24,18 +24,43 @@
           "category": {
             "type": "string",
             "description": "分类，不传则自动推断"
-          },
-          "l1": {
-            "type": "string",
-            "description": "L1 摘要（文档入库第二轮调用时传入）"
-          },
-          "file_path": {
-            "type": "string",
-            "description": "文档存储路径（L1 回传时使用）"
           }
         },
         "required": [
           "path"
+        ]
+      },
+      "visibility": "hidden"
+    },
+    {
+      "server": "photo-server",
+      "name": "ingest_document",
+      "description": "文档入库工具 — 文件搬运 + 提交LightRAG异步处理\n\n参数:\n- file_path: 必填，文档文件路径\n- category: 分类，默认 \"其他\"\n- mode: copy（复制）| move（移动）| reference（引用），默认 copy\n\n文件搬运完成后，文档提交给LightRAG异步分析并存入知识图谱（自动抽取实体和建链），处理时间可能较长。\n\n返回:\n- status: success | error\n- action: copied | moved | referenced | skipped\n- file_path: 存储路径\n- lightrag: inserted | skipped",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "file_path": {
+            "type": "string",
+            "description": "文档文件路径"
+          },
+          "category": {
+            "type": "string",
+            "description": "分类，仅填写用户明确要求的分类，否则不填",
+            "default": "其他"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "copy",
+              "move",
+              "reference"
+            ],
+            "default": "copy",
+            "description": "文件操作模式"
+          }
+        },
+        "required": [
+          "file_path"
         ]
       },
       "visibility": "hidden"
@@ -61,7 +86,7 @@
           "name"
         ]
       },
-      "visibility": "dynamic"
+      "visibility": "hidden"
     },
     {
       "server": "photo-server",
@@ -84,7 +109,7 @@
           "person_b_id"
         ]
       },
-      "visibility": "dynamic"
+      "visibility": "hidden"
     },
     {
       "server": "photo-server",
@@ -107,7 +132,7 @@
           "query"
         ]
       },
-      "visibility": "dynamic"
+      "visibility": "hidden"
     },
     {
       "server": "photo-server",
@@ -117,7 +142,7 @@
         "type": "object",
         "properties": {}
       },
-      "visibility": "dynamic"
+      "visibility": "hidden"
     },
     {
       "server": "photo-server",
@@ -135,7 +160,7 @@
           "person_id"
         ]
       },
-      "visibility": "dynamic"
+      "visibility": "hidden"
     },
     {
       "server": "photo-server",
@@ -145,7 +170,7 @@
         "type": "object",
         "properties": {}
       },
-      "visibility": "dynamic"
+      "visibility": "hidden"
     },
     {
       "server": "photo-server",
@@ -167,7 +192,7 @@
           "person_id"
         ]
       },
-      "visibility": "dynamic"
+      "visibility": "hidden"
     },
     {
       "server": "photo-server",
@@ -550,7 +575,7 @@
           "memory_type"
         ]
       },
-      "visibility": "static"
+      "visibility": "hidden"
     },
     {
       "server": "memory-server",
@@ -582,7 +607,7 @@
           "query"
         ]
       },
-      "visibility": "static"
+      "visibility": "hidden"
     },
     {
       "server": "memory-server",
@@ -609,7 +634,7 @@
           "content"
         ]
       },
-      "visibility": "static"
+      "visibility": "hidden"
     },
     {
       "server": "memory-server",
@@ -619,7 +644,7 @@
         "type": "object",
         "properties": {}
       },
-      "visibility": "static"
+      "visibility": "hidden"
     },
     {
       "server": "memory-server",
@@ -635,7 +660,7 @@
           }
         }
       },
-      "visibility": "static"
+      "visibility": "hidden"
     },
     {
       "server": "memory-server",
@@ -663,7 +688,7 @@
           "relation"
         ]
       },
-      "visibility": "static"
+      "visibility": "hidden"
     },
     {
       "server": "memory-server",
@@ -690,7 +715,7 @@
           "content"
         ]
       },
-      "visibility": "static"
+      "visibility": "hidden"
     },
     {
       "server": "memory-server",
@@ -709,7 +734,7 @@
           }
         }
       },
-      "visibility": "static"
+      "visibility": "hidden"
     },
     {
       "server": "memory-server",
@@ -719,7 +744,513 @@
         "type": "object",
         "properties": {}
       },
-      "visibility": "static"
+      "visibility": "hidden"
+    }
+  ],
+  "lightrag-server": [
+    {
+      "server": "lightrag-server",
+      "name": "lightrag_query",
+      "description": "Search the knowledge base using LightRAG. Modes: 'local' (entity-centric), 'global' (overview), 'hybrid' (balanced), 'mix' (KG + vector combined), 'naive' (vector only). Returns generated text answer or raw context.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Search query string"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "naive",
+              "local",
+              "global",
+              "hybrid",
+              "mix",
+              "bypass"
+            ],
+            "default": "mix",
+            "description": "Retrieval mode ('bypass' skips retrieval, uses LLM only)"
+          },
+          "only_need_context": {
+            "type": "boolean",
+            "default": true,
+            "description": "Return context only without LLM generation"
+          },
+          "top_k": {
+            "type": "integer",
+            "default": 5,
+            "description": "Number of top results to retrieve"
+          },
+          "response_type": {
+            "type": "string",
+            "default": "Multiple Paragraphs",
+            "description": "Response format when generating"
+          }
+        },
+        "required": [
+          "query"
+        ]
+      },
+      "visibility": "hidden"
+    },
+    {
+      "server": "lightrag-server",
+      "name": "lightrag_query_data",
+      "description": "Query the knowledge base returning structured data (entities + relationships + chunks). MODES: 'local' (entity-centric graph traversal, RECOMMENDED for most queries), 'global' (community-level overview), 'hybrid' (local+global combined, slower), 'naive' (vector-only, NO graph data), 'mix' (all combined, slowest). KEY OPTIMIZATION: When you provide 'keywords', the query skips LLM keyword extraction and uses your keywords directly — this eliminates LLM latency (~10-100s -> <1s) while keeping full graph traversal capability. ALWAYS provide keywords when you know the search terms (e.g., query='便签' keywords=['便签']). Only omit keywords for complex natural language queries that need LLM interpretation.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Search query string"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "naive",
+              "local",
+              "global",
+              "hybrid",
+              "mix",
+              "bypass"
+            ],
+            "default": "local",
+            "description": "Retrieval mode. 'local' is best for finding specific entities. 'hybrid' adds community context but is slower. 'naive' skips graph entirely."
+          },
+          "keywords": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": [],
+            "description": "Pre-provided keywords to skip LLM extraction. DRAMATICALLY faster. Use the core nouns/terms from your query. E.g., query='查看便签' -> keywords=['便签']. For 'local' mode these become ll_keywords; for 'global'/'hybrid' they become both hl and ll keywords."
+          },
+          "top_k": {
+            "type": "integer",
+            "default": 10,
+            "description": "Number of top results to retrieve"
+          }
+        },
+        "required": [
+          "query"
+        ]
+      },
+      "visibility": "hidden"
+    },
+    {
+      "server": "lightrag-server",
+      "name": "lightrag_search_entities",
+      "description": "Search for entities of a specific type in the knowledge graph. Uses local mode (entity-focused) and filters by entity_type. Common types: skill, tool, knowledge, person, photo, concept.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Search query string"
+          },
+          "entity_type": {
+            "type": "string",
+            "default": "",
+            "description": "Entity type to filter (skill, tool, knowledge, person, photo, concept)"
+          },
+          "top_k": {
+            "type": "integer",
+            "default": 10,
+            "description": "Max results"
+          }
+        },
+        "required": [
+          "query"
+        ]
+      },
+      "visibility": "hidden"
+    },
+    {
+      "server": "lightrag-server",
+      "name": "lightrag_get_graph",
+      "description": "Get a subgraph from the knowledge graph. action='explore' returns N-layer neighbors of an entity; action='snapshot' returns full graph for visualization.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "explore",
+              "snapshot"
+            ],
+            "default": "explore",
+            "description": "Graph retrieval type"
+          },
+          "entity_name": {
+            "type": "string",
+            "default": "",
+            "description": "Center entity name (for explore action)"
+          },
+          "depth": {
+            "type": "integer",
+            "default": 2,
+            "description": "BFS traversal depth 1-5 (for explore)"
+          },
+          "limit": {
+            "type": "integer",
+            "default": 200,
+            "description": "Max nodes to return (for snapshot)"
+          },
+          "edge_types": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Filter edges by relation type (e.g., ['followed_by', 'corrected_by']). None returns all."
+          }
+        },
+        "required": [
+          "action"
+        ]
+      },
+      "visibility": "hidden"
+    },
+    {
+      "server": "lightrag-server",
+      "name": "lightrag_timeline_query",
+      "description": "时间线查询：向量匹配内容 → 遍历时间链 → 按时间戳排序。用于追踪事件演变、纠正链、因果关系。",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "查询文本（与 start_entities 二选一）"
+          },
+          "start_entities": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "直接指定起始实体名列表，跳过向量匹配"
+          },
+          "direction": {
+            "type": "string",
+            "enum": [
+              "backward",
+              "forward"
+            ],
+            "default": "backward",
+            "description": "排序方向：backward=最近优先，forward=最早优先"
+          },
+          "max_depth": {
+            "type": "integer",
+            "default": 2,
+            "description": "时间链遍历深度"
+          },
+          "top_k": {
+            "type": "integer",
+            "default": 5,
+            "description": "向量搜索返回实体数"
+          },
+          "max_results": {
+            "type": "integer",
+            "default": 10,
+            "description": "返回结果最大数量"
+          }
+        },
+        "required": []
+      },
+      "visibility": "hidden"
+    },
+    {
+      "server": "lightrag-server",
+      "name": "lightrag_insert",
+      "description": "Insert document(s) into the knowledge base. LightRAG automatically extracts entities and relations via LLM. Use file_path for large content.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "content": {
+            "type": "string",
+            "description": "Document text content"
+          },
+          "doc_id": {
+            "type": "string",
+            "description": "Optional unique document ID (auto-generated if omitted)"
+          },
+          "file_path": {
+            "type": "string",
+            "description": "Optional file path for citation"
+          }
+        },
+        "required": [
+          "content"
+        ]
+      },
+      "visibility": "hidden"
+    },
+    {
+      "server": "lightrag-server",
+      "name": "lightrag_insert_file",
+      "description": "Insert a file into the knowledge base by file path. LightRAG reads and parses the file automatically (supports DOCX, PDF, PPTX, XLSX, TXT, MD, etc.), then extracts entities and builds the knowledge graph asynchronously.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "file_path": {
+            "type": "string",
+            "description": "Absolute path to the file to insert into the knowledge base"
+          },
+          "doc_id": {
+            "type": "string",
+            "description": "Optional unique document ID for dedup"
+          }
+        },
+        "required": [
+          "file_path"
+        ]
+      },
+      "visibility": "dynamic"
+    },
+    {
+      "server": "lightrag-server",
+      "name": "lightrag_insert_custom_kg",
+      "description": "Inject structured knowledge (entities + relationships + chunks) directly. Bypasses LLM extraction for precise control. Use for skills, tools, photo names, and other data that must be exact.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "entities": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "List of entity dicts: {entity_name, entity_type, description}"
+          },
+          "relationships": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "List of relationship dicts: {src_id, tgt_id, keywords, description}"
+          },
+          "chunks": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "List of chunk dicts: {content, source_id, file_path}"
+          },
+          "source_id": {
+            "type": "string",
+            "default": "custom_kg",
+            "description": "Default source ID"
+          }
+        },
+        "required": []
+      },
+      "visibility": "hidden"
+    },
+    {
+      "server": "lightrag-server",
+      "name": "lightrag_insert_entity",
+      "description": "Insert a single entity into the knowledge graph with precise control.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Entity name"
+          },
+          "entity_type": {
+            "type": "string",
+            "description": "Entity type (e.g., person, concept, skill)"
+          },
+          "description": {
+            "type": "string",
+            "default": "",
+            "description": "Entity description"
+          },
+          "source_id": {
+            "type": "string",
+            "default": "custom_kg",
+            "description": "Source ID"
+          },
+          "file_path": {
+            "type": "string",
+            "default": "custom_kg",
+            "description": "File path for citation"
+          },
+          "skip_llm_extraction": {
+            "type": "boolean",
+            "default": false,
+            "description": "Skip LLM extraction on entity description. When True, no chunks are passed to ainsert_custom_kg, preventing LLM from creating duplicate entities from description text. Use this for entities whose description contains names that already exist as separate entities (e.g., Person entities with human names)."
+          }
+        },
+        "required": [
+          "name",
+          "entity_type"
+        ]
+      },
+      "visibility": "hidden"
+    },
+    {
+      "server": "lightrag-server",
+      "name": "lightrag_insert_relation",
+      "description": "Insert a relation between two entities in the knowledge graph.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "src_id": {
+            "type": "string",
+            "description": "Source entity name"
+          },
+          "tgt_id": {
+            "type": "string",
+            "description": "Target entity name"
+          },
+          "relation": {
+            "type": "string",
+            "description": "Relation type (e.g., has_framework, USED_FOR)"
+          },
+          "description": {
+            "type": "string",
+            "default": "",
+            "description": "Relation description"
+          },
+          "source_id": {
+            "type": "string",
+            "default": "custom_kg",
+            "description": "Source ID"
+          },
+          "file_path": {
+            "type": "string",
+            "default": "custom_kg",
+            "description": "File path for citation"
+          }
+        },
+        "required": [
+          "src_id",
+          "tgt_id",
+          "relation"
+        ]
+      },
+      "visibility": "hidden"
+    },
+    {
+      "server": "lightrag-server",
+      "name": "lightrag_delete_entity",
+      "description": "Delete an entity and all its relations from the knowledge graph.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "entity_name": {
+            "type": "string",
+            "description": "Entity name to delete"
+          }
+        },
+        "required": [
+          "entity_name"
+        ]
+      },
+      "visibility": "hidden"
+    },
+    {
+      "server": "lightrag-server",
+      "name": "lightrag_document_status",
+      "description": "Get document processing status counts (pending, processing, processed, failed).",
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      },
+      "visibility": "hidden"
+    },
+    {
+      "server": "lightrag-server",
+      "name": "lightrag_get_document",
+      "description": "获取完整文档内容及其处理状态。对应旧 vector-store/get_document。",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "doc_id": {
+            "type": "string",
+            "description": "文档ID"
+          }
+        },
+        "required": [
+          "doc_id"
+        ]
+      },
+      "visibility": "hidden"
+    },
+    {
+      "server": "lightrag-server",
+      "name": "lightrag_delete_document",
+      "description": "级联删除文档及其关联的 chunks、entities、relationships。对应旧 vector-store/delete_document，但执行完整级联删除而非仅删实体。",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "doc_id": {
+            "type": "string",
+            "description": "要删除的文档ID"
+          }
+        },
+        "required": [
+          "doc_id"
+        ]
+      },
+      "visibility": "hidden"
+    },
+    {
+      "server": "lightrag-server",
+      "name": "lightrag_list_entities",
+      "description": "List entities or documents in the knowledge base. list_type='entities' lists graph entities; 'documents' lists indexed documents; 'labels' lists all entity type labels.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "list_type": {
+            "type": "string",
+            "enum": [
+              "entities",
+              "documents",
+              "labels"
+            ],
+            "default": "entities",
+            "description": "What to list"
+          },
+          "entity_type": {
+            "type": "string",
+            "default": "",
+            "description": "Filter by entity type (e.g., person, concept)"
+          },
+          "limit": {
+            "type": "integer",
+            "default": 50,
+            "description": "Max results"
+          }
+        },
+        "required": []
+      },
+      "visibility": "hidden"
+    },
+    {
+      "server": "lightrag-server",
+      "name": "lightrag_merge_entities",
+      "description": "Merge multiple entities into one, consolidating all relations.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "source_entities": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Entity names to merge"
+          },
+          "target_entity": {
+            "type": "string",
+            "description": "Name of the merged target entity"
+          }
+        },
+        "required": [
+          "source_entities",
+          "target_entity"
+        ]
+      },
+      "visibility": "hidden"
     }
   ],
   "file-parser": [
@@ -739,7 +1270,7 @@
           "file_path"
         ]
       },
-      "visibility": "dynamic"
+      "visibility": "hidden"
     },
     {
       "server": "file-parser",
@@ -774,7 +1305,7 @@
     {
       "server": "session-manager",
       "name": "add_message",
-      "description": "Add a message to the session. Used by context-manager to insert consolidated L0 summaries after merging multiple messages.",
+      "description": "Add a message to the session. Used by context-manager to insert consolidated summaries after merging multiple messages.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -802,7 +1333,7 @@
     {
       "server": "session-manager",
       "name": "update_message",
-      "description": "Update content of an existing message by ID. Used by context-manager to rewrite L0 summaries in-place during compression.",
+      "description": "Update content of an existing message by ID. Used by context-manager to rewrite summaries in-place during compression.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -916,7 +1447,7 @@
           }
         }
       },
-      "visibility": "static"
+      "visibility": "hidden"
     },
     {
       "server": "scheduler-server",
@@ -971,7 +1502,7 @@
     {
       "server": "browser-server",
       "name": "browser_navigate",
-      "description": "启动浏览器并导航到 URL，自动返回页面结构化状态（编号的交互元素列表）。LLM 根据返回的元素编号决策下一步操作。**使用场景**：用户要求'打开网页'、'访问网站'、'浏览页面'时使用。**返回**：url、title、elements（编号的交互元素，如 [0]<button>登录 />）、pageInfo。",
+      "description": "启动浏览器并导航到 URL，自动返回页面结构化状态和标签页列表。LLM 根据返回的元素编号决策下一步操作，根据 tabSummary 管理多个标签页。**使用场景**：用户要求'打开网页'、'访问网站'、'浏览页面'时使用。**返回**：url、title、elements（编号的交互元素）、tabSummary（标签页列表）、currentTabId。",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -994,12 +1525,12 @@
           "url"
         ]
       },
-      "visibility": "static"
+      "visibility": "hidden"
     },
     {
       "server": "browser-server",
       "name": "browser_interact",
-      "description": "Interact with page elements by index: click, input text, select option, scroll, or get current state. Each action returns updated page state with re-indexed elements. Actions are serial - always use latest index from previous result.",
+      "description": "与页面元素交互（按索引）：点击、输入文本、选择下拉项、滚动、获取当前状态。每次操作返回更新后的页面状态（含重新编号的元素和标签页摘要）。操作是串行的——始终使用上一次结果的最新索引。",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -1062,6 +1593,42 @@
         ]
       },
       "visibility": "dynamic"
+    },
+    {
+      "server": "browser-server",
+      "name": "browser_switch_tab",
+      "description": "切换到指定标签页。当需要操作非当前标签页时使用。tabId 来自之前响应中的 tabSummary 表格。",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "tab_id": {
+            "type": "integer",
+            "description": "要切换到的标签页 ID（来自 tabSummary）"
+          }
+        },
+        "required": [
+          "tab_id"
+        ]
+      },
+      "visibility": "hidden"
+    },
+    {
+      "server": "browser-server",
+      "name": "browser_close_tab",
+      "description": "关闭指定标签页。不能关闭初始标签页。关闭后自动切换到最后一个剩余标签页。",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "tab_id": {
+            "type": "integer",
+            "description": "要关闭的标签页 ID（来自 tabSummary）"
+          }
+        },
+        "required": [
+          "tab_id"
+        ]
+      },
+      "visibility": "hidden"
     }
   ]
 }
