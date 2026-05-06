@@ -368,6 +368,17 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
                 "description": {"type": "string", "default": "", "description": "Entity description"},
                 "source_id": {"type": "string", "default": "custom_kg", "description": "Source ID"},
                 "file_path": {"type": "string", "default": "custom_kg", "description": "File path for citation"},
+                "skip_llm_extraction": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": (
+                        "Skip LLM extraction on entity description. "
+                        "When True, no chunks are passed to ainsert_custom_kg, preventing "
+                        "LLM from creating duplicate entities from description text. "
+                        "Use this for entities whose description contains names that already "
+                        "exist as separate entities (e.g., Person entities with human names)."
+                    ),
+                },
             },
             "required": ["name", "entity_type"],
         },
@@ -897,12 +908,18 @@ def lightrag_insert_entity(
     description: str = "",
     source_id: str = "custom_kg",
     file_path: str = "custom_kg",
+    skip_llm_extraction: bool = False,
 ) -> Dict[str, Any]:
     """Insert a single entity via inject_custom_kg (inject_entity removed).
 
     Automatically adds a brain:Niu -> entity anchor relationship so the
-    entity is reachable from the root, and passes the entity description
-    as a chunk so LLM can extract additional relationships.
+    entity is reachable from the root.
+
+    When skip_llm_extraction is False (default), passes the entity description
+    as a chunk so LLM can extract additional relationships from it.
+    When True, skips chunks entirely — use this for entities whose description
+    contains names that already exist as separate entities (e.g., Person entities
+    with human names like "张三" that would cause LLM to create duplicates).
     """
     try:
         ingester = _get_ingester()
@@ -919,8 +936,10 @@ def lightrag_insert_entity(
         # Pass entity description as chunk text so LLM can extract
         # additional entities/relationships from it (ainsert_custom_kg
         # runs LLM extraction on chunks).
+        # Skip when skip_llm_extraction=True to prevent LLM from creating
+        # duplicate entities from description text (e.g., person names).
         entity_chunks = []
-        if description:
+        if description and not skip_llm_extraction:
             entity_chunks.append({
                 "content": f"{name} ({entity_type}): {description}",
                 "source_id": source_id,

@@ -1899,10 +1899,13 @@ def name_person(person_id: str, name: str) -> dict:
             registry = get_registry()
             insert_entity = registry.get("lightrag-server/lightrag_insert_entity")
             if insert_entity:
+                # skip_llm_extraction=True: 人名（如"张三"）不应触发 LLM 提取，
+                # 否则 LLM 会创建独立的"张三"实体，与 person:uuid 断裂
                 insert_entity(
                     name=f"person:{person_id}",
                     entity_type="Person",
                     description=name,
+                    skip_llm_extraction=True,
                 )
             else:
                 logger.warning("[NAME_PERSON] lightrag_insert_entity not available")
@@ -2119,11 +2122,15 @@ def merge_persons(person_a_id: str, person_b_id: str) -> dict:
 
             # 1. 更新 person_a 实体
             insert_entity = registry.get("lightrag-server/lightrag_insert_entity")
-            insert_entity(
-                name=entity_a,
-                entity_type="Person",
-                description=merged_name,
-            )
+            if insert_entity:
+                # skip_llm_extraction=True: 合并后的人名不应触发 LLM 提取，
+                # 否则 LLM 会创建独立的人名实体，与 person:uuid 断裂
+                insert_entity(
+                    name=entity_a,
+                    entity_type="Person",
+                    description=merged_name,
+                    skip_llm_extraction=True,
+                )
 
             # 2. 合并：person_b 的边迁移到 person_a，然后删除 person_b
             merge_entities = registry.get("lightrag-server/lightrag_merge_entities")
