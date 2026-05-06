@@ -98,19 +98,25 @@ class CommunityDetector:
     # ------------------------------------------------------------------
 
     def detect_communities(
-        self, resolution: float = 1.0
+        self, resolution: float = 1.0, min_graph_size: int = 50,
+        min_community_size: int = 3,
     ) -> CommunityDetectionResult:
         """对 LightRAG 知识图谱运行 Leiden 社区检测
 
         步骤:
         1. 通过 adapter 获取图快照
-        2. 将 NetworkX 风格数据转换为 igraph Graph
-        3. 运行 Leiden 算法
-        4. 构建每个社区的 RegionPartition
-        5. 返回 CommunityDetectionResult
+        2. 检查图谱大小是否达到 min_graph_size
+        3. resolution 自适应：节点 < 200 用 0.5，>= 200 用传入值
+        4. 将 NetworkX 风格数据转换为 igraph Graph
+        5. 运行 Leiden 算法
+        6. 过滤小社区（成员 < min_community_size）
+        7. 返回 CommunityDetectionResult
 
         Args:
             resolution: Leiden 分辨率参数，值越大社区越小、越多
+                （小图谱会被自动降低为 0.5）
+            min_graph_size: 图谱最小节点数，低于此值返回空结果（默认 50）
+            min_community_size: 社区最小成员数，低于此值的社区被过滤（默认 3）
 
         Returns:
             CommunityDetectionResult 包含所有检测结果
@@ -124,27 +130,38 @@ class CommunityDetector:
         nodes: list[dict] = snapshot.get("nodes", [])
         edges: list[dict] = snapshot.get("edges", [])
 
-        if len(nodes) < 2:
-            # 单节点或空图：无需 Leiden，直接返回结果
-            return self._handle_small_graph(nodes, edges)
+        # 2. 检查图谱大小
+        if len(nodes) < min_graph_size:
+            logger.info(
+                "图谱节点数 %d < min_graph_size %d，跳过社区检测",
+                len(nodes), min_graph_size,
+            )
+            return _empty_result()
 
-        # 2. 检查 leidenalg 是否可用
+        # 3. resolution 自适应：小图谱倾向更大更少的社区
+        effective_resolution = resolution
+        if len(nodes) < 200:
+            effective_resolution = 0.5
+            logger.info(
+                "小图谱 (%d 节点)，resolution 从 %.1f 降至 %.1f",
+                len(nodes), resolution, effective_resolution,
+            )
+
+        # 4. 检查 leidenalg 是否可用
         if not _HAS_LEIDEN:
             logger.error("leidenalg/python-igraph 未安装，无法执行社区检测")
             return _empty_result()
 
-        # 2. 构建 igraph
+        # 5. 构建 igraph
         graph = self._build_igraph(nodes, edges)
 
-        # 3. 运行 Leiden
-        # ModularityVertexPartition 不支持 resolution_parameter；
-        # 如需分辨率控制，应使用 RBConfigurationVertexPartition
+        # 6. 运行 Leiden
         try:
-            if resolution != 1.0:
+            if effective_resolution != 1.0:
                 partition = leidenalg.find_partition(
                     graph,
                     leidenalg.RBConfigurationVertexPartition,
-                    resolution_parameter=resolution,
+                    resolution_parameter=effective_resolution,
                 )
             else:
                 partition = leidenalg.find_partition(
@@ -155,10 +172,10 @@ class CommunityDetector:
             logger.exception("Leiden 社区检测失败")
             return _empty_result()
 
-        # 4. 构建分区结果
-        partitions = self._build_partitions(graph, partition)
+        # 7. 构建分区结果 + 过滤小社区
+        partitions = self._build_partitions(graph, partition, min_community_size)
 
-        # 5. 返回完整结果
+        # 8. 返回完整结果
         return CommunityDetectionResult(
             partitions=partitions,
             total_nodes=graph.vcount(),
@@ -193,8 +210,9 @@ class CommunityDetector:
             node_types.append(entity_type)
             name_to_idx[name] = i
 
-        # 创建 igraph
-        g = igraph.Graph(len(nodes))
+        # Create undirected igraph for Leiden (directed graphs can produce
+        # spurious single-node communities and Leiden works best undirected)
+        g = igraph.Graph(len(nodes), directed=False)
         g.vs["name"] = node_names
         g.vs["entity_type"] = node_types
 
@@ -234,24 +252,32 @@ class CommunityDetector:
         return g
 
     def _build_partitions(
-        self, graph: "igraph.Graph", partition: Any
+        self, graph: "igraph.Graph", partition: Any,
+        min_community_size: int = 3,
     ) -> list[RegionPartition]:
         """将 Leiden 分区结果转换为 RegionPartition 列表
 
         Args:
             graph: igraph Graph 对象
             partition: leidenalg 分区结果
+            min_community_size: 社区最小成员数，低于此值的社区被过滤
 
         Returns:
             按 region_id 排序的 RegionPartition 列表
         """
         result: list[RegionPartition] = []
+        filtered_count = 0
 
         # 计算全局模块度（用于按比例分配给各社区）
         global_modularity = partition.q if hasattr(partition, "q") else 0.0
 
         for community_idx, member_indices in enumerate(partition):
             if not member_indices:
+                continue
+
+            # 过滤小社区：成员 < min_community_size 的不返回
+            if len(member_indices) < min_community_size:
+                filtered_count += 1
                 continue
 
             # 收集实体名称和类型
@@ -290,6 +316,12 @@ class CommunityDetector:
                 )
             )
 
+        if filtered_count > 0:
+            logger.info(
+                "过滤 %d 个小社区（成员 < %d）",
+                filtered_count, min_community_size,
+            )
+
         # 按 region_id 排序
         result.sort(key=lambda r: r.region_id)
         return result
@@ -300,15 +332,15 @@ class CommunityDetector:
         """计算社区内部边数（两端均在社区内的边）
 
         Iterates over edges rather than neighbors to correctly handle
-        parallel/directed edges. Each undirected edge is counted twice
-        (once per direction), so divide by 2.
+        parallel edges. In igraph, undirected graphs store each edge
+        once in the edge sequence, so no division is needed.
         """
         member_set = set(member_indices)
         count = 0
         for edge in graph.es:
             if edge.source in member_set and edge.target in member_set:
                 count += 1
-        return count // 2
+        return count
 
     def _handle_small_graph(
         self, nodes: list[dict], _edges: list[dict]

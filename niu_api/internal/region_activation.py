@@ -119,6 +119,12 @@ class RegionActivationManager:
         # region_id -> description (from BrainRegionInfo.description)
         self._descriptions: dict[str, str] = {}
 
+        # Co-activation tracking for merge candidates
+        self._co_activation_counts: dict[tuple[str, str], int] = {}
+        self._total_activation_rounds: int = 0
+        # Cached member counts (updated on initialize/remove)
+        self._member_counts: dict[str, int] = {}
+
     # ------------------------------------------------------------------
     # Initialization
     # ------------------------------------------------------------------
@@ -140,6 +146,9 @@ class RegionActivationManager:
             self._label_index.clear()
             self._descriptions.clear()
             self._neighbors.clear()
+            # Preserve co-activation state across re-initialization
+            # (merge candidates depend on accumulated history)
+            # co_activation_counts and total_activation_rounds are NOT cleared
 
             for region in regions:
                 self._regions[region.community_id] = BrainRegionState(
@@ -156,6 +165,9 @@ class RegionActivationManager:
                 # Build entity -> region mapping from members
                 for entity_name in region.members:
                     self._entity_to_region[entity_name] = region.community_id
+
+                # Cache member count for O(1) lookup in get_merge_candidates
+                self._member_counts[region.community_id] = len(region.members)
 
             logger.info(
                 "初始化脑区激活管理器: %d 个区域, %d 个实体映射",
@@ -217,6 +229,16 @@ class RegionActivationManager:
                 state.last_activated_at = time.time()
                 state.activation_count += 1
                 activated_regions.add(region_id)
+
+            # Track co-activation for merge candidates
+            activated_list = sorted(activated_regions)
+            self._total_activation_rounds += 1
+            for i in range(len(activated_list)):
+                for j in range(i + 1, len(activated_list)):
+                    pair = (activated_list[i], activated_list[j])
+                    self._co_activation_counts[pair] = (
+                        self._co_activation_counts.get(pair, 0) + 1
+                    )
 
             # Spillover to neighbors
             for region_id in activated_regions:
@@ -491,3 +513,153 @@ class RegionActivationManager:
             if region_id is not None:
                 return self._regions.get(region_id)
             return None
+
+    # ------------------------------------------------------------------
+    # Merge candidates (co-activation based)
+    # ------------------------------------------------------------------
+
+    def get_merge_candidates(
+        self,
+        co_activation_threshold: float = 0.9,
+        max_merged_size: int = 50,
+    ) -> list[tuple[str, str]]:
+        """Return pairs of region_ids that should be merged.
+
+        Two regions are merge candidates if:
+        - Their co-activation ratio > co_activation_threshold (default 90%)
+        - Their combined member count < max_merged_size
+
+        Args:
+            co_activation_threshold: Minimum co-activation ratio (0-1)
+            max_merged_size: Maximum combined size for merged region
+
+        Returns:
+            List of (region_A_id, region_B_id) pairs, sorted by ratio desc.
+        """
+        with self._lock:
+            if self._total_activation_rounds < 5:
+                return []
+
+            candidates: list[tuple[str, str, float]] = []
+            for (a, b), count in self._co_activation_counts.items():
+                ratio = count / self._total_activation_rounds
+                if ratio < co_activation_threshold:
+                    continue
+                # Check combined size (O(1) via cached counts)
+                size_a = self._member_counts.get(a, 0)
+                size_b = self._member_counts.get(b, 0)
+                if size_a + size_b > max_merged_size:
+                    continue
+                # Both must still exist
+                if a not in self._regions or b not in self._regions:
+                    continue
+                candidates.append((a, b, ratio))
+
+            # Sort by ratio descending (merge strongest pairs first)
+            candidates.sort(key=lambda x: x[2], reverse=True)
+
+            # Deduplicate: each region appears in at most one pair
+            used: set[str] = set()
+            result: list[tuple[str, str]] = []
+            for a, b, ratio in candidates:
+                if a in used or b in used:
+                    continue
+                result.append((a, b))
+                used.add(a)
+                used.add(b)
+
+            if result:
+                logger.info(
+                    "发现 %d 对合并候选脑区（共激活阈值 %.0f%%）",
+                    len(result), co_activation_threshold * 100,
+                )
+
+            return result
+
+    def merge_region_into(self, source_id: str, target_id: str) -> None:
+        """Merge source region into target region (after KG merge).
+
+        Transfers all entity-to-region mappings and member counts from
+        source to target, then removes the source region.
+
+        Args:
+            source_id: Region ID being merged away.
+            target_id: Region ID absorbing the source.
+        """
+        with self._lock:
+            # Get source state before removal (need label for index cleanup)
+            source_state = self._regions.get(source_id)
+
+            # Reassign source entities to target
+            source_members = [
+                entity for entity, rid in self._entity_to_region.items()
+                if rid == source_id
+            ]
+            for entity in source_members:
+                self._entity_to_region[entity] = target_id
+
+            # Update target member count
+            target_count = self._member_counts.get(target_id, 0)
+            source_count = self._member_counts.get(source_id, 0)
+            self._member_counts[target_id] = target_count + source_count
+
+            # Remove source region state (in-line to avoid lock gap)
+            self._regions.pop(source_id, None)
+            self._member_counts.pop(source_id, None)
+
+            # Clean label index and descriptions
+            if source_state is not None:
+                self._label_index.pop(source_state.label, None)
+            self._descriptions.pop(source_id, None)
+
+            # Remove co-activation counts involving source
+            keys_to_remove = [
+                key for key in self._co_activation_counts
+                if source_id in key
+            ]
+            for key in keys_to_remove:
+                self._co_activation_counts.pop(key, None)
+
+            # Clean stale neighbor references
+            for neighbors in self._neighbors.values():
+                neighbors.discard(source_id)
+            self._neighbors.pop(source_id, None)
+
+    def remove_region(self, region_id: str) -> None:
+        """Remove a region from activation tracking (after merge or dissolve).
+
+        Cleans up the region state, entity mappings, and co-activation counts.
+        """
+        with self._lock:
+            # Remove region state
+            state = self._regions.pop(region_id, None)
+            if state is None:
+                return
+
+            # Remove from label index
+            self._label_index.pop(state.label, None)
+            self._descriptions.pop(region_id, None)
+            self._member_counts.pop(region_id, None)
+
+            # Remove entity -> region mappings for this region
+            entities_to_remove = [
+                entity for entity, rid in self._entity_to_region.items()
+                if rid == region_id
+            ]
+            for entity in entities_to_remove:
+                self._entity_to_region.pop(entity, None)
+
+            # Remove co-activation counts involving this region
+            keys_to_remove = [
+                key for key in self._co_activation_counts
+                if region_id in key
+            ]
+            for key in keys_to_remove:
+                self._co_activation_counts.pop(key, None)
+
+            # Clean stale neighbor references
+            for neighbors in self._neighbors.values():
+                neighbors.discard(region_id)
+            self._neighbors.pop(region_id, None)
+
+            logger.info("移除脑区激活追踪: %s (%s)", state.label, region_id)

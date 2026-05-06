@@ -1,6 +1,6 @@
 ---
 name: note-management
-description: Use when user asks to create, read, update, or delete sticky notes, or when user mentions notes, 便签, or reminders
+description: Use when user asks to create, read, update, or delete sticky notes, or when user mentions notes, 便签, 便利贴, or reminders
 ---
 
 # Note Management

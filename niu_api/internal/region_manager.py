@@ -96,7 +96,9 @@ def _parse_description(description: str) -> dict[str, str]:
     """Parse brain_meta_* attributes from flat description text.
 
     Returns:
-        Dict with keys: summary, region_id, size, representative, updated_at
+        Dict with all brain_meta_* keys plus summary.
+        Always includes: summary, region_id, size, representative, updated_at.
+        Additional keys (e.g. shrink_count) are preserved dynamically.
     """
     result: dict[str, str] = {
         "summary": "",
@@ -118,8 +120,7 @@ def _parse_description(description: str) -> dict[str, str]:
         if match:
             key = match.group(1)
             value = match.group(2)
-            if key in result:
-                result[key] = value
+            result[key] = value
         else:
             summary_parts.append(part)
 
@@ -339,6 +340,14 @@ class RegionManager:
             community_id = parsed.get("region_id", "")
             representative = members[0] if members else ""
 
+            # Preserve dynamic metadata keys (e.g. shrink_count) that
+            # _encode_description does not include in its standard 5 fields
+            STANDARD_KEYS = {"summary", "region_id", "size", "representative", "updated_at"}
+            extra_meta = {
+                k: v for k, v in parsed.items()
+                if k not in STANDARD_KEYS and v
+            }
+
             # Build entity summaries with type labels from graph
             entity_summaries = self._build_entity_summaries(members, set(), {})
             _, region_summary = self._summarize_region(entity_summaries)
@@ -351,6 +360,10 @@ class RegionManager:
                 representative=representative,
                 updated_at=now,
             )
+
+            # Append preserved dynamic metadata
+            for key, value in extra_meta.items():
+                description += f" | brain_meta_{key}:{value}"
 
             # Collect updated entity for batch inject
             all_entities.append({
@@ -489,6 +502,10 @@ class RegionManager:
         # (just node/edge removal, no embedding computation). If this becomes a
         # bottleneck, a batch delete API would be needed in LightRAG.
         for region in existing_regions:
+            # Protect default regions (no community_id = created by create_default_regions)
+            if not region.community_id:
+                logger.debug("保护默认脑区: %s", region.name)
+                continue
             if region.community_id not in current_community_ids:
                 # Delete stale region
                 delete_result = self._adapter.delete_entity(region.name)
@@ -509,6 +526,226 @@ class RegionManager:
         if removed:
             logger.info("共清理 %d 个过时脑区节点", len(removed))
         return removed
+
+    def dissolve_shrunk_regions(
+        self,
+        shrink_threshold: int = 3,
+        shrink_rounds: int = 3,
+    ) -> list[str]:
+        """Dissolve regions that have been shrinking for multiple sync cycles.
+
+        A region is "shrunk" when its member count < shrink_threshold.
+        After shrink_rounds consecutive sync cycles of being shrunk,
+        the region is dissolved: members are reassigned to the most
+        similar neighbor region, and the region node is deleted.
+
+        Shrink tracking is stored in the region description field
+        as ``brain_meta_shrink_count:N``.
+
+        Args:
+            shrink_threshold: Minimum members before region is "shrunk" (default 3)
+            shrink_rounds: Consecutive shrunk cycles before dissolution (default 3)
+
+        Returns:
+            List of dissolved region entity names.
+        """
+        existing_regions = self.get_all_regions()
+        dissolved: list[str] = []
+        dissolved_names: set[str] = set()  # Track dissolved names for stale snapshot filtering
+
+        # Pre-fetch raw descriptions from KG (get_all_regions strips brain_meta_* metadata)
+        region_raw_desc_map: dict[str, str] = {}
+        list_result = self._adapter.list_entities(
+            list_type="entities", entity_type=REGION_ENTITY_TYPE, limit=1000
+        )
+        if isinstance(list_result, dict) and list_result.get("status") == "ok":
+            for entity in list_result.get("data", []):
+                name = entity.get("id") or entity.get("entity_name", "")
+                if name:
+                    region_raw_desc_map[name] = entity.get("description", "")
+
+        for region in existing_regions:
+            # Protect default regions (no community_id)
+            if not region.community_id:
+                continue
+
+            members = self.get_region_members(region.name)
+            current_size = len(members)
+
+            # Parse shrink count from RAW KG description (not stripped summary)
+            raw_desc = region_raw_desc_map.get(region.name, "")
+            # Fallback: try explore_node if list_entities didn't return this region
+            if not raw_desc:
+                try:
+                    explore_result = self._adapter.explore_node(region.name, depth=0)
+                    if explore_result and explore_result.get("center"):
+                        for node in explore_result.get("nodes", []):
+                            if node.get("id") == region.name or node.get("name") == region.name:
+                                raw_desc = node.get("description", "")
+                                break
+                except Exception:
+                    pass
+
+            parsed = _parse_description(raw_desc)
+            shrink_count = int(parsed.get("shrink_count", "0") or "0")
+
+            if current_size < shrink_threshold:
+                shrink_count += 1
+            else:
+                shrink_count = 0
+
+            # Check dissolution threshold before writing shrink_count
+            if shrink_count >= shrink_rounds:
+                # Region will be dissolved — skip shrink_count write
+                target_region = self._find_most_similar_neighbor(
+                    region, existing_regions, dissolved_names
+                )
+
+                reassign_rels: list[dict] = []
+                if target_region:
+                    # Reassign members to target via belongs_to relations
+                    # (injected AFTER delete to avoid duplicate edges)
+                    for member in members:
+                        reassign_rels.append({
+                            "src_id": target_region.name,
+                            "tgt_id": member,
+                            "keywords": BELONGS_TO_RELATION,
+                            "description": f"{member} belongs to region {target_region.label}",
+                            "weight": 0.8,
+                            "source_id": REGION_SOURCE_ID,
+                            "file_path": REGION_FILE_PATH,
+                        })
+
+                # Delete the dissolved region node first (cascades old belongs_to edges)
+                delete_result = self._adapter.delete_entity(region.name)
+                if isinstance(delete_result, dict) and delete_result.get("status") == "ok":
+                    dissolved.append(region.name)
+                    dissolved_names.add(region.name)
+                    logger.info(
+                        "解散萎缩脑区: %s (成员 %d, 萎缩 %d 轮, 归入 %s)",
+                        region.name, current_size, shrink_count,
+                        target_region.name if target_region else "无",
+                    )
+
+                    # Now inject new belongs_to relations for target region
+                    if target_region and reassign_rels:
+                        try:
+                            self._ingester.inject_custom_kg(
+                                entities=[],
+                                relationships=reassign_rels,
+                                chunks=[],
+                                source_id=REGION_SOURCE_ID,
+                            )
+                        except Exception as e:
+                            logger.debug("重新分配成员失败 %s -> %s: %s",
+                                         region.name, target_region.name, e)
+                else:
+                    logger.warning("解散脑区失败: %s", region.name)
+            elif shrink_count > 0 or parsed.get("shrink_count", "0") != "0":
+                # Persist shrink_count (incremented or reset to 0)
+                # Reset-to-0 write is needed so next sync doesn't read stale count
+                now = time.time()
+                updated_desc = _encode_description(
+                    summary=parsed.get("summary", ""),
+                    region_id=region.community_id,
+                    size=current_size,
+                    representative=region.representative,
+                    updated_at=now,
+                )
+                # Append shrink_count + preserve other dynamic metadata
+                updated_desc += f" | brain_meta_shrink_count:{shrink_count}"
+                STANDARD_KEYS = {"summary", "region_id", "size", "representative", "updated_at", "shrink_count"}
+                for key, value in parsed.items():
+                    if key not in STANDARD_KEYS and value:
+                        updated_desc += f" | brain_meta_{key}:{value}"
+
+                try:
+                    self._ingester.inject_custom_kg(
+                        entities=[{
+                            "entity_name": region.name,
+                            "entity_type": REGION_ENTITY_TYPE,
+                            "description": updated_desc,
+                        }],
+                        relationships=[],
+                        chunks=[],
+                        source_id=REGION_SOURCE_ID,
+                    )
+                except Exception as e:
+                    logger.debug("更新萎缩计数失败 %s: %s", region.name, e)
+
+        if dissolved:
+            logger.info("共解散 %d 个萎缩脑区", len(dissolved))
+        return dissolved
+
+    def _find_most_similar_neighbor(
+        self,
+        region: BrainRegionInfo,
+        all_regions: list[BrainRegionInfo],
+        excluded_names: set[str] | None = None,
+    ) -> BrainRegionInfo | None:
+        """Find the most similar neighbor region by entity type distribution.
+
+        Uses cosine similarity on entity_type count vectors derived from
+        actual member entities (via explore_node), not from description text.
+        Excludes the region itself, default regions (no community_id),
+        and any names in excluded_names (e.g. already dissolved regions).
+        """
+        import math
+
+        # Build entity type distribution from actual member entities
+        region_types = self._get_entity_type_distribution(region.name)
+
+        best_score = -1.0
+        best_region: BrainRegionInfo | None = None
+        _excluded = excluded_names or set()
+
+        for other in all_regions:
+            if other.name == region.name:
+                continue
+            if not other.community_id:
+                continue
+            if other.name in _excluded:
+                continue
+
+            other_types = self._get_entity_type_distribution(other.name)
+
+            # Cosine similarity
+            all_keys = set(region_types.keys()) | set(other_types.keys())
+            dot = sum(region_types.get(k, 0) * other_types.get(k, 0) for k in all_keys)
+            norm_a = math.sqrt(sum(v * v for v in region_types.values())) if region_types else 0
+            norm_b = math.sqrt(sum(v * v for v in other_types.values())) if other_types else 0
+
+            if norm_a > 0 and norm_b > 0:
+                score = dot / (norm_a * norm_b)
+            else:
+                score = 0.0
+
+            if score > best_score:
+                best_score = score
+                best_region = other
+
+        return best_region
+
+    def _get_entity_type_distribution(self, region_name: str) -> dict[str, int]:
+        """Get entity type distribution for a region's members via explore_node.
+
+        Returns a dict of entity_type -> count for all member entities.
+        Falls back to empty dict if explore fails.
+        """
+        type_counts: dict[str, int] = {}
+        try:
+            result = self._adapter.explore_node(region_name, depth=1)
+            if result and isinstance(result, dict):
+                for node in result.get("nodes", []):
+                    node_name = node.get("name", node.get("id", ""))
+                    # Skip the region node itself
+                    if node_name == region_name:
+                        continue
+                    etype = node.get("entityType", node.get("type", "Other"))
+                    type_counts[etype] = type_counts.get(etype, 0) + 1
+        except Exception as e:
+            logger.debug("获取实体类型分布失败 %s: %s", region_name, e)
+        return type_counts
 
     # ------------------------------------------------------------------
     # Internal methods
@@ -641,7 +878,7 @@ class RegionManager:
 
             detector = CommunityDetector(self._adapter)
             partition = detector.detect_communities(
-                resolution=REGION_CONFIG_DEFAULTS.get("resolution", 1.0) if "REGION_CONFIG_DEFAULTS" in dir() else 1.0,
+                resolution=1.0,
             )
             if partition is None or partition.total_regions < 1:
                 return {"regions_created": 0, "regions_removed": 0, "regions_updated": 0, "edges_disconnected": 0}
@@ -698,6 +935,15 @@ class RegionManager:
             if kg is None:
                 return 0
 
+            # NOTE: graph_write_lock only synchronizes with graph_read_lock holders.
+            # call_async-based writes (ainsert_custom_kg, adelete_by_entity, etc.)
+            # do NOT acquire this lock — they run in the asyncio loop. This means
+            # there is a theoretical race window where call_async modifies the
+            # NetworkX graph while we iterate edges under graph_write_lock.
+            # In practice this is safe because:
+            # 1. _decay_structural_edges runs infrequently (every 6h sync cycle)
+            # 2. call_async writes are serialized in the asyncio loop
+            # 3. If RuntimeError occurs, the except block handles it gracefully
             with graph_write_lock():
                 for region in regions:
                     try:

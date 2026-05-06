@@ -780,10 +780,11 @@ class LightRAGAdapter:
         if rag is None:
             return {"status": "error", "message": "LightRAG not available"}
         try:
-            from niu_api.internal.lightrag_manager import graph_write_lock
-
-            with graph_write_lock():
-                result = call_async(rag.adelete_by_entity(entity_name), timeout=300)
+            # call_async runs in LightRAG's asyncio loop (serialized there),
+            # so concurrent writes are impossible. No write lock needed —
+            # readers use graph_read_lock + copy() snapshot to avoid
+            # RuntimeError("Graph changed during iteration").
+            result = call_async(rag.adelete_by_entity(entity_name), timeout=300)
 
             # Record change for frontend changelog polling (best-effort)
             try:
@@ -845,21 +846,23 @@ class LightRAGAdapter:
                     # 不能用 get_knowledge_graph(entity_type)，因为那是按节点名搜索
                     from niu_api.internal.lightrag_manager import graph_read_lock
 
-                    nx_graph = getattr(rag.chunk_entity_relation_graph, "_graph", None)
+                    graph_obj = rag.chunk_entity_relation_graph
+                    nx_graph = graph_obj._graph if hasattr(graph_obj, "_graph") else graph_obj
                     if nx_graph is None:
                         return {"status": "ok", "data": []}
                     nodes = []
                     with graph_read_lock():
-                        for node_id, node_data in nx_graph.nodes(data=True):
-                            nt = node_data.get("entity_type", "Other")
-                            if nt.lower() == entity_type.lower():
-                                nodes.append({
-                                    "id": node_id,
-                                    "entity_type": nt,
-                                    "description": node_data.get("description", ""),
-                                })
-                                if len(nodes) >= limit:
-                                    break
+                        snapshot = nx_graph.copy()
+                    for node_id, node_data in snapshot.nodes(data=True):
+                        nt = node_data.get("entity_type", "Other")
+                        if nt.lower() == entity_type.lower():
+                            nodes.append({
+                                "id": node_id,
+                                "entity_type": nt,
+                                "description": node_data.get("description", ""),
+                            })
+                            if len(nodes) >= limit:
+                                break
                     return {"status": "ok", "data": nodes}
                 else:
                     # 无过滤：用 get_knowledge_graph 全图搜索
@@ -905,21 +908,37 @@ class LightRAGAdapter:
         if rag is None:
             return {"status": "error", "message": "LightRAG not available"}
         try:
-            from niu_api.internal.lightrag_manager import graph_write_lock
-
-            with graph_write_lock():
-                result = call_async(
-                    rag.amerge_entities(source_entities, target_entity),
-                    timeout=300,
-                )
+            # call_async runs in LightRAG's asyncio loop (serialized there),
+            # so concurrent writes are impossible. No write lock needed —
+            # readers use graph_read_lock + copy() snapshot to avoid
+            # RuntimeError("Graph changed during iteration").
+            result = call_async(
+                rag.amerge_entities(source_entities, target_entity),
+                timeout=300,
+            )
 
             # Record change for frontend changelog polling (best-effort)
             try:
-                from niu_api.internal.lightrag_manager import get_change_log
+                from niu_api.internal.lightrag_manager import get_change_log, graph_read_lock
+
+                # Read target entity's actual attributes from the graph
+                graph_obj = rag.chunk_entity_relation_graph
+                nx_graph = graph_obj._graph if hasattr(graph_obj, "_graph") else graph_obj
+                target_type = "Other"
+                target_desc = ""
+                if nx_graph and nx_graph.has_node(target_entity):
+                    with graph_read_lock():
+                        if nx_graph.has_node(target_entity):
+                            attrs = nx_graph.nodes[target_entity]
+                            target_type = attrs.get("entity_type", "Other")
+                            target_desc = attrs.get("description", "")
 
                 get_change_log().record_change("entity_merged", {
                     "source_ids": source_entities,
                     "target_id": target_entity,
+                    "name": target_entity,
+                    "type": target_type,
+                    "description": target_desc,
                 })
             except Exception as e:
                 logger.debug(f"changelog record_change failed: {e}")
@@ -1229,10 +1248,11 @@ class LightRAGIngester:
             })
 
         try:
-            from niu_api.internal.lightrag_manager import graph_write_lock
-
-            with graph_write_lock():
-                call_async(rag.ainsert_custom_kg(custom_kg), timeout=600)
+            # call_async runs in LightRAG's asyncio loop (serialized there),
+            # so concurrent writes are impossible. No write lock needed —
+            # readers use graph_read_lock + copy() snapshot to avoid
+            # RuntimeError("Graph changed during iteration").
+            call_async(rag.ainsert_custom_kg(custom_kg), timeout=600)
 
             # Record changes for frontend changelog polling
             # (best-effort: never let changelog errors affect the write result)
@@ -1305,9 +1325,10 @@ class LightRAGIngester:
             try:
                 from niu_api.internal.lightrag_manager import get_change_log
 
-                get_change_log().record_change("document_inserted", {
+                get_change_log().record_change("document_created", {
                     "id": doc_id or "",
                     "uri": file_path or "",
+                    "title": file_path or doc_id or "",
                     "source": "lightrag_insert",
                 })
             except Exception:
@@ -1352,9 +1373,10 @@ class LightRAGIngester:
             try:
                 from niu_api.internal.lightrag_manager import get_change_log
 
-                get_change_log().record_change("document_inserted", {
+                get_change_log().record_change("document_created", {
                     "id": ",".join(ids) if ids else "",
                     "uri": ",".join(file_paths) if file_paths else "",
+                    "title": ",".join(file_paths) if file_paths else ",".join(ids) if ids else "",
                     "source": "lightrag_insert_batch",
                     "count": len(documents),
                 })
