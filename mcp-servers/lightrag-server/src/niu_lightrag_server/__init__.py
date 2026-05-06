@@ -621,10 +621,13 @@ def lightrag_insert_file(
 
     LightRAG reads the file, extracts text (supports DOCX/PDF/PPTX/XLSX/txt/md etc.),
     chunks it, and builds the knowledge graph asynchronously.
+    The original file is never modified or moved — a temp copy is used.
     """
     try:
         from niu_api.internal.lightrag_manager import get_lightrag, call_async
         from pathlib import Path as _Path
+        import tempfile
+        import shutil
 
         file = _Path(file_path)
         if not file.is_file():
@@ -634,9 +637,24 @@ def lightrag_insert_file(
         if rag is None:
             return {"status": "error", "message": "LightRAG not available"}
 
-        from lightrag.api.routers.document_routes import pipeline_enqueue_file
+        # Copy file to a temp directory so pipeline_enqueue_file moves
+        # the copy (not the user's original file).
+        tmp_dir = _Path(tempfile.mkdtemp(prefix="lightrag_ingest_"))
+        tmp_file = tmp_dir / file.name
+        shutil.copy2(str(file), str(tmp_file))
 
-        enqueue_kwargs: dict[str, Any] = {"rag": rag, "file_path": file}
+        # Import pipeline_enqueue_file with sys.argv workaround.
+        # LightRAG's auth.py → config.py → parse_args() parses sys.argv
+        # and exits with SystemExit:2 when called outside the API server.
+        import sys as _sys
+        _saved_argv = _sys.argv
+        _sys.argv = ["lightrag"]
+        try:
+            from lightrag.api.routers.document_routes import pipeline_enqueue_file
+        finally:
+            _sys.argv = _saved_argv
+
+        enqueue_kwargs: dict[str, Any] = {"rag": rag, "file_path": tmp_file}
         if doc_id is not None:
             enqueue_kwargs["track_id"] = doc_id
 
@@ -644,6 +662,26 @@ def lightrag_insert_file(
             pipeline_enqueue_file(**enqueue_kwargs),
             timeout=600,
         )
+
+        # Trigger entity extraction pipeline after enqueuing.
+        # pipeline_enqueue_file only stores the document (PENDING status).
+        # apipeline_process_enqueue_documents splits, calls LLM for
+        # entity/relation extraction, and builds the knowledge graph.
+        if success:
+            try:
+                call_async(
+                    rag.apipeline_process_enqueue_documents(),
+                    timeout=600,
+                )
+            except Exception as proc_err:
+                logger.warning(f"[lightrag_insert_file] process_enqueue failed: {proc_err}")
+
+        # Clean up temp directory (pipeline_enqueue_file may have moved
+        # the file to its own __enqueued__ subdir, so remove what remains)
+        try:
+            shutil.rmtree(str(tmp_dir), ignore_errors=True)
+        except Exception:
+            pass
 
         # Record changelog
         try:

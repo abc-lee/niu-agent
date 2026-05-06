@@ -212,7 +212,7 @@ class TestLightragGetGraph:
 
         result = mod.lightrag_get_graph(action="explore", entity_name="Python", depth=2)
 
-        mock_adapter.explore_node.assert_called_once_with(entity_name="Python", depth=2)
+        mock_adapter.explore_node.assert_called_once_with(entity_name="Python", depth=2, edge_types=None)
 
     def test_snapshot_action(self):
         """snapshot action should call adapter.get_graph_snapshot()."""
@@ -302,17 +302,17 @@ class TestLightragInsertEntity:
     """Test lightrag_insert_entity tool function."""
 
     def test_delegates_to_ingester(self):
-        """lightrag_insert_entity should delegate to LightRAGIngester.inject_entity()."""
+        """lightrag_insert_entity should delegate to inject_custom_kg with entity."""
         mod = _import_module()
         mock_ingester = MagicMock()
-        mock_ingester.inject_entity.return_value = {"status": "ok"}
+        mock_ingester.inject_custom_kg.return_value = {"status": "ok"}
         mod._ingester = mock_ingester
 
         result = mod.lightrag_insert_entity(name="Python", entity_type="skill")
 
-        mock_ingester.inject_entity.assert_called_once_with(
-            name="Python", entity_type="skill",
-            description="", source_id="custom_kg", file_path="custom_kg",
+        mock_ingester.inject_custom_kg.assert_called_once_with(
+            entities=[{"entity_name": "Python", "entity_type": "skill", "description": ""}],
+            relationships=[], chunks=[], source_id="custom_kg",
         )
 
 
@@ -320,19 +320,24 @@ class TestLightragInsertRelation:
     """Test lightrag_insert_relation tool function."""
 
     def test_delegates_to_ingester(self):
-        """lightrag_insert_relation should delegate to LightRAGIngester.inject_relation()."""
+        """lightrag_insert_relation should delegate to inject_custom_kg with relationship."""
         mod = _import_module()
         mock_ingester = MagicMock()
-        mock_ingester.inject_relation.return_value = {"status": "ok"}
+        mock_ingester.inject_custom_kg.return_value = {"status": "ok"}
         mod._ingester = mock_ingester
 
         result = mod.lightrag_insert_relation(
             src_id="Python", tgt_id="Django", relation="has_framework",
         )
 
-        mock_ingester.inject_relation.assert_called_once_with(
-            src_id="Python", tgt_id="Django", relation="has_framework",
-            description="", source_id="custom_kg", file_path="custom_kg",
+        mock_ingester.inject_custom_kg.assert_called_once_with(
+            entities=[],
+            relationships=[{
+                "src_id": "Python", "tgt_id": "Django",
+                "keywords": "has_framework", "description": "",
+                "source_id": "custom_kg", "file_path": "custom_kg",
+            }],
+            chunks=[], source_id="custom_kg",
         )
 
 

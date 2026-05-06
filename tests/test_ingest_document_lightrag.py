@@ -189,16 +189,20 @@ class TestNoVectorStoreOrKgServer:
                 f"kg-server tool was called: {tool_name}"
 
     def test_no_store_document_l1_called(self, mock_registry, mock_preferences, tmp_path):
-        """Ensure ingest_document does NOT call store_document_l1 internally."""
+        """Ensure ingest_document does NOT call lightrag_insert (old tool) internally."""
         from niu_photo_server import ingest_document
 
         doc = tmp_path / "source" / "no_l1.txt"
         doc.parent.mkdir(parents=True, exist_ok=True)
         doc.write_text("Content for no L1 test.", encoding="utf-8")
 
-        with patch("niu_photo_server.store_document_l1") as mock_l1:
-            result = ingest_document(str(doc), category="其他", mode="copy")
-            mock_l1.assert_not_called()
+        result = ingest_document(str(doc), category="其他", mode="copy")
+        # Verify the old lightrag_insert tool was NOT called
+        mock_reg, mock_insert = mock_registry
+        for call in mock_reg.get.call_args_list:
+            tool_name = call[0][0] if call[0] else ""
+            assert tool_name != "lightrag-server/lightrag_insert", \
+                "Old lightrag_insert should not be called"
 
 
 # ---------------------------------------------------------------------------

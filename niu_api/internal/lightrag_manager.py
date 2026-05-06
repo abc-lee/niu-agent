@@ -69,17 +69,33 @@ _loop_ready = threading.Event()
 _loop_lock = threading.Lock()
 
 # Read-write lock for the NetworkX knowledge graph.
-# - Write lock: acquired by inject_custom_kg, delete_entity, merge_entities,
-#   _decay_structural_edges (any operation that mutates the graph).
+#
+# IMPORTANT: call_async operations (ainsert_custom_kg, adelete_by_entity,
+# amerge_entities, ainsert) must NOT be called inside this lock.
+# call_async submits to LightRAG's asyncio loop and blocks for up to 600s;
+# holding the lock during that time would freeze all reads.
+#
+# Lock usage:
+# - Write lock: only for direct NetworkX mutations (e.g. _decay_structural_edges
+#   which calls kg.remove_edge / edge_data["weight"] directly).
+#   call_async-based writes do NOT need this lock — they run serialized in the
+#   asyncio loop and update the NetworkX graph internally.
 # - Read lock: acquired by get_graph_snapshot, list_entities (entity_type path),
-#   and any other direct NetworkX graph traversal.
-# Multiple readers can proceed concurrently; writers have exclusive access.
-# This prevents RuntimeError("Graph changed during iteration") and silent
-# data corruption when background sync writes while API requests read.
-_graph_rwlock = threading.RLock()  # Simplified: use RLock for now (exclusive only)
-# TODO: Upgrade to proper R/W lock (e.g. readerwriterlock) if read contention
-# becomes measurable. For now, exclusive access is sufficient — reads are fast
-# (<10ms for ~200 nodes) and writes are infrequent (every 6h sync cycle).
+#   and any other direct NetworkX graph traversal. Readers should copy() the
+#   graph under the lock, then iterate the snapshot lock-free.
+#
+# CAVEAT: graph_read_lock only synchronizes with direct NetworkX mutations
+# (graph_write_lock holders like _decay_structural_edges). It does NOT
+# synchronize with call_async-based writes, which run in the asyncio loop
+# without acquiring this lock. This means snapshot = g.copy() under
+# graph_read_lock may still encounter concurrent modification from call_async.
+# This is a deliberate trade-off: holding the lock during call_async would
+# freeze reads for up to 600s. In practice, call_async writes are serialized
+# in the asyncio loop and brief; the risk of partial snapshot is low but not
+# zero. If a RuntimeError occurs, the endpoint returns an empty result and
+# the frontend retries on the next poll cycle.
+#
+_graph_rwlock = threading.RLock()
 
 
 def graph_read_lock():
@@ -87,17 +103,21 @@ def graph_read_lock():
 
     Usage:
         with graph_read_lock():
-            nodes = list(nx_graph.nodes())
+            snapshot = nx_graph.copy()
     """
     return _graph_rwlock
 
 
 def graph_write_lock():
-    """Context manager for write access to the NetworkX graph.
+    """Context manager for direct NetworkX graph mutations (NOT call_async).
+
+    Only use for operations that directly modify the NetworkX graph object
+    (e.g. kg.remove_edge, edge_data["weight"] = ...).
+    Do NOT wrap call_async() calls — they block too long and freeze reads.
 
     Usage:
         with graph_write_lock():
-            result = call_async(rag.ainsert_custom_kg(...))
+            kg.remove_edge(src, tgt)
     """
     return _graph_rwlock
 

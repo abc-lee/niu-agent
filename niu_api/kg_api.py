@@ -70,17 +70,22 @@ class FindPathRequest(BaseModel):
 
 
 def _get_graph():
-    """Get LightRAG's NetworkX graph safely, with retry on concurrent modification."""
+    """Get LightRAG's NetworkX graph (unwrapped from OperableGraph wrapper).
+
+    Returns the raw NetworkX DiGraph, not the LightRAG OperableGraph wrapper.
+    This is necessary because callers use NetworkX APIs (nx.shortest_path,
+    g.nodes(), g.edges(), g.copy()) which require a NetworkX Graph object.
+    """
     from niu_api.internal.lightrag_manager import get_lightrag
 
     rag = get_lightrag()
     if rag is None:
         return None
-    try:
-        return getattr(rag, "chunk_entity_relation_graph", None)
-    except RuntimeError:
-        logger.warning("LightRAG graph modified during read, retrying")
-        return getattr(rag, "chunk_entity_relation_graph", None)
+    graph_obj = getattr(rag, "chunk_entity_relation_graph", None)
+    if graph_obj is None:
+        return None
+    # Unwrap OperableGraph to get the underlying NetworkX graph
+    return graph_obj._graph if hasattr(graph_obj, "_graph") else graph_obj
 
 
 # ============== Singleton Adapter ==============
@@ -156,14 +161,19 @@ def hub_entities(
         return {"status": "error", "message": "LightRAG not available"}
 
     try:
-        node_degrees = {n: g.degree(n) for n in g.nodes()}
+        from niu_api.internal.lightrag_manager import graph_read_lock
+
+        with graph_read_lock():
+            snapshot = g.copy()
+
+        node_degrees = {n: snapshot.degree(n) for n in snapshot.nodes()}
         sorted_nodes = sorted(node_degrees.keys(), key=lambda n: node_degrees[n], reverse=True)
         top = sorted_nodes[:limit]
         top_set = set(top)
 
         nodes = []
         for node_name in top:
-            attrs = g.nodes[node_name] if g.has_node(node_name) else {}
+            attrs = snapshot.nodes[node_name] if snapshot.has_node(node_name) else {}
             nodes.append(
                 {
                     "id": f"entity:{node_name}",
@@ -178,7 +188,7 @@ def hub_entities(
             )
 
         edges = []
-        for u, v, data in g.edges(data=True):
+        for u, v, data in snapshot.edges(data=True):
             if u in top_set and v in top_set:
                 confidence = data.get("weight", 1.0)
                 if min_confidence > 0 and confidence < min_confidence:
@@ -252,7 +262,12 @@ def find_path(request: FindPathRequest):
     tgt = request.to_id.removeprefix("entity:")
 
     try:
-        path_nodes = nx.shortest_path(g, source=src, target=tgt)
+        from niu_api.internal.lightrag_manager import graph_read_lock
+
+        with graph_read_lock():
+            snapshot = g.copy()
+
+        path_nodes = nx.shortest_path(snapshot, source=src, target=tgt)
     except (nx.NodeNotFound, nx.NetworkXNoPath):
         return {"nodes": [], "edges": []}
     except RuntimeError:
@@ -262,7 +277,7 @@ def find_path(request: FindPathRequest):
     try:
         nodes = []
         for node_name in path_nodes:
-            attrs = g.nodes[node_name] if g.has_node(node_name) else {}
+            attrs = snapshot.nodes[node_name] if snapshot.has_node(node_name) else {}
             nodes.append(
                 {
                     "id": f"entity:{node_name}",
@@ -281,8 +296,8 @@ def find_path(request: FindPathRequest):
         for i in range(len(path_nodes) - 1):
             u, v = path_nodes[i], path_nodes[i + 1]
             # Check both directions since the graph is directed
-            if g.has_edge(u, v):
-                data = g.edges[u, v]
+            if snapshot.has_edge(u, v):
+                data = snapshot.edges[u, v]
                 edges.append(
                     {
                         "source": f"entity:{u}",
@@ -292,8 +307,8 @@ def find_path(request: FindPathRequest):
                         "edgeType": "RELATED_TO",
                     }
                 )
-            elif g.has_edge(v, u):
-                data = g.edges[v, u]
+            elif snapshot.has_edge(v, u):
+                data = snapshot.edges[v, u]
                 edges.append(
                     {
                         "source": f"entity:{v}",
@@ -325,9 +340,14 @@ def list_entities(
         return {"status": "error", "message": "LightRAG not available"}
 
     try:
+        from niu_api.internal.lightrag_manager import graph_read_lock
+
+        with graph_read_lock():
+            snapshot = g.copy()
+
         collected = []
-        for node_name in g.nodes():
-            attrs = g.nodes[node_name] if g.has_node(node_name) else {}
+        for node_name in snapshot.nodes():
+            attrs = snapshot.nodes[node_name] if snapshot.has_node(node_name) else {}
             # Filter by entity_type if requested
             if entity_type and attrs.get("entity_type", "").lower() != entity_type.lower():
                 continue
@@ -352,7 +372,7 @@ def list_entities(
             )
 
         edges = []
-        for u, v, data in g.edges(data=True):
+        for u, v, data in snapshot.edges(data=True):
             if u in node_names and v in node_names:
                 edges.append(
                     {
@@ -382,9 +402,14 @@ def list_concepts(limit: int = Query(default=100, ge=1, le=500)):
         return {"status": "error", "message": "LightRAG not available"}
 
     try:
+        from niu_api.internal.lightrag_manager import graph_read_lock
+
+        with graph_read_lock():
+            snapshot = g.copy()
+
         collected = []
-        for node_name in g.nodes():
-            attrs = g.nodes[node_name] if g.has_node(node_name) else {}
+        for node_name in snapshot.nodes():
+            attrs = snapshot.nodes[node_name] if snapshot.has_node(node_name) else {}
             if attrs.get("entity_type", "").lower() == "concept":
                 collected.append((node_name, attrs))
             if len(collected) >= limit:
@@ -405,7 +430,7 @@ def list_concepts(limit: int = Query(default=100, ge=1, le=500)):
             )
 
         edges = []
-        for u, v, data in g.edges(data=True):
+        for u, v, data in snapshot.edges(data=True):
             if u in node_names and v in node_names:
                 edges.append(
                     {
@@ -439,9 +464,14 @@ def surprising_connections(
         return {"status": "error", "message": "LightRAG not available"}
 
     try:
+        from niu_api.internal.lightrag_manager import graph_read_lock
+
+        with graph_read_lock():
+            snapshot = g.copy()
+
         # Build adjacency sets only for the requested number of entities (not the full graph)
-        candidate_nodes = list(g.nodes())[:max_entities]
-        adj: Dict[str, set] = {n: set(g.neighbors(n)) for n in candidate_nodes}
+        candidate_nodes = list(snapshot.nodes())[:max_entities]
+        adj: Dict[str, set] = {n: set(snapshot.neighbors(n)) for n in candidate_nodes}
 
         surprising_pairs: List[tuple] = []  # (u, v, shared_count)
         node_set = set()
@@ -461,7 +491,7 @@ def surprising_connections(
 
         nodes = []
         for node_name in node_set:
-            attrs = g.nodes[node_name] if g.has_node(node_name) else {}
+            attrs = snapshot.nodes[node_name] if snapshot.has_node(node_name) else {}
             nodes.append(
                 {
                     "id": f"entity:{node_name}",
@@ -478,7 +508,7 @@ def surprising_connections(
         # Include edges between the surprising pairs
         edges = []
         pair_set = {(u, v) for u, v, _ in surprising_pairs}
-        for u, v, data in g.edges(data=True):
+        for u, v, data in snapshot.edges(data=True):
             if (u, v) in pair_set or (v, u) in pair_set:
                 confidence = data.get("weight", 1.0)
                 if min_confidence > 0 and confidence < min_confidence:

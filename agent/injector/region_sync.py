@@ -32,7 +32,12 @@ REGION_CONFIG_DEFAULTS: dict[str, Any] = {
     "algorithm": "leiden",
     "resolution": 1.0,
     "min_graph_size": 50,
+    "min_community_size": 3,
     "incremental_update": True,
+    "co_activation_threshold": 0.9,
+    "max_merged_size": 50,
+    "shrink_threshold": 3,
+    "shrink_rounds": 3,
     "neighbor_unfreeze_depth": 2,
     "decay_factor": 0.92,
     "activation_boost": 1.0,
@@ -144,7 +149,10 @@ class RegionSync:
         # Step 6: Initialize activation manager with new regions
         self._refresh_activation_manager(stats)
 
-        # Step 7: Save status
+        # Step 7: Merge co-activated regions + dissolve shrunk regions
+        self._merge_and_dissolve(stats)
+
+        # Step 8: Save status
         self._save_status(stats)
 
         logger.info(
@@ -172,8 +180,14 @@ class RegionSync:
             adapter = LightRAGAdapter()
             detector = CommunityDetector(adapter)
             resolution = REGION_CONFIG_DEFAULTS["resolution"]
+            min_graph_size = REGION_CONFIG_DEFAULTS.get("min_graph_size", 50)
+            min_community_size = REGION_CONFIG_DEFAULTS.get("min_community_size", 3)
             # detect_communities is sync — no call_async needed
-            detection_result = detector.detect_communities(resolution=resolution)
+            detection_result = detector.detect_communities(
+                resolution=resolution,
+                min_graph_size=min_graph_size,
+                min_community_size=min_community_size,
+            )
             return detection_result
         except Exception as e:
             logger.warning(f"[RegionSync] Community detection failed: {e}")
@@ -238,7 +252,7 @@ class RegionSync:
             stats: Stats dict (updated in place with activation stats).
         """
         try:
-            from agent.brain_tools import set_activation_mgr
+            from agent.brain_tools import get_activation_mgr, set_activation_mgr
             from niu_api.internal.lightrag_adapter import LightRAGAdapter, LightRAGIngester
             from niu_api.internal.region_activation import RegionActivationManager
             from niu_api.internal.region_manager import RegionManager
@@ -259,12 +273,18 @@ class RegionSync:
                         f"[RegionSync] get_region_members failed for {region.name}: {e}"
                     )
 
-            activation_mgr = RegionActivationManager(
-                decay_factor=REGION_CONFIG_DEFAULTS["decay_factor"],
-                activation_threshold=REGION_CONFIG_DEFAULTS["activation_threshold"],
-                spillover_factor=REGION_CONFIG_DEFAULTS["spillover_factor"],
-                tool_reinforce_value=REGION_CONFIG_DEFAULTS["tool_reinforce_value"],
-            )
+            # Reuse existing activation manager to preserve co-activation state
+            # (creating a new one each cycle would discard _co_activation_counts)
+            existing_mgr = get_activation_mgr()
+            if existing_mgr is not None:
+                activation_mgr = existing_mgr
+            else:
+                activation_mgr = RegionActivationManager(
+                    decay_factor=REGION_CONFIG_DEFAULTS["decay_factor"],
+                    activation_threshold=REGION_CONFIG_DEFAULTS["activation_threshold"],
+                    spillover_factor=REGION_CONFIG_DEFAULTS["spillover_factor"],
+                    tool_reinforce_value=REGION_CONFIG_DEFAULTS["tool_reinforce_value"],
+                )
             activation_mgr.initialize_from_regions(all_regions)
 
             # BUG 3 fix: Set neighbor map for spillover activation.
@@ -288,6 +308,103 @@ class RegionSync:
         except Exception as e:
             logger.warning(f"[RegionSync] Activation manager refresh failed: {e}")
             stats["errors"].append(f"activation: {e}")
+
+    # ------------------------------------------------------------------
+    # Merge + dissolve
+    # ------------------------------------------------------------------
+
+    def _merge_and_dissolve(self, stats: dict) -> None:
+        """Check for merge candidates (co-activation) and dissolve shrunk regions.
+
+        Args:
+            stats: Stats dict to update.
+        """
+        # Step 7a: Merge co-activated regions
+        try:
+            from agent.brain_tools import get_activation_mgr
+            from niu_api.internal.lightrag_adapter import LightRAGAdapter
+
+            activation_mgr = get_activation_mgr()
+            if activation_mgr is not None:
+                candidates = activation_mgr.get_merge_candidates(
+                    co_activation_threshold=REGION_CONFIG_DEFAULTS.get("co_activation_threshold", 0.9),
+                    max_merged_size=REGION_CONFIG_DEFAULTS.get("max_merged_size", 50),
+                )
+                if candidates:
+                    adapter = LightRAGAdapter()
+                    merged_count = 0
+                    for source_id, target_id in candidates:
+                        # Find region names from activation manager
+                        source_state = activation_mgr.get_region_state(source_id)
+                        target_state = activation_mgr.get_region_state(target_id)
+                        if source_state is None or target_state is None:
+                            continue
+
+                        # Merge KG nodes via adapter — use full region names, not labels
+                        try:
+                            source_name = f"brain:region:{source_state.label}"
+                            target_name = f"brain:region:{target_state.label}"
+                            result = adapter.merge_entities(
+                                source_entities=[source_name],
+                                target_entity=target_name,
+                            )
+                            if isinstance(result, dict) and result.get("status") == "ok":
+                                merged_count += 1
+                                # Transfer source members to target, then remove source
+                                activation_mgr.merge_region_into(source_id, target_id)
+                                logger.info(
+                                    "[RegionSync] 合并脑区: %s -> %s",
+                                    source_state.label, target_state.label,
+                                )
+                        except Exception as e:
+                            logger.debug(f"[RegionSync] merge_entities failed: {e}")
+
+                    stats["regions_merged"] = merged_count
+        except Exception as e:
+            logger.debug(f"[RegionSync] Merge check skipped: {e}")
+
+        # Step 7b: Dissolve shrunk regions
+        try:
+            from niu_api.internal.lightrag_adapter import LightRAGAdapter, LightRAGIngester
+            from niu_api.internal.region_manager import RegionManager
+
+            adapter = LightRAGAdapter()
+            ingester = LightRAGIngester()
+            manager = RegionManager(adapter, ingester)
+
+            dissolved = manager.dissolve_shrunk_regions(
+                shrink_threshold=REGION_CONFIG_DEFAULTS.get("shrink_threshold", 3),
+                shrink_rounds=REGION_CONFIG_DEFAULTS.get("shrink_rounds", 3),
+            )
+            stats["regions_dissolved"] = len(dissolved)
+
+            # Remove dissolved regions from activation manager
+            if dissolved:
+                try:
+                    from agent.brain_tools import get_activation_mgr
+                    activation_mgr = get_activation_mgr()
+                    if activation_mgr is not None:
+                        for region_name in dissolved:
+                            # Derive region_id from region_name (brain:region:{label})
+                            label = region_name.removeprefix("brain:region:")
+                            region_id = self._label_to_region_id(activation_mgr, label)
+                            if region_id:
+                                activation_mgr.remove_region(region_id)
+                except Exception as e:
+                    logger.debug(f"[RegionSync] Activation cleanup after dissolve: {e}")
+        except Exception as e:
+            logger.debug(f"[RegionSync] Dissolve check skipped: {e}")
+
+    @staticmethod
+    def _label_to_region_id(activation_mgr: Any, label: str) -> str | None:
+        """Look up region_id from label via activation manager's label index."""
+        try:
+            state = activation_mgr.find_region_by_label(label)
+            if state is not None:
+                return state.region_id
+        except Exception:
+            pass
+        return None
 
     # ------------------------------------------------------------------
     # Status file I/O
