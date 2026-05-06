@@ -32,7 +32,7 @@ REGION_CONFIG_DEFAULTS: dict[str, Any] = {
     "algorithm": "leiden",
     "resolution": 1.0,
     "min_graph_size": 50,
-    "min_community_size": 3,
+    "min_community_size": 10,
     "incremental_update": True,
     "co_activation_threshold": 0.9,
     "max_merged_size": 50,
@@ -181,7 +181,7 @@ class RegionSync:
             detector = CommunityDetector(adapter)
             resolution = REGION_CONFIG_DEFAULTS["resolution"]
             min_graph_size = REGION_CONFIG_DEFAULTS.get("min_graph_size", 50)
-            min_community_size = REGION_CONFIG_DEFAULTS.get("min_community_size", 3)
+            min_community_size = REGION_CONFIG_DEFAULTS.get("min_community_size", 10)
             # detect_communities is sync — no call_async needed
             detection_result = detector.detect_communities(
                 resolution=resolution,

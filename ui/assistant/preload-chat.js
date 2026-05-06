@@ -46,6 +46,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 用系统默认查看器打开文件
   openWithSystemViewer: (filePath) => ipcRenderer.send('open-with-system-viewer', filePath),
   
+  // 用系统默认浏览器打开链接
+  openExternal: (url) => ipcRenderer.send('open-external', url),
+
   // 清空聊天记录
   clearChat: () => ipcRenderer.invoke('clear-chat'),
 
