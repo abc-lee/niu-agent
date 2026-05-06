@@ -325,7 +325,12 @@ class LightRAGSync:
     def _sync_skills_and_tools(
         self, prev_skill_ids: set, prev_tool_ids: set
     ) -> tuple[int, int, set, set]:
-        """Sync skills and MCP tools into LightRAG knowledge graph.
+        """Sync skills into LightRAG knowledge graph.
+
+        MCP Tools sync removed — tools are discovered via disk YAML in
+        disk mode, not via LightRAG retrieval. Injecting 52+ tool
+        descriptions as chunks triggered massive LLM extraction on
+        every startup, creating spurious entities.
 
         Uses inject_entities_batch() for a single persist cycle instead of
         one inject_entity() call per item (which triggers N full persists).
@@ -337,7 +342,6 @@ class LightRAGSync:
         so a failed inject won't cause items to be permanently skipped.
         """
         skill_items: list[dict] = []
-        tool_items: list[dict] = []
         new_skill_ids: set = set()
         new_tool_ids: set = set()
 
@@ -377,56 +381,28 @@ class LightRAGSync:
         except Exception as e:
             logger.debug(f"[LightRAGSync] Skills scan skipped: {e}")
 
-        # --- Collect MCP Tools ---
-        try:
-            from agent.tool_registry import get_registry
-
-            registry = get_registry()
-
-            for full_name, schema in registry.get_all_schemas().items():
-                if "/" not in full_name:
-                    continue
-                tool_id = f"tool:{full_name}"
-                if tool_id in prev_tool_ids:
-                    continue
-                tool_name = full_name.split("/", 1)[1]
-                description = schema.get("description", "")
-                if not description:
-                    continue
-                tool_items.append({
-                    "id": tool_id,
-                    "item": {
-                        "name": f"tool:{full_name}",
-                        "entity_type": "Tool",
-                        "description": description,
-                        "source_id": f"tool:{full_name}",
-                        "chunk_content": f"{tool_name}: {description}",
-                        "file_path": f"mcp://{full_name}",
-                    },
-                })
-        except Exception as e:
-            logger.debug(f"[LightRAGSync] Tools scan skipped: {e}")
+        # --- MCP Tools sync removed (disk mode) ---
+        # Tools are discovered via disk YAML, not LightRAG.
+        # Previously, injecting 52+ tool descriptions as chunks caused
+        # massive LLM extraction on every startup.
 
         # --- Batch inject all collected items in one call ---
-        all_items = skill_items + tool_items
-        if all_items:
+        if skill_items:
             try:
                 from niu_api.internal.lightrag_adapter import LightRAGIngester
                 ingester = LightRAGIngester()
-                result = ingester.inject_entities_batch([e["item"] for e in all_items])
+                result = ingester.inject_entities_batch([e["item"] for e in skill_items])
                 logger.info(
-                    f"[LightRAGSync] Batch injected {len(all_items)} items "
-                    f"({len(skill_items)} skills, {len(tool_items)} tools) — "
+                    f"[LightRAGSync] Batch injected {len(skill_items)} skills — "
                     f"{result.get('entities', 0)} entities, {result.get('chunks', 0)} chunks"
                 )
                 # Only track IDs after confirmed successful inject
                 if result.get("status") == "ok":
                     new_skill_ids = {e["id"] for e in skill_items}
-                    new_tool_ids = {e["id"] for e in tool_items}
                 else:
                     logger.error(
                         f"[LightRAGSync] Batch inject returned status={result.get('status')}, "
-                        f"not tracking {len(all_items)} item IDs"
+                        f"not tracking {len(skill_items)} item IDs"
                     )
             except Exception as e:
                 logger.error(f"[LightRAGSync] Batch inject failed: {e}")
