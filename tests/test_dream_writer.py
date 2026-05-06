@@ -19,6 +19,7 @@ from agent.injector.dream_writer import (
     DREAM_SOURCE_ID,
     EPISODIC_ENTITY_TYPE,
     EVENT_PREFIX,
+    INVOLVES_RELATION,
     NIU_ENTITY,
     DreamWriter,
 )
@@ -46,7 +47,7 @@ def writer(mock_ingester: MagicMock) -> DreamWriter:
 
 
 def test_write_semantic_entity(writer: DreamWriter, mock_ingester: MagicMock) -> None:
-    """Verify entity + brain:Niu relation created."""
+    """Verify entity + brain:Niu relation created in single atomic call."""
     result = writer.write_semantic_entity(
         name="Python",
         entity_type="Skill",
@@ -59,20 +60,24 @@ def test_write_semantic_entity(writer: DreamWriter, mock_ingester: MagicMock) ->
     assert result["entity_type"] == "Skill"
     assert result["niu_relation_keyword"] == "skilled_in"
 
-    # Verify inject_custom_kg called for entity (no brain_meta in description)
-    assert mock_ingester.inject_custom_kg.call_count >= 1
-    kg_call = mock_ingester.inject_custom_kg.call_args_list[0]
+    # Verify single atomic inject_custom_kg call with entity + Niu relation + chunk
+    mock_ingester.inject_custom_kg.assert_called_once()
+    kg_call = mock_ingester.inject_custom_kg.call_args
+
+    # Entity
     entity = kg_call.kwargs["entities"][0]
     assert entity["entity_name"] == "Python"
     assert entity["description"] == "Programming language"
 
-    # Verify inject_custom_kg called for brain:Niu relation
-    assert mock_ingester.inject_custom_kg.call_count == 2
-    kg_call = mock_ingester.inject_custom_kg.call_args_list[1]
+    # brain:Niu anchor relation
     rel = kg_call.kwargs["relationships"][0]
     assert rel["src_id"] == NIU_ENTITY
     assert rel["tgt_id"] == "Python"
     assert rel["keywords"] == "skilled_in"
+
+    # Chunk
+    chunk = kg_call.kwargs["chunks"][0]
+    assert chunk["content"] == "Programming language"
 
 
 # ============== Test 2: write_semantic_relation ==============
@@ -101,7 +106,7 @@ def test_write_semantic_relation(writer: DreamWriter, mock_ingester: MagicMock) 
 
 
 def test_write_episodic_event(writer: DreamWriter, mock_ingester: MagicMock) -> None:
-    """Verify event entity created."""
+    """Verify event entity created with brain:Niu anchor in single atomic call."""
     result = writer.write_episodic_event(
         event_name="tool_x_failed",
         description="Tool X returned error code 500",
@@ -114,17 +119,24 @@ def test_write_episodic_event(writer: DreamWriter, mock_ingester: MagicMock) -> 
     assert result["event_name"] == f"{EVENT_PREFIX}tool_x_failed"
     assert result["experience_type"] == "error"
 
-    # Verify inject_custom_kg called for entity (no brain_meta in description)
-    mock_ingester.inject_custom_kg.assert_called()
-    kg_call = mock_ingester.inject_custom_kg.call_args_list[0]
+    # Verify single atomic inject_custom_kg call
+    mock_ingester.inject_custom_kg.assert_called_once()
+    kg_call = mock_ingester.inject_custom_kg.call_args
+
+    # Entity
     entity = kg_call.kwargs["entities"][0]
     assert entity["entity_name"] == f"{EVENT_PREFIX}tool_x_failed"
     assert entity["entity_type"] == EPISODIC_ENTITY_TYPE
     assert entity["description"] == "Tool X returned error code 500"
 
-    # No time chain or involves relations expected
-    assert result["chain"] is None
-    assert result["involves"] == []
+    # brain:Niu anchor relation (always present)
+    rels = kg_call.kwargs["relationships"]
+    niu_rel = [r for r in rels if r["src_id"] == NIU_ENTITY][0]
+    assert niu_rel["tgt_id"] == f"{EVENT_PREFIX}tool_x_failed"
+    assert niu_rel["keywords"] == "experienced"
+
+    # No time chain or involves relations — only the Niu anchor
+    assert len(rels) == 1
 
 
 # ============== Test 4: write_episodic_event_with_chain ==============
@@ -133,7 +145,7 @@ def test_write_episodic_event(writer: DreamWriter, mock_ingester: MagicMock) -> 
 def test_write_episodic_event_with_chain(
     writer: DreamWriter, mock_ingester: MagicMock
 ) -> None:
-    """Verify followed_by/corrected_by chain."""
+    """Verify followed_by/corrected_by chain in single atomic call."""
     # Test followed_by chain
     result_followed = writer.write_episodic_event(
         event_name="tried_tool_y",
@@ -143,25 +155,24 @@ def test_write_episodic_event_with_chain(
         is_correction=False,
     )
 
-    # Check chain relation
-    assert result_followed["chain"] is not None
-    # inject_custom_kg should have been called for the chain
-    kg_calls = mock_ingester.inject_custom_kg.call_args_list
-    # Find the chain call (not the entity call — entity call has empty relationships)
-    chain_call = None
-    for c in kg_calls:
-        rels = c.kwargs.get("relationships", [])
-        if rels and rels[0]["keywords"] in (
-            CHAIN_RELATION_FOLLOWED,
-            CHAIN_RELATION_CORRECTED,
-        ):
-            chain_call = rels[0]
+    assert result_followed["status"] == "ok"
+
+    # Single atomic call contains all relationships
+    mock_ingester.inject_custom_kg.assert_called_once()
+    kg_call = mock_ingester.inject_custom_kg.call_args
+    rels = kg_call.kwargs["relationships"]
+
+    # Find the chain relation
+    chain_rel = None
+    for r in rels:
+        if r["keywords"] in (CHAIN_RELATION_FOLLOWED, CHAIN_RELATION_CORRECTED):
+            chain_rel = r
             break
 
-    assert chain_call is not None
-    assert chain_call["src_id"] == f"{EVENT_PREFIX}tried_tool_x"
-    assert chain_call["tgt_id"] == f"{EVENT_PREFIX}tried_tool_y"
-    assert chain_call["keywords"] == CHAIN_RELATION_FOLLOWED
+    assert chain_rel is not None
+    assert chain_rel["src_id"] == f"{EVENT_PREFIX}tried_tool_x"
+    assert chain_rel["tgt_id"] == f"{EVENT_PREFIX}tried_tool_y"
+    assert chain_rel["keywords"] == CHAIN_RELATION_FOLLOWED
 
     # Reset for correction test
     mock_ingester.reset_mock()
@@ -177,22 +188,52 @@ def test_write_episodic_event_with_chain(
         is_correction=True,
     )
 
-    kg_calls = mock_ingester.inject_custom_kg.call_args_list
-    chain_call = None
-    for c in kg_calls:
-        rels = c.kwargs.get("relationships", [])
-        if rels and rels[0]["keywords"] in (
-            CHAIN_RELATION_FOLLOWED,
-            CHAIN_RELATION_CORRECTED,
-        ):
-            chain_call = rels[0]
+    assert result_corrected["status"] == "ok"
+
+    mock_ingester.inject_custom_kg.assert_called_once()
+    kg_call = mock_ingester.inject_custom_kg.call_args
+    rels = kg_call.kwargs["relationships"]
+
+    chain_rel = None
+    for r in rels:
+        if r["keywords"] in (CHAIN_RELATION_FOLLOWED, CHAIN_RELATION_CORRECTED):
+            chain_rel = r
             break
 
-    assert chain_call is not None
-    assert chain_call["keywords"] == CHAIN_RELATION_CORRECTED
+    assert chain_rel is not None
+    assert chain_rel["keywords"] == CHAIN_RELATION_CORRECTED
 
 
-# ============== Test 5: _determine_niu_relation ==============
+# ============== Test 5: write_episodic_event_with_involves ==============
+
+
+def test_write_episodic_event_with_involves(
+    writer: DreamWriter, mock_ingester: MagicMock
+) -> None:
+    """Verify involves relations included in single atomic call."""
+    result = writer.write_episodic_event(
+        event_name="data_analysis_session",
+        description="Analyzed sales data",
+        experience_type="success",
+        related_entities=["Python", "pandas"],
+    )
+
+    assert result["status"] == "ok"
+
+    # Single atomic call
+    mock_ingester.inject_custom_kg.assert_called_once()
+    kg_call = mock_ingester.inject_custom_kg.call_args
+    rels = kg_call.kwargs["relationships"]
+
+    # brain:Niu anchor + 2 involves relations = 3 total
+    involves_rels = [r for r in rels if r["keywords"] == INVOLVES_RELATION]
+    assert len(involves_rels) == 2
+    assert involves_rels[0]["src_id"] == f"{EVENT_PREFIX}data_analysis_session"
+    assert involves_rels[0]["tgt_id"] == "Python"
+    assert involves_rels[1]["tgt_id"] == "pandas"
+
+
+# ============== Test 6: _determine_niu_relation ==============
 
 
 def test_determine_niu_relation(writer: DreamWriter) -> None:

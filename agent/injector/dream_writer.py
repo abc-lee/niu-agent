@@ -99,6 +99,8 @@ class DreamWriter:
         Creates entity + brain:Niu → entity relation (prefers/skilled_in/remembers).
         No time chain needed — semantic entities use associative retrieval.
 
+        Single atomic inject_custom_kg call with entity + Niu anchor relation + chunk.
+
         Args:
             name: Entity name (e.g., "Python", "数据分析").
             entity_type: Entity type (e.g., "Person", "Concept", "Skill").
@@ -107,34 +109,15 @@ class DreamWriter:
         Returns:
             Dict with status and details.
         """
-        # Step 1: Inject the entity
-        entity_result = self._ingester.inject_custom_kg(
+        niu_relation = self._determine_niu_relation(entity_type)
+
+        # Atomic: entity + brain:Niu anchor relation + chunk in one call
+        result = self._ingester.inject_custom_kg(
             entities=[{
                 "entity_name": name,
                 "entity_type": entity_type,
                 "description": description,
             }],
-            relationships=[],
-            chunks=[{
-                "content": description,
-                "source_id": DREAM_SOURCE_ID,
-                "file_path": DREAM_FILE_PATH,
-            }],
-            source_id=DREAM_SOURCE_ID,
-        )
-
-        if isinstance(entity_result, dict) and entity_result.get("status") == "error":
-            logger.warning(
-                "注入语义实体失败: %s — %s",
-                name,
-                entity_result.get("message", "unknown"),
-            )
-            return entity_result
-
-        # Step 2: Create brain:Niu → entity relation
-        niu_relation = self._determine_niu_relation(entity_type)
-        niu_result = self._ingester.inject_custom_kg(
-            entities=[],
             relationships=[
                 {
                     "src_id": NIU_ENTITY,
@@ -146,9 +129,21 @@ class DreamWriter:
                     "file_path": DREAM_FILE_PATH,
                 }
             ],
-            chunks=[],
+            chunks=[{
+                "content": description,
+                "source_id": DREAM_SOURCE_ID,
+                "file_path": DREAM_FILE_PATH,
+            }],
             source_id=DREAM_SOURCE_ID,
         )
+
+        if isinstance(result, dict) and result.get("status") == "error":
+            logger.warning(
+                "注入语义实体失败: %s — %s",
+                name,
+                result.get("message", "unknown"),
+            )
+            return result
 
         logger.info(
             "写入语义实体: %s (type=%s, niu_relation=%s)",
@@ -159,8 +154,7 @@ class DreamWriter:
 
         return {
             "status": "ok",
-            "entity": entity_result,
-            "niu_relation": niu_result,
+            "result": result,
             "name": name,
             "entity_type": entity_type,
             "niu_relation_keyword": niu_relation,
@@ -229,6 +223,7 @@ class DreamWriter:
 
         Creates brain:event:{name} entity with:
         - entity_type = "EpisodicEvent"
+        - brain:Niu → event anchor relation (experienced)
 
         If prev_event_name provided:
         - If is_correction: inject_relation(prev → current, corrected_by)
@@ -236,6 +231,8 @@ class DreamWriter:
 
         If related_entities provided:
         - inject_relation(event → entity, involves) for each
+
+        Single atomic inject_custom_kg call with entity + all relations + chunk.
 
         Args:
             event_name: Event name (used as brain:event:{event_name}).
@@ -251,14 +248,58 @@ class DreamWriter:
         """
         full_event_name = f"{EVENT_PREFIX}{event_name}"
 
-        # Step 1: Inject the event entity
-        entity_result = self._ingester.inject_custom_kg(
+        # Collect all relationships in one list
+        relationships: list[dict[str, Any]] = []
+
+        # brain:Niu anchor relation
+        relationships.append({
+            "src_id": NIU_ENTITY,
+            "tgt_id": full_event_name,
+            "keywords": "experienced",
+            "description": f"brain:Niu experienced {full_event_name}",
+            "weight": 1.0,
+            "source_id": DREAM_SOURCE_ID,
+            "file_path": DREAM_FILE_PATH,
+        })
+
+        # Time chain relation (if prev_event provided)
+        chain_keyword: str | None = None
+        if prev_event_name is not None:
+            prev_full_name = f"{EVENT_PREFIX}{prev_event_name}"
+            chain_keyword = (
+                CHAIN_RELATION_CORRECTED if is_correction else CHAIN_RELATION_FOLLOWED
+            )
+            relationships.append({
+                "src_id": prev_full_name,
+                "tgt_id": full_event_name,
+                "keywords": chain_keyword,
+                "description": f"{prev_full_name} {chain_keyword} {full_event_name}",
+                "weight": 1.0,
+                "source_id": DREAM_SOURCE_ID,
+                "file_path": DREAM_FILE_PATH,
+            })
+
+        # involves relations (if related_entities provided)
+        if related_entities:
+            for entity_name in related_entities:
+                relationships.append({
+                    "src_id": full_event_name,
+                    "tgt_id": entity_name,
+                    "keywords": INVOLVES_RELATION,
+                    "description": f"{full_event_name} involves {entity_name}",
+                    "weight": 0.8,
+                    "source_id": DREAM_SOURCE_ID,
+                    "file_path": DREAM_FILE_PATH,
+                })
+
+        # Atomic: entity + all relationships + chunk in one call
+        result = self._ingester.inject_custom_kg(
             entities=[{
                 "entity_name": full_event_name,
                 "entity_type": EPISODIC_ENTITY_TYPE,
                 "description": description,
             }],
-            relationships=[],
+            relationships=relationships,
             chunks=[{
                 "content": description,
                 "source_id": DREAM_SOURCE_ID,
@@ -267,37 +308,15 @@ class DreamWriter:
             source_id=DREAM_SOURCE_ID,
         )
 
-        if isinstance(entity_result, dict) and entity_result.get("status") == "error":
+        if isinstance(result, dict) and result.get("status") == "error":
             logger.warning(
                 "注入事件实体失败: %s — %s",
                 full_event_name,
-                entity_result.get("message", "unknown"),
+                result.get("message", "unknown"),
             )
-            return entity_result
+            return result
 
-        # Step 2: Time chain relation (if prev_event provided)
-        chain_result = None
-        if prev_event_name is not None:
-            prev_full_name = f"{EVENT_PREFIX}{prev_event_name}"
-            chain_keyword = (
-                CHAIN_RELATION_CORRECTED if is_correction else CHAIN_RELATION_FOLLOWED
-            )
-            chain_result = self._ingester.inject_custom_kg(
-                entities=[],
-                relationships=[
-                    {
-                        "src_id": prev_full_name,
-                        "tgt_id": full_event_name,
-                        "keywords": chain_keyword,
-                        "description": f"{prev_full_name} {chain_keyword} {full_event_name}",
-                        "weight": 1.0,
-                        "source_id": DREAM_SOURCE_ID,
-                        "file_path": DREAM_FILE_PATH,
-                    }
-                ],
-                chunks=[],
-                source_id=DREAM_SOURCE_ID,
-            )
+        if chain_keyword is not None:
             logger.info(
                 "事件链: %s ──%s──→ %s",
                 prev_event_name,
@@ -305,37 +324,12 @@ class DreamWriter:
                 event_name,
             )
 
-        # Step 3: involves relations (if related_entities provided)
-        involves_results: list[dict] = []
         if related_entities:
-            involves_rels = []
-            for entity_name in related_entities:
-                involves_rels.append(
-                    {
-                        "src_id": full_event_name,
-                        "tgt_id": entity_name,
-                        "keywords": INVOLVES_RELATION,
-                        "description": f"{full_event_name} involves {entity_name}",
-                        "weight": 0.8,
-                        "source_id": DREAM_SOURCE_ID,
-                        "file_path": DREAM_FILE_PATH,
-                    }
-                )
-
-            if involves_rels:
-                involves_results.append(
-                    self._ingester.inject_custom_kg(
-                        entities=[],
-                        relationships=involves_rels,
-                        chunks=[],
-                        source_id=DREAM_SOURCE_ID,
-                    )
-                )
-                logger.info(
-                    "事件关联: %s involves %s",
-                    event_name,
-                    ", ".join(related_entities),
-                )
+            logger.info(
+                "事件关联: %s involves %s",
+                event_name,
+                ", ".join(related_entities),
+            )
 
         logger.info(
             "写入事件: %s (type=%s, experience=%s)",
@@ -346,9 +340,7 @@ class DreamWriter:
 
         return {
             "status": "ok",
-            "entity": entity_result,
-            "chain": chain_result,
-            "involves": involves_results,
+            "result": result,
             "event_name": full_event_name,
             "experience_type": experience_type,
         }

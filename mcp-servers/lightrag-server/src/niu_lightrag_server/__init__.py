@@ -898,9 +898,34 @@ def lightrag_insert_entity(
     source_id: str = "custom_kg",
     file_path: str = "custom_kg",
 ) -> Dict[str, Any]:
-    """Insert a single entity via inject_custom_kg (inject_entity removed)."""
+    """Insert a single entity via inject_custom_kg (inject_entity removed).
+
+    Automatically adds a brain:Niu -> entity anchor relationship so the
+    entity is reachable from the root, and passes the entity description
+    as a chunk so LLM can extract additional relationships.
+    """
     try:
         ingester = _get_ingester()
+        # Anchor relationship: brain:Niu -> entity, so graph traversal
+        # starting from brain:Niu can reach this entity.
+        anchor_rel = {
+            "src_id": "brain:Niu",
+            "tgt_id": name,
+            "relation": "owns",
+            "description": f"brain:Niu owns the {entity_type} entity '{name}'",
+            "source_id": source_id,
+            "file_path": file_path,
+        }
+        # Pass entity description as chunk text so LLM can extract
+        # additional entities/relationships from it (ainsert_custom_kg
+        # runs LLM extraction on chunks).
+        entity_chunks = []
+        if description:
+            entity_chunks.append({
+                "content": f"{name} ({entity_type}): {description}",
+                "source_id": source_id,
+                "file_path": file_path,
+            })
         return ingester.inject_custom_kg(
             entities=[{
                 "entity_name": name,
@@ -909,8 +934,8 @@ def lightrag_insert_entity(
                 "source_id": source_id,
                 "file_path": file_path,
             }],
-            relationships=[],
-            chunks=[],
+            relationships=[anchor_rel],
+            chunks=entity_chunks,
             source_id=source_id,
         )
     except Exception as e:
