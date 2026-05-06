@@ -2380,13 +2380,14 @@ def calculate_file_hash(file_path: str) -> str:
     return sha256.hexdigest()
 
 
-def read_file_content(path: str) -> str:
-    """读取文件内容，支持多种格式"""
+def read_file_content(path: str, max_chars: int = 20000) -> str:
+    """读取文件内容，支持多种格式，超过max_chars截断"""
     suffix = Path(path).suffix.lower()
+    text = ""
 
     if suffix in {".txt", ".md", ".csv", ".json", ".log"}:
         with open(path, "r", encoding="utf-8", errors="ignore") as f:
-            return f.read()
+            text = f.read(max_chars)
 
     elif suffix == ".pdf":
         try:
@@ -2394,49 +2395,73 @@ def read_file_content(path: str) -> str:
 
             with open(path, "rb") as f:
                 reader = PdfReader(f)
-                return " ".join([page.extract_text() or "" for page in reader.pages])
+                parts = []
+                total = 0
+                for page in reader.pages:
+                    t = page.extract_text() or ""
+                    parts.append(t)
+                    total += len(t)
+                    if total >= max_chars:
+                        break
+                text = " ".join(parts)
         except Exception as e:
             logger.warning(f"[READ] PDF读取失败: {e}")
-            return ""
 
     elif suffix in {".docx", ".doc"}:
         try:
             from docx import Document
             doc = Document(path)
-            return "\n".join([para.text for para in doc.paragraphs if para.text.strip()])
+            parts = []
+            total = 0
+            for para in doc.paragraphs:
+                if para.text.strip():
+                    parts.append(para.text)
+                    total += len(para.text)
+                    if total >= max_chars:
+                        break
+            text = "\n".join(parts)
         except Exception as e:
             logger.warning(f"[READ] DOCX读取失败: {e}")
-            return ""
 
     elif suffix in {".pptx", ".ppt"}:
         try:
             from pptx import Presentation
             prs = Presentation(path)
-            texts = []
+            parts = []
+            total = 0
             for slide in prs.slides:
                 for shape in slide.shapes:
-                    text = getattr(shape, "text", "")
-                    if text and str(text).strip():
-                        texts.append(str(text).strip())
-            return "\n".join(texts)
+                    t = getattr(shape, "text", "")
+                    if t and str(t).strip():
+                        parts.append(str(t).strip())
+                        total += len(str(t))
+                        if total >= max_chars:
+                            break
+                if total >= max_chars:
+                    break
+            text = "\n".join(parts)
         except Exception as e:
             logger.warning(f"[READ] PPTX读取失败: {e}")
-            return ""
 
     elif suffix in {".xlsx", ".xls"}:
         try:
             from openpyxl import load_workbook
             wb = load_workbook(path, data_only=True)
-            rows = []
+            parts = []
+            total = 0
             for sheet in wb.worksheets:
                 for row in sheet.iter_rows(values_only=True):
                     row_text = " ".join([str(c) for c in row if c is not None])
                     if row_text.strip():
-                        rows.append(row_text)
-            return "\n".join(rows)
+                        parts.append(row_text)
+                        total += len(row_text)
+                        if total >= max_chars:
+                            break
+                if total >= max_chars:
+                    break
+            text = "\n".join(parts)
         except Exception as e:
             logger.warning(f"[READ] XLSX读取失败: {e}")
-            return ""
 
     elif suffix in {".html", ".htm"}:
         try:
@@ -2455,18 +2480,19 @@ def read_file_content(path: str) -> str:
                 html = f.read()
             parser = _TextExtractor()
             parser.feed(html)
-            return "\n".join(parser._texts)
+            text = "\n".join(parser._texts)
         except Exception as e:
             logger.warning(f"[READ] HTML读取失败: {e}")
-            return ""
 
     else:
         # Unknown format, try plain text
         try:
             with open(path, "r", encoding="utf-8", errors="ignore") as f:
-                return f.read()
+                text = f.read(max_chars)
         except Exception:
             return ""
+
+    return text[:max_chars]
 
 
 def calculate_content_similarity(file1: str, file2: str) -> float:
