@@ -1,5 +1,6 @@
 const { app, BrowserWindow, ipcMain, shell } = require('electron');
 const path = require('path');
+const fs = require('fs');
 const http = require('http');
 
 const API_HOST = '127.0.0.1';
@@ -92,12 +93,44 @@ ipcMain.handle('kg-changelog', async (event, since) => {
   return apiRequest('GET', `/api/kg/changelog?${params}`);
 });
 
-// File operations
+// File operations (with same security checks as chat window)
 ipcMain.handle('open-path', async (event, filePath) => {
+  if (!filePath) return;
+  if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
+    console.warn('[Graph] open-path: path does not exist or is not a file:', filePath);
+    return;
+  }
+  // Block UNC paths (network shares)
+  if (filePath.startsWith('\\\\') || filePath.startsWith('//')) {
+    console.warn('[Graph] open-path: UNC paths not allowed:', filePath);
+    return;
+  }
+  // Block executable extensions
+  const ext = path.extname(filePath).toLowerCase();
+  const blockedExts = new Set([
+    '.exe', '.bat', '.cmd', '.ps1', '.vbs', '.vbe', '.wsf', '.wsh',
+    '.msi', '.scr', '.com', '.cpl', '.hta', '.pif', '.reg', '.url',
+    '.inf', '.application', '.appx', '.msix',
+    '.lnk', '.sct', '.msp', '.diagpkg', '.ws',
+  ]);
+  if (blockedExts.has(ext)) {
+    console.warn('[Graph] open-path: blocked executable extension:', ext);
+    return;
+  }
   return shell.openPath(filePath);
 });
 
 ipcMain.handle('show-item-in-folder', async (event, filePath) => {
+  if (!filePath) return;
+  if (!fs.existsSync(filePath)) {
+    console.warn('[Graph] show-item-in-folder: path does not exist:', filePath);
+    return;
+  }
+  // Block UNC paths
+  if (filePath.startsWith('\\\\') || filePath.startsWith('//')) {
+    console.warn('[Graph] show-item-in-folder: UNC paths not allowed:', filePath);
+    return;
+  }
   shell.showItemInFolder(filePath);
 });
 

@@ -44,7 +44,8 @@ function getNodeLabel(node) {
 function escapeHtml(str) {
   const div = document.createElement('div');
   div.textContent = str;
-  return div.innerHTML;
+  // Also escape quotes for safe use in HTML attribute values (e.g. data-node-id="...")
+  return div.innerHTML.replace(/"/g, '&quot;');
 }
 
 // ===== Media Detection =====
@@ -57,6 +58,16 @@ function getMediaType(uri) {
   const ext = MEDIA_EXTENSIONS.find(e => lower.endsWith(e));
   if (!ext) return null;
   return IMAGE_EXTENSIONS.includes(ext) ? 'image' : 'video';
+}
+
+// ===== Local File Path Detection =====
+function isLocalFilePath(uri) {
+  if (!uri || typeof uri !== 'string') return false;
+  // Windows absolute path: C:\... or \\server\share...
+  if (/^[A-Za-z]:[\\\/]/.test(uri) || /^\\\\/.test(uri)) return true;
+  // Unix absolute path: /home/...
+  if (/^\/[^\/]/.test(uri)) return true;
+  return false;
 }
 
 // ===== Current Graph Data =====
@@ -116,7 +127,34 @@ const hideEmpty = () => {
 };
 
 // ===== Build force-graph data from currentData =====
+// Preserves existing node positions (x, y, vx, vy) from the force-graph
+// to avoid visual "jumping" on incremental updates.
+let _prevNodePositions = {}; // id -> {x, y, vx, vy}
+
+function pruneStalePositions() {
+  const liveIds = new Set(currentData.nodes.map(n => n.id));
+  for (const id of Object.keys(_prevNodePositions)) {
+    if (!liveIds.has(id)) delete _prevNodePositions[id];
+  }
+}
+
 function buildGraphData() {
+  // Snapshot current positions from force-graph before rebuilding
+  try {
+    const fgData = graph.graphData();
+    if (fgData && fgData.nodes) {
+      fgData.nodes.forEach(n => {
+        if (n.x != null && Number.isFinite(n.x) && Number.isFinite(n.y)) {
+          _prevNodePositions[n.id] = {
+            x: n.x, y: n.y,
+            vx: Number.isFinite(n.vx) ? n.vx : 0,
+            vy: Number.isFinite(n.vy) ? n.vy : 0,
+          };
+        }
+      });
+    }
+  } catch (_) { /* graph not initialized yet */ }
+
   const nodes = currentData.nodes.map(node => {
     const visualType = mapNodeType(node);
     const color = typeColors[visualType] || typeColors.other;
@@ -132,7 +170,7 @@ function buildGraphData() {
       opacity = asCore ? 0.95 : (currentPerspective ? 0.4 : 0.75);
     }
 
-    return {
+    const fgNode = {
       id: node.id,
       label: node.label || node.name || node.id,
       color: color,
@@ -141,21 +179,38 @@ function buildGraphData() {
       _originalData: node,
       _visualType: visualType,
     };
+
+    // Restore position from previous layout to avoid jumping
+    const prev = _prevNodePositions[node.id];
+    if (prev && Number.isFinite(prev.x) && Number.isFinite(prev.y)) {
+      fgNode.x = prev.x;
+      fgNode.y = prev.y;
+      fgNode.vx = Number.isFinite(prev.vx) ? prev.vx : 0;
+      fgNode.vy = Number.isFinite(prev.vy) ? prev.vy : 0;
+    }
+
+    return fgNode;
   });
 
-  const links = currentData.edges.map(edge => {
-    const isMatch = currentMatchIds
-      ? (currentMatchIds.has(edge.source) || currentMatchIds.has(edge.target))
-      : true;
-    return {
-      source: edge.source,
-      target: edge.target,
-      relation: edge.relation || '',
-      color: isMatch ? 'rgba(0,0,0,0.12)' : 'rgba(0,0,0,0.04)',
-      width: isMatch ? 1 : 0.5,
-    };
-  });
+  // Build node ID set for filtering dangling edges
+  const nodeIdSet = new Set(nodes.map(n => n.id));
 
+  const links = currentData.edges
+    .filter(edge => nodeIdSet.has(edge.source) && nodeIdSet.has(edge.target))
+    .map(edge => {
+      const isMatch = currentMatchIds
+        ? (currentMatchIds.has(edge.source) || currentMatchIds.has(edge.target))
+        : true;
+      return {
+        source: edge.source,
+        target: edge.target,
+        relation: edge.relation || '',
+        color: isMatch ? 'rgba(0,0,0,0.12)' : 'rgba(0,0,0,0.04)',
+        width: isMatch ? 1 : 0.5,
+      };
+    });
+
+  pruneStalePositions();
   return { nodes, links };
 }
 
@@ -207,9 +262,9 @@ const graph = ForceGraph()(container)
   .linkColor(d => d.color)
   .linkWidth(d => d.width)
   .linkCurvature(0)
-  .d3AlphaDecay(0.02)
-  .d3VelocityDecay(0.3)
-  .cooldownTime(3000)
+  .d3AlphaDecay(0.0228)
+  .d3VelocityDecay(0.4)
+  .cooldownTime(15000)
   .onNodeClick(node => {
     showDetail(node.id);
   })
@@ -231,9 +286,9 @@ const graph = ForceGraph()(container)
 // Configure d3-force parameters — apply BEFORE graphData() so simulation uses correct forces from the start
 function applyForceConfig() {
   const chargeForce = graph.d3Force('charge');
-  if (chargeForce) chargeForce.strength(-2.5);
+  if (chargeForce) chargeForce.strength(-30);
   const linkForce = graph.d3Force('link');
-  if (linkForce) linkForce.distance(30).strength(0.8);
+  if (linkForce) linkForce.distance(30).strength(link => 1 / Math.min(link.source.links?.length || 1, link.target.links?.length || 1));
 }
 
 // ===== Load Graph Data =====
@@ -257,10 +312,15 @@ async function loadGraphSnapshot() {
     graph.graphData(data);
     updateStats();
 
-    // 初始加载：模拟稳定后 zoomToFit
-    graph.onEngineStop(() => {
+    // Initial load: zoom to fit once, then unregister
+    let _initZoomPending = true;
+    const onFirstStop = () => {
+      if (!_initZoomPending) return;
+      _initZoomPending = false;
       graph.zoomToFit(400, 40);
-    });
+      graph.onEngineStop(() => {}); // Reset to no-op (null would crash force-graph)
+    };
+    graph.onEngineStop(onFirstStop);
   } catch (error) {
     console.error('Failed to load graph:', error);
     hideLoading();
@@ -289,17 +349,40 @@ function stopSync() {
   }
 }
 
+let _polling = false; // guard against concurrent pollChangelog executions
 async function pollChangelog() {
+  if (_polling) return; // previous poll still in progress (async await)
+  _polling = true;
   try {
     const result = await window.electronAPI.kgChangelog(syncSince);
     const changes = result.changes || [];
+
+    // Health check: detect and auto-repair NaN positions in force-graph.
+    // When d3-force computes NaN (e.g. from dangling edges or force misconfiguration),
+    // canvas arc() silently fails — nodes become invisible but still clickable.
+    // This check runs every poll (1s) and resets the graph if corruption is detected.
+    try {
+      const fgData = graph.graphData();
+      if (fgData && fgData.nodes && fgData.nodes.length > 0) {
+        const nanNodes = fgData.nodes.filter(n => !Number.isFinite(n.x) || !Number.isFinite(n.y));
+        if (nanNodes.length > 0) {
+          console.warn(`[graph] NaN positions detected: ${nanNodes.length}/${fgData.nodes.length} nodes. Auto-repairing.`);
+          // Clear the poisoned position cache and rebuild from currentData
+          _prevNodePositions = {};
+          buildEdgeCountCache();
+          graph.graphData(buildGraphData());
+          updateStats();
+        }
+      }
+    } catch (_) { /* graph not initialized yet */ }
+
     if (changes.length === 0) return;
 
-    // Track latest timestamp for next poll
+    // Track latest timestamp — but defer update until after snapshot_refresh
+    // to avoid advancing syncSince past a failed refresh event.
     const latestTs = changes.reduce((max, c) => {
       return (!max || c.timestamp > max) ? c.timestamp : max;
     }, null);
-    if (latestTs) syncSince = latestTs;
 
     // Merge incremental changes into currentData
     let changed = false;
@@ -352,55 +435,108 @@ async function pollChangelog() {
             changed = true;
           }
         }
+      } else if (change.type === 'entity_deleted' && change.data) {
+        const id = change.data.id;
+        currentData.nodes = currentData.nodes.filter(n => n.id !== id);
+        currentData.edges = currentData.edges.filter(e => e.source !== id && e.target !== id);
+        existingIds.delete(id);
+        changed = true;
+      } else if (change.type === 'entity_merged' && change.data) {
+        const sourceIds = change.data.source_ids || [];
+        const targetId = change.data.target_id;
+        // Reconnect edges from source nodes to target node (not delete)
+        sourceIds.forEach(srcId => {
+          currentData.edges = currentData.edges.map(e => {
+            if (e.source === srcId) return { ...e, source: targetId };
+            if (e.target === srcId) return { ...e, target: targetId };
+            return e;
+          });
+          // Remove source node
+          currentData.nodes = currentData.nodes.filter(n => n.id !== srcId);
+          existingIds.delete(srcId);
+        });
+        // Deduplicate edges after reconnection (same source+target+relation)
+        // and remove self-loops (e.g. A→B reconnected to A→A when A and B merge)
+        const edgeKeys = new Set();
+        currentData.edges = currentData.edges.filter(e => {
+          if (e.source === e.target) return false;
+          const key = `${e.source}|${e.target}|${e.relation || ''}`;
+          if (edgeKeys.has(key)) return false;
+          edgeKeys.add(key);
+          return true;
+        });
+        // Update or create target node with merged attributes
+        if (targetId) {
+          const existing = currentData.nodes.find(n => n.id === targetId);
+          if (existing) {
+            existing.label = change.data.name || existing.label;
+            existing.name = change.data.name || existing.name;
+            existing.entityType = change.data.type || existing.entityType;
+            existing.description = change.data.description || existing.description;
+          } else {
+            currentData.nodes.push({
+              id: targetId,
+              label: change.data.name || targetId,
+              name: change.data.name || targetId,
+              nodeType: 'Entity',
+              entityType: change.data.type || 'other',
+              description: change.data.description || '',
+            });
+            existingIds.add(targetId);
+          }
+        }
+        changed = true;
       }
     });
 
+    // Handle snapshot_refresh separately (needs await, can't be inside forEach)
+    const refreshEvent = changes.find(c => c.type === 'snapshot_refresh');
+    if (refreshEvent) {
+      try {
+        const snapshot = await window.electronAPI.getGraphSnapshot(200, 0);
+        const newNodes = snapshot.nodes || [];
+        const newEdges = snapshot.edges || [];
+        // Only replace currentData if snapshot has data.
+        // During pipeline processing, LightRAG's NetworkX graph may be
+        // temporarily empty (entities being merged), causing snapshot to
+        // return {nodes: [], edges: []}. Replacing currentData with empty
+        // data would make the entire graph vanish — the "sudden blank" bug.
+        if (newNodes.length > 0) {
+          currentData = { nodes: newNodes, edges: newEdges };
+          changed = true;
+        } else {
+          // Snapshot returned empty — don't replace, wait for backend to emit another refresh
+        }
+      } catch (e) {
+        // Snapshot fetch failed — syncSince still advances to avoid infinite retry
+      }
+    }
+
+    // Advance syncSince after all processing.
+    // Even if snapshot_refresh returned empty data, advance syncSince to avoid
+    // infinite re-fetch of the same snapshot_refresh event. The backend will
+    // emit a new snapshot_refresh when data is available again.
+    if (latestTs) {
+      syncSince = latestTs;
+    }
+
     if (changed) {
-      // Incremental update: keep existing node/link references, only append new ones
-      // This preserves positions of existing nodes — force-graph matches by id
-      const fgData = graph.graphData();
-      const fgNodeIds = new Set(fgData.nodes.map(n => n.id));
-
-      // Add new nodes to currentData and force-graph
-      currentData.nodes.forEach(node => {
-        if (!fgNodeIds.has(node.id)) {
-          const visualType = mapNodeType(node);
-          const color = typeColors[visualType] || typeColors.other;
-          const edgeCount = countEdges(node.id);
-          const size = 2 + Math.log(edgeCount + 1) * 1.5;
-          fgData.nodes.push({
-            id: node.id,
-            label: node.label || node.name || node.id,
-            color: color,
-            val: size,
-            opacity: 0.75,
-            _originalData: node,
-            _visualType: visualType,
-          });
-        }
-      });
-
-      // Add new links
-      const fgLinkKeys = new Set(fgData.links.map(l => `${l.source.id || l.source}->${l.target.id || l.target}`));
-      currentData.edges.forEach(edge => {
-        const key = `${edge.source}->${edge.target}`;
-        if (!fgLinkKeys.has(key)) {
-          fgData.links.push({
-            source: edge.source,
-            target: edge.target,
-            relation: edge.relation || '',
-            color: 'rgba(0,0,0,0.12)',
-            width: 1,
-          });
-        }
-      });
-
+      // Rebuild graph data from currentData (source of truth) instead of
+      // mutating force-graph's internal state. Mutating the internal fgData
+      // object (which has d3-resolved node references in link.source/target)
+      // causes rendering corruption — nodes appear without edges, simulation
+      // freezes, and the graph becomes unresponsive until restart.
+      // Cancel any pending reLayout zoomToFit since we're replacing graph data
+      _reLayoutPending = false;
       buildEdgeCountCache();
-      graph.graphData(fgData); // force-graph preserves positions of existing nodes
+      const freshData = buildGraphData(); // includes pruneStalePositions()
+      graph.graphData(freshData);
       updateStats();
     }
   } catch (err) {
-    // Silently ignore — next poll will retry
+    console.error("[graph] pollChangelog error:", err);
+  } finally {
+    _polling = false;
   }
 }
 
@@ -426,15 +562,21 @@ const updateStats = () => {
 // ===== Re-layout helper =====
 // force-graph: just set new data, d3-force simulation auto-reheats
 // No clear/render needed — smooth animated transition
+let _reLayoutPending = false; // guard against rapid consecutive reLayout calls
 function reLayout() {
   buildEdgeCountCache();
   applyForceConfig(); // Apply forces BEFORE graphData so simulation uses correct parameters
   const data = buildGraphData();
   graph.graphData(data);
-  // Wait for simulation to settle before zooming to fit
-  graph.onEngineStop(() => {
+  // Wait for simulation to settle before zooming to fit, then unregister
+  _reLayoutPending = true;
+  const onLayoutStop = () => {
+    if (!_reLayoutPending) return; // stale callback from a previous reLayout
+    _reLayoutPending = false;
     graph.zoomToFit(400, 40);
-  });
+    graph.onEngineStop(() => {}); // Reset to no-op (null would crash force-graph)
+  };
+  graph.onEngineStop(onLayoutStop);
 }
 
 // ===== Perspective Mode =====
@@ -475,6 +617,7 @@ function showTooltip(node) {
   // Position near mouse — force-graph doesn't give mouse coords in hover,
   // so we position near the node's screen coordinates
   const coords = graph.graph2ScreenCoords(node.x, node.y);
+  if (!Number.isFinite(coords.x) || !Number.isFinite(coords.y)) return;
   tooltip.style.left = (coords.x + 15) + 'px';
   tooltip.style.top = (coords.y - 10) + 'px';
 }
@@ -587,8 +730,8 @@ const showDetail = (nodeId) => {
     });
   });
 
-  // Enable/disable file buttons based on whether node has a file URI
-  const hasFile = !!(orig.uri);
+  // Enable/disable file buttons based on whether node has a local file URI
+  const hasFile = isLocalFilePath(orig.uri);
   openFileBtn.disabled = !hasFile;
   openFolderBtn.disabled = !hasFile;
 
@@ -614,7 +757,7 @@ const openFolderBtn = document.getElementById('open-folder');
 openFileBtn.addEventListener('click', () => {
   if (!currentSelectedNode) return;
   const orig = currentData.nodes.find(n => n.id === currentSelectedNode);
-  if (orig && orig.uri) {
+  if (orig && isLocalFilePath(orig.uri)) {
     window.electronAPI.openPath(orig.uri);
   }
 });
@@ -622,7 +765,7 @@ openFileBtn.addEventListener('click', () => {
 openFolderBtn.addEventListener('click', () => {
   if (!currentSelectedNode) return;
   const orig = currentData.nodes.find(n => n.id === currentSelectedNode);
-  if (orig && orig.uri) {
+  if (orig && isLocalFilePath(orig.uri)) {
     window.electronAPI.showItemInFolder(orig.uri);
   }
 });
@@ -641,7 +784,7 @@ focusNodeBtn.addEventListener('click', () => {
 // ===== Double-click to expand neighborhood =====
 async function expandNode(nodeId) {
   const orig = currentData.nodes.find(n => n.id === nodeId);
-  if (!orig || orig.nodeType !== 'Entity') return;
+  if (!orig || orig.nodeType === 'Document') return;
 
   const entityId = orig.id.replace(/^entity:/, '');
 
@@ -676,45 +819,11 @@ async function expandNode(nodeId) {
     });
 
     if (addedCount > 0) {
-      // Incremental: append new nodes/links to force-graph data, preserve positions
-      const fgData = graph.graphData();
-      const fgNodeIds = new Set(fgData.nodes.map(n => n.id));
-
-      result.nodes.forEach(n => {
-        const nid = n.id.startsWith('entity:') ? n.id : `entity:${n.id}`;
-        if (!fgNodeIds.has(nid)) {
-          const visualType = mapNodeType({ nodeType: n.nodeType || 'Entity', entityType: n.entityType });
-          const color = typeColors[visualType] || typeColors.other;
-          fgData.nodes.push({
-            id: nid,
-            label: n.label || n.name || nid,
-            color: color,
-            val: 2,
-            opacity: 0.75,
-            _originalData: { id: nid, label: n.label || n.name, nodeType: n.nodeType || 'Entity', entityType: n.entityType, description: n.description || '', uri: n.uri || '', source: n.source || '' },
-            _visualType: visualType,
-          });
-        }
-      });
-
-      const fgLinkKeys = new Set(fgData.links.map(l => `${l.source.id || l.source}->${l.target.id || l.target}`));
-      result.edges.forEach(edge => {
-        const srcId = edge.source.startsWith('entity:') ? edge.source : `entity:${edge.source}`;
-        const tgtId = edge.target.startsWith('entity:') ? edge.target : `entity:${edge.target}`;
-        const key = `${srcId}->${tgtId}`;
-        if (!fgLinkKeys.has(key) && fgNodeIds.has(srcId) && fgNodeIds.has(tgtId)) {
-          fgData.links.push({
-            source: srcId,
-            target: tgtId,
-            relation: edge.relation || '',
-            color: 'rgba(0,0,0,0.12)',
-            width: 1,
-          });
-        }
-      });
-
+      // Rebuild from currentData (source of truth) to avoid mutating
+      // force-graph's internal state with d3-resolved node references
       buildEdgeCountCache();
-      graph.graphData(fgData);
+      const freshData = buildGraphData();
+      graph.graphData(freshData);
       updateStats();
     }
   } catch (err) {

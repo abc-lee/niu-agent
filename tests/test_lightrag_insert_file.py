@@ -1,10 +1,10 @@
 """Tests for lightrag_insert_file tool and ingest_document using it.
 
-TDD RED phase: Tests define the contract for file-based LightRAG insertion.
+TDD GREEN phase: Tests verify the contract for file-based LightRAG insertion.
 
 Key changes:
 1. ingest_document calls lightrag_insert_file (file path) instead of lightrag_insert (text content)
-2. lightrag_insert_file delegates to LightRAG's pipeline_enqueue_file
+2. lightrag_insert_file delegates to LightRAG's pipeline_enqueue_file (sys.argv workaround)
 3. LightRAG reads and parses the file itself (DOCX/PDF/PPTX/XLSX/TXT/MD etc.)
 4. Photo ingest remains unchanged — never calls lightrag_insert_file
 """
@@ -84,58 +84,31 @@ class TestLightragInsertFileSchema:
 class TestLightragInsertFileFunction:
     """Test lightrag_insert_file function implementation."""
 
-    def test_delegates_to_pipeline_enqueue_file(self):
-        """lightrag_insert_file should call LightRAG's pipeline_enqueue_file."""
-        mod = _import_lightrag_module()
-
-        mock_rag = MagicMock()
-        mock_pipeline = AsyncMock(return_value=(True, "track-123"))
-
-        with patch("niu_lightrag_server.lightrag_insert_file") as mock_fn:
-            # We need to test the actual function, not the patched one
-            pass
-
-        # Instead, test by checking the function exists and has correct signature
-        assert hasattr(mod, "lightrag_insert_file")
-        assert callable(mod.lightrag_insert_file)
-
     def test_in_tool_functions(self):
         """lightrag_insert_file must be in _TOOL_FUNCTIONS."""
         mod = _import_lightrag_module()
         assert "lightrag_insert_file" in mod._TOOL_FUNCTIONS
 
-    def test_returns_status_dict(self):
-        """lightrag_insert_file should return dict with status field."""
+    def test_returns_error_for_missing_file(self):
+        """lightrag_insert_file returns error for nonexistent file."""
         mod = _import_lightrag_module()
+        result = mod.lightrag_insert_file(file_path="/nonexistent/test.docx")
+        assert result["status"] == "error"
+        assert "not found" in result["message"].lower()
 
-        # Mock at the import site inside the function
-        mock_rag = MagicMock()
-        mock_enqueue = AsyncMock(return_value=(True, "track-1"))
-
-        with patch("niu_api.internal.lightrag_manager.get_lightrag", return_value=mock_rag):
-            with patch("niu_api.internal.lightrag_manager.call_async", return_value=(True, "track-1")):
-                # Patch the import inside the function body
-                with patch.dict("sys.modules", {
-                    "lightrag.api.routers.document_routes": MagicMock(
-                        pipeline_enqueue_file=mock_enqueue
-                    ),
-                }):
-                    result = mod.lightrag_insert_file(file_path="/tmp/test.docx")
-                    assert isinstance(result, dict)
-                    assert "status" in result
-
-    def test_returns_error_when_rag_unavailable(self):
+    def test_returns_error_when_rag_unavailable(self, tmp_path):
         """Should return error when LightRAG is not available."""
         mod = _import_lightrag_module()
 
-        # lightrag_insert_file does lazy import from niu_api.internal.lightrag_manager
-        # We need the full module chain mocked during the function call.
+        # Create a real text file so file check passes
+        txt = tmp_path / "test.txt"
+        txt.write_text("Some content", encoding="utf-8")
+
         key = "niu_api.internal.lightrag_manager"
         saved = {}
         mock_mgr = MagicMock()
         mock_mgr.get_lightrag = MagicMock(return_value=None)
         mock_mgr.call_async = MagicMock()
-        # Ensure parent modules exist in sys.modules
         for mod_key in ["niu_api", "niu_api.internal", key]:
             saved[mod_key] = sys.modules.get(mod_key)
             if mod_key == key:
@@ -143,7 +116,7 @@ class TestLightragInsertFileFunction:
             else:
                 sys.modules.setdefault(mod_key, MagicMock())
         try:
-            result = mod.lightrag_insert_file(file_path="/tmp/test.docx")
+            result = mod.lightrag_insert_file(file_path=str(txt))
             assert result["status"] == "error"
             assert "not available" in result["message"].lower()
         finally:
@@ -153,26 +126,7 @@ class TestLightragInsertFileFunction:
                 else:
                     sys.modules.pop(mod_key, None)
 
-
-# ============== Integration: real import chain ==============
-
-
-class TestLightragInsertFileIntegration:
-    """Verify lightrag_insert_file works with real imports (no mocking of lightrag)."""
-
-    def test_pipeline_enqueue_file_importable(self):
-        """pipeline_enqueue_file must be importable in real environment."""
-        from lightrag.api.routers.document_routes import pipeline_enqueue_file
-        assert callable(pipeline_enqueue_file)
-
-    def test_lightrag_insert_file_file_not_found(self):
-        """lightrag_insert_file returns error for nonexistent file (real, no mock)."""
-        mod = _import_lightrag_module()
-        result = mod.lightrag_insert_file(file_path="/nonexistent/test.docx")
-        assert result["status"] == "error"
-        assert "not found" in result["message"].lower()
-
-    def test_lightrag_insert_file_schema_matches_function(self):
+    def test_schema_matches_function(self):
         """TOOL_SCHEMAS and _TOOL_FUNCTIONS must both contain lightrag_insert_file."""
         mod = _import_lightrag_module()
         assert "lightrag_insert_file" in mod.TOOL_SCHEMAS
@@ -181,6 +135,99 @@ class TestLightragInsertFileIntegration:
         schema = mod.TOOL_SCHEMAS["lightrag_insert_file"]
         assert fn.__name__ == "lightrag_insert_file"
         assert schema["name"] == "lightrag_insert_file"
+
+
+# ============== Integration: pipeline_enqueue_file importable + no file move ==============
+
+
+class TestPipelineEnqueueFileImportAndNoFileMove:
+    """Verify pipeline_enqueue_file can be imported and files are NOT moved."""
+
+    def test_pipeline_enqueue_file_importable_with_argv(self):
+        """pipeline_enqueue_file must be importable when sys.argv is set to ['lightrag']."""
+        saved_argv = sys.argv
+        sys.argv = ["lightrag"]
+        try:
+            from lightrag.api.routers.document_routes import pipeline_enqueue_file
+            assert callable(pipeline_enqueue_file)
+        finally:
+            sys.argv = saved_argv
+
+    def test_lightrag_insert_file_does_not_move_file(self, tmp_path):
+        """lightrag_insert_file must NOT move the original file (uses temp copy)."""
+        mod = _import_lightrag_module()
+
+        # Create a real text file
+        txt = tmp_path / "test.txt"
+        txt.write_text("Test content for LightRAG", encoding="utf-8")
+
+        mock_rag = MagicMock()
+        mock_pipeline = AsyncMock(return_value=(True, "track-123"))
+
+        key = "niu_api.internal.lightrag_manager"
+        saved = {}
+        mock_mgr = MagicMock()
+        mock_mgr.get_lightrag = MagicMock(return_value=mock_rag)
+        mock_mgr.call_async = MagicMock(return_value=(True, "track-123"))
+        for mod_key in ["niu_api", "niu_api.internal", key]:
+            saved[mod_key] = sys.modules.get(mod_key)
+            if mod_key == key:
+                sys.modules[mod_key] = mock_mgr
+            else:
+                sys.modules.setdefault(mod_key, MagicMock())
+        try:
+            result = mod.lightrag_insert_file(file_path=str(txt))
+            # File must still exist at original location
+            assert txt.is_file(), "Original file must NOT be moved"
+            # No __enqueued__ directory should be created in original location
+            assert not (tmp_path / "__enqueued__").exists(), "No __enqueued__ dir should be created"
+        finally:
+            for mod_key, orig in saved.items():
+                if orig is not None:
+                    sys.modules[mod_key] = orig
+                else:
+                    sys.modules.pop(mod_key, None)
+
+
+    def test_lightrag_insert_file_triggers_processing_after_enqueue(self, tmp_path):
+        """After enqueue succeeds, lightrag_insert_file must trigger
+        apipeline_process_enqueue_documents to actually extract entities."""
+        mod = _import_lightrag_module()
+
+        txt = tmp_path / "test.txt"
+        txt.write_text("Test content for LightRAG", encoding="utf-8")
+
+        mock_rag = MagicMock()
+        mock_rag.apipeline_process_enqueue_documents = AsyncMock()
+
+        key = "niu_api.internal.lightrag_manager"
+        saved = {}
+        mock_mgr = MagicMock()
+        mock_mgr.get_lightrag = MagicMock(return_value=mock_rag)
+        # First call: pipeline_enqueue_file returns (True, track_id)
+        # Second call: apipeline_process_enqueue_documents
+        mock_mgr.call_async = MagicMock(side_effect=[
+            (True, "track-123"),  # enqueue succeeds
+            None,                  # process completes
+        ])
+        for mod_key in ["niu_api", "niu_api.internal", key]:
+            saved[mod_key] = sys.modules.get(mod_key)
+            if mod_key == key:
+                sys.modules[mod_key] = mock_mgr
+            else:
+                sys.modules.setdefault(mod_key, MagicMock())
+        try:
+            result = mod.lightrag_insert_file(file_path=str(txt))
+            assert result["status"] == "ok"
+            # call_async should be called twice: enqueue + process
+            assert mock_mgr.call_async.call_count == 2, \
+                "call_async should be called twice (enqueue + process)"
+        finally:
+            for mod_key, orig in saved.items():
+                if orig is not None:
+                    sys.modules[mod_key] = orig
+                else:
+                    sys.modules.pop(mod_key, None)
 
 
 # ============== ingest_document uses lightrag_insert_file ==============
