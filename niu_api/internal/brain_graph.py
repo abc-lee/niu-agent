@@ -204,7 +204,7 @@ class BrainGraph:
                 {
                     "src_id": "brain:Niu",
                     "tgt_id": target_name,
-                    "relation": relation_type,
+                    "keywords": relation_type,
                     "description": description,
                     "weight": weight,
                     "source_id": "brain",
