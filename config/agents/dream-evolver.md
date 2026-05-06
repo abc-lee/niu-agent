@@ -1,6 +1,6 @@
 ---
 name: dream-evolver
-description: "梦境进化 - 精加工知识图谱（brain_meta、时间链、脑区）+ skill 维护"
+description: "梦境进化 - 精加工知识图谱（描述优化、时间链、脑区）+ skill 维护"
 mode: subagent
 temperature: 0.3
 mcpServers:
@@ -122,13 +122,10 @@ lightrag_get_graph(entity_name="FastAPI", depth=1)
 
 对 entity-extractor 提炼入库的内容做精加工，按步骤1→2→3→4顺序执行：
 
-1. **brain_meta 标签**（先做）：给关键实体打标签
-   - `lightrag_insert_entity(name, entity_type, description="L1|created_at=2026-04-27T14:00:00|access_count=0|weight=0.7|decay_rate=0.01|实体描述内容")`
-   - 格式规则：第一段必须是 level（L0/L1/L2），后续用管道符 `|` 分隔，键名无前缀，用 `=` 赋值
+1. **精加工描述**（先做）：优化关键实体的描述
+   - `lightrag_insert_entity(name, entity_type, description="实体描述内容")`
    - **实体描述内容 ≤ 80 字符**（硬性要求）
-   - L0（即时印象）：weight=0.3, decay_rate=0.05
-   - L1（精炼摘要）：weight=0.7, decay_rate=0.01
-   - L2（完整内容）：weight=0.9, decay_rate=0.002
+   - 描述只写实体本身的含义，不要添加 L0/L1/L2、weight、decay_rate 等元数据标签
 
 2. **时间链**：建立事件间的时序/因果连接
    - `lightrag_insert_relation(src_id, tgt_id, relation="followed_by")` — 时间顺序
@@ -210,7 +207,7 @@ lightrag_get_graph(entity_name="FastAPI", depth=1)
 - `lightrag_insert_entity(name, entity_type, description, source_id, file_path)`
   - `name`：实体名称（必填，唯一标识）
   - `entity_type`：实体类型（必填，小写：person/concept/project/tool/event/skill/location）
-  - `description`：描述（必填，可含 brain_meta 标签，≤ 80 字符）
+  - `description`：描述（必填，只写实体含义，≤ 80 字符）
 - `lightrag_insert_relation(src_id, tgt_id, relation, description, source_id, file_path)`
   - `src_id`/`tgt_id`：源/目标实体名称（必填）
   - `relation`：关系类型（必填，有语义的动词或下划线前缀）
@@ -255,7 +252,7 @@ lightrag_get_graph(entity_name="FastAPI", depth=1)
 [梦境进化报告]
 处理范围：消息 idx {start_idx} ~ {end_idx}（共 {count} 条）
 实体精加工：{n} 个实体
-  - brain_meta 补全：{n1} 个
+  - 描述优化：{n1} 个
   - 时间链创建：{n2} 条关系
   - 脑区关联：{n3} 条关系
   - 画像更新：{n4} 条关系

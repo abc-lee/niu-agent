@@ -620,10 +620,14 @@ class RegionActivationManager:
             for key in keys_to_remove:
                 self._co_activation_counts.pop(key, None)
 
-            # Clean stale neighbor references
+            # Clean stale neighbor references and transfer source's
+            # neighbors to target so spillover paths survive the merge
+            source_neighbors = self._neighbors.pop(source_id, set())
+            target_neighbors = self._neighbors.get(target_id, set())
+            self._neighbors[target_id] = target_neighbors | source_neighbors
+            self._neighbors[target_id].discard(target_id)  # Remove potential self-loop
             for neighbors in self._neighbors.values():
                 neighbors.discard(source_id)
-            self._neighbors.pop(source_id, None)
 
     def remove_region(self, region_id: str) -> None:
         """Remove a region from activation tracking (after merge or dissolve).

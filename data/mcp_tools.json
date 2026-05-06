@@ -511,7 +511,7 @@
     {
       "server": "memory-server",
       "name": "remember",
-      "description": "保存长期记忆（自动生成 L0/L1/L2 三层）",
+      "description": "保存长期记忆",
       "input_schema": {
         "type": "object",
         "properties": {

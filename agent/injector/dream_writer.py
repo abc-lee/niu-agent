@@ -93,7 +93,6 @@ class DreamWriter:
         name: str,
         entity_type: str,
         description: str,
-        level: str = "L0",
     ) -> dict:
         """Write semantic entity (knowledge-type).
 
@@ -104,24 +103,20 @@ class DreamWriter:
             name: Entity name (e.g., "Python", "数据分析").
             entity_type: Entity type (e.g., "Person", "Concept", "Skill").
             description: Entity description.
-            level: Memory level (L0/L1/L2, default L0).
 
         Returns:
             Dict with status and details.
         """
         # Step 1: Inject the entity
-        # Encode brain_meta_level in description for semantic entities,
-        # consistent with episodic pipeline pattern
-        enriched_description = f"{description} | brain_meta_level:{level}"
         entity_result = self._ingester.inject_custom_kg(
             entities=[{
                 "entity_name": name,
                 "entity_type": entity_type,
-                "description": enriched_description,
+                "description": description,
             }],
             relationships=[],
             chunks=[{
-                "content": enriched_description,
+                "content": description,
                 "source_id": DREAM_SOURCE_ID,
                 "file_path": DREAM_FILE_PATH,
             }],
@@ -156,11 +151,10 @@ class DreamWriter:
         )
 
         logger.info(
-            "写入语义实体: %s (type=%s, niu_relation=%s, level=%s)",
+            "写入语义实体: %s (type=%s, niu_relation=%s)",
             name,
             entity_type,
             niu_relation,
-            level,
         )
 
         return {
@@ -226,7 +220,6 @@ class DreamWriter:
         event_name: str,
         description: str,
         experience_type: str,
-        level: str = "L1",
         related_entities: list[str] | None = None,
         prev_event_name: str | None = None,
         is_correction: bool = False,
@@ -236,9 +229,6 @@ class DreamWriter:
 
         Creates brain:event:{name} entity with:
         - entity_type = "EpisodicEvent"
-        - brain_meta_experience_type = error/success (in description)
-        - brain_meta_session_id = session_id (in description)
-        - brain_meta_level = L0/L1/L2 (in description)
 
         If prev_event_name provided:
         - If is_correction: inject_relation(prev → current, corrected_by)
@@ -251,7 +241,6 @@ class DreamWriter:
             event_name: Event name (used as brain:event:{event_name}).
             description: Event description.
             experience_type: "error" or "success".
-            level: Memory level (L0/L1/L2, default L1).
             related_entities: Optional list of related entity names.
             prev_event_name: Optional previous event name for time chain.
             is_correction: Whether this event corrects the previous one.
@@ -262,21 +251,12 @@ class DreamWriter:
         """
         full_event_name = f"{EVENT_PREFIX}{event_name}"
 
-        # Encode brain_meta_* attributes in description using | separator
-        # (GraphML limitation — same pattern as region_manager.py)
-        desc_parts = [description]
-        desc_parts.append(f"brain_meta_experience_type:{experience_type}")
-        desc_parts.append(f"brain_meta_level:{level}")
-        if session_id:
-            desc_parts.append(f"brain_meta_session_id:{session_id}")
-        full_description = " | ".join(desc_parts)
-
         # Step 1: Inject the event entity
         entity_result = self._ingester.inject_custom_kg(
             entities=[{
                 "entity_name": full_event_name,
                 "entity_type": EPISODIC_ENTITY_TYPE,
-                "description": full_description,
+                "description": description,
             }],
             relationships=[],
             chunks=[{
@@ -358,11 +338,10 @@ class DreamWriter:
                 )
 
         logger.info(
-            "写入事件: %s (type=%s, experience=%s, level=%s)",
+            "写入事件: %s (type=%s, experience=%s)",
             event_name,
             EPISODIC_ENTITY_TYPE,
             experience_type,
-            level,
         )
 
         return {

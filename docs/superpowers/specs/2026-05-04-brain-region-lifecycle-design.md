@@ -38,7 +38,7 @@
 - `min_graph_size` 从 `REGION_CONFIG_DEFAULTS` 传入，默认 50
 
 **新增 `min_community_size` 参数**：
-- 成员 < `min_community_size`（默认 3）的社区不返回
+- 成员 < `min_community_size`（默认 10）的社区不返回
 - 被过滤掉的小社区成员归入"未分配"集合（暂不处理，后续可归入最近邻居）
 
 **`resolution` 自适应**：

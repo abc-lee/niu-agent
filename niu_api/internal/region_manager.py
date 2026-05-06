@@ -32,7 +32,10 @@ REGION_ENTITY_TYPE = "BrainRegion"
 
 # Relation keywords
 ANCHOR_RELATION = "brain_region_anchor"
-BELONGS_TO_RELATION = "belongs_to"
+BELONGS_TO_RELATION = "_region:contains"
+# Legacy relation keyword (pre-unification). Kept for backward compat
+# when reading edges from existing graph data.
+_LEGACY_BELONGS_TO = "belongs_to"
 
 # Source identifiers for injected data
 REGION_SOURCE_ID = "brain"
@@ -461,7 +464,7 @@ class RegionManager:
             target = edge.get("target", "")
             relation = edge.get("relation", "")
 
-            if relation == BELONGS_TO_RELATION:
+            if relation in (BELONGS_TO_RELATION, _LEGACY_BELONGS_TO):
                 # region -> member: source is region, target is member
                 if source == region_name:
                     members.append(target)
@@ -879,6 +882,7 @@ class RegionManager:
             detector = CommunityDetector(self._adapter)
             partition = detector.detect_communities(
                 resolution=1.0,
+                min_community_size=10,
             )
             if partition is None or partition.total_regions < 1:
                 return {"regions_created": 0, "regions_removed": 0, "regions_updated": 0, "edges_disconnected": 0}
@@ -949,7 +953,7 @@ class RegionManager:
                     try:
                         neighbors = kg.get_neighbors(region.name)
                     except AttributeError:
-                        return 0
+                        continue
 
                     if not neighbors:
                         continue

@@ -21,16 +21,30 @@ def _normalize_nodes(nodes: list) -> list:
     """Convert adapter node format {id, name, type, description, file_path, source_id} to frontend-expected format.
 
     Frontend expects: {id, label, name, nodeType, entityType, description, uri, source}
-    Adapter returns:  {id, name, type, description, file_path, source_id}
+
+    Entity node IDs are prefixed with "entity:" to match the changelog event format.
+    Document node IDs (file paths) are kept as-is.
+    nodeType is set to "Entity" for entity nodes (not the specific type like "Person"),
+    with the specific type in entityType. This matches the changelog's entity_created format.
     """
     result = []
     for n in nodes:
+        raw_id = n.get("id", "")
+        node_type = n.get("type", "Other")
+        # Entity nodes: add entity: prefix, set nodeType to "Entity"
+        # Document nodes: keep ID as-is, nodeType stays "Document"
+        if node_type == "Document":
+            node_id = raw_id
+            normalized_type = "Document"
+        else:
+            node_id = f"entity:{raw_id}" if not raw_id.startswith("entity:") else raw_id
+            normalized_type = "Entity"
         result.append({
-            "id": n.get("id", ""),
+            "id": node_id,
             "label": n.get("name", n.get("id", "")),
             "name": n.get("name", ""),
-            "nodeType": n.get("type", "Other"),
-            "entityType": n.get("type", "Other"),
+            "nodeType": normalized_type,
+            "entityType": node_type,
             "description": n.get("description", ""),
             "uri": n.get("file_path", ""),
             "source": n.get("source_id", ""),
@@ -43,12 +57,21 @@ def _normalize_edges(edges: list) -> list:
 
     Frontend expects: {source, target, relation, edgeType, confidence}
     Adapter returns:  {source, target, relation, description, weight}
+
+    Source/target IDs are prefixed with "entity:" to match the node ID format.
     """
     result = []
     for e in edges:
+        src = e.get("source", e.get("src_id", ""))
+        tgt = e.get("target", e.get("tgt_id", ""))
+        # Add entity: prefix if not already present
+        if not src.startswith("entity:"):
+            src = f"entity:{src}"
+        if not tgt.startswith("entity:"):
+            tgt = f"entity:{tgt}"
         result.append({
-            "source": e.get("source", e.get("src_id", "")),
-            "target": e.get("target", e.get("tgt_id", "")),
+            "source": src,
+            "target": tgt,
             "relation": e.get("relation", e.get("keywords", "")),
             "edgeType": e.get("type", "relation"),
             "confidence": e.get("confidence", e.get("weight", 1.0)),
@@ -218,8 +241,10 @@ def explore_node(request: ExploreRequest):
     """
     adapter = _get_adapter()
 
+    # Strip entity: prefix if present — adapter expects bare entity names
+    entity_name = request.entity_id.removeprefix("entity:")
     result = adapter.explore_node(
-        entity_name=request.entity_id,
+        entity_name=entity_name,
         depth=request.depth,
     )
     if result is None:
@@ -235,10 +260,10 @@ def explore_node(request: ExploreRequest):
     if "center" in result and isinstance(result["center"], dict):
         c = result["center"]
         result["center"] = {
-            "id": c.get("id", ""),
+            "id": f"entity:{c.get('id', '')}" if not c.get("id", "").startswith("entity:") else c.get("id", ""),
             "label": c.get("name", c.get("id", "")),
             "name": c.get("name", ""),
-            "nodeType": c.get("type", "Other"),
+            "nodeType": "Entity",
             "entityType": c.get("type", "Other"),
             "description": c.get("description", ""),
         }

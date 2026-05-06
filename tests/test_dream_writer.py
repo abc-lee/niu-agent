@@ -51,7 +51,6 @@ def test_write_semantic_entity(writer: DreamWriter, mock_ingester: MagicMock) ->
         name="Python",
         entity_type="Skill",
         description="Programming language",
-        level="L0",
     )
 
     # Check status
@@ -60,19 +59,16 @@ def test_write_semantic_entity(writer: DreamWriter, mock_ingester: MagicMock) ->
     assert result["entity_type"] == "Skill"
     assert result["niu_relation_keyword"] == "skilled_in"
 
-    # Verify inject_entity called with correct params (level encoded in description)
-    mock_ingester.inject_entity.assert_called_once_with(
-        name="Python",
-        entity_type="Skill",
-        description="Programming language | brain_meta_level:L0",
-        source_id=DREAM_SOURCE_ID,
-        chunk_content="Programming language | brain_meta_level:L0",
-        file_path=DREAM_FILE_PATH,
-    )
+    # Verify inject_custom_kg called for entity (no brain_meta in description)
+    assert mock_ingester.inject_custom_kg.call_count >= 1
+    kg_call = mock_ingester.inject_custom_kg.call_args_list[0]
+    entity = kg_call.kwargs["entities"][0]
+    assert entity["entity_name"] == "Python"
+    assert entity["description"] == "Programming language"
 
     # Verify inject_custom_kg called for brain:Niu relation
-    mock_ingester.inject_custom_kg.assert_called_once()
-    kg_call = mock_ingester.inject_custom_kg.call_args
+    assert mock_ingester.inject_custom_kg.call_count == 2
+    kg_call = mock_ingester.inject_custom_kg.call_args_list[1]
     rel = kg_call.kwargs["relationships"][0]
     assert rel["src_id"] == NIU_ENTITY
     assert rel["tgt_id"] == "Python"
@@ -105,12 +101,11 @@ def test_write_semantic_relation(writer: DreamWriter, mock_ingester: MagicMock) 
 
 
 def test_write_episodic_event(writer: DreamWriter, mock_ingester: MagicMock) -> None:
-    """Verify event entity created with metadata."""
+    """Verify event entity created."""
     result = writer.write_episodic_event(
         event_name="tool_x_failed",
         description="Tool X returned error code 500",
         experience_type="error",
-        level="L1",
         session_id="sess-001",
     )
 
@@ -119,17 +114,13 @@ def test_write_episodic_event(writer: DreamWriter, mock_ingester: MagicMock) -> 
     assert result["event_name"] == f"{EVENT_PREFIX}tool_x_failed"
     assert result["experience_type"] == "error"
 
-    # Verify inject_entity called with brain:event: prefix and metadata in description
-    mock_ingester.inject_entity.assert_called_once()
-    entity_call = mock_ingester.inject_entity.call_args
-    assert entity_call.kwargs["name"] == f"{EVENT_PREFIX}tool_x_failed"
-    assert entity_call.kwargs["entity_type"] == EPISODIC_ENTITY_TYPE
-    # Description should contain brain_meta fields
-    desc = entity_call.kwargs["description"]
-    assert "brain_meta_experience_type:error" in desc
-    assert "brain_meta_level:L1" in desc
-    assert "brain_meta_session_id:sess-001" in desc
-    assert "Tool X returned error code 500" in desc
+    # Verify inject_custom_kg called for entity (no brain_meta in description)
+    mock_ingester.inject_custom_kg.assert_called()
+    kg_call = mock_ingester.inject_custom_kg.call_args_list[0]
+    entity = kg_call.kwargs["entities"][0]
+    assert entity["entity_name"] == f"{EVENT_PREFIX}tool_x_failed"
+    assert entity["entity_type"] == EPISODIC_ENTITY_TYPE
+    assert entity["description"] == "Tool X returned error code 500"
 
     # No time chain or involves relations expected
     assert result["chain"] is None

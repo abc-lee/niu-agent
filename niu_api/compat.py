@@ -398,7 +398,12 @@ async def shutdown():
     """Shutdown the server gracefully"""
     logger.info("Shutdown requested via API")
 
-    # vector_search removed — no cleanup needed
+    # Wait for pending LightRAG fire-and-forget futures (entity extraction)
+    # Go launcher has 2s HTTP timeout, so we must complete within that window
+    # shutdown_pending_futures is blocking (uses future.result with timeout),
+    # so we run it in a thread to avoid blocking the asyncio event loop.
+    from niu_api.internal.lightrag_manager import shutdown_pending_futures
+    await asyncio.to_thread(shutdown_pending_futures, timeout=1.5)
 
     logger.info("Python API ready for shutdown")
     return {"status": "shutting down"}
@@ -1342,7 +1347,8 @@ async def get_vector_stats():
             return {"error": "LightRAG not initialized"}
 
         # LightRAG 知识图谱统计（直接读取 NetworkX 图的 O(1) 计数属性）
-        nx_graph = rag.chunk_entity_relation_graph._graph
+        graph_obj = rag.chunk_entity_relation_graph
+        nx_graph = graph_obj._graph if hasattr(graph_obj, "_graph") else graph_obj
         node_count = nx_graph.number_of_nodes() if nx_graph else 0
         edge_count = nx_graph.number_of_edges() if nx_graph else 0
 

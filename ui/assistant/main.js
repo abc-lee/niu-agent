@@ -1,6 +1,7 @@
-const { app, BrowserWindow, ipcMain, screen, Tray, Menu, nativeImage, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, screen, Tray, Menu, nativeImage, dialog, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const url = require('url');
 const http = require('http');
 const { exec, spawn } = require('child_process');
 
@@ -144,8 +145,6 @@ function createChatWindow() {
     y: y,
     minWidth: 300,
     minHeight: 400,
-    maxWidth: 800,
-    maxHeight: 900,
     frame: false,
     transparent: true,
     alwaysOnTop: false,  // 聊天窗口是普通窗口，不置顶
@@ -168,6 +167,35 @@ function createChatWindow() {
     if (input.key === 'F12') {
       chatWindow.webContents.toggleDevTools();
     }
+  });
+
+  // 拦截所有导航：阻止在 Electron 窗口内打开外部链接
+  chatWindow.webContents.on('will-navigate', (event, url) => {
+    // 允许加载本地文件（chat.html 等），只拦截外部链接
+    if (!url.startsWith('file://')) {
+      event.preventDefault();
+      try {
+        const parsed = new URL(url);
+        if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+          shell.openExternal(url);
+        }
+      } catch (e) {
+        // Invalid URL, ignore
+      }
+    }
+  });
+
+  // 拦截新窗口打开（target="_blank" 等）
+  chatWindow.webContents.setWindowOpenHandler(({ url }) => {
+    try {
+      const parsed = new URL(url);
+      if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+        shell.openExternal(url);
+      }
+    } catch (e) {
+      // Invalid URL, ignore
+    }
+    return { action: 'deny' };
   });
   
   // 窗口移动时保存位置
@@ -514,11 +542,46 @@ ipcMain.on('notify-activity', () => {
   }
 });
 
+// 用系统默认浏览器打开链接（仅允许 http/https）
+ipcMain.on('open-external', (event, url) => {
+  if (!url) return;
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+      shell.openExternal(url);
+    } else {
+      console.warn('[Main] Blocked non-HTTP external URL:', url);
+    }
+  } catch (e) {
+    // Invalid URL, ignore
+  }
+});
+
 // 用系统默认查看器打开文件
 ipcMain.on('open-with-system-viewer', (event, filePath) => {
   if (!filePath) return;
-  // 使用 Electron 的 shell.openPath 打开文件
-  const { shell } = require('electron');
+  // Validate: must be an existing local file with safe extension
+  if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
+    console.warn('[Main] open-with-system-viewer: path does not exist or is not a file:', filePath);
+    return;
+  }
+  // Block UNC paths (network shares)
+  if (filePath.startsWith('\\\\') || filePath.startsWith('//')) {
+    console.warn('[Main] open-with-system-viewer: UNC paths not allowed:', filePath);
+    return;
+  }
+  // Block executable extensions
+  const ext = path.extname(filePath).toLowerCase();
+  const blockedExts = new Set([
+    '.exe', '.bat', '.cmd', '.ps1', '.vbs', '.vbe', '.wsf', '.wsh',
+    '.msi', '.scr', '.com', '.cpl', '.hta', '.pif', '.reg', '.url',
+    '.inf', '.application', '.appx', '.msix',
+    '.lnk', '.sct', '.msp', '.diagpkg', '.ws',
+  ]);
+  if (blockedExts.has(ext)) {
+    console.warn('[Main] open-with-system-viewer: blocked executable extension:', ext);
+    return;
+  }
   shell.openPath(filePath).catch(err => {
     console.error('[Main] 打开文件失败:', err);
   });
@@ -527,12 +590,14 @@ ipcMain.on('open-with-system-viewer', (event, filePath) => {
 // 获取图片显示 URL（本地路径转 file:// URL）
 ipcMain.handle('get-image-url', async (event, filePath) => {
   if (!filePath) return null;
-  // Windows 路径转 file:// URL
-  // REDACTED_WIN_PATH\photo.jpg → file:///REDACTED_WIN_PATH/photo.jpg
-  const normalized = filePath.replace(/\\/g, '/');
-  // 处理中文路径
-  const encoded = encodeURI('file:///' + normalized);
-  return encoded;
+  // Use Node.js pathToFileURL — correctly handles #, spaces, Unicode
+  try {
+    return url.pathToFileURL(filePath).href;
+  } catch {
+    // Fallback for non-absolute paths
+    const normalized = filePath.replace(/\\/g, '/');
+    return 'file:///' + normalized;
+  }
 });
 
 // 处理拖入的图片（调用后端 API）

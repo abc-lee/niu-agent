@@ -6,7 +6,7 @@ tools:
   - name: remember
     category: write
     short: "保存长期记忆"
-    long: "保存长期记忆（自动生成L0/L1/L2三层）"
+    long: "保存长期记忆"
     parameters:
       - name: content
         position: 1
@@ -43,9 +43,6 @@ tools:
       - name: memory_type
         flag: type
         type: string
-      - name: level
-        type: string
-        default: l1
 
   - name: update_memory
     category: write
