@@ -399,6 +399,8 @@ async function pollChangelog() {
             nodeType: 'Entity',
             entityType: change.data.type || 'other',
             description: change.data.description || '',
+            uri: change.data.file_path || '',
+            source: change.data.source_id || '',
           });
           existingIds.add(id);
           changed = true;
