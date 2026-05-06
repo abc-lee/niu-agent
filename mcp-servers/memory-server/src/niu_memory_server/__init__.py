@@ -1,7 +1,7 @@
 """
 Memory Server - 智能记忆管理 MCP 服务器
 
-提供记忆存储、检索功能，支持 L0/L1/L2 三层存储。
+提供记忆存储、检索功能。
 """
 
 from mcp.server import Server
@@ -26,7 +26,7 @@ storage = MemoryStorage()
 TOOL_SCHEMAS = {
     "remember": {
         "name": "remember",
-        "description": "保存长期记忆（自动生成 L0/L1/L2 三层）",
+        "description": "保存长期记忆",
         "input_schema": {
             "type": "object",
             "properties": {
