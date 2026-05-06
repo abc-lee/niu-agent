@@ -343,7 +343,7 @@ class SkillSync:
                 relationships=[{
                     "src_id": "brain:Niu",
                     "tgt_id": entity_name,
-                    "relation": "skilled_in",
+                    "keywords": "skilled_in",
                     "description": f"brain:Niu 掌握技能 {name}",
                     "source_id": entity_name,
                     "file_path": f"skill://{name}",

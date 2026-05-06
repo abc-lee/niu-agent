@@ -911,7 +911,7 @@ def lightrag_insert_entity(
         anchor_rel = {
             "src_id": "brain:Niu",
             "tgt_id": name,
-            "relation": "owns",
+            "keywords": "owns",
             "description": f"brain:Niu owns the {entity_type} entity '{name}'",
             "source_id": source_id,
             "file_path": file_path,

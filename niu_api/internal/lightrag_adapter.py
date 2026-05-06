@@ -1021,7 +1021,7 @@ class LightRAGIngester:
         relationships = [{
             "src_id": "brain:Niu",
             "tgt_id": entity_name,
-            "relation": "owns",
+            "keywords": "owns",
             "description": f"brain:Niu 拥有 {entity_name}",
         }]
 
@@ -1192,7 +1192,7 @@ class LightRAGIngester:
                 anchor_rels.append({
                     "src_id": "brain:Niu",
                     "tgt_id": entity_name,
-                    "relation": "owns",
+                    "keywords": "owns",
                     "description": f"brain:Niu 拥有 {entity_name}",
                 })
 

@@ -146,7 +146,7 @@ def sync_note_to_lightrag(note_id: str, content: str, tags: list[str]):
             relationships=[{
                 "src_id": "brain:Niu",
                 "tgt_id": entity_name,
-                "relation": "remembers",
+                "keywords": "remembers",
                 "description": "brain:Niu 记住了这条便签",
                 "source_id": f"note:{note_id}",
                 "file_path": f"note://{note_id}",
