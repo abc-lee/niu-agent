@@ -656,12 +656,12 @@ class LightRAGAdapter:
 
     @staticmethod
     def _extract_timestamp(description: str) -> str:
-        """从 brain_meta 描述前缀中提取 created_at 时间戳。
+        """从描述中提取 created_at 时间戳。
 
-        格式: L2|created_at=2026-04-27T14:00:00|其他内容
+        格式: created_at=2026-04-27T14:00:00|其他内容
 
         Args:
-            description: Entity/edge description string with brain_meta prefix.
+            description: Entity/edge description string.
 
         Returns:
             Extracted timestamp string, or empty string if not found.
@@ -713,7 +713,8 @@ class LightRAGAdapter:
                 try:
                     snapshot = nx_graph.copy()
                 except Exception:
-                    snapshot = nx_graph
+                    logger.warning("[KG] graph copy failed, returning empty snapshot")
+                    return {"nodes": [], "edges": []}
 
             # Now iterate the snapshot without holding the lock (safe because
             # it's our local copy — no other thread can modify it)
@@ -790,7 +791,7 @@ class LightRAGAdapter:
             try:
                 from niu_api.internal.lightrag_manager import get_change_log
 
-                get_change_log().record_change("entity_deleted", {"id": entity_name})
+                get_change_log().record_change("entity_deleted", {"id": f"entity:{entity_name}"})
             except Exception as e:
                 logger.debug(f"changelog record_change failed: {e}")
 
@@ -934,8 +935,8 @@ class LightRAGAdapter:
                             target_desc = attrs.get("description", "")
 
                 get_change_log().record_change("entity_merged", {
-                    "source_ids": source_entities,
-                    "target_id": target_entity,
+                    "source_ids": [f"entity:{s}" for s in source_entities],
+                    "target_id": f"entity:{target_entity}",
                     "name": target_entity,
                     "type": target_type,
                     "description": target_desc,
@@ -1262,15 +1263,17 @@ class LightRAGIngester:
                 change_log = get_change_log()
                 for entity in custom_kg["entities"]:
                     change_log.record_change("entity_created", {
-                        "id": entity["entity_name"],
+                        "id": f"entity:{entity['entity_name']}",
                         "name": entity["entity_name"],
                         "type": entity.get("entity_type", "Other"),
                         "description": entity.get("description", ""),
+                        "file_path": entity.get("file_path", ""),
+                        "source_id": entity.get("source_id", ""),
                     })
                 for rel in custom_kg["relationships"]:
                     change_log.record_change("edge_created", {
-                        "source": rel["src_id"],
-                        "target": rel["tgt_id"],
+                        "source": f"entity:{rel['src_id']}",
+                        "target": f"entity:{rel['tgt_id']}",
                         "relation": rel.get("keywords", ""),
                         "confidence": rel.get("weight", 1.0),
                     })

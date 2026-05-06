@@ -449,23 +449,9 @@ def sync_photo_to_kg(file_path: str, abstract: str, detected_persons: list) -> d
         relationships = []
         chunks = []
 
-        # 1a. 照片描述作为 chunk（供向量检索）
-        # content 不包含"未命名人物"名称，避免 LLM 自动提取创建重复实体
-        # 已知人物名称（用户命名）保留在描述中，因为它们在 KG 中有对应实体
-        chunk_content = f"[Photo: {file_path}]"
-        if abstract:
-            # abstract 格式: "未命名人物_1合影，2009年06月04日" 或 "任飞合影，2009年06月04日"
-            # 仅当第一段包含"未命名人物"时才去除，保留已知人物名称
-            parts = abstract.split("，")
-            if len(parts) > 1 and "未命名人物" in parts[0]:
-                chunk_content += f"\n{'，'.join(parts[1:])}"
-            else:
-                chunk_content += f"\n{abstract}"
-        chunks.append({
-            "content": chunk_content,
-            "source_id": "photo",
-            "file_path": file_path,
-        })
+        # 1a. 照片描述不作为 chunk 传入 ainsert_custom_kg
+        # 之前传 chunks 会导致 LLM 对 chunk 文本做实体提取，产生重复的 Photo 实体
+        # 照片的结构化信息（实体+边）已通过 entities/relationships 传入，无需 chunks
 
         # 1b. 照片实体
         # description 不包含"未命名人物"名称，避免 LLM 异步提取时从中创建重复实体
