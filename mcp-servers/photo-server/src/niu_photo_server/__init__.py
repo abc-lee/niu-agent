@@ -81,7 +81,7 @@ TOOL_SCHEMAS = {
             "type": "object",
             "properties": {
                 "file_path": {"type": "string", "description": "文档文件路径"},
-                "category": {"type": "string", "description": "分类，默认自动推断", "default": "其他"},
+                "category": {"type": "string", "description": "分类，不传则从配置读取默认分类", "default": "其他"},
                 "mode": {
                     "type": "string",
                     "enum": ["copy", "move", "reference"],
