@@ -14,7 +14,7 @@ import sqlite3
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import numpy as np
 from loguru import logger
@@ -81,7 +81,7 @@ TOOL_SCHEMAS = {
             "type": "object",
             "properties": {
                 "file_path": {"type": "string", "description": "文档文件路径"},
-                "category": {"type": "string", "description": "分类，不传则从配置读取默认分类", "default": "其他"},
+                "category": {"type": "string", "description": "分类，不传则返回文件内容让你判断分类，判断后再带category回调"},
                 "mode": {
                     "type": "string",
                     "enum": ["copy", "move", "reference"],
@@ -2381,10 +2381,10 @@ def calculate_file_hash(file_path: str) -> str:
 
 
 def read_file_content(path: str) -> str:
-    """读取文件内容"""
+    """读取文件内容，支持多种格式"""
     suffix = Path(path).suffix.lower()
 
-    if suffix in {".txt", ".md"}:
+    if suffix in {".txt", ".md", ".csv", ".json", ".log"}:
         with open(path, "r", encoding="utf-8", errors="ignore") as f:
             return f.read()
 
@@ -2396,12 +2396,77 @@ def read_file_content(path: str) -> str:
                 reader = PdfReader(f)
                 return " ".join([page.extract_text() or "" for page in reader.pages])
         except Exception as e:
-            logger.warning(f"[SIMILARITY] PDF读取失败: {e}")
+            logger.warning(f"[READ] PDF读取失败: {e}")
+            return ""
+
+    elif suffix in {".docx", ".doc"}:
+        try:
+            from docx import Document
+            doc = Document(path)
+            return "\n".join([para.text for para in doc.paragraphs if para.text.strip()])
+        except Exception as e:
+            logger.warning(f"[READ] DOCX读取失败: {e}")
+            return ""
+
+    elif suffix in {".pptx", ".ppt"}:
+        try:
+            from pptx import Presentation
+            prs = Presentation(path)
+            texts = []
+            for slide in prs.slides:
+                for shape in slide.shapes:
+                    text = getattr(shape, "text", "")
+                    if text and str(text).strip():
+                        texts.append(str(text).strip())
+            return "\n".join(texts)
+        except Exception as e:
+            logger.warning(f"[READ] PPTX读取失败: {e}")
+            return ""
+
+    elif suffix in {".xlsx", ".xls"}:
+        try:
+            from openpyxl import load_workbook
+            wb = load_workbook(path, data_only=True)
+            rows = []
+            for sheet in wb.worksheets:
+                for row in sheet.iter_rows(values_only=True):
+                    row_text = " ".join([str(c) for c in row if c is not None])
+                    if row_text.strip():
+                        rows.append(row_text)
+            return "\n".join(rows)
+        except Exception as e:
+            logger.warning(f"[READ] XLSX读取失败: {e}")
+            return ""
+
+    elif suffix in {".html", ".htm"}:
+        try:
+            from html.parser import HTMLParser
+
+            class _TextExtractor(HTMLParser):
+                def __init__(self):
+                    super().__init__()
+                    self._texts = []
+
+                def handle_data(self, data):
+                    if data.strip():
+                        self._texts.append(data.strip())
+
+            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                html = f.read()
+            parser = _TextExtractor()
+            parser.feed(html)
+            return "\n".join(parser._texts)
+        except Exception as e:
+            logger.warning(f"[READ] HTML读取失败: {e}")
             return ""
 
     else:
-        # 其他格式，返回文件名作为标识
-        return Path(path).stem
+        # Unknown format, try plain text
+        try:
+            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                return f.read()
+        except Exception:
+            return ""
 
 
 def calculate_content_similarity(file1: str, file2: str) -> float:
@@ -2544,15 +2609,39 @@ def rename_file(file_path: Path) -> str:
 # ============== 工具实现 ==============
 
 
-def ingest_document(file_path: str, category: str = "其他", mode: str = "copy") -> dict:
+def ingest_document(file_path: str, category: Optional[str] = None, mode: str = "copy") -> dict:
     """文档入库工具 — 全文 ainsert 到 LightRAG
 
     自动检测路径类型（目录/照片/文档）：
     - 目录：检查是否包含照片，转到照片批量处理
     - 照片：转到照片入库流程
     - 文档：读取全文（限 <20K），调用 lightrag_insert 全文 ainsert
+
+    如果不传 category，会读取文件内容返回给你，请你判断分类后再次调用本工具。
     """
     try:
+        # No category → read file content and ask caller to classify
+        if category is None:
+            content = read_file_content(file_path)
+            if content:
+                preview = content[:3000] if len(content) > 3000 else content
+                return {
+                    "status": "need_category",
+                    "message": f"请根据以下内容判断文档分类，然后再次调用 ingest_document 并传入 category 参数。\n\n文件: {file_path}\n内容预览:\n{preview}",
+                    "file_path": file_path,
+                    "mode": mode,
+                    "content_length": len(content),
+                }
+            else:
+                # Binary file or unreadable — return file info for classification
+                ext = Path(file_path).suffix.lower()
+                return {
+                    "status": "need_category",
+                    "message": f"请根据文件信息判断文档分类，然后再次调用 ingest_document 并传入 category 参数。\n\n文件: {file_path}\n格式: {ext}",
+                    "file_path": file_path,
+                    "mode": mode,
+                }
+
         logger.info(f"[INGEST] 开始处理: {file_path}")
         source = Path(file_path)
         if not source.exists():
