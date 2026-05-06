@@ -1017,9 +1017,17 @@ class LightRAGIngester:
             "file_path": "interaction_habit",
         }]
 
+        # Anchor relationship: brain:Niu -> entity, prevents orphan nodes
+        relationships = [{
+            "src_id": "brain:Niu",
+            "tgt_id": entity_name,
+            "relation": "owns",
+            "description": f"brain:Niu 拥有 {entity_name}",
+        }]
+
         return self.inject_custom_kg(
             entities=entities,
-            relationships=[],
+            relationships=relationships,
             chunks=chunks,
             source_id=source_id,
         )
@@ -1174,9 +1182,36 @@ class LightRAGIngester:
         if not entities and not chunks:
             return {"status": "ok", "entities": 0, "chunks": 0}
 
+        # Build anchor relationships: brain:Niu -> each entity
+        # This prevents orphan nodes by connecting every entity to the
+        # brain:Niu anchor, giving the graph traversable structure.
+        anchor_rels = []
+        for e in entities:
+            entity_name = e.get("entity_name", "")
+            if entity_name:
+                anchor_rels.append({
+                    "src_id": "brain:Niu",
+                    "tgt_id": entity_name,
+                    "relation": "owns",
+                    "description": f"brain:Niu 拥有 {entity_name}",
+                })
+
+        # Ensure chunks are always provided so LLM can extract additional edges.
+        # If no chunk_content was supplied by callers, generate chunks from
+        # entity descriptions so LightRAG still has text to work with.
+        if not chunks:
+            for e in entities:
+                entity_name = e.get("entity_name", "")
+                if entity_name:
+                    chunks.append({
+                        "content": f"{entity_name}({e.get('entity_type', '')}): {e.get('description', '')}",
+                        "source_id": e.get("source_id", "custom_kg"),
+                        "file_path": e.get("file_path", "custom_kg"),
+                    })
+
         return self.inject_custom_kg(
             entities=entities,
-            relationships=[],
+            relationships=anchor_rels,
             chunks=chunks,
             source_id="batch_inject",
         )

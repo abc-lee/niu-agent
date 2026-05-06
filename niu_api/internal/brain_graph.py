@@ -145,9 +145,9 @@ class BrainGraph:
     ) -> Dict[str, Any]:
         """Store a memory in the brain graph.
 
-        Creates:
-        1. A target entity via inject_custom_kg
-        2. A weighted relation from brain:Niu to the target via inject_custom_kg
+        Creates a target entity and a weighted relation from brain:Niu to it
+        in a single atomic inject_custom_kg call, with the entity description
+        passed as a chunk so LLM can extract additional relationships.
 
         Args:
             content: The memory content to store.
@@ -189,25 +189,17 @@ class BrainGraph:
         created_at = time.strftime("%Y-%m-%dT%H:%M:%S")
         entity_description = f"created_at={created_at}|{content[:200]}"
 
-        # Inject target entity
-        entity_result = self._ingester.inject_custom_kg(
+        # --- Single atomic inject_custom_kg call ---
+        # Merge entity + relationship + chunk into one call so that:
+        # 1. The operation is atomic — no orphan entity if relation fails
+        # 2. Chunk carries the entity description text, letting LLM extract
+        #    additional relationships from the description content
+        result = self._ingester.inject_custom_kg(
             entities=[{
                 "entity_name": target_name,
                 "entity_type": entity_type,
                 "description": entity_description,
             }],
-            relationships=[],
-            chunks=[],
-            source_id="brain",
-        )
-
-        if isinstance(entity_result, dict) and entity_result.get("status") == "error":
-            return entity_result
-
-        # Inject weighted relation via inject_custom_kg
-        # inject_relation doesn't support weight, so we use inject_custom_kg directly
-        relation_result = self._ingester.inject_custom_kg(
-            entities=[],
             relationships=[
                 {
                     "src_id": "brain:Niu",
@@ -219,11 +211,15 @@ class BrainGraph:
                     "file_path": "brain://memory",
                 }
             ],
-            chunks=[],
+            chunks=[{
+                "content": f"{target_name}: {entity_description}",
+                "source_id": "brain",
+            }],
+            source_id="brain",
         )
 
-        if isinstance(relation_result, dict) and relation_result.get("status") == "error":
-            return relation_result
+        if isinstance(result, dict) and result.get("status") == "error":
+            return result
 
         return {
             "status": "ok",
