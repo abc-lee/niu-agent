@@ -40,7 +40,7 @@ TOOL_SCHEMAS = {
 3. 内容类型（目录）：扫描目录 — 全照片 → 批量照片，全文档 → 批量文档，混合 → 分别处理
 
 照片流程: EXIF → 人脸检测 → 人物匹配 → L0摘要 → KG同步
-文档流程: 全自动 — 文件搬运 + LightRAG 全文 ainsert（自动抽取实体和建链）
+文档流程: 文件搬运 + 提交LightRAG异步分析存入知识图谱（处理时间较长）
 
 返回:
 - 照片: {status, photo_id, detected_persons, abstract, exif}
@@ -63,14 +63,14 @@ TOOL_SCHEMAS = {
     },
     "ingest_document": {
         "name": "ingest_document",
-        "description": """文档入库工具 — 文件搬运 + LightRAG 全文 ainsert
+        "description": """文档入库工具 — 文件搬运 + 提交LightRAG异步处理
 
 参数:
 - file_path: 必填，文档文件路径
 - category: 分类，默认 "其他"
 - mode: copy（复制）| move（移动）| reference（引用），默认 copy
 
-自动完成：文件搬运 + LightRAG 全文 ainsert（自动抽取实体和建链）
+文件搬运完成后，文档提交给LightRAG异步分析并存入知识图谱（自动抽取实体和建链），处理时间可能较长。
 
 返回:
 - status: success | error
@@ -2432,9 +2432,10 @@ def read_file_content(path: str, max_chars: int = 20000) -> str:
             for slide in prs.slides:
                 for shape in slide.shapes:
                     t = getattr(shape, "text", "")
-                    if t and str(t).strip():
-                        parts.append(str(t).strip())
-                        total += len(str(t))
+                    t_stripped = str(t).strip()
+                    if t_stripped:
+                        parts.append(t_stripped)
+                        total += len(t_stripped)
                         if total >= max_chars:
                             break
                 if total >= max_chars:
@@ -2636,12 +2637,12 @@ def rename_file(file_path: Path) -> str:
 
 
 def ingest_document(file_path: str, category: str = "其他", mode: str = "copy") -> dict:
-    """文档入库工具 — 全文 ainsert 到 LightRAG
+    """文档入库工具 — 文件搬运 + 提交LightRAG异步处理
 
     自动检测路径类型（目录/照片/文档）：
     - 目录：检查是否包含照片，转到照片批量处理
     - 照片：转到照片入库流程
-    - 文档：读取全文（限 <20K），调用 lightrag_insert 全文 ainsert
+    - 文档：文件搬运 + 提交LightRAG异步分析存入知识图谱（处理时间较长）
     """
     try:
         logger.info(f"[INGEST] 开始处理: {file_path}")
@@ -2792,6 +2793,7 @@ def ingest_document(file_path: str, category: str = "其他", mode: str = "copy"
             "content_length": content_length,
             "lightrag": lr_status,
             "lightrag_message": lr_msg or None,
+            "note": "文件已存储，正在异步分析并存入知识图谱，处理时间可能较长，请耐心等待",
         }
 
     except PermissionError as e:
@@ -2817,7 +2819,7 @@ def ingest_documents(
 ) -> dict:
     """批量文档入库
 
-    每个文件自动完成：文件搬运 + LightRAG 全文 ainsert。
+    每个文件自动完成：文件搬运 + 提交LightRAG异步分析存入知识图谱（处理时间较长）。
     不再返回 need_l1，无需后续手动调用 store_document_l1。
     """
     results = []
@@ -2880,7 +2882,7 @@ async def list_tools() -> list[Tool]:
     return [
         Tool(
             name="ingest_document",
-            description="""文档入库工具（全自动 + 全文 ainsert）
+            description="""文档入库工具 — 文件搬运 + 提交LightRAG异步处理
 
 参数:
 - file_path: 必填，源文件绝对路径
@@ -2890,9 +2892,7 @@ async def list_tools() -> list[Tool]:
 自动检测路径类型:
 - 目录 → 检查是否包含照片，转到照片批量处理
 - 照片 → 转到照片入库流程
-- 文档 → 读取全文，LightRAG ainsert 全文入库
-
-自动完成: 文件搬运 + LightRAG 全文 ainsert（自动抽取实体和建链）
+- 文档 → 文件搬运 + 提交LightRAG异步分析存入知识图谱（处理时间较长，请耐心等待）
 
 返回:
 - status: success | error
