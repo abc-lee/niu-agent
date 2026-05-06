@@ -134,14 +134,23 @@ def sync_note_to_lightrag(note_id: str, content: str, tags: list[str]):
 
         description = content + (" | 标签: " + ", ".join(tags) if tags else "")
 
+        entity_name = f"note:{note_id}"
+
         ingester = LightRAGIngester()
         result = ingester.inject_custom_kg(
             entities=[{
-                "entity_name": f"note:{note_id}",
+                "entity_name": entity_name,
                 "entity_type": "Note",
                 "description": description,
             }],
-            relationships=[],
+            relationships=[{
+                "src_id": "brain:Niu",
+                "tgt_id": entity_name,
+                "relation": "remembers",
+                "description": "brain:Niu 记住了这条便签",
+                "source_id": f"note:{note_id}",
+                "file_path": f"note://{note_id}",
+            }],
             chunks=[{
                 "content": description,
                 "source_id": f"note:{note_id}",

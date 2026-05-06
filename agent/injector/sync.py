@@ -332,19 +332,28 @@ class SkillSync:
             if extra_parts:
                 full_description += " | " + "; ".join(extra_parts)
 
+            entity_name = f"skill:{name}"
+
             result = ingester.inject_custom_kg(
                 entities=[{
-                    "entity_name": f"skill:{name}",
+                    "entity_name": entity_name,
                     "entity_type": "Skill",
                     "description": full_description,
                 }],
-                relationships=[],
-                chunks=[{
-                    "content": full_description,
-                    "source_id": f"skill:{name}",
+                relationships=[{
+                    "src_id": "brain:Niu",
+                    "tgt_id": entity_name,
+                    "relation": "skilled_in",
+                    "description": f"brain:Niu 掌握技能 {name}",
+                    "source_id": entity_name,
                     "file_path": f"skill://{name}",
                 }],
-                source_id=f"skill:{name}",
+                chunks=[{
+                    "content": full_description,
+                    "source_id": entity_name,
+                    "file_path": f"skill://{name}",
+                }],
+                source_id=entity_name,
             )
             if result.get("status") == "ok":
                 logger.info(f"[SkillSync] Injected skill '{name}' into LightRAG")
