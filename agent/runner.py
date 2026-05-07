@@ -350,6 +350,12 @@ class NiuRunner:
         # 用户记忆脏标记（remember/forget 工具调用后 set）
         self._memory_dirty = threading.Event()
 
+        # Brain context injector chain (lazy-cached, created once per runner)
+        self._brain_adapter = None      # LightRAGAdapter
+        self._brain_ingester = None     # LightRAGIngester
+        self._brain_region_mgr = None   # RegionManager
+        self._brain_injector = None     # BrainContextInjector
+
     def set_mcp_tools_schema(self, tools: list):
         """Set MCP tool schemas — in disk mode, only inject disk() schema.
 
@@ -430,6 +436,37 @@ class NiuRunner:
 
         # No schema refresh — tools_schema stays base + disk
         return tools_schema
+
+    def _get_brain_injector(self):
+        """Get or create the cached brain context injector chain.
+
+        All four instances (LightRAGAdapter, LightRAGIngester,
+        RegionManager, BrainContextInjector) are lightweight wrappers
+        with no expensive initialization, but creating them every turn
+        is unnecessary. Cached as instance variables on the runner.
+
+        Returns None if activation_mgr is not available (brain tools
+        not initialized), matching the original guard condition.
+        """
+        if self._brain_injector is None:
+            from niu_api.internal.lightrag_adapter import LightRAGAdapter, LightRAGIngester
+            from niu_api.internal.region_manager import RegionManager
+            from niu_api.internal.region_injector import BrainContextInjector
+            from agent.brain_tools import get_activation_mgr
+
+            self._brain_adapter = LightRAGAdapter()
+            self._brain_ingester = LightRAGIngester()
+            _activation_mgr = get_activation_mgr()
+            if self._brain_adapter is None or _activation_mgr is None:
+                # Brain tools not initialized — leave injector as None
+                return None
+            self._brain_region_mgr = RegionManager(self._brain_adapter, self._brain_ingester)
+            self._brain_injector = BrainContextInjector(
+                adapter=self._brain_adapter,
+                activation_mgr=_activation_mgr,
+                region_mgr=self._brain_region_mgr,
+            )
+        return self._brain_injector
 
     def _refresh_user_memories(self, messages: list):
         """Refresh the ### [用户长期记忆] section in system prompt if dirty"""
@@ -615,7 +652,10 @@ class NiuRunner:
         lightrag_results: dict[str, list[dict]] = {}
         try:
             from niu_api.internal.lightrag_adapter import LightRAGAdapter
-            adapter = LightRAGAdapter()
+            if self._brain_adapter is not None:
+                adapter = self._brain_adapter
+            else:
+                adapter = LightRAGAdapter()
             lightrag_results = adapter.search_multi_lightrag(
                 effective_query, mode="local", top_k=10, keywords=keywords,
             )
@@ -629,7 +669,10 @@ class NiuRunner:
         interaction_habits: list[dict] = []
         try:
             from niu_api.internal.lightrag_adapter import LightRAGAdapter
-            habit_adapter = LightRAGAdapter()
+            if self._brain_adapter is not None:
+                habit_adapter = self._brain_adapter
+            else:
+                habit_adapter = LightRAGAdapter()
             interaction_habits = habit_adapter.search_interaction_habits(
                 query=effective_query, top_k=3, keywords=keywords,
             )
@@ -698,23 +741,10 @@ class NiuRunner:
         if brain_memories_text:
             parts.append(brain_memories_text)
 
-        # Brain region activation context
+        # Brain region activation context (uses cached injector)
         try:
-            from niu_api.internal.region_injector import BrainContextInjector
-            from niu_api.internal.lightrag_adapter import LightRAGAdapter, LightRAGIngester
-            from agent.brain_tools import get_activation_mgr
-            from niu_api.internal.region_manager import RegionManager
-
-            _lightrag_adapter = LightRAGAdapter()
-            _activation_mgr = get_activation_mgr()
-            if _lightrag_adapter and _activation_mgr:
-                _ingester = LightRAGIngester()
-                _region_mgr = RegionManager(_lightrag_adapter, _ingester)
-                _brain_injector = BrainContextInjector(
-                    adapter=_lightrag_adapter,
-                    activation_mgr=_activation_mgr,
-                    region_mgr=_region_mgr,
-                )
+            _brain_injector = self._get_brain_injector()
+            if _brain_injector is not None:
                 brain_context = _brain_injector.inject_brain_context(context)
                 if brain_context:
                     parts.append(f"\n## 脑区激活上下文\n{brain_context}")
