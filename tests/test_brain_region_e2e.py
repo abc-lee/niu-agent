@@ -81,9 +81,10 @@ class TestE2EBrainRegionInjection:
         system_msg = next(m for m in result if m["role"] == "system")
 
         # Static prompt still injected
-        assert "brain:Niu" in system_msg["content"]
-        # Fallback regions present
-        assert "聊天历史" in system_msg["content"] or "默认" in system_msg["content"]
+        assert "大脑区域架构" in system_msg["content"]
+        # Dynamic fallback present
+        assert "当前图谱中的脑区" in system_msg["content"]
+        assert "默认" in system_msg["content"]
 
     def test_full_pipeline_empty_graph(self):
         """When graph has no regions, fallback is used."""
@@ -99,9 +100,10 @@ class TestE2EBrainRegionInjection:
         result = inject_brain_region_context(messages, adapter)
         system_msg = next(m for m in result if m["role"] == "system")
 
-        assert "brain:Niu" in system_msg["content"]
-        # Fallback regions
-        assert "聊天历史" in system_msg["content"] or "默认" in system_msg["content"]
+        assert "大脑区域架构" in system_msg["content"]
+        # Dynamic fallback present
+        assert "当前图谱中的脑区" in system_msg["content"]
+        assert "默认" in system_msg["content"]
 
     def test_injection_uses_local_mode_no_llm(self):
         """Dynamic query uses local mode (0 LLM calls) to prevent infinite loops."""
@@ -219,7 +221,8 @@ class TestE2EBrainRegionInjection:
         assert "brain:Niu" in content
         assert "brain_region_anchor" in content
         assert "belongs_to_region" in content
-        # Dynamic part present
+        # Dynamic part present (with format marker distinguishing it from static)
+        assert "当前图谱中的脑区" in content
         assert "自定义区域" in content
         # Original content still at the beginning
         assert content.startswith("---Role---")
