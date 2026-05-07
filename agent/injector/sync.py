@@ -293,10 +293,10 @@ class SkillSync:
         """同步单个 skill 到 LightRAG 知识图谱"""
         try:
             content = skill_file.read_text(encoding="utf-8")
-            fm = self._parse_yaml_frontmatter(content)
-            triggers = self._extract_triggers(content, fm)
-            description = self._extract_description(content, fm)
-            tags = self._extract_tags(content, fm, triggers)
+            fm = parse_yaml_frontmatter(content)
+            triggers = extract_triggers(content, fm)
+            description = extract_description(content, fm)
+            tags = extract_tags(content, fm, triggers)
 
             if description:
                 self._inject_skill_to_lightrag(name, description, tags, triggers)
@@ -313,9 +313,9 @@ class SkillSync:
     ):
         """Inject a skill entity into the LightRAG knowledge graph.
 
-        Wrapped in try/except so LightRAG failures never break skill sync.
-        The skill entity uses entity_type="skill" so that
-        LightRAGAdapter.search_skills() can find it.
+        Uses lightrag_insert (ainsert) so LightRAG auto-extracts entities,
+        merges same-name nodes, and builds edges. This replaces the old
+        inject_custom_kg path which could not auto-merge or auto-connect.
         """
         try:
             from niu_api.internal.lightrag_adapter import LightRAGIngester
@@ -332,36 +332,20 @@ class SkillSync:
             if extra_parts:
                 full_description += " | " + "; ".join(extra_parts)
 
-            entity_name = f"skill:{name}"
+            # Format as structured text for LightRAG ainsert auto-extraction
+            text = f"技能: {name}（类型: Skill），{full_description}。brain:Niu skilled_in {name}。"
 
-            result = ingester.inject_custom_kg(
-                entities=[{
-                    "entity_name": entity_name,
-                    "entity_type": "Skill",
-                    "description": full_description,
-                }],
-                relationships=[{
-                    "src_id": "brain:Niu",
-                    "tgt_id": entity_name,
-                    "keywords": "skilled_in",
-                    "description": f"brain:Niu 掌握技能 {name}",
-                    "source_id": entity_name,
-                    "file_path": f"skill://{name}",
-                }],
-                chunks=[{
-                    "content": full_description,
-                    "source_id": entity_name,
-                    "file_path": f"skill://{name}",
-                }],
-                source_id=entity_name,
+            result = ingester.lightrag_insert(
+                content=text,
+                file_paths=f"skill://{name}",
             )
             if result.get("status") == "ok":
-                logger.info(f"[SkillSync] Injected skill '{name}' into LightRAG")
+                logger.info(f"[SkillSync] Injected skill '{name}' into LightRAG via ainsert")
             else:
-                logger.warning(f"[SkillSync] LightRAG inject failed for '{name}': {result.get('message', '')}")
+                logger.warning(f"[SkillSync] LightRAG insert failed for '{name}': {result.get('message', '')}")
         except Exception as e:
-            # LightRAG not available or inject failed — non-fatal but visible
-            logger.warning(f"[SkillSync] LightRAG skill inject failed for '{name}': {e}")
+            # LightRAG not available or insert failed — non-fatal but visible
+            logger.warning(f"[SkillSync] LightRAG skill insert failed for '{name}': {e}")
 
     def _delete_skill(self, name: str):
         """从 LightRAG 知识图谱删除 skill"""
@@ -499,169 +483,6 @@ class SkillSync:
             logger.exception("Failed to inject notes to LightRAG")
             return False
 
-    def _parse_yaml_frontmatter(self, content: str) -> dict:
-        """解析 YAML frontmatter（--- 包裹的头部区域）
-
-        Returns:
-            解析后的字典，解析失败返回空字典
-        """
-        stripped = content.strip()
-        if not stripped.startswith("---"):
-            return {}
-
-        end = stripped.find("---", 3)
-        if end == -1:
-            return {}
-
-        yaml_text = stripped[3:end].strip()
-        if not yaml_text:
-            return {}
-
-        if YAML_AVAILABLE:
-            try:
-                result = yaml.safe_load(yaml_text)
-                if isinstance(result, dict):
-                    return result
-            except Exception as e:
-                logger.debug(f"YAML frontmatter parse failed: {e}")
-
-        # Fallback: 简单正则解析（无 PyYAML 时）
-        # 注意：仅支持标量值和内联列表 [a, b]，多行列表需安装 PyYAML
-        parsed = {}
-        for line in yaml_text.split("\n"):
-            match = re.match(r"^(\w+)\s*:\s*(.+)$", line.strip())
-            if match:
-                key, value = match.group(1), match.group(2).strip().strip("\"'")
-                # Handle inline list syntax: [a, b, c]
-                if value.startswith("[") and value.endswith("]"):
-                    items = [v.strip().strip("\"'") for v in value[1:-1].split(",") if v.strip()]
-                    parsed[key] = items
-                else:
-                    parsed[key] = value
-        if not YAML_AVAILABLE and any(k in ("triggers", "tags") for k in parsed):
-            logger.warning("PyYAML not installed, YAML list fields (triggers/tags) may not parse correctly")
-        return parsed
-
-    def _extract_triggers(self, content: str, fm: dict | None = None) -> list[str]:
-        """从 skill 内容提取触发词
-
-        优先级：YAML frontmatter triggers > Markdown 触发关键词 > triggers: []
-        """
-        triggers = []
-
-        # 优先级 1: YAML frontmatter triggers
-        if fm is None:
-            fm = self._parse_yaml_frontmatter(content)
-        fm_triggers = fm.get("triggers")
-        if fm_triggers is not None:
-            if isinstance(fm_triggers, list) and fm_triggers:
-                triggers.extend(str(t) for t in fm_triggers)
-            elif isinstance(fm_triggers, str):
-                triggers.extend(re.split(r"[,，、]", fm_triggers))
-                triggers = [t.strip() for t in triggers if t.strip()]
-
-        # 优先级 2: **触发关键词**：xxx、yyy (Markdown 加粗)
-        if not triggers:
-            match_bold = re.search(r"\*\*触发关键词\*\*[：:]\s*(.+)", content)
-            if match_bold:
-                keywords = match_bold.group(1)
-                triggers.extend(re.split(r"[,，、]", keywords))
-                triggers = [t.strip() for t in triggers if t.strip()]
-
-        # 优先级 3: 触发关键词：xxx、yyy (无加粗)
-        if not triggers:
-            match1 = re.search(r"触发关键词[：:]\s*(.+)", content)
-            if match1:
-                keywords = match1.group(1)
-                triggers.extend(re.split(r"[,，、]", keywords))
-                triggers = [t.strip() for t in triggers if t.strip()]
-
-        # 优先级 4: triggers: [xxx, yyy]
-        if not triggers:
-            match2 = re.search(r"triggers:\s*\[(.+)\]", content, re.IGNORECASE)
-            if match2:
-                keywords = match2.group(1)
-                triggers.extend([t.strip().strip("\"'") for t in keywords.split(",")])
-
-        return list(set(triggers))[:10]
-
-    def _extract_description(self, content: str, fm: dict | None = None) -> str:
-        """从 skill 内容提取描述
-
-        优先级：
-        1. YAML frontmatter description（"Use when..." 格式，CSO 最佳实践）
-        2. 第一个 # 标题（降级）
-        3. 默认：拒绝同步
-        """
-        # 优先级 1: YAML frontmatter description
-        if fm is None:
-            fm = self._parse_yaml_frontmatter(content)
-        fm_desc = fm.get("description", "")
-        if fm_desc and isinstance(fm_desc, str) and fm_desc.strip():
-            return fm_desc.strip()
-
-        # 优先级 2: 第一个 # 标题（降级）
-        # Strip frontmatter before scanning for titles
-        scan_content = content
-        stripped = content.strip()
-        if stripped.startswith("---"):
-            end = stripped.find("---", 3)
-            if end != -1:
-                scan_content = stripped[end + 3:]
-
-        lines = scan_content.strip().split("\n")
-        for line in lines:
-            line = line.strip()
-            if line.startswith("# "):
-                logger.warning("Skill 缺少 YAML frontmatter description，使用标题降级")
-                return line[2:].strip()
-
-        # 默认：拒绝同步
-        logger.error("Skill 缺少 YAML frontmatter description，无法同步到 LightRAG")
-        return ""
-
-    def _extract_tags(self, content: str, fm: dict | None = None, triggers: list[str] | None = None) -> list[str]:
-        """从 skill 内容提取标签
-
-        优先级：YAML frontmatter tags > tags: [] > 标签：xxx
-        """
-        tags = []
-
-        # 优先级 1: YAML frontmatter tags
-        if fm is None:
-            fm = self._parse_yaml_frontmatter(content)
-        fm_tags = fm.get("tags")
-        if fm_tags is not None:
-            if isinstance(fm_tags, list) and fm_tags:
-                tags.extend(str(t) for t in fm_tags)
-            elif isinstance(fm_tags, str):
-                tags.extend(re.split(r"[,，、]", fm_tags))
-                tags = [t.strip() for t in tags if t.strip()]
-
-        # 优先级 2: tags: [xxx, yyy]
-        if not tags:
-            match1 = re.search(r"tags:\s*\[(.+)\]", content, re.IGNORECASE)
-            if match1:
-                keywords = match1.group(1)
-                tags.extend([t.strip().strip("\"'") for t in keywords.split(",")])
-
-        # 优先级 3: 标签：xxx、yyy
-        if not tags:
-            match2 = re.search(r"标签[：:]\s*(.+)", content)
-            if match2:
-                keywords = match2.group(1)
-                tags.extend(re.split(r"[,，、]", keywords))
-                tags = [t.strip() for t in tags if t.strip()]
-
-        # 从触发词中提取标签（触发词也可以作为标签）
-        if triggers is None:
-            triggers = self._extract_triggers(content, fm)
-        for t in triggers:
-            if t not in tags:
-                tags.append(t)
-
-        return list(set(tags))[:10]
-
     def _start_watchdog(self):
         """启动 watchdog 监控"""
         if not self.use_watchdog or self._observer:
@@ -745,3 +566,169 @@ def get_skill_sync(skills_dir: str = None, auto_start: bool = True) -> SkillSync
                     instance.start_background_sync()
                 _skill_sync = instance
     return _skill_sync
+
+def parse_yaml_frontmatter(content: str) -> dict:
+    """解析 YAML frontmatter（--- 包裹的头部区域）
+
+    Returns:
+        解析后的字典，解析失败返回空字典
+    """
+    stripped = content.strip()
+    if not stripped.startswith("---"):
+        return {}
+
+    end = stripped.find("---", 3)
+    if end == -1:
+        return {}
+
+    yaml_text = stripped[3:end].strip()
+    if not yaml_text:
+        return {}
+
+    if YAML_AVAILABLE:
+        try:
+            result = yaml.safe_load(yaml_text)
+            if isinstance(result, dict):
+                return result
+        except Exception as e:
+            logger.debug(f"YAML frontmatter parse failed: {e}")
+
+    # Fallback: 简单正则解析（无 PyYAML 时）
+    # 注意：仅支持标量值和内联列表 [a, b]，多行列表需安装 PyYAML
+    parsed = {}
+    for line in yaml_text.split("\n"):
+        match = re.match(r"^(\w+)\s*:\s*(.+)$", line.strip())
+        if match:
+            key, value = match.group(1), match.group(2).strip().strip("\"'")
+            # Handle inline list syntax: [a, b, c]
+            if value.startswith("[") and value.endswith("]"):
+                items = [v.strip().strip("\"'") for v in value[1:-1].split(",") if v.strip()]
+                parsed[key] = items
+            else:
+                parsed[key] = value
+    if not YAML_AVAILABLE and any(k in ("triggers", "tags") for k in parsed):
+        logger.warning("PyYAML not installed, YAML list fields (triggers/tags) may not parse correctly")
+    return parsed
+
+
+def extract_description(content: str, fm: dict | None = None) -> str:
+    """从 skill 内容提取描述
+
+    优先级：
+    1. YAML frontmatter description（"Use when..." 格式，CSO 最佳实践）
+    2. 第一个 # 标题（降级）
+    3. 默认：拒绝同步
+    """
+    # 优先级 1: YAML frontmatter description
+    if fm is None:
+        fm = parse_yaml_frontmatter(content)
+    fm_desc = fm.get("description", "")
+    if fm_desc and isinstance(fm_desc, str) and fm_desc.strip():
+        return fm_desc.strip()
+
+    # 优先级 2: 第一个 # 标题（降级）
+    # Strip frontmatter before scanning for titles
+    scan_content = content
+    stripped = content.strip()
+    if stripped.startswith("---"):
+        end = stripped.find("---", 3)
+        if end != -1:
+            scan_content = stripped[end + 3:]
+
+    lines = scan_content.strip().split("\n")
+    for line in lines:
+        line = line.strip()
+        if line.startswith("# "):
+            logger.warning("Skill 缺少 YAML frontmatter description，使用标题降级")
+            return line[2:].strip()
+
+    # 默认：拒绝同步
+    logger.error("Skill 缺少 YAML frontmatter description，无法同步到 LightRAG")
+    return ""
+
+
+def extract_triggers(content: str, fm: dict | None = None) -> list[str]:
+    """从 skill 内容提取触发词
+
+    优先级：YAML frontmatter triggers > Markdown 触发关键词 > triggers: []
+    """
+    triggers = []
+
+    # 优先级 1: YAML frontmatter triggers
+    if fm is None:
+        fm = parse_yaml_frontmatter(content)
+    fm_triggers = fm.get("triggers")
+    if fm_triggers is not None:
+        if isinstance(fm_triggers, list) and fm_triggers:
+            triggers.extend(str(t) for t in fm_triggers)
+        elif isinstance(fm_triggers, str):
+            triggers.extend(re.split(r"[,，、]", fm_triggers))
+            triggers = [t.strip() for t in triggers if t.strip()]
+
+    # 优先级 2: **触发关键词**：xxx、yyy (Markdown 加粗)
+    if not triggers:
+        match_bold = re.search(r"\*\*触发关键词\*\*[：:]\s*(.+)", content)
+        if match_bold:
+            keywords = match_bold.group(1)
+            triggers.extend(re.split(r"[,，、]", keywords))
+            triggers = [t.strip() for t in triggers if t.strip()]
+
+    # 优先级 3: 触发关键词：xxx、yyy (无加粗)
+    if not triggers:
+        match1 = re.search(r"触发关键词[：:]\s*(.+)", content)
+        if match1:
+            keywords = match1.group(1)
+            triggers.extend(re.split(r"[,，、]", keywords))
+            triggers = [t.strip() for t in triggers if t.strip()]
+
+    # 优先级 4: triggers: [xxx, yyy]
+    if not triggers:
+        match2 = re.search(r"triggers:\s*\[(.+)\]", content, re.IGNORECASE)
+        if match2:
+            keywords = match2.group(1)
+            triggers.extend([t.strip().strip("\"'") for t in keywords.split(",")])
+
+    return list(set(triggers))[:10]
+
+
+def extract_tags(content: str, fm: dict | None = None, triggers: list[str] | None = None) -> list[str]:
+    """从 skill 内容提取标签
+
+    优先级：YAML frontmatter tags > tags: [] > 标签：xxx
+    """
+    tags = []
+
+    # 优先级 1: YAML frontmatter tags
+    if fm is None:
+        fm = parse_yaml_frontmatter(content)
+    fm_tags = fm.get("tags")
+    if fm_tags is not None:
+        if isinstance(fm_tags, list) and fm_tags:
+            tags.extend(str(t) for t in fm_tags)
+        elif isinstance(fm_tags, str):
+            tags.extend(re.split(r"[,，、]", fm_tags))
+            tags = [t.strip() for t in tags if t.strip()]
+
+    # 优先级 2: tags: [xxx, yyy]
+    if not tags:
+        match1 = re.search(r"tags:\s*\[(.+)\]", content, re.IGNORECASE)
+        if match1:
+            keywords = match1.group(1)
+            tags.extend([t.strip().strip("\"'") for t in keywords.split(",")])
+
+    # 优先级 3: 标签：xxx、yyy
+    if not tags:
+        match2 = re.search(r"标签[：:]\s*(.+)", content)
+        if match2:
+            keywords = match2.group(1)
+            tags.extend(re.split(r"[,，、]", keywords))
+            tags = [t.strip() for t in tags if t.strip()]
+
+    # 从触发词中提取标签（触发词也可以作为标签）
+    if triggers is None:
+        triggers = extract_triggers(content, fm)
+    for t in triggers:
+        if t not in tags:
+            tags.append(t)
+
+    return list(set(tags))[:10]
