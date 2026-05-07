@@ -34,6 +34,24 @@ def test_is_lightrag_extraction_request_no_system():
     assert is_lightrag_extraction_request(messages) is False
 
 
+def test_is_lightrag_extraction_request_system_no_content():
+    """System message without 'content' key is not an extraction request."""
+    messages = [
+        {"role": "system"},
+        {"role": "user", "content": "Hello"},
+    ]
+    assert is_lightrag_extraction_request(messages) is False
+
+
+def test_is_lightrag_extraction_request_system_empty_content():
+    """System message with empty content is not an extraction request."""
+    messages = [
+        {"role": "system", "content": ""},
+        {"role": "user", "content": "Hello"},
+    ]
+    assert is_lightrag_extraction_request(messages) is False
+
+
 def test_build_static_brain_region_prompt_returns_string():
     """Static prompt is a non-empty string."""
     from niu_api.internal.brain_region_prompt import build_static_brain_region_prompt
@@ -91,7 +109,7 @@ def test_build_dynamic_brain_region_prompt_empty():
     mock_adapter.query.return_value = ""
 
     prompt = build_dynamic_brain_region_prompt(mock_adapter)
-    assert "默认" in prompt or "聊天历史" in prompt
+    assert "默认" in prompt, f"Expected fallback marker '默认' in prompt, got: {prompt!r}"
 
 
 def test_build_dynamic_brain_region_prompt_adapter_failure():
@@ -101,7 +119,27 @@ def test_build_dynamic_brain_region_prompt_adapter_failure():
     mock_adapter.query.side_effect = Exception("LightRAG not initialized")
 
     prompt = build_dynamic_brain_region_prompt(mock_adapter)
-    assert "默认" in prompt or "聊天历史" in prompt
+    assert "默认" in prompt, f"Expected fallback marker '默认' in prompt, got: {prompt!r}"
+
+
+def test_build_dynamic_brain_region_prompt_none_result():
+    """When adapter.query() returns None, dynamic prompt falls back to defaults."""
+    from niu_api.internal.brain_region_prompt import build_dynamic_brain_region_prompt
+    mock_adapter = MagicMock()
+    mock_adapter.query.return_value = None
+
+    prompt = build_dynamic_brain_region_prompt(mock_adapter)
+    assert "默认" in prompt, f"Expected fallback marker '默认' in prompt, got: {prompt!r}"
+
+
+def test_build_dynamic_brain_region_prompt_whitespace_only():
+    """When adapter.query() returns only whitespace, dynamic prompt falls back to defaults."""
+    from niu_api.internal.brain_region_prompt import build_dynamic_brain_region_prompt
+    mock_adapter = MagicMock()
+    mock_adapter.query.return_value = "   \n\t  "
+
+    prompt = build_dynamic_brain_region_prompt(mock_adapter)
+    assert "默认" in prompt, f"Expected fallback marker '默认' in prompt, got: {prompt!r}"
 
 
 def test_build_dynamic_brain_region_prompt_uses_local_mode():
@@ -133,7 +171,7 @@ def test_inject_brain_region_context_adds_to_system_prompt():
 
     # System message should be modified
     system_msg = next(m for m in result if m["role"] == "system")
-    assert "脑区架构说明" in system_msg["content"] or "brain:Niu" in system_msg["content"]
+    assert "大脑区域架构" in system_msg["content"]
     assert "测试脑区" in system_msg["content"]
 
 
