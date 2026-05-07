@@ -25,6 +25,8 @@ from typing import Any, Optional
 
 from loguru import logger
 
+from niu_api.internal.lightrag_manager import get_lightrag
+
 # ============== Configuration Defaults ==============
 
 REGION_CONFIG_DEFAULTS: dict[str, Any] = {
@@ -102,8 +104,6 @@ class RegionSync:
 
         # Step 1: Check LightRAG availability
         try:
-            from niu_api.internal.lightrag_manager import get_lightrag
-
             rag = get_lightrag()
             if rag is None:
                 logger.warning("[RegionSync] LightRAG not available, skipping sync")
@@ -111,8 +111,8 @@ class RegionSync:
                 self._save_status(stats)
                 return stats
         except Exception as e:
-            logger.warning(f"[RegionSync] LightRAG import failed: {e}")
-            stats["errors"].append(f"import: {e}")
+            logger.warning(f"[RegionSync] LightRAG availability check failed: {e}")
+            stats["errors"].append(f"lightrag_check: {e}")
             self._save_status(stats)
             return stats
 
@@ -480,8 +480,6 @@ class RegionSync:
             if self._stop_event.is_set():
                 return  # Shutdown requested
             try:
-                from niu_api.internal.lightrag_manager import get_lightrag
-
                 rag = get_lightrag()
                 if rag is not None:
                     logger.info(

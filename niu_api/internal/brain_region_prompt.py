@@ -6,6 +6,8 @@ brain region architecture information so the LLM considers brain regions
 when building the knowledge graph.
 """
 
+from loguru import logger
+
 BRAIN_REGION_MARKER = "Knowledge Graph Specialist"
 
 _STATIC_BRAIN_REGION_PROMPT = """\
@@ -67,15 +69,15 @@ def build_dynamic_brain_region_prompt(adapter) -> str:
     """
     try:
         result = adapter.query(
-            "brain region nodes",
+            "brain:region",
             mode="local",
             only_need_context=True,
         )
 
         if result and result.strip():
             return f"当前图谱中的脑区：\n{result.strip()}"
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Brain region dynamic query failed, using fallback: %s", e)
 
     return f"当前图谱中的脑区（默认）：{FALLBACK_REGIONS}"
 
