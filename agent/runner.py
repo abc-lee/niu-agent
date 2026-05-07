@@ -476,8 +476,12 @@ class NiuRunner:
             self._brain_adapter = LightRAGAdapter()
             self._brain_ingester = LightRAGIngester()
             _activation_mgr = get_activation_mgr()
-            if self._brain_adapter is None or _activation_mgr is None:
-                # Brain tools not initialized — leave injector as None
+            if self._brain_adapter._get_rag() is None or _activation_mgr is None:
+                # LightRAG instance not available or activation mgr missing — invalidate cache
+                self._brain_adapter = None
+                self._brain_ingester = None
+                self._brain_region_mgr = None
+                self._brain_injector = None
                 return None
             self._brain_region_mgr = RegionManager(self._brain_adapter, self._brain_ingester)
             self._brain_injector = BrainContextInjector(
