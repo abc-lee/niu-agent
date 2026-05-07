@@ -23,6 +23,8 @@ from pydantic import BaseModel
 from fastapi import APIRouter, HTTPException
 from loguru import logger
 
+from niu_api.internal.brain_region_prompt import inject_brain_region_context
+
 router = APIRouter(prefix="/llm/v1", tags=["llm-proxy"])
 
 
@@ -349,6 +351,11 @@ async def chat_completions(request: OpenAIChatRequest) -> OpenAIChatResponse:
     # Convert OpenAI format to LiteLLM format
     litellm_messages = openai_to_litellm_messages(request.messages)
     litellm_tools = openai_to_litellm_tools(request.tools)
+
+    # Inject brain region context for LightRAG extraction requests
+    from niu_api.internal.lightrag_adapter import LightRAGAdapter
+    adapter = LightRAGAdapter()
+    litellm_messages = inject_brain_region_context(litellm_messages, adapter)
 
     logger.debug(f"[LLM Proxy] Converted {len(litellm_messages)} messages")
     if litellm_tools:

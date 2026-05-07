@@ -3,8 +3,8 @@ LightRAG Adapter & Ingester
 
 Provides two interfaces to the LightRAG instance:
 - LightRAGAdapter: query interface (replaces vector-store search + kg-server query)
-- LightRAGIngester: dual-path injection (structured via ainsert_custom_kg,
-                    unstructured via ainsert)
+- LightRAGIngester: injection via lightrag_insert (auto extraction),
+                    inject_custom_kg (precise control), and inject_document (unstructured)
 
 Both delegate to lightrag_manager for the LightRAG instance and use
 call_async() for the async/sync bridge.
@@ -610,8 +610,8 @@ class LightRAGAdapter:
                     if node.get("id") == entity_name or node.get("name") == entity_name:
                         entity_desc = node.get("description", "")
                         break
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"timeline_query: explore_node({entity_name}, depth=0) failed: {e}")
 
             timestamp = self._extract_timestamp(entity_desc)
             timeline_items.append({
@@ -624,7 +624,8 @@ class LightRAGAdapter:
             # Traverse edges via explore_node, keeping only timeline edges
             try:
                 node_data = self.explore_node(entity_name, depth=max_depth)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"timeline_query: explore_node({entity_name}, depth={max_depth}) failed: {e}")
                 continue
 
             # explore_node returns edges at top level, not nested in nodes
@@ -712,8 +713,8 @@ class LightRAGAdapter:
                 # we can release the lock and iterate the snapshot safely.
                 try:
                     snapshot = nx_graph.copy()
-                except Exception:
-                    logger.warning("[KG] graph copy failed, returning empty snapshot")
+                except Exception as e:
+                    logger.warning(f"[KG] graph copy failed: {e}, returning empty snapshot")
                     return {"nodes": [], "edges": []}
 
             # Now iterate the snapshot without holding the lock (safe because
@@ -953,13 +954,13 @@ class LightRAGAdapter:
 
 
 class LightRAGIngester:
-    """Dual-path data injection for LightRAG.
+    """Data injection for LightRAG.
 
-    Structured path: inject_custom_kg
-    → calls ainsert_custom_kg() for precise entity/relation insertion.
+    Recommended: lightrag_insert → calls ainsert() for automatic entity/relationship extraction and merging.
 
-    Unstructured path: inject_document, inject_documents
-    → calls ainsert() for LLM-driven entity extraction.
+    Structured: inject_custom_kg → calls ainsert_custom_kg() for precise entity/relationship injection (no LLM extraction).
+    Complementary: inject_custom_kg (precise control) and lightrag_insert (auto extraction) serve different purposes.
+    Unstructured: inject_document, inject_documents → calls ainsert() for raw document ingestion.
     """
 
     def _get_rag(self):
@@ -978,12 +979,8 @@ class LightRAGIngester:
     ) -> Dict[str, Any]:
         """Upsert an interaction habit entity into the knowledge graph.
 
-        Interaction habits are stored as LightRAG entities with
-        entity_type="interaction_habit". The entity name follows the pattern
-        "habit:{habit_type}:{target_tool}" for deterministic upsert.
-
-        If the entity already exists, it will be updated (LightRAG upsert
-        semantics: delete old + re-insert with new data).
+        Uses lightrag_insert (ainsert) for automatic entity extraction,
+        relationship discovery, and same-name entity merging.
 
         Args:
             habit_type: Habit type (e.g., "tool_dialect", "user_state").
@@ -1003,34 +1000,8 @@ class LightRAGIngester:
         entity_name = f"habit:{habit_type}:{target_tool}"
         description = f"{content} | confidence: {confidence}"
 
-        chunks = [{
-            "content": f"{content} target_tool={target_tool} confidence={confidence}",
-            "source_id": source_id,
-            "file_path": "interaction_habit",
-        }]
-
-        entities = [{
-            "entity_name": entity_name,
-            "entity_type": "InteractionHabit",
-            "description": description,
-            "source_id": source_id,
-            "file_path": "interaction_habit",
-        }]
-
-        # Anchor relationship: brain:Niu -> entity, prevents orphan nodes
-        relationships = [{
-            "src_id": "brain:Niu",
-            "tgt_id": entity_name,
-            "keywords": "owns",
-            "description": f"brain:Niu 拥有 {entity_name}",
-        }]
-
-        return self.inject_custom_kg(
-            entities=entities,
-            relationships=relationships,
-            chunks=chunks,
-            source_id=source_id,
-        )
+        text = f"交互习惯: {entity_name}（类型: InteractionHabit），{description}。brain:Niu uses {entity_name}。"
+        return self.lightrag_insert(content=text, file_paths=source_id if source_id != "custom_kg" else None)
 
     def update_habit_confidence(
         self,
@@ -1090,8 +1061,8 @@ class LightRAGIngester:
             # Extract the content part (before "| confidence:")
             content = _re.sub(r'\s*\|\s*confidence:\s*\{[^}]+\}\s*$', '', description).strip()
 
-            # Extract entity_type and source info
-            entity_type = target_node.properties.get("entity_type", "InteractionHabit")
+            # Extract entity_type (read for potential future use, currently unused)
+            entity_type = target_node.properties.get("entity_type", "InteractionHabit")  # noqa: F841
 
             # Update counts
             if result == "success":
@@ -1128,94 +1099,6 @@ class LightRAGIngester:
             logger.error(f"LightRAG update_habit_confidence failed: {e}")
             return {"status": "error", "message": str(e)}
 
-    def inject_entities_batch(
-        self,
-        items: List[Dict[str, Any]],
-    ) -> Dict[str, Any]:
-        """Batch inject multiple entities in a single ainsert_custom_kg() call.
-
-        Each item dict should have keys matching inject_entity() params:
-            name, entity_type, description, source_id, chunk_content, file_path
-
-        This is dramatically faster than calling inject_entity() in a loop
-        because each inject_entity() triggers a full LightRAG persist cycle
-        (embedding + graph write + disk flush). Batch inject does one persist.
-
-        Args:
-            items: List of entity dicts.
-
-        Returns:
-            Dict with status, entities count, chunks count.
-        """
-        if not items:
-            return {"status": "ok", "entities": 0, "chunks": 0}
-
-        entities = []
-        chunks = []
-
-        for item in items:
-            name = item.get("name")
-            if not name:
-                logger.warning(f"inject_entities_batch: skipping item missing 'name': {item}")
-                continue
-            entity_type = item.get("entity_type", "Other")
-            description = item.get("description", "")
-            source_id = item.get("source_id", "custom_kg")
-            file_path = item.get("file_path", "custom_kg")
-            chunk_content = item.get("chunk_content")
-
-            entities.append({
-                "entity_name": name,
-                "entity_type": entity_type,
-                "description": description,
-                "source_id": source_id,
-                "file_path": file_path,
-            })
-
-            if chunk_content:
-                chunks.append({
-                    "content": chunk_content,
-                    "source_id": source_id,
-                    "file_path": file_path,
-                })
-
-        if not entities and not chunks:
-            return {"status": "ok", "entities": 0, "chunks": 0}
-
-        # Build anchor relationships: brain:Niu -> each entity
-        # This prevents orphan nodes by connecting every entity to the
-        # brain:Niu anchor, giving the graph traversable structure.
-        anchor_rels = []
-        for e in entities:
-            entity_name = e.get("entity_name", "")
-            if entity_name:
-                anchor_rels.append({
-                    "src_id": "brain:Niu",
-                    "tgt_id": entity_name,
-                    "keywords": "owns",
-                    "description": f"brain:Niu 拥有 {entity_name}",
-                })
-
-        # Ensure chunks are always provided so LLM can extract additional edges.
-        # If no chunk_content was supplied by callers, generate chunks from
-        # entity descriptions so LightRAG still has text to work with.
-        if not chunks:
-            for e in entities:
-                entity_name = e.get("entity_name", "")
-                if entity_name:
-                    chunks.append({
-                        "content": f"{entity_name}({e.get('entity_type', '')}): {e.get('description', '')}",
-                        "source_id": e.get("source_id", "custom_kg"),
-                        "file_path": e.get("file_path", "custom_kg"),
-                    })
-
-        return self.inject_custom_kg(
-            entities=entities,
-            relationships=anchor_rels,
-            chunks=chunks,
-            source_id="batch_inject",
-        )
-
     def inject_custom_kg(
         self,
         entities: List[Dict[str, Any]],
@@ -1227,6 +1110,12 @@ class LightRAGIngester:
 
         This is the primary structured injection method. It builds the
         custom_kg dict that LightRAG expects and calls ainsert_custom_kg.
+
+        Complementary to lightrag_insert: use inject_custom_kg when you need
+        precise control over entity names, relationship types, and graph structure
+        (e.g., brain regions, photo metadata, person nodes). Use lightrag_insert
+        for natural language content where LLM auto-extraction and entity merging
+        are desired.
 
         Args:
             entities: List of entity dicts with keys:
@@ -1244,46 +1133,46 @@ class LightRAGIngester:
         if rag is None:
             return {"status": "error", "message": "LightRAG not available"}
 
-        # Build custom_kg dict matching LightRAG's expected structure
-        custom_kg: Dict[str, Any] = {
-            "chunks": [],
-            "entities": [],
-            "relationships": [],
-        }
-
-        for chunk in chunks:
-            custom_kg["chunks"].append({
-                "content": chunk["content"],
-                "source_id": chunk.get("source_id", source_id),
-                "file_path": chunk.get("file_path", "custom_kg"),
-                "chunk_order_index": chunk.get("chunk_order_index", 0),
-            })
-
-        for entity in entities:
-            custom_kg["entities"].append({
-                "entity_name": entity.get("entity_name") or entity.get("name", "Other"),
-                "entity_type": entity.get("entity_type", "Other"),
-                "description": entity.get("description", ""),
-                "source_id": entity.get("source_id", source_id),
-                "file_path": entity.get("file_path", "custom_kg"),
-            })
-
-        for rel in relationships:
-            # LightRAG requires "keywords" (direct access, no .get() fallback)
-            # and reads "description" (also direct access).
-            # "weight" uses .get() with default 1.0.
-            keywords = rel.get("keywords") or rel.get("relation", "")
-            custom_kg["relationships"].append({
-                "src_id": rel["src_id"],
-                "tgt_id": rel["tgt_id"],
-                "keywords": keywords,
-                "description": rel.get("description", ""),
-                "source_id": rel.get("source_id", source_id),
-                "file_path": rel.get("file_path", "custom_kg"),
-                "weight": rel.get("weight", 1.0),
-            })
-
         try:
+            # Build custom_kg dict matching LightRAG's expected structure
+            custom_kg: Dict[str, Any] = {
+                "chunks": [],
+                "entities": [],
+                "relationships": [],
+            }
+
+            for chunk in chunks:
+                custom_kg["chunks"].append({
+                    "content": chunk["content"],
+                    "source_id": chunk.get("source_id", source_id),
+                    "file_path": chunk.get("file_path", "custom_kg"),
+                    "chunk_order_index": chunk.get("chunk_order_index", 0),
+                })
+
+            for entity in entities:
+                custom_kg["entities"].append({
+                    "entity_name": entity.get("entity_name") or entity.get("name", "Other"),
+                    "entity_type": entity.get("entity_type", "Other"),
+                    "description": entity.get("description", ""),
+                    "source_id": entity.get("source_id", source_id),
+                    "file_path": entity.get("file_path", "custom_kg"),
+                })
+
+            for rel in relationships:
+                # LightRAG requires "keywords" (direct access, no .get() fallback)
+                # and reads "description" (also direct access).
+                # "weight" uses .get() with default 1.0.
+                keywords = rel.get("keywords") or rel.get("relation", "")
+                custom_kg["relationships"].append({
+                    "src_id": rel["src_id"],
+                    "tgt_id": rel["tgt_id"],
+                    "keywords": keywords,
+                    "description": rel.get("description", ""),
+                    "source_id": rel.get("source_id", source_id),
+                    "file_path": rel.get("file_path", "custom_kg"),
+                    "weight": rel.get("weight", 1.0),
+                })
+
             # call_async runs in LightRAG's asyncio loop (serialized there),
             # so concurrent writes are impossible. No write lock needed —
             # readers use graph_read_lock + copy() snapshot to avoid
@@ -1324,6 +1213,51 @@ class LightRAGIngester:
         except Exception as e:
             err_msg = str(e) or f"{type(e).__name__}: (no message)"
             logger.error(f"LightRAG custom_kg injection failed: {err_msg}", exc_info=True)
+            return {"status": "error", "message": err_msg}
+
+    def lightrag_insert(self, content: str, file_paths: Optional[str] = None) -> Dict[str, Any]:
+        """通过 ainsert 入库结构化文本（LightRAG 自动提取实体/关系）。
+
+        与 inject_custom_kg 互补：lightrag_insert 适用于自然语言内容，LightRAG
+        会自动提取实体和关系、合并同名实体、建立实体之间的边。inject_custom_kg
+        适用于需要精确控制实体名称、关系类型和图结构的场景（如脑区、照片元数据、人物节点）。
+
+        Args:
+            content: 结构化文本，格式化好的照片/人物/记忆描述
+            file_paths: 可选的文件路径关联
+
+        Returns:
+            Dict[str, Any]: 成功时 {"status": "ok", "track_id": str}，失败时 {"status": "error", "message": str}
+        """
+        rag = self._get_rag()
+        if rag is None:
+            return {"status": "error", "message": "LightRAG not available"}
+
+        try:
+            kwargs = {}
+            if file_paths:
+                kwargs["file_paths"] = file_paths
+            track_id = call_async(rag.ainsert(content, **kwargs), timeout=600)
+
+            # Record change for frontend changelog polling (best-effort)
+            # LLM-extracted entities are unknown at this point,
+            # frontend should re-fetch full snapshot after receiving this event.
+            try:
+                from niu_api.internal.lightrag_manager import get_change_log
+
+                get_change_log().record_change("document_created", {
+                    "id": track_id or "",
+                    "uri": file_paths or "",
+                    "title": file_paths or "lightrag_insert",
+                    "source": "lightrag_insert",
+                })
+            except Exception as e:
+                logger.debug(f"lightrag_insert changelog record failed: {e}")
+
+            return {"status": "ok", "track_id": track_id}
+        except Exception as e:
+            err_msg = str(e) or f"{type(e).__name__}: (no message)"
+            logger.error(f"LightRAG lightrag_insert failed: {err_msg}", exc_info=True)
             return {"status": "error", "message": err_msg}
 
     # ============== Unstructured Path ==============
@@ -1367,10 +1301,10 @@ class LightRAGIngester:
                     "id": doc_id or "",
                     "uri": file_path or "",
                     "title": file_path or doc_id or "",
-                    "source": "lightrag_insert",
+                    "source": "inject_document",
                 })
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"inject_document changelog record failed: {e}")
 
             return {"status": "ok", "track_id": track_id}
         except Exception as e:
@@ -1415,11 +1349,11 @@ class LightRAGIngester:
                     "id": ",".join(ids) if ids else "",
                     "uri": ",".join(file_paths) if file_paths else "",
                     "title": ",".join(file_paths) if file_paths else ",".join(ids) if ids else "",
-                    "source": "lightrag_insert_batch",
+                    "source": "inject_documents",
                     "count": len(documents),
                 })
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"inject_documents changelog record failed: {e}")
 
             return {"status": "ok", "track_id": track_id, "count": len(documents)}
         except Exception as e:

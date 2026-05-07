@@ -9,7 +9,7 @@ Follows the same pattern as agent/injector/lightrag_sync.py:
 - Background daemon thread with configurable interval
 - Status file tracking in ~/.niu/
 - start_background_sync() / stop_background_sync() methods
-- Initial 5-minute delay before first run
+- Polling readiness check before first run (5s intervals, 180s max)
 - Global singleton with thread-safe lock
 
 M7 module: Scheduled task + integration tests + config defaults.
@@ -470,12 +470,42 @@ class RegionSync:
     def _sync_loop(self) -> None:
         """Background sync loop.
 
-        Runs first sync after 5-minute initial delay (to let other services
-        start), then repeats every sync_interval seconds.
+        Polls for LightRAG readiness every 5 seconds (up to 180s total)
+        before running the first sync, then repeats every sync_interval.
+        This avoids a blanket 180s delay when LightRAG initializes faster.
         """
-        # Initial delay: 180s (staggered vs lightrag_sync's 420s to avoid
-        # both services competing for the LightRAG event loop simultaneously)
-        self._stop_event.wait(180)
+        # Poll for LightRAG readiness instead of fixed 180s wait
+        max_retries = 36  # 5s × 36 = 180s total (same ceiling as before)
+        for attempt in range(max_retries):
+            if self._stop_event.is_set():
+                return  # Shutdown requested
+            try:
+                from niu_api.internal.lightrag_manager import get_lightrag
+
+                rag = get_lightrag()
+                if rag is not None:
+                    logger.info(
+                        "[RegionSync] LightRAG ready, starting first sync "
+                        "(waited %ds)",
+                        attempt * 5,
+                    )
+                    break
+            except Exception:
+                pass
+            if attempt > 0 and attempt % 6 == 0:
+                logger.info(
+                    "[RegionSync] Waiting for LightRAG initialization... "
+                    "(%ds elapsed)",
+                    attempt * 5,
+                )
+            self._stop_event.wait(5)
+        else:
+            # Exhausted retries — proceed anyway; run_sync will handle
+            # a None LightRAG gracefully and log a warning.
+            logger.warning(
+                "[RegionSync] LightRAG not ready after 180s, "
+                "attempting first sync anyway"
+            )
         while True:
             try:
                 self.run_sync()
