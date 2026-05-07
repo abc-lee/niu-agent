@@ -118,7 +118,7 @@ def inject_brain_region_context(
     # Create new list with modified system prompt
     result = []
     for msg in messages:
-        if msg.get("role") == "system":
+        if msg.get("role") == "system" and BRAIN_REGION_MARKER in msg.get("content", ""):
             new_msg = {**msg, "content": msg.get("content", "") + injection}
             result.append(new_msg)
         else:
