@@ -355,6 +355,7 @@ class NiuRunner:
         self._brain_ingester = None     # LightRAGIngester
         self._brain_region_mgr = None   # RegionManager
         self._brain_injector = None     # BrainContextInjector
+        self._cached_activation_mgr = None  # RegionActivationManager (for cache invalidation)
 
     def set_mcp_tools_schema(self, tools: list):
         """Set MCP tool schemas — in disk mode, only inject disk() schema.
@@ -446,32 +447,38 @@ class NiuRunner:
         is unnecessary. Cached as instance variables on the runner.
 
         Includes cache invalidation: if the adapter's underlying LightRAG
-        instance has been reset (e.g. after re-initialization), the cached
-        wrappers are stale and must be recreated.
+        instance has been reset (e.g. after re-initialization), or if
+        the activation_mgr singleton was replaced by region_sync, the
+        cached wrappers are stale and must be recreated.
 
         Returns None if activation_mgr is not available (brain tools
         not initialized), matching the original guard condition.
         """
+        from agent.brain_tools import get_activation_mgr
+
         # Invalidate cache if the adapter's LightRAG instance is gone
+        # OR if the activation_mgr singleton was replaced by region_sync
         if self._brain_adapter is not None:
             try:
                 rag = self._brain_adapter._get_rag()
-                if rag is None:
+                current_mgr = get_activation_mgr()
+                if rag is None or current_mgr is not self._cached_activation_mgr:
                     self._brain_adapter = None
                     self._brain_ingester = None
                     self._brain_region_mgr = None
                     self._brain_injector = None
+                    self._cached_activation_mgr = None
             except Exception:
                 self._brain_adapter = None
                 self._brain_ingester = None
                 self._brain_region_mgr = None
                 self._brain_injector = None
+                self._cached_activation_mgr = None
 
         if self._brain_injector is None:
             from niu_api.internal.lightrag_adapter import LightRAGAdapter, LightRAGIngester
             from niu_api.internal.region_manager import RegionManager
             from niu_api.internal.region_injector import BrainContextInjector
-            from agent.brain_tools import get_activation_mgr
 
             self._brain_adapter = LightRAGAdapter()
             self._brain_ingester = LightRAGIngester()
@@ -482,7 +489,9 @@ class NiuRunner:
                 self._brain_ingester = None
                 self._brain_region_mgr = None
                 self._brain_injector = None
+                self._cached_activation_mgr = None
                 return None
+            self._cached_activation_mgr = _activation_mgr
             self._brain_region_mgr = RegionManager(self._brain_adapter, self._brain_ingester)
             self._brain_injector = BrainContextInjector(
                 adapter=self._brain_adapter,
@@ -525,17 +534,6 @@ class NiuRunner:
                 self.base_system_prompt = re.sub(r'\n*' + pattern + r'\n*', '', base, flags=re.DOTALL)
         elif new_section:
             self.base_system_prompt = base + "\n\n" + new_section
-
-        # Also update the live message if it exists
-        if messages and messages[0].get("role") == "system":
-            content = messages[0]["content"]
-            if re.search(pattern, content, re.DOTALL):
-                if new_section:
-                    messages[0]["content"] = re.sub(pattern, new_section, content, flags=re.DOTALL)
-                else:
-                    messages[0]["content"] = re.sub(r'\n*' + pattern + r'\n*', '', content, flags=re.DOTALL)
-            elif new_section:
-                messages[0]["content"] = content + "\n\n" + new_section
 
     def _extract_context_from_history(self, history: Optional[list], user_input: str) -> str:
         """
