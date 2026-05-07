@@ -445,9 +445,28 @@ class NiuRunner:
         with no expensive initialization, but creating them every turn
         is unnecessary. Cached as instance variables on the runner.
 
+        Includes cache invalidation: if the adapter's underlying LightRAG
+        instance has been reset (e.g. after re-initialization), the cached
+        wrappers are stale and must be recreated.
+
         Returns None if activation_mgr is not available (brain tools
         not initialized), matching the original guard condition.
         """
+        # Invalidate cache if the adapter's LightRAG instance is gone
+        if self._brain_adapter is not None:
+            try:
+                rag = self._brain_adapter._get_rag()
+                if rag is None:
+                    self._brain_adapter = None
+                    self._brain_ingester = None
+                    self._brain_region_mgr = None
+                    self._brain_injector = None
+            except Exception:
+                self._brain_adapter = None
+                self._brain_ingester = None
+                self._brain_region_mgr = None
+                self._brain_injector = None
+
         if self._brain_injector is None:
             from niu_api.internal.lightrag_adapter import LightRAGAdapter, LightRAGIngester
             from niu_api.internal.region_manager import RegionManager

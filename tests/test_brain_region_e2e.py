@@ -142,8 +142,8 @@ class TestE2EBrainRegionInjection:
         # Result system message has different content
         assert result[0]["content"] != original_content
 
-    def test_multiple_system_messages_all_injected(self):
-        """If there are multiple system messages, all are injected."""
+    def test_multiple_system_messages_only_injects_marker_system(self):
+        """Only the system message containing the marker gets injected."""
         from niu_api.internal.brain_region_prompt import inject_brain_region_context
 
         messages = [
@@ -156,12 +156,12 @@ class TestE2EBrainRegionInjection:
 
         result = inject_brain_region_context(messages, adapter)
 
-        # ALL system messages get injected (the function iterates all messages)
         system_msgs = [m for m in result if m["role"] == "system"]
         assert len(system_msgs) == 2
-        # Both system messages should have brain region info
+        # Only the first system message (with marker) should be injected
         assert "brain:Niu" in system_msgs[0]["content"]
-        assert "brain:Niu" in system_msgs[1]["content"]
+        # The second system message should be unchanged
+        assert system_msgs[1]["content"] == "Additional instructions"
 
     def test_full_pipeline_preserves_non_system_messages(self):
         """User and assistant messages pass through unchanged."""

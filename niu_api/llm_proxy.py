@@ -25,6 +25,18 @@ from loguru import logger
 
 from niu_api.internal.brain_region_prompt import inject_brain_region_context
 
+# Module-level lazy singleton for brain region injection
+_brain_adapter = None
+
+
+def _get_brain_adapter():
+    """Lazy singleton for LightRAGAdapter used in brain region injection."""
+    global _brain_adapter
+    if _brain_adapter is None:
+        from niu_api.internal.lightrag_adapter import LightRAGAdapter
+        _brain_adapter = LightRAGAdapter()
+    return _brain_adapter
+
 router = APIRouter(prefix="/llm/v1", tags=["llm-proxy"])
 
 
@@ -353,9 +365,11 @@ async def chat_completions(request: OpenAIChatRequest) -> OpenAIChatResponse:
     litellm_tools = openai_to_litellm_tools(request.tools)
 
     # Inject brain region context for LightRAG extraction requests
-    from niu_api.internal.lightrag_adapter import LightRAGAdapter
-    adapter = LightRAGAdapter()
-    litellm_messages = inject_brain_region_context(litellm_messages, adapter)
+    try:
+        adapter = _get_brain_adapter()
+        litellm_messages = inject_brain_region_context(litellm_messages, adapter)
+    except Exception as e:
+        logger.warning("Brain region injection failed, proceeding without it: %s", e)
 
     logger.debug(f"[LLM Proxy] Converted {len(litellm_messages)} messages")
     if litellm_tools:
