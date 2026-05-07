@@ -13,28 +13,29 @@ BRAIN_REGION_MARKER = "Knowledge Graph Specialist"
 _STATIC_BRAIN_REGION_PROMPT = """\
 ## 大脑区域架构
 
-知识图谱使用"大脑区域"来组织相关实体。大脑区域是知识图谱中的子图，将语义相关的实体归类到同一区域。
+知识图谱使用"大脑区域"来组织相关实体。脑区由 Leiden 社区检测算法自动创建和管理，你**不得**创建或修改脑区节点。
 
-### 核心结构
+### 禁止事项
 
-- 根节点 `brain:Niu` 代表整个知识图谱。
-- 每个大脑区域通过 `brain_region_anchor` 边连接到 `brain:Niu`。
-- 区域内的成员实体通过 `belongs_to_region` 边连接到所属区域。
+- **禁止创建** `brain:region:*` 节点。脑区由算法根据社区检测自动创建（至少10个实体才形成脑区）。
+- **禁止创建** `brain_region_anchor` 边。锚点边由算法在创建脑区时自动建立。
+- **禁止嵌套脑区**。`brain:region:*` 只能通过 `brain_region_anchor` 连接到 `brain:Niu`，不能连接到其他 `brain:region:*`。
 
-### 默认区域
+### 实体归入脑区规则
 
-存在三个默认区域：
+提取实体时，通过 `belongs_to_region` 边将实体连接到现有脑区：
+
+- 唯一合法：实体 → `belongs_to_region` → `brain:region:*`
+- 禁止：实体 → `belongs_to_region` → `brain:Niu`（实体不能直接挂根节点）
+- 每个实体只能属于一个脑区（只能有一条 `belongs_to_region` 边）
+- 如果实体不属于任何现有脑区，不要强行归入，也不要创建新脑区。算法会在后续自动处理。
+
+### 默认脑区
+
+绝大多数实体应归入以下三个默认脑区之一：
 - `brain:region:聊天历史` — 聊天对话中产生的实体
 - `brain:region:文档库` — 来自文档内容的实体
-- `brain:region:知识体系` — 结构化知识和概念的实体
-
-### 提取规则
-
-在构建实体关系时，请考虑将实体分配到合适的大脑区域：
-1. 根据实体来源判断应归属的区域。
-2. 通过添加 `belongs_to_region` 边将实体连接到相应区域。
-3. 如果没有合适的现有区域，可以创建新区域：创建 `brain:region:{标签}` 节点，通过 `brain_region_anchor` 边连接到 `brain:Niu`，再将实体通过 `belongs_to_region` 连接到新区域。\
-"""
+- `brain:region:知识体系` — 结构化知识、概念、技术栈、工作项目等实体"""
 
 
 def is_lightrag_extraction_request(messages: list[dict]) -> bool:
