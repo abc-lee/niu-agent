@@ -38,7 +38,7 @@ class TestRunSyncLightRAGUnavailable:
             "agent.injector.region_sync.RegionSync._save_status"
         ):
             with patch(
-                "niu_api.internal.lightrag_manager.get_lightrag",
+                "agent.injector.region_sync.get_lightrag",
                 return_value=None,
             ):
                 stats = sync.run_sync()
@@ -54,15 +54,15 @@ class TestRunSyncLightRAGUnavailable:
         with patch(
             "agent.injector.region_sync.RegionSync._save_status"
         ):
-            # Simulate import failure
+            # Simulate LightRAG call failure
             with patch(
-                "niu_api.internal.lightrag_manager.get_lightrag",
+                "agent.injector.region_sync.get_lightrag",
                 side_effect=ImportError("no lightrag"),
             ):
                 stats = sync.run_sync()
 
         assert len(stats["errors"]) > 0
-        assert "import" in stats["errors"][0]
+        assert "lightrag_check" in stats["errors"][0]
 
 
 # ============== Test 2: run_sync with detection failure ==============
@@ -79,7 +79,7 @@ class TestRunSyncDetectionFailure:
             "agent.injector.region_sync.RegionSync._save_status"
         ):
             with patch(
-                "niu_api.internal.lightrag_manager.get_lightrag",
+                "agent.injector.region_sync.get_lightrag",
                 return_value=MagicMock(),
             ):
                 with patch(
@@ -100,7 +100,7 @@ class TestRunSyncDetectionFailure:
             "agent.injector.region_sync.RegionSync._save_status"
         ):
             with patch(
-                "niu_api.internal.lightrag_manager.get_lightrag",
+                "agent.injector.region_sync.get_lightrag",
                 return_value=MagicMock(),
             ):
                 with patch(

@@ -11,6 +11,7 @@ import json
 import os
 import shutil
 import sqlite3
+import threading
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -316,6 +317,7 @@ def get_db_path() -> Path:
 
 _conn: sqlite3.Connection | None = None
 _db_path_failed: bool = False
+_db_write_lock = threading.Lock()
 
 
 def get_connection() -> sqlite3.Connection:
@@ -427,148 +429,60 @@ def call_embedding_service(endpoint: str, data: dict) -> dict | None:
 # ============== 知识图谱同步 ==============
 
 
-def sync_photo_to_kg(file_path: str, abstract: str, detected_persons: list) -> dict:
-    """同步照片和人物到 LightRAG 知识图谱。
+def format_photo_ingest_text(file_path: str, abstract: str, detected_persons: list) -> str:
+    """格式化照片信息为结构化文本，供 LightRAG ainsert 自动提取"""
+    title = Path(file_path).stem
+    parts = []
+    parts.append(f"照片文件 {title}（照片ID: {file_path}）")
 
-    照片和人物实体全部通过 lightrag_insert_custom_kg() 精确注入，
-    避免 lightrag_insert 的 LLM 自动提取创建重复/错误实体。
-    照片描述作为 chunk 注入供向量检索。
-    失败不影响主流程（照片入库已成功）。
-    """
+    if abstract:
+        # 过滤掉"未命名人物"名称，保留时间和地点信息
+        abs_parts = abstract.split("，")
+        filtered = [p for p in abs_parts if not p.startswith("未命名人物")]
+        if filtered:
+            parts.append("，".join(filtered))
+
+    if detected_persons:
+        person_descs = []
+        for p in detected_persons:
+            pid = p.get("id", "")
+            pname = p.get("name", "")
+            if pname.startswith("未命名人物"):
+                person_descs.append(f"一位未命名人物（人物ID: {pid}）")
+            else:
+                person_descs.append(f"{pname}（人物ID: {pid}）")
+        parts.append(f"照片中出现的人物: {'、'.join(person_descs)}")
+
+    return "，".join(parts) + "。"
+
+
+def sync_photo_to_kg(file_path: str, abstract: str, detected_persons: list) -> dict:
+    """同步照片信息到知识图谱（通过 ainsert 自动提取实体/关系）"""
     try:
         from agent.tool_registry import get_registry
 
+        text = format_photo_ingest_text(file_path, abstract, detected_persons)
         registry = get_registry()
-        title = Path(file_path).stem
-        photo_entity_name = f"photo:{file_path}"
-
-        # 通过 lightrag_insert_custom_kg 精确注入所有实体和文档
-        insert_custom_kg = registry.get("lightrag-server/lightrag_insert_custom_kg")
-        entities_created = []
-        entities = []
-        relationships = []
-        chunks = []
-
-        # 1a. 照片描述不作为 chunk 传入 ainsert_custom_kg
-        # 之前传 chunks 会导致 LLM 对 chunk 文本做实体提取，产生重复的 Photo 实体
-        # 照片的结构化信息（实体+边）已通过 entities/relationships 传入，无需 chunks
-
-        # 1b. 照片实体
-        # description 不包含"未命名人物"名称，避免 LLM 异步提取时从中创建重复实体
-        # 已知人物名称（用户命名）保留，因为它们在 KG 中有对应 person:{uuid} 实体
-        photo_description = f"Photo: {title}"
-        if abstract:
-            parts = abstract.split("，")
-            if len(parts) > 1 and "未命名人物" in parts[0]:
-                photo_description += f"，{'，'.join(parts[1:])}"
-            else:
-                photo_description += f"，{abstract}"
-        entities.append({
-            "entity_name": photo_entity_name,
-            "entity_type": "Photo",
-            "description": photo_description,
-            "file_path": file_path,
-            "source_id": "photo",
-        })
-        entities_created.append(photo_entity_name)
-
-        # 1c. 人物实体
-        if detected_persons:
-            for person in detected_persons:
-                person_id = person.get("id", "")
-                person_name = person.get("name", "")
-                similarity = person.get("similarity", 0.7)
-                if not person_id:
-                    continue
-                if not person_name:
-                    person_name = person_id
-
-                entity_name = f"person:{person_id}"
-                # 未命名人物用 entity_name 作为 description，避免 LLM 提取创建重复实体
-                # 已命名人物保留真实名称，因为 KG 中有对应 person:{uuid} 实体
-                person_desc = entity_name if person_name.startswith("未命名人物") else person_name
-                entities.append({
-                    "entity_name": entity_name,
-                    "entity_type": "Person",
-                    "description": person_desc,
-                    "file_path": file_path,
-                    "source_id": "photo",
-                })
-                # Photo -> Person relationship
-                # description 不包含人物名称，避免 LLM 提取创建重复实体
-                relationships.append({
-                    "src_id": photo_entity_name,
-                    "tgt_id": entity_name,
-                    "keywords": "depicts",
-                    "description": f"Photo {title} depicts person:{person_id}",
-                    "source_id": "photo",
-                    "file_path": file_path,
-                    "weight": round(similarity, 2),
-                })
-                entities_created.append(entity_name)
-
-        if insert_custom_kg and entities:
-            result = insert_custom_kg(
-                entities=entities,
-                relationships=relationships,
-                chunks=chunks,
-                source_id="photo",
-            )
-            logger.info(f"[KG] Photo entities injected: {result}")
-        elif not insert_custom_kg:
-            logger.warning("[KG] lightrag_insert_custom_kg not available in registry")
-
-        # 2. 同框人物之间建立 co_appears_with 关系
-        relations_created = 0
-        if len(detected_persons) >= 2:
-            co_rels = []
-            for i in range(len(detected_persons)):
-                for j in range(i + 1, len(detected_persons)):
-                    a_id = detected_persons[i].get("id", "")
-                    b_id = detected_persons[j].get("id", "")
-                    if not a_id or not b_id:
-                        continue
-                    if a_id > b_id:
-                        a_id, b_id = b_id, a_id
-                    co_rels.append({
-                        "src_id": f"person:{a_id}",
-                        "tgt_id": f"person:{b_id}",
-                        "keywords": "co_appears_with",
-                        "description": f"Appeared together in photo: {title}",
-                        "source_id": "photo",
-                        "file_path": file_path,
-                        "weight": 0.3,
-                    })
-                    relations_created += 1
-            if co_rels and insert_custom_kg:
-                insert_custom_kg(
-                    entities=[],
-                    relationships=co_rels,
-                    chunks=[],
-                    source_id="photo",
-                )
+        insert_fn = registry.get("lightrag-server/lightrag_insert")
+        if insert_fn:
+            result = insert_fn(content=text)
+            logger.info(f"[KG] Photo ingested via ainsert: {file_path}, result={result}")
+        else:
+            logger.warning("[KG] lightrag_insert not available in registry")
 
         # Mark photo as KG-synced to prevent lightrag_sync re-processing
         try:
-            conn = get_connection()
-            conn.execute(
-                "UPDATE photos SET kg_synced = 1 WHERE file_path = ?",
-                (file_path,),
-            )
-            conn.commit()
+            with _db_write_lock:
+                conn = get_connection()
+                conn.execute(
+                    "UPDATE photos SET kg_synced = 1 WHERE file_path = ?",
+                    (file_path,),
+                )
+                conn.commit()
         except Exception as e:
             logger.warning(f"[KG] Failed to mark kg_synced for {file_path}: {e}")
 
-        logger.info(
-            f"[KG] Photo sync complete: {len(entities_created)} entities, "
-            f"{relations_created} co-occurrences for {file_path}"
-        )
-        return {
-            "status": "success",
-            "doc_uri": file_path,
-            "entities": entities_created,
-            "relations": relations_created,
-        }
+        return {"status": "success", "doc_uri": file_path}
 
     except Exception as e:
         logger.warning(f"[KG] Photo sync failed: {e}")
@@ -647,13 +561,13 @@ def get_models_dir() -> Path:
 _face_model = None
 _last_model_use_time = None
 _model_in_use = False  # 防止卸载定时器在推理期间卸载模型
+_model_lock = threading.Lock()  # 保护 _model_in_use 和模型卸载的临界区
 MODEL_IDLE_TIMEOUT_SECONDS = 300  # 5 分钟无使用自动卸载
 _model_check_interval = 60  # 每 60 秒检查一次
 
 
 def _start_model_unload_timer():
     """启动后台定时器，定期检查并卸载空闲模型"""
-    import threading
     import time
 
     def check_and_unload():
@@ -661,17 +575,18 @@ def _start_model_unload_timer():
         while True:
             time.sleep(_model_check_interval)
 
-            if _face_model is not None and _last_model_use_time is not None and not _model_in_use:
-                idle_seconds = (datetime.now() - _last_model_use_time).total_seconds()
-                if idle_seconds > MODEL_IDLE_TIMEOUT_SECONDS:
-                    logger.info(
-                        f"[MODEL_UNLOAD] Model idle for {idle_seconds:.0f}s, unloading ~326MB..."
-                    )
-                    _face_model = None
-                    _last_model_use_time = None
-                    # 不调用 gc.collect()，让 Python 自然回收
-                    # 避免 detect_faces() 正在使用模型时被释放
-                    logger.info("[MODEL_UNLOAD] Face model unloaded, memory released")
+            with _model_lock:
+                if _face_model is not None and _last_model_use_time is not None and not _model_in_use:
+                    idle_seconds = (datetime.now() - _last_model_use_time).total_seconds()
+                    if idle_seconds > MODEL_IDLE_TIMEOUT_SECONDS:
+                        logger.info(
+                            f"[MODEL_UNLOAD] Model idle for {idle_seconds:.0f}s, unloading ~326MB..."
+                        )
+                        _face_model = None
+                        _last_model_use_time = None
+                        # 不调用 gc.collect()，让 Python 自然回收
+                        # 避免 detect_faces() 正在使用模型时被释放
+                        logger.info("[MODEL_UNLOAD] Face model unloaded, memory released")
 
     thread = threading.Thread(target=check_and_unload, daemon=True)
     thread.start()
@@ -1196,30 +1111,32 @@ def delete_person(person_id: str) -> dict:
         (person_id, person_id),
     ).fetchall()
 
-    # 删除关联的人脸记录
-    conn.execute("DELETE FROM faces WHERE person_id = ?", (person_id,))
+    # 写事务：删除关联数据并提交
+    with _db_write_lock:
+        # 删除关联的人脸记录
+        conn.execute("DELETE FROM faces WHERE person_id = ?", (person_id,))
 
-    # 重新计算同照片中其他人物的 photo_count
-    for (pid,) in co_person_ids:
-        actual_count = conn.execute(
-            "SELECT COUNT(DISTINCT photo_id) FROM faces WHERE person_id = ?",
-            (pid,),
-        ).fetchone()[0]
+        # 重新计算同照片中其他人物的 photo_count
+        for (pid,) in co_person_ids:
+            actual_count = conn.execute(
+                "SELECT COUNT(DISTINCT photo_id) FROM faces WHERE person_id = ?",
+                (pid,),
+            ).fetchone()[0]
+            conn.execute(
+                "UPDATE persons SET photo_count = ? WHERE id = ?",
+                (actual_count, pid),
+            )
+
+        # 删除同框关系
         conn.execute(
-            "UPDATE persons SET photo_count = ? WHERE id = ?",
-            (actual_count, pid),
+            "DELETE FROM co_occurrences WHERE person_a_id = ? OR person_b_id = ?",
+            (person_id, person_id),
         )
 
-    # 删除同框关系
-    conn.execute(
-        "DELETE FROM co_occurrences WHERE person_a_id = ? OR person_b_id = ?",
-        (person_id, person_id),
-    )
+        # 删除人物记录
+        conn.execute("DELETE FROM persons WHERE id = ?", (person_id,))
 
-    # 删除人物记录
-    conn.execute("DELETE FROM persons WHERE id = ?", (person_id,))
-
-    conn.commit()
+        conn.commit()
 
     # 同步删除知识图谱中的实体
     # Note: LightRAG doesn't support direct entity deletion by name;
@@ -1273,32 +1190,34 @@ def cleanup_deleted_photos() -> dict:
         deleted_photo_ids,
     ).fetchall()
 
-    # 删除关联的 faces 记录
-    cursor = conn.execute(
-        f"DELETE FROM faces WHERE photo_id IN ({placeholders})",
-        deleted_photo_ids,
-    )
-    deleted_faces = cursor.rowcount
-
-    # 删除 photos 记录
-    cursor = conn.execute(
-        f"DELETE FROM photos WHERE id IN ({placeholders})",
-        deleted_photo_ids,
-    )
-    deleted_photos = cursor.rowcount
-
-    # 重新计算受影响人物的 photo_count
-    for (pid,) in affected_person_ids:
-        actual_count = conn.execute(
-            "SELECT COUNT(DISTINCT photo_id) FROM faces WHERE person_id = ?",
-            (pid,),
-        ).fetchone()[0]
-        conn.execute(
-            "UPDATE persons SET photo_count = ? WHERE id = ?",
-            (actual_count, pid),
+    # 写事务：删除关联记录并提交
+    with _db_write_lock:
+        # 删除关联的 faces 记录
+        cursor = conn.execute(
+            f"DELETE FROM faces WHERE photo_id IN ({placeholders})",
+            deleted_photo_ids,
         )
+        deleted_faces = cursor.rowcount
 
-    conn.commit()
+        # 删除 photos 记录
+        cursor = conn.execute(
+            f"DELETE FROM photos WHERE id IN ({placeholders})",
+            deleted_photo_ids,
+        )
+        deleted_photos = cursor.rowcount
+
+        # 重新计算受影响人物的 photo_count
+        for (pid,) in affected_person_ids:
+            actual_count = conn.execute(
+                "SELECT COUNT(DISTINCT photo_id) FROM faces WHERE person_id = ?",
+                (pid,),
+            ).fetchone()[0]
+            conn.execute(
+                "UPDATE persons SET photo_count = ? WHERE id = ?",
+                (actual_count, pid),
+            )
+
+        conn.commit()
 
     return {
         "status": "success",
@@ -1511,7 +1430,8 @@ def detect_faces(file_path: str) -> list[dict]:
     logger.info(f"[DETECT_FACES] Starting face detection for: {file_path}")
 
     global _model_in_use
-    _model_in_use = True  # 在获取模型之前设置，防止卸载定时器在获取和使用之间卸载
+    with _model_lock:
+        _model_in_use = True  # 在获取模型之前设置，防止卸载定时器在获取和使用之间卸载
     try:
         logger.info("[DETECT_FACES] Getting face model...")
         print("[DETECT_FACES] Getting face model...", file=sys.stderr, flush=True)
@@ -1566,7 +1486,8 @@ def detect_faces(file_path: str) -> list[dict]:
         logger.exception(f"[DETECT_FACES] Face detection failed: {e}")
         return []
     finally:
-        _model_in_use = False
+        with _model_lock:
+            _model_in_use = False
 
 
 def generate_l0_abstract(person_names: list[str], taken_at: str | None) -> str:
@@ -1705,126 +1626,135 @@ def ingest_photo(file_path: str, category: str | None = None) -> dict:
         conn = get_connection()
         now = datetime.now().isoformat()
 
-        seen_person_ids = set()  # 防止同一人物多张人脸时 photo_count 重复递增
-        for face_data in faces:
-            face_embedding = face_data["embedding"]
+        try:
+            with _db_write_lock:
+                seen_person_ids = set()  # 防止同一人物多张人脸时 photo_count 重复递增
+                for face_data in faces:
+                    face_embedding = face_data["embedding"]
 
-            # Match to existing person
-            matched_id, similarity = match_face_to_person(face_embedding)
+                    # Match to existing person
+                    matched_id, similarity = match_face_to_person(face_embedding)
 
-            if matched_id:
-                person_id = matched_id
-                logger.info(
-                    f"[INGEST_PHOTO] Matched face to person {person_id} (similarity: {similarity:.3f})"
-                )
-            else:
-                # Create new person
-                person_id = str(uuid.uuid4())
-                auto_label = get_next_auto_label()
-                similarity = 1.0  # 新人相似度设为 1.0（完全匹配）
+                    if matched_id:
+                        person_id = matched_id
+                        logger.info(
+                            f"[INGEST_PHOTO] Matched face to person {person_id} (similarity: {similarity:.3f})"
+                        )
+                    else:
+                        # Create new person
+                        person_id = str(uuid.uuid4())
+                        auto_label = get_next_auto_label()
+                        similarity = 1.0  # 新人相似度设为 1.0（完全匹配）
+
+                        conn.execute(
+                            """INSERT INTO persons (id, auto_label, center_embedding, photo_count, first_seen, last_seen, created_at)
+                               VALUES (?, ?, ?, 0, ?, ?, ?)""",
+                            (person_id, auto_label, face_embedding.tobytes(), now, now, now),
+                        )
+                        logger.info(f"[INGEST_PHOTO] Created new person: {auto_label}")
+
+                    # Update center embedding（仅首次出现时递增 photo_count）
+                    is_new_photo = person_id not in seen_person_ids
+                    update_person_center(person_id, face_embedding, increment_count=is_new_photo)
+                    seen_person_ids.add(person_id)
+
+                    # Get person info for response
+                    cursor = conn.execute(
+                        "SELECT name, auto_label FROM persons WHERE id = ?", (person_id,)
+                    )
+                    row = cursor.fetchone()
+                    if row:
+                        person_name = row[0] if row[0] else row[1]
+                        detected_persons.append(
+                            {
+                                "id": person_id,
+                                "name": person_name,
+                                "similarity": similarity,
+                                "bbox": face_data.get(
+                                    "bbox", []
+                                ),  # 人脸框坐标 [x1, y1, x2, y2]
+                                "confidence": face_data.get("confidence", 0.0),
+                            }
+                        )
+
+                # 不在此处 commit，等文件复制和照片/人脸记录写入后一起提交
+
+                # 4. Copy photo to storage
+                workspace = get_workspace_path()
+
+                # 构建存储路径
+                relative_dir = build_photo_storage_path(category, source.name)
+                target_dir = workspace / relative_dir
+                target_dir.mkdir(parents=True, exist_ok=True)
+
+                # 构建文件名（日期_时间）
+                new_file_name = build_photo_file_name(source.name, exif.get("taken_at"))
+
+                # 检查重名
+                target_path = target_dir / new_file_name
+                final_path = handle_photo_conflict(target_path)
+
+                # 复制文件
+                shutil.copy2(str(source), final_path)
+                logger.info(f"[INGEST_PHOTO] Copied to: {final_path}")
+
+                # 5. Create photo record
+                photo_id = str(uuid.uuid4())
+
+                # Generate L0 abstract (person_names 用于摘要，不用于文件名)
+                person_names = [p["name"] for p in detected_persons]
+                abstract = generate_l0_abstract(person_names, exif.get("taken_at"))
 
                 conn.execute(
-                    """INSERT INTO persons (id, auto_label, center_embedding, photo_count, first_seen, last_seen, created_at)
-                       VALUES (?, ?, ?, 0, ?, ?, ?)""",
-                    (person_id, auto_label, face_embedding.tobytes(), now, now, now),
-                )
-                logger.info(f"[INGEST_PHOTO] Created new person: {auto_label}")
-
-            # Update center embedding（仅首次出现时递增 photo_count）
-            is_new_photo = person_id not in seen_person_ids
-            update_person_center(person_id, face_embedding, increment_count=is_new_photo)
-            seen_person_ids.add(person_id)
-
-            # Get person info for response
-            cursor = conn.execute(
-                "SELECT name, auto_label FROM persons WHERE id = ?", (person_id,)
-            )
-            row = cursor.fetchone()
-            if row:
-                person_name = row[0] if row[0] else row[1]
-                detected_persons.append(
-                    {
-                        "id": person_id,
-                        "name": person_name,
-                        "similarity": similarity,
-                        "bbox": face_data.get(
-                            "bbox", []
-                        ),  # 人脸框坐标 [x1, y1, x2, y2]
-                        "confidence": face_data.get("confidence", 0.0),
-                    }
+                    """INSERT INTO photos (id, file_path, taken_at, location, camera, abstract, ingested_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        photo_id,
+                        str(Path(final_path).resolve()),
+                        exif.get("taken_at"),
+                        exif.get("location"),
+                        exif.get("camera"),
+                        abstract,
+                        now,
+                    ),
                 )
 
-        # 不在此处 commit，等文件复制和照片/人脸记录写入后一起提交
+                # 6. Create face records
+                if len(faces) != len(detected_persons):
+                    logger.error(f"[INGEST_PHOTO] Face/person count mismatch: {len(faces)} vs {len(detected_persons)}")
+                for i, (face_data, person) in enumerate(zip(faces, detected_persons)):
+                    face_id = str(uuid.uuid4())
+                    bbox_str = json.dumps(face_data["bbox"])
+                    conn.execute(
+                        """INSERT INTO faces (id, photo_id, person_id, embedding, bounding_box, confidence)
+                           VALUES (?, ?, ?, ?, ?, ?)""",
+                        (
+                            face_id,
+                            photo_id,
+                            person["id"],
+                            face_data["embedding"].tobytes(),
+                            bbox_str,
+                            face_data["confidence"],
+                        ),
+                    )
 
-        # 4. Copy photo to storage
-        workspace = get_workspace_path()
+                # 7. Update co-occurrence relations（去重，防止同一人物多张人脸导致自共现）
+                unique_persons = []
+                seen_pids = set()
+                for p in detected_persons:
+                    if p["id"] not in seen_pids:
+                        seen_pids.add(p["id"])
+                        unique_persons.append(p)
+                update_co_occurrences(unique_persons, exif.get("taken_at"))
 
-        # 构建存储路径
-        relative_dir = build_photo_storage_path(category, source.name)
-        target_dir = workspace / relative_dir
-        target_dir.mkdir(parents=True, exist_ok=True)
-
-        # 构建文件名（日期_时间）
-        new_file_name = build_photo_file_name(source.name, exif.get("taken_at"))
-
-        # 检查重名
-        target_path = target_dir / new_file_name
-        final_path = handle_photo_conflict(target_path)
-
-        # 复制文件
-        shutil.copy2(str(source), final_path)
-        logger.info(f"[INGEST_PHOTO] Copied to: {final_path}")
-
-        # 5. Create photo record
-        photo_id = str(uuid.uuid4())
-
-        # Generate L0 abstract (person_names 用于摘要，不用于文件名)
-        person_names = [p["name"] for p in detected_persons]
-        abstract = generate_l0_abstract(person_names, exif.get("taken_at"))
-
-        conn.execute(
-            """INSERT INTO photos (id, file_path, taken_at, location, camera, abstract, ingested_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (
-                photo_id,
-                str(Path(final_path).resolve()),
-                exif.get("taken_at"),
-                exif.get("location"),
-                exif.get("camera"),
-                abstract,
-                now,
-            ),
-        )
-
-        # 6. Create face records
-        if len(faces) != len(detected_persons):
-            logger.error(f"[INGEST_PHOTO] Face/person count mismatch: {len(faces)} vs {len(detected_persons)}")
-        for i, (face_data, person) in enumerate(zip(faces, detected_persons)):
-            face_id = str(uuid.uuid4())
-            bbox_str = json.dumps(face_data["bbox"])
-            conn.execute(
-                """INSERT INTO faces (id, photo_id, person_id, embedding, bounding_box, confidence)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (
-                    face_id,
-                    photo_id,
-                    person["id"],
-                    face_data["embedding"].tobytes(),
-                    bbox_str,
-                    face_data["confidence"],
-                ),
-            )
-
-        # 7. Update co-occurrence relations（去重，防止同一人物多张人脸导致自共现）
-        unique_persons = []
-        seen_pids = set()
-        for p in detected_persons:
-            if p["id"] not in seen_pids:
-                seen_pids.add(p["id"])
-                unique_persons.append(p)
-        update_co_occurrences(unique_persons, exif.get("taken_at"))
-
-        conn.commit()
+                conn.commit()
+        except Exception:
+            if conn is not None:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+            raise
 
         # 8. 同步到知识图谱（失败不影响照片入库）
         final_path_resolved = str(Path(final_path).resolve())
@@ -1853,10 +1783,11 @@ def ingest_photo(file_path: str, category: str | None = None) -> dict:
     except Exception as e:
         logger.exception(f"[INGEST_PHOTO] Failed: {e}")
         # Rollback any uncommitted changes on the shared connection
-        try:
-            conn.rollback()
-        except Exception:
-            pass
+        if conn is not None:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
         # Clean up orphaned file if copy succeeded but DB failed
         if final_path is not None:
             try:
@@ -1890,64 +1821,21 @@ def name_person(person_id: str, name: str) -> dict:
             }
 
         # Update name
-        conn.execute("UPDATE persons SET name = ? WHERE id = ?", (name, person_id))
-        conn.commit()
+        with _db_write_lock:
+            conn.execute("UPDATE persons SET name = ? WHERE id = ?", (name, person_id))
+            conn.commit()
 
-        # 同步更新 LightRAG 知识图谱中的实体名称
+        # KG: 通过 ainsert 传入命名关联文本，LightRAG 自动建立 UUID-真名关联
         try:
             from agent.tool_registry import get_registry
             registry = get_registry()
-            insert_entity = registry.get("lightrag-server/lightrag_insert_entity")
-            if insert_entity:
-                # skip_llm_extraction=True: 人名（如"张三"）不应触发 LLM 提取，
-                # 否则 LLM 会创建独立的"张三"实体，与 person:uuid 断裂
-                insert_entity(
-                    name=f"person:{person_id}",
-                    entity_type="Person",
-                    description=name,
-                    skip_llm_extraction=True,
-                )
+            insert_fn = registry.get("lightrag-server/lightrag_insert")
+            if insert_fn:
+                rename_text = f"人物ID为 {person_id} 的人，用户确认其姓名为{name}。"
+                insert_fn(content=rename_text)
+                logger.info(f"[NAME_PERSON] KG rename ingested: person_id={person_id}, name={name}")
             else:
-                logger.warning("[NAME_PERSON] lightrag_insert_entity not available")
-
-            # KG 清理: 合并/删除所有"未命名人物"实体
-            # LLM 异步提取可能在 ingest 后几分钟才创建"未命名人物"实体，
-            # 所以搜索 KG 中所有以"未命名人物"开头的实体并合并到 person:{uuid}
-            auto_label = row[1]  # "未命名人物_X"
-            list_fn = registry.get("lightrag-server/lightrag_list_entities")
-            merge_fn = registry.get("lightrag-server/lightrag_merge_entities")
-            delete_fn = registry.get("lightrag-server/lightrag_delete_entity")
-            target_entity = f"person:{person_id}"
-
-            if list_fn and merge_fn:
-                try:
-                    kg_result = list_fn(list_type="entities", entity_type="Person", limit=1000)
-                    if kg_result.get("status") == "ok":
-                        kg_entities = kg_result.get("data", [])
-                        # 排除 auto_label，避免重复合并（auto_label 在后面单独处理）
-                        unnamed = [e["id"] for e in kg_entities
-                                   if e.get("id", "").startswith("未命名人物") and e["id"] != auto_label]
-                        if unnamed:
-                            logger.info(f"[NAME_PERSON] Merging {len(unnamed)} unnamed entities into {target_entity}: {unnamed}")
-                            merge_fn(source_entities=unnamed, target_entity=target_entity)
-                        else:
-                            logger.info(f"[NAME_PERSON] No unnamed entities found in KG")
-                except Exception as e:
-                    logger.debug(f"[NAME_PERSON] KG unnamed scan failed: {e}")
-
-            # 合并原始 auto_label（可能不以"未命名人物"开头，如已命名人物改名）
-            if auto_label and merge_fn:
-                try:
-                    merge_fn(source_entities=[auto_label], target_entity=target_entity)
-                    logger.info(f"[NAME_PERSON] Merged auto_label '{auto_label}' into {target_entity}")
-                except Exception as e:
-                    logger.debug(f"[NAME_PERSON] Merge auto_label failed: {e}")
-                    if delete_fn:
-                        try:
-                            delete_fn(entity_name=auto_label)
-                            logger.info(f"[NAME_PERSON] Deleted auto_label entity: {auto_label}")
-                        except Exception:
-                            pass
+                logger.warning("[NAME_PERSON] lightrag_insert not available in registry")
         except Exception as e:
             logger.warning(f"[NAME_PERSON] LightRAG sync failed: {e}")
 
@@ -2036,80 +1924,90 @@ def merge_persons(person_a_id: str, person_b_id: str) -> dict:
                 threshold_adjustment = (0.7 - similarity) + 0.05
                 threshold_adjustment = min(threshold_adjustment, 0.3)  # Cap at 0.3
 
-        # Update all faces from person_b to person_a
-        conn.execute(
-            "UPDATE faces SET person_id = ? WHERE person_id = ?",
-            (person_a_id, person_b_id),
-        )
-
-        # Calculate merged_count from actual face records (handles overlapping photos)
-        merged_count = conn.execute(
-            "SELECT COUNT(DISTINCT photo_id) FROM faces WHERE person_id = ?",
-            (person_a_id,),
-        ).fetchone()[0]
-
-        # Update person_a with merged data（始终执行，即使 embedding 为 None）
-        conn.execute(
-            """UPDATE persons SET center_embedding = ?, photo_count = ?,
-               threshold_adjustment = ?, last_seen = ? WHERE id = ?""",
-            (
-                merged_embedding.tobytes() if merged_embedding is not None else None,
-                merged_count,
-                max(threshold_adjustment, person_a[4] if person_a[4] else 0),
-                datetime.now().isoformat(),
-                person_a_id,
-            ),
-        )
-
-        # Clean up co_occurrences referencing person_b
-        # 1. Delete the pair (person_a, person_b) — self-co-occurrence after merge
-        pair = tuple(sorted([person_a_id, person_b_id]))
-        conn.execute(
-            "DELETE FROM co_occurrences WHERE person_a_id = ? AND person_b_id = ?",
-            pair,
-        )
-        # 2. Transfer person_b's co-occurrences to person_a (merge counts)
-        #    For each row where person_b appears with a third person X,
-        #    add the count to person_a's existing row with X (or create new row)
-        b_rows = conn.execute(
-            "SELECT person_a_id, person_b_id, count, first_seen, last_seen FROM co_occurrences WHERE person_a_id = ? OR person_b_id = ?",
-            (person_b_id, person_b_id),
-        ).fetchall()
-        for row_a, row_b, count, first_seen, last_seen in b_rows:
-            # Determine the third person X
-            other_id = row_b if row_a == person_b_id else row_a
-            if other_id == person_a_id:
-                continue  # Skip self-pair (already deleted above)
-            co_pair = tuple(sorted([person_a_id, other_id]))
-            # Try to add count to existing row
-            existing = conn.execute(
-                "SELECT count, first_seen, last_seen FROM co_occurrences WHERE person_a_id = ? AND person_b_id = ?",
-                co_pair,
-            ).fetchone()
-            if existing:
-                existing_first = existing[1]
-                existing_last = existing[2]
-                merged_first = min(existing_first, first_seen) if existing_first and first_seen else (existing_first or first_seen)
-                merged_last = max(existing_last, last_seen) if existing_last and last_seen else (existing_last or last_seen)
+        # 写事务：合并人物数据并提交
+        try:
+            with _db_write_lock:
+                # Update all faces from person_b to person_a
                 conn.execute(
-                    "UPDATE co_occurrences SET count = count + ?, first_seen = ?, last_seen = ? WHERE person_a_id = ? AND person_b_id = ?",
-                    (count, merged_first, merged_last, co_pair[0], co_pair[1]),
+                    "UPDATE faces SET person_id = ? WHERE person_id = ?",
+                    (person_a_id, person_b_id),
                 )
-            else:
+
+                # Calculate merged_count from actual face records (handles overlapping photos)
+                merged_count = conn.execute(
+                    "SELECT COUNT(DISTINCT photo_id) FROM faces WHERE person_id = ?",
+                    (person_a_id,),
+                ).fetchone()[0]
+
+                # Update person_a with merged data（始终执行，即使 embedding 为 None）
                 conn.execute(
-                    "INSERT INTO co_occurrences (person_a_id, person_b_id, count, first_seen, last_seen) VALUES (?, ?, ?, ?, ?)",
-                    (co_pair[0], co_pair[1], count, first_seen, last_seen),
+                    """UPDATE persons SET center_embedding = ?, photo_count = ?,
+                       threshold_adjustment = ?, last_seen = ? WHERE id = ?""",
+                    (
+                        merged_embedding.tobytes() if merged_embedding is not None else None,
+                        merged_count,
+                        max(threshold_adjustment, person_a[4] if person_a[4] else 0),
+                        datetime.now().isoformat(),
+                        person_a_id,
+                    ),
                 )
-        # 3. Delete all remaining rows referencing person_b
-        conn.execute(
-            "DELETE FROM co_occurrences WHERE person_a_id = ? OR person_b_id = ?",
-            (person_b_id, person_b_id),
-        )
 
-        # Delete person_b
-        conn.execute("DELETE FROM persons WHERE id = ?", (person_b_id,))
+                # Clean up co_occurrences referencing person_b
+                # 1. Delete the pair (person_a, person_b) — self-co-occurrence after merge
+                pair = tuple(sorted([person_a_id, person_b_id]))
+                conn.execute(
+                    "DELETE FROM co_occurrences WHERE person_a_id = ? AND person_b_id = ?",
+                    pair,
+                )
+                # 2. Transfer person_b's co-occurrences to person_a (merge counts)
+                #    For each row where person_b appears with a third person X,
+                #    add the count to person_a's existing row with X (or create new row)
+                b_rows = conn.execute(
+                    "SELECT person_a_id, person_b_id, count, first_seen, last_seen FROM co_occurrences WHERE person_a_id = ? OR person_b_id = ?",
+                    (person_b_id, person_b_id),
+                ).fetchall()
+                for row_a, row_b, count, first_seen, last_seen in b_rows:
+                    # Determine the third person X
+                    other_id = row_b if row_a == person_b_id else row_a
+                    if other_id == person_a_id:
+                        continue  # Skip self-pair (already deleted above)
+                    co_pair = tuple(sorted([person_a_id, other_id]))
+                    # Try to add count to existing row
+                    existing = conn.execute(
+                        "SELECT count, first_seen, last_seen FROM co_occurrences WHERE person_a_id = ? AND person_b_id = ?",
+                        co_pair,
+                    ).fetchone()
+                    if existing:
+                        existing_first = existing[1]
+                        existing_last = existing[2]
+                        merged_first = min(existing_first, first_seen) if existing_first and first_seen else (existing_first or first_seen)
+                        merged_last = max(existing_last, last_seen) if existing_last and last_seen else (existing_last or last_seen)
+                        conn.execute(
+                            "UPDATE co_occurrences SET count = count + ?, first_seen = ?, last_seen = ? WHERE person_a_id = ? AND person_b_id = ?",
+                            (count, merged_first, merged_last, co_pair[0], co_pair[1]),
+                        )
+                    else:
+                        conn.execute(
+                            "INSERT INTO co_occurrences (person_a_id, person_b_id, count, first_seen, last_seen) VALUES (?, ?, ?, ?, ?)",
+                            (co_pair[0], co_pair[1], count, first_seen, last_seen),
+                        )
+                # 3. Delete all remaining rows referencing person_b
+                conn.execute(
+                    "DELETE FROM co_occurrences WHERE person_a_id = ? OR person_b_id = ?",
+                    (person_b_id, person_b_id),
+                )
 
-        conn.commit()
+                # Delete person_b
+                conn.execute("DELETE FROM persons WHERE id = ?", (person_b_id,))
+
+                conn.commit()
+        except Exception:
+            if conn is not None:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+            raise
 
         # 同步 LightRAG：更新 person_a 实体，合并 person_b 的关系到 person_a
         try:
@@ -2134,10 +2032,11 @@ def merge_persons(person_a_id: str, person_b_id: str) -> dict:
 
             # 2. 合并：person_b 的边迁移到 person_a，然后删除 person_b
             merge_entities = registry.get("lightrag-server/lightrag_merge_entities")
-            merge_entities(
-                source_entities=[entity_b],
-                target_entity=entity_a,
-            )
+            if merge_entities:
+                merge_entities(
+                    source_entities=[entity_b],
+                    target_entity=entity_a,
+                )
             logger.info(f"[MERGE_PERSONS] Merged KG entity {entity_b} into {entity_a}")
         except Exception as e:
             logger.warning(f"[MERGE_PERSONS] LightRAG sync failed: {e}")
@@ -2154,10 +2053,11 @@ def merge_persons(person_a_id: str, person_b_id: str) -> dict:
 
     except Exception as e:
         logger.exception(f"[MERGE_PERSONS] Failed: {e}")
-        try:
-            conn.rollback()
-        except Exception:
-            pass
+        if conn is not None:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
         return {
             "status": "error",
             "error_code": "UNKNOWN_ERROR",
@@ -2718,13 +2618,14 @@ def ingest_document(file_path: str, category: str = "其他", mode: str = "copy"
 
                 registry = get_registry()
                 insert_file_tool = registry.get("lightrag-server/lightrag_insert_file")
-                lightrag_result = insert_file_tool(
-                    file_path=str(Path(final_path).resolve()),
-                    doc_id=str(Path(final_path).resolve()),
-                )
-                lr_status = lightrag_result.get("status", "unknown")
-                logger.info(f"[INGEST] LightRAG insert_file (skipped path): {lr_status}")
-                content_length = Path(final_path).stat().st_size
+                if insert_file_tool:
+                    lightrag_result = insert_file_tool(
+                        file_path=str(Path(final_path).resolve()),
+                        doc_id=str(Path(final_path).resolve()),
+                    )
+                    lr_status = lightrag_result.get("status", "unknown")
+                    logger.info(f"[INGEST] LightRAG insert_file (skipped path): {lr_status}")
+                    content_length = Path(final_path).stat().st_size
             except Exception as lr_err:
                 logger.warning(f"[INGEST] LightRAG insert_file 失败（不影响文件入库）: {lr_err}")
 
@@ -2758,19 +2659,20 @@ def ingest_document(file_path: str, category: str = "其他", mode: str = "copy"
 
             registry = get_registry()
             insert_file_tool = registry.get("lightrag-server/lightrag_insert_file")
-            lightrag_result = insert_file_tool(
-                file_path=str(Path(final_path).resolve()),
-                doc_id=str(Path(final_path).resolve()),
-            )
-            lr_status = lightrag_result.get("status", "unknown")
-            if lr_status == "ok":
-                logger.info(f"[INGEST] LightRAG insert_file: ok")
-            else:
-                lr_msg = lightrag_result.get("message", "")
-                logger.warning(
-                    f"[INGEST] LightRAG insert_file failed: status={lr_status}, message={lr_msg}"
+            if insert_file_tool:
+                lightrag_result = insert_file_tool(
+                    file_path=str(Path(final_path).resolve()),
+                    doc_id=str(Path(final_path).resolve()),
                 )
-            content_length = Path(final_path).stat().st_size
+                lr_status = lightrag_result.get("status", "unknown")
+                if lr_status == "ok":
+                    logger.info(f"[INGEST] LightRAG insert_file: ok")
+                else:
+                    lr_msg = lightrag_result.get("message", "")
+                    logger.warning(
+                        f"[INGEST] LightRAG insert_file failed: status={lr_status}, message={lr_msg}"
+                    )
+                content_length = Path(final_path).stat().st_size
         except Exception as lr_err:
             logger.warning(f"[INGEST] LightRAG insert_file 失败（不影响文件入库）: {lr_err}")
 

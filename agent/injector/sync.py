@@ -29,11 +29,20 @@ try:
     WATCHDOG_AVAILABLE = True
 except ImportError:
     WATCHDOG_AVAILABLE = False
-    Observer = None
-    FileSystemEventHandler = object  # 占位符
+    Observer = None  # type: ignore[assignment]
+    FileSystemEventHandler = object  # type: ignore[assignment,misc]
+    FileCreatedEvent = ()  # type: ignore[assignment,misc]  # empty tuple for isinstance fallback
+    FileModifiedEvent = ()  # type: ignore[assignment,misc]
+    FileDeletedEvent = ()  # type: ignore[assignment,misc]
 
 
-class SkillFileHandler(FileSystemEventHandler if WATCHDOG_AVAILABLE else object):
+if WATCHDOG_AVAILABLE:
+    _SkillFileHandlerBase = FileSystemEventHandler
+else:
+    _SkillFileHandlerBase = object  # type: ignore[misc]
+
+
+class SkillFileHandler(_SkillFileHandlerBase):  # type: ignore[misc]
     """
     Skill 文件变化处理器，带防抖和 self_writing 过滤
     """
@@ -49,29 +58,32 @@ class SkillFileHandler(FileSystemEventHandler if WATCHDOG_AVAILABLE else object)
     def on_created(self, event):
         """文件创建事件"""
         if WATCHDOG_AVAILABLE and isinstance(event, FileCreatedEvent):
-            if not event.is_directory and event.src_path.endswith(".md"):
-                logger.debug(f"[SkillFileHandler] File created: {event.src_path}")
-                self._schedule_sync(event.src_path, "sync")
+            path = str(event.src_path)
+            if not event.is_directory and path.endswith(".md"):
+                logger.debug(f"[SkillFileHandler] File created: {path}")
+                self._schedule_sync(path, "sync")
 
     def on_modified(self, event):
         """文件修改事件"""
         if WATCHDOG_AVAILABLE and isinstance(event, FileModifiedEvent):
-            if not event.is_directory and event.src_path.endswith(".md"):
+            path = str(event.src_path)
+            if not event.is_directory and path.endswith(".md"):
                 # 过滤 self_writing
                 try:
-                    mtime = Path(event.src_path).stat().st_mtime
-                    if not self._sync._is_self_write(event.src_path, mtime):
-                        logger.debug(f"[SkillFileHandler] File modified: {event.src_path}")
-                        self._schedule_sync(event.src_path, "sync")
+                    mtime = Path(path).stat().st_mtime
+                    if not self._sync._is_self_write(path, mtime):
+                        logger.debug(f"[SkillFileHandler] File modified: {path}")
+                        self._schedule_sync(path, "sync")
                 except Exception as e:
                     logger.warning(f"[SkillFileHandler] Failed to check mtime: {e}")
 
     def on_deleted(self, event):
         """文件删除事件"""
         if WATCHDOG_AVAILABLE and isinstance(event, FileDeletedEvent):
-            if not event.is_directory and event.src_path.endswith(".md"):
-                logger.debug(f"[SkillFileHandler] File deleted: {event.src_path}")
-                self._schedule_sync(event.src_path, "delete")
+            path = str(event.src_path)
+            if not event.is_directory and path.endswith(".md"):
+                logger.debug(f"[SkillFileHandler] File deleted: {path}")
+                self._schedule_sync(path, "delete")
 
     def _schedule_sync(self, path: str, action: str):
         """
@@ -102,7 +114,7 @@ class SkillFileHandler(FileSystemEventHandler if WATCHDOG_AVAILABLE else object)
             if action == "sync":
                 self._sync._sync_skill(name, Path(path))
             elif action == "delete":
-                self._sync._delete_skill(name)
+                self._sync._delete_skill_from_lightrag(name)
         except Exception as e:
             logger.error(f"[SkillFileHandler] Failed to execute {action} for {path}: {e}")
 
@@ -113,16 +125,23 @@ class SkillSync:
 
     扫描 memory/skills/ 目录，检测文件变化，同步到 LightRAG 知识图谱。
     通过 entity_type="skill" 标签区分，供 LightRAGAdapter.search_skills() 检索。
+
+    变化检测基于文件内容哈希（SHA256），状态持久化到 ~/.niu/skill_sync_state.json，
+    进程重启后不会误判已有 skill 为"新增"。mtime 变但内容不变则跳过。
     """
 
-    def __init__(self, skills_dir: str = None, scan_interval: int = 60, use_watchdog: bool = True):
+    def __init__(self, skills_dir: Optional[str] = None, scan_interval: int = 60, use_watchdog: bool = True):
         self.skills_dir = Path(skills_dir or self._default_skills_dir())
         self.scan_interval = scan_interval
         self.use_watchdog = use_watchdog and WATCHDOG_AVAILABLE
 
-        # 记录上次扫描状态 {skill_name: mtime}
-        self._last_scan: dict[str, float] = {}
-        self._last_notes_scan: dict[str, str] = {}  # note_id -> content hash (sha256 hex)
+        # 持久化状态文件（磁盘唯一真相来源）
+        self._state_file = Path.home() / ".niu" / "skill_sync_state.json"
+
+        # 内存缓存 {name: hash_str}，从状态文件加载
+        self._last_scan: dict[str, str] = self._load_state()
+        # notes 状态也持久化到同一个文件 {note_id: content_hash}
+        self._last_notes_scan: dict[str, str] = self._load_notes_state()
         self._lock = threading.Lock()  # 线程锁
 
         # 后台线程
@@ -130,7 +149,11 @@ class SkillSync:
         self._stop_event = threading.Event()
 
         # watchdog 相关
-        self._observer: Optional[Observer] = None
+        if WATCHDOG_AVAILABLE:
+            from watchdog.observers import Observer as _ObserverType
+            self._observer: Optional[_ObserverType] = None  # type: ignore[unused-ignore]
+        else:
+            self._observer = None  # type: ignore[assignment]
 
         # self_writing 检测
         self._last_write_times: dict[str, float] = {}  # path -> mtime
@@ -165,9 +188,72 @@ class SkillSync:
         """
         self._last_write_times[path] = time.time()
 
+    @staticmethod
+    def _compute_file_hash(path: Path) -> str:
+        """计算文件内容的 SHA256 哈希"""
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(8192), b""):
+                h.update(chunk)
+        return h.hexdigest()
+
+    def _load_state(self) -> dict[str, str]:
+        """从磁盘加载持久化状态文件；损坏或不存在时返回空 dict。
+
+        状态文件格式：
+        {
+          "browser-automation": "sha256hash1",
+          "python-patterns": "sha256hash2",
+          "_notes": { "note_id1": "hash1" }
+        }
+
+        返回时排除 "_notes" 键，只返回 {name: hash_str}。
+        """
+        try:
+            if self._state_file.exists():
+                data = json.loads(self._state_file.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    return {k: v for k, v in data.items() if k != "_notes" and isinstance(v, str)}
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning(f"[SkillSync] State file corrupt or unreadable, starting fresh: {e}")
+        return {}
+
+    def _load_notes_state(self) -> dict[str, str]:
+        """从磁盘加载 notes 子状态；损坏或不存在时返回空 dict"""
+        try:
+            if self._state_file.exists():
+                data = json.loads(self._state_file.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    notes = data.get("_notes", {})
+                    if isinstance(notes, dict):
+                        return {k: v for k, v in notes.items() if isinstance(v, str)}
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning(f"[SkillSync] State file corrupt or unreadable for notes, starting fresh: {e}")
+        return {}
+
+    def _save_state(self) -> None:
+        """将当前内存状态持久化到磁盘（异常保护）"""
+        try:
+            self._state_file.parent.mkdir(parents=True, exist_ok=True)
+            with self._lock:
+                data = {**self._last_scan, "_notes": self._last_notes_scan}
+            self._state_file.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except OSError as e:
+            logger.warning(f"[SkillSync] Failed to save state file: {e}")
+
     def scan_and_sync(self) -> tuple[int, int, int]:
         """
         扫描目录，同步变化的 skills 到 LightRAG 知识图谱
+
+        变化检测基于文件内容哈希（SHA256），状态持久化到磁盘文件，
+        进程重启后不会误判已有 skill 为"新增"。
+
+        仅在注入/删除成功时才更新状态文件中的 hash，
+        失败的 skill 保留旧 hash（或新增失败的不写入），
+        下次扫描时会重试。
 
         Returns:
             (added, updated, deleted) 计数
@@ -176,41 +262,66 @@ class SkillSync:
             logger.warning(f"[SkillSync] Skills directory not found: {self.skills_dir}")
             return 0, 0, 0
 
-        # 首次扫描时，从 LightRAG 加载已有 skill 状态，避免重复 "Added"
+        # 1. 从状态文件加载 known_skills = {name: hash}
         with self._lock:
-            if not self._last_scan:
-                self._load_existing_skills()
+            known_skills = dict(self._last_scan)
 
-        current: dict[str, float] = {}
-        added, updated, deleted = 0, 0, 0
-        synced_names: set[str] = set()  # 本轮已同步的 skill 名称
-
-        # 扫描所有 .md 文件
+        # 2. 扫描 skills 目录，计算当前 current_hashes = {name: hash}
+        current_hashes: dict[str, str] = {}
         for skill_file in self.skills_dir.glob("*.md"):
             name = skill_file.stem
-            mtime = skill_file.stat().st_mtime
-            current[name] = mtime
+            try:
+                content_hash = self._compute_file_hash(skill_file)
+            except OSError as e:
+                logger.error(f"[SkillSync] Cannot read skill file {name}: {e}")
+                continue
+            current_hashes[name] = content_hash
 
-            # 新增或修改（需要锁保护读取）
-            with self._lock:
-                last_scan = self._last_scan.copy()
+        added, updated, deleted = 0, 0, 0
+        # 最终写入状态文件的 dict，初始值为 known_skills 的副本
+        next_scan: dict[str, str] = dict(known_skills)
 
-            if name not in last_scan:
+        # 3. 对比检测变化
+        for name, current_hash in current_hashes.items():
+            known_hash = known_skills.get(name)
+            if known_hash is None:
+                # 新增
                 try:
+                    skill_file = self.skills_dir / f"{name}.md"
                     self._sync_skill(name, skill_file)
-                    synced_names.add(name)
+                    next_scan[name] = current_hash  # 成功才写入新 hash
                     added += 1
                     logger.info(f"[SkillSync] Added skill: {name}")
                 except Exception as e:
                     logger.error(f"[SkillSync] Failed to add skill {name}: {e}")
-            elif mtime > last_scan[name]:
+                    # 不写入 next_scan，下次扫描仍视为"新增"
+            elif known_hash != current_hash:
+                # 修改
                 try:
+                    self._delete_skill_from_lightrag(name)
+                    skill_file = self.skills_dir / f"{name}.md"
                     self._sync_skill(name, skill_file)
-                    synced_names.add(name)
+                    next_scan[name] = current_hash  # 成功才更新 hash
                     updated += 1
-                    logger.info(f"[SkillSync] Updated skill: {name}")
+                    logger.info(f"[SkillSync] Updated skill: {name} (content changed)")
                 except Exception as e:
                     logger.error(f"[SkillSync] Failed to update skill {name}: {e}")
+                    # 保留旧 hash，下次扫描仍检测到 hash 不同，会重试
+            else:
+                # 不变：hash 相同 → 保留
+                next_scan[name] = current_hash
+
+        # 删除：在 known_skills 中但不在 current_hashes 中 → 从图谱删除
+        for name in known_skills:
+            if name not in current_hashes:
+                try:
+                    self._delete_skill_from_lightrag(name)
+                    next_scan.pop(name, None)  # 成功才移除
+                    deleted += 1
+                    logger.info(f"[SkillSync] Deleted skill: {name}")
+                except Exception as e:
+                    logger.error(f"[SkillSync] Failed to delete skill {name}: {e}")
+                    # 保留旧 hash，下次扫描仍会重试删除
 
         # Scan notes
         try:
@@ -220,109 +331,66 @@ class SkillSync:
         except Exception as e:
             logger.error(f"[SkillSync] Notes scan failed: {e}")
 
-        # 检测删除
+        # 4. 将 next_scan 写入状态文件
         with self._lock:
-            last_scan = self._last_scan.copy()
-
-        for name in last_scan:
-            if name not in current:
-                try:
-                    self._delete_skill(name)
-                    deleted += 1
-                    logger.info(f"[SkillSync] Deleted skill: {name}")
-                except Exception as e:
-                    logger.error(f"[SkillSync] Failed to delete skill {name}: {e}")
-
-        # 检测 LightRAG 中 skill 被外部删除（需要回写）
-        # 只检查 last_scan 中已有但 LightRAG 缺失的 skill（跳过本轮新增的）
-        if last_scan:
-            try:
-                from niu_api.internal.lightrag_adapter import LightRAGAdapter
-                adapter = LightRAGAdapter()
-                result = adapter.list_entities(entity_type="Skill", limit=500)
-                if result.get("status") != "ok":
-                    logger.debug(f"[SkillSync] list_entities unavailable: {result.get('message', '')}")
-                else:
-                    existing_names = set()
-                    for entity in result.get("data", []):
-                        ename = entity.get("id", "")
-                        if ename.startswith("skill:"):
-                            existing_names.add(ename[6:])
-
-                    for name in last_scan:
-                        if name not in synced_names and name in current and name not in existing_names:
-                            skill_file = self.skills_dir / f"{name}.md"
-                            if skill_file.exists():
-                                self._sync_skill(name, skill_file)
-                                added += 1
-                                logger.info(f"[SkillSync] Re-added missing skill: {name}")
-            except Exception as e:
-                logger.debug(f"[SkillSync] Failed to check missing skills in LightRAG: {e}")
-
-        # 更新状态（需要锁保护写入）
-        with self._lock:
-            self._last_scan = current
+            self._last_scan = next_scan
+        self._save_state()
 
         return added, updated, deleted
 
-    def _load_existing_skills(self):
-        """从 LightRAG 加载已有 skill，使用磁盘文件的实际 mtime"""
-        try:
-            from niu_api.internal.lightrag_adapter import LightRAGAdapter
-            adapter = LightRAGAdapter()
-            result = adapter.list_entities(entity_type="Skill", limit=500)
-            if result.get("status") != "ok":
-                logger.debug(f"[SkillSync] list_entities unavailable: {result.get('message', '')}")
-                return
-            for entity in result.get("data", []):
-                ename = entity.get("id", "")
-                if ename.startswith("skill:"):
-                    name = ename[6:]
-                    skill_file = self.skills_dir / f"{name}.md"
-                    if skill_file.exists():
-                        self._last_scan[name] = skill_file.stat().st_mtime
-                    else:
-                        # 文件已删除但 LightRAG 中还有，用 inf 标记以便下次检测到删除
-                        self._last_scan[name] = float('inf')
-            if self._last_scan:
-                logger.info(f"[SkillSync] Loaded {len(self._last_scan)} existing skills from LightRAG")
-        except Exception as e:
-            logger.debug(f"[SkillSync] Failed to load existing skills from LightRAG: {e}")
-
     def _sync_skill(self, name: str, skill_file: Path):
-        """同步单个 skill 到 LightRAG 知识图谱"""
+        """同步单个 skill 到 LightRAG 知识图谱
+
+        读取文件全文，调用 _inject_skill_to_lightrag 做结构化注入。
+        """
         try:
             content = skill_file.read_text(encoding="utf-8")
-            fm = parse_yaml_frontmatter(content)
-            triggers = extract_triggers(content, fm)
-            description = extract_description(content, fm)
-            tags = extract_tags(content, fm, triggers)
-
-            if description:
-                self._inject_skill_to_lightrag(name, description, tags, triggers)
-
+            self._inject_skill_to_lightrag(name, content)
         except Exception as e:
             logger.error(f"[SkillSync] Failed to sync skill {name}: {e}")
 
-    def _inject_skill_to_lightrag(
-        self,
-        name: str,
-        description: str,
-        tags: list[str],
-        triggers: list[str],
-    ):
+    def _get_ingester(self):
+        """Get LightRAGIngester instance."""
+        from niu_api.internal.lightrag_adapter import LightRAGIngester
+        return LightRAGIngester()
+
+    def _inject_skill_to_lightrag(self, skill_name: str, content: str) -> bool:
         """Inject a skill entity into the LightRAG knowledge graph.
 
-        Uses lightrag_insert (ainsert) so LightRAG auto-extracts entities,
-        merges same-name nodes, and builds edges. This replaces the old
-        inject_custom_kg path which could not auto-merge or auto-connect.
+        Uses inject_custom_kg (structured injection) so that:
+        - Entity name is fixed (skill:{name}), no LLM auto-extraction drift
+        - Description is the primary vector-matching key, written precisely
+        - Same-name entity merges on re-injection (no duplicates)
+        - belongs_to_region edge links skill to 知识体系 brain region
+
+        Args:
+            skill_name: Skill identifier (without skill: prefix).
+            content: Full text content of the skill file.
+
+        Returns:
+            True on success, False on failure.
         """
         try:
-            from niu_api.internal.lightrag_adapter import LightRAGIngester
+            ingester = self._get_ingester()
 
-            ingester = LightRAGIngester()
+            entity_name = f"skill:{skill_name}"
+            source_id = f"skill://{skill_name}"
 
-            # Build a richer description from triggers + tags
+            # Extract frontmatter for a concise description
+            fm = parse_yaml_frontmatter(content)
+            description = extract_description(content, fm)
+
+            if not description:
+                logger.warning(
+                    "[SkillSync] Skill '%s' has no description, skipping injection",
+                    skill_name,
+                )
+                return False
+
+            # Build triggers/tags for enriched description
+            triggers = extract_triggers(content, fm)
+            tags = extract_tags(content, fm, triggers)
+
             extra_parts = []
             if triggers:
                 extra_parts.append(f"触发词: {', '.join(triggers)}")
@@ -332,37 +400,72 @@ class SkillSync:
             if extra_parts:
                 full_description += " | " + "; ".join(extra_parts)
 
-            # Format as structured text for LightRAG ainsert auto-extraction
-            text = f"技能: {name}（类型: Skill），{full_description}。brain:Niu skilled_in {name}。"
+            entities = [{
+                "entity_name": entity_name,
+                "entity_type": "Skill",
+                "description": full_description,
+                "source_id": source_id,
+            }]
 
-            result = ingester.lightrag_insert(
-                content=text,
-                file_paths=f"skill://{name}",
+            relationships = [{
+                "src_id": entity_name,
+                "tgt_id": "brain:region:知识体系",
+                "keywords": "belongs_to_region",
+                "description": f"{skill_name} 属于知识体系",
+                "source_id": source_id,
+                "weight": 1.0,
+            }]
+
+            chunks = [{
+                "content": f"Skill: {skill_name}\n\n{content}",
+                "source_id": source_id,
+            }]
+
+            result = ingester.inject_custom_kg(
+                entities=entities,
+                relationships=relationships,
+                chunks=chunks,
+                source_id=source_id,
             )
-            if result.get("status") == "ok":
-                logger.info(f"[SkillSync] Injected skill '{name}' into LightRAG via ainsert")
+            if isinstance(result, dict) and result.get("status") == "ok":
+                logger.info("[SkillSync] Injected skill '%s' into KG via inject_custom_kg", skill_name)
+                return True
             else:
-                logger.warning(f"[SkillSync] LightRAG insert failed for '{name}': {result.get('message', '')}")
+                logger.warning(
+                    "[SkillSync] inject_custom_kg returned non-ok for '%s': %s",
+                    skill_name,
+                    result.get("message", "") if isinstance(result, dict) else result,
+                )
+                return False
         except Exception as e:
-            # LightRAG not available or insert failed — non-fatal but visible
-            logger.warning(f"[SkillSync] LightRAG skill insert failed for '{name}': {e}")
+            logger.warning("[SkillSync] LightRAG skill inject failed for '%s': %s", skill_name, e)
+            return False
 
-    def _delete_skill(self, name: str):
-        """从 LightRAG 知识图谱删除 skill"""
-        # Clean up internal state to prevent redundant delete attempts
-        with self._lock:
-            self._last_scan.pop(name, None)
+    def _delete_skill_from_lightrag(self, skill_name: str) -> None:
+        """从 LightRAG 知识图谱删除 skill 节点
 
+        调用 adapter.delete_entity(entity_name) 删除实体。
+        skill 的实体名格式是 skill:{skill_name}（与注入时一致）。
+
+        Args:
+            skill_name: skill 名称（不含 skill: 前缀）
+        """
         try:
             from niu_api.internal.lightrag_adapter import LightRAGAdapter
+
             adapter = LightRAGAdapter()
-            result = adapter.delete_entity(f"skill:{name}")
-            if result.get("status") == "ok":
-                logger.debug(f"[SkillSync] Deleted skill '{name}' from LightRAG")
+            entity_name = f"skill:{skill_name}"
+            result = adapter.delete_entity(entity_name)
+            if isinstance(result, dict) and result.get("status") == "ok":
+                logger.info("[SkillSync] Deleted skill '%s' from KG (entity: %s)", skill_name, entity_name)
             else:
-                logger.warning(f"[SkillSync] LightRAG delete failed for '{name}': {result.get('message', '')}")
+                logger.warning(
+                    "[SkillSync] delete_entity returned non-ok for '%s': %s",
+                    skill_name,
+                    result.get("message", "") if isinstance(result, dict) else result,
+                )
         except Exception as e:
-            logger.warning(f"[SkillSync] LightRAG skill delete failed for '{name}': {e}")
+            logger.warning("[SkillSync] LightRAG skill delete failed for '%s': %s", skill_name, e)
 
     def _scan_notes(self) -> tuple[int, int]:
         """扫描 workspace/notes/notes.json，将变化同步到 LightRAG"""
@@ -452,6 +555,10 @@ class SkillSync:
             except Exception as e:
                 logger.warning(f"[SkillSync] LightRAG unavailable for note deletion: {e}")
 
+        # 持久化 notes 状态
+        if added > 0 or updated > 0 or deleted_ids:
+            self._save_state()
+
         return added, updated
 
     def _inject_note_to_lightrag(self, notes_data: list[dict]) -> bool:
@@ -474,6 +581,9 @@ class SkillSync:
             content = json.dumps(notes_data, ensure_ascii=False, indent=2)
             registry = get_registry()
             insert_tool = registry.get("lightrag-server/lightrag_insert")
+            if insert_tool is None:
+                logger.warning("lightrag-server/lightrag_insert tool not found in registry")
+                return False
             result = insert_tool(content=content, source="notes")
             if isinstance(result, dict) and result.get("status") == "ok":
                 return True
@@ -494,9 +604,13 @@ class SkillSync:
 
         try:
             handler = SkillFileHandler(self, debounce=1.0)
-            self._observer = Observer()
-            self._observer.schedule(handler, str(self.skills_dir), recursive=False)
-            self._observer.start()
+            if Observer is None:
+                logger.error("[SkillSync] Observer not available, cannot start watchdog")
+                return
+            observer = Observer()
+            observer.schedule(handler, str(self.skills_dir), recursive=False)
+            observer.start()
+            self._observer = observer
             logger.info(f"[SkillSync] Started watchdog monitoring: {self.skills_dir}")
         except Exception as e:
             logger.error(f"[SkillSync] Failed to start watchdog: {e}")
@@ -555,7 +669,7 @@ _skill_sync: Optional[SkillSync] = None
 _skill_sync_lock = threading.Lock()
 
 
-def get_skill_sync(skills_dir: str = None, auto_start: bool = True) -> SkillSync:
+def get_skill_sync(skills_dir: Optional[str] = None, auto_start: bool = True) -> SkillSync:
     """获取全局 SkillSync 实例（线程安全）"""
     global _skill_sync
     if _skill_sync is None:
@@ -587,7 +701,7 @@ def parse_yaml_frontmatter(content: str) -> dict:
 
     if YAML_AVAILABLE:
         try:
-            result = yaml.safe_load(yaml_text)
+            result = yaml.safe_load(yaml_text)  # type: ignore[union-attr]
             if isinstance(result, dict):
                 return result
         except Exception as e:

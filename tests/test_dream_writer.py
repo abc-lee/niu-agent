@@ -1,7 +1,7 @@
 """
 Tests for DreamWriter — Dream Evolver's brain graph write layer
 
-Validates dual-pipeline memory writes:
+Validates dual-pipeline memory writes via lightrag_insert:
 - Pipeline A: Semantic memory (entities + associative relations)
 - Pipeline B: Episodic memory (events + time chains)
 """
@@ -15,8 +15,6 @@ import pytest
 from agent.injector.dream_writer import (
     CHAIN_RELATION_CORRECTED,
     CHAIN_RELATION_FOLLOWED,
-    DREAM_FILE_PATH,
-    DREAM_SOURCE_ID,
     EPISODIC_ENTITY_TYPE,
     EVENT_PREFIX,
     INVOLVES_RELATION,
@@ -32,8 +30,7 @@ from agent.injector.dream_writer import (
 def mock_ingester() -> MagicMock:
     """Create a mock LightRAGIngester."""
     ingester = MagicMock()
-    ingester.inject_entity.return_value = {"status": "ok", "name": "test"}
-    ingester.inject_custom_kg.return_value = {"status": "ok"}
+    ingester.lightrag_insert.return_value = {"status": "ok", "track_id": "track-001"}
     return ingester
 
 
@@ -47,66 +44,90 @@ def writer(mock_ingester: MagicMock) -> DreamWriter:
 
 
 def test_write_semantic_entity(writer: DreamWriter, mock_ingester: MagicMock) -> None:
-    """Verify entity + brain:Niu relation created in single atomic call."""
+    """Verify structured text with entity + brain:Niu relation passed to lightrag_insert."""
     result = writer.write_semantic_entity(
         name="Python",
         entity_type="Skill",
         description="Programming language",
     )
 
-    # Check status
+    # Check return value from lightrag_insert
     assert result["status"] == "ok"
-    assert result["name"] == "Python"
-    assert result["entity_type"] == "Skill"
-    assert result["niu_relation_keyword"] == "skilled_in"
+    assert result["track_id"] == "track-001"
 
-    # Verify single atomic inject_custom_kg call with entity + Niu relation + chunk
-    mock_ingester.inject_custom_kg.assert_called_once()
-    kg_call = mock_ingester.inject_custom_kg.call_args
+    # Verify lightrag_insert called with correct structured text
+    mock_ingester.lightrag_insert.assert_called_once()
+    call_kwargs = mock_ingester.lightrag_insert.call_args
+    text = call_kwargs.kwargs["content"]
 
-    # Entity
-    entity = kg_call.kwargs["entities"][0]
-    assert entity["entity_name"] == "Python"
-    assert entity["description"] == "Programming language"
+    # Text should contain entity name, type, description, and brain:Niu relation
+    assert "Python" in text
+    assert "Skill" in text
+    assert "Programming language" in text
+    assert "brain:Niu" in text
+    assert "skilled_in" in text
 
-    # brain:Niu anchor relation
-    rel = kg_call.kwargs["relationships"][0]
-    assert rel["src_id"] == NIU_ENTITY
-    assert rel["tgt_id"] == "Python"
-    assert rel["keywords"] == "skilled_in"
 
-    # Chunk
-    chunk = kg_call.kwargs["chunks"][0]
-    assert chunk["content"] == "Programming language"
+def test_write_semantic_entity_default_relation(
+    writer: DreamWriter, mock_ingester: MagicMock
+) -> None:
+    """Verify default relation is 'remembers' for unknown entity types."""
+    writer.write_semantic_entity(
+        name="Alice",
+        entity_type="UnknownType",
+        description="A person",
+    )
+
+    call_kwargs = mock_ingester.lightrag_insert.call_args
+    text = call_kwargs.kwargs["content"]
+    assert "remembers" in text
 
 
 # ============== Test 2: write_semantic_relation ==============
 
 
 def test_write_semantic_relation(writer: DreamWriter, mock_ingester: MagicMock) -> None:
-    """Verify relation created."""
+    """Verify structured text with relation passed to lightrag_insert."""
     result = writer.write_semantic_relation(
-        src="Python",
-        tgt="数据分析",
-        relation_type="USED_FOR",
+        src_name="Python",
+        tgt_name="数据分析",
+        relation="USED_FOR",
         description="Python for data analysis",
     )
 
-    # Verify inject_custom_kg called with correct relationship
-    mock_ingester.inject_custom_kg.assert_called_once()
-    kg_call = mock_ingester.inject_custom_kg.call_args
-    rel = kg_call.kwargs["relationships"][0]
-    assert rel["src_id"] == "Python"
-    assert rel["tgt_id"] == "数据分析"
-    assert rel["keywords"] == "USED_FOR"
-    assert rel["description"] == "Python for data analysis"
+    assert result["status"] == "ok"
+
+    mock_ingester.lightrag_insert.assert_called_once()
+    call_kwargs = mock_ingester.lightrag_insert.call_args
+    text = call_kwargs.kwargs["content"]
+
+    assert "Python" in text
+    assert "数据分析" in text
+    assert "USED_FOR" in text
+    assert "Python for data analysis" in text
+
+
+def test_write_semantic_relation_no_description(
+    writer: DreamWriter, mock_ingester: MagicMock
+) -> None:
+    """Verify relation text without optional description."""
+    writer.write_semantic_relation(
+        src_name="Python",
+        tgt_name="Django",
+        relation="USED_FOR",
+    )
+
+    call_kwargs = mock_ingester.lightrag_insert.call_args
+    text = call_kwargs.kwargs["content"]
+
+    assert "语义关系: Python —[USED_FOR]→ Django。" == text
 
 
 # ============== Test 3: write_episodic_event ==============
 
 
 def test_write_episodic_event(writer: DreamWriter, mock_ingester: MagicMock) -> None:
-    """Verify event entity created with brain:Niu anchor in single atomic call."""
+    """Verify structured text with event + brain:Niu anchor passed to lightrag_insert."""
     result = writer.write_episodic_event(
         event_name="tool_x_failed",
         description="Tool X returned error code 500",
@@ -114,29 +135,23 @@ def test_write_episodic_event(writer: DreamWriter, mock_ingester: MagicMock) -> 
         session_id="sess-001",
     )
 
-    # Check status
     assert result["status"] == "ok"
-    assert result["event_name"] == f"{EVENT_PREFIX}tool_x_failed"
-    assert result["experience_type"] == "error"
 
-    # Verify single atomic inject_custom_kg call
-    mock_ingester.inject_custom_kg.assert_called_once()
-    kg_call = mock_ingester.inject_custom_kg.call_args
+    mock_ingester.lightrag_insert.assert_called_once()
+    call_kwargs = mock_ingester.lightrag_insert.call_args
+    text = call_kwargs.kwargs["content"]
 
-    # Entity
-    entity = kg_call.kwargs["entities"][0]
-    assert entity["entity_name"] == f"{EVENT_PREFIX}tool_x_failed"
-    assert entity["entity_type"] == EPISODIC_ENTITY_TYPE
-    assert entity["description"] == "Tool X returned error code 500"
-
-    # brain:Niu anchor relation (always present)
-    rels = kg_call.kwargs["relationships"]
-    niu_rel = [r for r in rels if r["src_id"] == NIU_ENTITY][0]
-    assert niu_rel["tgt_id"] == f"{EVENT_PREFIX}tool_x_failed"
-    assert niu_rel["keywords"] == "experienced"
-
-    # No time chain or involves relations — only the Niu anchor
-    assert len(rels) == 1
+    # Text should contain event name, type, description, and brain:Niu experienced
+    assert "tool_x_failed" in text
+    assert "error" in text
+    assert "Tool X returned error code 500" in text
+    assert "brain:Niu experienced brain:event:tool_x_failed" in text
+    # No chain or involves relations
+    assert "followed_by" not in text
+    assert "corrected_by" not in text
+    assert "involves" not in text
+    # session_id should be included in text (M1 fix)
+    assert "session: sess-001" in text
 
 
 # ============== Test 4: write_episodic_event_with_chain ==============
@@ -145,7 +160,7 @@ def test_write_episodic_event(writer: DreamWriter, mock_ingester: MagicMock) -> 
 def test_write_episodic_event_with_chain(
     writer: DreamWriter, mock_ingester: MagicMock
 ) -> None:
-    """Verify followed_by/corrected_by chain in single atomic call."""
+    """Verify followed_by/corrected_by chain in structured text."""
     # Test followed_by chain
     result_followed = writer.write_episodic_event(
         event_name="tried_tool_y",
@@ -157,27 +172,16 @@ def test_write_episodic_event_with_chain(
 
     assert result_followed["status"] == "ok"
 
-    # Single atomic call contains all relationships
-    mock_ingester.inject_custom_kg.assert_called_once()
-    kg_call = mock_ingester.inject_custom_kg.call_args
-    rels = kg_call.kwargs["relationships"]
+    call_kwargs = mock_ingester.lightrag_insert.call_args
+    text = call_kwargs.kwargs["content"]
 
-    # Find the chain relation
-    chain_rel = None
-    for r in rels:
-        if r["keywords"] in (CHAIN_RELATION_FOLLOWED, CHAIN_RELATION_CORRECTED):
-            chain_rel = r
-            break
-
-    assert chain_rel is not None
-    assert chain_rel["src_id"] == f"{EVENT_PREFIX}tried_tool_x"
-    assert chain_rel["tgt_id"] == f"{EVENT_PREFIX}tried_tool_y"
-    assert chain_rel["keywords"] == CHAIN_RELATION_FOLLOWED
+    assert "brain:event:tried_tool_x" in text
+    assert "brain:event:tried_tool_y" in text
+    assert CHAIN_RELATION_FOLLOWED in text
 
     # Reset for correction test
     mock_ingester.reset_mock()
-    mock_ingester.inject_entity.return_value = {"status": "ok", "name": "test"}
-    mock_ingester.inject_custom_kg.return_value = {"status": "ok"}
+    mock_ingester.lightrag_insert.return_value = {"status": "ok", "track_id": "track-002"}
 
     # Test corrected_by chain
     result_corrected = writer.write_episodic_event(
@@ -190,18 +194,12 @@ def test_write_episodic_event_with_chain(
 
     assert result_corrected["status"] == "ok"
 
-    mock_ingester.inject_custom_kg.assert_called_once()
-    kg_call = mock_ingester.inject_custom_kg.call_args
-    rels = kg_call.kwargs["relationships"]
+    call_kwargs = mock_ingester.lightrag_insert.call_args
+    text = call_kwargs.kwargs["content"]
 
-    chain_rel = None
-    for r in rels:
-        if r["keywords"] in (CHAIN_RELATION_FOLLOWED, CHAIN_RELATION_CORRECTED):
-            chain_rel = r
-            break
-
-    assert chain_rel is not None
-    assert chain_rel["keywords"] == CHAIN_RELATION_CORRECTED
+    assert "brain:event:tried_tool_y" in text
+    assert "brain:event:used_tool_z" in text
+    assert CHAIN_RELATION_CORRECTED in text
 
 
 # ============== Test 5: write_episodic_event_with_involves ==============
@@ -210,7 +208,7 @@ def test_write_episodic_event_with_chain(
 def test_write_episodic_event_with_involves(
     writer: DreamWriter, mock_ingester: MagicMock
 ) -> None:
-    """Verify involves relations included in single atomic call."""
+    """Verify involves relations included in structured text."""
     result = writer.write_episodic_event(
         event_name="data_analysis_session",
         description="Analyzed sales data",
@@ -220,17 +218,13 @@ def test_write_episodic_event_with_involves(
 
     assert result["status"] == "ok"
 
-    # Single atomic call
-    mock_ingester.inject_custom_kg.assert_called_once()
-    kg_call = mock_ingester.inject_custom_kg.call_args
-    rels = kg_call.kwargs["relationships"]
+    call_kwargs = mock_ingester.lightrag_insert.call_args
+    text = call_kwargs.kwargs["content"]
 
-    # brain:Niu anchor + 2 involves relations = 3 total
-    involves_rels = [r for r in rels if r["keywords"] == INVOLVES_RELATION]
-    assert len(involves_rels) == 2
-    assert involves_rels[0]["src_id"] == f"{EVENT_PREFIX}data_analysis_session"
-    assert involves_rels[0]["tgt_id"] == "Python"
-    assert involves_rels[1]["tgt_id"] == "pandas"
+    assert "brain:event:data_analysis_session" in text
+    assert "involves" in text
+    assert "Python" in text
+    assert "pandas" in text
 
 
 # ============== Test 6: _determine_niu_relation ==============
@@ -245,3 +239,137 @@ def test_determine_niu_relation(writer: DreamWriter) -> None:
     # Default case
     assert writer._determine_niu_relation("UnknownType") == "remembers"
     assert writer._determine_niu_relation("Place") == "remembers"
+
+
+# ============== Test 7: error handling ==============
+
+
+def test_write_semantic_entity_error(mock_ingester: MagicMock) -> None:
+    """Verify error handling when lightrag_insert raises exception."""
+    mock_ingester.lightrag_insert.side_effect = RuntimeError("insert failed")
+    writer = DreamWriter(mock_ingester)
+
+    result = writer.write_semantic_entity(
+        name="Python",
+        entity_type="Skill",
+        description="Programming language",
+    )
+
+    assert result["status"] == "error"
+    assert "insert failed" in result["message"]
+
+
+def test_write_episodic_event_error(mock_ingester: MagicMock) -> None:
+    """Verify error handling when lightrag_insert raises exception."""
+    mock_ingester.lightrag_insert.side_effect = RuntimeError("insert failed")
+    writer = DreamWriter(mock_ingester)
+
+    result = writer.write_episodic_event(
+        event_name="test_event",
+        description="Test description",
+        experience_type="error",
+    )
+
+    assert result["status"] == "error"
+    assert "insert failed" in result["message"]
+
+
+def test_write_semantic_relation_error(mock_ingester: MagicMock) -> None:
+    """Verify error handling when lightrag_insert raises exception."""
+    mock_ingester.lightrag_insert.side_effect = RuntimeError("insert failed")
+    writer = DreamWriter(mock_ingester)
+
+    result = writer.write_semantic_relation(
+        src_name="A",
+        tgt_name="B",
+        relation="USED_FOR",
+    )
+
+    assert result["status"] == "error"
+    assert "insert failed" in result["message"]
+
+
+# ============== Test 8: lightrag_insert returns error dict (H1) ==============
+
+
+def test_write_semantic_entity_insert_returns_error(mock_ingester: MagicMock) -> None:
+    """Verify warning logged and early return when lightrag_insert returns non-ok dict."""
+    mock_ingester.lightrag_insert.return_value = {"status": "error", "message": "duplicate"}
+    writer = DreamWriter(mock_ingester)
+
+    result = writer.write_semantic_entity(
+        name="Python",
+        entity_type="Skill",
+        description="Programming language",
+    )
+
+    assert result["status"] == "error"
+    assert result["message"] == "duplicate"
+
+
+def test_write_semantic_relation_insert_returns_error(mock_ingester: MagicMock) -> None:
+    """Verify warning logged and early return when lightrag_insert returns non-ok dict."""
+    mock_ingester.lightrag_insert.return_value = {"status": "error", "message": "duplicate"}
+    writer = DreamWriter(mock_ingester)
+
+    result = writer.write_semantic_relation(
+        src_name="A",
+        tgt_name="B",
+        relation="USED_FOR",
+    )
+
+    assert result["status"] == "error"
+    assert result["message"] == "duplicate"
+
+
+def test_write_episodic_event_insert_returns_error(mock_ingester: MagicMock) -> None:
+    """Verify warning logged and early return when lightrag_insert returns non-ok dict."""
+    mock_ingester.lightrag_insert.return_value = {"status": "error", "message": "duplicate"}
+    writer = DreamWriter(mock_ingester)
+
+    result = writer.write_episodic_event(
+        event_name="test_event",
+        description="Test",
+        experience_type="error",
+    )
+
+    assert result["status"] == "error"
+    assert result["message"] == "duplicate"
+
+
+# ============== Test 9: experience_type validation (M2) ==============
+
+
+def test_write_episodic_event_invalid_experience_type(mock_ingester: MagicMock) -> None:
+    """Verify invalid experience_type is rejected before calling lightrag_insert."""
+    writer = DreamWriter(mock_ingester)
+
+    result = writer.write_episodic_event(
+        event_name="bad_event",
+        description="Bad type",
+        experience_type="warning",
+    )
+
+    assert result["status"] == "error"
+    assert "warning" in result["message"]
+    assert "error" in result["message"] or "success" in result["message"]
+    # lightrag_insert should NOT have been called
+    mock_ingester.lightrag_insert.assert_not_called()
+
+
+# ============== Test 10: session_id omitted ==============
+
+
+def test_write_episodic_event_no_session_id(writer: DreamWriter, mock_ingester: MagicMock) -> None:
+    """Verify no session clause when session_id is None."""
+    result = writer.write_episodic_event(
+        event_name="test_event",
+        description="No session",
+        experience_type="success",
+    )
+
+    assert result["status"] == "ok"
+
+    call_kwargs = mock_ingester.lightrag_insert.call_args
+    text = call_kwargs.kwargs["content"]
+    assert "session:" not in text

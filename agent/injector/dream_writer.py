@@ -32,12 +32,10 @@ EPISODIC_ENTITY_TYPE = "EpisodicEvent"
 # Self entity name (anchor point for all semantic entities)
 NIU_ENTITY = "brain:Niu"
 
-# Source identifiers for injected data
-DREAM_SOURCE_ID = "dream_evolver"
-DREAM_FILE_PATH = "dream://evolver"
-
 # Relation keywords for semantic pipeline
-SEMANTIC_RELATION_TYPES = {"USED_FOR", "OFTEN_WITH", "associated_with"}
+# Format convention: "语义关系: {src} —[{relation}]→ {tgt}。"
+# The —[X]→ arrow syntax gives LightRAG a clear directional cue for
+# extracting src → tgt relationships with the relation type as the edge label.
 
 # Relation keywords for episodic pipeline
 CHAIN_RELATION_FOLLOWED = "followed_by"
@@ -96,10 +94,8 @@ class DreamWriter:
     ) -> dict:
         """Write semantic entity (knowledge-type).
 
-        Creates entity + brain:Niu → entity relation (prefers/skilled_in/remembers).
-        No time chain needed — semantic entities use associative retrieval.
-
-        Single atomic inject_custom_kg call with entity + Niu anchor relation + chunk.
+        Formats entity as structured text and inserts via lightrag_insert,
+        letting LightRAG auto-extract entities/relations/merge.
 
         Args:
             name: Entity name (e.g., "Python", "数据分析").
@@ -110,102 +106,59 @@ class DreamWriter:
             Dict with status and details.
         """
         niu_relation = self._determine_niu_relation(entity_type)
+        text = f"语义记忆: {name}（类型: {entity_type}），{description}。brain:Niu {niu_relation} {name}。"
 
-        # Atomic: entity + brain:Niu anchor relation + chunk in one call
-        result = self._ingester.inject_custom_kg(
-            entities=[{
-                "entity_name": name,
-                "entity_type": entity_type,
-                "description": description,
-            }],
-            relationships=[
-                {
-                    "src_id": NIU_ENTITY,
-                    "tgt_id": name,
-                    "keywords": niu_relation,
-                    "description": f"brain:Niu {niu_relation} {name}",
-                    "weight": 1.0,
-                    "source_id": DREAM_SOURCE_ID,
-                    "file_path": DREAM_FILE_PATH,
-                }
-            ],
-            chunks=[{
-                "content": description,
-                "source_id": DREAM_SOURCE_ID,
-                "file_path": DREAM_FILE_PATH,
-            }],
-            source_id=DREAM_SOURCE_ID,
-        )
-
-        if isinstance(result, dict) and result.get("status") == "error":
-            logger.warning(
-                "注入语义实体失败: %s — %s",
+        try:
+            result = self._ingester.lightrag_insert(content=text)
+            if isinstance(result, dict) and result.get("status") != "ok":
+                logger.warning("语义实体入库返回非ok: name=%s, result=%s", name, result)
+                return result
+            logger.info(
+                "语义实体入库完成: %s (type=%s, niu_relation=%s)",
                 name,
-                result.get("message", "unknown"),
+                entity_type,
+                niu_relation,
             )
             return result
-
-        logger.info(
-            "写入语义实体: %s (type=%s, niu_relation=%s)",
-            name,
-            entity_type,
-            niu_relation,
-        )
-
-        return {
-            "status": "ok",
-            "result": result,
-            "name": name,
-            "entity_type": entity_type,
-            "niu_relation_keyword": niu_relation,
-        }
+        except Exception as e:
+            logger.error("语义实体入库失败: %s, error=%s", name, e)
+            return {"status": "error", "message": str(e)}
 
     def write_semantic_relation(
         self,
-        src: str,
-        tgt: str,
-        relation_type: str,
+        src_name: str,
+        tgt_name: str,
+        relation: str,
         description: str = "",
     ) -> dict:
         """Write semantic relation (knowledge-type).
 
-        Directly calls inject_custom_kg with the relationship.
-        No time chain needed — semantic relations are associative.
+        Formats relation as structured text and inserts via lightrag_insert,
+        letting LightRAG auto-extract and link entities.
 
         Args:
-            src: Source entity name.
-            tgt: Target entity name.
-            relation_type: Relation type (USED_FOR, OFTEN_WITH, associated_with).
+            src_name: Source entity name.
+            tgt_name: Target entity name.
+            relation: Relation type (e.g., USED_FOR, OFTEN_WITH).
             description: Optional relation description.
 
         Returns:
             Dict with status and details.
         """
-        result = self._ingester.inject_custom_kg(
-            entities=[],
-            relationships=[
-                {
-                    "src_id": src,
-                    "tgt_id": tgt,
-                    "keywords": relation_type,
-                    "description": description or f"{src} {relation_type} {tgt}",
-                    "weight": 1.0,
-                    "source_id": DREAM_SOURCE_ID,
-                    "file_path": DREAM_FILE_PATH,
-                }
-            ],
-            chunks=[],
-            source_id=DREAM_SOURCE_ID,
-        )
+        text = f"语义关系: {src_name} —[{relation}]→ {tgt_name}。"
+        if description:
+            text += f" {description}。"
 
-        logger.info(
-            "写入语义关系: %s ──%s──→ %s",
-            src,
-            relation_type,
-            tgt,
-        )
-
-        return result
+        try:
+            result = self._ingester.lightrag_insert(content=text)
+            if isinstance(result, dict) and result.get("status") != "ok":
+                logger.warning("语义关系入库返回非ok: src=%s, tgt=%s, result=%s", src_name, tgt_name, result)
+                return result
+            logger.info("语义关系入库完成: %s %s %s", src_name, relation, tgt_name)
+            return result
+        except Exception as e:
+            logger.error("语义关系入库失败: %s %s %s, error=%s", src_name, relation, tgt_name, e)
+            return {"status": "error", "message": str(e)}
 
     # ============== Pipeline B: Episodic Memory ==============
 
@@ -221,18 +174,8 @@ class DreamWriter:
     ) -> dict:
         """Write episodic event (event-type).
 
-        Creates brain:event:{name} entity with:
-        - entity_type = "EpisodicEvent"
-        - brain:Niu → event anchor relation (experienced)
-
-        If prev_event_name provided:
-        - If is_correction: inject_relation(prev → current, corrected_by)
-        - Else: inject_relation(prev → current, followed_by)
-
-        If related_entities provided:
-        - inject_relation(event → entity, involves) for each
-
-        Single atomic inject_custom_kg call with entity + all relations + chunk.
+        Formats event as structured text and inserts via lightrag_insert,
+        letting LightRAG auto-extract entities/relations/merge.
 
         Args:
             event_name: Event name (used as brain:event:{event_name}).
@@ -246,104 +189,59 @@ class DreamWriter:
         Returns:
             Dict with status and details.
         """
-        full_event_name = f"{EVENT_PREFIX}{event_name}"
+        valid_types = {"error", "success"}
+        if experience_type not in valid_types:
+            return {"status": "error", "message": f"Invalid experience_type '{experience_type}'. Must be one of: {sorted(valid_types)}"}
 
-        # Collect all relationships in one list
-        relationships: list[dict[str, Any]] = []
+        text_parts = [f"情景记忆: {event_name}（类型: {experience_type}），{description}。"]
+        text_parts.append(f"brain:Niu experienced brain:event:{event_name}。")
 
-        # brain:Niu anchor relation
-        relationships.append({
-            "src_id": NIU_ENTITY,
-            "tgt_id": full_event_name,
-            "keywords": "experienced",
-            "description": f"brain:Niu experienced {full_event_name}",
-            "weight": 1.0,
-            "source_id": DREAM_SOURCE_ID,
-            "file_path": DREAM_FILE_PATH,
-        })
-
-        # Time chain relation (if prev_event provided)
         chain_keyword: str | None = None
         if prev_event_name is not None:
-            prev_full_name = f"{EVENT_PREFIX}{prev_event_name}"
-            chain_keyword = (
-                CHAIN_RELATION_CORRECTED if is_correction else CHAIN_RELATION_FOLLOWED
-            )
-            relationships.append({
-                "src_id": prev_full_name,
-                "tgt_id": full_event_name,
-                "keywords": chain_keyword,
-                "description": f"{prev_full_name} {chain_keyword} {full_event_name}",
-                "weight": 1.0,
-                "source_id": DREAM_SOURCE_ID,
-                "file_path": DREAM_FILE_PATH,
-            })
+            chain_keyword = CHAIN_RELATION_CORRECTED if is_correction else CHAIN_RELATION_FOLLOWED
+            text_parts.append(f"brain:event:{prev_event_name} {chain_keyword} brain:event:{event_name}。")
 
-        # involves relations (if related_entities provided)
         if related_entities:
-            for entity_name in related_entities:
-                relationships.append({
-                    "src_id": full_event_name,
-                    "tgt_id": entity_name,
-                    "keywords": INVOLVES_RELATION,
-                    "description": f"{full_event_name} involves {entity_name}",
-                    "weight": 0.8,
-                    "source_id": DREAM_SOURCE_ID,
-                    "file_path": DREAM_FILE_PATH,
-                })
+            entities_str = "、".join(related_entities)
+            text_parts.append(f"brain:event:{event_name} involves {entities_str}。")
 
-        # Atomic: entity + all relationships + chunk in one call
-        result = self._ingester.inject_custom_kg(
-            entities=[{
-                "entity_name": full_event_name,
-                "entity_type": EPISODIC_ENTITY_TYPE,
-                "description": description,
-            }],
-            relationships=relationships,
-            chunks=[{
-                "content": description,
-                "source_id": DREAM_SOURCE_ID,
-                "file_path": DREAM_FILE_PATH,
-            }],
-            source_id=DREAM_SOURCE_ID,
-        )
+        if session_id:
+            text_parts.append(f"session: {session_id}。")
 
-        if isinstance(result, dict) and result.get("status") == "error":
-            logger.warning(
-                "注入事件实体失败: %s — %s",
-                full_event_name,
-                result.get("message", "unknown"),
+        text = " ".join(text_parts)
+
+        try:
+            result = self._ingester.lightrag_insert(content=text)
+
+            if isinstance(result, dict) and result.get("status") != "ok":
+                logger.warning("情景事件入库返回非ok: event=%s, result=%s", event_name, result)
+                return result
+
+            if chain_keyword is not None:
+                logger.info(
+                    "事件链: %s ──%s──→ %s",
+                    prev_event_name,
+                    chain_keyword,
+                    event_name,
+                )
+
+            if related_entities:
+                logger.info(
+                    "事件关联: %s involves %s",
+                    event_name,
+                    ", ".join(related_entities),
+                )
+
+            logger.info(
+                "情景事件入库完成: %s (type=%s, experience=%s)",
+                event_name,
+                EPISODIC_ENTITY_TYPE,
+                experience_type,
             )
             return result
-
-        if chain_keyword is not None:
-            logger.info(
-                "事件链: %s ──%s──→ %s",
-                prev_event_name,
-                chain_keyword,
-                event_name,
-            )
-
-        if related_entities:
-            logger.info(
-                "事件关联: %s involves %s",
-                event_name,
-                ", ".join(related_entities),
-            )
-
-        logger.info(
-            "写入事件: %s (type=%s, experience=%s)",
-            event_name,
-            EPISODIC_ENTITY_TYPE,
-            experience_type,
-        )
-
-        return {
-            "status": "ok",
-            "result": result,
-            "event_name": full_event_name,
-            "experience_type": experience_type,
-        }
+        except Exception as e:
+            logger.error("情景事件入库失败: %s, error=%s", event_name, e)
+            return {"status": "error", "message": str(e)}
 
     # ============== Helpers ==============
 

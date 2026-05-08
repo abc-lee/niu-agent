@@ -359,25 +359,19 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
 
     "lightrag_insert_entity": {
         "name": "lightrag_insert_entity",
-        "description": "Insert a single entity into the knowledge graph with precise control.",
+        "description": "Insert an entity into the knowledge graph. LightRAG auto-extracts entities and relationships, merges same-name nodes, and builds edges. Prefer this over manual entity creation.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "name": {"type": "string", "description": "Entity name"},
-                "entity_type": {"type": "string", "description": "Entity type (e.g., person, concept, skill)"},
+                "name": {"type": "string", "description": "Entity name (e.g., 'Python', '数据分析')"},
+                "entity_type": {"type": "string", "description": "Entity type (e.g., 'Person', 'Concept', 'Skill', 'Tool')"},
                 "description": {"type": "string", "default": "", "description": "Entity description"},
-                "source_id": {"type": "string", "default": "custom_kg", "description": "Source ID"},
+                "source_id": {"type": "string", "default": "custom_kg", "description": "Source ID (deprecated, kept for compatibility)"},
                 "file_path": {"type": "string", "default": "custom_kg", "description": "File path for citation"},
                 "skip_llm_extraction": {
                     "type": "boolean",
                     "default": False,
-                    "description": (
-                        "Skip LLM extraction on entity description. "
-                        "When True, no chunks are passed to ainsert_custom_kg, preventing "
-                        "LLM from creating duplicate entities from description text. "
-                        "Use this for entities whose description contains names that already "
-                        "exist as separate entities (e.g., Person entities with human names)."
-                    ),
+                    "description": "Deprecated — LLM extraction is always enabled via ainsert. Kept for backward compatibility.",
                 },
             },
             "required": ["name", "entity_type"],
@@ -386,15 +380,15 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
 
     "lightrag_insert_relation": {
         "name": "lightrag_insert_relation",
-        "description": "Insert a relation between two entities in the knowledge graph.",
+        "description": "Insert a relation between two entities. LightRAG auto-extracts entities and relationships, merges same-name nodes, and builds edges.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "src_id": {"type": "string", "description": "Source entity name"},
                 "tgt_id": {"type": "string", "description": "Target entity name"},
-                "relation": {"type": "string", "description": "Relation type (e.g., has_framework, USED_FOR)"},
+                "relation": {"type": "string", "description": "Relation type (e.g., USED_FOR, OFTEN_WITH)"},
                 "description": {"type": "string", "default": "", "description": "Relation description"},
-                "source_id": {"type": "string", "default": "custom_kg", "description": "Source ID"},
+                "source_id": {"type": "string", "default": "custom_kg", "description": "Source ID (deprecated, kept for compatibility)"},
                 "file_path": {"type": "string", "default": "custom_kg", "description": "File path for citation"},
             },
             "required": ["src_id", "tgt_id", "relation"],
@@ -906,57 +900,40 @@ def lightrag_insert_entity(
     name: str,
     entity_type: str,
     description: str = "",
-    source_id: str = "custom_kg",
+    source_id: str = "custom_kg",  # kept for MCP schema compat (deprecated)
     file_path: str = "custom_kg",
-    skip_llm_extraction: bool = False,
+    skip_llm_extraction: bool = False,  # deprecated, always uses ainsert now
 ) -> Dict[str, Any]:
-    """Insert a single entity via inject_custom_kg (inject_entity removed).
+    """Insert a single entity via lightrag_insert (ainsert).
 
-    Automatically adds a brain:Niu -> entity anchor relationship so the
-    entity is reachable from the root.
+    LightRAG auto-extracts entities and relationships from the text,
+    merges same-name entities, and builds edges. This replaces the old
+    inject_custom_kg path which created isolated nodes without edges.
 
-    When skip_llm_extraction is False (default), passes the entity description
-    as a chunk so LLM can extract additional relationships from it.
-    When True, skips chunks entirely — use this for entities whose description
-    contains names that already exist as separate entities (e.g., Person entities
-    with human names like "张三" that would cause LLM to create duplicates).
+    Automatically includes a brain:Niu -> entity anchor in the text
+    so the entity is reachable from the root.
     """
+    # Deprecated params kept for MCP schema compatibility; consumed here to
+    # satisfy static analysis (callers still pass them by keyword).
+    _ = source_id, skip_llm_extraction
     try:
-        ingester = _get_ingester()
-        # Anchor relationship: brain:Niu -> entity, so graph traversal
-        # starting from brain:Niu can reach this entity.
-        anchor_rel = {
-            "src_id": "brain:Niu",
-            "tgt_id": name,
-            "keywords": "owns",
-            "description": f"brain:Niu owns the {entity_type} entity '{name}'",
-            "source_id": source_id,
-            "file_path": file_path,
+        niu_relation_map = {
+            "Person": "remembers",
+            "Skill": "skilled_in",
+            "Concept": "knows_about",
+            "Tool": "uses",
         }
-        # Pass entity description as chunk text so LLM can extract
-        # additional entities/relationships from it (ainsert_custom_kg
-        # runs LLM extraction on chunks).
-        # Skip when skip_llm_extraction=True to prevent LLM from creating
-        # duplicate entities from description text (e.g., person names).
-        entity_chunks = []
-        if description and not skip_llm_extraction:
-            entity_chunks.append({
-                "content": f"{name} ({entity_type}): {description}",
-                "source_id": source_id,
-                "file_path": file_path,
-            })
-        return ingester.inject_custom_kg(
-            entities=[{
-                "entity_name": name,
-                "entity_type": entity_type,
-                "description": description,
-                "source_id": source_id,
-                "file_path": file_path,
-            }],
-            relationships=[anchor_rel],
-            chunks=entity_chunks,
-            source_id=source_id,
-        )
+        niu_relation = niu_relation_map.get(entity_type, "remembers")
+
+        # Format as structured text for ainsert auto-extraction
+        text_parts = [f"语义记忆: {name}（类型: {entity_type}）"]
+        if description:
+            text_parts.append(description)
+        text_parts.append(f"brain:Niu {niu_relation} {name}。")
+        text = " ".join(text_parts)
+
+        ingester = _get_ingester()
+        return ingester.lightrag_insert(content=text, file_paths=file_path)
     except Exception as e:
         logger.error(f"lightrag_insert_entity failed: {e}")
         return {"status": "error", "message": str(e)}
@@ -967,25 +944,23 @@ def lightrag_insert_relation(
     tgt_id: str,
     relation: str,
     description: str = "",
-    source_id: str = "custom_kg",
+    source_id: str = "custom_kg",  # kept for MCP schema compat (deprecated)
     file_path: str = "custom_kg",
 ) -> Dict[str, Any]:
-    """Insert a single relation via inject_custom_kg (inject_relation removed)."""
+    """Insert a single relation via lightrag_insert (ainsert).
+
+    LightRAG auto-extracts entities and relationships from the text,
+    merges same-name entities, and builds edges. This replaces the old
+    inject_custom_kg path which created isolated edges without context.
+    """
+    _ = source_id  # kept for MCP schema compatibility (deprecated)
     try:
+        text = f"语义关系: {src_id} —[{relation}]→ {tgt_id}。"
+        if description:
+            text += f" {description}。"
+
         ingester = _get_ingester()
-        return ingester.inject_custom_kg(
-            entities=[],
-            relationships=[{
-                "src_id": src_id,
-                "tgt_id": tgt_id,
-                "keywords": relation,
-                "description": description,
-                "source_id": source_id,
-                "file_path": file_path,
-            }],
-            chunks=[],
-            source_id=source_id,
-        )
+        return ingester.lightrag_insert(content=text, file_paths=file_path)
     except Exception as e:
         logger.error(f"lightrag_insert_relation failed: {e}")
         return {"status": "error", "message": str(e)}
