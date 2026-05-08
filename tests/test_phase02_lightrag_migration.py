@@ -268,7 +268,7 @@ class TestLightRAGSync:
         sync = LightRAGSync()
 
         # vector-store has been deleted - _sync_vectors_db now returns (0, set())
-        synced, doc_ids = sync._sync_vectors_db(set())
+        synced, doc_ids = sync._sync_vectors_db()
         assert synced == 0, (
             f"_sync_vectors_db should return 0 after vector-store removal, got {synced}"
         )

@@ -2,14 +2,13 @@
 LightRAG Background Sync
 
 Periodic backfill service that syncs photos and documents from local databases
-into the LightRAG brain graph. Replaces the old KGSync (KuzuDB-based) with
-LightRAG ainsert() for unstructured data and ainsert_custom_kg() for structured.
+into the LightRAG brain graph. Photos use lightrag_insert (ainsert)
+so LightRAG auto-extracts entities, merges same-name nodes, and builds edges.
 
 Architecture:
 - Scans photos.db for photos with abstracts not yet in LightRAG
-- Scans vectors.db for documents not yet in LightRAG
-- Uses LightRAGIngester for structured person entities and relations
-- Uses LightRAGPipeline for unstructured document ingestion
+- Uses LightRAGIngester.lightrag_insert for photos
+- Skills sync is handled by SkillSync (agent/injector/sync.py)
 - Runs in a background daemon thread with configurable interval
 """
 
@@ -80,18 +79,16 @@ class LightRAGSync:
 
         # 2. Sync documents from vectors.db
         try:
-            d, new_doc_ids = self._sync_vectors_db(prev_doc_ids)
+            d, new_doc_ids = self._sync_vectors_db()
             stats["documents_synced"] = d
         except Exception as e:
             logger.warning(f"[LightRAGSync] vectors.db sync failed: {e}")
             stats["errors"].append(f"vectors: {e}")
             new_doc_ids = set()
 
-        # 3. Sync skills and tools into LightRAG (incremental)
+        # 3. Sync skills and tools (delegated to SkillSync — returns zeros)
         try:
-            skills_count, tools_count, new_skill_ids, new_tool_ids = self._sync_skills_and_tools(
-                prev_skill_ids, prev_tool_ids
-            )
+            skills_count, tools_count, new_skill_ids, new_tool_ids = self._sync_skills_and_tools()
             stats["skills_synced"] = skills_count
             stats["tools_synced"] = tools_count
         except Exception as e:
@@ -124,13 +121,13 @@ class LightRAGSync:
     ) -> tuple[int, int, set, set, set]:
         """Sync photos from photos.db into LightRAG.
 
-        Uses batch injection: collects all entities, relationships, and chunks
-        first, then calls inject_custom_kg once. This avoids serially blocking
-        the LightRAG event loop with N individual calls (which freezes the
-        frontend graph UI).
+        Uses lightrag_insert (ainsert) so LightRAG auto-extracts entities,
+        merges same-name nodes, and builds edges. All new items are collected
+        into a single structured text paragraph and inserted in one call,
+        avoiding N separate ainsert calls that would block the event loop.
 
         Only processes items whose IDs are not in the previous sync state,
-        preventing duplicate entity/relationship insertion.
+        preventing duplicate ingestion.
 
         Args:
             prev_photo_ids: Photo IDs already synced in previous runs.
@@ -149,12 +146,6 @@ class LightRAGSync:
             return 0, 0, set(), set(), set()
 
         from niu_api.internal.lightrag_adapter import LightRAGIngester
-        from niu_api.internal.lightrag_manager import get_lightrag
-
-        rag = get_lightrag()
-        if rag is None:
-            logger.warning("[LightRAGSync] LightRAG not available")
-            return 0, 0, set(), set(), set()
 
         ingester = LightRAGIngester()
         conn = sqlite3.connect(str(photos_db_path), check_same_thread=False)
@@ -162,37 +153,29 @@ class LightRAGSync:
         conn.row_factory = sqlite3.Row
 
         try:
-            # --- Collect all data first, then batch inject once ---
-            all_entities: list[dict] = []
-            all_relationships: list[dict] = []
-            all_chunks: list[dict] = []
             new_person_ids: set = set()
             new_photo_ids: set = set()
             new_co_occ_ids: set = set()
+            photo_ids_to_mark: list[int] = []
+            text_parts: list[str] = []
 
-            # 1. Collect person entities (only new ones)
+            # 1. Collect person descriptions (only new ones)
             rows = conn.execute("SELECT id, name, auto_label FROM persons").fetchall()
             for row in rows:
                 person_id = row["id"]
                 if person_id in prev_person_ids:
                     continue
                 person_name = row["name"] or row["auto_label"] or person_id
-                entity_name = f"person:{person_id}"
-                person_desc = entity_name if person_name.startswith("未命名人物") else person_name
-                all_entities.append({
-                    "entity_name": entity_name,
-                    "entity_type": "Person",
-                    "description": person_desc,
-                    "source_id": "photo",
-                })
+                if person_name.startswith("未命名人物"):
+                    text_parts.append(f"一位未命名人物（人物ID: {person_id}）。")
+                else:
+                    text_parts.append(f"人物ID为 {person_id} 的人，姓名为{person_name}。")
                 new_person_ids.add(person_id)
 
-            # 2. Collect photo entities + photo→person relationships
-            # Filter kg_synced=0 at SQL level to leverage SQLite WAL read consistency
+            # 2. Collect photo descriptions (only new ones)
             rows = conn.execute(
                 "SELECT p.id, p.file_path, p.abstract FROM photos p WHERE p.kg_synced = 0"
             ).fetchall()
-            photo_ids_to_mark: list[int] = []
             for row in rows:
                 photo_id = row["id"]
                 if photo_id in prev_photo_ids:
@@ -202,41 +185,34 @@ class LightRAGSync:
                 if not file_path or not abstract:
                     continue
                 title = Path(file_path).stem
-                # abstract 可能包含"未命名人物_X"名称，需净化避免 LLM 提取创建重复实体
+                # Filter out "未命名人物" names from abstract
                 safe_abstract = abstract
                 if abstract:
                     parts = abstract.split("，")
                     if len(parts) > 1 and "未命名人物" in parts[0]:
                         safe_abstract = "，".join(parts[1:])
-                photo_entity_name = f"photo:{file_path}"
-                all_entities.append({
-                    "entity_name": photo_entity_name,
-                    "entity_type": "Photo",
-                    "description": f"Photo: {title}，{safe_abstract}" if safe_abstract else f"Photo: {title}",
-                    "file_path": file_path,
-                    "source_id": "photo",
-                })
-                # Collect photo→person relationships from faces table
+                # Build structured text
+                photo_parts = [f"照片文件 {title}（照片ID: {file_path}）"]
+                if safe_abstract:
+                    photo_parts.append(safe_abstract)
+                # Add person references from faces table
                 face_rows = conn.execute(
-                    "SELECT person_id FROM faces WHERE photo_id = ?",
+                    "SELECT f.person_id, p.name, p.auto_label FROM faces f "
+                    "LEFT JOIN persons p ON f.person_id = p.id "
+                    "WHERE f.photo_id = ?",
                     (photo_id,),
                 ).fetchall()
-                for face_row in face_rows:
-                    person_id = face_row["person_id"]
-                    all_relationships.append({
-                        "src_id": photo_entity_name,
-                        "tgt_id": f"person:{person_id}",
-                        "keywords": "depicts",
-                        "description": f"Photo {title} depicts person:{person_id}",
-                        "source_id": "photo",
-                        "file_path": file_path,
-                        "weight": 0.7,
-                    })
-                all_chunks.append({
-                    "content": f"[Photo: {title}]\n{safe_abstract}" if safe_abstract else f"[Photo: {title}]",
-                    "source_id": "photo",
-                    "file_path": file_path,
-                })
+                if face_rows:
+                    person_descs = []
+                    for fr in face_rows:
+                        pid = fr["person_id"]
+                        pname = fr["name"] or fr["auto_label"] or ""
+                        if pname.startswith("未命名人物"):
+                            person_descs.append(f"一位未命名人物（人物ID: {pid}）")
+                        else:
+                            person_descs.append(f"{pname}（人物ID: {pid}）")
+                    photo_parts.append(f"照片中出现的人物: {'、'.join(person_descs)}")
+                text_parts.append("，".join(photo_parts) + "。")
                 new_photo_ids.add(photo_id)
                 photo_ids_to_mark.append(photo_id)
 
@@ -252,52 +228,42 @@ class LightRAGSync:
                 pair_key = f"{min(a_id, b_id)}__{max(a_id, b_id)}"
                 if pair_key in prev_co_occ:
                     continue
-                all_relationships.append({
-                    "src_id": f"person:{a_id}",
-                    "tgt_id": f"person:{b_id}",
-                    "keywords": "co_appears_with",
-                    "description": f"Co-occurrence count: {count}",
-                })
+                text_parts.append(f"人物ID {a_id} 和人物ID {b_id} 在照片中共同出现了{count}次。")
                 new_co_occ_ids.add(pair_key)
 
-            # 4. Batch inject all collected data in one call
+            # 4. Batch insert all collected text in one call
             persons_synced = 0
             photos_synced = 0
-            if all_entities or all_relationships or all_chunks:
+            if text_parts:
+                combined_text = "\n".join(text_parts)
                 try:
-                    result = ingester.inject_custom_kg(
-                        entities=all_entities,
-                        relationships=all_relationships,
-                        chunks=all_chunks,
-                    )
+                    result = ingester.lightrag_insert(content=combined_text)
                     if result.get("status") == "ok":
                         persons_synced = len(new_person_ids)
                         photos_synced = len(new_photo_ids)
                         # Mark kg_synced=1 for all synced photos
                         for pid in photo_ids_to_mark:
                             try:
-                                conn.execute(
-                                    "UPDATE photos SET kg_synced = 1 WHERE id = ?",
-                                    (pid,),
-                                )
+                                conn.execute("UPDATE photos SET kg_synced = 1 WHERE id = ?", (pid,))
                             except Exception as kg_err:
                                 logger.warning(f"[LightRAGSync] Failed to mark kg_synced for photo {pid}: {kg_err}")
                         conn.commit()
                         logger.info(
-                            f"[LightRAGSync] Batch injected {len(all_entities)} entities, "
-                            f"{len(all_relationships)} relationships, {len(all_chunks)} chunks"
+                            f"[LightRAGSync] Synced {photos_synced} photos, "
+                            f"{persons_synced} persons, {len(new_co_occ_ids)} co-occurrences "
+                            f"via ainsert ({len(text_parts)} text segments)"
                         )
                     else:
                         logger.warning(
-                            f"[LightRAGSync] Batch inject returned status={result.get('status')}, "
-                            f"not tracking {len(all_entities)} entities"
+                            f"[LightRAGSync] ainsert returned status={result.get('status')}, "
+                            f"not tracking {len(text_parts)} items"
                         )
-                        # Clear new IDs since inject failed — items will be retried next run
+                        # Clear new IDs since insert failed — items will be retried next run
                         new_person_ids.clear()
                         new_photo_ids.clear()
                         new_co_occ_ids.clear()
                 except Exception as e:
-                    logger.error(f"[LightRAGSync] Batch inject failed: {e}")
+                    logger.error(f"[LightRAGSync] Batch ainsert failed: {e}")
                     new_person_ids.clear()
                     new_photo_ids.clear()
                     new_co_occ_ids.clear()
@@ -306,14 +272,8 @@ class LightRAGSync:
         finally:
             conn.close()
 
-    def _sync_vectors_db(self, prev_doc_ids: set) -> tuple[int, set]:
+    def _sync_vectors_db(self) -> tuple[int, set]:
         """Sync documents from vectors.db into LightRAG.
-
-        Only processes documents whose IDs are not in the previous sync state,
-        preventing duplicate ingestion.
-
-        Args:
-            prev_doc_ids: Document IDs already synced in previous runs.
 
         Returns:
             (documents_synced, new_doc_ids)
@@ -323,91 +283,27 @@ class LightRAGSync:
         return 0, set()  # removed: vector-store deleted
         
     def _sync_skills_and_tools(
-        self, prev_skill_ids: set, prev_tool_ids: set
+        self,
     ) -> tuple[int, int, set, set]:
-        """Sync skills into LightRAG knowledge graph.
+        """Skills and tools sync — delegated to SkillSync.
+
+        SkillSync (agent/injector/sync) handles real-time skill synchronization
+        with hash-based change detection, structured injection (inject_custom_kg),
+        and deletion. This method delegates to SkillSync and returns actual counts.
 
         MCP Tools sync removed — tools are discovered via disk YAML in
-        disk mode, not via LightRAG retrieval. Injecting 52+ tool
-        descriptions as chunks triggered massive LLM extraction on
-        every startup, creating spurious entities.
-
-        Uses inject_entities_batch() for a single persist cycle instead of
-        one inject_entity() call per item (which triggers N full persists).
-
-        Only processes items whose IDs are not in the previous sync state,
-        preventing duplicate entity insertion.
-
-        ID tracking sets are populated ONLY after successful batch inject,
-        so a failed inject won't cause items to be permanently skipped.
+        disk mode, not via LightRAG retrieval.
         """
-        skill_items: list[dict] = []
-        new_skill_ids: set = set()
-        new_tool_ids: set = set()
-
-        # --- Collect Skills ---
         try:
-            from agent.injector.sync import SkillSync
-            _skill_sync_helper = SkillSync.__new__(SkillSync)
-
-            base_dir = Path(__file__).parent.parent.parent
-            skills_dir = base_dir / "memory" / "skills"
-
-            if skills_dir.exists():
-                for skill_file in skills_dir.glob("*.md"):
-                    name = skill_file.stem
-                    skill_id = f"skill:{name}"
-                    if skill_id in prev_skill_ids:
-                        continue
-                    try:
-                        content = skill_file.read_text(encoding="utf-8")
-                        fm = _skill_sync_helper._parse_yaml_frontmatter(content)
-                        description = _skill_sync_helper._extract_description(content, fm)
-
-                        if description:
-                            skill_items.append({
-                                "id": skill_id,
-                                "item": {
-                                    "name": f"skill:{name}",
-                                    "entity_type": "Skill",
-                                    "description": description,
-                                    "source_id": f"skill:{name}",
-                                    "chunk_content": f"{name}: {description}",
-                                    "file_path": f"skill://{name}",
-                                },
-                            })
-                    except Exception as e:
-                        logger.debug(f"[LightRAGSync] Skill read failed for '{name}': {e}")
+            from agent.injector.sync import get_skill_sync
+            skill_sync = get_skill_sync(auto_start=False)
+            added, updated, deleted = skill_sync.scan_and_sync()
+            skills_count = added + updated
+            logger.info(f"[LightRAGSync] SkillSync: added={added}, updated={updated}, deleted={deleted}")
+            return skills_count, 0, set(), set()
         except Exception as e:
-            logger.debug(f"[LightRAGSync] Skills scan skipped: {e}")
-
-        # --- MCP Tools sync removed (disk mode) ---
-        # Tools are discovered via disk YAML, not LightRAG.
-        # Previously, injecting 52+ tool descriptions as chunks caused
-        # massive LLM extraction on every startup.
-
-        # --- Batch inject all collected items in one call ---
-        if skill_items:
-            try:
-                from niu_api.internal.lightrag_adapter import LightRAGIngester
-                ingester = LightRAGIngester()
-                result = ingester.inject_entities_batch([e["item"] for e in skill_items])
-                logger.info(
-                    f"[LightRAGSync] Batch injected {len(skill_items)} skills — "
-                    f"{result.get('entities', 0)} entities, {result.get('chunks', 0)} chunks"
-                )
-                # Only track IDs after confirmed successful inject
-                if result.get("status") == "ok":
-                    new_skill_ids = {e["id"] for e in skill_items}
-                else:
-                    logger.error(
-                        f"[LightRAGSync] Batch inject returned status={result.get('status')}, "
-                        f"not tracking {len(skill_items)} item IDs"
-                    )
-            except Exception as e:
-                logger.error(f"[LightRAGSync] Batch inject failed: {e}")
-
-        return len(new_skill_ids), len(new_tool_ids), new_skill_ids, new_tool_ids
+            logger.warning(f"[LightRAGSync] SkillSync delegation failed: {e}")
+            return 0, 0, set(), set()
 
     def _load_status(self) -> dict:
         """Load previous sync status from file.
