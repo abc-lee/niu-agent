@@ -458,14 +458,9 @@ def format_photo_ingest_data(
 
     relationships = []
 
-    # brain:Niu → 照片 remembers 边
-    relationships.append({
-        "src_id": "brain:Niu",
-        "tgt_id": photo_entity_name,
-        "keywords": "remembers",
-        "description": "拥有这张照片",
-        "file_path": normalized_path,
-    })
+    # 注意：照片和人物实体不直接连接 brain:Niu 根节点。
+    # 照片通过 photo → person (features) 关系自然可达。
+    # 脑区归属由 brain_region 系统自动管理（brain:region:影像记忆 → photo）。
 
     # 人物实体 + 关系
     person_names = []
@@ -507,14 +502,9 @@ def format_photo_ingest_data(
             "file_path": normalized_path,
         })
 
-        # brain:Niu → 人物 remembers 边
-        relationships.append({
-            "src_id": "brain:Niu",
-            "tgt_id": entity_name,
-            "keywords": "remembers",
-            "description": f"认识{entity_name}",
-            "file_path": normalized_path,
-        })
+        # 注意：人物实体不直接连接 brain:Niu 根节点。
+        # 人物通过 photo → person (features) 关系自然可达。
+        # 脑区归属由 brain_region 系统自动管理。
 
     # 多人同框：co_occurs_with 双向关系
     # Safety: deduplicate person_names to prevent spurious self-referencing edges
