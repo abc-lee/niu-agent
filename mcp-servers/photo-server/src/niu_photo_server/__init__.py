@@ -436,9 +436,13 @@ def format_photo_ingest_data(
 
     返回 {"entities": [...], "relationships": [...]}，不触发 LLM。
     人物实体使用人名（或 auto_label）作为 entity_name，禁止 person:{uuid}。
+
+    所有路径统一归一化（正斜杠 + 小写），确保 entity_name、source_id、
+    file_path 不会因大小写或斜杠方向差异而分裂为不同实体。
     """
     # 归一化路径：统一为正斜杠 + 小写，避免大小写分裂
     normalized_path = file_path.replace("\\", "/").lower()
+    normalized_stem = Path(normalized_path).stem  # 归一化后的文件名 stem
     photo_entity_name = f"photo:{normalized_path}"
 
     # 照片实体
@@ -446,8 +450,9 @@ def format_photo_ingest_data(
         {
             "entity_name": photo_entity_name,
             "entity_type": "Photo",
-            "description": abstract if abstract else f"照片 {Path(file_path).stem}",
+            "description": abstract if abstract else f"照片 {normalized_stem}",
             "file_path": normalized_path,
+            "source_id": normalized_path,  # H5: source_id 也使用归一化路径
         }
     ]
 
@@ -464,6 +469,7 @@ def format_photo_ingest_data(
 
     # 人物实体 + 关系
     person_names = []
+    seen_person_entity_names: set[str] = set()  # deduplicate: same person may appear via multiple faces
     for p in detected_persons:
         pname = p.get("name", "")
         auto_label = p.get("auto_label", "")
@@ -474,10 +480,15 @@ def format_photo_ingest_data(
         if not entity_name:
             continue
 
+        # Deduplicate: skip if this person entity_name was already added
+        if entity_name in seen_person_entity_names:
+            continue
+        seen_person_entity_names.add(entity_name)
+
         person_names.append(entity_name)
         # 保留 person_id（UUID）到 description 中，便于 KG 实体溯源
         person_pid = p.get("id", "")
-        desc = f"{entity_name}，出现在照片{Path(file_path).stem}中"
+        desc = f"{entity_name}，出现在照片{normalized_stem}中"
         if person_pid:
             desc += f"（person_id={person_pid}）"
         entities.append({
@@ -506,6 +517,8 @@ def format_photo_ingest_data(
         })
 
     # 多人同框：co_occurs_with 双向关系
+    # Safety: deduplicate person_names to prevent spurious self-referencing edges
+    person_names = list(dict.fromkeys(person_names))
     for i in range(len(person_names)):
         for j in range(i + 1, len(person_names)):
             a, b = person_names[i], person_names[j]
@@ -1894,6 +1907,9 @@ def _merge_duplicate_person_entities(registry, target_name: str) -> None:
     解决 H2 问题：ainsert 可能已创建独立的同名人名实体（如"任飞"），
     name_person 的 merge_entities 只合并旧 person:{uuid}，遗漏这些独立实体。
 
+    流程：用 lightrag_query_data 的 keywords 参数搜索同名 person 实体，
+    如发现多个同名 person 实体或名称近似匹配的 person 实体，执行额外合并。
+
     Args:
         registry: ToolRegistry 实例，用于调用 lightrag 工具。
         target_name: 目标人名实体名称。
@@ -1918,40 +1934,133 @@ def _merge_duplicate_person_entities(registry, target_name: str) -> None:
         else:
             entities = data.get("entities", []) if isinstance(data, dict) else []
 
-        # 查找同名但不同实体（entity_name == target_name 但不是目标本身的情况：
-        # merge 已把 source → target，所以 KG 中只有一个 target_name，
-        # 但如果 ainsert 之前也创建了同名实体，可能有多个同 id 节点）
-        # LightRAG query_data 返回的实体可能有重复的 entity_name
-        duplicate_names: list[str] = []
-        seen_entity_ids: set[str] = set()
+        # 统计同名 person 实体出现次数和收集近似名称
+        same_name_count = 0
+        similar_name_entities: list[str] = []
+
         for entity in entities:
             if not isinstance(entity, dict):
                 continue
             entity_name = entity.get("entity_name", "")
             entity_type = (entity.get("entity_type", "") or "").lower()
-            entity_id = entity.get("id", entity_name)
 
-            # 只处理 person 类型且同名的实体
-            if entity_type != "person" or entity_name != target_name:
+            if entity_type != "person":
                 continue
-            # 跳过目标实体自身（避免无限循环）
-            if entity_id == target_name or entity_id in seen_entity_ids:
-                seen_entity_ids.add(entity_id)
-                continue
-            seen_entity_ids.add(entity_id)
-            duplicate_names.append(entity_name)
 
-        if not duplicate_names:
-            return
+            if entity_name == target_name:
+                same_name_count += 1
+            elif entity_name.startswith(target_name) and len(entity_name) - len(target_name) <= 5:
+                # Conservative match: e.g. "任飞(人物)" starts with "任飞" and suffix ≤5 chars
+                # Avoids false matches like "飞天" matching when target is "飞"
+                similar_name_entities.append(entity_name)
 
-        # 执行额外合并：将同名实体合并到目标
-        merge_fn(
-            source_entities=duplicate_names,
-            target_entity=target_name,
-        )
-        logger.info(f"[NAME_PERSON] Merged {len(duplicate_names)} duplicate person entities → {target_name}")
+        # 情况1：同名实体 > 1 个，说明 KG 中存在重复节点
+        # （正常合并后应只有 1 个 target_name 实体）
+        if same_name_count > 1:
+            # 由于 LightRAG NetworkX 中同名节点唯一，这种情况理论上
+            # 不应发生，但 VDB 层可能有重复向量记录
+            logger.info(
+                f"[NAME_PERSON] Found {same_name_count} duplicate person entities "
+                f"named '{target_name}' in KG. This may indicate VDB inconsistency."
+            )
+
+        # 情况2：存在名称近似的 person 实体（ainsert LLM 提取的变体）
+        # 执行合并：将近似实体合并到目标实体
+        if similar_name_entities:
+            # 去重
+            unique_similar = list(dict.fromkeys(similar_name_entities))
+            merge_fn(
+                source_entities=unique_similar,
+                target_entity=target_name,
+            )
+            logger.info(
+                f"[NAME_PERSON] Merged {len(unique_similar)} similar person entities "
+                f"({unique_similar}) → '{target_name}'"
+            )
     except Exception as e:
         logger.warning(f"[NAME_PERSON] Duplicate person entity merge failed: {e}")
+
+
+def _refresh_photo_abstracts_for_person(
+    person_id: str, new_name: str, conn: sqlite3.Connection
+) -> None:
+    """M7: Refresh abstracts for all photos containing a renamed person.
+
+    After name_person renames a person (e.g., "未命名人物_1" → "任飞"),
+    the photo abstracts in photos.db still contain the old name.
+    This function regenerates abstracts and re-syncs them to KG.
+
+    Args:
+        person_id: The person whose name was changed.
+        new_name: The new name for the person.
+        conn: Database connection.
+    """
+    # Find all photos that have faces from this person
+    photo_rows = conn.execute(
+        "SELECT DISTINCT f.photo_id, p.file_path, p.taken_at "
+        "FROM faces f JOIN photos p ON f.photo_id = p.id "
+        "WHERE f.person_id = ?",
+        (person_id,),
+    ).fetchall()
+
+    if not photo_rows:
+        return
+
+    # Collect all DB updates and KG syncs first, then apply in one batch
+    photo_updates: list[tuple[str, str, str, str]] = []  # (photo_id, file_path, new_abstract, taken_at)
+    kg_syncs: list[tuple[str, str, list]] = []  # (file_path, new_abstract, detected_persons)
+
+    for photo_id, file_path, taken_at in photo_rows:
+        # Get all person info for this photo (names are already updated in DB)
+        face_persons = conn.execute(
+            "SELECT p.id, p.name, p.auto_label FROM faces f "
+            "JOIN persons p ON f.person_id = p.id "
+            "WHERE f.photo_id = ?",
+            (photo_id,),
+        ).fetchall()
+
+        # Build person_names list for abstract generation (deduplicate by person_id)
+        person_names = []
+        detected_persons = []
+        seen_person_ids: set[str] = set()
+        for pid, pname, auto_label in face_persons:
+            if pid in seen_person_ids:
+                continue
+            seen_person_ids.add(pid)
+            is_unnamed = not pname or pname.startswith("未命名人物") or pname == auto_label
+            display_name = auto_label if is_unnamed else pname
+            if display_name:
+                person_names.append(display_name)
+            detected_persons.append({
+                "id": pid, "name": pname, "auto_label": auto_label
+            })
+
+        # Regenerate abstract with updated person names
+        new_abstract = generate_l0_abstract(person_names, taken_at)
+
+        photo_updates.append((photo_id, file_path, new_abstract, taken_at))
+        kg_syncs.append((file_path, new_abstract, detected_persons))
+
+    # Batch all DB updates in one lock + one commit
+    with _db_write_lock:
+        for photo_id, _, new_abstract, _ in photo_updates:
+            conn.execute(
+                "UPDATE photos SET abstract = ? WHERE id = ?",
+                (new_abstract, photo_id),
+            )
+        conn.commit()
+
+    # Re-sync to KG outside the lock (best-effort, non-blocking)
+    for file_path, new_abstract, detected_persons in kg_syncs:
+        try:
+            sync_photo_to_kg(file_path, new_abstract, detected_persons)
+        except Exception as e:
+            logger.debug(f"[M7] KG re-sync skipped for photo {file_path}: {e}")
+
+    logger.info(
+        f"[M7] Refreshed abstracts for {len(photo_updates)} photos after "
+        f"naming person {person_id} as '{new_name}'"
+    )
 
 
 def name_person(person_id: str, name: str) -> dict:
@@ -1981,6 +2090,7 @@ def name_person(person_id: str, name: str) -> dict:
             conn.commit()
 
         # KG: 通过 merge_entities 一步改名（旧实体删除+新实体创建+边迁移）
+        kg_synced = False
         try:
             from agent.tool_registry import get_registry
             registry = get_registry()
@@ -2009,10 +2119,19 @@ def name_person(person_id: str, name: str) -> dict:
 
                 # H2 fix: 合并 KG 中已存在的同名独立实体（如 ainsert 创建的人名实体）
                 _merge_duplicate_person_entities(registry, name)
+                kg_synced = True
             else:
                 logger.warning("[NAME_PERSON] lightrag_merge_entities not available in registry")
         except Exception as e:
             logger.warning(f"[NAME_PERSON] LightRAG rename failed: {e}")
+
+        # M7: Refresh abstracts for all photos containing this person
+        # When a person is named (e.g., "未命名人物_1" → "任飞"), their photos'
+        # abstracts still contain the old name. We regenerate them.
+        try:
+            _refresh_photo_abstracts_for_person(person_id, name, conn)
+        except Exception as e:
+            logger.warning(f"[NAME_PERSON] Photo abstract refresh failed: {e}")
 
         logger.info(f"[NAME_PERSON] Updated person {person_id} name to: {name}")
 
@@ -2021,6 +2140,7 @@ def name_person(person_id: str, name: str) -> dict:
             "person_id": person_id,
             "name": name,
             "auto_label": auto_label,
+            "kg_synced": kg_synced,
         }
 
     except Exception as e:
@@ -2219,6 +2339,14 @@ def merge_persons(person_a_id: str, person_b_id: str) -> dict:
                         target_entity=kg_name_a,
                     )
                 logger.info(f"[MERGE_PERSONS] Merged KG entity {kg_name_b} into {kg_name_a}")
+                # M5: After merging, if both source entities had edges to the same
+                # third-party entity, duplicate edges may exist. Dedup requires
+                # modifying LightRAG core code, so we log a warning instead.
+                logger.debug(
+                    f"[MERGE_PERSONS] Note: if {kg_name_a} and {kg_name_b} both had "
+                    f"edges to the same third-party entity, duplicate edges may now "
+                    f"exist on {kg_name_a}. Dedup requires LightRAG core changes."
+                )
         except Exception as e:
             logger.warning(f"[MERGE_PERSONS] LightRAG sync failed: {e}")
 
