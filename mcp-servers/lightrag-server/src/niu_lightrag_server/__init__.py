@@ -10,6 +10,8 @@ Tool groups:
 - Manage (6): lightrag_delete_document, lightrag_delete_entity, lightrag_document_status, lightrag_get_document, lightrag_list_entities, lightrag_merge_entities
 """
 
+import re
+
 from typing import Any, Dict, List, Optional
 import inspect
 import threading
@@ -48,6 +50,31 @@ def _get_pipeline_enqueue_file():
     if _pipeline_enqueue_file is None:
         raise RuntimeError("pipeline_enqueue_file was not imported at module load time")
     return _pipeline_enqueue_file
+
+
+# ============== Entity Name Normalization (M1 fix) ==============
+
+# Known entity name prefixes that should be lowercased to prevent
+# case-variant fragmentation (e.g., "Brain:Niu" vs "brain:Niu").
+_KNOWN_PREFIXES = re.compile(
+    r'^(brain|person|photo|location|skill|tool|concept):',
+    re.IGNORECASE,
+)
+
+
+def _normalize_entity_name(name: str) -> str:
+    """Normalize entity name: lowercase known prefixes to prevent case fragmentation.
+
+    LLM-extracted entities may use inconsistent casing for prefixes
+    (e.g., "Brain:Niu" vs "brain:Niu"). This function normalizes
+    known prefixes to lowercase so they always produce the same
+    entity node in the knowledge graph.
+
+    Non-prefixed names are returned unchanged.
+    """
+    return _KNOWN_PREFIXES.sub(
+        lambda m: m.group(1).lower() + ':', name
+    )
 
 
 # ============== Singleton Accessors ==============
@@ -882,12 +909,34 @@ def lightrag_insert_custom_kg(
     chunks: Optional[List[Dict[str, Any]]] = None,
     source_id: str = "custom_kg",
 ) -> Dict[str, Any]:
-    """Inject structured knowledge directly."""
+    """Inject structured knowledge directly.
+
+    Entity names and relationship src_id/tgt_id are normalized to lowercase
+    known prefixes (brain, person, photo, location, skill, tool, concept)
+    before injection, preventing case-variant fragmentation.
+    """
     try:
+        # M1: Normalize entity names and relationship endpoints
+        # to prevent case-variant fragmentation (e.g., Brain:Niu vs brain:Niu)
+        normalized_entities = []
+        for e in (entities or []):
+            ne = dict(e)  # shallow copy — immutable pattern
+            en = ne.get("entity_name") or ne.get("name")
+            if en:
+                ne["entity_name"] = _normalize_entity_name(en)
+            normalized_entities.append(ne)
+
+        normalized_relationships = []
+        for r in (relationships or []):
+            nr = dict(r)  # shallow copy — immutable pattern
+            nr["src_id"] = _normalize_entity_name(nr.get("src_id") or "")
+            nr["tgt_id"] = _normalize_entity_name(nr.get("tgt_id") or "")
+            normalized_relationships.append(nr)
+
         ingester = _get_ingester()
         return ingester.inject_custom_kg(
-            entities=entities or [],
-            relationships=relationships or [],
+            entities=normalized_entities,
+            relationships=normalized_relationships,
             chunks=chunks or [],
             source_id=source_id,
         )
@@ -924,6 +973,9 @@ def lightrag_insert_entity(
     # satisfy static analysis (callers still pass them by keyword).
     _ = source_id, skip_llm_extraction
     try:
+        # M1: Normalize entity name to prevent case fragmentation
+        normalized_name = _normalize_entity_name(name)
+
         niu_relation_map = {
             "Person": "remembers",
             "Skill": "skilled_in",
@@ -934,7 +986,7 @@ def lightrag_insert_entity(
 
         # Build entity dict for inject_custom_kg
         entity = {
-            "entity_name": name,
+            "entity_name": normalized_name,
             "entity_type": entity_type,
             "description": description,
             "source_id": file_path,
@@ -944,9 +996,9 @@ def lightrag_insert_entity(
         # Build brain:Niu -> entity anchor relationship
         anchor_rel = {
             "src_id": "brain:Niu",
-            "tgt_id": name,
+            "tgt_id": normalized_name,
             "keywords": niu_relation,
-            "description": f"Niu {niu_relation} {name}",
+            "description": f"Niu {niu_relation} {normalized_name}",
             "source_id": file_path,
             "file_path": file_path,
         }
@@ -987,10 +1039,14 @@ def lightrag_insert_relation(
     """
     _ = source_id  # kept for MCP schema compatibility (deprecated)
     try:
+        # M1: Normalize src_id and tgt_id to prevent case fragmentation
+        norm_src = _normalize_entity_name(src_id)
+        norm_tgt = _normalize_entity_name(tgt_id)
+
         # Build relationship dict for inject_custom_kg
         rel = {
-            "src_id": src_id,
-            "tgt_id": tgt_id,
+            "src_id": norm_src,
+            "tgt_id": norm_tgt,
             "keywords": relation,
             "description": description,
             "source_id": file_path,

@@ -950,12 +950,15 @@ class LightRAGAdapter:
             return {"status": "error", "message": "LightRAG not available"}
 
         # Resolve entity names with case-insensitive fallback.
-        # Build a snapshot of the graph for consistent reads (the graph
-        # can be mutated by background sync while we iterate).
+        # Take a snapshot under read lock to prevent RuntimeError from
+        # concurrent graph modification by background sync (lightrag_sync, region_sync).
+        from niu_api.internal.lightrag_manager import graph_read_lock
+
         graph_obj = rag.chunk_entity_relation_graph
-        nx_graph = graph_obj._graph if hasattr(graph_obj, "_graph") else graph_obj
-        if nx_graph is None:
+        if graph_obj is None:
             return {"status": "error", "message": "Knowledge graph not available"}
+        with graph_read_lock():
+            nx_graph = (graph_obj._graph.copy() if hasattr(graph_obj, "_graph") else graph_obj.copy())
 
         resolved_sources: List[str] = []
         unresolved_sources: List[str] = []
