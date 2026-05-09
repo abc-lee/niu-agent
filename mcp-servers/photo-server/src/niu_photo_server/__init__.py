@@ -429,58 +429,132 @@ def call_embedding_service(endpoint: str, data: dict) -> dict | None:
 # ============== 知识图谱同步 ==============
 
 
-def format_photo_ingest_text(file_path: str, abstract: str, detected_persons: list) -> str:
-    """格式化照片信息为结构化文本，供 LightRAG ainsert 自动提取"""
-    title = Path(file_path).stem
-    parts = []
-    parts.append(f"照片文件 {title}（照片ID: {file_path}）")
+def format_photo_ingest_data(
+    file_path: str, abstract: str, detected_persons: list
+) -> dict:
+    """格式化照片信息为结构化实体+关系，供 inject_custom_kg 一次性注入。
 
-    if abstract:
-        # 过滤掉"未命名人物"名称，保留时间和地点信息
-        abs_parts = abstract.split("，")
-        filtered = [p for p in abs_parts if not p.startswith("未命名人物")]
-        if filtered:
-            parts.append("，".join(filtered))
+    返回 {"entities": [...], "relationships": [...]}，不触发 LLM。
+    人物实体使用人名（或 auto_label）作为 entity_name，禁止 person:{uuid}。
+    """
+    # 归一化路径：统一为正斜杠 + 小写，避免大小写分裂
+    normalized_path = file_path.replace("\\", "/").lower()
+    photo_entity_name = f"photo:{normalized_path}"
 
-    if detected_persons:
-        person_descs = []
-        for p in detected_persons:
-            pid = p.get("id", "")
-            pname = p.get("name", "")
-            if pname.startswith("未命名人物"):
-                person_descs.append(f"一位未命名人物（人物ID: {pid}）")
-            else:
-                person_descs.append(f"{pname}（人物ID: {pid}）")
-        parts.append(f"照片中出现的人物: {'、'.join(person_descs)}")
+    # 照片实体
+    entities = [
+        {
+            "entity_name": photo_entity_name,
+            "entity_type": "Photo",
+            "description": abstract if abstract else f"照片 {Path(file_path).stem}",
+            "file_path": normalized_path,
+        }
+    ]
 
-    return "，".join(parts) + "。"
+    relationships = []
+
+    # brain:Niu → 照片 remembers 边
+    relationships.append({
+        "src_id": "brain:Niu",
+        "tgt_id": photo_entity_name,
+        "keywords": "remembers",
+        "description": "拥有这张照片",
+        "file_path": normalized_path,
+    })
+
+    # 人物实体 + 关系
+    person_names = []
+    for p in detected_persons:
+        pname = p.get("name", "")
+        auto_label = p.get("auto_label", "")
+        # 已命名用真名，未命名用 auto_label
+        # 未命名判定：name 为空 / name 以"未命名人物"开头 / name 与 auto_label 相同
+        is_unnamed = not pname or pname.startswith("未命名人物") or pname == auto_label
+        entity_name = auto_label if is_unnamed else pname
+        if not entity_name:
+            continue
+
+        person_names.append(entity_name)
+        # 保留 person_id（UUID）到 description 中，便于 KG 实体溯源
+        person_pid = p.get("id", "")
+        desc = f"{entity_name}，出现在照片{Path(file_path).stem}中"
+        if person_pid:
+            desc += f"（person_id={person_pid}）"
+        entities.append({
+            "entity_name": entity_name,
+            "entity_type": "person",
+            "description": desc,
+            "file_path": normalized_path,
+        })
+
+        # 照片 → 人物 features 边
+        relationships.append({
+            "src_id": photo_entity_name,
+            "tgt_id": entity_name,
+            "keywords": "features",
+            "description": f"照片中出现了{entity_name}",
+            "file_path": normalized_path,
+        })
+
+        # brain:Niu → 人物 remembers 边
+        relationships.append({
+            "src_id": "brain:Niu",
+            "tgt_id": entity_name,
+            "keywords": "remembers",
+            "description": f"认识{entity_name}",
+            "file_path": normalized_path,
+        })
+
+    # 多人同框：co_occurs_with 双向关系
+    for i in range(len(person_names)):
+        for j in range(i + 1, len(person_names)):
+            a, b = person_names[i], person_names[j]
+            relationships.append({
+                "src_id": a,
+                "tgt_id": b,
+                "keywords": "co_occurs_with",
+                "description": f"{a}和{b}同框出现",
+                "file_path": normalized_path,
+            })
+
+    return {"entities": entities, "relationships": relationships}
 
 
 def sync_photo_to_kg(file_path: str, abstract: str, detected_persons: list) -> dict:
-    """同步照片信息到知识图谱（通过 ainsert 自动提取实体/关系）"""
+    """同步照片信息到知识图谱（通过 inject_custom_kg 结构化注入，不触发 LLM）"""
     try:
         from agent.tool_registry import get_registry
 
-        text = format_photo_ingest_text(file_path, abstract, detected_persons)
+        data = format_photo_ingest_data(file_path, abstract, detected_persons)
         registry = get_registry()
-        insert_fn = registry.get("lightrag-server/lightrag_insert")
-        if insert_fn:
-            result = insert_fn(content=text)
-            logger.info(f"[KG] Photo ingested via ainsert: {file_path}, result={result}")
-        else:
-            logger.warning("[KG] lightrag_insert not available in registry")
+        inject_fn = registry.get("lightrag-server/lightrag_insert_custom_kg")
+        if not inject_fn:
+            logger.warning("[KG] lightrag_insert_custom_kg not available in registry")
+            return {"status": "error", "reason": "lightrag_insert_custom_kg not available"}
 
-        # Mark photo as KG-synced to prevent lightrag_sync re-processing
-        try:
-            with _db_write_lock:
-                conn = get_connection()
-                conn.execute(
-                    "UPDATE photos SET kg_synced = 1 WHERE file_path = ?",
-                    (file_path,),
-                )
-                conn.commit()
-        except Exception as e:
-            logger.warning(f"[KG] Failed to mark kg_synced for {file_path}: {e}")
+        result = inject_fn(
+            entities=data["entities"],
+            relationships=data["relationships"],
+            chunks=[],  # 无 chunks → 不触发 LLM → 100%可靠
+            source_id=f"photo:{file_path.replace(chr(92), '/').lower()}",
+        )
+        logger.info(f"[KG] Photo ingested via inject_custom_kg: {file_path}, result={result}")
+
+        # Only mark as KG-synced if injection succeeded
+        if result and result.get("status") == "ok":
+            try:
+                with _db_write_lock:
+                    conn = get_connection()
+                    conn.execute(
+                        "UPDATE photos SET kg_synced = 1 WHERE file_path = ?",
+                        (file_path,),
+                    )
+                    conn.commit()
+            except Exception as e:
+                logger.warning(f"[KG] Failed to mark kg_synced for {file_path}: {e}")
+        else:
+            logger.warning(f"[KG] inject_custom_kg returned error for {file_path}: {result}")
+            return {"status": "error", "reason": f"inject_custom_kg failed: {result}"}
 
         return {"status": "success", "doc_uri": file_path}
 
@@ -1139,9 +1213,20 @@ def delete_person(person_id: str) -> dict:
         conn.commit()
 
     # 同步删除知识图谱中的实体
-    # Note: LightRAG doesn't support direct entity deletion by name;
-    # for person entities, we rely on the graph's natural cleanup.
-    logger.info(f"[DELETE_PERSON] LightRAG entity cleanup for person:{person_id}")
+    if person_name:
+        try:
+            from agent.tool_registry import get_registry
+            registry = get_registry()
+            delete_fn = registry.get("lightrag-server/lightrag_delete_entity")
+            if delete_fn:
+                delete_fn(entity_name=person_name)
+                logger.info(f"[DELETE_PERSON] KG entity deleted: {person_name}")
+            else:
+                logger.warning("[DELETE_PERSON] lightrag_delete_entity not available in registry")
+        except Exception as e:
+            logger.warning(f"[DELETE_PERSON] LightRAG entity deletion failed: {e}")
+    else:
+        logger.warning(f"[DELETE_PERSON] No entity name for person {person_id}, skipping KG deletion")
 
     return {
         "status": "success",
@@ -1669,6 +1754,7 @@ def ingest_photo(file_path: str, category: str | None = None) -> dict:
                             {
                                 "id": person_id,
                                 "name": person_name,
+                                "auto_label": row[1],  # auto_label 列，供 KG 实体命名使用
                                 "similarity": similarity,
                                 "bbox": face_data.get(
                                     "bbox", []
@@ -1802,14 +1888,80 @@ def ingest_photo(file_path: str, category: str | None = None) -> dict:
         }
 
 
+def _merge_duplicate_person_entities(registry, target_name: str) -> None:
+    """查询 KG 中是否存在与 target_name 同名的独立 person 实体，如有则合并。
+
+    解决 H2 问题：ainsert 可能已创建独立的同名人名实体（如"任飞"），
+    name_person 的 merge_entities 只合并旧 person:{uuid}，遗漏这些独立实体。
+
+    Args:
+        registry: ToolRegistry 实例，用于调用 lightrag 工具。
+        target_name: 目标人名实体名称。
+    """
+    try:
+        query_fn = registry.get("lightrag-server/lightrag_query_data")
+        merge_fn = registry.get("lightrag-server/lightrag_merge_entities")
+        if not query_fn or not merge_fn:
+            logger.debug("[NAME_PERSON] query_data or merge_entities not available, skip duplicate merge")
+            return
+
+        # 用 keywords 精确搜索，避免 LLM 提取延迟
+        result = query_fn(query=target_name, mode="local", keywords=[target_name], top_k=20)
+
+        if not result or result.get("status") in ("no_results", "error"):
+            return
+
+        # 提取实体列表
+        data = result.get("data", result) if isinstance(result, dict) else {}
+        if isinstance(data, list):
+            entities = data
+        else:
+            entities = data.get("entities", []) if isinstance(data, dict) else []
+
+        # 查找同名但不同实体（entity_name == target_name 但不是目标本身的情况：
+        # merge 已把 source → target，所以 KG 中只有一个 target_name，
+        # 但如果 ainsert 之前也创建了同名实体，可能有多个同 id 节点）
+        # LightRAG query_data 返回的实体可能有重复的 entity_name
+        duplicate_names: list[str] = []
+        seen_entity_ids: set[str] = set()
+        for entity in entities:
+            if not isinstance(entity, dict):
+                continue
+            entity_name = entity.get("entity_name", "")
+            entity_type = (entity.get("entity_type", "") or "").lower()
+            entity_id = entity.get("id", entity_name)
+
+            # 只处理 person 类型且同名的实体
+            if entity_type != "person" or entity_name != target_name:
+                continue
+            # 跳过目标实体自身（避免无限循环）
+            if entity_id == target_name or entity_id in seen_entity_ids:
+                seen_entity_ids.add(entity_id)
+                continue
+            seen_entity_ids.add(entity_id)
+            duplicate_names.append(entity_name)
+
+        if not duplicate_names:
+            return
+
+        # 执行额外合并：将同名实体合并到目标
+        merge_fn(
+            source_entities=duplicate_names,
+            target_entity=target_name,
+        )
+        logger.info(f"[NAME_PERSON] Merged {len(duplicate_names)} duplicate person entities → {target_name}")
+    except Exception as e:
+        logger.warning(f"[NAME_PERSON] Duplicate person entity merge failed: {e}")
+
+
 def name_person(person_id: str, name: str) -> dict:
     """Name an existing person."""
     try:
         conn = get_connection()
 
-        # Check if person exists
+        # Check if person exists (query name + auto_label for KG merge)
         cursor = conn.execute(
-            "SELECT id, auto_label FROM persons WHERE id = ?", (person_id,)
+            "SELECT id, name, auto_label FROM persons WHERE id = ?", (person_id,)
         )
         row = cursor.fetchone()
 
@@ -1820,24 +1972,47 @@ def name_person(person_id: str, name: str) -> dict:
                 "message": f"Person not found: {person_id}",
             }
 
+        current_name = row[1]  # name column
+        auto_label = row[2]    # auto_label column
+
         # Update name
         with _db_write_lock:
             conn.execute("UPDATE persons SET name = ? WHERE id = ?", (name, person_id))
             conn.commit()
 
-        # KG: 通过 ainsert 传入命名关联文本，LightRAG 自动建立 UUID-真名关联
+        # KG: 通过 merge_entities 一步改名（旧实体删除+新实体创建+边迁移）
         try:
             from agent.tool_registry import get_registry
             registry = get_registry()
-            insert_fn = registry.get("lightrag-server/lightrag_insert")
-            if insert_fn:
-                rename_text = f"人物ID为 {person_id} 的人，用户确认其姓名为{name}。"
-                insert_fn(content=rename_text)
-                logger.info(f"[NAME_PERSON] KG rename ingested: person_id={person_id}, name={name}")
+            # 源实体：已命名用当前名，未命名用 auto_label
+            source_entity = current_name if current_name else auto_label
+            merge_fn = registry.get("lightrag-server/lightrag_merge_entities")
+            inject_fn = registry.get("lightrag-server/lightrag_insert_custom_kg")
+            # 先确保目标实体存在（merge_entities 不创建新实体，只迁移边）
+            if inject_fn:
+                inject_fn(
+                    entities=[{
+                        "entity_name": name,
+                        "entity_type": "person",
+                        "description": f"{name}，原名{source_entity}",
+                    }],
+                    relationships=[],
+                    chunks=[],
+                    source_id=f"rename:{source_entity}",
+                )
+            if merge_fn:
+                merge_fn(
+                    source_entities=[source_entity],
+                    target_entity=name,
+                )
+                logger.info(f"[NAME_PERSON] KG renamed: {source_entity} → {name}")
+
+                # H2 fix: 合并 KG 中已存在的同名独立实体（如 ainsert 创建的人名实体）
+                _merge_duplicate_person_entities(registry, name)
             else:
-                logger.warning("[NAME_PERSON] lightrag_insert not available in registry")
+                logger.warning("[NAME_PERSON] lightrag_merge_entities not available in registry")
         except Exception as e:
-            logger.warning(f"[NAME_PERSON] LightRAG sync failed: {e}")
+            logger.warning(f"[NAME_PERSON] LightRAG rename failed: {e}")
 
         logger.info(f"[NAME_PERSON] Updated person {person_id} name to: {name}")
 
@@ -1845,7 +2020,7 @@ def name_person(person_id: str, name: str) -> dict:
             "status": "success",
             "person_id": person_id,
             "name": name,
-            "auto_label": row[1],
+            "auto_label": auto_label,
         }
 
     except Exception as e:
@@ -2009,35 +2184,41 @@ def merge_persons(person_a_id: str, person_b_id: str) -> dict:
                     pass
             raise
 
-        # 同步 LightRAG：更新 person_a 实体，合并 person_b 的关系到 person_a
+        # 同步 LightRAG：更新目标实体描述，合并源实体关系到目标实体
         try:
             from agent.tool_registry import get_registry
 
             registry = get_registry()
-            merged_name = name_a if name_a else auto_label_a
-            entity_a = f"person:{person_a_id}"
-            entity_b = f"person:{person_b_id}"
+            # KG 实体名：已命名用 name，未命名用 auto_label
+            kg_name_a = name_a if name_a else auto_label_a
+            name_b = person_b[1]
+            auto_label_b = person_b[2]
+            kg_name_b = name_b if name_b else auto_label_b
 
-            # 1. 更新 person_a 实体
-            insert_entity = registry.get("lightrag-server/lightrag_insert_entity")
-            if insert_entity:
-                # skip_llm_extraction=True: 合并后的人名不应触发 LLM 提取，
-                # 否则 LLM 会创建独立的人名实体，与 person:uuid 断裂
-                insert_entity(
-                    name=entity_a,
-                    entity_type="Person",
-                    description=merged_name,
-                    skip_llm_extraction=True,
+            # 1. 用 inject_custom_kg 确保目标实体存在并更新描述（chunks=[] → 不触发 LLM）
+            inject_fn = registry.get("lightrag-server/lightrag_insert_custom_kg")
+            if not inject_fn:
+                logger.warning("[MERGE_PERSONS] lightrag_insert_custom_kg not available, skipping KG sync")
+            else:
+                inject_fn(
+                    entities=[{
+                        "entity_name": kg_name_a,
+                        "entity_type": "person",
+                        "description": f"{kg_name_a}，合并自{kg_name_b}",
+                    }],
+                    relationships=[],
+                    chunks=[],
+                    source_id=f"merge:{kg_name_a}",
                 )
 
-            # 2. 合并：person_b 的边迁移到 person_a，然后删除 person_b
-            merge_entities = registry.get("lightrag-server/lightrag_merge_entities")
-            if merge_entities:
-                merge_entities(
-                    source_entities=[entity_b],
-                    target_entity=entity_a,
-                )
-            logger.info(f"[MERGE_PERSONS] Merged KG entity {entity_b} into {entity_a}")
+                # 2. 合并：kg_name_b 的边迁移到 kg_name_a（依赖步骤1确保目标实体存在）
+                merge_fn = registry.get("lightrag-server/lightrag_merge_entities")
+                if merge_fn:
+                    merge_fn(
+                        source_entities=[kg_name_b],
+                        target_entity=kg_name_a,
+                    )
+                logger.info(f"[MERGE_PERSONS] Merged KG entity {kg_name_b} into {kg_name_a}")
         except Exception as e:
             logger.warning(f"[MERGE_PERSONS] LightRAG sync failed: {e}")
 

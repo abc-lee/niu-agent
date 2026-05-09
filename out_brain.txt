@@ -20,12 +20,7 @@ _STATIC_BRAIN_REGION_PROMPT = """\
 - `brain:region:文档库` — 文档内容的实体
 - `brain:region:知识体系` — 结构化知识、概念等实体
 
-提取实体时根据语义归入对应脑区，无法判断的归入"知识体系"。
-
-## 命名约定
-
-- `未命名人物_{n}` 是人物实体的临时命名方法，命名后会改为真实姓名。
-- 如果图谱中已存在同名实体，更新描述即可，不要创建新实体。"""
+提取实体时根据语义归入对应脑区，无法判断的归入"知识体系"。"""
 
 
 def is_lightrag_extraction_request(messages: list[dict]) -> bool:
