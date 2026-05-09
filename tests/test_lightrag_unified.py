@@ -291,12 +291,12 @@ class TestPersonEntityStructure:
 
 
 class TestNamePersonKGSync:
-    """Verify name_person uses lightrag-server/lightrag_insert_entity via ToolRegistry."""
+    """Verify name_person uses lightrag-server tools via ToolRegistry."""
 
     @patch("niu_photo_server.get_connection")
     @patch("agent.tool_registry.get_registry")
-    def test_name_person_calls_lightrag_insert_entity(self, mock_get_registry, mock_get_conn):
-        """name_person must call lightrag-server/lightrag_insert_entity via ToolRegistry."""
+    def test_name_person_calls_lightrag_tools(self, mock_get_registry, mock_get_conn):
+        """name_person must call lightrag-server/lightrag_insert_custom_kg and lightrag_merge_entities via ToolRegistry."""
         # Setup mock DB connection
         mock_conn = MagicMock()
         mock_cursor = MagicMock()
@@ -305,10 +305,19 @@ class TestNamePersonKGSync:
         mock_conn.commit.return_value = None
         mock_get_conn.return_value = mock_conn
 
-        # Setup mock ToolRegistry
-        mock_insert_entity = MagicMock(return_value={"status": "ok"})
+        # Setup mock ToolRegistry with separate mock functions
+        mock_insert_custom_kg = MagicMock(return_value={"status": "ok"})
+        mock_merge_entities = MagicMock(return_value={"status": "ok"})
         mock_registry = MagicMock()
-        mock_registry.get.return_value = mock_insert_entity
+
+        def registry_get(tool_name):
+            if tool_name == "lightrag-server/lightrag_insert_custom_kg":
+                return mock_insert_custom_kg
+            elif tool_name == "lightrag-server/lightrag_merge_entities":
+                return mock_merge_entities
+            return None
+
+        mock_registry.get.side_effect = registry_get
         mock_get_registry.return_value = mock_registry
 
         from niu_photo_server import name_person
@@ -317,13 +326,19 @@ class TestNamePersonKGSync:
 
         # Verify ToolRegistry was used
         mock_get_registry.assert_called_once()
-        mock_registry.get.assert_called_once_with("lightrag-server/lightrag_insert_entity")
+        mock_registry.get.assert_any_call("lightrag-server/lightrag_merge_entities")
+        mock_registry.get.assert_any_call("lightrag-server/lightrag_insert_custom_kg")
 
-        # Verify correct parameters passed to lightrag_insert_entity
-        mock_insert_entity.assert_called_once_with(
-            name="person:person_001",
-            entity_type="Person",
-            description="Alice",
+        # Verify insert_custom_kg called to create target entity
+        mock_insert_custom_kg.assert_called_once_with(
+            entities=[{
+                "entity_name": "Alice",
+                "entity_type": "person",
+                "description": "Alice，原名OldName",
+            }],
+            relationships=[],
+            chunks=[],
+            source_id="rename:OldName",
         )
 
         # Verify the function still returns success
@@ -584,18 +599,18 @@ class TestMergePersonsKGSync:
     @patch("niu_photo_server.get_connection")
     @patch("agent.tool_registry.get_registry")
     def test_merge_persons_calls_lightrag_tools(self, mock_get_registry, mock_get_conn):
-        """merge_persons must call lightrag_insert_entity and lightrag_merge_entities via ToolRegistry."""
+        """merge_persons must call lightrag_insert_custom_kg and lightrag_merge_entities via ToolRegistry."""
         mock_conn = self._make_mock_conn()
         mock_get_conn.return_value = mock_conn
 
         # Setup mock ToolRegistry with separate mock functions for each tool
-        mock_insert_entity = MagicMock(return_value={"status": "ok"})
+        mock_insert_custom_kg = MagicMock(return_value={"status": "ok"})
         mock_merge_entities = MagicMock(return_value={"status": "ok"})
         mock_registry = MagicMock()
 
         def registry_get(tool_name):
-            if tool_name == "lightrag-server/lightrag_insert_entity":
-                return mock_insert_entity
+            if tool_name == "lightrag-server/lightrag_insert_custom_kg":
+                return mock_insert_custom_kg
             elif tool_name == "lightrag-server/lightrag_merge_entities":
                 return mock_merge_entities
             return MagicMock()
@@ -610,21 +625,17 @@ class TestMergePersonsKGSync:
         # Verify ToolRegistry was used for both tools
         mock_get_registry.assert_called_once()
         assert mock_registry.get.call_count == 2
-        mock_registry.get.assert_any_call("lightrag-server/lightrag_insert_entity")
+        mock_registry.get.assert_any_call("lightrag-server/lightrag_insert_custom_kg")
         mock_registry.get.assert_any_call("lightrag-server/lightrag_merge_entities")
 
-        # Verify lightrag_insert_entity called to update person_a name
-        mock_insert_entity.assert_called_once_with(
-            name="person:person_a",
-            entity_type="Person",
-            description="Alice",
-        )
+        # Verify lightrag_insert_custom_kg called to create/update person_a entity
+        mock_insert_custom_kg.assert_called_once()
 
         # Verify lightrag_merge_entities called with correct parameters
-        # source_entities is a list, target_entity is a string
+        # merge_persons uses KG entity names (name_a, auto_label_b) not person IDs
         mock_merge_entities.assert_called_once_with(
-            source_entities=["person:person_b"],
-            target_entity="person:person_a",
+            source_entities=["auto_b"],
+            target_entity="Alice",
         )
 
         # Verify the function still returns success
@@ -660,13 +671,13 @@ class TestMergePersonsKGSync:
         mock_get_conn.return_value = mock_conn
 
         # Setup mock ToolRegistry
-        mock_insert_entity = MagicMock(return_value={"status": "ok"})
+        mock_insert_custom_kg = MagicMock(return_value={"status": "ok"})
         mock_merge_entities = MagicMock(return_value={"status": "ok"})
         mock_registry = MagicMock()
 
         def registry_get(tool_name):
-            if tool_name == "lightrag-server/lightrag_insert_entity":
-                return mock_insert_entity
+            if tool_name == "lightrag-server/lightrag_insert_custom_kg":
+                return mock_insert_custom_kg
             elif tool_name == "lightrag-server/lightrag_merge_entities":
                 return mock_merge_entities
             return MagicMock()
