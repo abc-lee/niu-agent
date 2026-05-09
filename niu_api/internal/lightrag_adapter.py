@@ -892,6 +892,45 @@ class LightRAGAdapter:
             logger.error(f"LightRAG list_entities failed: {e}")
             return {"status": "error", "message": str(e)}
 
+    def _resolve_entity_name_case_insensitive(
+        self, entity_name: str, nx_graph
+    ) -> Optional[str]:
+        """Resolve entity name with case-insensitive fallback.
+
+        Tries exact match first. If that fails, searches all graph nodes
+        for a case-insensitive match. Returns the canonical name from the
+        graph, or None if not found at all.
+
+        Args:
+            entity_name: The entity name to resolve.
+            nx_graph: NetworkX graph instance (snapshot, not live graph).
+
+        Returns:
+            Canonical entity name from graph, or None if not found.
+        """
+        if nx_graph.has_node(entity_name):
+            return entity_name
+
+        logger.warning(
+            "Entity '%s' not found in graph, trying case-insensitive match",
+            entity_name,
+        )
+        entity_name_lower = entity_name.lower()
+        for node_name in nx_graph.nodes():
+            if node_name.lower() == entity_name_lower:
+                logger.info(
+                    "Case-insensitive match: '%s' resolved to '%s'",
+                    entity_name,
+                    node_name,
+                )
+                return node_name
+
+        logger.error(
+            "Entity '%s' not found in graph (case-insensitive also failed)",
+            entity_name,
+        )
+        return None
+
     def merge_entities(
         self,
         source_entities: List[str],
@@ -909,13 +948,63 @@ class LightRAGAdapter:
         rag = self._get_rag()
         if rag is None:
             return {"status": "error", "message": "LightRAG not available"}
+
+        # Resolve entity names with case-insensitive fallback.
+        # Build a snapshot of the graph for consistent reads (the graph
+        # can be mutated by background sync while we iterate).
+        graph_obj = rag.chunk_entity_relation_graph
+        nx_graph = graph_obj._graph if hasattr(graph_obj, "_graph") else graph_obj
+        if nx_graph is None:
+            return {"status": "error", "message": "Knowledge graph not available"}
+
+        resolved_sources: List[str] = []
+        unresolved_sources: List[str] = []
+        for src in source_entities:
+            resolved = self._resolve_entity_name_case_insensitive(src, nx_graph)
+            if resolved is None:
+                unresolved_sources.append(src)
+            elif resolved != src:
+                logger.info(
+                    "Source entity '%s' resolved to '%s' (case-insensitive)",
+                    src, resolved,
+                )
+                resolved_sources.append(resolved)
+            else:
+                resolved_sources.append(src)
+
+        if unresolved_sources:
+            return {
+                "status": "error",
+                "message": (
+                    f"Source entities not found in graph "
+                    f"(case-insensitive also failed): {unresolved_sources}"
+                ),
+            }
+
+        resolved_target = self._resolve_entity_name_case_insensitive(
+            target_entity, nx_graph
+        )
+        if resolved_target is None:
+            return {
+                "status": "error",
+                "message": (
+                    f"Target entity '{target_entity}' not found in graph "
+                    f"(case-insensitive also failed)"
+                ),
+            }
+        if resolved_target != target_entity:
+            logger.info(
+                "Target entity '%s' resolved to '%s' (case-insensitive)",
+                target_entity, resolved_target,
+            )
+
         try:
             # call_async runs in LightRAG's asyncio loop (serialized there),
             # so concurrent writes are impossible. No write lock needed —
             # readers use graph_read_lock + copy() snapshot to avoid
             # RuntimeError("Graph changed during iteration").
             result = call_async(
-                rag.amerge_entities(source_entities, target_entity),
+                rag.amerge_entities(resolved_sources, resolved_target),
                 timeout=300,
             )
 
@@ -924,28 +1013,30 @@ class LightRAGAdapter:
                 from niu_api.internal.lightrag_manager import get_change_log, graph_read_lock
 
                 # Read target entity's actual attributes from the graph
+                # Use resolved_target (canonical graph name) instead of the
+                # raw target_entity which may differ by case.
                 graph_obj = rag.chunk_entity_relation_graph
                 nx_graph = graph_obj._graph if hasattr(graph_obj, "_graph") else graph_obj
                 target_type = "Other"
                 target_desc = ""
-                if nx_graph and nx_graph.has_node(target_entity):
+                if nx_graph and nx_graph.has_node(resolved_target):
                     with graph_read_lock():
-                        if nx_graph.has_node(target_entity):
-                            attrs = nx_graph.nodes[target_entity]
+                        if nx_graph.has_node(resolved_target):
+                            attrs = nx_graph.nodes[resolved_target]
                             target_type = attrs.get("entity_type", "Other")
                             target_desc = attrs.get("description", "")
 
                 get_change_log().record_change("entity_merged", {
-                    "source_ids": [f"entity:{s}" for s in source_entities],
-                    "target_id": f"entity:{target_entity}",
-                    "name": target_entity,
+                    "source_ids": [f"entity:{s}" for s in resolved_sources],
+                    "target_id": f"entity:{resolved_target}",
+                    "name": resolved_target,
                     "type": target_type,
                     "description": target_desc,
                 })
             except Exception as e:
                 logger.debug(f"changelog record_change failed: {e}")
 
-            return {"status": "ok", "target_entity": target_entity, "result": str(result)}
+            return {"status": "ok", "target_entity": resolved_target, "result": str(result)}
         except AttributeError:
             return {"status": "error", "message": "Entity merge not supported by this LightRAG version"}
         except Exception as e:

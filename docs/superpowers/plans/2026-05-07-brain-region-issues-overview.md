@@ -158,9 +158,16 @@
 
 **影响**：Skills 注入后没有边，无法被图谱关联
 
-**调研状态**：🟡 方案已设计（见 playful-sauteeing-boot.md 计划），未实施
+**调研状态**：✅ 不需要修改 — 已有替代方案
 
-**备注**：此问题独立于脑区注入，涉及 LightRAG 源码修改，需要单独实施
+**替代方案**（→ `docs/superpowers/plans/2026-05-06-photo-kg-auto-ingest.md`）：
+1. `inject_custom_kg` 负责精确写入结构（节点+边）— 这是正确的做法
+2. chunks 存入向量库用于语义检索
+3. **brain_tools 3个命令**（activate/dim/status）让大模型"认识"这些节点
+4. **脑区提示词注入**（今天实施）让 LightRAG 提取时考虑脑区归属
+5. 三者结合，大模型自然能与已有节点建边，无需修改 LightRAG 源码
+
+**结论**：原 P7 计划（修改 LightRAG 源码给 chunks 加 LLM 提取）是不必要的。现有方案更优。
 
 ---
 

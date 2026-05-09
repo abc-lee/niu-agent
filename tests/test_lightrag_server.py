@@ -302,7 +302,7 @@ class TestLightragInsertEntity:
     """Test lightrag_insert_entity tool function."""
 
     def test_delegates_to_ingester(self):
-        """lightrag_insert_entity should delegate to inject_custom_kg with entity."""
+        """lightrag_insert_entity should delegate to inject_custom_kg with entity + anchor."""
         mod = _import_module()
         mock_ingester = MagicMock()
         mock_ingester.inject_custom_kg.return_value = {"status": "ok"}
@@ -311,8 +311,16 @@ class TestLightragInsertEntity:
         result = mod.lightrag_insert_entity(name="Python", entity_type="skill")
 
         mock_ingester.inject_custom_kg.assert_called_once_with(
-            entities=[{"entity_name": "Python", "entity_type": "skill", "description": ""}],
-            relationships=[], chunks=[], source_id="custom_kg",
+            entities=[{
+                "entity_name": "Python", "entity_type": "skill",
+                "description": "", "source_id": "custom_kg", "file_path": "custom_kg",
+            }],
+            relationships=[{
+                "src_id": "brain:Niu", "tgt_id": "Python",
+                "keywords": "remembers", "description": "Niu remembers Python",
+                "source_id": "custom_kg", "file_path": "custom_kg",
+            }],
+            chunks=[], source_id="custom_kg",
         )
 
 
