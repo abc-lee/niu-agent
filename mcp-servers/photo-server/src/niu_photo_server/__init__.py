@@ -435,33 +435,38 @@ def format_photo_ingest_data(
     """格式化照片信息为结构化实体+关系，供 inject_custom_kg 注入。
 
     返回 {"entities": [...], "relationships": [...]}，不触发 LLM。
-    人物实体使用人名（或 auto_label）作为 entity_name，禁止 person:{uuid}。
-    照片实体使用短名 photo:{stem}（如 photo:20090603_092316），file_path 保留完整路径。
+
+    实体命名原则：完全遵循 LightRAG 的自然语言命名体系，不使用冒号前缀。
+    - 照片实体名：使用 abstract（自然语言描述），如"任飞合影，2009:06:03"
+    - 人物实体名：使用真名或 auto_label，如"任飞"、"未命名人物_1"
+    - 禁止 photo:{stem}、person:{uuid} 等编程风格命名
 
     路径统一归一化（正斜杠 + 小写），确保 file_path 不会因大小写或斜杠方向差异而分裂。
-    照片实体名用短名而非全路径，因为全路径太长且含特殊字符，LLM 无法识别导致碎片化。
     """
     # 归一化路径：统一为正斜杠 + 小写，避免大小写分裂
     normalized_path = file_path.replace("\\", "/").lower()
     normalized_stem = Path(normalized_path).stem  # 归一化后的文件名 stem
-    photo_entity_name = f"photo:{normalized_stem}"  # 短名：LLM可识别，检索友好
+
+    # 照片实体名：使用 abstract（自然语言描述），LLM 能稳定复现
+    # abstract 为空时用文件名 stem 作为兜底描述
+    photo_entity_name = abstract if abstract else f"照片{normalized_stem}"
 
     # 照片实体
     entities = [
         {
             "entity_name": photo_entity_name,
             "entity_type": "Photo",
-            "description": abstract if abstract else f"照片 {normalized_stem}",
+            "description": f"{abstract}，文件{normalized_stem}" if abstract else f"照片 {normalized_stem}",
             "file_path": normalized_path,
-            "source_id": normalized_path,  # H5: source_id 也使用归一化路径
+            "source_id": normalized_path,
         }
     ]
 
     relationships = []
 
-    # 注意：照片和人物实体不直接连接 brain:Niu 根节点。
+    # 注意：照片和人物实体不直接连接 Niu 根节点。
     # 照片通过 photo → person (features) 关系自然可达。
-    # 脑区归属由 brain_region 系统自动管理（brain:region:影像记忆 → photo）。
+    # 脑区归属由 brain_region 系统自动管理。
 
     # 人物实体 + 关系
     person_names = []
@@ -505,7 +510,7 @@ def format_photo_ingest_data(
             "source_id": normalized_path,  # 与 chunk 的 source_id 一致，确保映射成功
         })
 
-        # 注意：人物实体不直接连接 brain:Niu 根节点。
+        # 注意：人物实体不直接连接 Niu 根节点。
         # 人物通过 photo → person (features) 关系自然可达。
         # 脑区归属由 brain_region 系统自动管理。
 
@@ -536,7 +541,7 @@ def sync_photo_to_kg(file_path: str, abstract: str, detected_persons: list) -> d
     3. 标记 kg_synced
 
     核心原则：结构化注入的实体是"死"的（孤岛），必须 ainsert 让 LLM 建边。
-    chunk_text 中明确引用短名实体名，让 LLM 能识别并合并。
+    chunk_text 中明确引用实体名（自然语言），让 LLM 能识别并合并。
     """
     try:
         from agent.tool_registry import get_registry
@@ -546,11 +551,13 @@ def sync_photo_to_kg(file_path: str, abstract: str, detected_persons: list) -> d
         normalized_stem = Path(normalized_path).stem
         registry = get_registry()
 
-        # --- 构建 chunk_text（Step 2 用，明确引用短名实体名让 LLM 能识别） ---
+        # --- 构建 chunk_text（Step 2 用，明确引用实体名让 LLM 能识别） ---
+        # 实体名已经是自然语言格式（如"任飞合影，2009:06:03"、"任飞"），
+        # LLM 在 ainsert 时能稳定复现这些名称，不会碎片化
         entity_names = [e["entity_name"] for e in data["entities"]]
         chunk_text = (
             f"照片 {normalized_stem}：{abstract}\n"
-            f"实体：{', '.join(entity_names)}\n"  # 明确列出短名实体名
+            f"实体：{', '.join(entity_names)}\n"
         )
         person_list = ", ".join(
             e["entity_name"] for e in data["entities"]
@@ -564,7 +571,7 @@ def sync_photo_to_kg(file_path: str, abstract: str, detected_persons: list) -> d
             logger.warning("[KG] lightrag_insert_custom_kg not available in registry")
             return {"status": "error", "reason": "lightrag_insert_custom_kg not available"}
 
-        # --- Step 1: 注入实体 + 关系（照片 + 人物 + features/remembers），带 chunk 关联 source_id ---
+        # --- Step 1: 注入实体 + 关系（照片 + 人物 + features），带 chunk 关联 source_id ---
         entity_result = custom_kg_fn(
             entities=data["entities"],
             relationships=data["relationships"],
@@ -573,15 +580,15 @@ def sync_photo_to_kg(file_path: str, abstract: str, detected_persons: list) -> d
                 "source_id": normalized_path,
                 "file_path": normalized_path,
             }],
-            source_id=f"photo:{normalized_stem}",
+            source_id=normalized_path,
         )
         if not entity_result or entity_result.get("status") != "ok":
             logger.warning(f"[KG] Step1 entity+relationship injection failed for {file_path}: {entity_result}")
             return {"status": "error", "reason": f"Step1 entity+relationship injection failed: {entity_result}"}
-        logger.info(f"[KG] Step1 ok: {len(data['entities'])} entities + {len(data['relationships'])} relationships injected for photo:{normalized_stem}")
+        logger.info(f"[KG] Step1 ok: {len(data['entities'])} entities + {len(data['relationships'])} relationships injected for {normalized_stem}")
 
         # --- Step 2: ainsert 让 LLM 处理文本，建立语义连接 ---
-        # chunk_text 中明确引用了 Step 1 的短名实体名，LLM 能识别并合并
+        # chunk_text 中明确引用了 Step 1 的实体名（自然语言），LLM 能识别并合并
         insert_fn = registry.get("lightrag-server/lightrag_insert")
         if insert_fn:
             try:
@@ -591,7 +598,7 @@ def sync_photo_to_kg(file_path: str, abstract: str, detected_persons: list) -> d
                     doc_id=f"doc-{normalized_stem}",
                 )
                 if insert_result and insert_result.get("status") == "ok":
-                    logger.info(f"[KG] Step2 ok: ainsert completed for photo:{normalized_stem}")
+                    logger.info(f"[KG] Step2 ok: ainsert completed for {normalized_stem}")
                 else:
                     logger.warning(f"[KG] Step2 ainsert returned non-ok for {file_path}: {insert_result}")
             except Exception as e:
@@ -2152,7 +2159,7 @@ def name_person(person_id: str, name: str) -> dict:
                     }],
                     relationships=[],
                     chunks=[],
-                    source_id=f"rename:{source_entity}",
+                    source_id=f"rename_{source_entity}",
                 )
             if merge_fn:
                 merge_fn(
@@ -2372,7 +2379,7 @@ def merge_persons(person_a_id: str, person_b_id: str) -> dict:
                     }],
                     relationships=[],
                     chunks=[],
-                    source_id=f"merge:{kg_name_a}",
+                    source_id=f"merge_{kg_name_a}",
                 )
 
                 # 2. 合并：kg_name_b 的边迁移到 kg_name_a（依赖步骤1确保目标实体存在）

@@ -13,12 +13,12 @@ BRAIN_REGION_MARKER = "Knowledge Graph Specialist"
 _STATIC_BRAIN_REGION_PROMPT = """\
 ## 大脑区域架构
 
-知识图谱中存在脑区节点（`brain:region:*`），实体通过 `belongs_to_region` 边归属于脑区，脑区通过 `brain_region_anchor` 边连接到根节点 `brain:Niu`。
+知识图谱中存在脑区节点（`xxx脑区`），脑区通过 `_region:contains` 边包含其成员实体（方向：脑区→成员），脑区通过 `brain_region_anchor` 边连接到根节点 `Niu`。
 
 默认脑区：
-- `brain:region:聊天历史` — 聊天对话中的实体
-- `brain:region:文档库` — 文档内容的实体
-- `brain:region:知识体系` — 结构化知识、概念等实体
+- `聊天历史脑区` — 聊天对话中的实体
+- `文档库脑区` — 文档内容的实体
+- `知识体系脑区` — 结构化知识、概念等实体
 
 提取实体时根据语义归入对应脑区，无法判断的归入"知识体系"。
 
@@ -60,7 +60,7 @@ def build_dynamic_brain_region_prompt(adapter) -> str:
     """
     try:
         result = adapter.query(
-            "brain:region",
+            "脑区",
             mode="local",
             only_need_context=True,
         )

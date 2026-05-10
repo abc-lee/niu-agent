@@ -9,7 +9,7 @@ Semantic memories are preferences, skills, concepts, and tool relationships.
 They use associative retrieval (entity + associated_with/USED_FOR/OFTEN_WITH).
 
 Episodic memories are error/success experiences and decision processes.
-They use sequential retrieval (brain:event entities + followed_by/corrected_by chains).
+They use sequential retrieval (event entities + followed_by/corrected_by chains).
 
 M6 module: Dual-pipeline memory write layer for Dream Evolver.
 """
@@ -23,14 +23,14 @@ logger = logging.getLogger(__name__)
 
 # ============== Constants ==============
 
-# Namespace prefix for episodic event entities
-EVENT_PREFIX = "brain:event:"
+# Namespace prefix for episodic event entities (deprecated — events use natural language names)
+EVENT_PREFIX = ""
 
 # Entity type for episodic events
 EPISODIC_ENTITY_TYPE = "EpisodicEvent"
 
 # Self entity name (anchor point for all semantic entities)
-NIU_ENTITY = "brain:Niu"
+NIU_ENTITY = "Niu"
 
 # Relation keywords for semantic pipeline
 # Format convention: "语义关系: {src} —[{relation}]→ {tgt}。"
@@ -42,7 +42,7 @@ CHAIN_RELATION_FOLLOWED = "followed_by"
 CHAIN_RELATION_CORRECTED = "corrected_by"
 INVOLVES_RELATION = "involves"
 
-# Mapping from entity_type to brain:Niu relation keyword
+# Mapping from entity_type to Niu relation keyword
 _NIU_RELATION_MAP = {
     "Person": "remembers",
     "Skill": "skilled_in",
@@ -106,7 +106,7 @@ class DreamWriter:
             Dict with status and details.
         """
         niu_relation = self._determine_niu_relation(entity_type)
-        text = f"语义记忆: {name}（类型: {entity_type}），{description}。brain:Niu {niu_relation} {name}。"
+        text = f"语义记忆: {name}（类型: {entity_type}），{description}。Niu {niu_relation} {name}。"
 
         try:
             result = self._ingester.lightrag_insert(content=text)
@@ -178,7 +178,7 @@ class DreamWriter:
         letting LightRAG auto-extract entities/relations/merge.
 
         Args:
-            event_name: Event name (used as brain:event:{event_name}).
+            event_name: Event name (natural language, e.g., "海滩日落事件").
             description: Event description.
             experience_type: "error" or "success".
             related_entities: Optional list of related entity names.
@@ -194,16 +194,16 @@ class DreamWriter:
             return {"status": "error", "message": f"Invalid experience_type '{experience_type}'. Must be one of: {sorted(valid_types)}"}
 
         text_parts = [f"情景记忆: {event_name}（类型: {experience_type}），{description}。"]
-        text_parts.append(f"brain:Niu experienced brain:event:{event_name}。")
+        text_parts.append(f"Niu experienced {event_name}。")
 
         chain_keyword: str | None = None
         if prev_event_name is not None:
             chain_keyword = CHAIN_RELATION_CORRECTED if is_correction else CHAIN_RELATION_FOLLOWED
-            text_parts.append(f"brain:event:{prev_event_name} {chain_keyword} brain:event:{event_name}。")
+            text_parts.append(f"{prev_event_name} {chain_keyword} {event_name}。")
 
         if related_entities:
             entities_str = "、".join(related_entities)
-            text_parts.append(f"brain:event:{event_name} involves {entities_str}。")
+            text_parts.append(f"{event_name} involves {entities_str}。")
 
         if session_id:
             text_parts.append(f"session: {session_id}。")
@@ -246,13 +246,13 @@ class DreamWriter:
     # ============== Helpers ==============
 
     def _determine_niu_relation(self, entity_type: str) -> str:
-        """Determine brain:Niu → entity relation type based on entity_type.
+        """Determine Niu → entity relation type based on entity_type.
 
         Args:
             entity_type: The entity type string.
 
         Returns:
-            Relation keyword for the brain:Niu → entity relation.
+            Relation keyword for the Niu → entity relation.
             Person → "remembers"
             Skill → "skilled_in"
             Concept → "knows_about"

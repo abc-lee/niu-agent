@@ -34,7 +34,7 @@ mcpServers:
 
 **关系（Relation）**= 两个实体之间的连接，有方向
 ```
-例子：brain:Niu --[prefers]--> Python
+例子：Niu --[prefers]--> Python
 意思是：用户偏好 Python
 ```
 
@@ -48,7 +48,7 @@ mcpServers:
 
 2. **图遍历** `lightrag_get_graph(entity_name="Python", depth=1)`
    → 从"Python"出发，找到所有直接相连的实体和关系
-   → 主 Agent 会看到：brain:Niu --[prefers]--> Python, Python --[_region:contains]--> brain:region:procedural
+   → 主 Agent 会看到：Niu --[prefers]--> Python, Python --[包含]--> 程序记忆脑区
    → 所以你建的关系必须有语义：关系类型要能读成一句话（"用户偏好Python"、"Python属于程序记忆区"）
 
 ### 写入→检索 完整示例
@@ -56,7 +56,7 @@ mcpServers:
 **你写入**：
 ```
 lightrag_insert_entity(name="FastAPI", entity_type="tool", description="Python Web框架，用户用于构建API服务")
-lightrag_insert_relation(src_id="brain:Niu", tgt_id="FastAPI", relation="skilled_in")
+lightrag_insert_relation(src_id="Niu", tgt_id="FastAPI", relation="skilled_in")
 ```
 
 **以后用户问"我擅长什么Web框架？"，主 Agent 检索**：
@@ -66,7 +66,7 @@ lightrag_search_entities(query="Web框架", top_k=5)
 → 主 Agent 读到 description，知道用户擅长 FastAPI，用于构建API服务
 
 lightrag_get_graph(entity_name="FastAPI", depth=1)
-→ 返回：brain:Niu --[skilled_in]--> FastAPI
+→ 返回：Niu --[skilled_in]--> FastAPI
 → 主 Agent 读到关系，确认"用户擅长 FastAPI"
 ```
 
@@ -83,9 +83,9 @@ lightrag_get_graph(entity_name="FastAPI", depth=1)
 
 | 节点 | 含义 | 哪些实体连到这里 |
 |------|------|----------------|
-| `brain:region:聊天历史` | 来自对话的知识 | 用户聊天中提及的概念、偏好、事件 |
-| `brain:region:文档库` | 来自文档的知识 | 文档解析产生的实体和关系 |
-| `brain:region:知识体系` | 系统性知识 | 技能、工具、方法论 |
+| `聊天历史脑区` | 来自对话的知识 | 用户聊天中提及的概念、偏好、事件 |
+| `文档库脑区` | 来自文档的知识 | 文档解析产生的实体和关系 |
+| `知识体系脑区` | 系统性知识 | 技能、工具、方法论 |
 
 **2. 自动发现脑区**（Leiden 社区发现算法，每24小时自动运行）：
 - 算法分析图谱中实体的连接密度，自动发现社区
@@ -93,7 +93,7 @@ lightrag_get_graph(entity_name="FastAPI", depth=1)
 - 你**不需要**手动创建脑区，算法会自动发现并生成
 
 **你的操作**：
-- 创建实体时，**先检索现有脑区**：`lightrag_search_entities(query="brain:region:", top_k=20)`
+- 创建实体时，**先检索现有脑区**：`lightrag_search_entities(query="脑区", top_k=20)`
 - 如果实体适合某个已有脑区（包括算法自动生成的），就连到那个脑区
 - 如果没有合适的脑区，连到默认脑区（按来源选：聊天→聊天历史，文档→文档库，技能→知识体系）
 - **不要手动创建新脑区**——同类实体连到默认脑区多了以后，Leiden 算法会自动聚类成新脑区
@@ -103,8 +103,8 @@ lightrag_get_graph(entity_name="FastAPI", depth=1)
 
 | 节点 | 含义 | 什么时候连到这里 |
 |------|------|----------------|
-| `brain:Niu` | 用户画像主节点 | 用户偏好、技能、知识都连到这里 |
-| `brain:session:YYYY-MM-DD` | 当天会话节点 | 实体在当天对话中出现 |
+| `Niu` | 用户画像主节点 | 用户偏好、技能、知识都连到这里 |
+| `YYYY-MM-DD会话` | 当天会话节点 | 实体在当天对话中出现 |
 
 ### 工具使用速查
 
@@ -134,14 +134,14 @@ lightrag_get_graph(entity_name="FastAPI", depth=1)
    - `lightrag_insert_relation(src_id, tgt_id, relation="resolved_by")` — 解决
 
 3. **脑区关联**：将实体关联到最合适的脑区
-   - **先检索现有脑区**：`lightrag_search_entities(query="brain:region:", top_k=20)` 获取所有脑区节点
-   - **判断归属**：看当前实体是否属于某个已有脑区（如已有"Python开发"脑区，新实体"FastAPI"就属于它）
-   - **适合就连**：`lightrag_insert_relation(src_id="brain:region:Python开发", tgt_id="FastAPI", relation="_region:contains")`
-   - **不适合不强求**：没有合适的脑区时，连到默认脑区（聊天提及→`聊天历史`，文档产生→`文档库`，技能工具→`知识体系`）
+   - **先检索现有脑区**：`lightrag_search_entities(query="脑区", top_k=20)` 获取所有脑区节点
+   - **判断归属**：看当前实体是否属于某个已有脑区（如已有"Python开发脑区"，新实体"FastAPI"就属于它）
+   - **适合就连**：`lightrag_insert_relation(src_id="Python开发脑区", tgt_id="FastAPI", relation="包含")`
+   - **不适合不强求**：没有合适的脑区时，连到默认脑区（聊天提及→`聊天历史脑区`，文档产生→`文档库脑区`，技能工具→`知识体系脑区`）
    - **不要手动创建新脑区**——同类实体连到默认脑区多了以后，Leiden 社区发现算法会自动把它们聚类成新脑区
 
-4. **画像更新**（最后做）：更新 brain:Niu 的偏好和技能
-   - `lightrag_insert_relation(src_id="brain:Niu", tgt_id=entity, relation="prefers"/"skilled_in"/"knows_about")`
+4. **画像更新**（最后做）：更新 Niu 的偏好和技能
+   - `lightrag_insert_relation(src_id="Niu", tgt_id=entity, relation="prefers"/"skilled_in"/"knows_about")`
    - 判断标准（需用户明确表达，不因随口一提就标注）：
      - `prefers`：用户明确表达偏好（"我喜欢..."、"我更喜欢..."、"我习惯..."）
      - `skilled_in`：用户展示专业技能（代码讨论、技术决策、问题排查），至少出现 2 次相关讨论
@@ -176,8 +176,8 @@ lightrag_get_graph(entity_name="FastAPI", depth=1)
 **核心规则**：每条新实体必须至少建1条边，孤岛记忆无用。
 
 1. 新实体写入时，必须指定至少一个连接目标
-2. 默认连接到 `brain:region:聊天历史` 脑区
-3. Session 节点格式：`brain:session:{date}`（date 格式 `YYYY-MM-DD`，如 `brain:session:2026-04-26`，硬性要求）
+2. 默认连接到 `聊天历史脑区` 脑区
+3. Session 节点格式：`{date}会话`（date 格式 `YYYY-MM-DD`，如 `2026-04-26会话`，硬性要求）
 
 ## 实体提取规则
 
@@ -194,12 +194,12 @@ lightrag_get_graph(entity_name="FastAPI", depth=1)
 
 | 边类型 | keywords 格式 | 含义 | 方向 |
 |--------|-------------|------|------|
-| 脑区包含 | `_region:contains` | 脑区主节点 → 子实体 | src=脑区, tgt=实体 |
-| Session兜底 | `_session:contains` | Session → 临时实体 | src=session, tgt=实体 |
+| 脑区包含 | `包含` | 脑区主节点 → 子实体 | src=脑区, tgt=实体 |
+| Session兜底 | `包含` | Session → 临时实体 | src=session, tgt=实体 |
 | 语义关系 | 无前缀 | 真实语义关系 | src→tgt 按语义方向 |
 | 时间链 | 无前缀 | 时间顺序/因果 | src=先, tgt=后 |
 
-**注意**：`_region:contains` 方向是 脑区→实体（src=brain:region:xxx, tgt=entity），不要反向。
+**注意**：`包含` 方向是 脑区→实体（src=xxx脑区, tgt=entity），不要反向。
 
 ## 工具使用规范
 

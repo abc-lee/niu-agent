@@ -52,29 +52,24 @@ def _get_pipeline_enqueue_file():
     return _pipeline_enqueue_file
 
 
-# ============== Entity Name Normalization (M1 fix) ==============
+# ============== Entity Name Normalization ==============
 
-# Known entity name prefixes that should be lowercased to prevent
-# case-variant fragmentation (e.g., "Brain:Niu" vs "brain:Niu").
-_KNOWN_PREFIXES = re.compile(
-    r'^(brain|person|photo|location|skill|tool|concept):',
-    re.IGNORECASE,
-)
+# Legacy colon-prefix patterns (brain:, person:, photo:, etc.) are DEPRECATED.
+# All entity names now follow LightRAG's natural language naming system.
+# This normalization is kept as a no-op identity function for backward compat.
 
 
 def _normalize_entity_name(name: str) -> str:
-    """Normalize entity name: lowercase known prefixes to prevent case fragmentation.
+    """Normalize entity name.
 
-    LLM-extracted entities may use inconsistent casing for prefixes
-    (e.g., "Brain:Niu" vs "brain:Niu"). This function normalizes
-    known prefixes to lowercase so they always produce the same
-    entity node in the knowledge graph.
+    All entity names now use natural language format (e.g., "Niu", "任飞",
+    "影像记忆脑区") instead of colon-prefix format (e.g., "brain:Niu",
+    "person:uuid", "brain:region:影像记忆").
 
-    Non-prefixed names are returned unchanged.
+    This function is kept as identity for backward compatibility.
+    New code should pass natural language names directly.
     """
-    return _KNOWN_PREFIXES.sub(
-        lambda m: m.group(1).lower() + ':', name
-    )
+    return name
 
 
 # ============== Singleton Accessors ==============
@@ -386,7 +381,7 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
 
     "lightrag_insert_entity": {
         "name": "lightrag_insert_entity",
-        "description": "Insert an entity into the knowledge graph using structured injection (ainsert_custom_kg). Entity name and type are preserved exactly — no LLM auto-extraction. Also creates a brain:Niu anchor edge for reachability.",
+        "description": "Insert an entity into the knowledge graph using structured injection (ainsert_custom_kg). Entity name and type are preserved exactly — no LLM auto-extraction. Also creates a Niu anchor edge for reachability. Entity names must use natural language (e.g., 'Python', '任飞'), NOT colon-prefix format (e.g., NOT 'skill:Python', NOT 'person:uuid').",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -407,7 +402,7 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
 
     "lightrag_insert_relation": {
         "name": "lightrag_insert_relation",
-        "description": "Insert a relation between two entities using structured injection (ainsert_custom_kg). Relation src/tgt/keywords are preserved exactly — no LLM auto-extraction.",
+        "description": "Insert a relation between two entities using structured injection (ainsert_custom_kg). Relation src/tgt/keywords are preserved exactly — no LLM auto-extraction. Entity names must use natural language (e.g., 'Niu', 'Python'), NOT colon-prefix format.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -911,32 +906,14 @@ def lightrag_insert_custom_kg(
 ) -> Dict[str, Any]:
     """Inject structured knowledge directly.
 
-    Entity names and relationship src_id/tgt_id are normalized to lowercase
-    known prefixes (brain, person, photo, location, skill, tool, concept)
-    before injection, preventing case-variant fragmentation.
+    Entity names must follow LightRAG's natural language naming system.
+    No colon prefixes (e.g., use "Niu" not "brain:Niu", use "任飞" not "person:uuid").
     """
     try:
-        # M1: Normalize entity names and relationship endpoints
-        # to prevent case-variant fragmentation (e.g., Brain:Niu vs brain:Niu)
-        normalized_entities = []
-        for e in (entities or []):
-            ne = dict(e)  # shallow copy — immutable pattern
-            en = ne.get("entity_name") or ne.get("name")
-            if en:
-                ne["entity_name"] = _normalize_entity_name(en)
-            normalized_entities.append(ne)
-
-        normalized_relationships = []
-        for r in (relationships or []):
-            nr = dict(r)  # shallow copy — immutable pattern
-            nr["src_id"] = _normalize_entity_name(nr.get("src_id") or "")
-            nr["tgt_id"] = _normalize_entity_name(nr.get("tgt_id") or "")
-            normalized_relationships.append(nr)
-
         ingester = _get_ingester()
         return ingester.inject_custom_kg(
-            entities=normalized_entities,
-            relationships=normalized_relationships,
+            entities=entities or [],
+            relationships=relationships or [],
             chunks=chunks or [],
             source_id=source_id,
         )
@@ -957,11 +934,14 @@ def lightrag_insert_entity(
 
     Uses inject_custom_kg to bypass LLM auto-extraction, ensuring the
     entity name and type are preserved exactly as specified. Also creates
-    a brain:Niu -> entity anchor relationship so the entity is reachable
+    a Niu -> entity anchor relationship so the entity is reachable
     from the root.
 
+    Entity names must follow LightRAG's natural language naming system.
+    No colon prefixes (e.g., use "Python" not "skill:Python").
+
     Args:
-        name: Entity name (e.g., 'Python', '数据分析').
+        name: Entity name (e.g., 'Python', '数据分析', '任飞').
         entity_type: Entity type (e.g., 'Person', 'Concept', 'Skill', 'Tool').
         description: Entity description.
         source_id: Deprecated, kept for backward compatibility (ignored).
@@ -973,9 +953,6 @@ def lightrag_insert_entity(
     # satisfy static analysis (callers still pass them by keyword).
     _ = source_id, skip_llm_extraction
     try:
-        # M1: Normalize entity name to prevent case fragmentation
-        normalized_name = _normalize_entity_name(name)
-
         niu_relation_map = {
             "Person": "remembers",
             "Skill": "skilled_in",
@@ -986,19 +963,19 @@ def lightrag_insert_entity(
 
         # Build entity dict for inject_custom_kg
         entity = {
-            "entity_name": normalized_name,
+            "entity_name": name,
             "entity_type": entity_type,
             "description": description,
             "source_id": file_path,
             "file_path": file_path,
         }
 
-        # Build brain:Niu -> entity anchor relationship
+        # Build Niu -> entity anchor relationship
         anchor_rel = {
-            "src_id": "brain:Niu",
-            "tgt_id": normalized_name,
+            "src_id": "Niu",
+            "tgt_id": name,
             "keywords": niu_relation,
-            "description": f"Niu {niu_relation} {normalized_name}",
+            "description": f"Niu {niu_relation} {name}",
             "source_id": file_path,
             "file_path": file_path,
         }
@@ -1025,28 +1002,23 @@ def lightrag_insert_relation(
 ) -> Dict[str, Any]:
     """Insert a single relation via ainsert_custom_kg (structured injection).
 
-    Uses inject_custom_kg to bypass LLM auto-extraction, ensuring the
-    relationship src_id, tgt_id, and relation type are preserved exactly
-    as specified.
+    Entity names must follow LightRAG's natural language naming system.
+    No colon prefixes (e.g., use "Niu" not "brain:Niu").
 
     Args:
-        src_id: Source entity name.
-        tgt_id: Target entity name.
-        relation: Relation type (e.g., USED_FOR, OFTEN_WITH).
+        src_id: Source entity name (natural language).
+        tgt_id: Target entity name (natural language).
+        relation: Relation type (e.g., skilled_in, is_identical_to).
         description: Relation description.
         source_id: Deprecated, kept for backward compatibility (ignored).
         file_path: File path for citation.
     """
     _ = source_id  # kept for MCP schema compatibility (deprecated)
     try:
-        # M1: Normalize src_id and tgt_id to prevent case fragmentation
-        norm_src = _normalize_entity_name(src_id)
-        norm_tgt = _normalize_entity_name(tgt_id)
-
         # Build relationship dict for inject_custom_kg
         rel = {
-            "src_id": norm_src,
-            "tgt_id": norm_tgt,
+            "src_id": src_id,
+            "tgt_id": tgt_id,
             "keywords": relation,
             "description": description,
             "source_id": file_path,

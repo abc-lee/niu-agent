@@ -26,8 +26,10 @@ logger = logging.getLogger(__name__)
 
 # ============== Constants ==============
 
-# Namespace prefix for brain region entities (must match region_manager)
+# Namespace prefix for brain region entities (backward compat: read old-format names)
 REGION_PREFIX = "brain:region:"
+# New naming convention: label + suffix
+REGION_SUFFIX = "脑区"
 
 # Chars per token estimate for Chinese text
 CHARS_PER_TOKEN = 4
@@ -83,7 +85,7 @@ class BrainContextInjector:
         Steps:
         1. Use query_context to do LightRAG query -> extract hit entities
         2. activation_mgr.activate_regions(hit_entities, entity_to_region)
-        3. If hit brain:region:* master node -> secondary local query to expand
+        3. If hit xxx脑区 master node -> secondary local query to expand
         4. activation_mgr.decay_all()
         5. Format injection content by activation level
 
@@ -130,14 +132,22 @@ class BrainContextInjector:
 
         # Step 3: Expand region master node knowledge
         for entity in hit_entities:
-            if entity.startswith(REGION_PREFIX):
+            # Support both old format "brain:region:{label}" and new format "{label}脑区"
+            is_old_region = entity.startswith(REGION_PREFIX)
+            is_new_region = entity.endswith(REGION_SUFFIX) and not is_old_region
+            if is_old_region or is_new_region:
                 try:
                     knowledge = self._adapter.query(
                         entity, mode="local", only_need_context=True
                     )
                     if knowledge and isinstance(knowledge, str):
-                        # Extract label from "brain:region:{label}"
-                        label = entity[len(REGION_PREFIX):]
+                        # Extract label from entity name
+                        if is_old_region:
+                            # Backward compat: "brain:region:{label}" -> label
+                            label = entity[len(REGION_PREFIX):]
+                        else:
+                            # New format: "{label}脑区" -> label
+                            label = entity[:-len(REGION_SUFFIX)]
                         region_knowledge[label] = knowledge
                 except Exception as e:
                     logger.debug("脑区知识扩展查询失败: %s — %s", entity, e)

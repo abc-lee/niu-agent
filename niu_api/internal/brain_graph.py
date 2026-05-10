@@ -1,12 +1,12 @@
 """
 Brain Graph — Memory system on LightRAG knowledge graph.
 
-Memories are stored as weighted relations from brain:Niu to typed entities,
+Memories are stored as weighted relations from Niu to typed entities,
 and retrieved via LightRAG query_data(mode="mix").
 
 Core concepts:
-- brain:Niu — the "self" entity, all memory relations start from it
-- brain:{type}:{name} — namespaced entity names (Person, Concept, Skill, Event, Project)
+- Niu — the "self" entity, all memory relations start from it
+- Entity names use natural language (e.g., "Python", "任飞"), not colon-prefix format
 - memory_type drives relation type (MEMORY_TYPE_TO_RELATION) and entity type; weight defaults to DEFAULT_WEIGHT
 - Retrieval uses LightRAG aquery(mode="mix") directly
 """
@@ -76,15 +76,16 @@ def normalize_name(raw_name: str) -> str:
 
 
 def make_entity_name(entity_type: str, name: str) -> str:
-    """Generate a brain-namespaced entity name.
+    """Generate a natural language entity name.
 
-    Format: brain:{type}:{normalized_name}
-    Special case: brain:Niu (no name segment for the self entity).
+    Format: just the name itself (natural language).
+    Special case: "Niu" for the self entity.
+    No colon prefixes — LightRAG uses title case extraction which
+    conflicts with colon-prefix naming, causing entity fragmentation.
     """
     if entity_type == "Niu" or not name:
-        return "brain:Niu"
-    normalized = normalize_name(name)
-    return f"brain:{entity_type}:{normalized}"
+        return "Niu"
+    return name
 
 
 # ============== Helpers ==============
@@ -109,7 +110,7 @@ def _get_attr(obj: Any, key: str, default: Any = None) -> Any:
 class BrainGraph:
     """Memory brain graph built on LightRAG.
 
-    Stores memories as relations from brain:Niu to entities.
+    Stores memories as relations from Niu to entities.
     Retrieves memories via LightRAG aquery(mode="mix").
     """
 
@@ -120,13 +121,13 @@ class BrainGraph:
     # ============== Entity Initialization ==============
 
     def ensure_niu_entity(self) -> Dict[str, Any]:
-        """Ensure the brain:Niu self entity exists in the graph.
+        """Ensure the Niu self entity exists in the graph.
 
         Idempotent — safe to call on every startup.
         """
         return self._ingester.inject_custom_kg(
             entities=[{
-                "entity_name": "brain:Niu",
+                "entity_name": "Niu",
                 "entity_type": "Niu",
                 "description": "Self entity — all memory relations start from here",
             }],
@@ -145,7 +146,7 @@ class BrainGraph:
     ) -> Dict[str, Any]:
         """Store a memory in the brain graph.
 
-        Creates a target entity and a weighted relation from brain:Niu to it
+        Creates a target entity and a weighted relation from Niu to it
         in a single atomic inject_custom_kg call, with the entity description
         passed as a chunk so LLM can extract additional relationships.
 
@@ -202,7 +203,7 @@ class BrainGraph:
             }],
             relationships=[
                 {
-                    "src_id": "brain:Niu",
+                    "src_id": "Niu",
                     "tgt_id": target_name,
                     "keywords": relation_type,
                     "description": description,
@@ -313,7 +314,7 @@ class BrainGraph:
     def _extract_brain_memories_from_structured(
         self, relationships: Any, min_weight: float
     ) -> List[Dict[str, Any]]:
-        """Extract brain:Niu memories from structured query_data relationships.
+        """Extract Niu-related memories from structured query_data relationships.
 
         Handles both dict and dataclass/object access patterns.
         """
@@ -325,14 +326,14 @@ class BrainGraph:
             desc = _get_attr(rel, "description", "")
             weight = _get_attr(rel, "weight", 1.0)
 
-            # Only include relations involving brain: namespace
-            is_brain = src.startswith("brain:") or tgt.startswith("brain:")
-            if not is_brain:
+            # Include relations involving Niu or any entity
+            is_niu_related = src == "Niu" or tgt == "Niu"
+            if not is_niu_related:
                 continue
 
             if weight >= min_weight:
                 memories.append({
-                    "target": tgt if tgt.startswith("brain:") else src,
+                    "target": tgt if tgt != "Niu" else src,
                     "relation_type": relation,
                     "description": desc,
                     "weight": weight,
@@ -343,26 +344,24 @@ class BrainGraph:
     def _extract_brain_memories_from_text(
         self, text: str, min_weight: float
     ) -> List[Dict[str, Any]]:
-        """Extract brain:Niu memory references from query result text."""
+        """Extract Niu memory references from query result text."""
         memories = []
 
-        # Match both brain:Niu (2-segment) and brain:Concept:Name (3-segment)
-        pattern = r"\bbrain:[\w-]+(?::[\w-]+)?"
-        for match in re.finditer(pattern, text):
-            full_name = match.group(0)
+        # Match "Niu" as a standalone word (word boundary) to avoid
+        # false positives like "Niurou" or other substrings containing "Niu".
+        if re.search(r"\bNiu\b", text):
             weight = 0.7  # Default for recalled memories
-
             if weight >= min_weight:
                 memories.append({
-                    "target": full_name,
+                    "target": "Niu",
                     "relation_type": "remembers",
-                    "description": "",
+                    "description": text.strip()[:200],
                     "weight": weight,
                 })
 
         if not memories and text.strip():
             memories.append({
-                "target": "brain:Niu",
+                "target": "Niu",
                 "relation_type": "remembers",
                 "description": text.strip()[:200],
                 "weight": 0.5,
@@ -392,9 +391,6 @@ def format_memories_for_prompt(memories: List[Dict[str, Any]]) -> str:
         description = mem.get("description", "")
 
         display_name = target
-        if target.startswith("brain:"):
-            parts = target.split(":", 2)
-            display_name = parts[-1] if len(parts) > 2 else parts[-1]
 
         relation_display = {
             "prefers": "偏好",

@@ -157,10 +157,18 @@ def delete_note(note_id: str) -> Dict:
     logger.info(f"Note deleted: {note_id}")
 
     # Sync deletion to knowledge graph
+    # Delete both new-format (便签_{id[:8]}) and old-format (note:{id}) entities
+    # for backward compatibility. delete_entity removes the entity + all its edges.
     try:
         from niu_api.internal.lightrag_adapter import LightRAGAdapter
+
         adapter = LightRAGAdapter()
-        adapter.delete_entity(f"note:{note_id}")
+        # New format: 便签_{note_id[:8]}
+        new_entity_name = f"便签_{note_id[:8]}"
+        adapter.delete_entity(new_entity_name)
+        # Old format: note:{note_id} (backward compat)
+        old_entity_name = f"note:{note_id}"
+        adapter.delete_entity(old_entity_name)
     except Exception as e:
         logger.warning(f"LightRAG delete_entity failed for note:{note_id}: {e}")
 

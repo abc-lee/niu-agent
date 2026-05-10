@@ -123,12 +123,12 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Brain region sync start failed: {e}")
 
-    # 8.1. Initialize brain:Niu self entity
+    # 8.1. Initialize Niu self entity
     try:
         from niu_api.internal.brain_graph import get_brain_graph
         brain = get_brain_graph()
         brain.ensure_niu_entity()
-        logger.info("Brain graph initialized (brain:Niu entity ensured)")
+        logger.info("Brain graph initialized (Niu entity ensured)")
     except Exception as e:
         logger.warning(f"Brain graph initialization failed: {e}")
 
