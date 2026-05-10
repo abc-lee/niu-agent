@@ -596,12 +596,8 @@ class NiuRunner:
         added = 0
         for entity in entities:
             entity_name = entity.get("entity_name", "")
-            # Strip type prefix for display
+            # Entity names use natural language (no type prefixes)
             display_name = entity_name
-            for prefix in ("skill:", "tool:", "knowledge:", "habit:"):
-                if display_name.startswith(prefix):
-                    display_name = display_name[len(prefix):]
-                    break
             if display_name in seen_names:
                 continue
             seen_names.add(display_name)

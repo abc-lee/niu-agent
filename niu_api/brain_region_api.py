@@ -149,7 +149,7 @@ def consolidate_brain_regions(
 
     Steps:
     1. Run Leiden community detection on the LightRAG graph
-    2. Create/update brain:region:* master nodes via RegionManager
+    2. Create/update xxx脑区 master nodes via RegionManager
     3. Clean up stale regions
     4. Initialize activation manager with new regions
     """
@@ -210,16 +210,19 @@ def get_region_members(name: str) -> dict[str, Any]:
     """Get members of a specific brain region.
 
     Args:
-        name: Region entity name (e.g. "brain:region:Python")
-              or label (e.g. "Python"). The brain:region: prefix is
+        name: Region entity name (e.g. "Python脑区")
+              or label (e.g. "Python"). The "脑区" suffix is
               added automatically if missing.
     """
     try:
         region_mgr = _get_region_mgr()
 
-        # Normalize name: add prefix if missing
-        if not name.startswith("brain:region:"):
-            region_name = f"brain:region:{name}"
+        # Normalize name: add suffix if missing (support both new and old format)
+        if name.startswith("brain:region:"):
+            # Backward compat: read old-format names as-is
+            region_name = name
+        elif not name.endswith("脑区"):
+            region_name = f"{name}脑区"
         else:
             region_name = name
 

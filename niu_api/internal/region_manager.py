@@ -1,11 +1,14 @@
 """
 Brain Region Master Node Manager
 
-Creates and manages brain:region:{name} entities in the LightRAG knowledge graph
+Creates and manages brain region entities in the LightRAG knowledge graph
 for each Leiden community. Each region master node serves as:
 - Semantic pointer for search
-- Search entry via brain_region_anchor relation from brain:Niu
+- Search entry via brain_region_anchor relation from Niu
 - Metadata container (brain_meta_* attributes in description)
+
+Entity names use natural language format (e.g., "编程开发脑区") instead of
+colon-prefix format (e.g., "brain:region:编程开发").
 
 M2 module: Region node lifecycle, M1 provides community detection.
 """
@@ -24,7 +27,11 @@ logger = logging.getLogger(__name__)
 
 # ============== Constants ==============
 
-# Namespace prefix for brain region entities
+# Region entity name format: "{label}脑区" (natural language)
+# e.g., "编程开发脑区", "聊天历史脑区"
+REGION_SUFFIX = "脑区"
+
+# Legacy prefix for backward compat when reading existing graph data
 REGION_PREFIX = "brain:region:"
 
 # Entity type for brain region master nodes
@@ -41,8 +48,8 @@ _LEGACY_BELONGS_TO = "belongs_to"
 REGION_SOURCE_ID = "brain"
 REGION_FILE_PATH = "brain://region"
 
-# Self entity name (anchor point for all regions)
-NIU_ENTITY = "brain:Niu"
+# Self entity name (natural language, no prefix)
+NIU_ENTITY = "Niu"
 
 # Maximum number of entity descriptions to include in region summary
 MAX_SUMMARY_ENTITIES = 5
@@ -57,7 +64,7 @@ MAX_SUMMARY_ENTITIES = 5
 class BrainRegionInfo:
     """Brain region master node information"""
 
-    name: str  # "brain:region:编程开发"
+    name: str  # "编程开发脑区" (natural language)
     label: str  # "编程开发" (human-readable name)
     community_id: str  # "community_3"
     description: str  # LLM-generated summary
@@ -139,7 +146,7 @@ def _parse_description(description: str) -> dict[str, str]:
 class RegionManager:
     """Brain region master node lifecycle management
 
-    Creates brain:region:{name} entities for each Leiden community,
+    Creates region entities (natural language names) for each Leiden community,
     serving as semantic pointers, search entries, and metadata containers.
 
     All public methods are synchronous. Internal adapter/ingester calls
@@ -176,18 +183,18 @@ class RegionManager:
             partition_result: Community detection result from M1
 
         Returns:
-            List of created region names (e.g. ["brain:region:Python", ...])
+            List of created region names (e.g. ["Python脑区", ...])
         """
         all_entities: list[dict] = []
         all_relationships: list[dict] = []
         created_regions: list[str] = []
 
         for partition in partition_result.partitions:
-            # Step 1: Filter out existing brain:region:* nodes
+            # Step 1: Filter out existing region nodes (both natural language and legacy format)
             members = [
                 name
                 for name in partition.entity_names
-                if not name.startswith(REGION_PREFIX)
+                if not (name.endswith(REGION_SUFFIX) or name.startswith(REGION_PREFIX))
             ]
 
             if not members:
@@ -212,7 +219,7 @@ class RegionManager:
             now = time.time()
 
             # Full region entity name
-            region_name = f"{REGION_PREFIX}{region_label}"
+            region_name = f"{region_label}{REGION_SUFFIX}"
 
             # Step 3: Collect region master node entity
             description = _encode_description(
@@ -229,7 +236,7 @@ class RegionManager:
                 "description": description,
             })
 
-            # Step 4: Collect anchor relation from brain:Niu to region
+            # Step 4: Collect anchor relation from Niu to region
             all_relationships.append({
                 "src_id": NIU_ENTITY,
                 "tgt_id": region_name,
@@ -417,9 +424,11 @@ class RegionManager:
 
             parsed = _parse_description(description)
 
-            # Extract label from entity name: brain:region:{label}
+            # Extract label from entity name: "{label}脑区" or legacy "brain:region:{label}"
             label = entity_name
-            if entity_name.startswith(REGION_PREFIX):
+            if entity_name.endswith(REGION_SUFFIX):
+                label = entity_name[: -len(REGION_SUFFIX)]
+            elif entity_name.startswith(REGION_PREFIX):
                 label = entity_name[len(REGION_PREFIX):]
 
             regions.append(
@@ -445,7 +454,7 @@ class RegionManager:
         Uses explore_node(region_name, depth=1) then filter belongs_to edges
 
         Args:
-            region_name: Full region entity name (e.g. "brain:region:Python")
+            region_name: Full region entity name (e.g. "Python脑区")
 
         Returns:
             List of entity names that belong to this region
@@ -998,7 +1007,7 @@ def create_default_regions(adapter: Any, ingester: Any) -> dict:
     """Create default brain region master nodes.
 
     If a region already exists, skip it. Each region is linked to
-    brain:Niu via brain_region_anchor relation.
+    Niu via brain_region_anchor relation.
 
     Args:
         adapter: LightRAGAdapter instance.
@@ -1013,7 +1022,7 @@ def create_default_regions(adapter: Any, ingester: Any) -> dict:
     existing = 0
 
     for region_label, config in DEFAULT_REGIONS.items():
-        region_name = f"{REGION_PREFIX}{region_label}"
+        region_name = f"{region_label}{REGION_SUFFIX}"
 
         # Check if region already exists
         try:
