@@ -437,9 +437,12 @@ def format_photo_ingest_data(
     返回 {"entities": [...], "relationships": [...]}，不触发 LLM。
 
     实体命名原则：完全遵循 LightRAG 的自然语言命名体系，不使用冒号前缀。
-    - 照片实体名：使用 abstract（自然语言描述），如"任飞合影，2009:06:03"
+    - 照片实体名：使用文件名 stem（如 20090603_092316），确保稳定不随 abstract 变化
     - 人物实体名：使用真名或 auto_label，如"任飞"、"未命名人物_1"
     - 禁止 photo:{stem}、person:{uuid} 等编程风格命名
+
+    稳定性保证：照片实体名 = 文件名 stem，不受 abstract（人物名变化）影响。
+    abstract 变化时只需更新照片实体的 description，不创建新实体。
 
     路径统一归一化（正斜杠 + 小写），确保 file_path 不会因大小写或斜杠方向差异而分裂。
     """
@@ -447,9 +450,9 @@ def format_photo_ingest_data(
     normalized_path = file_path.replace("\\", "/").lower()
     normalized_stem = Path(normalized_path).stem  # 归一化后的文件名 stem
 
-    # 照片实体名：使用 abstract（自然语言描述），LLM 能稳定复现
-    # abstract 为空时用文件名 stem 作为兜底描述
-    photo_entity_name = abstract if abstract else f"照片{normalized_stem}"
+    # 照片实体名：使用文件名 stem，确保稳定不随 abstract 变化
+    # abstract 仅放入 description，用于搜索和语义理解
+    photo_entity_name = normalized_stem
 
     # 照片实体
     entities = [
@@ -532,7 +535,7 @@ def format_photo_ingest_data(
     return {"entities": entities, "relationships": relationships}
 
 
-def sync_photo_to_kg(file_path: str, abstract: str, detected_persons: list) -> dict:
+def sync_photo_to_kg(file_path: str, abstract: str, detected_persons: list, force: bool = False) -> dict:
     """同步照片信息到知识图谱（3步流程：结构化注入 + LLM 语义连接）
 
     流程：
@@ -542,7 +545,25 @@ def sync_photo_to_kg(file_path: str, abstract: str, detected_persons: list) -> d
 
     核心原则：结构化注入的实体是"死"的（孤岛），必须 ainsert 让 LLM 建边。
     chunk_text 中明确引用实体名（自然语言），让 LLM 能识别并合并。
+
+    防重复：如果照片已标记 kg_synced=1 且 force=False，跳过整个流程。
+    name_person 改名后不应重新 sync_photo_to_kg，只更新人物实体本身。
     """
+    # 防重复检查：已 kg_synced 的照片不重新注入（除非 force=True）
+    if not force:
+        try:
+            conn = get_connection()
+            cursor = conn.execute(
+                "SELECT kg_synced FROM photos WHERE file_path = ?",
+                (file_path,),
+            )
+            row = cursor.fetchone()
+            if row and row[0] == 1:
+                logger.info(f"[KG] Photo {file_path} already synced to KG, skipping")
+                return {"status": "skipped", "reason": "already synced"}
+        except Exception as e:
+            logger.warning(f"[KG] kg_synced check failed for {file_path}: {e}")
+
     try:
         from agent.tool_registry import get_registry
 
@@ -552,8 +573,9 @@ def sync_photo_to_kg(file_path: str, abstract: str, detected_persons: list) -> d
         registry = get_registry()
 
         # --- 构建 chunk_text（Step 2 用，明确引用实体名让 LLM 能识别） ---
-        # 实体名已经是自然语言格式（如"任飞合影，2009:06:03"、"任飞"），
-        # LLM 在 ainsert 时能稳定复现这些名称，不会碎片化
+        # 照片实体名 = 文件名 stem（如"20090603_092316"），稳定不变；
+        # 人物实体名 = 自然语言名（如"任飞"、"未命名人物_1"）
+        # LLM 在 ainsert 时能识别这些名称并建立语义边
         entity_names = [e["entity_name"] for e in data["entities"]]
         chunk_text = (
             f"照片 {normalized_stem}：{abstract}\n"
@@ -2035,16 +2057,15 @@ def _merge_duplicate_person_entities(registry, target_name: str) -> None:
 def _refresh_photo_abstracts_for_person(
     person_id: str, new_name: str, conn: sqlite3.Connection
 ) -> None:
-    """M7: Refresh abstracts for all photos containing a renamed person.
+    """人物改名后，更新相关照片的 abstract。
 
-    After name_person renames a person (e.g., "未命名人物_1" → "任飞"),
-    the photo abstracts in photos.db still contain the old name.
-    This function regenerates abstracts and re-syncs them to KG.
+    只更新 DB 中照片的 abstract 字段，不再重新注入照片到 KG。
+    避免 ainsert 重复产生新实体；人物实体改名已由 merge_entities 完成。
 
-    Args:
-        person_id: The person whose name was changed.
-        new_name: The new name for the person.
-        conn: Database connection.
+    流程：
+    1. 从 DB 查找该人物出现的所有照片
+    2. 重新生成 abstract（更新人名）
+    3. 更新 DB 中的 abstract
     """
     # Find all photos that have faces from this person
     photo_rows = conn.execute(
@@ -2057,9 +2078,8 @@ def _refresh_photo_abstracts_for_person(
     if not photo_rows:
         return
 
-    # Collect all DB updates and KG syncs first, then apply in one batch
+    # Collect all DB updates first, then apply in one batch
     photo_updates: list[tuple[str, str, str, str]] = []  # (photo_id, file_path, new_abstract, taken_at)
-    kg_syncs: list[tuple[str, str, list]] = []  # (file_path, new_abstract, detected_persons)
 
     for photo_id, file_path, taken_at in photo_rows:
         # Get all person info for this photo (names are already updated in DB)
@@ -2072,7 +2092,6 @@ def _refresh_photo_abstracts_for_person(
 
         # Build person_names list for abstract generation (deduplicate by person_id)
         person_names = []
-        detected_persons = []
         seen_person_ids: set[str] = set()
         for pid, pname, auto_label in face_persons:
             if pid in seen_person_ids:
@@ -2082,15 +2101,11 @@ def _refresh_photo_abstracts_for_person(
             display_name = auto_label if is_unnamed else pname
             if display_name:
                 person_names.append(display_name)
-            detected_persons.append({
-                "id": pid, "name": pname, "auto_label": auto_label
-            })
 
         # Regenerate abstract with updated person names
         new_abstract = generate_l0_abstract(person_names, taken_at)
 
         photo_updates.append((photo_id, file_path, new_abstract, taken_at))
-        kg_syncs.append((file_path, new_abstract, detected_persons))
 
     # Batch all DB updates in one lock + one commit
     with _db_write_lock:
@@ -2100,13 +2115,6 @@ def _refresh_photo_abstracts_for_person(
                 (new_abstract, photo_id),
             )
         conn.commit()
-
-    # Re-sync to KG outside the lock (best-effort, non-blocking)
-    for file_path, new_abstract, detected_persons in kg_syncs:
-        try:
-            sync_photo_to_kg(file_path, new_abstract, detected_persons)
-        except Exception as e:
-            logger.debug(f"[M7] KG re-sync skipped for photo {file_path}: {e}")
 
     logger.info(
         f"[M7] Refreshed abstracts for {len(photo_updates)} photos after "
@@ -2176,9 +2184,8 @@ def name_person(person_id: str, name: str) -> dict:
         except Exception as e:
             logger.warning(f"[NAME_PERSON] LightRAG rename failed: {e}")
 
-        # M7: Refresh abstracts for all photos containing this person
-        # When a person is named (e.g., "未命名人物_1" → "任飞"), their photos'
-        # abstracts still contain the old name. We regenerate them.
+        # M7: 改名后只更新 DB 中照片 abstract，不再重新注入照片到 KG
+        # （避免 ainsert 重复产生新实体；人物实体改名已由 merge_entities 完成）
         try:
             _refresh_photo_abstracts_for_person(person_id, name, conn)
         except Exception as e:
