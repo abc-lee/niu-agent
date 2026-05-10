@@ -434,7 +434,9 @@ class LightRAGAdapter:
         Interaction habits store tool usage patterns (e.g. dialect preferences,
         success/failure counts) as LightRAG entities with entity_type="interaction_habit".
 
-        The entity name follows the pattern "habit:{habit_type}:{target_tool}"
+        The entity name follows the pattern "{habit_type}__{target_tool}"
+        (double underscore separator to avoid ambiguity when habit_type
+        contains underscores, e.g. "tool_dialect__kg-server").
         and the description contains the habit content plus confidence data.
 
         Args:
@@ -1091,10 +1093,14 @@ class LightRAGIngester:
         if confidence is None:
             confidence = {"success_count": 0, "fail_count": 0}
 
-        entity_name = f"habit:{habit_type}:{target_tool}"
+        # Entity name uses double-underscore separator to avoid ambiguity
+        # when habit_type itself contains underscores (e.g. "tool_dialect").
+        # Format: {habit_type}__{target_tool}
+        # Example: "tool_dialect__kg-server" (not "tool_dialect_kg-server")
+        entity_name = f"{habit_type}__{target_tool}"
         description = f"{content} | confidence: {confidence}"
 
-        text = f"交互习惯: {entity_name}（类型: InteractionHabit），{description}。brain:Niu uses {entity_name}。"
+        text = f"交互习惯: {entity_name}（类型: InteractionHabit），{description}。Niu uses {entity_name}。"
         return self.lightrag_insert(content=text, file_paths=source_id if source_id != "custom_kg" else None)
 
     def update_habit_confidence(
@@ -1111,7 +1117,7 @@ class LightRAGIngester:
         direct SQLite operations on vectors.db.
 
         Args:
-            entity_name: Entity name (e.g., "habit:tool_dialect:kg-server").
+            entity_name: Entity name (e.g., "tool_dialect_kg-server").
             result: "success" or "fail".
 
         Returns:
@@ -1177,10 +1183,27 @@ class LightRAGIngester:
                 return {"status": "ok", "action": "deleted", "entity_name": entity_name}
 
             # Re-inject with updated confidence (upsert)
-            # Parse habit_type and target_tool from entity_name "habit:{type}:{tool}"
-            parts = entity_name.split(":", 2)
-            habit_type = parts[1] if len(parts) >= 2 else "unknown"
-            target_tool = parts[2] if len(parts) >= 3 else "unknown"
+            # Parse habit_type and target_tool from entity_name
+            # Support three formats:
+            #   New:     "{type}__{tool}" — double underscore (e.g. "tool_dialect__kg-server")
+            #   Legacy1: "habit:{type}:{tool}" — colon-prefix (e.g. "habit:tool_dialect:kg-server")
+            #   Legacy2: "{type}_{tool}" — single underscore (e.g. "tool_dialect_kg-server")
+            #            (ambiguous when type contains _, kept for backward compat only)
+            if entity_name.startswith("habit:"):
+                # Old colon-prefix format: "habit:{type}:{tool}"
+                parts = entity_name.split(":", 2)
+                habit_type = parts[1] if len(parts) >= 2 else "unknown"
+                target_tool = parts[2] if len(parts) >= 3 else "unknown"
+            elif "__" in entity_name:
+                # New double-underscore format: "{type}__{tool}"
+                parts = entity_name.split("__", 1)
+                habit_type = parts[0] if len(parts) >= 1 else "unknown"
+                target_tool = parts[1] if len(parts) >= 2 else "unknown"
+            else:
+                # Legacy single-underscore format (ambiguous, best-effort)
+                parts = entity_name.split("_", 1)
+                habit_type = parts[0] if len(parts) >= 1 else "unknown"
+                target_tool = parts[1] if len(parts) >= 2 else "unknown"
 
             return self.upsert_interaction_habit(
                 habit_type=habit_type,

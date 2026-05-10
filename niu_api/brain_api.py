@@ -85,7 +85,7 @@ def brain_status() -> Dict[str, Any]:
         bg.ensure_niu_entity()
         return {
             "status": "ok",
-            "message": "Brain graph is active. brain:Niu entity ensured.",
+            "message": "Brain graph is active. Niu entity ensured.",
         }
     except Exception as e:
         logger.error(f"[BRAIN] status check failed: {e}")

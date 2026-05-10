@@ -2,7 +2,7 @@
 Brain Region Periodic Update Service
 
 Runs Leiden community detection on the LightRAG knowledge graph,
-creates/updates brain:region:* master nodes, and refreshes
+creates/updates region master nodes (natural language names like "聊天历史脑区"), and refreshes
 the activation manager with new region data.
 
 Follows the same pattern as agent/injector/lightrag_sync.py:
@@ -59,7 +59,7 @@ class RegionSync:
     """Brain region periodic update service.
 
     Runs Leiden community detection on the LightRAG knowledge graph,
-    creates/updates brain:region:* master nodes, and refreshes
+    creates/updates region master nodes (natural language names like "聊天历史脑区"), and refreshes
     the activation manager with new region data.
 
     Runs in a background daemon thread with configurable interval.
@@ -342,8 +342,8 @@ class RegionSync:
 
                         # Merge KG nodes via adapter — use full region names, not labels
                         try:
-                            source_name = f"brain:region:{source_state.label}"
-                            target_name = f"brain:region:{target_state.label}"
+                            source_name = f"{source_state.label}脑区"
+                            target_name = f"{target_state.label}脑区"
                             result = adapter.merge_entities(
                                 source_entities=[source_name],
                                 target_entity=target_name,
@@ -385,8 +385,8 @@ class RegionSync:
                     activation_mgr = get_activation_mgr()
                     if activation_mgr is not None:
                         for region_name in dissolved:
-                            # Derive region_id from region_name (brain:region:{label})
-                            label = region_name.removeprefix("brain:region:")
+                            # Derive region_id from region_name ({label}脑区)
+                            label = region_name.removesuffix("脑区")
                             region_id = self._label_to_region_id(activation_mgr, label)
                             if region_id:
                                 activation_mgr.remove_region(region_id)

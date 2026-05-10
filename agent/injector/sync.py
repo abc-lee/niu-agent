@@ -358,13 +358,13 @@ class SkillSync:
         """Inject a skill entity into the LightRAG knowledge graph.
 
         Uses inject_custom_kg (structured injection) so that:
-        - Entity name is fixed (skill:{name}), no LLM auto-extraction drift
+        - Entity name is the skill name directly (natural language), no LLM auto-extraction drift
         - Description is the primary vector-matching key, written precisely
         - Same-name entity merges on re-injection (no duplicates)
-        - belongs_to_region edge links skill to 知识体系 brain region
+        - belongs_to_region edge links skill to 知识体系脑区
 
         Args:
-            skill_name: Skill identifier (without skill: prefix).
+            skill_name: Skill name (natural language, e.g., "photo-processing").
             content: Full text content of the skill file.
 
         Returns:
@@ -373,7 +373,7 @@ class SkillSync:
         try:
             ingester = self._get_ingester()
 
-            entity_name = f"skill:{skill_name}"
+            entity_name = skill_name
             source_id = f"skill://{skill_name}"
 
             # Extract frontmatter for a concise description
@@ -408,9 +408,9 @@ class SkillSync:
             }]
 
             relationships = [{
-                "src_id": entity_name,
-                "tgt_id": "brain:region:知识体系",
-                "keywords": "belongs_to_region",
+                "src_id": "知识体系脑区",
+                "tgt_id": entity_name,
+                "keywords": "_region:contains",
                 "description": f"{skill_name} 属于知识体系",
                 "source_id": source_id,
                 "weight": 1.0,
@@ -445,16 +445,16 @@ class SkillSync:
         """从 LightRAG 知识图谱删除 skill 节点
 
         调用 adapter.delete_entity(entity_name) 删除实体。
-        skill 的实体名格式是 skill:{skill_name}（与注入时一致）。
+        skill 的实体名就是 skill_name 本身（自然语言命名，与注入时一致）。
 
         Args:
-            skill_name: skill 名称（不含 skill: 前缀）
+            skill_name: skill 名称（自然语言，不含前缀）
         """
         try:
             from niu_api.internal.lightrag_adapter import LightRAGAdapter
 
             adapter = LightRAGAdapter()
-            entity_name = f"skill:{skill_name}"
+            entity_name = skill_name
             result = adapter.delete_entity(entity_name)
             if isinstance(result, dict) and result.get("status") == "ok":
                 logger.info("[SkillSync] Deleted skill '%s' from KG (entity: %s)", skill_name, entity_name)
@@ -543,6 +543,7 @@ class SkillSync:
                 for note_id in deleted_ids:
                     try:
                         result = adapter.delete_entity(f"note:{note_id}")
+                        adapter.delete_entity(f"便签_{note_id[:8]}")
                         if result.get("status") == "ok":
                             with self._lock:
                                 self._last_notes_scan.pop(note_id, None)
