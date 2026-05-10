@@ -432,18 +432,19 @@ def call_embedding_service(endpoint: str, data: dict) -> dict | None:
 def format_photo_ingest_data(
     file_path: str, abstract: str, detected_persons: list
 ) -> dict:
-    """格式化照片信息为结构化实体+关系，供 inject_custom_kg 一次性注入。
+    """格式化照片信息为结构化实体+关系，供 inject_custom_kg 注入。
 
     返回 {"entities": [...], "relationships": [...]}，不触发 LLM。
     人物实体使用人名（或 auto_label）作为 entity_name，禁止 person:{uuid}。
+    照片实体使用短名 photo:{stem}（如 photo:20090603_092316），file_path 保留完整路径。
 
-    所有路径统一归一化（正斜杠 + 小写），确保 entity_name、source_id、
-    file_path 不会因大小写或斜杠方向差异而分裂为不同实体。
+    路径统一归一化（正斜杠 + 小写），确保 file_path 不会因大小写或斜杠方向差异而分裂。
+    照片实体名用短名而非全路径，因为全路径太长且含特殊字符，LLM 无法识别导致碎片化。
     """
     # 归一化路径：统一为正斜杠 + 小写，避免大小写分裂
     normalized_path = file_path.replace("\\", "/").lower()
     normalized_stem = Path(normalized_path).stem  # 归一化后的文件名 stem
-    photo_entity_name = f"photo:{normalized_path}"
+    photo_entity_name = f"photo:{normalized_stem}"  # 短名：LLM可识别，检索友好
 
     # 照片实体
     entities = [
@@ -491,6 +492,7 @@ def format_photo_ingest_data(
             "entity_type": "person",
             "description": desc,
             "file_path": normalized_path,
+            "source_id": normalized_path,  # 与 chunk 的 source_id 一致，确保映射成功
         })
 
         # 照片 → 人物 features 边
@@ -500,6 +502,7 @@ def format_photo_ingest_data(
             "keywords": "features",
             "description": f"照片中出现了{entity_name}",
             "file_path": normalized_path,
+            "source_id": normalized_path,  # 与 chunk 的 source_id 一致，确保映射成功
         })
 
         # 注意：人物实体不直接连接 brain:Niu 根节点。
@@ -518,51 +521,86 @@ def format_photo_ingest_data(
                 "keywords": "co_occurs_with",
                 "description": f"{a}和{b}同框出现",
                 "file_path": normalized_path,
+                "source_id": normalized_path,  # 与 chunk 的 source_id 一致，确保映射成功
             })
 
     return {"entities": entities, "relationships": relationships}
 
 
 def sync_photo_to_kg(file_path: str, abstract: str, detected_persons: list) -> dict:
-    """同步照片信息到知识图谱（2步结构化入库，杜绝碎片化实体）
+    """同步照片信息到知识图谱（3步流程：结构化注入 + LLM 语义连接）
 
     流程：
-    1. lightrag_insert_custom_kg — 创建实体节点 + 关系边（不触发LLM）
-    2. 标记 kg_synced
+    1. custom_kg(entities + relationships + chunks) -- 注入实体+关系（带chunk关联source_id）
+    2. lightrag_insert(content=chunk_text) -- ainsert 让 LLM 建边
+    3. 标记 kg_synced
 
-    之前的 Step 3（lightrag_insert 产生chunk）已被移除，原因：
-    - ainsert 的 LLM 会从 chunk_text 中独立提取实体名
-    - LLM 无法保证使用与 Step 1 完全相同的实体名
-    - 例如 photo:e:/tmp/bot/.../xxx.jpg → LLM 可能提取 photo:xxx
-    - _merge_nodes_then_upsert 仅按精确名称匹配，无法合并不同名实体
-    - 结果：Step 1 创建正确实体，Step 3 LLM 创建碎片实体
-    - 实体 VDB 已包含 entity_name + description，向量搜索可达，无需额外 chunk
+    核心原则：结构化注入的实体是"死"的（孤岛），必须 ainsert 让 LLM 建边。
+    chunk_text 中明确引用短名实体名，让 LLM 能识别并合并。
     """
     try:
         from agent.tool_registry import get_registry
 
         data = format_photo_ingest_data(file_path, abstract, detected_persons)
         normalized_path = file_path.replace("\\", "/").lower()
+        normalized_stem = Path(normalized_path).stem
         registry = get_registry()
 
-        # --- Step 1: 创建实体节点 + 关系边（不触发LLM，不创建brain:Niu锚点） ---
+        # --- 构建 chunk_text（Step 2 用，明确引用短名实体名让 LLM 能识别） ---
+        entity_names = [e["entity_name"] for e in data["entities"]]
+        chunk_text = (
+            f"照片 {normalized_stem}：{abstract}\n"
+            f"实体：{', '.join(entity_names)}\n"  # 明确列出短名实体名
+        )
+        person_list = ", ".join(
+            e["entity_name"] for e in data["entities"]
+            if e.get("entity_type") == "person"
+        )
+        if person_list:
+            chunk_text += f"人物：{person_list}\n"
+
         custom_kg_fn = registry.get("lightrag-server/lightrag_insert_custom_kg")
         if not custom_kg_fn:
             logger.warning("[KG] lightrag_insert_custom_kg not available in registry")
             return {"status": "error", "reason": "lightrag_insert_custom_kg not available"}
 
+        # --- Step 1: 注入实体 + 关系（照片 + 人物 + features/remembers），带 chunk 关联 source_id ---
         entity_result = custom_kg_fn(
             entities=data["entities"],
             relationships=data["relationships"],
-            chunks=[],
-            source_id=normalized_path,
+            chunks=[{
+                "content": chunk_text,
+                "source_id": normalized_path,
+                "file_path": normalized_path,
+            }],
+            source_id=f"photo:{normalized_stem}",
         )
         if not entity_result or entity_result.get("status") != "ok":
-            logger.warning(f"[KG] Entity+relation injection failed for {file_path}: {entity_result}")
-            return {"status": "error", "reason": f"Entity+relation injection failed: {entity_result}"}
+            logger.warning(f"[KG] Step1 entity+relationship injection failed for {file_path}: {entity_result}")
+            return {"status": "error", "reason": f"Step1 entity+relationship injection failed: {entity_result}"}
+        logger.info(f"[KG] Step1 ok: {len(data['entities'])} entities + {len(data['relationships'])} relationships injected for photo:{normalized_stem}")
 
-        # --- Step 2: 标记 kg_synced ---
-        # Only mark as KG-synced if entity+relation injection succeeded
+        # --- Step 2: ainsert 让 LLM 处理文本，建立语义连接 ---
+        # chunk_text 中明确引用了 Step 1 的短名实体名，LLM 能识别并合并
+        insert_fn = registry.get("lightrag-server/lightrag_insert")
+        if insert_fn:
+            try:
+                insert_result = insert_fn(
+                    content=chunk_text,
+                    file_path=normalized_path,  # 避免 unknown_source
+                    doc_id=f"doc-{normalized_stem}",
+                )
+                if insert_result and insert_result.get("status") == "ok":
+                    logger.info(f"[KG] Step2 ok: ainsert completed for photo:{normalized_stem}")
+                else:
+                    logger.warning(f"[KG] Step2 ainsert returned non-ok for {file_path}: {insert_result}")
+            except Exception as e:
+                logger.warning(f"[KG] Step2 ainsert failed for {file_path}: {e}")
+        else:
+            logger.warning("[KG] lightrag_insert not available in registry, skipping Step2 ainsert")
+
+        # --- Step 3: 标记 kg_synced ---
+        # Only mark as KG-synced if Step 1 succeeded (Step2 failure is non-fatal)
         try:
             with _db_write_lock:
                 conn = get_connection()
@@ -579,6 +617,7 @@ def sync_photo_to_kg(file_path: str, abstract: str, detected_persons: list) -> d
     except Exception as e:
         logger.warning(f"[KG] Photo sync failed: {e}")
         return {"status": "error", "reason": str(e)}
+
 
 
 def sync_video_to_kg(file_path: str, abstract: str) -> dict:
