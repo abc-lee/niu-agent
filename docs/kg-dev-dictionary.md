@@ -1,6 +1,6 @@
 # KG 开发字典
 
-> 基于 2026-05-09 实测结果更新。LLM 代理可用，通过 API 代理 /llm/v1 端点调用真实 LLM。
+> 基于 2026-05-10 实测结果更新。LLM 代理可用，通过 API 代理 /llm/v1 端点调用真实 LLM。
 > 所有后续开发直接参考此字典，无需再做额外测试。
 
 ## 测试结果摘要
@@ -17,6 +17,7 @@
 | 4 | **文件路径 LLM 不建实体** | LLM 自己遇到文件路径不会建实体；我们主动建文件路径实体后 ainsert 也不破坏 |
 | 5 | **"未命名人物_1" LLM 不识别为人物** | 纯 ainsert 时 LLM 不提取"未命名人物_1"为人物实体；但 inject_custom_kg 注入后 ainsert 不会创建独立变体 |
 | 6 | **amerge_entities 可改名** | `amerge_entities(["未命名人物_1"], "任飞")` 成功，旧实体消失，新实体出现，描述保留 |
+| 7 | **全路径做节点名 LLM 识别不了** | LLM 遇到 `photo:REDACTED_WIN_PATH/.../file.jpg` 无法识别为同一照片实体，创建碎片；改用短名 `photo:20090603_092316` 后可正确识别合并 |
 
 ### LightRAG 防重复实体机制
 
@@ -58,51 +59,109 @@ LightRAG 通过 **entity_name 的小写匹配** 防止重复：
 
 ---
 
-## 2. 照片入库（结构化注入）
+## 2. 照片入库（3步流程：结构化 + LLM 语义连接）
 
-### `lightrag_insert_custom_kg` — 照片+人物+关系一次性注入
+### 为什么需要 LLM 参与（ainsert）
+
+**结构化注入的实体是"死"的** — 它们不会和图谱中已有的其他实体产生任何语义连接。
+只有让 LLM 参与（ainsert），才能从照片描述文本中提取出与已有实体的关联（如地点、相机型号、活动等），建立真正的知识网络。
+
+**因此照片入库必须走3步流程**，不能只用 custom_kg 绕过 LLM。
+
+### 3步流程
 
 ```python
+# Step 1: 结构化注入实体+关系（保证照片/人物实体精确存在 + features等边精确）
+# 关键：entities/relationships/chunks 必须在同一个 custom_kg 调用中传入
+# 这样 chunk_to_source_map 才有映射，relationships 的 source_id 才不会变成 UNKNOWN
 inject_custom_kg(
     entities=[
-        {"entity_name": "photo:{normalized_path}", "entity_type": "Photo",
-         "description": "{abstract}", "file_path": "{file_path}"},
-        # 人物实体：用 LLM 自然格式（人名），不用 person:{uuid}
-        {"entity_name": "{person_name}", "entity_type": "person",
+        {"entity_name": "photo:{normalized_stem}", "entity_type": "Photo",
+         "description": "{abstract}", "file_path": "{file_path}",
+         "source_id": "{normalized_path}"},
+        {"entity_name": "{person_name_or_未命名人物_n}", "entity_type": "person",
          "description": "{person_name}，出现在照片{file_path}中"},
-        # 未命名人物：用临时名字
-        # {"entity_name": "未命名人物_{n}", "entity_type": "person",
-        #  "description": "一个尚未命名的人物"},
     ],
     relationships=[
-        {"src_id": "photo:{normalized_path}", "tgt_id": "{person_name}",
+        {"src_id": "photo:{normalized_stem}", "tgt_id": "{person_name}",
          "keywords": "features", "description": "照片中出现了{person_name}"},
-        {"src_id": "brain:Niu", "tgt_id": "{person_name}",
-         "keywords": "remembers", "description": "认识{person_name}"},
-        {"src_id": "brain:Niu", "tgt_id": "photo:{normalized_path}",
-         "keywords": "remembers", "description": "拥有这张照片"},
         # 多人同框:
         {"src_id": "{name_a}", "tgt_id": "{name_b}",
          "keywords": "co_occurs_with", "description": "{name_a}和{name_b}同框出现"},
     ],
-    chunks=[],  # 无 chunks → 不触发 LLM → 100%可靠
-    source_id="photo:{normalized_path}",
+    chunks=[{
+        "content": chunk_text,
+        "source_id": "{normalized_path}",
+        "file_path": "{normalized_path}",
+    }],
+    source_id="photo:{normalized_stem}",
 )
+
+# Step 2: ainsert 让 LLM 处理文本（建立语义连接）
+# 关键：chunk_text 中必须明确引用 Step 1 的实体名，让 LLM 能识别并合并
+lightrag_insert(
+    content=chunk_text,  # 包含照片描述 + 实体名引用
+    file_path="{normalized_path}",  # 避免 unknown_source
+    doc_id=f"doc-{normalized_stem}",
+)
+
+# Step 3: 清理碎片实体（LLM 可能创建的额外实体）
+# 如果 ainsert 产生了与 Step 1 实体名不同的碎片实体，用 merge_entities 合并
 ```
+
+### chunk_text 构造要点
+
+chunk_text 中**必须明确引用 Step 1 的实体名**，这样 LLM 在提取实体时能识别到已有实体并合并，而不是创建碎片实体：
+
+```python
+# 正确：明确引用实体名
+chunk_text = (
+    f"照片 {normalized_stem}：{abstract}\n"
+    f"实体：{', '.join(entity_names)}\n"  # 明确列出所有实体名
+    f"人物：{', '.join(person_names)}\n"
+)
+
+# 错误：只给摘要，不引用实体名 → LLM 可能提取出不同名字的碎片实体
+chunk_text = abstract  # LLM 从"未命名人物_1合影"中可能提取出"合影"等无关实体
+```
+
+### 为什么不能只用 custom_kg（绕过 LLM）
+
+| 方案 | 实体精确 | 语义连接 | 碎片化 | 结论 |
+|------|---------|---------|--------|------|
+| 只用 custom_kg + chunks | ✅ 精确 | ❌ 无连接（死实体） | ✅ 无碎片 | **错误方案** — 实体变成孤岛 |
+| 3步流程（custom_kg + ainsert） | ✅ 精确 | ✅ LLM 建立连接 | ⚠️ 可能碎片 | **正确方案** — Step 3 清理碎片 |
+
+### source_id 映射机制（重要）
+
+LightRAG 的 `ainsert_custom_kg` 中，entity/relationship 的 source_id 通过 `chunk_to_source_map` 映射：
+
+```
+chunk_to_source_map[chunk.source_id] = chunk_id
+entity.source_id = chunk_to_source_map.get(entity.source_id, "UNKNOWN")
+```
+
+**关键**：entities 和 relationships 必须与 chunks 在**同一次 custom_kg 调用**中传入，否则：
+- 分开调用时，第二次调用 chunks=[] → chunk_to_source_map 为空 → source_id 变成 UNKNOWN
+- UNKNOWN source_id 导致实体不可通过向量搜索检索
+
+**陷阱**：不要把 Step 1 拆成"先注入实体，再注入关系"两次调用！必须一次性传入 entities + relationships + chunks。
 
 ```
 参数:  entities: list[dict]       — 见上方模板
        relationships: list[dict]  — 见上方模板
-       chunks: list[dict]         — 见上方模板
+       chunks: list[dict]         — custom_kg 的 chunks 参数（照片入库不用，走 ainsert）
        source_id: str = "custom_kg"
 返回:  {"status": "ok", "entities": N, "relationships": N, "chunks": N}
-注意:  无 chunks 时不触发 LLM，100% 可靠
+注意:  无 chunks 时不触发 LLM，100% 可靠（Step 1/2 用）
        有 chunks 时会触发 LLM 提取，但 LLM 失败后实体/关系仍写入
+       照片入库的语义连接由 Step 3 的 ainsert 提供，不是 custom_kg chunks
 陷阱:  keywords 是必需字段（LightRAG 直接访问 rel["keywords"]，无 fallback）
        file_path 默认 "custom_kg"，照片实体必须显式设置
        source_id 默认 "custom_kg"，不设会产生 "UNKNOWN source_id" 警告
        多次 inject 同名实体会用 <SEP> 追加描述
        co_occurs_with 双向关系可能被 LLM 合并减少（实测 3人6条→2条）
+       ainsert 可能产生碎片实体 — Step 4 用 merge_entities 清理
 ```
 
 ---
@@ -572,7 +631,7 @@ from agent.brain_tools import (
 | 类型 | 格式 | 示例 | 说明 |
 |------|------|------|------|
 | 人物 | `{人名}` | `任飞` | **LLM 自然格式**，未命名时用 `未命名人物_{n}` |
-| 照片 | `photo:{normalized_path}` | `photo:e:/photos/2024/beach.jpg` | 照片实体，路径归一化（正斜杠+小写），与人物实体通过 features 关系连接 |
+| 照片 | `photo:{normalized_stem}` | `photo:20090603_092316` | 照片实体，短名=文件名stem（不含扩展名），file_path放metadata存完整路径，与人物实体通过 features 关系连接 |
 | 脑区 | `brain:{name}` | `brain:Niu` | 脑区锚点 |
 | 事件 | `event:{name}` | `event:beach_sunset` | 事件实体 |
 | 交互习惯 | `habit:{type}:{tool}` | `habit:tool_dialect:kg-server` | 交互习惯 |
@@ -617,7 +676,11 @@ from agent.brain_tools import (
 | 12 | insert_entity 走 ainsert | 触发 LLM 提取，不适合精确控制；照片/人物用 inject_custom_kg |
 | 13 | lightrag_insert 产生 "unknown_source" | 必须传 file_path 参数 |
 | 14 | co_occurs_with 双向边被 LLM 合并 | 3人同框理论6条双向边，LLM 可能合并为2条；显式注入更可靠 |
-| 15 | LLM 提取额外实体 | inject_custom_kg 带 chunks 时 LLM 会提取额外实体/关系并合并；显式数据优先 |
+| 15 | LLM 提取额外实体 | ainsert 可能产生碎片实体（与 Step 1 实体名不同），Step 4 用 merge_entities 清理 |
+| 16 | **只用 custom_kg 绕过 LLM = 死实体** | 结构化注入的实体不会和已有实体产生语义连接，必须走3步流程（custom_kg + ainsert） |
+| 17 | **ainsert 碎片化根因** | LLM 从 chunk_text 提取的实体名与 Step 1 不同 → 无法合并 → 碎片；解决：chunk_text 中明确引用 Step 1 实体名 + Step 3 清理 |
+| 18 | **全路径做节点名 LLM 识别不了** | 照片实体名用短名 `photo:{stem}`（如 `photo:20090603_092316`），不用全路径 |
+| 19 | **custom_kg 分开调用导致 source_id UNKNOWN** | entities/relationships/chunks 必须在同一次 custom_kg 调用中传入；分开调用时第二次 chunks=[] → chunk_to_source_map 为空 → source_id=UNKNOWN |
 | 16 | reranker 未配置 WARNING | 不影响查询结果，但日志会有 WARNING |
 | 17 | **边默认 weight=1.0** | LightRAG 创建的边 weight 默认 1.0，reinforce +0.1 后 min(1.0,1.1)=1.0 无变化 |
 | 18 | **_reinforce_edge_weight delta 不一致** | brain_tools delta=0.1 vs RegionActivationManager tool_reinforce_value=0.85 |
@@ -633,7 +696,7 @@ from agent.brain_tools import (
 
 | # | 测试内容 | 优先级 | 状态 |
 |---|---------|--------|------|
-| 1 | 照片实体 `photo:{normalized_path}` 格式，LLM 是否识别为照片？ainsert 包含文件路径的文本时 LLM 如何处理？ | 高 | ✅ 通过：ainsert 后没有创建重复实体 |
+| 1 | 照片实体 `photo:{normalized_stem}` 短名格式，LLM 是否识别为照片？ainsert 包含短名的文本时 LLM 如何处理？ | 高 | ✅ 通过：ainsert 后没有创建重复实体，短名比全路径更易识别 |
 | 2 | 提示词注入：在 brain_region_prompt 中明确告诉 LLM "未命名人物_X 是人物实体的临时名字"，LLM 能否识别？ | 高 | ✅ 通过：inject_custom_kg 注入后 ainsert 合并到已有实体，无独立变体 |
 | 3 | 人物改名后，照片实体与人物实体的 features 关系是否正确迁移？ | 高 | ✅ 通过：amerge_entities 后所有关系正确迁移，包括 features |
 | 4 | 多张照片包含同一人物，人物实体是否保持唯一？ | 中 | ✅ 通过：两次 inject_custom_kg 同名人物 + ainsert，实体始终唯一，描述用 `<SEP>` 追加 |
@@ -679,16 +742,30 @@ from agent.brain_tools import (
 
 ## 全部测试结论
 
-**核心结论**：人物实体必须使用 LLM 自然格式（人名）作为 entity_name，才能与 ainsert 自动提取的实体正确合并。
+**核心结论**：照片入库必须走3步流程（结构化注入 + LLM 语义连接 + 碎片清理），不能只用 custom_kg 绕过 LLM。
+
+**为什么需要 LLM**：结构化注入的实体是"死"的，不会和图谱中已有实体产生语义连接。只有 ainsert 让 LLM 处理文本，才能从照片描述中提取出与已有实体（地点、相机、活动等）的关联，建立真正的知识网络。
+
+**碎片化对策**：ainsert 可能产生与 Step 1 实体名不同的碎片实体。解决方法：
+1. chunk_text 中明确引用 Step 1 的实体名，让 LLM 能识别并合并
+2. Step 3 用 merge_entities 清理残留碎片实体
 
 | 格式 | LLM 识别 | ainsert 合并 | 结论 |
 |------|---------|-------------|------|
 | `person:{uuid}` | ❌ 不识别 | ❌ 创建独立实体 | **禁止使用** |
+| `photo:{full_path}` | ❌ 不识别（路径太长含特殊字符） | ❌ 创建碎片实体 | **禁止使用** |
+| `photo:{stem}`（如 `photo:20090603_092316`） | ✅ 识别为照片 | ✅ 合并到已有实体 | **推荐使用** |
 | `{人名}`（如"任飞"） | ✅ 识别 | ✅ 合并到已有实体 | **推荐使用** |
 | `未命名人物_{n}` | ❌ 纯 ainsert 不提取 | ✅ inject 后 ainsert 不分裂 | **临时格式，需 amerge 改名** |
 
+| 方案 | 实体精确 | 语义连接 | 碎片化 | 结论 |
+|------|---------|---------|--------|------|
+| 只用 custom_kg（绕过 LLM） | ✅ 精确 | ❌ 无连接（死实体） | ✅ 无碎片 | **错误** — 实体变成孤岛 |
+| 3步流程（custom_kg + ainsert + 清理） | ✅ 精确 | ✅ LLM 建立连接 | ⚠️ 可能碎片（可清理） | **正确** |
+
 **生产代码修改方向**：
-1. `sync_photo_to_kg`：人物实体用 `{人名}` 或 `未命名人物_{n}` 作为 entity_name，UUID 放在描述里
+1. `sync_photo_to_kg`：3步流程 — Step1 用 custom_kg 一次性注入实体+关系+chunks（保证 source_id 映射），Step2 用 ainsert（chunk_text 引用短名实体名），Step3 清理碎片；照片实体名用短名 `photo:{stem}`，file_path 仍存完整路径
 2. `name_person`：调用 `amerge_entities(["未命名人物_{n}"], "{新名字}")` 改名
 3. `merge_persons`：调用 `amerge_entities(["{旧名}"], "{目标名}")` 合并
 4. 禁止 `person:{uuid}` 格式进入图谱
+5. ainsert 必须传 file_path 参数，避免 unknown_source
