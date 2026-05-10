@@ -524,40 +524,55 @@ def format_photo_ingest_data(
 
 
 def sync_photo_to_kg(file_path: str, abstract: str, detected_persons: list) -> dict:
-    """同步照片信息到知识图谱（通过 inject_custom_kg 结构化注入，不触发 LLM）"""
+    """同步照片信息到知识图谱（2步结构化入库，杜绝碎片化实体）
+
+    流程：
+    1. lightrag_insert_custom_kg — 创建实体节点 + 关系边（不触发LLM）
+    2. 标记 kg_synced
+
+    之前的 Step 3（lightrag_insert 产生chunk）已被移除，原因：
+    - ainsert 的 LLM 会从 chunk_text 中独立提取实体名
+    - LLM 无法保证使用与 Step 1 完全相同的实体名
+    - 例如 photo:e:/tmp/bot/.../xxx.jpg → LLM 可能提取 photo:xxx
+    - _merge_nodes_then_upsert 仅按精确名称匹配，无法合并不同名实体
+    - 结果：Step 1 创建正确实体，Step 3 LLM 创建碎片实体
+    - 实体 VDB 已包含 entity_name + description，向量搜索可达，无需额外 chunk
+    """
     try:
         from agent.tool_registry import get_registry
 
         data = format_photo_ingest_data(file_path, abstract, detected_persons)
+        normalized_path = file_path.replace("\\", "/").lower()
         registry = get_registry()
-        inject_fn = registry.get("lightrag-server/lightrag_insert_custom_kg")
-        if not inject_fn:
+
+        # --- Step 1: 创建实体节点 + 关系边（不触发LLM，不创建brain:Niu锚点） ---
+        custom_kg_fn = registry.get("lightrag-server/lightrag_insert_custom_kg")
+        if not custom_kg_fn:
             logger.warning("[KG] lightrag_insert_custom_kg not available in registry")
             return {"status": "error", "reason": "lightrag_insert_custom_kg not available"}
 
-        result = inject_fn(
+        entity_result = custom_kg_fn(
             entities=data["entities"],
             relationships=data["relationships"],
-            chunks=[],  # 无 chunks → 不触发 LLM → 100%可靠
-            source_id=f"photo:{file_path.replace(chr(92), '/').lower()}",
+            chunks=[],
+            source_id=normalized_path,
         )
-        logger.info(f"[KG] Photo ingested via inject_custom_kg: {file_path}, result={result}")
+        if not entity_result or entity_result.get("status") != "ok":
+            logger.warning(f"[KG] Entity+relation injection failed for {file_path}: {entity_result}")
+            return {"status": "error", "reason": f"Entity+relation injection failed: {entity_result}"}
 
-        # Only mark as KG-synced if injection succeeded
-        if result and result.get("status") == "ok":
-            try:
-                with _db_write_lock:
-                    conn = get_connection()
-                    conn.execute(
-                        "UPDATE photos SET kg_synced = 1 WHERE file_path = ?",
-                        (file_path,),
-                    )
-                    conn.commit()
-            except Exception as e:
-                logger.warning(f"[KG] Failed to mark kg_synced for {file_path}: {e}")
-        else:
-            logger.warning(f"[KG] inject_custom_kg returned error for {file_path}: {result}")
-            return {"status": "error", "reason": f"inject_custom_kg failed: {result}"}
+        # --- Step 2: 标记 kg_synced ---
+        # Only mark as KG-synced if entity+relation injection succeeded
+        try:
+            with _db_write_lock:
+                conn = get_connection()
+                conn.execute(
+                    "UPDATE photos SET kg_synced = 1 WHERE file_path = ?",
+                    (file_path,),
+                )
+                conn.commit()
+        except Exception as e:
+            logger.warning(f"[KG] Failed to mark kg_synced for {file_path}: {e}")
 
         return {"status": "success", "doc_uri": file_path}
 
