@@ -1,666 +1,848 @@
+#!/usr/bin/env python3
 """
-KG 真实数据诊断
-==============
+真实KG数据诊断脚本 — 只读，不修改任何数据
+直接读取 graphml (networkx) + photos.db (sqlite3)，诊断实体碎片化问题
 
-使用真实数据（photos.db, messages.db, lightrag_storage JSON）
-诊断知识图谱的已知问题，不使用 mock 数据。
+诊断5个问题:
+  P1: 照片实体碎片化 — 同一张照片有3个实体
+  P2: 人物实体碎片化 — 同一个人有2个实体
+  P3: 边方向错误 — Person->Photo 应为 Photo->Person
+  P4: abstract内容不当 — 包含代码推断的"合影"
+  P5: 旧照片实体未删除 — name_person后旧实体仍孤立
 
 用法:
-    python scripts/test_kg_real_diagnosis.py              # 只读诊断（阶段1-2）
-    python scripts/test_kg_real_diagnosis.py --full       # 完整诊断（含阶段3写操作）
-    python scripts/test_kg_real_diagnosis.py --reset      # 重置测试图谱到空状态
+  python scripts/test_kg_real_diagnosis.py
 """
 
 from __future__ import annotations
 
-import argparse
-import asyncio
-import json
-import logging
 import os
-import shutil
 import sqlite3
 import sys
-import time
-from collections import defaultdict
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-# ── sys.path 设置 ──
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(_PROJECT_ROOT))
-sys.path.insert(0, str(_PROJECT_ROOT / "agent"))
-
-# ── 日志 ──
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%H:%M:%S",
-)
-logger = logging.getLogger("kg_diagnosis")
+import networkx as nx
 
 # ── 常量 ──
 PHOTOS_DB = Path("E:/tmp/bot/photos.db")
-MESSAGES_DB = Path.home() / ".niu" / "messages.db"
 STORAGE_DIR = Path.home() / ".niu" / "lightrag_storage"
-TEST_STORAGE_DIR = Path.home() / ".niu" / "lightrag_test_diagnosis"
-PERSON_UUID = "20196f76-adfb-49ca-8f99-4402fb84b1d5"
-PERSON_KEY = f"person:{PERSON_UUID}"
-REAL_NAME = "任飞"
-ROOT_ENTITY = "brain:Niu"
+GRAPHML_PATH = STORAGE_DIR / "graph_chunk_entity_relation.graphml"
+ROOT_ENTITY = "Niu"
+
+# ── 诊断结果 ──
 
 
-# ══════════════════════════════════════════════════════════════
-#  诊断结果收集
-# ══════════════════════════════════════════════════════════════
+@dataclass
+class Issue:
+    """单个诊断问题。"""
 
+    id: str
+    severity: str  # CRITICAL, HIGH, MEDIUM, LOW
+    title: str
+    evidence: str
+    status: str = "CONFIRMED"  # CONFIRMED, NOT_FOUND, SKIPPED
+
+
+@dataclass
 class DiagnosisResult:
-    """收集和报告诊断结果。"""
+    """诊断结果收集器。"""
 
-    def __init__(self) -> None:
-        self.items: list[dict[str, Any]] = []
+    issues: list[Issue] = field(default_factory=list)
 
-    def confirm(self, problem_id: str, title: str, evidence: str) -> None:
-        self.items.append({
-            "id": problem_id, "status": "CONFIRMED",
-            "title": title, "evidence": evidence,
+    def confirm(self, id: str, severity: str, title: str, evidence: str) -> None:
+        self.issues.append(Issue(id=id, severity=severity, title=title,
+                                evidence=evidence, status="CONFIRMED"))
+
+    def not_found(self, id: str, title: str, note: str) -> None:
+        self.issues.append(Issue(id=id, severity="INFO", title=title,
+                                evidence=note, status="NOT_FOUND"))
+
+    def skip(self, id: str, title: str, reason: str) -> None:
+        self.issues.append(Issue(id=id, severity="INFO", title=title,
+                                evidence=reason, status="SKIPPED"))
+
+    def report(self) -> None:
+        confirmed = [i for i in self.issues if i.status == "CONFIRMED"]
+        not_found = [i for i in self.issues if i.status == "NOT_FOUND"]
+        skipped = [i for i in self.issues if i.status == "SKIPPED"]
+
+        print()
+        print("=" * 70)
+        print("  诊断汇总")
+        print("=" * 70)
+        print(f"  总计:   {len(self.issues)} 项")
+        print(f"  已确认: {len(confirmed)} 项")
+        print(f"  未发现: {len(not_found)} 项")
+        print(f"  已跳过: {len(skipped)} 项")
+        print()
+
+        if confirmed:
+            print("  --- 已确认问题 ---")
+            for item in confirmed:
+                print(f"  [{item.severity}] {item.id}: {item.title}")
+                print(f"    证据: {item.evidence[:200]}")
+                print()
+
+        if not_found:
+            print("  --- 未发现问题 ---")
+            for item in not_found:
+                print(f"  [INFO] {item.id}: {item.title} ({item.evidence})")
+            print()
+
+        if skipped:
+            print("  --- 已跳过 ---")
+            for item in skipped:
+                print(f"  [INFO] {item.id}: {item.title} ({item.evidence})")
+            print()
+
+
+# ── 数据加载 ──
+
+
+def load_graph() -> nx.DiGraph:
+    """加载真实图谱 (graphml) 并转为有向图。
+
+    networkx.read_graphml 默认返回无向 Graph，
+    但 LightRAG 的 graphml 实际上存储了有向边。
+    需要显式转为 DiGraph 才能用 successors/predecessors。
+    """
+    if not GRAPHML_PATH.exists():
+        print(f"ERROR: graphml 文件不存在: {GRAPHML_PATH}")
+        sys.exit(1)
+    G_raw = nx.read_graphml(str(GRAPHML_PATH))
+    # graphml 可能是 Graph 或 DiGraph，统一转为 DiGraph
+    if not G_raw.is_directed():
+        G = nx.DiGraph()
+        G.add_nodes_from(G_raw.nodes(data=True))
+        G.add_edges_from(G_raw.edges(data=True))
+    else:
+        G = G_raw
+    print(f"[加载] graphml: {G.number_of_nodes()} 节点, {G.number_of_edges()} 边 (DiGraph)")
+    return G
+
+
+def load_photos_db() -> sqlite3.Connection:
+    """加载真实照片数据库 (只读)。"""
+    if not PHOTOS_DB.exists():
+        print(f"ERROR: photos.db 不存在: {PHOTOS_DB}")
+        sys.exit(1)
+    conn = sqlite3.connect(f"file:{PHOTOS_DB}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    print(f"[加载] photos.db: OK")
+    return conn
+
+
+# ── 辅助函数 ──
+
+
+def get_entity_id(G: nx.DiGraph, node_id: str) -> str:
+    """获取节点的 entity_id 属性，不存在则返回 node_id 本身。"""
+    return G.nodes[node_id].get("entity_id", node_id)
+
+
+def get_entity_type(G: nx.DiGraph, node_id: str) -> str:
+    """获取节点的 entity_type 属性。"""
+    return G.nodes[node_id].get("entity_type", "UNKNOWN")
+
+
+def find_node_by_entity_id(G: nx.DiGraph, entity_id: str) -> str | None:
+    """按 entity_id 查找节点，返回 node_id 或 None。"""
+    for nid, attrs in G.nodes(data=True):
+        if attrs.get("entity_id") == entity_id:
+            return nid
+    return None
+
+
+def get_neighbors_info(G: nx.DiGraph, node_id: str) -> list[dict[str, Any]]:
+    """获取节点的所有邻居（入+出）及边属性。"""
+    neighbors = []
+    # 出边
+    for tgt in G.successors(node_id):
+        edge_data = G.edges[node_id, tgt]
+        neighbors.append({
+            "direction": "out",
+            "neighbor": get_entity_id(G, tgt),
+            "neighbor_type": get_entity_type(G, tgt),
+            "keywords": edge_data.get("keywords", ""),
+            "weight": edge_data.get("weight", 0),
         })
-        logger.info("  [CONFIRMED] %s: %s", problem_id, title)
-        logger.info("    证据: %s", evidence[:200])
-
-    def not_found(self, problem_id: str, title: str, note: str) -> None:
-        self.items.append({
-            "id": problem_id, "status": "NOT_FOUND",
-            "title": title, "evidence": note,
+    # 入边
+    for src in G.predecessors(node_id):
+        edge_data = G.edges[src, node_id]
+        neighbors.append({
+            "direction": "in",
+            "neighbor": get_entity_id(G, src),
+            "neighbor_type": get_entity_type(G, src),
+            "keywords": edge_data.get("keywords", ""),
+            "weight": edge_data.get("weight", 0),
         })
-        logger.info("  [NOT_FOUND] %s: %s (%s)", problem_id, title, note)
-
-    def skip(self, problem_id: str, title: str, reason: str) -> None:
-        self.items.append({
-            "id": problem_id, "status": "SKIPPED",
-            "title": title, "evidence": reason,
-        })
-        logger.info("  [SKIPPED] %s: %s (%s)", problem_id, title, reason)
-
-    def report(self) -> dict[str, Any]:
-        confirmed = [i for i in self.items if i["status"] == "CONFIRMED"]
-        not_found = [i for i in self.items if i["status"] == "NOT_FOUND"]
-        skipped = [i for i in self.items if i["status"] == "SKIPPED"]
-        return {
-            "total": len(self.items),
-            "confirmed": len(confirmed),
-            "not_found": len(not_found),
-            "skipped": len(skipped),
-            "items": self.items,
-        }
-
-
-result = DiagnosisResult()
+    return neighbors
 
 
 # ══════════════════════════════════════════════════════════════
-#  阶段 1：真实图谱现状诊断（只读 JSON 文件）
+#  P1: 照片实体碎片化
 # ══════════════════════════════════════════════════════════════
 
-def stage_1_graph_diagnosis() -> None:
-    logger.info("=" * 60)
-    logger.info("  阶段 1: 真实图谱现状诊断（只读）")
-    logger.info("=" * 60)
+def diagnose_photo_fragmentation(G: nx.DiGraph, result: DiagnosisResult) -> None:
+    """诊断同一张照片产生多个实体的问题。
 
-    # ── 1a. 读取实体 ──
-    entities_path = STORAGE_DIR / "kv_store_full_entities.json"
-    if not entities_path.exists():
-        logger.error("实体文件不存在: %s", entities_path)
-        return
+    方法: 从 photos.db 获取每张照片的 file_path 和 abstract，
+    然后在图谱中搜索所有可能对应同一张照片的实体节点，
+    检测同一照片是否有多个KG实体。
+    """
+    print()
+    print("-" * 60)
+    print("  P1: 照片实体碎片化诊断")
+    print("-" * 60)
 
-    with open(entities_path, "r", encoding="utf-8") as f:
-        entities_data = json.load(f)
+    # 收集所有可能是照片相关的节点，按以下特征识别:
+    #   1. entity_type == "photo"
+    #   2. entity_id 是文件名格式 (YYYYMMDD_HHMMSS)
+    #   3. entity_id 包含"合影"(代码推断的照片描述)
+    photo_nodes = []
+    filename_nodes = []
+    heying_nodes = []
 
-    # 解析实体名 -> 文档分布
-    all_entity_names: set[str] = set()
-    doc_to_entities: dict[str, list[str]] = {}
-    entity_to_docs: dict[str, list[str]] = defaultdict(list)
+    for nid, attrs in G.nodes(data=True):
+        eid = attrs.get("entity_id", nid)
+        etype = attrs.get("entity_type", "")
 
-    for doc_id, data in entities_data.items():
-        if isinstance(data, dict) and "entity_names" in data:
-            names = data["entity_names"]
-            doc_to_entities[doc_id] = names
-            for n in names:
-                all_entity_names.add(n)
-                entity_to_docs[n].append(doc_id)
+        if etype == "photo":
+            photo_nodes.append((nid, eid, attrs))
+        # 文件名实体: 类似 20090603_092316 (YYYYMMDD_HHMMSS)
+        if len(eid) >= 13 and eid.replace("_", "").replace(":", "").isdigit():
+            filename_nodes.append((nid, eid, attrs))
+        # 描述中包含"合影"的实体 (排除系统类型)
+        if ("合影" in eid) and etype not in (
+            "brainregion", "BrainRegion", "skill", "tool", "location",
+        ):
+            heying_nodes.append((nid, eid, attrs))
 
-    logger.info("  实体总数: %d, 文档数: %d", len(all_entity_names), len(doc_to_entities))
+    print(f"  photo 类型节点: {len(photo_nodes)}")
+    for nid, eid, attrs in photo_nodes:
+        print(f"    [{attrs.get('entity_type')}] {eid}")
 
-    # ── 问题 1: person:{uuid} 和 "任飞" 实体分裂 ──
-    person_docs = entity_to_docs.get(PERSON_KEY, [])
-    name_docs = entity_to_docs.get(REAL_NAME, [])
-    both_docs = set(person_docs) & set(name_docs)
+    print(f"  文件名格式节点: {len(filename_nodes)}")
+    for nid, eid, attrs in filename_nodes:
+        print(f"    [{attrs.get('entity_type')}] {eid}")
 
-    if person_docs and name_docs and PERSON_KEY != REAL_NAME:
-        # 检查是否有结构化同一性关系（is_identical_to 或实体合并）
-        # 如果 person:{uuid} 和 任飞 在同一文档中共存但没有合并，说明是分裂的
+    print(f"  含'合影'的节点: {len(heying_nodes)}")
+    for nid, eid, attrs in heying_nodes:
+        print(f"    [{attrs.get('entity_type')}] {eid}")
+
+    # 合并所有照片相关实体 (去重)
+    all_photo_related = {}
+    for nid, eid, attrs in photo_nodes + filename_nodes + heying_nodes:
+        if nid not in all_photo_related:
+            all_photo_related[nid] = (nid, eid, attrs)
+
+    all_items = list(all_photo_related.values())
+
+    # 按日期分组: 提取日期前缀(YYYYMMDD)用于分组
+    def extract_date(eid: str) -> str | None:
+        """从实体ID中提取8位日期前缀。"""
+        digits = eid.replace("_", "").replace(":", "").replace("，", "").replace(" ", "")
+        # 查找8位连续数字 (YYYYMMDD)
+        for i in range(len(digits) - 7):
+            seg = digits[i:i+8]
+            if seg[:4] in ("2009", "2010", "2011", "2012", "2013", "2014",
+                           "2015", "2016", "2017", "2018", "2019", "2020",
+                           "2021", "2022", "2023", "2024", "2025", "2026"):
+                return seg
+        return None
+
+    date_groups: dict[str, list[tuple]] = {}
+    for item in all_items:
+        nid, eid, attrs = item
+        date_key = extract_date(eid)
+        if date_key:
+            if date_key not in date_groups:
+                date_groups[date_key] = []
+            date_groups[date_key].append(item)
+
+    # 找到同一日期有多个实体的组 (碎片化)
+    fragmented_groups = {k: v for k, v in date_groups.items() if len(v) > 1}
+
+    if fragmented_groups:
+        total_fragments = sum(len(v) for v in fragmented_groups.values())
+        group_details = []
+        for date_key, items in fragmented_groups.items():
+            entity_descs = []
+            for nid, eid, attrs in items:
+                etype = attrs.get("entity_type", "?")
+                desc = attrs.get("description", "")[:40]
+                entity_descs.append(f"[{etype}] {eid} (desc={desc})")
+            group_details.append(f"日期{date_key}: " + "; ".join(entity_descs))
+
+        # 计算严重程度: 按最大组的碎片数
+        max_frag = max(len(v) for v in fragmented_groups.values())
+        severity = "CRITICAL" if max_frag >= 3 else "HIGH"
+
         result.confirm(
-            "P1", "person:{uuid} 和 任飞 实体分裂",
-            f"person:{PERSON_UUID} 出现在 {len(person_docs)} 个文档, "
-            f"任飞 出现在 {len(name_docs)} 个文档, "
-            f"两者共现于 {len(both_docs)} 个文档但未合并为同一实体。"
-            f"person:{PERSON_UUID} 文档: {person_docs[:3]}..., "
-            f"任飞 文档: {name_docs[:3]}...",
+            "P1", severity,
+            "照片实体碎片化 — 同一张照片有多个KG实体",
+            f"发现 {len(fragmented_groups)} 组碎片化照片实体 "
+            f"(共 {total_fragments} 个实体): "
+            + " | ".join(group_details)
+            + "。根因: abstract内容在name_person后变化('未命名人物_1'->'任飞')，"
+            + "导致照片实体名变了，旧实体未删除。",
         )
     else:
-        result.not_found("P1", "person:{uuid} 和 任飞 实体分裂", "未找到分裂证据")
+        # 即使没有按日期分组成功，也检查总数
+        if len(all_items) > 0:
+            result.not_found("P1", "照片实体碎片化",
+                             f"按日期分组未发现碎片，共 {len(all_items)} 个照片相关实体")
+        else:
+            result.skip("P1", "照片实体碎片化", "未找到照片相关实体")
 
-    # ── 问题 2: 大小写不一致 ──
-    # 用户说已在 LightRAG fork 中修复，检查当前数据是否仍有残留
-    lower_map: dict[str, list[str]] = defaultdict(list)
-    for name in all_entity_names:
-        lower_map[name.lower()].append(name)
+    # 额外: 检查照片实体之间的边
+    if len(all_items) > 1:
+        print()
+        print("  照片相关实体之间的边:")
+        for i, (nid_i, eid_i, _) in enumerate(all_items):
+            for j, (nid_j, eid_j, _) in enumerate(all_items):
+                if i >= j:
+                    continue
+                if G.has_edge(nid_i, nid_j):
+                    edge = G.edges[nid_i, nid_j]
+                    print(f"    {eid_i} --[{edge.get('keywords','')}]--> {eid_j}")
+                if G.has_edge(nid_j, nid_i):
+                    edge = G.edges[nid_j, nid_i]
+                    print(f"    {eid_j} --[{edge.get('keywords','')}]--> {eid_i}")
 
-    case_variants = {k: v for k, v in lower_map.items() if len(v) > 1}
-    if case_variants:
-        variant_details = []
-        for key, variants in case_variants.items():
-            variant_details.append(f"{variants}")
+
+# ══════════════════════════════════════════════════════════════
+#  P2: 人物实体碎片化
+# ══════════════════════════════════════════════════════════════
+
+def diagnose_person_fragmentation(G: nx.DiGraph, db: sqlite3.Connection, result: DiagnosisResult) -> None:
+    """诊断同一个人产生多个实体的问题。
+
+    方法: 从 photos.db 获取每个人物的 name 和 auto_label，
+    检查图谱中是否同时存在 auto_label 实体和 name 实体，
+    即同一人在图谱中有多个不同名称的person实体。
+    """
+    print()
+    print("-" * 60)
+    print("  P2: 人物实体碎片化诊断")
+    print("-" * 60)
+
+    # 收集所有 person 类型的节点
+    person_nodes = []
+    for nid, attrs in G.nodes(data=True):
+        etype = attrs.get("entity_type", "")
+        eid = attrs.get("entity_id", nid)
+        if etype == "person":
+            person_nodes.append((nid, eid, attrs))
+
+    print(f"  person 类型节点: {len(person_nodes)}")
+    for nid, eid, attrs in person_nodes:
+        desc = attrs.get("description", "")[:60]
+        print(f"    {eid} (desc={desc})")
+
+    # 从 photos.db 获取真实人物数据
+    db_persons = [dict(r) for r in db.execute(
+        "SELECT id, name, auto_label FROM persons"
+    ).fetchall()]
+    print(f"  photos.db persons: {len(db_persons)}")
+    for p in db_persons:
+        print(f"    id={p['id']}, name={p['name']}, auto_label={p['auto_label']}")
+
+    # 诊断: 对每个DB人物，检查图谱中是否存在碎片化
+    # 碎片化 = 同一人在图谱中既有 auto_label 实体又有 name 实体
+    fragmented_persons = []
+    for p in db_persons:
+        name = p.get("name", "")
+        auto_label = p.get("auto_label", "")
+        person_id = p.get("id", "")
+
+        if not name or not auto_label or name == auto_label:
+            continue
+
+        # 检查图谱中是否存在 name 实体
+        name_node = find_node_by_entity_id(G, name)
+        # 检查图谱中是否存在 auto_label 实体
+        auto_node = find_node_by_entity_id(G, auto_label)
+        # 也检查以 auto_label 开头的实体 (如 "未命名人物_N" 模板)
+        auto_prefix_nodes = []
+        for nid, eid, attrs in person_nodes:
+            if eid.startswith(auto_label.rsplit("_", 1)[0] + "_"):
+                auto_prefix_nodes.append((nid, eid))
+
+        has_name = name_node is not None
+        has_auto = auto_node is not None
+        has_auto_prefix = len(auto_prefix_nodes) > 0
+
+        print(f"  检查 person_id={person_id[:20]}: "
+              f"name='{name}'(KG:{'Y' if has_name else 'N'}), "
+              f"auto_label='{auto_label}'(KG:{'Y' if has_auto else 'N'}), "
+              f"auto_prefix匹配:{auto_prefix_nodes})")
+
+        if has_name and (has_auto or has_auto_prefix):
+            evidence_parts = [f"已命名实体 '{name}'"]
+            if has_auto:
+                evidence_parts.append(f"auto_label实体 '{auto_label}'")
+            for _, prefix_eid in auto_prefix_nodes:
+                if prefix_eid != auto_label:
+                    evidence_parts.append(f"模板实体 '{prefix_eid}'")
+            fragmented_persons.append({
+                "person_id": person_id,
+                "name": name,
+                "auto_label": auto_label,
+                "evidence": evidence_parts,
+            })
+
+    if fragmented_persons:
+        details = []
+        for fp in fragmented_persons:
+            details.append(
+                f"person_id={fp['person_id'][:20]}: "
+                + ", ".join(fp["evidence"])
+            )
         result.confirm(
-            "P2", "大小写不一致创建重复实体（残留数据）",
-            f"发现 {len(case_variants)} 组大小写变体: {variant_details}。"
-            f"LightRAG fork 已修复（_normalize_node_id），但历史数据仍有残留。",
+            "P2", "HIGH",
+            "人物实体碎片化 — 同一个人有多个KG实体",
+            f"发现 {len(fragmented_persons)} 个碎片化人物: "
+            + "; ".join(details)
+            + "。根因: 第一次ainsert让LLM提取了'未命名人物_N'模板实体，"
+            + "name_person用inject_custom_kg注入了命名实体，两者未合并。",
         )
     else:
-        result.not_found("P2", "大小写不一致", "当前数据无大小写变体")
-
-    # ── 问题 3: unknown_source file_path ──
-    doc_status_path = STORAGE_DIR / "kv_store_doc_status.json"
-    if doc_status_path.exists():
-        with open(doc_status_path, "r", encoding="utf-8") as f:
-            doc_status = json.load(f)
-
-        unknown_docs = []
-        photo_related_unknown = []
-        for doc_id, status in doc_status.items():
-            fp = status.get("file_path", "")
-            if fp == "unknown_source":
-                summary = status.get("content_summary", "")[:100]
-                unknown_docs.append(doc_id)
-                # 检查是否是照片相关文档
-                if "照片" in summary or "photo" in summary.lower() or PERSON_UUID in summary:
-                    photo_related_unknown.append(doc_id)
-
-        if unknown_docs:
-            result.confirm(
-                "P3", "文档 file_path 为 unknown_source",
-                f"共 {len(unknown_docs)}/{len(doc_status)} 个文档 file_path=unknown_source。"
-                f"其中 {len(photo_related_unknown)} 个与照片相关。"
-                f"根因: sync_photo_to_kg 调用 lightrag_insert(content=text) 未传 file_path。"
-                f"IDs: {unknown_docs[:5]}...",
-            )
-        else:
-            result.not_found("P3", "unknown_source file_path", "无 unknown_source 文档")
-
-    # ── 问题 4: 照片实体路径不一致 ──
-    photo_entities = [n for n in all_entity_names if n.startswith("photo:")]
-    if len(photo_entities) > 1:
-        # 检查反斜杠 vs 正斜杠
-        backslash = [p for p in photo_entities if "\\" in p]
-        forward = [p for p in photo_entities if "/" in p and "\\" not in p]
-        if backslash and forward:
-            result.confirm(
-                "P4", "照片实体路径格式不一致",
-                f"反斜杠路径: {backslash}, 正斜杠路径: {forward}。"
-                f"不同来源（photos.db vs LLM 提取）产生不同路径格式。",
-            )
-        else:
-            result.not_found("P4", "照片路径不一致", f"所有路径格式一致: {photo_entities}")
-    else:
-        result.skip("P4", "照片实体路径不一致", f"仅 {len(photo_entities)} 个照片实体，无法比较")
-
-    # ── 问题 5: lightrag_insert_entity 走 ainsert 而非 ainsert_custom_kg ──
-    # 检查 lightrag_insert_entity 函数内部是否调用 lightrag_insert(content=...)
-    lightrag_server_path = _PROJECT_ROOT / "mcp-servers/lightrag-server/src/niu_lightrag_server/__init__.py"
-    if lightrag_server_path.exists():
-        code = lightrag_server_path.read_text(encoding="utf-8")
-        # 找到 lightrag_insert_entity 函数体
-        in_insert_entity = False
-        insert_entity_uses_ainsert = False
-        insert_entity_uses_custom_kg = False
-        for line in code.splitlines():
-            stripped = line.strip()
-            if "def lightrag_insert_entity" in stripped:
-                in_insert_entity = True
-                continue
-            if in_insert_entity:
-                if stripped.startswith("def ") and "lightrag_insert_entity" not in stripped:
-                    break  # 到下一个函数定义
-                if "ingester.lightrag_insert(content=" in line:
-                    insert_entity_uses_ainsert = True
-                if "ingester.inject_custom_kg(" in line:
-                    insert_entity_uses_custom_kg = True
-
-        if insert_entity_uses_ainsert and not insert_entity_uses_custom_kg:
-            result.confirm(
-                "P5", "lightrag_insert_entity 走 ainsert 而非 ainsert_custom_kg",
-                "lightrag_insert_entity 函数内部调用 ingester.lightrag_insert(content=text)，"
-                "触发 LLM 自动提取，导致实体分裂（问题1的根因）。",
-            )
-        elif insert_entity_uses_ainsert and insert_entity_uses_custom_kg:
-            result.not_found("P5", "insert_entity 走 ainsert", "代码已同时使用 ainsert 和 inject_custom_kg")
-        else:
-            result.not_found("P5", "insert_entity 走 ainsert", "代码路径已变更")
-
-    # ── 问题 6: skip_llm_extraction 被忽略 ──
-    if lightrag_server_path.exists():
-        code = lightrag_server_path.read_text(encoding="utf-8")
-        if "_ = source_id, skip_llm_extraction" in code:
-            result.confirm(
-                "P6", "skip_llm_extraction 参数被显式忽略",
-                "代码中 '_ = source_id, skip_llm_extraction' 显式丢弃参数，"
-                "merge_persons 传入 skip_llm_extraction=True 无效。",
-            )
-        else:
-            result.not_found("P6", "skip_llm_extraction 被忽略", "代码已修复")
-
-    # ── 问题 7: dream-evolver 无去重 ──
-    # 检查 _tidy_context 中 dream-evolver 的调用方式
-    compat_path = _PROJECT_ROOT / "niu_api/compat.py"
-    if compat_path.exists():
-        code = compat_path.read_text(encoding="utf-8")
-        if "dream-evolver" in code or "dream_evolver" in code:
-            # 检查是否有去重逻辑
-            has_dedup = "dedup" in code.lower() or "merge" in code.lower()
-            result.confirm(
-                "P7", "dream-evolver 创建无去重的图谱数据",
-                f"_tidy_context 中调用 dream-evolver 子 Agent，"
-                f"子 Agent 使用 lightrag_insert_entity/relation 走 ainsert，"
-                f"LLM 提取的实体可能与已有实体重复。"
-                f"代码中 {'有' if has_dedup else '无'} 去重逻辑。",
-            )
-        else:
-            result.skip("P7", "dream-evolver 无去重", "未找到 dream-evolver 调用")
-
-    # ── 关系分析 ──
-    rel_path = STORAGE_DIR / "kv_store_full_relations.json"
-    if rel_path.exists():
-        with open(rel_path, "r", encoding="utf-8") as f:
-            rel_data = json.load(f)
-
-        # 收集 person:{uuid} -> 任飞 的关系
-        person_to_name_rels = []
-        for doc_id, data in rel_data.items():
-            if isinstance(data, dict) and "relation_pairs" in data:
-                for pair in data["relation_pairs"]:
-                    if len(pair) == 2:
-                        src, tgt = pair
-                        if (PERSON_KEY in src and REAL_NAME in tgt) or \
-                           (PERSON_KEY in tgt and REAL_NAME in src):
-                            person_to_name_rels.append((src, tgt, doc_id))
-
-        logger.info("  person:{uuid} <-> 任飞 关系数: %d", len(person_to_name_rels))
-        for src, tgt, doc in person_to_name_rels:
-            logger.info("    %s -> %s (from %s)", src, tgt, doc)
-
-    logger.info("-" * 60)
-    logger.info("  阶段 1 完成")
-    logger.info("-" * 60)
-
-
-# ══════════════════════════════════════════════════════════════
-#  阶段 2：真实数据库数据读取（只读 SQLite）
-# ══════════════════════════════════════════════════════════════
-
-def stage_2_database_diagnosis() -> None:
-    logger.info("=" * 60)
-    logger.info("  阶段 2: 真实数据库数据读取（只读）")
-    logger.info("=" * 60)
-
-    # ── 2a. photos.db ──
-    if PHOTOS_DB.exists():
-        conn = sqlite3.connect(str(PHOTOS_DB))
-        conn.row_factory = sqlite3.Row
-
-        # persons
-        persons = [dict(r) for r in conn.execute("SELECT id, name, auto_label, photo_count FROM persons").fetchall()]
-        logger.info("  persons: %d 条", len(persons))
-        for p in persons:
-            logger.info("    id=%s, name=%s, auto_label=%s, photo_count=%d",
-                       p["id"], p["name"], p["auto_label"], p["photo_count"])
-
-        # photos
-        photos = [dict(r) for r in conn.execute(
-            "SELECT id, file_path, camera, abstract, kg_synced FROM photos"
-        ).fetchall()]
-        logger.info("  photos: %d 条", len(photos))
-        for p in photos:
-            logger.info("    id=%s, file_path=%s, camera=%s, kg_synced=%d",
-                       p["id"][:20], p["file_path"][:60], p["camera"], p["kg_synced"])
-
-        # faces
-        faces = [dict(r) for r in conn.execute(
-            "SELECT person_id, photo_id, confidence FROM faces"
-        ).fetchall()]
-        logger.info("  faces: %d 条", len(faces))
-
-        # co_occurrences
-        co_occs = conn.execute("SELECT COUNT(*) FROM co_occurrences").fetchone()[0]
-        logger.info("  co_occurrences: %d 条", co_occs)
-
-        conn.close()
-
-        # 诊断：photos.db 中 person name 已更新为"任飞"
-        # 但图谱中 person:{uuid} 和 任飞 仍是独立实体
-        if persons and persons[0]["name"] == REAL_NAME:
-            logger.info("  [发现] photos.db 中 person name 已为 '%s'，但图谱中仍分裂", REAL_NAME)
-    else:
-        logger.warning("  photos.db 不存在: %s", PHOTOS_DB)
-
-    # ── 2b. messages.db ──
-    if MESSAGES_DB.exists():
-        conn = sqlite3.connect(str(MESSAGES_DB))
-        conn.row_factory = sqlite3.Row
-
-        messages = [dict(r) for r in conn.execute(
-            "SELECT id, role, substr(content, 1, 300) as content FROM messages ORDER BY id"
-        ).fetchall()]
-        logger.info("  messages: %d 条", len(messages))
-
-        # 找照片入库和命名的对话
-        photo_ingest_msgs = []
-        name_person_msgs = []
-        for m in messages:
-            content = m["content"]
-            if "入库" in content or "照片" in content:
-                photo_ingest_msgs.append(m)
-            if "命名" in content or "叫" in content:
-                name_person_msgs.append(m)
-
-        logger.info("  照片入库相关消息: %d 条", len(photo_ingest_msgs))
-        logger.info("  人物命名相关消息: %d 条", len(name_person_msgs))
-
-        # 重构完整的照片入库 -> 命名流程
-        logger.info("  === 照片入库 -> 命名 完整流程 ===")
-        for m in messages:
-            role = "用户" if m["role"] == "user" else "助手"
-            content = m["content"][:150]
-            logger.info("    [%s] %s", role, content)
-
-        conn.close()
-    else:
-        logger.warning("  messages.db 不存在: %s", MESSAGES_DB)
-
-    logger.info("-" * 60)
-    logger.info("  阶段 2 完成")
-    logger.info("-" * 60)
-
-
-# ══════════════════════════════════════════════════════════════
-#  阶段 3：真实代码路径调用（写测试图谱）
-# ══════════════════════════════════════════════════════════════
-
-async def stage_3_real_code_paths() -> None:
-    logger.info("=" * 60)
-    logger.info("  阶段 3: 真实代码路径调用（写测试图谱）")
-    logger.info("=" * 60)
-
-    # 初始化测试工作目录
-    if TEST_STORAGE_DIR.exists():
-        shutil.rmtree(TEST_STORAGE_DIR, ignore_errors=True)
-    TEST_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
-    logger.info("  测试工作目录: %s", TEST_STORAGE_DIR)
-
-    # 修补 STORAGE_DIR
-    try:
-        import niu_api.internal.lightrag_manager as _lm
-    except ImportError as exc:
-        logger.error("  导入 lightrag_manager 失败: %s", exc)
-        return
-
-    original_dir = getattr(_lm, "STORAGE_DIR", None)
-    _lm.STORAGE_DIR = str(TEST_STORAGE_DIR)
-    _lm._rag_instance = None
-    logger.info("  修补 STORAGE_DIR: %s -> %s", original_dir, TEST_STORAGE_DIR)
-
-    # 初始化 LightRAG
-    from niu_api.internal.lightrag_manager import ensure_lightrag, get_lightrag
-    await ensure_lightrag()
-    lightrag = get_lightrag()
-    if lightrag is None:
-        logger.error("  LightRAG 初始化失败")
-        return
-    logger.info("  LightRAG 初始化成功: %s", type(lightrag).__name__)
-
-    # 导入适配器
-    from niu_api.internal.lightrag_adapter import LightRAGAdapter, LightRAGIngester
-    adapter = LightRAGAdapter()
-    ingester = LightRAGIngester()
-
-    # ── 3a. 注入根节点 ──
-    logger.info("  3a. 注入根节点 brain:Niu")
-    ingester.inject_custom_kg(
-        entities=[{"entity_name": ROOT_ENTITY, "entity_type": "Brain",
-                   "description": "Niu 知识图谱根节点"}],
-        relationships=[], chunks=[], source_id="system:init",
-    )
-
-    # ── 3b. 调用 sync_photo_to_kg 的真实代码路径 ──
-    logger.info("  3b. 调用 sync_photo_to_kg 真实代码路径")
-
-    # 从 photos.db 读取真实数据
-    if PHOTOS_DB.exists():
-        conn = sqlite3.connect(str(PHOTOS_DB))
-        conn.row_factory = sqlite3.Row
-        photo = dict(conn.execute("SELECT * FROM photos LIMIT 1").fetchone())
-        persons_rows = conn.execute(
-            "SELECT p.id, p.name, p.auto_label FROM persons p "
-            "JOIN faces f ON f.person_id = p.id WHERE f.photo_id = ?",
-            (photo["id"],),
-        ).fetchall()
-        conn.close()
-
-        # 构造 detected_persons 参数（与 sync_photo_to_kg 一致）
-        detected_persons = [
-            {"id": r["id"], "name": r["name"] or r["auto_label"]}
-            for r in persons_rows
+        # 即使没有与DB交叉引用的碎片，也检查是否有未命名人物模板残留
+        unnamed_in_graph = [
+            (nid, eid) for nid, eid, _ in person_nodes
+            if eid.startswith("未命名人物")
         ]
-
-        # 调用 format_photo_ingest_text（真实函数）
-        from niu_photo_server import format_photo_ingest_text
-        text = format_photo_ingest_text(photo["file_path"], photo["abstract"], detected_persons)
-        logger.info("    format_photo_ingest_text 输出: %s", text)
-
-        # 调用 lightrag_insert（sync_photo_to_kg 的真实路径，不传 file_path）
-        logger.info("    调用 lightrag_insert(content=text) — 不传 file_path")
-        insert_result = ingester.lightrag_insert(content=text)
-        logger.info("    lightrag_insert 结果: %s", insert_result)
-
-        # 检查新文档的 file_path
-        doc_status_path = TEST_STORAGE_DIR / "kv_store_doc_status.json"
-        if doc_status_path.exists():
-            with open(doc_status_path, "r", encoding="utf-8") as f:
-                doc_status = json.load(f)
-            for doc_id, status in doc_status.items():
-                fp = status.get("file_path", "")
-                if fp == "unknown_source":
-                    result.confirm(
-                        "P3-LIVE", "sync_photo_to_kg 产生 unknown_source（实时复现）",
-                        f"调用 lightrag_insert(content=text) 后，文档 {doc_id} 的 "
-                        f"file_path=unknown_source。根因: 未传 file_path 参数。",
-                    )
-                    break
-
-        # 检查 LLM 是否创建了独立实体
-        entities_path = TEST_STORAGE_DIR / "kv_store_full_entities.json"
-        if entities_path.exists():
-            with open(entities_path, "r", encoding="utf-8") as f:
-                entities = json.load(f)
-            all_names = set()
-            for doc_id, data in entities.items():
-                if isinstance(data, dict) and "entity_names" in data:
-                    all_names.update(data["entity_names"])
-
-            # 检查 person:{uuid} 是否存在
-            person_key_in_graph = PERSON_KEY in all_names
-            # 检查是否有独立的人名实体（如"任飞"或"未命名人物_1"）
-            standalone_names = [n for n in all_names if n not in (PERSON_KEY, ROOT_ENTITY)
-                               and not n.startswith("photo:") and not n.startswith("brain:")
-                               and not n.startswith("Skill") and not n.startswith("Pattern")]
-            logger.info("    图谱中实体: %s", sorted(all_names))
-            logger.info("    person:{uuid} 存在: %s", person_key_in_graph)
-            logger.info("    独立人名实体: %s", standalone_names)
-
-    # ── 3c. 调用 name_person 的真实代码路径 ──
-    logger.info("  3c. 调用 name_person 真实代码路径")
-
-    # name_person 内部调用 lightrag_insert_entity
-    # 构造与 name_person 相同的文本
-    niu_relation = "remembers"
-    text = f"语义记忆: {PERSON_KEY}（类型: Person） {REAL_NAME} brain:Niu {niu_relation} {PERSON_KEY}。"
-    logger.info("    lightrag_insert_entity 构造的文本: %s", text)
-
-    name_result = ingester.lightrag_insert(content=text, file_paths="custom_kg")
-    logger.info("    lightrag_insert 结果: %s", name_result)
-
-    # 等待 LLM 处理完成
-    await asyncio.sleep(2)
-
-    # 检查图谱中是否产生了 person:{uuid} 和 任飞 的分裂
-    entities_path = TEST_STORAGE_DIR / "kv_store_full_entities.json"
-    if entities_path.exists():
-        with open(entities_path, "r", encoding="utf-8") as f:
-            entities = json.load(f)
-        all_names = set()
-        for doc_id, data in entities.items():
-            if isinstance(data, dict) and "entity_names" in data:
-                all_names.update(data["entity_names"])
-
-        has_person_key = PERSON_KEY in all_names
-        has_real_name = REAL_NAME in all_names
-        logger.info("    person:{uuid} 存在: %s, 任飞 存在: %s", has_person_key, has_real_name)
-
-        if has_person_key and has_real_name:
+        if unnamed_in_graph:
             result.confirm(
-                "P1-LIVE", "name_person 导致 person:{uuid} 和 任飞 实体分裂（实时复现）",
-                f"调用 lightrag_insert_entity(name='{PERSON_KEY}', description='{REAL_NAME}') 后，"
-                f"图谱中同时存在 '{PERSON_KEY}' 和 '{REAL_NAME}' 两个独立实体。"
-                f"根因: lightrag_insert_entity 走 ainsert，LLM 将描述中的'{REAL_NAME}'提取为独立实体。",
+                "P2", "MEDIUM",
+                "人物实体碎片化 — '未命名人物'模板实体残留",
+                f"图谱中存在 {len(unnamed_in_graph)} 个'未命名人物'模板实体: "
+                f"{[eid for _, eid in unnamed_in_graph]}。"
+                f"这些是LLM提取的临时命名实体，应被合并到正式命名实体中。",
             )
+        else:
+            result.not_found("P2", "人物实体碎片化",
+                             f"KG中 {len(person_nodes)} 个person实体，无碎片")
 
-    # ── 3d. 对比：使用 inject_custom_kg 的正确路径 ──
-    logger.info("  3d. 对比: 使用 inject_custom_kg 的正确路径")
-
-    # 先清理测试图谱
-    shutil.rmtree(TEST_STORAGE_DIR, ignore_errors=True)
-    TEST_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
-    _lm._rag_instance = None
-    await ensure_lightrag()
-
-    # 注入根节点
-    ingester.inject_custom_kg(
-        entities=[{"entity_name": ROOT_ENTITY, "entity_type": "Brain",
-                   "description": "Niu 知识图谱根节点"}],
-        relationships=[], chunks=[], source_id="system:init",
-    )
-
-    # 使用 inject_custom_kg 注入照片+人物（正确路径）
-    photo_key = f"photo:{photo['file_path']}"
-    inject_result = ingester.inject_custom_kg(
-        entities=[
-            {"entity_name": photo_key, "entity_type": "Photo",
-             "description": photo["abstract"], "file_path": photo["file_path"]},
-            {"entity_name": PERSON_KEY, "entity_type": "Person",
-             "description": REAL_NAME},
-        ],
-        relationships=[
-            {"src_id": photo_key, "tgt_id": PERSON_KEY,
-             "keywords": "features", "description": f"照片中出现了{REAL_NAME}"},
-            {"src_id": ROOT_ENTITY, "tgt_id": PERSON_KEY,
-             "keywords": "remembers", "description": f"认识{REAL_NAME}"},
-            {"src_id": ROOT_ENTITY, "tgt_id": photo_key,
-             "keywords": "remembers", "description": "拥有这张照片"},
-        ],
-        chunks=[],
-        source_id=photo_key,
-    )
-    logger.info("    inject_custom_kg 结果: %s", inject_result)
-
-    # 检查图谱
-    entities_path = TEST_STORAGE_DIR / "kv_store_full_entities.json"
-    if entities_path.exists():
-        with open(entities_path, "r", encoding="utf-8") as f:
-            entities = json.load(f)
-        all_names = set()
-        for doc_id, data in entities.items():
-            if isinstance(data, dict) and "entity_names" in data:
-                all_names.update(data["entity_names"])
-
-        has_person_key = PERSON_KEY in all_names
-        has_real_name_standalone = REAL_NAME in all_names
-        logger.info("    [inject_custom_kg] person:{uuid} 存在: %s, 独立任飞: %s",
-                   has_person_key, has_real_name_standalone)
-        logger.info("    [inject_custom_kg] 实体列表: %s", sorted(all_names))
-
-        if has_person_key and not has_real_name_standalone:
-            logger.info("    [对比] inject_custom_kg 不产生独立'任飞'实体 — 正确路径")
-
-    # 检查文档 file_path
-    doc_status_path = TEST_STORAGE_DIR / "kv_store_doc_status.json"
-    if doc_status_path.exists():
-        with open(doc_status_path, "r", encoding="utf-8") as f:
-            doc_status = json.load(f)
-        unknown_count = sum(1 for s in doc_status.values() if s.get("file_path") == "unknown_source")
-        logger.info("    [inject_custom_kg] unknown_source 文档数: %d/%d", unknown_count, len(doc_status))
-
-    logger.info("-" * 60)
-    logger.info("  阶段 3 完成")
-    logger.info("-" * 60)
+    # 额外: 检查 auto_label 实体是否还存在于图谱中
+    for p in db_persons:
+        auto_label = p.get("auto_label", "")
+        if auto_label:
+            auto_node = find_node_by_entity_id(G, auto_label)
+            if auto_node:
+                print(f"  [注意] DB中 auto_label='{auto_label}' 仍在图谱中存在")
 
 
 # ══════════════════════════════════════════════════════════════
-#  阶段 4：汇总报告
+#  P3: 边方向错误
 # ══════════════════════════════════════════════════════════════
 
-def stage_4_report() -> None:
-    logger.info("=" * 60)
-    logger.info("  阶段 4: 汇总报告")
-    logger.info("=" * 60)
+def diagnose_edge_direction(G: nx.DiGraph, result: DiagnosisResult) -> None:
+    """诊断边方向错误: Person->Photo 应为 Photo->Person。"""
+    print()
+    print("-" * 60)
+    print("  P3: 边方向错误诊断")
+    print("-" * 60)
 
-    report = result.report()
-    logger.info("  总计: %d 项", report["total"])
-    logger.info("  已确认: %d 项", report["confirmed"])
-    logger.info("  未发现: %d 项", report["not_found"])
-    logger.info("  已跳过: %d 项", report["skipped"])
+    # 收集所有 person->photo 方向的边 (features)
+    wrong_direction_edges = []
+    correct_direction_edges = []
 
-    logger.info("")
-    logger.info("  === 已确认问题 ===")
-    for item in report["items"]:
-        if item["status"] == "CONFIRMED":
-            logger.info("  [%s] %s", item["id"], item["title"])
-            logger.info("    %s", item["evidence"][:300])
-            logger.info("")
+    for src, tgt, attrs in G.edges(data=True):
+        src_type = get_entity_type(G, src)
+        tgt_type = get_entity_type(G, tgt)
+        src_eid = get_entity_id(G, src)
+        tgt_eid = get_entity_id(G, tgt)
+        keywords = attrs.get("keywords", "")
 
-    logger.info("  === 修复建议 ===")
-    logger.info("  P1/P5/P6: 将 lightrag_insert_entity 改为使用 inject_custom_kg")
-    logger.info("    - sync_photo_to_kg: 改用 inject_custom_kg（entities+relationships+chunks）")
-    logger.info("    - name_person: 改用 inject_custom_kg（entities+relationships, chunks=[]）")
-    logger.info("    - lightrag_insert_entity: 改用 inject_custom_kg（skip_llm_extraction 生效）")
-    logger.info("  P3: sync_photo_to_kg 调用 lightrag_insert 时传入 file_path 参数")
-    logger.info("  P2: LightRAG fork 已修复，需重新安装并清理历史数据")
-    logger.info("  P4: 统一照片路径格式（正斜杠 + 相对路径）")
-    logger.info("  P7: dream-evolver 改用 inject_custom_kg（chunks=[]）确保去重")
+        # Person -> Photo 方向的 features 边 (错误: 应为 Photo -> Person)
+        if src_type == "person" and tgt_type == "photo" and "features" in keywords:
+            wrong_direction_edges.append({
+                "src": src_eid, "src_type": src_type,
+                "tgt": tgt_eid, "tgt_type": tgt_type,
+                "keywords": keywords, "weight": attrs.get("weight", 0),
+            })
 
-    logger.info("-" * 60)
-    logger.info("  阶段 4 完成")
-    logger.info("-" * 60)
+        # Photo -> Person 方向的 features 边 (正确)
+        if src_type == "photo" and tgt_type == "person" and "features" in keywords:
+            correct_direction_edges.append({
+                "src": src_eid, "src_type": src_type,
+                "tgt": tgt_eid, "tgt_type": tgt_type,
+                "keywords": keywords, "weight": attrs.get("weight", 0),
+            })
 
+    # 也检查人物->照片相关实体的边 (可能类型不是photo但包含"合影")
+    for src, tgt, attrs in G.edges(data=True):
+        src_type = get_entity_type(G, src)
+        tgt_type = get_entity_type(G, tgt)
+        src_eid = get_entity_id(G, src)
+        tgt_eid = get_entity_id(G, tgt)
+        keywords = attrs.get("keywords", "")
 
-# ══════════════════════════════════════════════════════════════
-#  重置测试图谱
-# ══════════════════════════════════════════════════════════════
+        # Person -> 含"合影"实体 (方向反了: 应该是照片->人物)
+        if src_type == "person" and "合影" in tgt_eid and "features" in keywords:
+            already = any(e["src"] == src_eid and e["tgt"] == tgt_eid
+                         for e in wrong_direction_edges)
+            if not already:
+                wrong_direction_edges.append({
+                    "src": src_eid, "src_type": src_type,
+                    "tgt": tgt_eid, "tgt_type": tgt_type,
+                    "keywords": keywords, "weight": attrs.get("weight", 0),
+                })
 
-def reset_test_graph() -> None:
-    if TEST_STORAGE_DIR.exists():
-        shutil.rmtree(TEST_STORAGE_DIR, ignore_errors=True)
-        logger.info("已清理测试图谱: %s", TEST_STORAGE_DIR)
+        # 含"合影"实体 -> Person (正确方向)
+        if "合影" in src_eid and tgt_type == "person" and "features" in keywords:
+            already = any(e["src"] == src_eid and e["tgt"] == tgt_eid
+                         for e in correct_direction_edges)
+            if not already:
+                correct_direction_edges.append({
+                    "src": src_eid, "src_type": src_type,
+                    "tgt": tgt_eid, "tgt_type": tgt_type,
+                    "keywords": keywords, "weight": attrs.get("weight", 0),
+                })
+
+    print(f"  错误方向边 (Person->Photo): {len(wrong_direction_edges)}")
+    for e in wrong_direction_edges:
+        print(f"    {e['src']} [{e['src_type']}] --[{e['keywords']}]--> "
+              f"{e['tgt']} [{e['tgt_type']}] w={e['weight']}")
+
+    print(f"  正确方向边 (Photo->Person): {len(correct_direction_edges)}")
+    for e in correct_direction_edges:
+        print(f"    {e['src']} [{e['src_type']}] --[{e['keywords']}]--> "
+              f"{e['tgt']} [{e['tgt_type']}] w={e['weight']}")
+
+    if wrong_direction_edges:
+        edge_descs = []
+        for e in wrong_direction_edges:
+            edge_descs.append(
+                f"{e['src']}({e['src_type']}) --[{e['keywords']}]--> "
+                f"{e['tgt']}({e['tgt_type']})"
+            )
+        result.confirm(
+            "P3", "HIGH",
+            "边方向错误 — Person->Photo 应为 Photo->Person",
+            f"发现 {len(wrong_direction_edges)} 条方向错误的features边: "
+            + "; ".join(edge_descs)
+            + "。语义: '照片中出现了谁' 应为照片->人物，不是人物->照片。",
+        )
     else:
-        logger.info("测试图谱目录不存在，无需清理")
+        result.not_found("P3", "边方向错误", "所有features边方向正确")
+
+
+# ══════════════════════════════════════════════════════════════
+#  P4: abstract内容不当
+# ══════════════════════════════════════════════════════════════
+
+def diagnose_abstract_content(G: nx.DiGraph, db: sqlite3.Connection, result: DiagnosisResult) -> None:
+    """诊断abstract内容问题: 代码推断的'合影'不是照片实际内容。"""
+    print()
+    print("-" * 60)
+    print("  P4: abstract内容不当诊断")
+    print("-" * 60)
+
+    # 从 photos.db 检查 abstract
+    db_photos = [dict(r) for r in db.execute(
+        "SELECT id, file_path, abstract, camera FROM photos"
+    ).fetchall()]
+
+    problematic_abstracts = []
+    for p in db_photos:
+        abstract = p.get("abstract", "")
+        file_path = p.get("file_path", "")
+        # 检查 abstract 是否包含代码推断的"合影"
+        if "合影" in abstract:
+            # 进一步检查: "合影"是代码推断的，还是照片内容真实描述
+            # 如果abstract格式是 "XXX合影，YYYY:MM:DD"，说明是代码生成的
+            if "，" in abstract and abstract.endswith(("03", "04", "05", "06", "07", "08", "09")):
+                # 以日期结尾，是代码生成的格式
+                problematic_abstracts.append({
+                    "file_path": file_path,
+                    "abstract": abstract,
+                    "reason": "格式为'人物名+合影+日期'，是代码推断生成，非照片实际内容",
+                })
+
+    # 从图谱检查: photo 类型节点的 description
+    photo_entities_with_合影 = []
+    for nid, attrs in G.nodes(data=True):
+        etype = attrs.get("entity_type", "")
+        eid = attrs.get("entity_id", nid)
+        desc = attrs.get("description", "")
+        if etype == "photo" and "合影" in (eid + desc):
+            photo_entities_with_合影.append({
+                "entity_id": eid,
+                "description": desc[:80],
+            })
+
+    print(f"  photos.db 中含'合影'的abstract: {len(problematic_abstracts)}")
+    for pa in problematic_abstracts:
+        print(f"    {pa['file_path']}: abstract='{pa['abstract']}'")
+        print(f"      原因: {pa['reason']}")
+
+    print(f"  图谱中含'合影'的photo实体: {len(photo_entities_with_合影)}")
+    for pe in photo_entities_with_合影:
+        print(f"    {pe['entity_id']}: desc={pe['description']}")
+
+    if problematic_abstracts:
+        abs_details = []
+        for pa in problematic_abstracts:
+            abs_details.append(f"'{pa['abstract']}' ({pa['reason']})")
+        result.confirm(
+            "P4", "MEDIUM",
+            "abstract内容不当 — '合影'是代码推断，非照片实际内容",
+            f"photos.db中有 {len(problematic_abstracts)} 条abstract包含代码推断的'合影': "
+            + "; ".join(abs_details)
+            + "。'合影'来自检测到多个人脸后的推断逻辑，而非照片实际场景描述。",
+        )
+    else:
+        result.not_found("P4", "abstract内容不当", "未发现包含'合影'的abstract")
+
+    # 额外: 检查图谱中photo实体的entity_id是否也包含"合影"
+    if photo_entities_with_合影:
+        eid_with_合影 = [pe["entity_id"] for pe in photo_entities_with_合影]
+        print(f"  [注意] 图谱中photo实体ID也含'合影': {eid_with_合影}")
+        print(f"    根因: sync_photo_to_kg 用abstract作为entity_id的一部分")
+
+
+# ══════════════════════════════════════════════════════════════
+#  P5: 旧照片实体未删除
+# ══════════════════════════════════════════════════════════════
+
+def diagnose_stale_entities(G: nx.DiGraph, db: sqlite3.Connection, result: DiagnosisResult) -> None:
+    """诊断name_person后旧照片实体仍孤立的问题。"""
+    print()
+    print("-" * 60)
+    print("  P5: 旧照片实体未删除诊断")
+    print("-" * 60)
+
+    # 从 photos.db 获取当前的 abstract (即期望的实体名)
+    db_photos = [dict(r) for r in db.execute(
+        "SELECT id, file_path, abstract, kg_synced FROM photos"
+    ).fetchall()]
+
+    # 收集所有 photo 类型和照片相关的节点
+    photo_related_nodes = []
+    for nid, attrs in G.nodes(data=True):
+        etype = attrs.get("entity_type", "")
+        eid = attrs.get("entity_id", nid)
+        # photo 类型 或 含"合影" 或 文件名格式
+        if etype == "photo":
+            photo_related_nodes.append((nid, eid, attrs))
+        elif "合影" in eid:
+            photo_related_nodes.append((nid, eid, attrs))
+        elif len(eid) >= 13 and eid.replace("_", "").replace(":", "").isdigit():
+            photo_related_nodes.append((nid, eid, attrs))
+
+    print(f"  图谱中照片相关实体: {len(photo_related_nodes)}")
+    for nid, eid, attrs in photo_related_nodes:
+        etype = attrs.get("entity_type", "?")
+        neighbors = get_neighbors_info(G, nid)
+        has_niu_remembers = any(
+            n["neighbor"] == ROOT_ENTITY and "remembers" in n.get("keywords", "")
+            for n in neighbors
+        )
+        # 也检查反向: Niu -> this node
+        niu_node = find_node_by_entity_id(G, ROOT_ENTITY)
+        has_niu_out = False
+        if niu_node and G.has_edge(niu_node, nid):
+            edge_kw = G.edges[niu_node, nid].get("keywords", "")
+            if "remembers" in edge_kw:
+                has_niu_out = True
+
+        edge_count = len(neighbors)
+        print(f"    [{etype}] {eid} | 边数={edge_count} | Niu->remembers={has_niu_out}")
+
+    # 诊断: 找到与DB abstract不匹配的照片实体 (旧实体)
+    stale_entities = []
+    for photo in db_photos:
+        db_abstract = photo.get("abstract", "")
+        db_file_path = photo.get("file_path", "")
+        db_kg_synced = photo.get("kg_synced", 0)
+
+        # 如果 kg_synced=1，说明已同步过，但可能旧实体还在
+        if db_kg_synced == 1:
+            for nid, eid, attrs in photo_related_nodes:
+                # 当前DB的abstract对应的实体 (新实体)
+                if eid == db_abstract:
+                    continue  # 这是当前正确的实体
+                # 检查是否是同一照片的旧实体
+                # 旧实体特征: 包含旧人物名(如"未命名人物_1")或文件名
+                is_old = False
+                if "未命名人物" in eid and "合影" in eid:
+                    is_old = True
+                # 文件名实体 (如 20090603_092316)
+                file_stem = Path(db_file_path).stem if db_file_path else ""
+                if eid == file_stem:
+                    is_old = True
+
+                if is_old:
+                    # 检查这个旧实体是否是孤立的
+                    niu_node = find_node_by_entity_id(G, ROOT_ENTITY)
+                    has_niu_edge = False
+                    if niu_node:
+                        if G.has_edge(niu_node, nid):
+                            has_niu_edge = True
+                        if G.has_edge(nid, niu_node):
+                            has_niu_edge = True
+
+                    # 计算连接的边数
+                    neighbors = get_neighbors_info(G, nid)
+                    stale_entities.append({
+                        "entity_id": eid,
+                        "entity_type": attrs.get("entity_type", "?"),
+                        "has_niu_edge": has_niu_edge,
+                        "neighbor_count": len(neighbors),
+                        "is_orphan": not has_niu_edge and len(neighbors) <= 2,
+                    })
+
+    # 另一种方式: 直接检查图谱中"未命名人物"开头的photo实体
+    # 它们一定是旧实体 (因为name_person后人物名已更新)
+    for nid, eid, attrs in photo_related_nodes:
+        if eid.startswith("未命名人物") and "合影" in eid:
+            already = any(s["entity_id"] == eid for s in stale_entities)
+            if not already:
+                niu_node = find_node_by_entity_id(G, ROOT_ENTITY)
+                has_niu_edge = False
+                if niu_node:
+                    if G.has_edge(niu_node, nid) or G.has_edge(nid, niu_node):
+                        has_niu_edge = True
+                neighbors = get_neighbors_info(G, nid)
+                stale_entities.append({
+                    "entity_id": eid,
+                    "entity_type": attrs.get("entity_type", "?"),
+                    "has_niu_edge": has_niu_edge,
+                    "neighbor_count": len(neighbors),
+                    "is_orphan": not has_niu_edge,
+                })
+
+    # 也检查文件名实体 (如 20090603_092316) 是否为孤立碎片
+    for nid, eid, attrs in photo_related_nodes:
+        if len(eid) >= 13 and eid.replace("_", "").replace(":", "").isdigit():
+            already = any(s["entity_id"] == eid for s in stale_entities)
+            if not already:
+                niu_node = find_node_by_entity_id(G, ROOT_ENTITY)
+                has_niu_edge = False
+                if niu_node:
+                    if G.has_edge(niu_node, nid) or G.has_edge(nid, niu_node):
+                        has_niu_edge = True
+                neighbors = get_neighbors_info(G, nid)
+                # 文件名实体: 没有 Niu->它的 remembers 边
+                stale_entities.append({
+                    "entity_id": eid,
+                    "entity_type": attrs.get("entity_type", "?"),
+                    "has_niu_edge": has_niu_edge,
+                    "neighbor_count": len(neighbors),
+                    "is_orphan": not has_niu_edge,
+                })
+
+    print(f"  疑似旧/孤立实体: {len(stale_entities)}")
+    for s in stale_entities:
+        print(f"    {s['entity_id']} [{s['entity_type']}] "
+              f"| Niu边={s['has_niu_edge']} | 邻居数={s['neighbor_count']} "
+              f"| 孤立={s['is_orphan']}")
+
+    if stale_entities:
+        orphans = [s for s in stale_entities if s["is_orphan"]]
+        non_orphans = [s for s in stale_entities if not s["is_orphan"]]
+
+        evidence_parts = []
+        for s in stale_entities:
+            status = "孤立" if s["is_orphan"] else "有边但应为旧实体"
+            evidence_parts.append(f"{s['entity_id']}({status})")
+
+        severity = "HIGH" if orphans else "MEDIUM"
+        result.confirm(
+            "P5", severity,
+            "旧照片实体未删除 — name_person后旧实体仍存在",
+            f"发现 {len(stale_entities)} 个旧/孤立照片实体: "
+            + "; ".join(evidence_parts)
+            + f"。其中 {len(orphans)} 个完全孤立(无Niu连接)。"
+            + "根因: name_person更新abstract后重新sync_photo_to_kg，"
+            + "但旧的实体未被删除或合并。",
+        )
+    else:
+        result.not_found("P5", "旧照片实体未删除", "未发现旧/孤立照片实体")
+
+
+# ══════════════════════════════════════════════════════════════
+#  额外诊断: Niu根节点的remembers边
+# ══════════════════════════════════════════════════════════════
+
+def diagnose_niu_remembers(G: nx.DiGraph, result: DiagnosisResult) -> None:
+    """诊断Niu根节点的remembers边是否合理。"""
+    print()
+    print("-" * 60)
+    print("  额外: Niu根节点remembers边诊断")
+    print("-" * 60)
+
+    niu_node = find_node_by_entity_id(G, ROOT_ENTITY)
+    if not niu_node:
+        print("  [跳过] 未找到Niu根节点")
+        return
+
+    # Niu的出边
+    remembers_targets = []
+    for tgt in G.successors(niu_node):
+        edge = G.edges[niu_node, tgt]
+        keywords = edge.get("keywords", "")
+        if "remembers" in keywords:
+            tgt_eid = get_entity_id(G, tgt)
+            tgt_type = get_entity_type(G, tgt)
+            remembers_targets.append({
+                "entity_id": tgt_eid,
+                "entity_type": tgt_type,
+                "keywords": keywords,
+            })
+
+    print(f"  Niu --[remembers]--> 目标数: {len(remembers_targets)}")
+    for t in remembers_targets:
+        print(f"    [{t['entity_type']}] {t['entity_id']} (keywords={t['keywords']})")
+
+    # 检查: Niu是否直接remembers到照片实体 (而非通过brain region)
+    photo_remembers = [t for t in remembers_targets
+                       if t["entity_type"] == "photo"
+                       or "合影" in t["entity_id"]]
+    if photo_remembers:
+        print(f"  [注意] Niu直接remembers到 {len(photo_remembers)} 个照片实体，"
+              f"而非通过聊天历史脑区间接连接")
+
+    # 检查: 是否有Niu -> 旧照片实体的 remembers 边
+    stale_remembers = [t for t in remembers_targets
+                       if "未命名人物" in t["entity_id"]]
+    if stale_remembers:
+        print(f"  [注意] Niu remembers 到 {len(stale_remembers)} 个旧'未命名人物'实体:")
+
+
+# ══════════════════════════════════════════════════════════════
+#  额外诊断: 脑区归属检查
+# ══════════════════════════════════════════════════════════════
+
+def diagnose_brain_region_attribution(G: nx.DiGraph) -> None:
+    """诊断照片/人物实体的脑区归属是否正确。"""
+    print()
+    print("-" * 60)
+    print("  额外: 脑区归属检查")
+    print("-" * 60)
+
+    # 照片/人物实体应该属于聊天历史脑区，而非直接挂在Niu下
+    chat_brain = find_node_by_entity_id(G, "聊天历史脑区")
+
+    # 找所有person和photo实体
+    for nid, attrs in G.nodes(data=True):
+        etype = attrs.get("entity_type", "")
+        eid = attrs.get("entity_id", nid)
+        if etype in ("person", "photo") or "合影" in eid:
+            # 检查是否有聊天历史脑区 -> 此实体的边
+            if chat_brain:
+                has_brain_edge = G.has_edge(chat_brain, nid)
+                edge_info = ""
+                if has_brain_edge:
+                    kw = G.edges[chat_brain, nid].get("keywords", "")
+                    edge_info = f" (keywords={kw})"
+                print(f"  [{etype}] {eid}: "
+                      f"聊天历史脑区->{'有' if has_brain_edge else '无'}连接{edge_info}")
 
 
 # ══════════════════════════════════════════════════════════════
@@ -668,27 +850,55 @@ def reset_test_graph() -> None:
 # ══════════════════════════════════════════════════════════════
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="KG 真实数据诊断")
-    parser.add_argument("--full", action="store_true",
-                       help="完整诊断（含阶段3写操作，需要 API 服务器）")
-    parser.add_argument("--reset", action="store_true",
-                       help="重置测试图谱到空状态")
-    args = parser.parse_args()
+    print("=" * 70)
+    print("  真实KG数据诊断 — 只读，不修改任何数据")
+    print("=" * 70)
+    print(f"  图谱文件: {GRAPHML_PATH}")
+    print(f"  数据库:   {PHOTOS_DB}")
 
-    if args.reset:
-        reset_test_graph()
-        return
+    # 加载数据
+    G = load_graph()
+    db = load_photos_db()
 
-    # 阶段 1-2：只读，不需要 API 服务器
-    stage_1_graph_diagnosis()
-    stage_2_database_diagnosis()
+    result = DiagnosisResult()
 
-    # 阶段 3：写操作，需要 API 服务器（LLM 代理）
-    if args.full:
-        asyncio.run(stage_3_real_code_paths())
+    # 输出图谱概览
+    print()
+    print("-" * 60)
+    print("  图谱概览")
+    print("-" * 60)
 
-    # 阶段 4：汇总
-    stage_4_report()
+    # 统计各类型节点数
+    type_counts: dict[str, int] = {}
+    for nid, attrs in G.nodes(data=True):
+        etype = attrs.get("entity_type", "UNKNOWN")
+        type_counts[etype] = type_counts.get(etype, 0) + 1
+
+    print(f"  节点总数: {G.number_of_nodes()}")
+    for etype, count in sorted(type_counts.items(), key=lambda x: -x[1]):
+        print(f"    {etype}: {count}")
+    print(f"  边总数: {G.number_of_edges()}")
+
+    # 5项诊断
+    diagnose_photo_fragmentation(G, result)
+    diagnose_person_fragmentation(G, db, result)
+    diagnose_edge_direction(G, result)
+    diagnose_abstract_content(G, db, result)
+    diagnose_stale_entities(G, db, result)
+
+    # 额外诊断
+    diagnose_niu_remembers(G, result)
+    diagnose_brain_region_attribution(G)
+
+    # 汇总
+    result.report()
+
+    # 关闭数据库
+    db.close()
+
+    # 返回码: 有确认问题返回1，否则返回0
+    confirmed = [i for i in result.issues if i.status == "CONFIRMED"]
+    sys.exit(1 if confirmed else 0)
 
 
 if __name__ == "__main__":
