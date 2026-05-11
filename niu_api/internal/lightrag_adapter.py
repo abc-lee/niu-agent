@@ -497,6 +497,9 @@ class LightRAGAdapter:
                     "id": first_node.id,
                     "name": first_node.id,
                     "type": first_node.properties.get("entity_type", "Other"),
+                    "description": first_node.properties.get("description", ""),
+                    "file_path": first_node.properties.get("file_path", ""),
+                    "source_id": first_node.properties.get("source_id", ""),
                 }
 
             # Convert KnowledgeGraphNode to frontend-compatible format
