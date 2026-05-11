@@ -356,7 +356,7 @@ async def chat_completions(request: OpenAIChatRequest) -> OpenAIChatResponse:
     litellm_tools = openai_to_litellm_tools(request.tools)
 
     # Inject brain region context for LightRAG extraction requests
-    # Reads directly from JSON file — no LightRAG API call to avoid deadlock
+    # Reads directly from NetworkX in-memory graph — no LightRAG API call to avoid deadlock
     try:
         litellm_messages = inject_brain_region_context(litellm_messages)
     except Exception:

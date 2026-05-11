@@ -5,16 +5,21 @@ When LightRAG calls the LLM to extract entities/relationships, we inject
 brain region architecture information so the LLM considers brain regions
 when building the knowledge graph.
 
-IMPORTANT: This module MUST NOT call any LightRAG API (query, aquery, etc.)
-because it is invoked from the LLM proxy, which is called by LightRAG itself.
-Calling LightRAG from here would cause an event loop deadlock:
+IMPORTANT: This module MUST NOT call any LightRAG API (adapter.query,
+call_async, rag.aquery, etc.) because it is invoked from the LLM proxy,
+which is called by LightRAG itself. Calling LightRAG from here would cause
+an event loop deadlock:
   LightRAG query -> LLM call -> llm_proxy -> build_dynamic_brain_region_prompt()
   -> adapter.query() -> call_async(rag.aquery()) -> same event loop -> DEADLOCK
-Instead, we read the graph data directly from the JSON storage file.
+
+Instead, we read brain region entities directly from the NetworkX in-memory
+graph (rag.chunk_entity_relation_graph._graph). This is a pure synchronous
+read that does NOT enter the asyncio event loop, so no deadlock can occur.
 """
 
-from pathlib import Path
 from loguru import logger
+
+from niu_api.internal.lightrag_manager import get_lightrag, graph_read_lock
 
 BRAIN_REGION_MARKER = "Knowledge Graph Specialist"
 
@@ -54,43 +59,52 @@ FALLBACK_REGIONS = "聊天历史、文档库、知识体系"
 
 
 def build_dynamic_brain_region_prompt() -> str:
-    """Build dynamic brain region list by reading the graph storage file directly.
+    """Build dynamic brain region list by reading the NetworkX in-memory graph.
 
-    Reads vdb_entities.json from the LightRAG storage directory and filters
-    entities whose name contains '脑区' to build the current brain region list.
-
-    This avoids calling any LightRAG API which would cause an event loop
-    deadlock (see module docstring for details).
+    Accesses rag.chunk_entity_relation_graph._graph directly and filters
+    nodes with entity_type=="BrainRegion". This is a pure synchronous
+    read — it does NOT enter the asyncio event loop, so no deadlock
+    can occur (see module docstring for details).
 
     Returns:
         A string listing current brain regions from the graph,
-        or fallback defaults if the file is missing or unreadable.
+        or fallback defaults if LightRAG is unavailable or graph is empty.
     """
     try:
-        entities_path = Path.home() / ".niu" / "lightrag_storage" / "vdb_entities.json"
-        if not entities_path.exists():
-            logger.debug("Brain region file not found: %s, using fallback", entities_path)
+        rag = get_lightrag()
+        if rag is None:
+            logger.debug("LightRAG not available, using fallback brain regions")
             return f"当前图谱中的脑区（默认）：{FALLBACK_REGIONS}"
 
-        import json
-        data = json.loads(entities_path.read_text(encoding="utf-8"))
-        entity_list = data.get("data", [])
+        graph_obj = getattr(rag, "chunk_entity_relation_graph", None)
+        if graph_obj is None:
+            logger.debug("Knowledge graph not available, using fallback brain regions")
+            return f"当前图谱中的脑区（默认）：{FALLBACK_REGIONS}"
 
-        # Filter brain region entities by name containing '脑区'
+        nx_graph = graph_obj._graph if hasattr(graph_obj, "_graph") else graph_obj
+        if nx_graph is None or nx_graph.number_of_nodes() == 0:
+            logger.debug("Graph is empty, using fallback brain regions")
+            return f"当前图谱中的脑区（默认）：{FALLBACK_REGIONS}"
+
+        # Take a snapshot under read lock to prevent RuntimeError from
+        # concurrent graph modification by background sync threads.
+        with graph_read_lock():
+            snapshot = nx_graph.copy()
+
+        # Filter nodes whose entity_type is BrainRegion
         brain_regions = [
-            e["entity_name"]
-            for e in entity_list
-            if "脑区" in e.get("entity_name", "")
+            name for name, data in snapshot.nodes(data=True)
+            if data.get("entity_type") == "BrainRegion"
         ]
 
         if brain_regions:
-            logger.debug("Found %d brain regions from file: %s", len(brain_regions), brain_regions)
+            logger.debug("Found %d brain regions from graph: %s", len(brain_regions), brain_regions)
             region_str = "、".join(brain_regions)
             return f"当前图谱中的脑区：\n{region_str}"
         else:
-            logger.debug("No brain regions found in file, using fallback")
+            logger.debug("No BrainRegion nodes in graph, using fallback")
     except Exception as e:
-        logger.debug("Brain region file read failed, using fallback: %s", e)
+        logger.debug("Brain region graph read failed, using fallback: %s", e)
 
     return f"当前图谱中的脑区（默认）：{FALLBACK_REGIONS}"
 
