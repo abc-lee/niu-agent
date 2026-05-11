@@ -25,7 +25,7 @@ from typing import Any, Optional
 
 from loguru import logger
 
-from niu_api.internal.lightrag_manager import get_lightrag
+from niu_api.internal.lightrag_manager import get_lightrag, wait_lightrag_ready
 
 # ============== Configuration Defaults ==============
 
@@ -470,36 +470,11 @@ class RegionSync:
     def _sync_loop(self) -> None:
         """Background sync loop.
 
-        Polls for LightRAG readiness every 5 seconds (up to 180s total)
-        before running the first sync, then repeats every sync_interval.
-        This avoids a blanket 180s delay when LightRAG initializes faster.
+        Waits for LightRAG readiness signal (up to 180s) instead of polling,
+        then repeats every sync_interval. Uses threading.Event.wait() —
+        no polling, no deadlock risk.
         """
-        # Poll for LightRAG readiness instead of fixed 180s wait
-        max_retries = 36  # 5s × 36 = 180s total (same ceiling as before)
-        for attempt in range(max_retries):
-            if self._stop_event.is_set():
-                return  # Shutdown requested
-            try:
-                rag = get_lightrag()
-                if rag is not None:
-                    logger.info(
-                        "[RegionSync] LightRAG ready, starting first sync "
-                        "(waited %ds)",
-                        attempt * 5,
-                    )
-                    break
-            except Exception:
-                pass
-            if attempt > 0 and attempt % 6 == 0:
-                logger.info(
-                    "[RegionSync] Waiting for LightRAG initialization... "
-                    "(%ds elapsed)",
-                    attempt * 5,
-                )
-            self._stop_event.wait(5)
-        else:
-            # Exhausted retries — proceed anyway; run_sync will handle
-            # a None LightRAG gracefully and log a warning.
+        if not wait_lightrag_ready(timeout=180):
             logger.warning(
                 "[RegionSync] LightRAG not ready after 180s, "
                 "attempting first sync anyway"
