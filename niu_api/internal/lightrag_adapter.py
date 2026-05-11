@@ -124,6 +124,7 @@ class LightRAGAdapter:
         only_need_context: bool = True,
         top_k: Optional[int] = None,
         response_type: Optional[str] = None,
+        keywords: Optional[List[str]] = None,
     ) -> Optional[str]:
         """Query the brain graph / knowledge base.
 
@@ -133,6 +134,9 @@ class LightRAGAdapter:
             only_need_context: If True, return context without LLM generation.
             top_k: Number of top items to retrieve.
             response_type: Response format (e.g., "Bullet Points").
+            keywords: Pre-provided keywords to skip LLM extraction.
+                When provided, both hl_keywords and ll_keywords are set,
+                avoiding LLM calls entirely (near-instant return).
 
         Returns:
             Query result string, or None on error.
@@ -154,6 +158,9 @@ class LightRAGAdapter:
             from lightrag import QueryParam
 
             param = QueryParam(mode=mode, only_need_context=only_need_context)
+            if keywords is not None:
+                param.hl_keywords = keywords
+                param.ll_keywords = keywords
             if top_k is not None:
                 param.top_k = top_k
             if response_type is not None:

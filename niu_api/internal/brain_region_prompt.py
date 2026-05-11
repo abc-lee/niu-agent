@@ -48,8 +48,9 @@ FALLBACK_REGIONS = "聊天历史、文档库、知识体系"
 def build_dynamic_brain_region_prompt(adapter) -> str:
     """Build dynamic brain region list by querying the graph.
 
-    Uses local mode + only_need_context=True to avoid LLM calls.
-    This prevents infinite loops (proxy → query → LLM → proxy → ...).
+    Uses local mode + only_need_context=True + keywords to avoid LLM calls.
+    Providing keywords skips LLM keyword extraction, preventing infinite
+    loops (proxy → query → LLM → proxy → ...).
 
     Args:
         adapter: LightRAGAdapter instance with query() method.
@@ -63,6 +64,7 @@ def build_dynamic_brain_region_prompt(adapter) -> str:
             "脑区",
             mode="local",
             only_need_context=True,
+            keywords=["脑区"],
         )
 
         if result and result.strip():
