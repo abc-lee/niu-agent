@@ -468,6 +468,7 @@ preload_face_model()
 - **`docs/design-self-evolution-system.md` — 自我进化系统设计规范**
 - **`docs/USAGE-self-evolution.md` — 自我进化系统使用指南**
 - `docs/analysis-genericagent-evolution.md` — GenericAgent 进化机制分析
+- `E:\tools\LightRAG`lightrag源码
 
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
