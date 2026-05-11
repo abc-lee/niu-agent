@@ -331,9 +331,12 @@ async def call_llm_via_litellm(
 
             return response
 
-        response = await asyncio.to_thread(sync_call)
+        response = await asyncio.wait_for(asyncio.to_thread(sync_call), timeout=180)
         return response
 
+    except asyncio.TimeoutError:
+        logger.error("[LLM Proxy] LLM call timed out after 180s")
+        raise HTTPException(status_code=504, detail="LLM call timed out")
     except Exception as e:
         logger.error(f"LLM call failed: {e}")
         raise HTTPException(status_code=500, detail=f"LLM call failed: {str(e)}")
@@ -377,9 +380,12 @@ async def chat_completions(request: OpenAIChatRequest) -> OpenAIChatResponse:
     try:
         adapter = _get_brain_adapter()
         if adapter is not None:
-            litellm_messages = await asyncio.to_thread(
-                inject_brain_region_context, litellm_messages, adapter
+            litellm_messages = await asyncio.wait_for(
+                asyncio.to_thread(inject_brain_region_context, litellm_messages, adapter),
+                timeout=30,
             )
+    except asyncio.TimeoutError:
+        logger.warning("Brain region injection timed out (30s), continuing without it")
     except Exception:
         logger.warning("Brain region injection failed, continuing without it", exc_info=True)
 

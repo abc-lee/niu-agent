@@ -271,6 +271,7 @@ class LiteLLMSession(BaseSession):
             "custom_llm_provider": custom_provider,
             "api_base": self.api_base or None,
             "api_key": self.api_key or None,
+            "timeout": 120,  # 120s timeout to prevent indefinite blocking
             **provider_params,
         }
         if litellm_tools:
