@@ -107,6 +107,19 @@ async def lifespan(app: FastAPI):
     # 7. (Removed) Weekly vector cleanup — vectors.db is deprecated,
     #    LightRAG manages its own storage. Cleanup is no longer needed.
 
+    # 7.5. Eagerly initialize LightRAG (triggers lazy init before background threads start)
+    # This ensures _lightrag_ready Event is set quickly, so SkillSync/LightRAGSync/RegionSync
+    # don't have to wait for their timeout. If init fails, threads will handle it gracefully.
+    try:
+        from niu_api.internal.lightrag_manager import get_lightrag
+        rag = get_lightrag()
+        if rag is not None:
+            logger.info("LightRAG instance initialized (eager)")
+        else:
+            logger.warning("LightRAG instance not available (init failed or not installed)")
+    except Exception as e:
+        logger.warning(f"LightRAG eager init failed: {e}")
+
     # 8. Start LightRAG background sync (periodic photo/document backfill)
     try:
         from agent.injector.lightrag_sync import get_lightrag_sync

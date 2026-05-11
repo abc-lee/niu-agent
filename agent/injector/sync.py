@@ -660,9 +660,15 @@ class SkillSync:
         logger.info("[SkillSync] Waiting for LightRAG to be ready before first scan...")
         # Wait for LightRAG readiness signal instead of fixed delay.
         # If LightRAG init succeeds quickly, we start immediately;
-        # if it fails or takes longer, we wait up to 60s then proceed.
-        if not wait_lightrag_ready(timeout=60):
-            logger.warning("[SkillSync] LightRAG not ready after 60s, proceeding anyway")
+        # if it fails or takes longer, we wait up to 30s then proceed.
+        if not wait_lightrag_ready(timeout=30):
+            # Timeout — try to trigger init ourselves
+            from niu_api.internal.lightrag_manager import get_lightrag
+            rag = get_lightrag()
+            if rag is None:
+                logger.warning("[SkillSync] LightRAG not available, proceeding anyway")
+            else:
+                logger.info("[SkillSync] LightRAG initialized on retry")
         while not self._stop_event.is_set():
             try:
                 self.scan_and_sync()
