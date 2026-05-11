@@ -25,6 +25,7 @@ import asyncio
 import json
 import os
 import threading
+import time
 from collections import deque
 from datetime import datetime
 from functools import partial
@@ -272,6 +273,16 @@ def shutdown_pending_futures(timeout: float = 10.0):
 _rag_instance = None
 _rag_lock = threading.Lock()
 
+# Init failure tracking: timestamp-based retry gate instead of permanent sentinel.
+# After init fails, _init_failed_at records the time. get_lightrag() will
+# return None until _INIT_RETRY_SECONDS have elapsed, then retry.
+_init_failed_at: Optional[float] = None
+_INIT_RETRY_SECONDS: float = 60.0
+
+# Signaling event: set when LightRAG initializes successfully.
+# Other threads call wait_lightrag_ready() instead of polling get_lightrag().
+_lightrag_ready = threading.Event()
+
 
 def _make_local_embedding_func():
     """Create a direct local embedding callable for LightRAG.
@@ -399,43 +410,72 @@ except ImportError:
             self.kwargs = kwargs
 
 
-_INIT_FAILED = object()  # Sentinel: init failed, don't retry
-
-
 def get_lightrag():
     """Get the LightRAG instance (lazy-init on first call).
 
-    Returns None if LightRAG is not installed.
-    Caches init failures to avoid retry storms.
+    Returns None if LightRAG is not installed or init failed recently.
+    After init failure, waits _INIT_RETRY_SECONDS before retrying so
+    the system does not permanently lock up.
     """
-    global _rag_instance
+    global _rag_instance, _init_failed_at
 
-    if _rag_instance is not None and _rag_instance is not _INIT_FAILED:
+    # Fast path: already initialized
+    if _rag_instance is not None:
         return _rag_instance
 
-    if _rag_instance is _INIT_FAILED:
-        return None
+    # Retry gate: if init failed recently, return None until cooldown expires
+    if _init_failed_at is not None:
+        elapsed = time.monotonic() - _init_failed_at
+        if elapsed < _INIT_RETRY_SECONDS:
+            return None
+        # Cooldown expired — clear the flag and retry below
+        logger.info(
+            f"LightRAG init retry cooldown expired ({elapsed:.0f}s), retrying..."
+        )
+        _init_failed_at = None
 
     with _rag_lock:
-        if _rag_instance is not None and _rag_instance is not _INIT_FAILED:
+        # Double-check after acquiring lock
+        if _rag_instance is not None:
             return _rag_instance
 
-        if _rag_instance is _INIT_FAILED:
-            return None
+        if _init_failed_at is not None:
+            elapsed = time.monotonic() - _init_failed_at
+            if elapsed < _INIT_RETRY_SECONDS:
+                return None
+            _init_failed_at = None
 
         try:
             logger.info("Initializing LightRAG instance...")
             _rag_instance = _create_lightrag_instance()
             logger.info("LightRAG instance ready")
+            # Signal readiness to other threads
+            _lightrag_ready.set()
         except ImportError as e:
             logger.warning(f"LightRAG not available: {e}")
             return None
         except Exception as e:
             logger.error(f"Failed to initialize LightRAG: {e}")
-            _rag_instance = _INIT_FAILED
+            _init_failed_at = time.monotonic()
             return None
 
     return _rag_instance
+
+
+def wait_lightrag_ready(timeout: float) -> bool:
+    """Block until LightRAG is initialized, or until timeout expires.
+
+    Uses threading.Event.wait() internally — no polling, no deadlock.
+    Other threads (SkillSync, LightRAGSync, RegionSync) should call
+    this instead of polling get_lightrag() in a loop.
+
+    Args:
+        timeout: Max seconds to wait. If 0, returns immediately.
+
+    Returns:
+        True if LightRAG is ready, False if timeout expired.
+    """
+    return _lightrag_ready.wait(timeout=timeout)
 
 
 async def ensure_lightrag():
@@ -458,13 +498,20 @@ def get_lightrag_status() -> Dict[str, Any]:
     from niu_api.internal.reranker import get_current_reranker_info
 
     with _rag_lock:
-        initialized = _rag_instance is not None and _rag_instance is not _INIT_FAILED
+        initialized = _rag_instance is not None
+        init_failed = _init_failed_at is not None
+        if init_failed:
+            retry_in = max(0, round(_INIT_RETRY_SECONDS - (time.monotonic() - _init_failed_at), 1))
+        else:
+            retry_in = None
     with _loop_lock:
         loop_running = _loop is not None and _loop.is_running()
 
     return {
         "installed": is_lightrag_available(),
         "initialized": initialized,
+        "init_failed": init_failed,
+        "init_retry_in_seconds": retry_in,
         "storage_dir": str(STORAGE_DIR),
         "proxy_base_url": PROXY_BASE_URL,
         "embedding": get_current_model_info(),

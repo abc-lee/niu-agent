@@ -19,6 +19,8 @@ from typing import Optional
 
 from loguru import logger
 
+from niu_api.internal.lightrag_manager import wait_lightrag_ready
+
 
 class LightRAGSync:
     """LightRAG periodic backfill service.
@@ -198,12 +200,14 @@ class LightRAGSync:
     def _sync_loop(self):
         """Background sync loop.
 
-        Runs first sync after 5-minute initial delay (to let other services
-        start), then repeats every sync_interval seconds.
+        Runs first sync after LightRAG is ready (waits up to 120s),
+        then repeats every sync_interval seconds.
         """
-        # Initial delay: 420s (staggered vs region_sync's 180s to avoid
-        # both services competing for the LightRAG event loop simultaneously)
-        self._stop_event.wait(420)
+        # Wait for LightRAG readiness signal instead of fixed 420s delay.
+        # If LightRAG init succeeds quickly, we start immediately;
+        # if it fails or takes longer, we wait up to 120s then proceed.
+        if not wait_lightrag_ready(timeout=120):
+            logger.warning("[LightRAGSync] LightRAG not ready after 120s, proceeding anyway")
         while True:
             try:
                 self.run_sync()

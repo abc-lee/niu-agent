@@ -657,12 +657,12 @@ class SkillSync:
 
     def _sync_loop(self):
         """后台同步循环（异常不会终止线程）"""
-        logger.info("[SkillSync] Waiting 30s for LightRAG init before first scan...")
-        # Initial delay: let LightRAG and RegionSync finish initialization first.
-        # Without this delay, scan_and_sync competes with RegionSync/LightRAGSync
-        # for the same LightRAG event loop, causing startup hangs.
-        if self._stop_event.wait(30):
-            return  # stopped during wait
+        logger.info("[SkillSync] Waiting for LightRAG to be ready before first scan...")
+        # Wait for LightRAG readiness signal instead of fixed delay.
+        # If LightRAG init succeeds quickly, we start immediately;
+        # if it fails or takes longer, we wait up to 60s then proceed.
+        if not wait_lightrag_ready(timeout=60):
+            logger.warning("[SkillSync] LightRAG not ready after 60s, proceeding anyway")
         while not self._stop_event.is_set():
             try:
                 self.scan_and_sync()
