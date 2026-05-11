@@ -8,13 +8,68 @@ to match the frontend force-graph renderer expectations.
 """
 
 import threading
-from typing import Any, Dict, List, Literal, Optional
+from typing import Dict, List, Literal, Optional
 
 from fastapi import APIRouter, Query
 from loguru import logger
 from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/api/kg", tags=["knowledge-graph"])
+
+# LightRAG merges multi-valued node fields (file_path, source_id, description)
+# using <SEP> as a separator. For file_path, this produces values like:
+#   "e:/photos/2026/05/photo.jpg<SEP>unknown_source<SEP>custom_kg"
+# The frontend needs a single clean file path for thumbnail preview and
+# file-open actions, so we extract the first value that looks like a
+# real local file path (not a placeholder like "unknown_source" or "custom_kg").
+_GRAPH_FIELD_SEP = "<SEP>"
+_FILE_PATH_PLACEHOLDERS = {"unknown_source", "custom_kg"}
+
+
+def _clean_file_path(raw: str) -> str:
+    """Extract the first real file path from a LightRAG <SEP>-merged file_path field.
+
+    LightRAG's _merge_nodes_then_upsert merges file_path values from multiple
+    sources using <SEP>. When a photo entity is created by custom_kg (with the
+    real photo path) and later merged by ainsert (with "unknown_source" or
+    "custom_kg"), the stored value becomes:
+        "e:/photos/photo.jpg<SEP>unknown_source"
+
+    The frontend renderer checks if uri ends with .jpg/.png etc. to render
+    a thumbnail. The <SEP>-polluted value fails this check, so we must
+    extract just the real path.
+    """
+    if not raw:
+        return ""
+    if _GRAPH_FIELD_SEP not in raw:
+        return raw
+    # Split and return the first part that looks like a real file path
+    for part in raw.split(_GRAPH_FIELD_SEP):
+        part = part.strip()
+        if part and part not in _FILE_PATH_PLACEHOLDERS:
+            return part
+    # Fallback: all parts are placeholders — no real file path exists
+    return ""
+
+
+_SOURCE_ID_PLACEHOLDERS = {"unknown_source", "custom_kg"}
+
+
+def _clean_source_id(raw: str) -> str:
+    """Extract the first real source_id from a LightRAG <SEP>-merged field.
+
+    Same <SEP> merging pattern as file_path. source_id gets polluted with
+    "unknown_source" or "custom_kg" when ainsert merges with custom_kg entities.
+    """
+    if not raw:
+        return ""
+    if _GRAPH_FIELD_SEP not in raw:
+        return raw
+    for part in raw.split(_GRAPH_FIELD_SEP):
+        part = part.strip()
+        if part and part not in _SOURCE_ID_PLACEHOLDERS:
+            return part
+    return ""
 
 
 def _normalize_nodes(nodes: list) -> list:
@@ -46,8 +101,8 @@ def _normalize_nodes(nodes: list) -> list:
             "nodeType": normalized_type,
             "entityType": node_type,
             "description": n.get("description", ""),
-            "uri": n.get("file_path", ""),
-            "source": n.get("source_id", ""),
+            "uri": _clean_file_path(n.get("file_path", "")),
+            "source": _clean_source_id(n.get("source_id", "")),
         })
     return result
 
@@ -205,7 +260,7 @@ def hub_entities(
                     "nodeType": "Entity",
                     "entityType": attrs.get("entity_type", "Other"),
                     "description": attrs.get("description", ""),
-                    "uri": attrs.get("file_path", ""),
+                    "uri": _clean_file_path(attrs.get("file_path", "")),
                     "source": attrs.get("source_id", ""),
                 }
             )
@@ -266,6 +321,8 @@ def explore_node(request: ExploreRequest):
             "nodeType": "Entity",
             "entityType": c.get("type", "Other"),
             "description": c.get("description", ""),
+            "uri": _clean_file_path(c.get("file_path", "")),
+            "source": _clean_source_id(c.get("source_id", "")),
         }
     return result
 
@@ -311,7 +368,7 @@ def find_path(request: FindPathRequest):
                     "nodeType": "Entity",
                     "entityType": attrs.get("entity_type", "Other"),
                     "description": attrs.get("description", ""),
-                    "uri": attrs.get("file_path", ""),
+                    "uri": _clean_file_path(attrs.get("file_path", "")),
                     "source": attrs.get("source_id", ""),
                 }
             )
@@ -391,7 +448,7 @@ def list_entities(
                     "nodeType": "Entity",
                     "entityType": attrs.get("entity_type", "Other"),
                     "description": attrs.get("description", ""),
-                    "uri": attrs.get("file_path", ""),
+                    "uri": _clean_file_path(attrs.get("file_path", "")),
                     "source": attrs.get("source_id", ""),
                 }
             )
@@ -451,6 +508,8 @@ def list_concepts(limit: int = Query(default=100, ge=1, le=500)):
                     "nodeType": "Concept",
                     "entityType": attrs.get("entity_type", "Other"),
                     "description": attrs.get("description", ""),
+                    "uri": _clean_file_path(attrs.get("file_path", "")),
+                    "source": _clean_source_id(attrs.get("source_id", "")),
                 }
             )
 
@@ -525,7 +584,7 @@ def surprising_connections(
                     "nodeType": "Entity",
                     "entityType": attrs.get("entity_type", "Other"),
                     "description": attrs.get("description", ""),
-                    "uri": attrs.get("file_path", ""),
+                    "uri": _clean_file_path(attrs.get("file_path", "")),
                     "source": attrs.get("source_id", ""),
                 }
             )
