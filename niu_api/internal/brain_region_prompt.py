@@ -50,14 +50,20 @@ def build_dynamic_brain_region_prompt(adapter) -> str:
 
     Uses local mode + only_need_context=True + keywords to avoid LLM calls.
     Providing keywords skips LLM keyword extraction, preventing infinite
-    loops (proxy → query → LLM → proxy → ...).
+    loops (proxy -> query -> LLM -> proxy -> ...).
+
+    Uses a 2-second timeout on the LightRAG query to prevent deadlock when
+    the LightRAG event loop is busy (e.g. SkillSync running inject_custom_kg).
+    If the event loop is idle, the query completes well within 2s. If it is
+    busy, the timeout fires and we fall back to static defaults — the LLM
+    request continues without brain region context rather than deadlocking.
 
     Args:
         adapter: LightRAGAdapter instance with query() method.
 
     Returns:
         A string listing current brain regions from the graph,
-        or fallback defaults if the query fails.
+        or fallback defaults if the query fails or times out.
     """
     try:
         result = adapter.query(
@@ -65,6 +71,7 @@ def build_dynamic_brain_region_prompt(adapter) -> str:
             mode="local",
             only_need_context=True,
             keywords=["脑区"],
+            timeout=2,
         )
 
         if result and result.strip():

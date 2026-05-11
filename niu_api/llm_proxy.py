@@ -382,10 +382,10 @@ async def chat_completions(request: OpenAIChatRequest) -> OpenAIChatResponse:
         if adapter is not None:
             litellm_messages = await asyncio.wait_for(
                 asyncio.to_thread(inject_brain_region_context, litellm_messages, adapter),
-                timeout=30,
+                timeout=5,
             )
     except asyncio.TimeoutError:
-        logger.warning("Brain region injection timed out (30s), continuing without it")
+        logger.warning("Brain region injection timed out (5s), continuing without it")
     except Exception:
         logger.warning("Brain region injection failed, continuing without it", exc_info=True)
 
