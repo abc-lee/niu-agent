@@ -18,31 +18,12 @@ LLM Proxy API
 
 import json
 import asyncio
-import threading
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel
 from fastapi import APIRouter, HTTPException
 from loguru import logger
 
 from niu_api.internal.brain_region_prompt import inject_brain_region_context
-
-# Module-level lazy singleton for brain region injection (thread-safe)
-_brain_adapter = None
-_brain_adapter_lock = threading.Lock()
-
-
-def _get_brain_adapter():
-    """Lazy singleton for LightRAGAdapter used in brain region injection.
-    Uses double-checked locking for thread safety, consistent with
-    get_runner() and get_lightrag() patterns."""
-    global _brain_adapter
-    if _brain_adapter is not None:
-        return _brain_adapter
-    with _brain_adapter_lock:
-        if _brain_adapter is None:
-            from niu_api.internal.lightrag_adapter import LightRAGAdapter
-            _brain_adapter = LightRAGAdapter()
-    return _brain_adapter
 
 router = APIRouter(prefix="/llm/v1", tags=["llm-proxy"])
 
@@ -375,17 +356,9 @@ async def chat_completions(request: OpenAIChatRequest) -> OpenAIChatResponse:
     litellm_tools = openai_to_litellm_tools(request.tools)
 
     # Inject brain region context for LightRAG extraction requests
-    # Must run in thread pool to avoid blocking the event loop
-    # (LightRAGAdapter.query() does synchronous NetworkX graph traversal)
+    # Reads directly from JSON file — no LightRAG API call to avoid deadlock
     try:
-        adapter = _get_brain_adapter()
-        if adapter is not None:
-            litellm_messages = await asyncio.wait_for(
-                asyncio.to_thread(inject_brain_region_context, litellm_messages, adapter),
-                timeout=5,
-            )
-    except asyncio.TimeoutError:
-        logger.warning("Brain region injection timed out (5s), continuing without it")
+        litellm_messages = inject_brain_region_context(litellm_messages)
     except Exception:
         logger.warning("Brain region injection failed, continuing without it", exc_info=True)
 
