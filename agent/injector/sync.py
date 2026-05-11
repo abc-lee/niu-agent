@@ -16,6 +16,8 @@ from typing import Optional
 
 from loguru import logger
 
+from niu_api.internal.lightrag_manager import wait_lightrag_ready
+
 try:
     import yaml
     YAML_AVAILABLE = True
