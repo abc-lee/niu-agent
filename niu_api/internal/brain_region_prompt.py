@@ -4,8 +4,16 @@ Brain region prompt injection for LightRAG LLM extraction requests.
 When LightRAG calls the LLM to extract entities/relationships, we inject
 brain region architecture information so the LLM considers brain regions
 when building the knowledge graph.
+
+IMPORTANT: This module MUST NOT call any LightRAG API (query, aquery, etc.)
+because it is invoked from the LLM proxy, which is called by LightRAG itself.
+Calling LightRAG from here would cause an event loop deadlock:
+  LightRAG query -> LLM call -> llm_proxy -> build_dynamic_brain_region_prompt()
+  -> adapter.query() -> call_async(rag.aquery()) -> same event loop -> DEADLOCK
+Instead, we read the graph data directly from the JSON storage file.
 """
 
+from pathlib import Path
 from loguru import logger
 
 BRAIN_REGION_MARKER = "Knowledge Graph Specialist"
@@ -45,39 +53,44 @@ def is_lightrag_extraction_request(messages: list[dict]) -> bool:
 FALLBACK_REGIONS = "聊天历史、文档库、知识体系"
 
 
-def build_dynamic_brain_region_prompt(adapter) -> str:
-    """Build dynamic brain region list by querying the graph.
+def build_dynamic_brain_region_prompt() -> str:
+    """Build dynamic brain region list by reading the graph storage file directly.
 
-    Uses local mode + only_need_context=True + keywords to avoid LLM calls.
-    Providing keywords skips LLM keyword extraction, preventing infinite
-    loops (proxy -> query -> LLM -> proxy -> ...).
+    Reads vdb_entities.json from the LightRAG storage directory and filters
+    entities whose name contains '脑区' to build the current brain region list.
 
-    Uses a 2-second timeout on the LightRAG query to prevent deadlock when
-    the LightRAG event loop is busy (e.g. SkillSync running inject_custom_kg).
-    If the event loop is idle, the query completes well within 2s. If it is
-    busy, the timeout fires and we fall back to static defaults — the LLM
-    request continues without brain region context rather than deadlocking.
-
-    Args:
-        adapter: LightRAGAdapter instance with query() method.
+    This avoids calling any LightRAG API which would cause an event loop
+    deadlock (see module docstring for details).
 
     Returns:
         A string listing current brain regions from the graph,
-        or fallback defaults if the query fails or times out.
+        or fallback defaults if the file is missing or unreadable.
     """
     try:
-        result = adapter.query(
-            "脑区",
-            mode="local",
-            only_need_context=True,
-            keywords=["脑区"],
-            timeout=2,
-        )
+        entities_path = Path.home() / ".niu" / "lightrag_storage" / "vdb_entities.json"
+        if not entities_path.exists():
+            logger.debug("Brain region file not found: %s, using fallback", entities_path)
+            return f"当前图谱中的脑区（默认）：{FALLBACK_REGIONS}"
 
-        if result and result.strip():
-            return f"当前图谱中的脑区：\n{result.strip()}"
+        import json
+        data = json.loads(entities_path.read_text(encoding="utf-8"))
+        entity_list = data.get("data", [])
+
+        # Filter brain region entities by name containing '脑区'
+        brain_regions = [
+            e["entity_name"]
+            for e in entity_list
+            if "脑区" in e.get("entity_name", "")
+        ]
+
+        if brain_regions:
+            logger.debug("Found %d brain regions from file: %s", len(brain_regions), brain_regions)
+            region_str = "、".join(brain_regions)
+            return f"当前图谱中的脑区：\n{region_str}"
+        else:
+            logger.debug("No brain regions found in file, using fallback")
     except Exception as e:
-        logger.debug("Brain region dynamic query failed, using fallback: %s", e)
+        logger.debug("Brain region file read failed, using fallback: %s", e)
 
     return f"当前图谱中的脑区（默认）：{FALLBACK_REGIONS}"
 
@@ -92,7 +105,7 @@ def build_static_brain_region_prompt() -> str:
 
 
 def inject_brain_region_context(
-    messages: list[dict], adapter
+    messages: list[dict],
 ) -> list[dict]:
     """Inject brain region architecture info into LightRAG extraction requests.
 
@@ -103,7 +116,6 @@ def inject_brain_region_context(
 
     Args:
         messages: LiteLLM-format message list.
-        adapter: LightRAGAdapter instance for querying brain regions.
 
     Returns:
         New message list with brain region context injected (or original if
@@ -114,7 +126,7 @@ def inject_brain_region_context(
 
     # Build injection content
     static_part = build_static_brain_region_prompt()
-    dynamic_part = build_dynamic_brain_region_prompt(adapter)
+    dynamic_part = build_dynamic_brain_region_prompt()
     injection = f"\n\n{static_part}\n\n{dynamic_part}"
 
     # Create new list with modified system prompt
