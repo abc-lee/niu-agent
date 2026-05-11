@@ -470,15 +470,20 @@ class RegionSync:
     def _sync_loop(self) -> None:
         """Background sync loop.
 
-        Waits for LightRAG readiness signal (up to 180s) instead of polling,
-        then repeats every sync_interval. Uses threading.Event.wait() —
-        no polling, no deadlock risk.
+        Waits for LightRAG readiness (up to 30s), then runs first sync,
+        then repeats every sync_interval seconds.
         """
-        if not wait_lightrag_ready(timeout=180):
-            logger.warning(
-                "[RegionSync] LightRAG not ready after 180s, "
-                "attempting first sync anyway"
-            )
+        # Wait for LightRAG readiness signal instead of fixed delay.
+        # If LightRAG init succeeds quickly, we start immediately;
+        # if it fails or takes longer, we wait up to 30s then proceed.
+        if not wait_lightrag_ready(timeout=30):
+            # Timeout — try to trigger init ourselves
+            from niu_api.internal.lightrag_manager import get_lightrag
+            rag = get_lightrag()
+            if rag is None:
+                logger.warning("[RegionSync] LightRAG not available after 30s, attempting first sync anyway")
+            else:
+                logger.info("[RegionSync] LightRAG initialized on retry")
         while True:
             try:
                 self.run_sync()
