@@ -18,6 +18,18 @@ Agent 核心 (agent/generic/)
     ↓ MCP 协议
 MCP 服务器集群 (mcp-servers/)
 ```
+
+## ⛔ 不可违反的铁律（每次对话必读）
+
+1. **禁止自己改代码** — 所有代码修改必须委托给子Agent执行，主对话只做分析和决策
+2. **修改前必须先做临时提交备份** — `git add -A && git commit`，恢复前也必须先备份当前状态，不能直接 `git checkout` 覆盖
+3. **修改前必须用 gitnexus 分析影响范围** — 评估 blast radius 后再动手
+4. **测试必须用真实数据+真实LLM** — 绕过LLM的测试是假测试
+5. **多线程不能轮询 get_lightrag()** — 会导致事件循环竞争死锁，固定延迟虽然慢但安全
+6. **lightrag_insert_file 必须让 LightRAG 自己读文件** — 禁止自己提取文本再传给它
+
+**违反任何一条就停下来，不要继续。**
+
 ## 工作原则：
 ```
 1、修改代码必须经过用户同意，说清楚修改的原因
@@ -463,7 +475,7 @@ preload_face_model()
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **niu-agent** (14643 symbols, 23466 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **niu-agent** (14636 symbols, 23515 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 

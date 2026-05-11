@@ -429,6 +429,34 @@ def call_embedding_service(endpoint: str, data: dict) -> dict | None:
 # ============== 知识图谱同步 ==============
 
 
+def _generate_stable_description(normalized_stem: str, abstract: str) -> str:
+    """Generate a stable description for photo entity in KG.
+
+    Only includes immutable attributes (file name, date from stem).
+    Person names are NOT included — they belong to person entities and
+    are expressed via edges (features, co_occurs_with).
+    This prevents the description from becoming stale when a person is renamed.
+    """
+    # Extract date from stem if possible (format: YYYYMMDD_HHMMSS)
+    date_part = ""
+    if len(normalized_stem) >= 8 and normalized_stem[:8].isdigit():
+        try:
+            from datetime import datetime
+            dt = datetime.strptime(normalized_stem[:8], "%Y%m%d")
+            # Validate: month 1-12, day 1-31 (strptime already rejects invalid dates)
+            if dt.year < 1900 or dt.year > 2100:
+                raise ValueError("year out of reasonable range")
+            date_part = dt.strftime("%Y年%m月%d日")
+        except ValueError:
+            pass
+
+    parts = [f"照片 {normalized_stem}"]
+    if date_part:
+        parts.append(f"拍摄于{date_part}")
+
+    return "，".join(parts)
+
+
 def format_photo_ingest_data(
     file_path: str, abstract: str, detected_persons: list
 ) -> dict:
@@ -441,8 +469,8 @@ def format_photo_ingest_data(
     - 人物实体名：使用真名或 auto_label，如"任飞"、"未命名人物_1"
     - 禁止 photo:{stem}、person:{uuid} 等编程风格命名
 
-    稳定性保证：照片实体名 = 文件名 stem，不受 abstract（人物名变化）影响。
-    abstract 变化时只需更新照片实体的 description，不创建新实体。
+    稳定性保证：照片实体名 = 文件名 stem，description 不含人名，不受人物改名影响。
+    人物信息完全通过边（features, co_occurs_with）表达。
 
     路径统一归一化（正斜杠 + 小写），确保 file_path 不会因大小写或斜杠方向差异而分裂。
     """
@@ -459,7 +487,7 @@ def format_photo_ingest_data(
         {
             "entity_name": photo_entity_name,
             "entity_type": "Photo",
-            "description": f"{abstract}，文件{normalized_stem}" if abstract else f"照片 {normalized_stem}",
+            "description": _generate_stable_description(normalized_stem, abstract),
             "file_path": normalized_path,
             "source_id": normalized_path,
         }
@@ -508,7 +536,7 @@ def format_photo_ingest_data(
             "src_id": photo_entity_name,
             "tgt_id": entity_name,
             "keywords": "features",
-            "description": f"照片中出现了{entity_name}",
+            
             "file_path": normalized_path,
             "source_id": normalized_path,  # 与 chunk 的 source_id 一致，确保映射成功
         })
@@ -527,7 +555,7 @@ def format_photo_ingest_data(
                 "src_id": a,
                 "tgt_id": b,
                 "keywords": "co_occurs_with",
-                "description": f"{a}和{b}同框出现",
+                
                 "file_path": normalized_path,
                 "source_id": normalized_path,  # 与 chunk 的 source_id 一致，确保映射成功
             })
