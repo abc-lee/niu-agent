@@ -284,6 +284,31 @@ _INIT_RETRY_SECONDS: float = 60.0
 _lightrag_ready = threading.Event()
 
 
+def _clear_sync_state_if_storage_empty(storage_dir: Path) -> None:
+    """Clear sync state caches when lightrag_storage is freshly created/empty.
+
+    When users delete lightrag_storage and restart, the graph starts empty.
+    But skill_sync_state.json and last_region_sync.json may still exist,
+    causing SkillSync/RegionSync to think everything is already synced
+    and skip re-injection. This function detects the empty-graph condition
+    and deletes those stale cache files.
+    """
+    entities_file = storage_dir / "kv_store_full_entities.json"
+    if not entities_file.exists():
+        # Fresh storage — no entities yet, clear all sync state caches
+        state_files = [
+            Path.home() / ".niu" / "skill_sync_state.json",
+            Path.home() / ".niu" / "last_region_sync.json",
+        ]
+        for state_file in state_files:
+            if state_file.exists():
+                try:
+                    state_file.unlink()
+                    logger.info(f"Cleared stale sync state: {state_file}")
+                except OSError as e:
+                    logger.warning(f"Failed to clear sync state {state_file}: {e}")
+
+
 def _make_local_embedding_func():
     """Create a direct local embedding callable for LightRAG.
 
@@ -396,6 +421,9 @@ def _create_lightrag_instance():
     rag = LightRAG(**rag_params)
     # lightrag-hku 1.4.15 requires explicit storage initialization
     call_async(rag.initialize_storages(), timeout=300)
+    # If lightrag_storage is freshly created (empty graph), clear sync state caches
+    # so that SkillSync/LightRAGSync/RegionSync will re-inject everything
+    _clear_sync_state_if_storage_empty(STORAGE_DIR)
     return rag
 
 
