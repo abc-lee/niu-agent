@@ -125,6 +125,7 @@ class LightRAGAdapter:
         top_k: Optional[int] = None,
         response_type: Optional[str] = None,
         keywords: Optional[List[str]] = None,
+        timeout: int = 120,
     ) -> Optional[str]:
         """Query the brain graph / knowledge base.
 
@@ -137,6 +138,9 @@ class LightRAGAdapter:
             keywords: Pre-provided keywords to skip LLM extraction.
                 When provided, both hl_keywords and ll_keywords are set,
                 avoiding LLM calls entirely (near-instant return).
+            timeout: Maximum seconds to wait for the LightRAG query result.
+                Default is 120. Callers can set a shorter timeout (e.g. 2)
+                to prevent deadlock when the LightRAG event loop is busy.
 
         Returns:
             Query result string, or None on error.
@@ -166,7 +170,7 @@ class LightRAGAdapter:
             if response_type is not None:
                 param.response_type = response_type
 
-            result = call_async(rag.aquery(query, param=param), timeout=120)
+            result = call_async(rag.aquery(query, param=param), timeout=timeout)
             # aquery() type is str | AsyncIterator[str]; with only_need_context=True
             # it always returns str. Guard against non-string just in case.
             if not isinstance(result, str):
