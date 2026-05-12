@@ -597,7 +597,7 @@ def format_photo_ingest_data(
     return {"entities": entities, "relationships": relationships}
 
 
-def sync_photo_to_kg(file_path: str, abstract: str, detected_persons: list, force: bool = False) -> dict:
+def sync_photo_to_kg(file_path: str, abstract: str, detected_persons: list, force: bool = False, async_mode: bool = True) -> dict:
     """同步照片信息到知识图谱（3步流程：结构化注入 + LLM 语义连接）
 
     流程：
@@ -610,6 +610,13 @@ def sync_photo_to_kg(file_path: str, abstract: str, detected_persons: list, forc
 
     防重复：如果照片已标记 kg_synced=1 且 force=False，跳过整个流程。
     name_person 改名后不应重新 sync_photo_to_kg，只更新人物实体本身。
+
+    Args:
+        file_path: 照片文件路径
+        abstract: 照片摘要
+        detected_persons: 检测到的人物列表
+        force: 是否强制重新同步
+        async_mode: 是否异步执行（默认 True，后台执行不阻塞照片入库）
     """
     # 防重复检查：已 kg_synced 的照片不重新注入（除非 force=True）
     if not force:
@@ -626,6 +633,30 @@ def sync_photo_to_kg(file_path: str, abstract: str, detected_persons: list, forc
         except Exception as e:
             logger.warning(f"[KG] kg_synced check failed for {file_path}: {e}")
 
+    # 异步模式：使用 fire_and_forget 后台执行，不阻塞照片入库
+    if async_mode:
+        try:
+            from niu_api.internal.lightrag_manager import fire_and_forget
+
+            async def _async_sync():
+                try:
+                    _do_sync_photo_to_kg_sync(file_path, abstract, detected_persons)
+                except Exception as e:
+                    logger.warning(f"[KG] async sync_photo_to_kg failed for {file_path}: {e}")
+
+            fire_and_forget(_async_sync(), context=f"kg_sync:{file_path}")
+            logger.info(f"[KG] Scheduled async KG sync for {file_path}")
+            return {"status": "scheduled", "reason": "async mode"}
+        except Exception as e:
+            logger.warning(f"[KG] Failed to schedule async KG sync: {e}, falling back to sync mode")
+            # Fall through to sync mode
+
+    # 同步模式：直接执行
+    return _do_sync_photo_to_kg_sync(file_path, abstract, detected_persons)
+
+
+def _do_sync_photo_to_kg_sync(file_path: str, abstract: str, detected_persons: list) -> dict:
+    """同步执行 KG 同步（内部函数）"""
     try:
         from agent.tool_registry import get_registry
 
