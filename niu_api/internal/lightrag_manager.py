@@ -40,6 +40,35 @@ PROXY_BASE_URL = "http://localhost:9876/llm/v1"
 PROXY_API_KEY = "not-needed"  # Placeholder — proxy reads real key from user-config.json
 STORAGE_DIR = Path.home() / ".niu" / "lightrag_storage"
 
+# ============== Shared OpenAI Client ==============
+# Reuse a single AsyncOpenAI client across all LightRAG LLM calls.
+# This avoids the overhead of creating a new client for each call,
+# which can add 10-15 seconds of latency due to connection pool initialization.
+_shared_openai_client: Optional[Any] = None
+_client_lock = threading.Lock()
+
+
+def _get_shared_openai_client():
+    """Get or create a shared AsyncOpenAI client for LightRAG LLM calls."""
+    global _shared_openai_client
+
+    if _shared_openai_client is not None:
+        return _shared_openai_client
+
+    with _client_lock:
+        if _shared_openai_client is not None:
+            return _shared_openai_client
+
+        from openai import AsyncOpenAI
+
+        _shared_openai_client = AsyncOpenAI(
+            base_url=PROXY_BASE_URL,
+            api_key=PROXY_API_KEY,
+            timeout=180.0,  # 3 minutes timeout
+        )
+        logger.info("Created shared AsyncOpenAI client for LightRAG")
+        return _shared_openai_client
+
 
 def _get_lightrag_config() -> Dict[str, Any]:
     """Read LightRAG config from preferences.json."""
@@ -483,29 +512,34 @@ def _create_lightrag_instance():
     # Ensure storage directory exists
     STORAGE_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Build LLM function (routed through our proxy)
+    # Build LLM function with shared OpenAI client.
     # LightRAG calls llm_model_func(prompt, system_prompt=..., **kwargs).
-    # openai_complete_if_cache(model, prompt, ...) expects model as the first
-    # positional arg. Using partial(model=...) binds model as a keyword arg,
-    # which conflicts when LightRAG passes prompt as a positional arg (Python
-    # maps it to the first unbound param = model, then finds model= already
-    # set by partial → "got multiple values for argument 'model'").
-    # Fix: wrapper function whose first param is prompt (matching LightRAG's
-    # convention), passing model as a positional arg to openai_complete_if_cache.
+    # Using a shared client avoids the 10-15s overhead of creating a new
+    # AsyncOpenAI client for each call (connection pool initialization).
     async def _llm_model_func(
         prompt, system_prompt=None, history_messages=None,
         keyword_extraction=False, **kwargs,
     ) -> str:
-        return await openai_complete_if_cache(
-            "proxy-model",  # model as positional arg (proxy ignores, uses user-config.json)
-            prompt,
-            system_prompt=system_prompt,
-            history_messages=history_messages,
-            base_url=PROXY_BASE_URL,
-            api_key=PROXY_API_KEY,
-            keyword_extraction=keyword_extraction,
-            **kwargs,
+        client = _get_shared_openai_client()
+
+        # Build messages
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        if history_messages:
+            messages.extend(history_messages)
+        messages.append({"role": "user", "content": prompt})
+
+        # Call OpenAI API
+        response = await client.chat.completions.create(
+            model="proxy-model",
+            messages=messages,
         )
+
+        # Extract content
+        if response and response.choices:
+            return response.choices[0].message.content or ""
+        return ""
 
     llm_model_func = _llm_model_func
 
