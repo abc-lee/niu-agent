@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from niu_api.internal.lightrag_manager import get_all_region_members
 from niu_api.internal.region_activation import (
     BrainRegionState,
     RegionActivationManager,
@@ -83,80 +84,45 @@ class BrainContextInjector:
         """Main entry: activate regions + get layered injection content
 
         Steps:
-        1. Use query_context to do LightRAG query -> extract hit entities
-        2. activation_mgr.activate_regions(hit_entities, entity_to_region)
-        3. If hit xxx脑区 master node -> secondary local query to expand
-        4. activation_mgr.decay_all()
-        5. Format injection content by activation level
+        1. Get entity-to-region mapping from graph (direct read, no LLM)
+        2. activation_mgr.activate_regions based on query context matching
+        3. activation_mgr.decay_all()
+        4. Format injection content by activation level
 
         Returns injection text (empty string if no active regions or on error).
 
-        Note: This method is synchronous — all adapter calls (query_data, query)
-        are sync wrappers that internally handle their own async bridging via
-        call_async. Declaring this as async would cause nested call_async deadlock.
+        IMPORTANT: This method does NOT call LightRAG API to avoid event loop
+        deadlock. It directly reads the NetworkX graph via get_all_region_members().
         """
         if not query_context:
             return ""
 
-        # Step 1: Query LightRAG to find hit entities
+        # Step 1: Get entity-to-region mapping from direct graph read
+        region_members = get_all_region_members()
+        entity_to_region: dict[str, str] = {}
+        for region_name, members in region_members.items():
+            for member in members:
+                entity_to_region[member] = region_name
+
+        # Step 2: Simple keyword matching to activate regions
+        # This is a lightweight heuristic that doesn't require LLM calls.
+        # For more sophisticated matching, consider vector similarity search.
         hit_entities: list[str] = []
-        region_knowledge: dict[str, str] = {}  # region_label -> knowledge text
+        query_lower = query_context.lower()
+        for entity_name in entity_to_region.keys():
+            if entity_name.lower() in query_lower or query_lower in entity_name.lower():
+                hit_entities.append(entity_name)
 
-        try:
-            # Program auto-call: keywords=[query_context] skips LLM extraction.
-            # The full context as keyword is a deliberate trade-off: it avoids
-            # 5-30s LLM latency per turn. Vector search still returns results
-            # by semantic similarity; keywords only boost graph-traversal matches.
-            query_result = self._adapter.query_data(
-                query_context, mode="local", top_k=20, keywords=[query_context]
-            )
-
-            if query_result and isinstance(query_result, dict):
-                data = query_result.get("data", {})
-                if not data:
-                    data = query_result
-                entities = data.get("entities", [])
-                hit_entities = [
-                    e.get("entity_name", e.get("id", ""))
-                    for e in entities
-                    if e.get("entity_name") or e.get("id")
-                ]
-        except Exception as e:
-            logger.warning("脑区注入查询失败: %s", e)
-
-        # Step 2: Activate regions based on hit entities
-        entity_to_region = self._activation_mgr.get_entity_to_region_map()
         self._activation_mgr.activate_regions(
             hit_entities, entity_to_region
         )
 
-        # Step 3: Expand region master node knowledge
-        for entity in hit_entities:
-            # Support both old format "brain:region:{label}" and new format "{label}脑区"
-            is_old_region = entity.startswith(REGION_PREFIX)
-            is_new_region = entity.endswith(REGION_SUFFIX) and not is_old_region
-            if is_old_region or is_new_region:
-                try:
-                    knowledge = self._adapter.query(
-                        entity, mode="local", only_need_context=True
-                    )
-                    if knowledge and isinstance(knowledge, str):
-                        # Extract label from entity name
-                        if is_old_region:
-                            # Backward compat: "brain:region:{label}" -> label
-                            label = entity[len(REGION_PREFIX):]
-                        else:
-                            # New format: "{label}脑区" -> label
-                            label = entity[:-len(REGION_SUFFIX)]
-                        region_knowledge[label] = knowledge
-                except Exception as e:
-                    logger.debug("脑区知识扩展查询失败: %s — %s", entity, e)
-
-        # Step 4: Decay all regions
+        # Step 3: Decay all regions
         self._activation_mgr.decay_all()
 
-        # Step 5: Format injection content by activation level
-        return self._format_injection_content(region_knowledge)
+        # Step 4: Format injection content by activation level
+        # Note: region_knowledge is empty since we don't call LightRAG query
+        return self._format_injection_content({})
 
     # ------------------------------------------------------------------
     # Formatting: region map (always injected)

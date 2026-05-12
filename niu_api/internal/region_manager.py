@@ -1016,29 +1016,23 @@ def create_default_regions(adapter: Any, ingester: Any) -> dict:
     Returns:
         Dict with created and existing counts.
     """
+    from niu_api.internal.lightrag_manager import get_brain_regions
+
     all_entities: list[dict] = []
     all_relationships: list[dict] = []
     created = 0
     existing = 0
 
+    # Get existing brain regions directly from graph (no LLM call)
+    existing_regions = get_brain_regions()
+
     for region_label, config in DEFAULT_REGIONS.items():
         region_name = f"{region_label}{REGION_SUFFIX}"
 
-        # Check if region already exists
-        try:
-            search_result = adapter.query_data(
-                query=region_label, mode="local", top_k=3, keywords=[region_label],
-            )
-            found = False
-            if search_result and isinstance(search_result, dict):
-                data = search_result.get("data", {})
-                entities = data.get("entities", []) if isinstance(data, dict) else []
-                found = any(e.get("entity_name", "") == region_name for e in entities)
-            if found:
-                existing += 1
-                continue
-        except Exception:
-            pass  # Proceed to create
+        # Check if region already exists (direct graph read, no LLM)
+        if region_name in existing_regions:
+            existing += 1
+            continue
 
         # Collect region entity and anchor relation for batch inject
         all_entities.append({

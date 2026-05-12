@@ -278,21 +278,44 @@ def get_db_path() -> Path:
     """Get photo database path (3-level priority, consistent with get_vector_db_path).
 
     Priority:
-    1. NIU_DB_PATH env var (explicit override, replaces vectors.db with photos.db)
+    1. NIU_DB_PATH env var (explicit override)
     2. WORKSPACE_PATH env var (set by Go launcher main.go)
     3. ~/.niu/memory.json workspace.path
+
+    Auto-creates workspace directory if it doesn't exist.
     """
-    # 1. NIU_DB_PATH — replace vectors.db suffix with photos.db
+    # 1. NIU_DB_PATH — explicit override
     if "NIU_DB_PATH" in os.environ:
         p = Path(os.environ["NIU_DB_PATH"])
-        if not p.parent.exists():
-            raise ValueError(f"NIU_DB_PATH 父目录不存在: {p.parent}。请检查配置。")
-        return p.parent / "photos.db"
+        if not p.is_absolute():
+            raise ValueError(f"NIU_DB_PATH 必须是绝对路径: {p}")
+        # 解析符号链接
+        p = p.resolve()
+        # 如果路径没有扩展名，假设是目录，添加 photos.db
+        if p.suffix == '':
+            p = p / "photos.db"
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+        except PermissionError as e:
+            raise ValueError(f"无权限创建目录: {p.parent}。请检查权限。") from e
+        except FileExistsError as e:
+            raise ValueError(f"路径已存在但不是目录（可能是文件）: {p.parent}") from e
+        return p
     # 2. WORKSPACE_PATH env var
     if "WORKSPACE_PATH" in os.environ:
         ws = Path(os.environ["WORKSPACE_PATH"])
-        if not ws.exists():
-            raise ValueError(f"WORKSPACE_PATH 指向不存在的目录: {ws}。请检查配置。")
+        if not ws.is_absolute():
+            raise ValueError(f"WORKSPACE_PATH 必须是绝对路径: {ws}")
+        # 解析符号链接
+        ws = ws.resolve()
+        if ws.exists() and not ws.is_dir():
+            raise ValueError(f"WORKSPACE_PATH 指向的不是目录: {ws}")
+        try:
+            ws.mkdir(parents=True, exist_ok=True)
+        except PermissionError as e:
+            raise ValueError(f"无权限创建工作区目录: {ws}。请检查权限。") from e
+        except FileExistsError as e:
+            raise ValueError(f"路径已存在但不是目录（可能是文件）: {ws}") from e
         return ws / "photos.db"
     # 3. ~/.niu/memory.json workspace.path
     memory_path = Path.home() / ".niu" / "memory.json"
@@ -301,14 +324,25 @@ def get_db_path() -> Path:
             with open(memory_path, "r", encoding="utf-8") as f:
                 memory = json.load(f)
             workspace_path = memory.get("workspace", {}).get("path")
-            if workspace_path and Path(workspace_path).exists():
-                return Path(workspace_path) / "photos.db"
-            if workspace_path:
-                raise ValueError(f"workspace.path 指向不存在的目录: {workspace_path}。请检查 memory.json 配置。")
+            if workspace_path and workspace_path.strip():
+                ws = Path(workspace_path)
+                if not ws.is_absolute():
+                    raise ValueError(f"workspace.path 必须是绝对路径: {workspace_path}")
+                # 解析符号链接
+                ws = ws.resolve()
+                if ws.exists() and not ws.is_dir():
+                    raise ValueError(f"workspace.path 指向的不是目录: {workspace_path}")
+                try:
+                    ws.mkdir(parents=True, exist_ok=True)
+                except PermissionError as e:
+                    raise ValueError(f"无权限创建工作区目录: {ws}。请检查权限。") from e
+                except FileExistsError as e:
+                    raise ValueError(f"路径已存在但不是目录（可能是文件）: {ws}") from e
+                return ws / "photos.db"
         except ValueError:
             raise
         except Exception as e:
-            raise ValueError(f"无法从 {memory_path} 解析 JSON: {e}。") from e
+            raise ValueError(f"无法从 {memory_path} 解析 JSON: {e}。请检查 memory.json 格式是否正确。") from e
     raise ValueError(
         f"无法确定照片库路径：~/.niu/memory.json 不存在或缺少 workspace.path 配置。"
         f"请在 ~/.niu/memory.json 中设置 workspace.path，或设置 WORKSPACE_PATH 环境变量。"
@@ -989,13 +1023,24 @@ def get_workspace_path() -> Path:
     Priority:
     1. WORKSPACE_PATH 环境变量（由 Go 启动器 main.go 设置）
     2. ~/.niu/memory.json 的 workspace.path
-    不降级、不合成，路径无效时抛出 ValueError。
+
+    Auto-creates workspace directory if it doesn't exist.
     """
     # 1. WORKSPACE_PATH 环境变量
     if "WORKSPACE_PATH" in os.environ:
         ws = Path(os.environ["WORKSPACE_PATH"])
-        if not ws.exists():
-            raise ValueError(f"WORKSPACE_PATH 指向不存在的目录: {ws}。请检查配置。")
+        if not ws.is_absolute():
+            raise ValueError(f"WORKSPACE_PATH 必须是绝对路径: {ws}")
+        # 解析符号链接
+        ws = ws.resolve()
+        if ws.exists() and not ws.is_dir():
+            raise ValueError(f"WORKSPACE_PATH 指向的不是目录: {ws}")
+        try:
+            ws.mkdir(parents=True, exist_ok=True)
+        except PermissionError as e:
+            raise ValueError(f"无权限创建工作区目录: {ws}。请检查权限。") from e
+        except FileExistsError as e:
+            raise ValueError(f"路径已存在但不是目录（可能是文件）: {ws}") from e
         return ws
     # 2. 从 ~/.niu/memory.json 读取 workspace.path
     memory_path = Path.home() / ".niu" / "memory.json"
@@ -1004,14 +1049,25 @@ def get_workspace_path() -> Path:
             with open(memory_path, "r", encoding="utf-8") as f:
                 memory = json.load(f)
             workspace_path = memory.get("workspace", {}).get("path")
-            if workspace_path and Path(workspace_path).exists():
-                return Path(workspace_path)
-            if workspace_path:
-                raise ValueError(f"workspace.path 指向不存在的目录: {workspace_path}。请检查 memory.json 配置。")
+            if workspace_path and workspace_path.strip():
+                ws = Path(workspace_path)
+                if not ws.is_absolute():
+                    raise ValueError(f"workspace.path 必须是绝对路径: {workspace_path}")
+                # 解析符号链接
+                ws = ws.resolve()
+                if ws.exists() and not ws.is_dir():
+                    raise ValueError(f"workspace.path 指向的不是目录: {workspace_path}")
+                try:
+                    ws.mkdir(parents=True, exist_ok=True)
+                except PermissionError as e:
+                    raise ValueError(f"无权限创建工作区目录: {ws}。请检查权限。") from e
+                except FileExistsError as e:
+                    raise ValueError(f"路径已存在但不是目录（可能是文件）: {ws}") from e
+                return ws
         except ValueError:
             raise
         except Exception as e:
-            raise ValueError(f"无法从 {memory_path} 解析 JSON: {e}。") from e
+            raise ValueError(f"无法从 {memory_path} 解析 JSON: {e}。请检查 memory.json 格式是否正确。") from e
     raise ValueError(
         f"无法确定工作区路径：~/.niu/memory.json 不存在或缺少 workspace.path 配置。"
         f"请在 ~/.niu/memory.json 中设置 workspace.path，或设置 WORKSPACE_PATH 环境变量。"

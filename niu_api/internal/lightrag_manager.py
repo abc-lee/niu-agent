@@ -123,6 +123,142 @@ def graph_write_lock():
     return _graph_rwlock
 
 
+def get_brain_regions() -> list[str]:
+    """Get list of brain region names from the knowledge graph.
+
+    Directly reads from the NetworkX in-memory graph without calling
+    LightRAG API, avoiding potential event loop deadlocks.
+
+    This is a pure synchronous read — safe to call from anywhere,
+    including LLM proxy callbacks.
+
+    Returns:
+        List of brain region names (e.g., ["聊天历史脑区", "文档库脑区"]),
+        or empty list if LightRAG is unavailable or graph is empty.
+    """
+    try:
+        rag = get_lightrag()
+        if rag is None:
+            return []
+
+        graph_obj = getattr(rag, "chunk_entity_relation_graph", None)
+        if graph_obj is None:
+            return []
+
+        nx_graph = graph_obj._graph if hasattr(graph_obj, "_graph") else graph_obj
+        if nx_graph is None or nx_graph.number_of_nodes() == 0:
+            return []
+
+        # Take a snapshot under read lock to prevent RuntimeError from
+        # concurrent graph modification by background sync threads.
+        with graph_read_lock():
+            snapshot = nx_graph.copy()
+
+        # Filter nodes whose entity_type is BrainRegion
+        brain_regions = [
+            name for name, data in snapshot.nodes(data=True)
+            if data.get("entity_type") == "BrainRegion"
+        ]
+
+        return brain_regions
+
+    except Exception as e:
+        logger.debug("get_brain_regions failed: %s", e)
+        return []
+
+
+def get_region_members(region_name: str) -> list[str]:
+    """Get member entity names for a specific brain region.
+
+    Directly reads from the NetworkX in-memory graph, finding entities
+    connected to the region via "_region:contains" edges.
+
+    This is a pure synchronous read — safe to call from anywhere,
+    including LLM proxy callbacks.
+
+    Args:
+        region_name: Brain region entity name (e.g., "文档库脑区")
+
+    Returns:
+        List of member entity names, or empty list if region not found.
+    """
+    try:
+        rag = get_lightrag()
+        if rag is None:
+            return []
+
+        graph_obj = getattr(rag, "chunk_entity_relation_graph", None)
+        if graph_obj is None:
+            return []
+
+        nx_graph = graph_obj._graph if hasattr(graph_obj, "_graph") else graph_obj
+        if nx_graph is None or nx_graph.number_of_nodes() == 0:
+            return []
+
+        # Take a snapshot under read lock
+        with graph_read_lock():
+            snapshot = nx_graph.copy()
+
+        # Find members via "_region:contains" edges (region -> member)
+        # Note: LightRAG stores edge type in 'keywords' field, not 'type'
+        members = []
+        for src, tgt, data in snapshot.edges(data=True):
+            edge_type = data.get("keywords") or data.get("type", "")
+            if src == region_name and edge_type == "_region:contains":
+                members.append(tgt)
+
+        return members
+
+    except Exception as e:
+        logger.debug("get_region_members failed: %s", e)
+        return []
+
+
+def get_all_region_members() -> dict[str, list[str]]:
+    """Get all brain regions and their member entity names.
+
+    Directly reads from the NetworkX in-memory graph without calling
+    LightRAG API, avoiding potential event loop deadlocks.
+
+    Returns:
+        Dict mapping region name to list of member entity names,
+        e.g., {"文档库脑区": ["Python", "NumPy"], "聊天历史脑区": ["用户"]}
+    """
+    try:
+        rag = get_lightrag()
+        if rag is None:
+            return {}
+
+        graph_obj = getattr(rag, "chunk_entity_relation_graph", None)
+        if graph_obj is None:
+            return {}
+
+        nx_graph = graph_obj._graph if hasattr(graph_obj, "_graph") else graph_obj
+        if nx_graph is None or nx_graph.number_of_nodes() == 0:
+            return {}
+
+        # Take a snapshot under read lock
+        with graph_read_lock():
+            snapshot = nx_graph.copy()
+
+        # Build mapping: region -> members
+        # Note: LightRAG stores edge type in 'keywords' field, not 'type'
+        region_members: dict[str, list[str]] = {}
+        for src, tgt, data in snapshot.edges(data=True):
+            edge_type = data.get("keywords") or data.get("type", "")
+            if edge_type == "_region:contains":
+                # src is region, tgt is member
+                if src not in region_members:
+                    region_members[src] = []
+                region_members[src].append(tgt)
+
+        return region_members
+
+    except Exception as e:
+        logger.debug("get_all_region_members failed: %s", e)
+        return {}
+
+
 def _ensure_loop() -> asyncio.AbstractEventLoop:
     """Ensure the daemon event loop is running (thread-safe)."""
     global _loop, _loop_thread

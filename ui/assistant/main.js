@@ -808,7 +808,9 @@ ipcMain.handle('clear-chat', async () => {
 // 打开图谱窗口
 ipcMain.on('open-graph', () => {
   const { spawn } = require('child_process');
-  const exePath = path.join(__dirname, '..', '..', 'niu.exe');
+  // 平台无关：Windows 用 niu.exe，Mac/Linux 用 niu
+  const exeName = process.platform === 'win32' ? 'niu.exe' : 'niu';
+  const exePath = path.join(__dirname, '..', '..', exeName);
   const uiPath = path.join(__dirname, '..', '..');
   console.log('Opening graph, exe:', exePath, 'cwd:', uiPath);
   spawn(exePath, ['--graph'], {
@@ -925,7 +927,9 @@ function createTray() {
     {
       label: '📊 打开图谱',
       click: () => {
-        const exePath = path.join(__dirname, '..', '..', 'niu.exe');
+        // 平台无关：Windows 用 niu.exe，Mac/Linux 用 niu
+        const exeName = process.platform === 'win32' ? 'niu.exe' : 'niu';
+        const exePath = path.join(__dirname, '..', '..', exeName);
         const uiPath = path.join(__dirname, '..', '..');
         spawn(exePath, ['--graph'], {
           cwd: uiPath,
