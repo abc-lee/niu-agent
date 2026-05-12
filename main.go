@@ -258,6 +258,7 @@ func main() {
 		"PYTHONUNBUFFERED=1",
 	}
 		envVars = append(envVars, "LITELLM_LOCAL_MODEL_COST_MAP=True")
+		envVars = append(envVars, "LITELLM_NO_AIOHTTP_TRANSPORT=True")
 	if workspacePath != "" {
 		if _, err := os.Stat(workspacePath); err != nil {
 			slog.Error("WORKSPACE_PATH directory does not exist, skipping", "path", workspacePath, "error", err)

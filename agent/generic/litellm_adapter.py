@@ -13,6 +13,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Generator, List, Optional
 
+# 在导入 litellm 之前设置环境变量，避免远程获取 model cost map 和 aiohttp 初始化开销
+os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
+os.environ.setdefault("LITELLM_NO_AIOHTTP_TRANSPORT", "True")
+
 import litellm
 
 logger = logging.getLogger(__name__)
