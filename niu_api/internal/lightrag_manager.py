@@ -321,7 +321,8 @@ def _make_local_embedding_func():
 
     async def _embed(texts: list[str]):
         model = get_model()
-        return model.encode(texts, convert_to_numpy=True)
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, lambda: model.encode(texts, convert_to_numpy=True))
 
     return _embed
 
