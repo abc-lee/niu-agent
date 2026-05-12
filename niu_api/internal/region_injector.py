@@ -104,7 +104,7 @@ class BrainContextInjector:
             for member in members:
                 entity_to_region[member] = region_name
 
-        # Step 1: Query LightRAG to find hit entities (vector search)
+        # Step 2: Query LightRAG to find hit entities (vector search)
         hit_entities: list[str] = []
         region_knowledge: dict[str, str] = {}  # region_label -> knowledge text
 
