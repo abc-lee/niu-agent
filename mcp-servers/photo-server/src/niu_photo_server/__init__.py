@@ -597,16 +597,15 @@ def format_photo_ingest_data(
     return {"entities": entities, "relationships": relationships}
 
 
-def sync_photo_to_kg(file_path: str, abstract: str, detected_persons: list, force: bool = False, async_mode: bool = True) -> dict:
-    """同步照片信息到知识图谱（3步流程：结构化注入 + LLM 语义连接）
+def sync_photo_to_kg(file_path: str, abstract: str, detected_persons: list, force: bool = False) -> dict:
+    """同步照片信息到知识图谱（结构化注入）
 
     流程：
     1. custom_kg(entities + relationships + chunks) -- 注入实体+关系（带chunk关联source_id）
-    2. lightrag_insert(content=chunk_text) -- ainsert 让 LLM 建边
-    3. 标记 kg_synced
+    2. 标记 kg_synced
 
-    核心原则：结构化注入的实体是"死"的（孤岛），必须 ainsert 让 LLM 建边。
-    chunk_text 中明确引用实体名（自然语言），让 LLM 能识别并合并。
+    注意：ainsert (Step 2) 已禁用，因为它会阻塞 LightRAG 事件循环长达 90+ 秒。
+    仅保留 Step 1 的结构化注入，足以支持基本的图谱查询。
 
     防重复：如果照片已标记 kg_synced=1 且 force=False，跳过整个流程。
     name_person 改名后不应重新 sync_photo_to_kg，只更新人物实体本身。
@@ -616,7 +615,6 @@ def sync_photo_to_kg(file_path: str, abstract: str, detected_persons: list, forc
         abstract: 照片摘要
         detected_persons: 检测到的人物列表
         force: 是否强制重新同步
-        async_mode: 是否异步执行（默认 True，后台执行不阻塞照片入库）
     """
     # 防重复检查：已 kg_synced 的照片不重新注入（除非 force=True）
     if not force:
@@ -633,25 +631,7 @@ def sync_photo_to_kg(file_path: str, abstract: str, detected_persons: list, forc
         except Exception as e:
             logger.warning(f"[KG] kg_synced check failed for {file_path}: {e}")
 
-    # 异步模式：使用 fire_and_forget 后台执行，不阻塞照片入库
-    if async_mode:
-        try:
-            from niu_api.internal.lightrag_manager import fire_and_forget
-
-            async def _async_sync():
-                try:
-                    _do_sync_photo_to_kg_sync(file_path, abstract, detected_persons)
-                except Exception as e:
-                    logger.warning(f"[KG] async sync_photo_to_kg failed for {file_path}: {e}")
-
-            fire_and_forget(_async_sync(), context=f"kg_sync:{file_path}")
-            logger.info(f"[KG] Scheduled async KG sync for {file_path}")
-            return {"status": "scheduled", "reason": "async mode"}
-        except Exception as e:
-            logger.warning(f"[KG] Failed to schedule async KG sync: {e}, falling back to sync mode")
-            # Fall through to sync mode
-
-    # 同步模式：直接执行
+    # 直接同步执行（不再使用异步模式，避免阻塞 LightRAG 事件循环）
     return _do_sync_photo_to_kg_sync(file_path, abstract, detected_persons)
 
 
@@ -703,23 +683,29 @@ def _do_sync_photo_to_kg_sync(file_path: str, abstract: str, detected_persons: l
         logger.info(f"[KG] Step1 ok: {len(data['entities'])} entities + {len(data['relationships'])} relationships injected for {normalized_stem}")
 
         # --- Step 2: ainsert 让 LLM 处理文本，建立语义连接 ---
+        # DISABLED: ainsert 会阻塞 LightRAG 事件循环长达 90+ 秒，
+        # 导致后续的 query 操作超时。暂时禁用，仅保留 Step 1 的结构化注入。
+        # Step 1 已经注入了实体和关系，足以支持基本的图谱查询。
+        # TODO: 考虑使用独立的队列或进程来处理 ainsert。
+        #
         # chunk_text 中明确引用了 Step 1 的实体名（自然语言），LLM 能识别并合并
-        insert_fn = registry.get("lightrag-server/lightrag_insert")
-        if insert_fn:
-            try:
-                insert_result = insert_fn(
-                    content=chunk_text,
-                    file_path=normalized_path,  # 避免 unknown_source
-                    doc_id=f"doc-{normalized_stem}",
-                )
-                if insert_result and insert_result.get("status") == "ok":
-                    logger.info(f"[KG] Step2 ok: ainsert completed for {normalized_stem}")
-                else:
-                    logger.warning(f"[KG] Step2 ainsert returned non-ok for {file_path}: {insert_result}")
-            except Exception as e:
-                logger.warning(f"[KG] Step2 ainsert failed for {file_path}: {e}")
-        else:
-            logger.warning("[KG] lightrag_insert not available in registry, skipping Step2 ainsert")
+        # insert_fn = registry.get("lightrag-server/lightrag_insert")
+        # if insert_fn:
+        #     try:
+        #         insert_result = insert_fn(
+        #             content=chunk_text,
+        #             file_path=normalized_path,  # 避免 unknown_source
+        #             doc_id=f"doc-{normalized_stem}",
+        #         )
+        #         if insert_result and insert_result.get("status") == "ok":
+        #             logger.info(f"[KG] Step2 ok: ainsert completed for {normalized_stem}")
+        #         else:
+        #             logger.warning(f"[KG] Step2 ainsert returned non-ok for {file_path}: {insert_result}")
+        #     except Exception as e:
+        #         logger.warning(f"[KG] Step2 ainsert failed for {file_path}: {e}")
+        # else:
+        #     logger.warning("[KG] lightrag_insert not available in registry, skipping Step2 ainsert")
+        logger.info(f"[KG] Step2 ainsert skipped (disabled to prevent event loop blocking)")
 
         # --- Step 3: 标记 kg_synced ---
         # Only mark as KG-synced if Step 1 succeeded (Step2 failure is non-fatal)
