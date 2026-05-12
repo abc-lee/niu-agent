@@ -5,6 +5,7 @@
 import os
 import json
 import sqlite3
+from pathlib import Path
 import numpy as np
 from typing import Optional, List, Dict, Any
 from loguru import logger
@@ -29,34 +30,65 @@ def get_db_path() -> str:
     2. WORKSPACE_PATH 环境变量（由 Go 启动器设置）
     3. ~/.niu/memory.json 的 workspace.path
     如果均无法确定，抛出 ValueError（不降级、不创建流氓库）。
+    Auto-creates workspace directory if it doesn't exist.
     """
     # 1. 显式覆盖
     if "NIU_DB_PATH" in os.environ:
-        from pathlib import Path
         p = Path(os.environ["NIU_DB_PATH"])
-        if not p.parent.exists():
-            raise ValueError(f"NIU_DB_PATH 父目录不存在: {p.parent}。请检查配置。")
-        return os.environ["NIU_DB_PATH"]
+        if not p.is_absolute():
+            raise ValueError(f"NIU_DB_PATH 必须是绝对路径: {p}")
+        # 解析符号链接
+        p = p.resolve()
+        # 如果路径没有扩展名，假设是目录，添加 vectors.db
+        if p.suffix == '':
+            p = p / "vectors.db"
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+        except PermissionError as e:
+            raise ValueError(f"无权限创建目录: {p.parent}。请检查权限。") from e
+        except FileExistsError as e:
+            raise ValueError(f"路径已存在但不是目录（可能是文件）: {p.parent}") from e
+        return str(p)
 
     # 2. 环境变量（由 Go 启动器 main.go 设置）
     if "WORKSPACE_PATH" in os.environ:
-        ws = os.environ["WORKSPACE_PATH"]
-        if not os.path.exists(ws):
-            raise ValueError(f"WORKSPACE_PATH 指向不存在的目录: {ws}。请检查配置。")
+        ws = Path(os.environ["WORKSPACE_PATH"])
+        if not ws.is_absolute():
+            raise ValueError(f"WORKSPACE_PATH 必须是绝对路径: {ws}")
+        # 解析符号链接
+        ws = ws.resolve()
+        if ws.exists() and not ws.is_dir():
+            raise ValueError(f"WORKSPACE_PATH 指向的不是目录: {ws}")
+        try:
+            ws.mkdir(parents=True, exist_ok=True)
+        except PermissionError as e:
+            raise ValueError(f"无权限创建工作区目录: {ws}。请检查权限。") from e
+        except FileExistsError as e:
+            raise ValueError(f"路径已存在但不是目录（可能是文件）: {ws}") from e
         return os.path.join(ws, "vectors.db")
 
     # 3. 从 ~/.niu/memory.json 读取 workspace.path（与其他组件一致）
-    from pathlib import Path
     memory_path = Path.home() / ".niu" / "memory.json"
     try:
         if memory_path.exists():
             with open(memory_path, "r", encoding="utf-8") as f:
                 memory = json.load(f)
             workspace_path = memory.get("workspace", {}).get("path")
-            if workspace_path and Path(workspace_path).exists():
-                return str(Path(workspace_path) / "vectors.db")
-            if workspace_path:
-                raise ValueError(f"workspace.path 指向不存在的目录: {workspace_path}。请检查 memory.json 配置。")
+            if workspace_path and workspace_path.strip():
+                ws = Path(workspace_path)
+                if not ws.is_absolute():
+                    raise ValueError(f"workspace.path 必须是绝对路径: {ws}")
+                # 解析符号链接
+                ws = ws.resolve()
+                if ws.exists() and not ws.is_dir():
+                    raise ValueError(f"workspace.path 指向的不是目录: {ws}")
+                try:
+                    ws.mkdir(parents=True, exist_ok=True)
+                except PermissionError as e:
+                    raise ValueError(f"无权限创建工作区目录: {ws}。请检查权限。") from e
+                except FileExistsError as e:
+                    raise ValueError(f"路径已存在但不是目录（可能是文件）: {ws}") from e
+                return str(ws / "vectors.db")
     except ValueError:
         raise
     except Exception as e:

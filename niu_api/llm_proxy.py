@@ -228,6 +228,10 @@ async def call_llm_via_litellm(
 
     This ensures full SDK path is used.
     """
+    import time
+    start_time = time.time()
+    logger.info(f"[LLM Proxy] call_llm_via_litellm started")
+
     config = get_llm_config()
 
     if not config["apikey"]:
@@ -251,6 +255,10 @@ async def call_llm_via_litellm(
     try:
         # Run in thread to avoid blocking
         def sync_call():
+            import time
+            start_time = time.time()
+            logger.info(f"[LLM Proxy] sync_call started at {start_time}")
+
             gen = session.chat(messages=messages, tools=tools, response_format=response_format)
 
             # Consume generator to get MockResponse
@@ -267,6 +275,9 @@ async def call_llm_via_litellm(
             except StopIteration as e:
                 # Generator returns MockResponse via StopIteration
                 mock_response = e.value
+
+            elapsed = time.time() - start_time
+            logger.info(f"[LLM Proxy] sync_call completed in {elapsed:.2f}s, content_len={len(''.join(chunks))}")
 
             # Extract tool calls from MockResponse
             tool_calls_list = []
@@ -313,6 +324,8 @@ async def call_llm_via_litellm(
             return response
 
         response = await asyncio.wait_for(asyncio.to_thread(sync_call), timeout=180)
+        elapsed = time.time() - start_time
+        logger.info(f"[LLM Proxy] call_llm_via_litellm completed in {elapsed:.2f}s")
         return response
 
     except asyncio.TimeoutError:

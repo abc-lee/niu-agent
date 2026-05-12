@@ -468,12 +468,11 @@ preload_face_model()
 - **`docs/design-self-evolution-system.md` — 自我进化系统设计规范**
 - **`docs/USAGE-self-evolution.md` — 自我进化系统使用指南**
 - `docs/analysis-genericagent-evolution.md` — GenericAgent 进化机制分析
-- `E:\tools\LightRAG`lightrag源码
 
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **niu-agent** (14636 symbols, 23515 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **niu-agent** (15307 symbols, 24506 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
