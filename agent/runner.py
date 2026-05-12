@@ -727,8 +727,29 @@ class NiuRunner:
             f"Habits: {len(interaction_habits)}"
         )
 
-        # Skills
+        # Brain region activation context (uses cached injector)
+        # Apply activation weight BEFORE formatting so weighted scores affect output
         lightrag_skills = lightrag_results.get("skill", [])
+        lightrag_knowledge = lightrag_results.get("knowledge", [])
+        try:
+            _brain_injector = self._get_brain_injector()
+            if _brain_injector is not None:
+                brain_context = _brain_injector.inject_brain_context(context)
+                if brain_context:
+                    parts.append(f"\n## 脑区激活上下文\n{brain_context}")
+                    logger.debug(f"Brain context injected: {len(brain_context)} chars")
+
+                # Apply activation weight to LightRAG search results
+                # lightrag_skills and lightrag_knowledge are list[dict], each has "score" field
+                # Weighting boosts scores for entities in activated regions
+                if lightrag_skills:
+                    lightrag_skills[:] = _brain_injector.apply_activation_weight(lightrag_skills)
+                if lightrag_knowledge:
+                    lightrag_knowledge[:] = _brain_injector.apply_activation_weight(lightrag_knowledge)
+        except Exception as e:
+            logger.debug(f"BrainContextInjector not available: {e}")
+
+        # Skills (after weighting)
         skills_text, seen_names = self._format_lightrag_entities_for_prompt(
             lightrag_skills, "相关技能", seen_names,
         )
@@ -741,8 +762,7 @@ class NiuRunner:
                 "不要仅凭描述猜测技能用法。"
             )
 
-        # Knowledge
-        lightrag_knowledge = lightrag_results.get("knowledge", [])
+        # Knowledge (after weighting)
         knowledge_text, seen_names = self._format_lightrag_entities_for_prompt(
             lightrag_knowledge, "参考知识", seen_names,
         )
@@ -766,25 +786,6 @@ class NiuRunner:
         brain_memories_text = _strip_lightrag_error_lines(brain_memories_text)
         if brain_memories_text:
             parts.append(brain_memories_text)
-
-        # Brain region activation context (uses cached injector)
-        try:
-            _brain_injector = self._get_brain_injector()
-            if _brain_injector is not None:
-                brain_context = _brain_injector.inject_brain_context(context)
-                if brain_context:
-                    parts.append(f"\n## 脑区激活上下文\n{brain_context}")
-                    logger.debug(f"Brain context injected: {len(brain_context)} chars")
-
-                # Apply activation weight to LightRAG search results
-                # lightrag_skills and lightrag_knowledge are list[dict], each has "score" field
-                # Weighting boosts scores for entities in activated regions
-                if lightrag_skills:
-                    lightrag_skills[:] = _brain_injector.apply_activation_weight(lightrag_skills)
-                if lightrag_knowledge:
-                    lightrag_knowledge[:] = _brain_injector.apply_activation_weight(lightrag_knowledge)
-        except Exception as e:
-            logger.debug(f"BrainContextInjector not available: {e}")
 
         injection = "\n".join(parts)
         if injection:
