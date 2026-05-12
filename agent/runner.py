@@ -427,6 +427,15 @@ class NiuRunner:
         # Refresh user memories if dirty
         self._refresh_user_memories(messages)
 
+        # Decay brain region activation levels
+        try:
+            from agent.brain_tools import get_activation_mgr
+            mgr = get_activation_mgr()
+            if mgr is not None:
+                mgr.decay_all()
+        except Exception as e:
+            logger.debug(f"Brain region decay failed: {e}")
+
         # Extract context and re-inject skills/knowledge
         context = self._extract_context_from_messages(messages)
         injection, _ = self._inject_dynamic_resources(context)
@@ -766,6 +775,14 @@ class NiuRunner:
                 if brain_context:
                     parts.append(f"\n## 脑区激活上下文\n{brain_context}")
                     logger.debug(f"Brain context injected: {len(brain_context)} chars")
+
+                # Apply activation weight to LightRAG search results
+                # lightrag_skills and lightrag_knowledge are list[dict], each has "score" field
+                # Weighting boosts scores for entities in activated regions
+                if lightrag_skills:
+                    lightrag_skills[:] = _brain_injector.apply_activation_weight(lightrag_skills)
+                if lightrag_knowledge:
+                    lightrag_knowledge[:] = _brain_injector.apply_activation_weight(lightrag_knowledge)
         except Exception as e:
             logger.debug(f"BrainContextInjector not available: {e}")
 

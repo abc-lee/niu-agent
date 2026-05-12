@@ -21,6 +21,11 @@ from niu_api.internal.region_activation import RegionActivationManager
 
 logger = logging.getLogger(__name__)
 
+# ============== Edge Weight Constants ==============
+
+REINFORCE_DELTA = 0.15  # Edge weight boost per reinforcement (was 0.1)
+MAX_EDGE_WEIGHT = 2.0   # Maximum edge weight allowed (was 1.0)
+
 # ============== Singleton Accessor ==============
 
 _activation_mgr: RegionActivationManager | None = None
@@ -316,7 +321,7 @@ def handle_brain_region_status(include_dark: bool = False) -> str:
 # ============== Tool Dispatch Reinforce ==============
 
 
-def reinforce_on_tool_use(tool_name: str, reinforce_delta: float = 0.1) -> str | None:
+def reinforce_on_tool_use(tool_name: str, reinforce_delta: float = REINFORCE_DELTA) -> str | None:
     """Reinforce brain region when a tool is successfully called.
 
     Also boosts weight of structural edges (_region: prefix) in the
@@ -326,7 +331,7 @@ def reinforce_on_tool_use(tool_name: str, reinforce_delta: float = 0.1) -> str |
 
     Args:
         tool_name: Name of the tool that was just called.
-        reinforce_delta: Edge weight boost value (default 0.1).
+        reinforce_delta: Edge weight boost value (default REINFORCE_DELTA=0.15).
 
     Returns:
         The reinforced region_id, or None.
@@ -348,10 +353,14 @@ def reinforce_on_tool_use(tool_name: str, reinforce_delta: float = 0.1) -> str |
     return region_id
 
 
-def _reinforce_edge_weight(region_id: str, delta: float = 0.1) -> None:
+def _reinforce_edge_weight(region_id: str, delta: float = REINFORCE_DELTA) -> None:
     """Boost weight of structural edges for a brain region node.
 
-    Only boosts edges with _region: prefix keywords.
+    Boosts edges with brain region related prefixes:
+    - _region:contains (region contains members)
+    - _session:* (session related)
+    - brain_region_anchor (region anchor)
+
     Semantic edges (no prefix) are never boosted by tool usage.
     """
     try:
@@ -378,13 +387,17 @@ def _reinforce_edge_weight(region_id: str, delta: float = 0.1) -> None:
         if not neighbors:
             return
 
+        # Brain region related edge keyword prefixes
+        REGION_EDGE_PREFIXES = ("_region:", "_session:", "brain_region_")
+
         for neighbor_id, edge_data in list(neighbors.items()):
             if not isinstance(edge_data, dict):
                 continue
             keywords = edge_data.get("keywords", "")
-            if keywords.startswith("_region:"):
-                old_weight = edge_data.get("weight", 1.0)
-                new_weight = min(1.0, float(old_weight) + delta)
+            # Process all brain region related edges
+            if any(keywords.startswith(prefix) for prefix in REGION_EDGE_PREFIXES):
+                old_weight = edge_data.get("weight", 0.5)
+                new_weight = min(MAX_EDGE_WEIGHT, float(old_weight) + delta)
                 if new_weight > float(old_weight):
                     edge_data["weight"] = new_weight
                     logger.debug(

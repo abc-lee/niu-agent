@@ -188,9 +188,14 @@ def consolidate_brain_regions(
                 except Exception as exc:
                     logger.warning("Failed to fetch members for region %s: %s", region.name, exc)
             activation_mgr.initialize_from_regions(regions)
-            # BUG 3 fix: Set neighbor map for spillover
-            neighbor_map: dict[str, set[str]] = {}
+            # BUG 3 fix: Build neighbor map for spillover based on shared members
+            from niu_api.internal.region_neighbors import build_neighbor_map
+            neighbor_map = build_neighbor_map([
+                {"community_id": r.community_id, "members": r.members}
+                for r in regions
+            ])
             activation_mgr.set_region_neighbors(neighbor_map)
+            logger.info("构建脑区邻居映射: %d 个区域有邻居", len(neighbor_map))
 
         return {
             "status": "ok",
