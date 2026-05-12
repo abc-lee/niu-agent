@@ -104,25 +104,47 @@ class BrainContextInjector:
             for member in members:
                 entity_to_region[member] = region_name
 
-        # Step 2: Simple keyword matching to activate regions
-        # This is a lightweight heuristic that doesn't require LLM calls.
-        # For more sophisticated matching, consider vector similarity search.
+        # Step 1: Query LightRAG to find hit entities (vector search)
         hit_entities: list[str] = []
-        query_lower = query_context.lower()
-        for entity_name in entity_to_region.keys():
-            if entity_name.lower() in query_lower or query_lower in entity_name.lower():
-                hit_entities.append(entity_name)
+        region_knowledge: dict[str, str] = {}  # region_label -> knowledge text
 
+        try:
+            # Program auto-call: keywords=[query_context] skips LLM extraction.
+            # The full context as keyword is a deliberate trade-off: it avoids
+            # 5-30s LLM latency per turn. Vector search still returns results
+            # by semantic similarity; keywords only boost graph-traversal matches.
+            query_result = self._adapter.query_data(
+                query_context, mode="local", top_k=20, keywords=[query_context]
+            )
+
+            if query_result and isinstance(query_result, dict):
+                data = query_result.get("data", {})
+                if not data:
+                    data = query_result
+                entities = data.get("entities", [])
+                hit_entities = [
+                    e.get("entity_name", e.get("id", ""))
+                    for e in entities
+                    if e.get("entity_name") or e.get("id")
+                ]
+                # Extract knowledge snippets per region
+                for entity in entities:
+                    entity_name = entity.get("entity_name", entity.get("id", ""))
+                    region_label = entity_to_region.get(entity_name, "")
+                    if region_label and region_label not in region_knowledge:
+                        desc = entity.get("description", "")
+                        if desc:
+                            region_knowledge[region_label] = desc
+        except Exception as e:
+            logger.warning("脑区注入查询失败: %s", e)
+
+        # Step 2: Activate regions based on hit entities
         self._activation_mgr.activate_regions(
             hit_entities, entity_to_region
         )
 
-        # Step 3: Decay all regions
-        self._activation_mgr.decay_all()
-
-        # Step 4: Format injection content by activation level
-        # Note: region_knowledge is empty since we don't call LightRAG query
-        return self._format_injection_content({})
+        # Step 3: Format injection content with region_knowledge
+        return self._format_injection_content(region_knowledge)
 
     # ------------------------------------------------------------------
     # Formatting: region map (always injected)
