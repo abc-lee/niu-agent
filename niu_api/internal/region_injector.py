@@ -138,12 +138,12 @@ class BrainContextInjector:
         except Exception as e:
             logger.warning("脑区注入查询失败: %s", e)
 
-        # Step 2: Activate regions based on hit entities
+        # Step 3: Activate regions based on hit entities
         self._activation_mgr.activate_regions(
             hit_entities, entity_to_region
         )
 
-        # Step 3: Format injection content with region_knowledge
+        # Step 4: Format injection content with region_knowledge
         return self._format_injection_content(region_knowledge)
 
     # ------------------------------------------------------------------
