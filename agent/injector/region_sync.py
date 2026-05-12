@@ -287,16 +287,16 @@ class RegionSync:
                 )
             activation_mgr.initialize_from_regions(all_regions)
 
-            # BUG 3 fix: Set neighbor map for spillover activation.
-            # TODO: Compute actual neighbor map from LightRAG graph edges.
-            # Two regions are neighbors if they share edges between their
-            # member entities. For now, set empty map — spillover will be
-            # non-functional until edge data is computed during sync.
-            neighbor_map: dict[str, set[str]] = {}
+            # BUG 3 fix: Build neighbor map for spillover based on shared members
+            from niu_api.internal.region_neighbors import build_neighbor_map
+            neighbor_map = build_neighbor_map([
+                {"community_id": r.community_id, "members": r.members}
+                for r in all_regions
+            ])
             activation_mgr.set_region_neighbors(neighbor_map)
             logger.debug(
-                "[RegionSync] Neighbor map set (empty — spillover requires "
-                "graph edge data from future sync)"
+                "[RegionSync] Neighbor map set: %d regions have neighbors",
+                len(neighbor_map)
             )
 
             set_activation_mgr(activation_mgr)
@@ -338,6 +338,14 @@ class RegionSync:
                         source_state = activation_mgr.get_region_state(source_id)
                         target_state = activation_mgr.get_region_state(target_id)
                         if source_state is None or target_state is None:
+                            continue
+
+                        # Protect pre-set brain regions (region_id is empty for pre-set regions)
+                        if not source_state.region_id:
+                            logger.debug("[RegionSync] 跳过预置脑区合并: %s", source_state.label)
+                            continue
+                        if not target_state.region_id:
+                            logger.debug("[RegionSync] 跳过预置脑区作为合并目标: %s", target_state.label)
                             continue
 
                         # Merge KG nodes via adapter — use full region names, not labels

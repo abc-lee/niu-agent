@@ -99,7 +99,7 @@ class CommunityDetector:
 
     def detect_communities(
         self, resolution: float = 1.0, min_graph_size: int = 50,
-        min_community_size: int = 10,
+        min_community_size: int = 100,  # Threshold raised from 10 to 100
     ) -> CommunityDetectionResult:
         """对 LightRAG 知识图谱运行 Leiden 社区检测
 
@@ -116,7 +116,8 @@ class CommunityDetector:
             resolution: Leiden 分辨率参数，值越大社区越小、越多
                 （小图谱会被自动降低为 0.5）
             min_graph_size: 图谱最小节点数，低于此值返回空结果（默认 50）
-            min_community_size: 社区最小成员数，低于此值的社区被过滤（默认 10）
+            min_community_size: 社区最小成员数，低于此值的社区被过滤（默认 100）
+                Raised from 10 to reduce noise from small communities.
 
         Returns:
             CommunityDetectionResult 包含所有检测结果

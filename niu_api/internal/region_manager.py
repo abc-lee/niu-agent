@@ -242,7 +242,7 @@ class RegionManager:
                 "tgt_id": region_name,
                 "keywords": ANCHOR_RELATION,
                 "description": f"Brain region anchor: {region_label}",
-                "weight": 1.0,
+                "weight": 0.5,  # Unified initial weight (was 1.0)
                 "source_id": REGION_SOURCE_ID,
                 "file_path": REGION_FILE_PATH,
             })
@@ -254,7 +254,7 @@ class RegionManager:
                     "tgt_id": member,
                     "keywords": BELONGS_TO_RELATION,
                     "description": f"{member} belongs to region {region_label}",
-                    "weight": 0.8,
+                    "weight": 0.5,  # Unified initial weight (was 0.8)
                     "source_id": REGION_SOURCE_ID,
                     "file_path": REGION_FILE_PATH,
                 })
@@ -541,7 +541,7 @@ class RegionManager:
 
     def dissolve_shrunk_regions(
         self,
-        shrink_threshold: int = 3,
+        shrink_threshold: int = 100,  # Threshold raised from 3 to 100
         shrink_rounds: int = 3,
     ) -> list[str]:
         """Dissolve regions that have been shrinking for multiple sync cycles.
@@ -555,7 +555,8 @@ class RegionManager:
         as ``brain_meta_shrink_count:N``.
 
         Args:
-            shrink_threshold: Minimum members before region is "shrunk" (default 3)
+            shrink_threshold: Minimum members before region is "shrunk" (default 100)
+                Raised from 3 to reduce noise from small region dissolution.
             shrink_rounds: Consecutive shrunk cycles before dissolution (default 3)
 
         Returns:
@@ -623,7 +624,7 @@ class RegionManager:
                             "tgt_id": member,
                             "keywords": BELONGS_TO_RELATION,
                             "description": f"{member} belongs to region {target_region.label}",
-                            "weight": 0.8,
+                            "weight": 0.5,  # Unified initial weight
                             "source_id": REGION_SOURCE_ID,
                             "file_path": REGION_FILE_PATH,
                         })
@@ -891,7 +892,7 @@ class RegionManager:
             detector = CommunityDetector(self._adapter)
             partition = detector.detect_communities(
                 resolution=1.0,
-                min_community_size=10,
+                min_community_size=100,  # Threshold raised from 10 to 100
             )
             if partition is None or partition.total_regions < 1:
                 return {"regions_created": 0, "regions_removed": 0, "regions_updated": 0, "edges_disconnected": 0}
@@ -926,7 +927,12 @@ class RegionManager:
         decay_factor: float = 0.5,
         threshold: float = 0.1,
     ) -> int:
-        """Decay and disconnect low-weight structural edges (_region: and _session: prefixes).
+        """Decay and disconnect low-weight structural edges.
+
+        Handles all brain region related edges:
+        - _region:contains (region contains members)
+        - _session:* (session related)
+        - brain_region_anchor (region anchor)
 
         Args:
             regions: List of BrainRegionInfo to process.
@@ -947,6 +953,9 @@ class RegionManager:
             kg = rag.chunk_entity_relation_graph
             if kg is None:
                 return 0
+
+            # Brain region related edge keyword prefixes
+            REGION_EDGE_PREFIXES = ("_region:", "_session:", "brain_region_")
 
             # NOTE: graph_write_lock only synchronizes with graph_read_lock holders.
             # call_async-based writes (ainsert_custom_kg, adelete_by_entity, etc.)
@@ -971,8 +980,9 @@ class RegionManager:
                         if not isinstance(edge_data, dict):
                             continue
                         keywords = edge_data.get("keywords", "")
-                        if keywords.startswith("_region:") or keywords.startswith("_session:"):
-                            old_weight = float(edge_data.get("weight", 1.0))
+                        # Process all brain region related edges
+                        if any(keywords.startswith(prefix) for prefix in REGION_EDGE_PREFIXES):
+                            old_weight = float(edge_data.get("weight", 0.5))
                             new_weight = old_weight * decay_factor
                             if new_weight < threshold:
                                 try:
@@ -991,19 +1001,40 @@ class RegionManager:
 # ── Default Region Definitions ──────────────────────────────────
 
 DEFAULT_REGIONS: dict[str, dict] = {
+    # Core regions (by data source, always created)
     "聊天历史": {
         "description": "日常对话中提炼的偏好、技能和经验记忆",
+        "priority": "core",
     },
     "文档库": {
         "description": "用户导入的文档和资料，经解析后入库的知识",
+        "priority": "core",
     },
     "知识体系": {
         "description": "系统化组织的概念、关系和理论体系",
+        "priority": "core",
+    },
+    # Category regions (by knowledge domain, clear boundaries)
+    "人际关系": {
+        "description": "人物实体、关系网络、社交图谱",
+        "priority": "category",
+    },
+    "工作事务": {
+        "description": "工作相关的项目、任务、决策记录",
+        "priority": "category",
+    },
+    "生活事务": {
+        "description": "日常生活相关的日程、健康、财务",
+        "priority": "category",
     },
 }
 
 
-def create_default_regions(adapter: Any, ingester: Any) -> dict:
+def create_default_regions(
+    adapter: Any,
+    ingester: Any,
+    include_category: bool = True,
+) -> dict:
     """Create default brain region master nodes.
 
     If a region already exists, skip it. Each region is linked to
@@ -1012,6 +1043,7 @@ def create_default_regions(adapter: Any, ingester: Any) -> dict:
     Args:
         adapter: LightRAGAdapter instance.
         ingester: LightRAGIngester instance.
+        include_category: Whether to create category regions (default True).
 
     Returns:
         Dict with created and existing counts.
@@ -1027,6 +1059,10 @@ def create_default_regions(adapter: Any, ingester: Any) -> dict:
     existing_regions = get_brain_regions()
 
     for region_label, config in DEFAULT_REGIONS.items():
+        # Skip category regions unless explicitly requested
+        if config.get("priority") == "category" and not include_category:
+            continue
+
         region_name = f"{region_label}{REGION_SUFFIX}"
 
         # Check if region already exists (direct graph read, no LLM)
@@ -1075,3 +1111,111 @@ def create_default_regions(adapter: Any, ingester: Any) -> dict:
             return {"created": 0, "existing": existing}
 
     return {"created": created, "existing": existing}
+
+
+def assign_entities_to_default_regions(
+    adapter: Any,
+    entity_keywords: dict[str, list[str]] | None = None,
+) -> dict:
+    """Assign existing entities to default brain regions based on keywords.
+
+    This is a one-time operation to populate default regions with existing
+    entities. After this, entities will naturally accumulate in regions
+    through normal knowledge graph operations.
+
+    Args:
+        adapter: LightRAGAdapter instance.
+        entity_keywords: Optional mapping of entity_name -> keywords for
+            precise matching. If not provided, uses heuristic keyword matching.
+
+    Returns:
+        Dict with assigned counts per region.
+    """
+    from niu_api.internal.lightrag_manager import get_brain_regions
+
+    existing_regions = get_brain_regions()
+    if not existing_regions:
+        return {"assigned": 0, "regions": 0}
+
+    rag = adapter._get_rag()
+    if rag is None:
+        return {"assigned": 0, "regions": 0}
+
+    kg = rag.chunk_entity_relation_graph
+    if kg is None:
+        return {"assigned": 0, "regions": 0}
+
+    # Region keyword mapping for heuristic matching
+    REGION_KEYWORDS = {
+        "聊天历史脑区": ["偏好", "习惯", "设置", "配置", "喜欢", "想要"],
+        "文档库脑区": ["文档", "文件", "PDF", "Word", "Markdown", "笔记"],
+        "知识体系脑区": ["概念", "理论", "方法", "原理", "定义", "技术"],
+        "人际关系脑区": ["人物", "家人", "朋友", "同事", "联系人", "人名"],
+        "工作事务脑区": ["项目", "任务", "会议", "决策", "工作", "进度"],
+        "生活事务脑区": ["日程", "健康", "财务", "旅行", "生活", "日常"],
+    }
+
+    assigned_counts: dict[str, int] = {}
+    all_relationships: list[dict] = []
+
+    # Iterate all entity nodes
+    for node_id, node_data in kg._graph.nodes(data=True):
+        if not isinstance(node_data, dict):
+            continue
+        entity_name = node_data.get("entity_name", node_id)
+        entity_desc = node_data.get("description", "")
+
+        # Skip region nodes themselves
+        if entity_name.endswith("脑区"):
+            continue
+
+        # Matching logic: keyword matching + description similarity
+        best_region = None
+        best_score = 0.0
+
+        for region_name, keywords in REGION_KEYWORDS.items():
+            if region_name not in existing_regions:
+                continue
+
+            # Keyword matching
+            score = 0.0
+            for kw in keywords:
+                if kw in entity_name or kw in entity_desc:
+                    score += 1.0
+
+            if score > best_score:
+                best_score = score
+                best_region = region_name
+
+        # If matched, create belongs_to relation
+        if best_region and best_score > 0:
+            all_relationships.append({
+                "src_id": best_region,
+                "tgt_id": entity_name,
+                "keywords": BELONGS_TO_RELATION,
+                "description": f"{entity_name} 属于 {best_region}",
+                "weight": 0.5,
+                "source_id": REGION_SOURCE_ID,
+                "file_path": REGION_FILE_PATH,
+            })
+            assigned_counts[best_region] = assigned_counts.get(best_region, 0) + 1
+
+    # Batch inject relations
+    if all_relationships:
+        try:
+            from niu_api.internal.lightrag_ingester import LightRAGIngester
+            ingester = LightRAGIngester()
+            ingester.inject_custom_kg(
+                entities=[],
+                relationships=all_relationships,
+                chunks=[],
+                source_id=REGION_SOURCE_ID,
+            )
+            logger.info(
+                "批量注入实体-脑区关系: %d 条",
+                len(all_relationships),
+            )
+        except Exception as e:
+            logger.warning(f"批量注入实体-脑区关系失败: {e}")
+
+    return {"assigned": sum(assigned_counts.values()), "regions": len(assigned_counts)}
