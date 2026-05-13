@@ -357,23 +357,6 @@ async def chat_sync(request: ChatRequest) -> ChatResponse:
         # Persist assistant response to database
         message_id = None
         if full_reply.strip():
-            # 程序化附加 kg 元数据到 assistant 消息
-            # 从子 Agent 的工具调用中提取 kg_entities/kg_rename，确保 Entity Extractor/Dream Evolver 一定能看到
-            from agent.subagent import get_pending_kg_metadata
-            pending_kg = get_pending_kg_metadata()
-            if pending_kg:
-                kg_lines = []
-                for km in pending_kg:
-                    if "kg_entities" in km and km["kg_entities"]:
-                        entities = km["kg_entities"]
-                        entity_strs = [f"{e.get('entity_name', '?')}({e.get('entity_type', '?')})" for e in entities]
-                        kg_lines.append(f"图谱实体：{', '.join(entity_strs)}")
-                    if "kg_rename" in km and km["kg_rename"]:
-                        kg_lines.append(km["kg_rename"])
-                if kg_lines:
-                    kg_block = "\n".join(kg_lines)
-                    full_reply = full_reply.rstrip() + "\n\n" + kg_block
-
             message_id = await store.add_message(role="assistant", content=full_reply)
             await notify_new_message(message_id, "assistant", full_reply)
 
