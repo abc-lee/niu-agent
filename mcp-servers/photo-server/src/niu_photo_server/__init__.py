@@ -1875,6 +1875,7 @@ def ingest_photo(file_path: str, category: str | None = None) -> dict:
                 "status": "error",
                 "error_code": "FILE_NOT_FOUND",
                 "message": f"File not found: {file_path}",
+                "kg_entities": [],
             }
 
         # Get default category from preferences
@@ -2340,6 +2341,7 @@ def merge_persons(person_a_id: str, person_b_id: str) -> dict:
                 "status": "error",
                 "error_code": "PERSON_NOT_FOUND",
                 "message": "One or both persons not found",
+                "kg_rename": None,
             }
 
         # Find person_a and person_b
@@ -2352,6 +2354,7 @@ def merge_persons(person_a_id: str, person_b_id: str) -> dict:
                 "status": "error",
                 "error_code": "PERSON_NOT_FOUND",
                 "message": "One or both persons not found",
+                "kg_rename": None,
             }
 
         # Keep person_a's name
@@ -2475,6 +2478,7 @@ def merge_persons(person_a_id: str, person_b_id: str) -> dict:
             raise
 
         # 同步 LightRAG：更新目标实体描述，合并源实体关系到目标实体
+        kg_synced = False
         try:
             from agent.tool_registry import get_registry
 
@@ -2508,6 +2512,7 @@ def merge_persons(person_a_id: str, person_b_id: str) -> dict:
                         source_entities=[kg_name_b],
                         target_entity=kg_name_a,
                     )
+                    kg_synced = True
                 logger.info(f"[MERGE_PERSONS] Merged KG entity {kg_name_b} into {kg_name_a}")
                 # M5: After merging, if both source entities had edges to the same
                 # third-party entity, duplicate edges may exist. Dedup requires
@@ -2528,6 +2533,7 @@ def merge_persons(person_a_id: str, person_b_id: str) -> dict:
             "name": name_a if name_a else auto_label_a,
             "photo_count": merged_count,
             "deleted_person_id": person_b_id,
+            "kg_rename": f"知识图谱实体名从「{kg_name_b}」改为「{kg_name_a}」" if kg_synced else None,
         }
 
     except Exception as e:
@@ -2541,6 +2547,7 @@ def merge_persons(person_a_id: str, person_b_id: str) -> dict:
             "status": "error",
             "error_code": "UNKNOWN_ERROR",
             "message": str(e),
+            "kg_rename": None,
         }
 
 
@@ -3033,6 +3040,7 @@ def ingest_document(file_path: str, category: str = "其他", mode: str = "copy"
                 "error_code": "FILE_NOT_FOUND",
                 "message": f"文件不存在: {file_path}",
                 "suggestion": "请检查文件路径是否正确",
+                "kg_entities": [],
             }
 
         # 自动检测文件类型：目录 → 照片 → 文档
@@ -3063,6 +3071,7 @@ def ingest_document(file_path: str, category: str = "其他", mode: str = "copy"
                     "error_code": "DIRECTORY_NO_PHOTOS",
                     "message": f"目录中没有找到照片文件: {file_path}",
                     "suggestion": "请确认目录中包含照片（.jpg, .png 等）",
+                    "kg_entities": [],
                 }
 
         if is_photo(str(source)):
@@ -3117,6 +3126,7 @@ def ingest_document(file_path: str, category: str = "其他", mode: str = "copy"
                 "content_length": content_length,
                 "lightrag": "inserted" if lightrag_result and lightrag_result.get("status") in ("success", "ok") else "skipped",
                 "note": "文件已存在，已补全 LightRAG 写入",
+                "kg_entities": [],
             }
 
         logger.info(f"[INGEST] 执行文件操作: {mode}")
@@ -3175,6 +3185,7 @@ def ingest_document(file_path: str, category: str = "其他", mode: str = "copy"
             "lightrag": lr_status,
             "lightrag_message": lr_msg or None,
             "note": "文件已存储，正在异步分析并存入知识图谱，处理时间可能较长，请耐心等待",
+            "kg_entities": [],
         }
 
     except PermissionError as e:
@@ -3184,6 +3195,7 @@ def ingest_document(file_path: str, category: str = "其他", mode: str = "copy"
             "error_code": "PERMISSION_DENIED",
             "message": f"无权限: {e}",
             "suggestion": "请检查文件或目录权限",
+            "kg_entities": [],
         }
     except Exception as e:
         logger.exception(f"[INGEST] 失败: {e}")
@@ -3192,6 +3204,7 @@ def ingest_document(file_path: str, category: str = "其他", mode: str = "copy"
             "error_code": "UNKNOWN_ERROR",
             "message": str(e),
             "suggestion": "请检查日志获取详细信息",
+            "kg_entities": [],
         }
 
 
