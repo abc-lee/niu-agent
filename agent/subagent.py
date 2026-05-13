@@ -246,18 +246,6 @@ def get_subagent_mcp_tools_schema(agent_name: str) -> List[Dict]:
     return schema
 
 
-# 全局变量：待注入的 kg 元数据（call_subagent 写入，compat.py 读取后清空）
-_pending_kg_metadata: list = []
-
-
-def get_pending_kg_metadata() -> list:
-    """获取并清空待注入的 kg 元数据"""
-    global _pending_kg_metadata
-    data = _pending_kg_metadata[:]
-    _pending_kg_metadata.clear()
-    return data
-
-
 def call_subagent(
     agent_name: str,
     task: str,
@@ -360,31 +348,9 @@ def call_subagent(
         logger.warning(f"[SubAgent] {agent_name}: Context overflow at {data.get('tokens_used', 0)} tokens")
         return json.dumps(overflow_report, ensure_ascii=False)
 
-    # 确定最终返回值（优先从 return 值提取结构化结果，否则回退到 result_text）
+    # 优先从 return 值提取结构化结果
     extracted = _extract_result_from_return_value(return_value)
-    final_result = extracted if extracted is not None else result_text
+    if extracted is not None:
+        return extracted
 
-    # 程序化附加 kg 元数据（不依赖 LLM 输出格式）
-    # 从 handler 的工具调用历史中提取 kg_entities/kg_rename，确保下游 Agent 一定能看到
-    kg_metadata = getattr(handler, '_kg_metadata', [])
-    if kg_metadata:
-        kg_lines = []
-        for km in kg_metadata:
-            if "kg_entities" in km and km["kg_entities"]:
-                entities = km["kg_entities"]
-                entity_strs = [f"{e.get('entity_name', '?')}({e.get('entity_type', '?')})" for e in entities]
-                kg_lines.append(f"图谱实体：{', '.join(entity_strs)}")
-            if "kg_rename" in km and km["kg_rename"]:
-                kg_lines.append(km["kg_rename"])
-        if kg_lines:
-            kg_block = "\n".join(kg_lines)
-            if final_result:
-                final_result = final_result.rstrip() + "\n\n" + kg_block
-            else:
-                final_result = kg_block
-            # 同时写入全局变量，让 compat.py 在存入 assistant 消息时附加
-            # 这样 Entity Extractor/Dream Evolver 一定能看到实体名
-            global _pending_kg_metadata
-            _pending_kg_metadata.extend(kg_metadata)
-
-    return final_result
+    return result_text
