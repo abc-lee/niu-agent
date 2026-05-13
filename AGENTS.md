@@ -675,7 +675,7 @@ toolMappings, err := registry.BuildToolMappings(ctx, append(agent.Tools, append(
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **niu-agent** (15672 symbols, 25133 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **niu-agent** (15676 symbols, 25134 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
