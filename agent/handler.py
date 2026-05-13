@@ -269,6 +269,7 @@ class NiuHandler(BaseHandler):
 
         # P2-1: 工具调用历史追踪（用于重复检测）
         self._recent_tool_calls: list[str] = []
+        self._kg_metadata: list = []  # 记录 MCP 工具返回的 kg_entities/kg_rename
 
     # ========== 工作记忆机制 ==========
 
@@ -904,6 +905,15 @@ class NiuHandler(BaseHandler):
                                 runner._memory_dirty.set()
                         except Exception as e:
                             logger.debug(f"Memory dirty flag set failed: {e}")
+                    # 记录 kg 元数据（kg_entities/kg_rename）— 仅子 Agent 需要
+                    if getattr(self, '_is_subagent', False) and isinstance(result, dict) and ("kg_entities" in result or "kg_rename" in result):
+                        kg_data = {"_tool": real_tool_name}
+                        if result.get("kg_entities"):
+                            kg_data["kg_entities"] = result["kg_entities"]
+                        if result.get("kg_rename"):
+                            kg_data["kg_rename"] = result["kg_rename"]
+                        if len(kg_data) > 1:  # 除了 _tool 还有其他字段
+                            self._kg_metadata.append(kg_data)
                     return StepOutcome(result, next_prompt=f"工具调用成功。请向用户简洁汇报结果。")
                 else:
                     return StepOutcome(result, next_prompt="Tool execution returned an error. Read the error message above and adjust accordingly.")
@@ -984,6 +994,15 @@ class NiuHandler(BaseHandler):
                                 runner._memory_dirty.set()
                         except Exception as e:
                             logger.debug(f"Memory dirty flag set failed: {e}")
+                    # 记录 kg 元数据（kg_entities/kg_rename）— 仅子 Agent 需要
+                    if getattr(self, '_is_subagent', False) and ("kg_entities" in result or "kg_rename" in result):
+                        kg_data = {"_tool": tool_name}
+                        if result.get("kg_entities"):
+                            kg_data["kg_entities"] = result["kg_entities"]
+                        if result.get("kg_rename"):
+                            kg_data["kg_rename"] = result["kg_rename"]
+                        if len(kg_data) > 1:  # 除了 _tool 还有其他字段
+                            self._kg_metadata.append(kg_data)
                     # 成功执行，提示LLM向用户汇报
                     result_summary = json.dumps(result, ensure_ascii=False)[:500]
                     return StepOutcome(result, next_prompt=f"工具调用成功。请向用户简洁汇报结果：{result_summary}")
