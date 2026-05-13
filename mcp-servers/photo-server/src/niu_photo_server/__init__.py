@@ -627,7 +627,7 @@ def sync_photo_to_kg(file_path: str, abstract: str, detected_persons: list, forc
             row = cursor.fetchone()
             if row and row[0] == 1:
                 logger.info(f"[KG] Photo {file_path} already synced to KG, skipping")
-                return {"status": "skipped", "reason": "already synced"}
+                return {"status": "skipped", "reason": "already synced", "kg_entities": []}
         except Exception as e:
             logger.warning(f"[KG] kg_synced check failed for {file_path}: {e}")
 
@@ -664,7 +664,7 @@ def _do_sync_photo_to_kg_sync(file_path: str, abstract: str, detected_persons: l
         custom_kg_fn = registry.get("lightrag-server/lightrag_insert_custom_kg")
         if not custom_kg_fn:
             logger.warning("[KG] lightrag_insert_custom_kg not available in registry")
-            return {"status": "error", "reason": "lightrag_insert_custom_kg not available"}
+            return {"status": "error", "reason": "lightrag_insert_custom_kg not available", "kg_entities": []}
 
         # --- Step 1: 注入实体 + 关系（照片 + 人物 + features），带 chunk 关联 source_id ---
         entity_result = custom_kg_fn(
@@ -679,7 +679,7 @@ def _do_sync_photo_to_kg_sync(file_path: str, abstract: str, detected_persons: l
         )
         if not entity_result or entity_result.get("status") != "ok":
             logger.warning(f"[KG] Step1 entity+relationship injection failed for {file_path}: {entity_result}")
-            return {"status": "error", "reason": f"Step1 entity+relationship injection failed: {entity_result}"}
+            return {"status": "error", "reason": f"Step1 entity+relationship injection failed: {entity_result}", "kg_entities": []}
         logger.info(f"[KG] Step1 ok: {len(data['entities'])} entities + {len(data['relationships'])} relationships injected for {normalized_stem}")
 
         # --- Step 2: ainsert 让 LLM 处理文本，建立语义连接 ---
@@ -720,11 +720,17 @@ def _do_sync_photo_to_kg_sync(file_path: str, abstract: str, detected_persons: l
         except Exception as e:
             logger.warning(f"[KG] Failed to mark kg_synced for {file_path}: {e}")
 
-        return {"status": "success", "doc_uri": file_path}
+        # Build entity list for return value (so downstream agents know what's in the graph)
+        kg_entities = [
+            {"entity_name": e["entity_name"], "entity_type": e["entity_type"]}
+            for e in data["entities"]
+        ]
+
+        return {"status": "success", "doc_uri": file_path, "kg_entities": kg_entities}
 
     except Exception as e:
         logger.warning(f"[KG] Photo sync failed: {e}")
-        return {"status": "error", "reason": str(e)}
+        return {"status": "error", "reason": str(e), "kg_entities": []}
 
 
 
@@ -2032,6 +2038,7 @@ def ingest_photo(file_path: str, category: str | None = None) -> dict:
         # 8. 同步到知识图谱（失败不影响照片入库）
         final_path_resolved = str(Path(final_path).resolve())
         kg_result = sync_photo_to_kg(final_path_resolved, abstract, detected_persons)
+        kg_entities = kg_result.get("kg_entities", []) if isinstance(kg_result, dict) else []
 
         # 9. Unload face model to release memory (optional, for single photo)
         # For batch processing, keep model loaded
@@ -2051,6 +2058,7 @@ def ingest_photo(file_path: str, category: str | None = None) -> dict:
             "abstract": abstract,
             "exif": exif,
             "lightrag_sync": kg_result,
+            "kg_entities": kg_entities,
         }
 
     except Exception as e:
@@ -2072,6 +2080,7 @@ def ingest_photo(file_path: str, category: str | None = None) -> dict:
             "status": "error",
             "error_code": "UNKNOWN_ERROR",
             "message": str(e),
+            "kg_entities": [],
         }
 
 
@@ -2300,6 +2309,7 @@ def name_person(person_id: str, name: str) -> dict:
             "name": name,
             "auto_label": auto_label,
             "kg_synced": kg_synced,
+            "kg_rename": f"知识图谱实体名从「{source_entity}」改为「{name}」" if kg_synced else None,
         }
 
     except Exception as e:
@@ -2308,6 +2318,7 @@ def name_person(person_id: str, name: str) -> dict:
             "status": "error",
             "error_code": "UNKNOWN_ERROR",
             "message": str(e),
+            "kg_rename": None,
         }
 
 
