@@ -307,6 +307,41 @@ def format_resources_for_prompt(results: list, title: str = "相关资源") -> s
     return "\n".join(lines)
 
 
+def _clean_stream_output(text: str) -> str:
+    """清理流式输出中的调试标记和多余空行"""
+    text = re.sub(r"\n*\*\*LLM Running \(Turn \d+\) \.\.\.\*\*\n*", "\n", text)
+    text = re.sub(r"\n*🛠️ \*\*正在调用工具:[\s\S]*?````\n*", "\n", text)
+    text = re.sub(r"<summary>[\s\S]*?</summary>\n*", "", text, flags=re.IGNORECASE)
+
+    # 清理内部工具调用标签（LiteLLM 调试输出，不应显示给用户）
+    text = re.sub(r"<tool_use>.*?</tool_use>", "", text, flags=re.DOTALL)
+
+    # 清理 LLM 输出的结构化标签
+    text = re.sub(r"</?text>\n*", "", text)
+    text = re.sub(r"</?response>\n*", "", text)
+    text = re.sub(r"</?content>\n*", "", text)
+
+    # 清理空代码块
+    text = re.sub(r"`{6,}\n*", "", text)
+    text = re.sub(r"`{5}\n*", "", text)
+    text = re.sub(r"`{4}\n*", "", text)
+    text = re.sub(r"```\s*```\n*", "", text)
+
+    # 清理开头和结尾的单独反引号
+    text = re.sub(r"^```\s*\n", "", text)
+    text = re.sub(r"^```\s*$", "", text, flags=re.MULTILINE)
+    text = re.sub(r"\n```\s*$", "", text)
+    text = re.sub(r"```\s*$", "", text)
+
+    # 清理中间的孤立反引号行
+    text = re.sub(r"\n```\s*\n", "\n", text)
+    text = re.sub(r"\n```\s*", "\n", text)
+
+    # 清理连续空行
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
 class NiuRunner:
     """
     Niu Agent Runner
@@ -905,40 +940,8 @@ class NiuRunner:
                     logger.error(f"Failed to extract return_value data: {e}")
                     full_resp = ""
 
-        # 清理 CLI 调试输出（含前后相邻换行，避免清除后残留空白行）
-        full_resp = re.sub(r"\n*\*\*LLM Running \(Turn \d+\) \.\.\.\*\*\n*", "\n", full_resp)
-        full_resp = re.sub(r"\n*🛠️ \*\*正在调用工具:[\s\S]*?````\n*", "\n", full_resp)
-        full_resp = re.sub(r"<summary>[\s\S]*?</summary>\n*", "", full_resp, flags=re.IGNORECASE)
-
-        # 清理内部工具调用标签（LiteLLM 调试输出，不应显示给用户）
-        full_resp = re.sub(r"<tool_use>.*?</tool_use>", "", full_resp, flags=re.DOTALL)
-
-        # 清理 LLM 输出的结构化标签（如 <text>, </text>）
-        full_resp = re.sub(r"</?text>\n*", "", full_resp)
-        full_resp = re.sub(r"</?response>\n*", "", full_resp)
-        full_resp = re.sub(r"</?content>\n*", "", full_resp)
-
-        # 清理空代码块（可能来自 LLM 响应）
-        # 先处理多个连续反引号的情况
-        full_resp = re.sub(r"`{6,}\n*", "", full_resp)  # 6个及以上反引号
-        full_resp = re.sub(r"`{5}\n*", "", full_resp)  # 5个反引号
-        full_resp = re.sub(r"`{4}\n*", "", full_resp)  # 4个反引号
-        full_resp = re.sub(r"```\s*```\n*", "", full_resp)  # 连续的空代码块
-
-        # 清理开头和结尾的单独反引号（无内容的代码块标记）
-        # 开头的 ``` 后面没有内容或直接换行
-        full_resp = re.sub(r"^```\s*\n", "", full_resp)
-        full_resp = re.sub(r"^```\s*$", "", full_resp, flags=re.MULTILINE)
-        # 结尾的 ```
-        full_resp = re.sub(r"\n```\s*$", "", full_resp)
-        full_resp = re.sub(r"```\s*$", "", full_resp)
-
-        # 清理中间的孤立反引号行（整行只有反引号）
-        full_resp = re.sub(r"\n```\s*\n", "\n", full_resp)
-        full_resp = re.sub(r"\n```\s*", "\n", full_resp)
-
-        # 清理连续空行（超过1个空行变成1个）
-        full_resp = re.sub(r"\n{3,}", "\n\n", full_resp)
+        # 清理流式输出中的调试标记
+        full_resp = _clean_stream_output(full_resp)
 
         # 对话结束后工具衰减已由 _on_turn_end 每轮执行，此处不再重复
 
