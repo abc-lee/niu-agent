@@ -2,6 +2,27 @@ import json, logging, re, sys
 from dataclasses import dataclass
 from typing import Any, Optional
 
+_VALID_STREAM_TYPES = ("reply", "tool_marker", "system")
+
+
+@dataclass
+class StreamEvent:
+    type: str
+    content: str
+
+    def __post_init__(self):
+        if self.type not in _VALID_STREAM_TYPES:
+            raise ValueError(f"Invalid StreamEvent type: {self.type!r}, must be one of {_VALID_STREAM_TYPES}")
+
+    def __str__(self):
+        return self.content
+
+    def __add__(self, other):
+        if isinstance(other, str):
+            return self.content + other
+        return NotImplemented
+
+
 logger = logging.getLogger(__name__)
 
 
