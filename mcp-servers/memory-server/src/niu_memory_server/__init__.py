@@ -341,7 +341,7 @@ def get_tool_definitions() -> list[Tool]:
 # ============================================================================
 
 
-async def remember_handler(
+def remember_handler(
     content: str,
     memory_type: str,
     metadata: Optional[Dict[str, Any]] = None,
@@ -360,7 +360,7 @@ async def remember_handler(
     }
 
 
-async def recall_handler(
+def recall_handler(
     query: str, limit: int = 5, memory_type: Optional[str] = None, level: str = "l1"
 ) -> list[dict]:
     """检索相关记忆"""
@@ -380,7 +380,7 @@ async def recall_handler(
     return results
 
 
-async def update_memory_handler(
+def update_memory_handler(
     memory_id: str, content: str, metadata: Optional[Dict[str, Any]] = None
 ) -> dict:
     """更新记忆"""
@@ -400,7 +400,7 @@ async def update_memory_handler(
         }
 
 
-async def get_memory_stats_handler() -> dict:
+def get_memory_stats_handler() -> dict:
     """获取记忆统计"""
     stats = storage.get_memory_stats()
     return {
@@ -409,7 +409,7 @@ async def get_memory_stats_handler() -> dict:
     }
 
 
-async def cleanup_memories_handler(days: int = 30) -> dict:
+def cleanup_memories_handler(days: int = 30) -> dict:
     """清理过期记忆"""
     logger.info(f"清理记忆: {days} 天前")
 
@@ -422,7 +422,7 @@ async def cleanup_memories_handler(days: int = 30) -> dict:
     }
 
 
-async def link_memories_handler(
+def link_memories_handler(
     memory_id_1: str, memory_id_2: str, relation: str
 ) -> dict:
     """关联两条记忆"""
@@ -559,7 +559,7 @@ def _write_permanent_only(permanent: list):
         path.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-async def user_memory_remember_handler(content: str, type: str = "memory") -> dict:
+def user_memory_remember_handler(content: str, type: str = "memory") -> dict:
     """添加用户长期记忆到 memory.json permanent 数组
 
     type="task": 当前工作便签（最多1条，新任务覆盖旧的）
@@ -633,7 +633,7 @@ async def user_memory_remember_handler(content: str, type: str = "memory") -> di
     }
 
 
-async def user_memory_forget_handler(index: int = None, keyword: str = None) -> dict:
+def user_memory_forget_handler(index: int = None, keyword: str = None) -> dict:
     """删除用户长期记忆"""
     data = _read_memory_json()
     if data.get("_raw_fallback"):
@@ -695,7 +695,7 @@ async def user_memory_forget_handler(index: int = None, keyword: str = None) -> 
     return {"status": "error", "message": "请提供 index 或 keyword 参数"}
 
 
-async def user_memory_list_handler() -> dict:
+def user_memory_list_handler() -> dict:
     """查看当前所有用户长期记忆和工作便签"""
     data = _read_memory_json()
     if data.get("_raw_fallback"):
@@ -748,7 +748,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     """Handle tool calls."""
     try:
         if name == "remember":
-            result = await remember_handler(
+            result = remember_handler(
                 content=arguments["content"],
                 memory_type=arguments["memory_type"],
                 metadata=arguments.get("metadata"),
@@ -756,42 +756,42 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 importance=arguments.get("importance"),
             )
         elif name == "recall":
-            result = await recall_handler(
+            result = recall_handler(
                 query=arguments["query"],
                 limit=arguments.get("limit", 5),
                 memory_type=arguments.get("memory_type"),
                 level=arguments.get("level", "l1"),
             )
         elif name == "update_memory":
-            result = await update_memory_handler(
+            result = update_memory_handler(
                 memory_id=arguments["memory_id"],
                 content=arguments["content"],
                 metadata=arguments.get("metadata"),
             )
         elif name == "get_memory_stats":
-            result = await get_memory_stats_handler()
+            result = get_memory_stats_handler()
         elif name == "cleanup_memories":
-            result = await cleanup_memories_handler(
+            result = cleanup_memories_handler(
                 days=arguments.get("days", 30),
             )
         elif name == "link_memories":
-            result = await link_memories_handler(
+            result = link_memories_handler(
                 memory_id_1=arguments["memory_id_1"],
                 memory_id_2=arguments["memory_id_2"],
                 relation=arguments["relation"],
             )
         elif name == "user_memory_remember":
-            result = await user_memory_remember_handler(
+            result = user_memory_remember_handler(
                 content=arguments["content"],
                 type=arguments.get("type", "memory"),
             )
         elif name == "user_memory_forget":
-            result = await user_memory_forget_handler(
+            result = user_memory_forget_handler(
                 index=arguments.get("index"),
                 keyword=arguments.get("keyword"),
             )
         elif name == "user_memory_list":
-            result = await user_memory_list_handler()
+            result = user_memory_list_handler()
         else:
             return [TextContent(type="text", text=f"Unknown tool: {name}")]
 
