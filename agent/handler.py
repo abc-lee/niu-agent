@@ -346,7 +346,7 @@ class NiuHandler(BaseHandler):
             adapter = LightRAGAdapter()
 
             # 工具调用成功，更新相关 dialect 的置信度
-            if hasattr(ret, 'status') and ret.status == "success":
+            if isinstance(ret, dict) and ret.get("status") == "success":
                 habit_entities = adapter.search_interaction_habits(
                     query=str(args), top_k=10,
                 )
