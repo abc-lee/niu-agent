@@ -297,6 +297,59 @@ async def _run_auto_tidy():
         logger.warning(f"[AutoTidy] Failed: {e}")
 
 
+async def _persist_messages_from_return_value(store, return_value: dict, skip_user: bool = True) -> list[str]:
+    """从 agent_runner_loop 的 return value 中提取完整 messages 并持久化到数据库。
+
+    双管道架构的 DB 管道：SSE 管道只推送 reply 内容，DB 管道从 return_value
+    获取完整 messages（包含 tool_calls + tool_results），逐条写入数据库。
+
+    Args:
+        store: MessageStore 实例
+        return_value: agent_runner_loop 的返回值，包含 "messages" 键
+        skip_user: 是否跳过第一条 user 消息（端点已单独持久化）
+
+    Returns:
+        持久化的消息 ID 列表
+    """
+    if not return_value or not isinstance(return_value, dict):
+        return []
+    messages = return_value.get("messages")
+    if not messages or not isinstance(messages, list):
+        return []
+
+    persisted_ids = []
+    user_skipped = False
+
+    for msg in messages:
+        role = msg.get("role", "")
+        content = msg.get("content", "")
+
+        # 跳过 system 消息（agent 内部使用，不需要持久化）
+        if role == "system":
+            continue
+
+        # 跳过第一条 user 消息（端点已单独持久化）
+        if skip_user and not user_skipped and role == "user":
+            user_skipped = True
+            continue
+
+        # 提取 tool_calls（assistant 消息可能携带）
+        tool_calls = msg.get("tool_calls")
+
+        # 提取 tool_call_id（tool 消息必须关联）
+        tool_call_id = msg.get("tool_call_id", "")
+
+        msg_id = await store.add_message(
+            role=role,
+            content=content,
+            tool_calls=tool_calls,
+            tool_call_id=tool_call_id,
+        )
+        persisted_ids.append(msg_id)
+
+    return persisted_ids
+
+
 router = APIRouter(tags=["compat"])
 
 # 并发锁：串行化所有 chat 请求，防止并发调用 runner.chat() 导致共享状态损坏
@@ -474,16 +527,27 @@ async def chat_session(request: ChatRequest) -> ChatResponse:
             logger.error(f"Chat error: {e}\n{traceback.format_exc()}")
             full_reply = f"Error: {str(e)}"
 
-        # Store assistant response
+        # 双管道持久化：从 return_value 获取完整 messages（含 tool_calls + tool_results）
+        # SSE 管道已在 runner.py 中过滤，yield 的只有 reply 内容
         message_id = None
-        if full_reply.strip():
-            message_id = await store.add_message(role="assistant", content=full_reply)
-            # 通知 SSE 端点推送给前端
-            from niu_api.chat import notify_new_message
-            await notify_new_message(message_id, "assistant", full_reply)
+        rv = getattr(runner, "last_return_value", None)
+        if rv and isinstance(rv, dict) and rv.get("messages"):
+            # DB 管道：持久化完整 messages（跳过已持久化的 user 消息）
+            persisted_ids = await _persist_messages_from_return_value(store, rv, skip_user=True)
+            # 取最后一条 assistant 消息的 ID 作为 message_id（用于响应）
+            if persisted_ids:
+                message_id = persisted_ids[-1]
+                # 通知 SSE 推送最后一条 assistant 消息给前端
+                from niu_api.chat import notify_new_message
+                await notify_new_message(message_id, "assistant", full_reply)
+        else:
+            # 回退：无 return_value 或无 messages，使用旧逻辑只存 assistant 回复
+            if full_reply.strip():
+                message_id = await store.add_message(role="assistant", content=full_reply)
+                from niu_api.chat import notify_new_message
+                await notify_new_message(message_id, "assistant", full_reply)
 
         # 检测主 Agent 上下文溢出 → 同步触发 force 压缩（阻塞）
-        rv = getattr(runner, "last_return_value", None)
         if rv and isinstance(rv, dict) and rv.get("result") == "CONTEXT_OVERFLOW":
             overflow_data = rv.get("data", {})
             logger.warning(
