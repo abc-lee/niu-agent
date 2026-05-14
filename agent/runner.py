@@ -905,9 +905,9 @@ class NiuRunner:
                     logger.error(f"Failed to extract return_value data: {e}")
                     full_resp = ""
 
-        # 清理 CLI 调试输出
-        full_resp = re.sub(r"\*\*LLM Running \(Turn \d+\) \.\.\.\*\*\n*", "", full_resp)
-        full_resp = re.sub(r"🛠️ \*\*正在调用工具:[\s\S]*?````\n", "", full_resp)
+        # 清理 CLI 调试输出（含前后相邻换行，避免清除后残留空白行）
+        full_resp = re.sub(r"\n*\*\*LLM Running \(Turn \d+\) \.\.\.\*\*\n*", "\n", full_resp)
+        full_resp = re.sub(r"\n*🛠️ \*\*正在调用工具:[\s\S]*?````\n*", "\n", full_resp)
         full_resp = re.sub(r"<summary>[\s\S]*?</summary>\n*", "", full_resp, flags=re.IGNORECASE)
 
         # 清理内部工具调用标签（LiteLLM 调试输出，不应显示给用户）
@@ -937,7 +937,7 @@ class NiuRunner:
         full_resp = re.sub(r"\n```\s*\n", "\n", full_resp)
         full_resp = re.sub(r"\n```\s*", "\n", full_resp)
 
-        # 清理连续空行（超过2个空行变成2个）
+        # 清理连续空行（超过1个空行变成1个）
         full_resp = re.sub(r"\n{3,}", "\n\n", full_resp)
 
         # 对话结束后工具衰减已由 _on_turn_end 每轮执行，此处不再重复
