@@ -37,6 +37,21 @@ def format_error(e: Exception) -> str:
     return f"{type(e).__name__}: {e}"
 
 
+def _run_coroutine(coro):
+    """在同步上下文中执行 coroutine（集中桥接点）"""
+    import asyncio
+    import inspect
+    if not inspect.iscoroutine(coro):
+        return coro
+    try:
+        asyncio.get_running_loop()
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            return pool.submit(asyncio.run, coro).result()
+    except RuntimeError:
+        return asyncio.run(coro)
+
+
 def file_read(
     path: str, start: int = 1, keyword: str = None, count: int = 200, show_linenos: bool = True
 ) -> str:
@@ -948,19 +963,7 @@ class NiuHandler(BaseHandler):
                 # 直接调用工具函数
                 result = func(**args)
 
-                # 处理 async 函数返回的 coroutine
-                import asyncio
-                import inspect
-                if inspect.iscoroutine(result):
-                    try:
-                        asyncio.get_running_loop()
-                        # 已有事件循环运行中（不应发生在同步handler），用 to_thread
-                        import concurrent.futures
-                        with concurrent.futures.ThreadPoolExecutor() as pool:
-                            result = pool.submit(asyncio.run, result).result()
-                    except RuntimeError:
-                        # 没有运行中的事件循环，直接 asyncio.run
-                        result = asyncio.run(result)
+                result = _run_coroutine(result)
 
                 yield f"[MCP] {tool_name} executed\n"
 
@@ -1012,17 +1015,7 @@ class NiuHandler(BaseHandler):
 
                 result = func(**args)
 
-                # Handle async functions
-                import asyncio
-                import inspect
-                if inspect.iscoroutine(result):
-                    try:
-                        loop = asyncio.get_running_loop()
-                        import concurrent.futures
-                        with concurrent.futures.ThreadPoolExecutor() as pool:
-                            result = pool.submit(asyncio.run, result).result()
-                    except RuntimeError:
-                        result = asyncio.run(result)
+                result = _run_coroutine(result)
 
                 yield f"[MCP] {tool_name} executed\n"
 
