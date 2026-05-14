@@ -231,16 +231,17 @@ def agent_runner_loop(
 
             # 关键：Anthropic API 要求每个 tool_call 都有 tool_result
             # 即使 outcome.data 为 None，也必须添加空的 tool_result
-            if outcome.data is not None:
-                datastr = (
-                    json.dumps(outcome.data, ensure_ascii=False, default=json_default)
-                    if type(outcome.data) in [dict, list]
-                    else str(outcome.data)
-                )
-                tool_results.append({"tool_use_id": tid, "content": datastr})
-            else:
-                # 添加空的 tool_result 以满足 Anthropic API 要求
-                tool_results.append({"tool_use_id": tid, "content": ""})
+            # 但 no_tool 场景 tid 为空字符串，不应产生孤立的 tool 消息
+            if tid:
+                if outcome.data is not None:
+                    datastr = (
+                        json.dumps(outcome.data, ensure_ascii=False, default=json_default)
+                        if type(outcome.data) in [dict, list]
+                        else str(outcome.data)
+                    )
+                    tool_results.append({"tool_use_id": tid, "content": datastr})
+                else:
+                    tool_results.append({"tool_use_id": tid, "content": ""})
 
             next_prompts.add(outcome.next_prompt)
 
