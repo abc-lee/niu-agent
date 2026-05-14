@@ -20,7 +20,7 @@ from typing import Any, Optional
 from loguru import logger
 
 # 导入 GenericAgent 基类
-from .generic.agent_loop import BaseHandler, StepOutcome, try_call_generator
+from .generic.agent_loop import BaseHandler, StepOutcome, StreamEvent, try_call_generator
 
 # 导入经验总结器
 from .experience_summarizer import ExperienceSummarizer, ToolExecution, ExperienceContext
@@ -693,7 +693,7 @@ class NiuHandler(BaseHandler):
 
         runner = get_runner()
         if runner is None:
-            yield "[System] Runner not initialized\n"
+            yield StreamEvent("system", "[System] Runner not initialized\n")
             return StepOutcome(
                 {"status": "error", "msg": "Runner not initialized"},
                 next_prompt="\n[System] Runner not initialized\n",
@@ -703,7 +703,7 @@ class NiuHandler(BaseHandler):
         llm_config = runner.llm_config.copy()  # 复制一份，避免修改原始配置
 
         try:
-            yield f"[SubAgent] Calling {agent_name}...\n"
+            yield StreamEvent("tool_marker", f"[SubAgent] Calling {agent_name}...\n")
             result = call_subagent(
                 agent_name=agent_name,
                 task=task,
@@ -739,24 +739,24 @@ class NiuHandler(BaseHandler):
                                         """)
                                         latest_task = cursor.fetchone()
                                 except sqlite3.Error as e:
-                                    yield f"[SubAgent] ⚠ Database error: {e}\n"
+                                    yield StreamEvent("system", f"[SubAgent] ⚠ Database error: {e}\n")
                                     latest_task = None
 
                                 if latest_task:
-                                    yield f"[SubAgent] ✓ Verified task in database: {latest_task[1]} at {latest_task[3]}\n"
+                                    yield StreamEvent("tool_marker", f"[SubAgent] ✓ Verified task in database: {latest_task[1]} at {latest_task[3]}\n")
                                 else:
-                                    yield f"[SubAgent] ⚠ Warning: No task found in database\n"
+                                    yield StreamEvent("system", f"[SubAgent] ⚠ Warning: No task found in database\n")
                 except Exception as e:
-                    yield f"[SubAgent] Warning: Failed to verify task: {e}\n"
+                    yield StreamEvent("system", f"[SubAgent] Warning: Failed to verify task: {e}\n")
 
-            yield f"[SubAgent] {agent_name} completed: {result[:200] if len(result) > 200 else result}\n"
+            yield StreamEvent("tool_marker", f"[SubAgent] {agent_name} completed: {result[:200] if len(result) > 200 else result}\n")
             # 返回结果给 LLM，让它向用户汇报
             return StepOutcome(
                 {"status": "success", "result": result},
                 next_prompt=f"[SubAgent Result] {agent_name} 已完成任务。请根据以下结果向用户汇报：\n{result}\n"
             )
         except Exception as e:
-            yield f"[SubAgent] Error: {e}\n"
+            yield StreamEvent("system", f"[SubAgent] Error: {e}\n")
             return StepOutcome(
                 {"status": "error", "msg": str(e)}, next_prompt=f"\n[System] Sub-agent error: {e}\n"
             )
@@ -946,7 +946,7 @@ class NiuHandler(BaseHandler):
                 func = get_registry().get(tool_name)
 
                 if func is None:
-                    yield f"[MCP Error] Tool not found: {tool_name}\n"
+                    yield StreamEvent("system", f"[MCP Error] Tool not found: {tool_name}\n")
                     return StepOutcome(
                         {"status": "error", "error_code": "TOOL_NOT_FOUND", "msg": f"Tool {tool_name} not found in registry"},
                         next_prompt=self._get_anchor_prompt()
@@ -965,7 +965,7 @@ class NiuHandler(BaseHandler):
 
                 result = _run_coroutine(result)
 
-                yield f"[MCP] {tool_name} executed\n"
+                yield StreamEvent("tool_marker", f"[MCP] {tool_name} executed\n")
 
                 # 调用 tool_after_callback（工作记忆、重复检测、习惯追踪）
                 try:
@@ -994,7 +994,7 @@ class NiuHandler(BaseHandler):
                     # 需要进一步处理，返回anchor prompt
                     return StepOutcome(result, next_prompt=self._get_anchor_prompt())
             except Exception as e:
-                yield f"[MCP Error] {tool_name}: {e}\n"
+                yield StreamEvent("system", f"[MCP Error] {tool_name}: {e}\n")
                 return StepOutcome(
                     {"status": "error", "msg": str(e)}, next_prompt=self._get_anchor_prompt()
                 )
@@ -1017,7 +1017,7 @@ class NiuHandler(BaseHandler):
 
                 result = _run_coroutine(result)
 
-                yield f"[MCP] {tool_name} executed\n"
+                yield StreamEvent("tool_marker", f"[MCP] {tool_name} executed\n")
 
                 try:
                     _ = yield from try_call_generator(
@@ -1032,11 +1032,11 @@ class NiuHandler(BaseHandler):
                 else:
                     return StepOutcome(result, next_prompt=self._get_anchor_prompt())
             except Exception as e:
-                yield f"[MCP Error] {tool_name}: {e}\n"
+                yield StreamEvent("system", f"[MCP Error] {tool_name}: {e}\n")
                 return StepOutcome(
                     {"status": "error", "msg": str(e)}, next_prompt=self._get_anchor_prompt()
                 )
 
         # 未知工具
-        yield f"Unknown tool: {tool_name}\n"
+        yield StreamEvent("system", f"Unknown tool: {tool_name}\n")
         return StepOutcome(None, next_prompt=f"Unknown tool: {tool_name}")
