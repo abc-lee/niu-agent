@@ -23,10 +23,11 @@ class Message:
     """A chat message"""
 
     id: str
-    role: str  # 'user' | 'assistant' | 'system'
+    role: str  # 'user' | 'assistant' | 'system' | 'tool'
     content: str
     tool_calls: List[Dict] = field(default_factory=list)
     tool_results: List[Dict] = field(default_factory=list)
+    tool_call_id: str = ""  # Links tool result to assistant's tool_calls[].id
     created_at: str = ""
 
     def to_dict(self) -> dict:
@@ -68,9 +69,19 @@ class MessageStore:
             """)
 
             await db.execute("""
-                CREATE INDEX IF NOT EXISTS idx_messages_created_at 
+                CREATE INDEX IF NOT EXISTS idx_messages_created_at
                 ON messages(created_at ASC)
             """)
+
+            # Migration: add tool_call_id column if missing (compat with existing DBs)
+            cursor = await db.execute("PRAGMA table_info(messages)")
+            columns = [row[1] for row in await cursor.fetchall()]
+            if "tool_call_id" not in columns:
+                await db.execute(
+                    "ALTER TABLE messages ADD COLUMN tool_call_id TEXT DEFAULT ''"
+                )
+                await db.commit()
+                logger.info("Migrated messages table: added tool_call_id column")
 
             await db.commit()
             logger.info(f"MessageStore initialized: {self.db_path}")
@@ -81,6 +92,7 @@ class MessageStore:
         content: str,
         tool_calls: List[Dict] = None,
         tool_results: List[Dict] = None,
+        tool_call_id: str = "",
     ) -> str:
         """Add a message"""
         msg_id = str(uuid4())
@@ -90,10 +102,10 @@ class MessageStore:
 
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
-                """INSERT INTO messages 
-                   (id, role, content, tool_calls, tool_results, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (msg_id, role, content, tool_calls_json, tool_results_json, created_at),
+                """INSERT INTO messages
+                   (id, role, content, tool_calls, tool_results, tool_call_id, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (msg_id, role, content, tool_calls_json, tool_results_json, tool_call_id, created_at),
             )
             await db.commit()
 
@@ -172,6 +184,7 @@ class MessageStore:
                         content=row["content"] or "",
                         tool_calls=json.loads(row["tool_calls"] or "[]"),
                         tool_results=json.loads(row["tool_results"] or "[]"),
+                        tool_call_id=row["tool_call_id"] if "tool_call_id" in row.keys() else "",
                         created_at=row["created_at"],
                     )
                 )
