@@ -129,8 +129,15 @@ def agent_runner_loop(
         for msg in history:
             role = msg.get("role", "user")
             content = msg.get("content", "")
-            if role in ("user", "assistant") and content:
-                messages.append({"role": role, "content": content})
+            if role in ("user", "assistant", "tool") and (content or msg.get("tool_calls") or msg.get("tool_call_id")):
+                entry = {"role": role, "content": content}
+                # 还原 tool_calls（assistant 消息可能携带工具调用）
+                if msg.get("tool_calls"):
+                    entry["tool_calls"] = msg["tool_calls"]
+                # 还原 tool_call_id（tool 消息必须关联到对应的 tool_call）
+                if msg.get("tool_call_id"):
+                    entry["tool_call_id"] = msg["tool_call_id"]
+                messages.append(entry)
 
     # Add current user message
     messages.append({
