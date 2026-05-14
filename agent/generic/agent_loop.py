@@ -162,6 +162,7 @@ def agent_runner_loop(
                         "tokens_used": current_tokens,
                         "tokens_limit": context_window_tokens,
                     },
+                    "messages": messages,
                 }
         if verbose:
             yield StreamEvent("system", f"**LLM Running (Turn {turn}) ...**\n\n")
@@ -241,6 +242,7 @@ def agent_runner_loop(
                 return {
                     "result": "EXITED",
                     "data": outcome.data,
+                    "messages": messages,
                 }  # should_exit is only used for immediate exit
             if not outcome.next_prompt:
                 should_exit = {"result": "CURRENT_TASK_DONE", "data": outcome.data}
@@ -277,6 +279,8 @@ def agent_runner_loop(
                 # 纯文本回复：也要执行衰减
                 if on_turn_end is not None:
                     on_turn_end(messages, tools_schema, turn)
+                if isinstance(should_exit, dict):
+                    should_exit["messages"] = messages
                 return should_exit
             next_prompts.add(handler._done_hooks.pop(0))
         next_prompt = handler.next_prompt_patcher("\n".join(next_prompts), None, turn)
@@ -286,6 +290,8 @@ def agent_runner_loop(
             # 确保最后一轮的 decay 和保存执行
             if on_turn_end is not None:
                 on_turn_end(messages, tools_schema, turn)
+            if isinstance(should_exit, dict):
+                should_exit["messages"] = messages
             return should_exit
 
         # 添加下一个user消息
@@ -331,4 +337,4 @@ def agent_runner_loop(
     # MAX_TURNS_EXCEEDED 退出时也要执行衰减
     if on_turn_end is not None:
         on_turn_end(messages, tools_schema, turn)
-    return {"result": "MAX_TURNS_EXCEEDED"}
+    return {"result": "MAX_TURNS_EXCEEDED", "messages": messages}
