@@ -36,15 +36,18 @@ class ContextManager:
         self.max_messages = max_messages
         self.max_tokens = max_tokens
 
-    async def load_history(self, limit: Optional[int] = None) -> List[Dict[str, str]]:
+    async def load_history(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
         """
         加载历史消息并转换为 agent_loop 格式
+
+        完整还原 tool 消息：保留 tool_calls、tool_call_id 等字段，
+        不再过滤空 content 的 assistant(tool_calls) 消息。
 
         Args:
             limit: 加载消息数量，None 则使用 max_messages
 
         Returns:
-            消息列表 [{"role": "user/assistant", "content": str}, ...]
+            消息列表 [{"role": "user/assistant/tool", "content": str, ...}, ...]
         """
         if limit is None:
             limit = self.max_messages
@@ -52,18 +55,28 @@ class ContextManager:
         # 从 MessageStore 加载
         messages = await self.store.get_messages(limit=limit)
 
-        # 转换格式
+        # 转换格式 — 完整还原 tool 消息
         history = []
         for msg in messages:
-            if msg.content:  # 跳过空消息
-                history.append({
-                    "role": msg.role,
-                    "content": msg.content
-                })
+            entry = {"role": msg.role, "content": msg.content or ""}
+
+            # 还原 tool_calls（assistant 消息可能携带工具调用）
+            if msg.tool_calls:
+                entry["tool_calls"] = msg.tool_calls
+
+            # 还原 tool_call_id（tool 消息必须关联到对应的 tool_call）
+            if msg.tool_call_id:
+                entry["tool_call_id"] = msg.tool_call_id
+
+            # 完全空的消息（无 content、无 tool_calls、无 tool_call_id）可以跳过
+            if not msg.content and not msg.tool_calls and not msg.tool_call_id:
+                continue
+
+            history.append(entry)
 
         return history
 
-    def count_tokens_simple(self, messages: List[Dict[str, str]]) -> int:
+    def count_tokens_simple(self, messages: List[Dict[str, Any]]) -> int:
         """
         使用 litellm.token_counter 计算 token 数量（基于 tiktoken）
 
@@ -86,7 +99,7 @@ class ContextManager:
                 total_tokens += max(1, len(content) // 2) + 4
             return total_tokens
 
-    def should_compress(self, messages: List[Dict[str, str]]) -> bool:
+    def should_compress(self, messages: List[Dict[str, Any]]) -> bool:
         """
         判断是否需要压缩上下文
 
@@ -107,13 +120,14 @@ class ContextManager:
 
         return False
 
-    def compress_messages(self, messages: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    def compress_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
         压缩消息列表（保留最近消息）
 
         策略：
         - 保留最近 80% 的消息
         - 删除早期的 20% 消息
+        - assistant(tool_calls) + tool 消息必须成对删除，避免孤立
 
         Args:
             messages: 消息列表
@@ -130,8 +144,35 @@ class ContextManager:
         # 确保至少保留 10 条消息
         keep_count = max(10, keep_count)
 
-        # 保留最近的消息
-        compressed = messages[-keep_count:]
+        # 计算要删除的数量
+        delete_count = len(messages) - keep_count
+        if delete_count <= 0:
+            return messages
+
+        # 成对删除：如果删除 assistant(tool_calls)，必须同时删除对应的 tool 消息
+        # 从前向后扫描，标记要删除的消息
+        to_delete = set(range(delete_count))
+
+        # 收集被删除的 assistant(tool_calls) 的 tool_call_id
+        deleted_tool_call_ids = set()
+        for idx in to_delete:
+            msg = messages[idx]
+            if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                for tc in msg["tool_calls"]:
+                    tc_id = tc.get("id", "")
+                    if tc_id:
+                        deleted_tool_call_ids.add(tc_id)
+
+        # 如果有被删除的 tool_call_id，对应的 tool 消息也必须删除
+        for idx in range(len(messages)):
+            if idx in to_delete:
+                continue
+            msg = messages[idx]
+            if msg.get("role") == "tool" and msg.get("tool_call_id") in deleted_tool_call_ids:
+                to_delete.add(idx)
+
+        # 构建压缩后的消息列表
+        compressed = [msg for idx, msg in enumerate(messages) if idx not in to_delete]
 
         # 如果删除了消息，添加压缩说明
         if len(compressed) < len(messages):
@@ -144,7 +185,7 @@ class ContextManager:
 
         return compressed
 
-    def estimate_context_usage(self, messages: List[Dict[str, str]]) -> Dict[str, Any]:
+    def estimate_context_usage(self, messages: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
         估算上下文使用情况
 
@@ -173,7 +214,7 @@ class ContextManager:
             "max_tokens": self.max_tokens
         }
 
-    async def get_context_for_chat(self, exclude_last: bool = True) -> List[Dict[str, str]]:
+    async def get_context_for_chat(self, exclude_last: bool = True) -> List[Dict[str, Any]]:
         """
         获取用于聊天的上下文（主入口）
 
