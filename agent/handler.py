@@ -360,7 +360,7 @@ class NiuHandler(BaseHandler):
                         ingester.update_habit_confidence(entity_name, "success")
 
             # 工具调用失败
-            elif hasattr(ret, 'status') and ret.status == "error":
+            elif isinstance(ret, dict) and ret.get("status") == "error":
                 habit_entities = adapter.search_interaction_habits(
                     query=str(args), top_k=5,
                 )
