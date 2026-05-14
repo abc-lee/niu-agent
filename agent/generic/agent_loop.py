@@ -82,7 +82,7 @@ class BaseHandler:
         elif tool_name == "bad_json":
             return StepOutcome(None, next_prompt=args.get("msg", "bad_json"), should_exit=False)
         else:
-            yield f"未知工具: {tool_name}\n"
+            yield StreamEvent("system", f"未知工具: {tool_name}\n")
             return StepOutcome(None, next_prompt=f"未知工具 {tool_name}", should_exit=False)
 
 
@@ -164,19 +164,19 @@ def agent_runner_loop(
                     },
                 }
         if verbose:
-            yield f"**LLM Running (Turn {turn}) ...**\n\n"
+            yield StreamEvent("system", f"**LLM Running (Turn {turn}) ...**\n\n")
         if turn % 10 == 0:
             client.last_tools = ""  # 每10轮重置一次工具描述，避免上下文过大导致的模型性能下降
         response_gen = client.chat(messages=messages, tools=tools_schema)
         if verbose:
             response = yield from response_gen
-            yield "\n\n"
+            yield StreamEvent("system", "\n\n")
         else:
             response = exhaust(response_gen)
             # 过滤掉 <tool_use> 标签，只返回纯文本
             content = response.content or ""
             content = re.sub(r"<tool_use>.*?</tool_use>", "", content, flags=re.DOTALL)
-            yield content
+            yield StreamEvent("reply", content)
 
         if not response.tool_calls:
             tool_calls = [{"tool_name": "no_tool", "args": {}}]
@@ -225,13 +225,13 @@ def agent_runner_loop(
                 pass
             elif verbose:
                 showarg = get_pretty_json(args)
-                yield f"🛠️ **正在调用工具:** `{tool_name}`  📥**参数:**\n````text\n{showarg}\n````\n"
+                yield StreamEvent("tool_marker", f"🛠️ **正在调用工具:** `{tool_name}`  📥**参数:**\n````text\n{showarg}\n````\n")
             handler.current_turn = turn
             gen = handler.dispatch(tool_name, args, response, index=ii)
             if verbose:
-                yield "`````\n"
+                yield StreamEvent("tool_marker", "`````\n")
                 outcome = yield from gen
-                yield "`````\n"
+                yield StreamEvent("tool_marker", "`````\n")
             else:
                 outcome = exhaust(gen)
 
