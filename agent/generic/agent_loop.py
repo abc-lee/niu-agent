@@ -202,10 +202,8 @@ def agent_runner_loop(
             tool_name, args, tid = tc["tool_name"], tc["args"], tc.get("id", "")
             if tool_name == "no_tool":
                 pass
-            else:
+            elif verbose:
                 showarg = get_pretty_json(args)
-                if not verbose and len(showarg) > 200:
-                    showarg = showarg[:200] + " ..."
                 yield f"🛠️ **正在调用工具:** `{tool_name}`  📥**参数:**\n````text\n{showarg}\n````\n"
             handler.current_turn = turn
             gen = handler.dispatch(tool_name, args, response, index=ii)
