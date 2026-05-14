@@ -354,9 +354,7 @@ async def chat_sync(request: ChatRequest) -> ChatResponse:
             logger.error(f"Chat sync error: {e}\n{traceback.format_exc()}")
             full_reply = f"Error: {str(e)}"
 
-        # 清理流式输出中的调试标记后再持久化
-        from agent.runner import _clean_stream_output
-        full_reply = _clean_stream_output(full_reply)
+        # 双管道架构：runner.chat() 已过滤非 reply 内容，无需再清理
 
         # Persist assistant response to database
         message_id = None

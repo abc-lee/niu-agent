@@ -103,7 +103,7 @@ if sys.platform == 'win32':
     if not isinstance(sys.stdout, io.TextIOWrapper) or sys.stdout.encoding != 'utf-8':
         sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
 
-from .generic.agent_loop import agent_runner_loop
+from .generic.agent_loop import agent_runner_loop, StreamEvent
 from .generic.llmcore import ToolClient
 from .handler import NiuHandler
 from .injector.sync import get_skill_sync
@@ -306,40 +306,6 @@ def format_resources_for_prompt(results: list, title: str = "相关资源") -> s
 
     return "\n".join(lines)
 
-
-def _clean_stream_output(text: str) -> str:
-    """清理流式输出中的调试标记和多余空行"""
-    text = re.sub(r"\n*\*\*LLM Running \(Turn \d+\) \.\.\.\*\*\n*", "\n", text)
-    text = re.sub(r"\n*🛠️ \*\*正在调用工具:[\s\S]*?````\n*", "\n", text)
-    text = re.sub(r"<summary>[\s\S]*?</summary>\n*", "", text, flags=re.IGNORECASE)
-
-    # 清理内部工具调用标签（LiteLLM 调试输出，不应显示给用户）
-    text = re.sub(r"<tool_use>.*?</tool_use>", "", text, flags=re.DOTALL)
-
-    # 清理 LLM 输出的结构化标签
-    text = re.sub(r"</?text>\n*", "", text)
-    text = re.sub(r"</?response>\n*", "", text)
-    text = re.sub(r"</?content>\n*", "", text)
-
-    # 清理空代码块
-    text = re.sub(r"`{6,}\n*", "", text)
-    text = re.sub(r"`{5}\n*", "", text)
-    text = re.sub(r"`{4}\n*", "", text)
-    text = re.sub(r"```\s*```\n*", "", text)
-
-    # 清理开头和结尾的单独反引号
-    text = re.sub(r"^```\s*\n", "", text)
-    text = re.sub(r"^```\s*$", "", text, flags=re.MULTILINE)
-    text = re.sub(r"\n```\s*$", "", text)
-    text = re.sub(r"```\s*$", "", text)
-
-    # 清理中间的孤立反引号行
-    text = re.sub(r"\n```\s*\n", "\n", text)
-    text = re.sub(r"\n```\s*", "\n", text)
-
-    # 清理连续空行
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    return text.strip()
 
 
 class NiuRunner:
@@ -882,14 +848,24 @@ class NiuRunner:
             context_window_tokens=context_window_tokens,  # 主 Agent 溢出检测
         )
 
-        # 累加输出
+        # 累加输出（双管道：full_resp 只含 reply 内容，用于 DB 存储）
         full_resp = ""
         return_value = None
         self.last_return_value = None  # 重置，避免复用残留
         while True:
             try:
                 chunk = next(gen)
-                full_resp += chunk
+                if isinstance(chunk, StreamEvent):
+                    if chunk.type == "reply":
+                        full_resp += chunk.content
+                        if chunk.content:  # SSE 管道：只推送非空 reply
+                            yield chunk.content
+                    # type="system" 和 "tool_marker" 不进入 SSE 和 full_resp
+                else:
+                    # 向后兼容：普通 str
+                    full_resp += chunk
+                    if chunk:
+                        yield chunk
             except StopIteration as e:
                 return_value = e.value
                 break
@@ -940,12 +916,11 @@ class NiuRunner:
                     logger.error(f"Failed to extract return_value data: {e}")
                     full_resp = ""
 
-        # 清理流式输出中的调试标记
-        full_resp = _clean_stream_output(full_resp)
+            # 回退：return_value 中提取的内容作为最后一个 chunk yield
+            if full_resp.strip():
+                yield full_resp.strip()
 
         # 对话结束后工具衰减已由 _on_turn_end 每轮执行，此处不再重复
-
-        yield full_resp.strip()
 
 
 # 全局实例
