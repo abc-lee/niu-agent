@@ -335,28 +335,11 @@ async def chat(request: ChatRequest) -> StreamingResponse:
                         last_assistant_id = pid
 
                 # 修复：纯文本回复时 rv["messages"] 中没有 assistant 消息，
-                # 从 rv["data"] 或 reply_chunks 构造 assistant 消息并持久化
+                # 从 reply_chunks 构造 assistant 消息并持久化
                 if last_assistant_id is None:
-                    assistant_content = None
-                    data = rv.get("data")
-                    if data is not None:
-                        # 优先从 rv["data"] 提取内容
-                        if isinstance(data, str):
-                            assistant_content = data
-                        elif isinstance(data, dict):
-                            assistant_content = json.dumps(data, ensure_ascii=False)
-                        elif isinstance(data, list):
-                            assistant_content = json.dumps(data, ensure_ascii=False)
-                        else:
-                            assistant_content = str(data)
-                    elif reply_chunks:
-                        # 回退：从 SSE 管道收集的 reply_chunks 提取
-                        full_reply = "".join(reply_chunks)
-                        if full_reply.strip():
-                            assistant_content = full_reply
-
-                    if assistant_content and assistant_content.strip():
-                        pid = await store.add_message(role="assistant", content=assistant_content)
+                    full_reply = "".join(reply_chunks)
+                    if full_reply.strip():
+                        pid = await store.add_message(role="assistant", content=full_reply)
                         last_assistant_id = pid
 
                 # 推送最后一条 assistant 消息给 SSE 订阅者
