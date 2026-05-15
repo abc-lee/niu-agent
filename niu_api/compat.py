@@ -553,15 +553,17 @@ async def chat_session(request: ChatRequest) -> ChatResponse:
                             last_assistant_content = msg.get("content", "") or ""
                         persisted_idx += 1
             # 纯文本回复不在 rv["messages"] 中，需要从 full_reply 持久化。
-            # 条件：full_reply 非空，且 rv["messages"] 中最后一条 assistant 消息的 content 为空
-            # （即只有 tool_calls 的 assistant 消息，最终纯文本回复不在 rv 中）。
-            if full_reply.strip() and not last_assistant_content.strip():
-                # 纯文本回复或 tool_calls+纯文本：从 full_reply 创建 assistant 消息
+            # 条件：full_reply 非空，且与 rv["messages"] 中最后一条 assistant 消息的 content 不同。
+            # - 纯文本回复：rv 中无 assistant 消息，last_assistant_content 为空，条件成立。
+            # - tool_calls + 纯文本：rv 中 assistant(content="")，last_assistant_content 为空，条件成立。
+            # - tool_calls 带文本 + 纯文本：rv 中 assistant(content="xxx")，条件也成立（内容不同）。
+            if full_reply.strip() and full_reply.strip() != last_assistant_content.strip():
+                # 从 full_reply 创建 assistant 消息
                 message_id = await store.add_message(role="assistant", content=full_reply)
                 from niu_api.chat import notify_new_message
                 await notify_new_message(message_id, "assistant", full_reply)
             elif last_assistant_id:
-                # rv["messages"] 中有带内容的 assistant 消息，只推送 SSE
+                # rv["messages"] 中有带内容的 assistant 消息且与 full_reply 相同，只推送 SSE
                 message_id = last_assistant_id
                 from niu_api.chat import notify_new_message
                 await notify_new_message(message_id, "assistant", full_reply)
