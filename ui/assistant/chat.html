@@ -744,6 +744,8 @@
     
     // ========== 消息显示 ==========
     function addMessage(role, text, images = []) {
+      // 双管道分离：tool 消息只走 DB 管道，不渲染到对话框
+      if (role === 'tool') return document.createElement('div');
       const div = document.createElement('div');
       div.className = `message ${role}`;
       
