@@ -696,7 +696,8 @@
       }
 
       // 铁律1：用户触发的 → 先刷新页面（即时反馈）
-      addMessage('user', text);
+      const userMsg = addMessage('user', text);
+      if (!userMsg) return;  // addMessage 返回 null（如 tool 消息被过滤），跳过后续
 
       userInput.value = '';
       userInput.style.height = 'auto';
@@ -1186,6 +1187,12 @@
         overlayDiv.textContent = '处理中...';
         previewDiv.appendChild(overlayDiv);
         const msgDiv = addMessage('user', null);
+        if (!msgDiv) {
+          // addMessage 返回 null（如 tool 消息被过滤），跳过后续
+          isProcessing = false;
+          sendBtn.disabled = false;
+          return;
+        }
         msgDiv.appendChild(previewDiv);
 
         showTyping();
