@@ -328,6 +328,14 @@ async def _persist_messages_from_return_value(store, return_value: dict, history
 
     persisted_ids = []
 
+    # 收集需要跳过的 tool_call_id（working_memory 虚拟调用）
+    _wm_tool_call_ids = set()
+    for msg in messages[history_len + 1:]:
+        if msg.get("role") == "assistant" and msg.get("tool_calls"):
+            for tc in msg["tool_calls"]:
+                if tc.get("function", {}).get("name") == "working_memory":
+                    _wm_tool_call_ids.add(tc.get("id", ""))
+
     for msg in messages[history_len + 1:]:
         role = msg.get("role", "")
         content = msg.get("content", "")
@@ -345,6 +353,13 @@ async def _persist_messages_from_return_value(store, return_value: dict, history
 
         # 提取 tool_call_id（tool 消息必须关联）
         tool_call_id = msg.get("tool_call_id", "")
+
+        # 跳过 working_memory 虚拟消息（不持久化到数据库）
+        if role == "assistant" and tool_calls:
+            if any(tc.get("function", {}).get("name") == "working_memory" for tc in tool_calls):
+                continue
+        if role == "tool" and tool_call_id in _wm_tool_call_ids:
+            continue
 
         msg_id = await store.add_message(
             role=role,
