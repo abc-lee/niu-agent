@@ -312,8 +312,23 @@ def agent_runner_loop(
                 return should_exit
             return {"result": "CURRENT_TASK_DONE", "data": None, "messages": messages}
 
-        # 添加下一个user消息
-        messages.append({"role": "user", "content": next_prompt})
+        # WORKING MEMORY 摘要作为 tool 消息注入，而非 user 消息
+        # 避免被 LLM 误认为是用户输入
+        _wm_call_id = f"wm_{turn}"
+        messages.append({
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{
+                "id": _wm_call_id,
+                "type": "function",
+                "function": {"name": "working_memory", "arguments": "{}"}
+            }]
+        })
+        messages.append({
+            "role": "tool",
+            "tool_call_id": _wm_call_id,
+            "content": next_prompt
+        })
 
         # FIFO 上下文截断：按 token 量逐条移除旧消息，保护 messages[0](system) 和 messages[1](初始task)
         if context_fifo_threshold > 0 and len(messages) > 2:
