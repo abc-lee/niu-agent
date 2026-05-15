@@ -538,7 +538,9 @@ async def chat_session(request: ChatRequest) -> ChatResponse:
             # DB 管道：持久化 tool 相关消息和 assistant 消息（user 消息已在入口持久化）
             persisted_ids = await _persist_messages_from_return_value(store, rv)
             # 找到最后一条 assistant 消息的 ID（persisted_ids 可能包含 tool 消息）
+            # 同时记录最后一条持久化的 assistant 消息的 content，用于检测纯文本回复是否已持久化
             last_assistant_id = None
+            last_assistant_content = ""
             if persisted_ids and rv.get("messages"):
                 # 遍历 rv["messages"] 和 persisted_ids，找到最后一条 assistant 消息
                 # _persist_messages_from_return_value 只持久化 assistant 和 tool，顺序与 rv["messages"] 一致
@@ -550,30 +552,28 @@ async def chat_session(request: ChatRequest) -> ChatResponse:
                     if persisted_idx < len(persisted_ids):
                         if role == "assistant":
                             last_assistant_id = persisted_ids[persisted_idx]
+                            last_assistant_content = msg.get("content", "") or ""
                         persisted_idx += 1
-            if last_assistant_id:
-                message_id = last_assistant_id
-                from niu_api.chat import notify_new_message
-                await notify_new_message(message_id, "assistant", full_reply)
-            elif persisted_ids:
-                # 回退：没有 assistant 消息（纯文本回复时 rv 中无 assistant 消息）
-                # 直接存储 assistant 回复
-                if full_reply.strip():
-                    message_id = await store.add_message(role="assistant", content=full_reply)
-                    from niu_api.chat import notify_new_message
-                    await notify_new_message(message_id, "assistant", full_reply)
-            else:
-                # persisted_ids 为空：纯文本回复，rv 中只有 system + user 消息
-                if full_reply.strip():
-                    message_id = await store.add_message(role="assistant", content=full_reply)
-                    from niu_api.chat import notify_new_message
-                    await notify_new_message(message_id, "assistant", full_reply)
-        else:
-            # 回退：无 return_value 或无 messages，使用旧逻辑只存 assistant 回复
-            if full_reply.strip():
+            # 修复：多轮对话时（先 tool_calls 后纯文本），纯文本回复不在 rv["messages"] 中。
+            # 检查 full_reply 是否有内容且未被持久化为 assistant 消息。
+            if full_reply.strip() and full_reply.strip() != last_assistant_content.strip():
                 message_id = await store.add_message(role="assistant", content=full_reply)
                 from niu_api.chat import notify_new_message
                 await notify_new_message(message_id, "assistant", full_reply)
+            elif last_assistant_id:
+                message_id = last_assistant_id
+                from niu_api.chat import notify_new_message
+                await notify_new_message(message_id, "assistant", full_reply)
+            elif persisted_ids and full_reply.strip():
+                # 回退：没有 assistant 消息（纯文本回复时 rv 中无 assistant 消息）
+                message_id = await store.add_message(role="assistant", content=full_reply)
+                from niu_api.chat import notify_new_message
+                await notify_new_message(message_id, "assistant", full_reply)
+        elif full_reply.strip():
+            # 回退：无 return_value 或无 messages，使用旧逻辑只存 assistant 回复
+            message_id = await store.add_message(role="assistant", content=full_reply)
+            from niu_api.chat import notify_new_message
+            await notify_new_message(message_id, "assistant", full_reply)
 
         # 检测主 Agent 上下文溢出 → 同步触发 force 压缩（阻塞）
         if rv and isinstance(rv, dict) and rv.get("result") == "CONTEXT_OVERFLOW":
