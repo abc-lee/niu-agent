@@ -120,48 +120,6 @@ class ChatResponse(BaseModel):
     message_id: Optional[str] = None
 
 
-async def persist_messages(store, messages: list, session_id: str):
-    """将 agent_runner_loop 的 messages 持久化到数据库（双管道 DB 管道）。
-
-    只持久化 tool 相关消息（user/assistant 已在流式过程中存储）：
-    - role="tool" 的消息：存储 tool_call_id + content
-    - role="assistant" 且有 tool_calls 的消息：存储 tool_calls 字段
-
-    Args:
-        store: MessageStore 实例
-        messages: agent_runner_loop return value 中的 messages 列表
-        session_id: 会话ID（当前未使用，预留）
-    """
-    persisted_count = 0
-    for msg in messages:
-        role = msg.get("role", "")
-        content = msg.get("content", "")
-        tool_calls = msg.get("tool_calls")
-        tool_call_id = msg.get("tool_call_id", "")
-
-        # 只持久化 tool 相关消息
-        if role == "tool":
-            # tool 消息必须关联到 assistant 的 tool_call
-            if tool_call_id:
-                await store.add_message(
-                    role="tool",
-                    content=content or "",
-                    tool_call_id=tool_call_id,
-                )
-                persisted_count += 1
-        elif role == "assistant" and tool_calls:
-            # assistant(tool_calls) 消息：存储 tool_calls 字段
-            # content 可能为空（纯工具调用时 LLM 不返回文本）
-            await store.add_message(
-                role="assistant",
-                content=content or "",
-                tool_calls=tool_calls,
-            )
-            persisted_count += 1
-
-    if persisted_count > 0:
-        logger.debug(f"[DB Pipeline] Persisted {persisted_count} tool-related messages")
-
 
 def _load_llm_config():
     """直接从文件读取 LLM 配置，不走缓存，保留所有原始字段"""
@@ -474,7 +432,7 @@ async def chat_sync(request: ChatRequest) -> ChatResponse:
         if rv and isinstance(rv, dict) and rv.get("messages"):
             # DB 管道：从 return value 持久化 tool 相关消息
             # 只持久化新增消息（跳过 history 部分，避免重复写入）
-            # assistant 纯文本回复也在这里持久化（避免与 persist_messages 重复）
+            # assistant 纯文本回复也在这里持久化（避免与 rv["messages"] 中的重复）
             persisted_ids = []
             last_assistant_content = ""  # 记录最后一条持久化的 assistant 消息的 content
             for msg in rv["messages"][history_len + 1:]:
