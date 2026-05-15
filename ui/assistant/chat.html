@@ -745,7 +745,7 @@
     // ========== 消息显示 ==========
     function addMessage(role, text, images = []) {
       // 双管道分离：tool 消息只走 DB 管道，不渲染到对话框
-      if (role === 'tool') return document.createElement('div');
+      if (role === 'tool') return null;
       const div = document.createElement('div');
       div.className = `message ${role}`;
       
@@ -914,6 +914,7 @@
       }
 
       const div = addMessage(role, text, images);
+      if (!div) return null;
       div.dataset.id = id;
       return div;
     }
@@ -996,7 +997,29 @@
         const result = await window.electronAPI.getHistory(50);
         const msgs = result.messages || [];
 
-        // 只添加比DOM中已有消息更新的消息
+        if (existingIds.size === 0) {
+          // DOM中没有带data-id的消息（可能只有临时用户消息或为空）
+          // 清空DOM，用数据库消息重建（类似loadHistory的初始化逻辑）
+          messages.innerHTML = '';
+          msgs.forEach(msg => {
+            addMessageWithId(msg.role, msg.content, msg.id);
+          });
+          if (msgs.length > 0) {
+            oldestMessageId = msgs[0].id;
+          }
+          // 检查是否有assistant消息，有则关闭typing
+          const hasAssistantMsg = msgs.some(msg => msg.role === 'assistant');
+          if (hasAssistantMsg) {
+            hideTyping();
+            isProcessing = false;
+            sendBtn.disabled = false;
+            window.electronAPI.notifyBusy(false, 'chat');
+          }
+          messages.scrollTop = messages.scrollHeight;
+          return;
+        }
+
+        // 正常去重逻辑：只添加比DOM中已有消息更新的消息
         // msgs 是按时间顺序排列（最旧在前），DOM 中已有的是中间某段
         // 找到第一条在DOM中已存在的消息位置，只处理它之后的消息
         let firstExistingIdx = -1;
@@ -1007,8 +1030,7 @@
           }
         }
 
-        // 如果没有已存在的消息，说明DOM可能被清空了，全部添加
-        // 如果有已存在的消息，只添加它之后的消息（更新的消息）
+        // 只添加已存在消息之后的消息（更新的消息）
         const startIdx = firstExistingIdx >= 0 ? firstExistingIdx : 0;
 
         let hasNew = false;
@@ -1292,6 +1314,7 @@
 
       // 复用 addMessage 的渲染逻辑（支持 ::person_photo:: 等标记）
       const div = addMessage(role, content);
+      if (!div) return;
       div.dataset.id = id;
       messages.insertBefore(div, messages.firstChild);
     }
