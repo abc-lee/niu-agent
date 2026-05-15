@@ -31,6 +31,9 @@ def _register_model_cost(model: str):
         litellm.model_cost[model.lower()] = {"input_cost_per_token": 0, "output_cost_per_token": 0}
 
 from .llmcore import BaseSession, MockResponse, MockToolCall, ToolClient
+from .http_logger import install_http_logger
+
+install_http_logger()
 
 
 def _write_interaction_log(log_entry: Dict[str, Any]):
