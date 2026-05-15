@@ -753,7 +753,7 @@ class NiuHandler(BaseHandler):
             # 返回结果给 LLM，让它向用户汇报
             return StepOutcome(
                 {"status": "success", "result": result},
-                next_prompt=f"[SubAgent Result] {agent_name} 已完成任务。请根据以下结果向用户汇报：\n{result}\n"
+                next_prompt=self._get_anchor_prompt()
             )
         except Exception as e:
             yield StreamEvent("system", f"[SubAgent] Error: {e}\n")
