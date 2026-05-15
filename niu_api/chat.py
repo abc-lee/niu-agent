@@ -264,6 +264,13 @@ async def chat(request: ChatRequest) -> StreamingResponse:
             reply_chunks = []
             stream_error = None
 
+            # 加载 history 用于传给 runner.chat()，同时记录长度用于后续只持久化新增消息
+            from agent.context_manager import get_context_manager
+            store = await get_message_store()
+            context_manager = await get_context_manager(store)
+            history_for_runner = await context_manager.get_context_for_chat(exclude_last=True)
+            history_len = len(history_for_runner)
+
             # Run streaming in executor thread, communicate chunks via queue
             import queue as _queue
 
@@ -272,7 +279,7 @@ async def chat(request: ChatRequest) -> StreamingResponse:
             def sync_stream():
                 nonlocal stream_error
                 try:
-                    for chunk in runner.chat(session_id, request.message, stream=True):
+                    for chunk in runner.chat(session_id, request.message, stream=True, history=history_for_runner):
                         if chunk:
                             chunk_queue.put(chunk)
                 except Exception as e:
@@ -306,15 +313,16 @@ async def chat(request: ChatRequest) -> StreamingResponse:
                 yield f"data: {json.dumps({'error': stream_error})}\n\n"
 
             # 双管道 DB 管道：从 return value 持久化消息
+            # 只持久化新增消息（跳过 history 部分，避免重复写入）
             rv = getattr(runner, "last_return_value", None)
             if rv and isinstance(rv, dict) and rv.get("messages"):
-                store = await get_message_store()
+                # store 已在上方获取
                 # 持久化 user + assistant + tool 消息
                 # 只持久化第一条 user 消息（真实用户输入），跳过 agent 内部的 next_prompt
                 user_persisted = False
                 last_assistant_id = None
                 last_assistant_content = ""  # 记录 rv["messages"] 中最后一条 assistant 消息的 content
-                for msg in rv["messages"]:
+                for msg in rv["messages"][history_len + 1:]:
                     role = msg.get("role", "")
                     content = msg.get("content", "")
                     tool_calls = msg.get("tool_calls")
@@ -436,6 +444,7 @@ async def chat_sync(request: ChatRequest) -> ChatResponse:
 
         context_manager = await get_context_manager(store)
         history_for_runner = await context_manager.get_context_for_chat(exclude_last=True)
+        history_len = len(history_for_runner)
 
         runner = get_or_create_runner()
         session_id = request.session_id or "default"
@@ -464,10 +473,11 @@ async def chat_sync(request: ChatRequest) -> ChatResponse:
 
         if rv and isinstance(rv, dict) and rv.get("messages"):
             # DB 管道：从 return value 持久化 tool 相关消息
+            # 只持久化新增消息（跳过 history 部分，避免重复写入）
             # assistant 纯文本回复也在这里持久化（避免与 persist_messages 重复）
             persisted_ids = []
             last_assistant_content = ""  # 记录最后一条持久化的 assistant 消息的 content
-            for msg in rv["messages"]:
+            for msg in rv["messages"][history_len + 1:]:
                 role = msg.get("role", "")
                 content = msg.get("content", "")
                 tool_calls = msg.get("tool_calls")
@@ -490,7 +500,7 @@ async def chat_sync(request: ChatRequest) -> ChatResponse:
             last_assistant_id = None
             if persisted_ids:
                 persisted_idx = 0
-                for msg in rv["messages"]:
+                for msg in rv["messages"][history_len + 1:]:
                     role = msg.get("role", "")
                     if role in ("system", "user"):
                         continue
