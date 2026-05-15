@@ -34,6 +34,7 @@ from niu_api.brain_api import router as brain_router
 from niu_api.brain_region_api import router as brain_region_router
 from niu_api.notes_api import router as notes_router
 from niu_api.llm_proxy import router as llm_proxy_router
+from niu_api.http_log_api import router as http_log_router
 
 
 # Configure logging
@@ -270,7 +271,8 @@ app.include_router(kg_router)  # Knowledge Graph API
 app.include_router(brain_router)  # Brain Graph API
 app.include_router(brain_region_router)  # Brain Region API
 app.include_router(notes_router)  # Notes API
-app.include_router(llm_proxy_router)  # LLM Proxy API (/llm/v1/*)
+app.include_router(llm_proxy_router)
+app.include_router(http_log_router)  # LLM Proxy API (/llm/v1/*)
 
 
 # Mount scheduler router
