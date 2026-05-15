@@ -218,9 +218,10 @@ def agent_runner_loop(
                         "error": str(e),  # 记录错误信息
                     })
 
-        # 添加assistant消息（如果有工具调用）
+        # 添加assistant消息（无论是否有工具调用，都必须追加到messages）
+        assistant_msg = {"role": "assistant", "content": response.content or ""}
         if response.tool_calls:
-            assistant_msg = {"role": "assistant", "content": response.content or "", "tool_calls": []}
+            assistant_msg["tool_calls"] = []
             for tc in response.tool_calls:
                 assistant_msg["tool_calls"].append({
                     "id": tc.id,
@@ -230,7 +231,7 @@ def agent_runner_loop(
                         "arguments": tc.function.arguments
                     }
                 })
-            messages.append(assistant_msg)
+        messages.append(assistant_msg)
 
         tool_results = []
         next_prompts = set()
