@@ -348,7 +348,6 @@ async def chat(request: ChatRequest) -> StreamingResponse:
 
                 # 推送最后一条 assistant 消息给 SSE 订阅者
                 if last_assistant_id:
-                    full_reply = "".join(reply_chunks)
                     await notify_new_message(last_assistant_id, "assistant", full_reply)
             else:
                 # 回退：无 return_value 时，从 request 和 reply_chunks 持久化
