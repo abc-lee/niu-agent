@@ -1231,7 +1231,8 @@
       console.log('[Chat] 拖入文件:', filePath);
 
       // 铁律1：先刷新页面（显示文件名）
-      addMessage('user', `📄 ${file.name}`);
+      const fileMsg = addMessage('user', `📄 ${file.name}`);
+      if (!fileMsg) return;  // addMessage 返回 null（如 tool 消息被过滤），跳过后续
 
       isProcessing = true;
       sendBtn.disabled = true;
