@@ -222,9 +222,14 @@ async def chat(request: ChatRequest) -> StreamingResponse:
             reply_chunks = []
             stream_error = None
 
-            # 加载 history 用于传给 runner.chat()，同时记录长度用于后续只持久化新增消息
-            from agent.context_manager import get_context_manager
+            # 先持久化 user 消息，再加载 history（与其他端点一致）
+            # 这样 exclude_last=True 才能正确排除当前 user 消息
             store = await get_message_store()
+            user_msg_id = await store.add_message(role="user", content=request.message)
+            await notify_new_message(user_msg_id, "user", request.message)
+
+            # 加载 history（exclude_last=True 现在正确排除当前 user 消息）
+            from agent.context_manager import get_context_manager
             context_manager = await get_context_manager(store)
             history_for_runner = await context_manager.get_context_for_chat(exclude_last=True)
             history_len = len(history_for_runner)
@@ -275,9 +280,8 @@ async def chat(request: ChatRequest) -> StreamingResponse:
             rv = getattr(runner, "last_return_value", None)
             if rv and isinstance(rv, dict) and rv.get("messages"):
                 # store 已在上方获取
-                # 持久化 user + assistant + tool 消息
-                # 只持久化第一条 user 消息（真实用户输入），跳过 agent 内部的 next_prompt
-                user_persisted = False
+                # 持久化 assistant + tool 消息
+                # user 消息已在上方持久化，这里只处理新增的非 user 消息
                 last_assistant_id = None
                 last_assistant_content = ""  # 记录 rv["messages"] 中最后一条 assistant 消息的 content
                 for msg in rv["messages"][history_len + 1:]:
@@ -289,12 +293,7 @@ async def chat(request: ChatRequest) -> StreamingResponse:
                     if role == "system":
                         continue
                     if role == "user":
-                        if not user_persisted:
-                            # 只持久化第一条 user 消息（真实用户输入）
-                            user_msg_id = await store.add_message(role="user", content=content)
-                            await notify_new_message(user_msg_id, "user", content)
-                            user_persisted = True
-                        continue  # 跳过后续 next_prompt user 消息
+                        continue  # user 消息已在上方持久化，跳过
                     elif role == "tool" and tool_call_id:
                         await store.add_message(role="tool", content=content or "", tool_call_id=tool_call_id)
                     elif role == "assistant":
@@ -316,10 +315,8 @@ async def chat(request: ChatRequest) -> StreamingResponse:
                 if last_assistant_id:
                     await notify_new_message(last_assistant_id, "assistant", full_reply)
             else:
-                # 回退：无 return_value 时，从 request 和 reply_chunks 持久化
-                store = await get_message_store()
-                user_msg_id = await store.add_message(role="user", content=request.message)
-                await notify_new_message(user_msg_id, "user", request.message)
+                # 回退：无 return_value 时，从 reply_chunks 持久化 assistant 消息
+                # user 消息已在上方持久化，无需重复
                 full_reply = "".join(reply_chunks)
                 if full_reply.strip():
                     msg_id = await store.add_message(role="assistant", content=full_reply)
