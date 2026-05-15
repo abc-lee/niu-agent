@@ -34,6 +34,9 @@ def set_main_event_loop(loop: asyncio.AbstractEventLoop):
 
 async def notify_new_message(message_id: str, role: str, content: str):
     """新消息写入数据库后调用，广播给所有 SSE 订阅者"""
+    # 双管道分离：tool 消息只走 DB 管道，不推送给前端
+    if role == "tool":
+        return
     event = {
         "type": "new_message",
         "id": message_id,
@@ -49,6 +52,9 @@ async def notify_new_message(message_id: str, role: str, content: str):
 
 def notify_new_message_sync(message_id: str, role: str, content: str):
     """同步版本 — 从非 async 上下文（如 scheduler 线程）调用"""
+    # 双管道分离：tool 消息只走 DB 管道，不推送给前端
+    if role == "tool":
+        return
     event = {
         "type": "new_message",
         "id": message_id,
