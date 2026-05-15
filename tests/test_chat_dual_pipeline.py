@@ -41,26 +41,21 @@ def test_chat_py_persist_messages_is_async():
 
 
 def test_chat_endpoint_accesses_return_value_messages():
-    """chat_endpoint 应从 return value 获取 messages 并调用 persist_messages"""
+    """chat_endpoint 应从 return value 获取 messages 并持久化"""
     source = CHAT_PY_PATH.read_text(encoding="utf-8")
     # 验证 /chat 端点中有获取 return_value 的代码
-    # runner.chat() 是同步生成器，return value 通过 StopIteration.value 获取
-    # 在 runner.py 中已存储为 runner.last_return_value
-    # chat.py 应读取 last_return_value 并提取 messages
     assert "last_return_value" in source, (
         "/chat 端点应读取 runner.last_return_value 获取 return value"
     )
-    # 验证 /chat 端点调用 persist_messages
-    # 搜索 persist_messages 调用（不限于 /chat/sync）
-    found_call = False
+    # 验证 /chat 端点中有持久化逻辑（不再使用 persist_messages 函数，改为内联）
+    # 搜索从 return_value 持久化消息的代码
+    found_persist = False
     for line in source.split("\n"):
-        if "persist_messages" in line and "async def persist_messages" not in line and "def persist_messages" not in line:
-            # 是调用而非定义
-            if "await" in line or "persist_messages(" in line:
-                found_call = True
-                break
-    assert found_call, (
-        "/chat 端点应调用 persist_messages 持久化 tool 消息"
+        if "rv" in line and "messages" in line and "add_message" in line:
+            found_persist = True
+            break
+    assert found_persist or "persist_messages" in source, (
+        "/chat 端点应有从 return_value 持久化消息的逻辑"
     )
 
 

@@ -20,6 +20,13 @@ class StreamEvent:
     def __add__(self, other):
         if isinstance(other, str):
             return self.content + other
+        if isinstance(other, StreamEvent):
+            return self.content + other.content
+        return NotImplemented
+
+    def __radd__(self, other):
+        if isinstance(other, str):
+            return other + self.content
         return NotImplemented
 
 
@@ -129,14 +136,15 @@ def agent_runner_loop(
         for msg in history:
             role = msg.get("role", "user")
             content = msg.get("content", "")
-            if role in ("user", "assistant", "tool") and (content or msg.get("tool_calls") or msg.get("tool_call_id")):
+            if role in ("user", "assistant") and (content or msg.get("tool_calls")):
                 entry = {"role": role, "content": content}
                 # 还原 tool_calls（assistant 消息可能携带工具调用）
                 if msg.get("tool_calls"):
                     entry["tool_calls"] = msg["tool_calls"]
-                # 还原 tool_call_id（tool 消息必须关联到对应的 tool_call）
-                if msg.get("tool_call_id"):
-                    entry["tool_call_id"] = msg["tool_call_id"]
+                messages.append(entry)
+            elif role == "tool" and msg.get("tool_call_id") and content is not None:
+                # tool 消息必须有 tool_call_id 和 content，否则 OpenAI API 返回 400
+                entry = {"role": role, "content": content, "tool_call_id": msg["tool_call_id"]}
                 messages.append(entry)
 
     # Add current user message
@@ -212,7 +220,7 @@ def agent_runner_loop(
 
         # 添加assistant消息（如果有工具调用）
         if response.tool_calls:
-            assistant_msg = {"role": "assistant", "tool_calls": []}
+            assistant_msg = {"role": "assistant", "content": response.content or "", "tool_calls": []}
             for tc in response.tool_calls:
                 assistant_msg["tool_calls"].append({
                     "id": tc.id,
@@ -230,7 +238,7 @@ def agent_runner_loop(
         for ii, tc in enumerate(tool_calls):
             tool_name, args, tid = tc["tool_name"], tc["args"], tc.get("id", "")
             if tool_name == "no_tool":
-                pass
+                continue
             elif verbose:
                 showarg = get_pretty_json(args)
                 yield StreamEvent("tool_marker", f"🛠️ **正在调用工具:** `{tool_name}`  📥**参数:**\n````text\n{showarg}\n````\n")
@@ -288,7 +296,9 @@ def agent_runner_loop(
                     on_turn_end(messages, tools_schema, turn)
                 if isinstance(should_exit, dict):
                     should_exit["messages"] = messages
-                return should_exit
+                    return should_exit
+                # should_exit 为 None 时（无工具调用），返回标准格式
+                return {"result": "CURRENT_TASK_DONE", "data": None, "messages": messages}
             next_prompts.add(handler._done_hooks.pop(0))
         next_prompt = handler.next_prompt_patcher("\n".join(next_prompts), None, turn)
 
@@ -299,7 +309,8 @@ def agent_runner_loop(
                 on_turn_end(messages, tools_schema, turn)
             if isinstance(should_exit, dict):
                 should_exit["messages"] = messages
-            return should_exit
+                return should_exit
+            return {"result": "CURRENT_TASK_DONE", "data": None, "messages": messages}
 
         # 添加下一个user消息
         messages.append({"role": "user", "content": next_prompt})
@@ -320,18 +331,6 @@ def agent_runner_loop(
                         while len(messages) > 2 and messages[2].get("role") == "tool":
                             messages.pop(2)
                             removed += 1
-                    # 如果移除的是 tool 结果，检查前面是否已有孤立的 assistant(tool_calls)
-                    # （这种情况不应发生，因为我们是 FIFO 从头移除，但做防御性检查）
-                    if first.get("role") == "tool" and len(messages) > 2:
-                        prev = messages[2]
-                        if prev.get("role") == "assistant" and prev.get("tool_calls"):
-                            # assistant 的 tool_calls 已没有对应的 tool 结果，也移除
-                            messages.pop(2)
-                            removed += 1
-                            # 继续移除该 assistant 后可能残留的其他 tool 结果
-                            while len(messages) > 2 and messages[2].get("role") == "tool":
-                                messages.pop(2)
-                                removed += 1
                     current_tokens = count_messages_tokens(messages)
                 if removed > 0:
                     logger.info(f"[FIFO] Context truncation: removed {removed} oldest messages, "

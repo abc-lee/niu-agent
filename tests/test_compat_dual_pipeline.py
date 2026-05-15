@@ -69,11 +69,11 @@ async def test_compat_persists_tool_messages():
 
     # Persist all messages (skip user which was already persisted by the endpoint)
     persisted_ids = await _persist_messages_from_return_value(
-        store, return_value, skip_user=True
+        store, return_value
     )
 
-    # Verify all messages were persisted (user skipped because skip_user=True,
-    # it's already persisted separately by the endpoint)
+    # Verify all messages were persisted (user skipped because
+    # _persist_messages_from_return_value now always skips user messages)
     db_messages = await store.get_messages()
     assert len(db_messages) == 3
 
@@ -101,8 +101,8 @@ async def test_compat_persists_tool_messages():
 
 
 @pytest.mark.asyncio
-async def test_compat_persist_skips_user_when_requested():
-    """When skip_user=True, the user message is not persisted (already done by endpoint)."""
+async def test_compat_persist_skips_user_messages():
+    """User messages are always skipped (already persisted by the endpoint)."""
     from agent.session import MessageStore
     import tempfile, os
 
@@ -120,11 +120,11 @@ async def test_compat_persist_skips_user_when_requested():
     from niu_api.compat import _persist_messages_from_return_value
 
     persisted_ids = await _persist_messages_from_return_value(
-        store, return_value, skip_user=True
+        store, return_value
     )
 
     db_messages = await store.get_messages()
-    # Only assistant message should be persisted
+    # Only assistant message should be persisted (user always skipped)
     assert len(db_messages) == 1
     assert db_messages[0].role == "assistant"
 
@@ -151,7 +151,7 @@ async def test_compat_persist_no_messages_in_return_value():
     from niu_api.compat import _persist_messages_from_return_value
 
     persisted_ids = await _persist_messages_from_return_value(
-        store, return_value, skip_user=True
+        store, return_value
     )
 
     db_messages = await store.get_messages()
@@ -184,7 +184,7 @@ async def test_compat_persist_context_overflow():
     from niu_api.compat import _persist_messages_from_return_value
 
     persisted_ids = await _persist_messages_from_return_value(
-        store, return_value, skip_user=True
+        store, return_value
     )
 
     db_messages = await store.get_messages()
@@ -235,7 +235,7 @@ async def test_compat_persist_multiple_tool_calls():
     from niu_api.compat import _persist_messages_from_return_value
 
     persisted_ids = await _persist_messages_from_return_value(
-        store, return_value, skip_user=True
+        store, return_value
     )
 
     db_messages = await store.get_messages()
@@ -277,7 +277,7 @@ async def test_compat_persist_skips_system_messages():
     from niu_api.compat import _persist_messages_from_return_value
 
     persisted_ids = await _persist_messages_from_return_value(
-        store, return_value, skip_user=True
+        store, return_value
     )
 
     db_messages = await store.get_messages()
