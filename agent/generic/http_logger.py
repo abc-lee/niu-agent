@@ -79,23 +79,13 @@ def _is_streaming_response(response: httpx.Response) -> bool:
 
 
 def _read_streaming_body(response: httpx.Response) -> Any:
-    """读取 SSE 流式响应内容（仅读取前 N 字节作为采样）。"""
-    max_bytes = 4096
-    try:
-        chunks = []
-        total = 0
-        for chunk in response.iter_bytes():
-            chunks.append(chunk)
-            total += len(chunk)
-            if total >= max_bytes:
-                break
-        raw = b"".join(chunks)
-        text = raw.decode("utf-8", errors="replace")
-        if total >= max_bytes:
-            text += f"\n... <truncated, total >= {max_bytes} bytes>"
-        return text
-    except Exception as exc:
-        return f"<streaming read error: {exc}>"
+    """流式响应：不消费原始流，只返回标记说明。
+
+    流式响应（SSE）是单向消费的，一旦调用 iter_bytes() 就会丢失数据，
+    导致下游 litellm SDK 无法正确解析初始 chunk（含 tool_calls 等关键信息）。
+    因此只记录元信息，不读取 body。
+    """
+    return "<streaming response, body not captured>"
 
 
 def _write_log_entry(seq: int, entry: dict) -> None:
