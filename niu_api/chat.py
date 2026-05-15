@@ -282,6 +282,14 @@ async def chat(request: ChatRequest) -> StreamingResponse:
                 # store 已在上方获取
                 # 持久化 assistant + tool 消息
                 # user 消息已在上方持久化，这里只处理新增的非 user 消息
+                # 收集需要跳过的 tool_call_id（working_memory 虚拟调用）
+                _wm_tool_call_ids = set()
+                for msg in rv["messages"][history_len + 1:]:
+                    if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                        for tc in msg["tool_calls"]:
+                            if tc.get("function", {}).get("name") == "working_memory":
+                                _wm_tool_call_ids.add(tc.get("id", ""))
+
                 last_assistant_id = None
                 last_assistant_content = ""  # 记录 rv["messages"] 中最后一条 assistant 消息的 content
                 for msg in rv["messages"][history_len + 1:]:
@@ -294,7 +302,15 @@ async def chat(request: ChatRequest) -> StreamingResponse:
                         continue
                     if role == "user":
                         continue  # user 消息已在上方持久化，跳过
-                    elif role == "tool" and tool_call_id:
+
+                    # 跳过 working_memory 虚拟消息（不持久化到数据库）
+                    if role == "assistant" and tool_calls:
+                        if any(tc.get("function", {}).get("name") == "working_memory" for tc in tool_calls):
+                            continue
+                    if role == "tool" and tool_call_id in _wm_tool_call_ids:
+                        continue
+
+                    if role == "tool" and tool_call_id:
                         await store.add_message(role="tool", content=content or "", tool_call_id=tool_call_id)
                     elif role == "assistant":
                         pid = await store.add_message(role="assistant", content=content or "", tool_calls=tool_calls)
@@ -430,6 +446,14 @@ async def chat_sync(request: ChatRequest) -> ChatResponse:
             # DB 管道：从 return value 持久化 tool 相关消息
             # 只持久化新增消息（跳过 history 部分，避免重复写入）
             # assistant 纯文本回复也在这里持久化（避免与 rv["messages"] 中的重复）
+            # 收集需要跳过的 tool_call_id（working_memory 虚拟调用）
+            _wm_tool_call_ids = set()
+            for msg in rv["messages"][history_len + 1:]:
+                if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                    for tc in msg["tool_calls"]:
+                        if tc.get("function", {}).get("name") == "working_memory":
+                            _wm_tool_call_ids.add(tc.get("id", ""))
+
             persisted_ids = []
             last_assistant_content = ""  # 记录最后一条持久化的 assistant 消息的 content
             for msg in rv["messages"][history_len + 1:]:
@@ -442,6 +466,13 @@ async def chat_sync(request: ChatRequest) -> ChatResponse:
                     continue
                 if role == "user":
                     continue  # user 消息已在上方持久化
+
+                # 跳过 working_memory 虚拟消息（不持久化到数据库）
+                if role == "assistant" and tool_calls:
+                    if any(tc.get("function", {}).get("name") == "working_memory" for tc in tool_calls):
+                        continue
+                if role == "tool" and tool_call_id in _wm_tool_call_ids:
+                    continue
 
                 if role == "tool" and tool_call_id:
                     pid = await store.add_message(role="tool", content=content or "", tool_call_id=tool_call_id)
