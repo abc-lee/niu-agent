@@ -299,12 +299,48 @@ async def chat(request: ChatRequest) -> StreamingResponse:
             if stream_error:
                 yield f"data: {json.dumps({'error': stream_error})}\n\n"
 
-            # 双管道 DB 管道：从 return value 获取 messages 并持久化 tool 相关消息
+            # 双管道 DB 管道：从 return value 持久化消息
             rv = getattr(runner, "last_return_value", None)
-            if rv and isinstance(rv, dict):
-                if rv.get("messages"):
-                    store = await get_message_store()
-                    await persist_messages(store, rv["messages"], session_id)
+            if rv and isinstance(rv, dict) and rv.get("messages"):
+                store = await get_message_store()
+                # 持久化 user + assistant + tool 消息
+                # 只持久化第一条 user 消息（真实用户输入），跳过 agent 内部的 next_prompt
+                user_persisted = False
+                last_assistant_id = None
+                for msg in rv["messages"]:
+                    role = msg.get("role", "")
+                    content = msg.get("content", "")
+                    tool_calls = msg.get("tool_calls")
+                    tool_call_id = msg.get("tool_call_id", "")
+
+                    if role == "system":
+                        continue
+                    if role == "user":
+                        if not user_persisted:
+                            # 只持久化第一条 user 消息（真实用户输入）
+                            user_msg_id = await store.add_message(role="user", content=content)
+                            await notify_new_message(user_msg_id, "user", content)
+                            user_persisted = True
+                        continue  # 跳过后续 next_prompt user 消息
+                    elif role == "tool" and tool_call_id:
+                        await store.add_message(role="tool", content=content or "", tool_call_id=tool_call_id)
+                    elif role == "assistant":
+                        pid = await store.add_message(role="assistant", content=content or "", tool_calls=tool_calls)
+                        last_assistant_id = pid
+
+                # 推送最后一条 assistant 消息给 SSE 订阅者
+                if last_assistant_id:
+                    full_reply = "".join(reply_chunks)
+                    await notify_new_message(last_assistant_id, "assistant", full_reply)
+            else:
+                # 回退：无 return_value 时，从 request 和 reply_chunks 持久化
+                store = await get_message_store()
+                user_msg_id = await store.add_message(role="user", content=request.message)
+                await notify_new_message(user_msg_id, "user", request.message)
+                full_reply = "".join(reply_chunks)
+                if full_reply.strip():
+                    msg_id = await store.add_message(role="assistant", content=full_reply)
+                    await notify_new_message(msg_id, "assistant", full_reply)
 
             # 检测主 Agent 上下文溢出 → 同步触发 force 压缩（阻塞）
             if rv and isinstance(rv, dict) and rv.get("result") == "CONTEXT_OVERFLOW":
@@ -405,16 +441,42 @@ async def chat_sync(request: ChatRequest) -> ChatResponse:
 
         # 双管道架构：runner.chat() 已过滤非 reply 内容，无需再清理
 
-        # Persist assistant response to database
+        # 持久化消息到数据库
         message_id = None
-        if full_reply.strip():
+        rv = getattr(runner, "last_return_value", None)
+
+        if rv and isinstance(rv, dict) and rv.get("messages"):
+            # DB 管道：从 return value 持久化 tool 相关消息
+            # assistant 纯文本回复也在这里持久化（避免与 persist_messages 重复）
+            persisted_ids = []
+            for msg in rv["messages"]:
+                role = msg.get("role", "")
+                content = msg.get("content", "")
+                tool_calls = msg.get("tool_calls")
+                tool_call_id = msg.get("tool_call_id", "")
+
+                if role == "system":
+                    continue
+                if role == "user":
+                    continue  # user 消息已在上方持久化
+
+                if role == "tool" and tool_call_id:
+                    pid = await store.add_message(role="tool", content=content or "", tool_call_id=tool_call_id)
+                    persisted_ids.append(pid)
+                elif role == "assistant":
+                    pid = await store.add_message(role="assistant", content=content or "", tool_calls=tool_calls)
+                    persisted_ids.append(pid)
+
+            if persisted_ids:
+                message_id = persisted_ids[-1]
+                await notify_new_message(message_id, "assistant", full_reply)
+        elif full_reply.strip():
+            # 回退：无 return_value 时只存 assistant 纯文本回复
             message_id = await store.add_message(role="assistant", content=full_reply)
             await notify_new_message(message_id, "assistant", full_reply)
 
         # 检测主 Agent 上下文溢出 → 同步触发 force 压缩（阻塞，压缩完再继续）
-        rv = getattr(runner, "last_return_value", None)
         if rv and isinstance(rv, dict) and rv.get("result") == "CONTEXT_OVERFLOW":
-            from loguru import logger
             overflow_data = rv.get("data", {})
             logger.warning(
                 f"[Chat] Main agent CONTEXT_OVERFLOW at {overflow_data.get('tokens_used', 0)} tokens, "
@@ -430,10 +492,6 @@ async def chat_sync(request: ChatRequest) -> ChatResponse:
             if full_reply.strip():
                 from niu_api.compat import _check_and_trigger_auto_tidy
                 await _check_and_trigger_auto_tidy(store)
-
-        # 双管道 DB 管道：从 return value 获取 messages 并持久化 tool 相关消息
-        if rv and isinstance(rv, dict) and rv.get("messages"):
-            await persist_messages(store, rv["messages"], session_id)
 
         return ChatResponse(session_id=session_id, reply=full_reply, message_id=message_id)
     finally:

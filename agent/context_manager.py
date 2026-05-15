@@ -153,23 +153,53 @@ class ContextManager:
         # 从前向后扫描，标记要删除的消息
         to_delete = set(range(delete_count))
 
-        # 收集被删除的 assistant(tool_calls) 的 tool_call_id
-        deleted_tool_call_ids = set()
-        for idx in to_delete:
-            msg = messages[idx]
-            if msg.get("role") == "assistant" and msg.get("tool_calls"):
-                for tc in msg["tool_calls"]:
-                    tc_id = tc.get("id", "")
-                    if tc_id:
-                        deleted_tool_call_ids.add(tc_id)
+        # 迭代收敛：删除消息可能产生新的孤立消息，需要反复检查直到稳定
+        changed = True
+        max_iterations = len(messages)  # 上限：最多迭代消息数量次
+        iteration = 0
+        while changed and iteration < max_iterations:
+            changed = False
+            iteration += 1
+            changed = False
 
-        # 如果有被删除的 tool_call_id，对应的 tool 消息也必须删除
-        for idx in range(len(messages)):
-            if idx in to_delete:
-                continue
-            msg = messages[idx]
-            if msg.get("role") == "tool" and msg.get("tool_call_id") in deleted_tool_call_ids:
-                to_delete.add(idx)
+            # 正向：收集被删除的 assistant(tool_calls) 的 tool_call_id
+            deleted_tool_call_ids = set()
+            for idx in to_delete:
+                msg = messages[idx]
+                if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                    for tc in msg["tool_calls"]:
+                        tc_id = tc.get("id", "")
+                        if tc_id:
+                            deleted_tool_call_ids.add(tc_id)
+
+            # 正向：被删除的 tool_call_id 对应的 tool 消息也必须删除
+            for idx in range(len(messages)):
+                if idx in to_delete:
+                    continue
+                msg = messages[idx]
+                if msg.get("role") == "tool" and msg.get("tool_call_id") in deleted_tool_call_ids:
+                    if idx not in to_delete:
+                        to_delete.add(idx)
+                        changed = True
+
+            # 反向：收集被删除的 tool 消息的 tool_call_id
+            deleted_tool_call_ids_from_tool = set()
+            for idx in to_delete:
+                msg = messages[idx]
+                if msg.get("role") == "tool" and msg.get("tool_call_id"):
+                    deleted_tool_call_ids_from_tool.add(msg["tool_call_id"])
+
+            # 反向：如果 assistant(tool_calls) 的任一 tool_call_id 被删除，该 assistant 也必须删除
+            for idx in range(len(messages)):
+                if idx in to_delete:
+                    continue
+                msg = messages[idx]
+                if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                    tc_ids = {tc.get("id", "") for tc in msg["tool_calls"] if tc.get("id")}
+                    if tc_ids and any(tc_id in deleted_tool_call_ids_from_tool for tc_id in tc_ids):
+                        if idx not in to_delete:
+                            to_delete.add(idx)
+                            changed = True
 
         # 构建压缩后的消息列表
         compressed = [msg for idx, msg in enumerate(messages) if idx not in to_delete]

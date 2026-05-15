@@ -297,16 +297,21 @@ async def _run_auto_tidy():
         logger.warning(f"[AutoTidy] Failed: {e}")
 
 
-async def _persist_messages_from_return_value(store, return_value: dict, skip_user: bool = True) -> list[str]:
+async def _persist_messages_from_return_value(store, return_value: dict) -> list[str]:
     """从 agent_runner_loop 的 return value 中提取完整 messages 并持久化到数据库。
 
     双管道架构的 DB 管道：SSE 管道只推送 reply 内容，DB 管道从 return_value
     获取完整 messages（包含 tool_calls + tool_results），逐条写入数据库。
 
+    只持久化 tool 相关消息和 assistant 消息：
+    - role="tool" 的消息：存储 tool_call_id + content
+    - role="assistant" 的消息：存储 content + tool_calls
+    - 跳过 system 消息（agent 内部使用）
+    - 跳过 user 消息（端点入口已单独持久化，且 agent 内部的 next_prompt 不是用户输入）
+
     Args:
         store: MessageStore 实例
         return_value: agent_runner_loop 的返回值，包含 "messages" 键
-        skip_user: 是否跳过第一条 user 消息（端点已单独持久化）
 
     Returns:
         持久化的消息 ID 列表
@@ -318,7 +323,6 @@ async def _persist_messages_from_return_value(store, return_value: dict, skip_us
         return []
 
     persisted_ids = []
-    user_skipped = False
 
     for msg in messages:
         role = msg.get("role", "")
@@ -328,9 +332,8 @@ async def _persist_messages_from_return_value(store, return_value: dict, skip_us
         if role == "system":
             continue
 
-        # 跳过第一条 user 消息（端点已单独持久化）
-        if skip_user and not user_skipped and role == "user":
-            user_skipped = True
+        # 跳过 user 消息（端点入口已持久化，agent 内部的 next_prompt 不是用户输入）
+        if role == "user":
             continue
 
         # 提取 tool_calls（assistant 消息可能携带）
@@ -532,14 +535,39 @@ async def chat_session(request: ChatRequest) -> ChatResponse:
         message_id = None
         rv = getattr(runner, "last_return_value", None)
         if rv and isinstance(rv, dict) and rv.get("messages"):
-            # DB 管道：持久化完整 messages（跳过已持久化的 user 消息）
-            persisted_ids = await _persist_messages_from_return_value(store, rv, skip_user=True)
-            # 取最后一条 assistant 消息的 ID 作为 message_id（用于响应）
-            if persisted_ids:
-                message_id = persisted_ids[-1]
-                # 通知 SSE 推送最后一条 assistant 消息给前端
+            # DB 管道：持久化 tool 相关消息和 assistant 消息（user 消息已在入口持久化）
+            persisted_ids = await _persist_messages_from_return_value(store, rv)
+            # 找到最后一条 assistant 消息的 ID（persisted_ids 可能包含 tool 消息）
+            last_assistant_id = None
+            if persisted_ids and rv.get("messages"):
+                # 遍历 rv["messages"] 和 persisted_ids，找到最后一条 assistant 消息
+                # _persist_messages_from_return_value 只持久化 assistant 和 tool，顺序与 rv["messages"] 一致
+                persisted_idx = 0
+                for msg in rv["messages"]:
+                    role = msg.get("role", "")
+                    if role in ("system", "user"):
+                        continue  # 跳过的消息没有对应的 persisted_id
+                    if persisted_idx < len(persisted_ids):
+                        if role == "assistant":
+                            last_assistant_id = persisted_ids[persisted_idx]
+                        persisted_idx += 1
+            if last_assistant_id:
+                message_id = last_assistant_id
                 from niu_api.chat import notify_new_message
                 await notify_new_message(message_id, "assistant", full_reply)
+            elif persisted_ids:
+                # 回退：没有 assistant 消息（纯文本回复时 rv 中无 assistant 消息）
+                # 直接存储 assistant 回复
+                if full_reply.strip():
+                    message_id = await store.add_message(role="assistant", content=full_reply)
+                    from niu_api.chat import notify_new_message
+                    await notify_new_message(message_id, "assistant", full_reply)
+            else:
+                # persisted_ids 为空：纯文本回复，rv 中只有 system + user 消息
+                if full_reply.strip():
+                    message_id = await store.add_message(role="assistant", content=full_reply)
+                    from niu_api.chat import notify_new_message
+                    await notify_new_message(message_id, "assistant", full_reply)
         else:
             # 回退：无 return_value 或无 messages，使用旧逻辑只存 assistant 回复
             if full_reply.strip():
