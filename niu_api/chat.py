@@ -313,7 +313,7 @@ async def chat(request: ChatRequest) -> StreamingResponse:
                 # 只持久化第一条 user 消息（真实用户输入），跳过 agent 内部的 next_prompt
                 user_persisted = False
                 last_assistant_id = None
-                last_assistant_content = ""  # 记录最后一条持久化的 assistant 消息的 content
+                has_assistant_in_rv = False  # rv["messages"] 中是否有 assistant 消息
                 for msg in rv["messages"]:
                     role = msg.get("role", "")
                     content = msg.get("content", "")
@@ -334,12 +334,11 @@ async def chat(request: ChatRequest) -> StreamingResponse:
                     elif role == "assistant":
                         pid = await store.add_message(role="assistant", content=content or "", tool_calls=tool_calls)
                         last_assistant_id = pid
-                        last_assistant_content = content or ""
+                        has_assistant_in_rv = True
 
-                # 修复：多轮对话时（先 tool_calls 后纯文本），纯文本回复不在 rv["messages"] 中。
-                # 检查 reply_chunks 是否有内容且未被持久化为 assistant 消息。
+                # 纯文本回复不在 rv["messages"] 中，需要从 reply_chunks 持久化
                 full_reply = "".join(reply_chunks)
-                if full_reply.strip() and full_reply.strip() != last_assistant_content.strip():
+                if full_reply.strip() and not has_assistant_in_rv:
                     pid = await store.add_message(role="assistant", content=full_reply)
                     last_assistant_id = pid
 
