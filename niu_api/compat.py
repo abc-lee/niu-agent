@@ -616,7 +616,7 @@ async def get_context_messages(
                 id=msg.id, role=msg.role, content=msg.content, created_at=msg.created_at
             )
             for msg in messages
-            if msg.role != "tool"  # tool 消息只走 DB 管道，不给前端看
+            if msg.role != "tool" and not (msg.role == "assistant" and not (msg.content or "").strip() and msg.tool_calls)  # 过滤 tool 消息 + 空 content 带 tool_calls 的 assistant 消息
         ],
         total_in_db=total,
     )
