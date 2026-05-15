@@ -337,11 +337,12 @@ async def chat(request: ChatRequest) -> StreamingResponse:
                         last_assistant_content = content or ""
 
                 # 纯文本回复不在 rv["messages"] 中，需要从 reply_chunks 持久化。
-                # 条件：full_reply 非空，且 rv["messages"] 中最后一条 assistant 消息的 content 为空
-                # （即只有 tool_calls 的 assistant 消息，最终纯文本回复不在 rv 中）。
-                # 纯文本回复时 rv 中无 assistant 消息，last_assistant_content 为空，条件也成立。
+                # 条件：full_reply 非空，且与 rv["messages"] 中最后一条 assistant 消息的 content 不同。
+                # - 纯文本回复：rv 中无 assistant 消息，last_assistant_content 为空，条件成立。
+                # - tool_calls + 纯文本：rv 中 assistant(content="")，last_assistant_content 为空，条件成立。
+                # - tool_calls 带文本 + 纯文本：rv 中 assistant(content="xxx")，条件也成立（内容不同）。
                 full_reply = "".join(reply_chunks)
-                if full_reply.strip() and not last_assistant_content.strip():
+                if full_reply.strip() and full_reply.strip() != last_assistant_content.strip():
                     pid = await store.add_message(role="assistant", content=full_reply)
                     last_assistant_id = pid
 
