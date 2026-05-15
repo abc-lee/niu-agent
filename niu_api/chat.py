@@ -313,6 +313,7 @@ async def chat(request: ChatRequest) -> StreamingResponse:
                 # 只持久化第一条 user 消息（真实用户输入），跳过 agent 内部的 next_prompt
                 user_persisted = False
                 last_assistant_id = None
+                last_assistant_content = ""  # 记录最后一条持久化的 assistant 消息的 content
                 for msg in rv["messages"]:
                     role = msg.get("role", "")
                     content = msg.get("content", "")
@@ -333,14 +334,14 @@ async def chat(request: ChatRequest) -> StreamingResponse:
                     elif role == "assistant":
                         pid = await store.add_message(role="assistant", content=content or "", tool_calls=tool_calls)
                         last_assistant_id = pid
+                        last_assistant_content = content or ""
 
-                # 修复：纯文本回复时 rv["messages"] 中没有 assistant 消息，
-                # 从 reply_chunks 构造 assistant 消息并持久化
-                if last_assistant_id is None:
-                    full_reply = "".join(reply_chunks)
-                    if full_reply.strip():
-                        pid = await store.add_message(role="assistant", content=full_reply)
-                        last_assistant_id = pid
+                # 修复：多轮对话时（先 tool_calls 后纯文本），纯文本回复不在 rv["messages"] 中。
+                # 检查 reply_chunks 是否有内容且未被持久化为 assistant 消息。
+                full_reply = "".join(reply_chunks)
+                if full_reply.strip() and full_reply.strip() != last_assistant_content.strip():
+                    pid = await store.add_message(role="assistant", content=full_reply)
+                    last_assistant_id = pid
 
                 # 推送最后一条 assistant 消息给 SSE 订阅者
                 if last_assistant_id:
@@ -463,6 +464,7 @@ async def chat_sync(request: ChatRequest) -> ChatResponse:
             # DB 管道：从 return value 持久化 tool 相关消息
             # assistant 纯文本回复也在这里持久化（避免与 persist_messages 重复）
             persisted_ids = []
+            last_assistant_content = ""  # 记录最后一条持久化的 assistant 消息的 content
             for msg in rv["messages"]:
                 role = msg.get("role", "")
                 content = msg.get("content", "")
@@ -480,6 +482,7 @@ async def chat_sync(request: ChatRequest) -> ChatResponse:
                 elif role == "assistant":
                     pid = await store.add_message(role="assistant", content=content or "", tool_calls=tool_calls)
                     persisted_ids.append(pid)
+                    last_assistant_content = content or ""
 
             # 找到最后一条 assistant 消息的 ID（persisted_ids 可能包含 tool 消息）
             last_assistant_id = None
@@ -493,7 +496,13 @@ async def chat_sync(request: ChatRequest) -> ChatResponse:
                         if role == "assistant":
                             last_assistant_id = persisted_ids[persisted_idx]
                         persisted_idx += 1
-            if last_assistant_id:
+
+            # 修复：多轮对话时（先 tool_calls 后纯文本），纯文本回复不在 rv["messages"] 中。
+            # 检查 full_reply 是否有内容且未被持久化为 assistant 消息。
+            if full_reply.strip() and full_reply.strip() != last_assistant_content.strip():
+                message_id = await store.add_message(role="assistant", content=full_reply)
+                await notify_new_message(message_id, "assistant", full_reply)
+            elif last_assistant_id:
                 message_id = last_assistant_id
                 await notify_new_message(message_id, "assistant", full_reply)
             elif persisted_ids and full_reply.strip():
