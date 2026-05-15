@@ -537,29 +537,32 @@ async def chat_session(request: ChatRequest) -> ChatResponse:
         if rv and isinstance(rv, dict) and rv.get("messages"):
             # DB 管道：持久化 tool 相关消息和 assistant 消息（user 消息已在入口持久化）
             persisted_ids = await _persist_messages_from_return_value(store, rv)
-            # 找到最后一条 assistant 消息的 ID（persisted_ids 可能包含 tool 消息）
+            # 找到最后一条 assistant 消息的 ID 和 content
+            # persisted_ids 可能包含 tool 消息，顺序与 rv["messages"] 中非 system/user 的消息一致
             last_assistant_id = None
+            last_assistant_content = ""
             if persisted_ids and rv.get("messages"):
-                # 遍历 rv["messages"] 和 persisted_ids，找到最后一条 assistant 消息
-                # _persist_messages_from_return_value 只持久化 assistant 和 tool，顺序与 rv["messages"] 一致
                 persisted_idx = 0
                 for msg in rv["messages"]:
                     role = msg.get("role", "")
                     if role in ("system", "user"):
-                        continue  # 跳过的消息没有对应的 persisted_id
+                        continue
                     if persisted_idx < len(persisted_ids):
                         if role == "assistant":
                             last_assistant_id = persisted_ids[persisted_idx]
+                            last_assistant_content = msg.get("content", "") or ""
                         persisted_idx += 1
-            # _persist_messages_from_return_value 已处理 rv["messages"] 中的 assistant 消息持久化。
-            # 纯文本回复时 rv["messages"] 中无 assistant 消息，需要从 full_reply 创建。
-            if last_assistant_id:
-                message_id = last_assistant_id
+            # 纯文本回复不在 rv["messages"] 中，需要从 full_reply 持久化。
+            # 条件：full_reply 非空，且 rv["messages"] 中最后一条 assistant 消息的 content 为空
+            # （即只有 tool_calls 的 assistant 消息，最终纯文本回复不在 rv 中）。
+            if full_reply.strip() and not last_assistant_content.strip():
+                # 纯文本回复或 tool_calls+纯文本：从 full_reply 创建 assistant 消息
+                message_id = await store.add_message(role="assistant", content=full_reply)
                 from niu_api.chat import notify_new_message
                 await notify_new_message(message_id, "assistant", full_reply)
-            elif full_reply.strip():
-                # 纯文本回复：rv["messages"] 中无 assistant 消息，从 full_reply 持久化
-                message_id = await store.add_message(role="assistant", content=full_reply)
+            elif last_assistant_id:
+                # rv["messages"] 中有带内容的 assistant 消息，只推送 SSE
+                message_id = last_assistant_id
                 from niu_api.chat import notify_new_message
                 await notify_new_message(message_id, "assistant", full_reply)
         elif full_reply.strip():
