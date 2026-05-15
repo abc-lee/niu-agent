@@ -485,10 +485,20 @@ async def chat_sync(request: ChatRequest) -> ChatResponse:
             # 找到最后一条 assistant 消息的 ID（persisted_ids 可能包含 tool 消息）
             last_assistant_id = None
             if persisted_ids:
+                # persisted_ids 与非 user/system/WM 消息按顺序对齐
+                # WM 虚拟消息未持久化，跳过以保持对齐
                 persisted_idx = 0
                 for msg in rv["messages"][history_len + 1:]:
                     role = msg.get("role", "")
                     if role in ("system", "user"):
+                        continue
+                    # 跳过 working_memory 虚拟消息（与持久化循环一致）
+                    tool_calls = msg.get("tool_calls")
+                    tool_call_id = msg.get("tool_call_id", "")
+                    if role == "assistant" and tool_calls:
+                        if any(tc.get("function", {}).get("name") == "working_memory" for tc in tool_calls):
+                            continue
+                    if role == "tool" and tool_call_id in _wm_tool_call_ids:
                         continue
                     if persisted_idx < len(persisted_ids):
                         if role == "assistant":
