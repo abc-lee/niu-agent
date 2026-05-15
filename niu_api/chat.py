@@ -467,8 +467,24 @@ async def chat_sync(request: ChatRequest) -> ChatResponse:
                     pid = await store.add_message(role="assistant", content=content or "", tool_calls=tool_calls)
                     persisted_ids.append(pid)
 
+            # 找到最后一条 assistant 消息的 ID（persisted_ids 可能包含 tool 消息）
+            last_assistant_id = None
             if persisted_ids:
-                message_id = persisted_ids[-1]
+                persisted_idx = 0
+                for msg in rv["messages"]:
+                    role = msg.get("role", "")
+                    if role in ("system", "user"):
+                        continue
+                    if persisted_idx < len(persisted_ids):
+                        if role == "assistant":
+                            last_assistant_id = persisted_ids[persisted_idx]
+                        persisted_idx += 1
+            if last_assistant_id:
+                message_id = last_assistant_id
+                await notify_new_message(message_id, "assistant", full_reply)
+            elif persisted_ids and full_reply.strip():
+                # 回退：没有 assistant 消息（纯文本回复时 rv 中无 assistant 消息）
+                message_id = await store.add_message(role="assistant", content=full_reply)
                 await notify_new_message(message_id, "assistant", full_reply)
         elif full_reply.strip():
             # 回退：无 return_value 时只存 assistant 纯文本回复
