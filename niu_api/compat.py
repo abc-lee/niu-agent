@@ -297,8 +297,10 @@ async def _run_auto_tidy():
         logger.warning(f"[AutoTidy] Failed: {e}")
 
 
-async def _persist_messages_from_return_value(store, return_value: dict) -> list[str]:
-    """从 agent_runner_loop 的 return value 中提取完整 messages 并持久化到数据库。
+async def _persist_messages_from_return_value(store, return_value: dict, history_len: int = 0) -> list[str]:
+    """从 agent_runner_loop 的 return value 中提取新增消息并持久化到数据库。
+
+    只持久化 history_len 之后的消息（本轮新增），跳过历史消息（已在之前的对话中持久化）。
 
     双管道架构的 DB 管道：SSE 管道只推送 reply 内容，DB 管道从 return_value
     获取完整 messages（包含 tool_calls + tool_results），逐条写入数据库。
@@ -312,6 +314,8 @@ async def _persist_messages_from_return_value(store, return_value: dict) -> list
     Args:
         store: MessageStore 实例
         return_value: agent_runner_loop 的返回值，包含 "messages" 键
+        history_len: 历史消息长度，rv["messages"][:history_len] 为历史消息（已持久化），
+                     只持久化 rv["messages"][history_len + 1:] 的新增消息
 
     Returns:
         持久化的消息 ID 列表
@@ -324,7 +328,7 @@ async def _persist_messages_from_return_value(store, return_value: dict) -> list
 
     persisted_ids = []
 
-    for msg in messages:
+    for msg in messages[history_len + 1:]:
         role = msg.get("role", "")
         content = msg.get("content", "")
 
@@ -504,6 +508,7 @@ async def chat_session(request: ChatRequest) -> ChatResponse:
 
         context_manager = await get_context_manager(store)
         history_for_runner = await context_manager.get_context_for_chat(exclude_last=True)
+        history_len = len(history_for_runner)
 
         logger.info(f"Loaded {len(history_for_runner)} history messages")
 
@@ -536,42 +541,34 @@ async def chat_session(request: ChatRequest) -> ChatResponse:
         rv = getattr(runner, "last_return_value", None)
         if rv and isinstance(rv, dict) and rv.get("messages"):
             # DB 管道：持久化 tool 相关消息和 assistant 消息（user 消息已在入口持久化）
-            persisted_ids = await _persist_messages_from_return_value(store, rv)
-            # 找到最后一条 assistant 消息的 ID 和 content
-            # persisted_ids 可能包含 tool 消息，顺序与 rv["messages"] 中非 system/user 的消息一致
+            # 只持久化 history_len 之后的新增消息，跳过历史消息（已在上轮持久化）
+            persisted_ids = await _persist_messages_from_return_value(store, rv, history_len=history_len)
+            # 找 persisted_ids 中最后一条 assistant 消息的 content
             last_assistant_id = None
             last_assistant_content = ""
             if persisted_ids and rv.get("messages"):
-                persisted_idx = 0
-                for msg in rv["messages"]:
-                    role = msg.get("role", "")
-                    if role in ("system", "user"):
-                        continue
-                    if persisted_idx < len(persisted_ids):
-                        if role == "assistant":
-                            last_assistant_id = persisted_ids[persisted_idx]
-                            last_assistant_content = msg.get("content", "") or ""
-                        persisted_idx += 1
-            # 纯文本回复不在 rv["messages"] 中，需要从 full_reply 持久化。
-            # 条件：full_reply 非空，且与 rv["messages"] 中最后一条 assistant 消息的 content 不同。
-            # - 纯文本回复：rv 中无 assistant 消息，last_assistant_content 为空，条件成立。
-            # - tool_calls + 纯文本：rv 中 assistant(content="")，last_assistant_content 为空，条件成立。
-            # - tool_calls 带文本 + 纯文本：rv 中 assistant(content="xxx")，条件也成立（内容不同）。
+                # 从新增消息中找最后一条 assistant
+                for msg in rv["messages"][history_len + 1:]:
+                    if msg.get("role") == "assistant":
+                        last_assistant_content = msg.get("content", "") or ""
+                # persisted_ids 中最后一条就是最后持久化的消息
+                if last_assistant_content:
+                    last_assistant_id = persisted_ids[-1] if persisted_ids else None
+
+            # 纯文本回复不在 rv["messages"] 中，需要从 full_reply 持久化
             if full_reply.strip() and full_reply.strip() != last_assistant_content.strip():
-                # 从 full_reply 创建 assistant 消息
                 message_id = await store.add_message(role="assistant", content=full_reply)
                 from niu_api.chat import notify_new_message
                 await notify_new_message(message_id, "assistant", full_reply)
             elif last_assistant_id:
-                # rv["messages"] 中有带内容的 assistant 消息且与 full_reply 相同，只推送 SSE
                 message_id = last_assistant_id
                 from niu_api.chat import notify_new_message
                 await notify_new_message(message_id, "assistant", full_reply)
-        elif full_reply.strip():
-            # 回退：无 return_value 或无 messages，使用旧逻辑只存 assistant 回复
-            message_id = await store.add_message(role="assistant", content=full_reply)
-            from niu_api.chat import notify_new_message
-            await notify_new_message(message_id, "assistant", full_reply)
+            elif full_reply.strip():
+                # 回退：无 return_value 或无 messages
+                message_id = await store.add_message(role="assistant", content=full_reply)
+                from niu_api.chat import notify_new_message
+                await notify_new_message(message_id, "assistant", full_reply)
 
         # 检测主 Agent 上下文溢出 → 同步触发 force 压缩（阻塞）
         if rv and isinstance(rv, dict) and rv.get("result") == "CONTEXT_OVERFLOW":
