@@ -773,6 +773,27 @@ class NiuHandler(BaseHandler):
                 except Exception as e:
                     yield StreamEvent("system", f"[SubAgent] Warning: Failed to verify task: {e}\n")
 
+            # entity-extractor 调用完成后，从输出提取游标并写入文件
+            # 这样下次 sleep 模式触发时，游标已推进，不会重复处理
+            if agent_name == "entity-extractor" and result:
+                try:
+                    import re as _re
+                    _pattern = r'\{\s*"last_entity_extract_id"\s*:\s*"([^"]+)"\s*'
+                    _match = _re.search(_pattern, result, _re.DOTALL)
+                    if _match:
+                        _new_cursor = _match.group(1)
+                        from pathlib import Path as _Path
+                        from datetime import datetime as _dt
+                        _cursor_path = _Path.home() / ".niu" / "last_entity_extract.json"
+                        _cursor_path.parent.mkdir(parents=True, exist_ok=True)
+                        _cursor_path.write_text(json.dumps({
+                            "last_entity_extract_id": _new_cursor,
+                            "last_entity_extract_at": _dt.now().isoformat(),
+                        }, ensure_ascii=False, indent=2), encoding="utf-8")
+                        logger.info(f"[SubAgent] Entity cursor updated: {_new_cursor}")
+                except Exception as e:
+                    logger.warning(f"[SubAgent] Failed to update entity cursor: {e}")
+
             yield StreamEvent("tool_marker", f"[SubAgent] {agent_name} completed: {result[:200] if len(result) > 200 else result}\n")
             # 返回结果给 LLM，让它向用户汇报
             return StepOutcome(
