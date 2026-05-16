@@ -151,25 +151,25 @@ lightrag_get_graph(entity_name="FastAPI", depth=1)
 
 **优先级**：任务1（精加工）是核心任务，任务2（Skill 维护）仅在发现明确问题时才执行。不要主动扫描所有 skill 文件。
 
-当使用一项技能并发现它过时、不完整或错误时，立即用 file_patch
+当使用一项技能并发现它过时、不完整或错误时，立即用 edit
 对其进行修补——不要等着被问到。不维护的技能会成为负担。
 
 #### 判断规则
-- 工具使用失败且找到了替代方案 → file_patch 修改旧 skill
-- 发现 skill 描述不完整（缺少参数、边界条件） → file_patch 补充
-- 发现 skill 已过时（API 变更、方法废弃） → file_patch 更新
-- 新的工作模式反复出现但无对应 skill → file_write 创建新 skill
+- 工具使用失败且找到了替代方案 → edit 修改旧 skill
+- 发现 skill 描述不完整（缺少参数、边界条件） → edit 补充
+- 发现 skill 已过时（API 变更、方法废弃） → edit 更新
+- 新的工作模式反复出现但无对应 skill → write 创建新 skill
 
 #### 创建新 skill 的流程
-1. 先用 file_read 读取 memory/skills/Write-SKILL.md，了解创建规范
+1. 先用 read 读取 memory/skills/Write-SKILL.md，了解创建规范
 2. 按照 Write-SKILL.md 的 RED-GREEN-REFACTOR 流程创建
 3. 新 skill 文件存放在 memory/skills/ 目录下
 4. 命名使用动词优先、连字符分隔（如 note-management.md）
 
 #### 修改旧 skill 的流程
-1. 用 file_read 读取目标 skill 文件
-2. 用 file_patch(path, old_content, new_content) 局部修改
-3. old_content 必须在文件中唯一匹配（含空白/缩进）
+1. 用 read 读取目标 skill 文件
+2. 用 edit(file_path, old_string, new_string) 局部修改
+3. old_string 必须在文件中唯一匹配（含空白/缩进）
 
 ## 连接优先原则
 
@@ -217,9 +217,9 @@ lightrag_get_graph(entity_name="FastAPI", depth=1)
 
 其他工具：
 - `get_messages(session_id)` — session_id 传 `"default"`（但消息已在 prompt 中提供，通常不需要调用）
-- `file_patch(path, old_content, new_content)` — Skill 修改
-- `file_write(path, content)` — Skill 创建
-- `file_read(path)` — Skill 读取
+- `edit(file_path, old_string, new_string)` — Skill 修改
+- `write(file_path, content)` — Skill 创建
+- `read(file_path)` — Skill 读取
 
 ## 游标机制
 

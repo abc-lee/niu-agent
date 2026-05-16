@@ -17,28 +17,39 @@
       "cwd": {"type": "string", "description": "Working directory, defaults to cwd"}}}
   }},
   {"type": "function", "function": {
-    "name": "file_read",
-    "description": "Read file. Read before modify for latest context and line numbers",
+    "name": "read",
+    "description": "Reads a file from the local filesystem. You can access any file directly by using this tool. By default, it reads up to 2000 lines starting from the beginning of the file. You can optionally specify a line offset and limit (especially handy for long files). Results are returned using cat -n format, with line numbers starting at 1.",
     "parameters": {"type": "object", "properties": {
-      "path": {"type": "string", "description": "Relative or absolute"},
-      "start": {"type": "integer", "description": "Start line number (1-based)", "default": 1},
-      "count": {"type": "integer", "description": "Number of lines to read", "default": 200},
-      "keyword": {"type": "string", "description": "[Optional] If provided, returns first match (case-insensitive) with context"},
-      "show_linenos": {"type": "boolean", "description": "Show line numbers", "default": true}}}
+      "file_path": {"type": "string", "description": "The absolute path to the file to read"},
+      "offset": {"type": "integer", "description": "The line number to start reading from (1-based). Only provide if the file is too large to read at once.", "default": 1},
+      "limit": {"type": "integer", "description": "The number of lines to read. Only provide if the file is too large to read at once. Maximum 500.", "default": 2000}
+    }, "required": ["file_path"]}
   }},
   {"type": "function", "function": {
-    "name": "file_patch",
-    "description": "Replace unique old_content with new_content. Exact match required (whitespace/indentation). On failure, file_read to recheck",
+    "name": "write",
+    "description": "Writes a file to the local filesystem. This tool will overwrite the existing file if there is one at the provided path.",
     "parameters": {"type": "object", "properties": {
-      "path": {"type": "string", "description": "File path"},
-      "old_content": {"type": "string", "description": "Original text block to replace (must be unique)"},
-      "new_content": {"type": "string", "description": "New content. Supports {{file:path:startLine:endLine}} to ref file lines, auto-expanded"}}}
+      "file_path": {"type": "string", "description": "The absolute path to the file to write to"},
+      "content": {"type": "string", "description": "The content to write to the file"}
+    }, "required": ["file_path", "content"]}
   }},
   {"type": "function", "function": {
-    "name": "file_write",
-    "description": "Create/overwrite/append files. ONLY for HUGE edits. Content in <file_content> tags or reply code blocks. Supports {{file:path:startLine:endLine}}, auto-expanded",
+    "name": "edit",
+    "description": "Performs exact string replacements in files. The edit will FAIL if old_string is not unique in the file. Either provide a larger string with more surrounding context to make it unique or use replace_all to change every instance of old_string.",
     "parameters": {"type": "object", "properties": {
-      "path": {"type": "string", "description": "File path"},
-      "mode": {"type": "string", "enum": ["overwrite", "append", "prepend"], "description": "Write mode", "default": "append"}}}
+      "file_path": {"type": "string", "description": "The absolute path to the file to modify"},
+      "old_string": {"type": "string", "description": "The text to replace (must be different from new_string)"},
+      "new_string": {"type": "string", "description": "The text to replace it with"},
+      "replace_all": {"type": "boolean", "description": "Replace all occurrences of old_string (default false)", "default": false}
+    }, "required": ["file_path", "old_string", "new_string"]}
+  }},
+  {"type": "function", "function": {
+    "name": "grep",
+    "description": "Search for a pattern in files. Returns matching lines with line numbers. Supports regular expressions. Useful for finding where a symbol is defined, where a function is called, or searching for any text pattern across files.",
+    "parameters": {"type": "object", "properties": {
+      "pattern": {"type": "string", "description": "The pattern to search for (supports regular expressions)"},
+      "path": {"type": "string", "description": "The directory or file to search in (absolute path). Defaults to current working directory.", "default": "."},
+      "include": {"type": "string", "description": "File pattern to include (e.g. '*.py', '*.{ts,tsx}'). If not provided, searches all files."}
+    }, "required": ["pattern"]}
   }}
 ]

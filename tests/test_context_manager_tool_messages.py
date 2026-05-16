@@ -69,7 +69,7 @@ async def test_load_history_empty_assistant_with_tool_calls(ctx_mgr, store):
     await store.add_message(
         role="assistant",
         content="",
-        tool_calls=[{"id": "call_002", "type": "function", "function": {"name": "file_read", "arguments": "{}"}}]
+        tool_calls=[{"id": "call_002", "type": "function", "function": {"name": "read", "arguments": "{}"}}]
     )
 
     history = await ctx_mgr.load_history()

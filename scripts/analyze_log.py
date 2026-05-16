@@ -35,7 +35,7 @@ for i, block in enumerate(blocks):
     elif has_sys_prompt:
         # Find what the agent decided to do
         ai_section = block[block.find('[AI回复]'):] if '[AI回复]' in block else ''
-        tool_match = re.search(r'(file_read|bash|code_run|disk)', ai_section)
+        tool_match = re.search(r'(read|bash|code_run|disk)', ai_section)
         tool = tool_match.group(1) if tool_match else '(no tool)'
         print(f'{ts} | AGENT_DECISION  | tool={tool}')
     else:

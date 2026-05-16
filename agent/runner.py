@@ -759,7 +759,7 @@ class NiuRunner:
             parts.append(
                 "\n\n### [技能使用指引]\n"
                 "上述技能仅展示了名称和触发描述。只有当用户明确要求执行某个具体功能时，"
-                "才使用 file_read 读取对应的完整技能文件，路径格式：memory/skills/<技能名>.md\n"
+                "才使用 read 读取对应的完整技能文件，路径格式：memory/skills/<技能名>.md\n"
                 "不要在简单对话中主动读取技能文件。"
             )
 

@@ -52,6 +52,134 @@ def _run_coroutine(coro):
         return asyncio.run(coro)
 
 
+def read_file(file_path: str, offset: int = 1, limit: int = 2000) -> str:
+    """读取文件内容（支持 offset/limit 分页，limit 最大 500）"""
+    import itertools
+
+    MAX_LIMIT = 500
+    if limit > MAX_LIMIT:
+        limit = MAX_LIMIT
+
+    try:
+        if os.path.isdir(file_path):
+            return f"Error: '{file_path}' is a directory, not a file."
+        with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+            total_lines = sum(1 for _ in f)
+            f.seek(0)
+            stream = ((i, l.rstrip("\r\n")) for i, l in enumerate(f, 1))
+            stream = itertools.dropwhile(lambda x: x[0] < offset, stream)
+            res = list(itertools.islice(stream, limit))
+
+            realcnt = len(res)
+            L_MAX = max(100, 512000 // realcnt) if realcnt > 0 else 100
+            TAG = " ... [TRUNCATED]"
+
+            res = [(i, l if len(l) <= L_MAX else l[:L_MAX] + TAG) for i, l in res]
+            result = "\n".join(f"{i}|{l}" for i, l in res)
+
+            header = f"[FILE] Showing {len(res)} lines from line {offset} (total {total_lines} lines)"
+            if offset + limit - 1 < total_lines:
+                header += f"\n[Use offset={offset + limit} to read more]"
+
+            return header + "\n" + result
+    except FileNotFoundError:
+        return f"Error: File not found: '{file_path}'"
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+def write_file(file_path: str, content: str) -> dict:
+    """写入文件（覆盖写入）"""
+    try:
+        file_path = str(Path(file_path).resolve())
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(content)
+        return {"status": "success", "msg": f"Written {len(content)} bytes to {file_path}"}
+    except Exception as e:
+        return {"status": "error", "msg": str(e)}
+
+
+def edit_file(file_path: str, old_string: str, new_string: str, replace_all: bool = False) -> dict:
+    """局部修改文件（精确字符串替换）"""
+    try:
+        file_path = str(Path(file_path).resolve())
+        if not os.path.exists(file_path):
+            return {"status": "error", "msg": "File not found"}
+
+        with open(file_path, "r", encoding="utf-8") as f:
+            full_text = f.read()
+
+        if not old_string:
+            return {"status": "error", "msg": "old_string is empty"}
+
+        count = full_text.count(old_string)
+        if count == 0:
+            return {"status": "error", "msg": "old_string not found"}
+        if count > 1 and not replace_all:
+            return {"status": "error", "msg": f"Found {count} matches. Use replace_all=true or provide more context to make old_string unique."}
+
+        if replace_all:
+            updated_text = full_text.replace(old_string, new_string)
+        else:
+            updated_text = full_text.replace(old_string, new_string, 1)
+
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(updated_text)
+
+        replaced = count if replace_all else 1
+        return {"status": "success", "msg": f"Replaced {replaced} occurrence(s)"}
+    except Exception as e:
+        return {"status": "error", "msg": str(e)}
+
+
+def grep_search(pattern: str, path: str = ".", include: str = "") -> str:
+    """搜索文件内容（支持正则，最多返回50个匹配）"""
+    import re as re_mod
+    import glob as glob_mod
+
+    MAX_LINES = 50
+
+    try:
+        regex = re_mod.compile(pattern, re_mod.IGNORECASE)
+    except re_mod.error:
+        regex = re_mod.compile(re_mod.escape(pattern), re_mod.IGNORECASE)
+
+    matches = []
+
+    if os.path.isfile(path):
+        files = [path]
+    else:
+        if include:
+            files = glob_mod.glob(os.path.join(path, "**", include), recursive=True)
+        else:
+            files = glob_mod.glob(os.path.join(path, "**", "*"), recursive=True)
+        # 过滤目录和二进制文件
+        binary_exts = ('.pyc', '.so', '.dylib', '.exe', '.png', '.jpg', '.jpeg', '.gif', '.ico', '.woff', '.woff2', '.ttf', '.eot', '.db', '.sqlite', '.graphml', '.jsonl')
+        files = [f for f in files if os.path.isfile(f) and not f.endswith(binary_exts)]
+
+    for filepath in files[:200]:
+        try:
+            with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+                for line_no, line in enumerate(f, 1):
+                    if regex.search(line):
+                        matches.append(f"{filepath}:{line_no}:{line.rstrip()}")
+                        if len(matches) >= MAX_LINES:
+                            break
+        except (OSError, UnicodeDecodeError):
+            continue
+        if len(matches) >= MAX_LINES:
+            break
+
+    if not matches:
+        return f"[GREP] No matches for '{pattern}' in {path}"
+
+    result = "\n".join(matches)
+    if len(matches) >= MAX_LINES:
+        result += f"\n... (showing first {MAX_LINES} matches)"
+    return result
+
+
 def file_read(
     path: str, start: int = 1, keyword: str = None, count: int = 200, show_linenos: bool = True
 ) -> str:
@@ -399,7 +527,7 @@ class NiuHandler(BaseHandler):
         clean_args = {k: v for k, v in args.items() if not k.startswith("_")}
 
         # 基于工具类型生成不同格式的摘要
-        if tool_name == "file_read":
+        if tool_name in ("read", "file_read"):
             path = clean_args.get("path", "")
             filename = os.path.basename(path) if path else "未知文件"
             return f"读取文件: {filename}"
@@ -411,7 +539,7 @@ class NiuHandler(BaseHandler):
             exit_code = ret.get("exit_code", "?") if isinstance(ret, dict) else "?"
             return f"执行{code_type}代码: {preview} (退出码: {exit_code})"
 
-        elif tool_name == "file_patch":
+        elif tool_name in ("edit", "file_patch"):
             path = clean_args.get("path", "")
             filename = os.path.basename(path) if path else "未知文件"
             return f"修改文件: {filename}"
@@ -570,36 +698,51 @@ class NiuHandler(BaseHandler):
 
     # ========== 文件操作 ==========
 
-    def do_file_read(self, args: dict, response) -> StepOutcome:
-        """读取文件"""
-        path = self._get_abs_path(args.get("path", ""))
-        start = args.get("start", 1)
-        count = args.get("count", 200)
-        keyword = args.get("keyword")
-        show_linenos = args.get("show_linenos", True)
+    def do_read(self, args: dict, response) -> StepOutcome:
+        """读取文件（新 API，兼容旧参数名 path/start/count）"""
+        raw_path = args.get("file_path", args.get("path", ""))
+        file_path = self._get_abs_path(raw_path) if hasattr(self, "cwd") and self.cwd else raw_path
+        offset = args.get("offset", args.get("start", 1))
+        limit = args.get("limit", args.get("count", 2000))
 
-        result = file_read(
-            path, start=start, keyword=keyword, count=count, show_linenos=show_linenos
-        )
-        return StepOutcome(result, next_prompt=self._get_anchor_prompt())
+        result = read_file(file_path, offset=offset, limit=limit)
+        anchor = self._get_anchor_prompt() if hasattr(self, "history_info") else None
+        return StepOutcome(result, next_prompt=anchor)
 
-    def do_file_write(self, args: dict, response) -> StepOutcome:
-        """写入文件"""
-        path = self._get_abs_path(args.get("path", ""))
+    def do_write(self, args: dict, response) -> StepOutcome:
+        """Write content to file."""
+        file_path = self._get_abs_path(args.get("file_path") or args.get("path", ""))
         content = args.get("content", "")
-        mode = args.get("mode", "write")
 
-        result = file_write(path, content, mode=mode)
+        result = write_file(file_path, content)
         return StepOutcome(result, next_prompt=self._get_anchor_prompt())
 
-    def do_file_patch(self, args: dict, response) -> StepOutcome:
-        """局部修改文件"""
-        path = self._get_abs_path(args.get("path", ""))
-        old_content = args.get("old_content", "")
-        new_content = args.get("new_content", "")
+    def do_edit(self, args: dict, response) -> StepOutcome:
+        """Edit file by replacing old_string with new_string."""
+        file_path = self._get_abs_path(args.get("file_path") or args.get("path", ""))
+        old_string = args.get("old_string") or args.get("old_content", "")
+        new_string = args.get("new_string") or args.get("new_content", "")
+        replace_all = args.get("replace_all", False)
 
-        result = file_patch(path, old_content, new_content)
+        result = edit_file(file_path, old_string, new_string, replace_all=replace_all)
         return StepOutcome(result, next_prompt=self._get_anchor_prompt())
+
+    def do_grep(self, args: dict, response) -> StepOutcome:
+        """Search for pattern in files."""
+        pattern = args.get("pattern", "")
+        path = self._get_abs_path(args.get("path", "."))
+        include = args.get("include", "")
+
+        if not pattern:
+            return StepOutcome("[GREP] Error: pattern is required", next_prompt=self._get_anchor_prompt())
+
+        result = grep_search(pattern, path, include)
+        return StepOutcome(result, next_prompt=self._get_anchor_prompt())
+
+    # 向后兼容
+    do_file_read = do_read
+    do_file_write = do_write
+    do_file_patch = do_edit
 
     # ========== 代码执行 ==========
 
@@ -673,7 +816,7 @@ class NiuHandler(BaseHandler):
                     next_prompt=(
                         "[System] 检测到你在上一轮回复中主要内容是较大代码块，且本轮未调用任何工具。\n"
                         "如果这些代码需要执行、写入文件或进一步分析，请重新组织回复并显式调用相应工具"
-                        "（例如：code_run、file_write、file_patch 等）；\n"
+                        "（例如：code_run、write、edit 等）；\n"
                         "如果只是向用户展示或讲解代码片段，请在回复中补充自然语言说明，"
                         "并明确是否还需要额外的实际操作。"
                     ),
@@ -884,6 +1027,9 @@ class NiuHandler(BaseHandler):
 
     # Backward compatibility aliases: old tool names → new lightrag-server tools
     _TOOL_ALIASES = {
+        "file_read": "read",
+        "file_write": "write",
+        "file_patch": "edit",
     }
 
     def dispatch(self, tool_name: str, args, response, index=0):
@@ -1085,3 +1231,7 @@ class NiuHandler(BaseHandler):
         # 未知工具
         yield StreamEvent("system", f"Unknown tool: {tool_name}\n")
         return StepOutcome(None, next_prompt=f"Unknown tool: {tool_name}")
+
+
+# Backward-compatible alias
+Handler = NiuHandler
