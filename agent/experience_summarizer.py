@@ -93,7 +93,7 @@ class ExperienceSummarizer:
 
         # 条件 4: 有成功执行的关键工具
         successful_tools = [t for t in context.tool_executions if t.success]
-        key_tools = {"code_run", "read", "write", "search", "remember"}
+        key_tools = {"code_run", "read", "write", "edit", "grep", "search", "remember"}
         if any(t.tool_name in key_tools for t in successful_tools):
             reasons.append("key_tool_success")
 
