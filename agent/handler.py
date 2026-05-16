@@ -159,6 +159,9 @@ def grep_search(pattern: str, path: str = ".", include: str = "") -> str:
 
     MAX_LINES = 50
 
+    if not pattern:
+        return "[GREP] Error: pattern is required"
+
     if not os.path.exists(path):
         return f"[GREP] Error: Path does not exist: '{path}'"
 
@@ -577,6 +580,10 @@ class NiuHandler(BaseHandler):
             filename = os.path.basename(path) if path else "未知文件"
             return f"修改文件: {filename}"
 
+        elif tool_name == "grep":
+            pattern = clean_args.get("pattern", "")
+            return f"搜索文件: {pattern}"
+
         elif tool_name.startswith("chat-with-"):
             agent = tool_name.replace("chat-with-", "")
             return f"调用子Agent: {agent}"
@@ -735,8 +742,10 @@ class NiuHandler(BaseHandler):
         """读取文件（新 API，兼容旧参数名 path/start/count）"""
         raw_path = args.get("file_path") if "file_path" in args else args.get("path", "")
         file_path = self._get_abs_path(raw_path) if hasattr(self, "cwd") and self.cwd else raw_path
-        offset = int(args.get("offset") if "offset" in args else args.get("start", 1))
-        limit = int(args.get("limit") if "limit" in args else args.get("count", 500))
+        raw_offset = args.get("offset") if "offset" in args else args.get("start", 1)
+        raw_limit = args.get("limit") if "limit" in args else args.get("count", 500)
+        offset = int(raw_offset if raw_offset is not None else 1)
+        limit = int(raw_limit if raw_limit is not None else 500)
 
         result = read_file(file_path, offset=offset, limit=limit)
         anchor = self._get_anchor_prompt() if hasattr(self, "history_info") else None
@@ -759,7 +768,8 @@ class NiuHandler(BaseHandler):
         file_path = self._get_abs_path(args.get("file_path") if "file_path" in args else args.get("path", ""))
         old_string = args.get("old_string") if "old_string" in args else args.get("old_content", "")
         new_string = args.get("new_string") if "new_string" in args else args.get("new_content", "")
-        replace_all = args.get("replace_all", False)
+        replace_all_raw = args.get("replace_all", False)
+        replace_all = replace_all_raw if isinstance(replace_all_raw, bool) else str(replace_all_raw).lower() == "true"
 
         if not file_path:
             return StepOutcome({"status": "error", "msg": "file_path is required"}, next_prompt=self._get_anchor_prompt())
