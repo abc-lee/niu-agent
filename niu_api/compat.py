@@ -853,6 +853,10 @@ async def _tidy_context_impl(request: dict):
                 continue
             entity_history.append(entry)
 
+        # 移除末尾孤立的 assistant(tool_calls)（没有对应 tool 结果）
+        while entity_history and entity_history[-1].get("role") == "assistant" and entity_history[-1].get("tool_calls"):
+            entity_history.pop()
+
         # Calculate per-message token counts
         message_count = len(messages)
         msg_tokens = []
@@ -949,7 +953,7 @@ async def _tidy_context_impl(request: dict):
 
             # 1/3. entity-extractor（增量，非破坏性）
             entity_msg_ids = []
-            entity_incremental_text = _build_incremental_msg_text(messages, last_entity_extract_id, entity_msg_ids, msg_tokens)
+            _build_incremental_msg_text(messages, last_entity_extract_id, entity_msg_ids, msg_tokens)
             new_entity_id = last_entity_extract_id  # 默认保留旧游标
             entity_prompt = """请从上方对话历史中提取有价值的内容，形成精炼文档提交给 LightRAG 入库。
 
