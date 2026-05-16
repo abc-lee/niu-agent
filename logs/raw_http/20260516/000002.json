@@ -1,7 +1,7 @@
 {
   "seq": 2,
-  "timestamp": "2026-05-16T07:00:46.387",
-  "elapsed_ms": 877,
+  "timestamp": "2026-05-16T08:04:46.713",
+  "elapsed_ms": 1022,
   "request": {
     "method": "POST",
     "url": "https://ark.cn-beijing.volces.com/api/coding/v3/chat/completions",
@@ -23,17 +23,17 @@
       "x-stainless-raw-response": "true",
       "x-stainless-retry-count": "0",
       "x-stainless-read-timeout": "120.0",
-      "content-length": "6654"
+      "content-length": "6651"
     },
     "body": {
       "messages": [
         {
           "role": "system",
-          "content": "# 事件管理器（Event Manager）\n\n你负责管理用户的所有时间相关事件：日程、提醒、定时任务。\n\n## 核心职责：把任务写对\n\n你的唯一职责是确保 scheduler 数据库中的任务准确无误。\n\n## 操作流程\n\n### 创建事件\n用 `schedule_task` 创建事件，获得 `task_id`\n\n### 查询事件\n用 `list_scheduled_tasks` 查询事件\n\n### 更新事件\n用户可能用模糊描述引用已有事件（如\"把3点的事改到4点\"、\"之前说的那个会议\"）。你必须：\n1. 用 `list_scheduled_tasks` 查找匹配的事件\n2. **找到唯一匹配** → 用 `update_task` 更新\n3. **找到多条匹配** → 向用户列出候选，请用户确认是哪一条，不要擅自修改\n4. **没有匹配** → 告知用户未找到对应事件\n\n### 删除事件\n用 `cancel_task` 删除事件\n\n## 工具\n\n### scheduler-server\n- `schedule_task`：创建事件\n- `list_scheduled_tasks`：列出/查询事件\n- `update_task`：更新事件\n- `cancel_task`：删除事件\n\nCurrent Time: 2026-05-16 15:00:46"
+          "content": "# 事件管理器（Event Manager）\n\n你负责管理用户的所有时间相关事件：日程、提醒、定时任务。\n\n## 核心职责：把任务写对\n\n你的唯一职责是确保 scheduler 数据库中的任务准确无误。\n\n## 操作流程\n\n### 创建事件\n用 `schedule_task` 创建事件，获得 `task_id`\n\n### 查询事件\n用 `list_scheduled_tasks` 查询事件\n\n### 更新事件\n用户可能用模糊描述引用已有事件（如\"把3点的事改到4点\"、\"之前说的那个会议\"）。你必须：\n1. 用 `list_scheduled_tasks` 查找匹配的事件\n2. **找到唯一匹配** → 用 `update_task` 更新\n3. **找到多条匹配** → 向用户列出候选，请用户确认是哪一条，不要擅自修改\n4. **没有匹配** → 告知用户未找到对应事件\n\n### 删除事件\n用 `cancel_task` 删除事件\n\n## 工具\n\n### scheduler-server\n- `schedule_task`：创建事件\n- `list_scheduled_tasks`：列出/查询事件\n- `update_task`：更新事件\n- `cancel_task`：删除事件\n\nCurrent Time: 2026-05-16 16:04:46"
         },
         {
           "role": "user",
-          "content": "5分钟后（2026-05-16 15:05:00）提醒我吃药"
+          "content": "5分钟后（2026-05-16 16:09）提醒我吃药"
         }
       ],
       "model": "ark-code-latest",
@@ -301,12 +301,12 @@
     "status_code": 200,
     "headers": {
       "server": "istio-envoy",
-      "date": "Sat, 16 May 2026 07:00:46 GMT",
+      "date": "Sat, 16 May 2026 08:04:47 GMT",
       "content-type": "text/event-stream",
       "cache-control": "no-cache",
-      "x-client-request-id": "unknown-20260516150046-siznjQxW",
-      "x-envoy-upstream-service-time": "756",
-      "x-request-id": "0217789148465634f24b207f6c3c840415c2dc20832f65f52fbb8",
+      "x-client-request-id": "unknown-20260516160446-KMbFxJyu",
+      "x-envoy-upstream-service-time": "693",
+      "x-request-id": "02177891868684710667a214a88c4c78c1353731389a01c1a7b3b",
       "transfer-encoding": "chunked"
     },
     "body": "<streaming response, body not captured>"
