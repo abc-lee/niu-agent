@@ -705,7 +705,11 @@ class NiuHandler(BaseHandler):
         try:
             yield StreamEvent("tool_marker", f"[SubAgent] Calling {agent_name}...\n")
             # 过滤 WORKING MEMORY 虚拟消息，不让子Agent看到
-            _history = getattr(self, '_current_messages', None)
+            # 只有 entity-extractor 需要看到主Agent的tool消息，其他子Agent保持独立上下文
+            if agent_name == "entity-extractor":
+                _history = getattr(self, '_current_messages', None)
+            else:
+                _history = None
             if _history:
                 _wm_ids = set()
                 for m in _history:
