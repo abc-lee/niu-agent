@@ -1,24 +1,18 @@
 """
-TDD RED-phase tests for basic tool renaming.
+Tests for basic tool renaming.
 
 Testing the new function signatures and behaviors:
-- file_read -> read_file(file_path, offset=1, limit=2000)
-- file_write -> write_file(file_path, content)
+- file_read -> read_file(file_path, offset=1, limit=500)
+- file_write -> write_file(file_path, content, mode="overwrite")
 - file_patch -> edit_file(file_path, old_string, new_string, replace_all=False)
 - new: grep_search(pattern, path=".", include="")
-
-These tests are expected to FAIL in the RED phase because:
-1. New function names (read_file, write_file, edit_file, grep_search) don't exist yet
-2. New parameter names (offset/limit vs start/count, old_string vs old_content) differ
-3. New behaviors (limit cap at 500, replace_all, grep_search) are not implemented
 """
 
 import os
 import pytest
 
 # ---------------------------------------------------------------------------
-# Import: use new names only. These don't exist yet, so tests will FAIL
-# with ImportError/AttributeError -- that is the expected RED phase behavior.
+# Import: use new names only
 # ---------------------------------------------------------------------------
 
 from agent.handler import read_file, write_file, edit_file, grep_search
@@ -162,6 +156,28 @@ class TestWriteFile:
 
         assert f.read_text(encoding="utf-8") == "new content"
 
+    def test_append_mode(self, tmp_path):
+        """mode='append' adds content to the end of the file."""
+        f = tmp_path / "append.txt"
+        f.write_text("first line\n", encoding="utf-8")
+
+        result = write_file(str(f), "second line\n", mode="append")
+
+        assert isinstance(result, dict)
+        assert result.get("status") == "success"
+        assert f.read_text(encoding="utf-8") == "first line\nsecond line\n"
+
+    def test_overwrite_mode_default(self, tmp_path):
+        """Default mode is 'overwrite', which replaces entire file."""
+        f = tmp_path / "default.txt"
+        f.write_text("original", encoding="utf-8")
+
+        result = write_file(str(f), "replacement")
+
+        assert isinstance(result, dict)
+        assert result.get("status") == "success"
+        assert f.read_text(encoding="utf-8") == "replacement"
+
 
 # ===================================================================
 # edit_file tests
@@ -248,11 +264,11 @@ class TestGrepSearch:
 
     def test_basic_search_returns_file_line_content(self, tmp_path):
         """Searching in a directory returns 'filepath:lineno:content' format."""
-        # Create test files
+        # Create test files — use lowercase to match case-sensitive search
         f1 = tmp_path / "code.py"
         f1.write_text("def hello():\n    print('world')\n", encoding="utf-8")
         f2 = tmp_path / "readme.md"
-        f2.write_text("# Hello World\nSome text\n", encoding="utf-8")
+        f2.write_text("# hello world\nSome text\n", encoding="utf-8")
 
         result = grep_search("hello", str(tmp_path))
 
@@ -262,20 +278,19 @@ class TestGrepSearch:
         lines = result.strip().split("\n")
         match_lines = [l for l in lines if ":" in l and "code.py" in l]
         if match_lines:
-            # Should have at least one colon-separated entry
             parts = match_lines[0].split(":")
             assert len(parts) >= 3, f"Expected 'file:line:content' format, got: {match_lines[0]}"
 
     def test_regex_search(self, tmp_path):
-        """grep_search supports regular expression patterns."""
+        """grep_search supports regex patterns (case-sensitive)."""
         f = tmp_path / "data.py"
-        f.write_text("var_1 = 10\nvar_2 = 20\nconst = 30\n", encoding="utf-8")
+        f.write_text("var_1 = 10\nVar_2 = 20\nconst = 30\n", encoding="utf-8")
 
-        # Search with regex: var_ followed by a digit
+        # Case-sensitive: var_\d matches var_1 but NOT Var_2
         result = grep_search(r"var_\d", str(tmp_path))
 
         assert "var_1" in result
-        assert "var_2" in result
+        assert "Var_2" not in result
         assert "const" not in result
 
     def test_include_parameter_filters_by_glob(self, tmp_path):

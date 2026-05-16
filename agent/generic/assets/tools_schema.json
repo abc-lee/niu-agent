@@ -18,19 +18,20 @@
   }},
   {"type": "function", "function": {
     "name": "read",
-    "description": "Reads a file from the local filesystem. You can access any file directly by using this tool. By default, it reads up to 2000 lines starting from the beginning of the file. You can optionally specify a line offset and limit (especially handy for long files). Results are returned using cat -n format, with line numbers starting at 1.",
+    "description": "Reads a file from the local filesystem. You can access any file directly by using this tool. By default, it reads up to 500 lines starting from the beginning of the file. You can optionally specify a line offset and limit (especially handy for long files). Results are returned using cat -n format, with line numbers starting at 1.",
     "parameters": {"type": "object", "properties": {
       "file_path": {"type": "string", "description": "The absolute path to the file to read"},
       "offset": {"type": "integer", "description": "The line number to start reading from (1-based). Only provide if the file is too large to read at once.", "default": 1},
-      "limit": {"type": "integer", "description": "The number of lines to read. Only provide if the file is too large to read at once. Maximum 500.", "default": 2000}
+      "limit": {"type": "integer", "description": "The number of lines to read. Only provide if the file is too large to read at once. Maximum 500.", "default": 500}
     }, "required": ["file_path"]}
   }},
   {"type": "function", "function": {
     "name": "write",
-    "description": "Writes a file to the local filesystem. This tool will overwrite the existing file if there is one at the provided path.",
+    "description": "Writes a file to the local filesystem. This tool will overwrite the existing file if there is one at the provided path. Use mode='append' to append content to the end of the file.",
     "parameters": {"type": "object", "properties": {
       "file_path": {"type": "string", "description": "The absolute path to the file to write to"},
-      "content": {"type": "string", "description": "The content to write to the file"}
+      "content": {"type": "string", "description": "The content to write to the file"},
+      "mode": {"type": "string", "enum": ["overwrite", "append"], "description": "Write mode: 'overwrite' replaces the entire file, 'append' adds content to the end. Default: overwrite.", "default": "overwrite"}
     }, "required": ["file_path", "content"]}
   }},
   {"type": "function", "function": {
