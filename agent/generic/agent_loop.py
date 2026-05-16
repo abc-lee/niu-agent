@@ -235,6 +235,9 @@ def agent_runner_loop(
         tool_results = []
         next_prompts = set()
         should_exit = None
+        # 注入当前消息列表到 handler，使子Agent能获取主Agent的对话历史
+        # 注意：此时 messages 包含本轮的 assistant(tool_calls) 但不含 tool 结果
+        handler._current_messages = messages
         for ii, tc in enumerate(tool_calls):
             tool_name, args, tid = tc["tool_name"], tc["args"], tc.get("id", "")
             if tool_name == "no_tool":
@@ -243,7 +246,6 @@ def agent_runner_loop(
                 showarg = get_pretty_json(args)
                 yield StreamEvent("tool_marker", f"🛠️ **正在调用工具:** `{tool_name}`  📥**参数:**\n````text\n{showarg}\n````\n")
             handler.current_turn = turn
-            handler._current_messages = messages
             gen = handler.dispatch(tool_name, args, response, index=ii)
             if verbose:
                 yield StreamEvent("tool_marker", "`````\n")
