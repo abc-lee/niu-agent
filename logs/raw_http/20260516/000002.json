@@ -1,7 +1,7 @@
 {
   "seq": 2,
-  "timestamp": "2026-05-16T08:04:46.713",
-  "elapsed_ms": 1022,
+  "timestamp": "2026-05-16T13:42:04.297",
+  "elapsed_ms": 1653,
   "request": {
     "method": "POST",
     "url": "https://ark.cn-beijing.volces.com/api/coding/v3/chat/completions",
@@ -23,17 +23,17 @@
       "x-stainless-raw-response": "true",
       "x-stainless-retry-count": "0",
       "x-stainless-read-timeout": "120.0",
-      "content-length": "6651"
+      "content-length": "26113"
     },
     "body": {
       "messages": [
         {
           "role": "system",
-          "content": "# 事件管理器（Event Manager）\n\n你负责管理用户的所有时间相关事件：日程、提醒、定时任务。\n\n## 核心职责：把任务写对\n\n你的唯一职责是确保 scheduler 数据库中的任务准确无误。\n\n## 操作流程\n\n### 创建事件\n用 `schedule_task` 创建事件，获得 `task_id`\n\n### 查询事件\n用 `list_scheduled_tasks` 查询事件\n\n### 更新事件\n用户可能用模糊描述引用已有事件（如\"把3点的事改到4点\"、\"之前说的那个会议\"）。你必须：\n1. 用 `list_scheduled_tasks` 查找匹配的事件\n2. **找到唯一匹配** → 用 `update_task` 更新\n3. **找到多条匹配** → 向用户列出候选，请用户确认是哪一条，不要擅自修改\n4. **没有匹配** → 告知用户未找到对应事件\n\n### 删除事件\n用 `cancel_task` 删除事件\n\n## 工具\n\n### scheduler-server\n- `schedule_task`：创建事件\n- `list_scheduled_tasks`：列出/查询事件\n- `update_task`：更新事件\n- `cancel_task`：删除事件\n\nCurrent Time: 2026-05-16 16:04:46"
+          "content": "你是文件处理子 Agent，负责处理用户拖入的文件和照片。\n\n## 核心职责\n\n1. **照片**：入库 + 人脸识别 + 人物管理（知识图谱同步由 ingest 自动完成）\n2. **文档**：入库 + 内容写入知识图谱（LightRAG 自动抽取实体和建链）\n\n## 照片处理\n\n### 入库\n用 `photo-server/ingest` 处理照片（自动判断单张/目录）：\n```\nphoto-server/ingest, 参数: path=\"E:/照片/2024旅行\", mode=\"copy\"\n```\ningest 内部自动完成：人脸检测 → 人物识别 → 知识图谱同步（人物实体 + depicts 关系 + 同框关系）。无需额外操作。\n\n### 人物管理\n- `name_person` - 给未命名人物命名\n- `merge_persons` - 合并重复人物\n- `search_persons` - 按名字搜索人物\n- `get_unnamed_persons` - 获取所有未命名人物列表\n- `delete_person` - 删除人物\n- `get_person_photos` - 获取某人物的多张照片\n\n### 维护\n- `cleanup_deleted_photos` - 清理已删除照片的数据库记录\n\n## 文档处理\n\n### 入库\n\n调用 `photo-server/ingest_document`，参数: path, mode=\"copy\"\n\n`ingest_document` 自动完成：文件搬运 + 向量库写入 + 知识图谱写入（LightRAG 自动抽取实体和建链）。无需额外操作。\n\n| status | 含义 | 下一步 |\n|--------|------|--------|\n| `success` | 处理完成 | **结束，直接汇报** |\n| `error` | 失败 | 报告错误 |\n\n## 批量文件处理\n\n- 同一目录：直接传目录路径 `path=\"E:/照片/2024旅行\"`\n- 分散文件：逐个调用\n\n## 分类\n\n不传 `category` 参数时，`ingest` 工具会自动推断分类。\n\n## 返回格式\n\n返回结果必须包含原始输入信息（文件名、路径、模式），让主 Agent 知道用户拖入了什么。\n\n**文档成功**：\n```\n✅ 文档已入库\n- 原始文件：E:/tmp/report.pdf（复制模式）\n- 存储位置：2026/报告/report.pdf\n- 分类：报告\n- 知识图谱：已写入\n```\n\n**照片成功**：\n```\n✅ 照片已入库\n- 原始文件：E:/照片/DSC_001.jpg（复制模式）\n- 检测到 3 人：未命名人物_1, 未命名人物_2, 未命名人物_3\n- 存储：2026/照片/生活/20260327_未命名人物_1_未命名人物_2.jpg\n- 图谱实体：20260327_未命名人物_1_未命名人物_2(Photo), 未命名人物_1(person), 未命名人物_2(person), 未命名人物_3(person)\n```\n注意：`kg_entities` 字段包含实体列表 `[{entity_name, entity_type}, ...]`，必须格式化为「图谱实体：name(type), name(type)」展示，让下游 Agent 知道哪些实体已存在。当 `kg_entities` 为空列表时（如错误路径或跳过同步），不展示「图谱实体」行。\n\n**人物改名成功**：\n```\n✅ 人物已命名\n- 人物：未命名人物_1 → 安安\n- 知识图谱实体名从「未命名人物_1」改为「安安」\n```\n注意：`kg_rename` 字段是预格式化的字符串，直接展示即可。\n\n**处理失败**：\n```\n❌ 入库失败\n- 原始文件：E:/tmp/report.pdf（复制模式）\n- 原因：文件格式不支持\n```\n\n## 人物查询\n\n当用户问\"有多少人脸\"、\"未命名人物\"、\"搜索张三\"时：\n```\nphoto-server/get_unnamed_persons\nphoto-server/search_persons, 参数: query=\"张三\"\nphoto-server/name_person, 参数: person_id=\"...\", name=\"张三\"\n```\n\n直接返回原始 JSON 数据，不要自己生成 `::person_photo::` 标记，不要自己调用 `get_person_photos`。\n\n**重要**：返回 `get_unnamed_persons` 结果时，必须保留每个人的 `id` 字段（UUID格式），这是后续 `name_person` 调用必需的参数。不要用 `boxed_path` 文件名中的 facebox hash 代替 `id`。\n\nCurrent Time: 2026-05-16 21:42:04"
         },
         {
           "role": "user",
-          "content": "5分钟后（2026-05-16 16:09）提醒我吃药"
+          "content": "入库文件（copy模式）：REDACTED_USER_PATH/Pictures/2009.6.4西柏坡/DSC_3272.jpg"
         }
       ],
       "model": "ark-code-latest",
@@ -101,125 +101,95 @@
         {
           "type": "function",
           "function": {
-            "name": "file_read",
-            "description": "Read file. Read before modify for latest context and line numbers",
+            "name": "read",
+            "description": "Reads a file from the local filesystem. You can access any file directly by using this tool. By default, it reads up to 500 lines starting from the beginning of the file. You can optionally specify a line offset and limit (especially handy for long files). Results are returned with line numbers starting at 1.",
             "parameters": {
               "type": "object",
               "properties": {
-                "path": {
+                "file_path": {
                   "type": "string",
-                  "description": "Relative or absolute"
+                  "description": "The absolute path to the file to read"
                 },
-                "start": {
+                "offset": {
                   "type": "integer",
-                  "description": "Start line number (1-based)",
+                  "description": "The line number to start reading from (1-based). Only provide if the file is too large to read at once.",
                   "default": 1
                 },
-                "count": {
+                "limit": {
                   "type": "integer",
-                  "description": "Number of lines to read",
-                  "default": 200
-                },
-                "keyword": {
-                  "type": "string",
-                  "description": "[Optional] If provided, returns first match (case-insensitive) with context"
-                },
-                "show_linenos": {
-                  "type": "boolean",
-                  "description": "Show line numbers",
-                  "default": true
+                  "description": "The number of lines to read. Only provide if the file is too large to read at once. Maximum 500.",
+                  "default": 500
                 }
-              }
+              },
+              "required": [
+                "file_path"
+              ]
             }
           }
         },
         {
           "type": "function",
           "function": {
-            "name": "file_patch",
-            "description": "Replace unique old_content with new_content. Exact match required (whitespace/indentation). On failure, file_read to recheck",
+            "name": "write",
+            "description": "Writes a file to the local filesystem. This tool will overwrite the existing file if there is one at the provided path. Use mode='append' to append content to the end of the file.",
             "parameters": {
               "type": "object",
               "properties": {
-                "path": {
+                "file_path": {
                   "type": "string",
-                  "description": "File path"
+                  "description": "The absolute path to the file to write to"
                 },
-                "old_content": {
+                "content": {
                   "type": "string",
-                  "description": "Original text block to replace (must be unique)"
-                },
-                "new_content": {
-                  "type": "string",
-                  "description": "New content. Supports {{file:path:startLine:endLine}} to ref file lines, auto-expanded"
-                }
-              }
-            }
-          }
-        },
-        {
-          "type": "function",
-          "function": {
-            "name": "file_write",
-            "description": "Create/overwrite/append files. ONLY for HUGE edits. Content in <file_content> tags or reply code blocks. Supports {{file:path:startLine:endLine}}, auto-expanded",
-            "parameters": {
-              "type": "object",
-              "properties": {
-                "path": {
-                  "type": "string",
-                  "description": "File path"
+                  "description": "The content to write to the file"
                 },
                 "mode": {
                   "type": "string",
                   "enum": [
                     "overwrite",
-                    "append",
-                    "prepend"
+                    "append"
                   ],
-                  "description": "Write mode",
-                  "default": "append"
+                  "description": "Write mode: 'overwrite' replaces the entire file, 'append' adds content to the end. Default: overwrite.",
+                  "default": "overwrite"
                 }
-              }
+              },
+              "required": [
+                "file_path",
+                "content"
+              ]
             }
           }
         },
         {
           "type": "function",
           "function": {
-            "name": "scheduler-server/schedule_task",
-            "description": "创建定时任务，支持单次和循环任务。\n\n参数：\n- content (必填): 任务内容，如 \"开会\"、\"吃药\"\n- scheduled_at (必填): 首次触发时间，ISO格式，如 \"2026-04-06T08:00:00\"\n- event_type (可选): 事件类型，meeting/task/reminder/recurring，默认 reminder\n- is_recurring (可选): 是否循环任务，默认 false\n- cron_expr (可选): cron 表达式（循环任务必填），如 \"0 8 * * *\"（每天8点）\n\n示例：\n1. 单次提醒：content=\"开会\", scheduled_at=\"2026-04-07T15:00:00\", event_type=\"meeting\"\n2. 每天提醒：content=\"吃药\", scheduled_at=\"2026-04-06T08:00:00\", is_recurring=true, cron_expr=\"0 8 * * *\"\n\n重要：相对时间（明天、下周）必须由 Agent 转换为具体的日期时间。",
+            "name": "edit",
+            "description": "Performs exact string replacements in files. The edit will FAIL if old_string is not unique in the file. Either provide a larger string with more surrounding context to make it unique or use replace_all to change every instance of old_string.",
             "parameters": {
               "type": "object",
               "properties": {
-                "content": {
+                "file_path": {
                   "type": "string",
-                  "description": "任务内容"
+                  "description": "The absolute path to the file to modify"
                 },
-                "scheduled_at": {
+                "old_string": {
                   "type": "string",
-                  "description": "首次触发时间（ISO格式）"
+                  "description": "The text to replace (must be different from new_string)"
                 },
-                "event_type": {
+                "new_string": {
                   "type": "string",
-                  "enum": [
-                    "meeting",
-                    "task",
-                    "reminder",
-                    "recurring"
-                  ]
+                  "description": "The text to replace it with"
                 },
-                "is_recurring": {
+                "replace_all": {
                   "type": "boolean",
-                  "description": "是否循环任务"
-                },
-                "cron_expr": {
-                  "type": "string",
-                  "description": "cron 表达式"
+                  "description": "Replace all occurrences of old_string (default false)",
+                  "default": false
                 }
               },
               "required": [
-                "content",
-                "scheduled_at"
+                "file_path",
+                "old_string",
+                "new_string"
               ]
             }
           }
@@ -227,38 +197,60 @@
         {
           "type": "function",
           "function": {
-            "name": "scheduler-server/list_scheduled_tasks",
-            "description": "查询定时任务列表。\n\n参数：\n- status (可选): 筛选状态，pending/triggered/cancelled\n\n返回：任务列表，包含 id、content、scheduled_at、is_recurring、cron_expr、status",
+            "name": "grep",
+            "description": "Search for a pattern in files. Returns matching lines with line numbers. Supports regular expressions. Useful for finding where a symbol is defined, where a function is called, or searching for any text pattern across files.",
             "parameters": {
               "type": "object",
               "properties": {
-                "status": {
+                "pattern": {
+                  "type": "string",
+                  "description": "The pattern to search for (supports regular expressions)"
+                },
+                "path": {
+                  "type": "string",
+                  "description": "The directory or file to search in (absolute path). Defaults to current working directory.",
+                  "default": "."
+                },
+                "include": {
+                  "type": "string",
+                  "description": "File pattern to include (e.g. '*.py', '*.ts'). If not provided, searches all files."
+                }
+              },
+              "required": [
+                "pattern"
+              ]
+            }
+          }
+        },
+        {
+          "type": "function",
+          "function": {
+            "name": "photo-server/ingest",
+            "description": "统一入库工具 — 自动判断路径类型和内容类型\n\n参数:\n- path: 必填，文件路径或目录路径\n- mode: copy（复制）| move（移动）| reference（引用），默认 copy\n- category: 分类，不传则自动推断\n\n自动判断逻辑:\n1. 路径类型：is_dir() → 目录模式，is_file() → 文件模式\n2. 内容类型（文件）：按扩展名判断 — 照片(.jpg/.png等) → 照片流程，其他 → 文档流程\n3. 内容类型（目录）：扫描目录 — 全照片 → 批量照片，全文档 → 批量文档，混合 → 分别处理\n\n照片流程: EXIF → 人脸检测 → 人物匹配 → 摘要 → KG同步\n文档流程: 文件搬运 + 提交LightRAG异步分析存入知识图谱（处理时间较长）\n\n返回:\n- 照片: {status, photo_id, detected_persons, abstract, exif}\n- 文档: {status, action, file_path, lightrag}\n- 目录: {status, total, processed, results}",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "description": "文件路径或目录路径"
+                },
+                "mode": {
                   "type": "string",
                   "enum": [
-                    "pending",
-                    "triggered",
-                    "cancelled"
-                  ]
-                }
-              }
-            }
-          }
-        },
-        {
-          "type": "function",
-          "function": {
-            "name": "scheduler-server/cancel_task",
-            "description": "取消定时任务。\n\n参数：\n- task_id: 任务ID\n\n返回：取消结果",
-            "parameters": {
-              "type": "object",
-              "properties": {
-                "task_id": {
+                    "copy",
+                    "move",
+                    "reference"
+                  ],
+                  "default": "copy",
+                  "description": "文件操作模式"
+                },
+                "category": {
                   "type": "string",
-                  "description": "任务ID"
+                  "description": "分类，不传则自动推断"
                 }
               },
               "required": [
-                "task_id"
+                "path"
               ]
             }
           }
@@ -266,30 +258,700 @@
         {
           "type": "function",
           "function": {
-            "name": "scheduler-server/update_task",
-            "description": "更新定时任务。\n\n参数：\n- task_id: 任务ID\n- content: 新的任务内容（可选）\n- scheduled_at: 新的触发时间（可选）\n- cron_expr: 新的 cron 表达式（可选）\n\n返回：更新结果",
+            "name": "photo-server/ingest_document",
+            "description": "文档入库工具 — 文件搬运 + 提交LightRAG异步处理\n\n参数:\n- file_path: 必填，文档文件路径\n- category: 分类，默认 \"其他\"\n- mode: copy（复制）| move（移动）| reference（引用），默认 copy\n\n文件搬运完成后，文档提交给LightRAG异步分析并存入知识图谱（自动抽取实体和建链），处理时间可能较长。\n\n返回:\n- status: success | error\n- action: copied | moved | referenced | skipped\n- file_path: 存储路径\n- lightrag: inserted | skipped",
             "parameters": {
               "type": "object",
               "properties": {
-                "task_id": {
+                "file_path": {
                   "type": "string",
-                  "description": "任务ID"
+                  "description": "文档文件路径"
                 },
-                "content": {
+                "category": {
                   "type": "string",
-                  "description": "新的任务内容"
+                  "description": "分类，仅填写用户明确要求的分类，否则不填",
+                  "default": "其他"
                 },
-                "scheduled_at": {
+                "mode": {
                   "type": "string",
-                  "description": "新的触发时间"
-                },
-                "cron_expr": {
-                  "type": "string",
-                  "description": "新的 cron 表达式"
+                  "enum": [
+                    "copy",
+                    "move",
+                    "reference"
+                  ],
+                  "default": "copy",
+                  "description": "文件操作模式"
                 }
               },
               "required": [
-                "task_id"
+                "file_path"
+              ]
+            }
+          }
+        },
+        {
+          "type": "function",
+          "function": {
+            "name": "photo-server/name_person",
+            "description": "为人物命名\n\n参数:\n- person_id: 必填，人物ID\n- name: 必填，新名称\n\n返回:\n- status: success | error\n- person_id: 人物ID\n- name: 新名称\n- auto_label: 自动标签（如\"未命名人物_1\"）",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "person_id": {
+                  "type": "string",
+                  "description": "人物ID"
+                },
+                "name": {
+                  "type": "string",
+                  "description": "新名称"
+                }
+              },
+              "required": [
+                "person_id",
+                "name"
+              ]
+            }
+          }
+        },
+        {
+          "type": "function",
+          "function": {
+            "name": "photo-server/merge_persons",
+            "description": "合并两个人物\n\n参数:\n- person_a_id: 必填，保留的人物ID\n- person_b_id: 必填，要合并到A的人物ID\n\n返回:\n- status: success | error\n- merged_into: 合并到的人物ID\n- name: 保留的名称\n- photo_count: 合并后的照片数量\n- deleted_person_id: 被删除的人物ID\n\n说明:\n- 保留 person_a 的名称\n- 合并所有人脸向量，重新计算中心\n- 更新所有照片关联\n- 学习机制：如果相似度低于阈值，自动调整阈值",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "person_a_id": {
+                  "type": "string",
+                  "description": "保留的人物ID"
+                },
+                "person_b_id": {
+                  "type": "string",
+                  "description": "要合并的人物ID"
+                }
+              },
+              "required": [
+                "person_a_id",
+                "person_b_id"
+              ]
+            }
+          }
+        },
+        {
+          "type": "function",
+          "function": {
+            "name": "photo-server/search_persons",
+            "description": "搜索人物（按名字模糊匹配）\n\n参数:\n- query: 搜索词（人名，子串匹配）\n- limit: 返回数量（默认10）\n\n返回:\n- 匹配的人物列表",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "query": {
+                  "type": "string",
+                  "description": "搜索词（人名）"
+                },
+                "limit": {
+                  "type": "integer",
+                  "description": "返回数量",
+                  "default": 10
+                }
+              },
+              "required": [
+                "query"
+              ]
+            }
+          }
+        },
+        {
+          "type": "function",
+          "function": {
+            "name": "photo-server/get_unnamed_persons",
+            "description": "获取所有未命名人物\n\n返回:\n- 未命名人物列表，按出现次数排序\n- 包含：id, auto_label, photo_count, has_valid_photos, photos: [{file_path, boxed_path}]\n- boxed_path 是带人脸红框的图片路径，前端用 ::person_photo:: 标记显示\n- has_valid_photos=false 表示该人物的照片文件已不存在",
+            "parameters": {
+              "type": "object",
+              "properties": {}
+            }
+          }
+        },
+        {
+          "type": "function",
+          "function": {
+            "name": "photo-server/delete_person",
+            "description": "删除人物及其所有关联数据\n\n警告：这会删除人物图谱中的节点，请谨慎使用。\n只有在用户明确要求删除时才调用。\n\n参数:\n- person_id: 要删除的人物ID\n\n返回:\n- status: success | error\n- message: 结果说明",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "person_id": {
+                  "type": "string",
+                  "description": "人物ID"
+                }
+              },
+              "required": [
+                "person_id"
+              ]
+            }
+          }
+        },
+        {
+          "type": "function",
+          "function": {
+            "name": "photo-server/cleanup_deleted_photos",
+            "description": "清理已删除照片的数据库记录\n\n在删除照片文件/目录后调用，清理数据库中的孤儿记录。\n扫描 photos 表，删除文件不存在的记录及其关联的 faces 记录。\n\n返回:\n- deleted_photos: 删除的照片记录数\n- deleted_faces: 删除的人脸记录数\n\n使用场景：\n- 用户删除了照片目录后\n- 清理数据库中的残留记录",
+            "parameters": {
+              "type": "object",
+              "properties": {}
+            }
+          }
+        },
+        {
+          "type": "function",
+          "function": {
+            "name": "photo-server/get_person_photos",
+            "description": "获取某人物的多张照片（用于\"换一张\"场景）\n\n当用户说\"看不清\"、\"换一张\"时调用此工具。\n\n参数:\n- person_id: 人物ID\n- limit: 最多返回几张照片（默认5）\n\n返回:\n- person_id, person_name\n- photos: [{file_path, boxed_path, taken_at}, ...]\n\nboxed_path 是带人脸红框的图片路径，前端用 ::person_photo:: 标记显示。",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "person_id": {
+                  "type": "string",
+                  "description": "人物ID"
+                },
+                "limit": {
+                  "type": "integer",
+                  "description": "最多返回几张（默认5）"
+                }
+              },
+              "required": [
+                "person_id"
+              ]
+            }
+          }
+        },
+        {
+          "type": "function",
+          "function": {
+            "name": "photo-server/unload_face_model",
+            "description": "卸载人脸识别模型，释放内存（约 326MB）\n\n在长时间空闲时调用此工具释放内存。\n通常由系统在 SLEEP 状态时自动调用。\n\n返回:\n- status: success\n- message: 卸载结果",
+            "parameters": {
+              "type": "object",
+              "properties": {}
+            }
+          }
+        },
+        {
+          "type": "function",
+          "function": {
+            "name": "lightrag-server/lightrag_query",
+            "description": "Search the knowledge base using LightRAG. Modes: 'local' (entity-centric), 'global' (overview), 'hybrid' (balanced), 'mix' (KG + vector combined), 'naive' (vector only). Returns generated text answer or raw context.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "query": {
+                  "type": "string",
+                  "description": "Search query string"
+                },
+                "mode": {
+                  "type": "string",
+                  "enum": [
+                    "naive",
+                    "local",
+                    "global",
+                    "hybrid",
+                    "mix",
+                    "bypass"
+                  ],
+                  "default": "mix",
+                  "description": "Retrieval mode ('bypass' skips retrieval, uses LLM only)"
+                },
+                "only_need_context": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Return context only without LLM generation"
+                },
+                "top_k": {
+                  "type": "integer",
+                  "default": 5,
+                  "description": "Number of top results to retrieve"
+                },
+                "response_type": {
+                  "type": "string",
+                  "default": "Multiple Paragraphs",
+                  "description": "Response format when generating"
+                }
+              },
+              "required": [
+                "query"
+              ]
+            }
+          }
+        },
+        {
+          "type": "function",
+          "function": {
+            "name": "lightrag-server/lightrag_query_data",
+            "description": "Query the knowledge base returning structured data (entities + relationships + chunks). MODES: 'local' (entity-centric graph traversal, RECOMMENDED for most queries), 'global' (community-level overview), 'hybrid' (local+global combined, slower), 'naive' (vector-only, NO graph data), 'mix' (all combined, slowest). KEY OPTIMIZATION: When you provide 'keywords', the query skips LLM keyword extraction and uses your keywords directly — this eliminates LLM latency (~10-100s -> <1s) while keeping full graph traversal capability. ALWAYS provide keywords when you know the search terms (e.g., query='便签' keywords=['便签']). Only omit keywords for complex natural language queries that need LLM interpretation.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "query": {
+                  "type": "string",
+                  "description": "Search query string"
+                },
+                "mode": {
+                  "type": "string",
+                  "enum": [
+                    "naive",
+                    "local",
+                    "global",
+                    "hybrid",
+                    "mix",
+                    "bypass"
+                  ],
+                  "default": "local",
+                  "description": "Retrieval mode. 'local' is best for finding specific entities. 'hybrid' adds community context but is slower. 'naive' skips graph entirely."
+                },
+                "keywords": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "default": [],
+                  "description": "Pre-provided keywords to skip LLM extraction. DRAMATICALLY faster. Use the core nouns/terms from your query. E.g., query='查看便签' -> keywords=['便签']. For 'local' mode these become ll_keywords; for 'global'/'hybrid' they become both hl and ll keywords."
+                },
+                "top_k": {
+                  "type": "integer",
+                  "default": 10,
+                  "description": "Number of top results to retrieve"
+                }
+              },
+              "required": [
+                "query"
+              ]
+            }
+          }
+        },
+        {
+          "type": "function",
+          "function": {
+            "name": "lightrag-server/lightrag_search_entities",
+            "description": "Search for entities of a specific type in the knowledge graph. Uses local mode (entity-focused) and filters by entity_type. Common types: skill, tool, knowledge, person, photo, concept.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "query": {
+                  "type": "string",
+                  "description": "Search query string"
+                },
+                "entity_type": {
+                  "type": "string",
+                  "default": "",
+                  "description": "Entity type to filter (skill, tool, knowledge, person, photo, concept)"
+                },
+                "top_k": {
+                  "type": "integer",
+                  "default": 10,
+                  "description": "Max results"
+                }
+              },
+              "required": [
+                "query"
+              ]
+            }
+          }
+        },
+        {
+          "type": "function",
+          "function": {
+            "name": "lightrag-server/lightrag_get_graph",
+            "description": "Get a subgraph from the knowledge graph. action='explore' returns N-layer neighbors of an entity; action='snapshot' returns full graph for visualization.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "action": {
+                  "type": "string",
+                  "enum": [
+                    "explore",
+                    "snapshot"
+                  ],
+                  "default": "explore",
+                  "description": "Graph retrieval type"
+                },
+                "entity_name": {
+                  "type": "string",
+                  "default": "",
+                  "description": "Center entity name (for explore action)"
+                },
+                "depth": {
+                  "type": "integer",
+                  "default": 2,
+                  "description": "BFS traversal depth 1-5 (for explore)"
+                },
+                "limit": {
+                  "type": "integer",
+                  "default": 200,
+                  "description": "Max nodes to return (for snapshot)"
+                },
+                "edge_types": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Filter edges by relation type (e.g., ['followed_by', 'corrected_by']). None returns all."
+                }
+              },
+              "required": [
+                "action"
+              ]
+            }
+          }
+        },
+        {
+          "type": "function",
+          "function": {
+            "name": "lightrag-server/lightrag_timeline_query",
+            "description": "时间线查询：向量匹配内容 → 遍历时间链 → 按时间戳排序。用于追踪事件演变、纠正链、因果关系。",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "query": {
+                  "type": "string",
+                  "description": "查询文本（与 start_entities 二选一）"
+                },
+                "start_entities": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "直接指定起始实体名列表，跳过向量匹配"
+                },
+                "direction": {
+                  "type": "string",
+                  "enum": [
+                    "backward",
+                    "forward"
+                  ],
+                  "default": "backward",
+                  "description": "排序方向：backward=最近优先，forward=最早优先"
+                },
+                "max_depth": {
+                  "type": "integer",
+                  "default": 2,
+                  "description": "时间链遍历深度"
+                },
+                "top_k": {
+                  "type": "integer",
+                  "default": 5,
+                  "description": "向量搜索返回实体数"
+                },
+                "max_results": {
+                  "type": "integer",
+                  "default": 10,
+                  "description": "返回结果最大数量"
+                }
+              },
+              "required": []
+            }
+          }
+        },
+        {
+          "type": "function",
+          "function": {
+            "name": "lightrag-server/lightrag_insert",
+            "description": "Insert document(s) into the knowledge base. LightRAG automatically extracts entities and relations via LLM. Use file_path for large content.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "content": {
+                  "type": "string",
+                  "description": "Document text content"
+                },
+                "doc_id": {
+                  "type": "string",
+                  "description": "Optional unique document ID (auto-generated if omitted)"
+                },
+                "file_path": {
+                  "type": "string",
+                  "description": "Optional file path for citation"
+                }
+              },
+              "required": [
+                "content"
+              ]
+            }
+          }
+        },
+        {
+          "type": "function",
+          "function": {
+            "name": "lightrag-server/lightrag_insert_file",
+            "description": "Insert a file into the knowledge base by file path. LightRAG reads and parses the file automatically (supports DOCX, PDF, PPTX, XLSX, TXT, MD, etc.), then extracts entities and builds the knowledge graph asynchronously.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "file_path": {
+                  "type": "string",
+                  "description": "Absolute path to the file to insert into the knowledge base"
+                },
+                "doc_id": {
+                  "type": "string",
+                  "description": "Optional unique document ID for dedup"
+                }
+              },
+              "required": [
+                "file_path"
+              ]
+            }
+          }
+        },
+        {
+          "type": "function",
+          "function": {
+            "name": "lightrag-server/lightrag_insert_custom_kg",
+            "description": "Inject structured knowledge (entities + relationships + chunks) directly. Bypasses LLM extraction for precise control. Use for skills, tools, photo names, and other data that must be exact.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "entities": {
+                  "type": "array",
+                  "items": {
+                    "type": "object"
+                  },
+                  "description": "List of entity dicts: {entity_name, entity_type, description}"
+                },
+                "relationships": {
+                  "type": "array",
+                  "items": {
+                    "type": "object"
+                  },
+                  "description": "List of relationship dicts: {src_id, tgt_id, keywords, description}"
+                },
+                "chunks": {
+                  "type": "array",
+                  "items": {
+                    "type": "object"
+                  },
+                  "description": "List of chunk dicts: {content, source_id, file_path}"
+                },
+                "source_id": {
+                  "type": "string",
+                  "default": "custom_kg",
+                  "description": "Default source ID"
+                }
+              },
+              "required": []
+            }
+          }
+        },
+        {
+          "type": "function",
+          "function": {
+            "name": "lightrag-server/lightrag_insert_entity",
+            "description": "Insert an entity into the knowledge graph using structured injection (ainsert_custom_kg). Entity name and type are preserved exactly — no LLM auto-extraction. Also creates a Niu anchor edge for reachability. Entity names must use natural language (e.g., 'Python', '任飞'), NOT colon-prefix format (e.g., NOT 'skill:Python', NOT 'person:uuid').",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "description": "Entity name (e.g., 'Python', '数据分析')"
+                },
+                "entity_type": {
+                  "type": "string",
+                  "description": "Entity type (e.g., 'Person', 'Concept', 'Skill', 'Tool')"
+                },
+                "description": {
+                  "type": "string",
+                  "default": "",
+                  "description": "Entity description"
+                },
+                "source_id": {
+                  "type": "string",
+                  "default": "custom_kg",
+                  "description": "Deprecated — ignored. Kept for backward compatibility."
+                },
+                "file_path": {
+                  "type": "string",
+                  "default": "custom_kg",
+                  "description": "File path for citation"
+                },
+                "skip_llm_extraction": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Deprecated — custom_kg never triggers LLM. Kept for backward compatibility."
+                }
+              },
+              "required": [
+                "name",
+                "entity_type"
+              ]
+            }
+          }
+        },
+        {
+          "type": "function",
+          "function": {
+            "name": "lightrag-server/lightrag_insert_relation",
+            "description": "Insert a relation between two entities using structured injection (ainsert_custom_kg). Relation src/tgt/keywords are preserved exactly — no LLM auto-extraction. Entity names must use natural language (e.g., 'Niu', 'Python'), NOT colon-prefix format.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "src_id": {
+                  "type": "string",
+                  "description": "Source entity name"
+                },
+                "tgt_id": {
+                  "type": "string",
+                  "description": "Target entity name"
+                },
+                "relation": {
+                  "type": "string",
+                  "description": "Relation type (e.g., USED_FOR, OFTEN_WITH)"
+                },
+                "description": {
+                  "type": "string",
+                  "default": "",
+                  "description": "Relation description"
+                },
+                "source_id": {
+                  "type": "string",
+                  "default": "custom_kg",
+                  "description": "Deprecated — ignored. Kept for backward compatibility."
+                },
+                "file_path": {
+                  "type": "string",
+                  "default": "custom_kg",
+                  "description": "File path for citation"
+                }
+              },
+              "required": [
+                "src_id",
+                "tgt_id",
+                "relation"
+              ]
+            }
+          }
+        },
+        {
+          "type": "function",
+          "function": {
+            "name": "lightrag-server/lightrag_delete_entity",
+            "description": "Delete an entity and all its relations from the knowledge graph.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "entity_name": {
+                  "type": "string",
+                  "description": "Entity name to delete"
+                }
+              },
+              "required": [
+                "entity_name"
+              ]
+            }
+          }
+        },
+        {
+          "type": "function",
+          "function": {
+            "name": "lightrag-server/lightrag_document_status",
+            "description": "Get document processing status counts (pending, processing, processed, failed).",
+            "parameters": {
+              "type": "object",
+              "properties": {}
+            }
+          }
+        },
+        {
+          "type": "function",
+          "function": {
+            "name": "lightrag-server/lightrag_get_document",
+            "description": "获取完整文档内容及其处理状态。对应旧 vector-store/get_document。",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "doc_id": {
+                  "type": "string",
+                  "description": "文档ID"
+                }
+              },
+              "required": [
+                "doc_id"
+              ]
+            }
+          }
+        },
+        {
+          "type": "function",
+          "function": {
+            "name": "lightrag-server/lightrag_delete_document",
+            "description": "级联删除文档及其关联的 chunks、entities、relationships。对应旧 vector-store/delete_document，但执行完整级联删除而非仅删实体。",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "doc_id": {
+                  "type": "string",
+                  "description": "要删除的文档ID"
+                }
+              },
+              "required": [
+                "doc_id"
+              ]
+            }
+          }
+        },
+        {
+          "type": "function",
+          "function": {
+            "name": "lightrag-server/lightrag_list_entities",
+            "description": "List entities or documents in the knowledge base. list_type='entities' lists graph entities; 'documents' lists indexed documents; 'labels' lists all entity type labels.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "list_type": {
+                  "type": "string",
+                  "enum": [
+                    "entities",
+                    "documents",
+                    "labels"
+                  ],
+                  "default": "entities",
+                  "description": "What to list"
+                },
+                "entity_type": {
+                  "type": "string",
+                  "default": "",
+                  "description": "Filter by entity type (e.g., person, concept)"
+                },
+                "limit": {
+                  "type": "integer",
+                  "default": 50,
+                  "description": "Max results"
+                }
+              },
+              "required": []
+            }
+          }
+        },
+        {
+          "type": "function",
+          "function": {
+            "name": "lightrag-server/lightrag_merge_entities",
+            "description": "Merge multiple entities into one, consolidating all relations.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "source_entities": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Entity names to merge"
+                },
+                "target_entity": {
+                  "type": "string",
+                  "description": "Name of the merged target entity"
+                }
+              },
+              "required": [
+                "source_entities",
+                "target_entity"
               ]
             }
           }
@@ -301,12 +963,12 @@
     "status_code": 200,
     "headers": {
       "server": "istio-envoy",
-      "date": "Sat, 16 May 2026 08:04:47 GMT",
+      "date": "Sat, 16 May 2026 13:42:05 GMT",
       "content-type": "text/event-stream",
+      "x-client-request-id": "unknown-20260516214204-wiksIxhl",
       "cache-control": "no-cache",
-      "x-client-request-id": "unknown-20260516160446-KMbFxJyu",
-      "x-envoy-upstream-service-time": "693",
-      "x-request-id": "02177891868684710667a214a88c4c78c1353731389a01c1a7b3b",
+      "x-envoy-upstream-service-time": "1513",
+      "x-request-id": "0217789389245485b683ea6c70a7e1d7277ef2ab8257e0f204db4",
       "transfer-encoding": "chunked"
     },
     "body": "<streaming response, body not captured>"
