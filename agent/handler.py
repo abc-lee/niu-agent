@@ -80,7 +80,7 @@ def read_file(file_path: str, offset: int = 1, limit: int = 500) -> str:
                 return f"[FILE] No content to display (offset={offset}, total={total_lines} lines)"
 
             realcnt = len(res)
-            L_MAX = max(100, 512000 // realcnt) if realcnt > 0 else 100
+            L_MAX = min(10000, max(100, 500000 // max(realcnt, 1)))
             TAG = " ... [TRUNCATED]"
 
             res = [(i, l if len(l) <= L_MAX else l[:L_MAX] + TAG) for i, l in res]
@@ -100,6 +100,8 @@ def read_file(file_path: str, offset: int = 1, limit: int = 500) -> str:
 def write_file(file_path: str, content: str, mode: str = "overwrite") -> dict:
     """写入文件（支持 overwrite/append 模式）"""
     try:
+        if mode not in ("overwrite", "append"):
+            return {"status": "error", "msg": f"Invalid mode '{mode}'. Use 'overwrite' or 'append'."}
         file_path = str(Path(file_path).resolve())
         dir_path = os.path.dirname(file_path)
         if dir_path and not os.path.exists(dir_path):
@@ -186,7 +188,7 @@ def grep_search(pattern: str, path: str = ".", include: str = "") -> str:
     for filepath in files[:200]:
         searched_count += 1
         try:
-            with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+            with open(filepath, "r", encoding="utf-8", errors="replace") as f:
                 for line_no, line in enumerate(f, 1):
                     if regex.search(line):
                         matches.append(f"{filepath}:{line_no}:{line.rstrip()}")
@@ -733,8 +735,8 @@ class NiuHandler(BaseHandler):
         """读取文件（新 API，兼容旧参数名 path/start/count）"""
         raw_path = args.get("file_path") if "file_path" in args else args.get("path", "")
         file_path = self._get_abs_path(raw_path) if hasattr(self, "cwd") and self.cwd else raw_path
-        offset = args.get("offset") if "offset" in args else args.get("start", 1)
-        limit = args.get("limit") if "limit" in args else args.get("count", 500)
+        offset = int(args.get("offset") if "offset" in args else args.get("start", 1))
+        limit = int(args.get("limit") if "limit" in args else args.get("count", 500))
 
         result = read_file(file_path, offset=offset, limit=limit)
         anchor = self._get_anchor_prompt() if hasattr(self, "history_info") else None

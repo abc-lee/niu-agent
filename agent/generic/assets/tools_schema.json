@@ -18,7 +18,7 @@
   }},
   {"type": "function", "function": {
     "name": "read",
-    "description": "Reads a file from the local filesystem. You can access any file directly by using this tool. By default, it reads up to 500 lines starting from the beginning of the file. You can optionally specify a line offset and limit (especially handy for long files). Results are returned using cat -n format, with line numbers starting at 1.",
+    "description": "Reads a file from the local filesystem. You can access any file directly by using this tool. By default, it reads up to 500 lines starting from the beginning of the file. You can optionally specify a line offset and limit (especially handy for long files). Results are returned with line numbers starting at 1.",
     "parameters": {"type": "object", "properties": {
       "file_path": {"type": "string", "description": "The absolute path to the file to read"},
       "offset": {"type": "integer", "description": "The line number to start reading from (1-based). Only provide if the file is too large to read at once.", "default": 1},
@@ -50,7 +50,7 @@
     "parameters": {"type": "object", "properties": {
       "pattern": {"type": "string", "description": "The pattern to search for (supports regular expressions)"},
       "path": {"type": "string", "description": "The directory or file to search in (absolute path). Defaults to current working directory.", "default": "."},
-      "include": {"type": "string", "description": "File pattern to include (e.g. '*.py', '*.{ts,tsx}'). If not provided, searches all files."}
+      "include": {"type": "string", "description": "File pattern to include (e.g. '*.py', '*.ts'). If not provided, searches all files."}
     }, "required": ["pattern"]}
   }}
 ]
