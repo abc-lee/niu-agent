@@ -115,6 +115,69 @@ def _build_incremental_msg_text(messages, last_cursor_id: str, out_msg_ids: list
     return f"共 {len(lines)} 条新消息\n\n" + "\n".join(lines)
 
 
+def _build_entity_history(messages, last_cursor_id: str = "") -> list:
+    """
+    构建 entity_history：按游标过滤增量消息，过滤 WM 虚拟消息。
+
+    Args:
+        messages: 全量消息对象列表（来自 message store，有 .id/.role/.content/.tool_calls/.tool_call_id 属性）
+        last_cursor_id: 上次处理到的消息 UUID（空字符串表示全量）
+
+    Returns:
+        history 列表（dict 格式，可直接传给 call_subagent）
+    """
+    # 按游标过滤增量消息
+    if last_cursor_id:
+        cursor_idx = -1
+        for i, msg in enumerate(messages):
+            if (getattr(msg, "id", "") or "") == last_cursor_id:
+                cursor_idx = i
+                break
+        if cursor_idx >= 0:
+            source_messages = messages[cursor_idx + 1:]
+        else:
+            logger.warning("[Tidy] Entity cursor not found in messages, degrading to full processing")
+            source_messages = messages
+    else:
+        source_messages = messages  # 无游标，全量
+
+    # 构建 history（含 tool 消息，过滤 WM 虚拟消息）
+    entity_history = []
+    _wm_ids = set()
+    for msg in source_messages:
+        if msg.tool_calls:
+            for tc in (msg.tool_calls if isinstance(msg.tool_calls, list) else []):
+                tc_name = tc.get("function", {}).get("name", "") if isinstance(tc, dict) else ""
+                if tc_name == "working_memory":
+                    _wm_ids.add(tc.get("id", ""))
+    for msg in source_messages:
+        entry = {"role": msg.role, "content": msg.content or ""}
+        if msg.tool_calls:
+            entry["tool_calls"] = msg.tool_calls
+        if msg.tool_call_id:
+            entry["tool_call_id"] = msg.tool_call_id
+        if not entry["content"] and not entry.get("tool_calls") and not entry.get("tool_call_id"):
+            continue
+        # 跳过 WM 虚拟消息
+        if entry["role"] == "assistant" and entry.get("tool_calls"):
+            if any(tc.get("function", {}).get("name") == "working_memory" for tc in (entry["tool_calls"] if isinstance(entry["tool_calls"], list) else [])):
+                continue
+        if entry["role"] == "tool" and entry.get("tool_call_id", "") in _wm_ids:
+            continue
+        entity_history.append(entry)
+
+    # 移除末尾孤立的 assistant(tool_calls)
+    while entity_history and entity_history[-1].get("role") == "assistant" and entity_history[-1].get("tool_calls"):
+        entity_history.pop()
+
+    # 成对完整性修复：如果第一条是 tool 消息但没有对应的 assistant(tool_calls)，移除它
+    # （游标切割可能把 assistant(tool_calls) 切掉但保留了 tool 结果）
+    while entity_history and entity_history[0].get("role") == "tool":
+        entity_history.pop(0)
+
+    return entity_history
+
+
 def truncate_message_content(content: str, max_chars: int = 500) -> str:
     """
     截断单条消息内容（用于雪球式压缩的 force 模式）。
@@ -828,35 +891,6 @@ async def _tidy_context_impl(request: dict):
             logger.info("[Tidy] No messages to tidy")
             return {"status": "success", "message": "No messages to tidy"}
 
-        # 构建传给 entity-extractor 的 history（含 tool 消息，过滤 WM 虚拟消息）
-        entity_history = []
-        _wm_ids = set()
-        for msg in messages:
-            if msg.tool_calls:
-                for tc in (msg.tool_calls if isinstance(msg.tool_calls, list) else []):
-                    tc_name = tc.get("function", {}).get("name", "") if isinstance(tc, dict) else ""
-                    if tc_name == "working_memory":
-                        _wm_ids.add(tc.get("id", ""))
-        for msg in messages:
-            entry = {"role": msg.role, "content": msg.content or ""}
-            if msg.tool_calls:
-                entry["tool_calls"] = msg.tool_calls
-            if msg.tool_call_id:
-                entry["tool_call_id"] = msg.tool_call_id
-            if not entry["content"] and not entry.get("tool_calls") and not entry.get("tool_call_id"):
-                continue
-            # 跳过 WM 虚拟消息
-            if entry["role"] == "assistant" and entry.get("tool_calls"):
-                if any(tc.get("function", {}).get("name") == "working_memory" for tc in (entry["tool_calls"] if isinstance(entry["tool_calls"], list) else [])):
-                    continue
-            if entry["role"] == "tool" and entry.get("tool_call_id", "") in _wm_ids:
-                continue
-            entity_history.append(entry)
-
-        # 移除末尾孤立的 assistant(tool_calls)（没有对应 tool 结果）
-        while entity_history and entity_history[-1].get("role") == "assistant" and entity_history[-1].get("tool_calls"):
-            entity_history.pop()
-
         # Calculate per-message token counts
         message_count = len(messages)
         msg_tokens = []
@@ -963,13 +997,16 @@ async def _tidy_context_impl(request: dict):
             if entity_msg_ids:
                 logger.info(f"[Tidy] entity-extractor: {len(entity_msg_ids)} new messages since cursor")
 
+                # 用增量消息构建 entity_history
+                incremental_entity_history = _build_entity_history(messages, last_entity_extract_id)
+
                 def run_entity_extractor():
                     return call_subagent(
                         agent_name="entity-extractor",
                         task=entity_prompt,
                         llm_config=llm_config,
                         mcp_client=None,
-                        history=entity_history,
+                        history=incremental_entity_history,
                     )
 
                 entity_result = await asyncio.to_thread(run_entity_extractor)
@@ -1206,7 +1243,7 @@ async def _tidy_context_impl(request: dict):
                     task=entity_prompt_force,
                     llm_config=llm_config,
                     mcp_client=None,
-                    history=entity_history,
+                    history=_build_entity_history(messages, ""),
                 )
 
             entity_result = await asyncio.to_thread(run_entity_extractor_force)
