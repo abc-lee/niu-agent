@@ -63,6 +63,7 @@ def _run_agent_loop(
     initial_user_content: Optional[str] = None,
     context_window_tokens: int = 0,
     context_fifo_threshold: int = 0,
+    history: Optional[list] = None,
 ) -> Tuple[str, Any]:
     """
     执行 agent_runner_loop 并收集结果（提取自 call_subagent）
@@ -97,6 +98,7 @@ def _run_agent_loop(
         initial_user_content=initial_user_content,
         context_window_tokens=context_window_tokens,
         context_fifo_threshold=context_fifo_threshold,
+        history=history,
     )
 
     result = ""
@@ -251,6 +253,7 @@ def call_subagent(
     task: str,
     llm_config: Dict[str, Any],
     mcp_client=None,
+    history: Optional[list] = None,
 ) -> str:
     """
     调用子 Agent
@@ -332,6 +335,7 @@ def call_subagent(
         initial_user_content=task,
         context_window_tokens=context_window_tokens,
         context_fifo_threshold=context_fifo_threshold,
+        history=history,
     )
 
     # CONTEXT_OVERFLOW：返回结构化进度报告

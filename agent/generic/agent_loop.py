@@ -243,6 +243,7 @@ def agent_runner_loop(
                 showarg = get_pretty_json(args)
                 yield StreamEvent("tool_marker", f"🛠️ **正在调用工具:** `{tool_name}`  📥**参数:**\n````text\n{showarg}\n````\n")
             handler.current_turn = turn
+            handler._current_messages = messages
             gen = handler.dispatch(tool_name, args, response, index=ii)
             if verbose:
                 yield StreamEvent("tool_marker", "`````\n")
