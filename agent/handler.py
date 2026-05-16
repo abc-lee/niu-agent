@@ -530,7 +530,7 @@ class NiuHandler(BaseHandler):
 
         # 基于工具类型生成不同格式的摘要
         if tool_name in ("read", "file_read"):
-            path = clean_args.get("path", "")
+            path = clean_args.get("file_path") if "file_path" in clean_args else clean_args.get("path", "")
             filename = os.path.basename(path) if path else "未知文件"
             return f"读取文件: {filename}"
 
@@ -541,8 +541,13 @@ class NiuHandler(BaseHandler):
             exit_code = ret.get("exit_code", "?") if isinstance(ret, dict) else "?"
             return f"执行{code_type}代码: {preview} (退出码: {exit_code})"
 
+        elif tool_name in ("write", "file_write"):
+            path = clean_args.get("file_path") if "file_path" in clean_args else clean_args.get("path", "")
+            filename = os.path.basename(path) if path else "未知文件"
+            return f"写入文件: {filename}"
+
         elif tool_name in ("edit", "file_patch"):
-            path = clean_args.get("path", "")
+            path = clean_args.get("file_path") if "file_path" in clean_args else clean_args.get("path", "")
             filename = os.path.basename(path) if path else "未知文件"
             return f"修改文件: {filename}"
 
@@ -702,10 +707,10 @@ class NiuHandler(BaseHandler):
 
     def do_read(self, args: dict, response) -> StepOutcome:
         """读取文件（新 API，兼容旧参数名 path/start/count）"""
-        raw_path = args.get("file_path", args.get("path", ""))
+        raw_path = args.get("file_path") if "file_path" in args else args.get("path", "")
         file_path = self._get_abs_path(raw_path) if hasattr(self, "cwd") and self.cwd else raw_path
-        offset = args.get("offset", args.get("start", 1))
-        limit = args.get("limit", args.get("count", 2000))
+        offset = args.get("offset") if "offset" in args else args.get("start", 1)
+        limit = args.get("limit") if "limit" in args else args.get("count", 2000)
 
         result = read_file(file_path, offset=offset, limit=limit)
         anchor = self._get_anchor_prompt() if hasattr(self, "history_info") else None
