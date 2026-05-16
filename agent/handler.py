@@ -88,14 +88,16 @@ def read_file(file_path: str, offset: int = 1, limit: int = 2000) -> str:
         return f"Error: {str(e)}"
 
 
-def write_file(file_path: str, content: str) -> dict:
-    """写入文件（覆盖写入）"""
+def write_file(file_path: str, content: str, mode: str = "overwrite") -> dict:
+    """写入文件（支持 overwrite/append 模式）"""
     try:
         file_path = str(Path(file_path).resolve())
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
-        with open(file_path, "w", encoding="utf-8") as f:
+        write_mode = "a" if mode == "append" else "w"
+        with open(file_path, write_mode, encoding="utf-8") as f:
             f.write(content)
-        return {"status": "success", "msg": f"Written {len(content)} bytes to {file_path}"}
+        action = "Appended" if mode == "append" else "Written"
+        return {"status": "success", "msg": f"{action} {len(content)} bytes to {file_path}"}
     except Exception as e:
         return {"status": "error", "msg": str(e)}
 
@@ -141,9 +143,9 @@ def grep_search(pattern: str, path: str = ".", include: str = "") -> str:
     MAX_LINES = 50
 
     try:
-        regex = re_mod.compile(pattern, re_mod.IGNORECASE)
+        regex = re_mod.compile(pattern)
     except re_mod.error:
-        regex = re_mod.compile(re_mod.escape(pattern), re_mod.IGNORECASE)
+        regex = re_mod.compile(re_mod.escape(pattern))
 
     matches = []
 
@@ -711,17 +713,18 @@ class NiuHandler(BaseHandler):
 
     def do_write(self, args: dict, response) -> StepOutcome:
         """Write content to file."""
-        file_path = self._get_abs_path(args.get("file_path") or args.get("path", ""))
+        file_path = self._get_abs_path(args.get("file_path") if "file_path" in args else args.get("path", ""))
         content = args.get("content", "")
+        mode = args.get("mode", "overwrite")
 
-        result = write_file(file_path, content)
+        result = write_file(file_path, content, mode=mode)
         return StepOutcome(result, next_prompt=self._get_anchor_prompt())
 
     def do_edit(self, args: dict, response) -> StepOutcome:
         """Edit file by replacing old_string with new_string."""
-        file_path = self._get_abs_path(args.get("file_path") or args.get("path", ""))
-        old_string = args.get("old_string") or args.get("old_content", "")
-        new_string = args.get("new_string") or args.get("new_content", "")
+        file_path = self._get_abs_path(args.get("file_path") if "file_path" in args else args.get("path", ""))
+        old_string = args.get("old_string") if "old_string" in args else args.get("old_content", "")
+        new_string = args.get("new_string") if "new_string" in args else args.get("new_content", "")
         replace_all = args.get("replace_all", False)
 
         result = edit_file(file_path, old_string, new_string, replace_all=replace_all)
