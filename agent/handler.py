@@ -52,11 +52,15 @@ def _run_coroutine(coro):
         return asyncio.run(coro)
 
 
-def read_file(file_path: str, offset: int = 1, limit: int = 2000) -> str:
+def read_file(file_path: str, offset: int = 1, limit: int = 500) -> str:
     """读取文件内容（支持 offset/limit 分页，limit 最大 500）"""
     import itertools
 
     MAX_LIMIT = 500
+    if offset < 1:
+        offset = 1
+    if limit < 1:
+        limit = MAX_LIMIT
     if limit > MAX_LIMIT:
         limit = MAX_LIMIT
 
@@ -69,6 +73,11 @@ def read_file(file_path: str, offset: int = 1, limit: int = 2000) -> str:
             stream = ((i, l.rstrip("\r\n")) for i, l in enumerate(f, 1))
             stream = itertools.dropwhile(lambda x: x[0] < offset, stream)
             res = list(itertools.islice(stream, limit))
+
+            if not res:
+                if offset > total_lines:
+                    return f"[FILE] offset={offset} exceeds total lines ({total_lines}). Use offset=1 to read from the beginning."
+                return f"[FILE] No content to display (offset={offset}, total={total_lines} lines)"
 
             realcnt = len(res)
             L_MAX = max(100, 512000 // realcnt) if realcnt > 0 else 100
@@ -92,11 +101,14 @@ def write_file(file_path: str, content: str, mode: str = "overwrite") -> dict:
     """写入文件（支持 overwrite/append 模式）"""
     try:
         file_path = str(Path(file_path).resolve())
-        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+        dir_path = os.path.dirname(file_path)
+        if dir_path and not os.path.exists(dir_path):
+            os.makedirs(dir_path, exist_ok=True)
+        existed = os.path.exists(file_path)
         write_mode = "a" if mode == "append" else "w"
         with open(file_path, write_mode, encoding="utf-8") as f:
             f.write(content)
-        action = "Appended" if mode == "append" else "Written"
+        action = "Appended" if mode == "append" and existed else "Written"
         return {"status": "success", "msg": f"{action} {len(content)} bytes to {file_path}"}
     except Exception as e:
         return {"status": "error", "msg": str(e)}
@@ -114,6 +126,9 @@ def edit_file(file_path: str, old_string: str, new_string: str, replace_all: boo
 
         if not old_string:
             return {"status": "error", "msg": "old_string is empty"}
+
+        if old_string == new_string:
+            return {"status": "error", "msg": "old_string and new_string are identical. No change needed."}
 
         count = full_text.count(old_string)
         if count == 0:
@@ -142,6 +157,9 @@ def grep_search(pattern: str, path: str = ".", include: str = "") -> str:
 
     MAX_LINES = 50
 
+    if not os.path.exists(path):
+        return f"[GREP] Error: Path does not exist: '{path}'"
+
     try:
         regex = re_mod.compile(pattern)
     except re_mod.error:
@@ -157,10 +175,16 @@ def grep_search(pattern: str, path: str = ".", include: str = "") -> str:
         else:
             files = glob_mod.glob(os.path.join(path, "**", "*"), recursive=True)
         # 过滤目录和二进制文件
-        binary_exts = ('.pyc', '.so', '.dylib', '.exe', '.png', '.jpg', '.jpeg', '.gif', '.ico', '.woff', '.woff2', '.ttf', '.eot', '.db', '.sqlite', '.graphml', '.jsonl')
+        binary_exts = ('.pyc', '.so', '.dylib', '.exe', '.png', '.jpg', '.jpeg', '.gif', '.ico',
+                        '.woff', '.woff2', '.ttf', '.eot', '.db', '.sqlite', '.graphml', '.jsonl',
+                        '.zip', '.gz', '.tar', '.rar', '.pdf', '.doc', '.docx', '.ppt', '.pptx',
+                        '.xls', '.xlsx', '.class', '.o', '.obj', '.bin', '.dat',
+                        '.wav', '.mp3', '.mp4', '.avi', '.mov', '.svg')
         files = [f for f in files if os.path.isfile(f) and not f.endswith(binary_exts)]
 
+    searched_count = 0
     for filepath in files[:200]:
+        searched_count += 1
         try:
             with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
                 for line_no, line in enumerate(f, 1):
@@ -174,7 +198,7 @@ def grep_search(pattern: str, path: str = ".", include: str = "") -> str:
             break
 
     if not matches:
-        return f"[GREP] No matches for '{pattern}' in {path}"
+        return f"[GREP] No matches for '{pattern}' in {path} (searched {searched_count} files)"
 
     result = "\n".join(matches)
     if len(matches) >= MAX_LINES:
@@ -710,7 +734,7 @@ class NiuHandler(BaseHandler):
         raw_path = args.get("file_path") if "file_path" in args else args.get("path", "")
         file_path = self._get_abs_path(raw_path) if hasattr(self, "cwd") and self.cwd else raw_path
         offset = args.get("offset") if "offset" in args else args.get("start", 1)
-        limit = args.get("limit") if "limit" in args else args.get("count", 2000)
+        limit = args.get("limit") if "limit" in args else args.get("count", 500)
 
         result = read_file(file_path, offset=offset, limit=limit)
         anchor = self._get_anchor_prompt() if hasattr(self, "history_info") else None
@@ -722,6 +746,9 @@ class NiuHandler(BaseHandler):
         content = args.get("content", "")
         mode = args.get("mode", "overwrite")
 
+        if not file_path:
+            return StepOutcome({"status": "error", "msg": "file_path is required"}, next_prompt=self._get_anchor_prompt())
+
         result = write_file(file_path, content, mode=mode)
         return StepOutcome(result, next_prompt=self._get_anchor_prompt())
 
@@ -731,6 +758,9 @@ class NiuHandler(BaseHandler):
         old_string = args.get("old_string") if "old_string" in args else args.get("old_content", "")
         new_string = args.get("new_string") if "new_string" in args else args.get("new_content", "")
         replace_all = args.get("replace_all", False)
+
+        if not file_path:
+            return StepOutcome({"status": "error", "msg": "file_path is required"}, next_prompt=self._get_anchor_prompt())
 
         result = edit_file(file_path, old_string, new_string, replace_all=replace_all)
         return StepOutcome(result, next_prompt=self._get_anchor_prompt())

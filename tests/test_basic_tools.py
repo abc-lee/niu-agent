@@ -117,6 +117,30 @@ class TestReadFile:
         assert "gamma" in text
         assert "alpha" not in text
 
+    def test_offset_zero_normalized_to_one(self, tmp_path):
+        """offset=0 should be normalized to 1."""
+        f = tmp_path / "test.txt"
+        f.write_text("line1\nline2\nline3\n", encoding="utf-8")
+
+        result = read_file(str(f), offset=0)
+        assert "line1" in result
+
+    def test_negative_offset_normalized(self, tmp_path):
+        """Negative offset should be normalized to 1."""
+        f = tmp_path / "test.txt"
+        f.write_text("line1\nline2\n", encoding="utf-8")
+
+        result = read_file(str(f), offset=-5)
+        assert "line1" in result
+
+    def test_offset_exceeds_total_lines(self, tmp_path):
+        """offset beyond file length should return clear message."""
+        f = tmp_path / "test.txt"
+        f.write_text("line1\nline2\n", encoding="utf-8")
+
+        result = read_file(str(f), offset=100)
+        assert "exceeds total lines" in result
+
 
 # ===================================================================
 # write_file tests
@@ -177,6 +201,18 @@ class TestWriteFile:
         assert isinstance(result, dict)
         assert result.get("status") == "success"
         assert f.read_text(encoding="utf-8") == "replacement"
+
+    def test_append_to_nonexistent_file(self, tmp_path):
+        """mode='append' on a nonexistent file creates the file (shows 'Written' not 'Appended')."""
+        f = tmp_path / "new_append.txt"
+
+        result = write_file(str(f), "first content\n", mode="append")
+
+        assert isinstance(result, dict)
+        assert result.get("status") == "success"
+        assert f.read_text(encoding="utf-8") == "first content\n"
+        # Message should say "Written" not "Appended" since file didn't exist
+        assert "Written" in result.get("msg", "")
 
 
 # ===================================================================
@@ -253,6 +289,28 @@ class TestEditFile:
 
         assert isinstance(result, dict)
         assert result.get("status") == "error"
+
+    def test_old_string_equals_new_string(self, tmp_path):
+        """When old_string == new_string, returns error (no-op)."""
+        f = tmp_path / "same.txt"
+        f.write_text("hello world\n", encoding="utf-8")
+
+        result = edit_file(str(f), old_string="hello", new_string="hello")
+
+        assert isinstance(result, dict)
+        assert result.get("status") == "error"
+        assert "identical" in result.get("msg", "").lower()
+
+    def test_delete_by_empty_new_string(self, tmp_path):
+        """Replacing with empty new_string effectively deletes old_string."""
+        f = tmp_path / "delete.txt"
+        f.write_text("keep this\nremove this\nkeep this too\n", encoding="utf-8")
+
+        result = edit_file(str(f), old_string="remove this\n", new_string="")
+
+        assert isinstance(result, dict)
+        assert result.get("status") == "success"
+        assert f.read_text(encoding="utf-8") == "keep this\nkeep this too\n"
 
 
 # ===================================================================
@@ -332,3 +390,8 @@ class TestGrepSearch:
         # Count result lines (skip header/summary lines)
         result_lines = [l for l in result.strip().split("\n") if l.strip() and ":" in l]
         assert len(result_lines) <= 50, f"Expected at most 50 results, got {len(result_lines)}"
+
+    def test_nonexistent_path_returns_error(self):
+        """Searching in a nonexistent path returns an error message."""
+        result = grep_search("test", "/nonexistent/path/that/does/not/exist")
+        assert "does not exist" in result.lower() or "error" in result.lower()
