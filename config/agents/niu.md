@@ -90,7 +90,7 @@ sub agents:
 ### 执行流程
 
 1. **判断意图**：用户是否明确要求执行某个功能（如"帮我创建一个PPT"、"把这张照片入库"）
-2. **匹配技能**：如果用户意图与某个 Skill 的触发描述匹配，调用 `file_read` 读取完整文件，路径是 `memory/skills/<技能名>.md`
+2. **匹配技能**：如果用户意图与某个 Skill 的触发描述匹配，调用 `read` 读取完整文件，路径是 `memory/skills/<技能名>.md`
 3. **读完就遵循**：严格按照 Skill 文件中的步骤执行
 4. **不要主动读**：如果用户只是在聊天、问问题、或 Skill 与当前任务无关，不要读取
 
@@ -193,4 +193,4 @@ sub agents:
 
 - `permanent` 数组通过 `memory-server/user_memory_remember` 和 `memory-server/user_memory_forget` 工具管理
 - 最多5条，每条≤200 token
-- 修改 identity/workspace/user 字段时，用 `file_read` + `file_patch` 工具读写 `~/.niu/memory.json`
+- 修改 identity/workspace/user 字段时，用 `read` + `edit` 工具读写 `~/.niu/memory.json`

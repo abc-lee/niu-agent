@@ -1346,8 +1346,8 @@ async def _tidy_context_impl(request: dict):
             prompt = f"""CRITICAL: 你只有一轮机会完成所有压缩决策。多轮工具调用会导致上下文溢出，任务失败。
 
     - 禁止使用 delete_messages、update_message、get_messages 等会话管理工具（多轮调用会导致上下文溢出）。
-    - 禁止使用 bash、code_run、file_read、file_patch 等工具（浪费时间，你已有全部信息）。
-    - 只允许使用 file_write 工具一次性输出压缩方案。
+    - 禁止使用 bash、code_run、read、edit 等工具（浪费时间，你已有全部信息）。
+    - 只允许使用 write 工具一次性输出压缩方案。
     - 任何其他工具调用都将浪费你唯一的执行轮次 — 你将失败。
 
     当前上下文状态：
@@ -1367,10 +1367,10 @@ async def _tidy_context_impl(request: dict):
     {msg_list_text}
     --- 消息列表数据结束 ---
 
-    用 file_write 工具写入 {compress_plan_path}，内容为 JSON：
+    用 write 工具写入 {compress_plan_path}，内容为 JSON：
     {{"deletes": ["要删除的消息id1", "id2", ...], "updates": [{{"message_id": "id", "content": "压缩后的摘要内容"}}], "last_compress_id": "操作范围内 idx 最大的、且仍存在的消息 id（UUID）"}}
 
-    REMINDER: 只使用 file_write 工具。其他工具调用将浪费你唯一的轮次。"""
+    REMINDER: 只使用 write 工具。其他工具调用将浪费你唯一的轮次。"""
 
             def run_context_manager_force():
                 return call_subagent(
@@ -1473,7 +1473,7 @@ async def _tidy_context_impl(request: dict):
                         except OSError:
                             logger.warning("[Tidy] Failed to cleanup compress_plan.json")
             else:
-                logger.warning("[Tidy] Force: No compress plan file found, sub-agent may not have used file_write")
+                logger.warning("[Tidy] Force: No compress plan file found, sub-agent may not have used write")
 
             # 写入 compress 游标
             if new_compress_id:

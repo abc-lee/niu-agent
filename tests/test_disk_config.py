@@ -23,7 +23,7 @@ def tmp_config_dir(tmp_path):
     # Global config
     (config_dir / "disk.yaml").write_text(yaml.dump({
         "version": 1,
-        "exclude_tools": ["nanobot.system/code_run", "nanobot.system/file_read"],
+        "exclude_tools": ["nanobot.system/code_run", "nanobot.system/read"],
         "show_hidden": False,
         "disk_mode": True,
     }))
@@ -88,7 +88,7 @@ def config(tmp_config_dir):
 class TestLoading:
     def test_load_valid_config(self, config):
         assert config.version == 1
-        assert config.exclude_tools == ["nanobot.system/code_run", "nanobot.system/file_read"]
+        assert config.exclude_tools == ["nanobot.system/code_run", "nanobot.system/read"]
         assert config.disk_mode is True
 
     def test_load_servers(self, config):

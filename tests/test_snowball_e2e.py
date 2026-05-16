@@ -3,7 +3,7 @@
 
 模拟真实场景：上下文到 85%（~170K tokens）时触发 force 压缩。
 消息总量控制在 ~170K tokens（不超过 200K 上下文窗口），
-子 Agent 拿到全量内容 + 15% 输出空间，一轮 file_write 输出压缩方案。
+子 Agent 拿到全量内容 + 15% 输出空间，一轮 write 输出压缩方案。
 """
 
 import asyncio
@@ -118,7 +118,7 @@ async def main():
     print(f"压缩前: {tokens_before:>12,} tokens ({len(messages)} 条消息)")
     print(f"压缩后: {tokens_after:>12,} tokens ({len(messages_after)} 条消息)")
     print(f"减少:   {reduction:>12,} tokens ({reduction_pct:.1f}%)")
-    print(f"方案:   一轮 JSON file_write（全量内容，不截断）")
+    print(f"方案:   一轮 JSON write（全量内容，不截断）")
     print(f"{'='*60}")
 
     if tokens_after < tokens_before:

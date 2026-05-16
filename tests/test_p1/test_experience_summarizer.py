@@ -91,7 +91,7 @@ class TestExperienceSummarizer:
             turn_count=12,
             tool_executions=[
                 ToolExecution("code_run", {}, "Success", True),
-                ToolExecution("file_write", {}, "OK", True),
+                ToolExecution("write", {}, "OK", True),
             ],
             final_result="Task done"
         )
@@ -121,7 +121,7 @@ class TestExperienceSummarizer:
             turn_count=12,
             tool_executions=[
                 ToolExecution("code_run", {"code": "print('hello')"}, "hello", True),
-                ToolExecution("file_write", {"path": "/tmp/test.txt"}, "Success", True),
+                ToolExecution("write", {"path": "/tmp/test.txt"}, "Success", True),
             ],
             final_result="Task completed"
         )

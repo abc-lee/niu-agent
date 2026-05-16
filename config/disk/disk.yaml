@@ -1,8 +1,8 @@
 version: 1
 exclude_tools:
   - nanobot.system/code_run
-  - nanobot.system/file_read
-  - nanobot.system/file_patch
-  - nanobot.system/file_write
+  - nanobot.system/read
+  - nanobot.system/edit
+  - nanobot.system/write
 show_hidden: false
 disk_mode: true
