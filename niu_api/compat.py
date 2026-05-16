@@ -828,8 +828,15 @@ async def _tidy_context_impl(request: dict):
             logger.info("[Tidy] No messages to tidy")
             return {"status": "success", "message": "No messages to tidy"}
 
-        # 构建传给 entity-extractor 的 history（含 tool 消息）
+        # 构建传给 entity-extractor 的 history（含 tool 消息，过滤 WM 虚拟消息）
         entity_history = []
+        _wm_ids = set()
+        for msg in messages:
+            if msg.tool_calls:
+                for tc in (msg.tool_calls if isinstance(msg.tool_calls, list) else []):
+                    tc_name = tc.get("function", {}).get("name", "") if isinstance(tc, dict) else ""
+                    if tc_name == "working_memory":
+                        _wm_ids.add(tc.get("id", ""))
         for msg in messages:
             entry = {"role": msg.role, "content": msg.content or ""}
             if msg.tool_calls:
@@ -837,6 +844,12 @@ async def _tidy_context_impl(request: dict):
             if msg.tool_call_id:
                 entry["tool_call_id"] = msg.tool_call_id
             if not entry["content"] and not entry.get("tool_calls") and not entry.get("tool_call_id"):
+                continue
+            # 跳过 WM 虚拟消息
+            if entry["role"] == "assistant" and entry.get("tool_calls"):
+                if any(tc.get("function", {}).get("name") == "working_memory" for tc in (entry["tool_calls"] if isinstance(entry["tool_calls"], list) else [])):
+                    continue
+            if entry["role"] == "tool" and entry.get("tool_call_id", "") in _wm_ids:
                 continue
             entity_history.append(entry)
 

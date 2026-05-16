@@ -704,12 +704,31 @@ class NiuHandler(BaseHandler):
 
         try:
             yield StreamEvent("tool_marker", f"[SubAgent] Calling {agent_name}...\n")
+            # 过滤 WORKING MEMORY 虚拟消息，不让子Agent看到
+            _history = getattr(self, '_current_messages', None)
+            if _history:
+                _wm_ids = set()
+                for m in _history:
+                    if m.get("role") == "assistant" and m.get("tool_calls"):
+                        for tc in m["tool_calls"]:
+                            if tc.get("function", {}).get("name") == "working_memory":
+                                _wm_ids.add(tc.get("id", ""))
+                _history = [m for m in _history if not (
+                    (m.get("role") == "assistant" and m.get("tool_calls") and
+                     any(tc.get("function", {}).get("name") == "working_memory" for tc in m["tool_calls"]))
+                    or (m.get("role") == "tool" and m.get("tool_call_id", "") in _wm_ids)
+                )]
+
+            # 移除末尾孤立的 assistant(tool_calls)（没有对应 tool 结果）
+            while _history and _history[-1].get("role") == "assistant" and _history[-1].get("tool_calls"):
+                _history.pop()
+
             result = call_subagent(
                 agent_name=agent_name,
                 task=task,
                 llm_config=llm_config,
                 mcp_client=self.mcp_client,
-                history=getattr(self, '_current_messages', None),
+                history=_history,
             )
 
             # 验证结果：检查 event-manager 是否真正创建了任务
