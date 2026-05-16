@@ -828,6 +828,18 @@ async def _tidy_context_impl(request: dict):
             logger.info("[Tidy] No messages to tidy")
             return {"status": "success", "message": "No messages to tidy"}
 
+        # 构建传给 entity-extractor 的 history（含 tool 消息）
+        entity_history = []
+        for msg in messages:
+            entry = {"role": msg.role, "content": msg.content or ""}
+            if msg.tool_calls:
+                entry["tool_calls"] = msg.tool_calls
+            if msg.tool_call_id:
+                entry["tool_call_id"] = msg.tool_call_id
+            if not entry["content"] and not entry.get("tool_calls") and not entry.get("tool_call_id"):
+                continue
+            entity_history.append(entry)
+
         # Calculate per-message token counts
         message_count = len(messages)
         msg_tokens = []
@@ -926,11 +938,11 @@ async def _tidy_context_impl(request: dict):
             entity_msg_ids = []
             entity_incremental_text = _build_incremental_msg_text(messages, last_entity_extract_id, entity_msg_ids, msg_tokens)
             new_entity_id = last_entity_extract_id  # 默认保留旧游标
-            entity_prompt = f"""请从以下消息中提取有价值的内容，形成精炼文档提交给 LightRAG 入库。
+            entity_prompt = """请从上方对话历史中提取有价值的内容，形成精炼文档提交给 LightRAG 入库。
 
-{entity_incremental_text}
+注意：对话历史中包含工具调用结果（role=tool），这些是程序化操作的结果。照片入库、人物命名等操作已经自动完成了知识图谱写入，不要重复创建这些实体。如果需要关联已有实体，请使用入库后的实体名称。
 
-处理完成后，在报告末尾用 JSON 格式报告：{{"last_entity_extract_id": "<操作范围内 idx 最大的、且仍存在的消息的 id（UUID）>"}}"""
+处理完成后，在报告末尾用 JSON 格式报告：{"last_entity_extract_id": "<操作范围内 idx 最大的、且仍存在的消息的 id（UUID）>"}"""
             if entity_msg_ids:
                 logger.info(f"[Tidy] entity-extractor: {len(entity_msg_ids)} new messages since cursor")
 
@@ -940,6 +952,7 @@ async def _tidy_context_impl(request: dict):
                         task=entity_prompt,
                         llm_config=llm_config,
                         mcp_client=None,
+                        history=entity_history,
                     )
 
                 entity_result = await asyncio.to_thread(run_entity_extractor)
@@ -1164,14 +1177,11 @@ async def _tidy_context_impl(request: dict):
             logger.info("[Tidy] Force mode: starting entity-extractor (full processing)")
 
             # 1/3. entity-extractor（全量，非破坏性，不能截断内容）
-            entity_prompt_force = f"""请从以下消息中提取有价值的内容，形成精炼文档提交给 LightRAG 入库。
+            entity_prompt_force = """请从上方对话历史中提取有价值的内容，形成精炼文档提交给 LightRAG 入库。
 
-    消息列表：
-    共 {message_count} 条消息
+注意：对话历史中包含工具调用结果（role=tool），这些是程序化操作的结果。照片入库、人物命名等操作已经自动完成了知识图谱写入，不要重复创建这些实体。如果需要关联已有实体，请使用入库后的实体名称。
 
-    {msg_list_text}
-
-    处理完成后，在报告末尾用 JSON 格式报告：{{"last_entity_extract_id": "<操作范围内 idx 最大的、且仍存在的消息的 id（UUID）>"}}"""
+处理完成后，在报告末尾用 JSON 格式报告：{"last_entity_extract_id": "<操作范围内 idx 最大的、且仍存在的消息的 id（UUID）>"}"""
 
             def run_entity_extractor_force():
                 return call_subagent(
@@ -1179,6 +1189,7 @@ async def _tidy_context_impl(request: dict):
                     task=entity_prompt_force,
                     llm_config=llm_config,
                     mcp_client=None,
+                    history=entity_history,
                 )
 
             entity_result = await asyncio.to_thread(run_entity_extractor_force)

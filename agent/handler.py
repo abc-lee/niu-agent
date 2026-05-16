@@ -709,6 +709,7 @@ class NiuHandler(BaseHandler):
                 task=task,
                 llm_config=llm_config,
                 mcp_client=self.mcp_client,
+                history=getattr(self, '_current_messages', None),
             )
 
             # 验证结果：检查 event-manager 是否真正创建了任务
