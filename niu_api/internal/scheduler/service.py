@@ -21,7 +21,6 @@ from .task_store import TaskStore
 # ============== 全局状态 ==============
 
 _scheduler: Optional[Scheduler] = None
-_store: Optional[TaskStore] = None
 _init_lock = threading.Lock()
 
 
@@ -175,7 +174,7 @@ def _persist_fallback_message(user_content: str, assistant_content: str):
 
 def start_scheduler():
     """启动调度器（延迟启动，等待主服务就绪）"""
-    global _scheduler, _store
+    global _scheduler
 
     with _init_lock:
         if _scheduler is not None:
@@ -185,8 +184,11 @@ def start_scheduler():
         db_path = get_db_path()
         logger.info(f"[INTERNAL SCHEDULER] Initializing with database: {db_path}")
 
-        _store = TaskStore(db_path)
-        _scheduler = Scheduler(db_path, trigger_callback, store=_store)
+        _scheduler = Scheduler(
+            db_path=db_path,
+            trigger_callback=trigger_callback,
+            store_factory=get_store,  # 传入 factory，让 Scheduler 动态获取 store
+        )
         # 延迟启动，等待 FastAPI 完全就绪后再开始检查任务
         _scheduler.start_delayed(delay_seconds=10)
 
@@ -195,22 +197,19 @@ def start_scheduler():
 
 def stop_scheduler():
     """停止调度器"""
-    global _scheduler, _store
+    global _scheduler
 
     with _init_lock:
         if _scheduler:
             _scheduler.stop()
             _scheduler = None
-            _store = None
             logger.info("[INTERNAL SCHEDULER] Stopped")
 
 
 def get_store() -> TaskStore:
-    """获取 TaskStore 实例"""
-    with _init_lock:
-        if _store is None:
-            raise RuntimeError("Scheduler not initialized")
-        return _store
+    """获取 TaskStore 实例（动态计算数据库路径，与 MCP scheduler-server 保持一致）"""
+    db_path = get_db_path()
+    return TaskStore(db_path)
 
 
 def get_scheduler() -> Scheduler:

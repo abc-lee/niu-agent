@@ -27,6 +27,7 @@ class Scheduler:
         db_path: str,
         trigger_callback: Callable,
         store: Optional["TaskStore"] = None,
+        store_factory: Optional[Callable[[], "TaskStore"]] = None,
     ):
         self.db_path = db_path
         self.trigger_callback = trigger_callback
@@ -39,11 +40,16 @@ class Scheduler:
         # 防止 check_and_trigger 并发执行
         self._check_lock = threading.Lock()
 
-        # Initialize store
-        if store is not None:
+        # Store: 优先使用 factory（动态获取），其次使用传入的实例，最后自己创建
+        if store_factory is not None:
+            self._store_factory = store_factory
+            self.store = store_factory()
+        elif store is not None:
+            self._store_factory = None
             self.store = store
         else:
             from niu_api.internal.scheduler.task_store import TaskStore
+            self._store_factory = None
             self.store = TaskStore(db_path)
 
         # Thread pool for executing trigger callbacks (non-blocking)
@@ -156,6 +162,10 @@ class Scheduler:
         Releases _check_lock during stagger waits so new check_and_trigger
         calls can process newly-arrived on-time tasks.
         """
+        # 动态刷新 store（如果使用 factory，确保 db_path 与 workspace 一致）
+        if self._store_factory is not None:
+            self.store = self._store_factory()
+
         from datetime import date
 
         today = date.today().isoformat()
