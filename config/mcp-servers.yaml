@@ -206,4 +206,18 @@ browser-server:
       visibility: hidden
     browser_close_tab:
       visibility: hidden
+brain-region-server:
+  command: ${PYTHON_PATH}
+  args:
+  - -m
+  - niu_brain_region_server
+  workdir: mcp-servers/brain-region-server/src
+  preload: true
+  tools:
+    brain_region_activate:
+      visibility: static
+    brain_region_dim:
+      visibility: static
+    brain_region_status:
+      visibility: static
 nanobot.system: null

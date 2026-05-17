@@ -819,15 +819,35 @@ class NiuRunner:
         if injection:
             system_prompt += injection
 
-        # 组装 tools_schema = base tools + disk
+        # 组装 tools_schema = base tools + static MCP tools + disk
         tools_schema = self.base_tools_schema.copy()
+
+        # Inject static-visibility MCP tools (e.g. brain_region/*)
+        # These are always visible to the LLM, unlike hidden/dynamic tools
+        # which are accessed via disk().
+        try:
+            from agent.tool_registry import get_registry
+            registry = get_registry()
+            for tool_name in registry.get_static_tools():
+                schema = registry._schemas.get(tool_name)
+                if schema:
+                    tools_schema.append({
+                        "type": "function",
+                        "function": {
+                            "name": schema["name"],
+                            "description": schema.get("description", ""),
+                            "parameters": schema.get("input_schema", {"type": "object", "properties": {}}),
+                        }
+                    })
+        except Exception as e:
+            logger.debug(f"Static MCP tools injection skipped: {e}")
 
         # Add disk tool
         disk_schema = self.disk_engine.get_schema()
         tools_schema.append(disk_schema)
 
         logger.debug(
-            f"tools_schema: {len(self.base_tools_schema)} base + 1 disk = {len(tools_schema)} total"
+            f"tools_schema: {len(self.base_tools_schema)} base + {len(tools_schema) - len(self.base_tools_schema) - 1} static + 1 disk = {len(tools_schema)} total"
         )
 
         # 读取上下文窗口大小，用于主 Agent 85% 溢出检测
