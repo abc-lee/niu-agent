@@ -38,8 +38,9 @@ AI 助理在日常对话中积累了大量用户工作信息（项目进展、�
 
 | 组件 | 类型 | 位置 | 说明 |
 |------|------|------|------|
-| journal-skill.md | Skill | config/disk/ | 日志格式规范 + 写入规则，主Agent和entity-extractor都读 |
-| report-skill.md | Skill | config/disk/ | 报告模板 + 生成流程 |
+| journal-skill.md | Skill | config/disk/ | 日志格式规范 + 写入规则，主Agent通过disk()读取 |
+| report-skill.md | Skill | config/disk/ | 报告模板 + 生成流程，主Agent通过disk()读取 |
+| entity-extractor.md | Agent定义 | config/agents/ | 日志写入规则直接写在提示词中（子Agent不会读Skill） |
 | 每日日志确认 | 定时任务 | scheduler | 18:00 触发，读取当日日志，与用户确认 |
 | 每周报告提醒 | 定时任务 | scheduler | 周一 9:00 触发，提醒生成周报 |
 
@@ -62,8 +63,9 @@ AI 助理在日常对话中积累了大量用户工作信息（项目进展、�
 ### 3.1 journal-skill.md 核心内容
 
 **特殊性**：
-1. 主 Agent 和 entity-extractor 都必须读取此 Skill
-2. 主 Agent 应根据用户特点随时修改此 Skill
+1. 主 Agent 通过 disk() 读取此 Skill
+2. entity-extractor **不会读 Skill 文件**，其日志写入规则直接写在 `config/agents/entity-extractor.md` 提示词中
+3. 主 Agent 可根据用户特点随时修改此 Skill 和 entity-extractor.md
 
 **日志条目格式**：
 
@@ -85,22 +87,37 @@ AI 助理在日常对话中积累了大量用户工作信息（项目进展、�
 
 **写入规则**：
 1. entity-extractor 在对话中识别到工作相关内容时，追加写入当日日志
-2. 追加方式：读取当日文件 → 在末尾追加条目 → 用 `write_file` 写回
-3. 如当日文件不存在，创建新文件并写入头部日期标记
-4. 同一条工作内容不重复写入（entity-extractor 维护已提取记录的追踪）
+2. 追加方式：用 `read` 读取当日文件 → 在末尾追加条目 → 用 `write` 写回
+3. 如当日文件不存在，用 `write` 创建新文件并写入头部日期标记
+4. 同一条工作内容不重复写入（基于对话消息ID追踪已提取记录）
 
 **知识图谱同步规则**：
-1. 首次写入日志文件后，调用 `lightrag_insert_file` 入库
+1. 首次写入日志文件后，调用 `lightrag-server/lightrag_insert_file` 入库
 2. 日志文件被追加内容后，先 `lightrag_delete_document` 删除旧版本，再 `lightrag_insert_file` 重新入库
 3. doc_id 使用文件路径作为固定标识（`workspace/journals/YYYY-MM-DD.md`），确保更新时可精确删除
 
+**注意**：entity-extractor 已有 `lightrag-server` 工具权限，可直接调用入库。文件读写使用基础工具 `read`/`write`/`edit`，无需额外添加 file-parser。
+
 ### 3.2 entity-extractor 的日志提取规则
 
-entity-extractor 当前提取偏好、技能、事件三类内容。新增"工作进展"提取类别：
+**关键约束**：entity-extractor 不会自己读 Skill 文件，所有日志写入规则必须直接写在其 agent 定义（`config/agents/entity-extractor.md`）的提示词中。
 
+**当前可用工具**：
+- 基础工具：`read`、`write`、`edit`（可直接读写文件）
+- MCP 工具：`lightrag-server`（知识图谱入库）
+- 无 disk() 工具，无法读取 Skill 文件
+
+**修改 entity-extractor.md**：
+1. 在提示词中新增"工作日志"提取规则段落
+2. 明确日志文件路径：`{workspace}/journals/YYYY-MM-DD.md`
+3. 明确日志条目格式（与 3.1 节格式一致）
+4. 明确写入流程：`read` 当日文件 → 追加条目 → `write` 写回
+5. 明确知识图谱同步：`lightrag_insert_file` 入库，更新时先 `lightrag_delete_document` 再重新入库
+
+**提取规则**：
 - **识别信号**：用户提到项目名称、任务进展、会议、决策、代码提交、bug修复等
 - **提取内容**：时间、项目、任务描述、状态（进行中/完成/搁置）、关键词
-- **去重机制**：entity-extractor 维护"已提取记录"集合（基于对话消息ID），避免同一对话内容重复写入日志
+- **去重机制**：基于对话消息ID追踪已提取记录，避免同一对话内容重复写入日志
 
 ### 3.3 主 Agent 的日志交互规则
 
@@ -220,4 +237,5 @@ entity-extractor 当前提取偏好、技能、事件三类内容。新增"工�
 4. 定时任务能触发主 Agent 读取日志并与用户确认
 5. 主 Agent 能根据日志文件 + LightRAG 查询生成周报/月报
 6. 主 Agent 能根据用户偏好修改 Skill 内容
-7. 两个 Skill 文件（journal-skill.md + report-skill.md）主 Agent 和 entity-extractor 都能读取
+7. journal-skill.md 和 report-skill.md 主 Agent 可通过 disk() 读取
+8. entity-extractor.md 提示词中包含完整的日志写入规则（不依赖 Skill 文件）
