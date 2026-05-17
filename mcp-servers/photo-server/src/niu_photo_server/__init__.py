@@ -46,7 +46,7 @@ TOOL_SCHEMAS = {
 返回:
 - 照片: {status, photo_id, detected_persons, abstract, exif}
 - 文档(need_category): {status: need_category, message, file_path, mode}
-- 文档(success): {status: success, action, file_path, lightrag}
+- 文档(success): {status: success, action, file_path, lightrag, lightrag_message}
 - 目录: {status, total, processed, results}""",
         "input_schema": {
             "type": "object",
@@ -78,7 +78,8 @@ TOOL_SCHEMAS = {
 - status: need_category | success | error
 - action: created | versioned | renamed | referenced | skipped
 - file_path: 存储路径
-- lightrag: inserted | skipped | error""",
+- lightrag: inserted | unsupported | skipped | error
+- lightrag_message: unsupported/error 时的原因说明""",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -2758,6 +2759,49 @@ def is_document(file_path: str) -> bool:
     return Path(file_path).suffix.lower() in DOCUMENT_EXTENSIONS
 
 
+# LightRAG 知识图谱支持的文件扩展名
+KG_SUPPORTED_EXTENSIONS = {
+    ".txt", ".md", ".csv", ".json", ".log",
+    ".pdf", ".docx", ".pptx", ".xlsx",
+    ".html", ".htm",
+}
+
+# OLE2 复合文档签名（旧版 .doc 格式）
+OLE2_MAGIC = b"\xd0\xcf\x11\xe0"
+
+
+def check_kg_supported(file_path: str) -> tuple[bool, str]:
+    """检查文件格式是否支持知识图谱入库
+
+    Returns:
+        (supported, reason) 元组：
+        - supported: True 表示支持，False 表示不支持
+        - reason: 不支持时的原因说明
+    """
+    suffix = Path(file_path).suffix.lower()
+
+    # 无扩展名
+    if not suffix:
+        return (False, "无扩展名的文件不支持知识图谱入库")
+
+    # 扩展名不在白名单中
+    if suffix not in KG_SUPPORTED_EXTENSIONS:
+        return (False, f"{suffix} 格式不支持知识图谱入库")
+
+    # 检测假 .docx（WPS 创建的 OLE2 格式文件，扩展名为 .docx 但实际是旧版 .doc）
+    # OLE2 签名前 4 字节: D0 CF 11 E0（完整签名 8 字节，4 字节足以区分 ZIP vs OLE2）
+    if suffix == ".docx":
+        try:
+            with open(file_path, "rb") as f:
+                header = f.read(4)
+            if header == OLE2_MAGIC:
+                return (False, "该 .docx 文件实际为旧版 .doc 格式（WPS 创建），不支持知识图谱入库")
+        except Exception as e:
+            logger.warning(f"[KG_CHECK] 无法读取文件头检测 OLE2: {e}")
+
+    return (True, "")
+
+
 def calculate_file_hash(file_path: str) -> str:
     """计算文件哈希"""
     sha256 = hashlib.sha256()
@@ -2873,8 +2917,12 @@ def read_file_content(path: str, max_chars: int = 20000) -> str:
             logger.warning(f"[READ] HTML读取失败: {e}")
 
     else:
-        # Unknown format, try plain text
+        # Unknown format — check if binary before attempting text read
         try:
+            with open(path, "rb") as f:
+                chunk = f.read(1024)
+            if b"\x00" in chunk:
+                return ""  # binary file, skip text extraction
             with open(path, "r", encoding="utf-8", errors="ignore") as f:
                 text = f.read(max_chars)
         except Exception:
@@ -3024,7 +3072,7 @@ def rename_file(file_path: Path) -> str:
 
 
 def ingest_document(file_path: str, category: str = "", mode: str = "copy") -> dict:
-    """文档入库工具 — 文件搬运 + 提交LightRAG异步处理
+    """文档入库工具 — 文件搬运 + 知识图谱入库（格式不支持时跳过KG）
 
     不传 category 时，读取文件内容返回 need_category 状态+内容预览，
     由调用方判断分类后再次调用传入 category 完成入库。
@@ -3032,11 +3080,11 @@ def ingest_document(file_path: str, category: str = "", mode: str = "copy") -> d
     自动检测路径类型（目录/照片/文档）：
     - 目录：检查是否包含照片，转到照片批量处理
     - 照片：转到照片入库流程
-    - 文档：文件搬运 + 提交LightRAG异步分析存入知识图谱（处理时间较长）
+    - 文档：文件搬运 + 检查格式支持后提交LightRAG（不支持则跳过KG）
 
     返回 status:
-    - need_category: 需要调用方判断分类（附带内容预览）
-    - success: 入库完成
+    - need_category: 需要调用方判断分类（附带内容预览和 kg_supported 标记）
+    - success: 入库完成（lightrag: inserted | unsupported | error | skipped）
     - error: 失败
     """
     try:
@@ -3090,30 +3138,36 @@ def ingest_document(file_path: str, category: str = "", mode: str = "copy") -> d
 
         # ---- 文档文件处理 ----
 
+        # 检查格式是否支持知识图谱入库（提前告知子 Agent）
+        kg_ok, kg_reason = check_kg_supported(file_path)
+
         # No category → read file content and ask caller to classify
         if not category:
             prefs = get_preferences()
             available_categories = prefs.get("categories", {}).get("documents", ["其他"])
             content = read_file_content(file_path)
+            kg_note = f"\n注意：{kg_reason}" if not kg_ok else ""
             if content:
                 preview = content[:3000] if len(content) > 3000 else content
                 return {
                     "status": "need_category",
-                    "message": f"请根据以下内容判断文档分类目录，然后再次调用 ingest_document 并传入 category 参数。\n\n文件: {file_path}\n内容预览:\n{preview}\n可选分类: {', '.join(available_categories)}",
+                    "message": f"请根据以下内容判断文档分类目录，然后再次调用 ingest_document 并传入 category 参数。\n\n文件: {file_path}\n内容预览:\n{preview}\n可选分类: {', '.join(available_categories)}{kg_note}",
                     "file_path": file_path,
                     "mode": mode,
                     "content_length": len(content),
                     "available_categories": available_categories,
+                    "kg_supported": kg_ok,
                 }
             else:
                 ext = source.suffix.lower()
                 size = source.stat().st_size
                 return {
                     "status": "need_category",
-                    "message": f"无法读取文件内容，请根据文件信息判断分类目录，然后再次调用 ingest_document 并传入 category 参数。\n\n文件: {file_path}\n格式: {ext}\n大小: {size} 字节\n可选分类: {', '.join(available_categories)}",
+                    "message": f"无法读取文件内容，请根据文件信息判断分类目录，然后再次调用 ingest_document 并传入 category 参数。\n\n文件: {file_path}\n格式: {ext}\n大小: {size} 字节\n可选分类: {', '.join(available_categories)}{kg_note}",
                     "file_path": file_path,
                     "mode": mode,
                     "available_categories": available_categories,
+                    "kg_supported": kg_ok,
                 }
         logger.info("[INGEST] 读取配置...")
         workspace = get_workspace_path()
@@ -3132,25 +3186,55 @@ def ingest_document(file_path: str, category: str = "", mode: str = "copy") -> d
 
         if action == "skipped":
             logger.info("[INGEST] 文件已存在，检查 LightRAG 写入状态...")
-            # File already exists, but LightRAG may not have been written successfully.
-            # Pass file path to LightRAG so it reads and parses the file itself.
             content_length = 0
             lightrag_result = None
-            try:
-                from agent.tool_registry import get_registry
 
-                registry = get_registry()
-                insert_file_tool = registry.get("lightrag-server/lightrag_insert_file")
-                if insert_file_tool:
-                    lightrag_result = insert_file_tool(
-                        file_path=str(Path(final_path).resolve()),
-                        doc_id=str(Path(final_path).resolve()),
-                    )
-                    lr_status = lightrag_result.get("status", "unknown")
-                    logger.info(f"[INGEST] LightRAG insert_file (skipped path): {lr_status}")
-                    content_length = Path(final_path).stat().st_size
-            except Exception as lr_err:
-                logger.warning(f"[INGEST] LightRAG insert_file 失败（不影响文件入库）: {lr_err}")
+            # 使用前面已检查的 KG 格式支持结果
+            if not kg_ok:
+                lr_status = "unsupported"
+                lr_msg = kg_reason
+                logger.info(f"[INGEST] KG unsupported (skipped file): {kg_reason}")
+                content_length = Path(final_path).stat().st_size
+            else:
+                lr_status = "skipped"
+                lr_msg = ""
+                try:
+                    from agent.tool_registry import get_registry
+
+                    registry = get_registry()
+                    insert_file_tool = registry.get("lightrag-server/lightrag_insert_file")
+                    if insert_file_tool:
+                        lightrag_result = insert_file_tool(
+                            file_path=str(Path(final_path).resolve()),
+                            doc_id=str(Path(final_path).resolve()),
+                        )
+                        lr_status = lightrag_result.get("status", "unknown")
+                        logger.info(f"[INGEST] LightRAG insert_file (skipped path): {lr_status}")
+                        content_length = Path(final_path).stat().st_size
+                except Exception as lr_err:
+                    logger.warning(f"[INGEST] LightRAG insert_file 失败（不影响文件入库）: {lr_err}")
+
+            # 确定 lightrag 状态
+            if lr_status == "unsupported":
+                lr_final = "unsupported"
+                lr_final_msg = lr_msg
+            elif lightrag_result and lightrag_result.get("status") in ("success", "ok"):
+                lr_final = "inserted"
+                lr_final_msg = ""
+            elif lightrag_result and lightrag_result.get("status") == "error":
+                lr_final = "error"
+                lr_final_msg = lightrag_result.get("message", "")
+            else:
+                lr_final = "skipped"
+                lr_final_msg = ""
+
+            # 根据知识图谱状态生成提示
+            if lr_final == "unsupported":
+                note = f"文件已存在，但{lr_final_msg}"
+            elif lr_final == "error":
+                note = f"文件已存在，知识图谱入库失败：{lr_final_msg}"
+            else:
+                note = "文件已存在，已补全 LightRAG 写入"
 
             return {
                 "status": "success",
@@ -3159,8 +3243,9 @@ def ingest_document(file_path: str, category: str = "", mode: str = "copy") -> d
                 "original_path": str(source),
                 "category": category,
                 "content_length": content_length,
-                "lightrag": "inserted" if lightrag_result and lightrag_result.get("status") in ("success", "ok") else "skipped",
-                "note": "文件已存在，已补全 LightRAG 写入",
+                "lightrag": lr_final,
+                "lightrag_message": lr_final_msg or None,
+                "note": note,
                 "kg_entities": [],
             }
 
@@ -3178,37 +3263,59 @@ def ingest_document(file_path: str, category: str = "", mode: str = "copy") -> d
         # 将文件直接交给 LightRAG 处理入库
         content_length = 0
         lightrag_result = None
-        try:
-            from agent.tool_registry import get_registry
 
-            registry = get_registry()
-            insert_file_tool = registry.get("lightrag-server/lightrag_insert_file")
-            if insert_file_tool:
-                lightrag_result = insert_file_tool(
-                    file_path=str(Path(final_path).resolve()),
-                    doc_id=str(Path(final_path).resolve()),
-                )
-                lr_status = lightrag_result.get("status", "unknown")
-                if lr_status == "ok":
-                    logger.info(f"[INGEST] LightRAG insert_file: ok")
-                else:
-                    lr_msg = lightrag_result.get("message", "")
-                    logger.warning(
-                        f"[INGEST] LightRAG insert_file failed: status={lr_status}, message={lr_msg}"
-                    )
-                content_length = Path(final_path).stat().st_size
-        except Exception as lr_err:
-            logger.warning(f"[INGEST] LightRAG insert_file 失败（不影响文件入库）: {lr_err}")
-
-        # Determine lightrag status for return value
-        lr_msg = ""
-        if lightrag_result and lightrag_result.get("status") == "ok":
-            lr_status = "inserted"
-        elif lightrag_result and lightrag_result.get("status") == "error":
-            lr_status = "error"
-            lr_msg = lightrag_result.get("message", "")
+        # 使用前面已检查的 KG 格式支持结果
+        if not kg_ok:
+            lr_status = "unsupported"
+            lr_msg = kg_reason
+            logger.info(f"[INGEST] KG unsupported: {kg_reason}")
+            content_length = Path(final_path).stat().st_size
         else:
             lr_status = "skipped"
+            lr_msg = ""
+            try:
+                from agent.tool_registry import get_registry
+
+                registry = get_registry()
+                insert_file_tool = registry.get("lightrag-server/lightrag_insert_file")
+                if insert_file_tool:
+                    lightrag_result = insert_file_tool(
+                        file_path=str(Path(final_path).resolve()),
+                        doc_id=str(Path(final_path).resolve()),
+                    )
+                    lr_status = lightrag_result.get("status", "unknown")
+                    if lr_status == "ok":
+                        logger.info(f"[INGEST] LightRAG insert_file: ok")
+                    else:
+                        lr_msg = lightrag_result.get("message", "")
+                        logger.warning(
+                            f"[INGEST] LightRAG insert_file failed: status={lr_status}, message={lr_msg}"
+                        )
+                    content_length = Path(final_path).stat().st_size
+            except Exception as lr_err:
+                logger.warning(f"[INGEST] LightRAG insert_file 失败（不影响文件入库）: {lr_err}")
+
+        # Determine lightrag status for return value
+        if lr_status == "unsupported":
+            lr_final = "unsupported"
+            lr_final_msg = lr_msg
+        elif lightrag_result and lightrag_result.get("status") in ("success", "ok"):
+            lr_final = "inserted"
+            lr_final_msg = ""
+        elif lightrag_result and lightrag_result.get("status") == "error":
+            lr_final = "error"
+            lr_final_msg = lightrag_result.get("message", "")
+        else:
+            lr_final = "skipped"
+            lr_final_msg = ""
+
+        # 根据知识图谱状态生成提示
+        if lr_final == "unsupported":
+            note = f"文件已存储，但{lr_final_msg}"
+        elif lr_final == "error":
+            note = f"文件已存储，知识图谱入库失败：{lr_final_msg}"
+        else:
+            note = "文件已存储，正在异步分析并存入知识图谱，处理时间可能较长，请耐心等待"
 
         return {
             "status": "success",
@@ -3217,9 +3324,9 @@ def ingest_document(file_path: str, category: str = "", mode: str = "copy") -> d
             "original_path": str(source),
             "category": category,
             "content_length": content_length,
-            "lightrag": lr_status,
-            "lightrag_message": lr_msg or None,
-            "note": "文件已存储，正在异步分析并存入知识图谱，处理时间可能较长，请耐心等待",
+            "lightrag": lr_final,
+            "lightrag_message": lr_final_msg or None,
+            "note": note,
             "kg_entities": [],
         }
 
@@ -3256,24 +3363,29 @@ def ingest_documents(
     skipped_files = []  # 跳过的文件
     failed_files = []  # 失败的文件
     need_category_files = []  # 需要分类的文件
+    kg_unsupported_files = []  # 格式不支持知识图谱的文件
 
     for file_path in file_paths:
         result = ingest_document(file_path, category, mode)
 
         if result["status"] == "success":
+            lr = result.get("lightrag", "skipped")
             if result.get("action") == "skipped":
                 skipped_files.append(Path(file_path).name)
             else:
                 success_files.append(Path(file_path).name)
-            results.append(
-                {
-                    "file": Path(file_path).name,
-                    "status": "success",
-                    "action": result.get("action", ""),
-                    "path": result.get("file_path", ""),
-                    "lightrag": result.get("lightrag", "skipped"),
-                }
-            )
+            if lr == "unsupported":
+                kg_unsupported_files.append(Path(file_path).name)
+            entry = {
+                "file": Path(file_path).name,
+                "status": "success",
+                "action": result.get("action", ""),
+                "path": result.get("file_path", ""),
+                "lightrag": lr,
+            }
+            if lr in ("unsupported", "error") and result.get("lightrag_message"):
+                entry["lightrag_message"] = result["lightrag_message"]
+            results.append(entry)
         elif result["status"] == "need_category":
             need_category_files.append(
                 {
@@ -3303,6 +3415,15 @@ def ingest_documents(
                 }
             )
 
+    # 构建摘要
+    parts = [f"已处理 {len(success_files) + len(skipped_files)}/{len(file_paths)} 文件"]
+    if len(failed_files):
+        parts.append(f"{len(failed_files)} 个失败")
+    if len(need_category_files):
+        parts.append(f"{len(need_category_files)} 个需要分类")
+    if len(kg_unsupported_files):
+        parts.append(f"其中 {len(kg_unsupported_files)} 个格式不支持知识图谱入库")
+
     return {
         "status": "success",
         "total": len(file_paths),
@@ -3311,8 +3432,9 @@ def ingest_documents(
         "skipped": len(skipped_files),
         "failed": len(failed_files),
         "need_category": len(need_category_files),
+        "kg_unsupported": len(kg_unsupported_files),
         "results": results,
-        "summary": f"已处理 {len(success_files) + len(skipped_files)}/{len(file_paths)} 文件，{len(failed_files)} 个失败，{len(need_category_files)} 个需要分类",
+        "summary": "，".join(parts),
     }
 
 
@@ -3340,7 +3462,8 @@ async def list_tools() -> list[Tool]:
 - status: need_category | success | error
 - action: created | versioned | renamed | referenced | skipped
 - file_path: 存储后的完整路径
-- lightrag: inserted | skipped | error
+- lightrag: inserted | unsupported | skipped | error
+- lightrag_message: unsupported/error 时的原因说明
 
 冲突处理:
 - 完全相同文件（哈希相同）→ 跳过
@@ -3383,7 +3506,8 @@ async def list_tools() -> list[Tool]:
 - skipped: 跳过数
 - failed: 失败数
 - need_category: 需分类数
-- results: 每个文件的处理结果
+- kg_unsupported: 格式不支持知识图谱入库的文件数
+- results: 每个文件的处理结果（含 lightrag 和 lightrag_message）
 - summary: 总结""",
             inputSchema={
                 "type": "object",

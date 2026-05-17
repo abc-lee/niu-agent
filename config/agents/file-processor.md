@@ -75,9 +75,14 @@ ingest 自动完成：复制文件到知识库目录 → 检测人脸 → 识别
 **所有字段值都从工具返回的 JSON 中提取，不要自己编造路径或分类名。**
 
 **文档成功** — 从工具返回值中提取以下字段：
-- `file_path` → 存储位置（工具动态生成的路径，如 2026/工作文档/报告.pdf）
+- `file_path` → 存储位置（工具动态生成的路径）
 - `category` → 分类（你第二次调用时传入的值）
-- `lightrag` → 知识图谱写入状态（inserted=已写入, skipped=跳过, error=失败）
+- `lightrag` → 知识图谱写入状态：
+  - `inserted` = 已写入知识库
+  - `unsupported` = 文件格式不支持知识图谱入库（如 .doc、WPS 创建的假 .docx），文件已存储但不会写入知识库
+  - `error` = 写入失败
+  - `skipped` = 跳过
+- `lightrag_message` → 不支持或失败时的原因说明（仅 unsupported/error 时存在）
 
 **照片成功** — 从工具返回值中提取以下字段：
 - `file_path` → 存储位置（工具动态生成的路径）
