@@ -38,9 +38,8 @@ AI 助理在日常对话中积累了大量用户工作信息（项目进展、�
 
 | 组件 | 类型 | 位置 | 说明 |
 |------|------|------|------|
-| journal-skill.md | Skill | config/disk/ | 日志格式规范 + 写入规则，主Agent通过disk()读取 |
+| journal-skill.md | Skill | config/disk/ | 日志格式规范 + 写入规则，主Agent和entity-extractor都通过read工具读取 |
 | report-skill.md | Skill | config/disk/ | 报告模板 + 生成流程，主Agent通过disk()读取 |
-| entity-extractor.md | Agent定义 | config/agents/ | 日志写入规则直接写在提示词中（子Agent不会读Skill） |
 | 每日日志确认 | 定时任务 | scheduler | 18:00 触发，读取当日日志，与用户确认 |
 | 每周报告提醒 | 定时任务 | scheduler | 周一 9:00 触发，提醒生成周报 |
 
@@ -64,8 +63,9 @@ AI 助理在日常对话中积累了大量用户工作信息（项目进展、�
 
 **特殊性**：
 1. 主 Agent 通过 disk() 读取此 Skill
-2. entity-extractor **不会读 Skill 文件**，其日志写入规则直接写在 `config/agents/entity-extractor.md` 提示词中
-3. 主 Agent 可根据用户特点随时修改此 Skill 和 entity-extractor.md
+2. entity-extractor 通过 `read` 基础工具直接读取此 Skill 文件（路径固定，写在 entity-extractor.md 提示词中）
+3. 主 Agent 可根据用户特点随时修改此 Skill，entity-extractor 下次读取时自动生效
+4. 这样主 Agent 只改 Skill 文件，不会碰子 Agent 的核心提示词，职责隔离清晰
 
 **日志条目格式**：
 
@@ -100,19 +100,25 @@ AI 助理在日常对话中积累了大量用户工作信息（项目进展、�
 
 ### 3.2 entity-extractor 的日志提取规则
 
-**关键约束**：entity-extractor 不会自己读 Skill 文件，所有日志写入规则必须直接写在其 agent 定义（`config/agents/entity-extractor.md`）的提示词中。
+**关键设计**：entity-extractor 不需要 disk() 工具，它有基础 `read` 工具，可以直接读取 Skill 文件。在 entity-extractor.md 提示词中写明：
+
+> 写日志前，必须先用 `read` 工具读取 `{项目根目录}/config/disk/journal-skill.md`，按照其中的格式和规则写入日志。
+
+这样：
+- 日志格式和写入规则集中在 Skill 文件中，一处修改全局生效
+- 主 Agent 改 Skill 文件，不会碰子 Agent 的核心提示词
+- entity-extractor 每次写日志时动态读取最新规则，自动适应用户偏好变化
 
 **当前可用工具**：
-- 基础工具：`read`、`write`、`edit`（可直接读写文件）
+- 基础工具：`read`、`write`、`edit`（可直接读写文件，包括 Skill 文件）
 - MCP 工具：`lightrag-server`（知识图谱入库）
-- 无 disk() 工具，无法读取 Skill 文件
 
 **修改 entity-extractor.md**：
-1. 在提示词中新增"工作日志"提取规则段落
-2. 明确日志文件路径：`{workspace}/journals/YYYY-MM-DD.md`
-3. 明确日志条目格式（与 3.1 节格式一致）
-4. 明确写入流程：`read` 当日文件 → 追加条目 → `write` 写回
-5. 明确知识图谱同步：`lightrag_insert_file` 入库，更新时先 `lightrag_delete_document` 再重新入库
+1. 在提示词中新增"工作日志"段落
+2. 写明：写日志前必须先 `read` Skill 文件获取格式和规则
+3. 写明 Skill 文件路径：`{项目根目录}/config/disk/journal-skill.md`
+4. 写明日志文件路径：`{workspace}/journals/YYYY-MM-DD.md`
+5. 写明知识图谱同步：`lightrag_insert_file` 入库，更新时先 `lightrag_delete_document` 再重新入库
 
 **提取规则**：
 - **识别信号**：用户提到项目名称、任务进展、会议、决策、代码提交、bug修复等
@@ -238,4 +244,4 @@ AI 助理在日常对话中积累了大量用户工作信息（项目进展、�
 5. 主 Agent 能根据日志文件 + LightRAG 查询生成周报/月报
 6. 主 Agent 能根据用户偏好修改 Skill 内容
 7. journal-skill.md 和 report-skill.md 主 Agent 可通过 disk() 读取
-8. entity-extractor.md 提示词中包含完整的日志写入规则（不依赖 Skill 文件）
+8. entity-extractor 通过 `read` 工具读取 journal-skill.md（路径写在提示词中），不碰子 Agent 核心提示词
