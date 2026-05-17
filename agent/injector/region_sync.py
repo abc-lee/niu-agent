@@ -124,6 +124,9 @@ class RegionSync:
             stats["errors"].append(f"detection_unexpected: {e}")
 
         if detection_result is None:
+            # Still refresh activation manager even when detection is skipped
+            # (default brain regions exist independently of community detection)
+            self._refresh_activation_manager(stats)
             self._save_status(stats)
             return stats
 
