@@ -521,17 +521,14 @@ class RegionActivationManager:
     def get_merge_candidates(
         self,
         co_activation_threshold: float = 0.9,
-        max_merged_size: int = 50,
     ) -> list[tuple[str, str]]:
         """Return pairs of region_ids that should be merged.
 
         Two regions are merge candidates if:
         - Their co-activation ratio > co_activation_threshold (default 90%)
-        - Their combined member count < max_merged_size
 
         Args:
             co_activation_threshold: Minimum co-activation ratio (0-1)
-            max_merged_size: Maximum combined size for merged region
 
         Returns:
             List of (region_A_id, region_B_id) pairs, sorted by ratio desc.
@@ -545,11 +542,7 @@ class RegionActivationManager:
                 ratio = count / self._total_activation_rounds
                 if ratio < co_activation_threshold:
                     continue
-                # Check combined size (O(1) via cached counts)
-                size_a = self._member_counts.get(a, 0)
-                size_b = self._member_counts.get(b, 0)
-                if size_a + size_b > max_merged_size:
-                    continue
+
                 # Both must still exist
                 if a not in self._regions or b not in self._regions:
                     continue

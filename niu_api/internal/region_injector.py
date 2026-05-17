@@ -86,8 +86,7 @@ class BrainContextInjector:
         Steps:
         1. Get entity-to-region mapping from graph (direct read, no LLM)
         2. activation_mgr.activate_regions based on query context matching
-        3. activation_mgr.decay_all()
-        4. Format injection content by activation level
+        3. Format injection content by activation level
 
         Returns injection text (empty string if no active regions or on error).
 

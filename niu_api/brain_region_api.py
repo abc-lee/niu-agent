@@ -32,6 +32,7 @@ from niu_api.internal.region_activation import (
     STATUS_OFF,
     BrainRegionState,
 )
+from agent.injector.region_sync import REGION_CONFIG_DEFAULTS
 
 router = APIRouter(prefix="/api/brain", tags=["brain-regions"])
 
@@ -161,7 +162,11 @@ def consolidate_brain_regions(
         detector = CommunityDetector(adapter)
 
         # Step 1: Detect communities (sync method, no await needed)
-        detection_result = detector.detect_communities(resolution=req.resolution)
+        detection_result = detector.detect_communities(
+            resolution=req.resolution,
+            min_graph_size=REGION_CONFIG_DEFAULTS.get("min_graph_size", 50),
+            min_community_size=REGION_CONFIG_DEFAULTS.get("min_community_size", 100),
+        )
 
         if not detection_result.partitions:
             return {

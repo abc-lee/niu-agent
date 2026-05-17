@@ -34,11 +34,10 @@ REGION_CONFIG_DEFAULTS: dict[str, Any] = {
     "algorithm": "leiden",
     "resolution": 1.0,
     "min_graph_size": 50,
-    "min_community_size": 10,
+    "min_community_size": 100,
     "incremental_update": True,
     "co_activation_threshold": 0.9,
-    "max_merged_size": 50,
-    "shrink_threshold": 3,
+    "shrink_threshold": 100,
     "shrink_rounds": 3,
     "neighbor_unfreeze_depth": 2,
     "decay_factor": 0.92,
@@ -181,7 +180,7 @@ class RegionSync:
             detector = CommunityDetector(adapter)
             resolution = REGION_CONFIG_DEFAULTS["resolution"]
             min_graph_size = REGION_CONFIG_DEFAULTS.get("min_graph_size", 50)
-            min_community_size = REGION_CONFIG_DEFAULTS.get("min_community_size", 10)
+            min_community_size = REGION_CONFIG_DEFAULTS.get("min_community_size", 100)
             # detect_communities is sync — no call_async needed
             detection_result = detector.detect_communities(
                 resolution=resolution,
@@ -328,7 +327,6 @@ class RegionSync:
             if activation_mgr is not None:
                 candidates = activation_mgr.get_merge_candidates(
                     co_activation_threshold=REGION_CONFIG_DEFAULTS.get("co_activation_threshold", 0.9),
-                    max_merged_size=REGION_CONFIG_DEFAULTS.get("max_merged_size", 50),
                 )
                 if candidates:
                     adapter = LightRAGAdapter()
@@ -381,7 +379,7 @@ class RegionSync:
             manager = RegionManager(adapter, ingester)
 
             dissolved = manager.dissolve_shrunk_regions(
-                shrink_threshold=REGION_CONFIG_DEFAULTS.get("shrink_threshold", 3),
+                shrink_threshold=REGION_CONFIG_DEFAULTS.get("shrink_threshold", 100),
                 shrink_rounds=REGION_CONFIG_DEFAULTS.get("shrink_rounds", 3),
             )
             stats["regions_dissolved"] = len(dissolved)

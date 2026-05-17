@@ -889,10 +889,13 @@ class RegionManager:
         try:
             from niu_api.internal.region_detector import CommunityDetector
 
+            from agent.injector.region_sync import REGION_CONFIG_DEFAULTS
+
             detector = CommunityDetector(self._adapter)
             partition = detector.detect_communities(
-                resolution=1.0,
-                min_community_size=100,  # Threshold raised from 10 to 100
+                resolution=REGION_CONFIG_DEFAULTS.get("resolution", 1.0),
+                min_graph_size=REGION_CONFIG_DEFAULTS.get("min_graph_size", 50),
+                min_community_size=REGION_CONFIG_DEFAULTS.get("min_community_size", 100),
             )
             if partition is None or partition.total_regions < 1:
                 return {"regions_created": 0, "regions_removed": 0, "regions_updated": 0, "edges_disconnected": 0}
