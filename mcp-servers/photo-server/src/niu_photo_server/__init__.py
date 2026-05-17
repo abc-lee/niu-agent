@@ -33,7 +33,7 @@ TOOL_SCHEMAS = {
 参数:
 - path: 必填，文件路径或目录路径
 - mode: copy（复制）| move（移动）| reference（引用），默认 copy
-- category: 分类，不传则自动推断
+- category: 分类目录，不传则返回内容预览供你判断分类
 
 自动判断逻辑:
 1. 路径类型：is_dir() → 目录模式，is_file() → 文件模式
@@ -41,11 +41,12 @@ TOOL_SCHEMAS = {
 3. 内容类型（目录）：扫描目录 — 全照片 → 批量照片，全文档 → 批量文档，混合 → 分别处理
 
 照片流程: EXIF → 人脸检测 → 人物匹配 → 摘要 → KG同步
-文档流程: 文件搬运 + 提交LightRAG异步分析存入知识图谱（处理时间较长）
+文档流程: 不传category → 返回内容预览(need_category) → 判断分类后再次调用 → 入库
 
 返回:
 - 照片: {status, photo_id, detected_persons, abstract, exif}
-- 文档: {status, action, file_path, lightrag}
+- 文档(need_category): {status: need_category, message, file_path, mode}
+- 文档(success): {status: success, action, file_path, lightrag}
 - 目录: {status, total, processed, results}""",
         "input_schema": {
             "type": "object",
@@ -57,7 +58,7 @@ TOOL_SCHEMAS = {
                     "default": "copy",
                     "description": "文件操作模式",
                 },
-                "category": {"type": "string", "description": "分类，不传则自动推断"},
+                "category": {"type": "string", "description": "文件分类目录。不传则返回内容预览供你判断分类", "default": ""},
             },
             "required": ["path"],
         },
@@ -82,7 +83,7 @@ TOOL_SCHEMAS = {
             "type": "object",
             "properties": {
                 "file_path": {"type": "string", "description": "文档文件路径"},
-                "category": {"type": "string", "description": "分类，仅填写用户明确要求的分类，否则不填", "default": "其他"},
+                "category": {"type": "string", "description": "文件分类目录（如：工作文档、个人资料、财务报告等）。不传则返回文件内容预览供你判断分类", "default": ""},
                 "mode": {
                     "type": "string",
                     "enum": ["copy", "move", "reference"],
@@ -3022,13 +3023,21 @@ def rename_file(file_path: Path) -> str:
 # ============== 工具实现 ==============
 
 
-def ingest_document(file_path: str, category: str = "其他", mode: str = "copy") -> dict:
+def ingest_document(file_path: str, category: str = "", mode: str = "copy") -> dict:
     """文档入库工具 — 文件搬运 + 提交LightRAG异步处理
+
+    不传 category 时，读取文件内容返回 need_category 状态+内容预览，
+    由调用方判断分类后再次调用传入 category 完成入库。
 
     自动检测路径类型（目录/照片/文档）：
     - 目录：检查是否包含照片，转到照片批量处理
     - 照片：转到照片入库流程
     - 文档：文件搬运 + 提交LightRAG异步分析存入知识图谱（处理时间较长）
+
+    返回 status:
+    - need_category: 需要调用方判断分类（附带内容预览）
+    - success: 入库完成
+    - error: 失败
     """
     try:
         logger.info(f"[INGEST] 开始处理: {file_path}")
@@ -3042,6 +3051,28 @@ def ingest_document(file_path: str, category: str = "其他", mode: str = "copy"
                 "suggestion": "请检查文件路径是否正确",
                 "kg_entities": [],
             }
+
+        # No category → read file content and ask caller to classify
+        if not category:
+            content = read_file_content(file_path)
+            if content:
+                preview = content[:3000] if len(content) > 3000 else content
+                return {
+                    "status": "need_category",
+                    "message": f"请根据以下内容判断文档分类目录，然后再次调用 ingest_document 并传入 category 参数。\n\n文件: {file_path}\n内容预览:\n{preview}",
+                    "file_path": file_path,
+                    "mode": mode,
+                    "content_length": len(content),
+                }
+            else:
+                ext = source.suffix.lower()
+                size = source.stat().st_size
+                return {
+                    "status": "need_category",
+                    "message": f"无法读取文件内容，请根据文件信息判断分类目录，然后再次调用 ingest_document 并传入 category 参数。\n\n文件: {file_path}\n格式: {ext}\n大小: {size} 字节",
+                    "file_path": file_path,
+                    "mode": mode,
+                }
 
         # 自动检测文件类型：目录 → 照片 → 文档
         if source.is_dir():
@@ -3209,12 +3240,12 @@ def ingest_document(file_path: str, category: str = "其他", mode: str = "copy"
 
 
 def ingest_documents(
-    file_paths: list[str], category: str = "其他", mode: str = "copy"
+    file_paths: list[str], category: str = "", mode: str = "copy"
 ) -> dict:
     """批量文档入库
 
-    每个文件自动完成：文件搬运 + 提交LightRAG异步分析存入知识图谱（处理时间较长）。
-    不再返回 need_l1，无需后续手动调用 store_document_l1。
+    必须传入 category 参数。不传时子调用会返回 need_category 状态，
+    批量场景无法交互判断分类，会被归入失败。
     """
     results = []
     success_files = []  # 成功的文件
@@ -3304,8 +3335,8 @@ async def list_tools() -> list[Tool]:
                     "file_path": {"type": "string", "description": "源文件绝对路径"},
                     "category": {
                         "type": "string",
-                        "description": "分类（财务/合同/报告/方案/其他）",
-                        "default": "其他",
+                        "description": "文件分类目录（如：工作文档、个人资料、财务报告等）。不传则返回文件内容预览供你判断分类",
+                        "default": "",
                     },
                     "mode": {
                         "type": "string",
@@ -3344,7 +3375,7 @@ async def list_tools() -> list[Tool]:
                         "items": {"type": "string"},
                         "description": "源文件路径列表",
                     },
-                    "category": {"type": "string", "default": "其他"},
+                    "category": {"type": "string", "default": ""},
                     "mode": {
                         "type": "string",
                         "enum": ["copy", "move", "reference"],
@@ -3610,19 +3641,19 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             # ingest 统一入口，委托给 ingest_document
             result = ingest_document(
                 file_path=arguments["path"],
-                category=arguments.get("category", "其他"),
+                category=arguments.get("category", ""),
                 mode=arguments.get("mode", "copy"),
             )
         elif name == "ingest_document":
             result = ingest_document(
                 file_path=arguments["file_path"],
-                category=arguments.get("category", "其他"),
+                category=arguments.get("category", ""),
                 mode=arguments.get("mode", "copy"),
             )
         elif name == "ingest_documents":
             result = ingest_documents(
                 file_paths=arguments["file_paths"],
-                category=arguments.get("category", "其他"),
+                category=arguments.get("category", ""),
                 mode=arguments.get("mode", "copy"),
             )
         elif name == "ingest_photo":
