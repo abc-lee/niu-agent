@@ -3073,7 +3073,7 @@ def ingest_document(file_path: str, category: str = "", mode: str = "copy") -> d
                 logger.info(
                     f"[INGEST] 目录包含 {len(photo_files)} 张照片，转到照片批量处理"
                 )
-                return ingest_photos_batch(file_path, category)
+                return ingest_photos_batch(file_path, category or None)
             else:
                 return {
                     "status": "error",
@@ -3086,7 +3086,7 @@ def ingest_document(file_path: str, category: str = "", mode: str = "copy") -> d
         if is_photo(str(source)):
             logger.info("[INGEST] 检测到照片文件，转到照片入库")
             from niu_photo_server import ingest_photo
-            return ingest_photo(str(source), category)
+            return ingest_photo(str(source), category or None)
 
         # ---- 文档文件处理 ----
 
@@ -3311,19 +3311,16 @@ async def list_tools() -> list[Tool]:
 
 参数:
 - file_path: 必填，源文件绝对路径
-- category: 分类名称，从 preferences.json 的 categories.documents 中选取（财务、合同、报告、方案、其他）
+- category: 分类目录，不传则返回内容预览供判断分类
 - mode: copy（复制）| move（移动）| reference（引用）
 
-自动检测路径类型:
-- 目录 → 检查是否包含照片，转到照片批量处理
-- 照片 → 转到照片入库流程
-- 文档 → 文件搬运 + 提交LightRAG异步分析存入知识图谱（处理时间较长，请耐心等待）
+不传 category 时返回 need_category 状态+内容预览，判断分类后再次调用传入 category。
 
 返回:
-- status: success | error
+- status: need_category | success | error
 - action: created | versioned | renamed | referenced | skipped
 - file_path: 存储后的完整路径
-- lightrag: inserted | skipped
+- lightrag: inserted | skipped | error
 
 冲突处理:
 - 完全相同文件（哈希相同）→ 跳过
