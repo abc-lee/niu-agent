@@ -33,7 +33,7 @@ TOOL_SCHEMAS = {
 参数:
 - path: 必填，文件路径或目录路径
 - mode: copy（复制）| move（移动）| reference（引用），默认 copy
-- category: 分类目录，不传则返回内容预览供你判断分类
+- category: 分类目录（文档必填，照片/目录可不传）
 
 自动判断逻辑:
 1. 路径类型：is_dir() → 目录模式，is_file() → 文件模式
@@ -69,16 +69,16 @@ TOOL_SCHEMAS = {
 
 参数:
 - file_path: 必填，文档文件路径
-- category: 分类，默认 "其他"
+- category: 分类目录，不传则返回内容预览供判断分类
 - mode: copy（复制）| move（移动）| reference（引用），默认 copy
 
-文件搬运完成后，文档提交给LightRAG异步分析并存入知识图谱（自动抽取实体和建链），处理时间可能较长。
+不传 category 时返回 need_category 状态+内容预览，判断分类后再次调用传入 category。
 
 返回:
-- status: success | error
-- action: copied | moved | referenced | skipped
+- status: need_category | success | error
+- action: created | versioned | renamed | referenced | skipped
 - file_path: 存储路径
-- lightrag: inserted | skipped""",
+- lightrag: inserted | skipped | error""",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -3052,28 +3052,6 @@ def ingest_document(file_path: str, category: str = "", mode: str = "copy") -> d
                 "kg_entities": [],
             }
 
-        # No category → read file content and ask caller to classify
-        if not category:
-            content = read_file_content(file_path)
-            if content:
-                preview = content[:3000] if len(content) > 3000 else content
-                return {
-                    "status": "need_category",
-                    "message": f"请根据以下内容判断文档分类目录，然后再次调用 ingest_document 并传入 category 参数。\n\n文件: {file_path}\n内容预览:\n{preview}",
-                    "file_path": file_path,
-                    "mode": mode,
-                    "content_length": len(content),
-                }
-            else:
-                ext = source.suffix.lower()
-                size = source.stat().st_size
-                return {
-                    "status": "need_category",
-                    "message": f"无法读取文件内容，请根据文件信息判断分类目录，然后再次调用 ingest_document 并传入 category 参数。\n\n文件: {file_path}\n格式: {ext}\n大小: {size} 字节",
-                    "file_path": file_path,
-                    "mode": mode,
-                }
-
         # 自动检测文件类型：目录 → 照片 → 文档
         if source.is_dir():
             logger.info("[INGEST] 检测到目录，检查是否包含照片...")
@@ -3111,6 +3089,28 @@ def ingest_document(file_path: str, category: str = "", mode: str = "copy") -> d
             return ingest_photo(str(source), category)
 
         # ---- 文档文件处理 ----
+
+        # No category → read file content and ask caller to classify
+        if not category:
+            content = read_file_content(file_path)
+            if content:
+                preview = content[:3000] if len(content) > 3000 else content
+                return {
+                    "status": "need_category",
+                    "message": f"请根据以下内容判断文档分类目录，然后再次调用 ingest_document 并传入 category 参数。\n\n文件: {file_path}\n内容预览:\n{preview}",
+                    "file_path": file_path,
+                    "mode": mode,
+                    "content_length": len(content),
+                }
+            else:
+                ext = source.suffix.lower()
+                size = source.stat().st_size
+                return {
+                    "status": "need_category",
+                    "message": f"无法读取文件内容，请根据文件信息判断分类目录，然后再次调用 ingest_document 并传入 category 参数。\n\n文件: {file_path}\n格式: {ext}\n大小: {size} 字节",
+                    "file_path": file_path,
+                    "mode": mode,
+                }
         logger.info("[INGEST] 读取配置...")
         workspace = get_workspace_path()
 
