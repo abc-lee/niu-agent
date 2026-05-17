@@ -3362,14 +3362,14 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="ingest_documents",
-            description="""批量文档入库（全自动 + 全文 ainsert）
+            description="""批量文档入库（必须传入 category）
 
 参数:
 - file_paths: 必填，源文件路径列表
-- category: 分类名称
+- category: 分类目录（必须传入，不传时子文件返回 need_category）
 - mode: copy | move | reference
 
-每个文件自动完成：文件搬运 + LightRAG 全文 ainsert。
+每个文件独立处理。不传 category 时子文件会返回 need_category 状态。
 
 返回:
 - status: success
@@ -3378,7 +3378,8 @@ async def list_tools() -> list[Tool]:
 - new_files: 新文件数
 - skipped: 跳过数
 - failed: 失败数
-- results: 每个文件的处理结果（含 lightrag 字段）
+- need_category: 需分类数
+- results: 每个文件的处理结果
 - summary: 总结""",
             inputSchema={
                 "type": "object",
@@ -3388,7 +3389,7 @@ async def list_tools() -> list[Tool]:
                         "items": {"type": "string"},
                         "description": "源文件路径列表",
                     },
-                    "category": {"type": "string", "default": ""},
+                    "category": {"type": "string", "description": "分类目录（必须传入，不传时子文件返回 need_category）", "default": ""},
                     "mode": {
                         "type": "string",
                         "enum": ["copy", "move", "reference"],
