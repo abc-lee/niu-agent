@@ -3251,6 +3251,7 @@ def ingest_documents(
     success_files = []  # 成功的文件
     skipped_files = []  # 跳过的文件
     failed_files = []  # 失败的文件
+    need_category_files = []  # 需要分类的文件
 
     for file_path in file_paths:
         result = ingest_document(file_path, category, mode)
@@ -3267,6 +3268,20 @@ def ingest_documents(
                     "action": result.get("action", ""),
                     "path": result.get("file_path", ""),
                     "lightrag": result.get("lightrag", "skipped"),
+                }
+            )
+        elif result["status"] == "need_category":
+            need_category_files.append(
+                {
+                    "file": Path(file_path).name,
+                    "preview": result.get("message", ""),
+                }
+            )
+            results.append(
+                {
+                    "file": Path(file_path).name,
+                    "status": "need_category",
+                    "preview": result.get("message", ""),
                 }
             )
         else:
@@ -3291,8 +3306,9 @@ def ingest_documents(
         "new_files": len(success_files),
         "skipped": len(skipped_files),
         "failed": len(failed_files),
+        "need_category": len(need_category_files),
         "results": results,
-        "summary": f"已处理 {len(success_files) + len(skipped_files)}/{len(file_paths)} 文件，{len(failed_files)} 个失败",
+        "summary": f"已处理 {len(success_files) + len(skipped_files)}/{len(file_paths)} 文件，{len(failed_files)} 个失败，{len(need_category_files)} 个需要分类",
     }
 
 
