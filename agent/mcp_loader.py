@@ -27,6 +27,7 @@ REQUIRED_SERVERS: List[Tuple[str, str]] = [
     ("session-manager", "niu_session_manager"),
     ("scheduler-server", "niu_scheduler_server"),
     ("browser-server", "niu_browser_server"),
+    ("brain-region-server", "niu_brain_region_server"),
 ]
 
 
@@ -79,43 +80,6 @@ def _add_server_workdirs_to_sys_path(config: dict) -> None:
 def _inject_tools_to_lightrag(registry: ToolRegistry, servers: List[Tuple[str, str]]) -> None:
     """No-op in disk mode — tools discovered via disk YAML, not LightRAG."""
     logger.debug("[MCP Loader] Tool injection to LightRAG skipped (disk mode)")
-
-
-# ============================================================================
-# Brain Region Tool Registration
-# ============================================================================
-
-def _register_brain_tools(registry: ToolRegistry) -> None:
-    """Register brain region MCP tools with ToolRegistry.
-
-    These are built-in tools (no MCP server module) that wrap
-    RegionActivationManager for manual brain region control.
-    """
-    try:
-        from agent.brain_tools import (
-            BRAIN_TOOL_SCHEMAS,
-            handle_brain_region_activate,
-            handle_brain_region_dim,
-            handle_brain_region_status,
-        )
-
-        handlers = {
-            "brain_region/activate": handle_brain_region_activate,
-            "brain_region/dim": handle_brain_region_dim,
-            "brain_region/status": handle_brain_region_status,
-        }
-
-        for schema in BRAIN_TOOL_SCHEMAS:
-            name = schema["name"]
-            handler = handlers.get(name)
-            if handler:
-                registry.register(name, handler, schema, visibility="static")
-            else:
-                logger.warning(f"Brain tool schema '{name}' has no handler")
-
-        logger.info("[MCP Loader] Brain region tools registered")
-    except Exception as e:
-        logger.warning(f"[MCP Loader] Brain region tool registration failed: {e}")
 
 
 # ============================================================================
@@ -181,14 +145,5 @@ def load_mcp_tools(required_servers: Optional[List[Tuple[str, str]]] = None) -> 
     # Tool injection to LightRAG is a no-op in disk mode
     # (tools discovered via disk YAML, not LightRAG entities)
     _inject_tools_to_lightrag(registry, servers)
-
-    # Register brain region MCP tools (brain_region/activate, brain_region/dim, brain_region/status)
-    _register_brain_tools(registry)
-
-    # BUG 6 fix: Validate that brain tools were actually registered
-    brain_tool_names = {"brain_region/activate", "brain_region/dim", "brain_region/status"}
-    missing = brain_tool_names - set(registry._tools.keys())
-    if missing:
-        logger.warning(f"[MCP Loader] Brain tools missing from registry: {missing}")
 
     return registry
