@@ -1280,6 +1280,46 @@ class LightRAGIngester:
                     "chunk_order_index": chunk.get("chunk_order_index", 0),
                 })
 
+            # Auto-generate virtual chunks for source_ids not covered by existing
+            # chunks. LightRAG's ainsert_custom_kg uses chunk_to_source_map to
+            # translate source_id to chunk physical IDs. Without a mapping, all
+            # source_ids become "UNKNOWN". Virtual chunks also improve vector recall.
+            covered_source_ids: set[str] = {
+                c.get("source_id", source_id) for c in custom_kg["chunks"]
+            }
+            for entity in entities:
+                entity_source_id = entity.get("source_id", source_id)
+                # Use unique source_id per entity to avoid chunk_to_source_map
+                # overwriting (all entities sharing "brain" would map to the
+                # same last chunk_id otherwise)
+                unique_source_id = f"{entity_source_id}_{entity.get('entity_name') or entity.get('name', 'Other')}"
+                if unique_source_id not in covered_source_ids:
+                    entity_name = entity.get("entity_name") or entity.get("name", "Other")
+                    entity_desc = entity.get("description", "")
+                    custom_kg["chunks"].append({
+                        "content": f"{entity_name}: {entity_desc}" if entity_desc else entity_name,
+                        "source_id": unique_source_id,
+                        "file_path": entity.get("file_path", "custom_kg"),
+                        "chunk_order_index": 0,
+                    })
+                    covered_source_ids.add(unique_source_id)
+                # Update entity's source_id to match the unique chunk source_id
+                entity["source_id"] = unique_source_id
+            for rel in relationships:
+                rel_source_id = rel.get("source_id", source_id)
+                if rel_source_id not in covered_source_ids:
+                    src = rel.get('src_id', 'unknown')
+                    tgt = rel.get('tgt_id', 'unknown')
+                    keywords = rel.get('keywords', '') or rel.get('relation', '')
+                    content = f"{src}->{tgt}: {keywords}" if keywords else f"{src} -> {tgt}"
+                    custom_kg["chunks"].append({
+                        "content": content,
+                        "source_id": rel_source_id,
+                        "file_path": rel.get("file_path", "custom_kg"),
+                        "chunk_order_index": 0,
+                    })
+                    covered_source_ids.add(rel_source_id)
+
             for entity in entities:
                 custom_kg["entities"].append({
                     "entity_name": entity.get("entity_name") or entity.get("name", "Other"),

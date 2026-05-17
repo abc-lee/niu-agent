@@ -100,9 +100,9 @@ def _register_brain_tools(registry: ToolRegistry) -> None:
         )
 
         handlers = {
-            "brain_region_activate": handle_brain_region_activate,
-            "brain_region_dim": handle_brain_region_dim,
-            "brain_region_status": handle_brain_region_status,
+            "brain_region/activate": handle_brain_region_activate,
+            "brain_region/dim": handle_brain_region_dim,
+            "brain_region/status": handle_brain_region_status,
         }
 
         for schema in BRAIN_TOOL_SCHEMAS:
@@ -182,11 +182,11 @@ def load_mcp_tools(required_servers: Optional[List[Tuple[str, str]]] = None) -> 
     # (tools discovered via disk YAML, not LightRAG entities)
     _inject_tools_to_lightrag(registry, servers)
 
-    # Register brain region MCP tools (brain_region_activate, brain_region_dim, brain_region_status)
+    # Register brain region MCP tools (brain_region/activate, brain_region/dim, brain_region/status)
     _register_brain_tools(registry)
 
     # BUG 6 fix: Validate that brain tools were actually registered
-    brain_tool_names = {"brain_region_activate", "brain_region_dim", "brain_region_status"}
+    brain_tool_names = {"brain_region/activate", "brain_region/dim", "brain_region/status"}
     missing = brain_tool_names - set(registry._tools.keys())
     if missing:
         logger.warning(f"[MCP Loader] Brain tools missing from registry: {missing}")
