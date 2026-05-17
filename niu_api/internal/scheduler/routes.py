@@ -25,6 +25,7 @@ class CreateTaskRequest(BaseModel):
     event_type: str = "reminder"
     is_recurring: bool = False
     cron_expr: Optional[str] = None
+    name: Optional[str] = None
 
 
 class UpdateTaskRequest(BaseModel):
@@ -51,7 +52,8 @@ async def create_task(request: CreateTaskRequest):
             scheduled_at=request.scheduled_at,
             event_type=request.event_type,
             is_recurring=request.is_recurring,
-            cron_expr=request.cron_expr
+            cron_expr=request.cron_expr,
+            name=request.name
         )
 
         logger.info(f"[SCHEDULER] Task created: {task_id} - {request.content}")

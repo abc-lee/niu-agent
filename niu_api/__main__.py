@@ -158,19 +158,40 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Default brain region creation failed: {e}")
 
-    # 8.6. Ensure entity-extractor daily task exists (replaces deleted kg-enricher)
-    _ENTITY_EXTRACTOR_TASK_CONTENT = (
-        "调用 chat-with-entity-extractor 子 Agent，task 参数为："
-        "\"提炼有价值内容：扫描近期对话，筛选偏好/技能/经验，形成精炼文档通过 lightrag_insert 增量注入 LightRAG。\" "
-        "不要从对话历史中提取内容，只执行此 task。"
-    )
+    # 8.6. Ensure system recurring tasks exist (by name, not cron_expr)
+    _SYSTEM_TASKS = [
+        {
+            "name": "daily-entity-extractor",
+            "content": (
+                "调用 chat-with-entity-extractor 子 Agent，task 参数为："
+                "\"提炼有价值内容：扫描近期对话，筛选偏好/技能/经验，形成精炼文档通过 lightrag_insert 增量注入 LightRAG。\" "
+                "不要从对话历史中提取内容，只执行此 task。"
+            ),
+            "cron_expr": "0 8 * * *",
+            "hour": 8,
+        },
+        {
+            "name": "daily-journal-check",
+            "content": "请检查今天的日志，整理后与用户确认是否完整",
+            "cron_expr": "0 18 * * *",
+            "hour": 18,
+        },
+        {
+            "name": "weekly-report-reminder",
+            "content": "提醒用户本周工作已汇总，询问是否需要生成周报",
+            "cron_expr": "0 9 * * 1",
+            "hour": 9,
+            "dow": 1,
+        },
+    ]
+
     try:
         from niu_api.internal.scheduler import get_store
 
         ts = get_store()
         existing_tasks = ts.list_tasks()
 
-        # Cancel any stale kg-enricher tasks (cancel_task only transitions pending→cancelled)
+        # Cancel any stale kg-enricher tasks
         for task in existing_tasks:
             if (
                 task.get("event_type") == "recurring"
@@ -178,43 +199,46 @@ async def lifespan(app: FastAPI):
             ):
                 try:
                     ts.cancel_task(task["id"])
-                    logger.info(f"Cancelled stale kg-enricher task: {task['id']} (status={task.get('status')})")
+                    logger.info(f"Cancelled stale kg-enricher task: {task['id']}")
                 except Exception as cancel_err:
                     logger.warning(f"Could not cancel kg-enricher task {task['id']}: {cancel_err}")
 
-        # Find existing entity-extractor task
-        extractor_task = next(
-            (
-                task for task in existing_tasks
-                if task.get("event_type") == "recurring"
-                and task.get("cron_expr") == "0 8 * * *"
-                and "chat-with-entity-extractor" in task.get("content", "")
-                and task.get("status") != "cancelled"
-            ),
-            None,
-        )
+        # Ensure each system task exists (by name, not cron_expr)
+        for task_def in _SYSTEM_TASKS:
+            existing = ts.find_task_by_name(task_def["name"])
 
-        if extractor_task is None:
-            # Create new task
-            now = datetime.now()
-            next_8am = now.replace(hour=8, minute=0, second=0, microsecond=0)
-            if next_8am <= now:
-                next_8am += timedelta(days=1)
+            if existing is None:
+                # Create new task
+                now = datetime.now()
+                hour = task_def.get("hour", 8)
+                next_time = now.replace(hour=hour, minute=0, second=0, microsecond=0)
+                if task_def.get("dow") is not None:
+                    # Calculate next target weekday
+                    days_ahead = task_def["dow"] - now.isoweekday()
+                    if days_ahead <= 0:
+                        days_ahead += 7
+                    next_time = (now + timedelta(days=days_ahead)).replace(hour=hour, minute=0, second=0, microsecond=0)
+                elif next_time <= now:
+                    next_time += timedelta(days=1)
 
-            ts.create_task(
-                content=_ENTITY_EXTRACTOR_TASK_CONTENT,
-                scheduled_at=next_8am.isoformat(),
-                is_recurring=True,
-                cron_expr="0 8 * * *",
-                event_type="recurring",
-            )
-            logger.info(f"Created entity-extractor daily task (next run: {next_8am})")
-        elif extractor_task.get("content") != _ENTITY_EXTRACTOR_TASK_CONTENT:
-            # Update existing task with new content
-            ts.update_task(extractor_task["id"], content=_ENTITY_EXTRACTOR_TASK_CONTENT)
-            logger.info(f"Updated entity-extractor task content (id={extractor_task['id']})")
+                ts.create_task(
+                    content=task_def["content"],
+                    scheduled_at=next_time.isoformat(),
+                    is_recurring=True,
+                    cron_expr=task_def["cron_expr"],
+                    event_type="recurring",
+                    name=task_def["name"],
+                )
+                logger.info(f"Created system task '{task_def['name']}' (next run: {next_time})")
+            elif existing.get("content") != task_def["content"]:
+                # Update content only (keep user's cron_expr changes)
+                ts.update_task(existing["id"], content=task_def["content"])
+                logger.info(f"Updated system task '{task_def['name']}' content (id={existing['id']})")
+            else:
+                logger.debug(f"System task '{task_def['name']}' already exists and up-to-date")
+
     except Exception as e:
-        logger.warning(f"Failed to ensure entity-extractor task: {e}")
+        logger.warning(f"Failed to ensure system tasks: {e}")
 
     yield
 
