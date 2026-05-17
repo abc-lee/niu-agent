@@ -14,7 +14,7 @@ Niu 是一个**本地运行**的个人知识管理助手，核心理念：
 | 功能 | 说明 |
 |------|------|
 | 对话助手 | 多模型支持（OpenAI/Claude/DeepSeek/Qwen/Ollama） |
-| 文档入库 | 拖入 PDF/Word/PPT/Excel/MD → 自动解析入库 |
+| 文档入库 | 拖入文档自动入库；部分格式（.doc/.xls/.ppt）仅支持存储，不支持知识图谱 |
 | 知识图谱 | 自动提取实体和关系，支持图谱查询 |
 | 语义搜索 | 向量检索 + 递归查询，精准匹配 |
 | 人脸识别 | 拖入照片 → 自动检测人脸 → 相册管理 |
@@ -127,3 +127,4 @@ ai-bot/
 | 依赖与模型 | [manual-dependencies.md](manual-dependencies.md) | Python 依赖、GPU 支持策略、人脸识别模型、向量模型、下载镜像 |
 | 用户操作 | [manual-user-guide.md](manual-user-guide.md) | 首次启动、LLM 配置、知识图谱、记忆管理、常见问题 |
 | 开发者参考 | [manual-developer.md](manual-developer.md) | 本地开发、调试技巧、API 端点、环境变量、更新日志 |
+| 文件格式支持 | [manual-file-formats.md](manual-file-formats.md) | 文件存储/知识图谱/照片支持的格式，不支持KG的格式及原因 |
