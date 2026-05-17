@@ -9,7 +9,7 @@
   }},
   {"type": "function", "function": {
     "name": "code_run",
-    "description": "Code executor. Prefer python. No concurrent calls. Prefer code in ```python/powershell blocks in reply body to avoid escaping. No hardcoding bulk data",
+    "description": "Code executor. Prefer python. No concurrent calls. Prefer code in reply body to avoid escaping. No hardcoding bulk data",
     "parameters": {"type": "object", "properties": {
       "script": {"type": "string", "description": "[Mutually exclusive] NEVER use this param when use reply code block."},
       "type": {"type": "string", "enum": ["python", "powershell"], "description": "Code type", "default": "python"},

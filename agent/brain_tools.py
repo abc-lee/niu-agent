@@ -116,7 +116,7 @@ def _extract_community_id(description: str) -> str:
 # ============== Tool Schemas ==============
 
 BRAIN_REGION_ACTIVATE_SCHEMA = {
-    "name": "brain_region_activate",
+    "name": "brain_region/activate",
     "description": (
         "主动点亮一个或多个脑区，使其知识立即注入上下文。"
         "当你判断接下来的工作需要某个领域的知识时使用。"
@@ -139,7 +139,7 @@ BRAIN_REGION_ACTIVATE_SCHEMA = {
 }
 
 BRAIN_REGION_DIM_SCHEMA = {
-    "name": "brain_region_dim",
+    "name": "brain_region/dim",
     "description": (
         "主动关闭一个或多个脑区，停止注入其详细知识。"
         "当你确认某领域知识不再需要时使用，可节省上下文空间。"
@@ -158,7 +158,7 @@ BRAIN_REGION_DIM_SCHEMA = {
 }
 
 BRAIN_REGION_STATUS_SCHEMA = {
-    "name": "brain_region_status",
+    "name": "brain_region/status",
     "description": (
         "Show current brain region activation states. "
         "Shows which regions are lit up and their activation levels."
