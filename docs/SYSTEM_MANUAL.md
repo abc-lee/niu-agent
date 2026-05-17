@@ -7,7 +7,7 @@
 Niu 是一个**本地运行**的个人知识管理助手，核心理念：
 - **本地优先**：所有数据存储在本地，隐私可控
 - **AI 原生**：每个操作都有 AI 辅助
-- **知识沉淀**：文档入库 → 知识图谱 + 向量检索 → 持久记忆
+- **知识沉淀**：文档入库 → 知识图谱（LightRAG 统一检索） → 持久记忆
 
 ### 1.2 功能列表
 
@@ -16,7 +16,7 @@ Niu 是一个**本地运行**的个人知识管理助手，核心理念：
 | 对话助手 | 多模型支持（OpenAI/Claude/DeepSeek/Qwen/Ollama） |
 | 文档入库 | 拖入文档自动入库；部分格式（.doc/.xls/.ppt）仅支持存储，不支持知识图谱 |
 | 知识图谱 | 自动提取实体和关系，支持图谱查询 |
-| 语义搜索 | 向量检索 + 递归查询，精准匹配 |
+| 语义搜索 | LightRAG 统一检索（local/global/hybrid/mix/naive 模式） |
 | 人脸识别 | 拖入照片 → 自动检测人脸 → 相册管理 |
 | 定时任务 | 自然语言创建提醒，支持循环任务 |
 | 智能记忆 | 自动学习用户偏好和习惯 |
@@ -29,8 +29,8 @@ Niu 是一个**本地运行**的个人知识管理助手，核心理念：
 | 前端 | Electron | 桌面应用 |
 | 后端 | Python FastAPI | API 服务 + Agent 核心 |
 | 启动器 | Go | 进程管理 + 自动更新 |
-| 数据库 | SQLite | 消息/向量/图谱/任务 |
-| 向量 | Sentence Transformers | 语义搜索 |
+| 数据库 | SQLite | 消息/图谱/任务 |
+| 知识检索 | LightRAG + Sentence Transformers | 知识图谱 + 语义搜索（统一架构） |
 | 人脸 | InsightFace + ONNX | 人脸检测/识别 |
 | MCP | 同进程架构 | 工具调用（无 stdio 通信） |
 
@@ -50,35 +50,36 @@ Niu 是一个**本地运行**的个人知识管理助手，核心理念：
 - **MCP Loader** (`agent/mcp_loader.py`)：启动时加载所有 MCP 模块，严格验证
 - 每个 MCP 服务器模块定义 `TOOL_SCHEMAS` 字典 + 工具函数
 
-**已实现的 MCP 服务器（8个）：**
+**已实现的 MCP 服务器（9个）：**
 
 | 服务器 | 功能 | 预加载 |
 |--------|------|--------|
 | `photo-server` | 照片管理 + 人脸识别 | Yes |
-| `lightrag-server` | 知识图谱 + 向量检索（LightRAG 统一） | Yes |
+| `lightrag-server` | 知识图谱 + 语义检索（LightRAG 统一） | Yes |
 | `config-manager` | 配置管理 | Yes |
 | `memory-server` | 智能记忆 | Yes |
 | `scheduler-server` | 定时任务 | Yes |
+| `brain-region-server` | 脑区管理（激活/降权/状态） | Yes |
 | `file-parser` | 文档解析 | Yes |
 | `session-manager` | 会话管理 | No |
 | `browser-server` | 浏览器自动化 | No |
-| `nanobot.system` | 内置系统工具 | — |
 
-> `kg-server`、`vector-store`、`embedding-service` 已废弃，由 `lightrag-server` 替代。
+> `kg-server`、`vector-store`、`embedding-service` 已移除，由 `lightrag-server` 统一替代。`mcp-servers/embedding-service/` 目录仍残留但不再加载。
+> `nanobot.system` 为内置系统工具（code_run/read/edit/write），非 MCP 服务器模块，通过 disk 配置管理。
 
 ### 2.2 工具注入机制
 
 **衰减-覆盖评分模式：**
 - 每轮开始：所有活跃工具 -10 分
-- 向量检索命中：覆盖为新分数
+- LightRAG 图检索命中：覆盖为新分数
 - 低于 min_score(50) 自动移除
 
-**向量库标签：**
-- `l1` — L1 摘要
-- `l2` — L2 原文
-- `skill` — Skills 文件
-- `mcp_tool` — MCP 工具描述
-- `interaction_habit` — 交互习惯（工具方言、用户状态、用户画像）
+**LightRAG 实体类型（entity_type）：**
+- `Skill` — Skills 文件
+- `Tool` — MCP 工具描述
+- `Person` — 人物（照片识别）
+- `Concept` — 概念/知识实体
+- `Photo` — 照片摘要
 
 ### 2.3 数据流
 
@@ -106,7 +107,7 @@ ai-bot/
 │   ├── mcp_loader.py   # MCP 加载器
 │   └── injector/       # 动态注入
 ├── niu_api/            # FastAPI 服务
-├── mcp-servers/        # MCP 服务器（8个）
+├── mcp-servers/        # MCP 服务器（9个）
 ├── ui/assistant/       # Electron 前端
 ├── config/             # 配置文件
 ├── models/             # 模型文件
@@ -121,8 +122,8 @@ ai-bot/
 
 | 分册 | 文件 | 内容 |
 |------|------|------|
-| 向量库运维 | [manual-vector-store.md](manual-vector-store.md) | 向量库数据结构、文档类型、交互习惯、metadata、递归查询、初始化 |
-| 故障排查 | [manual-troubleshooting.md](manual-troubleshooting.md) | 启动问题、人脸识别、定时任务、向量库、数据、浏览器插件 |
+| 知识检索运维 | [manual-vector-store.md](manual-vector-store.md) | LightRAG 知识图谱架构、实体类型、检索模式、文档管理 |
+| 故障排查 | [manual-troubleshooting.md](manual-troubleshooting.md) | 启动问题、人脸识别、定时任务、知识检索、数据、浏览器插件 |
 | 性能优化 | [manual-performance.md](manual-performance.md) | 内存优化、启动速度、GPU 加速策略 |
 | 依赖与模型 | [manual-dependencies.md](manual-dependencies.md) | Python 依赖、GPU 支持策略、人脸识别模型、向量模型、下载镜像 |
 | 用户操作 | [manual-user-guide.md](manual-user-guide.md) | 首次启动、LLM 配置、知识图谱、记忆管理、常见问题 |

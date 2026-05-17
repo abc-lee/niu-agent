@@ -15,8 +15,8 @@
 | Embedding 模型 | ~400MB | 默认 bge-base-zh-v1.5，常驻内存；bge-m3 约 2.2GB |
 | 人脸识别模型 | ~326MB | 按需加载，空闲 5 分钟自动卸载 |
 | 向量数据库 | ~100MB | 取决于数据量，由 LightRAG 管理 |
-| MCP 模块 | ~50MB × 8 | 同进程架构，无独立进程开销 |
-| **总计** | ~1.7GB | 使用 bge-base-zh-v1.5；若用 bge-m3 则约 3.5GB，推荐内存：8GB+ |
+| MCP 模块 | ~50MB × 9 | 同进程架构，无独立进程开销 |
+| **总计** | ~1.5GB | 使用 bge-base-zh-v1.5；若用 bge-m3 则约 3.3GB，推荐内存：8GB+ |
 
 **优化策略：**
 
@@ -41,10 +41,24 @@
 3. **减少 MCP 模块加载**
    ```yaml
    # config/mcp-servers.yaml
-   # 同进程架构下，8 个 REQUIRED_SERVERS 在启动时均加载（模块导入）
+   # 同进程架构下，9 个 REQUIRED_SERVERS 在启动时均加载（模块导入）
    # preload: true/false 在同进程架构中仅影响是否预加载重量级资源（如模型）
    # 不影响模块注册本身
    ```
+
+**9 个 MCP 服务器一览：**
+
+| 服务器 | 工具数 | preload | 说明 |
+|--------|--------|---------|------|
+| photo-server | 16 | true | 照片管理 + 人脸识别，按需加载 InsightFace 模型 |
+| config-manager | 16 | true | 配置管理（LLM/存储/身份/偏好） |
+| memory-server | 10 | true | 智能记忆提取和检索 |
+| lightrag-server | 16 | true | 知识图谱 + 向量检索（LightRAG 统一管理） |
+| file-parser | 2 | true | 文档解析（PDF/Word/PPT/Excel/MD/HTML） |
+| session-manager | 4 | false | 会话管理（消息压缩） |
+| scheduler-server | 4 | true | 定时任务（单次/循环提醒） |
+| browser-server | 3 | false | 浏览器自动化（Playwright 守护线程） |
+| brain-region-server | 3 | true | 脑区激活控制（手动点亮/熄灭/查询状态） |
 
 ### 1.2 启动速度优化
 
@@ -55,14 +69,14 @@
 | Session 初始化 | <1秒 | SQLite 初始化 |
 | Embedding 模型加载 | ~10秒 GPU / ~30秒 CPU | bge-base-zh-v1.5 (~400MB) |
 | Scheduler 启动 | <1秒 | 后台线程 |
-| MCP 工具加载 | ~2秒 | 同进程模块导入，8 个必需服务器 |
+| MCP 工具加载 | ~2秒 | 同进程模块导入，9 个必需服务器 |
 | **总计** | ~15秒 GPU / ~35秒 CPU | 首次启动需下载模型 |
 
 **优化建议：**
 
 1. **MCP 同进程架构**
    ```python
-   # agent/mcp_loader.py — REQUIRED_SERVERS 列表中的 8 个服务器
+   # agent/mcp_loader.py — REQUIRED_SERVERS 列表中的 9 个服务器
    # 同进程直接调用，无 stdio 通信开销
    # 首次工具调用延迟：stdio ~4s → 同进程 ~0ms（性能提升 ~40000x）
    ```
@@ -198,10 +212,53 @@ python scripts/download_model.py
 
 **解决**：已升级到同进程架构（MCP In-Process），直接 Python 函数调用
 ```python
-# agent/mcp_loader.py — 8 个 REQUIRED_SERVERS 同进程加载
+# agent/mcp_loader.py — 9 个 REQUIRED_SERVERS 同进程加载
 # agent/tool_registry.py — 全局工具注册中心
 # 首次工具调用延迟：stdio ~4s → 同进程 ~0ms（性能提升 ~40000x）
 ```
+
+### 1.6 LightRAG 性能特征
+
+LightRAG 是工具数最多的 MCP 服务器（16 个工具），承担知识图谱查询、文档索引、实体管理等核心功能，其性能对整体体验影响最大。
+
+**查询延迟：**
+
+| 查询模式 | 延迟 | 说明 |
+|----------|------|------|
+| bypass + keywords | ~0ms | 跳过 LLM，直接向量检索，近乎即时 |
+| naive | ~1-3秒 | 纯向量检索，无图谱推理 |
+| local / global | ~3-10秒 | 单次 LLM 调用 + 图谱检索 |
+| hybrid / mix | ~5-15秒 | 多次 LLM 调用 + 图谱推理，最全面 |
+| only_need_context=True | 减少 50%+ | 跳过 LLM 生成，仅返回检索上下文 |
+
+```python
+# niu_api/internal/lightrag_adapter.py — LightRAGAdapter.query()
+# timeout: int = 120  — 默认查询超时 120 秒
+# keywords 参数：提供后跳过 LLM 关键词提取，直接检索（near-instant）
+# only_need_context=True：跳过 LLM 生成步骤，仅返回检索结果
+```
+
+**索引构建开销：**
+
+| 操作 | 延迟 | 说明 |
+|------|------|------|
+| 文档插入（小文档 <1KB） | ~5-15秒 | 分块 + LLM 实体/关系抽取 + 写入图谱 |
+| 文档插入（大文档 >10KB） | ~30-120秒 | 分块数增加，LLM 调用次数线性增长 |
+| 实体插入 | ~3-10秒 | 单次 LLM 调用 + 向量编码 |
+| 删除实体 | ~5-10秒 | 图谱遍历 + 清理关联关系 |
+| 文档状态查询 | ~1秒 | 直接查询处理队列 |
+
+```python
+# 索引构建为异步后台任务，不阻塞主线程
+# pipeline_enqueue_file 通过 LightRAG 内部队列异步处理
+# 删除操作 timeout=300 秒（图谱遍历耗时较长）
+```
+
+**内存占用：**
+
+- LightRAG 运行时依赖 Embedding 模型（已计入 1.1 内存表），不额外占用模型内存
+- 图谱数据存储在磁盘（Neo4j/NetworkX + 向量库），内存占用取决于查询缓存
+- `_adapter` 和 `_ingester` 为单例，线程安全（`_adapter_lock` / `_ingester_lock`）
 
 ## 验证记录
 
@@ -211,7 +268,7 @@ python scripts/download_model.py
 |---|------|------|--------|------|
 | 1 | 6.1 内存表 | Embedding 模型 ~500MB 常驻内存 | Embedding 模型 ~400MB，默认 bge-base-zh-v1.5 | 默认模型已从 all-MiniLM-L6-v2 (90MB) 更换为 bge-base-zh-v1.5 (~400MB)，代码中 DEFAULT_MODEL = "bge-base-zh-v1.5" |
 | 2 | 6.1 内存表 | MCP 服务器 ~50MB × 7 每个服务器独立进程 | MCP 模块 ~50MB × 9 同进程架构 | mcp_loader.py REQUIRED_SERVERS 有 9 个服务器；架构已从 stdio 进程通信升级为同进程模块导入 |
-| 3 | 6.1 内存表 | 总计 ~1.5GB | 总计 ~1.8GB（bge-base-zh-v1.5）；若用 bge-m3 则约 3.6GB | Embedding 模型从 500MB 更改为 400MB 默认值，加上 bge-m3 选项说明 |
+| 3 | 6.1 内存表 | 总计 ~1.5GB | 总计 ~1.5GB（bge-base-zh-v1.5）；若用 bge-m3 则约 3.3GB | 200MB 基础 + 400MB embedding + 326MB 人脸 + 100MB 向量库 + 50MB×9 模块 ≈ 1476MB；bge-m3 模式：200+2200+326+100+450 ≈ 3276MB |
 | 4 | 6.1 优化策略 | 向量搜索降级 device = "cpu" | Embedding 模型选择（bge-base-zh-v1.5/bge-m3/minilm-l12） | 代码不使用手动 device="cpu" 配置，而是通过 get_device() 自动检测；Embedding 模型已改为可配置 |
 | 5 | 6.1 优化策略 | 减少 MCP 服务器 enabled: false | 减少 MCP 模块加载 preload: false | config/mcp-servers.yaml 不使用 enabled 字段，而是 preload: true/false；且 REQUIRED_SERVERS 中 9 个服务器必须加载 |
 | 6 | 6.2 启动时间 | Embedding 模型加载 7秒 GPU: RTX 4090 | ~10秒 GPU / ~30秒 CPU bge-base-zh-v1.5 | 模型从 90MB 换为 ~400MB，加载时间相应变化 |
