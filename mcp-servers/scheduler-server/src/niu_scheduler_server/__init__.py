@@ -42,7 +42,8 @@ TOOL_SCHEMAS = {
                 "scheduled_at": {"type": "string", "description": "首次触发时间（ISO格式）"},
                 "event_type": {"type": "string", "enum": ["meeting", "task", "reminder", "recurring"]},
                 "is_recurring": {"type": "boolean", "description": "是否循环任务"},
-                "cron_expr": {"type": "string", "description": "cron 表达式"}
+                "cron_expr": {"type": "string", "description": "cron 表达式"},
+                "name": {"type": "string", "description": "任务名称（可选，系统自动注入的任务用 name 标识）"}
             },
             "required": ["content", "scheduled_at"]
         },
@@ -54,7 +55,7 @@ TOOL_SCHEMAS = {
 参数：
 - status (可选): 筛选状态，pending/triggered/cancelled
 
-返回：任务列表，包含 id、content、scheduled_at、is_recurring、cron_expr、status""",
+返回：任务列表，包含 id、content、scheduled_at、is_recurring、cron_expr、status、name""",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -157,6 +158,7 @@ def schedule_task(
     event_type: str = "reminder",
     is_recurring: bool = False,
     cron_expr: str = None,
+    name: str = None,
 ) -> dict:
     """创建定时任务，支持单次和循环任务。"""
     try:
@@ -167,6 +169,7 @@ def schedule_task(
             event_type=event_type,
             is_recurring=is_recurring,
             cron_expr=cron_expr,
+            name=name,
         )
         return {"status": "success", "task_id": task_id, "message": f"已创建定时任务：{content}"}
     except Exception as e:
@@ -252,7 +255,8 @@ async def run_server():
                         "scheduled_at": {"type": "string", "description": "首次触发时间（ISO格式）"},
                         "event_type": {"type": "string", "enum": ["meeting", "task", "reminder", "recurring"]},
                         "is_recurring": {"type": "boolean", "description": "是否循环任务"},
-                        "cron_expr": {"type": "string", "description": "cron 表达式"}
+                        "cron_expr": {"type": "string", "description": "cron 表达式"},
+                        "name": {"type": "string", "description": "任务名称（可选，系统自动注入的任务用 name 标识）"}
                     },
                     "required": ["content", "scheduled_at"]
                 }
@@ -264,7 +268,7 @@ async def run_server():
 参数：
 - status (可选): 筛选状态，pending/triggered/cancelled
 
-返回：任务列表，包含 id、content、scheduled_at、is_recurring、cron_expr、status""",
+返回：任务列表，包含 id、content、scheduled_at、is_recurring、cron_expr、status、name""",
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -321,7 +325,8 @@ async def run_server():
                     scheduled_at=arguments["scheduled_at"],
                     event_type=arguments.get("event_type", "reminder"),
                     is_recurring=arguments.get("is_recurring", False),
-                    cron_expr=arguments.get("cron_expr")
+                    cron_expr=arguments.get("cron_expr"),
+                    name=arguments.get("name")
                 )
 
                 return [TextContent(
