@@ -77,7 +77,7 @@ class TestDetectCommunitiesBasic:
         adapter = _make_mock_adapter(nodes, edges)
         detector = CommunityDetector(adapter)
 
-        result = detector.detect_communities(resolution=1.0)
+        result = detector.detect_communities(resolution=1.0, min_graph_size=5, min_community_size=2)
 
         assert isinstance(result, CommunityDetectionResult)
         assert result.total_nodes == 9
@@ -93,7 +93,7 @@ class TestDetectCommunitiesBasic:
         adapter = _make_mock_adapter(nodes, edges)
         detector = CommunityDetector(adapter)
 
-        result = detector.detect_communities()
+        result = detector.detect_communities(min_graph_size=5, min_community_size=2)
 
         for partition in result.partitions:
             assert isinstance(partition, RegionPartition)
@@ -111,7 +111,7 @@ class TestDetectCommunitiesBasic:
         adapter = _make_mock_adapter(nodes, edges)
         detector = CommunityDetector(adapter)
 
-        result = detector.detect_communities()
+        result = detector.detect_communities(min_graph_size=5, min_community_size=2)
 
         all_assigned = set()
         for p in result.partitions:
@@ -161,7 +161,7 @@ class TestDetectCommunitiesSingleNode:
         adapter = _make_mock_adapter(nodes, [])
         detector = CommunityDetector(adapter)
 
-        result = detector.detect_communities()
+        result = detector.detect_communities(min_graph_size=1, min_community_size=1)
 
         assert result.total_regions == 1
         assert result.total_nodes == 1
@@ -181,7 +181,7 @@ class TestDetectCommunitiesSingleNode:
         adapter = _make_mock_adapter(nodes, [])
         detector = CommunityDetector(adapter)
 
-        result = detector.detect_communities()
+        result = detector.detect_communities(min_graph_size=1, min_community_size=1)
 
         assert result.partitions[0].entity_types == {"unknown": 1}
 
@@ -355,7 +355,7 @@ class TestGracefulDegradation:
 
         # 模拟 leidenalg 未安装
         with patch("niu_api.internal.region_detector._HAS_LEIDEN", False):
-            result = detector.detect_communities()
+            result = detector.detect_communities(min_graph_size=1, min_community_size=1)
 
         assert result.partitions == []
         assert result.total_nodes == 0

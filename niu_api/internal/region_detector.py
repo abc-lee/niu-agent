@@ -254,7 +254,7 @@ class CommunityDetector:
 
     def _build_partitions(
         self, graph: "igraph.Graph", partition: Any,
-        min_community_size: int = 10,
+        min_community_size: int = 100,
     ) -> list[RegionPartition]:
         """将 Leiden 分区结果转换为 RegionPartition 列表
 
