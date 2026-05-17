@@ -49,14 +49,14 @@ ingest 自动完成：复制文件到知识库目录 → 检测人脸 → 识别
    ```
    photo-server/ingest_document, 参数: file_path="xxx.docx", mode="copy"
    ```
-2. 工具会读取文件内容，返回 `status: "need_category"` + 内容预览
-3. **阅读内容预览，判断这个文件属于哪个分类目录**，再次调用并传入 category：
+2. 工具会读取文件内容，返回 `status: "need_category"` + 内容预览 + `available_categories`（可选分类列表）
+3. **从 available_categories 中选择最合适的分类**，再次调用并传入 category：
    ```
-   photo-server/ingest_document, 参数: file_path="xxx.docx", category="工作文档", mode="copy"
+   photo-server/ingest_document, 参数: file_path="xxx.docx", category="报告", mode="copy"
    ```
 4. 工具完成入库（复制文件到分类目录 + 内容写入知识库），返回 `status: "success"`
 
-分类目录参考：工作文档、个人资料、财务报告、合同协议、学习笔记、其他
+**分类必须从工具返回的 available_categories 列表中选择，不要自己编造分类名。**
 
 | status | 含义 | 下一步 |
 |--------|------|--------|

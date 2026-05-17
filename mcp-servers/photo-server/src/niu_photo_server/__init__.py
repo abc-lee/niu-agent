@@ -3092,24 +3092,28 @@ def ingest_document(file_path: str, category: str = "", mode: str = "copy") -> d
 
         # No category → read file content and ask caller to classify
         if not category:
+            prefs = get_preferences()
+            available_categories = prefs.get("categories", {}).get("documents", ["其他"])
             content = read_file_content(file_path)
             if content:
                 preview = content[:3000] if len(content) > 3000 else content
                 return {
                     "status": "need_category",
-                    "message": f"请根据以下内容判断文档分类目录，然后再次调用 ingest_document 并传入 category 参数。\n\n文件: {file_path}\n内容预览:\n{preview}",
+                    "message": f"请根据以下内容判断文档分类目录，然后再次调用 ingest_document 并传入 category 参数。\n\n文件: {file_path}\n内容预览:\n{preview}\n可选分类: {', '.join(available_categories)}",
                     "file_path": file_path,
                     "mode": mode,
                     "content_length": len(content),
+                    "available_categories": available_categories,
                 }
             else:
                 ext = source.suffix.lower()
                 size = source.stat().st_size
                 return {
                     "status": "need_category",
-                    "message": f"无法读取文件内容，请根据文件信息判断分类目录，然后再次调用 ingest_document 并传入 category 参数。\n\n文件: {file_path}\n格式: {ext}\n大小: {size} 字节",
+                    "message": f"无法读取文件内容，请根据文件信息判断分类目录，然后再次调用 ingest_document 并传入 category 参数。\n\n文件: {file_path}\n格式: {ext}\n大小: {size} 字节\n可选分类: {', '.join(available_categories)}",
                     "file_path": file_path,
                     "mode": mode,
+                    "available_categories": available_categories,
                 }
         logger.info("[INGEST] 读取配置...")
         workspace = get_workspace_path()
