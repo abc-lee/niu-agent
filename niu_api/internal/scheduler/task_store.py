@@ -47,6 +47,13 @@ class TaskStore:
                 """)
             except sqlite3.OperationalError:
                 pass  # 列已存在
+            # 迁移：老数据库可能没有 name 列
+            try:
+                conn.execute("""
+                    ALTER TABLE scheduled_tasks ADD COLUMN name TEXT
+                """)
+            except sqlite3.OperationalError:
+                pass  # 列已存在
             conn.commit()
         finally:
             conn.close()
@@ -57,7 +64,8 @@ class TaskStore:
         scheduled_at: str,
         event_type: str = "reminder",
         is_recurring: bool = False,
-        cron_expr: Optional[str] = None
+        cron_expr: Optional[str] = None,
+        name: Optional[str] = None
     ) -> str:
         """创建任务"""
         task_id = str(uuid.uuid4())
@@ -67,9 +75,9 @@ class TaskStore:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("""
                 INSERT INTO scheduled_tasks
-                (id, content, scheduled_at, is_recurring, cron_expr, event_type, status)
-                VALUES (?, ?, ?, ?, ?, ?, 'pending')
-            """, (task_id, content, scheduled_at, int(is_recurring), cron_expr, event_type))
+                (id, content, scheduled_at, is_recurring, cron_expr, event_type, status, name)
+                VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)
+            """, (task_id, content, scheduled_at, int(is_recurring), cron_expr, event_type, name))
             conn.commit()
         finally:
             conn.close()
@@ -85,14 +93,14 @@ class TaskStore:
 
             if status:
                 cursor.execute("""
-                    SELECT id, content, scheduled_at, is_recurring, cron_expr, event_type, status, created_at, last_executed_date
+                    SELECT id, content, scheduled_at, is_recurring, cron_expr, event_type, status, created_at, last_executed_date, name
                     FROM scheduled_tasks
                     WHERE status = ?
                     ORDER BY scheduled_at
                 """, (status,))
             else:
                 cursor.execute("""
-                    SELECT id, content, scheduled_at, is_recurring, cron_expr, event_type, status, created_at, last_executed_date
+                    SELECT id, content, scheduled_at, is_recurring, cron_expr, event_type, status, created_at, last_executed_date, name
                     FROM scheduled_tasks
                     ORDER BY scheduled_at
                 """)
@@ -111,7 +119,8 @@ class TaskStore:
                 "event_type": row[5],
                 "status": row[6],
                 "created_at": row[7],
-                "last_executed_date": row[8]
+                "last_executed_date": row[8],
+                "name": row[9]
             }
             for row in rows
         ]
@@ -133,6 +142,38 @@ class TaskStore:
             conn.close()
         return affected > 0
 
+    def find_task_by_name(self, name: str) -> Optional[Dict[str, Any]]:
+        """按 name 查找非取消状态的任务"""
+        conn = sqlite3.connect(self.db_path, timeout=10.0)
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, content, scheduled_at, is_recurring, cron_expr, event_type, status, created_at, last_executed_date, name
+                FROM scheduled_tasks
+                WHERE name = ? AND status != 'cancelled'
+                LIMIT 1
+            """, (name,))
+            row = cursor.fetchone()
+        finally:
+            conn.close()
+
+        if not row:
+            return None
+
+        return {
+            "id": row[0],
+            "content": row[1],
+            "scheduled_at": row[2],
+            "is_recurring": bool(row[3]),
+            "cron_expr": row[4],
+            "event_type": row[5],
+            "status": row[6],
+            "created_at": row[7],
+            "last_executed_date": row[8],
+            "name": row[9]
+        }
+
     def update_task(
         self,
         task_id: str,
@@ -140,7 +181,8 @@ class TaskStore:
         scheduled_at: Optional[str] = None,
         cron_expr: Optional[str] = None,
         status: Optional[str] = None,
-        expected_status: Optional[str] = None
+        expected_status: Optional[str] = None,
+        name: Optional[str] = None
     ) -> bool:
         """更新任务
 
@@ -165,6 +207,10 @@ class TaskStore:
         if status is not None:
             updates.append("status = ?")
             params.append(status)
+
+        if name is not None:
+            updates.append("name = ?")
+            params.append(name)
 
         if not updates:
             return False
@@ -197,7 +243,7 @@ class TaskStore:
             conn.execute("PRAGMA journal_mode=WAL")
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT id, content, scheduled_at, is_recurring, cron_expr, event_type, status, created_at, last_executed_date
+                SELECT id, content, scheduled_at, is_recurring, cron_expr, event_type, status, created_at, last_executed_date, name
                 FROM scheduled_tasks
                 WHERE id = ?
             """, (task_id,))
@@ -217,7 +263,8 @@ class TaskStore:
             "event_type": row[5],
             "status": row[6],
             "created_at": row[7],
-            "last_executed_date": row[8]
+            "last_executed_date": row[8],
+            "name": row[9]
         }
 
     def delete_task_permanent(self, task_id: str) -> bool:
@@ -260,7 +307,7 @@ class TaskStore:
             conn.execute("PRAGMA journal_mode=WAL")
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT id, content, scheduled_at, is_recurring, cron_expr, event_type, status, last_executed_date
+                SELECT id, content, scheduled_at, is_recurring, cron_expr, event_type, status, last_executed_date, name
                 FROM scheduled_tasks
                 WHERE status = 'pending' AND datetime(scheduled_at) <= datetime(?)
                 ORDER BY scheduled_at
@@ -278,7 +325,8 @@ class TaskStore:
                 "cron_expr": row[4],
                 "event_type": row[5],
                 "status": row[6],
-                "last_executed_date": row[7]
+                "last_executed_date": row[7],
+                "name": row[8]
             }
             for row in rows
         ]
