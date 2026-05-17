@@ -190,123 +190,86 @@ sqlite3 ~/.niu/scheduled_tasks.db "SELECT * FROM scheduled_tasks WHERE status='p
 # 在对话中问："查看 ID 为 xxx 的任务详情"
 ```
 
-### 1.4 向量库问题
+### 1.4 LightRAG / 知识检索问题
 
-#### 问题：向量库初始化失败
+#### 问题：LightRAG 知识检索无结果
 
 **可能原因：**
-- 向量模型未加载
-- 数据库文件损坏
+- 文档未入库
+- 入库处理未完成（异步处理）
+- 查询模式不匹配
+
+**诊断步骤：**
+```bash
+# 1. 检查文档入库状态
+# 在对话中让 Agent 调用 lightrag_document_status 工具
+
+# 2. 搜索关键词确认数据存在
+# 在对话中让 Agent 调用 lightrag_search_entities 工具
+
+# 3. 检查 LightRAG 存储目录
+ls ~/.niu/lightrag_storage/
+```
+
+**解决方案：**
+```
+1. 等待异步处理完成：文档入库是异步操作，大文档可能需要较长时间
+2. 尝试不同查询模式：local（局部细节）、global（全局概览）、hybrid（混合）
+3. 确认文档格式支持：.doc/.xls/.ppt + WPS 假 .docx 不支持 KG 入库
+```
+
+#### 问题：LightRAG 存储损坏
+
+**可能原因：**
+- 进程异常退出导致数据写入不完整
 - 磁盘空间不足
 
 **诊断步骤：**
 ```bash
-# 1. 检查向量库文件
-# 路径通过 WORKSPACE_PATH 或 ~/.niu/memory.json 中的 workspace.path 解析
-# 默认: {workspace.path}/vectors.db
-ls -la ~/.niu/vectors.db
-
-# 2. 检查向量库状态
-python scripts/check_mcp_tools_in_db.py
-
-# 3. 检查磁盘空间
-df -h
+# 检查存储目录文件完整性
+ls -la ~/.niu/lightrag_storage/
+# 正常应包含：graph_chunk_entity_relation.graphml、kv_store_*.json 等文件
 ```
 
 **解决方案：**
 ```bash
-# 1. 删除损坏的向量库
-rm ~/.niu/vectors.db
-
-# 2. 重新初始化
-python scripts/init_vector_db.py
+# 删除损坏的存储后重启，重新导入文档
+rm -rf ~/.niu/lightrag_storage/
+# 重启程序后重新导入文档
 ```
 
-#### 问题：工具注册不完整
+#### 问题：文档入库失败（格式不支持）
 
-**可能原因：**
-- 注册过程中断
-- 批量注册部分失败
+**说明：** .doc/.xls/.ppt 及 WPS 生成的假 .docx 不支持 KG 入库。
 
 **诊断步骤：**
-```bash
-# 检查工具数量
-python scripts/check_mcp_tools_in_db.py
 ```
-
-**正常数量参考（随版本迭代可能变化）：**
-```
-MCP tools in vector DB: 约 68
-By server:
-  config-manager: 20
-  photo-server: 9
-  lightrag-server: 15
-  memory-server: 9
-  browser-server: 5
-  scheduler-server: 4
-  session-manager: 4
-  file-parser: 2
+ingest_document 返回 lightrag: "unsupported" 表示格式不支持
 ```
 
 **解决方案：**
-```bash
-# 1. 重新注册所有工具
-python scripts/export_all_mcp_tools.py
-python scripts/register_all_mcp_tools_from_json.py
-
-# 2. 或者重新初始化
-rm ~/.niu/vectors.db
-python scripts/init_vector_db.py
+```
+用 Microsoft Office 另存为 .docx/.xlsx/.pptx 后重新入库
 ```
 
-#### 问题：查询模式不匹配
+#### 问题：Skills 未同步
 
 **可能原因：**
-- query_pattern未注册
-- 用户表达与预设模式差异较大
-
-**说明**：向量检索是语义匹配，multilingual模型支持跨语言检索，不存在语种问题。
-
-**诊断步骤：**
-```python
-# 检查query_pattern数量
-python -c "
-import sqlite3
-conn = sqlite3.connect('~/.niu/vectors.db')
-cur = conn.execute('SELECT COUNT(*) FROM documents WHERE json_extract(metadata, \"\$.type\") = \"query_pattern\"')
-print('Query patterns:', cur.fetchone()[0])
-conn.close()
-"
-```
-
-**正常数量：8个query_pattern**
-
-#### 问题：Skills未同步
-
-**可能原因：**
-- Skills文件不存在
+- Skills 文件不存在
 - 同步失败
 
 **诊断步骤：**
 ```bash
-# 检查Skills文件
+# 检查 Skills 文件
 ls memory/skills/
 
-# 检查向量库中的Skills
-python -c "
-import sqlite3
-conn = sqlite3.connect('~/.niu/vectors.db')
-cur = conn.execute('SELECT COUNT(*) FROM documents WHERE json_extract(metadata, \"\$.category\") = \"skill\"')
-print('Skills in DB:', cur.fetchone()[0])
-conn.close()
-"
+# 检查 LightRAG 中的 Skills
+# 在对话中让 Agent 搜索 Skills 相关内容
 ```
 
 **解决方案：**
 ```bash
 # 重新同步
-python scripts/init_vector_db.py
-# 或直接操作
 python -c "
 from agent.injector.sync import get_skill_sync
 sync = get_skill_sync(auto_start=False)
@@ -314,51 +277,7 @@ sync.scan_and_sync()
 "
 ```
 
-### 1.5 向量搜索问题
-
-#### 问题：搜索结果不准确
-
-**可能原因：**
-- 向量模型未正确加载
-- 知识库数据量太小
-- 搜索词太模糊
-
-**解决方案：**
-```python
-# 1. 检查模型
-# 在对话中问："测试向量搜索：知识管理"
-
-# 2. 增加知识库数据
-# 拖入更多文档
-
-# 3. 使用更具体的搜索词
-# 差："文档"
-# 好："如何管理文档知识库"
-```
-
-#### 问题：向量搜索报错 "embedding service error"
-
-**可能原因：**
-- 模型未加载
-- GPU 内存不足
-
-**解决方案：**
-```bash
-# 1. 检查模型文件
-# 默认模型: bge-base-zh-v1.5
-ls models/bge-base-zh-v1.5/
-# 可选模型: paraphrase-multilingual-MiniLM-L12-v2
-ls models/paraphrase-multilingual-MiniLM-L12-v2/
-
-# 2. 检查 GPU 内存
-nvidia-smi
-
-# 3. 使用 CPU 模式（如果 GPU 内存不足）
-set CUDA_VISIBLE_DEVICES=-1
-niu-assistant.exe
-```
-
-### 1.6 数据问题
+### 1.5 数据问题
 
 #### 问题：数据丢失（历史对话、知识库）
 
@@ -370,8 +289,7 @@ niu-assistant.exe
 ```
 重要文件（路径通过 WORKSPACE_PATH 或 ~/.niu/memory.json 中的 workspace.path 解析）：
 - {workspace}/messages.db          # 历史对话
-- {workspace}/vectors.db           # 向量知识库
-- {workspace}/knowledge.kz*        # 知识图谱（Kuzu 数据库）
+- ~/.niu/lightrag_storage/         # LightRAG 知识检索存储
 - {workspace}/scheduled_tasks.db   # 定时任务
 - {workspace}/photos.db            # 照片数据库
 - ~/.niu/memory.json               # 用户记忆
@@ -401,11 +319,12 @@ sqlite3 ~/.niu/messages.db "DELETE FROM messages WHERE created_at < datetime('no
 # 2. 压缩数据库
 sqlite3 ~/.niu/messages.db "VACUUM;"
 
-# 3. 重建向量索引
-# 在对话中问："重新生成所有知识库向量"
+# 3. 重建知识检索索引
+# 删除 LightRAG 存储后重启，重新导入文档
+# rm -rf ~/.niu/lightrag_storage/
 ```
 
-### 1.7 浏览器自动化插件
+### 1.6 浏览器自动化插件
 
 #### 插件概述
 
@@ -457,7 +376,7 @@ typeof NiuDomTree !== 'undefined'
 | 新标签页无法操作 | content_script 未注入 | 刷新页面或等待自动注入 |
 | WebSocket 连接失败 | Python 服务未启动 | 重启 AI 助手服务 |
 
-### 1.8 LightRAG / 知识图谱故障
+### 1.7 LightRAG / 知识图谱故障
 
 | 症状 | 可能原因 | 排查方法 |
 |------|---------|---------|
@@ -465,6 +384,11 @@ typeof NiuDomTree !== 'undefined'
 | 文档入库后查不到实体 | ainsert 失败 | 查看 API 日志中 `lightrag` 相关错误 |
 | 知识图谱响应极慢 | 数据量过大或模型未加载 | 检查 `~/.niu/lightrag_storage/` 大小；确认 embedding 模型已加载 |
 | lightrag-server 工具不可用 | 模块未加载 | 检查 `agent/mcp_loader.py` 的 REQUIRED_SERVERS 是否包含 lightrag-server |
+| LightRAG 初始化失败 | embedding 模型加载失败 | 检查 `models/bge-base-zh-v1.5/` 目录是否完整；查看日志中 embedding 相关错误；确认 sentence_transformers 已安装 |
+| LightRAG 文档处理超时 | 文档过大或 LLM API 响应慢 | 检查 LLM API 连通性；尝试拆分大文档后重新入库；查看日志中 ainsert 超时信息 |
+| brain-region-server 工具不可用 | 模块未加载 | 检查 `agent/mcp_loader.py` 的 REQUIRED_SERVERS 是否包含 brain-region-server |
+| 脑区同步失败 | region_sync 数据源异常 | 查看 API 日志中 `region_sync` 相关错误；检查 `config/mcp-servers.yaml` 中 brain-region-server 配置 |
+| 脑区查询返回 UNKNOWN source_id | 数据源标识缺失 | 检查 region_sync 注入时是否正确设置 source_id 参数 |
 
 ---
 
@@ -476,12 +400,12 @@ typeof NiuDomTree !== 'undefined'
 | 2 | 人脸识别需要 ~500MB 内存 | 人脸识别需要约 326MB 内存 | CLAUDE.md 和 photo-server 代码均记录为约 326MB |
 | 3 | 检查日志：应看到 "[INTERNAL SCHEDULER] Started" | 应看到 "[INTERNAL SCHEDULER] Scheduled to start (delayed 10s)"，调度器延迟 10 秒启动 | service.py 中 start_scheduler 使用 start_delayed(delay_seconds=10) |
 | 4 | sqlite3 data/scheduled_tasks.db ... | sqlite3 ~/.niu/scheduled_tasks.db ... | 数据库路径通过 WORKSPACE_PATH 或 memory.json 解析，默认 ~/.niu/ |
-| 5 | 所有 REDACTED_WIN_PATH/vectors.db 硬编码路径 | ~/.niu/vectors.db（并说明路径解析机制） | vector-store 和 vector_search.py 通过环境变量/memory.json 动态解析路径 |
-| 6 | ls models/paraphrase-multilingual-MiniLM-L12-v2（向量搜索报错排查） | 同时列出 models/bge-base-zh-v1.5/（默认）和 models/paraphrase-multilingual-MiniLM-L12-v2/（可选） | 默认模型已变更 |
-| 7 | data/messages.db, data/vectors.db, data/kg.db（数据备份列表） | {workspace}/messages.db, {workspace}/vectors.db, {workspace}/knowledge.kz*，并说明路径解析 | 知识图谱使用 Kuzu 数据库（knowledge.kz*），非 kg.db；消息库在 ~/.niu/ 下 |
+| 5 | 所有 REDACTED_WIN_PATH/vectors.db 硬编码路径 | vectors.db 已废弃，知识检索改用 LightRAG（~/.niu/lightrag_storage/） | vector-store 架构已移除，由 lightrag-server 统一管理知识检索 |
+| 6 | ls models/paraphrase-multilingual-MiniLM-L12-v2（向量搜索报错排查） | 默认模型 bge-base-zh-v1.5，向量搜索独立排查已移除（合并到 LightRAG 故障排查） | 默认模型已变更，独立向量搜索概念已不存在 |
+| 7 | data/messages.db, data/vectors.db, data/kg.db（数据备份列表） | {workspace}/messages.db, ~/.niu/lightrag_storage/, {workspace}/scheduled_tasks.db 等，并说明路径解析 | vectors.db 和 knowledge.kz* 已废弃，知识检索改用 LightRAG 存储 |
 | 8 | sqlite3 data/messages.db "DELETE ... WHERE timestamp ..." | sqlite3 ~/.niu/messages.db "DELETE ... WHERE created_at ..." | messages 表使用 created_at 列（见 agent/session.py），不是 timestamp |
 | 9 | 浏览器方法 3 使用 --user-data-dir="%USERPROFILE%\.niu\browser_ext_profile" | 使用 --disable-extensions-except，并说明默认使用用户浏览器配置文件 | launcher.py 不指定 --user-data-dir，使用用户默认 profile 共享 cookies |
 | 10 | 人脸识别故障提到 "MCP stdio 通信错误"、"ONNX Runtime stdout 污染" | 说明同进程架构后无 stdio 通信问题，无需检查 JSONRPC 解析 | MCP 已从 stdio 架构迁移到同进程直接调用 |
 | 11 | 浏览器故障提到 "Playwright 选择器失效"、检查 "playwright\|browser" 日志 | 改为 WSBridge + Chrome Extension 架构，NiuDomTree 通过 content.js 注入 | browser-server 从 Playwright 迁移到 WSBridge + Extension 架构 |
-| 12 | 工具数量 73 个，按旧服务器分类（kg-server:14, vector-store:7, photo-server:16） | 约 68 个，按新服务器分类（lightrag-server:15, photo-server:9） | kg-server + vector-store 合并为 lightrag-server，各服务器工具数量随版本变化 |
+| 12 | 工具数量 73 个，按旧服务器分类（kg-server:14, vector-store:7, photo-server:16） | 约 70 个，按新服务器分类（lightrag-server:15, photo-server:15, brain-region-server:3, browser-server:3） | kg-server + vector-store 合并为 lightrag-server，各服务器工具数量随版本变化 |
 | 13 | MCP 加载故障提到手动启动各 MCP 服务器进程测试 | 改为同进程架构下直接测试模块导入（python -c "from niu_xxx import get_tool_schemas"） | MCP 同进程架构无需启动独立进程 |

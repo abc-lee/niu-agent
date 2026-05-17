@@ -99,9 +99,8 @@ InsightFace 的 `ctx_id` 参数仅对 CUDA 有效：`ctx_id=0` 表示使用 GPU�
 ```
 
 **为什么必须预加载？**
-- InsightFace 在 MCP stdio 管道中动态导入会**卡死**
-- 这是 InsightFace + MCP stdio 的已知问题
-- 预加载模块代码（不是模型），避免后续卡死
+- 同进程架构下，InsightFace 在启动时预加载模块代码，避免运行时加载延迟
+- 预加载模块代码（不是模型），确保首次人脸识别时快速响应
 
 **模型按需加载（首次使用时）：**
 ```
@@ -254,7 +253,7 @@ def get_model():
 
 **运行时切换：**
 
-可通过 `switch_model(new_model)` 函数运行时切换模型，自动更新 `preferences.json` 并在下一次 `get_model()` 调用时加载新模型。若维度不同，需重新索引向量库。
+可通过 `switch_model(new_model)` 函数运行时切换模型，自动更新 `preferences.json` 并在下一次 `get_model()` 调用时加载新模型。若维度不同，需重建 LightRAG 知识库（删除 ~/.niu/lightrag_storage/ 后重新导入）。
 
 ### 2.3 模型下载
 

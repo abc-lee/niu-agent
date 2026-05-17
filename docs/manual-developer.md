@@ -84,9 +84,6 @@ result = tool_fn(photo_path="test.jpg")
 # 查看消息历史（路径：~/.niu/messages.db）
 sqlite3 ~/.niu/messages.db "SELECT id, role, content, created_at FROM messages ORDER BY created_at DESC LIMIT 10;"
 
-# 查看向量数据（路径由 WORKSPACE_PATH 或 memory.json workspace.path 决定）
-sqlite3 <workspace>/vectors.db "SELECT id, content FROM documents LIMIT 10;"
-
 # 查看定时任务（路径：~/.niu/scheduled_tasks.db 或 <workspace>/scheduled_tasks.db）
 sqlite3 ~/.niu/scheduled_tasks.db "SELECT * FROM scheduled_tasks;"
 
@@ -144,8 +141,7 @@ niu.exe [选项]
 |------|------|--------|
 | `NIU_API_PORT` | Python API 端口 | `9876` |
 | `NIU_MODELS_PATH` | 模型文件目录（覆盖默认 `{项目根}/models`） | 项目根目录下 `models/` |
-| `WORKSPACE_PATH` | 工作空间根目录（向量库、定时任务等数据存储位置） | 从 `~/.niu/memory.json` 的 `workspace.path` 读取 |
-| `NIU_DB_PATH` | 向量库数据库路径（显式覆盖，最高优先级） | 由 `WORKSPACE_PATH` 或 `workspace.path` 推导 |
+| `WORKSPACE_PATH` | 工作空间根目录（定时任务等数据存储位置） | 从 `~/.niu/memory.json` 的 `workspace.path` 读取 |
 | `LITELLM_LOCAL_MODEL_COST_MAP` | LiteLLM 本地模型费用映射开关 | Go 启动器设为 `True` |
 | `CUDA_VISIBLE_DEVICES` | GPU 设备选择 | 所有可用 GPU |
 | `PYTHONUNBUFFERED` | Python 输出无缓冲 | Go 启动器设为 `1` |
@@ -169,8 +165,7 @@ niu.exe [选项]
 | `/api/llm-status` | GET | LLM 配置可用状态 |
 | `/api/stats` | GET | 系统统计（消息数、运行时间） |
 | `/api/pending-alerts` | GET | 获取待处理提醒 |
-| `/api/vector/stats` | GET | 向量库统计 |
-| `/api/vector/cleanup` | POST | 触发向量库清理 |
+| `/api/vector/stats` | GET | LightRAG 知识库统计 |
 | `/api/inject/mcp-tool` | POST | 注册单个 MCP 工具 |
 | `/api/inject/mcp-tools/batch` | POST | 批量注册 MCP 工具 |
 | `/api/inject/resources` | GET | 列出注入资源 |
@@ -231,21 +226,21 @@ Copyright (c) 2026
 ### v0.3.0 (2026-04-09)
 
 **重大变更：**
-- 新增向量库系统文档（第三章）
+- 新增向量库系统文档（第三章）（已废弃，由 LightRAG 替代）
 - L1规范统一（spec-L1-summary.md）
-- 递归查询机制文档（design-vector-recursive-query.md）
-- 新增向量库故障排查（5.4节）
+- 递归查询机制文档（design-vector-recursive-query.md）（已废弃）
+- 新增向量库故障排查（5.4节）（已废弃，由 LightRAG 故障排查替代）
 
-**向量库系统：**
+**向量库系统：**（已废弃，由 LightRAG 替代）
 - 4类文档：mcp_tool, query_pattern, skill, document
 - 统一metadata结构：level, category, language
 - L2归一化（标准行为）
 - 递归查询机制（is_recursive标志）
 
-**辅助脚本：**
+**辅助脚本：**（服务于已废弃的向量库系统）
 - `export_all_mcp_tools.py` - 导出工具到JSON
 - `register_all_mcp_tools_from_json.py` - 从JSON注册
-- `check_mcp_tools_in_db.py` - 检查向量库状态
+- `check_mcp_tools_in_db.py` - 检查向量库状态（已删除）
 
 ### v0.2.0 (2026-04-06)
 
@@ -281,13 +276,13 @@ Copyright (c) 2026
 | Node.js | Node.js 18+ | Node.js 18+（含 Electron 28+） | `ui/assistant/package.json` 依赖 electron ^28 |
 | 日志路径 | `logs/api_stderr.log` | `logs/llm_interaction_*.log` + 控制台输出 | Go 启动器通过 Pipe 捕获，API 无独立 stderr 文件 |
 | MCP 工具测试 | `/api/mcp-tools` 和 `/api/mcp-call` HTTP 端点 | ToolRegistry 同进程调用（旧 HTTP 端点已不存在） | `niu_api/` 中无 mcp-tools/mcp-call 路由定义 |
-| 数据库路径 | `data/messages.db` 等 | `~/.niu/messages.db`、`<workspace>/vectors.db`、`~/.niu/scheduled_tasks.db` | `agent/session.py` 和 `agent/vector_search.py` 实际路径逻辑 |
+| 数据库路径 | `data/messages.db` 等 | `~/.niu/messages.db`、`~/.niu/lightrag_storage/`、`~/.niu/scheduled_tasks.db` | `agent/session.py` 和 LightRAG 实际路径逻辑 |
 | 命令行参数 | `--help` | `--config=path`（保留兼容），移除 `--help` | `main.go` flag 定义中无 help flag |
 | 环境变量 | 仅列出 4 个 | 补充 `WORKSPACE_PATH`、`NIU_DB_PATH`、`LITELLM_LOCAL_MODEL_COST_MAP` | `main.go` 和 `niu_api/internal/embedding.py` 实际使用的变量 |
 | API 端点 | 7 个端点 | 扩展为完整列表（含 `/api/context/*`、`/api/brain/*`、`/llm/v1/*`、`/scheduler/*` 等） | `niu_api/__main__.py` 注册的所有路由 |
 | `/session/messages` | GET | 不存在（实际为 `/api/context/messages`） | `niu_api/session.py` 路径为 `/{session_id}/messages`，UI 使用 `/api/context/messages` |
 | `/api/inject/resources` | POST | GET（列出资源）+ POST（注册工具）分离为多个端点 | `niu_api/injector.py` 路由定义 |
-| MCP 服务器列表 | 无 lightrag-server | 补充 lightrag-server、scheduler-server；embedding-service 已整合为 API 内部模块 | `mcp-servers/` 目录实际结构 |
+| MCP 服务器列表 | 无 lightrag-server | 补充 lightrag-server、scheduler-server；embedding-service 已整合为 API 内部模块（`mcp-servers/embedding-service/` 目录仍残留但不再加载） | `mcp-servers/` 目录实际结构 |
 | UI 窗口 | 仅 `ui/assistant` | 补充 `ui/settings`、`ui/graph` | `ui/` 目录实际结构 |
 | GPU 检测 | CUDA/DirectML/CPU | CUDA/CPU（DirectML 已移除） | `niu_api/internal/embedding.py` 的 `get_device()` 仅检测 CUDA 和 CPU |
 | 许可证 | 无 LightRAG | 补充 LightRAG: MIT License | 项目实际使用 LightRAG |
