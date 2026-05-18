@@ -21,11 +21,13 @@ class ChannelRouter:
         self._agent_runner = runner
 
     async def route_in(self, message: UnifiedMessage) -> str:
-        """所有通道的消息统一交给 Agent 处理"""
-        if self._agent_runner is None:
-            raise RuntimeError("Agent runner not initialized")
-        reply = await asyncio.to_thread(self._chat_sync, message.content)
-        return reply
+        """所有通道的消息统一交给 Agent 处理
+
+        飞书 SDK 在后台线程中调用 _on_message，此时 asyncio.to_thread
+        会使用 SDK 的后台事件循环而非 FastAPI 主循环，导致上下文错误。
+        因此直接同步调用 _chat_sync（它本身是同步函数，在任意线程中都可运行）。
+        """
+        return self._chat_sync(message.content)
 
     def _chat_sync(self, message: str) -> str:
         """同步调用 Agent（在线程池中执行，与 _chat_lock 共享同一把锁）"""
