@@ -100,6 +100,40 @@ async def lifespan(app: FastAPI):
     set_preload_complete()
     logger.info("Preload complete, ready to show window")
 
+    # 6.1. Initialize channel router
+    from niu_api.channel import get_channel_router
+    from niu_api.channel.electron_channel import ElectronChannelAdapter
+
+    channel_router = get_channel_router()
+    channel_router.register("electron", ElectronChannelAdapter())
+    logger.info("Channel router initialized (electron channel registered)")
+
+    # 6.2. Start Feishu channel (if configured)
+    try:
+        import json
+        from pathlib import Path
+        prefs_path = Path.home() / ".niu" / "preferences.json"
+        if prefs_path.exists():
+            prefs = json.loads(prefs_path.read_text(encoding="utf-8"))
+            feishu_config = prefs.get("feishu", {})
+            if feishu_config.get("enabled"):
+                from niu_api.channel.feishu_channel import FeishuChannelAdapter
+
+                feishu_adapter = FeishuChannelAdapter(
+                    app_id=feishu_config["app_id"],
+                    app_secret=feishu_config["app_secret"],
+                    channel_router=channel_router,
+                )
+                channel_router.register("feishu", feishu_adapter)
+                asyncio.create_task(feishu_adapter.start())
+                logger.info("Feishu channel starting (WebSocket)")
+            else:
+                logger.info("Feishu channel disabled (not enabled in preferences)")
+        else:
+            logger.debug("No preferences.json, Feishu channel skipped")
+    except Exception as e:
+        logger.warning(f"Feishu channel setup failed: {e}")
+
     # 6.5. Save main event loop for SSE sync notifications
     from niu_api.chat import set_main_event_loop
     set_main_event_loop(asyncio.get_running_loop())
@@ -264,6 +298,17 @@ async def lifespan(app: FastAPI):
         logger.info("LightRAG background sync stopped")
     except Exception as e:
         logger.warning(f"Failed to stop LightRAG sync: {e}")
+
+    # 停止飞书通道
+    try:
+        from niu_api.channel import get_channel_router
+        router = get_channel_router()
+        feishu_adapter = router.channels.get("feishu")
+        if feishu_adapter and hasattr(feishu_adapter.channel, 'disconnect'):
+            await feishu_adapter.channel.disconnect()
+            logger.info("Feishu channel disconnected")
+    except Exception as e:
+        logger.warning(f"Failed to disconnect Feishu channel: {e}")
 
     from niu_api.internal.scheduler import stop_scheduler
     stop_scheduler()
