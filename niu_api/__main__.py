@@ -215,9 +215,11 @@ async def lifespan(app: FastAPI):
                 if task_def.get("dow") is not None:
                     # Calculate next target weekday
                     days_ahead = task_def["dow"] - now.isoweekday()
-                    if days_ahead <= 0:
+                    if days_ahead < 0:
                         days_ahead += 7
                     next_time = (now + timedelta(days=days_ahead)).replace(hour=hour, minute=0, second=0, microsecond=0)
+                    if next_time <= now:
+                        next_time += timedelta(days=7)
                 elif next_time <= now:
                     next_time += timedelta(days=1)
 
