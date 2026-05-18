@@ -1,5 +1,8 @@
 """飞书通道适配器 — 基于 lark-oapi FeishuChannel WebSocket 长连接"""
 
+import asyncio
+import threading
+
 from loguru import logger
 
 from .base import UnifiedMessage, ChannelAdapter
@@ -21,8 +24,8 @@ class FeishuChannelAdapter(ChannelAdapter):
         self.channel.on("reconnecting", self._on_reconnecting)
         self.channel.on("reconnected", self._on_reconnected)
 
-    async def _on_message(self, msg):
-        """处理飞书消息事件"""
+    def _on_message(self, msg):
+        """处理飞书消息事件（同步 handler，不阻塞 SDK 事件循环）"""
         try:
             unified = UnifiedMessage(
                 content=msg.content_text or "",
@@ -38,17 +41,35 @@ class FeishuChannelAdapter(ChannelAdapter):
                 logger.debug("[FeishuChannel] Empty message, skipping")
                 return
 
-            # 记录 P2P chat_id 用于主动推送
             if not self._user_p2p_chat_id:
                 self._user_p2p_chat_id = msg.chat_id
 
             logger.info(f"[FeishuChannel] Received: {unified.content[:50]}...")
 
-            # 交给 ChannelRouter → Agent 处理
-            reply = await self.router.route_in(unified)
-            if reply:
-                await self.channel.send(msg.chat_id, {"markdown": reply})
-                logger.info(f"[FeishuChannel] Replied: {reply[:50]}...")
+            # 在 SDK bg loop 上下文中捕获 loop 引用
+            # _on_message 由 SDK _invoke 在 bg loop 线程中调用，
+            # 此时 get_running_loop() 返回 SDK bg loop
+            try:
+                sdk_loop = asyncio.get_running_loop()
+            except RuntimeError:
+                logger.warning("[FeishuChannel] No running event loop, cannot capture SDK loop")
+                return
+            chat_id = msg.chat_id
+
+            def _process_and_reply():
+                """在独立线程中执行阻塞调用，完成后通过 run_coroutine_threadsafe 发送回复"""
+                try:
+                    reply = self.router.route_in_sync(unified)
+                    if reply:
+                        asyncio.run_coroutine_threadsafe(
+                            self.channel.send(chat_id, {"markdown": reply}),
+                            sdk_loop,
+                        )
+                        logger.info(f"[FeishuChannel] Replied: {reply[:50]}...")
+                except Exception as e:
+                    logger.error(f"[FeishuChannel] Process/reply error: {e}")
+
+            threading.Thread(target=_process_and_reply, daemon=True).start()
 
         except Exception as e:
             logger.error(f"[FeishuChannel] Message handler error: {e}")

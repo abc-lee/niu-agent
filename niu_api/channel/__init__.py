@@ -23,6 +23,10 @@ class ChannelRouter:
         """
         return self._chat_sync(message.content)
 
+    def route_in_sync(self, message: UnifiedMessage) -> str:
+        """同步路由消息 — 供飞书通道线程中调用"""
+        return self._chat_sync(message.content)
+
     def _chat_sync(self, message: str) -> str:
         """同步调用 Agent — 可在任意线程中运行"""
         import os
