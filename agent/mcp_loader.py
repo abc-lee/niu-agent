@@ -30,6 +30,10 @@ REQUIRED_SERVERS: List[Tuple[str, str]] = [
     ("brain-region-server", "niu_brain_region_server"),
 ]
 
+OPTIONAL_SERVERS: List[Tuple[str, str]] = [
+    ("feishu-server", "niu_feishu_server"),
+]
+
 
 # ============================================================================
 # Config Loader
@@ -135,6 +139,30 @@ def load_mcp_tools(required_servers: Optional[List[Tuple[str, str]]] = None) -> 
         raise RuntimeError(error_msg)
 
     logger.info(f"All {len(servers)} servers loaded")
+
+    # Load optional servers (failure does not terminate startup)
+    for server_name, module_name in OPTIONAL_SERVERS:
+        server_config = config.get(server_name, {})
+        if not isinstance(server_config, dict) or not server_config:
+            logger.debug(f"Optional server {server_name} not configured, skipping")
+            continue
+
+        try:
+            module = __import__(module_name, fromlist=["get_tool_schemas"])
+
+            visibility_map = None
+            if isinstance(server_config, dict) and "tools" in server_config:
+                visibility_map = server_config["tools"]
+
+            if registry.register_server(server_name, module, visibility_map):
+                logger.info(f"Optional server loaded: {server_name}")
+            else:
+                logger.warning(f"Optional server {server_name} registration failed")
+
+        except ImportError as e:
+            logger.debug(f"Optional server {server_name} not available: {e}")
+        except Exception as e:
+            logger.warning(f"Optional server {server_name} error: {e}")
 
     # Set global registry instance
     set_registry(registry)

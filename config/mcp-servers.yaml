@@ -220,4 +220,19 @@ brain-region-server:
       visibility: static
     brain_region_status:
       visibility: static
+feishu-server:
+  command: ${PYTHON_PATH}
+  args:
+  - -m
+  - niu_feishu_server
+  workdir: mcp-servers/feishu-server/src
+  preload: false
+  optional: true
+  tools:
+    feishu_calendar_create:
+      visibility: hidden
+    feishu_calendar_cancel:
+      visibility: hidden
+    feishu_calendar_update:
+      visibility: hidden
 nanobot.system: null
