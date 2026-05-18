@@ -5,6 +5,7 @@
 """
 
 import json
+import threading
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from loguru import logger
@@ -20,6 +21,7 @@ from niu_feishu_server.converter import cron_to_rrule
 # ============== Mapping Store ==============
 
 MAPPING_PATH = Path.home() / ".niu" / "feishu_task_mapping.json"
+_mapping_lock = threading.Lock()
 
 
 def _load_mapping() -> dict:
@@ -60,43 +62,46 @@ def sync_task_to_feishu(*, task_name: str, cron: str, prompt: str) -> dict:
 
     Returns dict with ``event_id`` on success, or ``error`` on failure.
     """
-    mapping = _load_mapping()
+    rrule = cron_to_rrule(cron)
+    if rrule is None:
+        return {"error": f"cron '{cron}' 无法转换为 RRULE（仅支持 'min hour * * *' 和 'min hour * * dow' 格式）"}
 
-    # 如果已有映射，更新而非重复创建
-    existing_event_id = mapping.get(task_name)
-    if existing_event_id:
+    with _mapping_lock:
+        mapping = _load_mapping()
+
+        # 如果已有映射，更新而非重复创建
+        existing_event_id = mapping.get(task_name)
+        if existing_event_id:
+            start, end = _next_run_from_cron(cron)
+            result = feishu_calendar_update(
+                event_id=existing_event_id,
+                summary=f"[定时任务] {task_name}",
+                start_time=start,
+                end_time=end,
+                recurrence=rrule,
+                description=prompt,
+            )
+            if "error" in result:
+                logger.warning(f"[Feishu] Task sync update failed: {result['error']}")
+            return result
+
+        # 创建新事件
         start, end = _next_run_from_cron(cron)
-        rrule = cron_to_rrule(cron)
-        result = feishu_calendar_update(
-            event_id=existing_event_id,
+
+        result = feishu_calendar_create(
             summary=f"[定时任务] {task_name}",
             start_time=start,
             end_time=end,
             recurrence=rrule,
             description=prompt,
         )
-        if "error" in result:
-            logger.warning(f"[Feishu] Task sync update failed: {result['error']}")
+
+        if "event_id" in result:
+            mapping[task_name] = result["event_id"]
+            _save_mapping(mapping)
+            logger.info(f"[Feishu] Task synced: {task_name} → {result['event_id']}")
+
         return result
-
-    # 创建新事件
-    start, end = _next_run_from_cron(cron)
-    rrule = cron_to_rrule(cron)
-
-    result = feishu_calendar_create(
-        summary=f"[定时任务] {task_name}",
-        start_time=start,
-        end_time=end,
-        recurrence=rrule,
-        description=prompt,
-    )
-
-    if "event_id" in result:
-        mapping[task_name] = result["event_id"]
-        _save_mapping(mapping)
-        logger.info(f"[Feishu] Task synced: {task_name} → {result['event_id']}")
-
-    return result
 
 
 def cancel_feishu_event(*, task_name: str) -> dict:
@@ -104,18 +109,19 @@ def cancel_feishu_event(*, task_name: str) -> dict:
 
     Returns dict with ``success: True`` on success, or ``error`` on failure.
     """
-    mapping = _load_mapping()
-    event_id = mapping.get(task_name)
+    with _mapping_lock:
+        mapping = _load_mapping()
+        event_id = mapping.get(task_name)
 
-    if not event_id:
-        logger.debug(f"[Feishu] No mapping for task: {task_name}")
-        return {"success": True, "note": "no event found"}
+        if not event_id:
+            logger.debug(f"[Feishu] No mapping for task: {task_name}")
+            return {"success": True, "note": "no event found"}
 
-    result = feishu_calendar_cancel(event_id=event_id)
+        result = feishu_calendar_cancel(event_id=event_id)
 
-    if "error" not in result:
-        mapping.pop(task_name, None)
-        _save_mapping(mapping)
-        logger.info(f"[Feishu] Task cancelled: {task_name} ({event_id})")
+        if "error" not in result:
+            mapping.pop(task_name, None)
+            _save_mapping(mapping)
+            logger.info(f"[Feishu] Task cancelled: {task_name} ({event_id})")
 
-    return result
+        return result
