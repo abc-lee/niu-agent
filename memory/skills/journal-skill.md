@@ -39,6 +39,14 @@ description: Use when user mentions work progress, project updates, meetings, de
 - 状态：完成/进行中/搁置
 - 关键词：3-5个关键标签，逗号分隔
 
+## 职业上下文
+
+- 写日志前，先读取 `~/.niu/memory.json` 获取用户职业信息
+- 如果 `user.profession` 非空，日志提取时优先关注与该职业相关的工作内容
+- 例如：profession="软件工程师" → 重点关注代码开发、技术决策、Bug修复等；profession="产品经理" → 重点关注需求分析、项目进度、用户反馈等
+- 职业信息仅作为提取优先级参考，不排除其他类型的工作内容
+- 如果 `user.profession` 为空，Agent 应主动询问用户的职业，并通过 `set_user_info(profession="...")` 更新到 memory.json
+
 ## 写入规则
 
 1. 识别到工作相关内容时，追加写入当日日志文件
@@ -59,6 +67,12 @@ description: Use when user mentions work progress, project updates, meetings, de
 
 - 维护已提取消息ID集合，避免同一对话内容重复写入日志
 - 如果同一条消息中包含多个工作事项，分别写成独立条目
+
+## Skill 自更新
+
+- 如果用户在交互中对日志格式、分类方式、关注重点等提出明确要求或意见，Agent 应及时用 `edit` 工具更新本 Skill 文件，确保后续日志记录符合用户最新偏好
+- 例如：用户说"日志里不需要写关键词了" → 删除关键词字段；用户说"把类型改成：编码/沟通/管理/学习" → 更新类型枚举
+- 如果用户给出具体的日志模板，必须用 `edit` 工具将模板写入本 Skill 文件，后续日志严格按模板格式输出
 
 ## 主 Agent 交互规则
 

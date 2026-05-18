@@ -216,6 +216,18 @@
       max-width: 100%;
       border-radius: 4px;
     }
+    /* 定时任务消息：灰色背景，左对齐，带时钟图标 */
+    .message.scheduled {
+      background: #e9ecef;
+      color: #555;
+      font-size: 14px;
+      border-radius: 4px;
+      max-width: 85%;
+    }
+    .message.scheduled::before {
+      content: '⏰ ';
+      opacity: 0.7;
+    }
     
     /* 正在输入动画 */
     .message.typing {
