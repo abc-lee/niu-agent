@@ -71,7 +71,8 @@ def trigger_callback(task: dict) -> str:
     prompt = f"[定时任务] {task['content']}"
 
     # 获取主 API URL（虽然在同一进程，但仍可通过 HTTP 调用 /chat/sync）
-    main_url = os.environ.get("MAIN_API_URL", "http://127.0.0.1:9876")
+    port = os.environ.get("NIU_API_PORT", "9876")
+    main_url = os.environ.get("MAIN_API_URL", f"http://127.0.0.1:{port}")
 
     # 检查主 API 可用性（带重试）
     api_healthy = False
