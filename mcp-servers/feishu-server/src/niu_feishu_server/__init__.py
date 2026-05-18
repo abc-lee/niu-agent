@@ -8,9 +8,9 @@ import json
 from loguru import logger
 
 from niu_feishu_server.client import (
-    feishu_calendar_create,
-    feishu_calendar_cancel,
-    feishu_calendar_update,
+    feishu_calendar_create as _client_create,
+    feishu_calendar_cancel as _client_cancel,
+    feishu_calendar_update as _client_update,
     feishu_sync_enabled,
 )
 from niu_feishu_server.sync import sync_task_to_feishu, cancel_feishu_event
@@ -148,7 +148,7 @@ def feishu_calendar_create(summary: str, start_time: str, end_time: str,
     """创建飞书日历事件（MCP 工具入口）"""
     if not feishu_sync_enabled():
         return {"error": "飞书日历同步未启用"}
-    return feishu_calendar_create(
+    return _client_create(
         summary=summary, start_time=start_time, end_time=end_time,
         recurrence=recurrence, description=description,
     )
@@ -158,7 +158,7 @@ def feishu_calendar_cancel(event_id: str) -> dict:
     """取消飞书日历事件（MCP 工具入口）"""
     if not feishu_sync_enabled():
         return {"error": "飞书日历同步未启用"}
-    return feishu_calendar_cancel(event_id=event_id)
+    return _client_cancel(event_id=event_id)
 
 
 def feishu_calendar_update(event_id: str, *, summary: str | None = None,
@@ -169,7 +169,7 @@ def feishu_calendar_update(event_id: str, *, summary: str | None = None,
     """更新飞书日历事件（MCP 工具入口）"""
     if not feishu_sync_enabled():
         return {"error": "飞书日历同步未启用"}
-    return feishu_calendar_update(
+    return _client_update(
         event_id=event_id, summary=summary, start_time=start_time,
         end_time=end_time, recurrence=recurrence, description=description,
     )
