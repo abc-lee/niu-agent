@@ -97,15 +97,17 @@ def feishu_calendar_create(
             .start_time(_make_time_info(start_time)) \
             .end_time(_make_time_info(end_time))
 
-        if recurrence:
-            event_builder = event_builder.recurrence(recurrence)
         if description:
             event_builder = event_builder.description(description)
+
+        event = event_builder.build()
+        if recurrence:
+            event.recurrence = [recurrence]
 
         req = CreateCalendarEventRequest.builder() \
             .calendar_id(CALENDAR_ID) \
             .user_id_type("user_id") \
-            .request_body(event_builder.build()) \
+            .request_body(event) \
             .build()
 
         resp = client.calendar.v4.calendar_event.create(req)
@@ -170,16 +172,18 @@ def feishu_calendar_update(
             event_builder = event_builder.start_time(_make_time_info(start_time))
         if end_time is not None:
             event_builder = event_builder.end_time(_make_time_info(end_time))
-        if recurrence is not None:
-            event_builder = event_builder.recurrence(recurrence)
         if description is not None:
             event_builder = event_builder.description(description)
+
+        event = event_builder.build()
+        if recurrence is not None:
+            event.recurrence = [recurrence]
 
         req = PatchCalendarEventRequest.builder() \
             .calendar_id(CALENDAR_ID) \
             .event_id(event_id) \
             .user_id_type("user_id") \
-            .request_body(event_builder.build()) \
+            .request_body(event) \
             .build()
 
         resp = client.calendar.v4.calendar_event.patch(req)
