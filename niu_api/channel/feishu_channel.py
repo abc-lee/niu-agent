@@ -78,15 +78,21 @@ class FeishuChannelAdapter(ChannelAdapter):
         except Exception as e:
             logger.warning(f"[FeishuChannel] Disconnect error: {e}")
 
-    async def send(self, chat_id: str, content: str) -> None:
+    async def send(self, channel_id: str, content: str) -> None:
         """发送消息到飞书"""
-        await self.channel.send(chat_id, {"markdown": content})
+        try:
+            await self.channel.send(channel_id, {"markdown": content})
+        except Exception as e:
+            logger.error(f"[FeishuChannel] Send failed: {e}")
 
-    async def push(self, chat_id: str, content: str) -> None:
+    async def push(self, channel_id: str, content: str) -> None:
         """主动推送（定时提醒等）"""
-        target = chat_id or self._user_p2p_chat_id
+        target = channel_id or self._user_p2p_chat_id
         if target:
-            await self.channel.send(target, {"markdown": content})
+            try:
+                await self.channel.send(target, {"markdown": content})
+            except Exception as e:
+                logger.error(f"[FeishuChannel] Push failed: {e}")
         else:
             logger.warning("[FeishuChannel] No chat_id for push, skipping")
 
