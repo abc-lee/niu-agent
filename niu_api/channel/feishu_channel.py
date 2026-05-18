@@ -2,13 +2,13 @@
 
 from loguru import logger
 
-from .base import UnifiedMessage, ChannelAdapter, ChannelRouter
+from .base import UnifiedMessage, ChannelAdapter
 
 
 class FeishuChannelAdapter(ChannelAdapter):
     """飞书通道 — WebSocket 长连接，消息收发，Agent 无感知"""
 
-    def __init__(self, app_id: str, app_secret: str, channel_router: ChannelRouter):
+    def __init__(self, app_id: str, app_secret: str, channel_router):
         from lark_oapi.channel import FeishuChannel
 
         self.channel = FeishuChannel(app_id=app_id, app_secret=app_secret)
