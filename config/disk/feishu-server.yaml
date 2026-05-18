@@ -1,0 +1,57 @@
+server: feishu-server
+directory: feishu
+description: "飞书 — 日历同步"
+
+tools:
+  - name: feishu_calendar_create
+    category: write
+    hidden: true
+    short: "创建飞书日历事件"
+    long: "创建飞书日历事件（同步钩子调用）"
+    parameters:
+      - name: summary
+        position: 1
+        type: string
+        required: true
+      - name: start_time
+        position: 2
+        type: string
+        required: true
+      - name: end_time
+        position: 3
+        type: string
+        required: true
+      - name: description
+        flag: desc
+        type: string
+      - name: recurrence
+        flag: rrule
+        type: string
+
+  - name: feishu_calendar_cancel
+    category: admin
+    hidden: true
+    short: "取消飞书日历事件"
+    long: "取消飞书日历事件"
+    parameters:
+      - name: event_id
+        position: 1
+        type: string
+        required: true
+
+  - name: feishu_calendar_update
+    category: write
+    hidden: true
+    short: "更新飞书日历事件"
+    long: "更新飞书日历事件"
+    parameters:
+      - name: event_id
+        position: 1
+        type: string
+        required: true
+      - name: summary
+        type: string
+      - name: start_time
+        type: string
+      - name: end_time
+        type: string
