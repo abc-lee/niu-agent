@@ -284,41 +284,6 @@ def cron_to_rrule(cron_expr: str) -> str:
 
 **不支持降级策略**：如果 cron 表达式无法精确转换为 RRULE，则创建单次飞书日历事件（不设置 recurrence），并在日志中记录降级原因。
 
-### 4.5 飞书日历事件通知
-
-**FeishuChannel 不支持日历事件订阅**（仅支持 IM 相关事件：message, cardAction, reaction 等）。
-
-日历变更通知需要使用独立的 `lark_oapi.ws.Client` + `EventDispatcherHandler`：
-
-```python
-# niu_api/channel/feishu_calendar_listener.py
-from lark_oapi.ws import Client as WSClient
-from lark_oapi.event import EventDispatcherHandler
-
-class FeishuCalendarListener:
-    def __init__(self, app_id, app_secret, feishu_adapter):
-        self.app_id = app_id
-        self.app_secret = app_secret
-        self.feishu_adapter = feishu_adapter  # 用于推送通知到飞书
-
-    def start(self):
-        handler = EventDispatcherHandler.builder("", "") \
-            .register_p2_calendar_calendar_changed_v4(self._on_calendar_change) \
-            .build()
-        ws_client = WSClient(self.app_id, self.app_secret, handler)
-        ws_client.start()  # 第二个 WebSocket 连接，专门用于日历事件
-
-    async def _on_calendar_change(self, ctx, event):
-        # 仅通知，不自动回写本地
-        summary = event.event.summary if event.event else "未知日程"
-        await self.feishu_adapter.push(
-            self.feishu_adapter._user_p2p_chat_id,
-            f"飞书日历变更：{summary}"
-        )
-```
-
-> 注意：这会建立第二个 WebSocket 连接（第一个是 FeishuChannel 的 IM 连接，第二个是日历事件连接）。两个连接独立运行，互不影响。
-
 ## 5. 飞书 MCP 工具（disk 路径）
 
 ### 5.1 服务器配置
