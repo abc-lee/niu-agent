@@ -1,6 +1,6 @@
 {
   "spirit": {
-    "x": 1457,
+    "x": 1456,
     "y": 520
   },
   "chat": {
@@ -10,8 +10,8 @@
     "height": 634
   },
   "sticky": {
-    "x": 1173,
-    "y": 394
+    "x": 1172,
+    "y": 397
   },
   "stickySize": 250,
   "chatSessionId": "default"
