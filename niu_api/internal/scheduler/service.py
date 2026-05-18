@@ -116,6 +116,23 @@ def trigger_callback(task: dict) -> str:
             # 触发小女孩蹦高提醒（仅用于视觉提示，不传递消息内容）
             add_pending_alert("⏰")
 
+            # 飞书通道推送
+            try:
+                import asyncio
+                from niu_api.channel import get_channel_router
+                channel_router = get_channel_router()
+                if channel_router.has_channel("feishu"):
+                    feishu_adapter = channel_router.channels["feishu"]
+                    if feishu_adapter.user_p2p_chat_id:
+                        from niu_api.chat import _main_loop
+                        if _main_loop and not _main_loop.is_closed():
+                            asyncio.run_coroutine_threadsafe(
+                                channel_router.push(agent_reply, "feishu", feishu_adapter.user_p2p_chat_id),
+                                _main_loop
+                            )
+            except Exception as e:
+                logger.warning(f"[SCHEDULER] Feishu push failed: {e}")
+
             return agent_reply if agent_reply else f"定时提醒：{task['content']}"
         else:
             logger.error(f"[INTERNAL SCHEDULER] Chat API error: {response.status_code}")
