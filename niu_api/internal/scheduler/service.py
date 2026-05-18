@@ -67,8 +67,8 @@ def trigger_callback(task: dict) -> str:
 
     logger.info(f"[INTERNAL SCHEDULER] Triggering task: {task['content']}")
 
-    # 构建提示词（固定前缀标识定时任务，避免主Agent误认为用户对话）
-    prompt = f"[定时任务自动提醒，不是用户对话] {task['content']}"
+    # 构建提示词（[定时任务] 前缀标识系统触发，前端据此用灰色样式展示）
+    prompt = f"[定时任务] {task['content']}"
 
     # 获取主 API URL（虽然在同一进程，但仍可通过 HTTP 调用 /chat/sync）
     main_url = os.environ.get("MAIN_API_URL", "http://127.0.0.1:9876")

@@ -130,13 +130,14 @@ LightRAG 的实体去重依赖实体名称的小写匹配。原始名称和最�
 
 除了记忆提炼和技能提炼，你还负责**工作日志记录**。
 
-**写日志前，必须先用 `read` 工具读取 Skill 文件：**
+**写日志前，必须先用 `read` 工具读取 Skill 文件和用户职业：**
 
 ```
 read(file_path="{项目根目录}/memory/skills/journal-skill.md")
+read(file_path="~/.niu/memory.json")  → 取 user.profession
 ```
 
-严格按照 Skill 文件中的规则执行。
+严格按照 Skill 文件中的规则执行，职业信息用于判断工作内容优先级。
 
 ## 禁止
 
