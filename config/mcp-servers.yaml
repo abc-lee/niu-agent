@@ -235,4 +235,8 @@ feishu-server:
       visibility: hidden
     feishu_calendar_update:
       visibility: hidden
+    feishu_task_sync:
+      visibility: hidden
+    feishu_task_cancel:
+      visibility: hidden
 nanobot.system: null

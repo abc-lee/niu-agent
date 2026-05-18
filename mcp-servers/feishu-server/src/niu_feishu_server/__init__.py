@@ -13,7 +13,6 @@ from niu_feishu_server.client import (
     feishu_calendar_update,
     feishu_sync_enabled,
 )
-from niu_feishu_server.converter import cron_to_recurrence
 from niu_feishu_server.sync import sync_task_to_feishu, cancel_feishu_event
 
 
@@ -143,9 +142,9 @@ def get_tool_schemas():
 
 # ============== Tool Functions ==============
 
-def _feishu_calendar_create(summary: str, start_time: str, end_time: str,
-                            recurrence: str | None = None,
-                            description: str = "") -> dict:
+def feishu_calendar_create(summary: str, start_time: str, end_time: str,
+                          recurrence: str | None = None,
+                          description: str = "") -> dict:
     """创建飞书日历事件（MCP 工具入口）"""
     if not feishu_sync_enabled():
         return {"error": "飞书日历同步未启用"}
@@ -155,18 +154,18 @@ def _feishu_calendar_create(summary: str, start_time: str, end_time: str,
     )
 
 
-def _feishu_calendar_cancel(event_id: str) -> dict:
+def feishu_calendar_cancel(event_id: str) -> dict:
     """取消飞书日历事件（MCP 工具入口）"""
     if not feishu_sync_enabled():
         return {"error": "飞书日历同步未启用"}
     return feishu_calendar_cancel(event_id=event_id)
 
 
-def _feishu_calendar_update(event_id: str, *, summary: str | None = None,
-                            start_time: str | None = None,
-                            end_time: str | None = None,
-                            recurrence: str | None = None,
-                            description: str | None = None) -> dict:
+def feishu_calendar_update(event_id: str, *, summary: str | None = None,
+                          start_time: str | None = None,
+                          end_time: str | None = None,
+                          recurrence: str | None = None,
+                          description: str | None = None) -> dict:
     """更新飞书日历事件（MCP 工具入口）"""
     if not feishu_sync_enabled():
         return {"error": "飞书日历同步未启用"}
@@ -176,14 +175,14 @@ def _feishu_calendar_update(event_id: str, *, summary: str | None = None,
     )
 
 
-def _feishu_task_sync(task_name: str, cron: str, prompt: str) -> dict:
+def feishu_task_sync(task_name: str, cron: str, prompt: str) -> dict:
     """将定时任务同步到飞书日历（MCP 工具入口）"""
     if not feishu_sync_enabled():
         return {"error": "飞书日历同步未启用"}
     return sync_task_to_feishu(task_name=task_name, cron=cron, prompt=prompt)
 
 
-def _feishu_task_cancel(task_name: str) -> dict:
+def feishu_task_cancel(task_name: str) -> dict:
     """取消飞书日历上的定时任务事件（MCP 工具入口）"""
     if not feishu_sync_enabled():
         return {"error": "飞书日历同步未启用"}

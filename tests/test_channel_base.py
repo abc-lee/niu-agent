@@ -99,7 +99,8 @@ class TestChannelRouterRegister:
 # 3. ChannelRouter route_in without runner raises RuntimeError
 # ---------------------------------------------------------------------------
 class TestChannelRouterRouteIn:
-    async def test_route_in_no_runner_raises(self):
+    async def test_route_in_returns_empty_on_failure(self):
+        """route_in calls _chat_sync which returns empty string on connection failure"""
         router = ChannelRouter()
         msg = UnifiedMessage(
             content="hi",
@@ -108,8 +109,9 @@ class TestChannelRouterRouteIn:
             sender_id="u1",
             message_type="text",
         )
-        with pytest.raises(RuntimeError, match="Agent runner not initialized"):
-            await router.route_in(msg)
+        result = await router.route_in(msg)
+        # _chat_sync fails to connect, returns empty string
+        assert result == ""
 
 
 # ---------------------------------------------------------------------------

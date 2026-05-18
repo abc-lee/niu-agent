@@ -55,3 +55,39 @@ tools:
         type: string
       - name: end_time
         type: string
+      - name: recurrence
+        flag: rrule
+        type: string
+      - name: description
+        flag: desc
+        type: string
+
+  - name: feishu_task_sync
+    category: write
+    hidden: true
+    short: "将定时任务同步到飞书日历"
+    long: "将定时任务同步到飞书日历（自动根据 cron 生成重复规则）"
+    parameters:
+      - name: task_name
+        position: 1
+        type: string
+        required: true
+      - name: cron
+        position: 2
+        type: string
+        required: true
+      - name: prompt
+        position: 3
+        type: string
+        required: true
+
+  - name: feishu_task_cancel
+    category: admin
+    hidden: true
+    short: "取消飞书日历上的定时任务事件"
+    long: "取消飞书日历上的定时任务事件"
+    parameters:
+      - name: task_name
+        position: 1
+        type: string
+        required: true
