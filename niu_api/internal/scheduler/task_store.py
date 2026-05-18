@@ -307,7 +307,7 @@ class TaskStore:
             conn.execute("PRAGMA journal_mode=WAL")
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT id, content, scheduled_at, is_recurring, cron_expr, event_type, status, last_executed_date, name
+                SELECT id, content, scheduled_at, is_recurring, cron_expr, event_type, status, created_at, last_executed_date, name
                 FROM scheduled_tasks
                 WHERE status = 'pending' AND datetime(scheduled_at) <= datetime(?)
                 ORDER BY scheduled_at
@@ -325,8 +325,9 @@ class TaskStore:
                 "cron_expr": row[4],
                 "event_type": row[5],
                 "status": row[6],
-                "last_executed_date": row[7],
-                "name": row[8]
+                "created_at": row[7],
+                "last_executed_date": row[8],
+                "name": row[9]
             }
             for row in rows
         ]
