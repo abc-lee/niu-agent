@@ -126,3 +126,6 @@ def cron_to_rrule(cron_expr: str) -> str | None:
             return None
         day_str = ",".join(days)
         return f"FREQ=WEEKLY;BYDAY={day_str};BYHOUR={hour_str};BYMINUTE={minute}"
+
+# Alias — __init__.py imports this name
+cron_to_recurrence = cron_to_rrule

@@ -70,6 +70,14 @@ class FeishuChannelAdapter(ChannelAdapter):
         await self.channel.connect_until_ready(timeout=30)
         logger.info("[FeishuChannel] WebSocket connected")
 
+    async def disconnect(self) -> None:
+        """断开 WebSocket 长连接"""
+        try:
+            await self.channel.disconnect()
+            logger.info("[FeishuChannel] WebSocket disconnected")
+        except Exception as e:
+            logger.warning(f"[FeishuChannel] Disconnect error: {e}")
+
     async def send(self, chat_id: str, content: str) -> None:
         """发送消息到飞书"""
         await self.channel.send(chat_id, {"markdown": content})

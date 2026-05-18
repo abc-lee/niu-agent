@@ -117,16 +117,30 @@ async def lifespan(app: FastAPI):
             prefs = json.loads(prefs_path.read_text(encoding="utf-8"))
             feishu_config = prefs.get("feishu", {})
             if feishu_config.get("enabled"):
-                from niu_api.channel.feishu_channel import FeishuChannelAdapter
+                app_id = feishu_config.get("app_id", "").strip()
+                app_secret = feishu_config.get("app_secret", "").strip()
+                if not app_id or not app_secret:
+                    logger.warning("Feishu channel enabled but app_id/app_secret missing, skipping")
+                else:
+                    from niu_api.channel.feishu_channel import FeishuChannelAdapter
 
-                feishu_adapter = FeishuChannelAdapter(
-                    app_id=feishu_config["app_id"],
-                    app_secret=feishu_config["app_secret"],
-                    channel_router=channel_router,
-                )
-                channel_router.register("feishu", feishu_adapter)
-                asyncio.create_task(feishu_adapter.start())
-                logger.info("Feishu channel starting (WebSocket)")
+                    feishu_adapter = FeishuChannelAdapter(
+                        app_id=app_id,
+                        app_secret=app_secret,
+                        channel_router=channel_router,
+                    )
+                    channel_router.register("feishu", feishu_adapter)
+
+                    feishu_task = asyncio.create_task(feishu_adapter.start())
+
+                    def _on_feishu_done(t: asyncio.Task):
+                        if not t.cancelled():
+                            exc = t.exception()
+                            if exc:
+                                logger.error(f"Feishu channel startup failed: {exc}")
+
+                    feishu_task.add_done_callback(_on_feishu_done)
+                    logger.info("Feishu channel starting (WebSocket)")
             else:
                 logger.info("Feishu channel disabled (not enabled in preferences)")
         else:
@@ -304,8 +318,9 @@ async def lifespan(app: FastAPI):
         from niu_api.channel import get_channel_router
         router = get_channel_router()
         feishu_adapter = router.channels.get("feishu")
-        if feishu_adapter and hasattr(feishu_adapter.channel, 'disconnect'):
-            await feishu_adapter.channel.disconnect()
+        if feishu_adapter:
+            await feishu_adapter.disconnect()
+            await feishu_adapter.disconnect()
             logger.info("Feishu channel disconnected")
     except Exception as e:
         logger.warning(f"Failed to disconnect Feishu channel: {e}")

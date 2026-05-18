@@ -126,9 +126,12 @@ def trigger_callback(task: dict) -> str:
                     if feishu_adapter.user_p2p_chat_id:
                         from niu_api.chat import _main_loop
                         if _main_loop and not _main_loop.is_closed():
-                            asyncio.run_coroutine_threadsafe(
+                            future = asyncio.run_coroutine_threadsafe(
                                 channel_router.push(agent_reply, "feishu", feishu_adapter.user_p2p_chat_id),
                                 _main_loop
+                            )
+                            future.add_done_callback(
+                                lambda f: logger.warning(f"[SCHEDULER] Feishu push failed: {f.exception()}") if f.exception() else None
                             )
             except Exception as e:
                 logger.warning(f"[SCHEDULER] Feishu push failed: {e}")
