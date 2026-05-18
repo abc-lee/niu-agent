@@ -1,6 +1,5 @@
 """通道抽象层 — ChannelRouter + 全局单例"""
 
-import asyncio
 from typing import Dict, Optional
 from loguru import logger
 
@@ -14,11 +13,6 @@ class ChannelRouter:
 
     def __init__(self):
         self.channels: Dict[str, ChannelAdapter] = {}
-        self._agent_runner = None
-
-    def set_agent_runner(self, runner):
-        """由 niu_api 启动时注入 NiuRunner 实例"""
-        self._agent_runner = runner
 
     async def route_in(self, message: UnifiedMessage) -> str:
         """所有通道的消息统一交给 Agent 处理
@@ -30,14 +24,15 @@ class ChannelRouter:
         return self._chat_sync(message.content)
 
     def _chat_sync(self, message: str) -> str:
-        """同步调用 Agent（在线程池中执行，与 _chat_lock 共享同一把锁）"""
+        """同步调用 Agent — 可在任意线程中运行"""
+        import os
         import requests
 
-        main_url = "http://127.0.0.1:9876"
+        port = os.environ.get("NIU_API_PORT", "9876")
         try:
             resp = requests.post(
-                f"{main_url}/chat/sync",
-                json={"session_id": "default", "message": message},
+                f"http://127.0.0.1:{port}/chat/sync",
+                json={"session_id": "feishu", "message": message},
                 timeout=120,
             )
             if resp.status_code == 200:

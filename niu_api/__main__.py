@@ -320,7 +320,6 @@ async def lifespan(app: FastAPI):
         feishu_adapter = router.channels.get("feishu")
         if feishu_adapter:
             await feishu_adapter.disconnect()
-            await feishu_adapter.disconnect()
             logger.info("Feishu channel disconnected")
     except Exception as e:
         logger.warning(f"Failed to disconnect Feishu channel: {e}")
