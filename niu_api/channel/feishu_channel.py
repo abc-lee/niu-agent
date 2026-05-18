@@ -57,12 +57,12 @@ class FeishuChannelAdapter(ChannelAdapter):
         """处理卡片交互事件（Phase 4 实现）"""
         logger.debug("[FeishuChannel] Card action received (not implemented yet)")
 
-    async def _on_reconnecting(self, _):
-        """WebSocket 重连中"""
+    def _on_reconnecting(self):
+        """WebSocket 重连中（SDK 调用 h() 无参数）"""
         logger.warning("[FeishuChannel] WebSocket reconnecting...")
 
-    async def _on_reconnected(self, _):
-        """WebSocket 重连成功"""
+    def _on_reconnected(self):
+        """WebSocket 重连成功（SDK 调用 h() 无参数）"""
         logger.info("[FeishuChannel] WebSocket reconnected")
 
     async def start(self) -> None:
