@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "niu_feishu_server"
+version = "0.1.0"
+description = "Feishu MCP Server for Niu Agent"
+requires-python = ">=3.11"
+dependencies = [
+    "lark-oapi>=1.6.5",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
