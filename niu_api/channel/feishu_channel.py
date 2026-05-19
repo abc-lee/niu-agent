@@ -2,6 +2,8 @@
 
 import asyncio
 import json
+import os
+import tempfile
 import threading
 from pathlib import Path
 
@@ -65,11 +67,9 @@ class FeishuChannelAdapter(ChannelAdapter):
                 logger.debug("[FeishuChannel] Empty message with no resources, skipping")
                 return
 
+            # 仅 P2P 消息才更新推送目标和持久化
             if self._is_p2p_message(msg):
                 self._user_p2p_chat_id = msg.chat_id
-
-            # 仅 P2P 消息才持久化 chat_id 和 open_id
-            if self._is_p2p_message(msg):
                 self._update_persisted_ids(msg.chat_id, msg.sender_id)
 
             logger.info(f"[FeishuChannel] Received: {unified.content[:50]}...")
@@ -80,7 +80,7 @@ class FeishuChannelAdapter(ChannelAdapter):
             logger.error(f"[FeishuChannel] Message handler error: {e}")
 
     @staticmethod
-    def _format_resources(resources: list) -> str:
+    def _format_resources(resources: list | None) -> str:
         """将 resources 列表转为文本描述"""
         if not resources:
             return ""
@@ -122,9 +122,12 @@ class FeishuChannelAdapter(ChannelAdapter):
                 logger.info(f"[FeishuChannel] Replied: {reply[:50]}...")
             else:
                 logger.warning("[FeishuChannel] Empty reply from agent")
-                self.channel.schedule(
-                    self.channel.send(unified.channel_id, {"text": "收到，但无法生成回复"}),
-                )
+                try:
+                    self.channel.schedule(
+                        self.channel.send(unified.channel_id, {"text": "收到，但无法生成回复"}),
+                    )
+                except Exception:
+                    pass
         except Exception as e:
             logger.error(f"[FeishuChannel] Process/reply error: {e}")
 
@@ -167,8 +170,6 @@ class FeishuChannelAdapter(ChannelAdapter):
 
     def _save_prefs(self):
         """将 feishu 配置段写回 preferences.json（原子写入）"""
-        import os
-        import tempfile
         try:
             prefs = {}
             if self._prefs_path.exists():
