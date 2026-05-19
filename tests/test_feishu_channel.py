@@ -113,12 +113,18 @@ class TestP2PMessageGuard:
         assert adapter._is_p2p_message(unified) is False
 
     def test_p2p_message_updates_chat_id(self):
-        """P2P 消息应更新 _user_p2p_chat_id"""
+        """P2P 消息应更新 _user_p2p_chat_id（通过工作线程中的 _update_persisted_ids）"""
         adapter = _create_adapter()
         adapter._user_p2p_chat_id = None
         msg = _create_msg(chat_id="p2p_chat_123", sender_id="user_001", chat_type="p2p")
-        with patch('threading.Thread'):
+        with patch('threading.Thread') as mock_thread:
             adapter._on_message(msg)
+            # 执行线程目标函数来触发 _process_and_reply
+            call_kwargs = mock_thread.call_args[1]
+            thread_target = call_kwargs['target']
+            thread_args = call_kwargs.get('args', ())
+            with patch.object(adapter.router, 'route_in_sync', return_value="回复"):
+                thread_target(*thread_args)
         assert adapter._user_p2p_chat_id == "p2p_chat_123"
 
     def test_p2p_chat_id_change_detected(self):
@@ -255,6 +261,52 @@ class TestSessionIdByUser:
                 call_args = mock_route.call_args
                 assert call_args is not None
                 assert "group_chat_789" in str(call_args)
+
+
+class TestP2PPersistInWorkerThread:
+    """验证 P2P 持久化在工作线程中执行"""
+
+    def test_p2p_persist_called_in_process_and_reply(self):
+        """is_p2p=True 时 _process_and_reply 应调用 _update_persisted_ids"""
+        from niu_api.channel.base import UnifiedMessage
+        adapter = _create_adapter()
+        adapter._user_p2p_chat_id = None
+        adapter._user_open_id = None
+        adapter.channel = MagicMock()
+        adapter.channel.is_ready = True
+        adapter.channel.schedule = MagicMock()
+        adapter.router = MagicMock()
+        adapter.router.route_in_sync = MagicMock(return_value="回复内容")
+        adapter._update_persisted_ids = MagicMock()
+
+        unified = UnifiedMessage(
+            content="你好", channel="feishu", channel_id="oc_123",
+            sender_id="ou_456", message_type="text", resources=[],
+            raw={"chat_type": "p2p"},
+        )
+        adapter._process_and_reply(unified, is_p2p=True)
+        adapter._update_persisted_ids.assert_called_once_with("oc_123", "ou_456")
+
+    def test_non_p2p_no_persist_in_process_and_reply(self):
+        """is_p2p=False 时 _process_and_reply 不应调用 _update_persisted_ids"""
+        from niu_api.channel.base import UnifiedMessage
+        adapter = _create_adapter()
+        adapter._user_p2p_chat_id = None
+        adapter._user_open_id = None
+        adapter.channel = MagicMock()
+        adapter.channel.is_ready = True
+        adapter.channel.schedule = MagicMock()
+        adapter.router = MagicMock()
+        adapter.router.route_in_sync = MagicMock(return_value="回复内容")
+        adapter._update_persisted_ids = MagicMock()
+
+        unified = UnifiedMessage(
+            content="你好", channel="feishu", channel_id="oc_group",
+            sender_id="ou_456", message_type="text", resources=[],
+            raw={"chat_type": "group"},
+        )
+        adapter._process_and_reply(unified, is_p2p=False)
+        adapter._update_persisted_ids.assert_not_called()
 
 
 class TestScheduleForReply:
