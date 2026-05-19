@@ -121,6 +121,15 @@ class TestP2PMessageGuard:
             adapter._on_message(msg)
         assert adapter._user_p2p_chat_id == "p2p_chat_123"
 
+    def test_p2p_chat_id_change_detected(self):
+        """chat_id 变化时 _update_persisted_ids 应检测到并触发持久化"""
+        adapter = _create_adapter()
+        adapter._user_p2p_chat_id = "old_chat_id"
+        adapter._user_open_id = "ou_001"
+        adapter._update_persisted_ids("new_chat_id", "ou_001")
+        # chat_id 应更新为新值
+        assert adapter._user_p2p_chat_id == "new_chat_id"
+
     def test_group_message_does_not_overwrite_p2p_chat_id(self):
         """群聊消息不应覆盖已有的 P2P chat_id"""
         adapter = _create_adapter()
@@ -180,6 +189,33 @@ class TestResourcesToText:
         assert "图片" in result
         assert "文件" in result
         assert "\n" in result
+
+    def test_format_resources_dataclass_image(self):
+        """ResourceDescriptor dataclass 图片资源转为文本"""
+        from lark_oapi.channel.types import ResourceDescriptor
+        from niu_api.channel.feishu_channel import FeishuChannelAdapter
+        adapter = _create_adapter()
+        resources = [ResourceDescriptor(type="image", file_key="img_002.jpg")]
+        result = adapter._format_resources(resources)
+        assert "图片" in result
+        assert "img_002.jpg" in result
+
+    def test_format_resources_dataclass_file(self):
+        """ResourceDescriptor dataclass 文件资源转为文本"""
+        from lark_oapi.channel.types import ResourceDescriptor
+        from niu_api.channel.feishu_channel import FeishuChannelAdapter
+        adapter = _create_adapter()
+        resources = [ResourceDescriptor(type="file", file_key="fk_123", file_name="report.pdf")]
+        result = adapter._format_resources(resources)
+        assert "文件" in result
+        assert "report.pdf" in result
+
+    def test_format_resources_none(self):
+        """None resources 返回空字符串"""
+        from niu_api.channel.feishu_channel import FeishuChannelAdapter
+        adapter = _create_adapter()
+        result = adapter._format_resources(None)
+        assert result == ""
 
 
 class TestSessionIdByUser:
