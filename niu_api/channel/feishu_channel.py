@@ -1,7 +1,9 @@
 """飞书通道适配器 — 基于 lark-oapi FeishuChannel WebSocket 长连接"""
 
 import asyncio
+import json
 import threading
+from pathlib import Path
 
 from loguru import logger
 
@@ -25,6 +27,12 @@ class FeishuChannelAdapter(ChannelAdapter):
         self.channel = FeishuChannel(app_id=app_id, app_secret=app_secret)
         self.router = channel_router
         self._user_p2p_chat_id = None
+        self._user_open_id = None
+        self._prefs_path = Path.home() / ".niu" / "preferences.json"
+        self._feishu_prefs = self._load_prefs()
+
+        # 从持久化数据恢复 chat_id / open_id
+        self._apply_persisted_ids()
 
         # 注册事件处理器
         self.channel.on("message", self._on_message)
@@ -51,6 +59,9 @@ class FeishuChannelAdapter(ChannelAdapter):
 
             if not self._user_p2p_chat_id:
                 self._user_p2p_chat_id = msg.chat_id
+
+            # 持久化 chat_id 和 open_id
+            self._update_persisted_ids(msg.chat_id, msg.sender_id)
 
             logger.info(f"[FeishuChannel] Received: {unified.content[:50]}...")
 
@@ -94,6 +105,66 @@ class FeishuChannelAdapter(ChannelAdapter):
         """WebSocket 重连成功（SDK 调用 h() 可能传一个参数）"""
         logger.info("[FeishuChannel] WebSocket reconnected")
 
+    def _load_prefs(self) -> dict:
+        """从 preferences.json 加载 feishu 配置段"""
+        try:
+            if self._prefs_path.exists():
+                with open(self._prefs_path, "r", encoding="utf-8") as f:
+                    prefs = json.load(f)
+                    return prefs.get("feishu", {})
+        except Exception as e:
+            logger.warning(f"[FeishuChannel] Failed to load preferences: {e}")
+        return {}
+
+    def _save_prefs(self):
+        """将 feishu 配置段写回 preferences.json"""
+        try:
+            prefs = {}
+            if self._prefs_path.exists():
+                with open(self._prefs_path, "r", encoding="utf-8") as f:
+                    prefs = json.load(f)
+
+            feishu = prefs.setdefault("feishu", {})
+            if self._user_p2p_chat_id:
+                feishu["user_p2p_chat_id"] = self._user_p2p_chat_id
+            if self._user_open_id:
+                feishu["user_open_id"] = self._user_open_id
+
+            with open(self._prefs_path, "w", encoding="utf-8") as f:
+                json.dump(prefs, f, indent=2, ensure_ascii=False)
+
+            self._feishu_prefs = feishu
+        except Exception as e:
+            logger.warning(f"[FeishuChannel] Failed to save preferences: {e}")
+
+    def _apply_persisted_ids(self):
+        """从 _feishu_prefs 恢复 chat_id / open_id（不覆盖已有值）"""
+        persisted_chat_id = self._feishu_prefs.get("user_p2p_chat_id")
+        persisted_open_id = self._feishu_prefs.get("user_open_id")
+
+        if persisted_chat_id and not self._user_p2p_chat_id:
+            self._user_p2p_chat_id = persisted_chat_id
+            logger.info(f"[FeishuChannel] Restored chat_id from preferences: {persisted_chat_id}")
+
+        if persisted_open_id and not self._user_open_id:
+            self._user_open_id = persisted_open_id
+            logger.info(f"[FeishuChannel] Restored open_id from preferences: {persisted_open_id}")
+
+    def _update_persisted_ids(self, chat_id: str, open_id: str):
+        """更新 chat_id / open_id 并持久化（仅在变化时保存）"""
+        changed = False
+
+        if chat_id != self._user_p2p_chat_id:
+            self._user_p2p_chat_id = chat_id
+            changed = True
+
+        if open_id != self._user_open_id:
+            self._user_open_id = open_id
+            changed = True
+
+        if changed:
+            self._save_prefs()
+
     async def start(self) -> None:
         """启动 WebSocket 长连接"""
         await self.channel.connect_until_ready(timeout=30)
@@ -116,14 +187,23 @@ class FeishuChannelAdapter(ChannelAdapter):
 
     async def push(self, channel_id: str, content: str) -> None:
         """主动推送（定时提醒等）"""
-        target = channel_id or self._user_p2p_chat_id
+        target = channel_id or self._user_p2p_chat_id or self._user_open_id
         if target:
             try:
                 await self.channel.send(target, {"markdown": content})
             except Exception as e:
-                logger.error(f"[FeishuChannel] Push failed: {e}")
+                # 如果 chat_id 失效，尝试用 open_id 重发
+                if self._user_open_id and target != self._user_open_id:
+                    logger.warning(f"[FeishuChannel] Push to chat_id failed, retrying with open_id: {e}")
+                    try:
+                        await self.channel.send(self._user_open_id, {"markdown": content})
+                        return
+                    except Exception as e2:
+                        logger.error(f"[FeishuChannel] Push to open_id also failed: {e2}")
+                else:
+                    logger.error(f"[FeishuChannel] Push failed: {e}")
         else:
-            logger.warning("[FeishuChannel] No chat_id for push, skipping")
+            logger.warning("[FeishuChannel] No chat_id or open_id for push, skipping")
 
     @property
     def user_p2p_chat_id(self) -> str | None:
