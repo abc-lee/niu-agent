@@ -246,3 +246,49 @@ class TestScheduleForReply:
         from niu_api.channel.feishu_channel import FeishuChannelAdapter
         source = inspect.getsource(FeishuChannelAdapter._on_message)
         assert "get_running_loop" not in source
+
+
+class TestErrorEventAndEmptyReply:
+    """Task 5: 注册 error 事件 + 空回复反馈"""
+
+    def test_error_event_registered_in_init(self):
+        """__init__ 应注册 channel.on("error", self._on_error)"""
+        from niu_api.channel.feishu_channel import FeishuChannelAdapter
+        with patch('lark_oapi.ws.client') as mock_ws_client, \
+             patch('lark_oapi.channel.FeishuChannel') as mock_channel_class:
+            mock_ws_client.loop = MagicMock()
+            mock_ws_client.loop.is_running = MagicMock(return_value=False)
+            mock_channel = MagicMock()
+            mock_channel.on = MagicMock()
+            mock_channel_class.return_value = mock_channel
+            adapter = FeishuChannelAdapter(
+                app_id="test", app_secret="test", channel_router=MagicMock()
+            )
+            # 验证 on 被调用且包含 "error" 事件
+            on_calls = [c[0] for c in mock_channel.on.call_args_list]
+            event_names = [c[0] for c in on_calls]
+            assert "error" in event_names
+
+    def test_on_error_exists(self):
+        """_on_error 方法应存在"""
+        adapter = _create_adapter()
+        assert hasattr(adapter, '_on_error')
+
+    def test_empty_reply_sends_notification(self):
+        """Agent 返回空回复时应发提示消息"""
+        from niu_api.channel.base import UnifiedMessage
+        adapter = _create_adapter()
+        unified = UnifiedMessage(
+            content="你好",
+            channel="feishu",
+            channel_id="chat_123",
+            sender_id="user_001",
+            message_type="text",
+            resources=[],
+            raw={"chat_type": "p2p"},
+        )
+        with patch.object(adapter.channel, 'schedule') as mock_schedule, \
+             patch.object(adapter.router, 'route_in_sync', return_value=""):
+            adapter._process_and_reply(unified)
+            # 空回复时 schedule 也应被调用（发送提示消息）
+            assert mock_schedule.called

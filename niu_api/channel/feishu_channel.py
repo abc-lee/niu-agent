@@ -46,6 +46,7 @@ class FeishuChannelAdapter(ChannelAdapter):
         self.channel.on("cardAction", self._on_card_action)
         self.channel.on("reconnecting", self._on_reconnecting)
         self.channel.on("reconnected", self._on_reconnected)
+        self.channel.on("error", self._on_error)
 
     def _on_message(self, msg):
         """处理飞书消息事件（同步 handler，不阻塞 SDK 事件循环）"""
@@ -128,6 +129,9 @@ class FeishuChannelAdapter(ChannelAdapter):
                 logger.info(f"[FeishuChannel] Replied: {reply[:50]}...")
             else:
                 logger.warning("[FeishuChannel] Empty reply from agent")
+                self.channel.schedule(
+                    self.channel.send(unified.channel_id, {"text": "收到，但无法生成回复"}),
+                )
         except Exception as e:
             logger.error(f"[FeishuChannel] Process/reply error: {e}")
 
@@ -149,6 +153,10 @@ class FeishuChannelAdapter(ChannelAdapter):
     def _on_reconnected(self, _=None):
         """WebSocket 重连成功（SDK 调用 h() 可能传一个参数）"""
         logger.info("[FeishuChannel] WebSocket reconnected")
+
+    def _on_error(self, err):
+        """SDK 内部错误集中处理"""
+        logger.error(f"[FeishuChannel] SDK error: {err}")
 
     def _load_prefs(self) -> dict:
         """从 preferences.json 加载 feishu 配置段"""
