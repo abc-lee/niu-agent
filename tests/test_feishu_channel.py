@@ -199,3 +199,50 @@ class TestSessionIdByUser:
                 call_args = mock_route.call_args
                 assert call_args is not None
                 assert "group_chat_789" in str(call_args)
+
+
+class TestScheduleForReply:
+    """Task 4: 回复发送应通过 channel.schedule() 而非 run_coroutine_threadsafe"""
+
+    def test_process_and_reply_uses_schedule(self):
+        """_process_and_reply 应通过 channel.schedule() 发送回复"""
+        import asyncio
+        from niu_api.channel.base import UnifiedMessage
+        adapter = _create_adapter()
+        adapter._user_p2p_chat_id = "chat_123"
+        # channel.send 必须返回一个真实的协程（MagicMock 默认返回 MagicMock 不是协程）
+        async def _fake_send(*args, **kwargs):
+            pass
+        adapter.channel.send = _fake_send
+        unified = UnifiedMessage(
+            content="你好",
+            channel="feishu",
+            channel_id="chat_123",
+            sender_id="user_001",
+            message_type="text",
+            resources=[],
+            raw={"chat_type": "p2p"},
+        )
+        with patch.object(adapter.router, 'route_in_sync', return_value="回复内容"):
+            adapter._process_and_reply(unified)
+        # 验证 channel.schedule 被调用
+        assert adapter.channel.schedule.called
+        # 验证 schedule 收到的是协程
+        call_arg = adapter.channel.schedule.call_args[0][0]
+        assert asyncio.iscoroutine(call_arg)
+        # 清理未 await 的协程
+        call_arg.close()
+
+    def test_on_message_no_run_coroutine_threadsafe(self):
+        """_on_message 不应使用 run_coroutine_threadsafe"""
+        import inspect
+        from niu_api.channel.feishu_channel import FeishuChannelAdapter
+        source = inspect.getsource(FeishuChannelAdapter._on_message)
+        assert "run_coroutine_threadsafe" not in source
+
+    def test_on_message_no_get_running_loop(self):
+        """_on_message 不应捕获 asyncio.get_running_loop()"""
+        import inspect
+        from niu_api.channel.feishu_channel import FeishuChannelAdapter
+        source = inspect.getsource(FeishuChannelAdapter._on_message)
+        assert "get_running_loop" not in source
