@@ -92,6 +92,26 @@ class TestP2PMessageGuard:
         msg = _create_msg(chat_type=None)
         assert adapter._is_p2p_message(msg) is False
 
+    def test_is_p2p_message_with_unified_p2p(self):
+        """_is_p2p_message 对 UnifiedMessage P2P 消息返回 True"""
+        from niu_api.channel.base import UnifiedMessage
+        adapter = _create_adapter()
+        unified = UnifiedMessage(
+            content="你好", channel="feishu", channel_id="c1",
+            sender_id="u1", message_type="text", resources=[], raw={"chat_type": "p2p"},
+        )
+        assert adapter._is_p2p_message(unified) is True
+
+    def test_is_p2p_message_with_unified_group(self):
+        """_is_p2p_message 对 UnifiedMessage 群聊消息返回 False"""
+        from niu_api.channel.base import UnifiedMessage
+        adapter = _create_adapter()
+        unified = UnifiedMessage(
+            content="你好", channel="feishu", channel_id="c1",
+            sender_id="u1", message_type="text", resources=[], raw={"chat_type": "group"},
+        )
+        assert adapter._is_p2p_message(unified) is False
+
     def test_p2p_message_updates_chat_id(self):
         """P2P 消息应更新 _user_p2p_chat_id"""
         adapter = _create_adapter()

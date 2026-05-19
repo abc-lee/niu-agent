@@ -98,18 +98,11 @@ class FeishuChannelAdapter(ChannelAdapter):
                 parts.append(f"[{rtype}: {name}]" if rtype else f"[资源: {name}]")
         return "\n".join(parts)
 
-    @staticmethod
-    def _is_p2p_message_by_unified(unified: UnifiedMessage) -> bool:
-        """从 UnifiedMessage 判断是否为 P2P 消息"""
-        raw = unified.raw or {}
-        chat_type = raw.get("chat_type", "")
-        return chat_type == "p2p"
-
     def _process_and_reply(self, unified: UnifiedMessage):
         """在独立线程中执行阻塞调用，完成后通过 channel.schedule() 发送回复"""
         try:
             # P2P 用 sender_id，群聊用 chat_id
-            if self._is_p2p_message_by_unified(unified):
+            if self._is_p2p_message(unified):
                 session_id = f"feishu:{unified.sender_id}"
             else:
                 session_id = f"feishu:group:{unified.channel_id}"
@@ -135,11 +128,14 @@ class FeishuChannelAdapter(ChannelAdapter):
         except Exception as e:
             logger.error(f"[FeishuChannel] Process/reply error: {e}")
 
-    def _is_p2p_message(self, msg) -> bool:
-        """判断是否为 P2P 消息（非群聊）"""
-        chat_type = getattr(msg, 'chat_type', None)
+    def _is_p2p_message(self, msg_or_unified) -> bool:
+        """判断是否为 P2P 消息（非群聊）— 兼容 SDK msg 和 UnifiedMessage"""
+        chat_type = getattr(msg_or_unified, 'chat_type', None)
         if chat_type:
             return chat_type == "p2p"
+        raw = getattr(msg_or_unified, 'raw', None)
+        if isinstance(raw, dict):
+            return raw.get("chat_type") == "p2p"
         return False
 
     async def _on_card_action(self, action):
