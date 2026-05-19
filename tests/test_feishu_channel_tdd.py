@@ -134,6 +134,7 @@ class TestRouteInSync:
             channel="feishu",
             channel_id="chat_123",
             sender_id="user_1",
+            message_type="text",
         )
 
         result = router.route_in_sync(msg)
@@ -156,6 +157,7 @@ class TestRouteInSync:
             channel="feishu",
             channel_id="chat_123",
             sender_id="user_1",
+            message_type="text",
         )
 
         router.route_in_sync(msg)
@@ -182,6 +184,8 @@ class TestOnMessageSyncHandler:
         adapter.channel = mock_channel
         adapter.router = mock_router
         adapter._user_p2p_chat_id = None
+        adapter._user_open_id = None
+        adapter._feishu_prefs = {}
 
         return adapter, mock_channel, mock_router
 
@@ -353,6 +357,8 @@ class TestReconnectHandlerSignature:
         adapter.channel = MockFeishuChannel()
         adapter.router = MagicMock()
         adapter._user_p2p_chat_id = None
+        adapter._user_open_id = None
+        adapter._feishu_prefs = {}
         return adapter
 
     def test_on_reconnecting_accepts_no_args(self):
@@ -378,3 +384,96 @@ class TestReconnectHandlerSignature:
         adapter = self._make_adapter()
         adapter._on_reconnected(None)
         adapter._on_reconnected("some_arg")
+
+
+# ============== Task 5: chat_id / open_id 持久化 ==============
+
+
+class TestChatIdPersistence:
+    """验证 chat_id 和 open_id 持久化到 preferences.json"""
+
+    def _make_adapter_with_prefs(self, feishu_prefs=None):
+        """创建测试用 FeishuChannelAdapter，注入 _load_prefs / _save_prefs"""
+        from niu_api.channel.feishu_channel import FeishuChannelAdapter
+
+        adapter = FeishuChannelAdapter.__new__(FeishuChannelAdapter)
+        adapter.channel = MockFeishuChannel()
+        adapter.router = MagicMock()
+        adapter._user_p2p_chat_id = None
+        adapter._user_open_id = None
+        adapter._prefs_path = None  # 测试中不写真实文件
+        # 模拟加载的偏好
+        adapter._feishu_prefs = feishu_prefs or {}
+        return adapter
+
+    def test_init_loads_persisted_chat_id(self):
+        """__init__ 应该从 preferences.json 加载持久化的 chat_id"""
+        adapter = self._make_adapter_with_prefs(
+            feishu_prefs={"user_p2p_chat_id": "oc_persisted_123"}
+        )
+        # 模拟 _load_prefs 在 __init__ 中的效果
+        adapter._apply_persisted_ids()
+        assert adapter._user_p2p_chat_id == "oc_persisted_123"
+
+    def test_init_loads_persisted_open_id(self):
+        """__init__ 应该从 preferences.json 加载持久化的 open_id"""
+        adapter = self._make_adapter_with_prefs(
+            feishu_prefs={"user_open_id": "ou_persisted_456"}
+        )
+        adapter._apply_persisted_ids()
+        assert adapter._user_open_id == "ou_persisted_456"
+
+    def test_on_message_updates_persisted_ids(self):
+        """收到消息时应该更新并持久化 chat_id 和 open_id"""
+        adapter = self._make_adapter_with_prefs()
+        adapter._feishu_prefs = {}
+        adapter._save_prefs = MagicMock()  # mock 保存方法
+
+        msg = MockFeishuMsg(
+            content="你好", chat_id="oc_new_chat_789", sender_id="ou_new_user_012"
+        )
+
+        # 模拟 _on_message 中的持久化逻辑
+        adapter._update_persisted_ids(msg.chat_id, msg.sender_id)
+
+        assert adapter._user_p2p_chat_id == "oc_new_chat_789"
+        assert adapter._user_open_id == "ou_new_user_012"
+        adapter._save_prefs.assert_called_once()
+
+    def test_on_message_does_not_save_if_unchanged(self):
+        """如果 chat_id 和 open_id 没变，不应该重复保存"""
+        adapter = self._make_adapter_with_prefs(
+            feishu_prefs={
+                "user_p2p_chat_id": "oc_same_chat",
+                "user_open_id": "ou_same_user",
+            }
+        )
+        adapter._user_p2p_chat_id = "oc_same_chat"
+        adapter._user_open_id = "ou_same_user"
+        adapter._save_prefs = MagicMock()
+
+        adapter._update_persisted_ids("oc_same_chat", "ou_same_user")
+
+        adapter._save_prefs.assert_not_called()
+
+    def test_push_uses_persisted_chat_id_without_message(self):
+        """启动后无需先发消息，push 就能使用持久化的 chat_id"""
+        adapter = self._make_adapter_with_prefs(
+            feishu_prefs={"user_p2p_chat_id": "oc_persisted_123"}
+        )
+        adapter._apply_persisted_ids()
+
+        # push 应该能直接用持久化的 chat_id
+        assert adapter.user_p2p_chat_id == "oc_persisted_123"
+
+    def test_apply_persisted_ids_no_overwrite_existing(self):
+        """如果内存中已有 chat_id，_apply_persisted_ids 不应该覆盖"""
+        adapter = self._make_adapter_with_prefs(
+            feishu_prefs={"user_p2p_chat_id": "oc_old"}
+        )
+        adapter._user_p2p_chat_id = "oc_current"
+
+        adapter._apply_persisted_ids()
+
+        # 内存中的值优先
+        assert adapter._user_p2p_chat_id == "oc_current"
