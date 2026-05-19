@@ -23,8 +23,15 @@ class FeishuChannelAdapter(ChannelAdapter):
             _ws_client.loop = asyncio.new_event_loop()
 
         from lark_oapi.channel import FeishuChannel
+        from lark_oapi.channel.outbound import OutboundConfig, MarkdownConverter
 
-        self.channel = FeishuChannel(app_id=app_id, app_secret=app_secret)
+        self.channel = FeishuChannel(
+            app_id=app_id,
+            app_secret=app_secret,
+            outbound=OutboundConfig(
+                markdown_converter=MarkdownConverter(tag_md_mode="native")
+            ),
+        )
         self.router = channel_router
         self._user_p2p_chat_id = None
         self._user_open_id = None
