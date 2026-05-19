@@ -23,7 +23,7 @@ class FeishuChannelAdapter(ChannelAdapter):
             _ws_client.loop = asyncio.new_event_loop()
 
         from lark_oapi.channel import FeishuChannel
-        from lark_oapi.channel.outbound import OutboundConfig, MarkdownConverter
+        from lark_oapi.channel.config import OutboundConfig, MarkdownConverter
 
         self.channel = FeishuChannel(
             app_id=app_id,
