@@ -23,11 +23,12 @@ class ChannelRouter:
         """
         return self._chat_sync(message.content)
 
-    def route_in_sync(self, message: UnifiedMessage) -> str:
+    def route_in_sync(self, message: UnifiedMessage, session_id: str = "feishu", message_override: str | None = None) -> str:
         """同步路由消息 — 供飞书通道线程中调用"""
-        return self._chat_sync(message.content)
+        content = message_override if message_override is not None else message.content
+        return self._chat_sync(content, session_id=session_id)
 
-    def _chat_sync(self, message: str) -> str:
+    def _chat_sync(self, message: str, session_id: str = "feishu") -> str:
         """同步调用 Agent — 可在任意线程中运行"""
         import os
         import requests
@@ -36,7 +37,7 @@ class ChannelRouter:
         try:
             resp = requests.post(
                 f"http://127.0.0.1:{port}/chat/sync",
-                json={"session_id": "feishu", "message": message},
+                json={"session_id": session_id, "message": message},
                 timeout=120,
             )
             if resp.status_code == 200:

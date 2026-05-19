@@ -446,6 +446,7 @@ class ChatRequest(BaseModel):
 
     message: str
     session_id: str | None = None
+    resources: list = []
 
 
 class ChatResponse(BaseModel):

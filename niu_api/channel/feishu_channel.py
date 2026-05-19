@@ -81,25 +81,65 @@ class FeishuChannelAdapter(ChannelAdapter):
             except RuntimeError:
                 logger.warning("[FeishuChannel] No running event loop, cannot capture SDK loop")
                 return
-            chat_id = msg.chat_id
 
-            def _process_and_reply():
-                """在独立线程中执行阻塞调用，完成后通过 run_coroutine_threadsafe 发送回复"""
-                try:
-                    reply = self.router.route_in_sync(unified)
-                    if reply:
-                        asyncio.run_coroutine_threadsafe(
-                            self.channel.send(chat_id, {"markdown": reply}),
-                            sdk_loop,
-                        )
-                        logger.info(f"[FeishuChannel] Replied: {reply[:50]}...")
-                except Exception as e:
-                    logger.error(f"[FeishuChannel] Process/reply error: {e}")
-
-            threading.Thread(target=_process_and_reply, daemon=True).start()
+            threading.Thread(target=self._process_and_reply, args=(unified, sdk_loop), daemon=True).start()
 
         except Exception as e:
             logger.error(f"[FeishuChannel] Message handler error: {e}")
+
+    @staticmethod
+    def _format_resources(resources: list) -> str:
+        """将 resources 列表转为文本描述"""
+        if not resources:
+            return ""
+        parts = []
+        for r in resources:
+            rtype = r.get("type", "")
+            if rtype == "image":
+                key = r.get("file_key", r.get("file_name", "未知图片"))
+                parts.append(f"[图片: {key}]")
+            elif rtype == "file":
+                name = r.get("file_name", r.get("file_key", "未知文件"))
+                parts.append(f"[文件: {name}]")
+            else:
+                name = r.get("file_name", r.get("file_key", "未知资源"))
+                parts.append(f"[{rtype}: {name}]" if rtype else f"[资源: {name}]")
+        return "\n".join(parts)
+
+    @staticmethod
+    def _is_p2p_message_by_unified(unified: UnifiedMessage) -> bool:
+        """从 UnifiedMessage 判断是否为 P2P 消息"""
+        raw = unified.raw or {}
+        chat_type = raw.get("chat_type", "")
+        return chat_type == "p2p"
+
+    def _process_and_reply(self, unified: UnifiedMessage, sdk_loop):
+        """在独立线程中执行阻塞调用，完成后通过 run_coroutine_threadsafe 发送回复"""
+        try:
+            # P2P 用 sender_id，群聊用 chat_id
+            if self._is_p2p_message_by_unified(unified):
+                session_id = f"feishu:{unified.sender_id}"
+            else:
+                session_id = f"feishu:group:{unified.channel_id}"
+
+            # 将 resources 转为文本描述，追加到消息后面
+            resource_text = self._format_resources(unified.resources)
+            if resource_text:
+                message_content = f"{unified.content}\n{resource_text}" if unified.content.strip() else resource_text
+            else:
+                message_content = unified.content
+
+            reply = self.router.route_in_sync(unified, session_id=session_id, message_override=message_content)
+            if reply:
+                asyncio.run_coroutine_threadsafe(
+                    self.channel.send(unified.channel_id, {"markdown": reply}),
+                    sdk_loop,
+                )
+                logger.info(f"[FeishuChannel] Replied: {reply[:50]}...")
+            else:
+                logger.warning("[FeishuChannel] Empty reply from agent")
+        except Exception as e:
+            logger.error(f"[FeishuChannel] Process/reply error: {e}")
 
     def _is_p2p_message(self, msg) -> bool:
         """判断是否为 P2P 消息（非群聊）"""
