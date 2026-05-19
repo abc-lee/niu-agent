@@ -456,7 +456,8 @@ def _clear_sync_state_if_storage_empty(storage_dir: Path) -> None:
     But skill_sync_state.json and last_region_sync.json may still exist,
     causing SkillSync/RegionSync to think everything is already synced
     and skip re-injection. This function detects the empty-graph condition
-    and deletes those stale cache files.
+    and deletes those stale cache files, then notifies the sync services
+    to reload their in-memory state.
     """
     entities_file = storage_dir / "kv_store_full_entities.json"
     if not entities_file.exists():
@@ -465,13 +466,26 @@ def _clear_sync_state_if_storage_empty(storage_dir: Path) -> None:
             Path.home() / ".niu" / "skill_sync_state.json",
             Path.home() / ".niu" / "last_region_sync.json",
         ]
+        cleared = False
         for state_file in state_files:
             if state_file.exists():
                 try:
                     state_file.unlink()
                     logger.info(f"Cleared stale sync state: {state_file}")
+                    cleared = True
                 except OSError as e:
                     logger.warning(f"Failed to clear sync state {state_file}: {e}")
+
+        # Notify SkillSync to reload state from disk (now empty)
+        if cleared:
+            try:
+                from agent.injector.sync import get_skill_sync
+                skill_sync = get_skill_sync(auto_start=False)
+                skill_sync._last_scan = skill_sync._load_state()
+                skill_sync._last_notes_scan = skill_sync._load_notes_state()
+                logger.info("[LightRAG] SkillSync state reloaded after clearing stale cache")
+            except Exception as e:
+                logger.warning(f"[LightRAG] Failed to notify SkillSync: {e}")
 
 
 def _make_local_embedding_func():
