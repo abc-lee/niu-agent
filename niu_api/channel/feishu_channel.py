@@ -60,8 +60,8 @@ class FeishuChannelAdapter(ChannelAdapter):
                 raw=msg.raw or {},
             )
 
-            if not unified.content.strip():
-                logger.debug("[FeishuChannel] Empty message, skipping")
+            if not unified.content.strip() and not unified.resources:
+                logger.debug("[FeishuChannel] Empty message with no resources, skipping")
                 return
 
             if not self._user_p2p_chat_id:
