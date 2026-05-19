@@ -76,7 +76,8 @@ class FeishuChannelAdapter(ChannelAdapter):
             # 仅 P2P 消息才更新推送目标（持久化移到工作线程中，避免阻塞 SDK 线程）
             is_p2p = self._is_p2p_message(msg)
 
-            logger.info(f"[FeishuChannel] Received: {unified.content[:50]}...")
+            log_preview = unified.content[:50] if unified.content.strip() else f"[resources: {len(unified.resources)}]"
+            logger.info(f"[FeishuChannel] Received: {log_preview}...")
 
             threading.Thread(target=self._process_and_reply, args=(unified, is_p2p), daemon=True).start()
 
