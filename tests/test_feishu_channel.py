@@ -69,3 +69,52 @@ class TestImageMessageNotSkipped:
              patch('asyncio.get_running_loop', return_value=Mock()):
             adapter._on_message(msg)
             assert mock_thread.called
+
+
+class TestP2PMessageGuard:
+    """Task 2: 群聊消息不应覆盖 P2P chat_id/open_id"""
+
+    def test_is_p2p_message_with_p2p(self):
+        """_is_p2p_message 对 P2P 消息返回 True"""
+        adapter = _create_adapter()
+        msg = _create_msg(chat_type="p2p")
+        assert adapter._is_p2p_message(msg) is True
+
+    def test_is_p2p_message_with_group(self):
+        """_is_p2p_message 对群聊消息返回 False"""
+        adapter = _create_adapter()
+        msg = _create_msg(chat_type="group")
+        assert adapter._is_p2p_message(msg) is False
+
+    def test_is_p2p_message_without_chat_type(self):
+        """_is_p2p_message 在 chat_type 不存在时返回 False"""
+        adapter = _create_adapter()
+        msg = _create_msg(chat_type=None)
+        assert adapter._is_p2p_message(msg) is False
+
+    def test_p2p_message_updates_chat_id(self):
+        """P2P 消息应更新 _user_p2p_chat_id"""
+        adapter = _create_adapter()
+        adapter._user_p2p_chat_id = None
+        msg = _create_msg(chat_id="p2p_chat_123", sender_id="user_001", chat_type="p2p")
+        with patch('threading.Thread'):
+            adapter._on_message(msg)
+        assert adapter._user_p2p_chat_id == "p2p_chat_123"
+
+    def test_group_message_does_not_overwrite_p2p_chat_id(self):
+        """群聊消息不应覆盖已有的 P2P chat_id"""
+        adapter = _create_adapter()
+        adapter._user_p2p_chat_id = "p2p_chat_123"
+        msg = _create_msg(chat_id="group_chat_456", sender_id="user_002", chat_type="group")
+        with patch('threading.Thread'):
+            adapter._on_message(msg)
+        assert adapter._user_p2p_chat_id == "p2p_chat_123"
+
+    def test_group_message_does_not_overwrite_open_id(self):
+        """群聊消息不应覆盖已有的 P2P open_id"""
+        adapter = _create_adapter()
+        adapter._user_open_id = "user_001"
+        msg = _create_msg(chat_id="group_chat_456", sender_id="user_002", chat_type="group")
+        with patch('threading.Thread'):
+            adapter._on_message(msg)
+        assert adapter._user_open_id == "user_001"

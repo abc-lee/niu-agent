@@ -64,11 +64,12 @@ class FeishuChannelAdapter(ChannelAdapter):
                 logger.debug("[FeishuChannel] Empty message with no resources, skipping")
                 return
 
-            if not self._user_p2p_chat_id:
+            if self._is_p2p_message(msg):
                 self._user_p2p_chat_id = msg.chat_id
 
-            # 持久化 chat_id 和 open_id
-            self._update_persisted_ids(msg.chat_id, msg.sender_id)
+            # 仅 P2P 消息才持久化 chat_id 和 open_id
+            if self._is_p2p_message(msg):
+                self._update_persisted_ids(msg.chat_id, msg.sender_id)
 
             logger.info(f"[FeishuChannel] Received: {unified.content[:50]}...")
 
@@ -99,6 +100,13 @@ class FeishuChannelAdapter(ChannelAdapter):
 
         except Exception as e:
             logger.error(f"[FeishuChannel] Message handler error: {e}")
+
+    def _is_p2p_message(self, msg) -> bool:
+        """判断是否为 P2P 消息（非群聊）"""
+        chat_type = getattr(msg, 'chat_type', None)
+        if chat_type:
+            return chat_type == "p2p"
+        return False
 
     async def _on_card_action(self, action):
         """处理卡片交互事件（Phase 4 实现）"""
