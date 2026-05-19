@@ -72,13 +72,12 @@ class FeishuChannelAdapter(ChannelAdapter):
                 logger.debug("[FeishuChannel] Empty message with no resources, skipping")
                 return
 
-            # 仅 P2P 消息才更新推送目标和持久化
-            if self._is_p2p_message(msg):
-                self._update_persisted_ids(msg.chat_id, msg.sender_id)
+            # 仅 P2P 消息才更新推送目标（持久化移到工作线程中，避免阻塞 SDK 线程）
+            is_p2p = self._is_p2p_message(msg)
 
             logger.info(f"[FeishuChannel] Received: {unified.content[:50]}...")
 
-            threading.Thread(target=self._process_and_reply, args=(unified,), daemon=True).start()
+            threading.Thread(target=self._process_and_reply, args=(unified, is_p2p), daemon=True).start()
 
         except Exception as e:
             logger.error(f"[FeishuChannel] Message handler error: {e}")
@@ -109,9 +108,13 @@ class FeishuChannelAdapter(ChannelAdapter):
                 parts.append(f"[{rtype}: {name}]" if rtype else f"[资源: {name}]")
         return "\n".join(parts)
 
-    def _process_and_reply(self, unified: UnifiedMessage):
+    def _process_and_reply(self, unified: UnifiedMessage, is_p2p: bool = False):
         """在独立线程中执行阻塞调用，完成后通过 channel.schedule() 发送回复"""
         try:
+            # P2P 消息：更新推送目标并持久化
+            if is_p2p:
+                self._update_persisted_ids(unified.channel_id, unified.sender_id)
+
             # P2P 用 sender_id，群聊用 chat_id
             if self._is_p2p_message(unified):
                 session_id = f"feishu:{unified.sender_id}"
@@ -133,17 +136,24 @@ class FeishuChannelAdapter(ChannelAdapter):
                     )
                 except Exception as e:
                     logger.error(f"[FeishuChannel] Failed to schedule reply: {e}")
-                logger.info(f"[FeishuChannel] Replied: {reply[:50]}...")
+                logger.info(f"[FeishuChannel] Reply scheduled: {reply[:50]}...")
             else:
                 logger.warning("[FeishuChannel] Empty reply from agent")
                 try:
                     self.channel.schedule(
                         self.channel.send(unified.channel_id, {"text": "收到，但无法生成回复"}),
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning(f"[FeishuChannel] Failed to send empty-reply notification: {e}")
         except Exception as e:
             logger.error(f"[FeishuChannel] Process/reply error: {e}")
+            try:
+                if self.channel.is_ready:
+                    self.channel.schedule(
+                        self.channel.send(unified.channel_id, {"text": "处理消息时出错，请稍后重试"}),
+                    )
+            except Exception:
+                pass
 
     def _is_p2p_message(self, msg_or_unified) -> bool:
         """判断是否为 P2P 消息（非群聊）— 兼容 SDK msg 和 UnifiedMessage"""
@@ -155,7 +165,7 @@ class FeishuChannelAdapter(ChannelAdapter):
             return raw.get("chat_type") == "p2p"
         return False
 
-    async def _on_card_action(self, action):
+    async def _on_card_action(self, _action):
         """处理卡片交互事件（Phase 4 实现）"""
         logger.debug("[FeishuChannel] Card action received (not implemented yet)")
 
