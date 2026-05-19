@@ -32,6 +32,7 @@ def _create_adapter():
     adapter._user_open_id = None
     adapter._prefs_path = Mock()
     adapter._feishu_prefs = {}
+    adapter._prefs_lock = __import__('threading').Lock()
     return adapter
 
 
