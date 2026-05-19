@@ -73,16 +73,7 @@ class FeishuChannelAdapter(ChannelAdapter):
 
             logger.info(f"[FeishuChannel] Received: {unified.content[:50]}...")
 
-            # 在 SDK bg loop 上下文中捕获 loop 引用
-            # _on_message 由 SDK _invoke 在 bg loop 线程中调用，
-            # 此时 get_running_loop() 返回 SDK bg loop
-            try:
-                sdk_loop = asyncio.get_running_loop()
-            except RuntimeError:
-                logger.warning("[FeishuChannel] No running event loop, cannot capture SDK loop")
-                return
-
-            threading.Thread(target=self._process_and_reply, args=(unified, sdk_loop), daemon=True).start()
+            threading.Thread(target=self._process_and_reply, args=(unified,), daemon=True).start()
 
         except Exception as e:
             logger.error(f"[FeishuChannel] Message handler error: {e}")
@@ -113,8 +104,8 @@ class FeishuChannelAdapter(ChannelAdapter):
         chat_type = raw.get("chat_type", "")
         return chat_type == "p2p"
 
-    def _process_and_reply(self, unified: UnifiedMessage, sdk_loop):
-        """在独立线程中执行阻塞调用，完成后通过 run_coroutine_threadsafe 发送回复"""
+    def _process_and_reply(self, unified: UnifiedMessage):
+        """在独立线程中执行阻塞调用，完成后通过 channel.schedule() 发送回复"""
         try:
             # P2P 用 sender_id，群聊用 chat_id
             if self._is_p2p_message_by_unified(unified):
@@ -131,9 +122,8 @@ class FeishuChannelAdapter(ChannelAdapter):
 
             reply = self.router.route_in_sync(unified, session_id=session_id, message_override=message_content)
             if reply:
-                asyncio.run_coroutine_threadsafe(
+                self.channel.schedule(
                     self.channel.send(unified.channel_id, {"markdown": reply}),
-                    sdk_loop,
                 )
                 logger.info(f"[FeishuChannel] Replied: {reply[:50]}...")
             else:
