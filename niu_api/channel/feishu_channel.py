@@ -53,6 +53,11 @@ class FeishuChannelAdapter(ChannelAdapter):
     def _on_message(self, msg):
         """处理飞书消息事件（同步 handler，不阻塞 SDK 事件循环）"""
         try:
+            # 确保 raw 中包含 chat_type，供后续 _is_p2p_message(unified) 判断
+            raw = msg.raw or {}
+            if msg.chat_type and "chat_type" not in raw:
+                raw = {**raw, "chat_type": msg.chat_type}
+
             unified = UnifiedMessage(
                 content=msg.content_text or "",
                 channel="feishu",
@@ -60,7 +65,7 @@ class FeishuChannelAdapter(ChannelAdapter):
                 sender_id=msg.sender_id,
                 message_type=msg.raw_content_type or "text",
                 resources=msg.resources or [],
-                raw=msg.raw or {},
+                raw=raw,
             )
 
             if not unified.content.strip() and not unified.resources:
@@ -69,7 +74,6 @@ class FeishuChannelAdapter(ChannelAdapter):
 
             # 仅 P2P 消息才更新推送目标和持久化
             if self._is_p2p_message(msg):
-                self._user_p2p_chat_id = msg.chat_id
                 self._update_persisted_ids(msg.chat_id, msg.sender_id)
 
             logger.info(f"[FeishuChannel] Received: {unified.content[:50]}...")
@@ -81,20 +85,27 @@ class FeishuChannelAdapter(ChannelAdapter):
 
     @staticmethod
     def _format_resources(resources: list | None) -> str:
-        """将 resources 列表转为文本描述"""
+        """将 resources 列表转为文本描述（兼容 ResourceDescriptor dataclass 和 dict）"""
         if not resources:
             return ""
         parts = []
         for r in resources:
-            rtype = r.get("type", "")
+            if isinstance(r, dict):
+                rtype = r.get("type", "")
+                file_key = r.get("file_key", "")
+                file_name = r.get("file_name", "") or ""
+            else:
+                rtype = getattr(r, "type", "")
+                file_key = getattr(r, "file_key", "")
+                file_name = getattr(r, "file_name", "") or ""
             if rtype == "image":
-                key = r.get("file_key", r.get("file_name", "未知图片"))
+                key = file_key or file_name or "未知图片"
                 parts.append(f"[图片: {key}]")
             elif rtype == "file":
-                name = r.get("file_name", r.get("file_key", "未知文件"))
+                name = file_name or file_key or "未知文件"
                 parts.append(f"[文件: {name}]")
             else:
-                name = r.get("file_name", r.get("file_key", "未知资源"))
+                name = file_name or file_key or "未知资源"
                 parts.append(f"[{rtype}: {name}]" if rtype else f"[资源: {name}]")
         return "\n".join(parts)
 
@@ -116,9 +127,12 @@ class FeishuChannelAdapter(ChannelAdapter):
 
             reply = self.router.route_in_sync(unified, session_id=session_id, message_override=message_content)
             if reply:
-                self.channel.schedule(
-                    self.channel.send(unified.channel_id, {"markdown": reply}),
-                )
+                try:
+                    self.channel.schedule(
+                        self.channel.send(unified.channel_id, {"markdown": reply}),
+                    )
+                except Exception as e:
+                    logger.error(f"[FeishuChannel] Failed to schedule reply: {e}")
                 logger.info(f"[FeishuChannel] Replied: {reply[:50]}...")
             else:
                 logger.warning("[FeishuChannel] Empty reply from agent")
