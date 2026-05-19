@@ -12,6 +12,14 @@ class FeishuChannelAdapter(ChannelAdapter):
     """飞书通道 — WebSocket 长连接，消息收发，Agent 无感知"""
 
     def __init__(self, app_id: str, app_secret: str, channel_router):
+        # 修补 lark_oapi.ws.client 模块级 loop — 防止捕获 uvicorn 的运行中 loop
+        # ws/client.py 在 import 时通过 asyncio.get_event_loop() 捕获当前 loop，
+        # 如果此时 uvicorn loop 已在运行，WSClient.start() 的 loop.run_until_complete()
+        # 会抛出 RuntimeError: This event loop is already running
+        import lark_oapi.ws.client as _ws_client
+        if _ws_client.loop.is_running():
+            _ws_client.loop = asyncio.new_event_loop()
+
         from lark_oapi.channel import FeishuChannel
 
         self.channel = FeishuChannel(app_id=app_id, app_secret=app_secret)
@@ -78,12 +86,12 @@ class FeishuChannelAdapter(ChannelAdapter):
         """处理卡片交互事件（Phase 4 实现）"""
         logger.debug("[FeishuChannel] Card action received (not implemented yet)")
 
-    def _on_reconnecting(self):
-        """WebSocket 重连中（SDK 调用 h() 无参数）"""
+    def _on_reconnecting(self, _=None):
+        """WebSocket 重连中（SDK 调用 h() 可能传一个参数）"""
         logger.warning("[FeishuChannel] WebSocket reconnecting...")
 
-    def _on_reconnected(self):
-        """WebSocket 重连成功（SDK 调用 h() 无参数）"""
+    def _on_reconnected(self, _=None):
+        """WebSocket 重连成功（SDK 调用 h() 可能传一个参数）"""
         logger.info("[FeishuChannel] WebSocket reconnected")
 
     async def start(self) -> None:

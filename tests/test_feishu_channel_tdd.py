@@ -284,3 +284,97 @@ class TestOnMessageSyncHandler:
 
         # 不应该发送消息
         assert len(mock_channel.sent_messages) == 0
+
+
+# ============== Task 3: ws_client.loop monkey-patch ==============
+
+
+class TestWsClientLoopPatch:
+    """验证 __init__ 中修补 ws_client.loop 的逻辑"""
+
+    def test_init_patches_running_loop(self):
+        """当 ws_client.loop 正在运行时，__init__ 应该替换为新 loop"""
+        from niu_api.channel.feishu_channel import FeishuChannelAdapter
+
+        mock_router = MagicMock()
+
+        with patch("lark_oapi.ws.client") as mock_ws_client:
+            # 模拟 uvicorn 场景：loop 正在运行
+            running_loop = MagicMock()
+            running_loop.is_running.return_value = True
+            mock_ws_client.loop = running_loop
+
+            with patch("lark_oapi.channel.FeishuChannel") as MockChannel:
+                MockChannel.return_value = MagicMock()
+
+                adapter = FeishuChannelAdapter(
+                    app_id="test_id", app_secret="test_secret", channel_router=mock_router
+                )
+
+                # loop 应该被替换为新的未运行的 loop
+                assert mock_ws_client.loop is not running_loop
+                assert not mock_ws_client.loop.is_running()
+                assert isinstance(mock_ws_client.loop, asyncio.AbstractEventLoop)
+
+    def test_init_keeps_non_running_loop(self):
+        """当 ws_client.loop 未运行时，__init__ 不应该替换"""
+        from niu_api.channel.feishu_channel import FeishuChannelAdapter
+
+        mock_router = MagicMock()
+
+        with patch("lark_oapi.ws.client") as mock_ws_client:
+            # 模拟正常场景：loop 未运行
+            idle_loop = MagicMock()
+            idle_loop.is_running.return_value = False
+            mock_ws_client.loop = idle_loop
+
+            with patch("lark_oapi.channel.FeishuChannel") as MockChannel:
+                MockChannel.return_value = MagicMock()
+
+                adapter = FeishuChannelAdapter(
+                    app_id="test_id", app_secret="test_secret", channel_router=mock_router
+                )
+
+                # loop 不应该被替换
+                assert mock_ws_client.loop is idle_loop
+
+
+# ============== Task 4: _on_reconnecting / _on_reconnected signature ==============
+
+
+class TestReconnectHandlerSignature:
+    """验证 _on_reconnecting / _on_reconnected 接受可选参数"""
+
+    def _make_adapter(self):
+        """创建测试用 FeishuChannelAdapter"""
+        from niu_api.channel.feishu_channel import FeishuChannelAdapter
+
+        adapter = FeishuChannelAdapter.__new__(FeishuChannelAdapter)
+        adapter.channel = MockFeishuChannel()
+        adapter.router = MagicMock()
+        adapter._user_p2p_chat_id = None
+        return adapter
+
+    def test_on_reconnecting_accepts_no_args(self):
+        """_on_reconnecting 应该可以无参数调用"""
+        adapter = self._make_adapter()
+        # 不应该抛出 TypeError
+        adapter._on_reconnecting()
+
+    def test_on_reconnecting_accepts_one_arg(self):
+        """_on_reconnecting 应该可以接受一个参数（SDK 传的）"""
+        adapter = self._make_adapter()
+        # 不应该抛出 TypeError: missing 1 required positional argument
+        adapter._on_reconnecting(None)
+        adapter._on_reconnecting("some_arg")
+
+    def test_on_reconnected_accepts_no_args(self):
+        """_on_reconnected 应该可以无参数调用"""
+        adapter = self._make_adapter()
+        adapter._on_reconnected()
+
+    def test_on_reconnected_accepts_one_arg(self):
+        """_on_reconnected 应该可以接受一个参数（SDK 传的）"""
+        adapter = self._make_adapter()
+        adapter._on_reconnected(None)
+        adapter._on_reconnected("some_arg")
