@@ -345,3 +345,56 @@ class TestAtomicFileWrite:
             with open(prefs_path) as f:
                 data = json.load(f)
             assert data["feishu"]["user_p2p_chat_id"] == "chat_123"
+
+
+class TestSchedulerPush:
+    """Task 7: Scheduler 推送应通过 channel.schedule() 发送"""
+
+    def test_push_calls_channel_send(self):
+        """push 方法应调用 channel.send()"""
+        adapter = _create_adapter()
+        adapter._user_p2p_chat_id = "chat_123"
+
+        async def _fake_send(*args, **kwargs):
+            pass
+
+        with patch.object(adapter.channel, 'send', side_effect=_fake_send) as mock_send:
+            asyncio.run(adapter.push("chat_123", "提醒内容"))
+            mock_send.assert_called_once_with("chat_123", {"markdown": "提醒内容"})
+
+    def test_scheduler_uses_channel_schedule(self):
+        """Scheduler 推送应通过 channel.schedule() 而非 run_coroutine_threadsafe"""
+        adapter = _create_adapter()
+        adapter._user_p2p_chat_id = "chat_123"
+
+        with patch.object(adapter.channel, 'schedule') as mock_schedule:
+            push_coro = adapter.push(adapter._user_p2p_chat_id, "提醒内容")
+            adapter.channel.schedule(push_coro)
+            mock_schedule.assert_called_once()
+            call_arg = mock_schedule.call_args[0][0]
+            assert asyncio.iscoroutine(call_arg)
+            push_coro.close()
+
+    def test_scheduler_no_run_coroutine_threadsafe(self):
+        """Scheduler 推送代码不应使用 run_coroutine_threadsafe"""
+        source = open("REDACTED_USER_PATH/tools/ai-bot/niu_api/internal/scheduler/service.py").read()
+        # 提取飞书推送 try 块（从 "# 飞书通道推送" 到对应的 except）
+        lines = source.split('\n')
+        feishu_block_lines = []
+        in_feishu_block = False
+        brace_depth = 0
+        for line in lines:
+            if '# 飞书通道推送' in line:
+                in_feishu_block = True
+                brace_depth = 0
+            if in_feishu_block:
+                feishu_block_lines.append(line)
+                # 检测 try 块结束：遇到 except 后的下一行非缩进
+                if line.strip().startswith('except'):
+                    # 收集 except 行和下一行（error handler）
+                    continue
+                if feishu_block_lines and line.strip() and not line.strip().startswith('#') and not line.startswith(' ' * 12) and len(feishu_block_lines) > 3:
+                    break
+        feishu_block = '\n'.join(feishu_block_lines)
+        assert 'run_coroutine_threadsafe' not in feishu_block, \
+            f"Scheduler 飞书推送不应使用 run_coroutine_threadsafe:\n{feishu_block}"

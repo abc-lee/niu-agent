@@ -119,21 +119,14 @@ def trigger_callback(task: dict) -> str:
 
             # 飞书通道推送
             try:
-                import asyncio
                 from niu_api.channel import get_channel_router
                 channel_router = get_channel_router()
                 if channel_router.has_channel("feishu"):
                     feishu_adapter = channel_router.channels["feishu"]
                     if feishu_adapter.user_p2p_chat_id:
-                        from niu_api.chat import _main_loop
-                        if _main_loop and not _main_loop.is_closed():
-                            future = asyncio.run_coroutine_threadsafe(
-                                channel_router.push(agent_reply, "feishu", feishu_adapter.user_p2p_chat_id),
-                                _main_loop
-                            )
-                            future.add_done_callback(
-                                lambda f: logger.warning(f"[SCHEDULER] Feishu push failed: {f.exception()}") if f.exception() else None
-                            )
+                        feishu_adapter.channel.schedule(
+                            feishu_adapter.push(feishu_adapter.user_p2p_chat_id, agent_reply)
+                        )
             except Exception as e:
                 logger.warning(f"[SCHEDULER] Feishu push failed: {e}")
 
