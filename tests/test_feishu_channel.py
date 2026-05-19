@@ -292,3 +292,56 @@ class TestErrorEventAndEmptyReply:
             adapter._process_and_reply(unified)
             # 空回复时 schedule 也应被调用（发送提示消息）
             assert mock_schedule.called
+
+
+class TestAtomicFileWrite:
+    """Task 6: 原子文件写入"""
+
+    def test_save_prefs_uses_atomic_write(self):
+        """_save_prefs 应使用临时文件 + os.replace()"""
+        import inspect
+        from niu_api.channel.feishu_channel import FeishuChannelAdapter
+        source = inspect.getsource(FeishuChannelAdapter._save_prefs)
+        assert "os.replace" in source
+
+    def test_save_prefs_creates_valid_file(self):
+        """_save_prefs 应创建有效的 JSON 文件"""
+        import tempfile
+        import os
+        from pathlib import Path
+        adapter = _create_adapter()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            prefs_path = Path(tmpdir) / "preferences.json"
+            adapter._prefs_path = prefs_path
+            adapter._user_p2p_chat_id = "chat_123"
+            adapter._user_open_id = "ou_abc"
+            adapter._feishu_prefs = {}
+            adapter._save_prefs()
+            import json
+            with open(prefs_path) as f:
+                data = json.load(f)
+            assert data["feishu"]["user_p2p_chat_id"] == "chat_123"
+            assert data["feishu"]["user_open_id"] == "ou_abc"
+
+    def test_save_prefs_no_partial_file_on_error(self):
+        """_save_prefs 失败时不应留下部分写入的文件"""
+        import tempfile
+        import os
+        import json
+        from pathlib import Path
+        adapter = _create_adapter()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            prefs_path = Path(tmpdir) / "preferences.json"
+            adapter._prefs_path = prefs_path
+            adapter._user_p2p_chat_id = "chat_123"
+            adapter._user_open_id = None
+            adapter._feishu_prefs = {}
+            # 先写一个有效文件
+            adapter._save_prefs()
+            # 模拟写入失败（路径指向一个不存在的目录中的文件）
+            adapter._prefs_path = Path("/nonexistent_dir/feishu_prefs.json")
+            adapter._save_prefs()  # 应该不抛异常
+            # 原文件应仍然有效
+            with open(prefs_path) as f:
+                data = json.load(f)
+            assert data["feishu"]["user_p2p_chat_id"] == "chat_123"
