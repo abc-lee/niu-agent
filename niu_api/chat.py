@@ -110,6 +110,7 @@ class ChatRequest(BaseModel):
     session_id: Optional[str] = None
     message: str
     system_prompt: Optional[str] = ""
+    resources: list = []
 
 
 class ChatResponse(BaseModel):

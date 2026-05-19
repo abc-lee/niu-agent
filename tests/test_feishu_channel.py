@@ -15,7 +15,7 @@ def _create_msg(content="你好", chat_id="chat_123", sender_id="user_001",
     msg.chat_type = chat_type
     msg.resources = resources or []
     msg.raw_content_type = raw_content_type
-    msg.raw = {}
+    msg.raw = {"chat_type": chat_type} if chat_type else {}
     return msg
 
 
@@ -118,3 +118,84 @@ class TestP2PMessageGuard:
         with patch('threading.Thread'):
             adapter._on_message(msg)
         assert adapter._user_open_id == "user_001"
+
+
+class TestResourcesToText:
+    """Task 3: resources 转文本描述"""
+
+    def test_format_resources_image(self):
+        """图片资源转为 [图片: file_key] 文本"""
+        from niu_api.channel.feishu_channel import FeishuChannelAdapter
+        adapter = _create_adapter()
+        resources = [{"type": "image", "file_key": "img_001.jpg"}]
+        result = adapter._format_resources(resources)
+        assert "图片" in result
+        assert "img_001.jpg" in result
+
+    def test_format_resources_file(self):
+        """文件资源转为 [文件: file_name] 文本"""
+        from niu_api.channel.feishu_channel import FeishuChannelAdapter
+        adapter = _create_adapter()
+        resources = [{"type": "file", "file_name": "report.pdf"}]
+        result = adapter._format_resources(resources)
+        assert "文件" in result
+        assert "report.pdf" in result
+
+    def test_format_resources_empty(self):
+        """空 resources 返回空字符串"""
+        from niu_api.channel.feishu_channel import FeishuChannelAdapter
+        adapter = _create_adapter()
+        result = adapter._format_resources([])
+        assert result == ""
+
+    def test_format_resources_multiple(self):
+        """多个 resources 合并为一行一个"""
+        from niu_api.channel.feishu_channel import FeishuChannelAdapter
+        adapter = _create_adapter()
+        resources = [
+            {"type": "image", "file_key": "img_001.jpg"},
+            {"type": "file", "file_name": "report.pdf"},
+        ]
+        result = adapter._format_resources(resources)
+        assert "图片" in result
+        assert "文件" in result
+        assert "\n" in result
+
+
+class TestSessionIdByUser:
+    """Task 3: session_id 按用户区分"""
+
+    def test_session_id_uses_sender_id(self):
+        """session_id 应基于 sender_id 生成"""
+        adapter = _create_adapter()
+        msg = _create_msg(sender_id="user_abc", chat_type="p2p")
+        with patch.object(adapter.router, 'route_in_sync', return_value="回复") as mock_route:
+            with patch('threading.Thread') as mock_thread, \
+                 patch('asyncio.get_running_loop', return_value=Mock()):
+                adapter._on_message(msg)
+                # 获取线程目标函数和参数并执行
+                call_kwargs = mock_thread.call_args[1]
+                thread_target = call_kwargs['target']
+                thread_args = call_kwargs.get('args', ())
+                thread_target(*thread_args)
+                # 验证 route_in_sync 被调用时传了正确的 session_id
+                call_args = mock_route.call_args
+                assert call_args is not None
+                # route_in_sync 现在接收 UnifiedMessage 和 session_id
+                assert "user_abc" in str(call_args)
+
+    def test_session_id_group_uses_channel_id(self):
+        """群聊消息 session_id 应基于 channel_id"""
+        adapter = _create_adapter()
+        msg = _create_msg(sender_id="user_abc", chat_id="group_chat_789", chat_type="group")
+        with patch.object(adapter.router, 'route_in_sync', return_value="回复") as mock_route:
+            with patch('threading.Thread') as mock_thread, \
+                 patch('asyncio.get_running_loop', return_value=Mock()):
+                adapter._on_message(msg)
+                call_kwargs = mock_thread.call_args[1]
+                thread_target = call_kwargs['target']
+                thread_args = call_kwargs.get('args', ())
+                thread_target(*thread_args)
+                call_args = mock_route.call_args
+                assert call_args is not None
+                assert "group_chat_789" in str(call_args)
