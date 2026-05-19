@@ -170,7 +170,9 @@ class FeishuChannelAdapter(ChannelAdapter):
         return {}
 
     def _save_prefs(self):
-        """将 feishu 配置段写回 preferences.json"""
+        """将 feishu 配置段写回 preferences.json（原子写入）"""
+        import os
+        import tempfile
         try:
             prefs = {}
             if self._prefs_path.exists():
@@ -183,8 +185,15 @@ class FeishuChannelAdapter(ChannelAdapter):
             if self._user_open_id:
                 feishu["user_open_id"] = self._user_open_id
 
-            with open(self._prefs_path, "w", encoding="utf-8") as f:
-                json.dump(prefs, f, indent=2, ensure_ascii=False)
+            dir_name = str(self._prefs_path.parent)
+            fd, tmp_path = tempfile.mkstemp(dir=dir_name, suffix=".tmp")
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(prefs, f, indent=2, ensure_ascii=False)
+                os.replace(tmp_path, str(self._prefs_path))
+            except Exception:
+                os.unlink(tmp_path)
+                raise
 
             self._feishu_prefs = feishu
         except Exception as e:
