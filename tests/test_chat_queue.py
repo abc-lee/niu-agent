@@ -238,15 +238,15 @@ async def test_is_processing_flag(mock_runner, mock_store):
 
 
 @pytest.mark.asyncio
-async def test_enqueue_sync_with_no_loop(mock_runner):
-    """enqueue_sync 在主循环不可用时应返回失败"""
+async def test_enqueue_sync_with_no_loop():
+    """enqueue_sync 在所有循环都不可用时应返回失败"""
     from niu_api.chat_queue import ChatQueue
 
-    q = ChatQueue(mock_runner)
+    q = ChatQueue(MagicMock())
 
-    # enqueue_sync 内部 from niu_api.chat import _main_loop
-    # 需要patch niu_api.chat._main_loop
-    with patch("niu_api.chat._main_loop", None):
+    # 模拟 _main_loop=None 且无运行中循环
+    with patch("niu_api.chat._main_loop", None), \
+         patch.object(asyncio, "get_running_loop", side_effect=RuntimeError("no running loop")):
         result = q.enqueue_sync("测试无循环")
         assert result.queued is False
 

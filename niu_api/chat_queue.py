@@ -98,8 +98,12 @@ class ChatQueue:
         from niu_api.chat import _main_loop
         loop = _main_loop
         if loop is None or loop.is_closed():
-            logger.error("[ChatQueue] Main loop not available, cannot enqueue")
-            return EnqueueResult(queued=False, message="主事件循环不可用")
+            # Fallback: try to get a running event loop
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                logger.error("[ChatQueue] No event loop available, cannot enqueue")
+                return EnqueueResult(queued=False, message="No event loop available")
 
         self._request_counter += 1
         req = ChatRequest(
@@ -198,7 +202,11 @@ class ChatQueue:
                 merged_content = first_req.content
 
             # 处理合并后的消息
-            reply = await self._process_single(merged_content, first_req.session_id, all_contents)
+            try:
+                reply = await self._process_single(merged_content, first_req.session_id, all_contents)
+            except Exception as e:
+                logger.error(f"[ChatQueue] Processing error: {e}")
+                reply = f"[处理出错: {e}]"
 
             # 推送回复到飞书（传空 channel_id，让 push() 按 open_id > chat_id 优先级选择）
             if source == "feishu":

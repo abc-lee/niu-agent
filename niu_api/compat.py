@@ -362,9 +362,6 @@ async def _run_auto_tidy():
 
 router = APIRouter(tags=["compat"])
 
-# 并发锁：串行化所有 chat 请求，防止并发调用 runner.chat() 导致共享状态损坏
-_chat_lock = asyncio.Lock()
-
 
 class ChatRequest(BaseModel):
     """Chat request"""
@@ -617,50 +614,47 @@ async def add_context_message(request: dict) -> dict:
 @router.post("/api/chat/clear")
 async def clear_chat() -> dict:
     """Clear all messages (for /new command)"""
-    # 获取锁，防止与正在进行的 chat 冲突
-    import asyncio
+    # drain: 等待当前 chat 处理完成 + 清空队列中待处理消息
+    from niu_api.chat_queue import get_chat_queue
 
-    # 排队等待锁：最多等 5 秒（清除操作不需要等太久）
-    try:
-        await asyncio.wait_for(_chat_lock.acquire(), timeout=5.0)
-    except TimeoutError:
-        logger.warning("[clear_chat] _chat_lock 5s timeout, clear rejected")
+    q = get_chat_queue()
+    drained = await q.drain(timeout=5.0)
+
+    if not drained:
+        logger.warning("[clear_chat] ChatQueue drain 5s timeout, clear rejected")
         return {"success": False, "error": "系统正忙，请稍后再试"}
 
-    try:
-        store = await get_message_store()
-        count = await store.clear_messages()
+    store = await get_message_store()
+    count = await store.clear_messages()
 
-        # 重置 runner 的所有状态
-        from niu_api.chat import get_or_create_runner
+    # 重置 runner 的所有状态
+    from niu_api.chat import get_or_create_runner
 
-        runner = get_or_create_runner()
-        if runner:
-            # 重置 handler 的工作记忆
-            if runner.handler:
-                runner.handler.reset_working_memory()
+    runner = get_or_create_runner()
+    if runner:
+        # 重置 handler 的工作记忆
+        if runner.handler:
+            runner.handler.reset_working_memory()
 
-            # Note: LLM session history is managed by ContextManager,
-            # which reloads from message store each call.
-            # store.clear_messages() above already clears persistent history.
+        # Note: LLM session history is managed by ContextManager,
+        # which reloads from message store each call.
+        # store.clear_messages() above already clears persistent history.
 
-        # 清空临时目录（画框图片等）
-        from agent.tmp_dir import cleanup_all_tmp
-        cleaned_tmp = cleanup_all_tmp()
+    # 清空临时目录（画框图片等）
+    from agent.tmp_dir import cleanup_all_tmp
+    cleaned_tmp = cleanup_all_tmp()
 
-        # 重置游标文件（消息已清空，旧游标指向不存在的消息）
-        from pathlib import Path
-        for cursor_name in ["last_entity_extract.json", "last_dream_evolve.json", "last_compress.json", "last_tidy_tokens.json"]:
-            cursor_p = Path.home() / ".niu" / cursor_name
-            try:
-                if cursor_p.exists():
-                    cursor_p.unlink()
-            except OSError as e:
-                logger.warning(f"[clear_chat] Failed to reset cursor file {cursor_name}: {e}")
+    # 重置游标文件（消息已清空，旧游标指向不存在的消息）
+    from pathlib import Path
+    for cursor_name in ["last_entity_extract.json", "last_dream_evolve.json", "last_compress.json", "last_tidy_tokens.json"]:
+        cursor_p = Path.home() / ".niu" / cursor_name
+        try:
+            if cursor_p.exists():
+                cursor_p.unlink()
+        except OSError as e:
+            logger.warning(f"[clear_chat] Failed to reset cursor file {cursor_name}: {e}")
 
-        return {"success": True, "deleted_count": count, "cleaned_tmp": cleaned_tmp}
-    finally:
-        _chat_lock.release()
+    return {"success": True, "deleted_count": count, "cleaned_tmp": cleaned_tmp, "drained": drained}
 
 
 @router.get("/api/pending-alerts")

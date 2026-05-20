@@ -153,6 +153,11 @@ async def lifespan(app: FastAPI):
     set_main_event_loop(asyncio.get_running_loop())
     logger.info("SSE event loop captured")
 
+    # 6.6. Start ChatQueue (serial message processing)
+    from niu_api.chat_queue import start_chat_queue
+    await start_chat_queue()
+    logger.info("ChatQueue started")
+
     # 7. (Removed) Weekly vector cleanup — vectors.db is deprecated,
     #    LightRAG manages its own storage. Cleanup is no longer needed.
 
@@ -312,6 +317,14 @@ async def lifespan(app: FastAPI):
         logger.info("LightRAG background sync stopped")
     except Exception as e:
         logger.warning(f"Failed to stop LightRAG sync: {e}")
+
+    # 停止 ChatQueue
+    try:
+        from niu_api.chat_queue import stop_chat_queue
+        await stop_chat_queue()
+        logger.info("ChatQueue stopped")
+    except Exception as e:
+        logger.warning(f"Failed to stop ChatQueue: {e}")
 
     # 停止飞书通道
     try:

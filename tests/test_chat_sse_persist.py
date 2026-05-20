@@ -109,7 +109,6 @@ async def test_chat_sse_persist_assistant_plain_text(temp_db_path, temp_message_
     # ---- 构造 FastAPI app ----
     from fastapi import FastAPI
     from niu_api.chat import router as chat_router
-    from niu_api.compat import _chat_lock
     import agent.session as session_module
 
     app = FastAPI()
@@ -131,10 +130,6 @@ async def test_chat_sse_persist_assistant_plain_text(temp_db_path, temp_message_
             patch("niu_api.chat.notify_new_message", new_callable=AsyncMock),
             patch("niu_api.compat._check_and_trigger_auto_tidy", new_callable=AsyncMock),
         ):
-            # 确保 _chat_lock 未被持有
-            while _chat_lock.locked():
-                _chat_lock.release()
-
             client = TestClient(app)
 
             # ---- 发送 /chat 请求 ----

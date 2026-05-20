@@ -52,9 +52,8 @@ class FeishuChannelAdapter(ChannelAdapter):
         self.channel.on("error", self._on_error)
 
     def _on_message(self, msg):
-        """处理飞书消息事件（同步 handler，不阻塞 SDK 事件循环）"""
+        """处理飞书消息事件（直接入队，不阻塞 SDK 线程）"""
         try:
-            # 确保 raw 中包含 chat_type，供后续 _is_p2p_message(unified) 判断
             raw = msg.raw or {}
             if msg.chat_type and "chat_type" not in raw:
                 raw = {**raw, "chat_type": msg.chat_type}
@@ -73,13 +72,39 @@ class FeishuChannelAdapter(ChannelAdapter):
                 logger.debug("[FeishuChannel] Empty message with no resources, skipping")
                 return
 
-            # 仅 P2P 消息才更新推送目标（持久化移到工作线程中，避免阻塞 SDK 线程）
             is_p2p = self._is_p2p_message(msg)
-
             log_preview = unified.content[:50] if unified.content.strip() else f"[resources: {len(unified.resources)}]"
             logger.info(f"[FeishuChannel] Received: {log_preview}...")
 
-            threading.Thread(target=self._process_and_reply, args=(unified, is_p2p), daemon=True).start()
+            # P2P 消息：更新推送目标并持久化
+            if is_p2p:
+                self._update_persisted_ids(unified.channel_id, unified.sender_id)
+
+            # 将 resources 转为文本描述
+            resource_text = self._format_resources(unified.resources)
+            if resource_text:
+                message_content = f"{unified.content}\n{resource_text}" if unified.content.strip() else resource_text
+            else:
+                message_content = unified.content
+
+            # P2P 用 sender_id，群聊用 chat_id — 区分 session 避免上下文混淆
+            if is_p2p:
+                session_id = f"feishu:{unified.sender_id}"
+            else:
+                session_id = f"feishu:group:{unified.channel_id}"
+
+            # 直接入队（不再启动新线程，入队操作几乎不耗时）
+            result = self.router.route_in_sync(unified, session_id=session_id, message_override=message_content)
+            if result.queued:
+                logger.info(f"[FeishuChannel] Message queued: {message_content[:50]}...")
+            else:
+                logger.warning(f"[FeishuChannel] Failed to queue: {result.message}")
+                try:
+                    self.channel.schedule(
+                        self.channel.send(unified.channel_id, {"text": "消息入队失败，请稍后重试"}),
+                    )
+                except Exception as e:
+                    logger.warning(f"[FeishuChannel] Failed to send error notification: {e}")
 
         except Exception as e:
             logger.error(f"[FeishuChannel] Message handler error: {e}")
@@ -109,49 +134,6 @@ class FeishuChannelAdapter(ChannelAdapter):
                 name = file_name or file_key or "未知资源"
                 parts.append(f"[{rtype}: {name}]" if rtype else f"[资源: {name}]")
         return "\n".join(parts)
-
-    def _process_and_reply(self, unified: UnifiedMessage, is_p2p: bool = False):
-        """在独立线程中执行阻塞调用，完成后通过 channel.schedule() 发送回复"""
-        try:
-            # P2P 消息：更新推送目标并持久化
-            if is_p2p:
-                self._update_persisted_ids(unified.channel_id, unified.sender_id)
-
-            # P2P 用 sender_id，群聊用 chat_id
-            if is_p2p:
-                session_id = f"feishu:{unified.sender_id}"
-            else:
-                session_id = f"feishu:group:{unified.channel_id}"
-
-            # 将 resources 转为文本描述，追加到消息后面
-            resource_text = self._format_resources(unified.resources)
-            if resource_text:
-                message_content = f"{unified.content}\n{resource_text}" if unified.content.strip() else resource_text
-            else:
-                message_content = unified.content
-
-            reply = self.router.route_in_sync(unified, session_id=session_id, message_override=message_content)
-            # route_in_sync now returns EnqueueResult (fire-and-forget enqueue)
-            # ChatQueue Worker handles pushing the reply to Feishu
-            if reply and reply.queued:
-                logger.info(f"[FeishuChannel] Message enqueued: request_id={reply.request_id}")
-            else:
-                logger.warning(f"[FeishuChannel] Enqueue failed: {reply.message if reply else 'no result'}")
-                try:
-                    self.channel.schedule(
-                        self.channel.send(unified.channel_id, {"text": "消息入队失败，请稍后重试"}),
-                    )
-                except Exception as e:
-                    logger.warning(f"[FeishuChannel] Failed to send enqueue-failure notification: {e}")
-        except Exception as e:
-            logger.error(f"[FeishuChannel] Process/reply error: {e}")
-            try:
-                if self.channel.is_ready:
-                    self.channel.schedule(
-                        self.channel.send(unified.channel_id, {"text": "处理消息时出错，请稍后重试"}),
-                    )
-            except Exception:
-                pass
 
     def _is_p2p_message(self, msg_or_unified) -> bool:
         """判断是否为 P2P 消息（非群聊）— 兼容 SDK msg 和 UnifiedMessage"""
