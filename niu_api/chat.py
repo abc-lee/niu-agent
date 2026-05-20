@@ -14,7 +14,7 @@ from loguru import logger
 
 from agent.runner import NiuRunner, get_runner
 from agent.session import get_message_store
-from niu_api.compat import _chat_lock
+from niu_api.chat_queue import get_chat_queue, EnqueueResult
 
 router = APIRouter(tags=["chat"])
 
@@ -267,7 +267,7 @@ def get_or_create_runner() -> "NiuRunner":
 @router.post("/chat")
 async def chat(request: ChatRequest) -> StreamingResponse:
     """
-    Main chat endpoint - 使用 NiuRunner 流式响应
+    Main chat endpoint - 入队后 SSE 心跳 keepalive，回复通过 notify_new_message 推送
     """
     llm_cfg = _load_llm_config()
 
@@ -276,118 +276,27 @@ async def chat(request: ChatRequest) -> StreamingResponse:
             status_code=400, detail="LLM not configured. Please set up API key first."
         )
 
-    runner = get_or_create_runner()
-
-    # Get or create session
     session_id = request.session_id or "default"
+    q = get_chat_queue()
+    result = await q.enqueue(
+        content=request.message,
+        source="frontend",
+        session_id=session_id,
+    )
 
-    # Stream response
-    async def generate():
-        # 排队等待锁：最多等 60 秒
-        try:
-            await asyncio.wait_for(_chat_lock.acquire(), timeout=60.0)
-        except asyncio.TimeoutError:
-            logger.warning("[/chat] _chat_lock 60s timeout, request rejected")
-            yield f"data: {json.dumps({'error': 'Another request is in progress, please wait'})}\n\n"
-            yield f"data: {json.dumps({'done': True, 'session_id': session_id})}\n\n"
-            return
+    async def event_generator():
+        # 立即发送入队确认
+        yield f"data: {json.dumps({'type': 'queued', 'request_id': result.request_id})}\n\n"
 
-        try:
-            reply_chunks = []
-            stream_error = None
-
-            # 先持久化 user 消息，再加载 history（与其他端点一致）
-            # 这样 exclude_last=True 才能正确排除当前 user 消息
-            store = await get_message_store()
-            user_msg_id = await store.add_message(role="user", content=request.message)
-            await notify_new_message(user_msg_id, "user", request.message)
-
-            # 加载 history（exclude_last=True 现在正确排除当前 user 消息）
-            from agent.context_manager import get_context_manager
-            context_manager = await get_context_manager(store)
-            history_for_runner = await context_manager.get_context_for_chat(exclude_last=True)
-            history_len = len(history_for_runner)
-
-            # Run streaming in executor thread, communicate chunks via queue
-            import queue as _queue
-
-            chunk_queue: _queue.Queue[str | None] = _queue.Queue()
-
-            def sync_stream():
-                nonlocal stream_error
-                try:
-                    for chunk in runner.chat(session_id, request.message, stream=True, history=history_for_runner):
-                        if chunk:
-                            chunk_queue.put(chunk)
-                except Exception as e:
-                    stream_error = str(e)
-                finally:
-                    chunk_queue.put(None)  # sentinel
-
-            loop = asyncio.get_running_loop()
-            stream_future = loop.run_in_executor(None, sync_stream)
-
-            # Drain queue in async context while executor produces chunks
-            while not stream_future.done() or not chunk_queue.empty():
-                try:
-                    chunk = chunk_queue.get_nowait()
-                except _queue.Empty:
-                    await asyncio.sleep(0.01)
-                    continue
-                if chunk is None:
-                    break
-                reply_chunks.append(chunk)
-                yield f"data: {json.dumps({'chunk': chunk})}\n\n"
-
-            # Ensure executor finished
-            try:
-                await stream_future
-            except Exception as e:
-                stream_error = stream_error or str(e)
-
-            # Send error if streaming failed
-            if stream_error:
-                yield f"data: {json.dumps({'error': stream_error})}\n\n"
-
-            # 双管道 DB 管道：从 return value 持久化消息
-            rv = getattr(runner, "last_return_value", None)
-            full_reply = "".join(reply_chunks)
-            await persist_agent_reply(store, rv, history_len, full_reply)
-
-            # 检测主 Agent 上下文溢出 → 同步触发 force 压缩（阻塞）
-            if rv and isinstance(rv, dict) and rv.get("result") == "CONTEXT_OVERFLOW":
-                overflow_data = rv.get("data", {})
-                logger.warning(
-                    f"[Chat SSE] Main agent CONTEXT_OVERFLOW at {overflow_data.get('tokens_used', 0)} tokens, "
-                    f"triggering force compression (blocking)"
-                )
-                from niu_api.compat import _tidy_context_impl, _tidy_lock
-                async with _tidy_lock:
-                    tidy_result = await _tidy_context_impl(request={"session_id": session_id, "mode": "force"})
-                logger.info(f"[Chat SSE] Force compression result: {tidy_result.get('status')}")
-                yield f"data: {json.dumps({'force_compression_done': True, 'status': tidy_result.get('status')})}\n\n"
-            else:
-                # 正常：异步触发增量整理检查（不阻塞）
-                full_reply = "".join(reply_chunks)
-                if full_reply.strip():
-                    from niu_api.compat import _check_and_trigger_auto_tidy
-                    store = await get_message_store()
-                    await _check_and_trigger_auto_tidy(store)
-
-            # Send final message
-            yield f"data: {json.dumps({'done': True, 'session_id': session_id})}\n\n"
-        finally:
-            # 确保执行器线程完成后再释放锁，防止 runner.chat() 并发
-            sf = locals().get("stream_future")
-            if sf and not sf.done():
-                try:
-                    await asyncio.wait_for(sf, timeout=30.0)
-                except (asyncio.TimeoutError, Exception):
-                    logger.warning("[/chat] Executor thread did not finish after client disconnect")
-            _chat_lock.release()
+        # 心跳 keepalive，直到 SSE 推送到达或超时
+        heartbeat = 0
+        while heartbeat < 60:  # 最多 60 次 * 0.5s = 30s
+            await asyncio.sleep(0.5)
+            heartbeat += 1
+            yield ": heartbeat\n\n"
 
     return StreamingResponse(
-        generate(),
+        event_generator(),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -400,8 +309,7 @@ async def chat(request: ChatRequest) -> StreamingResponse:
 @router.post("/chat/sync")
 async def chat_sync(request: ChatRequest) -> ChatResponse:
     """
-    Synchronous chat endpoint - waits for complete response.
-    Persists both user and assistant messages to the database.
+    Sync chat endpoint - 使用 ChatQueue 排队等待回复
     """
     llm_cfg = _load_llm_config()
 
@@ -410,75 +318,14 @@ async def chat_sync(request: ChatRequest) -> ChatResponse:
             status_code=400, detail="LLM not configured. Please set up API key first."
         )
 
-    # 排队等待锁：最多等 60 秒
-    try:
-        await asyncio.wait_for(_chat_lock.acquire(), timeout=60.0)
-    except asyncio.TimeoutError:
-        logger.warning("[/chat/sync] _chat_lock 60s timeout, request rejected")
-        raise HTTPException(
-            status_code=503, detail="Another request is in progress, please try again later."
-        )
-
-    try:
-        # Persist user message to database
-        store = await get_message_store()
-        user_msg_id = await store.add_message(role="user", content=request.message)
-        # /chat/sync 由 scheduler 调用，用户消息不在前端本地渲染，需要 SSE 推送
-        await notify_new_message(user_msg_id, "user", request.message)
-
-        # Load conversation history via ContextManager (same as /api/chat/session)
-        from agent.context_manager import get_context_manager
-
-        context_manager = await get_context_manager(store)
-        history_for_runner = await context_manager.get_context_for_chat(exclude_last=True)
-        history_len = len(history_for_runner)
-
-        runner = get_or_create_runner()
-        session_id = request.session_id or "default"
-
-        # Run chat (non-streaming)
-        def sync_chat():
-            full_reply = ""
-            for chunk in runner.chat(session_id, request.message, stream=True, history=history_for_runner):
-                full_reply += chunk
-            return full_reply
-
-        try:
-            loop = asyncio.get_running_loop()
-            full_reply = await loop.run_in_executor(None, sync_chat)
-        except Exception as e:
-            import traceback
-            from loguru import logger
-            logger.error(f"Chat sync error: {e}\n{traceback.format_exc()}")
-            full_reply = f"Error: {str(e)}"
-
-        # 双管道架构：runner.chat() 已过滤非 reply 内容，无需再清理
-
-        # 持久化消息到数据库
-        rv = getattr(runner, "last_return_value", None)
-        message_id, full_reply = await persist_agent_reply(store, rv, history_len, full_reply)
-
-        # 检测主 Agent 上下文溢出 → 同步触发 force 压缩（阻塞，压缩完再继续）
-        if rv and isinstance(rv, dict) and rv.get("result") == "CONTEXT_OVERFLOW":
-            overflow_data = rv.get("data", {})
-            logger.warning(
-                f"[Chat] Main agent CONTEXT_OVERFLOW at {overflow_data.get('tokens_used', 0)} tokens, "
-                f"triggering force compression (blocking)"
-            )
-            from niu_api.compat import _tidy_context_impl, _tidy_lock
-            async with _tidy_lock:
-                tidy_result = await _tidy_context_impl(request={"session_id": session_id, "mode": "force"})
-            logger.info(f"[Chat] Force compression result: {tidy_result.get('status')}")
-            # 压缩完成后不触发 auto_tidy（force 已包含完整3步整理）
-        else:
-            # 正常：异步触发增量整理检查（不阻塞）
-            if full_reply.strip():
-                from niu_api.compat import _check_and_trigger_auto_tidy
-                await _check_and_trigger_auto_tidy(store)
-
-        return ChatResponse(session_id=session_id, reply=full_reply, message_id=message_id)
-    finally:
-        _chat_lock.release()
+    session_id = request.session_id or "default"
+    q = get_chat_queue()
+    reply = await q.enqueue_and_wait(
+        content=request.message,
+        source="frontend",
+        session_id=session_id,
+    )
+    return ChatResponse(reply=reply)
 
 
 @router.get("/api/events/stream")
