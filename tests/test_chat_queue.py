@@ -51,9 +51,9 @@ async def test_enqueue_and_process(mock_runner, mock_store):
     processed = asyncio.Event()
 
     with patch("niu_api.chat_queue.get_message_store", return_value=mock_store), \
-         patch("niu_api.chat_queue.notify_new_message", new_callable=AsyncMock), \
+         patch("niu_api.chat.notify_new_message", new_callable=AsyncMock), \
          patch("agent.context_manager.get_context_manager") as mock_cm, \
-         patch("niu_api.chat_queue.persist_agent_reply", new_callable=AsyncMock, return_value=("msg-id", "回复内容")), \
+         patch("niu_api.chat.persist_agent_reply", new_callable=AsyncMock, return_value=("msg-id", "回复内容")), \
          patch("niu_api.chat_queue.ChatQueue._check_overflow", new_callable=AsyncMock):
 
         _setup_context_manager(mock_cm)
@@ -88,9 +88,9 @@ async def test_message_merging(mock_runner, mock_store):
     processed = asyncio.Event()
 
     with patch("niu_api.chat_queue.get_message_store", return_value=mock_store), \
-         patch("niu_api.chat_queue.notify_new_message", new_callable=AsyncMock), \
+         patch("niu_api.chat.notify_new_message", new_callable=AsyncMock), \
          patch("agent.context_manager.get_context_manager") as mock_cm, \
-         patch("niu_api.chat_queue.persist_agent_reply", new_callable=AsyncMock, return_value=("msg-id", "回复内容")), \
+         patch("niu_api.chat.persist_agent_reply", new_callable=AsyncMock, return_value=("msg-id", "回复内容")), \
          patch("niu_api.chat_queue.ChatQueue._check_overflow", new_callable=AsyncMock):
 
         _setup_context_manager(mock_cm)
@@ -129,9 +129,9 @@ async def test_enqueue_returns_immediately(mock_runner, mock_store):
     q = ChatQueue(mock_runner)
 
     with patch("niu_api.chat_queue.get_message_store", return_value=mock_store), \
-         patch("niu_api.chat_queue.notify_new_message", new_callable=AsyncMock), \
+         patch("niu_api.chat.notify_new_message", new_callable=AsyncMock), \
          patch("agent.context_manager.get_context_manager") as mock_cm, \
-         patch("niu_api.chat_queue.persist_agent_reply", new_callable=AsyncMock, return_value=("msg-id", "回复内容")), \
+         patch("niu_api.chat.persist_agent_reply", new_callable=AsyncMock, return_value=("msg-id", "回复内容")), \
          patch("niu_api.chat_queue.ChatQueue._check_overflow", new_callable=AsyncMock):
 
         _setup_context_manager(mock_cm)
@@ -155,9 +155,9 @@ async def test_enqueue_and_wait(mock_runner, mock_store):
     q = ChatQueue(mock_runner)
 
     with patch("niu_api.chat_queue.get_message_store", return_value=mock_store), \
-         patch("niu_api.chat_queue.notify_new_message", new_callable=AsyncMock), \
+         patch("niu_api.chat.notify_new_message", new_callable=AsyncMock), \
          patch("agent.context_manager.get_context_manager") as mock_cm, \
-         patch("niu_api.chat_queue.persist_agent_reply", new_callable=AsyncMock, return_value=("msg-id", "回复内容")), \
+         patch("niu_api.chat.persist_agent_reply", new_callable=AsyncMock, return_value=("msg-id", "回复内容")), \
          patch("niu_api.chat_queue.ChatQueue._check_overflow", new_callable=AsyncMock):
 
         _setup_context_manager(mock_cm)
@@ -178,9 +178,9 @@ async def test_drain(mock_runner, mock_store):
     q = ChatQueue(mock_runner)
 
     with patch("niu_api.chat_queue.get_message_store", return_value=mock_store), \
-         patch("niu_api.chat_queue.notify_new_message", new_callable=AsyncMock), \
+         patch("niu_api.chat.notify_new_message", new_callable=AsyncMock), \
          patch("agent.context_manager.get_context_manager") as mock_cm, \
-         patch("niu_api.chat_queue.persist_agent_reply", new_callable=AsyncMock, return_value=("msg-id", "回复内容")), \
+         patch("niu_api.chat.persist_agent_reply", new_callable=AsyncMock, return_value=("msg-id", "回复内容")), \
          patch("niu_api.chat_queue.ChatQueue._check_overflow", new_callable=AsyncMock):
 
         _setup_context_manager(mock_cm)
@@ -207,9 +207,9 @@ async def test_is_processing_flag(mock_runner, mock_store):
     processing_checked = asyncio.Event()
 
     with patch("niu_api.chat_queue.get_message_store", return_value=mock_store), \
-         patch("niu_api.chat_queue.notify_new_message", new_callable=AsyncMock), \
+         patch("niu_api.chat.notify_new_message", new_callable=AsyncMock), \
          patch("agent.context_manager.get_context_manager") as mock_cm, \
-         patch("niu_api.chat_queue.persist_agent_reply", new_callable=AsyncMock, return_value=("msg-id", "回复内容")), \
+         patch("niu_api.chat.persist_agent_reply", new_callable=AsyncMock, return_value=("msg-id", "回复内容")), \
          patch("niu_api.chat_queue.ChatQueue._check_overflow", new_callable=AsyncMock):
 
         _setup_context_manager(mock_cm)
@@ -260,9 +260,9 @@ async def test_feishu_push_on_feishu_source(mock_runner, mock_store):
     processed = asyncio.Event()
 
     with patch("niu_api.chat_queue.get_message_store", return_value=mock_store), \
-         patch("niu_api.chat_queue.notify_new_message", new_callable=AsyncMock), \
+         patch("niu_api.chat.notify_new_message", new_callable=AsyncMock), \
          patch("agent.context_manager.get_context_manager") as mock_cm, \
-         patch("niu_api.chat_queue.persist_agent_reply", new_callable=AsyncMock, return_value=("msg-id", "回复内容")), \
+         patch("niu_api.chat.persist_agent_reply", new_callable=AsyncMock, return_value=("msg-id", "回复内容")), \
          patch("niu_api.chat_queue.ChatQueue._check_overflow", new_callable=AsyncMock), \
          patch("niu_api.chat_queue.ChatQueue._push_to_feishu", new_callable=AsyncMock) as mock_push:
 
@@ -293,9 +293,9 @@ async def test_no_feishu_push_on_frontend_source(mock_runner, mock_store):
     processed = asyncio.Event()
 
     with patch("niu_api.chat_queue.get_message_store", return_value=mock_store), \
-         patch("niu_api.chat_queue.notify_new_message", new_callable=AsyncMock), \
+         patch("niu_api.chat.notify_new_message", new_callable=AsyncMock), \
          patch("agent.context_manager.get_context_manager") as mock_cm, \
-         patch("niu_api.chat_queue.persist_agent_reply", new_callable=AsyncMock, return_value=("msg-id", "回复内容")), \
+         patch("niu_api.chat.persist_agent_reply", new_callable=AsyncMock, return_value=("msg-id", "回复内容")), \
          patch("niu_api.chat_queue.ChatQueue._check_overflow", new_callable=AsyncMock), \
          patch("niu_api.chat_queue.ChatQueue._push_to_feishu", new_callable=AsyncMock) as mock_push:
 

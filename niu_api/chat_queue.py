@@ -173,7 +173,6 @@ class ChatQueue:
 
         try:
             source = first_req.source
-            channel_id = first_req.channel_id
             reply_future = first_req.reply_future
             supplements = []
 
@@ -249,6 +248,7 @@ class ChatQueue:
             full_reply = f"处理消息时出错：{str(e)}"
 
         # 持久化回复消息（使用共享函数）
+        from niu_api.chat import persist_agent_reply, notify_new_message
         rv = getattr(self._runner, "last_return_value", None)
         message_id, full_reply = await persist_agent_reply(store, rv, history_len, full_reply)
 
