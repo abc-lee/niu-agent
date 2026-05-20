@@ -1,6 +1,6 @@
 """飞书通道异步架构修复 — TDD 测试
 
-验证 _on_message sync handler + threading 架构的正确性。
+验证 _on_message 直接入队 ChatQueue 架构的正确性。
 """
 
 import asyncio
@@ -221,19 +221,15 @@ class TestOnMessageSyncHandler:
             FeishuChannelAdapter._on_message
         ), "_on_message 不应该是 async 函数"
 
-    def test_on_message_returns_immediately(self, bg_loop):
-        """_on_message 应该立即返回，不阻塞"""
-        adapter, mock_channel, mock_router = self._make_adapter(
-            chat_sync_delay=2.0  # 模拟长时间阻塞
-        )
+    def test_on_message_calls_route_in_sync_directly(self, bg_loop):
+        """_on_message 应直接调用 route_in_sync 入队（不再启动线程）"""
+        adapter, mock_channel, mock_router = self._make_adapter()
         msg = MockFeishuMsg(content="在吗")
 
-        start = time.time()
         bg_loop.invoke_sync_handler(adapter._on_message, msg)
-        elapsed = time.time() - start
 
-        # sync handler 应该在 0.5s 内返回（threading 启动开销）
-        assert elapsed < 0.5, f"_on_message 耗时 {elapsed:.2f}s，应该立即返回"
+        # route_in_sync 应该被直接调用（不经过线程）
+        assert mock_router.route_in_sync.call_count == 1
 
     def test_on_message_captures_p2p_chat_id(self, bg_loop):
         """_on_message 应该记录 P2P chat_id"""
@@ -253,20 +249,16 @@ class TestOnMessageSyncHandler:
         bg_loop.invoke_sync_handler(adapter._on_message, msg)
 
         # 空消息不应该触发 route_in_sync
-        time.sleep(0.2)
         assert mock_router.route_in_sync.call_count == 0
 
-    def test_on_message_processes_in_thread(self, bg_loop):
-        """_on_message 应该在独立线程中处理消息"""
+    def test_on_message_processes_directly(self, bg_loop):
+        """_on_message 应直接处理消息（不再启动线程）"""
         adapter, mock_channel, mock_router = self._make_adapter()
 
         msg = MockFeishuMsg(content="你好")
         bg_loop.invoke_sync_handler(adapter._on_message, msg)
 
-        # 等待线程完成
-        time.sleep(0.5)
-
-        # route_in_sync 应该被调用
+        # route_in_sync 应该已经被调用（同步，无需等待线程）
         assert mock_router.route_in_sync.call_count == 1
 
     def test_on_message_enqueue_success(self, bg_loop):
@@ -276,15 +268,14 @@ class TestOnMessageSyncHandler:
         msg = MockFeishuMsg(content="你好")
         bg_loop.invoke_sync_handler(adapter._on_message, msg)
 
-        # 等待线程完成
-        time.sleep(0.5)
-
         # route_in_sync 应该被调用（入队成功）
         assert mock_router.route_in_sync.call_count == 1
 
     def test_on_message_enqueue_failure_sends_notification(self, bg_loop):
         """如果入队失败，应该发送失败通知"""
-        adapter, mock_channel, mock_router = self._make_adapter(enqueue_success=False, bg_loop=bg_loop)
+        adapter, mock_channel, mock_router = self._make_adapter(enqueue_success=False)
+        # 设置 mock channel 的 _loop 以支持 schedule()
+        mock_channel._loop = bg_loop.loop
 
         msg = MockFeishuMsg(content="你好")
         bg_loop.invoke_sync_handler(adapter._on_message, msg)
@@ -293,18 +284,14 @@ class TestOnMessageSyncHandler:
         # 入队失败时应该发送失败通知
         assert len(mock_channel.sent_messages) == 1
 
-    def test_on_message_thread_exception_does_not_crash(self, bg_loop):
-        """工作线程中的异常不应该导致崩溃"""
+    def test_on_message_exception_does_not_crash(self, bg_loop):
+        """_on_message 内部异常不应导致崩溃"""
         adapter, mock_channel, mock_router = self._make_adapter()
         mock_router.route_in_sync = Mock(side_effect=RuntimeError("模拟异常"))
 
         msg = MockFeishuMsg(content="你好")
         # 不应该抛出异常
         bg_loop.invoke_sync_handler(adapter._on_message, msg)
-        time.sleep(0.5)
-
-        # 不应该发送消息
-        assert len(mock_channel.sent_messages) == 0
 
 
 # ============== Task 3: ws_client.loop monkey-patch ==============

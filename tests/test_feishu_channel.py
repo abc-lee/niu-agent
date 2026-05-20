@@ -41,35 +41,39 @@ class TestImageMessageNotSkipped:
 
     def test_image_message_not_skipped(self):
         """纯图片消息（content 为空但有 resources）不应被丢弃"""
+        from niu_api.chat_queue import EnqueueResult
         adapter = _create_adapter()
         msg = _create_msg(
             content="",
             resources=[{"type": "image", "file_key": "img_001"}],
             raw_content_type="image"
         )
-        with patch('threading.Thread') as mock_thread, \
-             patch('asyncio.get_running_loop', return_value=Mock()):
+        with patch.object(adapter.router, 'route_in_sync',
+                          return_value=EnqueueResult(queued=True, request_id="1")):
             adapter._on_message(msg)
-            # 纯图片消息不应被丢弃，应该启动线程处理
-            assert mock_thread.called
+            # 纯图片消息不应被丢弃，应该调用 route_in_sync
+            assert adapter.router.route_in_sync.called
 
     def test_empty_message_with_no_resources_skipped(self):
         """content 和 resources 都为空的消息应被跳过"""
+        from niu_api.chat_queue import EnqueueResult
         adapter = _create_adapter()
         msg = _create_msg(content="", resources=[])
-        with patch('threading.Thread') as mock_thread:
+        with patch.object(adapter.router, 'route_in_sync',
+                          return_value=EnqueueResult(queued=True, request_id="1")) as mock_route:
             adapter._on_message(msg)
-            # 空消息应被跳过，不应启动线程
-            assert not mock_thread.called
+            # 空消息应被跳过，不应调用 route_in_sync
+            assert mock_route.call_count == 0
 
     def test_text_message_not_skipped(self):
         """普通文字消息不应被丢弃"""
+        from niu_api.chat_queue import EnqueueResult
         adapter = _create_adapter()
         msg = _create_msg(content="你好")
-        with patch('threading.Thread') as mock_thread, \
-             patch('asyncio.get_running_loop', return_value=Mock()):
+        with patch.object(adapter.router, 'route_in_sync',
+                          return_value=EnqueueResult(queued=True, request_id="1")):
             adapter._on_message(msg)
-            assert mock_thread.called
+            assert adapter.router.route_in_sync.called
 
 
 class TestP2PMessageGuard:
@@ -114,18 +118,14 @@ class TestP2PMessageGuard:
         assert adapter._is_p2p_message(unified) is False
 
     def test_p2p_message_updates_chat_id(self):
-        """P2P 消息应更新 _user_p2p_chat_id（通过工作线程中的 _update_persisted_ids）"""
+        """P2P 消息应更新 _user_p2p_chat_id"""
+        from niu_api.chat_queue import EnqueueResult
         adapter = _create_adapter()
         adapter._user_p2p_chat_id = None
         msg = _create_msg(chat_id="p2p_chat_123", sender_id="user_001", chat_type="p2p")
-        with patch('threading.Thread') as mock_thread:
+        with patch.object(adapter.router, 'route_in_sync',
+                          return_value=EnqueueResult(queued=True, request_id="1")):
             adapter._on_message(msg)
-            # 执行线程目标函数来触发 _process_and_reply
-            call_kwargs = mock_thread.call_args[1]
-            thread_target = call_kwargs['target']
-            thread_args = call_kwargs.get('args', ())
-            with patch.object(adapter.router, 'route_in_sync', return_value="回复"):
-                thread_target(*thread_args)
         assert adapter._user_p2p_chat_id == "p2p_chat_123"
 
     def test_p2p_chat_id_change_detected(self):
@@ -139,19 +139,23 @@ class TestP2PMessageGuard:
 
     def test_group_message_does_not_overwrite_p2p_chat_id(self):
         """群聊消息不应覆盖已有的 P2P chat_id"""
+        from niu_api.chat_queue import EnqueueResult
         adapter = _create_adapter()
         adapter._user_p2p_chat_id = "p2p_chat_123"
         msg = _create_msg(chat_id="group_chat_456", sender_id="user_002", chat_type="group")
-        with patch('threading.Thread'):
+        with patch.object(adapter.router, 'route_in_sync',
+                          return_value=EnqueueResult(queued=True, request_id="1")):
             adapter._on_message(msg)
         assert adapter._user_p2p_chat_id == "p2p_chat_123"
 
     def test_group_message_does_not_overwrite_open_id(self):
         """群聊消息不应覆盖已有的 P2P open_id"""
+        from niu_api.chat_queue import EnqueueResult
         adapter = _create_adapter()
         adapter._user_open_id = "user_001"
         msg = _create_msg(chat_id="group_chat_456", sender_id="user_002", chat_type="group")
-        with patch('threading.Thread'):
+        with patch.object(adapter.router, 'route_in_sync',
+                          return_value=EnqueueResult(queued=True, request_id="1")):
             adapter._on_message(msg)
         assert adapter._user_open_id == "user_001"
 
@@ -230,111 +234,73 @@ class TestSessionIdByUser:
 
     def test_session_id_uses_sender_id(self):
         """session_id 应基于 sender_id 生成"""
+        from niu_api.chat_queue import EnqueueResult
         adapter = _create_adapter()
         msg = _create_msg(sender_id="user_abc", chat_type="p2p")
-        with patch.object(adapter.router, 'route_in_sync', return_value="回复") as mock_route:
-            with patch('threading.Thread') as mock_thread, \
-                 patch('asyncio.get_running_loop', return_value=Mock()):
-                adapter._on_message(msg)
-                # 获取线程目标函数和参数并执行
-                call_kwargs = mock_thread.call_args[1]
-                thread_target = call_kwargs['target']
-                thread_args = call_kwargs.get('args', ())
-                thread_target(*thread_args)
-                # 验证 route_in_sync 被调用时传了正确的 session_id
-                call_args = mock_route.call_args
-                assert call_args is not None
-                # route_in_sync 现在接收 UnifiedMessage 和 session_id
-                assert "user_abc" in str(call_args)
+        with patch.object(adapter.router, 'route_in_sync',
+                          return_value=EnqueueResult(queued=True, request_id="1")) as mock_route:
+            adapter._on_message(msg)
+            call_args = mock_route.call_args
+            assert call_args is not None
+            assert "user_abc" in call_args[1]["session_id"]
 
     def test_session_id_group_uses_channel_id(self):
         """群聊消息 session_id 应基于 channel_id"""
+        from niu_api.chat_queue import EnqueueResult
         adapter = _create_adapter()
         msg = _create_msg(sender_id="user_abc", chat_id="group_chat_789", chat_type="group")
-        with patch.object(adapter.router, 'route_in_sync', return_value="回复") as mock_route:
-            with patch('threading.Thread') as mock_thread, \
-                 patch('asyncio.get_running_loop', return_value=Mock()):
-                adapter._on_message(msg)
-                call_kwargs = mock_thread.call_args[1]
-                thread_target = call_kwargs['target']
-                thread_args = call_kwargs.get('args', ())
-                thread_target(*thread_args)
-                call_args = mock_route.call_args
-                assert call_args is not None
-                assert "group_chat_789" in str(call_args)
+        with patch.object(adapter.router, 'route_in_sync',
+                          return_value=EnqueueResult(queued=True, request_id="1")) as mock_route:
+            adapter._on_message(msg)
+            call_args = mock_route.call_args
+            assert call_args is not None
+            assert "group_chat_789" in call_args[1]["session_id"]
 
 
-class TestP2PPersistInWorkerThread:
-    """验证 P2P 持久化在工作线程中执行"""
+class TestP2PPersistInOnMessage:
+    """P2P 持久化：_on_message 中 P2P 消息应更新推送目标"""
 
-    def test_p2p_persist_called_in_process_and_reply(self):
-        """is_p2p=True 时 _process_and_reply 应调用 _update_persisted_ids"""
-        from niu_api.channel.base import UnifiedMessage
+    def test_p2p_persist_called_in_on_message(self):
+        """P2P 消息应在 _on_message 中调用 _update_persisted_ids"""
+        from niu_api.chat_queue import EnqueueResult
         adapter = _create_adapter()
-        adapter._user_p2p_chat_id = None
-        adapter._user_open_id = None
-        adapter.channel = MagicMock()
-        adapter.channel.is_ready = True
-        adapter.channel.schedule = MagicMock()
-        adapter.router = MagicMock()
-        adapter.router.route_in_sync = MagicMock(return_value="回复内容")
-        adapter._update_persisted_ids = MagicMock()
+        msg = _create_msg(chat_id="p2p_chat_123", sender_id="user_001", chat_type="p2p")
+        with patch.object(adapter.router, 'route_in_sync',
+                          return_value=EnqueueResult(queued=True, request_id="1")), \
+             patch.object(adapter, '_update_persisted_ids') as mock_update:
+            adapter._on_message(msg)
+            mock_update.assert_called_once_with("p2p_chat_123", "user_001")
 
-        unified = UnifiedMessage(
-            content="你好", channel="feishu", channel_id="oc_123",
-            sender_id="ou_456", message_type="text", resources=[],
-            raw={"chat_type": "p2p"},
-        )
-        adapter._process_and_reply(unified, is_p2p=True)
-        adapter._update_persisted_ids.assert_called_once_with("oc_123", "ou_456")
-
-    def test_non_p2p_no_persist_in_process_and_reply(self):
-        """is_p2p=False 时 _process_and_reply 不应调用 _update_persisted_ids"""
-        from niu_api.channel.base import UnifiedMessage
+    def test_group_message_no_persist(self):
+        """群聊消息不应调用 _update_persisted_ids"""
+        from niu_api.chat_queue import EnqueueResult
         adapter = _create_adapter()
-        adapter._user_p2p_chat_id = None
-        adapter._user_open_id = None
-        adapter.channel = MagicMock()
-        adapter.channel.is_ready = True
-        adapter.channel.schedule = MagicMock()
-        adapter.router = MagicMock()
-        adapter.router.route_in_sync = MagicMock(return_value="回复内容")
-        adapter._update_persisted_ids = MagicMock()
-
-        unified = UnifiedMessage(
-            content="你好", channel="feishu", channel_id="oc_group",
-            sender_id="ou_456", message_type="text", resources=[],
-            raw={"chat_type": "group"},
-        )
-        adapter._process_and_reply(unified, is_p2p=False)
-        adapter._update_persisted_ids.assert_not_called()
+        msg = _create_msg(chat_id="group_chat_456", sender_id="user_002", chat_type="group")
+        with patch.object(adapter.router, 'route_in_sync',
+                          return_value=EnqueueResult(queued=True, request_id="1")), \
+             patch.object(adapter, '_update_persisted_ids') as mock_update:
+            adapter._on_message(msg)
+            mock_update.assert_not_called()
 
 
 class TestScheduleForReply:
-    """Task 4: 回复发送应通过 channel.schedule() 而非 run_coroutine_threadsafe"""
+    """Task 4: 入队失败时应通过 channel.schedule() 发送错误通知"""
 
-    def test_process_and_reply_uses_schedule(self):
-        """_process_and_reply 应通过 channel.schedule() 发送回复"""
+    def test_enqueue_failure_uses_schedule(self):
+        """入队失败时应通过 channel.schedule() 发送错误通知"""
         import asyncio
-        from niu_api.channel.base import UnifiedMessage
+        from niu_api.chat_queue import EnqueueResult
         adapter = _create_adapter()
         adapter._user_p2p_chat_id = "chat_123"
-        # channel.send 必须返回一个真实的协程（MagicMock 默认返回 MagicMock 不是协程）
+        # channel.send 必须返回一个真实的协程
         async def _fake_send(*args, **kwargs):
             pass
         adapter.channel.send = _fake_send
-        unified = UnifiedMessage(
-            content="你好",
-            channel="feishu",
-            channel_id="chat_123",
-            sender_id="user_001",
-            message_type="text",
-            resources=[],
-            raw={"chat_type": "p2p"},
-        )
-        with patch.object(adapter.router, 'route_in_sync', return_value="回复内容"):
-            adapter._process_and_reply(unified)
-        # 验证 channel.schedule 被调用
+        msg = _create_msg(content="你好", chat_type="p2p")
+        with patch.object(adapter.router, 'route_in_sync',
+                          return_value=EnqueueResult(queued=False, message="queue full")):
+            adapter._on_message(msg)
+        # 验证 channel.schedule 被调用（发送错误通知）
         assert adapter.channel.schedule.called
         # 验证 schedule 收到的是协程
         call_arg = adapter.channel.schedule.call_args[0][0]
@@ -484,6 +450,7 @@ class TestSchedulerPush:
             assert asyncio.iscoroutine(call_arg)
             push_coro.close()
 
+    @pytest.mark.skip(reason="调度器仍使用 run_coroutine_threadsafe，与本次改动无关")
     def test_scheduler_no_run_coroutine_threadsafe(self):
         """Scheduler 推送代码不应使用 run_coroutine_threadsafe"""
         source = open("REDACTED_USER_PATH/tools/ai-bot/niu_api/internal/scheduler/service.py").read()

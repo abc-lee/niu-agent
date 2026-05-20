@@ -5,7 +5,7 @@
   1. SDK _invoke 对 sync handler 不 await
   2. asyncio.get_event_loop() 在 SDK bg loop 线程中返回 SDK bg loop
   3. 从工作线程中通过 run_coroutine_threadsafe 可以成功提交协程到 SDK bg loop
-  4. sync handler 不阻塞 bg loop（心跳可以正常运行）
+  4. sync handler 直接入队（不阻塞 SDK bg loop）
 
 运行方式：
   python -m pytest tests/test_feishu_async_arch.py -v
