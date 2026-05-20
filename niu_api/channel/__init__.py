@@ -37,7 +37,7 @@ class ChannelRouter:
         返回 EnqueueResult，不再返回回复文本。
         回复由 ChatQueue Worker 处理后自动推送到飞书。
         """
-        from niu_api.chat_queue import get_chat_queue, EnqueueResult
+        from niu_api.chat_queue import get_chat_queue
         content = message_override if message_override is not None else message.content
         q = get_chat_queue()
         return q.enqueue_sync(
