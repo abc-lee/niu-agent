@@ -7,11 +7,9 @@ Scheduler Service Lifecycle Management
 import json
 import os
 import threading
-import time
 from pathlib import Path
 from typing import Optional
 
-import requests
 from loguru import logger
 
 from .scheduler import Scheduler
@@ -58,90 +56,71 @@ def get_db_path() -> str:
 
 def trigger_callback(task: dict) -> str:
     """
-    任务触发回调：调用主 API Agent 处理任务
+    任务触发回调：通过 ChatQueue 入队并等待 Agent 回复
 
-    由于 scheduler 和 niu_api 在同一进程，直接调用内部接口。
-    所有消息都写入数据库，前端通过轮询检测新消息。
+    从调度器工作线程调用，通过 run_coroutine_threadsafe 桥接到主事件循环。
+    ChatQueue 串行处理消息，自动持久化到数据库并 SSE 推送。
     """
+    import asyncio
+
     from niu_api.alerts import add_pending_alert
+    from niu_api.chat import _main_loop
+    from niu_api.chat_queue import get_chat_queue
 
     logger.info(f"[INTERNAL SCHEDULER] Triggering task: {task['content']}")
 
     # 构建提示词（[定时任务] 前缀标识系统触发，前端据此用灰色样式展示）
     prompt = f"[定时任务] {task['content']}"
 
-    # 获取主 API URL（虽然在同一进程，但仍可通过 HTTP 调用 /chat/sync）
-    port = os.environ.get("NIU_API_PORT", "9876")
-    main_url = os.environ.get("MAIN_API_URL", f"http://127.0.0.1:{port}")
-
-    # 检查主 API 可用性（带重试）
-    api_healthy = False
-    for attempt in range(3):
-        try:
-            resp = requests.get(f"{main_url}/health", timeout=5)
-            if resp.status_code == 200:
-                api_healthy = True
-                break
-            logger.warning(f"Main API returned {resp.status_code} (attempt {attempt + 1}/3)")
-        except requests.RequestException as e:
-            logger.warning(f"Main API unavailable (attempt {attempt + 1}/3): {e}")
-        if attempt < 2:
-            time.sleep(2 ** attempt)
-
-    if not api_healthy:
-        logger.error("[INTERNAL SCHEDULER] All health checks failed, using fallback")
+    loop = _main_loop
+    if loop is None or loop.is_closed():
+        logger.error("[INTERNAL SCHEDULER] Main event loop not available, using fallback")
         fallback_msg = f"定时提醒：{task['content']}"
         _persist_fallback_message(prompt, fallback_msg)
         add_pending_alert("⏰")
         return fallback_msg
 
-    # 调用 /chat/sync（已持久化消息到数据库）
+    # 通过 ChatQueue 入队并等待回复
     try:
-        response = requests.post(
-            f"{main_url}/chat/sync",
-            json={
-                "session_id": "default",
-                "message": prompt
-            },
-            timeout=90
+        q = get_chat_queue()
+        future = asyncio.run_coroutine_threadsafe(
+            q.enqueue_and_wait(
+                content=prompt,
+                source="scheduler",
+                session_id="default",
+            ),
+            loop,
         )
+        agent_reply = future.result(timeout=300)  # 5 分钟超时
 
-        if response.status_code == 200:
-            data = response.json()
-            agent_reply = data.get("reply", "")
-            logger.info(f"[INTERNAL SCHEDULER] Agent replied: {agent_reply[:100] if agent_reply else '(empty)'}")
-
-            # /chat/sync 已将 user + assistant 消息持久化到数据库
-            # 前端轮询会自动检测到新消息并显示
-
-            # 触发小女孩蹦高提醒（仅用于视觉提示，不传递消息内容）
-            add_pending_alert("⏰")
-
-            # 飞书通道推送
-            try:
-                from niu_api.channel import get_channel_router
-                channel_router = get_channel_router()
-                if channel_router.has_channel("feishu"):
-                    feishu_adapter = channel_router.channels["feishu"]
-                    if feishu_adapter.user_p2p_chat_id:
-                        feishu_adapter.channel.schedule(
-                            feishu_adapter.push(feishu_adapter.user_p2p_chat_id, agent_reply)
-                        )
-            except Exception as e:
-                logger.warning(f"[SCHEDULER] Feishu push failed: {e}")
-
-            return agent_reply if agent_reply else f"定时提醒：{task['content']}"
+        if agent_reply:
+            logger.info(f"[INTERNAL SCHEDULER] Agent replied: {agent_reply[:100]}")
         else:
-            logger.error(f"[INTERNAL SCHEDULER] Chat API error: {response.status_code}")
-            # API 出错，直接将降级提醒写入消息数据库
-            fallback_msg = f"定时提醒：{task['content']}"
-            _persist_fallback_message(prompt, fallback_msg)
-            add_pending_alert("⏰")
-            return fallback_msg
+            logger.warning("[INTERNAL SCHEDULER] Agent returned empty reply")
+            agent_reply = f"定时提醒：{task['content']}"
+
+        # 触发小女孩蹦高提醒（仅用于视觉提示，不传递消息内容）
+        add_pending_alert("⏰")
+
+        # 飞书通道推送：有推送目标时才推送
+        try:
+            from niu_api.channel import get_channel_router
+            router = get_channel_router()
+            if router.has_channel("feishu"):
+                adapter = router.channels["feishu"]
+                if getattr(adapter, '_user_p2p_chat_id', None) or getattr(adapter, '_user_open_id', None):
+                    push_future = asyncio.run_coroutine_threadsafe(
+                        adapter.push("", agent_reply),
+                        loop,
+                    )
+                    push_future.result(timeout=30)
+        except Exception as e:
+            logger.warning(f"[SCHEDULER] Feishu push failed: {e}")
+
+        return agent_reply
 
     except Exception as e:
-        logger.error(f"[INTERNAL SCHEDULER] Failed to call chat API: {e}")
-        # API 异常，直接将降级提醒写入消息数据库
+        logger.error(f"[INTERNAL SCHEDULER] ChatQueue call failed: {e}")
         fallback_msg = f"定时提醒：{task['content']}"
         _persist_fallback_message(prompt, fallback_msg)
         add_pending_alert("⏰")
