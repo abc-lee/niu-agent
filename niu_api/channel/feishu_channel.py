@@ -172,8 +172,10 @@ class FeishuChannelAdapter(ChannelAdapter):
         logger.warning("[FeishuChannel] WebSocket reconnecting...")
 
     def _on_reconnected(self, _=None):
-        """WebSocket 重连成功（SDK 调用 h() 可能传一个参数）"""
+        """WebSocket 重连成功 — 重新加载已保存的 ID"""
         logger.info("[FeishuChannel] WebSocket reconnected")
+        self._feishu_prefs = self._load_prefs()
+        self._apply_persisted_ids()
 
     def _on_error(self, err):
         """SDK 内部错误集中处理"""
@@ -270,29 +272,48 @@ class FeishuChannelAdapter(ChannelAdapter):
             logger.error(f"[FeishuChannel] Send exception: {e}")
 
     async def push(self, channel_id: str, content: str) -> None:
-        """主动推送（定时提醒等）"""
-        target = channel_id or self._user_p2p_chat_id or self._user_open_id
-        if target:
-            try:
-                result = await self.channel.send(target, {"markdown": content})
-                if not result.success:
-                    # 如果 chat_id 失效，尝试用 open_id 重发
-                    if self._user_open_id and target != self._user_open_id:
-                        logger.warning(f"[FeishuChannel] Push to chat_id failed ({result.error}), retrying with open_id")
-                        try:
-                            result2 = await self.channel.send(self._user_open_id, {"markdown": content})
-                            if not result2.success:
-                                logger.error(f"[FeishuChannel] Push to open_id also failed: {result2.error}")
-                        except Exception as e2:
-                            logger.error(f"[FeishuChannel] Push to open_id exception: {e2}")
-                    else:
-                        logger.error(f"[FeishuChannel] Push failed: {result.error}")
-            except Exception as e:
-                logger.error(f"[FeishuChannel] Push exception: {e}")
-        else:
-            logger.warning("[FeishuChannel] No chat_id or open_id for push, skipping")
+        """主动推送 — 没有 ID 就不发，优先 open_id"""
+        target = channel_id or self._user_open_id or self._user_p2p_chat_id
+        if not target:
+            logger.warning("[FeishuChannel] No chat_id or open_id, skipping push")
+            return
+        try:
+            result = await self.channel.send(target, {"markdown": content})
+            if not result.success:
+                fallback = None
+                if target == self._user_open_id and self._user_p2p_chat_id:
+                    fallback = self._user_p2p_chat_id
+                elif target == self._user_p2p_chat_id and self._user_open_id:
+                    fallback = self._user_open_id
+                if fallback:
+                    logger.warning(f"[FeishuChannel] Push to {target} failed, retrying with {fallback}")
+                    try:
+                        r2 = await self.channel.send(fallback, {"markdown": content})
+                        if not r2.success:
+                            logger.error(f"[FeishuChannel] Push to {fallback} also failed: {r2.error}")
+                    except Exception as e2:
+                        logger.error(f"[FeishuChannel] Push to {fallback} exception: {e2}")
+                else:
+                    logger.error(f"[FeishuChannel] Push failed: {result.error}")
+        except Exception as e:
+            logger.error(f"[FeishuChannel] Push exception: {e}")
 
     @property
     def user_p2p_chat_id(self) -> str | None:
         """获取用户 P2P 会话 ID"""
         return self._user_p2p_chat_id
+
+    @property
+    def user_open_id(self) -> str | None:
+        """获取用户 open_id"""
+        return self._user_open_id
+
+    @property
+    def is_connected(self) -> bool:
+        """WebSocket 是否已连接"""
+        return self.channel.is_ready
+
+    @property
+    def has_push_target(self) -> bool:
+        """是否有可用的推送目标（chat_id 或 open_id）"""
+        return bool(self._user_p2p_chat_id or self._user_open_id)
