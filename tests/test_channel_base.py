@@ -99,8 +99,8 @@ class TestChannelRouterRegister:
 # 3. ChannelRouter route_in without runner raises RuntimeError
 # ---------------------------------------------------------------------------
 class TestChannelRouterRouteIn:
-    async def test_route_in_returns_empty_on_failure(self):
-        """route_in calls _chat_sync which returns empty string on connection failure"""
+    async def test_route_in_returns_enqueue_result(self):
+        """route_in enqueues to ChatQueue and returns result message"""
         router = ChannelRouter()
         msg = UnifiedMessage(
             content="hi",
@@ -110,8 +110,9 @@ class TestChannelRouterRouteIn:
             message_type="text",
         )
         result = await router.route_in(msg)
-        # _chat_sync fails to connect, returns empty string
-        assert result == ""
+        # route_in now returns EnqueueResult.message from ChatQueue
+        assert isinstance(result, str)
+        assert result != ""
 
 
 # ---------------------------------------------------------------------------

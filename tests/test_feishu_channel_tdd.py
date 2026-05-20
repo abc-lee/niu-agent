@@ -19,10 +19,11 @@ from niu_api.channel import ChannelRouter, UnifiedMessage
 class MockFeishuMsg:
     """模拟 lark-oapi SDK 的 InboundMessage"""
 
-    def __init__(self, content="hello", chat_id="chat_123", sender_id="user_1"):
+    def __init__(self, content="hello", chat_id="chat_123", sender_id="user_1", chat_type="p2p"):
         self.content_text = content
         self.chat_id = chat_id
         self.sender_id = sender_id
+        self.chat_type = chat_type
         self.raw_content_type = "text"
         self.resources = []
         self.raw = {}
@@ -35,12 +36,24 @@ class MockFeishuChannel:
         self.sent_messages: list[tuple[str, dict]] = []
         self._loop: asyncio.AbstractEventLoop | None = None
         self._handlers: dict[str, list] = {}
+        self.is_ready = True
 
     def on(self, event: str, handler):
         self._handlers.setdefault(event, []).append(handler)
 
     async def send(self, chat_id: str, message: dict):
         self.sent_messages.append((chat_id, message))
+
+    def schedule(self, coro):
+        """模拟 channel.schedule() — 在 bg loop 中执行协程"""
+        if self._loop and self._loop.is_running():
+            asyncio.run_coroutine_threadsafe(coro, self._loop)
+        else:
+            # 没有 bg loop，直接记录（简单场景）
+            try:
+                asyncio.get_event_loop().run_until_complete(coro)
+            except RuntimeError:
+                pass
 
     def connect_until_ready(self, timeout=30):
         pass
@@ -50,17 +63,19 @@ class MockFeishuChannel:
 
 
 class MockChatSync:
-    """模拟 _chat_sync 的阻塞调用"""
+    """模拟 route_in_sync 的调用 — 返回 EnqueueResult"""
 
     def __init__(self, reply="测试回复", delay=0.1):
         self.reply = reply
         self.delay = delay
         self.call_count = 0
 
-    def __call__(self, content: str) -> str:
+    def __call__(self, *args, **kwargs):
+        from niu_api.chat_queue import EnqueueResult
         self.call_count += 1
         time.sleep(self.delay)  # 模拟阻塞
-        return self.reply
+        # 返回 EnqueueResult，queued=True 表示入队成功
+        return EnqueueResult(queued=bool(self.reply), request_id=str(self.call_count))
 
 
 class BgLoopFixture:
@@ -123,12 +138,15 @@ class TestRouteInSync:
         router = ChannelRouter.__new__(ChannelRouter)
         assert hasattr(router, "route_in_sync"), "ChannelRouter 缺少 route_in_sync 方法"
 
-    def test_route_in_sync_calls_chat_sync(self):
-        """route_in_sync 应该调用 _chat_sync 并返回结果"""
-        router = ChannelRouter.__new__(ChannelRouter)
-        mock_chat = MockChatSync(reply="你好")
-        router._chat_sync = mock_chat
+    @patch("niu_api.chat_queue.get_chat_queue")
+    def test_route_in_sync_calls_enqueue_sync(self, mock_get_q):
+        """route_in_sync 应该调用 ChatQueue.enqueue_sync"""
+        from niu_api.chat_queue import EnqueueResult
+        mock_q = MagicMock()
+        mock_q.enqueue_sync.return_value = EnqueueResult(queued=True, request_id="1")
+        mock_get_q.return_value = mock_q
 
+        router = ChannelRouter()
         msg = UnifiedMessage(
             content="在吗",
             channel="feishu",
@@ -138,20 +156,19 @@ class TestRouteInSync:
         )
 
         result = router.route_in_sync(msg)
-        assert result == "你好"
-        assert mock_chat.call_count == 1
+        assert isinstance(result, EnqueueResult)
+        assert result.queued is True
+        mock_q.enqueue_sync.assert_called_once()
 
-    def test_route_in_sync_passes_content(self):
-        """route_in_sync 应该传递 message.content 给 _chat_sync"""
-        router = ChannelRouter.__new__(ChannelRouter)
-        received_content = []
+    @patch("niu_api.chat_queue.get_chat_queue")
+    def test_route_in_sync_passes_content(self, mock_get_q):
+        """route_in_sync 应该传递 message.content 给 enqueue_sync"""
+        from niu_api.chat_queue import EnqueueResult
+        mock_q = MagicMock()
+        mock_q.enqueue_sync.return_value = EnqueueResult(queued=True, request_id="1")
+        mock_get_q.return_value = mock_q
 
-        def fake_chat_sync(content: str) -> str:
-            received_content.append(content)
-            return "ok"
-
-        router._chat_sync = fake_chat_sync
-
+        router = ChannelRouter()
         msg = UnifiedMessage(
             content="今天天气怎么样",
             channel="feishu",
@@ -161,7 +178,8 @@ class TestRouteInSync:
         )
 
         router.route_in_sync(msg)
-        assert received_content == ["今天天气怎么样"]
+        call_kwargs = mock_q.enqueue_sync.call_args.kwargs
+        assert call_kwargs["content"] == "今天天气怎么样"
 
 
 # ============== Task 2: _on_message sync + threading ==============
@@ -170,14 +188,18 @@ class TestRouteInSync:
 class TestOnMessageSyncHandler:
     """验证 _on_message 是同步 handler + threading 架构"""
 
-    def _make_adapter(self, chat_sync_reply="测试回复", chat_sync_delay=0.05):
+    def _make_adapter(self, enqueue_success=True, chat_sync_delay=0.05, bg_loop=None):
         """创建测试用 FeishuChannelAdapter"""
         from niu_api.channel.feishu_channel import FeishuChannelAdapter
+        from niu_api.chat_queue import EnqueueResult
 
         mock_channel = MockFeishuChannel()
+        if bg_loop is not None:
+            mock_channel._loop = bg_loop.loop
         mock_router = MagicMock()
         mock_router.route_in_sync = MockChatSync(
-            reply=chat_sync_reply, delay=chat_sync_delay
+            reply="测试回复" if enqueue_success else "",
+            delay=chat_sync_delay,
         )
 
         adapter = FeishuChannelAdapter.__new__(FeishuChannelAdapter)
@@ -186,6 +208,7 @@ class TestOnMessageSyncHandler:
         adapter._user_p2p_chat_id = None
         adapter._user_open_id = None
         adapter._feishu_prefs = {}
+        adapter._prefs_lock = threading.Lock()
 
         return adapter, mock_channel, mock_router
 
@@ -246,35 +269,29 @@ class TestOnMessageSyncHandler:
         # route_in_sync 应该被调用
         assert mock_router.route_in_sync.call_count == 1
 
-    def test_on_message_sends_reply_via_run_coroutine_threadsafe(self, bg_loop):
-        """_on_message 应该通过 run_coroutine_threadsafe 发送回复"""
-        adapter, mock_channel, mock_router = self._make_adapter(
-            chat_sync_reply="这是回复"
-        )
+    def test_on_message_enqueue_success(self, bg_loop):
+        """route_in_sync 入队成功后，ChatQueue Worker 负责推送回复"""
+        adapter, mock_channel, mock_router = self._make_adapter(enqueue_success=True)
 
         msg = MockFeishuMsg(content="你好")
         bg_loop.invoke_sync_handler(adapter._on_message, msg)
 
-        # 等待线程完成 + 协程执行
+        # 等待线程完成
         time.sleep(0.5)
 
-        # 验证 send 被调用
+        # route_in_sync 应该被调用（入队成功）
+        assert mock_router.route_in_sync.call_count == 1
+
+    def test_on_message_enqueue_failure_sends_notification(self, bg_loop):
+        """如果入队失败，应该发送失败通知"""
+        adapter, mock_channel, mock_router = self._make_adapter(enqueue_success=False, bg_loop=bg_loop)
+
+        msg = MockFeishuMsg(content="你好")
+        bg_loop.invoke_sync_handler(adapter._on_message, msg)
+        time.sleep(0.5)
+
+        # 入队失败时应该发送失败通知
         assert len(mock_channel.sent_messages) == 1
-        chat_id, message = mock_channel.sent_messages[0]
-        assert chat_id == "chat_123"
-        assert message == {"markdown": "这是回复"}
-
-    def test_on_message_no_reply_sends_nothing(self, bg_loop):
-        """如果 _chat_sync 返回空，不应该发送回复"""
-        adapter, mock_channel, mock_router = self._make_adapter(
-            chat_sync_reply=""  # 空回复
-        )
-
-        msg = MockFeishuMsg(content="你好")
-        bg_loop.invoke_sync_handler(adapter._on_message, msg)
-        time.sleep(0.5)
-
-        assert len(mock_channel.sent_messages) == 0
 
     def test_on_message_thread_exception_does_not_crash(self, bg_loop):
         """工作线程中的异常不应该导致崩溃"""
