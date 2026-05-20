@@ -131,22 +131,18 @@ class FeishuChannelAdapter(ChannelAdapter):
                 message_content = unified.content
 
             reply = self.router.route_in_sync(unified, session_id=session_id, message_override=message_content)
-            if reply:
-                try:
-                    self.channel.schedule(
-                        self.channel.send(unified.channel_id, {"markdown": reply}),
-                    )
-                except Exception as e:
-                    logger.error(f"[FeishuChannel] Failed to schedule reply: {e}")
-                logger.info(f"[FeishuChannel] Reply scheduled: {reply[:50]}...")
+            # route_in_sync now returns EnqueueResult (fire-and-forget enqueue)
+            # ChatQueue Worker handles pushing the reply to Feishu
+            if reply and reply.queued:
+                logger.info(f"[FeishuChannel] Message enqueued: request_id={reply.request_id}")
             else:
-                logger.warning("[FeishuChannel] Empty reply from agent")
+                logger.warning(f"[FeishuChannel] Enqueue failed: {reply.message if reply else 'no result'}")
                 try:
                     self.channel.schedule(
-                        self.channel.send(unified.channel_id, {"text": "收到，但无法生成回复"}),
+                        self.channel.send(unified.channel_id, {"text": "消息入队失败，请稍后重试"}),
                     )
                 except Exception as e:
-                    logger.warning(f"[FeishuChannel] Failed to send empty-reply notification: {e}")
+                    logger.warning(f"[FeishuChannel] Failed to send enqueue-failure notification: {e}")
         except Exception as e:
             logger.error(f"[FeishuChannel] Process/reply error: {e}")
             try:
