@@ -202,9 +202,9 @@ class ChatQueue:
             # 处理合并后的消息
             reply = await self._process_single(merged_content, first_req.session_id, all_contents)
 
-            # 推送回复到飞书
-            if source == "feishu" and channel_id:
-                await self._push_to_feishu(channel_id, reply)
+            # 推送回复到飞书（传空 channel_id，让 push() 按 open_id > chat_id 优先级选择）
+            if source == "feishu":
+                await self._push_to_feishu(reply)
 
             # 设置 reply_future
             if reply_future and not reply_future.done():

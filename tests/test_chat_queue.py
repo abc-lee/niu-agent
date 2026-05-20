@@ -279,7 +279,7 @@ async def test_feishu_push_on_feishu_source(mock_runner, mock_store):
         try:
             await q.enqueue("飞书消息", source="feishu", channel_id="oc_test123")
             await asyncio.wait_for(processed.wait(), timeout=5.0)
-            mock_push.assert_called_once_with("oc_test123", "回复内容")
+            mock_push.assert_called_once_with("回复内容")
         finally:
             await q.stop()
 
