@@ -137,7 +137,7 @@ class ChatQueue:
 
     async def drain(self, timeout: float = 30.0) -> bool:
         """等待当前处理完成并清空队列"""
-        # 清空队列中的待处理消息
+        # 清空队列中的待处理消息（非原子，但 drain 仅在 clear 时调用，低并发场景可接受）
         while not self._queue.empty():
             try:
                 req = self._queue.get_nowait()
@@ -277,15 +277,15 @@ class ChatQueue:
             from niu_api.compat import _check_and_trigger_auto_tidy
             await _check_and_trigger_auto_tidy(store)
 
-    async def _push_to_feishu(self, channel_id: str, reply: str):
-        """推送回复到飞书 — 使用 adapter.push()，内部按 open_id > chat_id 优先级选择目标"""
+    async def _push_to_feishu(self, reply: str):
+        """推送回复到飞书 — 传空 channel_id，让 push() 按 open_id > chat_id 优先级选择"""
         try:
             from niu_api.channel import get_channel_router
             router = get_channel_router()
             if router.has_channel("feishu"):
                 adapter = router.channels["feishu"]
-                # push() 内部已实现 open_id > chat_id 优先级选择
-                await adapter.push(channel_id, reply)
+                # 传空 channel_id，让 push() 内部按 open_id > chat_id 优先级选择
+                await adapter.push("", reply)
         except Exception as e:
             logger.warning(f"[ChatQueue] Feishu push failed: {e}")
 
