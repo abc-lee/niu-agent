@@ -14,7 +14,7 @@ from loguru import logger
 
 from agent.runner import NiuRunner, get_runner
 from agent.session import get_message_store
-from niu_api.chat_queue import get_chat_queue, EnqueueResult
+from niu_api.chat_queue import get_chat_queue
 
 router = APIRouter(tags=["chat"])
 

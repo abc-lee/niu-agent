@@ -491,7 +491,7 @@ async def chat_session(request: ChatRequest) -> ChatResponse:
     from niu_api.chat_queue import get_chat_queue
 
     q = get_chat_queue()
-    result = await q.enqueue(
+    await q.enqueue(
         content=request.message,
         source="frontend",
         session_id=request.session_id or "default",
