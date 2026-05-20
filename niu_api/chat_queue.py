@@ -12,7 +12,6 @@ from loguru import logger
 
 from agent.runner import NiuRunner
 from agent.session import get_message_store
-from niu_api.chat import notify_new_message, persist_agent_reply
 
 
 @dataclass
