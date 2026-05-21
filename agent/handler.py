@@ -498,43 +498,6 @@ class NiuHandler(BaseHandler):
         # 追踪工具执行以供经验总结
         self._track_tool_execution(tool_name, args, ret)
 
-        # 更新 Interaction Habits 置信度（LightRAG）
-        try:
-            from niu_api.internal.lightrag_adapter import LightRAGAdapter, LightRAGIngester
-
-            adapter = LightRAGAdapter()
-
-            # 工具调用成功，更新相关 dialect 的置信度
-            if isinstance(ret, dict) and ret.get("status") == "success":
-                habit_entities = adapter.search_interaction_habits(
-                    query=str(args), top_k=10,
-                )
-                for entity in habit_entities:
-                    entity_name = entity.get("entity_name", "")
-                    # Match by target_tool extracted from entity_name "habit:{type}:{tool}"
-                    parts = entity_name.split(":", 2)
-                    target_tool = parts[2] if len(parts) >= 3 else ""
-                    if target_tool == tool_name:
-                        ingester = LightRAGIngester()
-                        ingester.update_habit_confidence(entity_name, "success")
-
-            # 工具调用失败
-            elif isinstance(ret, dict) and ret.get("status") == "error":
-                habit_entities = adapter.search_interaction_habits(
-                    query=str(args), top_k=5,
-                )
-                for entity in habit_entities:
-                    entity_name = entity.get("entity_name", "")
-                    parts = entity_name.split(":", 2)
-                    target_tool = parts[2] if len(parts) >= 3 else ""
-                    if target_tool == tool_name:
-                        ingester = LightRAGIngester()
-                        ingester.update_habit_confidence(entity_name, "fail")
-
-        except Exception:
-            # 置信度更新失败不影响主流程
-            logger.debug("Interaction habit update failed (non-blocking)", exc_info=True)
-
     def _track_tool_call_for_repeat_detection(self, tool_name: str, args: dict):
         """追踪工具调用用于重复检测"""
         if not hasattr(self, '_recent_tool_calls'):
