@@ -639,6 +639,7 @@
     function hideTyping() {
       const bubble = document.getElementById('status-bubble');
       if (bubble) bubble.remove();
+      window.electronAPI.notifyBusy(false, 'chat');
     }
 
     // 更新状态气泡内容（工具调用状态推送时调用）

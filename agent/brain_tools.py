@@ -77,15 +77,32 @@ def get_tool_to_region() -> dict[str, str]:
         )
 
         if isinstance(result, dict) and result.get("status") == "ok":
-            mapping: dict[str, str] = {}
+            cid_mapping: dict[str, str] = {}  # tool_name -> community_id
             for entity in result.get("data", []):
                 entity_name = entity.get("id", entity.get("entity_name", ""))
                 description = entity.get("description", "")
-                # Extract region_id from description metadata
+                # Extract community_id from description metadata
                 # Format: "description | brain_meta_region_id:community_3 | ..."
                 community_id = _extract_community_id(description)
                 if community_id:
-                    mapping[entity_name] = community_id
+                    cid_mapping[entity_name] = community_id
+
+            # Translate community_id -> region.name (the _regions dict key)
+            # so reinforce_by_tool_use can find regions correctly
+            activation_mgr = get_activation_mgr()
+            if activation_mgr is not None:
+                # Build community_id -> region_id reverse lookup
+                cid_to_rid: dict[str, str] = {}
+                for state in activation_mgr.get_region_map():
+                    if state.community_id:
+                        cid_to_rid[state.community_id] = state.region_id
+                mapping = {
+                    tool: cid_to_rid.get(cid, cid)
+                    for tool, cid in cid_mapping.items()
+                }
+            else:
+                # Fallback: keep community_id values (will be rebuilt later)
+                mapping = cid_mapping
 
             _tool_to_region = mapping
             logger.info(
