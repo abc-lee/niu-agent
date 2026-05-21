@@ -290,7 +290,7 @@ async def chat(request: ChatRequest) -> StreamingResponse:
 
         # 心跳 keepalive，直到 SSE 推送到达或超时
         heartbeat = 0
-        while heartbeat < 60:  # 最多 60 次 * 0.5s = 30s
+        while heartbeat < 240:  # 最多 240 次 * 0.5s = 120s
             await asyncio.sleep(0.5)
             heartbeat += 1
             yield ": heartbeat\n\n"

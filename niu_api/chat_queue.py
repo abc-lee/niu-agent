@@ -5,6 +5,7 @@ ChatQueue — 消息队列 + 串行处理 + 上下文合并
 ChatWorker 串行处理，补充消息在下一轮合并到上下文中。
 """
 import asyncio
+import itertools
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -46,10 +47,11 @@ class ChatQueue:
         self._runner = runner
         self._worker_task: Optional[asyncio.Task] = None
         self._running = False
+        self._paused = False
         self._processing = False
         self._processing_done = asyncio.Event()
         self._processing_done.set()  # 初始状态：未在处理
-        self._request_counter = 0
+        self._request_counter = itertools.count(1)
 
     @property
     def is_processing(self) -> bool:
@@ -79,7 +81,7 @@ class ChatQueue:
                       channel_id: str = "", sender_id: str = "",
                       session_id: str = "default") -> EnqueueResult:
         """消息入队 — 立即返回"""
-        self._request_counter += 1
+        request_id = str(next(self._request_counter))
         req = ChatRequest(
             content=content,
             source=source,
@@ -89,7 +91,7 @@ class ChatQueue:
         )
         await self._queue.put(req)
         logger.info(f"[ChatQueue] Enqueued: source={source}, content={content[:50]}...")
-        return EnqueueResult(queued=True, request_id=str(self._request_counter))
+        return EnqueueResult(queued=True, request_id=request_id)
 
     def enqueue_sync(self, content: str, source: str = "frontend",
                      channel_id: str = "", sender_id: str = "",
@@ -105,7 +107,7 @@ class ChatQueue:
                 logger.error("[ChatQueue] No event loop available, cannot enqueue")
                 return EnqueueResult(queued=False, message="No event loop available")
 
-        self._request_counter += 1
+        request_id = str(next(self._request_counter))
         req = ChatRequest(
             content=content,
             source=source,
@@ -115,7 +117,7 @@ class ChatQueue:
         )
         loop.call_soon_threadsafe(self._queue.put_nowait, req)
         logger.info(f"[ChatQueue] Enqueued (sync): source={source}, content={content[:50]}...")
-        return EnqueueResult(queued=True, request_id=str(self._request_counter))
+        return EnqueueResult(queued=True, request_id=request_id)
 
     async def enqueue_and_wait(self, content: str, source: str = "scheduler",
                                session_id: str = "default",
@@ -135,6 +137,8 @@ class ChatQueue:
         try:
             return await asyncio.wait_for(future, timeout=timeout)
         except asyncio.TimeoutError:
+            if not future.done():
+                future.cancel()
             logger.warning(f"[ChatQueue] Wait timeout for: {content[:50]}...")
             return ""
 
@@ -159,33 +163,57 @@ class ChatQueue:
                 return False
         return True
 
+    def pause(self):
+        """暂停 worker 处理（用于 clear_chat 防止 drain→clear 间隙中新消息被处理）"""
+        self._paused = True
+
+    def resume(self):
+        """恢复 worker 处理"""
+        self._paused = False
+
     async def _worker_loop(self):
         """ChatWorker 主循环 — 串行处理队列中的消息"""
         while self._running:
             try:
                 req = await self._queue.get()
+                if self._paused:
+                    # 暂停期间跳过处理，消息留在队列中
+                    await self._queue.put(req)
+                    await asyncio.sleep(0.1)
+                    continue
                 await self._process_with_merge(req)
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.error(f"[ChatQueue] Worker error: {e}")
+                self._processing = False
+                self._processing_done.set()
 
     async def _process_with_merge(self, first_req: ChatRequest):
         """处理消息，合并队列中的补充消息"""
         self._processing = True
         self._processing_done.clear()
 
-        try:
-            source = first_req.source
-            reply_future = first_req.reply_future
-            supplements = []
+        # 初始化变量，确保 finally 块中始终可用
+        source = first_req.source
+        reply_future = first_req.reply_future
+        supplements = []
+        reply = ""
 
+        try:
+            remaining = []
             while not self._queue.empty():
                 try:
                     extra = self._queue.get_nowait()
-                    supplements.append(extra)
+                    if extra.session_id == first_req.session_id:
+                        supplements.append(extra)
+                    else:
+                        remaining.append(extra)
                 except asyncio.QueueEmpty:
                     break
+            # Put back messages from other sessions
+            for r in remaining:
+                self._queue.put_nowait(r)
 
             # 合并补充消息（仅用于传给 runner.chat() 的参数）
             all_contents = [first_req.content] + [s.content for s in supplements]
@@ -209,17 +237,19 @@ class ChatQueue:
                 reply = f"[处理出错: {e}]"
 
             # 推送回复到飞书（传空 channel_id，让 push() 按 open_id > chat_id 优先级选择）
-            if source == "feishu":
-                await self._push_to_feishu(reply)
+            try:
+                if source == "feishu":
+                    await self._push_to_feishu(reply)
+            except Exception as e:
+                logger.error(f"[ChatQueue] Feishu push error: {e}")
 
-            # 设置 reply_future
+        finally:
+            # Always resolve futures, regardless of push success
             if reply_future and not reply_future.done():
                 reply_future.set_result(reply)
             for s in supplements:
                 if s.reply_future and not s.reply_future.done():
                     s.reply_future.set_result(reply)
-
-        finally:
             self._processing = False
             self._processing_done.set()
 
@@ -256,13 +286,9 @@ class ChatQueue:
             full_reply = f"处理消息时出错：{str(e)}"
 
         # 持久化回复消息（使用共享函数）
-        from niu_api.chat import persist_agent_reply, notify_new_message
+        from niu_api.chat import persist_agent_reply
         rv = getattr(self._runner, "last_return_value", None)
         message_id, full_reply = await persist_agent_reply(store, rv, history_len, full_reply)
-
-        # SSE 推送
-        if message_id:
-            await notify_new_message(message_id, "assistant", full_reply)
 
         # 上下文溢出检测
         await self._check_overflow(session_id, store, full_reply)
@@ -300,11 +326,14 @@ class ChatQueue:
 # ============== 全局单例 ==============
 
 _queue: ChatQueue | None = None
+_queue_stopped: bool = False
 
 
 def get_chat_queue() -> ChatQueue:
     """获取全局 ChatQueue 实例"""
-    global _queue
+    global _queue, _queue_stopped
+    if _queue_stopped:
+        raise RuntimeError("ChatQueue has been stopped")
     if _queue is None:
         from niu_api.chat import get_or_create_runner
         runner = get_or_create_runner()
@@ -320,7 +349,8 @@ async def start_chat_queue():
 
 async def stop_chat_queue():
     """停止 ChatQueue（在 FastAPI shutdown 中调用）"""
-    global _queue
+    global _queue, _queue_stopped
+    _queue_stopped = True
     if _queue:
         await _queue.stop()
         _queue = None

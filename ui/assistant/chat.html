@@ -726,8 +726,6 @@
       } catch (err) {
         addMessage('system', `连接失败: ${err.message}`);
       } finally {
-        hideTyping();
-        window.electronAPI.notifyBusy(false, 'chat');
         loadStats();
         userInput.focus();
       }
@@ -1197,8 +1195,6 @@
         console.error('[Chat] 图片处理失败:', e);
         addMessage('system', '图片处理失败，请重试');
       } finally {
-        hideTyping();
-        window.electronAPI.notifyBusy(false, 'chat');
       }
     }
 
@@ -1229,8 +1225,6 @@
         console.error('[Chat] 文件处理失败:', e);
         addMessage('system', '文件处理失败，请重试');
       } finally {
-        hideTyping();
-        window.electronAPI.notifyBusy(false, 'chat');
       }
     }
     
