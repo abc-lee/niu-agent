@@ -352,20 +352,40 @@ tbody td {
   cursor: pointer;
   font-size: 18px;
 }
-.detail-body {
+
+/* ---- Tabs ---- */
+.detail-tabs {
   display: flex;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+}
+.detail-tab {
+  padding: 8px 20px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-dim);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: color .15s, border-color .15s;
+  user-select: none;
+}
+.detail-tab:hover { color: var(--text); }
+.detail-tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+.detail-body {
   min-height: 200px;
 }
-.detail-half {
-  flex: 1;
+.detail-content {
   padding: 12px 16px;
   overflow: auto;
   max-height: 70vh;
+  display: none;
 }
-.detail-half + .detail-half {
-  border-left: 1px solid var(--border);
-}
-.detail-half h3 {
+.detail-content.active { display: block; }
+.detail-content h3 {
   font-size: 13px;
   color: var(--text-dim);
   margin-bottom: 8px;
@@ -377,6 +397,43 @@ tbody td {
   word-break: break-all;
   color: var(--accent);
   margin-bottom: 10px;
+}
+.detail-meta {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+  font-size: 12px;
+}
+.detail-meta-item {
+  color: var(--text-dim);
+}
+.detail-meta-item span {
+  color: var(--text);
+  font-weight: 600;
+}
+.usage-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.usage-cell {
+  background: var(--bg);
+  border-radius: var(--radius);
+  padding: 8px 12px;
+  text-align: center;
+}
+.usage-cell .usage-label {
+  font-size: 11px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+}
+.usage-cell .usage-value {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text);
+  margin-top: 2px;
 }
 
 /* ---- Collapsible sections ---- */
@@ -445,9 +502,8 @@ tbody td {
 
 /* ---- Responsive ---- */
 @media (max-width: 768px) {
-  .detail-body { flex-direction: column; }
-  .detail-half + .detail-half { border-left: none; border-top: 1px solid var(--border); }
   .stats-bar { gap: 12px; }
+  .usage-grid { grid-template-columns: 1fr; }
 }
 </style>
 </head>
@@ -489,15 +545,15 @@ tbody td {
     <span id="detailTitle">Entry Detail</span>
     <button id="detailClose">&times;</button>
   </div>
+  <div class="detail-tabs" id="detailTabs">
+    <div class="detail-tab" data-tab="transport">Transport</div>
+    <div class="detail-tab" data-tab="request">Request</div>
+    <div class="detail-tab" data-tab="response">Response</div>
+  </div>
   <div class="detail-body">
-    <div class="detail-half" id="detailRequest">
-      <h3>Request</h3>
-      <div id="reqContent"></div>
-    </div>
-    <div class="detail-half" id="detailResponse">
-      <h3>Response</h3>
-      <div id="respContent"></div>
-    </div>
+    <div class="detail-content" id="contentTransport"></div>
+    <div class="detail-content" id="contentRequest"></div>
+    <div class="detail-content" id="contentResponse"></div>
   </div>
 </div>
 
@@ -512,12 +568,15 @@ tbody td {
   const detailPanel = document.getElementById('detailPanel');
   const detailTitle = document.getElementById('detailTitle');
   const detailClose = document.getElementById('detailClose');
-  const reqContent = document.getElementById('reqContent');
-  const respContent = document.getElementById('respContent');
+  const contentTransport = document.getElementById('contentTransport');
+  const contentRequest = document.getElementById('contentRequest');
+  const contentResponse = document.getElementById('contentResponse');
+  const detailTabs = document.getElementById('detailTabs');
 
   let currentDate = '';
   let currentSeq = null;
   let entriesCache = [];
+  let currentDetailData = null;
 
   // ---- Init ----
   loadDates();
@@ -537,6 +596,25 @@ tbody td {
     currentSeq = null;
     document.querySelectorAll('#logBody tr.active').forEach(r => r.classList.remove('active'));
   });
+
+  // ---- Tab switching ----
+  detailTabs.addEventListener('click', (e) => {
+    const tab = e.target.closest('.detail-tab');
+    if (!tab) return;
+    const tabName = tab.dataset.tab;
+    switchTab(tabName);
+  });
+
+  function switchTab(tabName) {
+    detailTabs.querySelectorAll('.detail-tab').forEach(t => {
+      t.classList.toggle('active', t.dataset.tab === tabName);
+    });
+    document.querySelectorAll('.detail-content').forEach(c => {
+      c.classList.remove('active');
+    });
+    const target = document.getElementById('content' + tabName.charAt(0).toUpperCase() + tabName.slice(1));
+    if (target) target.classList.add('active');
+  }
 
   // ---- Load dates ----
   async function loadDates() {
@@ -643,51 +721,167 @@ tbody td {
     tr.classList.add('active');
     currentSeq = seq;
     detailTitle.textContent = 'Entry #' + seq;
-    reqContent.innerHTML = '<div style="color:var(--text-dim)">Loading...</div>';
-    respContent.innerHTML = '';
+    contentTransport.innerHTML = '<div style="color:var(--text-dim)">Loading...</div>';
+    contentRequest.innerHTML = '<div style="color:var(--text-dim)">Loading...</div>';
+    contentResponse.innerHTML = '<div style="color:var(--text-dim)">Loading...</div>';
     detailPanel.classList.add('open');
 
     try {
       const res = await fetch('/http-log/' + currentDate + '/entries/' + seq);
       if (!res.ok) throw new Error('HTTP ' + res.status);
       const data = await res.json();
+      currentDetailData = data;
       renderDetail(data);
     } catch(e) {
-      reqContent.innerHTML = '<div style="color:var(--error)">Failed to load: ' + escHtml(e.message) + '</div>';
+      contentTransport.innerHTML = '<div style="color:var(--error)">Failed to load: ' + escHtml(e.message) + '</div>';
     }
   }
 
   // ---- Render detail ----
   function renderDetail(data) {
-    const req = data.request || {};
-    const resp = data.response || {};
+    const transport = data.transport || {};
+    const request = data.request || {};
+    const response = data.response || {};
 
-    // Request side
+    // ---- Transport Tab ----
+    let transHtml = '';
+    const tReq = transport.request || {};
+    const tResp = transport.response || {};
+
+    // URL + Method
+    if (tReq.method || tReq.url) {
+      transHtml += '<div class="detail-url">' + escHtml(tReq.method || '') + ' ' + escHtml(tReq.url || '') + '</div>';
+    }
+    // Elapsed
+    if (transport.elapsed_ms != null) {
+      transHtml += '<div class="detail-meta"><div class="detail-meta-item">Elapsed: <span>' + transport.elapsed_ms + ' ms</span></div></div>';
+    }
+    // Request Headers
+    transHtml += makeCollapsible('Request Headers', renderHeaders(tReq.headers), true);
+    // Request Body
+    if (tReq.body !== undefined) {
+      transHtml += makeCollapsible('Request Body', renderJsonTree(tReq.body, 0, false), true);
+    }
+    // Response Status
+    if (tResp.status_code != null) {
+      const cls = tResp.status_code < 400 ? 'status-ok' : 'status-err';
+      transHtml += '<div style="margin:8px 0">Response Status: <span class="' + cls + '">' + tResp.status_code + '</span></div>';
+    }
+    // Response Headers
+    transHtml += makeCollapsible('Response Headers', renderHeaders(tResp.headers), true);
+    // Response Body
+    if (tResp.body !== undefined) {
+      const body = tResp.body;
+      if (typeof body === 'object' && body !== null && body.streaming === true) {
+        transHtml += makeCollapsible('Response Body', '<div style="color:var(--orange);font-style:italic">Streaming response -- content captured in application layer</div>', false);
+      } else {
+        transHtml += makeCollapsible('Response Body', renderJsonTree(body, 0, false), true);
+      }
+    }
+    if (!transHtml) {
+      transHtml = '<div style="color:var(--text-dim);padding:20px;text-align:center">No transport data available</div>';
+    }
+    contentTransport.innerHTML = transHtml;
+
+    // ---- Request Tab ----
     let reqHtml = '';
-    reqHtml += '<div class="detail-url">' + escHtml(req.method || '') + ' ' + escHtml(req.url || '') + '</div>';
-    reqHtml += makeCollapsible('Headers', renderHeaders(req.headers), true);
-    if (req.body !== undefined) {
-      const bodyHtml = renderJsonTree(req.body, 0, true);
-      reqHtml += makeCollapsible('Body', bodyHtml, false);
+    // Model + Provider + Timestamp
+    const reqMeta = [];
+    if (request.model) reqMeta.push('Model: <span>' + escHtml(request.model) + '</span>');
+    if (request.provider) reqMeta.push('Provider: <span>' + escHtml(request.provider) + '</span>');
+    if (request.timestamp) reqMeta.push('Time: <span>' + escHtml(request.timestamp) + '</span>');
+    if (reqMeta.length > 0) {
+      reqHtml += '<div class="detail-meta">' + reqMeta.map(m => '<div class="detail-meta-item">' + m + '</div>').join('') + '</div>';
     }
-    reqContent.innerHTML = reqHtml;
+    // Messages
+    if (request.messages) {
+      reqHtml += makeCollapsible('Messages (' + request.messages.length + ')', renderMessagesArray(request.messages), false);
+    }
+    // Tools
+    if (request.tools) {
+      reqHtml += makeCollapsible('Tools (' + request.tools.length + ')', renderJsonTree(request.tools, 0, false), true);
+    }
+    // Provider Params
+    if (request.provider_params) {
+      reqHtml += makeCollapsible('Provider Params', renderJsonTree(request.provider_params, 0, false), true);
+    }
+    // Request Params
+    if (request.request_params) {
+      reqHtml += makeCollapsible('Request Params', renderJsonTree(request.request_params, 0, false), true);
+    }
+    if (!reqHtml) {
+      reqHtml = '<div style="color:var(--text-dim);padding:20px;text-align:center">No application request data available</div>';
+    }
+    contentRequest.innerHTML = reqHtml;
 
-    // Response side
+    // ---- Response Tab ----
     let respHtml = '';
-    if (resp.status_code != null) {
-      const cls = resp.status_code < 400 ? 'status-ok' : 'status-err';
-      respHtml += '<div style="margin-bottom:10px">Status: <span class="' + cls + '">' + resp.status_code + '</span></div>';
+    // Model + Timestamp
+    const respMeta = [];
+    if (response.model) respMeta.push('Model: <span>' + escHtml(response.model) + '</span>');
+    if (response.timestamp) respMeta.push('Time: <span>' + escHtml(response.timestamp) + '</span>');
+    if (respMeta.length > 0) {
+      respHtml += '<div class="detail-meta">' + respMeta.map(m => '<div class="detail-meta-item">' + m + '</div>').join('') + '</div>';
     }
-    respHtml += makeCollapsible('Headers', renderHeaders(resp.headers), true);
-    if (resp.body !== undefined) {
-      const bodyHtml = renderJsonTree(resp.body, 0, true);
-      respHtml += makeCollapsible('Body', bodyHtml, false);
+    // Usage
+    const usage = response.usage;
+    if (usage && typeof usage === 'object') {
+      respHtml += '<div class="usage-grid">';
+      respHtml += '<div class="usage-cell"><div class="usage-label">Prompt</div><div class="usage-value">' + (usage.prompt_tokens != null ? usage.prompt_tokens.toLocaleString() : '-') + '</div></div>';
+      respHtml += '<div class="usage-cell"><div class="usage-label">Completion</div><div class="usage-value">' + (usage.completion_tokens != null ? usage.completion_tokens.toLocaleString() : '-') + '</div></div>';
+      respHtml += '<div class="usage-cell"><div class="usage-label">Total</div><div class="usage-value">' + (usage.total_tokens != null ? usage.total_tokens.toLocaleString() : '-') + '</div></div>';
+      respHtml += '</div>';
     }
-    respContent.innerHTML = respHtml;
+    // Content
+    if (response.content !== undefined && response.content !== null) {
+      respHtml += makeCollapsible('Content', renderLongText(response.content), false);
+    }
+    // Thinking
+    if (response.thinking !== undefined && response.thinking !== null) {
+      respHtml += makeCollapsible('Thinking', renderLongText(response.thinking), true);
+    }
+    // Tool Calls
+    if (response.tool_calls) {
+      respHtml += makeCollapsible('Tool Calls (' + response.tool_calls.length + ')', renderJsonTree(response.tool_calls, 0, false), false);
+    }
+    if (!respHtml) {
+      respHtml = '<div style="color:var(--text-dim);padding:20px;text-align:center">No application response data available</div>';
+    }
+    contentResponse.innerHTML = respHtml;
 
-    // Bind collapsible toggles
-    bindCollapsibles(reqContent);
-    bindCollapsibles(respContent);
+    // Bind collapsibles
+    bindCollapsibles(contentTransport);
+    bindCollapsibles(contentRequest);
+    bindCollapsibles(contentResponse);
+
+    // Select default tab: Request if available, else Transport
+    if (data.request) {
+      switchTab('request');
+    } else {
+      switchTab('transport');
+    }
+  }
+
+  // ---- Render long text with expand/collapse ----
+  function renderLongText(text) {
+    if (typeof text !== 'string') {
+      return renderJsonTree(text, 0, false);
+    }
+    const id = 'lt_' + Math.random().toString(36).slice(2, 10);
+    const escaped = escHtml(text);
+    // Always show full text, but allow collapsing for very long strings
+    if (text.length > 500) {
+      return '<div id="' + id + '">' +
+             '<div id="' + id + '_short" style="white-space:pre-wrap;word-break:break-word;max-height:200px;overflow:hidden;position:relative">' +
+             escaped +
+             '<div style="position:absolute;bottom:0;left:0;right:0;height:40px;background:linear-gradient(transparent,var(--card));cursor:pointer" onclick="document.getElementById(\'' + id + '_short\').style.display=\'none\';document.getElementById(\'' + id + '_full\').style.display=\'block\'"></div>' +
+             '</div>' +
+             '<div id="' + id + '_full" style="display:none;white-space:pre-wrap;word-break:break-word">' +
+             escaped +
+             '<span class="long-str-toggle" onclick="document.getElementById(\'' + id + '_full\').style.display=\'none\';document.getElementById(\'' + id + '_short\').style.display=\'block\'">collapse</span>' +
+             '</div></div>';
+    }
+    return '<div style="white-space:pre-wrap;word-break:break-word">' + escaped + '</div>';
   }
 
   function renderHeaders(headers) {
