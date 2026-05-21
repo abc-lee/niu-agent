@@ -85,13 +85,17 @@ class BrainContextInjector:
 
         Steps:
         1. Get entity-to-region mapping from graph (direct read, no LLM)
-        2. activation_mgr.activate_regions based on query context matching
-        3. Format injection content by activation level
+        2. Keyword-match query against region member names to find hit entities
+        3. activation_mgr.activate_regions based on keyword matches
+        4. Format injection content by activation level
 
         Returns injection text (empty string if no active regions or on error).
 
-        IMPORTANT: This method does NOT call LightRAG API to avoid event loop
-        deadlock. It directly reads the NetworkX graph via get_all_region_members().
+        IMPORTANT: This method does NOT call LightRAG API to avoid circular
+        deadlock in the LLM Proxy chain (LightRAG -> LLM -> Proxy -> query_data
+        -> LightRAG). Instead, it directly reads the NetworkX graph via
+        get_all_region_members() and performs case-insensitive keyword matching
+        against member entity names to determine region activation.
         """
         if not query_context:
             return ""
@@ -103,39 +107,30 @@ class BrainContextInjector:
             for member in members:
                 entity_to_region[member] = region_name
 
-        # Step 2: Query LightRAG to find hit entities (vector search)
+        # Step 2: Keyword-match query against member names (no LLM, no deadlock)
+        query_lower = query_context.lower()
         hit_entities: list[str] = []
         region_knowledge: dict[str, str] = {}  # region_label -> knowledge text
 
-        try:
-            # Program auto-call: keywords=[query_context] skips LLM extraction.
-            # The full context as keyword is a deliberate trade-off: it avoids
-            # 5-30s LLM latency per turn. Vector search still returns results
-            # by semantic similarity; keywords only boost graph-traversal matches.
-            query_result = self._adapter.query_data(
-                query_context, mode="local", top_k=20, keywords=[query_context]
-            )
+        for region_name, members in region_members.items():
+            matched_members: list[str] = []
+            for member in members:
+                member_lower = member.lower()
+                # Case-insensitive partial match: either the query contains
+                # the member name or the member name contains a query word
+                if member_lower in query_lower or any(
+                    w in member_lower
+                    for w in query_lower.split()
+                    if len(w) >= 2
+                ):
+                    matched_members.append(member)
 
-            if query_result and isinstance(query_result, dict):
-                data = query_result.get("data", {})
-                if not data:
-                    data = query_result
-                entities = data.get("entities", [])
-                hit_entities = [
-                    e.get("entity_name", e.get("id", ""))
-                    for e in entities
-                    if e.get("entity_name") or e.get("id")
-                ]
-                # Extract knowledge snippets per region
-                for entity in entities:
-                    entity_name = entity.get("entity_name", entity.get("id", ""))
-                    region_label = entity_to_region.get(entity_name, "")
-                    if region_label and region_label not in region_knowledge:
-                        desc = entity.get("description", "")
-                        if desc:
-                            region_knowledge[region_label] = desc
-        except Exception as e:
-            logger.warning("脑区注入查询失败: %s", e)
+            if matched_members:
+                hit_entities.extend(matched_members)
+                # Build a brief knowledge summary from matched member names
+                region_knowledge[region_name] = (
+                    f"相关实体: {', '.join(matched_members)}"
+                )
 
         # Step 3: Activate regions based on hit entities
         self._activation_mgr.activate_regions(

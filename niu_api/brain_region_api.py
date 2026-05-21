@@ -101,8 +101,8 @@ def get_brain_regions(
         # Combine region info with activation states
         result_regions: list[dict[str, Any]] = []
         for region in regions:
-            act_state = activation_map.get(region.community_id)
-            if act_state is not None:
+            act_state = activation_map.get(region.name)
+            if act_state is not None and activation_mgr is not None:
                 activation = act_state.activation
                 status_light = activation_mgr.get_status_light(activation)
                 manually_dimmed = act_state.manually_dimmed

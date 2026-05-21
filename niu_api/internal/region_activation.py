@@ -46,7 +46,8 @@ class BrainRegionState:
     mechanisms. Reset on each new session.
     """
 
-    region_id: str  # community_id (e.g. "community_3")
+    region_id: str  # unique region name (e.g. "Python脑区") — used as dict key
+    community_id: str  # Leiden community ID (e.g. "community_3"), empty for default regions
     label: str  # human-readable region name (e.g. "Python")
     activation: float  # current activation 0.0-1.0
     last_activated_at: float  # timestamp of last activation
@@ -151,23 +152,24 @@ class RegionActivationManager:
             # co_activation_counts and total_activation_rounds are NOT cleared
 
             for region in regions:
-                self._regions[region.community_id] = BrainRegionState(
-                    region_id=region.community_id,
+                self._regions[region.name] = BrainRegionState(
+                    region_id=region.name,
+                    community_id=region.community_id,
                     label=region.label,
                     activation=0.0,
                     last_activated_at=0.0,
                     activation_count=0,
                     manually_dimmed=False,
                 )
-                self._label_index[region.label] = region.community_id
-                self._descriptions[region.community_id] = region.description or ""
+                self._label_index[region.label] = region.name
+                self._descriptions[region.name] = region.description or ""
 
                 # Build entity -> region mapping from members
                 for entity_name in region.members:
-                    self._entity_to_region[entity_name] = region.community_id
+                    self._entity_to_region[entity_name] = region.name
 
                 # Cache member count for O(1) lookup in get_merge_candidates
-                self._member_counts[region.community_id] = len(region.members)
+                self._member_counts[region.name] = len(region.members)
 
             logger.info(
                 "初始化脑区激活管理器: %d 个区域, %d 个实体映射",
@@ -450,16 +452,32 @@ class RegionActivationManager:
 
         Removes self-loops and stores the cleaned map under lock.
 
+        The input neighbor_map is keyed by community_id (from build_neighbor_map).
+        We translate keys/values to region_id (region.name) so spillover lookups
+        work against the _regions dict which is keyed by region_id.
+
         Args:
-            neighbor_map: region_id -> set of neighbor region_ids
+            neighbor_map: community_id -> set of neighbor community_ids
         """
+        # Build community_id -> region_id translation table
+        cid_to_rid: dict[str, str] = {}
+        for state in self._regions.values():
+            if state.community_id:
+                cid_to_rid[state.community_id] = state.region_id
+
         cleaned: dict[str, set[str]] = {}
-        for region_id, neighbors in neighbor_map.items():
-            neighbor_set = set(neighbors)
-            if region_id in neighbor_set:
-                logger.warning("Self-loop in neighbor map for %s, removing", region_id)
-                neighbor_set.discard(region_id)
-            cleaned[region_id] = neighbor_set
+        for cid, neighbors in neighbor_map.items():
+            # Translate community_id key to region_id
+            rid = cid_to_rid.get(cid, cid)
+            neighbor_set = set()
+            for n_cid in neighbors:
+                n_rid = cid_to_rid.get(n_cid, n_cid)
+                neighbor_set.add(n_rid)
+
+            if rid in neighbor_set:
+                logger.warning("Self-loop in neighbor map for %s, removing", rid)
+                neighbor_set.discard(rid)
+            cleaned[rid] = neighbor_set
 
         with self._lock:
             self._neighbors = cleaned
