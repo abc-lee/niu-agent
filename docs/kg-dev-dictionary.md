@@ -1,6 +1,6 @@
 # KG 开发字典
 
-> 基于 2026-05-10 实测结果更新。LLM 代理可用，通过 API 代理 /llm/v1 端点调用真实 LLM。
+> 基于 2026-05-21 实测结果更新。LLM 代理可用，通过 API 代理 /llm/v1 端点调用真实 LLM。
 > 所有后续开发直接参考此字典，无需再做额外测试。
 
 ## 测试结果摘要
@@ -192,8 +192,8 @@ amerge_entities(
 inject_custom_kg(
     entities=[{"entity_name": "任飞", "entity_type": "person",
                "description": "任飞，用户的朋友"}],
-    relationships=[{"src_id": "brain:Niu", "tgt_id": "任飞",
-                    "keywords": "remembers", "description": "认识任飞"}],
+    relationships=[{"src_id": "Niu", "tgt_id": "任飞",
+                    "keywords": "brain_region_anchor", "description": "认识任飞"}],
     chunks=[],  # 无 chunks → 不触发 LLM → 100%可靠
     source_id="person:rename",
 )
@@ -316,8 +316,8 @@ merge_entities(
        skip_llm_extraction: bool = False（已废弃）
 返回:  {"status": "ok", "track_id": str} | {"status": "error"}
 注意:  内部构造文本调用 lightrag_insert（ainsert），自动提取实体/关系
-       自动包含 brain:Niu → entity 锚定关系
-       Person→remembers, Skill→skilled_in, Concept→knows_about, Tool→uses
+       自动包含 Niu → entity 锚定关系
+       Person→brain_region_anchor, Skill→brain_region_anchor, Concept→brain_region_anchor, Tool→brain_region_anchor
 陷阱:  走 LLM 提取，不适合精确控制；照片/人物应使用 inject_custom_kg
 ```
 
@@ -361,20 +361,20 @@ merge_entities(
 ### `lightrag_insert_custom_kg` — 注入脑区实体+锚定关系
 
 ```python
-# 确保 brain:Niu 存在（启动时幂等调用）
+# 确保 Niu 存在（启动时幂等调用）
 inject_custom_kg(
-    entities=[{"entity_name": "brain:Niu", "entity_type": "Niu",
+    entities=[{"entity_name": "Niu", "entity_type": "Niu",
                "description": "Self entity — all memory relations start from here"}],
     relationships=[], chunks=[], source_id="brain",
 )
 
-# 注入脑区实体
+# 注入脑区实体（自然语言命名）
 inject_custom_kg(
-    entities=[{"entity_name": "brain:{region_name}", "entity_type": "BrainRegion",
+    entities=[{"entity_name": "{label}脑区", "entity_type": "BrainRegion",
                "description": "{region_description}"}],
-    relationships=[{"src_id": "brain:Niu", "tgt_id": "brain:{region_name}",
-                    "keywords": "remembers", "description": "拥有脑区{region_name}"}],
-    chunks=[], source_id="brain:{region_name}",
+    relationships=[{"src_id": "Niu", "tgt_id": "{label}脑区",
+                    "keywords": "brain_region_anchor", "description": "拥有脑区{label}"}],
+    chunks=[], source_id="brain",
 )
 ```
 
@@ -442,7 +442,7 @@ manager = RegionActivationManager()
 # 初始化：从 BrainRegionInfo 列表创建状态
 from niu_api.internal.region_manager import BrainRegionInfo
 regions = [
-    BrainRegionInfo(name="brain:region:xxx", label="标签", community_id="c1",
+    BrainRegionInfo(name="编程开发脑区", label="编程开发", community_id="c1",
                     description="描述", size=5, representative="代表实体",
                     members=["实体1", "实体2"], updated_at=0.0),
 ]
@@ -450,17 +450,17 @@ manager.initialize_from_regions(regions)
 
 # 激活脑区（通过命中实体 → 映射到脑区）
 hit_entities = ["Python"]
-entity_to_region = {"Python": "brain:region:编程"}
+entity_to_region = {"Python": "community_3"}
 activated = manager.activate_regions(hit_entities, entity_to_region)
 # 返回: set[str] — 被激活的 region_id 集合
 
 # 工具使用强化
-region_id = manager.reinforce_by_tool_use("lightrag_insert", {"lightrag_insert": "brain:region:编程"})
+region_id = manager.reinforce_by_tool_use("lightrag_insert", {"lightrag_insert": "community_3"})
 # 返回: str | None — 被强化的 region_id
 
 # 手动激活/调暗
-manager.manual_activate(["brain:region:编程"])   # region_labels: list[str]
-manager.manual_dim(["brain:region:编程"])         # region_labels: list[str]
+manager.manual_activate(["编程开发"])   # region_labels: list[str]
+manager.manual_dim(["编程开发"])         # region_labels: list[str]
 
 # 衰减（每轮调用一次）
 manager.decay_all()  # factor=0.92, threshold=0.1
@@ -505,49 +505,52 @@ manager = RegionManager(adapter, ingester)
 regions = manager.get_all_regions()  # → list[BrainRegionInfo]
 
 # 获取脑区成员
-members = manager.get_region_members("brain:region:编程")  # → list[str]
+members = manager.get_region_members("编程开发脑区")  # → list[str]
 
-# 创建脑区节点（在图谱中创建 brain:region:xxx 实体 + belongs_to 边）
-manager.create_region_nodes(regions)
+# 创建脑区节点（在图谱中创建 {label}脑区 实体 + _region:contains 边）
+manager.create_region_nodes(partition_result)
 
 # 更新脑区摘要
-manager.update_region_summaries(regions)
+manager.update_region_summaries(region_names)
 
-# 清理过时脑区（成员 < 2 的脑区）
-manager.cleanup_stale_regions(regions)
+# 清理过时脑区
+manager.cleanup_stale_regions(current_partition)
 
 # 解散萎缩脑区
-manager.dissolve_shrunk_regions(regions)
+manager.dissolve_shrunk_regions()
 
-# 增量更新（Leiden 社区检测后）
-manager.incremental_update(old_regions, new_regions)
+# 增量更新（社区检测 + 创建节点 + 清理 + 更新摘要 + 衰减边）
+result = manager.incremental_update()
 
 # 边权重衰减（_region: 和 _session: 前缀的边）
 disconnected = manager._decay_structural_edges(regions)
 # 返回: int — 断开的边数
 
-# 创建默认脑区（3个：聊天历史、文档库、知识体系）
-manager.create_default_regions()
+# 创建默认脑区（6个：Core 3 + Category 3）
+from niu_api.internal.region_manager import create_default_regions
+result = create_default_regions(adapter, ingester)
 ```
 
 ```
 参数:  __init__(adapter: LightRAGAdapter, ingester: LightRAGIngester)
        get_all_regions() → list[BrainRegionInfo]
        get_region_members(region_name: str) → list[str]
-       create_region_nodes(regions: list[BrainRegionInfo])
-       update_region_summaries(regions: list[BrainRegionInfo])
-       cleanup_stale_regions(regions: list[BrainRegionInfo])
-       dissolve_shrunk_regions(regions: list[BrainRegionInfo])
-       incremental_update(old: list, new: list)
+       create_region_nodes(partition_result: CommunityDetectionResult)
+       update_region_summaries(region_names: list[str])
+       cleanup_stale_regions(current_partition: CommunityDetectionResult)
+       dissolve_shrunk_regions(shrink_threshold: int = 100, shrink_rounds: int = 3)
+       incremental_update() → dict  # 已完整实现
        _decay_structural_edges(regions: list[BrainRegionInfo]) → int
-       create_default_regions()
 返回:  见上方各方法
 注意:  BELONGS_TO_RELATION = "_region:contains"（旧版: "belongs_to"）
        _decay_structural_edges: decay_factor=0.5, threshold=0.1
        _summarize_region: 启发式（非 LLM）— 用第一个实体名做 label
        BrainRegionInfo: name, label, community_id, description, size, representative, members, updated_at
+       create_default_regions 是模块级函数（不是 RegionManager 方法）
+       签名: create_default_regions(adapter, ingester, include_category=True)
+       创建6个默认脑区：Core(3)+Category(3)
 陷阱:  构造函数需要 (adapter, ingester)，不是 (rag)
-       incremental_update 未实现（pass）
+       incremental_update 已完整实现（不是 pass）
        _summarize_region 是启发式，不是 LLM 生成
        _decay_structural_edges 只处理 _region: 和 _session: 前缀的边
 ```
@@ -558,7 +561,7 @@ manager.create_default_regions()
 from agent.injector.region_sync import RegionSync
 
 sync = RegionSync(sync_interval=86400)  # 默认24小时
-sync.start()  # 启动后台守护线程
+sync.start_background_sync()  # 启动后台守护线程
 ```
 
 ```
@@ -567,8 +570,7 @@ sync.start()  # 启动后台守护线程
 注意:  8步流程: LightRAG检查 → 社区检测 → 创建节点 → 清理过时 → 更新摘要
        → 刷新激活管理器 → 合并+解散 → 保存状态
        后台守护线程，polling readiness check
-陷阱:  邻居映射为空 — spillover 激活不工作
-       Leiden 社区检测需要 leidenalg 包（未在 requirements.txt 中）
+陷阱:  Leiden 社区检测需要 leidenalg 包（未在 requirements.txt 中）
 ```
 
 ### `brain_region_prompt` — 脑区上下文注入
@@ -583,20 +585,18 @@ messages = [
 ]
 assert is_lightrag_extraction_request(messages)  # True
 
-# 注入脑区上下文
-from niu_api.internal.lightrag_adapter import LightRAGAdapter
-adapter = LightRAGAdapter()
-augmented = inject_brain_region_context(messages, adapter)
+# 注入脑区上下文（单参数，内部通过 get_brain_regions() 读取 NetworkX 内存图）
+augmented = inject_brain_region_context(messages)
 # 返回: list[dict] — 增强后的 messages
 ```
 
 ```
-参数:  inject_brain_region_context(messages: list[dict], adapter: LightRAGAdapter)
+参数:  inject_brain_region_context(messages: list[dict])
        is_lightrag_extraction_request(messages: list[dict]) → bool
 返回:  增强后的 messages 列表
 注意:  只对包含 "Knowledge Graph Specialist" 的 messages 生效
        静态提示: 脑区架构 + 命名约定（未命名人物临时命名 + 同名实体不重复创建）
-       动态提示: 从图谱查询当前脑区（mode="local", only_need_context=True）
+       动态提示: 直接读 NetworkX 内存图 via get_brain_regions()，避免事件循环死锁
        注入内容长度约 69000 字符
 陷阱:  只在 LightRAG 提取请求时注入，普通对话不触发
 ```
@@ -613,15 +613,14 @@ from agent.brain_tools import (
 ```
 
 ```
-参数:  handle_brain_region_activate(region_labels: list[str])
-       handle_brain_region_dim(region_labels: list[str])
-       handle_brain_region_status() → dict
-       reinforce_on_tool_use(tool_name: str, tool_to_region: dict[str,str])
+参数:  handle_brain_region_activate(regions: list[str], reason: str = "")
+       handle_brain_region_dim(regions: list[str])
+       handle_brain_region_status(include_dark: bool = False) → str
+       reinforce_on_tool_use(tool_name: str, reinforce_delta: float = 0.15)
 返回:  各工具返回格式不同
 注意:  reinforce_on_tool_use 调用 manager.reinforce_by_tool_use + _reinforce_edge_weight
-       _reinforce_edge_weight: 对 _region: 前缀的边 weight += 0.1, max=1.0
-陷阱:  _reinforce_edge_weight 的 delta=0.1 与 RegionActivationManager 的 tool_reinforce_value=0.85 不一致
-       边默认 weight=1.0，reinforce 无可见效果（min(1.0, 1.0+0.1)=1.0）
+       _reinforce_edge_weight: 对 _region: 前缀的边 weight += 0.15, max=2.0
+陷阱:  边初始 weight=0.5，reinforce delta=0.15，max=2.0（REINFORCE_DELTA=0.15, MAX_EDGE_WEIGHT=2.0）
 ```
 
 ---
@@ -632,10 +631,11 @@ from agent.brain_tools import (
 |------|------|------|------|
 | 人物 | `{人名}` | `任飞` | **LLM 自然格式**，未命名时用 `未命名人物_{n}` |
 | 照片 | `photo:{normalized_stem}` | `photo:20090603_092316` | 照片实体，短名=文件名stem（不含扩展名），file_path放metadata存完整路径，与人物实体通过 features 关系连接 |
-| 脑区 | `brain:{name}` | `brain:Niu` | 脑区锚点 |
+| 脑区 | `{label}脑区` | `聊天历史脑区` | 自然语言命名，label为可读名称 |
+| 自身 | `Niu` | `Niu` | 根节点，脑区锚点 |
 | 事件 | `event:{name}` | `event:beach_sunset` | 事件实体 |
 | 交互习惯 | `habit:{type}:{tool}` | `habit:tool_dialect:kg-server` | 交互习惯 |
-| 记忆 | `brain:{type}:{label}` | `brain:Preference:python` | 记忆实体 |
+| 记忆 | 自然语言 | `Python偏好` | 记忆实体，自然语言命名 |
 
 ### 人物实体命名规则（重要）
 
@@ -650,13 +650,12 @@ from agent.brain_tools import (
 | 关键词 | 方向 | 语义 |
 |--------|------|------|
 | `features` | photo→person | 照片中出现了某人 |
-| `remembers` | brain:Niu→实体 | 认识/拥有/知道 |
+| `brain_region_anchor` | Niu→实体 | 认识/拥有/知道（锚定关系） |
 | `co_occurs_with` | person→person | 同框出现 |
 | `participated` | event→person | 参加了某事件 |
 | `classmate` | person→person | 同学关系 |
-| `skilled_in` | brain:Niu→Skill | 技能 |
-| `knows_about` | brain:Niu→Concept | 知识 |
-| `uses` | brain:Niu→Tool | 工具使用 |
+| `_region:contains` | 脑区→成员 | 脑区包含实体 |
+| `brain_region_anchor` | Niu→脑区 | Niu 拥有脑区 |
 
 ## 已知陷阱速查
 
@@ -681,16 +680,16 @@ from agent.brain_tools import (
 | 17 | **ainsert 碎片化根因** | LLM 从 chunk_text 提取的实体名与 Step 1 不同 → 无法合并 → 碎片；解决：chunk_text 中明确引用 Step 1 实体名 + Step 3 清理 |
 | 18 | **全路径做节点名 LLM 识别不了** | 照片实体名用短名 `photo:{stem}`（如 `photo:20090603_092316`），不用全路径 |
 | 19 | **custom_kg 分开调用导致 source_id UNKNOWN** | entities/relationships/chunks 必须在同一次 custom_kg 调用中传入；分开调用时第二次 chunks=[] → chunk_to_source_map 为空 → source_id=UNKNOWN |
-| 16 | reranker 未配置 WARNING | 不影响查询结果，但日志会有 WARNING |
-| 17 | **边默认 weight=1.0** | LightRAG 创建的边 weight 默认 1.0，reinforce +0.1 后 min(1.0,1.1)=1.0 无变化 |
-| 18 | **_reinforce_edge_weight delta 不一致** | brain_tools delta=0.1 vs RegionActivationManager tool_reinforce_value=0.85 |
-| 19 | **spillover 激活不工作** | RegionSync 邻居映射为空，spillover_factor=0.3 从未生效 |
-| 20 | ~~brain_region_prompt 用 person:{uuid}~~ | **已修复**：静态提示已简化为命名约定（未命名人物临时命名 + 同名实体不重复创建），不再强制 person:{uuid} 格式 |
-| 21 | **incremental_update 未实现** | RegionManager.incremental_update() 是 pass |
-| 22 | **_decay_structural_edges 从未运行** | 只处理 _region: 前缀边，但当前图中无此类边，返回 0 |
-| 23 | **leidenalg 未在 requirements.txt** | 社区检测需要此包，但未声明依赖 |
-| 24 | **_summarize_region 是启发式** | 用第一个实体名做 label，不是 LLM 生成 |
-| 25 | **brain_region_prompt 只在提取请求时注入** | 普通对话不触发，只在 LightRAG ainsert 时注入 |
+| 20 | reranker 未配置 WARNING | 不影响查询结果，但日志会有 WARNING |
+| 21 | **边初始 weight=0.5** | LightRAG 创建的边 weight 默认 0.5，reinforce +0.15 后 min(2.0, 0.5+0.15)=0.65 有变化 |
+| 22 | **_reinforce_edge_weight delta=0.15** | brain_tools REINFORCE_DELTA=0.15, MAX_EDGE_WEIGHT=2.0（旧值 delta=0.1, max=1.0 已修正） |
+| 23 | ~~spillover 激活不工作~~ | **已修复**：BUG 3 fix 实现了 build_neighbor_map()，spillover_factor=0.3 现在生效 |
+| 24 | ~~brain_region_prompt 用 person:{uuid}~~ | **已修复**：静态提示已简化为命名约定（未命名人物临时命名 + 同名实体不重复创建），不再强制 person:{uuid} 格式 |
+| 25 | ~~incremental_update 未实现~~ | **已修复**：RegionManager.incremental_update() 已完整实现（社区检测 + 创建节点 + 清理 + 更新摘要 + 衰减边） |
+| 26 | **_decay_structural_edges 从未运行** | 只处理 _region: 前缀边，但当前图中无此类边，返回 0 |
+| 27 | **leidenalg 未在 requirements.txt** | 社区检测需要此包，但未声明依赖 |
+| 28 | **_summarize_region 是启发式** | 用第一个实体名做 label，不是 LLM 生成 |
+| 29 | **brain_region_prompt 只在提取请求时注入** | 普通对话不触发，只在 LightRAG ainsert 时注入 |
 
 ## 待测试项
 
@@ -724,7 +723,7 @@ from agent.brain_tools import (
 3. amerge_entities(["未命名人物_1"], "任飞") → 未命名人物_1消失，任飞出现，边迁移
 4. amerge_entities(["未命名人物_2"], "任飞") → 未命名人物_2消失，边迁移到任飞
 
-**结果**：两个未命名人物都成功合并为任飞，所有关系（features, remembers）正确迁移
+**结果**：两个未命名人物都成功合并为任飞，所有关系（features, brain_region_anchor）正确迁移
 
 ### 测试6：ainsert 长文档人物去重
 

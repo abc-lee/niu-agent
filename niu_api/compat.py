@@ -493,7 +493,7 @@ async def chat_session(request: ChatRequest) -> ChatResponse:
         source="frontend",
         session_id=request.session_id or "default",
     )
-    return ChatResponse(reply="", session_id="default")  # 即返模式，回复通过 SSE 推送
+    return ChatResponse(reply="", session_id=request.session_id or "default")  # 即返模式，回复通过 SSE 推送
 
 
 @router.get("/api/context/messages")
@@ -618,9 +618,11 @@ async def clear_chat() -> dict:
     from niu_api.chat_queue import get_chat_queue
 
     q = get_chat_queue()
+    q.pause()  # 防止 drain→clear 间隙中新消息被处理
     drained = await q.drain(timeout=5.0)
 
     if not drained:
+        q.resume()
         logger.warning("[clear_chat] ChatQueue drain 5s timeout, clear rejected")
         return {"success": False, "error": "系统正忙，请稍后再试"}
 
@@ -654,6 +656,7 @@ async def clear_chat() -> dict:
         except OSError as e:
             logger.warning(f"[clear_chat] Failed to reset cursor file {cursor_name}: {e}")
 
+    q.resume()  # 恢复 worker 处理
     return {"success": True, "deleted_count": count, "cleaned_tmp": cleaned_tmp, "drained": drained}
 
 

@@ -321,8 +321,10 @@ async def lifespan(app: FastAPI):
     # 停止 ChatQueue
     try:
         from niu_api.chat_queue import stop_chat_queue
-        await stop_chat_queue()
+        await asyncio.wait_for(stop_chat_queue(), timeout=10.0)
         logger.info("ChatQueue stopped")
+    except asyncio.TimeoutError:
+        logger.warning("ChatQueue stop timed out after 10s")
     except Exception as e:
         logger.warning(f"Failed to stop ChatQueue: {e}")
 
