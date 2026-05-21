@@ -22,50 +22,6 @@ _LOG_DIR = Path("logs") / "raw_http"
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _extract_summary(data: dict, seq: int) -> dict:
-    """Extract a lightweight summary dict from a full log entry."""
-    req = data.get("request", {}) or {}
-    resp = data.get("response", {}) or {}
-    req_body = req.get("body")
-    resp_body = resp.get("body")
-
-    # request.body may be a dict or a string (raw body)
-    model = None
-    msg_count = None
-    if isinstance(req_body, dict):
-        model = req_body.get("model")
-        messages = req_body.get("messages")
-        if isinstance(messages, list):
-            msg_count = len(messages)
-
-    streaming = None
-    prompt_tokens = None
-    completion_tokens = None
-    total_tokens = None
-    if isinstance(resp_body, dict):
-        streaming = resp_body.get("streaming")
-        usage = resp_body.get("usage")
-        if isinstance(usage, dict):
-            prompt_tokens = usage.get("prompt_tokens")
-            completion_tokens = usage.get("completion_tokens")
-            total_tokens = usage.get("total_tokens")
-
-    return {
-        "seq": seq,
-        "timestamp": data.get("timestamp"),
-        "elapsed_ms": data.get("elapsed_ms"),
-        "model": model,
-        "method": req.get("method"),
-        "url": req.get("url"),
-        "status_code": resp.get("status_code"),
-        "streaming": streaming,
-        "msg_count": msg_count,
-        "prompt_tokens": prompt_tokens,
-        "completion_tokens": completion_tokens,
-        "total_tokens": total_tokens,
-    }
-
-
 # ---------------------------------------------------------------------------
 # API Endpoints
 # ---------------------------------------------------------------------------
@@ -91,36 +47,146 @@ def list_dates():
 
 @router.get("/{date}/entries", response_class=JSONResponse)
 def list_entries(date: str):
-    """Return summary list for all entries of a given date."""
+    """Return summary list for all entries of a given date.
+
+    Supports two log formats:
+    - Transport layer: {seq:06d}.json (request + streaming response marker)
+    - Application layer: {seq:06d}_request.json + {seq:06d}_response.json
+    """
     day_dir = _LOG_DIR / date
     if not day_dir.is_dir():
         return []
 
-    summaries: list[dict] = []
-    for f in sorted(day_dir.glob("*.json")):
+    # Collect all seq numbers from all file types
+    seqs: set[int] = set()
+    for f in day_dir.glob("*.json"):
         try:
-            seq = int(f.stem)
+            # "000001" or "000001_request" or "000001_response"
+            seq_str = f.stem.split("_")[0]
+            seqs.add(int(seq_str))
         except ValueError:
             continue
-        try:
-            data = json.loads(f.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            continue
-        summaries.append(_extract_summary(data, seq))
+
+    summaries: list[dict] = []
+    for seq in sorted(seqs):
+        summary = _build_summary(day_dir, seq)
+        if summary:
+            summaries.append(summary)
     return summaries
+
+
+def _build_summary(day_dir: Path, seq: int) -> dict | None:
+    """Build a summary for a single seq by merging available log files."""
+    transport_file = day_dir / f"{seq:06d}.json"
+    request_file = day_dir / f"{seq:06d}_request.json"
+    response_file = day_dir / f"{seq:06d}_response.json"
+
+    summary: dict = {"seq": seq}
+
+    # Prefer application-layer request (has full messages without truncation)
+    req_data = None
+    if request_file.is_file():
+        try:
+            req_data = json.loads(request_file.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    if req_data:
+        summary["timestamp"] = req_data.get("timestamp")
+        summary["model"] = req_data.get("model")
+        msgs = req_data.get("messages")
+        if isinstance(msgs, list):
+            summary["msg_count"] = len(msgs)
+        tools = req_data.get("tools")
+        if isinstance(tools, list):
+            summary["tool_count"] = len(tools)
+
+    # Prefer application-layer response (has full content)
+    resp_data = None
+    if response_file.is_file():
+        try:
+            resp_data = json.loads(response_file.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    if resp_data:
+        if "timestamp" not in summary:
+            summary["timestamp"] = resp_data.get("timestamp")
+        if "model" not in summary:
+            summary["model"] = resp_data.get("model")
+        usage = resp_data.get("usage")
+        if isinstance(usage, dict):
+            summary["prompt_tokens"] = usage.get("prompt_tokens")
+            summary["completion_tokens"] = usage.get("completion_tokens")
+            summary["total_tokens"] = usage.get("total_tokens")
+        # Mark streaming if response has content (means it was captured)
+        summary["streaming"] = False
+
+    # Fall back to transport-layer data for fields not yet filled
+    if transport_file.is_file():
+        try:
+            transport_data = json.loads(transport_file.read_text(encoding="utf-8"))
+        except Exception:
+            transport_data = None
+        if transport_data:
+            if "timestamp" not in summary:
+                summary["timestamp"] = transport_data.get("timestamp")
+            summary["elapsed_ms"] = transport_data.get("elapsed_ms")
+            req = transport_data.get("request", {})
+            if "model" not in summary:
+                body = req.get("body")
+                if isinstance(body, dict):
+                    summary["model"] = body.get("model")
+            summary["method"] = req.get("method")
+            summary["url"] = req.get("url")
+            resp = transport_data.get("response", {})
+            summary["status_code"] = resp.get("status_code")
+            if "streaming" not in summary:
+                body = resp.get("body")
+                if isinstance(body, dict):
+                    summary["streaming"] = body.get("streaming", False)
+
+    if not req_data and not resp_data and not transport_file.is_file():
+        return None
+    return summary
 
 
 @router.get("/{date}/entries/{seq}", response_class=JSONResponse)
 def get_entry(date: str, seq: int):
-    """Return the full JSON data for a single log entry."""
-    path = _LOG_DIR / date / f"{seq:06d}.json"
-    if not path.is_file():
+    """Return the full JSON data for a single log entry.
+
+    Merges transport-layer and application-layer data.
+    """
+    day_dir = _LOG_DIR / date
+    transport_file = day_dir / f"{seq:06d}.json"
+    request_file = day_dir / f"{seq:06d}_request.json"
+    response_file = day_dir / f"{seq:06d}_response.json"
+
+    if not transport_file.is_file() and not request_file.is_file() and not response_file.is_file():
         raise HTTPException(status_code=404, detail="Entry not found")
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError) as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to read entry: {exc}")
-    return data
+
+    result: dict = {"seq": seq}
+
+    # Transport layer data
+    if transport_file.is_file():
+        try:
+            result["transport"] = json.loads(transport_file.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
+    # Application layer request
+    if request_file.is_file():
+        try:
+            result["request"] = json.loads(request_file.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
+    # Application layer response
+    if response_file.is_file():
+        try:
+            result["response"] = json.loads(response_file.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
+    return result
 
 
 # ---------------------------------------------------------------------------

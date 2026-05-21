@@ -341,11 +341,11 @@ class RegionSync:
                         if source_state is None or target_state is None:
                             continue
 
-                        # Protect pre-set brain regions (region_id is empty for pre-set regions)
-                        if not source_state.region_id:
+                        # Protect pre-set brain regions (community_id is empty for pre-set regions)
+                        if not source_state.community_id:
                             logger.debug("[RegionSync] 跳过预置脑区合并: %s", source_state.label)
                             continue
-                        if not target_state.region_id:
+                        if not target_state.community_id:
                             logger.debug("[RegionSync] 跳过预置脑区作为合并目标: %s", target_state.label)
                             continue
 

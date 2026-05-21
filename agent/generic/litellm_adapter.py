@@ -35,6 +35,30 @@ from .http_logger import install_http_logger
 
 install_http_logger()
 
+# 完整无截断的原始日志序号计数器
+_raw_seq_counter = 0
+
+
+def _write_raw_log(log_type: str, data: dict) -> None:
+    """写入完整无截断的原始日志到 JSON 文件。
+
+    与 _write_interaction_log（人类可读、有截断）互补，
+    记录完整的 request/response 数据用于排查底层问题。
+    """
+    global _raw_seq_counter
+    try:
+        log_dir = Path(__file__).parent.parent.parent / "logs" / "raw_http" / datetime.now().strftime("%Y%m%d")
+        log_dir.mkdir(parents=True, exist_ok=True)
+        seq = _raw_seq_counter
+        _raw_seq_counter += 1
+        filepath = log_dir / f"{seq:06d}_{log_type}.json"
+        filepath.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2, default=str),
+            encoding="utf-8",
+        )
+    except Exception as e:
+        print(f"[LiteLLM] Failed to write raw log: {e}", file=sys.stderr, flush=True)
+
 
 def _write_interaction_log(log_entry: Dict[str, Any]):
     """
@@ -301,6 +325,17 @@ class LiteLLMSession(BaseSession):
             "provider_params": provider_params if provider_params else None
         })
 
+        # 记录完整无截断的原始请求
+        _write_raw_log("request", {
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "model": self.default_model,
+            "provider": custom_provider,
+            "messages": messages,
+            "tools": tools,
+            "provider_params": provider_params,
+            "request_params": {k: v for k, v in request_params.items() if k not in ("messages", "tools")},
+        })
+
         response = litellm.completion(**request_params)
 
         full_content = ""
@@ -459,6 +494,19 @@ class LiteLLMSession(BaseSession):
                 for tc in tool_calls
             ] if tool_calls else [],
             "usage": mock_resp.usage if hasattr(mock_resp, 'usage') else None
+        })
+
+        # 记录完整无截断的原始响应
+        _write_raw_log("response", {
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "model": self.default_model,
+            "thinking": reasoning_content,
+            "content": full_content,
+            "tool_calls": [
+                {"name": tc.function.name, "arguments": tc.function.arguments}
+                for tc in tool_calls
+            ] if tool_calls else [],
+            "usage": mock_resp.usage if hasattr(mock_resp, 'usage') else None,
         })
 
         return mock_resp
