@@ -219,13 +219,16 @@ _HTML_VIEWER = r"""<!DOCTYPE html>
   --success: #4caf50;
   --error: #f44336;
   --radius: 6px;
+  --navbar-h: 48px;
+  --stats-h: 40px;
 }
 
 html, body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   background: var(--bg);
   color: var(--text);
-  min-height: 100vh;
+  height: 100vh;
+  overflow: hidden;
 }
 
 /* ---- Top Nav ---- */
@@ -236,9 +239,8 @@ html, body {
   padding: 12px 24px;
   background: var(--card);
   border-bottom: 1px solid var(--border);
-  position: sticky;
-  top: 0;
-  z-index: 100;
+  height: var(--navbar-h);
+  flex-shrink: 0;
 }
 .navbar h1 {
   font-size: 18px;
@@ -271,12 +273,15 @@ html, body {
 .stats-bar {
   display: flex;
   gap: 24px;
-  padding: 12px 24px;
+  padding: 8px 24px;
   background: var(--card);
   border-bottom: 1px solid var(--border);
   font-size: 13px;
   color: var(--text-dim);
   flex-wrap: wrap;
+  height: var(--stats-h);
+  align-items: center;
+  flex-shrink: 0;
 }
 .stats-bar .stat-val {
   color: var(--text);
@@ -284,15 +289,34 @@ html, body {
   margin-left: 4px;
 }
 
-/* ---- Table ---- */
+/* ---- Main Layout: Left-Right Split ---- */
+.main-container {
+  display: flex;
+  height: calc(100vh - var(--navbar-h) - var(--stats-h));
+  overflow: hidden;
+}
+
+/* ---- Left Panel: List ---- */
+.list-panel {
+  width: 40%;
+  min-width: 320px;
+  overflow-y: auto;
+  border-right: 1px solid var(--border);
+  flex-shrink: 0;
+}
 .table-wrap {
-  padding: 16px 24px;
-  overflow-x: auto;
+  padding: 0;
 }
 table {
   width: 100%;
   border-collapse: collapse;
   font-size: 13px;
+}
+thead {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: var(--card);
 }
 thead th {
   text-align: left;
@@ -308,7 +332,7 @@ tbody tr {
   transition: background .12s;
 }
 tbody tr:hover { background: var(--card-hover); }
-tbody tr.active { background: var(--card); }
+tbody tr.active { background: var(--accent-dim); color: #fff; }
 tbody td {
   padding: 8px 10px;
   white-space: nowrap;
@@ -326,24 +350,32 @@ tbody td {
 .status-ok { color: var(--success); }
 .status-err { color: var(--error); }
 
-/* ---- Detail Panel ---- */
+/* ---- Right Panel: Detail ---- */
 .detail-panel {
-  margin: 0 24px 24px;
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  overflow: hidden;
-  display: none;
+  width: 60%;
+  overflow-y: auto;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
 }
-.detail-panel.open { display: block; }
+.detail-panel .detail-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--text-dim);
+  font-size: 15px;
+}
 .detail-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
   padding: 10px 16px;
   border-bottom: 1px solid var(--border);
+  background: var(--card);
   font-size: 14px;
   font-weight: 600;
+  flex-shrink: 0;
 }
 .detail-header button {
   background: none;
@@ -357,7 +389,8 @@ tbody td {
 .detail-tabs {
   display: flex;
   border-bottom: 1px solid var(--border);
-  background: var(--bg);
+  background: var(--card);
+  flex-shrink: 0;
 }
 .detail-tab {
   padding: 8px 20px;
@@ -376,12 +409,11 @@ tbody td {
 }
 
 .detail-body {
-  min-height: 200px;
+  flex: 1;
+  overflow-y: auto;
 }
 .detail-content {
   padding: 12px 16px;
-  overflow: auto;
-  max-height: 70vh;
   display: none;
 }
 .detail-content.active { display: block; }
@@ -419,7 +451,7 @@ tbody td {
   margin-bottom: 10px;
 }
 .usage-cell {
-  background: var(--bg);
+  background: var(--card);
   border-radius: var(--radius);
   padding: 8px 12px;
   text-align: center;
@@ -492,6 +524,15 @@ tbody td {
 }
 .long-str-toggle:hover { text-decoration: underline; }
 
+/* Formatted text (preserves newlines) */
+.formatted-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: "SF Mono", "Fira Code", "Consolas", monospace;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 /* ---- Empty state ---- */
 .empty-state {
   text-align: center;
@@ -502,6 +543,9 @@ tbody td {
 
 /* ---- Responsive ---- */
 @media (max-width: 768px) {
+  .main-container { flex-direction: column; }
+  .list-panel { width: 100%; min-width: 0; max-height: 40vh; border-right: none; border-bottom: 1px solid var(--border); }
+  .detail-panel { width: 100%; }
   .stats-bar { gap: 12px; }
   .usage-grid { grid-template-columns: 1fr; }
 }
@@ -522,38 +566,45 @@ tbody td {
   <span>Completion tokens:<span class="stat-val" id="statCompletion">0</span></span>
 </div>
 
-<div class="table-wrap" id="tableWrap">
-  <div class="empty-state" id="emptyState">Select a date to view logs</div>
-  <table id="logTable" style="display:none">
-    <thead>
-      <tr>
-        <th>#</th>
-        <th>Time</th>
-        <th>Model</th>
-        <th>Elapsed (ms)</th>
-        <th>Status</th>
-        <th>Prompt</th>
-        <th>Completion</th>
-      </tr>
-    </thead>
-    <tbody id="logBody"></tbody>
-  </table>
-</div>
+<div class="main-container">
+  <!-- Left Panel: Entry List -->
+  <div class="list-panel" id="listPanel">
+    <div class="table-wrap" id="tableWrap">
+      <div class="empty-state" id="emptyState">Select a date to view logs</div>
+      <table id="logTable" style="display:none">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Time</th>
+            <th>Model</th>
+            <th>Prompt</th>
+            <th>Completion</th>
+          </tr>
+        </thead>
+        <tbody id="logBody"></tbody>
+      </table>
+    </div>
+  </div>
 
-<div class="detail-panel" id="detailPanel">
-  <div class="detail-header">
-    <span id="detailTitle">Entry Detail</span>
-    <button id="detailClose">&times;</button>
-  </div>
-  <div class="detail-tabs" id="detailTabs">
-    <div class="detail-tab" data-tab="transport">Transport</div>
-    <div class="detail-tab" data-tab="request">Request</div>
-    <div class="detail-tab" data-tab="response">Response</div>
-  </div>
-  <div class="detail-body">
-    <div class="detail-content" id="contentTransport"></div>
-    <div class="detail-content" id="contentRequest"></div>
-    <div class="detail-content" id="contentResponse"></div>
+  <!-- Right Panel: Detail -->
+  <div class="detail-panel" id="detailPanel">
+    <div class="detail-empty" id="detailEmpty">Select an entry to view details</div>
+    <div id="detailContent" style="display:none">
+      <div class="detail-header">
+        <span id="detailTitle">Entry Detail</span>
+        <button id="detailClose">&times;</button>
+      </div>
+      <div class="detail-tabs" id="detailTabs">
+        <div class="detail-tab" data-tab="transport">Transport</div>
+        <div class="detail-tab" data-tab="request">Request</div>
+        <div class="detail-tab" data-tab="response">Response</div>
+      </div>
+      <div class="detail-body">
+        <div class="detail-content" id="contentTransport"></div>
+        <div class="detail-content" id="contentRequest"></div>
+        <div class="detail-content" id="contentResponse"></div>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -566,6 +617,8 @@ tbody td {
   const logBody = document.getElementById('logBody');
   const emptyState = document.getElementById('emptyState');
   const detailPanel = document.getElementById('detailPanel');
+  const detailEmpty = document.getElementById('detailEmpty');
+  const detailContent = document.getElementById('detailContent');
   const detailTitle = document.getElementById('detailTitle');
   const detailClose = document.getElementById('detailClose');
   const contentTransport = document.getElementById('contentTransport');
@@ -592,9 +645,10 @@ tbody td {
   });
 
   detailClose.addEventListener('click', () => {
-    detailPanel.classList.remove('open');
     currentSeq = null;
     document.querySelectorAll('#logBody tr.active').forEach(r => r.classList.remove('active'));
+    detailContent.style.display = 'none';
+    detailEmpty.style.display = 'flex';
   });
 
   // ---- Tab switching ----
@@ -640,8 +694,9 @@ tbody td {
   // ---- Load entries ----
   async function loadEntries(date) {
     currentDate = date;
-    detailPanel.classList.remove('open');
     currentSeq = null;
+    detailContent.style.display = 'none';
+    detailEmpty.style.display = 'flex';
     try {
       const res = await fetch('/http-log/' + date + '/entries');
       entriesCache = await res.json();
@@ -688,9 +743,6 @@ tbody td {
 
       const time = e.timestamp ? e.timestamp.replace('T', ' ').slice(11, 23) : '-';
       const model = e.model || '-';
-      const elapsed = e.elapsed_ms != null ? e.elapsed_ms : '-';
-      const status = e.status_code != null ? e.status_code : '-';
-      const statusClass = (typeof status === 'number' && status < 400) ? 'status-ok' : (typeof status === 'number' ? 'status-err' : '');
       const streamTag = e.streaming ? '<span class="tag-stream">Stream</span>' : '';
       const prompt = e.prompt_tokens != null ? e.prompt_tokens.toLocaleString() : '-';
       const completion = e.completion_tokens != null ? e.completion_tokens.toLocaleString() : '-';
@@ -699,24 +751,16 @@ tbody td {
         '<td>' + e.seq + streamTag + '</td>' +
         '<td>' + time + '</td>' +
         '<td>' + escHtml(model) + '</td>' +
-        '<td>' + elapsed + '</td>' +
-        '<td class="' + statusClass + '">' + status + '</td>' +
         '<td>' + prompt + '</td>' +
         '<td>' + completion + '</td>';
 
-      tr.addEventListener('click', () => toggleDetail(e.seq, tr));
+      tr.addEventListener('click', () => selectEntry(e.seq, tr));
       logBody.appendChild(tr);
     });
   }
 
-  // ---- Toggle detail ----
-  async function toggleDetail(seq, tr) {
-    if (currentSeq === seq) {
-      detailPanel.classList.remove('open');
-      currentSeq = null;
-      tr.classList.remove('active');
-      return;
-    }
+  // ---- Select entry (always shows detail, no toggle-off) ----
+  async function selectEntry(seq, tr) {
     document.querySelectorAll('#logBody tr.active').forEach(r => r.classList.remove('active'));
     tr.classList.add('active');
     currentSeq = seq;
@@ -724,7 +768,11 @@ tbody td {
     contentTransport.innerHTML = '<div style="color:var(--text-dim)">Loading...</div>';
     contentRequest.innerHTML = '<div style="color:var(--text-dim)">Loading...</div>';
     contentResponse.innerHTML = '<div style="color:var(--text-dim)">Loading...</div>';
-    detailPanel.classList.add('open');
+    detailEmpty.style.display = 'none';
+    detailContent.style.display = 'flex';
+    detailContent.style.flexDirection = 'column';
+    detailContent.style.flex = '1';
+    detailContent.style.overflow = 'hidden';
 
     try {
       const res = await fetch('/http-log/' + currentDate + '/entries/' + seq);
@@ -872,16 +920,35 @@ tbody td {
     // Always show full text, but allow collapsing for very long strings
     if (text.length > 500) {
       return '<div id="' + id + '">' +
-             '<div id="' + id + '_short" style="white-space:pre-wrap;word-break:break-word;max-height:200px;overflow:hidden;position:relative">' +
+             '<div id="' + id + '_short" class="formatted-text" style="max-height:200px;overflow:hidden;position:relative">' +
              escaped +
-             '<div style="position:absolute;bottom:0;left:0;right:0;height:40px;background:linear-gradient(transparent,var(--card));cursor:pointer" onclick="document.getElementById(\'' + id + '_short\').style.display=\'none\';document.getElementById(\'' + id + '_full\').style.display=\'block\'"></div>' +
+             '<div style="position:absolute;bottom:0;left:0;right:0;height:40px;background:linear-gradient(transparent,var(--bg));cursor:pointer" onclick="document.getElementById(\'' + id + '_short\').style.display=\'none\';document.getElementById(\'' + id + '_full\').style.display=\'block\'"></div>' +
              '</div>' +
-             '<div id="' + id + '_full" style="display:none;white-space:pre-wrap;word-break:break-word">' +
+             '<div id="' + id + '_full" class="formatted-text" style="display:none">' +
              escaped +
              '<span class="long-str-toggle" onclick="document.getElementById(\'' + id + '_full\').style.display=\'none\';document.getElementById(\'' + id + '_short\').style.display=\'block\'">collapse</span>' +
              '</div></div>';
     }
-    return '<div style="white-space:pre-wrap;word-break:break-word">' + escaped + '</div>';
+    return '<div class="formatted-text">' + escaped + '</div>';
+  }
+
+  // ---- Render formatted text for message content ----
+  function renderFormattedText(text) {
+    if (typeof text !== 'string') return renderJsonTree(text, 1, false);
+    const id = 'ft_' + Math.random().toString(36).slice(2, 10);
+    const escaped = escHtml(text);
+    if (text.length > 500) {
+      return '<div id="' + id + '">' +
+             '<div id="' + id + '_short" class="formatted-text" style="max-height:150px;overflow:hidden;position:relative">' +
+             escaped +
+             '<div style="position:absolute;bottom:0;left:0;right:0;height:40px;background:linear-gradient(transparent,var(--card));cursor:pointer" onclick="document.getElementById(\'' + id + '_short\').style.display=\'none\';document.getElementById(\'' + id + '_full\').style.display=\'block\'"></div>' +
+             '</div>' +
+             '<div id="' + id + '_full" class="formatted-text" style="display:none">' +
+             escaped +
+             '<span class="long-str-toggle" onclick="document.getElementById(\'' + id + '_full\').style.display=\'none\';document.getElementById(\'' + id + '_short\').style.display=\'block\'">collapse</span>' +
+             '</div></div>';
+    }
+    return '<div class="formatted-text">' + escaped + '</div>';
   }
 
   function renderHeaders(headers) {
@@ -953,6 +1020,19 @@ tbody td {
   }
 
   function renderString(s) {
+    // If string contains newlines, render with pre-wrap to preserve them
+    if (s.indexOf('\n') !== -1) {
+      const id = 'ns_' + Math.random().toString(36).slice(2, 10);
+      const escaped = escHtml(s);
+      if (s.length > 200) {
+        const preview = escHtml(s.slice(0, 200));
+        return '<span id="' + id + '_short" class="jt-str">"' + preview + '..."' +
+               '<span class="long-str-toggle" onclick="document.getElementById(\'' + id + '_short\').style.display=\'none\';document.getElementById(\'' + id + '_full\').style.display=\'inline\'">expand</span></span>' +
+               '<span id="' + id + '_full" class="jt-str" style="display:none">"<pre class="formatted-text" style="display:inline;margin:0;padding:0;background:none;color:inherit;font-size:inherit">' + escaped + '</pre>"' +
+               '<span class="long-str-toggle" onclick="document.getElementById(\'' + id + '_full\').style.display=\'none\';document.getElementById(\'' + id + '_short\').style.display=\'inline\'">collapse</span></span>';
+      }
+      return '<span class="jt-str">"<pre class="formatted-text" style="display:inline;margin:0;padding:0;background:none;color:inherit;font-size:inherit">' + escaped + '</pre>"</span>';
+    }
     if (s.length > 200) {
       const id = 'ls_' + Math.random().toString(36).slice(2, 10);
       const preview = escHtml(s.slice(0, 200));
@@ -1016,9 +1096,13 @@ tbody td {
       const roleClass = 'msg-role-' + role;
       html += '<div class="msg-block ' + roleClass + '">';
       html += '<div style="font-weight:600;font-size:11px;margin-bottom:4px">' + escHtml(role.toUpperCase()) + '</div>';
-      // Render content separately
+      // Render content with formatted text for long/multiline strings
       if (msg && msg.content !== undefined) {
-        html += renderJsonTree(msg.content, 1, false);
+        if (typeof msg.content === 'string' && (msg.content.length > 100 || msg.content.indexOf('\n') !== -1)) {
+          html += renderFormattedText(msg.content);
+        } else {
+          html += renderJsonTree(msg.content, 1, false);
+        }
       } else {
         html += renderJsonTree(msg, 1, false);
       }
