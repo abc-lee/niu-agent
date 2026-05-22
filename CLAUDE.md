@@ -26,6 +26,7 @@ MCP 服务器集群 (mcp-servers/)
 3. **修改前必须先做临时提交备份** — `git add -A && git commit`，恢复前也必须先备份当前状态，不能直接 `git checkout` 覆盖
 4. **修改前必须用 gitnexus 分析影响范围** — 评估 blast radius 后再动手
 5. **测试必须用真实数据+真实LLM** — 绕过LLM的测试是假测试
+6. **python/ 目录必须是完整的自包含 Python 安装** — 所有二进制文件、库、依赖必须真实存在于 python/ 目录内，禁止使用符号链接指向外部路径（如 /Library/Frameworks/Python.framework/）。这个目录最终要打包分发，客户不需要自己安装 Python 环境，也不需要自己安装依赖。
 
 **违反任何一条就停下来，不要继续。**
 
