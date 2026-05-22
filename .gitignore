@@ -36,6 +36,7 @@ wheels/
 .venv/
 venv/
 ENV/
+python/
 .pytest_cache/
 .ruff_cache/
 
