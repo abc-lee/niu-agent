@@ -534,26 +534,12 @@ def _create_lightrag_instance():
         prompt, system_prompt=None, history_messages=None,
         keyword_extraction=False, **kwargs,
     ) -> str:
-        client = _get_shared_openai_client()
-
-        # Build messages
-        messages = []
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-        if history_messages:
-            messages.extend(history_messages)
-        messages.append({"role": "user", "content": prompt})
-
-        # Call OpenAI API
-        response = await client.chat.completions.create(
-            model="proxy-model",
-            messages=messages,
+        return await openai_complete_if_cache(
+            "proxy-model", prompt,
+            system_prompt=system_prompt, history_messages=history_messages,
+            base_url=PROXY_BASE_URL, api_key=PROXY_API_KEY,
+            keyword_extraction=keyword_extraction, **kwargs,
         )
-
-        # Extract content
-        if response and response.choices:
-            return response.choices[0].message.content or ""
-        return ""
 
     llm_model_func = _llm_model_func
 
