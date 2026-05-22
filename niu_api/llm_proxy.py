@@ -372,7 +372,7 @@ async def chat_completions(request: OpenAIChatRequest) -> OpenAIChatResponse:
     # Reads directly from NetworkX in-memory graph — no LightRAG API call to avoid deadlock
     try:
         _t0 = time.time()
-        litellm_messages = inject_brain_region_context(litellm_messages)
+        litellm_messages = await asyncio.to_thread(inject_brain_region_context, litellm_messages)
         _t1 = time.time()
         logger.info(f"[LLM Proxy] Brain region injection took {_t1-_t0:.3f}s")
     except Exception:
