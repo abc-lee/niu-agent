@@ -77,54 +77,42 @@ func LoadContextConfig() *ContextConfig {
 	return cfg
 }
 
-// detectPython finds a suitable Python executable for launching the API server
+// detectPython finds the project's self-contained Python executable.
+// Primary: based on executable directory (works when running built binary from any cwd).
+// Fallback: current working directory (supports `go run main.go` during development).
 func detectPython() string {
-	exePath, _ := os.Executable()
-	exeDir := filepath.Dir(exePath)
-
-	var candidates []string
-
-	// 根据操作系统选择不同的路径格式
+	var pythonRelPath string
 	if runtime.GOOS == "windows" {
-		// Windows 路径
-		candidates = []string{
-			filepath.Join(exeDir, "python", "Scripts", "python.exe"),
-			filepath.Join(".", "python", "Scripts", "python.exe"),
-			"E:/opencode/venv/Scripts/python.exe",
-			filepath.Join(exeDir, ".venv", "Scripts", "python.exe"),
-			"C:/Python311/python.exe",
-			"C:/Python310/python.exe",
-			"python",
-			"python3",
-		}
+		pythonRelPath = filepath.Join("python", "Scripts", "python.exe")
 	} else {
-		// Mac/Linux 路径 (使用 bin 而不是 Scripts，无 .exe 扩展名)
-		homeDir, _ := os.UserHomeDir()
-		candidates = []string{
-			filepath.Join(homeDir, ".niu-venv", "bin", "python3"),
-			filepath.Join(homeDir, ".venv", "bin", "python3"),
-			filepath.Join(exeDir, "python", "bin", "python3"),
-			filepath.Join(exeDir, ".venv", "bin", "python3"),
-			filepath.Join(".", "python", "bin", "python3"),
-			"/usr/local/bin/python3",
-			"/usr/bin/python3",
-			"python3",
-			"python",
-		}
+		pythonRelPath = filepath.Join("python", "bin", "python3")
 	}
 
-	for _, candidate := range candidates {
-		cmd := exec.Command(candidate, "--version")
-		if err := cmd.Run(); err == nil {
-			if absPath, err := filepath.Abs(candidate); err == nil {
-				return absPath
-			}
-			return candidate
-		}
+	// Primary: executable directory
+	exePath, err := os.Executable()
+	if err != nil {
+		slog.Error("Failed to determine executable path", "error", err)
+		os.Exit(1)
+	}
+	exeDir := filepath.Dir(exePath)
+	candidate := filepath.Join(exeDir, pythonRelPath)
+	if cmd := exec.Command(candidate, "--version"); cmd.Run() == nil {
+		absPath, _ := filepath.Abs(candidate)
+		slog.Info("Found project Python (exeDir)", "path", absPath)
+		return absPath
 	}
 
-	slog.Warn("No Python found, using 'python' as fallback")
-	return "python"
+	// Fallback: current working directory (go run scenario)
+	candidate = filepath.Join(".", pythonRelPath)
+	if cmd := exec.Command(candidate, "--version"); cmd.Run() == nil {
+		absPath, _ := filepath.Abs(candidate)
+		slog.Info("Found project Python (cwd fallback)", "path", absPath)
+		return absPath
+	}
+
+	slog.Error("Project Python not found", "checked_exeDir", filepath.Join(exeDir, pythonRelPath), "checked_cwd", pythonRelPath)
+	os.Exit(1)
+	return ""
 }
 
 // loadMemory loads user memory from ~/.niu/memory.json
