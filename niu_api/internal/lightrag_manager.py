@@ -589,9 +589,20 @@ def _create_lightrag_instance():
     else:
         logger.info("LightRAG reranker disabled")
 
-    rag = LightRAG(**rag_params)
-    # lightrag-hku 1.4.15 requires explicit storage initialization
-    call_async(rag.initialize_storages(), timeout=300)
+    # Create LightRAG instance INSIDE the lightrag-loop event loop.
+    # LightRAG.__post_init__ creates asyncio sync primitives (Lock, Event,
+    # PriorityQueue) that bind to the current event loop context. If we
+    # create the instance on the main thread, those primitives are bound
+    # to the main thread's loop (or no loop at all). When later code in
+    # the lightrag-loop awaits those primitives, signal notification is
+    # lost and coroutines hang forever. Moving creation into the loop
+    # ensures all asyncio objects share the same event loop context.
+    async def _create_and_init():
+        rag = LightRAG(**rag_params)
+        await rag.initialize_storages()
+        return rag
+
+    rag = call_async(_create_and_init(), timeout=300)
     # If lightrag_storage is freshly created (empty graph), clear sync state caches
     # so that SkillSync/LightRAGSync/RegionSync will re-inject everything
     _clear_sync_state_if_storage_empty(STORAGE_DIR)
