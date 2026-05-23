@@ -24,6 +24,7 @@ Usage:
 import asyncio
 import json
 import os
+import sys
 import threading
 import time
 from collections import deque
@@ -31,6 +32,11 @@ from datetime import datetime
 from functools import partial
 from pathlib import Path
 from typing import Any, Dict, Optional
+
+_trace_t0 = time.monotonic()
+def _trace(tag, msg):
+    sys.stderr.write(f"[LR-TRACE {_trace_t0 and f'{time.monotonic()-_trace_t0:.1f}s'}] {tag} {msg}\n")
+    sys.stderr.flush()
 
 from loguru import logger
 
@@ -327,27 +333,27 @@ def call_async(coro, timeout: int = 120):
         result = call_async(rag.aquery("hello"))
         result = call_async(rag.ainsert(content), timeout=600)  # 10 min for large docs
     """
-    import sys as _sys, time as _time, concurrent.futures as _cf
+    import concurrent.futures as _cf
 
-    _ts = lambda: f"{_time.monotonic():.3f}"
-    _sys.stderr.write(f"[TRACE-LR] call_async ENTER {_ts()}\n"); _sys.stderr.flush()
-
+    _trace("CALL_ASYNC", f"enter, timeout={timeout}")
     loop = _ensure_loop()
-    _sys.stderr.write(f"[TRACE-LR] call_async BEFORE run_coroutine_threadsafe {_ts()}\n"); _sys.stderr.flush()
+    _trace("CALL_ASYNC", f"before run_coroutine_threadsafe")
     future = asyncio.run_coroutine_threadsafe(coro, loop)
-    _sys.stderr.write(f"[TRACE-LR] call_async AFTER run_coroutine_threadsafe {_ts()}\n"); _sys.stderr.flush()
+    _trace("CALL_ASYNC", f"after run_coroutine_threadsafe, before future.result(timeout={timeout})")
     try:
-        _sys.stderr.write(f"[TRACE-LR] call_async BEFORE future.result(timeout={timeout}) {_ts()}\n"); _sys.stderr.flush()
         result = future.result(timeout=timeout)
-        _sys.stderr.write(f"[TRACE-LR] call_async AFTER future.result {_ts()}\n"); _sys.stderr.flush()
+        _trace("CALL_ASYNC", f"future.result() returned successfully")
         return result
     except _cf.TimeoutError:
+        _trace("CALL_ASYNC", f"TimeoutError after {timeout}s")
         future.cancel()
         raise
     except asyncio.CancelledError:
+        _trace("CALL_ASYNC", "CancelledError")
         future.cancel()
         raise
     except Exception:
+        _trace("CALL_ASYNC", "Exception, cancelling future")
         future.cancel()
         raise
 
