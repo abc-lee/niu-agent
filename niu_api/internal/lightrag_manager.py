@@ -24,7 +24,6 @@ Usage:
 import asyncio
 import json
 import os
-import sys
 import threading
 import time
 from collections import deque
@@ -32,11 +31,6 @@ from datetime import datetime
 from functools import partial
 from pathlib import Path
 from typing import Any, Dict, Optional
-
-_trace_t0 = time.monotonic()
-def _trace(tag, msg):
-    sys.stderr.write(f"[LR-TRACE {_trace_t0 and f'{time.monotonic()-_trace_t0:.1f}s'}] {tag} {msg}\n")
-    sys.stderr.flush()
 
 from loguru import logger
 
@@ -335,25 +329,18 @@ def call_async(coro, timeout: int = 120):
     """
     import concurrent.futures as _cf
 
-    _trace("CALL_ASYNC", f"enter, timeout={timeout}")
     loop = _ensure_loop()
-    _trace("CALL_ASYNC", f"before run_coroutine_threadsafe")
     future = asyncio.run_coroutine_threadsafe(coro, loop)
-    _trace("CALL_ASYNC", f"after run_coroutine_threadsafe, before future.result(timeout={timeout})")
     try:
         result = future.result(timeout=timeout)
-        _trace("CALL_ASYNC", f"future.result() returned successfully")
         return result
     except _cf.TimeoutError:
-        _trace("CALL_ASYNC", f"TimeoutError after {timeout}s")
         future.cancel()
         raise
     except asyncio.CancelledError:
-        _trace("CALL_ASYNC", "CancelledError")
         future.cancel()
         raise
     except Exception:
-        _trace("CALL_ASYNC", "Exception, cancelling future")
         future.cancel()
         raise
 

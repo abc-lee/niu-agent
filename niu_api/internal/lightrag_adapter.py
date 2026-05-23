@@ -10,6 +10,8 @@ Both delegate to lightrag_manager for the LightRAG instance and use
 call_async() for the async/sync bridge.
 """
 
+import time
+
 from typing import Any, Dict, List, Optional
 
 from loguru import logger
@@ -1184,8 +1186,7 @@ class LightRAGIngester:
             elif result == "fail":
                 confidence["fail_count"] = confidence.get("fail_count", 0) + 1
 
-            import time as _time
-            confidence["last_used"] = _time.strftime("%Y-%m-%d")
+            confidence["last_used"] = time.strftime("%Y-%m-%d")
 
             # Delete if too many failures
             if confidence.get("fail_count", 0) >= 3:
