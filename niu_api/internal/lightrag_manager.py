@@ -327,12 +327,20 @@ def call_async(coro, timeout: int = 120):
         result = call_async(rag.aquery("hello"))
         result = call_async(rag.ainsert(content), timeout=600)  # 10 min for large docs
     """
-    import concurrent.futures as _cf
+    import sys as _sys, time as _time, concurrent.futures as _cf
+
+    _ts = lambda: f"{_time.monotonic():.3f}"
+    _sys.stderr.write(f"[TRACE-LR] call_async ENTER {_ts()}\n"); _sys.stderr.flush()
 
     loop = _ensure_loop()
+    _sys.stderr.write(f"[TRACE-LR] call_async BEFORE run_coroutine_threadsafe {_ts()}\n"); _sys.stderr.flush()
     future = asyncio.run_coroutine_threadsafe(coro, loop)
+    _sys.stderr.write(f"[TRACE-LR] call_async AFTER run_coroutine_threadsafe {_ts()}\n"); _sys.stderr.flush()
     try:
-        return future.result(timeout=timeout)
+        _sys.stderr.write(f"[TRACE-LR] call_async BEFORE future.result(timeout={timeout}) {_ts()}\n"); _sys.stderr.flush()
+        result = future.result(timeout=timeout)
+        _sys.stderr.write(f"[TRACE-LR] call_async AFTER future.result {_ts()}\n"); _sys.stderr.flush()
+        return result
     except _cf.TimeoutError:
         future.cancel()
         raise
