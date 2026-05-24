@@ -277,12 +277,6 @@ func main() {
 		}()
 	}
 
-	// Set process group so we can kill the entire group on shutdown
-	// (including child processes like multiprocessing.resource_tracker)
-	apiServerCmd.SysProcAttr = &syscall.SysProcAttr{
-		Setpgid: true,
-	}
-
 	if err := apiServerCmd.Start(); err != nil {
 		slog.Error("Failed to start Python API server", "error", err)
 		fmt.Printf("Failed to start API server: %v\n", err)
@@ -393,23 +387,10 @@ func main() {
 	// Wait for graceful shutdown (increased from 500ms to 2s to allow subprocess cleanup)
 	time.Sleep(2 * time.Second)
 
-	// Kill the entire process group (not just the main process)
-	// This ensures child processes (resource_tracker, etc.) are also killed
-	slog.Info("Stopping Python API server (process group)...")
-	pgid, err := syscall.Getpgid(apiServerCmd.Process.Pid)
-	if err != nil {
-		slog.Warn("Failed to get process group, falling back to single process kill", "error", err)
-		if err := apiServerCmd.Process.Kill(); err != nil {
-			slog.Warn("Failed to kill API server", "error", err)
-		}
-	} else {
-		// Send SIGKILL to the entire process group (negative pgid means process group)
-		if err := syscall.Kill(-pgid, syscall.SIGKILL); err != nil {
-			slog.Warn("Failed to kill process group, falling back to single process kill", "error", err)
-			if err := apiServerCmd.Process.Kill(); err != nil {
-				slog.Warn("Failed to kill API server", "error", err)
-			}
-		}
+	// Shutdown API server
+	slog.Info("Stopping Python API server...")
+	if err := apiServerCmd.Process.Kill(); err != nil {
+		slog.Warn("Failed to kill API server", "error", err)
 	}
 
 	// Electron window should already be closed (triggered shutdown)
