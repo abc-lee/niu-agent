@@ -958,8 +958,9 @@ def lightrag_insert_entity(
             "Skill": "skilled_in",
             "Concept": "knows_about",
             "Tool": "uses",
+            "Preference": "prefers",
         }
-        niu_relation = niu_relation_map.get(entity_type, "remembers")
+        niu_relation = niu_relation_map.get(entity_type)
 
         # Build entity dict for inject_custom_kg
         entity = {
@@ -970,20 +971,24 @@ def lightrag_insert_entity(
             "file_path": file_path,
         }
 
-        # Build Niu -> entity anchor relationship
-        anchor_rel = {
-            "src_id": "Niu",
-            "tgt_id": name,
-            "keywords": niu_relation,
-            "description": f"Niu {niu_relation} {name}",
-            "source_id": file_path,
-            "file_path": file_path,
-        }
+        # Build Niu -> entity anchor relationship (only for types that
+        # semantically connect to Niu — Person/Skill/Concept/Tool/Preference)
+        relationships = []
+        if niu_relation:
+            anchor_rel = {
+                "src_id": "Niu",
+                "tgt_id": name,
+                "keywords": niu_relation,
+                "description": f"Niu {niu_relation} {name}",
+                "source_id": file_path,
+                "file_path": file_path,
+            }
+            relationships.append(anchor_rel)
 
         ingester = _get_ingester()
         return ingester.inject_custom_kg(
             entities=[entity],
-            relationships=[anchor_rel],
+            relationships=relationships,
             chunks=[],
             source_id=file_path,
         )

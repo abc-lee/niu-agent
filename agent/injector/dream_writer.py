@@ -48,6 +48,7 @@ _NIU_RELATION_MAP = {
     "Skill": "skilled_in",
     "Concept": "knows_about",
     "Tool": "uses",
+    "Preference": "prefers",
 }
 
 
@@ -106,7 +107,10 @@ class DreamWriter:
             Dict with status and details.
         """
         niu_relation = self._determine_niu_relation(entity_type)
-        text = f"语义记忆: {name}（类型: {entity_type}），{description}。Niu {niu_relation} {name}。"
+        if niu_relation:
+            text = f"语义记忆: {name}（类型: {entity_type}），{description}。Niu {niu_relation} {name}。"
+        else:
+            text = f"语义记忆: {name}（类型: {entity_type}），{description}。"
 
         try:
             result = self._ingester.lightrag_insert(content=text)
@@ -117,7 +121,7 @@ class DreamWriter:
                 "语义实体入库完成: %s (type=%s, niu_relation=%s)",
                 name,
                 entity_type,
-                niu_relation,
+                niu_relation or "(no anchor)",
             )
             return result
         except Exception as e:
@@ -245,18 +249,20 @@ class DreamWriter:
 
     # ============== Helpers ==============
 
-    def _determine_niu_relation(self, entity_type: str) -> str:
+    def _determine_niu_relation(self, entity_type: str) -> str | None:
         """Determine Niu → entity relation type based on entity_type.
 
         Args:
             entity_type: The entity type string.
 
         Returns:
-            Relation keyword for the Niu → entity relation.
+            Relation keyword for the Niu → entity relation, or None if
+            this entity type should not have a Niu anchor.
             Person → "remembers"
             Skill → "skilled_in"
             Concept → "knows_about"
             Tool → "uses"
-            Default → "remembers"
+            Preference → "prefers"
+            Other → None (no Niu anchor)
         """
-        return _NIU_RELATION_MAP.get(entity_type, "remembers")
+        return _NIU_RELATION_MAP.get(entity_type)
