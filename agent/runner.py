@@ -494,13 +494,26 @@ class NiuRunner:
             self._brain_ingester = LightRAGIngester()
             _activation_mgr = get_activation_mgr()
             if self._brain_adapter._get_rag() is None or _activation_mgr is None:
-                # LightRAG instance not available or activation mgr missing — invalidate cache
-                self._brain_adapter = None
-                self._brain_ingester = None
-                self._brain_region_mgr = None
-                self._brain_injector = None
-                self._cached_activation_mgr = None
-                return None
+                # If activation_mgr is None, try forcing a RegionSync once
+                if _activation_mgr is None and self._brain_adapter._get_rag() is not None:
+                    try:
+                        from agent.injector.region_sync import RegionSync
+                        logger.info("[BrainInjector] activation_mgr is None, forcing RegionSync.run_sync()")
+                        RegionSync().run_sync()
+                        _activation_mgr = get_activation_mgr()
+                    except Exception as e:
+                        logger.error("[BrainInjector] Forced RegionSync failed: %s", e)
+                # Re-check after forced sync attempt
+                if self._brain_adapter._get_rag() is None or _activation_mgr is None:
+                    if _activation_mgr is None:
+                        logger.error("[BrainInjector] activation_mgr still None after forced sync, brain context disabled")
+                    # LightRAG instance not available or activation mgr missing — invalidate cache
+                    self._brain_adapter = None
+                    self._brain_ingester = None
+                    self._brain_region_mgr = None
+                    self._brain_injector = None
+                    self._cached_activation_mgr = None
+                    return None
             self._cached_activation_mgr = _activation_mgr
             self._brain_region_mgr = RegionManager(self._brain_adapter, self._brain_ingester)
             self._brain_injector = BrainContextInjector(
@@ -738,7 +751,7 @@ class NiuRunner:
                 brain_context = _brain_injector.inject_brain_context(context)
                 if brain_context:
                     parts.append(f"\n## 脑区激活上下文\n{brain_context}")
-                    logger.debug(f"Brain context injected: {len(brain_context)} chars")
+                    logger.info(f"Brain context injected: {len(brain_context)} chars, preview: {brain_context[:120]}...")
 
                 # Apply activation weight to LightRAG search results
                 # lightrag_skills and lightrag_knowledge are list[dict], each has "score" field
@@ -748,7 +761,7 @@ class NiuRunner:
                 if lightrag_knowledge:
                     lightrag_knowledge[:] = _brain_injector.apply_activation_weight(lightrag_knowledge)
         except Exception as e:
-            logger.debug(f"BrainContextInjector not available: {e}")
+            logger.warning(f"BrainContextInjector not available: {e}")
 
         # Skills (after weighting)
         skills_text, seen_names = self._format_lightrag_entities_for_prompt(

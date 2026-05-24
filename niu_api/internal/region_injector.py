@@ -121,12 +121,20 @@ class BrainContextInjector:
                 if not data:
                     data = query_result
                 entities = data.get("entities", [])
+                logger.info(
+                    "脑区注入: query_data返回 %d 个实体, query=%s",
+                    len(entities), query_context[:30],
+                )
                 for entity in entities:
                     entity_name = entity.get("entity_name", entity.get("id", ""))
+                    entity_type = entity.get("entity_type", "")
                     if entity_name:
                         hit_entities.append(entity_name)
-                        # Find which region this entity belongs to
-                        region_name = entity_to_region.get(entity_name, "")
+                        # 先从映射找脑区
+                        region_name = entity_to_region.get(entity_name)
+                        if not region_name:
+                            # 运行时分类：根据 entity_type 归属
+                            region_name = self._classify_entity_to_region(entity_name, entity_type)
                         if region_name and region_name not in region_knowledge:
                             desc = entity.get("description", "")
                             if desc:
@@ -325,6 +333,30 @@ class BrainContextInjector:
         boosted.sort(key=lambda r: r.get("score", 0.0), reverse=True)
         return boosted
 
+    def _classify_entity_to_region(self, entity_name: str, entity_type: str) -> str:
+        """根据实体类型运行时分类到默认脑区（不写回图谱）
+
+        当实体没有 _region:contains 边（即不在 entity_to_region 映射中）时，
+        根据其 entity_type 做简单分类，让脑区注入先能工作起来。
+        这只是注入时的运行时分类，不写回图谱（不改数据）。
+
+        Args:
+            entity_name: 实体名称（未使用，保留用于未来扩展）
+            entity_type: 实体类型字符串
+
+        Returns:
+            脑区名称字符串
+        """
+        et = (entity_type or "").lower()
+        if et in ("person", "人物", "people"):
+            return "人际关系脑区"
+        if et in ("document", "文档", "file"):
+            return "文档库脑区"
+        if et in ("concept", "skill", "knowledge", "概念", "技能", "知识"):
+            return "知识体系脑区"
+        # 默认归入知识体系脑区
+        return "知识体系脑区"
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
@@ -349,6 +381,12 @@ class BrainContextInjector:
         # Separate regions by activation level
         high_regions = [r for r in all_regions if r.activation > 0.7]
         mid_regions = [r for r in all_regions if 0.3 < r.activation <= 0.7]
+
+        logger.info(
+            "脑区注入格式化: total=%d, high=%d, mid=%d, knowledge_keys=%s",
+            len(all_regions), len(high_regions), len(mid_regions),
+            list(region_knowledge.keys()),
+        )
 
         # Sort by activation descending
         high_regions.sort(key=lambda r: r.activation, reverse=True)

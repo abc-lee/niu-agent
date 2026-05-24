@@ -182,15 +182,7 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"LightRAG background sync start failed: {e}")
 
-    # 8.05. Start brain region periodic sync (community detection + region node refresh)
-    try:
-        from agent.injector.region_sync import get_region_sync
-        region_sync = get_region_sync(auto_start=True)
-        logger.info("Brain region sync started (interval: 24h)")
-    except Exception as e:
-        logger.warning(f"Brain region sync start failed: {e}")
-
-    # 8.1. Initialize Niu self entity
+    # 8.01. Initialize Niu self entity (must be before RegionSync so brain regions exist)
     try:
         from niu_api.internal.brain_graph import get_brain_graph
         brain = get_brain_graph()
@@ -199,7 +191,7 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Brain graph initialization failed: {e}")
 
-    # 8.2. Create default brain regions (聊天历史, 文档库, 知识体系)
+    # 8.02. Create default brain regions (must be before RegionSync so activation_mgr finds them)
     try:
         from niu_api.internal.region_manager import create_default_regions
         from niu_api.internal.lightrag_adapter import LightRAGAdapter, LightRAGIngester
@@ -210,6 +202,14 @@ async def lifespan(app: FastAPI):
         logger.info(f"Default brain regions: created={region_result['created']}, existing={region_result['existing']}")
     except Exception as e:
         logger.warning(f"Default brain region creation failed: {e}")
+
+    # 8.1. Start brain region periodic sync (after brain regions are created)
+    try:
+        from agent.injector.region_sync import get_region_sync
+        region_sync = get_region_sync(auto_start=True)
+        logger.info("Brain region sync started (interval: 24h)")
+    except Exception as e:
+        logger.warning(f"Brain region sync start failed: {e}")
 
     # 8.6. Ensure system recurring tasks exist (by name, not cron_expr)
     _SYSTEM_TASKS = [

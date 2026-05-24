@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import threading
+import traceback
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -308,7 +309,10 @@ class RegionSync:
                 f"{len(all_regions)} regions"
             )
         except Exception as e:
-            logger.warning(f"[RegionSync] Activation manager refresh failed: {e}")
+            logger.error(
+                "[RegionSync] Activation manager refresh failed: %s\n%s",
+                e, traceback.format_exc(),
+            )
             stats["errors"].append(f"activation: {e}")
 
     # ------------------------------------------------------------------
