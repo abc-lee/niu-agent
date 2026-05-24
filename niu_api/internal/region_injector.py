@@ -85,17 +85,15 @@ class BrainContextInjector:
 
         Steps:
         1. Get entity-to-region mapping from graph (direct read, no LLM)
-        2. Keyword-match query against region member names to find hit entities
-        3. activation_mgr.activate_regions based on keyword matches
+        2. Vector-search query via query_data(keywords=...) to find hit entities
+        3. activation_mgr.activate_regions based on search results
         4. Format injection content by activation level
 
         Returns injection text (empty string if no active regions or on error).
 
-        IMPORTANT: This method does NOT call LightRAG API to avoid circular
-        deadlock in the LLM Proxy chain (LightRAG -> LLM -> Proxy -> query_data
-        -> LightRAG). Instead, it directly reads the NetworkX graph via
-        get_all_region_members() and performs case-insensitive keyword matching
-        against member entity names to determine region activation.
+        Uses query_data() with keywords parameter to skip LLM extraction
+        (near-instant, no circular deadlock). Without keywords, query_data()
+        would invoke LLM extraction which can deadlock in the proxy chain.
         """
         if not query_context:
             return ""
@@ -107,30 +105,34 @@ class BrainContextInjector:
             for member in members:
                 entity_to_region[member] = region_name
 
-        # Step 2: Keyword-match query against member names (no LLM, no deadlock)
-        query_lower = query_context.lower()
+        # Step 2: Vector-search query via query_data(keywords=...) to find hit entities
+        # Passing keywords=[query_context] skips LLM extraction, avoiding circular
+        # deadlock in the proxy chain. Without keywords, query_data() would invoke
+        # LLM extraction which can deadlock (LightRAG -> LLM -> Proxy -> query_data).
         hit_entities: list[str] = []
         region_knowledge: dict[str, str] = {}  # region_label -> knowledge text
 
-        for region_name, members in region_members.items():
-            matched_members: list[str] = []
-            for member in members:
-                member_lower = member.lower()
-                # Case-insensitive partial match: either the query contains
-                # the member name or the member name contains a query word
-                if member_lower in query_lower or any(
-                    w in member_lower
-                    for w in query_lower.split()
-                    if len(w) >= 2
-                ):
-                    matched_members.append(member)
-
-            if matched_members:
-                hit_entities.extend(matched_members)
-                # Build a brief knowledge summary from matched member names
-                region_knowledge[region_name] = (
-                    f"相关实体: {', '.join(matched_members)}"
-                )
+        try:
+            query_result = self._adapter.query_data(
+                query_context, mode="local", top_k=20, keywords=[query_context]
+            )
+            if query_result and isinstance(query_result, dict):
+                data = query_result.get("data", {})
+                if not data:
+                    data = query_result
+                entities = data.get("entities", [])
+                for entity in entities:
+                    entity_name = entity.get("entity_name", entity.get("id", ""))
+                    if entity_name:
+                        hit_entities.append(entity_name)
+                        # Find which region this entity belongs to
+                        region_name = entity_to_region.get(entity_name, "")
+                        if region_name and region_name not in region_knowledge:
+                            desc = entity.get("description", "")
+                            if desc:
+                                region_knowledge[region_name] = desc
+        except Exception as e:
+            logger.warning("脑区注入向量检索失败: %s", e)
 
         # Step 3: Activate regions based on hit entities
         self._activation_mgr.activate_regions(
