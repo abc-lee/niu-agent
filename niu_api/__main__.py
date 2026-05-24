@@ -336,6 +336,14 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Failed to stop LightRAG sync: {e}")
 
+    # 停止 LightRAG 事件循环（取消 fire_and_forget 后台任务 + 停止循环）
+    try:
+        from niu_api.internal.lightrag_manager import shutdown_lightrag_loop
+        shutdown_lightrag_loop(timeout=10.0)
+        logger.info("LightRAG event loop stopped")
+    except Exception as e:
+        logger.warning(f"Failed to stop LightRAG event loop: {e}")
+
     # 停止 ChatQueue
     try:
         from niu_api.chat_queue import stop_chat_queue
@@ -438,6 +446,17 @@ async def root():
 def main():
     """Main entry point - run with: python -m niu_api"""
     import uvicorn
+    import atexit
+
+    def _cleanup_multiprocessing():
+        """Clean up multiprocessing resources on exit."""
+        try:
+            from multiprocessing import resource_tracker
+            resource_tracker._resource_tracker._stop()
+        except Exception:
+            pass
+
+    atexit.register(_cleanup_multiprocessing)
 
     # Get port from environment or default
     port = int(os.environ.get("NIU_API_PORT", "9876"))
