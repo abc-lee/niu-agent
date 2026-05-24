@@ -433,6 +433,43 @@ def shutdown_pending_futures(timeout: float = 10.0):
     logger.info("[fire_and_forget] shutdown: all futures resolved")
 
 
+def shutdown_lightrag_loop(timeout: float = 10.0):
+    """Stop the LightRAG event loop gracefully.
+
+    First cancels all pending fire-and-forget futures, then stops the loop.
+    Called during application shutdown.
+    """
+    global _loop, _loop_thread
+
+    # Step 1: Cancel pending fire-and-forget futures
+    shutdown_pending_futures(timeout=timeout)
+
+    # Step 2: Stop the event loop
+    with _loop_lock:
+        loop = _loop
+        thread = _loop_thread
+
+    if loop is None or not loop.is_running():
+        return
+
+    logger.info("[lightrag-loop] Stopping event loop...")
+
+    # Submit loop.stop() from a different thread
+    loop.call_soon_threadsafe(loop.stop)
+
+    # Wait for the daemon thread to finish
+    if thread is not None and thread.is_alive():
+        thread.join(timeout=5.0)
+        if thread.is_alive():
+            logger.warning("[lightrag-loop] Loop thread did not stop within timeout")
+        else:
+            logger.info("[lightrag-loop] Loop thread stopped")
+
+    with _loop_lock:
+        _loop = None
+        _loop_thread = None
+
+
 # ============== LightRAG Instance ==============
 
 _rag_instance = None
