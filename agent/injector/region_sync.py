@@ -74,6 +74,7 @@ class RegionSync:
         self.sync_interval = sync_interval
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
+        self._brain_ready = threading.Event()
         self._status_file = Path.home() / ".niu" / "last_region_sync.json"
 
     def run_sync(self) -> dict:
@@ -157,6 +158,14 @@ class RegionSync:
 
         # Step 8: Save status
         self._save_status(stats)
+
+        # Invalidate cached tool-to-region mapping so it will be lazily rebuilt
+        # with current region structure (regions may have been merged/dissolved)
+        try:
+            from agent.brain_tools import invalidate_tool_to_region
+            invalidate_tool_to_region()
+        except Exception:
+            pass
 
         logger.info(
             f"[RegionSync] Sync complete: "
@@ -293,7 +302,7 @@ class RegionSync:
             # BUG 3 fix: Build neighbor map for spillover based on shared members
             from niu_api.internal.region_neighbors import build_neighbor_map
             neighbor_map = build_neighbor_map([
-                {"community_id": r.community_id, "members": r.members}
+                {"community_id": r.community_id or r.name, "members": r.members}
                 for r in all_regions
             ])
             activation_mgr.set_region_neighbors(neighbor_map)
@@ -461,6 +470,16 @@ class RegionSync:
     # Background thread management
     # ------------------------------------------------------------------
 
+    def signal_brain_ready(self) -> None:
+        """Signal that brain region initialization is complete.
+
+        Called from the main thread after create_default_regions() finishes,
+        so that _sync_loop knows the brain region nodes exist before running
+        its first sync (which calls _refresh_activation_manager).
+        """
+        self._brain_ready.set()
+        logger.info("[RegionSync] Brain regions ready signal received")
+
     def start_background_sync(self) -> None:
         """Start the background sync thread."""
         if self._thread and self._thread.is_alive():
@@ -483,8 +502,9 @@ class RegionSync:
     def _sync_loop(self) -> None:
         """Background sync loop.
 
-        Waits for LightRAG readiness (up to 30s), then runs first sync,
-        then repeats every sync_interval seconds.
+        Waits for LightRAG readiness (up to 30s), then waits for brain region
+        initialization signal (up to 60s), then runs first sync, then repeats
+        every sync_interval seconds.
         """
         # Wait for LightRAG readiness signal instead of fixed delay.
         # If LightRAG init succeeds quickly, we start immediately;
@@ -497,6 +517,13 @@ class RegionSync:
                 logger.warning("[RegionSync] LightRAG not available after 30s, attempting first sync anyway")
             else:
                 logger.info("[RegionSync] LightRAG initialized on retry")
+
+        # Wait for brain region initialization to complete before first sync.
+        # This prevents the race where _refresh_activation_manager() calls
+        # manager.get_all_regions() before create_default_regions() has finished.
+        if not self._brain_ready.wait(timeout=60):
+            logger.warning("[RegionSync] Brain region init not signaled after 60s, proceeding anyway")
+
         while True:
             try:
                 self.run_sync()

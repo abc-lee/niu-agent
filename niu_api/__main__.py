@@ -203,13 +203,31 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Default brain region creation failed: {e}")
 
-    # 8.1. Start brain region periodic sync (after brain regions are created)
+    # 8.025. Get RegionSync singleton (without starting background thread yet)
+    #       This must happen after brain regions are created so the singleton exists
+    #       for us to signal readiness before the thread starts.
     try:
         from agent.injector.region_sync import get_region_sync
-        region_sync = get_region_sync(auto_start=True)
-        logger.info("Brain region sync started (interval: 24h)")
+        region_sync = get_region_sync(auto_start=False)
     except Exception as e:
-        logger.warning(f"Brain region sync start failed: {e}")
+        logger.warning(f"RegionSync singleton creation failed: {e}")
+        region_sync = None
+
+    # 8.026. Signal brain regions ready so _sync_loop won't block on first sync
+    if region_sync is not None:
+        try:
+            region_sync.signal_brain_ready()
+            logger.info("Brain regions ready signal sent to RegionSync")
+        except Exception as e:
+            logger.warning(f"Failed to signal brain regions ready: {e}")
+
+    # 8.1. Start brain region periodic sync (background thread starts here)
+    if region_sync is not None:
+        try:
+            region_sync.start_background_sync()
+            logger.info("Brain region sync started (interval: 24h)")
+        except Exception as e:
+            logger.warning(f"Brain region sync start failed: {e}")
 
     # 8.6. Ensure system recurring tasks exist (by name, not cron_expr)
     _SYSTEM_TASKS = [

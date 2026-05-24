@@ -497,9 +497,9 @@ class NiuRunner:
                 # If activation_mgr is None, try forcing a RegionSync once
                 if _activation_mgr is None and self._brain_adapter._get_rag() is not None:
                     try:
-                        from agent.injector.region_sync import RegionSync
+                        from agent.injector.region_sync import get_region_sync
                         logger.info("[BrainInjector] activation_mgr is None, forcing RegionSync.run_sync()")
-                        RegionSync().run_sync()
+                        get_region_sync().run_sync()
                         _activation_mgr = get_activation_mgr()
                     except Exception as e:
                         logger.error("[BrainInjector] Forced RegionSync failed: %s", e)

@@ -136,12 +136,17 @@ class RegionActivationManager:
     ) -> None:
         """Initialize activation state from RegionManager's region list.
 
-        All regions start with activation=0.0.
+        Existing regions preserve their activation state; new regions start with activation=0.0.
 
         Args:
             regions: List of BrainRegionInfo from RegionManager.get_all_regions()
         """
         with self._lock:
+            # Preserve existing activation state across re-initialization
+            old_state = {
+                rid: (state.activation, state.last_activated_at, state.activation_count, state.manually_dimmed)
+                for rid, state in self._regions.items()
+            }
             self._regions.clear()
             self._entity_to_region.clear()
             self._label_index.clear()
@@ -152,14 +157,16 @@ class RegionActivationManager:
             # co_activation_counts and total_activation_rounds are NOT cleared
 
             for region in regions:
+                # Restore preserved state if region existed before, otherwise default to 0
+                prev_activation, prev_last_at, prev_count, prev_dimmed = old_state.get(region.name, (0.0, 0.0, 0, False))
                 self._regions[region.name] = BrainRegionState(
                     region_id=region.name,
                     community_id=region.community_id,
                     label=region.label,
-                    activation=0.0,
-                    last_activated_at=0.0,
-                    activation_count=0,
-                    manually_dimmed=False,
+                    activation=prev_activation,
+                    last_activated_at=prev_last_at,
+                    activation_count=prev_count,
+                    manually_dimmed=prev_dimmed,
                 )
                 self._label_index[region.label] = region.name
                 self._descriptions[region.name] = region.description or ""
@@ -171,10 +178,12 @@ class RegionActivationManager:
                 # Cache member count for O(1) lookup in get_merge_candidates
                 self._member_counts[region.name] = len(region.members)
 
+            preserved_count = sum(1 for rid in old_state if rid in self._regions)
             logger.info(
-                "初始化脑区激活管理器: %d 个区域, %d 个实体映射",
+                "初始化脑区激活管理器: %d 个区域, %d 个实体映射, %d 个保留激活状态",
                 len(self._regions),
                 len(self._entity_to_region),
+                preserved_count,
             )
 
     # ------------------------------------------------------------------
@@ -210,6 +219,8 @@ class RegionActivationManager:
                 # Prefer the provided mapping, fall back to internal map
                 # Use explicit None check (not `or`) to avoid falsy-value bugs
                 region_id = entity_to_region.get(entity)
+                if region_id is not None and region_id not in self._regions:
+                    region_id = None  # Stale external mapping, try internal
                 if region_id is None:
                     region_id = self._entity_to_region.get(entity)
                 if region_id is None:
@@ -406,12 +417,12 @@ class RegionActivationManager:
     def get_status_light(self, activation: float) -> str:
         """Three-status light:
         > 0.7 -> lit (green)
-        > 0.1 -> dimming (yellow)
+        > 0.3 -> dimming (yellow)
         else  -> off (black)
         """
         if activation > 0.7:
             return STATUS_LIT
-        elif activation > 0.1:
+        elif activation > 0.3:
             return STATUS_DIMMING
         else:
             return STATUS_OFF
@@ -459,27 +470,27 @@ class RegionActivationManager:
         Args:
             neighbor_map: community_id -> set of neighbor community_ids
         """
-        # Build community_id -> region_id translation table
-        cid_to_rid: dict[str, str] = {}
-        for state in self._regions.values():
-            if state.community_id:
-                cid_to_rid[state.community_id] = state.region_id
-
-        cleaned: dict[str, set[str]] = {}
-        for cid, neighbors in neighbor_map.items():
-            # Translate community_id key to region_id
-            rid = cid_to_rid.get(cid, cid)
-            neighbor_set = set()
-            for n_cid in neighbors:
-                n_rid = cid_to_rid.get(n_cid, n_cid)
-                neighbor_set.add(n_rid)
-
-            if rid in neighbor_set:
-                logger.warning("Self-loop in neighbor map for %s, removing", rid)
-                neighbor_set.discard(rid)
-            cleaned[rid] = neighbor_set
-
         with self._lock:
+            # Build community_id -> region_id translation table
+            cid_to_rid: dict[str, str] = {}
+            for state in self._regions.values():
+                if state.community_id:
+                    cid_to_rid[state.community_id] = state.region_id
+
+            cleaned: dict[str, set[str]] = {}
+            for cid, neighbors in neighbor_map.items():
+                # Translate community_id key to region_id
+                rid = cid_to_rid.get(cid, cid)
+                neighbor_set = set()
+                for n_cid in neighbors:
+                    n_rid = cid_to_rid.get(n_cid, n_cid)
+                    neighbor_set.add(n_rid)
+
+                if rid in neighbor_set:
+                    logger.warning("Self-loop in neighbor map for %s, removing", rid)
+                    neighbor_set.discard(rid)
+                cleaned[rid] = neighbor_set
+
             self._neighbors = cleaned
         logger.info(
             "设置脑区邻居关系: %d 个区域有邻居",

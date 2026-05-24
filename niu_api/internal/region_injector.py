@@ -188,9 +188,17 @@ class BrainContextInjector:
             light = self._activation_mgr.get_status_light(region.activation)
             # Get member count from region_id if available
             member_count = self._get_member_count(region.region_id)
-            lines.append(
-                f"{light} {region.label} ({member_count}实体)"
-            )
+            description = self._get_region_description(region.region_id)
+            if description:
+                # Truncate description to ~30 chars for map display
+                short_desc = description[:30] + ("..." if len(description) > 30 else "")
+                lines.append(
+                    f"{light} {region.label} — {short_desc} ({member_count}实体)"
+                )
+            else:
+                lines.append(
+                    f"{light} {region.label} ({member_count}实体)"
+                )
 
         return "\n".join(lines)
 
@@ -348,13 +356,28 @@ class BrainContextInjector:
             脑区名称字符串
         """
         et = (entity_type or "").lower()
+        # 聊天历史
+        if et in ("chat", "chatmessage", "session", "conversation", "dialog",
+                  "对话", "聊天", "会话"):
+            return "聊天历史脑区"
+        # 文档库
+        if et in ("document", "文档", "file", "pdf", "note", "markdown",
+                  "presentation", "spreadsheet", "text"):
+            return "文档库脑区"
+        # 人际关系
         if et in ("person", "人物", "people"):
             return "人际关系脑区"
-        if et in ("document", "文档", "file"):
-            return "文档库脑区"
-        if et in ("concept", "skill", "knowledge", "概念", "技能", "知识"):
-            return "知识体系脑区"
-        # 默认归入知识体系脑区
+        # 工作事务
+        if et in ("project", "task", "meeting", "decision", "issue",
+                  "milestone", "organization", "company",
+                  "项目", "任务", "会议"):
+            return "工作事务脑区"
+        # 生活事务
+        if et in ("health", "finance", "travel", "event", "location",
+                  "place", "activity",
+                  "健康", "财务", "旅行"):
+            return "生活事务脑区"
+        # 知识体系 (default)
         return "知识体系脑区"
 
     # ------------------------------------------------------------------
@@ -402,7 +425,7 @@ class BrainContextInjector:
 
             for region in high_regions:
                 members = self._get_members(region.region_id)
-                knowledge = region_knowledge.get(region.label, "")
+                knowledge = region_knowledge.get(region.region_id, "")
                 detailed = self.format_detailed_region(
                     region, members, per_region_budget, knowledge
                 )
