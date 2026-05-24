@@ -124,6 +124,17 @@ async def persist_agent_reply(
     """
     message_id = None
 
+    # DEBUG: Log rv structure for diagnosing tool_calls persistence
+    if rv and isinstance(rv, dict) and rv.get("messages"):
+        _debug_msgs = rv["messages"]
+        logger.info(f"[persist DEBUG] rv has {len(_debug_msgs)} messages, history_len={history_len}, slice_start={history_len+1}")
+        for i, m in enumerate(_debug_msgs[history_len+1:], start=history_len+1):
+            _tc = m.get("tool_calls")
+            _tci = m.get("tool_call_id", "")
+            _role = m.get("role", "")
+            _content_preview = (m.get("content", "") or "")[:50]
+            logger.info(f"[persist DEBUG]   [{i}] role={_role} has_tool_calls={bool(_tc)} tool_call_id={_tci[:20]} content={_content_preview!r}")
+
     if rv and isinstance(rv, dict) and rv.get("messages"):
         # 收集需要跳过的 tool_call_id（working_memory 虚拟调用）
         _wm_tool_call_ids = set()
