@@ -524,7 +524,9 @@
     const personCount = document.getElementById('person-count');
     const noteCount = document.getElementById('note-count');
     const graphBtn = document.getElementById('graph-btn');
-    
+    let isProcessing = false;
+    let busyTimeout = null;
+
     // ========== 拖拽窗口 ==========
     // 拦截消息区域中的链接点击，用系统默认浏览器打开
     messages.addEventListener('click', (e) => {
@@ -639,7 +641,11 @@
     function hideTyping() {
       const bubble = document.getElementById('status-bubble');
       if (bubble) bubble.remove();
-      window.electronAPI.notifyBusy(false, 'chat');
+    }
+
+    // 便捷函数：添加系统消息
+    function addSystemMessage(text) {
+      addMessage('system', text);
     }
 
     // 更新状态气泡内容（工具调用状态推送时调用）
@@ -696,8 +702,11 @@
     }
     
     async function sendMessage() {
+      if (isProcessing) { addSystemMessage('请等待当前回复完成'); return; }
+      isProcessing = true;
+
       const text = userInput.value.trim();
-      if (!text) return;
+      if (!text) { isProcessing = false; return; }
 
       // /new 指令 - 清空聊天记录
       if (text === '/new') {
@@ -715,6 +724,15 @@
       userInput.style.height = 'auto';
       showTyping();
       window.electronAPI.notifyBusy(true, 'chat');
+      if (busyTimeout) clearTimeout(busyTimeout);
+      busyTimeout = setTimeout(() => {
+        isProcessing = false;
+        sendBtn.disabled = false;
+        hideTyping();
+        window.electronAPI.notifyBusy(false, 'chat');
+        addSystemMessage('回复超时，已自动恢复');
+        busyTimeout = null;
+      }, 120000);
 
       try {
         const result = await sendMessageWithRetry(text);
@@ -727,6 +745,11 @@
       } catch (err) {
         addMessage('system', `连接失败: ${err.message}`);
       } finally {
+        if (busyTimeout) { clearTimeout(busyTimeout); busyTimeout = null; }
+        hideTyping();
+        window.electronAPI.notifyBusy(false, 'chat');
+        sendBtn.disabled = false;
+        isProcessing = false;
         loadStats();
         userInput.focus();
       }
@@ -1018,6 +1041,10 @@
           const hasAssistantMsg = msgs.some(msg => msg.role === 'assistant');
           if (hasAssistantMsg) {
             hideTyping();
+            if (busyTimeout) { clearTimeout(busyTimeout); busyTimeout = null; }
+            isProcessing = false;
+            sendBtn.disabled = false;
+            window.electronAPI.notifyBusy(false, 'chat');
           }
           messages.scrollTop = messages.scrollHeight;
           return;
@@ -1068,6 +1095,10 @@
           const hasAssistantMsg = msgs.slice(startIdx).some(msg => !existingIds.has(msg.id) && msg.role === 'assistant');
           if (hasAssistantMsg) {
             hideTyping();
+            if (busyTimeout) { clearTimeout(busyTimeout); busyTimeout = null; }
+            isProcessing = false;
+            sendBtn.disabled = false;
+            window.electronAPI.notifyBusy(false, 'chat');
           }
           if (!oldestMessageId && msgs.length > 0) {
             oldestMessageId = msgs[0].id;
@@ -1152,9 +1183,13 @@
     
     // 处理拖入的图片
     async function handleDroppedImage(file) {
+      if (isProcessing) { addSystemMessage('请等待当前回复完成'); return; }
+      isProcessing = true;
+
       const filePath = file.path;
       if (!filePath) {
         console.error('[Chat] 无法获取文件路径');
+        isProcessing = false;
         return;
       }
 
@@ -1184,6 +1219,15 @@
 
         showTyping();
         window.electronAPI.notifyBusy(true, 'chat');
+        if (busyTimeout) clearTimeout(busyTimeout);
+        busyTimeout = setTimeout(() => {
+          isProcessing = false;
+          sendBtn.disabled = false;
+          hideTyping();
+          window.electronAPI.notifyBusy(false, 'chat');
+          addSystemMessage('回复超时，已自动恢复');
+          busyTimeout = null;
+        }, 120000);
 
         const result = await window.electronAPI.processImage(filePath);
         // agent回复由SSE→refreshFromDB()显示
@@ -1196,14 +1240,23 @@
         console.error('[Chat] 图片处理失败:', e);
         addMessage('system', '图片处理失败，请重试');
       } finally {
+        if (busyTimeout) { clearTimeout(busyTimeout); busyTimeout = null; }
+        hideTyping();
+        window.electronAPI.notifyBusy(false, 'chat');
+        sendBtn.disabled = false;
+        isProcessing = false;
       }
     }
 
     // 处理拖入的文件（非图片）
     async function handleDroppedFile(file) {
+      if (isProcessing) { addSystemMessage('请等待当前回复完成'); return; }
+      isProcessing = true;
+
       const filePath = file.path;
       if (!filePath) {
         console.error('[Chat] 无法获取文件路径');
+        isProcessing = false;
         return;
       }
 
@@ -1211,10 +1264,19 @@
 
       // 铁律1：先刷新页面（显示文件名）
       const fileMsg = addMessage('user', `📄 ${file.name}`);
-      if (!fileMsg) return;  // addMessage 返回 null（如 tool 消息被过滤），跳过后续
+      if (!fileMsg) { isProcessing = false; return; }  // addMessage 返回 null（如 tool 消息被过滤），跳过后续
 
       showTyping();
       window.electronAPI.notifyBusy(true, 'chat');
+      if (busyTimeout) clearTimeout(busyTimeout);
+      busyTimeout = setTimeout(() => {
+        isProcessing = false;
+        sendBtn.disabled = false;
+        hideTyping();
+        window.electronAPI.notifyBusy(false, 'chat');
+        addSystemMessage('回复超时，已自动恢复');
+        busyTimeout = null;
+      }, 120000);
 
       try {
         const result = await window.electronAPI.processImage(filePath);
@@ -1226,6 +1288,11 @@
         console.error('[Chat] 文件处理失败:', e);
         addMessage('system', '文件处理失败，请重试');
       } finally {
+        if (busyTimeout) { clearTimeout(busyTimeout); busyTimeout = null; }
+        hideTyping();
+        window.electronAPI.notifyBusy(false, 'chat');
+        sendBtn.disabled = false;
+        isProcessing = false;
       }
     }
     
