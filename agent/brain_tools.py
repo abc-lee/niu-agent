@@ -15,6 +15,7 @@ M5 module: MCP tools + API endpoints + tool dispatch reinforce.
 from __future__ import annotations
 
 import logging
+import threading
 from typing import TYPE_CHECKING
 
 from niu_api.internal.region_activation import RegionActivationManager
@@ -29,29 +30,41 @@ MAX_EDGE_WEIGHT = 2.0   # Maximum edge weight allowed (was 1.0)
 # ============== Singleton Accessor ==============
 
 _activation_mgr: RegionActivationManager | None = None
+_activation_mgr_lock = threading.Lock()
 
 
 def set_activation_mgr(mgr: RegionActivationManager) -> None:
     """Set the global RegionActivationManager singleton."""
     global _activation_mgr
-    _activation_mgr = mgr
+    with _activation_mgr_lock:
+        _activation_mgr = mgr
     logger.info("Brain tools: activation manager set")
 
 
 def get_activation_mgr() -> RegionActivationManager | None:
     """Get the global RegionActivationManager singleton."""
-    return _activation_mgr
+    with _activation_mgr_lock:
+        return _activation_mgr
 
 
 # ============== Tool-to-Region Mapping ==============
 
 _tool_to_region: dict[str, str] | None = None
+_tool_to_region_lock = threading.Lock()
+
+
+def invalidate_tool_to_region() -> None:
+    """Invalidate the cached tool_to_region mapping (called after region changes)."""
+    global _tool_to_region
+    with _tool_to_region_lock:
+        _tool_to_region = None
 
 
 def set_tool_to_region(mapping: dict[str, str]) -> None:
     """Set the tool_name -> region_id mapping."""
     global _tool_to_region
-    _tool_to_region = mapping
+    with _tool_to_region_lock:
+        _tool_to_region = mapping
     logger.info("Brain tools: tool-to-region mapping set (%d entries)", len(mapping))
 
 
@@ -62,59 +75,60 @@ def get_tool_to_region() -> dict[str, str]:
     Returns empty dict if LightRAG is unavailable.
     """
     global _tool_to_region
-    if _tool_to_region is not None:
-        return _tool_to_region
+    with _tool_to_region_lock:
+        if _tool_to_region is not None:
+            return _tool_to_region
 
-    # Lazy build from LightRAG entities with entity_type="Tool"
-    try:
-        from niu_api.internal.lightrag_adapter import LightRAGAdapter
+        # Lazy build from LightRAG entities with entity_type="Tool"
+        try:
+            from niu_api.internal.lightrag_adapter import LightRAGAdapter
 
-        adapter = LightRAGAdapter()
-        result = adapter.list_entities(
-            list_type="entities",
-            entity_type="Tool",
-            limit=1000,
-        )
-
-        if isinstance(result, dict) and result.get("status") == "ok":
-            cid_mapping: dict[str, str] = {}  # tool_name -> community_id
-            for entity in result.get("data", []):
-                entity_name = entity.get("id", entity.get("entity_name", ""))
-                description = entity.get("description", "")
-                # Extract community_id from description metadata
-                # Format: "description | brain_meta_region_id:community_3 | ..."
-                community_id = _extract_community_id(description)
-                if community_id:
-                    cid_mapping[entity_name] = community_id
-
-            # Translate community_id -> region.name (the _regions dict key)
-            # so reinforce_by_tool_use can find regions correctly
-            activation_mgr = get_activation_mgr()
-            if activation_mgr is not None:
-                # Build community_id -> region_id reverse lookup
-                cid_to_rid: dict[str, str] = {}
-                for state in activation_mgr.get_region_map():
-                    if state.community_id:
-                        cid_to_rid[state.community_id] = state.region_id
-                mapping = {
-                    tool: cid_to_rid.get(cid, cid)
-                    for tool, cid in cid_mapping.items()
-                }
-            else:
-                # Fallback: keep community_id values (will be rebuilt later)
-                mapping = cid_mapping
-
-            _tool_to_region = mapping
-            logger.info(
-                "Lazily built tool-to-region mapping: %d entries",
-                len(mapping),
+            adapter = LightRAGAdapter()
+            result = adapter.list_entities(
+                list_type="entities",
+                entity_type="Tool",
+                limit=1000,
             )
-            return mapping
-    except Exception as e:
-        logger.debug("Failed to build tool-to-region mapping: %s", e)
 
-    _tool_to_region = {}
-    return _tool_to_region
+            if isinstance(result, dict) and result.get("status") == "ok":
+                cid_mapping: dict[str, str] = {}  # tool_name -> community_id
+                for entity in result.get("data", []):
+                    entity_name = entity.get("id", entity.get("entity_name", ""))
+                    description = entity.get("description", "")
+                    # Extract community_id from description metadata
+                    # Format: "description | brain_meta_region_id:community_3 | ..."
+                    community_id = _extract_community_id(description)
+                    if community_id:
+                        cid_mapping[entity_name] = community_id
+
+                # Translate community_id -> region.name (the _regions dict key)
+                # so reinforce_by_tool_use can find regions correctly
+                activation_mgr = get_activation_mgr()
+                if activation_mgr is not None:
+                    # Build community_id -> region_id reverse lookup
+                    cid_to_rid: dict[str, str] = {}
+                    for state in activation_mgr.get_region_map():
+                        if state.community_id:
+                            cid_to_rid[state.community_id] = state.region_id
+                    mapping = {
+                        tool: cid_to_rid.get(cid, cid)
+                        for tool, cid in cid_mapping.items()
+                    }
+                else:
+                    # Fallback: keep community_id values (will be rebuilt later)
+                    mapping = cid_mapping
+
+                _tool_to_region = mapping
+                logger.info(
+                    "Lazily built tool-to-region mapping: %d entries",
+                    len(mapping),
+                )
+                return mapping
+        except Exception as e:
+            logger.debug("Failed to build tool-to-region mapping: %s", e)
+
+        _tool_to_region = {}
+        return _tool_to_region
 
 
 def _extract_community_id(description: str) -> str:

@@ -1263,6 +1263,8 @@ def populate_default_region_members(ingester: Any) -> dict:
                 "keywords": BELONGS_TO_RELATION,
                 "description": f"属于{label}脑区",
                 "weight": 0.8,
+                "source_id": REGION_SOURCE_ID,
+                "file_path": REGION_FILE_PATH,
             })
 
     # Batch inject
