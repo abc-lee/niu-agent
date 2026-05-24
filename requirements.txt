@@ -11,7 +11,7 @@
 # 1. numpy<2 — torch 2.2.2 和 insightface 的 C 扩展用 NumPy 1.x 编译，numpy 2.x 会崩溃
 # 2. torch==2.2.2 — 项目固定版本，不要升级
 # 3. transformers>=4.41,<5.0 — transformers 5.x 要求 torch>=2.4，与 torch 2.2.2 不兼容
-# 4. lightrag-hku==1.4.16 — 必须从 Fork 安装，不能用 PyPI 版本（缺 PR#2990 修复）
+# 4. lightrag-hku — 必须从 Fork 安装（git+https://github.com/abc-lee/LightRAG.git），不能用 PyPI 版本（缺 PR#2990 修复）
 # 5. sentence-transformers>=4.0,<6.0 — 依赖 transformers<6，与 torch 2.2.2 兼容
 #
 
@@ -94,10 +94,7 @@ coloredlogs==15.0.1
 humanfriendly==10.0
 
 # ============== 知识图谱（LightRAG） ==============
-# !! lightrag-hku 必须从 Fork 安装，不能用 PyPI 版本 !!
-# 安装命令：pip install git+https://github.com/abc-lee/LightRAG.git
-# Fork 包含三个自定义修改（PR#2990）：节点属性保留、边属性保留、大小写不敏感节点ID
-lightrag-hku==1.4.16
+lightrag-hku @ git+https://github.com/abc-lee/LightRAG.git
 python-igraph==1.0.0
 igraph==1.0.0
 leidenalg==0.11.0
