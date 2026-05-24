@@ -332,8 +332,7 @@ def call_async(coro, timeout: int = 120):
     loop = _ensure_loop()
     future = asyncio.run_coroutine_threadsafe(coro, loop)
     try:
-        result = future.result(timeout=timeout)
-        return result
+        return future.result(timeout=timeout)
     except _cf.TimeoutError:
         future.cancel()
         raise
