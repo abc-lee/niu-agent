@@ -159,6 +159,9 @@ def agent_runner_loop(
     turn = 0
     handler._done_hooks = []
     handler.max_turns = max_turns
+    # V4: 通知前端进入忙碌状态
+    yield StreamEvent("system", "chat_busy")
+
     while turn < handler.max_turns:
         turn += 1
         # 上下文溢出保护：检查 token 使用率
@@ -169,6 +172,8 @@ def agent_runner_loop(
                 logger.warning(f"[Overflow] Context {current_tokens}/{context_window_tokens} tokens ({usage_ratio:.1%}) exceeds 85% threshold")
                 if on_turn_end is not None:
                     on_turn_end(messages, tools_schema, turn)
+                # V4: 通知前端进入空闲状态
+                yield StreamEvent("system", "chat_idle")
                 return {
                     "result": "CONTEXT_OVERFLOW",
                     "data": {
@@ -259,6 +264,7 @@ def agent_runner_loop(
             if outcome.should_exit:
                 if on_turn_end is not None:
                     on_turn_end(messages, tools_schema, turn)
+                yield StreamEvent("system", "chat_idle")
                 return {
                     "result": "EXITED",
                     "data": outcome.data,
@@ -311,6 +317,8 @@ def agent_runner_loop(
                 if response.content and not response.tool_calls:
                     pure_text_msg = {"role": "assistant", "content": response.content}
                     yield StreamEvent("persist", json.dumps(pure_text_msg, ensure_ascii=False))
+                # V4: 通知前端进入空闲状态
+                yield StreamEvent("system", "chat_idle")
                 if isinstance(should_exit, dict):
                     should_exit["messages"] = messages
                     return should_exit
@@ -327,6 +335,8 @@ def agent_runner_loop(
             # V4: 此分支只在有tool_calls的轮次后进入，持久化最后一条assistant(tool_calls)
             if messages and messages[-1].get("role") == "assistant" and messages[-1].get("tool_calls"):
                 yield StreamEvent("persist", json.dumps(messages[-1], ensure_ascii=False))
+            # V4: 通知前端进入空闲状态
+            yield StreamEvent("system", "chat_idle")
             if isinstance(should_exit, dict):
                 should_exit["messages"] = messages
                 return should_exit
@@ -378,4 +388,6 @@ def agent_runner_loop(
     # MAX_TURNS_EXCEEDED 退出时也要执行衰减
     if on_turn_end is not None:
         on_turn_end(messages, tools_schema, turn)
+    # V4: 通知前端进入空闲状态
+    yield StreamEvent("system", "chat_idle")
     return {"result": "MAX_TURNS_EXCEEDED", "messages": messages}
