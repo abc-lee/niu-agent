@@ -894,6 +894,7 @@ class NiuRunner:
                             msg_dict = json.loads(chunk.content)
                             msg_id = self._persist_one_msg(msg_dict)
                             if msg_id is not None:
+                                msg_dict["_persisted_id"] = msg_id  # 记录写入后的消息ID
                                 persisted_msgs.append(msg_dict)
                         except Exception as e:
                             logger.warning(f"[Runner] Failed to persist msg: {e}")

@@ -218,13 +218,17 @@ async def persist_agent_reply(
             pid = await store.add_message(role="assistant", content=full_reply)
             last_assistant_id = pid
 
-        # 推送 SSE 通知（仅在兜底路径：逐条推送未执行时）
-        if last_assistant_id and not persisted_msgs:
+        # V4: SSE通知 + message_id返回
+        # 逐条推送已执行时，从persisted_msgs获取最后一条assistant消息的ID
+        if persisted_msgs:
+            for pm in reversed(persisted_msgs):
+                if pm.get("role") == "assistant" and pm.get("_persisted_id"):
+                    message_id = pm["_persisted_id"]
+                    break
+        elif last_assistant_id:
+            # 兜底路径：逐条推送未执行，从rv["messages"]遍历获取
             message_id = last_assistant_id
             await notify_new_message(message_id, "assistant", full_reply, source=source)
-        elif last_assistant_id:
-            # 逐条推送已执行，只需返回 message_id
-            message_id = last_assistant_id
     elif full_reply.strip():
         # 回退：无 return_value 时，从 full_reply 持久化 assistant 消息
         message_id = await store.add_message(role="assistant", content=full_reply)
