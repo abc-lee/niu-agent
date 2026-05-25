@@ -540,7 +540,7 @@ async def chat_session(request: ChatRequest) -> ChatResponse:
         # 双管道持久化：使用 persist_agent_reply 统一处理
         rv = getattr(runner, "last_return_value", None)
         from niu_api.chat import persist_agent_reply
-        message_id, full_reply = await persist_agent_reply(store, rv, history_len, full_reply, source="electron", runner=runner)
+        message_id, full_reply = await persist_agent_reply(store, rv, history_len, full_reply, source="electron")
 
         # 检测主 Agent 上下文溢出 → 同步触发 force 压缩（阻塞）
         if rv and isinstance(rv, dict) and rv.get("result") == "CONTEXT_OVERFLOW":
