@@ -526,14 +526,16 @@ class NiuRunner:
     @staticmethod
     def _msg_fingerprint(msg: dict) -> str:
         """计算消息指纹用于去重。同一消息不会重复持久化。"""
+        import hashlib
         role = msg.get("role", "")
-        content = (msg.get("content", "") or "")[:200]  # 截断避免过长
+        content = msg.get("content", "") or ""
+        content_hash = hashlib.md5(content.encode()).hexdigest()[:16]
         tool_call_id = msg.get("tool_call_id", "")
         # assistant 消息用 tool_calls 的 id 列表作为指纹
         tc_ids = ""
         if msg.get("tool_calls"):
             tc_ids = ",".join(tc.get("id", "") for tc in msg["tool_calls"])
-        return f"{role}:{content}:{tool_call_id}:{tc_ids}"
+        return f"{role}:{content_hash}:{tool_call_id}:{tc_ids}"
 
     async def _async_persist_increment(self, msgs: list[dict]):
         """在 FastAPI 主事件循环中执行：DB 写入 + SSE 推送。
