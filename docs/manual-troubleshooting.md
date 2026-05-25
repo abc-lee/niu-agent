@@ -324,6 +324,33 @@ sqlite3 ~/.niu/messages.db "VACUUM;"
 # rm -rf ~/.niu/lightrag_storage/
 ```
 
+#### 问题：用户数据文件丢失或损坏
+
+**问题：~/.niu/ 下关键文件丢失，导致程序无法正常运行**
+
+**涉及文件：**
+- `~/.niu/memory.json` — 用户记忆（身份、偏好、工作目录）
+- `~/.niu/preferences.json` — 存储配置
+- `~/.niu/skills/` — Skills 技能文件目录
+
+**恢复方法：从项目安装目录的 config/user-data/ 拷贝**
+
+```bash
+# Linux/Mac
+mkdir -p ~/.niu/skills
+cp config/user-data/memory.json ~/.niu/
+cp config/user-data/preferences.json ~/.niu/
+cp config/user-data/skills/*.md ~/.niu/skills/
+
+# Windows (PowerShell)
+mkdir "$env:USERPROFILE\.niu\skills"
+copy config\user-data\memory.json "$env:USERPROFILE\.niu\"
+copy config\user-data\preferences.json "$env:USERPROFILE\.niu\"
+copy config\user-data\skills\*.md "$env:USERPROFILE\.niu\skills\"
+```
+
+**注意：** 仅恢复缺失的文件，不要覆盖用户已有的配置。如果 preferences.json 已存在但 memory.json 丢失，只恢复 memory.json。
+
 ### 1.6 浏览器自动化插件
 
 #### 插件概述
