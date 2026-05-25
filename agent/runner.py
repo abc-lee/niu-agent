@@ -519,6 +519,11 @@ class NiuRunner:
                     f.result()
                 except Exception as e:
                     logger.error(f"[TurnResult] Persist error: {e}")
+                    # 移除失败消息的指纹，使 persist_agent_reply 兜底能重试
+                    with self._persisted_lock:
+                        for msg in new_msgs:
+                            fp = self._msg_fingerprint(msg)
+                            self._persisted_fingerprints.discard(fp)
             future.add_done_callback(_log_exception)
         except RuntimeError:
             logger.debug(f"[TurnResult] Event loop closed, skipping persist for turn {turn}")
