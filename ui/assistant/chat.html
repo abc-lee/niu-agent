@@ -1097,8 +1097,11 @@
           messages.scrollTop = messages.scrollHeight;
           // 只在收到 assistant 消息时才隐藏 typing（用户消息入库不应关闭 typing）
           // 只检查新添加的消息（startIdx 之后），避免旧消息误触发
-          const hasAssistantMsg = msgs.slice(startIdx).some(msg => !existingIds.has(msg.id) && msg.role === 'assistant');
-          if (hasAssistantMsg) {
+          // V4: 逐条推送模式下，中间轮次的assistant(tool_calls)不应重置状态机
+          // 只有纯文本assistant（无tool_calls）出现时才表示任务完成
+          const newAssistantMsgs = msgs.slice(startIdx).filter(msg => !existingIds.has(msg.id) && msg.role === 'assistant');
+          const hasFinalReply = newAssistantMsgs.some(msg => !msg.tool_calls || msg.tool_calls.length === 0);
+          if (hasFinalReply) {
             hideTyping();
             if (busyTimeout) { clearTimeout(busyTimeout); busyTimeout = null; }
             isProcessing = false;
