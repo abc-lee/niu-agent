@@ -526,7 +526,7 @@ async def chat_session(request: ChatRequest) -> ChatResponse:
         # Run chat using asyncio.to_thread to avoid blocking event loop
         def sync_chat():
             chunks = []
-            for chunk in runner.chat(session_id, request.message, stream=False, history=history_for_runner, channel="electron"):
+            for chunk in runner.chat(session_id, request.message, stream=False, history=history_for_runner):
                 chunks.append(chunk)
             return "".join(chunks)
 
