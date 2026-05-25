@@ -6,11 +6,11 @@ Experience Summarizer - 经验总结器
 核心概念（借鉴 GenericAgent）：
 - 任务完成时提取关键经验
 - 将环境事实、坑点、操作步骤写成 SOP
-- 写入 memory/skills/ 目录，自动被 SkillSync 同步到向量库
+- 写入 ~/.niu/skills/ 目录，自动被 SkillSync 同步到向量库
 
 优势（超越 GenericAgent）：
 - 自动 + 手动触发
-- 统一存储在 memory/skills/
+- 统一存储在 ~/.niu/skills/
 - 自动被 SkillSync 索引，无需手动同步
 """
 
@@ -55,7 +55,7 @@ class ExperienceSummarizer:
     """
 
     # Skill 文件存储目录
-    SKILLS_DIR = Path(__file__).parent.parent.parent / "memory" / "skills"
+    SKILLS_DIR = Path.home() / ".niu" / "skills"
 
     # 触发阈值
     DEFAULT_TURN_THRESHOLD = 10  # 超过 10 轮自动触发

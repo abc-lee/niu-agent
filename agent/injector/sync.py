@@ -1,7 +1,7 @@
 """
 Skill Sync
 
-Skills 目录同步服务。定时扫描 memory/skills/ 目录，同步变化到 LightRAG 知识图谱。
+Skills 目录同步服务。定时扫描 ~/.niu/skills/ 目录，同步变化到 LightRAG 知识图谱。
 通过 entity_type="skill" 标签区分，供 LightRAGAdapter.search_skills() 检索。
 """
 
@@ -125,7 +125,7 @@ class SkillSync:
     """
     Skills 目录同步服务
 
-    扫描 memory/skills/ 目录，检测文件变化，同步到 LightRAG 知识图谱。
+    扫描 ~/.niu/skills/ 目录，检测文件变化，同步到 LightRAG 知识图谱。
     通过 entity_type="skill" 标签区分，供 LightRAGAdapter.search_skills() 检索。
 
     变化检测基于文件内容哈希（SHA256），状态持久化到 ~/.niu/skill_sync_state.json，
@@ -164,8 +164,7 @@ class SkillSync:
     @staticmethod
     def _default_skills_dir() -> str:
         """默认 skills 目录"""
-        base_dir = Path(__file__).parent.parent.parent
-        return str(base_dir / "memory" / "skills")
+        return str(Path.home() / ".niu" / "skills")
 
     def _is_self_write(self, path: str, mtime: float) -> bool:
         """

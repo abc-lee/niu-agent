@@ -133,7 +133,7 @@ LightRAG 的实体去重依赖实体名称的小写匹配。原始名称和最�
 **写日志前，必须先用 `read` 工具读取 Skill 文件和用户职业：**
 
 ```
-read(file_path="{项目根目录}/memory/skills/journal-skill.md")
+read(file_path="~/.niu/skills/journal-skill.md")
 read(file_path="~/.niu/memory.json")  → 取 user.profession
 ```
 

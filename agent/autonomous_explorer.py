@@ -165,7 +165,7 @@ class AutonomousExplorer:
     def _count_skills(self) -> int:
         """统计已有 Skills 数量"""
         try:
-            skills_dir = Path(__file__).parent.parent.parent / "memory" / "skills"
+            skills_dir = Path.home() / ".niu" / "skills"
             if skills_dir.exists():
                 return len(list(skills_dir.glob("*.md")))
         except Exception as e:
