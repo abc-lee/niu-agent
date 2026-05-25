@@ -376,13 +376,17 @@ async def chat(request: ChatRequest) -> StreamingResponse:
             yield f"data: {json.dumps({'done': True, 'session_id': session_id, 'message_id': message_id})}\n\n"
         finally:
             # 确保执行器线程完成后再释放锁，防止 runner.chat() 并发
-            sf = locals().get("stream_future")
-            if sf and not sf.done():
-                try:
-                    await asyncio.wait_for(sf, timeout=30.0)
-                except (asyncio.TimeoutError, Exception):
-                    logger.warning("[/chat] Executor thread did not finish after client disconnect")
-            _chat_lock.release()
+            # 注意：finally 块中的 await 可能被 CancelledError（BaseException）中断，
+            # 必须用嵌套 try/finally 保证 _chat_lock.release() 始终执行
+            try:
+                sf = locals().get("stream_future")
+                if sf and not sf.done():
+                    try:
+                        await asyncio.wait_for(sf, timeout=30.0)
+                    except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+                        logger.warning("[/chat] Executor thread did not finish after client disconnect")
+            finally:
+                _chat_lock.release()
 
     return StreamingResponse(
         generate(),
@@ -409,6 +413,7 @@ async def chat_sync(request: ChatRequest) -> ChatResponse:
         )
 
     # 排队等待锁：最多等 60 秒
+    # 锁获取后立即进入 try/finally，确保 CancelledError 不会导致锁泄漏
     try:
         await asyncio.wait_for(_chat_lock.acquire(), timeout=60.0)
     except asyncio.TimeoutError:
