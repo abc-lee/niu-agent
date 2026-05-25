@@ -351,6 +351,8 @@ def get_chat_queue() -> ChatQueue:
     if _queue is None:
         from niu_api.chat import get_or_create_runner
         runner = get_or_create_runner()
+        if runner is None:
+            raise RuntimeError("Runner not initialized, cannot create ChatQueue")
         _queue = ChatQueue(runner)
     return _queue
 
