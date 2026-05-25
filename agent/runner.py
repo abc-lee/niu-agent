@@ -935,7 +935,7 @@ class NiuRunner:
         return injection, {}  # Empty mcp_tool_scores — no dynamic MCP injection
 
     def chat(
-        self, session_id: str, user_input: str, stream: bool = True, max_turns: int = 40, history: list = None
+        self, session_id: str, user_input: str, stream: bool = True, max_turns: int = 40, history: list = None, channel: str = "electron"
     ) -> Generator[str, None, None]:
         """执行对话 — disk mode: base tools + disk only.
 
@@ -945,6 +945,7 @@ class NiuRunner:
             stream: 是否流式输出
             max_turns: 最大轮次
             history: 可选的历史消息列表
+            channel: 消息来源通道 (electron/feishu/scheduler 等)
         """
         # 从消息历史中提取上下文
         context = self._extract_context_from_history(history, user_input)
@@ -1014,6 +1015,7 @@ class NiuRunner:
         # 重置逐轮推送状态
         self._persisted_ids.clear()
         self._persisted_fingerprints.clear()
+        self._current_channel = channel
         while True:
             try:
                 chunk = next(gen)

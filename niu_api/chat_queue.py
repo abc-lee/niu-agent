@@ -291,7 +291,7 @@ class ChatQueue:
         # NiuRunner.chat(session_id, user_input, stream=False, history=...)
         def sync_chat():
             chunks = []
-            for chunk in self._runner.chat(session_id, content, stream=False, history=history_for_runner):
+            for chunk in self._runner.chat(session_id, content, stream=False, history=history_for_runner, channel=channel):
                 chunks.append(chunk)
             return "".join(chunks)
 
