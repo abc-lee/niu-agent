@@ -1145,9 +1145,9 @@ function startMessageEventStream() {
           try {
             const event = JSON.parse(jsonStr);
             if (event.type === 'new_message') {
-              // 通知 chat 有新消息（不传内容，chat 自己从数据库读取）
+              // 通知 chat 有新消息（传递 role 字段，用于 chat_busy/chat_idle 状态机控制）
               if (chatWindow && !chatWindow.isDestroyed() && chatWindow.isVisible()) {
-                chatWindow.webContents.send('new-message');
+                chatWindow.webContents.send('new-message', { role: event.role });
               }
             } else if (event.type === 'tool_status') {
               // 转发工具调用状态到聊天窗口

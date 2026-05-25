@@ -1042,15 +1042,7 @@
           if (msgs.length > 0) {
             oldestMessageId = msgs[0].id;
           }
-          // 检查是否有assistant消息，有则关闭typing
-          const hasAssistantMsg = msgs.some(msg => msg.role === 'assistant');
-          if (hasAssistantMsg) {
-            hideTyping();
-            if (busyTimeout) { clearTimeout(busyTimeout); busyTimeout = null; }
-            isProcessing = false;
-            sendBtn.disabled = false;
-            window.electronAPI.notifyBusy(false, 'chat');
-          }
+          // V4: 状态机重置由SSE chat_idle事件控制，refreshFromDB不再重置状态
           messages.scrollTop = messages.scrollHeight;
           return;
         }
@@ -1099,15 +1091,7 @@
           // 只检查新添加的消息（startIdx 之后），避免旧消息误触发
           // V4: 逐条推送模式下，中间轮次的assistant(tool_calls)不应重置状态机
           // 只有纯文本assistant（无tool_calls）出现时才表示任务完成
-          const newAssistantMsgs = msgs.slice(startIdx).filter(msg => !existingIds.has(msg.id) && msg.role === 'assistant');
-          const hasFinalReply = newAssistantMsgs.some(msg => !msg.tool_calls || msg.tool_calls.length === 0);
-          if (hasFinalReply) {
-            hideTyping();
-            if (busyTimeout) { clearTimeout(busyTimeout); busyTimeout = null; }
-            isProcessing = false;
-            sendBtn.disabled = false;
-            window.electronAPI.notifyBusy(false, 'chat');
-          }
+          // V4: 状态机重置由SSE chat_idle事件控制，refreshFromDB不再重置状态
           if (!oldestMessageId && msgs.length > 0) {
             oldestMessageId = msgs[0].id;
           }
@@ -1124,8 +1108,21 @@
     }
 
     // SSE通知：有新消息 → 从数据库刷新
-    window.electronAPI.onNewMessage(() => {
-      refreshFromDB();
+    // V4: chat_busy/chat_idle 事件控制状态机，普通消息触发 refreshFromDB
+    window.electronAPI.onNewMessage((data) => {
+      if (data && data.role === 'chat_idle') {
+        // Agent循环结束：重置状态机
+        hideTyping();
+        if (busyTimeout) { clearTimeout(busyTimeout); busyTimeout = null; }
+        isProcessing = false;
+        sendBtn.disabled = false;
+        window.electronAPI.notifyBusy(false, 'chat');
+      } else if (data && data.role === 'chat_busy') {
+        // Agent循环开始：sendMessage已设置状态，此处不做额外操作
+      } else {
+        // 普通消息通知 → 从DB刷新渲染
+        refreshFromDB();
+      }
     });
 
     // ========== 初始化 ==========

@@ -898,7 +898,12 @@ class NiuRunner:
                                 persisted_msgs.append(msg_dict)
                         except Exception as e:
                             logger.warning(f"[Runner] Failed to persist msg: {e}")
-                    # type="system" 和 "tool_marker" 不进入 SSE 和 full_resp
+                    elif chunk.type == "system":
+                        # V4: chat_busy/chat_idle 状态机事件，通过SSE推送给前端
+                        if chunk.content in ("chat_busy", "chat_idle"):
+                            from niu_api.chat import notify_new_message_sync
+                            notify_new_message_sync("", chunk.content, "", source="electron")
+                    # type="tool_marker" 不进入 SSE 和 full_resp
                 else:
                     # 向后兼容：普通 str
                     full_resp += chunk
