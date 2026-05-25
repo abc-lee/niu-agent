@@ -362,6 +362,9 @@ async def _run_auto_tidy():
 
 router = APIRouter(tags=["compat"])
 
+# 并发锁：串行化所有 chat 请求，防止并发调用 runner.chat() 导致共享状态损坏
+_chat_lock = asyncio.Lock()
+
 
 class ChatRequest(BaseModel):
     """Chat request"""
@@ -473,10 +476,9 @@ async def shutdown():
 @router.post("/api/chat/session")
 async def chat_session(request: ChatRequest) -> ChatResponse:
     """
-    Chat endpoint - 入队即返模式，回复通过 SSE 推送
+    Chat endpoint - uses GenericAgentRunner with original GenericAgent code
 
-    使用 ChatQueue 替代 _chat_lock，消息入队后立即返回空回复，
-    ChatWorker 串行处理，回复通过 notify_new_message 推送到前端。
+    Uses runner.py which correctly imports from agent/generic/
     """
     from niu_api.config import get_config
 
@@ -485,15 +487,79 @@ async def chat_session(request: ChatRequest) -> ChatResponse:
     if not config.llm or not config.llm.api_key:
         return ChatResponse(reply="Error: LLM not configured, please set API Key first")
 
-    from niu_api.chat_queue import get_chat_queue
+    # 排队等待锁：最多等 60 秒，而非直接拒绝
+    # 之前 timeout=0.01 导致文件拖入等请求被直接丢弃
+    try:
+        await asyncio.wait_for(_chat_lock.acquire(), timeout=60.0)
+    except TimeoutError:
+        logger.warning("[chat_session] _chat_lock 60s timeout, request rejected")
+        return ChatResponse(reply="系统正忙，请稍后再试", session_id="default")
 
-    q = get_chat_queue()
-    await q.enqueue(
-        content=request.message,
-        source="frontend",
-        session_id=request.session_id or "default",
-    )
-    return ChatResponse(reply="", session_id=request.session_id or "default")  # 即返模式，回复通过 SSE 推送
+    try:
+        # Get message store
+        store = await get_message_store()
+
+        # Store user message
+        user_msg_id = await store.add_message(role="user", content=request.message)
+        # 通知 SSE 推送用户消息（前端用此 ID 给本地渲染的 user 气泡补上 data-id）
+        from niu_api.chat import notify_new_message
+        await notify_new_message(user_msg_id, "user", request.message)
+
+        # P1-1: 使用 ContextManager 加载历史（统一管理）
+        from agent.context_manager import get_context_manager
+
+        context_manager = await get_context_manager(store)
+        history_for_runner = await context_manager.get_context_for_chat(exclude_last=True)
+        history_len = len(history_for_runner)
+
+        logger.info(f"Loaded {len(history_for_runner)} history messages")
+
+        # Get runner (uses original GenericAgent from agent/generic/)
+        # Use the pre-initialized runner from niu_api/chat.py which has MCP tools
+        from niu_api.chat import get_or_create_runner
+
+        runner = get_or_create_runner()
+
+        # Create a simple session_id (no session concept, but runner needs one)
+        session_id = "default"
+
+        # Run chat using asyncio.to_thread to avoid blocking event loop
+        def sync_chat():
+            chunks = []
+            for chunk in runner.chat(session_id, request.message, stream=False, history=history_for_runner):
+                chunks.append(chunk)
+            return "".join(chunks)
+
+        try:
+            full_reply = await asyncio.to_thread(sync_chat)
+        except Exception as e:
+            import traceback
+            logger.error(f"Chat error: {e}\n{traceback.format_exc()}")
+            full_reply = f"Error: {str(e)}"
+
+        # 双管道持久化：使用 persist_agent_reply 统一处理
+        rv = getattr(runner, "last_return_value", None)
+        from niu_api.chat import persist_agent_reply
+        message_id, full_reply = await persist_agent_reply(store, rv, history_len, full_reply)
+
+        # 检测主 Agent 上下文溢出 → 同步触发 force 压缩（阻塞）
+        if rv and isinstance(rv, dict) and rv.get("result") == "CONTEXT_OVERFLOW":
+            overflow_data = rv.get("data", {})
+            logger.warning(
+                f"[Chat Session] Main agent CONTEXT_OVERFLOW at {overflow_data.get('tokens_used', 0)} tokens, "
+                f"triggering force compression (blocking)"
+            )
+            async with _tidy_lock:
+                tidy_result = await _tidy_context_impl(request={"session_id": session_id, "mode": "force"})
+            logger.info(f"[Chat Session] Force compression result: {tidy_result.get('status')}")
+        else:
+            # 正常：异步触发增量整理检查（不阻塞）
+            if full_reply.strip():
+                await _check_and_trigger_auto_tidy(store)
+
+        return ChatResponse(reply=full_reply, session_id="default", message_id=message_id)
+    finally:
+        _chat_lock.release()
 
 
 @router.get("/api/context/messages")
@@ -614,50 +680,48 @@ async def add_context_message(request: dict) -> dict:
 @router.post("/api/chat/clear")
 async def clear_chat() -> dict:
     """Clear all messages (for /new command)"""
-    # drain: 等待当前 chat 处理完成 + 清空队列中待处理消息
-    from niu_api.chat_queue import get_chat_queue
-
-    q = get_chat_queue()
-    q.pause()  # 防止 drain→clear 间隙中新消息被处理
-    drained = await q.drain(timeout=5.0)
-
-    if not drained:
-        q.resume()
-        logger.warning("[clear_chat] ChatQueue drain 5s timeout, clear rejected")
+    # 获取锁，防止与正在进行的 chat 冲突
+    # 排队等待锁：最多等 5 秒（清除操作不需要等太久）
+    try:
+        await asyncio.wait_for(_chat_lock.acquire(), timeout=5.0)
+    except TimeoutError:
+        logger.warning("[clear_chat] _chat_lock 5s timeout, clear rejected")
         return {"success": False, "error": "系统正忙，请稍后再试"}
 
-    store = await get_message_store()
-    count = await store.clear_messages()
+    try:
+        store = await get_message_store()
+        count = await store.clear_messages()
 
-    # 重置 runner 的所有状态
-    from niu_api.chat import get_or_create_runner
+        # 重置 runner 的所有状态
+        from niu_api.chat import get_or_create_runner
 
-    runner = get_or_create_runner()
-    if runner:
-        # 重置 handler 的工作记忆
-        if runner.handler:
-            runner.handler.reset_working_memory()
+        runner = get_or_create_runner()
+        if runner:
+            # 重置 handler 的工作记忆
+            if runner.handler:
+                runner.handler.reset_working_memory()
 
-        # Note: LLM session history is managed by ContextManager,
-        # which reloads from message store each call.
-        # store.clear_messages() above already clears persistent history.
+            # Note: LLM session history is managed by ContextManager,
+            # which reloads from message store each call.
+            # store.clear_messages() above already clears persistent history.
 
-    # 清空临时目录（画框图片等）
-    from agent.tmp_dir import cleanup_all_tmp
-    cleaned_tmp = cleanup_all_tmp()
+        # 清空临时目录（画框图片等）
+        from agent.tmp_dir import cleanup_all_tmp
+        cleaned_tmp = cleanup_all_tmp()
 
-    # 重置游标文件（消息已清空，旧游标指向不存在的消息）
-    from pathlib import Path
-    for cursor_name in ["last_entity_extract.json", "last_dream_evolve.json", "last_compress.json", "last_tidy_tokens.json"]:
-        cursor_p = Path.home() / ".niu" / cursor_name
-        try:
-            if cursor_p.exists():
-                cursor_p.unlink()
-        except OSError as e:
-            logger.warning(f"[clear_chat] Failed to reset cursor file {cursor_name}: {e}")
+        # 重置游标文件（消息已清空，旧游标指向不存在的消息）
+        from pathlib import Path
+        for cursor_name in ["last_entity_extract.json", "last_dream_evolve.json", "last_compress.json", "last_tidy_tokens.json"]:
+            cursor_p = Path.home() / ".niu" / cursor_name
+            try:
+                if cursor_p.exists():
+                    cursor_p.unlink()
+            except OSError as e:
+                logger.warning(f"[clear_chat] Failed to reset cursor file {cursor_name}: {e}")
 
-    q.resume()  # 恢复 worker 处理
-    return {"success": True, "deleted_count": count, "cleaned_tmp": cleaned_tmp, "drained": drained}
+        return {"success": True, "deleted_count": count, "cleaned_tmp": cleaned_tmp}
+    finally:
+        _chat_lock.release()
 
 
 @router.get("/api/pending-alerts")

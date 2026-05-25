@@ -1,7 +1,7 @@
 """
 ChatQueue — 消息队列 + 串行处理 + 上下文合并
 
-替代 _chat_lock，所有消息来源（前端、飞书、Scheduler）统一入队，
+替代 _chat_lock，所有消息来源（Electron、飞书、Scheduler）统一入队，
 ChatWorker 串行处理，补充消息在下一轮合并到上下文中。
 """
 import asyncio
@@ -20,6 +20,7 @@ class ChatRequest:
     """入队消息"""
     content: str
     source: str = "frontend"  # "frontend" | "feishu" | "scheduler"
+    channel: str = "electron"  # 消息来源通道: "electron" | "feishu" | "scheduler" 等
     channel_id: str = ""
     sender_id: str = ""
     session_id: str = "default"
@@ -78,25 +79,26 @@ class ChatQueue:
         logger.info("[ChatQueue] Worker stopped")
 
     async def enqueue(self, content: str, source: str = "frontend",
-                      channel_id: str = "", sender_id: str = "",
-                      session_id: str = "default") -> EnqueueResult:
+                      channel: str = "electron", channel_id: str = "",
+                      sender_id: str = "", session_id: str = "default") -> EnqueueResult:
         """消息入队 — 立即返回"""
         request_id = str(next(self._request_counter))
         req = ChatRequest(
             content=content,
             source=source,
+            channel=channel,
             channel_id=channel_id,
             sender_id=sender_id,
             session_id=session_id,
         )
         await self._queue.put(req)
-        logger.info(f"[ChatQueue] Enqueued: source={source}, content={content[:50]}...")
+        logger.info(f"[ChatQueue] Enqueued: source={source}, channel={channel}, content={content[:50]}...")
         return EnqueueResult(queued=True, request_id=request_id)
 
     def enqueue_sync(self, content: str, source: str = "frontend",
-                     channel_id: str = "", sender_id: str = "",
-                     session_id: str = "default") -> EnqueueResult:
-        """同步入队 — 供飞书线程调用（通过 call_soon_threadsafe）"""
+                     channel: str = "feishu", channel_id: str = "",
+                     sender_id: str = "", session_id: str = "default") -> EnqueueResult:
+        """同步入队 — 供外部线程调用（通过 call_soon_threadsafe）"""
         from niu_api.chat import _main_loop
         loop = _main_loop
         if loop is None or loop.is_closed():
@@ -111,15 +113,17 @@ class ChatQueue:
         req = ChatRequest(
             content=content,
             source=source,
+            channel=channel,
             channel_id=channel_id,
             sender_id=sender_id,
             session_id=session_id,
         )
         loop.call_soon_threadsafe(self._queue.put_nowait, req)
-        logger.info(f"[ChatQueue] Enqueued (sync): source={source}, content={content[:50]}...")
+        logger.info(f"[ChatQueue] Enqueued (sync): source={source}, channel={channel}, content={content[:50]}...")
         return EnqueueResult(queued=True, request_id=request_id)
 
     async def enqueue_and_wait(self, content: str, source: str = "scheduler",
+                               channel: str = "scheduler",
                                session_id: str = "default",
                                timeout: float = 120.0) -> str:
         """入队并等待回复 — 供 Scheduler 等需要同步结果的场景"""
@@ -128,11 +132,12 @@ class ChatQueue:
         req = ChatRequest(
             content=content,
             source=source,
+            channel=channel,
             session_id=session_id,
             reply_future=future,
         )
         await self._queue.put(req)
-        logger.info(f"[ChatQueue] Enqueued (wait): source={source}, content={content[:50]}...")
+        logger.info(f"[ChatQueue] Enqueued (wait): source={source}, channel={channel}, content={content[:50]}...")
 
         try:
             return await asyncio.wait_for(future, timeout=timeout)
@@ -195,7 +200,6 @@ class ChatQueue:
         self._processing_done.clear()
 
         # 初始化变量，确保 finally 块中始终可用
-        source = first_req.source
         reply_future = first_req.reply_future
         supplements = []
         reply = ""
@@ -236,12 +240,22 @@ class ChatQueue:
                 logger.error(f"[ChatQueue] Processing error: {e}")
                 reply = f"[处理出错: {e}]"
 
-            # 推送回复到飞书（传空 channel_id，让 push() 按 open_id > chat_id 优先级选择）
-            try:
-                if source == "feishu":
-                    await self._push_to_feishu(reply)
-            except Exception as e:
-                logger.error(f"[ChatQueue] Feishu push error: {e}")
+            # 通道无关的回复路由
+            if first_req.channel != "electron" and first_req.channel_id:
+                try:
+                    from niu_api.channel import get_channel_router
+                    router = get_channel_router()
+                    await router.route_out(reply, first_req.channel, first_req.channel_id)
+                except Exception as e:
+                    logger.error(f"[ChatQueue] Failed to route reply to {first_req.channel}: {e}")
+            elif first_req.channel != "electron" and not first_req.channel_id:
+                # 无目标通道ID（如scheduler主动推送），用push广播
+                try:
+                    from niu_api.channel import get_channel_router
+                    router = get_channel_router()
+                    await router.push(reply, first_req.channel, "")
+                except Exception as e:
+                    logger.error(f"[ChatQueue] Failed to push reply to {first_req.channel}: {e}")
 
         finally:
             # Always resolve futures, regardless of push success
@@ -256,6 +270,8 @@ class ChatQueue:
     async def _process_single(self, content: str, session_id: str = "default",
                               user_contents: list[str] | None = None) -> str:
         """处理单条消息 — 加载历史，持久化 user 消息，调用 runner.chat()，持久化回复，SSE推送"""
+        from niu_api.compat import _chat_lock
+
         store = await get_message_store()
 
         # 先加载历史上下文（此时不包含当前 user 消息，避免重复）
@@ -279,11 +295,21 @@ class ChatQueue:
                 chunks.append(chunk)
             return "".join(chunks)
 
+        acquired = False
         try:
+            acquired = await asyncio.wait_for(_chat_lock.acquire(), timeout=120)
+            if not acquired:
+                raise TimeoutError("Timeout waiting for chat lock")
             full_reply = await asyncio.get_running_loop().run_in_executor(None, sync_chat)
+        except asyncio.TimeoutError:
+            logger.error("[ChatQueue] Timeout waiting for chat lock")
+            full_reply = "处理消息超时，请稍后重试"
         except Exception as e:
             logger.error(f"[ChatQueue] Chat error: {e}")
             full_reply = f"处理消息时出错：{str(e)}"
+        finally:
+            if acquired:
+                _chat_lock.release()
 
         # 持久化回复消息（使用共享函数）
         from niu_api.chat import persist_agent_reply
@@ -309,18 +335,6 @@ class ChatQueue:
         elif full_reply.strip():
             from niu_api.compat import _check_and_trigger_auto_tidy
             await _check_and_trigger_auto_tidy(store)
-
-    async def _push_to_feishu(self, reply: str):
-        """推送回复到飞书 — 传空 channel_id，让 push() 按 open_id > chat_id 优先级选择"""
-        try:
-            from niu_api.channel import get_channel_router
-            router = get_channel_router()
-            if router.has_channel("feishu"):
-                adapter = router.channels["feishu"]
-                # 传空 channel_id，让 push() 内部按 open_id > chat_id 优先级选择
-                await adapter.push("", reply)
-        except Exception as e:
-            logger.warning(f"[ChatQueue] Feishu push failed: {e}")
 
 
 # ============== 全局单例 ==============
