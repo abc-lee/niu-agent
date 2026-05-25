@@ -32,11 +32,13 @@ def set_main_event_loop(loop: asyncio.AbstractEventLoop):
     _main_loop = loop
 
 
-async def notify_new_message(message_id: str, role: str, content: str):
+async def notify_new_message(message_id: str, role: str, content: str, source: str = "electron"):
     """新消息写入数据库后调用，广播给所有 SSE 订阅者"""
     # 双管道分离：tool 消息只走 DB 管道，不推送给前端
     if role == "tool":
         return
+    if source != "electron":
+        return  # 非electron通道不走SSE，前端零感知
     event = {
         "type": "new_message",
         "id": message_id,
@@ -50,10 +52,12 @@ async def notify_new_message(message_id: str, role: str, content: str):
             logger.warning("[SSE] Subscriber queue full, skipping event")
 
 
-def notify_new_message_sync(message_id: str, role: str, content: str):
+def notify_new_message_sync(message_id: str, role: str, content: str, source: str = "electron"):
     """同步版本 — 从非 async 上下文（如 scheduler 线程）调用"""
     # 双管道分离：tool 消息只走 DB 管道，不推送给前端
     if role == "tool":
+        return
+    if source != "electron":
         return
     event = {
         "type": "new_message",
@@ -105,7 +109,7 @@ def _sync_broadcast(event: dict):
 
 
 async def persist_agent_reply(
-    store, rv, history_len: int, full_reply: str
+    store, rv, history_len: int, full_reply: str, source: str = "electron"
 ) -> tuple[str | None, str]:
     """持久化 Agent 回复消息（从 rv["messages"] 双管道），过滤 working_memory，通知前端。
 
@@ -179,11 +183,11 @@ async def persist_agent_reply(
         # 推送最后一条 assistant 消息给 SSE 订阅者
         if last_assistant_id:
             message_id = last_assistant_id
-            await notify_new_message(message_id, "assistant", full_reply)
+            await notify_new_message(message_id, "assistant", full_reply, source=source)
     elif full_reply.strip():
         # 回退：无 return_value 时，从 full_reply 持久化 assistant 消息
         message_id = await store.add_message(role="assistant", content=full_reply)
-        await notify_new_message(message_id, "assistant", full_reply)
+        await notify_new_message(message_id, "assistant", full_reply, source=source)
 
     return message_id, full_reply
 
@@ -277,7 +281,7 @@ def get_or_create_runner() -> Optional["NiuRunner"]:
 @router.post("/chat")
 async def chat(request: ChatRequest) -> StreamingResponse:
     """
-    Main chat endpoint - 使用 NiuRunner 流式响应
+    [DEPRECATED] Main chat endpoint - 使用 NiuRunner 流式响应
     """
     llm_cfg = _load_llm_config()
 
@@ -352,7 +356,7 @@ async def chat(request: ChatRequest) -> StreamingResponse:
             store = await get_message_store()
             rv = getattr(runner, "last_return_value", None)
             history_len = 0  # /chat 端点不加载历史，rv 包含完整 messages
-            message_id, full_reply = await persist_agent_reply(store, rv, history_len, full_reply)
+            message_id, full_reply = await persist_agent_reply(store, rv, history_len, full_reply, source="electron")
 
             # 检测主 Agent 上下文溢出 → 同步触发 force 压缩（阻塞）
             if rv and isinstance(rv, dict) and rv.get("result") == "CONTEXT_OVERFLOW":
@@ -426,8 +430,8 @@ async def chat_sync(request: ChatRequest) -> ChatResponse:
         # Persist user message to database
         store = await get_message_store()
         user_msg_id = await store.add_message(role="user", content=request.message)
-        # /chat/sync 由 scheduler 调用，用户消息不在前端本地渲染，需要 SSE 推送
-        await notify_new_message(user_msg_id, "user", request.message)
+        # /chat/sync 当前只被 Electron 前端调用（scheduler 已走 ChatQueue 入队）
+        await notify_new_message(user_msg_id, "user", request.message, source="electron")
 
         # Load conversation history via ContextManager (same as /api/chat/session)
         from agent.context_manager import get_context_manager
@@ -456,7 +460,7 @@ async def chat_sync(request: ChatRequest) -> ChatResponse:
         # 持久化 Agent 回复（使用 persist_agent_reply 双管道）
         rv = getattr(runner, "last_return_value", None)
         history_len = len(history_for_runner) if history_for_runner else 0
-        message_id, full_reply = await persist_agent_reply(store, rv, history_len, full_reply)
+        message_id, full_reply = await persist_agent_reply(store, rv, history_len, full_reply, source="electron")
 
         # 检测主 Agent 上下文溢出 → 同步触发 force 压缩（阻塞，压缩完再继续）
         if rv and isinstance(rv, dict) and rv.get("result") == "CONTEXT_OVERFLOW":

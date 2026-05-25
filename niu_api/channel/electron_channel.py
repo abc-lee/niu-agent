@@ -18,5 +18,5 @@ class ElectronChannelAdapter(ChannelAdapter):
         import uuid
 
         msg_id = str(uuid.uuid4())
-        notify_new_message_sync(msg_id, "assistant", content)
+        notify_new_message_sync(msg_id, "assistant", content, source="electron")
         logger.debug(f"[ElectronChannel] push() — sent via SSE (id={msg_id[:8]})")
