@@ -632,7 +632,7 @@ class NiuRunner:
                 lines.append(f"{added + 1}. **{display_name}** (来源: 知识图谱)")
             # For skill entities, append file path so LLM can read the full file
             if is_skill_section:
-                lines.append(f"   路径: memory/skills/{display_name}.md")
+                lines.append(f"   路径: ~/.niu/skills/{display_name}.md")
             added += 1
 
         if added == 0:

@@ -221,7 +221,7 @@ def file_read(
 
     try:
         if os.path.isdir(path):
-            return f"Error: '{path}' is a directory, not a file. Please provide a file path, e.g. 'memory/skills/photo-face-display.md'"
+            return f"Error: '{path}' is a directory, not a file. Please provide a file path, e.g. '~/.niu/skills/photo-face-display.md'"
         with open(path, "r", encoding="utf-8", errors="replace") as f:
             stream = ((i, l.rstrip("\r\n")) for i, l in enumerate(f, 1))
             stream = itertools.dropwhile(lambda x: x[0] < start, stream)

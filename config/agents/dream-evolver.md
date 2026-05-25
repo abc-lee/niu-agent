@@ -161,9 +161,9 @@ lightrag_get_graph(entity_name="FastAPI", depth=1)
 - 新的工作模式反复出现但无对应 skill → write 创建新 skill
 
 #### 创建新 skill 的流程
-1. 先用 read 读取 memory/skills/Write-SKILL.md，了解创建规范
+1. 先用 read 读取 ~/.niu/skills/Write-SKILL.md，了解创建规范
 2. 按照 Write-SKILL.md 的 RED-GREEN-REFACTOR 流程创建
-3. 新 skill 文件存放在 memory/skills/ 目录下
+3. 新 skill 文件存放在 ~/.niu/skills/ 目录下
 4. 命名使用动词优先、连字符分隔（如 note-management.md）
 
 #### 修改旧 skill 的流程

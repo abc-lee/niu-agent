@@ -46,6 +46,35 @@ logger.add(
 )
 
 
+def _backup_critical_files():
+    """备份~/.niu/下的关键文件到~/.niu/backup/（启动时执行一次）
+
+    备份范围：memory.json、preferences.json、skills/ 目录。
+    目的是防止用户数据意外丢失，备份存放在用户数据目录自身的 backup/ 子目录。
+    """
+    import shutil
+    source = Path.home() / ".niu"
+    backup = source / "backup"
+    try:
+        backup.mkdir(parents=True, exist_ok=True)
+
+        for name in ("memory.json", "preferences.json"):
+            src = source / name
+            if src.exists():
+                shutil.copy2(src, backup / name)
+
+        skills_src = source / "skills"
+        if skills_src.exists():
+            skills_backup = backup / "skills"
+            if skills_backup.exists():
+                shutil.rmtree(skills_backup)
+            shutil.copytree(skills_src, skills_backup)
+
+        logger.info("Critical user files backed up to ~/.niu/backup/")
+    except Exception as e:
+        logger.warning(f"Failed to backup critical user files: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan handler"""
@@ -99,6 +128,9 @@ async def lifespan(app: FastAPI):
     from niu_api.compat import set_preload_complete
     set_preload_complete()
     logger.info("Preload complete, ready to show window")
+
+    # 6.0. Backup critical user files
+    _backup_critical_files()
 
     # 6.1. Initialize channel router
     from niu_api.channel import get_channel_router
