@@ -171,7 +171,7 @@ def agent_runner_loop(
                 if on_turn_end is not None:
                     on_turn_end(messages, tools_schema, turn)
                 if on_turn_result is not None:
-                    on_turn_result(messages, [], turn)  # 数据已通过轮次回调持久化
+                    on_turn_result(messages, messages[1:], turn)  # 全量increment（溢出前的所有消息）
                 return {
                     "result": "CONTEXT_OVERFLOW",
                     "data": {
@@ -305,17 +305,15 @@ def agent_runner_loop(
                 if on_turn_end is not None:
                     on_turn_end(messages, tools_schema, turn)
                 if on_turn_result is not None:
-                    if response.tool_calls:
-                        # 有工具调用：assistant_msg（带 tool_calls）和 tool 结果已在 messages 中
-                        _inc_start = len(messages) - len(tool_results) - 1
-                        on_turn_result(messages, messages[max(_inc_start, 0):], turn)
+                    # 纯文本回复或工具调用后无 next_prompt
+                    # response.content 是 LLM 最终回复，可能不在 messages 中
+                    _last_content = response.content or ""
+                    if _last_content.strip():
+                        on_turn_result(messages, [{"role": "assistant", "content": _last_content}], turn)
                     else:
-                        # 纯文本回复：assistant content 不在 messages 中，需显式构造
-                        _last_content = response.content or ""
-                        if _last_content.strip():
-                            on_turn_result(messages, [{"role": "assistant", "content": _last_content}], turn)
-                        else:
-                            on_turn_result(messages, [], turn)
+                        # 有工具调用但无纯文本回复：increment 已在 messages 中
+                        _inc_start = len(messages) - len(tool_results) - (1 if response.tool_calls else 0)
+                        on_turn_result(messages, messages[max(_inc_start, 0):], turn)
                 if isinstance(should_exit, dict):
                     should_exit["messages"] = messages
                     return should_exit
