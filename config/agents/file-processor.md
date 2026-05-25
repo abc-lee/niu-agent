@@ -50,7 +50,7 @@ ingest 自动完成：复制文件到知识库目录 → 检测人脸 → 识别
    photo-server/ingest_document, 参数: file_path="xxx.docx", mode="copy"
    ```
 2. 工具会读取文件内容，返回 `status: "need_category"` + 内容预览 + `available_categories`（可选分类列表）
-3. **从 available_categories 中选择最合适的分类**，再次调用并传入 category：
+3. **根据文件内容你自行判断，从 available_categories 中选择最合适的分类**，再次调用并传入 category：
    ```
    photo-server/ingest_document, 参数: file_path="xxx.docx", category="报告", mode="copy"
    ```
