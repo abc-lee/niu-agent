@@ -262,6 +262,32 @@ def agent_runner_loop(
                 outcome = exhaust(gen)
 
             if outcome.should_exit:
+                # should_exit路径：补齐当前tool_result到tool_results列表
+                if tid:
+                    if outcome.data is not None:
+                        datastr = (
+                            json.dumps(outcome.data, ensure_ascii=False, default=json_default)
+                            if type(outcome.data) in [dict, list]
+                            else str(outcome.data)
+                        )
+                        tool_results.append({"tool_use_id": tid, "content": datastr})
+                    else:
+                        tool_results.append({"tool_use_id": tid, "content": ""})
+                # 添加tool消息到messages
+                for tool_result in tool_results:
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_result["tool_use_id"],
+                        "content": tool_result["content"]
+                    })
+                # V4: yield每条tool结果的persist事件
+                for tool_result in tool_results:
+                    tool_msg = {
+                        "role": "tool",
+                        "tool_call_id": tool_result["tool_use_id"],
+                        "content": tool_result["content"]
+                    }
+                    yield StreamEvent("persist", json.dumps(tool_msg, ensure_ascii=False))
                 if on_turn_end is not None:
                     on_turn_end(messages, tools_schema, turn)
                 yield StreamEvent("system", "chat_idle")
@@ -332,9 +358,6 @@ def agent_runner_loop(
             # 确保最后一轮的 decay 和保存执行
             if on_turn_end is not None:
                 on_turn_end(messages, tools_schema, turn)
-            # V4: 此分支只在有tool_calls的轮次后进入，持久化最后一条assistant(tool_calls)
-            if messages and messages[-1].get("role") == "assistant" and messages[-1].get("tool_calls"):
-                yield StreamEvent("persist", json.dumps(messages[-1], ensure_ascii=False))
             # V4: 通知前端进入空闲状态
             yield StreamEvent("system", "chat_idle")
             if isinstance(should_exit, dict):
