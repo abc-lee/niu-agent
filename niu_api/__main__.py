@@ -130,7 +130,6 @@ async def lifespan(app: FastAPI):
     logger.info("Preload complete, ready to show window")
 
     # 6.0. Backup critical user files
-    _backup_critical_files()
 
     # 6.1. Initialize channel router
     from niu_api.channel import get_channel_router
