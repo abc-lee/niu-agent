@@ -314,7 +314,7 @@ class ChatQueue:
         # 持久化回复消息（使用共享函数）
         from niu_api.chat import persist_agent_reply
         rv = getattr(self._runner, "last_return_value", None)
-        message_id, full_reply = await persist_agent_reply(store, rv, history_len, full_reply, source=channel, runner=self._runner)
+        message_id, full_reply = await persist_agent_reply(store, rv, history_len, full_reply, source=channel)
 
         # 上下文溢出检测
         await self._check_overflow(session_id, store, full_reply)

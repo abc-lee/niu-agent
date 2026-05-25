@@ -358,13 +358,6 @@ class NiuRunner:
         self._brain_injector = None     # BrainContextInjector
         self._cached_activation_mgr = None  # RegionActivationManager (for cache invalidation)
 
-        # 实时逐轮推送状态
-        self._persisted_ids: set[str] = set()        # 已持久化的消息 ID
-        self._persisted_fingerprints: set[str] = set()  # 已持久化的消息指纹（去重）
-        self._persisted_lock = threading.Lock()      # 线程安全锁
-        self._current_channel: str = "electron"      # 当前请求的通道来源
-        self._main_event_loop = None                 # FastAPI 主事件循环引用
-
     def set_mcp_tools_schema(self, tools: list):
         """Set MCP tool schemas — in disk mode, only inject disk() schema.
 
@@ -454,128 +447,6 @@ class NiuRunner:
 
         # No schema refresh — tools_schema stays base + disk
         return tools_schema
-
-    def _on_turn_result(self, messages: list, turn_increment: list, turn: int):
-        """每轮消息追加完成后，增量持久化到 DB + SSE 推送给前端。
-
-        从 agent_loop 的 executor 线程调用（同步上下文），
-        通过 run_coroutine_threadsafe 桥接到 FastAPI 主事件循环。
-        """
-        if not turn_increment:
-            return
-
-        # 过滤 working_memory 虚拟消息
-        _wm_tool_call_ids = set()
-        for msg in turn_increment:
-            if msg.get("role") == "assistant" and msg.get("tool_calls"):
-                for tc in msg["tool_calls"]:
-                    if tc.get("function", {}).get("name") == "working_memory":
-                        _wm_tool_call_ids.add(tc.get("id", ""))
-
-        filtered = []
-        for msg in turn_increment:
-            role = msg.get("role", "")
-            if role == "system" or role == "user":
-                continue
-            # 跳过 working_memory 虚拟消息
-            if role == "assistant" and msg.get("tool_calls"):
-                if any(tc.get("function", {}).get("name") == "working_memory" for tc in msg["tool_calls"]):
-                    continue
-            if role == "tool" and msg.get("tool_call_id", "") in _wm_tool_call_ids:
-                continue
-            filtered.append(msg)
-
-        if not filtered:
-            return
-
-        # 指纹去重：对每条消息计算指纹，跳过已持久化的
-        new_msgs = []
-        with self._persisted_lock:
-            for msg in filtered:
-                fp = self._msg_fingerprint(msg)
-                if fp not in self._persisted_fingerprints:
-                    self._persisted_fingerprints.add(fp)
-                    new_msgs.append(msg)
-
-        if not new_msgs:
-            return
-
-        # 桥接到 FastAPI 主事件循环执行 DB 写入 + SSE 推送
-        loop = self._main_event_loop
-        if loop is None or loop.is_closed():
-            logger.debug(f"[TurnResult] No main event loop, skipping persist for turn {turn}")
-            return
-
-        try:
-            import asyncio
-            future = asyncio.run_coroutine_threadsafe(
-                self._async_persist_increment(new_msgs),
-                loop,
-            )
-            # 不等待结果（fire-and-forget），避免阻塞 executor 线程
-            # 但设置回调记录异常
-            def _log_exception(f):
-                try:
-                    f.result()
-                except Exception as e:
-                    logger.error(f"[TurnResult] Persist error: {e}")
-            future.add_done_callback(_log_exception)
-        except RuntimeError:
-            logger.debug(f"[TurnResult] Event loop closed, skipping persist for turn {turn}")
-
-    @staticmethod
-    def _msg_fingerprint(msg: dict) -> str:
-        """计算消息指纹用于去重。同一消息不会重复持久化。"""
-        role = msg.get("role", "")
-        content = (msg.get("content", "") or "")[:200]  # 截断避免过长
-        tool_call_id = msg.get("tool_call_id", "")
-        # assistant 消息用 tool_calls 的 id 列表作为指纹
-        tc_ids = ""
-        if msg.get("tool_calls"):
-            tc_ids = ",".join(tc.get("id", "") for tc in msg["tool_calls"])
-        return f"{role}:{content}:{tool_call_id}:{tc_ids}"
-
-    async def _async_persist_increment(self, msgs: list[dict]):
-        """在 FastAPI 主事件循环中执行：DB 写入 + SSE 推送。
-
-        从 _on_turn_result 通过 run_coroutine_threadsafe 调用。
-        """
-        from agent.session import get_message_store
-        from niu_api.chat import notify_new_message
-
-        store = await get_message_store()
-        channel = self._current_channel
-
-        last_assistant_id = None
-        last_assistant_content = ""
-
-        for msg in msgs:
-            role = msg.get("role", "")
-            content = msg.get("content", "") or ""
-            tool_calls = msg.get("tool_calls")
-            tool_call_id = msg.get("tool_call_id", "")
-
-            # 用同步方法写入 DB（当前已在 async 上下文，用 add_message）
-            if role == "tool" and tool_call_id:
-                msg_id = await store.add_message(role="tool", content=content, tool_call_id=tool_call_id)
-            elif role == "assistant":
-                msg_id = await store.add_message(role="assistant", content=content, tool_calls=tool_calls)
-                last_assistant_id = msg_id
-                last_assistant_content = content
-            else:
-                continue
-
-            # 记录已持久化的 ID
-            with self._persisted_lock:
-                self._persisted_ids.add(msg_id)
-
-        # SSE 推送最后一条 assistant 消息
-        if last_assistant_id and last_assistant_content.strip():
-            await notify_new_message(last_assistant_id, "assistant", last_assistant_content, source=channel)
-
-    def set_main_event_loop(self, loop):
-        """设置 FastAPI 主事件循环引用（在 startup 时调用）"""
-        self._main_event_loop = loop
 
     def _get_brain_injector(self):
         """Get or create the cached brain context injector chain.
@@ -1001,7 +872,6 @@ class NiuRunner:
             initial_user_content=user_input,
             history=history,  # Pass history to agent_loop
             on_turn_end=self._on_turn_end,  # 每轮结束后刷新动态注入
-            on_turn_result=self._on_turn_result,  # 每轮完成后增量持久化 + SSE 推送
             context_window_tokens=context_window_tokens,  # 主 Agent 溢出检测
         )
 
@@ -1009,9 +879,6 @@ class NiuRunner:
         full_resp = ""
         return_value = None
         self.last_return_value = None  # 重置，避免复用残留
-        # 重置逐轮推送状态
-        self._persisted_ids.clear()
-        self._persisted_fingerprints.clear()
         while True:
             try:
                 chunk = next(gen)

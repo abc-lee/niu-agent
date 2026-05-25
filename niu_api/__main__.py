@@ -95,13 +95,6 @@ async def lifespan(app: FastAPI):
     from niu_api.chat import init_runner
     init_runner(tool_registry)
 
-    # 5.1. Pass main event loop to NiuRunner for _on_turn_result bridging
-    from agent.runner import get_runner
-    _runner = get_runner()
-    if _runner is not None:
-        _runner.set_main_event_loop(asyncio.get_running_loop())
-        logger.info("NiuRunner main event loop set")
-
     # 6. Mark preload as complete
     from niu_api.compat import set_preload_complete
     set_preload_complete()
