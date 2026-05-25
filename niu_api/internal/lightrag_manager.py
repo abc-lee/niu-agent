@@ -632,7 +632,139 @@ def _create_lightrag_instance():
     # If lightrag_storage is freshly created (empty graph), clear sync state caches
     # so that SkillSync/LightRAGSync/RegionSync will re-inject everything
     _clear_sync_state_if_storage_empty(STORAGE_DIR)
+
+    # ---------- Graph save protection ----------
+    # Prevent a zombie process's incomplete in-memory graph from overwriting the
+    # complete disk graph. When a zombie process triggers ainsert_custom_kg ->
+    # _insert_done -> index_done_callback, the full in-memory graph (which may
+    # be incomplete if the process has not fully loaded the disk data) gets
+    # written to disk, destroying the complete graph.
+    #
+    # Protection: before the NetworkX graph storage writes to disk, compare
+    # in-memory node count with disk node count. If in-memory < disk * 0.5,
+    # the in-memory graph is considered incomplete — skip the write and reload
+    # from disk instead.
+    _patch_graph_save_protection(rag)
+
     return rag
+
+
+def _patch_graph_save_protection(rag) -> None:
+    """Monkey-patch chunk_entity_relation_graph.index_done_callback to
+    prevent an incomplete in-memory graph from overwriting a complete disk graph.
+
+    This is the critical protection against the zombie-process data destruction
+    bug: when a zombie process (or a newly-initialized process whose graph has
+    not been fully populated) triggers _insert_done, the index_done_callback
+    writes the entire in-memory NetworkX graph to the graphml file, replacing
+    whatever was on disk. If the in-memory graph is incomplete, this destroys
+    the complete disk data.
+
+    The patch wraps the original index_done_callback with a node-count guard:
+    - Before writing, load the disk graph and compare node counts
+    - If in-memory nodes < disk nodes * SAFETY_RATIO, skip the write and
+      reload from disk instead (preserving the complete data)
+    - Otherwise, proceed with the normal write
+    """
+    try:
+        graph_storage = rag.chunk_entity_relation_graph
+        if graph_storage is None:
+            return
+
+        # Safety ratio: if in-memory graph has less than this fraction of
+        # the disk graph's nodes, it's considered incomplete.
+        SAFETY_RATIO = 0.5
+
+        original_callback = graph_storage.index_done_callback
+
+        async def _protected_index_done_callback():
+            """Protected index_done_callback that prevents incomplete graph writes."""
+            import networkx as _nx
+
+            # Get the graphml file path from the storage object
+            graphml_file = getattr(graph_storage, "_graphml_xml_file", None)
+            if graphml_file is None or not os.path.exists(graphml_file):
+                # No disk file yet — this is a fresh graph, safe to write
+                return await original_callback()
+
+            # Count nodes in the in-memory graph
+            mem_graph = getattr(graph_storage, "_graph", None)
+            if mem_graph is None:
+                # No in-memory graph — can't write anyway
+                return await original_callback()
+            mem_nodes = mem_graph.number_of_nodes()
+
+            # If in-memory graph is empty, always skip write
+            if mem_nodes == 0:
+                logger.warning(
+                    "[GraphProtection] In-memory graph is empty (0 nodes), "
+                    "skipping write to prevent destroying disk data"
+                )
+                # Reload from disk to restore the in-memory graph
+                disk_graph = _nx.read_graphml(graphml_file)
+                if disk_graph is not None and disk_graph.number_of_nodes() > 0:
+                    graph_storage._graph = disk_graph
+                    logger.info(
+                        "[GraphProtection] Reloaded disk graph with %d nodes",
+                        disk_graph.number_of_nodes(),
+                    )
+                return False
+
+            # Load disk graph to compare node counts
+            try:
+                disk_graph = _nx.read_graphml(graphml_file)
+            except Exception as e:
+                logger.warning(
+                    "[GraphProtection] Failed to load disk graph for comparison: %s",
+                    e,
+                )
+                # Can't compare — proceed with original callback as fallback
+                return await original_callback()
+
+            if disk_graph is None:
+                # No disk graph yet — safe to write
+                return await original_callback()
+
+            disk_nodes = disk_graph.number_of_nodes()
+
+            # If disk graph is empty or smaller, in-memory is definitely complete
+            if disk_nodes == 0 or mem_nodes >= disk_nodes:
+                return await original_callback()
+
+            # Critical check: in-memory significantly smaller than disk
+            ratio = mem_nodes / disk_nodes
+            if ratio < SAFETY_RATIO:
+                logger.warning(
+                    "[GraphProtection] BLOCKED graph write: in-memory has %d nodes "
+                    "but disk has %d nodes (ratio=%.2f < safety=%.2f). "
+                    "Reloading from disk to preserve complete data.",
+                    mem_nodes, disk_nodes, ratio, SAFETY_RATIO,
+                )
+                # Reload the complete disk graph into memory instead of
+                # overwriting disk with the incomplete in-memory graph
+                graph_storage._graph = disk_graph
+                # Reset the update flag so _get_graph() won't try to reload again
+                storage_updated = getattr(graph_storage, "storage_updated", None)
+                if storage_updated is not None:
+                    storage_updated.value = False
+                logger.info(
+                    "[GraphProtection] Reloaded disk graph with %d nodes, "
+                    "in-memory graph now restored",
+                    disk_graph.number_of_nodes(),
+                )
+                return False  # Signal that write was skipped
+
+            # In-memory graph is reasonably close to disk — safe to write
+            return await original_callback()
+
+        # Apply the patch
+        graph_storage.index_done_callback = _protected_index_done_callback
+        logger.info("[GraphProtection] Graph save protection patch applied")
+
+    except Exception as e:
+        logger.warning("[GraphProtection] Failed to apply graph save protection: %s", e)
+        # If patching fails, the original callback remains intact —
+        # no protection, but no crash either
 
 
 # We need EmbeddingFunc from lightrag for type annotation
