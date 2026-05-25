@@ -119,19 +119,18 @@ async def persist_agent_reply(
     """
     message_id = None
 
-    # 获取已提交的消息指纹集合（由 _on_turn_result 在 fire-and-forget 之前同步写入）
-    persisted_fps = set()
+    # 获取已持久化的消息 ID 集合
+    persisted_ids = set()
     if runner is not None:
         try:
-            with runner._persisted_lock:
-                persisted_fps = runner._persisted_fingerprints.copy()
+            persisted_ids = getattr(runner, "_persisted_ids", set()).copy()
         except Exception:
-            persisted_fps = set()
+            persisted_ids = set()
 
     # DEBUG: Log rv structure for diagnosing tool_calls persistence
     if rv and isinstance(rv, dict) and rv.get("messages"):
         _debug_msgs = rv["messages"]
-        logger.info(f"[persist DEBUG] rv has {len(_debug_msgs)} messages, history_len={history_len}, persisted_fps={len(persisted_fps)}")
+        logger.info(f"[persist DEBUG] rv has {len(_debug_msgs)} messages, history_len={history_len}, persisted_ids={len(persisted_ids)}")
         for i, m in enumerate(_debug_msgs[history_len+1:], start=history_len+1):
             _tc = m.get("tool_calls")
             _tci = m.get("tool_call_id", "")
@@ -151,41 +150,48 @@ async def persist_agent_reply(
         last_assistant_id = None
         last_assistant_content = ""
 
-        # 用指纹去重：跳过 _on_turn_result 已提交的消息（无论是否已执行完）
-        for msg in rv["messages"][history_len + 1:]:
-            role = msg.get("role", "")
-            content = msg.get("content", "")
-            tool_calls = msg.get("tool_calls")
-            tool_call_id = msg.get("tool_call_id", "")
+        # 如果 _on_turn_result 已逐轮持久化，跳过 DB 写入（避免重复）
+        if persisted_ids:
+            # 只提取最后一条 assistant 消息内容，用于 SSE 推送检查
+            for msg in rv["messages"][history_len + 1:]:
+                role = msg.get("role", "")
+                content = msg.get("content", "")
+                tool_calls = msg.get("tool_calls")
+                if role == "assistant" and tool_calls:
+                    if any(tc.get("function", {}).get("name") == "working_memory" for tc in tool_calls):
+                        continue
+                if role == "assistant":
+                    last_assistant_content = content or ""
+        else:
+            # 兜底：_on_turn_result 未工作，从 rv["messages"] 持久化
+            for msg in rv["messages"][history_len + 1:]:
+                role = msg.get("role", "")
+                content = msg.get("content", "")
+                tool_calls = msg.get("tool_calls")
+                tool_call_id = msg.get("tool_call_id", "")
 
-            if role == "system":
-                continue
-            if role == "user":
-                continue
-
-            # 跳过 working_memory 虚拟消息
-            if role == "assistant" and tool_calls:
-                if any(tc.get("function", {}).get("name") == "working_memory" for tc in tool_calls):
+                if role == "system":
                     continue
-            if role == "tool" and tool_call_id in _wm_tool_call_ids:
-                continue
+                if role == "user":
+                    continue
 
-            # 指纹去重：如果 _on_turn_result 已提交此消息，跳过 DB 写入
-            from agent.runner import NiuRunner
-            fp = NiuRunner._msg_fingerprint(msg)
-            if fp in persisted_fps:
-                continue
+                # 跳过 working_memory 虚拟消息
+                if role == "assistant" and tool_calls:
+                    if any(tc.get("function", {}).get("name") == "working_memory" for tc in tool_calls):
+                        continue
+                if role == "tool" and tool_call_id in _wm_tool_call_ids:
+                    continue
 
-            if role == "tool" and tool_call_id:
-                await store.add_message(role="tool", content=content or "", tool_call_id=tool_call_id)
-            elif role == "assistant":
-                pid = await store.add_message(role="assistant", content=content or "", tool_calls=tool_calls)
-                last_assistant_id = pid
-                last_assistant_content = content or ""
+                if role == "tool" and tool_call_id:
+                    await store.add_message(role="tool", content=content or "", tool_call_id=tool_call_id)
+                elif role == "assistant":
+                    pid = await store.add_message(role="assistant", content=content or "", tool_calls=tool_calls)
+                    last_assistant_id = pid
+                    last_assistant_content = content or ""
 
         # 推送最后一条 assistant 消息给 SSE 订阅者（仅在兜底场景下）
-        # 如果 _on_turn_result 已推送过（指纹匹配），则跳过
-        if last_assistant_id:
+        # 如果 _on_turn_result 已推送过，则跳过
+        if last_assistant_id and last_assistant_id not in persisted_ids:
             message_id = last_assistant_id
             await notify_new_message(message_id, "assistant", last_assistant_content or full_reply, source=source)
     elif full_reply.strip():
