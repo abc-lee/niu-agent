@@ -2,7 +2,7 @@ import json, logging, re, sys
 from dataclasses import dataclass
 from typing import Any, Optional
 
-_VALID_STREAM_TYPES = ("reply", "tool_marker", "system")
+_VALID_STREAM_TYPES = ("reply", "tool_marker", "system", "persist")
 
 
 @dataclass
@@ -231,6 +231,8 @@ def agent_runner_loop(
                     }
                 })
             messages.append(assistant_msg)
+            # V4: yield persist事件，逐条持久化assistant(tool_calls)消息
+            yield StreamEvent("persist", json.dumps(assistant_msg, ensure_ascii=False))
 
         tool_results = []
         next_prompts = set()
@@ -291,12 +293,24 @@ def agent_runner_loop(
                 "tool_call_id": tool_result["tool_use_id"],
                 "content": tool_result["content"]
             })
+        # V4: yield每条tool结果的persist事件
+        for tool_result in tool_results:
+            tool_msg = {
+                "role": "tool",
+                "tool_call_id": tool_result["tool_use_id"],
+                "content": tool_result["content"]
+            }
+            yield StreamEvent("persist", json.dumps(tool_msg, ensure_ascii=False))
 
         if len(next_prompts) == 0:
             if len(handler._done_hooks) == 0:
                 # 纯文本回复：也要执行衰减
                 if on_turn_end is not None:
                     on_turn_end(messages, tools_schema, turn)
+                # V4: 纯文本回复yield persist事件（从response.content构造，不从messages[-1]获取）
+                if response.content and not response.tool_calls:
+                    pure_text_msg = {"role": "assistant", "content": response.content}
+                    yield StreamEvent("persist", json.dumps(pure_text_msg, ensure_ascii=False))
                 if isinstance(should_exit, dict):
                     should_exit["messages"] = messages
                     return should_exit
@@ -310,6 +324,9 @@ def agent_runner_loop(
             # 确保最后一轮的 decay 和保存执行
             if on_turn_end is not None:
                 on_turn_end(messages, tools_schema, turn)
+            # V4: 此分支只在有tool_calls的轮次后进入，持久化最后一条assistant(tool_calls)
+            if messages and messages[-1].get("role") == "assistant" and messages[-1].get("tool_calls"):
+                yield StreamEvent("persist", json.dumps(messages[-1], ensure_ascii=False))
             if isinstance(should_exit, dict):
                 should_exit["messages"] = messages
                 return should_exit

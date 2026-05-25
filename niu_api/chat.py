@@ -108,8 +108,33 @@ def _sync_broadcast(event: dict):
             logger.warning("[SSE] Subscriber queue full, skipping event")
 
 
+def _msg_fingerprint(msg: dict) -> str | None:
+    """生成消息指纹，用于去重判断
+
+    指纹规则：
+    - assistant(tool_calls): role + tool_calls[0].id（唯一标识一次工具调用）
+    - assistant(纯文本): role + content[:50]（短文本前缀，避免长文本哈希）
+    - tool: role + tool_call_id（唯一标识一次工具结果）
+    - 其他: None（不参与去重）
+    """
+    role = msg.get("role", "")
+    if role == "assistant":
+        tool_calls = msg.get("tool_calls")
+        if tool_calls:
+            first_id = tool_calls[0].get("id", "") if tool_calls else ""
+            return f"assistant:tc:{first_id}"
+        else:
+            content = (msg.get("content", "") or "")[:50]
+            return f"assistant:text:{content}"
+    elif role == "tool":
+        tool_call_id = msg.get("tool_call_id", "")
+        return f"tool:{tool_call_id}"
+    return None
+
+
 async def persist_agent_reply(
-    store, rv, history_len: int, full_reply: str, source: str = "electron"
+    store, rv, history_len: int, full_reply: str, source: str = "electron",
+    persisted_msgs: list[dict] | None = None
 ) -> tuple[str | None, str]:
     """持久化 Agent 回复消息（从 rv["messages"] 双管道），过滤 working_memory，通知前端。
 
@@ -140,6 +165,14 @@ async def persist_agent_reply(
             logger.info(f"[persist DEBUG]   [{i}] role={_role} has_tool_calls={bool(_tc)} tool_call_id={_tci[:20]} content={_content_preview!r}")
 
     if rv and isinstance(rv, dict) and rv.get("messages"):
+        # V4: 构建"已持久化消息"指纹集合，用于兜底去重
+        _persisted_fingerprints = set()
+        if persisted_msgs:
+            for pm in persisted_msgs:
+                fp = _msg_fingerprint(pm)
+                if fp:
+                    _persisted_fingerprints.add(fp)
+
         # 收集需要跳过的 tool_call_id（working_memory 虚拟调用）
         _wm_tool_call_ids = set()
         for msg in rv["messages"][history_len + 1:]:
@@ -161,6 +194,11 @@ async def persist_agent_reply(
             if role == "user":
                 continue
 
+            # V4: 兜底去重——如果此消息已被逐条推送写入 DB，跳过
+            fp = _msg_fingerprint(msg)
+            if fp and fp in _persisted_fingerprints:
+                continue
+
             # 跳过 working_memory 虚拟消息
             if role == "assistant" and tool_calls:
                 if any(tc.get("function", {}).get("name") == "working_memory" for tc in tool_calls):
@@ -175,15 +213,18 @@ async def persist_agent_reply(
                 last_assistant_id = pid
                 last_assistant_content = content or ""
 
-        # 纯文本回复不在 rv["messages"] 中，需要从 full_reply 持久化
-        if full_reply.strip() and full_reply.strip() != last_assistant_content.strip():
+        # 纯文本回复不在 rv["messages"] 中，仅在逐条推送未执行时从 full_reply 持久化
+        if not persisted_msgs and full_reply.strip() and full_reply.strip() != last_assistant_content.strip():
             pid = await store.add_message(role="assistant", content=full_reply)
             last_assistant_id = pid
 
-        # 推送最后一条 assistant 消息给 SSE 订阅者
-        if last_assistant_id:
+        # 推送 SSE 通知（仅在兜底路径：逐条推送未执行时）
+        if last_assistant_id and not persisted_msgs:
             message_id = last_assistant_id
             await notify_new_message(message_id, "assistant", full_reply, source=source)
+        elif last_assistant_id:
+            # 逐条推送已执行，只需返回 message_id
+            message_id = last_assistant_id
     elif full_reply.strip():
         # 回退：无 return_value 时，从 full_reply 持久化 assistant 消息
         message_id = await store.add_message(role="assistant", content=full_reply)
@@ -356,7 +397,8 @@ async def chat(request: ChatRequest) -> StreamingResponse:
             store = await get_message_store()
             rv = getattr(runner, "last_return_value", None)
             history_len = 0  # /chat 端点不加载历史，rv 包含完整 messages
-            message_id, full_reply = await persist_agent_reply(store, rv, history_len, full_reply, source="electron")
+            persisted_msgs = getattr(runner, "_persisted_msgs", None)  # V4: 已逐条持久化的消息
+            message_id, full_reply = await persist_agent_reply(store, rv, history_len, full_reply, source="electron", persisted_msgs=persisted_msgs)
 
             # 检测主 Agent 上下文溢出 → 同步触发 force 压缩（阻塞）
             if rv and isinstance(rv, dict) and rv.get("result") == "CONTEXT_OVERFLOW":
@@ -460,7 +502,8 @@ async def chat_sync(request: ChatRequest) -> ChatResponse:
         # 持久化 Agent 回复（使用 persist_agent_reply 双管道）
         rv = getattr(runner, "last_return_value", None)
         history_len = len(history_for_runner) if history_for_runner else 0
-        message_id, full_reply = await persist_agent_reply(store, rv, history_len, full_reply, source="electron")
+        persisted_msgs = getattr(runner, "_persisted_msgs", None)  # V4: 已逐条持久化的消息
+        message_id, full_reply = await persist_agent_reply(store, rv, history_len, full_reply, source="electron", persisted_msgs=persisted_msgs)
 
         # 检测主 Agent 上下文溢出 → 同步触发 force 压缩（阻塞，压缩完再继续）
         if rv and isinstance(rv, dict) and rv.get("result") == "CONTEXT_OVERFLOW":
