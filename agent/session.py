@@ -112,6 +112,55 @@ class MessageStore:
         logger.debug(f"Added message: {msg_id}")
         return msg_id
 
+    def add_message_sync(
+        self,
+        role: str,
+        content: str,
+        tool_calls: List[Dict] = None,
+        tool_results: List[Dict] = None,
+        tool_call_id: str = "",
+    ) -> str:
+        """同步版本 add_message — 供 executor 线程调用
+
+        使用 sqlite3（同步）+ WAL 模式 + busy_timeout，确保从
+        executor 线程安全写入，不会与主 async 事件循环的
+        aiosqlite 连接冲突。
+        """
+        import sqlite3
+
+        msg_id = str(uuid4())
+        created_at = datetime.now().isoformat()
+        tool_calls_json = json.dumps(tool_calls or [], ensure_ascii=False)
+        tool_results_json = json.dumps(tool_results or [], ensure_ascii=False)
+
+        conn = sqlite3.connect(self.db_path)
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=5000")
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS messages (
+                    id TEXT PRIMARY KEY,
+                    role TEXT NOT NULL,
+                    content TEXT,
+                    tool_calls TEXT,
+                    tool_results TEXT,
+                    tool_call_id TEXT DEFAULT '',
+                    created_at TEXT NOT NULL
+                )"""
+            )
+            conn.execute(
+                """INSERT INTO messages
+                   (id, role, content, tool_calls, tool_results, tool_call_id, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (msg_id, role, content, tool_calls_json, tool_results_json, tool_call_id, created_at),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        logger.debug(f"Added message (sync): {msg_id}")
+        return msg_id
+
     async def get_messages(self, limit: Optional[int] = None, before_id: Optional[str] = None) -> List[Message]:
         """Get messages (chronological order). If limit is None, return all messages.
 

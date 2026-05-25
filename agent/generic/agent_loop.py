@@ -125,6 +125,7 @@ def agent_runner_loop(
     initial_user_content=None,
     history=None,  # Optional: list of {"role": "user/assistant", "content": str}
     on_turn_end=None,  # Optional: callback(messages, tools_schema, turn) -> tools_schema
+    on_turn_result=None,  # Optional: callback(messages, turn_increment, turn) — 每轮消息追加完成后触发
     context_window_tokens=0,  # 0 means no limit check (backward compatible)
     context_fifo_threshold=0,  # 0 means no FIFO truncation; >0 means max token budget for sub-agents
 ):
@@ -169,6 +170,8 @@ def agent_runner_loop(
                 logger.warning(f"[Overflow] Context {current_tokens}/{context_window_tokens} tokens ({usage_ratio:.1%}) exceeds 85% threshold")
                 if on_turn_end is not None:
                     on_turn_end(messages, tools_schema, turn)
+                if on_turn_result is not None:
+                    on_turn_result(messages, messages[1:], turn)  # 全量increment（溢出前的所有消息）
                 return {
                     "result": "CONTEXT_OVERFLOW",
                     "data": {
@@ -257,6 +260,10 @@ def agent_runner_loop(
             if outcome.should_exit:
                 if on_turn_end is not None:
                     on_turn_end(messages, tools_schema, turn)
+                if on_turn_result is not None:
+                    # 计算本轮increment：assistant tool_calls + tool results
+                    inc_start = len(messages) - len(tool_results) - (1 if response.tool_calls else 0)
+                    on_turn_result(messages, messages[inc_start:], turn)
                 return {
                     "result": "EXITED",
                     "data": outcome.data,
@@ -297,6 +304,16 @@ def agent_runner_loop(
                 # 纯文本回复：也要执行衰减
                 if on_turn_end is not None:
                     on_turn_end(messages, tools_schema, turn)
+                if on_turn_result is not None:
+                    # 纯文本回复或工具调用后无 next_prompt
+                    # response.content 是 LLM 最终回复，可能不在 messages 中
+                    _last_content = response.content or ""
+                    if _last_content.strip():
+                        on_turn_result(messages, [{"role": "assistant", "content": _last_content}], turn)
+                    else:
+                        # 有工具调用但无纯文本回复：increment 已在 messages 中
+                        _inc_start = len(messages) - len(tool_results) - (1 if response.tool_calls else 0)
+                        on_turn_result(messages, messages[max(_inc_start, 0):], turn)
                 if isinstance(should_exit, dict):
                     should_exit["messages"] = messages
                     return should_exit
@@ -310,6 +327,8 @@ def agent_runner_loop(
             # 确保最后一轮的 decay 和保存执行
             if on_turn_end is not None:
                 on_turn_end(messages, tools_schema, turn)
+            if on_turn_result is not None:
+                on_turn_result(messages, [], turn)  # 已由路径3或should_exit处理
             if isinstance(should_exit, dict):
                 should_exit["messages"] = messages
                 return should_exit
@@ -357,8 +376,14 @@ def agent_runner_loop(
         # 轮次级刷新回调：允许调用方在每轮结束后更新 system_prompt 和 tools_schema
         if on_turn_end is not None:
             tools_schema = on_turn_end(messages, tools_schema, turn)
+        if on_turn_result is not None:
+            # 计算本轮increment: 从assistant tool_calls到tool results
+            inc_start = len(messages) - len(tool_results) - (1 if response.tool_calls else 0)
+            on_turn_result(messages, messages[inc_start:], turn)
 
     # MAX_TURNS_EXCEEDED 退出时也要执行衰减
     if on_turn_end is not None:
         on_turn_end(messages, tools_schema, turn)
+    if on_turn_result is not None:
+        on_turn_result(messages, [], turn)
     return {"result": "MAX_TURNS_EXCEEDED", "messages": messages}
