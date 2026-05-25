@@ -127,7 +127,7 @@ go fmt ./...
 ### Agent 核心（agent/generic/）
 
 **核心文件**：
-- `agent_loop.py` — 主循环（99行）
+- `agent_loop.py` — 主循环 + V4逐轮persist推送 + chat_busy/chat_idle状态机
 - `handler.py` — 工具实现 + 工作记忆机制（526行）
 - `llmcore.py` — LLM 抽象层，支持多厂商（835行）
 
@@ -195,13 +195,6 @@ result = tool_fn(content="用户喜欢 Python", metadata={"type": "preference"})
 schemas = registry.get_schemas()
 ```
 
-**迁移状态**（已完成）：
-- ✅ 所有 8 个 MCP 服务器改造完成（photo-server + 7 个其他服务器）
-- ✅ 52 个工具 schema 已添加
-- ✅ Handler 使用 ToolRegistry 进行工具调用
-- ✅ API 启动流程使用 `load_mcp_tools()`
-- ✅ 集成测试通过
-
 **废弃组件**（保留向后兼容）：
 - `MCPSyncBridge` (`agent/mcp_sync_bridge.py`)：保留但不再使用
 - `mcp_client.py` 的 stdio 通信函数：标记为废弃，建议使用 ToolRegistry
@@ -245,6 +238,9 @@ schemas = registry.get_schemas()
 | `memory-server` | 智能记忆提取和检索 | ✅ |
 | `session-manager` | 会话管理（消息压缩） | ❌ |
 | `browser-server` | 浏览器自动化（Playwright async_api + 守护线程） | ✅ |
+| `brain-region-server` | 脑区激活/调暗/状态管理 | ✅ |
+| `scheduler-server` | 定时任务调度（增删改查） | ❌ |
+| `feishu-server` | 飞书消息收发（可选） | ❌ |
 
 **Browser-Server 架构**：
 - `playwright.async_api` 在独立守护线程中运行（自有 asyncio loop）
@@ -292,25 +288,6 @@ schemas = registry.get_schemas()
 - `skill` — Skills 文件
 - `mcp_tool` — MCP 工具描述
 
-### 同步/异步桥接（已废弃）
-
-**问题**：GenericAgent 纯同步，MCP 客户端异步，FastAPI 异步端点，导致事件循环冲突。
-
-**旧解决方案**（已废弃）：
-1. `agent/mcp_sync_bridge.py` — 后台事件循环 + `run_coroutine_threadsafe`
-2. `agent/handler.py` 的 `dispatch()` 使用 `MCPSyncBridge` 调用 MCP 工具
-3. `niu_api/compat.py` 使用 `asyncio.to_thread` 运行同步 chat
-
-**新解决方案**（推荐）：
-- 使用 ToolRegistry 进行同进程直接调用
-- 无需事件循环桥接，纯同步架构
-- 性能提升 ~40000x
-
-**迁移状态**：
-- ✅ Handler 已改用 ToolRegistry
-- ✅ API 启动流程已使用 `load_mcp_tools()`
-- ⚠️ MCPSyncBridge 保留向后兼容，但不推荐使用
-
 ## 配置文件架构
 
 ### 程序目录 `config/`
@@ -327,7 +304,7 @@ schemas = registry.get_schemas()
 
 | 目录 | 大小 | 用途 |
 |------|------|------|
-| `models/all-MiniLM-L6-v2/` | ~90 MB | SentenceTransformer 文本向量 |
+| `models/bge-base-zh-v1.5/` | ~390 MB | BAAI/bge-base-zh-v1.5 中文向量模型（768d） |
 | `models/models/buffalo_l/` | ~326 MB | InsightFace 人脸识别 |
 
 **加载逻辑**：优先从本地加载，本地没有才下载。
@@ -443,21 +420,6 @@ preload_face_model()
 **解决**：
 - 检查 LightRAG 工作目录：`~/.niu/lightrag/`
 - 检查数据库路径：`~/.niu/memory.json` 中的 `workspace.path`
-
-### MCP stdio 通信错误（旧架构问题）
-
-**症状**：日志中出现大量 "Failed to parse JSONRPC message"
-
-**原因**：ONNX Runtime 将调试信息输出到 stdout，污染了 MCP 协议
-
-**解决方案**（已废弃，建议升级到新架构）：
-- ~~已在 `mcp-servers/photo-server/src/niu_photo_server/__init__.py` 中修复，临时抑制 stdout~~
-- **推荐**：升级到 MCP 同进程架构，无需 stdio 通信
-
-**新架构优势**：
-- 无 stdio 通信，无 JSON-RPC 序列化开销
-- 无 stdout 污染问题
-- 性能提升 ~40000x
 
 ## 相关文档
 
