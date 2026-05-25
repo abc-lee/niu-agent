@@ -879,6 +879,7 @@ class NiuRunner:
         full_resp = ""
         return_value = None
         self.last_return_value = None  # 重置，避免复用残留
+        persisted_msgs = []  # V4: 已通过persist事件持久化的消息列表
         while True:
             try:
                 chunk = next(gen)
@@ -887,6 +888,15 @@ class NiuRunner:
                         full_resp += chunk.content
                         if chunk.content:  # SSE 管道：只推送非空 reply
                             yield chunk.content
+                    elif chunk.type == "persist":
+                        # V4: 逐条持久化消息到 DB + 通知 SSE
+                        try:
+                            msg_dict = json.loads(chunk.content)
+                            msg_id = self._persist_one_msg(msg_dict)
+                            if msg_id is not None:
+                                persisted_msgs.append(msg_dict)
+                        except Exception as e:
+                            logger.warning(f"[Runner] Failed to persist msg: {e}")
                     # type="system" 和 "tool_marker" 不进入 SSE 和 full_resp
                 else:
                     # 向后兼容：普通 str
@@ -899,6 +909,7 @@ class NiuRunner:
 
         # 暴露 return_value 给调用方（用于检测 CONTEXT_OVERFLOW 等控制流）
         self.last_return_value = return_value
+        self._persisted_msgs = persisted_msgs  # V4: 已逐条持久化的消息列表
 
         # 如果 full_resp 为空但有返回值数据，使用返回值
         if not full_resp.strip() and return_value:
@@ -948,6 +959,79 @@ class NiuRunner:
                 yield full_resp.strip()
 
         # 对话结束后工具衰减已由 _on_turn_end 每轮执行，此处不再重复
+
+    def _persist_one_msg(self, msg_dict: dict) -> str | None:
+        """逐条持久化消息到 DB + 通知 SSE（同步，从 executor 线程调用）
+
+        Args:
+            msg_dict: 完整的消息 dict，包含 role, content, tool_calls, tool_call_id 等
+
+        Returns:
+            消息 ID，或 None（写入失败或消息被过滤）
+        """
+        from niu_api.chat import notify_new_message_sync
+        from agent.session import get_message_store
+
+        role = msg_dict.get("role", "")
+        content = msg_dict.get("content", "") or ""
+        tool_calls = msg_dict.get("tool_calls")
+        tool_call_id = msg_dict.get("tool_call_id", "")
+
+        # 跳过 working_memory 虚拟消息（不持久化到 DB，不推送给前端）
+        if role == "assistant" and tool_calls:
+            if any(tc.get("function", {}).get("name") == "working_memory" for tc in tool_calls):
+                return None
+        if role == "tool" and tool_call_id.startswith("wm_"):
+            return None
+
+        # 同步写入 DB
+        msg_id = self._sync_add_message(role=role, content=content,
+                                         tool_calls=tool_calls, tool_call_id=tool_call_id)
+        if msg_id is None:
+            return None
+
+        # 通知 SSE（仅 assistant 消息推送给前端）
+        if role == "assistant" and content.strip():
+            notify_new_message_sync(msg_id, "assistant", content, source="electron")
+
+        return msg_id
+
+    def _sync_add_message(self, role: str, content: str,
+                           tool_calls: list | None = None, tool_call_id: str = "") -> str | None:
+        """从同步线程写入消息到 DB（桥接 aiosqlite）
+
+        使用 asyncio.run_coroutine_threadsafe 在 FastAPI 事件循环中执行 DB 写入，
+        然后阻塞等待结果。这保证了消息按 yield 顺序写入 DB（不会倒序）。
+
+        超时设为30秒：DB写入正常情况下<100ms，30秒足够覆盖极端情况。
+        如果30秒仍超时，说明DB严重故障，此时重复写入是可接受的。
+
+        Returns:
+            消息 ID，或 None（写入失败）
+        """
+        from niu_api.chat import _main_loop
+        from agent.session import get_message_store
+        import asyncio
+
+        loop = _main_loop
+        if loop is None or loop.is_closed():
+            logger.warning("[Runner] No event loop available for sync DB write")
+            return None
+
+        async def _do_add():
+            store = await get_message_store()
+            return await store.add_message(
+                role=role, content=content,
+                tool_calls=tool_calls, tool_call_id=tool_call_id
+            )
+
+        try:
+            future = asyncio.run_coroutine_threadsafe(_do_add(), loop)
+            msg_id = future.result(timeout=30.0)  # 阻塞等待，保证顺序
+            return msg_id
+        except Exception as e:
+            logger.warning(f"[Runner] sync_add_message failed: {e}")
+            return None
 
 
 # 全局实例

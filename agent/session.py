@@ -57,6 +57,10 @@ class MessageStore:
     async def init_db(self):
         """Initialize database schema"""
         async with aiosqlite.connect(self.db_path) as db:
+            # V4: WAL模式 + busy_timeout，支持高频并发写入
+            await db.execute("PRAGMA journal_mode=WAL")
+            await db.execute("PRAGMA busy_timeout=5000")
+
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS messages (
                     id TEXT PRIMARY KEY,

@@ -1014,8 +1014,12 @@
 
     // ========== 数据库$视图刷新 ==========
     let _refreshFromDBRunning = false;  // 防止并发调用
+    let _refreshPending = false;
     async function refreshFromDB() {
-      if (_refreshFromDBRunning) return;  // 跳过并发调用
+      if (_refreshFromDBRunning) {
+        _refreshPending = true;
+        return;
+      }
       _refreshFromDBRunning = true;
       try {
         // 收集DOM中已有的消息ID
@@ -1109,6 +1113,10 @@
         console.error('[Chat] 刷新消息失败:', e);
       } finally {
         _refreshFromDBRunning = false;
+        if (_refreshPending) {
+          _refreshPending = false;
+          setTimeout(() => refreshFromDB(), 0);
+        }
       }
     }
 
