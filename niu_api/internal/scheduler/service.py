@@ -148,8 +148,8 @@ def _persist_fallback_message(user_content: str, assistant_content: str):
         msg_id = await store.add_message(role="assistant", content=assistant_content)
         # 通知 SSE 推送（已在主 loop 中，可直接用 async 版本）
         from niu_api.chat import notify_new_message
-        await notify_new_message(user_msg_id, "user", user_content)
-        await notify_new_message(msg_id, "assistant", assistant_content)
+        await notify_new_message(user_msg_id, "user", user_content, source="scheduler")
+        await notify_new_message(msg_id, "assistant", assistant_content, source="scheduler")
         logger.info("[INTERNAL SCHEDULER] Fallback message persisted to DB")
 
     try:

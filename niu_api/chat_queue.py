@@ -235,7 +235,7 @@ class ChatQueue:
 
             # 处理合并后的消息
             try:
-                reply = await self._process_single(merged_content, first_req.session_id, all_contents)
+                reply = await self._process_single(merged_content, first_req.session_id, all_contents, channel=first_req.channel)
             except Exception as e:
                 logger.error(f"[ChatQueue] Processing error: {e}")
                 reply = f"[处理出错: {e}]"
@@ -268,7 +268,7 @@ class ChatQueue:
             self._processing_done.set()
 
     async def _process_single(self, content: str, session_id: str = "default",
-                              user_contents: list[str] | None = None) -> str:
+                              user_contents: list[str] | None = None, channel: str = "electron") -> str:
         """处理单条消息 — 加载历史，持久化 user 消息，调用 runner.chat()，持久化回复，SSE推送"""
         from niu_api.compat import _chat_lock
 
@@ -314,7 +314,7 @@ class ChatQueue:
         # 持久化回复消息（使用共享函数）
         from niu_api.chat import persist_agent_reply
         rv = getattr(self._runner, "last_return_value", None)
-        message_id, full_reply = await persist_agent_reply(store, rv, history_len, full_reply)
+        message_id, full_reply = await persist_agent_reply(store, rv, history_len, full_reply, source=channel)
 
         # 上下文溢出检测
         await self._check_overflow(session_id, store, full_reply)
