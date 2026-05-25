@@ -245,9 +245,13 @@ class FeishuChannelAdapter(ChannelAdapter):
             logger.warning(f"[FeishuChannel] Disconnect error: {e}")
 
     async def send(self, channel_id: str, content: str) -> None:
-        """发送消息到飞书"""
+        """发送消息到飞书 — 回复到指定会话，空 channel_id 时 fallback 到 push()"""
+        target = channel_id or self._user_open_id or self._user_p2p_chat_id
+        if not target:
+            logger.warning("[FeishuChannel] send() no target, skipping")
+            return
         try:
-            result = await self.channel.send(channel_id, {"markdown": content})
+            result = await self.channel.send(target, {"markdown": content})
             if not result.success:
                 logger.error(f"[FeishuChannel] Send failed: {result.error}")
         except Exception as e:

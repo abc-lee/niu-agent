@@ -107,13 +107,11 @@ def trigger_callback(task: dict) -> str:
             from niu_api.channel import get_channel_router
             router = get_channel_router()
             if router.has_channel("feishu"):
-                adapter = router.channels["feishu"]
-                if getattr(adapter, '_user_p2p_chat_id', None) or getattr(adapter, '_user_open_id', None):
-                    push_future = asyncio.run_coroutine_threadsafe(
-                        adapter.push("", agent_reply),
-                        loop,
-                    )
-                    push_future.result(timeout=30)
+                push_future = asyncio.run_coroutine_threadsafe(
+                    router.push(agent_reply, "feishu", ""),
+                    loop,
+                )
+                push_future.result(timeout=30)
         except Exception as e:
             logger.warning(f"[SCHEDULER] Feishu push failed: {e}")
 

@@ -23,36 +23,48 @@ class ChannelRouter:
         """
         from niu_api.chat_queue import get_chat_queue
         q = get_chat_queue()
+        channel = message.channel or "electron"
+        session_id = "default" if channel == "electron" else f"{channel}:{message.channel_id}"
         result = await q.enqueue(
             content=message.content,
-            source="frontend",
-            session_id="default",
+            source=channel,
+            channel=channel,
+            channel_id=message.channel_id,
+            sender_id=message.sender_id,
+            session_id=session_id,
         )
         return result.message
 
-    def route_in_sync(self, message: UnifiedMessage, session_id: str = "feishu",
+    def route_in_sync(self, message: UnifiedMessage, session_id: str | None = None,
                       message_override: str | None = None):
-        """同步路由消息到 ChatQueue — 供飞书通道线程中调用
+        """同步路由消息到 ChatQueue — 供飞书等通道线程中调用
 
         返回 EnqueueResult，不再返回回复文本。
         回复由 ChatQueue Worker 处理后自动推送到飞书。
         """
         from niu_api.chat_queue import get_chat_queue
         content = message_override if message_override is not None else message.content
+        channel = message.channel or "feishu"
+        if session_id is None:
+            session_id = f"{channel}:{message.sender_id}"
         q = get_chat_queue()
         return q.enqueue_sync(
             content=content,
-            source="feishu",
+            source=channel,
+            channel=channel,
             channel_id=message.channel_id,
             sender_id=message.sender_id,
             session_id=session_id,
         )
 
     async def route_out(self, reply: str, channel: str, channel_id: str) -> None:
-        """回复投递到指定通道"""
+        """回复投递到指定通道 — 通道无关"""
         adapter = self.channels.get(channel)
         if adapter:
-            await adapter.send(channel_id, reply)
+            if channel_id:
+                await adapter.send(channel_id, reply)
+            else:
+                await adapter.push("", reply)
 
     async def push(self, content: str, channel: str, channel_id: str) -> None:
         """主动推送（定时提醒等）"""
