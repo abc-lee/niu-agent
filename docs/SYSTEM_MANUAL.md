@@ -129,3 +129,4 @@ ai-bot/
 | 用户操作 | [manual-user-guide.md](manual-user-guide.md) | 首次启动、LLM 配置、知识图谱、记忆管理、常见问题 |
 | 开发者参考 | [manual-developer.md](manual-developer.md) | 本地开发、调试技巧、API 端点、环境变量、更新日志 |
 | 文件格式支持 | [manual-file-formats.md](manual-file-formats.md) | 文件存储/知识图谱/照片支持的格式，不支持KG的格式及原因 |
+| 飞书开通 | [manual-feishu-setup.md](manual-feishu-setup.md) | 飞书机器人开通流程、浏览器操作步骤、配置写入、故障排查 |
