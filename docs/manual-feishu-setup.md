@@ -12,7 +12,7 @@
 主Agent用浏览器打开以下链接：
 
 ```
-https://open.feishu.cn/page/openclaw?user_code=DDLT-FLXv&from=hermes&tp=Niu
+https://open.feishu.cn/page/openclaw?user_code=DDLT-FLXv&from=hermes&tp=hermes
 ```
 
 页面会显示一个二维码。
