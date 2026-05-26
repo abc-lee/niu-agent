@@ -81,8 +81,9 @@ class FeishuChannelAdapter(ChannelAdapter):
                 self._update_persisted_ids(unified.channel_id, unified.sender_id)
 
             # 新增：下载远端资源到本地（需要 message_id 以访问消息附件）
-            feishu_message_id = getattr(msg, 'id', '') or getattr(msg, 'message_id', '')
-            logger.info(f"[FeishuChannel] Downloading resources with message_id={feishu_message_id}")
+            feishu_message_id = str(getattr(msg, 'id', '') or getattr(msg, 'message_id', '') or '')
+            logger.info(f"[FeishuChannel] msg.id={getattr(msg, 'id', 'N/A')}, msg.message_id={getattr(msg, 'message_id', 'N/A')}, resolved message_id={feishu_message_id}")
+            logger.info(f"[FeishuChannel] msg type: {type(msg).__name__}, resources: {len(unified.resources) if unified.resources else 0}")
             local_resources = self.resolve_inbound_resources(unified.resources, message_id=feishu_message_id)
 
             # 将 resources 转为文本描述（现有逻辑不变）
@@ -231,6 +232,8 @@ class FeishuChannelAdapter(ChannelAdapter):
             if rtype not in ('image', 'file') or not file_key:
                 continue
 
+            logger.info(f"[FeishuChannel] resolve_inbound: type={rtype}, file_key={file_key}, file_name={file_name}, message_id={message_id}")
+
             # 复用 self.channel.schedule() 提交异步下载
             future = self.channel.schedule(
                 self._download_from_feishu(file_key, rtype, file_name or "", message_id=message_id)
@@ -244,10 +247,12 @@ class FeishuChannelAdapter(ChannelAdapter):
                         local_path=local_path,
                         filename=file_name or f"{file_key}.bin"
                     ))
+                else:
+                    logger.warning(f"[FeishuChannel] _download_from_feishu returned None for {file_key}")
             except TimeoutError:
-                logger.warning(f"[FeishuChannel] Download timeout for {file_key}, skipping")
+                logger.warning(f"[FeishuChannel] Download timeout for {file_key} (message_id={message_id}), skipping")
             except Exception as e:
-                logger.warning(f"[FeishuChannel] Download failed for {file_key}: {e}")
+                logger.warning(f"[FeishuChannel] Download failed for {file_key} (message_id={message_id}): {type(e).__name__}: {e}")
 
         return local_resources
 
@@ -259,21 +264,45 @@ class FeishuChannelAdapter(ChannelAdapter):
         local_path = local_dir / f"feishu_in_{file_key}_{safe_name}"
 
         if local_path.exists():
+            logger.info(f"[FeishuChannel] Reusing cached download: {local_path}")
             return str(local_path)
+
+        # message_id 是下载用户发送图片的关键：有 message_id → message_resource 端点
+        # 没有 message_id → im/v1/images 端点（只能下载应用上传的图片）
+        mid_for_sdk = message_id or None
+        logger.info(f"[FeishuChannel] _download_from_feishu: file_key={file_key}, rtype={rtype}, message_id={message_id!r} (→ SDK as {mid_for_sdk})")
 
         try:
             result_path = await self.channel.download_resource_to_file(
                 file_key,
                 resource_type=rtype,
-                message_id=message_id or None,
+                message_id=mid_for_sdk,
                 dest_dir=local_dir,
                 file_name=local_path.name,
             )
             if result_path:
                 logger.info(f"[FeishuChannel] Downloaded {rtype} to {result_path}")
                 return str(result_path)
+            else:
+                logger.warning(f"[FeishuChannel] download_resource_to_file returned None for {file_key}")
         except Exception as e:
-            logger.warning(f"[FeishuChannel] Download resource failed: {e}")
+            logger.warning(f"[FeishuChannel] Download resource failed for {file_key} (message_id={message_id!r}): {type(e).__name__}: {e}")
+            # 尝试回退到不带 message_id 的下载（可能是应用上传的图片）
+            if mid_for_sdk:
+                logger.info(f"[FeishuChannel] Retrying download without message_id for {file_key}")
+                try:
+                    result_path = await self.channel.download_resource_to_file(
+                        file_key,
+                        resource_type=rtype,
+                        message_id=None,
+                        dest_dir=local_dir,
+                        file_name=local_path.name,
+                    )
+                    if result_path:
+                        logger.info(f"[FeishuChannel] Fallback download succeeded: {result_path}")
+                        return str(result_path)
+                except Exception as e2:
+                    logger.warning(f"[FeishuChannel] Fallback download also failed: {type(e2).__name__}: {e2}")
         return None
 
     def _is_p2p_message(self, msg_or_unified) -> bool:
