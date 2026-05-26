@@ -3,9 +3,9 @@
 from typing import Dict, Optional
 from loguru import logger
 
-from .base import UnifiedMessage, ChannelAdapter
+from .base import UnifiedMessage, ChannelAdapter, ResolvedMessage, LocalResource
 
-__all__ = ["ChannelRouter", "get_channel_router", "UnifiedMessage", "ChannelAdapter"]
+__all__ = ["ChannelRouter", "get_channel_router", "UnifiedMessage", "ChannelAdapter", "ResolvedMessage", "LocalResource"]
 
 
 class ChannelRouter:
@@ -58,19 +58,33 @@ class ChannelRouter:
         )
 
     async def route_out(self, reply: str, channel: str, channel_id: str) -> None:
-        """回复投递到指定通道 — 通道无关"""
+        """回复投递到指定通道 — 先解析文件标记，再路由发送"""
         adapter = self.channels.get(channel)
-        if adapter:
-            if channel_id:
-                await adapter.send(channel_id, reply)
-            else:
-                await adapter.push("", reply)
+        if not adapter:
+            return
+
+        messages = await adapter.resolve_outbound_content(reply)
+        for msg in messages:
+            if msg.kind == "text":
+                if channel_id:
+                    await adapter.send(channel_id, msg.content)
+                else:
+                    await adapter.push("", msg.content)
+            elif msg.kind in ("image", "file"):
+                await adapter.send_media(channel_id, msg)
 
     async def push(self, content: str, channel: str, channel_id: str) -> None:
-        """主动推送（定时提醒等）"""
+        """主动推送（定时提醒等）— 先解析文件标记，再路由发送"""
         adapter = self.channels.get(channel)
-        if adapter:
-            await adapter.push(channel_id, content)
+        if not adapter:
+            return
+
+        messages = await adapter.resolve_outbound_content(content)
+        for msg in messages:
+            if msg.kind == "text":
+                await adapter.push(channel_id, msg.content)
+            elif msg.kind in ("image", "file"):
+                await adapter.send_media(channel_id, msg)
 
     def register(self, name: str, adapter: ChannelAdapter) -> None:
         """注册通道适配器"""

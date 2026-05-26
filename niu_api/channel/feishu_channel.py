@@ -9,7 +9,7 @@ from pathlib import Path
 
 from loguru import logger
 
-from .base import UnifiedMessage, ChannelAdapter
+from .base import UnifiedMessage, ChannelAdapter, ResolvedMessage, LocalResource
 
 
 class FeishuChannelAdapter(ChannelAdapter):
@@ -80,12 +80,24 @@ class FeishuChannelAdapter(ChannelAdapter):
             if is_p2p:
                 self._update_persisted_ids(unified.channel_id, unified.sender_id)
 
-            # 将 resources 转为文本描述
+            # 新增：下载远端资源到本地
+            local_resources = self.resolve_inbound_resources(unified.resources)
+
+            # 将 resources 转为文本描述（现有逻辑不变）
             resource_text = self._format_resources(unified.resources)
             if resource_text:
                 message_content = f"{unified.content}\n{resource_text}" if unified.content.strip() else resource_text
             else:
                 message_content = unified.content
+
+            # 新增：替换占位符为本地路径
+            for lr in local_resources:
+                if lr.resource_type == 'image':
+                    old = f"[图片: {lr.original_key}]"
+                else:
+                    old = f"[文件: {lr.filename or lr.original_key}]"
+                new = f"[{lr.resource_type}: {lr.local_path}]"
+                message_content = message_content.replace(old, new)
 
             # P2P 用 sender_id，群聊用 chat_id — 区分 session 避免上下文混淆
             if is_p2p:
@@ -108,6 +120,16 @@ class FeishuChannelAdapter(ChannelAdapter):
 
         except Exception as e:
             logger.error(f"[FeishuChannel] Message handler error: {e}")
+
+    @staticmethod
+    def _is_path_allowed(path: str) -> bool:
+        """路径白名单校验 — 只允许 ~/.niu/ 和临时目录"""
+        p = Path(path).resolve()
+        allowed_dirs = [
+            Path.home() / ".niu",
+            Path(tempfile.gettempdir()),
+        ]
+        return any(str(p).startswith(str(d)) for d in allowed_dirs)
 
     @staticmethod
     def _format_resources(resources: list | None) -> str:
@@ -134,6 +156,112 @@ class FeishuChannelAdapter(ChannelAdapter):
                 name = file_name or file_key or "未知资源"
                 parts.append(f"[{rtype}: {name}]" if rtype else f"[资源: {name}]")
         return "\n".join(parts)
+
+    async def resolve_outbound_content(self, content: str) -> list[ResolvedMessage]:
+        """解析出方向消息中的本地文件标记"""
+        import re
+
+        media_messages = []
+        cleaned_content = content
+
+        # 匹配 ::person_photo::{"path": "...", "name": "..."}::
+        photo_pattern = r'::person_photo::(\{.*?\})::'
+        for match in re.finditer(photo_pattern, content):
+            try:
+                data = json.loads(match.group(1))
+                path = data.get("path", "")
+                name = data.get("name", "")
+                if not path:
+                    cleaned_content = cleaned_content.replace(match.group(0), "[照片信息缺失]")
+                    continue
+                if not self._is_path_allowed(path):
+                    cleaned_content = cleaned_content.replace(match.group(0), "[文件无法发送: 安全限制]")
+                    continue
+                if not Path(path).exists():
+                    cleaned_content = cleaned_content.replace(match.group(0), f"[照片不存在: {name}]")
+                    continue
+                media_messages.append(ResolvedMessage(kind="image", local_path=path, caption=name))
+                # 标记位置用引用文本替代
+                cleaned_content = cleaned_content.replace(match.group(0), f"↑ {name}的照片")
+            except json.JSONDecodeError:
+                cleaned_content = cleaned_content.replace(match.group(0), "[照片标记格式错误]")
+
+        # 匹配 ::file::{"path": "...", "name": "..."}::  (未来扩展)
+        file_pattern = r'::file::(\{.*?\})::'
+        for match in re.finditer(file_pattern, cleaned_content):
+            try:
+                data = json.loads(match.group(1))
+                path = data.get("path", "")
+                name = data.get("name", "")
+                if not path:
+                    cleaned_content = cleaned_content.replace(match.group(0), "[文件信息缺失]")
+                    continue
+                if not self._is_path_allowed(path):
+                    cleaned_content = cleaned_content.replace(match.group(0), "[文件无法发送: 安全限制]")
+                    continue
+                if not Path(path).exists():
+                    cleaned_content = cleaned_content.replace(match.group(0), f"[文件不存在: {name}]")
+                    continue
+                media_messages.append(ResolvedMessage(kind="file", local_path=path, filename=name))
+                cleaned_content = cleaned_content.replace(match.group(0), f"↑ {name}")
+            except json.JSONDecodeError:
+                cleaned_content = cleaned_content.replace(match.group(0), "[文件标记格式错误]")
+
+        messages = []
+        if cleaned_content.strip():
+            messages.append(ResolvedMessage(kind="text", content=cleaned_content))
+        messages.extend(media_messages)
+        return messages
+
+    def resolve_inbound_resources(self, resources: list) -> list[LocalResource]:
+        """同步方法 — 在 SDK 线程中调用，通过 schedule 提交异步下载"""
+        local_resources = []
+        for r in resources:
+            rtype = getattr(r, 'type', '') if not isinstance(r, dict) else r.get('type', '')
+            file_key = getattr(r, 'file_key', '') if not isinstance(r, dict) else r.get('file_key', '')
+            file_name = getattr(r, 'file_name', '') if not isinstance(r, dict) else r.get('file_name', '')
+
+            if rtype not in ('image', 'file') or not file_key:
+                continue
+
+            # 复用 self.channel.schedule() 提交异步下载
+            future = self.channel.schedule(
+                self._download_from_feishu(file_key, rtype, file_name or "")
+            )
+            try:
+                local_path = future.result(timeout=30)
+                if local_path:
+                    local_resources.append(LocalResource(
+                        original_key=file_key,
+                        resource_type=rtype,
+                        local_path=local_path,
+                        filename=file_name or f"{file_key}.bin"
+                    ))
+            except Exception as e:
+                logger.warning(f"[FeishuChannel] Download failed for {file_key}: {e}")
+
+        return local_resources
+
+    async def _download_from_feishu(self, file_key: str, rtype: str, file_name: str) -> str | None:
+        """下载飞书资源到本地，返回本地路径"""
+        local_dir = Path.home() / ".niu" / "tmp"
+        local_dir.mkdir(parents=True, exist_ok=True)
+        safe_name = file_name or f"{file_key}.bin"
+        local_path = local_dir / f"feishu_in_{file_key}_{safe_name}"
+
+        if local_path.exists():
+            return str(local_path)
+
+        try:
+            data = await self.channel.download_resource(file_key, rtype)
+            if data:
+                content = data.read() if hasattr(data, 'read') else data
+                local_path.write_bytes(content)
+                logger.info(f"[FeishuChannel] Downloaded {rtype} to {local_path}")
+                return str(local_path)
+        except Exception as e:
+            logger.warning(f"[FeishuChannel] Download resource failed: {e}")
+        return None
 
     def _is_p2p_message(self, msg_or_unified) -> bool:
         """判断是否为 P2P 消息（非群聊）— 兼容 SDK msg 和 UnifiedMessage"""
@@ -283,6 +411,35 @@ class FeishuChannelAdapter(ChannelAdapter):
                     logger.error(f"[FeishuChannel] Push failed: {result.error}")
         except Exception as e:
             logger.error(f"[FeishuChannel] Push exception: {e}")
+
+    async def send_media(self, channel_id: str, msg: ResolvedMessage) -> None:
+        """发送飞书图片/文件消息"""
+        target = channel_id or self._user_open_id or self._user_p2p_chat_id
+        if not target:
+            logger.warning("[FeishuChannel] send_media() no target, skipping")
+            return
+
+        from lark_oapi.channel.types import MediaSource
+
+        result = None
+        try:
+            if msg.kind == "image":
+                # SDK send pipeline 自动上传本地文件 + 发送图片消息
+                result = await self.channel.send(target, {
+                    "image": MediaSource(kind="file", path=msg.local_path),
+                    "caption": msg.caption,
+                })
+            elif msg.kind == "file":
+                # 文件消息用 OutboundFile dataclass（确保 fileName 被正确传递）
+                from lark_oapi.channel.types import OutboundFile
+                result = await self.channel.send(target, OutboundFile(
+                    source=MediaSource(kind="file", path=msg.local_path),
+                    file_name=msg.filename,
+                ))
+            if result is not None and not result.success:
+                logger.error(f"[FeishuChannel] send_media failed: {result.error}")
+        except Exception as e:
+            logger.error(f"[FeishuChannel] send_media exception: {e}")
 
     @property
     def user_p2p_chat_id(self) -> str | None:
