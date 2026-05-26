@@ -9,9 +9,6 @@ HTTP API server for Niu Agent using FastAPI + Uvicorn
 import sys
 import os
 import asyncio
-import subprocess
-import threading
-import time
 from pathlib import Path
 from datetime import datetime, timedelta
 
@@ -22,8 +19,6 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
-
-from niu_api.config import get_config
 from niu_api.session import router as session_router
 from niu_api.chat import router as chat_router
 from niu_api.compat import router as compat_router
@@ -44,35 +39,6 @@ logger.add(
     format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan> - <level>{message}</level>",
     level="INFO",
 )
-
-
-def _backup_critical_files():
-    """备份~/.niu/下的关键文件到~/.niu/backup/（启动时执行一次）
-
-    备份范围：memory.json、preferences.json、skills/ 目录。
-    目的是防止用户数据意外丢失，备份存放在用户数据目录自身的 backup/ 子目录。
-    """
-    import shutil
-    source = Path.home() / ".niu"
-    backup = source / "backup"
-    try:
-        backup.mkdir(parents=True, exist_ok=True)
-
-        for name in ("memory.json", "preferences.json"):
-            src = source / name
-            if src.exists():
-                shutil.copy2(src, backup / name)
-
-        skills_src = source / "skills"
-        if skills_src.exists():
-            skills_backup = backup / "skills"
-            if skills_backup.exists():
-                shutil.rmtree(skills_backup)
-            shutil.copytree(skills_src, skills_backup)
-
-        logger.info("Critical user files backed up to ~/.niu/backup/")
-    except Exception as e:
-        logger.warning(f"Failed to backup critical user files: {e}")
 
 
 @asynccontextmanager
@@ -263,16 +229,6 @@ async def lifespan(app: FastAPI):
     # 8.6. Ensure system recurring tasks exist (by name, not cron_expr)
     _SYSTEM_TASKS = [
         {
-            "name": "daily-entity-extractor",
-            "content": (
-                "调用 chat-with-entity-extractor 子 Agent，task 参数为："
-                "\"提炼有价值内容：扫描近期对话，筛选偏好/技能/经验，形成精炼文档通过 lightrag_insert 增量注入 LightRAG。\" "
-                "不要从对话历史中提取内容，只执行此 task。"
-            ),
-            "cron_expr": "0 8 * * *",
-            "hour": 8,
-        },
-        {
             "name": "daily-journal-check",
             "content": "请检查今天的日志，整理后与用户确认是否完整",
             "cron_expr": "0 18 * * *",
@@ -291,19 +247,6 @@ async def lifespan(app: FastAPI):
         from niu_api.internal.scheduler import get_store
 
         ts = get_store()
-        existing_tasks = ts.list_tasks()
-
-        # Cancel any stale kg-enricher tasks
-        for task in existing_tasks:
-            if (
-                task.get("event_type") == "recurring"
-                and "chat-with-kg-enricher" in task.get("content", "")
-            ):
-                try:
-                    ts.cancel_task(task["id"])
-                    logger.info(f"Cancelled stale kg-enricher task: {task['id']}")
-                except Exception as cancel_err:
-                    logger.warning(f"Could not cancel kg-enricher task {task['id']}: {cancel_err}")
 
         # Ensure each system task exists (by name, not cron_expr)
         for task_def in _SYSTEM_TASKS:
