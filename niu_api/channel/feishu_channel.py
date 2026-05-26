@@ -42,6 +42,8 @@ class FeishuChannelAdapter(ChannelAdapter):
         self._prefs_path = Path.home() / ".niu" / "preferences.json"
         self._feishu_prefs = self._load_prefs()
         self._prefs_lock = threading.Lock()
+        self._tenant_token: str | None = None
+        self._tenant_token_expires_at: float = 0.0
 
         # 从持久化数据恢复 chat_id / open_id
         self._apply_persisted_ids()
@@ -84,8 +86,8 @@ class FeishuChannelAdapter(ChannelAdapter):
 
             # 新增：下载远端资源到本地（需要 message_id 以访问消息附件）
             feishu_message_id = str(getattr(msg, 'id', '') or getattr(msg, 'message_id', '') or '')
-            logger.info(f"[FeishuChannel] msg.id={getattr(msg, 'id', 'N/A')}, msg.message_id={getattr(msg, 'message_id', 'N/A')}, resolved message_id={feishu_message_id}")
-            logger.info(f"[FeishuChannel] msg type: {type(msg).__name__}, resources: {len(unified.resources) if unified.resources else 0}")
+            logger.debug(f"[FeishuChannel] msg.id={getattr(msg, 'id', 'N/A')}, msg.message_id={getattr(msg, 'message_id', 'N/A')}, resolved message_id={feishu_message_id}")
+            logger.debug(f"[FeishuChannel] msg type: {type(msg).__name__}, resources: {len(unified.resources) if unified.resources else 0}")
             local_resources = self.resolve_inbound_resources(unified.resources, message_id=feishu_message_id)
 
             # 将 resources 转为文本描述（现有逻辑不变）
@@ -151,7 +153,12 @@ class FeishuChannelAdapter(ChannelAdapter):
             (Path.home() / ".niu").resolve(),
             Path(tempfile.gettempdir()).resolve(),
         ]
-        return any(str(p).startswith(str(d)) for d in allowed_dirs)
+        for d in allowed_dirs:
+            prefix = str(d)
+            sp = str(p)
+            if sp == prefix or sp.startswith(prefix + os.sep):
+                return True
+        return False
 
     @staticmethod
     def _format_resources(resources: list | None) -> str:
@@ -584,10 +591,10 @@ class FeishuChannelAdapter(ChannelAdapter):
             logger.error(f"[FeishuChannel] send_image: file not found: {img_path}")
             return False
 
-        # 超过5MB时压缩
+        # 超过10MB时压缩
         actual_path = p
         compressed_path = None
-        if p.stat().st_size > 5 * 1024 * 1024:
+        if p.stat().st_size > 10 * 1024 * 1024:
             compressed_path = await self._compress_image(p)
             if compressed_path:
                 actual_path = compressed_path
@@ -597,7 +604,8 @@ class FeishuChannelAdapter(ChannelAdapter):
         try:
             # Step 1: 上传图片
             with open(str(actual_path), "rb") as f:
-                resp = _requests.post(
+                resp = await asyncio.to_thread(
+                    _requests.post,
                     "https://open.feishu.cn/open-apis/im/v1/images",
                     headers={"Authorization": f"Bearer {token}"},
                     data={"image_type": "message"},
@@ -618,7 +626,8 @@ class FeishuChannelAdapter(ChannelAdapter):
             # Step 2: 发送图片消息
             receive_id_type = self._infer_receive_id_type(receive_id)
             content = json.dumps({"image_key": image_key})
-            resp2 = _requests.post(
+            resp2 = await asyncio.to_thread(
+                _requests.post,
                 f"https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type={receive_id_type}",
                 headers={
                     "Authorization": f"Bearer {token}",
@@ -667,7 +676,8 @@ class FeishuChannelAdapter(ChannelAdapter):
         try:
             # Step 1: 上传文件
             with open(str(p), "rb") as f:
-                resp = _requests.post(
+                resp = await asyncio.to_thread(
+                    _requests.post,
                     "https://open.feishu.cn/open-apis/im/v1/files",
                     headers={"Authorization": f"Bearer {token}"},
                     data={"file_type": "stream"},
@@ -688,7 +698,8 @@ class FeishuChannelAdapter(ChannelAdapter):
             # Step 2: 发送文件消息
             receive_id_type = self._infer_receive_id_type(receive_id)
             content = json.dumps({"file_key": file_key})
-            resp2 = _requests.post(
+            resp2 = await asyncio.to_thread(
+                _requests.post,
                 f"https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type={receive_id_type}",
                 headers={
                     "Authorization": f"Bearer {token}",
@@ -714,27 +725,29 @@ class FeishuChannelAdapter(ChannelAdapter):
             return False
 
     async def _compress_image(self, img_path: Path) -> Path | None:
-        """压缩超过5MB的图片为JPEG — 返回临时文件路径，失败返回None"""
+        """压缩超过10MB的图片为JPEG — 返回临时文件路径，失败返回None"""
         try:
             from PIL import Image
 
             img = Image.open(str(img_path))
-            if img.mode in ("RGBA", "P"):
-                img = img.convert("RGB")
+            try:
+                rgb_img = img.convert("RGB") if img.mode in ("RGBA", "P") else img
 
-            tmp_dir = Path.home() / ".niu" / "tmp"
-            tmp_dir.mkdir(parents=True, exist_ok=True)
-            tmp_path = tmp_dir / f"compressed_{img_path.stem}.jpg"
+                tmp_dir = Path.home() / ".niu" / "tmp"
+                tmp_dir.mkdir(parents=True, exist_ok=True)
+                tmp_path = tmp_dir / f"compressed_{img_path.stem}.jpg"
 
-            for quality in (85, 70, 55, 40, 25):
-                img.save(str(tmp_path), "JPEG", quality=quality)
-                if tmp_path.stat().st_size <= 5 * 1024 * 1024:
-                    logger.info(f"[FeishuChannel] compressed {img_path.name} to {tmp_path.stat().st_size // 1024}KB (quality={quality})")
-                    return tmp_path
+                for quality in (85, 70, 55, 40, 25):
+                    rgb_img.save(str(tmp_path), "JPEG", quality=quality)
+                    if tmp_path.stat().st_size <= 10 * 1024 * 1024:
+                        logger.info(f"[FeishuChannel] compressed {img_path.name} to {tmp_path.stat().st_size // 1024}KB (quality={quality})")
+                        return tmp_path
 
-            # 即使最低质量仍超过5MB
-            logger.warning(f"[FeishuChannel] compressed image still >5MB at quality=25")
-            return tmp_path if tmp_path.exists() else None
+                # 即使最低质量仍超过10MB
+                logger.warning(f"[FeishuChannel] compressed image still >10MB at quality=25")
+                return None
+            finally:
+                img.close()
 
         except Exception as e:
             logger.error(f"[FeishuChannel] compress image failed: {e}")
@@ -753,11 +766,17 @@ class FeishuChannelAdapter(ChannelAdapter):
             return "chat_id"  # 默认
 
     async def _get_tenant_token(self) -> str | None:
-        """获取飞书 tenant_access_token"""
+        """获取飞书 tenant_access_token（带缓存，提前5分钟刷新）"""
+        import time
+
+        if self._tenant_token and time.monotonic() < self._tenant_token_expires_at:
+            return self._tenant_token
+
         import requests as _requests
 
         try:
-            resp = _requests.post(
+            resp = await asyncio.to_thread(
+                _requests.post,
                 "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
                 json={"app_id": self._app_id, "app_secret": self._app_secret},
                 timeout=10,
@@ -766,7 +785,12 @@ class FeishuChannelAdapter(ChannelAdapter):
             if result.get("code", -1) != 0:
                 logger.error(f"[FeishuChannel] _get_tenant_token failed: {result}")
                 return None
-            return result.get("tenant_access_token", "")
+            token = result.get("tenant_access_token", "")
+            expire = result.get("expire", 7200)  # 默认2小时
+            self._tenant_token = token
+            # 提前5分钟刷新
+            self._tenant_token_expires_at = time.monotonic() + expire - 300
+            return token
         except Exception as e:
             logger.error(f"[FeishuChannel] _get_tenant_token exception: {e}")
             return None
