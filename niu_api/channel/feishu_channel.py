@@ -234,12 +234,12 @@ class FeishuChannelAdapter(ChannelAdapter):
 
             logger.info(f"[FeishuChannel] resolve_inbound: type={rtype}, file_key={file_key}, file_name={file_name}, message_id={message_id}")
 
-            # 复用 self.channel.schedule() 提交异步下载
+            # 用 schedule 提交到 SDK bg_loop，但超时设 30s（bg_loop 可能排队）
             future = self.channel.schedule(
                 self._download_from_feishu(file_key, rtype, file_name or "", message_id=message_id)
             )
             try:
-                local_path = future.result(timeout=10)
+                local_path = future.result(timeout=30)
                 if local_path:
                     local_resources.append(LocalResource(
                         original_key=file_key,
@@ -250,7 +250,7 @@ class FeishuChannelAdapter(ChannelAdapter):
                 else:
                     logger.warning(f"[FeishuChannel] _download_from_feishu returned None for {file_key}")
             except TimeoutError:
-                logger.warning(f"[FeishuChannel] Download timeout for {file_key} (message_id={message_id}), skipping")
+                logger.warning(f"[FeishuChannel] Download timeout (30s) for {file_key} (message_id={message_id}), skipping")
             except Exception as e:
                 logger.warning(f"[FeishuChannel] Download failed for {file_key} (message_id={message_id}): {type(e).__name__}: {e}")
 
