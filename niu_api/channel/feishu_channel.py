@@ -9,7 +9,7 @@ from pathlib import Path
 
 from loguru import logger
 
-from .base import UnifiedMessage, ChannelAdapter
+from .base import UnifiedMessage, ChannelAdapter, ResolvedMessage, LocalResource
 
 from lark_oapi.api.cardkit.v1 import (
     CreateCardRequest, CreateCardRequestBody, Card,
@@ -44,12 +44,16 @@ class FeishuChannelAdapter(ChannelAdapter):
                 markdown_converter=MarkdownConverter(tag_md_mode="native")
             ),
         )
+        self._app_id = app_id
+        self._app_secret = app_secret
         self.router = channel_router
         self._user_p2p_chat_id = None
         self._user_open_id = None
         self._prefs_path = Path.home() / ".niu" / "preferences.json"
         self._feishu_prefs = self._load_prefs()
         self._prefs_lock = threading.Lock()
+        self._tenant_token: str | None = None
+        self._tenant_token_expires_at: float = 0.0
 
         # 流式推送状态
         self._feishu_waiting: bool = False
@@ -101,6 +105,12 @@ class FeishuChannelAdapter(ChannelAdapter):
             if is_p2p:
                 self._update_persisted_ids(unified.channel_id, unified.sender_id)
 
+            # 下载远端资源到本地（需要 message_id 以访问消息附件）
+            feishu_message_id = str(getattr(msg, 'id', '') or getattr(msg, 'message_id', '') or '')
+            logger.debug(f"[FeishuChannel] msg.id={getattr(msg, 'id', 'N/A')}, msg.message_id={getattr(msg, 'message_id', 'N/A')}, resolved message_id={feishu_message_id}")
+            logger.debug(f"[FeishuChannel] msg type: {type(msg).__name__}, resources: {len(unified.resources) if unified.resources else 0}")
+            local_resources = self.resolve_inbound_resources(unified.resources, message_id=feishu_message_id)
+
             # 将 resources 转为文本描述
             resource_text = self._format_resources(unified.resources)
             if resource_text:
@@ -108,13 +118,39 @@ class FeishuChannelAdapter(ChannelAdapter):
             else:
                 message_content = unified.content
 
+            # 替换占位符为本地路径
+            for lr in local_resources:
+                if lr.resource_type == 'image':
+                    old = f"[图片: {lr.original_key}]"
+                else:
+                    old = f"[文件: {lr.filename or lr.original_key}]"
+                new = f"[{lr.resource_type}: {lr.local_path}]"
+                message_content = message_content.replace(old, new)
+
+            # 对未下载成功的资源，标记为下载失败
+            downloaded_keys = {lr.original_key for lr in local_resources}
+            for r in unified.resources:
+                rtype = getattr(r, 'type', '') if not isinstance(r, dict) else r.get('type', '')
+                file_key = getattr(r, 'file_key', '') if not isinstance(r, dict) else r.get('file_key', '')
+                if not file_key or file_key in downloaded_keys:
+                    continue
+                if rtype == 'image':
+                    placeholder = f"[图片: {file_key}]"
+                    if placeholder in message_content:
+                        message_content = message_content.replace(placeholder, f"[图片下载失败: {file_key}]")
+                elif rtype == 'file':
+                    file_name_r = getattr(r, 'file_name', '') if not isinstance(r, dict) else r.get('file_name', '')
+                    placeholder = f"[文件: {file_name_r or file_key}]"
+                    if placeholder in message_content:
+                        message_content = message_content.replace(placeholder, f"[文件下载失败: {file_name_r or file_key}]")
+
             # P2P 用 sender_id，群聊用 chat_id — 区分 session 避免上下文混淆
             if is_p2p:
                 session_id = f"feishu:{unified.sender_id}"
             else:
                 session_id = f"feishu:group:{unified.channel_id}"
 
-            # 直接入队（不再启动新线程，入队操作几乎不耗时）
+            # 流式推送状态初始化
             self._feishu_waiting = True
             self._stream_target = unified.channel_id or self._user_open_id or self._user_p2p_chat_id
 
@@ -139,6 +175,8 @@ class FeishuChannelAdapter(ChannelAdapter):
                 logger.info(f"[FeishuChannel] Message queued: {message_content[:50]}...")
             else:
                 logger.warning(f"[FeishuChannel] Failed to queue: {result.message}")
+                self._feishu_waiting = False
+                self._stream_target = None
                 try:
                     self.channel.schedule(
                         self.channel.send(unified.channel_id, {"text": "消息入队失败，请稍后重试"}),
@@ -444,7 +482,7 @@ class FeishuChannelAdapter(ChannelAdapter):
             # 创建卡片实体
             body = CreateCardRequestBody.builder().type("card_json").data(card_json).build()
             req = CreateCardRequest.builder().request_body(body).build()
-            resp = self.channel._client.cardkit.v1.card.create(req)
+            resp = self.channel.client.cardkit.v1.card.create(req)
             if not resp.success():
                 logger.error(f"[FeishuStream] CreateCard failed: {resp.code} {resp.msg}")
                 return None
@@ -460,7 +498,7 @@ class FeishuChannelAdapter(ChannelAdapter):
                     .content(card_ref)
                     .build()) \
                 .build()
-            send_resp = self.channel._client.im.v1.message.create(send_req)
+            send_resp = self.channel.client.im.v1.message.create(send_req)
             if not send_resp.success():
                 logger.error(f"[FeishuStream] SendMessage failed: {send_resp.code} {send_resp.msg}")
                 return None
@@ -483,7 +521,7 @@ class FeishuChannelAdapter(ChannelAdapter):
                     .uuid(f"niu-stream-{seq}")
                     .build()) \
                 .build()
-            resp = self.channel._client.cardkit.v1.card_element.content(req)
+            resp = self.channel.client.cardkit.v1.card_element.content(req)
             if not resp.success():
                 logger.error(f"[FeishuStream] UpdateElement failed: {resp.code} {resp.msg}")
                 return False
@@ -512,7 +550,7 @@ class FeishuChannelAdapter(ChannelAdapter):
                     .uuid(f"niu-finalize-settings")
                     .build()) \
                 .build()
-            settings_resp = self.channel._client.cardkit.v1.card.settings(settings_req)
+            settings_resp = self.channel.client.cardkit.v1.card.settings(settings_req)
             if not settings_resp.success():
                 logger.error(f"[FeishuStream] Settings API failed: {settings_resp.code} {settings_resp.msg}")
                 self._stream_fallback_used = True
@@ -541,7 +579,7 @@ class FeishuChannelAdapter(ChannelAdapter):
                     .uuid(f"niu-finalize-update")
                     .build()) \
                 .build()
-            update_resp = self.channel._client.cardkit.v1.card.update(update_req)
+            update_resp = self.channel.client.cardkit.v1.card.update(update_req)
             if not update_resp.success():
                 logger.error(f"[FeishuStream] UpdateCard failed: {update_resp.code} {update_resp.msg}")
             else:
@@ -570,3 +608,484 @@ class FeishuChannelAdapter(ChannelAdapter):
             },
         }
         return json.dumps(card, ensure_ascii=False)
+
+    # ── 资源下载 ──────────────────────────────────────────────
+
+    @staticmethod
+    def _is_path_allowed(path: str) -> bool:
+        """路径白名单校验 — 只允许 ~/.niu/ 和临时目录"""
+        p = Path(path).resolve()
+        allowed_dirs = [
+            (Path.home() / ".niu").resolve(),
+            Path(tempfile.gettempdir()).resolve(),
+        ]
+        for d in allowed_dirs:
+            prefix = str(d)
+            sp = str(p)
+            if sp == prefix or sp.startswith(prefix + os.sep):
+                return True
+        return False
+
+    async def resolve_outbound_content(self, content: str) -> list[ResolvedMessage]:
+        """解析出方向消息中的本地文件标记"""
+        media_messages = []
+        cleaned_content = content
+
+        for marker in ("person_photo", "file"):
+            pattern = f"::{marker}::"
+            while pattern in cleaned_content:
+                start = cleaned_content.index(pattern)
+                after_marker = start + len(pattern)
+                json_end = cleaned_content.find("::", after_marker)
+                if json_end == -1:
+                    cleaned_content = cleaned_content[:start] + f"[{marker}标记格式错误]" + cleaned_content[after_marker:]
+                    break
+                json_str = cleaned_content[after_marker:json_end]
+                remaining = cleaned_content[json_end + 2:]
+                try:
+                    data = json.loads(json_str)
+                except json.JSONDecodeError:
+                    cleaned_content = cleaned_content[:start] + f"[{marker}标记格式错误]" + remaining
+                    break
+                path = data.get("path", "")
+                name = data.get("name", "")
+                if not path:
+                    replacement = "[文件信息缺失]"
+                elif not self._is_path_allowed(path):
+                    replacement = "[文件无法发送: 安全限制]"
+                elif not Path(path).exists():
+                    replacement = f"[文件不存在: {name}]" if name else "[文件不存在]"
+                else:
+                    if marker == "person_photo":
+                        media_messages.append(ResolvedMessage(kind="image", local_path=path, caption=name))
+                        replacement = f"↑ {name}的照片" if name else "↑ 照片"
+                    else:
+                        media_messages.append(ResolvedMessage(kind="file", local_path=path, filename=name))
+                        replacement = f"↑ {name}" if name else "↑ 文件"
+                cleaned_content = cleaned_content[:start] + replacement + remaining
+
+        messages = []
+        if cleaned_content.strip():
+            messages.append(ResolvedMessage(kind="text", content=cleaned_content))
+        messages.extend(media_messages)
+        return messages
+
+    def resolve_inbound_resources(self, resources: list, *, message_id: str = "") -> list[LocalResource]:
+        """同步下载飞书资源 — 在当前线程直接调用 SDK 同步 API，下载完成后才入队
+
+        使用 lark_oapi.Client 的同步 get() 方法（requests 库），无需 event loop。
+        下载在 _on_message 回调线程中同步完成，保证 Agent 收到的是真实文件路径。
+        """
+        local_resources = []
+        for r in resources:
+            rtype = getattr(r, 'type', '') if not isinstance(r, dict) else r.get('type', '')
+            file_key = getattr(r, 'file_key', '') if not isinstance(r, dict) else r.get('file_key', '')
+            file_name = getattr(r, 'file_name', '') if not isinstance(r, dict) else r.get('file_name', '')
+
+            if rtype not in ('image', 'file') or not file_key:
+                continue
+
+            logger.info(f"[FeishuChannel] resolve_inbound: type={rtype}, file_key={file_key}, message_id={message_id}")
+
+            local_path = self._download_sync(file_key, rtype, file_name or "", message_id=message_id)
+            if local_path:
+                local_resources.append(LocalResource(
+                    original_key=file_key,
+                    resource_type=rtype,
+                    local_path=local_path,
+                    filename=file_name or f"{file_key}.bin"
+                ))
+            else:
+                logger.warning(f"[FeishuChannel] Download failed for {file_key}")
+
+        return local_resources
+
+    def _download_sync(self, file_key: str, rtype: str, file_name: str, *, message_id: str = "") -> str | None:
+        """同步下载飞书资源到本地 — 使用 SDK 同步 API（requests 库），无需 event loop
+
+        在 _on_message 的 SDK WebSocket 线程中直接调用，下载完成后才入队。
+        飞书资源下载通常 1-3 秒，不会长时间阻塞 SDK 线程。
+        """
+        local_dir = Path.home() / ".niu" / "tmp"
+        local_dir.mkdir(parents=True, exist_ok=True)
+
+        sdk_client = self.channel.client
+        mid = message_id or None
+        logger.info(f"[FeishuChannel] _download_sync: file_key={file_key}, rtype={rtype}, message_id={mid}")
+
+        # 主路径：带 message_id → message_resource 端点（下载用户发送的图片/文件）
+        if mid:
+            try:
+                result = self._sync_download_message_resource(sdk_client, file_key, rtype, mid, local_dir, file_key)
+                if result:
+                    return result
+            except Exception as e:
+                logger.warning(f"[FeishuChannel] message_resource download failed: {type(e).__name__}: {e}")
+
+        # 回退路径：不带 message_id → im/v1/images 或 im/v1/file 端点
+        try:
+            result = self._sync_download_standalone(sdk_client, file_key, rtype, local_dir, file_key)
+            if result:
+                return result
+        except Exception as e:
+            logger.warning(f"[FeishuChannel] standalone download also failed: {type(e).__name__}: {e}")
+
+        return None
+
+    def _sync_download_message_resource(self, sdk_client, file_key: str, rtype: str, message_id: str, local_dir: Path, basename: str) -> str | None:
+        """同步调用 message_resource.get() — 下载用户发送的消息附件"""
+        from lark_oapi.api.im.v1.model.get_message_resource_request import GetMessageResourceRequest
+
+        req = (
+            GetMessageResourceRequest.builder()
+            .message_id(message_id)
+            .file_key(file_key)
+            .type(rtype)
+            .build()
+        )
+        resp = sdk_client.im.v1.message_resource.get(req)
+
+        if resp.file is None:
+            logger.warning(f"[FeishuChannel] message_resource.get() returned no file: code={resp.code}, msg={resp.msg}")
+            return None
+
+        data = resp.file.read()
+        if not data:
+            logger.warning(f"[FeishuChannel] message_resource.get() returned empty file content")
+            return None
+
+        # 确定文件名：优先 resp.file_name（飞书API返回的原始文件名），其次推断
+        final_name = self._resolve_filename(resp.file_name, rtype, basename, resp.raw)
+        local_path = local_dir / f"feishu_in_{basename}_{final_name}"
+
+        if local_path.exists():
+            logger.info(f"[FeishuChannel] Reusing cached download: {local_path}")
+            return str(local_path)
+
+        # 原子写入
+        tmp_path = local_dir / f".dl-{local_path.name}"
+        tmp_path.write_bytes(data)
+        os.replace(str(tmp_path), str(local_path))
+        logger.info(f"[FeishuChannel] Downloaded {rtype} via message_resource: {local_path} ({len(data)} bytes)")
+        return str(local_path)
+
+    def _sync_download_standalone(self, sdk_client, file_key: str, rtype: str, local_dir: Path, basename: str) -> str | None:
+        """同步调用独立端点 — im/v1/images 或 im/v1/file"""
+        if rtype == "image":
+            from lark_oapi.api.im.v1.model.get_image_request import GetImageRequest
+            req = GetImageRequest.builder().image_key(file_key).build()
+            resp = sdk_client.im.v1.image.get(req)
+        else:
+            from lark_oapi.api.im.v1.model.get_file_request import GetFileRequest
+            req = GetFileRequest.builder().file_key(file_key).build()
+            resp = sdk_client.im.v1.file.get(req)
+
+        if resp.file is None:
+            logger.warning(f"[FeishuChannel] standalone {rtype}.get() returned no file")
+            return None
+
+        data = resp.file.read()
+        if not data:
+            logger.warning(f"[FeishuChannel] standalone {rtype}.get() returned empty content")
+            return None
+
+        final_name = self._resolve_filename(resp.file_name, rtype, basename, resp.raw)
+        local_path = local_dir / f"feishu_in_{basename}_{final_name}"
+
+        if local_path.exists():
+            logger.info(f"[FeishuChannel] Reusing cached download: {local_path}")
+            return str(local_path)
+
+        tmp_path = local_dir / f".dl-{local_path.name}"
+        tmp_path.write_bytes(data)
+        os.replace(str(tmp_path), str(local_path))
+        logger.info(f"[FeishuChannel] Downloaded {rtype} via standalone endpoint: {local_path} ({len(data)} bytes)")
+        return str(local_path)
+
+    @staticmethod
+    def _resolve_filename(api_file_name: str | None, rtype: str, basename: str, raw_resp) -> str:
+        """确定最终文件名 — 优先飞书API返回的原始文件名，其次从Content-Type推断，最后兜底"""
+        # 优先级1：飞书API的 Content-Disposition 头返回的原始文件名（含扩展名）
+        if api_file_name:
+            return api_file_name
+
+        # 优先级2：从 Content-Type 推断扩展名
+        content_type = ""
+        if raw_resp and hasattr(raw_resp, 'headers'):
+            content_type = raw_resp.headers.get("Content-Type", "") or ""
+        ext_from_ct = FeishuChannelAdapter._content_type_to_ext(content_type)
+        if ext_from_ct:
+            return f"{basename}{ext_from_ct}"
+
+        # 优先级3：兜底 — 图片默认.jpg，文件默认.bin
+        if rtype == "image":
+            return f"{basename}.jpg"
+        return f"{basename}.bin"
+
+    @staticmethod
+    def _content_type_to_ext(content_type: str) -> str | None:
+        """从 Content-Type 推断文件扩展名"""
+        if not content_type:
+            return None
+        ct_lower = content_type.lower().split(";")[0].strip()
+        mapping = {
+            "image/jpeg": ".jpg", "image/png": ".png", "image/gif": ".gif",
+            "image/webp": ".webp", "image/bmp": ".bmp", "image/svg+xml": ".svg",
+            "application/pdf": ".pdf",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation": ".pptx",
+            "application/msword": ".doc",
+            "application/vnd.ms-excel": ".xls",
+            "application/vnd.ms-powerpoint": ".ppt",
+            "text/plain": ".txt", "text/csv": ".csv",
+            "application/zip": ".zip",
+            "application/x-rar-compressed": ".rar",
+            "application/json": ".json",
+        }
+        return mapping.get(ct_lower)
+
+    # ── 媒体发送 ──────────────────────────────────────────────
+
+    async def send_media(self, channel_id: str, msg: ResolvedMessage) -> None:
+        """发送飞书图片/文件消息 — 上传+发消息全走 REST API"""
+        target = channel_id or self._user_open_id or self._user_p2p_chat_id
+        if not target:
+            logger.warning("[FeishuChannel] send_media() no target, skipping")
+            return
+
+        try:
+            if msg.kind == "image":
+                ok = await self._send_image_via_rest(target, msg.local_path, msg.caption)  # noqa: caption unused — 飞书 image 消息不支持
+                if not ok:
+                    await self.send(channel_id, "[图片发送失败]")
+            elif msg.kind == "file":
+                ok = await self._send_file_via_rest(target, msg.local_path, msg.filename or Path(msg.local_path).name)
+                if not ok:
+                    await self.send(channel_id, "[文件发送失败]")
+        except Exception as e:
+            logger.error(f"[FeishuChannel] send_media exception: {e}")
+            try:
+                await self.send(channel_id, f"[媒体发送异常: {type(e).__name__}]")
+            except Exception:
+                pass
+
+    async def _send_image_via_rest(self, receive_id: str, img_path: str, _caption: str | None = None) -> bool:
+        """上传图片并发送消息 — 全走 REST API"""
+        import requests as _requests
+
+        token = await self._get_tenant_token()
+        if not token:
+            logger.error("[FeishuChannel] send_image: no tenant token")
+            return False
+
+        p = Path(img_path)
+        if not p.exists():
+            logger.error(f"[FeishuChannel] send_image: file not found: {img_path}")
+            return False
+
+        # 超过10MB时压缩
+        actual_path = p
+        compressed_path = None
+        if p.stat().st_size > 10 * 1024 * 1024:
+            compressed_path = await self._compress_image(p)
+            if compressed_path:
+                actual_path = compressed_path
+            else:
+                logger.warning("[FeishuChannel] send_image: compression failed, trying original")
+
+        try:
+            # Step 1: 上传图片
+            with open(str(actual_path), "rb") as f:
+                resp = await asyncio.to_thread(
+                    _requests.post,
+                    "https://open.feishu.cn/open-apis/im/v1/images",
+                    headers={"Authorization": f"Bearer {token}"},
+                    data={"image_type": "message"},
+                    files={"image": (actual_path.name, f)},
+                    timeout=30,
+                )
+            result = resp.json()
+            code = result.get("code", -1)
+            if code != 0:
+                logger.error(f"[FeishuChannel] upload image failed: code={code}, msg={result.get('msg', '')}")
+                return False
+            image_key = result.get("data", {}).get("image_key", "")
+            if not image_key:
+                logger.error("[FeishuChannel] upload image: no image_key in response")
+                return False
+            logger.info(f"[FeishuChannel] upload image success: {image_key}")
+
+            # Step 2: 发送图片消息
+            receive_id_type = self._infer_receive_id_type(receive_id)
+            content = json.dumps({"image_key": image_key})
+            resp2 = await asyncio.to_thread(
+                _requests.post,
+                f"https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type={receive_id_type}",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "receive_id": receive_id,
+                    "msg_type": "image",
+                    "content": content,
+                },
+                timeout=15,
+            )
+            result2 = resp2.json()
+            code2 = result2.get("code", -1)
+            if code2 != 0:
+                logger.error(f"[FeishuChannel] send image msg failed: code={code2}, msg={result2.get('msg', '')}")
+                return False
+            logger.info(f"[FeishuChannel] send image msg success")
+            return True
+
+        except Exception as e:
+            logger.error(f"[FeishuChannel] send_image_via_rest exception: {type(e).__name__}: {e}")
+            return False
+        finally:
+            # 清理临时压缩文件
+            if compressed_path and compressed_path != p and compressed_path.exists():
+                try:
+                    compressed_path.unlink()
+                except Exception:
+                    pass
+
+    async def _send_file_via_rest(self, receive_id: str, file_path: str, file_name: str) -> bool:
+        """上传文件并发送消息 — 全走 REST API"""
+        import requests as _requests
+
+        token = await self._get_tenant_token()
+        if not token:
+            logger.error("[FeishuChannel] send_file: no tenant token")
+            return False
+
+        p = Path(file_path)
+        if not p.exists():
+            logger.error(f"[FeishuChannel] send_file: file not found: {file_path}")
+            return False
+
+        try:
+            # Step 1: 上传文件
+            with open(str(p), "rb") as f:
+                resp = await asyncio.to_thread(
+                    _requests.post,
+                    "https://open.feishu.cn/open-apis/im/v1/files",
+                    headers={"Authorization": f"Bearer {token}"},
+                    data={"file_type": "stream"},
+                    files={"file": (file_name, f)},
+                    timeout=60,
+                )
+            result = resp.json()
+            code = result.get("code", -1)
+            if code != 0:
+                logger.error(f"[FeishuChannel] upload file failed: code={code}, msg={result.get('msg', '')}")
+                return False
+            file_key = result.get("data", {}).get("file_key", "")
+            if not file_key:
+                logger.error("[FeishuChannel] upload file: no file_key in response")
+                return False
+            logger.info(f"[FeishuChannel] upload file success: {file_key}")
+
+            # Step 2: 发送文件消息
+            receive_id_type = self._infer_receive_id_type(receive_id)
+            content = json.dumps({"file_key": file_key})
+            resp2 = await asyncio.to_thread(
+                _requests.post,
+                f"https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type={receive_id_type}",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "receive_id": receive_id,
+                    "msg_type": "file",
+                    "content": content,
+                },
+                timeout=15,
+            )
+            result2 = resp2.json()
+            code2 = result2.get("code", -1)
+            if code2 != 0:
+                logger.error(f"[FeishuChannel] send file msg failed: code={code2}, msg={result2.get('msg', '')}")
+                return False
+            logger.info(f"[FeishuChannel] send file msg success")
+            return True
+
+        except Exception as e:
+            logger.error(f"[FeishuChannel] send_file_via_rest exception: {type(e).__name__}: {e}")
+            return False
+
+    async def _compress_image(self, img_path: Path) -> Path | None:
+        """压缩超过10MB的图片为JPEG — 返回临时文件路径，失败返回None"""
+        try:
+            from PIL import Image
+
+            img = Image.open(str(img_path))
+            try:
+                rgb_img = img.convert("RGB") if img.mode in ("RGBA", "P") else img
+
+                tmp_dir = Path.home() / ".niu" / "tmp"
+                tmp_dir.mkdir(parents=True, exist_ok=True)
+                tmp_path = tmp_dir / f"compressed_{img_path.stem}.jpg"
+
+                for quality in (85, 70, 55, 40, 25):
+                    rgb_img.save(str(tmp_path), "JPEG", quality=quality)
+                    if tmp_path.stat().st_size <= 10 * 1024 * 1024:
+                        logger.info(f"[FeishuChannel] compressed {img_path.name} to {tmp_path.stat().st_size // 1024}KB (quality={quality})")
+                        return tmp_path
+
+                # 即使最低质量仍超过10MB
+                logger.warning(f"[FeishuChannel] compressed image still >10MB at quality=25")
+                return None
+            finally:
+                img.close()
+
+        except Exception as e:
+            logger.error(f"[FeishuChannel] compress image failed: {e}")
+            return None
+
+    @staticmethod
+    def _infer_receive_id_type(receive_id: str) -> str:
+        """根据 receive_id 前缀推断 receive_id_type"""
+        if receive_id.startswith("oc_"):
+            return "chat_id"
+        elif receive_id.startswith("ou_"):
+            return "open_id"
+        elif receive_id.startswith("on_"):
+            return "open_id"
+        else:
+            return "chat_id"  # 默认
+
+    # ── Tenant Token ──────────────────────────────────────────
+
+    async def _get_tenant_token(self) -> str | None:
+        """获取飞书 tenant_access_token（带缓存，提前5分钟刷新）"""
+        import time
+
+        if self._tenant_token and time.monotonic() < self._tenant_token_expires_at:
+            return self._tenant_token
+
+        import requests as _requests
+
+        try:
+            resp = await asyncio.to_thread(
+                _requests.post,
+                "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
+                json={"app_id": self._app_id, "app_secret": self._app_secret},
+                timeout=10,
+            )
+            result = resp.json()
+            if result.get("code", -1) != 0:
+                logger.error(f"[FeishuChannel] _get_tenant_token failed: {result}")
+                return None
+            token = result.get("tenant_access_token", "")
+            expire = result.get("expire", 7200)  # 默认2小时
+            self._tenant_token = token
+            # 提前5分钟刷新
+            self._tenant_token_expires_at = time.monotonic() + expire - 300
+            return token
+        except Exception as e:
+            logger.error(f"[FeishuChannel] _get_tenant_token exception: {e}")
+            return None
