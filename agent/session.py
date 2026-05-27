@@ -306,30 +306,6 @@ class MessageStore:
         logger.info(f"Deleted {deleted} messages by IDs, freed {freed_tokens} tokens, cleaned {cleaned} temp files")
         return {"deleted_count": deleted, "freed_tokens": freed_tokens}
 
-    async def get_max_rowid(self) -> int:
-        """获取 messages 表最大 rowid，空表返回 0"""
-        async with aiosqlite.connect(self.db_path) as db:
-            cursor = await db.execute("SELECT MAX(rowid) FROM messages")
-            row = await cursor.fetchone()
-            return row[0] if row and row[0] else 0
-
-    async def get_assistant_text_after_rowid(self, after_rowid: int) -> list[str]:
-        """获取指定 rowid 之后所有 assistant 文本消息的 content（纯 DB 数据，零伪造）
-
-        只返回 role='assistant' 且 content 非空非纯空格的消息。
-        这是飞书流式推送的唯一数据源。
-        """
-        async with aiosqlite.connect(self.db_path) as db:
-            cursor = await db.execute(
-                """SELECT content FROM messages
-                   WHERE rowid > ? AND role = 'assistant'
-                   AND content IS NOT NULL AND content != ''
-                   ORDER BY rowid ASC""",
-                (after_rowid,),
-            )
-            rows = await cursor.fetchall()
-            return [row[0] for row in rows if row[0] and row[0].strip()]
-
 
 def _extract_tmp_paths(contents: list[str]) -> list[str]:
     """Extract temp file paths from message content strings.
