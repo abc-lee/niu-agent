@@ -65,6 +65,8 @@ class FeishuChannelAdapter(ChannelAdapter):
         self._stream_card_created: bool = False
         self._stream_fallback_used: bool = False
         self._accumulated_text: str = ""
+        self._stream_pending_images: list[dict] = []   # [{"img_key": "img_v3_xxx", "alt": "描述"}]
+        self._stream_pending_files: list[dict] = []     # [{"local_path": "...", "filename": "..."}]
 
         # 从持久化数据恢复 chat_id / open_id
         self._apply_persisted_ids()
@@ -325,9 +327,18 @@ class FeishuChannelAdapter(ChannelAdapter):
     async def send(self, channel_id: str, content: str) -> None:
         """发送消息到飞书 — 回复到指定会话，空 channel_id 时 fallback 到 push()"""
         try:
-            if self._stream_card_created and not self._stream_fallback_used:
-                await self._finalize_stream_card(content)
-                return  # 流式卡片已展示完整内容，不重复发
+            if self._stream_card_created:
+                # 流式卡片存在，先尝试终结（无论 fallback 标记）
+                try:
+                    await self._finalize_stream_card(content)
+                    # 终结成功后，如果有待发送的图片/文件，通过 send_media 发送
+                    if self._stream_pending_images or self._stream_pending_files:
+                        await self._send_pending_media(channel_id)
+                    return  # 流式卡片已展示内容，不重复发
+                except Exception as e:
+                    logger.error(f"[FeishuStream] Finalize failed, falling back to markdown: {e}")
+                    # 终结失败 → 发 markdown
+            # 普通发送逻辑（无流式卡片 或 终结失败时的 fallback）
             target = channel_id or self._user_open_id or self._user_p2p_chat_id
             if not target:
                 logger.warning("[FeishuChannel] send() no target, skipping")
@@ -348,6 +359,8 @@ class FeishuChannelAdapter(ChannelAdapter):
             self._last_pushed_rowid = 0
             self._stream_target = None
             self._accumulated_text = ""
+            self._stream_pending_images = []
+            self._stream_pending_files = []
 
     async def push(self, channel_id: str, content: str) -> None:
         """主动推送 — 没有 ID 就不发，优先 open_id"""
@@ -440,9 +453,16 @@ class FeishuChannelAdapter(ChannelAdapter):
 
             # 拼接内容
             parts = [text for _, text in new_texts]
-            self._accumulated_text += "\n".join(parts)
+            raw_increment = "\n".join(parts)
+            self._accumulated_text += raw_increment
             new_rowid = new_texts[-1][0]
 
+            # 过滤 ::person_photo:: 和 ::file:: 标记，提取图片/文件信息
+            # 只对新增量部分过滤标记，避免重复处理已过滤的内容
+            filtered_increment = await self._filter_media_markers(raw_increment)
+            # 用过滤后的文本替换 _accumulated_text 中的新增量
+            if filtered_increment != raw_increment:
+                self._accumulated_text = self._accumulated_text[:-len(raw_increment)] + filtered_increment
             content = self._accumulated_text
             if len(content) > 18000:
                 content = content[:17900] + "\n\n...[内容已截断]"
@@ -473,6 +493,120 @@ class FeishuChannelAdapter(ChannelAdapter):
         except Exception as e:
             logger.error(f"[FeishuStream] Push incremental error: {e}")
             self._stream_fallback_used = True
+
+    async def _filter_media_markers(self, text: str) -> str:
+        """过滤 ::person_photo::JSON:: 和 ::file::JSON:: 标记，提取图片/文件信息
+
+        - 图片：上传到飞书获取 image_key，保存到 _stream_pending_images
+        - 文件：保存本地路径到 _stream_pending_files
+        - 将标记从文本中完全删除
+        """
+        for marker in ("person_photo", "file"):
+            pattern = f"::{marker}::"
+            while pattern in text:
+                start = text.index(pattern)
+                after_marker = start + len(pattern)
+                json_end = text.find("::", after_marker)
+                if json_end == -1:
+                    # 格式错误，跳过
+                    text = text[:start] + text[after_marker:]
+                    break
+                json_str = text[after_marker:json_end]
+                remaining = text[json_end + 2:]
+                try:
+                    data = json.loads(json_str)
+                except json.JSONDecodeError:
+                    text = text[:start] + remaining
+                    break
+                path = data.get("path", "")
+                name = data.get("name", "")
+                if marker == "person_photo" and path and Path(path).exists():
+                    # 上传图片到飞书
+                    try:
+                        img_key = await self._upload_image_to_feishu(path)
+                        if img_key:
+                            self._stream_pending_images.append({
+                                "img_key": img_key,
+                                "alt": name or "人物照片",
+                            })
+                        else:
+                            # 上传失败，终结时通过 send_media 发送
+                            self._stream_pending_files.append({
+                                "local_path": path,
+                                "filename": name or Path(path).name,
+                                "kind": "image",
+                            })
+                    except Exception as e:
+                        logger.warning(f"[FeishuStream] Upload image failed, will send as media: {e}")
+                        self._stream_pending_files.append({
+                            "local_path": path,
+                            "filename": name or Path(path).name,
+                            "kind": "image",
+                        })
+                elif marker == "file" and path and Path(path).exists():
+                    self._stream_pending_files.append({
+                        "local_path": path,
+                        "filename": name or Path(path).name,
+                        "kind": "file",
+                    })
+                # 删除标记，不留占位符
+                text = text[:start] + remaining
+        return text
+
+    async def _upload_image_to_feishu(self, local_path: str) -> str | None:
+        """上传本地图片到飞书，返回 image_key（只上传不发送消息）"""
+        import requests as _requests
+
+        token = await self._get_tenant_token()
+        if not token:
+            logger.error("[FeishuStream] upload_image: no tenant token")
+            return None
+
+        p = Path(local_path)
+        if not p.exists():
+            logger.error(f"[FeishuStream] upload_image: file not found: {local_path}")
+            return None
+
+        # 超过10MB时压缩
+        actual_path = p
+        compressed_path = None
+        if p.stat().st_size > 10 * 1024 * 1024:
+            compressed_path = await self._compress_image(p)
+            if compressed_path:
+                actual_path = compressed_path
+            else:
+                logger.warning("[FeishuStream] upload_image: compression failed, trying original")
+
+        try:
+            with open(str(actual_path), "rb") as f:
+                resp = await asyncio.to_thread(
+                    _requests.post,
+                    "https://open.feishu.cn/open-apis/im/v1/images",
+                    headers={"Authorization": f"Bearer {token}"},
+                    data={"image_type": "message"},
+                    files={"image": (actual_path.name, f)},
+                    timeout=30,
+                )
+            result = resp.json()
+            code = result.get("code", -1)
+            if code != 0:
+                logger.error(f"[FeishuStream] upload image failed: code={code}, msg={result.get('msg', '')}")
+                return None
+            image_key = result.get("data", {}).get("image_key", "")
+            if not image_key:
+                logger.error("[FeishuStream] upload image: no image_key in response")
+                return None
+            logger.info(f"[FeishuStream] upload image success: {image_key}")
+            return image_key
+        except Exception as e:
+            logger.error(f"[FeishuStream] upload_image exception: {type(e).__name__}: {e}")
+            return None
+        finally:
+            if compressed_path and compressed_path != p and compressed_path.exists():
+                try:
+                    compressed_path.unlink()
+                except Exception:
+                    pass
 
     def _create_stream_card(self, content: str) -> str | None:
         """创建流式卡片实体 + 用 card_id 引用发送消息"""
@@ -533,11 +667,14 @@ class FeishuChannelAdapter(ChannelAdapter):
     async def _finalize_stream_card(self, final_content: str):
         """终结流式卡片：flush 最后内容 → settings API → UpdateCard 完整内容"""
         try:
+            # 过滤 final_content 中的媒体标记
+            filtered_content = await self._filter_media_markers(final_content)
+
             # 1. 如果还有未推送的内容，先 flush
-            if final_content and final_content.strip() != self._accumulated_text.strip():
+            if filtered_content and filtered_content.strip() != self._accumulated_text.strip():
                 self._stream_seq += 1
-                self._update_stream_element(final_content, self._stream_seq)
-                self._accumulated_text = final_content
+                self._update_stream_element(filtered_content, self._stream_seq)
+                self._accumulated_text = filtered_content
 
             # 2. Settings API 关闭 streaming_mode
             self._stream_seq += 1
@@ -561,6 +698,17 @@ class FeishuChannelAdapter(ChannelAdapter):
             content = self._accumulated_text
             if len(content) > 18000:
                 content = content[:17900] + "\n\n...[内容已截断]"
+
+            # 构建 elements：markdown + 待发送的图片
+            elements = [{"tag": "markdown", "content": content, "element_id": "md1"}]
+            for i, img_info in enumerate(self._stream_pending_images):
+                elements.append({
+                    "tag": "img",
+                    "img_key": img_info["img_key"],
+                    "alt": {"tag": "plain_text", "content": img_info["alt"]},
+                    "element_id": f"img_{i}",
+                })
+
             final_card = {
                 "schema": "2.0",
                 "header": {
@@ -568,7 +716,7 @@ class FeishuChannelAdapter(ChannelAdapter):
                     "subtitle": {"content": "", "tag": "plain_text"},
                 },
                 "config": {"streaming_mode": False, "summary": {"content": ""}},
-                "body": {"elements": [{"tag": "markdown", "content": content, "element_id": "md1"}]},
+                "body": {"elements": elements},
             }
             final_json = json.dumps(final_card, ensure_ascii=False)
             update_req = UpdateCardRequest.builder() \
@@ -588,6 +736,22 @@ class FeishuChannelAdapter(ChannelAdapter):
         except Exception as e:
             logger.error(f"[FeishuStream] Finalize exception: {e}")
             self._stream_fallback_used = True
+
+    async def _send_pending_media(self, channel_id: str):
+        """终结后发送待处理的文件（上传失败的图片 + 普通文件），通过 send_media 发送"""
+        for item in self._stream_pending_files:
+            try:
+                kind = item.get("kind", "file")
+                msg = ResolvedMessage(
+                    kind=kind,
+                    local_path=item["local_path"],
+                    filename=item.get("filename", Path(item["local_path"]).name),
+                )
+                await self.send_media(channel_id, msg)
+            except Exception as e:
+                logger.error(f"[FeishuStream] Send pending media failed: {e}")
+        # 清空已处理的列表
+        self._stream_pending_files = []
 
     @staticmethod
     def _build_streaming_card_dict(content: str) -> str:
@@ -858,15 +1022,22 @@ class FeishuChannelAdapter(ChannelAdapter):
             if msg.kind == "image":
                 ok = await self._send_image_via_rest(target, msg.local_path, msg.caption)  # noqa: caption unused — 飞书 image 消息不支持
                 if not ok:
-                    await self.send(channel_id, "[图片发送失败]")
+                    # 不调用 self.send()，避免重置流式推送状态
+                    try:
+                        await self.channel.send(target, {"text": "[图片发送失败]"})
+                    except Exception:
+                        pass
             elif msg.kind == "file":
                 ok = await self._send_file_via_rest(target, msg.local_path, msg.filename or Path(msg.local_path).name)
                 if not ok:
-                    await self.send(channel_id, "[文件发送失败]")
+                    try:
+                        await self.channel.send(target, {"text": "[文件发送失败]"})
+                    except Exception:
+                        pass
         except Exception as e:
             logger.error(f"[FeishuChannel] send_media exception: {e}")
             try:
-                await self.send(channel_id, f"[媒体发送异常: {type(e).__name__}]")
+                await self.channel.send(target, {"text": f"[媒体发送异常: {type(e).__name__}]"})
             except Exception:
                 pass
 
