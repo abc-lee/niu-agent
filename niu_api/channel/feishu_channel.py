@@ -67,6 +67,7 @@ class FeishuChannelAdapter(ChannelAdapter):
         self._accumulated_text: str = ""
         self._stream_pending_images: list[dict] = []   # [{"img_key": "img_v3_xxx", "alt": "描述"}]
         self._stream_pending_files: list[dict] = []     # [{"local_path": "...", "filename": "..."}]
+        self._stream_sent_media_paths: set[str] = set()  # 流式卡片中已展示的媒体路径，防止 send_media 重复发送
 
         # 从持久化数据恢复 chat_id / open_id
         self._apply_persisted_ids()
@@ -155,6 +156,7 @@ class FeishuChannelAdapter(ChannelAdapter):
             # 流式推送状态初始化
             self._feishu_waiting = True
             self._stream_target = unified.channel_id or self._user_open_id or self._user_p2p_chat_id
+            self._stream_sent_media_paths = set()
 
             # 同步初始化游标：记录当前 DB 位置，后续 _persist_one_msg 的增量从此之后开始
             try:
@@ -337,7 +339,20 @@ class FeishuChannelAdapter(ChannelAdapter):
                     return  # 流式卡片已展示内容，不重复发
                 except Exception as e:
                     logger.error(f"[FeishuStream] Finalize failed, falling back to markdown: {e}")
-                    # 终结失败 → 发 markdown
+                    # 终结失败：将未嵌入卡片的图片转为独立消息发送
+                    for img_info in self._stream_pending_images:
+                        local_path = img_info.get("local_path")
+                        if local_path:
+                            self._stream_pending_files.append({
+                                "local_path": local_path,
+                                "filename": img_info.get("alt", Path(local_path).name),
+                                "kind": "image",
+                            })
+                    if self._stream_pending_files:
+                        try:
+                            await self._send_pending_media(channel_id)
+                        except Exception as me:
+                            logger.error(f"[FeishuStream] Send pending media also failed: {me}")
             # 普通发送逻辑（无流式卡片 或 终结失败时的 fallback）
             target = channel_id or self._user_open_id or self._user_p2p_chat_id
             if not target:
@@ -528,7 +543,9 @@ class FeishuChannelAdapter(ChannelAdapter):
                             self._stream_pending_images.append({
                                 "img_key": img_key,
                                 "alt": name or "人物照片",
+                                "local_path": path,
                             })
+                            self._stream_sent_media_paths.add(path)
                         else:
                             # 上传失败，终结时通过 send_media 发送
                             self._stream_pending_files.append({
@@ -549,6 +566,7 @@ class FeishuChannelAdapter(ChannelAdapter):
                         "filename": name or Path(path).name,
                         "kind": "file",
                     })
+                    self._stream_sent_media_paths.add(path)
                 # 删除标记，不留占位符
                 text = text[:start] + remaining
         return text
@@ -690,8 +708,7 @@ class FeishuChannelAdapter(ChannelAdapter):
             settings_resp = self.channel.client.cardkit.v1.card.settings(settings_req)
             if not settings_resp.success():
                 logger.error(f"[FeishuStream] Settings API failed: {settings_resp.code} {settings_resp.msg}")
-                self._stream_fallback_used = True
-                return
+                raise RuntimeError(f"Settings API failed: {settings_resp.code} {settings_resp.msg}")
 
             # 3. UpdateCard 更新完整卡片内容（移除 subtitle）
             self._stream_seq += 1
@@ -1013,6 +1030,13 @@ class FeishuChannelAdapter(ChannelAdapter):
 
     async def send_media(self, channel_id: str, msg: ResolvedMessage) -> None:
         """发送飞书图片/文件消息 — 上传+发消息全走 REST API"""
+        # 去重：如果该路径已在流式卡片中展示过，跳过独立发送
+        local_path = msg.local_path
+        if local_path and local_path in self._stream_sent_media_paths:
+            logger.info(f"[FeishuStream] Skipping duplicate media send (already in stream card): {local_path}")
+            self._stream_sent_media_paths.discard(local_path)
+            return
+
         target = channel_id or self._user_open_id or self._user_p2p_chat_id
         if not target:
             logger.warning("[FeishuChannel] send_media() no target, skipping")
