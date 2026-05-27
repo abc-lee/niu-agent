@@ -999,6 +999,15 @@ class NiuRunner:
         # 通知 SSE（仅 assistant 消息推送给前端）
         if role == "assistant" and content.strip():
             notify_new_message_sync(msg_id, "assistant", content, source="electron")
+            # v9: 触发飞书流式推送（与 SSE 条件一致，只在 assistant 文本非空时触发）
+            try:
+                from niu_api.channel import get_channel_router
+                router = get_channel_router()
+                feishu = router.channels.get("feishu")
+                if feishu and feishu._stream_active and not feishu._stream_finalized:
+                    feishu.trigger_push_incremental()
+            except Exception:
+                pass  # 流式推送失败不影响主流程
 
         return msg_id
 
