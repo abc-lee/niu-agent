@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import re
 import tempfile
 import threading
 from pathlib import Path
@@ -333,12 +334,13 @@ class FeishuChannelAdapter(ChannelAdapter):
                 # 流式卡片存在，先尝试终结（无论 fallback 标记）
                 try:
                     await self._finalize_stream_card(content)
-                    # 终结成功后，如果有待发送的图片/文件，通过 send_media 发送
-                    if self._stream_pending_images or self._stream_pending_files:
-                        await self._send_pending_media(channel_id)
-                    return  # 流式卡片已展示内容，不重复发
+                    return  # 图片已嵌入卡片，不再独立发送
                 except Exception as e:
                     logger.error(f"[FeishuStream] Finalize failed, falling back to markdown: {e}")
+                    # 终结失败：清除去重集合，允许图片重新发送（卡片终结失败，图片未展示）
+                    self._stream_sent_media_paths.clear()
+                    # 剥离内容中的媒体标记，避免 markdown 中出现原始标记
+                    content = re.sub(r'::(?:person_photo|file)::.*?::', '', content)
                     # 终结失败：将未嵌入卡片的图片转为独立消息发送
                     for img_info in self._stream_pending_images:
                         local_path = img_info.get("local_path")
@@ -470,9 +472,11 @@ class FeishuChannelAdapter(ChannelAdapter):
             # 多轮对话中每轮产生独立回复，不应拼接显示
             latest_rowid, latest_text = new_texts[-1]
             filtered_text = await self._filter_media_markers(latest_text)
-            self._accumulated_text = filtered_text
+            self._accumulated_text = filtered_text  # 保留 [PHOTO_SEP] 供终结时拆分
             new_rowid = latest_rowid
-            content = self._accumulated_text
+            # 流式推送时隐藏 [PHOTO_SEP] 分隔符，终结阶段才用其拆分文本+插入img
+            display_text = self._accumulated_text.replace("[PHOTO_SEP]", "")
+            content = display_text
             if len(content) > 18000:
                 content = content[:17900] + "\n\n...[内容已截断]"
 
@@ -508,7 +512,8 @@ class FeishuChannelAdapter(ChannelAdapter):
 
         - 图片：上传到飞书获取 image_key，保存到 _stream_pending_images
         - 文件：保存本地路径到 _stream_pending_files
-        - 将标记从文本中完全删除
+        - 图片标记替换为 [PHOTO_SEP] 分隔符（供终结时拆分文本+插入img元素）
+        - 文件标记从文本中完全删除
         """
         for marker in ("person_photo", "file"):
             pattern = f"::{marker}::"
@@ -540,6 +545,8 @@ class FeishuChannelAdapter(ChannelAdapter):
                                 "local_path": path,
                             })
                             self._stream_sent_media_paths.add(path)
+                            # 替换为分隔符（而非完全删除），供终结时拆分文本+插入img元素
+                            text = text[:start] + "[PHOTO_SEP]" + remaining
                         else:
                             # 上传失败，终结时通过 send_media 发送
                             self._stream_pending_files.append({
@@ -547,6 +554,7 @@ class FeishuChannelAdapter(ChannelAdapter):
                                 "filename": name or Path(path).name,
                                 "kind": "image",
                             })
+                            text = text[:start] + remaining
                     except Exception as e:
                         logger.warning(f"[FeishuStream] Upload image failed, will send as media: {e}")
                         self._stream_pending_files.append({
@@ -554,6 +562,7 @@ class FeishuChannelAdapter(ChannelAdapter):
                             "filename": name or Path(path).name,
                             "kind": "image",
                         })
+                        text = text[:start] + remaining
                 elif marker == "file" and path and Path(path).exists():
                     self._stream_pending_files.append({
                         "local_path": path,
@@ -561,8 +570,21 @@ class FeishuChannelAdapter(ChannelAdapter):
                         "kind": "file",
                     })
                     self._stream_sent_media_paths.add(path)
-                # 删除标记，不留占位符
-                text = text[:start] + remaining
+                # 默认：删除标记（仅当上方分支未自行处理文本时）
+                # person_photo 分支已在内部处理了 text 替换（[PHOTO_SEP] 或删除）
+                # 此处仅处理 file 标记和 person_photo 路径不存在的情况
+                if marker == "file" and path and Path(path).exists():
+                    # file 标记已在 elif 中添加到 pending_files，此处删除标记
+                    pass  # text 替换在下方统一执行
+                elif not (marker == "person_photo" and path and Path(path).exists()):
+                    # person_photo 路径不存在时，直接删除标记
+                    pass  # text 替换在下方统一执行
+                # 统一文本替换（file 标记删除，person_photo 路径不存在时删除）
+                if marker == "file":
+                    text = text[:start] + remaining
+                elif not (marker == "person_photo" and path and Path(path).exists()):
+                    text = text[:start] + remaining
+                # person_photo 上传成功时 text 已替换为 [PHOTO_SEP]，不做二次替换
         return text
 
     async def _upload_image_to_feishu(self, local_path: str) -> str | None:
@@ -676,6 +698,45 @@ class FeishuChannelAdapter(ChannelAdapter):
             logger.error(f"[FeishuStream] UpdateElement exception: {e}")
             return False
 
+    def _build_final_card_body(self, final_text: str) -> list:
+        """构建终结卡片的 body elements，包含 markdown + img 元素交替排列"""
+        elements = []
+
+        if not self._stream_pending_images:
+            # 没有图片，保持单个 markdown 元素
+            elements.append({"tag": "markdown", "content": final_text, "element_id": "md1"})
+        else:
+            # 按分隔符拆分文本
+            parts = final_text.split("[PHOTO_SEP]")
+            md_idx = 1
+            img_idx = 0
+            for i, part in enumerate(parts):
+                part = part.strip()
+                if part:
+                    elements.append({
+                        "tag": "markdown",
+                        "content": part,
+                        "element_id": f"md{md_idx}"
+                    })
+                    md_idx += 1
+
+                # 在文本片段之间插入对应的 img 元素
+                if i < len(self._stream_pending_images):
+                    img_info = self._stream_pending_images[i]
+                    elements.append({
+                        "tag": "img",
+                        "img_key": img_info["img_key"],
+                        "alt": {"tag": "plain_text", "content": img_info.get("alt", "照片")},
+                        "element_id": f"img_{img_idx}"
+                    })
+                    img_idx += 1
+
+        # 如果没有元素（极端情况），添加一个空 markdown
+        if not elements:
+            elements.append({"tag": "markdown", "content": final_text, "element_id": "md1"})
+
+        return elements
+
     async def _finalize_stream_card(self, final_content: str):
         """终结流式卡片：flush 最后内容 → settings API → UpdateCard 完整内容"""
         try:
@@ -704,14 +765,17 @@ class FeishuChannelAdapter(ChannelAdapter):
                 logger.error(f"[FeishuStream] Settings API failed: {settings_resp.code} {settings_resp.msg}")
                 raise RuntimeError(f"Settings API failed: {settings_resp.code} {settings_resp.msg}")
 
-            # 3. UpdateCard 更新完整卡片内容（移除 subtitle）
+            # 3. UpdateCard 更新完整卡片内容（移除 subtitle，图片嵌入卡片）
             self._stream_seq += 1
             content = filtered_content if filtered_content and filtered_content.strip() else self._accumulated_text
             if len(content) > 18000:
                 content = content[:17900] + "\n\n...[内容已截断]"
 
-            # 构建 elements：只保留 markdown，图片通过 send_media() 独立发送
-            elements = [{"tag": "markdown", "content": content, "element_id": "md1"}]
+            # 构建 body elements：markdown + img 元素交替排列
+            # 终结时使用 _accumulated_text（含 [PHOTO_SEP]）来正确嵌入照片
+            # filtered_content 不含 [PHOTO_SEP]，无法拆分文本和照片
+            body_text = self._accumulated_text if self._stream_pending_images else content
+            card_body_elements = self._build_final_card_body(body_text)
 
             final_card = {
                 "schema": "2.0",
@@ -719,8 +783,13 @@ class FeishuChannelAdapter(ChannelAdapter):
                     "title": {"content": "Niu助手", "tag": "plain_text"},
                     "subtitle": {"content": "", "tag": "plain_text"},
                 },
-                "config": {"streaming_mode": False, "summary": {"content": ""}},
-                "body": {"elements": elements},
+                "config": {
+                    "streaming_mode": False,
+                    "update_multi": True,
+                },
+                "body": {
+                    "elements": card_body_elements
+                },
             }
             final_json = json.dumps(final_card, ensure_ascii=False)
             update_req = UpdateCardRequest.builder() \
@@ -740,6 +809,7 @@ class FeishuChannelAdapter(ChannelAdapter):
         except Exception as e:
             logger.error(f"[FeishuStream] Finalize exception: {e}")
             self._stream_fallback_used = True
+            raise  # 重新抛出，让 send() 的回退路径执行
 
     async def _send_pending_media(self, channel_id: str):
         """终结后发送待处理的图片和文件，通过 send_media 发送"""
@@ -1030,8 +1100,7 @@ class FeishuChannelAdapter(ChannelAdapter):
         local_path = msg.local_path
         if local_path and local_path in self._stream_sent_media_paths:
             logger.info(f"[FeishuStream] Skipping duplicate media send (already in stream card): {local_path}")
-            self._stream_sent_media_paths.discard(local_path)
-            return
+            return  # 不 discard，保留路径供后续去重
 
         target = channel_id or self._user_open_id or self._user_p2p_chat_id
         if not target:
