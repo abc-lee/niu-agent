@@ -534,16 +534,23 @@ class FeishuChannelAdapter(ChannelAdapter):
     async def send(self, channel_id: str, content: str) -> None:
         """发送消息到飞书 — 回复到指定会话，空 channel_id 时 fallback 到 push()"""
         try:
-            # v9: 如果流式卡片已终结且展示了完整内容，跳过普通 markdown 发送
-            if self._stream_finalized and self._stream_content_sent.strip():
-                logger.info("[FeishuStream] Card showed complete content, skipping normal send")
-                return
-
-            # v9: 如果流式推送激活但未终结，先终结再发送
+            # v9: 流式推送终结逻辑
             if self._stream_active and not self._stream_finalized:
+                # 将 send() 的 content 追加到卡片（确保最终回复不丢失）
+                if content and content.strip():
+                    if self._stream_content_sent and content != self._stream_content_sent:
+                        # 最终回复与已推送内容不同 → 更新卡片为最终完整内容
+                        self._stream_content_sent = content
+                        if self._stream_card_id:
+                            await self._update_stream_card(content)
+                    elif not self._stream_content_sent.strip():
+                        # 卡片还没推过任何内容 → 用 send content 创建卡片
+                        self._stream_content_sent = content
+                        await self._create_and_send_stream_card(content)
+                # 终结流式卡片
                 await self._stream_finalize()
 
-            # v9: 终结后如果有内容，检查是否与 send content 相同 → skip
+            # v9: 流式卡片已展示完整内容 → 跳过普通 markdown 发送
             if self._stream_finalized and self._stream_content_sent.strip():
                 logger.info("[FeishuStream] Card showed complete content, skipping normal send")
                 return
