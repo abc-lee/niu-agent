@@ -1000,6 +1000,13 @@ class NiuRunner:
         if role == "assistant" and content.strip():
             notify_new_message_sync(msg_id, "assistant", content, source="electron")
 
+            # 触发飞书流式推送
+            try:
+                from niu_api.channel.feishu_channel import FeishuChannelAdapter
+                FeishuChannelAdapter.trigger_feishu_stream_push()
+            except Exception:
+                pass
+
         return msg_id
 
     def _sync_add_message(self, role: str, content: str,
