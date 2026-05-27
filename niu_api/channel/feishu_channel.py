@@ -11,6 +11,16 @@ from loguru import logger
 
 from .base import UnifiedMessage, ChannelAdapter
 
+from lark_oapi.api.cardkit.v1 import (
+    CreateCardRequest, CreateCardRequestBody, Card,
+    UpdateCardRequest, UpdateCardRequestBody,
+    SettingsCardRequest, SettingsCardRequestBody,
+    ContentCardElementRequest, ContentCardElementRequestBody,
+)
+from lark_oapi.api.im.v1 import (
+    CreateMessageRequest, CreateMessageRequestBody,
+)
+
 
 class FeishuChannelAdapter(ChannelAdapter):
     """飞书通道 — WebSocket 长连接，消息收发，Agent 无感知"""
@@ -40,6 +50,17 @@ class FeishuChannelAdapter(ChannelAdapter):
         self._prefs_path = Path.home() / ".niu" / "preferences.json"
         self._feishu_prefs = self._load_prefs()
         self._prefs_lock = threading.Lock()
+
+        # 流式推送状态
+        self._feishu_waiting: bool = False
+        self._stream_card_id: str | None = None
+        self._stream_message_id: str | None = None
+        self._last_pushed_rowid: int = 0
+        self._stream_seq: int = 0
+        self._stream_target: str | None = None
+        self._stream_card_created: bool = False
+        self._stream_fallback_used: bool = False
+        self._accumulated_text: str = ""
 
         # 从持久化数据恢复 chat_id / open_id
         self._apply_persisted_ids()
@@ -94,6 +115,25 @@ class FeishuChannelAdapter(ChannelAdapter):
                 session_id = f"feishu:group:{unified.channel_id}"
 
             # 直接入队（不再启动新线程，入队操作几乎不耗时）
+            self._feishu_waiting = True
+            self._stream_target = unified.channel_id or self._user_open_id or self._user_p2p_chat_id
+
+            # 同步初始化游标：记录当前 DB 位置，后续 _persist_one_msg 的增量从此之后开始
+            try:
+                import sqlite3
+                db_path = str(Path.home() / ".niu" / "messages.db")
+                conn = sqlite3.connect(db_path)
+                try:
+                    cursor = conn.execute("SELECT MAX(rowid) FROM messages")
+                    row = cursor.fetchone()
+                    self._last_pushed_rowid = row[0] if row and row[0] is not None else 0
+                finally:
+                    conn.close()
+                logger.info(f"[FeishuStream] Waiting, cursor={self._last_pushed_rowid}")
+            except Exception as e:
+                logger.warning(f"[FeishuStream] Failed to init cursor: {e}")
+                self._last_pushed_rowid = 0
+
             result = self.router.route_in_sync(unified, session_id=session_id, message_override=message_content)
             if result.queued:
                 logger.info(f"[FeishuChannel] Message queued: {message_content[:50]}...")
@@ -246,16 +286,30 @@ class FeishuChannelAdapter(ChannelAdapter):
 
     async def send(self, channel_id: str, content: str) -> None:
         """发送消息到飞书 — 回复到指定会话，空 channel_id 时 fallback 到 push()"""
-        target = channel_id or self._user_open_id or self._user_p2p_chat_id
-        if not target:
-            logger.warning("[FeishuChannel] send() no target, skipping")
-            return
         try:
-            result = await self.channel.send(target, {"markdown": content})
-            if not result.success:
-                logger.error(f"[FeishuChannel] Send failed: {result.error}")
-        except Exception as e:
-            logger.error(f"[FeishuChannel] Send exception: {e}")
+            if self._stream_card_created and not self._stream_fallback_used:
+                await self._finalize_stream_card(content)
+                return  # 流式卡片已展示完整内容，不重复发
+            target = channel_id or self._user_open_id or self._user_p2p_chat_id
+            if not target:
+                logger.warning("[FeishuChannel] send() no target, skipping")
+                return
+            try:
+                result = await self.channel.send(target, {"markdown": content})
+                if not result.success:
+                    logger.error(f"[FeishuChannel] Send failed: {result.error}")
+            except Exception as e:
+                logger.error(f"[FeishuChannel] Send exception: {e}")
+        finally:
+            self._feishu_waiting = False
+            self._stream_card_id = None
+            self._stream_message_id = None
+            self._stream_card_created = False
+            self._stream_fallback_used = False
+            self._stream_seq = 0
+            self._last_pushed_rowid = 0
+            self._stream_target = None
+            self._accumulated_text = ""
 
     async def push(self, channel_id: str, content: str) -> None:
         """主动推送 — 没有 ID 就不发，优先 open_id"""
@@ -303,3 +357,216 @@ class FeishuChannelAdapter(ChannelAdapter):
     def has_push_target(self) -> bool:
         """是否有可用的推送目标（chat_id 或 open_id）"""
         return bool(self._user_p2p_chat_id or self._user_open_id)
+
+    # ── 流式推送 ──────────────────────────────────────────────
+
+    @classmethod
+    def trigger_feishu_stream_push(cls):
+        """从 executor 线程触发流式推送（通过 run_coroutine_threadsafe 调度到主循环）"""
+        try:
+            from niu_api.chat import _main_loop
+            loop = _main_loop
+        except Exception:
+            loop = None
+
+        if loop and not loop.is_closed():
+            asyncio.run_coroutine_threadsafe(cls._do_feishu_stream_push(), loop)
+        else:
+            logger.debug("[FeishuStream] No running event loop, skipping stream push")
+
+    @staticmethod
+    async def _do_feishu_stream_push():
+        """在主循环中执行流式推送"""
+        try:
+            from niu_api.channel import get_channel_router
+            router = get_channel_router()
+            adapter = router.channels.get("feishu")
+            if adapter and isinstance(adapter, FeishuChannelAdapter):
+                await adapter._push_incremental()
+        except Exception as e:
+            logger.warning(f"[FeishuStream] Stream push error: {e}")
+
+    async def _push_incremental(self):
+        """读取 DB 增量内容，创建或更新流式卡片"""
+        if not self._feishu_waiting:
+            return
+
+        try:
+            from agent.session import get_message_store
+            store = await get_message_store()
+
+            # 读取增量 assistant 文本（游标在 _on_message 中已初始化）
+            new_texts = await store.get_assistant_text_after_rowid(self._last_pushed_rowid)
+            if not new_texts:
+                return
+
+            # 拼接内容
+            parts = [text for _, text in new_texts]
+            self._accumulated_text += "\n".join(parts)
+            new_rowid = new_texts[-1][0]
+
+            content = self._accumulated_text
+            if len(content) > 18000:
+                content = content[:17900] + "\n\n...[内容已截断]"
+
+            if not self._stream_card_created:
+                # 首次：创建流式卡片
+                card_id = self._create_stream_card(content)
+                if card_id:
+                    self._stream_card_id = card_id
+                    self._stream_card_created = True
+                    self._last_pushed_rowid = new_rowid
+                    self._stream_seq = 1
+                    logger.info(f"[FeishuStream] Card created: card_id={card_id}")
+                else:
+                    self._stream_fallback_used = True
+                    logger.warning("[FeishuStream] Card creation failed, will fallback to markdown")
+            else:
+                # 后续：元素级更新
+                self._stream_seq += 1
+                success = self._update_stream_element(content, self._stream_seq)
+                if success:
+                    self._last_pushed_rowid = new_rowid
+                    logger.info(f"[FeishuStream] Element updated: seq={self._stream_seq}")
+                else:
+                    self._stream_fallback_used = True
+                    logger.warning("[FeishuStream] Element update failed, will fallback to markdown")
+
+        except Exception as e:
+            logger.error(f"[FeishuStream] Push incremental error: {e}")
+            self._stream_fallback_used = True
+
+    def _create_stream_card(self, content: str) -> str | None:
+        """创建流式卡片实体 + 用 card_id 引用发送消息"""
+        try:
+            card_json = self._build_streaming_card_dict(content)
+
+            # 创建卡片实体
+            body = CreateCardRequestBody.builder().type("card_json").data(card_json).build()
+            req = CreateCardRequest.builder().request_body(body).build()
+            resp = self.channel._client.cardkit.v1.card.create(req)
+            if not resp.success():
+                logger.error(f"[FeishuStream] CreateCard failed: {resp.code} {resp.msg}")
+                return None
+            card_id = resp.data.card_id
+
+            # 用 card_id 引用发送消息（关键：只有引用方式，终结操作才能传导到飞书端）
+            card_ref = json.dumps({"type": "card", "data": {"card_id": card_id}}, ensure_ascii=False)
+            send_req = CreateMessageRequest.builder() \
+                .receive_id_type("chat_id") \
+                .request_body(CreateMessageRequestBody.builder()
+                    .receive_id(self._stream_target)
+                    .msg_type("interactive")
+                    .content(card_ref)
+                    .build()) \
+                .build()
+            send_resp = self.channel._client.im.v1.message.create(send_req)
+            if not send_resp.success():
+                logger.error(f"[FeishuStream] SendMessage failed: {send_resp.code} {send_resp.msg}")
+                return None
+            self._stream_message_id = send_resp.data.message_id
+
+            return card_id
+        except Exception as e:
+            logger.error(f"[FeishuStream] Create stream card exception: {e}")
+            return None
+
+    def _update_stream_element(self, content: str, seq: int) -> bool:
+        """元素级内容更新（轻量级，不是全卡 UpdateCard）"""
+        try:
+            req = ContentCardElementRequest.builder() \
+                .card_id(self._stream_card_id) \
+                .element_id("md1") \
+                .request_body(ContentCardElementRequestBody.builder()
+                    .content(content)
+                    .sequence(seq)
+                    .uuid(f"niu-stream-{seq}")
+                    .build()) \
+                .build()
+            resp = self.channel._client.cardkit.v1.card_element.content(req)
+            if not resp.success():
+                logger.error(f"[FeishuStream] UpdateElement failed: {resp.code} {resp.msg}")
+                return False
+            return True
+        except Exception as e:
+            logger.error(f"[FeishuStream] UpdateElement exception: {e}")
+            return False
+
+    async def _finalize_stream_card(self, final_content: str):
+        """终结流式卡片：flush 最后内容 → settings API → UpdateCard 完整内容"""
+        try:
+            # 1. 如果还有未推送的内容，先 flush
+            if final_content and final_content.strip() != self._accumulated_text.strip():
+                self._stream_seq += 1
+                self._update_stream_element(final_content, self._stream_seq)
+                self._accumulated_text = final_content
+
+            # 2. Settings API 关闭 streaming_mode
+            self._stream_seq += 1
+            settings_json = json.dumps({"config": {"streaming_mode": False}})
+            settings_req = SettingsCardRequest.builder() \
+                .card_id(self._stream_card_id) \
+                .request_body(SettingsCardRequestBody.builder()
+                    .settings(settings_json)
+                    .sequence(self._stream_seq)
+                    .uuid(f"niu-finalize-settings")
+                    .build()) \
+                .build()
+            settings_resp = self.channel._client.cardkit.v1.card.settings(settings_req)
+            if not settings_resp.success():
+                logger.error(f"[FeishuStream] Settings API failed: {settings_resp.code} {settings_resp.msg}")
+                self._stream_fallback_used = True
+                return
+
+            # 3. UpdateCard 更新完整卡片内容（移除 subtitle）
+            self._stream_seq += 1
+            content = self._accumulated_text
+            if len(content) > 18000:
+                content = content[:17900] + "\n\n...[内容已截断]"
+            final_card = {
+                "schema": "2.0",
+                "header": {
+                    "title": {"content": "Niu助手", "tag": "plain_text"},
+                    "subtitle": {"content": "", "tag": "plain_text"},
+                },
+                "config": {"streaming_mode": False, "summary": {"content": ""}},
+                "body": {"elements": [{"tag": "markdown", "content": content, "element_id": "md1"}]},
+            }
+            final_json = json.dumps(final_card, ensure_ascii=False)
+            update_req = UpdateCardRequest.builder() \
+                .card_id(self._stream_card_id) \
+                .request_body(UpdateCardRequestBody.builder()
+                    .card(Card.builder().type("card_json").data(final_json).build())
+                    .sequence(self._stream_seq)
+                    .uuid(f"niu-finalize-update")
+                    .build()) \
+                .build()
+            update_resp = self.channel._client.cardkit.v1.card.update(update_req)
+            if not update_resp.success():
+                logger.error(f"[FeishuStream] UpdateCard failed: {update_resp.code} {update_resp.msg}")
+            else:
+                logger.info("[FeishuStream] Card finalized successfully")
+
+        except Exception as e:
+            logger.error(f"[FeishuStream] Finalize exception: {e}")
+            self._stream_fallback_used = True
+
+    @staticmethod
+    def _build_streaming_card_dict(content: str) -> str:
+        """构建流式卡片 JSON 2.0"""
+        card = {
+            "schema": "2.0",
+            "header": {
+                "title": {"content": "Niu助手", "tag": "plain_text"},
+                "subtitle": {"content": "思考中...", "tag": "plain_text"},
+            },
+            "config": {
+                "streaming_mode": True,
+                "update_multi": True,
+                "summary": {"content": ""},
+            },
+            "body": {
+                "elements": [{"tag": "markdown", "content": content, "element_id": "md1"}],
+            },
+        }
+        return json.dumps(card, ensure_ascii=False)
