@@ -999,6 +999,13 @@ class NiuRunner:
         # 通知 SSE（仅 assistant 消息推送给前端）
         if role == "assistant" and content.strip():
             notify_new_message_sync(msg_id, "assistant", content, source="electron")
+            # 飞书流式推送触发
+            if role == "assistant" and content and content.strip():
+                try:
+                    from niu_api.channel.feishu_channel import FeishuChannelAdapter
+                    FeishuChannelAdapter.trigger_push_incremental()
+                except Exception:
+                    pass
 
         return msg_id
 

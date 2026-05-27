@@ -202,6 +202,55 @@ class MessageStore:
             result = await cursor.fetchone()
             return result[0] if result else 0
 
+    async def get_max_rowid(self) -> int:
+        """获取消息表的最大rowid"""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute("SELECT MAX(rowid) FROM messages")
+            result = await cursor.fetchone()
+            return result[0] if result and result[0] else 0
+
+    async def get_messages_after_rowid(self, after_rowid: int) -> List[Message]:
+        """获取rowid > after_rowid的所有消息（按rowid升序）"""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """SELECT rowid, * FROM messages
+                   WHERE rowid > ?
+                   ORDER BY rowid ASC""",
+                (after_rowid,),
+            )
+            rows = await cursor.fetchall()
+
+            messages = []
+            for row in rows:
+                messages.append(Message(
+                    id=row["id"],
+                    role=row["role"],
+                    content=row["content"] or "",
+                    tool_calls=json.loads(row["tool_calls"] or "[]"),
+                    tool_results=json.loads(row["tool_results"] or "[]"),
+                    tool_call_id=row["tool_call_id"] if "tool_call_id" in row.keys() else "",
+                    created_at=row["created_at"],
+                ))
+
+            return messages
+
+    async def get_assistant_text_after_rowid(self, after_rowid: int) -> list[tuple[int, str]]:
+        """获取rowid > after_rowid的assistant文本消息（content非空）
+
+        返回: [(rowid, content), ...] 按rowid升序。用于飞书流式推送的增量读取。
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                """SELECT rowid, content FROM messages
+                   WHERE rowid > ? AND role = 'assistant'
+                   AND content IS NOT NULL AND LENGTH(TRIM(content)) > 0
+                   ORDER BY rowid ASC""",
+                (after_rowid,),
+            )
+            rows = await cursor.fetchall()
+            return [(row[0], row[1]) for row in rows]
+
     async def clear_messages(self) -> int:
         """Clear all messages and cleanup referenced temp files"""
         # Single connection + transaction to avoid race condition
