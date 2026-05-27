@@ -579,6 +579,16 @@ async def get_context_messages(
     messages = await store.get_messages(limit, before_id)
     total = await store.count_messages()
 
+    # 通知飞书通道增量推送
+    try:
+        from niu_api.channel import get_channel_router
+        router = get_channel_router()
+        feishu_adapter = router.channels.get("feishu")
+        if feishu_adapter:
+            await feishu_adapter.push_incremental()
+    except Exception as e:
+        logger.debug(f"[FeishuStream] push_incremental skip: {e}")
+
     return MessagesResponse(
         messages=[
             MessageResponse(
