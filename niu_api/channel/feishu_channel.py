@@ -57,6 +57,7 @@ class FeishuChannelAdapter(ChannelAdapter):
 
         # v9: 流式推送状态
         self._stream_active: bool = False
+        self._stream_failed: bool = False
         self._stream_card_id: str | None = None
         self._stream_msg_id: str | None = None
         self._stream_seq: int = 0
@@ -144,6 +145,7 @@ class FeishuChannelAdapter(ChannelAdapter):
                 logger.info(f"[FeishuChannel] Message queued: {message_content[:50]}...")
                 # v9: 激活流式推送状态
                 self._stream_active = True
+                self._stream_failed = False
                 self._stream_finalized = False
                 self._stream_card_id = None
                 self._stream_msg_id = None
@@ -536,24 +538,24 @@ class FeishuChannelAdapter(ChannelAdapter):
         try:
             # v9: 流式推送终结逻辑
             if self._stream_active and not self._stream_finalized:
-                # 将 send() 的 content 追加到卡片（确保最终回复不丢失）
-                if content and content.strip():
-                    if self._stream_content_sent and content != self._stream_content_sent:
-                        # 最终回复与已推送内容不同 → 更新卡片为最终完整内容
-                        self._stream_content_sent = content
-                        if self._stream_card_id:
-                            await self._update_stream_card(content)
-                    elif not self._stream_content_sent.strip():
-                        # 卡片还没推过任何内容 → 用 send content 创建卡片
-                        self._stream_content_sent = content
-                        await self._create_and_send_stream_card(content)
-                # 终结流式卡片
-                await self._stream_finalize()
+                if not self._stream_failed:
+                    # 将 send() 的 content 追加到卡片（确保最终回复不丢失）
+                    if content and content.strip():
+                        if self._stream_content_sent and content != self._stream_content_sent:
+                            self._stream_content_sent = content
+                            if self._stream_card_id:
+                                await self._update_stream_card(content)
+                        elif not self._stream_content_sent.strip():
+                            self._stream_content_sent = content
+                            await self._create_and_send_stream_card(content)
+                    # 终结流式卡片
+                    await self._stream_finalize()
 
-            # v9: 流式卡片已展示完整内容 → 跳过普通 markdown 发送
-            if self._stream_finalized and self._stream_content_sent.strip():
-                logger.info("[FeishuStream] Card showed complete content, skipping normal send")
-                return
+                # 流式失败 → 回退到普通 markdown（不跳过下面的发送逻辑）
+                # 流式成功且已终结 → 跳过普通 markdown
+                if not self._stream_failed and self._stream_finalized and self._stream_content_sent.strip():
+                    logger.info("[FeishuStream] Card showed complete content, skipping normal send")
+                    return
 
             # 原有发送逻辑
             target = channel_id or self._user_open_id or self._user_p2p_chat_id
@@ -569,6 +571,7 @@ class FeishuChannelAdapter(ChannelAdapter):
         finally:
             # v9: 重置所有流式推送状态
             self._stream_active = False
+            self._stream_failed = False
             self._stream_card_id = None
             self._stream_msg_id = None
             self._stream_seq = 0
@@ -872,7 +875,7 @@ class FeishuChannelAdapter(ChannelAdapter):
         调用条件：role='assistant' 且 content.strip() 非空
         与 SSE notify_new_message_sync 的条件一致。
         """
-        if not self._stream_active or self._stream_finalized:
+        if not self._stream_active or self._stream_finalized or self._stream_failed:
             return
         from niu_api.chat import _main_loop
         loop = _main_loop
@@ -930,7 +933,7 @@ class FeishuChannelAdapter(ChannelAdapter):
         token = await self._get_tenant_token()
         if not token:
             logger.error("[FeishuStream] No tenant token, cannot create card")
-            self._stream_active = False  # 回退
+            self._stream_failed = True
             return
 
         sdk_client = self.channel.client
@@ -948,7 +951,7 @@ class FeishuChannelAdapter(ChannelAdapter):
         create_resp = await asyncio.to_thread(sdk_client.cardkit.v1.card.create, create_req)
         if not create_resp.success():
             logger.error(f"[FeishuStream] CreateCard failed: code={create_resp.code}, msg={create_resp.msg}")
-            self._stream_active = False  # 回退
+            self._stream_failed = True
             return
 
         self._stream_card_id = create_resp.data.card_id
@@ -959,7 +962,7 @@ class FeishuChannelAdapter(ChannelAdapter):
         target = self._user_open_id or self._user_p2p_chat_id
         if not target:
             logger.error("[FeishuStream] No push target, cannot send card message")
-            self._stream_active = False
+            self._stream_failed = True
             return
 
         receive_id_type = self._infer_receive_id_type(target)
@@ -981,7 +984,7 @@ class FeishuChannelAdapter(ChannelAdapter):
         send_resp = await asyncio.to_thread(sdk_client.im.v1.message.create, send_req)
         if not send_resp.success():
             logger.error(f"[FeishuStream] Send card msg failed: code={send_resp.code}, msg={send_resp.msg}")
-            self._stream_active = False
+            self._stream_failed = True
             return
 
         self._stream_msg_id = send_resp.data.message_id
@@ -1024,14 +1027,15 @@ class FeishuChannelAdapter(ChannelAdapter):
 
     async def _stream_finalize(self):
         """终结流式卡片 — Agent 完成后调用"""
-        if not self._stream_active or self._stream_finalized:
+        if not self._stream_active or self._stream_finalized or self._stream_failed:
             return
 
         # 最后一轮推送（确保 DB 中所有内容都已推送）
         await self._push_incremental()
 
         if not self._stream_card_id:
-            self._stream_active = False
+            # 卡片没有创建成功 → 标记失败，让 send() 走 markdown 回退
+            self._stream_failed = True
             self._stream_finalized = True
             return
 
@@ -1045,7 +1049,7 @@ class FeishuChannelAdapter(ChannelAdapter):
         token = await self._get_tenant_token()
         if not token:
             logger.warning("[FeishuStream] No token for finalize")
-            self._stream_active = False
+            self._stream_failed = True
             self._stream_finalized = True
             return
 
@@ -1067,9 +1071,10 @@ class FeishuChannelAdapter(ChannelAdapter):
         finalize_resp = await asyncio.to_thread(sdk_client.cardkit.v1.card.batch_update, finalize_req)
         if not finalize_resp.success():
             logger.warning(f"[FeishuStream] Finalize failed: {finalize_resp.msg}")
+            # 终结失败 → 卡片内容已展示但会一直"生成中"，设 failed 让 send() 发 markdown 补救
+            self._stream_failed = True
 
         logger.info(f"[FeishuStream] Card finalized: seq={self._stream_seq}")
-        self._stream_active = False
         self._stream_finalized = True
 
     @staticmethod
