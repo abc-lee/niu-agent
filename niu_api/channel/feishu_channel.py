@@ -466,18 +466,12 @@ class FeishuChannelAdapter(ChannelAdapter):
             if not new_texts:
                 return
 
-            # 拼接内容
-            parts = [text for _, text in new_texts]
-            raw_increment = "\n".join(parts)
-            self._accumulated_text += raw_increment
-            new_rowid = new_texts[-1][0]
-
-            # 过滤 ::person_photo:: 和 ::file:: 标记，提取图片/文件信息
-            # 只对新增量部分过滤标记，避免重复处理已过滤的内容
-            filtered_increment = await self._filter_media_markers(raw_increment)
-            # 用过滤后的文本替换 _accumulated_text 中的新增量
-            if filtered_increment != raw_increment:
-                self._accumulated_text = self._accumulated_text[:-len(raw_increment)] + filtered_increment
+            # 只取最新一条 assistant 消息，不累积历史轮次
+            # 多轮对话中每轮产生独立回复，不应拼接显示
+            latest_rowid, latest_text = new_texts[-1]
+            filtered_text = await self._filter_media_markers(latest_text)
+            self._accumulated_text = filtered_text
+            new_rowid = latest_rowid
             content = self._accumulated_text
             if len(content) > 18000:
                 content = content[:17900] + "\n\n...[内容已截断]"
@@ -712,19 +706,12 @@ class FeishuChannelAdapter(ChannelAdapter):
 
             # 3. UpdateCard 更新完整卡片内容（移除 subtitle）
             self._stream_seq += 1
-            content = self._accumulated_text
+            content = filtered_content if filtered_content and filtered_content.strip() else self._accumulated_text
             if len(content) > 18000:
                 content = content[:17900] + "\n\n...[内容已截断]"
 
-            # 构建 elements：markdown + 待发送的图片
+            # 构建 elements：只保留 markdown，图片通过 send_media() 独立发送
             elements = [{"tag": "markdown", "content": content, "element_id": "md1"}]
-            for i, img_info in enumerate(self._stream_pending_images):
-                elements.append({
-                    "tag": "img",
-                    "img_key": img_info["img_key"],
-                    "alt": {"tag": "plain_text", "content": img_info["alt"]},
-                    "element_id": f"img_{i}",
-                })
 
             final_card = {
                 "schema": "2.0",
@@ -755,7 +742,16 @@ class FeishuChannelAdapter(ChannelAdapter):
             self._stream_fallback_used = True
 
     async def _send_pending_media(self, channel_id: str):
-        """终结后发送待处理的文件（上传失败的图片 + 普通文件），通过 send_media 发送"""
+        """终结后发送待处理的图片和文件，通过 send_media 发送"""
+        # 先把 _stream_pending_images 转为 _stream_pending_files 格式
+        for img_info in self._stream_pending_images:
+            local_path = img_info.get("local_path")
+            if local_path:
+                self._stream_pending_files.append({
+                    "local_path": local_path,
+                    "filename": img_info.get("alt", Path(local_path).name),
+                    "kind": "image",
+                })
         for item in self._stream_pending_files:
             try:
                 kind = item.get("kind", "file")
