@@ -38,11 +38,11 @@ class TestSearchMultiLightrag:
             result = adapter.search_multi_lightrag("python", mode="hybrid", top_k=20)
 
         assert len(result["skill"]) == 2
-        assert len(result["mcp_tool"]) == 0
         assert len(result["knowledge"]) == 0
+        assert len(result["other"]) == 0
 
     def test_groups_tool_entities(self):
-        """Tool entities are grouped into 'mcp_tool' bucket."""
+        """Tool entities are grouped into 'knowledge' bucket."""
         from niu_api.internal.lightrag_adapter import LightRAGAdapter
 
         adapter = LightRAGAdapter()
@@ -59,7 +59,7 @@ class TestSearchMultiLightrag:
         with patch.object(adapter, "query_data", return_value=mock_result):
             result = adapter.search_multi_lightrag("parse file", mode="hybrid")
 
-        assert len(result["mcp_tool"]) == 1
+        assert len(result["knowledge"]) == 1
         assert len(result["skill"]) == 0
 
     def test_groups_knowledge_and_concept_entities(self):
@@ -105,8 +105,8 @@ class TestSearchMultiLightrag:
             result = adapter.search_multi_lightrag("git")
 
         assert len(result["skill"]) == 1
-        assert len(result["mcp_tool"]) == 1
-        assert len(result["knowledge"]) == 1
+        assert len(result["knowledge"]) == 3
+        assert len(result["other"]) == 0
 
     def test_returns_empty_on_none_query_data(self):
         """Returns empty buckets when query_data returns None."""
@@ -116,7 +116,7 @@ class TestSearchMultiLightrag:
         with patch.object(adapter, "query_data", return_value=None):
             result = adapter.search_multi_lightrag("test")
 
-        assert result == {"skill": [], "mcp_tool": [], "knowledge": []}
+        assert result == {"skill": [], "knowledge": [], "other": []}
 
     def test_returns_empty_on_empty_entities(self):
         """Returns empty buckets when no entities found."""
@@ -128,7 +128,7 @@ class TestSearchMultiLightrag:
         with patch.object(adapter, "query_data", return_value=mock_result):
             result = adapter.search_multi_lightrag("nonexistent")
 
-        assert result == {"skill": [], "mcp_tool": [], "knowledge": []}
+        assert result == {"skill": [], "knowledge": [], "other": []}
 
 
 # ============== _format_lightrag_entities_for_prompt tests ==============
@@ -356,7 +356,7 @@ class TestInjectDynamicResourcesUsesLightRAG:
              patch("niu_api.internal.brain_graph.get_brain_graph", side_effect=Exception("no brain")), \
              patch("niu_api.internal.region_injector.BrainContextInjector", side_effect=Exception("no region")):
             mock_adapter = MagicMock()
-            mock_adapter.search_multi_lightrag.return_value = {"skill": [], "knowledge": [], "mcp_tool": []}
+            mock_adapter.search_multi_lightrag.return_value = {"skill": [], "knowledge": [], "other": []}
             mock_adapter.search_interaction_habits.return_value = []
             mock_adapter_cls.return_value = mock_adapter
 
@@ -372,7 +372,7 @@ class TestInjectDynamicResourcesUsesLightRAG:
              patch("niu_api.internal.brain_graph.get_brain_graph", side_effect=Exception("no brain")), \
              patch("niu_api.internal.region_injector.BrainContextInjector", side_effect=Exception("no region")):
             mock_adapter = MagicMock()
-            mock_adapter.search_multi_lightrag.return_value = {"skill": [], "knowledge": [], "mcp_tool": []}
+            mock_adapter.search_multi_lightrag.return_value = {"skill": [], "knowledge": [], "other": []}
             mock_adapter.search_interaction_habits.return_value = []
             mock_adapter_cls.return_value = mock_adapter
 
@@ -389,7 +389,7 @@ class TestInjectDynamicResourcesUsesLightRAG:
              patch("niu_api.internal.region_injector.BrainContextInjector") as mock_injector_cls, \
              patch("niu_api.internal.brain_graph.get_brain_graph", side_effect=Exception("no brain")):
             mock_adapter = MagicMock()
-            mock_adapter.search_multi_lightrag.return_value = {"skill": [], "knowledge": [], "mcp_tool": []}
+            mock_adapter.search_multi_lightrag.return_value = {"skill": [], "knowledge": [], "other": []}
             mock_adapter.search_interaction_habits.return_value = []
             mock_adapter_cls.return_value = mock_adapter
 
@@ -422,7 +422,7 @@ class TestInjectDynamicResourcesUsesLightRAG:
         with patch("niu_api.internal.lightrag_adapter.LightRAGAdapter") as mock_adapter_cls, \
              patch("niu_api.internal.brain_graph.get_brain_graph", side_effect=Exception("no brain")):
             mock_adapter = MagicMock()
-            mock_adapter.search_multi_lightrag.return_value = {"skill": [], "knowledge": [], "mcp_tool": []}
+            mock_adapter.search_multi_lightrag.return_value = {"skill": [], "knowledge": [], "other": []}
             mock_adapter.search_interaction_habits.return_value = []
             mock_adapter_cls.return_value = mock_adapter
 

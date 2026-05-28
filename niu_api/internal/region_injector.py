@@ -157,6 +157,7 @@ class BrainContextInjector:
     def format_region_map(
         self,
         regions: list[BrainRegionState],
+        region_members_map: dict[str, list[str]] | None = None,
     ) -> str:
         """Region map (always injected, ~150-200 tokens)
 
@@ -173,45 +174,6 @@ class BrainContextInjector:
         lines = [f"## 脑区状态 ({len(regions)}个脑区)"]
 
         # Sort: lit first, then dimming, then off; within same status, by label
-        status_order = {STATUS_LIT: 0, STATUS_DIMMING: 1, STATUS_OFF: 2}
-        sorted_regions = sorted(
-            regions,
-            key=lambda r: (
-                status_order.get(
-                    self._activation_mgr.get_status_light(r.activation), 3
-                ),
-                r.label,
-            ),
-        )
-
-        for region in sorted_regions:
-            light = self._activation_mgr.get_status_light(region.activation)
-            # Get member count from region_id if available
-            member_count = self._get_member_count(region.region_id)
-            description = self._get_region_description(region.region_id)
-            if description:
-                # Truncate description to ~30 chars for map display
-                short_desc = description[:30] + ("..." if len(description) > 30 else "")
-                lines.append(
-                    f"{light} {region.label} — {short_desc} ({member_count}实体)"
-                )
-            else:
-                lines.append(
-                    f"{light} {region.label} ({member_count}实体)"
-                )
-
-        return "\n".join(lines)
-
-    def _format_region_map(
-        self,
-        regions: list[BrainRegionState],
-        region_members_map: dict[str, list[str]] | None = None,
-    ) -> str:
-        if not regions:
-            return ""
-
-        lines = [f"## 脑区状态 ({len(regions)}个脑区)"]
-
         status_order = {STATUS_LIT: 0, STATUS_DIMMING: 1, STATUS_OFF: 2}
         sorted_regions = sorted(
             regions,
@@ -447,7 +409,7 @@ class BrainContextInjector:
         parts: list[str] = []
 
         # Always inject: region map
-        region_map = self._format_region_map(all_regions, region_members_map)
+        region_map = self.format_region_map(all_regions, region_members_map)
         if region_map:
             parts.append(region_map)
 
