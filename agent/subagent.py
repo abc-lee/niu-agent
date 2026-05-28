@@ -238,7 +238,7 @@ def get_subagent_mcp_tools_schema(agent_name: str) -> List[Dict]:
                 schema.append({
                     "type": "function",
                     "function": {
-                        "name": tool_name,
+                        "name": tool_name.split("/", 1)[1],  # LLM sees bare name; handler auto-resolves to full name
                         "description": tool.get("description", ""),
                         "parameters": tool.get("input_schema", {"type": "object", "properties": {}}),
                     }

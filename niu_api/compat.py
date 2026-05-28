@@ -8,6 +8,8 @@ import asyncio
 import json
 import os
 import re
+import threading
+import time
 from datetime import datetime
 
 from agent.session import get_message_store
@@ -457,6 +459,12 @@ async def get_stats() -> StatsResponse:
     return StatsResponse(messages=messages, uptime=uptime)
 
 
+def _force_exit_after_delay():
+    """3秒后强制退出进程，确保 /api/shutdown 不会让进程变成僵尸"""
+    time.sleep(3)
+    os._exit(0)
+
+
 @router.post("/api/shutdown")
 async def shutdown():
     """Shutdown the server gracefully"""
@@ -468,6 +476,10 @@ async def shutdown():
     # so we run it in a thread to avoid blocking the asyncio event loop.
     from niu_api.internal.lightrag_manager import shutdown_pending_futures
     await asyncio.to_thread(shutdown_pending_futures, timeout=1.5)
+
+    # 启动兜底退出线程：3秒后强制 os._exit(0)，
+    # 给 Go 启动器足够时间收到 HTTP 响应后再终止进程
+    threading.Thread(target=_force_exit_after_delay, daemon=True).start()
 
     logger.info("Python API ready for shutdown")
     return {"status": "shutting down"}

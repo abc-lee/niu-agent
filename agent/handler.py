@@ -1052,6 +1052,18 @@ class NiuHandler(BaseHandler):
         if resolved_name != tool_name:
             logger.debug(f"Tool alias: {tool_name} → {resolved_name}")
             tool_name = resolved_name
+
+        # Auto-resolve bare tool names: if no "/" prefix, try MCP server prefixes
+        if "/" not in tool_name:
+            from agent.tool_registry import get_registry
+            registry = get_registry()
+            for server_name in registry._server_tools:
+                full_name = f"{server_name}/{tool_name}"
+                if full_name in registry._schemas:
+                    logger.debug(f"Auto-resolved bare tool: {tool_name} → {full_name}")
+                    tool_name = full_name
+                    break
+
         # 先检查 chat-with-* 子 Agent 调用（通配路由）
         if tool_name.startswith("chat-with-"):
             agent_name = tool_name[len("chat-with-"):]

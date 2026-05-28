@@ -46,6 +46,9 @@ async def lifespan(app: FastAPI):
     """Application lifespan handler"""
     # Startup
     logger.info("Niu API Server starting...")
+    logger.info(f"[PROCESS-START] PID={os.getpid()} PPID={os.getppid()} started")
+    import traceback
+    logger.info(f"[PROCESS-START] Call stack:\n{''.join(traceback.format_stack()[-8:])}")
 
     # 1. Initialize session store
     from agent.session import get_session_store
@@ -421,6 +424,10 @@ def main():
     """Main entry point - run with: python -m niu_api"""
     import uvicorn
     import atexit
+    import traceback as _tb
+
+    logger.info(f"[PROCESS-START-MAIN] PID={os.getpid()} PPID={os.getppid()} entered main()")
+    logger.info(f"[PROCESS-START-MAIN] Call stack:\n{''.join(_tb.format_stack()[-6:])}")
 
     def _cleanup_multiprocessing():
         """Clean up multiprocessing resources on exit."""
@@ -431,6 +438,12 @@ def main():
             pass
 
     atexit.register(_cleanup_multiprocessing)
+
+    def _log_process_exit():
+        """记录进程退出，用于诊断僵尸进程问题"""
+        logger.info(f"[PROCESS-EXIT] PID={os.getpid()} exiting normally")
+
+    atexit.register(_log_process_exit)
 
     # Get port from environment or default
     port = int(os.environ.get("NIU_API_PORT", "9876"))
