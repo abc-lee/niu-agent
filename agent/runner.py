@@ -750,7 +750,7 @@ class NiuRunner:
             if _brain_injector is not None:
                 brain_context = _brain_injector.inject_brain_context(context)
                 if brain_context:
-                    parts.append(f"\n## 脑区激活上下文\n{brain_context}")
+                    parts.append(f"\n{brain_context}")
                     logger.info(f"Brain context injected: {len(brain_context)} chars, preview: {brain_context[:120]}...")
 
                 # Apply activation weight to LightRAG search results
