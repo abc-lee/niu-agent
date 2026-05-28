@@ -125,6 +125,8 @@ class BrainGraph:
 
         Idempotent — safe to call on every startup.
         """
+        if self._adapter.has_entity("Niu"):
+            return {"status": "ok", "message": "实体'Niu'已存在，跳过重复入库", "skipped": True}
         return self._ingester.inject_custom_kg(
             entities=[{
                 "entity_name": "Niu",
