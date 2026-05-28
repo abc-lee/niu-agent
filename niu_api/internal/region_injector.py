@@ -148,7 +148,7 @@ class BrainContextInjector:
         )
 
         # Step 4: Format injection content with region_knowledge
-        return self._format_injection_content(region_knowledge)
+        return self._format_injection_content(region_knowledge, entity_to_region)
 
     # ------------------------------------------------------------------
     # Formatting: region map (always injected)
@@ -191,6 +191,46 @@ class BrainContextInjector:
             description = self._get_region_description(region.region_id)
             if description:
                 # Truncate description to ~30 chars for map display
+                short_desc = description[:30] + ("..." if len(description) > 30 else "")
+                lines.append(
+                    f"{light} {region.label} — {short_desc} ({member_count}实体)"
+                )
+            else:
+                lines.append(
+                    f"{light} {region.label} ({member_count}实体)"
+                )
+
+        return "\n".join(lines)
+
+    def _format_region_map(
+        self,
+        regions: list[BrainRegionState],
+        region_members_map: dict[str, list[str]] | None = None,
+    ) -> str:
+        if not regions:
+            return ""
+
+        lines = [f"## 脑区状态 ({len(regions)}个脑区)"]
+
+        status_order = {STATUS_LIT: 0, STATUS_DIMMING: 1, STATUS_OFF: 2}
+        sorted_regions = sorted(
+            regions,
+            key=lambda r: (
+                status_order.get(
+                    self._activation_mgr.get_status_light(r.activation), 3
+                ),
+                r.label,
+            ),
+        )
+
+        for region in sorted_regions:
+            light = self._activation_mgr.get_status_light(region.activation)
+            if region_members_map:
+                member_count = len(region_members_map.get(region.region_id, []))
+            else:
+                member_count = self._get_member_count(region.region_id)
+            description = self._get_region_description(region.region_id)
+            if description:
                 short_desc = description[:30] + ("..." if len(description) > 30 else "")
                 lines.append(
                     f"{light} {region.label} — {short_desc} ({member_count}实体)"
@@ -283,6 +323,7 @@ class BrainContextInjector:
     def format_summary_region(
         self,
         region: BrainRegionState,
+        member_count: int | None = None,
     ) -> str:
         """Mid activation (0.3-0.7): inject summary
 
@@ -292,7 +333,8 @@ class BrainContextInjector:
         """
         description = self._get_region_description(region.region_id)
         if not description:
-            description = f"相关区域，包含{self._get_member_count(region.region_id)}个实体"
+            count = member_count if member_count is not None else self._get_member_count(region.region_id)
+            description = f"相关区域，包含{count}个实体"
 
         return f"### [{region.label}] (近期)\n{description}"
 
@@ -387,6 +429,7 @@ class BrainContextInjector:
     def _format_injection_content(
         self,
         region_knowledge: dict[str, str],
+        entity_to_region: dict[str, str] | None = None,
     ) -> str:
         """Format the full injection content based on current activation levels."""
         all_regions = self._activation_mgr.get_region_map()
@@ -394,10 +437,17 @@ class BrainContextInjector:
         if not all_regions:
             return ""
 
+        # Build region_id -> members from entity_to_region if provided
+        region_members_map: dict[str, list[str]] | None = None
+        if entity_to_region:
+            region_members_map = {}
+            for entity, rid in entity_to_region.items():
+                region_members_map.setdefault(rid, []).append(entity)
+
         parts: list[str] = []
 
         # Always inject: region map
-        region_map = self.format_region_map(all_regions)
+        region_map = self._format_region_map(all_regions, region_members_map)
         if region_map:
             parts.append(region_map)
 
@@ -424,7 +474,10 @@ class BrainContextInjector:
             )
 
             for region in high_regions:
-                members = self._get_members(region.region_id)
+                if region_members_map:
+                    members = region_members_map.get(region.region_id, [])
+                else:
+                    members = self._get_members(region.region_id)
                 knowledge = region_knowledge.get(region.region_id, "")
                 detailed = self.format_detailed_region(
                     region, members, per_region_budget, knowledge
@@ -436,7 +489,11 @@ class BrainContextInjector:
         if mid_regions:
             parts.append("")  # blank line separator
             for region in mid_regions:
-                summary = self.format_summary_region(region)
+                if region_members_map:
+                    mc = len(region_members_map.get(region.region_id, []))
+                else:
+                    mc = None
+                summary = self.format_summary_region(region, member_count=mc)
                 if summary:
                     parts.append(summary)
 
