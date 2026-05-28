@@ -84,10 +84,8 @@ def launch_browser(url: Optional[str] = None, browser_exe: Optional[str] = None)
     args = [
         exe_path,
         f"--load-extension={extension_path}",
-        f"--disable-extensions-except={extension_path}",
         "--no-first-run",
         "--no-default-browser-check",
-        "--disable-component-extensions-with-background-pages",
         url or "https://www.bing.com",
     ]
 
