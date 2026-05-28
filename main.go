@@ -211,6 +211,26 @@ func main() {
 
 	slog.Info("Niu launcher starting...")
 
+	// --settings and --graph modes: connect to existing API, do NOT start a new one
+	// This prevents orphan Python API processes when these modes exit without shutdown
+	if *showSettings || *showGraph {
+		if isAPIRunning(*port) {
+			windowName := "settings"
+			if *showGraph {
+				windowName = "graph"
+			}
+			slog.Info("API already running, launching window", "window", windowName, "port", *port)
+			if _, err := launchWindow(windowName); err != nil {
+				slog.Error("Failed to launch window", "window", windowName, "error", err)
+				os.Exit(1)
+			}
+			return
+		}
+		slog.Error("API is not running, please start the main program first", "port", *port)
+		fmt.Printf("Error: API is not running on port %d. Please start the main program (niu) first.\n", *port)
+		os.Exit(1)
+	}
+
 	// Load context configuration
 	contextConfig = LoadContextConfig()
 
@@ -258,6 +278,9 @@ func main() {
 		slog.Info("Setting WORKSPACE_PATH for Python API", "path", workspacePath)
 	}
 	apiServerCmd.Env = append(os.Environ(), envVars...)
+
+	// Kill stale Python API process occupying the port before starting a new one
+	killStaleAPIProcess(*port)
 
 	// Capture output
 	if stdout, err := apiServerCmd.StdoutPipe(); err == nil {
@@ -339,22 +362,6 @@ func main() {
 		slog.Warn("Preload may not be complete, proceeding anyway")
 	}
 
-	// If --settings flag, just open settings and exit
-	if *showSettings {
-		if _, err := launchWindow("settings"); err != nil {
-			slog.Error("Failed to launch settings window", "error", err)
-		}
-		return
-	}
-
-	// If --graph flag, just open graph and exit
-	if *showGraph {
-		if _, err := launchWindow("graph"); err != nil {
-			slog.Error("Failed to launch graph window", "error", err)
-		}
-		return
-	}
-
 	// Launch assistant window
 	electronCmd, err := launchWindow("assistant")
 	if err != nil {
@@ -387,10 +394,32 @@ func main() {
 	// Wait for graceful shutdown (increased from 500ms to 2s to allow subprocess cleanup)
 	time.Sleep(2 * time.Second)
 
-	// Shutdown API server
+	// Shutdown API server: SIGTERM first for graceful shutdown, then SIGKILL as fallback
 	slog.Info("Stopping Python API server...")
-	if err := apiServerCmd.Process.Kill(); err != nil {
-		slog.Warn("Failed to kill API server", "error", err)
+	if err := apiServerCmd.Process.Signal(syscall.SIGTERM); err != nil {
+		slog.Warn("Failed to send SIGTERM to API server, trying SIGKILL", "error", err)
+		if err := apiServerCmd.Process.Kill(); err != nil {
+			slog.Warn("Failed to kill API server", "error", err)
+		}
+	} else {
+		// Wait up to 5 seconds for graceful exit
+		done := make(chan struct{}, 1)
+		go func() {
+			apiServerCmd.Process.Wait(); done <- struct{}{}
+		}()
+		select {
+		case <-done:
+			slog.Info("API server exited gracefully after SIGTERM")
+		case <-time.After(5 * time.Second):
+			slog.Warn("API server did not exit in 5s, sending SIGKILL")
+			if err := apiServerCmd.Process.Kill(); err != nil {
+				slog.Warn("Failed to SIGKILL API server", "error", err)
+			}
+		}
+	}
+	// Reap the child process to prevent zombie
+	if _, err := apiServerCmd.Process.Wait(); err != nil {
+		slog.Warn("Process.Wait returned error", "error", err)
 	}
 
 	// Electron window should already be closed (triggered shutdown)
@@ -408,6 +437,54 @@ func notifyShutdown(port int) error {
 	}
 	resp.Body.Close()
 	return nil
+}
+
+// isAPIRunning checks if the Python API is already running on the given port
+func isAPIRunning(port int) bool {
+	client := http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/health", port))
+	if err != nil {
+		return false
+	}
+	resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
+}
+
+// killStaleAPIProcess checks if the API port is occupied and kills the stale process
+func killStaleAPIProcess(port int) {
+	// Check if port is occupied by trying to connect
+	conn, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/health", port))
+	if err != nil {
+		// Port not occupied, safe to start
+		return
+	}
+	conn.Body.Close()
+
+	slog.Warn("Port already occupied, attempting to stop stale API process", "port", port)
+
+	// Try graceful shutdown via HTTP endpoint
+	if err := notifyShutdown(port); err == nil {
+		slog.Info("Sent shutdown request to stale API process, waiting 2s...")
+		time.Sleep(2 * time.Second)
+		// Check if port is now free
+		conn2, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/health", port))
+		if err != nil {
+			slog.Info("Stale API process exited gracefully")
+			return
+		}
+		conn2.Body.Close()
+	}
+
+	// Still alive, force kill with pkill
+	slog.Warn("Stale API process still alive, force killing with pkill")
+	killCmd := exec.Command("pkill", "-f", "python.*niu_api")
+	if err := killCmd.Run(); err != nil {
+		slog.Warn("pkill failed (process may already be gone)", "error", err)
+	} else {
+		slog.Info("Sent SIGTERM to stale API process via pkill")
+	}
+	// Wait for process to exit
+	time.Sleep(1 * time.Second)
 }
 
 func launchWindow(name string) (*exec.Cmd, error) {

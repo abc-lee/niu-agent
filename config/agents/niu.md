@@ -100,7 +100,7 @@ sub agents:
 # 照片管理
 
 用户查询未命名人物或照片入库后返回未命名人物时，需要让用户看到照片才能命名
-必须读取skill：photo-face-display.md，了解技能后处理
+必须读取skill：~/.niu/skills/photo-face-display.md，了解技能后处理
 
 # 系统管理
 
