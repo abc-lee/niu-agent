@@ -86,11 +86,11 @@ def _encode_description(
     representative: str,
     updated_at: float,
 ) -> str:
-    """Encode region metadata into description using | separator.
+    """Encode region metadata into description using <SEP> separator.
 
     LightRAG stores custom attributes as flat text in the description field
     (GraphML limitation). The brain_meta_* attributes are embedded using
-    | separators, following the existing pattern from brain_graph.py.
+    <SEP> separators, following LightRAG's GRAPH_FIELD_SEP convention.
     """
     parts = [
         summary,
@@ -99,7 +99,7 @@ def _encode_description(
         f"brain_meta_representative:{representative}",
         f"brain_meta_updated_at:{int(updated_at)}",
     ]
-    return " | ".join(parts)
+    return "<SEP>".join(parts)
 
 
 def _parse_description(description: str) -> dict[str, str]:
@@ -121,7 +121,7 @@ def _parse_description(description: str) -> dict[str, str]:
     if not description:
         return result
 
-    parts = description.split(" | ")
+    parts = re.split(r'<SEP>|\s\|\s', description)
     summary_parts: list[str] = []
 
     for part in parts:
@@ -134,7 +134,7 @@ def _parse_description(description: str) -> dict[str, str]:
         else:
             summary_parts.append(part)
 
-    result["summary"] = " | ".join(summary_parts)
+    result["summary"] = "<SEP>".join(summary_parts)
     return result
 
 
@@ -213,8 +213,8 @@ class RegionManager:
             region_label, region_summary = self._summarize_region(entity_summaries)
 
             # Pick representative: first entity name (highest-degree in community)
-            # Sanitize: replace | with - to avoid breaking description parsing
-            representative = members[0].replace("|", "-") if members else ""
+            # Sanitize: replace <SEP> and | with - to avoid breaking description parsing
+            representative = members[0].replace("<SEP>", "-").replace("|", "-") if members else ""
             community_id = f"community_{partition.region_id}"
             now = time.time()
 
@@ -373,7 +373,7 @@ class RegionManager:
 
             # Append preserved dynamic metadata
             for key, value in extra_meta.items():
-                description += f" | brain_meta_{key}:{value}"
+                description += f"<SEP>brain_meta_{key}:{value}"
 
             # Collect updated entity for batch inject
             all_entities.append({
@@ -666,11 +666,11 @@ class RegionManager:
                     updated_at=now,
                 )
                 # Append shrink_count + preserve other dynamic metadata
-                updated_desc += f" | brain_meta_shrink_count:{shrink_count}"
+                updated_desc += f"<SEP>brain_meta_shrink_count:{shrink_count}"
                 STANDARD_KEYS = {"summary", "region_id", "size", "representative", "updated_at", "shrink_count"}
                 for key, value in parsed.items():
                     if key not in STANDARD_KEYS and value:
-                        updated_desc += f" | brain_meta_{key}:{value}"
+                        updated_desc += f"<SEP>brain_meta_{key}:{value}"
 
                 try:
                     self._ingester.inject_custom_kg(
@@ -853,9 +853,8 @@ class RegionManager:
         # Heuristic 1: Use the first entity (representative) as region label
         region_label = entity_names[0]
 
-        # Sanitize: replace | with - to avoid breaking description parsing
-        # (| is the separator in _encode_description / _parse_description)
-        region_label = region_label.replace("|", "-")
+        # Sanitize: replace <SEP> and | with - to avoid breaking description parsing
+        region_label = region_label.replace("<SEP>", "-").replace("|", "-")
 
         # Heuristic 2: Build summary from top MAX_SUMMARY_ENTITIES entities
         top_summaries = entity_summaries[:MAX_SUMMARY_ENTITIES]

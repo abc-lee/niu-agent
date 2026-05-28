@@ -1158,7 +1158,7 @@ class LightRAGIngester:
         # Format: {habit_type}__{target_tool}
         # Example: "tool_dialect__kg-server" (not "tool_dialect_kg-server")
         entity_name = f"{habit_type}__{target_tool}"
-        description = f"{content} | confidence: {confidence}"
+        description = f"{content}<SEP>confidence: {confidence}"
 
         text = f"交互习惯: {entity_name}（类型: InteractionHabit），{description}。Niu uses {entity_name}。"
         return self.lightrag_insert(content=text, file_paths=source_id if source_id != "custom_kg" else None)
@@ -1219,7 +1219,7 @@ class LightRAGIngester:
                     pass
 
             # Extract the content part (before "| confidence:")
-            content = _re.sub(r'\s*\|\s*confidence:\s*\{[^}]+\}\s*$', '', description).strip()
+            content = _re.sub(r'(?:<SEP>|\s\|\s)confidence:\s*\{[^}]+\}\s*$', '', description).strip()
 
             # Extract entity_type (read for potential future use, currently unused)
             entity_type = target_node.properties.get("entity_type", "InteractionHabit")  # noqa: F841

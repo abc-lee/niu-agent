@@ -190,7 +190,7 @@ class BrainGraph:
 
         # Build entity description with created_at timestamp only
         created_at = time.strftime("%Y-%m-%dT%H:%M:%S")
-        entity_description = f"created_at={created_at}|{content[:200]}"
+        entity_description = f"created_at={created_at}<SEP>{content[:200]}"
 
         # --- Single atomic inject_custom_kg call ---
         # Merge entity + relationship + chunk into one call so that:
