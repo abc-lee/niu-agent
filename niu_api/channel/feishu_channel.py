@@ -473,6 +473,9 @@ class FeishuChannelAdapter(ChannelAdapter):
             latest_rowid, latest_text = new_texts[-1]
             filtered_text = await self._filter_media_markers(latest_text)
             self._accumulated_text = filtered_text  # 保留 [PHOTO_SEP] 供终结时拆分
+            # 新文本不含照片分隔符，清空残留图片，避免终结时旧图片被插入
+            if "[PHOTO_SEP]" not in self._accumulated_text:
+                self._stream_pending_images = []
             new_rowid = latest_rowid
             # 流式推送时隐藏 [PHOTO_SEP] 分隔符，终结阶段才用其拆分文本+插入img
             display_text = self._accumulated_text.replace("[PHOTO_SEP]", "")
@@ -702,11 +705,11 @@ class FeishuChannelAdapter(ChannelAdapter):
         """构建终结卡片的 body elements，包含 markdown + img 元素交替排列"""
         elements = []
 
-        if not self._stream_pending_images:
-            # 没有图片，保持单个 markdown 元素
+        if not self._stream_pending_images or "[PHOTO_SEP]" not in final_text:
+            # 没有照片或文本不含分隔符，保持单个 markdown 元素
             elements.append({"tag": "markdown", "content": final_text, "element_id": "md1"})
         else:
-            # 按分隔符拆分文本
+            # 按分隔符拆分文本，交替插入 markdown + img 元素
             parts = final_text.split("[PHOTO_SEP]")
             md_idx = 1
             img_idx = 0
@@ -805,6 +808,10 @@ class FeishuChannelAdapter(ChannelAdapter):
                 logger.error(f"[FeishuStream] UpdateCard failed: {update_resp.code} {update_resp.msg}")
             else:
                 logger.info("[FeishuStream] Card finalized successfully")
+                # 将嵌入卡片的图片路径加入去重集合，阻止 route_out 的 send_media 重复发送
+                for img_info in self._stream_pending_images:
+                    if img_info.get("local_path"):
+                        self._stream_sent_media_paths.add(img_info["local_path"])
 
         except Exception as e:
             logger.error(f"[FeishuStream] Finalize exception: {e}")
