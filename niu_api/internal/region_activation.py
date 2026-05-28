@@ -355,13 +355,14 @@ class RegionActivationManager:
                 logger.info("手动激活脑区: %s (%s)", label, state.region_id)
             return activated
 
-    def manual_dim(self, region_labels: list[str]) -> None:
+    def manual_dim(self, region_labels: list[str], reason: str = "") -> None:
         """Manual dim via brain_region_dim tool.
 
         activation = 0.0, manually_dimmed = True.
 
         Args:
             region_labels: Human-readable region labels to dim
+            reason: Optional reason for dimming (for memory logging).
         """
         with self._lock:
             for label in region_labels:
@@ -373,7 +374,10 @@ class RegionActivationManager:
                 state.activation = 0.0
                 state.manually_dimmed = True
 
-                logger.info("手动调暗脑区: %s (%s)", label, state.region_id)
+                if reason:
+                    logger.info("手动调暗脑区: %s (%s), reason: %s", label, state.region_id, reason)
+                else:
+                    logger.info("手动调暗脑区: %s (%s)", label, state.region_id)
 
     # ------------------------------------------------------------------
     # Decay

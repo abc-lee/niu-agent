@@ -34,10 +34,10 @@ def brain_region_activate(regions: list[str], reason: str = "", **kwargs) -> str
     return handle_brain_region_activate(regions=regions, reason=reason)
 
 
-def brain_region_dim(regions: list[str], **kwargs) -> str:
+def brain_region_dim(regions: list[str], reason: str = "", **kwargs) -> str:
     """Dim brain regions by label names."""
     from agent.brain_tools import handle_brain_region_dim
-    return handle_brain_region_dim(regions=regions)
+    return handle_brain_region_dim(regions=regions, reason=reason)
 
 
 def brain_region_status(include_dark: bool = False, **kwargs) -> str:
@@ -85,6 +85,10 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
                     "type": "array",
                     "items": {"type": "string"},
                     "description": "要关闭的脑区名称列表",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "为什么要关闭这些脑区（可选，用于记忆记录）",
                 },
             },
             "required": ["regions"],
