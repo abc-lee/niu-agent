@@ -183,6 +183,10 @@ BRAIN_REGION_DIM_SCHEMA = {
                 "items": {"type": "string"},
                 "description": "要关闭的脑区名称列表",
             },
+            "reason": {
+                "type": "string",
+                "description": "为什么要关闭这些脑区（用于记忆记录）",
+            },
         },
         "required": ["regions"],
     },
@@ -266,11 +270,12 @@ def handle_brain_region_activate(regions: list[str], reason: str = "") -> str:
     return "\n".join(lines)
 
 
-def handle_brain_region_dim(regions: list[str]) -> str:
+def handle_brain_region_dim(regions: list[str], reason: str = "") -> str:
     """Handle brain_region_dim tool call.
 
     Args:
         regions: List of region names to dim.
+        reason: Optional reason for dimming (for memory logging).
 
     Returns:
         Formatted status string showing dimmed regions.
@@ -283,11 +288,14 @@ def handle_brain_region_dim(regions: list[str]) -> str:
         return "[Brain] No regions specified. Use 'regions' parameter with a list of region names."
 
     # Call manual_dim on the manager
-    mgr.manual_dim(regions)
+    mgr.manual_dim(regions, reason=reason)
 
     # Build formatted status
     lines: list[str] = []
-    lines.append("[Brain] Dimmed regions:")
+    if reason:
+        lines.append(f"[Brain] Dimmed regions (reason: {reason}):")
+    else:
+        lines.append("[Brain] Dimmed regions:")
 
     for label in regions:
         state = mgr.find_region_by_label(label)

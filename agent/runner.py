@@ -686,9 +686,20 @@ class NiuRunner:
         2. interaction_habits（LightRAG + keywords）
         3. brain memories（脑图）
         """
-        # 1. LightRAG 主检索 — local + keywords = 0 LLM calls
+        # 0. Brain region activation — BEFORE LightRAG search so activation weighting applies
         effective_query = context
         keywords = [effective_query]
+        _brain_region_knowledge: dict[str, str] = {}
+        _brain_entity_to_region: dict[str, str] = {}
+        _brain_injector = None
+        try:
+            _brain_injector = self._get_brain_injector()
+            if _brain_injector is not None:
+                _brain_region_knowledge, _brain_entity_to_region = _brain_injector.activate_for_query(context)
+        except Exception as e:
+            logger.warning(f"Brain activation failed: {e}")
+
+        # 1. LightRAG 主检索 — local + keywords = 0 LLM calls
         lightrag_results: dict[str, list[dict]] = {}
         try:
             from niu_api.internal.lightrag_adapter import LightRAGAdapter
@@ -741,21 +752,18 @@ class NiuRunner:
             f"Habits: {len(interaction_habits)}"
         )
 
-        # Brain region activation context (uses cached injector)
-        # Apply activation weight BEFORE formatting so weighted scores affect output
+        # Brain region injection text + activation weighting (activation already done above)
         lightrag_skills = lightrag_results.get("skill", [])
         lightrag_knowledge = lightrag_results.get("knowledge", [])
         try:
-            _brain_injector = self._get_brain_injector()
             if _brain_injector is not None:
-                brain_context = _brain_injector.inject_brain_context(context)
+                brain_context = _brain_injector.format_injection_text(
+                    _brain_region_knowledge, _brain_entity_to_region
+                )
                 if brain_context:
                     parts.append(f"\n{brain_context}")
                     logger.info(f"Brain context injected: {len(brain_context)} chars, preview: {brain_context[:120]}...")
 
-                # Apply activation weight to LightRAG search results
-                # lightrag_skills and lightrag_knowledge are list[dict], each has "score" field
-                # Weighting boosts scores for entities in activated regions
                 if lightrag_skills:
                     lightrag_skills[:] = _brain_injector.apply_activation_weight(lightrag_skills)
                 if lightrag_knowledge:

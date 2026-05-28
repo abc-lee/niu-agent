@@ -77,40 +77,26 @@ class BrainContextInjector:
     # Main entry
     # ------------------------------------------------------------------
 
-    def inject_brain_context(
+    def activate_for_query(
         self,
         query_context: str,
-    ) -> str:
-        """Main entry: activate regions + get layered injection content
+    ) -> tuple[dict[str, str], dict[str, str]]:
+        """Step 1-3: Get entity mapping, vector-search, activate regions.
 
-        Steps:
-        1. Get entity-to-region mapping from graph (direct read, no LLM)
-        2. Vector-search query via query_data(keywords=...) to find hit entities
-        3. activation_mgr.activate_regions based on search results
-        4. Format injection content by activation level
-
-        Returns injection text (empty string if no active regions or on error).
-
-        Uses query_data() with keywords parameter to skip LLM extraction
-        (near-instant, no circular deadlock). Without keywords, query_data()
-        would invoke LLM extraction which can deadlock in the proxy chain.
+        Returns:
+            (region_knowledge, entity_to_region) for use by format_injection_text().
         """
         if not query_context:
-            return ""
+            return {}, {}
 
-        # Step 1: Get entity-to-region mapping from direct graph read
         region_members = get_all_region_members()
         entity_to_region: dict[str, str] = {}
         for region_name, members in region_members.items():
             for member in members:
                 entity_to_region[member] = region_name
 
-        # Step 2: Vector-search query via query_data(keywords=...) to find hit entities
-        # Passing keywords=[query_context] skips LLM extraction, avoiding circular
-        # deadlock in the proxy chain. Without keywords, query_data() would invoke
-        # LLM extraction which can deadlock (LightRAG -> LLM -> Proxy -> query_data).
         hit_entities: list[str] = []
-        region_knowledge: dict[str, str] = {}  # region_label -> knowledge text
+        region_knowledge: dict[str, str] = {}
 
         try:
             query_result = self._adapter.query_data(
@@ -130,10 +116,8 @@ class BrainContextInjector:
                     entity_type = entity.get("entity_type", "")
                     if entity_name:
                         hit_entities.append(entity_name)
-                        # 先从映射找脑区
                         region_name = entity_to_region.get(entity_name)
                         if not region_name:
-                            # 运行时分类：根据 entity_type 归属
                             region_name = self._classify_entity_to_region(entity_name, entity_type)
                         if region_name and region_name not in region_knowledge:
                             desc = entity.get("description", "")
@@ -142,13 +126,27 @@ class BrainContextInjector:
         except Exception as e:
             logger.warning("脑区注入向量检索失败: %s", e)
 
-        # Step 3: Activate regions based on hit entities
         self._activation_mgr.activate_regions(
             hit_entities, entity_to_region
         )
 
-        # Step 4: Format injection content with region_knowledge
+        return region_knowledge, entity_to_region
+
+    def format_injection_text(
+        self,
+        region_knowledge: dict[str, str],
+        entity_to_region: dict[str, str] | None = None,
+    ) -> str:
+        """Step 4: Format injection content by activation level."""
         return self._format_injection_content(region_knowledge, entity_to_region)
+
+    def inject_brain_context(
+        self,
+        query_context: str,
+    ) -> str:
+        """Convenience: activate + format in one call."""
+        region_knowledge, entity_to_region = self.activate_for_query(query_context)
+        return self.format_injection_text(region_knowledge, entity_to_region)
 
     # ------------------------------------------------------------------
     # Formatting: region map (always injected)
