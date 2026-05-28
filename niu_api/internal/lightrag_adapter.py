@@ -692,6 +692,50 @@ class LightRAGAdapter:
                 return part[len("created_at="):]
         return ""
 
+    def has_entity(self, entity_name: str) -> bool:
+        """精确查询实体是否已存在（LightRAG内部lowercase存储，此处直接lowercase匹配）。
+
+        Returns False when LightRAG is not initialized (lenient — allows insert
+        to proceed, and ainsert_custom_kg will use <SEP> append, not overwrite).
+        """
+        rag = self._get_rag()
+        if rag is None:
+            return False
+        graph_obj = getattr(rag, "chunk_entity_relation_graph", None)
+        if graph_obj is None:
+            return False
+        nx_graph = graph_obj._graph if hasattr(graph_obj, "_graph") else graph_obj
+        from niu_api.internal.lightrag_manager import graph_read_lock
+        with graph_read_lock():
+            return nx_graph.has_node(entity_name.lower())
+
+    def has_edge(self, src_id: str, tgt_id: str, keywords: str = None) -> bool:
+        """精确查询关系是否已存在。
+
+        If keywords is provided, also checks that the edge's keywords matches.
+        Without keywords, returns True if any edge exists between src and tgt.
+
+        Returns False when LightRAG is not initialized (lenient — allows insert
+        to proceed; ainsert_custom_kg will use <SEP> append for existing edges).
+        """
+        rag = self._get_rag()
+        if rag is None:
+            return False
+        graph_obj = getattr(rag, "chunk_entity_relation_graph", None)
+        if graph_obj is None:
+            return False
+        nx_graph = graph_obj._graph if hasattr(graph_obj, "_graph") else graph_obj
+        from niu_api.internal.lightrag_manager import graph_read_lock
+        with graph_read_lock():
+            src = src_id.lower()
+            tgt = tgt_id.lower()
+            if not nx_graph.has_edge(src, tgt):
+                return False
+            if keywords is None:
+                return True
+            edge_data = nx_graph.get_edge_data(src, tgt)
+            return edge_data.get("keywords") == keywords
+
     def get_graph_snapshot(self, limit: int = 200) -> Dict[str, Any]:
         """Return all nodes and edges from LightRAG knowledge graph.
 

@@ -953,6 +953,11 @@ def lightrag_insert_entity(
     # satisfy static analysis (callers still pass them by keyword).
     _ = source_id, skip_llm_extraction
     try:
+        # Dedup: skip if entity already exists in the graph
+        adapter = _get_adapter()
+        if adapter.has_entity(name):
+            return {"status": "ok", "message": f"实体'{name}'已存在，跳过重复入库", "skipped": True}
+
         niu_relation_map = {
             "Person": "remembers",
             "Skill": "skilled_in",
@@ -1020,6 +1025,11 @@ def lightrag_insert_relation(
     """
     _ = source_id  # kept for MCP schema compatibility (deprecated)
     try:
+        # Dedup: skip if edge (with matching keywords) already exists in the graph
+        adapter = _get_adapter()
+        if adapter.has_edge(src_id, tgt_id, keywords=relation):
+            return {"status": "ok", "message": f"关系'{src_id}'→'{tgt_id}'({relation})已存在，跳过重复入库", "skipped": True}
+
         # Build relationship dict for inject_custom_kg
         rel = {
             "src_id": src_id,
