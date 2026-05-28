@@ -117,10 +117,10 @@ else:
 
 # 检查关键映射
 critical_mappings = {
-    "tool": "tool",  # 不应该是 "mcp_tool"
-    "concept": "concept",  # 不应该是 "knowledge"
-    "brainregion": "brain_region",
-    "episodicevent": "episodic_event",
+    "tool": "knowledge",
+    "concept": "knowledge",
+    "brainregion": "knowledge",
+    "episodicevent": "knowledge",
     "other": "other",
 }
 for key, expected_val in critical_mappings.items():

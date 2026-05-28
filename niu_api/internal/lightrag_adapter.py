@@ -362,7 +362,7 @@ class LightRAGAdapter:
         # Group by entity_type → category
         for entity in entities:
             et = entity.get("entity_type", "").lower().strip()
-            category = self._ENTITY_TYPE_TO_CATEGORY.get(et)
+            category = self._ENTITY_TYPE_TO_CATEGORY.get(et, "knowledge")
             if category and category in result:
                 result[category].append(entity)
 
