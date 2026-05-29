@@ -288,3 +288,158 @@ tools:
         flag: max-results
         type: integer
         default: 10
+
+  - name: lightrag_edit_entity
+    category: admin
+    short: "编辑实体"
+    long: "修改实体属性（描述、类型），支持改名和合并"
+    parameters:
+      - name: entity_name
+        position: 1
+        type: string
+        required: true
+      - name: description
+        type: string
+      - name: entity_type
+        flag: type
+        type: string
+      - name: new_name
+        flag: new-name
+        type: string
+      - name: allow_rename
+        flag: allow-rename
+        type: boolean
+        default: false
+      - name: allow_merge
+        flag: allow-merge
+        type: boolean
+        default: false
+
+  - name: lightrag_edit_relation
+    category: admin
+    short: "编辑关系"
+    long: "修改关系属性（描述、关键词、权重）"
+    parameters:
+      - name: source_entity
+        position: 1
+        type: string
+        required: true
+      - name: target_entity
+        position: 2
+        type: string
+        required: true
+      - name: keywords
+        flag: keywords
+        type: string
+      - name: new_keywords
+        flag: new-keywords
+        type: string
+      - name: new_description
+        type: string
+      - name: new_weight
+        flag: new-weight
+        type: number
+
+  - name: lightrag_delete_relation
+    category: admin
+    short: "删除关系"
+    long: "删除两实体间的关系（保留实体）"
+    parameters:
+      - name: source_entity
+        position: 1
+        type: string
+        required: true
+      - name: target_entity
+        position: 2
+        type: string
+        required: true
+      - name: keywords
+        flag: keywords
+        type: string
+
+  - name: lightrag_get_entity_info
+    category: query
+    short: "查询实体详情"
+    long: "获取单个实体的详细信息"
+    parameters:
+      - name: entity_name
+        position: 1
+        type: string
+        required: true
+      - name: include_vector_data
+        flag: vector
+        type: boolean
+        default: false
+
+  - name: lightrag_get_relation_info
+    category: query
+    short: "查询关系详情"
+    long: "获取两实体间关系的详细信息"
+    parameters:
+      - name: source_entity
+        position: 1
+        type: string
+        required: true
+      - name: target_entity
+        position: 2
+        type: string
+        required: true
+      - name: include_vector_data
+        flag: vector
+        type: boolean
+        default: false
+
+  - name: lightrag_create_entity
+    category: write
+    short: "创建实体"
+    long: "创建新实体（实体已存在则失败）"
+    parameters:
+      - name: entity_name
+        position: 1
+        type: string
+        required: true
+      - name: entity_type
+        flag: type
+        type: string
+        required: true
+      - name: description
+        type: string
+      - name: source_id
+        flag: source-id
+        type: string
+        default: manual_creation
+      - name: file_path
+        flag: file-path
+        type: string
+        default: manual_creation
+
+  - name: lightrag_create_relation
+    category: write
+    short: "创建关系"
+    long: "创建两实体间的新关系（关系已存在则失败）"
+    parameters:
+      - name: source_entity
+        position: 1
+        type: string
+        required: true
+      - name: target_entity
+        position: 2
+        type: string
+        required: true
+      - name: keywords
+        flag: keywords
+        type: string
+        required: true
+      - name: description
+        type: string
+      - name: weight
+        type: number
+        default: 1.0
+      - name: source_id
+        flag: source-id
+        type: string
+        default: manual_creation
+      - name: file_path
+        flag: file-path
+        type: string
+        default: manual_creation
