@@ -80,14 +80,14 @@ class BrainContextInjector:
     def activate_for_query(
         self,
         query_context: str,
-    ) -> tuple[dict[str, str], dict[str, str]]:
+    ) -> tuple[dict[str, str], dict[str, str], list[str]]:
         """Step 1-3: Get entity mapping, vector-search, activate regions.
 
         Returns:
-            (region_knowledge, entity_to_region) for use by format_injection_text().
+            (region_knowledge, entity_to_region, hit_entities) for use by format_injection_text().
         """
         if not query_context:
-            return {}, {}
+            return {}, {}, []
 
         region_members = get_all_region_members()
         entity_to_region: dict[str, str] = {}
@@ -119,6 +119,8 @@ class BrainContextInjector:
                         region_name = entity_to_region.get(entity_name)
                         if not region_name:
                             region_name = self._classify_entity_to_region(entity_name, entity_type)
+                            if region_name:
+                                entity_to_region[entity_name] = region_name
                         if region_name and region_name not in region_knowledge:
                             desc = entity.get("description", "")
                             if desc:
@@ -130,23 +132,24 @@ class BrainContextInjector:
             hit_entities, entity_to_region
         )
 
-        return region_knowledge, entity_to_region
+        return region_knowledge, entity_to_region, hit_entities
 
     def format_injection_text(
         self,
         region_knowledge: dict[str, str],
         entity_to_region: dict[str, str] | None = None,
+        hit_entities: list[str] | None = None,
     ) -> str:
         """Step 4: Format injection content by activation level."""
-        return self._format_injection_content(region_knowledge, entity_to_region)
+        return self._format_injection_content(region_knowledge, entity_to_region, hit_entities)
 
     def inject_brain_context(
         self,
         query_context: str,
     ) -> str:
         """Convenience: activate + format in one call."""
-        region_knowledge, entity_to_region = self.activate_for_query(query_context)
-        return self.format_injection_text(region_knowledge, entity_to_region)
+        region_knowledge, entity_to_region, hit_entities = self.activate_for_query(query_context)
+        return self.format_injection_text(region_knowledge, entity_to_region, hit_entities)
 
     # ------------------------------------------------------------------
     # Formatting: region map (always injected)
@@ -185,10 +188,7 @@ class BrainContextInjector:
 
         for region in sorted_regions:
             light = self._activation_mgr.get_status_light(region.activation)
-            if region_members_map:
-                member_count = len(region_members_map.get(region.region_id, []))
-            else:
-                member_count = self._get_member_count(region.region_id)
+            member_count = self._get_member_count(region.region_id)
             description = self._get_region_description(region.region_id)
             if description:
                 short_desc = description[:30] + ("..." if len(description) > 30 else "")
@@ -239,8 +239,9 @@ class BrainContextInjector:
         # Knowledge snippets (max 3)
         knowledge_line = ""
         if knowledge:
-            snippets = knowledge.split("\n")
-            top_snippets = [s.strip() for s in snippets[:MAX_KNOWLEDGE_SNIPPETS] if s.strip()]
+            cleaned_knowledge = knowledge.replace("<SEP>", "\n")
+            snippets = [s.strip() for s in cleaned_knowledge.split("\n") if s.strip()]
+            top_snippets = snippets[:MAX_KNOWLEDGE_SNIPPETS]
             if top_snippets:
                 knowledge_line = "知识: " + "; ".join(top_snippets)
 
@@ -390,6 +391,7 @@ class BrainContextInjector:
         self,
         region_knowledge: dict[str, str],
         entity_to_region: dict[str, str] | None = None,
+        hit_entities: list[str] | None = None,
     ) -> str:
         """Format the full injection content based on current activation levels."""
         all_regions = self._activation_mgr.get_region_map()
@@ -399,7 +401,15 @@ class BrainContextInjector:
 
         # Build region_id -> members from entity_to_region if provided
         region_members_map: dict[str, list[str]] | None = None
-        if entity_to_region:
+        if hit_entities and entity_to_region:
+            # 向量检索命中实体：只用 Top N，而非脑区全部成员
+            region_members_map = {}
+            for entity in hit_entities:
+                rid = entity_to_region.get(entity)
+                if rid:
+                    region_members_map.setdefault(rid, []).append(entity)
+        elif entity_to_region:
+            # fallback: 无 hit_entities 时用全部成员（兼容旧调用方式）
             region_members_map = {}
             for entity, rid in entity_to_region.items():
                 region_members_map.setdefault(rid, []).append(entity)
@@ -459,7 +469,9 @@ class BrainContextInjector:
 
         parts.append("\U0001f4a1 以上实体名可直接作为KG查询的keywords参数使用，例如：disk(\"/lightrag/lightrag_search_entities '实体名' --keywords '实体名'\")")
 
-        return "\n".join(parts)
+        result = "\n".join(parts)
+        result = result.replace("<SEP>", "\n")
+        return result
 
     def _get_members(self, region_id: str) -> list[str]:
         """Get member entity names for a region from activation manager."""

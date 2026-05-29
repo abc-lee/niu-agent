@@ -624,7 +624,7 @@ class NiuRunner:
             if display_name in seen_names:
                 continue
             seen_names.add(display_name)
-            description = entity.get("description", "")
+            description = entity.get("description", "").replace("<SEP>", "\n")
             if description:
                 lines.append(f"{added + 1}. **{display_name}** (来源: 知识图谱)")
                 lines.append(f"   {description}")
@@ -691,11 +691,12 @@ class NiuRunner:
         keywords = [effective_query]
         _brain_region_knowledge: dict[str, str] = {}
         _brain_entity_to_region: dict[str, str] = {}
+        _brain_hit_entities: list[str] = []
         _brain_injector = None
         try:
             _brain_injector = self._get_brain_injector()
             if _brain_injector is not None:
-                _brain_region_knowledge, _brain_entity_to_region = _brain_injector.activate_for_query(context)
+                _brain_region_knowledge, _brain_entity_to_region, _brain_hit_entities = _brain_injector.activate_for_query(context)
         except Exception as e:
             logger.warning(f"Brain activation failed: {e}")
 
@@ -758,7 +759,7 @@ class NiuRunner:
         try:
             if _brain_injector is not None:
                 brain_context = _brain_injector.format_injection_text(
-                    _brain_region_knowledge, _brain_entity_to_region
+                    _brain_region_knowledge, _brain_entity_to_region, _brain_hit_entities
                 )
                 if brain_context:
                     parts.append(f"\n{brain_context}")
@@ -787,7 +788,6 @@ class NiuRunner:
             parts.append(
                 "\n\n### [知识探索指引]\n"
                 "优先参考上述注入的历史参考信息回答用户问题。"
-                "若命中知识点涉及已知实体，可使用 disk(\"/lightrag/query <实体名>\") 查询知识图谱。"
             )
 
         # Interaction habits (LightRAG)
