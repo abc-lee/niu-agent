@@ -29,6 +29,10 @@ tools:
         flag: response-type
         type: string
         default: "Multiple Paragraphs"
+      - name: keywords
+        flag: keywords
+        type: array
+        cli_format: repeatable
 
   - name: lightrag_query_data
     category: query
@@ -69,6 +73,10 @@ tools:
         flag: top-k
         type: integer
         default: 10
+      - name: keywords
+        flag: keywords
+        type: array
+        cli_format: repeatable
 
   - name: lightrag_get_graph
     category: query
