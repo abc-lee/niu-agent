@@ -1135,8 +1135,8 @@ class NiuHandler(BaseHandler):
                                 runner._memory_dirty.set()
                         except Exception as e:
                             logger.debug(f"Memory dirty flag set failed: {e}")
-                    # 只有 status=="ok" 才提示汇报结果；need_category/need_info 等中间状态让 LLM 自行判断
-                    if isinstance(result, dict) and result.get("status") == "ok":
+                    # status 为 ok/success 表示任务完成，提示汇报；其他非 error 状态（need_category 等）让 LLM 自行判断
+                    if isinstance(result, dict) and result.get("status") in ("ok", "success"):
                         return StepOutcome(result, next_prompt=f"工具调用成功。请向用户简洁汇报结果。")
                     else:
                         return StepOutcome(result, next_prompt=self._get_anchor_prompt())
@@ -1207,8 +1207,8 @@ class NiuHandler(BaseHandler):
                                 runner._memory_dirty.set()
                         except Exception as e:
                             logger.debug(f"Memory dirty flag set failed: {e}")
-                    # 只有 status=="ok" 才提示汇报结果；need_category/need_info 等中间状态让 LLM 自行判断
-                    if result.get("status") == "ok":
+                    # status 为 ok/success 表示任务完成，提示汇报；其他非 error 状态（need_category 等）让 LLM 自行判断
+                    if result.get("status") in ("ok", "success"):
                         result_summary = json.dumps(result, ensure_ascii=False)[:500]
                         return StepOutcome(result, next_prompt=f"工具调用成功。请向用户简洁汇报结果：{result_summary}")
                     else:
@@ -1250,8 +1250,8 @@ class NiuHandler(BaseHandler):
                     pass
 
                 if isinstance(result, dict) and result.get("status") not in ("error", None):
-                    # 只有 status=="ok" 才提示汇报结果；need_category/need_info 等中间状态让 LLM 自行判断
-                    if result.get("status") == "ok":
+                    # status 为 ok/success 表示任务完成，提示汇报；其他非 error 状态（need_category 等）让 LLM 自行判断
+                    if result.get("status") in ("ok", "success"):
                         result_summary = json.dumps(result, ensure_ascii=False)[:500]
                         return StepOutcome(result, next_prompt=f"工具调用成功。请向用户简洁汇报结果：{result_summary}")
                     else:
