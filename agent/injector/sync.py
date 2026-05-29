@@ -364,6 +364,11 @@ class SkillSync:
         - Same-name entity merges on re-injection (no duplicates)
         - belongs_to_region edge links skill to 知识体系脑区
 
+        注入前会检查实体是否已存在：如果已存在则先通过 ToolRegistry 调用
+        lightrag_delete_entity 删除旧实体，再注入新实体。
+        这样即使 scan_and_sync 中的 _delete_skill_from_lightrag 删除失败，
+        此处也能补救，避免"旧实体删不掉 + 新实体被 dedup 跳过"的双重失败。
+
         Args:
             skill_name: Skill name (natural language, e.g., "photo-processing").
             content: Full text content of the skill file.
@@ -372,6 +377,56 @@ class SkillSync:
             True on success, False on failure.
         """
         try:
+            # 防御性删除：注入前检查实体是否已存在，若存在则先删除
+            # 场景：scan_and_sync 的 _delete_skill_from_lightrag 可能失败，
+            # 而 MCP 层 lightrag_insert_custom_kg 有 dedup 检查会跳过已存在实体，
+            # 导致 skill 更新彻底失败。此处补救：发现已存在就先删再注。
+            try:
+                from niu_api.internal.lightrag_adapter import LightRAGAdapter
+                adapter = LightRAGAdapter()
+                if adapter.has_entity(skill_name):
+                    logger.info(
+                        "[SkillSync] Entity '%s' already exists before injection, deleting first",
+                        skill_name,
+                    )
+                    try:
+                        from agent.tool_registry import get_registry
+                        registry = get_registry()
+                        delete_fn = registry.get("lightrag-server/lightrag_delete_entity")
+                        if delete_fn is not None:
+                            del_result = delete_fn(entity_name=skill_name)
+                            if isinstance(del_result, dict) and del_result.get("status") == "ok":
+                                logger.info(
+                                    "[SkillSync] Pre-inject delete succeeded for '%s'",
+                                    skill_name,
+                                )
+                            else:
+                                logger.warning(
+                                    "[SkillSync] Pre-inject delete returned non-ok for '%s': %s",
+                                    skill_name,
+                                    del_result.get("message", "") if isinstance(del_result, dict) else del_result,
+                                )
+                        else:
+                            # ToolRegistry 不可用时降级到 adapter 直接删除
+                            logger.warning(
+                                "[SkillSync] lightrag_delete_entity not in registry, fallback to adapter"
+                            )
+                            adapter.delete_entity(skill_name)
+                    except Exception as del_err:
+                        # 删除失败不阻断注入，inject_custom_kg 本身是 upsert 语义
+                        logger.warning(
+                            "[SkillSync] Pre-inject delete failed for '%s' (will try inject anyway): %s",
+                            skill_name,
+                            del_err,
+                        )
+            except Exception as check_err:
+                # has_entity 检查失败不阻断注入，继续走正常注入流程
+                logger.debug(
+                    "[SkillSync] has_entity check failed for '%s' (proceeding with inject): %s",
+                    skill_name,
+                    check_err,
+                )
+
             ingester = self._get_ingester()
 
             entity_name = skill_name
