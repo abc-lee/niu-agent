@@ -8,6 +8,7 @@ Tool groups:
 - Query (5): lightrag_query, lightrag_query_data, lightrag_search_entities, lightrag_get_graph, lightrag_timeline_query
 - Insert (5): lightrag_insert, lightrag_insert_file, lightrag_insert_custom_kg, lightrag_insert_entity, lightrag_insert_relation
 - Manage (6): lightrag_delete_document, lightrag_delete_entity, lightrag_document_status, lightrag_get_document, lightrag_list_entities, lightrag_merge_entities
+- Edit/Detail (7): lightrag_edit_entity, lightrag_edit_relation, lightrag_delete_relation, lightrag_get_entity_info, lightrag_get_relation_info, lightrag_create_entity, lightrag_create_relation
 """
 
 import re
@@ -521,6 +522,116 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
                 },
             },
             "required": ["source_entities", "target_entity"],
+        },
+    },
+
+    # --- Edit/Detail Group ---
+    "lightrag_edit_entity": {
+        "name": "lightrag_edit_entity",
+        "description": "Edit entity information in the knowledge graph. Can update description, type, or rename entity. Set allow_rename=True to enable renaming. Set allow_merge=True to merge into existing entity when renaming to an existing name.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "entity_name": {"type": "string", "description": "Entity name to edit"},
+                "description": {"type": "string", "description": "New description (overwrites existing)"},
+                "entity_type": {"type": "string", "description": "New entity type"},
+                "new_name": {"type": "string", "description": "New entity name (requires allow_rename=True)"},
+                "allow_rename": {"type": "boolean", "default": False, "description": "Allow renaming entity"},
+                "allow_merge": {"type": "boolean", "default": False, "description": "Allow merging into existing entity when renaming"},
+            },
+            "required": ["entity_name"],
+        },
+    },
+
+    "lightrag_edit_relation": {
+        "name": "lightrag_edit_relation",
+        "description": "Edit relation (edge) information between two entities. Can update description, keywords, or weight.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "source_entity": {"type": "string", "description": "Source entity name"},
+                "target_entity": {"type": "string", "description": "Target entity name"},
+                "keywords": {"type": "string", "description": "Current keywords (used to identify the relation)"},
+                "new_keywords": {"type": "string", "description": "New keywords"},
+                "new_description": {"type": "string", "description": "New description"},
+                "new_weight": {"type": "number", "description": "New weight"},
+            },
+            "required": ["source_entity", "target_entity"],
+        },
+    },
+
+    "lightrag_delete_relation": {
+        "name": "lightrag_delete_relation",
+        "description": "Delete a relation between two entities. Both entities are kept, only the relation is removed.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "source_entity": {"type": "string", "description": "Source entity name"},
+                "target_entity": {"type": "string", "description": "Target entity name"},
+                "keywords": {"type": "string", "description": "Relation keywords (optional, if not specified deletes all relations between the two entities)"},
+            },
+            "required": ["source_entity", "target_entity"],
+        },
+    },
+
+    "lightrag_get_entity_info": {
+        "name": "lightrag_get_entity_info",
+        "description": "Get detailed information of a single entity, including graph data and optionally vector data.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "entity_name": {"type": "string", "description": "Entity name to query"},
+                "include_vector_data": {"type": "boolean", "default": False, "description": "Include vector database information"},
+            },
+            "required": ["entity_name"],
+        },
+    },
+
+    "lightrag_get_relation_info": {
+        "name": "lightrag_get_relation_info",
+        "description": "Get detailed information of a relationship between two entities.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "source_entity": {"type": "string", "description": "Source entity name"},
+                "target_entity": {"type": "string", "description": "Target entity name"},
+                "include_vector_data": {"type": "boolean", "default": False, "description": "Include vector database information"},
+            },
+            "required": ["source_entity", "target_entity"],
+        },
+    },
+
+    "lightrag_create_entity": {
+        "name": "lightrag_create_entity",
+        "description": "Create a new entity in the knowledge graph. Fails if entity already exists. Use lightrag_insert_entity for upsert behavior.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "entity_name": {"type": "string", "description": "Entity name (must be unique)"},
+                "entity_type": {"type": "string", "description": "Entity type (e.g., Person, Concept, Skill, Tool)"},
+                "description": {"type": "string", "default": "", "description": "Entity description"},
+                "source_id": {"type": "string", "default": "manual_creation", "description": "Source chunk ID"},
+                "file_path": {"type": "string", "default": "manual_creation", "description": "File path for citation"},
+            },
+            "required": ["entity_name", "entity_type"],
+        },
+    },
+
+    "lightrag_create_relation": {
+        "name": "lightrag_create_relation",
+        "description": "Create a new relation between two entities. Both entities must exist. Fails if relation already exists.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "source_entity": {"type": "string", "description": "Source entity name"},
+                "target_entity": {"type": "string", "description": "Target entity name"},
+                "keywords": {"type": "string", "description": "Relation keywords (required)"},
+                "description": {"type": "string", "default": "", "description": "Relation description"},
+                "weight": {"type": "number", "default": 1.0, "description": "Relation weight"},
+                "source_id": {"type": "string", "default": "manual_creation", "description": "Source chunk ID"},
+                "file_path": {"type": "string", "default": "manual_creation", "description": "File path for citation"},
+            },
+            "required": ["source_entity", "target_entity", "keywords"],
         },
     },
 }
@@ -1224,6 +1335,177 @@ def lightrag_merge_entities(
         return {"status": "error", "message": str(e)}
 
 
+def lightrag_edit_entity(
+    entity_name: str,
+    description: Optional[str] = None,
+    entity_type: Optional[str] = None,
+    new_name: Optional[str] = None,
+    allow_rename: bool = False,
+    allow_merge: bool = False,
+) -> Dict[str, Any]:
+    """Edit entity information in the knowledge graph."""
+    try:
+        adapter = _get_adapter()
+        updated_data = {}
+        if description is not None:
+            updated_data["description"] = description
+        if entity_type is not None:
+            updated_data["entity_type"] = entity_type
+        if new_name is not None:
+            updated_data["entity_name"] = new_name
+        if not updated_data:
+            return {"status": "error", "message": "No update fields provided"}
+        result = adapter.edit_entity(entity_name=entity_name, updated_data=updated_data, allow_rename=allow_rename, allow_merge=allow_merge)
+        if result.get("status") == "ok":
+            data = result.get("data")
+            op_summary = data.get("operation_summary", {}) if isinstance(data, dict) else {}
+            msg = f"实体 '{entity_name}' 编辑成功"
+            if op_summary.get("renamed"):
+                msg = f"实体 '{entity_name}' 已重命名为 '{op_summary.get('final_entity')}'"
+            if op_summary.get("merged"):
+                msg = f"实体 '{entity_name}' 已合并到 '{op_summary.get('target_entity')}'"
+            return {"status": "ok", "message": msg, "data": data}
+        return result
+    except Exception as e:
+        logger.error(f"lightrag_edit_entity failed: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+def lightrag_edit_relation(
+    source_entity: str,
+    target_entity: str,
+    keywords: Optional[str] = None,
+    new_keywords: Optional[str] = None,
+    new_description: Optional[str] = None,
+    new_weight: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Edit relation (edge) information between two entities."""
+    try:
+        adapter = _get_adapter()
+        updated_data = {}
+        if new_keywords is not None:
+            updated_data["keywords"] = new_keywords
+        if new_description is not None:
+            updated_data["description"] = new_description
+        if new_weight is not None:
+            updated_data["weight"] = new_weight
+        if not updated_data:
+            return {"status": "error", "message": "No update fields provided"}
+        result = adapter.edit_relation(source_entity=source_entity, target_entity=target_entity, updated_data=updated_data)
+        if result.get("status") == "ok":
+            return {"status": "ok", "message": f"关系 '{source_entity}'→'{target_entity}' 编辑成功", "data": result.get("data")}
+        return result
+    except Exception as e:
+        logger.error(f"lightrag_edit_relation failed: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+def lightrag_delete_relation(
+    source_entity: str,
+    target_entity: str,
+    keywords: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Delete a relation between two entities."""
+    try:
+        adapter = _get_adapter()
+        if keywords:
+            info = adapter.get_relation_info(source_entity, target_entity)
+            if info.get("status") == "ok":
+                data = info.get("data")
+                edge_data = data.get("graph_data", {}) if isinstance(data, dict) else {}
+                edge_keywords = edge_data.get("keywords", "")
+                if keywords not in edge_keywords:
+                    return {"status": "ok", "message": f"关系 '{source_entity}'→'{target_entity}' 的 keywords 不匹配 '{keywords}'，未删除", "skipped": True}
+        result = adapter.delete_relation(source_entity=source_entity, target_entity=target_entity)
+        if result.get("status") == "ok":
+            return {"status": "ok", "message": f"关系 '{source_entity}'→'{target_entity}' 已删除"}
+        return result
+    except Exception as e:
+        logger.error(f"lightrag_delete_relation failed: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+def lightrag_get_entity_info(
+    entity_name: str,
+    include_vector_data: bool = False,
+) -> Dict[str, Any]:
+    """Get detailed information of a single entity."""
+    try:
+        adapter = _get_adapter()
+        result = adapter.get_entity_info(entity_name=entity_name, include_vector_data=include_vector_data)
+        if result.get("status") == "ok":
+            return {"status": "ok", "message": f"实体 '{entity_name}' 信息查询成功", "data": result.get("data")}
+        return result
+    except Exception as e:
+        logger.error(f"lightrag_get_entity_info failed: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+def lightrag_get_relation_info(
+    source_entity: str,
+    target_entity: str,
+    include_vector_data: bool = False,
+) -> Dict[str, Any]:
+    """Get detailed information of a relationship between two entities."""
+    try:
+        adapter = _get_adapter()
+        result = adapter.get_relation_info(source_entity=source_entity, target_entity=target_entity, include_vector_data=include_vector_data)
+        if result.get("status") == "ok":
+            return {"status": "ok", "message": f"关系 '{source_entity}'→'{target_entity}' 信息查询成功", "data": result.get("data")}
+        return result
+    except Exception as e:
+        logger.error(f"lightrag_get_relation_info failed: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+def lightrag_create_entity(
+    entity_name: str,
+    entity_type: str,
+    description: str = "",
+    source_id: str = "manual_creation",
+    file_path: str = "manual_creation",
+) -> Dict[str, Any]:
+    """Create a new entity in the knowledge graph."""
+    try:
+        adapter = _get_adapter()
+        if adapter.has_entity(entity_name):
+            return {"status": "ok", "message": f"实体 '{entity_name}' 已存在，无法创建。如需修改请使用 lightrag_edit_entity。", "skipped": True}
+        result = adapter.create_entity(entity_name=entity_name, entity_type=entity_type, description=description, source_id=source_id, file_path=file_path)
+        if result.get("status") == "ok":
+            return {"status": "ok", "message": f"实体 '{entity_name}' 创建成功", "data": result.get("data")}
+        return result
+    except Exception as e:
+        logger.error(f"lightrag_create_entity failed: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+def lightrag_create_relation(
+    source_entity: str,
+    target_entity: str,
+    keywords: str,
+    description: str = "",
+    weight: float = 1.0,
+    source_id: str = "manual_creation",
+    file_path: str = "manual_creation",
+) -> Dict[str, Any]:
+    """Create a new relation between two entities."""
+    try:
+        adapter = _get_adapter()
+        if not adapter.has_entity(source_entity):
+            return {"status": "error", "message": f"源实体 '{source_entity}' 不存在，请先创建该实体"}
+        if not adapter.has_entity(target_entity):
+            return {"status": "error", "message": f"目标实体 '{target_entity}' 不存在，请先创建该实体"}
+        if adapter.has_edge(source_entity, target_entity, keywords=keywords):
+            return {"status": "ok", "message": f"关系 '{source_entity}'→'{target_entity}'({keywords}) 已存在，无法创建。如需修改请使用 lightrag_edit_relation。", "skipped": True}
+        result = adapter.create_relation(source_entity=source_entity, target_entity=target_entity, keywords=keywords, description=description, weight=weight, source_id=source_id, file_path=file_path)
+        if result.get("status") == "ok":
+            return {"status": "ok", "message": f"关系 '{source_entity}'→'{target_entity}'({keywords}) 创建成功", "data": result.get("data")}
+        return result
+    except Exception as e:
+        logger.error(f"lightrag_create_relation failed: {e}")
+        return {"status": "error", "message": str(e)}
+
+
 # ============== call_tool Dispatcher ==============
 
 _TOOL_FUNCTIONS = {
@@ -1243,6 +1525,13 @@ _TOOL_FUNCTIONS = {
     "lightrag_list_entities": lightrag_list_entities,
     "lightrag_merge_entities": lightrag_merge_entities,
     "lightrag_timeline_query": lightrag_timeline_query,
+    "lightrag_edit_entity": lightrag_edit_entity,
+    "lightrag_edit_relation": lightrag_edit_relation,
+    "lightrag_delete_relation": lightrag_delete_relation,
+    "lightrag_get_entity_info": lightrag_get_entity_info,
+    "lightrag_get_relation_info": lightrag_get_relation_info,
+    "lightrag_create_entity": lightrag_create_entity,
+    "lightrag_create_relation": lightrag_create_relation,
 }
 
 

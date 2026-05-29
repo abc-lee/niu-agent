@@ -972,13 +972,15 @@ class LightRAGAdapter:
             logger.error(f"LightRAG get_relation_info failed: {e}")
             return {"status": "error", "message": str(e)}
 
-    def create_entity(self, entity_name, entity_type, description="", timeout=300):
+    def create_entity(self, entity_name, entity_type, description="", source_id="manual_creation", file_path="manual_creation", timeout=300):
         """Create a new entity in the knowledge graph.
 
         Args:
             entity_name: Name of the entity to create.
             entity_type: Type of the entity (e.g., "Person", "Concept").
             description: Description of the entity.
+            source_id: Source chunk ID.
+            file_path: File path for citation.
             timeout: Maximum seconds to wait for the operation.
 
         Returns:
@@ -988,14 +990,14 @@ class LightRAGAdapter:
         if rag is None:
             return {"status": "error", "message": "LightRAG not available"}
         try:
-            entity_data = {"entity_type": entity_type, "description": description}
+            entity_data = {"entity_type": entity_type, "description": description, "source_id": source_id, "file_path": file_path}
             result = call_async(rag.acreate_entity(entity_name, entity_data), timeout)
             return {"status": "ok", "data": result}
         except Exception as e:
             logger.error(f"LightRAG create_entity failed: {e}")
             return {"status": "error", "message": str(e)}
 
-    def create_relation(self, source_entity, target_entity, keywords, description="", weight=1.0, timeout=300):
+    def create_relation(self, source_entity, target_entity, keywords, description="", weight=1.0, source_id="manual_creation", file_path="manual_creation", timeout=300):
         """Create a new relation in the knowledge graph.
 
         Args:
@@ -1004,6 +1006,8 @@ class LightRAGAdapter:
             keywords: Keywords/relation type for the edge.
             description: Description of the relation.
             weight: Weight of the relation (default 1.0).
+            source_id: Source chunk ID.
+            file_path: File path for citation.
             timeout: Maximum seconds to wait for the operation.
 
         Returns:
@@ -1013,7 +1017,7 @@ class LightRAGAdapter:
         if rag is None:
             return {"status": "error", "message": "LightRAG not available"}
         try:
-            relation_data = {"keywords": keywords, "description": description, "weight": weight}
+            relation_data = {"keywords": keywords, "description": description, "weight": weight, "source_id": source_id, "file_path": file_path}
             result = call_async(rag.acreate_relation(source_entity, target_entity, relation_data), timeout)
             return {"status": "ok", "data": result}
         except Exception as e:
