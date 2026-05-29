@@ -13,7 +13,14 @@ KG 工具集成测试
 """
 
 import pytest
+from agent.mcp_loader import load_mcp_tools
 from agent.tool_registry import get_registry
+
+
+@pytest.fixture(scope="session", autouse=True)
+def init_mcp():
+    """初始化 MCP 模块（只执行一次）"""
+    load_mcp_tools()
 
 
 @pytest.fixture(scope="module")
