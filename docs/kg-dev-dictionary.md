@@ -362,7 +362,100 @@ merge_entities(
 
 ---
 
-## 7. 脑区管理
+## 7. 实体/关系编辑与精确查询
+
+### `lightrag_edit_entity` — 编辑实体
+
+```
+参数:  entity_name: str          — 实体名（必填）
+       description: str          — 新描述（覆盖式）
+       entity_type: str          — 新类型
+       new_name: str             — 新实体名（需 allow_rename=True）
+       allow_rename: bool        — 允许改名（默认 False）
+       allow_merge: bool         — 允许合并到已存在实体（默认 False）
+返回:  {"status": "ok", "message": str, "data": dict}
+注意:  allow_rename 有风险，改名后可能影响已有关系。allow_merge=True 时，如果 new_name 已存在，会合并两个实体。
+示例:  disk("/lightrag/lightrag_edit_entity 'Python' --description '一种编程语言'")
+       disk("/lightrag/lightrag_edit_entity '旧名' --new-name '新名' --allow-rename true")
+```
+
+### `lightrag_edit_relation` — 编辑关系
+
+```
+参数:  source_entity: str        — 源实体名（必填）
+       target_entity: str        — 目标实体名（必填）
+       keywords: str             — 当前关键词（用于定位关系）
+       new_keywords: str         — 新关键词
+       new_description: str      — 新描述
+       new_weight: float         — 新权重
+返回:  {"status": "ok", "message": str, "data": dict}
+注意:  关系是无向的，source/target 顺序不影响结果
+示例:  disk("/lightrag/lightrag_edit_relation 'Niu' 'Python' --new_description 'Niu精通Python'")
+```
+
+### `lightrag_delete_relation` — 删除关系
+
+```
+参数:  source_entity: str        — 源实体名（必填）
+       target_entity: str        — 目标实体名（必填）
+       keywords: str             — 关系关键词（可选，不指定则删除两实体间所有关系）
+返回:  {"status": "ok", "message": str}
+注意:  只删关系，不删实体
+示例:  disk("/lightrag/lightrag_delete_relation 'Niu' 'Python'")
+```
+
+### `lightrag_get_entity_info` — 查询实体详情
+
+```
+参数:  entity_name: str          — 实体名（必填）
+       include_vector_data: bool — 包含向量数据（默认 False）
+返回:  {"status": "ok", "data": {"entity_name": str, "source_id": str, "graph_data": dict}}
+注意:  graph_data 包含 description、entity_type 等属性
+示例:  disk("/lightrag/lightrag_get_entity_info 'Python'")
+```
+
+### `lightrag_get_relation_info` — 查询关系详情
+
+```
+参数:  source_entity: str        — 源实体名（必填）
+       target_entity: str        — 目标实体名（必填）
+       include_vector_data: bool — 包含向量数据（默认 False）
+返回:  {"status": "ok", "data": {"src_entity": str, "tgt_entity": str, "graph_data": dict}}
+注意:  关系是无向的，source/target 顺序不影响结果
+示例:  disk("/lightrag/lightrag_get_relation_info 'Niu' 'Python'")
+```
+
+### `lightrag_create_entity` — 创建实体（严格模式）
+
+```
+参数:  entity_name: str          — 实体名（必填，必须唯一）
+       entity_type: str          — 实体类型（必填）
+       description: str          — 描述
+       source_id: str            — 来源 chunk ID
+       file_path: str            — 文件路径引用
+返回:  {"status": "ok", "message": str, "data": dict}
+注意:  实体已存在则失败（返回 skipped=True）。与 lightrag_insert_entity 的区别：insert 是 upsert，create 是严格新建
+示例:  disk("/lightrag/lightrag_create_entity '新概念' --type 'Concept' --description '描述'")
+```
+
+### `lightrag_create_relation` — 创建关系（严格模式）
+
+```
+参数:  source_entity: str        — 源实体名（必填）
+       target_entity: str        — 目标实体名（必填）
+       keywords: str             — 关系关键词（必填）
+       description: str          — 描述
+       weight: float             — 权重（默认 1.0）
+       source_id: str            — 来源 chunk ID
+       file_path: str            — 文件路径引用
+返回:  {"status": "ok", "message": str, "data": dict}
+注意:  任一实体不存在则失败。关系已存在则失败（返回 skipped=True）
+示例:  disk("/lightrag/lightrag_create_relation 'Niu' 'Python' --keywords 'skilled_in'")
+```
+
+---
+
+## 8. 脑区管理
 
 ### `lightrag_insert_custom_kg` — 注入脑区实体+锚定关系
 
@@ -386,7 +479,7 @@ inject_custom_kg(
 
 ---
 
-## 8. 内容提取入库
+## 9. 内容提取入库
 
 ### `lightrag_insert` — 聊天记录精炼文档入库
 
@@ -409,7 +502,7 @@ inject_custom_kg(
 
 ---
 
-## 9. 文档管理
+## 10. 文档管理
 
 ### `lightrag_document_status` — 文档处理状态
 
@@ -436,7 +529,7 @@ inject_custom_kg(
 
 ---
 
-## 10. 脑区管理（Brain Region）
+## 11. 脑区管理（Brain Region）
 
 ### `RegionActivationManager` — 脑区激活/衰减管理器
 
@@ -696,6 +789,10 @@ from agent.brain_tools import (
 | 27 | **leidenalg 未在 requirements.txt** | 社区检测需要此包，但未声明依赖 |
 | 28 | **_summarize_region 是启发式** | 用第一个实体名做 label，不是 LLM 生成 |
 | 29 | **brain_region_prompt 只在提取请求时注入** | 普通对话不触发，只在 LightRAG ainsert 时注入 |
+| 30 | **`lightrag_create_entity` 实体已存在会失败** | 先用 `lightrag_get_entity_info` 检查，或直接用 `lightrag_insert_entity`（upsert 模式） |
+| 31 | **`lightrag_create_relation` 关系已存在会失败** | 先用 `lightrag_get_relation_info` 检查，或直接用 `lightrag_insert_relation`（upsert 模式） |
+| 32 | **`lightrag_edit_entity` 改名可能破坏关系** | 谨慎使用 `allow_rename=True`，改名后检查相关关系 |
+| 33 | **`lightrag_delete_relation` 不指定 keywords 会删除所有关系** | 如需精确删除，务必指定 keywords 参数 |
 
 ## 待测试项
 
