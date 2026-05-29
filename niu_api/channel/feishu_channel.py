@@ -175,6 +175,14 @@ class FeishuChannelAdapter(ChannelAdapter):
                 logger.warning(f"[FeishuStream] Failed to init cursor: {e}")
                 self._last_pushed_rowid = 0
 
+            # 根据资源类型添加前缀（与桌面端格式一致）
+            if local_resources:
+                has_image = any(lr.resource_type == 'image' for lr in local_resources)
+                if has_image:
+                    message_content = "入库照片：" + message_content
+                else:
+                    message_content = "入库文件：" + message_content
+
             result = self.router.route_in_sync(unified, session_id=session_id, message_override=message_content)
             if result.queued:
                 logger.info(f"[FeishuChannel] Message queued: {message_content[:50]}...")
