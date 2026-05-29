@@ -41,26 +41,23 @@ ingest 自动完成：复制文件到知识库目录 → 检测人脸 → 识别
 
 ## 文档处理
 
-### 入库（两阶段交互）
+### 入库
 
-文档入库需要你判断分类目录。流程如下：
+文档入库需要指定分类目录。调用 `photo-server/ingest_document`：
 
-1. 先调用 `photo-server/ingest_document`，**不传 category 参数**：
-   ```
-   photo-server/ingest_document, 参数: file_path="xxx.docx", mode="copy"
-   ```
-2. 工具会读取文件内容，返回 `status: "need_category"` + 内容预览 + `available_categories`（可选分类列表）
-3. **根据文件内容你自行判断，从 available_categories 中选择最合适的分类**，再次调用并传入 category：
-   ```
-   photo-server/ingest_document, 参数: file_path="xxx.docx", category="报告", mode="copy"
-   ```
-4. 工具完成入库（复制文件到分类目录 + 内容写入知识库），返回 `status: "success"`
+- **用户已指定分类**：直接带 category 调用
+  ```
+  photo-server/ingest_document, 参数: file_path="xxx.docx", category="报告", mode="copy"
+  ```
+- **用户未指定分类**：不传 category，工具会读取文件内容并返回 `status: "need_category"` + 内容预览 + `available_categories`（可选分类列表）。**你自行阅读内容预览，从 available_categories 中选择最合适的分类，继续调用**（带 category 参数）
+
+工具完成入库后返回 `status: "success"`。
 
 **分类必须从工具返回的 available_categories 列表中选择，不要自己编造分类名。**
 
 | status | 含义 | 下一步 |
 |--------|------|--------|
-| `need_category` | 工具读了文件内容，等你判断分类 | **阅读内容预览，判断分类后再次调用** |
+| `need_category` | 工具已读取文件内容，等你判断分类 | **阅读内容预览，从 available_categories 中选择分类，继续调用** |
 | `success` | 文件已复制到知识库目录，内容已写入知识库 | **结束，直接汇报** |
 | `error` | 失败 | 报告错误 |
 

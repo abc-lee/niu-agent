@@ -1135,7 +1135,11 @@ class NiuHandler(BaseHandler):
                                 runner._memory_dirty.set()
                         except Exception as e:
                             logger.debug(f"Memory dirty flag set failed: {e}")
-                    return StepOutcome(result, next_prompt=f"工具调用成功。请向用户简洁汇报结果。")
+                    # 只有 status=="ok" 才提示汇报结果；need_category/need_info 等中间状态让 LLM 自行判断
+                    if isinstance(result, dict) and result.get("status") == "ok":
+                        return StepOutcome(result, next_prompt=f"工具调用成功。请向用户简洁汇报结果。")
+                    else:
+                        return StepOutcome(result, next_prompt=self._get_anchor_prompt())
                 else:
                     return StepOutcome(result, next_prompt="Tool execution returned an error. Read the error message above and adjust accordingly.")
             elif disk_result.action == "ERROR":
@@ -1203,9 +1207,12 @@ class NiuHandler(BaseHandler):
                                 runner._memory_dirty.set()
                         except Exception as e:
                             logger.debug(f"Memory dirty flag set failed: {e}")
-                    # 成功执行，提示LLM向用户汇报
-                    result_summary = json.dumps(result, ensure_ascii=False)[:500]
-                    return StepOutcome(result, next_prompt=f"工具调用成功。请向用户简洁汇报结果：{result_summary}")
+                    # 只有 status=="ok" 才提示汇报结果；need_category/need_info 等中间状态让 LLM 自行判断
+                    if result.get("status") == "ok":
+                        result_summary = json.dumps(result, ensure_ascii=False)[:500]
+                        return StepOutcome(result, next_prompt=f"工具调用成功。请向用户简洁汇报结果：{result_summary}")
+                    else:
+                        return StepOutcome(result, next_prompt=self._get_anchor_prompt())
                 else:
                     # 需要进一步处理，返回anchor prompt
                     return StepOutcome(result, next_prompt=self._get_anchor_prompt())
@@ -1243,8 +1250,12 @@ class NiuHandler(BaseHandler):
                     pass
 
                 if isinstance(result, dict) and result.get("status") not in ("error", None):
-                    result_summary = json.dumps(result, ensure_ascii=False)[:500]
-                    return StepOutcome(result, next_prompt=f"工具调用成功。请向用户简洁汇报结果：{result_summary}")
+                    # 只有 status=="ok" 才提示汇报结果；need_category/need_info 等中间状态让 LLM 自行判断
+                    if result.get("status") == "ok":
+                        result_summary = json.dumps(result, ensure_ascii=False)[:500]
+                        return StepOutcome(result, next_prompt=f"工具调用成功。请向用户简洁汇报结果：{result_summary}")
+                    else:
+                        return StepOutcome(result, next_prompt=self._get_anchor_prompt())
                 else:
                     return StepOutcome(result, next_prompt=self._get_anchor_prompt())
             except Exception as e:
