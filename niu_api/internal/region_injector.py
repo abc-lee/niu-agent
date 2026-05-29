@@ -457,6 +457,8 @@ class BrainContextInjector:
                 if summary:
                     parts.append(summary)
 
+        parts.append("\U0001f4a1 以上实体名可直接作为KG查询的keywords参数使用，例如：disk(\"/lightrag/lightrag_search_entities '实体名' --keywords '实体名'\")")
+
         return "\n".join(parts)
 
     def _get_members(self, region_id: str) -> list[str]:
