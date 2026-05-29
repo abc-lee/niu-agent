@@ -2,7 +2,6 @@
 Injector API endpoints
 
 Disk mode: MCP tools are discovered via disk YAML configs, not injected into LightRAG.
-The register endpoints are kept as no-ops for backward compatibility.
 List/delete still query LightRAG for skill entities.
 """
 
@@ -11,22 +10,6 @@ from fastapi import APIRouter, HTTPException
 from loguru import logger
 
 router = APIRouter(prefix="/api/inject", tags=["injector"])
-
-
-class RegisterMCPToolRequest(BaseModel):
-    """注册 MCP 工具请求"""
-
-    server_name: str
-    tool_name: str
-    description: str = ""
-    input_schema: dict = {}
-
-
-class RegisterMCPToolResponse(BaseModel):
-    """注册 MCP 工具响应"""
-
-    status: str
-    resource_id: str
 
 
 class ListResourcesResponse(BaseModel):
@@ -44,30 +27,8 @@ _CATEGORY_TO_ENTITY_TYPE: dict[str, str] = {
 }
 
 
-@router.post("/mcp-tool", response_model=RegisterMCPToolResponse)
-async def register_mcp_tool(request: RegisterMCPToolRequest):
-    """No-op in disk mode — tools are discovered via disk YAML, not LightRAG."""
-    doc_id = f"mcp_tool:{request.server_name}:{request.tool_name}"
-    return RegisterMCPToolResponse(status="skipped", resource_id=doc_id)
-
-
-@router.post("/mcp-tools/batch")
-async def register_mcp_tools_batch(tools: list[RegisterMCPToolRequest]):
-    """No-op in disk mode — tools are discovered via disk YAML, not LightRAG."""
-    if not tools:
-        return {"results": []}
-    results = []
-    for tool in tools:
-        results.append({
-            "tool_name": tool.tool_name,
-            "status": "skipped",
-            "resource_id": f"mcp_tool:{tool.server_name}:{tool.tool_name}",
-        })
-    return {"results": results}
-
-
 @router.get("/resources", response_model=ListResourcesResponse)
-async def list_resources(resource_type: str = None):
+async def list_resources(resource_type: str | None = None):
     """列出已注册的资源（从 LightRAG 知识图谱查询）"""
     try:
         from niu_api.internal.lightrag_adapter import LightRAGAdapter
