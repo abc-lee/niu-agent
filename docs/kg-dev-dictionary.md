@@ -243,11 +243,15 @@ merge_entities(
        only_need_context: bool = True  — True 返回上下文，False 让 LLM 生成回答
        top_k: int = 5            — 检索数量
        response_type: str = "Multiple Paragraphs"
+       keywords: list[str] | None — 预提供关键词，跳过 LLM 提取（近即时返回）
 返回:  str | None（only_need_context=True 返回上下文文本）
 注意:  需要 LLM 可用（keywords 提取 + 可选的回答生成）
+       提供 keywords 时跳过 LLM 提取，近即时返回
        实测：hybrid 模式查询"谁出现在海滩照片里？"返回 6846 字符上下文
 陷阱:  LLM 不可用时返回 None 或空字符串
        返回 fail_response 文本时 adapter 会过滤为 ""
+       不提供 keywords 时 LightRAG 需调 LLM 提取关键词（5-30秒），LLM 不可用或返回格式不合规时查询失败
+       Agent 自身即为大模型，应自行提取关键词传入 keywords 参数，避免 LightRAG 重复调用 LLM
        reranker 未配置时会有 WARNING 但不影响结果
 ```
 
@@ -270,9 +274,11 @@ merge_entities(
 参数:  query: str                — 搜索文本
        entity_type: str = ""     — 过滤类型（空=不过滤）
        top_k: int = 10
+       keywords: list[str] | None — 预提供关键词，跳过 LLM 提取（近即时返回）
 返回:  {"status": "ok", "data": [entity_dict]} | {"status": "no_results"}
 注意:  内部调用 query_data(mode="local")
        entity_type 过滤是大小写不敏感的
+       提供 keywords 时跳过 LLM 提取，近即时返回；推荐 Agent 自行提取关键词传入
 ```
 
 ### `lightrag_get_graph` — 子图探索

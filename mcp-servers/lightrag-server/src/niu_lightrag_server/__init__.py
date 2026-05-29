@@ -139,6 +139,11 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
                     "default": "Multiple Paragraphs",
                     "description": "Response format when generating",
                 },
+                "keywords": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "提供keywords时跳过LLM关键词提取，近即时返回（<1秒）；不提供时由LightRAG自动提取（5-30秒，依赖LLM可用）。推荐提供keywords以获得最佳性能。从查询中提取核心名词/术语作为keywords。",
+                },
             },
             "required": ["query"],
         },
@@ -203,6 +208,11 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
                     "type": "integer",
                     "default": 10,
                     "description": "Max results",
+                },
+                "keywords": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "提供keywords时跳过LLM关键词提取，近即时返回（<1秒）；不提供时由LightRAG自动提取（5-30秒，依赖LLM可用）。推荐提供keywords以获得最佳性能。从查询中提取核心名词/术语作为keywords。",
                 },
             },
             "required": ["query"],
@@ -533,6 +543,7 @@ def lightrag_query(
     only_need_context: bool = True,
     top_k: int = 5,
     response_type: str = "Multiple Paragraphs",
+    keywords: Optional[list] = None,
 ):
     """Search the knowledge base using LightRAG."""
     valid_modes = {"naive", "local", "global", "hybrid", "mix", "bypass"}
@@ -546,6 +557,7 @@ def lightrag_query(
             only_need_context=only_need_context,
             top_k=top_k,
             response_type=response_type,
+            keywords=keywords,
         )
         if result is None:
             return {"status": "error", "message": "No results from LightRAG"}
@@ -587,11 +599,12 @@ def lightrag_search_entities(
     query: str,
     entity_type: str = "",
     top_k: int = 10,
+    keywords: Optional[list] = None,
 ) -> Dict[str, Any]:
     """Search for entities of a specific type."""
     try:
         adapter = _get_adapter()
-        result = adapter.query_data(query=query, mode="local", top_k=top_k)
+        result = adapter.query_data(query=query, mode="local", top_k=top_k, keywords=keywords)
         if LightRAGAdapter._is_no_result(result):
             return {"status": "no_results", "message": "No relevant results found in knowledge graph"}
         if entity_type:
