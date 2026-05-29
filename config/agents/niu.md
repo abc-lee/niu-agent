@@ -49,12 +49,12 @@ sub agents:
 
 注入内容只是摘要，当你需要更深入的信息时，优先用实体搜索，而非语义查询：
 
-- **实体搜索**（首选）：`disk("/lightrag/lightrag_search_entities query='实体名' keywords=['实体名'] top_k=5")`
+- **实体搜索**（首选）：`disk("/lightrag/lightrag_search_entities '实体名' --keywords '实体名' --top-k 5")`
   - 按实体名精确/模糊匹配，已知实体名时最可靠
   - **必须提供keywords参数**：你是大模型，自己就能从query中提取核心关键词，不需要LightRAG再调LLM提取。提供keywords近即时返回（<1秒），不提供需5-30秒且可能失败
 - **实体列表**：`disk("/lightrag/lightrag_list_entities top_k=20")`
   - 列出图谱中所有实体，确认内容是否已入库
-- **语义查询**（兜底）：`disk("/lightrag/lightrag_query query='...' mode=hybrid keywords=['关键词1','关键词2']")`
+- **语义查询**（兜底）：`disk("/lightrag/lightrag_query '...' --mode hybrid --keywords '关键词1' --keywords '关键词2'")`
   - hybrid/local/naive 模式走向量检索+图遍历
   - **必须提供keywords参数**：从查询中提取2-3个核心关键词传入，跳过LLM提取环节
   - **如果语义查询返回空，不要认为知识库没有内容——改用实体搜索验证**
