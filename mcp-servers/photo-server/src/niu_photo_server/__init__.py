@@ -554,15 +554,12 @@ def format_photo_ingest_data(
         seen_person_entity_names.add(entity_name)
 
         person_names.append(entity_name)
-        # 保留 person_id（UUID）到 description 中，便于 KG 实体溯源
-        person_pid = p.get("id", "")
-        desc = f"{entity_name}，出现在照片{normalized_stem}中"
-        if person_pid:
-            desc += f"（person_id={person_pid}）"
+        # 人名实体的 description 置空：人与照片的关联关系已有 features 边表达，
+        # description 里写"出现在照片X中"是冗余且不准确的
         entities.append({
             "entity_name": entity_name,
             "entity_type": "person",
-            "description": desc,
+            "description": "",
             "file_path": normalized_path,
             "source_id": normalized_path,  # 与 chunk 的 source_id 一致，确保映射成功
         })

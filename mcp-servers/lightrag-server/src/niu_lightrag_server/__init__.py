@@ -921,15 +921,75 @@ def lightrag_insert_custom_kg(
 
     Entity names must follow LightRAG's natural language naming system.
     No colon prefixes (e.g., use "Niu" not "brain:Niu", use "任飞" not "person:uuid").
+
+    Dedup: entities/relationships that already exist in the graph are skipped,
+    and the return message reports which items were skipped.
     """
     try:
+        adapter = _get_adapter()
+
+        # --- Dedup entities ---
+        input_entities = entities or []
+        new_entities = []
+        skipped_entity_names = []
+        for ent in input_entities:
+            ent_name = ent.get("entity_name", "")
+            if ent_name and adapter.has_entity(ent_name):
+                skipped_entity_names.append(ent_name)
+            else:
+                new_entities.append(ent)
+
+        # --- Dedup relationships ---
+        input_rels = relationships or []
+        new_rels = []
+        skipped_rel_labels = []
+        for rel in input_rels:
+            src = rel.get("src_id", "")
+            tgt = rel.get("tgt_id", "")
+            kw = rel.get("keywords", "")
+            if src and tgt and adapter.has_edge(src, tgt, keywords=kw):
+                skipped_rel_labels.append(f"{src}->{tgt}({kw})")
+            else:
+                new_rels.append(rel)
+
+        # Build skip info string
+        skip_parts = []
+        if skipped_entity_names:
+            skip_parts.append(f"跳过已存在的实体: {skipped_entity_names}")
+        if skipped_rel_labels:
+            skip_parts.append(f"跳过已存在的关系: {skipped_rel_labels}")
+        skip_info = "。".join(skip_parts)
+
+        # If everything was skipped, return early
+        if not new_entities and not new_rels:
+            if skip_info:
+                return {"status": "ok", "message": f"所有数据已存在，跳过插入。{skip_info}。", "skipped": True}
+            # No data was provided at all
+            return {"status": "ok", "message": "未提供任何实体或关系数据。"}
+
         ingester = _get_ingester()
-        return ingester.inject_custom_kg(
-            entities=entities or [],
-            relationships=relationships or [],
+        result = ingester.inject_custom_kg(
+            entities=new_entities,
+            relationships=new_rels,
             chunks=chunks or [],
             source_id=source_id,
         )
+
+        # Enrich result with skip info
+        inserted_e = len(new_entities)
+        inserted_r = len(new_rels)
+        msg = f"已插入 {inserted_e} 个实体, {inserted_r} 个关系。"
+        if skip_info:
+            msg += skip_info + "。"
+
+        if isinstance(result, dict):
+            result["message"] = msg
+            if skipped_entity_names:
+                result["skipped_entities"] = skipped_entity_names
+            if skipped_rel_labels:
+                result["skipped_relationships"] = skipped_rel_labels
+            return result
+        return {"status": "ok", "message": msg}
     except Exception as e:
         logger.error(f"lightrag_insert_custom_kg failed: {e}")
         return {"status": "error", "message": str(e)}

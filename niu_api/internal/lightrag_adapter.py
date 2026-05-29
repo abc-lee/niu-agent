@@ -696,7 +696,7 @@ class LightRAGAdapter:
         """精确查询实体是否已存在（LightRAG内部lowercase存储，此处直接lowercase匹配）。
 
         Returns False when LightRAG is not initialized (lenient — allows insert
-        to proceed, and ainsert_custom_kg will use <SEP> append, not overwrite).
+        to proceed; ainsert_custom_kg will upsert/overwrite existing nodes).
         """
         rag = self._get_rag()
         if rag is None:
@@ -716,7 +716,7 @@ class LightRAGAdapter:
         Without keywords, returns True if any edge exists between src and tgt.
 
         Returns False when LightRAG is not initialized (lenient — allows insert
-        to proceed; ainsert_custom_kg will use <SEP> append for existing edges).
+        to proceed; ainsert_custom_kg will upsert/overwrite existing edges).
         """
         rag = self._get_rag()
         if rag is None:
