@@ -863,6 +863,163 @@ class LightRAGAdapter:
             logger.error(f"LightRAG delete_entity failed: {e}")
             return {"status": "error", "message": str(e)}
 
+    def edit_entity(self, entity_name, updated_data, allow_rename=False, allow_merge=False, timeout=300):
+        """Edit an entity's properties in the knowledge graph.
+
+        Args:
+            entity_name: Entity name to edit.
+            updated_data: Dict of properties to update.
+            allow_rename: Whether to allow renaming the entity.
+            allow_merge: Whether to allow merging with existing entities.
+            timeout: Maximum seconds to wait for the operation.
+
+        Returns:
+            Dict with status and data.
+        """
+        rag = self._get_rag()
+        if rag is None:
+            return {"status": "error", "message": "LightRAG not available"}
+        try:
+            result = call_async(rag.aedit_entity(entity_name, updated_data, allow_rename=allow_rename, allow_merge=allow_merge), timeout)
+            return {"status": "ok", "data": result}
+        except Exception as e:
+            logger.error(f"LightRAG edit_entity failed: {e}")
+            return {"status": "error", "message": str(e)}
+
+    def edit_relation(self, source_entity, target_entity, updated_data, timeout=300):
+        """Edit a relation's properties in the knowledge graph.
+
+        Args:
+            source_entity: Source entity name.
+            target_entity: Target entity name.
+            updated_data: Dict of properties to update.
+            timeout: Maximum seconds to wait for the operation.
+
+        Returns:
+            Dict with status and data.
+        """
+        rag = self._get_rag()
+        if rag is None:
+            return {"status": "error", "message": "LightRAG not available"}
+        try:
+            result = call_async(rag.aedit_relation(source_entity, target_entity, updated_data), timeout)
+            return {"status": "ok", "data": result}
+        except Exception as e:
+            logger.error(f"LightRAG edit_relation failed: {e}")
+            return {"status": "error", "message": str(e)}
+
+    def delete_relation(self, source_entity, target_entity, timeout=300):
+        """Delete a relation from the knowledge graph.
+
+        Args:
+            source_entity: Source entity name.
+            target_entity: Target entity name.
+            timeout: Maximum seconds to wait for the operation.
+
+        Returns:
+            Dict with status and data.
+        """
+        rag = self._get_rag()
+        if rag is None:
+            return {"status": "error", "message": "LightRAG not available"}
+        try:
+            result = call_async(rag.adelete_by_relation(source_entity, target_entity), timeout)
+            return {"status": "ok", "data": result}
+        except Exception as e:
+            logger.error(f"LightRAG delete_relation failed: {e}")
+            return {"status": "error", "message": str(e)}
+
+    def get_entity_info(self, entity_name, include_vector_data=False, timeout=30):
+        """Get detailed information about an entity.
+
+        Args:
+            entity_name: Entity name to look up.
+            include_vector_data: Whether to include vector data in the result.
+            timeout: Maximum seconds to wait for the operation.
+
+        Returns:
+            Dict with status and data.
+        """
+        rag = self._get_rag()
+        if rag is None:
+            return {"status": "error", "message": "LightRAG not available"}
+        try:
+            result = call_async(rag.get_entity_info(entity_name, include_vector_data), timeout)
+            return {"status": "ok", "data": result}
+        except Exception as e:
+            logger.error(f"LightRAG get_entity_info failed: {e}")
+            return {"status": "error", "message": str(e)}
+
+    def get_relation_info(self, source_entity, target_entity, include_vector_data=False, timeout=30):
+        """Get detailed information about a relation.
+
+        Args:
+            source_entity: Source entity name.
+            target_entity: Target entity name.
+            include_vector_data: Whether to include vector data in the result.
+            timeout: Maximum seconds to wait for the operation.
+
+        Returns:
+            Dict with status and data.
+        """
+        rag = self._get_rag()
+        if rag is None:
+            return {"status": "error", "message": "LightRAG not available"}
+        try:
+            result = call_async(rag.get_relation_info(source_entity, target_entity, include_vector_data), timeout)
+            return {"status": "ok", "data": result}
+        except Exception as e:
+            logger.error(f"LightRAG get_relation_info failed: {e}")
+            return {"status": "error", "message": str(e)}
+
+    def create_entity(self, entity_name, entity_type, description="", timeout=300):
+        """Create a new entity in the knowledge graph.
+
+        Args:
+            entity_name: Name of the entity to create.
+            entity_type: Type of the entity (e.g., "Person", "Concept").
+            description: Description of the entity.
+            timeout: Maximum seconds to wait for the operation.
+
+        Returns:
+            Dict with status and data.
+        """
+        rag = self._get_rag()
+        if rag is None:
+            return {"status": "error", "message": "LightRAG not available"}
+        try:
+            entity_data = {"entity_type": entity_type, "description": description}
+            result = call_async(rag.acreate_entity(entity_name, entity_data), timeout)
+            return {"status": "ok", "data": result}
+        except Exception as e:
+            logger.error(f"LightRAG create_entity failed: {e}")
+            return {"status": "error", "message": str(e)}
+
+    def create_relation(self, source_entity, target_entity, keywords, description="", weight=1.0, timeout=300):
+        """Create a new relation in the knowledge graph.
+
+        Args:
+            source_entity: Source entity name.
+            target_entity: Target entity name.
+            keywords: Keywords/relation type for the edge.
+            description: Description of the relation.
+            weight: Weight of the relation (default 1.0).
+            timeout: Maximum seconds to wait for the operation.
+
+        Returns:
+            Dict with status and data.
+        """
+        rag = self._get_rag()
+        if rag is None:
+            return {"status": "error", "message": "LightRAG not available"}
+        try:
+            relation_data = {"keywords": keywords, "description": description, "weight": weight}
+            result = call_async(rag.acreate_relation(source_entity, target_entity, relation_data), timeout)
+            return {"status": "ok", "data": result}
+        except Exception as e:
+            logger.error(f"LightRAG create_relation failed: {e}")
+            return {"status": "error", "message": str(e)}
+
     def document_status(self) -> Dict[str, Any]:
         """Get document processing status counts.
 
