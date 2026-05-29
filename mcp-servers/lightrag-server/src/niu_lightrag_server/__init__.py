@@ -1066,10 +1066,26 @@ def lightrag_insert_custom_kg(
         # Build skip info string
         skip_parts = []
         if skipped_entity_names:
-            skip_parts.append(f"跳过已存在的实体: {skipped_entity_names}")
+            for ent_name in skipped_entity_names:
+                skip_parts.append(
+                    f"实体'{ent_name}'已存在。可选操作：\n"
+                    f"  - 追加描述：disk(\"/lightrag/lightrag_insert '新描述'\")\n"
+                    f"  - 修改描述：disk(\"/lightrag/lightrag_edit_entity '{ent_name}' --description '新描述'\")\n"
+                    f"  - 删除重建：disk(\"/lightrag/lightrag_delete_entity '{ent_name}'\")"
+                )
         if skipped_rel_labels:
-            skip_parts.append(f"跳过已存在的关系: {skipped_rel_labels}")
-        skip_info = "。".join(skip_parts)
+            for rel_label in skipped_rel_labels:
+                match = re.match(r"(.+?)->(.+?)\((.+)\)", rel_label)
+                if match:
+                    src, tgt, kw = match.groups()
+                    skip_parts.append(
+                        f"关系'{src}'→'{tgt}'({kw})已存在。可选操作：\n"
+                        f"  - 修改关系：disk(\"/lightrag/lightrag_edit_relation '{src}' '{tgt}' --keywords '{kw}' --new_description '新描述'\")\n"
+                        f"  - 删除关系：disk(\"/lightrag/lightrag_delete_relation '{src}' '{tgt}' --keywords '{kw}'\")"
+                    )
+                else:
+                    skip_parts.append(f"关系'{rel_label}'已存在")
+        skip_info = "\n".join(skip_parts)
 
         # If everything was skipped, return early
         if not new_entities and not new_rels:
@@ -1140,7 +1156,21 @@ def lightrag_insert_entity(
         # Dedup: skip if entity already exists in the graph
         adapter = _get_adapter()
         if adapter.has_entity(name):
-            return {"status": "ok", "message": f"实体'{name}'已存在，跳过重复入库", "skipped": True}
+            info = adapter.get_entity_info(name)
+            current_desc = ""
+            if info.get("status") == "ok":
+                data = info.get("data")
+                if isinstance(data, dict):
+                    current_desc = str(data.get("graph_data", {}).get("description", ""))[:100]
+            return {
+                "status": "ok",
+                "message": f"实体'{name}'已存在（当前描述：{current_desc}）。可选操作：\n"
+                           f"1. 追加描述：disk(\"/lightrag/lightrag_insert '新描述内容'\")\n"
+                           f"2. 删除重建：disk(\"/lightrag/lightrag_delete_entity '{name}'\") 后重新插入\n"
+                           f"3. 修改描述：disk(\"/lightrag/lightrag_edit_entity '{name}' --description '新描述'\")",
+                "skipped": True,
+                "entity_name": name,
+            }
 
         niu_relation_map = {
             "Person": "remembers",
@@ -1212,7 +1242,16 @@ def lightrag_insert_relation(
         # Dedup: skip if edge (with matching keywords) already exists in the graph
         adapter = _get_adapter()
         if adapter.has_edge(src_id, tgt_id, keywords=relation):
-            return {"status": "ok", "message": f"关系'{src_id}'→'{tgt_id}'({relation})已存在，跳过重复入库", "skipped": True}
+            return {
+                "status": "ok",
+                "message": f"关系'{src_id}'→'{tgt_id}'({relation})已存在。可选操作：\n"
+                           f"1. 修改关系：disk(\"/lightrag/lightrag_edit_relation '{src_id}' '{tgt_id}' --keywords '{relation}' --new_description '新描述'\")\n"
+                           f"2. 删除关系：disk(\"/lightrag/lightrag_delete_relation '{src_id}' '{tgt_id}' --keywords '{relation}'\")",
+                "skipped": True,
+                "source_entity": src_id,
+                "target_entity": tgt_id,
+                "keywords": relation,
+            }
 
         # Build relationship dict for inject_custom_kg
         rel = {
