@@ -1118,7 +1118,8 @@
         sendBtn.disabled = false;
         window.electronAPI.notifyBusy(false, 'chat');
       } else if (data && data.role === 'chat_busy') {
-        // Agent循环开始：sendMessage已设置状态，此处不做额外操作
+        // Agent循环开始：通知 spirit 进入忙碌状态（飞书等外部触发时需要）
+        window.electronAPI.notifyBusy(true, 'chat');
       } else {
         // 普通消息通知 → 从DB刷新渲染
         refreshFromDB();

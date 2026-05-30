@@ -643,7 +643,10 @@
     
     // 监听用户活动通知（聊天窗口有活动时重置空闲计时器）
     window.electronAPI.onUserActivity(() => {
-      if (currentState === State.IDLE) {
+      if (currentState === State.SLEEP) {
+        console.log('[Spirit] 用户活动，从睡眠中唤醒');
+        transitionTo(State.IDLE);
+      } else if (currentState === State.IDLE) {
         console.log('[Spirit] 用户活动，重置空闲计时器');
         startIdleTimer();
       }
