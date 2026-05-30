@@ -74,7 +74,7 @@ def _extract_overflow_info(result: str) -> dict:
         return {"overflow": True, "raw": result}
 
 
-def _build_incremental_msg_text(messages, last_cursor_id: str, out_msg_ids: list, msg_tokens: list | None = None) -> str:
+def _build_incremental_msg_text(messages, last_cursor_id: str, out_msg_ids: list, msg_tokens: list | None = None, end_cursor_id: str | None = None) -> str:
     """
     构建增量消息文本：只包含游标之后的新消息。
 
@@ -83,11 +83,12 @@ def _build_incremental_msg_text(messages, last_cursor_id: str, out_msg_ids: list
         last_cursor_id: 上次处理到的消息 UUID（空字符串表示全量）
         out_msg_ids: 输出参数，收集增量消息的 UUID 列表
         msg_tokens: 每条消息的 token 数列表（与 messages 等长），None 则不注解
+        end_cursor_id: 上界游标 UUID，只生成到该消息为止（含该消息），None 则到末尾
 
     Returns:
         格式化的消息文本
     """
-    # 找到游标位置
+    # 找到下界游标位置
     cursor_idx = -1
     if last_cursor_id:
         for i, msg in enumerate(messages):
@@ -98,10 +99,28 @@ def _build_incremental_msg_text(messages, last_cursor_id: str, out_msg_ids: list
         if cursor_idx < 0:
             logger.warning(f"[Tidy] Cursor UUID {last_cursor_id} not found in message list, degrading to full processing")
 
-    # 只取游标之后的消息
+    # 找到上界游标位置
+    end_idx = len(messages) - 1
+    if end_cursor_id:
+        found = False
+        for i, msg in enumerate(messages):
+            if (getattr(msg, "id", "") or "") == end_cursor_id:
+                end_idx = i
+                found = True
+                break
+        if not found:
+            logger.warning(f"[Tidy] End cursor UUID {end_cursor_id} not found in message list, degrading to full range")
+            end_idx = len(messages) - 1
+
+    # 计算有效范围：[start, effective_end)
     start = cursor_idx + 1 if cursor_idx >= 0 else 0
+    effective_end = end_idx + 1  # 包含 end_cursor 本身
+
+    if start >= effective_end:
+        return "（无新增消息）"
+
     lines = []
-    for i, msg in enumerate(messages[start:]):
+    for i, msg in enumerate(messages[start:effective_end]):
         idx = start + i + 1  # 1-based display index
         msg_id = getattr(msg, "id", "") or ""
         out_msg_ids.append(msg_id)
