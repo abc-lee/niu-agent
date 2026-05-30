@@ -1233,6 +1233,7 @@ async def _tidy_context_impl(request: dict):
             except ImportError:
                 msg_tokens = [max(1, len(msg.content or "") // 2) + 4 for msg in messages]
             msg_id_set = {getattr(m, "id", "") for m in messages}
+            new_dream_id = last_dream_evolve_id  # 默认保留旧游标
             dream_force_msg_ids = []
             dream_force_msg_text = _build_incremental_msg_text(
                 messages, last_dream_evolve_id, dream_force_msg_ids, msg_tokens, filter_wm=True
