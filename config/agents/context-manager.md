@@ -13,29 +13,28 @@ mcpServers:
 
 ## 游标机制
 
-调用方会传入消息列表和游标信息：
-- `last_dream_evolve_id`：dream-evolver 已处理到的消息 UUID
-- `last_compress_id`：上次压缩整理到的消息 UUID（首次为空）
+程序只传入增量范围内的消息（compress_cursor 到 dream_cursor_new 之间的消息），你只需处理收到的全部消息。
 
 每条消息格式为 `[id:UUID] [idx:N] Xtokens role: content`。
 
 **重要**：
 - **游标用 id（UUID）存储**：因为 id 是数据库中持久化的，删除消息不影响其他消息的 id
-- **时间顺序用 idx 判断**：idx 是消息在列表中的位置，代表时间先后。但 idx 是动态的（删除消息后后续 idx 会前移），不能当游标存储
+- **idx 是全量列表序号**：代表消息在完整对话中的位置（1-based，动态值，删除消息后会变）
 - **UUID v4 字典序不代表时间先后**：不要用 id 比较大小来判断先后
 
+**[PROTECTED] 保护标签**：
+- 带有 `[PROTECTED]` 标签的消息是最近的重要消息，**绝对不可删除或压缩**
+- 程序层面也会兜底保护这些消息（即使你误操作，程序也会阻止）
+- 保护数量由配置决定，默认 10 条
+
 **操作步骤**：
-1. 从消息列表中找到游标 UUID 对应的消息，记录其 idx
-2. 用 idx 确定操作范围（idx 大的 = 更新的消息）
+1. 直接处理收到的全部消息（程序已保证只传入正确范围的消息）
+2. 不要修改或删除带 [PROTECTED] 标签的消息
 3. 操作完成后，用 id（UUID）报告游标位置
 
-**游标含义**：
-- idx ≤ 游标idx 的消息：已处理过，不重复处理
-- idx > last_dream_evolve_id 对应idx 的消息：dream-evolver 尚未提取知识
-
 **空游标处理**：
-- `last_compress_id` 为空：视为从 idx=0 开始（即处理所有 ≤ last_dream_evolve_id 对应idx 的消息）
-- `last_dream_evolve_id` 为空：不应发生，若出现则只做模式一且不删除任何消息
+- 无 `last_compress_id`（首次）：视为从最早消息开始
+- 范围内无消息：直接报告游标推进，不做任何操作
 
 ## 摘要格式规范
 
@@ -83,7 +82,7 @@ mcpServers:
 - 合并摘要格式：`[合并] 原始消息1摘要 + 原始消息2摘要 + ...`（每条原始消息用一句话概括，总长 ≤ 80 字符）
 
 **安全边界**：
-- idx > last_dream_evolve_id 对应idx 的消息：dream-evolver 尚未提取知识，不得修改或删除
+- 带 [PROTECTED] 标签的消息不可删除或压缩
 
 **实现**：用 `update_message` 改写冗余消息为精简版，用 `delete_messages` 删除被合并的消息
 
@@ -109,7 +108,7 @@ mcpServers:
    - 用 `delete_messages` 删除单元中其余消息
 
 **安全边界**：
-- idx > last_dream_evolve_id 对应idx 的消息：dream-evolver 尚未提取知识，不得修改或删除
+- 带 [PROTECTED] 标签的消息不可删除或压缩
 
 ## 模式三：强制压缩（一轮 JSON 方案）
 
@@ -188,7 +187,7 @@ mcpServers:
 
 ## 重要约束
 
-- 绝不删除操作开始时 idx 最大的 10 条消息（按 id 锚定，不受后续 idx 变化影响）
+- 带 [PROTECTED] 标签的消息绝不删除或压缩
   - 若总消息数 ≤ 10：保护所有消息，仅允许压缩为摘要，不允许删除
 - 会话单元不撕裂（属于同一话题的消息要么全处理，要么全不处理）
 - 一次性完成，不中途暂停
