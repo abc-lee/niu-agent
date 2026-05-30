@@ -225,11 +225,40 @@ sub agents:
 
 如果子Agent的增量范围为空（游标已在末尾且无新消息），跳过该子Agent调用。不传空消息列表给 LLM，避免无意义的 token 消耗。
 
-### force 模式 Dream Evolver 增量截断
+### 边缘场景：force 模式 Dream Evolver 增量范围
 
-force 模式下 Dream Evolver 仍为增量模式。但若上次 sleep 时 dream 游标未推进（如 entity-extractor 返回 null），增量范围可能很大。处理方式：在 `_build_incremental_msg_text()` 中增加 token 预算参数（如 `max_tokens=30000`），超过预算时从最新的消息开始截取，优先处理近期消息。截断时记录警告日志。
+force 模式下 Dream Evolver 仍为增量模式。增量范围可能很大（如果上次 sleep 时 dream 游标未推进），但**不需要截断**，因为子Agent使用 FIFO 模式管理上下文：当 token 超过 75% 阈值（150K），自动从最早的消息开始丢弃。因此 Dream Evolver 会优先处理最近的消息，最早的消息被 FIFO 自然丢弃。这与设计原则3（sleep/force 都只传增量）一致。
 
-### 子Agent输出游标格式不一致
+### 串行调用的双游标隔离
+
+三个子Agent串行执行：Entity → Dream → Context Manager。隔离规则：
+
+1. **每个子Agent执行前重新获取消息列表** — 前一个子Agent可能通过 `delete_messages`/`update_message` 修改了 DB，后续Agent必须看到最新状态
+2. **每个子Agent独立计算增量范围** — 基于各自的游标和最新消息列表
+3. **Context Manager 的上界使用 Dream 处理前的游标** — 避免重复处理 Dream 刚处理过的消息
+
+```
+Entity Extractor:
+  范围: [entity_cursor, 末尾]
+  输入: 重新获取 messages → _build_incremental_msg_text(messages, entity_cursor)
+  输出: 推进 entity_cursor → 写入游标文件
+
+Dream Evolver:
+  范围: [dream_cursor, 末尾]
+  输入: 重新获取 messages → _build_incremental_msg_text(messages, dream_cursor)
+  输出: 推进 dream_cursor → 写入游标文件
+  注意: 记录 dream_cursor_before = dream_cursor (推进前的值)
+
+Context Manager:
+  范围: [compress_cursor, dream_cursor_before]
+  输入: 重新获取 messages → _build_incremental_msg_text(messages, compress_cursor, end_cursor_id=dream_cursor_before)
+  输出: 推进 compress_cursor → 写入游标文件
+  注意: 上界是 Dream 推进前的游标，不包含 Dream 刚处理过的消息
+```
+
+force 模式同理，只是 Entity Extractor 范围为全量（`entity_cursor = ""`），其余逻辑相同。
+
+## 边缘场景处理
 
 子Agent可能返回多种格式的游标：`"uuid"`、`null`、空字符串、带换行等。统一处理：
 - `_extract_cursor_id()` 正则同时匹配 `"value"` 和 `null` 两种格式
