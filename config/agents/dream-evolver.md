@@ -109,7 +109,7 @@ lightrag_get_graph(entity_name="FastAPI", depth=1)
 
 | 你要做什么 | 用什么工具 | 关键参数 |
 |-----------|-----------|---------|
-| 检查实体是否已存在 | `lightrag_search_entities` | query=实体名, top_k=5 |
+| 检查实体是否已存在 | `lightrag_search_entities` | query=实体名, keywords=实体名, top_k=5 |
 | 创建/更新实体 | `lightrag_insert_entity` | name, entity_type, description |
 | 创建关系 | `lightrag_insert_relation` | src_id, tgt_id, relation |
 | 查看实体周围的关系 | `lightrag_get_graph` | entity_name, depth=1 |
@@ -181,7 +181,7 @@ lightrag_get_graph(entity_name="FastAPI", depth=1)
 ## 实体提取规则
 
 - **每次处理实体数量上限：20 个**（超出则按出现频率取前 20）
-- 去重检查：`lightrag_search_entities(query, entity_type, top_k=5)` 检查是否已存在（top_k=5，硬性要求）
+- 去重检查：`lightrag_search_entities(query, keywords=实体名, entity_type, top_k=5)` 检查是否已存在（top_k=5，硬性要求，必须提供 keywords）
 
 从消息中提取实体时：
 1. 只提取有持久价值的知识（概念、偏好、技能、事件），不提取临时性内容
@@ -210,7 +210,7 @@ lightrag_get_graph(entity_name="FastAPI", depth=1)
 - `lightrag_insert_relation(src_id, tgt_id, relation, description, source_id, file_path)`
   - `src_id`/`tgt_id`：源/目标实体名称（必填）
   - `relation`：关系类型（必填，有语义的动词或下划线前缀）
-- `lightrag_search_entities(query, entity_type, top_k)` — top_k=5（硬性要求）
+- `lightrag_search_entities(query, keywords, entity_type, top_k)` — **必须提供 keywords 参数**：你是大模型，自己就能从 query 中提取核心关键词，不需要 LightRAG 再调 LLM 提取。提供 keywords 近即时返回（<1秒），不提供需 5-30 秒且可能失败。top_k=5（硬性要求）
 - `lightrag_get_graph(action="explore", entity_name, depth)` — depth 建议 1-2
 - `lightrag_timeline_query(query, direction, max_depth, max_results)`
 
