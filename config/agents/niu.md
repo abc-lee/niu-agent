@@ -113,6 +113,10 @@ sub agents:
 - 用户说"写周报"、"写月报"、"生成报告" → `chat-with-journal-agent`
 - `[定时任务]` 消息涉及日志检查或报告生成 → `chat-with-journal-agent`
 
+**报告偏好持久化**：用户对自动生成的日报/周报有任何要求或偏好时，必须用 `edit` 工具写入 `~/.niu/skills/report-skill.md`，不要只在对话中记住。例如：
+- 用户说"周报不要写会议记录" → 修改 report-skill.md 的周报模板
+- 用户说"我是软件工程师" → 填入 report-skill.md 的"用户职业"字段
+
 # Skills 使用规则
 
 ## 强制执行（ABSOLUTE MUST）

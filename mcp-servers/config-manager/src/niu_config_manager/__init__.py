@@ -145,7 +145,7 @@ TOOL_SCHEMAS = {
     },
     "get_user_info": {
         "name": "get_user_info",
-        "description": "Get user information (name, preferences, profession).",
+        "description": "Get user information (name, preferences).",
         "input_schema": {
             "type": "object",
             "properties": {},
@@ -165,10 +165,6 @@ TOOL_SCHEMAS = {
                     "type": "array",
                     "items": {"type": "string"},
                     "description": "User preferences (e.g., ['concise answers', 'Chinese'])",
-                },
-                "profession": {
-                    "type": "string",
-                    "description": "User's profession or occupation (e.g., '软件工程师', '数据分析师', '产品经理')",
                 },
             },
         },
@@ -360,7 +356,7 @@ def load_memory() -> dict[str, Any]:
             "greetingStyle": "友好问候，简洁明了",
         },
         "workspace": {"path": "", "createdAt": ""},
-        "user": {"name": "", "preferences": [], "profession": ""},
+        "user": {"name": "", "preferences": []},
         "firstRun": True,
         "createdAt": "",
         "lastActiveAt": "",
@@ -590,7 +586,7 @@ def get_user_info() -> dict[str, Any]:
     return memory.get("user", {"name": "", "preferences": []})
 
 
-def set_user_info(name: str = None, preferences: list[str] = None, profession: str = None) -> dict[str, Any]:
+def set_user_info(name: str = None, preferences: list[str] = None) -> dict[str, Any]:
     """Set user information."""
     memory = load_memory()
     user = memory.get("user", {})
@@ -599,8 +595,6 @@ def set_user_info(name: str = None, preferences: list[str] = None, profession: s
         user["name"] = name
     if preferences is not None:
         user["preferences"] = preferences
-    if profession is not None:
-        user["profession"] = profession
 
     memory["user"] = user
     save_memory(memory)
