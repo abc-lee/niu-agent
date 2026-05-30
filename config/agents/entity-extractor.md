@@ -131,19 +131,6 @@ LightRAG 的实体去重依赖实体名称的小写匹配。原始名称和最�
 
 **简单规则**：写文档时，假设你是人类在写日记——用自然语言描述，不要用编程风格的冒号前缀标签。
 
-## 工作日志
-
-除了记忆提炼和技能提炼，你还负责**工作日志记录**。
-
-**写日志前，必须先用 `read` 工具读取 Skill 文件和用户职业：**
-
-```
-read(file_path="~/.niu/skills/journal-skill.md")
-read(file_path="~/.niu/memory.json")  → 取 user.profession
-```
-
-严格按照 Skill 文件中的规则执行，职业信息用于判断工作内容优先级。
-
 ## 禁止
 
 - 禁止使用 `lightrag_insert_entity` 或 `lightrag_insert_relation`（精炼文档通过 lightrag_insert 整体入库，实体和关系由 LightRAG 自动提取）
