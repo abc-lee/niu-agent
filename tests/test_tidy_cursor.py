@@ -223,3 +223,112 @@ class TestBuildIncrementalMsgTextFilterWm:
         assert "[idx:1]" in result
         assert "[idx:4]" in result
         assert "[idx:2]" not in result  # uuid-1 被过滤，idx=2 不应出现
+
+
+class TestBuildIncrementalMsgTextProtectRecent:
+    """测试 protect_recent 参数：对最后 N 条消息加 [PROTECTED] 标签"""
+
+    def test_protect_recent_labels_last_n_messages(self):
+        """protect_recent=3 时，最后 3 条消息加 [PROTECTED] 标签"""
+        messages = make_messages(10)
+        out_ids = []
+        result = _build_incremental_msg_text(
+            messages,
+            last_cursor_id="",
+            out_msg_ids=out_ids,
+            protect_recent=3,
+        )
+        lines = result.split("\n")
+        protected_lines = [l for l in lines if "[PROTECTED]" in l]
+        # 最后 3 条（uuid-7, uuid-8, uuid-9）应有 [PROTECTED]
+        assert len(protected_lines) == 3
+        assert "uuid-7" in protected_lines[0]
+        assert "uuid-8" in protected_lines[1]
+        assert "uuid-9" in protected_lines[2]
+
+    def test_protect_recent_zero_no_labels(self):
+        """protect_recent=0 时，不加任何 [PROTECTED] 标签"""
+        messages = make_messages(10)
+        out_ids = []
+        result = _build_incremental_msg_text(
+            messages,
+            last_cursor_id="",
+            out_msg_ids=out_ids,
+            protect_recent=0,
+        )
+        assert "[PROTECTED]" not in result
+
+    def test_protect_recent_with_end_cursor(self):
+        """protect_recent 与 end_cursor_id 组合：保护范围内的最后 N 条"""
+        messages = make_messages(10)
+        out_ids = []
+        result = _build_incremental_msg_text(
+            messages,
+            last_cursor_id="uuid-2",
+            out_msg_ids=out_ids,
+            end_cursor_id="uuid-7",
+            protect_recent=2,
+        )
+        lines = result.split("\n")
+        protected_lines = [l for l in lines if "[PROTECTED]" in l]
+        # 范围内 uuid-3~uuid-7，最后 2 条是 uuid-6, uuid-7
+        assert len(protected_lines) == 2
+        assert "uuid-6" in protected_lines[0]
+        assert "uuid-7" in protected_lines[1]
+
+    def test_protect_recent_larger_than_range(self):
+        """protect_recent 大于增量消息数时，全部加 [PROTECTED]"""
+        messages = make_messages(3)
+        out_ids = []
+        result = _build_incremental_msg_text(
+            messages,
+            last_cursor_id="",
+            out_msg_ids=out_ids,
+            protect_recent=10,
+        )
+        lines = result.split("\n")
+        protected_lines = [l for l in lines if "[PROTECTED]" in l]
+        assert len(protected_lines) == 3  # 全部 3 条
+
+    def test_protect_recent_with_filter_wm(self):
+        """protect_recent + filter_wm 组合：过滤后再保护"""
+        messages = [
+            FakeMessage(id="uuid-0", role="user", content="你好"),
+            FakeMessage(id="uuid-1", role="assistant", content="", tool_calls=[
+                {"id": "tc-wm", "function": {"name": "working_memory"}, "arguments": "{}"}
+            ]),
+            FakeMessage(id="uuid-2", role="tool", content="ok", tool_call_id="tc-wm"),
+            FakeMessage(id="uuid-3", role="user", content="帮我写代码"),
+            FakeMessage(id="uuid-4", role="assistant", content="好的"),
+        ]
+        out_ids = []
+        result = _build_incremental_msg_text(
+            messages, "", out_ids, protect_recent=1, filter_wm=True
+        )
+        # 过滤后剩 uuid-0, uuid-3, uuid-4，最后 1 条(uuid-4) 加 PROTECTED
+        lines = result.split("\n")
+        protected_lines = [l for l in lines if "[PROTECTED]" in l]
+        assert len(protected_lines) == 1
+        assert "uuid-4" in protected_lines[0]
+
+    def test_end_cursor_with_filter_wm(self):
+        """end_cursor_id + filter_wm 组合：先截断再过滤"""
+        messages = [
+            FakeMessage(id="uuid-0", role="user", content="你好"),
+            FakeMessage(id="uuid-1", role="assistant", content="", tool_calls=[
+                {"id": "tc-wm", "function": {"name": "working_memory"}, "arguments": "{}"}
+            ]),
+            FakeMessage(id="uuid-2", role="tool", content="ok", tool_call_id="tc-wm"),
+            FakeMessage(id="uuid-3", role="user", content="帮我"),
+            FakeMessage(id="uuid-4", role="assistant", content="好的"),
+        ]
+        out_ids = []
+        result = _build_incremental_msg_text(
+            messages, "", out_ids, end_cursor_id="uuid-3", filter_wm=True
+        )
+        # 截断到 uuid-3 → [uuid-0, uuid-1, uuid-2, uuid-3]，过滤 WM → [uuid-0, uuid-3]
+        assert "uuid-0" in out_ids
+        assert "uuid-1" not in out_ids
+        assert "uuid-2" not in out_ids
+        assert "uuid-3" in out_ids
+        assert "uuid-4" not in out_ids

@@ -74,7 +74,7 @@ def _extract_overflow_info(result: str) -> dict:
         return {"overflow": True, "raw": result}
 
 
-def _build_incremental_msg_text(messages, last_cursor_id: str, out_msg_ids: list, msg_tokens: list | None = None, end_cursor_id: str | None = None, filter_wm: bool = False) -> str:
+def _build_incremental_msg_text(messages, last_cursor_id: str, out_msg_ids: list, msg_tokens: list | None = None, end_cursor_id: str | None = None, filter_wm: bool = False, protect_recent: int = 0) -> str:
     """
     构建增量消息文本：只包含游标之后的新消息。
 
@@ -86,6 +86,7 @@ def _build_incremental_msg_text(messages, last_cursor_id: str, out_msg_ids: list
         end_cursor_id: 上界游标 UUID，只生成到该消息为止（含该消息），None 则到末尾
         filter_wm: 是否过滤 working_memory 虚拟消息（WM tool_calls + 对应 tool 结果），
                    并修复 tool_calls 成对完整性（移除末尾孤立 assistant(tool_calls) 和开头孤立 tool）
+        protect_recent: 对最后 N 条消息加 [PROTECTED] 标签（0 表示不加）
 
     Returns:
         格式化的消息文本
@@ -170,6 +171,7 @@ def _build_incremental_msg_text(messages, last_cursor_id: str, out_msg_ids: list
         range_messages_with_pos = filtered
 
     lines = []
+    total_count = len(range_messages_with_pos)
     for rel_pos, (orig_pos, msg) in enumerate(range_messages_with_pos):
         original_idx = start + orig_pos + 1  # 1-based display index（使用原始位置）
         msg_id = getattr(msg, "id", "") or ""
@@ -178,7 +180,11 @@ def _build_incremental_msg_text(messages, last_cursor_id: str, out_msg_ids: list
         token_annotation = ""
         if msg_tokens and (start + orig_pos) < len(msg_tokens):
             token_annotation = f"{msg_tokens[start + orig_pos]}tokens "
-        lines.append(f"[id:{msg_id}] [idx:{original_idx}] {token_annotation}{msg.role}: {content}")
+        # protect_recent: 对最后 N 条消息加 [PROTECTED] 标签
+        protected_label = ""
+        if protect_recent > 0 and rel_pos >= total_count - protect_recent:
+            protected_label = "[PROTECTED] "
+        lines.append(f"[id:{msg_id}] [idx:{original_idx}] {token_annotation}{msg.role}: {protected_label}{content}")
 
     if not lines:
         return "（无新增消息）"
