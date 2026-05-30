@@ -877,6 +877,15 @@ async def _tidy_context_impl(request: dict):
             except Exception as e:
                 logger.warning(f"[Tidy] Failed to read compress cursor: {e}")
 
+        journal_cursor_path = Path.home() / ".niu" / "last_journal.json"
+        last_journal_id = ""
+        if journal_cursor_path.exists():
+            try:
+                cursor_data = json.loads(journal_cursor_path.read_text(encoding="utf-8"))
+                last_journal_id = cursor_data.get("last_journal_id", "")
+            except Exception as e:
+                logger.warning(f"[Tidy] Failed to read journal cursor: {e}")
+
         # 构建消息列表（包含 UUID，完整内容不截断）
         # 真实环境下 force 模式触发时上下文约 170K tokens（85%阈值）
         # 全量消息列表 ≤ 190K tokens，子 Agent 200K 窗口有 15% 输出空间，不会溢出
@@ -1041,6 +1050,89 @@ async def _tidy_context_impl(request: dict):
             else:
                 logger.info("[Tidy] dream-evolver: no new messages since cursor")
                 new_dream_id = last_dream_evolve_id
+
+            # 2.5/3. journal-agent（sleep 模式，仅 usage >= 50% 时调用）
+            if usage_percent >= 50:
+                # 重新获取消息列表（Dream 可能已修改 DB）
+                messages = await store.get_messages()
+                msg_tokens = []
+                try:
+                    from litellm import token_counter
+                    for msg in messages:
+                        try:
+                            t = token_counter(model="gpt-4o", messages=[{"role": msg.role, "content": msg.content or ""}])
+                        except Exception:
+                            t = max(1, len(msg.content or "") // 2) + 4
+                        msg_tokens.append(t)
+                except ImportError:
+                    msg_tokens = [max(1, len(msg.content or "") // 2) + 4 for msg in messages]
+                msg_id_set = {getattr(m, "id", "") for m in messages}
+
+                new_journal_id = last_journal_id
+                journal_msg_ids = []
+                journal_msg_text = _build_incremental_msg_text(
+                    messages, last_journal_id, journal_msg_ids, msg_tokens, filter_wm=True
+                )
+                logger.info(f"[Tidy] Sleep: starting journal-agent ({len(journal_msg_ids)} incremental messages)")
+
+                if journal_msg_ids:
+                    journal_prompt = f"""以下是对话消息（每条带 [id:UUID] [idx:N] 序号标注）。请从中识别工作内容，提取为日志条目追加写入 journal.md。
+
+{journal_msg_text}
+
+处理完成后，在报告末尾用 JSON 格式报告：{{"last_journal_id": "<收到的消息中 idx 最大的消息的 id（UUID）>"}}
+**必须推进游标**：即使没有可提取的工作内容，也必须输出 idx 最大的消息的 UUID。"""
+
+                    def run_journal_agent():
+                        return call_subagent(
+                            agent_name="journal-agent",
+                            task=journal_prompt,
+                            llm_config=llm_config,
+                            mcp_client=None,
+                        )
+
+                    journal_result = await asyncio.to_thread(run_journal_agent)
+                    logger.info(f"[Tidy] journal-agent result: {journal_result[:200]}")
+
+                    if _is_subagent_overflow(journal_result):
+                        overflow_info = _extract_overflow_info(journal_result)
+                        logger.warning(f"[Tidy] journal-agent overflow: {overflow_info.get('turns_completed', 0)} turns")
+                        partial = overflow_info.get("partial_result", "")
+                        recovered = _extract_cursor_id(partial, "last_journal_id", msg_id_set)
+                        if recovered and recovered != "NULL":
+                            new_journal_id = recovered
+                        else:
+                            new_journal_id = journal_msg_ids[-1]
+                            logger.warning(f"[Tidy] Journal cursor overflow fallback: {new_journal_id}")
+                    else:
+                        extracted = _extract_cursor_id(journal_result, "last_journal_id", msg_id_set)
+                        if extracted and extracted != "NULL":
+                            new_journal_id = extracted
+                        elif extracted == "NULL" or not extracted:
+                            new_journal_id = journal_msg_ids[-1]
+                            logger.warning(f"[Tidy] Journal cursor not matched, fallback: {new_journal_id}")
+
+                    # 校验游标
+                    if new_journal_id:
+                        fresh_msgs = await store.get_messages()
+                        fresh_ids = {getattr(m, "id", "") for m in fresh_msgs}
+                        if new_journal_id not in fresh_ids:
+                            logger.warning(f"[Tidy] Journal cursor {new_journal_id} deleted, reverting to {last_journal_id}")
+                            new_journal_id = last_journal_id
+                            if new_journal_id and new_journal_id not in fresh_ids:
+                                new_journal_id = ""
+
+                    if new_journal_id:
+                        journal_cursor_path.parent.mkdir(parents=True, exist_ok=True)
+                        journal_cursor_path.write_text(json.dumps({
+                            "last_journal_id": new_journal_id,
+                            "last_journal_at": datetime.now().isoformat(),
+                        }, ensure_ascii=False, indent=2), encoding="utf-8")
+                        logger.info(f"[Tidy] Journal cursor updated: last_journal_id={new_journal_id}")
+                else:
+                    logger.info("[Tidy] journal-agent: no new messages since cursor")
+            else:
+                logger.info(f"[Tidy] journal-agent: skipped (usage {usage_percent:.1f}% < 50%)")
 
             # 3/3. context-manager（增量 task 方式，保护范围 [compress_cursor, dream_cursor_new]）
             # 串行执行：重新获取消息列表（Dream 可能已修改 DB）
@@ -1309,6 +1401,86 @@ async def _tidy_context_impl(request: dict):
                     "last_dream_evolve_id": new_dream_id,
                     "last_evolve_at": datetime.now().isoformat(),
                 }, ensure_ascii=False, indent=2), encoding="utf-8")
+
+            # 2.5/3. journal-agent（force 模式，始终调用）
+            # 重新获取消息列表
+            messages = await store.get_messages()
+            msg_tokens = []
+            try:
+                from litellm import token_counter
+                for msg in messages:
+                    try:
+                        t = token_counter(model="gpt-4o", messages=[{"role": msg.role, "content": msg.content or ""}])
+                    except Exception:
+                        t = max(1, len(msg.content or "") // 2) + 4
+                    msg_tokens.append(t)
+            except ImportError:
+                msg_tokens = [max(1, len(msg.content or "") // 2) + 4 for msg in messages]
+            msg_id_set = {getattr(m, "id", "") for m in messages}
+
+            new_journal_id = last_journal_id
+            journal_force_msg_ids = []
+            journal_force_msg_text = _build_incremental_msg_text(
+                messages, last_journal_id, journal_force_msg_ids, msg_tokens, filter_wm=True
+            )
+            logger.info(f"[Tidy] Force: starting journal-agent ({len(journal_force_msg_ids)} incremental messages)")
+
+            if journal_force_msg_ids:
+                journal_force_prompt = f"""以下是对话消息（每条带 [id:UUID] [idx:N] 序号标注）。请从中识别工作内容，提取为日志条目追加写入 journal.md。
+
+{journal_force_msg_text}
+
+处理完成后，在报告末尾用 JSON 格式报告：{{"last_journal_id": "<收到的消息中 idx 最大的消息的 id（UUID）>"}}
+**必须推进游标**：即使没有可提取的工作内容，也必须输出 idx 最大的消息的 UUID。"""
+
+                def run_journal_agent_force():
+                    return call_subagent(
+                        agent_name="journal-agent",
+                        task=journal_force_prompt,
+                        llm_config=llm_config,
+                        mcp_client=None,
+                    )
+
+                journal_result = await asyncio.to_thread(run_journal_agent_force)
+                logger.info(f"[Tidy] Force: journal-agent completed, length={len(journal_result)}")
+
+                if _is_subagent_overflow(journal_result):
+                    overflow_info = _extract_overflow_info(journal_result)
+                    logger.warning(f"[Tidy] Force: journal-agent overflow: {overflow_info.get('turns_completed', 0)} turns")
+                    partial = overflow_info.get("partial_result", "")
+                    recovered = _extract_cursor_id(partial, "last_journal_id", msg_id_set)
+                    if recovered and recovered != "NULL":
+                        new_journal_id = recovered
+                    else:
+                        new_journal_id = journal_force_msg_ids[-1]
+                        logger.warning(f"[Tidy] Force: Journal cursor overflow fallback: {new_journal_id}")
+                else:
+                    extracted = _extract_cursor_id(journal_result, "last_journal_id", msg_id_set)
+                    if extracted and extracted != "NULL":
+                        new_journal_id = extracted
+                    elif extracted == "NULL" or not extracted:
+                        new_journal_id = journal_force_msg_ids[-1]
+                        logger.warning(f"[Tidy] Force: Journal cursor not matched, fallback: {new_journal_id}")
+
+                # 校验游标
+                if new_journal_id:
+                    fresh_msgs = await store.get_messages()
+                    fresh_ids = {getattr(m, "id", "") for m in fresh_msgs}
+                    if new_journal_id not in fresh_ids:
+                        logger.warning(f"[Tidy] Force: Journal cursor {new_journal_id} deleted, reverting to {last_journal_id}")
+                        new_journal_id = last_journal_id
+                        if new_journal_id and new_journal_id not in fresh_ids:
+                            new_journal_id = ""
+
+                if new_journal_id:
+                    journal_cursor_path.parent.mkdir(parents=True, exist_ok=True)
+                    journal_cursor_path.write_text(json.dumps({
+                        "last_journal_id": new_journal_id,
+                        "last_journal_at": datetime.now().isoformat(),
+                    }, ensure_ascii=False, indent=2), encoding="utf-8")
+                    logger.info(f"[Tidy] Force: Journal cursor updated: last_journal_id={new_journal_id}")
+            else:
+                logger.info("[Tidy] Force: journal-agent no incremental messages")
 
             # 3/3. context-manager force prompt — 一轮 JSON 文件方案
             # 重新读取 compress 游标
