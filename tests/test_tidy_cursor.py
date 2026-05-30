@@ -556,10 +556,9 @@ class TestTidyContextImplIntegration:
         """force 模式 Context Manager 全量 + 保护"""
         messages = make_messages(20)
         compress_ids = []
-        _build_incremental_msg_text(messages, "", compress_ids, protect_recent=5, filter_wm=True)
+        result = _build_incremental_msg_text(messages, "", compress_ids, protect_recent=5, filter_wm=True)
         assert len(compress_ids) == 20
         # 最后 5 条应有 [PROTECTED] 标签
-        result = _build_incremental_msg_text(messages, "", compress_ids, protect_recent=5, filter_wm=True)
         lines = result.split("\n")
         protected_lines = [l for l in lines if "[PROTECTED]" in l]
         assert len(protected_lines) == 5
