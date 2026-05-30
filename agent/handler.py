@@ -860,28 +860,8 @@ class NiuHandler(BaseHandler):
 
         try:
             yield StreamEvent("tool_marker", f"[SubAgent] Calling {agent_name}...\n")
-            # 过滤 WORKING MEMORY 虚拟消息，不让子Agent看到
-            # 只有 entity-extractor 需要看到主Agent的tool消息，其他子Agent保持独立上下文
-            if agent_name == "entity-extractor":
-                _history = getattr(self, '_current_messages', None)
-            else:
-                _history = None
-            if _history:
-                _wm_ids = set()
-                for m in _history:
-                    if m.get("role") == "assistant" and m.get("tool_calls"):
-                        for tc in m["tool_calls"]:
-                            if tc.get("function", {}).get("name") == "working_memory":
-                                _wm_ids.add(tc.get("id", ""))
-                _history = [m for m in _history if not (
-                    (m.get("role") == "assistant" and m.get("tool_calls") and
-                     any(tc.get("function", {}).get("name") == "working_memory" for tc in m["tool_calls"]))
-                    or (m.get("role") == "tool" and m.get("tool_call_id", "") in _wm_ids)
-                )]
-
-            # 移除末尾孤立的 assistant(tool_calls)（没有对应 tool 结果）
-            while _history and _history[-1].get("role") == "assistant" and _history[-1].get("tool_calls"):
-                _history.pop()
+            # 子Agent保持独立上下文，不传递主Agent历史
+            _history = None
 
             result = call_subagent(
                 agent_name=agent_name,
@@ -929,31 +909,6 @@ class NiuHandler(BaseHandler):
                 except Exception as e:
                     yield StreamEvent("system", f"[SubAgent] Warning: Failed to verify task: {e}\n")
 
-            # entity-extractor 调用完成后，从输出提取游标并写入文件
-            # 这样下次 sleep 模式触发时，游标已推进，不会重复处理
-            if agent_name == "entity-extractor" and result:
-                try:
-                    import re as _re
-                    _pattern = r'\{\s*"last_entity_extract_id"\s*:\s*"([^"]+)"\s*'
-                    _match = _re.search(_pattern, result, _re.DOTALL)
-                    if _match:
-                        _new_cursor = _match.group(1)
-                        from pathlib import Path as _Path
-                        from datetime import datetime as _dt
-                        _cursor_path = _Path.home() / ".niu" / "last_entity_extract.json"
-                        _cursor_path.parent.mkdir(parents=True, exist_ok=True)
-                        _cursor_path.write_text(json.dumps({
-                            "last_entity_extract_id": _new_cursor,
-                            "last_entity_extract_at": _dt.now().isoformat(),
-                        }, ensure_ascii=False, indent=2), encoding="utf-8")
-                        logger.info(f"[SubAgent] Entity cursor updated: {_new_cursor}")
-                    else:
-                        # 正则未匹配（可能返回了 null）— 检查是否显式返回了 null
-                        _null_pattern = r'\{\s*"last_entity_extract_id"\s*:\s*null\s*'
-                        if _re.search(_null_pattern, result, _re.DOTALL):
-                            logger.warning("[SubAgent] Entity extractor returned null cursor — cursor not advanced (will be handled by compat.py fallback)")
-                except Exception as e:
-                    logger.warning(f"[SubAgent] Failed to update entity cursor: {e}")
 
             yield StreamEvent("tool_marker", f"[SubAgent] {agent_name} completed: {result[:200] if len(result) > 200 else result}\n")
             # 返回结果给 LLM，让它向用户汇报
@@ -1072,6 +1027,13 @@ class NiuHandler(BaseHandler):
         # 先检查 chat-with-* 子 Agent 调用（通配路由）
         if tool_name.startswith("chat-with-"):
             agent_name = tool_name[len("chat-with-"):]
+            # 系统自动管理的子Agent，禁止手动调用
+            BLOCKED_SUBAGENTS = {"context-manager", "entity-extractor"}
+            if agent_name in BLOCKED_SUBAGENTS:
+                return StepOutcome(
+                    {"status": "error", "message": f"子Agent {agent_name} 已由系统自动管理，不可手动调用"},
+                    next_prompt=self._get_anchor_prompt()
+                )
             args = {**args, "_index": index}
             prer = yield from try_call_generator(
                 self.tool_before_callback, tool_name, args, response
