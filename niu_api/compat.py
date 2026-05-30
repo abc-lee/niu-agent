@@ -1213,6 +1213,15 @@ async def _tidy_context_impl(request: dict):
                     elif extracted == "NULL" or not extracted:
                         new_entity_id = entity_force_msg_ids[-1] if entity_force_msg_ids else last_entity_extract_id
                         logger.warning(f"[Tidy] Force: Entity cursor not matched, fallback to last msg: {new_entity_id}")
+                # 校验游标
+                if new_entity_id:
+                    fresh_msgs = await store.get_messages()
+                    fresh_ids = {getattr(m, "id", "") for m in fresh_msgs}
+                    if new_entity_id not in fresh_ids:
+                        logger.warning(f"[Tidy] Force: Entity cursor {new_entity_id} deleted by sub-agent, reverting to {last_entity_extract_id}")
+                        new_entity_id = last_entity_extract_id
+                        if new_entity_id and new_entity_id not in fresh_ids:
+                            new_entity_id = ""
                 if new_entity_id:
                     entity_cursor_path.parent.mkdir(parents=True, exist_ok=True)
                     entity_cursor_path.write_text(json.dumps({
@@ -1283,6 +1292,16 @@ async def _tidy_context_impl(request: dict):
                         logger.warning(f"[Tidy] Force: Dream cursor not matched, fallback to last msg: {new_dream_id}")
             else:
                 logger.info("[Tidy] Force: dream-evolver no incremental messages")
+
+            # 校验游标
+            if new_dream_id:
+                fresh_msgs = await store.get_messages()
+                fresh_ids = {getattr(m, "id", "") for m in fresh_msgs}
+                if new_dream_id not in fresh_ids:
+                    logger.warning(f"[Tidy] Force: Dream cursor {new_dream_id} deleted by sub-agent, reverting to {last_dream_evolve_id}")
+                    new_dream_id = last_dream_evolve_id
+                    if new_dream_id and new_dream_id not in fresh_ids:
+                        new_dream_id = ""
 
             if new_dream_id:
                 dream_cursor_path.parent.mkdir(parents=True, exist_ok=True)
