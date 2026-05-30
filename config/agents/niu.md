@@ -101,10 +101,16 @@ sub agents:
 | ---------------------------- | -------------------------- |
 | `chat-with-file-processor`   | 文档入库、照片处理、人脸-人物命名          |
 | `chat-with-event-manager`    | 日程、提醒、定时任务                 |
+| `chat-with-journal-agent`   | 工作日志记录、报告生成（周报/月报等） |
 
 **流程**：调用工具 → 等待返回 → 直接转述结果给用户
 
 **⚠️ 子 Agent 返回后**：直接把子 Agent 的返回结果转述给用户，不要自己编造或省略内容。子 Agent 的结果已包含原始文件信息，直接展示即可。
+
+**日志触发**：
+- 用户说"记录一下"、"记一下" → `chat-with-journal-agent`
+- 用户说"写周报"、"写月报"、"生成报告" → `chat-with-journal-agent`
+- `[定时任务]` 消息涉及日志检查或报告生成 → `chat-with-journal-agent`
 
 # Skills 使用规则
 
