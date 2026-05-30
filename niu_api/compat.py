@@ -74,7 +74,7 @@ def _extract_overflow_info(result: str) -> dict:
         return {"overflow": True, "raw": result}
 
 
-def _build_incremental_msg_text(messages, last_cursor_id: str, out_msg_ids: list, msg_tokens: list | None = None, end_cursor_id: str | None = None) -> str:
+def _build_incremental_msg_text(messages, last_cursor_id: str, out_msg_ids: list, msg_tokens: list | None = None, end_cursor_id: str | None = None, filter_wm: bool = False) -> str:
     """
     构建增量消息文本：只包含游标之后的新消息。
 
@@ -84,6 +84,8 @@ def _build_incremental_msg_text(messages, last_cursor_id: str, out_msg_ids: list
         out_msg_ids: 输出参数，收集增量消息的 UUID 列表
         msg_tokens: 每条消息的 token 数列表（与 messages 等长），None 则不注解
         end_cursor_id: 上界游标 UUID，只生成到该消息为止（含该消息），None 则到末尾
+        filter_wm: 是否过滤 working_memory 虚拟消息（WM tool_calls + 对应 tool 结果），
+                   并修复 tool_calls 成对完整性（移除末尾孤立 assistant(tool_calls) 和开头孤立 tool）
 
     Returns:
         格式化的消息文本
@@ -119,16 +121,64 @@ def _build_incremental_msg_text(messages, last_cursor_id: str, out_msg_ids: list
     if start >= effective_end:
         return "（无新增消息）"
 
+    # 构建带原始位置的消息列表（用于 filter_wm 后保留原始 idx）
+    # 每个元素为 (orig_pos, msg)，orig_pos 是在 messages[start:effective_end] 中的偏移
+    range_messages_with_pos = [(i, msg) for i, msg in enumerate(messages[start:effective_end])]
+
+    if filter_wm:
+        # 1. 收集 WM tool_call IDs（working_memory 函数的调用 ID）
+        wm_tc_ids = set()
+        for orig_pos, msg in range_messages_with_pos:
+            tool_calls = getattr(msg, "tool_calls", None)
+            if tool_calls and isinstance(tool_calls, list):
+                for tc in tool_calls:
+                    if isinstance(tc, dict):
+                        tc_name = tc.get("function", {}).get("name", "")
+                        if tc_name == "working_memory":
+                            wm_tc_ids.add(tc.get("id", ""))
+
+        # 2. 过滤消息
+        filtered = []
+        for orig_pos, msg in range_messages_with_pos:
+            role = getattr(msg, "role", "")
+            tool_calls = getattr(msg, "tool_calls", None)
+            tool_call_id = getattr(msg, "tool_call_id", "") or ""
+
+            # 过滤 WM 对应的 tool 结果消息
+            if role == "tool" and tool_call_id in wm_tc_ids:
+                continue
+
+            # 过滤纯 WM 的 assistant(tool_calls)（所有 tool_calls 都是 WM）
+            if role == "assistant" and tool_calls and isinstance(tool_calls, list):
+                wm_only = all(
+                    isinstance(tc, dict) and tc.get("function", {}).get("name") == "working_memory"
+                    for tc in tool_calls
+                )
+                if wm_only:
+                    continue
+
+            filtered.append((orig_pos, msg))
+
+        # 3. 移除末尾孤立的 assistant(tool_calls)（无对应 tool 结果）
+        while filtered and filtered[-1][1].role == "assistant" and getattr(filtered[-1][1], "tool_calls", None):
+            filtered.pop()
+
+        # 4. 移除开头孤立的 tool 消息（游标切割导致无对应 assistant）
+        while filtered and filtered[0][1].role == "tool":
+            filtered.pop(0)
+
+        range_messages_with_pos = filtered
+
     lines = []
-    for i, msg in enumerate(messages[start:effective_end]):
-        idx = start + i + 1  # 1-based display index
+    for rel_pos, (orig_pos, msg) in enumerate(range_messages_with_pos):
+        original_idx = start + orig_pos + 1  # 1-based display index（使用原始位置）
         msg_id = getattr(msg, "id", "") or ""
         out_msg_ids.append(msg_id)
         content = msg.content or ""
         token_annotation = ""
-        if msg_tokens and (start + i) < len(msg_tokens):
-            token_annotation = f"{msg_tokens[start + i]}tokens "
-        lines.append(f"[id:{msg_id}] [idx:{idx}] {token_annotation}{msg.role}: {content}")
+        if msg_tokens and (start + orig_pos) < len(msg_tokens):
+            token_annotation = f"{msg_tokens[start + orig_pos]}tokens "
+        lines.append(f"[id:{msg_id}] [idx:{original_idx}] {token_annotation}{msg.role}: {content}")
 
     if not lines:
         return "（无新增消息）"
