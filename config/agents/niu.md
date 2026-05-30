@@ -7,6 +7,7 @@ permissions:
 sub agents:
   - file-processor
   - event-manager
+  - journal-agent
 ---
 
 # 核心能力
