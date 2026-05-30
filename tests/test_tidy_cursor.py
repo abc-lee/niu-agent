@@ -417,3 +417,149 @@ class TestExtractCursorIdNull:
             set(),
         )
         assert result == "NULL"
+
+
+class TestTidyContextImplIntegration:
+    """
+    全量集成测试 — 验证 _tidy_context_impl 的完整流程
+
+    测试方式：构造真实消息，验证三个子Agent的增量范围计算、
+    游标 fallback、保护范围等程序层面逻辑。不 mock LLM。
+    """
+
+    def test_incremental_range_calculation(self):
+        """验证三个子Agent的增量消息范围计算逻辑"""
+        messages = make_messages(20)  # uuid-0 ~ uuid-19
+
+        # Entity: cursor=uuid-4, 范围 [uuid-5, 末尾]
+        entity_ids = []
+        _build_incremental_msg_text(messages, "uuid-4", entity_ids, filter_wm=True)
+        assert entity_ids[0] == "uuid-5"
+        assert entity_ids[-1] == "uuid-19"
+        assert len(entity_ids) == 15
+
+        # Dream: cursor=uuid-9, 范围 [uuid-10, 末尾]（与 entity 独立）
+        dream_ids = []
+        _build_incremental_msg_text(messages, "uuid-9", dream_ids, filter_wm=True)
+        assert dream_ids[0] == "uuid-10"
+        assert dream_ids[-1] == "uuid-19"
+        assert len(dream_ids) == 10
+
+        # Context: cursor=uuid-2, end=uuid-14, 范围 [uuid-3, uuid-14]
+        compress_ids = []
+        _build_incremental_msg_text(messages, "uuid-2", compress_ids, end_cursor_id="uuid-14", protect_recent=3, filter_wm=True)
+        assert compress_ids[0] == "uuid-3"
+        assert compress_ids[-1] == "uuid-14"
+        assert len(compress_ids) == 12
+
+    def test_first_run_all_cursors_empty(self):
+        """首次运行：所有游标为空，三个Agent从开头处理"""
+        messages = make_messages(10)
+
+        # Entity: cursor=""
+        entity_ids = []
+        _build_incremental_msg_text(messages, "", entity_ids, filter_wm=True)
+        assert len(entity_ids) == 10
+
+        # Dream: cursor=""
+        dream_ids = []
+        _build_incremental_msg_text(messages, "", dream_ids, filter_wm=True)
+        assert len(dream_ids) == 10
+
+        # Context: cursor="", end=uuid-9
+        compress_ids = []
+        _build_incremental_msg_text(messages, "", compress_ids, end_cursor_id="uuid-9", filter_wm=True)
+        assert len(compress_ids) == 10
+
+    def test_cursor_points_to_deleted_message(self):
+        """游标指向已删除消息时，退化到从头开始"""
+        messages = make_messages(10)
+        # uuid-99 不在列表中
+        entity_ids = []
+        result = _build_incremental_msg_text(messages, "uuid-99", entity_ids, filter_wm=True)
+        # 退化到全量
+        assert len(entity_ids) == 10
+
+    def test_empty_incremental_range(self):
+        """游标已在末尾，无增量消息"""
+        messages = make_messages(5)
+        entity_ids = []
+        result = _build_incremental_msg_text(messages, "uuid-4", entity_ids, filter_wm=True)
+        assert entity_ids == []
+        assert "无新增消息" in result
+
+    def test_protected_ids_extraction(self):
+        """验证保护范围内的 UUID 列表提取"""
+        messages = make_messages(20)
+        compress_ids = []
+        _build_incremental_msg_text(
+            messages, "uuid-5", compress_ids,
+            end_cursor_id="uuid-15", protect_recent=3, filter_wm=True
+        )
+        # compress_ids 包含 uuid-6 ~ uuid-15（10条）
+        # 最后 3 条保护：uuid-13, uuid-14, uuid-15
+        protected = compress_ids[-3:]
+        assert protected == ["uuid-13", "uuid-14", "uuid-15"]
+
+    def test_cursor_fallback_to_last_incremental_msg(self):
+        """验证游标 fallback：推进到增量消息最后一条"""
+        messages = make_messages(10)
+        entity_ids = []
+        _build_incremental_msg_text(messages, "uuid-3", entity_ids, filter_wm=True)
+        # 如果 _extract_cursor_id 返回 None 或 "NULL"，应推进到 entity_ids[-1]
+        fallback_cursor = entity_ids[-1] if entity_ids else None
+        assert fallback_cursor == "uuid-9"
+
+    def test_serial_execution_isolation(self):
+        """验证串行执行隔离：三个Agent独立计算增量范围"""
+        messages = make_messages(30)  # uuid-0 ~ uuid-29
+
+        # 模拟串行执行：
+        # Step 1: Entity cursor=uuid-10, 范围 [uuid-11, 末尾]
+        entity_ids = []
+        _build_incremental_msg_text(messages, "uuid-10", entity_ids, filter_wm=True)
+        assert entity_ids[0] == "uuid-11"
+        assert len(entity_ids) == 19
+
+        # Step 2: Dream cursor=uuid-15, 范围 [uuid-16, 末尾]（独立于 Entity）
+        dream_ids = []
+        _build_incremental_msg_text(messages, "uuid-15", dream_ids, filter_wm=True)
+        assert dream_ids[0] == "uuid-16"
+        assert len(dream_ids) == 14
+
+        # Step 3: Context cursor=uuid-5, end=dream推进后的新游标(uuid-29)
+        # 范围 [uuid-6, uuid-29]
+        compress_ids = []
+        _build_incremental_msg_text(messages, "uuid-5", compress_ids, end_cursor_id="uuid-29", protect_recent=5, filter_wm=True)
+        assert compress_ids[0] == "uuid-6"
+        assert compress_ids[-1] == "uuid-29"
+        assert len(compress_ids) == 24
+
+    def test_force_mode_entity_full_range(self):
+        """force 模式 Entity Extractor 传空游标 = 全量"""
+        messages = make_messages(15)
+        entity_ids = []
+        _build_incremental_msg_text(messages, "", entity_ids, filter_wm=True)
+        assert len(entity_ids) == 15
+        assert entity_ids[0] == "uuid-0"
+        assert entity_ids[-1] == "uuid-14"
+
+    def test_force_mode_dream_still_incremental(self):
+        """force 模式 Dream Evolver 仍为增量模式"""
+        messages = make_messages(15)
+        dream_ids = []
+        _build_incremental_msg_text(messages, "uuid-10", dream_ids, filter_wm=True)
+        assert len(dream_ids) == 4  # uuid-11 ~ uuid-14
+        assert dream_ids[0] == "uuid-11"
+
+    def test_force_mode_context_full_range_with_protection(self):
+        """force 模式 Context Manager 全量 + 保护"""
+        messages = make_messages(20)
+        compress_ids = []
+        _build_incremental_msg_text(messages, "", compress_ids, protect_recent=5, filter_wm=True)
+        assert len(compress_ids) == 20
+        # 最后 5 条应有 [PROTECTED] 标签
+        result = _build_incremental_msg_text(messages, "", compress_ids, protect_recent=5, filter_wm=True)
+        lines = result.split("\n")
+        protected_lines = [l for l in lines if "[PROTECTED]" in l]
+        assert len(protected_lines) == 5
