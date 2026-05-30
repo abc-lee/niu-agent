@@ -923,10 +923,6 @@ async def list_tools() -> list[Tool]:
                         "items": {"type": "string"},
                         "description": "User preferences (e.g., ['concise answers', 'Chinese'])",
                     },
-                    "profession": {
-                        "type": "string",
-                        "description": "User's profession or occupation (e.g., '软件工程师', '数据分析师', '产品经理')",
-                    },
                 },
             },
         ),
@@ -1082,7 +1078,6 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             result = set_user_info(
                 name=arguments.get("name"),
                 preferences=arguments.get("preferences"),
-                profession=arguments.get("profession"),
             )
         elif name == "add_user_preference":
             result = add_user_preference(preference=arguments.get("preference"))
