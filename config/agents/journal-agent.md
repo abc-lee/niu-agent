@@ -50,10 +50,16 @@ mcpServers: []
 ## 报告生成
 
 当任务要求生成报告时：
-1. 读取 `~/.niu/skills/report-skill.md` 获取报告格式模板
-2. 用 `grep` 定位起止日期在 `{workspace}/journal.md` 中的行号
-3. 用 `read(offset=N, limit=M)` 读取该日期范围内的内容
-4. 按模板聚合生成报告
+1. 读取 `~/.niu/skills/report-skill.md` 获取报告格式模板和逐级聚合规则
+2. **按聚合层级读取数据**：
+   - 周报：优先读 `{workspace}/reports/weekly/` 下本周的日报，没有则读 journal.md 本周条目
+   - 月报：优先读 `{workspace}/reports/monthly/` 下本月各周周报，没有则读 journal.md 本月条目
+   - 季报：优先读 `{workspace}/reports/quarterly/` 下本季各月月报，没有则读 journal.md 本季条目
+   - 年报：优先读 `{workspace}/reports/annual/` 下本年各季季报，没有则读 journal.md 本年条目
+3. 可混合使用：有已生成报告的部分用报告，没有的部分回退到 journal.md 原始日志
+4. 用 `grep` 定位日期，`read` 读取内容
+5. 按模板聚合生成报告
+6. 生成后将报告写入对应目录（如 `{workspace}/reports/weekly/2026-W22.md`）
 
 ## 游标机制
 
