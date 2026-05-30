@@ -119,7 +119,7 @@ lightrag_get_graph(entity_name="FastAPI", depth=1)
 
 ### 任务1：精加工（按以下顺序执行）
 
-对 entity-extractor 提炼入库的内容做精加工，按步骤1→2→3→4顺序执行：
+对知识图谱中已有的实体做精加工，按步骤1→2→3→4顺序执行：
 
 1. **精加工描述**（先做）：优化关键实体的描述
    - `lightrag_insert_entity(name, entity_type, description="实体描述内容")`

@@ -39,7 +39,7 @@ def _extract_cursor_id(text: str, field_name: str, valid_ids: set) -> str | None
     if not text:
         return None
     # 先检查 null 匹配：区分"没报告"和"明确返回null"
-    null_pattern = rf'\{{\s*"{re.escape(field_name)}"\s*:\s*null\s*'
+    null_pattern = rf'\{{\s*"{re.escape(field_name)}"\s*:\s*null\s*[,\}}]'
     if re.search(null_pattern, text, re.DOTALL):
         return "NULL"
     # 宽松匹配：允许各种空白格式
@@ -1168,6 +1168,7 @@ async def _tidy_context_impl(request: dict):
             logger.info("[Tidy] Force mode: starting entity-extractor (full processing)")
 
             # 1/3. entity-extractor（全量 task 方式，cursor 传空 = 全量）
+            new_entity_id = last_entity_extract_id  # 默认保留旧游标
             entity_force_msg_ids = []
             entity_force_msg_text = _build_incremental_msg_text(
                 messages, "", entity_force_msg_ids, msg_tokens, filter_wm=True
@@ -1190,33 +1191,36 @@ async def _tidy_context_impl(request: dict):
                     history=None,
                 )
 
-            entity_result = await asyncio.to_thread(run_entity_extractor_force)
-            logger.info(f"[Tidy] Force: entity-extractor completed, length={len(entity_result)}")
+            if entity_force_msg_ids:
+                entity_result = await asyncio.to_thread(run_entity_extractor_force)
+                logger.info(f"[Tidy] Force: entity-extractor completed, length={len(entity_result)}")
 
-            if _is_subagent_overflow(entity_result):
-                overflow_info = _extract_overflow_info(entity_result)
-                logger.warning(f"[Tidy] Force: entity-extractor overflow: {overflow_info.get('turns_completed', 0)} turns, {overflow_info.get('tokens_used', 0)} tokens")
-                partial = overflow_info.get("partial_result", "")
-                recovered = _extract_cursor_id(partial, "last_entity_extract_id", msg_id_set)
-                if recovered and recovered != "NULL":
-                    new_entity_id = recovered
-                    logger.info(f"[Tidy] Force: Entity cursor recovered from partial_result: {new_entity_id}")
+                if _is_subagent_overflow(entity_result):
+                    overflow_info = _extract_overflow_info(entity_result)
+                    logger.warning(f"[Tidy] Force: entity-extractor overflow: {overflow_info.get('turns_completed', 0)} turns, {overflow_info.get('tokens_used', 0)} tokens")
+                    partial = overflow_info.get("partial_result", "")
+                    recovered = _extract_cursor_id(partial, "last_entity_extract_id", msg_id_set)
+                    if recovered and recovered != "NULL":
+                        new_entity_id = recovered
+                        logger.info(f"[Tidy] Force: Entity cursor recovered from partial_result: {new_entity_id}")
+                    else:
+                        new_entity_id = entity_force_msg_ids[-1] if entity_force_msg_ids else last_entity_extract_id
+                        logger.warning(f"[Tidy] Force: Entity cursor overflow fallback: {new_entity_id}")
                 else:
-                    new_entity_id = entity_force_msg_ids[-1] if entity_force_msg_ids else last_entity_extract_id
-                    logger.warning(f"[Tidy] Force: Entity cursor overflow fallback: {new_entity_id}")
+                    extracted = _extract_cursor_id(entity_result, "last_entity_extract_id", msg_id_set)
+                    if extracted and extracted != "NULL":
+                        new_entity_id = extracted
+                    elif extracted == "NULL" or not extracted:
+                        new_entity_id = entity_force_msg_ids[-1] if entity_force_msg_ids else last_entity_extract_id
+                        logger.warning(f"[Tidy] Force: Entity cursor not matched, fallback to last msg: {new_entity_id}")
+                if new_entity_id:
+                    entity_cursor_path.parent.mkdir(parents=True, exist_ok=True)
+                    entity_cursor_path.write_text(json.dumps({
+                        "last_entity_extract_id": new_entity_id,
+                        "last_entity_extract_at": datetime.now().isoformat(),
+                    }, ensure_ascii=False, indent=2), encoding="utf-8")
             else:
-                extracted = _extract_cursor_id(entity_result, "last_entity_extract_id", msg_id_set)
-                if extracted and extracted != "NULL":
-                    new_entity_id = extracted
-                elif extracted == "NULL" or not extracted:
-                    new_entity_id = entity_force_msg_ids[-1] if entity_force_msg_ids else last_entity_extract_id
-                    logger.warning(f"[Tidy] Force: Entity cursor not matched, fallback to last msg: {new_entity_id}")
-            if new_entity_id:
-                entity_cursor_path.parent.mkdir(parents=True, exist_ok=True)
-                entity_cursor_path.write_text(json.dumps({
-                    "last_entity_extract_id": new_entity_id,
-                    "last_entity_extract_at": datetime.now().isoformat(),
-                }, ensure_ascii=False, indent=2), encoding="utf-8")
+                logger.info("[Tidy] Force mode: entity-extractor skipped, no messages")
 
             # 2/3. dream-evolver（增量 task 方式，force 模式也是增量）
             # 串行执行：重新获取消息列表
