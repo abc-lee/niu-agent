@@ -1394,6 +1394,24 @@ async def _tidy_context_impl(request: dict):
                     if cursor_updates:
                         logger.warning(f"[Tidy] Force: Removing cursor messages from updates: {[u.get('message_id') for u in cursor_updates]}")
                         valid_updates = [u for u in valid_updates if u.get("message_id", "") not in cursor_ids_set]
+                    # 程序层面排除保护范围内的消息 ID
+                    protect_recent_count = 10
+                    try:
+                        from pathlib import Path as _P2
+                        _prefs2 = json.loads((_P2.home() / ".niu" / "preferences.json").read_text(encoding="utf-8"))
+                        protect_recent_count = _prefs2.get("context", {}).get("protectRecentCount", 10)
+                    except Exception:
+                        pass
+                    if protect_recent_count > 0 and len(fresh_messages) > protect_recent_count:
+                        protected_force_ids = {getattr(m, "id", "") for m in fresh_messages[-protect_recent_count:]}
+                        removed_deletes = [mid for mid in valid_deletes if mid in protected_force_ids]
+                        if removed_deletes:
+                            logger.warning(f"[Tidy] Force: Protecting {len(removed_deletes)} recent messages from deletion: {removed_deletes}")
+                            valid_deletes = [mid for mid in valid_deletes if mid not in protected_force_ids]
+                        removed_updates = [u for u in valid_updates if u.get("message_id", "") in protected_force_ids]
+                        if removed_updates:
+                            logger.warning(f"[Tidy] Force: Protecting {len(removed_updates)} recent messages from update")
+                            valid_updates = [u for u in valid_updates if u.get("message_id", "") not in protected_force_ids]
                     # 防止 delete/update 重叠：同一 ID 同时出现在 deletes 和 updates 中时，
                     # 保留 update（摘要），从 deletes 中移除（否则先删后更新，消息丢失）
                     update_ids = {u.get("message_id", "") for u in valid_updates}
