@@ -1042,83 +1042,108 @@ async def _tidy_context_impl(request: dict):
                 logger.info("[Tidy] dream-evolver: no new messages since cursor")
                 new_dream_id = last_dream_evolve_id
 
-            # 3/3. context-manager prompt（双游标，UUID 存储 + idx 判断时间顺序）
-            # 根据 usage_percent 自动选择压缩模式：
-            #   < 50% → 模式一（轻度整理）
-            #   >= 50% → 模式二（半破坏性压缩）
+            # 3/3. context-manager（增量 task 方式，保护范围 [compress_cursor, dream_cursor_new]）
+            # 串行执行：重新获取消息列表（Dream 可能已修改 DB）
+            messages = await store.get_messages()
+            msg_tokens = []
+            try:
+                from litellm import token_counter
+                for msg in messages:
+                    try:
+                        t = token_counter(model="gpt-4o", messages=[{"role": msg.role, "content": msg.content or ""}])
+                    except Exception:
+                        t = max(1, len(msg.content or "") // 2) + 4
+                    msg_tokens.append(t)
+            except ImportError:
+                msg_tokens = [max(1, len(msg.content or "") // 2) + 4 for msg in messages]
+            msg_id_set = {getattr(m, "id", "") for m in messages}
+            compress_msg_ids = []
+            # 读取保护数量配置
+            protect_recent_count = 10
+            try:
+                _prefs_path = Path.home() / ".niu" / "preferences.json"
+                if _prefs_path.exists():
+                    _prefs = json.loads(_prefs_path.read_text(encoding="utf-8"))
+                    protect_recent_count = _prefs.get("context", {}).get("protectRecentCount", 10)
+            except Exception:
+                pass  # 保留默认值 10
+
+            compress_msg_text = _build_incremental_msg_text(
+                messages, last_compress_id, compress_msg_ids, msg_tokens,
+                end_cursor_id=new_dream_id, protect_recent=protect_recent_count, filter_wm=True
+            )
             compress_mode = "模式二：睡眠整理（半破坏性）" if usage_percent >= 50 else "模式一：睡眠整理（非破坏性）"
             logger.info(f"[Tidy] Sleep: usage={usage_percent:.1f}%, selecting {compress_mode}")
 
-            prompt = f"""系统进入睡眠状态。
+            new_compress_id = last_compress_id
+            if compress_msg_ids:
+                # 构建保护消息 UUID 列表
+                protected_ids = compress_msg_ids[-protect_recent_count:] if len(compress_msg_ids) > protect_recent_count else compress_msg_ids[:]
 
-    当前上下文：{estimated_tokens} tokens（{usage_percent:.1f}%）
+                prompt = f"""系统进入睡眠状态。
 
-    双游标：last_compress_id={last_compress_id}，last_dream_evolve_id={new_dream_id}
-    操作范围：先从消息列表中找到游标UUID对应的idx，再处理 last_compress_idx < idx ≤ last_dream_evolve_idx 的消息。
-    游标用 id（UUID）存储（持久化），时间顺序用 idx 判断（idx 是动态位置索引，删除消息后会变，不能当游标存储）。UUID v4 字典序不代表时间先后。
+当前上下文：{estimated_tokens} tokens（{usage_percent:.1f}%）
 
-    消息列表：
-    共 {message_count} 条消息
+以下消息已标注 [PROTECTED]，不可删除或压缩：
+保护消息ID: {json.dumps(protected_ids)}
 
-    {msg_list_text}
+消息列表：
+{compress_msg_text}
 
-    请按照【{compress_mode}】的规则处理。处理完成后，在报告末尾用 JSON 格式报告：{{"last_compress_id": "<操作范围内 idx 最大的、且仍存在的消息的 id（UUID）>"}}"""
+请按照【{compress_mode}】的规则处理。处理完成后，在报告末尾用 JSON 格式报告：{{"last_compress_id": "<收到的消息中 idx 最大的消息的 id（UUID）>"}}
+**必须推进游标**：即使没有需要处理的内容，也必须输出 idx 最大的消息的 UUID。"""
 
-            def run_context_manager():
-                return call_subagent(
-                    agent_name="context-manager",
-                    task=prompt,
-                    llm_config=llm_config,
-                    mcp_client=None,
-                )
+                def run_context_manager():
+                    return call_subagent(
+                        agent_name="context-manager",
+                        task=prompt,
+                        llm_config=llm_config,
+                        mcp_client=None,
+                    )
 
-            result = await asyncio.to_thread(run_context_manager)
-            logger.info(f"[Tidy] Context-manager result: {result[:200]}")
+                cm_result = await asyncio.to_thread(run_context_manager)
+                logger.info(f"[Tidy] context-manager result: {cm_result[:200]}")
 
-            if _is_subagent_overflow(result):
-                overflow_info = _extract_overflow_info(result)
-                logger.warning(f"[Tidy] Context-manager overflow: {overflow_info.get('turns_completed', 0)} turns, {overflow_info.get('tokens_used', 0)} tokens")
-                # 溢出时尝试从 partial_result 提取游标，避免游标停滞导致无限重复处理
-                partial = overflow_info.get("partial_result", "")
-                recovered = _extract_cursor_id(partial, "last_compress_id", msg_id_set)
-                if recovered:
-                    new_compress_id = recovered
-                    logger.info(f"[Tidy] Compress cursor recovered from partial_result: {new_compress_id}")
+                # 游标提取
+                if _is_subagent_overflow(cm_result):
+                    overflow_info = _extract_overflow_info(cm_result)
+                    logger.warning(f"[Tidy] context-manager overflow: {overflow_info.get('turns_completed', 0)} turns")
+                    partial = overflow_info.get("partial_result", "")
+                    recovered = _extract_cursor_id(partial, "last_compress_id", msg_id_set)
+                    if recovered and recovered != "NULL":
+                        new_compress_id = recovered
+                    else:
+                        new_compress_id = compress_msg_ids[-1]
+                        logger.warning(f"[Tidy] Compress cursor overflow fallback: {new_compress_id}")
                 else:
-                    new_compress_id = last_compress_id
-                    logger.warning(f"[Tidy] Compress cursor preserved at {last_compress_id} to prevent knowledge loss")
-                # 溢出时也写入游标（推进到已处理位置）
-                # 校验游标：子 Agent 可能已删除游标指向的消息，需根据最新消息验证
+                    extracted = _extract_cursor_id(cm_result, "last_compress_id", msg_id_set)
+                    if extracted and extracted != "NULL":
+                        new_compress_id = extracted
+                    elif extracted == "NULL" or not extracted:
+                        new_compress_id = compress_msg_ids[-1]
+                        logger.warning(f"[Tidy] Compress cursor not matched, fallback: {new_compress_id}")
+
+                # 校验游标
                 if new_compress_id:
                     fresh_msgs = await store.get_messages()
                     fresh_ids = {getattr(m, "id", "") for m in fresh_msgs}
                     if new_compress_id not in fresh_ids:
-                        logger.warning(f"[Tidy] Sleep overflow: Compress cursor {new_compress_id} deleted by sub-agent, reverting to {last_compress_id}")
+                        logger.warning(f"[Tidy] Compress cursor {new_compress_id} deleted, reverting to {last_compress_id}")
                         new_compress_id = last_compress_id
                         if new_compress_id and new_compress_id not in fresh_ids:
                             new_compress_id = ""
-                if new_compress_id:
-                    compress_cursor_path.parent.mkdir(parents=True, exist_ok=True)
-                    compress_cursor_path.write_text(json.dumps({
-                        "last_compress_id": new_compress_id,
-                        "last_compress_at": datetime.now().isoformat(),
-                    }, ensure_ascii=False, indent=2), encoding="utf-8")
-                    logger.info(f"[Tidy] Compress cursor updated on overflow: last_compress_id={new_compress_id}")
-            else:
-                # 提取并写入 compress 游标（UUID）
-                extracted = _extract_cursor_id(result, "last_compress_id", msg_id_set)
-                new_compress_id = extracted or last_compress_id
-                if not extracted:
-                    logger.warning("[Tidy] Sleep: Compress cursor UUID regex not matched, cursor not updated")
-                # 校验游标：子 Agent 可能已删除游标指向的消息，需根据最新消息验证
-                if new_compress_id:
-                    fresh_msgs = await store.get_messages()
-                    fresh_ids = {getattr(m, "id", "") for m in fresh_msgs}
-                    if new_compress_id not in fresh_ids:
-                        logger.warning(f"[Tidy] Sleep: Compress cursor {new_compress_id} deleted by sub-agent, reverting to {last_compress_id}")
-                        new_compress_id = last_compress_id
-                        if new_compress_id and new_compress_id not in fresh_ids:
-                            new_compress_id = ""
+
+                # 事后校验：保护范围内的消息是否被误删
+                if protected_ids:
+                    try:
+                        post_msgs = await store.get_messages()
+                        post_ids = {getattr(m, "id", "") for m in post_msgs}
+                        for pid in protected_ids:
+                            if pid not in post_ids:
+                                logger.warning(f"[Tidy] PROTECTED message {pid} was deleted by context-manager!")
+                    except Exception as e:
+                        logger.warning(f"[Tidy] Failed to verify protected messages: {e}")
+
                 if new_compress_id:
                     compress_cursor_path.parent.mkdir(parents=True, exist_ok=True)
                     compress_cursor_path.write_text(json.dumps({
@@ -1126,19 +1151,17 @@ async def _tidy_context_impl(request: dict):
                         "last_compress_at": datetime.now().isoformat(),
                     }, ensure_ascii=False, indent=2), encoding="utf-8")
                     logger.info(f"[Tidy] Compress cursor updated: last_compress_id={new_compress_id}")
+            else:
+                logger.info("[Tidy] context-manager: no messages in range [compress_cursor, dream_cursor_new]")
 
-            # 整理完成后更新 last_tidy_tokens，防止自动整理阈值失效
+            # 更新 last_tidy_tokens
             try:
                 post_tidy_msgs = await store.get_messages()
                 _write_last_tidy_tokens(_estimate_total_tokens(post_tidy_msgs))
             except Exception as e:
-                logger.warning(f"[Tidy] Sleep: Failed to update last_tidy_tokens: {e}")
+                logger.warning(f"[Tidy] Failed to update last_tidy_tokens: {e}")
 
-            return {
-                "status": "success",
-                "message": f"Context tidied: {message_count} messages processed",
-                "result": result,
-            }
+            return {"status": "ok", "mode": "sleep", "tokens_before": estimated_tokens}
 
         elif mode == "force":
             # Force mode: entity-extractor 全量 → dream-evolver 全量 → context-manager 强制压缩
