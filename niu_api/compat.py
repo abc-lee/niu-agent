@@ -923,9 +923,13 @@ async def _tidy_context_impl(request: dict):
                     if extracted:
                         new_entity_id = extracted
                     else:
-                        # 提取失败 → 保留旧游标（重复处理优于知识丢失，与 force 模式一致）
-                        new_entity_id = last_entity_extract_id
-                        logger.warning("[Tidy] Entity cursor regex not matched, preserving old cursor to prevent knowledge loss")
+                        # 提取失败 → 推进到增量消息的最后一条（避免重复处理）
+                        if entity_msg_ids:
+                            new_entity_id = entity_msg_ids[-1]
+                            logger.warning(f"[Tidy] Entity cursor regex not matched, advancing to last incremental msg: {new_entity_id}")
+                        else:
+                            new_entity_id = last_entity_extract_id
+                            logger.warning("[Tidy] Entity cursor regex not matched, no incremental msgs, preserving old cursor")
                 # 校验游标：子 Agent 可能已删除游标指向的消息
                 if new_entity_id:
                     fresh_msgs = await store.get_messages()

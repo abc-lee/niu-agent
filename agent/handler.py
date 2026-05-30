@@ -947,6 +947,11 @@ class NiuHandler(BaseHandler):
                             "last_entity_extract_at": _dt.now().isoformat(),
                         }, ensure_ascii=False, indent=2), encoding="utf-8")
                         logger.info(f"[SubAgent] Entity cursor updated: {_new_cursor}")
+                    else:
+                        # 正则未匹配（可能返回了 null）— 检查是否显式返回了 null
+                        _null_pattern = r'\{\s*"last_entity_extract_id"\s*:\s*null\s*'
+                        if _re.search(_null_pattern, result, _re.DOTALL):
+                            logger.warning("[SubAgent] Entity extractor returned null cursor — cursor not advanced (will be handled by compat.py fallback)")
                 except Exception as e:
                     logger.warning(f"[SubAgent] Failed to update entity cursor: {e}")
 
