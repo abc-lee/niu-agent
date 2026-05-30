@@ -894,61 +894,57 @@ async def _tidy_context_impl(request: dict):
         if mode == "sleep":
             # Sleep mode: entity-extractor (增量) → dream-evolver (增量) → context-manager (增量)
 
-            # 1/3. entity-extractor（增量，非破坏性）
+            # 1/3. entity-extractor（增量，task 方式）
             entity_msg_ids = []
-            _build_incremental_msg_text(messages, last_entity_extract_id, entity_msg_ids, msg_tokens)
+            entity_msg_text = _build_incremental_msg_text(
+                messages, last_entity_extract_id, entity_msg_ids, msg_tokens, filter_wm=True
+            )
             new_entity_id = last_entity_extract_id  # 默认保留旧游标
-            entity_prompt = """请从上方对话历史中提取有价值的内容，形成精炼文档提交给 LightRAG 入库。
+            entity_prompt_prefix = """以下是最近的对话消息（每条带 [id:UUID] [idx:N] 序号标注）。请从中提取有价值的内容，形成精炼文档提交给 LightRAG 入库。
 
 注意：对话历史中包含工具调用结果（role=tool），这些是程序化操作的结果。照片入库、人物命名等操作已经自动完成了知识图谱写入，不要重复创建这些实体。如果需要关联已有实体，请使用入库后的实体名称。
 
-处理完成后，在报告末尾用 JSON 格式报告：{"last_entity_extract_id": "<操作范围内 idx 最大的、且仍存在的消息的 id（UUID）>"}"""
+"""
+            entity_prompt_suffix = """
+
+处理完成后，在报告末尾用 JSON 格式报告：{"last_entity_extract_id": "<收到的消息中 idx 最大的消息的 id（UUID）>"}
+**必须推进游标**：即使没有可提取的内容（全是程序化操作、闲聊等），也必须输出 idx 最大的消息的 UUID。只有当传入的消息列表本身为空（一条消息都没有）时，才输出 {"last_entity_extract_id": null}"""
             if entity_msg_ids:
                 logger.info(f"[Tidy] entity-extractor: {len(entity_msg_ids)} new messages since cursor")
-
-                # TODO: 替换为 _build_incremental_msg_text(filter_wm=True) + 转换为 history dict 列表
-                # _build_entity_history 已删除，此处需改用 _build_incremental_msg_text 构建增量消息后转换
-                incremental_entity_history = None  # placeholder，后续 Task 替换
+                entity_full_prompt = entity_prompt_prefix + entity_msg_text + entity_prompt_suffix
 
                 def run_entity_extractor():
                     return call_subagent(
                         agent_name="entity-extractor",
-                        task=entity_prompt,
+                        task=entity_full_prompt,
                         llm_config=llm_config,
                         mcp_client=None,
-                        history=incremental_entity_history,
+                        history=None,
                     )
 
                 entity_result = await asyncio.to_thread(run_entity_extractor)
                 logger.info(f"[Tidy] entity-extractor result: {entity_result[:200]}")
 
+                # 游标提取和推进
                 if _is_subagent_overflow(entity_result):
                     overflow_info = _extract_overflow_info(entity_result)
                     logger.warning(f"[Tidy] entity-extractor overflow: {overflow_info.get('turns_completed', 0)} turns, {overflow_info.get('tokens_used', 0)} tokens")
-                    # 溢出时尝试从 partial_result 提取游标，避免游标停滞导致无限重复处理
                     partial = overflow_info.get("partial_result", "")
                     recovered = _extract_cursor_id(partial, "last_entity_extract_id", msg_id_set)
-                    if recovered:
+                    if recovered and recovered != "NULL":
                         new_entity_id = recovered
                         logger.info(f"[Tidy] Entity cursor recovered from partial_result: {new_entity_id}")
                     else:
-                        # 无法提取游标 → 保留旧游标（宁可重复处理也不丢失知识）
-                        new_entity_id = last_entity_extract_id
-                        logger.warning(f"[Tidy] Entity cursor preserved at {last_entity_extract_id} to prevent knowledge loss")
+                        new_entity_id = entity_msg_ids[-1]
+                        logger.warning(f"[Tidy] Entity cursor overflow fallback to last incremental msg: {new_entity_id}")
                 else:
-                    # 成功：从子 Agent 输出提取实际处理位置
                     extracted = _extract_cursor_id(entity_result, "last_entity_extract_id", msg_id_set)
-                    if extracted:
+                    if extracted and extracted != "NULL":
                         new_entity_id = extracted
-                    else:
-                        # 提取失败 → 推进到增量消息的最后一条（避免重复处理）
-                        if entity_msg_ids:
-                            new_entity_id = entity_msg_ids[-1]
-                            logger.warning(f"[Tidy] Entity cursor regex not matched, advancing to last incremental msg: {new_entity_id}")
-                        else:
-                            new_entity_id = last_entity_extract_id
-                            logger.warning("[Tidy] Entity cursor regex not matched, no incremental msgs, preserving old cursor")
-                # 校验游标：子 Agent 可能已删除游标指向的消息
+                    elif extracted == "NULL" or not extracted:
+                        new_entity_id = entity_msg_ids[-1]
+                        logger.warning(f"[Tidy] Entity cursor not matched or null, advancing to last incremental msg: {new_entity_id}")
+                # 校验游标
                 if new_entity_id:
                     fresh_msgs = await store.get_messages()
                     fresh_ids = {getattr(m, "id", "") for m in fresh_msgs}
