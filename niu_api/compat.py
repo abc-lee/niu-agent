@@ -1140,22 +1140,27 @@ async def _tidy_context_impl(request: dict):
             # Force mode: entity-extractor 全量 → dream-evolver 全量 → context-manager 强制压缩
             logger.info("[Tidy] Force mode: starting entity-extractor (full processing)")
 
-            # 1/3. entity-extractor（全量，非破坏性，不能截断内容）
-            entity_prompt_force = """请从上方对话历史中提取有价值的内容，形成精炼文档提交给 LightRAG 入库。
+            # 1/3. entity-extractor（全量 task 方式，cursor 传空 = 全量）
+            entity_force_msg_ids = []
+            entity_force_msg_text = _build_incremental_msg_text(
+                messages, "", entity_force_msg_ids, msg_tokens, filter_wm=True
+            )
+            entity_force_prompt = f"""以下是最近的对话消息（每条带 [id:UUID] [idx:N] 序号标注）。请从中提取有价值的内容，形成精炼文档提交给 LightRAG 入库。
 
 注意：对话历史中包含工具调用结果（role=tool），这些是程序化操作的结果。照片入库、人物命名等操作已经自动完成了知识图谱写入，不要重复创建这些实体。如果需要关联已有实体，请使用入库后的实体名称。
 
-处理完成后，在报告末尾用 JSON 格式报告：{"last_entity_extract_id": "<操作范围内 idx 最大的、且仍存在的消息的 id（UUID）>"}"""
+{entity_force_msg_text}
+
+处理完成后，在报告末尾用 JSON 格式报告：{{"last_entity_extract_id": "<收到的消息中 idx 最大的消息的 id（UUID）>"}}
+**必须推进游标**：即使没有可提取的内容，也必须输出 idx 最大的消息的 UUID。"""
 
             def run_entity_extractor_force():
                 return call_subagent(
                     agent_name="entity-extractor",
-                    task=entity_prompt_force,
+                    task=entity_force_prompt,
                     llm_config=llm_config,
                     mcp_client=None,
-                    # TODO: 替换为 _build_incremental_msg_text(filter_wm=True) + 转换为 history dict 列表
-                    # _build_entity_history 已删除，此处需改用 _build_incremental_msg_text 构建全量消息后转换
-                    history=None,  # placeholder，后续 Task 替换
+                    history=None,
                 )
 
             entity_result = await asyncio.to_thread(run_entity_extractor_force)
@@ -1164,22 +1169,21 @@ async def _tidy_context_impl(request: dict):
             if _is_subagent_overflow(entity_result):
                 overflow_info = _extract_overflow_info(entity_result)
                 logger.warning(f"[Tidy] Force: entity-extractor overflow: {overflow_info.get('turns_completed', 0)} turns, {overflow_info.get('tokens_used', 0)} tokens")
-                # 溢出时尝试从 partial_result 提取游标，避免游标停滞导致无限重复处理
                 partial = overflow_info.get("partial_result", "")
                 recovered = _extract_cursor_id(partial, "last_entity_extract_id", msg_id_set)
-                if recovered:
+                if recovered and recovered != "NULL":
                     new_entity_id = recovered
                     logger.info(f"[Tidy] Force: Entity cursor recovered from partial_result: {new_entity_id}")
                 else:
-                    # 无法提取游标 → 保留旧游标（宁可重复处理也不丢失知识）
-                    new_entity_id = last_entity_extract_id
-                    logger.warning(f"[Tidy] Force: Entity cursor preserved at {last_entity_extract_id} to prevent knowledge loss")
+                    new_entity_id = entity_force_msg_ids[-1] if entity_force_msg_ids else last_entity_extract_id
+                    logger.warning(f"[Tidy] Force: Entity cursor overflow fallback: {new_entity_id}")
             else:
-                # 提取并写入 entity 游标
                 extracted = _extract_cursor_id(entity_result, "last_entity_extract_id", msg_id_set)
-                new_entity_id = extracted or last_entity_extract_id
-                if not extracted:
-                    logger.warning("[Tidy] Force: entity cursor UUID regex not matched, preserving old cursor")
+                if extracted and extracted != "NULL":
+                    new_entity_id = extracted
+                elif extracted == "NULL" or not extracted:
+                    new_entity_id = entity_force_msg_ids[-1] if entity_force_msg_ids else last_entity_extract_id
+                    logger.warning(f"[Tidy] Force: Entity cursor not matched, fallback to last msg: {new_entity_id}")
             if new_entity_id:
                 entity_cursor_path.parent.mkdir(parents=True, exist_ok=True)
                 entity_cursor_path.write_text(json.dumps({
