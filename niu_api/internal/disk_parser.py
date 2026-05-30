@@ -20,8 +20,8 @@ _SHELL_PATTERNS: list[tuple[str, str]] = [
     (r'(?<!\\)&&', "and_operator"),
     (r'(?<!\\);', "semicolon"),
     (r'(?<!\\)>>?', "redirect"),
-    (r'(?<!\\)\*', "wildcard"),
-    (r'(?<!\\)\?', "wildcard"),
+    (r'(?<!\\)\*', "glob_wildcard"),
+    (r'(?<!\\)\?', "question_wildcard"),
     (r'(?<!\\)\$', "variable"),
     (r'(?<!\\)&', "background"),
 ]
@@ -32,7 +32,8 @@ _SHELL_ERROR_MSGS = {
     "and_operator": "&&: command chaining not supported. Execute one tool at a time.",
     "semicolon": ";: command chaining not supported. Execute one tool at a time.",
     "redirect": ">: redirection not supported in this shell.",
-    "wildcard": "*: wildcard not supported. Use exact tool names.",
+    "glob_wildcard": "*: wildcard not supported. Use exact tool names.",
+    "question_wildcard": "?: wildcard not supported in shell commands. (URLs with ? are allowed.)",
     "variable": "$: variable expansion not supported. Use literal values.",
     "background": "&: background execution not supported.",
 }
@@ -88,6 +89,9 @@ def _looks_like_value(token: str) -> bool:
 def _check_shell_syntax(cmd: str) -> str | None:
     """Check for shell special syntax outside quotes. Returns error msg or None."""
     stripped = _strip_quoted_regions(cmd)
+    # URL query parameters contain '?' which is not a shell wildcard.
+    # Strip URL-like tokens before checking for '?' wildcard.
+    stripped = re.sub(r'https?://\S*', lambda m: m.group().replace('?', ' '), stripped)
     for pattern, syntax_type in _SHELL_PATTERNS:
         if re.search(pattern, stripped):
             return _SHELL_ERROR_MSGS[syntax_type]
