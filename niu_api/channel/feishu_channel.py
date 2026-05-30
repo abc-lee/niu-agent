@@ -154,6 +154,15 @@ class FeishuChannelAdapter(ChannelAdapter):
             else:
                 session_id = f"feishu:group:{unified.channel_id}"
 
+            # 完整重置流式状态（防止上一轮残留）
+            self._stream_card_id = None
+            self._stream_message_id = None
+            self._stream_card_created = False
+            self._stream_fallback_used = False
+            self._stream_seq = 0
+            self._accumulated_text = ""
+            self._stream_pending_images = []
+            self._stream_pending_files = []
             # 流式推送状态初始化
             self._feishu_waiting = True
             self._stream_target = unified.channel_id or self._user_open_id or self._user_p2p_chat_id
@@ -338,6 +347,13 @@ class FeishuChannelAdapter(ChannelAdapter):
     async def send(self, channel_id: str, content: str) -> None:
         """发送消息到飞书 — 回复到指定会话，空 channel_id 时 fallback 到 push()"""
         try:
+            # 确保流式推送已完成（消除竞态：协程可能还没执行完）
+            if self._feishu_waiting and not self._stream_card_created:
+                try:
+                    await self._push_incremental()
+                except Exception as e:
+                    logger.warning(f"[FeishuStream] Pre-send push failed: {e}")
+
             if self._stream_card_created:
                 # 流式卡片存在，先尝试终结（无论 fallback 标记）
                 try:
