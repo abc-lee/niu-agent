@@ -964,79 +964,83 @@ async def _tidy_context_impl(request: dict):
             else:
                 logger.info("[Tidy] entity-extractor: no new messages since cursor")
 
-            # 2/3. dream-evolver prompt（UUID 游标，idx 判断时间顺序）
+            # 2/3. dream-evolver（增量 task 方式）
+            # 串行执行：重新获取消息列表（Entity 可能已修改 DB）
+            messages = await store.get_messages()
+            msg_tokens = []
+            try:
+                from litellm import token_counter
+                for msg in messages:
+                    try:
+                        t = token_counter(model="gpt-4o", messages=[{"role": msg.role, "content": msg.content or ""}])
+                    except Exception:
+                        t = max(1, len(msg.content or "") // 2) + 4
+                    msg_tokens.append(t)
+            except ImportError:
+                msg_tokens = [max(1, len(msg.content or "") // 2) + 4 for msg in messages]
+            msg_id_set = {getattr(m, "id", "") for m in messages}
+            dream_msg_ids = []
+            dream_msg_text = _build_incremental_msg_text(
+                messages, last_dream_evolve_id, dream_msg_ids, msg_tokens, filter_wm=True
+            )
             new_dream_id = last_dream_evolve_id  # 默认保留旧游标
-            if last_dream_evolve_id:
-                dream_prompt = f"""请对以下消息中涉及的实体进行精加工（打标签、建关系、关联脑区、更新画像），并维护 skill 文件。
+            if dream_msg_ids:
+                logger.info(f"[Tidy] dream-evolver: {len(dream_msg_ids)} new messages since cursor")
+                dream_prompt = f"""对以下消息中涉及的实体进行精加工（打标签、建关系、关联脑区、更新画像），并维护 skill 文件。
 
-    增量游标：上次处理到消息UUID={last_dream_evolve_id}，只处理该UUID对应idx之后的新消息。
-    游标用 id（UUID）存储（持久化），时间顺序用 idx 判断（idx 是动态位置索引，删除消息后会变，不能当游标存储）。UUID v4 字典序不代表时间先后。
-    如果在消息列表中找不到该UUID，或所有消息idx都 <= 游标idx，说明没有新消息，直接报告"无新增消息"即可。
+{dream_msg_text}
 
-    消息列表：
-    共 {message_count} 条消息
+处理完成后，在报告末尾用 JSON 格式报告：{{"last_dream_evolve_id": "<收到的消息中 idx 最大的消息的 id（UUID）>"}}
+**必须推进游标**：即使没有需要精加工的内容，也必须输出 idx 最大的消息的 UUID。"""
 
-    {msg_list_text}
+                def run_dream_evolver():
+                    return call_subagent(
+                        agent_name="dream-evolver",
+                        task=dream_prompt,
+                        llm_config=llm_config,
+                        mcp_client=None,
+                    )
 
-    处理完成后，在报告末尾用 JSON 格式报告：{{"last_dream_evolve_id": "<操作范围内 idx 最大的、且仍存在的消息的 id（UUID）>"}}"""
-            else:
-                dream_prompt = f"""请对以下消息中涉及的实体进行精加工（打标签、建关系、关联脑区、更新画像），并维护 skill 文件。
+                dream_result = await asyncio.to_thread(run_dream_evolver)
+                logger.info(f"[Tidy] Dream-evolver result: {dream_result[:200]}")
 
-    全量处理所有消息（无增量游标）。
-
-    消息列表：
-    共 {message_count} 条消息
-
-    {msg_list_text}
-
-    处理完成后，在报告末尾用 JSON 格式报告：{{"last_dream_evolve_id": "<操作范围内 idx 最大的、且仍存在的消息的 id（UUID）>"}}"""
-
-            def run_dream_evolver():
-                return call_subagent(
-                    agent_name="dream-evolver",
-                    task=dream_prompt,
-                    llm_config=llm_config,
-                    mcp_client=None,
-                )
-
-            dream_result = await asyncio.to_thread(run_dream_evolver)
-            logger.info(f"[Tidy] Dream-evolver result: {dream_result[:200]}")
-
-            if _is_subagent_overflow(dream_result):
-                overflow_info = _extract_overflow_info(dream_result)
-                logger.warning(f"[Tidy] Dream-evolver overflow: {overflow_info.get('turns_completed', 0)} turns, {overflow_info.get('tokens_used', 0)} tokens")
-                # 溢出时尝试从 partial_result 提取游标，避免游标停滞导致无限重复处理
-                partial = overflow_info.get("partial_result", "")
-                recovered = _extract_cursor_id(partial, "last_dream_evolve_id", msg_id_set)
-                if recovered:
-                    new_dream_id = recovered
-                    logger.info(f"[Tidy] Dream cursor recovered from partial_result: {new_dream_id}")
+                if _is_subagent_overflow(dream_result):
+                    overflow_info = _extract_overflow_info(dream_result)
+                    logger.warning(f"[Tidy] Dream-evolver overflow: {overflow_info.get('turns_completed', 0)} turns, {overflow_info.get('tokens_used', 0)} tokens")
+                    partial = overflow_info.get("partial_result", "")
+                    recovered = _extract_cursor_id(partial, "last_dream_evolve_id", msg_id_set)
+                    if recovered and recovered != "NULL":
+                        new_dream_id = recovered
+                        logger.info(f"[Tidy] Dream cursor recovered from partial_result: {new_dream_id}")
+                    else:
+                        new_dream_id = dream_msg_ids[-1]
+                        logger.warning(f"[Tidy] Dream cursor overflow fallback to last incremental msg: {new_dream_id}")
                 else:
-                    # 无法提取游标 → 保留旧游标（宁可重复处理也不丢失知识）
-                    new_dream_id = last_dream_evolve_id
-                    logger.warning(f"[Tidy] Dream cursor preserved at {last_dream_evolve_id} to prevent knowledge loss")
+                    extracted = _extract_cursor_id(dream_result, "last_dream_evolve_id", msg_id_set)
+                    if extracted and extracted != "NULL":
+                        new_dream_id = extracted
+                    elif extracted == "NULL" or not extracted:
+                        new_dream_id = dream_msg_ids[-1]
+                        logger.warning(f"[Tidy] Dream cursor not matched or null, advancing to last incremental msg: {new_dream_id}")
+                # 校验游标
+                if new_dream_id:
+                    fresh_msgs = await store.get_messages()
+                    fresh_ids = {getattr(m, "id", "") for m in fresh_msgs}
+                    if new_dream_id not in fresh_ids:
+                        logger.warning(f"[Tidy] Dream cursor {new_dream_id} deleted by sub-agent, reverting to {last_dream_evolve_id}")
+                        new_dream_id = last_dream_evolve_id
+                        if new_dream_id and new_dream_id not in fresh_ids:
+                            new_dream_id = ""
+                if new_dream_id:
+                    dream_cursor_path.parent.mkdir(parents=True, exist_ok=True)
+                    dream_cursor_path.write_text(json.dumps({
+                        "last_dream_evolve_id": new_dream_id,
+                        "last_evolve_at": datetime.now().isoformat(),
+                    }, ensure_ascii=False, indent=2), encoding="utf-8")
+                    logger.info(f"[Tidy] Dream cursor updated: last_dream_evolve_id={new_dream_id}")
             else:
-                # 提取并写入 dream 游标（UUID）
-                extracted = _extract_cursor_id(dream_result, "last_dream_evolve_id", msg_id_set)
-                new_dream_id = extracted or last_dream_evolve_id
-                if not extracted:
-                    logger.warning("[Tidy] Dream cursor UUID regex not matched, preserving old cursor")
-            # 校验游标：子 Agent 可能已删除游标指向的消息（溢出和正常路径都需要）
-            if new_dream_id:
-                fresh_msgs = await store.get_messages()
-                fresh_ids = {getattr(m, "id", "") for m in fresh_msgs}
-                if new_dream_id not in fresh_ids:
-                    logger.warning(f"[Tidy] Dream cursor {new_dream_id} deleted by sub-agent, reverting to {last_dream_evolve_id}")
-                    new_dream_id = last_dream_evolve_id
-                    if new_dream_id and new_dream_id not in fresh_ids:
-                        new_dream_id = ""
-            if new_dream_id:
-                dream_cursor_path.parent.mkdir(parents=True, exist_ok=True)
-                dream_cursor_path.write_text(json.dumps({
-                    "last_dream_evolve_id": new_dream_id,
-                    "last_evolve_at": datetime.now().isoformat(),
-                }, ensure_ascii=False, indent=2), encoding="utf-8")
-                logger.info(f"[Tidy] Dream cursor updated: last_dream_evolve_id={new_dream_id}")
+                logger.info("[Tidy] dream-evolver: no new messages since cursor")
+                new_dream_id = last_dream_evolve_id
 
             # 3/3. context-manager prompt（双游标，UUID 存储 + idx 判断时间顺序）
             # 根据 usage_percent 自动选择压缩模式：
@@ -1191,48 +1195,67 @@ async def _tidy_context_impl(request: dict):
                     "last_entity_extract_at": datetime.now().isoformat(),
                 }, ensure_ascii=False, indent=2), encoding="utf-8")
 
-            # 2/3. dream-evolver（全量，非破坏性，不能截断内容）
-            logger.info("[Tidy] Force mode: starting dream-evolver (full processing)")
+            # 2/3. dream-evolver（增量 task 方式，force 模式也是增量）
+            # 串行执行：重新获取消息列表
+            messages = await store.get_messages()
+            msg_tokens = []
+            try:
+                from litellm import token_counter
+                for msg in messages:
+                    try:
+                        t = token_counter(model="gpt-4o", messages=[{"role": msg.role, "content": msg.content or ""}])
+                    except Exception:
+                        t = max(1, len(msg.content or "") // 2) + 4
+                    msg_tokens.append(t)
+            except ImportError:
+                msg_tokens = [max(1, len(msg.content or "") // 2) + 4 for msg in messages]
+            msg_id_set = {getattr(m, "id", "") for m in messages}
+            dream_force_msg_ids = []
+            dream_force_msg_text = _build_incremental_msg_text(
+                messages, last_dream_evolve_id, dream_force_msg_ids, msg_tokens, filter_wm=True
+            )
+            logger.info(f"[Tidy] Force mode: starting dream-evolver ({len(dream_force_msg_ids)} incremental messages)")
 
-            dream_prompt = f"""请对以下消息中涉及的实体进行精加工（打标签、建关系、关联脑区、更新画像），并维护 skill 文件。
+            if dream_force_msg_ids:
+                dream_force_prompt = f"""对以下消息中涉及的实体进行精加工（打标签、建关系、关联脑区、更新画像），并维护 skill 文件。
 
-    消息列表：
-    共 {message_count} 条消息
+{dream_force_msg_text}
 
-    {msg_list_text}
+处理完成后，在报告末尾用 JSON 格式报告：{{"last_dream_evolve_id": "<收到的消息中 idx 最大的消息的 id（UUID）>"}}
+**必须推进游标**：即使没有需要精加工的内容，也必须输出 idx 最大的消息的 UUID。"""
 
-    处理完成后，在报告末尾用 JSON 格式报告：{{"last_dream_evolve_id": "<操作范围内 idx 最大的、且仍存在的消息的 id（UUID）>"}}"""
+                def run_dream_evolver_force():
+                    return call_subagent(
+                        agent_name="dream-evolver",
+                        task=dream_force_prompt,
+                        llm_config=llm_config,
+                        mcp_client=None,
+                    )
 
-            def run_dream_evolver_force():
-                return call_subagent(
-                    agent_name="dream-evolver",
-                    task=dream_prompt,
-                    llm_config=llm_config,
-                    mcp_client=None,
-                )
+                dream_result = await asyncio.to_thread(run_dream_evolver_force)
+                logger.info(f"[Tidy] Force: dream-evolver completed, length={len(dream_result)}")
 
-            dream_result = await asyncio.to_thread(run_dream_evolver_force)
-            logger.info(f"[Tidy] Force: dream-evolver completed, length={len(dream_result)}")
-
-            if _is_subagent_overflow(dream_result):
-                overflow_info = _extract_overflow_info(dream_result)
-                logger.warning(f"[Tidy] Force: Dream-evolver overflow: {overflow_info.get('turns_completed', 0)} turns, {overflow_info.get('tokens_used', 0)} tokens")
-                # 溢出时尝试从 partial_result 提取游标，避免游标停滞导致无限重复处理
-                partial = overflow_info.get("partial_result", "")
-                recovered = _extract_cursor_id(partial, "last_dream_evolve_id", msg_id_set)
-                if recovered:
-                    new_dream_id = recovered
-                    logger.info(f"[Tidy] Force: Dream cursor recovered from partial_result: {new_dream_id}")
+                if _is_subagent_overflow(dream_result):
+                    overflow_info = _extract_overflow_info(dream_result)
+                    logger.warning(f"[Tidy] Force: Dream-evolver overflow: {overflow_info.get('turns_completed', 0)} turns, {overflow_info.get('tokens_used', 0)} tokens")
+                    partial = overflow_info.get("partial_result", "")
+                    recovered = _extract_cursor_id(partial, "last_dream_evolve_id", msg_id_set)
+                    if recovered and recovered != "NULL":
+                        new_dream_id = recovered
+                        logger.info(f"[Tidy] Force: Dream cursor recovered from partial_result: {new_dream_id}")
+                    else:
+                        new_dream_id = dream_force_msg_ids[-1]
+                        logger.warning(f"[Tidy] Force: Dream cursor overflow fallback: {new_dream_id}")
                 else:
-                    # 无法提取游标 → 保留旧游标（宁可重复处理也不丢失知识）
-                    new_dream_id = last_dream_evolve_id
-                    logger.warning(f"[Tidy] Force: Dream cursor preserved at {last_dream_evolve_id} to prevent knowledge loss")
+                    extracted = _extract_cursor_id(dream_result, "last_dream_evolve_id", msg_id_set)
+                    if extracted and extracted != "NULL":
+                        new_dream_id = extracted
+                    elif extracted == "NULL" or not extracted:
+                        new_dream_id = dream_force_msg_ids[-1]
+                        logger.warning(f"[Tidy] Force: Dream cursor not matched, fallback to last msg: {new_dream_id}")
             else:
-                # 提取并写入 dream 游标
-                extracted = _extract_cursor_id(dream_result, "last_dream_evolve_id", msg_id_set)
-                new_dream_id = extracted or last_dream_evolve_id
-                if not extracted:
-                    logger.warning("[Tidy] Force: dream cursor UUID regex not matched, preserving old cursor")
+                logger.info("[Tidy] Force: dream-evolver no incremental messages")
+
             if new_dream_id:
                 dream_cursor_path.parent.mkdir(parents=True, exist_ok=True)
                 dream_cursor_path.write_text(json.dumps({
