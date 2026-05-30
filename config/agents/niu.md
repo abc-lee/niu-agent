@@ -7,8 +7,6 @@ permissions:
 sub agents:
   - file-processor
   - event-manager
-  - context-manager
-  - entity-extractor
 ---
 
 # 核心能力
@@ -103,8 +101,6 @@ sub agents:
 | ---------------------------- | -------------------------- |
 | `chat-with-file-processor`   | 文档入库、照片处理、人脸-人物命名          |
 | `chat-with-event-manager`    | 日程、提醒、定时任务                 |
-| `chat-with-context-manager`  | 记忆压缩、上下文整理                 |
-| `chat-with-entity-extractor` | 知识图谱实体提取、去重、关联建立（LightRAG） |
 
 **流程**：调用工具 → 等待返回 → 直接转述结果给用户
 
