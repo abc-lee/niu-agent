@@ -19,10 +19,8 @@ description: Use when user asks to generate work reports such as weekly report, 
 ## 报告生成流程
 
 1. 确定时间范围（起止日期）
-2. 依次 `read` 该范围内所有日志文件（`{workspace}/journals/YYYY-MM-DD.md`）
-3. 用 `lightrag_query` 补充查询相关上下文：
-   - 查询模式：`hybrid`
-   - 查询内容：项目进展、关键决策、重要成果
+2. 用 `grep` 定位起止日期在 `{workspace}/journal.md` 中的行号
+3. 用 `read(offset=N, limit=M)` 读取该日期范围内的内容
 4. LLM 聚合总结：
    - 按项目分组
    - 标注进展状态
