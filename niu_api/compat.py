@@ -34,10 +34,14 @@ def _extract_cursor_id(text: str, field_name: str, valid_ids: set) -> str | None
         valid_ids: 当前消息列表中有效的 UUID 集合
 
     Returns:
-        验证通过的 UUID，或 None（未找到或无效）
+        验证通过的 UUID，"NULL"（明确返回 null），或 None（未找到或无效）
     """
     if not text:
         return None
+    # 先检查 null 匹配：区分"没报告"和"明确返回null"
+    null_pattern = rf'\{{\s*"{re.escape(field_name)}"\s*:\s*null\s*'
+    if re.search(null_pattern, text, re.DOTALL):
+        return "NULL"
     # 宽松匹配：允许各种空白格式
     pattern = rf'\{{\s*"{re.escape(field_name)}"\s*:\s*"([^"]+)"\s*'
     match = re.search(pattern, text, re.DOTALL)
@@ -191,68 +195,6 @@ def _build_incremental_msg_text(messages, last_cursor_id: str, out_msg_ids: list
 
     return f"共 {len(lines)} 条新消息\n\n" + "\n".join(lines)
 
-
-def _build_entity_history(messages, last_cursor_id: str = "") -> list:
-    """
-    构建 entity_history：按游标过滤增量消息，过滤 WM 虚拟消息。
-
-    Args:
-        messages: 全量消息对象列表（来自 message store，有 .id/.role/.content/.tool_calls/.tool_call_id 属性）
-        last_cursor_id: 上次处理到的消息 UUID（空字符串表示全量）
-
-    Returns:
-        history 列表（dict 格式，可直接传给 call_subagent）
-    """
-    # 按游标过滤增量消息
-    if last_cursor_id:
-        cursor_idx = -1
-        for i, msg in enumerate(messages):
-            if (getattr(msg, "id", "") or "") == last_cursor_id:
-                cursor_idx = i
-                break
-        if cursor_idx >= 0:
-            source_messages = messages[cursor_idx + 1:]
-        else:
-            logger.warning("[Tidy] Entity cursor not found in messages, degrading to full processing")
-            source_messages = messages
-    else:
-        source_messages = messages  # 无游标，全量
-
-    # 构建 history（含 tool 消息，过滤 WM 虚拟消息）
-    entity_history = []
-    _wm_ids = set()
-    for msg in source_messages:
-        if msg.tool_calls:
-            for tc in (msg.tool_calls if isinstance(msg.tool_calls, list) else []):
-                tc_name = tc.get("function", {}).get("name", "") if isinstance(tc, dict) else ""
-                if tc_name == "working_memory":
-                    _wm_ids.add(tc.get("id", ""))
-    for msg in source_messages:
-        entry = {"role": msg.role, "content": msg.content or ""}
-        if msg.tool_calls:
-            entry["tool_calls"] = msg.tool_calls
-        if msg.tool_call_id:
-            entry["tool_call_id"] = msg.tool_call_id
-        if not entry["content"] and not entry.get("tool_calls") and not entry.get("tool_call_id"):
-            continue
-        # 跳过 WM 虚拟消息
-        if entry["role"] == "assistant" and entry.get("tool_calls"):
-            if any(tc.get("function", {}).get("name") == "working_memory" for tc in (entry["tool_calls"] if isinstance(entry["tool_calls"], list) else [])):
-                continue
-        if entry["role"] == "tool" and entry.get("tool_call_id", "") in _wm_ids:
-            continue
-        entity_history.append(entry)
-
-    # 移除末尾孤立的 assistant(tool_calls)
-    while entity_history and entity_history[-1].get("role") == "assistant" and entity_history[-1].get("tool_calls"):
-        entity_history.pop()
-
-    # 成对完整性修复：如果第一条是 tool 消息但没有对应的 assistant(tool_calls)，移除它
-    # （游标切割可能把 assistant(tool_calls) 切掉但保留了 tool 结果）
-    while entity_history and entity_history[0].get("role") == "tool":
-        entity_history.pop(0)
-
-    return entity_history
 
 
 def truncate_message_content(content: str, max_chars: int = 500) -> str:
@@ -964,8 +906,9 @@ async def _tidy_context_impl(request: dict):
             if entity_msg_ids:
                 logger.info(f"[Tidy] entity-extractor: {len(entity_msg_ids)} new messages since cursor")
 
-                # 用增量消息构建 entity_history
-                incremental_entity_history = _build_entity_history(messages, last_entity_extract_id)
+                # TODO: 替换为 _build_incremental_msg_text(filter_wm=True) + 转换为 history dict 列表
+                # _build_entity_history 已删除，此处需改用 _build_incremental_msg_text 构建增量消息后转换
+                incremental_entity_history = None  # placeholder，后续 Task 替换
 
                 def run_entity_extractor():
                     return call_subagent(
@@ -1214,7 +1157,9 @@ async def _tidy_context_impl(request: dict):
                     task=entity_prompt_force,
                     llm_config=llm_config,
                     mcp_client=None,
-                    history=_build_entity_history(messages, ""),
+                    # TODO: 替换为 _build_incremental_msg_text(filter_wm=True) + 转换为 history dict 列表
+                    # _build_entity_history 已删除，此处需改用 _build_incremental_msg_text 构建全量消息后转换
+                    history=None,  # placeholder，后续 Task 替换
                 )
 
             entity_result = await asyncio.to_thread(run_entity_extractor_force)

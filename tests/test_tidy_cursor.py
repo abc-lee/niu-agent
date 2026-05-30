@@ -34,6 +34,7 @@ def make_messages(n: int, start_idx: int = 0) -> list[FakeMessage]:
 import sys
 sys.path.insert(0, ".")
 from niu_api.compat import _build_incremental_msg_text
+from niu_api.compat import _extract_cursor_id
 
 
 class TestBuildIncrementalMsgTextEndCursor:
@@ -332,3 +333,87 @@ class TestBuildIncrementalMsgTextProtectRecent:
         assert "uuid-2" not in out_ids
         assert "uuid-3" in out_ids
         assert "uuid-4" not in out_ids
+
+
+class TestBuildEntityHistoryReplacement:
+    """验证 _build_incremental_msg_text(filter_wm=True) 完整替代 _build_entity_history() 的功能"""
+
+    def test_wm_filter_in_incremental_range(self):
+        """增量范围内的 WM 过滤效果与 _build_entity_history 一致"""
+        messages = [
+            FakeMessage(id="uuid-0", role="user", content="你好"),
+            FakeMessage(id="uuid-1", role="assistant", content="你好！", tool_calls=[
+                {"id": "tc-wm", "function": {"name": "working_memory"}, "arguments": "{}"}
+            ]),
+            FakeMessage(id="uuid-2", role="tool", content='{"status": "ok"}', tool_call_id="tc-wm"),
+            FakeMessage(id="uuid-3", role="assistant", content="有什么可以帮你？"),
+            FakeMessage(id="uuid-4", role="user", content="帮我写代码"),
+            FakeMessage(id="uuid-5", role="assistant", content="好的", tool_calls=[
+                {"id": "tc-real", "function": {"name": "code_run"}, "arguments": "{}"}
+            ]),
+            FakeMessage(id="uuid-6", role="tool", content="代码执行结果", tool_call_id="tc-real"),
+        ]
+        out_ids = []
+        result = _build_incremental_msg_text(
+            messages,
+            last_cursor_id="uuid-0",
+            out_msg_ids=out_ids,
+            filter_wm=True,
+        )
+        # uuid-1(WM call) 和 uuid-2(WM result) 被过滤
+        # uuid-5 和 uuid-6 不是 WM，保留
+        assert "uuid-1" not in out_ids
+        assert "uuid-2" not in out_ids
+        assert "uuid-3" in out_ids
+        assert "uuid-4" in out_ids
+        assert "uuid-5" in out_ids
+        assert "uuid-6" in out_ids
+
+
+class TestExtractCursorIdNull:
+    """测试 _extract_cursor_id 对 null 值的检测"""
+
+    def test_normal_uuid_extraction(self):
+        """正常提取 UUID"""
+        result = _extract_cursor_id(
+            '处理完成 {"last_entity_extract_id": "uuid-abc123"} 收尾',
+            "last_entity_extract_id",
+            {"uuid-abc123"},
+        )
+        assert result == "uuid-abc123"
+
+    def test_null_returns_sentinel(self):
+        """明确返回 null 时，返回特殊标记 'NULL'（区分'没报告'和'明确返回null'）"""
+        result = _extract_cursor_id(
+            '处理完成 {"last_entity_extract_id": null} 收尾',
+            "last_entity_extract_id",
+            set(),
+        )
+        assert result == "NULL"
+
+    def test_no_match_returns_none(self):
+        """没有匹配时返回 None"""
+        result = _extract_cursor_id(
+            "没有任何游标信息",
+            "last_entity_extract_id",
+            set(),
+        )
+        assert result is None
+
+    def test_invalid_uuid_not_in_valid_ids(self):
+        """UUID 不在 valid_ids 中时返回 None"""
+        result = _extract_cursor_id(
+            '{"last_entity_extract_id": "uuid-nonexistent"}',
+            "last_entity_extract_id",
+            {"uuid-other"},
+        )
+        assert result is None
+
+    def test_null_with_whitespace(self):
+        """null 带各种空白格式"""
+        result = _extract_cursor_id(
+            '{"last_entity_extract_id" :  null  }',
+            "last_entity_extract_id",
+            set(),
+        )
+        assert result == "NULL"
