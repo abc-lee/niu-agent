@@ -67,7 +67,8 @@ mcpServers:
 - 调用方会传入消息列表，你只需处理传入的消息
 - 每条消息带有 `[idx:N]` 序号，处理完成后报告 idx 最大的那条消息的 UUID
 - 在报告末尾输出：`{"last_entity_extract_id": "<idx最大的消息的UUID>"}`
-- 如果传入的消息为空，输出 `{"last_entity_extract_id": null}`
+- **必须推进游标**：即使没有可提取的内容（全是程序化操作、闲聊等），也必须输出 idx 最大的消息的 UUID
+- 只有当传入的消息列表本身为空（一条消息都没有）时，才输出 `{"last_entity_extract_id": null}`
 
 ## ⛔ 严格禁止：实体碎片化防护
 
