@@ -741,7 +741,7 @@ async def clear_chat() -> dict:
 
         # 重置游标文件（消息已清空，旧游标指向不存在的消息）
         from pathlib import Path
-        for cursor_name in ["last_entity_extract.json", "last_dream_evolve.json", "last_compress.json", "last_tidy_tokens.json"]:
+        for cursor_name in ["last_entity_extract.json", "last_dream_evolve.json", "last_compress.json", "last_tidy_tokens.json", "last_journal.json"]:
             cursor_p = Path.home() / ".niu" / cursor_name
             try:
                 if cursor_p.exists():
