@@ -127,14 +127,21 @@ sub agents:
 
 同时移除委托表中 `chat-with-context-manager` 和 `chat-with-entity-extractor` 的说明行。
 
+**文件**: `agent/handler.py`
+
+- 删除 `_call_subagent_gen` 中 entity-extractor 的 history 特殊分支（第864-884行：`if agent_name == "entity-extractor"` 的 WM 过滤和 history 构建）
+- 删除 `_call_subagent_gen` 中 entity-extractor 的游标写入逻辑（第932-956行）
+- 在 `dispatch()` 的 `chat-with-*` 路由中增加屏蔽：对 `context-manager` 和 `entity-extractor` 返回"此子Agent已由系统自动管理，不可手动调用"
+
 ### 2. Entity Extractor 改为 task 方式
 
 **文件**: `niu_api/compat.py`
 
 - 删除 `_build_entity_history()` 函数（其 WM 过滤和成对修复逻辑迁移到 `_build_incremental_msg_text()` 的 `filter_wm` 参数）
-- Entity Extractor 调用改为 `call_subagent(history=None, task=msg_text + entity_prompt)`
-- `msg_text` 由 `_build_incremental_msg_text()` 生成（entity_cursor 到末尾）
+- **sleep 模式**（第893-902行）：将 `call_subagent(history=incremental_entity_history, task=entity_prompt)` 改为 `call_subagent(history=None, task=entity_msg_text + entity_prompt)`，其中 `entity_msg_text` 由 `_build_incremental_msg_text(messages, last_entity_extract_id, entity_msg_ids, msg_tokens, filter_wm=True)` 生成
+- **force 模式**（第1142行）：将 `history=_build_entity_history(messages, "")` 改为 `history=None`，task 改为增量消息文本（force 模式 entity_cursor 传空字符串 = 全量）
 - 游标 fallback：子Agent返回 null 时，推进到增量消息最后一条的 UUID
+- 空增量范围跳过：已有 `if entity_msg_ids:` 检查（第889行），保持不变
 
 **文件**: `config/agents/entity-extractor.md`
 
@@ -146,25 +153,28 @@ sub agents:
 
 **文件**: `niu_api/compat.py`
 
-- Dream Evolver 调用改为只传 dream_cursor 之后的增量消息（与 Entity Extractor 同样的 `_build_incremental_msg_text()` 调用方式）
-- 不再传全量消息列表让子Agent自行过滤
+- **sleep 模式**（第953-988行）：将全量 `msg_list_text` 替换为 `_build_incremental_msg_text(messages, last_dream_evolve_id, dream_msg_ids, msg_tokens, filter_wm=True)` 生成的增量消息文本。prompt 简化为"对以下消息中涉及的实体做精加工"，移除"只处理游标之后的消息"的自行过滤要求
+- **force 模式**（第1174-1194行）：同样改为增量消息文本
 - 游标 fallback：与 Entity Extractor 一致
+- 空增量范围跳过：新增 `if dream_msg_ids:` 检查，无增量消息时跳过调用
 
 **文件**: `config/agents/dream-evolver.md`
 
 - prompt 移除"在消息列表中找到游标 UUID 的 idx，只处理 idx 更大的消息"的自行过滤要求
 - 程序已保证只传入增量消息，子Agent只需处理收到的全部消息
-- prompt 明确告知"以下消息是 entity-extractor 新处理的，请对其中涉及的实体做精加工"
+- prompt 简化为"对以下消息中涉及的实体做精加工"（不提及 Entity Extractor，两者独立）
 
 ### 4. Context Manager 保护范围硬性保证
 
 **文件**: `niu_api/compat.py`
 
-- `_build_incremental_msg_text()` 增加 `end_cursor_id` 参数（上界截断，用于 Context Manager 的 `[compress_cursor, dream_cursor]` 范围）
+- `_build_incremental_msg_text()` 增加 `end_cursor_id` 参数（上界截断，用于 Context Manager 的 `[compress_cursor, dream_cursor_new]` 范围）
 - `_build_incremental_msg_text()` 增加 `protect_recent` 参数（对最后 N 条消息加 `[PROTECTED]` 标签）
-- 保护数量从 `~/.niu/preferences.json` 读取
+- 保护数量从 `~/.niu/preferences.json` 的 `context.protectRecentCount` 读取，默认 10
+- **sleep 模式**（第1027-1048行）：将全量 `msg_list_text` 替换为 `_build_incremental_msg_text(messages, last_compress_id, compress_msg_ids, msg_tokens, end_cursor_id=new_dream_id, protect_recent=N, filter_wm=True)` 生成的增量范围消息文本。prompt 简化为"处理收到的全部消息"
 - force 模式执行压缩计划时，程序层面排除保护范围内的消息 ID
 - sleep 模式执行完后校验保护范围内的消息是否被误删，如果被删则记录警告
+- 空增量范围跳过：新增 `if compress_msg_ids:` 检查，无增量消息时跳过调用
 
 **文件**: `config/agents/context-manager.md`
 
@@ -172,18 +182,20 @@ sub agents:
 - 明确带标签的消息不可删除/压缩
 - prompt 简化范围描述：程序已保证只传入正确范围的消息，子Agent只需处理收到的全部消息
 
-### 5. 游标单点写入
+### 5. 串行调用消息刷新
 
-**文件**: `agent/handler.py`
+**文件**: `niu_api/compat.py`
 
-- 删除 entity-extractor 游标写入逻辑（`_call_subagent_gen` 中的游标提取和文件写入）
-- 游标统一在 `compat.py` 的 `_tidy_context_impl` 中写入
+- 每个子Agent执行前重新获取消息列表：`messages = await store.get_messages()`
+- 重新计算 `msg_tokens` 和 `msg_id_set`
+- 记录 `dream_cursor_new`（Dream 推进后的游标，含 fallback），作为 Context Manager 的上界
 
 ### 6. Dream Evolver 游标 fallback
 
 **文件**: `niu_api/compat.py`
 
 - Dream Evolver 游标提取失败时，与 Entity Extractor 一致：推进到增量消息最后一条的 UUID
+- `_extract_cursor_id()` 增加对 `null` 值的检测，返回特殊标记区分"没报告游标"和"明确返回 null"
 
 ### 7. `_build_incremental_msg_text()` 增强
 
@@ -192,7 +204,7 @@ sub agents:
 - 新增 `end_cursor_id` 参数：上界游标，只生成到该游标为止的消息（用于 Context Manager）
 - 新增 `protect_recent` 参数：对最后 N 条消息加 `[PROTECTED]` 标签
 - 新增 `filter_wm` 参数：过滤 WM 虚拟消息和修复 tool_calls 成对完整性（原 `_build_entity_history()` 的逻辑迁移至此）
-- idx 保持全量序号（与当前行为一致），不改为增量相对序号
+- idx 使用全量序号（与 `_build_incremental_msg_text()` 当前行为一致，entity-extractor 改 task 方式后首次使用此格式）
 
 ## 游标文件格式
 
@@ -234,8 +246,10 @@ force 模式下 Dream Evolver 仍为增量模式。增量范围可能很大（�
 三个子Agent串行执行：Entity → Dream → Context Manager。隔离规则：
 
 1. **每个子Agent执行前重新获取消息列表** — 前一个子Agent可能通过 `delete_messages`/`update_message` 修改了 DB，后续Agent必须看到最新状态
-2. **每个子Agent独立计算增量范围** — 基于各自的游标和最新消息列表
-3. **Context Manager 的上界使用 Dream 处理前的游标** — 避免重复处理 Dream 刚处理过的消息
+2. **每个子Agent独立计算增量范围** — 基于各自的游标和最新消息列表，与其它Agent的游标无关
+3. **Context Manager 的上界使用 Dream 推进后的新游标** — 无论 Dream 正常推进还是 fallback，新游标都代表 Dream 已覆盖的范围
+
+**Dream 与 Entity 的关系**：Dream 和 Entity 是独立的游标，不存在依赖关系。Dream 只负责增量范围内出现的新实体的精加工，不需要知道 Entity 做了什么。prompt 简化为"对以下消息中涉及的实体做精加工"，不再提及 Entity。
 
 ```
 Entity Extractor:
@@ -244,16 +258,16 @@ Entity Extractor:
   输出: 推进 entity_cursor → 写入游标文件
 
 Dream Evolver:
-  范围: [dream_cursor, 末尾]
+  范围: [dream_cursor, 末尾]  （与 entity_cursor 无关）
   输入: 重新获取 messages → _build_incremental_msg_text(messages, dream_cursor)
   输出: 推进 dream_cursor → 写入游标文件
-  注意: 记录 dream_cursor_before = dream_cursor (推进前的值)
+  记录: dream_cursor_new = 推进后的游标值（含 fallback）
 
 Context Manager:
-  范围: [compress_cursor, dream_cursor_before]
-  输入: 重新获取 messages → _build_incremental_msg_text(messages, compress_cursor, end_cursor_id=dream_cursor_before)
+  范围: [compress_cursor, dream_cursor_new]
+  输入: 重新获取 messages → _build_incremental_msg_text(messages, compress_cursor, end_cursor_id=dream_cursor_new)
   输出: 推进 compress_cursor → 写入游标文件
-  注意: 上界是 Dream 推进前的游标，不包含 Dream 刚处理过的消息
+  注意: 上界是 Dream 推进后的游标，不包含 Dream 还未处理的消息
 ```
 
 force 模式同理，只是 Entity Extractor 范围为全量（`entity_cursor = ""`），其余逻辑相同。
