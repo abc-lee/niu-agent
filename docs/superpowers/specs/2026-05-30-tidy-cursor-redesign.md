@@ -209,6 +209,45 @@ sub agents:
 - `~/.niu/last_dream_evolve.json`
 - `~/.niu/last_compress.json`
 
+## 边缘场景处理
+
+### 首次运行
+
+所有游标文件不存在时，游标值为空字符串。`_build_incremental_msg_text()` 中 `start_idx = 0`，生成全量消息。三个子Agent均从开头处理。与当前行为一致，无需额外处理。
+
+### 游标指向已删除消息
+
+用户或 Context Manager 可能删除了游标指向的消息。此时在消息列表中找不到游标 UUID，定位失败。
+
+处理方式：游标定位失败时，回退到从头开始处理（`start_idx = 0`），等效于首次运行。不应保留旧游标导致死循环。
+
+### 空增量范围
+
+如果子Agent的增量范围为空（游标已在末尾且无新消息），跳过该子Agent调用。不传空消息列表给 LLM，避免无意义的 token 消耗。
+
+### force 模式 Dream Evolver 增量截断
+
+force 模式下 Dream Evolver 仍为增量模式。但若上次 sleep 时 dream 游标未推进（如 entity-extractor 返回 null），增量范围可能很大。处理方式：在 `_build_incremental_msg_text()` 中增加 token 预算参数（如 `max_tokens=30000`），超过预算时从最新的消息开始截取，优先处理近期消息。截断时记录警告日志。
+
+### 子Agent输出游标格式不一致
+
+子Agent可能返回多种格式的游标：`"uuid"`、`null`、空字符串、带换行等。统一处理：
+- `_extract_cursor_id()` 正则同时匹配 `"value"` 和 `null` 两种格式
+- 返回 `null` 时走 fallback（推进到增量消息最后一条的 UUID）
+- 返回空字符串或无效 UUID 时同样走 fallback
+- 返回不在 `msg_id_set` 中的 UUID 时，视为无效，走 fallback
+
+### 并发调用
+
+auto-tidy 运行期间用户发送新消息，可能导致：
+- 游标推进到新消息，但新消息尚未被子Agent处理
+- 实际上当前 auto-tidy 是串行执行的（`_tidy_context_impl` 在主循环中运行），新消息会在下一轮 tidy 中处理
+- 无需额外并发控制，但需确保游标推进后不会跳过未处理的消息
+
+### Context Manager 保护数量配置
+
+`~/.niu/preferences.json` 中如果没有 `context.protectRecentCount` 字段，默认值为 10。在 `_tidy_context_impl()` 中读取时使用 `prefs.get("context", {}).get("protectRecentCount", 10)`。无需初始化逻辑。
+
 ## 风险评估
 
 | 改动 | 风险 | 缓解 |
