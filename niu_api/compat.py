@@ -1418,6 +1418,25 @@ async def _tidy_context_impl(request: dict):
                     if cursor_updates:
                         logger.warning(f"[Tidy] Force: Removing cursor messages from updates: {[u.get('message_id') for u in cursor_updates]}")
                         valid_updates = [u for u in valid_updates if u.get("message_id", "") not in cursor_ids_set]
+                    # 程序化执行 dream 安全边界：dream-evolver 游标之后的消息不得删除或替换
+                    # sleep mode 通过 end_cursor_id 结构性限制 context-manager 可见范围，
+                    # force mode 必须程序化过滤，否则 LLM 可能忽略 prompt 指令删除未提取的消息
+                    if new_dream_id:
+                        dream_boundary_idx = -1
+                        for i, m in enumerate(fresh_messages):
+                            if (getattr(m, "id", "") or "") == new_dream_id:
+                                dream_boundary_idx = i
+                                break
+                        if dream_boundary_idx >= 0:
+                            post_dream_ids = {getattr(m, "id", "") for m in fresh_messages[dream_boundary_idx + 1:]}
+                            unsafe_deletes = [mid for mid in valid_deletes if mid in post_dream_ids]
+                            if unsafe_deletes:
+                                logger.warning(f"[Tidy] Force: Protecting {len(unsafe_deletes)} messages after dream cursor from deletion")
+                                valid_deletes = [mid for mid in valid_deletes if mid not in post_dream_ids]
+                            unsafe_updates = [u for u in valid_updates if u.get("message_id", "") in post_dream_ids]
+                            if unsafe_updates:
+                                logger.warning(f"[Tidy] Force: Protecting {len(unsafe_updates)} messages after dream cursor from content replacement")
+                                valid_updates = [u for u in valid_updates if u.get("message_id", "") not in post_dream_ids]
                     # 程序层面排除保护范围内的消息 ID
                     protect_recent_count = 10
                     try:
