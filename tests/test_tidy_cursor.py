@@ -91,3 +91,135 @@ class TestBuildIncrementalMsgTextEndCursor:
             end_cursor_id="uuid-2",
         )
         assert out_ids == []
+
+
+class TestBuildIncrementalMsgTextFilterWm:
+    """测试 filter_wm 参数：过滤 working_memory 虚拟消息和修复 tool_calls 成对完整性"""
+
+    def _make_messages_with_wm(self) -> list[FakeMessage]:
+        """构造含 WM 虚拟消息的消息列表"""
+        return [
+            FakeMessage(id="uuid-0", role="user", content="你好"),
+            FakeMessage(id="uuid-1", role="assistant", content="你好！", tool_calls=[
+                {"id": "tc-1", "function": {"name": "working_memory"}, "arguments": "{}"}
+            ]),
+            FakeMessage(id="uuid-2", role="tool", content='{"status": "ok"}', tool_call_id="tc-1"),
+            FakeMessage(id="uuid-3", role="user", content="帮我写代码"),
+            FakeMessage(id="uuid-4", role="assistant", content="好的，我来写"),
+        ]
+
+    def test_filter_wm_true_removes_working_memory(self):
+        """filter_wm=True 时，过滤掉 WM 的 assistant(tool_calls) 和对应 tool 结果"""
+        messages = self._make_messages_with_wm()
+        out_ids = []
+        result = _build_incremental_msg_text(
+            messages,
+            last_cursor_id="",
+            out_msg_ids=out_ids,
+            filter_wm=True,
+        )
+        # uuid-1(WM call) 和 uuid-2(WM result) 应被过滤
+        assert "uuid-1" not in out_ids
+        assert "uuid-2" not in out_ids
+        assert "uuid-0" in out_ids
+        assert "uuid-3" in out_ids
+        assert "uuid-4" in out_ids
+
+    def test_filter_wm_false_keeps_working_memory(self):
+        """filter_wm=False 时，保留 WM 消息（默认行为，向后兼容）"""
+        messages = self._make_messages_with_wm()
+        out_ids = []
+        result = _build_incremental_msg_text(
+            messages,
+            last_cursor_id="",
+            out_msg_ids=out_ids,
+            filter_wm=False,
+        )
+        assert "uuid-1" in out_ids
+        assert "uuid-2" in out_ids
+
+    def test_filter_wm_removes_trailing_orphan_tool_calls(self):
+        """filter_wm=True 时，移除末尾孤立的 assistant(tool_calls)（无对应 tool 结果）"""
+        messages = [
+            FakeMessage(id="uuid-0", role="user", content="你好"),
+            FakeMessage(id="uuid-1", role="assistant", content="", tool_calls=[
+                {"id": "tc-1", "function": {"name": "some_tool"}, "arguments": "{}"}
+            ]),
+            # 没有对应的 tool 结果 — 末尾孤立
+        ]
+        out_ids = []
+        result = _build_incremental_msg_text(
+            messages,
+            last_cursor_id="",
+            out_msg_ids=out_ids,
+            filter_wm=True,
+        )
+        # uuid-1 是末尾孤立的 assistant(tool_calls)，应被移除
+        assert "uuid-1" not in out_ids
+
+    def test_filter_wm_removes_leading_orphan_tool(self):
+        """filter_wm=True 时，移除开头孤立的 tool 消息（游标切割导致）"""
+        messages = [
+            FakeMessage(id="uuid-0", role="tool", content="result", tool_call_id="tc-missing"),
+            FakeMessage(id="uuid-1", role="user", content="你好"),
+        ]
+        out_ids = []
+        result = _build_incremental_msg_text(
+            messages,
+            last_cursor_id="",
+            out_msg_ids=out_ids,
+            filter_wm=True,
+        )
+        # uuid-0 是开头的孤立 tool，应被移除
+        assert "uuid-0" not in out_ids
+        assert "uuid-1" in out_ids
+
+    def test_filter_wm_mixed_tool_calls_keeps_non_wm(self):
+        """filter_wm=True 时，assistant 同时有 WM 和非 WM tool_calls，保留非 WM 部分"""
+        messages = [
+            FakeMessage(id="uuid-0", role="user", content="你好"),
+            FakeMessage(id="uuid-1", role="assistant", content="我来处理", tool_calls=[
+                {"id": "tc-wm", "function": {"name": "working_memory"}, "arguments": "{}"},
+                {"id": "tc-real", "function": {"name": "code_run"}, "arguments": "{}"},
+            ]),
+            FakeMessage(id="uuid-2", role="tool", content='{"status": "ok"}', tool_call_id="tc-wm"),
+            FakeMessage(id="uuid-3", role="tool", content="代码执行结果", tool_call_id="tc-real"),
+        ]
+        out_ids = []
+        result = _build_incremental_msg_text(messages, "", out_ids, filter_wm=True)
+        # uuid-1 应保留（有非 WM tool_call），uuid-2(WM result) 应过滤，uuid-3 应保留
+        assert "uuid-1" in out_ids
+        assert "uuid-2" not in out_ids
+        assert "uuid-3" in out_ids
+
+    def test_filter_wm_preserves_non_wm_tool_calls(self):
+        """filter_wm=True 时，非 WM 的 tool_calls（如 code_run）不被过滤"""
+        messages = [
+            FakeMessage(id="uuid-0", role="user", content="帮我写代码"),
+            FakeMessage(id="uuid-1", role="assistant", content="好的", tool_calls=[
+                {"id": "tc-1", "function": {"name": "code_run"}, "arguments": "{}"}
+            ]),
+            FakeMessage(id="uuid-2", role="tool", content="代码执行结果", tool_call_id="tc-1"),
+        ]
+        out_ids = []
+        result = _build_incremental_msg_text(messages, "", out_ids, filter_wm=True)
+        assert "uuid-0" in out_ids
+        assert "uuid-1" in out_ids
+        assert "uuid-2" in out_ids
+
+    def test_filter_wm_idx_uses_original_positions(self):
+        """filter_wm 过滤消息后，idx 仍使用原始全量列表位置"""
+        messages = [
+            FakeMessage(id="uuid-0", role="user", content="你好"),
+            FakeMessage(id="uuid-1", role="assistant", content="", tool_calls=[
+                {"id": "tc-wm", "function": {"name": "working_memory"}, "arguments": "{}"}
+            ]),
+            FakeMessage(id="uuid-2", role="tool", content="ok", tool_call_id="tc-wm"),
+            FakeMessage(id="uuid-3", role="user", content="帮我写代码"),
+        ]
+        out_ids = []
+        result = _build_incremental_msg_text(messages, "", out_ids, filter_wm=True)
+        # uuid-0 的 idx=1，uuid-3 的 idx=4（原始位置，不是过滤后的 idx=2）
+        assert "[idx:1]" in result
+        assert "[idx:4]" in result
+        assert "[idx:2]" not in result  # uuid-1 被过滤，idx=2 不应出现
