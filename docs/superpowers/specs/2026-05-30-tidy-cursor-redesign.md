@@ -48,8 +48,8 @@ _tidy_context_impl()
 [id:uuid2] [idx:4] 256tokens role:assistant: 消息内容...
 ```
 
-- `id`: 消息在 DB 中的 UUID（持久标识，用于游标存储）
-- `idx`: 消息在**全量消息列表**中的绝对位置（1-based），不是增量列表中的相对序号。保持绝对位置是为了让子Agent报告游标时能准确对应到消息
+- `id`: 消息在 DB 中的 UUID（持久标识，用于游标存储，跨会话不变）
+- `idx`: 消息在全量消息列表中的序号（1-based，动态值，删除消息后会变）。不是增量列表中的相对序号 — 增量消息的 idx 与全量列表保持一致（如全量第51条，增量中 idx=51 而非 idx=1）。游标用 id（UUID）存储，idx 仅用于子Agent判断时间先后
 - `tokens`: 消息的 token 数
 
 ### Context Manager 的保护范围
@@ -139,7 +139,7 @@ sub agents:
 **文件**: `config/agents/entity-extractor.md`
 
 - prompt 改为 task 方式的消息格式描述
-- 明确 `[id:UUID] [idx:N]` 格式（idx 是全量列表的绝对位置）
+- 明确 `[id:UUID] [idx:N]` 格式（idx 是全量列表序号，不是增量相对序号）
 - 明确游标报告方式：输出 `{"last_entity_extract_id": "<收到的消息中 idx 最大的消息的 id（UUID）>"}`，即使无内容也必须推进游标
 
 ### 3. Dream Evolver 改为增量模式
@@ -192,7 +192,7 @@ sub agents:
 - 新增 `end_cursor_id` 参数：上界游标，只生成到该游标为止的消息（用于 Context Manager）
 - 新增 `protect_recent` 参数：对最后 N 条消息加 `[PROTECTED]` 标签
 - 新增 `filter_wm` 参数：过滤 WM 虚拟消息和修复 tool_calls 成对完整性（原 `_build_entity_history()` 的逻辑迁移至此）
-- idx 保持全量绝对位置（与当前行为一致），不改为增量相对位置
+- idx 保持全量序号（与当前行为一致），不改为增量相对序号
 
 ## 游标文件格式
 
