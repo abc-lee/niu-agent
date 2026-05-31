@@ -138,3 +138,55 @@ class TestSamplingCallback:
             result = await callback(None, params)
             assert result.role == "assistant"
             assert "Sampling" in result.content.text or "失败" in result.content.text
+
+
+class TestCallToolResultConversion:
+    """验证 call_tool 将 CallToolResult 转换为 dict"""
+
+    @pytest.mark.asyncio
+    async def test_call_tool_returns_dict_on_success(self):
+        """成功调用返回标准 dict 格式"""
+        from agent.mcp_client import MCPClientManager
+        from mcp.types import TextContent
+
+        manager = MCPClientManager(sampling_callback=None)
+        mock_session = AsyncMock()
+        mock_result = MagicMock()
+        mock_result.content = [TextContent(type="text", text="file content here")]
+        mock_result.isError = False
+        mock_result.structuredContent = None
+        mock_session.call_tool.return_value = mock_result
+        manager._connections["ext-server"] = mock_session
+
+        result = await manager.call_tool("ext-server", "read_file", {"path": "/tmp/test.txt"})
+        assert isinstance(result, dict)
+        assert result["status"] == "success"
+        assert "file content here" in result["content"]
+
+    @pytest.mark.asyncio
+    async def test_call_tool_returns_dict_on_error(self):
+        """错误调用返回 error 状态的 dict"""
+        from agent.mcp_client import MCPClientManager
+        from mcp.types import TextContent
+
+        manager = MCPClientManager(sampling_callback=None)
+        mock_session = AsyncMock()
+        mock_result = MagicMock()
+        mock_result.content = [TextContent(type="text", text="Permission denied")]
+        mock_result.isError = True
+        mock_result.structuredContent = None
+        mock_session.call_tool.return_value = mock_result
+        manager._connections["ext-server"] = mock_session
+
+        result = await manager.call_tool("ext-server", "write_file", {"path": "/forbidden"})
+        assert isinstance(result, dict)
+        assert result["status"] == "error"
+        assert "Permission denied" in result["content"]
+
+    @pytest.mark.asyncio
+    async def test_call_tool_raises_for_unknown_server(self):
+        """未知服务器抛出 KeyError"""
+        from agent.mcp_client import MCPClientManager
+        manager = MCPClientManager(sampling_callback=None)
+        with pytest.raises(KeyError):
+            await manager.call_tool("unknown-server", "tool", {})
