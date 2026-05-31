@@ -223,14 +223,13 @@ class ToolRegistry:
 
     # 以下方法行为不变，对内部/外部工具一视同仁：
     # - get_schemas(): 返回所有工具（含 hidden），visibility 字段保留
-    # - get_static_tools(): 只返回 visibility=static 的工具
-    # - get_dynamic_tools(): 只返回 visibility=dynamic 的工具
+    # - get_static_tools(): 只返回 visibility=static 的工具（主 Agent 可见）
     # - get_visibility(): 返回工具的 visibility 值
 ```
 
 **关键约束**：
 - `get_schemas()` 仍返回所有工具（含 hidden），供子 Agent 使用
-- `get_static_tools()` / `get_dynamic_tools()` 仍按 visibility 过滤，主 Agent 只看到非 hidden 工具
+- `get_static_tools()` 按 visibility 过滤，主 Agent 只看到 static 工具
 - 子 Agent 的 `get_subagent_mcp_tools_schema()` 仍按 mcpServers 白名单过滤，忽略 visibility
 - 磁盘导航（disk_parser）仍通过 ToolRegistry 获取工具，disk hidden 是独立维度
 
@@ -397,9 +396,10 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
 #### 第一层：ToolRegistry visibility（工具注册可见性）
 
 - 来源：`config/mcp-servers.yaml` 中每个工具的 `visibility` 字段
-- 取值：`static`（始终可见）、`dynamic`（向量检索可见）、`hidden`（不可见）
+- 取值：`static`（标准可见，直接注入主 Agent 工具列表）、`hidden`（隐藏，走虚拟磁盘）
+- **`dynamic` 已废弃**：早期版本用向量检索动态注入工具，引入虚拟磁盘后不再需要。现在只有 static 和 hidden 两种
 - 作用范围：主 Agent 的 `get_schemas()` 返回结果
-- **规则**：`hidden` 工具不出现在主 Agent 的工具列表中，但 ToolRegistry 仍注册该工具（可通过 `get(name)` 获取）
+- **规则**：`hidden` 工具不出现在主 Agent 的工具列表中，但 ToolRegistry 仍注册该工具（可通过 `get(name)` 获取）。`hidden` 工具通过虚拟磁盘供主 Agent 间接调用
 - **改造约束**：外部 MCP 服务器的工具也必须在注册时支持 visibility 配置。外部工具的 visibility 仍由 `mcp-servers.yaml` 配置，不是由外部服务器自身决定
 
 #### 第二层：DiskConfig hidden（虚拟磁盘软隐藏）
@@ -459,7 +459,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
 - 性能无回退（同进程调用速度不变）
 - photo-server 文档入库 + Sampling 分类正常
 - 三层可见性机制完整保留：
-  - ToolRegistry visibility（static/dynamic/hidden）正常过滤
+  - ToolRegistry visibility（static/hidden）正常过滤
   - 磁盘 disk hidden 机制正常工作
   - 子 Agent mcpServers 白名单忽略 visibility
 
