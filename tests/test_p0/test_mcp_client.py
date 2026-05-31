@@ -93,3 +93,48 @@ class TestMCPSamplingCallback:
         from agent.mcp_client import MCPClientManager
         manager = MCPClientManager()
         assert manager._sampling_callback is None
+
+
+class TestSamplingCallback:
+    """验证 Sampling callback 实现"""
+
+    def test_make_sampling_callback_returns_callable(self):
+        """make_sampling_callback 返回可调用对象"""
+        from agent.mcp_client import make_sampling_callback
+        callback = make_sampling_callback()
+        assert callable(callback)
+
+    @pytest.mark.asyncio
+    async def test_sampling_callback_calls_llm(self):
+        """Sampling callback 调用 LLM 并返回结果"""
+        from agent.mcp_client import make_sampling_callback
+        from mcp.types import CreateMessageRequestParams, TextContent, SamplingMessage
+        callback = make_sampling_callback()
+
+        with patch("niu_api.llm_proxy.get_llm_config", return_value={"model": "test-model"}), \
+             patch("niu_api.llm_proxy.call_llm_via_litellm", return_value={"content": "文档分类：技术文档"}) as mock_call:
+            params = CreateMessageRequestParams(
+                messages=[SamplingMessage(role="user", content=TextContent(type="text", text="请分类"))],
+                maxTokens=100,
+            )
+            result = await callback(None, params)
+            assert result.role == "assistant"
+            assert isinstance(result.content, TextContent)
+            assert "技术文档" in result.content.text
+            mock_call.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_sampling_callback_returns_error_on_failure(self):
+        """LLM 调用失败时返回错误提示"""
+        from agent.mcp_client import make_sampling_callback
+        from mcp.types import CreateMessageRequestParams, TextContent, SamplingMessage
+        callback = make_sampling_callback()
+
+        with patch("niu_api.llm_proxy.get_llm_config", side_effect=RuntimeError("LLM unavailable")):
+            params = CreateMessageRequestParams(
+                messages=[SamplingMessage(role="user", content=TextContent(type="text", text="test"))],
+                maxTokens=100,
+            )
+            result = await callback(None, params)
+            assert result.role == "assistant"
+            assert "Sampling" in result.content.text or "失败" in result.content.text
