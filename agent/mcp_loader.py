@@ -175,3 +175,111 @@ def load_mcp_tools(required_servers: Optional[List[Tuple[str, str]]] = None) -> 
     _inject_tools_to_lightrag(registry, servers)
 
     return registry
+
+
+# ============================================================================
+# External Server Support
+# ============================================================================
+
+def is_external_server(server_config: dict) -> bool:
+    """判断 MCP 服务器是否为外部服务器（stdio/HTTP 模式）
+
+    Args:
+        server_config: mcp-servers.yaml 中单个服务器的配置
+
+    Returns:
+        True 表示外部服务器（stdio/HTTP），False 表示内部服务器（同进程）
+    """
+    mode = server_config.get("mode", "")
+    return mode in ("stdio", "http")
+
+
+def _get_or_create_event_loop():
+    """获取现有事件循环或创建新的"""
+    import asyncio
+
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_closed():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        return loop
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        return loop
+
+
+def load_external_servers(mcp_client, registry=None):
+    """加载外部 MCP 服务器（stdio/HTTP 模式）
+
+    读取 mcp-servers.yaml 配置，连接所有外部服务器，
+    注册外部工具到 ToolRegistry。
+
+    Args:
+        mcp_client: MCPClientManager 实例
+        registry: ToolRegistry 实例（默认使用全局 registry）
+    """
+    from agent.tool_registry import get_registry
+
+    if registry is None:
+        registry = get_registry()
+
+    config = _load_mcp_config()
+    if not config:
+        logger.warning("No MCP server config found")
+        return
+
+    for server_name, server_config in config.items():
+        if not is_external_server(server_config):
+            continue
+
+        mode = server_config.get("mode", "")
+        logger.info(f"Loading external MCP server: {server_name} (mode={mode})")
+
+        try:
+            if mode == "stdio":
+                command = server_config.get("command", "")
+                args = server_config.get("args", [])
+                env = server_config.get("env", None)
+
+                # 执行异步连接
+                loop = _get_or_create_event_loop()
+                loop.run_until_complete(
+                    mcp_client.connect_stdio(server_name, command, args, env)
+                )
+            elif mode == "http":
+                url = server_config.get("url", "")
+
+                loop = _get_or_create_event_loop()
+                loop.run_until_complete(
+                    mcp_client.connect_http(server_name, url)
+                )
+
+            # 获取工具列表并注册到 ToolRegistry
+            loop = _get_or_create_event_loop()
+            tools = loop.run_until_complete(mcp_client.list_tools(server_name))
+
+            # 读取 visibility 配置
+            tools_config = server_config.get("tools", {})
+
+            for tool in tools:
+                full_name = f"{server_name}/{tool.name}"
+                registry._external_tools[full_name] = (server_name, tool.name)
+
+                # visibility 从配置文件读取，未列出的工具默认 hidden
+                tool_config = tools_config.get(tool.name, {})
+                visibility = tool_config.get("visibility", "hidden")
+
+                registry._schemas[full_name] = {
+                    "name": full_name,
+                    "description": tool.description,
+                    "input_schema": tool.inputSchema,
+                    "visibility": visibility,
+                }
+                registry._server_tools.setdefault(server_name, []).append(full_name)
+
+            logger.info(f"External MCP server {server_name} loaded: {len(tools)} tools")
+
+        except Exception as e:
+            logger.error(f"Failed to load external MCP server {server_name}: {e}")
