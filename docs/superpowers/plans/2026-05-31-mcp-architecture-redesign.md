@@ -17,7 +17,7 @@
 | 文件 | 职责 | 状态 |
 |------|------|------|
 | `agent/tool_registry.py` | 工具注册中心，双轨统一接口，ask_agent 注入 | 修改 |
-| `agent/mcp_client.py` | MCP Client 管理器（stdio + HTTP 连接 + Sampling） | 重写 |
+| `agent/mcp_client.py` | MCP Client 管理器（stdio + HTTP 连接 + Sampling） | 新建 |
 | `agent/mcp_loader.py` | MCP 模块加载器，新增外部服务器加载 | 修改 |
 | `agent/runner.py` | Agent 运行器，注入 ask_agent + 初始化 MCPClientManager | 修改 |
 | `config/mcp-servers.yaml` | MCP 服务器配置，新增 mode 字段 | 修改 |
@@ -62,26 +62,25 @@ class TestVisibilityValues:
         """可以注册 static 工具"""
         def dummy():
             pass
-        self.registry.register("test-server/tool", dummy, {"name": "test-server/tool", "visibility": "static"})
+        self.registry.register("test-server/tool", dummy, {"name": "test-server/tool"}, visibility="static")
         assert self.registry._schemas["test-server/tool"]["visibility"] == "static"
 
     def test_register_hidden_visibility(self):
         """可以注册 hidden 工具"""
         def dummy():
             pass
-        self.registry.register("test-server/tool", dummy, {"name": "test-server/tool", "visibility": "hidden"})
+        self.registry.register("test-server/tool", dummy, {"name": "test-server/tool"}, visibility="hidden")
         assert self.registry._schemas["test-server/tool"]["visibility"] == "hidden"
 
     def test_get_static_tools_returns_only_static(self):
-        """get_static_tools 只返回 static 工具"""
+        """get_static_tools 只返回 static 工具名列表"""
         def dummy():
             pass
-        self.registry.register("srv/a", dummy, {"name": "srv/a", "visibility": "static"})
-        self.registry.register("srv/b", dummy, {"name": "srv/b", "visibility": "hidden"})
-        schemas = self.registry.get_static_tools()
-        names = [s["name"] for s in schemas]
-        assert "srv/a" in names
-        assert "srv/b" not in names
+        self.registry.register("srv/a", dummy, {"name": "srv/a"}, visibility="static")
+        self.registry.register("srv/b", dummy, {"name": "srv/b"}, visibility="hidden")
+        static_names = self.registry.get_static_tools()
+        assert "srv/a" in static_names
+        assert "srv/b" not in static_names
 
     def test_no_get_dynamic_tools_method(self):
         """get_dynamic_tools 方法已删除"""
@@ -282,15 +281,15 @@ class TestAskAgentCallback:
 
     def test_make_ask_agent_callback_returns_callable(self):
         """_make_ask_agent_callback 返回可调用对象"""
-        from agent.runner import GenericAgentRunner
-        runner = GenericAgentRunner.__new__(GenericAgentRunner)
+        from agent.runner import NiuRunner
+        runner = NiuRunner.__new__(NiuRunner)
         callback = runner._make_ask_agent_callback()
         assert callable(callback)
 
     def test_ask_agent_callback_signature(self):
         """callback 签名符合 (prompt, system_prompt, max_tokens) -> str"""
-        from agent.runner import GenericAgentRunner
-        runner = GenericAgentRunner.__new__(GenericAgentRunner)
+        from agent.runner import NiuRunner
+        runner = NiuRunner.__new__(NiuRunner)
         callback = runner._make_ask_agent_callback()
         # 验证签名接受 3 个参数（不含 self）
         import inspect
@@ -308,7 +307,7 @@ Expected: FAIL — `_make_ask_agent_callback` 方法不存在
 
 - [ ] **Step 3: 在 runner.py 中实现 `_make_ask_agent_callback()`**
 
-在 `agent/runner.py` 的 `GenericAgentRunner` 类中新增：
+在 `agent/runner.py` 的 `NiuRunner` 类中新增：
 
 ```python
 def _make_ask_agent_callback(self):
@@ -337,7 +336,7 @@ def _make_ask_agent_callback(self):
 
 - [ ] **Step 4: 在 runner.py 初始化时注入 callback**
 
-在 `GenericAgentRunner.__init__()` 中，`load_mcp_tools()` 之后添加：
+在 `NiuRunner.__init__()` 中，`load_mcp_tools()` 之后添加：
 
 ```python
 # 注入 ask_agent callback
@@ -469,10 +468,15 @@ class MCPClientManager:
 
     def __init__(self, sampling_callback: Optional[Callable] = None):
         self._connections: dict = {}  # server_name -> ClientSession
+        self._connection_contexts: dict = {}  # server_name -> (stdio_client_cm, session_cm) 用于清理
         self._sampling_callback = sampling_callback
 
     async def connect_stdio(self, server_name: str, command: str, args: list[str], env: dict = None):
-        """连接 stdio 模式的 MCP 服务器"""
+        """连接 stdio 模式的 MCP 服务器
+
+        注意：不能使用 async with，否则 session 在方法退出时关闭。
+        手动管理上下文生命周期，保存 context manager 用于后续清理。
+        """
         from mcp import ClientSession, StdioServerParameters
         from mcp.client.stdio import stdio_client
 
@@ -482,28 +486,39 @@ class MCPClientManager:
             env=env,
         )
 
-        async with stdio_client(server_params) as (read_stream, write_stream):
-            async with ClientSession(
-                read_stream, write_stream,
-                sampling_callback=self._sampling_callback,
-            ) as session:
-                await session.initialize()
-                self._connections[server_name] = session
-                logger.info(f"Connected to external MCP server (stdio): {server_name}")
+        # 手动进入上下文管理器，不使用 async with
+        stdio_cm = stdio_client(server_params)
+        read_stream, write_stream = await stdio_cm.__aenter__()
+
+        session_cm = ClientSession(
+            read_stream, write_stream,
+            sampling_callback=self._sampling_callback,
+        )
+        session = await session_cm.__aenter__()
+        await session.initialize()
+
+        self._connections[server_name] = session
+        self._connection_contexts[server_name] = (stdio_cm, session_cm)
+        logger.info(f"Connected to external MCP server (stdio): {server_name}")
 
     async def connect_http(self, server_name: str, url: str):
         """连接 HTTP 模式的 MCP 服务器"""
         from mcp import ClientSession
         from mcp.client.streamable_http import streamablehttp_client
 
-        async with streamablehttp_client(url) as (read_stream, write_stream, _):
-            async with ClientSession(
-                read_stream, write_stream,
-                sampling_callback=self._sampling_callback,
-            ) as session:
-                await session.initialize()
-                self._connections[server_name] = session
-                logger.info(f"Connected to external MCP server (http): {server_name}")
+        http_cm = streamablehttp_client(url)
+        read_stream, write_stream, _ = await http_cm.__aenter__()
+
+        session_cm = ClientSession(
+            read_stream, write_stream,
+            sampling_callback=self._sampling_callback,
+        )
+        session = await session_cm.__aenter__()
+        await session.initialize()
+
+        self._connections[server_name] = session
+        self._connection_contexts[server_name] = (http_cm, session_cm)
+        logger.info(f"Connected to external MCP server (http): {server_name}")
 
     async def call_tool(self, server_name: str, tool_name: str, arguments: dict) -> dict:
         """通过 MCP Client 调用工具（异步）"""
@@ -521,14 +536,11 @@ class MCPClientManager:
             loop = None
 
         if loop and loop.is_running():
-            # 已在事件循环中，用 run_coroutine_threadsafe
-            import concurrent.futures
             future = asyncio.run_coroutine_threadsafe(
                 self.call_tool(server_name, tool_name, arguments), loop
             )
             return future.result(timeout=30)
         else:
-            # 不在事件循环中，直接运行
             return asyncio.run(self.call_tool(server_name, tool_name, arguments))
 
     async def list_tools(self, server_name: str) -> list:
@@ -540,11 +552,19 @@ class MCPClientManager:
         return result.tools
 
     async def disconnect(self, server_name: str):
-        """断开连接"""
-        if server_name in self._connections:
-            session = self._connections.pop(server_name)
-            await session.__aexit__(None, None, None)
-            logger.info(f"Disconnected from external MCP server: {server_name}")
+        """断开连接，清理上下文管理器"""
+        if server_name in self._connection_contexts:
+            stdio_cm, session_cm = self._connection_contexts.pop(server_name)
+            try:
+                await session_cm.__aexit__(None, None, None)
+            except Exception:
+                pass
+            try:
+                await stdio_cm.__aexit__(None, None, None)
+            except Exception:
+                pass
+        self._connections.pop(server_name, None)
+        logger.info(f"Disconnected from external MCP server: {server_name}")
 
     async def disconnect_all(self):
         """断开所有连接"""
@@ -623,22 +643,20 @@ class TestSamplingCallback:
     async def test_sampling_callback_calls_llm(self):
         """Sampling callback 调用 LLM 并返回结果"""
         from agent.mcp_client import make_sampling_callback
+        from mcp.types import CreateMessageRequestParams, TextContent, SamplingMessage, Role
         callback = make_sampling_callback()
 
-        # Mock LLM 响应
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]
         mock_response.choices[0].message.content = "文档分类：技术文档"
-        mock_response.model = "test-model"
 
         mock_client = MagicMock()
         mock_client.chat.completions.create.return_value = mock_response
 
         with patch("agent.mcp_client.create_client", return_value=mock_client), \
              patch("agent.mcp_client.load_llm_config", return_value={"model": "test-model"}):
-            from mcp.types import CreateMessageRequestParams, TextContent
             params = CreateMessageRequestParams(
-                messages=[],
+                messages=[SamplingMessage(role=Role.USER, content=TextContent(type="text", text="请分类"))],
                 maxTokens=100,
             )
             result = await callback(None, params)
@@ -650,12 +668,12 @@ class TestSamplingCallback:
     async def test_sampling_callback_returns_error_on_failure(self):
         """LLM 调用失败时返回错误提示"""
         from agent.mcp_client import make_sampling_callback
+        from mcp.types import CreateMessageRequestParams, TextContent, SamplingMessage, Role
         callback = make_sampling_callback()
 
         with patch("agent.mcp_client.create_client", side_effect=RuntimeError("LLM unavailable")):
-            from mcp.types import CreateMessageRequestParams
             params = CreateMessageRequestParams(
-                messages=[],
+                messages=[SamplingMessage(role=Role.USER, content=TextContent(type="text", text="test"))],
                 maxTokens=100,
             )
             result = await callback(None, params)
@@ -1180,7 +1198,18 @@ def _connect_external_servers(self):
         return
     with open(config_path) as f:
         config = yaml.safe_load(f) or {}
-    asyncio.run(load_external_servers(config, self._mcp_client))
+
+    # 尝试在已有事件循环中运行，否则创建新的
+    try:
+        loop = asyncio.get_running_loop()
+        # 已有事件循环，用 run_coroutine_threadsafe
+        future = asyncio.run_coroutine_threadsafe(
+            load_external_servers(config, self._mcp_client), loop
+        )
+        future.result(timeout=30)
+    except RuntimeError:
+        # 没有事件循环，直接运行
+        asyncio.run(load_external_servers(config, self._mcp_client))
 ```
 
 - [ ] **Step 6: 运行全部测试确认无回归**
@@ -1223,12 +1252,14 @@ Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m niu_api`
 - brain-region-server 的 3 个 static 工具可见
 - 其他 82 个 hidden 工具不出现在主 Agent 工具列表中
 - 子 Agent 白名单正常工作
+- handler.py 裸名解析正常（如 `remember` → `memory-server/remember`）
 
 - [ ] **Step 3: 验证三层可见性机制**
 
 1. 主 Agent 只看到 `static` 工具（brain-region-server 的 3 个）
 2. 虚拟磁盘导航能看到所有非 disk-hidden 的工具
 3. 子 Agent 能看到白名单中服务器的所有工具（含 hidden）
+4. handler.py 裸名解析同时覆盖内部和外部工具
 
 - [ ] **Step 4: 验证 ask_agent 可用**
 
