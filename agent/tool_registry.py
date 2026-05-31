@@ -60,7 +60,7 @@ class ToolRegistry:
             name: Tool name (e.g. "lightrag-query").
             func: Callable that implements the tool.
             schema: Tool schema dict with keys: name, description, input_schema.
-            visibility: "static", "dynamic", or "hidden". Defaults to "static".
+            visibility: "static" or "hidden". Defaults to "static".
         """
         self._tools[name] = func
         normalized_schema = {
@@ -83,7 +83,7 @@ class ToolRegistry:
         Args:
             server_name: 服务器名称（如 "photo-server"）
             module: Python模块对象，必须提供get_tool_schemas()函数
-            visibility_map: 工具可见性映射，格式 {"tool_name": {"visibility": "static"/"dynamic"/"hidden"}}
+            visibility_map: 工具可见性映射，格式 {"tool_name": {"visibility": "static"/"hidden"}}
 
         Returns:
             True if registration succeeded, False otherwise
@@ -120,9 +120,9 @@ class ToolRegistry:
                 full_name = f"{server_name}/{tool_name}"
 
                 # 确定 visibility
-                tool_vis = "dynamic"  # 默认值
+                tool_vis = "hidden"  # 默认值
                 if visibility_map and tool_name in visibility_map:
-                    tool_vis = visibility_map[tool_name].get("visibility", "dynamic")
+                    tool_vis = visibility_map[tool_name].get("visibility", "hidden")
 
                 # 存储schema（确保使用input_schema格式）
                 normalized_schema = {
@@ -243,21 +243,6 @@ class ToolRegistry:
         """
         return tool_name in self._tools
 
-    def get_visibility(self, tool_name: str) -> str:
-        """
-        获取工具的 visibility 标识
-
-        Args:
-            tool_name: 完整工具名（如 "kg-server/create_entity"）
-
-        Returns:
-            "static" / "dynamic" / "hidden"，未注册工具返回 "dynamic"
-        """
-        schema = self._schemas.get(tool_name)
-        if schema:
-            return schema.get("visibility", "dynamic")
-        return "dynamic"
-
     def get_static_tools(self) -> List[str]:
         """
         返回所有 visibility=static 的工具名列表
@@ -265,14 +250,6 @@ class ToolRegistry:
         替代 runner.py 中硬编码的 BASE_MCP_TOOLS
         """
         return [name for name, schema in self._schemas.items() if schema.get("visibility") == "static"]
-
-    def get_dynamic_tools(self) -> List[str]:
-        """
-        返回所有 visibility=dynamic 的工具名列表
-
-        向量库初始化时使用：只有 dynamic 工具才存入向量库
-        """
-        return [name for name, schema in self._schemas.items() if schema.get("visibility", "dynamic") == "dynamic"]
 
     def clear(self):
         """清空所有注册的工具"""
