@@ -436,6 +436,11 @@ def list_presets() -> list[dict[str, Any]]:
     return load_presets()
 
 
+# Alias: TOOL_SCHEMAS registers this tool as "list_llm_presets",
+# so register_server() needs a module attribute with that exact name.
+list_llm_presets = list_presets
+
+
 def test_llm_connection() -> dict[str, Any]:
     """Test LLM connection with current configuration."""
     import httpx

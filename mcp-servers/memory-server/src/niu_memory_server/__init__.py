@@ -731,6 +731,24 @@ def user_memory_forget(**kwargs):
 def user_memory_list(**kwargs):
     return user_memory_list_handler(**kwargs)
 
+def remember(content: str, memory_type: str, **kwargs):
+    return remember_handler(content=content, memory_type=memory_type, **kwargs)
+
+def recall(query: str, **kwargs):
+    return recall_handler(query=query, **kwargs)
+
+def update_memory(memory_id: str, content: str, **kwargs):
+    return update_memory_handler(memory_id=memory_id, content=content, **kwargs)
+
+def get_memory_stats(**kwargs):
+    return get_memory_stats_handler(**kwargs)
+
+def cleanup_memories(**kwargs):
+    return cleanup_memories_handler(**kwargs)
+
+def link_memories(memory_id_1: str, memory_id_2: str, relation: str, **kwargs):
+    return link_memories_handler(memory_id_1=memory_id_1, memory_id_2=memory_id_2, relation=relation, **kwargs)
+
 
 # ============================================================================
 # MCP handlers
