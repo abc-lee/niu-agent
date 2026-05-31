@@ -2592,178 +2592,6 @@ def is_video(file_path: str) -> bool:
     return Path(file_path).suffix.lower() in VIDEO_EXTENSIONS
 
 
-def ingest_photos_batch(source_path: str, category: str | None = None) -> dict:
-    """
-    批量入库照片目录（保持原目录结构）
-
-    Args:
-        source_path: 源目录路径
-        category: 分类名称（作为目标根目录名）
-
-    Returns:
-        处理结果
-    """
-    try:
-        source_dir = Path(source_path)
-        if not source_dir.exists():
-            return {
-                "status": "error",
-                "error_code": "DIR_NOT_FOUND",
-                "message": f"目录不存在: {source_path}",
-            }
-
-        if not source_dir.is_dir():
-            return {
-                "status": "error",
-                "error_code": "NOT_A_DIRECTORY",
-                "message": f"不是目录: {source_path}",
-            }
-
-        if category is None:
-            try:
-                prefs = get_preferences()
-                category = prefs["categories"]["photos"][0]
-            except (KeyError, TypeError, IndexError):
-                category = "生活"
-
-        # 确保 category 不为 None
-        if category is None:
-            category = "生活"
-
-        workspace = get_workspace_path()
-
-        # 构建目标路径：{year}/{category}/{原目录名}
-        now = datetime.now()
-        target_root = workspace / str(now.year) / category / source_dir.name
-
-        # 收集所有照片文件（去重，Windows 大小写不敏感会重复）
-        photo_files = []
-        seen_paths = set()
-        for ext in PHOTO_EXTENSIONS:
-            for pf in source_dir.rglob(f"*{ext}"):
-                key = str(pf.resolve()).lower()
-                if key not in seen_paths:
-                    seen_paths.add(key)
-                    photo_files.append(pf)
-            for pf in source_dir.rglob(f"*{ext.upper()}"):
-                key = str(pf.resolve()).lower()
-                if key not in seen_paths:
-                    seen_paths.add(key)
-                    photo_files.append(pf)
-
-        if not photo_files:
-            return {
-                "status": "error",
-                "error_code": "NO_PHOTOS_FOUND",
-                "message": f"目录中没有找到照片文件: {source_path}",
-            }
-
-        logger.info(f"[BATCH_PHOTOS] Found {len(photo_files)} photos in {source_path}")
-
-        # 复制目录结构
-        success_count = 0
-        failed_count = 0
-        results = []
-
-        for photo_file in photo_files:
-            try:
-                # 计算相对路径
-                relative_path = photo_file.relative_to(source_dir)
-                target_path = target_root / relative_path
-
-                # 创建目标目录
-                target_path.parent.mkdir(parents=True, exist_ok=True)
-
-                # 检查重名
-                if target_path.exists():
-                    stem = target_path.stem
-                    suffix = target_path.suffix
-                    parent = target_path.parent
-                    index = 1
-                    while target_path.exists():
-                        target_path = parent / f"{stem}_{index}{suffix}"
-                        index += 1
-
-                # 复制文件
-                shutil.copy2(str(photo_file), str(target_path))
-                success_count += 1
-                results.append(
-                    {
-                        "file": str(relative_path),
-                        "status": "success",
-                        "target": str(target_path),
-                    }
-                )
-
-            except Exception as e:
-                failed_count += 1
-                results.append(
-                    {
-                        "file": str(photo_file.relative_to(source_dir)),
-                        "status": "error",
-                        "message": str(e),
-                    }
-                )
-
-        logger.info(f"[BATCH_PHOTOS] Completed: {success_count}/{len(photo_files)}")
-
-        return {
-            "status": "success",
-            "source_path": source_path,
-            "target_path": str(target_root),
-            "total": len(photo_files),
-            "success": success_count,
-            "failed": failed_count,
-            "category": category,
-            "note": f"已复制 {success_count} 张照片到 {target_root}，保持原目录结构",
-        }
-
-    except Exception as e:
-        logger.exception(f"[BATCH_PHOTOS] Failed: {e}")
-        return {
-            "status": "error",
-            "error_code": "UNKNOWN_ERROR",
-            "message": str(e),
-        }
-
-
-def ingest_photos(source_path: str, category: str | None = None) -> dict:
-    """
-    智能照片入库（自动判断单张/多张/目录）
-
-    Args:
-        source_path: 文件路径或目录路径
-        category: 分类名称
-
-    Returns:
-        处理结果
-    """
-    path = Path(source_path)
-
-    if not path.exists():
-        return {
-            "status": "error",
-            "error_code": "PATH_NOT_FOUND",
-            "message": f"路径不存在: {source_path}",
-        }
-
-    # 目录 → 批量处理
-    if path.is_dir():
-        logger.info(f"[INGEST_PHOTOS] 批量模式: {source_path}")
-        return ingest_photos_batch(source_path, category)
-
-    # 文件 → 单张处理
-    if path.is_file():
-        logger.info(f"[INGEST_PHOTOS] 单张模式: {source_path}")
-        return ingest_photo(source_path, category)
-
-    return {
-        "status": "error",
-        "error_code": "INVALID_PATH",
-        "message": f"无效路径: {source_path}",
-    }
-
-
 DOCUMENT_EXTENSIONS = {
     ".pdf",
     ".docx",
@@ -3659,94 +3487,6 @@ def ingest_document(file_path: str, category: str = "", mode: str = "copy") -> d
         }
 
 
-def ingest_documents(
-    file_paths: list[str], category: str = "", mode: str = "copy"
-) -> dict:
-    """批量文档入库
-
-    必须传入 category 参数。不传时子调用会返回 need_category 状态，
-    批量场景无法交互判断分类，会被归入失败。
-    """
-    results = []
-    success_files = []  # 成功的文件
-    skipped_files = []  # 跳过的文件
-    failed_files = []  # 失败的文件
-    need_category_files = []  # 需要分类的文件
-    kg_unsupported_files = []  # 格式不支持知识图谱的文件
-
-    for file_path in file_paths:
-        result = ingest_document(file_path, category, mode)
-
-        if result["status"] == "success":
-            lr = result.get("lightrag", "skipped")
-            if result.get("action") == "skipped":
-                skipped_files.append(Path(file_path).name)
-            else:
-                success_files.append(Path(file_path).name)
-            if lr == "unsupported":
-                kg_unsupported_files.append(Path(file_path).name)
-            entry = {
-                "file": Path(file_path).name,
-                "status": "success",
-                "action": result.get("action", ""),
-                "path": result.get("file_path", ""),
-                "lightrag": lr,
-            }
-            if lr in ("unsupported", "error") and result.get("lightrag_message"):
-                entry["lightrag_message"] = result["lightrag_message"]
-            results.append(entry)
-        elif result["status"] == "need_category":
-            need_category_files.append(
-                {
-                    "file": Path(file_path).name,
-                    "preview": result.get("message", ""),
-                }
-            )
-            results.append(
-                {
-                    "file": Path(file_path).name,
-                    "status": "need_category",
-                    "preview": result.get("message", ""),
-                }
-            )
-        else:
-            failed_files.append(
-                {
-                    "file": Path(file_path).name,
-                    "reason": result.get("message", ""),
-                }
-            )
-            results.append(
-                {
-                    "file": Path(file_path).name,
-                    "status": "error",
-                    "reason": result.get("message", ""),
-                }
-            )
-
-    # 构建摘要
-    parts = [f"已处理 {len(success_files) + len(skipped_files)}/{len(file_paths)} 文件"]
-    if len(failed_files):
-        parts.append(f"{len(failed_files)} 个失败")
-    if len(need_category_files):
-        parts.append(f"{len(need_category_files)} 个需要分类")
-    if len(kg_unsupported_files):
-        parts.append(f"其中 {len(kg_unsupported_files)} 个格式不支持知识图谱入库")
-
-    return {
-        "status": "success",
-        "total": len(file_paths),
-        "processed": len(success_files) + len(skipped_files),
-        "new_files": len(success_files),
-        "skipped": len(skipped_files),
-        "failed": len(failed_files),
-        "need_category": len(need_category_files),
-        "kg_unsupported": len(kg_unsupported_files),
-        "results": results,
-        "summary": "，".join(parts),
-    }
-
-
 # ============== MCP Server ==============
 
 server = Server("niu-photo-server")
@@ -3794,46 +3534,6 @@ async def list_tools() -> list[Tool]:
                     },
                 },
                 "required": ["file_path"],
-            },
-        ),
-        Tool(
-            name="ingest_documents",
-            description="""批量文档入库（必须传入 category）
-
-参数:
-- file_paths: 必填，源文件路径列表
-- category: 分类目录（必须传入，不传时子文件返回 need_category）
-- mode: copy | move | reference
-
-每个文件独立处理。不传 category 时子文件会返回 need_category 状态。
-
-返回:
-- status: success
-- total: 总数
-- processed: 成功数
-- new_files: 新文件数
-- skipped: 跳过数
-- failed: 失败数
-- need_category: 需分类数
-- kg_unsupported: 格式不支持知识图谱入库的文件数
-- results: 每个文件的处理结果（含 lightrag 和 lightrag_message）
-- summary: 总结""",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "file_paths": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "源文件路径列表",
-                    },
-                    "category": {"type": "string", "description": "分类目录（必须传入，不传时子文件返回 need_category）", "default": ""},
-                    "mode": {
-                        "type": "string",
-                        "enum": ["copy", "move", "reference"],
-                        "default": "copy",
-                    },
-                },
-                "required": ["file_paths"],
             },
         ),
         Tool(
@@ -3923,47 +3623,6 @@ async def list_tools() -> list[Tool]:
                     "person_b_id": {"type": "string", "description": "要合并的人物ID"},
                 },
                 "required": ["person_a_id", "person_b_id"],
-            },
-        ),
-        Tool(
-            name="ingest_photos",
-            description="""智能照片入库（自动判断单张/目录）
-
-参数:
-- source_path: 必填，**单个**文件路径或目录路径
-- category: 分类（生活/工作/旅行/证件/其他）
-
-两种模式:
-1. 目录路径 → 批量模式：保持原目录结构，整体搬迁
-2. 单个文件路径 → 单张模式：按模板重命名、人脸识别、分类存储
-
-⚠️ 重要：
-- 此工具只接受**一个路径**（文件或目录）
-- 多个独立文件 → 需要分别调用此工具多次（每个文件一次）
-- 不要提取共同目录路径，而是逐个处理每个文件
-
-批量模式返回:
-- total: 照片总数
-- success: 成功数
-- target_path: 目标目录
-
-单张模式返回:
-- photo_id: 照片ID
-- detected_persons: 检测到的人物
-- file_path: 存储路径""",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "source_path": {
-                        "type": "string",
-                        "description": "文件路径或目录路径",
-                    },
-                    "category": {
-                        "type": "string",
-                        "description": "分类（生活/工作/旅行/证件/其他）",
-                    },
-                },
-                "required": ["source_path"],
             },
         ),
         Tool(
@@ -4108,12 +3767,6 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 category=arguments.get("category", ""),
                 mode=arguments.get("mode", "copy"),
             )
-        elif name == "ingest_documents":
-            result = ingest_documents(
-                file_paths=arguments["file_paths"],
-                category=arguments.get("category", ""),
-                mode=arguments.get("mode", "copy"),
-            )
         elif name == "ingest_photo":
             result = ingest_photo(
                 file_path=arguments["file_path"],
@@ -4134,11 +3787,6 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             result = delete_person(person_id=arguments["person_id"])
         elif name == "cleanup_deleted_photos":
             result = cleanup_deleted_photos()
-        elif name == "ingest_photos":
-            result = ingest_photos(
-                source_path=arguments["source_path"],
-                category=arguments.get("category"),
-            )
         elif name == "search_persons":
             persons = search_persons(
                 query=arguments["query"],
