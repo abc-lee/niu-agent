@@ -12,7 +12,7 @@
 
 ## ⚠️ 审查发现的P0问题（已修复）
 
-以下问题在多Agent审查中发现，已在计划中修复：
+以下问题在多轮审查中发现，已在计划中修复：
 
 1. **`ingest_document` 返回格式与目录分页格式不一致** — `_ingest_directory` 需包装 `ingest_document` 的 `need_category` 返回，添加 `processed`/`total` 字段
 2. **`need_category` 后 `_offset` 语义** — 当前文件未处理完，`_offset` 不变，子Agent带分类再次调用时仍用相同 `_offset`
@@ -20,6 +20,11 @@
 4. **子Agent提示词"只回答分类名称"与实际交互流矛盾** — 明确"再次调用ingest工具并传入category参数"
 5. **测试断言格式不匹配** — 移除 `"directory"` 状态断言，修正测试逻辑
 6. **`ingest_document` 内部旧目录处理逻辑冲突** — `ingest_document` 移除目录处理，只处理单文件；`ingest()` 是唯一目录入口
+7. **Task 3 调用 `ingest_photo(mode=mode)` 但 Task 4 才加 mode 参数** — Task 3 先不传 mode，Task 4 实现 mode 后再补充调用
+8. **success 返回格式缺少 `photos`/`documents` 计数和 `details` 列表** — 添加 `_build_success_summary()` 函数
+9. **EXIF description 拼接顺序与设计方案相反** — 修正为：拍摄于 → 设备 → 位置
+10. **`DOCUMENT_EXTENSIONS` 缺少 `.epub`/`.html`，`PHOTO_EXTENSIONS` 缺少 `.tiff`** — Task 3 补充扩展后缀列表
+11. **`need_category` 缺少 `message` 字段，`preview` 取值错误** — 添加 message 字段，preview 从 ingest_document 返回中提取纯内容预览
 
 ---
 
@@ -458,13 +463,35 @@ git commit -m "test: 子Agent工具循环真实测试脚本（TDD先行）"
 - Modify: `mcp-servers/photo-server/src/niu_photo_server/__init__.py:3071-3081` (ingest函数)
 - Modify: `mcp-servers/photo-server/src/niu_photo_server/__init__.py:28-65` (TOOL_SCHEMAS ingest)
 - Modify: `mcp-servers/photo-server/src/niu_photo_server/__init__.py:3114-3142` (ingest_document目录处理)
+- Modify: `mcp-servers/photo-server/src/niu_photo_server/__init__.py:2555` (PHOTO_EXTENSIONS)
+- Modify: `mcp-servers/photo-server/src/niu_photo_server/__init__.py:2741` (DOCUMENT_EXTENSIONS)
 
 **实现目标**：
 1. ingest收到目录时，扫描文件列表，逐个处理并返回progress/need_category/success
 2. 支持offset参数跳过已处理文件
 3. ingest_document移除目录处理逻辑（只处理单文件），避免与ingest冲突
+4. 补充文件后缀：`.tiff` → PHOTO_EXTENSIONS，`.epub`/`.html`/`.htm` → DOCUMENT_EXTENSIONS
+5. success 返回完整汇总（含 photos/documents 计数和 details 列表）
+6. need_category 返回包含 message 字段和正确的 preview 取值
 
-- [ ] **Step 1: ingest_document移除目录处理**
+- [ ] **Step 1: 补充文件后缀**
+
+修改 `PHOTO_EXTENSIONS`（约line 2555），添加 `.tiff`：
+```python
+PHOTO_EXTENSIONS = {
+    ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".heic", ".heif", ".tiff"
+}
+```
+
+修改 `DOCUMENT_EXTENSIONS`（约line 2741），添加 `.epub`/`.html`/`.htm`：
+```python
+DOCUMENT_EXTENSIONS = {
+    ".pdf", ".docx", ".doc", ".txt", ".md", ".xlsx", ".xls", ".pptx", ".ppt",
+    ".epub", ".html", ".htm",
+}
+```
+
+- [ ] **Step 2: ingest_document移除目录处理**
 
 现有 `ingest_document()` (约line 3114-3142) 在路径是目录时调用 `ingest_photos_batch()` 或返回 `DIRECTORY_NO_PHOTOS`。移除这段逻辑，改为：
 ```python
@@ -472,7 +499,7 @@ if source.is_dir():
     return {"status": "error", "message": "ingest_document不支持目录，请使用ingest工具处理目录"}
 ```
 
-- [ ] **Step 2: 重写ingest函数**
+- [ ] **Step 3: 重写ingest函数**
 
 修改 `ingest()` 函数（line 3071），当路径是目录时调用 `_ingest_directory`：
 
@@ -494,7 +521,7 @@ def ingest(path: str, category: str = "", mode: str = "copy", _offset: int = 0) 
     if source.is_file():
         if is_photo(str(source)):
             from niu_photo_server import ingest_photo
-            return ingest_photo(str(source), category=category or None, mode=mode)
+            return ingest_photo(str(source), category=category or None)
         else:
             return ingest_document(file_path=path, category=category, mode=mode)
 
@@ -502,16 +529,38 @@ def ingest(path: str, category: str = "", mode: str = "copy", _offset: int = 0) 
     return _ingest_directory(source, category, mode, _offset)
 ```
 
-- [ ] **Step 3: 新增_ingest_directory函数**
+**注意**：单文件分支中 `ingest_photo` 暂时不传 mode 参数（Task 4 实现 mode 后补充）。`ingest_document` 已支持 mode 参数，直接传入。
+
+- [ ] **Step 4: 新增_ingest_directory和_build_success_summary函数**
 
 ```python
+def _build_success_summary(all_files: list, processed_results: list) -> dict:
+    """构建最终汇总结果，符合设计方案要求的 details 结构"""
+    photos = [f for f in all_files if f["type"] == "image"]
+    documents = [f for f in all_files if f["type"] == "document"]
+    skipped = [f for f in all_files if f["type"] == "other"]
+
+    return {
+        "status": "success",
+        "total": len(all_files),
+        "photos": len(photos),
+        "documents": len(documents),
+        "skipped": len(skipped),
+        "details": {
+            "photos": [Path(f["path"]).name for f in photos],
+            "documents": [Path(f["path"]).name for f in documents],
+            "skipped": [Path(f["path"]).name for f in skipped],
+        }
+    }
+
+
 def _ingest_directory(source: Path, category: str, mode: str, offset: int) -> dict:
     """目录入库：分页式处理，每次处理一个文件
 
     返回值：
     - progress: 已处理一个文件，还有更多
     - need_category: 当前文档需要分类
-    - success: 所有文件处理完毕
+    - success: 所有文件处理完毕（含 details 汇总）
     - error: 出错
     """
     # 扫描所有文件（按名称排序保证稳定性）
@@ -533,6 +582,9 @@ def _ingest_directory(source: Path, category: str, mode: str, offset: int) -> di
     if offset >= len(all_files):
         return {"status": "error", "message": f"_offset={offset}超出文件总数({len(all_files)})"}
 
+    # 收集已处理文件的结果，用于最终汇总
+    processed_results = []
+
     # 用 while 循环跳过不支持文件（避免递归栈溢出）
     while offset < len(all_files):
         next_file = all_files[offset]
@@ -543,19 +595,14 @@ def _ingest_directory(source: Path, category: str, mode: str, offset: int) -> di
             continue
 
         if next_file["type"] == "image":
-            # 图片直接入库
+            # 图片直接入库（暂不传mode，Task 4实现mode后补充）
             from niu_photo_server import ingest_photo
-            result = ingest_photo(next_file["path"], category=category or None, mode=mode)
+            result = ingest_photo(next_file["path"], category=category or None)
+            processed_results.append({"file": next_file["path"], "type": "image", "result": result})
             offset += 1
             # 检查是否还有更多文件
             if offset >= len(all_files):
-                return {
-                    "status": "success",
-                    "total": len(all_files),
-                    "processed": offset,
-                    "last_result": result,
-                    "skipped": sum(1 for f in all_files if f["type"] == "other"),
-                }
+                return _build_success_summary(all_files, processed_results)
             else:
                 next_info = all_files[offset]
                 return {
@@ -571,15 +618,10 @@ def _ingest_directory(source: Path, category: str, mode: str, offset: int) -> di
             if category:
                 # 有分类，直接入库
                 result = ingest_document(file_path=next_file["path"], category=category, mode=mode)
+                processed_results.append({"file": next_file["path"], "type": "document", "result": result})
                 offset += 1
                 if offset >= len(all_files):
-                    return {
-                        "status": "success",
-                        "total": len(all_files),
-                        "processed": offset,
-                        "last_result": result,
-                        "skipped": sum(1 for f in all_files if f["type"] == "other"),
-                    }
+                    return _build_success_summary(all_files, processed_results)
                 else:
                     next_info = all_files[offset]
                     return {
@@ -594,7 +636,16 @@ def _ingest_directory(source: Path, category: str, mode: str, offset: int) -> di
                 # 无分类，返回need_category（包装ingest_document的返回）
                 doc_result = ingest_document(file_path=next_file["path"], category="", mode=mode)
                 if doc_result.get("status") == "need_category":
-                    # 包装为目录上下文格式
+                    # 提取纯内容预览（ingest_document的message包含引导文本+内容，取内容部分）
+                    full_message = doc_result.get("message", "")
+                    # message 格式: "请根据以下内容判断文档分类目录...\n\n{content}"
+                    # 尝试提取内容预览部分
+                    preview = full_message
+                    if "\n\n" in full_message:
+                        parts = full_message.split("\n\n", 1)
+                        if len(parts) > 1:
+                            preview = parts[1][:2000]  # 限制预览长度
+
                     return {
                         "status": "need_category",
                         "processed": offset,  # 当前文件索引（尚未处理完）
@@ -602,21 +653,16 @@ def _ingest_directory(source: Path, category: str, mode: str, offset: int) -> di
                         "current_file": Path(next_file["path"]).name,
                         "file_path": next_file["path"],
                         "mode": mode,
-                        "preview": doc_result.get("message", ""),
+                        "preview": preview,
                         "available_categories": doc_result.get("available_categories", ["其他"]),
+                        "message": "请从 available_categories 中选择分类后继续调用 ingest",
                     }
                 else:
-                    # ingest_document 意外返回了其他状态（如success或error）
-                    # 按结果处理
+                    # ingest_document 意外返回了其他状态
+                    processed_results.append({"file": next_file["path"], "type": "document", "result": doc_result})
                     offset += 1
                     if offset >= len(all_files):
-                        return {
-                            "status": "success",
-                            "total": len(all_files),
-                            "processed": offset,
-                            "last_result": doc_result,
-                            "skipped": sum(1 for f in all_files if f["type"] == "other"),
-                        }
+                        return _build_success_summary(all_files, processed_results)
                     else:
                         next_info = all_files[offset]
                         return {
@@ -632,7 +678,7 @@ def _ingest_directory(source: Path, category: str, mode: str, offset: int) -> di
     return {"status": "error", "message": f"目录中没有可入库的文件: {source}"}
 ```
 
-- [ ] **Step 4: 更新TOOL_SCHEMAS**
+- [ ] **Step 5: 更新TOOL_SCHEMAS**
 
 在 `ingest` 的 `input_schema` 中添加 `_offset` 参数：
 
@@ -645,15 +691,15 @@ def _ingest_directory(source: Path, category: str, mode: str, offset: int) -> di
 "description": "统一入库工具。接收文件路径或目录路径。单文件直接入库；目录分页式处理（逐个文件入库，返回progress/need_category/success状态，子Agent需循环调用直到收到success+total）。文档未指定category时返回need_category等待分类判断。",
 ```
 
-- [ ] **Step 5: 运行Task1测试验证**
+- [ ] **Step 6: 运行Task1目录分页测试验证**
 
 ```bash
-PYTHONPATH=mcp-servers/photo-server/src:$PYTHONPATH python -m pytest tests/test_ingest_paging.py -v --tb=short 2>&1 | tail -30
+PYTHONPATH=mcp-servers/photo-server/src:$PYTHONPATH python -m pytest tests/test_ingest_paging.py::TestIngestDirectoryPaging tests/test_ingest_paging.py::TestIngestNeedCategory -v --tb=short 2>&1 | tail -30
 ```
 
-预期：目录分页相关测试通过。
+预期：目录分页和need_category测试通过。photo mode测试暂跳过（Task 4实现）。
 
-- [ ] **Step 6: 运行Task2测试验证**
+- [ ] **Step 7: 运行Task2测试验证**
 
 ```bash
 PYTHONPATH=mcp-servers/photo-server/src:$PYTHONPATH python -m pytest tests/test_ingest_agent_loop.py -v --tb=short 2>&1 | tail -30
@@ -661,11 +707,11 @@ PYTHONPATH=mcp-servers/photo-server/src:$PYTHONPATH python -m pytest tests/test_
 
 预期：工具循环测试通过。
 
-- [ ] **Step 7: 提交**
+- [ ] **Step 8: 提交**
 
 ```bash
 git add mcp-servers/photo-server/src/niu_photo_server/__init__.py
-git commit -m "feat: ingest目录分页式处理 — 子Agent工具循环（修复6个P0审查问题）"
+git commit -m "feat: ingest目录分页式处理 — 子Agent工具循环（含details汇总+后缀补全）"
 ```
 
 ---
@@ -696,17 +742,32 @@ git commit -m "feat: ingest目录分页式处理 — 子Agent工具循环（修�
    - copy/move: 记录目标路径
    - reference: 记录原始路径
 
-- [ ] **Step 2: 运行Task1中photo mode测试**
+- [ ] **Step 2: 回补ingest函数中的mode传参**
+
+Task 3 中 `_ingest_directory` 调用 `ingest_photo` 时暂未传 mode 参数。现在补充：
+```python
+# 修改 _ingest_directory 中图片入库调用
+result = ingest_photo(next_file["path"], category=category or None, mode=mode)
+```
+
+同时修改 `ingest()` 单文件分支：
+```python
+if is_photo(str(source)):
+    from niu_photo_server import ingest_photo
+    return ingest_photo(str(source), category=category or None, mode=mode)
+```
+
+- [ ] **Step 3: 运行Task1中photo mode测试**
 
 ```bash
 PYTHONPATH=mcp-servers/photo-server/src:$PYTHONPATH python -m pytest tests/test_ingest_paging.py::TestIngestPhotoMode -v --tb=short
 ```
 
-- [ ] **Step 3: 提交**
+- [ ] **Step 4: 提交**
 
 ```bash
 git add mcp-servers/photo-server/src/niu_photo_server/__init__.py
-git commit -m "feat: ingest_photo支持copy/move/reference三种模式"
+git commit -m "feat: ingest_photo支持copy/move/reference三种模式 + 回补ingest中mode传参"
 ```
 
 ---
@@ -728,17 +789,13 @@ git commit -m "feat: ingest_photo支持copy/move/reference三种模式"
 
 - [ ] **Step 2: 修改_generate_stable_description**
 
+设计方案要求顺序：拍摄于 → 设备 → 位置
+
 ```python
 def _generate_stable_description(normalized_stem: str, abstract: str, exif: dict | None = None) -> str:
     parts = [f"照片 {normalized_stem}"]
-    # EXIF信息
+    # EXIF信息（顺序与设计方案一致：拍摄于 → 设备 → 位置）
     if exif:
-        camera = exif.get("camera")
-        if camera:
-            parts.append(f"设备：{camera}")
-        location = exif.get("location")
-        if location:
-            parts.append(f"位置：{location}")
         taken_at = exif.get("taken_at")
         if taken_at:
             try:
@@ -747,6 +804,12 @@ def _generate_stable_description(normalized_stem: str, abstract: str, exif: dict
                 parts.append(f"拍摄于{dt.strftime('%Y年%m月%d日 %H:%M')}")
             except (ValueError, TypeError):
                 pass
+        camera = exif.get("camera")
+        if camera:
+            parts.append(f"设备：{camera}")
+        location = exif.get("location")
+        if location:
+            parts.append(f"位置：{location}")
     # fallback: 从文件名提取日期
     if not any("拍摄于" in p for p in parts):
         if len(normalized_stem) >= 8 and normalized_stem[:8].isdigit():
@@ -767,21 +830,26 @@ def _generate_stable_description(normalized_stem: str, abstract: str, exif: dict
 class TestEXIFInKG:
     """验证EXIF信息写入KG实体description"""
 
-    def test_stable_description_includes_camera(self):
-        """description包含相机型号"""
-        from niu_photo_server import _generate_stable_description
-        result = _generate_stable_description(
+    def test_stable_description_includes_exif(self):
+        """description包含拍摄时间、设备、位置（顺序：拍摄于→设备→位置）"""
+        import niu_photo_server
+        result = niu_photo_server._generate_stable_description(
             "20260419_143000", "单人照片",
             exif={"camera": "Apple iPhone 15 Pro", "location": "31.23,121.47", "taken_at": "2026:04:19 14:30:00"}
         )
+        # 验证内容
+        assert "2026年04月19日" in result
         assert "iPhone" in result
         assert "31.23" in result
-        assert "2026年04月19日" in result
+        # 验证顺序：拍摄于 在 设备 前面
+        idx_shot = result.index("拍摄于")
+        idx_device = result.index("设备")
+        assert idx_shot < idx_device, f"拍摄于应在设备前面，实际顺序: {result}"
 
     def test_stable_description_without_exif(self):
         """无EXIF时fallback到文件名日期"""
-        from niu_photo_server import _generate_stable_description
-        result = _generate_stable_description("20260419_143000", "单人照片", exif=None)
+        import niu_photo_server
+        result = niu_photo_server._generate_stable_description("20260419_143000", "单人照片", exif=None)
         assert "2026年04月19日" in result
 ```
 
@@ -858,18 +926,34 @@ git commit -m "feat: 子Agent提示词添加工具循环规范（明确再次调
 ## Task 7: 更新配置文件
 
 **Files:**
-- Modify: `config/mcp-servers.yaml`
-- Modify: `config/disk/photo-server.yaml`
+- Modify: `config/mcp-servers.yaml` (photo-server ingest工具配置)
+- Modify: `config/disk/` 相关YAML (disk路由规则)
 
-- [ ] **Step 1: 更新ingest的TOOL_SCHEMAS参数和disk YAML**
+**实现目标**：配置文件与代码变更保持同步（设计方案要求修改 config/mcp-servers.yaml 和 config/disk/）。
 
-确保ingest工具的参数定义包含 `_offset`，disk YAML参数与TOOL_SCHEMAS一致。
+- [ ] **Step 1: 更新mcp-servers.yaml中ingest工具配置**
 
-- [ ] **Step 2: 提交**
+确认 photo-server 的 ingest 工具配置包含 `_offset` 和 `mode` 参数。
 
 ```bash
-git add config/mcp-servers.yaml config/disk/photo-server.yaml
-git commit -m "feat: 更新ingest工具配置"
+grep -A 20 "photo-server" config/mcp-servers.yaml | head -30
+```
+
+如果配置中缺少 `_offset` 或 `mode`，需要添加。
+
+- [ ] **Step 2: 更新disk路由规则**
+
+检查 `config/disk/` 下是否有 ingest 相关路由需要更新。disk解析器需要能正确匹配 `ingest` 工具名和参数。
+
+```bash
+find config/disk/ -name "*.yaml" -exec grep -l "ingest" {} \;
+```
+
+- [ ] **Step 3: 提交**
+
+```bash
+git add config/mcp-servers.yaml config/disk/
+git commit -m "feat: 更新ingest工具配置（_offset/mode参数）+ disk路由规则"
 ```
 
 ---
