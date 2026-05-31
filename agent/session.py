@@ -29,6 +29,7 @@ class Message:
     tool_results: List[Dict] = field(default_factory=list)
     tool_call_id: str = ""  # Links tool result to assistant's tool_calls[].id
     created_at: str = ""
+    rowid: int = 0  # SQLite rowid, 0 = sentinel for "not loaded from DB" (real rowid starts at 1)
 
     def to_dict(self) -> dict:
         return asdict(self)
