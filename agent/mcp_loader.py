@@ -194,23 +194,7 @@ def is_external_server(server_config: dict) -> bool:
     return mode in ("stdio", "http")
 
 
-def _get_or_create_event_loop():
-    """获取现有事件循环或创建新的"""
-    import asyncio
-
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_closed():
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        return loop
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        return loop
-
-
-def load_external_servers(mcp_client, registry=None):
+async def load_external_servers(mcp_client, registry=None):
     """加载外部 MCP 服务器（stdio/HTTP 模式）
 
     读取 mcp-servers.yaml 配置，连接所有外部服务器，
@@ -242,23 +226,13 @@ def load_external_servers(mcp_client, registry=None):
                 command = server_config.get("command", "")
                 args = server_config.get("args", [])
                 env = server_config.get("env", None)
-
-                # 执行异步连接
-                loop = _get_or_create_event_loop()
-                loop.run_until_complete(
-                    mcp_client.connect_stdio(server_name, command, args, env)
-                )
+                await mcp_client.connect_stdio(server_name, command, args, env)
             elif mode == "http":
                 url = server_config.get("url", "")
-
-                loop = _get_or_create_event_loop()
-                loop.run_until_complete(
-                    mcp_client.connect_http(server_name, url)
-                )
+                await mcp_client.connect_http(server_name, url)
 
             # 获取工具列表并注册到 ToolRegistry
-            loop = _get_or_create_event_loop()
-            tools = loop.run_until_complete(mcp_client.list_tools(server_name))
+            tools = await mcp_client.list_tools(server_name)
 
             # 读取 visibility 配置
             tools_config = server_config.get("tools", {})
@@ -277,7 +251,7 @@ def load_external_servers(mcp_client, registry=None):
                     "input_schema": tool.inputSchema,
                     "visibility": visibility,
                 }
-                registry._server_tools.setdefault(server_name, []).append(full_name)
+                registry._server_tools.setdefault(server_name, []).append(tool.name)
 
             logger.info(f"External MCP server {server_name} loaded: {len(tools)} tools")
 

@@ -364,23 +364,21 @@ class NiuRunner:
 
         # 初始化 MCPClientManager 并连接外部 MCP 服务器
         from agent.mcp_client import MCPClientManager, make_sampling_callback
-        self._mcp_client_manager = MCPClientManager(sampling_callback=make_sampling_callback())
-        _registry.set_mcp_client(self._mcp_client_manager)
-        self._connect_external_servers()
+        self._ext_mcp_client = MCPClientManager(sampling_callback=make_sampling_callback())
+        _registry.set_mcp_client(self._ext_mcp_client)
+        # 注意：_connect_external_servers 是 async，需要在 async 上下文中调用
+        # 这里暂时不调用，由 lifespan 的 startup 事件触发
 
     def _make_ask_agent_callback(self):
         """创建 ask_agent 回调，调用当前 Agent 的 LLM"""
         def ask_agent(prompt: str, system_prompt: str = "", max_tokens: int = 500) -> str | None:
             try:
-                from agent.llmcore import load_llm_config, create_client
-                config = load_llm_config()
-                client = create_client(config)
                 messages = []
                 if system_prompt:
                     messages.append({"role": "system", "content": system_prompt})
                 messages.append({"role": "user", "content": prompt})
-                response = client.chat.completions.create(
-                    model=config["model"],
+                response = self.client.chat.completions.create(
+                    model=self.llm_config["model"],
                     messages=messages,
                     max_tokens=max_tokens,
                     temperature=0.2,
@@ -391,13 +389,17 @@ class NiuRunner:
                 return None
         return ask_agent
 
-    def _connect_external_servers(self):
+    async def _connect_external_servers(self):
         """连接外部 MCP 服务器（stdio/HTTP 模式）"""
         try:
             from agent.mcp_loader import load_external_servers
-            load_external_servers(self._mcp_client_manager)
+            await load_external_servers(self._ext_mcp_client)
         except Exception as e:
             logger.warning(f"Failed to connect external MCP servers: {e}")
+
+    async def startup(self):
+        """异步启动，连接外部 MCP 服务器。由 lifespan startup 事件调用。"""
+        await self._connect_external_servers()
 
     def set_mcp_tools_schema(self, tools: list):
         """Set MCP tool schemas — in disk mode, only inject disk() schema.
