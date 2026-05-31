@@ -127,7 +127,7 @@ class TestExternalToolRegistration:
             "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}},
             "visibility": "static",
         }
-        self.registry._server_tools.setdefault("ext-srv", []).append("ext-srv/read_file")
+        self.registry._server_tools.setdefault("ext-srv", []).append("read_file")
 
         assert "ext-srv/read_file" in self.registry._schemas
         assert self.registry._schemas["ext-srv/read_file"]["visibility"] == "static"
