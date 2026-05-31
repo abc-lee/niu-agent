@@ -67,5 +67,28 @@ class TestMessageStoreSorting:
         assert len(messages) == 10, f"Expected 10 messages, got {len(messages)}"
 
 
+def test_message_has_rowid_field():
+    """Message dataclass must have a rowid field with default 0."""
+    from agent.session import Message
+
+    msg = Message(
+        id="test-id",
+        role="user",
+        content="hello",
+        created_at="2026-01-01T00:00:00",
+    )
+    assert hasattr(msg, "rowid")
+    assert msg.rowid == 0
+
+    msg_with_rowid = Message(
+        id="test-id",
+        role="user",
+        content="hello",
+        created_at="2026-01-01T00:00:00",
+        rowid=42,
+    )
+    assert msg_with_rowid.rowid == 42
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "-m", "p0"])
