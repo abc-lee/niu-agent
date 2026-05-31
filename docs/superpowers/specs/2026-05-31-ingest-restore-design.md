@@ -2,7 +2,7 @@
 
 ## 问题
 
-原始 `ingest_unified.py` 实现了完整的统一入库：一个入口自动判断路径类型（文件/目录）和内容类型（照片/文档/混合），支持 copy/move/reference 三种模式。在后续重构为 MCP photo-server 时，大量功能丢失：
+原始 `ingest_unified.py` 实现了完整的统一入库：一个入口自动判断路径类型和内容类型，支持 copy/move/reference 三种模式。重构为 MCP photo-server 时大量功能丢失：
 
 | 功能 | 原始 | 当前 | 状态 |
 |------|------|------|------|
@@ -10,17 +10,49 @@
 | 照片 copy/move/reference | 三分支 | 硬编码 copy | 丢失 |
 | 文档 copy/move/reference | 三分支 | 三分支 | 正常 |
 | 批量照片完整处理 | 逐张 ingest_photo() | 仅 shutil.copy2 | 丢失 |
-| 批量照片 mode 参数 | 传递 mode | 无 | 丢失 |
-| 纯文档目录入库 | _ingest_document_directory() | DIRECTORY_NO_PHOTOS | 丢失 |
-| 混合目录入库 | _ingest_mixed_directory() | 只处理照片部分 | 丢失 |
+| 纯文档目录入库 | 逐个调 ingest_document() | DIRECTORY_NO_PHOTOS | 丢失 |
+| 混合目录入库 | 照片/文档分别处理 | 只处理照片部分 | 丢失 |
 | move 模式错误回滚 | shutil.move 回原位 | os.remove 丢文件 | 丢失 |
-| 统一入口路由 | ingest() 自动分发 | 委托给 ingest_document | 丢失 |
+
+## 工具交互机制
+
+### MCP 工具是请求-响应模式
+
+每次 `ingest_document()` 调用都是独立的、无状态的函数调用。子Agent和工具之间通过子Agent的 LLM 循环协调：
+
+```
+子Agent LLM 循环：
+  → 调用 ingest_document(file_path="a.pdf")          ← 第1次工具调用
+  ← 返回 need_category + 内容预览 + available_categories
+  → 子Agent阅读预览，判断分类为"报告"
+  → 调用 ingest_document(file_path="a.pdf", category="报告")  ← 第2次工具调用
+  ← 返回 success
+  → 调用 ingest_document(file_path="b.docx")          ← 第3次工具调用
+  ← ...
+```
+
+**关键**：每次工具调用返回后，子Agent的 LLM 决定下一步操作。photo-server 本身没有内部循环，不维护跨调用的状态。
+
+### 目录入库的工作方式
+
+当用户拖入一个含10个文档的目录且未指定分类时，子Agent需要为每个文件做两轮调用（拿预览 → 带分类入库），共约20次工具调用。这些调用全部由子Agent的 LLM 循环驱动。
+
+如果用户指定了分类，则每个文件只需一次调用（直接带分类入库），共约10次。
+
+### 分类目录来自配置文件
+
+`available_categories` 从 `~/.niu/preferences.json` 的 `categories.documents` 字段读取，用户可自定义。
 
 ## 设计
 
 ### 核心思路
 
-恢复 `ingest` 工具为真正的统一入口：接收 path + mode + category，自动判断路径类型和内容类型，路由到正确的处理分支。所有底层函数复用现有代码，只补缺失部分。
+1. 恢复 `ingest` 工具为统一入口：接收 path + mode + category，自动判断内容类型，路由到正确分支
+2. `ingest_photo()` 加 mode 参数 + 修复 move 回滚
+3. 批量照片改为逐张调 `ingest_photo()`（完整流程）
+4. 新增文档目录入库函数
+5. 新增混合目录入库函数
+6. 子Agent提示词同步更新
 
 ### 架构
 
@@ -28,56 +60,50 @@
 ingest(path, mode, category)
     │
     ├── classify_path(path)
-    │   ├── FILE + PHOTO  → ingest_photo(file_path, mode, category)
-    │   ├── FILE + DOCUMENT → ingest_document(file_path, mode, category)
-    │   ├── DIRECTORY + PHOTO → ingest_photo_directory(path, mode, category)
-    │   ├── DIRECTORY + DOCUMENT → ingest_document_directory(path, mode, category)
-    │   ├── DIRECTORY + MIXED → ingest_mixed_directory(path, mode, category)
-    │   └── DIRECTORY + EMPTY → 报错
+    │   ├── FILE + PHOTO     → ingest_photo(path, mode, category)
+    │   ├── FILE + DOCUMENT → ingest_document(path, mode, category)
+    │   ├── DIR + PHOTO     → ingest_photo_directory(path, mode, category)
+    │   ├── DIR + DOCUMENT  → ingest_document_directory(path, mode, category)
+    │   ├── DIR + MIXED     → ingest_mixed_directory(path, mode, category)
+    │   └── DIR + EMPTY     → error
     │
-    └── 各分支内部处理
-        ├── ingest_photo() — 加 mode 参数 + 修复回滚
-        ├── ingest_document() — 已有 mode，保持不变
-        ├── ingest_photo_directory() — 新增，逐张调 ingest_photo()
-        ├── ingest_document_directory() — 新增，逐个调 ingest_document()
-        └── ingest_mixed_directory() — 新增，分别调上面两个
+    └── 底层函数（已有，复用）
+        ├── ingest_photo()        — 加 mode + 修复回滚
+        ├── ingest_document()    — 保持不变
+        ├── extract_exif()       — 不变
+        ├── detect_faces()       — 不变
+        ├── match_face_to_person() — 不变
+        ├── sync_photo_to_kg()   — 不变
+        └── lightrag_insert_file() — 不变
 ```
 
 ### 改动1：新增路径分类函数
 
-从 `ingest_unified.py:28-72` 移植 `PathType`、`ContentType` 枚举和 `classify_path()` 函数到 `__init__.py`。逻辑不变，只是移到新位置。
+从 `ingest_unified.py:28-72` 移植。不改变逻辑。
 
 ```python
-class PathType(Enum):
-    FILE = "file"
-    DIRECTORY = "directory"
-    NOT_FOUND = "not_found"
-
 class ContentType(Enum):
     PHOTO = "photo"
     DOCUMENT = "document"
     MIXED = "mixed"
     EMPTY = "empty"
 
-def classify_path(path: str) -> tuple[PathType, ContentType]:
+def classify_path(path: str) -> ContentType:
     source = Path(path)
-    if not source.exists():
-        return PathType.NOT_FOUND, ContentType.EMPTY
     if source.is_file():
-        ext = source.suffix.lower()
-        if ext in PHOTO_EXTENSIONS:
-            return PathType.FILE, ContentType.PHOTO
-        return PathType.FILE, ContentType.DOCUMENT
+        if source.suffix.lower() in PHOTO_EXTENSIONS:
+            return ContentType.PHOTO
+        return ContentType.DOCUMENT
     # directory
-    photos = sum(1 for f in source.rglob("*") if f.is_file() and f.suffix.lower() in PHOTO_EXTENSIONS)
-    docs = sum(1 for f in source.rglob("*") if f.is_file() and f.suffix.lower() in DOCUMENT_EXTENSIONS and f.suffix.lower() not in PHOTO_EXTENSIONS)
-    if photos > 0 and docs > 0:
-        return PathType.DIRECTORY, ContentType.MIXED
-    if photos > 0:
-        return PathType.DIRECTORY, ContentType.PHOTO
-    if docs > 0:
-        return PathType.DIRECTORY, ContentType.DOCUMENT
-    return PathType.DIRECTORY, ContentType.EMPTY
+    has_photo = any(f.is_file() and f.suffix.lower() in PHOTO_EXTENSIONS for f in source.rglob("*"))
+    has_doc = any(f.is_file() and f.suffix.lower() in DOCUMENT_EXTENSIONS and f.suffix.lower() not in PHOTO_EXTENSIONS for f in source.rglob("*"))
+    if has_photo and has_doc:
+        return ContentType.MIXED
+    if has_photo:
+        return ContentType.PHOTO
+    if has_doc:
+        return ContentType.DOCUMENT
+    return ContentType.EMPTY
 ```
 
 ### 改动2：ingest_photo() 加 mode 参数 + 修复回滚
@@ -100,7 +126,6 @@ elif mode == "reference":
 **错误回滚修复**（参照 `ingest_unified.py:216-231`）：
 ```python
 except Exception as e:
-    # rollback file operation
     if final_path is not None:
         try:
             if mode == "move":
@@ -112,13 +137,13 @@ except Exception as e:
             pass
 ```
 
-### 改动3：重写批量照片入库为完整处理
+### 改动3：批量照片改为逐张完整处理
 
-删除 `ingest_photos_batch()` 的"只拷贝"逻辑，改为新增 `_ingest_photo_directory()`，逐张调用 `ingest_photo()`：
+新增 `ingest_photo_directory()`，逐张调用已有的 `ingest_photo()`（已包含 EXIF/人脸/KG/DB 完整流程）。删除 `ingest_photos_batch()` 的"只拷贝"逻辑。
 
 ```python
-def _ingest_photo_directory(source_path: str, mode: str = "copy", category: str | None = None) -> dict:
-    """照片目录入库：逐张走完整流程（EXIF/人脸/KG/DB）"""
+def ingest_photo_directory(source_path: str, mode: str = "copy", category: str | None = None) -> dict:
+    """照片目录入库：逐张走完整流程"""
     source = Path(source_path)
     photo_files = sorted([f for f in source.rglob("*") if f.is_file() and f.suffix.lower() in PHOTO_EXTENSIONS])
 
@@ -136,18 +161,20 @@ def _ingest_photo_directory(source_path: str, mode: str = "copy", category: str 
         "total": len(photo_files),
         "succeeded": len(results),
         "failed": len(errors),
-        "errors": errors[:10],  # 最多返回10个错误
+        "errors": errors[:10],
         "photos": results,
     }
 ```
 
-同步更新 `ingest_photos()` 签名加 `mode`，透传给 `_ingest_photo_directory` 或 `ingest_photo`。
+同步更新 `ingest_photos()` 签名加 `mode`，路由到 `ingest_photo` 或 `ingest_photo_directory`。
 
 ### 改动4：新增文档目录入库
 
+逐个调用已有的 `ingest_document()`。子Agent通过工具调用循环来处理 need_category 交互——程序不需要内部循环。
+
 ```python
-def _ingest_document_directory(source_path: str, mode: str = "copy", category: str | None = None) -> dict:
-    """文档目录入库：逐个调用 ingest_document()，未指定分类时首个 need_category 即中断"""
+def ingest_document_directory(source_path: str, mode: str = "copy", category: str | None = None) -> dict:
+    """文档目录入库：逐个调用 ingest_document()"""
     source = Path(source_path)
     doc_files = sorted([f for f in source.rglob("*")
                        if f.is_file() and f.suffix.lower() in DOCUMENT_EXTENSIONS
@@ -155,28 +182,10 @@ def _ingest_document_directory(source_path: str, mode: str = "copy", category: s
 
     results = []
     errors = []
-
     for df in doc_files:
-        # 跳过已入库的文件（通过 hash 检测）
-        file_hash = _compute_file_hash(str(df))
-        existing = _check_document_exists(file_hash)
-        if existing:
-            results.append({"status": "skipped", "file": str(df), "reason": "already_ingested"})
-            continue
-
-        result = ingest_document(str(df), mode=mode, category=category)
+        result = ingest_document(str(df), mode=mode, category=category or "")
         if result.get("status") == "success":
             results.append(result)
-        elif result.get("status") == "need_category":
-            # 未指定分类时，第一个 need_category 即中断，返回给子Agent选择分类
-            return {
-                "status": "need_category",
-                "total": len(doc_files),
-                "succeeded": len(results),
-                "pending": len(doc_files) - len(results) - 1,
-                "current_file": result,
-                "message": f"已入库 {len(results)} 个文档，还有 {len(doc_files) - len(results) - 1} 个待处理。请为当前文档选择分类。",
-            }
         else:
             errors.append({"file": str(df), "error": result.get("message", "unknown")})
 
@@ -190,16 +199,15 @@ def _ingest_document_directory(source_path: str, mode: str = "copy", category: s
     }
 ```
 
-当 `category` 已指定时，所有文档直接入库，`need_category` 为空。
-当 `category` 未指定时，逐个调用 `ingest_document()`，第一个返回 `need_category` 的文件会中断批量流程——工具一次性返回该文件的内容预览 + `available_categories`，子Agent判断分类后带 category 重新调用整个目录。这意味着未指定 category 时，目录入库需要两轮：第一轮碰到第一个需要分类的文件就返回，子Agent选好分类后第二轮用 category 重新调用。已入库的文档不会重复处理（通过 hash 检测跳过）。
+注意：当 `category` 为空时，`ingest_document()` 会对每个文件返回 `need_category`。这些结果会被收集到 errors 中（因为 status 不是 success）。子Agent看到这些信息后，会逐个带分类重新调用工具。
 
 ### 改动5：新增混合目录入库
 
 ```python
-def _ingest_mixed_directory(source_path: str, mode: str = "copy", category: str | None = None) -> dict:
+def ingest_mixed_directory(source_path: str, mode: str = "copy", category: str | None = None) -> dict:
     """混合目录入库：照片和文档分别处理"""
-    photo_result = _ingest_photo_directory(source_path, mode=mode, category=category)
-    doc_result = _ingest_document_directory(source_path, mode=mode, category=category)
+    photo_result = ingest_photo_directory(source_path, mode=mode, category=category)
+    doc_result = ingest_document_directory(source_path, mode=mode, category=category)
 
     return {
         "status": "success",
@@ -218,12 +226,13 @@ if name == "ingest":
     mode = arguments.get("mode", "copy")
     category = arguments.get("category", "") or None
 
-    path_type, content_type = classify_path(path)
+    content_type = classify_path(path)
 
-    if path_type == PathType.NOT_FOUND:
-        return {"status": "error", "message": f"路径不存在: {path}"}
+    if content_type == ContentType.EMPTY:
+        return {"status": "error", "message": f"目录为空或路径不存在: {path}"}
 
-    if path_type == PathType.FILE:
+    source = Path(path)
+    if source.is_file():
         if content_type == ContentType.PHOTO:
             return ingest_photo(path, mode=mode, category=category)
         else:
@@ -231,43 +240,41 @@ if name == "ingest":
 
     # DIRECTORY
     if content_type == ContentType.PHOTO:
-        return _ingest_photo_directory(path, mode=mode, category=category)
+        return ingest_photo_directory(path, mode=mode, category=category)
     elif content_type == ContentType.DOCUMENT:
-        return _ingest_document_directory(path, mode=mode, category=category)
-    elif content_type == ContentType.MIXED:
-        return _ingest_mixed_directory(path, mode=mode, category=category)
-    else:  # EMPTY
-        return {"status": "error", "message": f"目录为空: {path}"}
+        return ingest_document_directory(path, mode=mode, category=category)
+    else:  # MIXED
+        return ingest_mixed_directory(path, mode=mode, category=category)
 ```
 
-### 改动7：更新 TOOL_SCHEMAS 和 MCP Tool schema
+### 改动7：更新 TOOL_SCHEMAS 和 MCP Tool schemas
 
-- `ingest` schema 的 description 更新为准确描述路由行为
-- `ingest_photo` schema 加 `mode` 参数
+- `ingest` schema description 更新为准确描述路由行为
+- `ingest_photo` schema 加 `mode` 参数 (enum: copy/move/reference, default: copy)
 - `ingest_photos` schema 加 `mode` 参数
 
 ### 改动8：更新 file-processor 子Agent 提示词
 
-`config/agents/file-processor.md` 中照片入库指令需要同步更新：
+`config/agents/file-processor.md` 同步更新：
 - 照片入库现在也支持 mode 参数
-- 目录入库自动识别内容类型，不需要手动区分
+- 目录入库自动识别内容类型（照片/文档/混合）
+- 保持现有的 need_category 交互流程不变
 
 ## 不改动
 
-- `ingest_document()` 单文件逻辑：保持现有实现（mode 三分支 + need_category + lightrag_insert_file）
+- `ingest_document()` 单文件逻辑：保持不变
 - `ingest_documents()` 批量函数：保持现有签名
-- 底层辅助函数：`extract_exif`, `detect_faces`, `match_face_to_person`, `generate_l0_abstract`, `sync_photo_to_kg` 等全部保持不变
+- 底层辅助函数：全部保持不变
 - 数据库表结构：无变化
-- `store_document_l1()` / L1 回传模式：暂不恢复，当前 `lightrag_insert_file` 路径已满足需求
+- `store_document_l1()` / L1 回传模式：暂不恢复
+- 分类目录来源：仍从 `preferences.json` 读取
 
 ## 文件清单
 
 | 文件 | 改动 | 风险 |
 |------|------|------|
-| `__init__.py` | 新增 classify_path + 3个目录入库函数 + 重写 ingest 路由 + ingest_photo 加 mode | 中 |
-| `__init__.py` MCP Tool schemas | ingest_photo/ingest_photos 加 mode 参数 | 低 |
-| `__init__.py` TOOL_SCHEMAS | ingest 描述更新 + photo schemas 加 mode | 低 |
-| `config/agents/file-processor.md` | 照片入库指令更新 | 低 |
+| `mcp-servers/photo-server/src/niu_photo_server/__init__.py` | classify_path + 目录入库函数 + ingest 路由重写 + ingest_photo 加 mode | 中 |
+| `config/agents/file-processor.md` | 照片 mode 参数 + 目录入库指令 | 低 |
 
 ## 测试计划
 
@@ -284,8 +291,9 @@ if name == "ingest":
 
 每个测试验证：
 - 文件存储位置正确
-- 数据库记录写入
+- 数据库记录写入（照片）
 - 人脸检测/匹配正常（照片）
 - 知识图谱写入正常（文档）
 - move 模式下源文件已删除
 - reference 模式下不复制文件
+- move 模式错误时文件正确回滚
