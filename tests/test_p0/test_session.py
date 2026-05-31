@@ -1,12 +1,35 @@
 """P0-2: 测试 MessageStore 排序逻辑"""
 import pytest
 import asyncio
+import aiosqlite
 import sys
 import tempfile
 import os
 sys.path.insert(0, "E:/tools/ai-bot")
 
 from agent.session import MessageStore
+
+
+def _db_path_factory(tmp_path):
+    """Create a temporary database path."""
+    return str(tmp_path / "test_messages.db")
+
+
+async def _init_store(db_path: str):
+    """Create a MessageStore with real schema."""
+    store = MessageStore(db_path)
+    await store.init_db()
+    return store
+
+
+async def _insert_message(db_path: str, msg_id: str, role: str, content: str, created_at: str):
+    """Insert a message directly into the database (to control created_at independently of rowid)."""
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute(
+            "INSERT INTO messages (id, role, content, created_at) VALUES (?, ?, ?, ?)",
+            (msg_id, role, content, created_at),
+        )
+        await db.commit()
 
 
 @pytest.mark.p0
@@ -88,6 +111,43 @@ def test_message_has_rowid_field():
         rowid=42,
     )
     assert msg_with_rowid.rowid == 42
+
+
+def test_messages_ordered_by_rowid_not_created_at(tmp_path):
+    """
+    Messages must be returned in rowid order (write order), not created_at order.
+
+    Scenario: Insert messages with out-of-order created_at values.
+    - Insert A at 2026-05-31T08:00 (rowid=1)
+    - Insert B at 2026-05-30T22:00 (rowid=2, created_at EARLIER than A)
+    - Insert C at 2026-05-31T08:01 (rowid=3)
+
+    If sorted by created_at ASC: B, A, C (wrong — B's timestamp is earliest)
+    If sorted by rowid ASC: A, B, C (correct — matches write order)
+    """
+    async def _run():
+        db_path = _db_path_factory(tmp_path)
+        store = await _init_store(db_path)
+
+        # Write A first (earlier timestamp today)
+        await _insert_message(db_path, "msg-a", "user", "Message A", "2026-05-31T08:00:00")
+        # Write B second (LATER rowid, but EARLIER created_at — yesterday)
+        await _insert_message(db_path, "msg-b", "user", "Message B", "2026-05-30T22:00:00")
+        # Write C third (latest of both)
+        await _insert_message(db_path, "msg-c", "user", "Message C", "2026-05-31T08:01:00")
+
+        messages = await store.get_messages(limit=10)
+
+        # Must return in chronological order (rowid ASC): A, B, C
+        # rowid=1 (A), rowid=2 (B), rowid=3 (C)
+        # Even though B's created_at is earlier than A's, B was written after A,
+        # so B comes after A in write order.
+        assert len(messages) == 3
+        assert messages[0].id == "msg-a"  # rowid 1 (written first)
+        assert messages[1].id == "msg-b"  # rowid 2 (written second, despite earlier created_at)
+        assert messages[2].id == "msg-c"  # rowid 3 (written third)
+
+    asyncio.run(_run())
 
 
 if __name__ == "__main__":
