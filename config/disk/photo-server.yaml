@@ -18,6 +18,9 @@ tools:
         default: copy
       - name: category
         type: string
+      - name: _offset
+        type: integer
+        default: 0
 
   - name: name_person
     category: write
