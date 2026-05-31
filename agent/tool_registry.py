@@ -44,6 +44,9 @@ class ToolRegistry:
         # 服务器注册追踪: server_name -> list of tool names
         self._server_tools: Dict[str, List[str]] = {}
 
+        # Agent LLM 回调函数，供内部 MCP Server 调用
+        self._ask_agent = None  # callable(prompt: str, system_prompt: str = "", max_tokens: int = 500) -> str
+
     def register(
         self,
         name: str,
@@ -250,6 +253,27 @@ class ToolRegistry:
         替代 runner.py 中硬编码的 BASE_MCP_TOOLS
         """
         return [name for name, schema in self._schemas.items() if schema.get("visibility") == "static"]
+
+    def set_ask_agent(self, fn):
+        """注入 Agent LLM 回调函数，供内部 MCP Server 调用"""
+        self._ask_agent = fn
+
+    def ask_agent(self, prompt: str, system_prompt: str = "", max_tokens: int = 500) -> str | None:
+        """请求 Agent LLM 生成回答。返回文本或 None（如果不可用）"""
+        if self._ask_agent is None:
+            return None
+        try:
+            import inspect as _inspect
+            sig = _inspect.signature(self._ask_agent)
+            valid_params = set(sig.parameters.keys())
+            kwargs = {k: v for k, v in {
+                "prompt": prompt,
+                "system_prompt": system_prompt,
+                "max_tokens": max_tokens,
+            }.items() if k in valid_params}
+            return self._ask_agent(**kwargs)
+        except Exception:
+            return None
 
     def clear(self):
         """清空所有注册的工具"""

@@ -58,3 +58,50 @@ class TestVisibilityValues:
     def test_no_get_visibility_method(self):
         """get_visibility 方法已删除"""
         assert not hasattr(self.registry, "get_visibility")
+
+
+class TestAskAgent:
+    """验证 ask_agent 注入和调用机制"""
+
+    def setup_method(self):
+        self.registry = ToolRegistry()
+        self.registry._tools = {}
+        self.registry._schemas = {}
+        self.registry._server_tools = {}
+
+    def test_ask_agent_returns_none_when_not_set(self):
+        """未注入 callback 时 ask_agent 返回 None"""
+        result = self.registry.ask_agent(prompt="test")
+        assert result is None
+
+    def test_ask_agent_calls_callback(self):
+        """注入 callback 后 ask_agent 调用它"""
+        calls = []
+        def mock_callback(prompt, system_prompt="", max_tokens=500):
+            calls.append({"prompt": prompt, "system_prompt": system_prompt, "max_tokens": max_tokens})
+            return "分类结果"
+
+        self.registry.set_ask_agent(mock_callback)
+        result = self.registry.ask_agent(prompt="请分类", system_prompt="你是助手", max_tokens=100)
+
+        assert result == "分类结果"
+        assert len(calls) == 1
+        assert calls[0]["prompt"] == "请分类"
+        assert calls[0]["system_prompt"] == "你是助手"
+        assert calls[0]["max_tokens"] == 100
+
+    def test_ask_agent_returns_none_on_callback_exception(self):
+        """callback 抛异常时 ask_agent 返回 None"""
+        def bad_callback(prompt, system_prompt="", max_tokens=500):
+            raise RuntimeError("LLM 调用失败")
+
+        self.registry.set_ask_agent(bad_callback)
+        result = self.registry.ask_agent(prompt="test")
+        assert result is None
+
+    def test_set_ask_agent_overrides_previous(self):
+        """重复设置 callback 会覆盖前一个"""
+        self.registry.set_ask_agent(lambda prompt: "first")
+        self.registry.set_ask_agent(lambda prompt: "second")
+        result = self.registry.ask_agent(prompt="test")
+        assert result == "second"
