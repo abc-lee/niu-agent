@@ -3052,11 +3052,24 @@ def _process_next_file(session: dict, category: str = "") -> dict:
             # 需要分类 — 先读取内容预览
             doc_result = ingest_document(file_path=current["path"], category="", mode=mode)
 
-            # 如果 ingest_document 返回 error（文件无法处理），跳过此文件
+            # 如果 ingest_document 返回 error（文件无法处理），跳过此文件继续下一个
             if doc_result.get("status") == "error":
                 session["processed"].append({"file": current["path"], "type": "document", "result": doc_result})
                 session["offset"] = next_idx + 1
-                return _process_next_file(session, category)
+                # 迭代而非递归：重新找下一个可处理文件
+                next_idx2 = _find_next_processable(all_files, session["offset"])
+                if next_idx2 is None:
+                    return _build_success_summary(all_files, session["processed"])
+                # 复用当前函数的逻辑，但通过循环而非递归
+                # 这里返回 progress 让 Agent 继续，避免深度递归
+                next_info2 = all_files[next_idx2]
+                return {
+                    "status": "progress",
+                    "total": len(all_files),
+                    "last_result": doc_result,
+                    "next": {"file": Path(next_info2["path"]).name, "type": next_info2["type"], "needs_category": next_info2["type"] == "document"},
+                    "message": f"跳过失败的文档，下一个: {Path(next_info2['path']).name}" + (" 需要分类" if next_info2["type"] == "document" else ""),
+                }
 
             preview = ""
             try:
@@ -3496,6 +3509,46 @@ server = Server("niu-photo-server")
 async def list_tools() -> list[Tool]:
     """列出可用工具"""
     return [
+        Tool(
+            name="ingest",
+            description="""有状态统一入库工具 — 支持目录逐文件交互式入库
+
+参数:
+- path: 必填，文件路径或目录路径
+- mode: copy（复制）| move（移动）| reference（引用），默认 copy
+- category: 分类目录（文档需要分类时传入，照片不需要）
+- action: start | interact | abort，默认空字符串
+
+三阶段交互模式（目录入库）:
+1. 初始化: ingest(path="E:/照片", action="start", mode="copy")
+   → 扫描目录，创建会话，处理第一个文件，返回 progress/need_category
+2. 中间态交互:
+   - 继续（progress后）: ingest(path="E:/照片")
+   - 回答分类（need_category后）: ingest(path="E:/照片", category="技术文档")
+3. 中止: ingest(path="E:/照片", action="abort")
+
+单文件入库（path是文件时）: 无状态，直接入库，action参数无效""",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "文件路径或目录路径"},
+                    "mode": {
+                        "type": "string",
+                        "enum": ["copy", "move", "reference"],
+                        "default": "copy",
+                        "description": "文件操作模式",
+                    },
+                    "category": {"type": "string", "description": "文件分类目录。need_category状态时必须从available_categories中选择", "default": ""},
+                    "action": {
+                        "type": "string",
+                        "enum": ["", "start", "interact", "abort"],
+                        "default": "",
+                        "description": "会话动作：start=初始化会话，interact/空=继续交互，abort=中止会话",
+                    },
+                },
+                "required": ["path"],
+            },
+        ),
         Tool(
             name="ingest_document",
             description="""文档入库工具 — 文件搬运 + 提交LightRAG异步处理
