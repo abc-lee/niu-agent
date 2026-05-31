@@ -28,29 +28,33 @@ from mcp.types import TextContent, Tool
 TOOL_SCHEMAS = {
     "ingest": {
         "name": "ingest",
-        "description": """统一入库工具 — 自动判断路径类型和内容类型
+        "description": """有状态统一入库工具 — 支持目录逐文件交互式入库
 
 参数:
 - path: 必填，文件路径或目录路径
 - mode: copy（复制）| move（移动）| reference（引用），默认 copy
-- category: 分类目录（文档必填，照片/目录可不传）
-- _offset: 目录入库时跳过前N个已处理文件（内部参数，子Agent通过progress返回的processed值设置）
+- category: 分类目录（文档需要分类时传入，照片不需要）
+- action: start | interact | abort，默认空字符串
 
-自动判断逻辑:
-1. 路径类型：is_dir() → 目录模式，is_file() → 文件模式
-2. 内容类型（文件）：按扩展名判断 — 照片(.jpg/.png等) → 照片流程，其他 → 文档流程
-3. 内容类型（目录）：扫描目录 — 含照片 → 批量照片入库，无照片 → 报错
+三阶段交互模式（目录入库）:
+1. 初始化: ingest(path="E:/照片", action="start", mode="copy")
+   → 扫描目录，创建会话，处理第一个文件，返回 progress/need_category
+2. 中间态交互:
+   - 继续（progress后）: ingest(path="E:/照片")
+   - 回答分类（need_category后）: ingest(path="E:/照片", category="技术文档")
+3. 中止: ingest(path="E:/照片", action="abort")
 
-照片流程: EXIF → 人脸检测 → 人物匹配 → 摘要 → KG同步
-文档流程: 不传category → 返回内容预览(need_category) → 判断分类后再次调用 → 入库
+单文件入库（path是文件时）: 无状态，直接入库，action参数无效
 
 返回:
 - 照片: {status, photo_id, detected_persons, abstract, exif}
-- 文档(need_category): {status: need_category, message, file_path, mode}
+- 文档(need_category): {status: need_category, preview, available_categories}
 - 文档(success): {status: success, action, file_path, lightrag, lightrag_message}
-- 目录: {status, total, processed, results}
-
-目录分页式处理：逐个文件入库，返回progress/need_category/success状态。子Agent需循环调用直到收到success+total。文档未指定category时返回need_category等待分类判断。""",
+- 目录(progress): {status: progress, total, last_result, next}
+- 目录(need_category): {status: need_category, total, current_file, preview, available_categories}
+- 目录(success): {status: success, total, photos, documents, skipped, details}
+- 目录(aborted): {status: aborted, message, processed_count}
+- 错误: {status: error, message}""",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -61,8 +65,13 @@ TOOL_SCHEMAS = {
                     "default": "copy",
                     "description": "文件操作模式",
                 },
-                "category": {"type": "string", "description": "文件分类目录。不传则返回内容预览供你判断分类", "default": ""},
-                "_offset": {"type": "integer", "description": "目录入库时跳过前N个已处理文件（内部参数，子Agent通过progress返回的processed值设置）", "default": 0},
+                "category": {"type": "string", "description": "文件分类目录。need_category状态时必须从available_categories中选择", "default": ""},
+                "action": {
+                    "type": "string",
+                    "enum": ["", "start", "interact", "abort"],
+                    "default": "",
+                    "description": "会话动作：start=初始化会话，interact/空=继续交互，abort=中止会话",
+                },
             },
             "required": ["path"],
         },
@@ -359,6 +368,9 @@ _conn: sqlite3.Connection | None = None
 _db_path_failed: bool = False
 _db_write_lock = threading.Lock()
 
+# ============== 有状态入库会话 ==============
+_ingest_sessions: dict[str, dict] = {}
+
 
 def get_connection() -> sqlite3.Connection:
     """Get or create database connection."""
@@ -469,59 +481,36 @@ def call_embedding_service(endpoint: str, data: dict) -> dict | None:
 # ============== 知识图谱同步 ==============
 
 
-def _generate_stable_description(normalized_stem: str, abstract: str, exif: dict | None = None) -> str:
+def _generate_stable_description(normalized_stem: str, abstract: str) -> str:
     """Generate a stable description for photo entity in KG.
 
-    Includes immutable attributes (file name, date, camera, location from EXIF).
+    Only includes immutable attributes (file name, date from stem).
     Person names are NOT included — they belong to person entities and
     are expressed via edges (features, co_occurs_with).
     This prevents the description from becoming stale when a person is renamed.
-
-    Args:
-        normalized_stem: 归一化后的文件名 stem
-        abstract: 照片摘要（暂未使用）
-        exif: EXIF 信息字典，包含 taken_at, camera, location
     """
-    parts = [f"照片 {normalized_stem}"]
-
-    # 日期部分：优先从 EXIF taken_at 提取
-    date_str = ""
-    if exif and exif.get("taken_at"):
+    # Extract date from stem if possible (format: YYYYMMDD_HHMMSS)
+    date_part = ""
+    if len(normalized_stem) >= 8 and normalized_stem[:8].isdigit():
         try:
             from datetime import datetime
-            dt = datetime.fromisoformat(exif["taken_at"])
-            date_str = dt.strftime("%Y年%m月%d日 %H:%M")
-        except (ValueError, TypeError):
+            dt = datetime.strptime(normalized_stem[:8], "%Y%m%d")
+            # Validate: month 1-12, day 1-31 (strptime already rejects invalid dates)
+            if dt.year < 1900 or dt.year > 2100:
+                raise ValueError("year out of reasonable range")
+            date_part = dt.strftime("%Y年%m月%d日")
+        except ValueError:
             pass
 
-    if not date_str:
-        # fallback: 从文件名提取日期
-        if len(normalized_stem) >= 8 and normalized_stem[:8].isdigit():
-            try:
-                from datetime import datetime
-                dt = datetime.strptime(normalized_stem[:8], "%Y%m%d")
-                if dt.year < 1900 or dt.year > 2100:
-                    raise ValueError("year out of reasonable range")
-                date_str = dt.strftime("%Y年%m月%d日")
-            except ValueError:
-                pass
-
-    if date_str:
-        parts.append(f"拍摄于{date_str}")
-
-    # 设备部分
-    if exif and exif.get("camera"):
-        parts.append(f"设备：{exif['camera']}")
-
-    # 位置部分
-    if exif and exif.get("location"):
-        parts.append(f"位置：{exif['location']}")
+    parts = [f"照片 {normalized_stem}"]
+    if date_part:
+        parts.append(f"拍摄于{date_part}")
 
     return "，".join(parts)
 
 
 def format_photo_ingest_data(
-    file_path: str, abstract: str, detected_persons: list, exif: dict | None = None
+    file_path: str, abstract: str, detected_persons: list
 ) -> dict:
     """格式化照片信息为结构化实体+关系，供 inject_custom_kg 注入。
 
@@ -550,7 +539,7 @@ def format_photo_ingest_data(
         {
             "entity_name": photo_entity_name,
             "entity_type": "Photo",
-            "description": _generate_stable_description(normalized_stem, abstract, exif=exif),
+            "description": _generate_stable_description(normalized_stem, abstract),
             "file_path": normalized_path,
             "source_id": normalized_path,
         }
@@ -581,12 +570,15 @@ def format_photo_ingest_data(
         seen_person_entity_names.add(entity_name)
 
         person_names.append(entity_name)
-        # 人名实体的 description 置空：人与照片的关联关系已有 features 边表达，
-        # description 里写"出现在照片X中"是冗余且不准确的
+        # 保留 person_id（UUID）到 description 中，便于 KG 实体溯源
+        person_pid = p.get("id", "")
+        desc = f"{entity_name}，出现在照片{normalized_stem}中"
+        if person_pid:
+            desc += f"（person_id={person_pid}）"
         entities.append({
             "entity_name": entity_name,
             "entity_type": "person",
-            "description": "",
+            "description": desc,
             "file_path": normalized_path,
             "source_id": normalized_path,  # 与 chunk 的 source_id 一致，确保映射成功
         })
@@ -623,7 +615,7 @@ def format_photo_ingest_data(
     return {"entities": entities, "relationships": relationships}
 
 
-def sync_photo_to_kg(file_path: str, abstract: str, detected_persons: list, force: bool = False, exif: dict | None = None) -> dict:
+def sync_photo_to_kg(file_path: str, abstract: str, detected_persons: list, force: bool = False) -> dict:
     """同步照片信息到知识图谱（结构化注入）
 
     流程：
@@ -658,15 +650,15 @@ def sync_photo_to_kg(file_path: str, abstract: str, detected_persons: list, forc
             logger.warning(f"[KG] kg_synced check failed for {file_path}: {e}")
 
     # 直接同步执行（不再使用异步模式，避免阻塞 LightRAG 事件循环）
-    return _do_sync_photo_to_kg_sync(file_path, abstract, detected_persons, exif=exif)
+    return _do_sync_photo_to_kg_sync(file_path, abstract, detected_persons)
 
 
-def _do_sync_photo_to_kg_sync(file_path: str, abstract: str, detected_persons: list, exif: dict | None = None) -> dict:
+def _do_sync_photo_to_kg_sync(file_path: str, abstract: str, detected_persons: list) -> dict:
     """同步执行 KG 同步（内部函数）"""
     try:
         from agent.tool_registry import get_registry
 
-        data = format_photo_ingest_data(file_path, abstract, detected_persons, exif=exif)
+        data = format_photo_ingest_data(file_path, abstract, detected_persons)
         normalized_path = file_path.replace("\\", "/").lower()
         normalized_stem = Path(normalized_path).stem
         registry = get_registry()
@@ -2000,9 +1992,16 @@ def ingest_photo(file_path: str, category: str | None = None, mode: str = "copy"
                 target_path = target_dir / new_file_name
                 final_path = handle_photo_conflict(target_path)
 
-                # 复制文件
-                shutil.copy2(str(source), final_path)
-                logger.info(f"[INGEST_PHOTO] Copied to: {final_path}")
+                # 文件操作
+                if mode == "move":
+                    shutil.move(str(source), final_path)
+                    logger.info(f"[INGEST_PHOTO] Moved to: {final_path}")
+                elif mode == "reference":
+                    final_path = str(source)
+                    logger.info(f"[INGEST_PHOTO] Referenced: {final_path}")
+                else:
+                    shutil.copy2(str(source), final_path)
+                    logger.info(f"[INGEST_PHOTO] Copied to: {final_path}")
 
                 # 5. Create photo record
                 photo_id = str(uuid.uuid4())
@@ -2064,7 +2063,7 @@ def ingest_photo(file_path: str, category: str | None = None, mode: str = "copy"
 
         # 8. 同步到知识图谱（失败不影响照片入库）
         final_path_resolved = str(Path(final_path).resolve())
-        kg_result = sync_photo_to_kg(final_path_resolved, abstract, detected_persons, exif=exif)
+        kg_result = sync_photo_to_kg(final_path_resolved, abstract, detected_persons)
         kg_entities = kg_result.get("kg_entities", []) if isinstance(kg_result, dict) else []
 
         # 9. Unload face model to release memory (optional, for single photo)
@@ -2579,7 +2578,7 @@ def merge_persons(person_a_id: str, person_b_id: str) -> dict:
 
 # ============== 照片批量处理 ==============
 
-PHOTO_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".heic", ".heif", ".tiff"}
+PHOTO_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".heic", ".heif"}
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".flv", ".wmv", ".m4v"}
 
 
@@ -2775,9 +2774,6 @@ DOCUMENT_EXTENSIONS = {
     ".xls",
     ".pptx",
     ".ppt",
-    ".epub",
-    ".html",
-    ".htm",
 }
 
 
@@ -3095,39 +3091,59 @@ def rename_file(file_path: Path) -> str:
     return str(new_path)
 
 
-# ============== 工具实现 ==============
+# ============== 有状态目录入库 ==============
 
 
-def ingest(path: str, category: str = "", mode: str = "copy", _offset: int = 0) -> dict:
-    """统一入库工具 — 自动判断路径类型和内容类型
+def _normalize_session_key(path: str) -> str:
+    """归一化路径作为会话 key（统一分隔符 + 小写）"""
+    return str(Path(path).resolve()).replace("\\", "/").lower()
 
-    参数:
-    - path: 必填，文件路径或目录路径
-    - mode: copy（复制）| move（移动）| reference（引用），默认 copy
-    - category: 分类目录（文档必填，照片/目录可不传）
-    - _offset: 内部参数，目录入库时跳过前N个已处理文件，默认0
+
+def _scan_directory(source: Path) -> list[dict]:
+    """扫描目录，分类文件为 image/document/skipped
+    
+    Returns:
+        [{"path": str, "type": "image"|"document"|"skipped", "reason": str}, ...]
     """
-    source = Path(path)
-    if not source.exists():
-        return {"status": "error", "message": f"路径不存在: {path}"}
-
-    # 单文件：直接入库
-    if source.is_file():
-        if is_photo(str(source)):
-            return ingest_photo(str(source), category=category or None, mode=mode)
+    files = []
+    seen_paths = set()
+    
+    # 收集所有文件
+    for item in source.rglob("*"):
+        if not item.is_file():
+            continue
+        key = str(item.resolve()).lower()
+        if key in seen_paths:
+            continue
+        seen_paths.add(key)
+        
+        suffix = item.suffix.lower()
+        if suffix in PHOTO_EXTENSIONS:
+            files.append({"path": str(item), "type": "image"})
+        elif suffix in DOCUMENT_EXTENSIONS:
+            files.append({"path": str(item), "type": "document"})
+        elif suffix in VIDEO_EXTENSIONS:
+            files.append({"path": str(item), "type": "skipped", "reason": "视频文件暂不支持入库"})
         else:
-            return ingest_document(file_path=path, category=category, mode=mode)
+            files.append({"path": str(item), "type": "skipped", "reason": f"不支持的文件格式: {suffix}"})
+    
+    return files
 
-    # 目录：分页式处理
-    return _ingest_directory(source, category, mode, _offset)
+
+def _find_next_processable(all_files: list[dict], offset: int) -> int | None:
+    """从 offset 开始找下一个可处理文件（image 或 document），返回索引或 None"""
+    for i in range(offset, len(all_files)):
+        if all_files[i]["type"] in ("image", "document"):
+            return i
+    return None
 
 
-def _build_success_summary(all_files: list, processed_results: list) -> dict:
-    """构建最终汇总结果"""
-    photos = [f for f in all_files if f["type"] == "image"]
-    documents = [f for f in all_files if f["type"] == "document"]
-    skipped = [f for f in all_files if f["type"] == "other"]
-
+def _build_success_summary(all_files: list[dict], processed: list[dict]) -> dict:
+    """构建最终成功摘要"""
+    photos = [p for p in processed if p["type"] == "image"]
+    documents = [p for p in processed if p["type"] == "document"]
+    skipped = [f for f in all_files if f["type"] == "skipped"]
+    
     return {
         "status": "success",
         "total": len(all_files),
@@ -3135,138 +3151,245 @@ def _build_success_summary(all_files: list, processed_results: list) -> dict:
         "documents": len(documents),
         "skipped": len(skipped),
         "details": {
-            "photos": [Path(f["path"]).name for f in photos],
-            "documents": [Path(f["path"]).name for f in documents],
-            "skipped": [Path(f["path"]).name for f in skipped],
-        }
+            "photos": [{"file": Path(p["file"]).name, "result": p["result"]} for p in photos],
+            "documents": [{"file": Path(p["file"]).name, "result": p["result"]} for p in documents],
+            "skipped": [{"file": Path(f["path"]).name, "reason": f.get("reason", "")} for f in skipped],
+        },
     }
 
 
-def _find_next_processable(all_files: list, start: int) -> int | None:
-    """从 start 位置向后扫描，跳过所有 'other' 类型文件，返回下一个可处理文件的索引。
-    如果找不到可处理文件，返回 None。
+def _process_next_file(session: dict, category: str = "") -> dict:
+    """处理 session 中的下一个文件，更新进度，返回结果
+    
+    Args:
+        session: 会话状态 dict
+        category: 文档分类（need_category 时传入）
+    
+    Returns:
+        处理结果 dict（progress / need_category / success）
     """
-    for i in range(start, len(all_files)):
-        if all_files[i]["type"] != "other":
-            return i
-    return None
-
-
-def _ingest_directory(source: Path, category: str, mode: str, offset: int) -> dict:
-    """目录入库：分页式处理，每次处理一个文件"""
-    # 扫描所有文件（按名称排序保证稳定性）
-    all_files = []
-    for f in sorted(source.rglob("*")):
-        if not f.is_file() or f.name.startswith("."):
-            continue
-        if is_photo(str(f)):
-            all_files.append({"path": str(f), "type": "image"})
-        elif is_document(str(f)):
-            all_files.append({"path": str(f), "type": "document"})
-        else:
-            all_files.append({"path": str(f), "type": "other"})
-
-    if not all_files:
-        return {"status": "error", "message": f"目录为空或没有可入库文件: {source}"}
-
-    if offset >= len(all_files):
-        return {"status": "error", "message": f"_offset={offset}超出文件总数({len(all_files)})"}
-
-    processed_results = []
-
-    # 跳过开头的 other 文件，找到第一个可处理文件
-    first_idx = _find_next_processable(all_files, offset)
-    if first_idx is None:
-        return _build_success_summary(all_files, processed_results)
-
-    offset = first_idx
-
-    # while 循环：进入时保证 all_files[offset] 是可处理文件（image 或 document）
-    while offset < len(all_files):
-        next_file = all_files[offset]
-
-        if next_file["type"] == "image":
-            result = ingest_photo(next_file["path"], category=category or None, mode=mode)
-            processed_results.append({"file": next_file["path"], "type": "image", "result": result})
-            offset += 1
-            # 找下一个可处理文件
-            next_idx = _find_next_processable(all_files, offset)
-            if next_idx is None:
-                return _build_success_summary(all_files, processed_results)
-            next_info = all_files[next_idx]
+    all_files = session["all_files"]
+    offset = session["offset"]
+    mode = session["mode"]
+    
+    # 找下一个可处理文件
+    next_idx = _find_next_processable(all_files, offset)
+    if next_idx is None:
+        # 全部处理完毕
+        return _build_success_summary(all_files, session["processed"])
+    
+    current = all_files[next_idx]
+    
+    if current["type"] == "image":
+        result = ingest_photo(current["path"], category=None, mode=mode)
+        session["processed"].append({"file": current["path"], "type": "image", "result": result})
+        session["offset"] = next_idx + 1
+        
+        # 找下一个
+        next_next = _find_next_processable(all_files, session["offset"])
+        if next_next is None:
+            return _build_success_summary(all_files, session["processed"])
+        next_info = all_files[next_next]
+        return {
+            "status": "progress",
+            "total": len(all_files),
+            "last_result": result,
+            "next": {"file": Path(next_info["path"]).name, "type": next_info["type"], "needs_category": next_info["type"] == "document"},
+            "message": f"下一个: {Path(next_info['path']).name}" + (" 需要分类" if next_info["type"] == "document" else ""),
+        }
+    
+    elif current["type"] == "document":
+        if category:
+            # 有分类，直接入库
+            result = ingest_document(file_path=current["path"], category=category, mode=mode)
+            session["processed"].append({"file": current["path"], "type": "document", "result": result})
+            session["offset"] = next_idx + 1
+            
+            # 找下一个
+            next_next = _find_next_processable(all_files, session["offset"])
+            if next_next is None:
+                return _build_success_summary(all_files, session["processed"])
+            next_info = all_files[next_next]
             return {
                 "status": "progress",
-                "processed": next_idx,
                 "total": len(all_files),
                 "last_result": result,
                 "next": {"file": Path(next_info["path"]).name, "type": next_info["type"], "needs_category": next_info["type"] == "document"},
-                "message": f"已处理 {next_idx}/{len(all_files)}，下一个: {Path(next_info['path']).name}"
+                "message": f"下一个: {Path(next_info['path']).name}" + (" 需要分类" if next_info["type"] == "document" else ""),
             }
+        else:
+            # 需要分类 — 先读取内容预览
+            doc_result = ingest_document(file_path=current["path"], category="", mode=mode)
+            preview = ""
+            try:
+                preview = read_file_content(current["path"])[:20000]
+            except Exception:
+                preview = doc_result.get("message", "")[:20000]
+            
+            available_categories = doc_result.get("available_categories", ["其他"])
+            
+            return {
+                "status": "need_category",
+                "total": len(all_files),
+                "current_file": Path(current["path"]).name,
+                "current_file_path": current["path"],
+                "preview": preview,
+                "available_categories": available_categories,
+                "message": "请从 available_categories 中选择分类",
+            }
+    
+    # Should not reach here
+    session["offset"] = next_idx + 1
+    return _process_next_file(session, category)
 
-        elif next_file["type"] == "document":
-            if category:
-                result = ingest_document(file_path=next_file["path"], category=category, mode=mode)
-                processed_results.append({"file": next_file["path"], "type": "document", "result": result})
-                offset += 1
-                # 找下一个可处理文件
-                next_idx = _find_next_processable(all_files, offset)
-                if next_idx is None:
-                    return _build_success_summary(all_files, processed_results)
-                next_info = all_files[next_idx]
-                return {
-                    "status": "progress",
-                    "processed": next_idx,
-                    "total": len(all_files),
-                    "last_result": result,
-                    "next": {"file": Path(next_info["path"]).name, "type": next_info["type"], "needs_category": next_info["type"] == "document"},
-                    "message": f"已处理 {next_idx}/{len(all_files)}，下一个: {Path(next_info['path']).name}"
-                }
-            else:
-                doc_result = ingest_document(file_path=next_file["path"], category="", mode=mode)
-                if doc_result.get("status") == "need_category":
-                    # 直接读取文件内容作为 preview，失败则 fallback 到 message 文本解析
+
+def ingest(path: str, category: str = "", mode: str = "copy", action: str = "") -> dict:
+    """有状态统一入库工具
+    
+    单文件：无状态，直接入库
+    目录：有状态三阶段交互（start → interact → ... → success/abort）
+    """
+    source = Path(path)
+    
+    if not source.exists():
+        return {
+            "status": "error",
+            "error_code": "PATH_NOT_FOUND",
+            "message": f"路径不存在: {path}",
+        }
+    
+    # 单文件：无状态直接入库
+    if source.is_file():
+        if is_photo(str(source)):
+            return ingest_photo(str(source), category=category or None, mode=mode)
+        else:
+            return ingest_document(file_path=str(source), category=category, mode=mode)
+    
+    # 目录：有状态处理
+    if not source.is_dir():
+        return {
+            "status": "error",
+            "error_code": "INVALID_PATH",
+            "message": f"无效路径: {path}",
+        }
+    
+    session_key = _normalize_session_key(path)
+    
+    # action="abort": 中止会话
+    if action == "abort":
+        session = _ingest_sessions.pop(session_key, None)
+        if session is None:
+            return {
+                "status": "error",
+                "message": "没有活跃的入库会话",
+            }
+        processed_count = len(session["processed"])
+        return {
+            "status": "aborted",
+            "message": f"入库已中止，已处理 {processed_count} 个文件",
+            "processed_count": processed_count,
+        }
+    
+    # action="start": 初始化会话
+    if action == "start":
+        # 如果已有会话，先清理
+        if session_key in _ingest_sessions:
+            logger.warning(f"[INGEST] 覆盖已有会话: {session_key}")
+        
+        all_files = _scan_directory(source)
+        if not all_files:
+            return {
+                "status": "error",
+                "error_code": "NO_FILES_FOUND",
+                "message": f"目录中没有找到可处理的文件: {path}",
+            }
+        
+        image_count = sum(1 for f in all_files if f["type"] == "image")
+        doc_count = sum(1 for f in all_files if f["type"] == "document")
+        skip_count = sum(1 for f in all_files if f["type"] == "skipped")
+        
+        session = {
+            "all_files": all_files,
+            "offset": 0,
+            "processed": [],
+            "mode": mode,
+        }
+        _ingest_sessions[session_key] = session
+        
+        # 自动处理第一个文件
+        result = _process_next_file(session, category=category)
+        
+        # 如果只有一个可处理文件且已成功，清理会话
+        if result["status"] == "success":
+            _ingest_sessions.pop(session_key, None)
+            return result
+        
+        # 在返回中附加概览信息
+        if result["status"] in ("progress", "need_category"):
+            result["message"] = f"发现 {image_count} 张图片、{doc_count} 个文档、{skip_count} 个跳过文件\n" + result["message"]
+        
+        return result
+    
+    # action="" 或 "interact": 继续交互
+    if action in ("", "interact"):
+        session = _ingest_sessions.get(session_key)
+        if session is None:
+            return {
+                "status": "error",
+                "message": "会话未初始化，请先调用 ingest(path, action='start')",
+            }
+        
+        # 如果传了 category 且当前处于 need_category 状态
+        # （offset 指向的文件就是需要分类的那个文档）
+        if category:
+            # 找到当前需要分类的文件
+            next_idx = _find_next_processable(session["all_files"], session["offset"])
+            if next_idx is not None and session["all_files"][next_idx]["type"] == "document":
+                current = session["all_files"][next_idx]
+                # 验证 category 是否在可选列表中
+                prefs = get_preferences()
+                available_categories = prefs.get("categories", {}).get("documents", ["其他"])
+                if category not in available_categories:
+                    # 重新读取预览
                     preview = ""
                     try:
-                        preview = read_file_content(next_file["path"])[:20000]
+                        preview = read_file_content(current["path"])[:20000]
                     except Exception:
-                        full_message = doc_result.get("message", "")
-                        if "\n\n" in full_message:
-                            parts = full_message.split("\n\n", 1)
-                            if len(parts) > 1:
-                                preview = parts[1][:20000]
-                        else:
-                            preview = full_message[:20000]
-
+                        pass
                     return {
                         "status": "need_category",
-                        "processed": offset,
-                        "total": len(all_files),
-                        "current_file": Path(next_file["path"]).name,
-                        "file_path": next_file["path"],
-                        "mode": mode,
+                        "total": len(session["all_files"]),
+                        "current_file": Path(current["path"]).name,
+                        "current_file_path": current["path"],
                         "preview": preview,
-                        "available_categories": doc_result.get("available_categories", ["其他"]),
-                        "message": "请从 available_categories 中选择分类后继续调用 ingest",
-                        "_offset": offset,
+                        "available_categories": available_categories,
+                        "message": f"分类 '{category}' 不在可选列表中，请从 available_categories 中选择",
                     }
-                else:
-                    processed_results.append({"file": next_file["path"], "type": "document", "result": doc_result})
-                    offset += 1
-                    # 找下一个可处理文件
-                    next_idx = _find_next_processable(all_files, offset)
-                    if next_idx is None:
-                        return _build_success_summary(all_files, processed_results)
-                    next_info = all_files[next_idx]
-                    return {
-                        "status": "progress",
-                        "processed": next_idx,
-                        "total": len(all_files),
-                        "last_result": doc_result,
-                        "next": {"file": Path(next_info["path"]).name, "type": next_info["type"], "needs_category": next_info["type"] == "document"},
-                        "message": f"已处理 {next_idx}/{len(all_files)}，下一个: {Path(next_info['path']).name}"
-                    }
+                
+                # 有分类，处理当前文档
+                result = ingest_document(file_path=current["path"], category=category, mode=session["mode"])
+                session["processed"].append({"file": current["path"], "type": "document", "result": result})
+                session["offset"] = next_idx + 1
+                
+                # 继续处理下一个
+                next_result = _process_next_file(session)
+                if next_result["status"] == "success":
+                    _ingest_sessions.pop(session_key, None)
+                return next_result
+        
+        # 无 category，继续处理下一个文件（progress 后的继续）
+        result = _process_next_file(session)
+        if result["status"] == "success":
+            _ingest_sessions.pop(session_key, None)
+        return result
+    
+    return {
+        "status": "error",
+        "message": f"未知的 action: {action}",
+    }
 
-    return _build_success_summary(all_files, processed_results)
+
+# ============== 工具实现 ==============
 
 
 def ingest_document(file_path: str, category: str = "", mode: str = "copy") -> dict:
@@ -3298,14 +3421,19 @@ def ingest_document(file_path: str, category: str = "", mode: str = "copy") -> d
                 "kg_entities": [],
             }
 
-        # 自动检测文件类型：目录 → 照片 → 文档
+        # 目录应使用 ingest 工具处理
         if source.is_dir():
-            return {"status": "error", "message": "ingest_document不支持目录，请使用ingest工具处理目录"}
+            return {
+                "status": "error",
+                "error_code": "IS_DIRECTORY",
+                "message": "请使用 ingest 工具处理目录，ingest_document 仅处理单文件",
+                "kg_entities": [],
+            }
 
         if is_photo(str(source)):
             logger.info("[INGEST] 检测到照片文件，转到照片入库")
             from niu_photo_server import ingest_photo
-            return ingest_photo(str(source), category or None, mode=mode)
+            return ingest_photo(str(source), category or None)
 
         # ---- 文档文件处理 ----
 
@@ -3705,7 +3833,6 @@ async def list_tools() -> list[Tool]:
 参数:
 - file_path: 必填，照片文件绝对路径
 - category: 分类（生活/工作/旅行/证件/其他），默认从 preferences.json 读取
-- mode: copy（复制）| move（移动）| reference（引用），默认 copy
 
 返回:
 - status: success | error
@@ -3726,12 +3853,6 @@ async def list_tools() -> list[Tool]:
                     "category": {
                         "type": "string",
                         "description": "分类（生活/工作/旅行/证件/其他）",
-                    },
-                    "mode": {
-                        "type": "string",
-                        "enum": ["copy", "move", "reference"],
-                        "default": "copy",
-                        "description": "文件操作模式",
                     },
                 },
                 "required": ["file_path"],
@@ -3958,11 +4079,12 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         logger.info(f"[CALL_TOOL] 开始: {name}")
 
         if name == "ingest":
-            # ingest 统一入口，委托给 ingest_document
-            result = ingest_document(
-                file_path=arguments["path"],
+            # 有状态统一入库工具
+            result = ingest(
+                path=arguments["path"],
                 category=arguments.get("category", ""),
                 mode=arguments.get("mode", "copy"),
+                action=arguments.get("action", ""),
             )
         elif name == "ingest_document":
             result = ingest_document(
@@ -3980,7 +4102,6 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             result = ingest_photo(
                 file_path=arguments["file_path"],
                 category=arguments.get("category"),
-                mode=arguments.get("mode", "copy"),
             )
         elif name == "name_person":
             result = name_person(

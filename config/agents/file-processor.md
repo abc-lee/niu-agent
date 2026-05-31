@@ -18,65 +18,43 @@ mcpServers:
 同时，文件内容会被自动分析，提取出关键信息（人物、事件、概念等）存入知识库，
 后续可以通过语义搜索查到这些文件的内容。
 
-## 照片/文档入库（统一工具）
+## 照片处理
 
-用 `photo-server/ingest` 处理所有入库请求（自动判断单张/目录/文档）：
+### 入库
+用 `photo-server/ingest` 处理照片（自动判断单张/目录）：
 ```
 photo-server/ingest, 参数: path="E:/照片/2024旅行", mode="copy"
 ```
+ingest 自动完成：复制文件到知识库目录 → 检测人脸 → 识别人物 → 把人物信息写入知识库。
+你不需要做额外操作。
 
-### mode 参数
-- `copy`：复制文件到知识库（默认）
-- `move`：移动文件到知识库（原文件消失）
-- `reference`：不移动文件，只在知识库中建立引用
+### 目录入库（有状态交互模式）
 
-### 目录入库 — 工具循环（重要）
+当用户拖入目录时，使用有状态三阶段交互：
 
-ingest 处理目录时，会逐个文件处理，每次返回中间结果。你必须**持续调用 ingest 直到收到最终汇总结果**。
+1. **初始化**：`photo-server/ingest, 参数: path="E:/照片", action="start", mode="copy"`
+   - 扫描目录，返回文件概览（几张图片、几个文档、几个跳过）
+   - 自动处理第一个文件，返回 `progress` 或 `need_category`
 
-#### 三种返回状态
+2. **中间态交互**：
+   - **继续**（progress 后）：`photo-server/ingest, 参数: path="E:/照片"`
+   - **回答分类**（need_category 后）：`photo-server/ingest, 参数: path="E:/照片", category="技术文档"`
+     - **分类必须从 available_categories 列表中选择，不要自己编造分类名**
 
-| status | 含义 | 你的下一步 |
-|--------|------|-----------|
-| `progress` | 一个文件处理完成，还有更多文件 | **继续调用 ingest，传入上次返回的 processed 值作为 _offset** |
-| `need_category` | 遇到文档，等你判断分类 | **阅读 preview 内容，从 available_categories 中选择分类，继续调用 ingest 并传入 category 和 _offset** |
-| `success`（含 total） | 所有文件处理完毕 | **向主 Agent 汇报入库完成** |
+3. **中止**：`photo-server/ingest, 参数: path="E:/照片", action="abort"`
 
-#### _offset 参数 — 记住进度
-- `_offset` 值来自上次返回的 `processed` 字段
-- `need_category` 时 `_offset` 不变（文件未处理），直接从返回的 `_offset` 字段取值
-- **不要自己计算 _offset**，只从工具返回值中复制
+**错误处理**：
+- 如果收到 `"会话未初始化"` 错误，先用 `action="start"` 初始化
+- 如果分类不在可选列表中，工具会返回 `need_category` 并提示重新选择
 
-#### 正确示例
-
-```
-工具返回: {"status": "progress", "processed": 1, "total": 5, "next": {"file": "报告.pdf", "type": "document", "needs_category": true}}
-你调用: ingest(path="E:/文档", _offset=1)
-
-工具返回: {"status": "need_category", "current_file": "报告.pdf", "preview": "...", "available_categories": ["技术文档", "工作文档"], "_offset": 1}
-你调用: ingest(path="E:/文档", category="技术文档", _offset=1)
-
-工具返回: {"status": "progress", "processed": 2, "total": 5, ...}
-你调用: ingest(path="E:/文档", _offset=2)
-
-...直到收到 {"status": "success", "total": 5, "photos": 3, "documents": 2}
-你向主Agent汇报: 入库完成，3张照片和2个文档已入库
-```
-
-#### 错误示例（禁止）
-
-```
-✗ 收到 need_category 后回答"我觉得应该放在技术文档里" → 错误：必须再次调用 ingest 工具传入 category
-✗ 收到 progress 后向主Agent汇报"入库完成" → 错误：还没处理完
-✗ 自己编造 category 名"项目资料" → 错误：必须从 available_categories 列表中选择
-```
-
-#### 单文件入库
-直接调用 `ingest`，不需要循环：
-```
-ingest(path="E:/照片/IMG_2024.jpg", mode="copy")
-ingest(path="E:/文档/报告.pdf", category="技术文档", mode="copy")
-```
+**返回状态**：
+| status | 含义 | 下一步 |
+|--------|------|--------|
+| `progress` | 处理了一个文件，还有下一个 | 继续调用（不传参数或传 category） |
+| `need_category` | 当前文档需要分类 | **阅读预览，从 available_categories 选择分类后再次调用** |
+| `success` | 全部处理完毕 | **结束，汇报结果** |
+| `aborted` | 用户中止 | **结束，汇报已处理数量** |
+| `error` | 失败 | 报告错误 |
 
 ### 人物管理
 - `name_person` - 给未命名人物命名
@@ -91,23 +69,26 @@ ingest(path="E:/文档/报告.pdf", category="技术文档", mode="copy")
 
 ## 文档处理
 
-### 入库
+### 入库（两阶段交互）
 
-文档入库需要指定分类目录。调用 `photo-server/ingest_document`：
+文档入库需要你判断分类目录。流程如下：
 
-- **用户已指定分类**：直接带 category 调用
-  ```
-  photo-server/ingest_document, 参数: file_path="xxx.docx", category="报告", mode="copy"
-  ```
-- **用户未指定分类**：不传 category，工具会读取文件内容并返回 `status: "need_category"` + 内容预览 + `available_categories`（可选分类列表）。**你自行阅读内容预览，从 available_categories 中选择最合适的分类，继续调用**（带 category 参数）
-
-工具完成入库后返回 `status: "success"`。
+1. 先调用 `photo-server/ingest_document`，**不传 category 参数**：
+   ```
+   photo-server/ingest_document, 参数: file_path="xxx.docx", mode="copy"
+   ```
+2. 工具会读取文件内容，返回 `status: "need_category"` + 内容预览 + `available_categories`（可选分类列表）
+3. **从 available_categories 中选择最合适的分类**，再次调用并传入 category：
+   ```
+   photo-server/ingest_document, 参数: file_path="xxx.docx", category="报告", mode="copy"
+   ```
+4. 工具完成入库（复制文件到分类目录 + 内容写入知识库），返回 `status: "success"`
 
 **分类必须从工具返回的 available_categories 列表中选择，不要自己编造分类名。**
 
 | status | 含义 | 下一步 |
 |--------|------|--------|
-| `need_category` | 工具已读取文件内容，等你判断分类 | **阅读内容预览，从 available_categories 中选择分类，继续调用** |
+| `need_category` | 工具读了文件内容，等你判断分类 | **阅读内容预览，判断分类后再次调用** |
 | `success` | 文件已复制到知识库目录，内容已写入知识库 | **结束，直接汇报** |
 | `error` | 失败 | 报告错误 |
 
