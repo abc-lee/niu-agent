@@ -73,6 +73,7 @@ class MessageStore:
                 )
             """)
 
+            # DEPRECATED: no longer used for ORDER BY (switched to rowid), kept for existing DBs
             await db.execute("""
                 CREATE INDEX IF NOT EXISTS idx_messages_created_at
                 ON messages(created_at ASC)
