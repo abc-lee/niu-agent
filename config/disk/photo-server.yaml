@@ -5,6 +5,7 @@ description: "照片与文档管理 — 照片入库/人脸识别/人物检索�
 tools:
   - name: ingest
     category: write
+    hidden: true
     short: "有状态统一入库(照片/文档)"
     long: "有状态统一入库(照片/文档) — 目录逐文件交互式入库"
     parameters:
