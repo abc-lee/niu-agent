@@ -3068,6 +3068,19 @@ def rename_file(file_path: Path) -> str:
 # ============== 工具实现 ==============
 
 
+def ingest(path: str, category: str = "", mode: str = "copy") -> dict:
+    """统一入库工具 — 自动判断路径类型和内容类型
+
+    参数:
+    - path: 必填，文件路径或目录路径
+    - mode: copy（复制）| move（移动）| reference（引用），默认 copy
+    - category: 分类目录（文档必填，照片/目录可不传）
+
+    委托给 ingest_document，由其自动检测路径类型（目录/照片/文档）并分派。
+    """
+    return ingest_document(file_path=path, category=category, mode=mode)
+
+
 def ingest_document(file_path: str, category: str = "", mode: str = "copy") -> dict:
     """文档入库工具 — 文件搬运 + 知识图谱入库（格式不支持时跳过KG）
 

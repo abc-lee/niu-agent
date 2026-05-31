@@ -179,6 +179,9 @@ tools:
         flag: file-path
         type: string
         default: custom_kg
+      - name: skip_llm_extraction
+        type: boolean
+        default: true
 
   - name: lightrag_insert_relation
     category: write

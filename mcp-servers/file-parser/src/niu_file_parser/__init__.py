@@ -166,6 +166,58 @@ def parse_text(file_path: str) -> dict[str, Any]:
     }
 
 
+def parse_file(file_path: str) -> dict[str, Any]:
+    """Parse a document file and extract text content.
+
+    Dispatches to the appropriate parser based on file extension.
+    Returns a dict with parsed content plus file_path and file_name fields.
+    """
+    path = Path(file_path)
+
+    if not path.exists():
+        return {"error": f"File not found: {file_path}"}
+
+    suffix = path.suffix.lower()
+
+    if suffix == ".pdf":
+        result = parse_pdf(file_path)
+    elif suffix == ".docx":
+        result = parse_docx(file_path)
+    elif suffix == ".pptx":
+        result = parse_pptx(file_path)
+    elif suffix == ".xlsx":
+        result = parse_xlsx(file_path)
+    elif suffix == ".md":
+        result = parse_markdown(file_path)
+    elif suffix == ".html":
+        result = parse_html(file_path)
+    elif suffix == ".txt":
+        result = parse_text(file_path)
+    else:
+        return {
+            "error": f"Unsupported file format: {suffix}. Use list_supported_formats to see supported formats."
+        }
+
+    result["file_path"] = file_path
+    result["file_name"] = path.name
+    return result
+
+
+def list_supported_formats() -> dict[str, Any]:
+    """List all supported file formats for parsing."""
+    return {
+        "formats": [
+            {"extension": ".pdf", "description": "PDF documents"},
+            {"extension": ".docx", "description": "Microsoft Word documents"},
+            {"extension": ".pptx", "description": "Microsoft PowerPoint presentations"},
+            {"extension": ".xlsx", "description": "Microsoft Excel spreadsheets"},
+            {"extension": ".md", "description": "Markdown files"},
+            {"extension": ".html", "description": "HTML files"},
+            {"extension": ".txt", "description": "Plain text files"},
+        ]
+    }
+
+
 @server.list_tools()
 async def list_tools() -> list[Tool]:
     """List available tools."""

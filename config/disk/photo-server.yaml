@@ -18,11 +18,6 @@ tools:
         default: copy
       - name: category
         type: string
-      - name: l1
-        type: string
-      - name: file_path
-        flag: file-path
-        type: string
 
   - name: name_person
     category: write

@@ -43,6 +43,9 @@ tools:
       - name: memory_type
         flag: type
         type: string
+      - name: level
+        type: string
+        default: l1
 
   - name: update_memory
     category: write

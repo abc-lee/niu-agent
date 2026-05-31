@@ -27,6 +27,8 @@ tools:
       - name: cron_expr
         flag: cron
         type: string
+      - name: name
+        type: string
 
   - name: list_scheduled_tasks
     category: read
