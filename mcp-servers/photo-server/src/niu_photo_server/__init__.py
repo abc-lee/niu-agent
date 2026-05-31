@@ -3143,17 +3143,20 @@ def _build_success_summary(all_files: list[dict], processed: list[dict]) -> dict
     photos = [p for p in processed if p["type"] == "image"]
     documents = [p for p in processed if p["type"] == "document"]
     skipped = [f for f in all_files if f["type"] == "skipped"]
-    
+    errors = [p for p in processed if isinstance(p.get("result"), dict) and p["result"].get("status") == "error"]
+
     return {
         "status": "success",
         "total": len(all_files),
         "photos": len(photos),
         "documents": len(documents),
         "skipped": len(skipped),
+        "errors": len(errors),
         "details": {
             "photos": [{"file": Path(p["file"]).name, "result": p["result"]} for p in photos],
             "documents": [{"file": Path(p["file"]).name, "result": p["result"]} for p in documents],
             "skipped": [{"file": Path(f["path"]).name, "reason": f.get("reason", "")} for f in skipped],
+            "errors": [{"file": Path(p["file"]).name, "message": p["result"].get("message", "")} for p in errors],
         },
     }
 
@@ -3220,12 +3223,19 @@ def _process_next_file(session: dict, category: str = "") -> dict:
         else:
             # 需要分类 — 先读取内容预览
             doc_result = ingest_document(file_path=current["path"], category="", mode=mode)
+
+            # 如果 ingest_document 返回 error（文件无法处理），跳过此文件
+            if doc_result.get("status") == "error":
+                session["processed"].append({"file": current["path"], "type": "document", "result": doc_result})
+                session["offset"] = next_idx + 1
+                return _process_next_file(session, category)
+
             preview = ""
             try:
                 preview = read_file_content(current["path"])[:20000]
             except Exception:
                 preview = doc_result.get("message", "")[:20000]
-            
+
             available_categories = doc_result.get("available_categories", ["其他"])
             
             return {
@@ -3433,7 +3443,7 @@ def ingest_document(file_path: str, category: str = "", mode: str = "copy") -> d
         if is_photo(str(source)):
             logger.info("[INGEST] 检测到照片文件，转到照片入库")
             from niu_photo_server import ingest_photo
-            return ingest_photo(str(source), category or None)
+            return ingest_photo(str(source), category=category or None, mode=mode)
 
         # ---- 文档文件处理 ----
 
@@ -3854,6 +3864,12 @@ async def list_tools() -> list[Tool]:
                         "type": "string",
                         "description": "分类（生活/工作/旅行/证件/其他）",
                     },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["copy", "move", "reference"],
+                        "default": "copy",
+                        "description": "文件操作模式",
+                    },
                 },
                 "required": ["file_path"],
             },
@@ -4102,6 +4118,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             result = ingest_photo(
                 file_path=arguments["file_path"],
                 category=arguments.get("category"),
+                mode=arguments.get("mode", "copy"),
             )
         elif name == "name_person":
             result = name_person(
