@@ -1162,10 +1162,12 @@ class NiuHandler(BaseHandler):
                 except Exception:
                     pass  # callback 失败不影响主流程
 
-                # 判断任务是否完成：
-                # - 成功后让LLM向用户汇报结果
-                if isinstance(result, dict) and result.get("status") not in ("error", None):
-                    # Set memory dirty flag for user memory tools
+                # Determine success: dict with status != error, or any non-dict result (str/list)
+                is_success = (
+                    isinstance(result, dict) and result.get("status") not in ("error", None)
+                ) or not isinstance(result, dict)
+                if is_success:
+                    # Set memory dirty flag for user memory tools on success
                     if tool_name in ("memory-server/user_memory_remember", "memory-server/user_memory_forget"):
                         try:
                             from agent.runner import get_runner
@@ -1175,7 +1177,7 @@ class NiuHandler(BaseHandler):
                         except Exception as e:
                             logger.debug(f"Memory dirty flag set failed: {e}")
                     # status 为 ok/success 表示任务完成，提示汇报；其他非 error 状态（need_category 等）让 LLM 自行判断
-                    if result.get("status") in ("ok", "success"):
+                    if isinstance(result, dict) and result.get("status") in ("ok", "success"):
                         result_summary = json.dumps(result, ensure_ascii=False)[:500]
                         return StepOutcome(result, next_prompt=f"工具调用成功。请向用户简洁汇报结果：{result_summary}")
                     else:
@@ -1216,9 +1218,13 @@ class NiuHandler(BaseHandler):
                 except Exception:
                     pass
 
-                if isinstance(result, dict) and result.get("status") not in ("error", None):
+                # Determine success: dict with status != error, or any non-dict result (str/list)
+                is_success = (
+                    isinstance(result, dict) and result.get("status") not in ("error", None)
+                ) or not isinstance(result, dict)
+                if is_success:
                     # status 为 ok/success 表示任务完成，提示汇报；其他非 error 状态（need_category 等）让 LLM 自行判断
-                    if result.get("status") in ("ok", "success"):
+                    if isinstance(result, dict) and result.get("status") in ("ok", "success"):
                         result_summary = json.dumps(result, ensure_ascii=False)[:500]
                         return StepOutcome(result, next_prompt=f"工具调用成功。请向用户简洁汇报结果：{result_summary}")
                     else:
