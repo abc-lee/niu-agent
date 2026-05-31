@@ -1,67 +1,141 @@
-# 文档/照片入库功能恢复设计
+# 入库功能恢复 + MCP Sampling 改造设计
 
 ## 设计原则
 
 **程序尽可能自己处理，处理不了才问Agent。**
 
-用户拖入路径后，程序负责所有自动判断和处理。只在"文档需要分类且用户未指定"这一个场景下，才返回问Agent。照片部分永远不需要问Agent，程序自己全部处理完。
+用户拖入路径后，程序负责所有自动判断和处理。只在"文档需要分类且用户未指定"时，通过 `ask_agent` callback 请求 Agent 判断。照片部分永远不需要问Agent。
 
-## 完整流程
+## 架构改造：ToolRegistry 注入 ask_agent callback
+
+### 问题
+
+当前同进程 ToolRegistry 架构下，photo-server 无法在工具调用过程中向 Agent 请求 LLM 推理。MCP Sampling 需要 session，但同进程模式没有 session。
+
+### 方案：在 ToolRegistry 中注入 ask_agent callback
+
+photo-server 已经通过 `get_registry()` 调用 lightrag-server 的工具。用同样的路径注入一个 `ask_agent` callback，让 photo-server 需要分类判断时直接调用。
 
 ```
-用户拖入 path
-    │
-    ▼
-程序判断 path 类型
-    │
-    ├── 不存在 → 返回 error
-    ├── 文件 → 判断照片/文档
-    ├── 目录 → 扫描内容，判断纯照片/纯文档/混合/空
-    │
-    ▼
-照片部分（永远不需要问Agent）
-    │
-    ├── 逐张走完整流程：EXIF → 人脸检测 → 人物匹配 → DB写入 → KG同步
-    ├── mode 参数：copy/move/reference
-    └── 全部处理完，收集结果
-
-文档部分
-    │
-    ├── Agent 已指定 category → 逐个直接入库（拷贝+KG），不问
-    ├── Agent 未指定 category → 逐个处理：
-    │   ├── 读取内容（≤20K），返回 need_category + 预览 + available_categories
-    │   │   → Agent 选择分类后再次调用 → 继续处理剩余文件
-    │   ├── 文件不支持 KG → 仍然拷贝到知识库目录，标记 lightrag=unsupported
-    │   └── 全部处理完，收集结果
-    │
-    ▼
-返回完整结果（照片结果 + 文档结果）
+┌─────────────┐     注册时注入      ┌─────────────┐
+│   runner.py  │ ─────────────────→ │ ToolRegistry │
+│              │   set_ask_agent()  │              │
+└─────────────┘                     │  _ask_agent  │ ← photo-server 调用
+                                    └─────────────┘
 ```
 
-## 当前问题
+### 改动1：ToolRegistry 新增 ask_agent
 
-| 功能 | 原始设计 | 当前实现 | 问题 |
-|------|----------|----------|------|
-| 路径类型自动判断 | classify_path() 扫描 | 无 | 目录入库直接报错 |
-| 照片 mode 参数 | copy/move/reference | 硬编码 copy | move/reference 失效 |
-| 批量照片完整处理 | 逐张 ingest_photo() | ingest_photos_batch() 只做 copy | 无人脸/EXIF/KG/DB |
-| 纯文档目录入库 | 逐个调 ingest_document() | 返回 DIRECTORY_NO_PHOTOS | 完全无法入库 |
-| 混合目录入库 | 照片/文档分别处理 | 只处理照片部分 | 文档被忽略 |
-| move 模式错误回滚 | shutil.move 回原位 | os.remove 删文件 | 数据丢失 |
+`agent/tool_registry.py`：
 
-## 工具交互机制
+```python
+class ToolRegistry:
+    def __init__(self):
+        ...
+        self._ask_agent = None  # callable(prompt: str, system_prompt: str = "", max_tokens: int = 500) -> str
 
-MCP 工具是请求-响应模式，每次调用独立无状态。子Agent 通过 LLM 循环协调多次工具调用：
+    def set_ask_agent(self, fn):
+        """注入 Agent LLM 回调函数，供 MCP Server 调用"""
+        self._ask_agent = fn
 
-- **照片目录**：一次调用，程序内部循环逐张处理，返回完整结果。子Agent不需要多次调用。
-- **文档目录（有 category）**：一次调用，程序内部循环逐个入库，返回完整结果。
-- **文档目录（无 category）**：第一次调用，程序逐个处理，碰到第一个需要分类的文件返回 need_category → 子Agent选择分类 → 第二次调用带 category，程序继续处理（已入库的通过 hash 跳过）→ 如还有未分类的，再次返回 need_category → 循环直到全部完成。
+    def ask_agent(self, prompt: str, system_prompt: str = "", max_tokens: int = 500) -> str | None:
+        """请求 Agent LLM 生成回答。返回文本或 None（如果不可用）"""
+        if self._ask_agent is None:
+            return None
+        return self._ask_agent(prompt=prompt, system_prompt=system_prompt, max_tokens=max_tokens)
+```
 
-## 改动
+### 改动2：runner.py 注入 ask_agent 实现
 
-### 改动1：新增路径分类
+`agent/runner.py` 在初始化 ToolRegistry 后注入：
 
-从 `ingest_unified.py:28-72` 移植逻辑。
+```python
+def _make_ask_agent_callback(self):
+    """创建 ask_agent 回调，调用当前 Agent 的 LLM"""
+    def ask_agent(prompt: str, system_prompt: str = "", max_tokens: int = 500) -> str | None:
+        try:
+            from litellm import completion
+            config = load_llm_config()
+            messages = []
+            if system_prompt:
+                messages.append({"role": "system", "content": system_prompt})
+            messages.append({"role": "user", "content": prompt})
+            response = completion(
+                model=config["model"],
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=0.2,
+                api_key=config.get("api_key"),
+                api_base=config.get("api_base"),
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            logger.error(f"ask_agent failed: {e}")
+            return None
+    return ask_agent
+
+# 在 __init__ 或初始化阶段
+registry = get_registry()
+registry.set_ask_agent(self._make_ask_agent_callback())
+```
+
+### 改动3：photo-server 使用 ask_agent
+
+`mcp-servers/photo-server/src/niu_photo_server/__init__.py`：
+
+文档入库需要分类时：
+```python
+def _ask_agent_for_category(self, preview: str, available_categories: list[str]) -> str | None:
+    """请求 Agent 判断文档分类"""
+    from agent.tool_registry import get_registry
+    registry = get_registry()
+    prompt = f"""请根据以下文档内容，从可选分类中选择最合适的一个分类。
+
+文档内容预览：
+{preview}
+
+可选分类：{', '.join(available_categories)}
+
+只回答分类名称，不要解释。"""
+    result = registry.ask_agent(prompt=prompt, system_prompt="你是一个文档分类助手。", max_tokens=100)
+    if result and result.strip() in available_categories:
+        return result.strip()
+    return None
+```
+
+这样 photo-server 在入库过程中可以：
+1. 读取文件内容（≤20K）
+2. 调用 `ask_agent` 让 Agent 判断分类
+3. Agent 返回分类后继续入库
+4. 全部在一个工具调用内完成
+
+**如果 ask_agent 不可用**（返回 None），回退到现有的 `need_category` 模式——返回内容预览让子Agent多次调用。
+
+## 完整入库流程
+
+```
+ingest(path, mode, category)
+    │
+    ├── classify_path(path)
+    │   ├── FILE + PHOTO     → ingest_photo()
+    │   ├── FILE + DOCUMENT → ingest_document()
+    │   ├── DIR + PHOTO     → ingest_photo_directory()  ← 程序内部循环，一次返回
+    │   ├── DIR + DOCUMENT  → ingest_document_directory()
+    │   ├── DIR + MIXED     → ingest_mixed_directory()
+    │   └── EMPTY            → error
+    │
+    ├── 照片部分（永远不问Agent）
+    │   └── 逐张 ingest_photo()：EXIF → 人脸 → DB → KG
+    │
+    └── 文档部分
+        ├── category 已指定 → 逐个直接入库，不问
+        ├── category 未指定 + ask_agent 可用 → 程序内部逐个调 ask_agent 判断分类，一次返回全部结果
+        └── category 未指定 + ask_agent 不可用 → 回退 need_category 模式（多轮工具调用）
+```
+
+## 入库功能恢复改动
+
+### 改动4：新增 classify_path()
 
 ```python
 class ContentType(Enum):
@@ -71,7 +145,6 @@ class ContentType(Enum):
     EMPTY = "empty"
 
 def classify_path(path: str) -> ContentType:
-    """判断路径内容类型。文件直接看扩展名，目录扫描子文件统计。"""
     source = Path(path)
     if not source.exists():
         return ContentType.EMPTY
@@ -88,14 +161,14 @@ def classify_path(path: str) -> ContentType:
     return ContentType.EMPTY
 ```
 
-### 改动2：ingest_photo() 加 mode 参数 + 修复回滚
+### 改动5：ingest_photo() 加 mode + 修复回滚
 
 **签名变更**：
 ```python
 def ingest_photo(file_path: str, mode: str = "copy", category: str | None = None) -> dict:
 ```
 
-**文件操作三分支**（参照 `ingest_unified.py:175-180`）：
+**文件操作三分支**：
 ```python
 if mode == "copy":
     shutil.copy2(str(source), final_path)
@@ -105,7 +178,7 @@ elif mode == "reference":
     final_path = str(source)
 ```
 
-**错误回滚修复**（参照 `ingest_unified.py:216-231`）：
+**错误回滚修复**：
 ```python
 except Exception as e:
     if final_path is not None:
@@ -119,9 +192,9 @@ except Exception as e:
             pass
 ```
 
-### 改动3：批量照片改为逐张完整处理
+### 改动6：批量照片改为逐张完整处理
 
-新增 `ingest_photo_directory()`，程序内部循环逐张调用 `ingest_photo()`。一次调用返回完整结果，不需要子Agent多次调用。
+新增 `ingest_photo_directory()`，程序内部循环逐张调用 `ingest_photo()`：
 
 ```python
 def ingest_photo_directory(source_path: str, mode: str = "copy", category: str | None = None) -> dict:
@@ -148,18 +221,13 @@ def ingest_photo_directory(source_path: str, mode: str = "copy", category: str |
     }
 ```
 
-同步更新 `ingest_photos()` 签名加 `mode`，路由到 `ingest_photo` 或 `ingest_photo_directory`。
+### 改动7：新增文档目录入库
 
-### 改动4：新增文档目录入库
-
-程序内部循环逐个调用 `ingest_document()`。
-
-- **有 category**：所有文件直接入库，一次返回完整结果。
-- **无 category**：逐个处理，第一个需要分类的文件返回 need_category。子Agent选择分类后带 category 重新调用。已入库的文件通过 hash 检测自动跳过。
+程序内部循环逐个调用 `ingest_document()`，需要分类时用 `ask_agent`：
 
 ```python
 def ingest_document_directory(source_path: str, mode: str = "copy", category: str | None = None) -> dict:
-    """文档目录入库：程序逐个处理，需要分类时返回问Agent。"""
+    """文档目录入库：程序逐个处理，需要分类时用 ask_agent 或回退 need_category。"""
     source = Path(source_path)
     doc_files = sorted([f for f in source.rglob("*")
                        if f.is_file() and f.suffix.lower() in DOCUMENT_EXTENSIONS
@@ -167,68 +235,61 @@ def ingest_document_directory(source_path: str, mode: str = "copy", category: st
 
     results = []
     errors = []
+    unsupported = []
 
     for df in doc_files:
-        result = ingest_document(str(df), mode=mode, category=category or "")
+        file_category = category
+        # 未指定分类时，尝试用 ask_agent 自动判断
+        if not file_category:
+            result_needs_cat = ingest_document(str(df), mode=mode, category="")
+            if result_needs_cat.get("status") == "need_category":
+                agent_category = _ask_agent_for_category(
+                    result_needs_cat.get("message", ""),
+                    result_needs_cat.get("available_categories", [])
+                )
+                if agent_category:
+                    file_category = agent_category
+                else:
+                    # ask_agent 不可用，记录待分类文件
+                    unsupported.append(result_needs_cat)
+                    continue
 
-        if result.get("status") == "success" or result.get("status") == "skipped":
+        result = ingest_document(str(df), mode=mode, category=file_category or "")
+        if result.get("status") == "success":
             results.append(result)
         elif result.get("status") == "need_category":
-            # 程序处理不了，返回给Agent选择分类
-            return {
-                "status": "need_category",
-                "total": len(doc_files),
-                "succeeded": len(results),
-                "pending": len(doc_files) - len(results) - 1,
-                "current_file": result,
-                "message": f"已入库 {len(results)} 个文档，还有 {len(doc_files) - len(results) - 1} 个待处理。请为当前文档选择分类。",
-            }
+            unsupported.append(result)
         else:
             errors.append({"file": str(df), "error": result.get("message", "unknown")})
 
+    status = "success" if not unsupported else "partial"
     return {
-        "status": "success",
+        "status": status,
         "total": len(doc_files),
         "succeeded": len(results),
         "failed": len(errors),
+        "need_category": unsupported,
         "errors": errors[:10],
         "documents": results,
     }
 ```
 
-### 改动5：新增混合目录入库
-
-照片部分程序自己全部处理完，文档部分按改动4的逻辑处理。
+### 改动8：新增混合目录入库
 
 ```python
 def ingest_mixed_directory(source_path: str, mode: str = "copy", category: str | None = None) -> dict:
     """混合目录入库：照片程序处理完，文档按需问Agent。"""
-    # 照片部分：程序内部全部处理完，不需要问Agent
     photo_result = ingest_photo_directory(source_path, mode=mode, category=category)
-
-    # 文档部分：有category则一次处理完，没有则按需问Agent
     doc_result = ingest_document_directory(source_path, mode=mode, category=category)
 
-    # 如果文档部分返回 need_category，整体也返回 need_category
-    if doc_result.get("status") == "need_category":
-        return {
-            "status": "need_category",
-            "photos": photo_result,
-            "current_file": doc_result["current_file"],
-            "total_docs": doc_result["total"],
-            "succeeded_docs": doc_result["succeeded"],
-            "pending_docs": doc_result["pending"],
-            "message": f"照片已全部入库({photo_result['succeeded']}张)。文档还需要分类：{doc_result['message']}",
-        }
-
     return {
-        "status": "success",
+        "status": doc_result.get("status", "success"),
         "photos": photo_result,
         "documents": doc_result,
     }
 ```
 
-### 改动6：重写 ingest 工具路由
+### 改动9：重写 ingest 工具路由
 
 `call_tool` 中 `name == "ingest"` 分支：
 
@@ -250,28 +311,20 @@ if name == "ingest":
         else:
             return ingest_document(path, mode=mode, category=category)
 
-    # DIRECTORY
     if content_type == ContentType.PHOTO:
         return ingest_photo_directory(path, mode=mode, category=category)
     elif content_type == ContentType.DOCUMENT:
         return ingest_document_directory(path, mode=mode, category=category)
-    else:  # MIXED
+    else:
         return ingest_mixed_directory(path, mode=mode, category=category)
 ```
 
-### 改动7：更新 TOOL_SCHEMAS 和 MCP Tool schemas
+### 改动10：更新 TOOL_SCHEMAS 和 file-processor.md
 
-- `ingest` schema description 更新：明确说明程序自动判断内容类型，照片自动处理，文档需要分类
-- `ingest_photo` schema 加 `mode` 参数 (enum: copy/move/reference, default: copy)
-- `ingest_photos` schema 加 `mode` 参数
-
-### 改动8：更新 file-processor 子Agent 提示词
-
-`config/agents/file-processor.md`：
-- 照片入库：现在也支持 mode 参数
-- 目录入库：程序自动识别内容类型，照片自动处理完
-- 文档分类：need_category 交互流程保持不变
-- 混合目录：照片自动处理，文档按需问分类
+- `ingest` schema description 更新
+- `ingest_photo` schema 加 mode 参数
+- `ingest_photos` schema 加 mode 参数
+- `file-processor.md` 更新交互流程说明
 
 ## 不改动
 
@@ -280,14 +333,25 @@ if name == "ingest":
 - 底层辅助函数：全部保持不变
 - 数据库表结构：无变化
 - 分类目录来源：仍从 `preferences.json` 读取
-- L1 回传模式：暂不恢复
 
 ## 文件清单
 
 | 文件 | 改动 |
 |------|------|
-| `mcp-servers/photo-server/src/niu_photo_server/__init__.py` | classify_path + 目录入库函数 + ingest 路由重写 + ingest_photo 加 mode |
+| `agent/tool_registry.py` | 新增 ask_agent 属性和 getter/setter（~15行） |
+| `agent/runner.py` | 注入 ask_agent callback（~25行） |
+| `mcp-servers/photo-server/src/niu_photo_server/__init__.py` | classify_path + 目录入库函数 + ask_agent 分类 + ingest 路由重写 + ingest_photo 加 mode |
 | `config/agents/file-processor.md` | 提示词更新 |
+
+## 实施顺序
+
+1. **P0: ToolRegistry ask_agent 注入** — 改动最小，独立可测
+2. **P1: photo-server classify_path + ingest 路由重写** — 目录入库通路
+3. **P1: ingest_photo 加 mode + 回滚修复** — 照片 move/reference 恢复
+4. **P2: ingest_photo_directory** — 批量照片完整处理
+5. **P2: ingest_document_directory + ask_agent 分类** — 文档目录入库
+6. **P3: ingest_mixed_directory** — 混合目录
+7. **P3: Schema + 提示词更新**
 
 ## 测试计划
 
@@ -310,3 +374,4 @@ if name == "ingest":
 - move 模式下源文件已删除
 - reference 模式下不复制文件
 - move 模式错误时文件正确回滚
+- ask_agent 分类判断准确
