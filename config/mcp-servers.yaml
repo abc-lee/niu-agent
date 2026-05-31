@@ -122,16 +122,6 @@ photo-server:
       visibility: hidden
     ingest_document:
       visibility: hidden
-    ingest_documents:
-      visibility: hidden
-    ingest_photo:
-      visibility: hidden
-    ingest_photos:
-      visibility: hidden
-    store_document_l1:
-      visibility: hidden
-    store_documents_l1:
-      visibility: hidden
     unload_face_model:
       visibility: hidden
 memory-server:

@@ -1,10 +1,20 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-统一入库工具 — 替代 ingest_photo / ingest_photos / ingest_document / ingest_documents
+统一入库工具 — 已废弃 (DEPRECATED)
 
-自动判断路径类型（文件/目录）和内容类型（照片/文档/混合），
-与子 Agent 形成 L1 生成循环。
+⚠️ 此脚本已废弃，功能已迁移到 photo-server 的 ingest_document 工具。
+
+废弃原因：
+- store_document_l1() 和 sync_to_kg() 已从 photo-server 删除
+- 新的 ingest_document() 已内置 LightRAG 入库，无需手动调用 L1 存储
+- 此脚本的代码与 photo-server 重复，维护成本高
+
+替代方案：
+- 直接调用 photo-server 的 ingest_document 工具
+- 或通过 ToolRegistry 调用: registry.get("photo-server/ingest_document")
+
+保留此文件仅供参考，请勿在生产环境使用。
 """
 
 import json
@@ -15,6 +25,12 @@ import uuid
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
+
+# 废弃警告：运行时提醒
+print("=" * 60, file=sys.stderr)
+print("⚠️  DEPRECATED: scripts/ingest_unified.py 已废弃", file=sys.stderr)
+print("请使用 photo-server 的 ingest_document 工具替代", file=sys.stderr)
+print("=" * 60, file=sys.stderr)
 
 PHOTO_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".heic", ".heif"}
 
@@ -280,24 +296,17 @@ def _ingest_single_document(path: str, category: str = "其他", mode: str = "co
         final_path = str(source)
         action = "referenced"
 
-    # 如果有 L1，存储到向量库
+    # 如果有 L1，直接调用 photo-server 的 ingest_document 完成入库
+    # （ingest_document 已内置 LightRAG 入库，无需手动调用 store_document_l1 / sync_to_kg）
     if l1:
-        l1_error = None
         try:
-            ps.store_document_l1(str(final_path), l1)
+            result = ps.ingest_document(str(final_path), category=category, mode=mode)
+            if result.get("status") == "error":
+                return result
+            return {"status": "success", "action": action, "file_path": str(final_path), "category": category}
         except Exception as e:
-            print(f"[ingest] L1 存储失败: {e}", file=sys.stderr)
-            l1_error = str(e)
-
-        # KG 同步（即使 L1 失败也尝试同步）
-        try:
-            ps.sync_to_kg(str(final_path), l1, source="document")
-        except Exception as e:
-            print(f"[ingest] KG 同步失败: {e}", file=sys.stderr)
-
-        if l1_error:
-            return {"status": "error", "error_code": "L1_STORE_FAILED", "message": f"L1 存储失败: {l1_error}", "file_path": str(final_path)}
-        return {"status": "success", "action": action, "file_path": str(final_path), "category": category}
+            print(f"[ingest] 文档入库失败: {e}", file=sys.stderr)
+            return {"status": "error", "error_code": "INGEST_FAILED", "message": str(e), "file_path": str(final_path)}
 
     # 没有 L1，返回 need_l1
     file_content = None
@@ -335,17 +344,16 @@ def ingest(
         l1: L1 摘要（文档入库第二轮调用时传入）
         file_path: 文档存储路径（L1 回传时使用）
     """
-    # L1 回传模式
+    # L1 回传模式：直接调用 photo-server 的 ingest_document 完成入库
+    # （ingest_document 已内置 LightRAG 入库，无需手动调用 store_document_l1 / sync_to_kg）
     if l1 and file_path:
         ps = _get_photo_server()
         try:
-            ps.store_document_l1(file_path, l1)
+            result = ps.ingest_document(file_path, category="", mode=mode)
+            if result.get("status") == "error":
+                return result
         except Exception as e:
-            return {"status": "error", "message": f"L1 存储失败: {e}"}
-        try:
-            ps.sync_to_kg(file_path, l1, source="document")
-        except Exception as e:
-            print(f"[ingest] KG 同步失败: {e}", file=sys.stderr)
+            return {"status": "error", "message": f"文档入库失败: {e}"}
         return {"status": "success", "file_path": file_path}
 
     # 防止空路径
