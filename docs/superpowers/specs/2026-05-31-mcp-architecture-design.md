@@ -444,13 +444,14 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
 
 ## 实施顺序
 
-1. **P0: 实现 MCP ClientManager** — stdio + HTTP 连接 + Sampling callback
-2. **P1: ToolRegistry 双轨注册** — 内部函数 + 外部 Client 包装器，保留完整 visibility 机制
-3. **P1: 配置文件扩展** — 支持 stdio/http 模式声明 + visibility 配置
-4. **P2: handler.py 适配** — 内部同步/外部异步区分
-5. **P2: ToolRegistry.ask_agent()** — 内部服务器 Sampling 等价接口
-6. **P3: photo-server 使用 ask_agent** — 文档分类自动化
-7. **P3: 入库功能恢复** — classify_path + 目录入库 + mode 参数
+1. **P0: 清理废弃代码** — 删除 `get_dynamic_tools()`、`get_visibility()` 方法，visibility 默认值改为 `hidden`
+2. **P0: 实现 MCP ClientManager** — stdio + HTTP 连接 + Sampling callback
+3. **P1: ToolRegistry 双轨注册** — 内部函数 + 外部 Client 包装器，保留完整 visibility 机制
+4. **P1: 配置文件扩展** — 支持 stdio/http 模式声明 + visibility 配置
+5. **P2: handler.py 适配** — 内部同步/外部异步区分
+6. **P2: ToolRegistry.ask_agent()** — 内部服务器 Sampling 等价接口
+7. **P3: photo-server 使用 ask_agent** — 文档分类自动化
+8. **P3: 入库功能恢复** — classify_path + 目录入库 + mode 参数
 
 ## 测试标准
 
@@ -478,3 +479,16 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
 - 重启应用后外部工具自动可用
 - 无需修改任何 Python 代码
 - 外部工具的 visibility 通过配置文件控制
+
+## 废弃代码清理（P0）
+
+`dynamic` visibility 已废弃（引入虚拟磁盘后不再需要），以下代码需要清理：
+
+| 文件 | 清理内容 | 原因 |
+|------|---------|------|
+| `agent/tool_registry.py` | 删除 `get_dynamic_tools()` 方法（第 269-275 行） | 无调用者 |
+| `agent/tool_registry.py` | 删除 `get_visibility()` 方法（第 246-259 行） | 无调用者 |
+| `agent/tool_registry.py` | visibility 默认值从 `"dynamic"` 改为 `"hidden"` | 与实际配置一致 |
+| `agent/tool_registry.py` | 更新注释，移除 `"dynamic"` 描述 | 只有 static/hidden 两种 |
+| `scripts/init_vector_db.py` | 更新 dynamic 过滤逻辑的注释 | 当前无 dynamic 工具，函数无效果 |
+| `tests/test_disk_integration.py` | 检查断言是否与配置矛盾 | brain-region-server 有 3 个 static 工具 |
