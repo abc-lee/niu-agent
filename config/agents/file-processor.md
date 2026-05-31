@@ -18,15 +18,65 @@ mcpServers:
 同时，文件内容会被自动分析，提取出关键信息（人物、事件、概念等）存入知识库，
 后续可以通过语义搜索查到这些文件的内容。
 
-## 照片处理
+## 照片/文档入库（统一工具）
 
-### 入库
-用 `photo-server/ingest` 处理照片（自动判断单张/目录）：
+用 `photo-server/ingest` 处理所有入库请求（自动判断单张/目录/文档）：
 ```
 photo-server/ingest, 参数: path="E:/照片/2024旅行", mode="copy"
 ```
-ingest 自动完成：复制文件到知识库目录 → 检测人脸 → 识别人物 → 把人物信息写入知识库。
-你不需要做额外操作。
+
+### mode 参数
+- `copy`：复制文件到知识库（默认）
+- `move`：移动文件到知识库（原文件消失）
+- `reference`：不移动文件，只在知识库中建立引用
+
+### 目录入库 — 工具循环（重要）
+
+ingest 处理目录时，会逐个文件处理，每次返回中间结果。你必须**持续调用 ingest 直到收到最终汇总结果**。
+
+#### 三种返回状态
+
+| status | 含义 | 你的下一步 |
+|--------|------|-----------|
+| `progress` | 一个文件处理完成，还有更多文件 | **继续调用 ingest，传入上次返回的 processed 值作为 _offset** |
+| `need_category` | 遇到文档，等你判断分类 | **阅读 preview 内容，从 available_categories 中选择分类，继续调用 ingest 并传入 category 和 _offset** |
+| `success`（含 total） | 所有文件处理完毕 | **向主 Agent 汇报入库完成** |
+
+#### _offset 参数 — 记住进度
+- `_offset` 值来自上次返回的 `processed` 字段
+- `need_category` 时 `_offset` 不变（文件未处理），直接从返回的 `_offset` 字段取值
+- **不要自己计算 _offset**，只从工具返回值中复制
+
+#### 正确示例
+
+```
+工具返回: {"status": "progress", "processed": 1, "total": 5, "next": {"file": "报告.pdf", "type": "document", "needs_category": true}}
+你调用: ingest(path="E:/文档", _offset=1)
+
+工具返回: {"status": "need_category", "current_file": "报告.pdf", "preview": "...", "available_categories": ["技术文档", "工作文档"], "_offset": 1}
+你调用: ingest(path="E:/文档", category="技术文档", _offset=1)
+
+工具返回: {"status": "progress", "processed": 2, "total": 5, ...}
+你调用: ingest(path="E:/文档", _offset=2)
+
+...直到收到 {"status": "success", "total": 5, "photos": 3, "documents": 2}
+你向主Agent汇报: 入库完成，3张照片和2个文档已入库
+```
+
+#### 错误示例（禁止）
+
+```
+✗ 收到 need_category 后回答"我觉得应该放在技术文档里" → 错误：必须再次调用 ingest 工具传入 category
+✗ 收到 progress 后向主Agent汇报"入库完成" → 错误：还没处理完
+✗ 自己编造 category 名"项目资料" → 错误：必须从 available_categories 列表中选择
+```
+
+#### 单文件入库
+直接调用 `ingest`，不需要循环：
+```
+ingest(path="E:/照片/IMG_2024.jpg", mode="copy")
+ingest(path="E:/文档/报告.pdf", category="技术文档", mode="copy")
+```
 
 ### 人物管理
 - `name_person` - 给未命名人物命名
