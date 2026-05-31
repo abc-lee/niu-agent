@@ -47,6 +47,12 @@ class ToolRegistry:
         # Agent LLM 回调函数，供内部 MCP Server 调用
         self._ask_agent = None  # callable(prompt: str, system_prompt: str = "", max_tokens: int = 500) -> str
 
+        # 外部 MCP 工具映射: full_name -> (server_name, tool_name)
+        self._external_tools: Dict[str, tuple[str, str]] = {}
+
+        # MCPClientManager 实例，供外部工具调用
+        self._mcp_client = None
+
     def register(
         self,
         name: str,
@@ -194,8 +200,7 @@ class ToolRegistry:
             return False
 
     def get(self, tool_name: str) -> Optional[Callable]:
-        """
-        获取工具函数
+        """获取工具函数——内部返回函数引用，外部返回 Client 调用包装器
 
         Args:
             tool_name: 完整工具名（如 "server-name/tool-name"）
@@ -203,7 +208,18 @@ class ToolRegistry:
         Returns:
             工具函数，如果不存在则返回None
         """
-        return self._tools.get(tool_name)
+        if tool_name in self._tools:
+            return self._tools[tool_name]
+        if tool_name in self._external_tools:
+            server_name, tool_name_raw = self._external_tools[tool_name]
+            if self._mcp_client is None:
+                return None
+
+            def wrapper(**kwargs):
+                return self._mcp_client.call_tool_sync(server_name, tool_name_raw, kwargs)
+
+            return wrapper
+        return None
 
     def get_schemas(self) -> List[Dict[str, Any]]:
         """
@@ -226,17 +242,15 @@ class ToolRegistry:
         return dict(self._schemas)
 
     def list_tools(self) -> List[str]:
-        """
-        列出所有已注册的工具名称
+        """列出所有已注册的工具名称（内部 + 外部）
 
         Returns:
             工具名称列表
         """
-        return list(self._tools.keys())
+        return list(self._tools.keys()) + list(self._external_tools.keys())
 
     def has_tool(self, tool_name: str) -> bool:
-        """
-        检查工具是否已注册
+        """检查工具是否已注册（内部或外部）
 
         Args:
             tool_name: 完整工具名
@@ -244,7 +258,7 @@ class ToolRegistry:
         Returns:
             True if tool is registered
         """
-        return tool_name in self._tools
+        return tool_name in self._tools or tool_name in self._external_tools
 
     def get_static_tools(self) -> List[str]:
         """
@@ -257,6 +271,10 @@ class ToolRegistry:
     def set_ask_agent(self, fn):
         """注入 Agent LLM 回调函数，供内部 MCP Server 调用"""
         self._ask_agent = fn
+
+    def set_mcp_client(self, client):
+        """注入 MCPClientManager 实例，供外部工具调用"""
+        self._mcp_client = client
 
     def ask_agent(self, prompt: str, system_prompt: str = "", max_tokens: int = 500) -> str | None:
         """请求 Agent LLM 生成回答。返回文本或 None（如果不可用）"""
@@ -280,6 +298,8 @@ class ToolRegistry:
         self._tools.clear()
         self._schemas.clear()
         self._server_tools.clear()
+        self._external_tools.clear()
+        self._mcp_client = None
         logger.info("ToolRegistry cleared")
 
 

@@ -1,4 +1,5 @@
 import pytest
+from unittest.mock import MagicMock
 from agent.tool_registry import ToolRegistry, get_registry
 
 
@@ -105,3 +106,122 @@ class TestAskAgent:
         self.registry.set_ask_agent(lambda prompt: "second")
         result = self.registry.ask_agent(prompt="test")
         assert result == "second"
+
+
+class TestExternalToolRegistration:
+    """验证外部 MCP 工具注册和调用"""
+
+    def setup_method(self):
+        self.registry = ToolRegistry()
+        self.registry._tools = {}
+        self.registry._schemas = {}
+        self.registry._server_tools = {}
+        self.registry._external_tools = {}
+
+    def test_register_external_server_creates_schemas(self):
+        """注册外部服务器时创建工具 schema"""
+        self.registry._external_tools["ext-srv/read_file"] = ("ext-srv", "read_file")
+        self.registry._schemas["ext-srv/read_file"] = {
+            "name": "ext-srv/read_file",
+            "description": "Read a file",
+            "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}},
+            "visibility": "static",
+        }
+        self.registry._server_tools.setdefault("ext-srv", []).append("ext-srv/read_file")
+
+        assert "ext-srv/read_file" in self.registry._schemas
+        assert self.registry._schemas["ext-srv/read_file"]["visibility"] == "static"
+
+    def test_get_external_tool_returns_wrapper(self):
+        """get() 对外部工具返回同步包装器"""
+        self.registry._external_tools["ext-srv/read_file"] = ("ext-srv", "read_file")
+        mock_client = MagicMock()
+        mock_client.call_tool_sync.return_value = {"content": [{"type": "text", "text": "file content"}]}
+        self.registry._mcp_client = mock_client
+
+        func = self.registry.get("ext-srv/read_file")
+        assert func is not None
+        assert callable(func)
+
+    def test_get_external_tool_wrapper_calls_mcp_client(self):
+        """外部工具包装器调用 MCP Client"""
+        self.registry._external_tools["ext-srv/read_file"] = ("ext-srv", "read_file")
+        mock_client = MagicMock()
+        mock_client.call_tool_sync.return_value = {"content": [{"type": "text", "text": "file content"}]}
+        self.registry._mcp_client = mock_client
+
+        func = self.registry.get("ext-srv/read_file")
+        result = func(path="/tmp/test.txt")
+        mock_client.call_tool_sync.assert_called_once_with("ext-srv", "read_file", {"path": "/tmp/test.txt"})
+
+    def test_get_external_tool_returns_none_without_mcp_client(self):
+        """没有 MCPClientManager 时 get() 返回 None"""
+        self.registry._external_tools["ext-srv/read_file"] = ("ext-srv", "read_file")
+        self.registry._mcp_client = None
+        func = self.registry.get("ext-srv/read_file")
+        assert func is None
+
+    def test_external_tool_visibility_from_config(self):
+        """外部工具 visibility 从配置文件读取"""
+        self.registry._external_tools["ext-srv/read_file"] = ("ext-srv", "read_file")
+        self.registry._schemas["ext-srv/read_file"] = {
+            "name": "ext-srv/read_file",
+            "description": "Read a file",
+            "input_schema": {},
+            "visibility": "hidden",
+        }
+        static = self.registry.get_static_tools()
+        names = [s for s in static]
+        assert "ext-srv/read_file" not in names
+
+    def test_external_tool_default_visibility_hidden(self):
+        """未配置 visibility 的外部工具默认 hidden"""
+        self.registry._external_tools["ext-srv/read_file"] = ("ext-srv", "read_file")
+        self.registry._schemas["ext-srv/read_file"] = {
+            "name": "ext-srv/read_file",
+            "description": "Read a file",
+            "input_schema": {},
+            "visibility": "hidden",
+        }
+        assert self.registry._schemas["ext-srv/read_file"]["visibility"] == "hidden"
+
+    def test_get_internal_tool_still_works(self):
+        """内部工具注册和调用不受影响"""
+        def my_func():
+            return "internal result"
+        self.registry.register("internal-srv/tool", my_func, {"name": "internal-srv/tool"})
+
+        func = self.registry.get("internal-srv/tool")
+        assert func is my_func
+        assert func() == "internal result"
+
+    def test_has_tool_checks_external_tools(self):
+        """has_tool 同时检查内部和外部工具"""
+        self.registry._external_tools["ext-srv/tool"] = ("ext-srv", "tool")
+        assert self.registry.has_tool("ext-srv/tool") is True
+        assert self.registry.has_tool("nonexistent/tool") is False
+
+    def test_list_tools_includes_external(self):
+        """list_tools 同时返回内部和外部工具"""
+        def my_func():
+            pass
+        self.registry.register("int-srv/tool1", my_func, {"name": "int-srv/tool1"})
+        self.registry._external_tools["ext-srv/tool2"] = ("ext-srv", "tool2")
+        tools = self.registry.list_tools()
+        assert "int-srv/tool1" in tools
+        assert "ext-srv/tool2" in tools
+
+    def test_set_mcp_client(self):
+        """set_mcp_client 注入 MCPClientManager"""
+        mock_client = MagicMock()
+        self.registry.set_mcp_client(mock_client)
+        assert self.registry._mcp_client is mock_client
+
+    def test_clear_cleans_external_tools(self):
+        """clear 同时清理外部工具"""
+        self.registry._external_tools["ext-srv/tool"] = ("ext-srv", "tool")
+        mock_client = MagicMock()
+        self.registry._mcp_client = mock_client
+        self.registry.clear()
+        assert len(self.registry._external_tools) == 0
+        assert self.registry._mcp_client is None
