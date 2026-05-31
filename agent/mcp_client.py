@@ -111,3 +111,45 @@ class MCPClientManager:
         """断开所有连接"""
         for name in list(self._connections.keys()):
             await self.disconnect(name)
+
+
+def make_sampling_callback():
+    """创建 MCP Sampling callback，调用 Agent LLM 处理 Server 的请求"""
+    from mcp.types import CreateMessageResult, TextContent
+
+    async def sampling_callback(context, params) -> CreateMessageResult:
+        try:
+            from niu_api.llm_proxy import get_llm_config, call_llm_via_litellm
+            config = get_llm_config()
+
+            messages = []
+            if params.systemPrompt:
+                messages.append({"role": "system", "content": params.systemPrompt})
+            for msg in params.messages:
+                content_text = msg.content.text if hasattr(msg.content, 'text') else str(msg.content)
+                messages.append({"role": msg.role, "content": content_text})
+
+            result = await call_llm_via_litellm(
+                messages=messages,
+                max_tokens=params.maxTokens,
+                temperature=params.temperature or 0.2,
+            )
+            content = result.get("content", "")
+            if isinstance(content, list):
+                content = content[0].get("text", str(content))
+            return CreateMessageResult(
+                role="assistant",
+                content=TextContent(type="text", text=content),
+                model=config.get("model", "unknown"),
+                stopReason="endTurn",
+            )
+        except Exception as e:
+            logger.error(f"MCP Sampling callback failed: {e}")
+            return CreateMessageResult(
+                role="assistant",
+                content=TextContent(type="text", text=f"[Sampling 失败: {e}]"),
+                model="error",
+                stopReason="endTurn",
+            )
+
+    return sampling_callback
