@@ -62,12 +62,21 @@ class MCPClientManager:
         logger.info(f"Connected to external MCP server (http): {server_name}")
 
     async def call_tool(self, server_name: str, tool_name: str, arguments: dict) -> dict:
-        """通过 MCP Client 调用工具（异步）"""
+        """通过 MCP Client 调用工具（异步），返回标准 dict 格式"""
         if server_name not in self._connections:
             raise KeyError(f"MCP server not connected: {server_name}")
         session = self._connections[server_name]
         result = await session.call_tool(tool_name, arguments)
-        return result
+        # 将 CallToolResult 转换为与内部工具一致的 dict 格式
+        text_parts = []
+        for block in (result.content or []):
+            if hasattr(block, 'text'):
+                text_parts.append(block.text)
+        return {
+            "status": "error" if getattr(result, 'isError', False) else "success",
+            "content": "\n".join(text_parts) if text_parts else "",
+            "structuredContent": getattr(result, 'structuredContent', None),
+        }
 
     def call_tool_sync(self, server_name: str, tool_name: str, arguments: dict) -> dict:
         """同步调用 MCP Client（通过 asyncio 桥接，供 handler.py 使用）"""
