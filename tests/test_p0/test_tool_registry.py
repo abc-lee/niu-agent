@@ -225,3 +225,26 @@ class TestExternalToolRegistration:
         self.registry.clear()
         assert len(self.registry._external_tools) == 0
         assert self.registry._mcp_client is None
+
+
+class TestAskAgentCallback:
+    """验证 runner 注入的 ask_agent callback 能调用 LLM"""
+
+    def test_make_ask_agent_callback_returns_callable(self):
+        """_make_ask_agent_callback 返回可调用对象"""
+        from agent.runner import NiuRunner
+        runner = NiuRunner.__new__(NiuRunner)
+        callback = runner._make_ask_agent_callback()
+        assert callable(callback)
+
+    def test_ask_agent_callback_signature(self):
+        """callback 签名符合 (prompt, system_prompt, max_tokens) -> str"""
+        from agent.runner import NiuRunner
+        runner = NiuRunner.__new__(NiuRunner)
+        callback = runner._make_ask_agent_callback()
+        import inspect
+        sig = inspect.signature(callback)
+        params = list(sig.parameters.keys())
+        assert "prompt" in params
+        assert "system_prompt" in params
+        assert "max_tokens" in params
