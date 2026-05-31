@@ -150,5 +150,108 @@ def test_messages_ordered_by_rowid_not_created_at(tmp_path):
     asyncio.run(_run())
 
 
+def test_pagination_cursor_uses_rowid(tmp_path):
+    """
+    Cursor-based pagination must use rowid, not created_at.
+
+    Scenario:
+    - Insert 5 messages with mixed created_at values
+    - Request limit=2 (gets oldest 2 by rowid, returned in chronological order)
+    - Use last message's id as before_id
+    - Request next page (should get the next 2 by rowid, not by created_at)
+    """
+    async def _run():
+        db_path = _db_path_factory(tmp_path)
+        store = await _init_store(db_path)
+
+        # Insert 5 messages with out-of-order timestamps
+        # rowid order: 1,2,3,4,5 — this is the true order
+        await _insert_message(db_path, "m1", "user", "First", "2026-05-31T08:00:00")   # rowid=1
+        await _insert_message(db_path, "m2", "user", "Second", "2026-05-30T22:00:00")  # rowid=2
+        await _insert_message(db_path, "m3", "user", "Third", "2026-05-31T08:01:00")   # rowid=3
+        await _insert_message(db_path, "m4", "user", "Fourth", "2026-05-30T23:00:00")  # rowid=4
+        await _insert_message(db_path, "m5", "user", "Fifth", "2026-05-31T08:02:00")   # rowid=5
+
+        # First page: limit=2, should get m4, m5 (oldest 2 by rowid ASC after reverse)
+        # SQL returns rowid DESC: m5, m4 -> reversed: m4, m5
+        page1 = await store.get_messages(limit=2)
+        assert len(page1) == 2
+        assert page1[0].id == "m4"
+        assert page1[1].id == "m5"
+
+        # Second page: before_id=m4's id, rowid<4 returns m3,m2,m1 DESC -> reversed ASC: m1,m2,m3
+        # limit=2 -> SQL: m3,m2 DESC -> reversed: m2,m3
+        page2 = await store.get_messages(limit=2, before_id="m4")
+        assert len(page2) == 2
+        assert page2[0].id == "m2"
+        assert page2[1].id == "m3"
+
+        # Third page: before_id=m2's id, rowid<2 returns m1 DESC -> reversed: m1
+        page3 = await store.get_messages(limit=2, before_id="m2")
+        assert len(page3) == 1
+        assert page3[0].id == "m1"
+
+    asyncio.run(_run())
+
+
+def test_rowid_ordering_with_deleted_messages(tmp_path):
+    """
+    Deleting messages creates rowid gaps but must not break ordering.
+
+    Scenario:
+    - Insert 5 messages (rowid 1-5)
+    - Delete messages 2 and 4
+    - Remaining: rowid 1, 3, 5
+    - get_messages() must return them in rowid ASC order: 1, 3, 5
+    """
+    async def _run():
+        db_path = _db_path_factory(tmp_path)
+        store = await _init_store(db_path)
+
+        for i in range(1, 6):
+            await _insert_message(
+                db_path, f"m{i}", "user", f"Message {i}",
+                f"2026-05-31T08:00:{i:02d}",
+            )
+
+        # Delete m2 and m4
+        await store.delete_messages_by_ids(["m2", "m4"])
+
+        messages = await store.get_messages(limit=10)
+        assert len(messages) == 3
+        # get_messages returns chronological order (rowid ASC): m1, m3, m5
+        assert messages[0].id == "m1"
+        assert messages[1].id == "m3"
+        assert messages[2].id == "m5"
+
+    asyncio.run(_run())
+
+
+def test_same_second_messages_maintain_write_order(tmp_path):
+    """
+    Messages with identical created_at must still be ordered by write order (rowid).
+
+    This is the original bug: same-second messages had indeterminate ordering.
+    """
+    async def _run():
+        db_path = _db_path_factory(tmp_path)
+        store = await _init_store(db_path)
+
+        # Insert 3 messages with IDENTICAL created_at
+        ts = "2026-05-31T08:00:00"
+        await _insert_message(db_path, "first", "user", "Written first", ts)
+        await _insert_message(db_path, "second", "assistant", "Written second", ts)
+        await _insert_message(db_path, "third", "user", "Written third", ts)
+
+        messages = await store.get_messages(limit=10)
+        assert len(messages) == 3
+        # Must be in write order (rowid ASC): first, second, third
+        assert messages[0].id == "first"
+        assert messages[1].id == "second"
+        assert messages[2].id == "third"
+
+    asyncio.run(_run())
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "-m", "p0"])
