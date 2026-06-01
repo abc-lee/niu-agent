@@ -126,6 +126,9 @@ def validate_references(content: str) -> ValidationResult:
 
         if is_image:
             if not _is_local_path(path):
+                # data: URI 是内嵌内容，跳过验证；URL 是真正的外部链接，报错
+                if path.startswith("data:"):
+                    continue
                 result.errors.append(ReferenceError(
                     kind="图片", path=raw_path,
                     reason="不允许使用URL，必须使用本地绝对路径"

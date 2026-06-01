@@ -366,9 +366,13 @@ class FeishuChannelAdapter(ChannelAdapter):
                     # 剥离内容中的媒体标记，避免 markdown 中出现原始标记
                     content = re.sub(r'::person_photo::.*?::', '', content)  # 兼容极旧格式
                     from agent.output_validator import _extract_md_refs
-                    for _, _, full_match, is_image, _ in _extract_md_refs(content):
+                    # 从后向前移除图片标记，避免偏移
+                    img_removals = []
+                    for _, _, full_match, is_image, start_idx in _extract_md_refs(content):
                         if is_image:
-                            content = content.replace(full_match, "", 1)
+                            img_removals.append((start_idx, start_idx + len(full_match)))
+                    for start, end in sorted(img_removals, key=lambda x: x[0], reverse=True):
+                        content = content[:start] + content[end:]
                     # 终结失败：将未嵌入卡片的图片转为独立消息发送
                     for img_info in self._stream_pending_images:
                         local_path = img_info.get("local_path")
@@ -930,6 +934,9 @@ class FeishuChannelAdapter(ChannelAdapter):
 
             if is_image:
                 img_path = _normalize_path(raw_path)
+                if not _is_local_path(img_path):
+                    # URL/data URI 图片不允许，跳过（不添加到替换列表）
+                    continue
                 if not img_path:
                     replacement = "[图片信息缺失]"
                 elif not Path(img_path).exists():
