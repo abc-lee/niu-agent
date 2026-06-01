@@ -137,7 +137,7 @@ sub agents:
 
 # 照片管理
 
-展示人物照片时，使用 Markdown 标准图片语法 `![人物名](图片路径)`，不要使用自定义标记格式。
+展示人物照片时，使用 Markdown 标准图片语法 `![人物名](图片路径)`，路径使用绝对路径（如 `/Users/xxx/photo.jpg`），不要加 `file://` 前缀，不要使用自定义标记格式。
 详细操作请读取 skill：~/.niu/skills/photo-face-display.md
 
 # 系统管理
