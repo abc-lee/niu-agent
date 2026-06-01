@@ -98,8 +98,10 @@ def _normalize_path(path: str) -> str:
 
 
 def _is_local_path(path: str) -> bool:
-    """判断是否为本地路径（非 URL）"""
-    return not path.startswith(("http://", "https://", "ftp://", "mailto:"))
+    """判断是否为本地路径（非 URL、非 data URI、非空）"""
+    if not path:
+        return False
+    return not path.startswith(("http://", "https://", "ftp://", "mailto:", "data:"))
 
 
 def validate_references(content: str) -> ValidationResult:

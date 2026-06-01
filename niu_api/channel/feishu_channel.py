@@ -921,7 +921,13 @@ class FeishuChannelAdapter(ChannelAdapter):
 
         # 1. 解析 Markdown 图片和文件链接（括号平衡解析器，支持文件名中的括号）
         from agent.output_validator import _extract_md_refs, _normalize_path, _is_local_path
-        for alt_text, raw_path, full_match, is_image, _start in _extract_md_refs(cleaned_content):
+
+        # 收集替换操作，从后向前替换避免偏移
+        replacements: list[tuple[int, int, str]] = []
+
+        for alt_text, raw_path, full_match, is_image, start_idx in _extract_md_refs(cleaned_content):
+            end_idx = start_idx + len(full_match)
+
             if is_image:
                 img_path = _normalize_path(raw_path)
                 if not img_path:
@@ -936,7 +942,7 @@ class FeishuChannelAdapter(ChannelAdapter):
                             display_name = parts[1]
                     media_messages.append(ResolvedMessage(kind="image", local_path=img_path, caption=alt_text))
                     replacement = f"↑ {display_name}的照片" if display_name else "↑ 照片"
-                cleaned_content = cleaned_content.replace(full_match, replacement, 1)
+                replacements.append((start_idx, end_idx, replacement))
             else:
                 # 文件链接
                 link_path = _normalize_path(raw_path)
@@ -952,7 +958,11 @@ class FeishuChannelAdapter(ChannelAdapter):
                 else:
                     media_messages.append(ResolvedMessage(kind="file", local_path=link_path, filename=alt_text))
                     replacement = f"↑ {alt_text}" if alt_text else "↑ 文件"
-                cleaned_content = cleaned_content.replace(full_match, replacement, 1)
+                replacements.append((start_idx, end_idx, replacement))
+
+        # 从后向前替换，避免前面的替换影响后续位置
+        for start, end, repl in sorted(replacements, key=lambda x: x[0], reverse=True):
+            cleaned_content = cleaned_content[:start] + repl + cleaned_content[end:]
 
         messages = []
         if cleaned_content.strip():
