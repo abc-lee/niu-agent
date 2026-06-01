@@ -163,8 +163,8 @@ class TestValidateReferences:
         content = "![刘永辉](https://example.com/photo.jpg)"
         result = validate_references(content)
         feedback = result.format_feedback()
-        assert "get_person_photos" in feedback
-        assert "本地路径" in feedback
+        assert "chat-with-file-processor" in feedback
+        assert "本地绝对路径" in feedback
 
 
 if __name__ == "__main__":
@@ -208,9 +208,9 @@ class ValidationResult:
             lines.append(f"  - {err.kind}引用：{err.path}（{err.reason}）")
         lines.append("")
         lines.append("请修正：")
-        lines.append("1. 图片必须使用本地绝对路径（如 /Users/xxx/photo.jpg），禁止使用 URL")
-        lines.append("2. 如需显示人物照片，请先调用 get_person_photos(person_id) 获取带红框的本地照片路径（boxed_path）")
-        lines.append("3. 如需发送文件，请确认文件已存在于本地知识库中，使用标准格式 [文件名](本地路径)")
+        lines.append("1. 图片和文件必须使用本地绝对路径（如 /Users/xxx/photo.jpg），禁止使用 URL")
+        lines.append("2. 如需显示人物照片，请使用 chat-with-file-processor 查询人物照片")
+        lines.append("3. 如需发送文件，请确认文件已存在于本地知识库中")
         return "\n".join(lines)
 
 
@@ -362,8 +362,8 @@ class TestValidateIntegration:
 from agent.output_validator import validate_references
 
 # 在 agent_runner_loop 函数内，while True 循环前添加
-_validation_fail_count = 0
-_MAX_VALIDATION_RETRIES = 3
+_harness_fail_count = 0
+_MAX_HARNESS_RETRIES = 3
 ```
 
 修改 `verbose=False` 分支（约第 191-210 行），替换 `yield StreamEvent("reply", content)` 部分：
@@ -375,16 +375,18 @@ else:
     content = response.content or ""
     content = re.sub(r"<tool_use>.*?</tool_use>", "", content, flags=re.DOTALL)
 
-    # Harness 验证：检查图片/文件引用路径是否存在
-    validation = validate_references(content)
-    if not validation.is_valid and _validation_fail_count < _MAX_VALIDATION_RETRIES:
-        _validation_fail_count += 1
-        feedback = validation.format_feedback()
-        # 不 yield reply，将反馈注入下一轮 messages
-        messages.append({"role": "user", "content": feedback})
-        continue  # 继续循环，让 LLM 修正
-    # 验证通过或超过重试次数，正常输出
-    _validation_fail_count = 0  # 重置计数
+    # Harness 验证：仅在 LLM 不调工具直接回复用户时验证
+    # 条件 not response.tool_calls 精确区分最终回复 vs 中间工具调用
+    if not response.tool_calls:
+        validation = validate_references(content)
+        if not validation.is_valid and _harness_fail_count < _MAX_HARNESS_RETRIES:
+            _harness_fail_count += 1
+            feedback = validation.format_feedback()
+            messages.append({"role": "assistant", "content": content})
+            messages.append({"role": "user", "content": feedback})
+            continue  # 回到 while 循环，让 LLM 修正
+        _harness_fail_count = 0
+
     yield StreamEvent("reply", content)
 ```
 
@@ -463,7 +465,7 @@ git commit -m "feat: integrate harness validation in agent_loop — block invali
             link_path = match.group(2)
             full_match = match.group(0)
 
-            if not link_path or link_path.startswith(("http://", "https://", "ftp://", "mailto://")):
+            if not link_path or link_path.startswith(("http://", "https://", "ftp://", "mailto:")):
                 continue
 
             if link_path.startswith("file:///"):
@@ -527,8 +529,8 @@ textDiv.querySelectorAll('a').forEach(a => {
     a.addEventListener('click', (e) => {
       e.preventDefault();
       const filePath = a.getAttribute('data-file-path');
-      if (filePath && window.openWithSystemViewer) {
-        window.openWithSystemViewer(filePath);
+      if (filePath && window.electronAPI && window.electronAPI.openWithSystemViewer) {
+        window.electronAPI.openWithSystemViewer(filePath);
       }
     });
   }
@@ -588,18 +590,14 @@ git commit -m "feat: desktop file links [name](path) — click to open with syst
 
 ## 照片
 
-展示人物照片时，使用 Markdown 标准图片语法 `![人物名](图片路径)`，路径使用绝对路径（如 `/Users/xxx/photo.jpg`），不要加 `file://` 前缀，不要使用自定义标记格式，不要使用 URL。
+展示人物照片时，使用 Markdown 标准图片语法 `![人物名](图片路径)`，路径使用本地绝对路径（如 `/Users/xxx/photo.jpg`），不要加 `file://` 前缀，不要使用 URL。
 详细操作请读取 skill：~/.niu/skills/photo-face-display.md
 
 ## 文件
 
-发送文件给用户时，使用 Markdown 标准链接语法 `[文件名](本地路径)`，路径使用绝对路径。例如：`[报告.pdf](/Users/xxx/.niu/work/2026/报告/报告.pdf)`。
+发送文件给用户时，使用 Markdown 标准链接语法 `[文件名](本地路径)`，路径使用本地绝对路径。例如：`[报告.pdf](/Users/xxx/.niu/work/2026/报告/报告.pdf)`。
 
-**禁止**使用 URL 作为图片或文件路径——系统会验证所有引用路径，路径不存在或使用 URL 会被拦截并要求修正。
-
-**重要**：显示人物照片前，必须先调用工具获取本地照片路径：
-- 查询人物 → 用 `disk("/photos/get_person_photos person_id=xxx")` 获取 `boxed_path`（带红框照片）
-- 绝对不要自己编造图片路径或使用 URL
+**禁止使用 URL 作为图片或文件路径**——系统会验证所有引用路径，路径不存在或使用 URL 会被拦截并要求修正。
 ```
 
 - [ ] **Step 2: 修改 `file-processor.md` 返回格式部分**
@@ -737,132 +735,3 @@ git commit -m "cleanup: remove deprecated ::file:: format, replaced by Markdown 
 
 - `validate_references` 返回 `ValidationResult`，`agent_loop.py` 使用 `validation.is_valid` 和 `validation.format_feedback()` — 一致
 - `_filter_media_markers` 和 `resolve_outbound_content` 中文件链接解析使用相同的正则和路径规范化逻辑 — 一致
-
----
-
-## 审查修正（2026-06-01 代码审查后）
-
-### 修正 1: Task 2 agent_loop.py 关键细节
-
-**变量名确认**：agent_runner_loop 中 messages 变量名为 `messages`（第174行确认），不是 `_msgs`。
-
-**verbose=True 流式模式处理**：
-- 流式模式逐 token yield，无法在输出前验证
-- 策略：流式输出完成后对累积内容做验证，验证失败时在 messages 追加修正提示
-- 已 yield 的 token 无法撤回，但修正提示影响下一轮输出
-- 当前 agent_loop.py 第213行有 `_full_response_text` 变量累积流式输出，可直接用于验证
-
-**verbose=False 模式修正**：
-- 验证失败时先 `messages.pop()` 删除刚添加的 assistant message
-- 然后 `messages.append({"role": "user", "content": feedback})`
-- `continue` 回到 while 循环顶部（消耗一个 turn，但 max_turns 通常 ≥30，影响可忽略）
-
-### 修正 2: Task 3 正则冲突问题
-
-`(?<!!)\[([^\]]+)\]\(([^)]+)\)` 的 lookbehind 与已有 `!\[([^\]]*)\]\(([^)]+)\)` 不冲突：
-- 图片正则先执行，匹配 `![alt](path)` 并替换
-- 文件链接正则在替换后的文本上执行，此时 `![` 已被处理，不会再匹配
-
-但需注意：如果图片路径不存在被替换为空字符串，原来的 `![alt](path)` 消失，不会误匹配为文件链接。
-
-### 修正 3: 跨平台路径
-
-output_validator.py 中 `Path(path).exists()` 在 macOS（case-insensitive）和 Windows 上都能正确处理。
-`_normalize_path()` 中 `file:///` 剥离后：
-- Windows: `C:/Users/xxx/file.pdf` → Path.exists() 正确
-- macOS: `/Users/xxx/file.pdf` → Path.exists() 正确
-
-### 修正 4: 死循环防护
-
-- `_MAX_HARNESS_RETRIES = 3`，超过后强制通过
-- agent_loop 的 `while _turn_count < _max_turns:` 也提供硬上限
-- 验证失败 continue 会递增 turn_count，不会无限循环
-
----
-
-## 审查修正 2（用户反馈后）
-
-### 修正 5: 拦截位置必须在"最终回复"而非"工具循环中间"
-
-**问题**：原计划在 agent_loop.py:200 的 `yield StreamEvent("reply", content)` 前拦截，但 agent_loop 是工具循环核心，中间有大量工具调用和子Agent调用。如果在这里无条件拦截，子Agent 返回的 `![alt](boxed_path)` 等格式可能被误拦截。
-
-**正确做法**：只在 `not response.tool_calls` 条件下拦截——这精确区分了"LLM 不调工具直接回复用户"和"LLM 调工具的中间过程"。
-
-```python
-# agent_loop.py:195-200 修正后的代码
-else:
-    response = exhaust(response_gen)
-    content = response.content or ""
-    content = re.sub(r"<tool_use>.*?</tool_use>", "", content, flags=re.DOTALL)
-
-    # Harness 验证：仅在 LLM 不调工具直接回复用户时验证
-    # 条件 not response.tool_calls 精确区分最终回复 vs 中间工具调用
-    if not response.tool_calls:
-        validation = validate_references(content)
-        if not validation.is_valid and _harness_fail_count < _MAX_HARNESS_RETRIES:
-            _harness_fail_count += 1
-            feedback = validation.format_feedback()
-            messages.append({"role": "assistant", "content": content})
-            messages.append({"role": "user", "content": feedback})
-            continue  # 回到 while 循环，让 LLM 修正
-        _harness_fail_count = 0
-
-    yield StreamEvent("reply", content)
-```
-
-**关键**：`not response.tool_calls` 保证了：
-- LLM 直接回复用户 → 拦截验证
-- LLM 调工具（包括子Agent）→ 不拦截，工具循环正常执行
-- 子Agent 内部的输出不受影响（子Agent 有独立的 agent_runner_loop 实例）
-
-### 修正 6: 提示词不应教具体操作步骤
-
-**问题**：原计划 Task 5 在 niu.md 中写了"必须先调用 get_person_photos 获取 boxed_path"，但：
-1. 用户只是要显示照片，不需要红框
-2. 红框只在改名流程才需要，改名流程有专门的 Skill
-3. 主Agent 提示词不应教具体工具调用步骤——Skill 会自己处理
-
-**修正后的 niu.md 内容**：
-
-```markdown
-# 照片与文件引用
-
-## 照片
-
-展示人物照片时，使用 Markdown 标准图片语法 `![人物名](图片路径)`，路径使用本地绝对路径（如 `/Users/xxx/photo.jpg`），不要加 `file://` 前缀，不要使用 URL。
-详细操作请读取 skill：~/.niu/skills/photo-face-display.md
-
-## 文件
-
-发送文件给用户时，使用 Markdown 标准链接语法 `[文件名](本地路径)`，路径使用本地绝对路径。例如：`[报告.pdf](/Users/xxx/.niu/work/2026/报告/报告.pdf)`。
-
-**禁止使用 URL 作为图片或文件路径**——系统会验证所有引用路径，路径不存在或使用 URL 会被拦截并要求修正。
-```
-
-**修正后的 output_validator.py format_feedback()**：
-
-```python
-def format_feedback(self) -> str:
-    if self.is_valid:
-        return ""
-    lines = ["[System] 输出验证失败：以下引用路径无效："]
-    for err in self.errors:
-        lines.append(f"  - {err.kind}引用：{err.path}（{err.reason}）")
-    lines.append("")
-    lines.append("请修正：")
-    lines.append("1. 图片和文件必须使用本地绝对路径（如 /Users/xxx/photo.jpg），禁止使用 URL")
-    lines.append("2. 如需显示人物照片，请使用 chat-with-file-processor 查询人物照片")
-    lines.append("3. 如需发送文件，请确认文件已存在于本地知识库中")
-    return "\n".join(lines)
-```
-
-**测试修正**：`test_format_feedback_message` 中不再检查 `get_person_photos`，改为检查 `chat-with-file-processor`：
-
-```python
-def test_format_feedback_message(self):
-    content = "![刘永辉](https://example.com/photo.jpg)"
-    result = validate_references(content)
-    feedback = result.format_feedback()
-    assert "chat-with-file-processor" in feedback
-    assert "本地绝对路径" in feedback
-```

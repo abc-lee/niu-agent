@@ -823,7 +823,7 @@
               if (alt && alt.includes('|')) {
                 const parts = alt.split('|');
                 // person_id 是 UUID 格式
-                if (parts[0] && parts[0].length >= 8 && parts[0].includes('-')) {
+                if (parts[0] && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(parts[0])) {
                   img.dataset.personId = parts[0];
                   img.setAttribute('alt', parts[1] || '');
                 }

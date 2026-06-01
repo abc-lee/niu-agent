@@ -493,14 +493,11 @@ class FeishuChannelAdapter(ChannelAdapter):
             if not new_texts:
                 return
 
-            # 只取最新一条 assistant 消息，不累积历史轮次
-            # 多轮对话中每轮产生独立回复，不应拼接显示
-            latest_rowid, latest_text = new_texts[-1]
-            filtered_text = await self._filter_media_markers(latest_text)
+            # 拼接同一轮回复的所有增量片段（流式输出可能分多条写入DB）
+            combined_text = "".join(text for _, text in new_texts)
+            latest_rowid = new_texts[-1][0]
+            filtered_text = await self._filter_media_markers(combined_text)
             self._accumulated_text = filtered_text  # 保留 [PHOTO_SEP] 供终结时拆分
-            # 新文本不含照片分隔符，清空残留图片，避免终结时旧图片被插入
-            if "[PHOTO_SEP]" not in self._accumulated_text:
-                self._stream_pending_images = []
             new_rowid = latest_rowid
             # 流式推送时隐藏 [PHOTO_SEP] 分隔符，终结阶段才用其拆分文本+插入img
             display_text = self._accumulated_text.replace("[PHOTO_SEP]", "")
@@ -593,7 +590,9 @@ class FeishuChannelAdapter(ChannelAdapter):
                     })
                     text = text.replace(full_match, "", 1)
             else:
-                # 图片路径不存在，删除标记
+                # 图片路径不存在或为 URL，删除标记
+                if img_path:
+                    logger.debug(f"[FeishuStream] Image path not found or unsupported: {img_path}")
                 text = text.replace(full_match, "", 1)
 
         # 2. 解析 ::file::JSON:: 标记（保留，LLM 不会自然生成 Markdown 文件链接）
@@ -769,6 +768,9 @@ class FeishuChannelAdapter(ChannelAdapter):
                         "element_id": f"img_{img_idx}"
                     })
                     img_idx += 1
+                elif i < sep_count:
+                    # [PHOTO_SEP] 数量超过 _stream_pending_images，图片上传可能失败
+                    logger.warning(f"[FeishuStream] PHOTO_SEP #{i} has no matching image, skipping")
 
         # 如果没有元素（极端情况），添加一个空 markdown
         if not elements:
@@ -779,8 +781,12 @@ class FeishuChannelAdapter(ChannelAdapter):
     async def _finalize_stream_card(self, final_content: str):
         """终结流式卡片：flush 最后内容 → settings API → UpdateCard 完整内容"""
         try:
-            # 过滤 final_content 中的媒体标记
-            filtered_content = await self._filter_media_markers(final_content)
+            # 如果流式推送已处理过图片，使用已处理的文本；否则对 final_content 做兜底处理
+            if self._stream_pending_images:
+                filtered_content = self._accumulated_text
+            else:
+                filtered_content = await self._filter_media_markers(final_content)
+                self._accumulated_text = filtered_content
 
             # 1. 如果还有未推送的内容，先 flush
             if filtered_content and filtered_content.strip() != self._accumulated_text.strip():
@@ -806,7 +812,7 @@ class FeishuChannelAdapter(ChannelAdapter):
 
             # 3. UpdateCard 更新完整卡片内容（移除 subtitle，图片嵌入卡片）
             self._stream_seq += 1
-            content = filtered_content if filtered_content and filtered_content.strip() else self._accumulated_text
+            content = filtered_content if filtered_content and filtered_content.strip() else ""
             if len(content) > 18000:
                 content = content[:17900] + "\n\n...[内容已截断]"
 
