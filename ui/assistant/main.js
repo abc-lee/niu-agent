@@ -573,6 +573,8 @@ ipcMain.on('open-external', (event, url) => {
 // 用系统默认查看器打开文件
 ipcMain.on('open-with-system-viewer', (event, filePath) => {
   if (!filePath) return;
+  // marked.js 会将路径中的空格/括号等编码为 %XX，需要解码
+  try { filePath = decodeURIComponent(filePath); } catch(e) {}
   // Validate: must be an existing local file with safe extension
   if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
     console.warn('[Main] open-with-system-viewer: path does not exist or is not a file:', filePath);

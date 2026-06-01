@@ -697,7 +697,7 @@ class NiuRunner:
 
         return (
             "\n\n### [虚拟磁盘工具]\n"
-            "你有一个虚拟磁盘工具 disk(command)，可以用 Unix 命令探索和调用所有 MCP 工具。\n\n"
+            "你有一个虚拟磁盘工具 disk(command)，可以用 Unix 命令探索和调用所有 MCP 工具。这是对 MCP 工具的虚拟化封装，不是系统磁盘，不能用于访问本地文件系统。\n\n"
             "命令:\n"
             "  ls /                列出所有目录\n"
             "  ls /<dir>           列出目录下的工具\n"
