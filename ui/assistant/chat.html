@@ -814,6 +814,10 @@
               } else if (src && /^\//.test(src)) {
                 img.setAttribute('src', encodeURI('file://' + src));
               }
+              // 给本地路径图片添加 chat-image class（自适应缩放）
+              if (src && (/^[A-Za-z]:[\/]/.test(src) || /^\//.test(src) || src.startsWith('file://'))) {
+                img.classList.add('chat-image');
+              }
               // 处理 alt 文本中的 person_id|name 格式
               const alt = img.getAttribute('alt') || '';
               if (alt && alt.includes('|')) {

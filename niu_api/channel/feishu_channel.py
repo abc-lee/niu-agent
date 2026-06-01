@@ -930,8 +930,6 @@ class FeishuChannelAdapter(ChannelAdapter):
 
             if not img_path:
                 replacement = "[图片信息缺失]"
-            elif not self._is_path_allowed(img_path):
-                replacement = "[图片无法发送: 安全限制]"
             elif not Path(img_path).exists():
                 replacement = "[图片不存在]"
             else:
