@@ -785,6 +785,68 @@
       userInput.focus();
     }
     
+    // ========== 路径编码预处理（括号平衡算法） ==========
+    // 修复：文件路径中的括号（如 硅基银行项目 (2).docx）被 Markdown 语法截断
+    // 简单正则 [^)]* 遇到第一个 ) 就停止匹配，导致路径截断
+    // 改用括号平衡算法，正确处理路径中嵌套的括号
+    function encodeLocalPaths(text) {
+      // 用括号平衡算法处理包含空格/括号/方括号/井号/百分号的本地路径
+      let result = '';
+      let i = 0;
+      const n = text.length;
+      while (i < n) {
+        // 检测 [text](path) 或 ![alt](path) 模式
+        let isImage = false;
+        let bracketStart = -1;
+        if (text.substring(i, i + 2) === '![') {
+          isImage = true;
+          bracketStart = i + 2;
+        } else if (text[i] === '[') {
+          bracketStart = i + 1;
+        }
+        if (bracketStart >= 0) {
+          const bracketEnd = text.indexOf(']', bracketStart);
+          if (bracketEnd >= 0 && bracketEnd + 1 < n && text[bracketEnd + 1] === '(') {
+            // 用括号平衡找到匹配的 )
+            let depth = 1;
+            let j = bracketEnd + 2;
+            while (j < n && depth > 0) {
+              if (text[j] === '(') depth++;
+              else if (text[j] === ')') depth--;
+              j++;
+            }
+            if (depth === 0) {
+              const path = text.substring(bracketEnd + 2, j - 1);
+              // 只对本地路径（以/或盘符开头）且包含特殊字符的路径做 URL 编码
+              if ((path.startsWith('/') || /^[A-Za-z]:[\/]/.test(path)) &&
+                  (path.includes(' ') || path.includes('(') || path.includes(')') ||
+                   path.includes('[') || path.includes(']') ||
+                   path.includes('#') || path.includes('%'))) {
+                // 注意：% 必须最后替换，因为其他替换会产生新的 % 字符（如 %20）
+                const encoded = path
+                  .replace(/\\/g, '/')  // Windows 反斜杠转正斜杠
+                  .replace(/ /g, '%20')
+                  .replace(/\(/g, '%28')
+                  .replace(/\)/g, '%29')
+                  .replace(/\[/g, '%5B')
+                  .replace(/\]/g, '%5D')
+                  .replace(/#/g, '%23')
+                  .replace(/%/g, '%25');
+                result += text.substring(i, bracketEnd + 2) + encoded + ')';
+              } else {
+                result += text.substring(i, j);
+              }
+              i = j;
+              continue;
+            }
+          }
+        }
+        result += text[i];
+        i++;
+      }
+      return result;
+    }
+
     // ========== 消息显示 ==========
     function addMessage(role, text, images = []) {
       // 双管道分离：tool 消息只走 DB 管道，不渲染到对话框
@@ -800,14 +862,13 @@
         // assistant 消息用 markdown 渲染，其他角色纯文本
         if (role === 'assistant' && typeof marked !== 'undefined') {
           try {
-            // Pre-process: normalize Windows backslash paths in image links
-            // Markdown treats \t \n \f etc. as escape sequences, breaking paths like
-            // ![alt](C:\Users\.niu\tmp\facebox.png) — \t becomes tab, \n becomes newline
-            const safeText = text.replace(/(!\[[^\]]*\]\()([A-Za-z]:[\\\/][^)]+)(\))/g,
-              (match, prefix, path, suffix) => prefix + path.replace(/\\/g, '/') + suffix
-            );
+            // Pre-process: 用括号平衡算法编码本地路径中的空格和括号
+            // 简单正则 [^)]* 遇到路径中 ) 就截断（如 硅基银行项目 (2).docx）
+            const safeText = encodeLocalPaths(text);
             const htmlContent = typeof DOMPurify !== 'undefined'
-              ? DOMPurify.sanitize(marked.parse(safeText))
+              ? DOMPurify.sanitize(marked.parse(safeText), {
+                  ALLOWED_URI_REGEXP: /^(?:(?:(?:f|ht)tps?|mailto|tel|file):|\/|[A-Za-z]:\\|[a-z+.-]+(?:[^a-z+.-:]))(?:[^"<>]|$)/i
+                })
               : marked.parse(safeText);
             textDiv.innerHTML = htmlContent;
             // 后处理：将本地路径图片转为 file:/// URL，并提取 person_id 添加交互
@@ -822,9 +883,11 @@
                 img.setAttribute('src', src);
               }
               if (src && /^[A-Za-z]:[\/]/.test(src)) {
-                img.setAttribute('src', encodeURI('file:///' + src));
+                const encodedPath = src.replace(/\\/g, '/').split('/').map(encodeURIComponent).join('/');
+                img.setAttribute('src', 'file:///' + encodedPath);
               } else if (src && /^\//.test(src)) {
-                img.setAttribute('src', encodeURI('file://' + src));
+                const encodedPath = src.split('/').map(encodeURIComponent).join('/');
+                img.setAttribute('src', 'file://' + encodedPath);
               }
               // 给本地路径图片添加 chat-image class（自适应缩放）
               if (src && (/^[A-Za-z]:[\/]/.test(src) || /^\//.test(src) || src.startsWith('file://'))) {
