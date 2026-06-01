@@ -800,7 +800,15 @@
             textDiv.innerHTML = htmlContent;
             // 后处理：将本地路径图片转为 file:/// URL，并提取 person_id 添加交互
             textDiv.querySelectorAll('img').forEach(img => {
-              const src = img.getAttribute('src');
+              let src = img.getAttribute('src');
+              // 兼容模型输出 file:/// 前缀：去掉后统一由下面的逻辑处理
+              if (src && src.startsWith('file:///')) {
+                src = decodeURIComponent(src.replace('file:///', ''));
+                img.setAttribute('src', src);
+              } else if (src && src.startsWith('file://')) {
+                src = decodeURIComponent(src.replace('file://', ''));
+                img.setAttribute('src', src);
+              }
               if (src && /^[A-Za-z]:[\/]/.test(src)) {
                 img.setAttribute('src', encodeURI('file:///' + src));
               } else if (src && /^\//.test(src)) {
