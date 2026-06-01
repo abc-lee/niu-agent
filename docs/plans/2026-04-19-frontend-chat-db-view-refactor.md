@@ -71,7 +71,7 @@
 - `lastMessageId` 变量
 
 ### 保留的逻辑
-- `addMessage()` — 渲染单条消息（保留 ::person_photo:: 解析，但改为直接显示带框图）
+- `addMessage()` — 渲染单条消息（Markdown 图片语法由 marked.js 自动渲染）
 - `addMessageWithId()` — 带 data-id 的消息渲染（保留去重检查）
 - `prependMessage()` — 顶部插入历史消息
 - `loadHistory()` — 初始化加载历史
@@ -103,9 +103,9 @@
 5. 更新 oldestMessageId（如果之前为空）
 ```
 
-### ::person_photo:: 渲染简化
+### 照片展示渲染简化
 当前：解析 bbox，加载原图，前端算缩放坐标画红框
-改为：后端已画好框存临时目录，消息内容里是带框图的路径，前端直接显示图片
+改为：后端已画好框存临时目录，消息内容里是带框图的路径，前端用 Markdown 图片语法 `![person_id|name](path)` 直接显示图片
 
 - [ ] **Step 1: 重写 sendMessage()**
 
@@ -267,9 +267,9 @@ async function handleDroppedImage(file) {
 }
 ```
 
-- [ ] **Step 7: 简化 ::person_photo:: 渲染**
+- [ ] **Step 7: 简化照片展示渲染**
 
-删除 `renderFaceBox()` 函数。`createPersonPhotoElement()` 简化为直接显示图片（带框图已在后端画好）：
+删除 `renderFaceBox()` 函数。照片展示使用 Markdown 图片语法 `![person_id|name](path)`，由 marked.js 自动渲染：
 
 ```javascript
 async function createPersonPhotoElement(data) {
@@ -603,11 +603,12 @@ if img is not None and bbox and len(bbox) == 4:
     photo_data.pop("bbox", None)
 ```
 
-- [ ] **Step 3: 更新 ::person_photo:: 标记格式**
+- [ ] **Step 3: 更新照片展示格式为 Markdown 图片语法**
 
 skill 文档 `memory/skills/photo-face-display.md` 中的标记格式更新：
 - 删除 `bbox` 参数（后端已画好框）
 - `path` 现在指向临时目录中的带框图
+- 使用 Markdown 标准图片语法替代自定义标记
 
 标记格式从：
 ```
@@ -615,8 +616,13 @@ skill 文档 `memory/skills/photo-face-display.md` 中的标记格式更新：
 ```
 改为：
 ```
-::person_photo::{"path": "带框图路径", "person_id": "ID", "name": "名"}::
+![ID|名](带框图路径)
 ```
+
+参数说明（编码在 alt 文本中，用 `|` 分隔）：
+- `person_id`：人物ID（UUID 格式）
+- `name`：人物名称
+- `path`：带人脸红框的图片路径（绝对路径，不加 `file://` 前缀）
 
 ---
 
@@ -731,7 +737,7 @@ logger.info(f"Cleaned {cleaned_tmp} temp files")
 |------|----------|
 | 数据库是唯一消息源 | Task 1 (chat.html重写) + Task 2 (main.js SSE简化) + Task 3 (preload简化) |
 | 临时目录 | Task 5 Step 1 (tmp_dir.py) |
-| 消息记录引用文件路径 | Task 1 Step 7 (person_photo简化) + Task 5 Step 2 (画框存图) |
+| 消息记录引用文件路径 | Task 1 Step 7 (照片展示简化) + Task 5 Step 2 (画框存图) |
 | 删除消息联动清理 | Task 6 (session.py + compat.py) |
 | 人脸框 | Task 5 Step 2 (后端画框) + Task 1 Step 7 (前端简化) |
 | 小女孩alert | Task 4 (限制触发源) |

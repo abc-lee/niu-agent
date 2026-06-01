@@ -155,26 +155,31 @@ messagesDiv.addEventListener('drop', async (e) => {
 ```
 
 **Agent 消息格式**：
-Agent 在消息中使用特殊标记让前端渲染图片+人脸框：
+Agent 在消息中使用 Markdown 标准图片语法展示带人脸红框的照片：
 ```
-::person_photo::{"path": "REDACTED_WIN_PATH/.../photo.jpg", "bbox": [x1,y1,x2,y2], "person_id": "uuid", "name": "未命名人物_8"}::
+![person_id|name](图片路径)
 ```
 
-前端检测 `::person_photo::` 标记并渲染图片+人脸框。
+参数说明（编码在 alt 文本中，用 `|` 分隔）：
+- `person_id`：人物ID（UUID 格式）
+- `name`：人物名称
+- `path`：带人脸红框的图片路径（绝对路径，不加 `file://` 前缀）
+
+前端使用标准 Markdown 渲染器（marked.js）自动渲染 `![alt](path)` 图片。
 
 **渲染逻辑**：
 
 ```javascript
-// 解析消息中的 ::person_photo:: 标记
-function parsePersonPhotoMarkers(text) {
-  const regex = /::person_photo::(\{.*?\})::/g;
-  const results = [];
-  let match;
-  while ((match = regex.exec(text)) !== null) {
-    results.push(JSON.parse(match[1]));
+// Markdown 渲染器自动处理 ![alt](path) 图片语法
+// 后处理：提取 alt 文本中的 person_id 添加为 data 属性
+textDiv.querySelectorAll('img').forEach(img => {
+  const alt = img.getAttribute('alt') || '';
+  if (alt.includes('|')) {
+    const [personId, name] = alt.split('|', 2);
+    img.dataset.personId = personId;
+    img.alt = name;
   }
-  return results;
-}
+});
 
 // 渲染图片+人脸框
 async function renderPersonPhoto(data) {
