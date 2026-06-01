@@ -80,6 +80,20 @@ class TestValidateReferences:
         assert "chat-with-file-processor" in feedback
         assert "本地绝对路径" in feedback
 
+    def test_data_uri_image_skipped(self):
+        """data: URI 图片不应被验证为本地路径"""
+        content = "![chart](data:image/png;base64,iVBORw0KGgo=)"
+        result = validate_references(content)
+        assert result.is_valid is True
+        assert result.errors == []
+
+    def test_empty_path_skipped(self):
+        """空路径的链接不应触发验证"""
+        content = "[点击下载]()"
+        result = validate_references(content)
+        assert result.is_valid is True
+        assert result.errors == []
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
