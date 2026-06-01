@@ -366,6 +366,8 @@ class FeishuChannelAdapter(ChannelAdapter):
                             await self._send_pending_media(channel_id)
                         except Exception as me:
                             logger.error(f"[FeishuStream] Send pending files after finalize failed: {me}")
+                        finally:
+                            self._stream_pending_files.clear()
                     return  # 图片已嵌入卡片，不再独立发送
                 except Exception as e:
                     logger.error(f"[FeishuStream] Finalize failed, falling back to markdown: {e}")
@@ -1164,9 +1166,9 @@ class FeishuChannelAdapter(ChannelAdapter):
 
     async def send_media(self, channel_id: str, msg: ResolvedMessage) -> None:
         """发送飞书图片/文件消息 — 上传+发消息全走 REST API"""
-        # 去重：如果该路径已在流式卡片中展示过，跳过独立发送
+        # 去重：如果该路径已在流式卡片中展示过，跳过独立发送（仅图片，文件不走卡片嵌入）
         local_path = msg.local_path
-        if local_path and local_path in self._stream_sent_media_paths:
+        if msg.kind == "image" and local_path and local_path in self._stream_sent_media_paths:
             logger.info(f"[FeishuStream] Skipping duplicate media send (already in stream card): {local_path}")
             return  # 不 discard，保留路径供后续去重
 
@@ -1296,13 +1298,18 @@ class FeishuChannelAdapter(ChannelAdapter):
 
         try:
             # Step 1: 上传文件
+            # 清理飞书消息ID前缀：feishu_in_file_v3_00128_xxx_真实文件名 → 真实文件名
+            clean_name = file_name
+            feishu_prefix_match = re.match(r'^feishu_in_file_v3_\d+_[0-9a-f-]+_(.+)$', file_name)
+            if feishu_prefix_match:
+                clean_name = feishu_prefix_match.group(1)
             with open(str(p), "rb") as f:
                 resp = await asyncio.to_thread(
                     _requests.post,
                     "https://open.feishu.cn/open-apis/im/v1/files",
                     headers={"Authorization": f"Bearer {token}"},
                     data={"file_type": "stream"},
-                    files={"file": (file_name, f)},
+                    files={"file": (clean_name, f, "application/octet-stream")},
                     timeout=60,
                 )
             result = resp.json()
