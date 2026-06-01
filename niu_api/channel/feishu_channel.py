@@ -365,7 +365,10 @@ class FeishuChannelAdapter(ChannelAdapter):
                     self._stream_sent_media_paths.clear()
                     # 剥离内容中的媒体标记，避免 markdown 中出现原始标记
                     content = re.sub(r'::person_photo::.*?::', '', content)  # 兼容极旧格式
-                    content = re.sub(r'!\[[^\]]*\]\([^)]+\)', '', content)
+                    from agent.output_validator import _extract_md_refs
+                    for _, _, full_match, is_image, _ in _extract_md_refs(content):
+                        if is_image:
+                            content = content.replace(full_match, "", 1)
                     # 终结失败：将未嵌入卡片的图片转为独立消息发送
                     for img_info in self._stream_pending_images:
                         local_path = img_info.get("local_path")
@@ -535,93 +538,81 @@ class FeishuChannelAdapter(ChannelAdapter):
     async def _filter_media_markers(self, text: str) -> str:
         """过滤 Markdown 图片/文件语法，提取图片/文件信息
 
-        - Markdown 图片：![alt](path) 或 ![](path)，alt 可含 person_id|name 格式
-        - Markdown 文件链接：[文件名](path)，非图片链接
+        使用 bracket-balanced parser（_extract_md_refs），支持文件名中的括号（如 V1.8(4).docx）
         - 图片：上传到飞书获取 image_key，保存到 _stream_pending_images
         - 文件：保存本地路径到 _stream_pending_files
-        - 图片标记替换为 [PHOTO_SEP] 分隔符（供终结时拆分文本+插入img元素）
-        - 文件标记从文本中完全删除
+        - 图片标记替换为 [PHOTO_SEP] 分隔符
+        - 文件标记替换为 ↑ 文件名 提示
         """
-        # 1. 解析 Markdown 图片语法 ![alt](path)
-        md_img_pattern = re.compile(r'!\[([^\]]*)\]\(([^)]+(?:\)[^)\s])*)\)')
-        for match in md_img_pattern.finditer(text):
-            alt_text = match.group(1)   # 可能是空串、"人物名"、"person_id|name"
-            img_path = match.group(2)   # 图片本地路径
-            full_match = match.group(0)  # 整个 ![alt](path)
+        from agent.output_validator import _extract_md_refs, _normalize_path, _is_local_path
 
-            if img_path and Path(img_path).exists():
-                # 提取 person_id 和 name（如果 alt 包含 person_id|name 格式）
-                person_id = ""
-                name = alt_text
-                if "|" in alt_text:
-                    parts = alt_text.split("|", 1)
-                    # person_id 是 UUID 格式（如 a4317e63-23fd-4edd-b543-3600e8c5c52e）
-                    if len(parts[0]) >= 8 and "-" in parts[0]:
-                        person_id = parts[0]
-                        name = parts[1]
-                    else:
-                        name = alt_text
+        # 收集替换操作，从后向前替换避免偏移
+        replacements: list[tuple[int, int, str]] = []  # (start, end, replacement)
 
-                # 上传图片到飞书
-                try:
-                    img_key = await self._upload_image_to_feishu(img_path)
-                    if img_key:
-                        self._stream_pending_images.append({
-                            "img_key": img_key,
-                            "alt": name or "人物照片",
-                            "local_path": img_path,
-                        })
-                        self._stream_sent_media_paths.add(img_path)
-                        # 替换为分隔符（而非完全删除），供终结时拆分文本+插入img元素
-                        text = text.replace(full_match, "[PHOTO_SEP]", 1)
-                    else:
-                        # 上传失败，终结时通过 send_media 发送
+        for alt_text, raw_path, full_match, is_image, start_idx in _extract_md_refs(text):
+            end_idx = start_idx + len(full_match)
+
+            if is_image:
+                img_path = _normalize_path(raw_path)
+                if not _is_local_path(img_path):
+                    replacements.append((start_idx, end_idx, ""))
+                elif img_path and Path(img_path).exists():
+                    name = alt_text
+                    if "|" in alt_text:
+                        parts = alt_text.split("|", 1)
+                        if len(parts[0]) >= 8 and "-" in parts[0]:
+                            name = parts[1]
+                        else:
+                            name = alt_text
+
+                    try:
+                        img_key = await self._upload_image_to_feishu(img_path)
+                        if img_key:
+                            self._stream_pending_images.append({
+                                "img_key": img_key,
+                                "alt": name or "人物照片",
+                                "local_path": img_path,
+                            })
+                            self._stream_sent_media_paths.add(img_path)
+                            replacements.append((start_idx, end_idx, "[PHOTO_SEP]"))
+                        else:
+                            self._stream_pending_files.append({
+                                "local_path": img_path,
+                                "filename": name or Path(img_path).name,
+                                "kind": "image",
+                            })
+                            replacements.append((start_idx, end_idx, ""))
+                    except Exception as e:
+                        logger.warning(f"[FeishuStream] Upload image failed, will send as media: {e}")
                         self._stream_pending_files.append({
                             "local_path": img_path,
                             "filename": name or Path(img_path).name,
                             "kind": "image",
                         })
-                        text = text.replace(full_match, "", 1)
-                except Exception as e:
-                    logger.warning(f"[FeishuStream] Upload image failed, will send as media: {e}")
-                    self._stream_pending_files.append({
-                        "local_path": img_path,
-                        "filename": name or Path(img_path).name,
-                        "kind": "image",
-                    })
-                    text = text.replace(full_match, "", 1)
+                        replacements.append((start_idx, end_idx, ""))
+                else:
+                    if img_path:
+                        logger.debug(f"[FeishuStream] Image path not found or unsupported: {img_path}")
+                    replacements.append((start_idx, end_idx, ""))
             else:
-                # 图片路径不存在或为 URL，删除标记
-                if img_path:
-                    logger.debug(f"[FeishuStream] Image path not found or unsupported: {img_path}")
-                text = text.replace(full_match, "", 1)
+                link_path = _normalize_path(raw_path)
+                if not _is_local_path(link_path):
+                    continue
 
-        # 1.5 解析 Markdown 文件链接 [文件名](path)（非图片链接）
-        md_link_pattern = re.compile(r'(?<!!)\[([^\]]+)\]\(([^)]+(?:\)[^)\s])*)\)')
-        for match in md_link_pattern.finditer(text):
-            link_text = match.group(1)
-            link_path = match.group(2)
-            full_match = match.group(0)
+                if link_path and Path(link_path).exists() and link_path not in self._stream_sent_media_paths:
+                    self._stream_pending_files.append({
+                        "local_path": link_path,
+                        "filename": alt_text or Path(link_path).name,
+                        "kind": "file",
+                    })
+                    self._stream_sent_media_paths.add(link_path)
+                    replacements.append((start_idx, end_idx, f"↑ {alt_text or Path(link_path).name}"))
+                else:
+                    replacements.append((start_idx, end_idx, f"[文件不可用: {alt_text}]"))
 
-            # 只处理本地路径，跳过 URL
-            if not link_path or link_path.startswith(("http://", "https://", "ftp://", "mailto:")):
-                continue
-
-            # 规范化路径
-            if link_path.startswith("file:///"):
-                link_path = link_path[7:]
-            elif link_path.startswith("file://"):
-                link_path = link_path[6:]
-
-            if Path(link_path).exists() and link_path not in self._stream_sent_media_paths:
-                self._stream_pending_files.append({
-                    "local_path": link_path,
-                    "filename": link_text or Path(link_path).name,
-                    "kind": "file",
-                })
-                self._stream_sent_media_paths.add(link_path)
-            # 从文本中删除链接标记（文件通过飞书文件消息发送，不走 markdown）
-            text = text.replace(full_match, f"↑ {link_text or Path(link_path).name}", 1)
+        # 从后向前替换，避免前面的替换影响后续位置
+        for start, end, repl in sorted(replacements, key=lambda x: x[0], reverse=True):
+            text = text[:start] + repl + text[end:]
 
         return text
 
@@ -746,6 +737,7 @@ class FeishuChannelAdapter(ChannelAdapter):
         else:
             # 按分隔符拆分文本，交替插入 markdown + img 元素
             parts = final_text.split("[PHOTO_SEP]")
+            sep_count = len(parts) - 1
             md_idx = 1
             img_idx = 0
             for i, part in enumerate(parts):
@@ -928,10 +920,10 @@ class FeishuChannelAdapter(ChannelAdapter):
         cleaned_content = content
 
         # 1. 解析 Markdown 图片和文件链接（括号平衡解析器，支持文件名中的括号）
-        from agent.output_validator import _extract_md_refs
-        for alt_text, raw_path, full_match, is_image in _extract_md_refs(cleaned_content):
+        from agent.output_validator import _extract_md_refs, _normalize_path, _is_local_path
+        for alt_text, raw_path, full_match, is_image, _start in _extract_md_refs(cleaned_content):
             if is_image:
-                img_path = raw_path
+                img_path = _normalize_path(raw_path)
                 if not img_path:
                     replacement = "[图片信息缺失]"
                 elif not Path(img_path).exists():
@@ -947,14 +939,9 @@ class FeishuChannelAdapter(ChannelAdapter):
                 cleaned_content = cleaned_content.replace(full_match, replacement, 1)
             else:
                 # 文件链接
-                link_path = raw_path
-                if not link_path or link_path.startswith(("http://", "https://", "ftp://", "mailto:")):
+                link_path = _normalize_path(raw_path)
+                if not _is_local_path(link_path):
                     continue
-
-                if link_path.startswith("file:///"):
-                    link_path = link_path[7:]
-                elif link_path.startswith("file://"):
-                    link_path = link_path[6:]
 
                 if not link_path:
                     replacement = "[文件信息缺失]"
