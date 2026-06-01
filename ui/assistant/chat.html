@@ -803,6 +803,8 @@
               const src = img.getAttribute('src');
               if (src && /^[A-Za-z]:[\/]/.test(src)) {
                 img.setAttribute('src', encodeURI('file:///' + src));
+              } else if (src && /^\//.test(src)) {
+                img.setAttribute('src', encodeURI('file://' + src));
               }
               // 处理 alt 文本中的 person_id|name 格式
               const alt = img.getAttribute('alt') || '';
@@ -823,6 +825,12 @@
                   localPath = decodeURIComponent(localPath.replace('file:///', ''));
                 }
                 if (localPath && /^[A-Za-z]:/.test(localPath)) {
+                  img.dataset.filePath = localPath;
+                  img.style.cursor = 'pointer';
+                  img.addEventListener('dblclick', () => {
+                    window.electronAPI.openWithSystemViewer(localPath);
+                  });
+                } else if (localPath && /^\//.test(localPath)) {
                   img.dataset.filePath = localPath;
                   img.style.cursor = 'pointer';
                   img.addEventListener('dblclick', () => {
@@ -1306,7 +1314,7 @@
       const existing = document.querySelector(`.message[data-id="${id}"]`);
       if (existing) return;
 
-      // 复用 addMessage 的渲染逻辑（支持 ::person_photo:: 等标记）
+      // 复用 addMessage 的渲染逻辑（Markdown 图片由 marked.js 渲染）
       const div = addMessage(role, content);
       if (!div) return;
       div.dataset.id = id;
