@@ -868,10 +868,12 @@
               let href = a.getAttribute('href') || '';
               // 剥离 file:/// 前缀
               if (href.startsWith('file:///')) {
-                href = decodeURIComponent(href.replace('file:///', ''));
+                href = href.replace('file:///', '');
               } else if (href.startsWith('file://')) {
-                href = decodeURIComponent(href.replace('file://', ''));
+                href = href.replace('file://', '');
               }
+              // marked.js 会将中文路径编码为 %XX，需要解码
+              try { href = decodeURIComponent(href); } catch(e) {}
               // 判断是否为本地路径（绝对路径）— macOS 以 / 开头，Windows 以 C: 开头
               if (href && (/^[A-Za-z]:[\/]/.test(href) || /^\//.test(href))) {
                 a.setAttribute('data-file-path', href);

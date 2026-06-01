@@ -543,7 +543,7 @@ class FeishuChannelAdapter(ChannelAdapter):
         - 文件标记从文本中完全删除
         """
         # 1. 解析 Markdown 图片语法 ![alt](path)
-        md_img_pattern = re.compile(r'!\[([^\]]*)\]\(([^)]+)\)')
+        md_img_pattern = re.compile(r'!\[([^\]]*)\]\(([^)]+(?:\)[^)\s])*)\)')
         for match in md_img_pattern.finditer(text):
             alt_text = match.group(1)   # 可能是空串、"人物名"、"person_id|name"
             img_path = match.group(2)   # 图片本地路径
@@ -597,7 +597,7 @@ class FeishuChannelAdapter(ChannelAdapter):
                 text = text.replace(full_match, "", 1)
 
         # 1.5 解析 Markdown 文件链接 [文件名](path)（非图片链接）
-        md_link_pattern = re.compile(r'(?<!!)\[([^\]]+)\]\(([^)]+)\)')
+        md_link_pattern = re.compile(r'(?<!!)\[([^\]]+)\]\(([^)]+(?:\)[^)\s])*)\)')
         for match in md_link_pattern.finditer(text):
             link_text = match.group(1)
             link_path = match.group(2)
@@ -927,53 +927,45 @@ class FeishuChannelAdapter(ChannelAdapter):
         media_messages = []
         cleaned_content = content
 
-        # 1. 解析 Markdown 图片语法 ![alt](path)
-        md_img_pattern = re.compile(r'!\[([^\]]*)\]\(([^)]+)\)')
-        for match in md_img_pattern.finditer(cleaned_content):
-            alt_text = match.group(1)
-            img_path = match.group(2)
-            full_match = match.group(0)
-
-            if not img_path:
-                replacement = "[图片信息缺失]"
-            elif not Path(img_path).exists():
-                replacement = "[图片不存在]"
+        # 1. 解析 Markdown 图片和文件链接（括号平衡解析器，支持文件名中的括号）
+        from agent.output_validator import _extract_md_refs
+        for alt_text, raw_path, full_match, is_image in _extract_md_refs(cleaned_content):
+            if is_image:
+                img_path = raw_path
+                if not img_path:
+                    replacement = "[图片信息缺失]"
+                elif not Path(img_path).exists():
+                    replacement = "[图片不存在]"
+                else:
+                    display_name = alt_text
+                    if "|" in alt_text:
+                        parts = alt_text.split("|", 1)
+                        if len(parts[0]) >= 8 and "-" in parts[0]:
+                            display_name = parts[1]
+                    media_messages.append(ResolvedMessage(kind="image", local_path=img_path, caption=alt_text))
+                    replacement = f"↑ {display_name}的照片" if display_name else "↑ 照片"
+                cleaned_content = cleaned_content.replace(full_match, replacement, 1)
             else:
-                # 解析 person_id|name 格式，避免替换文本暴露 UUID
-                display_name = alt_text
-                if "|" in alt_text:
-                    parts = alt_text.split("|", 1)
-                    if len(parts[0]) >= 8 and "-" in parts[0]:
-                        display_name = parts[1]
-                media_messages.append(ResolvedMessage(kind="image", local_path=img_path, caption=alt_text))
-                replacement = f"↑ {display_name}的照片" if display_name else "↑ 照片"
-            cleaned_content = cleaned_content.replace(full_match, replacement, 1)
+                # 文件链接
+                link_path = raw_path
+                if not link_path or link_path.startswith(("http://", "https://", "ftp://", "mailto:")):
+                    continue
 
-        # 1.5 解析 Markdown 文件链接 [文件名](path)
-        md_link_pattern = re.compile(r'(?<!!)\[([^\]]+)\]\(([^)]+)\)')
-        for match in md_link_pattern.finditer(cleaned_content):
-            link_text = match.group(1)
-            link_path = match.group(2)
-            full_match = match.group(0)
+                if link_path.startswith("file:///"):
+                    link_path = link_path[7:]
+                elif link_path.startswith("file://"):
+                    link_path = link_path[6:]
 
-            if not link_path or link_path.startswith(("http://", "https://", "ftp://", "mailto:")):
-                continue
-
-            if link_path.startswith("file:///"):
-                link_path = link_path[7:]
-            elif link_path.startswith("file://"):
-                link_path = link_path[6:]
-
-            if not link_path:
-                replacement = "[文件信息缺失]"
-            elif not self._is_path_allowed(link_path):
-                replacement = "[文件无法发送: 安全限制]"
-            elif not Path(link_path).exists():
-                replacement = f"[文件不存在: {link_text}]" if link_text else "[文件不存在]"
-            else:
-                media_messages.append(ResolvedMessage(kind="file", local_path=link_path, filename=link_text))
-                replacement = f"↑ {link_text}" if link_text else "↑ 文件"
-            cleaned_content = cleaned_content.replace(full_match, replacement, 1)
+                if not link_path:
+                    replacement = "[文件信息缺失]"
+                elif not self._is_path_allowed(link_path):
+                    replacement = "[文件无法发送: 安全限制]"
+                elif not Path(link_path).exists():
+                    replacement = f"[文件不存在: {alt_text}]" if alt_text else "[文件不存在]"
+                else:
+                    media_messages.append(ResolvedMessage(kind="file", local_path=link_path, filename=alt_text))
+                    replacement = f"↑ {alt_text}" if alt_text else "↑ 文件"
+                cleaned_content = cleaned_content.replace(full_match, replacement, 1)
 
         messages = []
         if cleaned_content.strip():

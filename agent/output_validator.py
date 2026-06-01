@@ -1,6 +1,5 @@
 """Harness 输出验证——验证 LLM 输出中的图片/文件引用路径是否存在"""
 
-import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -32,11 +31,60 @@ class ValidationResult:
         return "\n".join(lines)
 
 
-# Markdown 图片语法：![alt](path)
-_IMG_PATTERN = re.compile(r'!\[([^\]]*)\]\(([^)]+)\)')
+def _extract_md_refs(text: str) -> list[tuple[str, str, str, bool]]:
+    """提取 Markdown 图片和文件引用，处理路径中的括号
 
-# Markdown 链接语法：[text](path) — 排除以 http/https 开头的常规超链接
-_LINK_PATTERN = re.compile(r'(?<!!)\[([^\]]+)\]\(([^)]+)\)')
+    返回: [(alt_text, path, full_match, is_image), ...]
+    用括号平衡解析器代替正则，正确处理文件名中的括号（如 V1.8(4).docx）
+    """
+    results = []
+    i = 0
+    n = len(text)
+    while i < n:
+        # 检测 ![alt](path) 或 [text](path)
+        is_image = False
+        if text[i:i+2] == '![':
+            is_image = True
+            bracket_start = i + 2
+        elif text[i] == '[':
+            bracket_start = i + 1
+        else:
+            i += 1
+            continue
+
+        # 找到 ]
+        bracket_end = text.find(']', bracket_start)
+        if bracket_end < 0:
+            i += 1
+            continue
+
+        alt_text = text[bracket_start:bracket_end]
+
+        # 检查后面是否紧跟 (
+        if bracket_end + 1 >= n or text[bracket_end + 1] != '(':
+            i = bracket_end + 1
+            continue
+
+        # 用括号平衡找到匹配的 )
+        depth = 1
+        j = bracket_end + 2
+        while j < n and depth > 0:
+            if text[j] == '(':
+                depth += 1
+            elif text[j] == ')':
+                depth -= 1
+            j += 1
+
+        if depth != 0:
+            i = bracket_end + 1
+            continue
+
+        path = text[bracket_end + 2:j - 1]
+        full_match = text[i:j]
+        results.append((alt_text, path, full_match, is_image))
+        i = j
+
+    return results
 
 
 def _normalize_path(path: str) -> str:
@@ -61,50 +109,38 @@ def validate_references(content: str) -> ValidationResult:
     - [text](path)：文件链接（非图片），path 必须是本地路径且文件存在
     - 以 http/https 开头的 URL 链接视为普通超链接，不验证
     - 以 http/https 开头的图片引用视为错误（LLM 不应输出 URL 图片）
+    - 支持路径中包含括号（如 V1.8(4).docx）
     """
     result = ValidationResult()
-    seen_paths = set()  # 去重
+    seen_paths = set()
 
-    # 1. 验证图片引用
-    for match in _IMG_PATTERN.finditer(content):
-        raw_path = match.group(2)
+    for alt_text, raw_path, full_match, is_image in _extract_md_refs(content):
         path = _normalize_path(raw_path)
 
         if path in seen_paths:
             continue
         seen_paths.add(path)
 
-        if not _is_local_path(path):
-            result.errors.append(ReferenceError(
-                kind="图片", path=raw_path,
-                reason="不允许使用URL，必须使用本地绝对路径"
-            ))
-            continue
-
-        if not Path(path).exists():
-            result.errors.append(ReferenceError(
-                kind="图片", path=path,
-                reason="路径不存在"
-            ))
-
-    # 2. 验证文件链接（排除图片引用，排除 URL 超链接）
-    for match in _LINK_PATTERN.finditer(content):
-        raw_path = match.group(2)
-        path = _normalize_path(raw_path)
-
-        if path in seen_paths:
-            continue
-        seen_paths.add(path)
-
-        # 跳过 URL 超链接（LLM 输出普通网页链接是正常的）
-        if not _is_local_path(path):
-            continue
-
-        if not Path(path).exists():
-            result.errors.append(ReferenceError(
-                kind="文件", path=path,
-                reason="路径不存在"
-            ))
+        if is_image:
+            if not _is_local_path(path):
+                result.errors.append(ReferenceError(
+                    kind="图片", path=raw_path,
+                    reason="不允许使用URL，必须使用本地绝对路径"
+                ))
+                continue
+            if not Path(path).exists():
+                result.errors.append(ReferenceError(
+                    kind="图片", path=path,
+                    reason="路径不存在"
+                ))
+        else:
+            if not _is_local_path(path):
+                continue
+            if not Path(path).exists():
+                result.errors.append(ReferenceError(
+                    kind="文件", path=path,
+                    reason="路径不存在"
+                ))
 
     result.is_valid = len(result.errors) == 0
     return result
