@@ -358,6 +358,12 @@ class FeishuChannelAdapter(ChannelAdapter):
                 # 流式卡片存在，先尝试终结（无论 fallback 标记）
                 try:
                     await self._finalize_stream_card(content)
+                    # 终结成功后，发送待处理的文件（图片已嵌入卡片，文件需要独立发送）
+                    if self._stream_pending_files:
+                        try:
+                            await self._send_pending_media(channel_id)
+                        except Exception as me:
+                            logger.error(f"[FeishuStream] Send pending files after finalize failed: {me}")
                     return  # 图片已嵌入卡片，不再独立发送
                 except Exception as e:
                     logger.error(f"[FeishuStream] Finalize failed, falling back to markdown: {e}")
