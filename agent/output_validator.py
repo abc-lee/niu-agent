@@ -31,11 +31,12 @@ class ValidationResult:
         return "\n".join(lines)
 
 
-def _extract_md_refs(text: str) -> list[tuple[str, str, str, bool]]:
+def _extract_md_refs(text: str) -> list[tuple[str, str, str, bool, int]]:
     """提取 Markdown 图片和文件引用，处理路径中的括号
 
-    返回: [(alt_text, path, full_match, is_image), ...]
+    返回: [(alt_text, path, full_match, is_image, start_index), ...]
     用括号平衡解析器代替正则，正确处理文件名中的括号（如 V1.8(4).docx）
+    start_index 是 full_match 在 text 中的起始位置，用于精确替换
     """
     results = []
     i = 0
@@ -81,7 +82,7 @@ def _extract_md_refs(text: str) -> list[tuple[str, str, str, bool]]:
 
         path = text[bracket_end + 2:j - 1]
         full_match = text[i:j]
-        results.append((alt_text, path, full_match, is_image))
+        results.append((alt_text, path, full_match, is_image, i))
         i = j
 
     return results
@@ -114,7 +115,7 @@ def validate_references(content: str) -> ValidationResult:
     result = ValidationResult()
     seen_paths = set()
 
-    for alt_text, raw_path, full_match, is_image in _extract_md_refs(content):
+    for alt_text, raw_path, full_match, is_image, _start in _extract_md_refs(content):
         path = _normalize_path(raw_path)
 
         if path in seen_paths:
