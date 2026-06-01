@@ -2,6 +2,8 @@ import json, logging, re, sys
 from dataclasses import dataclass
 from typing import Any, Optional
 
+from agent.output_validator import validate_references
+
 _VALID_STREAM_TYPES = ("reply", "tool_marker", "system", "persist")
 
 
@@ -162,6 +164,9 @@ def agent_runner_loop(
     # V4: 通知前端进入忙碌状态
     yield StreamEvent("system", "chat_busy")
 
+    _harness_fail_count = 0
+    _MAX_HARNESS_RETRIES = 3
+
     while turn < handler.max_turns:
         turn += 1
         # 上下文溢出保护：检查 token 使用率
@@ -197,6 +202,18 @@ def agent_runner_loop(
             # 过滤掉 <tool_use> 标签，只返回纯文本
             content = response.content or ""
             content = re.sub(r"<tool_use>.*?</tool_use>", "", content, flags=re.DOTALL)
+            # Harness 验证：仅在 LLM 不调工具直接回复用户时验证
+            # 条件 not response.tool_calls 精确区分最终回复 vs 中间工具调用
+            if not response.tool_calls:
+                validation = validate_references(content)
+                if not validation.is_valid and _harness_fail_count < _MAX_HARNESS_RETRIES:
+                    _harness_fail_count += 1
+                    feedback = validation.format_feedback()
+                    messages.append({"role": "assistant", "content": content})
+                    messages.append({"role": "user", "content": feedback})
+                    continue  # 回到 while 循环，让 LLM 修正
+                _harness_fail_count = 0
+
             yield StreamEvent("reply", content)
 
         if not response.tool_calls:
