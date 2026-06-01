@@ -82,7 +82,7 @@ def _run_agent_loop(
     Returns:
         (result_text, return_value) 元组
     """
-    from .generic.agent_loop import agent_runner_loop
+    from .generic.agent_loop import agent_runner_loop, StreamEvent
 
     if initial_user_content is None:
         initial_user_content = user_input
@@ -109,13 +109,12 @@ def _run_agent_loop(
             chunk = next(gen)
             if isinstance(chunk, str):
                 result += chunk
+            elif isinstance(chunk, StreamEvent):
+                if chunk.type == "reply":
+                    result += chunk.content
+                # 忽略 persist/system/tool_marker — 这些是子Agent内部过程，不应返回给主Agent
             else:
-                content = getattr(chunk, "content", None)
-                if content and isinstance(content, str):
-                    result += content
-                else:
-                    logger.warning(f"[SubAgent] Non-string chunk from agent_runner_loop: {type(chunk).__name__}")
-                    result += str(chunk)
+                logger.warning(f"[SubAgent] Non-string chunk from agent_runner_loop: {type(chunk).__name__}")
         except StopIteration as e:
             return_value = e.value
             break
