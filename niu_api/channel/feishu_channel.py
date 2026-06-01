@@ -365,6 +365,7 @@ class FeishuChannelAdapter(ChannelAdapter):
                     self._stream_sent_media_paths.clear()
                     # 剥离内容中的媒体标记，避免 markdown 中出现原始标记
                     content = re.sub(r'::(?:person_photo|file)::.*?::', '', content)
+                    content = re.sub(r'!\[[^\]]*\]\([^)]+\)', '', content)
                     # 终结失败：将未嵌入卡片的图片转为独立消息发送
                     for img_info in self._stream_pending_images:
                         local_path = img_info.get("local_path")
@@ -934,8 +935,14 @@ class FeishuChannelAdapter(ChannelAdapter):
             elif not Path(img_path).exists():
                 replacement = "[图片不存在]"
             else:
+                # 解析 person_id|name 格式，避免替换文本暴露 UUID
+                display_name = alt_text
+                if "|" in alt_text:
+                    parts = alt_text.split("|", 1)
+                    if len(parts[0]) >= 8 and "-" in parts[0]:
+                        display_name = parts[1]
                 media_messages.append(ResolvedMessage(kind="image", local_path=img_path, caption=alt_text))
-                replacement = f"↑ {alt_text}的照片" if alt_text else "↑ 照片"
+                replacement = f"↑ {display_name}的照片" if display_name else "↑ 照片"
             cleaned_content = cleaned_content.replace(full_match, replacement, 1)
 
         # 2. 解析 ::file::JSON:: 标记
