@@ -53,7 +53,6 @@ def _read_context_window_tokens() -> int:
 
 
 def _run_agent_loop(
-    agent_name: str,
     client,
     system_prompt: str,
     user_input: str,
@@ -324,7 +323,6 @@ def call_subagent(
     context_fifo_threshold = int(context_window_tokens * 0.75)
 
     result_text, return_value = _run_agent_loop(
-        agent_name=agent_name,
         client=client,
         system_prompt=system_prompt,
         user_input=task,
