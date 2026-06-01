@@ -359,6 +359,8 @@ class FeishuChannelAdapter(ChannelAdapter):
                 try:
                     await self._finalize_stream_card(content)
                     # 终结成功后，发送待处理的文件（图片已嵌入卡片，文件需要独立发送）
+                    # 清空 _stream_pending_images 避免重复发送（图片已通过 image_key 嵌入卡片）
+                    self._stream_pending_images.clear()
                     if self._stream_pending_files:
                         try:
                             await self._send_pending_media(channel_id)
