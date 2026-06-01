@@ -619,8 +619,7 @@ class FeishuChannelAdapter(ChannelAdapter):
                         "filename": alt_text or Path(link_path).name,
                         "kind": "file",
                     })
-                    # 注意：文件不加入 _stream_sent_media_paths，因为文件只是文字提示，未真正嵌入卡片
-                    # 只有图片才真正嵌入卡片，需要 dedup
+                    self._stream_sent_media_paths.add(link_path)
                     replacements.append((start_idx, end_idx, f"↑ {alt_text or Path(link_path).name}"))
                 else:
                     replacements.append((start_idx, end_idx, f"[文件不可用: {alt_text}]"))
@@ -886,7 +885,7 @@ class FeishuChannelAdapter(ChannelAdapter):
                     local_path=item["local_path"],
                     filename=item.get("filename", Path(item["local_path"]).name),
                 )
-                await self.send_media(channel_id, msg)
+                await self.send_media(channel_id, msg, from_pending=True)
             except Exception as e:
                 logger.error(f"[FeishuStream] Send pending media failed: {e}")
         # 清空已处理的列表
@@ -1165,13 +1164,21 @@ class FeishuChannelAdapter(ChannelAdapter):
 
     # ── 媒体发送 ──────────────────────────────────────────────
 
-    async def send_media(self, channel_id: str, msg: ResolvedMessage) -> None:
-        """发送飞书图片/文件消息 — 上传+发消息全走 REST API"""
-        # 去重：如果该图片已在流式卡片中嵌入展示过，跳过独立发送
-        # 注意：只对图片做 dedup（图片真正嵌入卡片），文件不做 dedup（文件只是文字提示）
+    async def send_media(self, channel_id: str, msg: ResolvedMessage, *, from_pending: bool = False) -> None:
+        """发送飞书图片/文件消息 — 上传+发消息全走 REST API
+
+        Args:
+            channel_id: 目标频道/用户ID
+            msg: 已解析的消息对象
+            from_pending: 是否来自 _send_pending_media 首次发送。
+                          True = 跳过去重检查（首次发送）
+                          False = 检查去重（来自 route_out，防止重复发送）
+        """
+        # 去重：如果该媒体已在流式卡片中嵌入展示过，跳过独立发送
+        # 但来自 _send_pending_media 的首次发送需要跳过此检查
         local_path = msg.local_path
-        if msg.kind == "image" and local_path and local_path in self._stream_sent_media_paths:
-            logger.info(f"[FeishuStream] Skipping duplicate image send (already in stream card): {local_path}")
+        if not from_pending and local_path and local_path in self._stream_sent_media_paths:
+            logger.info(f"[FeishuStream] Skipping duplicate media send (already in stream card): {local_path}")
             return  # 不 discard，保留路径供后续去重
 
         target = channel_id or self._user_open_id or self._user_p2p_chat_id
@@ -1284,6 +1291,18 @@ class FeishuChannelAdapter(ChannelAdapter):
                 except Exception:
                     pass
 
+    @staticmethod
+    def _sanitize_filename(name: str) -> str:
+        """清理文件名中的危险字符，确保飞书API上传安全"""
+        # 移除控制字符
+        name = re.sub(r'[\x00-\x1f\x7f]', '', name)
+        # 替换可能导致HTTP请求问题的字符
+        name = re.sub(r'["\\]', '_', name)
+        # 限制长度（飞书文件名限制）
+        if len(name) > 200:
+            name = name[:200]
+        return name.strip() or "unnamed"
+
     async def _send_file_via_rest(self, receive_id: str, file_path: str, file_name: str) -> bool:
         """上传文件并发送消息 — 全走 REST API"""
         import requests as _requests
@@ -1305,6 +1324,7 @@ class FeishuChannelAdapter(ChannelAdapter):
             feishu_prefix_match = re.match(r'^feishu_in_file_v3_\d+_[0-9a-f-]+_(.+)$', file_name)
             if feishu_prefix_match:
                 clean_name = feishu_prefix_match.group(1)
+            clean_name = self._sanitize_filename(clean_name)
             with open(str(p), "rb") as f:
                 resp = await asyncio.to_thread(
                     _requests.post,

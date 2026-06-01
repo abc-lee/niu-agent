@@ -53,12 +53,21 @@ def _extract_md_refs(text: str) -> list[tuple[str, str, str, bool, int]]:
             i += 1
             continue
 
-        # 找到 ]
-        bracket_end = text.find(']', bracket_start)
-        if bracket_end < 0:
+        # 用方括号平衡找到匹配的 ]
+        depth = 1
+        j = bracket_start
+        while j < n and depth > 0:
+            if text[j] == '[':
+                depth += 1
+            elif text[j] == ']':
+                depth -= 1
+            if depth > 0:
+                j += 1
+        if depth != 0:
             i += 1
             continue
 
+        bracket_end = j
         alt_text = text[bracket_start:bracket_end]
 
         # 检查后面是否紧跟 (
