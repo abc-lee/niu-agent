@@ -53,7 +53,7 @@ class TestClearMessagesCleansTmp:
         # Add a message that references the temp file
         store = MessageStore(db_path=test_db)
         await store.init_db()
-        await store.add_message(role="assistant", content=f"这是谁？\n::person_photo::{{\"path\": \"{boxed_path}\", \"person_id\": \"abc\"}}::")
+        await store.add_message(role="assistant", content=f"这是谁？\n![abc|人物](file://{boxed_path})")
 
         # Clear messages — should also delete the temp file
         deleted = await store.clear_messages()
