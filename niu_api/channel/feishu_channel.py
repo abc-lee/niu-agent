@@ -535,83 +535,94 @@ class FeishuChannelAdapter(ChannelAdapter):
             self._stream_fallback_used = True
 
     async def _filter_media_markers(self, text: str) -> str:
-        """过滤 ::person_photo::JSON:: 和 ::file::JSON:: 标记，提取图片/文件信息
+        """过滤 Markdown 图片语法 ![alt](path) 和 ::file::JSON:: 标记，提取图片/文件信息
 
+        - Markdown 图片：![alt](path) 或 ![](path)，alt 可含 person_id|name 格式
         - 图片：上传到飞书获取 image_key，保存到 _stream_pending_images
         - 文件：保存本地路径到 _stream_pending_files
         - 图片标记替换为 [PHOTO_SEP] 分隔符（供终结时拆分文本+插入img元素）
         - 文件标记从文本中完全删除
         """
-        for marker in ("person_photo", "file"):
-            pattern = f"::{marker}::"
-            while pattern in text:
-                start = text.index(pattern)
-                after_marker = start + len(pattern)
-                json_end = text.find("::", after_marker)
-                if json_end == -1:
-                    # 格式错误，跳过
-                    text = text[:start] + text[after_marker:]
-                    break
-                json_str = text[after_marker:json_end]
-                remaining = text[json_end + 2:]
+        # 1. 解析 Markdown 图片语法 ![alt](path)
+        md_img_pattern = re.compile(r'!\[([^\]]*)\]\(([^)]+)\)')
+        for match in md_img_pattern.finditer(text):
+            alt_text = match.group(1)   # 可能是空串、"人物名"、"person_id|name"
+            img_path = match.group(2)   # 图片本地路径
+            full_match = match.group(0)  # 整个 ![alt](path)
+
+            if img_path and Path(img_path).exists():
+                # 提取 person_id 和 name（如果 alt 包含 person_id|name 格式）
+                person_id = ""
+                name = alt_text
+                if "|" in alt_text:
+                    parts = alt_text.split("|", 1)
+                    # person_id 是 UUID 格式（如 a4317e63-23fd-4edd-b543-3600e8c5c52e）
+                    if len(parts[0]) >= 8 and "-" in parts[0]:
+                        person_id = parts[0]
+                        name = parts[1]
+                    else:
+                        name = alt_text
+
+                # 上传图片到飞书
                 try:
-                    data = json.loads(json_str)
-                except json.JSONDecodeError:
-                    text = text[:start] + remaining
-                    break
-                path = data.get("path", "")
-                name = data.get("name", "")
-                if marker == "person_photo" and path and Path(path).exists():
-                    # 上传图片到飞书
-                    try:
-                        img_key = await self._upload_image_to_feishu(path)
-                        if img_key:
-                            self._stream_pending_images.append({
-                                "img_key": img_key,
-                                "alt": name or "人物照片",
-                                "local_path": path,
-                            })
-                            self._stream_sent_media_paths.add(path)
-                            # 替换为分隔符（而非完全删除），供终结时拆分文本+插入img元素
-                            text = text[:start] + "[PHOTO_SEP]" + remaining
-                        else:
-                            # 上传失败，终结时通过 send_media 发送
-                            self._stream_pending_files.append({
-                                "local_path": path,
-                                "filename": name or Path(path).name,
-                                "kind": "image",
-                            })
-                            text = text[:start] + remaining
-                    except Exception as e:
-                        logger.warning(f"[FeishuStream] Upload image failed, will send as media: {e}")
+                    img_key = await self._upload_image_to_feishu(img_path)
+                    if img_key:
+                        self._stream_pending_images.append({
+                            "img_key": img_key,
+                            "alt": name or "人物照片",
+                            "local_path": img_path,
+                        })
+                        self._stream_sent_media_paths.add(img_path)
+                        # 替换为分隔符（而非完全删除），供终结时拆分文本+插入img元素
+                        text = text.replace(full_match, "[PHOTO_SEP]", 1)
+                    else:
+                        # 上传失败，终结时通过 send_media 发送
                         self._stream_pending_files.append({
-                            "local_path": path,
-                            "filename": name or Path(path).name,
+                            "local_path": img_path,
+                            "filename": name or Path(img_path).name,
                             "kind": "image",
                         })
-                        text = text[:start] + remaining
-                elif marker == "file" and path and Path(path).exists():
+                        text = text.replace(full_match, "", 1)
+                except Exception as e:
+                    logger.warning(f"[FeishuStream] Upload image failed, will send as media: {e}")
                     self._stream_pending_files.append({
-                        "local_path": path,
-                        "filename": name or Path(path).name,
-                        "kind": "file",
+                        "local_path": img_path,
+                        "filename": name or Path(img_path).name,
+                        "kind": "image",
                     })
-                    self._stream_sent_media_paths.add(path)
-                # 默认：删除标记（仅当上方分支未自行处理文本时）
-                # person_photo 分支已在内部处理了 text 替换（[PHOTO_SEP] 或删除）
-                # 此处仅处理 file 标记和 person_photo 路径不存在的情况
-                if marker == "file" and path and Path(path).exists():
-                    # file 标记已在 elif 中添加到 pending_files，此处删除标记
-                    pass  # text 替换在下方统一执行
-                elif not (marker == "person_photo" and path and Path(path).exists()):
-                    # person_photo 路径不存在时，直接删除标记
-                    pass  # text 替换在下方统一执行
-                # 统一文本替换（file 标记删除，person_photo 路径不存在时删除）
-                if marker == "file":
-                    text = text[:start] + remaining
-                elif not (marker == "person_photo" and path and Path(path).exists()):
-                    text = text[:start] + remaining
-                # person_photo 上传成功时 text 已替换为 [PHOTO_SEP]，不做二次替换
+                    text = text.replace(full_match, "", 1)
+            else:
+                # 图片路径不存在，删除标记
+                text = text.replace(full_match, "", 1)
+
+        # 2. 解析 ::file::JSON:: 标记（保留，LLM 不会自然生成 Markdown 文件链接）
+        pattern_file = "::file::"
+        while pattern_file in text:
+            start = text.index(pattern_file)
+            after_marker = start + len(pattern_file)
+            json_end = text.find("::", after_marker)
+            if json_end == -1:
+                # 格式错误，跳过
+                text = text[:start] + text[after_marker:]
+                break
+            json_str = text[after_marker:json_end]
+            remaining = text[json_end + 2:]
+            try:
+                data = json.loads(json_str)
+            except json.JSONDecodeError:
+                text = text[:start] + remaining
+                break
+            path = data.get("path", "")
+            name = data.get("name", "")
+            if path and Path(path).exists():
+                self._stream_pending_files.append({
+                    "local_path": path,
+                    "filename": name or Path(path).name,
+                    "kind": "file",
+                })
+                self._stream_sent_media_paths.add(path)
+            # 删除文件标记
+            text = text[:start] + remaining
         return text
 
     async def _upload_image_to_feishu(self, local_path: str) -> str | None:
@@ -909,38 +920,52 @@ class FeishuChannelAdapter(ChannelAdapter):
         media_messages = []
         cleaned_content = content
 
-        for marker in ("person_photo", "file"):
-            pattern = f"::{marker}::"
-            while pattern in cleaned_content:
-                start = cleaned_content.index(pattern)
-                after_marker = start + len(pattern)
-                json_end = cleaned_content.find("::", after_marker)
-                if json_end == -1:
-                    cleaned_content = cleaned_content[:start] + f"[{marker}标记格式错误]" + cleaned_content[after_marker:]
-                    break
-                json_str = cleaned_content[after_marker:json_end]
-                remaining = cleaned_content[json_end + 2:]
-                try:
-                    data = json.loads(json_str)
-                except json.JSONDecodeError:
-                    cleaned_content = cleaned_content[:start] + f"[{marker}标记格式错误]" + remaining
-                    break
-                path = data.get("path", "")
-                name = data.get("name", "")
-                if not path:
-                    replacement = "[文件信息缺失]"
-                elif not self._is_path_allowed(path):
-                    replacement = "[文件无法发送: 安全限制]"
-                elif not Path(path).exists():
-                    replacement = f"[文件不存在: {name}]" if name else "[文件不存在]"
-                else:
-                    if marker == "person_photo":
-                        media_messages.append(ResolvedMessage(kind="image", local_path=path, caption=name))
-                        replacement = f"↑ {name}的照片" if name else "↑ 照片"
-                    else:
-                        media_messages.append(ResolvedMessage(kind="file", local_path=path, filename=name))
-                        replacement = f"↑ {name}" if name else "↑ 文件"
-                cleaned_content = cleaned_content[:start] + replacement + remaining
+        # 1. 解析 Markdown 图片语法 ![alt](path)
+        md_img_pattern = re.compile(r'!\[([^\]]*)\]\(([^)]+)\)')
+        for match in md_img_pattern.finditer(cleaned_content):
+            alt_text = match.group(1)
+            img_path = match.group(2)
+            full_match = match.group(0)
+
+            if not img_path:
+                replacement = "[图片信息缺失]"
+            elif not self._is_path_allowed(img_path):
+                replacement = "[图片无法发送: 安全限制]"
+            elif not Path(img_path).exists():
+                replacement = "[图片不存在]"
+            else:
+                media_messages.append(ResolvedMessage(kind="image", local_path=img_path, caption=alt_text))
+                replacement = f"↑ {alt_text}的照片" if alt_text else "↑ 照片"
+            cleaned_content = cleaned_content.replace(full_match, replacement, 1)
+
+        # 2. 解析 ::file::JSON:: 标记
+        pattern_file = "::file::"
+        while pattern_file in cleaned_content:
+            start = cleaned_content.index(pattern_file)
+            after_marker = start + len(pattern_file)
+            json_end = cleaned_content.find("::", after_marker)
+            if json_end == -1:
+                cleaned_content = cleaned_content[:start] + "[file标记格式错误]" + cleaned_content[after_marker:]
+                break
+            json_str = cleaned_content[after_marker:json_end]
+            remaining = cleaned_content[json_end + 2:]
+            try:
+                data = json.loads(json_str)
+            except json.JSONDecodeError:
+                cleaned_content = cleaned_content[:start] + "[file标记格式错误]" + remaining
+                break
+            path = data.get("path", "")
+            name = data.get("name", "")
+            if not path:
+                replacement = "[文件信息缺失]"
+            elif not self._is_path_allowed(path):
+                replacement = "[文件无法发送: 安全限制]"
+            elif not Path(path).exists():
+                replacement = f"[文件不存在: {name}]" if name else "[文件不存在]"
+            else:
+                media_messages.append(ResolvedMessage(kind="file", local_path=path, filename=name))
+                replacement = f"↑ {name}" if name else "↑ 文件"
+            cleaned_content = cleaned_content[:start] + replacement + remaining
 
         messages = []
         if cleaned_content.strip():

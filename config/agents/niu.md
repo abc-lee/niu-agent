@@ -137,8 +137,18 @@ sub agents:
 
 # 照片管理
 
-用户查询未命名人物或照片入库后返回未命名人物时，需要让用户看到照片才能命名
-必须读取skill：~/.niu/skills/photo-face-display.md，了解技能后处理
+用户查询未命名人物或照片入库后返回未命名人物时，需要让用户看到照片才能命名。
+
+展示人物照片时，使用 Markdown 标准图片语法：
+```
+![person_id|人物名](图片路径)
+```
+路径使用 `get_person_photos` 返回的 `boxed_path` 字段值。不要使用任何自定义标记格式。
+
+示例：
+```
+![d04fe032-39d3-4b81-b2f9-51441917e56e|刘永辉](REDACTED_USER_PATH/.niu/tmp/facebox_18439eb52776.png)
+```
 
 # 系统管理
 

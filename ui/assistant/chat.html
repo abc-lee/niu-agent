@@ -780,87 +780,65 @@
       const div = document.createElement('div');
       div.className = `message ${role}`;
       
-      // 解析 ::person_photo:: 标记并渲染图片+人脸框
-      if (text && text.includes('::person_photo::')) {
-        const { cleanText, photos } = parsePersonPhotoMarkers(text);
-        
-        // 文本内容（不含标记）
-        if (cleanText) {
-          const textDiv = document.createElement('div');
-          textDiv.className = 'message-text';
-          if (role === 'assistant' && typeof marked !== 'undefined') {
-            try {
-              const safeCleanText = cleanText.replace(/(!\[[^\]]*\]\()([A-Za-z]:[\\\/][^)]+)(\))/g,
-                (match, prefix, path, suffix) => prefix + path.replace(/\\/g, '/') + suffix
-              );
-              textDiv.innerHTML = typeof DOMPurify !== 'undefined'
-                ? DOMPurify.sanitize(marked.parse(safeCleanText))
-                : marked.parse(safeCleanText);
-              textDiv.querySelectorAll('img').forEach(img => {
-                const src = img.getAttribute('src');
-                if (src && /^[A-Za-z]:[\/]/.test(src)) {
-                  img.setAttribute('src', encodeURI('file:///' + src));
+      // 所有消息统一走 Markdown 渲染（包括含图片的消息）
+      // Markdown 图片 ![person_id|name](path) 由 marked.js 渲染，然后后处理添加交互
+      if (text) {
+        const textDiv = document.createElement('div');
+        textDiv.className = 'message-text';
+        // assistant 消息用 markdown 渲染，其他角色纯文本
+        if (role === 'assistant' && typeof marked !== 'undefined') {
+          try {
+            // Pre-process: normalize Windows backslash paths in image links
+            // Markdown treats \t \n \f etc. as escape sequences, breaking paths like
+            // ![alt](C:\Users\.niu\tmp\facebox.png) — \t becomes tab, \n becomes newline
+            const safeText = text.replace(/(!\[[^\]]*\]\()([A-Za-z]:[\\\/][^)]+)(\))/g,
+              (match, prefix, path, suffix) => prefix + path.replace(/\\/g, '/') + suffix
+            );
+            const htmlContent = typeof DOMPurify !== 'undefined'
+              ? DOMPurify.sanitize(marked.parse(safeText))
+              : marked.parse(safeText);
+            textDiv.innerHTML = htmlContent;
+            // 后处理：将本地路径图片转为 file:/// URL，并提取 person_id 添加交互
+            textDiv.querySelectorAll('img').forEach(img => {
+              const src = img.getAttribute('src');
+              if (src && /^[A-Za-z]:[\/]/.test(src)) {
+                img.setAttribute('src', encodeURI('file:///' + src));
+              }
+              // 处理 alt 文本中的 person_id|name 格式
+              const alt = img.getAttribute('alt') || '';
+              if (alt && alt.includes('|')) {
+                const parts = alt.split('|');
+                // person_id 是 UUID 格式
+                if (parts[0] && parts[0].length >= 8 && parts[0].includes('-')) {
+                  img.dataset.personId = parts[0];
+                  img.setAttribute('alt', parts[1] || '');
                 }
-              });
-            } catch (e) {
-              textDiv.textContent = cleanText;
-            }
-          } else {
-            textDiv.textContent = cleanText;
-          }
-          div.appendChild(textDiv);
-        }
-        
-        // 渲染人物照片+人脸框（异步）
-        photos.forEach(photo => {
-          // 先创建容器，异步填充内容
-          const container = document.createElement('div');
-          container.className = 'image-container loading';
-          div.appendChild(container);
-          
-          // 异步加载图片
-          createPersonPhotoElement(photo).then(el => {
-            container.replaceWith(el);
-          }).catch(err => {
-            console.error('[Chat] 渲染人物照片失败:', err);
-            container.textContent = '[图片加载失败]';
-            container.classList.remove('loading');
-          });
-        });
-      } else {
-        // 普通文本消息
-        if (text) {
-          const textDiv = document.createElement('div');
-          textDiv.className = 'message-text';
-          // assistant 消息用 markdown 渲染，其他角色纯文本
-          if (role === 'assistant' && typeof marked !== 'undefined') {
-            try {
-              // Pre-process: normalize Windows backslash paths in image links
-              // Markdown treats \t \n \f etc. as escape sequences, breaking paths like
-              // ![alt](C:\Users\.niu\tmp\facebox.png) — \t becomes tab, \n becomes newline
-              const safeText = text.replace(/(!\[[^\]]*\]\()([A-Za-z]:[\\\/][^)]+)(\))/g,
-                (match, prefix, path, suffix) => prefix + path.replace(/\\/g, '/') + suffix
-              );
-              const htmlContent = typeof DOMPurify !== 'undefined'
-                ? DOMPurify.sanitize(marked.parse(safeText))
-                : marked.parse(safeText);
-              textDiv.innerHTML = htmlContent;
-              // Convert local file paths to file:/// URLs for Electron
-              textDiv.querySelectorAll('img').forEach(img => {
-                const src = img.getAttribute('src');
-                if (src && /^[A-Za-z]:[\/]/.test(src)) {
-                  img.setAttribute('src', encodeURI('file:///' + src));
+              }
+              // 添加双击用系统查看器打开
+              const imgSrc = img.getAttribute('src') || src;
+              if (imgSrc) {
+                // 从 file:/// URL 还原本地路径，或直接使用原始路径
+                let localPath = src || '';
+                if (localPath.startsWith('file:///')) {
+                  localPath = decodeURIComponent(localPath.replace('file:///', ''));
                 }
-              });
-            } catch (e) {
-              console.warn('[Chat] Markdown 渲染失败，降级为纯文本:', e);
-              textDiv.textContent = text;
-            }
-          } else {
+                if (localPath && /^[A-Za-z]:/.test(localPath)) {
+                  img.dataset.filePath = localPath;
+                  img.style.cursor = 'pointer';
+                  img.addEventListener('dblclick', () => {
+                    window.electronAPI.openWithSystemViewer(localPath);
+                  });
+                }
+              }
+            });
+          } catch (e) {
+            console.warn('[Chat] Markdown 渲染失败，降级为纯文本:', e);
             textDiv.textContent = text;
           }
-          div.appendChild(textDiv);
+        } else {
+          textDiv.textContent = text;
         }
+        div.appendChild(textDiv);
       }
       
       // 额外图片（拖入等）
@@ -890,49 +868,6 @@
       messages.appendChild(div);
       messages.scrollTop = messages.scrollHeight;
       return div;
-    }
-    
-    // 解析 ::person_photo:: 标记
-    function parsePersonPhotoMarkers(text) {
-      const regex = /::person_photo::(\{.*?\})::/g;
-      const photos = [];
-      let match;
-      let cleanText = text;
-      
-      while ((match = regex.exec(text)) !== null) {
-        try {
-          const data = JSON.parse(match[1]);
-          photos.push(data);
-          cleanText = cleanText.replace(match[0], '');
-        } catch (e) {
-          console.error('[Chat] 解析 person_photo 标记失败:', e);
-        }
-      }
-      
-      return { cleanText: cleanText.trim(), photos };
-    }
-    
-    // 创建人物照片元素（后端已在原图上画好红框，直接显示）
-    async function createPersonPhotoElement(data) {
-      const container = document.createElement('div');
-      container.className = 'image-container';
-      if (data.person_id) container.dataset.personId = data.person_id;
-
-      const img = document.createElement('img');
-      img.className = 'chat-image';
-      img.style.cursor = 'pointer';
-
-      // data.path 是带框图的路径（后端已画好）
-      const imageUrl = await window.electronAPI.getImageUrl(data.path);
-      img.src = imageUrl;
-      img.dataset.filePath = data.path;
-
-      img.addEventListener('dblclick', () => {
-        window.electronAPI.openWithSystemViewer(data.path);
-      });
-
-      container.appendChild(img);
-      return container;
     }
     
     // 带消息ID的消息（用于历史加载）
