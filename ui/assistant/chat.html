@@ -389,7 +389,19 @@
     .chat-image:hover {
       transform: scale(1.02);
     }
-    
+    /* 本地文件链接样式 */
+    .local-file-link {
+      color: #1890ff;
+      text-decoration: underline;
+      cursor: pointer;
+    }
+    .local-file-link:hover {
+      color: #40a9ff;
+    }
+    .local-file-link::before {
+      content: '📎 ';
+    }
+
     /* ========== 人脸框显示 ========== */
     .image-container {
       position: relative;
@@ -849,6 +861,29 @@
                     window.electronAPI.openWithSystemViewer(localPath);
                   });
                 }
+              }
+            });
+            // 后处理：本地路径文件链接添加点击打开功能
+            textDiv.querySelectorAll('a').forEach(a => {
+              let href = a.getAttribute('href') || '';
+              // 剥离 file:/// 前缀
+              if (href.startsWith('file:///')) {
+                href = decodeURIComponent(href.replace('file:///', ''));
+              } else if (href.startsWith('file://')) {
+                href = decodeURIComponent(href.replace('file://', ''));
+              }
+              // 判断是否为本地路径（绝对路径）— macOS 以 / 开头，Windows 以 C: 开头
+              if (href && (/^[A-Za-z]:[\/]/.test(href) || /^\//.test(href))) {
+                a.setAttribute('data-file-path', href);
+                a.setAttribute('href', '#');
+                a.classList.add('local-file-link');
+                a.addEventListener('click', (e) => {
+                  e.preventDefault();
+                  const filePath = a.getAttribute('data-file-path');
+                  if (filePath && window.electronAPI && window.electronAPI.openWithSystemViewer) {
+                    window.electronAPI.openWithSystemViewer(filePath);
+                  }
+                });
               }
             });
           } catch (e) {

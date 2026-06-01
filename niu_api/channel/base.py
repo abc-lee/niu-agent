@@ -51,7 +51,7 @@ class ChannelAdapter(ABC):
         """解析出方向消息中的本地文件标记，返回待发送的消息列表。
 
         默认实现：不转换，返回一条 ResolvedMessage(kind="text", content=content)
-        飞书通道重写：提取 Markdown 图片 ![alt](path) / ::file:: 标记 → 返回多条消息
+        飞书通道重写：提取 Markdown 图片 ![alt](path) / 文件链接 [name](path) 标记 → 返回多条消息
         Electron 通道：使用默认实现（前端自行解析 Markdown 图片）
         """
         return [ResolvedMessage(kind="text", content=content)]

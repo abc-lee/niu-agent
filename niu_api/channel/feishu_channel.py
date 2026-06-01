@@ -364,7 +364,7 @@ class FeishuChannelAdapter(ChannelAdapter):
                     # 终结失败：清除去重集合，允许图片重新发送（卡片终结失败，图片未展示）
                     self._stream_sent_media_paths.clear()
                     # 剥离内容中的媒体标记，避免 markdown 中出现原始标记
-                    content = re.sub(r'::(?:person_photo|file)::.*?::', '', content)
+                    content = re.sub(r'::person_photo::.*?::', '', content)  # 兼容极旧格式
                     content = re.sub(r'!\[[^\]]*\]\([^)]+\)', '', content)
                     # 终结失败：将未嵌入卡片的图片转为独立消息发送
                     for img_info in self._stream_pending_images:
@@ -533,9 +533,10 @@ class FeishuChannelAdapter(ChannelAdapter):
             self._stream_fallback_used = True
 
     async def _filter_media_markers(self, text: str) -> str:
-        """过滤 Markdown 图片语法 ![alt](path) 和 ::file::JSON:: 标记，提取图片/文件信息
+        """过滤 Markdown 图片/文件语法，提取图片/文件信息
 
         - Markdown 图片：![alt](path) 或 ![](path)，alt 可含 person_id|name 格式
+        - Markdown 文件链接：[文件名](path)，非图片链接
         - 图片：上传到飞书获取 image_key，保存到 _stream_pending_images
         - 文件：保存本地路径到 _stream_pending_files
         - 图片标记替换为 [PHOTO_SEP] 分隔符（供终结时拆分文本+插入img元素）
@@ -595,34 +596,33 @@ class FeishuChannelAdapter(ChannelAdapter):
                     logger.debug(f"[FeishuStream] Image path not found or unsupported: {img_path}")
                 text = text.replace(full_match, "", 1)
 
-        # 2. 解析 ::file::JSON:: 标记（保留，LLM 不会自然生成 Markdown 文件链接）
-        pattern_file = "::file::"
-        while pattern_file in text:
-            start = text.index(pattern_file)
-            after_marker = start + len(pattern_file)
-            json_end = text.find("::", after_marker)
-            if json_end == -1:
-                # 格式错误，跳过
-                text = text[:start] + text[after_marker:]
-                break
-            json_str = text[after_marker:json_end]
-            remaining = text[json_end + 2:]
-            try:
-                data = json.loads(json_str)
-            except json.JSONDecodeError:
-                text = text[:start] + remaining
-                break
-            path = data.get("path", "")
-            name = data.get("name", "")
-            if path and Path(path).exists():
+        # 1.5 解析 Markdown 文件链接 [文件名](path)（非图片链接）
+        md_link_pattern = re.compile(r'(?<!!)\[([^\]]+)\]\(([^)]+)\)')
+        for match in md_link_pattern.finditer(text):
+            link_text = match.group(1)
+            link_path = match.group(2)
+            full_match = match.group(0)
+
+            # 只处理本地路径，跳过 URL
+            if not link_path or link_path.startswith(("http://", "https://", "ftp://", "mailto:")):
+                continue
+
+            # 规范化路径
+            if link_path.startswith("file:///"):
+                link_path = link_path[7:]
+            elif link_path.startswith("file://"):
+                link_path = link_path[6:]
+
+            if Path(link_path).exists() and link_path not in self._stream_sent_media_paths:
                 self._stream_pending_files.append({
-                    "local_path": path,
-                    "filename": name or Path(path).name,
+                    "local_path": link_path,
+                    "filename": link_text or Path(link_path).name,
                     "kind": "file",
                 })
-                self._stream_sent_media_paths.add(path)
-            # 删除文件标记
-            text = text[:start] + remaining
+                self._stream_sent_media_paths.add(link_path)
+            # 从文本中删除链接标记（文件通过飞书文件消息发送，不走 markdown）
+            text = text.replace(full_match, f"↑ {link_text or Path(link_path).name}", 1)
+
         return text
 
     async def _upload_image_to_feishu(self, local_path: str) -> str | None:
@@ -949,34 +949,31 @@ class FeishuChannelAdapter(ChannelAdapter):
                 replacement = f"↑ {display_name}的照片" if display_name else "↑ 照片"
             cleaned_content = cleaned_content.replace(full_match, replacement, 1)
 
-        # 2. 解析 ::file::JSON:: 标记
-        pattern_file = "::file::"
-        while pattern_file in cleaned_content:
-            start = cleaned_content.index(pattern_file)
-            after_marker = start + len(pattern_file)
-            json_end = cleaned_content.find("::", after_marker)
-            if json_end == -1:
-                cleaned_content = cleaned_content[:start] + "[file标记格式错误]" + cleaned_content[after_marker:]
-                break
-            json_str = cleaned_content[after_marker:json_end]
-            remaining = cleaned_content[json_end + 2:]
-            try:
-                data = json.loads(json_str)
-            except json.JSONDecodeError:
-                cleaned_content = cleaned_content[:start] + "[file标记格式错误]" + remaining
-                break
-            path = data.get("path", "")
-            name = data.get("name", "")
-            if not path:
+        # 1.5 解析 Markdown 文件链接 [文件名](path)
+        md_link_pattern = re.compile(r'(?<!!)\[([^\]]+)\]\(([^)]+)\)')
+        for match in md_link_pattern.finditer(cleaned_content):
+            link_text = match.group(1)
+            link_path = match.group(2)
+            full_match = match.group(0)
+
+            if not link_path or link_path.startswith(("http://", "https://", "ftp://", "mailto:")):
+                continue
+
+            if link_path.startswith("file:///"):
+                link_path = link_path[7:]
+            elif link_path.startswith("file://"):
+                link_path = link_path[6:]
+
+            if not link_path:
                 replacement = "[文件信息缺失]"
-            elif not self._is_path_allowed(path):
+            elif not self._is_path_allowed(link_path):
                 replacement = "[文件无法发送: 安全限制]"
-            elif not Path(path).exists():
-                replacement = f"[文件不存在: {name}]" if name else "[文件不存在]"
+            elif not Path(link_path).exists():
+                replacement = f"[文件不存在: {link_text}]" if link_text else "[文件不存在]"
             else:
-                media_messages.append(ResolvedMessage(kind="file", local_path=path, filename=name))
-                replacement = f"↑ {name}" if name else "↑ 文件"
-            cleaned_content = cleaned_content[:start] + replacement + remaining
+                media_messages.append(ResolvedMessage(kind="file", local_path=link_path, filename=link_text))
+                replacement = f"↑ {link_text}" if link_text else "↑ 文件"
+            cleaned_content = cleaned_content.replace(full_match, replacement, 1)
 
         messages = []
         if cleaned_content.strip():
