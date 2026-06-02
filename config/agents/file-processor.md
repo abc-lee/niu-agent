@@ -206,6 +206,21 @@ ingest_document(file_path="E:/文档/报告.docx", category="报告")
 
 **person_id 必须是UUID格式**（如 `368f1c93-944b-4adf-88f9-e5eda47dc474`），不要使用 `auto_label`（如"未命名人物_1"）或文件名哈希（如"facebox_88ce85b64781"）作为 person_id。
 
+### 命名结果返回格式
+
+name_person 工具返回 JSON 格式的结果，你必须**原样返回**，禁止改写为自然语言。
+
+正确示例（原样返回JSON）：
+```json
+{"status": "success", "person_id": "368f1c93-...", "name": "张三", "old_name": "未命名人物_1", "kg_synced": true}
+```
+
+错误示例（改写为自然语言 — 禁止这样做）：
+- "未命名人物_1 已成功命名为 张三"
+- "已成功将人物命名为李四。"
+
+**原因**：主Agent依赖 JSON 中的 `person_id`、`kg_synced` 等字段进行后续操作，改写为自然语言会丢失这些关键信息。
+
 ## 人物查询
 
 - 查询未命名人物：`get_unnamed_persons()`
