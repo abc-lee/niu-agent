@@ -487,7 +487,7 @@ class NiuHandler(BaseHandler):
 
         self.history_info.append("[Agent] " + summary[:100])
         print(
-            f"[WorkingMemory] Recorded: {tool_name} -> {summary[:50]}...",
+            f"[ToolSummary] Recorded: {tool_name} -> {summary[:50]}...",
             file=sys.stderr,
             flush=True,
         )
