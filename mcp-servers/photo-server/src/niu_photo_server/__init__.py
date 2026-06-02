@@ -38,15 +38,18 @@ TOOL_SCHEMAS = {
 
 三阶段交互模式（目录入库）:
 1. 初始化: ingest(path="E:/照片", action="start", mode="copy")
-   → 扫描目录，创建会话，自动处理所有照片和已分类文档
-   → 遇到未分类文档时返回 need_category，等待交互
+   → 扫描目录，创建会话
+   → 如果传入 category：所有文档使用同一分类，自动循环处理到完成
+   → 如果未传 category：自动处理所有照片，遇到文档时返回 need_category
 2. 中间态交互:
    - 回答分类（need_category后）: ingest(path="E:/照片", category="技术文档")
-   → 自动处理该文档及后续所有文件，直到再次遇到未分类文档
+   → 仅处理当前文档，然后继续自动处理照片，遇到下一个未分类文档再次返回 need_category
 3. 中止: ingest(path="E:/照片", action="abort")
 
-注意：当 category 非空时，所有文档使用同一分类，自动循环处理到完成。
-照片入库不需要分类，始终自动处理到完成。
+三种自动循环场景:
+- 初始化带 category → 自动循环到完成（所有文档用同一分类）
+- 纯照片目录（无文档）→ 自动循环到完成
+- 子Agent回答分类后 → 只处理当前文档，不会自动跳过后续未分类文档
 
 单文件入库（path是文件时）: 无状态，直接入库，action参数无效
 
@@ -2995,19 +2998,22 @@ def _build_success_summary(all_files: list[dict], processed: list[dict]) -> dict
 def _process_next_file(session: dict, category: str = "") -> dict:
     """处理 session 中的下一个文件，更新进度，返回结果
 
-    当 category 非空（分类已确定）或遇到照片（不需要分类）时，
-    自动循环处理完所有文件，直接返回 success。
-    只有 category 为空且遇到文档时，才返回 need_category 等待交互。
+    自动循环逻辑：
+    - 照片：始终自动循环（不需要分类）
+    - 文档 + session["auto_category"] 非空：用 auto_category 自动循环
+    - 文档 + category 非空（子Agent刚回答的）：只处理当前文档，不传播到后续
+    - 文档 + 都为空：返回 need_category 等待交互
 
     Args:
-        session: 会话状态 dict
-        category: 文档分类（need_category 时传入）
+        session: 会话状态 dict（含 auto_category 字段）
+        category: 子Agent回答的当前文档分类（只处理当前文档，不传播）
 
     Returns:
         处理结果 dict（need_category / success / error）
     """
     all_files = session["all_files"]
     mode = session["mode"]
+    auto_category = session.get("auto_category", "")
 
     # 循环处理文件，直到遇到 need_category 或全部完成
     while True:
@@ -3019,53 +3025,71 @@ def _process_next_file(session: dict, category: str = "") -> dict:
 
         current = all_files[next_idx]
 
-        if current["type"] == "image":
-            # 照片不需要分类判断，始终自动继续
-            result = ingest_photo(current["path"], category=None, mode=mode)
-            session["processed"].append({"file": current["path"], "type": "image", "result": result})
-            session["offset"] = next_idx + 1
-            # 继续循环处理下一个文件
-            continue
-
-        elif current["type"] == "document":
-            if category:
-                # 有分类，直接入库，然后继续循环
-                result = ingest_document(file_path=current["path"], category=category, mode=mode)
-                session["processed"].append({"file": current["path"], "type": "document", "result": result})
+        try:
+            if current["type"] == "image":
+                # 照片不需要分类判断，始终自动继续
+                result = ingest_photo(current["path"], category=None, mode=mode)
+                session["processed"].append({"file": current["path"], "type": "image", "result": result})
                 session["offset"] = next_idx + 1
                 # 继续循环处理下一个文件
                 continue
-            else:
-                # 需要分类 — 先读取内容预览
-                doc_result = ingest_document(file_path=current["path"], category="", mode=mode)
 
-                # 如果 ingest_document 返回 error（文件无法处理），跳过此文件继续下一个
-                if doc_result.get("status") == "error":
-                    session["processed"].append({"file": current["path"], "type": "document", "result": doc_result})
+            elif current["type"] == "document":
+                # 优先使用 auto_category（初始化时指定的全量分类）
+                if auto_category:
+                    # 有全量分类，自动入库并继续循环
+                    result = ingest_document(file_path=current["path"], category=auto_category, mode=mode)
+                    session["processed"].append({"file": current["path"], "type": "document", "result": result})
                     session["offset"] = next_idx + 1
                     # 继续循环处理下一个文件
                     continue
+                elif category:
+                    # 子Agent回答的分类，只处理当前文档，不传播到后续
+                    result = ingest_document(file_path=current["path"], category=category, mode=mode)
+                    session["processed"].append({"file": current["path"], "type": "document", "result": result})
+                    session["offset"] = next_idx + 1
+                    # 清空 category，后续文档根据 auto_category 判断（为空则返回 need_category）
+                    category = ""
+                    # 继续循环，下一个文档会根据 auto_category 决定行为
+                    continue
+                else:
+                    # 需要分类 — 先读取内容预览
+                    doc_result = ingest_document(file_path=current["path"], category="", mode=mode)
 
-                preview = ""
-                try:
-                    preview = read_file_content(current["path"])[:20000]
-                except Exception:
-                    preview = doc_result.get("message", "")[:20000]
+                    # 如果 ingest_document 返回 error（文件无法处理），跳过此文件继续下一个
+                    if doc_result.get("status") == "error":
+                        session["processed"].append({"file": current["path"], "type": "document", "result": doc_result})
+                        session["offset"] = next_idx + 1
+                        # 继续循环处理下一个文件
+                        continue
 
-                available_categories = doc_result.get("available_categories", ["其他"])
+                    # 读取文件内容供子Agent判断分类（需要足够内容，不能只用 ingest_document 的 3000 字符预览）
+                    try:
+                        preview = read_file_content(current["path"])[:20000]
+                    except Exception as e:
+                        logger.warning(f"读取文档预览失败: {current['path']}, 错误: {e}")
+                        session["processed"].append({"file": current["path"], "type": "document", "result": doc_result})
+                        session["offset"] = next_idx + 1
+                        continue  # 跳过无法读取预览的文档，继续处理下一个
+                    available_categories = doc_result.get("available_categories", ["其他"])
 
-                return {
-                    "status": "need_category",
-                    "total": len(all_files),
-                    "current_file": Path(current["path"]).name,
-                    "current_file_path": current["path"],
-                    "preview": preview,
-                    "available_categories": available_categories,
-                    "message": "请从 available_categories 中选择分类",
-                }
+                    return {
+                        "status": "need_category",
+                        "total": len(all_files),
+                        "current_file": Path(current["path"]).name,
+                        "current_file_path": current["path"],
+                        "preview": preview,
+                        "available_categories": available_categories,
+                        "message": "请从 available_categories 中选择分类",
+                    }
 
-        else:
-            # 未知类型，跳过
+            else:
+                # 未知类型，跳过
+                session["offset"] = next_idx + 1
+                continue
+
+        except Exception as e:
+            logger.error(f"处理文件异常: {current['path']}, 错误: {e}")
             session["offset"] = next_idx + 1
             continue
 
@@ -3122,7 +3146,7 @@ def ingest(path: str, category: str = "", mode: str = "copy", action: str = "") 
         # 如果已有会话，先清理
         if session_key in _ingest_sessions:
             logger.warning(f"[INGEST] 覆盖已有会话: {session_key}")
-        
+
         all_files = _scan_directory(source)
         if not all_files:
             return {
@@ -3130,6 +3154,18 @@ def ingest(path: str, category: str = "", mode: str = "copy", action: str = "") 
                 "error_code": "NO_FILES_FOUND",
                 "message": f"目录中没有找到可处理的文件: {path}",
             }
+
+        # 仅当目录中包含文档文件时才校验 category（纯照片目录不需要分类）
+        has_documents = any(f["type"] == "document" for f in all_files)
+        if category and has_documents:
+            prefs = get_preferences()
+            available_categories = prefs.get("categories", {}).get("documents", ["其他"])
+            if category not in available_categories:
+                return {
+                    "status": "error",
+                    "error_code": "INVALID_CATEGORY",
+                    "message": f"分类 '{category}' 不在可选列表中，可选分类: {', '.join(available_categories)}",
+                }
         
         image_count = sum(1 for f in all_files if f["type"] == "image")
         doc_count = sum(1 for f in all_files if f["type"] == "document")
@@ -3140,6 +3176,7 @@ def ingest(path: str, category: str = "", mode: str = "copy", action: str = "") 
             "offset": 0,
             "processed": [],
             "mode": mode,
+            "auto_category": category,  # 初始化时的分类，非空表示全量自动循环
         }
         _ingest_sessions[session_key] = session
         
@@ -3198,8 +3235,8 @@ def ingest(path: str, category: str = "", mode: str = "copy", action: str = "") 
                 session["processed"].append({"file": current["path"], "type": "document", "result": result})
                 session["offset"] = next_idx + 1
 
-                # 继续处理（传入 category，自动循环处理后续文件）
-                next_result = _process_next_file(session, category=category)
+                # 继续处理（不传 category，让函数根据 session["auto_category"] 决定后续行为）
+                next_result = _process_next_file(session)
                 if next_result["status"] == "success":
                     _ingest_sessions.pop(session_key, None)
                 return next_result

@@ -117,7 +117,7 @@ ingest(path="E:/照片/2024旅行", action="start", mode="copy")
 
 **3. 未传 category 遇到文档**
 
-目录中有文档且未传 category 时，每个文档都会停下返回 `need_category`，由你阅读内容预览判断分类：
+目录中有文档且初始化时未传 category 时，每个文档都会逐个停下返回 `need_category`，由你阅读内容预览判断分类。你回答的分类只用于当前文档，下一个文档会再次询问：
 ```
 ingest(path="E:/文档目录", action="start", mode="copy")
 → {status: "need_category", current_file: "报告.docx", preview: "年度技术总结...", available_categories: ["技术文档", "报告", "个人"]}
