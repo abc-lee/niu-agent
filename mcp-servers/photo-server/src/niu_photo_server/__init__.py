@@ -2357,6 +2357,17 @@ def name_person(person_id: str, name: str) -> dict:
 def merge_persons(person_a_id: str, person_b_id: str) -> dict:
     """Merge two persons into one (keeping person_a's name)."""
     conn = None
+
+    if person_a_id == person_b_id:
+        return {
+            "status": "error",
+            "error_code": "SAME_PERSON_ID",
+            "message": "Cannot merge a person with themselves",
+            "merged_into": None,
+            "deleted_person_id": None,
+            "kg_rename": None,
+        }
+
     try:
         conn = get_connection()
 
