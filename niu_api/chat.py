@@ -136,10 +136,10 @@ async def persist_agent_reply(
     store, rv, history_len: int, full_reply: str, source: str = "electron",
     persisted_msgs: list[dict] | None = None
 ) -> tuple[str | None, str]:
-    """持久化 Agent 回复消息（从 rv["messages"] 双管道），过滤 working_memory，通知前端。
+    """持久化 Agent 回复消息（从 rv["messages"] 双管道），通知前端。
 
     从 runner.last_return_value 的 messages 中持久化新增的 tool/assistant 消息，
-    跳过 working_memory 虚拟调用，处理纯文本回复回退，并推送 SSE 通知。
+    处理纯文本回复回退，并推送 SSE 通知。
 
     Args:
         store: SessionStore 实例
@@ -173,14 +173,6 @@ async def persist_agent_reply(
                 if fp:
                     _persisted_fingerprints.add(fp)
 
-        # 收集需要跳过的 tool_call_id（working_memory 虚拟调用）
-        _wm_tool_call_ids = set()
-        for msg in rv["messages"][history_len + 1:]:
-            if msg.get("role") == "assistant" and msg.get("tool_calls"):
-                for tc in msg["tool_calls"]:
-                    if tc.get("function", {}).get("name") == "working_memory":
-                        _wm_tool_call_ids.add(tc.get("id", ""))
-
         last_assistant_id = None
         last_assistant_content = ""
         for msg in rv["messages"][history_len + 1:]:
@@ -197,13 +189,6 @@ async def persist_agent_reply(
             # V4: 兜底去重——如果此消息已被逐条推送写入 DB，跳过
             fp = _msg_fingerprint(msg)
             if fp and fp in _persisted_fingerprints:
-                continue
-
-            # 跳过 working_memory 虚拟消息
-            if role == "assistant" and tool_calls:
-                if any(tc.get("function", {}).get("name") == "working_memory" for tc in tool_calls):
-                    continue
-            if role == "tool" and tool_call_id in _wm_tool_call_ids:
                 continue
 
             if role == "tool" and tool_call_id:

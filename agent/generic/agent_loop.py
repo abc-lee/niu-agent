@@ -370,35 +370,19 @@ def agent_runner_loop(
             next_prompts.add(handler._done_hooks.pop(0))
         next_prompt = handler.next_prompt_patcher("\n".join(next_prompts), None, turn)
 
-        # 如果 next_prompt 为空，说明任务完成，应该退出
-        if not next_prompt or not next_prompt.strip():
-            # 确保最后一轮的 decay 和保存执行
+        # 退出逻辑：LLM 无工具调用时退出（纯文本回复 = 任务完成或等待用户输入）
+        if not response.tool_calls:
             if on_turn_end is not None:
                 on_turn_end(messages, tools_schema, turn)
-            # V4: 通知前端进入空闲状态
             yield StreamEvent("system", "chat_idle")
             if isinstance(should_exit, dict):
                 should_exit["messages"] = messages
                 return should_exit
             return {"result": "CURRENT_TASK_DONE", "data": None, "messages": messages}
 
-        # WORKING MEMORY 摘要作为 tool 消息注入，而非 user 消息
-        # 避免被 LLM 误认为是用户输入
-        _wm_call_id = f"wm_{turn}"
-        messages.append({
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [{
-                "id": _wm_call_id,
-                "type": "function",
-                "function": {"name": "working_memory", "arguments": "{}"}
-            }]
-        })
-        messages.append({
-            "role": "tool",
-            "tool_call_id": _wm_call_id,
-            "content": next_prompt
-        })
+        # 警告注入：只在有工具调用时才有意义（LLM 还在工作，可能需要调整策略）
+        if next_prompt and next_prompt.strip():
+            messages.append({"role": "user", "content": next_prompt})
 
         # FIFO 上下文截断：按 token 量逐条移除旧消息，保护 messages[0](system) 和 messages[1](初始task)
         if context_fifo_threshold > 0 and len(messages) > 2:
