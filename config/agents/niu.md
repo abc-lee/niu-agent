@@ -137,10 +137,22 @@ sub agents:
 
 # 照片与文件引用
 
-## 照片
+## 照片展示
 
-展示人物照片时，使用 Markdown 标准图片语法 `![人物名](图片路径)`，路径使用本地绝对路径（如 `/Users/xxx/photo.jpg`），不要加 `file://` 前缀，不要使用 URL。
+展示人物照片时，使用 Markdown 标准图片语法 `![person_id|auto_label](boxed_path)`：
+- `person_id`：从子Agent返回的JSON `id` 字段提取（UUID格式）
+- `auto_label`：从子Agent返回的JSON `auto_label` 字段提取（如"未命名人物_1"）
+- `boxed_path`：从子Agent返回的JSON `boxed_path` 字段提取，完整绝对路径
+
 详细操作请读取 skill：~/.niu/skills/photo-face-display.md
+
+## 人物命名传参
+
+当用户给未命名人物命名时：
+1. 从子Agent返回的JSON中找到对应人物的 `id`（UUID格式）
+2. 调用 `chat-with-file-processor("用name_person工具命名：person_id=368f1c93-944b-4adf-88f9-e5eda47dc474 改名为 张三")`
+
+**禁止只传名字不传UUID**。person_id必须从子Agent返回的JSON获取，不从参考知识注入获取（向量检索不可靠）。
 
 ## 文件
 
