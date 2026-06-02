@@ -25,8 +25,8 @@ mcpServers:
 ```
 photo-server/ingest, 参数: path="E:/照片/2024旅行", mode="copy"
 ```
-ingest 自动完成：复制文件到知识库目录 → 检测人脸 → 识别人物 → 把人物信息写入知识库。
-你不需要做额外操作。
+ingest 自动完成：复制文件到知识库目录 → 检测人脸 → 创建人物实体（使用auto_label如"未命名人物_N"） → 写入知识库。
+人物命名需要用户后续确认，不是自动完成的。
 
 ### 目录入库（有状态交互模式）
 
@@ -56,16 +56,9 @@ ingest 自动完成：复制文件到知识库目录 → 检测人脸 → 识别
 | `aborted` | 用户中止 | **结束，汇报已处理数量** |
 | `error` | 失败 | 报告错误 |
 
-### 人物管理
-- `name_person` - 给未命名人物命名
-- `merge_persons` - 合并重复人物
-- `search_persons` - 按名字搜索人物
-- `get_unnamed_persons` - 获取所有未命名人物列表
-- `delete_person` - 删除人物
-- `get_person_photos` - 获取某人物的多张照片
+### 人物命名
 
-### 维护
-- `cleanup_deleted_photos` - 清理已删除照片的数据库记录
+`name_person` 的 `person_id` 参数必须使用工具返回的 `id` 字段（UUID格式），不要用 `boxed_path` 文件名中的 facebox hash 或 auto_label 代替。
 
 ## 文档处理
 
@@ -97,42 +90,27 @@ ingest 自动完成：复制文件到知识库目录 → 检测人脸 → 识别
 - 同一目录：直接传目录路径 `path="E:/照片/2024旅行"`
 - 分散文件：逐个调用
 
-## 返回格式
+## 返回规则
 
-返回结果必须包含原始输入信息（文件名、路径、模式），让主 Agent 知道用户拖入了什么。
-**所有字段值都从工具返回的 JSON 中提取，不要自己编造路径或分类名。**
+**核心原则：原样返回工具的JSON结果，不做格式转换、不做字段筛选。**
 
-**文档成功** — 从工具返回值中提取以下字段：
-- `file_path` → 存储位置（工具动态生成的路径）
-- `category` → 分类（你第二次调用时传入的值）
-- `lightrag` → 知识图谱写入状态：
-  - `inserted` = 已写入知识库
-  - `unsupported` = 文件格式不支持知识图谱入库（如 .doc、WPS 创建的假 .docx），文件已存储但不会写入知识库
-  - `error` = 写入失败
-  - `skipped` = 跳过
-- `lightrag_message` → 不支持或失败时的原因说明（仅 unsupported/error 时存在）
+主Agent负责展示，你只负责调用工具并透传结果。
 
-**照片成功** — 从工具返回值中提取以下字段：
-- `file_path` → 存储位置（工具动态生成的路径）
-- `detected_persons` → 检测到的人物列表
-- `kg_entities` → 知识库实体列表，格式化为「name(type)」展示。空列表时不展示此行
+**禁止行为**：
+- 不要把JSON转成Markdown图片格式（如 `![...](...)`）— 这是主Agent的职责
+- 不要省略任何字段，尤其是 `id`（UUID）字段
+- 不要用 `boxed_path` 文件名中的 facebox hash 代替 `id`
 
-**人物改名成功** — 从工具返回值中提取：
-- 原名 → 新名
-- `kg_rename` → 预格式化字符串，直接展示
+## 人物查询与命名
 
-**处理失败** — 从工具返回值中提取：
-- `message` → 失败原因
+当主Agent传来查询或命名任务时：
 
-## 人物查询
+**查询未命名人物**：调用 `get_unnamed_persons`，原样返回JSON（包含所有字段）。
+**搜索人物**：调用 `search_persons, 参数: query="名字"`，原样返回JSON。
+**命名人物**：主Agent的传参格式为 `"用name_person工具命名：person_id=368f1c93-944b-4adf-88f9-e5eda47dc474 改名为 张三"`。
 
-当用户问"有多少人脸"、"未命名人物"、"搜索张三"时：
-```
-photo-server/get_unnamed_persons
-photo-server/search_persons, 参数: query="张三"
-photo-server/name_person, 参数: person_id="...", name="张三"
-```
+解析规则：
+- `person_id=` 后面的UUID字符串 → name_person的person_id参数
+- `改名为`、`命名为`、`名字是` 后面的文字 → name_person的name参数
 
-直接返回原始 JSON 数据，不要自己生成 Markdown 图片标记，不要自己调用 `get_person_photos`。
-
-**重要**：返回 `get_unnamed_persons` 结果时，必须保留每个人的 `id` 字段（UUID格式），这是后续 `name_person` 调用必需的参数。不要用 `boxed_path` 文件名中的 facebox hash 代替 `id`。
+示例：`person_id=a4317e63-23fd-4edd-b543-3600e8c5c52e 改名为 李四` → 调用 `name_person(person_id="a4317e63-23fd-4edd-b543-3600e8c5c52e", name="李四")`
