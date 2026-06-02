@@ -931,6 +931,7 @@ class NiuRunner:
         return_value = None
         self.last_return_value = None  # 重置，避免复用残留
         persisted_msgs = []  # V4: 已通过persist事件持久化的消息列表
+        _skipped_tool_call_ids: set[str] = set()  # 收集被跳过的 working_memory tool_call_id
         while True:
             try:
                 chunk = next(gen)
@@ -943,7 +944,7 @@ class NiuRunner:
                         # V4: 逐条持久化消息到 DB + 通知 SSE
                         try:
                             msg_dict = json.loads(chunk.content)
-                            msg_id = self._persist_one_msg(msg_dict)
+                            msg_id = self._persist_one_msg(msg_dict, _skipped_tool_call_ids)
                             if msg_id is not None:
                                 msg_dict["_persisted_id"] = msg_id  # 记录写入后的消息ID
                                 persisted_msgs.append(msg_dict)
@@ -1017,7 +1018,7 @@ class NiuRunner:
 
         # 对话结束后工具衰减已由 _on_turn_end 每轮执行，此处不再重复
 
-    def _persist_one_msg(self, msg_dict: dict) -> str | None:
+    def _persist_one_msg(self, msg_dict: dict, skipped_ids: set[str] | None = None) -> str | None:
         """逐条持久化消息到 DB + 通知 SSE（同步，从 executor 线程调用）
 
         Args:
@@ -1037,8 +1038,14 @@ class NiuRunner:
         # 跳过 working_memory 虚拟消息（不持久化到 DB，不推送给前端）
         if role == "assistant" and tool_calls:
             if any(tc.get("function", {}).get("name") == "working_memory" for tc in tool_calls):
+                # 收集所有 tool_call_id，用于后续过滤对应的 tool_result
+                if skipped_ids is not None:
+                    for tc in tool_calls:
+                        tc_id = tc.get("id", "")
+                        if tc_id:
+                            skipped_ids.add(tc_id)
                 return None
-        if role == "tool" and tool_call_id.startswith("wm_"):
+        if role == "tool" and (tool_call_id.startswith("wm_") or (skipped_ids and tool_call_id in skipped_ids)):
             return None
 
         # 同步写入 DB
