@@ -38,11 +38,15 @@ TOOL_SCHEMAS = {
 
 三阶段交互模式（目录入库）:
 1. 初始化: ingest(path="E:/照片", action="start", mode="copy")
-   → 扫描目录，创建会话，处理第一个文件，返回 progress/need_category
+   → 扫描目录，创建会话，自动处理所有照片和已分类文档
+   → 遇到未分类文档时返回 need_category，等待交互
 2. 中间态交互:
-   - 继续（progress后）: ingest(path="E:/照片")
    - 回答分类（need_category后）: ingest(path="E:/照片", category="技术文档")
+   → 自动处理该文档及后续所有文件，直到再次遇到未分类文档
 3. 中止: ingest(path="E:/照片", action="abort")
+
+注意：当 category 非空时，所有文档使用同一分类，自动循环处理到完成。
+照片入库不需要分类，始终自动处理到完成。
 
 单文件入库（path是文件时）: 无状态，直接入库，action参数无效
 
@@ -50,7 +54,6 @@ TOOL_SCHEMAS = {
 - 照片: {status, photo_id, detected_persons, abstract, exif}
 - 文档(need_category): {status: need_category, preview, available_categories}
 - 文档(success): {status: success, action, file_path, lightrag, lightrag_message}
-- 目录(progress): {status: progress, total, last_result, next}
 - 目录(need_category): {status: need_category, total, current_file, preview, available_categories}
 - 目录(success): {status: success, total, photos, documents, skipped, details}
 - 目录(aborted): {status: aborted, message, processed_count}
@@ -2991,107 +2994,80 @@ def _build_success_summary(all_files: list[dict], processed: list[dict]) -> dict
 
 def _process_next_file(session: dict, category: str = "") -> dict:
     """处理 session 中的下一个文件，更新进度，返回结果
-    
+
+    当 category 非空（分类已确定）或遇到照片（不需要分类）时，
+    自动循环处理完所有文件，直接返回 success。
+    只有 category 为空且遇到文档时，才返回 need_category 等待交互。
+
     Args:
         session: 会话状态 dict
         category: 文档分类（need_category 时传入）
-    
+
     Returns:
-        处理结果 dict（progress / need_category / success）
+        处理结果 dict（need_category / success / error）
     """
     all_files = session["all_files"]
-    offset = session["offset"]
     mode = session["mode"]
-    
-    # 找下一个可处理文件
-    next_idx = _find_next_processable(all_files, offset)
-    if next_idx is None:
-        # 全部处理完毕
-        return _build_success_summary(all_files, session["processed"])
-    
-    current = all_files[next_idx]
-    
-    if current["type"] == "image":
-        result = ingest_photo(current["path"], category=None, mode=mode)
-        session["processed"].append({"file": current["path"], "type": "image", "result": result})
-        session["offset"] = next_idx + 1
-        
-        # 找下一个
-        next_next = _find_next_processable(all_files, session["offset"])
-        if next_next is None:
-            return _build_success_summary(all_files, session["processed"])
-        next_info = all_files[next_next]
-        return {
-            "status": "progress",
-            "total": len(all_files),
-            "last_result": result,
-            "next": {"file": Path(next_info["path"]).name, "type": next_info["type"], "needs_category": next_info["type"] == "document"},
-            "message": f"下一个: {Path(next_info['path']).name}" + (" 需要分类" if next_info["type"] == "document" else ""),
-        }
-    
-    elif current["type"] == "document":
-        if category:
-            # 有分类，直接入库
-            result = ingest_document(file_path=current["path"], category=category, mode=mode)
-            session["processed"].append({"file": current["path"], "type": "document", "result": result})
-            session["offset"] = next_idx + 1
-            
-            # 找下一个
-            next_next = _find_next_processable(all_files, session["offset"])
-            if next_next is None:
-                return _build_success_summary(all_files, session["processed"])
-            next_info = all_files[next_next]
-            return {
-                "status": "progress",
-                "total": len(all_files),
-                "last_result": result,
-                "next": {"file": Path(next_info["path"]).name, "type": next_info["type"], "needs_category": next_info["type"] == "document"},
-                "message": f"下一个: {Path(next_info['path']).name}" + (" 需要分类" if next_info["type"] == "document" else ""),
-            }
-        else:
-            # 需要分类 — 先读取内容预览
-            doc_result = ingest_document(file_path=current["path"], category="", mode=mode)
 
-            # 如果 ingest_document 返回 error（文件无法处理），跳过此文件继续下一个
-            if doc_result.get("status") == "error":
-                session["processed"].append({"file": current["path"], "type": "document", "result": doc_result})
+    # 循环处理文件，直到遇到 need_category 或全部完成
+    while True:
+        offset = session["offset"]
+        next_idx = _find_next_processable(all_files, offset)
+        if next_idx is None:
+            # 全部处理完毕
+            return _build_success_summary(all_files, session["processed"])
+
+        current = all_files[next_idx]
+
+        if current["type"] == "image":
+            # 照片不需要分类判断，始终自动继续
+            result = ingest_photo(current["path"], category=None, mode=mode)
+            session["processed"].append({"file": current["path"], "type": "image", "result": result})
+            session["offset"] = next_idx + 1
+            # 继续循环处理下一个文件
+            continue
+
+        elif current["type"] == "document":
+            if category:
+                # 有分类，直接入库，然后继续循环
+                result = ingest_document(file_path=current["path"], category=category, mode=mode)
+                session["processed"].append({"file": current["path"], "type": "document", "result": result})
                 session["offset"] = next_idx + 1
-                # 迭代而非递归：重新找下一个可处理文件
-                next_idx2 = _find_next_processable(all_files, session["offset"])
-                if next_idx2 is None:
-                    return _build_success_summary(all_files, session["processed"])
-                # 复用当前函数的逻辑，但通过循环而非递归
-                # 这里返回 progress 让 Agent 继续，避免深度递归
-                next_info2 = all_files[next_idx2]
+                # 继续循环处理下一个文件
+                continue
+            else:
+                # 需要分类 — 先读取内容预览
+                doc_result = ingest_document(file_path=current["path"], category="", mode=mode)
+
+                # 如果 ingest_document 返回 error（文件无法处理），跳过此文件继续下一个
+                if doc_result.get("status") == "error":
+                    session["processed"].append({"file": current["path"], "type": "document", "result": doc_result})
+                    session["offset"] = next_idx + 1
+                    # 继续循环处理下一个文件
+                    continue
+
+                preview = ""
+                try:
+                    preview = read_file_content(current["path"])[:20000]
+                except Exception:
+                    preview = doc_result.get("message", "")[:20000]
+
+                available_categories = doc_result.get("available_categories", ["其他"])
+
                 return {
-                    "status": "progress",
+                    "status": "need_category",
                     "total": len(all_files),
-                    "last_result": doc_result,
-                    "next": {"file": Path(next_info2["path"]).name, "type": next_info2["type"], "needs_category": next_info2["type"] == "document"},
-                    "message": f"跳过失败的文档，下一个: {Path(next_info2['path']).name}" + (" 需要分类" if next_info2["type"] == "document" else ""),
+                    "current_file": Path(current["path"]).name,
+                    "current_file_path": current["path"],
+                    "preview": preview,
+                    "available_categories": available_categories,
+                    "message": "请从 available_categories 中选择分类",
                 }
 
-            preview = ""
-            try:
-                preview = read_file_content(current["path"])[:20000]
-            except Exception:
-                preview = doc_result.get("message", "")[:20000]
-
-            available_categories = doc_result.get("available_categories", ["其他"])
-            
-            return {
-                "status": "need_category",
-                "total": len(all_files),
-                "current_file": Path(current["path"]).name,
-                "current_file_path": current["path"],
-                "preview": preview,
-                "available_categories": available_categories,
-                "message": "请从 available_categories 中选择分类",
-            }
-    
-    # Should not reach here
-    session["offset"] = next_idx + 1
-    return _process_next_file(session, category)
+        else:
+            # 未知类型，跳过
+            session["offset"] = next_idx + 1
+            continue
 
 
 def ingest(path: str, category: str = "", mode: str = "copy", action: str = "") -> dict:
@@ -3167,18 +3143,18 @@ def ingest(path: str, category: str = "", mode: str = "copy", action: str = "") 
         }
         _ingest_sessions[session_key] = session
         
-        # 自动处理第一个文件
+        # 自动处理文件（category 非空时自动循环处理完所有文件）
         result = _process_next_file(session, category=category)
-        
-        # 如果只有一个可处理文件且已成功，清理会话
+
+        # 如果全部处理完毕，清理会话
         if result["status"] == "success":
             _ingest_sessions.pop(session_key, None)
             return result
-        
-        # 在返回中附加概览信息
-        if result["status"] in ("progress", "need_category"):
+
+        # need_category 时附加概览信息
+        if result["status"] == "need_category":
             result["message"] = f"发现 {image_count} 张图片、{doc_count} 个文档、{skip_count} 个跳过文件\n" + result["message"]
-        
+
         return result
     
     # action="" 或 "interact": 继续交互
@@ -3221,14 +3197,14 @@ def ingest(path: str, category: str = "", mode: str = "copy", action: str = "") 
                 result = ingest_document(file_path=current["path"], category=category, mode=session["mode"])
                 session["processed"].append({"file": current["path"], "type": "document", "result": result})
                 session["offset"] = next_idx + 1
-                
-                # 继续处理下一个
-                next_result = _process_next_file(session)
+
+                # 继续处理（传入 category，自动循环处理后续文件）
+                next_result = _process_next_file(session, category=category)
                 if next_result["status"] == "success":
                     _ingest_sessions.pop(session_key, None)
                 return next_result
-        
-        # 无 category，继续处理下一个文件（progress 后的继续）
+
+        # 无 category，继续处理下一个文件
         result = _process_next_file(session)
         if result["status"] == "success":
             _ingest_sessions.pop(session_key, None)
