@@ -78,7 +78,7 @@ def _extract_overflow_info(result: str) -> dict:
         return {"overflow": True, "raw": result}
 
 
-def _build_incremental_msg_text(messages, last_cursor_id: str, out_msg_ids: list, msg_tokens: list | None = None, end_cursor_id: str | None = None, filter_wm: bool = False, protect_recent: int = 0) -> str:
+def _build_incremental_msg_text(messages, last_cursor_id: str, out_msg_ids: list, msg_tokens: list | None = None, end_cursor_id: str | None = None, protect_recent: int = 0) -> str:
     """
     构建增量消息文本：只包含游标之后的新消息。
 
@@ -88,8 +88,6 @@ def _build_incremental_msg_text(messages, last_cursor_id: str, out_msg_ids: list
         out_msg_ids: 输出参数，收集增量消息的 UUID 列表
         msg_tokens: 每条消息的 token 数列表（与 messages 等长），None 则不注解
         end_cursor_id: 上界游标 UUID，只生成到该消息为止（含该消息），None 则到末尾
-        filter_wm: 是否过滤 working_memory 虚拟消息（WM tool_calls + 对应 tool 结果），
-                   并修复 tool_calls 成对完整性（移除末尾孤立 assistant(tool_calls) 和开头孤立 tool）
         protect_recent: 对最后 N 条消息加 [PROTECTED] 标签（0 表示不加）
 
     Returns:
@@ -126,53 +124,8 @@ def _build_incremental_msg_text(messages, last_cursor_id: str, out_msg_ids: list
     if start >= effective_end:
         return "（无新增消息）"
 
-    # 构建带原始位置的消息列表（用于 filter_wm 后保留原始 idx）
-    # 每个元素为 (orig_pos, msg)，orig_pos 是在 messages[start:effective_end] 中的偏移
+    # 构建带原始位置的消息列表（保留原始 idx）
     range_messages_with_pos = [(i, msg) for i, msg in enumerate(messages[start:effective_end])]
-
-    if filter_wm:
-        # 1. 收集 WM tool_call IDs（working_memory 函数的调用 ID）
-        wm_tc_ids = set()
-        for orig_pos, msg in range_messages_with_pos:
-            tool_calls = getattr(msg, "tool_calls", None)
-            if tool_calls and isinstance(tool_calls, list):
-                for tc in tool_calls:
-                    if isinstance(tc, dict):
-                        tc_name = tc.get("function", {}).get("name", "")
-                        if tc_name == "working_memory":
-                            wm_tc_ids.add(tc.get("id", ""))
-
-        # 2. 过滤消息
-        filtered = []
-        for orig_pos, msg in range_messages_with_pos:
-            role = getattr(msg, "role", "")
-            tool_calls = getattr(msg, "tool_calls", None)
-            tool_call_id = getattr(msg, "tool_call_id", "") or ""
-
-            # 过滤 WM 对应的 tool 结果消息
-            if role == "tool" and tool_call_id in wm_tc_ids:
-                continue
-
-            # 过滤纯 WM 的 assistant(tool_calls)（所有 tool_calls 都是 WM）
-            if role == "assistant" and tool_calls and isinstance(tool_calls, list):
-                wm_only = all(
-                    isinstance(tc, dict) and tc.get("function", {}).get("name") == "working_memory"
-                    for tc in tool_calls
-                )
-                if wm_only:
-                    continue
-
-            filtered.append((orig_pos, msg))
-
-        # 3. 移除末尾孤立的 assistant(tool_calls)（无对应 tool 结果）
-        while filtered and filtered[-1][1].role == "assistant" and getattr(filtered[-1][1], "tool_calls", None):
-            filtered.pop()
-
-        # 4. 移除开头孤立的 tool 消息（游标切割导致无对应 assistant）
-        while filtered and filtered[0][1].role == "tool":
-            filtered.pop(0)
-
-        range_messages_with_pos = filtered
 
     lines = []
     total_count = len(range_messages_with_pos)
@@ -906,7 +859,7 @@ async def _tidy_context_impl(request: dict):
             # 1/3. entity-extractor（增量，task 方式）
             entity_msg_ids = []
             entity_msg_text = _build_incremental_msg_text(
-                messages, last_entity_extract_id, entity_msg_ids, msg_tokens, filter_wm=True
+                messages, last_entity_extract_id, entity_msg_ids, msg_tokens
             )
             new_entity_id = last_entity_extract_id  # 默认保留旧游标
             entity_prompt_prefix = """以下是最近的对话消息（每条带 [id:UUID] [idx:N] 序号标注）。请从中提取有价值的内容，形成精炼文档提交给 LightRAG 入库。
@@ -990,7 +943,7 @@ async def _tidy_context_impl(request: dict):
             msg_id_set = {getattr(m, "id", "") for m in messages}
             dream_msg_ids = []
             dream_msg_text = _build_incremental_msg_text(
-                messages, last_dream_evolve_id, dream_msg_ids, msg_tokens, filter_wm=True
+                messages, last_dream_evolve_id, dream_msg_ids, msg_tokens
             )
             new_dream_id = last_dream_evolve_id  # 默认保留旧游标
             if dream_msg_ids:
@@ -1071,7 +1024,7 @@ async def _tidy_context_impl(request: dict):
                 new_journal_id = last_journal_id
                 journal_msg_ids = []
                 journal_msg_text = _build_incremental_msg_text(
-                    messages, last_journal_id, journal_msg_ids, msg_tokens, filter_wm=True
+                    messages, last_journal_id, journal_msg_ids, msg_tokens
                 )
                 logger.info(f"[Tidy] Sleep: starting journal-agent ({len(journal_msg_ids)} incremental messages)")
 
@@ -1162,7 +1115,7 @@ async def _tidy_context_impl(request: dict):
 
             compress_msg_text = _build_incremental_msg_text(
                 messages, last_compress_id, compress_msg_ids, msg_tokens,
-                end_cursor_id=new_dream_id, protect_recent=protect_recent_count, filter_wm=True
+                end_cursor_id=new_dream_id, protect_recent=protect_recent_count
             )
             compress_mode = "模式二：睡眠整理（半破坏性）" if usage_percent >= 50 else "模式一：睡眠整理（非破坏性）"
             logger.info(f"[Tidy] Sleep: usage={usage_percent:.1f}%, selecting {compress_mode}")
@@ -1263,7 +1216,7 @@ async def _tidy_context_impl(request: dict):
             new_entity_id = last_entity_extract_id  # 默认保留旧游标
             entity_force_msg_ids = []
             entity_force_msg_text = _build_incremental_msg_text(
-                messages, "", entity_force_msg_ids, msg_tokens, filter_wm=True
+                messages, "", entity_force_msg_ids, msg_tokens
             )
             entity_force_prompt = f"""以下是最近的对话消息（每条带 [id:UUID] [idx:N] 序号标注）。请从中提取有价值的内容，形成精炼文档提交给 LightRAG 入库。
 
@@ -1341,7 +1294,7 @@ async def _tidy_context_impl(request: dict):
             new_dream_id = last_dream_evolve_id  # 默认保留旧游标
             dream_force_msg_ids = []
             dream_force_msg_text = _build_incremental_msg_text(
-                messages, last_dream_evolve_id, dream_force_msg_ids, msg_tokens, filter_wm=True
+                messages, last_dream_evolve_id, dream_force_msg_ids, msg_tokens
             )
             logger.info(f"[Tidy] Force mode: starting dream-evolver ({len(dream_force_msg_ids)} incremental messages)")
 
@@ -1421,7 +1374,7 @@ async def _tidy_context_impl(request: dict):
             new_journal_id = last_journal_id
             journal_force_msg_ids = []
             journal_force_msg_text = _build_incremental_msg_text(
-                messages, last_journal_id, journal_force_msg_ids, msg_tokens, filter_wm=True
+                messages, last_journal_id, journal_force_msg_ids, msg_tokens
             )
             logger.info(f"[Tidy] Force: starting journal-agent ({len(journal_force_msg_ids)} incremental messages)")
 

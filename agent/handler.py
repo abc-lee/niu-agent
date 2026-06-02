@@ -673,14 +673,8 @@ class NiuHandler(BaseHandler):
                         f"---\n\n原始提示：{next_prompt}"
                     )
 
-        # 每 35 轮强制询问用户
-        if turn % 35 == 0:
-            next_prompt += (
-                f"\n\n[DANGER] 已连续执行第 {turn} 轮。你必须总结情况并直接向用户提问，"
-                "不允许继续重试。"
-            )
-        # 每 7 轮警告禁止无效重试
-        elif turn % 7 == 0:
+        # 每 7 轮警告禁止无效重试（35轮强制询问已移除——长程工作流可能超过35轮）
+        if turn % 7 == 0:
             next_prompt += (
                 f"\n\n[DANGER] 已连续执行第 {turn} 轮。禁止无效重试。"
                 "若无有效进展，必须切换策略或请求用户协助。"
@@ -690,8 +684,8 @@ class NiuHandler(BaseHandler):
 
     def reset_working_memory(self):
         """重置工作记忆（新会话开始时调用）"""
-        self.history_info = []
         self.current_turn = 0
+        self._recent_tool_calls = []
 
     def _get_abs_path(self, path: str) -> str:
         """获取绝对路径"""
@@ -711,8 +705,7 @@ class NiuHandler(BaseHandler):
         limit = int(raw_limit if raw_limit is not None else 500)
 
         result = read_file(file_path, offset=offset, limit=limit)
-        anchor = self._get_anchor_prompt() if hasattr(self, "history_info") else None
-        return StepOutcome(result, next_prompt=anchor)
+        return StepOutcome(result, next_prompt="")
 
     def do_write(self, args: dict, response) -> StepOutcome:
         """Write content to file."""
@@ -721,10 +714,10 @@ class NiuHandler(BaseHandler):
         mode = args.get("mode", "overwrite")
 
         if not file_path:
-            return StepOutcome({"status": "error", "msg": "file_path is required"}, next_prompt=self._get_anchor_prompt())
+            return StepOutcome({"status": "error", "msg": "file_path is required"}, next_prompt="")
 
         result = write_file(file_path, content, mode=mode)
-        return StepOutcome(result, next_prompt=self._get_anchor_prompt())
+        return StepOutcome(result, next_prompt="")
 
     def do_edit(self, args: dict, response) -> StepOutcome:
         """Edit file by replacing old_string with new_string."""
@@ -735,10 +728,10 @@ class NiuHandler(BaseHandler):
         replace_all = replace_all_raw if isinstance(replace_all_raw, bool) else str(replace_all_raw).lower() == "true"
 
         if not file_path:
-            return StepOutcome({"status": "error", "msg": "file_path is required"}, next_prompt=self._get_anchor_prompt())
+            return StepOutcome({"status": "error", "msg": "file_path is required"}, next_prompt="")
 
         result = edit_file(file_path, old_string, new_string, replace_all=replace_all)
-        return StepOutcome(result, next_prompt=self._get_anchor_prompt())
+        return StepOutcome(result, next_prompt="")
 
     def do_grep(self, args: dict, response) -> StepOutcome:
         """Search for pattern in files."""
@@ -747,10 +740,10 @@ class NiuHandler(BaseHandler):
         include = args.get("include", "")
 
         if not pattern:
-            return StepOutcome("[GREP] Error: pattern is required", next_prompt=self._get_anchor_prompt())
+            return StepOutcome("[GREP] Error: pattern is required", next_prompt="")
 
         result = grep_search(pattern, path, include)
-        return StepOutcome(result, next_prompt=self._get_anchor_prompt())
+        return StepOutcome(result, next_prompt="")
 
     # 向后兼容
     do_file_read = do_read
@@ -771,11 +764,11 @@ class NiuHandler(BaseHandler):
         timeout = max(1, min(args.get("timeout", 30), 300))
 
         if not command:
-            return StepOutcome("[Error] Command missing.", next_prompt="\n")
+            return StepOutcome("[Error] Command missing.", next_prompt="")
 
         code_type = "bash" if os.name != "nt" else "powershell"
         result = code_run(command, code_type=code_type, timeout=timeout, cwd=self.cwd)
-        return StepOutcome(result, next_prompt=self._get_anchor_prompt())
+        return StepOutcome(result, next_prompt="")
 
     def do_code_run(self, args: dict, response) -> StepOutcome:
         """执行代码"""
@@ -790,11 +783,11 @@ class NiuHandler(BaseHandler):
             if not code:
                 return StepOutcome(
                     "[Error] Code missing. Use ```{code_type} block or 'script' arg.",
-                    next_prompt="\n",
+                    next_prompt="",
                 )
 
         result = code_run(code, code_type=code_type, timeout=timeout, cwd=self.cwd)
-        return StepOutcome(result, next_prompt=self._get_anchor_prompt())
+        return StepOutcome(result, next_prompt="")
 
     # ========== 无工具调用 ==========
 
@@ -803,14 +796,14 @@ class NiuHandler(BaseHandler):
         content = getattr(response, "content", "") if response else ""
 
         if not content.strip():
-            return StepOutcome({}, next_prompt="[System] Blank response, regenerate")
+            return StepOutcome({}, next_prompt="")
 
         # 检测只有反引号的响应（LLM 输出异常）
         clean_content = re.sub(r"`+", "", content).strip()
         if not clean_content:
             return StepOutcome(
                 {},
-                next_prompt="[System] 你只输出了反引号，没有实际内容。请重新组织回复，直接输出文本内容，不要使用空的代码块。"
+                next_prompt=""
             )
 
         # 检测大段代码但没有工具调用
@@ -826,13 +819,7 @@ class NiuHandler(BaseHandler):
             if len(clean_residual) <= 20:
                 return StepOutcome(
                     {},
-                    next_prompt=(
-                        "[System] 检测到你在上一轮回复中主要内容是较大代码块，且本轮未调用任何工具。\n"
-                        "如果这些代码需要执行、写入文件或进一步分析，请重新组织回复并显式调用相应工具"
-                        "（例如：code_run、write、edit 等）；\n"
-                        "如果只是向用户展示或讲解代码片段，请在回复中补充自然语言说明，"
-                        "并明确是否还需要额外的实际操作。"
-                    ),
+                    next_prompt="",
                 )
 
         # 正常情况：返回给用户，使用空字符串作为 next_prompt 而不是 None
@@ -852,7 +839,7 @@ class NiuHandler(BaseHandler):
             yield StreamEvent("system", "[System] Runner not initialized\n")
             return StepOutcome(
                 {"status": "error", "msg": "Runner not initialized"},
-                next_prompt="\n[System] Runner not initialized\n",
+                next_prompt="",
             )
 
         # 直接传递完整配置（而不是挑选字段）
@@ -914,12 +901,12 @@ class NiuHandler(BaseHandler):
             # 返回结果给 LLM，让它向用户汇报
             return StepOutcome(
                 {"status": "success", "result": result},
-                next_prompt=self._get_anchor_prompt()
+                next_prompt=""
             )
         except Exception as e:
             yield StreamEvent("system", f"[SubAgent] Error: {e}\n")
             return StepOutcome(
-                {"status": "error", "msg": str(e)}, next_prompt=f"\n[System] Sub-agent error: {e}\n"
+                {"status": "error", "msg": str(e)}, next_prompt=""
             )
 
     # ========== 记忆管理 ==========
@@ -943,7 +930,7 @@ class NiuHandler(BaseHandler):
             if not content:
                 return StepOutcome(
                     {"status": "error", "msg": "content is required"},
-                    next_prompt="[System] 记忆内容不能为空\n",
+                    next_prompt="",
                 )
 
             # 调用 memory-server/remember
@@ -971,18 +958,18 @@ class NiuHandler(BaseHandler):
 
                 return StepOutcome(
                     {"status": "success", "memory_id": result.get("memory_id")},
-                    next_prompt=self._get_anchor_prompt(),
+                    next_prompt="",
                 )
             else:
                 return StepOutcome(
                     {"status": "error", "msg": "memory-server/remember tool not available"},
-                    next_prompt="[System] 记忆工具不可用\n",
+                    next_prompt="",
                 )
 
         except Exception as e:
             return StepOutcome(
                 {"status": "error", "msg": str(e)},
-                next_prompt=f"[System] 保存记忆失败: {e}\n",
+                next_prompt="",
             )
 
     def _calculate_importance(self, memory_type: str) -> float:
@@ -1032,7 +1019,7 @@ class NiuHandler(BaseHandler):
             if agent_name in BLOCKED_SUBAGENTS:
                 return StepOutcome(
                     {"status": "error", "message": f"子Agent {agent_name} 已由系统自动管理，不可手动调用"},
-                    next_prompt=self._get_anchor_prompt()
+                    next_prompt=""
                 )
             args = {**args, "_index": index}
             prer = yield from try_call_generator(
@@ -1104,25 +1091,25 @@ class NiuHandler(BaseHandler):
                             logger.debug(f"Memory dirty flag set failed: {e}")
                     # status 为 ok/success 表示任务完成，提示汇报；其他非 error 状态（need_category 等）让 LLM 自行判断
                     if isinstance(result, dict) and result.get("status") in ("ok", "success"):
-                        return StepOutcome(result, next_prompt=f"工具调用成功。请向用户简洁汇报结果。")
+                        return StepOutcome(result, next_prompt="")
                     else:
-                        return StepOutcome(result, next_prompt=self._get_anchor_prompt())
+                        return StepOutcome(result, next_prompt="")
                 else:
-                    return StepOutcome(result, next_prompt="Tool execution returned an error. Read the error message above and adjust accordingly.")
+                    return StepOutcome(result, next_prompt="")
             elif disk_result.action == "ERROR":
                 # 参数/执行错误 → 提示修正
                 result = disk_result.text
                 _ = yield from try_call_generator(
                     self.tool_after_callback, tool_name, args, response, result
                 )
-                return StepOutcome(result, next_prompt="Disk command returned an error. Read the error message above and fix the command accordingly.")
+                return StepOutcome(result, next_prompt="")
             else:
                 # 导航命令 (LIST/READ/HELP/EMPTY) → 继续工作
                 result = disk_result.text
                 _ = yield from try_call_generator(
                     self.tool_after_callback, tool_name, args, response, result
                 )
-                return StepOutcome(result, next_prompt=self._get_anchor_prompt())
+                return StepOutcome(result, next_prompt="")
 
         # 检查 MCP 工具（工具名格式：server/tool）
         if "/" in tool_name:
@@ -1136,7 +1123,7 @@ class NiuHandler(BaseHandler):
                     yield StreamEvent("system", f"[MCP Error] Tool not found: {tool_name}\n")
                     return StepOutcome(
                         {"status": "error", "error_code": "TOOL_NOT_FOUND", "msg": f"Tool {tool_name} not found in registry"},
-                        next_prompt=self._get_anchor_prompt()
+                        next_prompt=""
                     )
 
                 # Reinforce brain region on tool use
@@ -1179,16 +1166,16 @@ class NiuHandler(BaseHandler):
                     # status 为 ok/success 表示任务完成，提示汇报；其他非 error 状态（need_category 等）让 LLM 自行判断
                     if isinstance(result, dict) and result.get("status") in ("ok", "success"):
                         result_summary = json.dumps(result, ensure_ascii=False)[:500]
-                        return StepOutcome(result, next_prompt=f"工具调用成功。请向用户简洁汇报结果：{result_summary}")
+                        return StepOutcome(result, next_prompt="")
                     else:
-                        return StepOutcome(result, next_prompt=self._get_anchor_prompt())
+                        return StepOutcome(result, next_prompt="")
                 else:
                     # 需要进一步处理，返回anchor prompt
-                    return StepOutcome(result, next_prompt=self._get_anchor_prompt())
+                    return StepOutcome(result, next_prompt="")
             except Exception as e:
                 yield StreamEvent("system", f"[MCP Error] {tool_name}: {e}\n")
                 return StepOutcome(
-                    {"status": "error", "msg": str(e)}, next_prompt=self._get_anchor_prompt()
+                    {"status": "error", "msg": str(e)}, next_prompt=""
                 )
 
         # Check ToolRegistry for bare tool names (no "/" prefix, e.g. "lightrag-query")
@@ -1226,15 +1213,15 @@ class NiuHandler(BaseHandler):
                     # status 为 ok/success 表示任务完成，提示汇报；其他非 error 状态（need_category 等）让 LLM 自行判断
                     if isinstance(result, dict) and result.get("status") in ("ok", "success"):
                         result_summary = json.dumps(result, ensure_ascii=False)[:500]
-                        return StepOutcome(result, next_prompt=f"工具调用成功。请向用户简洁汇报结果：{result_summary}")
+                        return StepOutcome(result, next_prompt="")
                     else:
-                        return StepOutcome(result, next_prompt=self._get_anchor_prompt())
+                        return StepOutcome(result, next_prompt="")
                 else:
-                    return StepOutcome(result, next_prompt=self._get_anchor_prompt())
+                    return StepOutcome(result, next_prompt="")
             except Exception as e:
                 yield StreamEvent("system", f"[MCP Error] {tool_name}: {e}\n")
                 return StepOutcome(
-                    {"status": "error", "msg": str(e)}, next_prompt=self._get_anchor_prompt()
+                    {"status": "error", "msg": str(e)}, next_prompt=""
                 )
 
         # 未知工具

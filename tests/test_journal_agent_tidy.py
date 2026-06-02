@@ -108,7 +108,7 @@ class TestJournalAgentSleepMode:
         messages = make_messages(20)
         journal_msg_ids = []
         result = _build_incremental_msg_text(
-            messages, "uuid-9", journal_msg_ids, filter_wm=True
+            messages, "uuid-9", journal_msg_ids
         )
         # 从 uuid-9 之后开始，应有 uuid-10 ~ uuid-19
         assert journal_msg_ids[0] == "uuid-10"
@@ -150,7 +150,7 @@ class TestJournalAgentForceMode:
         messages = make_messages(20)
         journal_force_msg_ids = []
         result = _build_incremental_msg_text(
-            messages, "uuid-14", journal_force_msg_ids, filter_wm=True
+            messages, "uuid-14", journal_force_msg_ids
         )
         # 从 uuid-14 之后开始，应有 uuid-15 ~ uuid-19
         assert journal_force_msg_ids[0] == "uuid-15"
@@ -229,7 +229,7 @@ class TestJournalAgentPromptFormat:
         messages = make_messages(5)
         journal_msg_ids = []
         result = _build_incremental_msg_text(
-            messages, "", journal_msg_ids, filter_wm=True
+            messages, "", journal_msg_ids
         )
         assert len(journal_msg_ids) == 5
         assert "[id:uuid-0]" in result
@@ -274,7 +274,7 @@ class TestJournalCursorFallback:
         """验证游标 fallback 到增量消息列表的最后一条"""
         messages = make_messages(10)
         journal_msg_ids = []
-        _build_incremental_msg_text(messages, "uuid-3", journal_msg_ids, filter_wm=True)
+        _build_incremental_msg_text(messages, "uuid-3", journal_msg_ids)
         fallback_cursor = journal_msg_ids[-1] if journal_msg_ids else None
         assert fallback_cursor == "uuid-9"
 
@@ -331,9 +331,9 @@ class TestJournalIntegrationWithOtherAgents:
         entity_ids = []
         dream_ids = []
         journal_ids = []
-        _build_incremental_msg_text(messages, "uuid-5", entity_ids, filter_wm=True)
-        _build_incremental_msg_text(messages, "uuid-10", dream_ids, filter_wm=True)
-        _build_incremental_msg_text(messages, "uuid-15", journal_ids, filter_wm=True)
+        _build_incremental_msg_text(messages, "uuid-5", entity_ids)
+        _build_incremental_msg_text(messages, "uuid-10", dream_ids)
+        _build_incremental_msg_text(messages, "uuid-15", journal_ids)
         # 各自独立计算增量范围
         assert entity_ids[0] == "uuid-6"
         assert dream_ids[0] == "uuid-11"
