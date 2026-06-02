@@ -3028,9 +3028,9 @@ def _process_next_file(session: dict, category: str = "") -> dict:
         try:
             if current["type"] == "image":
                 # 照片不需要分类判断，始终自动继续
+                session["offset"] = next_idx + 1  # 先推进 offset，防止 append 失败导致重复处理
                 result = ingest_photo(current["path"], category=None, mode=mode)
                 session["processed"].append({"file": current["path"], "type": "image", "result": result})
-                session["offset"] = next_idx + 1
                 # 继续循环处理下一个文件
                 continue
 
@@ -3038,16 +3038,16 @@ def _process_next_file(session: dict, category: str = "") -> dict:
                 # 优先使用 auto_category（初始化时指定的全量分类）
                 if auto_category:
                     # 有全量分类，自动入库并继续循环
+                    session["offset"] = next_idx + 1  # 先推进 offset，防止 append 失败导致重复处理
                     result = ingest_document(file_path=current["path"], category=auto_category, mode=mode)
                     session["processed"].append({"file": current["path"], "type": "document", "result": result})
-                    session["offset"] = next_idx + 1
                     # 继续循环处理下一个文件
                     continue
                 elif category:
                     # 子Agent回答的分类，只处理当前文档，不传播到后续
+                    session["offset"] = next_idx + 1  # 先推进 offset，防止 append 失败导致重复处理
                     result = ingest_document(file_path=current["path"], category=category, mode=mode)
                     session["processed"].append({"file": current["path"], "type": "document", "result": result})
-                    session["offset"] = next_idx + 1
                     # 清空 category，后续文档根据 auto_category 判断（为空则返回 need_category）
                     category = ""
                     # 继续循环，下一个文档会根据 auto_category 决定行为
@@ -3063,14 +3063,18 @@ def _process_next_file(session: dict, category: str = "") -> dict:
                         # 继续循环处理下一个文件
                         continue
 
-                    # 读取文件内容供子Agent判断分类（需要足够内容，不能只用 ingest_document 的 3000 字符预览）
-                    try:
-                        preview = read_file_content(current["path"])[:20000]
-                    except Exception as e:
-                        logger.warning(f"读取文档预览失败: {current['path']}, 错误: {e}")
-                        session["processed"].append({"file": current["path"], "type": "document", "result": doc_result})
+                    # 从 ingest_document 返回结果中提取预览（已包含 20000 字符）
+                    preview = doc_result.get("preview", "")
+                    if not preview:
+                        # ingest_document 未能读取内容，记录错误并跳过
+                        logger.warning(f"文档预览为空: {current['path']}")
+                        session["processed"].append({
+                            "file": current["path"],
+                            "type": "document",
+                            "result": {"status": "error", "message": "无法读取文档预览: 内容为空"}
+                        })
                         session["offset"] = next_idx + 1
-                        continue  # 跳过无法读取预览的文档，继续处理下一个
+                        continue
                     available_categories = doc_result.get("available_categories", ["其他"])
 
                     return {
@@ -3090,6 +3094,11 @@ def _process_next_file(session: dict, category: str = "") -> dict:
 
         except Exception as e:
             logger.error(f"处理文件异常: {current['path']}, 错误: {e}")
+            session["processed"].append({
+                "file": current["path"],
+                "type": current.get("type", "unknown"),
+                "result": {"status": "error", "message": str(e)}
+            })
             session["offset"] = next_idx + 1
             continue
 
@@ -3311,7 +3320,7 @@ def ingest_document(file_path: str, category: str = "", mode: str = "copy") -> d
             content = read_file_content(file_path)
             kg_note = f"\n注意：{kg_reason}" if not kg_ok else ""
             if content:
-                preview = content[:3000] if len(content) > 3000 else content
+                preview = content[:20000] if len(content) > 20000 else content
                 return {
                     "status": "need_category",
                     "message": f"请根据以下内容判断文档分类目录，然后再次调用 ingest_document 并传入 category 参数。\n\n文件: {file_path}\n内容预览:\n{preview}\n可选分类: {', '.join(available_categories)}{kg_note}",
@@ -3320,6 +3329,7 @@ def ingest_document(file_path: str, category: str = "", mode: str = "copy") -> d
                     "content_length": len(content),
                     "available_categories": available_categories,
                     "kg_supported": kg_ok,
+                    "preview": preview,
                 }
             else:
                 ext = source.suffix.lower()
