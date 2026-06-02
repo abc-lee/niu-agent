@@ -277,7 +277,7 @@ class ChatQueue:
         # 先加载历史上下文（此时不包含当前 user 消息，避免重复）
         from agent.context_manager import get_context_manager
         context_manager = await get_context_manager(store)
-        history_for_runner = await context_manager.get_context_for_chat()
+        history_for_runner = await context_manager.get_context_for_chat(exclude_last=False)
         history_len = len(history_for_runner)
 
         # 持久化 user 消息（每条独立持久化，在历史加载之后）
