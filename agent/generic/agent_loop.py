@@ -313,9 +313,6 @@ def agent_runner_loop(
                     "data": outcome.data,
                     "messages": messages,
                 }  # should_exit is only used for immediate exit
-            if not outcome.next_prompt:
-                should_exit = {"result": "CURRENT_TASK_DONE", "data": outcome.data}
-                break
             if outcome.next_prompt.startswith("未知工具"):
                 client.last_tools = ""
 
