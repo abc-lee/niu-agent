@@ -91,7 +91,7 @@ TOOL_SCHEMAS = {
 - category: 分类目录，不传则返回内容预览供判断分类
 - mode: copy（复制）| move（移动）| reference（引用），默认 copy
 
-不传 category 时返回 need_category 状态+内容预览，判断分类后再次调用传入 category。
+不传 category 时返回 need_category 状态+内容预览，判断分类后再次调用 ingest 或 ingest_document 传入 category。
 
 返回:
 - status: need_category | success | error
@@ -3084,7 +3084,7 @@ def _process_next_file(session: dict, category: str = "") -> dict:
                         "current_file_path": current["path"],
                         "preview": preview,
                         "available_categories": available_categories,
-                        "message": "请从 available_categories 中选择分类",
+                        "message": f"请从 available_categories 中选择分类，然后再次调用 ingest(path=\"{current['path']}\", category=分类名) 继续",
                     }
 
             else:
@@ -3323,7 +3323,7 @@ def ingest_document(file_path: str, category: str = "", mode: str = "copy") -> d
                 preview = content[:20000] if len(content) > 20000 else content
                 return {
                     "status": "need_category",
-                    "message": f"请根据以下内容判断文档分类目录，然后再次调用 ingest_document 并传入 category 参数。\n\n文件: {file_path}\n内容预览:\n{preview}\n可选分类: {', '.join(available_categories)}{kg_note}",
+                    "message": f"请根据以下内容判断文档分类目录，然后再次调用 ingest 工具并传入 category 参数。对于目录入库使用相同的 path 参数继续会话；对于单文件入库使用相同的 file_path 参数。\n\n文件: {file_path}\n内容预览:\n{preview}\n可选分类: {', '.join(available_categories)}{kg_note}",
                     "file_path": file_path,
                     "mode": mode,
                     "content_length": len(content),
@@ -3336,7 +3336,7 @@ def ingest_document(file_path: str, category: str = "", mode: str = "copy") -> d
                 size = source.stat().st_size
                 return {
                     "status": "need_category",
-                    "message": f"无法读取文件内容，请根据文件信息判断分类目录，然后再次调用 ingest_document 并传入 category 参数。\n\n文件: {file_path}\n格式: {ext}\n大小: {size} 字节\n可选分类: {', '.join(available_categories)}{kg_note}",
+                    "message": f"无法读取文件内容，请根据文件信息判断分类目录，然后再次调用 ingest 工具并传入 category 参数。对于目录入库使用相同的 path 参数继续会话；对于单文件入库使用相同的 file_path 参数。\n\n文件: {file_path}\n格式: {ext}\n大小: {size} 字节\n可选分类: {', '.join(available_categories)}{kg_note}",
                     "file_path": file_path,
                     "mode": mode,
                     "available_categories": available_categories,
@@ -3581,7 +3581,7 @@ async def list_tools() -> list[Tool]:
 - category: 分类目录，不传则返回内容预览供判断分类
 - mode: copy（复制）| move（移动）| reference（引用）
 
-不传 category 时返回 need_category 状态+内容预览，判断分类后再次调用传入 category。
+不传 category 时返回 need_category 状态+内容预览，判断分类后再次调用 ingest 或 ingest_document 传入 category。
 
 返回:
 - status: need_category | success | error
