@@ -848,7 +848,7 @@
     }
 
     // ========== 消息显示 ==========
-    function addMessage(role, text, images = []) {
+    function addMessage(role, text, images = [], skipAppend = false) {
       // 双管道分离：tool 消息只走 DB 管道，不渲染到对话框
       if (role === 'tool') return null;
       const div = document.createElement('div');
@@ -985,8 +985,10 @@
         div.appendChild(imagesDiv);
       }
       
-      messages.appendChild(div);
-      messages.scrollTop = messages.scrollHeight;
+      if (!skipAppend) {
+        messages.appendChild(div);
+        messages.scrollTop = messages.scrollHeight;
+      }
       return div;
     }
     
@@ -1374,8 +1376,10 @@
           const history = result.messages || result;  // 兼容新旧格式
           if (history && history.length > 0) {
             // 在顶部插入消息（history 已经是正序：最旧在前）
+            // 保存插入参考节点：所有新消息插入到这个节点之前，保持正序
+            const refNode = messages.firstChild;
             history.forEach(msg => {
-              prependMessage(msg.role, msg.content, msg.id);
+              prependMessage(msg.role, msg.content, msg.id, refNode);
             });
             // 更新最旧消息ID为刚加载的第一条（最旧的）
             oldestMessageId = history[0].id;
@@ -1421,16 +1425,16 @@
     }
     
     // 在顶部插入消息（用于加载更多历史）
-    function prependMessage(role, content, id) {
+    function prependMessage(role, content, id, refNode = null) {
       // 去重：检查是否已存在相同ID的消息
       const existing = document.querySelector(`.message[data-id="${id}"]`);
       if (existing) return;
 
       // 复用 addMessage 的渲染逻辑（Markdown 图片由 marked.js 渲染）
-      const div = addMessage(role, content);
+      const div = addMessage(role, content, [], true);  // skipAppend=true: 不做appendChild/scrollTop
       if (!div) return;
       div.dataset.id = id;
-      messages.insertBefore(div, messages.firstChild);
+      messages.insertBefore(div, refNode || messages.firstChild);
     }
   </script>
 </body>
