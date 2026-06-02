@@ -313,7 +313,7 @@ def agent_runner_loop(
                     "data": outcome.data,
                     "messages": messages,
                 }  # should_exit is only used for immediate exit
-            if outcome.next_prompt.startswith("未知工具"):
+            if outcome.next_prompt.startswith("未知工具") or outcome.next_prompt.startswith("Unknown tool"):
                 client.last_tools = ""
 
             # 关键：Anthropic API 要求每个 tool_call 都有 tool_result
