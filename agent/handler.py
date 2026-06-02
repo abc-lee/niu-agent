@@ -444,7 +444,7 @@ class NiuHandler(BaseHandler):
         # P2-1: 工具调用历史追踪（用于重复检测）
         self._recent_tool_calls: list[str] = []
 
-    # ========== 工作记忆机制 ==========
+    # ========== 工具回调机制 ==========
 
     def tool_before_callback(self, tool_name, args, response):
         """工具调用前：推送状态到前端"""
@@ -628,22 +628,6 @@ class NiuHandler(BaseHandler):
                 )
             # 重置 context
             self._experience_context = None
-
-    def _get_anchor_prompt(self, skip=False):
-        """生成工作记忆提示词（仅工具调用摘要）"""
-        if skip:
-            return "\n"
-
-        # 限制历史信息长度，避免过长导致 LLM 困惑
-        history_items = self.history_info[-10:]  # 减少到最近10条
-        h_str = "\n".join(history_items)
-        if len(h_str) > 500:  # 限制总长度
-            h_str = h_str[:500] + "..."
-
-        prompt = f"\n### [WORKING MEMORY]\n<history>\n{h_str}\n</history>"
-        prompt += f"\nCurrent turn: {self.current_turn}\n"
-
-        return prompt
 
     def next_prompt_patcher(self, next_prompt, outcome, turn):
         """周期性警告、全局记忆注入和重复调用检测"""
