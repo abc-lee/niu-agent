@@ -20,6 +20,7 @@ from lark_oapi.api.cardkit.v1 import (
 )
 from lark_oapi.api.im.v1 import (
     CreateMessageRequest, CreateMessageRequestBody,
+    ReplyMessageRequest, ReplyMessageRequestBody,
 )
 
 
@@ -68,6 +69,7 @@ class FeishuChannelAdapter(ChannelAdapter):
         self._accumulated_text: str = ""
         self._stream_pending_images: list[dict] = []   # [{"img_key": "img_v3_xxx", "alt": "描述"}]
         self._stream_pending_files: list[dict] = []     # [{"local_path": "...", "filename": "..."}]
+        self._stream_reply_to_id: str | None = None     # F3: 群聊回复目标消息ID
         self._stream_sent_media_paths: set[str] = set()  # 流式卡片中已展示的媒体路径，防止 send_media 重复发送
 
         # 从持久化数据恢复 chat_id / open_id
@@ -168,6 +170,10 @@ class FeishuChannelAdapter(ChannelAdapter):
             self._accumulated_text = ""
             self._stream_pending_images = []
             self._stream_pending_files = []
+            self._stream_reply_to_id = None  # F3c: 重置群聊回复目标
+            # F3b: 群聊消息设置 reply_to_id（必须在重置之后）
+            if not is_p2p:
+                self._stream_reply_to_id = getattr(msg, 'message_id', None)
             # 流式推送状态初始化
             self._feishu_waiting = True
             self._stream_target = unified.channel_id or self._user_open_id or self._user_p2p_chat_id
@@ -714,15 +720,27 @@ class FeishuChannelAdapter(ChannelAdapter):
 
             # 用 card_id 引用发送消息（关键：只有引用方式，终结操作才能传导到飞书端）
             card_ref = json.dumps({"type": "card", "data": {"card_id": card_id}}, ensure_ascii=False)
-            send_req = CreateMessageRequest.builder() \
-                .receive_id_type("chat_id") \
-                .request_body(CreateMessageRequestBody.builder()
-                    .receive_id(self._stream_target)
-                    .msg_type("interactive")
-                    .content(card_ref)
-                    .build()) \
-                .build()
-            send_resp = self.channel.client.im.v1.message.create(send_req)
+            if self._stream_reply_to_id:
+                # F3d: 群聊 — 使用 reply API 回复原始消息
+                send_req = ReplyMessageRequest.builder() \
+                    .message_id(self._stream_reply_to_id) \
+                    .request_body(ReplyMessageRequestBody.builder()
+                        .msg_type("interactive")
+                        .content(card_ref)
+                        .build()) \
+                    .build()
+                send_resp = self.channel.client.im.v1.message.reply(send_req)
+            else:
+                # 单聊 — 使用 create API 发送新消息
+                send_req = CreateMessageRequest.builder() \
+                    .receive_id_type("chat_id") \
+                    .request_body(CreateMessageRequestBody.builder()
+                        .receive_id(self._stream_target)
+                        .msg_type("interactive")
+                        .content(card_ref)
+                        .build()) \
+                    .build()
+                send_resp = self.channel.client.im.v1.message.create(send_req)
             if not send_resp.success():
                 logger.error(f"[FeishuStream] SendMessage failed: {send_resp.code} {send_resp.msg}")
                 return None

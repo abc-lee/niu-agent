@@ -218,3 +218,56 @@ class TestF2GroupMessagePrefix:
         message_override = call_args.kwargs.get("message_override") or call_args[1].get("message_override")
         assert "[群聊]" not in message_override
         assert "张三:" not in message_override
+
+
+# ---------------------------------------------------------------------------
+# F3: 群聊使用 reply API 回复，单聊使用 create API
+# ---------------------------------------------------------------------------
+class TestF3GroupReplyAPI:
+    """F3: 群聊使用 reply API 回复，单聊使用 create API"""
+
+    def test_group_sets_reply_to_id(self, adapter, mock_route):
+        """群聊@bot消息 → _stream_reply_to_id 被设为 msg.message_id"""
+        msg = FakeInboundMessage(
+            message_id="om_reply1",
+            chat_type="group",
+            chat_id="oc_group1",
+            sender_id="ou_user1",
+            sender_name="张三",
+            text="@_user_1 你好",
+            mentioned_bot=True,
+        )
+        adapter._on_message(msg)
+        assert adapter._stream_reply_to_id == "om_reply1"
+
+    def test_p2p_no_reply_to_id(self, adapter, mock_route):
+        """单聊消息 → _stream_reply_to_id 保持 None"""
+        msg = FakeInboundMessage(
+            message_id="om_reply2",
+            chat_type="p2p",
+            chat_id="oc_p2p1",
+            sender_id="ou_user1",
+            sender_name="张三",
+            text="你好",
+            mentioned_bot=False,
+        )
+        adapter._on_message(msg)
+        assert adapter._stream_reply_to_id is None
+
+    def test_on_message_resets_reply_to_id(self, adapter, mock_route):
+        """新消息进入时 _stream_reply_to_id 被重置"""
+        # 先设置一个旧值
+        adapter._stream_reply_to_id = "om_old_msg"
+        # 发送新的群聊消息
+        msg = FakeInboundMessage(
+            message_id="om_reply3",
+            chat_type="group",
+            chat_id="oc_group1",
+            sender_id="ou_user1",
+            sender_name="张三",
+            text="@_user_1 新消息",
+            mentioned_bot=True,
+        )
+        adapter._on_message(msg)
+        # 应该被设为新消息的 ID（而不是旧值）
+        assert adapter._stream_reply_to_id == "om_reply3"
