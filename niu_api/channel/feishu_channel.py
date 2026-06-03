@@ -197,6 +197,14 @@ class FeishuChannelAdapter(ChannelAdapter):
                 else:
                     message_content = "入库文件：" + message_content
 
+            # F2: 群聊消息注入发送者前缀 + @bot 文本清理
+            if not is_p2p:
+                # 清理 @_user_N mention 标记
+                message_content = re.sub(r'@_user_\d+\s*', '', message_content).strip()
+                # 注入发送者前缀
+                sender_name = getattr(msg, 'sender_name', '未知')
+                message_content = f"[群聊] {sender_name}: {message_content}"
+
             result = self.router.route_in_sync(unified, session_id=session_id, message_override=message_content)
             if result.queued:
                 logger.info(f"[FeishuChannel] Message queued: {message_content[:50]}...")
