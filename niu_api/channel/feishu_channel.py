@@ -102,6 +102,11 @@ class FeishuChannelAdapter(ChannelAdapter):
                 return
 
             is_p2p = self._is_p2p_message(msg)
+
+            # F1: 群聊中仅 @bot 消息触发 Agent
+            if not is_p2p and not getattr(msg, 'mentioned_bot', False):
+                return
+
             log_preview = unified.content[:50] if unified.content.strip() else f"[resources: {len(unified.resources)}]"
             logger.info(f"[FeishuChannel] Received: {log_preview}...")
 
