@@ -227,8 +227,8 @@ sub agents:
   "user": {
     "name": "李磊",
     "nickname": "老板",
-    "occupation": "软件工程师",
-    "organization": "某科技公司"
+    "occupation": "请询问用户职业",
+    "organization": "请询问用户工作单位"
   },
   "permanent": [
     {"type": "task", "content": "正在修复登录bug：已定位到token过期问题"},

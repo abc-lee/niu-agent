@@ -267,6 +267,12 @@ def _build_user_info_section() -> str:
 
     sections = []
 
+    # 工作目录
+    workspace = memory.get("workspace", {})
+    ws_path = workspace.get("path", "")
+    if ws_path and not str(ws_path).startswith("请询问"):
+        sections.append(f"## 工作目录\n\n{ws_path}")
+
     # 用户信息
     user = memory.get("user", {})
     user_lines = []
