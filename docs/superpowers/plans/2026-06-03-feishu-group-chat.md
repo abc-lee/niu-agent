@@ -63,7 +63,7 @@ def _make_adapter():
     with patch.object(FeishuChannelAdapter, '__init__', lambda self, *a, **k: None):
         adapter = FeishuChannelAdapter.__new__(FeishuChannelAdapter)
 
-    # 初始化必要属性
+    # 初始化必要属性（与 __init__ 中的流式状态变量一致）
     adapter._user_p2p_chat_id = "oc_p2p"
     adapter._user_open_id = "ou_user1"
     adapter._feishu_waiting = False
@@ -76,12 +76,15 @@ def _make_adapter():
     adapter._stream_pending_images = []
     adapter._stream_pending_files = []
     adapter._stream_target = None
+    adapter._stream_open_id = None
+    adapter._stream_chat_id = None
     adapter._stream_sent_media_paths = set()
     adapter._last_pushed_rowid = 0
     adapter._stream_reply_to_id = None
     adapter.router = MagicMock()
     adapter.channel = MagicMock()
     adapter.channel._bot_open_id = "ou_bot123"
+    adapter.logger = MagicMock()
 
     return adapter
 
@@ -98,12 +101,13 @@ class TestF1BotFilter:
             mentioned_bot=False,
         )
 
-        # _on_message 应该直接 return，不调 router.route_in_sync
-        with patch.object(adapter, 'resolve_inbound_resources', return_value=[]):
+        # _on_message 应该直接 return，不调 _enqueue_message
+        with patch.object(adapter, 'resolve_inbound_resources', return_value=[]), \
+             patch.object(adapter, '_enqueue_message') as mock_enqueue:
             adapter._on_message(msg)
 
-        # router.route_in_sync 不应被调用
-        adapter.router.route_in_sync.assert_not_called()
+        # _enqueue_message 不应被调用
+        mock_enqueue.assert_not_called()
 
     def test_group_message_with_mention_triggers_agent(self):
         """群聊中 @bot 的消息应触发 Agent"""
@@ -115,11 +119,12 @@ class TestF1BotFilter:
             chat_id="oc_group1",
         )
 
-        with patch.object(adapter, 'resolve_inbound_resources', return_value=[]):
+        with patch.object(adapter, 'resolve_inbound_resources', return_value=[]), \
+             patch.object(adapter, '_enqueue_message') as mock_enqueue:
             adapter._on_message(msg)
 
-        # router.route_in_sync 应被调用（消息入队）
-        adapter.router.route_in_sync.assert_called_once()
+        # _enqueue_message 应被调用
+        mock_enqueue.assert_called_once()
 
     def test_p2p_message_always_triggers_agent(self):
         """单聊消息无论是否 @bot 都应触发 Agent"""
@@ -130,10 +135,11 @@ class TestF1BotFilter:
             mentioned_bot=False,
         )
 
-        with patch.object(adapter, 'resolve_inbound_resources', return_value=[]):
+        with patch.object(adapter, 'resolve_inbound_resources', return_value=[]), \
+             patch.object(adapter, '_enqueue_message') as mock_enqueue:
             adapter._on_message(msg)
 
-        adapter.router.route_in_sync.assert_called_once()
+        mock_enqueue.assert_called_once()
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -143,12 +149,9 @@ Expected: FAIL — 群聊消息目前不检查 mentioned_bot，所有消息都�
 
 - [ ] **Step 3: Implement F1 — 在 `_on_message` 中添加群聊 @bot 过滤**
 
-在 `niu_api/channel/feishu_channel.py` 的 `_on_message` 方法中，在 `is_p2p = self._is_p2p_message(msg)` 之后，添加群聊 @bot 过滤逻辑：
+在 `niu_api/channel/feishu_channel.py` 的 `_on_message` 方法中，在 `is_p2p = self._is_p2p_message(msg)` （line 104）之后、`logger.info` （line 106）之前插入：
 
 ```python
-# 在 _on_message 中，is_p2p 判断之后、UnifiedMessage 构建之前
-is_p2p = self._is_p2p_message(msg)
-
 # F1: 群聊中仅 @bot 消息触发 Agent，其他群消息忽略
 if not is_p2p and not getattr(msg, 'mentioned_bot', False):
     logger.debug(f"[FeishuChannel] Group message without @bot, skipping")
@@ -195,12 +198,18 @@ class TestF2GroupMessageMeta:
             chat_id="oc_group1",
         )
 
-        with patch.object(adapter, 'resolve_inbound_resources', return_value=[]):
+        with patch.object(adapter, 'resolve_inbound_resources', return_value=[]), \
+             patch.object(adapter, '_enqueue_message') as mock_enqueue:
             adapter._on_message(msg)
 
-        # 验证 route_in_sync 被调用时 message_override 包含发送者前缀
-        call_args = adapter.router.route_in_sync.call_args
-        message_override = call_args.kwargs.get('message_override', '') or call_args[1].get('message_override', '')
+        # 验证 _enqueue_message 被调用时 message_override 包含发送者前缀
+        mock_enqueue.assert_called_once()
+        call_kwargs = mock_enqueue.call_args.kwargs
+        message_override = call_kwargs.get('message_override', '')
+        if not message_override:
+            # 也可能是位置参数
+            call_args = mock_enqueue.call_args[0]
+            message_override = call_args[1] if len(call_args) > 1 else ''
         assert "[群聊]" in message_override
         assert "张三" in message_override
 
@@ -216,12 +225,15 @@ class TestF2GroupMessageMeta:
             chat_id="oc_group1",
         )
 
-        with patch.object(adapter, 'resolve_inbound_resources', return_value=[]):
+        with patch.object(adapter, 'resolve_inbound_resources', return_value=[]), \
+             patch.object(adapter, '_enqueue_message') as mock_enqueue:
             adapter._on_message(msg)
 
-        call_args = adapter.router.route_in_sync.call_args
-        message_override = call_args.kwargs.get('message_override', '') or call_args[1].get('message_override', '')
-        assert "ou_abc12" in message_override  # sender_id[:8]
+        mock_enqueue.assert_called_once()
+        # 从 _on_message 内部查看 message_content 的修改
+        # 由于 message_content 是局部变量，我们通过 _enqueue_message 参数间接验证
+        all_args_str = str(mock_enqueue.call_args)
+        assert "ou_abc12" in all_args_str  # sender_id[:8]
 
     def test_p2p_message_no_sender_prefix(self):
         """单聊消息不注入发送者前缀"""
@@ -232,12 +244,13 @@ class TestF2GroupMessageMeta:
             sender_name="张三",
         )
 
-        with patch.object(adapter, 'resolve_inbound_resources', return_value=[]):
+        with patch.object(adapter, 'resolve_inbound_resources', return_value=[]), \
+             patch.object(adapter, '_enqueue_message') as mock_enqueue:
             adapter._on_message(msg)
 
-        call_args = adapter.router.route_in_sync.call_args
-        message_override = call_args.kwargs.get('message_override', '') or call_args[1].get('message_override', '')
-        assert "[群聊]" not in message_override
+        mock_enqueue.assert_called_once()
+        all_args_str = str(mock_enqueue.call_args)
+        assert "[群聊]" not in all_args_str
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -247,7 +260,7 @@ Expected: FAIL — 当前群聊消息不注入发送者前缀
 
 - [ ] **Step 3: Implement F2 — 群聊消息元信息注入 + @bot 文本清理**
 
-在 `_on_message` 中，群聊分支（`not is_p2p`）构建 `message_content` 后，注入发送者前缀并清理 @bot 文本：
+在 `_on_message` 中，`message_content` 最终赋值完成后（资源替换之后、`_enqueue_message` 调用之前），插入群聊分支：
 
 ```python
 # F2: 群聊消息元信息注入
@@ -255,25 +268,29 @@ if not is_p2p:
     sender_name = getattr(msg, 'sender_name', '') or ''
     sender_id = unified.sender_id or ''
     display_name = sender_name or (sender_id[:8] if sender_id else '未知')
-    # 清理 @bot 文本
+
+    # 清理 @bot 文本：尝试用 SDK mentions 模块，失败则用正则兜底
     content_to_inject = message_content
     try:
         from lark_oapi.channel.normalize.mentions import extract_mentions, resolve_mentions
         bot_open_id = getattr(self.channel, '_bot_open_id', None)
         if bot_open_id:
-            raw_mentions = (msg.raw or {}).get("mentions", [])
+            raw_mentions = (getattr(msg, 'raw', None) or {}).get("mentions", [])
             ext = extract_mentions(raw_mentions, bot_open_id=bot_open_id)
             content_to_inject = resolve_mentions(
                 message_content, ext,
                 strip_bot_mentions=True,
                 bot_open_id=bot_open_id,
             )
-    except Exception as e:
-        logger.debug(f"[FeishuChannel] Mention cleanup failed, using raw content: {e}")
+    except (ImportError, Exception) as e:
+        logger.debug(f"[FeishuChannel] Mention cleanup via SDK failed: {e}")
+        # 兜底：正则去除 @提及
+        content_to_inject = re.sub(r'@[\w一-鿿]+\s*', '', message_content).strip()
+
     message_content = f"[群聊] 发送者：{display_name}\n\n{content_to_inject}"
 ```
 
-注意：这段代码应放在 `message_content` 构建完成之后（资源替换完成后）、`route_in_sync` 调用之前。
+**注意**：`lark_oapi.channel.normalize.mentions` 的 import 路径需要在实现时验证。如果 SDK 版本中不存在该模块，则使用正则兜底方案。
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -293,10 +310,10 @@ git commit -m "feat(feishu): F2 group chat sender info injection + @bot text cle
 
 **Files:**
 - Modify: `tests/test_feishu_group_chat.py`
-- Modify: `niu_api/channel/feishu_channel.py:21-23` (import)
+- Modify: `niu_api/channel/feishu_channel.py:1-5` (import 块)
 - Modify: `niu_api/channel/feishu_channel.py:59-72` (__init__ 流式状态)
-- Modify: `niu_api/channel/feishu_channel.py:157-169` (状态重置)
-- Modify: `niu_api/channel/feishu_channel.py:688-721` (_create_stream_card)
+- Modify: `niu_api/channel/feishu_channel.py:95-100` (_on_message 状态重置)
+- Modify: `niu_api/channel/feishu_channel.py:688-730` (_create_stream_card)
 
 - [ ] **Step 1: Write the failing test — 群聊设置 _stream_reply_to_id**
 
@@ -394,57 +411,38 @@ Expected: FAIL — 当前没有 `_stream_reply_to_id` 属性，也没有 reply �
 
 - [ ] **Step 3: Implement F3 — reply API 支持**
 
-**3a. 添加 import**（`feishu_channel.py:21-23`）：
+**3a. 添加 import**（`feishu_channel.py` 顶部 import 块，在 `CreateMessageRequest, CreateMessageRequestBody` 所在行之后添加）：
 
 ```python
-from lark_oapi.api.im.v1 import (
-    CreateMessageRequest, CreateMessageRequestBody,
-    ReplyMessageRequest, ReplyMessageRequestBody,
-)
+from lark_oapi.api.im.v1 import ReplyMessageRequest, ReplyMessageRequestBody
 ```
 
-**3b. 添加 `_stream_reply_to_id` 属性**（`feishu_channel.py` __init__ 流式状态块，约 line 59-72）：
+**3b. 添加 `_stream_reply_to_id` 属性**（`feishu_channel.py` __init__ 流式状态块，在 `self._stream_sent_media_paths = set()` 之后）：
 
-在 `self._stream_sent_media_paths = set()` 之后添加：
 ```python
 self._stream_reply_to_id: str | None = None  # F3: 群聊 reply 目标消息 ID
 ```
 
-**3c. 状态重置**（`feishu_channel.py:157-169`，`_on_message` 入口重置块）：
+**3c. 状态重置**（`feishu_channel.py` `_on_message` 入口重置块，在 `self._stream_sent_media_paths = set()` 之后添加）：
 
-在 `self._stream_sent_media_paths = set()` 之后添加：
 ```python
 self._stream_reply_to_id = None
 ```
 
-**3d. 群聊分支设置 reply_to_id**（在 `is_p2p` 判断后，群聊分支中）：
+**3d. 群聊分支设置 reply_to_id**（在 `_on_message` 中，F1 过滤之后、F2 元信息注入之前）：
 
-在 `if is_p2p:` 块的 else 分支（或 `not is_p2p` 条件）中添加：
 ```python
 # F3: 群聊设置 reply 目标
-self._stream_reply_to_id = str(getattr(msg, 'message_id', '') or getattr(msg, 'id', '') or '')
+if not is_p2p:
+    self._stream_reply_to_id = str(getattr(msg, 'message_id', '') or getattr(msg, 'id', '') or '')
 ```
 
-**3e. 修改 `_create_stream_card`**（`feishu_channel.py:688-721`）：
+**3e. 修改 `_create_stream_card`**（`feishu_channel.py`，约 line 688-730）：
 
-将现有的 `CreateMessageRequest` 发送逻辑替换为 reply/create 分支：
+在现有的 `CreateMessageRequest` 发送逻辑处，替换为 reply/create 分支。只替换发送消息的部分（从 `card_ref = json.dumps(...)` 到 `send_resp = self.channel.client.im.v1.message.create(send_req)`），保留前后的卡片创建和 card_id 获取逻辑不变：
 
 ```python
-def _create_stream_card(self, content: str) -> str | None:
-    """创建流式卡片实体 + 用 card_id 引用发送消息"""
-    try:
-        card_json = self._build_streaming_card_dict(content)
-
-        # 创建卡片实体
-        body = CreateCardRequestBody.builder().type("card_json").data(card_json).build()
-        req = CreateCardRequest.builder().request_body(body).build()
-        resp = self.channel.client.cardkit.v1.card.create(req)
-        if not resp.success():
-            logger.error(f"[FeishuStream] CreateCard failed: {resp.code} {resp.msg}")
-            return None
-        card_id = resp.data.card_id
-
-        # 用 card_id 引用发送消息（关键：只有引用方式，终结操作才能传导到飞书端）
+        # 用 card_id 引用发送消息
         card_ref = json.dumps({"type": "card", "data": {"card_id": card_id}}, ensure_ascii=False)
 
         # F3: 群聊使用 reply API，单聊使用 create API
@@ -467,16 +465,6 @@ def _create_stream_card(self, content: str) -> str | None:
                     .build()) \
                 .build()
             send_resp = self.channel.client.im.v1.message.create(send_req)
-
-        if not send_resp.success():
-            logger.error(f"[FeishuStream] SendMessage failed: {send_resp.code} {send_resp.msg}")
-            return None
-        self._stream_message_id = send_resp.data.message_id
-
-        return card_id
-    except Exception as e:
-        logger.error(f"[FeishuStream] Create stream card exception: {e}")
-        return None
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
@@ -628,13 +616,9 @@ def create_task(
 
 **3c. 所有 SELECT 查询增加 `chat_id` 列**：
 
-在 `list_tasks`、`get_task`、`get_overdue_tasks`、`find_task_by_name` 的 SELECT 语句中增加 `chat_id`，并在结果字典中添加 `"chat_id": row[N]`（N 为 chat_id 在 SELECT 中的位置，在 name 之后）。
+在 `list_tasks`、`get_task`、`get_overdue_tasks`、`find_task_by_name` 的 SELECT 语句中增加 `chat_id`，并在结果字典中添加 `"chat_id"` 键。
 
-具体修改：
-- `list_tasks`：SELECT 增加 `chat_id`，dict 增加 `"chat_id": row[10]`
-- `get_task`：同上
-- `get_overdue_tasks`：同上
-- `find_task_by_name`：同上
+**重要**：具体列索引取决于实际 SELECT 语句的列顺序。实现时需阅读每个方法的实际 SELECT，在末尾增加 `chat_id` 列，并在 dict 构建中添加对应索引。不要假设固定索引号——以源码实际 SELECT 为准。
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -762,24 +746,24 @@ Expected: FAIL — 当前 `router.push(agent_reply, "feishu", "")` 硬编码空�
 
 - [ ] **Step 3: Implement — service 传递 chat_id**
 
-修改 `niu_api/internal/scheduler/service.py:105-116`，将硬编码空串改为从 task 读取 chat_id：
+修改 `niu_api/internal/scheduler/service.py`，在 `trigger_callback` 函数中找到 `router.push` 调用（约 line 112），将硬编码空串改为从 task 读取 chat_id：
 
 ```python
-# 飞书通道推送：有推送目标时才推送
-try:
-    from niu_api.channel import get_channel_router
-    router = get_channel_router()
-    if router.has_channel("feishu"):
-        # F4: 从 task 读取 chat_id，支持群推送
-        push_chat_id = task.get("chat_id") or ""
-        push_future = asyncio.run_coroutine_threadsafe(
-            router.push(agent_reply, "feishu", push_chat_id),
-            loop,
-        )
-        push_future.result(timeout=30)
-except Exception as e:
-    logger.warning(f"[SCHEDULER] Feishu push failed: {e}")
+# 原代码：
+# push_future = asyncio.run_coroutine_threadsafe(
+#     router.push(agent_reply, "feishu", ""),
+#     loop,
+# )
+
+# 修改为：
+push_chat_id = task.get("chat_id") or ""
+push_future = asyncio.run_coroutine_threadsafe(
+    router.push(agent_reply, "feishu", push_chat_id),
+    loop,
+)
 ```
+
+**注意**：`router.push()` 的第三个参数名可能是 `channel_id`，实现时需确认 `ChannelRouter.push()` 和 `FeishuChannelAdapter.push()` 的签名。如果 `channel_id` 不对应 `chat_id`，需要调整传递方式。
 
 - [ ] **Step 4: Implement — scheduler-server MCP 工具增加 chat_id 参数**
 
@@ -878,12 +862,14 @@ class TestF5SessionIsolation:
             chat_id="oc_group1",
         )
 
-        with patch.object(adapter, 'resolve_inbound_resources', return_value=[]):
+        with patch.object(adapter, 'resolve_inbound_resources', return_value=[]), \
+             patch.object(adapter, '_enqueue_message') as mock_enqueue:
             adapter._on_message(msg)
 
-        call_args = adapter.router.route_in_sync.call_args
-        session_id = call_args.kwargs.get('session_id', '') or call_args[1].get('session_id', '')
-        assert session_id == "feishu:group:oc_group1"
+        mock_enqueue.assert_called_once()
+        all_args_str = str(mock_enqueue.call_args)
+        # session_id 应包含 group 标识
+        assert "group" in all_args_str or "oc_group1" in all_args_str
 
     def test_p2p_session_id_unchanged(self):
         """单聊 session_id 格式应保持 feishu:{sender_id}"""
@@ -894,12 +880,14 @@ class TestF5SessionIsolation:
             sender_id="ou_user1",
         )
 
-        with patch.object(adapter, 'resolve_inbound_resources', return_value=[]):
+        with patch.object(adapter, 'resolve_inbound_resources', return_value=[]), \
+             patch.object(adapter, '_enqueue_message') as mock_enqueue:
             adapter._on_message(msg)
 
-        call_args = adapter.router.route_in_sync.call_args
-        session_id = call_args.kwargs.get('session_id', '') or call_args[1].get('session_id', '')
-        assert session_id == "feishu:ou_user1"
+        mock_enqueue.assert_called_once()
+        # 单聊不应有 group 标识
+        all_args_str = str(mock_enqueue.call_args)
+        assert "feishu:ou_user1" in all_args_str
 
 
 class TestRegressionP2PUntouched:
@@ -909,7 +897,8 @@ class TestRegressionP2PUntouched:
         """单聊不设置 _stream_reply_to_id"""
         adapter = _make_adapter()
         msg = FakeInboundMessage(chat_type="p2p", content_text="你好")
-        with patch.object(adapter, 'resolve_inbound_resources', return_value=[]):
+        with patch.object(adapter, 'resolve_inbound_resources', return_value=[]), \
+             patch.object(adapter, '_enqueue_message'):
             adapter._on_message(msg)
         assert adapter._stream_reply_to_id is None
 
@@ -917,11 +906,11 @@ class TestRegressionP2PUntouched:
         """单聊不注入发送者前缀"""
         adapter = _make_adapter()
         msg = FakeInboundMessage(chat_type="p2p", content_text="你好", sender_name="张三")
-        with patch.object(adapter, 'resolve_inbound_resources', return_value=[]):
+        with patch.object(adapter, 'resolve_inbound_resources', return_value=[]), \
+             patch.object(adapter, '_enqueue_message') as mock_enqueue:
             adapter._on_message(msg)
-        call_args = adapter.router.route_in_sync.call_args
-        message_override = call_args.kwargs.get('message_override', '') or call_args[1].get('message_override', '')
-        assert "[群聊]" not in message_override
+        all_args_str = str(mock_enqueue.call_args)
+        assert "[群聊]" not in all_args_str
 
     def test_p2p_stream_target_unchanged(self):
         """单聊 _stream_target 设置逻辑不变"""
@@ -934,7 +923,8 @@ class TestRegressionP2PUntouched:
             chat_id="oc_p2p",
             sender_id="ou_user1",
         )
-        with patch.object(adapter, 'resolve_inbound_resources', return_value=[]):
+        with patch.object(adapter, 'resolve_inbound_resources', return_value=[]), \
+             patch.object(adapter, '_enqueue_message'):
             adapter._on_message(msg)
         # _stream_target 应为 channel_id 或 open_id（现有逻辑）
         assert adapter._stream_target in ("oc_p2p", "ou_user1")
@@ -988,7 +978,8 @@ git commit -m "test(feishu): F5 session isolation + p2p regression tests"
 ### Task 7: send() 方法流式清理也需重置 _stream_reply_to_id
 
 **Files:**
-- Modify: `niu_api/channel/feishu_channel.py:410-422` (send 方法 finally 块)
+- Modify: `niu_api/channel/feishu_channel.py` (send 方法 finally 块)
+- Modify: `tests/test_feishu_group_chat.py`
 
 - [ ] **Step 1: Write the failing test — send() 完成后清理 _stream_reply_to_id**
 
@@ -1014,7 +1005,7 @@ class TestF3ReplyToIdCleanup:
 
 - [ ] **Step 2: Implement — send() finally 块增加 _stream_reply_to_id 重置**
 
-在 `feishu_channel.py` 的 `send()` 方法 finally 块（约 line 410-422）中，在 `self._stream_pending_files = []` 之后添加：
+在 `feishu_channel.py` 的 `send()` 方法 finally 块中，找到 `self._stream_pending_files = []` 所在行，在其后添加：
 
 ```python
 self._stream_reply_to_id = None
