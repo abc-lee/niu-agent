@@ -999,7 +999,7 @@ class NiuHandler(BaseHandler):
         if tool_name.startswith("chat-with-"):
             agent_name = tool_name[len("chat-with-"):]
             # 系统自动管理的子Agent，禁止手动调用
-            BLOCKED_SUBAGENTS = {"context-manager", "entity-extractor"}  # 由 auto-tidy 管道自动调用，禁止主Agent手动触发
+            BLOCKED_SUBAGENTS = {"context-manager", "entity-extractor", "dream-evolver"}  # 由 auto-tidy 管道自动调用，禁止主Agent手动触发
             if agent_name in BLOCKED_SUBAGENTS:
                 return StepOutcome(
                     {"status": "error", "message": f"子Agent {agent_name} 已由系统自动管理，不可手动调用"},
