@@ -225,7 +225,10 @@ sub agents:
     "createdAt": "2026-03-27"
   },
   "user": {
-    "name": "老板"
+    "name": "李磊",
+    "nickname": "老板",
+    "occupation": "软件工程师",
+    "organization": "某科技公司"
   },
   "permanent": [
     {"type": "task", "content": "正在修复登录bug：已定位到token过期问题"},
@@ -244,7 +247,10 @@ sub agents:
 | ---------------- | ----------------------------------------------- | ----------------------------------- |
 | `identity`       | AI 身份设定（名字、性格、问候风格）                             | 用户要求时由主 Agent 修改                    |
 | `workspace.path` | 知识库目录，启动时通过 WORKSPACE_PATH 环境变量传递给所有 MCP server | 首次设置时由主 Agent 写入                    |
-| `user.name`      | 用户称呼                                            | 用户要求时由主 Agent 修改                    |
+| `user.name`      | 用户真实姓名                                        | 用户要求时由主 Agent 修改                    |
+| `user.nickname`  | 用户称呼/昵称                                        | 用户要求时由主 Agent 修改                    |
+| `user.occupation` | 用户职业，影响子Agent内容提取和日志编写              | 用户要求时由主 Agent 修改                    |
+| `user.organization` | 用户工作单位，影响子Agent内容提取和日志编写        | 用户要求时由主 Agent 修改                    |
 | `permanent`      | **用户长期记忆**：用户特别强调的内容，驻留在系统提示词中                  | 通过 user_memory_remember/forget 工具管理 |
 | `firstRun`       | 首次使用标志，值为 true 时触发初始设置引导                          | 完成设置后设为 false                             |
 

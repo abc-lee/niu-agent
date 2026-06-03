@@ -137,3 +137,7 @@ LightRAG 的实体去重依赖实体名称的小写匹配。原始名称和最�
 
 - 禁止使用 `lightrag_insert_entity` 或 `lightrag_insert_relation`（精炼文档通过 lightrag_insert 整体入库，实体和关系由 LightRAG 自动提取）
 - 禁止在精炼文档中使用任何冒号前缀实体名（`brain:xxx`、`person:xxx`、`skill:xxx`、`photo:xxx`、`event:xxx` 等）
+
+## 用户背景
+
+根据用户的职业、工作性质和偏好，重点提取与用户专业领域相关的有价值信息。
