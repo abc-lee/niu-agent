@@ -705,7 +705,18 @@ ipcMain.handle('send-to-agent', async (event, { message, context }) => {
   
   return new Promise((resolve) => {
     // 使用与聊天窗口相同的 sessionID，实现上下文共享
-    const data = JSON.stringify({ message: message });
+    // 传递 resources：将拖入文件和模式信息以结构化方式传递给后端
+    const resources = (context && context.files)
+      ? context.files.map(f => ({
+          path: (f.path || f).replace(/\\/g, '/'),
+          mode: context.mode || 'copy'
+        }))
+      : undefined;
+    const payload = { message: message };
+    if (resources) {
+      payload.resources = resources;
+    }
+    const data = JSON.stringify(payload);
     
     const req = http.request({
       hostname: '127.0.0.1',
