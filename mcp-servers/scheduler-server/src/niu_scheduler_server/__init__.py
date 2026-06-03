@@ -43,7 +43,8 @@ TOOL_SCHEMAS = {
                 "event_type": {"type": "string", "enum": ["meeting", "task", "reminder", "recurring"]},
                 "is_recurring": {"type": "boolean", "description": "是否循环任务"},
                 "cron_expr": {"type": "string", "description": "cron 表达式"},
-                "name": {"type": "string", "description": "任务名称（可选，系统自动注入的任务用 name 标识）"}
+                "name": {"type": "string", "description": "任务名称（可选，系统自动注入的任务用 name 标识）"},
+                "chat_id": {"type": "string", "description": "群聊 chat_id（可选，群聊中创建时传入，用于推送到群）"}
             },
             "required": ["content", "scheduled_at"]
         },
@@ -159,6 +160,7 @@ def schedule_task(
     is_recurring: bool = False,
     cron_expr: str = None,
     name: str = None,
+    chat_id: str = None,
 ) -> dict:
     """创建定时任务，支持单次和循环任务。"""
     try:
@@ -170,6 +172,7 @@ def schedule_task(
             is_recurring=is_recurring,
             cron_expr=cron_expr,
             name=name,
+            chat_id=chat_id,
         )
         return {"status": "success", "task_id": task_id, "message": f"已创建定时任务：{content}"}
     except Exception as e:
@@ -256,7 +259,8 @@ async def run_server():
                         "event_type": {"type": "string", "enum": ["meeting", "task", "reminder", "recurring"]},
                         "is_recurring": {"type": "boolean", "description": "是否循环任务"},
                         "cron_expr": {"type": "string", "description": "cron 表达式"},
-                        "name": {"type": "string", "description": "任务名称（可选，系统自动注入的任务用 name 标识）"}
+                        "name": {"type": "string", "description": "任务名称（可选，系统自动注入的任务用 name 标识）"},
+                        "chat_id": {"type": "string", "description": "群聊 chat_id（可选，群聊中创建时传入，用于推送到群）"}
                     },
                     "required": ["content", "scheduled_at"]
                 }
@@ -326,7 +330,8 @@ async def run_server():
                     event_type=arguments.get("event_type", "reminder"),
                     is_recurring=arguments.get("is_recurring", False),
                     cron_expr=arguments.get("cron_expr"),
-                    name=arguments.get("name")
+                    name=arguments.get("name"),
+                    chat_id=arguments.get("chat_id")
                 )
 
                 return [TextContent(

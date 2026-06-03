@@ -107,8 +107,9 @@ def trigger_callback(task: dict) -> str:
             from niu_api.channel import get_channel_router
             router = get_channel_router()
             if router.has_channel("feishu"):
+                push_chat_id = task.get("chat_id") or ""
                 push_future = asyncio.run_coroutine_threadsafe(
-                    router.push(agent_reply, "feishu", ""),
+                    router.push(agent_reply, "feishu", push_chat_id),
                     loop,
                 )
                 push_future.result(timeout=30)
