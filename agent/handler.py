@@ -672,10 +672,13 @@ class NiuHandler(BaseHandler):
         self._recent_tool_calls = []
 
     def _get_abs_path(self, path: str) -> str:
-        """获取绝对路径"""
+        """获取绝对路径（支持 ~ 展开和相对路径解析）"""
         if not path:
             return ""
-        return os.path.abspath(os.path.join(self.cwd, path))
+        expanded = os.path.expanduser(path)
+        if os.path.isabs(expanded):
+            return expanded
+        return os.path.abspath(os.path.join(self.cwd, expanded))
 
     # ========== 文件操作 ==========
 
