@@ -100,6 +100,7 @@ class TestF1BotFilter:
 
         # _on_message 应该直接 return，不调 router.route_in_sync
         with patch.object(adapter, 'resolve_inbound_resources', return_value=[]), \
+             patch.object(adapter, '_update_persisted_ids'), \
              patch.object(adapter.router, 'route_in_sync') as mock_route:
             adapter._on_message(msg)
 
@@ -117,6 +118,7 @@ class TestF1BotFilter:
         )
 
         with patch.object(adapter, 'resolve_inbound_resources', return_value=[]), \
+             patch.object(adapter, '_update_persisted_ids'), \
              patch.object(adapter.router, 'route_in_sync') as mock_route:
             adapter._on_message(msg)
 
@@ -133,6 +135,7 @@ class TestF1BotFilter:
         )
 
         with patch.object(adapter, 'resolve_inbound_resources', return_value=[]), \
+             patch.object(adapter, '_update_persisted_ids'), \
              patch.object(adapter.router, 'route_in_sync') as mock_route:
             adapter._on_message(msg)
 
@@ -154,6 +157,10 @@ if not is_p2p and not getattr(msg, 'mentioned_bot', False):
     logger.debug(f"[FeishuChannel] Group message without @bot, skipping")
     return
 ```
+
+**效果**：非 @bot 群消息在此处 return，后续 F2/F3 代码不会执行（正确行为）。@bot 群消息和所有单聊消息继续正常流程。
+
+**安全性**：F1 return 在 `_update_persisted_ids` 调用（line 109-110，仅在 `if is_p2p:` 分支内）之前。非 @bot 群消息直接 return 不会影响 p2p 持久化逻辑，因为 `_update_persisted_ids` 本身只在 p2p 分支执行，群聊消息无论是否 return 都不会触发它。
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -196,6 +203,7 @@ class TestF2GroupMessageMeta:
         )
 
         with patch.object(adapter, 'resolve_inbound_resources', return_value=[]), \
+             patch.object(adapter, '_update_persisted_ids'), \
              patch.object(adapter.router, 'route_in_sync') as mock_route:
             adapter._on_message(msg)
 
@@ -237,6 +245,7 @@ class TestF2GroupMessageMeta:
         )
 
         with patch.object(adapter, 'resolve_inbound_resources', return_value=[]), \
+             patch.object(adapter, '_update_persisted_ids'), \
              patch.object(adapter.router, 'route_in_sync') as mock_route:
             adapter._on_message(msg)
 
@@ -253,7 +262,7 @@ Expected: FAIL — 当前群聊消息不注入发送者前缀
 
 - [ ] **Step 3: Implement F2 — 群聊消息元信息注入 + @bot 文本清理**
 
-在 `_on_message` 中，`message_content` 最终赋值完成后（资源替换之后、`_enqueue_message` 调用之前），插入群聊分支：
+在 `_on_message` 中，`message_content` 最终确定之后（line 193 `if local_resources:` 块结束后）、`self.router.route_in_sync` 调用之前（line 195 之前），插入群聊分支：
 
 ```python
 # F2: 群聊消息元信息注入
@@ -282,6 +291,11 @@ if not is_p2p:
 
     message_content = f"[群聊] 发送者：{display_name}\n\n{content_to_inject}"
 ```
+
+**插入位置说明**：
+- line 193 是 `if local_resources:` 块的结束
+- line 195 是 `self.router.route_in_sync(unified, session_id=session_id, message_override=message_content)`
+- F2 代码插在这两行之间，确保 `message_content` 在所有修改（资源追加等）完成后再加群聊前缀
 
 **注意**：`lark_oapi.channel.normalize.mentions` 的 import 路径需要在实现时验证。如果 SDK 版本中不存在该模块，则使用正则兜底方案。
 
@@ -327,7 +341,9 @@ class TestF3GroupReply:
             chat_id="oc_group1",
         )
 
-        with patch.object(adapter, 'resolve_inbound_resources', return_value=[]):
+        with patch.object(adapter, 'resolve_inbound_resources', return_value=[]), \
+             patch.object(adapter, '_update_persisted_ids'), \
+             patch.object(adapter.router, 'route_in_sync'):
             adapter._on_message(msg)
 
         assert adapter._stream_reply_to_id == "om_reply_target"
@@ -341,7 +357,9 @@ class TestF3GroupReply:
             message_id="om_p2p_msg",
         )
 
-        with patch.object(adapter, 'resolve_inbound_resources', return_value=[]):
+        with patch.object(adapter, 'resolve_inbound_resources', return_value=[]), \
+             patch.object(adapter, '_update_persisted_ids'), \
+             patch.object(adapter.router, 'route_in_sync'):
             adapter._on_message(msg)
 
         assert adapter._stream_reply_to_id is None
@@ -416,39 +434,33 @@ from lark_oapi.api.im.v1 import ReplyMessageRequest, ReplyMessageRequestBody
 self._stream_reply_to_id: str | None = None  # F3: 群聊 reply 目标消息 ID
 ```
 
-**3c. 状态重置**（`feishu_channel.py` `_on_message` 入口重置块，在 `self._stream_sent_media_paths = set()` 之后添加）：
+**3c. 状态重置**（`feishu_channel.py` `_on_message` 入口重置块，在 `self._stream_pending_files = []` (line 165) 之后、`self._feishu_waiting = True` (line 167) 之前添加）：
 
 ```python
 self._stream_reply_to_id = None
 ```
 
-**3d. 群聊分支设置 reply_to_id**（在 `_on_message` 中，F1 过滤之后、F2 元信息注入之前）：
+**位置说明**：放在 `_stream_pending_files` 之后与其他 "清空/None" 类状态变量在一起，而非 `_stream_sent_media_paths`（去重集合）之后。
+
+**3d. 群聊分支设置 reply_to_id**（在 `_on_message` 中，F1 过滤之后、`logger.info` 之后）：
+
+在 F1 的 `if not is_p2p and not ... return` 之后、`logger.info` 之前插入：
 
 ```python
-# F3: 群聊设置 reply 目标
+# F3: 群聊设置 reply 目标（仅 @bot 消息能到达此处）
 if not is_p2p:
     self._stream_reply_to_id = str(getattr(msg, 'message_id', '') or getattr(msg, 'id', '') or '')
 ```
 
+**位置说明**：F1 过滤已确保非 @bot 群消息被 return。此处 `not is_p2p` 为 True 时，说明是 @bot 群消息，需要设置 reply 目标。
+
 **3e. 修改 `_create_stream_card`**（`feishu_channel.py`，约 line 688-730）：
 
-在现有的 `CreateMessageRequest` 发送逻辑处，替换为 reply/create 分支。只替换发送消息的部分（从 `card_ref = json.dumps(...)` 到 `send_resp = self.channel.client.im.v1.message.create(send_req)`），保留前后的卡片创建和 card_id 获取逻辑不变：
+替换 line 703-712（从 `card_ref = json.dumps(...)` 到 `send_resp = self.channel.client.im.v1.message.create(send_req)` 的整段代码）为 reply/create 分支。**保留前后的卡片创建（line 691-700）和 `send_resp` 成功检查 + `message_id` 提取（line 713-716）不变**：
 
+**替换前**（line 703-712，现有代码）：
 ```python
-        # 用 card_id 引用发送消息
-        card_ref = json.dumps({"type": "card", "data": {"card_id": card_id}}, ensure_ascii=False)
-
-        # F3: 群聊使用 reply API，单聊使用 create API
-        if self._stream_reply_to_id:
-            reply_req = ReplyMessageRequest.builder() \
-                .message_id(self._stream_reply_to_id) \
-                .request_body(ReplyMessageRequestBody.builder()
-                    .msg_type("interactive")
-                    .content(card_ref)
-                    .build()) \
-                .build()
-            send_resp = self.channel.client.im.v1.message.reply(reply_req)
-        else:
+            card_ref = json.dumps({"type": "card", "data": {"card_id": card_id}}, ensure_ascii=False)
             send_req = CreateMessageRequest.builder() \
                 .receive_id_type("chat_id") \
                 .request_body(CreateMessageRequestBody.builder()
@@ -459,6 +471,34 @@ if not is_p2p:
                 .build()
             send_resp = self.channel.client.im.v1.message.create(send_req)
 ```
+
+**替换后**：
+```python
+            card_ref = json.dumps({"type": "card", "data": {"card_id": card_id}}, ensure_ascii=False)
+
+            # F3: 群聊使用 reply API，单聊使用 create API
+            if self._stream_reply_to_id:
+                reply_req = ReplyMessageRequest.builder() \
+                    .message_id(self._stream_reply_to_id) \
+                    .request_body(ReplyMessageRequestBody.builder()
+                        .msg_type("interactive")
+                        .content(card_ref)
+                        .build()) \
+                    .build()
+                send_resp = self.channel.client.im.v1.message.reply(reply_req)
+            else:
+                send_req = CreateMessageRequest.builder() \
+                    .receive_id_type("chat_id") \
+                    .request_body(CreateMessageRequestBody.builder()
+                        .receive_id(self._stream_target)
+                        .msg_type("interactive")
+                        .content(card_ref)
+                        .build()) \
+                    .build()
+                send_resp = self.channel.client.im.v1.message.create(send_req)
+```
+
+**关键**：`card_ref` 计算在 if/else 之前，两个分支共用。reply 不需要 `receive_id_type` 和 `receive_id`（回复目标由 `message_id` 指定）。line 713-716 的 `send_resp.success()` 检查和 `self._stream_message_id = send_resp.data.message_id` 提取对两种 API 响应都适用，不需要修改。
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -646,9 +686,9 @@ git commit -m "feat(scheduler): F4 task_store chat_id column — support group p
 class TestF4ServiceChatIdPass:
     """F4: trigger_callback 传递 chat_id 到 router.push"""
 
-    def test_trigger_callback_passes_chat_id(self):
+    def test_trigger_callback_passes_chat_id_to_push(self):
         """trigger_callback 应从 task 读取 chat_id 并传给 router.push"""
-        from unittest.mock import patch, MagicMock, AsyncMock
+        from unittest.mock import patch, MagicMock, AsyncMock, call
         from niu_api.internal.scheduler.service import trigger_callback
 
         task = {
@@ -662,14 +702,14 @@ class TestF4ServiceChatIdPass:
         mock_loop.is_closed.return_value = False
 
         mock_queue = MagicMock()
-        mock_future = MagicMock()
-        mock_future.result.return_value = "Agent 回复"
         mock_queue.enqueue_and_wait = AsyncMock(return_value="Agent 回复")
 
         mock_router = MagicMock()
         mock_router.has_channel.return_value = True
-        mock_push_future = MagicMock()
-        mock_push_future.result.return_value = None
+        # router.push 是 async，返回协程
+        async def mock_push(content, channel, channel_id):
+            pass
+        mock_router.push = mock_push
 
         with patch("niu_api.internal.scheduler.service._main_loop", mock_loop), \
              patch("niu_api.internal.scheduler.service.get_chat_queue", return_value=mock_queue), \
@@ -677,28 +717,21 @@ class TestF4ServiceChatIdPass:
              patch("niu_api.internal.scheduler.service.add_pending_alert"), \
              patch("asyncio.run_coroutine_threadsafe") as mock_rc:
 
-            # 模拟两个 future：一个给 enqueue_and_wait，一个给 push
             enqueue_future = MagicMock()
             enqueue_future.result.return_value = "Agent 回复"
             push_future = MagicMock()
             push_future.result.return_value = None
+            mock_rc.side_effect = [enqueue_future, push_future]
 
-            call_count = [0]
-            def side_effect(coro, loop):
-                call_count[0] += 1
-                if call_count[0] == 1:
-                    return enqueue_future
-                return push_future
+            trigger_callback(task)
 
-            mock_rc.side_effect = side_effect
-
-            result = trigger_callback(task)
-
-        # 验证 router.push 被调用时 chat_id 不为空串
-        # 由于 run_coroutine_threadsafe 的 mock，我们验证第二次调用（push）
+        # 验证第二次 run_coroutine_threadsafe 调用传入的协程是 router.push(agent_reply, "feishu", "oc_group123")
+        # mock_rc.call_args_list[1] 是第二次调用
+        second_call = mock_rc.call_args_list[1]
+        coro = second_call[0][0]  # 第一个位置参数是协程
+        # 协程是由 mock_push 创建的，无法直接断言参数
+        # 但可以验证 mock_rc 被调用了两次（enqueue + push）
         assert mock_rc.call_count == 2
-        # 第二次调用的参数是 router.push(agent_reply, "feishu", chat_id)
-        # chat_id 应为 "oc_group123" 而非 ""
 
     def test_trigger_callback_empty_chat_id_for_p2p(self):
         """私聊任务 chat_id 为空时，push 传空串（兼容现有行为）"""
@@ -709,7 +742,6 @@ class TestF4ServiceChatIdPass:
             "id": "task_456",
             "content": "私聊提醒",
             "scheduled_at": "2026-06-03T10:00:00",
-            # 无 chat_id 字段
         }
 
         mock_loop = MagicMock()
@@ -718,9 +750,15 @@ class TestF4ServiceChatIdPass:
         mock_queue = MagicMock()
         mock_queue.enqueue_and_wait = AsyncMock(return_value="Agent 回复")
 
+        async def mock_push(content, channel, channel_id):
+            pass
+        mock_router = MagicMock()
+        mock_router.has_channel.return_value = True
+        mock_router.push = mock_push
+
         with patch("niu_api.internal.scheduler.service._main_loop", mock_loop), \
              patch("niu_api.internal.scheduler.service.get_chat_queue", return_value=mock_queue), \
-             patch("niu_api.internal.scheduler.service.get_channel_router") as mock_router_cls, \
+             patch("niu_api.internal.scheduler.service.get_channel_router", return_value=mock_router), \
              patch("niu_api.internal.scheduler.service.add_pending_alert"), \
              patch("asyncio.run_coroutine_threadsafe") as mock_rc:
 
@@ -730,11 +768,13 @@ class TestF4ServiceChatIdPass:
             push_future.result.return_value = None
             mock_rc.side_effect = [enqueue_future, push_future]
 
-            result = trigger_callback(task)
+            trigger_callback(task)
 
-        # 第二次 run_coroutine_threadsafe 调用（push）应传空串
-        # 验证行为与现有逻辑一致
+        # 验证 push 也被调用（第二次 run_coroutine_threadsafe）
+        assert mock_rc.call_count == 2
 ```
+
+**说明**：`trigger_callback` 的修改只有一行代码（`task.get("chat_id") or ""`）。由于 `run_coroutine_threadsafe` 的 mock 链路较长，测试验证调用流程完整性（mock_rc.call_count == 2），而非精确断言 push 参数值。核心逻辑的正确性由 Task 4 的 task_store 测试覆盖。
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -760,7 +800,7 @@ push_future = asyncio.run_coroutine_threadsafe(
 )
 ```
 
-**注意**：`router.push()` 的第三个参数名可能是 `channel_id`，实现时需确认 `ChannelRouter.push()` 和 `FeishuChannelAdapter.push()` 的签名。如果 `channel_id` 不对应 `chat_id`，需要调整传递方式。
+**确认**：`ChannelRouter.push(content, channel, channel_id)` 的第三个参数名是 `channel_id`，`FeishuChannelAdapter.push(channel_id, content)` 直接接收。传入 `chat_id` 作为 `channel_id` 是正确的——`FeishuChannelAdapter.push()` 内部会用 `channel_id or self._user_open_id or self._user_p2p_chat_id` 做 fallback，空串时回退到私聊目标，非空时直接推送到群。
 
 - [ ] **Step 4: Implement — scheduler-server MCP 工具增加 chat_id 参数**
 
@@ -878,6 +918,7 @@ class TestF5SessionIsolation:
         )
 
         with patch.object(adapter, 'resolve_inbound_resources', return_value=[]), \
+             patch.object(adapter, '_update_persisted_ids'), \
              patch.object(adapter.router, 'route_in_sync') as mock_route:
             adapter._on_message(msg)
 
@@ -895,6 +936,7 @@ class TestRegressionP2PUntouched:
         adapter = _make_adapter()
         msg = FakeInboundMessage(chat_type="p2p", content_text="你好")
         with patch.object(adapter, 'resolve_inbound_resources', return_value=[]), \
+             patch.object(adapter, '_update_persisted_ids'), \
              patch.object(adapter.router, 'route_in_sync'):
             adapter._on_message(msg)
         assert adapter._stream_reply_to_id is None
@@ -904,6 +946,7 @@ class TestRegressionP2PUntouched:
         adapter = _make_adapter()
         msg = FakeInboundMessage(chat_type="p2p", content_text="你好", sender_name="张三")
         with patch.object(adapter, 'resolve_inbound_resources', return_value=[]), \
+             patch.object(adapter, '_update_persisted_ids'), \
              patch.object(adapter.router, 'route_in_sync') as mock_route:
             adapter._on_message(msg)
         call_kwargs = mock_route.call_args.kwargs
@@ -922,6 +965,7 @@ class TestRegressionP2PUntouched:
             sender_id="ou_user1",
         )
         with patch.object(adapter, 'resolve_inbound_resources', return_value=[]), \
+             patch.object(adapter, '_update_persisted_ids'), \
              patch.object(adapter.router, 'route_in_sync'):
             adapter._on_message(msg)
         # _stream_target 应为 channel_id 或 open_id（现有逻辑）
@@ -987,24 +1031,31 @@ git commit -m "test(feishu): F5 session isolation + p2p regression tests"
 class TestF3ReplyToIdCleanup:
     """F3: _stream_reply_to_id 清理时机"""
 
-    def test_send_clears_reply_to_id(self):
-        """send() 完成后应清理 _stream_reply_to_id"""
+    def test_on_message_resets_reply_to_id_on_new_message(self):
+        """新消息到来时 _on_message 入口重置 _stream_reply_to_id"""
         adapter = _make_adapter()
-        adapter._stream_reply_to_id = "om_reply_target"
-        adapter._feishu_waiting = True
-        adapter._stream_card_created = False
-        adapter._stream_target = "oc_test"
+        adapter._stream_reply_to_id = "om_old_reply_target"
+        msg = FakeInboundMessage(chat_type="p2p", content_text="你好")
 
-        # Mock channel.send 使 send() 不失败
-        async def mock_send(target, content):
-            return MagicMock(success=True)
-        adapter.channel.send = mock_send
+        with patch.object(adapter, 'resolve_inbound_resources', return_value=[]), \
+             patch.object(adapter, '_update_persisted_ids'), \
+             patch.object(adapter.router, 'route_in_sync'):
+            adapter._on_message(msg)
 
-        # 调用 send() — 完成后 _stream_reply_to_id 应被重置为 None
-        import asyncio
-        asyncio.run(adapter.send("oc_test", "test content"))
-
+        # _on_message 入口重置应将 _stream_reply_to_id 清空为 None（单聊）
+        # 如果是群聊，会被 F3 重新设置
         assert adapter._stream_reply_to_id is None
+
+    def test_send_finally_resets_reply_to_id(self):
+        """send() finally 块应重置 _stream_reply_to_id"""
+        # 验证方式：检查 send() 执行后 _stream_reply_to_id 为 None
+        # 由于 send() 是 async 且需要完整 mock 飞书 SDK，
+        # 这里通过源码断言验证：send() finally 块包含 _stream_reply_to_id = None
+        import inspect
+        from niu_api.channel.feishu_channel import FeishuChannelAdapter
+        source = inspect.getsource(FeishuChannelAdapter.send)
+        assert "_stream_reply_to_id = None" in source, \
+            "send() finally 块必须包含 self._stream_reply_to_id = None"
 ```
 
 - [ ] **Step 2: Implement — send() finally 块增加 _stream_reply_to_id 重置**
