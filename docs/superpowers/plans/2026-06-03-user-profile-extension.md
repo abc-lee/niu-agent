@@ -228,10 +228,23 @@ def complete_setup(
 Run: `python -c "import ast; ast.parse(open('mcp-servers/config-manager/src/niu_config_manager/__init__.py').read()); print('OK')"`
 Expected: OK
 
-- [ ] **Step 6: 提交**
+- [ ] **Step 6: 更新 virtual disk 配置文件**
+
+在 `config/disk/config-manager.yaml` 第146行（`assistant_name` 参数）之后，增加三个新参数：
+
+```yaml
+      - name: user_nickname
+        type: string
+      - name: user_occupation
+        type: string
+      - name: user_organization
+        type: string
+```
+
+- [ ] **Step 7: 提交**
 
 ```bash
-git add mcp-servers/config-manager/src/niu_config_manager/__init__.py
+git add mcp-servers/config-manager/src/niu_config_manager/__init__.py config/disk/config-manager.yaml
 git commit -m "feat: extend complete_setup with nickname/occupation/organization"
 ```
 
