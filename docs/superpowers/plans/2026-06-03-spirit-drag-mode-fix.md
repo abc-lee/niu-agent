@@ -166,17 +166,20 @@ git commit -m "fix: pass structured resources with mode to backend in send-to-ag
 ```python
         # 注入 resources（拖入文件的模式信息）
         if resources:
-            resource_lines = []
-            for r in resources:
-                path = r.get("path", "")
-                mode = r.get("mode", "copy")
-                if mode == "reference":
-                    resource_lines.append(f"- 文件 {path}：必须使用引用模式（mode=reference），不要拷贝文件，使用原路径引用")
-                elif mode == "move":
-                    resource_lines.append(f"- 文件 {path}：必须使用移动模式（mode=move），将文件移动到存储目录")
-                # mode="copy" 不需要额外提示，这是默认行为
-            if resource_lines:
-                system_prompt += "\n\n【文件操作模式要求】\n以下文件的操作模式由用户指定，调用 ingest 工具时必须传递对应的 mode 参数：\n" + "\n".join(resource_lines)
+            # 防御性过滤：只处理格式正确的资源条目
+            valid_resources = [r for r in resources if isinstance(r, dict) and "path" in r and "mode" in r]
+            if valid_resources:
+                resource_lines = []
+                for r in valid_resources:
+                    path = r.get("path", "")
+                    mode = r.get("mode", "copy")
+                    if mode == "reference":
+                        resource_lines.append(f"- 文件 {path}：必须使用引用模式（mode=reference），不要拷贝文件，使用原路径引用")
+                    elif mode == "move":
+                        resource_lines.append(f"- 文件 {path}：必须使用移动模式（mode=move），将文件移动到存储目录")
+                    # mode="copy" 不需要额外提示，这是默认行为
+                if resource_lines:
+                    system_prompt += "\n\n【文件操作模式要求】\n以下文件的操作模式由用户指定，调用 ingest 工具时必须传递对应的 mode 参数：\n" + "\n".join(resource_lines)
 ```
 
 - [ ] **Step 2: 修改 compat.py，将 request.resources 传递给 runner.chat()**
@@ -234,201 +237,115 @@ git commit -m "feat: inject resources with mode info into system_prompt for drag
 import pytest
 
 
+def _build_resource_lines(resources):
+    """Simulate the injection logic from runner.py — with defensive filtering."""
+    if not resources:
+        return []
+    valid_resources = [r for r in resources if isinstance(r, dict) and "path" in r and "mode" in r]
+    if not valid_resources:
+        return []
+    resource_lines = []
+    for r in valid_resources:
+        path = r.get("path", "")
+        mode = r.get("mode", "copy")
+        if mode == "reference":
+            resource_lines.append(
+                f"- 文件 {path}：必须使用引用模式（mode=reference），不要拷贝文件，使用原路径引用"
+            )
+        elif mode == "move":
+            resource_lines.append(
+                f"- 文件 {path}：必须使用移动模式（mode=move），将文件移动到存储目录"
+            )
+    return resource_lines
+
+
 class TestResourcesInjection:
     """Test that resources with mode info are correctly injected into system_prompt."""
 
     def test_reference_mode_injection(self):
-        """Reference mode resources should generate '引用模式' instruction in system_prompt."""
-        resources = [
-            {"path": "/Users/test/doc.pdf", "mode": "reference"},
-        ]
-        # Simulate the injection logic from runner.py
-        resource_lines = []
-        for r in resources:
-            path = r.get("path", "")
-            mode = r.get("mode", "copy")
-            if mode == "reference":
-                resource_lines.append(
-                    f"- 文件 {path}：必须使用引用模式（mode=reference），不要拷贝文件，使用原路径引用"
-                )
-            elif mode == "move":
-                resource_lines.append(
-                    f"- 文件 {path}：必须使用移动模式（mode=move），将文件移动到存储目录"
-                )
-
-        assert len(resource_lines) == 1
-        assert "mode=reference" in resource_lines[0]
-        assert "不要拷贝" in resource_lines[0]
-        assert "/Users/test/doc.pdf" in resource_lines[0]
+        lines = _build_resource_lines([{"path": "/Users/test/doc.pdf", "mode": "reference"}])
+        assert len(lines) == 1
+        assert "mode=reference" in lines[0]
+        assert "不要拷贝" in lines[0]
+        assert "/Users/test/doc.pdf" in lines[0]
 
     def test_move_mode_injection(self):
-        """Move mode resources should generate '移动模式' instruction in system_prompt."""
-        resources = [
-            {"path": "/Users/test/file.txt", "mode": "move"},
-        ]
-        resource_lines = []
-        for r in resources:
-            path = r.get("path", "")
-            mode = r.get("mode", "copy")
-            if mode == "reference":
-                resource_lines.append(
-                    f"- 文件 {path}：必须使用引用模式（mode=reference），不要拷贝文件，使用原路径引用"
-                )
-            elif mode == "move":
-                resource_lines.append(
-                    f"- 文件 {path}：必须使用移动模式（mode=move），将文件移动到存储目录"
-                )
-
-        assert len(resource_lines) == 1
-        assert "mode=move" in resource_lines[0]
-        assert "移动到存储目录" in resource_lines[0]
+        lines = _build_resource_lines([{"path": "/Users/test/file.txt", "mode": "move"}])
+        assert len(lines) == 1
+        assert "mode=move" in lines[0]
+        assert "移动到存储目录" in lines[0]
 
     def test_copy_mode_no_injection(self):
-        """Copy mode should NOT generate any extra instruction (default behavior)."""
-        resources = [
-            {"path": "/Users/test/file.txt", "mode": "copy"},
-        ]
-        resource_lines = []
-        for r in resources:
-            path = r.get("path", "")
-            mode = r.get("mode", "copy")
-            if mode == "reference":
-                resource_lines.append(
-                    f"- 文件 {path}：必须使用引用模式（mode=reference），不要拷贝文件，使用原路径引用"
-                )
-            elif mode == "move":
-                resource_lines.append(
-                    f"- 文件 {path}：必须使用移动模式（mode=move），将文件移动到存储目录"
-                )
-
-        assert len(resource_lines) == 0
+        """Copy mode is default behavior — no extra instruction generated."""
+        lines = _build_resource_lines([{"path": "/Users/test/file.txt", "mode": "copy"}])
+        assert len(lines) == 0
 
     def test_mixed_modes_injection(self):
-        """Multiple files with different modes should each get correct instruction."""
-        resources = [
+        """Only non-copy modes generate instructions."""
+        lines = _build_resource_lines([
             {"path": "/Users/test/ref.pdf", "mode": "reference"},
             {"path": "/Users/test/move.txt", "mode": "move"},
             {"path": "/Users/test/copy.doc", "mode": "copy"},
-        ]
-        resource_lines = []
-        for r in resources:
-            path = r.get("path", "")
-            mode = r.get("mode", "copy")
-            if mode == "reference":
-                resource_lines.append(
-                    f"- 文件 {path}：必须使用引用模式（mode=reference），不要拷贝文件，使用原路径引用"
-                )
-            elif mode == "move":
-                resource_lines.append(
-                    f"- 文件 {path}：必须使用移动模式（mode=move），将文件移动到存储目录"
-                )
-
-        assert len(resource_lines) == 2
-        assert "mode=reference" in resource_lines[0]
-        assert "mode=move" in resource_lines[1]
+        ])
+        assert len(lines) == 2
+        assert "mode=reference" in lines[0]
+        assert "mode=move" in lines[1]
 
     def test_empty_resources_no_injection(self):
-        """Empty resources list should produce no injection."""
-        resources = []
-        resource_lines = []
-        for r in resources:
-            path = r.get("path", "")
-            mode = r.get("mode", "copy")
-            if mode == "reference":
-                resource_lines.append(
-                    f"- 文件 {path}：必须使用引用模式（mode=reference），不要拷贝文件，使用原路径引用"
-                )
-            elif mode == "move":
-                resource_lines.append(
-                    f"- 文件 {path}：必须使用移动模式（mode=move），将文件移动到存储目录"
-                )
-
-        assert len(resource_lines) == 0
+        lines = _build_resource_lines([])
+        assert len(lines) == 0
 
     def test_none_resources_no_injection(self):
-        """None resources should produce no injection."""
-        resources = None
-        resource_lines = []
-        # Guard: skip if resources is None
-        if resources:
-            for r in resources:
-                path = r.get("path", "")
-                mode = r.get("mode", "copy")
-                if mode == "reference":
-                    resource_lines.append(
-                        f"- 文件 {path}：必须使用引用模式（mode=reference），不要拷贝文件，使用原路径引用"
-                    )
-                elif mode == "move":
-                    resource_lines.append(
-                        f"- 文件 {path}：必须使用移动模式（mode=move），将文件移动到存储目录"
-                    )
+        lines = _build_resource_lines(None)
+        assert len(lines) == 0
 
-        assert len(resource_lines) == 0
+    def test_malformed_resources_filtered(self):
+        """Malformed entries (missing path/mode, not dict) are silently filtered."""
+        lines = _build_resource_lines([
+            {"path": "/Users/test/ref.pdf", "mode": "reference"},
+            {"path": "/missing-mode"},          # missing 'mode' key
+            {"mode": "move"},                    # missing 'path' key
+            "not_a_dict",                        # not a dict
+            None,                                # None entry
+        ])
+        assert len(lines) == 1
+        assert "mode=reference" in lines[0]
 
 
 class TestFullSystemPromptInjection:
     """Test the complete system_prompt assembly with resources."""
 
-    def test_resources_appended_to_system_prompt(self):
-        """Resources injection should be appended after existing system_prompt content."""
+    def test_resources_appended_after_skills(self):
         base_prompt = "你是助手。"
         injection = "\n\n【技能】\n某些技能内容"
-        resources = [
-            {"path": "/Users/test/doc.pdf", "mode": "reference"},
-        ]
+        resources = [{"path": "/Users/test/doc.pdf", "mode": "reference"}]
 
-        # Simulate runner.py logic
         system_prompt = base_prompt
         if injection:
             system_prompt += injection
 
-        if resources:
-            resource_lines = []
-            for r in resources:
-                path = r.get("path", "")
-                mode = r.get("mode", "copy")
-                if mode == "reference":
-                    resource_lines.append(
-                        f"- 文件 {path}：必须使用引用模式（mode=reference），不要拷贝文件，使用原路径引用"
-                    )
-                elif mode == "move":
-                    resource_lines.append(
-                        f"- 文件 {path}：必须使用移动模式（mode=move），将文件移动到存储目录"
-                    )
-            if resource_lines:
-                system_prompt += (
-                    "\n\n【文件操作模式要求】\n以下文件的操作模式由用户指定，调用 ingest 工具时必须传递对应的 mode 参数：\n"
-                    + "\n".join(resource_lines)
-                )
+        lines = _build_resource_lines(resources)
+        if lines:
+            system_prompt += (
+                "\n\n【文件操作模式要求】\n以下文件的操作模式由用户指定，调用 ingest 工具时必须传递对应的 mode 参数：\n"
+                + "\n".join(lines)
+            )
 
         assert "【技能】" in system_prompt
         assert "【文件操作模式要求】" in system_prompt
         assert "mode=reference" in system_prompt
 
     def test_no_resources_no_extra_section(self):
-        """Without resources, no 【文件操作模式要求】 section should appear."""
         base_prompt = "你是助手。"
         resources = None
 
         system_prompt = base_prompt
-        if resources:
-            resource_lines = []
-            for r in resources:
-                path = r.get("path", "")
-                mode = r.get("mode", "copy")
-                if mode == "reference":
-                    resource_lines.append(
-                        f"- 文件 {path}：必须使用引用模式（mode=reference），不要拷贝文件，使用原路径引用"
-                    )
-                elif mode == "move":
-                    resource_lines.append(
-                        f"- 文件 {path}：必须使用移动模式（mode=move），将文件移动到存储目录"
-                    )
-            if resource_lines:
-                system_prompt += (
-                    "\n\n【文件操作模式要求】\n以下文件的操作模式由用户指定，调用 ingest 工具时必须传递对应的 mode 参数：\n"
-                    + "\n".join(resource_lines)
-                )
+        lines = _build_resource_lines(resources)
+        if lines:
+            system_prompt += (
+                "\n\n【文件操作模式要求】\n以下文件的操作模式由用户指定，调用 ingest 工具时必须传递对应的 mode 参数：\n"
+                + "\n".join(lines)
+            )
 
         assert "【文件操作模式要求】" not in system_prompt
         assert system_prompt == base_prompt
@@ -437,7 +354,7 @@ class TestFullSystemPromptInjection:
 - [ ] **Step 2: 运行测试验证通过**
 
 Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_spirit_drag_mode.py -v`
-Expected: 8 tests PASS
+Expected: 9 tests PASS (7 in TestResourcesInjection + 2 in TestFullSystemPromptInjection)
 
 - [ ] **Step 3: 提交**
 
