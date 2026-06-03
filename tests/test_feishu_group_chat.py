@@ -161,3 +161,60 @@ class TestF1BotFilter:
             delattr(msg, "mentioned_bot")
         adapter._on_message(msg)
         mock_route.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# F2: 群聊消息注入发送者前缀 + @bot 文本清理
+# ---------------------------------------------------------------------------
+class TestF2GroupMessagePrefix:
+    """F2: 群聊消息注入发送者前缀 + @bot 文本清理"""
+
+    def test_group_message_has_sender_prefix(self, adapter, mock_route):
+        """群聊@bot消息 → message_content 带 [群聊] sender_name: 前缀"""
+        msg = FakeInboundMessage(
+            message_id="om_f2_1",
+            chat_type="group",
+            chat_id="oc_group1",
+            sender_id="ou_user1",
+            sender_name="张三",
+            text="@_user_1 你好",
+            mentioned_bot=True,
+        )
+        adapter._on_message(msg)
+        # 验证 route_in_sync 被调用时的 message_override 参数
+        call_args = mock_route.call_args
+        message_override = call_args.kwargs.get("message_override") or call_args[1].get("message_override")
+        assert "[群聊] 张三:" in message_override
+
+    def test_group_message_at_mention_cleaned(self, adapter, mock_route):
+        """群聊@bot消息 → @_user_N mention 标记被清理"""
+        msg = FakeInboundMessage(
+            message_id="om_f2_2",
+            chat_type="group",
+            chat_id="oc_group1",
+            sender_id="ou_user1",
+            sender_name="李四",
+            text="@_user_1 帮我查一下",
+            mentioned_bot=True,
+        )
+        adapter._on_message(msg)
+        call_args = mock_route.call_args
+        message_override = call_args.kwargs.get("message_override") or call_args[1].get("message_override")
+        assert "@_user_1" not in message_override
+
+    def test_p2p_message_no_prefix(self, adapter, mock_route):
+        """单聊消息不添加 [群聊] 前缀"""
+        msg = FakeInboundMessage(
+            message_id="om_f2_3",
+            chat_type="p2p",
+            chat_id="oc_p2p1",
+            sender_id="ou_user1",
+            sender_name="张三",
+            text="你好",
+            mentioned_bot=False,
+        )
+        adapter._on_message(msg)
+        call_args = mock_route.call_args
+        message_override = call_args.kwargs.get("message_override") or call_args[1].get("message_override")
+        assert "[群聊]" not in message_override
+        assert "张三:" not in message_override
