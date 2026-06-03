@@ -2,92 +2,101 @@
 
 ## 问题
 
-Spirit 小女孩拖入文件时，前端已检测修饰键区分操作模式（copy/move/reference），但 mode 信息在 main.js 中被丢弃，导致所有拖入一律按拷贝处理。
+Spirit 小女孩拖入文件时，前端已检测修饰键区分操作模式（copy/move/reference），但 mode 信息传递不完整，导致所有拖入一律按拷贝处理。
 
 ## 当前链路
 
 ```
-spirit.html drop事件
+spirit.html drop事件 (line ~596)
   → 检测 e.shiftKey/e.ctrlKey → 确定 mode
   → 构造 context = {files: [...], mode: "reference"}
+  → 消息文本已有模式："入库文件（reference模式）：/path"  ⚠️ 措辞是编程术语
   → window.electronAPI.sendToAgent(context)
 
 preload-spirit.js
   → ipcRenderer.send('send-to-agent', context)
 
-main.js send-to-agent handler
-  → 只用 context.files 构造消息文本 ❌ context.mode 被丢弃
-  → fetch('/api/chat', { body: { message: "入库文件：/path" } })
+main.js send-to-agent handler (line 708)
+  → const data = JSON.stringify({ message: message })  ❌ context 被丢弃
+  → fetch('/api/chat', { body: data })
 
 后端 → Agent → LLM → 子Agent
   → ingest() 默认 mode="copy" → 全部拷贝
 ```
 
+## 问题分析
+
+### 问题1：main.js 丢弃了 context
+
+`main.js:708` 只取了 `message` 字段构造请求体，`context.files` 和 `context.mode` 被完全丢弃。但消息文本本身（由 spirit.html 构造）已经包含了模式描述，所以 context 丢失不会导致 mode 信息完全丢失。
+
+### 问题2：模式措辞不够明确
+
+当前 spirit.html 生成的消息如 `入库文件（reference模式）：/path`，"reference模式" 是编程术语，LLM 可能不够敏感，不会主动映射到 ingest 工具的 `mode="reference"` 参数。
+
+### 问题3：多文件/目录场景
+
+拖入目录时，file-parser 会遍历目录内所有文件，逐个调用 ingest。LLM 需要对每个文件都传递 mode 参数，单靠消息文本提示可能不够可靠。
+
 ## 修复方案
 
-### 核心思路
+### 方案：改 spirit.html 的模式提示文本 + main.js 传递 context
 
-在消息文本中注入模式提示，让 LLM 感知操作模式，自动选择正确的 mode 参数调用 ingest 工具。
+**改动1：spirit.html — 增强模式提示措辞**
 
-**为什么不在程序层面传递 mode**：ingest 工具由子Agent（file-processor）调用，调用链是 LLM → 工具选择 → ingest(mode=...)。mode 是 LLM 的决策参数，不是通道参数。程序层面传递 mode 需要：
-1. API 增加 resources 字段
-2. ChannelRouter 增加元信息传递
-3. Agent prompt 注入机制修改
-4. 子Agent 提示词修改
+将编程术语改为 LLM 更容易理解的语义描述：
 
-改动面大且不自然。而消息文本提示只需改 main.js 一处，利用现有 LLM 推理能力。
-
-### 修改点
-
-**唯一修改：`main.js` 的 `send-to-agent` handler**
-
-当前代码（简化）：
 ```javascript
-ipcMain.on('send-to-agent', (event, context) => {
-    const files = context.files;
-    const message = `入库文件：${files.join('、')}`;
-    // ... fetch('/api/chat', { message })
-});
+// 修改前
+const modeText = mode !== 'copy' ? `（${mode}模式）` : '';
+
+// 修改后
+const modeText = mode === 'reference' ? '（引用模式，使用原路径引用文件，不要拷贝）'
+               : mode === 'move' ? '（移动模式，将文件移动到存储目录）'
+               : '';
 ```
 
-修改后：
+效果对比：
+
+| 拖入方式 | 修改前 | 修改后 |
+|---------|--------|--------|
+| 普通拖入 | `入库文件：/path` | `入库文件：/path`（不变） |
+| Shift+拖入 | `入库文件（move模式）：/path` | `入库文件（移动模式，将文件移动到存储目录）：/path` |
+| Ctrl+拖入 | `入库文件（reference模式）：/path` | `入库文件（引用模式，使用原路径引用文件，不要拷贝）：/path` |
+
+**改动2：main.js — 将 context.files 作为结构化数据传递**
+
+当前 main.js 只传 message 字符串。增加 `resources` 字段，让 mode 以结构化方式传递：
+
 ```javascript
-ipcMain.on('send-to-agent', (event, context) => {
-    const files = context.files;
-    const mode = context.mode || 'copy';
-    const modeText = mode === 'reference' ? '（引用模式，不要拷贝文件，创建链接）'
-                   : mode === 'move' ? '（移动模式，将文件移动到存储目录）'
-                   : '';
-    const message = `入库文件${modeText}：${files.join('、')}`;
-    // ... fetch('/api/chat', { message })
-});
+// 修改前 (line 708)
+const data = JSON.stringify({ message: message });
+
+// 修改后
+const resources = context.files.map(f => ({
+    path: f,
+    mode: context.mode || 'copy'
+}));
+const data = JSON.stringify({ message: message, resources: resources });
 ```
 
-**效果对比**：
+### 为什么需要两个改动
 
-| 拖入方式 | 修改前消息 | 修改后消息 |
-|---------|-----------|-----------|
-| 普通拖入 | `入库文件：/path/to/file` | `入库文件：/path/to/file`（不变） |
-| Shift+拖入 | `入库文件：/path/to/file` | `入库文件（移动模式，将文件移动到存储目录）：/path/to/file` |
-| Ctrl+拖入 | `入库文件：/path/to/file` | `入库文件（引用模式，不要拷贝文件，创建链接）：/path/to/file` |
+- **改动1**（spirit.html）：确保消息文本中的模式提示足够明确，LLM 能正确推断 mode 参数
+- **改动2**（main.js）：提供结构化的 resources 数据，作为可靠 fallback。即使 LLM 忽略了消息文本提示，后端也可以从 resources 字段获取 mode
 
-### 为什么这样就够了
+### 后端处理
 
-1. **ingest 工具已支持 mode 参数**：`ingest(path, mode="copy")` / `ingest_document(path, mode="move")` / `ingest_photo(path, mode="reference")` 三个工具都已实现 copy/move/reference 三种文件操作
-2. **LLM 推理能力**：消息中有明确的模式提示，LLM 会自动选择 mode 参数
-3. **file-processor 子Agent**：其提示词已指导 LLM 根据用户意图选择工具和参数
-4. **最小改动**：只改 main.js 一处，不影响 API、Channel、Agent 等任何其他层
+检查后端 API 的 chat 请求体是否已有 `resources` 字段。如果有，直接利用；如果没有，需要增加。读取 `niu_api/api.py` 确认。
 
 ### 不修改的部分
 
-- **spirit.html**：已正确检测模式，无需修改
 - **preload-spirit.js**：已完整传递 context，无需修改
 - **chat.html**：对话窗口不区分拖入模式，这是设计决策（用户通过自然语言控制），无需修改
-- **后端 API**：无需增加 resources 字段
 - **ingest 工具**：已支持 mode 参数，无需修改
 
 ## 验证方法
 
-1. Ctrl+拖入一个目录到小女孩 → 消息应包含"引用模式" → ingest 应以 mode="reference" 调用 → 文件应原位引用而非拷贝
-2. Shift+拖入一个文件到小女孩 → 消息应包含"移动模式" → ingest 应以 mode="move" 调用 → 文件应被移动而非拷贝
-3. 普通拖入 → 消息不变 → ingest 默认 mode="copy" → 行为不变
+1. Ctrl+拖入一个目录到小女孩 → 消息应包含"引用模式" + resources 中 mode="reference" → ingest 应以 mode="reference" 调用 → 文件应原位引用
+2. Shift+拖入一个文件到小女孩 → 消息应包含"移动模式" + resources 中 mode="move" → ingest 应以 mode="move" 调用 → 文件应被移动
+3. 普通拖入 → 消息不变 → resources 中 mode="copy" → 行为不变
