@@ -63,28 +63,25 @@ def _make_adapter():
     with patch.object(FeishuChannelAdapter, '__init__', lambda self, *a, **k: None):
         adapter = FeishuChannelAdapter.__new__(FeishuChannelAdapter)
 
-    # 初始化必要属性（与 __init__ 中的流式状态变量一致）
+    # 初始化必要属性（与 __init__ 中的流式状态变量完全一致）
     adapter._user_p2p_chat_id = "oc_p2p"
     adapter._user_open_id = "ou_user1"
     adapter._feishu_waiting = False
     adapter._stream_card_id = None
     adapter._stream_message_id = None
+    adapter._last_pushed_rowid = 0
+    adapter._stream_seq = 0
+    adapter._stream_target = None
     adapter._stream_card_created = False
     adapter._stream_fallback_used = False
-    adapter._stream_seq = 0
     adapter._accumulated_text = ""
     adapter._stream_pending_images = []
     adapter._stream_pending_files = []
-    adapter._stream_target = None
-    adapter._stream_open_id = None
-    adapter._stream_chat_id = None
     adapter._stream_sent_media_paths = set()
-    adapter._last_pushed_rowid = 0
-    adapter._stream_reply_to_id = None
+    adapter._stream_reply_to_id = None  # F3 新增
     adapter.router = MagicMock()
     adapter.channel = MagicMock()
     adapter.channel._bot_open_id = "ou_bot123"
-    adapter.logger = MagicMock()
 
     return adapter
 
@@ -101,13 +98,13 @@ class TestF1BotFilter:
             mentioned_bot=False,
         )
 
-        # _on_message 应该直接 return，不调 _enqueue_message
+        # _on_message 应该直接 return，不调 router.route_in_sync
         with patch.object(adapter, 'resolve_inbound_resources', return_value=[]), \
-             patch.object(adapter, '_enqueue_message') as mock_enqueue:
+             patch.object(adapter.router, 'route_in_sync') as mock_route:
             adapter._on_message(msg)
 
-        # _enqueue_message 不应被调用
-        mock_enqueue.assert_not_called()
+        # router.route_in_sync 不应被调用
+        mock_route.assert_not_called()
 
     def test_group_message_with_mention_triggers_agent(self):
         """群聊中 @bot 的消息应触发 Agent"""
@@ -120,11 +117,11 @@ class TestF1BotFilter:
         )
 
         with patch.object(adapter, 'resolve_inbound_resources', return_value=[]), \
-             patch.object(adapter, '_enqueue_message') as mock_enqueue:
+             patch.object(adapter.router, 'route_in_sync') as mock_route:
             adapter._on_message(msg)
 
-        # _enqueue_message 应被调用
-        mock_enqueue.assert_called_once()
+        # router.route_in_sync 应被调用
+        mock_route.assert_called_once()
 
     def test_p2p_message_always_triggers_agent(self):
         """单聊消息无论是否 @bot 都应触发 Agent"""
@@ -136,10 +133,10 @@ class TestF1BotFilter:
         )
 
         with patch.object(adapter, 'resolve_inbound_resources', return_value=[]), \
-             patch.object(adapter, '_enqueue_message') as mock_enqueue:
+             patch.object(adapter.router, 'route_in_sync') as mock_route:
             adapter._on_message(msg)
 
-        mock_enqueue.assert_called_once()
+        mock_route.assert_called_once()
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -199,17 +196,13 @@ class TestF2GroupMessageMeta:
         )
 
         with patch.object(adapter, 'resolve_inbound_resources', return_value=[]), \
-             patch.object(adapter, '_enqueue_message') as mock_enqueue:
+             patch.object(adapter.router, 'route_in_sync') as mock_route:
             adapter._on_message(msg)
 
-        # 验证 _enqueue_message 被调用时 message_override 包含发送者前缀
-        mock_enqueue.assert_called_once()
-        call_kwargs = mock_enqueue.call_args.kwargs
+        # 验证 route_in_sync 被调用时 message_override 包含发送者前缀
+        mock_route.assert_called_once()
+        call_kwargs = mock_route.call_args.kwargs
         message_override = call_kwargs.get('message_override', '')
-        if not message_override:
-            # 也可能是位置参数
-            call_args = mock_enqueue.call_args[0]
-            message_override = call_args[1] if len(call_args) > 1 else ''
         assert "[群聊]" in message_override
         assert "张三" in message_override
 
@@ -226,14 +219,13 @@ class TestF2GroupMessageMeta:
         )
 
         with patch.object(adapter, 'resolve_inbound_resources', return_value=[]), \
-             patch.object(adapter, '_enqueue_message') as mock_enqueue:
+             patch.object(adapter.router, 'route_in_sync') as mock_route:
             adapter._on_message(msg)
 
-        mock_enqueue.assert_called_once()
-        # 从 _on_message 内部查看 message_content 的修改
-        # 由于 message_content 是局部变量，我们通过 _enqueue_message 参数间接验证
-        all_args_str = str(mock_enqueue.call_args)
-        assert "ou_abc12" in all_args_str  # sender_id[:8]
+        mock_route.assert_called_once()
+        call_kwargs = mock_route.call_args.kwargs
+        message_override = call_kwargs.get('message_override', '')
+        assert "ou_abc12" in message_override  # sender_id[:8]
 
     def test_p2p_message_no_sender_prefix(self):
         """单聊消息不注入发送者前缀"""
@@ -245,12 +237,13 @@ class TestF2GroupMessageMeta:
         )
 
         with patch.object(adapter, 'resolve_inbound_resources', return_value=[]), \
-             patch.object(adapter, '_enqueue_message') as mock_enqueue:
+             patch.object(adapter.router, 'route_in_sync') as mock_route:
             adapter._on_message(msg)
 
-        mock_enqueue.assert_called_once()
-        all_args_str = str(mock_enqueue.call_args)
-        assert "[群聊]" not in all_args_str
+        mock_route.assert_called_once()
+        call_kwargs = mock_route.call_args.kwargs
+        message_override = call_kwargs.get('message_override', '')
+        assert "[群聊]" not in message_override
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -616,9 +609,13 @@ def create_task(
 
 **3c. 所有 SELECT 查询增加 `chat_id` 列**：
 
-在 `list_tasks`、`get_task`、`get_overdue_tasks`、`find_task_by_name` 的 SELECT 语句中增加 `chat_id`，并在结果字典中添加 `"chat_id"` 键。
+在 `list_tasks`、`get_task`、`get_overdue_tasks`、`find_task_by_name` 的 SELECT 语句中增加 `chat_id`，并在结果字典中添加 `"chat_id": row[10]`。
 
-**重要**：具体列索引取决于实际 SELECT 语句的列顺序。实现时需阅读每个方法的实际 SELECT，在末尾增加 `chat_id` 列，并在 dict 构建中添加对应索引。不要假设固定索引号——以源码实际 SELECT 为准。
+所有 4 个方法当前 SELECT 列顺序一致：`id, content, scheduled_at, is_recurring, cron_expr, event_type, status, created_at, last_executed_date, name`（10列，row[0]-row[9]）。`chat_id` 在 `name` 之后，为 row[10]。
+
+每个方法的具体修改：
+1. SELECT 语句末尾加 `, chat_id`
+2. dict 构建末尾加 `"chat_id": row[10]`
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -863,13 +860,13 @@ class TestF5SessionIsolation:
         )
 
         with patch.object(adapter, 'resolve_inbound_resources', return_value=[]), \
-             patch.object(adapter, '_enqueue_message') as mock_enqueue:
+             patch.object(adapter.router, 'route_in_sync') as mock_route:
             adapter._on_message(msg)
 
-        mock_enqueue.assert_called_once()
-        all_args_str = str(mock_enqueue.call_args)
-        # session_id 应包含 group 标识
-        assert "group" in all_args_str or "oc_group1" in all_args_str
+        mock_route.assert_called_once()
+        call_kwargs = mock_route.call_args.kwargs
+        session_id = call_kwargs.get('session_id', '')
+        assert session_id == "feishu:group:oc_group1"
 
     def test_p2p_session_id_unchanged(self):
         """单聊 session_id 格式应保持 feishu:{sender_id}"""
@@ -881,13 +878,13 @@ class TestF5SessionIsolation:
         )
 
         with patch.object(adapter, 'resolve_inbound_resources', return_value=[]), \
-             patch.object(adapter, '_enqueue_message') as mock_enqueue:
+             patch.object(adapter.router, 'route_in_sync') as mock_route:
             adapter._on_message(msg)
 
-        mock_enqueue.assert_called_once()
-        # 单聊不应有 group 标识
-        all_args_str = str(mock_enqueue.call_args)
-        assert "feishu:ou_user1" in all_args_str
+        mock_route.assert_called_once()
+        call_kwargs = mock_route.call_args.kwargs
+        session_id = call_kwargs.get('session_id', '')
+        assert session_id == "feishu:ou_user1"
 
 
 class TestRegressionP2PUntouched:
@@ -898,7 +895,7 @@ class TestRegressionP2PUntouched:
         adapter = _make_adapter()
         msg = FakeInboundMessage(chat_type="p2p", content_text="你好")
         with patch.object(adapter, 'resolve_inbound_resources', return_value=[]), \
-             patch.object(adapter, '_enqueue_message'):
+             patch.object(adapter.router, 'route_in_sync'):
             adapter._on_message(msg)
         assert adapter._stream_reply_to_id is None
 
@@ -907,10 +904,11 @@ class TestRegressionP2PUntouched:
         adapter = _make_adapter()
         msg = FakeInboundMessage(chat_type="p2p", content_text="你好", sender_name="张三")
         with patch.object(adapter, 'resolve_inbound_resources', return_value=[]), \
-             patch.object(adapter, '_enqueue_message') as mock_enqueue:
+             patch.object(adapter.router, 'route_in_sync') as mock_route:
             adapter._on_message(msg)
-        all_args_str = str(mock_enqueue.call_args)
-        assert "[群聊]" not in all_args_str
+        call_kwargs = mock_route.call_args.kwargs
+        message_override = call_kwargs.get('message_override', '')
+        assert "[群聊]" not in message_override
 
     def test_p2p_stream_target_unchanged(self):
         """单聊 _stream_target 设置逻辑不变"""
@@ -924,7 +922,7 @@ class TestRegressionP2PUntouched:
             sender_id="ou_user1",
         )
         with patch.object(adapter, 'resolve_inbound_resources', return_value=[]), \
-             patch.object(adapter, '_enqueue_message'):
+             patch.object(adapter.router, 'route_in_sync'):
             adapter._on_message(msg)
         # _stream_target 应为 channel_id 或 open_id（现有逻辑）
         assert adapter._stream_target in ("oc_p2p", "ou_user1")
@@ -995,10 +993,16 @@ class TestF3ReplyToIdCleanup:
         adapter._stream_reply_to_id = "om_reply_target"
         adapter._feishu_waiting = True
         adapter._stream_card_created = False
+        adapter._stream_target = "oc_test"
 
-        # send() 的 finally 块应重置 _stream_reply_to_id
-        # 模拟 send() 的 finally 块行为
-        adapter._stream_reply_to_id = None  # 应在 finally 中执行
+        # Mock channel.send 使 send() 不失败
+        async def mock_send(target, content):
+            return MagicMock(success=True)
+        adapter.channel.send = mock_send
+
+        # 调用 send() — 完成后 _stream_reply_to_id 应被重置为 None
+        import asyncio
+        asyncio.run(adapter.send("oc_test", "test content"))
 
         assert adapter._stream_reply_to_id is None
 ```
