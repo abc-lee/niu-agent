@@ -271,3 +271,108 @@ class TestF3GroupReplyAPI:
         adapter._on_message(msg)
         # 应该被设为新消息的 ID（而不是旧值）
         assert adapter._stream_reply_to_id == "om_reply3"
+
+
+# ---------------------------------------------------------------------------
+# F5: Session 隔离验证 + 单聊回归测试
+# ---------------------------------------------------------------------------
+class TestF5SessionIsolation:
+    """F5: 群聊 session_id 隔离 + 单聊回归测试"""
+
+    def test_group_session_id_format(self, adapter, mock_route):
+        """群聊消息 session_id 格式为 feishu:group:{chat_id}"""
+        msg = FakeInboundMessage(
+            message_id="om_session1",
+            chat_type="group",
+            chat_id="oc_group_session",
+            sender_id="ou_user1",
+            sender_name="张三",
+            text="@_user_1 你好",
+            mentioned_bot=True,
+        )
+        adapter._on_message(msg)
+        call_args = mock_route.call_args
+        session_id = call_args.kwargs.get("session_id")
+        assert session_id == "feishu:group:oc_group_session"
+
+    def test_p2p_session_id_format(self, adapter, mock_route):
+        """单聊消息 session_id 格式为 feishu:{sender_id}"""
+        msg = FakeInboundMessage(
+            message_id="om_session2",
+            chat_type="p2p",
+            chat_id="oc_p2p_session",
+            sender_id="ou_user_p2p",
+            sender_name="李四",
+            text="你好",
+            mentioned_bot=False,
+        )
+        adapter._on_message(msg)
+        call_args = mock_route.call_args
+        session_id = call_args.kwargs.get("session_id")
+        assert session_id == "feishu:ou_user_p2p"
+
+
+class TestP2PRegression:
+    """单聊回归测试：确保 F1-F3 不影响单聊行为"""
+
+    def test_p2p_no_reply_to_id(self, adapter, mock_route):
+        """单聊消息不设置 _stream_reply_to_id"""
+        msg = FakeInboundMessage(
+            message_id="om_p2p_reg1",
+            chat_type="p2p",
+            chat_id="oc_p2p1",
+            sender_id="ou_user1",
+            sender_name="张三",
+            text="你好",
+            mentioned_bot=False,
+        )
+        adapter._on_message(msg)
+        assert adapter._stream_reply_to_id is None
+
+    def test_p2p_no_sender_prefix(self, adapter, mock_route):
+        """单聊消息不添加 [群聊] sender_name: 前缀"""
+        msg = FakeInboundMessage(
+            message_id="om_p2p_reg2",
+            chat_type="p2p",
+            chat_id="oc_p2p1",
+            sender_id="ou_user1",
+            sender_name="张三",
+            text="你好",
+            mentioned_bot=False,
+        )
+        adapter._on_message(msg)
+        call_args = mock_route.call_args
+        message_override = call_args.kwargs.get("message_override")
+        assert "[群聊]" not in message_override
+        assert "张三:" not in message_override
+
+    def test_p2p_stream_target_unchanged(self, adapter, mock_route):
+        """单聊消息 _stream_target 不受群聊代码影响"""
+        msg = FakeInboundMessage(
+            message_id="om_p2p_reg3",
+            chat_type="p2p",
+            chat_id="oc_p2p1",
+            sender_id="ou_user1",
+            sender_name="张三",
+            text="你好",
+            mentioned_bot=False,
+        )
+        adapter._on_message(msg)
+        # _stream_target 应该是 p2p 的 chat_id 或 open_id
+        assert adapter._stream_target is not None
+
+    def test_p2p_session_id_unchanged(self, adapter, mock_route):
+        """单聊消息 session_id 格式不变"""
+        msg = FakeInboundMessage(
+            message_id="om_p2p_reg4",
+            chat_type="p2p",
+            chat_id="oc_p2p1",
+            sender_id="ou_user_p2p_id",
+            sender_name="张三",
+            text="你好",
+            mentioned_bot=False,
+        )
+        adapter._on_message(msg)
+        call_args = mock_route.call_args
+        session_id = call_args.kwargs.get("session_id")
+        assert session_id == "feishu:ou_user_p2p_id"
