@@ -206,6 +206,18 @@ TOOL_SCHEMAS = {
                     "type": "string",
                     "description": "Assistant name",
                 },
+                "user_nickname": {
+                    "type": "string",
+                    "description": "User's nickname or preferred form of address",
+                },
+                "user_occupation": {
+                    "type": "string",
+                    "description": "User's occupation or profession",
+                },
+                "user_organization": {
+                    "type": "string",
+                    "description": "User's workplace or organization",
+                },
             },
         },
     },
@@ -629,7 +641,12 @@ def is_first_run() -> bool:
 
 
 def complete_setup(
-    workspace_path: str = None, user_name: str = None, assistant_name: str = None
+    workspace_path: str = None,
+    user_name: str = None,
+    assistant_name: str = None,
+    user_nickname: str = None,
+    user_occupation: str = None,
+    user_organization: str = None,
 ) -> dict[str, Any]:
     """Complete initial setup."""
     memory = load_memory()
@@ -657,6 +674,12 @@ def complete_setup(
     if user_name:
         memory["user"] = memory.get("user", {})
         memory["user"]["name"] = user_name
+    if user_nickname:
+        memory["user"]["nickname"] = user_nickname
+    if user_occupation:
+        memory["user"]["occupation"] = user_occupation
+    if user_organization:
+        memory["user"]["organization"] = user_organization
 
     # Set assistant name if provided
     if assistant_name:
@@ -966,6 +989,18 @@ async def list_tools() -> list[Tool]:
                         "type": "string",
                         "description": "Assistant name",
                     },
+                    "user_nickname": {
+                        "type": "string",
+                        "description": "User's nickname or preferred form of address",
+                    },
+                    "user_occupation": {
+                        "type": "string",
+                        "description": "User's occupation or profession",
+                    },
+                    "user_organization": {
+                        "type": "string",
+                        "description": "User's workplace or organization",
+                    },
                 },
             },
         ),
@@ -1095,6 +1130,9 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 workspace_path=arguments.get("workspace_path"),
                 user_name=arguments.get("user_name"),
                 assistant_name=arguments.get("assistant_name"),
+                user_nickname=arguments.get("user_nickname"),
+                user_occupation=arguments.get("user_occupation"),
+                user_organization=arguments.get("user_organization"),
             )
         elif name == "get_full_memory":
             result = get_full_memory()

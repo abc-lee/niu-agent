@@ -246,6 +246,51 @@ def get_subagent_mcp_tools_schema(agent_name: str) -> List[Dict]:
     return schema
 
 
+def _build_user_info_section() -> str:
+    """从 memory.json 构建 ## 用户信息 + ## 用户偏好 段落，供子Agent注入。
+
+    过滤规则：
+    - user 字段：值以"请询问"开头则跳过
+    - permanent 字段：只注入 type="memory"，过滤 type="task"
+    """
+    from pathlib import Path
+
+    memory_path = Path.home() / ".niu" / "memory.json"
+    if not memory_path.exists():
+        return ""
+
+    try:
+        import json
+        memory = json.loads(memory_path.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+
+    sections = []
+
+    # 用户信息
+    user = memory.get("user", {})
+    user_lines = []
+    if user.get("name") and not str(user["name"]).startswith("请询问"):
+        user_lines.append(f"真实姓名：{user['name']}")
+    if user.get("nickname") and not str(user["nickname"]).startswith("请询问"):
+        user_lines.append(f"称呼：{user['nickname']}")
+    if user.get("occupation") and not str(user["occupation"]).startswith("请询问"):
+        user_lines.append(f"职业：{user['occupation']}")
+    if user.get("organization") and not str(user["organization"]).startswith("请询问"):
+        user_lines.append(f"工作单位：{user['organization']}")
+    if user_lines:
+        sections.append("## 用户信息\n\n" + "\n".join(user_lines))
+
+    # 用户偏好（仅 type="memory"）
+    permanent = memory.get("permanent", [])
+    memory_items = [item for item in permanent if item.get("type") == "memory" and item.get("content")]
+    if memory_items:
+        pref_lines = [f"{i}. {item['content']}" for i, item in enumerate(memory_items, 1)]
+        sections.append("## 用户偏好\n\n" + "\n".join(pref_lines))
+
+    return "\n\n".join(sections)
+
+
 def call_subagent(
     agent_name: str,
     task: str,
@@ -282,6 +327,11 @@ def call_subagent(
     from datetime import datetime
     now = datetime.now()
     system_prompt += f"\n\nCurrent Time: {now.strftime('%Y-%m-%d %H:%M:%S')}"
+
+    # 2.5 注入用户信息和偏好（子Agent需要了解用户背景）
+    user_info_section = _build_user_info_section()
+    if user_info_section:
+        system_prompt += "\n\n" + user_info_section
 
     # 3. 创建 LLM 客户端（统一使用 LiteLLM）
     from .runner import create_client

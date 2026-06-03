@@ -185,8 +185,17 @@ def _load_memory_for_prompt() -> str:
 
     # 用户信息
     user = memory.get("user", {})
+    user_lines = []
     if user.get("name"):
-        user_str = f"## 用户信息\n\n用户称呼：{user['name']}"
+        user_lines.append(f"真实姓名：{user['name']}")
+    if user.get("nickname"):
+        user_lines.append(f"称呼：{user['nickname']}")
+    if user.get("occupation"):
+        user_lines.append(f"职业：{user['occupation']}")
+    if user.get("organization"):
+        user_lines.append(f"工作单位：{user['organization']}")
+    if user_lines:
+        user_str = "## 用户信息\n\n" + "\n".join(user_lines)
         parts.append(user_str)
 
     # 用户长期记忆（驻留在 system prompt，最多5条，每条≤200 token）

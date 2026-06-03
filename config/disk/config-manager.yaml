@@ -144,6 +144,12 @@ tools:
         type: string
       - name: assistant_name
         type: string
+      - name: user_nickname
+        type: string
+      - name: user_occupation
+        type: string
+      - name: user_organization
+        type: string
 
   - name: get_full_memory
     category: read
