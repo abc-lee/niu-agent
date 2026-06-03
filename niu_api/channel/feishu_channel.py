@@ -436,6 +436,7 @@ class FeishuChannelAdapter(ChannelAdapter):
             self._stream_seq = 0
             self._last_pushed_rowid = 0
             self._stream_target = None
+            self._stream_reply_to_id = None
             self._accumulated_text = ""
             self._stream_pending_images = []
             self._stream_pending_files = []

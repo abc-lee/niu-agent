@@ -376,3 +376,18 @@ class TestP2PRegression:
         call_args = mock_route.call_args
         session_id = call_args.kwargs.get("session_id")
         assert session_id == "feishu:ou_user_p2p_id"
+
+
+# ---------------------------------------------------------------------------
+# Task 7: send() finally 块重置 _stream_reply_to_id
+# ---------------------------------------------------------------------------
+class TestTask7SendFinallyReset:
+    """Task 7: send() finally 块重置 _stream_reply_to_id"""
+
+    def test_send_resets_reply_to_id_in_source(self):
+        """send() 源码中包含 _stream_reply_to_id = None 重置"""
+        import inspect
+        from niu_api.channel.feishu_channel import FeishuChannelAdapter
+        source = inspect.getsource(FeishuChannelAdapter.send)
+        assert "_stream_reply_to_id = None" in source, \
+            "send() finally block should reset _stream_reply_to_id = None"
