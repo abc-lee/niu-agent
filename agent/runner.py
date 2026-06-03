@@ -855,7 +855,7 @@ class NiuRunner:
         return injection, {}  # Empty mcp_tool_scores — no dynamic MCP injection
 
     def chat(
-        self, session_id: str, user_input: str, stream: bool = True, max_turns: int = 40, history: list = None
+        self, session_id: str, user_input: str, stream: bool = True, max_turns: int = 40, history: list = None, resources: list | None = None
     ) -> Generator[str, None, None]:
         """执行对话 — disk mode: base tools + disk only.
 
@@ -876,6 +876,23 @@ class NiuRunner:
         system_prompt = self.base_system_prompt
         if injection:
             system_prompt += injection
+
+        # 注入 resources（拖入文件的模式信息）
+        if resources:
+            # 防御性过滤：只处理格式正确的资源条目
+            valid_resources = [r for r in resources if isinstance(r, dict) and "path" in r and "mode" in r]
+            if valid_resources:
+                resource_lines = []
+                for r in valid_resources:
+                    path = r.get("path", "")
+                    mode = r.get("mode", "copy")
+                    if mode == "reference":
+                        resource_lines.append(f"- 文件 {path}：必须使用引用模式（mode=reference），不要拷贝文件，使用原路径引用")
+                    elif mode == "move":
+                        resource_lines.append(f"- 文件 {path}：必须使用移动模式（mode=move），将文件移动到存储目录")
+                    # mode="copy" 不需要额外提示，这是默认行为
+                if resource_lines:
+                    system_prompt += "\n\n【文件操作模式要求】\n以下文件的操作模式由用户指定，调用 ingest 工具时必须传递对应的 mode 参数：\n" + "\n".join(resource_lines)
 
         # 组装 tools_schema = base tools + static MCP tools + disk
         tools_schema = self.base_tools_schema.copy()

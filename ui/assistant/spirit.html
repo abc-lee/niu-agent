@@ -580,7 +580,13 @@
       }
 
       // 构建入库指令（简洁，避免 Agent 当对话回复而不调用工具）
-      const message = `入库文件（${mode}模式）：${fileList.map(f => f.path.replace(/\\/g, '/')).join('、')}`;
+      let modeHint = '';
+      if (mode === 'reference') {
+        modeHint = '（引用模式，使用原路径引用文件，不要拷贝）';
+      } else if (mode === 'move') {
+        modeHint = '（移动模式，将文件移动到存储目录）';
+      }
+      const message = `入库文件${modeHint}：${fileList.map(f => f.path.replace(/\\/g, '/')).join('、')}`;
       
       // 发送消息给 Agent
       const result = await window.electronAPI.sendToAgent(message, { files: fileList, mode });
