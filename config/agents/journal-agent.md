@@ -35,7 +35,7 @@ mcpServers: []
 
 ## 写入流程
 
-1. 读取 `~/.niu/memory.json` 获取 `workspace.path`，缺失则使用 `~/.niu/` 作为 fallback
+1. 工作目录（workspace）从系统提示词中的「## 工作目录」段获取，缺失则使用 `~/.niu/` 作为 fallback
 2. 日志文件路径：`{workspace}/journal.md`
 3. 检查文件是否存在：`read(file_path, offset=1, limit=1)`
    - 如不存在：`write(file_path, content, mode="overwrite")` 创建，内容以 `# YYYY-MM-DD` 开头

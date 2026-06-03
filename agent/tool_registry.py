@@ -152,21 +152,30 @@ class ToolRegistry:
                     # Wrap direct function with argument filtering to prevent
                     # TypeError from LLM-sent extra arguments
                     import inspect as _inspect
+                    sig = None
+                    valid_params = None
                     try:
                         sig = _inspect.signature(raw_fn)
                         valid_params = set(sig.parameters.keys())
                     except (ValueError, TypeError):
-                        valid_params = None
+                        pass
 
                     if valid_params is not None:
-                        def _make_filtered_fn(fn, params):
-                            def filtered_fn(**kwargs):
-                                filtered = {k: v for k, v in kwargs.items() if k in params}
-                                return fn(**filtered)
-                            # Preserve function identity for hasattr checks
-                            filtered_fn.__wrapped__ = fn
-                            return filtered_fn
-                        tool_fn = _make_filtered_fn(raw_fn, valid_params)
+                        # If the function accepts **kwargs (VAR_KEYWORD),
+                        # it already handles arbitrary arguments — skip filtering.
+                        has_var_keyword = any(
+                            p.kind == _inspect.Parameter.VAR_KEYWORD
+                            for p in sig.parameters.values()
+                        )
+                        if has_var_keyword:
+                            tool_fn = raw_fn
+                        else:
+                            def _make_filtered_fn(fn, params):
+                                def filtered_fn(**kwargs):
+                                    filtered = {k: v for k, v in kwargs.items() if k in params}
+                                    return fn(**filtered)
+                                return filtered_fn
+                            tool_fn = _make_filtered_fn(raw_fn, valid_params)
                     else:
                         tool_fn = raw_fn
                 elif hasattr(module, 'get_tool_function'):
