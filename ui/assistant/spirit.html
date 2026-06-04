@@ -67,41 +67,13 @@
     }
     #pending-badge.show { display: flex; }
     
-    /* 状态提示 */
-    #status-hint {
-      position: absolute;
-      left: 0;
-      bottom: -20px;
-      width: 100%;
-      text-align: center;
-      font-size: 11px;
-      font-family: 'AZhuPaoPaoTi', cursive;
-      color: #666;
-      pointer-events: none;
+    /* 入库进度指示器 */
+    #progress-ring {
+      transition: opacity 0.3s ease;
     }
-    
-    /* 完成气泡 */
-    #complete-bubble {
-      position: absolute;
-      bottom: 8px;
-      left: 50%;
-      transform: translateX(-50%);
-      background: rgba(102, 126, 234, 0.9);
-      color: white;
-      padding: 2px 8px;
-      border-radius: 10px;
-      font-size: 10px;
-      display: none;
-      pointer-events: none;
-      z-index: 100;
-      white-space: nowrap;
-    }
-    #complete-bubble.show { display: block; }
-    
-    @keyframes bubble-pop {
-      0% { transform: translateX(-50%) scale(0); opacity: 0; }
-      50% { transform: translateX(-50%) scale(1.1); }
-      100% { transform: translateX(-50%) scale(1); opacity: 1; }
+    /* 测试阶段：始终可见，不使用 .visible 控制显示隐藏 */
+    #progress-arc {
+      transition: stroke-dashoffset 0.5s ease;
     }
     
     /* 拖拽状态 */
@@ -165,9 +137,19 @@
     <img id="gif" src="idle1.gif" />
   </div>
   <div id="pending-badge">0</div>
-  <div id="status-hint"></div>
+  <!-- 入库进度指示器（测试阶段始终可见，确认效果后改为入库时显示） -->
+  <svg id="progress-ring" width="36" height="36" viewBox="0 0 36 36"
+       style="position:absolute; bottom:4px; left:50%; transform:translateX(-50%);
+              pointer-events:none; z-index:100;">
+    <circle cx="18" cy="18" r="15" fill="none" stroke="rgba(102,126,234,0.2)" stroke-width="3"/>
+    <circle id="progress-arc" cx="18" cy="18" r="15" fill="none"
+            stroke="rgba(102,126,234,0.9)" stroke-width="3" stroke-linecap="round"
+            stroke-dasharray="94.25" stroke-dashoffset="94.25"
+            transform="rotate(-90 18 18)"/>
+    <text id="progress-text" x="18" y="19" text-anchor="middle" dominant-baseline="central"
+          fill="white" font-size="9" font-family="system-ui, sans-serif" font-weight="bold">0%</text>
+  </svg>
   <div id="drop-hint">释放以复制文件</div>
-  <div id="complete-bubble">完成 ✨</div>
   <div id="alert-bubble">有事找你 🔔</div>
 
   <script>
@@ -210,7 +192,6 @@
     
     const spirit = document.getElementById('spirit');
     const gif = document.getElementById('gif');
-    const statusHint = document.getElementById('status-hint');
     const pendingBadge = document.getElementById('pending-badge');
     
     // ========== 忙碌计数管理 ==========
@@ -266,13 +247,11 @@
       switch (newState) {
         case State.IDLE:
           startIdleAnimation();
-          statusHint.textContent = '';
           startIdleTimer();
           break;
           
         case State.WAKE:
           gif.src = GIFS.wake;
-          statusHint.textContent = '点击聊天';
           idleTimer = setTimeout(() => setState(State.IDLE), 3000);
           break;
           
@@ -285,8 +264,7 @@
           } else {
             gif.src = GIFS.sleep;
           }
-          statusHint.textContent = '💤';
-          
+
           // 闲置整理：进入 SLEEP 状态后触发上下文整理
           triggerTidy();
           break;
@@ -299,8 +277,7 @@
             setTimeout(() => {
               gif.src = GIFS.toBusy;
             }, 10);
-            statusHint.textContent = '⏳';
-            
+
             // 5秒后切换到忙碌状态
             setTimeout(() => {
               if (currentState === State.BUSY) {
@@ -309,14 +286,12 @@
             }, TRANSITION_DURATION);
           } else {
             gif.src = GIFS.busy;
-            statusHint.textContent = '⏳';
           }
           break;
           
         case State.ALERT:
           // 有事叫用户 - 播放蹦高动画
           gif.src = GIFS.alert;
-          statusHint.textContent = '🔔';
           // 显示消息气泡
           showAlertBubble();
           break;
@@ -594,41 +569,95 @@
       // 收到响应后减少忙碌计数
       decrementBusy('file-drop-response');
       
-      // 显示处理结果
-      if (result && result.reply) {
-        showCompleteBubble();
-      } else if (result && result.error) {
-        showStatusHint('❌ 处理失败');
-      } else {
-        showCompleteBubble();
+      // 不再显示"完成"气泡 — 入库进度由轮询自动展示
+      // 但保留错误反馈：失败时在进度环上显示红色感叹号
+      if (result && result.error) {
+        showProgressError();
       }
     }
-    
-    // 显示完成气泡
-    function showCompleteBubble() {
-      const bubble = document.getElementById('complete-bubble');
-      bubble.classList.add('show');
-      setTimeout(() => {
-        bubble.classList.remove('show');
-      }, 2000);
+
+    // ========== 入库进度轮询 ==========
+    const PROGRESS_API = 'http://127.0.0.1:9876/api/kg/pipeline_status';
+    const PROGRESS_POLL_INTERVAL = 3000;  // 3秒轮询
+    let progressPollTimer = null;
+    let lastProgressBusy = false;
+
+    const progressRing = document.getElementById('progress-ring');
+    const progressArc = document.getElementById('progress-arc');
+    const progressText = document.getElementById('progress-text');
+    const CIRCUMFERENCE = 2 * Math.PI * 15;  // r=15, ≈94.25
+
+    function showProgressRing(percent) {
+      if (!progressRing) return;
+      const clamped = Math.max(0, Math.min(100, percent));
+      const offset = CIRCUMFERENCE * (1 - clamped / 100);
+      progressArc.setAttribute('stroke-dashoffset', offset);
+      progressText.textContent = clamped + '%';
+      // 测试阶段：始终可见，不需要 display 控制
+      // 确认效果后改为：progressRing.style.display = 'block';
     }
-    
+
+    function hideProgressRing() {
+      if (!progressRing) return;
+      // 测试阶段：不隐藏，方便观察
+      // 确认效果后改为：
+      // progressRing.style.display = 'none';
+    }
+
+    function showProgressError() {
+      if (!progressText || !progressArc) return;
+      progressText.textContent = '!';
+      progressArc.setAttribute('stroke', 'rgba(231, 76, 60, 0.9)');  // 红色
+      setTimeout(() => {
+        progressArc.setAttribute('stroke', 'rgba(102,126,234,0.9)');  // 恢复原色
+        progressText.textContent = '0%';
+        showProgressRing(0);
+      }, 5000);
+    }
+
+    async function pollPipelineStatus() {
+      try {
+        const resp = await fetch(PROGRESS_API);
+        const data = await resp.json();
+
+        if (data.busy) {
+          showProgressRing(data.progress);
+          lastProgressBusy = true;
+        } else {
+          // 测试阶段：空闲时也显示 0%，方便确认位置
+          showProgressRing(0);
+          if (lastProgressBusy) {
+            hideProgressRing();
+            lastProgressBusy = false;
+          }
+        }
+      } catch (e) {
+        console.debug('[Progress] poll failed:', e.message);
+      }
+    }
+
+    function startProgressPolling() {
+      if (progressPollTimer) return;
+      // 测试阶段：立即显示进度指示器
+      showProgressRing(0);
+      pollPipelineStatus();
+      progressPollTimer = setInterval(pollPipelineStatus, PROGRESS_POLL_INTERVAL);
+    }
+
+    function stopProgressPolling() {
+      if (progressPollTimer) {
+        clearInterval(progressPollTimer);
+        progressPollTimer = null;
+      }
+    }
+
     // 格式化文件大小
     function formatSize(bytes) {
       if (bytes < 1024) return bytes + ' B';
       if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
       return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
     }
-    
-    // 显示状态提示
-    function showStatusHint(text) {
-      const hint = document.getElementById('status-hint');
-      hint.textContent = text;
-      setTimeout(() => {
-        hint.textContent = '';
-      }, 3000);
-    }
-    
+
     // ========== 初始化 ==========
     window.electronAPI.resizeWindow(SIZE.normal.width, SIZE.normal.height);
     setState(State.IDLE);
@@ -657,6 +686,12 @@
         startIdleTimer();
       }
     });
+
+    // 启动入库进度轮询
+    startProgressPolling();
+
+    // 窗口关闭时停止轮询，避免后台空转
+    window.addEventListener('beforeunload', stopProgressPolling);
   </script>
 </body>
 </html>
