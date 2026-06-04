@@ -71,7 +71,14 @@
     #progress-ring {
       transition: opacity 0.3s ease;
     }
-    /* 测试阶段：始终可见，不使用 .visible 控制显示隐藏 */
+    #progress-ring.visible {
+      display: block;
+      animation: progress-fade-in 0.3s ease;
+    }
+    @keyframes progress-fade-in {
+      from { opacity: 0; transform: translateX(-50%) scale(0.8); }
+      to   { opacity: 1; transform: translateX(-50%) scale(1); }
+    }
     #progress-arc {
       transition: stroke-dashoffset 0.5s ease;
     }
@@ -137,9 +144,9 @@
     <img id="gif" src="idle1.gif" />
   </div>
   <div id="pending-badge">0</div>
-  <!-- 入库进度指示器（测试阶段始终可见，确认效果后改为入库时显示） -->
+  <!-- 入库进度指示器 -->
   <svg id="progress-ring" width="36" height="36" viewBox="0 0 36 36"
-       style="position:absolute; bottom:4px; left:50%; transform:translateX(-50%);
+       style="position:absolute; bottom:4px; left:50%; transform:translateX(-50%); display:none;
               pointer-events:none; z-index:100;">
     <circle cx="18" cy="18" r="15" fill="none" stroke="rgba(102,126,234,0.2)" stroke-width="3"/>
     <circle id="progress-arc" cx="18" cy="18" r="15" fill="none"
@@ -593,15 +600,17 @@
       const offset = CIRCUMFERENCE * (1 - clamped / 100);
       progressArc.setAttribute('stroke-dashoffset', offset);
       progressText.textContent = clamped + '%';
-      // 测试阶段：始终可见，不需要 display 控制
-      // 确认效果后改为：progressRing.style.display = 'block';
+      progressRing.classList.add('visible');
     }
 
     function hideProgressRing() {
       if (!progressRing) return;
-      // 测试阶段：不隐藏，方便观察
-      // 确认效果后改为：
-      // progressRing.style.display = 'none';
+      progressRing.classList.remove('visible');
+      setTimeout(() => {
+        if (!progressRing.classList.contains('visible')) {
+          progressRing.style.display = 'none';
+        }
+      }, 300);
     }
 
     function showProgressError() {
@@ -623,13 +632,9 @@
         if (data.busy) {
           showProgressRing(data.progress);
           lastProgressBusy = true;
-        } else {
-          // 测试阶段：空闲时也显示 0%，方便确认位置
-          showProgressRing(0);
-          if (lastProgressBusy) {
-            hideProgressRing();
-            lastProgressBusy = false;
-          }
+        } else if (lastProgressBusy) {
+          hideProgressRing();
+          lastProgressBusy = false;
         }
       } catch (e) {
         console.debug('[Progress] poll failed:', e.message);
@@ -638,8 +643,6 @@
 
     function startProgressPolling() {
       if (progressPollTimer) return;
-      // 测试阶段：立即显示进度指示器
-      showProgressRing(0);
       pollPipelineStatus();
       progressPollTimer = setInterval(pollPipelineStatus, PROGRESS_POLL_INTERVAL);
     }
