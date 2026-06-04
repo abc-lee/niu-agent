@@ -224,6 +224,51 @@ def graph_stats():
     return get_lightrag_status()
 
 
+@router.get("/pipeline_status")
+def pipeline_status():
+    """Get LightRAG ingestion pipeline progress.
+
+    Returns busy flag, current batch / total batches, progress percentage,
+    and the latest pipeline message. Frontend polls this endpoint to show
+    a graphical progress indicator in the spirit window.
+    """
+    from niu_api.internal.lightrag_manager import get_lightrag
+
+    rag = get_lightrag()
+    if rag is None:
+        return {"busy": False, "progress": 0, "message": "LightRAG not available"}
+
+    try:
+        from lightrag.kg.shared_storage import get_namespace_data
+
+        # pipeline_status is async; run in LightRAG's event loop
+        from niu_api.internal.lightrag_manager import call_async
+
+        ps = call_async(
+            get_namespace_data("pipeline_status", workspace=rag.workspace),
+            timeout=5,
+        )
+    except Exception as e:
+        return {"busy": False, "progress": 0, "message": f"Error: {e}"}
+
+    busy = bool(ps.get("busy", False))
+    cur_batch = int(ps.get("cur_batch", 0))
+    batchs = int(ps.get("batchs", 0))
+    job_name = str(ps.get("job_name", ""))
+    latest_message = str(ps.get("latest_message", ""))
+
+    progress = int(cur_batch / batchs * 100) if batchs > 0 else 0
+
+    return {
+        "busy": busy,
+        "progress": progress,
+        "cur_batch": cur_batch,
+        "batchs": batchs,
+        "job_name": job_name,
+        "message": latest_message,
+    }
+
+
 @router.get("/hubs")
 def hub_entities(
     limit: int = Query(default=20, ge=1, le=100),
