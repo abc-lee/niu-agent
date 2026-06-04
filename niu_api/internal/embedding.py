@@ -168,21 +168,21 @@ def get_model():
 def encode(text: str) -> list[float]:
     """Encode a single text to vector."""
     model = get_model()
-    embedding = model.encode(text, convert_to_numpy=True)
+    embedding = model.encode(text, convert_to_numpy=True, show_progress_bar=False)
     return embedding.tolist()
 
 
 def batch_encode(texts: list[str]) -> list[list[float]]:
     """Encode multiple texts to vectors."""
     model = get_model()
-    embeddings = model.encode(texts, convert_to_numpy=True)
+    embeddings = model.encode(texts, convert_to_numpy=True, show_progress_bar=False)
     return embeddings.tolist()
 
 
 def similarity(text1: str, text2: str) -> float:
     """Calculate similarity between two texts."""
     model = get_model()
-    embeddings = model.encode([text1, text2], convert_to_numpy=True)
+    embeddings = model.encode([text1, text2], convert_to_numpy=True, show_progress_bar=False)
     vec1, vec2 = embeddings[0], embeddings[1]
 
     # Cosine similarity
@@ -286,7 +286,7 @@ def preload():
     logger.info(f"Preloading embedding model: {model_name} ({dim}d)...")
     model = get_model()
     # Force load weights by encoding a dummy text
-    model.encode("init", convert_to_numpy=True)
+    model.encode("init", convert_to_numpy=True, show_progress_bar=False)
     logger.info(f"Embedding model ready: {model_name} ({dim}d)")
 
 
