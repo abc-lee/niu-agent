@@ -50,7 +50,7 @@ Niu 是一个**本地运行**的个人知识管理助手，核心理念：
 - **MCP Loader** (`agent/mcp_loader.py`)：启动时加载所有 MCP 模块，严格验证
 - 每个 MCP 服务器模块定义 `TOOL_SCHEMAS` 字典 + 工具函数
 
-**已实现的 MCP 服务器（9个）：**
+**已实现的 MCP 服务器（10个）：**
 
 | 服务器 | 功能 | 预加载 |
 |--------|------|--------|
@@ -63,9 +63,11 @@ Niu 是一个**本地运行**的个人知识管理助手，核心理念：
 | `file-parser` | 文档解析 | Yes |
 | `session-manager` | 会话管理 | No |
 | `browser-server` | 浏览器自动化 | No |
+| `feishu-server` | 飞书消息收发（日历/任务） | No（可选） |
 
 > `kg-server`、`vector-store`、`embedding-service` 已移除，由 `lightrag-server` 统一替代。`mcp-servers/embedding-service/` 目录仍残留但不再加载。
 > `nanobot.system` 为内置系统工具（code_run/read/edit/write），非 MCP 服务器模块，通过 disk 配置管理。
+> `feishu-server` 为可选服务器，需配置飞书机器人凭证后才会启用（`optional: true`）。
 
 ### 2.2 工具注入机制
 
@@ -107,7 +109,7 @@ ai-bot/
 │   ├── mcp_loader.py   # MCP 加载器
 │   └── injector/       # 动态注入
 ├── niu_api/            # FastAPI 服务
-├── mcp-servers/        # MCP 服务器（9个）
+├── mcp-servers/        # MCP 服务器（10个）
 ├── ui/assistant/       # Electron 前端
 ├── config/             # 配置文件
 ├── models/             # 模型文件
@@ -115,6 +117,50 @@ ai-bot/
 ├── data/               # 运行时数据（SQLite）
 └── docs/               # 文档
 ```
+
+### 2.5 子 Agent 架构
+
+主 Agent 负责对话，子 Agent 负责执行特定任务。子 Agent 通过 `chat-with-{agentName}` 工具调用。
+
+**已定义的子 Agent（6个）：**
+
+| 子 Agent | 职责 | 触发方式 | 温度 |
+|----------|------|----------|------|
+| `file-processor` | 文件处理：复制、解析、存储、向量化 | 主 Agent 委托（文件拖入） | 0.2 |
+| `event-manager` | 事件管理：创建/查询/删除事件 | 主 Agent 委托 | 0.2 |
+| `context-manager` | 上下文管理：L0/L1/L2 记忆层级 | auto-tidy 管线自动调度 | 0.2 |
+| `journal-agent` | 工作日志：从对话提取工作内容写入日志 | 主 Agent 委托或 auto-tidy | 0.3 |
+| `entity-extractor` | 内容提炼：从对话筛选有价值内容入库 | auto-tidy 管线自动调度 | 0.3 |
+| `dream-evolver` | 梦境进化：精加工知识图谱 + skill 维护 | auto-tidy 管线自动调度 | 0.3 |
+
+**BLOCKED_SUBAGENTS 机制：**
+
+`context-manager`、`entity-extractor`、`dream-evolver` 三个子 Agent 在 `agent/handler.py` 中被列入 `BLOCKED_SUBAGENTS` 集合，禁止主 Agent 手动调用。它们由 `auto-tidy` 管线按特定时机自动调度，确保：
+- 避免主 Agent 误触发导致重复执行
+- 保证执行顺序和时机符合系统设计
+- 防止用户对话被不必要的后台任务打断
+
+### 2.6 Skills 机制
+
+Skills 是存储在 `memory/skills/` 目录下的 Markdown 文件，定义了特定任务的执行规范和模板。
+
+**核心流程：**
+1. Skills 文件通过 `agent/injector/sync.py` 定时同步到 LightRAG 向量库（entity_type = `Skill`）
+2. Agent 每轮对话时，通过 `_inject_dynamic_resources()` 按语义搜索匹配相关 Skill
+3. 匹配到的 Skill 内容动态注入到 Agent 上下文，指导 Agent 按规范执行任务
+
+**已定义的 Skills：**
+
+| Skill 文件 | 功能 |
+|-----------|------|
+| `browser-automation.md` | 浏览器自动化操作规范 |
+| `note-management.md` | 笔记管理流程 |
+| `office-docs.md` | Office 文档处理规范 |
+| `photo-face-display.md` | 照片人脸显示规范 |
+| `report-skill.md` | 报告生成模板与聚合规则 |
+| `Write-SKILL.md` | 创建新 Skill 的规范（RED-GREEN-REFACTOR 流程） |
+
+**report-skill 触发条件：** 当 Agent 编写或整理用户日志、生成周报/月报等报告时，向量检索会自动匹配并注入 `report-skill.md`，Agent 按其中定义的聚合规则和模板生成报告。
 
 ---
 

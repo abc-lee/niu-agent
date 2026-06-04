@@ -105,9 +105,9 @@ NanoVectorDB 格式，存储在 `~/.niu/lightrag_storage/` 下：
 
 **Keywords 优化**：提供 `keywords` 参数可跳过 LLM 关键词提取，将延迟从 5-30s 降至 <1s，同时保持完整图遍历能力。动态注入（`_inject_dynamic_resources`）始终使用 keywords 模式。
 
-## 五、LightRAG MCP 工具（16 个）
+## 五、LightRAG MCP 工具（23 个）
 
-`lightrag-server` 提供 16 个统一工具，分三组：
+`lightrag-server` 提供 23 个统一工具，分四组：
 
 ### 查询组（5 个）
 
@@ -139,6 +139,18 @@ NanoVectorDB 格式，存储在 `~/.niu/lightrag_storage/` 下：
 | `lightrag_get_document` | 获取完整文档内容及处理状态 |
 | `lightrag_list_entities` | 列出实体、文档或实体类型标签（list_type: entities/documents/labels） |
 | `lightrag_merge_entities` | 合并多个实体，整合所有关系 |
+
+### 编辑/详情组（7 个）
+
+| 工具 | 说明 |
+|------|------|
+| `lightrag_edit_entity` | 编辑实体信息（描述、类型、重命名），支持合并到已有实体 |
+| `lightrag_edit_relation` | 编辑关系信息（关键词、描述、权重） |
+| `lightrag_delete_relation` | 删除两个实体间的关系，保留实体 |
+| `lightrag_get_entity_info` | 获取单个实体详细信息（含图谱和向量数据） |
+| `lightrag_get_relation_info` | 获取两个实体间关系的详细信息 |
+| `lightrag_create_entity` | 创建新实体（已存在则失败，如需 upsert 用 lightrag_insert_entity） |
+| `lightrag_create_relation` | 创建新关系（两端实体必须存在，已存在则失败） |
 
 ## 六、文档入库流程
 

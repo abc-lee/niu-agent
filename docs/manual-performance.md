@@ -53,11 +53,11 @@
 | photo-server | 16 | true | 照片管理 + 人脸识别，按需加载 InsightFace 模型 |
 | config-manager | 16 | true | 配置管理（LLM/存储/身份/偏好） |
 | memory-server | 10 | true | 智能记忆提取和检索 |
-| lightrag-server | 16 | true | 知识图谱 + 向量检索（LightRAG 统一管理） |
+| lightrag-server | 23 | true | 知识图谱 + 向量检索（LightRAG 统一管理） |
 | file-parser | 2 | true | 文档解析（PDF/Word/PPT/Excel/MD/HTML） |
 | session-manager | 4 | false | 会话管理（消息压缩） |
 | scheduler-server | 4 | true | 定时任务（单次/循环提醒） |
-| browser-server | 3 | false | 浏览器自动化（Playwright 守护线程） |
+| browser-server | 5 | false | 浏览器自动化（Chrome Extension + WSBridge） |
 | brain-region-server | 3 | true | 脑区激活控制（手动点亮/熄灭/查询状态） |
 
 ### 1.2 启动速度优化
@@ -219,7 +219,7 @@ python scripts/download_model.py
 
 ### 1.6 LightRAG 性能特征
 
-LightRAG 是工具数最多的 MCP 服务器（16 个工具），承担知识图谱查询、文档索引、实体管理等核心功能，其性能对整体体验影响最大。
+LightRAG 是工具数最多的 MCP 服务器（23 个工具），承担知识图谱查询、文档索引、实体管理等核心功能，其性能对整体体验影响最大。
 
 **查询延迟：**
 

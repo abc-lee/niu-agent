@@ -7,6 +7,12 @@
 
 ### 1.1 首次启动流程
 
+**初始化用户目录**
+
+Go 启动器首次运行时，会自动执行 `initNiuDir()`：
+1. 创建 `~/.niu/` 目录（如果不存在）
+2. 将 `memory/` 目录下的模板文件（`memory.json`、`preferences.json`）拷贝到 `~/.niu/`（仅当目标文件不存在时才拷贝，避免覆盖已有配置）
+
 **第一步：配置 LLM**
 
 首次启动时，如果未配置大模型，系统会自动弹出设置窗口让你输入 API Key。
@@ -16,6 +22,7 @@
 
 大模型配置成功后，主窗口会打开。
 如果是首次使用（memory.json 中 `firstRun` 为 `true`），大模型会主动询问你工作目录放在哪里。
+`workspace.path` 的默认值为占位文本"请询问用户指定工作目录"，Agent 检测到此占位文本时会主动询问用户设置真实工作目录。
 直接告诉大模型路径，例如："E:/我的知识库"
 大模型会自动帮你完成初始化配置。
 
@@ -93,7 +100,7 @@
 
 **存储位置**：`~/.niu/lightrag_storage/`（LightRAG 固定存储路径，不随 workspace.path 变化）
 
-**架构说明**：知识图谱和向量检索已统一由 `lightrag-server` 提供（15 个工具），取代了旧版独立的 `vector-store` 和 `kg-server`。旧的 `kg-server`（KuzuDB）和 `vector-store` 已禁用（`preload: false`）。
+**架构说明**：知识图谱和向量检索已统一由 `lightrag-server` 提供（23 个工具），取代了旧版独立的 `vector-store` 和 `kg-server`。旧的 `kg-server`（KuzuDB）和 `vector-store` 已禁用（`preload: false`）。
 
 **注意**：文档入库时，LightRAG 自动完成实体提取、关系构建和向量索引，无需手动操作。
 
