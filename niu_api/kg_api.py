@@ -258,19 +258,16 @@ def pipeline_status():
     job_name = str(ps.get("job_name", ""))
     latest_message = str(ps.get("latest_message", ""))
 
-    # 进度计算：结合 latest_message 判断阶段，给出整体进度估算
-    # 入库三阶段：文档分块(~5%) → 实体提取(~45%) → 关系提取(~50%)
+    # 进度计算：完全基于 latest_message，忽略 cur_batch/batchs
+    # cur_batch 在文档开始处理时就递增（不是完成时），导致进度跳跃
     progress = 0
     msg = latest_message
 
     if not busy:
-        # 入库未在进行中，进度为0
         progress = 0
     elif "Enqueued document processing pipeline stopped" in msg:
-        # 入库完成（busy可能还没来得及设为False）
         progress = 99
     elif "Completed processing file" in msg:
-        # 文件处理完成：消息格式 "Completed processing file N/M: ..."
         m3 = re.search(r"Completed processing file (\d+)/(\d+)", msg)
         if m3:
             file_cur = int(m3.group(1))
@@ -279,7 +276,6 @@ def pipeline_status():
         else:
             progress = 95
     elif "Merging stage" in msg:
-        # 关系提取/合并阶段：消息格式 "Merging stage N/M"
         m2 = re.search(r"Merging stage (\d+)/(\d+)", msg)
         if m2:
             stage_cur = int(m2.group(1))
@@ -287,9 +283,12 @@ def pipeline_status():
             stage_pct = stage_cur / stage_total if stage_total > 0 else 0
             progress = int(50 + stage_pct * 45)
         else:
-            progress = int(50 + (cur_batch / batchs * 45)) if batchs > 0 else 50
+            progress = 50
+    elif "Phase 2: Processing" in msg:
+        progress = 70
+    elif "Phase 1: Processing" in msg:
+        progress = 55
     elif "Chunk" in msg and "extracted" in msg:
-        # 实体提取阶段：从消息解析 "Chunk X of Y extracted ..."
         m = re.search(r"Chunk (\d+) of (\d+)", msg)
         if m:
             chunk_cur = int(m.group(1))
@@ -297,9 +296,8 @@ def pipeline_status():
             stage_pct = chunk_cur / chunk_total if chunk_total > 0 else 0
             progress = int(5 + stage_pct * 45)
         else:
-            progress = int(5 + (cur_batch / batchs * 45)) if batchs > 0 else 5
+            progress = 25
     elif "Extracting stage" in msg:
-        # 实体提取开始：消息格式 "Extracting stage N/M: ..."
         m4 = re.search(r"Extracting stage (\d+)/(\d+)", msg)
         if m4:
             file_cur = int(m4.group(1))
@@ -308,20 +306,13 @@ def pipeline_status():
         else:
             progress = 5
     elif "Processing d-id:" in msg:
-        # 文档处理开始（在实体提取之前）
-        if batchs > 0:
-            progress = int(5 + (cur_batch / batchs) * 45)
-        else:
-            progress = 5
+        # 文档处理刚开始，固定5%（不再使用 cur_batch/batchs）
+        progress = 5
     elif "Processing" in msg and "document(s)" in msg:
-        # 文档分块阶段（很快完成）：消息格式 "Processing N document(s)"
         progress = 3
     else:
-        # 回退：只在 busy=True 且 batchs>0 时才计算
-        if busy and batchs > 0:
-            progress = min(99, int(cur_batch / batchs * 100))
-        else:
-            progress = 0
+        # 回退：不再使用 cur_batch/batchs，返回0避免跳跃
+        progress = 0
 
     # 硬性封顶：busy 时不显示 100%
     progress = min(progress, 99)
