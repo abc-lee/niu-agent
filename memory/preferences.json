@@ -1,0 +1,61 @@
+{
+  "version": "1.0",
+  "storage": {
+    "structure": {
+      "documents": "{year}/{category}",
+      "photos": "{year}/{month}/{date}",
+      "notes": "{year}/notes"
+    },
+    "naming": {
+      "documents": "{date}_{title}",
+      "photos": "{date}_{persons}"
+    },
+    "conflict": {
+      "document": {
+        "similarity_threshold": 0.5,
+        "similar_action": "version",
+        "different_action": "rename"
+      },
+      "non_document": {
+        "action": "rename"
+      },
+      "rename_pattern": "{name}_{index}"
+    }
+  },
+  "categories": {
+    "documents": [
+      "财务",
+      "合同",
+      "报告",
+      "方案",
+      "其他",
+      "参考文献",
+      "操作手册"
+    ],
+    "photos": [
+      "生活",
+      "工作",
+      "旅行",
+      "证件",
+      "其他"
+    ]
+  },
+  "memory": {
+    "smartInjection": {
+      "enabled": true,
+      "extractOnEveryTurn": false,
+      "recallLimit": 5,
+      "minSimilarity": 0.3
+    }
+  },
+  "context": {
+    "warningThreshold": 0.8,
+    "targetThreshold": 0.5,
+    "sleepTriggerMinutes": 5,
+    "contextWindowSize": 200000
+  },
+  "lightrag": {
+    "embedding_model": "bge-base-zh-v1.5",
+    "reranker_model": "none"
+  }
+}

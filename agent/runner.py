@@ -177,22 +177,22 @@ def _load_memory_for_prompt() -> str:
             identity_str += f"\n问候风格：{greeting_style}。"
         parts.append(identity_str)
 
-    # 工作环境
+    # 工作目录
     workspace = memory.get("workspace", {})
-    if workspace.get("path"):
-        ws_str = f"## 工作环境\n\n知识库目录：{workspace['path']}"
-        parts.append(ws_str)
+    ws_path = workspace.get("path", "")
+    if ws_path and not str(ws_path).startswith("请询问"):
+        parts.append(f"## 工作目录\n\n知识库目录：{ws_path}")
 
     # 用户信息
     user = memory.get("user", {})
     user_lines = []
-    if user.get("name"):
+    if user.get("name") and not str(user["name"]).startswith("请询问"):
         user_lines.append(f"真实姓名：{user['name']}")
-    if user.get("nickname"):
+    if user.get("nickname") and not str(user["nickname"]).startswith("请询问"):
         user_lines.append(f"称呼：{user['nickname']}")
-    if user.get("occupation"):
+    if user.get("occupation") and not str(user["occupation"]).startswith("请询问"):
         user_lines.append(f"职业：{user['occupation']}")
-    if user.get("organization"):
+    if user.get("organization") and not str(user["organization"]).startswith("请询问"):
         user_lines.append(f"工作单位：{user['organization']}")
     if user_lines:
         user_str = "## 用户信息\n\n" + "\n".join(user_lines)
