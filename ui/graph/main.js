@@ -50,7 +50,7 @@ function createWindow() {
 // ========== IPC Handlers ==========
 
 ipcMain.handle('kg-snapshot', async (event, limit, minConfidence) => {
-  const params = new URLSearchParams({ limit: limit || 200, min_confidence: minConfidence || 0 });
+  const params = new URLSearchParams({ limit: limit || 2000, min_confidence: minConfidence || 0 });
   return apiRequest('GET', `/api/kg/snapshot?${params}`);
 });
 

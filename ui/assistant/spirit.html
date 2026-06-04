@@ -69,6 +69,7 @@
     
     /* 入库进度指示器 */
     #progress-ring {
+      display: none;
       transition: opacity 0.3s ease;
     }
     #progress-ring.visible {
@@ -146,7 +147,7 @@
   <div id="pending-badge">0</div>
   <!-- 入库进度指示器 -->
   <svg id="progress-ring" width="36" height="36" viewBox="0 0 36 36"
-       style="position:absolute; bottom:4px; left:50%; transform:translateX(-50%); display:none;
+       style="position:absolute; bottom:4px; left:50%; transform:translateX(-50%);
               pointer-events:none; z-index:100;">
     <circle cx="18" cy="18" r="15" fill="none" stroke="rgba(102,126,234,0.2)" stroke-width="3"/>
     <circle id="progress-arc" cx="18" cy="18" r="15" fill="none"

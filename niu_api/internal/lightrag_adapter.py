@@ -736,7 +736,7 @@ class LightRAGAdapter:
             edge_data = nx_graph.get_edge_data(src, tgt)
             return edge_data.get("keywords") == keywords
 
-    def get_graph_snapshot(self, limit: int = 200) -> Dict[str, Any]:
+    def get_graph_snapshot(self, limit: int = 2000) -> Dict[str, Any]:
         """Return all nodes and edges from LightRAG knowledge graph.
 
         Reads the NetworkX graph directly (same pattern as hub_entities,
