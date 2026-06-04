@@ -193,7 +193,7 @@ def _get_adapter():
 
 @router.get("/snapshot")
 def graph_snapshot(
-    limit: int = Query(default=200, ge=1, le=500),
+    limit: int = Query(default=2000, ge=1, le=5000),
     min_confidence: float = Query(default=0.0, ge=0.0, le=1.0),
 ):
     """Get full graph snapshot for visualization.

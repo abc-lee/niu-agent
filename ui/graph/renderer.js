@@ -297,7 +297,7 @@ async function loadGraphSnapshot() {
   hideEmpty();
 
   try {
-    const snapshot = await window.electronAPI.getGraphSnapshot(200, 0);
+    const snapshot = await window.electronAPI.getGraphSnapshot(2000, 0);
     currentData = { nodes: snapshot.nodes || [], edges: snapshot.edges || [] };
 
     if (currentData.nodes.length === 0) {
@@ -495,7 +495,7 @@ async function pollChangelog() {
     const refreshEvent = changes.find(c => c.type === 'snapshot_refresh');
     if (refreshEvent) {
       try {
-        const snapshot = await window.electronAPI.getGraphSnapshot(200, 0);
+        const snapshot = await window.electronAPI.getGraphSnapshot(2000, 0);
         const newNodes = snapshot.nodes || [];
         const newEdges = snapshot.edges || [];
         // Only replace currentData if snapshot has data.
