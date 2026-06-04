@@ -787,32 +787,3 @@ def graph_changelog(
     change_log = get_change_log()
     changes = change_log.get_changes(since=since or "", limit=limit)
     return {"changes": changes}
-
-
-@router.post("/test_ingest")
-def test_ingest(dir_path: str = "/tmp/niu_test_ingest3"):
-    """Test endpoint: trigger directory ingestion for pipeline status testing."""
-    import os
-
-    from niu_api.internal.lightrag_manager import call_async, fire_and_forget, get_lightrag
-
-    rag = get_lightrag()
-    if rag is None:
-        return {"error": "LightRAG not available"}
-
-    if not os.path.isdir(dir_path):
-        return {"error": f"Directory not found: {dir_path}"}
-
-    files = sorted(f for f in os.listdir(dir_path) if os.path.isfile(os.path.join(dir_path, f)))
-    if not files:
-        return {"error": "No files in directory"}
-
-    for fname in files:
-        fpath = os.path.join(dir_path, fname)
-        with open(fpath, "r") as f:
-            content = f.read()
-        call_async(rag.apipeline_enqueue_documents(content, file_paths=fpath), timeout=60)
-
-    fire_and_forget(rag.apipeline_process_enqueue_documents(), context="test-ingest")
-
-    return {"status": "started", "files": len(files), "dir": dir_path}

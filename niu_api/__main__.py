@@ -25,7 +25,6 @@ from niu_api.compat import router as compat_router
 from niu_api.injector import router as injector_router
 from niu_api.alerts_api import router as alerts_router
 from niu_api.kg_api import router as kg_router
-from tests.status_monitor import router as test_status_router
 from niu_api.brain_api import router as brain_router
 from niu_api.brain_region_api import router as brain_region_router
 from niu_api.notes_api import router as notes_router
@@ -380,9 +379,6 @@ app.include_router(http_log_router)  # LLM Proxy API (/llm/v1/*)
 # Mount scheduler router
 from niu_api.internal.scheduler import scheduler_router
 app.include_router(scheduler_router)
-
-# Test status monitor
-app.include_router(test_status_router)
 
 
 @app.get("/health")
