@@ -263,9 +263,31 @@ def pipeline_status():
     progress = 0
     msg = latest_message
 
-    if "Enqueued document processing pipeline stopped" in msg:
-        # 入库完成
+    if not busy:
+        # 入库未在进行中，进度为0
+        progress = 0
+    elif "Enqueued document processing pipeline stopped" in msg:
+        # 入库完成（busy可能还没来得及设为False）
         progress = 99
+    elif "Completed processing file" in msg:
+        # 文件处理完成：消息格式 "Completed processing file N/M: ..."
+        m3 = re.search(r"Completed processing file (\d+)/(\d+)", msg)
+        if m3:
+            file_cur = int(m3.group(1))
+            file_total = int(m3.group(2))
+            progress = int(file_cur / file_total * 95) if file_total > 0 else 95
+        else:
+            progress = 95
+    elif "Merging stage" in msg:
+        # 关系提取/合并阶段：消息格式 "Merging stage N/M"
+        m2 = re.search(r"Merging stage (\d+)/(\d+)", msg)
+        if m2:
+            stage_cur = int(m2.group(1))
+            stage_total = int(m2.group(2))
+            stage_pct = stage_cur / stage_total if stage_total > 0 else 0
+            progress = int(50 + stage_pct * 45)
+        else:
+            progress = int(50 + (cur_batch / batchs * 45)) if batchs > 0 else 50
     elif "Chunk" in msg and "extracted" in msg:
         # 实体提取阶段：从消息解析 "Chunk X of Y extracted ..."
         m = re.search(r"Chunk (\d+) of (\d+)", msg)
@@ -275,23 +297,31 @@ def pipeline_status():
             stage_pct = chunk_cur / chunk_total if chunk_total > 0 else 0
             progress = int(5 + stage_pct * 45)
         else:
-            progress = int(cur_batch / batchs * 50) if batchs > 0 else 5
-    elif "Merging stage" in msg:
-        # 关系提取/合并阶段：消息格式 "Merging stage N/M"
-        m2 = re.search(r"Merging stage (\d+)/(\d+)", msg)
-        if m2:
-            stage_cur = int(m2.group(1))
-            stage_total = int(m2.group(2))
-            stage_pct = stage_cur / stage_total if stage_total > 0 else 0
-            progress = int(50 + stage_pct * 49)
+            progress = int(5 + (cur_batch / batchs * 45)) if batchs > 0 else 5
+    elif "Extracting stage" in msg:
+        # 实体提取开始：消息格式 "Extracting stage N/M: ..."
+        m4 = re.search(r"Extracting stage (\d+)/(\d+)", msg)
+        if m4:
+            file_cur = int(m4.group(1))
+            file_total = int(m4.group(2))
+            progress = int(5 + (file_cur / file_total) * 45) if file_total > 0 else 5
         else:
-            progress = int(50 + (cur_batch / batchs * 49)) if batchs > 0 else 50
+            progress = 5
+    elif "Processing d-id:" in msg:
+        # 文档处理开始（在实体提取之前）
+        if batchs > 0:
+            progress = int(5 + (cur_batch / batchs) * 45)
+        else:
+            progress = 5
     elif "Processing" in msg and "document(s)" in msg:
         # 文档分块阶段（很快完成）：消息格式 "Processing N document(s)"
         progress = 3
     else:
-        # 回退：用 cur_batch/batchs，封顶 99%
-        progress = min(99, int(cur_batch / batchs * 100)) if batchs > 0 else 0
+        # 回退：只在 busy=True 且 batchs>0 时才计算
+        if busy and batchs > 0:
+            progress = min(99, int(cur_batch / batchs * 100))
+        else:
+            progress = 0
 
     # 硬性封顶：busy 时不显示 100%
     progress = min(progress, 99)
