@@ -115,6 +115,46 @@ func detectPython() string {
 	return ""
 }
 
+// initNiuDir ensures ~/.niu/ directory exists and copies template files if needed
+func initNiuDir(projectRoot string) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		slog.Error("Failed to get home directory", "error", err)
+		return
+	}
+
+	niuDir := filepath.Join(homeDir, ".niu")
+
+	// Create ~/.niu/ directory if it doesn't exist
+	if err := os.MkdirAll(niuDir, 0755); err != nil {
+		slog.Error("Failed to create ~/.niu directory", "error", err)
+		return
+	}
+
+	// Template files to copy if they don't exist in ~/.niu/
+	templateFiles := []string{"memory.json", "preferences.json"}
+	templateDir := filepath.Join(projectRoot, "memory")
+
+	for _, filename := range templateFiles {
+		dstPath := filepath.Join(niuDir, filename)
+		// Only copy if destination doesn't exist
+		if _, err := os.Stat(dstPath); err == nil {
+			continue
+		}
+		srcPath := filepath.Join(templateDir, filename)
+		srcData, err := os.ReadFile(srcPath)
+		if err != nil {
+			slog.Warn("Template file not found, skipping", "file", filename, "error", err)
+			continue
+		}
+		if err := os.WriteFile(dstPath, srcData, 0644); err != nil {
+			slog.Error("Failed to copy template file", "src", srcPath, "dst", dstPath, "error", err)
+			continue
+		}
+		slog.Info("Copied template file", "file", filename, "dst", dstPath)
+	}
+}
+
 // loadMemory loads user memory from ~/.niu/memory.json
 func loadMemory() map[string]any {
 	homeDir, err := os.UserHomeDir()
@@ -167,7 +207,7 @@ func formatMemoryForPrompt(memory map[string]any) string {
 
 	// Workspace
 	if workspace, ok := memory["workspace"].(map[string]any); ok {
-		if path, ok := workspace["path"].(string); ok && path != "" {
+		if path, ok := workspace["path"].(string); ok && path != "" && !strings.HasPrefix(path, "请询问") {
 			sb.WriteString("## 工作目录\n\n")
 			sb.WriteString(fmt.Sprintf("我的知识库存储在：%s\n\n", path))
 		}
@@ -238,24 +278,42 @@ func main() {
 	pythonPath := detectPython()
 	slog.Info("Using Python path", "path", pythonPath)
 
+	// Get project root (needed for template file paths)
+	// Primary: executable directory (works when running built binary from any cwd)
+	// Fallback: current working directory (supports `go run main.go` during development)
+	execPath, _ := os.Executable()
+	projectRoot := filepath.Dir(execPath)
+	memoryDir := filepath.Join(projectRoot, "memory")
+	if _, err := os.Stat(memoryDir); err != nil {
+		// exeDir doesn't contain memory/ — likely `go run` with temp build dir
+		cwd, _ := os.Getwd()
+		cwdMemoryDir := filepath.Join(cwd, "memory")
+		if _, err := os.Stat(cwdMemoryDir); err == nil {
+			slog.Info("memory/ not found in exeDir, using cwd as project root", "exeDir", projectRoot, "cwd", cwd)
+			projectRoot = cwd
+		} else {
+			slog.Warn("memory/ not found in exeDir or cwd, template copy will be skipped", "exeDir", projectRoot, "cwd", cwd)
+		}
+	}
+
+	// Initialize ~/.niu/ directory and copy template files if needed
+	initNiuDir(projectRoot)
+
 	// Load memory for injection (passed to Python API via environment)
 	memory := loadMemory()
 	_ = formatMemoryForPrompt(memory) // Memory injection handled by Python API
 
 	// Extract workspace.path from memory and set as WORKSPACE_PATH env var
 	// so all child processes (Python API, MCP servers) use the correct vectors.db path
+	// Skip placeholder values like "请询问用户指定工作目录" which are not real paths
 	var workspacePath string
 	if memory != nil {
 		if ws, ok := memory["workspace"].(map[string]any); ok {
-			if path, ok := ws["path"].(string); ok && path != "" {
+			if path, ok := ws["path"].(string); ok && path != "" && !strings.HasPrefix(path, "请询问") {
 				workspacePath = path
 			}
 		}
 	}
-
-	// Get project root
-	execPath, _ := os.Executable()
-	projectRoot := filepath.Dir(execPath)
 
 	// Start Python API server as background process
 	slog.Info("Starting Python API server...")
