@@ -353,7 +353,24 @@ func main() {
 		go func() {
 			scanner := bufio.NewScanner(stderr)
 			for scanner.Scan() {
-				slog.Error("niu_api", "error", scanner.Text())
+				line := scanner.Text()
+				// Filter tqdm progress bar lines (Batches:, \r lines)
+				if strings.HasPrefix(line, "Batches:") || strings.HasPrefix(line, "\r") {
+					continue
+				}
+				// Skip lines that are only ANSI escape sequences (tqdm control chars)
+				stripped := strings.ReplaceAll(line, "\x1b", "")
+				if len(stripped) == 0 {
+					continue
+				}
+				// Route log level based on Python logger markers
+				if strings.Contains(line, "| INFO") || strings.Contains(line, "| DEBUG") {
+					slog.Info("niu_api", "stderr", line)
+				} else if strings.Contains(line, "| WARNING") || strings.Contains(line, "| WARN") {
+					slog.Warn("niu_api", "stderr", line)
+				} else {
+					slog.Error("niu_api", "stderr", line)
+				}
 			}
 		}()
 	}
