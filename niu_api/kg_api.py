@@ -223,7 +223,8 @@ def graph_stats():
     from niu_api.internal.lightrag_manager import get_lightrag_status
 
     return get_lightrag_status()
-_last_pipeline_progress = 0
+_max_pipeline_progress = 0
+_last_file_progress = 0
 
 
 @router.get("/pipeline_status")
@@ -235,6 +236,8 @@ def pipeline_status():
     a graphical progress indicator in the spirit window.
     """
     from niu_api.internal.lightrag_manager import get_lightrag
+
+    global _max_pipeline_progress, _last_file_progress
 
     rag = get_lightrag()
     if rag is None:
@@ -259,81 +262,78 @@ def pipeline_status():
     job_name = str(ps.get("job_name", ""))
     latest_message = str(ps.get("latest_message", ""))
 
-    # 进度计算：基于 latest_message 判断入库阶段
-    # 入库流程：文档分块(3%) → 实体提取(5~50%) → Phase1(55%) → 实体合并(55~70%)
-    #         → Phase2(70%) → 关系合并(70~90%) → Phase3/完成(90~95%) → 结束(99%)
-    progress = 0
+    # 进度计算：文件级粒度 + 文件内部进度
+    # 总进度 = (cur_batch-1)/batchs * 100 + 文件内部进度/batchs * 100
+    # 进度只增不减
     msg = latest_message
 
     if not busy:
-        _last_pipeline_progress = 0
+        _max_pipeline_progress = 0
+        _last_file_progress = 0
         progress = 0
-    elif "Enqueued document processing pipeline stopped" in msg:
-        progress = 99
-    elif "Completed processing file" in msg:
-        m3 = re.search(r"Completed processing file (\d+)/(\d+)", msg)
-        if m3:
-            file_cur = int(m3.group(1))
-            file_total = int(m3.group(2))
-            progress = int(file_cur / file_total * 95) if file_total > 0 else 95
+    elif batchs > 0:
+        file_base = (min(cur_batch, batchs) - 1) / batchs * 100
+        # 当前文件内部进度
+        if "Enqueued document processing pipeline stopped" in msg:
+            file_progress = 95
+        elif "Completed processing file" in msg:
+            file_progress = 100
+        elif "Completed merging" in msg:
+            file_progress = 95
+        elif "Phase 3" in msg:
+            file_progress = 90
+        elif "Merged:" in msg and "~" in msg:
+            file_progress = 85
+        elif "LLMmrg:" in msg and "~" in msg:
+            file_progress = 75
+        elif "Phase 2" in msg:
+            file_progress = 70
+        elif "Merged:" in msg:
+            file_progress = 68
+        elif "LLMmrg:" in msg:
+            file_progress = 60
+        elif "Phase 1" in msg:
+            file_progress = 55
+        elif "Merging stage" in msg:
+            m2 = re.search(r"Merging stage (\d+)/(\d+)", msg)
+            if m2:
+                stage_pct = int(m2.group(1)) / int(m2.group(2)) if int(m2.group(2)) > 0 else 0
+                file_progress = 50 + stage_pct * 5
+            else:
+                file_progress = 50
+        elif "Chunk" in msg and "extracted" in msg:
+            m = re.search(r"Chunk (\d+) of (\d+)", msg)
+            if m:
+                chunk_pct = int(m.group(1)) / int(m.group(2)) if int(m.group(2)) > 0 else 0
+                file_progress = 5 + chunk_pct * 45
+            else:
+                file_progress = 25
+        elif "Extracting stage" in msg:
+            m4 = re.search(r"Extracting stage (\d+)/(\d+)", msg)
+            if m4:
+                file_pct = int(m4.group(1)) / int(m4.group(2)) if int(m4.group(2)) > 0 else 0
+                file_progress = 5 + file_pct * 45
+            else:
+                file_progress = 5
+        elif "Processing d-id:" in msg:
+            file_progress = 5
+        elif "Processing" in msg and "document(s)" in msg:
+            file_progress = 3
         else:
-            progress = 95
-    elif "Completed merging" in msg:
-        progress = 95
-    elif "Phase 3" in msg:
-        progress = 90
-    elif "Merged:" in msg and "~" in msg:
-        # 关系合并完成消息："Merged: `A`~`B` | N+M"
-        progress = 88
-    elif "LLMmrg:" in msg and "~" in msg:
-        # 关系合并中："LLMmrg: `A`~`B` | N+M"
-        progress = 75
-    elif "Phase 2" in msg:
-        progress = 70
-    elif "Merged:" in msg:
-        # 实体合并完成消息："Merged: `实体名` | N+M"
-        progress = 68
-    elif "LLMmrg:" in msg:
-        # 实体合并中："LLMmrg: `实体名` | N+M"
-        progress = 60
-    elif "Phase 1" in msg:
-        progress = 55
-    elif "Merging stage" in msg:
-        m2 = re.search(r"Merging stage (\d+)/(\d+)", msg)
-        if m2:
-            stage_cur = int(m2.group(1))
-            stage_total = int(m2.group(2))
-            stage_pct = stage_cur / stage_total if stage_total > 0 else 0
-            progress = int(50 + stage_pct * 5)
-        else:
-            progress = 50
-    elif "Chunk" in msg and "extracted" in msg:
-        m = re.search(r"Chunk (\d+) of (\d+)", msg)
-        if m:
-            chunk_cur = int(m.group(1))
-            chunk_total = int(m.group(2))
-            stage_pct = chunk_cur / chunk_total if chunk_total > 0 else 0
-            progress = int(5 + stage_pct * 45)
-        else:
-            progress = 25
-    elif "Extracting stage" in msg:
-        m4 = re.search(r"Extracting stage (\d+)/(\d+)", msg)
-        if m4:
-            file_cur = int(m4.group(1))
-            file_total = int(m4.group(2))
-            progress = int(5 + (file_cur / file_total) * 45) if file_total > 0 else 5
-        else:
-            progress = 5
-    elif "Processing d-id:" in msg:
-        progress = 5
-    elif "Processing" in msg and "document(s)" in msg:
-        progress = 3
-    else:
-        # 回退：busy=True 时保持上一次进度，避免跳跃
-        progress = _last_pipeline_progress if busy else 0
+            file_progress = _last_file_progress if busy else 0
 
-    if progress > 0:
-        _last_pipeline_progress = progress
+        progress = int(file_base + file_progress / batchs)
+        # 只增不减
+        if progress < _max_pipeline_progress:
+            progress = _max_pipeline_progress
+        else:
+            _max_pipeline_progress = progress
+        if file_progress > 0:
+            _last_file_progress = file_progress
+    else:
+        # batchs=0 但 busy=True：入库刚开始还没分配文件
+        progress = 1
+
     progress = min(progress, 99)
 
     return {
