@@ -188,8 +188,8 @@ def _get_adapter():
 
 # ============== Endpoints ==============
 # NOTE: All endpoints use `def` (not `async def`) because LightRAGAdapter.query()
-# and call_async() are blocking.  FastAPI runs regular def endpoints in a thread
-# pool, so they won't block the ASGI event loop.
+# and _shared_dicts reads are blocking.  FastAPI runs regular def endpoints in a
+# thread pool, so they won't block the ASGI event loop.
 
 
 @router.get("/snapshot")
@@ -244,15 +244,12 @@ def pipeline_status():
         return {"busy": False, "progress": 0, "message": "LightRAG not available"}
 
     try:
-        from lightrag.kg.shared_storage import get_namespace_data
+        from lightrag.kg.shared_storage import _shared_dicts, get_final_namespace
 
-        # pipeline_status is async; run in LightRAG's event loop
-        from niu_api.internal.lightrag_manager import call_async
-
-        ps = call_async(
-            get_namespace_data("pipeline_status", workspace=rag.workspace),
-            timeout=5,
-        )
+        ps_key = get_final_namespace("pipeline_status", rag.workspace)
+        ps = _shared_dicts.get(ps_key)
+        if ps is None:
+            return {"busy": False, "progress": 0, "message": "pipeline_status not initialized"}
     except Exception as e:
         return {"busy": False, "progress": 0, "message": f"Error: {e}"}
 
@@ -266,6 +263,41 @@ def pipeline_status():
     # 总进度 = (cur_batch-1)/batchs * 100 + 文件内部进度/batchs * 100
     # 进度只增不减
     msg = latest_message
+
+    if not busy:
+        # 补充检查：doc_status 中是否有未完成的文档
+        try:
+            from lightrag.kg.shared_storage import _shared_dicts, get_final_namespace
+
+            ds_key = get_final_namespace("doc_status", rag.workspace)
+            ds = _shared_dicts.get(ds_key)
+            if ds:
+                pending = 0
+                processing = 0
+                completed = 0
+                for v in ds.values():
+                    if isinstance(v, dict):
+                        st = v.get("status", "")
+                    else:
+                        st = getattr(v, "status", "")
+                    st = str(st) if st else ""
+                    if st in ("pending", "processing"):
+                        if st == "pending":
+                            pending += 1
+                        else:
+                            processing += 1
+                    elif st in ("completed", "processed", "preprocessed", "failed"):
+                        completed += 1
+                total = pending + processing + completed
+                if pending > 0 or processing > 0:
+                    busy = True
+                    if batchs == 0 and total > 0:
+                        batchs = total
+                        cur_batch = completed
+                    if not latest_message:
+                        latest_message = f"Processing {processing}/{total} document(s)..."
+        except Exception:
+            pass
 
     if not busy:
         _max_pipeline_progress = 0
