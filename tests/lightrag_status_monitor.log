@@ -1,0 +1,12 @@
+=== LightRAG Status Monitor started 2026-06-04 23:43:45.445310 ===
+Polling every 3s
+Workspace: REDACTED_USER_PATH/.niu/lightrag
+
+2026-06-04 23:43:45 | ERROR | AttributeError: 'NoneType' object has no attribute 'get'
+2026-06-04 23:43:48 | ERROR | AttributeError: 'NoneType' object has no attribute 'get'
+2026-06-04 23:43:51 | ERROR | AttributeError: 'NoneType' object has no attribute 'get'
+2026-06-04 23:43:54 | ERROR | AttributeError: 'NoneType' object has no attribute 'get'
+2026-06-04 23:43:57 | ERROR | AttributeError: 'NoneType' object has no attribute 'get'
+2026-06-04 23:44:00 | ERROR | AttributeError: 'NoneType' object has no attribute 'get'
+2026-06-04 23:44:03 | ERROR | AttributeError: 'NoneType' object has no attribute 'get'
+2026-06-04 23:44:06 | ERROR | AttributeError: 'NoneType' object has no attribute 'get'
