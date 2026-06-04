@@ -7,6 +7,7 @@ Response format: all graph endpoints return structured {nodes: [...], edges: [..
 to match the frontend force-graph renderer expectations.
 """
 
+import re
 import threading
 from typing import Dict, List, Literal, Optional
 
@@ -257,7 +258,43 @@ def pipeline_status():
     job_name = str(ps.get("job_name", ""))
     latest_message = str(ps.get("latest_message", ""))
 
-    progress = int(cur_batch / batchs * 100) if batchs > 0 else 0
+    # 进度计算：结合 latest_message 判断阶段，给出整体进度估算
+    # 入库三阶段：文档分块(~5%) → 实体提取(~45%) → 关系提取(~50%)
+    progress = 0
+    msg = latest_message
+
+    if "Enqueued document processing pipeline stopped" in msg:
+        # 入库完成
+        progress = 99
+    elif "Chunk" in msg and "extracted" in msg:
+        # 实体提取阶段：从消息解析 "Chunk X of Y extracted ..."
+        m = re.search(r"Chunk (\d+) of (\d+)", msg)
+        if m:
+            chunk_cur = int(m.group(1))
+            chunk_total = int(m.group(2))
+            stage_pct = chunk_cur / chunk_total if chunk_total > 0 else 0
+            progress = int(5 + stage_pct * 45)
+        else:
+            progress = int(cur_batch / batchs * 50) if batchs > 0 else 5
+    elif "Merging stage" in msg:
+        # 关系提取/合并阶段：消息格式 "Merging stage N/M"
+        m2 = re.search(r"Merging stage (\d+)/(\d+)", msg)
+        if m2:
+            stage_cur = int(m2.group(1))
+            stage_total = int(m2.group(2))
+            stage_pct = stage_cur / stage_total if stage_total > 0 else 0
+            progress = int(50 + stage_pct * 49)
+        else:
+            progress = int(50 + (cur_batch / batchs * 49)) if batchs > 0 else 50
+    elif "Processing" in msg and "document(s)" in msg:
+        # 文档分块阶段（很快完成）：消息格式 "Processing N document(s)"
+        progress = 3
+    else:
+        # 回退：用 cur_batch/batchs，封顶 99%
+        progress = min(99, int(cur_batch / batchs * 100)) if batchs > 0 else 0
+
+    # 硬性封顶：busy 时不显示 100%
+    progress = min(progress, 99)
 
     return {
         "busy": busy,
