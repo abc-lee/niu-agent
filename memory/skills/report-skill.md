@@ -1,6 +1,6 @@
 ---
 name: report-skill
-description: Use when user asks to generate work reports such as weekly report, monthly report, quarterly report, annual report, performance review, or custom time range summary
+description: Use when writing or organizing user's daily work journal, or generating reports (weekly/monthly/quarterly/annual report, performance review, or custom time range summary). Must be read before any journal write or report generation to ensure correct format and time rules.
 ---
 
 # 报告生成技能
@@ -16,10 +16,17 @@ description: Use when user asks to generate work reports such as weekly report, 
 | 年报 | 本年度 | 用户主动触发 |
 | 自定义 | 用户指定范围 | 用户主动触发 |
 
+## 日志编写规则
+
+1. **时间必须使用事件发生的真实时间**，而非日志整理时的当前时间。每条消息都带有时间戳，从中推断事件的真实发生时间。
+2. 如果无法确定精确时间，使用大致时间段（如"上午"、"下午"、"晚间"），**绝不使用整理时间作为事件时间**。
+3. 日志条目格式：`- HH:MM 一句话概括 | 项目:XXX | 类型:开发/会议/决策/修复/调研/其他 | 状态:完成/进行中/搁置`
+4. 同一天的多条条目按时间先后排列。
+
 ## 报告生成流程
 
 1. 确定时间范围（起止日期）
-2. 用 `grep` 定位起止日期在 `{workspace}/journal.md` 中的行号
+2. 用 `grep` 定位起止日期在系统提示词「## 工作目录」对应路径下的 `journal.md` 中的行号
 3. 用 `read(offset=N, limit=M)` 读取该日期范围内的内容
 4. LLM 聚合总结：
    - 按项目分组
