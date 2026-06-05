@@ -223,21 +223,16 @@ def graph_stats():
     from niu_api.internal.lightrag_manager import get_lightrag_status
 
     return get_lightrag_status()
-_max_pipeline_progress = 0
-_last_file_progress = 0
 
 
 @router.get("/pipeline_status")
 def pipeline_status():
     """Get LightRAG ingestion pipeline progress.
 
-    Returns busy flag, current batch / total batches, progress percentage,
-    and the latest pipeline message. Frontend polls this endpoint to show
-    a graphical progress indicator in the spirit window.
+    Returns busy flag, progress percentage, and the latest pipeline message.
+    Frontend polls this endpoint to show a graphical progress indicator.
     """
     from niu_api.internal.lightrag_manager import get_lightrag
-
-    global _max_pipeline_progress, _last_file_progress
 
     rag = get_lightrag()
     if rag is None:
@@ -258,114 +253,107 @@ def pipeline_status():
     batchs = int(ps.get("batchs", 0))
     job_name = str(ps.get("job_name", ""))
     latest_message = str(ps.get("latest_message", ""))
-
-    # 进度计算：文件级粒度 + 文件内部进度
-    # 总进度 = (cur_batch-1)/batchs * 100 + 文件内部进度/batchs * 100
-    # 进度只增不减
     msg = latest_message
 
-    if not busy:
-        # 补充检查：doc_status 中是否有未完成的文档
-        try:
-            from lightrag.kg.shared_storage import _shared_dicts, get_final_namespace
+    # 从 doc_status 获取当前活跃文档数
+    # 统计所有状态，用于计算当前批次的进度
+    active_pending = 0
+    active_processing = 0
+    active_completed = 0  # 当前批次已完成的（processed/preprocessed）
+    active_failed = 0     # 当前批次失败的
 
-            ds_key = get_final_namespace("doc_status", rag.workspace)
-            ds = _shared_dicts.get(ds_key)
-            if ds:
-                pending = 0
-                processing = 0
-                completed = 0
-                for v in ds.values():
-                    if isinstance(v, dict):
-                        st = v.get("status", "")
-                    else:
-                        st = getattr(v, "status", "")
-                    st = str(st) if st else ""
-                    if st in ("pending", "processing"):
-                        if st == "pending":
-                            pending += 1
-                        else:
-                            processing += 1
-                    elif st in ("completed", "processed", "preprocessed", "failed"):
-                        completed += 1
-                total = pending + processing + completed
-                if pending > 0 or processing > 0:
-                    busy = True
-                    _max_pipeline_progress = 0
-                    _last_file_progress = 0
-                    if batchs == 0 and total > 0:
-                        batchs = total
-                        cur_batch = completed
-                    if not latest_message:
-                        latest_message = f"Processing {processing}/{total} document(s)..."
-        except Exception:
-            pass
+    try:
+        from lightrag.kg.shared_storage import _shared_dicts, get_final_namespace
+
+        ds_key = get_final_namespace("doc_status", rag.workspace)
+        ds = _shared_dicts.get(ds_key)
+        if ds:
+            for v in ds.values():
+                if isinstance(v, dict):
+                    st = v.get("status", "")
+                else:
+                    st = getattr(v, "status", "")
+                st = str(st) if st else ""
+                if st == "pending":
+                    active_pending += 1
+                elif st == "processing":
+                    active_processing += 1
+                elif st in ("processed", "preprocessed"):
+                    active_completed += 1
+                elif st == "failed":
+                    active_failed += 1
+    except Exception:
+        pass
+
+    # 当前批次总数 = pipeline 正在处理的 + 排队等待的（不含历史已完成）
+    # 用 pending + processing + completed 估算（不包含 failed，因为 failed 会被重试且用户不知道）
+    active_total = active_pending + active_processing
+
+    # 判断是否入库中
+    if not busy and (active_pending > 0 or active_processing > 0):
+        busy = True
 
     if not busy:
-        _max_pipeline_progress = 0
-        _last_file_progress = 0
         progress = 0
-    elif batchs > 0:
-        file_base = (min(cur_batch, batchs) - 1) / batchs * 100
-        # 当前文件内部进度
-        if "Enqueued document processing pipeline stopped" in msg:
-            file_progress = 95
-        elif "Completed processing file" in msg:
+    elif active_total > 0:
+        # 文档级基础进度：已完成文档在当前活跃文档中的占比
+        # 但 active_total 只包含 pending+processing，需要加上已完成的
+        batch_total = active_total + active_completed
+        doc_base = active_completed / batch_total * 100 if batch_total > 0 else 0
+
+        # 文件内进度（从 latest_message 解析）
+        if "Completed processing file" in msg:
             file_progress = 100
         elif "Completed merging" in msg:
-            file_progress = 95
+            file_progress = 98
         elif "Phase 3" in msg:
-            file_progress = 90
+            file_progress = 95
         elif "Merged:" in msg and "~" in msg:
-            file_progress = 85
+            file_progress = 92
         elif "LLMmrg:" in msg and "~" in msg:
-            file_progress = 75
+            file_progress = 88
         elif "Phase 2" in msg:
-            file_progress = 70
+            file_progress = 80
         elif "Merged:" in msg:
-            file_progress = 68
+            file_progress = 78
         elif "LLMmrg:" in msg:
-            file_progress = 60
+            file_progress = 74
         elif "Phase 1" in msg:
-            file_progress = 55
+            file_progress = 72
         elif "Merging stage" in msg:
             m2 = re.search(r"Merging stage (\d+)/(\d+)", msg)
             if m2:
                 stage_pct = int(m2.group(1)) / int(m2.group(2)) if int(m2.group(2)) > 0 else 0
-                file_progress = 50 + stage_pct * 5
+                file_progress = 70 + stage_pct * 2
             else:
-                file_progress = 50
+                file_progress = 70
         elif "Chunk" in msg and "extracted" in msg:
             m = re.search(r"Chunk (\d+) of (\d+)", msg)
             if m:
                 chunk_pct = int(m.group(1)) / int(m.group(2)) if int(m.group(2)) > 0 else 0
-                file_progress = 5 + chunk_pct * 45
+                file_progress = chunk_pct * 70
             else:
-                file_progress = 25
+                file_progress = 35
         elif "Extracting stage" in msg:
             m4 = re.search(r"Extracting stage (\d+)/(\d+)", msg)
             if m4:
                 file_pct = int(m4.group(1)) / int(m4.group(2)) if int(m4.group(2)) > 0 else 0
-                file_progress = 5 + file_pct * 45
+                file_progress = file_pct * 70
             else:
                 file_progress = 5
         elif "Processing d-id:" in msg:
-            file_progress = 5
+            file_progress = 1
         elif "Processing" in msg and "document(s)" in msg:
-            file_progress = 3
+            file_progress = 0
         else:
-            file_progress = _last_file_progress if busy else 0
+            file_progress = 0
 
-        progress = int(file_base + file_progress / batchs)
-        # 只增不减
-        if progress < _max_pipeline_progress:
-            progress = _max_pipeline_progress
-        else:
-            _max_pipeline_progress = progress
-        if file_progress > 0:
-            _last_file_progress = file_progress
+        # 总进度 = 文档级基础 + 当前文件贡献
+        progress = int(doc_base + file_progress / batch_total)
+    elif batchs > 0:
+        # fallback: pipeline busy 但 doc_status 还没更新（刚启动的瞬间）
+        progress = int(cur_batch / batchs * 99) if batchs > 0 else 1
     else:
-        # batchs=0 但 busy=True：入库刚开始还没分配文件
         progress = 1
 
     progress = min(progress, 99)
