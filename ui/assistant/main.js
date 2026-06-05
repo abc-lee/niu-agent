@@ -1167,6 +1167,14 @@ function startMessageEventStream() {
               if (chatWindow && !chatWindow.isDestroyed()) {
                 chatWindow.webContents.send('tool-status', event);
               }
+            } else if (event.type === 'ingest-started' || event.type === 'ingest-completed') {
+              // 转发入库进度事件到 spirit 和 chat 窗口
+              if (spiritWindow && !spiritWindow.isDestroyed()) {
+                spiritWindow.webContents.send(event.type);
+              }
+              if (chatWindow && !chatWindow.isDestroyed()) {
+                chatWindow.webContents.send(event.type);
+              }
             }
           } catch (e) {
             // 忽略解析错误（可能是心跳等非 JSON 行）

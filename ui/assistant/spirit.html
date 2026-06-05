@@ -601,6 +601,7 @@
       const offset = CIRCUMFERENCE * (1 - clamped / 100);
       progressArc.setAttribute('stroke-dashoffset', offset);
       progressText.textContent = clamped + '%';
+      progressRing.style.display = '';  // Clear inline style set by hideProgressRing
       progressRing.classList.add('visible');
     }
 
@@ -693,6 +694,18 @@
 
     // 启动入库进度轮询
     startProgressPolling();
+
+    // 监听入库进度SSE事件（由后端pipeline watcher推送）
+    // ingest-started：立即轮询一次以快速显示进度，无需等3秒间隔
+    // ingest-completed：触发最终轮询以清除进度环
+    window.electronAPI.onIngestStarted && window.electronAPI.onIngestStarted(() => {
+      console.log('[Spirit] ingest-started SSE event received');
+      pollPipelineStatus();
+    });
+    window.electronAPI.onIngestCompleted && window.electronAPI.onIngestCompleted(() => {
+      console.log('[Spirit] ingest-completed SSE event received');
+      pollPipelineStatus();
+    });
 
     // 窗口关闭时停止轮询，避免后台空转
     window.addEventListener('beforeunload', stopProgressPolling);

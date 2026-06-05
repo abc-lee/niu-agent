@@ -53,7 +53,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   
   // 获取历史消息
   getHistory: (limit) => ipcRenderer.invoke('get-history', limit),
-  
+
   // 获取待显示消息（打开聊天窗口时）
-  getPendingMessages: () => ipcRenderer.invoke('get-pending-messages')
+  getPendingMessages: () => ipcRenderer.invoke('get-pending-messages'),
+
+  // 接收入库开始通知（SSE推送，立即触发进度轮询）
+  onIngestStarted: (callback) => ipcRenderer.on('ingest-started', callback),
+
+  // 接收入库完成通知（SSE推送，触发最终进度轮询）
+  onIngestCompleted: (callback) => ipcRenderer.on('ingest-completed', callback),
 });
