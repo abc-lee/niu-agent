@@ -293,8 +293,9 @@ def pipeline_status():
                     busy = True
                     _max_pipeline_progress = 0
                     _last_file_progress = 0
-                    batchs = total
-                    cur_batch = completed
+                    if batchs == 0 and total > 0:
+                        batchs = total
+                        cur_batch = completed
                     if not latest_message:
                         latest_message = f"Processing {processing}/{total} document(s)..."
         except Exception:
