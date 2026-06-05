@@ -352,7 +352,7 @@ def pipeline_status():
         progress = int(doc_base + file_progress / batch_total)
     elif batchs > 0:
         # fallback: pipeline busy 但 doc_status 还没更新（刚启动的瞬间）
-        progress = int(cur_batch / batchs * 99) if batchs > 0 else 1
+        progress = 1
     else:
         progress = 1
 
