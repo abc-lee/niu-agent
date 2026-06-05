@@ -306,53 +306,51 @@ def pipeline_status():
         _last_file_progress = 0
         progress = 0
     elif batchs > 0:
-        file_base = (min(cur_batch, batchs) - 1) / batchs * 100
+        file_base = (min(cur_batch, batchs) - 1) / batchs * 100 if cur_batch > 0 else 0
         # 当前文件内部进度
-        if "Enqueued document processing pipeline stopped" in msg:
-            file_progress = 95
-        elif "Completed processing file" in msg:
+        if "Completed processing file" in msg:
             file_progress = 100
         elif "Completed merging" in msg:
-            file_progress = 95
+            file_progress = 98
         elif "Phase 3" in msg:
-            file_progress = 90
-        elif "Merged:" in msg and "~" in msg:
-            file_progress = 85
-        elif "LLMmrg:" in msg and "~" in msg:
-            file_progress = 75
+            file_progress = 95
+        elif "Merged:" in msg and "~" in msg:  # 关系合并(无LLM)
+            file_progress = 92
+        elif "LLMmrg:" in msg and "~" in msg:  # 关系合并(有LLM)
+            file_progress = 88
         elif "Phase 2" in msg:
-            file_progress = 70
-        elif "Merged:" in msg:
-            file_progress = 68
-        elif "LLMmrg:" in msg:
-            file_progress = 60
+            file_progress = 80
+        elif "Merged:" in msg:  # 实体合并(无LLM)
+            file_progress = 78
+        elif "LLMmrg:" in msg:  # 实体合并(有LLM)
+            file_progress = 74
         elif "Phase 1" in msg:
-            file_progress = 55
+            file_progress = 72
         elif "Merging stage" in msg:
             m2 = re.search(r"Merging stage (\d+)/(\d+)", msg)
             if m2:
                 stage_pct = int(m2.group(1)) / int(m2.group(2)) if int(m2.group(2)) > 0 else 0
-                file_progress = 50 + stage_pct * 5
+                file_progress = 70 + stage_pct * 2
             else:
-                file_progress = 50
+                file_progress = 70
         elif "Chunk" in msg and "extracted" in msg:
             m = re.search(r"Chunk (\d+) of (\d+)", msg)
             if m:
                 chunk_pct = int(m.group(1)) / int(m.group(2)) if int(m.group(2)) > 0 else 0
-                file_progress = 5 + chunk_pct * 45
+                file_progress = chunk_pct * 70
             else:
-                file_progress = 25
+                file_progress = 35
         elif "Extracting stage" in msg:
             m4 = re.search(r"Extracting stage (\d+)/(\d+)", msg)
             if m4:
                 file_pct = int(m4.group(1)) / int(m4.group(2)) if int(m4.group(2)) > 0 else 0
-                file_progress = 5 + file_pct * 45
+                file_progress = file_pct * 70
             else:
                 file_progress = 5
         elif "Processing d-id:" in msg:
-            file_progress = 5
+            file_progress = 1
         elif "Processing" in msg and "document(s)" in msg:
-            file_progress = 3
+            file_progress = 0
         else:
             file_progress = _last_file_progress if busy else 0
 
