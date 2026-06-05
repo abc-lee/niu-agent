@@ -223,8 +223,6 @@ def graph_stats():
     from niu_api.internal.lightrag_manager import get_lightrag_status
 
     return get_lightrag_status()
-_max_pipeline_progress = 0
-_last_file_progress = 0
 
 
 @router.get("/pipeline_status")
@@ -237,16 +235,13 @@ def pipeline_status():
     """
     from niu_api.internal.lightrag_manager import get_lightrag
 
-    global _max_pipeline_progress, _last_file_progress
-
     rag = get_lightrag()
     if rag is None:
         return {"busy": False, "progress": 0, "message": "LightRAG not available",
                 "debug_info": {"ps_busy_raw": False, "ps_cur_batch_raw": 0, "ps_batchs_raw": 0,
                                "ps_msg_raw": "", "doc_status_triggered": False,
                                "doc_pending": 0, "doc_processing": 0, "doc_completed": 0,
-                               "doc_total": 0, "file_base": 0, "file_progress": 0,
-                               "_max_pipeline_progress": 0}}
+                               "doc_total": 0, "file_base": 0, "file_progress": 0}}
 
     try:
         from lightrag.kg.shared_storage import _shared_dicts, get_final_namespace
@@ -258,15 +253,13 @@ def pipeline_status():
                     "debug_info": {"ps_busy_raw": False, "ps_cur_batch_raw": 0, "ps_batchs_raw": 0,
                                    "ps_msg_raw": "", "doc_status_triggered": False,
                                    "doc_pending": 0, "doc_processing": 0, "doc_completed": 0,
-                                   "doc_total": 0, "file_base": 0, "file_progress": 0,
-                                   "_max_pipeline_progress": 0}}
+                                   "doc_total": 0, "file_base": 0, "file_progress": 0}}
     except Exception as e:
         return {"busy": False, "progress": 0, "message": f"Error: {e}",
                 "debug_info": {"ps_busy_raw": False, "ps_cur_batch_raw": 0, "ps_batchs_raw": 0,
                                "ps_msg_raw": "", "doc_status_triggered": False,
                                "doc_pending": 0, "doc_processing": 0, "doc_completed": 0,
-                               "doc_total": 0, "file_base": 0, "file_progress": 0,
-                               "_max_pipeline_progress": 0}}
+                               "doc_total": 0, "file_base": 0, "file_progress": 0}}
 
     busy = bool(ps.get("busy", False))
     cur_batch = int(ps.get("cur_batch", 0))
