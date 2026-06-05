@@ -7,7 +7,6 @@ Response format: all graph endpoints return structured {nodes: [...], edges: [..
 to match the frontend force-graph renderer expectations.
 """
 
-import re
 import threading
 from typing import Dict, List, Literal, Optional
 
@@ -253,109 +252,19 @@ def pipeline_status():
     batchs = int(ps.get("batchs", 0))
     job_name = str(ps.get("job_name", ""))
     latest_message = str(ps.get("latest_message", ""))
-    msg = latest_message
 
-    # 从 doc_status 获取当前活跃文档数
-    # 统计所有状态，用于计算当前批次的进度
-    active_pending = 0
-    active_processing = 0
-    active_completed = 0  # 当前批次已完成的（processed/preprocessed）
-    active_failed = 0     # 当前批次失败的
-
-    try:
-        from lightrag.kg.shared_storage import _shared_dicts, get_final_namespace
-
-        ds_key = get_final_namespace("doc_status", rag.workspace)
-        ds = _shared_dicts.get(ds_key)
-        if ds:
-            for v in ds.values():
-                if isinstance(v, dict):
-                    st = v.get("status", "")
-                else:
-                    st = getattr(v, "status", "")
-                st = str(st) if st else ""
-                if st == "pending":
-                    active_pending += 1
-                elif st == "processing":
-                    active_processing += 1
-                elif st in ("processed", "preprocessed"):
-                    active_completed += 1
-                elif st == "failed":
-                    active_failed += 1
-    except Exception:
-        pass
-
-    # 当前批次总数 = pipeline 正在处理的 + 排队等待的（不含历史已完成）
-    # 用 pending + processing + completed 估算（不包含 failed，因为 failed 会被重试且用户不知道）
-    active_total = active_pending + active_processing
-
-    # 判断是否入库中
-    if not busy and (active_pending > 0 or active_processing > 0):
-        busy = True
-
+    # Progress is computed purely from pipeline_status cur_batch/batchs.
+    # doc_status scanning is intentionally avoided — it includes ALL historical
+    # documents, inflating progress from the start.
     if not busy:
         progress = 0
-    elif active_total > 0:
-        # 文档级基础进度：已完成文档在当前活跃文档中的占比
-        # 但 active_total 只包含 pending+processing，需要加上已完成的
-        batch_total = active_total + active_completed
-        doc_base = active_completed / batch_total * 100 if batch_total > 0 else 0
-
-        # 文件内进度（从 latest_message 解析）
-        if "Completed processing file" in msg:
-            file_progress = 100
-        elif "Completed merging" in msg:
-            file_progress = 98
-        elif "Phase 3" in msg:
-            file_progress = 95
-        elif "Merged:" in msg and "~" in msg:
-            file_progress = 92
-        elif "LLMmrg:" in msg and "~" in msg:
-            file_progress = 88
-        elif "Phase 2" in msg:
-            file_progress = 80
-        elif "Merged:" in msg:
-            file_progress = 78
-        elif "LLMmrg:" in msg:
-            file_progress = 74
-        elif "Phase 1" in msg:
-            file_progress = 72
-        elif "Merging stage" in msg:
-            m2 = re.search(r"Merging stage (\d+)/(\d+)", msg)
-            if m2:
-                stage_pct = int(m2.group(1)) / int(m2.group(2)) if int(m2.group(2)) > 0 else 0
-                file_progress = 70 + stage_pct * 2
-            else:
-                file_progress = 70
-        elif "Chunk" in msg and "extracted" in msg:
-            m = re.search(r"Chunk (\d+) of (\d+)", msg)
-            if m:
-                chunk_pct = int(m.group(1)) / int(m.group(2)) if int(m.group(2)) > 0 else 0
-                file_progress = chunk_pct * 70
-            else:
-                file_progress = 35
-        elif "Extracting stage" in msg:
-            m4 = re.search(r"Extracting stage (\d+)/(\d+)", msg)
-            if m4:
-                file_pct = int(m4.group(1)) / int(m4.group(2)) if int(m4.group(2)) > 0 else 0
-                file_progress = file_pct * 70
-            else:
-                file_progress = 5
-        elif "Processing d-id:" in msg:
-            file_progress = 1
-        elif "Processing" in msg and "document(s)" in msg:
-            file_progress = 0
-        else:
-            file_progress = 0
-
-        # 总进度 = 文档级基础 + 当前文件贡献
-        progress = int(doc_base + file_progress / batch_total)
     elif batchs > 0:
-        # fallback: pipeline busy 但 doc_status 还没更新（刚启动的瞬间）
-        progress = 1
+        progress = int(cur_batch / batchs * 100)
     else:
+        # Pipeline just started — hasn't counted docs yet
         progress = 1
 
+    # Cap at 99: 100% means done, which should show as busy=False
     progress = min(progress, 99)
 
     return {
