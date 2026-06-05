@@ -1069,6 +1069,53 @@
       updateStatusBubble(data);
     });
 
+    // 监听入库进度SSE事件（由后端pipeline watcher推送）
+    // ingest-started：显示进度条并开始轮询
+    // ingest-completed：隐藏进度条
+    let ingestPollTimer = null;
+    const INGEST_POLL_INTERVAL = 3000;
+    const INGEST_PROGRESS_API = 'http://127.0.0.1:9876/api/kg/pipeline_status';
+
+    async function pollIngestProgress() {
+      try {
+        const resp = await fetch(INGEST_PROGRESS_API);
+        const data = await resp.json();
+        if (data.busy) {
+          showProgress('入库中...', data.progress);
+        } else {
+          hideProgress();
+          stopIngestPolling();
+        }
+      } catch (e) {
+        console.debug('[Chat] ingest poll failed:', e.message);
+      }
+    }
+
+    function startIngestPolling() {
+      if (ingestPollTimer) return;
+      pollIngestProgress();
+      ingestPollTimer = setInterval(pollIngestProgress, INGEST_POLL_INTERVAL);
+    }
+
+    function stopIngestPolling() {
+      if (ingestPollTimer) {
+        clearInterval(ingestPollTimer);
+        ingestPollTimer = null;
+      }
+    }
+
+    window.electronAPI.onIngestStarted(() => {
+      console.log('[Chat] ingest-started SSE event received');
+      showProgress('入库中...', 0);
+      startIngestPolling();
+    });
+
+    window.electronAPI.onIngestCompleted(() => {
+      console.log('[Chat] ingest-completed SSE event received');
+      hideProgress();
+      stopIngestPolling();
+    });
+
     // ========== 数据库$视图刷新 ==========
     let _refreshFromDBRunning = false;  // 防止并发调用
     let _refreshPending = false;

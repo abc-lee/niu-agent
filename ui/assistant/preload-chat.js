@@ -61,4 +61,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 接收工具调用状态通知（SSE 推送，实时显示 Agent 正在做什么）
   onToolStatus: (callback) => ipcRenderer.on('tool-status', (event, data) => callback(data)),
 
+  // 接收入库开始通知（SSE推送）
+  onIngestStarted: (callback) => ipcRenderer.on('ingest-started', callback),
+
+  // 接收入库完成通知（SSE推送）
+  onIngestCompleted: (callback) => ipcRenderer.on('ingest-completed', callback),
+
 });

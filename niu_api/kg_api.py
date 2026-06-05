@@ -7,7 +7,9 @@ Response format: all graph endpoints return structured {nodes: [...], edges: [..
 to match the frontend force-graph renderer expectations.
 """
 
+import re
 import threading
+import time
 from typing import Dict, List, Literal, Optional
 
 from fastapi import APIRouter, Query
@@ -15,6 +17,90 @@ from loguru import logger
 from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/api/kg", tags=["knowledge-graph"])
+
+
+def _cleanup_failed_docs(rag) -> Dict[str, int]:
+    """Remove unrecoverable FAILED entries from doc_status.
+
+    Two categories are deleted:
+      1. ``dup-`` entries — duplicate markers that have no content and can
+         never succeed on retry.
+      2. Empty-content documents — content_length == 0 or no row in
+         full_docs, which fail with "Set of Tasks/Futures is empty".
+
+    Other FAILED docs are left intact (they may be real failures worth
+    retrying).
+
+    Returns:
+        ``{"dup_deleted": N, "empty_deleted": N, "real_failures": N}``
+    """
+    from lightrag.base import DocStatus
+
+    from niu_api.internal.lightrag_manager import call_async
+
+    counts = {"dup_deleted": 0, "empty_deleted": 0, "real_failures": 0}
+
+    try:
+        failed_docs = call_async(
+            rag.doc_status.get_docs_by_status(DocStatus.FAILED), timeout=30
+        )
+    except Exception as e:
+        logger.error(f"cleanup_failed_docs: failed to read doc_status: {e}")
+        return counts
+
+    if not failed_docs:
+        return counts
+
+    dup_ids: List[str] = []
+    empty_ids: List[str] = []
+
+    for doc_id, doc in failed_docs.items():
+        if doc_id.startswith("dup-"):
+            dup_ids.append(doc_id)
+            continue
+
+        # Check for empty content
+        is_empty = doc.content_length == 0
+        if not is_empty:
+            try:
+                content_data = call_async(rag.full_docs.get_by_id(doc_id), timeout=10)
+                if content_data is None:
+                    is_empty = True
+                elif not content_data.get("content"):
+                    is_empty = True
+            except Exception as e:
+                logger.warning(
+                    f"cleanup_failed_docs: could not check full_docs for {doc_id}: {e}"
+                )
+
+        if is_empty:
+            empty_ids.append(doc_id)
+        else:
+            counts["real_failures"] += 1
+
+    # Delete dup- entries
+    if dup_ids:
+        try:
+            call_async(rag.doc_status.delete(dup_ids), timeout=30)
+            counts["dup_deleted"] = len(dup_ids)
+            logger.info(f"cleanup_failed_docs: deleted {len(dup_ids)} dup- entries")
+        except Exception as e:
+            logger.error(f"cleanup_failed_docs: failed to delete dup- entries: {e}")
+
+    # Delete empty-content entries
+    if empty_ids:
+        try:
+            call_async(rag.doc_status.delete(empty_ids), timeout=30)
+            counts["empty_deleted"] = len(empty_ids)
+            logger.info(
+                f"cleanup_failed_docs: deleted {len(empty_ids)} empty-content entries"
+            )
+        except Exception as e:
+            logger.error(
+                f"cleanup_failed_docs: failed to delete empty-content entries: {e}"
+            )
+
+    return counts
 
 # LightRAG merges multi-valued node fields (file_path, source_id, description)
 # using <SEP> as a separator. For file_path, this produces values like:
@@ -185,6 +271,184 @@ def _get_adapter():
     return _adapter
 
 
+def _parse_file_progress(msg: str) -> int:
+    """Parse within-file progress from LightRAG latest_message. Returns 0-100.
+
+    LightRAG's pipeline emits messages at different processing stages.
+    This function maps those messages to a 0-100 progress scale:
+
+      Extraction (0-70%): chunk-level progress from "Chunk X of Y extracted"
+      Merging (70-98%): phase indicators and merge messages
+      Completion (100%): "Completed processing file"
+    """
+    if not msg:
+        return 0
+
+    # Completion
+    if msg.startswith("Completed processing file"):
+        return 100
+    if msg.startswith("Completed merging"):
+        return 98
+
+    # Phase indicators
+    if "Phase 3" in msg:
+        return 95
+    if "Phase 2" in msg:
+        return 85
+    if "Phase 1" in msg:
+        return 75
+
+    # Relation merge messages (contain ~)
+    if "Merged:" in msg and "~" in msg:
+        return 82
+    if "LLMmrg:" in msg and "~" in msg:
+        return 82
+
+    # Entity merge messages (no ~)
+    if "LLMmrg:" in msg:
+        return 78
+    if "Merged:" in msg:
+        return 78
+
+    # Merge start
+    if msg.startswith("Merging stage"):
+        return 70
+
+    # Chunks appended from relation (side-effect during edge merge, after Phase 2)
+    if msg.startswith("Chunks appended from relation"):
+        return 86
+
+    # Chunk extraction — most granular progress (0-70%)
+    m = re.search(r"Chunk (\d+) of (\d+) extracted", msg)
+    if m:
+        chunk_cur = int(m.group(1))
+        chunk_total = int(m.group(2))
+        if chunk_total > 0:
+            return int(chunk_cur / chunk_total * 70)
+        return 35  # fallback
+
+    # Document started
+    if msg.startswith("Processing d-id:"):
+        return 1
+    if "document(s)" in msg and "Processing" in msg:
+        return 0
+
+    # Error/cancel messages — don't reset progress, return -1 to signal "keep previous"
+    if msg.startswith("Failed to extract document") or msg.startswith("User cancelled"):
+        return -1
+    if msg.startswith("Error processing"):
+        return -1
+
+    # Unknown message during busy state — don't reset to 0
+    return -1
+
+
+# ============== Pipeline Watcher ==============
+# Background thread that monitors LightRAG's _shared_dicts pipeline_status
+# and pushes SSE events when the pipeline becomes busy or idle.
+# This ensures the frontend progress ring appears even when ingestion
+# is triggered by MCP tools (lightrag_insert / ainsert) rather than
+# the /api/kg/insert HTTP endpoint.
+
+_pipeline_watcher_stop = threading.Event()
+
+
+def _read_pipeline_busy() -> bool | None:
+    """Read the busy flag from LightRAG's shared pipeline_status.
+
+    Returns True if busy, False if idle, None if LightRAG or
+    pipeline_status is not available.
+    """
+    try:
+        from niu_api.internal.lightrag_manager import get_lightrag
+
+        rag = get_lightrag()
+        if rag is None:
+            return None
+
+        from lightrag.kg.shared_storage import _shared_dicts, get_final_namespace
+
+        ps_key = get_final_namespace("pipeline_status", rag.workspace)
+        ps = _shared_dicts.get(ps_key)
+        if ps is None:
+            return None
+        return bool(ps.get("busy", False))
+    except Exception:
+        return None
+
+
+def _notify_ingest_started() -> None:
+    """Push an ingest-started SSE event to all connected clients."""
+    from niu_api.chat import _main_loop, _sync_broadcast
+
+    loop = _main_loop
+    if loop is None or loop.is_closed():
+        return
+    event = {"type": "ingest-started"}
+    try:
+        loop.call_soon_threadsafe(_sync_broadcast, event)
+    except RuntimeError:
+        pass
+
+
+def _notify_ingest_completed() -> None:
+    """Push an ingest-completed SSE event to all connected clients."""
+    from niu_api.chat import _main_loop, _sync_broadcast
+
+    loop = _main_loop
+    if loop is None or loop.is_closed():
+        return
+    event = {"type": "ingest-completed"}
+    try:
+        loop.call_soon_threadsafe(_sync_broadcast, event)
+    except RuntimeError:
+        pass
+
+
+def _pipeline_watcher() -> None:
+    """Background thread: monitor pipeline busy transitions and push SSE events.
+
+    Polls _shared_dicts every 1 second. When the pipeline transitions
+    from idle to busy, sends ingest-started. When it transitions from
+    busy to idle, sends ingest-completed.
+    """
+    logger.info("[PipelineWatcher] Started")
+    prev_busy = False
+
+    while not _pipeline_watcher_stop.is_set():
+        try:
+            busy = _read_pipeline_busy()
+
+            if busy is not None:
+                if busy and not prev_busy:
+                    logger.info("[PipelineWatcher] Pipeline became busy -> ingest-started")
+                    _notify_ingest_started()
+                elif not busy and prev_busy:
+                    logger.info("[PipelineWatcher] Pipeline became idle -> ingest-completed")
+                    _notify_ingest_completed()
+                prev_busy = busy
+        except Exception as e:
+            logger.warning(f"[PipelineWatcher] Error reading pipeline status: {e}")
+
+        _pipeline_watcher_stop.wait(timeout=1.0)
+
+    logger.info("[PipelineWatcher] Stopped")
+
+
+def start_pipeline_watcher() -> None:
+    """Start the pipeline watcher as a daemon thread (idempotent)."""
+    if _pipeline_watcher_stop.is_set():
+        _pipeline_watcher_stop.clear()
+
+    t = threading.Thread(target=_pipeline_watcher, name="pipeline-watcher", daemon=True)
+    t.start()
+
+
+def stop_pipeline_watcher() -> None:
+    """Signal the pipeline watcher thread to stop."""
+    _pipeline_watcher_stop.set()
+
+
 # ============== Endpoints ==============
 # NOTE: All endpoints use `def` (not `async def`) because LightRAGAdapter.query()
 # and _shared_dicts reads are blocking.  FastAPI runs regular def endpoints in a
@@ -253,19 +517,50 @@ def pipeline_status():
     job_name = str(ps.get("job_name", ""))
     latest_message = str(ps.get("latest_message", ""))
 
-    # Progress is computed purely from pipeline_status cur_batch/batchs.
-    # doc_status scanning is intentionally avoided — it includes ALL historical
-    # documents, inflating progress from the start.
+    # Clean up unrecoverable FAILED docs at two moments:
+    # 1. When pipeline just started (busy, cur_batch <= 1, batchs > 0) — before processing
+    # 2. When pipeline just completed (not busy, completion message still in latest_message)
+    # Cleanup is cheap when there are no FAILED docs (early return), so the
+    # post-completion trigger only matters until the message is overwritten.
+    should_cleanup = (busy and cur_batch <= 1 and batchs > 0)
+    if not busy and ("Completed processing" in latest_message
+                     or "Enqueued document processing pipeline stopped" in latest_message):
+        should_cleanup = True
+    if should_cleanup:
+        try:
+            cleanup_result = _cleanup_failed_docs(rag)
+            if cleanup_result["dup_deleted"] > 0 or cleanup_result["empty_deleted"] > 0:
+                logger.info(
+                    f"pipeline_status cleanup: {cleanup_result['dup_deleted']} dup, "
+                    f"{cleanup_result['empty_deleted']} empty, "
+                    f"{cleanup_result['real_failures']} real failures remain"
+                )
+                # Re-read pipeline_status after cleanup (LightRAG may have updated batchs)
+                ps = _shared_dicts.get(ps_key, ps)
+                cur_batch = int(ps.get("cur_batch", 0))
+                batchs = int(ps.get("batchs", 0))
+                latest_message = str(ps.get("latest_message", ""))
+        except Exception as e:
+            logger.warning(f"pipeline_status cleanup failed (non-fatal): {e}")
+
+    # Progress combines document-level base with within-file progress.
+    # cur_batch increments when a file STARTS processing, so (cur_batch - 1)
+    # gives the count of completed files. _parse_file_progress returns -1
+    # for unknown messages — we use a rough estimate based on cur_batch then.
     if not busy:
         progress = 0
     elif batchs > 0:
-        progress = int(cur_batch / batchs * 100)
+        doc_base = (cur_batch - 1) / batchs * 100
+        file_progress = _parse_file_progress(latest_message)
+        if file_progress >= 0:
+            progress = doc_base + file_progress / batchs
+        else:
+            # Unknown message — estimate from doc_base alone (current file ~50% done)
+            progress = doc_base + 50 / batchs
+        progress = min(int(progress), 99)
     else:
         # Pipeline just started — hasn't counted docs yet
         progress = 1
-
-    # Cap at 99: 100% means done, which should show as busy=False
-    progress = min(progress, 99)
 
     return {
         "busy": busy,
@@ -713,3 +1008,21 @@ def test_ingest(dir_path: str = "/tmp/niu_test_ingest3"):
     fire_and_forget(rag.apipeline_process_enqueue_documents(), context="test-ingest")
 
     return {"status": "started", "files": len(files), "dir": dir_path}
+
+
+@router.post("/cleanup_failed_docs")
+def cleanup_failed_docs():
+    """Manually clean up unrecoverable FAILED documents from doc_status.
+
+    Removes dup- entries (duplicate markers with no content) and
+    empty-content documents that fail with "Set of Tasks/Futures is empty".
+    Real failures are left intact for potential retry.
+    """
+    from niu_api.internal.lightrag_manager import get_lightrag
+
+    rag = get_lightrag()
+    if rag is None:
+        return {"error": "LightRAG not available"}
+
+    result = _cleanup_failed_docs(rag)
+    return {"status": "ok", **result}

@@ -172,6 +172,16 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"LightRAG eager init failed: {e}")
 
+    # 7.6. Start pipeline watcher (pushes ingest-started/completed SSE events
+    #      when LightRAG pipeline becomes busy/idle, so frontend progress ring
+    #      appears even for MCP-tool-triggered ingestion)
+    try:
+        from niu_api.kg_api import start_pipeline_watcher
+        start_pipeline_watcher()
+        logger.info("Pipeline watcher started")
+    except Exception as e:
+        logger.warning(f"Pipeline watcher start failed: {e}")
+
     # 8. Start LightRAG background sync (periodic photo/document backfill)
     try:
         from agent.injector.lightrag_sync import get_lightrag_sync
