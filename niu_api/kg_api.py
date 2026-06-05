@@ -290,6 +290,14 @@ def _parse_file_progress(msg: str) -> int:
     if msg.startswith("Completed merging"):
         return 98
 
+    # Persist phase (almost done)
+    if "In memory DB persist to disk" in msg:
+        return 99
+
+    # Rebuild phase
+    if "Rebuilding knowledge from" in msg:
+        return 60
+
     # Phase indicators
     if "Phase 3" in msg:
         return 95
@@ -310,9 +318,19 @@ def _parse_file_progress(msg: str) -> int:
     if "Merged:" in msg:
         return 78
 
-    # Merge start
+    # Merge start (must come before "Merging stage failed" check)
+    if msg.startswith("Merging stage failed"):
+        return -1
     if msg.startswith("Merging stage"):
         return 70
+
+    # Extraction just started (must come before chunk extraction regex)
+    if msg.startswith("Extracting stage"):
+        return 5
+
+    # Extraction error
+    if msg.startswith("Failed to extract entities"):
+        return -1
 
     # Chunks appended from relation (side-effect during edge merge, after Phase 2)
     if msg.startswith("Chunks appended from relation"):
@@ -548,7 +566,11 @@ def pipeline_status():
     # gives the count of completed files. _parse_file_progress returns -1
     # for unknown messages — we use a rough estimate based on cur_batch then.
     if not busy:
-        progress = 0
+        # Check if pipeline just completed — briefly show 100% before resetting
+        if "Completed processing" in latest_message or "Enqueued document processing pipeline stopped" in latest_message:
+            progress = 100
+        else:
+            progress = 0
     elif batchs > 0:
         doc_base = (cur_batch - 1) / batchs * 100
         file_progress = _parse_file_progress(latest_message)
@@ -557,7 +579,7 @@ def pipeline_status():
         else:
             # Unknown message — estimate from doc_base alone (current file ~50% done)
             progress = doc_base + 50 / batchs
-        progress = min(int(progress), 99)
+        progress = min(int(progress), 100)
     else:
         # Pipeline just started — hasn't counted docs yet
         progress = 1
