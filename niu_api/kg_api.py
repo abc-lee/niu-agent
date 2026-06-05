@@ -7,6 +7,7 @@ Response format: all graph endpoints return structured {nodes: [...], edges: [..
 to match the frontend force-graph renderer expectations.
 """
 
+import re
 import threading
 from typing import Dict, List, Literal, Optional
 
@@ -187,13 +188,13 @@ def _get_adapter():
 
 # ============== Endpoints ==============
 # NOTE: All endpoints use `def` (not `async def`) because LightRAGAdapter.query()
-# and call_async() are blocking.  FastAPI runs regular def endpoints in a thread
-# pool, so they won't block the ASGI event loop.
+# and _shared_dicts reads are blocking.  FastAPI runs regular def endpoints in a
+# thread pool, so they won't block the ASGI event loop.
 
 
 @router.get("/snapshot")
 def graph_snapshot(
-    limit: int = Query(default=200, ge=1, le=500),
+    limit: int = Query(default=2000, ge=1, le=5000),
     min_confidence: float = Query(default=0.0, ge=0.0, le=1.0),
 ):
     """Get full graph snapshot for visualization.
@@ -222,6 +223,161 @@ def graph_stats():
     from niu_api.internal.lightrag_manager import get_lightrag_status
 
     return get_lightrag_status()
+_max_pipeline_progress = 0
+_last_file_progress = 0
+
+
+@router.get("/pipeline_status")
+def pipeline_status():
+    """Get LightRAG ingestion pipeline progress.
+
+    Returns busy flag, current batch / total batches, progress percentage,
+    and the latest pipeline message. Frontend polls this endpoint to show
+    a graphical progress indicator in the spirit window.
+    """
+    from niu_api.internal.lightrag_manager import get_lightrag
+
+    global _max_pipeline_progress, _last_file_progress
+
+    rag = get_lightrag()
+    if rag is None:
+        return {"busy": False, "progress": 0, "message": "LightRAG not available"}
+
+    try:
+        from lightrag.kg.shared_storage import _shared_dicts, get_final_namespace
+
+        ps_key = get_final_namespace("pipeline_status", rag.workspace)
+        ps = _shared_dicts.get(ps_key)
+        if ps is None:
+            return {"busy": False, "progress": 0, "message": "pipeline_status not initialized"}
+    except Exception as e:
+        return {"busy": False, "progress": 0, "message": f"Error: {e}"}
+
+    busy = bool(ps.get("busy", False))
+    cur_batch = int(ps.get("cur_batch", 0))
+    batchs = int(ps.get("batchs", 0))
+    job_name = str(ps.get("job_name", ""))
+    latest_message = str(ps.get("latest_message", ""))
+
+    # 进度计算：文件级粒度 + 文件内部进度
+    # 总进度 = (cur_batch-1)/batchs * 100 + 文件内部进度/batchs * 100
+    # 进度只增不减
+    msg = latest_message
+
+    if not busy:
+        # 补充检查：doc_status 中是否有未完成的文档
+        try:
+            from lightrag.kg.shared_storage import _shared_dicts, get_final_namespace
+
+            ds_key = get_final_namespace("doc_status", rag.workspace)
+            ds = _shared_dicts.get(ds_key)
+            if ds:
+                pending = 0
+                processing = 0
+                completed = 0
+                for v in ds.values():
+                    if isinstance(v, dict):
+                        st = v.get("status", "")
+                    else:
+                        st = getattr(v, "status", "")
+                    st = str(st) if st else ""
+                    if st in ("pending", "processing"):
+                        if st == "pending":
+                            pending += 1
+                        else:
+                            processing += 1
+                    elif st in ("completed", "processed", "preprocessed", "failed"):
+                        completed += 1
+                total = pending + processing + completed
+                if pending > 0 or processing > 0:
+                    busy = True
+                    _max_pipeline_progress = 0
+                    _last_file_progress = 0
+                    if batchs == 0 and total > 0:
+                        batchs = total
+                        cur_batch = completed
+                    if not latest_message:
+                        latest_message = f"Processing {processing}/{total} document(s)..."
+        except Exception:
+            pass
+
+    if not busy:
+        _max_pipeline_progress = 0
+        _last_file_progress = 0
+        progress = 0
+    elif batchs > 0:
+        file_base = (min(cur_batch, batchs) - 1) / batchs * 100
+        # 当前文件内部进度
+        if "Enqueued document processing pipeline stopped" in msg:
+            file_progress = 95
+        elif "Completed processing file" in msg:
+            file_progress = 100
+        elif "Completed merging" in msg:
+            file_progress = 95
+        elif "Phase 3" in msg:
+            file_progress = 90
+        elif "Merged:" in msg and "~" in msg:
+            file_progress = 85
+        elif "LLMmrg:" in msg and "~" in msg:
+            file_progress = 75
+        elif "Phase 2" in msg:
+            file_progress = 70
+        elif "Merged:" in msg:
+            file_progress = 68
+        elif "LLMmrg:" in msg:
+            file_progress = 60
+        elif "Phase 1" in msg:
+            file_progress = 55
+        elif "Merging stage" in msg:
+            m2 = re.search(r"Merging stage (\d+)/(\d+)", msg)
+            if m2:
+                stage_pct = int(m2.group(1)) / int(m2.group(2)) if int(m2.group(2)) > 0 else 0
+                file_progress = 50 + stage_pct * 5
+            else:
+                file_progress = 50
+        elif "Chunk" in msg and "extracted" in msg:
+            m = re.search(r"Chunk (\d+) of (\d+)", msg)
+            if m:
+                chunk_pct = int(m.group(1)) / int(m.group(2)) if int(m.group(2)) > 0 else 0
+                file_progress = 5 + chunk_pct * 45
+            else:
+                file_progress = 25
+        elif "Extracting stage" in msg:
+            m4 = re.search(r"Extracting stage (\d+)/(\d+)", msg)
+            if m4:
+                file_pct = int(m4.group(1)) / int(m4.group(2)) if int(m4.group(2)) > 0 else 0
+                file_progress = 5 + file_pct * 45
+            else:
+                file_progress = 5
+        elif "Processing d-id:" in msg:
+            file_progress = 5
+        elif "Processing" in msg and "document(s)" in msg:
+            file_progress = 3
+        else:
+            file_progress = _last_file_progress if busy else 0
+
+        progress = int(file_base + file_progress / batchs)
+        # 只增不减
+        if progress < _max_pipeline_progress:
+            progress = _max_pipeline_progress
+        else:
+            _max_pipeline_progress = progress
+        if file_progress > 0:
+            _last_file_progress = file_progress
+    else:
+        # batchs=0 但 busy=True：入库刚开始还没分配文件
+        progress = 1
+
+    progress = min(progress, 99)
+
+    return {
+        "busy": busy,
+        "progress": progress,
+        "cur_batch": cur_batch,
+        "batchs": batchs,
+        "job_name": job_name,
+        "message": latest_message,
+    }
 
 
 @router.get("/hubs")
@@ -631,3 +787,32 @@ def graph_changelog(
     change_log = get_change_log()
     changes = change_log.get_changes(since=since or "", limit=limit)
     return {"changes": changes}
+
+
+@router.post("/test_ingest")
+def test_ingest(dir_path: str = "/tmp/niu_test_ingest3"):
+    """Test endpoint: trigger directory ingestion for pipeline status testing."""
+    import os
+
+    from niu_api.internal.lightrag_manager import call_async, fire_and_forget, get_lightrag
+
+    rag = get_lightrag()
+    if rag is None:
+        return {"error": "LightRAG not available"}
+
+    if not os.path.isdir(dir_path):
+        return {"error": f"Directory not found: {dir_path}"}
+
+    files = sorted(f for f in os.listdir(dir_path) if os.path.isfile(os.path.join(dir_path, f)))
+    if not files:
+        return {"error": "No files in directory"}
+
+    for fname in files:
+        fpath = os.path.join(dir_path, fname)
+        with open(fpath, "r") as f:
+            content = f.read()
+        call_async(rag.apipeline_enqueue_documents(content, file_paths=fpath), timeout=60)
+
+    fire_and_forget(rag.apipeline_process_enqueue_documents(), context="test-ingest")
+
+    return {"status": "started", "files": len(files), "dir": dir_path}
