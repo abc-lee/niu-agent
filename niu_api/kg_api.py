@@ -241,7 +241,12 @@ def pipeline_status():
 
     rag = get_lightrag()
     if rag is None:
-        return {"busy": False, "progress": 0, "message": "LightRAG not available"}
+        return {"busy": False, "progress": 0, "message": "LightRAG not available",
+                "debug_info": {"ps_busy_raw": False, "ps_cur_batch_raw": 0, "ps_batchs_raw": 0,
+                               "ps_msg_raw": "", "doc_status_triggered": False,
+                               "doc_pending": 0, "doc_processing": 0, "doc_completed": 0,
+                               "doc_total": 0, "file_base": 0, "file_progress": 0,
+                               "_max_pipeline_progress": 0}}
 
     try:
         from lightrag.kg.shared_storage import _shared_dicts, get_final_namespace
@@ -249,15 +254,34 @@ def pipeline_status():
         ps_key = get_final_namespace("pipeline_status", rag.workspace)
         ps = _shared_dicts.get(ps_key)
         if ps is None:
-            return {"busy": False, "progress": 0, "message": "pipeline_status not initialized"}
+            return {"busy": False, "progress": 0, "message": "pipeline_status not initialized",
+                    "debug_info": {"ps_busy_raw": False, "ps_cur_batch_raw": 0, "ps_batchs_raw": 0,
+                                   "ps_msg_raw": "", "doc_status_triggered": False,
+                                   "doc_pending": 0, "doc_processing": 0, "doc_completed": 0,
+                                   "doc_total": 0, "file_base": 0, "file_progress": 0,
+                                   "_max_pipeline_progress": 0}}
     except Exception as e:
-        return {"busy": False, "progress": 0, "message": f"Error: {e}"}
+        return {"busy": False, "progress": 0, "message": f"Error: {e}",
+                "debug_info": {"ps_busy_raw": False, "ps_cur_batch_raw": 0, "ps_batchs_raw": 0,
+                               "ps_msg_raw": "", "doc_status_triggered": False,
+                               "doc_pending": 0, "doc_processing": 0, "doc_completed": 0,
+                               "doc_total": 0, "file_base": 0, "file_progress": 0,
+                               "_max_pipeline_progress": 0}}
 
     busy = bool(ps.get("busy", False))
     cur_batch = int(ps.get("cur_batch", 0))
     batchs = int(ps.get("batchs", 0))
     job_name = str(ps.get("job_name", ""))
     latest_message = str(ps.get("latest_message", ""))
+
+    # debug_info 默认值
+    doc_pending = 0
+    doc_processing = 0
+    doc_completed = 0
+    doc_total = 0
+    doc_status_triggered = False
+    file_base = 0
+    file_progress = 0
 
     # 进度计算：文件级粒度 + 文件内部进度
     # 总进度 = (cur_batch-1)/batchs * 100 + 文件内部进度/batchs * 100
@@ -266,38 +290,36 @@ def pipeline_status():
 
     if not busy:
         # 补充检查：doc_status 中是否有未完成的文档
+        # 只统计 pending/processing 状态的文档，不计算历史已完成文档
+        # 历史已完成文档属于之前的入库，不应影响当前进度
         try:
             from lightrag.kg.shared_storage import _shared_dicts, get_final_namespace
 
             ds_key = get_final_namespace("doc_status", rag.workspace)
             ds = _shared_dicts.get(ds_key)
             if ds:
-                pending = 0
-                processing = 0
-                completed = 0
                 for v in ds.values():
                     if isinstance(v, dict):
                         st = v.get("status", "")
                     else:
                         st = getattr(v, "status", "")
                     st = str(st) if st else ""
-                    if st in ("pending", "processing"):
-                        if st == "pending":
-                            pending += 1
-                        else:
-                            processing += 1
+                    if st == "pending":
+                        doc_pending += 1
+                    elif st == "processing":
+                        doc_processing += 1
                     elif st in ("completed", "processed", "preprocessed", "failed"):
-                        completed += 1
-                total = pending + processing + completed
-                if pending > 0 or processing > 0:
+                        doc_completed += 1
+                doc_total = doc_pending + doc_processing  # 只包含当前活跃文档
+                if doc_pending > 0 or doc_processing > 0:
+                    doc_status_triggered = True
                     busy = True
                     _max_pipeline_progress = 0
                     _last_file_progress = 0
-                    if batchs == 0 and total > 0:
-                        batchs = total
-                        cur_batch = completed
+                    batchs = doc_total
+                    cur_batch = 0  # 当前活跃文档中没有已完成的
                     if not latest_message:
-                        latest_message = f"Processing {processing}/{total} document(s)..."
+                        latest_message = f"Processing {doc_processing}/{doc_total} document(s)..."
         except Exception:
             pass
 
@@ -375,6 +397,20 @@ def pipeline_status():
         "batchs": batchs,
         "job_name": job_name,
         "message": latest_message,
+        "debug_info": {
+            "ps_busy_raw": bool(ps.get("busy", False)),
+            "ps_cur_batch_raw": int(ps.get("cur_batch", 0)),
+            "ps_batchs_raw": int(ps.get("batchs", 0)),
+            "ps_msg_raw": str(ps.get("latest_message", ""))[:80],
+            "doc_status_triggered": doc_status_triggered,
+            "doc_pending": doc_pending,
+            "doc_processing": doc_processing,
+            "doc_completed": doc_completed,
+            "doc_total": doc_total,
+            "file_base": file_base,
+            "file_progress": file_progress,
+            "_max_pipeline_progress": _max_pipeline_progress,
+        },
     }
 
 
