@@ -226,8 +226,6 @@ def get_region_members(name: str) -> dict[str, Any]:
               added automatically if missing.
     """
     try:
-        region_mgr = _get_region_mgr()
-
         # Normalize name: add suffix if missing (support both new and old format)
         if name.startswith("brain:region:"):
             # Backward compat: read old-format names as-is

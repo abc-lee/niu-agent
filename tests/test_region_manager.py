@@ -222,31 +222,36 @@ class TestUpdateRegionSummaries:
         adapter, ingester = _make_mock_adapter_and_ingester()
         manager = RegionManager(adapter, ingester)
 
-        # Mock get_region_members 返回成员列表
-        # 需要模拟 explore_node 返回 belongs_to 边
-        adapter.explore_node.return_value = {
-            "center": {"id": "brain:region:Python", "name": "brain:region:Python", "type": "BrainRegion"},
-            "nodes": [
-                {"id": "brain:region:Python", "name": "brain:region:Python", "type": "BrainRegion",
-                 "description": "summary | brain_meta_region_id:community_0 | brain_meta_size:3"},
+        # Mock list_entities to return the region entity
+        adapter.list_entities.return_value = {
+            "status": "ok",
+            "data": [
+                {
+                    "id": "brain:region:Python",
+                    "entity_type": "BrainRegion",
+                    "description": "summary | brain_meta_region_id:community_0 | brain_meta_size:3 | brain_meta_representative:Python | brain_meta_updated_at:1745366400",
+                },
             ],
-            "edges": [
-                {"source": "brain:region:Python", "target": "Python", "relation": "belongs_to", "weight": 0.8},
-                {"source": "brain:region:Python", "target": "Django", "relation": "belongs_to", "weight": 0.8},
-            ],
-            "stats": {"nodes": 3, "edges": 2, "max_depth": 1},
         }
 
-        manager.update_region_summaries(["brain:region:Python"])
+        # Mock lightrag_manager.get_region_members
+        with pytest.MonkeyPatch.context() as m:
+            m.setattr(
+                "niu_api.internal.lightrag_manager.get_region_members",
+                lambda name: ["Python", "Django"] if name == "brain:region:Python" else [],
+            )
+            manager.update_region_summaries(["brain:region:Python"])
 
-        # inject_entity 应被调用一次以更新
-        ingester.inject_entity.assert_called_once()
-        call_kwargs = ingester.inject_entity.call_args[1]
-        assert call_kwargs["name"] == "brain:region:Python"
-        assert call_kwargs["entity_type"] == REGION_ENTITY_TYPE
+        # inject_custom_kg 应被调用一次以更新（batch inject）
+        ingester.inject_custom_kg.assert_called_once()
+        call_kwargs = ingester.inject_custom_kg.call_args[1]
+        entities = call_kwargs["entities"]
+        assert len(entities) == 1
+        assert entities[0]["entity_name"] == "brain:region:Python"
+        assert entities[0]["entity_type"] == REGION_ENTITY_TYPE
         # Description should contain brain_meta_* attributes
-        assert "brain_meta_region_id:" in call_kwargs["description"]
-        assert "brain_meta_size:" in call_kwargs["description"]
+        assert "brain_meta_region_id:" in entities[0]["description"]
+        assert "brain_meta_size:" in entities[0]["description"]
 
     @pytest.mark.asyncio
     async def test_skips_region_with_no_members(self):
@@ -254,15 +259,13 @@ class TestUpdateRegionSummaries:
         adapter, ingester = _make_mock_adapter_and_ingester()
         manager = RegionManager(adapter, ingester)
 
-        # explore_node 返回无 belongs_to 边
-        adapter.explore_node.return_value = {
-            "center": None,
-            "nodes": [],
-            "edges": [],
-            "stats": {"nodes": 0, "edges": 0, "max_depth": 1},
-        }
-
-        manager.update_region_summaries(["brain:region:Empty"])
+        # Mock lightrag_manager.get_region_members to return empty
+        with pytest.MonkeyPatch.context() as m:
+            m.setattr(
+                "niu_api.internal.lightrag_manager.get_region_members",
+                lambda name: [],
+            )
+            manager.update_region_summaries(["brain:region:Empty"])
 
         # inject_entity 不应被调用
         ingester.inject_entity.assert_not_called()
@@ -347,69 +350,40 @@ class TestGetAllRegions:
 
 
 class TestGetRegionMembers:
-    """test_get_region_members — 通过 belongs_to 关系获取成员"""
+    """test_get_region_members — 通过 lightrag_manager 获取成员"""
 
     @pytest.mark.asyncio
-    async def test_returns_members_from_outgoing_edges(self):
-        """从 region -> member 方向的 belongs_to 边获取成员"""
+    async def test_returns_members_from_lightrag_manager(self):
+        """从 lightrag_manager.get_region_members 获取成员"""
         adapter, ingester = _make_mock_adapter_and_ingester()
         manager = RegionManager(adapter, ingester)
 
-        adapter.explore_node.return_value = {
-            "center": {"id": "brain:region:Python"},
-            "nodes": [],
-            "edges": [
-                {"source": "brain:region:Python", "target": "Python", "relation": "belongs_to", "weight": 0.8},
-                {"source": "brain:region:Python", "target": "Django", "relation": "belongs_to", "weight": 0.8},
-                {"source": "brain:region:Python", "target": "FastAPI", "relation": "belongs_to", "weight": 0.8},
-                # 非成员边应被忽略
-                {"source": "brain:Niu", "target": "brain:region:Python", "relation": "brain_region_anchor", "weight": 1.0},
-            ],
-            "stats": {"nodes": 4, "edges": 4, "max_depth": 1},
-        }
-
-        members = manager.get_region_members("brain:region:Python")
+        # Mock lightrag_manager.get_region_members
+        with pytest.MonkeyPatch.context() as m:
+            m.setattr(
+                "niu_api.internal.lightrag_manager.get_region_members",
+                lambda name: ["Python", "Django", "FastAPI"] if name == "brain:region:Python" else [],
+            )
+            members = manager.get_region_members("brain:region:Python")
 
         assert len(members) == 3
         assert "Python" in members
         assert "Django" in members
         assert "FastAPI" in members
-        # brain:Niu 不应在成员列表中
-        assert "brain:Niu" not in members
-
-    @pytest.mark.asyncio
-    async def test_handles_incoming_belongs_to_edges(self):
-        """处理反向 belongs_to 边（member -> region）"""
-        adapter, ingester = _make_mock_adapter_and_ingester()
-        manager = RegionManager(adapter, ingester)
-
-        adapter.explore_node.return_value = {
-            "center": {"id": "brain:region:Python"},
-            "nodes": [],
-            "edges": [
-                {"source": "Python", "target": "brain:region:Python", "relation": "belongs_to", "weight": 0.8},
-            ],
-            "stats": {"nodes": 2, "edges": 1, "max_depth": 1},
-        }
-
-        members = manager.get_region_members("brain:region:Python")
-
-        assert "Python" in members
 
     @pytest.mark.asyncio
     async def test_returns_empty_when_no_members(self):
-        """无 belongs_to 边时返回空列表"""
+        """无成员时返回空列表"""
         adapter, ingester = _make_mock_adapter_and_ingester()
         manager = RegionManager(adapter, ingester)
 
-        adapter.explore_node.return_value = {
-            "center": None,
-            "nodes": [],
-            "edges": [],
-            "stats": {"nodes": 0, "edges": 0, "max_depth": 1},
-        }
-
-        members = manager.get_region_members("brain:region:Empty")
+        # Mock lightrag_manager.get_region_members to return empty
+        with pytest.MonkeyPatch.context() as m:
+            m.setattr(
+                "niu_api.internal.lightrag_manager.get_region_members",
+                lambda name: [],
+            )
+            members = manager.get_region_members("brain:region:Empty")
 
         assert members == []
 
