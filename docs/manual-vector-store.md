@@ -25,14 +25,16 @@ LightRAG 统一了知识图谱 + 语义检索，取代了旧的 vector-store + k
 
 ```python
 CUSTOM_ENTITY_TYPES = [
-    "Person", "Organization", "Technology", "Concept",
-    "Location", "Event", "Document", "Photo", "Video",
-    "Note", "Chat", "Skill", "Tool", "Knowledge",
-    "InteractionHabit", "EpisodicEvent", "BrainRegion", "Other",
+    "person", "organization", "technology", "concept",
+    "location", "event", "document", "photo", "video",
+    "note", "chat", "skill", "tool", "knowledge",
+    "interactionhabit", "episodicevent", "brainregion", "other",
 ]
 ```
 
-LLM 提取实体时被约束为上述类型，确保前端分类按钮与图谱数据一致。不匹配的实体归为 "Other"。
+LLM 提取实体时被约束为上述类型，确保前端分类按钮与图谱数据一致。不匹配的实体归为 "other"。
+
+**大小写统一规范**：所有 entity_type 和 keywords 在写入图谱时统一 `.lower()` 存储，查询时 `.lower()` 比较。此规范消除了大小写不一致导致的重复实体和 Counter 投票分裂问题。
 
 ## 二、LightRAG 数据结构
 
@@ -78,19 +80,21 @@ NanoVectorDB 格式，存储在 `~/.niu/lightrag_storage/` 下：
 
 | 类型 | 说明 | 创建来源 |
 |------|------|----------|
-| Skill | Skills 文件 | injector/sync.py 同步 |
-| Tool | MCP 工具描述 | injector/lightrag_sync.py 同步（当前已禁用，工具走 disk 模式发现） |
-| Person | 人物 | photo-server 照片入库时创建 |
-| Concept | 概念/知识实体 | 文档入库时 LightRAG 自动提取 |
-| Photo | 照片摘要 | photo-server 照片入库时创建 |
-| BrainRegion | 脑区节点 | injector/region_sync.py 定期运行 Leiden 社区检测生成 |
-| InteractionHabit | 交互习惯 | handler.py 工具调用反馈时写入 |
-| Document | 文档 | 文档入库时 LightRAG 自动提取 |
-| Organization | 组织 | 文档入库时 LightRAG 自动提取 |
-| Technology | 技术 | 文档入库时 LightRAG 自动提取 |
-| Other | 其他 | LLM 无法归类时的兜底类型 |
+| skill | Skills 文件 | injector/sync.py 同步 |
+| tool | MCP 工具描述 | injector/lightrag_sync.py 同步（当前已禁用，工具走 disk 模式发现） |
+| person | 人物 | photo-server 照片入库时创建 |
+| concept | 概念/知识实体 | 文档入库时 LightRAG 自动提取 |
+| photo | 照片摘要 | photo-server 照片入库时创建 |
+| brainregion | 脑区节点 | injector/region_sync.py 定期运行 Leiden 社区检测生成 |
+| interactionhabit | 交互习惯 | handler.py 工具调用反馈时写入 |
+| document | 文档 | 文档入库时 LightRAG 自动提取 |
+| organization | 组织 | 文档入库时 LightRAG 自动提取 |
+| technology | 技术 | 文档入库时 LightRAG 自动提取 |
+| other | 其他 | LLM 无法归类时的兜底类型 |
 
 **实体命名规范**：所有实体名使用自然语言（如 "Python"、"任飞"、"影像记忆脑区"），不使用冒号前缀格式（如 ~~"skill:Python"~~、~~"person:uuid"~~）。`_normalize_entity_name()` 保留为恒等函数做向后兼容。
+
+**大小写规范**：所有 entity_type 和 keywords 统一小写存储（写入时 `.lower()`），查询时 `.lower()` 比较。此规范在 LightRAG fork 的所有写入路径（`ainsert_custom_kg`、`acreate_entity`、`acreate_relation`、`_edit_entity_impl`、`_merge_entities_impl`）和查询路径（`get_brain_regions`、`has_edge`、dict 查找）中统一执行。
 
 ## 四、检索模式
 
@@ -200,7 +204,7 @@ photo-server/ingest_document
 
 ```python
 entity_name = skill_name  # 自然语言，如 "photo-processing"
-entity_type = "Skill"
+entity_type = "skill"
 description = "{描述} | 触发词: {triggers}; 标签: {tags}"
 source_id = "skill://{skill_name}"
 ```
@@ -228,10 +232,34 @@ source_id = "skill://{skill_name}"
 
 **同步步骤**：
 1. 运行 Leiden 社区检测
-2. 创建/更新脑区节点（entity_type="BrainRegion"）
+2. 创建/更新脑区节点（entity_type="brainregion"）
 3. 清理已消失的脑区
 4. 刷新激活管理器
 5. 合并共激活脑区 + 溶解萎缩脑区
+
+**缺省脑区配置化**：
+
+缺省脑区定义存储在 `~/.niu/preferences.json` 的 `brain_regions.defaults` 数组中，而非代码硬编码。程序启动时读取配置 → 查图谱 → 缺啥补啥。
+
+```json
+{
+  "brain_regions": {
+    "defaults": [
+      {"label": "聊天历史", "description": "日常对话中提炼的偏好、技能和经验记忆", "priority": "core"},
+      {"label": "文档库", "description": "用户导入的文档和资料，经解析后入库的知识", "priority": "core"},
+      {"label": "知识体系", "description": "系统化组织的概念、关系和理论体系", "priority": "core"},
+      {"label": "人际关系", "description": "人物实体、关系网络、社交图谱", "priority": "category"},
+      {"label": "工作事务", "description": "工作相关的项目、任务、决策记录", "priority": "category"},
+      {"label": "生活事务", "description": "日常生活相关的日程、健康、财务", "priority": "category"}
+    ]
+  }
+}
+```
+
+**保护机制**：清理/解散/合并脑区时，通过 `is_default_region()` 查配置列表判断是否缺省脑区，而非依赖 `community_id` 是否为空推断。这确保了：
+- 声明式保护：配置文件里声明的就是缺省脑区，程序不靠推断
+- 配置驱动创建：缺省脑区的名称、描述、优先级都从 preferences.json 读取
+- 向后兼容：旧版 preferences.json 没有 `brain_regions` 段时，使用代码中的默认值
 
 ## 八、运维操作
 

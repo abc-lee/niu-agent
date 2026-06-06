@@ -77,11 +77,13 @@ Niu 是一个**本地运行**的个人知识管理助手，核心理念：
 - 低于 min_score(50) 自动移除
 
 **LightRAG 实体类型（entity_type）：**
-- `Skill` — Skills 文件
-- `Tool` — MCP 工具描述
-- `Person` — 人物（照片识别）
-- `Concept` — 概念/知识实体
-- `Photo` — 照片摘要
+- `skill` — Skills 文件
+- `tool` — MCP 工具描述
+- `person` — 人物（照片识别）
+- `concept` — 概念/知识实体
+- `photo` — 照片摘要
+
+> 所有 entity_type 和 keywords 统一使用小写存储和比较（写入时 `.lower()`，查询时 `.lower()` 匹配），消除大小写不一致导致的重复实体和 Counter 投票分裂问题。
 
 ### 2.3 数据流
 
