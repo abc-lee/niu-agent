@@ -40,7 +40,7 @@ class LightRAGAdapter:
         "Person", "Organization", "Technology", "Concept",
         "Location", "Event", "Document", "Photo", "Video",
         "Note", "Chat", "Skill", "Tool", "Knowledge",
-        "InteractionHabit", "EpisodicEvent", "BrainRegion", "Other",
+        "interactionhabit", "EpisodicEvent", "brainregion", "other",
     }
 
     @staticmethod
@@ -1383,7 +1383,7 @@ class LightRAGIngester:
             content = _re.sub(r'(?:<SEP>|\s\|\s)confidence:\s*\{[^}]+\}\s*$', '', description).strip()
 
             # Extract entity_type (read for potential future use, currently unused)
-            entity_type = target_node.properties.get("entity_type", "InteractionHabit")  # noqa: F841
+            entity_type = target_node.properties.get("entity_type", "interactionhabit")  # noqa: F841
 
             # Update counts
             if result == "success":
