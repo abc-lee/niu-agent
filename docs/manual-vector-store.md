@@ -261,6 +261,13 @@ source_id = "skill://{skill_name}"
 - 配置驱动创建：缺省脑区的名称、描述、优先级都从 preferences.json 读取
 - 向后兼容：旧版 preferences.json 没有 `brain_regions` 段时，使用代码中的默认值
 
+**脑区内过滤检索机制**：
+
+点亮脑区后，系统通过 LightRAG 的 `filter_lambda` 参数在脑区成员范围内做语义检索，而非全图谱匹配。这确保了：
+- 同一查询在不同脑区范围内返回不同结果（如"差旅费"在财务脑区匹配报销制度，在技术脑区匹配出差部署）
+- 脑区成员实体通过 `_region:contains` 边维护，`get_all_region_members()` 直接从 NetworkX 图读取
+- 检索结果与全局向量检索结果通过 seen_names 去重，避免重复注入
+
 ## 八、运维操作
 
 ### 8.1 检查 LightRAG 状态
