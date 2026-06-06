@@ -2,8 +2,8 @@
 Tests for niu_api/internal/region_injector.py
 
 Brain Context Injector 测试 — 验证 BrainContextInjector 的
-区域地图格式、详细区域格式、摘要区域格式、激活加权排序、
-token 预算控制和主入口返回格式化文本。
+区域地图格式、脑区点亮数量软控制、format_region_map_only、
+和主入口返回格式化文本。
 """
 
 import pytest
@@ -172,313 +172,108 @@ class TestFormatRegionMap:
             assert max(dimming_indices) < min(off_indices)
 
 
-# ============== Test 2: format_detailed_region ==============
+# ============== Test 2: format_region_map_only ==============
 
 
-class TestFormatDetailedRegion:
-    """验证 format_detailed_region 详细格式"""
+class TestFormatRegionMapOnly:
+    """验证 format_region_map_only 直接返回区域地图"""
 
-    def test_detailed_region_format(self):
-        """高激活区域输出包含实体列表"""
+    def test_format_region_map_only_returns_map(self):
+        """format_region_map_only 返回区域地图"""
         activation_mgr = _make_activation_manager()
         injector = _make_injector(activation_mgr)
 
-        region = BrainRegionState(
-            region_id="community_0",
-            label="编程开发",
-            activation=0.9,
-            last_activated_at=1745366400.0,
-            activation_count=3,
-            manually_dimmed=False,
-        )
-        members = ["Python", "NumPy", "Data_Analysis"]
+        result = injector.format_region_map_only()
 
-        result = injector.format_detailed_region(
-            region, members, budget=500, knowledge=""
-        )
+        assert "## 脑区状态" in result
+        assert "编程开发" in result
 
-        assert "### [编程开发] (活跃)" in result
-        assert "实体:" in result
-        assert "Python" in result
-        assert "NumPy" in result
-
-    def test_detailed_region_with_knowledge(self):
-        """高激活区域包含知识片段"""
-        activation_mgr = _make_activation_manager()
-        injector = _make_injector(activation_mgr)
-
-        region = BrainRegionState(
-            region_id="community_0",
-            label="编程开发",
-            activation=0.95,
-            last_activated_at=1745366400.0,
-            activation_count=5,
-            manually_dimmed=False,
-        )
-        members = ["Python"]
-        knowledge = "Python is used for AI/ML since 2019\nNumPy provides array operations\nData analysis workflow"
-
-        result = injector.format_detailed_region(
-            region, members, budget=2000, knowledge=knowledge
-        )
-
-        assert "知识:" in result
-        assert "Python is used for AI/ML" in result
-
-    def test_detailed_region_no_members(self):
-        """无成员时显示 (无实体)"""
-        activation_mgr = _make_activation_manager()
-        injector = _make_injector(activation_mgr)
-
-        region = BrainRegionState(
-            region_id="community_0",
-            label="编程开发",
-            activation=0.9,
-            last_activated_at=1745366400.0,
-            activation_count=1,
-            manually_dimmed=False,
-        )
-
-        result = injector.format_detailed_region(
-            region, members=[], budget=500, knowledge=""
-        )
-
-        assert "(无实体)" in result
-
-
-# ============== Test 3: format_summary_region ==============
-
-
-class TestFormatSummaryRegion:
-    """验证 format_summary_region 摘要格式"""
-
-    def test_summary_region_format(self):
-        """中激活区域输出摘要格式"""
-        activation_mgr = _make_activation_manager()
-        injector = _make_injector(activation_mgr)
-
-        region = BrainRegionState(
-            region_id="community_1",
-            label="项目管理",
-            activation=0.5,
-            last_activated_at=1745366400.0,
-            activation_count=2,
-            manually_dimmed=False,
-        )
-
-        result = injector.format_summary_region(region)
-
-        assert "### [项目管理] (近期)" in result
-
-    def test_summary_region_fallback_description(self):
-        """无描述时使用默认描述"""
-        activation_mgr = _make_activation_manager()
-        injector = _make_injector(activation_mgr)
-
-        region = BrainRegionState(
-            region_id="community_1",
-            label="项目管理",
-            activation=0.4,
-            last_activated_at=1745366400.0,
-            activation_count=1,
-            manually_dimmed=False,
-        )
-
-        result = injector.format_summary_region(region)
-
-        # Should contain a description line (either custom or fallback)
-        lines = result.split("\n")
-        assert len(lines) >= 2
-        assert "### [项目管理] (近期)" in lines[0]
-
-    def test_summary_region_with_entity_count(self):
-        """无描述时显示实体计数"""
-        # Create a region with no description to trigger the fallback path
-        infos = _make_region_infos()
-        # Remove description from community_1 to test fallback
-        for info in infos:
-            if info.community_id == "community_1":
-                info.description = ""
-
+    def test_format_region_map_only_empty_when_no_regions(self):
+        """无区域时返回空字符串"""
         activation_mgr = RegionActivationManager()
-        activation_mgr.initialize_from_regions(infos)
         injector = _make_injector(activation_mgr)
 
-        region = BrainRegionState(
-            region_id="community_1",
-            label="项目管理",
-            activation=0.4,
-            last_activated_at=1745366400.0,
-            activation_count=1,
-            manually_dimmed=False,
-        )
+        result = injector.format_region_map_only()
 
-        result = injector.format_summary_region(region)
-
-        # community_1 has 4 members, so fallback should mention "4个实体"
-        assert "4个实体" in result
+        assert result == ""
 
 
-# ============== Test 4: apply_activation_weight ==============
+# ============== Test 3: brain region lit count soft control ==============
 
 
-class TestApplyActivationWeight:
-    """验证 apply_activation_weight 分数加权和重排序"""
+class TestLitCountSoftControl:
+    """验证脑区点亮数量软控制"""
 
-    def test_score_boosting(self):
-        """激活区域中的实体获得分数提升"""
-        activation_mgr = _make_activation_manager()
-        _set_activation(activation_mgr, "community_0", 1.0)  # Python region
-
+    def test_format_region_map_warns_too_many_lit(self):
+        """点亮超过5个脑区时应输出警告提示"""
+        activation_mgr = RegionActivationManager()
+        # Create 6 lit regions (activation > 0.3)
+        for i in range(6):
+            activation_mgr._regions[f"region_{i}"] = BrainRegionState(
+                region_id=f"region_{i}", community_id="",
+                label=f"测试脑区{i}", activation=0.8,
+                last_activated_at=0, activation_count=1, manually_dimmed=False,
+            )
         injector = _make_injector(activation_mgr)
 
-        query_results = [
-            {"entity_name": "Python", "score": 0.5},
-            {"entity_name": "UnknownEntity", "score": 0.8},
-        ]
+        result = injector.format_region_map_only()
 
-        boosted = injector.apply_activation_weight(
-            query_results, boost_factor=0.3
-        )
+        assert "建议关闭" in result
 
-        # Python: 0.5 + 1.0 * 0.3 = 0.8
-        # UnknownEntity: 0.8 + 0.0 = 0.8
-        python_result = next(r for r in boosted if r["entity_name"] == "Python")
-        unknown_result = next(r for r in boosted if r["entity_name"] == "UnknownEntity")
-
-        assert python_result["score"] == pytest.approx(0.8)
-        assert unknown_result["score"] == pytest.approx(0.8)
-
-    def test_score_boosting_changes_order(self):
-        """分数提升可以改变排序"""
-        activation_mgr = _make_activation_manager()
-        _set_activation(activation_mgr, "community_0", 1.0)  # Python region
-
+    def test_format_region_map_no_warn_within_limit(self):
+        """点亮5个以内脑区时不应输出警告"""
+        activation_mgr = RegionActivationManager()
+        # Create 3 lit regions (activation > 0.3)
+        for i in range(3):
+            activation_mgr._regions[f"region_{i}"] = BrainRegionState(
+                region_id=f"region_{i}", community_id="",
+                label=f"测试脑区{i}", activation=0.8,
+                last_activated_at=0, activation_count=1, manually_dimmed=False,
+            )
         injector = _make_injector(activation_mgr)
 
-        query_results = [
-            {"entity_name": "UnknownEntity", "score": 0.6},
-            {"entity_name": "Python", "score": 0.2},
-        ]
+        result = injector.format_region_map_only()
 
-        boosted = injector.apply_activation_weight(
-            query_results, boost_factor=0.5
+        assert "建议关闭" not in result
+
+    def test_format_region_map_warn_at_exactly_six(self):
+        """恰好6个点亮脑区时也输出警告"""
+        activation_mgr = RegionActivationManager()
+        for i in range(6):
+            activation_mgr._regions[f"region_{i}"] = BrainRegionState(
+                region_id=f"region_{i}", community_id="",
+                label=f"测试脑区{i}", activation=0.5,
+                last_activated_at=0, activation_count=1, manually_dimmed=False,
+            )
+        # Add an off region to verify the count is about lit, not total
+        activation_mgr._regions["region_off"] = BrainRegionState(
+            region_id="region_off", community_id="",
+            label="关闭脑区", activation=0.0,
+            last_activated_at=0, activation_count=0, manually_dimmed=False,
         )
-
-        # Python: 0.2 + 1.0 * 0.5 = 0.7
-        # UnknownEntity: 0.6 + 0.0 = 0.6
-        # Python should now be first
-        assert boosted[0]["entity_name"] == "Python"
-        assert boosted[0]["score"] == pytest.approx(0.7)
-
-    def test_empty_results(self):
-        """空结果列表返回空列表"""
-        injector = _make_injector()
-        result = injector.apply_activation_weight([])
-        assert result == []
-
-    def test_no_mutation(self):
-        """不修改原始结果列表"""
-        activation_mgr = _make_activation_manager()
         injector = _make_injector(activation_mgr)
 
-        query_results = [{"entity_name": "Python", "score": 0.5}]
-        original_score = query_results[0]["score"]
+        result = injector.format_region_map_only()
 
-        injector.apply_activation_weight(query_results, boost_factor=0.3)
+        assert "6个脑区已点亮" in result
 
-        # Original should not be modified
-        assert query_results[0]["score"] == original_score
-
-
-# ============== Test 5: context_budget_control ==============
-
-
-class TestContextBudgetControl:
-    """验证 token 预算控制 — 超出预算时截断"""
-
-    def test_truncation_when_exceeding_budget(self):
-        """超出预算时截断知识片段"""
-        activation_mgr = _make_activation_manager()
+    def test_format_region_map_no_warn_at_five(self):
+        """恰好5个点亮脑区时不输出警告（>5才警告）"""
+        activation_mgr = RegionActivationManager()
+        for i in range(5):
+            activation_mgr._regions[f"region_{i}"] = BrainRegionState(
+                region_id=f"region_{i}", community_id="",
+                label=f"测试脑区{i}", activation=0.5,
+                last_activated_at=0, activation_count=1, manually_dimmed=False,
+            )
         injector = _make_injector(activation_mgr)
 
-        region = BrainRegionState(
-            region_id="community_0",
-            label="编程开发",
-            activation=0.9,
-            last_activated_at=1745366400.0,
-            activation_count=1,
-            manually_dimmed=False,
-        )
-        members = ["Python"]
+        result = injector.format_region_map_only()
 
-        # Very long knowledge text with a tiny budget
-        long_knowledge = "\n".join(
-            [f"Knowledge line {i}: " + "x" * 200 for i in range(10)]
-        )
-
-        result = injector.format_detailed_region(
-            region, members, budget=50, knowledge=long_knowledge
-        )
-
-        # Result should be truncated (much shorter than full knowledge)
-        # Budget of 50 tokens = 200 chars, so result should be bounded
-        assert len(result) < len(long_knowledge)
-        assert "### [编程开发] (活跃)" in result
-
-    def test_entity_truncation_under_budget(self):
-        """实体列表在预算不足时被截断"""
-        activation_mgr = _make_activation_manager()
-        injector = _make_injector(activation_mgr)
-
-        region = BrainRegionState(
-            region_id="community_0",
-            label="编程开发",
-            activation=0.9,
-            last_activated_at=1745366400.0,
-            activation_count=1,
-            manually_dimmed=False,
-        )
-        # Many members
-        members = [f"Entity_{i}" for i in range(50)]
-
-        # Very small budget (forces truncation)
-        result = injector.format_detailed_region(
-            region, members, budget=20, knowledge=""
-        )
-
-        # Should contain header but truncated entity list
-        assert "### [编程开发] (活跃)" in result
-        # Should not contain all 50 entities
-        assert "Entity_49" not in result
-
-    def test_budget_preserves_content_when_sufficient(self):
-        """预算充足时保留完整内容"""
-        activation_mgr = _make_activation_manager()
-        injector = _make_injector(activation_mgr)
-
-        region = BrainRegionState(
-            region_id="community_0",
-            label="编程开发",
-            activation=0.9,
-            last_activated_at=1745366400.0,
-            activation_count=1,
-            manually_dimmed=False,
-        )
-        members = ["Python", "NumPy"]
-        knowledge = "Python is great"
-
-        result = injector.format_detailed_region(
-            region, members, budget=2000, knowledge=knowledge
-        )
-
-        # All content should be present
-        assert "Python" in result
-        assert "NumPy" in result
-        assert "Python is great" in result
+        assert "建议关闭" not in result
 
 
-# ============== Test 6: inject_brain_context_returns_text ==============
+# ============== Test 4: inject_brain_context_returns_text ==============
 
 
 class TestInjectBrainContextReturnsText:
