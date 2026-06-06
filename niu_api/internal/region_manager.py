@@ -521,8 +521,8 @@ class RegionManager:
         # (just node/edge removal, no embedding computation). If this becomes a
         # bottleneck, a batch delete API would be needed in LightRAG.
         for region in existing_regions:
-            # Protect default regions (no community_id = created by create_default_regions)
-            if not region.community_id:
+            # Protect default regions (defined in preferences.json)
+            if is_default_region(region.name):
                 logger.debug("保护默认脑区: %s", region.name)
                 continue
             if region.community_id not in current_community_ids:
@@ -585,8 +585,8 @@ class RegionManager:
                     region_raw_desc_map[name] = entity.get("description", "")
 
         for region in existing_regions:
-            # Protect default regions (no community_id)
-            if not region.community_id:
+            # Protect default regions (defined in preferences.json)
+            if is_default_region(region.name):
                 continue
 
             members = self.get_region_members(region.name)
@@ -722,7 +722,7 @@ class RegionManager:
         for other in all_regions:
             if other.name == region.name:
                 continue
-            if not other.community_id:
+            if is_default_region(other.name):
                 continue
             if other.name in _excluded:
                 continue
