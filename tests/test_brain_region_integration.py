@@ -158,16 +158,6 @@ class TestFullBrainRegionFlow:
         assert "编程开发" in region_map
         assert STATUS_LIT in region_map
 
-        # Format detailed region for the activated region
-        python_state = activation_mgr._regions["community_0"]
-        members = ["Python", "NumPy", "Data_Analysis"]
-        detailed = injector.format_detailed_region(
-            python_state, members, budget=500, knowledge=""
-        )
-
-        assert "### [编程开发] (活跃)" in detailed
-        assert "Python" in detailed
-
     def test_activate_decay_reactivate(self) -> None:
         """Activation, decay, and reinforce cycle.
 
@@ -460,46 +450,3 @@ class TestFullBrainRegionFlow:
         assert chain_c["src_id"] == f"{EVENT_PREFIX}event_B"
         assert chain_c["tgt_id"] == f"{EVENT_PREFIX}event_C"
         assert chain_c["keywords"] == CHAIN_RELATION_CORRECTED
-
-    def test_context_budget_not_exceeded(self) -> None:
-        """Detailed region output respects token budget.
-
-        Steps:
-        1. Create region with high activation and very long knowledge text
-        2. Call format_detailed_region() with budget=200
-        3. Verify result length is bounded (roughly within 4x budget chars)
-        """
-        activation_mgr = _make_activation_mgr()
-        injector = _make_injector(activation_mgr)
-
-        # Create a region with high activation
-        _set_activation(activation_mgr, "community_0", 0.95)
-        region = BrainRegionState(
-            region_id="community_0",
-            label="编程开发",
-            activation=0.95,
-            last_activated_at=1745366400.0,
-            activation_count=5,
-            manually_dimmed=False,
-        )
-
-        # Very long knowledge text
-        long_knowledge = "\n".join(
-            [f"Knowledge line {i}: " + "x" * 500 for i in range(20)]
-        )
-
-        # Budget = 200 tokens (1 token ~ 4 chars, so ~800 chars max)
-        result = injector.format_detailed_region(
-            region, members=["Python"], budget=200, knowledge=long_knowledge
-        )
-
-        # Verify result is bounded (roughly within 4x budget chars)
-        # Allow generous margin since header + entity line take some space
-        budget_chars = 200 * 4  # 800 chars
-        # The result should be significantly shorter than the full knowledge
-        assert len(result) < len(long_knowledge)
-        # The result should contain the header
-        assert "### [编程开发] (活跃)" in result
-        # Result should be bounded within roughly 4x budget + reasonable overhead
-        # (header + truncation overhead can add up to ~2x budget)
-        assert len(result) <= budget_chars * 3  # generous upper bound

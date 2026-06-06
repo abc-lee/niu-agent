@@ -2,8 +2,8 @@
 Brain Region Context Injector
 
 Injects brain region context into the system prompt based on activation levels.
-Provides layered injection: region map (always), detailed content (high activation),
-summary content (mid activation), and activation-weighted search result boosting.
+Provides the region status map (always injected); detailed content is now
+provided by region-filtered search results.
 
 M4 module: Context injection, M1-M3 provide detection, node management, and activation.
 """
@@ -25,43 +25,19 @@ from niu_api.internal.region_manager import RegionManager
 
 logger = logging.getLogger(__name__)
 
-# ============== Constants ==============
-
-# Namespace prefix for brain region entities (backward compat: read old-format names)
-REGION_PREFIX = "brain:region:"
-# New naming convention: label + suffix
-REGION_SUFFIX = "脑区"
-
-# Chars per token estimate for Chinese text
-CHARS_PER_TOKEN = 4
-
-# Maximum knowledge snippets in detailed region output
-MAX_KNOWLEDGE_SNIPPETS = 3
-
 
 class BrainContextInjector:
-    """Brain region activation-weighted context injection
+    """Brain region context injection
 
-    Takes a query, activates relevant brain regions, and returns formatted
-    injection text for the system prompt. Three layers of injection:
-
-    1. Region map (always injected): status lights for all regions
-    2. Detailed content (activation > 0.7): entities + relations + snippets
-    3. Summary content (0.3 < activation <= 0.7): brief summary
+    Takes a query, activates relevant brain regions, and returns the
+    region status map for the system prompt. Detailed content is now
+    provided by region-filtered search results.
 
     Usage::
 
         injector = BrainContextInjector(adapter, activation_mgr, region_mgr)
         injection_text = injector.inject_brain_context("Python数据分析")
     """
-
-    CONTEXT_BUDGET = {
-        "total": 4000,
-        "high_activation": 2000,
-        "mid_activation": 1200,
-        "low_activation": 400,
-        "skills": 400,
-    }
 
     def __init__(
         self,
@@ -140,8 +116,15 @@ class BrainContextInjector:
         entity_to_region: dict[str, str] | None = None,
         hit_entities: list[str] | None = None,
     ) -> str:
-        """Step 4: Format injection content by activation level."""
-        return self._format_injection_content(region_knowledge, entity_to_region, hit_entities)
+        """Format brain region injection text.
+
+        After refactoring, only returns the region status map.
+        Detailed content is now provided by region-filtered search results.
+        """
+        regions = self._activation_mgr.get_region_map()
+        if not regions:
+            return ""
+        return self.format_region_map(regions)
 
     def inject_brain_context(
         self,
@@ -158,7 +141,6 @@ class BrainContextInjector:
     def format_region_map(
         self,
         regions: list[BrainRegionState],
-        region_members_map: dict[str, list[str]] | None = None,
     ) -> str:
         """Region map (always injected, ~150-200 tokens)
 
@@ -174,6 +156,10 @@ class BrainContextInjector:
 
         lines = [f"## 脑区状态 ({len(regions)}个脑区)"]
 
+        lit_count = sum(1 for r in regions if r.activation > 0.3)
+        if lit_count > 5:
+            lines.append(f"> ⚠ {lit_count}个脑区已点亮，建议关闭与当前会话无关脑区以减少干扰")
+
         # Sort: lit first, then dimming, then off; within same status, by label
         status_order = {STATUS_LIT: 0, STATUS_DIMMING: 1, STATUS_OFF: 2}
         sorted_regions = sorted(
@@ -188,8 +174,8 @@ class BrainContextInjector:
 
         for region in sorted_regions:
             light = self._activation_mgr.get_status_light(region.activation)
-            member_count = self._get_member_count(region.region_id)
-            description = self._get_region_description(region.region_id)
+            member_count = len(self._activation_mgr.get_members_of_region(region.region_id))
+            description = self._activation_mgr.get_region_description(region.region_id)
             if description:
                 short_desc = description[:30] + ("..." if len(description) > 30 else "")
                 lines.append(
@@ -220,148 +206,6 @@ class BrainContextInjector:
     def get_members_of_region(self, region_id: str) -> list[str]:
         """Get entity names belonging to a specific region."""
         return self._activation_mgr.get_members_of_region(region_id)
-
-    # ------------------------------------------------------------------
-    # Formatting: detailed region (high activation > 0.7)
-    # ------------------------------------------------------------------
-
-    def format_detailed_region(
-        self,
-        region: BrainRegionState,
-        members: list[str],
-        budget: int,
-        knowledge: str = "",
-    ) -> str:
-        """High activation (>0.7): inject entities + relations + doc snippets
-
-        Format:
-        ### [编程开发] (活跃)
-        实体: Python(expert), NumPy, Data_Analysis, Web_Development
-        关系:
-        - 你擅长Python(expert级别)，从2019年开始用于AI/ML
-        - Python与NumPy通过数据科学生态关联
-        知识: [相关文档片段，最多3条]
-
-        Strictly control within budget tokens, truncate low-priority content.
-        Truncation order: knowledge snippets -> relations -> entities.
-        """
-        budget_chars = budget * CHARS_PER_TOKEN
-
-        # Header
-        header = f"### [{region.label}] (活跃)"
-        header_chars = len(header)
-
-        # Entity line
-        entity_text = ", ".join(members) if members else "(无实体)"
-        entity_line = f"实体: {entity_text}"
-
-        # Knowledge snippets (max 3)
-        knowledge_line = ""
-        if knowledge:
-            cleaned_knowledge = knowledge.replace("<SEP>", "\n")
-            snippets = [s.strip() for s in cleaned_knowledge.split("\n") if s.strip()]
-            top_snippets = snippets[:MAX_KNOWLEDGE_SNIPPETS]
-            if top_snippets:
-                knowledge_line = "知识: " + "; ".join(top_snippets)
-
-        # Build content, applying budget control
-        parts = [header, entity_line]
-        current_chars = header_chars + len(entity_line)
-
-        if knowledge_line:
-            if current_chars + len(knowledge_line) <= budget_chars:
-                parts.append(knowledge_line)
-                current_chars += len(knowledge_line)
-            else:
-                # Truncate knowledge: fill remaining budget (account for "..." suffix)
-                remaining = budget_chars - current_chars - len("知识: ") - len("...")
-                if remaining > 20:
-                    truncated = knowledge_line[len("知识: "):][:remaining] + "..."
-                    parts.append(f"知识: {truncated}")
-                    current_chars += len(f"知识: {truncated}")
-
-        # Account for newline separators between parts
-        current_chars += max(len(parts) - 1, 0)
-
-        # Check if entity line itself exceeds budget (truncate entities)
-        if current_chars > budget_chars:
-            # Truncate entity list to fit budget
-            available = budget_chars - header_chars - len("实体: ") - len("...")
-            if available > 0:
-                truncated_members = entity_text[:available] + "..."
-                parts = [header, f"实体: {truncated_members}"]
-            else:
-                parts = [header]
-
-        result = "\n".join(parts)
-        return result
-
-    # ------------------------------------------------------------------
-    # Formatting: summary region (mid activation 0.3-0.7)
-    # ------------------------------------------------------------------
-
-    def format_summary_region(
-        self,
-        region: BrainRegionState,
-        member_count: int | None = None,
-    ) -> str:
-        """Mid activation (0.3-0.7): inject summary
-
-        Format:
-        ### [项目管理] (近期)
-        你在参与AI_Bot项目，是主开发者。项目使用Python/Web技术栈。
-        """
-        description = self._get_region_description(region.region_id)
-        if not description:
-            count = member_count if member_count is not None else self._get_member_count(region.region_id)
-            description = f"相关区域，包含{count}个实体"
-
-        return f"### [{region.label}] (近期)\n{description}"
-
-    # ------------------------------------------------------------------
-    # Activation-weighted result boosting
-    # ------------------------------------------------------------------
-
-    def apply_activation_weight(
-        self,
-        query_results: list[dict],
-        boost_factor: float = 0.3,
-    ) -> list[dict]:
-        """Activation-weighted query results
-
-        Entities in activated regions get boosted scores:
-        final_score = lightrag_score + region.activation * boost_factor
-
-        Results sorted by final_score descending.
-        """
-        if not query_results:
-            return []
-
-        entity_to_region = self._activation_mgr.get_entity_to_region_map()
-        boosted: list[dict] = []
-
-        for result in query_results:
-            # Copy to avoid mutation
-            boosted_result = dict(result)
-
-            # Get entity name from result
-            entity_name = result.get("entity_name", result.get("id", ""))
-            original_score = result.get("score", 0.0)
-
-            # Find which region this entity belongs to
-            region_id = entity_to_region.get(entity_name)
-            boost = 0.0
-            if region_id:
-                state = self._activation_mgr.get_region_state(region_id)
-                if state:
-                    boost = state.activation * boost_factor
-
-            boosted_result["score"] = original_score + boost
-            boosted.append(boosted_result)
-
-        # Sort by final score descending
-        boosted.sort(key=lambda r: r.get("score", 0.0), reverse=True)
-        return boosted
 
     def _classify_entity_to_region(self, entity_name: str, entity_type: str) -> str:
         """根据实体类型运行时分类到默认脑区（不写回图谱）
@@ -401,110 +245,3 @@ class BrainContextInjector:
             return "生活事务脑区"
         # 知识体系 (default)
         return "知识体系脑区"
-
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-
-    def _format_injection_content(
-        self,
-        region_knowledge: dict[str, str],
-        entity_to_region: dict[str, str] | None = None,
-        hit_entities: list[str] | None = None,
-    ) -> str:
-        """Format the full injection content based on current activation levels."""
-        all_regions = self._activation_mgr.get_region_map()
-
-        if not all_regions:
-            return ""
-
-        # Build region_id -> members from entity_to_region if provided
-        region_members_map: dict[str, list[str]] | None = None
-        if hit_entities and entity_to_region:
-            # 向量检索命中实体：只用 Top N，而非脑区全部成员
-            region_members_map = {}
-            for entity in hit_entities:
-                rid = entity_to_region.get(entity)
-                if rid:
-                    region_members_map.setdefault(rid, []).append(entity)
-        elif entity_to_region:
-            # fallback: 无 hit_entities 时用全部成员（兼容旧调用方式）
-            region_members_map = {}
-            for entity, rid in entity_to_region.items():
-                region_members_map.setdefault(rid, []).append(entity)
-
-        parts: list[str] = []
-
-        # Always inject: region map
-        region_map = self.format_region_map(all_regions, region_members_map)
-        if region_map:
-            parts.append(region_map)
-
-        # Separate regions by activation level
-        high_regions = [r for r in all_regions if r.activation > 0.7]
-        mid_regions = [r for r in all_regions if 0.3 < r.activation <= 0.7]
-
-        logger.info(
-            "脑区注入格式化: total=%d, high=%d, mid=%d, knowledge_keys=%s",
-            len(all_regions), len(high_regions), len(mid_regions),
-            list(region_knowledge.keys()),
-        )
-
-        # Sort by activation descending
-        high_regions.sort(key=lambda r: r.activation, reverse=True)
-        mid_regions.sort(key=lambda r: r.activation, reverse=True)
-
-        # High activation: detailed content
-        if high_regions:
-            parts.append("")  # blank line separator
-            high_budget = self.CONTEXT_BUDGET["high_activation"]
-            per_region_budget = max(
-                high_budget // max(len(high_regions), 1), 200
-            )
-
-            for region in high_regions:
-                if region_members_map:
-                    members = region_members_map.get(region.region_id, [])
-                else:
-                    members = self._get_members(region.region_id)
-                knowledge = region_knowledge.get(region.region_id, "")
-                detailed = self.format_detailed_region(
-                    region, members, per_region_budget, knowledge
-                )
-                if detailed:
-                    parts.append(detailed)
-
-        # Mid activation: summary content
-        if mid_regions:
-            parts.append("")  # blank line separator
-            for region in mid_regions:
-                if region_members_map:
-                    mc = len(region_members_map.get(region.region_id, []))
-                else:
-                    mc = None
-                summary = self.format_summary_region(region, member_count=mc)
-                if summary:
-                    parts.append(summary)
-
-        parts.append("\U0001f4a1 以上实体名可直接作为KG查询的keywords参数使用，例如：disk(\"/lightrag/lightrag_search_entities '实体名' --keywords '实体名'\")")
-
-        result = "\n".join(parts)
-        result = result.replace("<SEP>", "\n")
-        return result
-
-    def _get_members(self, region_id: str) -> list[str]:
-        """Get member entity names for a region from NetworkX graph."""
-        from niu_api.internal.lightrag_manager import get_region_members
-        return get_region_members(region_id)
-
-    def _get_member_count(self, region_id: str) -> int:
-        """Get member count for a region."""
-        return len(self._get_members(region_id))
-
-    def _get_region_description(self, region_id: str) -> str:
-        """Get region description from activation manager.
-
-        Delegates to RegionActivationManager.get_region_description() which
-        stores descriptions from BrainRegionInfo.
-        """
-        return self._activation_mgr.get_region_description(region_id)
