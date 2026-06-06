@@ -44,11 +44,11 @@ INVOLVES_RELATION = "involves"
 
 # Mapping from entity_type to Niu relation keyword
 _NIU_RELATION_MAP = {
-    "Person": "remembers",
-    "Skill": "skilled_in",
-    "Concept": "knows_about",
-    "Tool": "uses",
-    "Preference": "prefers",
+    "person": "remembers",
+    "skill": "skilled_in",
+    "concept": "knows_about",
+    "tool": "uses",
+    "preference": "prefers",
 }
 
 
@@ -265,4 +265,4 @@ class DreamWriter:
             Preference → "prefers"
             Other → None (no Niu anchor)
         """
-        return _NIU_RELATION_MAP.get(entity_type)
+        return _NIU_RELATION_MAP.get(entity_type.lower() if entity_type else None)

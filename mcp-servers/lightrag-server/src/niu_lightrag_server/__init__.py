@@ -397,7 +397,7 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
             "type": "object",
             "properties": {
                 "name": {"type": "string", "description": "Entity name (e.g., 'Python', '数据分析')"},
-                "entity_type": {"type": "string", "description": "Entity type (e.g., 'Person', 'Concept', 'Skill', 'Tool')"},
+                "entity_type": {"type": "string", "description": "Entity type (e.g., 'person', 'concept', 'skill', 'tool')"},
                 "description": {"type": "string", "default": "", "description": "Entity description"},
                 "source_id": {"type": "string", "default": "custom_kg", "description": "Deprecated — ignored. Kept for backward compatibility."},
                 "file_path": {"type": "string", "default": "custom_kg", "description": "File path for citation"},
@@ -608,7 +608,7 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
             "type": "object",
             "properties": {
                 "entity_name": {"type": "string", "description": "Entity name (must be unique)"},
-                "entity_type": {"type": "string", "description": "Entity type (e.g., Person, Concept, Skill, Tool)"},
+                "entity_type": {"type": "string", "description": "Entity type (e.g., person, concept, skill, tool)"},
                 "description": {"type": "string", "default": "", "description": "Entity description"},
                 "source_id": {"type": "string", "default": "manual_creation", "description": "Source chunk ID"},
                 "file_path": {"type": "string", "default": "manual_creation", "description": "File path for citation"},
@@ -1173,13 +1173,13 @@ def lightrag_insert_entity(
             }
 
         niu_relation_map = {
-            "Person": "remembers",
-            "Skill": "skilled_in",
-            "Concept": "knows_about",
-            "Tool": "uses",
-            "Preference": "prefers",
+            "person": "remembers",
+            "skill": "skilled_in",
+            "concept": "knows_about",
+            "tool": "uses",
+            "preference": "prefers",
         }
-        niu_relation = niu_relation_map.get(entity_type)
+        niu_relation = niu_relation_map.get(entity_type.lower() if entity_type else None)
 
         # Build entity dict for inject_custom_kg
         entity = {

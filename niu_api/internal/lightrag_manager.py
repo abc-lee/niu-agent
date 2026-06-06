@@ -599,10 +599,10 @@ def _create_lightrag_instance():
     # If none match, LLM classifies as "Other" (LightRAG prompt convention).
     # This ensures frontend category buttons match actual graph data.
     CUSTOM_ENTITY_TYPES = [
-        "Person", "Organization", "Technology", "Concept",
-        "Location", "Event", "Document", "Photo", "Video",
-        "Note", "Chat", "Skill", "Tool", "Knowledge",
-        "InteractionHabit", "EpisodicEvent", "BrainRegion", "Other",
+        "person", "organization", "technology", "concept",
+        "location", "event", "document", "photo", "video",
+        "note", "chat", "skill", "tool", "knowledge",
+        "interactionhabit", "episodicevent", "brainregion", "other",
     ]
 
     rag_params = dict(
