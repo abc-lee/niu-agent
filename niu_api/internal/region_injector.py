@@ -474,8 +474,9 @@ class BrainContextInjector:
         return result
 
     def _get_members(self, region_id: str) -> list[str]:
-        """Get member entity names for a region from activation manager."""
-        return self._activation_mgr.get_members_of_region(region_id)
+        """Get member entity names for a region from NetworkX graph."""
+        from niu_api.internal.lightrag_manager import get_region_members
+        return get_region_members(region_id)
 
     def _get_member_count(self, region_id: str) -> int:
         """Get member count for a region."""

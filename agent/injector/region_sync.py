@@ -277,12 +277,14 @@ class RegionSync:
 
             # BUG 2 fix: Fetch members for each region so _entity_to_region
             # gets populated in initialize_from_regions()
+            from niu_api.internal.lightrag_manager import get_region_members as lightrag_get_region_members
             for region in all_regions:
                 try:
-                    region.members = manager.get_region_members(region.name)
+                    region.members = lightrag_get_region_members(region.name)
                 except Exception as e:
-                    logger.debug(
-                        f"[RegionSync] get_region_members failed for {region.name}: {e}"
+                    logger.warning(
+                        "[RegionSync] get_region_members failed for %s: %s",
+                        region.name, e,
                     )
 
             # Reuse existing activation manager to preserve co-activation state
