@@ -233,8 +233,11 @@ def get_region_members(region_name: str) -> list[str]:
         members = []
         for src, tgt, data in snapshot.edges(data=True):
             edge_type = data.get("keywords") or data.get("type", "")
-            if src == region_name and edge_type.lower() == "_region:contains":
-                members.append(tgt)
+            if edge_type.lower() == "_region:contains":
+                if src == region_name:
+                    members.append(tgt)
+                elif tgt == region_name:
+                    members.append(src)
 
         return members
 
@@ -276,10 +279,16 @@ def get_all_region_members() -> dict[str, list[str]]:
         for src, tgt, data in snapshot.edges(data=True):
             edge_type = data.get("keywords") or data.get("type", "")
             if edge_type.lower() == "_region:contains":
-                # src is region, tgt is member
-                if src not in region_members:
-                    region_members[src] = []
-                region_members[src].append(tgt)
+                # 无向图中 src/tgt 顺序不确定，需判断哪端是脑区
+                if src.endswith("脑区") or src.startswith("brain:region:"):
+                    region, member = src, tgt
+                elif tgt.endswith("脑区") or tgt.startswith("brain:region:"):
+                    region, member = tgt, src
+                else:
+                    continue
+                if region not in region_members:
+                    region_members[region] = []
+                region_members[region].append(member)
 
         return region_members
 
