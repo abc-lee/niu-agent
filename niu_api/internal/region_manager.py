@@ -35,7 +35,7 @@ REGION_SUFFIX = "脑区"
 REGION_PREFIX = "brain:region:"
 
 # Entity type for brain region master nodes
-REGION_ENTITY_TYPE = "BrainRegion"
+REGION_ENTITY_TYPE = "brainregion"
 
 # Relation keywords
 ANCHOR_RELATION = "brain_region_anchor"
@@ -53,6 +53,9 @@ NIU_ENTITY = "Niu"
 
 # Maximum number of entity descriptions to include in region summary
 MAX_SUMMARY_ENTITIES = 5
+
+# Minimum community size to create a brain region (must match region_detector default)
+MIN_COMMUNITY_SIZE = 100
 
 
 # ---------------------------------------------------------------------------
@@ -197,10 +200,12 @@ class RegionManager:
                 if not (name.endswith(REGION_SUFFIX) or name.startswith(REGION_PREFIX))
             ]
 
-            if not members:
+            if not members or len(members) < MIN_COMMUNITY_SIZE:
                 logger.debug(
-                    "社区 %d 无有效成员（全为 brain:region:* 节点），跳过",
+                    "社区 %d 成员数 %d < %d，跳过",
                     partition.region_id,
+                    len(members),
+                    MIN_COMMUNITY_SIZE,
                 )
                 continue
 
