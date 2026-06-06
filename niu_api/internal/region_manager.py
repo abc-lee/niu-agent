@@ -1047,37 +1047,6 @@ def is_default_region(region_name: str) -> bool:
     return False
 
 
-# ── Default Region Definitions ──────────────────────────────────
-
-DEFAULT_REGIONS: dict[str, dict] = {
-    # Core regions (by data source, always created)
-    "聊天历史": {
-        "description": "日常对话中提炼的偏好、技能和经验记忆",
-        "priority": "core",
-    },
-    "文档库": {
-        "description": "用户导入的文档和资料，经解析后入库的知识",
-        "priority": "core",
-    },
-    "知识体系": {
-        "description": "系统化组织的概念、关系和理论体系",
-        "priority": "core",
-    },
-    # Category regions (by knowledge domain, clear boundaries)
-    "人际关系": {
-        "description": "人物实体、关系网络、社交图谱",
-        "priority": "category",
-    },
-    "工作事务": {
-        "description": "工作相关的项目、任务、决策记录",
-        "priority": "category",
-    },
-    "生活事务": {
-        "description": "日常生活相关的日程、健康、财务",
-        "priority": "category",
-    },
-}
-
 
 def create_default_regions(
     adapter: Any,
@@ -1107,9 +1076,10 @@ def create_default_regions(
     # Get existing brain regions directly from graph (no LLM call)
     existing_regions = get_brain_regions()
 
-    for region_label, config in DEFAULT_REGIONS.items():
+    for region_def in get_default_regions_config():
+        region_label = region_def["label"]
         # Skip category regions unless explicitly requested
-        if config.get("priority") == "category" and not include_category:
+        if region_def.get("priority") == "category" and not include_category:
             continue
 
         region_name = f"{region_label}{REGION_SUFFIX}"
@@ -1123,7 +1093,7 @@ def create_default_regions(
         all_entities.append({
             "entity_name": region_name,
             "entity_type": REGION_ENTITY_TYPE,
-            "description": config["description"],
+            "description": region_def["description"],
         })
         all_relationships.append({
             "src_id": NIU_ENTITY,
