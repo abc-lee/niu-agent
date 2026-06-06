@@ -707,7 +707,7 @@ class RegionManager:
 
         Uses cosine similarity on entity_type count vectors derived from
         actual member entities (via explore_node), not from description text.
-        Excludes the region itself, default regions (no community_id),
+        Excludes the region itself, default regions (defined in preferences.json),
         and any names in excluded_names (e.g. already dissolved regions).
         """
         import math
