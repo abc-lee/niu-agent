@@ -724,41 +724,34 @@ class NiuRunner:
     # ============== Dynamic Resource Injection ==============
 
     def _inject_dynamic_resources(self, context: str) -> tuple[str, dict[str, int]]:
-        """动态注入相关资源（Skills、知识）— no MCP tool scores.
+        """动态注入相关资源 — 向量检索 + 脑区过滤检索。
 
-        LightRAG 图检索为主检索路径，使用 local + keywords 模式
-        实现 0 LLM 调用、完整图遍历的快速检索。
-        interaction_habits 也从 LightRAG 读取。
+        两条检索路径并行:
+        1. 全局向量检索 (search_multi_lightrag) — 语义最相关的 top_k 实体
+        2. 脑区内过滤检索 (search_within_region) — 激活脑区成员中语义最匹配的实体
 
         Args:
-            context: 3条对话上下文（包含历史消息和当前用户输入）
-
-        检索顺序：
-        1. LightRAG 主检索（local + keywords 模式）→ skills + knowledge
-        2. interaction_habits（LightRAG + keywords）
-        3. brain memories（脑图）
+            context: 3条对话上下文
         """
-        # 0. Brain region activation — BEFORE LightRAG search so activation weighting applies
+        # 0. Brain region activation
         effective_query = context
         keywords = [effective_query]
-        _brain_region_knowledge: dict[str, str] = {}
-        _brain_entity_to_region: dict[str, str] = {}
-        _brain_hit_entities: list[str] = []
         _brain_injector = None
         try:
             _brain_injector = self._get_brain_injector()
             if _brain_injector is not None:
-                _brain_region_knowledge, _brain_entity_to_region, _brain_hit_entities = _brain_injector.activate_for_query(context)
+                _brain_injector.activate_for_query(context)
         except Exception as e:
             logger.warning(f"Brain activation failed: {e}")
 
-        # 1. LightRAG 主检索 — local + keywords = 0 LLM calls
+        # 1. LightRAG 全局检索 — local + keywords = 0 LLM calls
         lightrag_results: dict[str, list[dict]] = {}
+        adapter = None
         try:
-            from niu_api.internal.lightrag_adapter import LightRAGAdapter
             if self._brain_adapter is not None:
                 adapter = self._brain_adapter
             else:
+                from niu_api.internal.lightrag_adapter import LightRAGAdapter
                 adapter = LightRAGAdapter()
             lightrag_results = adapter.search_multi_lightrag(
                 effective_query, mode="local", top_k=10, keywords=keywords,
@@ -766,16 +759,38 @@ class NiuRunner:
         except Exception as e:
             logger.warning(f"LightRAG retrieval failed: {e}")
 
-        if lightrag_results and not any(lightrag_results.values()):
-            logger.debug("LightRAG returned empty results")
+        # 2. 脑区内过滤检索 — 激活脑区成员范围内语义搜索
+        region_results: dict[str, list[dict]] = {"skill": [], "knowledge": [], "other": []}
+        try:
+            if _brain_injector is not None:
+                active_regions = _brain_injector.get_active_regions()
+                if active_regions:
+                    all_region_members = set()
+                    for region in active_regions:
+                        members = _brain_injector.get_members_of_region(region.region_id)
+                        all_region_members.update(members)
+                    if all_region_members:
+                        region_adapter = adapter
+                        if region_adapter is None:
+                            from niu_api.internal.lightrag_adapter import LightRAGAdapter
+                            region_adapter = LightRAGAdapter()
+                        region_results = region_adapter.search_within_region(
+                            effective_query,
+                            region_member_names=all_region_members,
+                            mode="local",
+                            top_k=10,
+                            keywords=keywords,
+                        )
+        except Exception as e:
+            logger.warning(f"Region-filtered search failed: {e}")
 
-        # 2. interaction_habits（LightRAG + keywords）
+        # 3. interaction_habits（LightRAG + keywords）
         interaction_habits: list[dict] = []
         try:
-            from niu_api.internal.lightrag_adapter import LightRAGAdapter
             if self._brain_adapter is not None:
                 habit_adapter = self._brain_adapter
             else:
+                from niu_api.internal.lightrag_adapter import LightRAGAdapter
                 habit_adapter = LightRAGAdapter()
             interaction_habits = habit_adapter.search_interaction_habits(
                 query=effective_query, top_k=3, keywords=keywords,
@@ -783,7 +798,7 @@ class NiuRunner:
         except Exception as e:
             logger.debug(f"Interaction habits search failed (non-blocking): {e}")
 
-        # 3. Brain graph memory recall
+        # 4. Brain graph memory recall
         brain_memories_text = ""
         try:
             from niu_api.internal.brain_graph import get_brain_graph, format_memories_for_prompt
@@ -802,36 +817,30 @@ class NiuRunner:
             f"Dynamic injection | "
             f"Skills: {len(lightrag_results.get('skill', []))}, "
             f"Knowledge: {len(lightrag_results.get('knowledge', []))}, "
+            f"Region skills: {len(region_results.get('skill', []))}, "
+            f"Region knowledge: {len(region_results.get('knowledge', []))}, "
             f"Habits: {len(interaction_habits)}"
         )
 
-        # Brain region injection text + activation weighting (activation already done above)
-        lightrag_skills = lightrag_results.get("skill", [])
-        lightrag_knowledge = lightrag_results.get("knowledge", [])
+        # Brain region status map (always inject)
         try:
             if _brain_injector is not None:
-                brain_context = _brain_injector.format_injection_text(
-                    _brain_region_knowledge, _brain_entity_to_region, _brain_hit_entities
-                )
+                brain_context = _brain_injector.format_region_map_only()
                 if brain_context:
                     parts.append(f"\n{brain_context}")
-                    logger.info(f"Brain context injected: {len(brain_context)} chars, preview: {brain_context[:120]}...")
-
-                if lightrag_skills:
-                    lightrag_skills[:] = _brain_injector.apply_activation_weight(lightrag_skills)
-                if lightrag_knowledge:
-                    lightrag_knowledge[:] = _brain_injector.apply_activation_weight(lightrag_knowledge)
         except Exception as e:
-            logger.warning(f"BrainContextInjector not available: {e}")
+            logger.warning(f"Brain region map injection failed: {e}")
 
-        # Skills (after weighting)
+        # Skills (global vector search)
+        lightrag_skills = lightrag_results.get("skill", [])
         skills_text, seen_names = self._format_lightrag_entities_for_prompt(
             lightrag_skills, "相关技能", seen_names,
         )
         if skills_text:
             parts.append(skills_text)
 
-        # Knowledge (after weighting)
+        # Knowledge (global vector search)
+        lightrag_knowledge = lightrag_results.get("knowledge", [])
         knowledge_text, seen_names = self._format_lightrag_entities_for_prompt(
             lightrag_knowledge, "参考知识", seen_names,
         )
@@ -841,6 +850,17 @@ class NiuRunner:
                 "\n\n### [知识探索指引]\n"
                 "优先参考上述注入的历史参考信息回答用户问题。"
             )
+
+        # Region-filtered knowledge (brain region semantic search, deduped with seen_names)
+        region_knowledge = region_results.get("knowledge", [])
+        region_skills = region_results.get("skill", [])
+        region_all = region_skills + region_knowledge
+        if region_all:
+            region_text, seen_names = self._format_lightrag_entities_for_prompt(
+                region_all, "活跃脑区知识", seen_names,
+            )
+            if region_text:
+                parts.append(region_text)
 
         # Interaction habits (LightRAG)
         if interaction_habits:
@@ -861,7 +881,7 @@ class NiuRunner:
         else:
             logger.debug("Dynamic injection - Skipped (no relevant results)")
 
-        return injection, {}  # Empty mcp_tool_scores — no dynamic MCP injection
+        return injection, {}
 
     def chat(
         self, session_id: str, user_input: str, stream: bool = True, max_turns: int = 40, history: list = None, resources: list | None = None
