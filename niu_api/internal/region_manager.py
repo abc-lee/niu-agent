@@ -15,7 +15,9 @@ M2 module: Region node lifecycle, M1 provides community detection.
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 import re
 import time
 from dataclasses import dataclass
@@ -1003,6 +1005,46 @@ class RegionManager:
             logger.warning("Edge decay failed: %s", e)
 
         return disconnected
+
+
+def get_default_regions_config() -> list[dict]:
+    """Read default brain region definitions from preferences.json.
+
+    Returns list of dicts with keys: label, description, priority.
+    Falls back to hardcoded defaults ONLY when preferences.json has no
+    brain_regions section at all. If the section exists (even with empty
+    defaults list), that configuration is respected.
+    """
+    try:
+        prefs_path = os.path.expanduser("~/.niu/preferences.json")
+        with open(prefs_path, "r", encoding="utf-8") as f:
+            prefs = json.load(f)
+        # Respect explicit configuration — even empty defaults list
+        if "brain_regions" in prefs:
+            return prefs["brain_regions"].get("defaults", [])
+    except Exception:
+        pass
+    # Fallback ONLY when preferences.json has no brain_regions section
+    return [
+        {"label": "聊天历史", "description": "日常对话中提炼的偏好、技能和经验记忆", "priority": "core"},
+        {"label": "文档库", "description": "用户导入的文档和资料，经解析后入库的知识", "priority": "core"},
+        {"label": "知识体系", "description": "系统化组织的概念、关系和理论体系", "priority": "core"},
+        {"label": "人际关系", "description": "人物实体、关系网络、社交图谱", "priority": "category"},
+        {"label": "工作事务", "description": "工作相关的项目、任务、决策记录", "priority": "category"},
+        {"label": "生活事务", "description": "日常生活相关的日程、健康、财务", "priority": "category"},
+    ]
+
+
+def is_default_region(region_name: str) -> bool:
+    """Check if a region name is a default region defined in preferences.
+
+    Uses the configured default regions list, not community_id.
+    """
+    defaults = get_default_regions_config()
+    for d in defaults:
+        if region_name == f"{d['label']}{REGION_SUFFIX}":
+            return True
+    return False
 
 
 # ── Default Region Definitions ──────────────────────────────────
