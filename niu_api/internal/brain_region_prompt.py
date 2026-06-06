@@ -87,7 +87,13 @@ def is_lightrag_extraction_request(messages: list[dict]) -> bool:
     return False
 
 
-FALLBACK_REGIONS = "聊天历史脑区、文档库脑区、知识体系脑区、人际关系脑区、工作事务脑区、生活事务脑区"
+def _get_fallback_regions_text() -> str:
+    from niu_api.internal.region_manager import get_default_regions_config, REGION_SUFFIX
+    defaults = get_default_regions_config()
+    names = [f"{d['label']}{REGION_SUFFIX}" for d in defaults]
+    return "、".join(names)
+
+FALLBACK_REGIONS = _get_fallback_regions_text()
 
 
 def build_dynamic_brain_region_prompt() -> str:
