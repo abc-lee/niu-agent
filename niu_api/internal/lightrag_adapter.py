@@ -509,7 +509,7 @@ class LightRAGAdapter:
                 center = {
                     "id": first_node.id,
                     "name": first_node.id,
-                    "type": first_node.properties.get("entity_type", "Other"),
+                    "type": first_node.properties.get("entity_type", "other"),
                     "description": first_node.properties.get("description", ""),
                     "file_path": first_node.properties.get("file_path", ""),
                     "source_id": first_node.properties.get("source_id", ""),
@@ -521,7 +521,7 @@ class LightRAGAdapter:
                 nodes.append({
                     "id": node.id,
                     "name": node.id,
-                    "type": node.properties.get("entity_type", "Other"),
+                    "type": node.properties.get("entity_type", "other"),
                     "description": node.properties.get("description", ""),
                     "file_path": node.properties.get("file_path", ""),
                     "source_id": node.properties.get("source_id", ""),
@@ -734,7 +734,7 @@ class LightRAGAdapter:
             if keywords is None:
                 return True
             edge_data = nx_graph.get_edge_data(src, tgt)
-            return edge_data.get("keywords") == keywords
+            return edge_data.get("keywords", "").lower() == (keywords or "").lower()
 
     def get_graph_snapshot(self, limit: int = 2000) -> Dict[str, Any]:
         """Return all nodes and edges from LightRAG knowledge graph.
@@ -803,7 +803,7 @@ class LightRAGAdapter:
                 nodes.append({
                     "id": node_name,
                     "name": node_name,
-                    "type": attrs.get("entity_type", "Other"),
+                    "type": attrs.get("entity_type", "other"),
                     "description": attrs.get("description", ""),
                     "file_path": attrs.get("file_path", ""),
                     "source_id": attrs.get("source_id", ""),
@@ -1079,7 +1079,7 @@ class LightRAGAdapter:
                     with graph_read_lock():
                         snapshot = nx_graph.copy()
                     for node_id, node_data in snapshot.nodes(data=True):
-                        nt = node_data.get("entity_type", "Other")
+                        nt = node_data.get("entity_type", "other")
                         if nt.lower() == entity_type.lower():
                             nodes.append({
                                 "id": node_id,
@@ -1105,7 +1105,7 @@ class LightRAGAdapter:
                     for node in kg.nodes:
                         nodes.append({
                             "id": node.id,
-                            "entity_type": node.properties.get("entity_type", "Other"),
+                            "entity_type": node.properties.get("entity_type", "other"),
                             "description": node.properties.get("description", ""),
                         })
                     return {"status": "ok", "data": nodes}
@@ -1243,13 +1243,13 @@ class LightRAGAdapter:
                 # raw target_entity which may differ by case.
                 graph_obj = rag.chunk_entity_relation_graph
                 nx_graph = graph_obj._graph if hasattr(graph_obj, "_graph") else graph_obj
-                target_type = "Other"
+                target_type = "other"
                 target_desc = ""
                 if nx_graph and nx_graph.has_node(resolved_target):
                     with graph_read_lock():
                         if nx_graph.has_node(resolved_target):
                             attrs = nx_graph.nodes[resolved_target]
-                            target_type = attrs.get("entity_type", "Other")
+                            target_type = attrs.get("entity_type", "other")
                             target_desc = attrs.get("description", "")
 
                 get_change_log().record_change("entity_merged", {
@@ -1529,7 +1529,7 @@ class LightRAGIngester:
             for entity in entities:
                 custom_kg["entities"].append({
                     "entity_name": entity.get("entity_name") or entity.get("name", "Other"),
-                    "entity_type": entity.get("entity_type", "Other"),
+                    "entity_type": entity.get("entity_type", "other"),
                     "description": entity.get("description", ""),
                     "source_id": entity.get("source_id", source_id),
                     "file_path": entity.get("file_path", "custom_kg"),
@@ -1566,7 +1566,7 @@ class LightRAGIngester:
                     change_log.record_change("entity_created", {
                         "id": f"entity:{entity['entity_name']}",
                         "name": entity["entity_name"],
-                        "type": entity.get("entity_type", "Other"),
+                        "type": entity.get("entity_type", "other"),
                         "description": entity.get("description", ""),
                         "file_path": entity.get("file_path", ""),
                         "source_id": entity.get("source_id", ""),
