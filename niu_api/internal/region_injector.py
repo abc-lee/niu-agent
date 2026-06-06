@@ -202,6 +202,25 @@ class BrainContextInjector:
 
         return "\n".join(lines)
 
+    def format_region_map_only(self) -> str:
+        """Format brain region status map only, without detailed content.
+
+        Used when detailed content is provided by region-filtered search results
+        instead of the old layered injection approach.
+        """
+        regions = self._activation_mgr.get_region_map()
+        if not regions:
+            return ""
+        return self.format_region_map(regions)
+
+    def get_active_regions(self) -> list[BrainRegionState]:
+        """Get regions with activation > threshold."""
+        return self._activation_mgr.get_active_regions()
+
+    def get_members_of_region(self, region_id: str) -> list[str]:
+        """Get entity names belonging to a specific region."""
+        return self._activation_mgr.get_members_of_region(region_id)
+
     # ------------------------------------------------------------------
     # Formatting: detailed region (high activation > 0.7)
     # ------------------------------------------------------------------

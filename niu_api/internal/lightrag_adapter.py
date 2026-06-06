@@ -192,6 +192,7 @@ class LightRAGAdapter:
         mode: str = "local",
         top_k: Optional[int] = None,
         keywords: Optional[List[str]] = None,
+        filter_lambda=None,
     ) -> Optional[Dict[str, Any]]:
         """Query LightRAG returning structured data (entities + relationships).
 
@@ -233,6 +234,8 @@ class LightRAGAdapter:
                 param.ll_keywords = keywords
                 if mode in ("global", "hybrid", "mix"):
                     param.hl_keywords = keywords
+            if filter_lambda is not None:
+                param.filter_lambda = filter_lambda
 
             result = call_async(rag.aquery_data(query, param=param), timeout=120)
             return result
@@ -308,6 +311,29 @@ class LightRAGAdapter:
         "other": "other",
     }
 
+    def _categorize_results(self, result: dict) -> dict[str, list[dict]]:
+        """Categorize query_data results into skill/knowledge/other buckets by entity_type.
+
+        Includes same fallback logic as search_multi_lightrag for data extraction.
+        """
+        buckets: dict[str, list[dict]] = {cat: [] for cat in set(self._ENTITY_TYPE_TO_CATEGORY.values())}
+
+        if not result:
+            return buckets
+
+        data = result.get("data", {})
+        if not data:
+            data = result
+        entities = data.get("entities", [])
+        if not entities:
+            return buckets
+
+        for entity in entities:
+            entity_type = entity.get("entity_type", "other").lower()
+            category = self._ENTITY_TYPE_TO_CATEGORY.get(entity_type, "knowledge")
+            buckets[category].append(entity)
+        return buckets
+
     def search_multi_lightrag(
         self,
         query: str,
@@ -351,22 +377,46 @@ class LightRAGAdapter:
             logger.debug("LightRAG search_multi_lightrag: query_data returned no results")
             return result
 
-        # Extract entities from query_data result
-        data = query_result.get("data", {})
-        if not data:
-            data = query_result
-        entities = data.get("entities", [])
-        if not entities:
-            return result
+        return self._categorize_results(query_result)
 
-        # Group by entity_type → category
-        for entity in entities:
-            et = entity.get("entity_type", "").lower().strip()
-            category = self._ENTITY_TYPE_TO_CATEGORY.get(et, "knowledge")
-            if category and category in result:
-                result[category].append(entity)
+    def search_within_region(
+        self,
+        query: str,
+        region_member_names: set[str] | list[str],
+        mode: str = "local",
+        top_k: int = 10,
+        keywords: list[str] | None = None,
+    ) -> dict[str, list[dict]]:
+        """Search entities within specified brain region members only.
 
-        return result
+        Uses filter_lambda to restrict vector search to the given member entity names.
+        This enables region-scoped semantic search (e.g., searching only within
+        activated brain regions).
+
+        Args:
+            query: Search query text
+            region_member_names: Set/list of entity names to restrict search to
+            mode: LightRAG search mode (default: "local")
+            top_k: Number of results to return
+            keywords: Optional keywords to skip LLM extraction
+
+        Returns:
+            Dict with "skill", "knowledge" and "other" lists, same format as search_multi_lightrag
+        """
+        if not region_member_names:
+            return {"skill": [], "knowledge": [], "other": []}
+
+        member_set = set(region_member_names)
+        filter_fn = lambda data: data.get("entity_name") in member_set
+
+        result = self.query_data(
+            query, mode=mode, top_k=top_k, keywords=keywords,
+            filter_lambda=filter_fn,
+        )
+        if not result:
+            return {"skill": [], "knowledge": [], "other": []}
+
+        return self._categorize_results(result)
 
     # ============== Semantic Search Methods ==============
 
