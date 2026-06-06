@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 修复脑区状态地图显示"0实体"的 bug，让成员计数直接从 NetworkX 图中读取。
+**Goal:** 修复脑区状态地图显示"0实体"的 bug，让成员数据直接从 NetworkX 图中读取。
 
-**Architecture:** 所有"获取脑区成员"的地方统一走 `lightrag_manager.get_region_members()` 直接读 NetworkX 图，替代绕路查内存映射的不可靠路径。同时修复该函数的无向图单向匹配问题。
+**Architecture:** 脑区节点在图中只有2种边：1条 `brain_region_anchor` + N条 `_region:contains`。所以 `边数 - 1 = 成员数`。修复方案就是让所有"获取脑区成员"的地方统一走 `lightrag_manager.get_region_members()` 直接读 NetworkX 图，不走不可靠的内存映射路径。
 
 **Tech Stack:** Python, NetworkX
 
@@ -12,11 +12,9 @@
 
 ## 根因
 
-`_get_member_count` → `_get_members` → `_activation_mgr.get_members_of_region()` → 查 `_entity_to_region` 内存映射 → 映射为空 → 0实体。
+`_get_member_count` → `_get_members` → `_activation_mgr.get_members_of_region()` → 查 `_entity_to_region` 内存映射 → 映射为空 → 显示0。
 
-而 NetworkX 图中 `_region:contains` 边就在那里，`lightrag_manager.get_region_members()` 已经能直接读到。问题只是 `_get_member_count` 不走这条路径。
-
-**修复思路**：让 `_get_member_count` 直接调 `lightrag_manager.get_region_members()`，不走内存映射。
+而 NetworkX 图中 `_region:contains` 边就在那里，`lightrag_manager.get_region_members()` 已经能直接读到。
 
 ---
 
@@ -31,6 +29,8 @@
 
 **Files:**
 - Modify: `REDACTED_USER_PATH/tools/ai-bot/niu_api/internal/lightrag_manager.py:233-237,275-282`
+
+当前 `get_region_members()` 只检查 `src == region_name`，在无向图中 `src/tgt` 顺序不确定，会遗漏成员。`get_all_region_members()` 同样假设 `src` 总是脑区，也有此问题。
 
 - [ ] **Step 1: 修改 `get_region_members()` 添加双向匹配**
 
@@ -59,6 +59,8 @@
 
 - [ ] **Step 2: 修改 `get_all_region_members()` 添加双向匹配**
 
+脑区名特征：以"脑区"结尾或以"brain:region:"开头。用此判断哪端是脑区。
+
 ```python
 # 修改前 (line 275-282):
         region_members: dict[str, list[str]] = {}
@@ -77,10 +79,10 @@
         for src, tgt, data in snapshot.edges(data=True):
             edge_type = data.get("keywords") or data.get("type", "")
             if edge_type.lower() == "_region:contains":
-                # NetworkX 无向图中 src/tgt 顺序不确定，需双向判断
-                if src.endswith(REGION_SUFFIX) or src.startswith(REGION_PREFIX):
+                # 无向图中 src/tgt 顺序不确定，需判断哪端是脑区
+                if src.endswith("脑区") or src.startswith("brain:region:"):
                     region, member = src, tgt
-                elif tgt.endswith(REGION_SUFFIX) or tgt.startswith(REGION_PREFIX):
+                elif tgt.endswith("脑区") or tgt.startswith("brain:region:"):
                     region, member = tgt, src
                 else:
                     continue
@@ -89,15 +91,6 @@
                 region_members[region].append(member)
 
         return region_members
-```
-
-注：用 `REGION_SUFFIX = "脑区"` 和 `REGION_PREFIX = "brain:region:"` 判断哪端是脑区名，比 `endswith("脑区")` 更精确——这两个常量定义在 `region_manager.py:36-37`，需要在 `lightrag_manager.py` 中导入或定义局部常量。
-
-在 `lightrag_manager.py` 顶部导入区域添加：
-
-```python
-REGION_SUFFIX = "脑区"
-REGION_PREFIX = "brain:region:"
 ```
 
 - [ ] **Step 3: 语法检查**
@@ -116,13 +109,13 @@ git commit -m "fix: add bidirectional edge matching in get_region_members and ge
 
 ### Task 2: 所有 get_region_members 调用统一改为 lightrag_manager 版本
 
-涉及三个文件中的调用点：
+涉及3个文件：
 
 | 文件 | 行号 | 当前调用 | 改为 |
 |------|------|----------|------|
 | `region_injector.py` | 476-478 | `_activation_mgr.get_members_of_region(region_id)` | `lightrag_get_region_members(region_id)` |
 | `region_sync.py` | 282 | `manager.get_region_members(region.name)` | `lightrag_get_region_members(region.name)` |
-| `brain_region_api.py` | 192 | `region_mgr.get_region_members(region.name)` | `lightrag_get_region_members(region.name)` |
+| `brain_region_api.py` | ~192 | `region_mgr.get_region_members(region.name)` | `lightrag_get_region_members(region.name)` |
 
 - [ ] **Step 1: 修改 region_injector.py 的 `_get_members` 方法**
 
@@ -163,11 +156,11 @@ git commit -m "fix: add bidirectional edge matching in get_region_members and ge
                     )
 ```
 
-注：导入放在函数内部，与 `_refresh_activation_manager` 中其他导入风格一致（line 267-270）。`manager` 变量仍需保留，因为第276行 `get_all_regions()` 还依赖它。异常日志从 `debug` 改为 `warning`。
+注：导入放在函数内部，与 `_refresh_activation_manager` 中其他导入风格一致（line 267-270）。`manager` 变量仍需保留，因为第276行 `get_all_regions()` 还依赖它。
 
 - [ ] **Step 3: 修改 brain_region_api.py 的 get_region_members 调用**
 
-读取 `REDACTED_USER_PATH/tools/ai-bot/niu_api/brain_region_api.py` 第190行附近，找到 `region.members = region_mgr.get_region_members(region.name)` 的调用，改为 `lightrag_get_region_members(region.name)`。
+读取 `REDACTED_USER_PATH/tools/ai-bot/niu_api/brain_region_api.py`，找到 `region.members = region_mgr.get_region_members(region.name)` 的调用，改为：
 
 ```python
 # 修改前:
@@ -185,7 +178,7 @@ Expected: 无输出
 
 - [ ] **Step 5: 运行测试**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_region_injector.py tests/test_region_sync.py tests/test_brain_region_integration.py -v`
+Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_region_injector.py tests/test_region_sync.py -v`
 Expected: 所有测试通过
 
 - [ ] **Step 6: 提交**
