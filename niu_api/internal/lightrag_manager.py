@@ -186,7 +186,7 @@ def get_brain_regions() -> list[str]:
         # Filter nodes whose entity_type is BrainRegion
         brain_regions = [
             name for name, data in snapshot.nodes(data=True)
-            if data.get("entity_type") == "BrainRegion"
+            if data.get("entity_type", "").lower() == "brainregion"
         ]
 
         return brain_regions
@@ -233,7 +233,7 @@ def get_region_members(region_name: str) -> list[str]:
         members = []
         for src, tgt, data in snapshot.edges(data=True):
             edge_type = data.get("keywords") or data.get("type", "")
-            if src == region_name and edge_type == "_region:contains":
+            if src == region_name and edge_type.lower() == "_region:contains":
                 members.append(tgt)
 
         return members
@@ -275,7 +275,7 @@ def get_all_region_members() -> dict[str, list[str]]:
         region_members: dict[str, list[str]] = {}
         for src, tgt, data in snapshot.edges(data=True):
             edge_type = data.get("keywords") or data.get("type", "")
-            if edge_type == "_region:contains":
+            if edge_type.lower() == "_region:contains":
                 # src is region, tgt is member
                 if src not in region_members:
                     region_members[src] = []

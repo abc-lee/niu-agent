@@ -171,10 +171,10 @@ def _normalize_nodes(nodes: list) -> list:
     result = []
     for n in nodes:
         raw_id = n.get("id", "")
-        node_type = n.get("type", "Other")
+        node_type = n.get("type", "other")
         # Entity nodes: add entity: prefix, set nodeType to "Entity"
         # Document nodes: keep ID as-is, nodeType stays "Document"
-        if node_type == "Document":
+        if node_type.lower() == "document":
             node_id = raw_id
             normalized_type = "Document"
         else:
@@ -628,7 +628,7 @@ def hub_entities(
                     "label": node_name,
                     "name": node_name,
                     "nodeType": "Entity",
-                    "entityType": attrs.get("entity_type", "Other"),
+                    "entityType": attrs.get("entity_type", "other"),
                     "description": attrs.get("description", ""),
                     "uri": _clean_file_path(attrs.get("file_path", "")),
                     "source": attrs.get("source_id", ""),
@@ -689,7 +689,7 @@ def explore_node(request: ExploreRequest):
             "label": c.get("name", c.get("id", "")),
             "name": c.get("name", ""),
             "nodeType": "Entity",
-            "entityType": c.get("type", "Other"),
+            "entityType": c.get("type", "other"),
             "description": c.get("description", ""),
             "uri": _clean_file_path(c.get("file_path", "")),
             "source": _clean_source_id(c.get("source_id", "")),
@@ -736,7 +736,7 @@ def find_path(request: FindPathRequest):
                     "label": node_name,
                     "name": node_name,
                     "nodeType": "Entity",
-                    "entityType": attrs.get("entity_type", "Other"),
+                    "entityType": attrs.get("entity_type", "other"),
                     "description": attrs.get("description", ""),
                     "uri": _clean_file_path(attrs.get("file_path", "")),
                     "source": attrs.get("source_id", ""),
@@ -816,7 +816,7 @@ def list_entities(
                     "label": node_name,
                     "name": node_name,
                     "nodeType": "Entity",
-                    "entityType": attrs.get("entity_type", "Other"),
+                    "entityType": attrs.get("entity_type", "other"),
                     "description": attrs.get("description", ""),
                     "uri": _clean_file_path(attrs.get("file_path", "")),
                     "source": attrs.get("source_id", ""),
@@ -876,7 +876,7 @@ def list_concepts(limit: int = Query(default=100, ge=1, le=500)):
                     "label": node_name,
                     "name": node_name,
                     "nodeType": "Concept",
-                    "entityType": attrs.get("entity_type", "Other"),
+                    "entityType": attrs.get("entity_type", "other"),
                     "description": attrs.get("description", ""),
                     "uri": _clean_file_path(attrs.get("file_path", "")),
                     "source": _clean_source_id(attrs.get("source_id", "")),
@@ -952,7 +952,7 @@ def surprising_connections(
                     "label": node_name,
                     "name": node_name,
                     "nodeType": "Entity",
-                    "entityType": attrs.get("entity_type", "Other"),
+                    "entityType": attrs.get("entity_type", "other"),
                     "description": attrs.get("description", ""),
                     "uri": _clean_file_path(attrs.get("file_path", "")),
                     "source": attrs.get("source_id", ""),
