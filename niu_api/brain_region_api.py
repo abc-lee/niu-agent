@@ -187,9 +187,10 @@ def consolidate_brain_regions(
         if activation_mgr is not None:
             regions = region_mgr.get_all_regions()
             # BUG 2 fix: Fetch members for each region
+            from niu_api.internal.lightrag_manager import get_region_members as lightrag_get_region_members
             for region in regions:
                 try:
-                    region.members = region_mgr.get_region_members(region.name)
+                    region.members = lightrag_get_region_members(region.name)
                 except Exception as exc:
                     logger.warning("Failed to fetch members for region %s: %s", region.name, exc)
             activation_mgr.initialize_from_regions(regions)
