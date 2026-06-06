@@ -338,6 +338,7 @@ class RegionSync:
         try:
             from agent.brain_tools import get_activation_mgr
             from niu_api.internal.lightrag_adapter import LightRAGAdapter
+            from niu_api.internal.region_manager import is_default_region
 
             activation_mgr = get_activation_mgr()
             if activation_mgr is not None:
@@ -354,11 +355,11 @@ class RegionSync:
                         if source_state is None or target_state is None:
                             continue
 
-                        # Protect pre-set brain regions (community_id is empty for pre-set regions)
-                        if not source_state.community_id:
+                        # Protect default brain regions (defined in preferences.json)
+                        if is_default_region(source_state.region_id):
                             logger.debug("[RegionSync] 跳过预置脑区合并: %s", source_state.label)
                             continue
-                        if not target_state.community_id:
+                        if is_default_region(target_state.region_id):
                             logger.debug("[RegionSync] 跳过预置脑区作为合并目标: %s", target_state.label)
                             continue
 
