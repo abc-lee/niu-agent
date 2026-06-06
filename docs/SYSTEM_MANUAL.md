@@ -128,7 +128,7 @@ ai-bot/
 |----------|------|----------|------|
 | `file-processor` | 文件处理：复制、解析、存储、向量化 | 主 Agent 委托（文件拖入） | 0.2 |
 | `event-manager` | 事件管理：创建/查询/删除事件 | 主 Agent 委托 | 0.2 |
-| `context-manager` | 上下文管理：L0/L1/L2 记忆层级 | auto-tidy 管线自动调度 | 0.2 |
+| `context-manager` | 上下文管理：内容压缩 | auto-tidy 管线自动调度 | 0.2 |
 | `journal-agent` | 工作日志：从对话提取工作内容写入日志 | 主 Agent 委托或 auto-tidy | 0.3 |
 | `entity-extractor` | 内容提炼：从对话筛选有价值内容入库 | auto-tidy 管线自动调度 | 0.3 |
 | `dream-evolver` | 梦境进化：精加工知识图谱 + skill 维护 | auto-tidy 管线自动调度 | 0.3 |
