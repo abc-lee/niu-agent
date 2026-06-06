@@ -237,8 +237,9 @@ def get_region_members(name: str) -> dict[str, Any]:
         else:
             region_name = name
 
-        # Get members via RegionManager (sync — no call_async)
-        members = region_mgr.get_region_members(region_name)
+        # Get members via lightrag_manager (reads _region:contains edges from graph)
+        from niu_api.internal.lightrag_manager import get_region_members as lightrag_get_region_members
+        members = lightrag_get_region_members(region_name)
 
         return {
             "status": "ok",

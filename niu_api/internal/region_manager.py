@@ -454,41 +454,13 @@ class RegionManager:
         return regions
 
     def get_region_members(self, region_name: str) -> list[str]:
-        """Get members by following belongs_to relationships from region node
+        """Get members by reading _region:contains edges from NetworkX graph.
 
-        No longer async — see get_all_regions for rationale.
-
-        Uses explore_node(region_name, depth=1) then filter belongs_to edges
-
-        Args:
-            region_name: Full region entity name (e.g. "Python脑区")
-
-        Returns:
-            List of entity names that belong to this region
+        Delegates to lightrag_manager.get_region_members() which directly
+        reads the in-memory graph — more reliable than explore_node.
         """
-        explore_result = self._adapter.explore_node(region_name, depth=1)
-
-        if not explore_result:
-            return []
-
-        members: list[str] = []
-        edges = explore_result.get("edges", [])
-
-        for edge in edges:
-            # belongs_to edges go from region -> member
-            source = edge.get("source", "")
-            target = edge.get("target", "")
-            relation = edge.get("relation", "")
-
-            if relation in (BELONGS_TO_RELATION, _LEGACY_BELONGS_TO):
-                # region -> member: source is region, target is member
-                if source == region_name:
-                    members.append(target)
-                # member -> region: reverse direction
-                elif target == region_name:
-                    members.append(source)
-
-        return members
+        from niu_api.internal.lightrag_manager import get_region_members as lightrag_get_region_members
+        return lightrag_get_region_members(region_name)
 
     def cleanup_stale_regions(
         self,
