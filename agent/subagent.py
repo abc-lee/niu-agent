@@ -82,9 +82,12 @@ def _run_agent_loop(
         (result_text, return_value) 元组
     """
     from .generic.agent_loop import agent_runner_loop, StreamEvent
+    from .runner import is_stop_requested, request_stop
 
     if initial_user_content is None:
         initial_user_content = user_input
+
+    was_stopped_before = is_stop_requested()
 
     gen = agent_runner_loop(
         client=client,
@@ -117,6 +120,11 @@ def _run_agent_loop(
         except StopIteration as e:
             return_value = e.value
             break
+
+    # 子Agent退出时 clear_stop() 会清除全局标志，导致主Agent无法检测停止请求
+    # 如果停止标志在子Agent运行前就已设置，重新设置它
+    if was_stopped_before:
+        request_stop()
 
     return result, return_value
 
