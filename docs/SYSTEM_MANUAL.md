@@ -21,6 +21,13 @@ Niu 是一个**本地运行**的个人知识管理助手，核心理念：
 | 定时任务 | 自然语言创建提醒，支持循环任务 |
 | 智能记忆 | 自动学习用户偏好和习惯 |
 | 浏览器辅助 | Chrome Extension，AI 操作网页 |
+| /stop 指令 | 停止当前 Agent 工作，支持 Electron 和 IM 通用 |
+| /clear 指令 | 先停止 Agent 再清空对话，支持 Electron 和 IM 通用 |
+
+**指令机制**：
+- `/stop`：通过正常消息通道发送（非独立 API），在 `chat_session` 和 `ChatQueue` 入口拦截并设置全局停止标志。Agent 主循环、handler dispatch 在关键点检查标志并退出。前端停止按钮自动发送 `/stop` 文本。
+- `/clear`：先发送 `/stop` 停止 Agent，等 `chat_idle` 事件后延迟执行 `clearChat()`，避免锁等待阻塞 UI。
+- 停止标志生命周期：Agent 循环退出时自动 `clear_stop()`，不留残留影响后续定时任务。用户发新消息时防御性清除。
 
 ### 1.3 技术栈
 
