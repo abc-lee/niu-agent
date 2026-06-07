@@ -611,8 +611,9 @@ async def chat_session(request: ChatRequest) -> ChatResponse:
 
         return ChatResponse(reply=full_reply, session_id="default", message_id=message_id)
     finally:
-        from agent.runner import clear_stop
+        from agent.runner import clear_stop, drain_supplements
         clear_stop()  # 防御性清除：确保停止标志不残留
+        drain_supplements()  # 清理残留补充消息，防止被 ChatQueue 路径读取
         _chat_lock.release()
 
 
