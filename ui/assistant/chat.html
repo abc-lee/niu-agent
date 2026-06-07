@@ -777,7 +777,7 @@
           _pendingClear = false;
           _pendingClearTimeout = null;
           addSystemMessage('停止超时，清空操作已取消');
-        }, 30000);
+        }, 120000);  // 与 busyTimeout 一致
         return;
       }
 
