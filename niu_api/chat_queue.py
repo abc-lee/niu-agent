@@ -287,57 +287,62 @@ class ChatQueue:
             logger.info("[ChatQueue] Clearing residual stop flag before processing")
             clear_stop()
 
-        from niu_api.compat import _chat_lock
-
-        store = await get_message_store()
-
-        # 先加载历史上下文（此时不包含当前 user 消息，避免重复）
-        from agent.context_manager import get_context_manager
-        context_manager = await get_context_manager(store)
-        history_for_runner = await context_manager.get_context_for_chat(exclude_last=False)
-        history_len = len(history_for_runner)
-
-        # 持久化 user 消息（每条独立持久化，在历史加载之后）
-        if user_contents:
-            for uc in user_contents:
-                await store.add_message(role="user", content=uc)
-        else:
-            await store.add_message(role="user", content=content)
-
-        # 调用 runner.chat()（在 executor 中运行，不阻塞事件循环）
-        # NiuRunner.chat(session_id, user_input, stream=False, history=...)
-        def sync_chat():
-            chunks = []
-            for chunk in self._runner.chat(session_id, content, stream=False, history=history_for_runner):
-                chunks.append(chunk)
-            return "".join(chunks)
-
-        acquired = False
         try:
-            acquired = await asyncio.wait_for(_chat_lock.acquire(), timeout=120)
-            if not acquired:
-                raise TimeoutError("Timeout waiting for chat lock")
-            full_reply = await asyncio.get_running_loop().run_in_executor(None, sync_chat)
-        except asyncio.TimeoutError:
-            logger.error("[ChatQueue] Timeout waiting for chat lock")
-            full_reply = "处理消息超时，请稍后重试"
-        except Exception as e:
-            logger.error(f"[ChatQueue] Chat error: {e}")
-            full_reply = f"处理消息时出错：{str(e)}"
+            from niu_api.compat import _chat_lock
+
+            store = await get_message_store()
+
+            # 先加载历史上下文（此时不包含当前 user 消息，避免重复）
+            from agent.context_manager import get_context_manager
+            context_manager = await get_context_manager(store)
+            history_for_runner = await context_manager.get_context_for_chat(exclude_last=False)
+            history_len = len(history_for_runner)
+
+            # 持久化 user 消息（每条独立持久化，在历史加载之后）
+            if user_contents:
+                for uc in user_contents:
+                    await store.add_message(role="user", content=uc)
+            else:
+                await store.add_message(role="user", content=content)
+
+            # 调用 runner.chat()（在 executor 中运行，不阻塞事件循环）
+            # NiuRunner.chat(session_id, user_input, stream=False, history=...)
+            def sync_chat():
+                chunks = []
+                for chunk in self._runner.chat(session_id, content, stream=False, history=history_for_runner):
+                    chunks.append(chunk)
+                return "".join(chunks)
+
+            acquired = False
+            try:
+                acquired = await asyncio.wait_for(_chat_lock.acquire(), timeout=120)
+                if not acquired:
+                    raise TimeoutError("Timeout waiting for chat lock")
+                full_reply = await asyncio.get_running_loop().run_in_executor(None, sync_chat)
+            except asyncio.TimeoutError:
+                logger.error("[ChatQueue] Timeout waiting for chat lock")
+                full_reply = "处理消息超时，请稍后重试"
+            except Exception as e:
+                logger.error(f"[ChatQueue] Chat error: {e}")
+                full_reply = f"处理消息时出错：{str(e)}"
+            finally:
+                if acquired:
+                    _chat_lock.release()
+
+            # 持久化回复消息（使用共享函数）
+            from niu_api.chat import persist_agent_reply
+            rv = getattr(self._runner, "last_return_value", None)
+            persisted_msgs = getattr(self._runner, "_persisted_msgs", None)  # V4: 已逐条持久化的消息
+            message_id, full_reply = await persist_agent_reply(store, rv, history_len, full_reply, source=channel, persisted_msgs=persisted_msgs)
+
+            # 上下文溢出检测
+            await self._check_overflow(session_id, store, full_reply)
+
+            return full_reply
         finally:
-            if acquired:
-                _chat_lock.release()
-
-        # 持久化回复消息（使用共享函数）
-        from niu_api.chat import persist_agent_reply
-        rv = getattr(self._runner, "last_return_value", None)
-        persisted_msgs = getattr(self._runner, "_persisted_msgs", None)  # V4: 已逐条持久化的消息
-        message_id, full_reply = await persist_agent_reply(store, rv, history_len, full_reply, source=channel, persisted_msgs=persisted_msgs)
-
-        # 上下文溢出检测
-        await self._check_overflow(session_id, store, full_reply)
-
-        return full_reply
+            # 防御性清除：确保停止标志不残留（与 chat_session 的 finally 对齐）
+            if is_stop_requested():
+                clear_stop()
 
     async def _check_overflow(self, session_id: str, store, full_reply: str):
         """检测上下文溢出，触发压缩"""

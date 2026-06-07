@@ -844,7 +844,7 @@ async def _tidy_context_impl(request: dict):
         logger.info(f"[Tidy] Current context: {message_count} messages, {estimated_tokens} tokens, {usage_percent:.1f}%")
 
         from agent.subagent import call_subagent
-        from agent.runner import is_stop_requested
+        from agent.runner import is_stop_requested, clear_stop
 
         from niu_api.chat import get_or_create_runner
 
@@ -947,6 +947,7 @@ async def _tidy_context_impl(request: dict):
                 entity_result = await asyncio.to_thread(run_entity_extractor)
                 if is_stop_requested():
                     logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
+                    clear_stop()
                     return {"status": "aborted", "message": "Stopped by user"}
                 logger.info(f"[Tidy] entity-extractor result: {entity_result[:200]}")
 
@@ -1029,6 +1030,7 @@ async def _tidy_context_impl(request: dict):
                 dream_result = await asyncio.to_thread(run_dream_evolver)
                 if is_stop_requested():
                     logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
+                    clear_stop()
                     return {"status": "aborted", "message": "Stopped by user"}
                 logger.info(f"[Tidy] Dream-evolver result: {dream_result[:200]}")
 
@@ -1218,6 +1220,7 @@ async def _tidy_context_impl(request: dict):
                 cm_result = await asyncio.to_thread(run_context_manager)
                 if is_stop_requested():
                     logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
+                    clear_stop()
                     return {"status": "aborted", "message": "Stopped by user"}
                 logger.info(f"[Tidy] context-manager result: {cm_result[:200]}")
 
@@ -1312,6 +1315,7 @@ async def _tidy_context_impl(request: dict):
                 entity_result = await asyncio.to_thread(run_entity_extractor_force)
                 if is_stop_requested():
                     logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
+                    clear_stop()
                     return {"status": "aborted", "message": "Stopped by user"}
                 logger.info(f"[Tidy] Force: entity-extractor completed, length={len(entity_result)}")
 
@@ -1392,6 +1396,7 @@ async def _tidy_context_impl(request: dict):
                 dream_result = await asyncio.to_thread(run_dream_evolver_force)
                 if is_stop_requested():
                     logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
+                    clear_stop()
                     return {"status": "aborted", "message": "Stopped by user"}
                 logger.info(f"[Tidy] Force: dream-evolver completed, length={len(dream_result)}")
 
@@ -1475,6 +1480,7 @@ async def _tidy_context_impl(request: dict):
                 journal_result = await asyncio.to_thread(run_journal_agent_force)
                 if is_stop_requested():
                     logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
+                    clear_stop()
                     return {"status": "aborted", "message": "Stopped by user"}
                 logger.info(f"[Tidy] Force: journal-agent completed, length={len(journal_result)}")
 
