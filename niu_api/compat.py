@@ -516,8 +516,24 @@ async def chat_session(request: ChatRequest) -> ChatResponse:
         logger.info("[ChatSession] /stop requested")
         return ChatResponse(reply="已停止")
 
-    # 排队等待锁：最多等 60 秒，而非直接拒绝
-    # 之前 timeout=0.01 导致文件拖入等请求被直接丢弃
+    # --- 见缝插针：Agent 运行期间，将补充消息入队并立即返回 ---
+    if _chat_lock.locked():
+        from agent.runner import enqueue_supplement
+
+        # 持久化 user 消息（与正常路径一致）
+        store = await get_message_store()
+        user_msg_id = await store.add_message(role="user", content=request.message)
+
+        # SSE 推送 user 消息给前端
+        from niu_api.chat import notify_new_message
+        await notify_new_message(user_msg_id, "user", request.message, source="electron")
+
+        # 入队补充消息，立即返回
+        enqueue_supplement(request.message)
+        logger.info(f"[chat_session] Supplement enqueued: {request.message[:50]}...")
+        return ChatResponse(reply="已收到", session_id="default", message_id=user_msg_id)
+
+    # 锁未被占用：正常获取锁并处理
     try:
         await asyncio.wait_for(_chat_lock.acquire(), timeout=60.0)
     except TimeoutError:
@@ -553,8 +569,10 @@ async def chat_session(request: ChatRequest) -> ChatResponse:
         session_id = "default"
 
         # 每次用户发起新对话时，清除停止标志
-        from agent.runner import clear_stop
+        from agent.runner import clear_stop, drain_supplements
         clear_stop()
+        # 清理残留的补充消息（这些消息已被持久化，会通过历史加载重新进入上下文）
+        drain_supplements()
 
         # Run chat using asyncio.to_thread to avoid blocking event loop
         def sync_chat():
