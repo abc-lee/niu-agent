@@ -8,6 +8,7 @@ Skills/知识通过 LightRAG 动态注入提示词。
 
 import json
 import os
+import queue as _queue_module
 import re
 import sys
 import io
@@ -38,6 +39,41 @@ def clear_stop():
 def is_stop_requested() -> bool:
     """Check if stop has been requested."""
     return _stop_requested.is_set()
+
+
+# --- Supplement queue (见缝插针) ---
+_supplement_queue = _queue_module.Queue()  # 无限长度，永不阻塞
+
+
+def enqueue_supplement(content: str):
+    """将用户在 Agent 运行期间发送的补充消息放入队列。"""
+    _supplement_queue.put(content)
+
+
+def drain_supplements() -> list[str]:
+    """取出所有补充消息（非阻塞，无竞态）。"""
+    msgs = []
+    while True:
+        try:
+            msgs.append(_supplement_queue.get_nowait())
+        except _queue_module.Empty:
+            break
+    return msgs
+
+
+def drain_supplement() -> str | None:
+    """取出所有补充消息，格式化为单条字符串。
+
+    - 无消息返回 None
+    - 单条返回原文
+    - 多条合并为 "[补充] 消息1\\n[补充] 消息2"
+    """
+    msgs = drain_supplements()
+    if not msgs:
+        return None
+    if len(msgs) == 1:
+        return msgs[0]
+    return "\n".join(f"[补充] {m}" for m in msgs)
 
 
 def _sanitize_memory_content(content: str) -> str:
