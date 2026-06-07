@@ -846,10 +846,6 @@ class NiuRunner:
         )
         if knowledge_text:
             parts.append(knowledge_text)
-            parts.append(
-                "\n\n### [知识探索指引]\n"
-                "优先参考上述注入的历史参考信息回答用户问题。"
-            )
 
         # Region-filtered knowledge (brain region semantic search, deduped with seen_names)
         region_knowledge = region_results.get("knowledge", [])
@@ -861,6 +857,10 @@ class NiuRunner:
             )
             if region_text:
                 parts.append(region_text)
+                parts.append(
+                    "\n\n### [知识探索指引]\n"
+                    "优先参考上述活跃脑区知识回答用户问题，脑区内容与你当前关注领域最相关。"
+                )
 
         # Interaction habits (LightRAG)
         if interaction_habits:
