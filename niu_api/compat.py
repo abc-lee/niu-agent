@@ -749,6 +749,9 @@ async def clear_chat() -> dict:
 
     try:
         clear_stop()  # 防御性清除：确保清空时标志干净
+        # 清理残留的补充消息
+        from agent.runner import drain_supplements
+        drain_supplements()
         store = await get_message_store()
         count = await store.clear_messages()
 
