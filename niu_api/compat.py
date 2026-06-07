@@ -1115,6 +1115,7 @@ async def _tidy_context_impl(request: dict):
                     journal_result = await asyncio.to_thread(run_journal_agent)
                     if is_stop_requested():
                         logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
+                        clear_stop()
                         return {"status": "aborted", "message": "Stopped by user"}
                     logger.info(f"[Tidy] journal-agent result: {journal_result[:200]}")
 
@@ -1581,6 +1582,7 @@ async def _tidy_context_impl(request: dict):
             result = await asyncio.to_thread(run_context_manager_force)
             if is_stop_requested():
                 logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
+                clear_stop()
                 return {"status": "aborted", "message": "Stopped by user"}
             logger.info(f"[Tidy] Force: context-manager completed, length={len(result)}")
 
