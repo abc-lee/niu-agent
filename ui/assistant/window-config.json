@@ -4,14 +4,14 @@
     "y": 520
   },
   "chat": {
-    "x": 408,
-    "y": 267,
+    "x": 455,
+    "y": 257,
     "width": 813,
     "height": 634
   },
   "sticky": {
     "x": 1171,
-    "y": 397
+    "y": 394
   },
   "stickySize": 250,
   "chatSessionId": "default"
