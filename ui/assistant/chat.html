@@ -777,19 +777,14 @@
           _pendingClear = false;
           _pendingClearTimeout = null;
           addSystemMessage('停止超时，清空操作已取消');
-        }, 120000);  // 与 busyTimeout 一致
+        }, 120000);
         return;
       }
 
-      if (isProcessing) { addSystemMessage('请等待当前回复完成'); return; }
-      isProcessing = true;
-      stopBtn.style.display = 'flex';
-
-      // /new 指令 - 清空聊天记录（只能在 isProcessing=false 时使用）
+      // /new 指令 - 清空聊天记录
       if (text === '/new') {
         userInput.value = '';
         userInput.style.height = 'auto';
-        isProcessing = false;
         stopBtn.style.display = 'none';
         await clearChat();
         return;
@@ -797,38 +792,17 @@
 
       // 铁律1：用户触发的 → 先刷新页面（即时反馈）
       const userMsg = addMessage('user', text);
-      if (!userMsg) { isProcessing = false; return; }  // addMessage 返回 null（如 tool 消息被过滤），跳过后续
+      if (!userMsg) { return; }  // addMessage 返回 null（如 tool 消息被过滤），跳过后续
 
       userInput.value = '';
       userInput.style.height = 'auto';
       showTyping();
       window.electronAPI.notifyBusy(true, 'chat');
-      if (busyTimeout) clearTimeout(busyTimeout);
-      busyTimeout = setTimeout(() => {
-        isProcessing = false;
-        sendBtn.disabled = false;
-        stopBtn.style.display = 'none';
-        hideTyping();
-        window.electronAPI.notifyBusy(false, 'chat');
-        addSystemMessage('回复超时，已自动恢复');
-        busyTimeout = null;
-      }, 120000);
 
       try {
         const result = await sendMessageWithRetry(text);
-        // 后端已写数据库 + SSE推送，refreshFromDB() 会用数据库版本替换临时显示
-        // typing 动画由 refreshFromDB 在收到 assistant 消息时关闭
-        // 如果后端返回了错误（如"系统正忙"），没有SSE，需要手动关闭typing
-        if (result && result.reply && result.reply.includes('系统正忙')) {
-          addMessage('system', '系统正忙，请稍后再试');
-        }
       } finally {
-        if (busyTimeout) { clearTimeout(busyTimeout); busyTimeout = null; }
-        hideTyping();
-        window.electronAPI.notifyBusy(false, 'chat');
         sendBtn.disabled = false;
-        stopBtn.style.display = 'none';
-        isProcessing = false;
         loadStats();
         userInput.focus();
       }
@@ -1283,7 +1257,6 @@
       if (data && data.role === 'chat_idle') {
         // Agent循环结束：重置状态机
         hideTyping();
-        if (busyTimeout) { clearTimeout(busyTimeout); busyTimeout = null; }
         isProcessing = false;
         sendBtn.disabled = false;
         stopBtn.style.display = 'none';
@@ -1375,14 +1348,9 @@
     
     // 处理拖入的图片
     async function handleDroppedImage(file) {
-      if (isProcessing) { addSystemMessage('请等待当前回复完成'); return; }
-      isProcessing = true;
-      stopBtn.style.display = 'flex';
-
       const filePath = file.path;
       if (!filePath) {
         console.error('[Chat] 无法获取文件路径');
-        isProcessing = false;
         return;
       }
 
@@ -1406,54 +1374,30 @@
         const msgDiv = addMessage('user', null);
         if (!msgDiv) {
           // addMessage 返回 null（如 tool 消息被过滤），跳过后续
-          isProcessing = false;
           return;
         }
         msgDiv.appendChild(previewDiv);
 
         showTyping();
         window.electronAPI.notifyBusy(true, 'chat');
-        if (busyTimeout) clearTimeout(busyTimeout);
-        busyTimeout = setTimeout(() => {
-          isProcessing = false;
-          sendBtn.disabled = false;
-          stopBtn.style.display = 'none';
-          hideTyping();
-          window.electronAPI.notifyBusy(false, 'chat');
-          addSystemMessage('回复超时，已自动恢复');
-          busyTimeout = null;
-        }, 120000);
 
-        const result = await window.electronAPI.processImage(filePath);
+        await window.electronAPI.processImage(filePath);
         // agent回复由SSE→refreshFromDB()显示
         previewDiv.classList.remove('uploading');
         overlayDiv.remove();
-        if (result && result.reply && result.reply.includes('系统正忙')) {
-          addMessage('system', '系统正忙，请稍后再试');
-        }
       } catch (e) {
         console.error('[Chat] 图片处理失败:', e);
         addMessage('system', '图片处理失败，请重试');
       } finally {
-        if (busyTimeout) { clearTimeout(busyTimeout); busyTimeout = null; }
-        hideTyping();
-        window.electronAPI.notifyBusy(false, 'chat');
         sendBtn.disabled = false;
-        stopBtn.style.display = 'none';
-        isProcessing = false;
       }
     }
 
     // 处理拖入的文件（非图片）
     async function handleDroppedFile(file) {
-      if (isProcessing) { addSystemMessage('请等待当前回复完成'); return; }
-      isProcessing = true;
-      stopBtn.style.display = 'flex';
-
       const filePath = file.path;
       if (!filePath) {
         console.error('[Chat] 无法获取文件路径');
-        isProcessing = false;
         return;
       }
 
@@ -1461,37 +1405,19 @@
 
       // 铁律1：先刷新页面（显示文件名）
       const fileMsg = addMessage('user', `📄 ${file.name}`);
-      if (!fileMsg) { isProcessing = false; return; }  // addMessage 返回 null（如 tool 消息被过滤），跳过后续
+      if (!fileMsg) { return; }  // addMessage 返回 null（如 tool 消息被过滤），跳过后续
 
       showTyping();
       window.electronAPI.notifyBusy(true, 'chat');
-      if (busyTimeout) clearTimeout(busyTimeout);
-      busyTimeout = setTimeout(() => {
-        isProcessing = false;
-        sendBtn.disabled = false;
-        stopBtn.style.display = 'none';
-        hideTyping();
-        window.electronAPI.notifyBusy(false, 'chat');
-        addSystemMessage('回复超时，已自动恢复');
-        busyTimeout = null;
-      }, 120000);
 
       try {
-        const result = await window.electronAPI.processImage(filePath);
+        await window.electronAPI.processImage(filePath);
         // agent回复由SSE→refreshFromDB()显示
-        if (result && result.reply && result.reply.includes('系统正忙')) {
-          addMessage('system', '系统正忙，请稍后再试');
-        }
       } catch (e) {
         console.error('[Chat] 文件处理失败:', e);
         addMessage('system', '文件处理失败，请重试');
       } finally {
-        if (busyTimeout) { clearTimeout(busyTimeout); busyTimeout = null; }
-        hideTyping();
-        window.electronAPI.notifyBusy(false, 'chat');
         sendBtn.disabled = false;
-        stopBtn.style.display = 'none';
-        isProcessing = false;
       }
     }
 
