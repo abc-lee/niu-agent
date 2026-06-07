@@ -19,6 +19,8 @@ os.environ.setdefault("LITELLM_NO_AIOHTTP_TRANSPORT", "True")
 
 import litellm
 
+from agent.runner import is_stop_requested
+
 logger = logging.getLogger(__name__)
 
 # 抑制 LiteLLM 的调试输出（"Provider List" 等提示）
@@ -362,6 +364,11 @@ class LiteLLMSession(BaseSession):
 
             for chunk in response:
                 chunk_count += 1
+
+                # 协作式停止：每个 chunk 后检查，发现停止立即中断流式生成
+                if is_stop_requested():
+                    logger.info("[LLM] Stop requested, breaking stream")
+                    break
 
                 delta = getattr(chunk, 'choices', [None])[0].delta if hasattr(chunk, 'choices') else None
                 if not delta:
