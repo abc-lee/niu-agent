@@ -557,7 +557,6 @@
     const noteCount = document.getElementById('note-count');
     const graphBtn = document.getElementById('graph-btn');
     let isProcessing = false;
-    let busyTimeout = null;
 
     // ========== 拖拽窗口 ==========
     // 拦截消息区域中的链接点击，用系统默认浏览器打开
@@ -745,6 +744,7 @@
     async function sendMessage() {
       const text = userInput.value.trim();
       if (!text) { userInput.style.height = 'auto'; return; }
+      sendBtn.disabled = true;
 
       // /stop 指令 - 停止当前 Agent 工作（允许在 isProcessing=true 时执行）
       if (text === '/stop') {
@@ -1273,7 +1273,9 @@
           }
         }
       } else if (data && data.role === 'chat_busy') {
-        // Agent循环开始：通知 spirit 进入忙碌状态（飞书等外部触发时需要）
+        // Agent循环开始：通知 spirit 进入忙碌状态
+        isProcessing = true;
+        stopBtn.style.display = 'flex';
         window.electronAPI.notifyBusy(true, 'chat');
       } else {
         // 普通消息通知 → 从DB刷新渲染
