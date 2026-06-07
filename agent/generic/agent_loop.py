@@ -225,6 +225,13 @@ def agent_runner_loop(
 
             yield StreamEvent("reply", content)
 
+        # 如果在 LLM 流式传输期间请求停止，跳过部分 tool_calls 处理
+        if is_stop_requested():
+            logger.info("[AgentLoop] Stop requested after LLM stream, skipping tool calls")
+            clear_stop()
+            yield StreamEvent("system", "chat_idle")
+            return {"result": "STOPPED", "messages": messages}
+
         if not response.tool_calls:
             tool_calls = [{"tool_name": "no_tool", "args": {}}]
         else:
