@@ -42,3 +42,68 @@ def test_stop_flag_is_thread_safe():
     results.append("seen")
     t.join()
     assert results == ["set", "seen"]
+
+
+def test_stop_flag_checked_in_loop():
+    """agent_runner_loop should exit when stop flag is set."""
+    from agent.runner import request_stop, clear_stop
+    from agent.generic.agent_loop import agent_runner_loop, StreamEvent
+    from unittest.mock import MagicMock
+
+    clear_stop()
+
+    client = MagicMock()
+    response = MagicMock()
+    response.tool_calls = None
+    response.content = "Hello"
+    response.usage = MagicMock(input_tokens=10, output_tokens=5)
+
+    call_count = 0
+
+    def chat_with_stop_check(**kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            # First call: return a response with a tool call
+            resp = MagicMock()
+            tc = MagicMock()
+            tc.function.name = "test_tool"
+            tc.function.arguments = "{}"
+            tc.id = "call_123"
+            resp.tool_calls = [tc]
+            resp.content = ""
+            resp.usage = MagicMock(input_tokens=10, output_tokens=5)
+            yield resp
+            return resp
+        else:
+            yield response
+            return response
+
+    client.chat = chat_with_stop_check
+
+    handler = MagicMock()
+    handler.max_turns = 40
+    handler._done_hooks = []
+
+    def mock_dispatch(tool_name, args, resp, index=0):
+        request_stop()
+        outcome = MagicMock()
+        outcome.should_exit = False
+        outcome.data = {"status": "ok"}
+        outcome.next_prompt = ""
+        yield StreamEvent("tool_marker", f"tool: {tool_name}")
+        return outcome
+
+    handler.dispatch = mock_dispatch
+
+    events = list(agent_runner_loop(
+        client=client,
+        system_prompt="test",
+        user_input="hello",
+        handler=handler,
+        tools_schema=[],
+        max_turns=5,
+    ))
+
+    idle_events = [e for e in events if isinstance(e, StreamEvent) and e.type == "system" and e.content == "chat_idle"]
+    assert len(idle_events) >= 1, "Loop should have exited with chat_idle"
