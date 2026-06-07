@@ -26,9 +26,9 @@ BRAIN_REGION_MARKER = "Knowledge Graph Specialist"
 _STATIC_BRAIN_REGION_PROMPT = """\
 ## 大脑区域架构（追加规则，不影响上方已有的提取规则）
 
-### 什么是 Niu
+### 什么是 niu
 
-`Niu` 是知识图谱的根节点，代表用户本人。它的类型是 `person`（不可修改），描述是用户画像。Niu 只通过语义边连接到用户的偏好、技能和知识实体——允许的关系类型为：`remembers`（记住人物）、`skilled_in`（擅长技能）、`knows_about`（了解概念）、`uses`（使用工具）、`prefers`（明确偏好）。**Niu 不是万能连接点，不要把所有实体都连到 Niu 上。**
+`niu` 是知识图谱的根节点，只与各脑区连接，不是万能连接点。
 
 ### 什么是脑区
 
@@ -58,8 +58,6 @@ _STATIC_BRAIN_REGION_PROMPT = """\
 ### 禁止事项
 
 - **不要创建新的脑区节点**。脑区由系统算法自动创建和管理。
-- **不要修改 Niu 节点**。Niu 是根节点，代表用户本人，描述固定，不要修改它的类型或描述。
-- **提取时实体严禁直接连接到 Niu 节点**。Niu 只连用户的偏好/技能/知识（remembers/skilled_in/knows_about/uses/prefers），其他实体不要直连 Niu。程序会在后续流程自动为合适的实体创建 Niu anchor 边，你不需要做。
 
 ## 命名约定
 
