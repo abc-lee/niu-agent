@@ -543,6 +543,7 @@
     const sendBtn = document.getElementById('send-btn');
     const stopBtn = document.getElementById('stop-btn');
     let _pendingClear = false;
+    let _pendingClearTimeout = null;
     const closeBtn = document.getElementById('close-btn');
     const header = document.getElementById('header');
     const statusBar = document.getElementById('status-bar');
@@ -771,6 +772,12 @@
         // 等 SSE chat_idle 事件重置 isProcessing 后，再清空聊天
         // 不直接 await clearChat()，因为锁被 Agent 占用会阻塞 UI
         _pendingClear = true;
+        if (_pendingClearTimeout) clearTimeout(_pendingClearTimeout);
+        _pendingClearTimeout = setTimeout(() => {
+          _pendingClear = false;
+          _pendingClearTimeout = null;
+          addSystemMessage('停止超时，清空操作已取消');
+        }, 30000);
         return;
       }
 
@@ -1291,6 +1298,7 @@
         // 处理 /clear 的延迟清空
         if (_pendingClear) {
           _pendingClear = false;
+          if (_pendingClearTimeout) { clearTimeout(_pendingClearTimeout); _pendingClearTimeout = null; }
           try {
             await clearChat();
           } catch (e) {
