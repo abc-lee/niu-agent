@@ -299,10 +299,26 @@
       transform: translateY(-1px);
       box-shadow: 2px 2px 6px rgba(0,0,0,0.15);
     }
-    .input-area button:disabled { 
-      background: #ccc; 
-      cursor: not-allowed; 
+    .input-area button:disabled {
+      background: #ccc;
+      cursor: not-allowed;
       transform: none;
+    }
+    .stop-btn {
+      background: #e74c3c;
+      color: white;
+      border: none;
+      border-radius: 50%;
+      width: 32px;
+      height: 32px;
+      cursor: pointer;
+      font-size: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .stop-btn:hover {
+      background: #c0392b;
     }
     
     /* 状态栏 */
@@ -507,6 +523,7 @@
     <div class="input-area">
       <textarea id="user-input" placeholder="说点什么..." rows="1"></textarea>
       <button id="send-btn">发送</button>
+      <button class="stop-btn" id="stop-btn" style="display:none;" title="停止生成 (/stop)">■</button>
     </div>
     
     <div class="status-bar" id="status-bar">
@@ -524,6 +541,8 @@
     const messages = document.getElementById('messages');
     const userInput = document.getElementById('user-input');
     const sendBtn = document.getElementById('send-btn');
+    const stopBtn = document.getElementById('stop-btn');
+    let _pendingClear = false;
     const closeBtn = document.getElementById('close-btn');
     const header = document.getElementById('header');
     const statusBar = document.getElementById('status-bar');
@@ -620,6 +639,15 @@
     // ========== 发送消息 ==========
     sendBtn.addEventListener('click', sendMessage);
 
+    stopBtn.addEventListener('click', async () => {
+      try {
+        await window.electronAPI.sendMessage('/stop');
+      } catch (e) {
+        console.error('停止失败:', e);
+        addSystemMessage('停止失败: ' + (e.message || e));
+      }
+    });
+
     // 自动调整 textarea 高度
     userInput.addEventListener('input', () => {
       userInput.style.height = 'auto';
@@ -714,17 +742,50 @@
     }
     
     async function sendMessage() {
+      const text = userInput.value.trim();
+      if (!text) { userInput.style.height = 'auto'; return; }
+
+      // /stop 指令 - 停止当前 Agent 工作（允许在 isProcessing=true 时执行）
+      if (text === '/stop') {
+        userInput.value = '';
+        userInput.style.height = 'auto';
+        try {
+          await window.electronAPI.sendMessage('/stop');
+        } catch (e) {
+          console.error('停止失败:', e);
+          addSystemMessage('停止失败: ' + (e.message || e));
+        }
+        return;
+      }
+
+      // /clear 指令 - 先停止再清空（允许在 isProcessing=true 时执行）
+      if (text === '/clear') {
+        userInput.value = '';
+        userInput.style.height = 'auto';
+        try {
+          await window.electronAPI.sendMessage('/stop');
+        } catch (e) {
+          console.error('停止失败:', e);
+          addSystemMessage('停止失败: ' + (e.message || e));
+        }
+        // 等 SSE chat_idle 事件重置 isProcessing 后，再清空聊天
+        // 不直接 await clearChat()，因为锁被 Agent 占用会阻塞 UI
+        _pendingClear = true;
+        return;
+      }
+
       if (isProcessing) { addSystemMessage('请等待当前回复完成'); return; }
       isProcessing = true;
+      stopBtn.style.display = 'flex';
+      sendBtn.style.display = 'none';
 
-      const text = userInput.value.trim();
-      if (!text) { isProcessing = false; return; }
-
-      // /new 指令 - 清空聊天记录
+      // /new 指令 - 清空聊天记录（只能在 isProcessing=false 时使用）
       if (text === '/new') {
         userInput.value = '';
         userInput.style.height = 'auto';
         isProcessing = false;
+        stopBtn.style.display = 'none';
+        sendBtn.style.display = 'flex';
         await clearChat();
         return;
       }
@@ -741,6 +802,8 @@
       busyTimeout = setTimeout(() => {
         isProcessing = false;
         sendBtn.disabled = false;
+        stopBtn.style.display = 'none';
+        sendBtn.style.display = 'flex';
         hideTyping();
         window.electronAPI.notifyBusy(false, 'chat');
         addSystemMessage('回复超时，已自动恢复');
@@ -762,6 +825,8 @@
         hideTyping();
         window.electronAPI.notifyBusy(false, 'chat');
         sendBtn.disabled = false;
+        stopBtn.style.display = 'none';
+        sendBtn.style.display = 'flex';
         isProcessing = false;
         loadStats();
         userInput.focus();
@@ -1213,14 +1278,26 @@
 
     // SSE通知：有新消息 → 从数据库刷新
     // V4: chat_busy/chat_idle 事件控制状态机，普通消息触发 refreshFromDB
-    window.electronAPI.onNewMessage((data) => {
+    window.electronAPI.onNewMessage(async (data) => {
       if (data && data.role === 'chat_idle') {
         // Agent循环结束：重置状态机
         hideTyping();
         if (busyTimeout) { clearTimeout(busyTimeout); busyTimeout = null; }
         isProcessing = false;
         sendBtn.disabled = false;
+        stopBtn.style.display = 'none';
+        sendBtn.style.display = 'flex';
         window.electronAPI.notifyBusy(false, 'chat');
+        // 处理 /clear 的延迟清空
+        if (_pendingClear) {
+          _pendingClear = false;
+          try {
+            await clearChat();
+          } catch (e) {
+            console.error('清空失败:', e);
+            addSystemMessage('清空失败: ' + (e.message || e));
+          }
+        }
       } else if (data && data.role === 'chat_busy') {
         // Agent循环开始：通知 spirit 进入忙碌状态（飞书等外部触发时需要）
         window.electronAPI.notifyBusy(true, 'chat');
@@ -1299,6 +1376,8 @@
     async function handleDroppedImage(file) {
       if (isProcessing) { addSystemMessage('请等待当前回复完成'); return; }
       isProcessing = true;
+      stopBtn.style.display = 'flex';
+      sendBtn.style.display = 'none';
 
       const filePath = file.path;
       if (!filePath) {
@@ -1338,6 +1417,8 @@
         busyTimeout = setTimeout(() => {
           isProcessing = false;
           sendBtn.disabled = false;
+          stopBtn.style.display = 'none';
+          sendBtn.style.display = 'flex';
           hideTyping();
           window.electronAPI.notifyBusy(false, 'chat');
           addSystemMessage('回复超时，已自动恢复');
@@ -1359,6 +1440,8 @@
         hideTyping();
         window.electronAPI.notifyBusy(false, 'chat');
         sendBtn.disabled = false;
+        stopBtn.style.display = 'none';
+        sendBtn.style.display = 'flex';
         isProcessing = false;
       }
     }
@@ -1367,6 +1450,8 @@
     async function handleDroppedFile(file) {
       if (isProcessing) { addSystemMessage('请等待当前回复完成'); return; }
       isProcessing = true;
+      stopBtn.style.display = 'flex';
+      sendBtn.style.display = 'none';
 
       const filePath = file.path;
       if (!filePath) {
@@ -1387,6 +1472,8 @@
       busyTimeout = setTimeout(() => {
         isProcessing = false;
         sendBtn.disabled = false;
+        stopBtn.style.display = 'none';
+        sendBtn.style.display = 'flex';
         hideTyping();
         window.electronAPI.notifyBusy(false, 'chat');
         addSystemMessage('回复超时，已自动恢复');
@@ -1407,6 +1494,8 @@
         hideTyping();
         window.electronAPI.notifyBusy(false, 'chat');
         sendBtn.disabled = false;
+        stopBtn.style.display = 'none';
+        sendBtn.style.display = 'flex';
         isProcessing = false;
       }
     }
