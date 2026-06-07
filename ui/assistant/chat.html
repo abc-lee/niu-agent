@@ -1350,6 +1350,7 @@
     
     // 处理拖入的图片
     async function handleDroppedImage(file) {
+      sendBtn.disabled = true;
       const filePath = file.path;
       if (!filePath) {
         console.error('[Chat] 无法获取文件路径');
@@ -1397,6 +1398,7 @@
 
     // 处理拖入的文件（非图片）
     async function handleDroppedFile(file) {
+      sendBtn.disabled = true;
       const filePath = file.path;
       if (!filePath) {
         console.error('[Chat] 无法获取文件路径');
