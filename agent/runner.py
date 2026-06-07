@@ -21,6 +21,25 @@ from loguru import logger
 from niu_api.internal.lightrag_adapter import _LIGHTRAG_ERROR_MARKERS
 
 
+# --- Stop flag mechanism ---
+_stop_requested = threading.Event()
+
+
+def request_stop():
+    """Set the stop flag — Agent loops will check and exit."""
+    _stop_requested.set()
+
+
+def clear_stop():
+    """Clear the stop flag — called when Agent loop exits and at conversation start."""
+    _stop_requested.clear()
+
+
+def is_stop_requested() -> bool:
+    """Check if stop has been requested."""
+    return _stop_requested.is_set()
+
+
 def _sanitize_memory_content(content: str) -> str:
     """Sanitize user memory content before injecting into system prompt.
     Prevents prompt injection by removing newlines and sentinel markers."""
