@@ -99,6 +99,7 @@ def _run_agent_loop(
         context_window_tokens=context_window_tokens,
         context_fifo_threshold=context_fifo_threshold,
         history=history,
+        enable_supplement=False,
     )
 
     result = ""
