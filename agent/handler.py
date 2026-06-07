@@ -982,15 +982,6 @@ class NiuHandler(BaseHandler):
     def dispatch(self, tool_name: str, args, response, index=0):
         """分发工具调用（支持 MCP 工具）- 必须是生成器"""
 
-        # --- Stop flag check ---
-        from agent.runner import is_stop_requested
-        if is_stop_requested():
-            return StepOutcome(
-                {"status": "stopped", "message": "用户已停止"},
-                next_prompt="",
-                should_exit=True,
-            )
-
         # Apply backward compatibility aliases
         resolved_name = self._TOOL_ALIASES.get(tool_name, tool_name)
         if resolved_name != tool_name:

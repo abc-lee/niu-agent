@@ -593,6 +593,8 @@ async def chat_session(request: ChatRequest) -> ChatResponse:
 
         return ChatResponse(reply=full_reply, session_id="default", message_id=message_id)
     finally:
+        from agent.runner import clear_stop
+        clear_stop()  # 防御性清除：确保停止标志不残留
         _chat_lock.release()
 
 
@@ -842,6 +844,7 @@ async def _tidy_context_impl(request: dict):
         logger.info(f"[Tidy] Current context: {message_count} messages, {estimated_tokens} tokens, {usage_percent:.1f}%")
 
         from agent.subagent import call_subagent
+        from agent.runner import is_stop_requested
 
         from niu_api.chat import get_or_create_runner
 
@@ -942,6 +945,9 @@ async def _tidy_context_impl(request: dict):
                     )
 
                 entity_result = await asyncio.to_thread(run_entity_extractor)
+                if is_stop_requested():
+                    logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
+                    return {"status": "aborted", "message": "Stopped by user"}
                 logger.info(f"[Tidy] entity-extractor result: {entity_result[:200]}")
 
                 # 游标提取和推进
@@ -1021,6 +1027,9 @@ async def _tidy_context_impl(request: dict):
                     )
 
                 dream_result = await asyncio.to_thread(run_dream_evolver)
+                if is_stop_requested():
+                    logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
+                    return {"status": "aborted", "message": "Stopped by user"}
                 logger.info(f"[Tidy] Dream-evolver result: {dream_result[:200]}")
 
                 if _is_subagent_overflow(dream_result):
@@ -1102,6 +1111,9 @@ async def _tidy_context_impl(request: dict):
                         )
 
                     journal_result = await asyncio.to_thread(run_journal_agent)
+                    if is_stop_requested():
+                        logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
+                        return {"status": "aborted", "message": "Stopped by user"}
                     logger.info(f"[Tidy] journal-agent result: {journal_result[:200]}")
 
                     if _is_subagent_overflow(journal_result):
@@ -1204,6 +1216,9 @@ async def _tidy_context_impl(request: dict):
                     )
 
                 cm_result = await asyncio.to_thread(run_context_manager)
+                if is_stop_requested():
+                    logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
+                    return {"status": "aborted", "message": "Stopped by user"}
                 logger.info(f"[Tidy] context-manager result: {cm_result[:200]}")
 
                 # 游标提取
@@ -1295,6 +1310,9 @@ async def _tidy_context_impl(request: dict):
 
             if entity_force_msg_ids:
                 entity_result = await asyncio.to_thread(run_entity_extractor_force)
+                if is_stop_requested():
+                    logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
+                    return {"status": "aborted", "message": "Stopped by user"}
                 logger.info(f"[Tidy] Force: entity-extractor completed, length={len(entity_result)}")
 
                 if _is_subagent_overflow(entity_result):
@@ -1372,6 +1390,9 @@ async def _tidy_context_impl(request: dict):
                     )
 
                 dream_result = await asyncio.to_thread(run_dream_evolver_force)
+                if is_stop_requested():
+                    logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
+                    return {"status": "aborted", "message": "Stopped by user"}
                 logger.info(f"[Tidy] Force: dream-evolver completed, length={len(dream_result)}")
 
                 if _is_subagent_overflow(dream_result):
@@ -1452,6 +1473,9 @@ async def _tidy_context_impl(request: dict):
                     )
 
                 journal_result = await asyncio.to_thread(run_journal_agent_force)
+                if is_stop_requested():
+                    logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
+                    return {"status": "aborted", "message": "Stopped by user"}
                 logger.info(f"[Tidy] Force: journal-agent completed, length={len(journal_result)}")
 
                 if _is_subagent_overflow(journal_result):
@@ -1549,6 +1573,9 @@ async def _tidy_context_impl(request: dict):
                 )
 
             result = await asyncio.to_thread(run_context_manager_force)
+            if is_stop_requested():
+                logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
+                return {"status": "aborted", "message": "Stopped by user"}
             logger.info(f"[Tidy] Force: context-manager completed, length={len(result)}")
 
             # 读取并执行压缩计划

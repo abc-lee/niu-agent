@@ -1038,10 +1038,10 @@ class NiuRunner:
             # 确保停止标志被清除（无论正常退出、停止退出还是异常退出）
             if is_stop_requested():
                 clear_stop()
-                # gen.close() 中断了 agent_loop 的正常退出路径，chat_idle SSE 事件丢失
-                # 显式推送 chat_idle，让前端状态机重置
-                from niu_api.chat import notify_new_message_sync
-                notify_new_message_sync("", "chat_idle", "", source="electron")
+            # 防御性推送 chat_idle：gen.close() 可能中断 agent_loop 的正常退出路径
+            # 前端幂等处理会忽略重复的 chat_idle
+            from niu_api.chat import notify_new_message_sync
+            notify_new_message_sync("", "chat_idle", "", source="electron")
 
         # 暴露 return_value 给调用方（用于检测 CONTEXT_OVERFLOW 等控制流）
         self.last_return_value = return_value
