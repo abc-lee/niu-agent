@@ -127,6 +127,13 @@ class ChatQueue:
                                session_id: str = "default",
                                timeout: float = 120.0) -> str:
         """入队并等待回复 — 供 Scheduler 等需要同步结果的场景"""
+        # --- /stop directive: immediate stop, no queueing ---
+        if content.strip() == "/stop":
+            from agent.runner import request_stop
+            request_stop()
+            logger.info("[ChatQueue] /stop requested (immediate)")
+            return "已停止"
+
         loop = asyncio.get_running_loop()
         future = loop.create_future()
         req = ChatRequest(
@@ -270,6 +277,12 @@ class ChatQueue:
     async def _process_single(self, content: str, session_id: str = "default",
                               user_contents: list[str] | None = None, channel: str = "electron") -> str:
         """处理单条消息 — 加载历史，持久化 user 消息，调用 runner.chat()，持久化回复，SSE推送"""
+        from agent.runner import clear_stop
+
+        # 防御性清除：确保新对话开始时标志干净
+        # （正常情况下 Agent 退出时已清除，这里处理异常退出残留）
+        clear_stop()
+
         from niu_api.compat import _chat_lock
 
         store = await get_message_store()
