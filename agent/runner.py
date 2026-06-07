@@ -997,6 +997,11 @@ class NiuRunner:
         self.last_return_value = None  # 重置，避免复用残留
         persisted_msgs = []  # V4: 已通过persist事件持久化的消息列表
         while True:
+            # 协作式停止：每次迭代检查，发现停止立即停止消费生成器
+            if is_stop_requested():
+                logger.info("[Runner] Stop requested, stopping generator consumption")
+                gen.close()  # 关闭生成器，触发 GeneratorExit
+                break
             try:
                 chunk = next(gen)
                 if isinstance(chunk, StreamEvent):
@@ -1028,6 +1033,11 @@ class NiuRunner:
             except StopIteration as e:
                 return_value = e.value
                 break
+
+        # 确保停止标志被清除（无论正常退出还是停止退出）
+        # 如果是停止退出，agent_loop 可能被 gen.close() 中断，未执行 clear_stop()
+        if is_stop_requested():
+            clear_stop()
 
         # 暴露 return_value 给调用方（用于检测 CONTEXT_OVERFLOW 等控制流）
         self.last_return_value = return_value
