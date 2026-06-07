@@ -996,6 +996,7 @@ class NiuRunner:
         return_value = None
         self.last_return_value = None  # 重置，避免复用残留
         persisted_msgs = []  # V4: 已通过persist事件持久化的消息列表
+        chat_idle_pushed = False  # 跟踪是否已推送 chat_idle，避免重复推送
         try:
             while True:
                 # 协作式停止：每次迭代检查，发现停止立即停止消费生成器
@@ -1025,6 +1026,8 @@ class NiuRunner:
                             if chunk.content in ("chat_busy", "chat_idle"):
                                 from niu_api.chat import notify_new_message_sync
                                 notify_new_message_sync("", chunk.content, "", source="electron")
+                                if chunk.content == "chat_idle":
+                                    chat_idle_pushed = True
                         # type="tool_marker" 不进入 SSE 和 full_resp
                     else:
                         # 向后兼容：普通 str
@@ -1039,9 +1042,10 @@ class NiuRunner:
             if is_stop_requested():
                 clear_stop()
             # 防御性推送 chat_idle：gen.close() 可能中断 agent_loop 的正常退出路径
-            # 前端幂等处理会忽略重复的 chat_idle
-            from niu_api.chat import notify_new_message_sync
-            notify_new_message_sync("", "chat_idle", "", source="electron")
+            # 只在未推送过时才推送，避免重复
+            if not chat_idle_pushed:
+                from niu_api.chat import notify_new_message_sync
+                notify_new_message_sync("", "chat_idle", "", source="electron")
 
         # 暴露 return_value 给调用方（用于检测 CONTEXT_OVERFLOW 等控制流）
         self.last_return_value = return_value

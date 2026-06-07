@@ -412,10 +412,19 @@ class LiteLLMSession(BaseSession):
                     usage = chunk.usage
 
             # 处理累积完成后的tool_calls
+            was_stopped = is_stop_requested()
             for idx in sorted(tool_calls_accumulator.keys()):
                 tc_data = tool_calls_accumulator[idx]
                 tc_name = tc_data['name']
                 tc_args_raw = tc_data['arguments'] or "{}"
+
+                # 停止中断时，跳过不完整的 tool_calls（arguments 未结束的 JSON）
+                if was_stopped:
+                    try:
+                        json.loads(tc_args_raw)
+                    except json.JSONDecodeError:
+                        logger.debug(f"[LLM] Skipping incomplete tool_call due to stop: {tc_name}")
+                        continue
 
                 # 跳过空工具名（MiniMax会把一个tool_call拆成多个chunk，只有name的chunk有name）
                 if not tc_name or tc_name.strip() == "":

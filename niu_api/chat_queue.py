@@ -277,11 +277,15 @@ class ChatQueue:
     async def _process_single(self, content: str, session_id: str = "default",
                               user_contents: list[str] | None = None, channel: str = "electron") -> str:
         """处理单条消息 — 加载历史，持久化 user 消息，调用 runner.chat()，持久化回复，SSE推送"""
-        from agent.runner import clear_stop
+        from agent.runner import is_stop_requested, clear_stop
 
-        # 防御性清除：确保新对话开始时标志干净
-        # （正常情况下 Agent 退出时已清除，这里处理异常退出残留）
-        clear_stop()
+        # 如果停止标志仍被设置，说明前一个 Agent 还未退出或标志残留
+        # 残留标志：清除并继续；用户新设置的：不应该处理新消息
+        if is_stop_requested():
+            # 标志可能残留（Agent 退出后未被清除）
+            # 清除残留标志，继续处理
+            logger.info("[ChatQueue] Clearing residual stop flag before processing")
+            clear_stop()
 
         from niu_api.compat import _chat_lock
 
