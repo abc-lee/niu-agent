@@ -130,6 +130,8 @@ def agent_runner_loop(
     context_window_tokens=0,  # 0 means no limit check (backward compatible)
     context_fifo_threshold=0,  # 0 means no FIFO truncation; >0 means max token budget for sub-agents
 ):
+    from agent.runner import is_stop_requested, clear_stop
+
     # Build messages: system + history + current user
     messages = [{"role": "system", "content": system_prompt}]
 
@@ -169,6 +171,12 @@ def agent_runner_loop(
 
     while turn < handler.max_turns:
         turn += 1
+        # --- Stop flag check ---
+        if is_stop_requested():
+            logger.info("[AgentLoop] Stop requested, exiting loop")
+            clear_stop()
+            yield StreamEvent("system", "chat_idle")
+            return {"result": "STOPPED", "messages": messages}
         # 上下文溢出保护：检查 token 使用率
         if context_window_tokens > 0:
             current_tokens = count_messages_tokens(messages)
@@ -178,6 +186,7 @@ def agent_runner_loop(
                 if on_turn_end is not None:
                     on_turn_end(messages, tools_schema, turn)
                 # V4: 通知前端进入空闲状态
+                clear_stop()
                 yield StreamEvent("system", "chat_idle")
                 return {
                     "result": "CONTEXT_OVERFLOW",
@@ -270,6 +279,12 @@ def agent_runner_loop(
                 showarg = get_pretty_json(args)
                 yield StreamEvent("tool_marker", f"🛠️ **正在调用工具:** `{tool_name}`  📥**参数:**\n````text\n{showarg}\n````\n")
             handler.current_turn = turn
+            # --- Stop flag check before tool dispatch ---
+            if is_stop_requested():
+                logger.info("[AgentLoop] Stop requested, skipping remaining tools")
+                clear_stop()
+                yield StreamEvent("system", "chat_idle")
+                return {"result": "STOPPED", "messages": messages}
             gen = handler.dispatch(tool_name, args, response, index=ii)
             if verbose:
                 yield StreamEvent("tool_marker", "`````\n")
@@ -307,6 +322,7 @@ def agent_runner_loop(
                     yield StreamEvent("persist", json.dumps(tool_msg, ensure_ascii=False))
                 if on_turn_end is not None:
                     on_turn_end(messages, tools_schema, turn)
+                clear_stop()
                 yield StreamEvent("system", "chat_idle")
                 return {
                     "result": "EXITED",
@@ -358,6 +374,7 @@ def agent_runner_loop(
                     pure_text_msg = {"role": "assistant", "content": response.content}
                     yield StreamEvent("persist", json.dumps(pure_text_msg, ensure_ascii=False))
                 # V4: 通知前端进入空闲状态
+                clear_stop()
                 yield StreamEvent("system", "chat_idle")
                 if isinstance(should_exit, dict):
                     should_exit["messages"] = messages
@@ -371,6 +388,7 @@ def agent_runner_loop(
         if not response.tool_calls:
             if on_turn_end is not None:
                 on_turn_end(messages, tools_schema, turn)
+            clear_stop()
             yield StreamEvent("system", "chat_idle")
             if isinstance(should_exit, dict):
                 should_exit["messages"] = messages
@@ -410,5 +428,6 @@ def agent_runner_loop(
     if on_turn_end is not None:
         on_turn_end(messages, tools_schema, turn)
     # V4: 通知前端进入空闲状态
+    clear_stop()
     yield StreamEvent("system", "chat_idle")
     return {"result": "MAX_TURNS_EXCEEDED", "messages": messages}
