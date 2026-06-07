@@ -375,6 +375,9 @@ class StatsResponse(BaseModel):
 
     messages: int
     uptime: str
+    files: int = 0      # 已处理文档数
+    persons: int = 0    # 人物实体数
+    notes: int = 0      # 笔记/知识实体数
 
 
 # Track startup time
@@ -426,7 +429,44 @@ async def get_stats() -> StatsResponse:
     store = await get_message_store()
     messages = await store.count_messages()
     uptime = str(datetime.now() - _startup_time).split(".")[0]
-    return StatsResponse(messages=messages, uptime=uptime)
+
+    files = 0
+    persons = 0
+    notes = 0
+
+    try:
+        from niu_api.internal.lightrag_adapter import LightRAGAdapter
+
+        adapter = LightRAGAdapter()
+
+        # Document count: processed documents from LightRAG
+        doc_status = adapter.document_status()
+        if isinstance(doc_status, dict) and "processed" in doc_status:
+            files = doc_status["processed"]
+
+        # Person and note counts: traverse NetworkX graph by entity_type
+        rag = adapter._get_rag()
+        if rag is not None:
+            graph_obj = getattr(rag, "chunk_entity_relation_graph", None)
+            if graph_obj is not None:
+                nx_graph = graph_obj._graph if hasattr(graph_obj, "_graph") else graph_obj
+                if nx_graph is not None:
+                    from niu_api.internal.lightrag_manager import graph_read_lock
+
+                    with graph_read_lock():
+                        snapshot = nx_graph.copy()
+
+                    for node_name in snapshot.nodes():
+                        attrs = snapshot.nodes[node_name] if snapshot.has_node(node_name) else {}
+                        entity_type = attrs.get("entity_type", "").lower()
+                        if entity_type == "person":
+                            persons += 1
+                        elif entity_type in ("note", "knowledge"):
+                            notes += 1
+    except Exception as e:
+        logger.debug(f"[Stats] LightRAG stats unavailable: {e}")
+
+    return StatsResponse(messages=messages, uptime=uptime, files=files, persons=persons, notes=notes)
 
 
 def _force_exit_after_delay():
@@ -469,6 +509,13 @@ async def chat_session(request: ChatRequest) -> ChatResponse:
     if not config.llm or not config.llm.api_key:
         return ChatResponse(reply="Error: LLM not configured, please set API Key first")
 
+    # --- /stop directive: stop current Agent work ---
+    if request.message.strip() == "/stop":
+        from agent.runner import request_stop
+        request_stop()
+        logger.info("[ChatSession] /stop requested")
+        return ChatResponse(reply="已停止")
+
     # 排队等待锁：最多等 60 秒，而非直接拒绝
     # 之前 timeout=0.01 导致文件拖入等请求被直接丢弃
     try:
@@ -504,6 +551,10 @@ async def chat_session(request: ChatRequest) -> ChatResponse:
 
         # Create a simple session_id (no session concept, but runner needs one)
         session_id = "default"
+
+        # 每次用户发起新对话时，清除停止标志
+        from agent.runner import clear_stop
+        clear_stop()
 
         # Run chat using asyncio.to_thread to avoid blocking event loop
         def sync_chat():
@@ -662,13 +713,17 @@ async def add_context_message(request: dict) -> dict:
 
 @router.post("/api/chat/clear")
 async def clear_chat() -> dict:
-    """Clear all messages (for /new command)"""
+    """Clear all messages (for /new and /clear commands)"""
+    # 先请求停止当前 Agent 工作
+    from agent.runner import request_stop
+    request_stop()
+
     # 获取锁，防止与正在进行的 chat 冲突
-    # 排队等待锁：最多等 5 秒（清除操作不需要等太久）
+    # 超时增加到 30 秒，等待 Agent 循环检测 stop 标志并退出
     try:
-        await asyncio.wait_for(_chat_lock.acquire(), timeout=5.0)
+        await asyncio.wait_for(_chat_lock.acquire(), timeout=30.0)
     except TimeoutError:
-        logger.warning("[clear_chat] _chat_lock 5s timeout, clear rejected")
+        logger.warning("[clear_chat] _chat_lock 30s timeout, clear rejected")
         return {"success": False, "error": "系统正忙，请稍后再试"}
 
     try:
