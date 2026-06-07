@@ -996,52 +996,52 @@ class NiuRunner:
         return_value = None
         self.last_return_value = None  # 重置，避免复用残留
         persisted_msgs = []  # V4: 已通过persist事件持久化的消息列表
-        while True:
-            # 协作式停止：每次迭代检查，发现停止立即停止消费生成器
+        try:
+            while True:
+                # 协作式停止：每次迭代检查，发现停止立即停止消费生成器
+                if is_stop_requested():
+                    logger.info("[Runner] Stop requested, stopping generator consumption")
+                    gen.close()  # 关闭生成器，触发 GeneratorExit
+                    break
+                try:
+                    chunk = next(gen)
+                    if isinstance(chunk, StreamEvent):
+                        if chunk.type == "reply":
+                            full_resp += chunk.content
+                            if chunk.content:  # SSE 管道：只推送非空 reply
+                                yield chunk.content
+                        elif chunk.type == "persist":
+                            # V4: 逐条持久化消息到 DB + 通知 SSE
+                            try:
+                                msg_dict = json.loads(chunk.content)
+                                msg_id = self._persist_one_msg(msg_dict)
+                                if msg_id is not None:
+                                    msg_dict["_persisted_id"] = msg_id  # 记录写入后的消息ID
+                                    persisted_msgs.append(msg_dict)
+                            except Exception as e:
+                                logger.warning(f"[Runner] Failed to persist msg: {e}")
+                        elif chunk.type == "system":
+                            # V4: chat_busy/chat_idle 状态机事件，通过SSE推送给前端
+                            if chunk.content in ("chat_busy", "chat_idle"):
+                                from niu_api.chat import notify_new_message_sync
+                                notify_new_message_sync("", chunk.content, "", source="electron")
+                        # type="tool_marker" 不进入 SSE 和 full_resp
+                    else:
+                        # 向后兼容：普通 str
+                        full_resp += chunk
+                        if chunk:
+                            yield chunk
+                except StopIteration as e:
+                    return_value = e.value
+                    break
+        finally:
+            # 确保停止标志被清除（无论正常退出、停止退出还是异常退出）
             if is_stop_requested():
-                logger.info("[Runner] Stop requested, stopping generator consumption")
-                gen.close()  # 关闭生成器，触发 GeneratorExit
-                break
-            try:
-                chunk = next(gen)
-                if isinstance(chunk, StreamEvent):
-                    if chunk.type == "reply":
-                        full_resp += chunk.content
-                        if chunk.content:  # SSE 管道：只推送非空 reply
-                            yield chunk.content
-                    elif chunk.type == "persist":
-                        # V4: 逐条持久化消息到 DB + 通知 SSE
-                        try:
-                            msg_dict = json.loads(chunk.content)
-                            msg_id = self._persist_one_msg(msg_dict)
-                            if msg_id is not None:
-                                msg_dict["_persisted_id"] = msg_id  # 记录写入后的消息ID
-                                persisted_msgs.append(msg_dict)
-                        except Exception as e:
-                            logger.warning(f"[Runner] Failed to persist msg: {e}")
-                    elif chunk.type == "system":
-                        # V4: chat_busy/chat_idle 状态机事件，通过SSE推送给前端
-                        if chunk.content in ("chat_busy", "chat_idle"):
-                            from niu_api.chat import notify_new_message_sync
-                            notify_new_message_sync("", chunk.content, "", source="electron")
-                    # type="tool_marker" 不进入 SSE 和 full_resp
-                else:
-                    # 向后兼容：普通 str
-                    full_resp += chunk
-                    if chunk:
-                        yield chunk
-            except StopIteration as e:
-                return_value = e.value
-                break
-
-        # 确保停止标志被清除（无论正常退出还是停止退出）
-        # 如果是停止退出，agent_loop 可能被 gen.close() 中断，未执行 clear_stop()
-        if is_stop_requested():
-            clear_stop()
-            # gen.close() 中断了 agent_loop 的正常退出路径，chat_idle SSE 事件丢失
-            # 显式推送 chat_idle，让前端状态机重置
-            from niu_api.chat import notify_new_message_sync
-            notify_new_message_sync("", "chat_idle", "", source="electron")
+                clear_stop()
+                # gen.close() 中断了 agent_loop 的正常退出路径，chat_idle SSE 事件丢失
+                # 显式推送 chat_idle，让前端状态机重置
+                from niu_api.chat import notify_new_message_sync
+                notify_new_message_sync("", "chat_idle", "", source="electron")
 
         # 暴露 return_value 给调用方（用于检测 CONTEXT_OVERFLOW 等控制流）
         self.last_return_value = return_value

@@ -715,7 +715,7 @@ async def add_context_message(request: dict) -> dict:
 async def clear_chat() -> dict:
     """Clear all messages (for /new and /clear commands)"""
     # 先请求停止当前 Agent 工作
-    from agent.runner import request_stop
+    from agent.runner import request_stop, clear_stop
     request_stop()
 
     # 获取锁，防止与正在进行的 chat 冲突
@@ -724,9 +724,11 @@ async def clear_chat() -> dict:
         await asyncio.wait_for(_chat_lock.acquire(), timeout=30.0)
     except TimeoutError:
         logger.warning("[clear_chat] _chat_lock 30s timeout, clear rejected")
+        clear_stop()  # 防止停止标志残留，影响后续定时任务
         return {"success": False, "error": "系统正忙，请稍后再试"}
 
     try:
+        clear_stop()  # 防御性清除：确保清空时标志干净
         store = await get_message_store()
         count = await store.clear_messages()
 
