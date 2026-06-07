@@ -784,7 +784,6 @@
       if (isProcessing) { addSystemMessage('请等待当前回复完成'); return; }
       isProcessing = true;
       stopBtn.style.display = 'flex';
-      sendBtn.style.display = 'none';
 
       // /new 指令 - 清空聊天记录（只能在 isProcessing=false 时使用）
       if (text === '/new') {
@@ -792,7 +791,6 @@
         userInput.style.height = 'auto';
         isProcessing = false;
         stopBtn.style.display = 'none';
-        sendBtn.style.display = 'flex';
         await clearChat();
         return;
       }
@@ -810,7 +808,6 @@
         isProcessing = false;
         sendBtn.disabled = false;
         stopBtn.style.display = 'none';
-        sendBtn.style.display = 'flex';
         hideTyping();
         window.electronAPI.notifyBusy(false, 'chat');
         addSystemMessage('回复超时，已自动恢复');
@@ -825,15 +822,12 @@
         if (result && result.reply && result.reply.includes('系统正忙')) {
           addMessage('system', '系统正忙，请稍后再试');
         }
-      } catch (err) {
-        addMessage('system', `连接失败: ${err.message}`);
       } finally {
         if (busyTimeout) { clearTimeout(busyTimeout); busyTimeout = null; }
         hideTyping();
         window.electronAPI.notifyBusy(false, 'chat');
         sendBtn.disabled = false;
         stopBtn.style.display = 'none';
-        sendBtn.style.display = 'flex';
         isProcessing = false;
         loadStats();
         userInput.focus();
@@ -1293,7 +1287,6 @@
         isProcessing = false;
         sendBtn.disabled = false;
         stopBtn.style.display = 'none';
-        sendBtn.style.display = 'flex';
         window.electronAPI.notifyBusy(false, 'chat');
         // 处理 /clear 的延迟清空
         if (_pendingClear) {
@@ -1385,7 +1378,6 @@
       if (isProcessing) { addSystemMessage('请等待当前回复完成'); return; }
       isProcessing = true;
       stopBtn.style.display = 'flex';
-      sendBtn.style.display = 'none';
 
       const filePath = file.path;
       if (!filePath) {
@@ -1426,7 +1418,6 @@
           isProcessing = false;
           sendBtn.disabled = false;
           stopBtn.style.display = 'none';
-          sendBtn.style.display = 'flex';
           hideTyping();
           window.electronAPI.notifyBusy(false, 'chat');
           addSystemMessage('回复超时，已自动恢复');
@@ -1449,7 +1440,6 @@
         window.electronAPI.notifyBusy(false, 'chat');
         sendBtn.disabled = false;
         stopBtn.style.display = 'none';
-        sendBtn.style.display = 'flex';
         isProcessing = false;
       }
     }
@@ -1459,7 +1449,6 @@
       if (isProcessing) { addSystemMessage('请等待当前回复完成'); return; }
       isProcessing = true;
       stopBtn.style.display = 'flex';
-      sendBtn.style.display = 'none';
 
       const filePath = file.path;
       if (!filePath) {
@@ -1481,7 +1470,6 @@
         isProcessing = false;
         sendBtn.disabled = false;
         stopBtn.style.display = 'none';
-        sendBtn.style.display = 'flex';
         hideTyping();
         window.electronAPI.notifyBusy(false, 'chat');
         addSystemMessage('回复超时，已自动恢复');
@@ -1503,11 +1491,10 @@
         window.electronAPI.notifyBusy(false, 'chat');
         sendBtn.disabled = false;
         stopBtn.style.display = 'none';
-        sendBtn.style.display = 'flex';
         isProcessing = false;
       }
     }
-    
+
     // 监听滚动，到顶部时加载更多
     messages.addEventListener('scroll', async () => {
       // 检查是否滚动到顶部
