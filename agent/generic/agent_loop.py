@@ -129,8 +129,9 @@ def agent_runner_loop(
     on_turn_end=None,  # Optional: callback(messages, tools_schema, turn) -> tools_schema
     context_window_tokens=0,  # 0 means no limit check (backward compatible)
     context_fifo_threshold=0,  # 0 means no FIFO truncation; >0 means max token budget for sub-agents
+    enable_supplement=True,  # False for sub-agents to prevent stealing main agent's supplements
 ):
-    from agent.runner import is_stop_requested, clear_stop
+    from agent.runner import is_stop_requested, clear_stop, drain_supplement
 
     # Build messages: system + history + current user
     messages = [{"role": "system", "content": system_prompt}]
@@ -402,9 +403,20 @@ def agent_runner_loop(
                 return should_exit
             return {"result": "CURRENT_TASK_DONE", "data": None, "messages": messages}
 
+        # --- 见缝插针：读取用户在 Agent 运行期间发送的补充消息 ---
+        supplement = drain_supplement() if enable_supplement else None
+
         # 警告注入：只在有工具调用时才有意义（LLM 还在工作，可能需要调整策略）
-        if next_prompt and next_prompt.strip():
-            messages.append({"role": "user", "content": next_prompt})
+        # 补充消息插在 next_prompt 前面，当前任务作为最后一条，LLM 优先处理
+        if supplement or (next_prompt and next_prompt.strip()):
+            combined = ""
+            if supplement:
+                combined = supplement
+            if next_prompt and next_prompt.strip():
+                combined = combined + "\n" + next_prompt if combined else next_prompt
+            messages.append({"role": "user", "content": combined})
+            if supplement:
+                logger.info(f"[AgentLoop] Supplement inserted before next_prompt: {supplement[:80]}...")
 
         # FIFO 上下文截断：按 token 量逐条移除旧消息，保护 messages[0](system) 和 messages[1](初始task)
         if context_fifo_threshold > 0 and len(messages) > 2:
