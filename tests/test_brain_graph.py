@@ -105,7 +105,7 @@ class TestBrainGraphStoreMemory:
     """Test memory storage in the brain graph."""
 
     def test_store_memory_no_type_default(self):
-        """Memory without type should create brain:Niu --remembers--> entity with default weight."""
+        """Memory without type should store entity with default weight."""
         bg = _make_mock_brain_graph()
 
         result = bg.store_memory(
@@ -115,18 +115,13 @@ class TestBrainGraphStoreMemory:
         assert result["status"] == "ok"
         assert result["relation_type"] == "remembers"
         assert result["weight"] == 0.7
-        # Should have called inject_custom_kg twice (entity + relation)
-        assert bg._ingester.inject_custom_kg.call_count == 2
-        # Second call has the relation from brain:Niu
-        call_kwargs = bg._ingester.inject_custom_kg.call_args_list[1]
-        rels = call_kwargs[1]["relationships"]
-        assert len(rels) == 1
-        assert rels[0]["src_id"] == "brain:Niu"
-        assert rels[0]["relation"] == "remembers"
-        assert rels[0]["weight"] == 0.7
+        # Single atomic call — no niu→entity relationship
+        assert bg._ingester.inject_custom_kg.call_count == 1
+        call_kwargs = bg._ingester.inject_custom_kg.call_args
+        assert call_kwargs[1]["relationships"] == []
 
     def test_store_l1_memory_prefers(self):
-        """Memory with type=preferences should create 'prefers' relation."""
+        """Memory with type=preferences should store entity with 'prefers' relation_type."""
         bg = _make_mock_brain_graph()
 
         result = bg.store_memory(
@@ -136,13 +131,10 @@ class TestBrainGraphStoreMemory:
 
         assert result["status"] == "ok"
         assert result["relation_type"] == "prefers"
-        assert bg._ingester.inject_custom_kg.call_count == 2
-        call_kwargs = bg._ingester.inject_custom_kg.call_args_list[1]
-        rels = call_kwargs[1]["relationships"]
-        assert rels[0]["relation"] == "prefers"
+        assert bg._ingester.inject_custom_kg.call_count == 1
 
     def test_store_memory_skills(self):
-        """Memory with type=skills should create 'skilled_in' relation."""
+        """Memory with type=skills should store entity with 'skilled_in' relation_type."""
         bg = _make_mock_brain_graph()
 
         result = bg.store_memory(
@@ -152,13 +144,10 @@ class TestBrainGraphStoreMemory:
 
         assert result["status"] == "ok"
         assert result["relation_type"] == "skilled_in"
-        assert bg._ingester.inject_custom_kg.call_count == 2
-        call_kwargs = bg._ingester.inject_custom_kg.call_args_list[1]
-        rels = call_kwargs[1]["relationships"]
-        assert rels[0]["relation"] == "skilled_in"
+        assert bg._ingester.inject_custom_kg.call_count == 1
 
     def test_store_memory_experiences(self):
-        """Memory with type=experiences should create 'remembers' relation."""
+        """Memory with type=experiences should store entity with 'remembers' relation_type."""
         bg = _make_mock_brain_graph()
 
         result = bg.store_memory(
@@ -168,10 +157,7 @@ class TestBrainGraphStoreMemory:
 
         assert result["status"] == "ok"
         assert result["relation_type"] == "remembers"
-        assert bg._ingester.inject_custom_kg.call_count == 2
-        call_kwargs = bg._ingester.inject_custom_kg.call_args_list[1]
-        rels = call_kwargs[1]["relationships"]
-        assert rels[0]["relation"] == "remembers"
+        assert bg._ingester.inject_custom_kg.call_count == 1
 
     def test_store_memory_default_weight(self):
         """Memory without type should use default weight 0.7."""
@@ -183,10 +169,7 @@ class TestBrainGraphStoreMemory:
 
         assert result["status"] == "ok"
         assert result["weight"] == 0.7
-        assert bg._ingester.inject_custom_kg.call_count == 2
-        call_kwargs = bg._ingester.inject_custom_kg.call_args_list[1]
-        rels = call_kwargs[1]["relationships"]
-        assert rels[0]["weight"] == 0.7
+        assert bg._ingester.inject_custom_kg.call_count == 1
 
     def test_store_memory_unknown_type_defaults(self):
         """Unknown memory_type should fall back to DEFAULT_RELATION_TYPE."""
@@ -269,17 +252,17 @@ class TestBrainGraphRecallMemories:
         assert result[0]["target"] == "brain:concept:High"
 
     def test_recall_extracts_brain_entities_from_text_fallback(self):
-        """recall_memories text fallback should extract brain: prefixed entities."""
+        """recall_memories text fallback should extract entities from text."""
         bg = _make_mock_brain_graph()
         bg._adapter.query_data.return_value = None
         bg._adapter.query.return_value = "brain:concept:Python is a language. brain:skill:Web_Development is useful."
 
         result = bg.recall_memories(query="编程技能")
 
-        assert len(result) >= 2
-        targets = [m["target"] for m in result]
-        assert "brain:concept:Python" in targets
-        assert "brain:skill:Web_Development" in targets
+        assert len(result) >= 1
+        # New logic extracts target from text content, not hardcoded "Niu"
+        assert result[0]["relation_type"] == "remembers"
+        assert "Python" in result[0]["description"]
 
 
 class TestBrainGraphEnsureNiu:
@@ -395,7 +378,7 @@ class TestMetadataEmbedding:
     """Test metadata embedding in store_memory."""
 
     def test_metadata_embedded_in_description(self):
-        """metadata should be embedded as JSON in the relation description."""
+        """metadata should be embedded as JSON in the entity description."""
         bg = _make_mock_brain_graph()
 
         result = bg.store_memory(
@@ -404,15 +387,15 @@ class TestMetadataEmbedding:
         )
 
         assert result["status"] == "ok"
-        assert bg._ingester.inject_custom_kg.call_count == 2
-        call_kwargs = bg._ingester.inject_custom_kg.call_args_list[1]
-        rels = call_kwargs[1]["relationships"]
-        desc = rels[0]["description"]
+        assert bg._ingester.inject_custom_kg.call_count == 1
+        call_kwargs = bg._ingester.inject_custom_kg.call_args
+        entities = call_kwargs[1]["entities"]
+        desc = entities[0]["description"]
         assert "[meta:" in desc
         assert "source" in desc
 
     def test_no_metadata_no_bracket(self):
-        """Without metadata, description should not contain [meta:]."""
+        """Without metadata, entity description should not contain [meta:]."""
         bg = _make_mock_brain_graph()
 
         result = bg.store_memory(
@@ -420,10 +403,10 @@ class TestMetadataEmbedding:
         )
 
         assert result["status"] == "ok"
-        assert bg._ingester.inject_custom_kg.call_count == 2
-        call_kwargs = bg._ingester.inject_custom_kg.call_args_list[1]
-        rels = call_kwargs[1]["relationships"]
-        desc = rels[0]["description"]
+        assert bg._ingester.inject_custom_kg.call_count == 1
+        call_kwargs = bg._ingester.inject_custom_kg.call_args
+        entities = call_kwargs[1]["entities"]
+        desc = entities[0]["description"]
         assert "[meta:" not in desc
 
     def test_metadata_stripped_from_prompt(self):
@@ -454,8 +437,8 @@ class TestMetadataEmbedding:
         )
 
         assert result["status"] == "ok"
-        assert bg._ingester.inject_custom_kg.call_count == 2
-        call_kwargs = bg._ingester.inject_custom_kg.call_args_list[1]
-        rels = call_kwargs[1]["relationships"]
-        desc = rels[0]["description"]
+        assert bg._ingester.inject_custom_kg.call_count == 1
+        call_kwargs = bg._ingester.inject_custom_kg.call_args
+        entities = call_kwargs[1]["entities"]
+        desc = entities[0]["description"]
         assert "[meta:" not in desc
