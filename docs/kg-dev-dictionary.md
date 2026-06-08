@@ -192,8 +192,8 @@ amerge_entities(
 inject_custom_kg(
     entities=[{"entity_name": "任飞", "entity_type": "person",
                "description": "任飞，用户的朋友"}],
-    relationships=[{"src_id": "Niu", "tgt_id": "任飞",
-                    "keywords": "brain_region_anchor", "description": "认识任飞"}],
+    relationships=[{"src_id": "情感偏好脑区", "tgt_id": "任飞",
+                    "keywords": "_region:contains", "description": "认识任飞"}],
     chunks=[],  # 无 chunks → 不触发 LLM → 100%可靠
     source_id="person:rename",
 )

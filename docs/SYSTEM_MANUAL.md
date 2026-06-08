@@ -98,6 +98,11 @@ Niu 是一个**本地运行**的个人知识管理助手，核心理念：
 - 动态注入过滤 `mcp_tool`/`tool` 类型实体和内部架构概念，防止工具描述和硬编码内容重复注入
 - 子Agent工具按 `mcpToolFilter` 白名单过滤，只注入职责所需工具（向后兼容：无配置时全量注入）
 
+**niu 根节点规则**：
+- `niu` 是知识图谱根节点，只与脑区连接，不与普通实体直接连接
+- 运行时代码（`lightrag_insert_entity`、`store_memory`）不创建 niu→实体锚边
+- 实体可达性由脑区 `_region:contains` 边保证
+
 **LightRAG 实体类型（entity_type）：**
 - `skill` — Skills 文件
 - `tool` — MCP 工具描述
