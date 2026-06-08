@@ -33,7 +33,7 @@ mcpServers:
 
 **关系（Relation）**= 两个实体之间的连接，有方向
 ```
-例子：Niu --[prefers]--> Python
+例子：知识体系脑区 --[_region:contains]--> Python
 意思是：用户偏好 Python
 ```
 
@@ -47,7 +47,7 @@ mcpServers:
 
 2. **图遍历** `lightrag_get_graph(entity_name="Python", depth=1)`
    → 从"Python"出发，找到所有直接相连的实体和关系
-   → 主 Agent 会看到：Niu --[prefers]--> Python, 程序记忆脑区 --[_region:contains]--> Python
+   → 主 Agent 会看到：知识体系脑区 --[_region:contains]--> Python
    → 所以你建的关系必须有语义：关系类型要能读成一句话（"用户偏好Python"、"Python属于程序记忆区"）
 
 ### 写入→检索 完整示例
@@ -55,7 +55,7 @@ mcpServers:
 **你写入**：
 ```
 lightrag_insert_entity(name="FastAPI", entity_type="tool", description="Python Web框架，用户用于构建API服务")
-lightrag_insert_relation(src_id="Niu", tgt_id="FastAPI", relation="skilled_in")
+lightrag_insert_relation(src_id="知识体系脑区", tgt_id="FastAPI", relation="_region:contains")
 ```
 
 **以后用户问"我擅长什么Web框架？"，主 Agent 检索**：
@@ -65,7 +65,7 @@ lightrag_search_entities(query="Web框架", top_k=5)
 → 主 Agent 读到 description，知道用户擅长 FastAPI，用于构建API服务
 
 lightrag_get_graph(entity_name="FastAPI", depth=1)
-→ 返回：Niu --[skilled_in]--> FastAPI
+→ 返回：知识体系脑区 --[_region:contains]--> FastAPI
 → 主 Agent 读到关系，确认"用户擅长 FastAPI"
 ```
 
@@ -102,7 +102,7 @@ lightrag_get_graph(entity_name="FastAPI", depth=1)
 
 | 节点 | 含义 | 什么时候连到这里 |
 |------|------|----------------|
-| `Niu` | 用户画像主节点 | 用户偏好、技能、知识都连到这里 |
+| `知识体系脑区` | 知识技能脑区 | 技能、概念等知识实体归入此脑区 |
 | `YYYY-MM-DD会话` | 当天会话节点 | 实体在当天对话中出现 |
 
 ### 工具使用速查
@@ -139,8 +139,9 @@ lightrag_get_graph(entity_name="FastAPI", depth=1)
    - **不适合不强求**：没有合适的脑区时，连到默认脑区（聊天提及→`聊天历史脑区`，文档产生→`文档库脑区`，技能工具→`知识体系脑区`）
    - **不要手动创建新脑区**——同类实体连到默认脑区多了以后，Leiden 社区发现算法会自动把它们聚类成新脑区
 
-4. **画像更新**（最后做）：更新 Niu 的偏好和技能
-   - `lightrag_insert_relation(src_id="Niu", tgt_id=entity, relation="prefers"/"skilled_in"/"knows_about")`
+4. **脑区归入**（最后做）：将实体归入对应脑区
+   - `lightrag_insert_relation(src_id="脑区名", tgt_id=entity, relation="_region:contains")`
+   - 先用 `lightrag_search_entities` 查找实体应归入哪个脑区
    - 判断标准（需用户明确表达，不因随口一提就标注）：
      - `prefers`：用户明确表达偏好（"我喜欢..."、"我更喜欢..."、"我习惯..."）
      - `skilled_in`：用户展示专业技能（代码讨论、技术决策、问题排查），至少出现 2 次相关讨论
@@ -252,7 +253,7 @@ lightrag_get_graph(entity_name="FastAPI", depth=1)
   - 描述优化：{n1} 个
   - 时间链创建：{n2} 条关系
   - 脑区关联：{n3} 条关系
-  - 画像更新：{n4} 条关系
+  - 脑区归入：{n4} 条关系
 Skill 维护：{n5} 个 skill 检查
 游标更新：last_dream_evolve_id = {new_cursor_id}
 
