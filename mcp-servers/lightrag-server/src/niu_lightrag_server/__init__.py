@@ -392,7 +392,7 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
 
     "lightrag_insert_entity": {
         "name": "lightrag_insert_entity",
-        "description": "Insert an entity into the knowledge graph using structured injection (ainsert_custom_kg). Entity name and type are preserved exactly — no LLM auto-extraction. Also creates a Niu anchor edge for reachability. Entity names must use natural language (e.g., 'Python', '任飞'), NOT colon-prefix format (e.g., NOT 'skill:Python', NOT 'person:uuid').",
+        "description": "Insert an entity into the knowledge graph using structured injection (ainsert_custom_kg). Entity name and type are preserved exactly — no LLM auto-extraction. Entity names must use natural language (e.g., 'Python', '任飞'), NOT colon-prefix format (e.g., NOT 'skill:Python', NOT 'person:uuid').",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -413,7 +413,7 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
 
     "lightrag_insert_relation": {
         "name": "lightrag_insert_relation",
-        "description": "Insert a relation between two entities using structured injection (ainsert_custom_kg). Relation src/tgt/keywords are preserved exactly — no LLM auto-extraction. Entity names must use natural language (e.g., 'Niu', 'Python'), NOT colon-prefix format.",
+        "description": "Insert a relation between two entities using structured injection (ainsert_custom_kg). Relation src/tgt/keywords are preserved exactly — no LLM auto-extraction. Entity names must use natural language (e.g., 'Python', '任飞'), NOT colon-prefix format.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -1172,15 +1172,6 @@ def lightrag_insert_entity(
                 "entity_name": name,
             }
 
-        niu_relation_map = {
-            "person": "remembers",
-            "skill": "skilled_in",
-            "concept": "knows_about",
-            "tool": "uses",
-            "preference": "prefers",
-        }
-        niu_relation = niu_relation_map.get(entity_type.lower() if entity_type else None)
-
         # Build entity dict for inject_custom_kg
         entity = {
             "entity_name": name,
@@ -1190,19 +1181,10 @@ def lightrag_insert_entity(
             "file_path": file_path,
         }
 
-        # Build Niu -> entity anchor relationship (only for types that
-        # semantically connect to Niu — Person/Skill/Concept/Tool/Preference)
+        # niu anchor edges removed: niu only connects to brain regions,
+        # not to individual entities. Entity reachability is provided by
+        # brain region _region:contains edges.
         relationships = []
-        if niu_relation:
-            anchor_rel = {
-                "src_id": "Niu",
-                "tgt_id": name,
-                "keywords": niu_relation,
-                "description": f"Niu {niu_relation} {name}",
-                "source_id": file_path,
-                "file_path": file_path,
-            }
-            relationships.append(anchor_rel)
 
         ingester = _get_ingester()
         return ingester.inject_custom_kg(
