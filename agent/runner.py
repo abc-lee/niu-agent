@@ -296,9 +296,11 @@ def get_tools_schema() -> list:
         sub_agents = []
 
     for agent_name in sub_agents:
+        task_desc = "描述要委托给子Agent执行的任务"  # 默认值
         try:
             agent_config = get_subagent_config(agent_name)
             desc = agent_config.get("description", f"子 Agent: {agent_name}")
+            task_desc = agent_config.get("taskDescription", task_desc)
         except Exception as e:
             logger.warning(f"Failed to load sub-agent '{agent_name}' config: {e}")
             desc = f"子 Agent: {agent_name}"
@@ -313,7 +315,7 @@ def get_tools_schema() -> list:
                         "properties": {
                             "task": {
                                 "type": "string",
-                                "description": "任务描述，如：处理照片：E:/path/photo.jpg",
+                                "description": task_desc,
                             },
                         },
                         "required": ["task"],

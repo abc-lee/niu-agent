@@ -3,6 +3,7 @@ name: event-manager
 description: "事件管理：日程/提醒/定时任务，写入scheduler数据库"
 mode: subagent
 temperature: 0.2
+taskDescription: 任务描述，如：创建提醒：明天上午10点开会，或：查看本周日程
 mcpServers:
   - scheduler-server
 ---
