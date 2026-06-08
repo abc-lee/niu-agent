@@ -1133,9 +1133,8 @@ def lightrag_insert_entity(
     """Insert a single entity via ainsert_custom_kg (structured injection).
 
     Uses inject_custom_kg to bypass LLM auto-extraction, ensuring the
-    entity name and type are preserved exactly as specified. Also creates
-    a Niu -> entity anchor relationship so the entity is reachable
-    from the root.
+    entity name and type are preserved exactly as specified. Entity
+    reachability is provided by brain region _region:contains edges.
 
     Entity names must follow LightRAG's natural language naming system.
     No colon prefixes (e.g., use "Python" not "skill:Python").
