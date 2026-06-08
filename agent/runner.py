@@ -702,34 +702,43 @@ class NiuRunner:
 
     # ============== LightRAG Helper Methods ==============
 
+    # 黑名单：这些实体类型/名称不应注入到主Agent system prompt
+    _INJECT_ENTITY_TYPE_BLACKLIST = {"mcp_tool", "tool"}
+    _INJECT_ENTITY_NAME_BLACKLIST = {
+        # 源码文件名 — 内部实现细节，对Agent对话无帮助
+        "agent_loop.py", "handler.py", "tool_registry.py",
+        # 内部架构概念 — system prompt 硬编码已覆盖
+        "主Agent", "context-manager", "chat_idle事件",
+        # 子Agent工具名 — tools description 已覆盖
+        "chat-with-file-processor", "chat-with-event-manager", "chat-with-journal-agent",
+    }
+
     def _format_lightrag_entities_for_prompt(
         self, entities: list[dict], title: str, seen_names: set[str],
     ) -> tuple[str, set[str]]:
-        """Format LightRAG entity dicts for prompt injection.
-
-        Similar to format_resources_for_prompt but works with LightRAG
-        entity dicts (entity_name, description) instead of SearchResult objects.
-
-        Args:
-            entities: List of LightRAG entity dicts.
-            title: Section title for the prompt.
-            seen_names: Set of names already included (for dedup).
-
-        Returns:
-            Tuple of (formatted_text, updated_seen_names).
-        """
+        """Format LightRAG entity dicts for prompt injection with blacklist filtering."""
         if not entities:
             return "", seen_names
 
-        # Detect if this is a skill section (for path annotation)
         is_skill_section = title == "相关技能"
-
         lines = [f"\n\n### [{title}]"]
         added = 0
         for entity in entities:
             entity_name = entity.get("entity_name", "")
-            # Entity names use natural language (no type prefixes)
             display_name = entity_name
+
+            # 过滤黑名单实体类型（如 mcp_tool/tool — 主Agent通过 disk 发现工具）
+            # 注意：LightRAG 返回的 entity_type 可能是 title case（如 "Tool"），需 .lower()
+            entity_type = entity.get("entity_type", "").lower()
+            if entity_type in self._INJECT_ENTITY_TYPE_BLACKLIST:
+                logger.debug(f"[Inject] Skipping blacklisted type '{entity_type}': {display_name}")
+                continue
+
+            # 过滤黑名单实体名（源码文件名、硬编码已覆盖的架构概念）
+            if display_name in self._INJECT_ENTITY_NAME_BLACKLIST:
+                logger.debug(f"[Inject] Skipping blacklisted name: {display_name}")
+                continue
+
             if display_name in seen_names:
                 continue
             seen_names.add(display_name)
@@ -739,7 +748,6 @@ class NiuRunner:
                 lines.append(f"   {description}")
             else:
                 lines.append(f"{added + 1}. **{display_name}**")
-            # For skill entities, append file path so LLM can read the full file
             if is_skill_section:
                 lines.append(f"   路径: ~/.niu/skills/{display_name}.md")
             added += 1

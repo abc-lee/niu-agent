@@ -172,6 +172,34 @@ class TestFormatLightragEntities:
         )
         assert text == ""  # deduped
 
+    def test_filters_mcp_tool_entity_type(self, runner):
+        """Entities with entity_type=mcp_tool or tool are filtered out (case-insensitive)."""
+        entities = [
+            {"entity_name": "file-parser", "entity_type": "mcp_tool", "description": "Parses files"},
+            {"entity_name": "browser-automation", "entity_type": "Tool", "description": "Browser tool"},
+            {"entity_name": "python", "description": "Python programming"},
+        ]
+        text, seen = runner._format_lightrag_entities_for_prompt(
+            entities, "参考知识", set(),
+        )
+        assert "file-parser" not in text
+        assert "browser-automation" not in text
+        assert "python" in text
+
+    def test_filters_blacklisted_entity_name(self, runner):
+        """Entities with blacklisted names are filtered out."""
+        entities = [
+            {"entity_name": "agent_loop.py", "description": "Main loop"},
+            {"entity_name": "主Agent", "description": "Main agent"},
+            {"entity_name": "python", "description": "Python programming"},
+        ]
+        text, seen = runner._format_lightrag_entities_for_prompt(
+            entities, "参考知识", set(),
+        )
+        assert "agent_loop.py" not in text
+        assert "主Agent" not in text
+        assert "python" in text
+
     def test_empty_entities_returns_empty(self, runner):
         """Empty entity list returns empty string."""
         text, seen = runner._format_lightrag_entities_for_prompt(
