@@ -23,7 +23,7 @@ def _make_region_infos() -> list[BrainRegionInfo]:
     """创建测试用的 BrainRegionInfo 列表"""
     return [
         BrainRegionInfo(
-            name="brain:region:Python",
+            name="Python脑区",
             label="Python",
             community_id="community_0",
             description="Python编程语言",
@@ -33,7 +33,7 @@ def _make_region_infos() -> list[BrainRegionInfo]:
             updated_at=1745366400.0,
         ),
         BrainRegionInfo(
-            name="brain:region:React",
+            name="React脑区",
             label="React",
             community_id="community_1",
             description="React前端框架",
@@ -43,7 +43,7 @@ def _make_region_infos() -> list[BrainRegionInfo]:
             updated_at=1745366400.0,
         ),
         BrainRegionInfo(
-            name="brain:region:Database",
+            name="Database脑区",
             label="Database",
             community_id="community_2",
             description="数据库技术",
@@ -90,9 +90,9 @@ class TestActivateRegions:
             entity_to_region={},
         )
 
-        # community_0 应被激活
-        assert "community_0" in activated
-        state = manager._regions["community_0"]
+        # "Python脑区" 应被激活
+        assert "Python脑区" in activated
+        state = manager._regions["Python脑区"]
         assert state.activation == 1.0
         assert state.activation_count == 1
 
@@ -102,11 +102,11 @@ class TestActivateRegions:
 
         activated = manager.activate_regions(
             hit_entities=["React"],
-            entity_to_region={"React": "community_1"},
+            entity_to_region={"React": "React脑区"},
         )
 
-        assert "community_1" in activated
-        assert manager._regions["community_1"].activation == 1.0
+        assert "React脑区" in activated
+        assert manager._regions["React脑区"].activation == 1.0
 
     def test_activate_regions_ignores_unknown_entities(self):
         """未知实体不激活任何区域"""
@@ -129,7 +129,7 @@ class TestActivateRegions:
             entity_to_region={},
         )
 
-        state = manager._regions["community_0"]
+        state = manager._regions["Python脑区"]
         assert state.last_activated_at >= before_time
 
     def test_activate_multiple_regions(self):
@@ -142,8 +142,8 @@ class TestActivateRegions:
         )
 
         assert len(activated) == 2
-        assert "community_0" in activated
-        assert "community_1" in activated
+        assert "Python脑区" in activated
+        assert "React脑区" in activated
 
 
 # ============== Test 2: reinforce_by_tool_use ==============
@@ -157,30 +157,30 @@ class TestReinforceByToolUse:
         manager = _make_manager_with_regions()
 
         # 先让区域有较低激活值
-        manager._regions["community_0"].activation = 0.4
+        manager._regions["Python脑区"].activation = 0.4
 
         result = manager.reinforce_by_tool_use(
             tool_name="kg-server/query",
-            tool_to_region={"kg-server/query": "community_0"},
+            tool_to_region={"kg-server/query": "Python脑区"},
         )
 
-        assert result == "community_0"
-        assert manager._regions["community_0"].activation == 0.85
+        assert result == "Python脑区"
+        assert manager._regions["Python脑区"].activation == 0.85
 
     def test_reinforce_does_not_reduce_higher_activation(self):
         """强化不降低已有高激活值"""
         manager = _make_manager_with_regions()
 
         # 区域已有高激活值
-        manager._regions["community_0"].activation = 1.0
+        manager._regions["Python脑区"].activation = 1.0
 
         manager.reinforce_by_tool_use(
             tool_name="kg-server/query",
-            tool_to_region={"kg-server/query": "community_0"},
+            tool_to_region={"kg-server/query": "Python脑区"},
         )
 
         # activation 保持在 1.0（max(1.0, 0.85) = 1.0）
-        assert manager._regions["community_0"].activation == 1.0
+        assert manager._regions["Python脑区"].activation == 1.0
 
     def test_reinforce_unknown_tool_returns_none(self):
         """未知工具返回 None"""
@@ -188,7 +188,7 @@ class TestReinforceByToolUse:
 
         result = manager.reinforce_by_tool_use(
             tool_name="unknown-tool",
-            tool_to_region={"kg-server/query": "community_0"},
+            tool_to_region={"kg-server/query": "Python脑区"},
         )
 
         assert result is None
@@ -199,7 +199,7 @@ class TestReinforceByToolUse:
 
         result = manager.reinforce_by_tool_use(
             tool_name="kg-server/query",
-            tool_to_region={"kg-server/query": "community_99"},
+            tool_to_region={"kg-server/query": "NonExistent脑区"},
         )
 
         assert result is None
@@ -218,22 +218,22 @@ class TestReinforceSteadyState:
         # Turn 1: tool call -> 0.85
         manager.reinforce_by_tool_use(
             tool_name="kg-server/query",
-            tool_to_region={"kg-server/query": "community_0"},
+            tool_to_region={"kg-server/query": "Python脑区"},
         )
-        assert manager._regions["community_0"].activation == 0.85
+        assert manager._regions["Python脑区"].activation == 0.85
 
         # Simulate 10 turns of continuous tool use
         for _ in range(10):
             # Decay
             manager.decay_all()
-            activation_after_decay = manager._regions["community_0"].activation
+            activation_after_decay = manager._regions["Python脑区"].activation
 
             # Reinforce
             manager.reinforce_by_tool_use(
                 tool_name="kg-server/query",
-                tool_to_region={"kg-server/query": "community_0"},
+                tool_to_region={"kg-server/query": "Python脑区"},
             )
-            activation_after_reinforce = manager._regions["community_0"].activation
+            activation_after_reinforce = manager._regions["Python脑区"].activation
 
             # After decay: ~0.78 (0.85 * 0.92)
             # After reinforce: back to 0.85 (max(~0.78, 0.85))
@@ -242,7 +242,7 @@ class TestReinforceSteadyState:
             assert activation_after_reinforce == 0.85
 
         # Steady state: oscillates between ~0.78 and 0.85, well above threshold 0.3
-        assert manager._regions["community_0"].activation > 0.3
+        assert manager._regions["Python脑区"].activation > 0.3
 
 
 # ============== Test 4: decay curve ==============
@@ -256,7 +256,7 @@ class TestDecayCurve:
         manager = _make_manager_with_regions(decay_factor=0.92)
 
         # Start with full activation
-        manager._regions["community_0"].activation = 1.0
+        manager._regions["Python脑区"].activation = 1.0
 
         # Track expected decay
         expected = 1.0
@@ -264,7 +264,7 @@ class TestDecayCurve:
         for turn in range(30):
             manager.decay_all()
             expected *= 0.92
-            actual = manager._regions["community_0"].activation
+            actual = manager._regions["Python脑区"].activation
 
             # Allow small floating-point tolerance
             assert abs(actual - expected) < 0.01, (
@@ -274,34 +274,34 @@ class TestDecayCurve:
     def test_decay_curve_key_points(self):
         """验证衰减曲线的关键节点"""
         manager = _make_manager_with_regions(decay_factor=0.92)
-        manager._regions["community_0"].activation = 1.0
+        manager._regions["Python脑区"].activation = 1.0
 
         # Turn 5: 0.92^5 ≈ 0.66
         for _ in range(5):
             manager.decay_all()
-        assert abs(manager._regions["community_0"].activation - 0.66) < 0.01
+        assert abs(manager._regions["Python脑区"].activation - 0.66) < 0.01
 
         # Continue to turn 10: 0.92^10 ≈ 0.43
         for _ in range(5):
             manager.decay_all()
-        assert abs(manager._regions["community_0"].activation - 0.43) < 0.02
+        assert abs(manager._regions["Python脑区"].activation - 0.43) < 0.02
 
         # Continue to turn 20: 0.92^20 ≈ 0.19
         for _ in range(10):
             manager.decay_all()
-        assert abs(manager._regions["community_0"].activation - 0.19) < 0.02
+        assert abs(manager._regions["Python脑区"].activation - 0.19) < 0.02
 
     def test_decay_reaches_near_zero(self):
         """持续衰减趋近于 0"""
         manager = _make_manager_with_regions(decay_factor=0.92)
-        manager._regions["community_0"].activation = 1.0
+        manager._regions["Python脑区"].activation = 1.0
 
         # 0.92^85 ≈ 0.0008, below 0.001 clamp threshold
         for _ in range(85):
             manager.decay_all()
 
         # Should be clamped to 0.0
-        assert manager._regions["community_0"].activation == 0.0
+        assert manager._regions["Python脑区"].activation == 0.0
 
 
 # ============== Test 5: spillover activation ==============
@@ -327,7 +327,7 @@ class TestSpilloverActivation:
         )
 
         # React (neighbor) should get 0.3 × 1.0 = 0.3
-        assert manager._regions["community_1"].activation == 0.3
+        assert manager._regions["React脑区"].activation == 0.3
 
     def test_spillover_does_not_reduce_higher_activation(self):
         """溢出不降低邻居已有的更高激活值"""
@@ -340,7 +340,7 @@ class TestSpilloverActivation:
         )
 
         # Set React region to high activation first
-        manager._regions["community_1"].activation = 0.8
+        manager._regions["React脑区"].activation = 0.8
 
         # Activate Python region (spillover = 0.3 × 1.0 = 0.3)
         manager.activate_regions(
@@ -349,7 +349,7 @@ class TestSpilloverActivation:
         )
 
         # React should keep its 0.8 (spillover 0.3 < 0.8)
-        assert manager._regions["community_1"].activation == 0.8
+        assert manager._regions["React脑区"].activation == 0.8
 
     def test_spillover_multiple_neighbors(self):
         """溢出传播到多个邻居"""
@@ -367,8 +367,8 @@ class TestSpilloverActivation:
         )
 
         # Both neighbors get 0.3 × 1.0 = 0.3
-        assert manager._regions["community_1"].activation == 0.3
-        assert manager._regions["community_2"].activation == 0.3
+        assert manager._regions["React脑区"].activation == 0.3
+        assert manager._regions["Database脑区"].activation == 0.3
 
     def test_no_spillover_without_neighbors(self):
         """无邻居关系时不发生溢出"""
@@ -383,8 +383,8 @@ class TestSpilloverActivation:
         )
 
         # community_1 and community_2 should stay at 0.0
-        assert manager._regions["community_1"].activation == 0.0
-        assert manager._regions["community_2"].activation == 0.0
+        assert manager._regions["React脑区"].activation == 0.0
+        assert manager._regions["Database脑区"].activation == 0.0
 
     def test_spillover_skips_manually_dimmed_neighbor(self):
         """溢出跳过手动调暗的邻居"""
@@ -406,8 +406,8 @@ class TestSpilloverActivation:
         )
 
         # React should stay dimmed (spillover skipped)
-        assert manager._regions["community_1"].activation == 0.0
-        assert manager._regions["community_1"].manually_dimmed is True
+        assert manager._regions["React脑区"].activation == 0.0
+        assert manager._regions["React脑区"].manually_dimmed is True
 
 
 # ============== Test 6: manual_dim blocks auto-activation ==============
@@ -429,10 +429,10 @@ class TestManualDimBlocksAuto:
             entity_to_region={},
         )
 
-        # community_0 should NOT be activated
-        assert "community_0" not in activated
-        assert manager._regions["community_0"].activation == 0.0
-        assert manager._regions["community_0"].manually_dimmed is True
+        # "Python脑区" should NOT be activated
+        assert "Python脑区" not in activated
+        assert manager._regions["Python脑区"].activation == 0.0
+        assert manager._regions["Python脑区"].manually_dimmed is True
 
     def test_manual_dim_blocks_tool_reinforce(self):
         """手动调暗的区域在该轮次中不会被工具强化"""
@@ -442,12 +442,12 @@ class TestManualDimBlocksAuto:
 
         result = manager.reinforce_by_tool_use(
             tool_name="kg-server/query",
-            tool_to_region={"kg-server/query": "community_0"},
+            tool_to_region={"kg-server/query": "Python脑区"},
         )
 
         # Reinforce should be skipped
         assert result is None
-        assert manager._regions["community_0"].activation == 0.0
+        assert manager._regions["Python脑区"].activation == 0.0
 
     def test_manual_activate_overrides_dim(self):
         """手动激活可以覆盖调暗状态"""
@@ -455,11 +455,11 @@ class TestManualDimBlocksAuto:
 
         # First dim, then activate
         manager.manual_dim(["Python"])
-        assert manager._regions["community_0"].manually_dimmed is True
+        assert manager._regions["Python脑区"].manually_dimmed is True
 
         manager.manual_activate(["Python"])
-        assert manager._regions["community_0"].activation == 1.0
-        assert manager._regions["community_0"].manually_dimmed is False
+        assert manager._regions["Python脑区"].activation == 1.0
+        assert manager._regions["Python脑区"].manually_dimmed is False
 
 
 # ============== Test 7: decay clears manually_dimmed ==============
@@ -474,19 +474,19 @@ class TestDecayClearsManuallyDimmed:
 
         # Dim a region
         manager.manual_dim(["Python"])
-        assert manager._regions["community_0"].manually_dimmed is True
+        assert manager._regions["Python脑区"].manually_dimmed is True
 
         # Decay (end of turn)
         manager.decay_all()
-        assert manager._regions["community_0"].manually_dimmed is False
+        assert manager._regions["Python脑区"].manually_dimmed is False
 
         # Next turn: auto-activation should work
         activated = manager.activate_regions(
             hit_entities=["Python"],
             entity_to_region={},
         )
-        assert "community_0" in activated
-        assert manager._regions["community_0"].activation == 1.0
+        assert "Python脑区" in activated
+        assert manager._regions["Python脑区"].activation == 1.0
 
     def test_decay_clears_all_manually_dimmed_flags(self):
         """衰减清除所有区域的 manually_dimmed 标记"""
@@ -494,14 +494,14 @@ class TestDecayClearsManuallyDimmed:
 
         # Dim two regions
         manager.manual_dim(["Python", "React"])
-        assert manager._regions["community_0"].manually_dimmed is True
-        assert manager._regions["community_1"].manually_dimmed is True
+        assert manager._regions["Python脑区"].manually_dimmed is True
+        assert manager._regions["React脑区"].manually_dimmed is True
 
         manager.decay_all()
 
         # Both should be cleared
-        assert manager._regions["community_0"].manually_dimmed is False
-        assert manager._regions["community_1"].manually_dimmed is False
+        assert manager._regions["Python脑区"].manually_dimmed is False
+        assert manager._regions["React脑区"].manually_dimmed is False
 
 
 # ============== Test 8: get_status_light ==============
@@ -519,13 +519,12 @@ class TestGetStatusLight:
         assert manager.get_status_light(0.71) == STATUS_LIT
 
     def test_dimming_for_medium_activation(self):
-        """0.1 < activation <= 0.7 返回 🟡"""
+        """0.3 < activation <= 0.7 返回 🟡"""
         manager = _make_manager_with_regions()
 
         assert manager.get_status_light(0.7) == STATUS_DIMMING
         assert manager.get_status_light(0.5) == STATUS_DIMMING
-        assert manager.get_status_light(0.3) == STATUS_DIMMING
-        assert manager.get_status_light(0.11) == STATUS_DIMMING
+        assert manager.get_status_light(0.31) == STATUS_DIMMING
 
     def test_off_for_low_activation(self):
         """activation <= 0.1 返回 ⚫"""

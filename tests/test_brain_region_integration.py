@@ -45,7 +45,7 @@ def _make_region_infos() -> list[BrainRegionInfo]:
     """Create test BrainRegionInfo list with multiple regions."""
     return [
         BrainRegionInfo(
-            name="brain:region:编程开发",
+            name="编程开发脑区",
             label="编程开发",
             community_id="community_0",
             description="Python/NumPy/Web技术栈",
@@ -55,7 +55,7 @@ def _make_region_infos() -> list[BrainRegionInfo]:
             updated_at=1745366400.0,
         ),
         BrainRegionInfo(
-            name="brain:region:项目管理",
+            name="项目管理脑区",
             label="项目管理",
             community_id="community_1",
             description="AI_Bot项目，主开发者",
@@ -65,7 +65,7 @@ def _make_region_infos() -> list[BrainRegionInfo]:
             updated_at=1745366400.0,
         ),
         BrainRegionInfo(
-            name="brain:region:日常偏好",
+            name="日常偏好脑区",
             label="日常偏好",
             community_id="community_2",
             description="暗色主题，远程办公",
@@ -110,8 +110,7 @@ def _make_dream_writer() -> tuple[DreamWriter, MagicMock]:
         (writer, mock_ingester) tuple.
     """
     ingester = MagicMock()
-    ingester.inject_entity.return_value = {"status": "ok", "name": "test"}
-    ingester.inject_custom_kg.return_value = {"status": "ok"}
+    ingester.lightrag_insert.return_value = {"status": "ok"}
     writer = DreamWriter(ingester)
     return writer, ingester
 
@@ -147,7 +146,7 @@ class TestFullBrainRegionFlow:
             hit_entities=["Python"], entity_to_region=entity_to_region
         )
 
-        assert "community_0" in activated
+        assert "编程开发脑区" in activated
 
         # Get region map
         regions = activation_mgr.get_region_map()
@@ -174,7 +173,7 @@ class TestFullBrainRegionFlow:
             hit_entities=["Python"], entity_to_region=entity_to_region
         )
 
-        state = manager._regions["community_0"]
+        state = manager._regions["编程开发脑区"]
         assert state.activation == 1.0
 
         # Decay once
@@ -186,7 +185,7 @@ class TestFullBrainRegionFlow:
         assert state.activation == pytest.approx(0.8464)
 
         # Reinforce via tool use (max(current, 0.85))
-        tool_to_region = {"kg-server/query": "community_0"}
+        tool_to_region = {"kg-server/query": "编程开发脑区"}
         manager.reinforce_by_tool_use("kg-server/query", tool_to_region)
 
         # Reinforce should bring it to 0.85 (0.8464 < 0.85)
@@ -208,7 +207,7 @@ class TestFullBrainRegionFlow:
         manager.activate_regions(
             hit_entities=["Python"], entity_to_region=entity_to_region
         )
-        state = manager._regions["community_0"]
+        state = manager._regions["编程开发脑区"]
         assert state.activation == 1.0
         assert state.manually_dimmed is False
 
@@ -221,7 +220,7 @@ class TestFullBrainRegionFlow:
         activated = manager.activate_regions(
             hit_entities=["Python"], entity_to_region=entity_to_region
         )
-        assert "community_0" not in activated
+        assert "编程开发脑区" not in activated
         assert state.activation == 0.0
         assert state.manually_dimmed is True
 
@@ -243,12 +242,12 @@ class TestFullBrainRegionFlow:
         manager = _make_activation_mgr()
 
         # Set tool mapping
-        tool_to_region = {"kg-server/query": "community_0"}
+        tool_to_region = {"kg-server/query": "编程开发脑区"}
 
         # Reinforce (region starts at 0.0, max(0.0, 0.85) = 0.85)
         result = manager.reinforce_by_tool_use("kg-server/query", tool_to_region)
-        assert result == "community_0"
-        state = manager._regions["community_0"]
+        assert result == "编程开发脑区"
+        state = manager._regions["编程开发脑区"]
         assert state.activation == pytest.approx(0.85)
 
         # Decay (0.85 * 0.92 = 0.782)
@@ -286,27 +285,27 @@ class TestFullBrainRegionFlow:
             hit_entities=["Python"], entity_to_region=entity_to_region
         )
 
-        assert "community_0" in activated
-        source_state = manager._regions["community_0"]
+        assert "编程开发脑区" in activated
+        source_state = manager._regions["编程开发脑区"]
         assert source_state.activation == 1.0
 
-        # Neighbor community_1 should get spillover (0.3 * 1.0 = 0.3)
-        neighbor_state = manager._regions["community_1"]
+        # Neighbor 项目管理脑区 should get spillover (0.3 * 1.0 = 0.3)
+        neighbor_state = manager._regions["项目管理脑区"]
         assert neighbor_state.activation == pytest.approx(0.3)
 
-        # community_2 is NOT a direct neighbor of community_0
-        # (it's a neighbor of community_1, but spillover only goes 1 hop)
-        distant_state = manager._regions["community_2"]
+        # 日常偏好脑区 is NOT a direct neighbor of 编程开发脑区
+        # (it's a neighbor of 项目管理脑区, but spillover only goes 1 hop)
+        distant_state = manager._regions["日常偏好脑区"]
         assert distant_state.activation == pytest.approx(0.0)
 
     def test_dream_writer_semantic_vs_episodic(self) -> None:
-        """Semantic writes use knowledge-type, episodic writes use EpisodicEvent.
+        """Semantic writes use 语义记忆 prefix, episodic writes use 情景记忆 prefix.
 
         Steps:
-        1. Write semantic entity — entity_type is NOT EpisodicEvent
-        2. Write episodic event — entity_type IS EpisodicEvent
+        1. Write semantic entity — content starts with 语义记忆
+        2. Write episodic event — content starts with 情景记忆
         3. Semantic writes do NOT create time chains
-        4. Episodic writes with prev_event create time chains
+        4. Episodic writes with prev_event include chain keyword in content
         """
         writer, ingester = _make_dream_writer()
 
@@ -317,17 +316,15 @@ class TestFullBrainRegionFlow:
             description="Programming language",
         )
         assert result["status"] == "ok"
-        assert result["entity_type"] == "Skill"
-        assert result["entity_type"] != EPISODIC_ENTITY_TYPE
 
-        # Verify inject_entity called with Skill type (not EpisodicEvent)
-        entity_call = ingester.inject_entity.call_args
-        assert entity_call.kwargs["entity_type"] == "Skill"
+        # Verify lightrag_insert called with semantic prefix
+        call_content = ingester.lightrag_insert.call_args.kwargs["content"]
+        assert call_content.startswith("语义记忆:")
+        assert "Python" in call_content
+        assert "Skill" in call_content
 
-        # Step 2: Episodic event (no prev, so no chain)
+        # Step 2: Episodic event (no prev, so no chain keyword)
         ingester.reset_mock()
-        ingester.inject_entity.return_value = {"status": "ok", "name": "test"}
-        ingester.inject_custom_kg.return_value = {"status": "ok"}
 
         result = writer.write_episodic_event(
             event_name="tool_x_failed",
@@ -335,18 +332,17 @@ class TestFullBrainRegionFlow:
             experience_type="error",
         )
         assert result["status"] == "ok"
-        assert result["experience_type"] == "error"
 
-        # Verify inject_entity called with EpisodicEvent type
-        entity_call = ingester.inject_entity.call_args
-        assert entity_call.kwargs["entity_type"] == EPISODIC_ENTITY_TYPE
-        # No prev_event, so no chain
-        assert result["chain"] is None
+        # Verify lightrag_insert called with episodic prefix
+        call_content = ingester.lightrag_insert.call_args.kwargs["content"]
+        assert call_content.startswith("情景记忆:")
+        assert "tool_x_failed" in call_content
+        # No prev_event, so no chain keyword in content
+        assert CHAIN_RELATION_FOLLOWED not in call_content
+        assert CHAIN_RELATION_CORRECTED not in call_content
 
-        # Step 3: Episodic event WITH prev_event creates chain
+        # Step 3: Episodic event WITH prev_event includes chain keyword
         ingester.reset_mock()
-        ingester.inject_entity.return_value = {"status": "ok", "name": "test"}
-        ingester.inject_custom_kg.return_value = {"status": "ok"}
 
         result = writer.write_episodic_event(
             event_name="tried_tool_y",
@@ -355,30 +351,22 @@ class TestFullBrainRegionFlow:
             prev_event_name="tool_x_failed",
             is_correction=False,
         )
-        assert result["chain"] is not None
+        assert result["status"] == "ok"
 
         # Verify chain relation is followed_by (not corrected_by)
-        kg_calls = ingester.inject_custom_kg.call_args_list
-        chain_call = None
-        for c in kg_calls:
-            rels = c.kwargs.get("relationships", [])
-            if rels and rels[0]["keywords"] in (
-                CHAIN_RELATION_FOLLOWED,
-                CHAIN_RELATION_CORRECTED,
-            ):
-                chain_call = rels[0]
-                break
-        assert chain_call is not None
-        assert chain_call["keywords"] == CHAIN_RELATION_FOLLOWED
+        call_content = ingester.lightrag_insert.call_args.kwargs["content"]
+        assert CHAIN_RELATION_FOLLOWED in call_content
+        assert CHAIN_RELATION_CORRECTED not in call_content
+        assert "tool_x_failed" in call_content
+        assert "tried_tool_y" in call_content
 
     def test_dream_writer_time_chain_integrity(self) -> None:
-        """Time chain: followed_by and corrected_by links are correct.
+        """Time chain: followed_by and corrected_by keywords in content.
 
         Steps:
-        1. Write event A (no prev)
-        2. Write event B (prev=A, is_correction=False) — followed_by chain
-        3. Write event C (prev=B, is_correction=True) — corrected_by chain
-        4. Verify chain links: A -> B (followed_by), B -> C (corrected_by)
+        1. Write event A (no prev) — no chain keyword
+        2. Write event B (prev=A, is_correction=False) — followed_by in content
+        3. Write event C (prev=B, is_correction=True) — corrected_by in content
         """
         writer, ingester = _make_dream_writer()
 
@@ -389,12 +377,14 @@ class TestFullBrainRegionFlow:
             experience_type="success",
         )
         assert result_a["status"] == "ok"
-        assert result_a["chain"] is None
+
+        # No chain keyword in content
+        content_a = ingester.lightrag_insert.call_args.kwargs["content"]
+        assert CHAIN_RELATION_FOLLOWED not in content_a
+        assert CHAIN_RELATION_CORRECTED not in content_a
 
         # Step 2: Write event B (prev=A, is_correction=False)
         ingester.reset_mock()
-        ingester.inject_entity.return_value = {"status": "ok", "name": "test"}
-        ingester.inject_custom_kg.return_value = {"status": "ok"}
 
         result_b = writer.write_episodic_event(
             event_name="event_B",
@@ -403,28 +393,17 @@ class TestFullBrainRegionFlow:
             prev_event_name="event_A",
             is_correction=False,
         )
-        assert result_b["chain"] is not None
+        assert result_b["status"] == "ok"
 
-        # Verify followed_by chain: A -> B
-        kg_calls_b = ingester.inject_custom_kg.call_args_list
-        chain_b = None
-        for c in kg_calls_b:
-            rels = c.kwargs.get("relationships", [])
-            if rels and rels[0]["keywords"] in (
-                CHAIN_RELATION_FOLLOWED,
-                CHAIN_RELATION_CORRECTED,
-            ):
-                chain_b = rels[0]
-                break
-        assert chain_b is not None
-        assert chain_b["src_id"] == f"{EVENT_PREFIX}event_A"
-        assert chain_b["tgt_id"] == f"{EVENT_PREFIX}event_B"
-        assert chain_b["keywords"] == CHAIN_RELATION_FOLLOWED
+        # Verify followed_by chain: A -> B in content
+        content_b = ingester.lightrag_insert.call_args.kwargs["content"]
+        assert CHAIN_RELATION_FOLLOWED in content_b
+        assert CHAIN_RELATION_CORRECTED not in content_b
+        assert "event_A" in content_b
+        assert "event_B" in content_b
 
         # Step 3: Write event C (prev=B, is_correction=True)
         ingester.reset_mock()
-        ingester.inject_entity.return_value = {"status": "ok", "name": "test"}
-        ingester.inject_custom_kg.return_value = {"status": "ok"}
 
         result_c = writer.write_episodic_event(
             event_name="event_C",
@@ -433,20 +412,11 @@ class TestFullBrainRegionFlow:
             prev_event_name="event_B",
             is_correction=True,
         )
-        assert result_c["chain"] is not None
+        assert result_c["status"] == "ok"
 
-        # Verify corrected_by chain: B -> C
-        kg_calls_c = ingester.inject_custom_kg.call_args_list
-        chain_c = None
-        for c in kg_calls_c:
-            rels = c.kwargs.get("relationships", [])
-            if rels and rels[0]["keywords"] in (
-                CHAIN_RELATION_FOLLOWED,
-                CHAIN_RELATION_CORRECTED,
-            ):
-                chain_c = rels[0]
-                break
-        assert chain_c is not None
-        assert chain_c["src_id"] == f"{EVENT_PREFIX}event_B"
-        assert chain_c["tgt_id"] == f"{EVENT_PREFIX}event_C"
-        assert chain_c["keywords"] == CHAIN_RELATION_CORRECTED
+        # Verify corrected_by chain: B -> C in content
+        content_c = ingester.lightrag_insert.call_args.kwargs["content"]
+        assert CHAIN_RELATION_CORRECTED in content_c
+        assert CHAIN_RELATION_FOLLOWED not in content_c
+        assert "event_B" in content_c
+        assert "event_C" in content_c

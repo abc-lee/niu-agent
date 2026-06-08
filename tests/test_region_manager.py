@@ -21,6 +21,7 @@ from niu_api.internal.region_manager import (
     BELONGS_TO_RELATION,
     REGION_ENTITY_TYPE,
     REGION_PREFIX,
+    REGION_SUFFIX,
 )
 
 
@@ -101,76 +102,108 @@ class TestCreateRegionNodes:
 
     @pytest.mark.asyncio
     async def test_creates_region_entities(self):
-        """为每个社区创建 brain:region:{name} 实体"""
+        """为每个社区创建 XXX脑区 实体"""
         adapter, ingester = _make_mock_adapter_and_ingester()
         manager = RegionManager(adapter, ingester)
-        result = _make_partition_result()
+
+        # Create partitions with enough members to pass MIN_COMMUNITY_SIZE check
+        partitions = [
+            RegionPartition(
+                region_id=0,
+                region_name="region_0",
+                entity_names=[f"Entity{i}" for i in range(100)],  # 100 members
+                entity_types={"language": 50, "framework": 50},
+                edge_count=2,
+                modularity_score=0.15,
+            ),
+            RegionPartition(
+                region_id=1,
+                region_name="region_1",
+                entity_names=[f"Node{i}" for i in range(100)],  # 100 members
+                entity_types={"framework": 100},
+                edge_count=3,
+                modularity_score=0.15,
+            ),
+        ]
+        result = _make_partition_result(partitions)
 
         region_names = manager.create_region_nodes(result)
 
         # 应创建 2 个脑区
         assert len(region_names) == 2
-        assert all(name.startswith(REGION_PREFIX) for name in region_names)
+        assert all(name.endswith(REGION_SUFFIX) for name in region_names)
 
-        # inject_entity 应被调用 2 次（每个社区一次）
-        assert ingester.inject_entity.call_count == 2
+        # inject_custom_kg 应被调用 1 次（批量注入）
+        assert ingester.inject_custom_kg.call_count == 1
 
         # 验证注入的实体类型为 BrainRegion
-        for call_item in ingester.inject_entity.call_args_list:
-            kwargs = call_item[1] if call_item[1] else call_item[0][0] if call_item[0] else {}
-            # Check via keyword args
-            if "entity_type" in kwargs:
-                assert kwargs["entity_type"] == REGION_ENTITY_TYPE
+        call_kwargs = ingester.inject_custom_kg.call_args[1]
+        entities = call_kwargs.get("entities", [])
+        assert len(entities) == 2
+        for entity in entities:
+            assert entity["entity_type"] == REGION_ENTITY_TYPE
 
     @pytest.mark.asyncio
     async def test_creates_anchor_and_belongs_to_relations(self):
-        """创建 brain:Niu -> region 锚点关系和 region -> member belongs_to 关系"""
+        """创建 Niu -> region 锚点关系和 region -> member belongs_to 关系"""
         adapter, ingester = _make_mock_adapter_and_ingester()
         manager = RegionManager(adapter, ingester)
-        result = _make_partition_result()
+
+        partitions = [
+            RegionPartition(
+                region_id=0,
+                region_name="region_0",
+                entity_names=["Python", "Django", "FastAPI"] + [f"E{i}" for i in range(97)],
+                entity_types={"language": 50, "framework": 50},
+                edge_count=2,
+                modularity_score=0.15,
+            ),
+            RegionPartition(
+                region_id=1,
+                region_name="region_1",
+                entity_names=["React", "Vue", "Angular"] + [f"N{i}" for i in range(97)],
+                entity_types={"framework": 100},
+                edge_count=3,
+                modularity_score=0.15,
+            ),
+        ]
+        result = _make_partition_result(partitions)
 
         manager.create_region_nodes(result)
 
-        # inject_custom_kg 被调用：每个社区 1 次锚点 + 1 次成员关系 = 2 次/社区
-        # 总共 4 次
-        assert ingester.inject_custom_kg.call_count == 4
+        # Batch inject: 1 call total
+        assert ingester.inject_custom_kg.call_count == 1
 
-        # 验证锚点关系（第 1 和第 3 次调用）
-        anchor_calls = [
-            ingester.inject_custom_kg.call_args_list[0],
-            ingester.inject_custom_kg.call_args_list[2],
-        ]
-        for call_item in anchor_calls:
-            kwargs = call_item[1]
-            relationships = kwargs.get("relationships", [])
-            assert len(relationships) == 1
-            assert relationships[0]["src_id"] == "brain:Niu"
-            assert relationships[0]["keywords"] == ANCHOR_RELATION
-            assert relationships[0]["weight"] == 1.0
+        call_kwargs = ingester.inject_custom_kg.call_args[1]
+        relationships = call_kwargs.get("relationships", [])
 
-        # 验证成员关系（第 2 和第 4 次调用）
-        member_calls = [
-            ingester.inject_custom_kg.call_args_list[1],
-            ingester.inject_custom_kg.call_args_list[3],
-        ]
-        for call_item in member_calls:
-            kwargs = call_item[1]
-            relationships = kwargs.get("relationships", [])
-            for rel in relationships:
-                assert rel["keywords"] == BELONGS_TO_RELATION
-                assert rel["weight"] == 0.8
+        # Verify anchor relations (Niu -> region)
+        anchor_rels = [r for r in relationships if r["keywords"] == ANCHOR_RELATION]
+        assert len(anchor_rels) == 2
+        for rel in anchor_rels:
+            assert rel["src_id"] == "Niu"
+            assert rel["weight"] == 0.5
+
+        # Verify belongs_to relations (region -> member)
+        belongs_rels = [r for r in relationships if r["keywords"] == BELONGS_TO_RELATION]
+        assert len(belongs_rels) == 200  # 100 members per region * 2 regions
+        for rel in belongs_rels:
+            assert rel["weight"] == 0.5
 
     @pytest.mark.asyncio
     async def test_skips_brain_region_prefix_nodes(self):
-        """跳过名称以 brain:region: 开头的现有节点"""
+        """跳过名称以 XXX脑区 格式的现有脑区节点"""
         adapter, ingester = _make_mock_adapter_and_ingester()
         manager = RegionManager(adapter, ingester)
 
+        # "OldRegion脑区" is a brain region name and should be filtered from members.
+        # "brain:region:LegacyRegion" is a legacy-format region name and should also be filtered.
+        # Remaining members must be >= MIN_COMMUNITY_SIZE to create a region.
         partition = RegionPartition(
             region_id=0,
             region_name="region_0",
-            entity_names=["brain:region:OldRegion", "Python"],
-            entity_types={"BrainRegion": 1, "language": 1},
+            entity_names=["OldRegion脑区", "brain:region:LegacyRegion", "Python"] + [f"E{i}" for i in range(99)],
+            entity_types={"BrainRegion": 1, "language": 98},
             edge_count=0,
             modularity_score=0.0,
         )
@@ -178,15 +211,15 @@ class TestCreateRegionNodes:
 
         region_names = manager.create_region_nodes(result)
 
-        # 应创建 1 个脑区（仅 Python 作为成员）
+        # Should create 1 region (脑区 names and legacy prefix names filtered out)
         assert len(region_names) == 1
 
-        # 成员应只包含 Python
-        member_call = ingester.inject_custom_kg.call_args_list[1]
-        kwargs = member_call[1]
-        relationships = kwargs.get("relationships", [])
-        member_targets = [r["tgt_id"] for r in relationships]
-        assert "brain:region:OldRegion" not in member_targets
+        # Verify brain region names are NOT in the belongs_to members
+        call_kwargs = ingester.inject_custom_kg.call_args[1]
+        relationships = call_kwargs.get("relationships", [])
+        member_targets = [r["tgt_id"] for r in relationships if r["keywords"] == BELONGS_TO_RELATION]
+        assert "OldRegion脑区" not in member_targets
+        assert "brain:region:LegacyRegion" not in member_targets
         assert "Python" in member_targets
 
     @pytest.mark.asyncio
@@ -227,7 +260,7 @@ class TestUpdateRegionSummaries:
             "status": "ok",
             "data": [
                 {
-                    "id": "brain:region:Python",
+                    "id": "Python脑区",
                     "entity_type": "BrainRegion",
                     "description": "summary | brain_meta_region_id:community_0 | brain_meta_size:3 | brain_meta_representative:Python | brain_meta_updated_at:1745366400",
                 },
@@ -238,16 +271,16 @@ class TestUpdateRegionSummaries:
         with pytest.MonkeyPatch.context() as m:
             m.setattr(
                 "niu_api.internal.lightrag_manager.get_region_members",
-                lambda name: ["Python", "Django"] if name == "brain:region:Python" else [],
+                lambda name: ["Python", "Django"] if name == "Python脑区" else [],
             )
-            manager.update_region_summaries(["brain:region:Python"])
+            manager.update_region_summaries(["Python脑区"])
 
         # inject_custom_kg 应被调用一次以更新（batch inject）
         ingester.inject_custom_kg.assert_called_once()
         call_kwargs = ingester.inject_custom_kg.call_args[1]
         entities = call_kwargs["entities"]
         assert len(entities) == 1
-        assert entities[0]["entity_name"] == "brain:region:Python"
+        assert entities[0]["entity_name"] == "Python脑区"
         assert entities[0]["entity_type"] == REGION_ENTITY_TYPE
         # Description should contain brain_meta_* attributes
         assert "brain_meta_region_id:" in entities[0]["description"]
@@ -265,7 +298,7 @@ class TestUpdateRegionSummaries:
                 "niu_api.internal.lightrag_manager.get_region_members",
                 lambda name: [],
             )
-            manager.update_region_summaries(["brain:region:Empty"])
+            manager.update_region_summaries(["Empty脑区"])
 
         # inject_entity 不应被调用
         ingester.inject_entity.assert_not_called()
@@ -288,12 +321,12 @@ class TestGetAllRegions:
             "status": "ok",
             "data": [
                 {
-                    "id": "brain:region:Python",
+                    "id": "Python脑区",
                     "entity_type": "BrainRegion",
                     "description": "Python(language)、Django(framework) | brain_meta_region_id:community_0 | brain_meta_size:3 | brain_meta_representative:Python | brain_meta_updated_at:1745366400",
                 },
                 {
-                    "id": "brain:region:React",
+                    "id": "React脑区",
                     "entity_type": "BrainRegion",
                     "description": "React(framework)、Vue(framework) | brain_meta_region_id:community_1 | brain_meta_size:3 | brain_meta_representative:React | brain_meta_updated_at:1745366400",
                 },
@@ -307,7 +340,7 @@ class TestGetAllRegions:
 
         # 验证第一个区域
         r0 = regions[0]
-        assert r0.name == "brain:region:Python"
+        assert r0.name == "Python脑区"
         assert r0.label == "Python"
         assert r0.community_id == "community_0"
         assert r0.size == 3
@@ -362,9 +395,9 @@ class TestGetRegionMembers:
         with pytest.MonkeyPatch.context() as m:
             m.setattr(
                 "niu_api.internal.lightrag_manager.get_region_members",
-                lambda name: ["Python", "Django", "FastAPI"] if name == "brain:region:Python" else [],
+                lambda name: ["Python", "Django", "FastAPI"] if name == "Python脑区" else [],
             )
-            members = manager.get_region_members("brain:region:Python")
+            members = manager.get_region_members("Python脑区")
 
         assert len(members) == 3
         assert "Python" in members
@@ -383,7 +416,7 @@ class TestGetRegionMembers:
                 "niu_api.internal.lightrag_manager.get_region_members",
                 lambda name: [],
             )
-            members = manager.get_region_members("brain:region:Empty")
+            members = manager.get_region_members("Empty脑区")
 
         assert members == []
 
@@ -405,12 +438,12 @@ class TestCleanupStaleRegions:
             "status": "ok",
             "data": [
                 {
-                    "id": "brain:region:Python",
+                    "id": "Python脑区",
                     "entity_type": "BrainRegion",
                     "description": "summary | brain_meta_region_id:community_0 | brain_meta_size:3 | brain_meta_representative:Python | brain_meta_updated_at:1745366400",
                 },
                 {
-                    "id": "brain:region:OldRegion",
+                    "id": "OldRegion脑区",
                     "entity_type": "BrainRegion",
                     "description": "summary | brain_meta_region_id:community_99 | brain_meta_size:2 | brain_meta_representative:OldEntity | brain_meta_updated_at:1745366400",
                 },
@@ -433,8 +466,8 @@ class TestCleanupStaleRegions:
 
         # 只有 OldRegion 应被删除
         assert len(removed) == 1
-        assert "brain:region:OldRegion" in removed
-        adapter.delete_entity.assert_called_once_with("brain:region:OldRegion")
+        assert "OldRegion脑区" in removed
+        adapter.delete_entity.assert_called_once_with("OldRegion脑区")
 
     @pytest.mark.asyncio
     async def test_no_stale_regions_returns_empty(self):
@@ -446,7 +479,7 @@ class TestCleanupStaleRegions:
             "status": "ok",
             "data": [
                 {
-                    "id": "brain:region:Python",
+                    "id": "Python脑区",
                     "entity_type": "BrainRegion",
                     "description": "summary | brain_meta_region_id:community_0 | brain_meta_size:3 | brain_meta_representative:Python | brain_meta_updated_at:1745366400",
                 },
@@ -479,12 +512,12 @@ class TestCleanupStaleRegions:
             "status": "ok",
             "data": [
                 {
-                    "id": "brain:region:Python",
+                    "id": "Python脑区",
                     "entity_type": "BrainRegion",
                     "description": "summary | brain_meta_region_id:community_0 | brain_meta_size:3 | brain_meta_representative:Python | brain_meta_updated_at:1745366400",
                 },
                 {
-                    "id": "brain:region:React",
+                    "id": "React脑区",
                     "entity_type": "BrainRegion",
                     "description": "summary | brain_meta_region_id:community_1 | brain_meta_size:3 | brain_meta_representative:React | brain_meta_updated_at:1745366400",
                 },
@@ -527,8 +560,8 @@ class TestDescriptionEncoding:
         assert "brain_meta_size:6" in result
         assert "brain_meta_representative:Python" in result
         assert "brain_meta_updated_at:1745366400" in result
-        # 属性之间用 | 分隔
-        assert " | " in result
+        # 属性之间用 <SEP> 分隔
+        assert "<SEP>" in result
 
     def test_parse_description(self):
         """解析包含 brain_meta_* 属性的描述"""

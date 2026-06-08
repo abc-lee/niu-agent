@@ -109,7 +109,11 @@ def build_dynamic_brain_region_prompt() -> str:
         A string listing current brain regions from the graph,
         or fallback defaults if LightRAG is unavailable or graph is empty.
     """
-    brain_regions = get_brain_regions()
+    try:
+        brain_regions = get_brain_regions()
+    except Exception as e:
+        logger.debug("get_brain_regions failed: %s, using fallback", e)
+        brain_regions = []
 
     if brain_regions:
         logger.debug("Found %d brain regions from graph: %s", len(brain_regions), brain_regions)

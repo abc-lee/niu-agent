@@ -28,7 +28,7 @@ def _make_region_infos() -> list[BrainRegionInfo]:
     """创建测试用的 BrainRegionInfo 列表"""
     return [
         BrainRegionInfo(
-            name="brain:region:编程开发",
+            name="编程开发脑区",
             label="编程开发",
             community_id="community_0",
             description="Python/NumPy/Web技术栈",
@@ -38,7 +38,7 @@ def _make_region_infos() -> list[BrainRegionInfo]:
             updated_at=1745366400.0,
         ),
         BrainRegionInfo(
-            name="brain:region:项目管理",
+            name="项目管理脑区",
             label="项目管理",
             community_id="community_1",
             description="AI_Bot项目，主开发者",
@@ -48,7 +48,7 @@ def _make_region_infos() -> list[BrainRegionInfo]:
             updated_at=1745366400.0,
         ),
         BrainRegionInfo(
-            name="brain:region:日常偏好",
+            name="日常偏好脑区",
             label="日常偏好",
             community_id="community_2",
             description="暗色主题，远程办公",
@@ -58,7 +58,7 @@ def _make_region_infos() -> list[BrainRegionInfo]:
             updated_at=1745366400.0,
         ),
         BrainRegionInfo(
-            name="brain:region:财务知识",
+            name="财务知识脑区",
             label="财务知识",
             community_id="community_3",
             description="报销流程、预算审批",
@@ -113,11 +113,12 @@ class TestFormatRegionMap:
     def test_format_region_map_with_status_lights(self):
         """区域地图包含状态灯和实体计数"""
         activation_mgr = _make_activation_manager()
-        # Set different activation levels
-        _set_activation(activation_mgr, "community_0", 1.0)  # lit
-        _set_activation(activation_mgr, "community_1", 0.5)  # dimming
-        _set_activation(activation_mgr, "community_2", 0.2)  # dimming
-        _set_activation(activation_mgr, "community_3", 0.0)  # off
+        # Set different activation levels using region name as key
+        # (region_id = region.name, e.g. "编程开发脑区", not community_id)
+        _set_activation(activation_mgr, "编程开发脑区", 1.0)  # lit
+        _set_activation(activation_mgr, "项目管理脑区", 0.5)  # dimming
+        _set_activation(activation_mgr, "日常偏好脑区", 0.2)  # off (< 0.3)
+        _set_activation(activation_mgr, "财务知识脑区", 0.0)  # off
 
         injector = _make_injector(activation_mgr)
         regions = activation_mgr.get_region_map()
