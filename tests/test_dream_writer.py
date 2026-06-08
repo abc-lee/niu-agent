@@ -18,7 +18,6 @@ from agent.injector.dream_writer import (
     EPISODIC_ENTITY_TYPE,
     EVENT_PREFIX,
     INVOLVES_RELATION,
-    NIU_ENTITY,
     DreamWriter,
 )
 
@@ -60,18 +59,18 @@ def test_write_semantic_entity(writer: DreamWriter, mock_ingester: MagicMock) ->
     call_kwargs = mock_ingester.lightrag_insert.call_args
     text = call_kwargs.kwargs["content"]
 
-    # Text should contain entity name, type, description, and brain:Niu relation
+    # Text should contain entity name, type, description
     assert "Python" in text
     assert "Skill" in text
     assert "Programming language" in text
-    assert "brain:Niu" in text
-    assert "skilled_in" in text
+    assert "brain:Niu" not in text
+    assert "skilled_in" not in text
 
 
 def test_write_semantic_entity_default_relation(
     writer: DreamWriter, mock_ingester: MagicMock
 ) -> None:
-    """Verify default relation is 'remembers' for unknown entity types."""
+    """Verify semantic entity text without niu anchor for unknown types."""
     writer.write_semantic_entity(
         name="Alice",
         entity_type="UnknownType",
@@ -80,7 +79,10 @@ def test_write_semantic_entity_default_relation(
 
     call_kwargs = mock_ingester.lightrag_insert.call_args
     text = call_kwargs.kwargs["content"]
-    assert "remembers" in text
+    assert "语义记忆" in text
+    assert "Alice" in text
+    assert "UnknownType" in text
+    assert "brain:Niu" not in text
 
 
 # ============== Test 2: write_semantic_relation ==============
@@ -127,7 +129,7 @@ def test_write_semantic_relation_no_description(
 
 
 def test_write_episodic_event(writer: DreamWriter, mock_ingester: MagicMock) -> None:
-    """Verify structured text with event + brain:Niu anchor passed to lightrag_insert."""
+    """Verify structured text with event passed to lightrag_insert."""
     result = writer.write_episodic_event(
         event_name="tool_x_failed",
         description="Tool X returned error code 500",
@@ -141,11 +143,11 @@ def test_write_episodic_event(writer: DreamWriter, mock_ingester: MagicMock) -> 
     call_kwargs = mock_ingester.lightrag_insert.call_args
     text = call_kwargs.kwargs["content"]
 
-    # Text should contain event name, type, description, and brain:Niu experienced
+    # Text should contain event name, type, description
     assert "tool_x_failed" in text
     assert "error" in text
     assert "Tool X returned error code 500" in text
-    assert "brain:Niu experienced brain:event:tool_x_failed" in text
+    assert "brain:Niu experienced" not in text
     # No chain or involves relations
     assert "followed_by" not in text
     assert "corrected_by" not in text
@@ -225,20 +227,6 @@ def test_write_episodic_event_with_involves(
     assert "involves" in text
     assert "Python" in text
     assert "pandas" in text
-
-
-# ============== Test 6: _determine_niu_relation ==============
-
-
-def test_determine_niu_relation(writer: DreamWriter) -> None:
-    """Verify relation type mapping."""
-    assert writer._determine_niu_relation("Person") == "remembers"
-    assert writer._determine_niu_relation("Skill") == "skilled_in"
-    assert writer._determine_niu_relation("Concept") == "knows_about"
-    assert writer._determine_niu_relation("Tool") == "uses"
-    # Default case
-    assert writer._determine_niu_relation("UnknownType") == "remembers"
-    assert writer._determine_niu_relation("Place") == "remembers"
 
 
 # ============== Test 7: error handling ==============
