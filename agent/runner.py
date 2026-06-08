@@ -735,10 +735,10 @@ class NiuRunner:
             seen_names.add(display_name)
             description = entity.get("description", "").replace("<SEP>", "\n")
             if description:
-                lines.append(f"{added + 1}. **{display_name}** (来源: 知识图谱)")
+                lines.append(f"{added + 1}. **{display_name}**")
                 lines.append(f"   {description}")
             else:
-                lines.append(f"{added + 1}. **{display_name}** (来源: 知识图谱)")
+                lines.append(f"{added + 1}. **{display_name}**")
             # For skill entities, append file path so LLM can read the full file
             if is_skill_section:
                 lines.append(f"   路径: ~/.niu/skills/{display_name}.md")
