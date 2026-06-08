@@ -131,6 +131,8 @@ class BrainContextInjector:
         query_context: str,
     ) -> str:
         """Convenience: activate + format in one call."""
+        if not query_context:
+            return ""
         region_knowledge, entity_to_region, hit_entities = self.activate_for_query(query_context)
         return self.format_injection_text(region_knowledge, entity_to_region, hit_entities)
 

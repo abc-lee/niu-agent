@@ -34,21 +34,18 @@ async def test_proxy_injects_brain_region_for_extraction_request():
             "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
         }
 
-    # Mock the adapter so real inject_brain_region_context runs with a working adapter
-    mock_adapter = MagicMock()
-    mock_adapter.query.return_value = "brain:region:聊天历史\nbrain:region:文档库"
-
+    # Mock get_brain_regions so real inject_brain_region_context runs with regions
     with patch("niu_api.llm_proxy.call_llm_via_litellm", new=AsyncMock(side_effect=mock_call_llm)):
         with patch("niu_api.llm_proxy.get_llm_config", return_value={
             "type": "openai", "apikey": "test-key", "apibase": "http://test", "model": "test-model"
         }):
-            with patch("niu_api.llm_proxy._get_brain_adapter", return_value=mock_adapter):
+            with patch("niu_api.internal.brain_region_prompt.get_brain_regions", return_value=["聊天历史脑区", "文档库脑区"]):
                 response = await chat_completions(request)
 
     # Verify the LLM received messages with brain region context
     sent_messages = captured_messages["messages"]
     system_msg = next(m for m in sent_messages if m["role"] == "system")
-    assert "brain:Niu" in system_msg["content"], "Brain region architecture should be in system message"
+    assert "niu" in system_msg["content"], "Brain region architecture should be in system message"
     assert "聊天历史" in system_msg["content"], "Dynamic brain regions should be in system message"
     assert "Knowledge Graph Specialist" in system_msg["content"], "Original content preserved"
 
@@ -75,19 +72,17 @@ async def test_proxy_skips_injection_for_normal_chat():
             "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
         }
 
-    mock_adapter = MagicMock()
-
     with patch("niu_api.llm_proxy.call_llm_via_litellm", new=AsyncMock(side_effect=mock_call_llm)):
         with patch("niu_api.llm_proxy.get_llm_config", return_value={
             "type": "openai", "apikey": "test-key", "apibase": "http://test", "model": "test-model"
         }):
-            with patch("niu_api.llm_proxy._get_brain_adapter", return_value=mock_adapter):
+            with patch("niu_api.internal.brain_region_prompt.get_brain_regions", return_value=["聊天历史脑区", "文档库脑区"]):
                 response = await chat_completions(request)
 
     # Verify no brain region content in normal chat
     sent_messages = captured_messages["messages"]
     system_msg = next(m for m in sent_messages if m["role"] == "system")
-    assert "brain:Niu" not in system_msg["content"], "Brain region should NOT be injected for normal chat"
+    assert "大脑区域架构" not in system_msg["content"], "Brain region should NOT be injected for normal chat"
     assert system_msg["content"] == "You are a helpful assistant.", "Original content unchanged"
 
 
@@ -116,18 +111,20 @@ async def test_proxy_gracefully_handles_injection_failure():
             "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
         }
 
-    # Make _get_brain_adapter throw an exception
+    # Make get_brain_regions throw an exception so injection fails
     with patch("niu_api.llm_proxy.call_llm_via_litellm", new=AsyncMock(side_effect=mock_call_llm)):
         with patch("niu_api.llm_proxy.get_llm_config", return_value={
             "type": "openai", "apikey": "test-key", "apibase": "http://test", "model": "test-model"
         }):
-            with patch("niu_api.llm_proxy._get_brain_adapter", side_effect=Exception("LightRAG not initialized")):
+            with patch("niu_api.internal.brain_region_prompt.get_brain_regions", side_effect=Exception("LightRAG not initialized")):
                 response = await chat_completions(request)
 
     # Verify request still succeeded (no crash)
     assert response is not None
-    # Messages should be unchanged (injection failed, so original messages passed through)
+    # When get_brain_regions fails, inject_brain_region_context still injects
+    # the static prompt + fallback regions (graceful degradation, not skip).
     sent_messages = captured_messages["messages"]
     system_msg = next(m for m in sent_messages if m["role"] == "system")
-    assert "brain:Niu" not in system_msg["content"], "Injection should not have happened"
+    # Static brain region prompt is still injected (with fallback regions)
+    assert "大脑区域架构" in system_msg["content"], "Static brain region prompt should still be injected with fallback"
     assert "Knowledge Graph Specialist" in system_msg["content"], "Original content preserved"

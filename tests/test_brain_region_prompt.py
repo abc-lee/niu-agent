@@ -65,13 +65,12 @@ def test_build_static_brain_region_prompt_contains_key_concepts():
     from niu_api.internal.brain_region_prompt import build_static_brain_region_prompt
     result = build_static_brain_region_prompt()
     # Must contain these key terms
-    assert "brain:Niu" in result
-    assert "brain_region_anchor" in result
-    assert "belongs_to_region" in result
-    assert "聊天历史" in result
-    assert "文档库" in result
-    assert "知识体系" in result
-    assert "brain:region:" in result
+    assert "niu" in result
+    assert "_region:contains" in result
+    # Static prompt uses "知识体系脑区" and "人际关系脑区" as examples
+    assert "知识体系脑区" in result
+    assert "人际关系脑区" in result
+    assert "脑区" in result
 
 
 def test_build_static_brain_region_prompt_consistent():
@@ -82,20 +81,18 @@ def test_build_static_brain_region_prompt_consistent():
     assert result1 == result2
 
 
-from unittest.mock import MagicMock
+from unittest.mock import patch
 
 
 def test_build_dynamic_brain_region_prompt_with_regions():
     """Dynamic prompt includes current brain regions from graph."""
     from niu_api.internal.brain_region_prompt import build_dynamic_brain_region_prompt
-    mock_adapter = MagicMock()
-    mock_adapter.query.return_value = (
-        "brain:region:聊天历史 - 聊天记录和对话历史\n"
-        "brain:region:文档库 - 文档和文件存储\n"
-        "brain:region:知识体系 - 系统化知识\n"
-    )
-
-    prompt = build_dynamic_brain_region_prompt(mock_adapter)
+    with patch("niu_api.internal.brain_region_prompt.get_brain_regions", return_value=[
+        "聊天历史脑区",
+        "文档库脑区",
+        "知识体系脑区",
+    ]):
+        prompt = build_dynamic_brain_region_prompt()
     assert "聊天历史" in prompt
     assert "文档库" in prompt
     assert "知识体系" in prompt
@@ -105,56 +102,43 @@ def test_build_dynamic_brain_region_prompt_with_regions():
 def test_build_dynamic_brain_region_prompt_empty():
     """When no regions found, dynamic prompt returns fallback."""
     from niu_api.internal.brain_region_prompt import build_dynamic_brain_region_prompt
-    mock_adapter = MagicMock()
-    mock_adapter.query.return_value = ""
-
-    prompt = build_dynamic_brain_region_prompt(mock_adapter)
+    with patch("niu_api.internal.brain_region_prompt.get_brain_regions", return_value=[]):
+        prompt = build_dynamic_brain_region_prompt()
     assert "默认" in prompt, f"Expected fallback marker '默认' in prompt, got: {prompt!r}"
 
 
 def test_build_dynamic_brain_region_prompt_adapter_failure():
-    """When adapter raises exception, falls back to defaults."""
+    """When get_brain_regions raises exception, falls back to defaults."""
     from niu_api.internal.brain_region_prompt import build_dynamic_brain_region_prompt
-    mock_adapter = MagicMock()
-    mock_adapter.query.side_effect = Exception("LightRAG not initialized")
-
-    prompt = build_dynamic_brain_region_prompt(mock_adapter)
+    with patch("niu_api.internal.brain_region_prompt.get_brain_regions", side_effect=Exception("LightRAG not initialized")):
+        prompt = build_dynamic_brain_region_prompt()
     assert "默认" in prompt, f"Expected fallback marker '默认' in prompt, got: {prompt!r}"
 
 
 def test_build_dynamic_brain_region_prompt_none_result():
-    """When adapter.query() returns None, dynamic prompt falls back to defaults."""
+    """When get_brain_regions returns empty list, dynamic prompt falls back to defaults."""
     from niu_api.internal.brain_region_prompt import build_dynamic_brain_region_prompt
-    mock_adapter = MagicMock()
-    mock_adapter.query.return_value = None
-
-    prompt = build_dynamic_brain_region_prompt(mock_adapter)
+    with patch("niu_api.internal.brain_region_prompt.get_brain_regions", return_value=[]):
+        prompt = build_dynamic_brain_region_prompt()
     assert "默认" in prompt, f"Expected fallback marker '默认' in prompt, got: {prompt!r}"
 
 
 def test_build_dynamic_brain_region_prompt_whitespace_only():
-    """When adapter.query() returns only whitespace, dynamic prompt falls back to defaults."""
+    """When get_brain_regions returns empty list, dynamic prompt falls back to defaults."""
     from niu_api.internal.brain_region_prompt import build_dynamic_brain_region_prompt
-    mock_adapter = MagicMock()
-    mock_adapter.query.return_value = "   \n\t  "
-
-    prompt = build_dynamic_brain_region_prompt(mock_adapter)
+    with patch("niu_api.internal.brain_region_prompt.get_brain_regions", return_value=[]):
+        prompt = build_dynamic_brain_region_prompt()
     assert "默认" in prompt, f"Expected fallback marker '默认' in prompt, got: {prompt!r}"
 
 
 def test_build_dynamic_brain_region_prompt_uses_local_mode():
-    """Dynamic query uses local mode (no LLM calls)."""
+    """Dynamic query reads from in-memory graph (no LLM calls)."""
     from niu_api.internal.brain_region_prompt import build_dynamic_brain_region_prompt
-    mock_adapter = MagicMock()
-    mock_adapter.query.return_value = "brain:region:测试"
+    with patch("niu_api.internal.brain_region_prompt.get_brain_regions", return_value=["测试脑区"]) as mock_get:
+        build_dynamic_brain_region_prompt()
 
-    build_dynamic_brain_region_prompt(mock_adapter)
-
-    # Verify query was called with local mode and only_need_context
-    mock_adapter.query.assert_called_once()
-    call_kwargs = mock_adapter.query.call_args[1]
-    assert call_kwargs["mode"] == "local"
-    assert call_kwargs["only_need_context"] is True
+    # Verify get_brain_regions was called (reads graph directly, no LLM)
+    mock_get.assert_called_once()
 
 
 def test_inject_brain_region_context_adds_to_system_prompt():
@@ -164,10 +148,9 @@ def test_inject_brain_region_context_adds_to_system_prompt():
         {"role": "system", "content": "---Role---\nYou are a Knowledge Graph Specialist..."},
         {"role": "user", "content": "Extract entities..."},
     ]
-    mock_adapter = MagicMock()
-    mock_adapter.query.return_value = "brain:region:测试脑区"
 
-    result = inject_brain_region_context(messages, mock_adapter)
+    with patch("niu_api.internal.brain_region_prompt.get_brain_regions", return_value=["测试脑区"]):
+        result = inject_brain_region_context(messages)
 
     # System message should be modified
     system_msg = next(m for m in result if m["role"] == "system")
@@ -182,10 +165,9 @@ def test_inject_brain_region_context_preserves_other_messages():
         {"role": "system", "content": "---Role---\nYou are a Knowledge Graph Specialist..."},
         {"role": "user", "content": "Extract entities..."},
     ]
-    mock_adapter = MagicMock()
-    mock_adapter.query.return_value = ""
 
-    result = inject_brain_region_context(messages, mock_adapter)
+    with patch("niu_api.internal.brain_region_prompt.get_brain_regions", return_value=[]):
+        result = inject_brain_region_context(messages)
 
     user_msg = next(m for m in result if m["role"] == "user")
     assert user_msg["content"] == "Extract entities..."
@@ -198,12 +180,12 @@ def test_inject_brain_region_context_non_extraction_request_unchanged():
         {"role": "system", "content": "You are a helpful assistant."},
         {"role": "user", "content": "Hello"},
     ]
-    mock_adapter = MagicMock()
 
-    result = inject_brain_region_context(messages, mock_adapter)
+    result = inject_brain_region_context(messages)
 
-    assert result is messages  # Same object, not a copy
-    mock_adapter.query.assert_not_called()
+    # Same content, returned as a shallow copy
+    assert len(result) == len(messages)
+    assert all(m["role"] == r["role"] and m["content"] == r["content"] for m, r in zip(messages, result))
 
 
 def test_inject_brain_region_context_returns_new_list():
@@ -213,11 +195,10 @@ def test_inject_brain_region_context_returns_new_list():
         {"role": "system", "content": "---Role---\nYou are a Knowledge Graph Specialist..."},
         {"role": "user", "content": "Extract entities..."},
     ]
-    mock_adapter = MagicMock()
-    mock_adapter.query.return_value = ""
 
-    result = inject_brain_region_context(messages, mock_adapter)
+    with patch("niu_api.internal.brain_region_prompt.get_brain_regions", return_value=[]):
+        result = inject_brain_region_context(messages)
 
     assert result is not messages
     # Original system message should NOT contain brain region info
-    assert "brain:Niu" not in messages[0]["content"]
+    assert "大脑区域架构" not in messages[0]["content"]

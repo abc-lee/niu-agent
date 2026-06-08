@@ -61,27 +61,27 @@ class TestNormalizeName:
 
 
 class TestMakeEntityName:
-    """Test entity name generation with brain: prefix."""
+    """Test entity name generation — natural language, no colon prefix."""
 
     def test_person_entity(self):
         from niu_api.internal.brain_graph import make_entity_name
 
-        assert make_entity_name("person", "LiLei") == "brain:person:LiLei"
+        assert make_entity_name("person", "LiLei") == "LiLei"
 
     def test_concept_entity(self):
         from niu_api.internal.brain_graph import make_entity_name
 
-        assert make_entity_name("concept", "Knowledge Graph") == "brain:concept:Knowledge_Graph"
+        assert make_entity_name("concept", "Knowledge Graph") == "Knowledge Graph"
 
     def test_skill_entity(self):
         from niu_api.internal.brain_graph import make_entity_name
 
-        assert make_entity_name("skill", "web development") == "brain:skill:Web_Development"
+        assert make_entity_name("skill", "web development") == "web development"
 
     def test_niu_entity(self):
         from niu_api.internal.brain_graph import make_entity_name
 
-        assert make_entity_name("Niu", "") == "brain:Niu"
+        assert make_entity_name("Niu", "") == "Niu"
 
 
 # ============== BrainGraph ==============
@@ -98,6 +98,8 @@ def _make_mock_brain_graph():
     bg._ingester.inject_custom_kg.return_value = {"status": "ok"}
     # Default: query_data returns no structured data (falls back to text query)
     bg._adapter.query_data.return_value = None
+    # Default: has_entity returns False so ensure_niu_entity will inject
+    bg._adapter.has_entity.return_value = False
     return bg
 
 
@@ -195,7 +197,7 @@ class TestBrainGraphRecallMemories:
         bg._adapter.query_data.return_value = {
             "data": {
                 "relationships": [
-                    {"src_id": "brain:Niu", "tgt_id": "brain:concept:Dark_Mode", "keywords": "prefers", "description": "偏好暗色主题", "weight": 0.7},
+                    {"src_id": "Niu", "tgt_id": "Dark Mode", "keywords": "prefers", "description": "偏好暗色主题", "weight": 0.7},
                 ]
             }
         }
@@ -210,7 +212,7 @@ class TestBrainGraphRecallMemories:
         bg._adapter.query_data.return_value = {
             "data": {
                 "relationships": [
-                    {"src_id": "brain:Niu", "tgt_id": "brain:concept:Python", "keywords": "skilled_in", "description": "擅长Python", "weight": 0.9},
+                    {"src_id": "Niu", "tgt_id": "Python", "keywords": "skilled_in", "description": "擅长Python", "weight": 0.9},
                 ]
             }
         }
@@ -220,13 +222,13 @@ class TestBrainGraphRecallMemories:
         bg._adapter.query_data.assert_called_once()
         assert len(result) == 1
         assert result[0]["weight"] == 0.9
-        assert result[0]["target"] == "brain:concept:Python"
+        assert result[0]["target"] == "Python"
 
     def test_recall_falls_back_to_text_query(self):
         """recall_memories should fall back to text query if query_data returns no relationships."""
         bg = _make_mock_brain_graph()
         bg._adapter.query_data.return_value = None
-        bg._adapter.query.return_value = "brain:concept:Python is a language."
+        bg._adapter.query.return_value = "Python is a language."
 
         result = bg.recall_memories(query="Python")
 
@@ -240,8 +242,8 @@ class TestBrainGraphRecallMemories:
         bg._adapter.query_data.return_value = {
             "data": {
                 "relationships": [
-                    {"src_id": "brain:Niu", "tgt_id": "brain:concept:Low", "keywords": "related_to", "description": "低权重记忆", "weight": 0.2},
-                    {"src_id": "brain:Niu", "tgt_id": "brain:concept:High", "keywords": "remembers", "description": "高权重记忆", "weight": 0.9},
+                    {"src_id": "Niu", "tgt_id": "Low", "keywords": "related_to", "description": "低权重记忆", "weight": 0.2},
+                    {"src_id": "Niu", "tgt_id": "High", "keywords": "remembers", "description": "高权重记忆", "weight": 0.9},
                 ]
             }
         }
@@ -249,13 +251,13 @@ class TestBrainGraphRecallMemories:
         result = bg.recall_memories(query="test", min_weight=0.5)
 
         assert len(result) == 1
-        assert result[0]["target"] == "brain:concept:High"
+        assert result[0]["target"] == "High"
 
     def test_recall_extracts_brain_entities_from_text_fallback(self):
         """recall_memories text fallback should extract entities from text."""
         bg = _make_mock_brain_graph()
         bg._adapter.query_data.return_value = None
-        bg._adapter.query.return_value = "brain:concept:Python is a language. brain:skill:Web_Development is useful."
+        bg._adapter.query.return_value = "Python is a language. Web Development is useful."
 
         result = bg.recall_memories(query="编程技能")
 
@@ -266,10 +268,10 @@ class TestBrainGraphRecallMemories:
 
 
 class TestBrainGraphEnsureNiu:
-    """Test brain:Niu entity initialization."""
+    """Test Niu entity initialization."""
 
     def test_ensure_niu_entity_creates_entity(self):
-        """ensure_niu_entity should inject brain:Niu if not present."""
+        """ensure_niu_entity should inject Niu if not present."""
         bg = _make_mock_brain_graph()
 
         bg.ensure_niu_entity()
@@ -278,7 +280,7 @@ class TestBrainGraphEnsureNiu:
         call_kwargs = bg._ingester.inject_custom_kg.call_args
         entities = call_kwargs[1]["entities"]
         assert len(entities) == 1
-        assert entities[0]["entity_name"] == "brain:Niu"
+        assert entities[0]["entity_name"] == "Niu"
         assert entities[0]["entity_type"] == "Niu"
 
 
@@ -325,7 +327,7 @@ class TestFormatMemoriesForPrompt:
 
         memories = [
             {
-                "target": "brain:concept:Python",
+                "target": "Python",
                 "relation_type": "remembers",
                 "description": "从2019年开始用Python",
                 "weight": 0.85,
@@ -340,13 +342,13 @@ class TestFormatMemoriesForPrompt:
 
         memories = [
             {
-                "target": "brain:concept:Rust",
+                "target": "Rust",
                 "relation_type": "learned_from",
                 "description": "最近在学Rust",
                 "weight": 0.5,
             },
             {
-                "target": "brain:concept:Python",
+                "target": "Python",
                 "relation_type": "skilled_in",
                 "description": "擅长Python",
                 "weight": 0.9,
@@ -415,7 +417,7 @@ class TestMetadataEmbedding:
 
         memories = [
             {
-                "target": "brain:concept:Python",
+                "target": "Python",
                 "relation_type": "remembers",
                 "description": "擅长Python [meta:{\"source\":\"chat\"}]",
                 "weight": 0.9,

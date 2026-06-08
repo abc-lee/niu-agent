@@ -39,7 +39,7 @@ def _make_region_infos() -> list[BrainRegionInfo]:
     """Create test BrainRegionInfo list."""
     return [
         BrainRegionInfo(
-            name="brain:region:Python",
+            name="Python脑区",
             label="Python",
             community_id="community_0",
             description="Python programming",
@@ -49,7 +49,7 @@ def _make_region_infos() -> list[BrainRegionInfo]:
             updated_at=1745366400.0,
         ),
         BrainRegionInfo(
-            name="brain:region:React",
+            name="React脑区",
             label="React",
             community_id="community_1",
             description="React frontend framework",
@@ -82,7 +82,7 @@ class TestHandleBrainRegionActivate:
         result = handle_brain_region_activate(regions=["Python"])
 
         # Activation should be set to 1.0
-        state = mgr._regions["community_0"]
+        state = mgr._regions["Python脑区"]
         assert state.activation == 1.0
         assert state.manually_dimmed is False
 
@@ -150,7 +150,7 @@ class TestHandleBrainRegionDim:
 
         result = handle_brain_region_dim(regions=["Python"])
 
-        state = mgr._regions["community_0"]
+        state = mgr._regions["Python脑区"]
         assert state.activation == 0.0
         assert state.manually_dimmed is True
 
@@ -288,13 +288,13 @@ class TestReinforceOnToolUse:
         """reinforce_on_tool_use activates the correct region for a tool."""
         mgr = _make_activation_mgr()
         set_activation_mgr(mgr)
-        set_tool_to_region({"kg-server/query": "community_0"})
+        set_tool_to_region({"kg-server/query": "Python脑区"})
 
         result = reinforce_on_tool_use("kg-server/query")
 
-        assert result == "community_0"
+        assert result == "Python脑区"
         # Activation should be reinforced
-        assert mgr._regions["community_0"].activation >= 0.85
+        assert mgr._regions["Python脑区"].activation >= 0.85
 
     def test_reinforce_unknown_tool(self):
         """Unknown tool returns None."""

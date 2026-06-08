@@ -26,8 +26,8 @@ class TestSearchMultiLightrag:
         mock_result = {
             "data": {
                 "entities": [
-                    {"entity_name": "skill:python", "entity_type": "skill", "description": "Python programming"},
-                    {"entity_name": "skill:rust", "entity_type": "skill", "description": "Rust programming"},
+                    {"entity_name": "Python", "entity_type": "skill", "description": "Python programming"},
+                    {"entity_name": "Rust", "entity_type": "skill", "description": "Rust programming"},
                 ],
                 "relationships": [],
                 "chunks": [],
@@ -91,7 +91,7 @@ class TestSearchMultiLightrag:
         mock_result = {
             "data": {
                 "entities": [
-                    {"entity_name": "skill:git", "entity_type": "skill"},
+                    {"entity_name": "Git", "entity_type": "skill"},
                     {"entity_name": "tool:git/commit", "entity_type": "tool"},
                     {"entity_name": "Git", "entity_type": "knowledge"},
                     {"entity_name": "Alice", "entity_type": "person"},  # Not mapped
@@ -234,7 +234,7 @@ class TestInjectorListResources:
         mock_adapter.list_entities.return_value = {
             "status": "ok",
             "data": [
-                {"id": "skill:python", "entity_type": "skill", "description": "Python programming"},
+                {"id": "Python", "entity_type": "skill", "description": "Python programming"},
             ],
         }
 
@@ -250,14 +250,14 @@ class TestInjectorListResources:
         mock_adapter.list_entities.return_value = {
             "status": "ok",
             "data": [
-                {"id": "skill:git", "entity_type": "skill", "description": "Git version control"},
+                {"id": "Git", "entity_type": "skill", "description": "Git version control"},
             ],
         }
 
         result = await list_resources(resource_type="skill")
         assert len(result.resources) == 1
         assert result.resources[0]["type"] == "skill"
-        assert result.resources[0]["name"] == "skill:git"
+        assert result.resources[0]["name"] == "Git"
         # list_entities should be called with entity_type="skill"
         mock_adapter.list_entities.assert_called_once_with(
             list_type="entities", entity_type="skill", limit=100,
@@ -314,7 +314,7 @@ class TestInjectorListResources:
         mock_adapter.list_entities.return_value = {
             "status": "ok",
             "data": [
-                {"id": "skill:long", "entity_type": "skill", "description": long_desc},
+                {"id": "LongSkill", "entity_type": "skill", "description": long_desc},
             ],
         }
 

@@ -43,7 +43,7 @@ def writer(mock_ingester: MagicMock) -> DreamWriter:
 
 
 def test_write_semantic_entity(writer: DreamWriter, mock_ingester: MagicMock) -> None:
-    """Verify structured text with entity + brain:Niu relation passed to lightrag_insert."""
+    """Verify semantic entity text (no niu anchor) passed to lightrag_insert."""
     result = writer.write_semantic_entity(
         name="Python",
         entity_type="Skill",
@@ -153,7 +153,7 @@ def test_write_episodic_event(writer: DreamWriter, mock_ingester: MagicMock) -> 
     assert "corrected_by" not in text
     assert "involves" not in text
     # session_id should be included in text (M1 fix)
-    assert "session: sess-001" in text
+    assert "来自会话 sess-001" in text
 
 
 # ============== Test 4: write_episodic_event_with_chain ==============
@@ -360,4 +360,4 @@ def test_write_episodic_event_no_session_id(writer: DreamWriter, mock_ingester: 
 
     call_kwargs = mock_ingester.lightrag_insert.call_args
     text = call_kwargs.kwargs["content"]
-    assert "session:" not in text
+    assert "来自会话" not in text
