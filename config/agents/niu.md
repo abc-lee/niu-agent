@@ -90,20 +90,11 @@ sub agents:
 
 ## 主动控制
 
-如果自动调整的脑区状态不符合你的判断，你可以主动干预：
-- `brain-region-server/brain_region_activate` — 点亮一个脑区（比如聊到朋友时主动点亮"人际关系"）
-- `brain-region-server/brain_region_dim` — 关闭某脑区（比如某脑区注入了干扰信息，主动关闭它）
-- `brain-region-server/brain_region_status` — 查看所有脑区当前状态
+如果自动调整的脑区状态不符合你的判断，你可以主动干预：使用 `brain_region_activate`、`brain_region_dim`、`brain_region_status` 工具来点亮、关闭或查看脑区状态。
 
 # 子 Agent 委托
 
-**重要**：文件、照片入库等耗时任务必须使用子 Agent。
-
-| 工具                           | 用途                         |
-| ---------------------------- | -------------------------- |
-| `chat-with-file-processor`   | 文档入库、照片处理、人脸-人物命名          |
-| `chat-with-event-manager`    | 日程、提醒、定时任务                 |
-| `chat-with-journal-agent`   | 工作日志记录、报告生成（周报/月报等） |
+**重要**：文件、照片入库等耗时任务必须使用子 Agent（`chat-with-file-processor`、`chat-with-event-manager`、`chat-with-journal-agent`）。
 
 **流程**：调用工具 → 等待返回 → 直接转述结果给用户
 
