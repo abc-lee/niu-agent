@@ -1,5 +1,7 @@
 # KG 实体合并修复 — 照片/人物实体去重 + 命名更新 + 自动同步移除
 
+> **⚠️ 历史文档**：本文档中使用 `brain:Niu`、`brain:region:xxx`、`brain:concept:xxx`、`brain:event:xxx`、`brain:person:xxx`、`brain:session:xxx`、`event:xxx`、`skill:xxx`、`person:xxx` 等冒号前缀实体名的描述已过时。当前系统要求所有实体名必须使用自然语言（如 `Niu`、`编程开发脑区`、`Python`、`海滩日落事件`），禁止冒号前缀格式。详见 `docs/kg-dev-dictionary.md`。
+
 > 修复知识图谱中照片实体重复、人物命名不更新、照片自动同步无效三大问题。
 > TDD 实施：先写测试，再写实现，每步提交。
 

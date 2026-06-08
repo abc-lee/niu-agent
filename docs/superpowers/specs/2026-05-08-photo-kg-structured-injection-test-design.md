@@ -1,5 +1,7 @@
 # Photo KG Structured Injection — Test-Before-Fix Design
 
+> **⚠️ 历史文档**：本文档中使用 `brain:Niu`、`brain:region:xxx`、`brain:concept:xxx`、`brain:event:xxx`、`brain:person:xxx`、`brain:session:xxx`、`event:xxx`、`skill:xxx`、`person:xxx` 等冒号前缀实体名的描述已过时。当前系统要求所有实体名必须使用自然语言（如 `Niu`、`编程开发脑区`、`Python`、`海滩日落事件`），禁止冒号前缀格式。详见 `docs/kg-dev-dictionary.md`。
+
 > **核心原则：不动现有代码，先写测试证明方案可行，用户审查通过后才动代码。**
 > **最终目标：形成完整的图谱开发字典，后期所有开发直接查字典，无需再测试。**
 
