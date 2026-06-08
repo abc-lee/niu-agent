@@ -315,11 +315,7 @@ class TestLightragInsertEntity:
                 "entity_name": "Python", "entity_type": "skill",
                 "description": "", "source_id": "custom_kg", "file_path": "custom_kg",
             }],
-            relationships=[{
-                "src_id": "brain:Niu", "tgt_id": "Python",
-                "keywords": "remembers", "description": "Niu remembers Python",
-                "source_id": "custom_kg", "file_path": "custom_kg",
-            }],
+            relationships=[],
             chunks=[], source_id="custom_kg",
         )
 
