@@ -732,7 +732,7 @@ from agent.brain_tools import (
 | 照片 | `photo:{normalized_stem}` | `photo:20090603_092316` | 照片实体，短名=文件名stem（不含扩展名），file_path放metadata存完整路径，与人物实体通过 features 关系连接 |
 | 脑区 | `{label}脑区` | `聊天历史脑区` | 自然语言命名，label为可读名称 |
 | 自身 | `Niu` | `Niu` | 根节点，脑区锚点 |
-| 事件 | `event:{name}` | `event:beach_sunset` | 事件实体 |
+| 事件 | `{name}事件` | `海滩日落事件` | 自然语言命名，禁止 `event:` 前缀 |
 | 交互习惯 | `habit:{type}:{tool}` | `habit:tool_dialect:kg-server` | 交互习惯 |
 | 记忆 | 自然语言 | `Python偏好` | 记忆实体，自然语言命名 |
 
@@ -749,7 +749,7 @@ from agent.brain_tools import (
 | 关键词 | 方向 | 语义 |
 |--------|------|------|
 | `features` | photo→person | 照片中出现了某人 |
-| `brain_region_anchor` | Niu→实体 | 认识/拥有/知道（锚定关系） |
+| `brain_region_anchor` | Niu→脑区 | Niu 拥有脑区（Niu 只与脑区连接，不与普通实体连接） |
 | `co_occurs_with` | person→person | 同框出现 |
 | `participated` | event→person | 参加了某事件 |
 | `classmate` | person→person | 同学关系 |
