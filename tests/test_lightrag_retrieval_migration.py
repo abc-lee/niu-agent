@@ -151,33 +151,21 @@ class TestFormatLightragEntities:
             return r
 
     def test_formats_skill_entities(self, runner):
-        """Skill entities are formatted with (来源: 知识图谱) marker and file path."""
+        """Skill entities are formatted with file path annotation."""
         entities = [
-            {"entity_name": "skill:python", "description": "Python programming"},
+            {"entity_name": "python", "description": "Python programming"},
         ]
         text, seen = runner._format_lightrag_entities_for_prompt(
             entities, "相关技能", set(),
         )
         assert "python" in text
-        assert "来源: 知识图谱" in text
         assert "Python programming" in text
-        assert "memory/skills/python.md" in text  # skill path annotation
-
-    def test_strips_type_prefix(self, runner):
-        """Type prefixes (skill:, tool:, knowledge:) are stripped for display."""
-        entities = [
-            {"entity_name": "skill:git", "description": "Git version control"},
-        ]
-        text, seen = runner._format_lightrag_entities_for_prompt(
-            entities, "相关技能", set(),
-        )
-        assert "skill:git" not in text  # prefix stripped
-        assert "git" in text
+        assert "~/.niu/skills/python.md" in text
 
     def test_dedup_against_seen_names(self, runner):
         """Already-seen names are skipped."""
         entities = [
-            {"entity_name": "skill:python", "description": "Python"},
+            {"entity_name": "python", "description": "Python"},
         ]
         text, seen = runner._format_lightrag_entities_for_prompt(
             entities, "相关技能", {"python"},
