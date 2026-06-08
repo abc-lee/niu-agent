@@ -210,7 +210,7 @@ def get_subagent_mcp_tools_schema(agent_name: str) -> List[Dict]:
     """
     获取子 Agent 的 MCP 工具 schema
 
-    根据子 Agent 配置中的 mcpServers 过滤工具
+    根据子 Agent 配置中的 mcpServers 过滤工具，支持 mcpToolFilter 白名单
 
     Args:
         agent_name: 子 Agent 名称
@@ -222,6 +222,7 @@ def get_subagent_mcp_tools_schema(agent_name: str) -> List[Dict]:
 
     config = get_subagent_config(agent_name)
     mcp_servers = config.get("mcpServers", [])
+    mcp_tool_filter = config.get("mcpToolFilter", {})
 
     if not mcp_servers:
         return []
@@ -237,13 +238,18 @@ def get_subagent_mcp_tools_schema(agent_name: str) -> List[Dict]:
         # 工具名格式：server_name/tool_name
         if "/" in tool_name:
             server = tool_name.split("/")[0]
+            bare_name = tool_name.split("/", 1)[1]
             if server in mcp_servers:
+                # 如果该服务器有白名单，只注入白名单中的工具
+                server_filter = mcp_tool_filter.get(server)
+                if server_filter is not None and bare_name not in server_filter:
+                    continue
                 # hidden 只对主 Agent 生效；子 Agent 由 mcpServers 白名单控制工具范围
                 # 转换为OpenAI工具格式
                 schema.append({
                     "type": "function",
                     "function": {
-                        "name": tool_name.split("/", 1)[1],  # LLM sees bare name; handler auto-resolves to full name
+                        "name": bare_name,  # LLM sees bare name; handler auto-resolves to full name
                         "description": tool.get("description", ""),
                         "parameters": tool.get("input_schema", {"type": "object", "properties": {}}),
                     }

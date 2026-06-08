@@ -9,6 +9,17 @@ permissions:
 mcpServers:
   - photo-server
   - lightrag-server
+mcpToolFilter:
+  lightrag-server:
+    - lightrag_insert
+    - lightrag_insert_file
+    - lightrag_insert_custom_kg
+    - lightrag_insert_entity
+    - lightrag_insert_relation
+    - lightrag_document_status
+    - lightrag_get_document
+    - lightrag_search_entities
+    - lightrag_list_entities
 ---
 
 # 角色
