@@ -802,6 +802,11 @@
       try {
         const result = await sendMessageWithRetry(text);
       } finally {
+        // 兜底状态重置（SSE chat_idle 为主驱动，此处为防御兜底）
+        hideTyping();
+        window.electronAPI.notifyBusy(false, 'chat');
+        stopBtn.style.display = 'none';
+        isProcessing = false;
         sendBtn.disabled = false;
         loadStats();
         userInput.focus();
@@ -1392,6 +1397,11 @@
         console.error('[Chat] 图片处理失败:', e);
         addMessage('system', '图片处理失败，请重试');
       } finally {
+        // 兜底状态重置
+        hideTyping();
+        window.electronAPI.notifyBusy(false, 'chat');
+        stopBtn.style.display = 'none';
+        isProcessing = false;
         sendBtn.disabled = false;
       }
     }
@@ -1421,6 +1431,11 @@
         console.error('[Chat] 文件处理失败:', e);
         addMessage('system', '文件处理失败，请重试');
       } finally {
+        // 兜底状态重置
+        hideTyping();
+        window.electronAPI.notifyBusy(false, 'chat');
+        stopBtn.style.display = 'none';
+        isProcessing = false;
         sendBtn.disabled = false;
       }
     }
