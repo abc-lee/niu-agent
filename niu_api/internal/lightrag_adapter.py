@@ -1371,7 +1371,7 @@ class LightRAGIngester:
         entity_name = f"{habit_type}__{target_tool}"
         description = f"{content}<SEP>confidence: {confidence}"
 
-        text = f"交互习惯: {entity_name}（类型: interactionhabit），{description}。Niu uses {entity_name}。"
+        text = f"交互习惯: {entity_name}（类型: interactionhabit），{description}。"
         return self.lightrag_insert(content=text, file_paths=source_id if source_id != "custom_kg" else None)
 
     def update_habit_confidence(
