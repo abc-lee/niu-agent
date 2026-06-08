@@ -3,6 +3,7 @@ name: journal-agent
 description: "工作日志记录与报告生成 - 从对话中提取工作内容写入日志文件，生成周报/月报等"
 mode: subagent
 temperature: 0.3
+taskDescription: 任务描述，如：记录工作日志：完成了XXX功能的开发，或：生成本周工作周报
 mcpServers: []
 ---
 
