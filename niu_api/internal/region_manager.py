@@ -8,7 +8,8 @@ for each Leiden community. Each region master node serves as:
 - Metadata container (brain_meta_* attributes in description)
 
 Entity names use natural language format (e.g., "编程开发脑区") instead of
-colon-prefix format (e.g., "brain:region:编程开发").
+colon-prefix format (e.g., "brain:region:编程开发") — DEPRECATED, kept only for
+reading pre-migration data.
 
 M2 module: Region node lifecycle, M1 provides community detection.
 """
@@ -33,7 +34,9 @@ logger = logging.getLogger(__name__)
 # e.g., "编程开发脑区", "聊天历史脑区"
 REGION_SUFFIX = "脑区"
 
-# Legacy prefix for backward compat when reading existing graph data
+# DEPRECATED: Legacy prefix for backward compat when reading existing graph data.
+# New code must use natural language format ("XXX脑区") only.
+# This constant exists solely to read pre-migration data from the graph.
 REGION_PREFIX = "brain:region:"
 
 # Entity type for brain region master nodes

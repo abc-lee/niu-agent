@@ -280,9 +280,9 @@ def get_all_region_members() -> dict[str, list[str]]:
             edge_type = data.get("keywords") or data.get("type", "")
             if edge_type.lower() == "_region:contains":
                 # 无向图中 src/tgt 顺序不确定，需判断哪端是脑区
-                if src.endswith("脑区") or src.startswith("brain:region:"):
+                if src.endswith("脑区"):
                     region, member = src, tgt
-                elif tgt.endswith("脑区") or tgt.startswith("brain:region:"):
+                elif tgt.endswith("脑区"):
                     region, member = tgt, src
                 else:
                     continue

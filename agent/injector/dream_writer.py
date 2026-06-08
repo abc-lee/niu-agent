@@ -194,7 +194,7 @@ class DreamWriter:
             text_parts.append(f"{event_name} involves {entities_str}。")
 
         if session_id:
-            text_parts.append(f"session: {session_id}。")
+            text_parts.append(f"来自会话 {session_id}。")
 
         text = " ".join(text_parts)
 

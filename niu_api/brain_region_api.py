@@ -226,11 +226,8 @@ def get_region_members(name: str) -> dict[str, Any]:
               added automatically if missing.
     """
     try:
-        # Normalize name: add suffix if missing (support both new and old format)
-        if name.startswith("brain:region:"):
-            # Backward compat: read old-format names as-is
-            region_name = name
-        elif not name.endswith("脑区"):
+        # Normalize name: add suffix if missing
+        if not name.endswith("脑区"):
             region_name = f"{name}脑区"
         else:
             region_name = name
