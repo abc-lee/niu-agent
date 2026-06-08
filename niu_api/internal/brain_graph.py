@@ -1,11 +1,12 @@
 """
 Brain Graph — Memory system on LightRAG knowledge graph.
 
-Memories are stored as weighted relations from Niu to typed entities,
-and retrieved via LightRAG query_data(mode="mix").
+Memories are stored as typed entities in the knowledge graph,
+and retrieved via LightRAG query_data(mode="mix"). Entity reachability
+is provided by brain region _region:contains edges, not niu anchors.
 
 Core concepts:
-- Niu — the "self" entity, all memory relations start from it
+- niu — the root node, only connects to brain regions
 - Entity names use natural language (e.g., "Python", "任飞"), not colon-prefix format
 - memory_type drives relation type (MEMORY_TYPE_TO_RELATION) and entity type; weight defaults to DEFAULT_WEIGHT
 - Retrieval uses LightRAG aquery(mode="mix") directly
@@ -110,7 +111,7 @@ def _get_attr(obj: Any, key: str, default: Any = None) -> Any:
 class BrainGraph:
     """Memory brain graph built on LightRAG.
 
-    Stores memories as relations from Niu to entities.
+    Stores memories as entities in the knowledge graph.
     Retrieves memories via LightRAG aquery(mode="mix").
     """
 
@@ -148,9 +149,10 @@ class BrainGraph:
     ) -> Dict[str, Any]:
         """Store a memory in the brain graph.
 
-        Creates a target entity and a weighted relation from Niu to it
+        Creates a target entity in the knowledge graph
         in a single atomic inject_custom_kg call, with the entity description
         passed as a chunk so LLM can extract additional relationships.
+        Entity reachability is provided by brain region _region:contains edges.
 
         Args:
             content: The memory content to store.
@@ -175,8 +177,9 @@ class BrainGraph:
         entity_label = self._extract_entity_label(content)
         target_name = make_entity_name(entity_type, entity_label)
 
-        # Build relation description, embedding metadata if present
-        description = content[:200]
+        # Build entity description with created_at timestamp + metadata
+        created_at = time.strftime("%Y-%m-%dT%H:%M:%S")
+        entity_description = f"created_at={created_at}<SEP>{content[:200]}"
         if metadata:
             try:
                 meta_str = json.dumps(metadata, ensure_ascii=False, separators=(",", ":"))
@@ -184,13 +187,9 @@ class BrainGraph:
                 if len(meta_str) > 200:
                     logger.debug(f"[BRAIN] metadata too long ({len(meta_str)} chars), skipping")
                 else:
-                    description = f"{description} [meta:{meta_str}]"
+                    entity_description = f"{entity_description} [meta:{meta_str}]"
             except (TypeError, ValueError):
                 pass  # Non-serializable metadata, skip
-
-        # Build entity description with created_at timestamp only
-        created_at = time.strftime("%Y-%m-%dT%H:%M:%S")
-        entity_description = f"created_at={created_at}<SEP>{content[:200]}"
 
         # --- Single atomic inject_custom_kg call ---
         # Merge entity + relationship + chunk into one call so that:
@@ -203,17 +202,7 @@ class BrainGraph:
                 "entity_type": entity_type,
                 "description": entity_description,
             }],
-            relationships=[
-                {
-                    "src_id": "Niu",
-                    "tgt_id": target_name,
-                    "keywords": relation_type,
-                    "description": description,
-                    "weight": weight,
-                    "source_id": "brain",
-                    "file_path": "brain://memory",
-                }
-            ],
+            relationships=[],
             chunks=[{
                 "content": f"{target_name}: {entity_description}",
                 "source_id": "brain",
@@ -328,14 +317,15 @@ class BrainGraph:
             desc = _get_attr(rel, "description", "")
             weight = _get_attr(rel, "weight", 1.0)
 
-            # Include relations involving Niu or any entity
-            is_niu_related = src == "Niu" or tgt == "Niu"
-            if not is_niu_related:
+            # Include all memory-relevant relations — no longer filtering by
+            # niu since store_memory no longer creates niu→entity edges.
+            # Exclude brain region structure edges (not memory content).
+            if relation.startswith("_region:"):
                 continue
 
             if weight >= min_weight:
                 memories.append({
-                    "target": tgt if tgt != "Niu" else src,
+                    "target": src if tgt == "Niu" else tgt,
                     "relation_type": relation,
                     "description": desc,
                     "weight": weight,
@@ -346,24 +336,26 @@ class BrainGraph:
     def _extract_brain_memories_from_text(
         self, text: str, min_weight: float
     ) -> List[Dict[str, Any]]:
-        """Extract Niu memory references from query result text."""
+        """Extract memory references from query result text."""
         memories = []
 
-        # Match "Niu" as a standalone word (word boundary) to avoid
-        # false positives like "Niurou" or other substrings containing "Niu".
-        if re.search(r"\bNiu\b", text):
+        if text.strip():
             weight = 0.7  # Default for recalled memories
             if weight >= min_weight:
+                # Extract a meaningful target from the text rather than
+                # hardcoding "Niu" — use first 20 chars as identifier
+                target = text.strip()[:20].split("。")[0].split("，")[0]
                 memories.append({
-                    "target": "Niu",
+                    "target": target,
                     "relation_type": "remembers",
                     "description": text.strip()[:200],
                     "weight": weight,
                 })
 
         if not memories and text.strip():
+            target = text.strip()[:20].split("。")[0].split("，")[0]
             memories.append({
-                "target": "Niu",
+                "target": target,
                 "relation_type": "remembers",
                 "description": text.strip()[:200],
                 "weight": 0.5,
