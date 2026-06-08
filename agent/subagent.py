@@ -286,19 +286,7 @@ def _build_user_info_section() -> str:
     if ws_path and not str(ws_path).startswith("请询问"):
         sections.append(f"## 工作目录\n\n{ws_path}")
 
-    # 用户信息
-    user = memory.get("user", {})
-    user_lines = []
-    if user.get("name") and not str(user["name"]).startswith("请询问"):
-        user_lines.append(f"真实姓名：{user['name']}")
-    if user.get("nickname") and not str(user["nickname"]).startswith("请询问"):
-        user_lines.append(f"称呼：{user['nickname']}")
-    if user.get("occupation") and not str(user["occupation"]).startswith("请询问"):
-        user_lines.append(f"职业：{user['occupation']}")
-    if user.get("organization") and not str(user["organization"]).startswith("请询问"):
-        user_lines.append(f"工作单位：{user['organization']}")
-    if user_lines:
-        sections.append("## 用户信息\n\n" + "\n".join(user_lines))
+    # 用户信息：子Agent不需要用户身份（姓名/称呼/职业/工作单位），只需工作目录和偏好
 
     # 用户偏好（仅 type="memory"）
     permanent = memory.get("permanent", [])
