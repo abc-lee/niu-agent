@@ -120,7 +120,7 @@ LightRAG 的实体去重依赖实体名称的小写匹配。原始名称和最�
 - 事件：`海滩日落事件`、`西柏坡旅行事件`（不要写 `brain:event:beach_sunset`）
 - 会话：`2026-04-27会话`（不要写 `brain:session:2026-04-27`）
 - 技能/概念：`Python开发`、`Rust所有权机制`（不要写 `skill:python` 或 `concept:rust`）
-- 用户主节点：`Niu`（不要写 `brain:Niu`）
+- 根节点名称保留原样：`niu`（不要写 `brain:niu`）
 
 ### 精炼文档中的实体名书写
 
@@ -129,7 +129,7 @@ LightRAG 的实体去重依赖实体名称的小写匹配。原始名称和最�
 - 写"任飞出现在照片中"，不要写"person:任飞出现在照片中"
 - 写"用户偏好 Python"，不要写"brain:Preference:python"
 - 写"这次对话属于聊天历史脑区"，不要写"brain:region:聊天历史"
-- 写"Niu 喜欢暗色主题"，不要写"brain:Niu 喜欢暗色主题"
+- 写"Python编程语言"，不要写"concept:Python编程语言"
 
 **简单规则**：写文档时，假设你是人类在写日记——用自然语言描述，不要用编程风格的冒号前缀标签。
 
