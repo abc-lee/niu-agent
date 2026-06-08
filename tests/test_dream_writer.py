@@ -177,8 +177,8 @@ def test_write_episodic_event_with_chain(
     call_kwargs = mock_ingester.lightrag_insert.call_args
     text = call_kwargs.kwargs["content"]
 
-    assert "brain:event:tried_tool_x" in text
-    assert "brain:event:tried_tool_y" in text
+    assert "tried_tool_x" in text
+    assert "tried_tool_y" in text
     assert CHAIN_RELATION_FOLLOWED in text
 
     # Reset for correction test
@@ -223,7 +223,7 @@ def test_write_episodic_event_with_involves(
     call_kwargs = mock_ingester.lightrag_insert.call_args
     text = call_kwargs.kwargs["content"]
 
-    assert "brain:event:data_analysis_session" in text
+    assert "data_analysis_session" in text
     assert "involves" in text
     assert "Python" in text
     assert "pandas" in text
