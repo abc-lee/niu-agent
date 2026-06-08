@@ -750,6 +750,7 @@
       if (text === '/stop') {
         userInput.value = '';
         userInput.style.height = 'auto';
+        sendBtn.disabled = false;
         try {
           await window.electronAPI.sendMessage('/stop');
         } catch (e) {
@@ -763,6 +764,7 @@
       if (text === '/clear') {
         userInput.value = '';
         userInput.style.height = 'auto';
+        sendBtn.disabled = false;
         try {
           await window.electronAPI.sendMessage('/stop');
         } catch (e) {
@@ -786,6 +788,7 @@
         userInput.value = '';
         userInput.style.height = 'auto';
         stopBtn.style.display = 'none';
+        sendBtn.disabled = false;
         await clearChat();
         return;
       }
