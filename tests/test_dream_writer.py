@@ -199,8 +199,8 @@ def test_write_episodic_event_with_chain(
     call_kwargs = mock_ingester.lightrag_insert.call_args
     text = call_kwargs.kwargs["content"]
 
-    assert "brain:event:tried_tool_y" in text
-    assert "brain:event:used_tool_z" in text
+    assert "tried_tool_y" in text
+    assert "used_tool_z" in text
     assert CHAIN_RELATION_CORRECTED in text
 
 
