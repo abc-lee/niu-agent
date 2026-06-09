@@ -343,6 +343,57 @@ LightRAG 入库参数从 `~/.niu/preferences.json` 的 `lightrag` 配置段读�
 | `embedding_model` | `bge-base-zh-v1.5` | 向量模型名称（见 8.6 向量模型切换） |
 | `reranker_model` | `none` | 重排序模型，`none` 表示关闭 |
 
+#### LightRAG 思考链与模型配置
+
+LightRAG 入库请求默认禁用思考链（`reasoning_effort: "none"`），防止深度推理导致实体提取超时。
+LightRAG 官方明确建议不要使用带思考链的模型做入库。
+
+**方案一：自动禁用思考链（零配置生效）**
+
+不做任何配置，系统自动将所有 LightRAG 入库请求的 `reasoning_effort` 设为 `"none"`。
+即使主 Agent 使用带思考链的模型（如 ark-code-latest），入库请求也不受影响。
+
+**方案二：独立模型配置**
+
+在 `config/user-config.json` 中配置 `lightrag_llm` 段，让 LightRAG 使用不同模型：
+
+```json
+{
+  "llm": {
+    "presetId": "ark-code-latest",
+    "apiKey": "...",
+    "apiBase": "https://ark.cn-beijing.volces.com/api/coding/v3",
+    "model": "ark-code-latest",
+    "type": "openai"
+  },
+  "lightrag_llm": {
+    "presetId": "doubao",
+    "apiKey": "",
+    "apiBase": "https://ark.cn-beijing.volces.com/api/v3",
+    "model": "doubao-pro-32k",
+    "type": "openai",
+    "reasoning_effort": "none"
+  }
+}
+```
+
+- `lightrag_llm` 段 `model` 为空时，使用主 Agent 同一模型（正常默认行为），但独立控制 `reasoning_effort`
+- `lightrag_llm` 有 `model` 但缺 `apiKey`/`apiBase` 时，从 `llm` 段继承
+- `reasoning_effort` 是独立配置维度，默认 `"none"`（禁用思考链），即使同一模型也可用不同思考深度
+- 修改配置后重启程序生效
+- 也可通过 MCP 工具 `set_lightrag_llm_config` 动态修改
+
+**reasoning_effort 参数**
+
+| 值 | 效果 | 适用场景 |
+|----|------|----------|
+| `none` | 完全禁用思考链（默认） | LightRAG 入库、简单提取任务 |
+| `low` | 浅层推理 | 需要少量推理的入库任务 |
+| `medium` | 中等推理 | 非入库的图谱查询任务 |
+| `high` | 深度推理 | 不建议用于 LightRAG |
+
+在 `lightrag_llm` 段中设置 `reasoning_effort` 可覆盖默认值 `"none"`。
+
 ### 8.6 向量模型切换
 
 在 `~/.niu/preferences.json` 的 `lightrag.embedding_model` 中配置：
