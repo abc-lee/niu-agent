@@ -107,7 +107,7 @@ class TestBrainGraphStoreMemory:
     """Test memory storage in the brain graph."""
 
     def test_store_memory_no_type_default(self):
-        """Memory without type should store entity with default weight."""
+        """Memory without type should store entity with default weight and Niu relation."""
         bg = _make_mock_brain_graph()
 
         result = bg.store_memory(
@@ -117,10 +117,12 @@ class TestBrainGraphStoreMemory:
         assert result["status"] == "ok"
         assert result["relation_type"] == "remembers"
         assert result["weight"] == 0.7
-        # Single atomic call — no niu→entity relationship
+        # Single atomic call with Niu→entity relationship
         assert bg._ingester.inject_custom_kg.call_count == 1
         call_kwargs = bg._ingester.inject_custom_kg.call_args
-        assert call_kwargs[1]["relationships"] == []
+        rels = call_kwargs[1]["relationships"]
+        assert len(rels) == 1
+        assert rels[0]["src_id"] == "Niu"
 
     def test_store_l1_memory_prefers(self):
         """Memory with type=preferences should store entity with 'prefers' relation_type."""
@@ -380,7 +382,7 @@ class TestMetadataEmbedding:
     """Test metadata embedding in store_memory."""
 
     def test_metadata_embedded_in_description(self):
-        """metadata should be embedded as JSON in the entity description."""
+        """metadata should be embedded as JSON in the relationship description."""
         bg = _make_mock_brain_graph()
 
         result = bg.store_memory(
@@ -391,13 +393,14 @@ class TestMetadataEmbedding:
         assert result["status"] == "ok"
         assert bg._ingester.inject_custom_kg.call_count == 1
         call_kwargs = bg._ingester.inject_custom_kg.call_args
-        entities = call_kwargs[1]["entities"]
-        desc = entities[0]["description"]
+        rels = call_kwargs[1]["relationships"]
+        assert len(rels) == 1
+        desc = rels[0]["description"]
         assert "[meta:" in desc
         assert "source" in desc
 
     def test_no_metadata_no_bracket(self):
-        """Without metadata, entity description should not contain [meta:]."""
+        """Without metadata, relationship description should not contain [meta:]."""
         bg = _make_mock_brain_graph()
 
         result = bg.store_memory(
@@ -407,8 +410,9 @@ class TestMetadataEmbedding:
         assert result["status"] == "ok"
         assert bg._ingester.inject_custom_kg.call_count == 1
         call_kwargs = bg._ingester.inject_custom_kg.call_args
-        entities = call_kwargs[1]["entities"]
-        desc = entities[0]["description"]
+        rels = call_kwargs[1]["relationships"]
+        assert len(rels) == 1
+        desc = rels[0]["description"]
         assert "[meta:" not in desc
 
     def test_metadata_stripped_from_prompt(self):
@@ -441,6 +445,7 @@ class TestMetadataEmbedding:
         assert result["status"] == "ok"
         assert bg._ingester.inject_custom_kg.call_count == 1
         call_kwargs = bg._ingester.inject_custom_kg.call_args
-        entities = call_kwargs[1]["entities"]
-        desc = entities[0]["description"]
+        rels = call_kwargs[1]["relationships"]
+        assert len(rels) == 1
+        desc = rels[0]["description"]
         assert "[meta:" not in desc

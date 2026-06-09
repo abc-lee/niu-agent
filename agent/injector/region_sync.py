@@ -231,6 +231,18 @@ class RegionSync:
                 logger.warning(f"[RegionSync] create_region_nodes failed: {e}")
                 stats["errors"].append(f"create: {e}")
 
+            # Step 3.5: Assign existing entities to default brain regions
+            # This creates _region:contains edges from default regions to entities
+            try:
+                from niu_api.internal.region_manager import assign_entities_to_default_regions
+                result = assign_entities_to_default_regions(adapter)
+                assigned = result.get("assigned", 0)
+                if assigned > 0:
+                    logger.info(f"[RegionSync] Assigned {assigned} entities to default regions")
+                    stats["entities_assigned"] = assigned
+            except Exception as e:
+                logger.debug(f"[RegionSync] assign_entities_to_default_regions skipped: {e}")
+
             # Step 4: Cleanup stale regions
             try:
                 removed = manager.cleanup_stale_regions(detection_result)

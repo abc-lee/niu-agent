@@ -581,8 +581,8 @@ class LightRAGAdapter:
             edges = []
             for edge in kg.edges:
                 edges.append({
-                    "source": edge.source,
-                    "target": edge.target,
+                    "source": f"entity:{edge.source}",
+                    "target": f"entity:{edge.target}",
                     "relation": edge.properties.get("keywords", ""),
                     "description": edge.properties.get("description", ""),
                     "weight": edge.properties.get("weight", 1.0),
@@ -864,8 +864,8 @@ class LightRAGAdapter:
                 for u, v, data in snapshot.edges(data=True):
                     if u in top_set and v in top_set:
                         edges.append({
-                            "source": u,
-                            "target": v,
+                            "source": f"entity:{u}",
+                            "target": f"entity:{v}",
                             "relation": data.get("keywords", ""),
                             "description": data.get("description", ""),
                             "weight": data.get("weight", 1.0),
