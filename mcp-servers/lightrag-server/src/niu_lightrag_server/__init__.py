@@ -921,6 +921,18 @@ def lightrag_insert_file(
                             logger.debug(
                                 f"[lightrag_insert_file] snapshot_refresh changelog skipped: {_cl_err}"
                             )
+                        # 查询入库结果并推送到前端
+                        try:
+                            docs = await rag_instance.doc_status.get_docs_by_track_id(tid)
+                            doc_info = next(iter(docs.values()), None) if docs else None
+                            from niu_api.chat import push_ingest_result
+                            await push_ingest_result(
+                                file_path=doc_info.file_path if doc_info else "",
+                                status="completed",
+                                chunks_count=doc_info.chunks_count if doc_info and doc_info.chunks_count is not None else 0,
+                            )
+                        except Exception as _push_err:
+                            logger.debug(f"[lightrag_insert_file] ingest result push skipped: {_push_err}")
                     except (_asyncio.CancelledError, Exception) as pipeline_err:
                         is_cancelled = isinstance(pipeline_err, _asyncio.CancelledError)
                         if is_cancelled:
@@ -962,6 +974,17 @@ def lightrag_insert_file(
                                 f"[lightrag_insert_file] mark-failed skipped "
                                 f"(best-effort): track_id={tid} error={mark_err}"
                             )
+                        # 推送入库失败结果（用户主动取消不算失败）
+                        if not is_cancelled:
+                            try:
+                                from niu_api.chat import push_ingest_result
+                                await push_ingest_result(
+                                    file_path="",
+                                    status="failed",
+                                    error=str(pipeline_err),
+                                )
+                            except Exception:
+                                pass
                         if is_cancelled:
                             raise pipeline_err
                     finally:
