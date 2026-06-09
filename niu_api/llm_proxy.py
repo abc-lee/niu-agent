@@ -24,7 +24,7 @@ from pydantic import BaseModel
 from fastapi import APIRouter, HTTPException
 from loguru import logger
 
-from niu_api.internal.brain_region_prompt import inject_brain_region_context
+from niu_api.internal.brain_region_prompt import inject_brain_region_context, is_lightrag_extraction_request
 
 router = APIRouter(prefix="/llm/v1", tags=["llm-proxy"])
 
@@ -195,14 +195,44 @@ def litellm_to_openai_response(
 # ============================================================================
 
 
-def get_llm_config() -> Dict[str, str]:
-    """Read LLM config from file"""
+def get_llm_config(use_lightrag_config: bool = False) -> Dict[str, str]:
+    """Read LLM config from file.
+
+    Args:
+        use_lightrag_config: If True, read from 'lightrag_llm' section.
+            model 为空时使用主 llm 同一模型（正常默认行为）。
+            apiKey/apiBase/type 为空时从 llm 段继承。
+            reasoning_effort 默认 "none"（独立于模型配置，强制禁用思考链）。
+            用户可在 lightrag_llm 段显式设置 reasoning_effort 覆盖默认值。
+    """
     from pathlib import Path
 
     config_path = Path(__file__).parent.parent / "config" / "user-config.json"
     try:
         data = json.loads(config_path.read_text(encoding="utf-8"))
         llm = data.get("llm", {})
+
+        # If requesting lightrag config, apply lightrag_llm overrides
+        if use_lightrag_config:
+            lightrag_llm = data.get("lightrag_llm", {})
+            if lightrag_llm.get("model"):
+                # Independent model configured: inherit missing fields from llm
+                if not lightrag_llm.get("apiKey"):
+                    lightrag_llm["apiKey"] = llm.get("apiKey", "")
+                if not lightrag_llm.get("apiBase"):
+                    lightrag_llm["apiBase"] = llm.get("apiBase", "")
+                if not lightrag_llm.get("type"):
+                    lightrag_llm["type"] = llm.get("type", "openai")
+                # Default reasoning_effort to "none" if not explicitly set
+                if not lightrag_llm.get("reasoning_effort"):
+                    lightrag_llm["reasoning_effort"] = "none"
+                llm = lightrag_llm
+            else:
+                # Use main llm model, but independently apply reasoning_effort
+                # model 和 reasoning_effort 是两个独立维度
+                llm = dict(llm)
+                user_effort = lightrag_llm.get("reasoning_effort")
+                llm["reasoning_effort"] = user_effort if user_effort else "none"
 
         # 统一转换为小写键名
         config = {}
@@ -216,13 +246,14 @@ def get_llm_config() -> Dict[str, str]:
 
         return config
     except Exception:
-        return {"type": "openai", "apikey": "", "apibase": "", "model": ""}
+        return {"type": "openai", "apikey": "", "apibase": "", "model": "", "reasoning_effort": "none"}
 
 
 async def call_llm_via_litellm(
     messages: List[Dict[str, Any]],
     tools: Optional[List[Dict[str, Any]]] = None,
     response_format: Optional[Dict[str, Any]] = None,
+    config: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """
     Call LLM using LiteLLM (through GenericAgent's LiteLLMSession)
@@ -233,7 +264,8 @@ async def call_llm_via_litellm(
     start_time = time.time()
     logger.info(f"[LLM Proxy] call_llm_via_litellm started")
 
-    config = get_llm_config()
+    if config is None:
+        config = get_llm_config()
 
     if not config["apikey"]:
         raise HTTPException(status_code=500, detail="LLM not configured")
@@ -247,6 +279,7 @@ async def call_llm_via_litellm(
         "apikey": config["apikey"],
         "apibase": config["apibase"],
         "model": config["model"],
+        "reasoning_effort": config.get("reasoning_effort"),
     }
 
     # Create independent session (not shared with main chat)
@@ -357,17 +390,20 @@ async def chat_completions(request: OpenAIChatRequest) -> OpenAIChatResponse:
     if request.tools:
         logger.info(f"[LLM Proxy] Tool names: {[t.function.get('name') for t in request.tools if hasattr(t, 'function')]}")
 
-    # Check LLM configuration
-    config = get_llm_config()
+    # Convert OpenAI format to LiteLLM format
+    litellm_messages = openai_to_litellm_messages(request.messages)
+    litellm_tools = openai_to_litellm_tools(request.tools)
+
+    # Detect LightRAG request BEFORE brain region injection
+    is_lightrag = is_lightrag_extraction_request(litellm_messages)
+
+    # Read LLM config (routes to lightrag_llm section if LightRAG request)
+    config = get_llm_config(use_lightrag_config=is_lightrag)
     if not config["apikey"]:
         raise HTTPException(
             status_code=500,
             detail="LLM not configured. Please set API key in config/user-config.json"
         )
-
-    # Convert OpenAI format to LiteLLM format
-    litellm_messages = openai_to_litellm_messages(request.messages)
-    litellm_tools = openai_to_litellm_tools(request.tools)
 
     # Inject brain region context for LightRAG extraction requests
     # Reads directly from NetworkX in-memory graph — no LightRAG API call to avoid deadlock
@@ -383,12 +419,17 @@ async def chat_completions(request: OpenAIChatRequest) -> OpenAIChatResponse:
     if litellm_tools:
         logger.debug(f"[LLM Proxy] Tools: {len(litellm_tools)}")
 
-    # Call LLM
+    # Log routing decision
+    if is_lightrag:
+        logger.info(f"[LLM Proxy] LightRAG request: model={config['model']}, reasoning_effort={config.get('reasoning_effort', 'N/A')}")
+
+    # Call LLM (pass pre-loaded config to avoid double file read)
     try:
         response = await call_llm_via_litellm(
             messages=litellm_messages,
             tools=litellm_tools,
             response_format=request.response_format,
+            config=config,
         )
 
         # Convert back to OpenAI format
