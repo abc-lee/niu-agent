@@ -337,6 +337,8 @@ def create_client(config: Dict[str, Any]):
     }
     if "temperature" in config and config["temperature"] is not None:
         cfg["temperature"] = config["temperature"]
+    if "reasoning_effort" in config and config["reasoning_effort"] is not None:
+        cfg["reasoning_effort"] = config["reasoning_effort"]
 
     from .generic.litellm_adapter import create_litellm_client
     logger.info(f"Using LiteLLM adapter for model: {cfg['model']}")

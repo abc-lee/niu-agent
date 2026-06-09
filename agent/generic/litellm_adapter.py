@@ -563,6 +563,8 @@ def create_litellm_client(config: Dict[str, Any]) -> ToolClient:
     }
     if "temperature" in config and config["temperature"] is not None:
         cfg["temperature"] = config["temperature"]
+    if "reasoning_effort" in config and config["reasoning_effort"] is not None:
+        cfg["reasoning_effort"] = config["reasoning_effort"]
 
     # 将当前模型注册到 cost map（置零），避免 LiteLLM 查找费率失败触发 Provider List
     _register_model_cost(cfg["model"])
