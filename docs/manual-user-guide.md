@@ -48,7 +48,8 @@ Go 启动器首次运行时，会自动执行 `initNiuDir()`：
     "apiKey": "sk-xxx",
     "apiBase": "https://api.openai.com/v1/chat/completions",
     "model": "gpt-4o-mini",
-    "type": "openai"
+    "type": "openai",
+    "reasoning_effort": ""
   },
   "lightrag_llm": {
     "presetId": "",
@@ -70,6 +71,7 @@ Go 启动器首次运行时，会自动执行 `initNiuDir()`：
 | `apiBase` | API 端点地址（openai 类型含 `/chat/completions` 后缀；anthropic 类型含 `/v1/messages` 后缀） |
 | `model` | 模型名称 |
 | `type` | 类型：`openai`（兼容 OpenAI API）或 `anthropic` |
+| `reasoning_effort` | 思考链深度：`""`（空，由模型默认决定）、`"none"`（禁用）、`"low"`、`"medium"`、`"high"`、`"xhigh"`。主 Agent 默认空，LightRAG 默认 `"none"` |
 
 **预设列表**：编辑 `config/llm-presets.json` 查看支持的预设。
 

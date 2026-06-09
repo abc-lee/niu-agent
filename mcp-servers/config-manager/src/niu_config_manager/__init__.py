@@ -46,6 +46,10 @@ TOOL_SCHEMAS = {
                     "type": "string",
                     "description": "Provider type: 'openai' or 'anthropic'",
                 },
+                "reasoning_effort": {
+                    "type": "string",
+                    "description": "Thinking chain depth: 'none' (disable), 'low', 'medium', 'high', 'xhigh'. Affects how deeply the model reasons before responding.",
+                },
             },
         },
     },
@@ -373,6 +377,7 @@ def load_user_config() -> dict[str, Any]:
             "apiBase": "",
             "model": "",
             "type": "openai",
+            "reasoning_effort": "",
         },
         "storage": {"documentRoot": "", "databasePath": ""},
         "firstRun": True,
@@ -434,6 +439,7 @@ def get_llm_config() -> dict[str, Any]:
         "model": llm.get("model", ""),
         "type": llm.get("type", "openai"),
         "hasApiKey": bool(llm.get("apiKey", "")),
+        "reasoning_effort": llm.get("reasoning_effort", ""),
     }
 
 
@@ -443,6 +449,7 @@ def set_llm_config(
     api_base: str = None,
     model: str = None,
     llm_type: str = None,
+    reasoning_effort: str = None,
 ) -> dict[str, Any]:
     """Set LLM configuration."""
     config = load_user_config()
@@ -457,6 +464,10 @@ def set_llm_config(
                 llm["apiBase"] = preset.get("apiBase", "")
                 llm["model"] = preset.get("model", "")
                 llm["type"] = preset.get("type", "openai")
+                # Clear reasoning_effort when switching presets (presets don't specify this)
+                # User can re-set reasoning_effort after choosing a preset
+                if reasoning_effort is None:
+                    llm.pop("reasoning_effort", None)
                 break
 
     # Override with explicit values
@@ -468,6 +479,8 @@ def set_llm_config(
         llm["model"] = model
     if llm_type is not None:
         llm["type"] = llm_type
+    if reasoning_effort is not None:
+        llm["reasoning_effort"] = reasoning_effort
 
     config["llm"] = llm
     save_user_config(config)
@@ -960,6 +973,10 @@ async def list_tools() -> list[Tool]:
                         "type": "string",
                         "description": "Provider type: 'openai' or 'anthropic'",
                     },
+                    "reasoning_effort": {
+                        "type": "string",
+                        "description": "Thinking chain depth: 'none' (disable), 'low', 'medium', 'high', 'xhigh'. Affects how deeply the model reasons before responding.",
+                    },
                 },
             },
         ),
@@ -1225,6 +1242,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 api_base=arguments.get("api_base"),
                 model=arguments.get("model"),
                 llm_type=arguments.get("llm_type"),
+                reasoning_effort=arguments.get("reasoning_effort"),
             )
         elif name == "list_llm_presets":
             result = list_presets()

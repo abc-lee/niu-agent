@@ -265,7 +265,7 @@ def _load_llm_config():
 
         return config
     except Exception:
-        return {"type": "openai", "apikey": "", "apibase": "", "model": ""}
+        return {"type": "openai", "apikey": "", "apibase": "", "model": "", "reasoning_effort": ""}
 
 
 def init_runner(tool_registry):
@@ -296,7 +296,7 @@ def get_or_create_runner() -> Optional["NiuRunner"]:
     if existing is not None and current["apikey"] and current["model"]:
         # Runner 已存在，检查配置是否变更
         runner_llm = getattr(existing, "llm_config", {})
-        if runner_llm.get("apikey") != current["apikey"] or runner_llm.get("model") != current["model"]:
+        if runner_llm.get("apikey") != current["apikey"] or runner_llm.get("model") != current["model"] or runner_llm.get("reasoning_effort") != current.get("reasoning_effort"):
             # 配置已变更，重新初始化
             with runner_module._runner_lock:
                 runner_module._runner = None
