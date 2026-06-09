@@ -75,6 +75,38 @@ def notify_new_message_sync(message_id: str, role: str, content: str, source: st
         pass  # 循环已关闭
 
 
+async def push_ingest_result(file_path: str, status: str, chunks_count: int = 0, error: str = ""):
+    """将入库结果写入 message.db 并推送 SSE 通知。
+
+    此消息仅供 Electron 前端消费，不应转发到 IM。
+    设计为 async 函数，在 LightRAG 事件循环中调用。
+    add_message 每次创建独立 aiosqlite 连接，可在任何事件循环中 await。
+    notify_new_message_sync 使用 call_soon_threadsafe，可从任何上下文调用。
+
+    Args:
+        file_path: 入库文件路径
+        status: "completed" 或 "failed"
+        chunks_count: 切片数
+        error: 错误信息（仅失败时）
+    """
+    import os
+    file_name = os.path.basename(file_path) if file_path else "未知文件"
+
+    if status == "completed":
+        content = f"文件入库完成：{file_name}（切片 {chunks_count} 个）"
+    else:
+        content = f"文件入库失败：{file_name}（错误：{error}）"
+
+    try:
+        from agent.session import MessageStore
+        store = MessageStore()
+        msg_id = await store.add_message(role="system", content=content)
+        if msg_id:
+            notify_new_message_sync(msg_id, "system", content)
+    except Exception:
+        pass
+
+
 def notify_tool_status_sync(tool_name: str, status: str, summary: str = ""):
     """从同步线程推送工具调用状态到 SSE 事件总线
 
