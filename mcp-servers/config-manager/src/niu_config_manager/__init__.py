@@ -515,6 +515,9 @@ def set_lightrag_llm_config(
         lightrag_llm = config.get("lightrag_llm", {})
         for key in ("presetId", "apiKey", "apiBase", "model", "type"):
             lightrag_llm.pop(key, None)
+        # Apply reasoning_effort even when clearing model (two independent dimensions)
+        if reasoning_effort is not None:
+            lightrag_llm["reasoning_effort"] = reasoning_effort
         if lightrag_llm:
             config["lightrag_llm"] = lightrag_llm
         else:
