@@ -220,16 +220,13 @@ def get_provider_params(model: str, reasoning_effort: Optional[str] = None) -> D
     params: Dict[str, Any] = {}
     model_lower = model.lower()
 
-    # MiniMax: 禁用 reasoning_split（导致tool calling参数丢失）
-    # if "minimax" in model_lower:
-    #     params["extra_body"] = {"reasoning_split": True}
-
     # Claude: 启用prompt caching
     if "claude" in model_lower:
         params["extra_headers"] = {"anthropic-beta": "prompt-caching-2024-07-31"}
 
-    # DeepSeek: 用户配置的 reasoning_effort
-    if "deepseek" in model_lower and reasoning_effort:
+    # reasoning_effort: 支持 OpenAI o-series, DeepSeek, 火山方舟等模型
+    # LiteLLM 将此参数作为 OpenAI 标准参数传递；不支持该参数的模型会被 LiteLLM 的 drop_params 忽略
+    if reasoning_effort:
         params["reasoning_effort"] = reasoning_effort
 
     return params
@@ -314,6 +311,10 @@ class LiteLLMSession(BaseSession):
             "timeout": 120,  # 120s timeout to prevent indefinite blocking
             **provider_params,
         }
+        # Only drop unsupported params when passing reasoning_effort
+        # (e.g., some models don't support this OpenAI extension parameter)
+        if provider_params.get("reasoning_effort"):
+            request_params["drop_params"] = True
         if litellm_tools:
             request_params["tools"] = litellm_tools
         if self.proxies:
