@@ -1197,7 +1197,7 @@ def assign_entities_to_default_regions(
     # Batch inject relations
     if all_relationships:
         try:
-            from niu_api.internal.lightrag_ingester import LightRAGIngester
+            from niu_api.internal.lightrag_adapter import LightRAGIngester
             ingester = LightRAGIngester()
             ingester.inject_custom_kg(
                 entities=[],

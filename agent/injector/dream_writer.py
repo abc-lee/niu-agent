@@ -39,7 +39,14 @@ CHAIN_RELATION_FOLLOWED = "followed_by"
 CHAIN_RELATION_CORRECTED = "corrected_by"
 INVOLVES_RELATION = "involves"
 
-# _NIU_RELATION_MAP removed — niu only connects to brain regions
+# Mapping from entity_type to Niu relation keyword
+_NIU_RELATION_MAP = {
+    "person": "remembers",
+    "skill": "skilled_in",
+    "concept": "knows_about",
+    "tool": "uses",
+    "preference": "prefers",
+}
 
 
 class DreamWriter:
@@ -97,6 +104,9 @@ class DreamWriter:
             Dict with status and details.
         """
         text = f"语义记忆: {name}（类型: {entity_type}），{description}。"
+        niu_relation = self._determine_niu_relation(entity_type)
+        if niu_relation:
+            text += f" Niu {niu_relation} {name}。"
 
         try:
             result = self._ingester.lightrag_insert(content=text)
@@ -104,9 +114,10 @@ class DreamWriter:
                 logger.warning("语义实体入库返回非ok: name=%s, result=%s", name, result)
                 return result
             logger.info(
-                "语义实体入库完成: %s (type=%s)",
+                "语义实体入库完成: %s (type=%s, niu_relation=%s)",
                 name,
                 entity_type,
+                niu_relation or "(no anchor)",
             )
             return result
         except Exception as e:
@@ -183,6 +194,7 @@ class DreamWriter:
             return {"status": "error", "message": f"Invalid experience_type '{experience_type}'. Must be one of: {sorted(valid_types)}"}
 
         text_parts = [f"情景记忆: {event_name}（类型: {experience_type}），{description}。"]
+        text_parts.append(f"Niu experienced {event_name}。")
 
         chain_keyword: str | None = None
         if prev_event_name is not None:
@@ -233,4 +245,20 @@ class DreamWriter:
 
     # ============== Helpers ==============
 
-    # _determine_niu_relation removed — niu only connects to brain regions
+    def _determine_niu_relation(self, entity_type: str) -> str | None:
+        """Determine Niu → entity relation type based on entity_type.
+
+        Args:
+            entity_type: The entity type string.
+
+        Returns:
+            Relation keyword for the Niu → entity relation, or None if
+            this entity type should not have a Niu anchor.
+            Person → "remembers"
+            Skill → "skilled_in"
+            Concept → "knows_about"
+            Tool → "uses"
+            Preference → "prefers"
+            Other → None (no Niu anchor)
+        """
+        return _NIU_RELATION_MAP.get(entity_type.lower() if entity_type else None)
