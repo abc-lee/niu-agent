@@ -927,7 +927,7 @@ def lightrag_insert_file(
                             doc_info = next(iter(docs.values()), None) if docs else None
                             from niu_api.chat import push_ingest_result
                             await push_ingest_result(
-                                file_path=doc_info.file_path if doc_info else "",
+                                file_path=original_path,
                                 status="completed",
                                 chunks_count=doc_info.chunks_count if doc_info and doc_info.chunks_count is not None else 0,
                             )
@@ -983,6 +983,8 @@ def lightrag_insert_file(
                                     status="failed",
                                     error=str(pipeline_err),
                                 )
+                            except _asyncio.CancelledError:
+                                raise
                             except Exception:
                                 pass
                         if is_cancelled:
