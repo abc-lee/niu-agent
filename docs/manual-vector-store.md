@@ -317,7 +317,33 @@ rm -f ~/.niu/last_region_sync.json
 
 通过 `lightrag_delete_document` 工具级联删除：文档 -> 关联 chunks -> 关联 entities -> 关联 relationships。
 
-### 8.5 向量模型切换
+### 8.5 LightRAG 入库配置
+
+LightRAG 入库参数从 `~/.niu/preferences.json` 的 `lightrag` 配置段读取，修改后重启程序生效。
+
+```json
+{
+  "lightrag": {
+    "llm_model_max_async": 4,
+    "chunk_token_size": 1200,
+    "chunk_overlap_token_size": 50,
+    "max_gleaning": 1,
+    "embedding_model": "bge-base-zh-v1.5",
+    "reranker_model": "none"
+  }
+}
+```
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `llm_model_max_async` | 4 | 入库时 chunk 级 LLM 并发数。值越大并发越高但可能触发 API 限流；设为 1 则串行处理，最稳定但最慢 |
+| `chunk_token_size` | 1200 | 文档分片大小（token 数）。值越大则分片越少，单次 LLM 调用输入越长 |
+| `chunk_overlap_token_size` | 50 | 分片重叠 token 数。增加重叠可减少跨片实体丢失 |
+| `max_gleaning` | 1 | 补充提取次数。每次 gleaning 会额外调用一次 LLM 来找出遗漏实体；设为 0 跳过补充提取 |
+| `embedding_model` | `bge-base-zh-v1.5` | 向量模型名称（见 8.6 向量模型切换） |
+| `reranker_model` | `none` | 重排序模型，`none` 表示关闭 |
+
+### 8.6 向量模型切换
 
 在 `~/.niu/preferences.json` 的 `lightrag.embedding_model` 中配置：
 
