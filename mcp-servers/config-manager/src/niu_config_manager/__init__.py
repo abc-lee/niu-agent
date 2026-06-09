@@ -65,6 +65,38 @@ TOOL_SCHEMAS = {
             "properties": {},
         },
     },
+    "get_lightrag_llm_config": {
+        "name": "get_lightrag_llm_config",
+        "description": "Get LightRAG LLM configuration (without API key for security). Returns the lightrag_llm section if configured, otherwise indicates it will fall back to the llm section.",
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    "set_lightrag_llm_config": {
+        "name": "set_lightrag_llm_config",
+        "description": "Set LightRAG LLM configuration. If model is set to empty string, removes the lightrag_llm section so that LightRAG falls back to the main LLM configuration. Default reasoning_effort is 'none' (disables thinking chain).",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "preset_id": {
+                    "type": "string",
+                    "description": "Preset ID to load for LightRAG LLM",
+                },
+                "api_key": {"type": "string", "description": "API key (inherits from main llm if not set)"},
+                "api_base": {"type": "string", "description": "API base URL (inherits from main llm if not set)"},
+                "model": {"type": "string", "description": "Model name (empty string to clear and fall back to main llm)"},
+                "llm_type": {
+                    "type": "string",
+                    "description": "Provider type: 'openai' or 'anthropic'",
+                },
+                "reasoning_effort": {
+                    "type": "string",
+                    "description": "Thinking chain depth: 'none' (default for LightRAG), 'low', 'medium', 'high'. LightRAG officially recommends 'none' to avoid timeouts.",
+                },
+            },
+        },
+    },
     "get_storage_config": {
         "name": "get_storage_config",
         "description": "Get storage configuration (document root, database path).",
@@ -441,6 +473,84 @@ def set_llm_config(
     save_user_config(config)
 
     return {"status": "updated", "llm": get_llm_config()}
+
+
+def get_lightrag_llm_config() -> dict[str, Any]:
+    """Get LightRAG LLM configuration (without API key for security).
+
+    Returns the lightrag_llm section if configured, otherwise indicates
+    it will fall back to the llm section.
+    """
+    config = load_user_config()
+    lightrag_llm = config.get("lightrag_llm", {})
+    return {
+        "presetId": lightrag_llm.get("presetId", ""),
+        "apiBase": lightrag_llm.get("apiBase", ""),
+        "model": lightrag_llm.get("model", ""),
+        "type": lightrag_llm.get("type", "openai"),
+        "hasApiKey": bool(lightrag_llm.get("apiKey", "")),
+        "configured": bool(lightrag_llm.get("model", "")),
+        "reasoning_effort": lightrag_llm.get("reasoning_effort", "none"),
+    }
+
+
+def set_lightrag_llm_config(
+    preset_id: str = None,
+    api_key: str = None,
+    api_base: str = None,
+    model: str = None,
+    llm_type: str = None,
+    reasoning_effort: str = None,
+) -> dict[str, Any]:
+    """Set LightRAG LLM configuration.
+
+    If model is set to empty string, removes model-specific fields
+    but preserves reasoning_effort (model 和 reasoning_effort 是独立维度).
+    """
+    config = load_user_config()
+
+    # If clearing the model (model=""), remove model-specific fields
+    # but preserve reasoning_effort (model 和 reasoning_effort 是独立维度)
+    if model == "":
+        lightrag_llm = config.get("lightrag_llm", {})
+        for key in ("presetId", "apiKey", "apiBase", "model", "type"):
+            lightrag_llm.pop(key, None)
+        if lightrag_llm:
+            config["lightrag_llm"] = lightrag_llm
+        else:
+            config.pop("lightrag_llm", None)
+        save_user_config(config)
+        return {"status": "cleared", "message": "LightRAG model cleared, will use main LLM model"}
+
+    lightrag_llm = config.get("lightrag_llm", {})
+
+    # If preset_id is provided, load from presets
+    if preset_id:
+        presets = load_presets()
+        for preset in presets:
+            if preset.get("id") == preset_id:
+                lightrag_llm["presetId"] = preset_id
+                lightrag_llm["apiBase"] = preset.get("apiBase", "")
+                lightrag_llm["model"] = preset.get("model", "")
+                lightrag_llm["type"] = preset.get("type", "openai")
+                break
+
+    # Override with explicit values
+    if api_key is not None:
+        lightrag_llm["apiKey"] = api_key
+    if api_base is not None:
+        lightrag_llm["apiBase"] = api_base
+    if model is not None:
+        lightrag_llm["model"] = model
+    if llm_type is not None:
+        lightrag_llm["type"] = llm_type
+    if reasoning_effort is not None:
+        lightrag_llm["reasoning_effort"] = reasoning_effort
+
+    config["lightrag_llm"] = lightrag_llm
+    save_user_config(config)
+
+    return {"status": "updated", "lightrag_llm": get_lightrag_llm_config()}
 
 
 def list_presets() -> list[dict[str, Any]]:
@@ -860,6 +970,35 @@ async def list_tools() -> list[Tool]:
             description="Test LLM connection with current configuration.",
             inputSchema={"type": "object", "properties": {}},
         ),
+        Tool(
+            name="get_lightrag_llm_config",
+            description="Get LightRAG LLM configuration. Returns model, reasoning_effort, and whether it falls back to main llm.",
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        Tool(
+            name="set_lightrag_llm_config",
+            description="Set LightRAG LLM configuration. If model='', clears the section (falls back to main llm). Default reasoning_effort='none' disables thinking chain.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "preset_id": {
+                        "type": "string",
+                        "description": "Preset ID to load for LightRAG LLM",
+                    },
+                    "api_key": {"type": "string", "description": "API key (inherits from main llm if not set)"},
+                    "api_base": {"type": "string", "description": "API base URL (inherits from main llm if not set)"},
+                    "model": {"type": "string", "description": "Model name (empty string to clear)"},
+                    "llm_type": {
+                        "type": "string",
+                        "description": "Provider type: 'openai' or 'anthropic'",
+                    },
+                    "reasoning_effort": {
+                        "type": "string",
+                        "description": "Thinking chain depth: 'none', 'low', 'medium', 'high'. Default 'none'.",
+                    },
+                },
+            },
+        ),
         # Storage Configuration
         Tool(
             name="get_storage_config",
@@ -1088,6 +1227,17 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             result = list_presets()
         elif name == "test_llm_connection":
             result = test_llm_connection()
+        elif name == "get_lightrag_llm_config":
+            result = get_lightrag_llm_config()
+        elif name == "set_lightrag_llm_config":
+            result = set_lightrag_llm_config(
+                preset_id=arguments.get("preset_id"),
+                api_key=arguments.get("api_key"),
+                api_base=arguments.get("api_base"),
+                model=arguments.get("model"),
+                llm_type=arguments.get("llm_type"),
+                reasoning_effort=arguments.get("reasoning_effort"),
+            )
 
         # Storage Configuration
         elif name == "get_storage_config":
