@@ -614,17 +614,31 @@ def _create_lightrag_instance():
         "interactionhabit", "episodicevent", "brainregion", "other",
     ]
 
+    # Read tunable params from preferences.json (lightrag section)
+    config = _get_lightrag_config()
+    chunk_token_size = config.get("chunk_token_size", 1200)
+    chunk_overlap_token_size = config.get("chunk_overlap_token_size", 50)
+    llm_model_max_async = config.get("llm_model_max_async", 4)
+    entity_extract_max_gleaning = config.get("max_gleaning", 1)
+
     rag_params = dict(
         working_dir=str(STORAGE_DIR),
         llm_model_func=llm_model_func,
         llm_model_name="proxy-model",
         embedding_func=EmbeddingFunc(**embedding_func_config),
-        chunk_overlap_token_size=50,
-        chunk_token_size=1200,
+        chunk_overlap_token_size=chunk_overlap_token_size,
+        chunk_token_size=chunk_token_size,
+        llm_model_max_async=llm_model_max_async,
         addon_params={
             "entity_types": CUSTOM_ENTITY_TYPES,
             "language": "Chinese",
+            "entity_extract_max_gleaning": entity_extract_max_gleaning,
         },
+    )
+
+    logger.info(
+        "LightRAG params: chunk_size=%d, chunk_overlap=%d, max_async=%d, max_gleaning=%d",
+        chunk_token_size, chunk_overlap_token_size, llm_model_max_async, entity_extract_max_gleaning,
     )
 
     # Add reranker if configured (lightrag-hku 1.4.15 uses rerank_model_func,
