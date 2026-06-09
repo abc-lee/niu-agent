@@ -569,7 +569,7 @@ class LightRAGAdapter:
             nodes = []
             for node in kg.nodes:
                 nodes.append({
-                    "id": node.id,
+                    "id": f"entity:{node.id}",
                     "name": node.id,
                     "type": node.properties.get("entity_type", "other"),
                     "description": node.properties.get("description", ""),
@@ -851,7 +851,7 @@ class LightRAGAdapter:
                 except (RuntimeError, KeyError):
                     attrs = {}
                 nodes.append({
-                    "id": node_name,
+                    "id": f"entity:{node_name}",
                     "name": node_name,
                     "type": attrs.get("entity_type", "other"),
                     "description": attrs.get("description", ""),
