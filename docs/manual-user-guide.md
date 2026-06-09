@@ -71,7 +71,7 @@ Go 启动器首次运行时，会自动执行 `initNiuDir()`：
 | `apiBase` | API 端点地址（openai 类型含 `/chat/completions` 后缀；anthropic 类型含 `/v1/messages` 后缀） |
 | `model` | 模型名称 |
 | `type` | 类型：`openai`（兼容 OpenAI API）或 `anthropic` |
-| `reasoning_effort` | 思考链深度：`""`（空，由模型默认决定）、`"none"`（禁用）、`"low"`、`"medium"`、`"high"`、`"xhigh"`。主 Agent 默认空，LightRAG 默认 `"none"` |
+| `reasoning_effort` | 思考链深度：`""`（空，由模型默认决定）、`"none"`（禁用）、`"low"`、`"medium"`、`"high"`、`"xhigh"`。主 Agent 默认空，LightRAG 默认 `"none"`。**注意**：该参数的实际效果与模型基础能力强相关，不同模型的最优值差异很大，需实测确定（详见下方"reasoning_effort 配置与测试指南"） |
 
 **预设列表**：编辑 `config/llm-presets.json` 查看支持的预设。
 
@@ -117,10 +117,37 @@ LightRAG 入库（实体提取、关系构建）使用与主 Agent 独立的 LLM
 
 | 值 | 效果 | 建议场景 |
 |----|------|----------|
-| `none` | 完全禁用思考链 | **入库时建议使用**（默认值，零配置生效） |
-| `low` | 浅层推理 | 需要少量推理的入库任务 |
-| `medium` | 中等推理 | 非入库的图谱查询任务 |
-| `high` | 深度推理 | 不建议用于 LightRAG 入库 |
+| `none` | 完全禁用思考链 | 能力强的模型（自带足够推理能力） |
+| `low` | 浅层推理 | **多数模型入库时的最优值**（实测推荐） |
+| `medium` | 中等推理 | 非入库的图谱查询任务；部分模型入库也可用 |
+| `high` | 深度推理 | 不建议用于入库（推理预算耗尽，输出质量反而下降） |
+| `xhigh` | 最深推理 | 不建议用于入库 |
+
+**reasoning_effort 配置与测试指南**：
+
+`reasoning_effort` 的最优值与模型基础能力强相关，不存在通用最优值。实测数据（ark-code-latest 模型入库 SYSTEM_MANUAL.md）：
+
+| 配置 | 实体类型准确率 | 空响应率 | 补充提取有效性 | 综合评分 |
+|------|--------------|---------|--------------|---------|
+| `none` | 67% | 60% | 无 | 5.5/10 |
+| `low` | 95% | 40% | 有效 | **7.5/10** |
+| `medium` | 14% | 40% | 部分 | 6.0/10 |
+| `high` | 分裂 | 40% | 无 | 4.0/10 |
+
+关键发现：
+1. **推理越深不一定越好**：推理token被模型内部消耗，不转化为输出质量。过度推理反而导致实体类型误分类（如子Agent被归为organization而非technology）
+2. **补充提取受影响**：高推理级别下模型过度自信，判断"无需补充"，导致遗漏无法弥补
+3. **不同模型差异很大**：能力强的模型（如 Claude、GPT-4o）在 `none` 或 `low` 即可高质量提取；能力有限的模型可能需要 `medium`，但也可能适得其反
+
+**换模型后必须实测**：更改模型或 reasoning_effort 后，用同一文档入库并检查日志验证效果。
+
+**入库质量检查方法**：
+1. 入库后检查日志目录 `logs/raw_http/YYYYMMDD/`，读取 `*_response.json` 文件
+2. 检查空响应：响应体仅含 `<|COMPLETE|>` 或 content 为空，说明该轮提取失败
+3. 检查实体类型：子Agent应为 technology 而非 person/organization；MCP服务器应为 technology 而非 organization
+4. 检查违规节点：不应出现与 niu 根节点重名的实体
+5. 检查补充提取：`*_response.json` 中补充提取应有实质内容（非仅 `<|COMPLETE|>`）
+6. 如发现问题，调整 reasoning_effort 重新入库测试
 
 **配置示例**：
 
@@ -132,23 +159,11 @@ LightRAG 入库（实体提取、关系构建）使用与主 Agent 独立的 LLM
   "apiBase": "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
   "model": "doubao-pro-32k",
   "type": "openai",
-  "reasoning_effort": "none"
+  "reasoning_effort": "low"
 }
 ```
 
-场景二：主 Agent 和 LightRAG 用同一模型，但独立控制思考深度（零配置即生效）：
-```json
-"lightrag_llm": {
-  "presetId": "",
-  "apiKey": "",
-  "apiBase": "",
-  "model": "",
-  "type": "openai",
-  "reasoning_effort": "none"
-}
-```
-
-场景三：允许 LightRAG 浅层推理（高级用法）：
+场景二：主 Agent 和 LightRAG 用同一模型，独立控制思考深度（零配置即生效）：
 ```json
 "lightrag_llm": {
   "presetId": "",
@@ -157,6 +172,18 @@ LightRAG 入库（实体提取、关系构建）使用与主 Agent 独立的 LLM
   "model": "",
   "type": "openai",
   "reasoning_effort": "low"
+}
+```
+
+场景三：能力强的模型，禁用思考链即可（如 Claude、GPT-4o）：
+```json
+"lightrag_llm": {
+  "presetId": "",
+  "apiKey": "",
+  "apiBase": "",
+  "model": "",
+  "type": "openai",
+  "reasoning_effort": "none"
 }
 ```
 
