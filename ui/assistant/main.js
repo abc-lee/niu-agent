@@ -167,6 +167,19 @@ function createChatWindow() {
     if (input.key === 'F12') {
       chatWindow.webContents.toggleDevTools();
     }
+    // macOS: 确保编辑快捷键正常工作
+    // Electron 在某些情况下可能不处理这些快捷键
+    if (input.meta) {  // Cmd 键
+      if (input.key === 'v') {
+        chatWindow.webContents.paste();
+      } else if (input.key === 'c') {
+        chatWindow.webContents.copy();
+      } else if (input.key === 'x') {
+        chatWindow.webContents.cut();
+      } else if (input.key === 'a') {
+        chatWindow.webContents.selectAll();
+      }
+    }
   });
 
   // 拦截所有导航：阻止在 Electron 窗口内打开外部链接
@@ -880,6 +893,25 @@ function createStickyWindow() {
   stickyWindow.setBackgroundColor('#00000000');
   stickyWindow.hide(); // 默认隐藏
 
+  // 编辑快捷键：确保 Cmd/Ctrl+A/C/V/X/Z 在便签窗口正常工作
+  stickyWindow.webContents.on('before-input-event', (event, input) => {
+    if (input.meta || input.control) {
+      if (input.key === 'v') {
+        stickyWindow.webContents.paste();
+      } else if (input.key === 'c') {
+        stickyWindow.webContents.copy();
+      } else if (input.key === 'x') {
+        stickyWindow.webContents.cut();
+      } else if (input.key === 'a') {
+        stickyWindow.webContents.selectAll();
+      } else if (input.key === 'z' && !input.shift) {
+        stickyWindow.webContents.undo();
+      } else if (input.key === 'z' && input.shift) {
+        stickyWindow.webContents.redo();
+      }
+    }
+  });
+
   // 窗口显示时重新确保置顶状态（修复Electron sometimes loses alwaysOnTop state）
   stickyWindow.on('show', () => {
     if (stickyWindow && !stickyWindow.isDestroyed()) {
@@ -1035,18 +1067,6 @@ if (process.platform === 'darwin') {
             app.quit();
           }
         }
-      ]
-    },
-    {
-      label: '编辑',
-      submenu: [
-        { role: 'undo' },
-        { role: 'redo' },
-        { type: 'separator' },
-        { role: 'cut' },
-        { role: 'copy' },
-        { role: 'paste' },
-        { role: 'selectAll' }
       ]
     }
   ]);
