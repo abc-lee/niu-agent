@@ -4,13 +4,73 @@ use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::mpsc::Receiver;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
 use clap::Parser;
+use iced::widget::container;
+use iced::window;
+use iced::{Element, Length, Subscription, Task, Theme};
 use serde::Deserialize;
 use tracing::{error, info, warn};
+
+// ---------------------------------------------------------------------------
+// Splash — iced splash window shown during startup
+// ---------------------------------------------------------------------------
+
+/// Splash window state
+struct Splash {
+    /// Receiver for the "ready" signal from the launcher background thread.
+    /// Wrapped in Mutex for Sync compatibility with iced's runtime.
+    ready_rx: Mutex<Receiver<()>>,
+}
+
+#[derive(Debug, Clone)]
+enum SplashMessage {
+    /// Periodic tick — check if the launcher is ready
+    Tick,
+}
+
+impl Splash {
+    fn new(ready_rx: Receiver<()>) -> Self {
+        Self {
+            ready_rx: Mutex::new(ready_rx),
+        }
+    }
+
+    fn update(&mut self, message: SplashMessage) -> Task<SplashMessage> {
+        match message {
+            SplashMessage::Tick => {
+                // Non-blocking check: if the launcher thread sent the ready signal, close
+                if self.ready_rx.lock().unwrap().try_recv().is_ok() {
+                    iced::exit()
+                } else {
+                    Task::none()
+                }
+            }
+        }
+    }
+
+    fn view(&self) -> Element<'_, SplashMessage> {
+        container(
+            iced::widget::text("妞妞正在启动...")
+                .size(20)
+                .color([1.0, 1.0, 1.0, 1.0]),
+        )
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .align_x(iced::alignment::Horizontal::Center)
+        .align_y(iced::alignment::Vertical::Center)
+        .into()
+    }
+
+    fn subscription(&self) -> Subscription<SplashMessage> {
+        // Use window redraw frames as a periodic tick to poll the channel
+        window::frames().map(|_| SplashMessage::Tick)
+    }
+}
 
 // ---------------------------------------------------------------------------
 // ContextConfig — corresponds to Go's ContextConfig struct
@@ -549,12 +609,18 @@ fn main() {
         }
     }
 
-    // Start Python API server as background process
-    info!("Starting Python API server...");
-    let mut api_server_cmd = Command::new(&python_path);
-    api_server_cmd.args(["-m", "niu_api"]);
-    api_server_cmd.current_dir(&project_root);
+    // --- Splash window + background launcher ---
+    // macOS requires GUI to run on the main thread, so we:
+    // 1. Spawn a background thread for Python API startup + health/preload checks
+    // 2. Run the iced splash window on the main thread
+    // 3. When preload is ready, background thread signals the splash to close
+    // 4. After splash closes, main thread continues with process monitoring
 
+    let (splash_tx, splash_rx) = std::sync::mpsc::channel::<()>();
+    let cancelled_bg = cancelled.clone();
+    let port = args.port;
+
+    // Build environment vars for Python API (computed on main thread for simplicity)
     let mut env_vars: Vec<(String, String)> = Vec::new();
     env_vars.push((
         "NIU_API_PORT".to_string(),
@@ -578,260 +644,308 @@ fn main() {
         info!("Setting WORKSPACE_PATH for Python API: {}", workspace_path);
     }
 
-    // Set environment: inherit current env + add our vars
-    for (key, value) in env::vars() {
-        api_server_cmd.env(&key, &value);
-    }
-    for (key, value) in &env_vars {
-        api_server_cmd.env(key, value);
-    }
-
     // Kill stale Python API process occupying the port before starting a new one
     kill_stale_api_process(args.port);
 
-    // Capture output
-    let mut api_server_child = api_server_cmd
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .expect("Failed to start Python API server command");
+    // Shared API server PID for graceful shutdown from main thread
+    let api_pid: Arc<std::sync::atomic::AtomicU32> = Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let api_pid_bg = api_pid.clone();
 
-    // stdout goroutine -> thread
-    if let Some(stdout) = api_server_child.stdout.take() {
-        thread::spawn(move || {
-            let reader = BufReader::new(stdout);
-            for line in reader.lines() {
-                match line {
-                    Ok(text) => info!("niu_api output: {}", text),
-                    Err(_) => break,
-                }
-            }
-        });
-    }
+    // Spawn background thread: start Python API, health check, preload check, launch Electron
+    let python_path_bg = python_path.clone();
+    let project_root_bg = project_root.clone();
+    let env_vars_bg = env_vars.clone();
+    thread::spawn(move || {
+        // Start Python API server as background process
+        info!("Starting Python API server...");
+        let mut api_server_cmd = Command::new(&python_path_bg);
+        api_server_cmd.args(["-m", "niu_api"]);
+        api_server_cmd.current_dir(&project_root_bg);
 
-    // stderr goroutine -> thread
-    if let Some(stderr) = api_server_child.stderr.take() {
-        thread::spawn(move || {
-            let reader = BufReader::new(stderr);
-            for line in reader.lines() {
-                match line {
-                    Ok(line_text) => {
-                        // Filter tqdm progress bar lines (Batches:, \r lines)
-                        if line_text.starts_with("Batches:") || line_text.starts_with('\r') {
-                            continue;
-                        }
-                        // Skip lines that are only ANSI escape sequences (tqdm control chars)
-                        let stripped = line_text.replace('\x1b', "");
-                        if stripped.is_empty() {
-                            continue;
-                        }
-                        // Route log level based on Python logger markers
-                        if line_text.contains("| INFO") || line_text.contains("| DEBUG") {
-                            info!("niu_api stderr: {}", line_text);
-                        } else if line_text.contains("| WARNING") || line_text.contains("| WARN") {
-                            warn!("niu_api stderr: {}", line_text);
-                        } else {
-                            error!("niu_api stderr: {}", line_text);
-                        }
-                    }
-                    Err(_) => break,
-                }
-            }
-        });
-    }
-
-    // Wait for API server to be ready
-    let mut api_ready = false;
-    for i in 0..30 {
-        thread::sleep(Duration::from_secs(1));
-        let url = format!("http://127.0.0.1:{}/health", args.port);
-        match reqwest::blocking::get(&url) {
-            Ok(resp) => {
-                if resp.status().is_success() {
-                    api_ready = true;
-                    break;
-                }
-            }
-            Err(_) => {}
+        // Set environment: inherit current env + add our vars
+        for (key, value) in env::vars() {
+            api_server_cmd.env(&key, &value);
         }
-        // Suppress unused variable warning for loop counter
-        let _ = i;
-    }
+        for (key, value) in &env_vars_bg {
+            api_server_cmd.env(key, value);
+        }
 
-    if !api_ready {
-        warn!("Python API server may not be ready");
-    }
-    info!("Python API server started");
+        // Capture output
+        let mut api_server_child = api_server_cmd
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("Failed to start Python API server command");
 
-    // Wait for preload to complete (embedding-service, MCP tools)
-    info!("Waiting for preload to complete...");
-    let mut preload_ready = false;
-    for i in 0..120 {
-        thread::sleep(Duration::from_millis(500));
-        let url = format!("http://127.0.0.1:{}/api/preload-status", args.port);
-        match reqwest::blocking::get(&url) {
-            Ok(resp) => {
-                let body = match resp.text() {
-                    Ok(b) => b,
-                    Err(_) => continue,
-                };
+        // Store PID for graceful shutdown from main thread
+        api_pid_bg.store(api_server_child.id(), std::sync::atomic::Ordering::SeqCst);
 
-                // Parse JSON
-                #[derive(Debug, Deserialize)]
-                struct PreloadStatus {
-                    ready: bool,
-                    uptime: String,
+        // stdout thread
+        if let Some(stdout) = api_server_child.stdout.take() {
+            thread::spawn(move || {
+                let reader = BufReader::new(stdout);
+                for line in reader.lines() {
+                    match line {
+                        Ok(text) => info!("niu_api output: {}", text),
+                        Err(_) => break,
+                    }
                 }
-                let status: PreloadStatus = match serde_json::from_str(&body) {
-                    Ok(s) => s,
+            });
+        }
+
+        // stderr thread
+        if let Some(stderr) = api_server_child.stderr.take() {
+            thread::spawn(move || {
+                let reader = BufReader::new(stderr);
+                for line in reader.lines() {
+                    match line {
+                        Ok(line_text) => {
+                            // Filter tqdm progress bar lines (Batches:, \r lines)
+                            if line_text.starts_with("Batches:") || line_text.starts_with('\r') {
+                                continue;
+                            }
+                            // Skip lines that are only ANSI escape sequences (tqdm control chars)
+                            let stripped = line_text.replace('\x1b', "");
+                            if stripped.is_empty() {
+                                continue;
+                            }
+                            // Route log level based on Python logger markers
+                            if line_text.contains("| INFO") || line_text.contains("| DEBUG") {
+                                info!("niu_api stderr: {}", line_text);
+                            } else if line_text.contains("| WARNING") || line_text.contains("| WARN") {
+                                warn!("niu_api stderr: {}", line_text);
+                            } else {
+                                error!("niu_api stderr: {}", line_text);
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+            });
+        }
+
+        // Wait for API server to be ready
+        let mut api_ready = false;
+        for i in 0..30 {
+            thread::sleep(Duration::from_secs(1));
+            let url = format!("http://127.0.0.1:{}/health", port);
+            match reqwest::blocking::get(&url) {
+                Ok(resp) => {
+                    if resp.status().is_success() {
+                        api_ready = true;
+                        break;
+                    }
+                }
+                Err(_) => {}
+            }
+            let _ = i;
+        }
+
+        if !api_ready {
+            warn!("Python API server may not be ready");
+        }
+        info!("Python API server started");
+
+        // Wait for preload to complete (embedding-service, MCP tools)
+        info!("Waiting for preload to complete...");
+        let mut preload_ready = false;
+        for i in 0..120 {
+            thread::sleep(Duration::from_millis(500));
+            let url = format!("http://127.0.0.1:{}/api/preload-status", port);
+            match reqwest::blocking::get(&url) {
+                Ok(resp) => {
+                    let body = match resp.text() {
+                        Ok(b) => b,
+                        Err(_) => continue,
+                    };
+
+                    // Parse JSON
+                    #[derive(Debug, Deserialize)]
+                    struct PreloadStatus {
+                        ready: bool,
+                        uptime: String,
+                    }
+                    let status: PreloadStatus = match serde_json::from_str(&body) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            warn!("Failed to parse preload status: error={}, body={}", e, body);
+                            continue;
+                        }
+                    };
+
+                    // Log first response or when ready
+                    if i == 0 || status.ready {
+                        info!(
+                            "Preload status check: ready={}, uptime={}, attempt={}",
+                            status.ready, status.uptime, i + 1
+                        );
+                    }
+
+                    if status.ready {
+                        preload_ready = true;
+                        info!("Preload complete, launching window...");
+                        break;
+                    }
+                }
+                Err(_) => {}
+            }
+        }
+
+        if !preload_ready {
+            warn!("Preload may not be complete, proceeding anyway");
+        }
+
+        // Signal the splash window to close
+        let _ = splash_tx.send(());
+
+        // Launch assistant window
+        let mut electron_child = match launch_window("assistant") {
+            Ok(child) => Some(child),
+            Err(e) => {
+                error!("Failed to launch assistant window: {}", e);
+                println!("\nPlease run manually: cd ui/assistant && npm start");
+                None
+            }
+        };
+
+        // Monitor Electron process - when it exits, trigger shutdown
+        if let Some(mut child) = electron_child.take() {
+            let cancelled_ref = cancelled_bg.clone();
+            thread::spawn(move || {
+                let result = child.wait();
+                match result {
                     Err(e) => {
-                        warn!("Failed to parse preload status: error={}, body={}", e, body);
-                        continue;
+                        info!("Electron window exited: error={}", e);
                     }
-                };
-
-                // Log first response or when ready
-                if i == 0 || status.ready {
-                    info!(
-                        "Preload status check: ready={}, uptime={}, attempt={}",
-                        status.ready, status.uptime, i + 1
-                    );
+                    Ok(status) => {
+                        if status.success() {
+                            info!("Electron window closed normally");
+                        } else {
+                            info!("Electron window exited with status: {}", status);
+                        }
+                    }
                 }
+                cancelled_ref.store(true, Ordering::SeqCst); // Trigger shutdown
+            });
+        }
 
-                if status.ready {
-                    preload_ready = true;
-                    info!("Preload complete, launching window...");
+        // Keep the api_server_child alive until the process exits or we get cancelled
+        // Wait for cancellation or child exit
+        loop {
+            if cancelled_bg.load(Ordering::SeqCst) {
+                break;
+            }
+            // Try non-blocking wait on the child
+            match api_server_child.try_wait() {
+                Ok(Some(status)) => {
+                    info!("Python API server exited with status: {}", status);
+                    cancelled_bg.store(true, Ordering::SeqCst);
+                    break;
+                }
+                Ok(None) => {
+                    // Still running
+                }
+                Err(e) => {
+                    warn!("Error checking API server status: {}", e);
                     break;
                 }
             }
-            Err(_) => {}
+            thread::sleep(Duration::from_millis(100));
         }
-    }
 
-    if !preload_ready {
-        warn!("Preload may not be complete, proceeding anyway");
-    }
+        // If we're here because of cancellation (not child exit), do the shutdown
+        if api_server_child.try_wait().ok().flatten().is_none() {
+            // Child is still running, need to shut it down
+            #[cfg(unix)]
+            {
+                use nix::sys::signal::{self, Signal};
+                use nix::unistd::Pid;
+                let pid = Pid::from_raw(api_pid_bg.load(std::sync::atomic::Ordering::SeqCst) as i32);
+                let _ = signal::kill(pid, Signal::SIGTERM);
+            }
+            #[cfg(windows)]
+            {
+                let _ = api_server_child.kill();
+            }
 
-    // Launch assistant window
-    let mut electron_child = match launch_window("assistant") {
-        Ok(child) => Some(child),
-        Err(e) => {
-            error!("Failed to launch assistant window: {}", e);
-            println!("\nPlease run manually: cd ui/assistant && npm start");
-            None
+            // Wait up to 5 seconds for graceful exit
+            let start = std::time::Instant::now();
+            loop {
+                match api_server_child.try_wait() {
+                    Ok(Some(_)) => {
+                        info!("API server exited gracefully");
+                        break;
+                    }
+                    Ok(None) => {
+                        if start.elapsed() >= Duration::from_secs(5) {
+                            warn!("API server did not exit in 5s, force killing");
+                            #[cfg(unix)]
+                            {
+                                use nix::sys::signal::{self, Signal};
+                                use nix::unistd::Pid;
+                                let pid = Pid::from_raw(api_pid_bg.load(std::sync::atomic::Ordering::SeqCst) as i32);
+                                let _ = signal::kill(pid, Signal::SIGKILL);
+                            }
+                            #[cfg(windows)]
+                            {
+                                let _ = api_server_child.kill();
+                            }
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+                thread::sleep(Duration::from_millis(100));
+            }
         }
+    });
+
+    // --- Run iced splash window on the main thread (required by macOS) ---
+    let splash = Splash::new(splash_rx);
+    let window_settings = window::Settings {
+        size: iced::Size::new(280.0, 120.0),
+        position: window::Position::Centered,
+        decorations: false,
+        transparent: true,
+        resizable: false,
+        exit_on_close_request: true,
+        ..window::Settings::default()
     };
 
-    // Monitor Electron process - when it exits, trigger shutdown
-    if let Some(mut child) = electron_child.take() {
-        let cancelled_ref = cancelled.clone();
-        thread::spawn(move || {
-            let result = child.wait();
-            match result {
-                Err(e) => {
-                    info!("Electron window exited: error={}", e);
-                }
-                Ok(status) => {
-                    if status.success() {
-                        info!("Electron window closed normally");
-                    } else {
-                        info!("Electron window exited with status: {}", status);
-                    }
-                }
-            }
-            cancelled_ref.store(true, Ordering::SeqCst); // Trigger shutdown
-        });
+    if let Err(e) = iced::application(
+        "妞妞",
+        Splash::update,
+        Splash::view,
+    )
+    .window(window_settings)
+    .theme(|_| Theme::Dark)
+    .subscription(|splash: &Splash| splash.subscription())
+    .run_with(|| (splash, Task::none()))
+    {
+        warn!("Splash window error (non-fatal): {}", e);
     }
 
-    // Wait for shutdown (either signal or Electron exit)
-    // Corresponds to Go's <-ctx.Done()
+    // --- After splash closes: wait for Electron window to close or Ctrl-C ---
+    info!("Splash window closed, waiting for Electron window to close...");
+
+    // Wait for cancelled flag (set by Electron exit monitor or Ctrl-C)
     while !cancelled.load(Ordering::SeqCst) {
         thread::sleep(Duration::from_millis(100));
     }
 
     // Graceful shutdown: notify Python API first
     info!("Notifying Python API to shutdown...");
-    if let Err(e) = notify_shutdown(args.port) {
+    if let Err(e) = notify_shutdown(port) {
         warn!("Failed to notify Python API shutdown: {}", e);
     }
 
-    // Wait for graceful shutdown (increased from 500ms to 2s to allow subprocess cleanup)
+    // Wait for graceful shutdown (allow subprocess cleanup)
     thread::sleep(Duration::from_secs(2));
 
-    // Shutdown API server: SIGTERM first for graceful shutdown, then SIGKILL as fallback
-    info!("Stopping Python API server...");
-    #[cfg(unix)]
-    {
-        let pid = api_server_child.id() as i32;
-        let send_sigterm = || {
-            use nix::sys::signal::{self, Signal};
-            use nix::unistd::Pid;
-            signal::kill(Pid::from_raw(pid), Signal::SIGTERM)
-        };
-
-        if let Err(e) = send_sigterm() {
-            warn!("Failed to send SIGTERM to API server, trying SIGKILL: {}", e);
-            if let Err(e) = api_server_child.kill() {
-                warn!("Failed to kill API server: {}", e);
-            }
-        } else {
-            // Wait up to 5 seconds for graceful exit
-            let grace_done = Arc::new(AtomicBool::new(false));
-            let grace_done_clone = grace_done.clone();
-            let wait_handle = thread::spawn(move || {
-                let _ = api_server_child.wait();
-                grace_done_clone.store(true, Ordering::SeqCst);
-            });
-
-            let start = std::time::Instant::now();
-            loop {
-                if grace_done.load(Ordering::SeqCst) {
-                    info!("API server exited gracefully after SIGTERM");
-                    break;
-                }
-                if start.elapsed() >= Duration::from_secs(5) {
-                    warn!("API server did not exit in 5s, sending SIGKILL");
-                    // We can't kill via the Child handle because it was moved into the thread.
-                    // Use nix kill as fallback.
-                    use nix::sys::signal::{self, Signal};
-                    use nix::unistd::Pid;
-                    let _ = signal::kill(Pid::from_raw(pid), Signal::SIGKILL);
-                    break;
-                }
-                thread::sleep(Duration::from_millis(100));
-            }
-            let _ = wait_handle.join();
-        }
-    }
-    #[cfg(windows)]
-    {
-        // On Windows, just kill the process (no SIGTERM equivalent)
-        if let Err(e) = api_server_child.kill() {
-            warn!("Failed to kill API server: {}", e);
-        } else {
-            // Wait up to 5 seconds for exit
-            let grace_done = Arc::new(AtomicBool::new(false));
-            let grace_done_clone = grace_done.clone();
-            let wait_handle = thread::spawn(move || {
-                let _ = api_server_child.wait();
-                grace_done_clone.store(true, Ordering::SeqCst);
-            });
-
-            let start = std::time::Instant::now();
-            loop {
-                if grace_done.load(Ordering::SeqCst) {
-                    info!("API server exited gracefully after kill");
-                    break;
-                }
-                if start.elapsed() >= Duration::from_secs(5) {
-                    warn!("API server did not exit in 5s");
-                    break;
-                }
-                thread::sleep(Duration::from_millis(100));
-            }
-            let _ = wait_handle.join();
-        }
-    }
+    // Signal the background thread that shutdown is in progress
+    // (it will handle SIGTERM/SIGKILL on the api_server_child)
+    // Wait for background thread to finish cleanup
+    thread::sleep(Duration::from_millis(500));
 
     info!("Niu launcher shutdown complete");
 }
