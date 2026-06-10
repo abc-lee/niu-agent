@@ -75,6 +75,30 @@ def notify_new_message_sync(message_id: str, role: str, content: str, source: st
         pass  # 循环已关闭
 
 
+async def push_ingest_result(file_path: str, error: str = ""):
+    """将入库异常写入 message.db 并推送 SSE 通知。
+
+    仅在入库异常时调用（管道失败或质量异常）。正常入库不调用。
+    设计为 async 函数，在 LightRAG 事件循环中调用。
+
+    Args:
+        file_path: 入库文件路径
+        error: 错误信息
+    """
+    import os
+    file_name = os.path.basename(file_path) if file_path else "未知文件"
+    content = f"文件入库异常：{file_name}" + (f"（{error}）" if error else "")
+
+    try:
+        from agent.session import MessageStore
+        store = MessageStore()
+        msg_id = await store.add_message(role="system", content=content)
+        if msg_id:
+            notify_new_message_sync(msg_id, "system", content)
+    except Exception:
+        pass
+
+
 def notify_tool_status_sync(tool_name: str, status: str, summary: str = ""):
     """从同步线程推送工具调用状态到 SSE 事件总线
 
