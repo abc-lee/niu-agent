@@ -963,6 +963,8 @@ def lightrag_insert_file(
                                 relations_count=relations_count,
                                 errors=errors if errors else None,
                             )
+                        except _asyncio.CancelledError:
+                            raise
                         except Exception as _push_err:
                             logger.debug(f"[lightrag_insert_file] ingest result push skipped: {_push_err}")
                     except (_asyncio.CancelledError, Exception) as pipeline_err:
