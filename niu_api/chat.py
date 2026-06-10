@@ -93,9 +93,9 @@ async def push_ingest_result(file_path: str, status: str, chunks_count: int = 0,
     file_name = os.path.basename(file_path) if file_path else "未知文件"
 
     if status == "completed":
-        content = f"文件入库完成：{file_name}（切片 {chunks_count} 个）"
+        content = f"文件入库完成：{file_name}（分片 {chunks_count} 个）"
     else:
-        content = f"文件入库失败：{file_name}（错误：{error}）"
+        content = f"文件入库失败：{file_name}" + (f"（{error}）" if error else "")
 
     try:
         from agent.session import MessageStore
