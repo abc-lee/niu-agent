@@ -477,15 +477,20 @@ fn kill_stale_api_process(port: u16) {
     }
     #[cfg(windows)]
     {
-        let kill_result = Command::new("taskkill")
-            .args(["/F", "/FI", "WINDOWTITLE eq niu_api*"])
+        // Use PowerShell to find and kill Python processes running niu_api
+        // Python background processes have no window title, so WINDOWTITLE filter won't work
+        let kill_result = Command::new("powershell")
+            .args([
+                "-Command",
+                "Get-Process python* | Where-Object {$_.CommandLine -match 'niu_api'} | Stop-Process -Force",
+            ])
             .status();
         match kill_result {
             Ok(status) if status.success() => {
-                info!("Sent kill to stale API process via taskkill");
+                info!("Sent kill to stale API process via PowerShell");
             }
             _ => {
-                warn!("taskkill failed (process may already be gone)");
+                warn!("PowerShell kill failed (process may already be gone)");
             }
         }
     }
@@ -559,10 +564,28 @@ fn main() {
 
     // Handle shutdown signals (replaces Go's signal.Notify)
     ctrlc::set_handler(move || {
-        info!("Shutdown signal received");
+        info!("Shutdown signal received (SIGINT)");
         cancelled_clone.store(true, Ordering::SeqCst);
     })
     .expect("Failed to set Ctrl-C handler");
+
+    // Also handle SIGTERM on Unix (ctrlc only handles SIGINT)
+    #[cfg(unix)]
+    {
+        use nix::sys::signal::{self, Signal};
+        let cancelled_term = cancelled.clone();
+        thread::spawn(move || {
+            // Use sigwait to synchronously wait for SIGTERM
+            // This is safe because sigwait doesn't use a signal handler
+            let mut sigset = signal::SigSet::empty();
+            sigset.add(Signal::SIGTERM);
+            // Block SIGTERM in this thread so sigwait can catch it
+            signal::pthread_sigmask(signal::SigmaskHow::SIG_BLOCK, Some(&sigset), None).unwrap();
+            sigset.wait().unwrap();
+            info!("Shutdown signal received (SIGTERM)");
+            cancelled_term.store(true, Ordering::SeqCst);
+        });
+    }
 
     info!("Niu launcher starting...");
 
@@ -765,11 +788,17 @@ fn main() {
         }
 
         // Wait for API server to be ready
+        // Use a 3-second timeout client for polling to avoid 30s default * 30 retries = 15min hang
+        let check_client = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(3))
+            .build()
+            .expect("Failed to build HTTP check client");
+
         let mut api_ready = false;
         for i in 0..30 {
             thread::sleep(Duration::from_secs(1));
             let url = format!("http://127.0.0.1:{}/health", port);
-            match reqwest::blocking::get(&url) {
+            match check_client.get(&url).send() {
                 Ok(resp) => {
                     if resp.status().is_success() {
                         api_ready = true;
@@ -792,7 +821,7 @@ fn main() {
         for i in 0..120 {
             thread::sleep(Duration::from_millis(500));
             let url = format!("http://127.0.0.1:{}/api/preload-status", port);
-            match reqwest::blocking::get(&url) {
+            match check_client.get(&url).send() {
                 Ok(resp) => {
                     let body = match resp.text() {
                         Ok(b) => b,
@@ -896,46 +925,73 @@ fn main() {
         // If we're here because of cancellation (not child exit), do the shutdown
         if api_server_child.try_wait().ok().flatten().is_none() {
             // Child is still running, need to shut it down
-            #[cfg(unix)]
-            {
-                use nix::sys::signal::{self, Signal};
-                use nix::unistd::Pid;
-                let pid = Pid::from_raw(api_pid_bg.load(std::sync::atomic::Ordering::SeqCst) as i32);
-                let _ = signal::kill(pid, Signal::SIGTERM);
-            }
-            #[cfg(windows)]
-            {
-                let _ = api_server_child.kill();
+
+            // Step 1: Send HTTP shutdown notification first (graceful)
+            info!("Notifying Python API to shutdown via HTTP...");
+            if let Err(e) = notify_shutdown(port) {
+                warn!("Failed to notify Python API shutdown: {}", e);
             }
 
-            // Wait up to 5 seconds for graceful exit
-            let start = std::time::Instant::now();
-            loop {
-                match api_server_child.try_wait() {
-                    Ok(Some(_)) => {
-                        info!("API server exited gracefully");
-                        break;
-                    }
-                    Ok(None) => {
-                        if start.elapsed() >= Duration::from_secs(5) {
-                            warn!("API server did not exit in 5s, force killing");
-                            #[cfg(unix)]
-                            {
-                                use nix::sys::signal::{self, Signal};
-                                use nix::unistd::Pid;
-                                let pid = Pid::from_raw(api_pid_bg.load(std::sync::atomic::Ordering::SeqCst) as i32);
-                                let _ = signal::kill(pid, Signal::SIGKILL);
-                            }
-                            #[cfg(windows)]
-                            {
-                                let _ = api_server_child.kill();
-                            }
+            // Step 2: Wait for graceful HTTP shutdown to take effect
+            thread::sleep(Duration::from_secs(2));
+
+            // Check if it exited after HTTP notification
+            if api_server_child.try_wait().ok().flatten().is_some() {
+                info!("API server exited gracefully after HTTP notification");
+            } else {
+                // Step 3: Send SIGTERM (Unix) or kill (Windows)
+                #[cfg(unix)]
+                {
+                    use nix::sys::signal::{self, Signal};
+                    use nix::unistd::Pid;
+                    let pid = Pid::from_raw(api_pid_bg.load(std::sync::atomic::Ordering::SeqCst) as i32);
+                    let _ = signal::kill(pid, Signal::SIGTERM);
+                }
+                #[cfg(windows)]
+                {
+                    let _ = api_server_child.kill();
+                }
+
+                // Step 4: Wait up to 5 seconds for graceful exit after SIGTERM
+                let start = std::time::Instant::now();
+                loop {
+                    match api_server_child.try_wait() {
+                        Ok(Some(_)) => {
+                            info!("API server exited gracefully after SIGTERM");
                             break;
                         }
+                        Ok(None) => {
+                            if start.elapsed() >= Duration::from_secs(5) {
+                                warn!("API server did not exit in 5s, force killing");
+                                // Step 5: SIGKILL
+                                #[cfg(unix)]
+                                {
+                                    use nix::sys::signal::{self, Signal};
+                                    use nix::unistd::Pid;
+                                    let pid = Pid::from_raw(api_pid_bg.load(std::sync::atomic::Ordering::SeqCst) as i32);
+                                    let _ = signal::kill(pid, Signal::SIGKILL);
+                                }
+                                #[cfg(windows)]
+                                {
+                                    let _ = api_server_child.kill();
+                                }
+
+                                // Step 6: Reap the child process after SIGKILL
+                                match api_server_child.wait() {
+                                    Ok(status) => {
+                                        info!("API server reaped after SIGKILL, exit status: {}", status);
+                                    }
+                                    Err(e) => {
+                                        warn!("Failed to reap API server after SIGKILL: {}", e);
+                                    }
+                                }
+                                break;
+                            }
+                        }
+                        Err(_) => break,
                     }
-                    Err(_) => break,
+                    thread::sleep(Duration::from_millis(100));
                 }
-                thread::sleep(Duration::from_millis(100));
             }
         }
     });
@@ -974,18 +1030,9 @@ fn main() {
         thread::sleep(Duration::from_millis(100));
     }
 
-    // Graceful shutdown: notify Python API first
-    info!("Notifying Python API to shutdown...");
-    if let Err(e) = notify_shutdown(port) {
-        warn!("Failed to notify Python API shutdown: {}", e);
-    }
-
-    // Wait for graceful shutdown (allow subprocess cleanup)
-    thread::sleep(Duration::from_secs(2));
-
-    // Signal the background thread that shutdown is in progress
-    // (it will handle SIGTERM/SIGKILL on the api_server_child)
-    // Wait for background thread to finish cleanup
+    // Shutdown is handled by the background thread:
+    // notify_shutdown HTTP -> sleep 2s -> SIGTERM -> sleep 5s -> SIGKILL -> wait()
+    // Just wait briefly for the background thread to finish cleanup
     thread::sleep(Duration::from_millis(500));
 
     info!("Niu launcher shutdown complete");
