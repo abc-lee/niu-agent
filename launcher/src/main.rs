@@ -425,9 +425,14 @@ fn is_api_running(port: u16) -> bool {
 
 /// killStaleAPIProcess checks if the API port is occupied and kills the stale process
 fn kill_stale_api_process(port: u16) {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+        .expect("Failed to build HTTP client");
+
     // Check if port is occupied by trying to connect
     let url = format!("http://127.0.0.1:{}/health", port);
-    let resp = reqwest::blocking::get(&url);
+    let resp = client.get(&url).send();
     let conn = match resp {
         Ok(r) => r,
         Err(_) => {
@@ -446,8 +451,7 @@ fn kill_stale_api_process(port: u16) {
         thread::sleep(Duration::from_secs(2));
         // Check if port is now free
         let url2 = format!("http://127.0.0.1:{}/health", port);
-        let resp2 = reqwest::blocking::get(&url2);
-        match resp2 {
+        match client.get(&url2).send() {
             Err(_) => {
                 info!("Stale API process exited gracefully");
                 return;
@@ -573,14 +577,19 @@ fn main() {
     #[cfg(unix)]
     {
         use nix::sys::signal::{self, Signal};
+        // Block SIGTERM in the main thread BEFORE spawning any threads.
+        // All subsequently created threads inherit this blocked mask,
+        // so the kernel can only deliver SIGTERM to the sigwait thread below.
+        let mut sigset = signal::SigSet::empty();
+        sigset.add(Signal::SIGTERM);
+        signal::pthread_sigmask(signal::SigmaskHow::SIG_BLOCK, Some(&sigset), None).unwrap();
+
         let cancelled_term = cancelled.clone();
         thread::spawn(move || {
-            // Use sigwait to synchronously wait for SIGTERM
-            // This is safe because sigwait doesn't use a signal handler
+            // SIGTERM is already blocked (inherited from main thread).
+            // sigwait will synchronously catch it.
             let mut sigset = signal::SigSet::empty();
             sigset.add(Signal::SIGTERM);
-            // Block SIGTERM in this thread so sigwait can catch it
-            signal::pthread_sigmask(signal::SigmaskHow::SIG_BLOCK, Some(&sigset), None).unwrap();
             sigset.wait().unwrap();
             info!("Shutdown signal received (SIGTERM)");
             cancelled_term.store(true, Ordering::SeqCst);
@@ -718,7 +727,7 @@ fn main() {
     let python_path_bg = python_path.clone();
     let project_root_bg = project_root.clone();
     let env_vars_bg = env_vars.clone();
-    thread::spawn(move || {
+    let bg_handle = thread::spawn(move || {
         // Start Python API server as background process
         info!("Starting Python API server...");
         let mut api_server_cmd = Command::new(&python_path_bg);
@@ -777,6 +786,8 @@ fn main() {
                                 info!("niu_api stderr: {}", line_text);
                             } else if line_text.contains("| WARNING") || line_text.contains("| WARN") {
                                 warn!("niu_api stderr: {}", line_text);
+                            } else if line_text.contains("Error") || line_text.contains("Exception") || line_text.contains("Traceback") {
+                                error!("niu_api stderr: {}", line_text);
                             } else {
                                 info!("niu_api stderr: {}", line_text);
                             }
@@ -1032,8 +1043,8 @@ fn main() {
 
     // Shutdown is handled by the background thread:
     // notify_shutdown HTTP -> sleep 2s -> SIGTERM -> sleep 5s -> SIGKILL -> wait()
-    // Just wait briefly for the background thread to finish cleanup
-    thread::sleep(Duration::from_millis(500));
+    // Wait for the background thread to finish cleanup
+    let _ = bg_handle.join();
 
     info!("Niu launcher shutdown complete");
 }
