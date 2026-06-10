@@ -1,0 +1,11 @@
+REDACTED_USER_PATH/tools/ai-bot/launcher/target/release/deps/ctrlc-adba74982f902284.d: REDACTED_USER_PATH/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ctrlc-3.5.2/src/lib.rs REDACTED_USER_PATH/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ctrlc-3.5.2/src/error.rs REDACTED_USER_PATH/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ctrlc-3.5.2/src/platform/mod.rs REDACTED_USER_PATH/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ctrlc-3.5.2/src/platform/unix/mod.rs REDACTED_USER_PATH/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ctrlc-3.5.2/src/signal.rs
+
+REDACTED_USER_PATH/tools/ai-bot/launcher/target/release/deps/libctrlc-adba74982f902284.rlib: REDACTED_USER_PATH/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ctrlc-3.5.2/src/lib.rs REDACTED_USER_PATH/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ctrlc-3.5.2/src/error.rs REDACTED_USER_PATH/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ctrlc-3.5.2/src/platform/mod.rs REDACTED_USER_PATH/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ctrlc-3.5.2/src/platform/unix/mod.rs REDACTED_USER_PATH/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ctrlc-3.5.2/src/signal.rs
+
+REDACTED_USER_PATH/tools/ai-bot/launcher/target/release/deps/libctrlc-adba74982f902284.rmeta: REDACTED_USER_PATH/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ctrlc-3.5.2/src/lib.rs REDACTED_USER_PATH/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ctrlc-3.5.2/src/error.rs REDACTED_USER_PATH/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ctrlc-3.5.2/src/platform/mod.rs REDACTED_USER_PATH/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ctrlc-3.5.2/src/platform/unix/mod.rs REDACTED_USER_PATH/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ctrlc-3.5.2/src/signal.rs
+
+REDACTED_USER_PATH/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ctrlc-3.5.2/src/lib.rs:
+REDACTED_USER_PATH/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ctrlc-3.5.2/src/error.rs:
+REDACTED_USER_PATH/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ctrlc-3.5.2/src/platform/mod.rs:
+REDACTED_USER_PATH/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ctrlc-3.5.2/src/platform/unix/mod.rs:
+REDACTED_USER_PATH/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ctrlc-3.5.2/src/signal.rs:
