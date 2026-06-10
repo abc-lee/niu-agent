@@ -907,6 +907,15 @@ def lightrag_insert_file(
                     import asyncio as _asyncio
                     try:
                         await rag_instance.apipeline_process_enqueue_documents()
+                        # 等待当前 track_id 的文档到达终态
+                        # 管道可能因 busy 而立即返回（request_pending），需要轮询确认文档已处理
+                        from lightrag.base import DocStatus as _DocStatus
+                        _terminal = {_DocStatus.PROCESSED, _DocStatus.PREPROCESSED, _DocStatus.FAILED}
+                        for _poll in range(120):  # 最多等 120 秒
+                            _pending_docs = await rag_instance.doc_status.get_docs_by_track_id(tid)
+                            if _pending_docs and all(d.status in _terminal for d in _pending_docs.values()):
+                                break
+                            await _asyncio.sleep(1)
                         # Pipeline succeeded — LLM extracted entities/edges that are
                         # NOT reported via changelog (they go through LightRAG's
                         # internal merge_nodes_and_edges, not our wrapper).
