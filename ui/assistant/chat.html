@@ -1129,7 +1129,7 @@
         const resp = await fetch(INGEST_PROGRESS_API);
         const data = await resp.json();
         if (data.busy) {
-          showProgress('入库中...', data.progress);
+          showProgress('处理中...', data.progress);
         } else {
           hideProgress();
           stopIngestPolling();
@@ -1154,7 +1154,7 @@
 
     window.electronAPI.onIngestStarted(() => {
       console.log('[Chat] ingest-started SSE event received');
-      showProgress('入库中...', 0);
+      showProgress('处理中...', 0);
       startIngestPolling();
     });
 
