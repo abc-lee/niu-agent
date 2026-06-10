@@ -24,7 +24,7 @@ from niu_api.internal.lightrag_manager import get_brain_regions
 BRAIN_REGION_MARKER = "Knowledge Graph Specialist"
 
 _STATIC_BRAIN_REGION_PROMPT = """\
-## 大脑区域架构（追加规则，不影响上方已有的提取规则）
+## 大脑区域架构
 
 注意，知识图谱内大小写不敏感，所有字母都会转换为小写。
 
