@@ -755,7 +755,7 @@ fn main() {
                             } else if line_text.contains("| WARNING") || line_text.contains("| WARN") {
                                 warn!("niu_api stderr: {}", line_text);
                             } else {
-                                error!("niu_api stderr: {}", line_text);
+                                info!("niu_api stderr: {}", line_text);
                             }
                         }
                         Err(_) => break,
