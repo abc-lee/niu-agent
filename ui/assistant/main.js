@@ -897,16 +897,22 @@ function createStickyWindow() {
   stickyWindow.webContents.on('before-input-event', (event, input) => {
     if (input.meta || input.control) {
       if (input.key === 'v') {
+        event.preventDefault();
         stickyWindow.webContents.paste();
       } else if (input.key === 'c') {
+        event.preventDefault();
         stickyWindow.webContents.copy();
       } else if (input.key === 'x') {
+        event.preventDefault();
         stickyWindow.webContents.cut();
       } else if (input.key === 'a') {
+        event.preventDefault();
         stickyWindow.webContents.selectAll();
       } else if (input.key === 'z' && !input.shift) {
+        event.preventDefault();
         stickyWindow.webContents.undo();
       } else if (input.key === 'z' && input.shift) {
+        event.preventDefault();
         stickyWindow.webContents.redo();
       }
     }
