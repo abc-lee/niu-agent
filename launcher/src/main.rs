@@ -12,7 +12,7 @@ use std::time::Duration;
 use clap::Parser;
 use iced::widget::container;
 use iced::window;
-use iced::{Element, Length, Subscription, Task, Theme};
+use iced::{Element, Font, Length, Subscription, Task, Theme};
 use serde::Deserialize;
 use tracing::{error, info, warn};
 
@@ -20,43 +20,79 @@ use tracing::{error, info, warn};
 // Splash — iced splash window shown during startup
 // ---------------------------------------------------------------------------
 
+/// CJK font for Chinese text display
+/// macOS: "PingFang SC" (system default CJK font)
+/// Windows: "Microsoft YaHei" (common CJK font)
+#[cfg(target_os = "macos")]
+const CJK_FONT: Font = Font::with_name("PingFang SC");
+
+#[cfg(target_os = "windows")]
+const CJK_FONT: Font = Font::with_name("Microsoft YaHei");
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+const CJK_FONT: Font = Font::with_name("Noto Sans CJK SC");
+
 /// Splash window state
 struct Splash {
     /// Receiver for the "ready" signal from the launcher background thread.
     /// Wrapped in Mutex for Sync compatibility with iced's runtime.
     ready_rx: Mutex<Receiver<()>>,
+    /// Window ID captured from window open event
+    window_id: Option<window::Id>,
 }
 
 #[derive(Debug, Clone)]
 enum SplashMessage {
     /// Periodic tick — check if the launcher is ready
     Tick,
+    /// Window opened — capture the window ID
+    WindowOpened(window::Id),
 }
 
 impl Splash {
     fn new(ready_rx: Receiver<()>) -> Self {
         Self {
             ready_rx: Mutex::new(ready_rx),
+            window_id: None,
         }
     }
 
     fn update(&mut self, message: SplashMessage) -> Task<SplashMessage> {
         match message {
             SplashMessage::Tick => {
-                // Non-blocking check: if the launcher thread sent the ready signal, close
+                // Non-blocking check: if the launcher thread sent the ready signal, close the window
                 if self.ready_rx.lock().unwrap().try_recv().is_ok() {
-                    iced::exit()
+                    // Use window::close() to close the splash window
+                    // This exits the iced event loop, allowing main.rs to continue
+                    if let Some(id) = self.window_id {
+                        window::close(id)
+                    } else {
+                        // Fallback: get the oldest window ID and close it
+                        window::get_oldest().then(|oldest_id| {
+                            if let Some(id) = oldest_id {
+                                window::close::<SplashMessage>(id)
+                            } else {
+                                Task::none()
+                            }
+                        })
+                    }
                 } else {
                     Task::none()
                 }
+            }
+            SplashMessage::WindowOpened(id) => {
+                // Capture the window ID when the window opens
+                self.window_id = Some(id);
+                Task::none()
             }
         }
     }
 
     fn view(&self) -> Element<'_, SplashMessage> {
         container(
-            iced::widget::text("妞妞正在启动...")
+            iced::widget::text("正在启动...")
                 .size(20)
+                .font(CJK_FONT)
                 .color([1.0, 1.0, 1.0, 1.0]),
         )
         .width(Length::Fill)
@@ -68,7 +104,11 @@ impl Splash {
 
     fn subscription(&self) -> Subscription<SplashMessage> {
         // Use window redraw frames as a periodic tick to poll the channel
-        window::frames().map(|_| SplashMessage::Tick)
+        // Also subscribe to window open events to capture the window ID
+        Subscription::batch([
+            window::frames().map(|_| SplashMessage::Tick),
+            window::open_events().map(SplashMessage::WindowOpened),
+        ])
     }
 }
 
@@ -913,11 +953,12 @@ fn main() {
     };
 
     if let Err(e) = iced::application(
-        "妞妞",
+        "启动中",
         Splash::update,
         Splash::view,
     )
     .window(window_settings)
+    .default_font(CJK_FONT)
     .theme(|_| Theme::Dark)
     .subscription(|splash: &Splash| splash.subscription())
     .run_with(|| (splash, Task::none()))
