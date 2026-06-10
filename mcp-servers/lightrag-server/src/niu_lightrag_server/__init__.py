@@ -921,6 +921,36 @@ def lightrag_insert_file(
                             logger.debug(
                                 f"[lightrag_insert_file] snapshot_refresh changelog skipped: {_cl_err}"
                             )
+                        # 检查入库质量异常（管道不抛异常但实际零产出）
+                        try:
+                            _docs = await rag_instance.doc_status.get_docs_by_track_id(tid)
+                            from lightrag.base import DocStatus
+                            for _did, _doc_info in (_docs or {}).items():
+                                if _doc_info.status == DocStatus.FAILED:
+                                    from niu_api.chat import push_ingest_result
+                                    await push_ingest_result(
+                                        file_path=original_path,
+                                        error=_doc_info.error_msg or "入库处理失败",
+                                    )
+                                elif _doc_info.status == DocStatus.PROCESSED and (_doc_info.chunks_count or 0) == 0:
+                                    from niu_api.chat import push_ingest_result
+                                    await push_ingest_result(
+                                        file_path=original_path,
+                                        error="文档分片后无内容",
+                                    )
+                                elif _doc_info.status == DocStatus.PROCESSED:
+                                    _ent = await rag_instance.full_entities.get_by_id(_did)
+                                    _ent_count = _ent.get("count", 0) if _ent else 0
+                                    if _ent_count == 0:
+                                        from niu_api.chat import push_ingest_result
+                                        await push_ingest_result(
+                                            file_path=original_path,
+                                            error="知识提取结果为空",
+                                        )
+                        except _asyncio.CancelledError:
+                            raise
+                        except Exception:
+                            pass
                     except (_asyncio.CancelledError, Exception) as pipeline_err:
                         is_cancelled = isinstance(pipeline_err, _asyncio.CancelledError)
                         if is_cancelled:
@@ -962,6 +992,18 @@ def lightrag_insert_file(
                                 f"[lightrag_insert_file] mark-failed skipped "
                                 f"(best-effort): track_id={tid} error={mark_err}"
                             )
+                        # 推送入库异常通知（用户主动取消不算异常）
+                        if not is_cancelled:
+                            try:
+                                from niu_api.chat import push_ingest_result
+                                await push_ingest_result(
+                                    file_path=original_path,
+                                    error=str(pipeline_err),
+                                )
+                            except _asyncio.CancelledError:
+                                raise
+                            except Exception:
+                                pass
                         if is_cancelled:
                             raise pipeline_err
                     finally:
