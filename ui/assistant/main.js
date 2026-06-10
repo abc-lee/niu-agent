@@ -167,19 +167,6 @@ function createChatWindow() {
     if (input.key === 'F12') {
       chatWindow.webContents.toggleDevTools();
     }
-    // macOS: 确保编辑快捷键正常工作
-    // Electron 在某些情况下可能不处理这些快捷键
-    if (input.meta) {  // Cmd 键
-      if (input.key === 'v') {
-        chatWindow.webContents.paste();
-      } else if (input.key === 'c') {
-        chatWindow.webContents.copy();
-      } else if (input.key === 'x') {
-        chatWindow.webContents.cut();
-      } else if (input.key === 'a') {
-        chatWindow.webContents.selectAll();
-      }
-    }
   });
 
   // 拦截所有导航：阻止在 Electron 窗口内打开外部链接
@@ -1048,6 +1035,18 @@ if (process.platform === 'darwin') {
             app.quit();
           }
         }
+      ]
+    },
+    {
+      label: '编辑',
+      submenu: [
+        { role: 'undo' },
+        { role: 'redo' },
+        { type: 'separator' },
+        { role: 'cut' },
+        { role: 'copy' },
+        { role: 'paste' },
+        { role: 'selectAll' }
       ]
     }
   ]);

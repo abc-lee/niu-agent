@@ -499,11 +499,6 @@
         e.preventDefault();
         addNote(stickyInputField.textContent);
       }
-      // 编辑快捷键需要正常冒泡，否则 Ctrl/Cmd+A/C/V/X/Z 不工作
-      const isEditShortcut = (e.ctrlKey || e.metaKey) && ['a','c','v','x','z'].includes(e.key.toLowerCase());
-      if (!isEditShortcut) {
-        e.stopPropagation();
-      }
     });
 
     // 输入框点击不阻止，让输入框获得焦点
