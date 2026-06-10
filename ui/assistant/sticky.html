@@ -224,32 +224,15 @@
     let currentPage = 0; // 当前显示的旧便签索引（0 = 最新）
     let stickySize = DEFAULT_SIZE;
     let currentNoteId = null; // 当前显示的旧便签 ID
+    let notesCache = []; // 内存缓存，后端为唯一数据源
 
     // ========== 便签数据管理 ==========
     function getNotes() {
-      try {
-        return JSON.parse(localStorage.getItem('nn_notes') || '[]');
-      } catch { return []; }
+      return notesCache;
     }
 
     function saveNotes(notes) {
-      localStorage.setItem('nn_notes', JSON.stringify(notes));
-      // 同步到后端（异步，不阻塞）
-      syncNotesToBackend(notes);
-    }
-
-    // 同步便签到后端（批量同步）
-    async function syncNotesToBackend(notes) {
-      try {
-        if (window.electronAPI && window.electronAPI.createNote) {
-          for (const note of notes) {
-            await window.electronAPI.createNote(note);
-          }
-          console.log(`已同步 ${notes.length} 条便签到后端`);
-        }
-      } catch (e) {
-        console.error('批量同步便签到后端失败:', e);
-      }
+      notesCache = notes;
     }
 
     // 创建便签（调用后端）
@@ -292,19 +275,25 @@
     }
 
     // ========== 添加便签 ==========
-    function addNote(content) {
+    async function addNote(content) {
       if (!content.trim()) return;
-      const notes = getNotes();
       const newNote = {
         id: Date.now().toString(),
         content: content.trim(),
         createdAt: Date.now()
       };
+
+      // 先调后端 API 创建
+      const result = await createNoteBackend(newNote);
+      if (!result) {
+        console.error('创建便签失败，后端未返回结果');
+        return;
+      }
+
+      // 后端创建成功后，更新内存变量
+      const notes = getNotes();
       notes.unshift(newNote);
       saveNotes(notes);
-
-      // 同步到后端
-      createNoteBackend(newNote);
 
       // 清空输入
       stickyInputField.textContent = '';
@@ -315,14 +304,16 @@
     }
 
     // ========== 删除便签 ==========
-    function deleteCurrentNote() {
+    async function deleteCurrentNote() {
       if (!currentNoteId) return;
       const noteIdToDelete = currentNoteId;
+
+      // 先调后端 API 删除
+      await deleteNoteBackend(noteIdToDelete);
+
+      // 后端删除成功后，更新内存变量
       const notes = getNotes().filter(n => n.id !== noteIdToDelete);
       saveNotes(notes);
-
-      // 从后端删除
-      deleteNoteBackend(noteIdToDelete);
 
       // 重新显示
       currentPage = 0;
@@ -549,31 +540,28 @@
 
     // ========== 初始化 ==========
     async function loadNotesFromBackend() {
-      // 尝试从后端加载便签
+      // 以后端为唯一数据源
       try {
         const resp = await fetch('http://127.0.0.1:9876/api/notes');
         const data = await resp.json();
-        if (data.status === 'ok' && data.notes && data.notes.length > 0) {
-          // 后端有数据，转换为前端格式并覆盖 localStorage
+        if (data.status === 'ok' && data.notes) {
+          // 后端有数据，转换为前端格式写入内存缓存
           const backendNotes = data.notes.map(n => ({
             id: n.id,
             content: n.content,
             createdAt: new Date(n.createdAt).getTime(),
             updatedAt: n.updatedAt ? new Date(n.updatedAt).getTime() : undefined
           }));
-          localStorage.setItem('nn_notes', JSON.stringify(backendNotes));
+          notesCache = backendNotes;
           console.log(`从后端加载了 ${backendNotes.length} 条便签`);
           return;
         }
       } catch (e) {
-        console.log('后端便签加载失败，使用本地数据:', e.message);
+        console.log('后端便签加载失败:', e.message);
       }
 
-      // 后端无数据或加载失败，把 localStorage 数据同步到后端
-      const localNotes = getNotes();
-      if (localNotes.length > 0) {
-        syncNotesToBackend(localNotes);
-      }
+      // 后端无数据或加载失败，内存缓存为空
+      notesCache = [];
     }
 
     function init() {
