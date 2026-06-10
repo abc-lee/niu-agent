@@ -913,7 +913,10 @@ def lightrag_insert_file(
                         _terminal = {_DocStatus.PROCESSED, _DocStatus.PREPROCESSED, _DocStatus.FAILED}
                         for _poll in range(120):  # 最多等 120 秒
                             _pending_docs = await rag_instance.doc_status.get_docs_by_track_id(tid)
-                            if _pending_docs and all(d.status in _terminal for d in _pending_docs.values()):
+                            _statuses = {k: str(v.status) for k, v in _pending_docs.items()} if _pending_docs else {}
+                            _all_terminal = _pending_docs and all(d.status in _terminal for d in _pending_docs.values())
+                            logger.debug(f"[lightrag_insert_file] poll {_poll}: tid={tid} statuses={_statuses} all_terminal={_all_terminal}")
+                            if _all_terminal:
                                 break
                             await _asyncio.sleep(1)
                         # Pipeline succeeded — LLM extracted entities/edges that are
