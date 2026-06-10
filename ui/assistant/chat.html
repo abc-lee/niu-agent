@@ -1304,6 +1304,7 @@
       // 滚动到底部
       messages.scrollTop = messages.scrollHeight;
       loadStats();
+      setInterval(loadStats, 60000);
       userInput.focus();
     });
     
