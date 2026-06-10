@@ -75,51 +75,6 @@ def notify_new_message_sync(message_id: str, role: str, content: str, source: st
         pass  # 循环已关闭
 
 
-async def push_ingest_result(file_path: str, total_docs: int = 0, success_docs: int = 0, failed_docs: int = 0, total_chunks: int = 0, entities_count: int = 0, relations_count: int = 0, errors: list[str] | None = None):
-    """将入库结果写入 message.db 并推送 SSE 通知。
-
-    用数据说话：推送分片数、实体数、关系数、成功/失败文档数，
-    让用户自己判断入库质量，不替用户下成功/失败结论。
-
-    Args:
-        file_path: 入库文件路径（单文件时有用，多文件时可为空）
-        total_docs: 总文档数
-        success_docs: 成功文档数（doc_status == PROCESSED）
-        failed_docs: 失败文档数（doc_status == FAILED 或 entities_count == 0）
-        total_chunks: 总分片数
-        entities_count: 各文档实体数之和（文档内去重，跨文档不去重）
-        relations_count: 各文档关系数之和（文档内去重，跨文档不去重）
-        errors: 失败文档的错误信息列表
-    """
-    import os
-    file_name = os.path.basename(file_path) if file_path else ""
-
-    parts = []
-    if file_name:
-        parts.append(file_name)
-    parts.append(f"文档 {success_docs}/{total_docs} 成功")
-    if failed_docs > 0:
-        parts.append(f"{failed_docs} 失败")
-    parts.append(f"分片 {total_chunks} 个")
-    parts.append(f"实体 {entities_count} 个")
-    parts.append(f"关系 {relations_count} 个")
-
-    content = "入库结果：" + "｜".join(parts)
-
-    if errors:
-        error_summary = errors[0] if len(errors) == 1 else f"{len(errors)} 个错误（首个：{errors[0]}）"
-        content += f"｜错误：{error_summary}"
-
-    try:
-        from agent.session import MessageStore
-        store = MessageStore()
-        msg_id = await store.add_message(role="system", content=content)
-        if msg_id:
-            notify_new_message_sync(msg_id, "system", content)
-    except Exception:
-        pass
-
-
 def notify_tool_status_sync(tool_name: str, status: str, summary: str = ""):
     """从同步线程推送工具调用状态到 SSE 事件总线
 

@@ -907,18 +907,6 @@ def lightrag_insert_file(
                     import asyncio as _asyncio
                     try:
                         await rag_instance.apipeline_process_enqueue_documents()
-                        # 等待当前 track_id 的文档到达终态
-                        # 管道可能因 busy 而立即返回（request_pending），需要轮询确认文档已处理
-                        from lightrag.base import DocStatus as _DocStatus
-                        _terminal = {_DocStatus.PROCESSED, _DocStatus.PREPROCESSED, _DocStatus.FAILED}
-                        for _poll in range(120):  # 最多等 120 秒
-                            _pending_docs = await rag_instance.doc_status.get_docs_by_track_id(tid)
-                            _statuses = {k: str(v.status) for k, v in _pending_docs.items()} if _pending_docs else {}
-                            _all_terminal = _pending_docs and all(d.status in _terminal for d in _pending_docs.values())
-                            logger.debug(f"[lightrag_insert_file] poll {_poll}: tid={tid} statuses={_statuses} all_terminal={_all_terminal}")
-                            if _all_terminal:
-                                break
-                            await _asyncio.sleep(1)
                         # Pipeline succeeded — LLM extracted entities/edges that are
                         # NOT reported via changelog (they go through LightRAG's
                         # internal merge_nodes_and_edges, not our wrapper).
@@ -933,52 +921,6 @@ def lightrag_insert_file(
                             logger.debug(
                                 f"[lightrag_insert_file] snapshot_refresh changelog skipped: {_cl_err}"
                             )
-                        # 查询入库统计数据并推送（用数据说话，不替用户下结论）
-                        try:
-                            docs = await rag_instance.doc_status.get_docs_by_track_id(tid)
-                            total_docs = len(docs)
-                            success_docs = 0
-                            failed_docs = 0
-                            total_chunks = 0
-                            entities_count = 0
-                            relations_count = 0
-                            errors = []
-                            from lightrag.base import DocStatus
-                            for _did, _dinfo in docs.items():
-                                total_chunks += _dinfo.chunks_count or 0
-                                if _dinfo.status == DocStatus.FAILED:
-                                    failed_docs += 1
-                                    if _dinfo.error_msg:
-                                        errors.append(_dinfo.error_msg)
-                                    continue
-                                # PROCESSED / PREPROCESSED — 查询实际产出
-                                _ent = await rag_instance.full_entities.get_by_id(_did)
-                                _rel = await rag_instance.full_relations.get_by_id(_did)
-                                _ent_count = _ent.get("count", 0) if _ent else 0
-                                _rel_count = _rel.get("count", 0) if _rel else 0
-                                if _ent_count == 0:
-                                    # 标记为成功但零实体产出 → 视为失败
-                                    failed_docs += 1
-                                    errors.append(f"{_dinfo.file_path or _did}: 未提取到实体")
-                                else:
-                                    success_docs += 1
-                                    entities_count += _ent_count
-                                    relations_count += _rel_count
-                            from niu_api.chat import push_ingest_result
-                            await push_ingest_result(
-                                file_path=original_path,
-                                total_docs=total_docs,
-                                success_docs=success_docs,
-                                failed_docs=failed_docs,
-                                total_chunks=total_chunks,
-                                entities_count=entities_count,
-                                relations_count=relations_count,
-                                errors=errors if errors else None,
-                            )
-                        except _asyncio.CancelledError:
-                            raise
-                        except Exception as _push_err:
-                            logger.debug(f"[lightrag_insert_file] ingest result push skipped: {_push_err}")
                     except (_asyncio.CancelledError, Exception) as pipeline_err:
                         is_cancelled = isinstance(pipeline_err, _asyncio.CancelledError)
                         if is_cancelled:
@@ -1020,26 +962,6 @@ def lightrag_insert_file(
                                 f"[lightrag_insert_file] mark-failed skipped "
                                 f"(best-effort): track_id={tid} error={mark_err}"
                             )
-                        # 推送入库失败结果（用户主动取消不算失败）
-                        if not is_cancelled:
-                            try:
-                                docs = await rag_instance.doc_status.get_docs_by_track_id(tid)
-                                total_docs = len(docs)
-                                total_chunks = sum(d.chunks_count or 0 for d in docs.values())
-                                _err_msgs = [d.error_msg for d in docs.values() if d.error_msg]
-                                from niu_api.chat import push_ingest_result
-                                await push_ingest_result(
-                                    file_path=original_path,
-                                    total_docs=total_docs,
-                                    success_docs=0,
-                                    failed_docs=total_docs,
-                                    total_chunks=total_chunks,
-                                    errors=_err_msgs if _err_msgs else [str(pipeline_err)],
-                                )
-                            except _asyncio.CancelledError:
-                                raise
-                            except Exception:
-                                pass
                         if is_cancelled:
                             raise pipeline_err
                     finally:
