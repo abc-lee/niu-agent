@@ -921,25 +921,48 @@ def lightrag_insert_file(
                             logger.debug(
                                 f"[lightrag_insert_file] snapshot_refresh changelog skipped: {_cl_err}"
                             )
-                        # 查询入库结果并推送到前端（管道不抛异常不代表入库成功）
+                        # 查询入库统计数据并推送（用数据说话，不替用户下结论）
                         try:
                             docs = await rag_instance.doc_status.get_docs_by_track_id(tid)
-                            doc_info = next(iter(docs.values()), None) if docs else None
-                            from niu_api.chat import push_ingest_result
+                            total_docs = len(docs)
+                            success_docs = 0
+                            failed_docs = 0
+                            total_chunks = 0
+                            entities_count = 0
+                            relations_count = 0
+                            errors = []
                             from lightrag.base import DocStatus
-                            if doc_info and doc_info.status == DocStatus.FAILED:
-                                await push_ingest_result(
-                                    file_path=original_path,
-                                    status="failed",
-                                    error=doc_info.error_msg or "入库处理失败",
-                                )
-                            else:
-                                # PROCESSED 或 PREPROCESSED 都算成功
-                                await push_ingest_result(
-                                    file_path=original_path,
-                                    status="completed",
-                                    chunks_count=doc_info.chunks_count if doc_info and doc_info.chunks_count is not None else 0,
-                                )
+                            for _did, _dinfo in docs.items():
+                                total_chunks += _dinfo.chunks_count or 0
+                                if _dinfo.status == DocStatus.FAILED:
+                                    failed_docs += 1
+                                    if _dinfo.error_msg:
+                                        errors.append(_dinfo.error_msg)
+                                    continue
+                                # PROCESSED / PREPROCESSED — 查询实际产出
+                                _ent = await rag_instance.full_entities.get_by_id(_did)
+                                _rel = await rag_instance.full_relations.get_by_id(_did)
+                                _ent_count = _ent.get("count", 0) if _ent else 0
+                                _rel_count = _rel.get("count", 0) if _rel else 0
+                                if _ent_count == 0:
+                                    # 标记为成功但零实体产出 → 视为失败
+                                    failed_docs += 1
+                                    errors.append(f"{_dinfo.file_path or _did}: 未提取到实体")
+                                else:
+                                    success_docs += 1
+                                    entities_count += _ent_count
+                                    relations_count += _rel_count
+                            from niu_api.chat import push_ingest_result
+                            await push_ingest_result(
+                                file_path=original_path,
+                                total_docs=total_docs,
+                                success_docs=success_docs,
+                                failed_docs=failed_docs,
+                                total_chunks=total_chunks,
+                                entities_count=entities_count,
+                                relations_count=relations_count,
+                                errors=errors if errors else None,
+                            )
                         except Exception as _push_err:
                             logger.debug(f"[lightrag_insert_file] ingest result push skipped: {_push_err}")
                     except (_asyncio.CancelledError, Exception) as pipeline_err:
@@ -986,14 +1009,18 @@ def lightrag_insert_file(
                         # 推送入库失败结果（用户主动取消不算失败）
                         if not is_cancelled:
                             try:
-                                # 查询 doc_status 获取更详细的错误信息
                                 docs = await rag_instance.doc_status.get_docs_by_track_id(tid)
-                                doc_info = next(iter(docs.values()), None) if docs else None
+                                total_docs = len(docs)
+                                total_chunks = sum(d.chunks_count or 0 for d in docs.values())
+                                _err_msgs = [d.error_msg for d in docs.values() if d.error_msg]
                                 from niu_api.chat import push_ingest_result
                                 await push_ingest_result(
                                     file_path=original_path,
-                                    status="failed",
-                                    error=doc_info.error_msg if doc_info and doc_info.error_msg else str(pipeline_err),
+                                    total_docs=total_docs,
+                                    success_docs=0,
+                                    failed_docs=total_docs,
+                                    total_chunks=total_chunks,
+                                    errors=_err_msgs if _err_msgs else [str(pipeline_err)],
                                 )
                             except _asyncio.CancelledError:
                                 raise

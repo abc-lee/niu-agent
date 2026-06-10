@@ -75,27 +75,40 @@ def notify_new_message_sync(message_id: str, role: str, content: str, source: st
         pass  # 循环已关闭
 
 
-async def push_ingest_result(file_path: str, status: str, chunks_count: int = 0, error: str = ""):
+async def push_ingest_result(file_path: str, total_docs: int = 0, success_docs: int = 0, failed_docs: int = 0, total_chunks: int = 0, entities_count: int = 0, relations_count: int = 0, errors: list[str] | None = None):
     """将入库结果写入 message.db 并推送 SSE 通知。
 
-    此消息仅供 Electron 前端消费，不应转发到 IM。
-    设计为 async 函数，在 LightRAG 事件循环中调用。
-    add_message 每次创建独立 aiosqlite 连接，可在任何事件循环中 await。
-    notify_new_message_sync 使用 call_soon_threadsafe，可从任何上下文调用。
+    用数据说话：推送分片数、实体数、关系数、成功/失败文档数，
+    让用户自己判断入库质量，不替用户下成功/失败结论。
 
     Args:
-        file_path: 入库文件路径
-        status: "completed" 或 "failed"
-        chunks_count: 切片数
-        error: 错误信息（仅失败时）
+        file_path: 入库文件路径（单文件时有用，多文件时可为空）
+        total_docs: 总文档数
+        success_docs: 成功文档数（doc_status == PROCESSED）
+        failed_docs: 失败文档数（doc_status == FAILED 或 entities_count == 0）
+        total_chunks: 总分片数
+        entities_count: 各文档实体数之和（文档内去重，跨文档不去重）
+        relations_count: 各文档关系数之和（文档内去重，跨文档不去重）
+        errors: 失败文档的错误信息列表
     """
     import os
-    file_name = os.path.basename(file_path) if file_path else "未知文件"
+    file_name = os.path.basename(file_path) if file_path else ""
 
-    if status == "completed":
-        content = f"文件入库完成：{file_name}（分片 {chunks_count} 个）"
-    else:
-        content = f"文件入库失败：{file_name}" + (f"（{error}）" if error else "")
+    parts = []
+    if file_name:
+        parts.append(file_name)
+    parts.append(f"文档 {success_docs}/{total_docs} 成功")
+    if failed_docs > 0:
+        parts.append(f"{failed_docs} 失败")
+    parts.append(f"分片 {total_chunks} 个")
+    parts.append(f"实体 {entities_count} 个")
+    parts.append(f"关系 {relations_count} 个")
+
+    content = "入库结果：" + "｜".join(parts)
+
+    if errors:
+        error_summary = errors[0] if len(errors) == 1 else f"{len(errors)} 个错误（首个：{errors[0]}）"
+        content += f"｜错误：{error_summary}"
 
     try:
         from agent.session import MessageStore
