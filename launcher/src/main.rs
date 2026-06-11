@@ -41,6 +41,8 @@ struct Splash {
     window_id: Option<window::Id>,
     /// Whether Dock icon has been hidden
     dock_hidden: bool,
+    /// Animation frame counter for the "..." dots (0..3 cycles)
+    dot_frame: u8,
 }
 
 #[derive(Debug, Clone)]
@@ -59,12 +61,15 @@ impl Splash {
             ready_rx: Mutex::new(ready_rx),
             window_id: None,
             dock_hidden: false,
+            dot_frame: 0,
         }
     }
 
     fn update(&mut self, message: SplashMessage) -> Task<SplashMessage> {
         match message {
             SplashMessage::Tick => {
+                // Advance animation frame
+                self.dot_frame = (self.dot_frame + 1) % 12;
                 // On first tick after window is open, hide Dock icon
                 if !self.dock_hidden && self.window_id.is_some() {
                     self.dock_hidden = true;
@@ -120,8 +125,13 @@ impl Splash {
     }
 
     fn view(&self) -> Element<'_, SplashMessage> {
+        let dots = match self.dot_frame / 4 {
+            0 => ".",
+            1 => "..",
+            _ => "...",
+        };
         container(
-            iced::widget::text("正在启动...")
+            iced::widget::text(format!("正在启动{}", dots))
                 .size(20)
                 .font(CJK_FONT)
                 .color([1.0, 1.0, 1.0, 1.0]),
@@ -1048,7 +1058,7 @@ fn main() {
     // --- Run iced splash window on the main thread (required by macOS) ---
     let splash = Splash::new(splash_rx);
     let window_settings = window::Settings {
-        size: iced::Size::new(280.0, 120.0),
+        size: iced::Size::new(280.0, 80.0),
         position: window::Position::Centered,
         decorations: false,
         transparent: true,
