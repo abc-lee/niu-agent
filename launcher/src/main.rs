@@ -39,6 +39,8 @@ struct Splash {
     ready_rx: Mutex<Receiver<()>>,
     /// Window ID captured from window open event
     window_id: Option<window::Id>,
+    /// Whether Dock icon has been hidden
+    dock_hidden: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -47,6 +49,8 @@ enum SplashMessage {
     Tick,
     /// Window opened — capture the window ID
     WindowOpened(window::Id),
+    /// First tick after window opened — hide Dock icon
+    HideDockIcon,
 }
 
 impl Splash {
@@ -54,12 +58,18 @@ impl Splash {
         Self {
             ready_rx: Mutex::new(ready_rx),
             window_id: None,
+            dock_hidden: false,
         }
     }
 
     fn update(&mut self, message: SplashMessage) -> Task<SplashMessage> {
         match message {
             SplashMessage::Tick => {
+                // On first tick after window is open, hide Dock icon
+                if !self.dock_hidden && self.window_id.is_some() {
+                    self.dock_hidden = true;
+                    return Task::done(SplashMessage::HideDockIcon);
+                }
                 // Non-blocking check: if the launcher thread sent the ready signal, close the window
                 if self.ready_rx.lock().unwrap().try_recv().is_ok() {
                     // Use window::close() to close the splash window
@@ -83,6 +93,27 @@ impl Splash {
             SplashMessage::WindowOpened(id) => {
                 // Capture the window ID when the window opens
                 self.window_id = Some(id);
+                Task::none()
+            }
+            SplashMessage::HideDockIcon => {
+                // winit overrides activation policy during EventLoop init.
+                // Re-set to Accessory after the window is created to hide the Dock icon.
+                #[cfg(target_os = "macos")]
+                {
+                    use std::ffi::c_void;
+                    extern "C" {
+                        fn objc_getClass(name: *const u8) -> *mut c_void;
+                        fn sel_registerName(name: *const u8) -> *mut c_void;
+                        fn objc_msgSend(obj: *mut c_void, sel: *mut c_void, ...) -> *mut c_void;
+                    }
+                    unsafe {
+                        let nsapp_class = objc_getClass("NSApplication\0".as_ptr());
+                        let shared_sel = sel_registerName("sharedApplication\0".as_ptr());
+                        let app = objc_msgSend(nsapp_class, shared_sel);
+                        let set_policy_sel = sel_registerName("setActivationPolicy:\0".as_ptr());
+                        objc_msgSend(app, set_policy_sel, 1i64);
+                    }
+                }
                 Task::none()
             }
         }
@@ -999,28 +1030,6 @@ fn main() {
             }
         }
     });
-
-    // --- macOS: hide Dock icon (NSApplicationActivationPolicyAccessory) ---
-    // Set before creating any window so the splash window won't cause a Dock icon.
-    // NSApplicationActivationPolicyAccessory = 1: app has windows but no Dock icon.
-    #[cfg(target_os = "macos")]
-    {
-        use std::ffi::c_void;
-        extern "C" {
-            fn objc_getClass(name: *const u8) -> *mut c_void;
-            fn sel_registerName(name: *const u8) -> *mut c_void;
-            fn objc_msgSend(obj: *mut c_void, sel: *mut c_void, ...) -> *mut c_void;
-        }
-        unsafe {
-            let nsapp_class = objc_getClass("NSApplication\0".as_ptr());
-            let shared_sel = sel_registerName("sharedApplication\0".as_ptr());
-            let app = objc_msgSend(nsapp_class, shared_sel);
-            let set_policy_sel = sel_registerName("setActivationPolicy:\0".as_ptr());
-            // NSApplicationActivationPolicyAccessory = 1
-            objc_msgSend(app, set_policy_sel, 1i64);
-        }
-        info!("macOS: set NSApplicationActivationPolicyAccessory (no Dock icon)");
-    }
 
     // --- Run iced splash window on the main thread (required by macOS) ---
     let splash = Splash::new(splash_rx);
