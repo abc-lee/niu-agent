@@ -232,6 +232,12 @@
         <label class="pencil-text">API Key</label>
         <input type="password" id="apiKey" placeholder="输入你的 API Key">
       </div>
+
+      <div class="form-group" style="margin-top: 12px;">
+        <label class="pencil-text">上下文窗口大小 (tokens)</label>
+        <input type="number" id="contextWindowSize" placeholder="200000" min="32000" max="2000000" step="1000">
+        <div style="font-size: 12px; color: #666; margin-top: 4px;">模型上下文窗口：128K=128000, 200K=200000, 256K=256000, 1M=1000000</div>
+      </div>
     </div>
     
     <button class="advanced-toggle" onclick="toggleAdvanced()">▼ 高级选项</button>
@@ -250,6 +256,26 @@
       <div class="form-group" style="margin-top: 12px;">
         <label class="pencil-text">模型名称</label>
         <input type="text" id="model" placeholder="gpt-4o-mini">
+      </div>
+
+      <div class="note-card mint" style="margin-top: 15px;">
+        <div class="form-group">
+          <label class="pencil-text">溢出警告阈值</label>
+          <input type="number" id="warningThreshold" placeholder="0.8" min="0.1" max="0.99" step="0.05">
+          <div style="font-size: 12px; color: #666; margin-top: 4px;">上下文使用率达到此比例时触发压缩（默认 0.8 = 80%）</div>
+        </div>
+
+        <div class="form-group" style="margin-top: 12px;">
+          <label class="pencil-text">压缩目标阈值</label>
+          <input type="number" id="targetThreshold" placeholder="0.5" min="0.1" max="0.99" step="0.05">
+          <div style="font-size: 12px; color: #666; margin-top: 4px;">强制压缩时目标使用率（默认 0.5 = 50%）</div>
+        </div>
+
+        <div class="form-group" style="margin-top: 12px;">
+          <label class="pencil-text">睡眠触发时间 (分钟)</label>
+          <input type="number" id="sleepTriggerMinutes" placeholder="5" min="1" max="60" step="1">
+          <div style="font-size: 12px; color: #666; margin-top: 4px;">空闲多久后触发睡眠整理（默认 5 分钟）</div>
+        </div>
       </div>
     </div>
     
@@ -286,6 +312,13 @@
         document.getElementById('model').value = config.llm.model || '';
         document.getElementById('apiType').value = config.llm.type || 'openai';
       }
+
+      if (config.context) {
+        document.getElementById('contextWindowSize').value = config.context.contextWindowSize || '';
+        document.getElementById('warningThreshold').value = config.context.warningThreshold || '';
+        document.getElementById('targetThreshold').value = config.context.targetThreshold || '';
+        document.getElementById('sleepTriggerMinutes').value = config.context.sleepTriggerMinutes || '';
+      }
     }
     
     function toggleAdvanced() {
@@ -305,6 +338,7 @@
     });
     
     async function testAndSave() {
+      const existingConfig = await window.electronAPI.getConfig();
       const presetId = document.getElementById('preset').value;
       const apiKey = document.getElementById('apiKey').value;
       const apiBase = document.getElementById('apiBase').value;
@@ -335,8 +369,15 @@
       if (result.success) {
         // Model responded, save config
         const config = {
-          llm: { presetId, apiKey, apiBase, model, type },
-          storage: {},
+          llm: { presetId, apiKey, apiBase, model, type, reasoning_effort: existingConfig.llm?.reasoning_effort || "" },
+          lightrag_llm: existingConfig.lightrag_llm || { presetId: "", apiKey: "", apiBase: "", model: "", type: "openai", reasoning_effort: "xhigh" },
+          context: {
+            contextWindowSize: parseInt(document.getElementById('contextWindowSize').value) || 200000,
+            warningThreshold: parseFloat(document.getElementById('warningThreshold').value) || 0.8,
+            targetThreshold: parseFloat(document.getElementById('targetThreshold').value) || 0.5,
+            sleepTriggerMinutes: parseInt(document.getElementById('sleepTriggerMinutes').value) || 5
+          },
+          storage: existingConfig.storage || {},
           firstRun: false
         };
 
