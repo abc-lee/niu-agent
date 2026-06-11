@@ -48,12 +48,6 @@
       "minSimilarity": 0.3
     }
   },
-  "context": {
-    "warningThreshold": 0.8,
-    "targetThreshold": 0.5,
-    "sleepTriggerMinutes": 5,
-    "contextWindowSize": 200000
-  },
   "lightrag": {
     "embedding_model": "bge-base-zh-v1.5",
     "reranker_model": "none"
