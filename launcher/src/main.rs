@@ -193,7 +193,7 @@ struct UserConfig {
     context: Option<ContextConfigOverrides>,
 }
 
-/// Partial context config from preferences.json (all fields optional)
+/// Partial context config from user-config.json (all fields optional)
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ContextConfigOverrides {
