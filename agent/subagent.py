@@ -38,14 +38,18 @@ def count_tokens_for_text(text: str) -> int:
         return max(1, len(text) // 2)
 
 
+def _get_user_config_path() -> Path:
+    """Locate config/user-config.json relative to project root."""
+    return Path(__file__).parent.parent / "config" / "user-config.json"
+
+
 def _read_context_window_tokens() -> int:
-    """Read context window size from ~/.niu/preferences.json."""
+    """Read context window size from config/user-config.json."""
     try:
-        home = Path.home()
-        prefs_path = home / ".niu" / "preferences.json"
-        with open(prefs_path, "r") as f:
-            prefs = json.load(f)
-        size = prefs.get("context", {}).get("contextWindowSize", DEFAULT_CONTEXT_WINDOW_SIZE)
+        config_path = _get_user_config_path()
+        with open(config_path, "r", encoding="utf-8") as f:
+            config = json.load(f)
+        size = config.get("context", {}).get("contextWindowSize", DEFAULT_CONTEXT_WINDOW_SIZE)
         if isinstance(size, (int, float)) and MIN_CONTEXT_WINDOW_SIZE <= size <= MAX_CONTEXT_WINDOW_SIZE:
             return int(size)
         logger.warning(f"Invalid contextWindowSize {size}, using default {DEFAULT_CONTEXT_WINDOW_SIZE}")
@@ -55,18 +59,17 @@ def _read_context_window_tokens() -> int:
 
 
 def _read_context_threshold(key: str, default: float) -> float:
-    """Read a context threshold from ~/.niu/preferences.json.
+    """Read a context threshold from config/user-config.json.
 
     Args:
         key: Field name in context section (e.g. 'warningThreshold', 'targetThreshold')
         default: Default value if key not found or invalid
     """
     try:
-        home = Path.home()
-        prefs_path = home / ".niu" / "preferences.json"
-        with open(prefs_path, "r") as f:
-            prefs = json.load(f)
-        val = prefs.get("context", {}).get(key, default)
+        config_path = _get_user_config_path()
+        with open(config_path, "r", encoding="utf-8") as f:
+            config = json.load(f)
+        val = config.get("context", {}).get(key, default)
         if isinstance(val, (int, float)) and 0.0 < val < 1.0:
             return float(val)
     except Exception:
@@ -82,6 +85,23 @@ def _read_warning_threshold() -> float:
 def _read_target_threshold() -> float:
     """Read target threshold (force compress target). Default 0.50, matching Rust launcher."""
     return _read_context_threshold("targetThreshold", 0.50)
+
+
+DEFAULT_PROTECT_RECENT_COUNT = 10
+
+
+def _read_protect_recent_count() -> int:
+    """Read protectRecentCount from config/user-config.json. Default 10."""
+    try:
+        config_path = _get_user_config_path()
+        with open(config_path, "r", encoding="utf-8") as f:
+            config = json.load(f)
+        val = config.get("context", {}).get("protectRecentCount", DEFAULT_PROTECT_RECENT_COUNT)
+        if isinstance(val, int) and val >= 0:
+            return val
+    except Exception:
+        pass
+    return DEFAULT_PROTECT_RECENT_COUNT
 
 
 def _run_agent_loop(
