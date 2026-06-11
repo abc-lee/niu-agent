@@ -1021,7 +1021,7 @@ class NiuRunner:
             f"tools_schema: {len(self.base_tools_schema)} base + {len(tools_schema) - len(self.base_tools_schema) - 1} static + 1 disk = {len(tools_schema)} total"
         )
 
-        # 读取上下文窗口大小，用于主 Agent 85% 溢出检测
+        # 读取上下文窗口大小，用于主 Agent warningThreshold 溢出检测
         from agent.subagent import _read_context_window_tokens
         context_window_tokens = _read_context_window_tokens()
 
