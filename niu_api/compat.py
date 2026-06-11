@@ -913,8 +913,8 @@ async def _tidy_context_impl(request: dict):
                 logger.warning(f"[Tidy] Failed to read journal cursor: {e}")
 
         # 构建消息列表（包含 UUID，完整内容不截断）
-        # 真实环境下 force 模式触发时上下文约 160K tokens（200K * warningThreshold 0.80）
-        # 全量消息列表 ≤ 190K tokens，子 Agent 200K 窗口有 15% 输出空间，不会溢出
+        # 真实环境下 force 模式触发时上下文约 contextWindowSize * warningThreshold tokens
+        # 全量消息列表 ≤ contextWindowSize * 95%，子 Agent 有 ~5-15% 输出空间，不会溢出
         msg_lines = []
         msg_ids = []
         for idx, msg in enumerate(messages, 1):
