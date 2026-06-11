@@ -197,7 +197,49 @@ LightRAG 入库（实体提取、关系构建）使用与主 Agent 独立的 LLM
 - **方式二**：关闭程序后，手动编辑 `config/user-config.json`
 - **方式三**：通过 MCP 工具 `set_lightrag_llm_config` 动态修改（无需重启）
 
-### 1.3 知识图谱
+### 1.3 上下文配置
+
+**配置文件**：`config/user-config.json` 中的 `context` 段
+
+```json
+{
+  "context": {
+    "contextWindowSize": 200000,
+    "warningThreshold": 0.8,
+    "targetThreshold": 0.5,
+    "sleepTriggerMinutes": 5
+  }
+}
+```
+
+**字段说明**：
+
+| 字段 | 说明 | 默认值 | 范围 |
+|------|------|--------|------|
+| `contextWindowSize` | 模型上下文窗口大小（tokens） | 200000 | 32000 ~ 2000000 |
+| `warningThreshold` | 溢出警告阈值，上下文使用率超过此值触发压缩 | 0.8 | 0.0 ~ 1.0 |
+| `targetThreshold` | 强制压缩目标，压缩后上下文使用率降至此值 | 0.5 | 0.0 ~ 1.0 |
+| `sleepTriggerMinutes` | 空闲多久后触发睡眠整理（分钟） | 5 | > 0 |
+
+**常见模型的 contextWindowSize**：
+
+| 模型 | 上下文窗口 | 配置值 |
+|------|-----------|--------|
+| GPT-4o-mini | 128K | 128000 |
+| GPT-4o | 128K | 128000 |
+| Claude 3.5 Sonnet | 200K | 200000 |
+| DeepSeek V3 (deepseek-chat) | 64K | 64000 |
+| DeepSeek R1 (deepseek-reasoner) | 128K | 128000 |
+| Qwen2.5-Turbo | 1M | 1000000 |
+| 本地 Ollama 模型 | 取决于模型 | 按实际配置 |
+
+> **注意**：`contextWindowSize` 与模型强相关，切换模型后需同步更新此值。设置窗口的"高级选项"中可直接配置。
+
+**修改配置方式**：
+- **方式一（推荐）**：通过设置窗口修改（首次启动自动弹出，点"高级选项"展开）
+- **方式二**：关闭程序后，手动编辑 `config/user-config.json`
+
+### 1.4 知识图谱
 
 知识图谱基于 LightRAG 引擎，支持文档入库后的自动实体提取和关系构建。
 
@@ -211,13 +253,13 @@ LightRAG 入库（实体提取、关系构建）使用与主 Agent 独立的 LLM
 
 **注意**：文档入库时，LightRAG 自动完成实体提取、关系构建和向量索引，无需手动操作。
 
-**注意**：并非所有文档格式都支持知识图谱入库，详见下方"1.4 支持的文件格式"。
+**注意**：并非所有文档格式都支持知识图谱入库，详见下方"1.5 支持的文件格式"。
 
 **入库参数配置**：LightRAG 入库参数（并发数、分片大小、补充提取次数等）可在 `~/.niu/preferences.json` 的 `lightrag` 配置段调整，详见 [知识检索运维手册](manual-vector-store.md) 第 8.5 节。
 
 **入库模型与思考链配置**：LightRAG 入库使用的模型和思考链深度在 `config/user-config.json` 的 `lightrag_llm` 配置段设置，详见上方 1.2 节"LightRAG 知识图谱 LLM 配置"。默认禁用思考链（`reasoning_effort: "none"`），防止深度推理导致入库超时。
 
-### 1.4 支持的文件格式
+### 1.5 支持的文件格式
 
 Niu 有两种入库能力，格式支持范围不同：
 
@@ -269,7 +311,7 @@ Niu 有两种入库能力，格式支持范围不同：
 
 详细格式说明和常见问题，请参阅 [文件格式支持手册](manual-file-formats.md)。
 
-### 1.5 记忆管理
+### 1.6 记忆管理
 
 记忆系统分为两层：
 
@@ -303,7 +345,7 @@ Niu 有两种入库能力，格式支持范围不同：
 - 添加记忆：说 "记住我的工作单位是 XXX"
 - 删除记忆：说 "忘记我的工作单位信息"
 
-### 1.6 首次使用（firstRun）
+### 1.7 首次使用（firstRun）
 
 **触发条件**：`~/.niu/memory.json` 中 `firstRun` 为 `true`
 
@@ -326,7 +368,7 @@ Niu 有两种入库能力，格式支持范围不同：
 - 不要询问用户 API Key（由设置窗口处理）
 - 只询问工作目录
 
-### 1.7 常见问题
+### 1.8 常见问题
 
 **Q: 数据存储在哪里？**
 ```

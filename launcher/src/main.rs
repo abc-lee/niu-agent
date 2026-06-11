@@ -187,9 +187,9 @@ fn default_context_config() -> ContextConfig {
     }
 }
 
-/// Helper struct for deserializing preferences.json
+/// Helper struct for deserializing user-config.json
 #[derive(Debug, Deserialize)]
-struct Preferences {
+struct UserConfig {
     context: Option<ContextConfigOverrides>,
 }
 
@@ -203,27 +203,28 @@ struct ContextConfigOverrides {
     context_window_size: Option<f64>,
 }
 
-/// LoadContextConfig loads context config from preferences.json
-fn load_context_config() -> ContextConfig {
+/// LoadContextConfig loads context config from config/user-config.json
+fn load_context_config(project_root: &str) -> ContextConfig {
     let mut cfg = default_context_config();
 
-    let home_dir = match dirs::home_dir() {
-        Some(d) => d,
-        None => return cfg,
-    };
-
-    let prefs_path = home_dir.join(".niu").join("preferences.json");
-    let data = match fs::read_to_string(&prefs_path) {
+    let config_path = PathBuf::from(project_root).join("config").join("user-config.json");
+    let data = match fs::read_to_string(&config_path) {
         Ok(d) => d,
-        Err(_) => return cfg,
+        Err(_) => {
+            info!("user-config.json not found at {}, using default context config", config_path.display());
+            return cfg;
+        }
     };
 
-    let prefs: Preferences = match serde_json::from_str(&data) {
-        Ok(p) => p,
-        Err(_) => return cfg,
+    let user_config: UserConfig = match serde_json::from_str(&data) {
+        Ok(c) => c,
+        Err(e) => {
+            warn!("Failed to parse user-config.json: {}, using default context config", e);
+            return cfg;
+        }
     };
 
-    if let Some(ctx) = prefs.context {
+    if let Some(ctx) = user_config.context {
         if let Some(v) = ctx.warning_threshold {
             if v > 0.0 && v < 1.0 {
                 cfg.warning_threshold = v;
@@ -696,14 +697,11 @@ fn main() {
         std::process::exit(1);
     }
 
-    // Load context configuration
-    let _context_config = load_context_config();
-
     // Detect Python
     let python_path = detect_python();
     info!("Using Python path: {}", python_path);
 
-    // Get project root (needed for template file paths)
+    // Get project root (needed for template file paths and config loading)
     // Primary: executable directory (works when running built binary from any cwd)
     // Fallback: current working directory (supports development)
     let exe_path = env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
@@ -716,7 +714,7 @@ fn main() {
         // exeDir doesn't contain memory/ — likely development with temp build dir
         let cwd = env::current_dir()
             .map(|d| d.to_string_lossy().to_string())
-            .unwrap_or_else(|_| ".".to_string());
+            .unwrap_or_else(|| ".".to_string());
         let cwd_memory_dir = PathBuf::from(&cwd).join("memory");
         if cwd_memory_dir.exists() {
             info!(
@@ -731,6 +729,9 @@ fn main() {
             );
         }
     }
+
+    // Load context configuration from config/user-config.json
+    let _context_config = load_context_config(&project_root);
 
     // Initialize ~/.niu/ directory and copy template files if needed
     init_niu_dir(&project_root);
