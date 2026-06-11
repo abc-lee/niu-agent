@@ -765,21 +765,25 @@
         userInput.value = '';
         userInput.style.height = 'auto';
         sendBtn.disabled = false;
-        try {
-          await window.electronAPI.sendMessage('/stop');
-        } catch (e) {
-          console.error('停止失败:', e);
-          addSystemMessage('停止失败: ' + (e.message || e));
+        if (isProcessing) {
+          // Agent 正在运行：先停止，等 chat_idle 事件再清空
+          try {
+            await window.electronAPI.sendMessage('/stop');
+          } catch (e) {
+            console.error('停止失败:', e);
+            addSystemMessage('停止失败: ' + (e.message || e));
+          }
+          _pendingClear = true;
+          if (_pendingClearTimeout) clearTimeout(_pendingClearTimeout);
+          _pendingClearTimeout = setTimeout(() => {
+            _pendingClear = false;
+            _pendingClearTimeout = null;
+            addSystemMessage('停止超时，清空操作已取消');
+          }, 120000);
+        } else {
+          // Agent 空闲：直接清空，无需等 chat_idle
+          await clearChat();
         }
-        // 等 SSE chat_idle 事件重置 isProcessing 后，再清空聊天
-        // 不直接 await clearChat()，因为锁被 Agent 占用会阻塞 UI
-        _pendingClear = true;
-        if (_pendingClearTimeout) clearTimeout(_pendingClearTimeout);
-        _pendingClearTimeout = setTimeout(() => {
-          _pendingClear = false;
-          _pendingClearTimeout = null;
-          addSystemMessage('停止超时，清空操作已取消');
-        }, 120000);
         return;
       }
 
