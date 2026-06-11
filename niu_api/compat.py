@@ -13,7 +13,7 @@ import time
 from datetime import datetime
 
 from agent.session import get_message_store
-from agent.subagent import _read_context_window_tokens, _read_target_threshold
+from agent.subagent import _read_context_window_tokens, _read_target_threshold, _read_protect_recent_count
 from fastapi import APIRouter
 from loguru import logger
 from pydantic import BaseModel
@@ -1189,14 +1189,7 @@ async def _tidy_context_impl(request: dict):
             msg_id_set = {getattr(m, "id", "") for m in messages}
             compress_msg_ids = []
             # 读取保护数量配置
-            protect_recent_count = 10
-            try:
-                _prefs_path = Path.home() / ".niu" / "preferences.json"
-                if _prefs_path.exists():
-                    _prefs = json.loads(_prefs_path.read_text(encoding="utf-8"))
-                    protect_recent_count = _prefs.get("context", {}).get("protectRecentCount", 10)
-            except Exception:
-                pass  # 保留默认值 10
+            protect_recent_count = _read_protect_recent_count()
 
             compress_msg_text = _build_incremental_msg_text(
                 messages, last_compress_id, compress_msg_ids, msg_tokens,
@@ -1668,13 +1661,7 @@ async def _tidy_context_impl(request: dict):
                                 logger.warning(f"[Tidy] Force: Protecting {len(unsafe_updates)} messages after dream cursor from content replacement")
                                 valid_updates = [u for u in valid_updates if u.get("message_id", "") not in post_dream_ids]
                     # 程序层面排除保护范围内的消息 ID
-                    protect_recent_count = 10
-                    try:
-                        from pathlib import Path as _P2
-                        _prefs2 = json.loads((_P2.home() / ".niu" / "preferences.json").read_text(encoding="utf-8"))
-                        protect_recent_count = _prefs2.get("context", {}).get("protectRecentCount", 10)
-                    except Exception:
-                        pass
+                    protect_recent_count = _read_protect_recent_count()
                     if protect_recent_count > 0 and len(fresh_messages) > protect_recent_count:
                         protected_force_ids = {getattr(m, "id", "") for m in fresh_messages[-protect_recent_count:]}
                         removed_deletes = [mid for mid in valid_deletes if mid in protected_force_ids]
