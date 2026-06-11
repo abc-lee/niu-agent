@@ -261,7 +261,7 @@ fn detect_python() -> String {
         .output()
         .is_ok()
     {
-        let abs_path = fs::canonicalize(&candidate).unwrap_or_else(|_| candidate.clone());
+        let abs_path = dunce::canonicalize(&candidate).unwrap_or_else(|_| candidate.clone());
         info!("Found project Python (exeDir): {}", abs_path.display());
         return abs_path.to_string_lossy().to_string();
     }
@@ -273,7 +273,7 @@ fn detect_python() -> String {
         .output()
         .is_ok()
     {
-        let abs_path = fs::canonicalize(&candidate).unwrap_or_else(|_| candidate.clone());
+        let abs_path = dunce::canonicalize(&candidate).unwrap_or_else(|_| candidate.clone());
         info!("Found project Python (cwd fallback): {}", abs_path.display());
         return abs_path.to_string_lossy().to_string();
     }
@@ -493,10 +493,9 @@ fn kill_stale_api_process(port: u16) {
         }
     }
 
-    // Still alive, force kill with pkill
-    warn!("Stale API process still alive, force killing with pkill");
     #[cfg(unix)]
     {
+        warn!("Stale API process still alive, force killing with pkill");
         let kill_result = Command::new("pkill")
             .arg("-f")
             .arg("python.*niu_api")
@@ -512,6 +511,7 @@ fn kill_stale_api_process(port: u16) {
     }
     #[cfg(windows)]
     {
+        warn!("Stale API process still alive, force killing with PowerShell");
         // Use PowerShell to find and kill Python processes running niu_api
         // Python background processes have no window title, so WINDOWTITLE filter won't work
         let kill_result = Command::new("powershell")
@@ -547,15 +547,29 @@ fn launch_window(name: &str) -> Result<std::process::Child, Box<dyn std::error::
     });
     let window_dir = exe_dir.join("ui").join(name);
 
-    let mut cmd = Command::new("npm");
-    cmd.arg("start");
-    cmd.current_dir(&window_dir);
-    cmd.stdout(std::process::Stdio::inherit());
-    cmd.stderr(std::process::Stdio::inherit());
-    cmd.stdin(std::process::Stdio::inherit());
+    #[cfg(windows)]
+    {
+        let mut cmd = Command::new("cmd");
+        cmd.args(["/C", "npm", "start"]);
+        cmd.current_dir(&window_dir);
+        cmd.stdout(std::process::Stdio::inherit());
+        cmd.stderr(std::process::Stdio::inherit());
+        cmd.stdin(std::process::Stdio::inherit());
+        let child = cmd.spawn()?;
+        Ok(child)
+    }
 
-    let child = cmd.spawn()?;
-    Ok(child)
+    #[cfg(not(windows))]
+    {
+        let mut cmd = Command::new("npm");
+        cmd.arg("start");
+        cmd.current_dir(&window_dir);
+        cmd.stdout(std::process::Stdio::inherit());
+        cmd.stderr(std::process::Stdio::inherit());
+        cmd.stdin(std::process::Stdio::inherit());
+        let child = cmd.spawn()?;
+        Ok(child)
+    }
 }
 
 // ---------------------------------------------------------------------------
