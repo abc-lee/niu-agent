@@ -562,16 +562,6 @@ class RegionSync:
         while True:
             try:
                 self.run_sync()
-                # Warm up _entity_type_counts cache so /api/stats doesn't
-                # fall back to graph traversal on first call
-                try:
-                    from agent.brain_tools import get_activation_mgr
-                    activation_mgr = get_activation_mgr()
-                    if activation_mgr is not None:
-                        activation_mgr.refresh_entity_mapping()
-                        logger.info("[RegionSync] Entity type counts cache warmed up")
-                except Exception as e:
-                    logger.debug("[RegionSync] Cache warmup failed (non-critical): %s", e)
             except Exception as e:
                 logger.error(f"[RegionSync] Sync loop error: {e}")
             if self._stop_event.wait(self.sync_interval):
