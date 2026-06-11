@@ -714,7 +714,7 @@ fn main() {
         // exeDir doesn't contain memory/ — likely development with temp build dir
         let cwd = env::current_dir()
             .map(|d| d.to_string_lossy().to_string())
-            .unwrap_or_else(|| ".".to_string());
+            .unwrap_or_else(|_| ".".to_string());
         let cwd_memory_dir = PathBuf::from(&cwd).join("memory");
         if cwd_memory_dir.exists() {
             info!(
