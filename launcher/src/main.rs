@@ -69,7 +69,7 @@ impl Splash {
         match message {
             SplashMessage::Tick => {
                 // Advance animation frame
-                self.dot_frame = (self.dot_frame + 1) % 12;
+                self.dot_frame = (self.dot_frame + 1) % 30;
                 // On first tick after window is open, hide Dock icon
                 if !self.dock_hidden && self.window_id.is_some() {
                     self.dock_hidden = true;
@@ -125,9 +125,9 @@ impl Splash {
     }
 
     fn view(&self) -> Element<'_, SplashMessage> {
-        let dots = match self.dot_frame / 4 {
-            0 => ".",
-            1 => "..",
+        let dots = match self.dot_frame / 10 {
+            0 => ".  ",
+            1 => ".. ",
             _ => "...",
         };
         container(
