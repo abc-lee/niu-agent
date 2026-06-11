@@ -240,8 +240,10 @@ fn load_context_config() -> ContextConfig {
             }
         }
         if let Some(v) = ctx.context_window_size {
-            if v > 0 {
+            if v >= 32000 && v <= 2_000_000 {
                 cfg.context_window_size = v;
+            } else {
+                warn!("Invalid contextWindowSize {}, using default {}", v, cfg.context_window_size);
             }
         }
     }
