@@ -777,7 +777,7 @@ fn main() {
                             // Route log level based on Python logger markers
                             if line_text.contains("| INFO") || line_text.contains("| DEBUG") {
                                 info!("niu_api stderr: {}", line_text);
-                            } else if line_text.contains("| WARNING") || line_text.contains("| WARN") {
+                            } else if line_text.contains("| WARNING") || line_text.contains("| WARN") || line_text.contains(":WARNING") || line_text.contains(":WARN") {
                                 warn!("niu_api stderr: {}", line_text);
                             } else if line_text.contains("Error") || line_text.contains("Exception") || line_text.contains("Traceback") {
                                 error!("niu_api stderr: {}", line_text);
