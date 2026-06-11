@@ -941,6 +941,11 @@ function createStickyWindow() {
 // ========== 启动 ==========
 // niu.exe 已经启动了后端，这里只需要创建窗口
 app.whenReady().then(() => {
+  // macOS: 隐藏 Dock 图标，只保留系统托盘图标
+  if (process.platform === 'darwin' && app.dock) {
+    app.dock.hide();
+  }
+
   createSpiritWindow();
   createStickyWindow();
   createTray();
