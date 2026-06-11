@@ -2269,24 +2269,55 @@ def name_person(person_id: str, name: str) -> dict:
     try:
         conn = get_connection()
 
-        # Check if person exists (query name + auto_label for KG merge)
-        cursor = conn.execute(
-            "SELECT id, name, auto_label FROM persons WHERE id = ?", (person_id,)
-        )
-        row = cursor.fetchone()
-
-        if not row:
-            return {
-                "status": "error",
-                "error_code": "PERSON_NOT_FOUND",
-                "message": f"Person not found: {person_id}",
-            }
-
-        current_name = row[1]  # name column
-        auto_label = row[2]    # auto_label column
-
-        # Update name
+        # All DB reads/writes inside _db_write_lock to prevent TOCTOU
         with _db_write_lock:
+            cursor = conn.execute(
+                "SELECT id, name, auto_label, photo_count FROM persons WHERE id = ?", (person_id,)
+            )
+            row = cursor.fetchone()
+
+            if not row:
+                return {
+                    "status": "error",
+                    "error_code": "PERSON_NOT_FOUND",
+                    "message": f"Person not found: {person_id}",
+                }
+
+            current_name = row[1]  # name column
+            auto_label = row[2]    # auto_label column
+            current_photo_count = row[3] or 0  # photo_count
+
+            # Same-name detection: check if another person with the same name already exists
+            if name and name != current_name:
+                dup_cursor = conn.execute(
+                    "SELECT id, name, auto_label, photo_count FROM persons WHERE name = ? AND id != ?",
+                    (name, person_id),
+                )
+                dup_row = dup_cursor.fetchone()
+
+                if dup_row:
+                    return {
+                        "status": "need_confirm",
+                        "message": f"已存在名为\"{name}\"的人物",
+                        "current_person": {
+                            "person_id": person_id,
+                            "name": current_name,
+                            "auto_label": auto_label,
+                            "photo_count": current_photo_count,
+                        },
+                        "existing_person": {
+                            "person_id": dup_row[0],
+                            "name": dup_row[1],
+                            "auto_label": dup_row[2],
+                            "photo_count": dup_row[3] or 0,
+                        },
+                        "merge_suggestion": {
+                            "person_a_id": dup_row[0],   # existing_person — 保留（已命名、照片多）
+                            "person_b_id": person_id,    # current_person — 合并后删除
+                        },
+                        "hint": "请确认：这是同一个人吗？如果是，请调用 merge_persons(person_a_id, person_b_id) 合并；如果只是同名，请换一个名字重新命名",
+                    }
+
             conn.execute("UPDATE persons SET name = ? WHERE id = ?", (name, person_id))
             conn.commit()
 
