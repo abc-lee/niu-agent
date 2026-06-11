@@ -15,7 +15,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 async def main():
     from agent.session import get_message_store
-    from agent.subagent import count_tokens_for_text
+    from agent.subagent import count_tokens_for_text, _read_context_window_tokens
+
+    # 读取上下文窗口大小
+    context_window = _read_context_window_tokens()
 
     # 1. 获取真实 MessageStore
     store = await get_message_store()
@@ -68,10 +71,10 @@ async def main():
     full_tokens = count_tokens_for_text(full_msg_text)
     print(f"[3/6] 完整 prompt：约 {full_tokens:,} tokens")
 
-    if full_tokens > 200_000:
-        print(f"  ⚠️  prompt tokens ({full_tokens:,}) 超过 200K 窗口！子 Agent 会溢出")
+    if full_tokens > context_window:
+        print(f"  ⚠️  prompt tokens ({full_tokens:,}) 超过 {context_window // 1000}K 窗口！子 Agent 会溢出")
     else:
-        print(f"  ✓  prompt tokens 在 200K 窗口内，子 Agent 不会溢出")
+        print(f"  ✓  prompt tokens 在 {context_window // 1000}K 窗口内，子 Agent 不会溢出")
 
     # 5. 加载 MCP 工具
     print(f"[4/7] 加载 MCP 工具...")
