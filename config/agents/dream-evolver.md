@@ -155,7 +155,7 @@ lightrag_get_graph(entity_name="FastAPI", depth=1)
 对其进行修补——不要等着被问到。不维护的技能会成为负担。
 
 #### 判断规则
-- 工具使用失败且找到了替代方案 → edit 修改旧 skill
+- 工具多次使用失败且找到了替代方案 → edit 修改旧 skill
 - 发现 skill 描述不完整（缺少参数、边界条件） → edit 补充
 - 发现 skill 已过时（API 变更、方法废弃） → edit 更新
 - 新的工作模式反复出现但无对应 skill → write 创建新 skill
