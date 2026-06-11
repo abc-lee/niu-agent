@@ -18,23 +18,27 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from agent.session import MessageStore, Message
+from agent.subagent import _read_context_window_tokens, _read_warning_threshold
 
 
 class ContextManager:
     """上下文管理器 - 统一历史管理职责"""
 
-    def __init__(self, message_store: MessageStore, max_messages: int = 50, max_tokens: int = 200000):
+    def __init__(self, message_store: MessageStore, max_messages: int = 50, max_tokens: int = None):
         """
         初始化上下文管理器
 
         Args:
             message_store: 消息存储实例
             max_messages: 最大消息数量（默认50条）
-            max_tokens: 最大 token 数量（默认200K）
+            max_tokens: 最大 token 数量（默认从配置读取）
         """
+        if max_tokens is None:
+            max_tokens = _read_context_window_tokens()
         self.store = message_store
         self.max_messages = max_messages
         self.max_tokens = max_tokens
+        self._warning_threshold = _read_warning_threshold()
 
     async def load_history(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
         """
@@ -115,7 +119,7 @@ class ContextManager:
 
         # 条件2: Token 数量超过阈值的 80%
         tokens = self.count_tokens_simple(messages)
-        if tokens > self.max_tokens * 0.8:
+        if tokens > self.max_tokens * self._warning_threshold:
             return True
 
         return False
