@@ -410,17 +410,39 @@ def _notify_ingest_started() -> None:
 
 
 def _notify_ingest_completed() -> None:
-    """Push an ingest-completed SSE event to all connected clients."""
+    """Push an ingest-completed SSE event to all connected clients.
+
+    Also triggers a lightweight refresh of entity-to-region mapping so that
+    brain region entity counts and /api/stats reflect the newly ingested data.
+    """
     from niu_api.chat import _main_loop, _sync_broadcast
 
     loop = _main_loop
-    if loop is None or loop.is_closed():
-        return
-    event = {"type": "ingest-completed"}
+    if loop is not None and not loop.is_closed():
+        event = {"type": "ingest-completed"}
+        try:
+            loop.call_soon_threadsafe(_sync_broadcast, event)
+        except RuntimeError:
+            pass
+
+    # Refresh entity mapping in a background thread (non-blocking)
+    # This updates _entity_to_region (brain region counts) and
+    # _entity_type_counts (/api/stats) without a full run_sync().
     try:
-        loop.call_soon_threadsafe(_sync_broadcast, event)
-    except RuntimeError:
-        pass
+        from agent.injector.region_sync import get_region_sync
+        import threading
+
+        sync = get_region_sync()
+        if sync is not None:
+            t = threading.Thread(
+                target=sync.refresh_entity_mapping_only,
+                name="entity-mapping-refresh",
+                daemon=True,
+            )
+            t.start()
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).debug("Entity mapping refresh trigger failed: %s", e)
 
 
 def _pipeline_watcher() -> None:
