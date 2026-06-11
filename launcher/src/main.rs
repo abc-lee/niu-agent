@@ -200,7 +200,7 @@ struct ContextConfigOverrides {
     warning_threshold: Option<f64>,
     target_threshold: Option<f64>,
     sleep_trigger_minutes: Option<i32>,
-    context_window_size: Option<i32>,
+    context_window_size: Option<f64>,
 }
 
 /// LoadContextConfig loads context config from preferences.json
@@ -244,8 +244,9 @@ fn load_context_config() -> ContextConfig {
             }
         }
         if let Some(v) = ctx.context_window_size {
-            if v >= 32000 && v <= 2_000_000 {
-                cfg.context_window_size = v;
+            let vi = v as i32;
+            if v > 0.0 && vi >= 32000 && vi <= 2_000_000 {
+                cfg.context_window_size = vi;
             } else {
                 warn!("Invalid contextWindowSize {}, using default {}", v, cfg.context_window_size);
             }

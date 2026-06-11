@@ -1,9 +1,9 @@
 """
 端到端测试：一轮 JSON 压缩方案
 
-模拟真实场景：上下文到 85%（~170K tokens）时触发 force 压缩。
-消息总量控制在 ~170K tokens（不超过 200K 上下文窗口），
-子 Agent 拿到全量内容 + 15% 输出空间，一轮 write 输出压缩方案。
+模拟真实场景：上下文到 warningThreshold 阈值时触发 force 压缩。
+消息总量控制在 warningThreshold * contextWindowSize tokens（不超过上下文窗口），
+子 Agent 拿到全量内容 + 剩余输出空间，一轮 write 输出压缩方案。
 """
 
 import asyncio
@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 async def main():
     from agent.session import get_message_store
-    from agent.subagent import count_tokens_for_text, _read_context_window_tokens
+    from agent.subagent import count_tokens_for_text, _read_context_window_tokens, _read_warning_threshold
 
     # 读取上下文窗口大小
     context_window = _read_context_window_tokens()
@@ -29,8 +29,9 @@ async def main():
     print(f"[0/6] 当前已有 {existing_count} 条消息")
 
     # 2. 计算已有消息的 token 数，确定需要添加多少消息
-    # 真实场景：force 模式在 85%（~170K tokens）时触发，总量不超过 200K
-    target_total_tokens = 170_000  # 85% of 200K
+    # 真实场景：force 模式在 warningThreshold 阈值时触发
+    warning_threshold = _read_warning_threshold()
+    target_total_tokens = int(context_window * warning_threshold)
     existing_content = "".join(getattr(m, "content", "") or "" for m in existing_messages)
     existing_tokens = count_tokens_for_text(existing_content)
     print(f"[1/6] 已有消息 {existing_tokens:,} tokens")

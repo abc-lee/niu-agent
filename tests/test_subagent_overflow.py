@@ -76,10 +76,10 @@ class TestNoPromptChunking:
 
 
 class TestAgentLoopTokenThreshold:
-    """Test that agent_runner_loop exits at 85% token usage."""
+    """Test that agent_runner_loop exits at warningThreshold token usage."""
 
     def test_overflow_returns_structured_report(self, monkeypatch):
-        """When token usage exceeds 85%, agent_runner_loop should return CONTEXT_OVERFLOW."""
+        """When token usage exceeds warningThreshold, agent_runner_loop should return CONTEXT_OVERFLOW."""
         from agent.generic.agent_loop import agent_runner_loop
         from agent.generic.llmcore import MockResponse
 
