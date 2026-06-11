@@ -1,11 +1,11 @@
 # Niu — 个人知识管理助手
 
-Electron 前端 + Go 启动器 + Python Agent 核心 + MCP 服务器集群的混合架构。
+Electron 前端 + Rust 启动器 + Python Agent 核心 + MCP 服务器集群的混合架构。
 
 ## 项目结构
 
 ```
-├── main.go              # Go 启动器（构建+监控子进程）
+├── launcher/            # Rust 启动器（构建+监控子进程+启动加载窗口）
 ├── niu_api/             # Python API 服务（HTTP/SSE）
 ├── agent/               # Agent 核心（主循环、LLM抽象、工具注册）
 ├── mcp-servers/         # MCP 服务器集群（记忆/文件/照片/知识图谱等）
@@ -50,7 +50,7 @@ copy config\user-data\skills\*.md "$env:USERPROFILE\.niu\skills\"
 ## 快速启动
 
 ```bash
-go run main.go
+cd launcher && cargo run --release
 ```
 
 ## 详细文档
