@@ -81,6 +81,17 @@ cp target/release/niu-launcher ../
 
 > **注意**：macOS 交叉编译需要 Xcode Command Line Tools。Windows 交叉编译需在 Windows 上执行或配置交叉工具链。
 
+## 图标资源
+
+应用图标位于 `ui/assistant/icons/`，供 Electron 窗口和系统托盘使用：
+
+| 文件 | 用途 |
+|------|------|
+| `icon-16.png` ~ `icon-256.png` | 各尺寸 PNG 图标（窗口、托盘） |
+| `icon.ico` | Windows 应用图标（打包用） |
+
+Electron 启动时自动从 `icons/` 目录加载，无需编译时嵌入。
+
 ## 详细文档
 
 见 [docs/SYSTEM_MANUAL.md](docs/SYSTEM_MANUAL.md)。
