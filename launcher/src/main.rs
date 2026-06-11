@@ -225,13 +225,17 @@ fn load_context_config() -> ContextConfig {
 
     if let Some(ctx) = prefs.context {
         if let Some(v) = ctx.warning_threshold {
-            if v > 0.0 {
+            if v > 0.0 && v < 1.0 {
                 cfg.warning_threshold = v;
+            } else {
+                warn!("Invalid warningThreshold {}, must be between 0 and 1, using default {}", v, cfg.warning_threshold);
             }
         }
         if let Some(v) = ctx.target_threshold {
-            if v > 0.0 {
+            if v > 0.0 && v < 1.0 {
                 cfg.target_threshold = v;
+            } else {
+                warn!("Invalid targetThreshold {}, must be between 0 and 1, using default {}", v, cfg.target_threshold);
             }
         }
         if let Some(v) = ctx.sleep_trigger_minutes {

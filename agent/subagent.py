@@ -408,7 +408,7 @@ def call_subagent(
 
     # 7. 执行（单次，不分片）
     context_window_tokens = _read_context_window_tokens()
-    # FIFO 截断阈值：75% 的上下文窗口，比溢出检测(85%)低，留出缓冲空间
+    # FIFO 截断阈值：75% 的上下文窗口，比溢出检测(warningThreshold)低，留出缓冲空间
     context_fifo_threshold = int(context_window_tokens * 0.75)
 
     result_text, return_value = _run_agent_loop(

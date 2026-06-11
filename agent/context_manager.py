@@ -117,7 +117,7 @@ class ContextManager:
         if len(messages) > self.max_messages:
             return True
 
-        # 条件2: Token 数量超过阈值的 80%
+        # 条件2: Token 数量超过 warningThreshold
         tokens = self.count_tokens_simple(messages)
         if tokens > self.max_tokens * self._warning_threshold:
             return True

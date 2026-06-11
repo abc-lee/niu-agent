@@ -185,7 +185,7 @@ def agent_runner_loop(
             current_tokens = count_messages_tokens(messages)
             usage_ratio = current_tokens / context_window_tokens
             if usage_ratio > warning_threshold:
-                logger.warning(f"[Overflow] Context {current_tokens}/{context_window_tokens} tokens ({usage_ratio:.1%}) exceeds 85% threshold")
+                logger.warning(f"[Overflow] Context {current_tokens}/{context_window_tokens} tokens ({usage_ratio:.1%}) exceeds {warning_threshold:.0%} threshold")
                 if on_turn_end is not None:
                     on_turn_end(messages, tools_schema, turn)
                 # V4: 通知前端进入空闲状态
