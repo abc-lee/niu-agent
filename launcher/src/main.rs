@@ -1000,6 +1000,28 @@ fn main() {
         }
     });
 
+    // --- macOS: hide Dock icon (NSApplicationActivationPolicyAccessory) ---
+    // Set before creating any window so the splash window won't cause a Dock icon.
+    // NSApplicationActivationPolicyAccessory = 1: app has windows but no Dock icon.
+    #[cfg(target_os = "macos")]
+    {
+        use std::ffi::c_void;
+        extern "C" {
+            fn objc_getClass(name: *const u8) -> *mut c_void;
+            fn sel_registerName(name: *const u8) -> *mut c_void;
+            fn objc_msgSend(obj: *mut c_void, sel: *mut c_void, ...) -> *mut c_void;
+        }
+        unsafe {
+            let nsapp_class = objc_getClass("NSApplication\0".as_ptr());
+            let shared_sel = sel_registerName("sharedApplication\0".as_ptr());
+            let app = objc_msgSend(nsapp_class, shared_sel);
+            let set_policy_sel = sel_registerName("setActivationPolicy:\0".as_ptr());
+            // NSApplicationActivationPolicyAccessory = 1
+            objc_msgSend(app, set_policy_sel, 1i64);
+        }
+        info!("macOS: set NSApplicationActivationPolicyAccessory (no Dock icon)");
+    }
+
     // --- Run iced splash window on the main thread (required by macOS) ---
     let splash = Splash::new(splash_rx);
     let window_settings = window::Settings {
