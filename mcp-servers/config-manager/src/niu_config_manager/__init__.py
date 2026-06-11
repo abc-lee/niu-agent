@@ -379,6 +379,20 @@ def load_user_config() -> dict[str, Any]:
             "type": "openai",
             "reasoning_effort": "",
         },
+        "lightrag_llm": {
+            "presetId": "",
+            "apiKey": "",
+            "apiBase": "",
+            "model": "",
+            "type": "openai",
+            "reasoning_effort": "xhigh",
+        },
+        "context": {
+            "contextWindowSize": 200000,
+            "warningThreshold": 0.8,
+            "targetThreshold": 0.5,
+            "sleepTriggerMinutes": 5,
+        },
         "storage": {"documentRoot": "", "databasePath": ""},
         "firstRun": True,
     }
@@ -821,6 +835,13 @@ def complete_setup(
     # Also update user config
     config = load_user_config()
     config["firstRun"] = False
+    if "context" not in config:
+        config["context"] = {
+            "contextWindowSize": 200000,
+            "warningThreshold": 0.8,
+            "targetThreshold": 0.5,
+            "sleepTriggerMinutes": 5,
+        }
     save_user_config(config)
 
     return {"status": "completed", "memory": memory}
