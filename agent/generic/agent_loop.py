@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 from agent.output_validator import validate_references
+from agent.subagent import _read_warning_threshold
 
 _VALID_STREAM_TYPES = ("reply", "tool_marker", "system", "persist")
 
@@ -169,6 +170,7 @@ def agent_runner_loop(
 
     _harness_fail_count = 0
     _MAX_HARNESS_RETRIES = 3
+    warning_threshold = _read_warning_threshold()
 
     while turn < handler.max_turns:
         turn += 1
@@ -182,7 +184,7 @@ def agent_runner_loop(
         if context_window_tokens > 0:
             current_tokens = count_messages_tokens(messages)
             usage_ratio = current_tokens / context_window_tokens
-            if usage_ratio > 0.85:
+            if usage_ratio > warning_threshold:
                 logger.warning(f"[Overflow] Context {current_tokens}/{context_window_tokens} tokens ({usage_ratio:.1%}) exceeds 85% threshold")
                 if on_turn_end is not None:
                     on_turn_end(messages, tools_schema, turn)
