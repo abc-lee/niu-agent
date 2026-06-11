@@ -53,6 +53,34 @@ copy config\user-data\skills\*.md "$env:USERPROFILE\.niu\skills\"
 cd launcher && cargo run --release
 ```
 
+## 编译 Rust 启动器
+
+Rust 启动器需要根据目标平台编译对应架构的二进制：
+
+```bash
+cd launcher
+
+# 当前平台原生编译
+cargo build --release
+
+# 编译产物位于 target/release/niu-launcher
+# 将其复制到项目根目录即可
+cp target/release/niu-launcher ../
+```
+
+**跨平台交叉编译**（需要先安装对应 target）：
+
+| 目标平台 | 命令 |
+|---------|------|
+| macOS Intel (x86_64) | `rustup target add x86_64-apple-darwin && cargo build --release --target x86_64-apple-darwin` |
+| macOS Apple Silicon (ARM64) | `rustup target add aarch64-apple-darwin && cargo build --release --target aarch64-apple-darwin` |
+| Windows x86_64 | `rustup target add x86_64-pc-windows-msvc && cargo build --release --target x86_64-pc-windows-msvc` |
+| Linux x86_64 | `rustup target add x86_64-unknown-linux-gnu && cargo build --release --target x86_64-unknown-linux-gnu` |
+
+编译产物位于 `target/<target>/release/niu-launcher`（Windows 为 `niu-launcher.exe`）。
+
+> **注意**：macOS 交叉编译需要 Xcode Command Line Tools。Windows 交叉编译需在 Windows 上执行或配置交叉工具链。
+
 ## 详细文档
 
 见 [docs/SYSTEM_MANUAL.md](docs/SYSTEM_MANUAL.md)。
