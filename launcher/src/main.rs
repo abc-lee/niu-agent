@@ -125,16 +125,26 @@ impl Splash {
     }
 
     fn view(&self) -> Element<'_, SplashMessage> {
-        let dots = match self.dot_frame / 10 {
-            0 => ".  ",
-            1 => ".. ",
+        let dots = match (self.dot_frame / 10) % 3 {
+            0 => ".",
+            1 => "..",
             _ => "...",
         };
+        // Two separate text elements: CJK label + fixed-width container for dots
+        // The dots container has a fixed width so the row's total width never changes,
+        // preventing layout shift when the number of dots changes.
+        let label = iced::widget::text("正在启动")
+            .size(18)
+            .font(CJK_FONT)
+            .color([1.0, 1.0, 1.0, 1.0]);
+        let dots_text = iced::widget::text(dots)
+            .size(18)
+            .font(Font::MONOSPACE)
+            .color([1.0, 1.0, 1.0, 1.0]);
+        let dots_container = container(dots_text).width(Length::Fixed(36.0));
         container(
-            iced::widget::text(format!("正在启动{}", dots))
-                .size(20)
-                .font(CJK_FONT)
-                .color([1.0, 1.0, 1.0, 1.0]),
+            iced::widget::row![label, dots_container]
+                .align_y(iced::alignment::Vertical::Center),
         )
         .width(Length::Fill)
         .height(Length::Fill)
