@@ -719,10 +719,6 @@ fn main() {
     // Kill stale Python API process occupying the port before starting a new one
     kill_stale_api_process(args.port);
 
-    // Shared API server PID for graceful shutdown from main thread
-    let api_pid: Arc<std::sync::atomic::AtomicU32> = Arc::new(std::sync::atomic::AtomicU32::new(0));
-    let api_pid_bg = api_pid.clone();
-
     // Spawn background thread: start Python API, health check, preload check, launch Electron
     let python_path_bg = python_path.clone();
     let project_root_bg = project_root.clone();
@@ -748,9 +744,6 @@ fn main() {
             .stderr(std::process::Stdio::piped())
             .spawn()
             .expect("Failed to start Python API server command");
-
-        // Store PID for graceful shutdown from main thread
-        api_pid_bg.store(api_server_child.id(), std::sync::atomic::Ordering::SeqCst);
 
         // stdout thread
         if let Some(stdout) = api_server_child.stdout.take() {
@@ -955,7 +948,7 @@ fn main() {
                 {
                     use nix::sys::signal::{self, Signal};
                     use nix::unistd::Pid;
-                    let pid = Pid::from_raw(api_pid_bg.load(std::sync::atomic::Ordering::SeqCst) as i32);
+                    let pid = Pid::from_raw(api_server_child.id() as i32);
                     let _ = signal::kill(pid, Signal::SIGTERM);
                 }
                 #[cfg(windows)]
@@ -979,7 +972,7 @@ fn main() {
                                 {
                                     use nix::sys::signal::{self, Signal};
                                     use nix::unistd::Pid;
-                                    let pid = Pid::from_raw(api_pid_bg.load(std::sync::atomic::Ordering::SeqCst) as i32);
+                                    let pid = Pid::from_raw(api_server_child.id() as i32);
                                     let _ = signal::kill(pid, Signal::SIGKILL);
                                 }
                                 #[cfg(windows)]
