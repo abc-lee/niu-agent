@@ -24,16 +24,16 @@ from agent.subagent import _read_context_window_tokens, _read_warning_threshold
 class ContextManager:
     """上下文管理器 - 统一历史管理职责"""
 
-    def __init__(self, message_store: MessageStore, max_messages: int = 50, max_tokens: int = None):
+    def __init__(self, message_store: MessageStore, max_messages: int = 50, max_tokens: int = 0):
         """
         初始化上下文管理器
 
         Args:
             message_store: 消息存储实例
             max_messages: 最大消息数量（默认50条）
-            max_tokens: 最大 token 数量（默认从配置读取）
+            max_tokens: 最大 token 数量（0 表示从配置读取）
         """
-        if max_tokens is None:
+        if max_tokens <= 0:
             max_tokens = _read_context_window_tokens()
         self.store = message_store
         self.max_messages = max_messages
