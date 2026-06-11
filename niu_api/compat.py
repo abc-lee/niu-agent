@@ -424,6 +424,37 @@ async def get_preload_status():
     return {"ready": _preload_complete, "uptime": str(datetime.now() - _startup_time).split(".")[0]}
 
 
+def _count_entities_from_graph(adapter) -> tuple[int, int]:
+    """Fallback: count persons and notes by traversing NetworkX graph.
+
+    Used when _entity_type_counts cache is empty (before first refresh).
+    """
+    persons = 0
+    notes = 0
+    try:
+        rag = adapter._get_rag()
+        if rag is not None:
+            graph_obj = getattr(rag, "chunk_entity_relation_graph", None)
+            if graph_obj is not None:
+                nx_graph = graph_obj._graph if hasattr(graph_obj, "_graph") else graph_obj
+                if nx_graph is not None:
+                    from niu_api.internal.lightrag_manager import graph_read_lock
+
+                    with graph_read_lock():
+                        snapshot = nx_graph.copy()
+
+                    for node_name in snapshot.nodes():
+                        attrs = snapshot.nodes[node_name] if snapshot.has_node(node_name) else {}
+                        entity_type = attrs.get("entity_type", "").lower()
+                        if entity_type == "person":
+                            persons += 1
+                        elif entity_type in ("note", "knowledge"):
+                            notes += 1
+    except Exception:
+        pass
+    return persons, notes
+
+
 @router.get("/api/stats")
 async def get_stats() -> StatsResponse:
     """Get system stats"""
@@ -445,25 +476,23 @@ async def get_stats() -> StatsResponse:
         if isinstance(doc_status, dict) and "processed" in doc_status:
             files = doc_status["processed"]
 
-        # Person and note counts: traverse NetworkX graph by entity_type
-        rag = adapter._get_rag()
-        if rag is not None:
-            graph_obj = getattr(rag, "chunk_entity_relation_graph", None)
-            if graph_obj is not None:
-                nx_graph = graph_obj._graph if hasattr(graph_obj, "_graph") else graph_obj
-                if nx_graph is not None:
-                    from niu_api.internal.lightrag_manager import graph_read_lock
+        # Person and note counts: from cached entity type counts (O(1))
+        try:
+            from agent.brain_tools import get_activation_mgr
 
-                    with graph_read_lock():
-                        snapshot = nx_graph.copy()
-
-                    for node_name in snapshot.nodes():
-                        attrs = snapshot.nodes[node_name] if snapshot.has_node(node_name) else {}
-                        entity_type = attrs.get("entity_type", "").lower()
-                        if entity_type == "person":
-                            persons += 1
-                        elif entity_type in ("note", "knowledge"):
-                            notes += 1
+            activation_mgr = get_activation_mgr()
+            if activation_mgr is not None:
+                type_counts = activation_mgr.get_entity_type_counts()
+                if type_counts:
+                    persons = type_counts.get("person", 0)
+                    notes = type_counts.get("note", 0) + type_counts.get("knowledge", 0)
+                else:
+                    # Cache empty (not yet refreshed), fall back to graph traversal
+                    persons, notes = _count_entities_from_graph(adapter)
+            else:
+                persons, notes = _count_entities_from_graph(adapter)
+        except Exception:
+            persons, notes = _count_entities_from_graph(adapter)
     except Exception as e:
         logger.debug(f"[Stats] LightRAG stats unavailable: {e}")
 
