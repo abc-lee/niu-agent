@@ -125,6 +125,8 @@ class RegionActivationManager:
         self._total_activation_rounds: int = 0
         # Cached member counts (updated on initialize/remove)
         self._member_counts: dict[str, int] = {}
+        # Cached entity type counts (for /api/stats, updated on refresh)
+        self._entity_type_counts: dict[str, int] = {}
 
     # ------------------------------------------------------------------
     # Initialization
@@ -178,6 +180,9 @@ class RegionActivationManager:
                 # Cache member count for O(1) lookup in get_merge_candidates
                 self._member_counts[region.name] = len(region.members)
 
+                # Update entity type counts from graph (for /api/stats cache)
+                self._entity_type_counts = self._build_entity_type_counts()
+
             preserved_count = sum(1 for rid in old_state if rid in self._regions)
             logger.info(
                 "初始化脑区激活管理器: %d 个区域, %d 个实体映射, %d 个保留激活状态",
@@ -185,6 +190,94 @@ class RegionActivationManager:
                 len(self._entity_to_region),
                 preserved_count,
             )
+
+    def _build_entity_type_counts(self) -> dict[str, int]:
+        """Build entity type counts from NetworkX graph node attributes.
+
+        Called from initialize_from_regions() to populate _entity_type_counts
+        without requiring a separate refresh_entity_mapping() call.
+        """
+        try:
+            from niu_api.internal.lightrag_manager import graph_read_lock, get_lightrag
+
+            counts: dict[str, int] = {}
+            rag = get_lightrag()
+            if rag is not None:
+                graph_obj = getattr(rag, "chunk_entity_relation_graph", None)
+                if graph_obj is not None:
+                    nx_graph = graph_obj._graph if hasattr(graph_obj, "_graph") else graph_obj
+                    if nx_graph is not None:
+                        with graph_read_lock():
+                            snapshot = nx_graph.copy()
+                        for node_name in snapshot.nodes():
+                            attrs = snapshot.nodes[node_name] if snapshot.has_node(node_name) else {}
+                            entity_type = attrs.get("entity_type", "").lower()
+                            if entity_type:
+                                counts[entity_type] = counts.get(entity_type, 0) + 1
+            return counts
+        except Exception as e:
+            logger.debug("_build_entity_type_counts failed: %s", e)
+            return {}
+
+    def refresh_entity_mapping(self) -> None:
+        """Lightweight refresh of entity-to-region mapping and type counts.
+
+        Reads _region:contains edges and node entity_types from the NetworkX
+        graph, then updates _entity_to_region, _member_counts, and
+        _entity_type_counts. Preserves activation state, neighbors, and
+        co-activation data.
+
+        Uses double-buffering: builds new mappings in temporary dicts first,
+        then atomically swaps under self._lock to avoid readers seeing
+        empty mappings during rebuild.
+
+        Called after ingest completes — much cheaper than full run_sync().
+        """
+        from niu_api.internal.lightrag_manager import (
+            get_all_region_members,
+            graph_read_lock,
+            get_lightrag,
+        )
+
+        try:
+            # 1. Build new _entity_to_region and _member_counts (outside lock)
+            all_members = get_all_region_members()
+            new_entity_to_region: dict[str, str] = {}
+            new_member_counts: dict[str, int] = {}
+            for region_name, members in all_members.items():
+                for member_name in members:
+                    new_entity_to_region[member_name] = region_name
+                new_member_counts[region_name] = len(members)
+
+            # 2. Build new _entity_type_counts from node attributes (outside lock)
+            new_entity_type_counts: dict[str, int] = {}
+            rag = get_lightrag()
+            if rag is not None:
+                graph_obj = getattr(rag, "chunk_entity_relation_graph", None)
+                if graph_obj is not None:
+                    nx_graph = graph_obj._graph if hasattr(graph_obj, "_graph") else graph_obj
+                    if nx_graph is not None:
+                        with graph_read_lock():
+                            snapshot = nx_graph.copy()
+                        for node_name in snapshot.nodes():
+                            attrs = snapshot.nodes[node_name] if snapshot.has_node(node_name) else {}
+                            entity_type = attrs.get("entity_type", "").lower()
+                            if entity_type:
+                                new_entity_type_counts[entity_type] = new_entity_type_counts.get(entity_type, 0) + 1
+
+            # 3. Atomic swap under self._lock (no clear() — readers never see empty)
+            with self._lock:
+                self._entity_to_region = new_entity_to_region
+                self._member_counts = new_member_counts
+                self._entity_type_counts = new_entity_type_counts
+
+            logger.info(
+                "实体映射刷新完成: %d 个实体映射, %d 种类型",
+                len(new_entity_to_region),
+                len(new_entity_type_counts),
+            )
+        except Exception as e:
+            logger.warning("实体映射刷新失败: %s", e)
 
     # ------------------------------------------------------------------
     # Activation (query hit)
@@ -449,6 +542,16 @@ class RegionActivationManager:
                 for entity, rid in self._entity_to_region.items()
                 if rid == region_id
             ]
+
+    def get_entity_type_counts(self) -> dict[str, int]:
+        """Get cached entity type counts (e.g., {"person": 5, "note": 3}).
+
+        Returns the _entity_type_counts cache populated by refresh_entity_mapping().
+        If cache is empty (not yet refreshed), returns empty dict — caller should
+        fall back to graph traversal.
+        """
+        with self._lock:
+            return dict(self._entity_type_counts)
 
     def get_region_description(self, region_id: str) -> str:
         """Get the description for a region (from BrainRegionInfo.description)."""
