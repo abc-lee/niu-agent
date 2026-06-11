@@ -1166,6 +1166,7 @@
       console.log('[Chat] ingest-completed SSE event received');
       hideProgress();
       stopIngestPolling();
+      loadStats();
     });
 
     // ========== 数据库$视图刷新 ==========
@@ -1308,7 +1309,6 @@
       // 滚动到底部
       messages.scrollTop = messages.scrollHeight;
       loadStats();
-      setInterval(loadStats, 60000);
       userInput.focus();
     });
     
