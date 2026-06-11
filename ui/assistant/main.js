@@ -633,8 +633,8 @@ ipcMain.handle('process-image', async (event, filePath) => {
       headers: {
         'Content-Type': 'application/json',
         'Content-Length': Buffer.byteLength(data)
-      },
-      timeout: 300000  // 5 分钟超时（图片处理可能较慢）
+      }
+      // No timeout — agent tasks can run indefinitely; user controls termination via Stop button
     }, (res) => {
       let body = '';
       res.on('data', chunk => body += chunk);
@@ -652,10 +652,6 @@ ipcMain.handle('process-image', async (event, filePath) => {
       });
     });
     req.on('error', (e) => resolve({ error: e.message }));
-    req.on('timeout', () => {
-      req.destroy();
-      resolve({ error: '请求超时' });
-    });
     req.write(data);
     req.end();
   });
@@ -674,8 +670,8 @@ ipcMain.handle('send-message', async (event, message) => {
       headers: {
         'Content-Type': 'application/json',
         'Content-Length': Buffer.byteLength(data)
-      },
-      timeout: 300000  // 5 分钟超时
+      }
+      // No timeout — agent tasks can run indefinitely; user controls termination via Stop button
     }, (res) => {
       let body = '';
       res.on('data', chunk => body += chunk);
@@ -689,10 +685,6 @@ ipcMain.handle('send-message', async (event, message) => {
       });
     });
     req.on('error', (e) => resolve({ error: e.message }));
-    req.on('timeout', () => {
-      req.destroy();
-      resolve({ error: '请求超时' });
-    });
     req.write(data);
     req.end();
   });
@@ -726,8 +718,8 @@ ipcMain.handle('send-to-agent', async (event, { message, context }) => {
       headers: {
         'Content-Type': 'application/json',
         'Content-Length': Buffer.byteLength(data)
-      },
-      timeout: 300000  // 5分钟超时，给 LLM 足够时间
+      }
+      // No timeout — agent tasks can run indefinitely; user controls termination via Stop button
     }, (res) => {
       let body = '';
       res.on('data', chunk => body += chunk);
@@ -748,11 +740,6 @@ ipcMain.handle('send-to-agent', async (event, { message, context }) => {
       });
     });
     req.on('error', (e) => resolve({ error: e.message }));
-    req.on('timeout', () => {
-      console.error('Agent 请求超时');
-      req.destroy();
-      resolve({ error: '请求超时' });
-    });
     req.write(data);
     req.end();
   });
