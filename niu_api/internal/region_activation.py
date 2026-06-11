@@ -180,8 +180,8 @@ class RegionActivationManager:
                 # Cache member count for O(1) lookup in get_merge_candidates
                 self._member_counts[region.name] = len(region.members)
 
-                # Update entity type counts from graph (for /api/stats cache)
-                self._entity_type_counts = self._build_entity_type_counts()
+            # Update entity type counts from graph (for /api/stats cache)
+            self._entity_type_counts = self._build_entity_type_counts()
 
             preserved_count = sum(1 for rid in old_state if rid in self._regions)
             logger.info(
