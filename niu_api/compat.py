@@ -13,6 +13,7 @@ import time
 from datetime import datetime
 
 from agent.session import get_message_store
+from agent.subagent import _read_context_window_tokens, _read_target_threshold
 from fastapi import APIRouter
 from loguru import logger
 from pydantic import BaseModel
@@ -850,17 +851,7 @@ async def _tidy_context_impl(request: dict):
         estimated_tokens = sum(msg_tokens)
 
         # 读取上下文窗口大小（tokens）
-        context_window_tokens = 200000  # 默认值
-        try:
-            import json
-            from pathlib import Path
-            prefs_path = Path.home() / ".niu" / "preferences.json"
-            if prefs_path.exists():
-                prefs = json.loads(prefs_path.read_text(encoding="utf-8"))
-                context_window_tokens = prefs.get("context", {}).get("contextWindowSize", 200000)
-        except Exception as e:
-            logger.warning(f"[Tidy] Failed to read preferences for context window size: {e}")
-            # 保留默认 context_window_tokens = 200000，不影响游标
+        context_window_tokens = _read_context_window_tokens()
         usage_percent = (estimated_tokens / context_window_tokens) * 100
 
         logger.info(f"[Tidy] Current context: {message_count} messages, {estimated_tokens} tokens, {usage_percent:.1f}%")
@@ -1555,7 +1546,7 @@ async def _tidy_context_impl(request: dict):
                 except Exception as e:
                     logger.warning(f"[Tidy] Failed to read compress cursor in force mode: {e}")
 
-            target_tokens = int(estimated_tokens * 0.5)
+            target_tokens = int(estimated_tokens * _read_target_threshold())
             compress_plan_path = os.path.expanduser("~/.niu/compress_plan.json")
             # 清理上次的残留计划文件
             if os.path.exists(compress_plan_path):
