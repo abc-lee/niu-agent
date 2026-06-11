@@ -7,8 +7,13 @@ SubAgent Module
 import os
 import json
 import yaml
+from pathlib import Path
 from typing import Optional, Dict, Any, List, Tuple
 from loguru import logger
+
+DEFAULT_CONTEXT_WINDOW_SIZE = 200000
+MIN_CONTEXT_WINDOW_SIZE = 32000    # 32K 最小合理值
+MAX_CONTEXT_WINDOW_SIZE = 2000000  # 2M 上限
 
 
 def count_tokens_for_text(text: str) -> int:
@@ -34,22 +39,49 @@ def count_tokens_for_text(text: str) -> int:
 
 
 def _read_context_window_tokens() -> int:
-    """
-    从 ~/.niu/preferences.json 读取上下文窗口大小
+    """Read context window size from ~/.niu/preferences.json."""
+    try:
+        home = Path.home()
+        prefs_path = home / ".niu" / "preferences.json"
+        with open(prefs_path, "r") as f:
+            prefs = json.load(f)
+        size = prefs.get("context", {}).get("contextWindowSize", DEFAULT_CONTEXT_WINDOW_SIZE)
+        if isinstance(size, (int, float)) and MIN_CONTEXT_WINDOW_SIZE <= size <= MAX_CONTEXT_WINDOW_SIZE:
+            return int(size)
+        logger.warning(f"Invalid contextWindowSize {size}, using default {DEFAULT_CONTEXT_WINDOW_SIZE}")
+    except Exception:
+        pass
+    return DEFAULT_CONTEXT_WINDOW_SIZE
 
-    Returns:
-        上下文窗口 token 数（默认 200000）
+
+def _read_context_threshold(key: str, default: float) -> float:
+    """Read a context threshold from ~/.niu/preferences.json.
+
+    Args:
+        key: Field name in context section (e.g. 'warningThreshold', 'targetThreshold')
+        default: Default value if key not found or invalid
     """
     try:
-        import json as _json
-        from pathlib import Path
-        prefs_path = Path.home() / ".niu" / "preferences.json"
-        if prefs_path.exists():
-            prefs = _json.loads(prefs_path.read_text(encoding="utf-8"))
-            return prefs.get("context", {}).get("contextWindowSize", 200000)
-    except Exception as e:
-        logger.warning(f"[SubAgent] Failed to read context window size from preferences: {e}")
-    return 200000
+        home = Path.home()
+        prefs_path = home / ".niu" / "preferences.json"
+        with open(prefs_path, "r") as f:
+            prefs = json.load(f)
+        val = prefs.get("context", {}).get(key, default)
+        if isinstance(val, (int, float)) and 0.0 < val < 1.0:
+            return float(val)
+    except Exception:
+        pass
+    return default
+
+
+def _read_warning_threshold() -> float:
+    """Read warning threshold (overflow detection). Default 0.80, matching Rust launcher."""
+    return _read_context_threshold("warningThreshold", 0.80)
+
+
+def _read_target_threshold() -> float:
+    """Read target threshold (force compress target). Default 0.50, matching Rust launcher."""
+    return _read_context_threshold("targetThreshold", 0.50)
 
 
 def _run_agent_loop(
