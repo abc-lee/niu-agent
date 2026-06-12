@@ -1037,6 +1037,7 @@ class NiuRunner:
             history=history,  # Pass history to agent_loop
             on_turn_end=self._on_turn_end,  # 每轮结束后刷新动态注入
             context_window_tokens=context_window_tokens,  # 主 Agent 溢出检测
+            context_fifo_threshold=int(context_window_tokens * 0.75),  # 主 Agent FIFO 截断阈值
         )
 
         # 累加输出（双管道：full_resp 只含 reply 内容，用于 DB 存储）
