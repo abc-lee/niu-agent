@@ -180,27 +180,12 @@ def agent_runner_loop(
             clear_stop()
             yield StreamEvent("system", "chat_idle")
             return {"result": "STOPPED", "messages": messages}
-        # 上下文溢出保护：检查 token 使用率
+        # 上下文使用率监控（仅警告，不主动退出 — 由 LLM API 报错驱动压缩）
         if context_window_tokens > 0:
             current_tokens = count_messages_tokens(messages)
             usage_ratio = current_tokens / context_window_tokens
             if usage_ratio > warning_threshold:
-                logger.warning(f"[Overflow] Context {current_tokens}/{context_window_tokens} tokens ({usage_ratio:.1%}) exceeds {warning_threshold:.0%} threshold")
-                if on_turn_end is not None:
-                    on_turn_end(messages, tools_schema, turn)
-                # V4: 通知前端进入空闲状态
-                clear_stop()
-                yield StreamEvent("system", "chat_idle")
-                return {
-                    "result": "CONTEXT_OVERFLOW",
-                    "data": {
-                        "overflow": True,
-                        "turns_completed": turn - 1,
-                        "tokens_used": current_tokens,
-                        "tokens_limit": context_window_tokens,
-                    },
-                    "messages": messages,
-                }
+                logger.warning(f"[Context] High usage {current_tokens}/{context_window_tokens} tokens ({usage_ratio:.1%}), will continue and let LLM API decide")
         if verbose:
             yield StreamEvent("system", f"**LLM Running (Turn {turn}) ...**\n\n")
         if turn % 10 == 0:
