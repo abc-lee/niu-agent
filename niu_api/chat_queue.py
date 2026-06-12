@@ -315,7 +315,7 @@ class ChatQueue:
 
             acquired = False
             try:
-                acquired = await asyncio.wait_for(_chat_lock.acquire(), timeout=120)
+                acquired = await asyncio.wait_for(_chat_lock.acquire(), timeout=600.0)
                 if not acquired:
                     raise TimeoutError("Timeout waiting for chat lock")
                 full_reply = await asyncio.get_running_loop().run_in_executor(None, sync_chat)
