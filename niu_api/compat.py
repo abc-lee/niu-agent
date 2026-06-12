@@ -424,6 +424,7 @@ class StatsResponse(BaseModel):
     files: int = 0      # 已处理文档数
     persons: int = 0    # 人物实体数
     notes: int = 0      # 笔记/知识实体数
+    context_usage: float = 0.0  # 上下文使用率 0.0-1.0
 
 
 # Track startup time
@@ -541,7 +542,17 @@ async def get_stats() -> StatsResponse:
     except Exception as e:
         logger.debug(f"[Stats] LightRAG stats unavailable: {e}")
 
-    return StatsResponse(messages=messages, uptime=uptime, files=files, persons=persons, notes=notes)
+    # 计算上下文使用率
+    context_usage = 0.0
+    try:
+        all_msgs = await store.get_messages()
+        total_tokens = _estimate_total_tokens(all_msgs)
+        context_window = _read_context_window_tokens()
+        context_usage = total_tokens / context_window if context_window > 0 else 0.0
+    except Exception:
+        context_usage = 0.0
+
+    return StatsResponse(messages=messages, uptime=uptime, files=files, persons=persons, notes=notes, context_usage=context_usage)
 
 
 def _force_exit_after_delay():

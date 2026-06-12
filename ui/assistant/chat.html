@@ -341,6 +341,20 @@
       align-items: center;
       gap: 4px;
     }
+    .context-usage {
+      display: flex;
+      align-items: center;
+      gap: 3px;
+      cursor: default;
+    }
+    .context-usage svg {
+      flex-shrink: 0;
+    }
+    .context-usage span {
+      font-size: 11px;
+      font-weight: 600;
+      min-width: 28px;
+    }
     .status-bar .graph-btn {
       background: #a3f0c2;
       color: #000;
@@ -528,6 +542,15 @@
     
     <div class="status-bar" id="status-bar">
       <div class="stats">
+        <span class="stat context-usage" id="context-usage" title="上下文使用率">
+          <svg width="20" height="20" viewBox="0 0 20 20">
+            <circle cx="10" cy="10" r="8" fill="none" stroke="#333" stroke-width="2.5"/>
+            <circle cx="10" cy="10" r="8" fill="none" stroke="#4CAF50" stroke-width="2.5"
+              stroke-dasharray="50.27" stroke-dashoffset="50.27" stroke-linecap="round"
+              transform="rotate(-90 10 10)" id="context-usage-arc"/>
+          </svg>
+          <span id="context-usage-text">0%</span>
+        </span>
         <span class="stat">📁 <span id="file-count">0</span></span>
         <span class="stat">👤 <span id="person-count">0</span></span>
         <span class="stat">📝 <span id="note-count">0</span></span>
@@ -1083,6 +1106,23 @@
           fileCount.textContent = result.files || 0;
           personCount.textContent = result.persons || 0;
           noteCount.textContent = result.notes || 0;
+          // 更新上下文使用率
+          const usage = result.context_usage || 0;
+          const pct = Math.round(usage * 100);
+          const arc = document.getElementById('context-usage-arc');
+          const text = document.getElementById('context-usage-text');
+          if (arc && text) {
+            const circumference = 2 * Math.PI * 8; // 50.27
+            arc.setAttribute('stroke-dashoffset', circumference * (1 - usage));
+            // 颜色：<70% 绿色，70-80% 黄色，≥80% 红色
+            let color;
+            if (pct < 70) color = '#4CAF50';
+            else if (pct < 80) color = '#FF9800';
+            else color = '#F44336';
+            arc.setAttribute('stroke', color);
+            text.textContent = pct + '%';
+            text.style.color = color;
+          }
         }
       } catch (e) {
         console.error('加载统计失败:', e);
