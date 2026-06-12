@@ -356,6 +356,7 @@ def call_subagent(
     llm_config: Dict[str, Any],
     mcp_client=None,
     history: Optional[list] = None,
+    context_fifo_threshold: int = -1,
 ) -> str:
     """
     调用子 Agent
@@ -368,6 +369,7 @@ def call_subagent(
         task: 任务描述
         llm_config: LLM 配置
         mcp_client: MCP 客户端
+        context_fifo_threshold: FIFO 截断阈值。-1 = 默认 75%，0 = 关闭 FIFO，>0 = 自定义值
 
     Returns:
         子 Agent 执行结果
@@ -428,8 +430,13 @@ def call_subagent(
 
     # 7. 执行（单次，不分片）
     context_window_tokens = _read_context_window_tokens()
-    # FIFO 截断阈值：75% 的上下文窗口，比溢出检测(warningThreshold)低，留出缓冲空间
-    context_fifo_threshold = int(context_window_tokens * 0.75)
+    # FIFO 截断阈值：-1 = 默认 75%，0 = 关闭 FIFO，>0 = 自定义值
+    if context_fifo_threshold == -1:
+        fifo_threshold = int(context_window_tokens * 0.75)
+    elif context_fifo_threshold == 0:
+        fifo_threshold = 0
+    else:
+        fifo_threshold = context_fifo_threshold
 
     result_text, return_value = _run_agent_loop(
         client=client,
@@ -440,7 +447,7 @@ def call_subagent(
         max_turns=20,
         initial_user_content=task,
         context_window_tokens=context_window_tokens,
-        context_fifo_threshold=context_fifo_threshold,
+        context_fifo_threshold=fifo_threshold,
         history=history,
     )
 

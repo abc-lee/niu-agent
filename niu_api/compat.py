@@ -1612,6 +1612,7 @@ async def _tidy_context_impl(request: dict):
                     task=prompt,
                     llm_config=llm_config,
                     mcp_client=None,
+                    context_fifo_threshold=0,
                 )
 
             result = await asyncio.to_thread(run_context_manager_force)
