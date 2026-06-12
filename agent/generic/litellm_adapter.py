@@ -351,7 +351,28 @@ class LiteLLMSession(BaseSession):
             "request_params": {k: v for k, v in request_params.items() if k not in ("messages", "tools")},
         }, seq=raw_log_seq)
 
-        response = litellm.completion(**request_params)
+        try:
+            response = litellm.completion(**request_params)
+        except Exception as init_err:
+            # 初始 API 调用就失败（如 context_length_exceeded），直接返回 MockResponse
+            error_msg = str(init_err).lower()
+            is_context_overflow = (
+                "context_length_exceeded" in str(init_err)
+                or "context window" in error_msg
+                or "prompt is too long" in error_msg
+                or "maximum context length" in error_msg
+            )
+            if is_context_overflow:
+                logger.warning(f"[STREAM] Context length exceeded on initial call: {init_err}")
+                return MockResponse(
+                    thinking="",
+                    content="",
+                    tool_calls=[],
+                    raw="",
+                    context_overflow=True,
+                )
+            # 非 context overflow 错误，重新抛出
+            raise
 
         full_content = ""
         reasoning_content = ""
@@ -454,6 +475,24 @@ class LiteLLMSession(BaseSession):
 
         except Exception as e:
             error_msg = str(e)
+
+            # 检测 context_length_exceeded 错误 — 设置标记让 agent_loop 触发强制压缩
+            is_context_overflow = (
+                "context_length_exceeded" in error_msg
+                or "context window" in error_msg.lower()
+                or "prompt is too long" in error_msg.lower()
+                or "maximum context length" in error_msg.lower()
+            )
+            if is_context_overflow:
+                logger.warning(f"[STREAM] Context length exceeded: {e}")
+                return MockResponse(
+                    thinking=reasoning_content or "",
+                    content=full_content or "",
+                    tool_calls=tool_calls,
+                    raw=full_content or "",
+                    context_overflow=True,
+                )
+
             is_socket_error = "10038" in error_msg or "10054" in error_msg or "non-socket" in error_msg.lower()
 
             if is_socket_error and not full_content:
