@@ -351,9 +351,9 @@ async def chat(request: ChatRequest) -> StreamingResponse:
 
     # Stream response
     async def generate():
-        # 排队等待锁：最多等 60 秒
+        # 排队等待锁：最多等 300 秒（压缩管道可能执行 2+ 分钟）
         try:
-            await asyncio.wait_for(_chat_lock.acquire(), timeout=60.0)
+            await asyncio.wait_for(_chat_lock.acquire(), timeout=300.0)
         except asyncio.TimeoutError:
             logger.warning("[/chat] _chat_lock 60s timeout, request rejected")
             yield f"data: {json.dumps({'error': 'Another request is in progress, please wait'})}\n\n"
@@ -471,10 +471,10 @@ async def chat_sync(request: ChatRequest) -> ChatResponse:
             status_code=400, detail="LLM not configured. Please set up API key first."
         )
 
-    # 排队等待锁：最多等 60 秒
+    # 排队等待锁：最多等 300 秒（压缩管道可能执行 2+ 分钟）
     # 锁获取后立即进入 try/finally，确保 CancelledError 不会导致锁泄漏
     try:
-        await asyncio.wait_for(_chat_lock.acquire(), timeout=60.0)
+        await asyncio.wait_for(_chat_lock.acquire(), timeout=300.0)
     except asyncio.TimeoutError:
         logger.warning("[/chat/sync] _chat_lock 60s timeout, request rejected")
         raise HTTPException(

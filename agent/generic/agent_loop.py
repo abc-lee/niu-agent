@@ -1,6 +1,8 @@
-import json, logging, re, sys
+import json, re, sys
 from dataclasses import dataclass
 from typing import Any, Optional
+
+from loguru import logger
 
 from agent.output_validator import validate_references
 from agent.subagent import _read_warning_threshold
@@ -33,7 +35,6 @@ class StreamEvent:
         return NotImplemented
 
 
-logger = logging.getLogger(__name__)
 
 
 def count_messages_tokens(messages: list) -> int:
@@ -162,10 +163,11 @@ def agent_runner_loop(
     })
 
     # Debug info only - logging is done in ToolClient.chat where the real prompt is built
-    print(f"[Debug] agent_runner_loop: {len(messages)} messages (history: {len(history) if history else 0})", file=sys.stderr, flush=True)
+    logger.info(f"[Debug] agent_runner_loop: {len(messages)} messages (history: {len(history) if history else 0})")
 
     turn = 0
     last_prompt_tokens = 0
+    _compress_cooldown = False  # 回调冷却：同一轮 agent_runner_loop 只触发一次压缩
     handler._done_hooks = []
     handler.max_turns = max_turns
     # V4: 通知前端进入忙碌状态
@@ -184,7 +186,7 @@ def agent_runner_loop(
             yield StreamEvent("system", "chat_idle")
             return {"result": "STOPPED", "messages": messages}
         # === 上下文使用率检测（prompt_tokens 驱动）===
-        if last_prompt_tokens > 0 and context_window_tokens > 0:
+        if last_prompt_tokens > 0 and context_window_tokens > 0 and not _compress_cooldown:
             usage_ratio = last_prompt_tokens / context_window_tokens
             if usage_ratio > warning_threshold:
                 if on_context_high_usage:
@@ -194,6 +196,7 @@ def agent_runner_loop(
                     on_context_high_usage(messages, last_prompt_tokens, context_window_tokens)
                     # 回调内部已完成压缩并原地修改 messages（messages[:] = ...）
                     last_prompt_tokens = 0  # 重置，下轮重新获取
+                    _compress_cooldown = True  # 冷却：本次 agent_runner_loop 不再触发压缩
                 else:
                     # 子 Agent：FIFO 裁剪到 target 阈值
                     target_tokens = context_target_threshold if context_target_threshold > 0 else int(context_window_tokens * 0.50)
@@ -244,9 +247,9 @@ def agent_runner_loop(
                 _pt = u.get('prompt_tokens', 0) if isinstance(u, dict) else getattr(u, 'prompt_tokens', 0)
                 if isinstance(_pt, (int, float)):
                     last_prompt_tokens = int(_pt)
-                    print(f"[Context] prompt_tokens={last_prompt_tokens}, context_window={context_window_tokens}", file=sys.stderr, flush=True)
+                    logger.info(f"[Context] prompt_tokens={last_prompt_tokens}, context_window={context_window_tokens}")
             else:
-                print(f"[Context] No usage in response: hasattr={hasattr(response, 'usage')}, usage={getattr(response, 'usage', 'N/A')}", file=sys.stderr, flush=True)
+                logger.info(f"[Context] No usage in response: hasattr={hasattr(response, 'usage')}, usage={getattr(response, 'usage', 'N/A')}")
         else:
             response = exhaust(response_gen)
             # 提取 prompt_tokens（用于下轮上下文检测）
@@ -255,9 +258,35 @@ def agent_runner_loop(
                 _pt = u.get('prompt_tokens', 0) if isinstance(u, dict) else getattr(u, 'prompt_tokens', 0)
                 if isinstance(_pt, (int, float)):
                     last_prompt_tokens = int(_pt)
-                    print(f"[Context] prompt_tokens={last_prompt_tokens}, context_window={context_window_tokens}", file=sys.stderr, flush=True)
+                    logger.info(f"[Context] prompt_tokens={last_prompt_tokens}, context_window={context_window_tokens}")
+                    # 立即检测：如果超阈值，在当前轮就触发回调/FIFO
+                    if last_prompt_tokens > 0 and context_window_tokens > 0 and not _compress_cooldown:
+                        usage_ratio = last_prompt_tokens / context_window_tokens
+                        if usage_ratio > warning_threshold:
+                            if on_context_high_usage:
+                                logger.info(f"[Context] Proactive compress: {last_prompt_tokens}/{context_window_tokens} tokens "
+                                            f"({usage_ratio:.1%} > {warning_threshold:.0%})")
+                                on_context_high_usage(messages, last_prompt_tokens, context_window_tokens)
+                                last_prompt_tokens = 0
+                                _compress_cooldown = True  # 冷却：本次 agent_runner_loop 不再触发压缩
+                            else:
+                                target_tokens = context_target_threshold if context_target_threshold > 0 else int(context_window_tokens * 0.50)
+                                if len(messages) > 2:
+                                    removed = 0
+                                    current_tokens = count_messages_tokens(messages)
+                                    while len(messages) > 2 and current_tokens > target_tokens:
+                                        first = messages[2]
+                                        messages.pop(2)
+                                        removed += 1
+                                        if first.get("role") == "assistant" and first.get("tool_calls"):
+                                            while len(messages) > 2 and messages[2].get("role") == "tool":
+                                                messages.pop(2)
+                                                removed += 1
+                                        current_tokens = count_messages_tokens(messages)
+                                    if removed > 0:
+                                        logger.info(f"[FIFO] Proactive pruning: removed {removed} messages")
             else:
-                print(f"[Context] No usage in response: hasattr={hasattr(response, 'usage')}, usage={getattr(response, 'usage', 'N/A')}", file=sys.stderr, flush=True)
+                logger.info(f"[Context] No usage in response: hasattr={hasattr(response, 'usage')}, usage={getattr(response, 'usage', 'N/A')}")
             # 过滤掉 <tool_use> 标签，只返回纯文本
             content = response.content or ""
             content = re.sub(r"<tool_use>.*?</tool_use>", "", content, flags=re.DOTALL)
@@ -315,8 +344,8 @@ def agent_runner_loop(
                     })
                 except json.JSONDecodeError as e:
                     # 记录错误并使用空参数继续执行
-                    print(f"[ERROR] Failed to parse tool arguments for {tc.function.name}: {e}", file=sys.stderr, flush=True)
-                    print(f"[ERROR] Raw arguments: {tc.function.arguments}", file=sys.stderr, flush=True)
+                    logger.error(f"[ERROR] Failed to parse tool arguments for {tc.function.name}: {e}")
+                    logger.error(f"[ERROR] Raw arguments: {tc.function.arguments}")
                     tool_calls.append({
                         "tool_name": tc.function.name,
                         "args": {},  # 回退为空参数
