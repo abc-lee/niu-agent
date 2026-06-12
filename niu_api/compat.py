@@ -211,6 +211,39 @@ def build_truncated_msg_list_text(
     return "\n".join(lines)
 
 
+def _truncate_task_for_subagent(task: str, max_tokens: int) -> str:
+    """
+    截断子Agent的 task 内容，确保不超过 max_tokens。
+    保留 task 开头（包含指令和状态信息），截断末尾的消息列表。
+    在截断位置添加截断标记。
+    """
+    if not task:
+        return task
+    try:
+        from litellm import token_counter
+        token_count = token_counter(model="gpt-4o", messages=[{"role": "user", "content": task}])
+    except Exception:
+        # 回退估算：2 字符/token
+        token_count = max(1, len(task) // 2)
+
+    if token_count <= max_tokens:
+        return task
+
+    # 按 token 比例估算需要保留的字符数
+    keep_ratio = max_tokens / token_count
+    keep_chars = int(len(task) * keep_ratio * 0.9)  # 留 10% 安全余量
+
+    truncated = task[:keep_chars]
+    # 找到最近的完整行
+    last_newline = truncated.rfind('\n')
+    if last_newline > keep_chars // 2:
+        truncated = truncated[:last_newline]
+
+    truncated += "\n\n[内容已截断：原始 task 超过 token 限制，仅保留前半部分消息。请基于已有内容完成整理。]"
+    logger.warning(f"[Tidy] Task truncated: {token_count} -> ~{max_tokens} tokens, {len(task)} -> {len(truncated)} chars")
+    return truncated
+
+
 def _estimate_total_tokens(messages) -> int:
     """估算消息列表的总 token 数（逐条计算，含角色开销）。"""
     try:
@@ -643,9 +676,17 @@ async def chat_session(request: ChatRequest) -> ChatResponse:
                 f"[Chat Session] Main agent CONTEXT_OVERFLOW at {overflow_data.get('tokens_used', 0)} tokens, "
                 f"triggering force compression (blocking)"
             )
-            async with _tidy_lock:
-                tidy_result = await _tidy_context_impl(request={"session_id": session_id, "mode": "force"})
-            logger.info(f"[Chat Session] Force compression result: {tidy_result.get('status')}")
+            try:
+                await asyncio.wait_for(_tidy_lock.acquire(), timeout=10.0)
+            except asyncio.TimeoutError:
+                logger.warning("[Chat Session] Force compression skipped: tidy lock held by another operation")
+                tidy_result = {"status": "skipped", "reason": "lock_busy"}
+            else:
+                try:
+                    tidy_result = await _tidy_context_impl(request={"session_id": session_id, "mode": "force"})
+                finally:
+                    _tidy_lock.release()
+                logger.info(f"[Chat Session] Force compression result: {tidy_result.get('status')}")
         else:
             # 正常：异步触发增量整理检查（不阻塞）
             if full_reply.strip():
@@ -855,9 +896,16 @@ async def tidy_context(request: dict):
             "freed_tokens": int (optional)
         }
     """
-    # 加锁防止并发：手动触发和自动触发互斥
-    async with _tidy_lock:
+    # 加锁防止并发：手动触发和自动触发互斥，超时10秒避免死锁
+    try:
+        await asyncio.wait_for(_tidy_lock.acquire(), timeout=10.0)
+    except asyncio.TimeoutError:
+        logger.warning("[Tidy] tidy_context skipped: tidy lock held by another operation")
+        return {"status": "skipped", "reason": "lock_busy"}
+    try:
         return await _tidy_context_impl(request)
+    finally:
+        _tidy_lock.release()
 
 
 async def _tidy_context_impl(request: dict):
@@ -989,16 +1037,25 @@ async def _tidy_context_impl(request: dict):
                 logger.info(f"[Tidy] entity-extractor: {len(entity_msg_ids)} new messages since cursor")
                 entity_full_prompt = entity_prompt_prefix + entity_msg_text + entity_prompt_suffix
 
+                # 截断 task 防止子Agent超限
+                context_window_for_truncate = _read_context_window_tokens()
+                safe_tokens = int(context_window_for_truncate * 0.6)
+                truncated_entity_prompt = _truncate_task_for_subagent(entity_full_prompt, safe_tokens)
+
                 def run_entity_extractor():
                     return call_subagent(
                         agent_name="entity-extractor",
-                        task=entity_full_prompt,
+                        task=truncated_entity_prompt,
                         llm_config=llm_config,
                         mcp_client=None,
                         history=None,
                     )
 
-                entity_result = await asyncio.to_thread(run_entity_extractor)
+                try:
+                    entity_result = await asyncio.wait_for(asyncio.to_thread(run_entity_extractor), timeout=120)
+                except asyncio.TimeoutError:
+                    logger.warning("[Tidy] entity-extractor timed out after 120s, skipping")
+                    entity_result = ""
                 if is_stop_requested():
                     logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
                     clear_stop()
@@ -1073,15 +1130,24 @@ async def _tidy_context_impl(request: dict):
 处理完成后，在报告末尾用 JSON 格式报告：{{"last_dream_evolve_id": "<收到的消息中 idx 最大的消息的 id（UUID）>"}}
 **必须推进游标**：即使没有需要精加工的内容，也必须输出 idx 最大的消息的 UUID。"""
 
+                # 截断 task 防止子Agent超限
+                context_window_for_truncate = _read_context_window_tokens()
+                safe_tokens = int(context_window_for_truncate * 0.6)
+                truncated_dream_prompt = _truncate_task_for_subagent(dream_prompt, safe_tokens)
+
                 def run_dream_evolver():
                     return call_subagent(
                         agent_name="dream-evolver",
-                        task=dream_prompt,
+                        task=truncated_dream_prompt,
                         llm_config=llm_config,
                         mcp_client=None,
                     )
 
-                dream_result = await asyncio.to_thread(run_dream_evolver)
+                try:
+                    dream_result = await asyncio.wait_for(asyncio.to_thread(run_dream_evolver), timeout=120)
+                except asyncio.TimeoutError:
+                    logger.warning("[Tidy] dream-evolver timed out after 120s, skipping")
+                    dream_result = ""
                 if is_stop_requested():
                     logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
                     clear_stop()
@@ -1158,15 +1224,24 @@ async def _tidy_context_impl(request: dict):
 处理完成后，在报告末尾用 JSON 格式报告：{{"last_journal_id": "<收到的消息中 idx 最大的消息的 id（UUID）>"}}
 **必须推进游标**：即使没有可提取的工作内容，也必须输出 idx 最大的消息的 UUID。"""
 
+                    # 截断 task 防止子Agent超限
+                    context_window_for_truncate = _read_context_window_tokens()
+                    safe_tokens = int(context_window_for_truncate * 0.6)
+                    truncated_journal_prompt = _truncate_task_for_subagent(journal_prompt, safe_tokens)
+
                     def run_journal_agent():
                         return call_subagent(
                             agent_name="journal-agent",
-                            task=journal_prompt,
+                            task=truncated_journal_prompt,
                             llm_config=llm_config,
                             mcp_client=None,
                         )
 
-                    journal_result = await asyncio.to_thread(run_journal_agent)
+                    try:
+                        journal_result = await asyncio.wait_for(asyncio.to_thread(run_journal_agent), timeout=120)
+                    except asyncio.TimeoutError:
+                        logger.warning("[Tidy] journal-agent timed out after 120s, skipping")
+                        journal_result = ""
                     if is_stop_requested():
                         logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
                         clear_stop()
@@ -1257,15 +1332,24 @@ async def _tidy_context_impl(request: dict):
 请按照【{compress_mode}】的规则处理。处理完成后，在报告末尾用 JSON 格式报告：{{"last_compress_id": "<收到的消息中 idx 最大的消息的 id（UUID）>"}}
 **必须推进游标**：即使没有需要处理的内容，也必须输出 idx 最大的消息的 UUID。"""
 
+                # 截断 task 防止子Agent超限
+                context_window_for_truncate = _read_context_window_tokens()
+                safe_tokens = int(context_window_for_truncate * 0.6)
+                truncated_prompt = _truncate_task_for_subagent(prompt, safe_tokens)
+
                 def run_context_manager():
                     return call_subagent(
                         agent_name="context-manager",
-                        task=prompt,
+                        task=truncated_prompt,
                         llm_config=llm_config,
                         mcp_client=None,
                     )
 
-                cm_result = await asyncio.to_thread(run_context_manager)
+                try:
+                    cm_result = await asyncio.wait_for(asyncio.to_thread(run_context_manager), timeout=120)
+                except asyncio.TimeoutError:
+                    logger.warning("[Tidy] context-manager timed out after 120s, skipping")
+                    cm_result = ""
                 if is_stop_requested():
                     logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
                     clear_stop()
@@ -1350,17 +1434,26 @@ async def _tidy_context_impl(request: dict):
 处理完成后，在报告末尾用 JSON 格式报告：{{"last_entity_extract_id": "<收到的消息中 idx 最大的消息的 id（UUID）>"}}
 **必须推进游标**：即使没有可提取的内容，也必须输出 idx 最大的消息的 UUID。"""
 
+            # 截断 task 防止子Agent超限
+            context_window_for_truncate = _read_context_window_tokens()
+            safe_tokens = int(context_window_for_truncate * 0.6)
+            truncated_entity_force_prompt = _truncate_task_for_subagent(entity_force_prompt, safe_tokens)
+
             def run_entity_extractor_force():
                 return call_subagent(
                     agent_name="entity-extractor",
-                    task=entity_force_prompt,
+                    task=truncated_entity_force_prompt,
                     llm_config=llm_config,
                     mcp_client=None,
                     history=None,
                 )
 
             if entity_force_msg_ids:
-                entity_result = await asyncio.to_thread(run_entity_extractor_force)
+                try:
+                    entity_result = await asyncio.wait_for(asyncio.to_thread(run_entity_extractor_force), timeout=120)
+                except asyncio.TimeoutError:
+                    logger.warning("[Tidy] Force: entity-extractor timed out after 120s, skipping")
+                    entity_result = ""
                 if is_stop_requested():
                     logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
                     clear_stop()
@@ -1433,15 +1526,24 @@ async def _tidy_context_impl(request: dict):
 处理完成后，在报告末尾用 JSON 格式报告：{{"last_dream_evolve_id": "<收到的消息中 idx 最大的消息的 id（UUID）>"}}
 **必须推进游标**：即使没有需要精加工的内容，也必须输出 idx 最大的消息的 UUID。"""
 
+                # 截断 task 防止子Agent超限
+                context_window_for_truncate = _read_context_window_tokens()
+                safe_tokens = int(context_window_for_truncate * 0.6)
+                truncated_dream_force_prompt = _truncate_task_for_subagent(dream_force_prompt, safe_tokens)
+
                 def run_dream_evolver_force():
                     return call_subagent(
                         agent_name="dream-evolver",
-                        task=dream_force_prompt,
+                        task=truncated_dream_force_prompt,
                         llm_config=llm_config,
                         mcp_client=None,
                     )
 
-                dream_result = await asyncio.to_thread(run_dream_evolver_force)
+                try:
+                    dream_result = await asyncio.wait_for(asyncio.to_thread(run_dream_evolver_force), timeout=120)
+                except asyncio.TimeoutError:
+                    logger.warning("[Tidy] Force: dream-evolver timed out after 120s, skipping")
+                    dream_result = ""
                 if is_stop_requested():
                     logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
                     clear_stop()
@@ -1517,15 +1619,24 @@ async def _tidy_context_impl(request: dict):
 处理完成后，在报告末尾用 JSON 格式报告：{{"last_journal_id": "<收到的消息中 idx 最大的消息的 id（UUID）>"}}
 **必须推进游标**：即使没有可提取的工作内容，也必须输出 idx 最大的消息的 UUID。"""
 
+                # 截断 task 防止子Agent超限
+                context_window_for_truncate = _read_context_window_tokens()
+                safe_tokens = int(context_window_for_truncate * 0.6)
+                truncated_journal_force_prompt = _truncate_task_for_subagent(journal_force_prompt, safe_tokens)
+
                 def run_journal_agent_force():
                     return call_subagent(
                         agent_name="journal-agent",
-                        task=journal_force_prompt,
+                        task=truncated_journal_force_prompt,
                         llm_config=llm_config,
                         mcp_client=None,
                     )
 
-                journal_result = await asyncio.to_thread(run_journal_agent_force)
+                try:
+                    journal_result = await asyncio.wait_for(asyncio.to_thread(run_journal_agent_force), timeout=120)
+                except asyncio.TimeoutError:
+                    logger.warning("[Tidy] Force: journal-agent timed out after 120s, skipping")
+                    journal_result = ""
                 if is_stop_requested():
                     logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
                     clear_stop()
@@ -1618,16 +1729,25 @@ async def _tidy_context_impl(request: dict):
 
     REMINDER: 只使用 write 工具。其他工具调用将浪费你唯一的轮次。"""
 
+            # 截断 task 防止子Agent超限
+            context_window_for_truncate = _read_context_window_tokens()
+            safe_tokens = int(context_window_for_truncate * 0.6)
+            truncated_force_prompt = _truncate_task_for_subagent(prompt, safe_tokens)
+
             def run_context_manager_force():
                 return call_subagent(
                     agent_name="context-manager",
-                    task=prompt,
+                    task=truncated_force_prompt,
                     llm_config=llm_config,
                     mcp_client=None,
                     context_fifo_threshold=0,
                 )
 
-            result = await asyncio.to_thread(run_context_manager_force)
+            try:
+                result = await asyncio.wait_for(asyncio.to_thread(run_context_manager_force), timeout=120)
+            except asyncio.TimeoutError:
+                logger.warning("[Tidy] Force: context-manager timed out after 120s, skipping")
+                result = ""
             if is_stop_requested():
                 logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
                 clear_stop()
