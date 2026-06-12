@@ -47,8 +47,9 @@ class TestNoPromptChunking:
 
         call_count = 0
 
-        def mock_run(agent_name, client, system_prompt, user_input, handler, tools_schema,
-                      max_turns=20, initial_user_content=None, context_window_tokens=0):
+        def mock_run(client, system_prompt, user_input, handler, tools_schema,
+                      max_turns=20, initial_user_content=None, context_window_tokens=0,
+                      context_fifo_threshold=0, history=None):
             nonlocal call_count
             call_count += 1
             return ("done", {"result": "CURRENT_TASK_DONE", "data": "ok"})
@@ -78,8 +79,10 @@ class TestNoPromptChunking:
 class TestAgentLoopTokenThreshold:
     """Test that agent_runner_loop exits at warningThreshold token usage."""
 
-    def test_overflow_returns_structured_report(self, monkeypatch):
-        """When token usage exceeds warningThreshold, agent_runner_loop should return CONTEXT_OVERFLOW."""
+    def test_high_usage_does_not_proactively_exit(self, monkeypatch):
+        """When token usage exceeds warningThreshold, agent_runner_loop should NOT
+        proactively return CONTEXT_OVERFLOW. It should only log a warning and continue.
+        CONTEXT_OVERFLOW is now triggered only by LLM API context_length_exceeded errors."""
         from agent.generic.agent_loop import agent_runner_loop
         from agent.generic.llmcore import MockResponse
 
@@ -120,7 +123,7 @@ class TestAgentLoopTokenThreshold:
         client = MockClient()
         handler = MockHandler()
 
-        # Use a very small context window to force overflow quickly
+        # Use a very small context window — would have triggered proactive exit before
         gen = agent_runner_loop(
             client=client,
             system_prompt="system",
@@ -129,7 +132,78 @@ class TestAgentLoopTokenThreshold:
             tools_schema=[],
             max_turns=40,
             verbose=False,
-            context_window_tokens=100,  # Very small → immediate overflow
+            context_window_tokens=100,  # Very small → high usage ratio
+        )
+
+        result_text = ""
+        return_value = None
+        while True:
+            try:
+                chunk = next(gen)
+                if isinstance(chunk, str):
+                    result_text += chunk
+            except StopIteration as e:
+                return_value = e.value
+                break
+
+        assert return_value is not None
+        assert isinstance(return_value, dict)
+        # Should NOT be CONTEXT_OVERFLOW — only a warning was logged
+        assert return_value.get("result") != "CONTEXT_OVERFLOW"
+
+    def test_context_overflow_on_llm_error(self, monkeypatch):
+        """When LLM API returns context_overflow=True, agent_runner_loop should
+        return CONTEXT_OVERFLOW."""
+        from agent.generic.agent_loop import agent_runner_loop
+        from agent.generic.llmcore import MockResponse
+
+        class MockClient:
+            name = "mock"
+            last_tools = ""
+            total_cd_tokens = 0
+            _call_count = 0
+
+            def chat(self, messages, tools=None):
+                self._call_count += 1
+                resp = MockResponse(
+                    thinking=None,
+                    content="",
+                    tool_calls=None,
+                    raw=None,
+                    context_overflow=True,  # LLM API returned context_length_exceeded
+                )
+                def gen():
+                    yield resp
+                    return resp
+                return gen()
+
+        class MockHandler:
+            _done_hooks = []
+            max_turns = 40
+            current_turn = 0
+
+            def dispatch(self, tool_name, args, response, index=0):
+                from agent.generic.agent_loop import StepOutcome
+                def gen():
+                    yield ""
+                    return StepOutcome(None, next_prompt="continue", should_exit=False)
+                return gen()
+
+            def next_prompt_patcher(self, next_prompt, outcome, turn):
+                return next_prompt
+
+        client = MockClient()
+        handler = MockHandler()
+
+        gen = agent_runner_loop(
+            client=client,
+            system_prompt="system",
+            user_input="test",
+            handler=handler,
+            tools_schema=[],
+            max_turns=40,
+            verbose=False,
+            context_window_tokens=100,
         )
 
         result_text = ""
@@ -288,7 +362,7 @@ class TestOverflowResultPropagation:
     def test_overflow_result_includes_progress(self, monkeypatch):
         from agent import subagent
 
-        def mock_run_agent_loop(agent_name, client, system_prompt, user_input, handler, tools_schema, max_turns=20, initial_user_content=None, context_window_tokens=0):
+        def mock_run_agent_loop(client, system_prompt, user_input, handler, tools_schema, max_turns=20, initial_user_content=None, context_window_tokens=0, context_fifo_threshold=0, history=None):
             return (
                 "partial work done",
                 {
@@ -330,7 +404,7 @@ class TestSubagentContextWindowConfig:
 
         captured_kwargs = {}
 
-        def mock_run(agent_name, client, system_prompt, user_input, handler, tools_schema, max_turns=20, initial_user_content=None, context_window_tokens=0):
+        def mock_run(client, system_prompt, user_input, handler, tools_schema, max_turns=20, initial_user_content=None, context_window_tokens=0, context_fifo_threshold=0, history=None):
             captured_kwargs["context_window_tokens"] = context_window_tokens
             return ("done", {"result": "CURRENT_TASK_DONE", "data": "ok"})
 
