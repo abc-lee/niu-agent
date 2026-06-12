@@ -180,6 +180,26 @@ def agent_runner_loop(
             clear_stop()
             yield StreamEvent("system", "chat_idle")
             return {"result": "STOPPED", "messages": messages}
+        # FIFO 上下文截断：按 token 量逐条移除旧消息，保护 messages[0](system) 和 messages[1](初始task)
+        if context_fifo_threshold > 0 and len(messages) > 2:
+            current_tokens = count_messages_tokens(messages)
+            if current_tokens > context_fifo_threshold:
+                removed = 0
+                while len(messages) > 2 and current_tokens > context_fifo_threshold:
+                    # 成对移除：如果 messages[2] 是 assistant(tool_calls)，
+                    # 需要连同后面的 tool 结果一起移除，避免 API 报错
+                    first = messages[2]
+                    messages.pop(2)
+                    removed += 1
+                    # 如果移除的是带 tool_calls 的 assistant，继续移除紧随的 tool 结果
+                    if first.get("role") == "assistant" and first.get("tool_calls"):
+                        while len(messages) > 2 and messages[2].get("role") == "tool":
+                            messages.pop(2)
+                            removed += 1
+                    current_tokens = count_messages_tokens(messages)
+                if removed > 0:
+                    logger.info(f"[FIFO] Context truncation: removed {removed} oldest messages, "
+                                f"tokens {current_tokens}/{context_fifo_threshold}")
         # 上下文使用率监控（仅警告，不主动退出 — 由 LLM API 报错驱动压缩）
         if context_window_tokens > 0:
             current_tokens = count_messages_tokens(messages)
@@ -422,27 +442,6 @@ def agent_runner_loop(
             messages.append({"role": "user", "content": combined})
             if supplement:
                 logger.info(f"[AgentLoop] Supplement inserted before next_prompt: {supplement[:80]}...")
-
-        # FIFO 上下文截断：按 token 量逐条移除旧消息，保护 messages[0](system) 和 messages[1](初始task)
-        if context_fifo_threshold > 0 and len(messages) > 2:
-            current_tokens = count_messages_tokens(messages)
-            if current_tokens > context_fifo_threshold:
-                removed = 0
-                while len(messages) > 2 and current_tokens > context_fifo_threshold:
-                    # 成对移除：如果 messages[2] 是 assistant(tool_calls)，
-                    # 需要连同后面的 tool 结果一起移除，避免 API 报错
-                    first = messages[2]
-                    messages.pop(2)
-                    removed += 1
-                    # 如果移除的是带 tool_calls 的 assistant，继续移除紧随的 tool 结果
-                    if first.get("role") == "assistant" and first.get("tool_calls"):
-                        while len(messages) > 2 and messages[2].get("role") == "tool":
-                            messages.pop(2)
-                            removed += 1
-                    current_tokens = count_messages_tokens(messages)
-                if removed > 0:
-                    logger.info(f"[FIFO] Context truncation: removed {removed} oldest messages, "
-                                f"tokens {current_tokens}/{context_fifo_threshold}")
 
         # 轮次级刷新回调：允许调用方在每轮结束后更新 system_prompt 和 tools_schema
         if on_turn_end is not None:
