@@ -241,52 +241,8 @@ def agent_runner_loop(
         if verbose:
             response = yield from response_gen
             yield StreamEvent("system", "\n\n")
-            # 提取 prompt_tokens（用于下轮上下文检测）
-            if hasattr(response, 'usage') and response.usage:
-                u = response.usage
-                _pt = u.get('prompt_tokens', 0) if isinstance(u, dict) else getattr(u, 'prompt_tokens', 0)
-                if isinstance(_pt, (int, float)):
-                    last_prompt_tokens = int(_pt)
-                    logger.info(f"[Context] prompt_tokens={last_prompt_tokens}, context_window={context_window_tokens}")
-            else:
-                logger.info(f"[Context] No usage in response: hasattr={hasattr(response, 'usage')}, usage={getattr(response, 'usage', 'N/A')}")
         else:
             response = exhaust(response_gen)
-            # 提取 prompt_tokens（用于下轮上下文检测）
-            if hasattr(response, 'usage') and response.usage:
-                u = response.usage
-                _pt = u.get('prompt_tokens', 0) if isinstance(u, dict) else getattr(u, 'prompt_tokens', 0)
-                if isinstance(_pt, (int, float)):
-                    last_prompt_tokens = int(_pt)
-                    logger.info(f"[Context] prompt_tokens={last_prompt_tokens}, context_window={context_window_tokens}")
-                    # 立即检测：如果超阈值，在当前轮就触发回调/FIFO
-                    if last_prompt_tokens > 0 and context_window_tokens > 0 and not _compress_cooldown:
-                        usage_ratio = last_prompt_tokens / context_window_tokens
-                        if usage_ratio > warning_threshold:
-                            if on_context_high_usage:
-                                logger.info(f"[Context] Proactive compress: {last_prompt_tokens}/{context_window_tokens} tokens "
-                                            f"({usage_ratio:.1%} > {warning_threshold:.0%})")
-                                on_context_high_usage(messages, last_prompt_tokens, context_window_tokens)
-                                last_prompt_tokens = 0
-                                _compress_cooldown = True  # 冷却：本次 agent_runner_loop 不再触发压缩
-                            else:
-                                target_tokens = context_target_threshold if context_target_threshold > 0 else int(context_window_tokens * 0.50)
-                                if len(messages) > 2:
-                                    removed = 0
-                                    current_tokens = count_messages_tokens(messages)
-                                    while len(messages) > 2 and current_tokens > target_tokens:
-                                        first = messages[2]
-                                        messages.pop(2)
-                                        removed += 1
-                                        if first.get("role") == "assistant" and first.get("tool_calls"):
-                                            while len(messages) > 2 and messages[2].get("role") == "tool":
-                                                messages.pop(2)
-                                                removed += 1
-                                        current_tokens = count_messages_tokens(messages)
-                                    if removed > 0:
-                                        logger.info(f"[FIFO] Proactive pruning: removed {removed} messages")
-            else:
-                logger.info(f"[Context] No usage in response: hasattr={hasattr(response, 'usage')}, usage={getattr(response, 'usage', 'N/A')}")
             # 过滤掉 <tool_use> 标签，只返回纯文本
             content = response.content or ""
             content = re.sub(r"<tool_use>.*?</tool_use>", "", content, flags=re.DOTALL)
@@ -303,6 +259,43 @@ def agent_runner_loop(
                 _harness_fail_count = 0
 
             yield StreamEvent("reply", content)
+
+        # 统一提取 prompt_tokens（verbose/else 分支共用）
+        if hasattr(response, 'usage') and response.usage:
+            u = response.usage
+            _pt = u.get('prompt_tokens', 0) if isinstance(u, dict) else getattr(u, 'prompt_tokens', 0)
+            if isinstance(_pt, (int, float)):
+                last_prompt_tokens = int(_pt)
+                logger.info(f"[Context] prompt_tokens={last_prompt_tokens}, context_window={context_window_tokens}")
+                # 提取后立即检测：如果超阈值，在当前轮就触发回调/FIFO
+                # （无工具调用时循环会退出，下轮顶部检测不会执行，所以此处必须检测）
+                if context_window_tokens > 0 and not _compress_cooldown:
+                    usage_ratio = last_prompt_tokens / context_window_tokens
+                    if usage_ratio > warning_threshold:
+                        if on_context_high_usage:
+                            logger.info(f"[Context] Proactive compress: {last_prompt_tokens}/{context_window_tokens} tokens "
+                                        f"({usage_ratio:.1%} > {warning_threshold:.0%})")
+                            on_context_high_usage(messages, last_prompt_tokens, context_window_tokens)
+                            last_prompt_tokens = 0
+                            _compress_cooldown = True
+                        else:
+                            target_tokens = context_target_threshold if context_target_threshold > 0 else int(context_window_tokens * 0.50)
+                            if len(messages) > 2:
+                                removed = 0
+                                current_tokens = count_messages_tokens(messages)
+                                while len(messages) > 2 and current_tokens > target_tokens:
+                                    first = messages[2]
+                                    messages.pop(2)
+                                    removed += 1
+                                    if first.get("role") == "assistant" and first.get("tool_calls"):
+                                        while len(messages) > 2 and messages[2].get("role") == "tool":
+                                            messages.pop(2)
+                                            removed += 1
+                                    current_tokens = count_messages_tokens(messages)
+                                if removed > 0:
+                                    logger.info(f"[FIFO] Proactive pruning: removed {removed} messages")
+        else:
+            logger.debug(f"[Context] No usage in response: hasattr={hasattr(response, 'usage')}, usage={getattr(response, 'usage', 'N/A')}")
 
         # 检测 LLM 返回的 context_length_exceeded 标记（覆盖 verbose=True 和 verbose=False）
         if hasattr(response, 'context_overflow') and response.context_overflow:
