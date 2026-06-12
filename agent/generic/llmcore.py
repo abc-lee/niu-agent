@@ -25,13 +25,14 @@ class MockToolCall:
 
 
 class MockResponse:
-    def __init__(self, thinking, content, tool_calls, raw, stop_reason="end_turn", context_overflow=False):
+    def __init__(self, thinking, content, tool_calls, raw, stop_reason="end_turn", context_overflow=False, usage=None):
         self.thinking = thinking
         self.content = content
         self.tool_calls = tool_calls
         self.raw = raw
         self.stop_reason = "tool_use" if tool_calls else stop_reason
         self.context_overflow = context_overflow
+        self.usage = usage
 
     def __repr__(self):
         return f"<MockResponse thinking={bool(self.thinking)}, content='{self.content}', tools={bool(self.tool_calls)}>"

@@ -114,6 +114,7 @@ def _run_agent_loop(
     initial_user_content: Optional[str] = None,
     context_window_tokens: int = 0,
     context_fifo_threshold: int = 0,
+    context_target_threshold: int = 0,
     history: Optional[list] = None,
 ) -> Tuple[str, Any]:
     """
@@ -150,6 +151,8 @@ def _run_agent_loop(
         initial_user_content=initial_user_content,
         context_window_tokens=context_window_tokens,
         context_fifo_threshold=context_fifo_threshold,
+        context_target_threshold=context_target_threshold,
+        on_context_high_usage=None,
         history=history,
         enable_supplement=False,
     )
@@ -438,6 +441,10 @@ def call_subagent(
     else:
         fifo_threshold = context_fifo_threshold
 
+    # FIFO 裁剪目标 token 量
+    target_threshold = _read_target_threshold()
+    context_target_threshold_val = int(context_window_tokens * target_threshold) if context_window_tokens > 0 else 0
+
     result_text, return_value = _run_agent_loop(
         client=client,
         system_prompt=system_prompt,
@@ -448,6 +455,7 @@ def call_subagent(
         initial_user_content=task,
         context_window_tokens=context_window_tokens,
         context_fifo_threshold=fifo_threshold,
+        context_target_threshold=context_target_threshold_val,
         history=history,
     )
 
