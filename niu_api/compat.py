@@ -621,9 +621,9 @@ async def chat_session(request: ChatRequest) -> ChatResponse:
 
     # 锁未被占用：正常获取锁并处理
     try:
-        await asyncio.wait_for(_chat_lock.acquire(), timeout=60.0)
+        await asyncio.wait_for(_chat_lock.acquire(), timeout=600.0)
     except TimeoutError:
-        logger.warning("[chat_session] _chat_lock 60s timeout, request rejected")
+        logger.warning("[chat_session] _chat_lock 600s timeout, request rejected")
         return ChatResponse(reply="系统正忙，请稍后再试", session_id="default")
 
     try:
