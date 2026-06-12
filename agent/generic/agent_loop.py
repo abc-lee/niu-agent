@@ -213,6 +213,24 @@ def agent_runner_loop(
 
             yield StreamEvent("reply", content)
 
+        # 检测 LLM 返回的 context_length_exceeded 标记（覆盖 verbose=True 和 verbose=False）
+        if hasattr(response, 'context_overflow') and response.context_overflow:
+            logger.warning(f"[Overflow] LLM API returned context_length_exceeded, triggering CONTEXT_OVERFLOW")
+            if on_turn_end is not None:
+                on_turn_end(messages, tools_schema, turn)
+            clear_stop()
+            yield StreamEvent("system", "chat_idle")
+            return {
+                "result": "CONTEXT_OVERFLOW",
+                "data": {
+                    "overflow": True,
+                    "turns_completed": turn - 1,
+                    "tokens_used": count_messages_tokens(messages),
+                    "tokens_limit": context_window_tokens,
+                },
+                "messages": messages,
+            }
+
         # 如果在 LLM 流式传输期间请求停止，跳过部分 tool_calls 处理
         if is_stop_requested():
             logger.info("[AgentLoop] Stop requested after LLM stream, skipping tool calls")
