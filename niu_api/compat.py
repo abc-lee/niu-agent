@@ -1707,6 +1707,9 @@ async def _tidy_context_impl(request: dict):
     - 只允许使用 write 工具一次性输出压缩方案。
     - 任何其他工具调用都将浪费你唯一的执行轮次 — 你将失败。
 
+    用 write 工具写入 {compress_plan_path}，内容为 JSON：
+    {{"deletes": ["要删除的消息id1", "id2", ...], "updates": [{{"message_id": "id", "content": "压缩后的摘要内容"}}], "last_compress_id": "操作范围内 idx 最大的、且仍存在的消息 id（UUID）"}}
+
     当前上下文状态：
     - 总消息数：{message_count}
     - 当前 token 总数：{estimated_tokens}（{usage_percent:.1f}%）
@@ -1723,9 +1726,6 @@ async def _tidy_context_impl(request: dict):
 
     {msg_list_text}
     --- 消息列表数据结束 ---
-
-    用 write 工具写入 {compress_plan_path}，内容为 JSON：
-    {{"deletes": ["要删除的消息id1", "id2", ...], "updates": [{{"message_id": "id", "content": "压缩后的摘要内容"}}], "last_compress_id": "操作范围内 idx 最大的、且仍存在的消息 id（UUID）"}}
 
     REMINDER: 只使用 write 工具。其他工具调用将浪费你唯一的轮次。"""
 
