@@ -644,6 +644,132 @@ class NiuRunner:
             logger.warning(f"[Runner] sync_update_message failed: {e}")
             return False
 
+    # --- Helper methods for _on_context_high_usage ---
+
+    @staticmethod
+    def _read_cursor(cursor_path, cursor_field):
+        """Read a cursor ID from a JSON file.
+
+        Returns the cursor value (str) or empty string if file missing / parse error.
+        """
+        if not cursor_path.exists():
+            return ""
+        try:
+            data = json.loads(cursor_path.read_text(encoding="utf-8"))
+            return data.get(cursor_field, "")
+        except Exception as e:
+            logger.warning(f"[Runner] Failed to read cursor {cursor_path.name}: {e}")
+            return ""
+
+    @staticmethod
+    def _recalc_msg_stats(db_messages):
+        """Recalculate per-message token counts and the id set.
+
+        Returns (msg_tokens: list[int], msg_id_set: set[str]).
+        """
+        msg_tokens = []
+        try:
+            from litellm import token_counter
+            for msg in db_messages:
+                try:
+                    t = token_counter(model="gpt-4o", messages=[{"role": msg.role, "content": msg.content or ""}])
+                except Exception:
+                    t = max(1, len(msg.content or "") // 2) + 4
+                msg_tokens.append(t)
+        except ImportError:
+            msg_tokens = [max(1, len(msg.content or "") // 2) + 4 for msg in db_messages]
+        msg_id_set = {getattr(m, "id", "") for m in db_messages}
+        return msg_tokens, msg_id_set
+
+    def _run_subagent_step(self, step_name, cursor_path, cursor_field,
+                           prompt, llm_config, msg_id_set, last_cursor_id,
+                           fallback_ids, timestamp_field):
+        """Run a sub-agent step with timeout, cursor extraction, validation and write-back.
+
+        Parameters
+        ----------
+        step_name : str
+            Sub-agent name passed to call_subagent (e.g. "entity-extractor").
+        cursor_path : Path
+            JSON file that persists the cursor.
+        cursor_field : str
+            Key name inside the cursor JSON (e.g. "last_entity_extract_id").
+        prompt : str
+            The task prompt for the sub-agent (already truncated).
+        llm_config : dict
+            LLM configuration forwarded to call_subagent.
+        msg_id_set : set[str]
+            Set of currently-valid message IDs (for cursor validation).
+        last_cursor_id : str
+            Previous cursor value — used as revert target on validation failure.
+        fallback_ids : list[str]
+            Message IDs from the incremental batch; last element is the
+            fallback cursor when extraction fails.
+        timestamp_field : str
+            Key name for the timestamp written into the cursor JSON
+            (e.g. "last_entity_extract_at").
+
+        Returns
+        -------
+        (result_text, new_cursor_id) : tuple[str, str]
+            result_text is the raw sub-agent output (empty on failure).
+            new_cursor_id is the validated cursor after the step.
+        """
+        import concurrent.futures as _cf
+        from niu_api.compat import _extract_cursor_id, _is_subagent_overflow, _extract_overflow_info
+        from agent.subagent import call_subagent
+
+        # --- call sub-agent with timeout ---
+        with _cf.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(call_subagent, step_name, prompt, llm_config, None)
+            try:
+                result = future.result(timeout=120)
+            except Exception as e:
+                logger.warning(f"[Runner] Force: {step_name} failed/timed out: {e}")
+                result = ""
+
+        logger.info(f"[Runner] Force: {step_name} completed, length={len(result)}")
+
+        # --- cursor extraction ---
+        new_cursor_id = last_cursor_id
+        if _is_subagent_overflow(result):
+            overflow_info = _extract_overflow_info(result)
+            logger.warning(f"[Runner] Force: {step_name} overflow: {overflow_info.get('turns_completed', 0)} turns")
+            partial = overflow_info.get("partial_result", "")
+            recovered = _extract_cursor_id(partial, cursor_field, msg_id_set)
+            if recovered and recovered != "NULL":
+                new_cursor_id = recovered
+            else:
+                new_cursor_id = fallback_ids[-1] if fallback_ids else last_cursor_id
+                logger.warning(f"[Runner] Force: {step_name} cursor overflow fallback: {new_cursor_id}")
+        else:
+            extracted = _extract_cursor_id(result, cursor_field, msg_id_set)
+            if extracted and extracted != "NULL":
+                new_cursor_id = extracted
+            elif extracted == "NULL" or not extracted:
+                new_cursor_id = fallback_ids[-1] if fallback_ids else last_cursor_id
+                logger.warning(f"[Runner] Force: {step_name} cursor not matched, fallback: {new_cursor_id}")
+
+        # --- cursor validation ---
+        if new_cursor_id:
+            fresh_msgs = self._sync_get_messages()
+            fresh_ids = {getattr(m, "id", "") for m in fresh_msgs}
+            if new_cursor_id not in fresh_ids:
+                logger.warning(f"[Runner] Force: {step_name} cursor {new_cursor_id} deleted, reverting to {last_cursor_id}")
+                new_cursor_id = last_cursor_id
+                if new_cursor_id and new_cursor_id not in fresh_ids:
+                    new_cursor_id = ""
+
+        # --- cursor write-back ---
+        if new_cursor_id:
+            cursor_path.parent.mkdir(parents=True, exist_ok=True)
+            cursor_path.write_text(json.dumps({
+                cursor_field: new_cursor_id,
+                timestamp_field: datetime.now().isoformat(),
+            }, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        return result, new_cursor_id
+
     def _on_context_high_usage(self, messages, tokens_used, tokens_limit):
         """主 Agent 上下文超阈值回调 — 执行完整 force 压缩流程
 
@@ -654,15 +780,11 @@ class NiuRunner:
         关键差异：compat.py 是 async，这里是同步线程中运行，
         子 Agent 调用用 concurrent.futures.ThreadPoolExecutor + timeout=120。
         """
-        import asyncio as _asyncio
         import concurrent.futures as _cf
         from pathlib import Path as _Path
         from niu_api.compat import (
             _build_incremental_msg_text,
             _truncate_task_for_subagent,
-            _extract_cursor_id,
-            _is_subagent_overflow,
-            _extract_overflow_info,
             _estimate_total_tokens,
             _write_last_tidy_tokens,
         )
@@ -683,37 +805,10 @@ class NiuRunner:
             compress_cursor_path = niu_dir / "last_compress.json"
             journal_cursor_path = niu_dir / "last_journal.json"
 
-            last_entity_extract_id = ""
-            if entity_cursor_path.exists():
-                try:
-                    cursor_data = json.loads(entity_cursor_path.read_text(encoding="utf-8"))
-                    last_entity_extract_id = cursor_data.get("last_entity_extract_id", "")
-                except Exception as e:
-                    logger.warning(f"[Runner] Failed to read entity cursor: {e}")
-
-            last_dream_evolve_id = ""
-            if dream_cursor_path.exists():
-                try:
-                    cursor_data = json.loads(dream_cursor_path.read_text(encoding="utf-8"))
-                    last_dream_evolve_id = cursor_data.get("last_dream_evolve_id", "")
-                except Exception as e:
-                    logger.warning(f"[Runner] Failed to read dream cursor: {e}")
-
-            last_compress_id = ""
-            if compress_cursor_path.exists():
-                try:
-                    cursor_data = json.loads(compress_cursor_path.read_text(encoding="utf-8"))
-                    last_compress_id = cursor_data.get("last_compress_id", "")
-                except Exception as e:
-                    logger.warning(f"[Runner] Failed to read compress cursor: {e}")
-
-            last_journal_id = ""
-            if journal_cursor_path.exists():
-                try:
-                    cursor_data = json.loads(journal_cursor_path.read_text(encoding="utf-8"))
-                    last_journal_id = cursor_data.get("last_journal_id", "")
-                except Exception as e:
-                    logger.warning(f"[Runner] Failed to read journal cursor: {e}")
+            last_entity_extract_id = self._read_cursor(entity_cursor_path, "last_entity_extract_id")
+            last_dream_evolve_id = self._read_cursor(dream_cursor_path, "last_dream_evolve_id")
+            last_compress_id = self._read_cursor(compress_cursor_path, "last_compress_id")
+            last_journal_id = self._read_cursor(journal_cursor_path, "last_journal_id")
 
             # === 从 DB 读取消息 ===
             db_messages = self._sync_get_messages()
@@ -721,24 +816,11 @@ class NiuRunner:
                 logger.info("[Runner] No messages in DB, skipping compress")
                 return
 
-            # 计算每条消息的 token 数
-            msg_tokens = []
-            try:
-                from litellm import token_counter
-                for msg in db_messages:
-                    try:
-                        t = token_counter(model="gpt-4o", messages=[{"role": msg.role, "content": msg.content or ""}])
-                    except Exception:
-                        t = max(1, len(msg.content or "") // 2) + 4
-                    msg_tokens.append(t)
-            except ImportError:
-                msg_tokens = [max(1, len(msg.content or "") // 2) + 4 for msg in db_messages]
-
+            msg_tokens, msg_id_set = self._recalc_msg_stats(db_messages)
             estimated_tokens = sum(msg_tokens)
             message_count = len(db_messages)
             context_window_tokens = _read_context_window_tokens()
             usage_percent = (estimated_tokens / context_window_tokens) * 100 if context_window_tokens > 0 else 0
-            msg_id_set = {getattr(m, "id", "") for m in db_messages}
 
             logger.info(f"[Runner] Force compress: {message_count} messages, {estimated_tokens} tokens, {usage_percent:.1f}%")
 
@@ -776,62 +858,18 @@ class NiuRunner:
 处理完成后，在报告末尾用 JSON 格式报告：{{"last_entity_extract_id": "<收到的消息中 idx 最大的消息的 id（UUID）>"}}
 **必须推进游标**：即使没有可提取的内容，也必须输出 idx 最大的消息的 UUID。"""
 
-                context_window_for_truncate = _read_context_window_tokens()
-                safe_tokens = int(context_window_for_truncate * 0.6)
+                safe_tokens = int(_read_context_window_tokens() * 0.6)
                 truncated_entity_prompt = _truncate_task_for_subagent(entity_force_prompt, safe_tokens)
 
-                with _cf.ThreadPoolExecutor(max_workers=1) as executor:
-                    future = executor.submit(
-                        call_subagent,
-                        "entity-extractor", truncated_entity_prompt, llm_config, None
-                    )
-                    try:
-                        entity_result = future.result(timeout=120)
-                    except Exception as e:
-                        logger.warning(f"[Runner] Force: entity-extractor failed/timed out: {e}")
-                        entity_result = ""
+                _, new_entity_id = self._run_subagent_step(
+                    "entity-extractor", entity_cursor_path, "last_entity_extract_id",
+                    truncated_entity_prompt, llm_config, msg_id_set, last_entity_extract_id,
+                    entity_force_msg_ids, "last_entity_extract_at",
+                )
 
                 if is_stop_requested():
                     logger.warning("[Runner] Stop requested, aborting force compress")
                     return
-
-                logger.info(f"[Runner] Force: entity-extractor completed, length={len(entity_result)}")
-
-                # 游标提取
-                if _is_subagent_overflow(entity_result):
-                    overflow_info = _extract_overflow_info(entity_result)
-                    logger.warning(f"[Runner] Force: entity-extractor overflow: {overflow_info.get('turns_completed', 0)} turns")
-                    partial = overflow_info.get("partial_result", "")
-                    recovered = _extract_cursor_id(partial, "last_entity_extract_id", msg_id_set)
-                    if recovered and recovered != "NULL":
-                        new_entity_id = recovered
-                    else:
-                        new_entity_id = entity_force_msg_ids[-1] if entity_force_msg_ids else last_entity_extract_id
-                        logger.warning(f"[Runner] Force: Entity cursor overflow fallback: {new_entity_id}")
-                else:
-                    extracted = _extract_cursor_id(entity_result, "last_entity_extract_id", msg_id_set)
-                    if extracted and extracted != "NULL":
-                        new_entity_id = extracted
-                    elif extracted == "NULL" or not extracted:
-                        new_entity_id = entity_force_msg_ids[-1] if entity_force_msg_ids else last_entity_extract_id
-                        logger.warning(f"[Runner] Force: Entity cursor not matched, fallback: {new_entity_id}")
-
-                # 校验游标
-                if new_entity_id:
-                    fresh_msgs = self._sync_get_messages()
-                    fresh_ids = {getattr(m, "id", "") for m in fresh_msgs}
-                    if new_entity_id not in fresh_ids:
-                        logger.warning(f"[Runner] Force: Entity cursor {new_entity_id} deleted, reverting to {last_entity_extract_id}")
-                        new_entity_id = last_entity_extract_id
-                        if new_entity_id and new_entity_id not in fresh_ids:
-                            new_entity_id = ""
-
-                if new_entity_id:
-                    entity_cursor_path.parent.mkdir(parents=True, exist_ok=True)
-                    entity_cursor_path.write_text(json.dumps({
-                        "last_entity_extract_id": new_entity_id,
-                        "last_entity_extract_at": datetime.now().isoformat(),
-                    }, ensure_ascii=False, indent=2), encoding="utf-8")
             else:
                 logger.info("[Runner] Force: entity-extractor skipped, no messages")
 
@@ -842,18 +880,7 @@ class NiuRunner:
 
             # 重新获取消息列表（entity 可能已修改 DB）
             db_messages = self._sync_get_messages()
-            msg_tokens = []
-            try:
-                from litellm import token_counter
-                for msg in db_messages:
-                    try:
-                        t = token_counter(model="gpt-4o", messages=[{"role": msg.role, "content": msg.content or ""}])
-                    except Exception:
-                        t = max(1, len(msg.content or "") // 2) + 4
-                    msg_tokens.append(t)
-            except ImportError:
-                msg_tokens = [max(1, len(msg.content or "") // 2) + 4 for msg in db_messages]
-            msg_id_set = {getattr(m, "id", "") for m in db_messages}
+            msg_tokens, msg_id_set = self._recalc_msg_stats(db_messages)
 
             new_dream_id = last_dream_evolve_id
             dream_force_msg_ids = []
@@ -870,63 +897,20 @@ class NiuRunner:
 处理完成后，在报告末尾用 JSON 格式报告：{{"last_dream_evolve_id": "<收到的消息中 idx 最大的消息的 id（UUID）>"}}
 **必须推进游标**：即使没有需要精加工的内容，也必须输出 idx 最大的消息的 UUID。"""
 
-                context_window_for_truncate = _read_context_window_tokens()
-                safe_tokens = int(context_window_for_truncate * 0.6)
+                safe_tokens = int(_read_context_window_tokens() * 0.6)
                 truncated_dream_prompt = _truncate_task_for_subagent(dream_force_prompt, safe_tokens)
 
-                with _cf.ThreadPoolExecutor(max_workers=1) as executor:
-                    future = executor.submit(
-                        call_subagent,
-                        "dream-evolver", truncated_dream_prompt, llm_config, None
-                    )
-                    try:
-                        dream_result = future.result(timeout=120)
-                    except Exception as e:
-                        logger.warning(f"[Runner] Force: dream-evolver failed/timed out: {e}")
-                        dream_result = ""
+                _, new_dream_id = self._run_subagent_step(
+                    "dream-evolver", dream_cursor_path, "last_dream_evolve_id",
+                    truncated_dream_prompt, llm_config, msg_id_set, last_dream_evolve_id,
+                    dream_force_msg_ids, "last_evolve_at",
+                )
 
                 if is_stop_requested():
                     logger.warning("[Runner] Stop requested, aborting force compress")
                     return
-
-                logger.info(f"[Runner] Force: dream-evolver completed, length={len(dream_result)}")
-
-                if _is_subagent_overflow(dream_result):
-                    overflow_info = _extract_overflow_info(dream_result)
-                    logger.warning(f"[Runner] Force: dream-evolver overflow: {overflow_info.get('turns_completed', 0)} turns")
-                    partial = overflow_info.get("partial_result", "")
-                    recovered = _extract_cursor_id(partial, "last_dream_evolve_id", msg_id_set)
-                    if recovered and recovered != "NULL":
-                        new_dream_id = recovered
-                    else:
-                        new_dream_id = dream_force_msg_ids[-1]
-                        logger.warning(f"[Runner] Force: Dream cursor overflow fallback: {new_dream_id}")
-                else:
-                    extracted = _extract_cursor_id(dream_result, "last_dream_evolve_id", msg_id_set)
-                    if extracted and extracted != "NULL":
-                        new_dream_id = extracted
-                    elif extracted == "NULL" or not extracted:
-                        new_dream_id = dream_force_msg_ids[-1]
-                        logger.warning(f"[Runner] Force: Dream cursor not matched, fallback: {new_dream_id}")
             else:
                 logger.info("[Runner] Force: dream-evolver no incremental messages")
-
-            # 校验 dream 游标
-            if new_dream_id:
-                fresh_msgs = self._sync_get_messages()
-                fresh_ids = {getattr(m, "id", "") for m in fresh_msgs}
-                if new_dream_id not in fresh_ids:
-                    logger.warning(f"[Runner] Force: Dream cursor {new_dream_id} deleted, reverting to {last_dream_evolve_id}")
-                    new_dream_id = last_dream_evolve_id
-                    if new_dream_id and new_dream_id not in fresh_ids:
-                        new_dream_id = ""
-
-            if new_dream_id:
-                dream_cursor_path.parent.mkdir(parents=True, exist_ok=True)
-                dream_cursor_path.write_text(json.dumps({
-                    "last_dream_evolve_id": new_dream_id,
-                    "last_evolve_at": datetime.now().isoformat(),
-                }, ensure_ascii=False, indent=2), encoding="utf-8")
 
             # === 步骤 2.5/4: journal-agent（force 模式，始终调用）===
             if is_stop_requested():
@@ -934,18 +918,7 @@ class NiuRunner:
                 return
 
             db_messages = self._sync_get_messages()
-            msg_tokens = []
-            try:
-                from litellm import token_counter
-                for msg in db_messages:
-                    try:
-                        t = token_counter(model="gpt-4o", messages=[{"role": msg.role, "content": msg.content or ""}])
-                    except Exception:
-                        t = max(1, len(msg.content or "") // 2) + 4
-                    msg_tokens.append(t)
-            except ImportError:
-                msg_tokens = [max(1, len(msg.content or "") // 2) + 4 for msg in db_messages]
-            msg_id_set = {getattr(m, "id", "") for m in db_messages}
+            msg_tokens, msg_id_set = self._recalc_msg_stats(db_messages)
 
             new_journal_id = last_journal_id
             journal_force_msg_ids = []
@@ -962,62 +935,19 @@ class NiuRunner:
 处理完成后，在报告末尾用 JSON 格式报告：{{"last_journal_id": "<收到的消息中 idx 最大的消息的 id（UUID）>"}}
 **必须推进游标**：即使没有可提取的工作内容，也必须输出 idx 最大的消息的 UUID。"""
 
-                context_window_for_truncate = _read_context_window_tokens()
-                safe_tokens = int(context_window_for_truncate * 0.6)
+                safe_tokens = int(_read_context_window_tokens() * 0.6)
                 truncated_journal_prompt = _truncate_task_for_subagent(journal_force_prompt, safe_tokens)
 
-                with _cf.ThreadPoolExecutor(max_workers=1) as executor:
-                    future = executor.submit(
-                        call_subagent,
-                        "journal-agent", truncated_journal_prompt, llm_config, None
-                    )
-                    try:
-                        journal_result = future.result(timeout=120)
-                    except Exception as e:
-                        logger.warning(f"[Runner] Force: journal-agent failed/timed out: {e}")
-                        journal_result = ""
+                _, new_journal_id = self._run_subagent_step(
+                    "journal-agent", journal_cursor_path, "last_journal_id",
+                    truncated_journal_prompt, llm_config, msg_id_set, last_journal_id,
+                    journal_force_msg_ids, "last_journal_at",
+                )
+                logger.info(f"[Runner] Force: Journal cursor updated: {new_journal_id}")
 
                 if is_stop_requested():
                     logger.warning("[Runner] Stop requested, aborting force compress")
                     return
-
-                logger.info(f"[Runner] Force: journal-agent completed, length={len(journal_result)}")
-
-                if _is_subagent_overflow(journal_result):
-                    overflow_info = _extract_overflow_info(journal_result)
-                    logger.warning(f"[Runner] Force: journal-agent overflow: {overflow_info.get('turns_completed', 0)} turns")
-                    partial = overflow_info.get("partial_result", "")
-                    recovered = _extract_cursor_id(partial, "last_journal_id", msg_id_set)
-                    if recovered and recovered != "NULL":
-                        new_journal_id = recovered
-                    else:
-                        new_journal_id = journal_force_msg_ids[-1]
-                        logger.warning(f"[Runner] Force: Journal cursor overflow fallback: {new_journal_id}")
-                else:
-                    extracted = _extract_cursor_id(journal_result, "last_journal_id", msg_id_set)
-                    if extracted and extracted != "NULL":
-                        new_journal_id = extracted
-                    elif extracted == "NULL" or not extracted:
-                        new_journal_id = journal_force_msg_ids[-1]
-                        logger.warning(f"[Runner] Force: Journal cursor not matched, fallback: {new_journal_id}")
-
-                # 校验 journal 游标
-                if new_journal_id:
-                    fresh_msgs = self._sync_get_messages()
-                    fresh_ids = {getattr(m, "id", "") for m in fresh_msgs}
-                    if new_journal_id not in fresh_ids:
-                        logger.warning(f"[Runner] Force: Journal cursor {new_journal_id} deleted, reverting to {last_journal_id}")
-                        new_journal_id = last_journal_id
-                        if new_journal_id and new_journal_id not in fresh_ids:
-                            new_journal_id = ""
-
-                if new_journal_id:
-                    journal_cursor_path.parent.mkdir(parents=True, exist_ok=True)
-                    journal_cursor_path.write_text(json.dumps({
-                        "last_journal_id": new_journal_id,
-                        "last_journal_at": datetime.now().isoformat(),
-                    }, ensure_ascii=False, indent=2), encoding="utf-8")
-                    logger.info(f"[Runner] Force: Journal cursor updated: {new_journal_id}")
             else:
                 logger.info("[Runner] Force: journal-agent no incremental messages")
 
@@ -1027,13 +957,7 @@ class NiuRunner:
                 return
 
             # 重新读取 compress 游标
-            last_compress_id = ""
-            if compress_cursor_path.exists():
-                try:
-                    cdata = json.loads(compress_cursor_path.read_text(encoding="utf-8"))
-                    last_compress_id = cdata.get("last_compress_id", "")
-                except Exception as e:
-                    logger.warning(f"[Runner] Failed to read compress cursor in force mode: {e}")
+            last_compress_id = self._read_cursor(compress_cursor_path, "last_compress_id")
 
             target_tokens = int(estimated_tokens * _read_target_threshold())
             compress_plan_path = os.path.expanduser("~/.niu/compress_plan.json")
