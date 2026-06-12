@@ -37,6 +37,42 @@ from .http_logger import install_http_logger
 
 install_http_logger()
 
+# === 上下文溢出统一检测 ===
+
+_OVERFLOW_PATTERNS = [
+    "context_length_exceeded",
+    "maximum context length",
+    "prompt is too long",
+    "prompt: length",
+    "exceed context limit",
+    "is longer than the model's context length",
+    "input tokens exceed the configured limit",
+    "exceeds the maximum number of tokens",
+    "input is too long",
+    "context window exceeded",
+]
+
+
+def _is_context_overflow_error(exc: Exception) -> bool:
+    """三层检测：isinstance > HTTP 413 > 字符串匹配"""
+    # Layer 1: litellm ContextWindowExceededError
+    try:
+        from litellm import ContextWindowExceededError
+        if isinstance(exc, ContextWindowExceededError):
+            return True
+    except ImportError:
+        pass
+
+    # Layer 2: HTTP 413
+    status_code = getattr(exc, "status_code", None) or getattr(getattr(exc, "response", None), "status_code", None)
+    if status_code == 413:
+        return True
+
+    # Layer 3: 字符串模式匹配
+    msg = str(exc).lower()
+    return any(p in msg for p in _OVERFLOW_PATTERNS)
+
+
 # 完整无截断的原始日志序号计数器
 _raw_seq_counter = 0
 
@@ -355,14 +391,7 @@ class LiteLLMSession(BaseSession):
             response = litellm.completion(**request_params)
         except Exception as init_err:
             # 初始 API 调用就失败（如 context_length_exceeded），直接返回 MockResponse
-            error_msg = str(init_err).lower()
-            is_context_overflow = (
-                "context_length_exceeded" in str(init_err)
-                or "context window" in error_msg
-                or "prompt is too long" in error_msg
-                or "maximum context length" in error_msg
-            )
-            if is_context_overflow:
+            if _is_context_overflow_error(init_err):
                 logger.warning(f"[STREAM] Context length exceeded on initial call: {init_err}")
                 return MockResponse(
                     thinking="",
@@ -370,6 +399,7 @@ class LiteLLMSession(BaseSession):
                     tool_calls=[],
                     raw="",
                     context_overflow=True,
+                    usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
                 )
             # 非 context overflow 错误，重新抛出
             raise
@@ -477,13 +507,7 @@ class LiteLLMSession(BaseSession):
             error_msg = str(e)
 
             # 检测 context_length_exceeded 错误 — 设置标记让 agent_loop 触发强制压缩
-            is_context_overflow = (
-                "context_length_exceeded" in error_msg
-                or "context window" in error_msg.lower()
-                or "prompt is too long" in error_msg.lower()
-                or "maximum context length" in error_msg.lower()
-            )
-            if is_context_overflow:
+            if _is_context_overflow_error(e):
                 logger.warning(f"[STREAM] Context length exceeded: {e}")
                 return MockResponse(
                     thinking=reasoning_content or "",
@@ -491,6 +515,7 @@ class LiteLLMSession(BaseSession):
                     tool_calls=tool_calls,
                     raw=full_content or "",
                     context_overflow=True,
+                    usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
                 )
 
             is_socket_error = "10038" in error_msg or "10054" in error_msg or "non-socket" in error_msg.lower()

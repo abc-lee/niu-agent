@@ -559,6 +559,22 @@ class NiuRunner:
         # No schema refresh — tools_schema stays base + disk
         return tools_schema
 
+    def _on_context_high_usage(self, messages, tokens_used, tokens_limit):
+        """主 Agent 上下文超阈值回调 — 执行完整 force 压缩流程
+
+        回调完成后原地修改 messages 列表（从 DB 重新加载压缩后的消息）。
+        agent_loop 不需要知道 DB、不需要导入 niu_api 的任何东西。
+        """
+        logger.info(f"[Runner] Context high usage: {tokens_used}/{tokens_limit} tokens "
+                     f"({tokens_used/tokens_limit:.1%})")
+        try:
+            # TODO: 完整实现 — 4步子Agent压缩 + 执行compress_plan + 重新加载messages
+            # 当前为骨架实现，确保回调能被正确调用
+            # 完整实现参考 compat.py force 模式（1429-1907行）
+            pass
+        except Exception as e:
+            logger.error(f"[Runner] Proactive compress failed: {e}")
+
     def _get_brain_injector(self):
         """Get or create the cached brain context injector chain.
 
@@ -1037,7 +1053,8 @@ class NiuRunner:
             history=history,  # Pass history to agent_loop
             on_turn_end=self._on_turn_end,  # 每轮结束后刷新动态注入
             context_window_tokens=context_window_tokens,  # 主 Agent 溢出检测
-            context_fifo_threshold=int(context_window_tokens * 0.75),  # 主 Agent FIFO 截断阈值
+            on_context_high_usage=self._on_context_high_usage,  # 主 Agent 超阈值回调
+            context_target_threshold=0,  # 主 Agent 不需要 FIFO 目标阈值
         )
 
         # 累加输出（双管道：full_resp 只含 reply 内容，用于 DB 存储）

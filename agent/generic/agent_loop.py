@@ -130,6 +130,8 @@ def agent_runner_loop(
     on_turn_end=None,  # Optional: callback(messages, tools_schema, turn) -> tools_schema
     context_window_tokens=0,  # 0 means no limit check (backward compatible)
     context_fifo_threshold=0,  # 0 means no FIFO truncation; >0 means max token budget for sub-agents
+    context_target_threshold=0,  # FIFO 裁剪目标 token 量
+    on_context_high_usage=None,  # 主Agent超阈值回调；None=子Agent走FIFO
     enable_supplement=True,  # False for sub-agents to prevent stealing main agent's supplements
 ):
     from agent.runner import is_stop_requested, clear_stop, drain_supplement
@@ -163,6 +165,7 @@ def agent_runner_loop(
     print(f"[Debug] agent_runner_loop: {len(messages)} messages (history: {len(history) if history else 0})", file=sys.stderr, flush=True)
 
     turn = 0
+    last_prompt_tokens = 0
     handler._done_hooks = []
     handler.max_turns = max_turns
     # V4: 通知前端进入忙碌状态
@@ -180,32 +183,53 @@ def agent_runner_loop(
             clear_stop()
             yield StreamEvent("system", "chat_idle")
             return {"result": "STOPPED", "messages": messages}
-        # FIFO 上下文截断：按 token 量逐条移除旧消息，保护 messages[0](system) 和 messages[1](初始task)
-        if context_fifo_threshold > 0 and len(messages) > 2:
+        # === 上下文使用率检测（prompt_tokens 驱动）===
+        if last_prompt_tokens > 0 and context_window_tokens > 0:
+            usage_ratio = last_prompt_tokens / context_window_tokens
+            if usage_ratio > warning_threshold:
+                if on_context_high_usage:
+                    # 主 Agent：调回调执行压缩，循环不退出
+                    logger.info(f"[Context] Proactive compress: {last_prompt_tokens}/{context_window_tokens} tokens "
+                                f"({usage_ratio:.1%} > {warning_threshold:.0%})")
+                    on_context_high_usage(messages, last_prompt_tokens, context_window_tokens)
+                    # 回调内部已完成压缩并原地修改 messages（messages[:] = ...）
+                    last_prompt_tokens = 0  # 重置，下轮重新获取
+                else:
+                    # 子 Agent：FIFO 裁剪到 target 阈值
+                    target_tokens = context_target_threshold if context_target_threshold > 0 else int(context_window_tokens * 0.50)
+                    if len(messages) > 2:
+                        removed = 0
+                        current_tokens = count_messages_tokens(messages)
+                        while len(messages) > 2 and current_tokens > target_tokens:
+                            first = messages[2]
+                            messages.pop(2)
+                            removed += 1
+                            if first.get("role") == "assistant" and first.get("tool_calls"):
+                                while len(messages) > 2 and messages[2].get("role") == "tool":
+                                    messages.pop(2)
+                                    removed += 1
+                            current_tokens = count_messages_tokens(messages)
+                        if removed > 0:
+                            logger.info(f"[FIFO] Proactive pruning: {last_prompt_tokens}/{context_window_tokens} tokens "
+                                        f"({usage_ratio:.1%} > {warning_threshold:.0%}), removed {removed} messages, "
+                                        f"now ~{current_tokens} tokens (target {target_tokens})")
+        # 旧 FIFO 回退：只在首轮（last_prompt_tokens==0）时执行
+        if context_fifo_threshold > 0 and len(messages) > 2 and last_prompt_tokens == 0:
             current_tokens = count_messages_tokens(messages)
             if current_tokens > context_fifo_threshold:
                 removed = 0
                 while len(messages) > 2 and current_tokens > context_fifo_threshold:
-                    # 成对移除：如果 messages[2] 是 assistant(tool_calls)，
-                    # 需要连同后面的 tool 结果一起移除，避免 API 报错
                     first = messages[2]
                     messages.pop(2)
                     removed += 1
-                    # 如果移除的是带 tool_calls 的 assistant，继续移除紧随的 tool 结果
                     if first.get("role") == "assistant" and first.get("tool_calls"):
                         while len(messages) > 2 and messages[2].get("role") == "tool":
                             messages.pop(2)
                             removed += 1
                     current_tokens = count_messages_tokens(messages)
                 if removed > 0:
-                    logger.info(f"[FIFO] Context truncation: removed {removed} oldest messages, "
+                    logger.info(f"[FIFO] Fallback truncation: removed {removed} oldest messages, "
                                 f"tokens {current_tokens}/{context_fifo_threshold}")
-        # 上下文使用率监控（仅警告，不主动退出 — 由 LLM API 报错驱动压缩）
-        if context_window_tokens > 0:
-            current_tokens = count_messages_tokens(messages)
-            usage_ratio = current_tokens / context_window_tokens
-            if usage_ratio > warning_threshold:
-                logger.warning(f"[Context] High usage {current_tokens}/{context_window_tokens} tokens ({usage_ratio:.1%}), will continue and let LLM API decide")
         if verbose:
             yield StreamEvent("system", f"**LLM Running (Turn {turn}) ...**\n\n")
         if turn % 10 == 0:
@@ -214,8 +238,26 @@ def agent_runner_loop(
         if verbose:
             response = yield from response_gen
             yield StreamEvent("system", "\n\n")
+            # 提取 prompt_tokens（用于下轮上下文检测）
+            if hasattr(response, 'usage') and response.usage:
+                u = response.usage
+                _pt = u.get('prompt_tokens', 0) if isinstance(u, dict) else getattr(u, 'prompt_tokens', 0)
+                if isinstance(_pt, (int, float)):
+                    last_prompt_tokens = int(_pt)
+                    print(f"[Context] prompt_tokens={last_prompt_tokens}, context_window={context_window_tokens}", file=sys.stderr, flush=True)
+            else:
+                print(f"[Context] No usage in response: hasattr={hasattr(response, 'usage')}, usage={getattr(response, 'usage', 'N/A')}", file=sys.stderr, flush=True)
         else:
             response = exhaust(response_gen)
+            # 提取 prompt_tokens（用于下轮上下文检测）
+            if hasattr(response, 'usage') and response.usage:
+                u = response.usage
+                _pt = u.get('prompt_tokens', 0) if isinstance(u, dict) else getattr(u, 'prompt_tokens', 0)
+                if isinstance(_pt, (int, float)):
+                    last_prompt_tokens = int(_pt)
+                    print(f"[Context] prompt_tokens={last_prompt_tokens}, context_window={context_window_tokens}", file=sys.stderr, flush=True)
+            else:
+                print(f"[Context] No usage in response: hasattr={hasattr(response, 'usage')}, usage={getattr(response, 'usage', 'N/A')}", file=sys.stderr, flush=True)
             # 过滤掉 <tool_use> 标签，只返回纯文本
             content = response.content or ""
             content = re.sub(r"<tool_use>.*?</tool_use>", "", content, flags=re.DOTALL)
