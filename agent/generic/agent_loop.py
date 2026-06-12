@@ -118,6 +118,27 @@ def get_pretty_json(data):
     return json.dumps(data, indent=2, ensure_ascii=False).replace("\\n", "\n")
 
 
+def _fifo_prune(messages, target_tokens):
+    """FIFO 裁剪：从 messages[2] 开始删除，直到 token 数低于 target。
+    assistant+tool_calls 消息会连带后续 tool 消息一起删除。
+    返回删除的消息数。
+    """
+    if len(messages) <= 2:
+        return 0
+    removed = 0
+    current_tokens = count_messages_tokens(messages)
+    while len(messages) > 2 and current_tokens > target_tokens:
+        first = messages[2]
+        messages.pop(2)
+        removed += 1
+        if first.get("role") == "assistant" and first.get("tool_calls"):
+            while len(messages) > 2 and messages[2].get("role") == "tool":
+                messages.pop(2)
+                removed += 1
+        current_tokens = count_messages_tokens(messages)
+    return removed
+
+
 def agent_runner_loop(
     client,
     system_prompt,
@@ -200,39 +221,17 @@ def agent_runner_loop(
                 else:
                     # 子 Agent：FIFO 裁剪到 target 阈值
                     target_tokens = context_target_threshold if context_target_threshold > 0 else int(context_window_tokens * 0.50)
-                    if len(messages) > 2:
-                        removed = 0
-                        current_tokens = count_messages_tokens(messages)
-                        while len(messages) > 2 and current_tokens > target_tokens:
-                            first = messages[2]
-                            messages.pop(2)
-                            removed += 1
-                            if first.get("role") == "assistant" and first.get("tool_calls"):
-                                while len(messages) > 2 and messages[2].get("role") == "tool":
-                                    messages.pop(2)
-                                    removed += 1
-                            current_tokens = count_messages_tokens(messages)
-                        if removed > 0:
-                            logger.info(f"[FIFO] Proactive pruning: {last_prompt_tokens}/{context_window_tokens} tokens "
-                                        f"({usage_ratio:.1%} > {warning_threshold:.0%}), removed {removed} messages, "
-                                        f"now ~{current_tokens} tokens (target {target_tokens})")
-        # 旧 FIFO 回退：只在首轮（last_prompt_tokens==0）时执行
-        if context_fifo_threshold > 0 and len(messages) > 2 and last_prompt_tokens == 0:
-            current_tokens = count_messages_tokens(messages)
-            if current_tokens > context_fifo_threshold:
-                removed = 0
-                while len(messages) > 2 and current_tokens > context_fifo_threshold:
-                    first = messages[2]
-                    messages.pop(2)
-                    removed += 1
-                    if first.get("role") == "assistant" and first.get("tool_calls"):
-                        while len(messages) > 2 and messages[2].get("role") == "tool":
-                            messages.pop(2)
-                            removed += 1
-                    current_tokens = count_messages_tokens(messages)
-                if removed > 0:
-                    logger.info(f"[FIFO] Fallback truncation: removed {removed} oldest messages, "
-                                f"tokens {current_tokens}/{context_fifo_threshold}")
+                    removed = _fifo_prune(messages, target_tokens)
+                    if removed > 0:
+                        logger.info(f"[FIFO] Proactive pruning: {last_prompt_tokens}/{context_window_tokens} tokens "
+                                    f"({usage_ratio:.1%} > {warning_threshold:.0%}), removed {removed} messages, "
+                                    f"now ~{count_messages_tokens(messages)} tokens (target {target_tokens})")
+            # 旧 FIFO 回退：只在首轮（last_prompt_tokens==0）时执行
+        if context_fifo_threshold > 0 and len(messages) > 2 and last_prompt_tokens == 0 and not _compress_cooldown:
+            removed = _fifo_prune(messages, context_fifo_threshold)
+            if removed > 0:
+                logger.info(f"[FIFO] Fallback truncation: removed {removed} oldest messages, "
+                            f"tokens {count_messages_tokens(messages)}/{context_fifo_threshold}")
         if verbose:
             yield StreamEvent("system", f"**LLM Running (Turn {turn}) ...**\n\n")
         if turn % 10 == 0:
@@ -280,20 +279,9 @@ def agent_runner_loop(
                             _compress_cooldown = True
                         else:
                             target_tokens = context_target_threshold if context_target_threshold > 0 else int(context_window_tokens * 0.50)
-                            if len(messages) > 2:
-                                removed = 0
-                                current_tokens = count_messages_tokens(messages)
-                                while len(messages) > 2 and current_tokens > target_tokens:
-                                    first = messages[2]
-                                    messages.pop(2)
-                                    removed += 1
-                                    if first.get("role") == "assistant" and first.get("tool_calls"):
-                                        while len(messages) > 2 and messages[2].get("role") == "tool":
-                                            messages.pop(2)
-                                            removed += 1
-                                    current_tokens = count_messages_tokens(messages)
-                                if removed > 0:
-                                    logger.info(f"[FIFO] Proactive pruning: removed {removed} messages")
+                            removed = _fifo_prune(messages, target_tokens)
+                            if removed > 0:
+                                logger.info(f"[FIFO] Proactive pruning: removed {removed} messages")
         else:
             logger.debug(f"[Context] No usage in response: hasattr={hasattr(response, 'usage')}, usage={getattr(response, 'usage', 'N/A')}")
 
