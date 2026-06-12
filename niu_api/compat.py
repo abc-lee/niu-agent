@@ -227,7 +227,7 @@ def _estimate_total_tokens(messages) -> int:
         return count_tokens_for_text(total_content)
 
 
-def _should_auto_tidy(current_tokens: int, last_tidy_tokens: int, threshold: int = 50000) -> bool:
+def _should_auto_tidy(current_tokens: int, last_tidy_tokens: int, threshold: int = 50000, context_window_tokens: int = 0) -> bool:
     """
     判断是否应该触发自动增量整理。
 
@@ -235,6 +235,7 @@ def _should_auto_tidy(current_tokens: int, last_tidy_tokens: int, threshold: int
         current_tokens: 当前消息总 token 数
         last_tidy_tokens: 上次整理时的总 token 数（0 表示从未整理）
         threshold: 触发阈值（增量 token 数）
+        context_window_tokens: 上下文窗口大小（0 表示不检查使用率）
 
     Returns:
         True 表示应该触发整理
@@ -245,7 +246,16 @@ def _should_auto_tidy(current_tokens: int, last_tidy_tokens: int, threshold: int
     # 从未整理过：总量超阈值就触发
     if last_tidy_tokens == 0:
         return current_tokens >= threshold
-    return increment >= threshold
+    # 增量正常（>=0）：原逻辑
+    if increment >= threshold:
+        return True
+    # 增量不够或为负数：使用率兜底
+    if context_window_tokens > 0:
+        usage_ratio = current_tokens / context_window_tokens
+        warning_threshold = 0.80
+        if usage_ratio >= warning_threshold:
+            return True
+    return False
 
 
 async def _check_and_trigger_auto_tidy(store):
@@ -262,13 +272,15 @@ async def _check_and_trigger_auto_tidy(store):
             return
 
         current_tokens = _estimate_total_tokens(messages)
-
         last_tidy_tokens = _read_last_tidy_tokens()
+        context_window_tokens = _read_context_window_tokens()
 
-        if not _should_auto_tidy(current_tokens, last_tidy_tokens):
+        if not _should_auto_tidy(current_tokens, last_tidy_tokens, context_window_tokens=context_window_tokens):
             return
 
-        logger.info(f"[AutoTidy] Increment {current_tokens - last_tidy_tokens} tokens exceeds threshold, triggering sleep tidy")
+        increment = current_tokens - last_tidy_tokens
+        usage_pct = f"{current_tokens/context_window_tokens:.1%}" if context_window_tokens > 0 else "N/A"
+        logger.info(f"[AutoTidy] Triggering sleep tidy: increment={increment}, usage={usage_pct}")
 
         # 异步触发 sleep 模式整理（_run_auto_tidy 内部有 _tidy_lock 防重入）
         asyncio.create_task(_run_auto_tidy())
@@ -318,15 +330,15 @@ async def _run_auto_tidy():
 
         try:
             result = await _tidy_context_impl(request={"session_id": "default", "mode": "sleep"})
-            # 无论成功失败都更新 last_tidy_tokens，避免失败后无限重触发
-            store = await get_message_store()
-            messages = await store.get_messages()
-            current_tokens = _estimate_total_tokens(messages)
-            _write_last_tidy_tokens(current_tokens)
-            if result.get("status") != "error":
-                logger.info(f"[AutoTidy] Completed, last_tidy_tokens updated to {current_tokens}")
+            if result.get("status") == "error":
+                # _tidy_context_impl 失败时可能没写 last_tidy_tokens，兜底写入当前值
+                store = await get_message_store()
+                messages = await store.get_messages()
+                current_tokens = _estimate_total_tokens(messages)
+                _write_last_tidy_tokens(current_tokens)
+                logger.warning(f"[AutoTidy] tidy_context returned error: {result}, last_tidy_tokens updated to {current_tokens}")
             else:
-                logger.warning(f"[AutoTidy] tidy_context returned error: {result}, but last_tidy_tokens updated to prevent re-triggering")
+                logger.info(f"[AutoTidy] Completed successfully")
         finally:
             _tidy_lock.release()
     except Exception as e:
