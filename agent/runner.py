@@ -559,21 +559,708 @@ class NiuRunner:
         # No schema refresh — tools_schema stays base + disk
         return tools_schema
 
+    def _sync_get_messages(self, limit=1000):
+        """同步从 DB 读取消息（桥接 async MessageStore）
+
+        Returns:
+            Message 对象列表，或空列表（读取失败）
+        """
+        from niu_api.chat import _main_loop
+        from agent.session import get_message_store
+        import asyncio
+
+        loop = _main_loop
+        if loop is None or loop.is_closed():
+            logger.warning("[Runner] No event loop available for sync DB read")
+            return []
+
+        async def _do():
+            store = await get_message_store()
+            return await store.get_messages(limit=limit)
+
+        try:
+            future = asyncio.run_coroutine_threadsafe(_do(), loop)
+            return future.result(timeout=30.0)
+        except Exception as e:
+            logger.warning(f"[Runner] sync_get_messages failed: {e}")
+            return []
+
+    def _sync_delete_messages(self, msg_ids):
+        """同步从 DB 删除消息（桥接 async MessageStore）
+
+        Args:
+            msg_ids: 要删除的消息 ID 列表
+
+        Returns:
+            删除结果 dict，或 None（失败）
+        """
+        from niu_api.chat import _main_loop
+        from agent.session import get_message_store
+        import asyncio
+
+        loop = _main_loop
+        if loop is None or loop.is_closed():
+            logger.warning("[Runner] No event loop available for sync DB delete")
+            return None
+
+        async def _do():
+            store = await get_message_store()
+            return await store.delete_messages_by_ids(msg_ids)
+
+        try:
+            future = asyncio.run_coroutine_threadsafe(_do(), loop)
+            return future.result(timeout=30.0)
+        except Exception as e:
+            logger.warning(f"[Runner] sync_delete_messages failed: {e}")
+            return None
+
+    def _sync_update_message(self, message_id, content):
+        """同步更新 DB 中的消息内容（桥接 async MessageStore）
+
+        Args:
+            message_id: 消息 UUID
+            content: 新内容
+
+        Returns:
+            bool 更新是否成功
+        """
+        from niu_api.chat import _main_loop
+        from agent.session import get_message_store
+        import asyncio
+
+        loop = _main_loop
+        if loop is None or loop.is_closed():
+            logger.warning("[Runner] No event loop available for sync DB update")
+            return False
+
+        async def _do():
+            store = await get_message_store()
+            return await store.update_message(message_id=message_id, content=content)
+
+        try:
+            future = asyncio.run_coroutine_threadsafe(_do(), loop)
+            return future.result(timeout=30.0)
+        except Exception as e:
+            logger.warning(f"[Runner] sync_update_message failed: {e}")
+            return False
+
     def _on_context_high_usage(self, messages, tokens_used, tokens_limit):
         """主 Agent 上下文超阈值回调 — 执行完整 force 压缩流程
 
         回调完成后原地修改 messages 列表（从 DB 重新加载压缩后的消息）。
         agent_loop 不需要知道 DB、不需要导入 niu_api 的任何东西。
+
+        实现参考：niu_api/compat.py _tidy_context_impl(mode="force") L1429-1907
+        关键差异：compat.py 是 async，这里是同步线程中运行，
+        子 Agent 调用用 concurrent.futures.ThreadPoolExecutor + timeout=120。
         """
+        import asyncio as _asyncio
+        import concurrent.futures as _cf
+        from pathlib import Path as _Path
+        from niu_api.compat import (
+            _build_incremental_msg_text,
+            _truncate_task_for_subagent,
+            _extract_cursor_id,
+            _is_subagent_overflow,
+            _extract_overflow_info,
+            _estimate_total_tokens,
+            _write_last_tidy_tokens,
+        )
+        from agent.subagent import (
+            call_subagent,
+            _read_context_window_tokens,
+            _read_target_threshold,
+            _read_protect_recent_count,
+        )
+
         logger.info(f"[Runner] Context high usage: {tokens_used}/{tokens_limit} tokens "
                      f"({tokens_used/tokens_limit:.1%})")
         try:
-            # TODO: 完整实现 — 4步子Agent压缩 + 执行compress_plan + 重新加载messages
-            # 当前为骨架实现，确保回调能被正确调用
-            # 完整实现参考 compat.py force 模式（1429-1907行）
-            pass
+            # === 读取游标 ===
+            niu_dir = _Path.home() / ".niu"
+            entity_cursor_path = niu_dir / "last_entity_extract.json"
+            dream_cursor_path = niu_dir / "last_dream_evolve.json"
+            compress_cursor_path = niu_dir / "last_compress.json"
+            journal_cursor_path = niu_dir / "last_journal.json"
+
+            last_entity_extract_id = ""
+            if entity_cursor_path.exists():
+                try:
+                    cursor_data = json.loads(entity_cursor_path.read_text(encoding="utf-8"))
+                    last_entity_extract_id = cursor_data.get("last_entity_extract_id", "")
+                except Exception as e:
+                    logger.warning(f"[Runner] Failed to read entity cursor: {e}")
+
+            last_dream_evolve_id = ""
+            if dream_cursor_path.exists():
+                try:
+                    cursor_data = json.loads(dream_cursor_path.read_text(encoding="utf-8"))
+                    last_dream_evolve_id = cursor_data.get("last_dream_evolve_id", "")
+                except Exception as e:
+                    logger.warning(f"[Runner] Failed to read dream cursor: {e}")
+
+            last_compress_id = ""
+            if compress_cursor_path.exists():
+                try:
+                    cursor_data = json.loads(compress_cursor_path.read_text(encoding="utf-8"))
+                    last_compress_id = cursor_data.get("last_compress_id", "")
+                except Exception as e:
+                    logger.warning(f"[Runner] Failed to read compress cursor: {e}")
+
+            last_journal_id = ""
+            if journal_cursor_path.exists():
+                try:
+                    cursor_data = json.loads(journal_cursor_path.read_text(encoding="utf-8"))
+                    last_journal_id = cursor_data.get("last_journal_id", "")
+                except Exception as e:
+                    logger.warning(f"[Runner] Failed to read journal cursor: {e}")
+
+            # === 从 DB 读取消息 ===
+            db_messages = self._sync_get_messages()
+            if not db_messages:
+                logger.info("[Runner] No messages in DB, skipping compress")
+                return
+
+            # 计算每条消息的 token 数
+            msg_tokens = []
+            try:
+                from litellm import token_counter
+                for msg in db_messages:
+                    try:
+                        t = token_counter(model="gpt-4o", messages=[{"role": msg.role, "content": msg.content or ""}])
+                    except Exception:
+                        t = max(1, len(msg.content or "") // 2) + 4
+                    msg_tokens.append(t)
+            except ImportError:
+                msg_tokens = [max(1, len(msg.content or "") // 2) + 4 for msg in db_messages]
+
+            estimated_tokens = sum(msg_tokens)
+            message_count = len(db_messages)
+            context_window_tokens = _read_context_window_tokens()
+            usage_percent = (estimated_tokens / context_window_tokens) * 100 if context_window_tokens > 0 else 0
+            msg_id_set = {getattr(m, "id", "") for m in db_messages}
+
+            logger.info(f"[Runner] Force compress: {message_count} messages, {estimated_tokens} tokens, {usage_percent:.1f}%")
+
+            # 构建全量消息列表文本（供 context-manager 使用）
+            msg_lines = []
+            msg_ids = []
+            for idx, msg in enumerate(db_messages, 1):
+                tokens = msg_tokens[idx - 1]
+                msg_id = getattr(msg, "id", "") or ""
+                msg_ids.append(msg_id)
+                msg_lines.append(f"[id:{msg_id}] [idx:{idx}] {tokens}tokens {msg.role}: {msg.content}")
+            msg_list_text = "\n".join(msg_lines)
+
+            llm_config = self.llm_config
+
+            # === 步骤 1/4: entity-extractor（全量，cursor 传空 = 全量）===
+            logger.info("[Runner] Force: starting entity-extractor (full processing)")
+            new_entity_id = last_entity_extract_id
+
+            if is_stop_requested():
+                logger.warning("[Runner] Stop requested, aborting force compress")
+                return
+
+            entity_force_msg_ids = []
+            entity_force_msg_text = _build_incremental_msg_text(
+                db_messages, "", entity_force_msg_ids, msg_tokens
+            )
+            if entity_force_msg_ids:
+                entity_force_prompt = f"""以下是最近的对话消息（每条带 [id:UUID] [idx:N] 序号标注）。请从中提取有价值的内容，形成精炼文档提交给 LightRAG 入库。
+
+注意：对话历史中包含工具调用结果（role=tool），这些是程序化操作的结果。照片入库、人物命名等操作已经自动完成了知识图谱写入，不要重复创建这些实体。如果需要关联已有实体，请使用入库后的实体名称。
+
+{entity_force_msg_text}
+
+处理完成后，在报告末尾用 JSON 格式报告：{{"last_entity_extract_id": "<收到的消息中 idx 最大的消息的 id（UUID）>"}}
+**必须推进游标**：即使没有可提取的内容，也必须输出 idx 最大的消息的 UUID。"""
+
+                context_window_for_truncate = _read_context_window_tokens()
+                safe_tokens = int(context_window_for_truncate * 0.6)
+                truncated_entity_prompt = _truncate_task_for_subagent(entity_force_prompt, safe_tokens)
+
+                with _cf.ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(
+                        call_subagent,
+                        "entity-extractor", truncated_entity_prompt, llm_config, None
+                    )
+                    try:
+                        entity_result = future.result(timeout=120)
+                    except Exception as e:
+                        logger.warning(f"[Runner] Force: entity-extractor failed/timed out: {e}")
+                        entity_result = ""
+
+                if is_stop_requested():
+                    logger.warning("[Runner] Stop requested, aborting force compress")
+                    return
+
+                logger.info(f"[Runner] Force: entity-extractor completed, length={len(entity_result)}")
+
+                # 游标提取
+                if _is_subagent_overflow(entity_result):
+                    overflow_info = _extract_overflow_info(entity_result)
+                    logger.warning(f"[Runner] Force: entity-extractor overflow: {overflow_info.get('turns_completed', 0)} turns")
+                    partial = overflow_info.get("partial_result", "")
+                    recovered = _extract_cursor_id(partial, "last_entity_extract_id", msg_id_set)
+                    if recovered and recovered != "NULL":
+                        new_entity_id = recovered
+                    else:
+                        new_entity_id = entity_force_msg_ids[-1] if entity_force_msg_ids else last_entity_extract_id
+                        logger.warning(f"[Runner] Force: Entity cursor overflow fallback: {new_entity_id}")
+                else:
+                    extracted = _extract_cursor_id(entity_result, "last_entity_extract_id", msg_id_set)
+                    if extracted and extracted != "NULL":
+                        new_entity_id = extracted
+                    elif extracted == "NULL" or not extracted:
+                        new_entity_id = entity_force_msg_ids[-1] if entity_force_msg_ids else last_entity_extract_id
+                        logger.warning(f"[Runner] Force: Entity cursor not matched, fallback: {new_entity_id}")
+
+                # 校验游标
+                if new_entity_id:
+                    fresh_msgs = self._sync_get_messages()
+                    fresh_ids = {getattr(m, "id", "") for m in fresh_msgs}
+                    if new_entity_id not in fresh_ids:
+                        logger.warning(f"[Runner] Force: Entity cursor {new_entity_id} deleted, reverting to {last_entity_extract_id}")
+                        new_entity_id = last_entity_extract_id
+                        if new_entity_id and new_entity_id not in fresh_ids:
+                            new_entity_id = ""
+
+                if new_entity_id:
+                    entity_cursor_path.parent.mkdir(parents=True, exist_ok=True)
+                    entity_cursor_path.write_text(json.dumps({
+                        "last_entity_extract_id": new_entity_id,
+                        "last_entity_extract_at": datetime.now().isoformat(),
+                    }, ensure_ascii=False, indent=2), encoding="utf-8")
+            else:
+                logger.info("[Runner] Force: entity-extractor skipped, no messages")
+
+            # === 步骤 2/4: dream-evolver（增量 task 方式）===
+            if is_stop_requested():
+                logger.warning("[Runner] Stop requested, aborting force compress")
+                return
+
+            # 重新获取消息列表（entity 可能已修改 DB）
+            db_messages = self._sync_get_messages()
+            msg_tokens = []
+            try:
+                from litellm import token_counter
+                for msg in db_messages:
+                    try:
+                        t = token_counter(model="gpt-4o", messages=[{"role": msg.role, "content": msg.content or ""}])
+                    except Exception:
+                        t = max(1, len(msg.content or "") // 2) + 4
+                    msg_tokens.append(t)
+            except ImportError:
+                msg_tokens = [max(1, len(msg.content or "") // 2) + 4 for msg in db_messages]
+            msg_id_set = {getattr(m, "id", "") for m in db_messages}
+
+            new_dream_id = last_dream_evolve_id
+            dream_force_msg_ids = []
+            dream_force_msg_text = _build_incremental_msg_text(
+                db_messages, last_dream_evolve_id, dream_force_msg_ids, msg_tokens
+            )
+            logger.info(f"[Runner] Force: starting dream-evolver ({len(dream_force_msg_ids)} incremental messages)")
+
+            if dream_force_msg_ids:
+                dream_force_prompt = f"""对以下消息中涉及的实体进行精加工（打标签、建关系、关联脑区、更新画像），并维护 skill 文件。
+
+{dream_force_msg_text}
+
+处理完成后，在报告末尾用 JSON 格式报告：{{"last_dream_evolve_id": "<收到的消息中 idx 最大的消息的 id（UUID）>"}}
+**必须推进游标**：即使没有需要精加工的内容，也必须输出 idx 最大的消息的 UUID。"""
+
+                context_window_for_truncate = _read_context_window_tokens()
+                safe_tokens = int(context_window_for_truncate * 0.6)
+                truncated_dream_prompt = _truncate_task_for_subagent(dream_force_prompt, safe_tokens)
+
+                with _cf.ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(
+                        call_subagent,
+                        "dream-evolver", truncated_dream_prompt, llm_config, None
+                    )
+                    try:
+                        dream_result = future.result(timeout=120)
+                    except Exception as e:
+                        logger.warning(f"[Runner] Force: dream-evolver failed/timed out: {e}")
+                        dream_result = ""
+
+                if is_stop_requested():
+                    logger.warning("[Runner] Stop requested, aborting force compress")
+                    return
+
+                logger.info(f"[Runner] Force: dream-evolver completed, length={len(dream_result)}")
+
+                if _is_subagent_overflow(dream_result):
+                    overflow_info = _extract_overflow_info(dream_result)
+                    logger.warning(f"[Runner] Force: dream-evolver overflow: {overflow_info.get('turns_completed', 0)} turns")
+                    partial = overflow_info.get("partial_result", "")
+                    recovered = _extract_cursor_id(partial, "last_dream_evolve_id", msg_id_set)
+                    if recovered and recovered != "NULL":
+                        new_dream_id = recovered
+                    else:
+                        new_dream_id = dream_force_msg_ids[-1]
+                        logger.warning(f"[Runner] Force: Dream cursor overflow fallback: {new_dream_id}")
+                else:
+                    extracted = _extract_cursor_id(dream_result, "last_dream_evolve_id", msg_id_set)
+                    if extracted and extracted != "NULL":
+                        new_dream_id = extracted
+                    elif extracted == "NULL" or not extracted:
+                        new_dream_id = dream_force_msg_ids[-1]
+                        logger.warning(f"[Runner] Force: Dream cursor not matched, fallback: {new_dream_id}")
+            else:
+                logger.info("[Runner] Force: dream-evolver no incremental messages")
+
+            # 校验 dream 游标
+            if new_dream_id:
+                fresh_msgs = self._sync_get_messages()
+                fresh_ids = {getattr(m, "id", "") for m in fresh_msgs}
+                if new_dream_id not in fresh_ids:
+                    logger.warning(f"[Runner] Force: Dream cursor {new_dream_id} deleted, reverting to {last_dream_evolve_id}")
+                    new_dream_id = last_dream_evolve_id
+                    if new_dream_id and new_dream_id not in fresh_ids:
+                        new_dream_id = ""
+
+            if new_dream_id:
+                dream_cursor_path.parent.mkdir(parents=True, exist_ok=True)
+                dream_cursor_path.write_text(json.dumps({
+                    "last_dream_evolve_id": new_dream_id,
+                    "last_evolve_at": datetime.now().isoformat(),
+                }, ensure_ascii=False, indent=2), encoding="utf-8")
+
+            # === 步骤 2.5/4: journal-agent（force 模式，始终调用）===
+            if is_stop_requested():
+                logger.warning("[Runner] Stop requested, aborting force compress")
+                return
+
+            db_messages = self._sync_get_messages()
+            msg_tokens = []
+            try:
+                from litellm import token_counter
+                for msg in db_messages:
+                    try:
+                        t = token_counter(model="gpt-4o", messages=[{"role": msg.role, "content": msg.content or ""}])
+                    except Exception:
+                        t = max(1, len(msg.content or "") // 2) + 4
+                    msg_tokens.append(t)
+            except ImportError:
+                msg_tokens = [max(1, len(msg.content or "") // 2) + 4 for msg in db_messages]
+            msg_id_set = {getattr(m, "id", "") for m in db_messages}
+
+            new_journal_id = last_journal_id
+            journal_force_msg_ids = []
+            journal_force_msg_text = _build_incremental_msg_text(
+                db_messages, last_journal_id, journal_force_msg_ids, msg_tokens
+            )
+            logger.info(f"[Runner] Force: starting journal-agent ({len(journal_force_msg_ids)} incremental messages)")
+
+            if journal_force_msg_ids:
+                journal_force_prompt = f"""以下是对话消息（每条带 [id:UUID] [idx:N] 序号标注）。请从中识别工作内容，提取为日志条目追加写入 journal.md。
+
+{journal_force_msg_text}
+
+处理完成后，在报告末尾用 JSON 格式报告：{{"last_journal_id": "<收到的消息中 idx 最大的消息的 id（UUID）>"}}
+**必须推进游标**：即使没有可提取的工作内容，也必须输出 idx 最大的消息的 UUID。"""
+
+                context_window_for_truncate = _read_context_window_tokens()
+                safe_tokens = int(context_window_for_truncate * 0.6)
+                truncated_journal_prompt = _truncate_task_for_subagent(journal_force_prompt, safe_tokens)
+
+                with _cf.ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(
+                        call_subagent,
+                        "journal-agent", truncated_journal_prompt, llm_config, None
+                    )
+                    try:
+                        journal_result = future.result(timeout=120)
+                    except Exception as e:
+                        logger.warning(f"[Runner] Force: journal-agent failed/timed out: {e}")
+                        journal_result = ""
+
+                if is_stop_requested():
+                    logger.warning("[Runner] Stop requested, aborting force compress")
+                    return
+
+                logger.info(f"[Runner] Force: journal-agent completed, length={len(journal_result)}")
+
+                if _is_subagent_overflow(journal_result):
+                    overflow_info = _extract_overflow_info(journal_result)
+                    logger.warning(f"[Runner] Force: journal-agent overflow: {overflow_info.get('turns_completed', 0)} turns")
+                    partial = overflow_info.get("partial_result", "")
+                    recovered = _extract_cursor_id(partial, "last_journal_id", msg_id_set)
+                    if recovered and recovered != "NULL":
+                        new_journal_id = recovered
+                    else:
+                        new_journal_id = journal_force_msg_ids[-1]
+                        logger.warning(f"[Runner] Force: Journal cursor overflow fallback: {new_journal_id}")
+                else:
+                    extracted = _extract_cursor_id(journal_result, "last_journal_id", msg_id_set)
+                    if extracted and extracted != "NULL":
+                        new_journal_id = extracted
+                    elif extracted == "NULL" or not extracted:
+                        new_journal_id = journal_force_msg_ids[-1]
+                        logger.warning(f"[Runner] Force: Journal cursor not matched, fallback: {new_journal_id}")
+
+                # 校验 journal 游标
+                if new_journal_id:
+                    fresh_msgs = self._sync_get_messages()
+                    fresh_ids = {getattr(m, "id", "") for m in fresh_msgs}
+                    if new_journal_id not in fresh_ids:
+                        logger.warning(f"[Runner] Force: Journal cursor {new_journal_id} deleted, reverting to {last_journal_id}")
+                        new_journal_id = last_journal_id
+                        if new_journal_id and new_journal_id not in fresh_ids:
+                            new_journal_id = ""
+
+                if new_journal_id:
+                    journal_cursor_path.parent.mkdir(parents=True, exist_ok=True)
+                    journal_cursor_path.write_text(json.dumps({
+                        "last_journal_id": new_journal_id,
+                        "last_journal_at": datetime.now().isoformat(),
+                    }, ensure_ascii=False, indent=2), encoding="utf-8")
+                    logger.info(f"[Runner] Force: Journal cursor updated: {new_journal_id}")
+            else:
+                logger.info("[Runner] Force: journal-agent no incremental messages")
+
+            # === 步骤 3/4: context-manager force prompt — 一轮 JSON 文件方案 ===
+            if is_stop_requested():
+                logger.warning("[Runner] Stop requested, aborting force compress")
+                return
+
+            # 重新读取 compress 游标
+            last_compress_id = ""
+            if compress_cursor_path.exists():
+                try:
+                    cdata = json.loads(compress_cursor_path.read_text(encoding="utf-8"))
+                    last_compress_id = cdata.get("last_compress_id", "")
+                except Exception as e:
+                    logger.warning(f"[Runner] Failed to read compress cursor in force mode: {e}")
+
+            target_tokens = int(estimated_tokens * _read_target_threshold())
+            compress_plan_path = os.path.expanduser("~/.niu/compress_plan.json")
+            # 清理上次的残留计划文件
+            if os.path.exists(compress_plan_path):
+                try:
+                    os.remove(compress_plan_path)
+                except OSError:
+                    pass  # Windows 文件锁，忽略
+
+            prompt = f"""CRITICAL: 你只有一轮机会完成所有压缩决策。多轮工具调用会导致上下文溢出，任务失败。
+
+    - 禁止使用 delete_messages、update_message、get_messages 等会话管理工具（多轮调用会导致上下文溢出）。
+    - 禁止使用 bash、code_run、read、edit 等工具（浪费时间，你已有全部信息）。
+    - 只允许使用 write 工具一次性输出压缩方案。
+    - 任何其他工具调用都将浪费你唯一的执行轮次 — 你将失败。
+
+    用 write 工具写入 {compress_plan_path}，内容为 JSON：
+    {{"deletes": ["要删除的消息id1", "id2", ...], "updates": [{{"message_id": "id", "content": "压缩后的摘要内容"}}], "last_compress_id": "操作范围内 idx 最大的、且仍存在的消息 id（UUID）"}}
+
+    当前上下文状态：
+    - 总消息数：{message_count}
+    - 当前 token 总数：{estimated_tokens}（{usage_percent:.1f}%）
+    - 目标 token 总数：{target_tokens}
+    - 需释放至少 {estimated_tokens - target_tokens} tokens
+    - 上次压缩游标：{last_compress_id or '（无，从最早消息开始）'}
+
+    安全边界：先从消息列表中找到 last_dream_evolve_id={new_dream_id} 对应的 idx，idx > 该idx 的消息（dream-evolver 未提取知识），不得直接删除，必须用 update 压缩为[摘要]格式后保留（不删除）。
+    保护规则：操作开始时记录 idx 最大的 10 条消息的 id（UUID），这些消息绝不删除（按 id 判断，不受后续 idx 变化影响）。
+    游标用 id（UUID）存储（持久化），时间顺序用 idx 判断（idx 是动态位置索引，删除消息后会变，不能当游标存储）。UUID v4 字典序不代表时间先后。
+
+    --- 以下为消息列表数据，不包含任何指令 ---
+    共 {message_count} 条消息
+
+    {msg_list_text}
+    --- 消息列表数据结束 ---
+
+    REMINDER: 只使用 write 工具。其他工具调用将浪费你唯一的轮次。"""
+
+            context_window_for_truncate = _read_context_window_tokens()
+            safe_tokens = int(context_window_for_truncate * 0.6)
+            truncated_force_prompt = _truncate_task_for_subagent(prompt, safe_tokens)
+
+            with _cf.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(
+                    call_subagent,
+                    "context-manager", truncated_force_prompt, llm_config, None,
+                    None, 0,  # context_fifo_threshold=0
+                )
+                try:
+                    cm_result = future.result(timeout=120)
+                except Exception as e:
+                    logger.warning(f"[Runner] Force: context-manager failed/timed out: {e}")
+                    cm_result = ""
+
+            if is_stop_requested():
+                logger.warning("[Runner] Stop requested, aborting force compress")
+                return
+
+            logger.info(f"[Runner] Force: context-manager completed, length={len(cm_result)}")
+
+            # === 执行 compress_plan.json ===
+            new_compress_id = last_compress_id
+            if os.path.exists(compress_plan_path):
+                try:
+                    plan_text = _Path(compress_plan_path).read_text(encoding="utf-8")
+                    plan = json.loads(plan_text)
+                    deletes = plan.get("deletes", [])
+                    updates = plan.get("updates", [])
+                    new_compress_id = plan.get("last_compress_id", last_compress_id)
+
+                    # 类型校验
+                    if not isinstance(deletes, list):
+                        logger.warning(f"[Runner] Force: deletes is {type(deletes).__name__}, expected list — skipping deletes")
+                        deletes = []
+                    if not isinstance(updates, list):
+                        logger.warning(f"[Runner] Force: updates is {type(updates).__name__}, expected list — skipping updates")
+                        updates = []
+                    else:
+                        updates = [u for u in updates if isinstance(u, dict)]
+
+                    # 重新获取消息列表（子 Agent 调用期间可能已变化）
+                    fresh_messages = self._sync_get_messages()
+                    existing_ids = {getattr(m, "id", "") for m in fresh_messages}
+                    valid_deletes = [mid for mid in deletes if mid in existing_ids]
+                    # 去重
+                    valid_deletes = list(dict.fromkeys(valid_deletes))
+                    # 校验游标有效性
+                    if new_compress_id and new_compress_id not in existing_ids:
+                        logger.warning(f"[Runner] Force: last_compress_id {new_compress_id} not in messages, reverting to {last_compress_id}")
+                        new_compress_id = last_compress_id
+                    if new_compress_id and new_compress_id not in existing_ids:
+                        logger.warning(f"[Runner] Force: Fallback last_compress_id {new_compress_id} also invalid, clearing cursor")
+                        new_compress_id = ""
+
+                    # 保护游标：禁止删除游标指向的消息
+                    cursor_ids_set = {cid for cid in [new_compress_id, new_entity_id, new_dream_id] if cid}
+                    for cursor_id in cursor_ids_set:
+                        if cursor_id in valid_deletes:
+                            valid_deletes.remove(cursor_id)
+                            logger.warning(f"[Runner] Force: Protected cursor message {cursor_id} from deletion")
+
+                    valid_updates = [u for u in updates if isinstance(u, dict) and u.get("message_id") and u["message_id"] in existing_ids]
+                    # 游标保护也覆盖 updates
+                    cursor_updates = [u for u in valid_updates if u.get("message_id", "") in cursor_ids_set]
+                    if cursor_updates:
+                        logger.warning(f"[Runner] Force: Removing cursor messages from updates: {[u.get('message_id') for u in cursor_updates]}")
+                        valid_updates = [u for u in valid_updates if u.get("message_id", "") not in cursor_ids_set]
+
+                    # dream 安全边界：dream-evolver 游标之后的消息不得删除或替换
+                    if new_dream_id:
+                        dream_boundary_idx = -1
+                        for i, m in enumerate(fresh_messages):
+                            if (getattr(m, "id", "") or "") == new_dream_id:
+                                dream_boundary_idx = i
+                                break
+                        if dream_boundary_idx >= 0:
+                            post_dream_ids = {getattr(m, "id", "") for m in fresh_messages[dream_boundary_idx + 1:]}
+                            unsafe_deletes = [mid for mid in valid_deletes if mid in post_dream_ids]
+                            if unsafe_deletes:
+                                logger.warning(f"[Runner] Force: Protecting {len(unsafe_deletes)} messages after dream cursor from deletion")
+                                valid_deletes = [mid for mid in valid_deletes if mid not in post_dream_ids]
+                            unsafe_updates = [u for u in valid_updates if u.get("message_id", "") in post_dream_ids]
+                            if unsafe_updates:
+                                logger.warning(f"[Runner] Force: Protecting {len(unsafe_updates)} messages after dream cursor from content replacement")
+                                valid_updates = [u for u in valid_updates if u.get("message_id", "") not in post_dream_ids]
+
+                    # 保护最近 N 条消息
+                    protect_recent_count = _read_protect_recent_count()
+                    if protect_recent_count > 0 and len(fresh_messages) > protect_recent_count:
+                        protected_force_ids = {getattr(m, "id", "") for m in fresh_messages[-protect_recent_count:]}
+                        removed_deletes = [mid for mid in valid_deletes if mid in protected_force_ids]
+                        if removed_deletes:
+                            logger.warning(f"[Runner] Force: Protecting {len(removed_deletes)} recent messages from deletion: {removed_deletes}")
+                            valid_deletes = [mid for mid in valid_deletes if mid not in protected_force_ids]
+                        removed_updates = [u for u in valid_updates if u.get("message_id", "") in protected_force_ids]
+                        if removed_updates:
+                            logger.warning(f"[Runner] Force: Protecting {len(removed_updates)} recent messages from update")
+                            valid_updates = [u for u in valid_updates if u.get("message_id", "") not in protected_force_ids]
+
+                    # 防止 delete/update 重叠
+                    update_ids = {u.get("message_id", "") for u in valid_updates}
+                    overlap_ids = update_ids & set(valid_deletes)
+                    if overlap_ids:
+                        logger.warning(f"[Runner] Force: Removing {len(overlap_ids)} IDs from deletes that also appear in updates: {overlap_ids}")
+                        valid_deletes = [mid for mid in valid_deletes if mid not in overlap_ids]
+
+                    if len(valid_deletes) < len(deletes):
+                        logger.warning(f"[Runner] Force: Filtered {len(deletes) - len(valid_deletes)} invalid delete IDs")
+                    if len(valid_updates) < len(updates):
+                        logger.warning(f"[Runner] Force: Filtered {len(updates) - len(valid_updates)} invalid update IDs")
+
+                    # 执行删除
+                    if valid_deletes:
+                        del_result = self._sync_delete_messages(valid_deletes)
+                        if del_result:
+                            logger.info(f"[Runner] Force: Deleted {del_result.get('deleted_count', 0)} messages, freed {del_result.get('freed_tokens', 0)} tokens")
+
+                    # 执行更新
+                    for upd in valid_updates:
+                        mid = upd.get("message_id", "")
+                        content = upd.get("content", "")
+                        if mid and content:
+                            ok = self._sync_update_message(mid, content)
+                            if ok:
+                                logger.info(f"[Runner] Force: Updated message {mid}")
+                            else:
+                                logger.warning(f"[Runner] Force: Failed to update message {mid}")
+
+                    logger.info(f"[Runner] Force: Compression plan executed: {len(valid_deletes)} deletes, {len(valid_updates)} updates")
+                except json.JSONDecodeError as e:
+                    logger.error(f"[Runner] Force: Failed to parse compress plan JSON: {e}")
+                except Exception as e:
+                    logger.error(f"[Runner] Force: Failed to execute compress plan: {e}")
+                finally:
+                    # 无论成功失败，都清理计划文件
+                    if os.path.exists(compress_plan_path):
+                        try:
+                            os.remove(compress_plan_path)
+                        except OSError:
+                            logger.warning("[Runner] Failed to cleanup compress_plan.json")
+            else:
+                logger.warning("[Runner] Force: No compress plan file found, sub-agent may not have used write")
+
+            # 写入 compress 游标
+            if new_compress_id:
+                compress_cursor_path.parent.mkdir(parents=True, exist_ok=True)
+                compress_cursor_path.write_text(json.dumps({
+                    "last_compress_id": new_compress_id,
+                    "last_compress_at": datetime.now().isoformat(),
+                }, ensure_ascii=False, indent=2), encoding="utf-8")
+                logger.info(f"[Runner] Force: Compress cursor updated: {new_compress_id}")
+
+            # === 重新加载消息，原地修改 agent_loop 的 messages 列表 ===
+            fresh_db_msgs = self._sync_get_messages()
+            if fresh_db_msgs:
+                # Message 对象 → dict（保留 agent_loop 需要的字段）
+                fresh_msgs = []
+                for msg in fresh_db_msgs:
+                    d = {
+                        "role": msg.role,
+                        "content": msg.content or "",
+                    }
+                    if msg.tool_calls:
+                        d["tool_calls"] = msg.tool_calls
+                    if msg.tool_call_id:
+                        d["tool_call_id"] = msg.tool_call_id
+                    fresh_msgs.append(d)
+                # 保留 system prompt（messages[0]），替换其余消息
+                system_msg = messages[0] if messages and messages[0].get("role") == "system" else None
+                if system_msg:
+                    messages[:] = [system_msg] + fresh_msgs
+                else:
+                    messages[:] = fresh_msgs
+                logger.info(f"[Runner] Force: Reloaded {len(fresh_msgs)} messages from DB after compress")
+
+            # 更新 last_tidy_tokens
+            try:
+                post_tidy_msgs = self._sync_get_messages()
+                _write_last_tidy_tokens(_estimate_total_tokens(post_tidy_msgs))
+            except Exception as e:
+                logger.warning(f"[Runner] Force: Failed to update last_tidy_tokens: {e}")
+
         except Exception as e:
-            logger.error(f"[Runner] Proactive compress failed: {e}")
+            import traceback
+            tb = traceback.format_exc()
+            logger.error(f"[Runner] Proactive compress failed: {e}\n{tb}")
 
     def _get_brain_injector(self):
         """Get or create the cached brain context injector chain.
@@ -978,6 +1665,7 @@ class NiuRunner:
             max_turns: 最大轮次
             history: 可选的历史消息列表
         """
+        logger.info(f"[Runner] chat() called, session_id={session_id}, input={user_input[:50]}")
         # 从消息历史中提取上下文
         context = self._extract_context_from_history(history, user_input)
 

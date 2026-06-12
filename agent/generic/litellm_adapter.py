@@ -341,6 +341,7 @@ class LiteLLMSession(BaseSession):
             "model": self.default_model,
             "messages": messages,
             "stream": True,
+            "stream_options": {"include_usage": True},
             "custom_llm_provider": custom_provider,
             "api_base": self.api_base or None,
             "api_key": self.api_key or None,

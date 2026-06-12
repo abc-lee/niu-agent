@@ -385,9 +385,9 @@ def test_callback_receives_correct_messages():
 
     # 回调应该被调用
     assert received_messages["msgs"] is not None, "Callback should have been called"
-    # messages 应该包含 system + user + assistant(tool_calls) + tool result
-    # 因为回调在第二轮开始时调用，此时 messages 已包含第一轮的所有内容
+    # immediate_check 在 prompt_tokens 提取后立即触发，此时 messages 可能只有 system + user
+    # （assistant 消息在 prompt_tokens 提取后、回调前可能尚未追加）
     msgs = received_messages["msgs"]
-    assert len(msgs) >= 3, f"Expected at least 3 messages, got {len(msgs)}"
+    assert len(msgs) >= 2, f"Expected at least 2 messages, got {len(msgs)}"
     # 第一条应该是 system
     assert msgs[0]["role"] == "system", f"First message should be system, got {msgs[0]['role']}"
