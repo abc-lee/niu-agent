@@ -183,7 +183,6 @@ class TestClearChatJournalCursorReset:
                 # 所有游标文件都应在同一行
                 assert "last_dream_evolve.json" in line
                 assert "last_compress.json" in line
-                assert "last_tidy_tokens.json" in line
                 break
         else:
             pytest.fail("Cursor reset list not found with expected entries")

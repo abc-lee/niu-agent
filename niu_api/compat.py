@@ -304,33 +304,6 @@ async def _check_and_trigger_auto_tidy(store):
         logger.warning(f"[AutoTidy] Check failed: {e}")
 
 
-def _read_last_tidy_tokens() -> int:
-    """读取上次整理时的总 token 数。"""
-    try:
-        from pathlib import Path
-        path = Path.home() / ".niu" / "last_tidy_tokens.json"
-        if path.exists():
-            data = json.loads(path.read_text(encoding="utf-8"))
-            return data.get("total_tokens", 0)
-    except Exception as e:
-        logger.warning(f"[AutoTidy] Failed to read last_tidy_tokens: {e}")
-    return 0
-
-
-def _write_last_tidy_tokens(total_tokens: int):
-    """写入当前整理时的总 token 数。"""
-    try:
-        from pathlib import Path
-        path = Path.home() / ".niu" / "last_tidy_tokens.json"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({
-            "total_tokens": total_tokens,
-            "updated_at": datetime.now().isoformat(),
-        }, ensure_ascii=False, indent=2), encoding="utf-8")
-    except Exception as e:
-        logger.warning(f"[AutoTidy] Failed to write last_tidy_tokens: {e}")
-
-
 _tidy_lock = asyncio.Lock()
 
 
@@ -347,12 +320,7 @@ async def _run_auto_tidy():
         try:
             result = await _tidy_context_impl(request={"session_id": "default", "mode": "sleep"})
             if result.get("status") == "error":
-                # _tidy_context_impl 失败时可能没写 last_tidy_tokens，兜底写入当前值
-                store = await get_message_store()
-                messages = await store.get_messages()
-                current_tokens = _estimate_total_tokens(messages)
-                _write_last_tidy_tokens(current_tokens)
-                logger.warning(f"[AutoTidy] tidy_context returned error: {result}, last_tidy_tokens updated to {current_tokens}")
+                logger.warning(f"[AutoTidy] tidy_context returned error: {result}")
             else:
                 logger.info(f"[AutoTidy] Completed successfully")
         finally:
@@ -852,7 +820,7 @@ async def clear_chat() -> dict:
 
         # 重置游标文件（消息已清空，旧游标指向不存在的消息）
         from pathlib import Path
-        for cursor_name in ["last_entity_extract.json", "last_dream_evolve.json", "last_compress.json", "last_tidy_tokens.json", "last_journal.json"]:
+        for cursor_name in ["last_entity_extract.json", "last_dream_evolve.json", "last_compress.json", "last_journal.json"]:
             cursor_p = Path.home() / ".niu" / cursor_name
             try:
                 if cursor_p.exists():
@@ -1400,13 +1368,6 @@ async def _tidy_context_impl(request: dict):
             else:
                 logger.info("[Tidy] context-manager: no messages in range [compress_cursor, dream_cursor_new]")
 
-            # 更新 last_tidy_tokens
-            try:
-                post_tidy_msgs = await store.get_messages()
-                _write_last_tidy_tokens(_estimate_total_tokens(post_tidy_msgs))
-            except Exception as e:
-                logger.warning(f"[Tidy] Failed to update last_tidy_tokens: {e}")
-
             return {"status": "ok", "mode": "sleep", "tokens_before": estimated_tokens}
 
         elif mode == "force":
@@ -1879,13 +1840,6 @@ async def _tidy_context_impl(request: dict):
                     "last_compress_at": datetime.now().isoformat(),
                 }, ensure_ascii=False, indent=2), encoding="utf-8")
                 logger.info(f"[Tidy] Force: Compress cursor updated: last_compress_id={new_compress_id}")
-
-            # 整理完成后更新 last_tidy_tokens，防止自动整理阈值失效
-            try:
-                post_tidy_msgs = await store.get_messages()
-                _write_last_tidy_tokens(_estimate_total_tokens(post_tidy_msgs))
-            except Exception as e:
-                logger.warning(f"[Tidy] Force: Failed to update last_tidy_tokens: {e}")
 
             return {"status": "ok", "mode": "force", "tokens_before": estimated_tokens}
 
