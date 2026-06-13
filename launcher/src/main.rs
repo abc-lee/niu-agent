@@ -629,8 +629,13 @@ struct Args {
 // ---------------------------------------------------------------------------
 
 fn main() {
-    // Initialize tracing (replaces Go's slog)
-    tracing_subscriber::fmt().init();
+    // Initialize tracing with local timezone (Asia/Shanghai UTC+8)
+    // Default uses UTC with "Z" suffix which is confusing for Chinese users
+    tracing_subscriber::fmt()
+        .with_timer(tracing_subscriber::fmt::time::LocalTime::new(
+            time::macros::format_description!("[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:6]+08:00"),
+        ))
+        .init();
 
     // Parse args (replaces Go's flag)
     let args = Args::parse();
