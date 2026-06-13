@@ -63,7 +63,7 @@ LightRAG Embedding：不变  OK
 
 **新的 `_llm_model_func` 逻辑：**
 
-1. 弹出 LightRAG 内部参数：`hashing_kv`、`_priority`（不传给 LiteLLM）
+1. 弹出 LightRAG 内部参数：`hashing_kv`、`_priority`、`_timeout`、`_queue_timeout`（不传给 LiteLLM，这些是 LightRAG 并发控制参数）
 2. 检测是否为实体提取请求（`system_prompt` 包含 `"Knowledge Graph Specialist"`）
    - 是：调 `build_static_brain_region_prompt()` + `build_dynamic_brain_region_prompt()`，拼入 `system_prompt` 末尾
    - 幂等保护：如果 system_prompt 已包含 `"大脑区域架构"`，跳过注入（防止双重注入）
@@ -74,13 +74,24 @@ LightRAG Embedding：不变  OK
 6. 用 `asyncio.to_thread` 包装同步调用，避免阻塞 LightRAG 事件循环
 7. 在同步函数内部：构建 `LiteLLMSession` 实例，调用 `session.chat()`，消费 Generator 获取 `MockResponse`
 8. 处理 `enable_cot`：从 `MockResponse.thinking` 提取思考内容，按 `openai_complete_if_cache` 的逻辑包装
-9. 根据 LightRAG 传入的 `stream` 参数返回 `str` 或 `AsyncIterator[str]`
+9. 根据 LightRAG 传入的 `stream` 参数决定返回格式：
+   - **stream=False**（默认）：返回 `str`
+   - **stream=True**：返回 `AsyncIterator[str]`。实现方式：消费 Generator 获取完整内容后，将字符串按固定大小分块，用 async generator 逐块 yield。注意：这不是真正的流式（数据已全部到达），但满足 LightRAG 的 `AsyncIterator[str]` 接口要求。对于知识图谱查询场景，流式体验不是刚需。COT 标签会在完整内容前面统一包装，不是逐 chunk 交错输出，与旧方案有行为差异，但不影响功能（LightRAG 的 `remove_think_tags` 会清理所有思考标签）
 
 **关键细节：**
 
 - **异步/同步桥接**：`_llm_model_func` 是 async 函数，`LiteLLMSession.chat()` 是同步 Generator。必须用 `asyncio.to_thread` 包装整个同步调用过程（构建 session -> 调用 chat() -> 消费 Generator），与 `call_llm_via_litellm` 的做法一致
 - **LiteLLMSession.chat() 不接受 stream 参数**：内部硬编码 `stream=True`，始终返回 `Generator[str, None, MockResponse]`。不管 LightRAG 传不传 stream，消费方式一样。消费完后根据 LightRAG 传入的 stream 参数决定返回格式
-- **配置获取**：`get_llm_config(use_lightrag_config=True)` 返回包含 `model`、`apibase`、`apikey`、`type`、`reasoning_effort` 的字典，传给 `LiteLLMSession` 构造函数
+- **配置获取与键名映射**：`get_llm_config(use_lightrag_config=True)` 返回的键名是 `type`，但 `LiteLLMSession` 构造函数读取的是 `api_type`。必须做映射：`"api_type": config.get("type", "openai")`，与 `call_llm_via_litellm`（llm_proxy.py 第278行）的做法一致。完整配置构建：
+  ```python
+  llm_config = {
+      "api_type": config.get("type", "openai"),  # type -> api_type 映射
+      "apikey": config["apikey"],
+      "apibase": config["apibase"],
+      "model": config["model"],
+      "reasoning_effort": config.get("reasoning_effort"),
+  }
+  ```
 - **keyword_extraction 的 response_format 构建**：`GPTKeywordExtractionFormat.model_json_schema()` 返回裸 JSON Schema，litellm 期望的格式是 `{"type": "json_schema", "json_schema": {"name": ..., "strict": True, "schema": {...}}}`，需要手动包装。当模型不支持时，`drop_params=True` 会使 LiteLLM 静默丢弃 `response_format`，退化为普通文本生成，LightRAG 的 `json_repair.loads()` 仍能解析
 - **drop_params**：传 `response_format` 时必须设 `drop_params=True`。由于 `LiteLLMSession.chat()` 内部只在 `reasoning_effort` 存在时才设 `drop_params`，需要改动 `litellm_adapter.py`（见改动 2）
 - **脑区注入**：复用 `brain_region_prompt.py` 中的 `build_static_brain_region_prompt()` 和 `build_dynamic_brain_region_prompt()`（后者内部调 `get_brain_regions()` 读内存图），拼接到 `system_prompt` 末尾。`get_brain_regions()` 是纯同步读内存，不进 asyncio 事件循环，不会死锁

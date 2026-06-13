@@ -52,7 +52,7 @@ numpy==1.26.4                       # !! numpy<2 是铁律，见顶部说明 !!
 sentence-transformers==5.5.1
 transformers==4.51.0                # !! transformers<5 是铁律，5.x 要求 torch>=2.4 !!
 accelerate==1.13.0
-huggingface_hub==0.36.2
+huggingface_hub==0.36.2                 # !! huggingface_hub<1 是铁律，1.x 与 sentence-transformers 不兼容
 hf-xet==1.5.0
 safetensors==0.7.0
 ml_dtypes==0.5.4
