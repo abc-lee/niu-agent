@@ -1,19 +1,14 @@
 """
-LLM Proxy API
+LLM Proxy Utilities
 
-为 LightRAG、浏览器插件等提供 OpenAI 兼容的代理端点。
+Provides helper functions for LLM configuration and direct LLM calls
+through LiteLLMSession. Used by MCP client sampling callbacks and
+LightRAG's _llm_model_func.
 
-功能：
-1. 提供 /llm/v1/chat/completions 端点（OpenAI 格式）
-2. 提供 /llm/v1/embeddings 端点（OpenAI 格式）
-3. 将请求转换为 internal LLM SDK 调用
-4. 返回 OpenAI 格式的响应
-
-使用方式：
-- LightRAG: base_url=http://localhost:9876/llm/v1
-- 浏览器插件: Base URL: http://localhost:9876/llm/v1
-- Model: 任意（代理会使用配置文件中的模型）
-- API Key: 留空或随意填写
+Remaining HTTP endpoints:
+- GET /llm/v1/models — list configured model
+- GET /llm/v1/health — check if LLM is configured
+- GET /llm/v1/status — LightRAG and model status
 """
 
 import json
@@ -23,8 +18,6 @@ from typing import List, Dict, Any, Optional
 from pydantic import BaseModel
 from fastapi import APIRouter, HTTPException
 from loguru import logger
-
-from niu_api.internal.brain_region_prompt import inject_brain_region_context, is_lightrag_extraction_request
 
 router = APIRouter(prefix="/llm/v1", tags=["llm-proxy"])
 
@@ -375,78 +368,6 @@ async def call_llm_via_litellm(
 # ============================================================================
 
 
-@router.post("/chat/completions")
-async def chat_completions(request: OpenAIChatRequest) -> OpenAIChatResponse:
-    """
-    OpenAI-compatible chat completions endpoint
-
-    This endpoint accepts OpenAI-format requests and converts them to
-    internal LLM SDK calls, then returns OpenAI-format responses.
-
-    Used by LightRAG and browser extensions.
-    """
-    logger.info(f"[LLM Proxy] Received request: model={request.model}, messages={len(request.messages)}")
-    logger.info(f"[LLM Proxy] Tools count: {len(request.tools) if request.tools else 0}")
-    if request.tools:
-        logger.info(f"[LLM Proxy] Tool names: {[t.function.get('name') for t in request.tools if hasattr(t, 'function')]}")
-
-    # Convert OpenAI format to LiteLLM format
-    litellm_messages = openai_to_litellm_messages(request.messages)
-    litellm_tools = openai_to_litellm_tools(request.tools)
-
-    # Detect LightRAG request BEFORE brain region injection
-    is_lightrag = is_lightrag_extraction_request(litellm_messages)
-
-    # Read LLM config (routes to lightrag_llm section if LightRAG request)
-    config = get_llm_config(use_lightrag_config=is_lightrag)
-    if not config["apikey"]:
-        raise HTTPException(
-            status_code=500,
-            detail="LLM not configured. Please set API key in config/user-config.json"
-        )
-
-    # Inject brain region context for LightRAG extraction requests
-    # Reads directly from NetworkX in-memory graph — no LightRAG API call to avoid deadlock
-    try:
-        _t0 = time.time()
-        litellm_messages = await asyncio.to_thread(inject_brain_region_context, litellm_messages)
-        _t1 = time.time()
-        logger.info(f"[LLM Proxy] Brain region injection took {_t1-_t0:.3f}s")
-    except Exception:
-        logger.warning("Brain region injection failed, continuing without it", exc_info=True)
-
-    logger.debug(f"[LLM Proxy] Converted {len(litellm_messages)} messages")
-    if litellm_tools:
-        logger.debug(f"[LLM Proxy] Tools: {len(litellm_tools)}")
-
-    # Log routing decision
-    if is_lightrag:
-        logger.info(f"[LLM Proxy] LightRAG request: model={config['model']}, reasoning_effort={config.get('reasoning_effort', 'N/A')}")
-
-    # Call LLM (pass pre-loaded config to avoid double file read)
-    try:
-        response = await call_llm_via_litellm(
-            messages=litellm_messages,
-            tools=litellm_tools,
-            response_format=request.response_format,
-            config=config,
-        )
-
-        # Convert back to OpenAI format
-        openai_response = litellm_to_openai_response(response, config["model"])
-
-        logger.info(f"[LLM Proxy] Response: {len(openai_response.choices)} choices")
-        return openai_response
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"[LLM Proxy] Error: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=str(e))
-
-
 @router.get("/models")
 async def list_models():
     """List available models (OpenAI-compatible endpoint)"""
@@ -499,58 +420,3 @@ async def lightrag_status():
         status["lightrag"] = {"installed": False}
 
     return status
-
-
-# ============================================================================
-# Embeddings Endpoint (for LightRAG)
-# ============================================================================
-
-
-class OpenAIEmbeddingRequest(BaseModel):
-    """OpenAI embeddings request"""
-
-    model: str
-    input: Any  # str or List[str]
-    encoding_format: Optional[str] = "float"
-    dimensions: Optional[int] = None
-
-
-@router.post("/embeddings")
-async def create_embeddings(request: OpenAIEmbeddingRequest):
-    """OpenAI-compatible embeddings endpoint for LightRAG."""
-    import time
-    import uuid
-
-    from niu_api.internal.embedding import batch_encode
-
-    # Normalize input to list
-    texts = request.input if isinstance(request.input, list) else [request.input]
-
-    # Get embeddings using shared model
-    embeddings = batch_encode(texts)
-
-    # Apply dimension reduction if requested (Matryoshka-style)
-    if request.dimensions and request.dimensions < len(embeddings[0]):
-        embeddings = [e[: request.dimensions] for e in embeddings]
-
-    # Format response
-    data = [
-        {
-            "object": "embedding",
-            "embedding": list(emb) if not isinstance(emb, list) else emb,
-            "index": idx,
-        }
-        for idx, emb in enumerate(embeddings)
-    ]
-
-    return {
-        "id": f"embd-{uuid.uuid4().hex[:8]}",
-        "object": "list",
-        "created": int(time.time()),
-        "model": request.model,
-        "data": data,
-        "usage": {
-            "prompt_tokens": sum(len(t.split()) for t in texts),
-            "total_tokens": sum(len(t.split()) for t in texts),
-        },
-    }
