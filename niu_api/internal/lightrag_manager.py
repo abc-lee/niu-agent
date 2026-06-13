@@ -6,7 +6,7 @@ and access. LightRAG runs in-process, sharing the same Python runtime
 as the ai-bot API server.
 
 Architecture:
-- LLM calls: LiteLLMSession direct call (→ litellm_adapter → user-config.json)
+- LLM calls: direct LiteLLMSession.chat() (→ LiteLLM → user-config.json)
 - Embedding calls: direct Python callable (→ niu_api.internal.embedding)
 - Reranker: direct Python callable (→ niu_api.internal.reranker)
 - Storage: NanoVectorDB (LightRAG default) in ~/.niu/lightrag_storage/

@@ -25,6 +25,21 @@ class TestConfig:
         assert ".niu" in str(STORAGE_DIR)
         assert "lightrag_storage" in str(STORAGE_DIR)
 
+    def test_no_proxy_base_url_constant(self):
+        """PROXY_BASE_URL should not exist — LightRAG calls LiteLLMSession directly."""
+        import niu_api.internal.lightrag_manager as lm
+        assert not hasattr(lm, "PROXY_BASE_URL"), "PROXY_BASE_URL should be deleted"
+
+    def test_no_proxy_api_key_constant(self):
+        """PROXY_API_KEY should not exist."""
+        import niu_api.internal.lightrag_manager as lm
+        assert not hasattr(lm, "PROXY_API_KEY"), "PROXY_API_KEY should be deleted"
+
+    def test_no_shared_openai_client(self):
+        """_get_shared_openai_client should not exist."""
+        import niu_api.internal.lightrag_manager as lm
+        assert not hasattr(lm, "_get_shared_openai_client"), "_get_shared_openai_client should be deleted"
+
     def test_get_lightrag_config_returns_dict(self):
         from niu_api.internal.lightrag_manager import _get_lightrag_config
         config = _get_lightrag_config()
@@ -101,6 +116,12 @@ class TestStatus:
         from niu_api.internal.lightrag_manager import get_lightrag_status
         status = get_lightrag_status()
         assert "name" in status["reranker"]
+
+    def test_status_dict_no_proxy_base_url_key(self):
+        """get_lightrag_status() should NOT contain proxy_base_url key."""
+        from niu_api.internal.lightrag_manager import get_lightrag_status
+        status = get_lightrag_status()
+        assert "proxy_base_url" not in status, "proxy_base_url should be removed from status dict"
 
 
 # ============== Async/Sync Bridge Tests ==============
