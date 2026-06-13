@@ -6,7 +6,7 @@ and access. LightRAG runs in-process, sharing the same Python runtime
 as the ai-bot API server.
 
 Architecture:
-- LLM calls: routed through /llm/v1/ proxy (→ LiteLLM → user-config.json)
+- LLM calls: LiteLLMSession direct call (→ litellm_adapter → user-config.json)
 - Embedding calls: direct Python callable (→ niu_api.internal.embedding)
 - Reranker: direct Python callable (→ niu_api.internal.reranker)
 - Storage: NanoVectorDB (LightRAG default) in ~/.niu/lightrag_storage/
@@ -36,38 +36,158 @@ from loguru import logger
 
 # ============== Config ==============
 
-PROXY_BASE_URL = "http://localhost:9876/llm/v1"
-PROXY_API_KEY = "not-needed"  # Placeholder — proxy reads real key from user-config.json
 STORAGE_DIR = Path.home() / ".niu" / "lightrag_storage"
 
-# ============== Shared OpenAI Client ==============
-# Reuse a single AsyncOpenAI client across all LightRAG LLM calls.
-# This avoids the overhead of creating a new client for each call,
-# which can add 10-15 seconds of latency due to connection pool initialization.
-_shared_openai_client: Optional[Any] = None
-_client_lock = threading.Lock()
+# ============== LightRAG LLM Function Builder ==============
+
+# Cache a shared LiteLLMSession instance keyed by config tuple.
+# Avoids connection init overhead for high-frequency entity extraction calls.
+_cached_session: Optional[Any] = None
+_cached_config_key: Optional[tuple] = None
+_session_lock = threading.Lock()
 
 
-def _get_shared_openai_client():
-    """Get or create a shared AsyncOpenAI client for LightRAG LLM calls."""
-    global _shared_openai_client
+def _get_litellm_session(config: dict) -> Any:
+    """Get or create a cached LiteLLMSession for LightRAG LLM calls.
 
-    if _shared_openai_client is not None:
-        return _shared_openai_client
+    Config changes (model/api_base/api_key/api_type/reasoning_effort) trigger session rebuild.
+    Thread-safe via double-check locking.
+    """
+    global _cached_session, _cached_config_key
+    from agent.generic.litellm_adapter import LiteLLMSession
 
-    with _client_lock:
-        if _shared_openai_client is not None:
-            return _shared_openai_client
+    config_key = (config.get("model"), config.get("apibase"), config.get("apikey"), config.get("type"), config.get("reasoning_effort"))
 
-        from openai import AsyncOpenAI
+    if _cached_session is not None and _cached_config_key == config_key:
+        return _cached_session
 
-        _shared_openai_client = AsyncOpenAI(
-            base_url=PROXY_BASE_URL,
-            api_key=PROXY_API_KEY,
-            timeout=180.0,  # 3 minutes timeout
-        )
-        logger.info("Created shared AsyncOpenAI client for LightRAG")
-        return _shared_openai_client
+    with _session_lock:
+        if _cached_session is not None and _cached_config_key == config_key:
+            return _cached_session
+
+        llm_config = {
+            "api_type": config.get("type", "openai"),  # type -> api_type mapping
+            "apikey": config["apikey"],
+            "apibase": config["apibase"],
+            "model": config["model"],
+            "reasoning_effort": config.get("reasoning_effort"),
+        }
+
+        _cached_session = LiteLLMSession(cfg=llm_config)
+        _cached_config_key = config_key
+        logger.info("Created LiteLLMSession for LightRAG: model=%s, api_type=%s", config.get("model"), config.get("type"))
+        return _cached_session
+
+
+def _build_llm_model_func():
+    """Build the async LLM function for LightRAG.
+
+    Returns an async function that LightRAG calls for all LLM operations.
+    Calls LiteLLMSession.chat() directly via asyncio.to_thread, avoiding
+    OpenAI SDK compatibility issues and HTTP proxy overhead.
+
+    Brain region injection is done here (not in proxy layer) for entity
+    extraction requests.
+    """
+    from niu_api.llm_proxy import get_llm_config
+    from agent.generic.litellm_adapter import MockResponse
+    from niu_api.internal.brain_region_prompt import (
+        build_static_brain_region_prompt,
+        build_dynamic_brain_region_prompt,
+        BRAIN_REGION_MARKER,
+    )
+
+    async def _llm_model_func(
+        prompt, system_prompt=None, history_messages=None,
+        keyword_extraction=False, **kwargs,
+    ) -> str:
+        # 1. Pop LightRAG internal params (concurrency control, not for LLM)
+        kwargs.pop("hashing_kv", None)
+        kwargs.pop("_priority", None)
+        kwargs.pop("_timeout", None)
+        kwargs.pop("_queue_timeout", None)
+
+        # 2. Brain region injection for entity extraction requests
+        if system_prompt and BRAIN_REGION_MARKER in system_prompt:
+            if "大脑区域架构" not in system_prompt:  # idempotent guard
+                static_part = build_static_brain_region_prompt()
+                dynamic_part = build_dynamic_brain_region_prompt()
+                system_prompt = system_prompt + f"\n\n{static_part}\n\n{dynamic_part}"
+
+        # 3. Build messages list
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        if history_messages:
+            for msg in history_messages:
+                content = msg.get("content") or ""  # litellm safety: None -> ""
+                messages.append({"role": msg.get("role", "user"), "content": content})
+        messages.append({"role": "user", "content": prompt})
+
+        # 4. Get LLM config
+        config = get_llm_config(use_lightrag_config=True)
+
+        # 5. Handle keyword_extraction: build standard response_format dict
+        response_format = None
+        if keyword_extraction:
+            from lightrag.types import GPTKeywordExtractionFormat
+            schema = GPTKeywordExtractionFormat.model_json_schema()
+            response_format = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "keyword_extraction",
+                    "strict": True,
+                    "schema": schema,
+                },
+            }
+
+        # 6. Handle enable_cot and stream from kwargs
+        enable_cot = kwargs.pop("enable_cot", False)
+        stream = kwargs.pop("stream", False)
+
+        # 7. Call LiteLLMSession via asyncio.to_thread
+        def sync_call():
+            session = _get_litellm_session(config)
+            gen = session.chat(messages=messages, response_format=response_format)
+
+            # Consume generator
+            chunks = []
+            mock_response = None
+            try:
+                while True:
+                    chunk = next(gen)
+                    if isinstance(chunk, str):
+                        chunks.append(chunk)
+            except StopIteration as e:
+                mock_response = e.value
+
+            full_content = "".join(chunks)
+
+            # Handle enable_cot (thinking chain)
+            if enable_cot and mock_response and mock_response.thinking:
+                if full_content:
+                    # Content exists — ignore thinking, just return content
+                    pass
+                else:
+                    # No content but thinking exists — wrap in think tags
+                    full_content = f"<think>{mock_response.thinking}</think>\n"
+
+            return full_content
+
+        result = await asyncio.to_thread(sync_call)
+
+        # 8. Stream handling
+        if stream:
+            # Pseudo-streaming: split complete result into chunks as AsyncIterator
+            chunk_size = 20
+            async def _async_gen():
+                for i in range(0, max(len(result), 1), chunk_size):
+                    yield result[i:i + chunk_size]
+            return _async_gen()
+
+        return result
+
+    return _llm_model_func
 
 
 def _get_lightrag_config() -> Dict[str, Any]:
@@ -560,7 +680,6 @@ def _create_lightrag_instance():
     """
     try:
         from lightrag.lightrag import LightRAG
-        from lightrag.llm.openai import openai_complete_if_cache
     except ImportError:
         raise ImportError(
             "LightRAG is not installed. Run: pip install lightrag-hku"
@@ -572,22 +691,10 @@ def _create_lightrag_instance():
     # Ensure storage directory exists
     STORAGE_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Build LLM function with shared OpenAI client.
+    # Build LLM function using LiteLLMSession (direct call, no proxy).
     # LightRAG calls llm_model_func(prompt, system_prompt=..., **kwargs).
-    # Using a shared client avoids the 10-15s overhead of creating a new
-    # AsyncOpenAI client for each call (connection pool initialization).
-    async def _llm_model_func(
-        prompt, system_prompt=None, history_messages=None,
-        keyword_extraction=False, **kwargs,
-    ) -> str:
-        return await openai_complete_if_cache(
-            "proxy-model", prompt,
-            system_prompt=system_prompt, history_messages=history_messages,
-            base_url=PROXY_BASE_URL, api_key=PROXY_API_KEY,
-            keyword_extraction=keyword_extraction, **kwargs,
-        )
-
-    llm_model_func = _llm_model_func
+    # LiteLLMSession is cached and reused across calls.
+    llm_model_func = _build_llm_model_func()
 
     # Build embedding function (direct local call, no proxy)
     from niu_api.internal.embedding import get_embedding_max_seq_length
@@ -772,7 +879,7 @@ def get_lightrag_status() -> Dict[str, Any]:
         "init_failed": init_failed,
         "init_retry_in_seconds": retry_in,
         "storage_dir": str(STORAGE_DIR),
-        "proxy_base_url": PROXY_BASE_URL,
+        "llm_mode": "litellm_direct",
         "embedding": get_current_model_info(),
         "reranker": get_current_reranker_info(),
         "loop_running": loop_running,
