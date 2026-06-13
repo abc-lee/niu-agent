@@ -97,7 +97,7 @@ LightRAG Embedding：不变  OK
 - **脑区注入**：复用 `brain_region_prompt.py` 中的 `build_static_brain_region_prompt()` 和 `build_dynamic_brain_region_prompt()`（后者内部调 `get_brain_regions()` 读内存图），拼接到 `system_prompt` 末尾。`get_brain_regions()` 是纯同步读内存，不进 asyncio 事件循环，不会死锁
 - **enable_cot 处理**：与 `openai_complete_if_cache` 行为一致——非流式时，`MockResponse.thinking` 非空且 `MockResponse.content` 也非空则忽略 thinking 只返回 content；thinking 非空但 content 为空则返回思考标签包裹的 thinking。流式时，由于 `LiteLLMSession.chat()` 的 Generator 不 yield thinking 内容（只 yield delta.content），thinking 只在 `MockResponse` 中获取，所以流式场景下 COT 标签在消费完 Generator 后统一包装到内容前面
 - **LiteLLMSession 实例缓存**：缓存一个共享的 `LiteLLMSession` 实例，用配置元组 `(model, api_base, api_key, api_type)` 作为缓存 key。配置变化时（用户改配置文件）自动重建。避免实体提取高频调用时每次新建实例的连接初始化开销
-- **get_lightrag_status 的 proxy_base_url 字段**：删除 `PROXY_BASE_URL` 后，`get_lightrag_status` 返回的 `proxy_base_url` 字段改为从 `get_llm_config` 读取 `apibase`，或直接删除该字段（前端不使用它）
+- **get_lightrag_status 的 proxy_base_url 字段**：直接删除该字段。改造后不再有代理，`proxy_base_url` 的语义已不存在。前端不使用该字段（已验证 ui/ 目录无引用）
 
 ### 改动 2: `litellm_adapter.py` — 传 response_format 时设 drop_params
 
@@ -118,11 +118,14 @@ if response_format is not None:
 
 - 删除 `chat_completions` 端点函数
 - 删除 `/llm/v1/embeddings` 端点函数
-- 删除 `is_lightrag_extraction_request` 相关的 import 和调用
-- 删除脑区注入拦截代码（`inject_brain_region_context` 调用）
-- 保留 `get_llm_config`、`call_llm_via_litellm`、`openai_to_litellm_messages` 等函数（被 MCP 客户端和其他代码引用）
+- 删除第27行的 `from niu_api.internal.brain_region_prompt import inject_brain_region_context, is_lightrag_extraction_request` 整条 import 语句
+- 删除脑区注入拦截代码（`inject_brain_region_context` 调用，约第408-416行）
+- 删除 `is_lightrag` 判断相关代码
+- 保留 `get_llm_config`、`call_llm_via_litellm` 函数（被 MCP 客户端引用）
+- 保留 `openai_to_litellm_messages`、`openai_to_litellm_tools`、`litellm_to_openai_response` 等辅助函数及 Pydantic 模型（虽当前仅被已删端点引用，但保留以备扩展，避免破坏性变更）
 - 保留 `/llm/v1/models`、`/llm/v1/health`、`/llm/v1/status` 等辅助端点
 - 保留路由注册（router 对象仍需存在，否则 `__main__.py` 的 import 会报错）
+- 更新模块 docstring（第1-17行）：移除对已删端点的描述，改为描述剩余端点
 
 **文件**: `niu_api/__main__.py`
 
@@ -134,7 +137,8 @@ if response_format is not None:
 
 - 删除 `PROXY_BASE_URL` 和 `PROXY_API_KEY` 常量
 - 删除 `_get_shared_openai_client` 函数及全局变量
-- `get_lightrag_status` 函数中的 `proxy_base_url` 字段改为删除或从 `get_llm_config` 读取
+- `get_lightrag_status` 函数中直接删除 `proxy_base_url` 字段
+- 更新模块 docstring 中的架构描述：从 `routed through /llm/v1/ proxy` 改为 `direct LiteLLMSession.chat()`
 
 **文件**: `niu_api/internal/brain_region_prompt.py`
 
@@ -144,7 +148,7 @@ if response_format is not None:
 
 - `tests/test_llm_proxy.py` — 删除对 `chat_completions` 和 `embeddings` 端点的测试
 - `tests/test_llm_proxy_injection.py` — 删除对代理层脑区注入的测试（注入已搬到 `_llm_model_func`）
-- `tests/test_lightrag_manager.py` — 更新 `proxy_base_url` 字段的断言
+- `tests/test_lightrag_manager.py` — 删除 `proxy_base_url` 字段的断言
 
 ## 不改的东西
 
