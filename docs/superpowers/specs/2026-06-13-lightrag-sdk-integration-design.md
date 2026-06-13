@@ -9,7 +9,7 @@ LightRAG 的 `openai_complete_if_cache` 使用 OpenAI SDK 专有的 `chat.comple
 ## 设计原则
 
 1. **应用层只管按 SDK 标准写请求**，模型兼容性由 LiteLLM 处理
-2. **代理程序不改**，它已经在正常工作
+2. **`llm_proxy.py` 的 chat_completions 端点可以删除** — 它唯一的调用方是 LightRAG，改造后不再需要。embedding/models/health/status 等其他端点保留
 3. **脑区注入搬到 LightRAG 模板层**，不再靠 HTTP 代理层拦截
 4. **只改需要改的地方**，不重构、不扩展、不加新模块
 
@@ -82,11 +82,15 @@ LightRAG operate.py
 
 **文件 3**: `niu_api/llm_proxy.py`
 
-移除 `inject_brain_region_context` 的调用（第 408-416 行），不再需要代理层拦截注入。
+- 删除 `chat_completions` 端点（LightRAG 不再走 HTTP 代理，前端一直直接调 LiteLLM SDK，该端点已无调用方）
+- 删除 `call_llm_via_litellm` 函数（仅被 chat_completions 使用）
+- 删除脑区注入相关代码（`inject_brain_region_context` 调用、`is_lightrag` 判断）
+- 保留 `/llm/v1/embeddings`、`/llm/v1/models`、`/llm/v1/health`、`/llm/v1/status` 等其他端点
+- 保留 `get_llm_config` 函数（`_llm_model_func` 需要用它获取配置）
 
 **文件 4**: `niu_api/internal/brain_region_prompt.py`
 
-此文件仍保留（`build_dynamic_brain_region_prompt` 等函数可能被其他地方引用），但 `inject_brain_region_context` 不再被 `llm_proxy.py` 调用。
+`_STATIC_BRAIN_REGION_PROMPT` 的内容已写入 LightRAG 的 `prompt.py` 模板，此文件中不再需要。`build_dynamic_brain_region_prompt` 的逻辑搬到 `operate.py` 中。检查是否有其他引用，如无则可整个删除。
 
 ### 改动 3: 清理不再需要的代码
 
@@ -98,12 +102,11 @@ LightRAG operate.py
 
 ## 不改的东西
 
-1. **`niu_api/llm_proxy.py`** — 不改核心逻辑，只删掉脑区注入拦截
-2. **`agent/generic/litellm_adapter.py`** — 不改，`LiteLLMSession` 原样使用
-3. **LightRAG 的 `operate.py`** — 只加一行 `brain_region_list` 填充，不重构
-4. **嵌入模型** — 不改，已经是本地直接调用
-5. **`response_format_handler.py`** — 不创建，LiteLLM 自带降级能力
-6. **探测/缓存/prompt注入** — 不做，LiteLLM 自动处理
+1. **`agent/generic/litellm_adapter.py`** — 不改，`LiteLLMSession` 原样使用
+2. **LightRAG 的 `operate.py`** — 只加一行 `brain_region_list` 填充，不重构
+3. **嵌入模型** — 不改，已经是本地直接调用
+4. **`response_format_handler.py`** — 不创建，LiteLLM 自带降级能力
+5. **探测/缓存/prompt注入** — 不做，LiteLLM 自动处理
 
 ## 验证标准
 
