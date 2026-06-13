@@ -15,9 +15,10 @@ from pathlib import Path
 class TestConfig:
     """Test LightRAG configuration reading."""
 
-    def test_proxy_base_url(self):
-        from niu_api.internal.lightrag_manager import PROXY_BASE_URL
-        assert "llm/v1" in PROXY_BASE_URL
+    def test_llm_mode_is_litellm_direct(self):
+        from niu_api.internal.lightrag_manager import get_lightrag_status
+        status = get_lightrag_status()
+        assert status.get("llm_mode") == "litellm_direct"
 
     def test_storage_dir_under_niu_home(self):
         from niu_api.internal.lightrag_manager import STORAGE_DIR
@@ -72,7 +73,7 @@ class TestStatus:
         assert "installed" in status
         assert "initialized" in status
         assert "storage_dir" in status
-        assert "proxy_base_url" in status
+        assert "llm_mode" in status
         assert "embedding" in status
         assert "reranker" in status
         assert "loop_running" in status
@@ -179,3 +180,310 @@ class TestEnsureLightRAG:
         finally:
             with mgr._rag_lock:
                 mgr._rag_instance = old_instance
+
+
+# ============== LLM Model Func Tests ==============
+
+
+class TestLlmModelFunc:
+    """Test the new _llm_model_func that calls LiteLLMSession directly."""
+
+    @pytest.fixture
+    def mock_llm_config(self):
+        """Mock get_llm_config to return valid LLM config."""
+        config = {
+            "type": "openai",
+            "apikey": "test-api-key",
+            "apibase": "https://api.openai.com/v1",
+            "model": "gpt-4o",
+            "reasoning_effort": "none",
+        }
+        return config
+
+    @pytest.fixture(autouse=True)
+    def reset_session_cache(self):
+        """Reset _cached_session before and after each test to prevent cross-test pollution."""
+        import niu_api.internal.lightrag_manager as mgr
+        mgr._cached_session = None
+        mgr._cached_config_key = None
+        yield
+        mgr._cached_session = None
+        mgr._cached_config_key = None
+
+    async def test_basic_text_call_returns_string(self, mock_llm_config):
+        """_llm_model_func with a simple prompt should return a string."""
+        from unittest.mock import patch
+
+        from agent.generic.litellm_adapter import LiteLLMSession, MockResponse
+
+        mock_response = MockResponse(thinking=None, content="Hello world", tool_calls=[], raw="Hello world")
+
+        def mock_chat_generator(messages, tools=None, response_format=None):
+            yield "Hello world"
+            return mock_response
+
+        with patch("niu_api.llm_proxy.get_llm_config", return_value=mock_llm_config):
+            with patch.object(LiteLLMSession, "chat", side_effect=mock_chat_generator):
+                from niu_api.internal.lightrag_manager import _build_llm_model_func
+
+                func = _build_llm_model_func()
+                result = await func("What is Python?")
+                assert isinstance(result, str)
+                assert result == "Hello world"
+
+    async def test_keyword_extraction_builds_response_format(self, mock_llm_config):
+        """keyword_extraction=True should build json_schema response_format for LiteLLMSession."""
+        from unittest.mock import patch
+
+        from agent.generic.litellm_adapter import LiteLLMSession, MockResponse
+
+        mock_response = MockResponse(thinking=None, content='{"high_level_keywords": ["test"], "low_level_keywords": ["unit"]}', tool_calls=[], raw='{"high_level_keywords": ["test"], "low_level_keywords": ["unit"]}')
+
+        captured_response_format = None
+
+        def mock_chat_generator(messages, tools=None, response_format=None):
+            nonlocal captured_response_format
+            captured_response_format = response_format
+            yield mock_response.content
+            return mock_response
+
+        with patch("niu_api.llm_proxy.get_llm_config", return_value=mock_llm_config):
+            with patch.object(LiteLLMSession, "chat", side_effect=mock_chat_generator):
+                from niu_api.internal.lightrag_manager import _build_llm_model_func
+
+                func = _build_llm_model_func()
+                result = await func("test keywords", keyword_extraction=True)
+
+        assert captured_response_format is not None
+        assert captured_response_format["type"] == "json_schema"
+        assert captured_response_format["json_schema"]["name"] == "keyword_extraction"
+        assert captured_response_format["json_schema"]["strict"] is True
+        assert "schema" in captured_response_format["json_schema"]
+
+    async def test_brain_region_injection_for_extraction_request(self, mock_llm_config):
+        """Entity extraction requests should have brain region info injected into system_prompt."""
+        from unittest.mock import patch
+
+        from agent.generic.litellm_adapter import LiteLLMSession, MockResponse
+
+        mock_response = MockResponse(thinking=None, content="Entity extraction result", tool_calls=[], raw="Entity extraction result")
+
+        captured_messages = None
+
+        def mock_chat_generator(messages, tools=None, response_format=None):
+            nonlocal captured_messages
+            captured_messages = messages
+            yield mock_response.content
+            return mock_response
+
+        with patch("niu_api.llm_proxy.get_llm_config", return_value=mock_llm_config):
+            with patch.object(LiteLLMSession, "chat", side_effect=mock_chat_generator):
+                with patch("niu_api.internal.brain_region_prompt.build_dynamic_brain_region_prompt",
+                           return_value="当前图谱中的脑区：测试脑区、文档库脑区"):
+                    from niu_api.internal.lightrag_manager import _build_llm_model_func
+
+                    func = _build_llm_model_func()
+                    result = await func(
+                        "extract entities from this text",
+                        system_prompt="---Role---\nYou are a Knowledge Graph Specialist...",
+                    )
+
+        system_msg = captured_messages[0]
+        assert system_msg["role"] == "system"
+        assert "大脑区域架构" in system_msg["content"]
+        assert "测试脑区" in system_msg["content"]
+
+    async def test_brain_region_not_injected_for_normal_request(self, mock_llm_config):
+        """Normal LLM requests should NOT have brain region info injected."""
+        from unittest.mock import patch
+
+        from agent.generic.litellm_adapter import LiteLLMSession, MockResponse
+
+        mock_response = MockResponse(thinking=None, content="Normal response", tool_calls=[], raw="Normal response")
+
+        captured_messages = None
+
+        def mock_chat_generator(messages, tools=None, response_format=None):
+            nonlocal captured_messages
+            captured_messages = messages
+            yield mock_response.content
+            return mock_response
+
+        with patch("niu_api.llm_proxy.get_llm_config", return_value=mock_llm_config):
+            with patch.object(LiteLLMSession, "chat", side_effect=mock_chat_generator):
+                from niu_api.internal.lightrag_manager import _build_llm_model_func
+
+                func = _build_llm_model_func()
+                result = await func(
+                    "What is Python?",
+                    system_prompt="You are a helpful assistant.",
+                )
+
+        system_msg = captured_messages[0]
+        assert "大脑区域架构" not in system_msg["content"]
+
+    async def test_brain_region_injection_idempotent(self, mock_llm_config):
+        """If system_prompt already contains brain region info, skip injection (no double injection)."""
+        from unittest.mock import patch
+
+        from agent.generic.litellm_adapter import LiteLLMSession, MockResponse
+
+        mock_response = MockResponse(thinking=None, content="Result", tool_calls=[], raw="Result")
+
+        captured_messages = None
+
+        def mock_chat_generator(messages, tools=None, response_format=None):
+            nonlocal captured_messages
+            captured_messages = messages
+            yield mock_response.content
+            return mock_response
+
+        with patch("niu_api.llm_proxy.get_llm_config", return_value=mock_llm_config):
+            with patch.object(LiteLLMSession, "chat", side_effect=mock_chat_generator):
+                from niu_api.internal.lightrag_manager import _build_llm_model_func
+
+                func = _build_llm_model_func()
+                result = await func(
+                    "extract entities",
+                    system_prompt="---Role---\nYou are a Knowledge Graph Specialist...\n\n大脑区域架构\nexisting content",
+                )
+
+        system_msg = captured_messages[0]
+        assert system_msg["content"].count("大脑区域架构") == 1
+
+    async def test_enable_cot_with_thinking_and_no_content(self, mock_llm_config):
+        """When enable_cot=True and thinking exists but content is empty, wrap thinking in tags."""
+        from unittest.mock import patch
+
+        from agent.generic.litellm_adapter import LiteLLMSession, MockResponse
+
+        mock_response = MockResponse(thinking="Let me think about this...", content="", tool_calls=[], raw="")
+
+        def mock_chat_generator(messages, tools=None, response_format=None):
+            yield ""
+            return mock_response
+
+        with patch("niu_api.llm_proxy.get_llm_config", return_value=mock_llm_config):
+            with patch.object(LiteLLMSession, "chat", side_effect=mock_chat_generator):
+                from niu_api.internal.lightrag_manager import _build_llm_model_func
+
+                func = _build_llm_model_func()
+                result = await func("test query", enable_cot=True)
+
+        assert result.startswith("<think>")
+        assert "Let me think about this..." in result
+        assert "</think>" in result
+
+    async def test_enable_cot_with_thinking_and_content(self, mock_llm_config):
+        """When enable_cot=True and both thinking and content exist, ignore thinking, return content only."""
+        from unittest.mock import patch
+
+        from agent.generic.litellm_adapter import LiteLLMSession, MockResponse
+
+        mock_response = MockResponse(thinking="I need to calculate this...", content="The answer is 42", tool_calls=[], raw="The answer is 42")
+
+        def mock_chat_generator(messages, tools=None, response_format=None):
+            yield "The answer is 42"
+            return mock_response
+
+        with patch("niu_api.llm_proxy.get_llm_config", return_value=mock_llm_config):
+            with patch.object(LiteLLMSession, "chat", side_effect=mock_chat_generator):
+                from niu_api.internal.lightrag_manager import _build_llm_model_func
+
+                func = _build_llm_model_func()
+                result = await func("test query", enable_cot=True)
+
+        assert result == "The answer is 42"
+        assert "<think>" not in result
+
+    async def test_stream_returns_async_iterator(self, mock_llm_config):
+        """When stream=True, _llm_model_func should return an async generator (AsyncIterator)."""
+        from unittest.mock import patch
+        from collections.abc import AsyncIterator
+
+        from agent.generic.litellm_adapter import LiteLLMSession, MockResponse
+
+        mock_response = MockResponse(thinking=None, content="Streamed content here", tool_calls=[], raw="Streamed content here")
+
+        def mock_chat_generator(messages, tools=None, response_format=None):
+            yield "Streamed content here"
+            return mock_response
+
+        with patch("niu_api.llm_proxy.get_llm_config", return_value=mock_llm_config):
+            with patch.object(LiteLLMSession, "chat", side_effect=mock_chat_generator):
+                from niu_api.internal.lightrag_manager import _build_llm_model_func
+
+                func = _build_llm_model_func()
+                result = await func("test query", stream=True)
+
+        assert isinstance(result, AsyncIterator)
+
+        chunks = []
+        async for chunk in result:
+            chunks.append(chunk)
+        full = "".join(chunks)
+        assert full == "Streamed content here"
+
+    async def test_lightrag_internal_params_popped(self, mock_llm_config):
+        """LightRAG concurrency control params should be silently removed."""
+        from unittest.mock import patch
+
+        from agent.generic.litellm_adapter import LiteLLMSession, MockResponse
+
+        mock_response = MockResponse(thinking=None, content="OK", tool_calls=[], raw="OK")
+
+        captured_messages = None
+
+        def mock_chat_generator(messages, tools=None, response_format=None):
+            nonlocal captured_messages
+            captured_messages = messages
+            yield "OK"
+            return mock_response
+
+        with patch("niu_api.llm_proxy.get_llm_config", return_value=mock_llm_config):
+            with patch.object(LiteLLMSession, "chat", side_effect=mock_chat_generator):
+                from niu_api.internal.lightrag_manager import _build_llm_model_func
+
+                func = _build_llm_model_func()
+                result = await func(
+                    "test",
+                    hashing_kv="some_cache",
+                    _priority=1,
+                    _timeout=30,
+                    _queue_timeout=10,
+                )
+
+        for msg in captured_messages:
+            assert "hashing_kv" not in str(msg)
+            assert "_priority" not in str(msg)
+
+    async def test_history_messages_content_none_replaced_with_empty(self, mock_llm_config):
+        """history_messages with content=None should be converted to empty string."""
+        from unittest.mock import patch
+
+        from agent.generic.litellm_adapter import LiteLLMSession, MockResponse
+
+        mock_response = MockResponse(thinking=None, content="OK", tool_calls=[], raw="OK")
+
+        captured_messages = None
+
+        def mock_chat_generator(messages, tools=None, response_format=None):
+            nonlocal captured_messages
+            captured_messages = messages
+            yield "OK"
+            return mock_response
+
+        with patch("niu_api.llm_proxy.get_llm_config", return_value=mock_llm_config):
+            with patch.object(LiteLLMSession, "chat", side_effect=mock_chat_generator):
+                from niu_api.internal.lightrag_manager import _build_llm_model_func
+
+                func = _build_llm_model_func()
+                result = await func(
+                    "test",
+                    history_messages=[
+                        {"role": "user", "content": None},
+                    ],
+                )
+
+        history_msg = [m for m in captured_messages if m["content"] == ""]
+        assert len(history_msg) >= 1, f"Expected a message with empty content, got: {captured_messages}"
