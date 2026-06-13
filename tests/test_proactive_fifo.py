@@ -391,3 +391,23 @@ def test_callback_receives_correct_messages():
     assert len(msgs) >= 2, f"Expected at least 2 messages, got {len(msgs)}"
     # 第一条应该是 system
     assert msgs[0]["role"] == "system", f"First message should be system, got {msgs[0]['role']}"
+
+
+def test_truncate_tool_content_with_name():
+    """截断标记应包含工具名"""
+    from agent.generic.agent_loop import _truncate_tool_content, MAX_TOOL_RESULT_CHARS
+    long_content = "x" * (MAX_TOOL_RESULT_CHARS + 1000)
+    result = _truncate_tool_content(long_content, "memory-server/remember")
+    assert "memory-server/remember" in result
+    assert "[截断]" in result
+    assert len(result) <= MAX_TOOL_RESULT_CHARS
+
+
+def test_truncate_tool_content_without_name():
+    """无工具名时截断标记显示通用标签"""
+    from agent.generic.agent_loop import _truncate_tool_content, MAX_TOOL_RESULT_CHARS
+    long_content = "x" * (MAX_TOOL_RESULT_CHARS + 1000)
+    result = _truncate_tool_content(long_content)
+    assert "工具" in result
+    assert "memory-server" not in result
+    assert len(result) <= MAX_TOOL_RESULT_CHARS

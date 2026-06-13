@@ -176,6 +176,17 @@ def agent_runner_loop(
 
     # Add conversation history if provided
     if history:
+        # 从 assistant 消息的 tool_calls 构建 tool_call_id → tool_name 映射
+        # 用于截断标记中显示工具名（DB 不存 tool_name，需从关联的 assistant 消息提取）
+        _tc_id_to_name: dict[str, str] = {}
+        for msg in history:
+            role = msg.get("role", "user")
+            if role == "assistant" and msg.get("tool_calls"):
+                for tc in msg["tool_calls"]:
+                    tc_id = tc.get("id", "")
+                    tc_name = tc.get("function", {}).get("name", "")
+                    if tc_id and tc_name:
+                        _tc_id_to_name[tc_id] = tc_name
         for msg in history:
             role = msg.get("role", "user")
             content = msg.get("content", "")
@@ -188,7 +199,8 @@ def agent_runner_loop(
             elif role == "tool" and msg.get("tool_call_id") and content is not None:
                 # tool 消息必须有 tool_call_id 和 content，否则 OpenAI API 返回 400
                 # 截断超长的 tool 内容（DB 中保存了完整内容，但 LLM 上下文需要保护）
-                entry = {"role": role, "content": _truncate_tool_content(content), "tool_call_id": msg["tool_call_id"]}
+                tool_name = _tc_id_to_name.get(msg["tool_call_id"], "")
+                entry = {"role": role, "content": _truncate_tool_content(content, tool_name), "tool_call_id": msg["tool_call_id"]}
                 messages.append(entry)
 
     # Add current user message
