@@ -114,21 +114,14 @@ def _build_llm_model_func():
                 dynamic_part = build_dynamic_brain_region_prompt()
                 system_prompt = system_prompt + f"\n\n{static_part}\n\n{dynamic_part}"
 
-        # 3. Build messages list
-        messages = []
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-        if history_messages:
-            for msg in history_messages:
-                content = msg.get("content") or ""  # litellm safety: None -> ""
-                messages.append({"role": msg.get("role", "user"), "content": content})
-        messages.append({"role": "user", "content": prompt})
-
-        # 4. Get LLM config
-        config = get_llm_config(use_lightrag_config=True)
-
-        # 5. Handle keyword_extraction: build standard response_format dict
+        # 3. Handle keyword_extraction: try response_format, fallback to prompt
+        # Models that support json_schema Structured Outputs (e.g. OpenAI) get the
+        # reliable response_format path. Models that don't (e.g. ark-code-latest)
+        # raise BadRequestError — we catch that, append JSON instructions to prompt,
+        # and retry without response_format. LightRAG's json_repair.loads() handles
+        # parsing the text-only output.
         response_format = None
+        kw_prompt_suffix = ""
         if keyword_extraction:
             from lightrag.types import GPTKeywordExtractionFormat
             schema = GPTKeywordExtractionFormat.model_json_schema()
@@ -140,17 +133,28 @@ def _build_llm_model_func():
                     "schema": schema,
                 },
             }
+            kw_prompt_suffix = '\n\nReturn your response as a JSON object with "high_level_keywords" and "low_level_keywords" arrays.'
+
+        # 4. Build messages list
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        if history_messages:
+            for msg in history_messages:
+                content = msg.get("content") or ""  # litellm safety: None -> ""
+                messages.append({"role": msg.get("role", "user"), "content": content})
+        messages.append({"role": "user", "content": prompt})
+
+        # 5. Get LLM config
+        config = get_llm_config(use_lightrag_config=True)
 
         # 6. Handle enable_cot and stream from kwargs
         enable_cot = kwargs.pop("enable_cot", False)
         stream = kwargs.pop("stream", False)
 
         # 7. Call LiteLLMSession via asyncio.to_thread
-        def sync_call():
-            session = _get_litellm_session(config)
-            gen = session.chat(messages=messages, response_format=response_format)
-
-            # Consume generator
+        def _consume_generator(gen):
+            """Consume a LiteLLMSession.chat() generator, return (chunks, mock_response)."""
             chunks = []
             mock_response = None
             try:
@@ -160,6 +164,25 @@ def _build_llm_model_func():
                         chunks.append(chunk)
             except StopIteration as e:
                 mock_response = e.value
+            return chunks, mock_response
+
+        def sync_call():
+            from litellm import BadRequestError
+            session = _get_litellm_session(config)
+
+            # Try with response_format first (works for models like OpenAI that support it)
+            gen = session.chat(messages=messages, response_format=response_format)
+            try:
+                chunks, mock_response = _consume_generator(gen)
+            except BadRequestError:
+                if not keyword_extraction:
+                    raise
+                # Model doesn't support response_format — retry with prompt-only approach
+                logger.info("response_format not supported by model, retrying with prompt-only JSON instruction")
+                fallback_messages = list(messages)
+                fallback_messages[-1]["content"] = prompt + kw_prompt_suffix
+                gen = session.chat(messages=fallback_messages, response_format=None)
+                chunks, mock_response = _consume_generator(gen)
 
             full_content = "".join(chunks)
 
