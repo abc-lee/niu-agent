@@ -601,24 +601,24 @@ class TestBuildTruncatedMsgListText:
 
 
 class TestAutoTidyTrigger:
-    """Test _check_auto_tidy incremental trigger mechanism."""
+    """Test _should_auto_tidy usage-ratio-only trigger mechanism."""
 
-    def test_increment_exceeds_threshold_triggers_tidy(self):
+    def test_should_auto_tidy_usage_above_80pct(self):
         from niu_api.compat import _should_auto_tidy
-        # 增量超过阈值 → 应触发
-        assert _should_auto_tidy(current_tokens=200000, last_tidy_tokens=100000, threshold=50000) is True
+        # 使用率 >= 80% 时触发整理
+        assert _should_auto_tidy(current_tokens=170000, context_window_tokens=200000) is True
 
-    def test_increment_below_threshold_no_tidy(self):
+    def test_should_auto_tidy_usage_below_80pct(self):
         from niu_api.compat import _should_auto_tidy
-        # 增量未超过阈值 → 不触发
-        assert _should_auto_tidy(current_tokens=120000, last_tidy_tokens=100000, threshold=50000) is False
+        # 使用率 < 80% 时不触发整理
+        assert _should_auto_tidy(current_tokens=150000, context_window_tokens=200000) is False
 
-    def test_zero_last_tidy_always_triggers(self):
+    def test_should_auto_tidy_zero_context_window(self):
         from niu_api.compat import _should_auto_tidy
-        # 从未整理过 → 总量超阈值就触发
-        assert _should_auto_tidy(current_tokens=60000, last_tidy_tokens=0, threshold=50000) is True
+        # context_window_tokens=0 时不触发整理（无法计算使用率）
+        assert _should_auto_tidy(current_tokens=100000, context_window_tokens=0) is False
 
-    def test_zero_current_tokens_no_tidy(self):
+    def test_should_auto_tidy_zero_current_tokens(self):
         from niu_api.compat import _should_auto_tidy
-        # 无消息 → 不触发
-        assert _should_auto_tidy(current_tokens=0, last_tidy_tokens=0, threshold=50000) is False
+        # current_tokens=0 时不触发整理
+        assert _should_auto_tidy(current_tokens=0, context_window_tokens=200000) is False
