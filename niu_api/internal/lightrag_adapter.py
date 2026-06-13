@@ -42,6 +42,8 @@ def _filter_result_fields(result: dict, fields: list) -> dict:
         return result
     field_set = set(fields)
     data = result.get("data", {})
+    if not isinstance(data, dict):
+        return result  # Unexpected structure, skip filtering
     # 裁剪 entities
     if "entities" in data:
         data["entities"] = [
