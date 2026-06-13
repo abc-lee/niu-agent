@@ -60,11 +60,14 @@ LightRAG operate.py
 2. 用 `LiteLLMSession` 直接调 `litellm.completion()`
 3. `keyword_extraction=True` 时，把 `GPTKeywordExtractionFormat` 转成标准 `response_format` 字典传给 LiteLLM
 4. `stream=True` 时返回 `AsyncIterator[str]`
-5. 配置从 `get_llm_config(use_lightrag_config=True)` 获取（跟代理用同样的配置源）
+5. 配置从 `get_llm_config(use_lightrag_config=True)` 获取（跟代理用同样的配置源），包括 `reasoning_effort`（当前默认 `"none"`，用户可在 `lightrag_llm` 配置段设置）
+6. `enable_cot=True` 时（LightRAG 查询阶段传入），处理 `reasoning_content` 的 `<tool_call>..улкан..` 标签包装（与 `openai_complete_if_cache` 行为一致）
 
-关于 `drop_params`：当传 `response_format` 时应启用 `drop_params=True`，这样 LiteLLM 在模型不支持时自动丢弃该参数而不是抛异常。
+关于 `drop_params`：当传 `response_format` 或 `reasoning_effort` 时应启用 `drop_params=True`，这样 LiteLLM 在模型不支持时自动丢弃该参数而不是抛异常。
 
 关于 `hashing_kv`：LightRAG 通过 `partial()` 把 `hashing_kv` 注入到 `llm_model_func` 的 kwargs 中，`_llm_model_func` 内部需要从 kwargs 弹出它，不做缓存（缓存由 LightRAG 上层的 `use_llm_func_with_cache` 管理）。
+
+关于 `reasoning_effort`：当前是在 `llm_proxy.py` 的 `call_llm_via_litellm` 中从 config 读取并注入到 `LiteLLMSession` 的，LightRAG 本身不传这个参数。改造后 `_llm_model_func` 从 `get_llm_config(use_lightrag_config=True)` 获取，逻辑不变。
 
 ### 改动 2: 脑区注入 — 从代理层拦截改为模板层写入
 
