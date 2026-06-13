@@ -1,8 +1,9 @@
 """
 Tests for niu_api/llm_proxy.py
 
-OpenAI-compatible LLM proxy endpoints: /llm/v1/chat/completions,
-/llm/v1/embeddings, /llm/v1/models, /llm/v1/health, /llm/v1/status.
+OpenAI-compatible LLM proxy utilities: format conversion helpers,
+direct LLM call functions, and remaining HTTP endpoints
+(/llm/v1/models, /llm/v1/health, /llm/v1/status).
 """
 
 import json
@@ -108,160 +109,6 @@ class TestStatusEndpoint:
                 assert data["reranker"]["name"] == "none"
 
 
-# ============== Chat Completions Tests ==============
-
-
-class TestChatCompletions:
-    """Test /llm/v1/chat/completions endpoint."""
-
-    def test_rejects_without_api_key(self, client):
-        with patch("niu_api.llm_proxy.get_llm_config", return_value={
-            "type": "openai", "apikey": "", "apibase": "", "model": ""
-        }):
-            response = client.post("/llm/v1/chat/completions", json={
-                "model": "test",
-                "messages": [{"role": "user", "content": "hello"}],
-            })
-            assert response.status_code == 500
-
-    def test_accepts_valid_request(self, client, mock_llm_config):
-        mock_response = {
-            "choices": [{
-                "message": {"role": "assistant", "content": "Hello!"},
-                "finish_reason": "stop",
-            }],
-            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
-        }
-
-        async def mock_call(**kwargs):
-            return mock_response
-
-        with patch("niu_api.llm_proxy.get_llm_config", return_value=mock_llm_config):
-            with patch("niu_api.llm_proxy.call_llm_via_litellm", side_effect=mock_call):
-                response = client.post("/llm/v1/chat/completions", json={
-                    "model": "test",
-                    "messages": [{"role": "user", "content": "hello"}],
-                })
-                assert response.status_code == 200
-                data = response.json()
-                assert data["object"] == "chat.completion"
-                assert len(data["choices"]) == 1
-                assert data["choices"][0]["message"]["content"] == "Hello!"
-
-    def test_passes_response_format(self, client, mock_llm_config):
-        """Verify response_format is forwarded to call_llm_via_litellm."""
-        mock_response = {
-            "choices": [{
-                "message": {"role": "assistant", "content": "{}"},
-                "finish_reason": "stop",
-            }],
-            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
-        }
-
-        captured_kwargs = {}
-
-        async def mock_call(**kwargs):
-            captured_kwargs.update(kwargs)
-            return mock_response
-
-        with patch("niu_api.llm_proxy.get_llm_config", return_value=mock_llm_config):
-            with patch("niu_api.llm_proxy.call_llm_via_litellm", side_effect=mock_call):
-                response = client.post("/llm/v1/chat/completions", json={
-                    "model": "test",
-                    "messages": [{"role": "user", "content": "hello"}],
-                    "response_format": {"type": "json_object"},
-                })
-                assert response.status_code == 200
-                assert captured_kwargs.get("response_format") == {"type": "json_object"}
-
-    def test_passes_tools(self, client, mock_llm_config):
-        """Verify tools are forwarded."""
-        mock_response = {
-            "choices": [{
-                "message": {"role": "assistant", "content": None, "tool_calls": None},
-                "finish_reason": "stop",
-            }],
-            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
-        }
-
-        captured_kwargs = {}
-
-        async def mock_call(**kwargs):
-            captured_kwargs.update(kwargs)
-            return mock_response
-
-        with patch("niu_api.llm_proxy.get_llm_config", return_value=mock_llm_config):
-            with patch("niu_api.llm_proxy.call_llm_via_litellm", side_effect=mock_call):
-                response = client.post("/llm/v1/chat/completions", json={
-                    "model": "test",
-                    "messages": [{"role": "user", "content": "hello"}],
-                    "tools": [{"type": "function", "function": {"name": "test_tool", "parameters": {}}}],
-                })
-                assert response.status_code == 200
-                assert captured_kwargs.get("tools") is not None
-
-
-# ============== Embeddings Endpoint Tests ==============
-
-
-class TestEmbeddingsEndpoint:
-    """Test /llm/v1/embeddings endpoint."""
-
-    def test_single_text_embedding(self, client):
-        mock_embeddings = [[0.1, 0.2, 0.3]]
-        with patch("niu_api.internal.embedding.batch_encode", return_value=mock_embeddings):
-            response = client.post("/llm/v1/embeddings", json={
-                "model": "test-embed",
-                "input": "hello world",
-            })
-            assert response.status_code == 200
-            data = response.json()
-            assert data["object"] == "list"
-            assert len(data["data"]) == 1
-            assert data["data"][0]["object"] == "embedding"
-            assert data["data"][0]["embedding"] == [0.1, 0.2, 0.3]
-
-    def test_batch_text_embeddings(self, client):
-        mock_embeddings = [[0.1, 0.2], [0.3, 0.4]]
-        with patch("niu_api.internal.embedding.batch_encode", return_value=mock_embeddings):
-            response = client.post("/llm/v1/embeddings", json={
-                "model": "test-embed",
-                "input": ["hello", "world"],
-            })
-            assert response.status_code == 200
-            data = response.json()
-            assert len(data["data"]) == 2
-            assert data["data"][0]["index"] == 0
-            assert data["data"][1]["index"] == 1
-
-    def test_dimension_reduction(self, client):
-        mock_embeddings = [[0.1, 0.2, 0.3, 0.4, 0.5]]
-        with patch("niu_api.internal.embedding.batch_encode", return_value=mock_embeddings):
-            response = client.post("/llm/v1/embeddings", json={
-                "model": "test-embed",
-                "input": "hello",
-                "dimensions": 3,
-            })
-            assert response.status_code == 200
-            data = response.json()
-            # Should truncate to 3 dimensions
-            assert len(data["data"][0]["embedding"]) == 3
-
-    def test_embedding_response_format(self, client):
-        mock_embeddings = [[0.1, 0.2]]
-        with patch("niu_api.internal.embedding.batch_encode", return_value=mock_embeddings):
-            response = client.post("/llm/v1/embeddings", json={
-                "model": "test-embed",
-                "input": "hello",
-            })
-            data = response.json()
-            assert "id" in data
-            assert "created" in data
-            assert "model" in data
-            assert "usage" in data
-            assert "prompt_tokens" in data["usage"]
-
-
 # ============== Format Conversion Tests ==============
 
 
@@ -331,3 +178,30 @@ class TestFormatConversion:
         assert result.choices[0].message.tool_calls is not None
         assert len(result.choices[0].message.tool_calls) == 1
         assert result.choices[0].message.tool_calls[0].function.name == "test_tool"
+
+
+# ============== Endpoint Removal Tests ==============
+
+
+class TestEndpointRemoval:
+    """Verify that removed endpoints no longer exist."""
+
+    def test_chat_completions_endpoint_removed(self):
+        """The /chat/completions POST endpoint should no longer exist."""
+        from niu_api.llm_proxy import router
+        routes = [r.path for r in router.routes]
+        assert "/chat/completions" not in routes
+
+    def test_embeddings_endpoint_removed(self):
+        """The /embeddings POST endpoint should no longer exist."""
+        from niu_api.llm_proxy import router
+        routes = [r.path for r in router.routes]
+        assert "/embeddings" not in routes
+
+    def test_remaining_endpoints_still_exist(self):
+        """Health, models, and status endpoints should still exist."""
+        from niu_api.llm_proxy import router
+        routes = [r.path for r in router.routes]
+        assert "/health" in routes or "/llm/v1/health" in routes
+        assert "/models" in routes or "/llm/v1/models" in routes
+        assert "/status" in routes or "/llm/v1/status" in routes
