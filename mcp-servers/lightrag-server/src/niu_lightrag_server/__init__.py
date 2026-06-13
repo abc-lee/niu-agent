@@ -161,7 +161,13 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
             "and uses your keywords directly — this eliminates LLM latency (~10-100s -> <1s) while "
             "keeping full graph traversal capability. ALWAYS provide keywords when you know the search "
             "terms (e.g., query='便签' keywords=['便签']). Only omit keywords for complex natural "
-            "language queries that need LLM interpretation."
+            "language queries that need LLM interpretation.\n\n"
+            "TRUNCATION AVOIDANCE: If results are truncated ([截断] marker appears), take these steps:\n"
+            "1. Reduce top_k (e.g., 10→5→3)\n"
+            "2. Switch to narrower mode: mix→hybrid→local\n"
+            "3. Provide more specific keywords (exact entity names work best)\n"
+            "4. Use fields=['entity_name','entity_type'] to get name-only lists without descriptions\n"
+            "5. Use lightrag_get_entity_info for single-entity detail instead of broad query"
         ),
         "input_schema": {
             "type": "object",
@@ -184,6 +190,11 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
                     "default": 10,
                     "description": "Number of top results to retrieve",
                 },
+                "fields": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional field names to include in output. When provided, only these fields are kept per entity/relationship/chunk, reducing output size. Common choices: ['entity_name','entity_type'] for name-only lists. Default: all fields (no filtering). Available entity fields: entity_name, entity_type, description, source_id, file_path, created_at. Available relationship fields: src_id, tgt_id, description, keywords, weight, source_id, file_path, created_at.",
+                },
             },
             "required": ["query"],
         },
@@ -194,7 +205,9 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
         "description": (
             "Search for entities of a specific type in the knowledge graph. "
             "Uses local mode (entity-focused) and filters by entity_type. "
-            "Common types: skill, tool, knowledge, person, photo, concept."
+            "Common types: skill, tool, knowledge, person, photo, concept.\n\n"
+            "TRUNCATION AVOIDANCE: If results are truncated, reduce top_k, provide specific keywords, "
+            "or use fields=['entity_name','entity_type'] to get compact name-only lists."
         ),
         "input_schema": {
             "type": "object",
@@ -214,6 +227,11 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
                     "type": "array",
                     "items": {"type": "string"},
                     "description": "提供keywords时跳过LLM关键词提取，近即时返回（<1秒）；不提供时由LightRAG自动提取（5-30秒，依赖LLM可用）。推荐提供keywords以获得最佳性能。从查询中提取核心名词/术语作为keywords。",
+                },
+                "fields": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional field names to include in output. E.g., ['entity_name','entity_type'] for name-only lists. Default: all fields.",
                 },
             },
             "required": ["query"],
@@ -683,12 +701,19 @@ def lightrag_query_data(
     mode: str = "local",
     keywords: Optional[list] = None,
     top_k: int = 10,
+    fields: Optional[list] = None,
 ):
     """Query returning structured data (entities + relationships + chunks).
 
     When keywords are provided, skips LLM keyword extraction for near-instant
     results while keeping full graph traversal. Without keywords, LLM extraction
     adds 5-30s latency.
+
+    Args:
+        fields: Optional list of field names to include. When provided, only
+            these fields are kept per entity/relationship/chunk. E.g.,
+            fields=["entity_name","entity_type"] returns name-only lists.
+            Default None returns all fields.
     """
     valid_modes = {"naive", "local", "global", "hybrid", "mix", "bypass"}
     if mode not in valid_modes:
@@ -697,6 +722,7 @@ def lightrag_query_data(
         adapter = _get_adapter()
         result = adapter.query_data(
             query=query, mode=mode, top_k=top_k, keywords=keywords,
+            fields=fields,
         )
         if LightRAGAdapter._is_no_result(result):
             return {"status": "no_results", "message": "No relevant results found in knowledge graph"}
@@ -711,11 +737,16 @@ def lightrag_search_entities(
     entity_type: str = "",
     top_k: int = 10,
     keywords: Optional[list] = None,
+    fields: Optional[list] = None,
 ) -> Dict[str, Any]:
     """Search for entities of a specific type."""
     try:
         adapter = _get_adapter()
-        result = adapter.query_data(query=query, mode="local", top_k=top_k, keywords=keywords)
+        # 当 entity_type 和 fields 同时提供时，自动包含 entity_type 字段
+        # 否则字段裁剪会先于 filter_by_entity_type 执行，导致过滤失效
+        if entity_type and fields and "entity_type" not in fields:
+            fields = list(fields) + ["entity_type"]
+        result = adapter.query_data(query=query, mode="local", top_k=top_k, keywords=keywords, fields=fields)
         if LightRAGAdapter._is_no_result(result):
             return {"status": "no_results", "message": "No relevant results found in knowledge graph"}
         if entity_type:
