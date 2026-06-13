@@ -56,6 +56,10 @@ tools:
         flag: top-k
         type: integer
         default: 10
+      - name: fields
+        flag: fields
+        type: array
+        cli_format: repeatable
 
   - name: lightrag_search_entities
     category: query
@@ -75,6 +79,10 @@ tools:
         default: 10
       - name: keywords
         flag: keywords
+        type: array
+        cli_format: repeatable
+      - name: fields
+        flag: fields
         type: array
         cli_format: repeatable
 
