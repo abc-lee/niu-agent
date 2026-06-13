@@ -352,6 +352,8 @@ class LiteLLMSession(BaseSession):
         # (e.g., some models don't support this OpenAI extension parameter)
         if provider_params.get("reasoning_effort"):
             request_params["drop_params"] = True
+        if response_format is not None:
+            request_params["drop_params"] = True
         if litellm_tools:
             request_params["tools"] = litellm_tools
         if self.proxies:
