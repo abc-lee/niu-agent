@@ -28,6 +28,41 @@ VALID_MODES = {"naive", "local", "global", "hybrid", "mix", "bypass"}
 _LIGHTRAG_ERROR_MARKERS = ("not able to provide", "[no-context]")
 
 
+def _filter_result_fields(result: dict, fields: list) -> dict:
+    """对 query_data 返回结果做字段裁剪，只保留指定字段。
+
+    Args:
+        result: query_data 返回的完整结果 dict
+        fields: 要保留的字段名列表。None 或空列表表示不过滤。
+
+    Returns:
+        裁剪后的结果 dict（原地修改 result 中的 data 部分）
+    """
+    if not fields:
+        return result
+    field_set = set(fields)
+    data = result.get("data", {})
+    # 裁剪 entities
+    if "entities" in data:
+        data["entities"] = [
+            {k: v for k, v in ent.items() if k in field_set}
+            for ent in data["entities"]
+        ]
+    # 裁剪 relationships
+    if "relationships" in data:
+        data["relationships"] = [
+            {k: v for k, v in rel.items() if k in field_set}
+            for rel in data["relationships"]
+        ]
+    # 裁剪 chunks
+    if "chunks" in data:
+        data["chunks"] = [
+            {k: v for k, v in ch.items() if k in field_set}
+            for ch in data["chunks"]
+        ]
+    return result
+
+
 class LightRAGAdapter:
     """Query interface for LightRAG.
 
@@ -193,6 +228,7 @@ class LightRAGAdapter:
         top_k: Optional[int] = None,
         keywords: Optional[List[str]] = None,
         filter_lambda=None,
+        fields: Optional[List[str]] = None,
     ) -> Optional[Dict[str, Any]]:
         """Query LightRAG returning structured data (entities + relationships).
 
@@ -210,6 +246,11 @@ class LightRAGAdapter:
             keywords: Pre-provided search keywords to skip LLM extraction.
                 For "local" mode: used as ll_keywords (entity search).
                 For "global"/"hybrid"/"mix": used as both hl and ll keywords.
+            filter_lambda: Optional filter function for LightRAG query.
+            fields: Optional list of field names to include in the output.
+                When provided, only these fields are kept in each entity/relationship/chunk.
+                Common choices: ["entity_name", "entity_type"] for name-only lists.
+                None (default) returns all fields (no filtering).
 
         Returns:
             Structured query result dict, or None on error.
@@ -238,6 +279,8 @@ class LightRAGAdapter:
                 param.filter_lambda = filter_lambda
 
             result = call_async(rag.aquery_data(query, param=param), timeout=120)
+            if fields:
+                result = _filter_result_fields(result, fields)
             return result
 
         except Exception as e:
