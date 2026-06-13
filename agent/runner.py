@@ -786,7 +786,6 @@ class NiuRunner:
             _build_incremental_msg_text,
             _truncate_task_for_subagent,
             _estimate_total_tokens,
-            _write_last_tidy_tokens,
         )
         from agent.subagent import (
             call_subagent,
@@ -1173,13 +1172,6 @@ class NiuRunner:
                 else:
                     messages[:] = fresh_msgs
                 logger.info(f"[Runner] Force: Reloaded {len(fresh_msgs)} messages from DB after compress")
-
-            # 更新 last_tidy_tokens
-            try:
-                post_tidy_msgs = self._sync_get_messages()
-                _write_last_tidy_tokens(_estimate_total_tokens(post_tidy_msgs))
-            except Exception as e:
-                logger.warning(f"[Runner] Force: Failed to update last_tidy_tokens: {e}")
 
         except Exception as e:
             import traceback
