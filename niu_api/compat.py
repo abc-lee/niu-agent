@@ -260,35 +260,20 @@ def _estimate_total_tokens(messages) -> int:
         return count_tokens_for_text(total_content)
 
 
-def _should_auto_tidy(current_tokens: int, last_tidy_tokens: int, threshold: int = 50000, context_window_tokens: int = 0) -> bool:
+def _should_auto_tidy(current_tokens: int, context_window_tokens: int = 0) -> bool:
     """
     判断是否应该触发自动增量整理。
 
-    Args:
-        current_tokens: 当前消息总 token 数
-        last_tidy_tokens: 上次整理时的总 token 数（0 表示从未整理）
-        threshold: 触发阈值（增量 token 数）
-        context_window_tokens: 上下文窗口大小（0 表示不检查使用率）
-
-    Returns:
-        True 表示应该触发整理
+    仅当上下文使用率 >= 80% 时触发。
+    工具输出的超长问题由 agent_loop 中的截断机制处理，
+    不再用 50K 增量阈值触发整理（该阈值在重启后容易误触发）。
     """
     if current_tokens <= 0:
         return False
-    increment = current_tokens - last_tidy_tokens
-    # 从未整理过：总量超阈值就触发
-    if last_tidy_tokens == 0:
-        return current_tokens >= threshold
-    # 增量正常（>=0）：原逻辑
-    if increment >= threshold:
-        return True
-    # 增量不够或为负数：使用率兜底
-    if context_window_tokens > 0:
-        usage_ratio = current_tokens / context_window_tokens
-        warning_threshold = 0.80
-        if usage_ratio >= warning_threshold:
-            return True
-    return False
+    if context_window_tokens <= 0:
+        return False
+    usage_ratio = current_tokens / context_window_tokens
+    return usage_ratio >= 0.80
 
 
 async def _check_and_trigger_auto_tidy(store):
@@ -305,15 +290,13 @@ async def _check_and_trigger_auto_tidy(store):
             return
 
         current_tokens = _estimate_total_tokens(messages)
-        last_tidy_tokens = _read_last_tidy_tokens()
         context_window_tokens = _read_context_window_tokens()
 
-        if not _should_auto_tidy(current_tokens, last_tidy_tokens, context_window_tokens=context_window_tokens):
+        if not _should_auto_tidy(current_tokens, context_window_tokens=context_window_tokens):
             return
 
-        increment = current_tokens - last_tidy_tokens
         usage_pct = f"{current_tokens/context_window_tokens:.1%}" if context_window_tokens > 0 else "N/A"
-        logger.info(f"[AutoTidy] Triggering sleep tidy: increment={increment}, usage={usage_pct}")
+        logger.info(f"[AutoTidy] Triggering sleep tidy: tokens={current_tokens}, usage={usage_pct}")
 
         # 异步触发 sleep 模式整理（_run_auto_tidy 内部有 _tidy_lock 防重入）
         asyncio.create_task(_run_auto_tidy())
