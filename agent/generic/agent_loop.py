@@ -139,6 +139,19 @@ def _fifo_prune(messages, target_tokens):
     return removed
 
 
+MAX_TOOL_RESULT_CHARS = 30000  # 单个工具结果最大字符数（约 15K-30K token）
+
+
+def _truncate_tool_content(content: str, tool_name: str = "") -> str:
+    """截断超长工具输出，保留开头部分并添加截断标记。"""
+    if len(content) <= MAX_TOOL_RESULT_CHARS:
+        return content
+    label = f"工具 {tool_name}" if tool_name else "工具"
+    marker = f"\n\n[截断] {label}原始输出 {len(content)} 字符，已截断至 {MAX_TOOL_RESULT_CHARS} 字符。如需完整内容，请调整查询参数或分页重新获取。"
+    truncated = content[:MAX_TOOL_RESULT_CHARS - len(marker)]
+    return truncated + marker
+
+
 def agent_runner_loop(
     client,
     system_prompt,
@@ -174,7 +187,8 @@ def agent_runner_loop(
                 messages.append(entry)
             elif role == "tool" and msg.get("tool_call_id") and content is not None:
                 # tool 消息必须有 tool_call_id 和 content，否则 OpenAI API 返回 400
-                entry = {"role": role, "content": content, "tool_call_id": msg["tool_call_id"]}
+                # 截断超长的 tool 内容（DB 中保存了完整内容，但 LLM 上下文需要保护）
+                entry = {"role": role, "content": _truncate_tool_content(content), "tool_call_id": msg["tool_call_id"]}
                 messages.append(entry)
 
     # Add current user message
@@ -387,15 +401,15 @@ def agent_runner_loop(
                             if type(outcome.data) in [dict, list]
                             else str(outcome.data)
                         )
-                        tool_results.append({"tool_use_id": tid, "content": datastr})
+                        tool_results.append({"tool_use_id": tid, "content": datastr, "tool_name": tool_name})
                     else:
-                        tool_results.append({"tool_use_id": tid, "content": ""})
+                        tool_results.append({"tool_use_id": tid, "content": "", "tool_name": tool_name})
                 # 添加tool消息到messages
                 for tool_result in tool_results:
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tool_result["tool_use_id"],
-                        "content": tool_result["content"]
+                        "content": _truncate_tool_content(tool_result["content"], tool_result.get("tool_name", ""))
                     })
                 # V4: yield每条tool结果的persist事件
                 for tool_result in tool_results:
@@ -427,9 +441,9 @@ def agent_runner_loop(
                         if type(outcome.data) in [dict, list]
                         else str(outcome.data)
                     )
-                    tool_results.append({"tool_use_id": tid, "content": datastr})
+                    tool_results.append({"tool_use_id": tid, "content": datastr, "tool_name": tool_name})
                 else:
-                    tool_results.append({"tool_use_id": tid, "content": ""})
+                    tool_results.append({"tool_use_id": tid, "content": "", "tool_name": tool_name})
 
             next_prompts.add(outcome.next_prompt)
 
@@ -438,7 +452,7 @@ def agent_runner_loop(
             messages.append({
                 "role": "tool",
                 "tool_call_id": tool_result["tool_use_id"],
-                "content": tool_result["content"]
+                "content": _truncate_tool_content(tool_result["content"], tool_result.get("tool_name", ""))
             })
         # V4: yield每条tool结果的persist事件
         for tool_result in tool_results:
