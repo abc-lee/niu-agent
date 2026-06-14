@@ -246,7 +246,7 @@ async def lifespan(app: FastAPI):
     _SYSTEM_TASKS = [
         {
             "name": "daily-journal-check",
-            "content": "请调用 journal-agent 检查今天的日志，整理后与用户确认是否完整",
+            "content": "请调用 journal-agent 记录今天的日志，整理后展示给用户确认是否需要修改",
             "cron_expr": "0 18 * * *",
             "hour": 18,
         },
