@@ -1,10 +1,10 @@
-# lightrag_query_data fields 参数 + 截断应对提示 Implementation Plan
+# lightrag_search_entities 移除 entity_type + fields 参数 + 截断应对提示 Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 为知识图谱查询工具添加 `fields` 可选参数，控制返回字段以缩小输出量；在工具描述中添加截断应对提示，指导 LLM 在结果被截断时如何调整参数。
+**Goal:** 从 `lightrag_search_entities` 移除 `entity_type` 后置过滤参数（语义搜索不需要类型过滤），为其添加 `fields` 参数和截断应对提示；同时保留 `lightrag_list_entities` 的 `entity_type` 作为"按类型枚举"的正确方案；修复 `lightrag_list_entities` 返回格式中 `id` → `entity_name` 的字段名不一致问题。
 
-**Architecture:** 1) 在 MCP 工具层（lightrag_query_data、lightrag_search_entities）添加 `fields` 可选参数，返回前对实体/关系/chunk 做字段裁剪；2) 在 lightrag_adapter.py 的 query_data 方法透传 fields 参数；3) 在 TOOL_SCHEMAS 和磁盘配置中同步更新；4) 在工具描述中补充截断应对提示。缺省不传 fields 时行为不变（全量输出）。
+**Architecture:** `lightrag_search_entities` 是语义搜索工具，后置过滤 `entity_type` 是有害的（先取 top_k 个全类型实体再筛，可能为 0）。移除后，按类型枚举的需求应使用 `lightrag_list_entities --entity-type`。同时为 `lightrag_search_entities` 添加 `fields` 参数（控制返回字段缩小输出）和截断应对提示（指导 LLM 在结果被截断时如何调整参数）。`lightrag_list_entities` 返回格式统一为 `entity_name` 字段（与 search_entities 一致），避免 LLM 混淆。
 
 **Tech Stack:** Python, lightrag-server MCP, lightrag_adapter.py, YAML 配置
 
@@ -14,26 +14,20 @@
 
 | File | Responsibility |
 |------|---------------|
-| `mcp-servers/lightrag-server/src/niu_lightrag_server/__init__.py` | MCP 工具函数 + TOOL_SCHEMAS：添加 fields 参数 + 截断提示 |
-| `niu_api/internal/lightrag_adapter.py` | Adapter 透传 fields 参数 + 字段裁剪逻辑 |
-| `config/disk/lightrag-server.yaml` | 磁盘工具配置：添加 fields 参数 |
-| `config/agents/niu.md` | 主 Agent 定义：更新知识图谱操作提示 |
+| `mcp-servers/lightrag-server/src/niu_lightrag_server/__init__.py` | MCP 工具函数 + TOOL_SCHEMAS：移除 entity_type，添加 fields + 截断提示 |
+| `niu_api/internal/lightrag_adapter.py` | Adapter 透传 fields 参数 + 字段裁剪逻辑 + list_entities 字段名修复 |
+| `config/disk/lightrag-server.yaml` | 磁盘工具配置：移除 entity_type，添加 fields |
+| `config/agents/dream-evolver.md` | 子 Agent：移除 entity_type 参数引用，强化去重指令 |
+| `config/agents/entity-extractor.md` | 子 Agent：移除 entity_type 参数引用 |
+| `config/agents/niu.md` | 主 Agent 定义：添加截断应对提示 |
+| `tests/test_lightrag_server.py` | 测试：删除 test_search_with_type_filter |
 
 ---
 
 ### Task 1: Adapter 层添加字段裁剪逻辑
 
 **Files:**
-- Modify: `niu_api/internal/lightrag_adapter.py:189-245`
-
-**设计：**
-- 在 `query_data` 方法中添加 `fields` 可选参数（`Optional[List[str]] = None`）
-- 当 `fields` 不为 None 时，对返回结果中的 entities/relationships/chunks 做字段裁剪
-- 裁剪逻辑放在 Adapter 层而非 LightRAG 原生层（不改 LightRAG 代码）
-- 可选字段列表：
-  - entities: `entity_name`, `entity_type`, `description`, `source_id`, `file_path`, `created_at`
-  - relationships: `src_id`, `tgt_id`, `description`, `keywords`, `weight`, `source_id`, `file_path`, `created_at`
-  - chunks: `content`, `file_path`, `chunk_id`
+- Modify: `niu_api/internal/lightrag_adapter.py`
 
 - [ ] **Step 1: 在 lightrag_adapter.py 中添加字段裁剪函数**
 
@@ -91,7 +85,7 @@ def _filter_result_fields(result: dict, fields: list) -> dict:
     ) -> Optional[Dict[str, Any]]:
 ```
 
-在 `docstring` 的 Args 部分添加：
+在 docstring 的 Args 部分添加：
 
 ```python
             fields: Optional list of field names to include in the output.
@@ -124,95 +118,92 @@ git commit -m "feat: add fields parameter to lightrag_adapter.query_data"
 
 ---
 
-### Task 2: MCP 工具层添加 fields 参数 + 截断应对提示
+### Task 2: 修复 lightrag_list_entities 返回格式（id → entity_name）
+
+**Files:**
+- Modify: `niu_api/internal/lightrag_adapter.py:1179,1202`
+
+`lightrag_list_entities` 返回格式中用 `id` 字段表示实体名，而 `lightrag_search_entities` 用 `entity_name`。统一为 `entity_name`，避免 LLM 混淆。
+
+- [ ] **Step 1: 修改 list_entities 中有 entity_type 过滤时的返回格式**
+
+`niu_api/internal/lightrag_adapter.py:1179`，将：
+```python
+                            nodes.append({
+                                "id": node_id,
+                                "entity_type": nt,
+                                "description": node_data.get("description", ""),
+                            })
+```
+改为：
+```python
+                            nodes.append({
+                                "entity_name": node_id,
+                                "entity_type": nt,
+                                "description": node_data.get("description", ""),
+                            })
+```
+
+- [ ] **Step 2: 修改 list_entities 中无过滤时的返回格式**
+
+`niu_api/internal/lightrag_adapter.py:1201`，将：
+```python
+                        nodes.append({
+                            "id": node.id,
+                            "entity_type": node.properties.get("entity_type", "other"),
+                            "description": node.properties.get("description", ""),
+                        })
+```
+改为：
+```python
+                        nodes.append({
+                            "entity_name": node.id,
+                            "entity_type": node.properties.get("entity_type", "other"),
+                            "description": node.properties.get("description", ""),
+                        })
+```
+
+- [ ] **Step 3: 验证语法**
+
+Run: `cd REDACTED_USER_PATH/tools/ai-bot && python3 -c "import py_compile; py_compile.compile('niu_api/internal/lightrag_adapter.py', doraise=True); print('OK')"`
+
+Expected: OK
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add niu_api/internal/lightrag_adapter.py
+git commit -m "fix: unify list_entities return field id → entity_name for consistency with search_entities"
+```
+
+---
+
+### Task 3: MCP 工具层：移除 entity_type + 添加 fields + 截断提示
 
 **Files:**
 - Modify: `mcp-servers/lightrag-server/src/niu_lightrag_server/__init__.py`
 
-**设计：**
-- `lightrag_query_data` 和 `lightrag_search_entities` 都添加 `fields` 可选参数
-- 在 TOOL_SCHEMAS 的 description 中添加截断应对提示
-- 在函数实现中透传 fields 参数给 adapter.query_data()
+- [ ] **Step 1: 更新 TOOL_SCHEMAS 中 lightrag_search_entities 的定义**
 
-- [ ] **Step 1: 更新 TOOL_SCHEMAS 中 lightrag_query_data 的定义**
-
-`__init__.py:153-190`，将 `lightrag_query_data` 的 TOOL_SCHEMAS 替换为：
-
-```python
-    "lightrag_query_data": {
-        "name": "lightrag_query_data",
-        "description": (
-            "Query the knowledge base returning structured data (entities + relationships + chunks). "
-            "MODES: 'local' (entity-centric graph traversal, RECOMMENDED for most queries), "
-            "'global' (community-level overview), 'hybrid' (local+global combined, slower), "
-            "'naive' (vector-only, NO graph data), 'mix' (all combined, slowest). "
-            "KEY OPTIMIZATION: When you provide 'keywords', the query skips LLM keyword extraction "
-            "and uses your keywords directly — this eliminates LLM latency (~10-100s -> <1s) while "
-            "keeping full graph traversal capability. ALWAYS provide keywords when you know the search "
-            "terms (e.g., query='便签' keywords=['便签']). Only omit keywords for complex natural "
-            "language queries that need LLM interpretation.\n\n"
-            "TRUNCATION AVOIDANCE: If results are truncated ([截断] marker appears), take these steps:\n"
-            "1. Reduce top_k (e.g., 10→5→3)\n"
-            "2. Switch to narrower mode: mix→hybrid→local\n"
-            "3. Provide more specific keywords (exact entity names work best)\n"
-            "4. Use fields=['entity_name','entity_type'] to get name-only lists without descriptions\n"
-            "5. Use lightrag_get_entity_info for single-entity detail instead of broad query"
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string", "description": "Search query string"},
-                "mode": {
-                    "type": "string",
-                    "enum": ["naive", "local", "global", "hybrid", "mix", "bypass"],
-                    "default": "local",
-                    "description": "Retrieval mode. 'local' is best for finding specific entities. 'hybrid' adds community context but is slower. 'naive' skips graph entirely.",
-                },
-                "keywords": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "default": [],
-                    "description": "Pre-provided keywords to skip LLM extraction. DRAMATICALLY faster. Use the core nouns/terms from your query. E.g., query='查看便签' -> keywords=['便签']. For 'local' mode these become ll_keywords; for 'global'/'hybrid' they become both hl and ll keywords.",
-                },
-                "top_k": {
-                    "type": "integer",
-                    "default": 10,
-                    "description": "Number of top results to retrieve",
-                },
-                "fields": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Optional field names to include in output. When provided, only these fields are kept per entity/relationship/chunk, reducing output size. Common choices: ['entity_name','entity_type'] for name-only lists. Default: all fields (no filtering). Available entity fields: entity_name, entity_type, description, source_id, file_path, created_at. Available relationship fields: src_id, tgt_id, description, keywords, weight, source_id, file_path, created_at.",
-                },
-            },
-            "required": ["query"],
-        },
-    },
-```
-
-- [ ] **Step 2: 更新 TOOL_SCHEMAS 中 lightrag_search_entities 的定义**
-
-`__init__.py:192-221`，将 `lightrag_search_entities` 的 TOOL_SCHEMAS 替换为：
+`__init__.py:203-239`，将 `lightrag_search_entities` 的 TOOL_SCHEMAS 替换为：
 
 ```python
     "lightrag_search_entities": {
         "name": "lightrag_search_entities",
         "description": (
-            "Search for entities of a specific type in the knowledge graph. "
-            "Uses local mode (entity-focused) and filters by entity_type. "
-            "Common types: skill, tool, knowledge, person, photo, concept.\n\n"
-            "TRUNCATION AVOIDANCE: If results are truncated, reduce top_k, provide specific keywords, "
-            "or use fields=['entity_name','entity_type'] to get compact name-only lists."
+            "Search for entities in the knowledge graph using semantic search (local mode). "
+            "Returns entities related to your query. For listing ALL entities of a specific type "
+            "(e.g., all persons), use lightrag_list_entities with entity_type filter instead.\n\n"
+            "TRUNCATION AVOIDANCE: If results are truncated, take these steps:\n"
+            "1. Reduce top_k (e.g., 10→5→3)\n"
+            "2. Provide more specific keywords (exact entity names work best)\n"
+            "3. Use fields=['entity_name','entity_type'] to get name-only lists without descriptions\n"
+            "4. Use lightrag_get_entity_info for single-entity detail instead of broad query"
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "Search query string"},
-                "entity_type": {
-                    "type": "string",
-                    "default": "",
-                    "description": "Entity type to filter (skill, tool, knowledge, person, photo, concept)",
-                },
                 "top_k": {
                     "type": "integer",
                     "default": 10,
@@ -234,152 +225,215 @@ git commit -m "feat: add fields parameter to lightrag_adapter.query_data"
     },
 ```
 
-- [ ] **Step 3: 更新 lightrag_query_data 函数签名和实现**
+- [ ] **Step 2: 更新 lightrag_search_entities 函数签名和实现**
 
-`__init__.py:681-706`，将 `lightrag_query_data` 函数替换为：
-
-```python
-def lightrag_query_data(
-    query: str,
-    mode: str = "local",
-    keywords: Optional[list] = None,
-    top_k: int = 10,
-    fields: Optional[list] = None,
-):
-    """Query returning structured data (entities + relationships + chunks).
-
-    When keywords are provided, skips LLM keyword extraction for near-instant
-    results while keeping full graph traversal. Without keywords, LLM extraction
-    adds 5-30s latency.
-
-    Args:
-        fields: Optional list of field names to include. When provided, only
-            these fields are kept per entity/relationship/chunk. E.g.,
-            fields=["entity_name","entity_type"] returns name-only lists.
-            Default None returns all fields.
-    """
-    valid_modes = {"naive", "local", "global", "hybrid", "mix", "bypass"}
-    if mode not in valid_modes:
-        return {"status": "error", "message": f"Invalid mode '{mode}'. Must be one of: {', '.join(sorted(valid_modes))}"}
-    try:
-        adapter = _get_adapter()
-        result = adapter.query_data(
-            query=query, mode=mode, top_k=top_k, keywords=keywords,
-            fields=fields,
-        )
-        if LightRAGAdapter._is_no_result(result):
-            return {"status": "no_results", "message": "No relevant results found in knowledge graph"}
-        return result
-    except Exception as e:
-        logger.error(f"lightrag_query_data failed: {e}")
-        return {"status": "error", "message": str(e)}
-```
-
-- [ ] **Step 4: 更新 lightrag_search_entities 函数签名和实现**
-
-`__init__.py:709-725` 附近，将函数签名和调用改为：
+`__init__.py:735-763`，将整个函数替换为：
 
 ```python
 def lightrag_search_entities(
     query: str,
-    entity_type: str = "",
     top_k: int = 10,
     keywords: Optional[list] = None,
     fields: Optional[list] = None,
 ) -> Dict[str, Any]:
-    """Search for entities of a specific type."""
+    """Search for entities in the knowledge graph using semantic search."""
     try:
         adapter = _get_adapter()
-        # 当 entity_type 和 fields 同时提供时，自动包含 entity_type 字段
-        # 否则字段裁剪会先于 filter_by_entity_type 执行，导致过滤失效
-        if entity_type and fields and "entity_type" not in fields:
-            fields = list(fields) + ["entity_type"]
         result = adapter.query_data(query=query, mode="local", top_k=top_k, keywords=keywords, fields=fields)
+        if LightRAGAdapter._is_no_result(result):
+            return {"status": "no_results", "message": "No relevant results found in knowledge graph"}
+        data = result.get("data", result) if isinstance(result, dict) else {}
+        if isinstance(data, list):
+            return {"status": "ok", "data": data}
+        entities = data.get("entities", []) if isinstance(data, dict) else []
+        return {"status": "ok", "data": entities}
+    except Exception as e:
+        logger.error(f"lightrag_search_entities failed: {e}")
+        return {"status": "error", "message": str(e)}
 ```
 
-（后续代码不变，只改签名和调用中增加 `fields=fields`）
-
-- [ ] **Step 5: 验证语法**
+- [ ] **Step 3: 验证语法**
 
 Run: `cd REDACTED_USER_PATH/tools/ai-bot && python3 -c "import py_compile; py_compile.compile('mcp-servers/lightrag-server/src/niu_lightrag_server/__init__.py', doraise=True); print('OK')"`
 
 Expected: OK
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 git add mcp-servers/lightrag-server/src/niu_lightrag_server/__init__.py
-git commit -m "feat: add fields parameter + truncation hints to lightrag query tools"
+git commit -m "feat: remove entity_type from search_entities, add fields + truncation hints"
 ```
 
 ---
 
-### Task 3: 磁盘工具配置 + photo-server 调用同步
+### Task 4: 磁盘工具配置 + 测试更新
 
 **Files:**
-- Modify: `config/disk/lightrag-server.yaml:37-58`
-- Modify: `mcp-servers/photo-server/src/niu_photo_server/__init__.py:2133-2140`
+- Modify: `config/disk/lightrag-server.yaml:64-87`
+- Modify: `tests/test_lightrag_server.py:160-173`
 
 - [ ] **Step 1: 更新磁盘工具配置**
 
-`config/disk/lightrag-server.yaml:37-58`，在 `lightrag_query_data` 的 parameters 列表末尾添加：
+`config/disk/lightrag-server.yaml`，将 `lightrag_search_entities` 的 parameters 部分（行 68-87）改为：
 
 ```yaml
+    parameters:
+      - name: query
+        position: 1
+        type: string
+        required: true
+      - name: top_k
+        flag: top-k
+        type: integer
+        default: 10
+      - name: keywords
+        flag: keywords
+        type: array
+        cli_format: repeatable
       - name: fields
         flag: fields
         type: array
         cli_format: repeatable
 ```
 
-同样在 `lightrag_search_entities` 的 parameters 列表末尾（约第 76-79 行之后）添加：
+即删除 `entity_type` 的3行（原行73-75），保留其他参数不变。
 
-```yaml
-      - name: fields
-        flag: fields
-        type: array
-        cli_format: repeatable
-```
+- [ ] **Step 2: 更新测试文件**
 
-- [ ] **Step 2: 确认 photo-server 调用不需要修改**
+`tests/test_lightrag_server.py:160-173`，删除 `test_search_with_type_filter` 测试（因为 entity_type 参数已移除）。在同一个 `TestLightragSearchEntities` 类中，新增一个测试验证 `fields` 参数：
 
-`mcp-servers/photo-server/src/niu_photo_server/__init__.py:2140`：
 ```python
-result = query_fn(query=target_name, mode="local", keywords=[target_name], top_k=20)
+    def test_search_with_fields(self):
+        """Should pass fields parameter to adapter."""
+        mod = _import_module()
+        mock_adapter = MagicMock()
+        mock_adapter.query_data.return_value = {
+            "data": {"entities": [{"entity_name": "Python", "entity_type": "skill"}]}
+        }
+        mod._adapter = mock_adapter
+        mod.LightRAGAdapter._is_no_result = MagicMock(return_value=False)
+
+        result = mod.lightrag_search_entities(query="python", fields=["entity_name", "entity_type"])
+
+        mock_adapter.query_data.assert_called_once_with(
+            query="python", mode="local", top_k=10, keywords=None, fields=["entity_name", "entity_type"]
+        )
+        assert result["status"] == "ok"
 ```
 
-此调用不传 fields 参数，走默认全量输出。photo-server 需要完整数据做同名实体合并，不需要裁剪。**无需修改。**
+- [ ] **Step 3: 验证语法**
+
+Run: `cd REDACTED_USER_PATH/tools/ai-bot && python3 -c "import py_compile; py_compile.compile('tests/test_lightrag_server.py', doraise=True); print('OK')" && python3 -c "import py_compile; py_compile.compile('config/disk/lightrag-server.yaml', doraise=True)" || echo "YAML 不需要 py_compile，手动检查格式"`
+
+Expected: OK
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add config/disk/lightrag-server.yaml tests/test_lightrag_server.py
+git commit -m "feat: update disk config + tests for search_entities entity_type removal"
+```
+
+---
+
+### Task 5: 更新子 Agent 配置（移除 entity_type + 强化去重指令）
+
+**Files:**
+- Modify: `config/agents/dream-evolver.md:186,215`
+- Modify: `config/agents/entity-extractor.md:67`
+
+- [ ] **Step 1: 更新 dream-evolver.md**
+
+行 186，将：
+```
+- 去重检查：`lightrag_search_entities(query, keywords=实体名, entity_type, top_k=5)` 检查是否已存在
+```
+改为：
+```
+- 去重检查：`lightrag_search_entities(query, keywords=实体名, top_k=5)` 检查同名是否已存在。实体名是唯一标识，同名即重复。需要按类型枚举所有实体时用 `lightrag_list_entities --entity-type 类型名`
+```
+
+行 215，将：
+```
+- `lightrag_search_entities(query, keywords, entity_type, top_k)` — **必须提供 keywords 参数**：...
+```
+改为：
+```
+- `lightrag_search_entities(query, keywords, top_k)` — **必须提供 keywords 参数**：你是大模型，自己就能从 query 中提取核心关键词，不需要 LightRAG 再调 LLM 提取。提供 keywords 近即时返回（<1秒），不提供需 5-30 秒且可能失败。top_k=5（硬性要求）
+- `lightrag_list_entities(list_type, entity_type, limit)` — 按类型枚举实体（如查看所有人物、所有技能）。entity_type 支持按类型过滤（person/skill/tool/knowledge/photo/concept）
+```
+
+- [ ] **Step 2: 更新 entity-extractor.md**
+
+行 67，将：
+```
+- 查询已有实体：`lightrag_search_entities(query, entity_type, top_k)`
+```
+改为：
+```
+- 查询已有实体：`lightrag_search_entities(query, top_k)` — 语义搜索，按关键词找相关实体。需要按类型枚举时用 `lightrag_list_entities --entity-type 类型名`
+```
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git add config/disk/lightrag-server.yaml
-git commit -m "feat: add fields parameter to lightrag disk tool config"
+git add config/agents/dream-evolver.md config/agents/entity-extractor.md
+git commit -m "docs: remove entity_type from search_entities in sub-agent configs"
 ```
 
 ---
 
-### Task 4: 更新 Niu.MD 主 Agent 定义
+### Task 6: 更新 Niu.MD 主 Agent 定义（截断应对提示）
 
 **Files:**
 - Modify: `config/agents/niu.md`
 
 - [ ] **Step 1: 在知识图谱查询提示后添加截断应对说明**
 
-`config/agents/niu.md` 第 65 行（`常见场景：...` 之后、`## 完整闭环` 之前）插入：
+`config/agents/niu.md` 知识图谱相关内容区域，插入：
 
 ```markdown
 
 **查询结果截断应对**：查询结果可能因数据量大被截断（出现 [截断] 标记）。应对策略：
 1. 降低 top_k（10→5→3）
-2. 切换更窄的 mode（mix→hybrid→local）
-3. 提供更精确的 keywords（用具体实体名而非宽泛词）
-4. 使用 fields=['entity_name','entity_type'] 只返回实体名列表，不返回描述——查看大社区（如人际关系）的成员列表时特别有用
-5. 查单个实体详情用 `lightrag_get_entity_info`
+2. 提供更精确的 keywords（用具体实体名而非宽泛词）
+3. 使用 fields=['entity_name','entity_type'] 只返回实体名列表，不返回描述——查看大类别（如通讯录）的成员列表时特别有用
+4. 查单个实体详情用 `lightrag_get_entity_info`
+5. 按类型枚举实体用 `lightrag_list_entities --entity-type person`（直接遍历图节点，不依赖语义搜索）
 ```
 
 - [ ] **Step 2: Commit**
 
 ```bash
 git add config/agents/niu.md
-git commit -m "docs: add fields parameter and truncation tips to niu.md agent config"
+git commit -m "docs: add truncation tips to niu.md agent config"
 ```
+
+---
+
+### Task 7: 验证端到端功能
+
+**Files:** 无代码修改
+
+- [ ] **Step 1: 启动程序，测试 lightrag_search_entities 无 entity_type 参数**
+
+在对话中输入类似：`搜索知识图谱中的Python相关实体`
+
+验证返回结果中不再有 entity_type 过滤逻辑，只返回语义搜索结果。
+
+- [ ] **Step 2: 测试 lightrag_list_entities 按 entity_type 过滤**
+
+在对话中输入类似：`列出所有人物实体`
+
+验证 `lightrag_list_entities --entity-type person` 正常返回按类型过滤的结果。
+
+- [ ] **Step 3: 测试 fields 参数**
+
+在对话中输入类似：`搜索知识图谱中的Python，只返回实体名和类型`
+
+验证 fields=['entity_name','entity_type'] 正常裁剪输出。
+
+- [ ] **Step 4: 验证 dream-evolver 仍能正常去重**
+
+观察一条消息触发 dream-evolver 后，确认去重检查调用 `lightrag_search_entities(query, keywords=实体名, top_k=5)` 不传 entity_type 仍能工作。
