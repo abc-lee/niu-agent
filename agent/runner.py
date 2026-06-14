@@ -339,6 +339,8 @@ def create_client(config: Dict[str, Any]):
         cfg["temperature"] = config["temperature"]
     if "reasoning_effort" in config and config["reasoning_effort"] is not None:
         cfg["reasoning_effort"] = config["reasoning_effort"]
+    cfg["provider"] = config.get("provider", "")
+    cfg["litellm_kwargs"] = config.get("litellm_kwargs", {})
 
     from .generic.litellm_adapter import create_litellm_client
     logger.info(f"Using LiteLLM adapter for model: {cfg['model']}")
