@@ -64,7 +64,7 @@ tools:
   - name: lightrag_search_entities
     category: query
     short: "搜索实体"
-    long: "按类型搜索知识图谱中的实体"
+    long: "语义搜索知识图谱中的实体，提供 keywords 可近即时返回"
     parameters:
       - name: query
         position: 1
