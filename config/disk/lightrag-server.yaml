@@ -451,3 +451,23 @@ tools:
         flag: file-path
         type: string
         default: manual_creation
+
+  - name: lightrag_get_document
+    category: read
+    short: "获取文档"
+    long: "获取完整文档内容及其处理状态"
+    parameters:
+      - name: doc_id
+        position: 1
+        type: string
+        required: true
+
+  - name: lightrag_delete_document
+    category: admin
+    short: "删除文档"
+    long: "级联删除文档及其关联的chunks、entities、relationships。共享实体会保留并重建描述"
+    parameters:
+      - name: doc_id
+        position: 1
+        type: string
+        required: true
