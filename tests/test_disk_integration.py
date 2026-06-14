@@ -41,20 +41,21 @@ class TestLightragServerYaml:
         assert "lightrag" in disk_config.list_directories()
 
     def test_lightrag_tool_count(self, disk_config):
-        """lightrag server should have 12 tools total."""
+        """lightrag server should have 23 tools total."""
         all_tools = disk_config.list_all_tools("lightrag")
-        assert len(all_tools) == 12
+        assert len(all_tools) == 23
 
     def test_lightrag_visible_tool_count(self, disk_config):
-        """lightrag server should have 11 visible tools (1 hidden)."""
+        """lightrag server should have 21 visible tools (2 hidden)."""
         visible = disk_config.list_visible_tools("lightrag")
-        assert len(visible) == 11
+        assert len(visible) == 21
 
-    def test_lightrag_hidden_tool(self, disk_config):
-        """lightrag_document_status should be hidden."""
-        tool = disk_config.get_tool_config("lightrag", "lightrag_document_status")
-        assert tool is not None
-        assert tool.hidden is True
+    def test_lightrag_hidden_tools(self, disk_config):
+        """lightrag_insert_file and lightrag_document_status should be hidden."""
+        for tool_name in ("lightrag_insert_file", "lightrag_document_status"):
+            tool = disk_config.get_tool_config("lightrag", tool_name)
+            assert tool is not None, f"Missing tool: {tool_name}"
+            assert tool.hidden is True, f"{tool_name} should be hidden"
 
     def test_lightrag_key_tools_present(self, disk_config):
         """Key lightrag tools should be present."""
@@ -64,6 +65,11 @@ class TestLightragServerYaml:
             "lightrag_get_graph", "lightrag_insert", "lightrag_insert_custom_kg",
             "lightrag_insert_entity", "lightrag_insert_relation",
             "lightrag_delete_entity", "lightrag_list_entities", "lightrag_merge_entities",
+            "lightrag_timeline_query", "lightrag_edit_entity", "lightrag_edit_relation",
+            "lightrag_delete_relation", "lightrag_get_entity_info",
+            "lightrag_get_relation_info", "lightrag_create_entity",
+            "lightrag_create_relation", "lightrag_get_document",
+            "lightrag_delete_document",
         ]
         for name in expected:
             assert name in server.tools, f"Missing tool: {name}"

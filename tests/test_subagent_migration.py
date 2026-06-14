@@ -85,12 +85,11 @@ class TestSubagentMigrationIntegration:
         assert not Path("config/agents/kg-enricher.md").exists()
 
     def test_handler_aliases_correct(self):
-        """handler.py _TOOL_ALIASES should use correct new mappings."""
+        """handler.py _TOOL_ALIASES should not contain vector-store entries (removed)."""
         from agent.handler import NiuHandler
         aliases = NiuHandler._TOOL_ALIASES
-        assert aliases.get("vector-store/get_document") == "lightrag-server/lightrag_get_document"
-        assert aliases.get("vector-store/delete_document") == "lightrag-server/lightrag_delete_document"
-        assert "vector-store/update_metadata" not in aliases
+        assert "vector-store/get_document" not in aliases
+        assert "vector-store/delete_document" not in aliases
 
     def test_deprecated_aliases_correct(self):
         """DEPRECATED_ALIASES should use correct new mappings."""
