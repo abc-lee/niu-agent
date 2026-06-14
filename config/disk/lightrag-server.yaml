@@ -70,9 +70,6 @@ tools:
         position: 1
         type: string
         required: true
-      - name: entity_type
-        flag: type
-        type: string
       - name: top_k
         flag: top-k
         type: integer

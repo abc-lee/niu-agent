@@ -64,7 +64,7 @@ mcpServers:
 
 - 文档注入：`lightrag_insert(content=精炼文档, doc_id="refined:{date}:{seq:03d}")` — 整体入库，LightRAG 自动提取实体和关系
 - 查询已有文档：`lightrag_document_status()` — 检查已有精炼文档
-- 查询已有实体：`lightrag_search_entities(query, entity_type, top_k)`
+- 查询已有实体：`lightrag_search_entities(query, top_k)` — 语义搜索，按关键词找相关实体。需要按类型枚举时用 `lightrag_list_entities --entity-type 类型名`
 - 图遍历：`lightrag_get_graph(action="explore", entity_name, depth)`
 
 ## 游标机制

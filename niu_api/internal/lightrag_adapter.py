@@ -1177,7 +1177,7 @@ class LightRAGAdapter:
                         nt = node_data.get("entity_type", "other")
                         if nt.lower() == entity_type.lower():
                             nodes.append({
-                                "id": node_id,
+                                "entity_name": node_id,
                                 "entity_type": nt,
                                 "description": node_data.get("description", ""),
                             })
@@ -1199,7 +1199,7 @@ class LightRAGAdapter:
                     nodes = []
                     for node in kg.nodes:
                         nodes.append({
-                            "id": node.id,
+                            "entity_name": node.id,
                             "entity_type": node.properties.get("entity_type", "other"),
                             "description": node.properties.get("description", ""),
                         })

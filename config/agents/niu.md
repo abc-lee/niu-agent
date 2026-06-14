@@ -70,6 +70,7 @@ sub agents:
 3. 提供更精确的 keywords（用具体实体名而非宽泛词）
 4. 使用 fields=['entity_name','entity_type'] 只返回实体名列表，不返回描述——查看大社区（如人际关系）的成员列表时特别有用
 5. 查单个实体详情用 `lightrag_get_entity_info`
+6. 按类型枚举实体用 `lightrag_list_entities --entity-type person`（直接遍历图节点，不依赖语义搜索）
 
 ## 完整闭环
 
