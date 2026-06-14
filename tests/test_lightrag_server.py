@@ -150,7 +150,7 @@ class TestLightragQueryData:
         result = mod.lightrag_query_data(query="test", mode="local", top_k=10)
 
         mock_adapter.query_data.assert_called_once_with(
-            query="test", mode="local", top_k=10, keywords=None,
+            query="test", mode="local", top_k=10, keywords=None, fields=None,
         )
 
 
