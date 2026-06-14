@@ -156,6 +156,11 @@ async def lifespan(app: FastAPI):
     await start_chat_queue()
     logger.info("ChatQueue started")
 
+    # 6.7. Signal scheduler that system is ready (ChatQueue operational)
+    from niu_api.internal.scheduler.service import signal_scheduler_ready
+    signal_scheduler_ready()
+    logger.info("Scheduler system_ready signal sent")
+
     # 7. (Removed) Weekly vector cleanup — vectors.db is deprecated,
     #    LightRAG manages its own storage. Cleanup is no longer needed.
 
