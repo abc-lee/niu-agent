@@ -286,7 +286,7 @@ async def call_llm_via_litellm(
             start_time = time.time()
             logger.info(f"[LLM Proxy] sync_call started at {start_time}")
 
-            gen = session.chat(messages=messages, tools=tools, response_format=response_format, drop_params=True)
+            gen = session.chat(messages=messages, tools=tools, response_format=response_format)
 
             # Consume generator to get MockResponse
             # IMPORTANT: Must use next() to capture StopIteration return value

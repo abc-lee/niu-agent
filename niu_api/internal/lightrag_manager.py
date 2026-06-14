@@ -169,10 +169,9 @@ def _build_llm_model_func():
         def sync_call():
             from litellm import BadRequestError
             session = _get_litellm_session(config)
-            kw_extra_body = {"thinking": {"type": "disabled"}} if keyword_extraction else None
 
             # Try with response_format first (works for models like OpenAI that support it)
-            gen = session.chat(messages=messages, response_format=response_format, extra_body=kw_extra_body)
+            gen = session.chat(messages=messages, response_format=response_format)
             try:
                 chunks, mock_response = _consume_generator(gen)
             except BadRequestError:

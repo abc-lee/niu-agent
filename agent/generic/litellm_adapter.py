@@ -323,8 +323,6 @@ class LiteLLMSession(BaseSession):
         messages: List,
         tools: Optional[List] = None,
         response_format: Optional[Dict[str, Any]] = None,
-        drop_params: bool = False,
-        extra_body: Optional[Dict[str, Any]] = None,
     ) -> Generator[str, None, MockResponse]:
         """
         原生 LiteLLM 调用（Generator版本）。
@@ -354,7 +352,7 @@ class LiteLLMSession(BaseSession):
         # (e.g., some models don't support this OpenAI extension parameter)
         if provider_params.get("reasoning_effort"):
             request_params["drop_params"] = True
-        if drop_params:
+        if response_format is not None:
             request_params["drop_params"] = True
         if litellm_tools:
             request_params["tools"] = litellm_tools
@@ -364,8 +362,6 @@ class LiteLLMSession(BaseSession):
             request_params["temperature"] = self.temperature
         if response_format is not None:
             request_params["response_format"] = response_format
-        if extra_body is not None:
-            request_params["extra_body"] = extra_body
 
         # 记录完整请求（全量，包含 messages）
         _write_interaction_log({
