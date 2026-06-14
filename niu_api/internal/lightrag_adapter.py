@@ -614,7 +614,7 @@ class LightRAGAdapter:
             nodes = []
             for node in kg.nodes:
                 nodes.append({
-                    "id": f"entity:{node.id}",
+                    "id": node.id,
                     "name": node.id,
                     "type": node.properties.get("entity_type", "other"),
                     "description": node.properties.get("description", ""),
@@ -626,8 +626,8 @@ class LightRAGAdapter:
             edges = []
             for edge in kg.edges:
                 edges.append({
-                    "source": f"entity:{edge.source}",
-                    "target": f"entity:{edge.target}",
+                    "source": edge.source,
+                    "target": edge.target,
                     "relation": edge.properties.get("keywords", ""),
                     "description": edge.properties.get("description", ""),
                     "weight": edge.properties.get("weight", 1.0),
@@ -896,7 +896,7 @@ class LightRAGAdapter:
                 except (RuntimeError, KeyError):
                     attrs = {}
                 nodes.append({
-                    "id": f"entity:{node_name}",
+                    "id": node_name,
                     "name": node_name,
                     "type": attrs.get("entity_type", "other"),
                     "description": attrs.get("description", ""),
@@ -909,8 +909,8 @@ class LightRAGAdapter:
                 for u, v, data in snapshot.edges(data=True):
                     if u in top_set and v in top_set:
                         edges.append({
-                            "source": f"entity:{u}",
-                            "target": f"entity:{v}",
+                            "source": u,
+                            "target": v,
                             "relation": data.get("keywords", ""),
                             "description": data.get("description", ""),
                             "weight": data.get("weight", 1.0),
