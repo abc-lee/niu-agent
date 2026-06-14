@@ -46,7 +46,7 @@ Go 启动器首次运行时，会自动执行 `initNiuDir()`：
   "llm": {
     "presetId": "openai",
     "apiKey": "sk-xxx",
-    "apiBase": "https://api.openai.com/v1/chat/completions",
+    "apiBase": "https://api.openai.com/v1",
     "model": "gpt-4o-mini",
     "type": "openai",
     "reasoning_effort": ""
@@ -68,9 +68,9 @@ Go 启动器首次运行时，会自动执行 `initNiuDir()`：
 |------|------|
 | `presetId` | 预设 ID，对应 llm-presets.json 中的预设 |
 | `apiKey` | 你的 API Key |
-| `apiBase` | API 端点地址（openai 类型含 `/chat/completions` 后缀；anthropic 类型含 `/v1/messages` 后缀） |
+| `apiBase` | API 端点基础地址（不含路径后缀，LiteLLM 会自动追加：openai 类型追加 `/chat/completions`，anthropic 类型追加 `/v1/messages`） |
 | `model` | 模型名称 |
-| `type` | 类型：`openai`（兼容 OpenAI API）或 `anthropic` |
+| `type` | 系统内部参数，用于区分 API 格式转换和认证方式：`openai`（OpenAI 兼容格式）或 `anthropic`（Anthropic 原生格式）。该值映射为 LiteLLM 的 custom_llm_provider，不是直接传给 SDK 的类型 |
 | `reasoning_effort` | 思考链深度：`""`（空，由模型默认决定）、`"none"`（禁用）、`"low"`、`"medium"`、`"high"`、`"xhigh"`。主 Agent 默认空，LightRAG 默认 `"none"`。**注意**：该参数的实际效果与模型基础能力强相关，不同模型的最优值差异很大，需实测确定（详见下方"reasoning_effort 配置与测试指南"） |
 
 **预设列表**：编辑 `config/llm-presets.json` 查看支持的预设。
@@ -96,6 +96,41 @@ Go 启动器首次运行时，会自动执行 `initNiuDir()`：
 | `ollama` | Ollama 本地 | openai |
 | `custom` | 自定义 | openai |
 
+**火山方舟(Ark)端点配置说明**
+
+火山方舟提供两种计费端点，模型池相同，但功能权限有差异：
+
+| 端点 | 地址 | 计费 | response_format | 适用场景 |
+|------|------|------|-----------------|----------|
+| 标准端点 | `https://ark.cn-beijing.volces.com/api/v3` | 按量计费 | 支持 | 主 Agent、LightRAG |
+| Coding Plan | `https://ark.cn-beijing.volces.com/api/coding/v3` | 包月计费 | **不支持**（网关拦截） | 主 Agent |
+
+> **重要**：LightRAG 的 keyword_extraction 依赖 `response_format`，必须使用标准端点。如果误用 Coding Plan 端点，系统会自动 fallback 到纯 prompt JSON 返回（功能正常但多一次无效请求）。
+
+**模型名格式差异**：
+
+两种端点的模型池相同，但模型名格式不同：
+
+| 端点 | 模型名格式 | 示例 |
+|------|-----------|------|
+| 标准端点 | 带日期后缀的全名 | `doubao-seed-2-0-pro-260215` |
+| Coding Plan | 简短别名 | `doubao-seed-2.0-pro` |
+
+> **注意**：在标准端点上使用 Coding Plan 的简短别名会返回 404；反之，在 Coding Plan 端点上两种格式都能用。
+
+**LiteLLM 路由要求**：
+
+使用 LiteLLM 调用火山方舟模型时，模型名必须加 `volcengine/` 前缀，确保走 VolcEngine 适配器路由：
+
+| 写法 | 路由 | 结果 |
+|------|------|------|
+| `volcengine/doubao-seed-2.0-pro` | VolcEngine 适配器 | 正确：`thinking` 参数自动处理，`response_format` 需配合 `allowed_openai_params` 透传 |
+| `doubao-seed-2.0-pro`（无前缀） | OpenAI 适配器 | **错误**：`thinking` 参数无法传递，`response_format` 虽能透传但缺少 `thinking:disabled` 会导致思考链冲突 |
+
+> **注意**：当前系统配置中 `type: "openai"` 是系统内部参数（区分 Anthropic/OpenAI 格式转换），不是 LiteLLM 的 `custom_llm_provider`。系统代码会根据 `apiBase` 是否包含 `volces.com` 自动将 `custom_llm_provider` 设为 `volcengine`，并添加 `volcengine/` 前缀。用户无需在 `model` 字段中手动添加前缀。
+
+**可用模型**：doubao-seed-2.0-code、doubao-seed-2.0-pro、doubao-seed-2.0-lite、minimax-m2.7、minimax-m3、glm-5.1、kimi-k2.6、deepseek-v4-pro、deepseek-v4-flash、ark-code-latest
+
 **LightRAG 知识图谱 LLM 配置**：`lightrag_llm` 段
 
 LightRAG 入库（实体提取、关系构建）使用与主 Agent 独立的 LLM 配置。`model` 和 `reasoning_effort` 是两个独立的配置维度，互不依赖。
@@ -107,7 +142,7 @@ LightRAG 入库（实体提取、关系构建）使用与主 Agent 独立的 LLM
 | `presetId` | 预设 ID，对应 llm-presets.json 中的预设 | `doubao`（豆包，轻量快速） |
 | `apiKey` | API Key。为空时自动继承 `llm` 段的 apiKey | 空（继承主配置） |
 | `apiBase` | API 端点地址。为空时自动继承 `llm` 段的 apiBase | 空（继承主配置） |
-| `model` | 模型名称。为空时使用主 Agent 同一模型 | `doubao-pro-32k`（不带思考链） |
+| `model` | 模型名称。为空时使用主 Agent 同一模型 | `doubao-seed-2.0-pro`（Coding Plan 别名）或 `doubao-seed-2-0-pro-260215`（标准端点全名） |
 | `type` | 类型：`openai` 或 `anthropic` | `openai` |
 | `reasoning_effort` | **思考链深度（核心配置）** | `"none"`（禁用，见下表） |
 
@@ -156,12 +191,15 @@ LightRAG 入库（实体提取、关系构建）使用与主 Agent 独立的 LLM
 "lightrag_llm": {
   "presetId": "doubao",
   "apiKey": "",
-  "apiBase": "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
-  "model": "doubao-pro-32k",
+  "apiBase": "https://ark.cn-beijing.volces.com/api/v3",
+  "model": "doubao-seed-2-0-pro-260215",
   "type": "openai",
   "reasoning_effort": "low"
 }
 ```
+
+> **注意**：LightRAG 必须使用标准端点（apiBase 含 /api/v3），不能用 Coding Plan 端点（/api/coding/v3），因为 Coding Plan 网关拦截 response_format。model 必须用标准端点的全名格式（带日期后缀）。
+> **LiteLLM 路由**：系统会根据 apiBase 自动识别火山方舟端点并走 VolcEngine 路由（模型名自动加 volcengine/ 前缀），无需手动配置。
 
 场景二：主 Agent 和 LightRAG 用同一模型，独立控制思考深度（零配置即生效）：
 ```json
