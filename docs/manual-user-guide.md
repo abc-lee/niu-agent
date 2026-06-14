@@ -49,7 +49,9 @@ Go 启动器首次运行时，会自动执行 `initNiuDir()`：
     "apiBase": "https://api.openai.com/v1",
     "model": "gpt-4o-mini",
     "type": "openai",
-    "reasoning_effort": ""
+    "provider": "",
+    "reasoning_effort": "",
+    "litellm_kwargs": {}
   },
   "lightrag_llm": {
     "presetId": "",
@@ -57,7 +59,9 @@ Go 启动器首次运行时，会自动执行 `initNiuDir()`：
     "apiBase": "",
     "model": "",
     "type": "openai",
-    "reasoning_effort": "none"
+    "provider": "",
+    "reasoning_effort": "none",
+    "litellm_kwargs": {}
   }
 }
 ```
@@ -70,8 +74,10 @@ Go 启动器首次运行时，会自动执行 `initNiuDir()`：
 | `apiKey` | 你的 API Key |
 | `apiBase` | API 端点基础地址（不含路径后缀，LiteLLM 会自动追加：openai 类型追加 `/chat/completions`，anthropic 类型追加 `/v1/messages`） |
 | `model` | 模型名称 |
-| `type` | 系统内部参数，用于区分 API 格式转换和认证方式：`openai`（OpenAI 兼容格式）或 `anthropic`（Anthropic 原生格式）。该值映射为 LiteLLM 的 custom_llm_provider，不是直接传给 SDK 的类型 |
+| `type` | 系统内部参数，用于区分 API 格式转换和认证方式：`openai`（OpenAI 兼容格式）或 `anthropic`（Anthropic 原生格式）。**不是** LiteLLM 的 custom_llm_provider |
+| `provider` | LiteLLM 路由参数，映射为 `custom_llm_provider`。常见值：`""`（空，默认由 type 决定）、`"volcengine"`（火山引擎）。填写后模型名无需加厂商前缀 |
 | `reasoning_effort` | 思考链深度：`""`（空，由模型默认决定）、`"none"`（禁用）、`"low"`、`"medium"`、`"high"`、`"xhigh"`。主 Agent 默认空，LightRAG 默认 `"none"`。**注意**：该参数的实际效果与模型基础能力强相关，不同模型的最优值差异很大，需实测确定（详见下方"reasoning_effort 配置与测试指南"） |
+| `litellm_kwargs` | 厂商特有参数，JSON 对象格式，原样透传给 LiteLLM。用于传递各厂商 SDK 要求的额外参数（如火山引擎的 `thinking`、`allowed_openai_params` 等）。代码不做任何厂商判断，只负责透传 |
 
 **预设列表**：编辑 `config/llm-presets.json` 查看支持的预设。
 
@@ -118,16 +124,17 @@ Go 启动器首次运行时，会自动执行 `initNiuDir()`：
 
 > **注意**：在标准端点上使用 Coding Plan 的简短别名会返回 404；反之，在 Coding Plan 端点上两种格式都能用。
 
-**LiteLLM 路由要求**：
+**LiteLLM 路由配置**：
 
-使用 LiteLLM 调用火山方舟模型时，模型名必须加 `volcengine/` 前缀，确保走 VolcEngine 适配器路由：
+使用 LiteLLM 调用火山方舟模型时，必须通过 `provider: "volcengine"` 走 VolcEngine 适配器路由。这是 LiteLLM 的标准机制：
 
-| 写法 | 路由 | 结果 |
-|------|------|------|
-| `volcengine/doubao-seed-2.0-pro` | VolcEngine 适配器 | 正确：`thinking` 参数自动处理，`response_format` 需配合 `allowed_openai_params` 透传 |
-| `doubao-seed-2.0-pro`（无前缀） | OpenAI 适配器 | **错误**：`thinking` 参数无法传递，`response_format` 虽能透传但缺少 `thinking:disabled` 会导致思考链冲突 |
+| 配置方式 | 路由 | 结果 |
+|----------|------|------|
+| `provider: "volcengine"` + `model: "doubao-seed-2.0-pro"` | VolcEngine 适配器 | 正确：`thinking` 参数自动处理，厂商特有参数通过 `litellm_kwargs` 透传 |
+| `model: "volcengine/doubao-seed-2.0-pro"`（无 provider） | VolcEngine 适配器 | 也可：LiteLLM 通过前缀推断路由，但不如 `provider` 显式 |
+| `model: "doubao-seed-2.0-pro"`（无 provider 无前缀） | OpenAI 适配器 | **错误**：`thinking` 等火山特有参数无法传递 |
 
-> **注意**：当前系统配置中 `type: "openai"` 是系统内部参数（区分 Anthropic/OpenAI 格式转换），不是 LiteLLM 的 `custom_llm_provider`。系统代码会根据 `apiBase` 是否包含 `volces.com` 自动将 `custom_llm_provider` 设为 `volcengine`，并添加 `volcengine/` 前缀。用户无需在 `model` 字段中手动添加前缀。
+> **注意**：`type: "openai"` 是系统内部参数（区分 Anthropic/OpenAI 格式转换），不是 LiteLLM 的 `custom_llm_provider`。两者独立：`type` 控制格式，`provider` 控制路由。
 
 **可用模型**：doubao-seed-2.0-code、doubao-seed-2.0-pro、doubao-seed-2.0-lite、minimax-m2.7、minimax-m3、glm-5.1、kimi-k2.6、deepseek-v4-pro、deepseek-v4-flash、ark-code-latest
 
@@ -144,7 +151,9 @@ LightRAG 入库（实体提取、关系构建）使用与主 Agent 独立的 LLM
 | `apiBase` | API 端点地址。为空时自动继承 `llm` 段的 apiBase | 空（继承主配置） |
 | `model` | 模型名称。为空时使用主 Agent 同一模型 | `doubao-seed-2.0-pro`（Coding Plan 别名）或 `doubao-seed-2-0-pro-260215`（标准端点全名） |
 | `type` | 类型：`openai` 或 `anthropic` | `openai` |
+| `provider` | LiteLLM 路由参数，同 `llm` 段说明。火山引擎填 `"volcengine"` | `""` 或 `"volcengine"` |
 | `reasoning_effort` | **思考链深度（核心配置）** | `"none"`（禁用，见下表） |
+| `litellm_kwargs` | 厂商特有参数，同 `llm` 段说明。火山引擎知识图谱需传 `thinking` 和 `allowed_openai_params` | `{}` 或见配置示例 |
 
 > **重要**：LightRAG 官方建议入库时不要使用带思考链的模型。思考链会导致实体提取超时（单次调用可达 198 秒）。`reasoning_effort` 默认 `"none"` 确保即使主 Agent 使用思考链模型，入库也不受影响。
 
@@ -194,12 +203,17 @@ LightRAG 入库（实体提取、关系构建）使用与主 Agent 独立的 LLM
   "apiBase": "https://ark.cn-beijing.volces.com/api/v3",
   "model": "doubao-seed-2-0-pro-260215",
   "type": "openai",
-  "reasoning_effort": "low"
+  "provider": "volcengine",
+  "reasoning_effort": "low",
+  "litellm_kwargs": {
+    "thinking": {"type": "disabled"},
+    "allowed_openai_params": ["response_format"]
+  }
 }
 ```
 
 > **注意**：LightRAG 必须使用标准端点（apiBase 含 /api/v3），不能用 Coding Plan 端点（/api/coding/v3），因为 Coding Plan 网关拦截 response_format。model 必须用标准端点的全名格式（带日期后缀）。
-> **LiteLLM 路由**：系统会根据 apiBase 自动识别火山方舟端点并走 VolcEngine 路由（模型名自动加 volcengine/ 前缀），无需手动配置。
+> **LiteLLM 路由**：`provider: "volcengine"` 让 LiteLLM 走 VolcEngine 适配器。`litellm_kwargs` 中的 `thinking: {"type": "disabled"}` 关闭思考链（火山要求使用 response_format 时必须关闭），`allowed_openai_params: ["response_format"]` 让 VolcEngine 适配器透传 response_format 参数。
 
 场景二：主 Agent 和 LightRAG 用同一模型，独立控制思考深度（零配置即生效）：
 ```json
@@ -209,7 +223,9 @@ LightRAG 入库（实体提取、关系构建）使用与主 Agent 独立的 LLM
   "apiBase": "",
   "model": "",
   "type": "openai",
-  "reasoning_effort": "low"
+  "provider": "",
+  "reasoning_effort": "low",
+  "litellm_kwargs": {}
 }
 ```
 
@@ -221,7 +237,9 @@ LightRAG 入库（实体提取、关系构建）使用与主 Agent 独立的 LLM
   "apiBase": "",
   "model": "",
   "type": "openai",
-  "reasoning_effort": "none"
+  "provider": "",
+  "reasoning_effort": "none",
+  "litellm_kwargs": {}
 }
 ```
 

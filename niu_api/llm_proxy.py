@@ -216,16 +216,23 @@ def get_llm_config(use_lightrag_config: bool = False) -> Dict[str, str]:
                     lightrag_llm["apiBase"] = llm.get("apiBase", "")
                 if not lightrag_llm.get("type"):
                     lightrag_llm["type"] = llm.get("type", "openai")
+                if not lightrag_llm.get("provider"):
+                    lightrag_llm["provider"] = llm.get("provider", "")
+                if not lightrag_llm.get("litellm_kwargs"):
+                    lightrag_llm["litellm_kwargs"] = llm.get("litellm_kwargs", {})
                 # Default reasoning_effort to "none" if not explicitly set
                 if not lightrag_llm.get("reasoning_effort"):
                     lightrag_llm["reasoning_effort"] = "none"
                 llm = lightrag_llm
             else:
-                # Use main llm model, but independently apply reasoning_effort
-                # model 和 reasoning_effort 是两个独立维度
+                # Use main llm model, but independently apply lightrag-specific overrides
                 llm = dict(llm)
                 user_effort = lightrag_llm.get("reasoning_effort")
                 llm["reasoning_effort"] = user_effort if user_effort else "none"
+                if lightrag_llm.get("provider"):
+                    llm["provider"] = lightrag_llm["provider"]
+                if lightrag_llm.get("litellm_kwargs"):
+                    llm["litellm_kwargs"] = lightrag_llm["litellm_kwargs"]
 
         # 统一转换为小写键名
         config = {}
@@ -234,6 +241,7 @@ def get_llm_config(use_lightrag_config: bool = False) -> Dict[str, str]:
 
         config.setdefault("type", "openai")
         config.setdefault("provider", "")
+        config.setdefault("litellm_kwargs", {})
         config.setdefault("apikey", "")
         config.setdefault("apibase", "")
         config.setdefault("model", "")
@@ -275,6 +283,7 @@ async def call_llm_via_litellm(
         "model": config["model"],
         "reasoning_effort": config.get("reasoning_effort"),
         "provider": config.get("provider", ""),
+        "litellm_kwargs": config.get("litellm_kwargs", {}),
     }
 
     # Create independent session (not shared with main chat)

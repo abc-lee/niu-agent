@@ -104,7 +104,7 @@ Chrome 扩展（用户已安装）
 {
   "llm": {
     "apiKey": "...",
-    "apiBase": "https://api.minimaxi.com/anthropic/v1/messages",
+    "apiBase": "https://api.minimaxi.com/anthropic",
     "openaiCompatibleApiBase": "https://ark.cn-beijing.volces.com/api/coding/v3",
     "model": "MiniMax-M2-highspeed",
     "type": "anthropic"

@@ -354,6 +354,7 @@ class LiteLLMSession(BaseSession):
         if provider_params.get("reasoning_effort"):
             request_params["drop_params"] = True
         if response_format is not None:
+            request_params["response_format"] = response_format
             request_params["drop_params"] = True
         if litellm_tools:
             request_params["tools"] = litellm_tools
@@ -361,8 +362,8 @@ class LiteLLMSession(BaseSession):
             request_params["proxy"] = self.proxies
         if self.temperature is not None:
             request_params["temperature"] = self.temperature
-        if response_format is not None:
-            request_params["response_format"] = response_format
+        if self.litellm_kwargs:
+            request_params.update(self.litellm_kwargs)
 
         # 记录完整请求（全量，包含 messages）
         _write_interaction_log({
@@ -634,6 +635,7 @@ def create_litellm_client(config: Dict[str, Any]) -> ToolClient:
     if "reasoning_effort" in config and config["reasoning_effort"] is not None:
         cfg["reasoning_effort"] = config["reasoning_effort"]
     cfg["provider"] = config.get("provider", "")
+    cfg["litellm_kwargs"] = config.get("litellm_kwargs", {})
 
     # 将当前模型注册到 cost map（置零），避免 LiteLLM 查找费率失败触发 Provider List
     _register_model_cost(cfg["model"])
