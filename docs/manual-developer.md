@@ -174,9 +174,9 @@ niu.exe [选项]
 | `/api/brain/*` | 多种 | 脑图端点（remember/recall/status） |
 | `/api/brain/regions/*` | 多种 | 脑区端点 |
 | `/api/notes/*` | 多种 | 笔记端点 |
-| `/llm/v1/chat/completions` | POST | LLM 代理端点 |
 | `/llm/v1/models` | GET | 可用模型列表 |
-| `/llm/v1/embeddings` | POST | 嵌入计算端点 |
+| `/llm/v1/health` | GET | LLM 配置检查 |
+| `/llm/v1/status` | GET | LightRAG 和模型状态 |
 | `/scheduler/tasks` | GET/POST/PUT/DELETE | 定时任务管理 |
 | `/health` | GET | 健康检查 |
 

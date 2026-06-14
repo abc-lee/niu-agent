@@ -134,7 +134,7 @@ OpenAI 兼容的聊天补全端点。
   "llm": {
     "type": "openai",
     "apiKey": "your-api-key",
-    "apiBase": "https://api.minimaxi.com/anthropic/v1/messages",
+    "apiBase": "https://api.minimaxi.com/anthropic",
     "model": "MiniMax-M2-highspeed"
   }
 }

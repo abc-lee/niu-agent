@@ -63,6 +63,7 @@ class BaseSession:
         mode = str(cfg.get("api_mode", "chat_completions")).strip().lower().replace("-", "_")
         self.api_mode = "responses" if mode in ("responses", "response") else "chat_completions"
         self.temperature = cfg.get("temperature")
+        self.litellm_kwargs = cfg.get("litellm_kwargs") or {}
 
 
 # ===== ToolClient =====

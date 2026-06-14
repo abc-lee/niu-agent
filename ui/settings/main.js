@@ -113,7 +113,7 @@ ipcMain.handle('test-connection', async (event, { apiBase, apiKey, type, model }
         const req = client.request({
           hostname: url.hostname,
           port: url.port || (url.protocol === 'https:' ? 443 : 80),
-          path: url.pathname,
+          path: (() => { let p = url.pathname === '/' ? '' : url.pathname; if (p.endsWith('/v1/messages')) p = p.slice(0, -13); else if (p.endsWith('/v1')) p = p.slice(0, -3); return p + '/v1/messages'; })(),
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -169,7 +169,7 @@ ipcMain.handle('test-connection', async (event, { apiBase, apiKey, type, model }
         const req = client.request({
           hostname: url.hostname,
           port: url.port || (url.protocol === 'https:' ? 443 : 80),
-          path: url.pathname,
+          path: (() => { let p = url.pathname === '/' ? '' : url.pathname; if (p.endsWith('/chat/completions')) p = p.slice(0, -17); return p + '/chat/completions'; })(),
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
