@@ -70,6 +70,7 @@
       "id": "doubao",
       "name": "豆包",
       "type": "openai",
+      "provider": "volcengine",
       "apiBase": "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
       "model": "doubao-pro-32k",
       "description": "字节豆包"

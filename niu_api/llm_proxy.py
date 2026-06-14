@@ -233,6 +233,7 @@ def get_llm_config(use_lightrag_config: bool = False) -> Dict[str, str]:
             config[key.lower()] = value
 
         config.setdefault("type", "openai")
+        config.setdefault("provider", "")
         config.setdefault("apikey", "")
         config.setdefault("apibase", "")
         config.setdefault("model", "")
@@ -273,6 +274,7 @@ async def call_llm_via_litellm(
         "apibase": config["apibase"],
         "model": config["model"],
         "reasoning_effort": config.get("reasoning_effort"),
+        "provider": config.get("provider", ""),
     }
 
     # Create independent session (not shared with main chat)

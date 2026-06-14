@@ -317,6 +317,7 @@ class LiteLLMSession(BaseSession):
     def __init__(self, cfg):
         super().__init__(cfg)
         self.api_type = cfg.get("api_type", "openai")
+        self.provider = cfg.get("provider", "")
 
     def chat(
         self,
@@ -333,7 +334,7 @@ class LiteLLMSession(BaseSession):
         Returns:
             MockResponse（通过 StopIteration）
         """
-        custom_provider = getattr(self, 'api_type', 'openai')
+        custom_provider = self.provider or ("anthropic" if self.api_type == "anthropic" else "openai")
         provider_params = get_provider_params(self.default_model, getattr(self, 'reasoning_effort', None))
         litellm_tools = _convert_tools_schema(tools)
 
@@ -632,6 +633,7 @@ def create_litellm_client(config: Dict[str, Any]) -> ToolClient:
         cfg["temperature"] = config["temperature"]
     if "reasoning_effort" in config and config["reasoning_effort"] is not None:
         cfg["reasoning_effort"] = config["reasoning_effort"]
+    cfg["provider"] = config.get("provider", "")
 
     # 将当前模型注册到 cost map（置零），避免 LiteLLM 查找费率失败触发 Provider List
     _register_model_cost(cfg["model"])
