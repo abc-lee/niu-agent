@@ -57,6 +57,7 @@ class Scheduler:
 
         # Track whether delayed start has been cancelled
         self._delayed_start_cancelled = False
+        self._ready_event = threading.Event()
 
         # Recover orphaned in_progress tasks from crashes
         self._recover_orphaned_tasks()
@@ -84,32 +85,47 @@ class Scheduler:
             self.thread.start()
         logger.info("[SCHEDULER] Started (single-loop, 10s interval)")
 
-    def start_delayed(self, delay_seconds: int = 10):
-        """Start the scheduler after a delay (wait for main service readiness)"""
+    def signal_ready(self):
+        """外部通知系统就绪（_main_loop + ChatQueue 已启动）"""
+        self._ready_event.set()
+
+    def start_delayed(self):
+        """Start the scheduler after system is ready.
+
+        Waits for signal_ready() to be called (indicating _main_loop and ChatQueue
+        are operational), plus a minimum safety delay. Falls back to forced start
+        after timeout to prevent indefinite blocking.
+        """
         self._delayed_start_cancelled = False
 
         def _delayed_start():
-            remaining = delay_seconds
-            while remaining > 0:
-                if self._delayed_start_cancelled:
-                    logger.info("[SCHEDULER] Delayed start cancelled")
-                    return
-                chunk = min(remaining, 1)
-                time.sleep(chunk)
-                remaining -= chunk
+            # Phase 1: Wait for system ready signal (with timeout fallback)
+            timeout_seconds = 60
+            signaled = self._ready_event.wait(timeout=timeout_seconds)
+            if not signaled:
+                logger.warning("[SCHEDULER] Ready signal not received within 60s, forcing start")
+
+            if self._delayed_start_cancelled:
+                logger.info("[SCHEDULER] Delayed start cancelled")
+                return
+
+            # Phase 2: Minimum safety delay after signal received
+            time.sleep(2)
+
             with self._lock:
                 if self.running or self._delayed_start_cancelled:
                     return
             self.start()
 
         threading.Thread(target=_delayed_start, daemon=True).start()
-        logger.info(f"[SCHEDULER] Delayed start scheduled ({delay_seconds}s)")
+        logger.info("[SCHEDULER] Delayed start: waiting for system_ready signal (60s timeout)")
 
     def stop(self):
         """Stop the scheduler"""
         with self._lock:
             self.running = False
             self._delayed_start_cancelled = True
+            self._ready_event.clear()
 
         if self.thread and self.thread.is_alive():
             self.thread.join(timeout=5)
@@ -162,6 +178,9 @@ class Scheduler:
         Releases _check_lock during stagger waits so new check_and_trigger
         calls can process newly-arrived on-time tasks.
         """
+        # Reset failed tasks older than 5 minutes to pending for retry
+        self.store.retry_failed_tasks(retry_interval_seconds=300)
+
         # 动态刷新 store（如果使用 factory，确保 db_path 与 workspace 一致）
         if self._store_factory is not None:
             self.store = self._store_factory()
@@ -218,8 +237,9 @@ class Scheduler:
             except (ValueError, TypeError):
                 pass
 
-            # CAS: pending -> in_progress
-            if not self.store.update_task(task_id, status="in_progress", expected_status="pending"):
+            # CAS: pending -> in_progress, 同时记录触发时间
+            now_iso = datetime.now().isoformat()
+            if not self.store.update_task(task_id, status="in_progress", triggered_at=now_iso, expected_status="pending"):
                 continue
 
             # CAS 后重新读取最新状态（防止竞态导致双重触发）
@@ -256,12 +276,18 @@ class Scheduler:
                 # 执行任务
                 logger.info(f"[SCHEDULER] Executing recurring task ({i+1}/{len(due_tasks)}): {task['content'][:50]}")
                 result = self._call_trigger_callback(task)
+                next_time = self._calc_next_trigger(datetime.now().isoformat(), cron_expr)
+
                 if result is None:
-                    self.store.update_task(task_id, status="failed", expected_status="in_progress")
+                    # 循环任务失败后直接 reschedule 到下次 cron 时间，不标记 failed 避免无限重试
+                    if next_time:
+                        logger.warning(f"[SCHEDULER] Recurring task {task_id} failed, rescheduling to {next_time}")
+                        self.store.update_task(task_id, scheduled_at=next_time.isoformat(), status="pending", expected_status="in_progress")
+                    else:
+                        self.store.update_task(task_id, status="failed", expected_status="in_progress")
                     continue
 
                 self.store.update_last_executed_date(task_id, today)
-                next_time = self._calc_next_trigger(datetime.now().isoformat(), cron_expr)
                 if next_time:
                     self.store.update_task(task_id, scheduled_at=next_time.isoformat(), status="pending", expected_status="in_progress")
                 else:

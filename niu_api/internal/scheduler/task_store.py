@@ -1,7 +1,10 @@
 """任务存储"""
 import sqlite3
 import uuid
+from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
+
+from loguru import logger
 
 
 class TaskStore:
@@ -192,7 +195,8 @@ class TaskStore:
         cron_expr: Optional[str] = None,
         status: Optional[str] = None,
         expected_status: Optional[str] = None,
-        name: Optional[str] = None
+        name: Optional[str] = None,
+        triggered_at: Optional[str] = None
     ) -> bool:
         """更新任务
 
@@ -221,6 +225,10 @@ class TaskStore:
         if name is not None:
             updates.append("name = ?")
             params.append(name)
+
+        if triggered_at is not None:
+            updates.append("triggered_at = ?")
+            params.append(triggered_at)
 
         if not updates:
             return False
@@ -381,3 +389,30 @@ class TaskStore:
         finally:
             conn.close()
         return deleted
+
+    def retry_failed_tasks(self, retry_interval_seconds: int = 300) -> int:
+        """将超过重试间隔的 failed 一次性任务重置为 pending
+
+        使用 triggered_at（任务最近一次触发时间）判断重试间隔，
+        仅重试一次性任务（循环任务失败后由调度器直接 reschedule）。
+        """
+        cutoff = (datetime.now() - timedelta(seconds=retry_interval_seconds)).isoformat()
+        conn = sqlite3.connect(self.db_path, timeout=10.0)
+        retried = 0
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE scheduled_tasks SET status = 'pending'
+                WHERE status = 'failed'
+                AND is_recurring = 0
+                AND triggered_at IS NOT NULL
+                AND datetime(triggered_at) < datetime(?)
+            """, (cutoff,))
+            retried = cursor.rowcount
+            conn.commit()
+        finally:
+            conn.close()
+        if retried > 0:
+            logger.info(f"[TASK_STORE] Reset {retried} failed one-time task(s) to pending for retry")
+        return retried

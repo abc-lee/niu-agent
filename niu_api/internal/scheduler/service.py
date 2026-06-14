@@ -54,7 +54,7 @@ def get_db_path() -> str:
 
 # ============== 触发回调 ==============
 
-def trigger_callback(task: dict) -> str:
+def trigger_callback(task: dict) -> Optional[str]:
     """
     任务触发回调：通过 ChatQueue 入队并等待 Agent 回复
 
@@ -74,11 +74,8 @@ def trigger_callback(task: dict) -> str:
 
     loop = _main_loop
     if loop is None or loop.is_closed():
-        logger.error("[INTERNAL SCHEDULER] Main event loop not available, using fallback")
-        fallback_msg = f"定时提醒：{task['content']}"
-        _persist_fallback_message(prompt, fallback_msg)
-        add_pending_alert("⏰")
-        return fallback_msg
+        logger.error("[INTERNAL SCHEDULER] Main event loop not available, cannot trigger task")
+        return None
 
     # 通过 ChatQueue 入队并等待回复
     try:
@@ -97,7 +94,7 @@ def trigger_callback(task: dict) -> str:
             logger.info(f"[INTERNAL SCHEDULER] Agent replied: {agent_reply[:100]}")
         else:
             logger.warning("[INTERNAL SCHEDULER] Agent returned empty reply")
-            agent_reply = f"定时提醒：{task['content']}"
+            return None
 
         # 触发小女孩蹦高提醒（仅用于视觉提示，不传递消息内容）
         add_pending_alert("⏰")
@@ -120,46 +117,7 @@ def trigger_callback(task: dict) -> str:
 
     except Exception as e:
         logger.error(f"[INTERNAL SCHEDULER] ChatQueue call failed: {e}")
-        fallback_msg = f"定时提醒：{task['content']}"
-        _persist_fallback_message(prompt, fallback_msg)
-        add_pending_alert("⏰")
-        return fallback_msg
-
-
-def _persist_fallback_message(user_content: str, assistant_content: str):
-    """
-    降级路径：直接将消息写入数据库（绕过 /chat/sync）
-
-    当 /chat/sync 不可用时，用此方法确保消息仍然入库。
-    使用 run_coroutine_threadsafe 在主 event loop 上执行异步 DB 操作，
-    避免创建新 event loop 与 aiosqlite 的 singleton 连接冲突。
-    """
-    import asyncio
-    from agent.session import get_message_store
-    from niu_api.chat import _main_loop
-
-    loop = _main_loop
-    if loop is None or loop.is_closed():
-        logger.warning("[INTERNAL SCHEDULER] Main event loop not available, cannot persist fallback message")
-        return
-
-    async def _do_persist():
-        store = await get_message_store()
-        user_msg_id = await store.add_message(role="user", content=user_content)
-        msg_id = await store.add_message(role="assistant", content=assistant_content)
-        # 通知 SSE 推送（已在主 loop 中，可直接用 async 版本）
-        from niu_api.chat import notify_new_message
-        await notify_new_message(user_msg_id, "user", user_content, source="scheduler")
-        await notify_new_message(msg_id, "assistant", assistant_content, source="scheduler")
-        logger.info("[INTERNAL SCHEDULER] Fallback message persisted to DB")
-
-    try:
-        future = asyncio.run_coroutine_threadsafe(_do_persist(), loop)
-        future.result(timeout=10)
-    except asyncio.TimeoutError:
-        logger.warning("[INTERNAL SCHEDULER] Fallback persistence timed out")
-    except Exception as e:
-        logger.error(f"[INTERNAL SCHEDULER] Failed to persist fallback message: {e}")
+        return None
 
 
 # ============== 生命周期管理 ==============
@@ -181,10 +139,10 @@ def start_scheduler():
             trigger_callback=trigger_callback,
             store_factory=get_store,  # 传入 factory，让 Scheduler 动态获取 store
         )
-        # 延迟启动，等待 FastAPI 完全就绪后再开始检查任务
-        _scheduler.start_delayed(delay_seconds=10)
+        # 延迟启动，等待系统就绪信号后再开始扫描任务
+        _scheduler.start_delayed()
 
-        logger.info("[INTERNAL SCHEDULER] Scheduled to start (delayed 10s)")
+        logger.info("[INTERNAL SCHEDULER] Scheduled to start (waiting for system_ready signal)")
 
 
 def stop_scheduler():
@@ -210,3 +168,11 @@ def get_scheduler() -> Scheduler:
         if _scheduler is None:
             raise RuntimeError("Scheduler not initialized")
         return _scheduler
+
+
+def signal_scheduler_ready():
+    """通知调度器系统就绪（_main_loop + ChatQueue 已启动）"""
+    global _scheduler
+    if _scheduler is not None:
+        _scheduler.signal_ready()
+        logger.info("[INTERNAL SCHEDULER] System ready signal sent")
