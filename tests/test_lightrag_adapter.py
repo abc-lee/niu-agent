@@ -883,65 +883,91 @@ class TestGetGraphSnapshot:
         assert result["nodes"] == []
         assert result["edges"] == []
 
-    @patch("niu_api.internal.lightrag_adapter.call_async")
     @patch.object(LightRAGAdapter, "_get_rag")
-    def test_returns_empty_when_kg_none(self, mock_get_rag, mock_call_async):
+    def test_returns_empty_when_kg_none(self, mock_get_rag):
+        """get_graph_snapshot returns empty when chunk_entity_relation_graph is None."""
         from niu_api.internal.lightrag_adapter import LightRAGAdapter
 
         rag = MagicMock()
         mock_get_rag.return_value = rag
-        mock_call_async.return_value = None
+        # chunk_entity_relation_graph is None — no graph available
+        rag.chunk_entity_relation_graph = None
 
         adapter = LightRAGAdapter()
         result = adapter.get_graph_snapshot()
         assert result["nodes"] == []
         assert result["edges"] == []
 
-    @patch("niu_api.internal.lightrag_adapter.call_async")
+    @patch("niu_api.internal.lightrag_manager.graph_read_lock")
     @patch.object(LightRAGAdapter, "_get_rag")
-    def test_returns_full_graph(self, mock_get_rag, mock_call_async):
+    def test_returns_full_graph(self, mock_get_rag, mock_read_lock):
+        """get_graph_snapshot reads NetworkX graph directly (not via call_async)."""
         from niu_api.internal.lightrag_adapter import LightRAGAdapter
 
         rag = MagicMock()
         mock_get_rag.return_value = rag
 
-        node1 = MagicMock()
-        node1.id = "Python"
-        node1.properties = {"entity_type": "skill", "description": "A language"}
+        # Build a mock NetworkX-style graph object
+        mock_graph = MagicMock()
+        rag.chunk_entity_relation_graph = MagicMock()
+        rag.chunk_entity_relation_graph._graph = mock_graph
 
-        node2 = MagicMock()
-        node2.id = "Docker"
-        node2.properties = {"entity_type": "tool", "description": "Container platform"}
+        # Mock graph_read_lock as a context manager
+        mock_read_lock.return_value.__enter__ = MagicMock(return_value=None)
+        mock_read_lock.return_value.__exit__ = MagicMock(return_value=False)
 
-        edge1 = MagicMock()
-        edge1.source = "Python"
-        edge1.target = "Docker"
-        edge1.properties = {"keywords": "deployed_with", "description": "", "weight": 1.0}
+        # mock_graph.copy() returns the snapshot
+        snapshot = MagicMock()
+        mock_graph.copy.return_value = snapshot
 
-        kg = MagicMock()
-        kg.nodes = [node1, node2]
-        kg.edges = [edge1]
+        # snapshot.nodes() returns node names
+        snapshot.nodes.return_value = ["python", "docker"]
+        # snapshot.degree() returns degree for each node
+        snapshot.degree.side_effect = lambda n: {"python": 2, "docker": 1}[n]
 
-        mock_call_async.return_value = kg
+        # snapshot.has_node() returns True for known nodes
+        snapshot.has_node.side_effect = lambda n: n in ("python", "docker")
+
+        # Use a real dict for node attributes so snapshot.nodes[node_name] works
+        node_attrs = {
+            "python": {"entity_type": "skill", "description": "A language"},
+            "docker": {"entity_type": "tool", "description": "Container platform"},
+        }
+        # Make snapshot.nodes subscriptable like a dict
+        snapshot.nodes.__getitem__ = MagicMock(side_effect=lambda key: node_attrs[key])
+
+        # snapshot.edges(data=True) returns edge tuples
+        snapshot.edges.return_value = [
+            ("python", "docker", {"keywords": "deployed_with", "description": "", "weight": 1.0}),
+        ]
 
         adapter = LightRAGAdapter()
         result = adapter.get_graph_snapshot(limit=100)
 
         assert len(result["nodes"]) == 2
         assert len(result["edges"]) == 1
-        assert result["nodes"][0]["id"] == "Python"
+        assert result["nodes"][0]["id"] == "python"
         assert result["nodes"][0]["type"] == "skill"
-        assert result["edges"][0]["source"] == "Python"
-        assert result["edges"][0]["target"] == "Docker"
+        assert result["edges"][0]["source"] == "python"
+        assert result["edges"][0]["target"] == "docker"
 
-    @patch("niu_api.internal.lightrag_adapter.call_async")
+    @patch("niu_api.internal.lightrag_manager.graph_read_lock")
     @patch.object(LightRAGAdapter, "_get_rag")
-    def test_handles_exception_gracefully(self, mock_get_rag, mock_call_async):
+    def test_handles_exception_gracefully(self, mock_get_rag, mock_read_lock):
         from niu_api.internal.lightrag_adapter import LightRAGAdapter
 
         rag = MagicMock()
         mock_get_rag.return_value = rag
-        mock_call_async.side_effect = RuntimeError("snapshot error")
+
+        # Mock graph_read_lock to raise inside the context manager
+        mock_read_lock.return_value.__enter__ = MagicMock(
+            side_effect=RuntimeError("snapshot error")
+        )
+        mock_read_lock.return_value.__exit__ = MagicMock(return_value=False)
+
+        # Need chunk_entity_relation_graph to exist so code enters the try block
+        rag.chunk_entity_relation_graph = MagicMock()
+        rag.chunk_entity_relation_graph._graph = MagicMock()
 
         adapter = LightRAGAdapter()
         result = adapter.get_graph_snapshot()
