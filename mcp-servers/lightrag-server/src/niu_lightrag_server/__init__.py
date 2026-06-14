@@ -203,21 +203,19 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
     "lightrag_search_entities": {
         "name": "lightrag_search_entities",
         "description": (
-            "Search for entities of a specific type in the knowledge graph. "
-            "Uses local mode (entity-focused) and filters by entity_type. "
-            "Common types: skill, tool, knowledge, person, photo, concept.\n\n"
-            "TRUNCATION AVOIDANCE: If results are truncated, reduce top_k, provide specific keywords, "
-            "or use fields=['entity_name','entity_type'] to get compact name-only lists."
+            "Search for entities in the knowledge graph using semantic search (local mode). "
+            "Returns entities related to your query. For listing ALL entities of a specific type "
+            "(e.g., all persons), use lightrag_list_entities with entity_type filter instead.\n\n"
+            "TRUNCATION AVOIDANCE: If results are truncated, take these steps:\n"
+            "1. Reduce top_k (e.g., 10→5→3)\n"
+            "2. Provide more specific keywords (exact entity names work best)\n"
+            "3. Use fields=['entity_name','entity_type'] to get name-only lists without descriptions\n"
+            "4. Use lightrag_get_entity_info for single-entity detail instead of broad query"
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "Search query string"},
-                "entity_type": {
-                    "type": "string",
-                    "default": "",
-                    "description": "Entity type to filter (skill, tool, knowledge, person, photo, concept)",
-                },
                 "top_k": {
                     "type": "integer",
                     "default": 10,
@@ -734,25 +732,16 @@ def lightrag_query_data(
 
 def lightrag_search_entities(
     query: str,
-    entity_type: str = "",
     top_k: int = 10,
     keywords: Optional[list] = None,
     fields: Optional[list] = None,
 ) -> Dict[str, Any]:
-    """Search for entities of a specific type."""
+    """Search for entities in the knowledge graph using semantic search."""
     try:
         adapter = _get_adapter()
-        # 当 entity_type 和 fields 同时提供时，自动包含 entity_type 字段
-        # 否则字段裁剪会先于 filter_by_entity_type 执行，导致过滤失效
-        if entity_type and fields and "entity_type" not in fields:
-            fields = list(fields) + ["entity_type"]
         result = adapter.query_data(query=query, mode="local", top_k=top_k, keywords=keywords, fields=fields)
         if LightRAGAdapter._is_no_result(result):
             return {"status": "no_results", "message": "No relevant results found in knowledge graph"}
-        if entity_type:
-            entities = adapter.filter_by_entity_type(result, entity_type)
-            return {"status": "ok", "data": entities}
-        # No filter: return all entities from result
         data = result.get("data", result) if isinstance(result, dict) else {}
         if isinstance(data, list):
             return {"status": "ok", "data": data}

@@ -157,20 +157,22 @@ class TestLightragQueryData:
 class TestLightragSearchEntities:
     """Test lightrag_search_entities tool function."""
 
-    def test_search_with_type_filter(self):
-        """Should filter by entity_type when provided."""
+    def test_search_with_fields(self):
+        """Should pass fields parameter to adapter."""
         mod = _import_module()
         mock_adapter = MagicMock()
-        mock_adapter.query_data.return_value = {"data": {"entities": [{"name": "Python", "entity_type": "skill"}]}}
-        mock_adapter.filter_by_entity_type.return_value = [{"name": "Python", "entity_type": "skill"}]
+        mock_adapter.query_data.return_value = {
+            "data": {"entities": [{"entity_name": "Python", "entity_type": "skill"}]}
+        }
         mod._adapter = mock_adapter
         mod.LightRAGAdapter._is_no_result = MagicMock(return_value=False)
 
-        result = mod.lightrag_search_entities(query="python", entity_type="skill")
+        result = mod.lightrag_search_entities(query="python", fields=["entity_name", "entity_type"])
 
-        mock_adapter.filter_by_entity_type.assert_called_once()
+        mock_adapter.query_data.assert_called_once_with(
+            query="python", mode="local", top_k=10, keywords=None, fields=["entity_name", "entity_type"]
+        )
         assert result["status"] == "ok"
-        assert result["data"] == [{"name": "Python", "entity_type": "skill"}]
 
     def test_search_without_type_filter(self):
         """Should return all entities when no filter."""
