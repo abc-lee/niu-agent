@@ -1018,3 +1018,33 @@ class TestBatchLabelGeneration:
         assert labels[0] == "标签0"
         assert labels[1] == "标签1"
         assert labels[2] == "备用名"
+
+
+class TestSummaryDisplayFormat:
+    """Test that BrainRegionInfo.description uses readable separator for display."""
+
+    def test_description_replaces_sep_with_chinese_comma(self):
+        """BrainRegionInfo.description should replace <SEP> with '、' for display."""
+        adapter, ingester = _make_mock_adapter_and_ingester()
+        manager = RegionManager(adapter, ingester)
+
+        # Setup: region with <SEP> format summary
+        adapter.list_entities.return_value = {
+            "status": "ok",
+            "data": [
+                {
+                    "id": "编程开发脑区",
+                    "description": _encode_description(
+                        summary="Python<SEP>Django<SEP>FastAPI",
+                        region_id="community_0",
+                        size=3,
+                        representative="Python",
+                        updated_at=1000.0,
+                    ),
+                },
+            ],
+        }
+
+        regions = manager.get_all_regions()
+        assert len(regions) == 1
+        assert regions[0].description == "Python、Django、FastAPI"
