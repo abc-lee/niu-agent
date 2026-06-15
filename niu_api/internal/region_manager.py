@@ -162,6 +162,11 @@ def _parse_description(description: str) -> dict[str, str]:
     return result
 
 
+def _format_summary_for_display(parsed: dict) -> str:
+    """Format parsed description summary for frontend display."""
+    return parsed.get("summary", "").replace("<SEP>", "、")
+
+
 # ---------------------------------------------------------------------------
 # Region Manager
 # ---------------------------------------------------------------------------
@@ -362,6 +367,10 @@ class RegionManager:
                     region_desc_map[name] = entity.get("description", "")
 
         for region_name in region_names:
+            if is_default_region(region_name):
+                logger.debug("跳过默认脑区摘要更新: %s", region_name)
+                continue
+
             # Step 1: Get current members
             members = self.get_region_members(region_name)
 
@@ -472,7 +481,7 @@ class RegionManager:
                 label = entity_name[: -len(REGION_SUFFIX)]
 
             # 将 <SEP> 替换为 "、" 用于前端展示
-            display_summary = parsed.get("summary", "").replace("<SEP>", "、")
+            display_summary = _format_summary_for_display(parsed)
 
             regions.append(
                 BrainRegionInfo(
@@ -1382,10 +1391,17 @@ def create_default_regions(
             continue
 
         # Collect region entity and anchor relation for batch inject
+        description = _encode_description(
+            summary=region_def["description"],
+            region_id=f"default_{region_label}",
+            size=0,
+            representative="",
+            updated_at=time.time(),
+        )
         all_entities.append({
             "entity_name": region_name,
             "entity_type": REGION_ENTITY_TYPE,
-            "description": region_def["description"],
+            "description": description,
         })
         all_relationships.append({
             "src_id": NIU_ENTITY,
