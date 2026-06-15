@@ -390,7 +390,7 @@ class RegionManager:
 
             parsed = _parse_description(current_desc)
             community_id = parsed.get("region_id", "")
-            representative = members[0] if members else ""
+            representative = members[0].replace("<SEP>", "-").replace("|", "-") if members else ""
 
             # Preserve dynamic metadata keys (e.g. shrink_count) that
             # _encode_description does not include in its standard 5 fields
@@ -401,7 +401,7 @@ class RegionManager:
             }
 
             # Build entity summaries with type labels from graph
-            entity_summaries = self._build_entity_summaries(members, set(), {})
+            entity_summaries = self._build_entity_summaries(members, {}, {})
             region_summary = self._generate_region_summary(entity_summaries)
 
             now = time.time()
@@ -1046,14 +1046,18 @@ class RegionManager:
                         missing_indices.append(i)
 
                 # Fallback to individual for missing
+                extended_existing = list(existing_regions) + [labels[j] for j in range(len(labels)) if labels[j] is not None and j not in missing_indices]
                 for i in missing_indices:
                     try:
                         label = self._generate_region_label(
-                            entity_summaries_list[i], existing_regions
+                            entity_summaries_list[i], extended_existing
                         )
                         labels[i] = label
+                        extended_existing.append(label)
                     except Exception:
-                        labels[i] = entity_summaries_list[i][0].split("(")[0] if entity_summaries_list[i] else "unknown"
+                        fallback = entity_summaries_list[i][0].split("(")[0] if entity_summaries_list[i] else "unknown"
+                        labels[i] = fallback
+                        extended_existing.append(fallback)
 
                 # De-duplicate: if batch LLM returned same label for multiple regions
                 seen_labels = set(existing_regions)
@@ -1067,7 +1071,7 @@ class RegionManager:
                             candidate = f"{base}{n}"
                         labels[i] = candidate
                     if label is not None:
-                        seen_labels.add(label)
+                        seen_labels.add(labels[i])
 
                 # Final truncation to 8 chars (safety net)
                 for i, label in enumerate(labels):
@@ -1170,43 +1174,6 @@ class RegionManager:
 
         return result
 
-    def _summarize_region(
-        self,
-        entity_summaries: list[str],
-    ) -> tuple[str, str]:
-        """Generate region name and summary from entity descriptions
-
-        Uses a heuristic approach: first entity name as label, top entity
-        names with <SEP> as summary. LLM naming is in _generate_region_label().
-
-        Args:
-            entity_summaries: ["Python(skill)", "Django(framework)", ...]
-
-        Returns:
-            (region_name, region_summary)
-        """
-        if not entity_summaries:
-            return ("unknown", "")
-
-        # Parse names from summaries
-        entity_names: list[str] = []
-        for summary in entity_summaries:
-            match = re.match(r"([^(]+)\(([^)]+)\)", summary)
-            if match:
-                entity_names.append(match.group(1).strip())
-            else:
-                entity_names.append(summary.strip())
-
-        if not entity_names:
-            return ("unknown", "")
-
-        # Heuristic: Use the first entity (highest-degree) as region label
-        region_label = entity_names[0].replace("<SEP>", "-").replace("|", "-")
-
-        # Generate summary using <SEP> format
-        region_summary = self._generate_region_summary(entity_summaries)
-
-        return (region_label, region_summary)
 
     # ------------------------------------------------------------------
     # Incremental update + edge decay
@@ -1238,10 +1205,11 @@ class RegionManager:
             # Cleanup stale regions
             removed = self.cleanup_stale_regions(partition)
 
-            # Update summaries for all current regions
+            # Update summaries for existing regions (skip newly-created ones
+            # which already have accurate summaries from partition type data)
             all_regions = self.get_all_regions()
-            region_names = [r.name for r in all_regions]
-            self.update_region_summaries(region_names)
+            existing_region_names = [r.name for r in all_regions if r.name not in set(created)]
+            self.update_region_summaries(existing_region_names)
 
             # Decay structural edges
             disconnected = self._decay_structural_edges(all_regions)
@@ -1249,7 +1217,7 @@ class RegionManager:
             return {
                 "regions_created": len(created),
                 "regions_removed": len(removed),
-                "regions_updated": len(all_regions),
+                "regions_updated": len(existing_region_names),
                 "edges_disconnected": disconnected,
             }
         except Exception as e:
