@@ -53,7 +53,7 @@ REGION_FILE_PATH = "brain://region"
 NIU_ENTITY = "Niu"
 
 # Maximum number of entity descriptions to include in region summary
-MAX_SUMMARY_ENTITIES = 5
+MAX_SUMMARY_ENTITIES = 10
 
 # Minimum community size to create a brain region (must match region_detector default)
 MIN_COMMUNITY_SIZE = 100
@@ -784,70 +784,63 @@ class RegionManager:
 
         return summaries
 
+    def _generate_region_summary(self, entity_summaries: list[str]) -> str:
+        """Generate region description from top entity names using <SEP> separator.
+
+        Entity names are joined by <SEP> (LightRAG's GRAPH_FIELD_SEP) so that
+        vector search can match individual entity names as semantic fragments.
+        """
+        if not entity_summaries:
+            return ""
+
+        entity_names: list[str] = []
+        for summary in entity_summaries[:MAX_SUMMARY_ENTITIES]:
+            match = re.match(r"([^(]+)\(([^)]+)\)", summary)
+            if match:
+                name = match.group(1).strip()
+            else:
+                name = summary.strip()
+            # Sanitize: replace <SEP> and | to avoid breaking description parsing
+            name = name.replace("<SEP>", "-").replace("|", "-")
+            entity_names.append(name)
+
+        return "<SEP>".join(entity_names)
+
     def _summarize_region(
         self,
         entity_summaries: list[str],
     ) -> tuple[str, str]:
         """Generate region name and summary from entity descriptions
 
-        Uses a heuristic approach (no LLM call in M2):
-        1. Count entity types in the community
-        2. Pick the most common type as the region category
-        3. Use the representative entity name as the region label
-        4. Build summary from top entity names
+        Uses a heuristic approach: first entity name as label, top entity
+        names with <SEP> as summary. LLM naming is in _generate_region_label().
 
         Args:
-            entity_summaries: ["Python(skill): Python编程语言...", ...]
+            entity_summaries: ["Python(skill)", "Django(framework)", ...]
 
         Returns:
             (region_name, region_summary)
-            Example: ("Python", "Python(skill)、Django(framework)、FastAPI(framework)")
         """
         if not entity_summaries:
-            return ("unknown", "空区域")
+            return ("unknown", "")
 
-        # Parse types from summaries: "Name(type)" format
-        type_counts: dict[str, int] = {}
+        # Parse names from summaries
         entity_names: list[str] = []
-
         for summary in entity_summaries:
-            # Extract name and type from "Name(type)" format
             match = re.match(r"([^(]+)\(([^)]+)\)", summary)
             if match:
-                name = match.group(1).strip()
-                etype = match.group(2).strip()
-                type_counts[etype] = type_counts.get(etype, 0) + 1
-                entity_names.append(name)
+                entity_names.append(match.group(1).strip())
             else:
-                # Fallback: treat whole string as name
                 entity_names.append(summary.strip())
-                type_counts["unknown"] = type_counts.get("unknown", 0) + 1
 
         if not entity_names:
-            return ("unknown", "空区域")
+            return ("unknown", "")
 
-        # Heuristic 1: Use the first entity (representative) as region label
-        region_label = entity_names[0]
+        # Heuristic: Use the first entity (highest-degree) as region label
+        region_label = entity_names[0].replace("<SEP>", "-").replace("|", "-")
 
-        # Sanitize: replace <SEP> and | with - to avoid breaking description parsing
-        region_label = region_label.replace("<SEP>", "-").replace("|", "-")
-
-        # Heuristic 2: Build summary from top MAX_SUMMARY_ENTITIES entities
-        top_summaries = entity_summaries[:MAX_SUMMARY_ENTITIES]
-        summary_parts: list[str] = []
-        for s in top_summaries:
-            # Extract just the name(type) portion for the summary
-            match = re.match(r"([^(]+\([^)]+\))", s)
-            if match:
-                summary_parts.append(match.group(1))
-            else:
-                summary_parts.append(s)
-
-        region_summary = "、".join(summary_parts)
-
-        # Add ellipsis if there are more entities
-        if len(entity_summaries) > MAX_SUMMARY_ENTITIES:
-            region_summary += f"等{len(entity_summaries)}个实体"
+        # Generate summary using <SEP> format
+        region_summary = self._generate_region_summary(entity_summaries)
 
         return (region_label, region_summary)
 

@@ -620,7 +620,7 @@ class TestSummarizeRegionHeuristic:
         ])
 
         assert name == "Python"
-        assert "Python(language)" in summary
+        assert "Python" in summary
 
     def test_empty_summaries_return_unknown(self):
         """空实体列表返回 unknown"""
@@ -630,7 +630,7 @@ class TestSummarizeRegionHeuristic:
         name, summary = manager._summarize_region([])
 
         assert name == "unknown"
-        assert summary == "空区域"
+        assert summary == ""
 
     def test_summary_limits_to_max_entities(self):
         """摘要最多包含 MAX_SUMMARY_ENTITIES 个实体"""
@@ -643,5 +643,48 @@ class TestSummarizeRegionHeuristic:
         name, summary = manager._summarize_region(entities)
 
         assert name == "Entity0"
-        # 摘要应包含实体数量信息
-        assert "10个实体" in summary
+        # 摘要应使用 <SEP> 分隔符
+        assert "<SEP>" in summary
+
+
+class TestGenerateRegionSummary:
+    """Test _generate_region_summary — top-10 entity names joined by <SEP>."""
+
+    def test_summary_uses_sep_separator(self):
+        """Summary should use <SEP> separator between entity names."""
+        manager = RegionManager.__new__(RegionManager)
+        entity_summaries = ["Python(skill)", "Django(framework)", "FastAPI(framework)"]
+        result = manager._generate_region_summary(entity_summaries)
+        assert result == "Python<SEP>Django<SEP>FastAPI"
+
+    def test_summary_top_10_entities(self):
+        """Summary should include at most 10 entity names."""
+        manager = RegionManager.__new__(RegionManager)
+        entity_summaries = [f"E{i}(type)" for i in range(15)]
+        result = manager._generate_region_summary(entity_summaries)
+        parts = result.split("<SEP>")
+        assert len(parts) == 10
+
+    def test_summary_extracts_name_only(self):
+        """Summary should contain entity names without type labels."""
+        manager = RegionManager.__new__(RegionManager)
+        entity_summaries = ["Python(skill)", "Django(framework)"]
+        result = manager._generate_region_summary(entity_summaries)
+        assert "skill" not in result
+        assert "framework" not in result
+        assert "Python" in result
+        assert "Django" in result
+
+    def test_summary_empty_input(self):
+        """Empty input should return empty string."""
+        manager = RegionManager.__new__(RegionManager)
+        result = manager._generate_region_summary([])
+        assert result == ""
+
+    def test_summary_sanitizes_sep_in_names(self):
+        """Entity names containing <SEP> or | should be sanitized."""
+        manager = RegionManager.__new__(RegionManager)
+        entity_summaries = ["Bad<SEP>Name(type)", "Pipe|Name(type2)"]
+        result = manager._generate_region_summary(entity_summaries)
+        assert "Bad-Name" in result
+        assert "Pipe-Name" in result
