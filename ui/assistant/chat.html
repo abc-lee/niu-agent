@@ -1132,21 +1132,20 @@
     // ========== 接收小女孩状态 ==========
     window.electronAPI.onSpiritState((state) => {
       if (state === 'busy') {
-        // 隐藏统计数据，显示处理中（不销毁子元素）
+        // 在统计数据末尾追加"处理中"，保留原有统计信息
         const statsDiv = statusBar.querySelector('.stats');
-        statsDiv.style.display = 'none';
         let busyEl = document.getElementById('stats-busy');
         if (!busyEl) {
           busyEl = document.createElement('span');
           busyEl.id = 'stats-busy';
+          busyEl.className = 'stat';
           busyEl.textContent = '⏳ 处理中...';
-          statusBar.insertBefore(busyEl, statusBar.firstChild);
+          statsDiv.appendChild(busyEl);
         }
       } else if (state === 'idle') {
-        // 恢复统计数据
+        // 移除"处理中"指示器
         const busyEl = document.getElementById('stats-busy');
         if (busyEl) busyEl.remove();
-        statusBar.querySelector('.stats').style.display = '';
         loadStats();
       }
     });
