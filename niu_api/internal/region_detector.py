@@ -131,6 +131,24 @@ class CommunityDetector:
         nodes: list[dict] = snapshot.get("nodes", [])
         edges: list[dict] = snapshot.get("edges", [])
 
+        # Filter out brain region master nodes and their structural edges
+        # Brain region nodes act as hubs (connected to many entities via "包含" edges)
+        # which distorts Leiden community detection by creating artificial star-topology communities
+        brain_region_names: set[str] = set()
+        for node in nodes:
+            etype = node.get("type", node.get("entity_type", ""))
+            name = node.get("name", node.get("id", ""))
+            if etype == "brainregion" or name.endswith("脑区"):
+                brain_region_names.add(name)
+
+        if brain_region_names:
+            nodes = [n for n in nodes if n.get("name", n.get("id", "")) not in brain_region_names]
+            edges = [e for e in edges if e.get("source", "") not in brain_region_names and e.get("target", "") not in brain_region_names]
+            logger.info(
+                "过滤 %d 个脑区主节点及其边，排除对社区检测的干扰",
+                len(brain_region_names),
+            )
+
         # 2. 检查图谱大小
         if len(nodes) < min_graph_size:
             logger.info(
