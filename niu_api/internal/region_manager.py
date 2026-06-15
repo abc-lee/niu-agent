@@ -26,6 +26,26 @@ from niu_api.internal.region_detector import CommunityDetectionResult
 
 logger = logging.getLogger(__name__)
 
+
+def _read_context_window_size() -> int:
+    """Read context window size from user config.
+
+    Returns 200000 as default if config is missing or unreadable.
+    """
+    try:
+        config_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+            "config", "user-config.json",
+        )
+        if os.path.exists(config_path):
+            with open(config_path, encoding="utf-8") as f:
+                data = json.load(f)
+            return data.get("context", {}).get("contextWindowSize", 200000)
+    except Exception:
+        pass
+    return 200000
+
+
 # ============== Constants ==============
 
 # Region entity name format: "{label}脑区" (natural language)
@@ -805,6 +825,182 @@ class RegionManager:
             entity_names.append(name)
 
         return "<SEP>".join(entity_names)
+
+    def _generate_region_label(
+        self,
+        entity_summaries: list[str],
+        existing_regions: list[str],
+    ) -> str:
+        """Generate a semantic Chinese label for a brain region via LLM.
+
+        Falls back to heuristic (entity_names[0]) on any LLM failure.
+        """
+        if not entity_summaries:
+            return "unknown"
+
+        # Extract entity names for prompt and fallback
+        entity_names: list[str] = []
+        entity_list_parts: list[str] = []
+        for summary in entity_summaries:
+            match = re.match(r"([^(]+)\(([^)]+)\)", summary)
+            if match:
+                name = match.group(1).strip()
+                etype = match.group(2).strip()
+                entity_names.append(name)
+                entity_list_parts.append(f"{name}({etype})")
+            else:
+                entity_names.append(summary.strip())
+                entity_list_parts.append(summary.strip())
+
+        if not entity_names:
+            return "unknown"
+
+        fallback_label = entity_names[0].replace("<SEP>", "-").replace("|", "-")
+
+        # Build prompt
+        entity_list_str = ", ".join(entity_list_parts)
+        existing_str = ", ".join(existing_regions) if existing_regions else "无"
+
+        prompt = (
+            "你是一个知识图谱分析师。根据以下社区内的实体列表，为这个社区生成一个简洁的中文标签名。\n\n"
+            "要求：\n"
+            "- 8个字以下\n"
+            "- 概括这些实体的共同主题\n"
+            "- 不要跟现有脑区重名或语义接近\n"
+            "- 只能返回JSON格式：{\"label\": \"标签名\"}\n"
+            "- 返回其他任何格式或内容将判定失败\n\n"
+            f"现有脑区：{existing_str}\n\n"
+            f"实体列表：{entity_list_str}"
+        )
+
+        # Token truncation check
+        try:
+            import litellm
+            token_count = litellm.token_counter(model="gpt-4o", text=prompt)
+            context_window = _read_context_window_size()
+            if token_count > context_window - 500:
+                while entity_list_parts and token_count > context_window - 500:
+                    entity_list_parts.pop()
+                    entity_list_str = ", ".join(entity_list_parts)
+                    prompt = (
+                        "你是一个知识图谱分析师。根据以下社区内的实体列表，为这个社区生成一个简洁的中文标签名。\n\n"
+                        "要求：\n"
+                        "- 8个字以下\n"
+                        "- 概括这些实体的共同主题\n"
+                        "- 不要跟现有脑区重名或语义接近\n"
+                        "- 只能返回JSON格式：{\"label\": \"标签名\"}\n"
+                        "- 返回其他任何格式或内容将判定失败\n\n"
+                        f"现有脑区：{existing_str}\n\n"
+                        f"实体列表：{entity_list_str}"
+                    )
+                    token_count = litellm.token_counter(model="gpt-4o", text=prompt)
+        except Exception:
+            pass  # Token counting failure should not block
+
+        # Call LLM with retry
+        label = self._parse_label_from_llm(prompt, fallback_label)
+
+        # Truncate to 8 chars first
+        if len(label) > 8:
+            label = label[:8]
+
+        # Check for duplicate names (suffix must fit in 8 chars)
+        if label in existing_regions:
+            base = label[:7]
+            n = 2
+            candidate = f"{base}{n}"
+            while candidate in existing_regions and n < 10:
+                n += 1
+                candidate = f"{base}{n}"
+            label = candidate
+
+        return label
+
+    def _parse_label_from_llm(self, prompt: str, fallback: str) -> str:
+        """Call LLM and parse label with retry logic."""
+        for attempt in range(2):
+            try:
+                content = self._call_llm_for_label(prompt)
+                label = self._extract_label_from_content(content)
+                if label:
+                    if len(label) > 8:
+                        label = label[:8]
+                    return label
+            except Exception as e:
+                logger.debug("LLM label generation attempt %d failed: %s", attempt + 1, e)
+
+        logger.warning("LLM label generation failed after retry, fallback to: %s", fallback)
+        return fallback
+
+    def _extract_label_from_content(self, content: str) -> str:
+        """Extract label from LLM response content."""
+        content = content.strip()
+
+        # Try JSON parse
+        try:
+            data = json.loads(content)
+            if isinstance(data, dict) and "label" in data:
+                label = str(data["label"]).strip()
+                if label:
+                    return label
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+        # Try regex extraction
+        match = re.search(r'"label"\s*:\s*"([^"]+)"', content)
+        if match:
+            label = match.group(1).strip()
+            if label:
+                return label
+
+        return ""
+
+    def _call_llm_for_label(self, prompt: str) -> str:
+        """Call LLM via LiteLLMSession to generate a label.
+
+        Consumes the streaming generator and returns the full text content.
+        30-second timeout via thread-based mechanism.
+        """
+        from niu_api.internal.lightrag_manager import _get_litellm_session
+        from niu_api.llm_proxy import get_llm_config
+
+        config = get_llm_config()  # 主 Agent 同款模型
+        session = _get_litellm_session(config)
+        gen = session.chat(messages=[{"role": "user", "content": prompt}])
+
+        # Consume generator with 30s timeout
+        chunks: list[str] = []
+        try:
+            import threading
+
+            result_holder: list = [None, None]  # [content, exception]
+
+            def _consume():
+                try:
+                    while True:
+                        chunk = next(gen)
+                        if isinstance(chunk, str):
+                            chunks.append(chunk)
+                except StopIteration:
+                    pass
+                except Exception as e:
+                    result_holder[1] = e
+
+            thread = threading.Thread(target=_consume, daemon=True)
+            thread.start()
+            thread.join(timeout=30)
+
+            if thread.is_alive():
+                logger.warning("LLM label generation timed out after 30s, using partial result")
+            if result_holder[1]:
+                raise result_holder[1]
+
+        except Exception as e:
+            if not chunks:
+                raise
+            logger.warning("LLM label generation error: %s, using partial result", e)
+
+        return "".join(chunks)
 
     def _summarize_region(
         self,

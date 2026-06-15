@@ -688,3 +688,83 @@ class TestGenerateRegionSummary:
         result = manager._generate_region_summary(entity_summaries)
         assert "Bad-Name" in result
         assert "Pipe-Name" in result
+
+
+class TestGenerateRegionLabel:
+    """Test _generate_region_label — LLM-generated semantic region label."""
+
+    def test_returns_label_from_llm_json(self):
+        """Should extract label from LLM JSON response."""
+        adapter, ingester = _make_mock_adapter_and_ingester()
+        manager = RegionManager(adapter, ingester)
+
+        manager._call_llm_for_label = lambda prompt: '{"label": "编程开发"}'
+
+        entity_summaries = ["Python(skill)", "Django(framework)", "FastAPI(framework)"]
+        existing_regions = []
+
+        result = manager._generate_region_label(entity_summaries, existing_regions)
+        assert result == "编程开发"
+
+    def test_fallback_on_json_parse_failure(self):
+        """Should fallback to entity_names[0] when JSON parse fails after retry."""
+        adapter, ingester = _make_mock_adapter_and_ingester()
+        manager = RegionManager(adapter, ingester)
+
+        def bad_llm(prompt):
+            return "这是一个编程相关的社区"
+        manager._call_llm_for_label = bad_llm
+
+        entity_summaries = ["Python(skill)", "Django(framework)"]
+        existing_regions = []
+
+        result = manager._generate_region_label(entity_summaries, existing_regions)
+        assert result == "Python"
+
+    def test_regex_fallback_on_malformed_json(self):
+        """Should try regex extraction when JSON parse fails."""
+        adapter, ingester = _make_mock_adapter_and_ingester()
+        manager = RegionManager(adapter, ingester)
+
+        manager._call_llm_for_label = lambda prompt: '结果是 {"label": "编程开发"} 哦'
+
+        entity_summaries = ["Python(skill)", "Django(framework)"]
+        existing_regions = []
+
+        result = manager._generate_region_label(entity_summaries, existing_regions)
+        assert result == "编程开发"
+
+    def test_label_truncated_over_8_chars(self):
+        """Label should be truncated to 8 characters."""
+        adapter, ingester = _make_mock_adapter_and_ingester()
+        manager = RegionManager(adapter, ingester)
+
+        manager._call_llm_for_label = lambda prompt: '{"label": "这是一个非常非常长的标签名称"}'
+
+        entity_summaries = ["Python(skill)"]
+        existing_regions = []
+
+        result = manager._generate_region_label(entity_summaries, existing_regions)
+        assert len(result) <= 8
+
+    def test_duplicate_label_gets_suffix(self):
+        """Should add numeric suffix when label duplicates existing region."""
+        adapter, ingester = _make_mock_adapter_and_ingester()
+        manager = RegionManager(adapter, ingester)
+
+        manager._call_llm_for_label = lambda prompt: '{"label": "编程开发"}'
+
+        entity_summaries = ["Python(skill)"]
+        existing_regions = ["编程开发"]
+
+        result = manager._generate_region_label(entity_summaries, existing_regions)
+        assert result.startswith("编程开发")
+        assert result != "编程开发"
+
+    def test_empty_input_returns_unknown(self):
+        """Empty entity_summaries should return 'unknown'."""
+        adapter, ingester = _make_mock_adapter_and_ingester()
+        manager = RegionManager(adapter, ingester)
+
+        result = manager._generate_region_label([], [])
+        assert result == "unknown"
