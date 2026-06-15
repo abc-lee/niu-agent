@@ -221,14 +221,14 @@ class RegionManager:
         except Exception:
             pass
 
+        # Pass 1: Filter valid communities and collect data
+        valid_communities: list[tuple] = []  # (partition, members, entity_summaries)
         for partition in partition_result.partitions:
-            # Step 1: Filter out existing region nodes
             members = [
                 name
                 for name in partition.entity_names
                 if not name.endswith(REGION_SUFFIX)
             ]
-
             if not members or len(members) < MIN_COMMUNITY_SIZE:
                 logger.debug(
                     "社区 %d 成员数 %d < %d，跳过",
@@ -238,27 +238,23 @@ class RegionManager:
                 )
                 continue
 
-            # Build entity summaries for region naming
             entity_summaries = self._build_entity_summaries(
                 members, partition.entity_types, partition.entity_name_to_type
             )
+            valid_communities.append((partition, members, entity_summaries))
 
-            # Step 2: Generate region label via LLM and summary via heuristic
-            region_label = self._generate_region_label(entity_summaries, existing_labels)
+        # Pass 2: Generate all labels (batch for 3+, individual for fewer)
+        entity_summaries_list = [es for _, _, es in valid_communities]
+        labels = self._generate_labels(entity_summaries_list, existing_labels)
+
+        # Pass 3: Build entities, relationships, chunks using generated labels
+        for (partition, members, entity_summaries), region_label in zip(valid_communities, labels):
             region_summary = self._generate_region_summary(entity_summaries)
-
-            # Track label for dedup in subsequent iterations
-            existing_labels.append(region_label)
-
-            # Pick representative: first entity name (highest-degree in community)
             representative = members[0].replace("<SEP>", "-").replace("|", "-") if members else ""
             community_id = f"community_{partition.region_id}"
             now = time.time()
-
-            # Full region entity name
             region_name = f"{region_label}{REGION_SUFFIX}"
 
-            # Step 3: Collect region master node entity
             description = _encode_description(
                 summary=region_summary,
                 region_id=community_id,
@@ -271,12 +267,11 @@ class RegionManager:
                 "entity_name": region_name,
                 "entity_type": REGION_ENTITY_TYPE,
                 "description": description,
-                "source_id": REGION_SOURCE_ID,  # inject_custom_kg rewrites to "brain_编程开发脑区"
+                "source_id": REGION_SOURCE_ID,
             })
 
-            # Step 4: Collect chunk for vector search visibility
             top_members = members[:MAX_SUMMARY_ENTITIES]
-            chunk_source_id = f"{REGION_SOURCE_ID}_{region_name}"  # "brain_编程开发脑区"
+            chunk_source_id = f"{REGION_SOURCE_ID}_{region_name}"
 
             all_chunks.append({
                 "content": f"{region_label}脑区：{', '.join(top_members)}",
@@ -284,7 +279,6 @@ class RegionManager:
                 "file_path": REGION_FILE_PATH,
             })
 
-            # Step 5: Collect anchor relation from Niu to region
             all_relationships.append({
                 "src_id": NIU_ENTITY,
                 "tgt_id": region_name,
@@ -295,7 +289,6 @@ class RegionManager:
                 "file_path": REGION_FILE_PATH,
             })
 
-            # Step 6: Collect belongs_to relations from region to each member
             for member in members:
                 all_relationships.append({
                     "src_id": region_name,
@@ -1024,6 +1017,155 @@ class RegionManager:
             logger.warning("LLM label generation error: %s, using partial result", e)
 
         return "".join(chunks)
+
+    def _generate_labels(
+        self,
+        entity_summaries_list: list[list[str]],
+        existing_regions: list[str],
+    ) -> list[str]:
+        """Generate labels for multiple regions, using batch or individual calls.
+
+        Uses batch LLM call for 3+ regions, individual for fewer.
+        """
+        if len(entity_summaries_list) >= 3:
+            try:
+                batch_result = self._generate_region_labels_batch(
+                    entity_summaries_list, existing_regions
+                )
+                # Check if batch returned all labels
+                labels = []
+                missing_indices = []
+                for i in range(len(entity_summaries_list)):
+                    if i in batch_result:
+                        labels.append(batch_result[i])
+                    else:
+                        labels.append(None)
+                        missing_indices.append(i)
+
+                # Fallback to individual for missing
+                for i in missing_indices:
+                    try:
+                        label = self._generate_region_label(
+                            entity_summaries_list[i], existing_regions
+                        )
+                        labels[i] = label
+                    except Exception:
+                        labels[i] = entity_summaries_list[i][0].split("(")[0] if entity_summaries_list[i] else "unknown"
+
+                # De-duplicate: if batch LLM returned same label for multiple regions
+                seen_labels = set(existing_regions)
+                for i, label in enumerate(labels):
+                    if label is not None and label in seen_labels:
+                        base = label[:7]
+                        n = 2
+                        candidate = f"{base}{n}"
+                        while candidate in seen_labels and n < 10:
+                            n += 1
+                            candidate = f"{base}{n}"
+                        labels[i] = candidate
+                    if label is not None:
+                        seen_labels.add(label)
+
+                # Final truncation to 8 chars (safety net)
+                for i, label in enumerate(labels):
+                    if label is not None and len(label) > 8:
+                        labels[i] = label[:8]
+
+                return labels
+            except Exception as e:
+                logger.warning("Batch label generation failed: %s, falling back to individual", e)
+
+        # Individual calls for < 3 regions or batch failure
+        labels = []
+        for entity_summaries in entity_summaries_list:
+            label = self._generate_region_label(entity_summaries, existing_regions)
+            labels.append(label)
+            existing_regions = existing_regions + [label]  # Avoid in-place mutation
+
+        return labels
+
+    def _generate_region_labels_batch(
+        self,
+        entity_summaries_list: list[list[str]],
+        existing_regions: list[str],
+    ) -> dict[int, str]:
+        """Generate labels for all regions in a single LLM call.
+
+        Returns dict of {index: label} for successfully parsed regions.
+        """
+        # Build batch prompt
+        community_lines = []
+        for i, entity_summaries in enumerate(entity_summaries_list):
+            entity_parts = []
+            for s in entity_summaries[:20]:
+                entity_parts.append(s)
+            community_lines.append(f"社区{i}实体：{', '.join(entity_parts)}")
+
+        existing_str = ", ".join(existing_regions) if existing_regions else "无"
+        communities_str = "\n".join(community_lines)
+
+        prompt = (
+            "你是一个知识图谱分析师。根据以下社区内的实体列表，为每个社区生成一个简洁的中文标签名。\n\n"
+            "要求：\n"
+            "- 每个标签8个字以下\n"
+            "- 概括该社区实体的共同主题\n"
+            "- 不要跟现有脑区重名或语义接近\n"
+            "- 只能返回JSON格式：{\"regions\": [{\"id\": 0, \"label\": \"标签1\"}, ...]}\n"
+            "- 返回其他任何格式或内容将判定失败\n\n"
+            f"现有脑区：{existing_str}\n\n"
+            f"{communities_str}"
+        )
+
+        # Token truncation
+        try:
+            import litellm
+            token_count = litellm.token_counter(model="gpt-4o", text=prompt)
+            context_window = _read_context_window_size()
+            if token_count > context_window - 500:
+                while len(community_lines) > 1 and token_count > context_window - 500:
+                    community_lines.pop()
+                    communities_str = "\n".join(community_lines)
+                    prompt = (
+                        "你是一个知识图谱分析师。根据以下社区内的实体列表，为每个社区生成一个简洁的中文标签名。\n\n"
+                        "要求：\n"
+                        "- 每个标签8个字以下\n"
+                        "- 概括该社区实体的共同主题\n"
+                        "- 不要跟现有脑区重名或语义接近\n"
+                        "- 只能返回JSON格式：{\"regions\": [{\"id\": 0, \"label\": \"标签1\"}, ...]}\n"
+                        "- 返回其他任何格式或内容将判定失败\n\n"
+                        f"现有脑区：{existing_str}\n\n"
+                        f"{communities_str}"
+                    )
+                    token_count = litellm.token_counter(model="gpt-4o", text=prompt)
+        except Exception:
+            pass
+
+        # Call LLM
+        content = self._call_llm_for_label(prompt)
+
+        # Parse batch response
+        try:
+            data = json.loads(content.strip())
+            if isinstance(data, dict) and "regions" in data:
+                result = {}
+                for item in data["regions"]:
+                    idx = item.get("id")
+                    label = str(item.get("label", "")).strip()
+                    if idx is not None and label and len(label) <= 8:
+                        result[int(idx)] = label
+                return result
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+        # Try regex fallback for batch
+        result = {}
+        for match in re.finditer(r'"id"\s*:\s*(\d+)\s*,\s*"label"\s*:\s*"([^"]+)"', content):
+            idx = int(match.group(1))
+            label = match.group(2).strip()
+            if label and len(label) <= 8:
+                result[idx] = label
+
+        return result
 
     def _summarize_region(
         self,
