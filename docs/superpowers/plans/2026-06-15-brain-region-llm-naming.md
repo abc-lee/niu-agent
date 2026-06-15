@@ -810,7 +810,7 @@ def create_region_nodes(
         members = [
             name
             for name in partition.entity_names
-            if not (name.endswith(REGION_SUFFIX) or name.startswith(REGION_PREFIX))
+            if not name.endswith(REGION_SUFFIX)
         ]
 
         if not members or len(members) < MIN_COMMUNITY_SIZE:
@@ -1380,7 +1380,7 @@ def create_region_nodes(
         members = [
             name
             for name in partition.entity_names
-            if not (name.endswith(REGION_SUFFIX) or name.startswith(REGION_PREFIX))
+            if not name.endswith(REGION_SUFFIX)
         ]
         if not members or len(members) < MIN_COMMUNITY_SIZE:
             logger.debug(
