@@ -4,9 +4,9 @@
 
 **Goal:** 将脑区命名从启发式（取第一个实体名）改为 LLM 生成语义化名称，同时修复 description 格式和 chunks 缺失问题，使脑区可被向量检索命中。
 
-**Architecture:** 拆分 `_summarize_region()` 为 `_generate_region_label()`（LLM）和 `_generate_region_summary()`（启发式）；description 改为 top-10 实体名 `<SEP>` 拼接；`inject_custom_kg` 带实体级 source_id 匹配的 chunks。
+**Architecture:** 拆分 `_summarize_region()` 为 `_generate_region_label()`（LLM）和 `_generate_region_summary()`（启发式）；description 改为 top-10 实体名 `<SEP>` 拼接；chunks 的 source_id 用 unique 格式匹配 entity 重写后的 source_id，避免虚拟 chunk 重复生成。
 
-**Tech Stack:** LiteLLMSession、litellm.token_counter
+**Tech Stack:** LiteLLMSession、litellm.token_counter(model="gpt-4o")
 
 ---
 
@@ -38,8 +38,8 @@
 **输入组装**：
 - 社区内实体名+类型列表：`"Python(skill), Django(framework), FastAPI(framework), ..."`
 - 现有脑区标签列表（避免重名）：从 `RegionManager.get_all_regions()` 获取
-- 组装完后用 `litellm.token_counter(model=model_name, text=prompt_text)` 算 token 数，超过模型上下文窗口则截断实体列表（从尾部删）
-- 上下文窗口大小从 `~/.niu/preferences.json` 的 `context.contextWindowSize` 读取（已有函数 `_read_context_window_tokens()` 在 `agent/subagent.py`）
+- 组装完后用 `litellm.token_counter(model="gpt-4o", text=prompt_text)` 算 token 数（用 "gpt-4o" 作为标准 tokenizer，与项目惯例一致），超过模型上下文窗口则截断实体列表（从尾部删）
+- 上下文窗口大小在 `region_manager.py` 中本地实现读取函数，直接读取 `config/user-config.json` 的 `context.contextWindowSize` 字段（约10行代码），不跨包 import `agent/subagent.py` 的私有函数
 
 **LLM prompt 模板**：
 ```
@@ -63,7 +63,7 @@
 from niu_api.internal.lightrag_manager import _get_litellm_session
 from niu_api.llm_proxy import get_llm_config
 
-config = get_llm_config()  # 主 Agent 同款模型
+config = get_llm_config()  # 主 Agent 同款模型（脑区命名需要高质量语义理解，不用 LightRAG 的廉价模型）
 session = _get_litellm_session(config)
 gen = session.chat(messages=[{"role": "user", "content": prompt}])
 
@@ -105,6 +105,8 @@ Python<SEP>Django<SEP>FastAPI<SEP>Redis<SEP>Celery<SEP>brain_meta_region_id:comm
 
 **top-10 的选取**：按社区内度数排序（连接数最多的排前面），不是 igraph 顶点 ID 顺序。
 
+**summary 的用途说明**：description 中的 `<SEP>` 分隔的实体名是给向量检索用的，不是给前端展示用的。前端展示脑区时，`_parse_description()` 解析出的 summary 是 `"Python<SEP>Django<SEP>..."` 格式，需要在展示层做后处理（将 `<SEP>` 替换为 `"、"`）才能人类可读。
+
 **现有脑区迁移**：`update_region_summaries()` 会在下次 sync 时用新格式覆盖旧脑区的 description，旧格式自动升级，无需单独迁移。
 
 ### 4. `create_region_nodes()` — 加入 chunks
@@ -113,30 +115,33 @@ Python<SEP>Django<SEP>FastAPI<SEP>Redis<SEP>Celery<SEP>brain_meta_region_id:comm
 
 **改为**：为每个脑区生成一个 chunk，内容包含脑区标签名 + top 实体名列表
 
-**关键**：必须确保 chunk 的 `source_id` 覆盖 entity 的 `source_id`，避免 `inject_custom_kg` 的自动虚拟 chunk 机制生成重复内容。具体做法：
+**关键**：`inject_custom_kg` 会将每个 entity 的 `source_id` 重写为 unique 格式 `f"{source_id}_{entity_name}"`（`lightrag_adapter.py:1596`）。因此 chunk 的 `source_id` 也必须用同样的 unique 格式，才能让 entity 重写后的 `source_id` 在 `covered_source_ids` 中被匹配，从而跳过虚拟 chunk 生成。
 
 ```python
-# 每个 entity 的 source_id 设为 chunk 的 source_id
-chunk_source_id = f"brain_region:{region_label}"
+# inject_custom_kg 的 source_id 参数
+base_source_id = "brain"
+
+# entity 会被重写为: "brain_编程开发脑区"
+# chunk 的 source_id 也必须用 unique 格式才能匹配
+chunk_source_id = f"brain_编程开发脑区"  # f"{base_source_id}_{region_name}"
 
 all_entities.append({
     "entity_name": region_name,
     "entity_type": REGION_ENTITY_TYPE,
     "description": description,
-    "source_id": chunk_source_id,  # 跟 chunk 对齐
+    "source_id": base_source_id,  # inject_custom_kg 会自动重写为 "brain_编程开发脑区"
 })
 
-# chunk 内容
-chunks=[{
+all_chunks.append({
     "content": f"{region_label}脑区：{', '.join(top_members)}",
-    "source_id": chunk_source_id,  # 跟 entity 对齐
+    "source_id": chunk_source_id,  # "brain_编程开发脑区"，与 entity 重写后的格式一致
     "file_path": REGION_FILE_PATH,
-}]
+})
 ```
 
-这样 `chunk_to_source_map[chunk_source_id] = chunk_id`，entity 的 `source_id` 能在 map 中找到对应 chunk，不会触发虚拟 chunk 生成。
+这样 `chunk_to_source_map["brain_编程开发脑区"] = chunk_id`，entity 重写后的 `"brain_编程开发脑区"` 能在 map 中找到对应 chunk，不会触发虚拟 chunk 生成。
 
-**注意**：entities、relationships、chunks 必须在同一次 `inject_custom_kg` 调用中传入（KG 开发字典陷阱 #19），否则 source_id 映射会变成 UNKNOWN。
+**注意**：entities、relationships、chunks 必须在同一次 `inject_custom_kg` 调用中传入（KG 开发字典陷阱 #19），否则 source_id 映射会变成 UNKNOWN。`inject_custom_kg` 会修改传入 entity dict 的 `source_id` 字段（重写为 unique 格式），此副作用不影响当前流程，但实现时需注意不要在调用后复用该 dict。
 
 ### 5. 社区内度数计算
 
@@ -145,13 +150,11 @@ chunks=[{
 **改为**：在 `_build_partitions()` 中，利用 igraph 的子图功能计算社区内度数，按度数降序排列 `entity_names`：
 
 ```python
-# 对每个社区
-member_vids = [v for v in membership if membership[v] == community_id]
-subgraph = ig.subgraph(member_vids)
+# 在 _build_partitions 中，member_indices 已经是当前社区的顶点列表
+subgraph = graph.subgraph(member_indices)
 degrees = subgraph.degree()
-# 按 degree 降序排列 member_vids
-sorted_pairs = sorted(zip(member_vids, degrees), key=lambda x: x[1], reverse=True)
-sorted_names = [node_names[vid] for vid, _ in sorted_pairs]
+sorted_pairs = sorted(zip(member_indices, degrees), key=lambda x: x[1], reverse=True)
+sorted_names = [graph.vs[vid]["name"] for vid, _ in sorted_pairs]
 ```
 
 这样 `entity_names[0]` 才是真正的社区中心实体，`representative` 和 description 中的 top-10 实体也都按此排序。
@@ -181,12 +184,16 @@ sorted_names = [node_names[vid] for vid, _ in sorted_pairs]
 
 3 个以下则逐个调用（避免批量 prompt 格式不稳定）。
 
+**批量 token 截断**：批量 prompt 中每个社区只保留 top-20 实体名（按度数排序），避免社区过多时超出上下文窗口。组装后同样用 `litellm.token_counter(model="gpt-4o", text=prompt_text)` 检查，超限则从尾部社区开始删除直到符合。
+
+**批量容错**：如果 LLM 返回的 region 数量少于输入社区数量，对缺失的社区降级为逐个调用。逐个调用也失败则 fallback 到 `entity_names[0]`。
+
 ## 不改动
 
 - **changelog 事件中的 `entity:` 前缀**：前端和 renderer.js 依赖，不动
 - **默认脑区**：`create_default_regions()` 创建的 6 个默认脑区，已有好的命名，不需要 LLM 命名。其 `inject_custom_kg(chunks=[])` 的问题由虚拟 chunk 机制自动兜底。
 - **RegionSync 同步间隔**：保持 86400 秒（24小时）
-- **Leiden 算法参数**：不动
+- **Leiven 算法参数**：不动
 
 ## 验证标准
 
@@ -196,3 +203,5 @@ sorted_names = [node_names[vid] for vid, _ in sorted_pairs]
 4. LLM 调用失败时 fallback 到启发式命名，不阻塞流程
 5. `update_region_summaries()` 不触发 LLM 调用，只更新 description 格式
 6. 旧格式 description 在下次 sync 时自动升级为新格式
+7. 批量 prompt 返回不完整时，缺失社区降级为逐个调用
+8. summary 的 `<SEP>` 分隔格式用于向量检索，展示层做 `<SEP>` → `"、"` 替换
