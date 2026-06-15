@@ -403,3 +403,48 @@ class TestBuildPartitionsDegreeSort:
         p0 = partitions[0]
         assert p0.entity_names[0] == "B"  # Highest degree first
         assert set(p0.entity_names) == {"A", "B", "C"}
+
+
+# ============== 脑区节点过滤测试 ==============
+
+
+class TestBrainRegionFiltering:
+    """Test that brainregion nodes are filtered from Leiden input."""
+
+    def test_brainregion_nodes_filtered(self):
+        """Brainregion nodes and their edges should be excluded from Leiden input."""
+        nodes = [
+            {"id": "Python", "name": "Python", "type": "language"},
+            {"id": "Django", "name": "Django", "type": "framework"},
+            {"id": "社交实体脑区", "name": "社交实体脑区", "type": "brainregion"},
+        ]
+        edges = [
+            {"source": "Python", "target": "Django", "relation": "related_to", "weight": 1.0},
+            {"source": "社交实体脑区", "target": "Python", "relation": "包含", "weight": 0.5},
+            {"source": "社交实体脑区", "target": "Django", "relation": "包含", "weight": 0.5},
+        ]
+        adapter = _make_mock_adapter(nodes, edges)
+        detector = CommunityDetector(adapter)
+
+        result = detector.detect_communities(min_graph_size=1, min_community_size=1)
+
+        # Brain region node should not appear in any partition's entity_names
+        for p in result.partitions:
+            assert "社交实体脑区" not in p.entity_names
+
+    def test_brainregion_by_suffix_filtered(self):
+        """Nodes with name ending in 脑区 should be filtered even without brainregion type."""
+        nodes = [
+            {"id": "Python", "name": "Python", "type": "language"},
+            {"id": "自定义脑区", "name": "自定义脑区", "type": "other"},
+        ]
+        edges = [
+            {"source": "自定义脑区", "target": "Python", "relation": "包含", "weight": 0.5},
+        ]
+        adapter = _make_mock_adapter(nodes, edges)
+        detector = CommunityDetector(adapter)
+
+        result = detector.detect_communities(min_graph_size=1, min_community_size=1)
+
+        for p in result.partitions:
+            assert "自定义脑区" not in p.entity_names

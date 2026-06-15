@@ -83,6 +83,11 @@
         "label": "生活事务",
         "description": "日常生活相关的日程、健康、财务",
         "priority": "category"
+      },
+      {
+        "label": "组织机构",
+        "description": "公司、部门、机构等组织实体和关系网络",
+        "priority": "category"
       }
     ]
   }
