@@ -17,6 +17,7 @@ from typing import Optional
 from loguru import logger
 
 from niu_api.internal.lightrag_manager import wait_lightrag_ready
+from niu_api.internal.region_manager import BELONGS_TO_RELATION
 
 try:
     import yaml
@@ -466,7 +467,7 @@ class SkillSync:
             relationships = [{
                 "src_id": "知识体系脑区",
                 "tgt_id": entity_name,
-                "keywords": "_region:contains",
+                "keywords": BELONGS_TO_RELATION,
                 "description": f"{skill_name} 属于知识体系",
                 "source_id": source_id,
                 "weight": 1.0,

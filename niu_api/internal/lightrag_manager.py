@@ -345,7 +345,7 @@ def get_region_members(region_name: str) -> list[str]:
     """Get member entity names for a specific brain region.
 
     Directly reads from the NetworkX in-memory graph, finding entities
-    connected to the region via "_region:contains" edges.
+    connected to the region via "包含" edges.
 
     This is a pure synchronous read — safe to call from anywhere,
     including LLM proxy callbacks.
@@ -373,12 +373,12 @@ def get_region_members(region_name: str) -> list[str]:
         with graph_read_lock():
             snapshot = nx_graph.copy()
 
-        # Find members via "_region:contains" edges (region -> member)
+        # Find members via "包含" edges (region -> member)
         # Note: LightRAG stores edge type in 'keywords' field, not 'type'
         members = []
         for src, tgt, data in snapshot.edges(data=True):
             edge_type = data.get("keywords") or data.get("type", "")
-            if edge_type.lower() == "_region:contains":
+            if edge_type.lower() == "包含":
                 if src == region_name:
                     members.append(tgt)
                 elif tgt == region_name:
@@ -423,7 +423,7 @@ def get_all_region_members() -> dict[str, list[str]]:
         region_members: dict[str, list[str]] = {}
         for src, tgt, data in snapshot.edges(data=True):
             edge_type = data.get("keywords") or data.get("type", "")
-            if edge_type.lower() == "_region:contains":
+            if edge_type.lower() == "包含":
                 # 无向图中 src/tgt 顺序不确定，需判断哪端是脑区
                 if src.endswith("脑区"):
                     region, member = src, tgt

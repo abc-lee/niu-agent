@@ -788,7 +788,7 @@ async function expandNode(nodeId) {
   const orig = currentData.nodes.find(n => n.id === nodeId);
   if (!orig || orig.nodeType === 'Document') return;
 
-  const entityId = orig.id.replace(/^entity:/, '');
+  const entityId = orig.id;
 
   try {
     const result = await window.electronAPI.exploreNode(entityId, 2, 0, 'both');
@@ -798,7 +798,7 @@ async function expandNode(nodeId) {
     let addedCount = 0;
 
     result.nodes.forEach(n => {
-      const nid = n.id.startsWith('entity:') ? n.id : `entity:${n.id}`;
+      const nid = n.id;
       if (!existingIds.has(nid)) {
         currentData.nodes.push({
           id: nid, label: n.label || n.name, nodeType: n.nodeType || 'Entity',
@@ -811,8 +811,8 @@ async function expandNode(nodeId) {
     });
 
     result.edges.forEach(edge => {
-      const srcId = edge.source.startsWith('entity:') ? edge.source : `entity:${edge.source}`;
-      const tgtId = edge.target.startsWith('entity:') ? edge.target : `entity:${edge.target}`;
+      const srcId = edge.source;
+      const tgtId = edge.target;
       if (!existingIds.has(srcId) || !existingIds.has(tgtId)) return;
       const edgeExists = currentData.edges.some(e => e.source === srcId && e.target === tgtId && e.relation === edge.relation);
       if (!edgeExists) {

@@ -163,22 +163,18 @@ def _normalize_nodes(nodes: list) -> list:
 
     Frontend expects: {id, label, name, nodeType, entityType, description, uri, source}
 
-    Entity node IDs are prefixed with "entity:" to match the changelog event format.
-    Document node IDs (file paths) are kept as-is.
     nodeType is set to "Entity" for entity nodes (not the specific type like "Person"),
-    with the specific type in entityType. This matches the changelog's entity_created format.
+    with the specific type in entityType. Document nodes keep nodeType "Document".
     """
     result = []
     for n in nodes:
         raw_id = n.get("id", "")
         node_type = n.get("type", "other")
-        # Entity nodes: add entity: prefix, set nodeType to "Entity"
-        # Document nodes: keep ID as-is, nodeType stays "Document"
         if node_type.lower() == "document":
             node_id = raw_id
             normalized_type = "Document"
         else:
-            node_id = f"entity:{raw_id}" if not raw_id.startswith("entity:") else raw_id
+            node_id = raw_id
             normalized_type = "Entity"
         result.append({
             "id": node_id,
@@ -198,18 +194,11 @@ def _normalize_edges(edges: list) -> list:
 
     Frontend expects: {source, target, relation, edgeType, confidence}
     Adapter returns:  {source, target, relation, description, weight}
-
-    Source/target IDs are prefixed with "entity:" to match the node ID format.
     """
     result = []
     for e in edges:
         src = e.get("source", e.get("src_id", ""))
         tgt = e.get("target", e.get("tgt_id", ""))
-        # Add entity: prefix if not already present
-        if not src.startswith("entity:"):
-            src = f"entity:{src}"
-        if not tgt.startswith("entity:"):
-            tgt = f"entity:{tgt}"
         result.append({
             "source": src,
             "target": tgt,
@@ -646,7 +635,7 @@ def hub_entities(
             attrs = snapshot.nodes[node_name] if snapshot.has_node(node_name) else {}
             nodes.append(
                 {
-                    "id": f"entity:{node_name}",
+                    "id": node_name,
                     "label": node_name,
                     "name": node_name,
                     "nodeType": "Entity",
@@ -665,8 +654,8 @@ def hub_entities(
                     continue
                 edges.append(
                     {
-                        "source": f"entity:{u}",
-                        "target": f"entity:{v}",
+                        "source": u,
+                        "target": v,
                         "relation": data.get("keywords", ""),
                         "confidence": confidence,
                         "edgeType": "RELATED_TO",
@@ -688,8 +677,7 @@ def explore_node(request: ExploreRequest):
     """
     adapter = _get_adapter()
 
-    # Strip entity: prefix if present — adapter expects bare entity names
-    entity_name = request.entity_id.removeprefix("entity:")
+    entity_name = request.entity_id
     result = adapter.explore_node(
         entity_name=entity_name,
         depth=request.depth,
@@ -707,7 +695,7 @@ def explore_node(request: ExploreRequest):
     if "center" in result and isinstance(result["center"], dict):
         c = result["center"]
         result["center"] = {
-            "id": f"entity:{c.get('id', '')}" if not c.get("id", "").startswith("entity:") else c.get("id", ""),
+            "id": c.get("id", ""),
             "label": c.get("name", c.get("id", "")),
             "name": c.get("name", ""),
             "nodeType": "Entity",
@@ -732,8 +720,8 @@ def find_path(request: FindPathRequest):
     if g is None:
         return {"status": "error", "message": "LightRAG not available"}
 
-    src = request.from_id.removeprefix("entity:")
-    tgt = request.to_id.removeprefix("entity:")
+    src = request.from_id
+    tgt = request.to_id
 
     try:
         from niu_api.internal.lightrag_manager import graph_read_lock
@@ -754,7 +742,7 @@ def find_path(request: FindPathRequest):
             attrs = snapshot.nodes[node_name] if snapshot.has_node(node_name) else {}
             nodes.append(
                 {
-                    "id": f"entity:{node_name}",
+                    "id": node_name,
                     "label": node_name,
                     "name": node_name,
                     "nodeType": "Entity",
@@ -774,8 +762,8 @@ def find_path(request: FindPathRequest):
                 data = snapshot.edges[u, v]
                 edges.append(
                     {
-                        "source": f"entity:{u}",
-                        "target": f"entity:{v}",
+                        "source": u,
+                        "target": v,
                         "relation": data.get("keywords", ""),
                         "confidence": data.get("weight", 1.0),
                         "edgeType": "RELATED_TO",
@@ -785,8 +773,8 @@ def find_path(request: FindPathRequest):
                 data = snapshot.edges[v, u]
                 edges.append(
                     {
-                        "source": f"entity:{v}",
-                        "target": f"entity:{u}",
+                        "source": v,
+                        "target": u,
                         "relation": data.get("keywords", ""),
                         "confidence": data.get("weight", 1.0),
                         "edgeType": "RELATED_TO",
@@ -834,7 +822,7 @@ def list_entities(
         for node_name, attrs in collected:
             nodes.append(
                 {
-                    "id": f"entity:{node_name}",
+                    "id": node_name,
                     "label": node_name,
                     "name": node_name,
                     "nodeType": "Entity",
@@ -850,8 +838,8 @@ def list_entities(
             if u in node_names and v in node_names:
                 edges.append(
                     {
-                        "source": f"entity:{u}",
-                        "target": f"entity:{v}",
+                        "source": u,
+                        "target": v,
                         "relation": data.get("keywords", ""),
                         "confidence": data.get("weight", 1.0),
                         "edgeType": "RELATED_TO",
@@ -894,7 +882,7 @@ def list_concepts(limit: int = Query(default=100, ge=1, le=500)):
         for node_name, attrs in collected:
             nodes.append(
                 {
-                    "id": f"entity:{node_name}",
+                    "id": node_name,
                     "label": node_name,
                     "name": node_name,
                     "nodeType": "Concept",
@@ -910,8 +898,8 @@ def list_concepts(limit: int = Query(default=100, ge=1, le=500)):
             if u in node_names and v in node_names:
                 edges.append(
                     {
-                        "source": f"entity:{u}",
-                        "target": f"entity:{v}",
+                        "source": u,
+                        "target": v,
                         "relation": data.get("keywords", ""),
                         "confidence": data.get("weight", 1.0),
                         "edgeType": "RELATED_TO",
@@ -970,7 +958,7 @@ def surprising_connections(
             attrs = snapshot.nodes[node_name] if snapshot.has_node(node_name) else {}
             nodes.append(
                 {
-                    "id": f"entity:{node_name}",
+                    "id": node_name,
                     "label": node_name,
                     "name": node_name,
                     "nodeType": "Entity",
@@ -991,8 +979,8 @@ def surprising_connections(
                     continue
                 edges.append(
                     {
-                        "source": f"entity:{u}",
-                        "target": f"entity:{v}",
+                        "source": u,
+                        "target": v,
                         "relation": data.get("keywords", ""),
                         "confidence": confidence,
                         "edgeType": "RELATED_TO",

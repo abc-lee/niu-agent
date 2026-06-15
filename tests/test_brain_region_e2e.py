@@ -33,7 +33,7 @@ class TestE2EBrainRegionInjection:
         # Step 3: Build static prompt
         static = build_static_brain_region_prompt()
         assert "niu" in static
-        assert "_region:contains" in static
+        assert "包含" in static
 
         # Step 4: Build dynamic prompt (mock get_brain_regions)
         with patch("niu_api.internal.brain_region_prompt.get_brain_regions", return_value=["聊天历史脑区", "文档库脑区"]):
@@ -206,7 +206,7 @@ class TestE2EBrainRegionInjection:
         # Static part present
         assert "大脑区域架构" in content
         assert "niu" in content
-        assert "_region:contains" in content
+        assert "包含" in content
         # Dynamic part present
         assert "当前图谱中的脑区" in content
         assert "自定义区域" in content

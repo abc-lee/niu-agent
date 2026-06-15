@@ -33,7 +33,7 @@ mcpServers:
 
 **关系（Relation）**= 两个实体之间的连接，有方向
 ```
-例子：知识体系脑区 --[_region:contains]--> Python
+例子：知识体系脑区 --[包含]--> Python
 意思是：用户偏好 Python
 ```
 
@@ -47,7 +47,7 @@ mcpServers:
 
 2. **图遍历** `lightrag_get_graph(entity_name="Python", depth=1)`
    → 从"Python"出发，找到所有直接相连的实体和关系
-   → 主 Agent 会看到：知识体系脑区 --[_region:contains]--> Python
+   → 主 Agent 会看到：知识体系脑区 --[包含]--> Python
    → 所以你建的关系必须有语义：关系类型要能读成一句话（"用户偏好Python"、"Python属于程序记忆区"）
 
 ### 写入→检索 完整示例
@@ -55,7 +55,7 @@ mcpServers:
 **你写入**：
 ```
 lightrag_insert_entity(name="FastAPI", entity_type="tool", description="Python Web框架，用户用于构建API服务")
-lightrag_insert_relation(src_id="知识体系脑区", tgt_id="FastAPI", relation="_region:contains")
+lightrag_insert_relation(src_id="知识体系脑区", tgt_id="FastAPI", relation="包含")
 ```
 
 **以后用户问"我擅长什么Web框架？"，主 Agent 检索**：
@@ -65,7 +65,7 @@ lightrag_search_entities(query="Web框架", top_k=5)
 → 主 Agent 读到 description，知道用户擅长 FastAPI，用于构建API服务
 
 lightrag_get_graph(entity_name="FastAPI", depth=1)
-→ 返回：知识体系脑区 --[_region:contains]--> FastAPI
+→ 返回：知识体系脑区 --[包含]--> FastAPI
 → 主 Agent 读到关系，确认"用户擅长 FastAPI"
 ```
 
@@ -135,12 +135,12 @@ lightrag_get_graph(entity_name="FastAPI", depth=1)
 3. **脑区关联**：将实体关联到最合适的脑区
    - **先检索现有脑区**：`lightrag_search_entities(query="脑区", top_k=20)` 获取所有脑区节点
    - **判断归属**：看当前实体是否属于某个已有脑区（如已有"Python开发脑区"，新实体"FastAPI"就属于它）
-   - **适合就连**：`lightrag_insert_relation(src_id="Python开发脑区", tgt_id="FastAPI", relation="_region:contains")`
+   - **适合就连**：`lightrag_insert_relation(src_id="Python开发脑区", tgt_id="FastAPI", relation="包含")`
    - **不适合不强求**：没有合适的脑区时，连到默认脑区（聊天提及→`聊天历史脑区`，文档产生→`文档库脑区`，技能工具→`知识体系脑区`）
    - **不要手动创建新脑区**——同类实体连到默认脑区多了以后，Leiden 社区发现算法会自动把它们聚类成新脑区
 
 4. **脑区归入**（最后做）：将实体归入对应脑区
-   - `lightrag_insert_relation(src_id="脑区名", tgt_id=entity, relation="_region:contains")`
+   - `lightrag_insert_relation(src_id="脑区名", tgt_id=entity, relation="包含")`
    - 先用 `lightrag_search_entities` 查找实体应归入哪个脑区
    - 判断标准（需用户明确表达，不因随口一提就标注）：
      - `prefers`：用户明确表达偏好（"我喜欢..."、"我更喜欢..."、"我习惯..."）
@@ -195,12 +195,11 @@ lightrag_get_graph(entity_name="FastAPI", depth=1)
 
 | 边类型 | keywords 格式 | 含义 | 方向 |
 |--------|-------------|------|------|
-| 脑区包含 | `_region:contains` | 脑区主节点 → 子实体 | src=脑区, tgt=实体 |
-| Session兜底 | `包含` | Session → 临时实体 | src=session, tgt=实体 |
+| 包含 | `包含` | 父节点 → 子实体 | src=脑区/session, tgt=实体 |
 | 语义关系 | 无前缀 | 真实语义关系 | src→tgt 按语义方向 |
 | 时间链 | 无前缀 | 时间顺序/因果 | src=先, tgt=后 |
 
-**注意**：`_region:contains` 方向是 脑区→实体（src=xxx脑区, tgt=entity），不要反向。
+**注意**：`包含` 方向是 脑区→实体（src=xxx脑区, tgt=entity），不要反向。
 
 ## 工具使用规范
 
@@ -211,7 +210,7 @@ lightrag_get_graph(entity_name="FastAPI", depth=1)
   - `description`：描述（必填，只写实体含义，≤ 80 字符）
 - `lightrag_insert_relation(src_id, tgt_id, relation, description, source_id, file_path)`
   - `src_id`/`tgt_id`：源/目标实体名称（必填）
-  - `relation`：关系类型（必填，有语义的动词或下划线前缀）
+  - `relation`：关系类型（必填，有语义的动词或名词）
 - `lightrag_search_entities(query, keywords, top_k)` — **必须提供 keywords 参数**：你是大模型，自己就能从 query 中提取核心关键词，不需要 LightRAG 再调 LLM 提取。提供 keywords 近即时返回（<1秒），不提供需 5-30 秒且可能失败。top_k=5（硬性要求）
 - `lightrag_list_entities(list_type, entity_type, limit)` — 按类型枚举实体（如查看所有人物、所有技能）。entity_type 支持按类型过滤（person/skill/tool/knowledge/photo/concept）
 - `lightrag_get_graph(action="explore", entity_name, depth)` — depth 建议 1-2

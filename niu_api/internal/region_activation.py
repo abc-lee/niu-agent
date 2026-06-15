@@ -222,7 +222,7 @@ class RegionActivationManager:
     def refresh_entity_mapping(self) -> None:
         """Lightweight refresh of entity-to-region mapping and type counts.
 
-        Reads _region:contains edges and node entity_types from the NetworkX
+        Reads 包含 edges and node entity_types from the NetworkX
         graph, then updates _entity_to_region, _member_counts, and
         _entity_type_counts. Preserves activation state, neighbors, and
         co-activation data.

@@ -19,6 +19,7 @@ import threading
 from typing import TYPE_CHECKING
 
 from niu_api.internal.region_activation import RegionActivationManager
+from niu_api.internal.region_manager import STRUCTURAL_EDGE_TYPES_LOWER
 
 logger = logging.getLogger(__name__)
 
@@ -396,9 +397,9 @@ def _reinforce_edge_weight(region_id: str, delta: float = REINFORCE_DELTA) -> No
     """Boost weight of structural edges for a brain region node.
 
     Boosts edges with brain region related prefixes:
-    - _region:contains (region contains members)
+    - 包含 (region contains members)
     - _session:* (session related)
-    - brain_region_anchor (region anchor)
+    - 脑区锚点 (region anchor)
 
     Semantic edges (no prefix) are never boosted by tool usage.
     """
@@ -426,15 +427,13 @@ def _reinforce_edge_weight(region_id: str, delta: float = REINFORCE_DELTA) -> No
         if not neighbors:
             return
 
-        # Brain region related edge keyword prefixes
-        REGION_EDGE_PREFIXES = ("_region:", "_session:", "brain_region_")
-
         for neighbor_id, edge_data in list(neighbors.items()):
             if not isinstance(edge_data, dict):
                 continue
             keywords = edge_data.get("keywords", "")
             # Process all brain region related edges
-            if any(keywords.startswith(prefix) for prefix in REGION_EDGE_PREFIXES):
+            kw_lower = keywords.lower()
+            if kw_lower in STRUCTURAL_EDGE_TYPES_LOWER or kw_lower.startswith("_session:"):
                 old_weight = edge_data.get("weight", 0.5)
                 new_weight = min(MAX_EDGE_WEIGHT, float(old_weight) + delta)
                 if new_weight > float(old_weight):
