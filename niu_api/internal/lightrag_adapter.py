@@ -949,7 +949,7 @@ class LightRAGAdapter:
             try:
                 from niu_api.internal.lightrag_manager import get_change_log
 
-                get_change_log().record_change("entity_deleted", {"id": f"entity:{entity_name}"})
+                get_change_log().record_change("entity_deleted", {"id": entity_name})
             except Exception as e:
                 logger.debug(f"changelog record_change failed: {e}")
 
@@ -1348,8 +1348,8 @@ class LightRAGAdapter:
                             target_desc = attrs.get("description", "")
 
                 get_change_log().record_change("entity_merged", {
-                    "source_ids": [f"entity:{s}" for s in resolved_sources],
-                    "target_id": f"entity:{resolved_target}",
+                    "source_ids": resolved_sources,
+                    "target_id": resolved_target,
                     "name": resolved_target,
                     "type": target_type,
                     "description": target_desc,
@@ -1659,7 +1659,7 @@ class LightRAGIngester:
                 change_log = get_change_log()
                 for entity in custom_kg["entities"]:
                     change_log.record_change("entity_created", {
-                        "id": f"entity:{entity['entity_name']}",
+                        "id": entity['entity_name'],
                         "name": entity["entity_name"],
                         "type": entity.get("entity_type", "other"),
                         "description": entity.get("description", ""),
@@ -1668,8 +1668,8 @@ class LightRAGIngester:
                     })
                 for rel in custom_kg["relationships"]:
                     change_log.record_change("edge_created", {
-                        "source": f"entity:{rel['src_id']}",
-                        "target": f"entity:{rel['tgt_id']}",
+                        "source": rel['src_id'],
+                        "target": rel['tgt_id'],
                         "relation": rel.get("keywords", ""),
                         "confidence": rel.get("weight", 1.0),
                     })

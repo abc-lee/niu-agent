@@ -4,7 +4,7 @@ Brain Region Master Node Manager
 Creates and manages brain region entities in the LightRAG knowledge graph
 for each Leiden community. Each region master node serves as:
 - Semantic pointer for search
-- Search entry via brain_region_anchor relation from Niu
+- Search entry via 脑区锚点 relation from Niu
 - Metadata container (brain_meta_* attributes in description)
 
 Entity names use natural language format (e.g., "编程开发脑区") instead of
@@ -43,11 +43,14 @@ REGION_PREFIX = "brain:region:"
 REGION_ENTITY_TYPE = "brainregion"
 
 # Relation keywords
-ANCHOR_RELATION = "brain_region_anchor"
-BELONGS_TO_RELATION = "_region:contains"
-# Legacy relation keyword (pre-unification). Kept for backward compat
-# when reading edges from existing graph data.
-_LEGACY_BELONGS_TO = "belongs_to"
+ANCHOR_RELATION = "脑区锚点"
+BELONGS_TO_RELATION = "包含"
+
+# Structural edge types (lowercase) for matching
+STRUCTURAL_EDGE_TYPES_LOWER = frozenset({
+    BELONGS_TO_RELATION.lower(),      # "包含"
+    ANCHOR_RELATION.lower(),          # "脑区锚点"
+})
 
 # Source identifiers for injected data
 REGION_SOURCE_ID = "brain"
@@ -457,7 +460,7 @@ class RegionManager:
         return regions
 
     def get_region_members(self, region_name: str) -> list[str]:
-        """Get members by reading _region:contains edges from NetworkX graph.
+        """Get members by reading 包含 edges from NetworkX graph.
 
         Delegates to lightrag_manager.get_region_members() which directly
         reads the in-memory graph — more reliable than explore_node.
@@ -914,9 +917,9 @@ class RegionManager:
         """Decay and disconnect low-weight structural edges.
 
         Handles all brain region related edges:
-        - _region:contains (region contains members)
+        - 包含 (region contains members)
         - _session:* (session related)
-        - brain_region_anchor (region anchor)
+        - 脑区锚点 (region anchor)
 
         Args:
             regions: List of BrainRegionInfo to process.
@@ -937,9 +940,6 @@ class RegionManager:
             kg = rag.chunk_entity_relation_graph
             if kg is None:
                 return 0
-
-            # Brain region related edge keyword prefixes
-            REGION_EDGE_PREFIXES = ("_region:", "_session:", "brain_region_")
 
             # NOTE: graph_write_lock only synchronizes with graph_read_lock holders.
             # call_async-based writes (ainsert_custom_kg, adelete_by_entity, etc.)
@@ -964,8 +964,9 @@ class RegionManager:
                         if not isinstance(edge_data, dict):
                             continue
                         keywords = edge_data.get("keywords", "")
+                        kw_lower = keywords.lower()
                         # Process all brain region related edges
-                        if any(keywords.startswith(prefix) for prefix in REGION_EDGE_PREFIXES):
+                        if kw_lower in STRUCTURAL_EDGE_TYPES_LOWER or kw_lower.startswith("_session:"):
                             old_weight = float(edge_data.get("weight", 0.5))
                             new_weight = old_weight * decay_factor
                             if new_weight < threshold:
@@ -1031,7 +1032,7 @@ def create_default_regions(
     """Create default brain region master nodes.
 
     If a region already exists, skip it. Each region is linked to
-    Niu via brain_region_anchor relation.
+    Niu via 脑区锚点 relation.
 
     Args:
         adapter: LightRAGAdapter instance.

@@ -212,7 +212,7 @@ class BrainContextInjector:
     def _classify_entity_to_region(self, entity_name: str, entity_type: str) -> str:
         """根据实体类型运行时分类到默认脑区（不写回图谱）
 
-        当实体没有 _region:contains 边（即不在 entity_to_region 映射中）时，
+        当实体没有 包含 边（即不在 entity_to_region 映射中）时，
         根据其 entity_type 做简单分类，让脑区注入先能工作起来。
         这只是注入时的运行时分类，不写回图谱（不改数据）。
 

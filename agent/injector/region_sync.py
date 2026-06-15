@@ -232,7 +232,7 @@ class RegionSync:
                 stats["errors"].append(f"create: {e}")
 
             # Step 3.5: Assign existing entities to default brain regions
-            # This creates _region:contains edges from default regions to entities
+            # This creates 包含 edges from default regions to entities
             try:
                 from niu_api.internal.region_manager import assign_entities_to_default_regions
                 result = assign_entities_to_default_regions(adapter)

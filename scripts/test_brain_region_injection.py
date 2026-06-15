@@ -61,9 +61,9 @@ def test_static_prompt():
     from niu_api.internal.brain_region_prompt import build_static_brain_region_prompt
 
     prompt = build_static_brain_region_prompt()
-    assert "brain:Niu" in prompt, "Missing brain:Niu"
-    assert "brain_region_anchor" in prompt, "Missing brain_region_anchor"
-    assert "belongs_to_region" in prompt, "Missing belongs_to_region"
+    assert "根节点" in prompt, "Missing 根节点"
+    assert "禁止事项" in prompt, "Missing 禁止事项"
+    assert "包含" in prompt, "Missing 包含"
     assert "聊天历史" in prompt, "Missing 聊天历史"
     assert "文档库" in prompt, "Missing 文档库"
     assert "知识体系" in prompt, "Missing 知识体系"
@@ -76,9 +76,8 @@ def test_static_prompt():
 def test_dynamic_prompt_with_real_adapter():
     """Test 3: Dynamic prompt with real LightRAGAdapter (if available)."""
     from niu_api.internal.brain_region_prompt import build_dynamic_brain_region_prompt
-    from unittest.mock import MagicMock
+    from unittest.mock import patch
 
-    adapter = None
     using_mock = False
 
     try:
@@ -86,27 +85,22 @@ def test_dynamic_prompt_with_real_adapter():
         adapter = LightRAGAdapter()
         rag = adapter._get_rag()
         if rag is None:
-            print("  WARN LightRAG not initialized -- using mock adapter for this test")
-            adapter = None
+            print("  WARN LightRAG not initialized -- using mock for this test")
+            using_mock = True
     except Exception as e:
-        print(f"  WARN LightRAGAdapter failed ({e}) -- using mock adapter")
-
-    if adapter is None:
-        adapter = MagicMock()
-        adapter.query.return_value = (
-            "brain:region:聊天历史\nbrain:region:文档库\nbrain:region:知识体系"
-        )
+        print(f"  WARN LightRAGAdapter failed ({e}) -- using mock")
         using_mock = True
 
-    prompt = build_dynamic_brain_region_prompt(adapter)
+    if using_mock:
+        with patch("niu_api.internal.brain_region_prompt.get_brain_regions", return_value=["聊天历史脑区", "文档库脑区", "知识体系脑区"]):
+            prompt = build_dynamic_brain_region_prompt()
+    else:
+        prompt = build_dynamic_brain_region_prompt()
+
     assert len(prompt) > 0, "Dynamic prompt is empty"
     assert "脑区" in prompt, "Missing 脑区 keyword"
 
-    # Verify local mode was used
     if using_mock:
-        call_kwargs = adapter.query.call_args[1]
-        assert call_kwargs["mode"] == "local", f"Expected mode=local, got {call_kwargs['mode']}"
-        assert call_kwargs["only_need_context"] is True, "Expected only_need_context=True"
         print(f"  PASS Dynamic prompt generated (mock): {prompt[:60]}...")
     else:
         print(f"  PASS Dynamic prompt generated (real): {prompt[:60]}...")
@@ -115,12 +109,10 @@ def test_dynamic_prompt_with_real_adapter():
 def test_dynamic_prompt_fallback():
     """Test 3b: Dynamic prompt falls back when adapter fails."""
     from niu_api.internal.brain_region_prompt import build_dynamic_brain_region_prompt, FALLBACK_REGIONS
-    from unittest.mock import MagicMock
+    from unittest.mock import patch
 
-    adapter = MagicMock()
-    adapter.query.return_value = ""
-
-    prompt = build_dynamic_brain_region_prompt(adapter)
+    with patch("niu_api.internal.brain_region_prompt.get_brain_regions", return_value=[]):
+        prompt = build_dynamic_brain_region_prompt()
     assert "默认" in prompt, "Missing 默认 fallback marker"
     assert FALLBACK_REGIONS in prompt, f"Missing fallback regions: {FALLBACK_REGIONS}"
 
@@ -130,12 +122,10 @@ def test_dynamic_prompt_fallback():
 def test_dynamic_prompt_exception_fallback():
     """Test 3c: Dynamic prompt falls back when adapter raises exception."""
     from niu_api.internal.brain_region_prompt import build_dynamic_brain_region_prompt, FALLBACK_REGIONS
-    from unittest.mock import MagicMock
+    from unittest.mock import patch
 
-    adapter = MagicMock()
-    adapter.query.side_effect = Exception("Connection refused")
-
-    prompt = build_dynamic_brain_region_prompt(adapter)
+    with patch("niu_api.internal.brain_region_prompt.get_brain_regions", side_effect=Exception("Connection refused")):
+        prompt = build_dynamic_brain_region_prompt()
     assert "默认" in prompt, "Missing 默认 fallback marker on exception"
     assert FALLBACK_REGIONS in prompt, "Missing fallback regions on exception"
 
@@ -145,26 +135,25 @@ def test_dynamic_prompt_exception_fallback():
 def test_full_injection_pipeline():
     """Test 4: Full injection pipeline."""
     from niu_api.internal.brain_region_prompt import inject_brain_region_context
-    from unittest.mock import MagicMock
+    from unittest.mock import patch
 
     messages = [
         {"role": "system", "content": "---Role---\nYou are a Knowledge Graph Specialist..."},
         {"role": "user", "content": "Extract entities from: Python is a programming language"},
     ]
-    adapter = MagicMock()
-    adapter.query.return_value = "brain:region:聊天历史\nbrain:region:文档库"
 
-    result = inject_brain_region_context(messages, adapter)
+    with patch("niu_api.internal.brain_region_prompt.get_brain_regions", return_value=["聊天历史脑区", "文档库脑区"]):
+        result = inject_brain_region_context(messages)
 
     # Verify injection happened
     assert result is not messages, "Should return new list"
     system_msg = next(m for m in result if m["role"] == "system")
-    assert "brain:Niu" in system_msg["content"], "Missing brain:Niu in injected content"
+    assert "根节点" in system_msg["content"] or "niu" in system_msg["content"].lower()
     assert "Knowledge Graph Specialist" in system_msg["content"], "Original content lost"
     assert "聊天历史" in system_msg["content"], "Missing dynamic region content"
 
     # Verify original not mutated
-    assert "brain:Niu" not in messages[0]["content"], "Original messages were mutated"
+    assert "大脑区域架构" not in messages[0]["content"], "Original messages were mutated"
 
     # Verify message order preserved
     roles = [m["role"] for m in result]
@@ -176,20 +165,16 @@ def test_full_injection_pipeline():
 def test_injection_normal_chat_passthrough():
     """Test 4b: Normal chat messages pass through unchanged."""
     from niu_api.internal.brain_region_prompt import inject_brain_region_context
-    from unittest.mock import MagicMock
 
     messages = [
         {"role": "system", "content": "You are a helpful assistant."},
         {"role": "user", "content": "What's the weather?"},
     ]
-    adapter = MagicMock()
 
-    result = inject_brain_region_context(messages, adapter)
+    result = inject_brain_region_context(messages)
 
-    # Same object returned (no copy)
-    assert result is messages, "Should return same list for non-extraction requests"
-    # Adapter never called
-    adapter.query.assert_not_called()
+    # Same content returned (shallow copy for non-extraction requests)
+    assert all(m["role"] == r["role"] and m["content"] == r["content"] for m, r in zip(messages, result))
 
     print("  PASS Normal chat messages pass through unchanged")
 
@@ -208,20 +193,18 @@ def test_llm_proxy_integration():
     # If API is running, test that injection is wired up
     try:
         from niu_api.internal.brain_region_prompt import inject_brain_region_context
-        from niu_api.internal.lightrag_adapter import LightRAGAdapter
 
-        adapter = LightRAGAdapter()
         messages = [
             {"role": "system", "content": "---Role---\nYou are a Knowledge Graph Specialist..."},
             {"role": "user", "content": "Test extraction"},
         ]
-        result = inject_brain_region_context(messages, adapter)
+        result = inject_brain_region_context(messages)
         system_msg = next(m for m in result if m["role"] == "system")
 
-        if "brain:Niu" in system_msg["content"]:
+        if "根节点" in system_msg["content"] or "niu" in system_msg["content"].lower():
             print("  PASS LLM proxy integration verified (injection works with real adapter)")
         else:
-            print("  WARN Injection may not be working -- brain:Niu not found in system message")
+            print("  WARN Injection may not be working -- 根节点 not found in system message")
     except Exception as e:
         print(f"  WARN Proxy integration test failed: {e}")
 

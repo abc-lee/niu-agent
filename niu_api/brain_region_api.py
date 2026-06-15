@@ -232,7 +232,7 @@ def get_region_members(name: str) -> dict[str, Any]:
         else:
             region_name = name
 
-        # Get members via lightrag_manager (reads _region:contains edges from graph)
+        # Get members via lightrag_manager (reads 包含 edges from graph)
         from niu_api.internal.lightrag_manager import get_region_members as lightrag_get_region_members
         members = lightrag_get_region_members(region_name)
 

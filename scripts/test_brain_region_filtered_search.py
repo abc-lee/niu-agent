@@ -63,7 +63,7 @@ def test_brain_region_filtered_search():
     print(f"\n  总成员实体数: {len(all_member_names)}")
 
     if not all_member_names:
-        print("[WARN] 脑区成员为空（_region:contains 边可能不存在）")
+        print("[WARN] 脑区成员为空（包含 边可能不存在）")
         print("  尝试从 activation manager 获取...")
         try:
             from agent.brain_tools import get_activation_mgr
