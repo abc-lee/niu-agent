@@ -471,12 +471,15 @@ class RegionManager:
             if entity_name.endswith(REGION_SUFFIX):
                 label = entity_name[: -len(REGION_SUFFIX)]
 
+            # 将 <SEP> 替换为 "、" 用于前端展示
+            display_summary = parsed.get("summary", "").replace("<SEP>", "、")
+
             regions.append(
                 BrainRegionInfo(
                     name=entity_name,
                     label=label,
                     community_id=parsed.get("region_id", ""),
-                    description=parsed.get("summary", ""),
+                    description=display_summary,
                     size=int(parsed.get("size", "0") or "0"),
                     representative=parsed.get("representative", ""),
                     members=[],  # Members not included in list_entities result
