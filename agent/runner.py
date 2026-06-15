@@ -721,13 +721,13 @@ class NiuRunner:
         from niu_api.compat import _extract_cursor_id, _is_subagent_overflow, _extract_overflow_info
         from agent.subagent import call_subagent
 
-        # --- call sub-agent with timeout ---
+        # --- call sub-agent ---
         with _cf.ThreadPoolExecutor(max_workers=1) as executor:
             future = executor.submit(call_subagent, step_name, prompt, llm_config, None)
             try:
-                result = future.result(timeout=120)
+                result = future.result()
             except Exception as e:
-                logger.warning(f"[Runner] Force: {step_name} failed/timed out: {e}")
+                logger.warning(f"[Runner] Force: {step_name} failed: {e}")
                 result = ""
 
         logger.info(f"[Runner] Force: {step_name} completed, length={len(result)}")
@@ -780,7 +780,7 @@ class NiuRunner:
 
         实现参考：niu_api/compat.py _tidy_context_impl(mode="force") L1429-1907
         关键差异：compat.py 是 async，这里是同步线程中运行，
-        子 Agent 调用用 concurrent.futures.ThreadPoolExecutor + timeout=120。
+        子 Agent 调用用 concurrent.futures.ThreadPoolExecutor，无总超时限制。
         """
         import concurrent.futures as _cf
         from pathlib import Path as _Path
@@ -1009,9 +1009,9 @@ class NiuRunner:
                     None, 0,  # context_fifo_threshold=0
                 )
                 try:
-                    cm_result = future.result(timeout=120)
+                    cm_result = future.result()
                 except Exception as e:
-                    logger.warning(f"[Runner] Force: context-manager failed/timed out: {e}")
+                    logger.warning(f"[Runner] Force: context-manager failed: {e}")
                     cm_result = ""
 
             if is_stop_requested():

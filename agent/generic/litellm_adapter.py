@@ -346,7 +346,7 @@ class LiteLLMSession(BaseSession):
             "custom_llm_provider": custom_provider,
             "api_base": self.api_base or None,
             "api_key": self.api_key or None,
-            "timeout": 120,  # 120s timeout to prevent indefinite blocking
+            "timeout": self.read_timeout,
             **provider_params,
         }
         # Only drop unsupported params when passing reasoning_effort
