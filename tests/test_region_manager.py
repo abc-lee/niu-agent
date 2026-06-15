@@ -104,6 +104,7 @@ class TestCreateRegionNodes:
         """为每个社区创建 XXX脑区 实体"""
         adapter, ingester = _make_mock_adapter_and_ingester()
         manager = RegionManager(adapter, ingester)
+        manager._generate_region_label = lambda summaries, existing: summaries[0].split("(")[0] if summaries else "unknown"
 
         # Create partitions with enough members to pass MIN_COMMUNITY_SIZE check
         partitions = [
@@ -147,6 +148,7 @@ class TestCreateRegionNodes:
         """创建 Niu -> region 锚点关系和 region -> member belongs_to 关系"""
         adapter, ingester = _make_mock_adapter_and_ingester()
         manager = RegionManager(adapter, ingester)
+        manager._generate_region_label = lambda summaries, existing: summaries[0].split("(")[0] if summaries else "unknown"
 
         partitions = [
             RegionPartition(
@@ -194,6 +196,7 @@ class TestCreateRegionNodes:
         """跳过名称以 XXX脑区 格式的现有脑区节点"""
         adapter, ingester = _make_mock_adapter_and_ingester()
         manager = RegionManager(adapter, ingester)
+        manager._generate_region_label = lambda summaries, existing: summaries[0].split("(")[0] if summaries else "unknown"
 
         # "OldRegion脑区" is a brain region name and should be filtered from members.
         # Remaining members must be >= MIN_COMMUNITY_SIZE to create a region.
@@ -768,3 +771,102 @@ class TestGenerateRegionLabel:
 
         result = manager._generate_region_label([], [])
         assert result == "unknown"
+
+
+class TestCreateRegionNodesWithLLMLabel:
+    """Test create_region_nodes uses _generate_region_label for naming."""
+
+    def test_uses_llm_label_for_region_name(self):
+        """Region name should use _generate_region_label result."""
+        adapter, ingester = _make_mock_adapter_and_ingester()
+        manager = RegionManager(adapter, ingester)
+        manager._generate_region_label = lambda summaries, existing: "编程开发"
+
+        partitions = [
+            RegionPartition(
+                region_id=0,
+                region_name="region_0",
+                entity_names=[f"E{i}" for i in range(100)],
+                entity_types={"skill": 100},
+                edge_count=2,
+                modularity_score=0.15,
+            ),
+        ]
+        result = _make_partition_result(partitions)
+        region_names = manager.create_region_nodes(result)
+
+        assert len(region_names) == 1
+        assert region_names[0] == "编程开发脑区"
+
+    def test_injects_chunks_with_unique_source_id(self):
+        """Chunks should have source_id matching entity's rewritten source_id format."""
+        adapter, ingester = _make_mock_adapter_and_ingester()
+        manager = RegionManager(adapter, ingester)
+        manager._generate_region_label = lambda summaries, existing: "编程开发"
+
+        partitions = [
+            RegionPartition(
+                region_id=0,
+                region_name="region_0",
+                entity_names=[f"E{i}" for i in range(100)],
+                entity_types={"skill": 100},
+                edge_count=2,
+                modularity_score=0.15,
+            ),
+        ]
+        result = _make_partition_result(partitions)
+        manager.create_region_nodes(result)
+
+        call_kwargs = ingester.inject_custom_kg.call_args[1]
+        chunks = call_kwargs.get("chunks", [])
+        assert len(chunks) >= 1
+        chunk = chunks[0]
+        assert chunk["source_id"] == "brain_编程开发脑区"
+
+    def test_entity_source_id_is_base(self):
+        """Entity source_id should be base 'brain' (inject_custom_kg will rewrite it)."""
+        adapter, ingester = _make_mock_adapter_and_ingester()
+        manager = RegionManager(adapter, ingester)
+        manager._generate_region_label = lambda summaries, existing: "编程开发"
+
+        partitions = [
+            RegionPartition(
+                region_id=0,
+                region_name="region_0",
+                entity_names=[f"E{i}" for i in range(100)],
+                entity_types={"skill": 100},
+                edge_count=2,
+                modularity_score=0.15,
+            ),
+        ]
+        result = _make_partition_result(partitions)
+        manager.create_region_nodes(result)
+
+        call_kwargs = ingester.inject_custom_kg.call_args[1]
+        entities = call_kwargs.get("entities", [])
+        assert len(entities) == 1
+        assert entities[0]["source_id"] == "brain"
+
+    def test_chunk_content_contains_label_and_members(self):
+        """Chunk content should include region label and top member names."""
+        adapter, ingester = _make_mock_adapter_and_ingester()
+        manager = RegionManager(adapter, ingester)
+        manager._generate_region_label = lambda summaries, existing: "编程开发"
+
+        partitions = [
+            RegionPartition(
+                region_id=0,
+                region_name="region_0",
+                entity_names=[f"E{i}" for i in range(100)],
+                entity_types={"skill": 100},
+                edge_count=2,
+                modularity_score=0.15,
+            ),
+        ]
+        result = _make_partition_result(partitions)
+        manager.create_region_nodes(result)
+
+        call_kwargs = ingester.inject_custom_kg.call_args[1]
+        chunks = call_kwargs.get("chunks", [])
+        assert len(chunks) >= 1
+        assert "编程开发" in chunks[0]["content"]
