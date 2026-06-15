@@ -1199,11 +1199,11 @@ class RegionManager:
             if partition is None or partition.total_regions < 1:
                 return {"regions_created": 0, "regions_removed": 0, "regions_updated": 0, "edges_disconnected": 0}
 
-            # Create new region nodes
-            created = self.create_region_nodes(partition)
-
             # Cleanup stale regions
             removed = self.cleanup_stale_regions(partition)
+
+            # Create new region nodes
+            created = self.create_region_nodes(partition)
 
             # Update summaries for existing regions (skip newly-created ones
             # which already have accurate summaries from partition type data)
