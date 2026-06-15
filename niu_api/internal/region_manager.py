@@ -7,9 +7,7 @@ for each Leiden community. Each region master node serves as:
 - Search entry via 脑区锚点 relation from Niu
 - Metadata container (brain_meta_* attributes in description)
 
-Entity names use natural language format (e.g., "编程开发脑区") instead of
-colon-prefix format (e.g., "brain:region:编程开发") — DEPRECATED, kept only for
-reading pre-migration data.
+Entity names use natural language format (e.g., "编程开发脑区").
 
 M2 module: Region node lifecycle, M1 provides community detection.
 """
@@ -33,11 +31,6 @@ logger = logging.getLogger(__name__)
 # Region entity name format: "{label}脑区" (natural language)
 # e.g., "编程开发脑区", "聊天历史脑区"
 REGION_SUFFIX = "脑区"
-
-# DEPRECATED: Legacy prefix for backward compat when reading existing graph data.
-# New code must use natural language format ("XXX脑区") only.
-# This constant exists solely to read pre-migration data from the graph.
-REGION_PREFIX = "brain:region:"
 
 # Entity type for brain region master nodes
 REGION_ENTITY_TYPE = "brainregion"
@@ -201,11 +194,11 @@ class RegionManager:
         created_regions: list[str] = []
 
         for partition in partition_result.partitions:
-            # Step 1: Filter out existing region nodes (both natural language and legacy format)
+            # Step 1: Filter out existing region nodes
             members = [
                 name
                 for name in partition.entity_names
-                if not (name.endswith(REGION_SUFFIX) or name.startswith(REGION_PREFIX))
+                if not name.endswith(REGION_SUFFIX)
             ]
 
             if not members or len(members) < MIN_COMMUNITY_SIZE:
@@ -437,12 +430,10 @@ class RegionManager:
 
             parsed = _parse_description(description)
 
-            # Extract label from entity name: "{label}脑区" or legacy "brain:region:{label}"
+            # Extract label from entity name: "{label}脑区"
             label = entity_name
             if entity_name.endswith(REGION_SUFFIX):
                 label = entity_name[: -len(REGION_SUFFIX)]
-            elif entity_name.startswith(REGION_PREFIX):
-                label = entity_name[len(REGION_PREFIX):]
 
             regions.append(
                 BrainRegionInfo(
