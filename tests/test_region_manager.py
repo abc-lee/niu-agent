@@ -20,7 +20,6 @@ from niu_api.internal.region_manager import (
     ANCHOR_RELATION,
     BELONGS_TO_RELATION,
     REGION_ENTITY_TYPE,
-    REGION_PREFIX,
     REGION_SUFFIX,
 )
 
@@ -191,19 +190,18 @@ class TestCreateRegionNodes:
             assert rel["weight"] == 0.5
 
     @pytest.mark.asyncio
-    async def test_skips_brain_region_prefix_nodes(self):
+    async def test_skips_brain_region_nodes(self):
         """跳过名称以 XXX脑区 格式的现有脑区节点"""
         adapter, ingester = _make_mock_adapter_and_ingester()
         manager = RegionManager(adapter, ingester)
 
         # "OldRegion脑区" is a brain region name and should be filtered from members.
-        # "brain:region:LegacyRegion" is a legacy-format region name and should also be filtered.
         # Remaining members must be >= MIN_COMMUNITY_SIZE to create a region.
         partition = RegionPartition(
             region_id=0,
             region_name="region_0",
-            entity_names=["OldRegion脑区", "brain:region:LegacyRegion", "Python"] + [f"E{i}" for i in range(99)],
-            entity_types={"BrainRegion": 1, "language": 98},
+            entity_names=["OldRegion脑区", "Python"] + [f"E{i}" for i in range(100)],
+            entity_types={"BrainRegion": 1, "language": 100},
             edge_count=0,
             modularity_score=0.0,
         )
@@ -211,7 +209,7 @@ class TestCreateRegionNodes:
 
         region_names = manager.create_region_nodes(result)
 
-        # Should create 1 region (脑区 names and legacy prefix names filtered out)
+        # Should create 1 region (脑区 names filtered out)
         assert len(region_names) == 1
 
         # Verify brain region names are NOT in the belongs_to members
@@ -219,7 +217,6 @@ class TestCreateRegionNodes:
         relationships = call_kwargs.get("relationships", [])
         member_targets = [r["tgt_id"] for r in relationships if r["keywords"] == BELONGS_TO_RELATION]
         assert "OldRegion脑区" not in member_targets
-        assert "brain:region:LegacyRegion" not in member_targets
         assert "Python" in member_targets
 
     @pytest.mark.asyncio
