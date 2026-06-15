@@ -52,7 +52,7 @@ class BaseSession:
         self.proxies = {"http": proxy, "https": proxy} if proxy else None
         self.max_retries = max(0, int(cfg.get("max_retries", 2)))
         self.connect_timeout = max(1, int(cfg.get("connect_timeout", 10)))
-        self.read_timeout = max(5, int(cfg.get("read_timeout", 120)))
+        self.read_timeout = max(5, int(cfg.get("read_timeout", 300)))
         effort = cfg.get("reasoning_effort")
         effort = None if effort is None else str(effort).strip().lower()
         self.reasoning_effort = (

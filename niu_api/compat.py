@@ -1013,11 +1013,7 @@ async def _tidy_context_impl(request: dict):
                         history=None,
                     )
 
-                try:
-                    entity_result = await asyncio.wait_for(asyncio.to_thread(run_entity_extractor), timeout=120)
-                except asyncio.TimeoutError:
-                    logger.warning("[Tidy] entity-extractor timed out after 120s, skipping")
-                    entity_result = ""
+                entity_result = await asyncio.to_thread(run_entity_extractor)
                 if is_stop_requested():
                     logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
                     clear_stop()
@@ -1105,11 +1101,7 @@ async def _tidy_context_impl(request: dict):
                         mcp_client=None,
                     )
 
-                try:
-                    dream_result = await asyncio.wait_for(asyncio.to_thread(run_dream_evolver), timeout=120)
-                except asyncio.TimeoutError:
-                    logger.warning("[Tidy] dream-evolver timed out after 120s, skipping")
-                    dream_result = ""
+                dream_result = await asyncio.to_thread(run_dream_evolver)
                 if is_stop_requested():
                     logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
                     clear_stop()
@@ -1199,11 +1191,7 @@ async def _tidy_context_impl(request: dict):
                             mcp_client=None,
                         )
 
-                    try:
-                        journal_result = await asyncio.wait_for(asyncio.to_thread(run_journal_agent), timeout=120)
-                    except asyncio.TimeoutError:
-                        logger.warning("[Tidy] journal-agent timed out after 120s, skipping")
-                        journal_result = ""
+                    journal_result = await asyncio.to_thread(run_journal_agent)
                     if is_stop_requested():
                         logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
                         clear_stop()
@@ -1307,11 +1295,7 @@ async def _tidy_context_impl(request: dict):
                         mcp_client=None,
                     )
 
-                try:
-                    cm_result = await asyncio.wait_for(asyncio.to_thread(run_context_manager), timeout=120)
-                except asyncio.TimeoutError:
-                    logger.warning("[Tidy] context-manager timed out after 120s, skipping")
-                    cm_result = ""
+                cm_result = await asyncio.to_thread(run_context_manager)
                 if is_stop_requested():
                     logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
                     clear_stop()
@@ -1404,11 +1388,7 @@ async def _tidy_context_impl(request: dict):
                 )
 
             if entity_force_msg_ids:
-                try:
-                    entity_result = await asyncio.wait_for(asyncio.to_thread(run_entity_extractor_force), timeout=120)
-                except asyncio.TimeoutError:
-                    logger.warning("[Tidy] Force: entity-extractor timed out after 120s, skipping")
-                    entity_result = ""
+                entity_result = await asyncio.to_thread(run_entity_extractor_force)
                 if is_stop_requested():
                     logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
                     clear_stop()
@@ -1494,11 +1474,7 @@ async def _tidy_context_impl(request: dict):
                         mcp_client=None,
                     )
 
-                try:
-                    dream_result = await asyncio.wait_for(asyncio.to_thread(run_dream_evolver_force), timeout=120)
-                except asyncio.TimeoutError:
-                    logger.warning("[Tidy] Force: dream-evolver timed out after 120s, skipping")
-                    dream_result = ""
+                dream_result = await asyncio.to_thread(run_dream_evolver_force)
                 if is_stop_requested():
                     logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
                     clear_stop()
@@ -1587,11 +1563,7 @@ async def _tidy_context_impl(request: dict):
                         mcp_client=None,
                     )
 
-                try:
-                    journal_result = await asyncio.wait_for(asyncio.to_thread(run_journal_agent_force), timeout=120)
-                except asyncio.TimeoutError:
-                    logger.warning("[Tidy] Force: journal-agent timed out after 120s, skipping")
-                    journal_result = ""
+                journal_result = await asyncio.to_thread(run_journal_agent_force)
                 if is_stop_requested():
                     logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
                     clear_stop()
@@ -1698,11 +1670,7 @@ async def _tidy_context_impl(request: dict):
                     context_fifo_threshold=0,
                 )
 
-            try:
-                result = await asyncio.wait_for(asyncio.to_thread(run_context_manager_force), timeout=120)
-            except asyncio.TimeoutError:
-                logger.warning("[Tidy] Force: context-manager timed out after 120s, skipping")
-                result = ""
+            result = await asyncio.to_thread(run_context_manager_force)
             if is_stop_requested():
                 logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
                 clear_stop()
