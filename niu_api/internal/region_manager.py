@@ -1545,4 +1545,50 @@ def assign_entities_to_default_regions(
         except Exception as e:
             logger.warning(f"批量注入实体-脑区关系失败: {e}")
 
+    # Update size metadata for default regions that got new assignments
+    if assigned_counts:
+        try:
+            from niu_api.internal.lightrag_adapter import LightRAGIngester
+            ingester = LightRAGIngester()
+
+            # Get current descriptions for all default regions
+            list_result = adapter.list_entities(
+                list_type="entities", entity_type=REGION_ENTITY_TYPE, limit=1000
+            )
+            if isinstance(list_result, dict) and list_result.get("status") == "ok":
+                update_entities = []
+                for entity in list_result.get("data", []):
+                    name = entity.get("id") or entity.get("entity_name", "")
+                    if name in assigned_counts:
+                        desc = entity.get("description", "")
+                        parsed = _parse_description(desc)
+                        new_size = assigned_counts[name]
+                        # Update size: if there was an existing size, add to it
+                        old_size = int(parsed.get("size", "0") or "0")
+                        updated_desc = _encode_description(
+                            summary=parsed.get("summary", ""),
+                            region_id=parsed.get("region_id", ""),
+                            size=old_size + new_size,
+                            representative=parsed.get("representative", ""),
+                            updated_at=time.time(),
+                        )
+                        update_entities.append({
+                            "entity_name": name,
+                            "entity_type": REGION_ENTITY_TYPE,
+                            "description": updated_desc,
+                        })
+                if update_entities:
+                    ingester.inject_custom_kg(
+                        entities=update_entities,
+                        relationships=[],
+                        chunks=[],
+                        source_id=REGION_SOURCE_ID,
+                    )
+                    logger.info(
+                        "更新 %d 个默认脑区的 size 元数据",
+                        len(update_entities),
+                    )
+        except Exception as e:
+            logger.warning("更新默认脑区 size 失败: %s", e)
+
     return {"assigned": sum(assigned_counts.values()), "regions": len(assigned_counts)}
