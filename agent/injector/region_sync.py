@@ -223,7 +223,15 @@ class RegionSync:
             ingester = LightRAGIngester()
             manager = RegionManager(adapter, ingester)
 
-            # Step 3: Create region nodes
+            # Step 3: Cleanup stale regions
+            try:
+                removed = manager.cleanup_stale_regions(detection_result)
+                stats["regions_removed"] = len(removed)
+            except Exception as e:
+                logger.warning(f"[RegionSync] cleanup_stale_regions failed: {e}")
+                stats["errors"].append(f"cleanup: {e}")
+
+            # Step 4: Create region nodes
             try:
                 created = manager.create_region_nodes(detection_result)
                 stats["regions_created"] = len(created)
@@ -231,7 +239,7 @@ class RegionSync:
                 logger.warning(f"[RegionSync] create_region_nodes failed: {e}")
                 stats["errors"].append(f"create: {e}")
 
-            # Step 3.5: Assign existing entities to default brain regions
+            # Step 4.5: Assign existing entities to default brain regions
             # This creates 包含 edges from default regions to entities
             try:
                 from niu_api.internal.region_manager import assign_entities_to_default_regions
@@ -242,14 +250,6 @@ class RegionSync:
                     stats["entities_assigned"] = assigned
             except Exception as e:
                 logger.debug(f"[RegionSync] assign_entities_to_default_regions skipped: {e}")
-
-            # Step 4: Cleanup stale regions
-            try:
-                removed = manager.cleanup_stale_regions(detection_result)
-                stats["regions_removed"] = len(removed)
-            except Exception as e:
-                logger.warning(f"[RegionSync] cleanup_stale_regions failed: {e}")
-                stats["errors"].append(f"cleanup: {e}")
 
             # Step 5: Update region summaries (if method exists)
             try:
