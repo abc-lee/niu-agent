@@ -359,3 +359,47 @@ class TestGracefulDegradation:
 
         assert result.partitions == []
         assert result.total_nodes == 0
+
+
+# ============== 社区内度数排序测试 ==============
+
+
+class TestBuildPartitionsDegreeSort:
+    """Test that _build_partitions sorts entity_names by in-community degree."""
+
+    def test_entity_names_sorted_by_degree(self):
+        """entity_names should be ordered by in-community degree (descending)."""
+        import igraph as ig
+
+        # Build a graph with clear degree differences in community [0, 1, 2]
+        # B(1) connects to A, C, and D(3) — degree 2 within community
+        # A(0) connects to B — degree 1 within community
+        # C(2) connects to B — degree 1 within community
+        # D(3) is in its own community, edge B-D is cross-community
+        g = ig.Graph()
+        g.add_vertices(4)
+        g.vs["name"] = ["A", "B", "C", "D"]
+        g.vs["entity_type"] = ["skill", "person", "org", "skill"]
+        # Community [0,1,2] edges: A-B, B-C (B has degree 2, A and C have degree 1)
+        # Cross-community edge: B-D
+        g.add_edges([(0, 1), (1, 2), (1, 3)])  # A-B, B-C, B-D
+
+        from niu_api.internal.region_detector import CommunityDetector
+        detector = CommunityDetector.__new__(CommunityDetector)
+
+        # Create a mock partition where community 0 = [0, 1, 2]
+        class MockPartition:
+            q = 0.5
+            def __iter__(self):
+                yield [0, 1, 2]
+                yield [3]
+
+        partitions = detector._build_partitions(g, MockPartition(), min_community_size=1)
+
+        # First partition: subgraph of [0,1,2] has edges A-B and B-C
+        # B(1) degree=2, A(0) degree=1, C(2) degree=1
+        # Sorted by degree descending: B(2), then A(1) and C(1) in original order
+        assert len(partitions) == 2
+        p0 = partitions[0]
+        assert p0.entity_names[0] == "B"  # Highest degree first
+        assert set(p0.entity_names) == {"A", "B", "C"}

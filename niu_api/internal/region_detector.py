@@ -281,12 +281,19 @@ class CommunityDetector:
                 filtered_count += 1
                 continue
 
-            # 收集实体名称和类型
+            # 按社区内度数降序排列顶点索引
+            subgraph = graph.subgraph(member_indices)
+            degrees = subgraph.degree()
+            sorted_pairs = sorted(
+                zip(member_indices, degrees), key=lambda x: x[1], reverse=True
+            )
+
+            # 收集实体名称和类型（按度数降序）
             entity_names: list[str] = []
             entity_type_counts: dict[str, int] = {}
             entity_name_to_type: dict[str, str] = {}
 
-            for vidx in member_indices:
+            for vidx, _deg in sorted_pairs:
                 v = graph.vs[vidx]
                 name = v["name"] if "name" in v.attributes() else f"entity_{vidx}"
                 entity_names.append(name)
