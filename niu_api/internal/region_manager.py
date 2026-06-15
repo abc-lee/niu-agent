@@ -349,7 +349,7 @@ class RegionManager:
 
         For each region:
         1. Get current members via get_region_members()
-        2. Re-generate summary via _summarize_region()
+        2. Re-generate summary via _generate_region_summary() (no LLM call)
         3. Update master node via inject_entity (overwrite)
 
         Args:
@@ -409,7 +409,7 @@ class RegionManager:
 
             # Build entity summaries with type labels from graph
             entity_summaries = self._build_entity_summaries(members, set(), {})
-            _, region_summary = self._summarize_region(entity_summaries)
+            region_summary = self._generate_region_summary(entity_summaries)
 
             now = time.time()
             description = _encode_description(
