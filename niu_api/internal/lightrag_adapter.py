@@ -605,7 +605,7 @@ class LightRAGAdapter:
                     "id": first_node.id,
                     "name": first_node.id,
                     "type": first_node.properties.get("entity_type", "other"),
-                    "description": first_node.properties.get("description", ""),
+                    "description": _safe_parse_brainregion_desc(first_node.properties),
                     "file_path": first_node.properties.get("file_path", ""),
                     "source_id": first_node.properties.get("source_id", ""),
                 }
@@ -617,7 +617,7 @@ class LightRAGAdapter:
                     "id": node.id,
                     "name": node.id,
                     "type": node.properties.get("entity_type", "other"),
-                    "description": node.properties.get("description", ""),
+                    "description": _safe_parse_brainregion_desc(node.properties),
                     "file_path": node.properties.get("file_path", ""),
                     "source_id": node.properties.get("source_id", ""),
                 })
@@ -899,7 +899,7 @@ class LightRAGAdapter:
                     "id": node_name,
                     "name": node_name,
                     "type": attrs.get("entity_type", "other"),
-                    "description": attrs.get("description", ""),
+                    "description": _safe_parse_brainregion_desc(attrs),
                     "file_path": attrs.get("file_path", ""),
                     "source_id": attrs.get("source_id", ""),
                 })
@@ -1179,7 +1179,7 @@ class LightRAGAdapter:
                             nodes.append({
                                 "entity_name": node_id,
                                 "entity_type": nt,
-                                "description": node_data.get("description", ""),
+                                "description": _safe_parse_brainregion_desc(node_data),
                             })
                             if len(nodes) >= limit:
                                 break
@@ -1201,7 +1201,7 @@ class LightRAGAdapter:
                         nodes.append({
                             "entity_name": node.id,
                             "entity_type": node.properties.get("entity_type", "other"),
-                            "description": node.properties.get("description", ""),
+                            "description": _safe_parse_brainregion_desc(node.properties),
                         })
                     return {"status": "ok", "data": nodes}
             else:
@@ -1363,6 +1363,29 @@ class LightRAGAdapter:
         except Exception as e:
             logger.error(f"LightRAG merge_entities failed: {e}")
             return {"status": "error", "message": str(e)}
+
+
+def _safe_parse_brainregion_desc(attrs: dict) -> str:
+    """Safely parse brainregion description, falling back to raw on failure."""
+    if attrs.get("entity_type") != "brainregion":
+        return attrs.get("description", "")
+    try:
+        return _parse_brainregion_description(attrs)
+    except Exception:
+        return attrs.get("description", "")
+
+
+def _parse_brainregion_description(attrs: dict) -> str:
+    """Parse brainregion description for display: strip brain_meta_* and replace <SEP> with '、'."""
+    from niu_api.internal.region_manager import _parse_description, _format_summary_for_display
+    desc = attrs.get("description", "")
+    if not desc:
+        return ""
+    parsed = _parse_description(desc)
+    result = _format_summary_for_display(parsed)
+    if result:
+        return result
+    return desc
 
 
 class LightRAGIngester:

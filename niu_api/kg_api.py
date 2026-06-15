@@ -16,6 +16,8 @@ from fastapi import APIRouter, Query
 from loguru import logger
 from pydantic import BaseModel, Field
 
+from niu_api.internal.lightrag_adapter import _safe_parse_brainregion_desc
+
 router = APIRouter(prefix="/api/kg", tags=["knowledge-graph"])
 
 
@@ -176,13 +178,20 @@ def _normalize_nodes(nodes: list) -> list:
         else:
             node_id = raw_id
             normalized_type = "Entity"
+        # Parse brainregion descriptions for display; _safe_parse_brainregion_desc
+        # returns raw description unchanged for non-brainregion nodes.
+        raw_desc = n.get("description", "")
+        parsed_desc = _safe_parse_brainregion_desc({
+            "entity_type": node_type,
+            "description": raw_desc,
+        })
         result.append({
             "id": node_id,
             "label": n.get("name", n.get("id", "")),
             "name": n.get("name", ""),
             "nodeType": normalized_type,
             "entityType": node_type,
-            "description": n.get("description", ""),
+            "description": parsed_desc,
             "uri": _clean_file_path(n.get("file_path", "")),
             "source": _clean_source_id(n.get("source_id", "")),
         })
@@ -640,7 +649,7 @@ def hub_entities(
                     "name": node_name,
                     "nodeType": "Entity",
                     "entityType": attrs.get("entity_type", "other"),
-                    "description": attrs.get("description", ""),
+                    "description": _safe_parse_brainregion_desc(attrs),
                     "uri": _clean_file_path(attrs.get("file_path", "")),
                     "source": attrs.get("source_id", ""),
                 }
@@ -694,13 +703,17 @@ def explore_node(request: ExploreRequest):
         result["edges"] = [e for e in result["edges"] if e.get("confidence", 1.0) >= request.min_confidence]
     if "center" in result and isinstance(result["center"], dict):
         c = result["center"]
+        center_type = c.get("type", "other")
         result["center"] = {
             "id": c.get("id", ""),
             "label": c.get("name", c.get("id", "")),
             "name": c.get("name", ""),
             "nodeType": "Entity",
-            "entityType": c.get("type", "other"),
-            "description": c.get("description", ""),
+            "entityType": center_type,
+            "description": _safe_parse_brainregion_desc({
+                "entity_type": center_type,
+                "description": c.get("description", ""),
+            }),
             "uri": _clean_file_path(c.get("file_path", "")),
             "source": _clean_source_id(c.get("source_id", "")),
         }
@@ -747,7 +760,7 @@ def find_path(request: FindPathRequest):
                     "name": node_name,
                     "nodeType": "Entity",
                     "entityType": attrs.get("entity_type", "other"),
-                    "description": attrs.get("description", ""),
+                    "description": _safe_parse_brainregion_desc(attrs),
                     "uri": _clean_file_path(attrs.get("file_path", "")),
                     "source": attrs.get("source_id", ""),
                 }
@@ -827,7 +840,7 @@ def list_entities(
                     "name": node_name,
                     "nodeType": "Entity",
                     "entityType": attrs.get("entity_type", "other"),
-                    "description": attrs.get("description", ""),
+                    "description": _safe_parse_brainregion_desc(attrs),
                     "uri": _clean_file_path(attrs.get("file_path", "")),
                     "source": attrs.get("source_id", ""),
                 }
@@ -887,7 +900,7 @@ def list_concepts(limit: int = Query(default=100, ge=1, le=500)):
                     "name": node_name,
                     "nodeType": "Concept",
                     "entityType": attrs.get("entity_type", "other"),
-                    "description": attrs.get("description", ""),
+                    "description": _safe_parse_brainregion_desc(attrs),
                     "uri": _clean_file_path(attrs.get("file_path", "")),
                     "source": _clean_source_id(attrs.get("source_id", "")),
                 }
@@ -963,7 +976,7 @@ def surprising_connections(
                     "name": node_name,
                     "nodeType": "Entity",
                     "entityType": attrs.get("entity_type", "other"),
-                    "description": attrs.get("description", ""),
+                    "description": _safe_parse_brainregion_desc(attrs),
                     "uri": _clean_file_path(attrs.get("file_path", "")),
                     "source": attrs.get("source_id", ""),
                 }
