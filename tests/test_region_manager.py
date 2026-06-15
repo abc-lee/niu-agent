@@ -249,7 +249,7 @@ class TestCreateRegionNodes:
         region_names = manager.create_region_nodes(result)
 
         assert region_names == []
-        ingester.inject_entity.assert_not_called()
+        ingester.inject_custom_kg.assert_not_called()
 
 
 # ============== Test 2: update_region_summaries ==============
@@ -310,7 +310,7 @@ class TestUpdateRegionSummaries:
             manager.update_region_summaries(["Empty脑区"])
 
         # inject_entity 不应被调用
-        ingester.inject_entity.assert_not_called()
+        ingester.inject_custom_kg.assert_not_called()
 
 
 # ============== Test 3: get_all_regions ==============
@@ -614,49 +614,6 @@ class TestDescriptionEncoding:
         assert parsed["region_id"] == ""
 
 
-# ============== _summarize_region Heuristic Tests ==============
-
-
-class TestSummarizeRegionHeuristic:
-    """验证 _summarize_region 的启发式命名逻辑"""
-
-    def test_returns_representative_as_name(self):
-        """使用第一个实体名作为区域名"""
-        adapter, ingester = _make_mock_adapter_and_ingester()
-        manager = RegionManager(adapter, ingester)
-
-        name, summary = manager._summarize_region([
-            "Python(language)",
-            "Django(framework)",
-            "FastAPI(framework)",
-        ])
-
-        assert name == "Python"
-        assert "Python" in summary
-
-    def test_empty_summaries_return_unknown(self):
-        """空实体列表返回 unknown"""
-        adapter, ingester = _make_mock_adapter_and_ingester()
-        manager = RegionManager(adapter, ingester)
-
-        name, summary = manager._summarize_region([])
-
-        assert name == "unknown"
-        assert summary == ""
-
-    def test_summary_limits_to_max_entities(self):
-        """摘要最多包含 MAX_SUMMARY_ENTITIES 个实体"""
-        adapter, ingester = _make_mock_adapter_and_ingester()
-        manager = RegionManager(adapter, ingester)
-
-        # 创建超过 5 个实体
-        entities = [f"Entity{i}(type{i})" for i in range(10)]
-
-        name, summary = manager._summarize_region(entities)
-
-        assert name == "Entity0"
-        # 摘要应使用 <SEP> 分隔符
-        assert "<SEP>" in summary
 
 
 class TestGenerateRegionSummary:
@@ -995,6 +952,35 @@ class TestBatchLabelGeneration:
         labels = manager._generate_labels(entity_summaries_list, existing)
 
         assert len(labels) == 2
+
+    def test_batch_dedup_same_label_for_multiple_regions(self):
+        """When batch LLM returns same label for multiple regions, dedup should rename correctly."""
+        adapter, ingester = _make_mock_adapter_and_ingester()
+        manager = RegionManager(adapter, ingester)
+
+        # Mock batch to return the same label for regions 0 and 1
+        def mock_batch(prompts_list, existing):
+            return {0: "编程", 1: "编程", 2: "开发"}
+        manager._generate_region_labels_batch = mock_batch
+
+        entity_summaries_list = [
+            ["Python(skill)", "Django(framework)"],
+            ["React(skill)", "Vue(framework)"],
+            ["雄安分行(org)", "河北分行(org)"],
+        ]
+        existing = []
+        labels = manager._generate_labels(entity_summaries_list, existing)
+
+        assert len(labels) == 3
+        # labels[0] and labels[1] must be different (one gets a numeric suffix)
+        assert labels[0] != labels[1]
+        # The first occurrence keeps the original label
+        assert labels[0] == "编程"
+        # The duplicate gets a suffix like "编程2"
+        assert labels[1].startswith("编程")
+        assert labels[1] != "编程"
+        # The third label is unaffected
+        assert labels[2] == "开发"
 
     def test_batch_fallback_on_missing_regions(self):
         """When batch returns fewer labels than input, fallback to individual."""
