@@ -870,3 +870,69 @@ class TestCreateRegionNodesWithLLMLabel:
         chunks = call_kwargs.get("chunks", [])
         assert len(chunks) >= 1
         assert "编程开发" in chunks[0]["content"]
+
+
+class TestUpdateRegionSummariesNoLLM:
+    """Test update_region_summaries does NOT call _generate_region_label."""
+
+    def test_update_does_not_call_generate_label(self):
+        """update_region_summaries should not call _generate_region_label."""
+        adapter, ingester = _make_mock_adapter_and_ingester()
+        manager = RegionManager(adapter, ingester)
+
+        # Mock _generate_region_label to track calls
+        label_calls = []
+        original_fn = manager._generate_region_label
+        def track_label_calls(*args, **kwargs):
+            label_calls.append(1)
+            return original_fn(*args, **kwargs)
+        manager._generate_region_label = track_label_calls
+
+        # Setup: return existing region data
+        adapter.list_entities.return_value = {
+            "status": "ok",
+            "data": [
+                {
+                    "id": "Python脑区",
+                    "description": _encode_description(
+                        summary="旧摘要", region_id="community_0",
+                        size=3, representative="Python", updated_at=1000.0,
+                    ),
+                },
+            ],
+        }
+
+        # Mock get_region_members
+        from unittest.mock import patch
+        with patch.object(manager, "get_region_members", return_value=["Python", "Django"]):
+            manager.update_region_summaries(["Python脑区"])
+
+        assert label_calls == []
+
+    def test_update_uses_generate_region_summary(self):
+        """update_region_summaries should use _generate_region_summary format."""
+        adapter, ingester = _make_mock_adapter_and_ingester()
+        manager = RegionManager(adapter, ingester)
+
+        adapter.list_entities.return_value = {
+            "status": "ok",
+            "data": [
+                {
+                    "id": "Python脑区",
+                    "description": _encode_description(
+                        summary="旧摘要", region_id="community_0",
+                        size=3, representative="Python", updated_at=1000.0,
+                    ),
+                },
+            ],
+        }
+
+        from unittest.mock import patch
+        with patch.object(manager, "get_region_members", return_value=["Python", "Django"]):
+            manager.update_region_summaries(["Python脑区"])
+
+        call_kwargs = ingester.inject_custom_kg.call_args[1]
+        entities = call_kwargs.get("entities", [])
+        assert len(entities) == 1
+        desc = entities[0]["description"]
+        assert "Python" in desc
