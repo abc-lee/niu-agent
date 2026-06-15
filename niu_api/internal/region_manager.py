@@ -199,19 +199,27 @@ class RegionManager:
     ) -> list[str]:
         """Create master nodes + relationships for each community
 
-        Uses batch injection: collects all entities and relationships first,
-        then calls inject_custom_kg once. This avoids serially blocking
-        the LightRAG event loop with N individual calls per community.
+        Uses batch injection: collects all entities, relationships and chunks first,
+        then calls inject_custom_kg once.
 
         Args:
             partition_result: Community detection result from M1
 
         Returns:
-            List of created region names (e.g. ["Python脑区", ...])
+            List of created region names (e.g. ["编程开发脑区", ...])
         """
         all_entities: list[dict] = []
         all_relationships: list[dict] = []
+        all_chunks: list[dict] = []
         created_regions: list[str] = []
+
+        # Pre-fetch existing region labels for LLM dedup
+        existing_labels: list[str] = []
+        try:
+            for region in self.get_all_regions():
+                existing_labels.append(region.label)
+        except Exception:
+            pass
 
         for partition in partition_result.partitions:
             # Step 1: Filter out existing region nodes
@@ -235,11 +243,14 @@ class RegionManager:
                 members, partition.entity_types, partition.entity_name_to_type
             )
 
-            # Step 2: Generate region name + summary
-            region_label, region_summary = self._summarize_region(entity_summaries)
+            # Step 2: Generate region label via LLM and summary via heuristic
+            region_label = self._generate_region_label(entity_summaries, existing_labels)
+            region_summary = self._generate_region_summary(entity_summaries)
+
+            # Track label for dedup in subsequent iterations
+            existing_labels.append(region_label)
 
             # Pick representative: first entity name (highest-degree in community)
-            # Sanitize: replace <SEP> and | with - to avoid breaking description parsing
             representative = members[0].replace("<SEP>", "-").replace("|", "-") if members else ""
             community_id = f"community_{partition.region_id}"
             now = time.time()
@@ -260,27 +271,38 @@ class RegionManager:
                 "entity_name": region_name,
                 "entity_type": REGION_ENTITY_TYPE,
                 "description": description,
+                "source_id": REGION_SOURCE_ID,  # inject_custom_kg rewrites to "brain_编程开发脑区"
             })
 
-            # Step 4: Collect anchor relation from Niu to region
+            # Step 4: Collect chunk for vector search visibility
+            top_members = members[:MAX_SUMMARY_ENTITIES]
+            chunk_source_id = f"{REGION_SOURCE_ID}_{region_name}"  # "brain_编程开发脑区"
+
+            all_chunks.append({
+                "content": f"{region_label}脑区：{', '.join(top_members)}",
+                "source_id": chunk_source_id,
+                "file_path": REGION_FILE_PATH,
+            })
+
+            # Step 5: Collect anchor relation from Niu to region
             all_relationships.append({
                 "src_id": NIU_ENTITY,
                 "tgt_id": region_name,
                 "keywords": ANCHOR_RELATION,
                 "description": f"Brain region anchor: {region_label}",
-                "weight": 0.5,  # Unified initial weight (was 1.0)
+                "weight": 0.5,
                 "source_id": REGION_SOURCE_ID,
                 "file_path": REGION_FILE_PATH,
             })
 
-            # Step 5: Collect belongs_to relations from region to each member
+            # Step 6: Collect belongs_to relations from region to each member
             for member in members:
                 all_relationships.append({
                     "src_id": region_name,
                     "tgt_id": member,
                     "keywords": BELONGS_TO_RELATION,
                     "description": f"{member} belongs to region {region_label}",
-                    "weight": 0.5,  # Unified initial weight (was 0.8)
+                    "weight": 0.5,
                     "source_id": REGION_SOURCE_ID,
                     "file_path": REGION_FILE_PATH,
                 })
@@ -299,7 +321,7 @@ class RegionManager:
             result = self._ingester.inject_custom_kg(
                 entities=all_entities,
                 relationships=all_relationships,
-                chunks=[],
+                chunks=all_chunks,
                 source_id=REGION_SOURCE_ID,
             )
             if isinstance(result, dict) and result.get("status") == "error":
@@ -310,9 +332,10 @@ class RegionManager:
                 )
                 return []
             logger.info(
-                "批量注入 %d 个脑区实体, %d 条关系",
+                "批量注入 %d 个脑区实体, %d 条关系, %d 个chunks",
                 len(all_entities),
                 len(all_relationships),
+                len(all_chunks),
             )
 
         logger.info("共创建 %d 个脑区节点", len(created_regions))
