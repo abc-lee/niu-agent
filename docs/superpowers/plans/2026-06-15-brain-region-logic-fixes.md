@@ -104,9 +104,9 @@ for (partition, members, entity_summaries), region_label in zip(valid_communitie
     # Always upsert entity (updates description for existing regions)
     all_entities.append({
         "entity_name": region_name,
-        "entity_type": "脑区",
+        "entity_type": REGION_ENTITY_TYPE,
         "description": description,
-        "source_id": "brain_region",
+        "source_id": REGION_SOURCE_ID,
     })
 
     if is_existing:
@@ -114,14 +114,24 @@ for (partition, members, entity_summaries), region_label in zip(valid_communitie
         continue
 
     # Below only for NEW regions — relationships + chunks
+    # Chunk（与当前 Pass 3 逻辑相同）
+    top_members = members[:MAX_SUMMARY_ENTITIES]
+    chunk_source_id = f"{REGION_SOURCE_ID}_{region_name}"
+    all_chunks.append({
+        "content": f"{region_label}脑区：{', '.join(top_members)}",
+        "source_id": chunk_source_id,
+        "file_path": REGION_FILE_PATH,
+    })
+
     # 脑区锚点边（与当前 Pass 3 逻辑相同）
     all_relationships.append({
-        "src_id": f"brain_anchor_{region_label}",
+        "src_id": NIU_ENTITY,
         "tgt_id": region_name,
-        "relation": "锚点",
-        "description": f"{region_label}的脑区锚点",
-        "weight": 1.0,
-        "source_id": "brain_region",
+        "keywords": ANCHOR_RELATION,
+        "description": f"Brain region anchor: {region_label}",
+        "weight": 0.5,
+        "source_id": REGION_SOURCE_ID,
+        "file_path": REGION_FILE_PATH,
     })
 
     # 包含边（与当前 Pass 3 逻辑相同）
@@ -129,18 +139,11 @@ for (partition, members, entity_summaries), region_label in zip(valid_communitie
         all_relationships.append({
             "src_id": region_name,
             "tgt_id": member,
-            "relation": "包含",
-            "description": f"{region_name}包含{member}",
-            "weight": 1.0,
-            "source_id": "brain_region",
-        })
-
-    # Chunk（与当前 Pass 3 逻辑相同）
-    if summary and entity_type_str:
-        chunk_content = f"{region_name}{GRAPH_FIELD_SEP}{entity_type_str}{GRAPH_FIELD_SEP}{summary}"
-        all_chunks.append({
-            "content": chunk_content,
-            "source_id": "brain_region",
+            "keywords": BELONGS_TO_RELATION,
+            "description": f"{member} belongs to region {region_label}",
+            "weight": 0.5,
+            "source_id": REGION_SOURCE_ID,
+            "file_path": REGION_FILE_PATH,
         })
 
     created_regions.append(region_name)
