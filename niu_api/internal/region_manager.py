@@ -150,7 +150,7 @@ def _parse_description(description: str) -> dict[str, str]:
 
     for part in parts:
         part = part.strip()
-        match = re.match(r"brain_meta_(\w+):(.+)", part)
+        match = re.match(r"brain_meta_(\w+):(.*)", part)
         if match:
             key = match.group(1)
             value = match.group(2)
