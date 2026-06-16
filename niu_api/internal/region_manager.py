@@ -427,7 +427,26 @@ class RegionManager:
             }
 
             # Build entity summaries with type labels from graph
-            entity_summaries = self._build_entity_summaries(members, {}, {})
+            # Read entity types from NetworkX graph to preserve type info (D-16 fix)
+            from niu_api.internal.lightrag_manager import graph_read_lock
+            entity_name_to_type: dict[str, str] = {}
+            try:
+                rag = self._adapter._get_rag()
+                if rag is not None:
+                    kg = rag.chunk_entity_relation_graph
+                    nx_graph = kg._graph if hasattr(kg, "_graph") else kg
+                    if nx_graph is not None:
+                        with graph_read_lock():
+                            for member in members:
+                                member_lower = member.lower() if isinstance(member, str) else member
+                                if member_lower in nx_graph:
+                                    node_data = nx_graph.nodes[member_lower]
+                                    etype = node_data.get("entity_type", "")
+                                    if etype:
+                                        entity_name_to_type[member] = etype
+            except Exception:
+                pass  # Read failure falls back to empty mapping — no worse than current code
+            entity_summaries = self._build_entity_summaries(members, {}, entity_name_to_type or None)
             region_summary = self._generate_region_summary(entity_summaries)
 
             now = time.time()
