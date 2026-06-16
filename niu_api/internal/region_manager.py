@@ -1570,12 +1570,13 @@ def get_default_regions_config() -> list[dict]:
         pass
     # Fallback ONLY when preferences.json has no brain_regions section
     return [
-        {"label": "聊天历史", "description": "日常对话中提炼的偏好、技能和经验记忆", "priority": "core"},
-        {"label": "文档库", "description": "用户导入的文档和资料，经解析后入库的知识", "priority": "core"},
-        {"label": "知识体系", "description": "系统化组织的概念、关系和理论体系", "priority": "core"},
-        {"label": "人际关系", "description": "人物实体、关系网络、社交图谱", "priority": "category"},
-        {"label": "工作事务", "description": "工作相关的项目、任务、决策记录", "priority": "category"},
-        {"label": "生活事务", "description": "日常生活相关的日程、健康、财务", "priority": "category"},
+        {"label": "聊天历史", "description": "日常对话中提炼的偏好、技能和经验记忆", "priority": "core", "keywords": ["偏好", "习惯", "设置", "配置", "喜欢", "想要"]},
+        {"label": "文档库", "description": "用户导入的文档和资料，经解析后入库的知识", "priority": "core", "keywords": ["文档", "文件", "PDF", "Word", "Markdown", "笔记"]},
+        {"label": "知识体系", "description": "系统化组织的概念、关系和理论体系", "priority": "core", "keywords": ["概念", "理论", "方法", "原理", "定义", "技术"]},
+        {"label": "人际关系", "description": "人物实体、关系网络、社交图谱", "priority": "category", "keywords": ["人物", "家人", "朋友", "同事", "联系人", "人名"]},
+        {"label": "工作事务", "description": "工作相关的项目、任务、决策记录", "priority": "category", "keywords": ["项目", "任务", "会议", "决策", "工作", "进度"]},
+        {"label": "生活事务", "description": "日常生活相关的日程、健康、财务", "priority": "category", "keywords": ["日程", "健康", "财务", "旅行", "生活", "日常"]},
+        {"label": "组织机构", "description": "公司、部门、机构等组织实体和关系网络", "priority": "category", "keywords": ["公司", "部门", "机构", "组织", "团队", "单位"]},
     ]
 
 
@@ -1715,15 +1716,24 @@ def assign_entities_to_default_regions(
     if kg is None:
         return {"assigned": 0, "regions": 0}
 
-    # Region keyword mapping for heuristic matching
-    REGION_KEYWORDS = {
+    # Dynamic keyword mapping from config (replaces hardcoded REGION_KEYWORDS)
+    _DEFAULT_KEYWORDS_FALLBACK: dict[str, list[str]] = {
         "聊天历史脑区": ["偏好", "习惯", "设置", "配置", "喜欢", "想要"],
         "文档库脑区": ["文档", "文件", "PDF", "Word", "Markdown", "笔记"],
         "知识体系脑区": ["概念", "理论", "方法", "原理", "定义", "技术"],
         "人际关系脑区": ["人物", "家人", "朋友", "同事", "联系人", "人名"],
         "工作事务脑区": ["项目", "任务", "会议", "决策", "工作", "进度"],
         "生活事务脑区": ["日程", "健康", "财务", "旅行", "生活", "日常"],
+        "组织机构脑区": ["公司", "部门", "机构", "组织", "团队", "单位"],
     }
+    REGION_KEYWORDS: dict[str, list[str]] = {}
+    for region_def in get_default_regions_config():
+        region_name = f"{region_def['label']}{REGION_SUFFIX}"
+        keywords = region_def.get("keywords", [])
+        if not keywords:
+            keywords = _DEFAULT_KEYWORDS_FALLBACK.get(region_name, [])
+        if keywords:
+            REGION_KEYWORDS[region_name] = keywords
 
     assigned_counts: dict[str, int] = {}
     all_relationships: list[dict] = []
@@ -1805,13 +1815,13 @@ def assign_entities_to_default_regions(
                     if name in assigned_counts:
                         desc = entity.get("description", "")
                         parsed = _parse_description(desc)
-                        new_size = assigned_counts[name]
-                        # Update size: if there was an existing size, add to it
-                        old_size = int(parsed.get("size", "0") or "0")
+                        # D-15 fix: Use actual member count instead of cumulative size
+                        from niu_api.internal.lightrag_manager import get_region_members as lightrag_get_region_members
+                        actual_members = lightrag_get_region_members(name)
                         updated_desc = _encode_description(
                             summary=parsed.get("summary", ""),
                             region_id=parsed.get("region_id", ""),
-                            size=old_size + new_size,
+                            size=len(actual_members),
                             representative=parsed.get("representative", ""),
                             updated_at=time.time(),
                         )

@@ -41,7 +41,16 @@ description: Use when managing or configuring brain regions, adding new regions,
 
 ### Step 2: Add Brain Region to Defaults
 
-Add your new brain region to the `brain_regions.defaults` section.
+Add your new brain region to the `brain_regions.defaults` section. Each entry supports:
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `label` | Yes | Region display name (e.g., "工作事务") |
+| `description` | Yes | What the region stores |
+| `priority` | Yes | `"core"` (always active) or `"category"` (on-demand) |
+| `keywords` | No | List of Chinese keywords for heuristic entity-to-region matching |
+
+The `keywords` field is used by `assign_entities_to_default_regions` to match entities to regions by name/description similarity. If omitted, the system falls back to a built-in keyword list for known default regions.
 
 ### Step 3: Restart
 
