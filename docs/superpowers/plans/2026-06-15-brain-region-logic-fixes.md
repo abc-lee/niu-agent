@@ -45,6 +45,8 @@ Task 6 (问题6) ──── 独立（依赖 Task 5 的代码基础）
 
 - [ ] **Step 1: 修改 `create_region_nodes` 方法**
 
+⚠️ **注意**：Task 4 已在 `create_region_nodes` 签名中添加了 `skip_community_ids` 参数。本 Step 的 Edit `old_string` 必须基于 Task 4 执行后的代码（包含 `skip_community_ids` 参数），不是原始源码。
+
 **注意**：审核发现 3 个必须处理的问题：(a) 已存在脑区必须从 Pass 1 和 Pass 2 中也过滤掉，否则 LLM 仍会为已存在脑区调用，且非确定性可能导致标签不匹配；(b) 代码 222-227 行已经调用了 `self.get_all_regions()`，应复用该调用同时构建 `existing_labels` 和 `existing_region_names`，不要加第二次调用；(c) `created_regions` 的语义从"所有处理过的脑区"变为"真正新建的脑区"。
 
 修改步骤：
@@ -241,10 +243,10 @@ git commit -m "fix(brain-region): Task 1 — create_region_nodes skip existing r
 # 在 update_region_summaries 方法中，替换 line 413：
 # 旧代码：entity_summaries = self._build_entity_summaries(members, {}, {})
 # 新代码：从图中批量读取成员实体的类型
-from niu_api.internal.lightrag_manager import get_lightrag, graph_read_lock
+from niu_api.internal.lightrag_manager import graph_read_lock
 entity_name_to_type: dict[str, str] = {}
 try:
-    rag = get_lightrag()
+    rag = self._adapter._get_rag()
     if rag is not None:
         kg = rag.chunk_entity_relation_graph
         nx_graph = kg._graph if hasattr(kg, "_graph") else kg
@@ -262,7 +264,7 @@ except Exception:
 entity_summaries = self._build_entity_summaries(members, {}, entity_name_to_type or None)
 ```
 
-**设计说明**：从 `nx_graph.nodes[member]` 读取 `entity_type` 属性是最高效的方式（直接读内存，无需 API 调用）。如果读取失败（图不可用），回退到空映射——此时 summary 质量与当前代码一致，不会退化。
+**设计说明**：使用 `self._adapter._get_rag()` 获取 LightRAG 实例，与 `_decay_structural_edges` 和 `assign_entities_to_default_regions` 中的模式一致。从 `nx_graph.nodes[member]` 读取 `entity_type` 属性是最高效的方式（直接读内存，无需 API 调用）。如果读取失败（图不可用），回退到空映射——此时 summary 质量与当前代码一致，不会退化。
 
 - [ ] **Step 2: 写测试**
 
@@ -593,6 +595,7 @@ def _update_drifted_regions(
    ```python
    removed, drifted, drifted_cids = manager.cleanup_stale_regions(current_partition)
    ```
+   ⚠️ **注意**：`cleanup_stale_regions` 新实现调用了 `get_all_region_members()`（需要 LightRAG 实例）。现有测试和新测试都必须 mock `niu_api.internal.lightrag_manager.get_all_region_members`，否则测试会因为无法连接 LightRAG 而失败。mock 返回值格式：`{"脑区名": ["成员1", "成员2"], ...}`
 
 2. **添加 `create_region_nodes` 的 `skip_community_ids` 参数签名**（方法体暂不实现，留给 Task 1）：
    ```python
@@ -1167,19 +1170,15 @@ def consolidate_brain_regions(req: ConsolidateRequest = ConsolidateRequest()):
     # 获取 RegionSync 的互斥锁，防止与定时同步并发
     from agent.injector.region_sync import get_region_sync
     sync = get_region_sync(auto_start=False)
-    lock_acquired = False
-    if sync is not None and not sync.try_acquire_sync():
+    if not sync.try_acquire_sync():
         raise HTTPException(
             status_code=409,
             detail="Another brain region sync is in progress. Please try again later.",
         )
-    if sync is not None:
-        lock_acquired = True
     try:
         # ... 原有 consolidate 逻辑 ...
     finally:
-        if lock_acquired:
-            sync.release_sync()
+        sync.release_sync()
 ```
 
 - [ ] **Step 3: 验证**
@@ -1206,6 +1205,22 @@ Run: `python -m pytest tests/test_region_manager.py tests/test_region_detector.p
 - [ ] **确认 `incremental_update` 一致性**
 
 验证 `incremental_update` 也受益于 Task 4 的 drift 检测（因为它也调用 `cleanup_stale_regions`）。
+
+- [ ] **验证 D-12 空列表保护**
+
+mock `get_all_regions()` 返回空列表，确认 `_refresh_activation_manager` 跳过初始化且现有激活状态未丢失。
+
+- [ ] **验证 D-15 size 不累加**
+
+运行 `assign_entities_to_default_regions` 两次，确认默认脑区的 `size` 字段等于实际成员数，不会因重复运行而累加。
+
+- [ ] **验证 `remove_region_edges` 功能**
+
+确认 `remove_region_edges(region_name, edge_type)` 能正确删除指定脑区的指定类型边（`py_compile` + 手动验证日志）。
+
+- [ ] **验证互斥锁行为**
+
+同时触发 `POST /api/brain/regions/consolidate` 和定时同步，确认其中一个返回 409 或被跳过。
 
 - [ ] **同步配置文件到运行目录**
 
