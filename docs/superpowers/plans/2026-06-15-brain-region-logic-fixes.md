@@ -1140,7 +1140,7 @@ elif not cleanup_ok:
 - [ ] **Step 2: `brain_region_api.py` 使用同一把锁**
 
 ```python
-def consolidate_brain_regions(req: ConsolidateRequest = None):
+def consolidate_brain_regions(req: ConsolidateRequest = ConsolidateRequest()):
     # ... docstring ...
 
     # 获取 RegionSync 的互斥锁，防止与定时同步并发
