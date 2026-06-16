@@ -877,17 +877,22 @@ class LightRAGAdapter:
             # Now iterate the snapshot without holding the lock (safe because
             # it's our local copy — no other thread can modify it)
             # Sort nodes by degree (most-connected first), then take top limit
-            try:
-                node_degrees = {n: snapshot.degree(n) for n in snapshot.nodes()}
-                sorted_nodes = sorted(
-                    node_degrees.keys(), key=lambda n: node_degrees[n], reverse=True
-                )
-                top_nodes = sorted_nodes[:limit]
+            # When limit <= 0, return ALL nodes (no truncation)
+            if limit <= 0:
+                top_nodes = list(snapshot.nodes())
                 top_set = set(top_nodes)
-            except RuntimeError:
-                logger.warning("Graph modified during snapshot read, returning partial data")
-                top_nodes = list(snapshot.nodes())[:limit]
-                top_set = set(top_nodes)
+            else:
+                try:
+                    node_degrees = {n: snapshot.degree(n) for n in snapshot.nodes()}
+                    sorted_nodes = sorted(
+                        node_degrees.keys(), key=lambda n: node_degrees[n], reverse=True
+                    )
+                    top_nodes = sorted_nodes[:limit]
+                    top_set = set(top_nodes)
+                except RuntimeError:
+                    logger.warning("Graph modified during snapshot read, returning partial data")
+                    top_nodes = list(snapshot.nodes())[:limit]
+                    top_set = set(top_nodes)
 
             nodes = []
             for node_name in top_nodes:

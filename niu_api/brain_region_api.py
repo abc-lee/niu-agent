@@ -175,12 +175,12 @@ def consolidate_brain_regions(
                 "regions_created": 0,
             }
 
-        # Step 2: Create region master nodes (sync — no call_async)
+        # Step 2: Clean up stale regions first (sync — no call_async)
         region_mgr = _get_region_mgr()
-        created = region_mgr.create_region_nodes(detection_result)
-
-        # Step 3: Clean up stale regions (sync — no call_async)
         removed = region_mgr.cleanup_stale_regions(detection_result)
+
+        # Step 3: Create region master nodes (sync — no call_async)
+        created = region_mgr.create_region_nodes(detection_result)
 
         # Step 4: Initialize activation manager with new regions
         activation_mgr = _get_activation_mgr()
