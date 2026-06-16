@@ -846,12 +846,14 @@ except Exception as e:
 
 # Step 4: Create region nodes (skip drifted community partitions)
 created: list[str] = []
+create_ok = True
 try:
     created = manager.create_region_nodes(detection_result, skip_community_ids=drifted_cids)
     stats["regions_created"] = len(created)
 except Exception as e:
     logger.warning(f"[RegionSync] create_region_nodes failed: {e}")
     stats["errors"].append(f"create: {e}")
+    create_ok = False
 
 # Step 4.5: Assign existing entities to default brain regions
 try:
@@ -864,13 +866,13 @@ try:
 except Exception as e:
     logger.debug(f"[RegionSync] assign_entities_to_default_regions skipped: {e}")
 
-# Step 3b: 执行删除和漂移更新（仅在 create 成功且 dry_run 未失败时）
-# 如果 create 失败（created 为空且 detection_result 有分区），
-# 保留旧脑区，避免数据丢失
+# Step 3b: 执行删除和漂移更新（仅在 create 未异常且 dry_run 未失败时）
+# create_ok=True 但 created=[] 是正常情况（所有脑区都已存在），仍需执行 cleanup
+# create_ok=False 表示 create 抛出异常，保留旧脑区避免数据丢失
 # 如果 dry_run 失败（cleanup_ok=False），跳过执行避免重复创建
 actual_removed: list[str] = []
 actual_drifted: list[str] = []
-if (created or not detection_result.partitions) and cleanup_ok:
+if (create_ok or not detection_result.partitions) and cleanup_ok:
     try:
         actual_removed, actual_drifted, _ = manager.cleanup_stale_regions(
             detection_result, dry_run=False,
@@ -882,7 +884,7 @@ if (created or not detection_result.partitions) and cleanup_ok:
 elif not cleanup_ok:
     logger.warning("[RegionSync] dry_run 失败，跳过 cleanup 执行避免重复创建")
 else:
-    logger.warning("[RegionSync] create_region_nodes 失败，保留旧脑区避免数据丢失")
+    logger.warning("[RegionSync] create_region_nodes 异常，保留旧脑区避免数据丢失")
 
 # Step 5: Update region summaries (exclude created and drifted)
 # created 脑区已有准确 summary（来自分区类型数据），drifted 脑区已由 _update_drifted_regions 更新
@@ -935,14 +937,17 @@ def incremental_update(self) -> dict:
 
         # Create new regions (skip drifted community partitions)
         created: list[str] = []
+        create_ok = True
         try:
             created = self.create_region_nodes(partition, skip_community_ids=drifted_cids)
         except Exception as e:
             logger.warning("incremental_update create_region_nodes failed: %s", e)
+            create_ok = False
 
-        # Execute cleanup only if create succeeded and dry_run succeeded
+        # Execute cleanup only if create didn't throw and dry_run succeeded
+        # create_ok=True but created=[] is normal (all regions exist), still run cleanup
         actual_removed, actual_drifted = [], []
-        if (created or not partition.partitions) and cleanup_ok:
+        if (create_ok or not partition.partitions) and cleanup_ok:
             try:
                 actual_removed, actual_drifted, _ = self.cleanup_stale_regions(partition, dry_run=False)
             except Exception as e:
@@ -950,7 +955,7 @@ def incremental_update(self) -> dict:
         elif not cleanup_ok:
             logger.warning("incremental_update dry_run 失败，跳过 cleanup 执行")
         else:
-            logger.warning("incremental_update create_region_nodes 失败，保留旧脑区")
+            logger.warning("incremental_update create_region_nodes 异常，保留旧脑区")
 
         # Update summaries for stable regions (exclude created and drifted)
         all_regions = self.get_all_regions()
@@ -999,10 +1004,17 @@ except Exception as e:
     cleanup_ok = False
 
 # Step 3: Create region nodes (Phase 2)
-created = region_mgr.create_region_nodes(detection_result, skip_community_ids=drifted_cids)
+create_ok = True
+try:
+    created = region_mgr.create_region_nodes(detection_result, skip_community_ids=drifted_cids)
+except Exception as e:
+    logger.error("[Consolidate] create_region_nodes failed: %s", e)
+    created = []
+    create_ok = False
 
-# Step 4: Execute cleanup only if create succeeded and dry_run succeeded (Phase 3)
-if (created or not detection_result.partitions) and cleanup_ok:
+# Step 4: Execute cleanup only if create didn't throw and dry_run succeeded (Phase 3)
+# create_ok=True but created=[] is normal (all regions exist), still run cleanup
+if (create_ok or not detection_result.partitions) and cleanup_ok:
     try:
         actual_removed, actual_drifted, _ = region_mgr.cleanup_stale_regions(detection_result, dry_run=False)
         removed = actual_removed
@@ -1012,8 +1024,7 @@ if (created or not detection_result.partitions) and cleanup_ok:
 elif not cleanup_ok:
     logger.warning("[Consolidate] dry_run failed, skipping cleanup execution")
 else:
-    logger.warning("[Consolidate] create_region_nodes failed, preserving stale regions")
-    created = []
+    logger.warning("[Consolidate] create_region_nodes exception, preserving stale regions")
 
 # Step 5: Initialize activation manager (with D-12 empty list protection)
 activation_mgr = _get_activation_mgr()
@@ -1129,9 +1140,16 @@ except Exception as e:
     cleanup_ok = False
 
 # ... create ...
+create_ok = True
+try:
+    created = manager.create_region_nodes(detection_result, skip_community_ids=drifted_cids)
+except Exception as e:
+    create_ok = False
+    ...
 
-# Step 3b: 执行删除和漂移更新（仅在 create 成功且 dry_run 未失败时）
-if (created or not detection_result.partitions) and cleanup_ok:
+# Step 3b: 执行删除和漂移更新（仅在 create 未异常且 dry_run 未失败时）
+# 注意：create_ok=True 但 created=[] 是正常情况，仍需执行 cleanup
+if (create_ok or not detection_result.partitions) and cleanup_ok:
     # ... execute cleanup ...
 elif not cleanup_ok:
     logger.warning("[RegionSync] dry_run 失败，跳过 cleanup 执行避免重复创建")
