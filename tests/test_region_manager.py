@@ -1188,3 +1188,201 @@ class TestSummaryDisplayFormat:
         regions = manager.get_all_regions()
         assert len(regions) == 1
         assert regions[0].description == "Python、Django、FastAPI"
+
+
+class TestSkipRelationshipInjectionForExistingRegions:
+    """test_skips_relationship_injection_for_existing_regions — 已存在脑区只更新描述，不注入关系和chunk"""
+
+    def test_existing_region_only_updates_description(self):
+        """已存在脑区只 append entity，不 append relationship 和 chunk"""
+        adapter, ingester = _make_mock_adapter_and_ingester()
+        manager = RegionManager(adapter, ingester)
+
+        # Mock _generate_labels to return "编程开发" for partition 0 and "React" for partition 1
+        manager._generate_labels = lambda summaries_list, existing: ["编程开发", "React"]
+
+        # Mock get_all_regions to return an existing region "编程开发脑区"
+        adapter.list_entities.return_value = {
+            "status": "ok",
+            "data": [
+                {
+                    "id": "编程开发脑区",
+                    "entity_type": "BrainRegion",
+                    "description": _encode_description(
+                        summary="Python<SEP>Django",
+                        region_id="community_0",
+                        size=3,
+                        representative="Python",
+                        updated_at=1000.0,
+                    ),
+                },
+            ],
+        }
+
+        # Partition 0 maps to "编程开发" label → "编程开发脑区" (existing)
+        # Partition 1 maps to "React" label → "React脑区" (new)
+        partitions = [
+            RegionPartition(
+                region_id=0,
+                region_name="region_0",
+                entity_names=["Python", "Django", "FastAPI"] + [f"E{i}" for i in range(97)],
+                entity_types={"language": 50, "framework": 50},
+                edge_count=2,
+                modularity_score=0.15,
+            ),
+            RegionPartition(
+                region_id=1,
+                region_name="region_1",
+                entity_names=["React", "Vue", "Angular"] + [f"N{i}" for i in range(97)],
+                entity_types={"framework": 100},
+                edge_count=3,
+                modularity_score=0.15,
+            ),
+        ]
+        result = _make_partition_result(partitions)
+
+        created_regions = manager.create_region_nodes(result)
+
+        # created_regions should only contain the NEW region
+        assert "编程开发脑区" not in created_regions
+        assert "React脑区" in created_regions
+        assert len(created_regions) == 1
+
+        # Verify inject_custom_kg was called
+        assert ingester.inject_custom_kg.call_count == 1
+        call_kwargs = ingester.inject_custom_kg.call_args[1]
+
+        # Both entities should be present (existing gets description update)
+        entities = call_kwargs.get("entities", [])
+        entity_names = [e["entity_name"] for e in entities]
+        assert "编程开发脑区" in entity_names
+        assert "React脑区" in entity_names
+
+        # Relationships should NOT contain 编程开发脑区
+        relationships = call_kwargs.get("relationships", [])
+        rel_targets = [r["tgt_id"] for r in relationships]
+        assert "编程开发脑区" not in rel_targets
+        # React脑区 should have anchor + belongs_to relationships
+        assert "React脑区" in rel_targets
+
+        # Chunks should NOT contain 编程开发脑区
+        chunks = call_kwargs.get("chunks", [])
+        chunk_source_ids = [c["source_id"] for c in chunks]
+        assert "brain_编程开发脑区" not in chunk_source_ids
+        assert "brain_React脑区" in chunk_source_ids
+
+    def test_skip_community_ids_filters_partitions(self):
+        """skip_community_ids 参数过滤漂移分区"""
+        adapter, ingester = _make_mock_adapter_and_ingester()
+        manager = RegionManager(adapter, ingester)
+        manager._generate_labels = lambda summaries_list, existing: [
+            summaries[0].split("(")[0] if summaries else "unknown"
+            for summaries in summaries_list
+        ]
+
+        partitions = [
+            RegionPartition(
+                region_id=0,
+                region_name="region_0",
+                entity_names=[f"E{i}" for i in range(100)],
+                entity_types={"skill": 100},
+                edge_count=2,
+                modularity_score=0.15,
+            ),
+            RegionPartition(
+                region_id=1,
+                region_name="region_1",
+                entity_names=[f"N{i}" for i in range(100)],
+                entity_types={"framework": 100},
+                edge_count=3,
+                modularity_score=0.15,
+            ),
+        ]
+        result = _make_partition_result(partitions)
+
+        # Skip community_0
+        created_regions = manager.create_region_nodes(result, skip_community_ids={"community_0"})
+
+        # Only region_1 should be processed
+        assert len(created_regions) == 1
+
+        call_kwargs = ingester.inject_custom_kg.call_args[1]
+        entities = call_kwargs.get("entities", [])
+        assert len(entities) == 1
+
+    def test_all_existing_regions_no_relationships(self):
+        """所有脑区都已存在时，只更新描述，不注入任何关系和chunk"""
+        adapter, ingester = _make_mock_adapter_and_ingester()
+        manager = RegionManager(adapter, ingester)
+        manager._generate_labels = lambda summaries_list, existing: [
+            summaries[0].split("(")[0] if summaries else "unknown"
+            for summaries in summaries_list
+        ]
+
+        # Mock get_all_regions to return both regions as existing
+        adapter.list_entities.return_value = {
+            "status": "ok",
+            "data": [
+                {
+                    "id": "Python脑区",
+                    "entity_type": "BrainRegion",
+                    "description": _encode_description(
+                        summary="Python<SEP>Django",
+                        region_id="community_0",
+                        size=3,
+                        representative="Python",
+                        updated_at=1000.0,
+                    ),
+                },
+                {
+                    "id": "React脑区",
+                    "entity_type": "BrainRegion",
+                    "description": _encode_description(
+                        summary="React<SEP>Vue",
+                        region_id="community_1",
+                        size=3,
+                        representative="React",
+                        updated_at=1000.0,
+                    ),
+                },
+            ],
+        }
+
+        partitions = [
+            RegionPartition(
+                region_id=0,
+                region_name="region_0",
+                entity_names=["Python", "Django", "FastAPI"] + [f"E{i}" for i in range(97)],
+                entity_types={"language": 50, "framework": 50},
+                edge_count=2,
+                modularity_score=0.15,
+            ),
+            RegionPartition(
+                region_id=1,
+                region_name="region_1",
+                entity_names=["React", "Vue", "Angular"] + [f"N{i}" for i in range(97)],
+                entity_types={"framework": 100},
+                edge_count=3,
+                modularity_score=0.15,
+            ),
+        ]
+        result = _make_partition_result(partitions)
+
+        created_regions = manager.create_region_nodes(result)
+
+        # No new regions created
+        assert created_regions == []
+
+        # inject_custom_kg should still be called (for entity description updates)
+        assert ingester.inject_custom_kg.call_count == 1
+        call_kwargs = ingester.inject_custom_kg.call_args[1]
+
+        # Entities present (description updates)
+        entities = call_kwargs.get("entities", [])
+        assert len(entities) == 2
+
+        # No relationships or chunks
+        relationships = call_kwargs.get("relationships", [])
+        chunks = call_kwargs.get("chunks", [])
+        assert relationships == []
+        assert chunks == []
