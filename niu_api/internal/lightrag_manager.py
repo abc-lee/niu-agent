@@ -442,7 +442,50 @@ def get_all_region_members() -> dict[str, list[str]]:
         return {}
 
 
-def _ensure_loop() -> asyncio.AbstractEventLoop:
+def remove_region_edges(region_name: str, edge_type: str) -> int:
+    """Remove edges of a specific type from a brain region node.
+
+    Directly operates on the internal NetworkX graph under write lock.
+
+    Args:
+        region_name: Brain region entity name
+        edge_type: Edge keywords to match (case-insensitive)
+
+    Returns:
+        Number of edges removed.
+
+    Note: Assumes nx.Graph (not MultiGraph). LightRAG uses nx.Graph,
+    add_edge is upsert semantics — no parallel edges.
+    """
+    removed = 0
+    try:
+        rag = get_lightrag()
+        if rag is None:
+            return 0
+        graph_obj = getattr(rag, "chunk_entity_relation_graph", None)
+        if graph_obj is None:
+            return 0
+        nx_graph = graph_obj._graph if hasattr(graph_obj, "_graph") else graph_obj
+        if nx_graph is None:
+            return 0
+        region_key = region_name.lower() if isinstance(region_name, str) else region_name
+        with graph_write_lock():
+            if region_key not in nx_graph:
+                return 0
+            for neighbor_id in list(nx_graph.neighbors(region_key)):
+                edge_data = nx_graph.get_edge_data(region_key, neighbor_id)
+                if edge_data is None:
+                    continue
+                kw = edge_data.get("keywords") or edge_data.get("type", "")
+                if kw.lower() == edge_type.lower():
+                    nx_graph.remove_edge(region_key, neighbor_id)
+                    removed += 1
+    except Exception as e:
+        logger.debug("remove_region_edges failed for %s: %s", region_name, e)
+    return removed
+
+
+def _ensure_loop() -> asyncio.AbstractEventLoop():
     """Ensure the daemon event loop is running (thread-safe)."""
     global _loop, _loop_thread
 

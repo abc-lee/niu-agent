@@ -22,7 +22,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from niu_api.internal.region_detector import CommunityDetectionResult
+from niu_api.internal.region_detector import CommunityDetectionResult, RegionPartition
 
 logger = logging.getLogger(__name__)
 
@@ -201,6 +201,7 @@ class RegionManager:
     def create_region_nodes(
         self,
         partition_result: CommunityDetectionResult,
+        skip_community_ids: set[str] | None = None,
     ) -> list[str]:
         """Create master nodes + relationships for each community
 
@@ -510,58 +511,229 @@ class RegionManager:
     def cleanup_stale_regions(
         self,
         current_partition: CommunityDetectionResult,
-    ) -> list[str]:
-        """Remove region master nodes that no longer exist in current partition
+        drift_threshold: float = 0.3,
+        dry_run: bool = False,
+    ) -> tuple[list[str], list[str], set[str]]:
+        """Remove stale and detect drifted regions using Jaccard similarity.
 
-        No longer async — see get_all_regions for rationale.
-
-        Compare current_partition community_ids with existing BrainRegion entities.
-        Delete stale nodes and their belongs_to relationships.
+        Instead of matching by community_id (unstable across Leiden runs),
+        compares actual membership overlap between existing regions and
+        new partition communities.
 
         Args:
             current_partition: Current community detection result
+            drift_threshold: Jaccard index below which a region is considered
+                drifted (default 0.3). Regions with best_jaccard >= threshold
+                are stable; 0 < best_jaccard < threshold → drifted;
+                best_jaccard == 0 → stale (removed).
+            dry_run: If True, only detect without executing changes.
 
         Returns:
-            List of removed region entity names
+            Tuple of (removed_region_names, drifted_region_names,
+            drifted_community_ids)
         """
-        # Get current community IDs from partition
-        current_community_ids: set[str] = set()
-        for partition in current_partition.partitions:
-            current_community_ids.add(f"community_{partition.region_id}")
+        from niu_api.internal.lightrag_manager import get_all_region_members
 
-        # Get all existing regions
+        # Step 1: Batch-read all region members from graph
+        region_member_map: dict[str, list[str]] = get_all_region_members()
+
+        # Step 2: Build community_id → member set mapping from partition
+        community_members: dict[str, set[str]] = {}
+        for partition in current_partition.partitions:
+            cid = f"community_{partition.region_id}"
+            community_members[cid] = set(partition.entity_names)
+
+        # Step 3: Get all existing regions
         existing_regions = self.get_all_regions()
 
+        # Safety check: if region_member_map is empty but non-default regions
+        # exist, the read may have failed — skip drift detection to avoid
+        # false removals
+        non_default_regions = [
+            r for r in existing_regions if not is_default_region(r.name)
+        ]
+        if not region_member_map and non_default_regions:
+            logger.warning(
+                "get_all_region_members 返回空但存在 %d 个非默认脑区，跳过漂移检测避免误删",
+                len(non_default_regions),
+            )
+            return ([], [], set())
+
         removed: list[str] = []
-        # NOTE: delete_entity calls call_async individually. This is acceptable
-        # because stale regions are typically very few (0-3), and delete is fast
-        # (just node/edge removal, no embedding computation). If this becomes a
-        # bottleneck, a batch delete API would be needed in LightRAG.
+        drift_info: dict[str, tuple[str, set[str]]] = {}  # region_name → (best_cid, best_members)
+
         for region in existing_regions:
-            # Protect default regions (defined in preferences.json)
             if is_default_region(region.name):
                 logger.debug("保护默认脑区: %s", region.name)
                 continue
-            if region.community_id not in current_community_ids:
-                # Delete stale region
-                delete_result = self._adapter.delete_entity(region.name)
-                if isinstance(delete_result, dict) and delete_result.get("status") == "ok":
-                    removed.append(region.name)
-                    logger.info(
-                        "删除过时脑区: %s (community_id=%s)",
-                        region.name,
-                        region.community_id,
-                    )
+
+            current_members = set(region_member_map.get(region.name, []))
+
+            # Find best-matching community by Jaccard similarity
+            best_jaccard = 0.0
+            best_cid = ""
+            best_members: set[str] = set()
+
+            for cid, members in community_members.items():
+                if not current_members and not members:
+                    continue
+                union = current_members | members
+                if not union:
+                    continue
+                intersection = current_members & members
+                jaccard = len(intersection) / len(union)
+                if jaccard > best_jaccard:
+                    best_jaccard = jaccard
+                    best_cid = cid
+                    best_members = members
+
+            if best_jaccard >= drift_threshold:
+                # Region is stable — no action needed
+                logger.debug(
+                    "脑区 %s 稳定 (Jaccard=%.2f, best_cid=%s)",
+                    region.name, best_jaccard, best_cid,
+                )
+            elif best_jaccard > 0:
+                # Region has drifted — record for update
+                logger.info(
+                    "脑区 %s 漂移 (Jaccard=%.2f, best_cid=%s)",
+                    region.name, best_jaccard, best_cid,
+                )
+                drift_info[region.name] = (best_cid, best_members)
+            else:
+                # Region is stale — no overlap at all
+                if not dry_run:
+                    delete_result = self._adapter.delete_entity(region.name)
+                    if isinstance(delete_result, dict) and delete_result.get("status") == "ok":
+                        removed.append(region.name)
+                        logger.info(
+                            "删除过时脑区: %s (Jaccard=0, 无成员重叠)",
+                            region.name,
+                        )
+                    else:
+                        logger.warning(
+                            "删除过时脑区失败: %s — %s",
+                            region.name,
+                            delete_result.get("message", "unknown") if isinstance(delete_result, dict) else "error",
+                        )
                 else:
-                    logger.warning(
-                        "删除过时脑区失败: %s — %s",
+                    logger.info(
+                        "[dry_run] 将删除过时脑区: %s (Jaccard=0)",
                         region.name,
-                        delete_result.get("message", "unknown") if isinstance(delete_result, dict) else "error",
                     )
+
+        # Step 5: Execute drift updates (skip in dry_run)
+        drifted_names: list[str] = []
+        drifted_cids: set[str] = set()
+        if drift_info and not dry_run:
+            self._update_drifted_regions(drift_info, current_partition)
+
+        for region_name, (cid, _members) in drift_info.items():
+            drifted_names.append(region_name)
+            drifted_cids.add(cid)
 
         if removed:
             logger.info("共清理 %d 个过时脑区节点", len(removed))
-        return removed
+        if drifted_names:
+            logger.info("共检测到 %d 个漂移脑区", len(drifted_names))
+
+        return (removed, drifted_names, drifted_cids)
+
+    def _update_drifted_regions(
+        self,
+        drift_info: dict[str, tuple[str, set[str]]],
+        current_partition: CommunityDetectionResult,
+    ) -> None:
+        """Update regions whose membership has drifted.
+
+        For each drifted region:
+        1. Remove all existing "包含" edges
+        2. Re-generate summary with type info from partition data
+        3. Update entity description (upsert)
+        4. Re-inject new membership "包含" edges
+
+        Args:
+            drift_info: Mapping of region_name → (best_community_id, new_member_set)
+            current_partition: Current community detection result (for type info)
+        """
+        from niu_api.internal.lightrag_manager import remove_region_edges
+
+        # Build community_id → partition lookup for type info
+        partition_map: dict[str, RegionPartition] = {}
+        for partition in current_partition.partitions:
+            cid = f"community_{partition.region_id}"
+            partition_map[cid] = partition
+
+        all_entities: list[dict] = []
+        all_relationships: list[dict] = []
+
+        for region_name, (best_cid, new_members) in drift_info.items():
+            # Step 1: Remove stale "包含" edges
+            removed_count = remove_region_edges(region_name, BELONGS_TO_RELATION)
+            logger.debug(
+                "漂移更新: 移除 %s 的 %d 条旧包含边",
+                region_name, removed_count,
+            )
+
+            # Step 2: Re-generate summary with type info from partition
+            partition = partition_map.get(best_cid)
+            entity_types = partition.entity_types if partition else {}
+            entity_name_to_type = partition.entity_name_to_type if partition else {}
+
+            members_list = sorted(new_members)
+            entity_summaries = self._build_entity_summaries(
+                members_list, entity_types, entity_name_to_type,
+            )
+            region_summary = self._generate_region_summary(entity_summaries)
+
+            # Step 3: Update entity description
+            representative = members_list[0].replace("<SEP>", "-").replace("|", "-") if members_list else ""
+            now = time.time()
+            description = _encode_description(
+                summary=region_summary,
+                region_id=best_cid,
+                size=len(members_list),
+                representative=representative,
+                updated_at=now,
+            )
+
+            all_entities.append({
+                "entity_name": region_name,
+                "entity_type": REGION_ENTITY_TYPE,
+                "description": description,
+            })
+
+            # Step 4: Re-inject new membership edges
+            for member in members_list:
+                all_relationships.append({
+                    "src_id": region_name,
+                    "tgt_id": member,
+                    "keywords": BELONGS_TO_RELATION,
+                    "description": f"{member} belongs to region {region_name}",
+                    "weight": 0.5,
+                    "source_id": REGION_SOURCE_ID,
+                    "file_path": REGION_FILE_PATH,
+                })
+
+            logger.info(
+                "漂移更新: %s → community %s (%d 新成员)",
+                region_name, best_cid, len(members_list),
+            )
+
+        # Batch inject all updates
+        if all_entities or all_relationships:
+            try:
+                self._ingester.inject_custom_kg(
+                    entities=all_entities,
+                    relationships=all_relationships,
+                    chunks=[],
+                    source_id=REGION_SOURCE_ID,
+                )
+            except Exception as e:
+                logger.error(
+                    "漂移更新注入失败: %d entities, %d relationships — %s",
+                    len(all_entities), len(all_relationships), e,
+                )
 
     def dissolve_shrunk_regions(
         self,
