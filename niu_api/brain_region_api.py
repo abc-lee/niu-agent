@@ -215,6 +215,27 @@ def consolidate_brain_regions(
             else:
                 logger.warning("[Consolidate] create_region_nodes exception, preserving stale regions")
 
+            # Step 4.5: Assign existing entities to default brain regions
+            try:
+                from niu_api.internal.region_manager import assign_entities_to_default_regions
+                result = assign_entities_to_default_regions(adapter)
+                assigned = result.get("assigned", 0)
+                if assigned > 0:
+                    logger.info("[Consolidate] Assigned %d entities to default regions", assigned)
+            except Exception as e:
+                logger.debug("[Consolidate] assign_entities_to_default_regions skipped: %s", e)
+
+            # Step 4.6: Update region summaries (exclude created and drifted)
+            try:
+                all_regions = region_mgr.get_all_regions()
+                created_set = set(created)
+                drifted_set = set(drifted) if cleanup_ok else set()
+                region_names = [r.name for r in all_regions
+                                if r.name not in created_set and r.name not in drifted_set]
+                region_mgr.update_region_summaries(region_names)
+            except Exception as e:
+                logger.debug("[Consolidate] update_region_summaries skipped: %s", e)
+
             # Step 5: Initialize activation manager (with D-12 empty list protection)
             activation_mgr = _get_activation_mgr()
             if activation_mgr is not None:
@@ -237,11 +258,87 @@ def consolidate_brain_regions(
                     activation_mgr.set_region_neighbors(neighbor_map)
                     logger.info("构建脑区邻居映射: %d 个区域有邻居", len(neighbor_map))
 
+            # Step 6: Merge co-activated regions
+            regions_merged = 0
+            try:
+                if activation_mgr is not None:
+                    from niu_api.internal.region_manager import is_default_region
+                    candidates = activation_mgr.get_merge_candidates(
+                        co_activation_threshold=REGION_CONFIG_DEFAULTS.get("co_activation_threshold", 0.9),
+                    )
+                    if candidates:
+                        for source_id, target_id in candidates:
+                            source_state = activation_mgr.get_region_state(source_id)
+                            target_state = activation_mgr.get_region_state(target_id)
+                            if source_state is None or target_state is None:
+                                continue
+                            if is_default_region(source_state.region_id):
+                                continue
+                            if is_default_region(target_state.region_id):
+                                continue
+                            try:
+                                source_name = f"{source_state.label}脑区"
+                                target_name = f"{target_state.label}脑区"
+                                result = adapter.merge_entities(
+                                    source_entities=[source_name],
+                                    target_entity=target_name,
+                                )
+                                if isinstance(result, dict) and result.get("status") == "ok":
+                                    regions_merged += 1
+                                    activation_mgr.merge_region_into(source_id, target_id)
+                                    logger.info(
+                                        "[Consolidate] 合并脑区: %s -> %s",
+                                        source_state.label, target_state.label,
+                                    )
+                            except Exception as e:
+                                logger.debug("[Consolidate] merge_entities failed: %s", e)
+            except Exception as e:
+                logger.debug("[Consolidate] Merge check skipped: %s", e)
+
+            # Step 7: Dissolve shrunk regions
+            regions_dissolved = 0
+            try:
+                dissolved = region_mgr.dissolve_shrunk_regions(
+                    shrink_threshold=REGION_CONFIG_DEFAULTS.get("shrink_threshold", 100),
+                    shrink_rounds=REGION_CONFIG_DEFAULTS.get("shrink_rounds", 3),
+                )
+                regions_dissolved = len(dissolved)
+                if dissolved and activation_mgr is not None:
+                    for region_name in dissolved:
+                        label = region_name.removesuffix("脑区")
+                        try:
+                            state = activation_mgr.find_region_by_label(label)
+                            if state is not None:
+                                activation_mgr.remove_region(state.region_id)
+                        except Exception:
+                            pass
+            except Exception as e:
+                logger.debug("[Consolidate] Dissolve check skipped: %s", e)
+
+            # Step 8: Decay structural edges
+            edges_disconnected = 0
+            try:
+                all_regions_for_decay = region_mgr.get_all_regions()
+                if all_regions_for_decay:
+                    edges_disconnected = region_mgr.decay_structural_edges(all_regions_for_decay)
+            except Exception as e:
+                logger.debug("[Consolidate] Edge decay skipped: %s", e)
+
+            # Step 9: Invalidate cached tool-to-region mapping
+            try:
+                from agent.brain_tools import invalidate_tool_to_region
+                invalidate_tool_to_region()
+            except Exception:
+                pass
+
             return {
                 "status": "ok",
                 "regions_created": len(created),
                 "regions_removed": len(removed),
                 "regions_drifted": len(drifted),
+                "regions_merged": regions_merged,
+                "regions_dissolved": regions_dissolved,
+                "edges_disconnected": edges_disconnected,
                 "total_regions": detection_result.total_regions,
                 "modularity": round(detection_result.modularity, 4),
             }
