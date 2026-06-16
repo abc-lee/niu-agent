@@ -143,53 +143,58 @@ class RegionActivationManager:
         Args:
             regions: List of BrainRegionInfo from RegionManager.get_all_regions()
         """
+        # Build new state outside lock first (non-destructive, double-buffer pattern)
+        new_regions: dict[str, BrainRegionState] = {}
+        new_entity_to_region: dict[str, str] = {}
+        new_label_index: dict[str, str] = {}
+        new_descriptions: dict[str, str] = {}
+        new_member_counts: dict[str, int] = {}
+
         with self._lock:
-            # Preserve existing activation state across re-initialization
             old_state = {
                 rid: (state.activation, state.last_activated_at, state.activation_count, state.manually_dimmed)
                 for rid, state in self._regions.items()
             }
-            self._regions.clear()
-            self._entity_to_region.clear()
-            self._label_index.clear()
-            self._descriptions.clear()
-            self._neighbors.clear()
-            # Preserve co-activation state across re-initialization
-            # (merge candidates depend on accumulated history)
-            # co_activation_counts and total_activation_rounds are NOT cleared
 
-            for region in regions:
-                # Restore preserved state if region existed before, otherwise default to 0
-                prev_activation, prev_last_at, prev_count, prev_dimmed = old_state.get(region.name, (0.0, 0.0, 0, False))
-                self._regions[region.name] = BrainRegionState(
-                    region_id=region.name,
-                    community_id=region.community_id,
-                    label=region.label,
-                    activation=prev_activation,
-                    last_activated_at=prev_last_at,
-                    activation_count=prev_count,
-                    manually_dimmed=prev_dimmed,
-                )
-                self._label_index[region.label] = region.name
-                self._descriptions[region.name] = region.description or ""
-
-                # Build entity -> region mapping from members
-                for entity_name in region.members:
-                    self._entity_to_region[entity_name] = region.name
-
-                # Cache member count for O(1) lookup in get_merge_candidates
-                self._member_counts[region.name] = len(region.members)
-
-            # Update entity type counts from graph (for /api/stats cache)
-            self._entity_type_counts = self._build_entity_type_counts()
-
-            preserved_count = sum(1 for rid in old_state if rid in self._regions)
-            logger.info(
-                "初始化脑区激活管理器: %d 个区域, %d 个实体映射, %d 个保留激活状态",
-                len(self._regions),
-                len(self._entity_to_region),
-                preserved_count,
+        for region in regions:
+            prev_activation, prev_last_at, prev_count, prev_dimmed = old_state.get(
+                region.name, (0.0, 0.0, 0, False))
+            new_regions[region.name] = BrainRegionState(
+                region_id=region.name,
+                community_id=region.community_id,
+                label=region.label,
+                activation=prev_activation,
+                last_activated_at=prev_last_at,
+                activation_count=prev_count,
+                manually_dimmed=prev_dimmed,
             )
+            new_label_index[region.label] = region.name
+            new_descriptions[region.name] = region.description or ""
+
+            for entity_name in region.members:
+                new_entity_to_region[entity_name] = region.name
+
+            new_member_counts[region.name] = len(region.members)
+
+        # Atomic swap under lock (no clear() — readers never see empty)
+        with self._lock:
+            self._regions = new_regions
+            self._entity_to_region = new_entity_to_region
+            self._label_index = new_label_index
+            self._descriptions = new_descriptions
+            self._member_counts = new_member_counts
+
+        # Update entity type counts (best-effort, failure is non-critical)
+        try:
+            self._entity_type_counts = self._build_entity_type_counts()
+        except Exception:
+            pass
+
+        preserved_count = sum(1 for rid in old_state if rid in new_regions)
+        logger.info(
+            "初始化脑区激活管理器: %d 个区域, %d 个实体映射, %d 个保留激活状态",
+            len(new_regions), len(new_entity_to_region), preserved_count,
+        )
 
     def _build_entity_type_counts(self) -> dict[str, int]:
         """Build entity type counts from NetworkX graph node attributes.

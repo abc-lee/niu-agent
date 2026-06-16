@@ -211,6 +211,12 @@ class RegionSync:
     ) -> None:
         """Create, cleanup, and update region master nodes.
 
+        Uses dry_run two-phase pattern to solve D-13 non-atomicity:
+        1. cleanup_stale_regions(dry_run=True) — detect only
+        2. create_region_nodes — create new regions
+        3. cleanup_stale_regions(dry_run=False) — execute cleanup
+        This ensures old regions are only deleted after new ones exist.
+
         Args:
             detection_result: CommunityDetectionResult from detection.
             stats: Stats dict to update.
@@ -223,24 +229,29 @@ class RegionSync:
             ingester = LightRAGIngester()
             manager = RegionManager(adapter, ingester)
 
-            # Step 3: Cleanup stale regions
+            # Step 3a: Detect stale and drifted regions (no execution)
+            cleanup_ok = True
             try:
-                removed = manager.cleanup_stale_regions(detection_result)
-                stats["regions_removed"] = len(removed)
+                removed, drifted, drifted_cids = manager.cleanup_stale_regions(
+                    detection_result, dry_run=True,
+                )
             except Exception as e:
-                logger.warning(f"[RegionSync] cleanup_stale_regions failed: {e}")
-                stats["errors"].append(f"cleanup: {e}")
+                logger.warning(f"[RegionSync] cleanup detection failed: {e}")
+                removed, drifted, drifted_cids = [], [], set()
+                cleanup_ok = False
 
-            # Step 4: Create region nodes
+            # Step 4: Create region nodes (skip drifted community partitions)
+            created: list[str] = []
+            create_ok = True
             try:
-                created = manager.create_region_nodes(detection_result)
+                created = manager.create_region_nodes(detection_result, skip_community_ids=drifted_cids)
                 stats["regions_created"] = len(created)
             except Exception as e:
                 logger.warning(f"[RegionSync] create_region_nodes failed: {e}")
                 stats["errors"].append(f"create: {e}")
+                create_ok = False
 
             # Step 4.5: Assign existing entities to default brain regions
-            # This creates 包含 edges from default regions to entities
             try:
                 from niu_api.internal.region_manager import assign_entities_to_default_regions
                 result = assign_entities_to_default_regions(adapter)
@@ -251,11 +262,34 @@ class RegionSync:
             except Exception as e:
                 logger.debug(f"[RegionSync] assign_entities_to_default_regions skipped: {e}")
 
-            # Step 5: Update region summaries (if method exists)
+            # Step 3b: Execute cleanup only if create didn't throw and dry_run succeeded
+            # create_ok=True but created=[] is normal (all regions exist), still run cleanup
+            # create_ok=False means create threw exception, preserve old regions
+            actual_removed: list[str] = []
+            actual_drifted: list[str] = []
+            if (create_ok or not detection_result.partitions) and cleanup_ok:
+                try:
+                    actual_removed, actual_drifted, _ = manager.cleanup_stale_regions(
+                        detection_result, dry_run=False,
+                    )
+                    stats["regions_removed"] = len(actual_removed)
+                except Exception as e:
+                    logger.warning(f"[RegionSync] cleanup execution failed: {e}")
+                    stats["errors"].append(f"cleanup: {e}")
+            elif not cleanup_ok:
+                logger.warning("[RegionSync] dry_run 失败，跳过 cleanup 执行避免重复创建")
+            else:
+                logger.warning("[RegionSync] create_region_nodes 异常，保留旧脑区避免数据丢失")
+
+            # Step 5: Update region summaries (exclude created and drifted)
+            # created regions have accurate summaries, drifted regions updated by _update_drifted_regions
             try:
                 if hasattr(manager, "update_region_summaries"):
                     all_regions = manager.get_all_regions()
-                    region_names = [r.name for r in all_regions]
+                    created_set = set(created)
+                    drifted_set = set(actual_drifted) if cleanup_ok else set()
+                    region_names = [r.name for r in all_regions
+                                    if r.name not in created_set and r.name not in drifted_set]
                     manager.update_region_summaries(region_names)
                     stats["regions_updated"] = len(region_names)
             except Exception as e:
@@ -286,6 +320,12 @@ class RegionSync:
             manager = RegionManager(adapter, ingester)
 
             all_regions = manager.get_all_regions()
+
+            # D-12 fix: Empty list means read failure or graph unavailable.
+            # Don't overwrite existing activation state with empty list.
+            if not all_regions:
+                logger.warning("[RegionSync] get_all_regions 返回空，跳过激活管理器刷新")
+                return
 
             # BUG 2 fix: Fetch members for each region so _entity_to_region
             # gets populated in initialize_from_regions()
