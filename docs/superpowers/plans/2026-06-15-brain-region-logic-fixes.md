@@ -284,6 +284,13 @@ def cleanup_stale_regions(
     # 3. 获取所有已存在脑区
     existing_regions = self.get_all_regions()
 
+    # 安全检查：如果 region_member_map 为空但存在非默认脑区，
+    # 说明读取可能失败（图暂时不可用），跳过漂移检测避免误删
+    has_non_default = any(not is_default_region(r.name) for r in existing_regions)
+    if not region_member_map and has_non_default:
+        logger.warning("get_all_region_members 返回空但存在脑区，跳过漂移检测")
+        return [], [], set()
+
     removed: list[str] = []
     drifted: list[str] = []
     drift_info: dict[str, tuple[str, set[str]]] = {}
@@ -534,6 +541,8 @@ def _update_drifted_regions(
 
 2. `niu_api/internal/region_manager.py:1212` — `incremental_update`：
    ```python
+   # 初始化默认值，防止 cleanup_stale_regions 异常时 NameError
+   removed, drifted, drifted_cids = [], [], set()
    removed, drifted, drifted_cids = self.cleanup_stale_regions(partition)
    created = self.create_region_nodes(partition, skip_community_ids=drifted_cids)
    ```
@@ -554,15 +563,34 @@ def _update_drifted_regions(
        "edges_disconnected": disconnected,
    }
    ```
+   **注意**：异常 fallback 返回值也必须包含 `"regions_drifted": 0`：
+   ```python
+   except Exception as e:
+       logger.warning("incremental_update failed: %s", e)
+       return {
+           "regions_created": 0, "regions_removed": 0,
+           "regions_drifted": 0, "regions_updated": 0,
+           "edges_disconnected": 0,
+       }
+   ```
 
 3. `niu_api/brain_region_api.py:180` — `consolidate_brain_regions`：
    ```python
    removed, drifted, drifted_cids = region_mgr.cleanup_stale_regions(detection_result)
-   stats["regions_removed"] = len(removed)
-   stats["regions_drifted"] = len(drifted)
-   # create_region_nodes 也需要传入 skip_community_ids
    created = region_mgr.create_region_nodes(detection_result, skip_community_ids=drifted_cids)
+
+   # ... activation manager 部分不变 ...
+
+   return {
+       "status": "ok",
+       "regions_created": len(created),
+       "regions_removed": len(removed),
+       "regions_drifted": len(drifted),
+       "total_regions": detection_result.total_regions,
+       "modularity": round(detection_result.modularity, 4),
+   }
    ```
+   注意：`consolidate_brain_regions` 没有 `stats` 变量，直接构建返回 dict。
 
 - [ ] **Step 4: 写测试**
 
