@@ -15,9 +15,9 @@
 ```
 Task 4 (问题4) ──→ Task 1 (问题1) 依赖 Task 4 的 drifted_community_ids
 Task 1 (问题1) ──→ Task 2 (问题2) 依赖 Task 1 的返回值 + Task 4 的 drifted
+Task 5 (问题5) ──→ 依赖 Task 4 + Task 1 + Task 2 的接口变更（统一更新调用者）
 Task 3 (问题3) ──── 独立
-Task 5 (问题5) ──── 独立（与 Task 2 同文件，但无逻辑依赖）
-Task 6 (问题6) ──── 独立
+Task 6 (问题6) ──── 独立（依赖 Task 5 的代码基础）
 ```
 
 建议执行顺序：**Task 4 → Task 1 → Task 2 → Task 5 → Task 6 → Task 3**
@@ -25,8 +25,11 @@ Task 6 (问题6) ──── 独立
 **注意**：
 - Task 1 依赖 Task 4 的 `drifted_community_ids` 返回值（`create_region_nodes` 的 `skip_community_ids` 参数），所以 Task 4 必须在 Task 1 之前执行。
 - Task 2 依赖 Task 1 的 `created` 返回值和 Task 4 的 `drifted` 返回值来排除 Step 5 的 summary 更新。
-- Task 5 修改 `region_sync.py` 的 `_refresh_activation_manager`，与 Task 2 同文件但不同方法，可并行但建议按顺序。
-- Task 6 添加互斥锁，独立于其他 Task。
+- **Task 5 负责统一更新所有调用者**：`_manage_region_nodes` 和 `incremental_update` 的修改（三元组解包 + skip_community_ids + created/drifted 排除 + dry_run 两阶段）统一由 Task 5 完成，Task 4 和 Task 2 不修改这两个调用者。这样避免同一段代码被多个 Task 重复修改导致 Edit 匹配失败。
+- Task 4 执行时同时添加 `create_region_nodes` 的 `skip_community_ids` 参数签名（方法体暂不实现），避免调用者传入未知参数导致 TypeError。
+- Task 6 添加互斥锁，在 Task 5 修改后的代码基础上工作。
+
+**⚠️ 临时不可运行窗口**：Task 4 完成后到 Task 5 执行前，`_manage_region_nodes` 和 `incremental_update` 仍用旧方式调用 `cleanup_stale_regions`（只解包一个返回值），会触发 ValueError。因此 Task 4 到 Task 5 必须在同一工作会话中连续执行，中间不运行测试。
 
 ---
 
@@ -568,133 +571,33 @@ def _update_drifted_regions(
 
 **注意**：`_update_drifted_regions` 是私有方法，由 `cleanup_stale_regions` 内部调用。外部调用者不需要也不应该直接调用此方法。
 
-- [ ] **Step 3: 更新所有 `cleanup_stale_regions` 调用者**
+- [ ] **Step 3: 更新简单调用者 + 添加 `skip_community_ids` 参数签名**
 
-返回值从 `list[str]` 改为 `tuple[list[str], list[str], set[str]]`，以下调用者必须同步更新：
+返回值从 `list[str]` 改为 `tuple[list[str], list[str], set[str]]`。**⚠️ `_manage_region_nodes` 和 `incremental_update` 的调用者更新统一由 Task 5 完成**，避免同一段代码被多个 Task 重复修改导致 Edit 匹配失败。
 
-1. `agent/injector/region_sync.py:228` — `_manage_region_nodes`：
-   ```python
-   # Step 3: Cleanup stale regions (also handles drift update internally)
-   removed, drifted, drifted_cids = [], [], set()
-   try:
-       removed, drifted, drifted_cids = manager.cleanup_stale_regions(detection_result)
-       stats["regions_removed"] = len(removed)
-   except Exception as e:
-       logger.warning(f"[RegionSync] cleanup_stale_regions failed: {e}")
-       stats["errors"].append(f"cleanup: {e}")
+以下简单调用者在本 Step 中更新：
 
-   # Step 4: Create region nodes (skip drifted community partitions)
-   created: list[str] = []
-   try:
-       created = manager.create_region_nodes(detection_result, skip_community_ids=drifted_cids)
-       stats["regions_created"] = len(created)
-   except Exception as e:
-       logger.warning(f"[RegionSync] create_region_nodes failed: {e}")
-       stats["errors"].append(f"create: {e}")
-   ```
-   注意：`removed, drifted, drifted_cids = [], [], set()` 在 try 块之前初始化，防止异常时 NameError。
-
-2. `niu_api/internal/region_manager.py:1212` — `incremental_update`：
-   ```python
-   # 初始化默认值，防止 cleanup_stale_regions 异常时 NameError
-   removed, drifted, drifted_cids = [], [], set()
-   removed, drifted, drifted_cids = self.cleanup_stale_regions(partition)
-   created = self.create_region_nodes(partition, skip_community_ids=drifted_cids)
-   ```
-   同时，`incremental_update` 的 summary 更新也应排除漂移脑区：
-   ```python
-   existing_region_names = [
-       r.name for r in all_regions
-       if r.name not in set(created) and r.name not in set(drifted)
-   ]
-   ```
-   返回值 dict 增加 `regions_drifted` 字段：
-   ```python
-   return {
-       "regions_created": len(created),
-       "regions_removed": len(removed),
-       "regions_drifted": len(drifted),
-       "regions_updated": len(existing_region_names),
-       "edges_disconnected": disconnected,
-   }
-   ```
-   **注意**：异常 fallback 返回值也必须包含 `"regions_drifted": 0`：
-   ```python
-   except Exception as e:
-       logger.warning("incremental_update failed: %s", e)
-       return {
-           "regions_created": 0, "regions_removed": 0,
-           "regions_drifted": 0, "regions_updated": 0,
-           "edges_disconnected": 0,
-       }
-   ```
-
-   **注意**：`incremental_update` 也存在 D-13 非原子性问题（先删后创，create 失败时脑区丢失）。应采用与 `_manage_region_nodes` 相同的 dry_run 两阶段模式：
-   ```python
-   def incremental_update(self) -> dict:
-       try:
-           # ... detect communities ...
-           if partition is None or partition.total_regions < 1:
-               return {"regions_created": 0, "regions_removed": 0, "regions_drifted": 0, "regions_updated": 0, "edges_disconnected": 0}
-
-           # Step 1: Detect only (dry run)
-           removed, drifted, drifted_cids = self.cleanup_stale_regions(partition, dry_run=True)
-
-           # Step 2: Create (skip drifted partitions)
-           created = self.create_region_nodes(partition, skip_community_ids=drifted_cids)
-
-           # Step 3: Execute cleanup only if create succeeded
-           if created or not partition.partitions:
-               removed, drifted, _ = self.cleanup_stale_regions(partition, dry_run=False)
-
-           # Step 4: Update summaries (skip newly-created AND drifted)
-           all_regions = self.get_all_regions()
-           existing_region_names = [
-               r.name for r in all_regions
-               if r.name not in set(created) and r.name not in set(drifted)
-           ]
-           self.update_region_summaries(existing_region_names)
-
-           # Step 5: Decay structural edges
-           disconnected = self._decay_structural_edges(all_regions)
-
-           return {
-               "regions_created": len(created),
-               "regions_removed": len(removed),
-               "regions_drifted": len(drifted),
-               "regions_updated": len(existing_region_names),
-               "edges_disconnected": disconnected,
-           }
-       except Exception as e:
-           logger.warning("incremental_update failed: %s", e)
-           return {"regions_created": 0, "regions_removed": 0, "regions_drifted": 0, "regions_updated": 0, "edges_disconnected": 0}
-   ```
-
-3. `niu_api/brain_region_api.py:180` — `consolidate_brain_regions`：
+1. `niu_api/brain_region_api.py:180` — `consolidate_brain_regions`：
    ```python
    removed, drifted, drifted_cids = region_mgr.cleanup_stale_regions(detection_result)
    created = region_mgr.create_region_nodes(detection_result, skip_community_ids=drifted_cids)
-
-   # ... activation manager 部分不变 ...
-
-   return {
-       "status": "ok",
-       "regions_created": len(created),
-       "regions_removed": len(removed),
-       "regions_drifted": len(drifted),
-       "total_regions": detection_result.total_regions,
-       "modularity": round(detection_result.modularity, 4),
-   }
    ```
-   注意：`consolidate_brain_regions` 没有 `stats` 变量，直接构建返回 dict。
+   返回值增加 `"regions_drifted": len(drifted)`。注意 `consolidate_brain_regions` 没有 `stats` 变量，直接构建返回 dict。
 
-4. `tests/test_region_manager.py:474,509,545` — 3 处测试中的旧调用：
+2. `tests/test_region_manager.py:474,509,545` — 3 处测试中的旧调用：
    ```python
-   # 旧代码：removed = manager.cleanup_stale_regions(current_partition)
-   # 新代码：
    removed, drifted, drifted_cids = manager.cleanup_stale_regions(current_partition)
    ```
-   注意：这 3 处测试不关心漂移结果，只需正确解包即可。`drifted` 和 `drifted_cids` 可以忽略。
+
+3. **添加 `create_region_nodes` 的 `skip_community_ids` 参数签名**（方法体暂不实现，留给 Task 1）：
+   ```python
+   def create_region_nodes(
+       self,
+       partition_result: CommunityDetectionResult,
+       skip_community_ids: set[str] | None = None,
+   ) -> list[str]:
+   ```
+   参数有默认值 `None`，现有调用不受影响。方法体中的过滤逻辑由 Task 1 实现。
 
 - [ ] **Step 4: 写测试**
 
@@ -860,13 +763,15 @@ Run: `python -m py_compile niu_api/internal/region_manager.py && python -m pytes
 
 ---
 
-## Task 5 [CRITICAL]：部分失败时激活管理器被清空 + cleanup/create 非原子
+## Task 5 [CRITICAL]：统一更新调用者 + 激活管理器保护 + 非原子性修复
 
-**Bug 根因**：两个相关联的缺陷：
+**Bug 根因**：三个相关联的缺陷：
 
-**(a) D-12**：`_refresh_activation_manager` 在 `_manage_region_nodes` 的 cleanup/create 步骤失败后仍无条件执行。如果 `get_all_regions()` 因 LightRAG 不可用而返回空列表，`initialize_from_regions([])` 会清空所有激活状态（`_regions`、`_entity_to_region`、`_label_index` 全部重置），导致 agent 的脑区激活系统完全失效。
+**(a) 调用者更新**：Task 4 改了 `cleanup_stale_regions` 的返回值（三元组），Task 1 加了 `skip_community_ids` 参数，Task 2 要求排除 created/drifted 脑区。`_manage_region_nodes` 和 `incremental_update` 这两个复杂调用者需要一次性重写，包含所有这些变更 + dry_run 两阶段模式。**本 Task 负责统一完成**，避免同一段代码被多个 Task 重复修改导致 Edit 匹配失败。
 
-**(b) D-13**：`cleanup_stale_regions` 成功删除旧脑区后，`create_region_nodes` 失败，此时 KG 中旧脑区已删、新脑区未创，所有检测脑区丢失直到下次同步（24小时后）。
+**(b) D-12**：`_refresh_activation_manager` 在 `_manage_region_nodes` 的 cleanup/create 步骤失败后仍无条件执行。如果 `get_all_regions()` 因 LightRAG 不可用而返回空列表，`initialize_from_regions([])` 会清空所有激活状态（`_regions`、`_entity_to_region`、`_label_index` 全部重置），导致 agent 的脑区激活系统完全失效。
+
+**(c) D-13**：`cleanup_stale_regions` 成功删除旧脑区后，`create_region_nodes` 失败，此时 KG 中旧脑区已删、新脑区未创，所有检测脑区丢失直到下次同步（24小时后）。
 
 **Files:**
 - Modify: `agent/injector/region_sync.py:209-339` — `_manage_region_nodes` dry_run 两阶段 + `_refresh_activation_manager` 空列表保护
