@@ -252,7 +252,7 @@ def consolidate_brain_regions(
                     activation_mgr.initialize_from_regions(regions)
                     from niu_api.internal.region_neighbors import build_neighbor_map
                     neighbor_map = build_neighbor_map([
-                        {"community_id": r.community_id, "members": r.members}
+                        {"community_id": r.community_id or r.name, "members": r.members}
                         for r in regions
                     ])
                     activation_mgr.set_region_neighbors(neighbor_map)
