@@ -4,7 +4,11 @@ description: "记忆压缩、上下文整理"
 mode: subagent
 temperature: 0.2
 mcpServers:
-  - session-manager
+  - name: session-manager
+    mcpToolFilter:
+      - get_messages
+      - update_message
+      - delete_messages
 ---
 
 # 记忆压缩器（Context Manager）
