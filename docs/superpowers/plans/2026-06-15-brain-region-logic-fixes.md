@@ -169,67 +169,16 @@ Run: `python -m py_compile niu_api/internal/region_manager.py && python -m pytes
 
 ---
 
-## Task 2 [IMPORTANT]：`_manage_region_nodes` 中排除新建和漂移脑区的 summary 更新 + `update_region_summaries` 类型信息保留
+## Task 2 [IMPORTANT]：`update_region_summaries` 类型信息保留
 
-**Bug 根因**：两个相关问题：
+**Bug 根因 (D-16)**：`update_region_summaries`（region_manager.py:413）调用 `_build_entity_summaries(members, {}, {})`，第三个参数 `entity_name_to_type` 为空字典，导致所有实体被标记为 "unknown" 类型，覆盖了首次创建时含类型信息的精确 summary。每次 24h 同步执行 `update_region_summaries` 时，稳定脑区的类型信息被永久丢失。
 
-**(a)** `_manage_region_nodes` 的 Step 5 对所有脑区调用 `update_region_summaries`，包括刚在 Step 4 创建的脑区和 Step 3 中漂移更新的脑区。新建脑区的 summary 已由 `create_region_nodes` 精确生成（含类型信息），漂移脑区的 summary 已由 `_update_drifted_regions` 精确生成（含类型信息），但 `update_region_summaries` 用 `_build_entity_summaries(members, {}, {})` 重建（空类型映射），覆盖为劣质 summary。
-
-**(b) D-16**：即使排除了新建和漂移脑区，"稳定"脑区的 summary 仍然会被 `update_region_summaries` 用空类型映射覆盖，类型信息永久丢失。这是因为 `update_region_summaries`（region_manager.py:413）调用 `_build_entity_summaries(members, {}, {})`，第三个参数 `entity_name_to_type` 为空字典，导致所有实体被标记为 "unknown" 类型。
-
-`incremental_update` (region_manager.py:1217-1221) 已正确排除新建脑区，`_manage_region_nodes` 应采用相同模式，并额外排除漂移脑区。同时 `update_region_summaries` 应获取实体的实际类型信息。
+`_manage_region_nodes` 和 `incremental_update` 中对 `update_region_summaries` 的调用方式变更（排除 created/drifted 脑区）由 Task 5 统一完成。
 
 **Files:**
-- Modify: `agent/injector/region_sync.py:234-262`
 - Modify: `niu_api/internal/region_manager.py:413` — `update_region_summaries` 类型信息修复
 
-- [ ] **Step 1: 修改 `_manage_region_nodes` 的 Step 3-5**
-
-关键修改：
-1. 在 Step 3 之前初始化 `removed, drifted, drifted_cids = [], [], set()`（防止异常时 NameError）
-2. Step 3 的 `cleanup_stale_regions` 返回三元组 `(removed, drifted, drifted_cids)`，漂移更新已在内部执行
-3. Step 4 的 `create_region_nodes` 传入 `skip_community_ids=drifted_cids`
-4. Step 5 排除 `created` 和漂移脑区
-
-```python
-# Step 3: Cleanup stale regions (also handles drift update internally)
-removed, drifted, drifted_cids = [], [], set()
-try:
-    removed, drifted, drifted_cids = manager.cleanup_stale_regions(detection_result)
-    stats["regions_removed"] = len(removed)
-except Exception as e:
-    logger.warning(f"[RegionSync] cleanup_stale_regions failed: {e}")
-    stats["errors"].append(f"cleanup: {e}")
-
-# Step 4: Create region nodes (skip drifted community partitions)
-created: list[str] = []
-try:
-    created = manager.create_region_nodes(detection_result, skip_community_ids=drifted_cids)
-    stats["regions_created"] = len(created)
-except Exception as e:
-    logger.warning(f"[RegionSync] create_region_nodes failed: {e}")
-    stats["errors"].append(f"create: {e}")
-
-# Step 4.5: Assign existing entities to default brain regions
-# ... (不变) ...
-
-# Step 5: Update region summaries (skip newly-created AND drifted regions)
-try:
-    if hasattr(manager, "update_region_summaries"):
-        all_regions = manager.get_all_regions()
-        created_set = set(created)
-        drifted_set = set(drifted)
-        region_names = [
-            r.name for r in all_regions
-            if r.name not in created_set and r.name not in drifted_set
-        ]
-        manager.update_region_summaries(region_names)
-        stats["regions_updated"] = len(region_names)
-except Exception as e:
-    logger.debug(f"[RegionSync] update_region_summaries skipped: {e}")
-```
-
-- [ ] **Step 2: 修复 `update_region_summaries` 的类型信息丢失 (D-16)**
+- [ ] **Step 1: 修复 `update_region_summaries` 的类型信息丢失 (D-16)**
 
 当前代码（region_manager.py:413）使用空类型映射，导致稳定脑区的类型信息被覆盖为 "unknown"。修复方式：从 NetworkX 图中批量读取成员实体的 `entity_type` 属性，构建 `entity_name_to_type` 映射。
 
@@ -260,11 +209,9 @@ entity_summaries = self._build_entity_summaries(members, {}, entity_name_to_type
 
 **设计说明**：从 `nx_graph.nodes[member]` 读取 `entity_type` 属性是最高效的方式（直接读内存，无需 API 调用）。如果读取失败（图不可用），回退到空映射——此时 summary 质量与当前代码一致，不会退化。
 
-- [ ] **Step 3: 验证**
+- [ ] **Step 2: 验证**
 
-Run: `python -m py_compile agent/injector/region_sync.py && python -m py_compile niu_api/internal/region_manager.py`
-
-确认 `incremental_update` (region_manager.py:1217-1221) 的模式与新代码一致。
+Run: `python -m py_compile niu_api/internal/region_manager.py`
 
 ---
 
@@ -277,8 +224,7 @@ Run: `python -m py_compile agent/injector/region_sync.py && python -m py_compile
 **Files:**
 - Modify: `niu_api/internal/region_manager.py:510-564`
 - Modify: `niu_api/internal/lightrag_manager.py` — 新增 `remove_region_edges` 函数
-- Modify: `agent/injector/region_sync.py` — 调用者更新（cleanup_stale_regions 三元组解包 + create_region_nodes skip_community_ids）
-- Modify: `niu_api/brain_region_api.py` — 调用者更新
+- Modify: `niu_api/brain_region_api.py` — 简单调用者更新（三元组解包 + skip_community_ids）
 - Modify: `tests/test_region_manager.py` — 旧测试解包方式更新
 
 - [ ] **Step 1: 修改 `cleanup_stale_regions`**
@@ -606,7 +552,7 @@ def _update_drifted_regions(
 - `test_no_drift_when_membership_overlaps`：成员重叠度高时不标记漂移
 - `test_default_regions_protected_from_drift`：默认脑区不参与漂移检测和删除
 
-- [ ] **Step 4: 验证**
+- [ ] **Step 5: 验证**
 
 Run: `python -m py_compile niu_api/internal/region_manager.py && python -m pytest tests/test_region_manager.py::TestCleanupStaleRegions -v`
 
