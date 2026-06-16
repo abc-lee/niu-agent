@@ -519,23 +519,16 @@ def _update_drifted_regions(
 
 - [ ] **Step 3: 更新简单调用者 + 添加 `skip_community_ids` 参数签名**
 
-返回值从 `list[str]` 改为 `tuple[list[str], list[str], set[str]]`。**⚠️ `_manage_region_nodes` 和 `incremental_update` 的调用者更新统一由 Task 5 完成**，避免同一段代码被多个 Task 重复修改导致 Edit 匹配失败。
+返回值从 `list[str]` 改为 `tuple[list[str], list[str], set[str]]`。**⚠️ `_manage_region_nodes`、`incremental_update` 和 `consolidate_brain_regions` 的调用者更新统一由 Task 5 完成**，避免同一段代码被多个 Task 重复修改导致 Edit 匹配失败。
 
 以下简单调用者在本 Step 中更新：
 
-1. `niu_api/brain_region_api.py:180` — `consolidate_brain_regions`：
-   ```python
-   removed, drifted, drifted_cids = region_mgr.cleanup_stale_regions(detection_result)
-   created = region_mgr.create_region_nodes(detection_result, skip_community_ids=drifted_cids)
-   ```
-   返回值增加 `"regions_drifted": len(drifted)`。注意 `consolidate_brain_regions` 没有 `stats` 变量，直接构建返回 dict。
-
-2. `tests/test_region_manager.py:474,509,545` — 3 处测试中的旧调用：
+1. `tests/test_region_manager.py:474,509,545` — 3 处测试中的旧调用：
    ```python
    removed, drifted, drifted_cids = manager.cleanup_stale_regions(current_partition)
    ```
 
-3. **添加 `create_region_nodes` 的 `skip_community_ids` 参数签名**（方法体暂不实现，留给 Task 1）：
+2. **添加 `create_region_nodes` 的 `skip_community_ids` 参数签名**（方法体暂不实现，留给 Task 1）：
    ```python
    def create_region_nodes(
        self,
@@ -547,10 +540,10 @@ def _update_drifted_regions(
 
 - [ ] **Step 4: 写测试**
 
-新增三个测试：
-- `test_detects_membership_drift`：成员完全不重叠时，触发漂移更新
-- `test_no_drift_when_membership_overlaps`：成员重叠度高时不标记漂移
-- `test_default_regions_protected_from_drift`：默认脑区不参与漂移检测和删除
+新增三个测试（注意：`cleanup_stale_regions` 返回三元组 `removed, drifted, drifted_cids`，新测试必须使用三元组解包）：
+- `test_detects_membership_drift`：成员完全不重叠时，触发漂移更新。断言 `drifted` 非空且 `drifted_cids` 包含对应 community_id
+- `test_no_drift_when_membership_overlaps`：成员重叠度高时不标记漂移。断言 `drifted` 为空且 `drifted_cids` 为空集
+- `test_default_regions_protected_from_drift`：默认脑区不参与漂移检测和删除。断言 `removed` 中无默认脑区名
 
 - [ ] **Step 5: 验证**
 
@@ -721,7 +714,8 @@ Run: `python -m py_compile niu_api/internal/region_manager.py && python -m pytes
 
 **Files:**
 - Modify: `agent/injector/region_sync.py:209-339` — `_manage_region_nodes` dry_run 两阶段 + `_refresh_activation_manager` 空列表保护
-- Modify: `niu_api/internal/region_manager.py` — `cleanup_stale_regions` 新增 `dry_run` 参数 + `incremental_update` 两阶段模式
+- Modify: `niu_api/internal/region_manager.py:1191-1234` — `incremental_update` 两阶段模式 + 三元组解包
+- Modify: `niu_api/brain_region_api.py:145-216` — `consolidate_brain_regions` 两阶段模式
 
 - [ ] **Step 1: 修复 `_refresh_activation_manager` 空列表保护**
 
@@ -799,6 +793,137 @@ def cleanup_stale_regions(
 ```
 
 在 `dry_run=True` 时，跳过 `delete_entity` 和 `_update_drifted_regions` 调用，只返回检测结果。
+
+- [ ] **Step 2.5: 修复 `incremental_update` — 两阶段模式 + 三元组解包**
+
+`region_manager.py:1191-1234` 的 `incremental_update` 当前使用 `removed = self.cleanup_stale_regions(partition)` 单返回值解包，Task 4 改返回值为三元组后这里会 ValueError。改为与 `_manage_region_nodes` 一致的两阶段模式：
+
+```python
+def incremental_update(self) -> dict:
+    try:
+        from niu_api.internal.region_detector import CommunityDetector
+        from agent.injector.region_sync import REGION_CONFIG_DEFAULTS
+
+        detector = CommunityDetector(self._adapter)
+        partition = detector.detect_communities(
+            resolution=REGION_CONFIG_DEFAULTS.get("resolution", 1.0),
+            min_graph_size=REGION_CONFIG_DEFAULTS.get("min_graph_size", 50),
+            min_community_size=REGION_CONFIG_DEFAULTS.get("min_community_size", 100),
+        )
+        if partition is None or partition.total_regions < 1:
+            return {"regions_created": 0, "regions_removed": 0, "regions_drifted": 0,
+                    "regions_updated": 0, "edges_disconnected": 0}
+
+        # 两阶段模式：先检测后执行（解决 D-13 非原子性）
+        cleanup_ok = True
+        try:
+            removed, drifted, drifted_cids = self.cleanup_stale_regions(partition, dry_run=True)
+        except Exception as e:
+            logger.warning("incremental_update cleanup detection failed: %s", e)
+            removed, drifted, drifted_cids = [], [], set()
+            cleanup_ok = False
+
+        # Create new regions (skip drifted community partitions)
+        created: list[str] = []
+        try:
+            created = self.create_region_nodes(partition, skip_community_ids=drifted_cids)
+        except Exception as e:
+            logger.warning("incremental_update create_region_nodes failed: %s", e)
+
+        # Execute cleanup only if create succeeded and dry_run succeeded
+        actual_removed, actual_drifted = [], []
+        if (created or not partition.partitions) and cleanup_ok:
+            try:
+                actual_removed, actual_drifted, _ = self.cleanup_stale_regions(partition, dry_run=False)
+            except Exception as e:
+                logger.warning("incremental_update cleanup execution failed: %s", e)
+        elif not cleanup_ok:
+            logger.warning("incremental_update dry_run 失败，跳过 cleanup 执行")
+        else:
+            logger.warning("incremental_update create_region_nodes 失败，保留旧脑区")
+
+        # Update summaries for stable regions (exclude created and drifted)
+        all_regions = self.get_all_regions()
+        created_set = set(created)
+        drifted_set = set(actual_drifted)
+        existing_region_names = [r.name for r in all_regions
+                                 if r.name not in created_set and r.name not in drifted_set]
+        self.update_region_summaries(existing_region_names)
+
+        # Decay structural edges
+        disconnected = self._decay_structural_edges(all_regions)
+
+        return {
+            "regions_created": len(created),
+            "regions_removed": len(actual_removed),
+            "regions_drifted": len(actual_drifted),
+            "regions_updated": len(existing_region_names),
+            "edges_disconnected": disconnected,
+        }
+    except Exception as e:
+        logger.warning("incremental_update failed: %s", e)
+        return {"regions_created": 0, "regions_removed": 0, "regions_drifted": 0,
+                "regions_updated": 0, "edges_disconnected": 0}
+```
+
+- [ ] **Step 2.6: 修复 `consolidate_brain_regions` — 两阶段模式**
+
+`brain_region_api.py:145-216` 的 `consolidate_brain_regions` 当前是先 cleanup 后 create，存在 D-13 非原子性。改为 dry_run 两阶段模式，与 `_manage_region_nodes` 一致：
+
+```python
+# Step 1: Detect communities (unchanged)
+detection_result = detector.detect_communities(...)
+
+if not detection_result.partitions:
+    return {"status": "ok", "message": "No communities detected", "regions_created": 0}
+
+region_mgr = _get_region_mgr()
+
+# Step 2: dry_run detect (Phase 1)
+removed, drifted, drifted_cids = region_mgr.cleanup_stale_regions(detection_result, dry_run=True)
+
+# Step 3: Create region nodes (Phase 2)
+created = region_mgr.create_region_nodes(detection_result, skip_community_ids=drifted_cids)
+
+# Step 4: Execute cleanup only if create succeeded (Phase 3)
+if created or not detection_result.partitions:
+    actual_removed, actual_drifted, _ = region_mgr.cleanup_stale_regions(detection_result, dry_run=False)
+    removed = actual_removed
+    drifted = actual_drifted
+else:
+    logger.warning("[Consolidate] create_region_nodes failed, preserving stale regions")
+    created = []
+
+# Step 5: Initialize activation manager (unchanged)
+activation_mgr = _get_activation_mgr()
+if activation_mgr is not None:
+    regions = region_mgr.get_all_regions()
+    from niu_api.internal.lightrag_manager import get_region_members as lightrag_get_region_members
+    for region in regions:
+        try:
+            region.members = lightrag_get_region_members(region.name)
+        except Exception as exc:
+            logger.warning("Failed to fetch members for region %s: %s", region.name, exc)
+    activation_mgr.initialize_from_regions(regions)
+    from niu_api.internal.region_neighbors import build_neighbor_map
+    neighbor_map = build_neighbor_map([
+        {"community_id": r.community_id, "members": r.members}
+        for r in regions
+    ])
+    activation_mgr.set_region_neighbors(neighbor_map)
+    logger.info("构建脑区邻居映射: %d 个区域有邻居", len(neighbor_map))
+
+return {
+    "status": "ok",
+    "regions_created": len(created),
+    "regions_removed": len(removed),
+    "regions_drifted": len(drifted),
+    "total_regions": detection_result.total_regions,
+    "modularity": round(detection_result.modularity, 4),
+}
+```
+
+注意：`brain_region_api.py` 加入 Task 5 的 Files 列表。
 
 - [ ] **Step 3: 验证**
 
