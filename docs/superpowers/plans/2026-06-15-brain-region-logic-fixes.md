@@ -260,11 +260,15 @@ def cleanup_stale_regions(
     self,
     current_partition: CommunityDetectionResult,
     drift_threshold: float = 0.3,
+    dry_run: bool = False,
 ) -> tuple[list[str], list[str], set[str]]:
     """返回 (removed_region_names, drifted_region_names, drifted_community_ids)
 
     漂移检测基于成员内容的 Jaccard 相似度，不依赖 community_id 匹配。
     这样即使 Leiden 重新编号导致 community_id 不稳定，也能正确判断脑区状态。
+
+    当 dry_run=True 时，只检测不执行（不删除脑区、不执行漂移更新），
+    用于两阶段模式：先检测后创建，创建成功后再执行删除。
 
     内部调用 _update_drifted_regions 执行漂移更新，所有调用者自动受益。
     drifted_community_ids 用于 create_region_nodes 的 skip_community_ids 参数，
@@ -310,10 +314,14 @@ def cleanup_stale_regions(
         current_members = set(region_member_map.get(region.name, []))
         if not current_members:
             # 无成员的脑区视为过时
-            delete_result = self._adapter.delete_entity(region.name)
-            if isinstance(delete_result, dict) and delete_result.get("status") == "ok":
+            if not dry_run:
+                delete_result = self._adapter.delete_entity(region.name)
+                if isinstance(delete_result, dict) and delete_result.get("status") == "ok":
+                    removed.append(region.name)
+                    logger.info("删除无成员脑区: %s", region.name)
+            else:
                 removed.append(region.name)
-                logger.info("删除无成员脑区: %s", region.name)
+                logger.debug("[dry_run] 检测到无成员脑区: %s", region.name)
             continue
 
         # 计算与所有新分区的 Jaccard 相似度，找最佳匹配
@@ -344,13 +352,18 @@ def cleanup_stale_regions(
             )
         else:
             # 无任何成员重叠，过时，删除
-            delete_result = self._adapter.delete_entity(region.name)
-            if isinstance(delete_result, dict) and delete_result.get("status") == "ok":
+            if not dry_run:
+                delete_result = self._adapter.delete_entity(region.name)
+                if isinstance(delete_result, dict) and delete_result.get("status") == "ok":
+                    removed.append(region.name)
+                    logger.info("删除过时脑区: %s (无成员重叠)", region.name)
+            else:
                 removed.append(region.name)
-                logger.info("删除过时脑区: %s (无成员重叠)", region.name)
+                logger.debug("[dry_run] 检测到过时脑区: %s (无成员重叠)", region.name)
 
     # 4. 内部执行漂移更新（所有调用者自动受益）
-    if drift_info:
+    # dry_run 时只检测不执行
+    if drift_info and not dry_run:
         self._update_drifted_regions(drift_info, current_partition)
 
     if removed:
@@ -637,6 +650,14 @@ def _update_drifted_regions(
    ```
    注意：`consolidate_brain_regions` 没有 `stats` 变量，直接构建返回 dict。
 
+4. `tests/test_region_manager.py:474,509,545` — 3 处测试中的旧调用：
+   ```python
+   # 旧代码：removed = manager.cleanup_stale_regions(current_partition)
+   # 新代码：
+   removed, drifted, drifted_cids = manager.cleanup_stale_regions(current_partition)
+   ```
+   注意：这 3 处测试不关心漂移结果，只需正确解包即可。`drifted` 和 `drifted_cids` 可以忽略。
+
 - [ ] **Step 4: 写测试**
 
 新增三个测试：
@@ -879,7 +900,7 @@ Run: `python -m py_compile agent/injector/region_sync.py && python -m py_compile
 - Modify: `agent/injector/region_sync.py` — 添加互斥锁
 - Modify: `niu_api/brain_region_api.py` — 使用同一把锁
 
-- [ ] **Step 1: 在 `RegionSync` 中添加互斥锁**
+- [ ] **Step 1: 在 `RegionSync` 中添加互斥锁和公共方法**
 
 ```python
 class RegionSync:
@@ -890,6 +911,14 @@ class RegionSync:
         self._brain_ready = threading.Event()
         self._status_file = Path.home() / ".niu" / "last_region_sync.json"
         self._sync_lock = threading.Lock()  # 互斥：防止 API 触发与定时同步并发
+
+    def try_acquire_sync(self) -> bool:
+        """尝试获取同步锁（非阻塞）。用于防止并发同步。"""
+        return self._sync_lock.acquire(blocking=False)
+
+    def release_sync(self) -> None:
+        """释放同步锁。"""
+        self._sync_lock.release()
 ```
 
 在 `run_sync` 方法入口获取锁（非阻塞，获取失败时跳过）：
@@ -897,13 +926,13 @@ class RegionSync:
 ```python
 def run_sync(self) -> dict:
     """Execute one full sync cycle."""
-    if not self._sync_lock.acquire(blocking=False):
+    if not self.try_acquire_sync():
         logger.warning("[RegionSync] 另一个同步正在运行，跳过本次")
         return {"regions_created": 0, "regions_removed": 0, "errors": ["skipped: concurrent sync"]}
     try:
         return self._run_sync_impl()
     finally:
-        self._sync_lock.release()
+        self.release_sync()
 
 def _run_sync_impl(self) -> dict:
     """实际同步逻辑（原 run_sync 内容）"""
@@ -942,17 +971,19 @@ def consolidate_brain_regions(req: ConsolidateRequest = None):
     # 获取 RegionSync 的互斥锁，防止与定时同步并发
     from agent.injector.region_sync import get_region_sync
     sync = get_region_sync(auto_start=False)
-    if sync is not None and not sync._sync_lock.acquire(blocking=False):
+    lock_acquired = False
+    if sync is not None and not sync.try_acquire_sync():
         raise HTTPException(
             status_code=409,
             detail="Another brain region sync is in progress. Please try again later.",
         )
-    lock_acquired = sync is not None
+    if sync is not None:
+        lock_acquired = True
     try:
         # ... 原有 consolidate 逻辑 ...
     finally:
         if lock_acquired:
-            sync._sync_lock.release()
+            sync.release_sync()
 ```
 
 - [ ] **Step 3: 验证**
