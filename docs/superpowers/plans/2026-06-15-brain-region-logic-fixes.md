@@ -578,6 +578,47 @@ def _update_drifted_regions(
        }
    ```
 
+   **注意**：`incremental_update` 也存在 D-13 非原子性问题（先删后创，create 失败时脑区丢失）。应采用与 `_manage_region_nodes` 相同的 dry_run 两阶段模式：
+   ```python
+   def incremental_update(self) -> dict:
+       try:
+           # ... detect communities ...
+           if partition is None or partition.total_regions < 1:
+               return {"regions_created": 0, "regions_removed": 0, "regions_drifted": 0, "regions_updated": 0, "edges_disconnected": 0}
+
+           # Step 1: Detect only (dry run)
+           removed, drifted, drifted_cids = self.cleanup_stale_regions(partition, dry_run=True)
+
+           # Step 2: Create (skip drifted partitions)
+           created = self.create_region_nodes(partition, skip_community_ids=drifted_cids)
+
+           # Step 3: Execute cleanup only if create succeeded
+           if created or not partition.partitions:
+               removed, drifted, _ = self.cleanup_stale_regions(partition, dry_run=False)
+
+           # Step 4: Update summaries (skip newly-created AND drifted)
+           all_regions = self.get_all_regions()
+           existing_region_names = [
+               r.name for r in all_regions
+               if r.name not in set(created) and r.name not in set(drifted)
+           ]
+           self.update_region_summaries(existing_region_names)
+
+           # Step 5: Decay structural edges
+           disconnected = self._decay_structural_edges(all_regions)
+
+           return {
+               "regions_created": len(created),
+               "regions_removed": len(removed),
+               "regions_drifted": len(drifted),
+               "regions_updated": len(existing_region_names),
+               "edges_disconnected": disconnected,
+           }
+       except Exception as e:
+           logger.warning("incremental_update failed: %s", e)
+           return {"regions_created": 0, "regions_removed": 0, "regions_drifted": 0, "regions_updated": 0, "edges_disconnected": 0}
+   ```
+
 3. `niu_api/brain_region_api.py:180` — `consolidate_brain_regions`：
    ```python
    removed, drifted, drifted_cids = region_mgr.cleanup_stale_regions(detection_result)
@@ -867,6 +908,29 @@ def run_sync(self) -> dict:
 def _run_sync_impl(self) -> dict:
     """实际同步逻辑（原 run_sync 内容）"""
     # ... 原有代码不变 ...
+```
+
+**注意**：当 `cleanup_stale_regions(dry_run=True)` 失败时，`drifted_cids` 为空集，`create_region_nodes` 不会跳过漂移分区。极端情况下 LLM 可能为漂移分区生成不同标签导致重复脑区。为降低此风险，在 dry_run 失败时用一个标志位跳过后续的 cleanup(dry_run=False)：
+
+```python
+# Step 3a: 检测过时和漂移脑区（不执行删除/更新）
+cleanup_ok = True
+try:
+    removed, drifted, drifted_cids = manager.cleanup_stale_regions(
+        detection_result, dry_run=True,
+    )
+except Exception as e:
+    logger.warning(f"[RegionSync] cleanup detection failed: {e}")
+    removed, drifted, drifted_cids = [], [], set()
+    cleanup_ok = False
+
+# ... create ...
+
+# Step 3b: 执行删除和漂移更新（仅在 create 成功且 dry_run 未失败时）
+if (created or not detection_result.partitions) and cleanup_ok:
+    # ... execute cleanup ...
+elif not cleanup_ok:
+    logger.warning("[RegionSync] dry_run 失败，跳过 cleanup 执行避免重复创建")
 ```
 
 - [ ] **Step 2: `brain_region_api.py` 使用同一把锁**
