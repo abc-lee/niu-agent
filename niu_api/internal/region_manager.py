@@ -657,15 +657,21 @@ class RegionManager:
                         region.name,
                     )
 
-        # Step 5: Execute drift updates (skip in dry_run)
+        # Step 5: Generate drifted lists from drift_info (always, regardless of update outcome)
         drifted_names: list[str] = []
         drifted_cids: set[str] = set()
-        if drift_info and not dry_run:
-            self._update_drifted_regions(drift_info, current_partition)
-
         for region_name, (cid, _members) in drift_info.items():
             drifted_names.append(region_name)
             drifted_cids.add(cid)
+
+        # Execute drift updates (skip in dry_run)
+        if drift_info and not dry_run:
+            try:
+                self._update_drifted_regions(drift_info, current_partition)
+            except Exception as e:
+                logger.warning(
+                    "漂移更新执行失败 (drifted 列表仍将返回): %s", e,
+                )
 
         if removed:
             logger.info("共清理 %d 个过时脑区节点", len(removed))
@@ -752,13 +758,19 @@ class RegionManager:
         # Step 4: Remove stale "包含" edges (only after successful inject)
         from niu_api.internal.lightrag_manager import remove_region_stale_edges
         for region_name, new_members in region_new_members.items():
-            removed_count = remove_region_stale_edges(
-                region_name, BELONGS_TO_RELATION, new_members,
-            )
-            logger.debug(
-                "漂移更新: 移除 %s 的 %d 条过期包含边",
-                region_name, removed_count,
-            )
+            try:
+                removed_count = remove_region_stale_edges(
+                    region_name, BELONGS_TO_RELATION, new_members,
+                )
+                logger.debug(
+                    "漂移更新: 移除 %s 的 %d 条过期包含边",
+                    region_name, removed_count,
+                )
+            except Exception as e:
+                logger.warning(
+                    "漂移更新: 移除 %s 的过期包含边失败: %s (继续处理其他脑区)",
+                    region_name, e,
+                )
 
     def dissolve_shrunk_regions(
         self,

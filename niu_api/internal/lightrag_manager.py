@@ -375,13 +375,15 @@ def get_region_members(region_name: str) -> list[str]:
 
         # Find members via "包含" edges (region -> member)
         # Note: LightRAG stores edge type in 'keywords' field, not 'type'
+        # Note: LightRAG graph keys are all lowercase, so compare in lowercase
+        region_name_lower = region_name.lower() if isinstance(region_name, str) else region_name
         members = []
         for src, tgt, data in snapshot.edges(data=True):
             edge_type = data.get("keywords") or data.get("type", "")
             if edge_type.lower() == "包含":
-                if src == region_name:
+                if src == region_name_lower:
                     members.append(tgt)
-                elif tgt == region_name:
+                elif tgt == region_name_lower:
                     members.append(src)
 
         return members
