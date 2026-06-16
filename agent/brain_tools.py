@@ -19,7 +19,7 @@ import threading
 from typing import TYPE_CHECKING
 
 from niu_api.internal.region_activation import RegionActivationManager
-from niu_api.internal.region_manager import ANCHOR_RELATION, STRUCTURAL_EDGE_TYPES_LOWER
+from niu_api.internal.region_manager import STRUCTURAL_EDGE_TYPES_LOWER
 
 logger = logging.getLogger(__name__)
 
@@ -428,9 +428,6 @@ def _reinforce_edge_weight(region_id: str, delta: float = REINFORCE_DELTA) -> No
                     continue
                 keywords = edge_data.get("keywords") or edge_data.get("type", "")
                 kw_lower = keywords.lower()
-                # 锚点边是永久结构边，不需要强化
-                if kw_lower == ANCHOR_RELATION.lower():
-                    continue
                 if kw_lower in STRUCTURAL_EDGE_TYPES_LOWER or kw_lower.startswith("_session:"):
                     old_weight = float(edge_data.get("weight", 0.5))
                     new_weight = min(MAX_EDGE_WEIGHT, old_weight + delta)
