@@ -1386,3 +1386,121 @@ class TestSkipRelationshipInjectionForExistingRegions:
         chunks = call_kwargs.get("chunks", [])
         assert relationships == []
         assert chunks == []
+
+
+class TestUpdateRegionSummariesPreservesTypeInfo:
+    """D-16 fix: update_region_summaries preserves entity type info from NetworkX graph."""
+
+    def test_type_info_from_graph_in_summary(self):
+        """Entity types from NetworkX graph should be passed to _build_entity_summaries."""
+        adapter, ingester = _make_mock_adapter_and_ingester()
+        manager = RegionManager(adapter, ingester)
+
+        # Mock list_entities to return the region entity
+        adapter.list_entities.return_value = {
+            "status": "ok",
+            "data": [
+                {
+                    "id": "Python脑区",
+                    "description": _encode_description(
+                        summary="Python<SEP>Django",
+                        region_id="community_0",
+                        size=2,
+                        representative="Python",
+                        updated_at=1000.0,
+                    ),
+                },
+            ],
+        }
+
+        # Mock _get_rag to return a LightRAG instance with node data
+        mock_rag = MagicMock()
+        mock_kg = MagicMock()
+        mock_nx_graph = MagicMock()
+        mock_nx_graph.nodes = {
+            "python": {"entity_type": "language"},
+            "django": {"entity_type": "framework"},
+        }
+        mock_nx_graph.__contains__ = lambda _, key: key in mock_nx_graph.nodes
+        mock_kg._graph = mock_nx_graph
+        mock_rag.chunk_entity_relation_graph = mock_kg
+        adapter._get_rag.return_value = mock_rag
+
+        # Spy on _build_entity_summaries to capture its entity_name_to_type arg
+        original_build = manager._build_entity_summaries
+        captured_type_map = {}
+        def spy_build(members, entity_types, entity_name_to_type=None):
+            if entity_name_to_type:
+                captured_type_map.update(entity_name_to_type)
+            return original_build(members, entity_types, entity_name_to_type)
+        manager._build_entity_summaries = spy_build
+
+        from unittest.mock import patch
+        with patch.object(manager, "get_region_members", return_value=["Python", "Django"]), \
+             patch("niu_api.internal.lightrag_manager.graph_read_lock", return_value=MagicMock()):
+            manager.update_region_summaries(["Python脑区"])
+
+        # Verify entity_name_to_type was populated from graph node data
+        assert captured_type_map == {"Python": "language", "Django": "framework"}
+
+    def test_fallback_when_rag_is_none(self):
+        """When _get_rag returns None, summary still works (types become 'unknown')."""
+        adapter, ingester = _make_mock_adapter_and_ingester()
+        manager = RegionManager(adapter, ingester)
+
+        adapter.list_entities.return_value = {
+            "status": "ok",
+            "data": [
+                {
+                    "id": "Python脑区",
+                    "description": _encode_description(
+                        summary="Python(language)<SEP>Django(framework)",
+                        region_id="community_0",
+                        size=2,
+                        representative="Python",
+                        updated_at=1000.0,
+                    ),
+                },
+            ],
+        }
+
+        # _get_rag returns None
+        adapter._get_rag.return_value = None
+
+        from unittest.mock import patch
+        with patch.object(manager, "get_region_members", return_value=["Python", "Django"]):
+            manager.update_region_summaries(["Python脑区"])
+
+        # Should still work (with 'unknown' types as before the fix)
+        ingester.inject_custom_kg.assert_called_once()
+
+    def test_fallback_when_graph_raises_exception(self):
+        """When graph read raises an exception, summary still works."""
+        adapter, ingester = _make_mock_adapter_and_ingester()
+        manager = RegionManager(adapter, ingester)
+
+        adapter.list_entities.return_value = {
+            "status": "ok",
+            "data": [
+                {
+                    "id": "Python脑区",
+                    "description": _encode_description(
+                        summary="Python(language)<SEP>Django(framework)",
+                        region_id="community_0",
+                        size=2,
+                        representative="Python",
+                        updated_at=1000.0,
+                    ),
+                },
+            ],
+        }
+
+        # _get_rag raises an exception
+        adapter._get_rag.side_effect = RuntimeError("graph not ready")
+
+        from unittest.mock import patch
+        with patch.object(manager, "get_region_members", return_value=["Python", "Django"]):
+            manager.update_region_summaries(["Python脑区"])
+
+        # Should still work (exception caught, falls back to empty mapping)
+        ingester.inject_custom_kg.assert_called_once()
