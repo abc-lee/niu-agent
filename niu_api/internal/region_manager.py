@@ -61,8 +61,7 @@ BELONGS_TO_RELATION = "包含"
 
 # Structural edge types (lowercase) for matching
 STRUCTURAL_EDGE_TYPES_LOWER = frozenset({
-    BELONGS_TO_RELATION.lower(),      # "包含"
-    ANCHOR_RELATION.lower(),          # "脑区锚点"
+    BELONGS_TO_RELATION.lower(),      # "包含" — 可衰减/强化的结构边类型
 })
 
 # Source identifiers for injected data
@@ -320,7 +319,7 @@ class RegionManager:
                 # Track stale edge removal (execute after batch inject)
                 removed_members = current_members - new_members_lower
                 if removed_members:
-                    stale_edge_cleanup.append((region_name, set(members)))
+                    stale_edge_cleanup.append((region_name, {m.lower() if isinstance(m, str) else m for m in members}))
                     logger.info(
                         "稳定脑区成员变更: %s (-%d 旧成员, 将在注入后清理)",
                         region_name, len(removed_members),
@@ -1574,9 +1573,6 @@ class RegionManager:
                             continue
                         keywords = edge_data.get("keywords") or edge_data.get("type", "")
                         kw_lower = keywords.lower()
-                        # 锚点边是永久结构边，不衰减
-                        if kw_lower == ANCHOR_RELATION.lower():
-                            continue
                         if kw_lower in STRUCTURAL_EDGE_TYPES_LOWER or kw_lower.startswith("_session:"):
                             old_weight = float(edge_data.get("weight", 0.5))
                             new_weight = old_weight * decay_factor
