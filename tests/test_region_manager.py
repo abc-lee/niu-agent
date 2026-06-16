@@ -1368,6 +1368,13 @@ class TestSkipRelationshipInjectionForExistingRegions:
         ]
         result = _make_partition_result(partitions)
 
+        # Mock get_region_members to return members matching the partitions
+        # so the is_existing path detects no membership change
+        manager.get_region_members = lambda name: {
+            "Python脑区": ["Python", "Django", "FastAPI"] + [f"E{i}" for i in range(97)],
+            "React脑区": ["React", "Vue", "Angular"] + [f"N{i}" for i in range(97)],
+        }.get(name, [])
+
         created_regions = manager.create_region_nodes(result)
 
         # No new regions created
