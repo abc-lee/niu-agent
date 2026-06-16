@@ -210,26 +210,35 @@ class RegionManager:
 
         Args:
             partition_result: Community detection result from M1
+            skip_community_ids: Community IDs to skip (already handled by drift update)
 
         Returns:
-            List of created region names (e.g. ["编程开发脑区", ...])
+            List of newly created region names (excludes existing regions that were only updated)
         """
         all_entities: list[dict] = []
         all_relationships: list[dict] = []
         all_chunks: list[dict] = []
         created_regions: list[str] = []
 
-        # Pre-fetch existing region labels for LLM dedup
+        # Pre-fetch existing region labels and names for LLM dedup + skip logic
+        existing_region_names: set[str] = set()
         existing_labels: list[str] = []
         try:
             for region in self.get_all_regions():
-                existing_labels.append(region.label)
+                existing_region_names.add(region.name)
+                label = region.label or region.name.removesuffix(REGION_SUFFIX)
+                existing_labels.append(label)
         except Exception:
             pass
 
         # Pass 1: Filter valid communities and collect data
         valid_communities: list[tuple] = []  # (partition, members, entity_summaries)
         for partition in partition_result.partitions:
+            # Skip partitions already handled by drift update
+            community_id = f"community_{partition.region_id}"
+            if skip_community_ids and community_id in skip_community_ids:
+                logger.debug("跳过漂移脑区对应的分区: %s", community_id)
+                continue
             members = [
                 name
                 for name in partition.entity_names
@@ -260,6 +269,7 @@ class RegionManager:
             community_id = f"community_{partition.region_id}"
             now = time.time()
             region_name = f"{region_label}{REGION_SUFFIX}"
+            is_existing = region_name in existing_region_names
 
             description = _encode_description(
                 summary=region_summary,
@@ -269,6 +279,7 @@ class RegionManager:
                 updated_at=now,
             )
 
+            # Always upsert entity (updates description for existing regions)
             all_entities.append({
                 "entity_name": region_name,
                 "entity_type": REGION_ENTITY_TYPE,
@@ -276,6 +287,11 @@ class RegionManager:
                 "source_id": REGION_SOURCE_ID,
             })
 
+            if is_existing:
+                logger.info("跳过已存在脑区的关系注入: %s (只更新描述)", region_name)
+                continue
+
+            # Below only for NEW regions — relationships + chunks
             top_members = members[:MAX_SUMMARY_ENTITIES]
             chunk_source_id = f"{REGION_SOURCE_ID}_{region_name}"
 
