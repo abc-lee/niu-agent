@@ -485,6 +485,55 @@ def remove_region_edges(region_name: str, edge_type: str) -> int:
     return removed
 
 
+def remove_region_stale_edges(
+    region_name: str, edge_type: str, keep_members: set[str]
+) -> int:
+    """Remove edges of a specific type from a brain region, except those
+    connecting to members in keep_members.
+
+    Directly operates on the internal NetworkX graph under write lock.
+    Used for atomic drift updates: inject new edges first, then remove
+    stale edges — avoiding the zero-member window.
+
+    Args:
+        region_name: Brain region entity name
+        edge_type: Edge keywords to match (case-insensitive)
+        keep_members: Set of member entity names whose edges to preserve.
+                      Names are compared case-insensitively.
+
+    Returns:
+        Number of edges removed.
+    """
+    removed = 0
+    try:
+        rag = get_lightrag()
+        if rag is None:
+            return 0
+        graph_obj = getattr(rag, "chunk_entity_relation_graph", None)
+        if graph_obj is None:
+            return 0
+        nx_graph = graph_obj._graph if hasattr(graph_obj, "_graph") else graph_obj
+        if nx_graph is None:
+            return 0
+        region_key = region_name.lower() if isinstance(region_name, str) else region_name
+        keep_lower = {m.lower() for m in keep_members}
+        with graph_write_lock():
+            if region_key not in nx_graph:
+                return 0
+            for neighbor_id in list(nx_graph.neighbors(region_key)):
+                edge_data = nx_graph.get_edge_data(region_key, neighbor_id)
+                if edge_data is None:
+                    continue
+                kw = edge_data.get("keywords") or edge_data.get("type", "")
+                if kw.lower() == edge_type.lower():
+                    if neighbor_id not in keep_lower:
+                        nx_graph.remove_edge(region_key, neighbor_id)
+                        removed += 1
+    except Exception as e:
+        logger.debug("remove_region_stale_edges failed for %s: %s", region_name, e)
+    return removed
+
+
 def _ensure_loop() -> asyncio.AbstractEventLoop():
     """Ensure the daemon event loop is running (thread-safe)."""
     global _loop, _loop_thread
