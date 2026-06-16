@@ -764,6 +764,8 @@ except Exception as e:
 # 如果 create 失败（created 为空且 detection_result 有分区），
 # 保留旧脑区，避免数据丢失
 # 如果 dry_run 失败（cleanup_ok=False），跳过执行避免重复创建
+actual_removed: list[str] = []
+actual_drifted: list[str] = []
 if (created or not detection_result.partitions) and cleanup_ok:
     try:
         actual_removed, actual_drifted, _ = manager.cleanup_stale_regions(
