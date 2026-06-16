@@ -69,9 +69,9 @@ except Exception:
 ```python
 # Pass 1: Filter valid communities, excluding already-existing regions
 valid_communities = []
-for partition in partitions:
+for partition in partition_result.partitions:
     members = [name for name in partition.entity_names if not name.endswith(REGION_SUFFIX)]
-    if not members:
+    if not members or len(members) < MIN_COMMUNITY_SIZE:
         continue
     entity_summaries = self._build_entity_summaries(
         members, partition.entity_types,
@@ -90,15 +90,17 @@ for (partition, members, entity_summaries), region_label in zip(valid_communitie
     region_name = f"{region_label}{REGION_SUFFIX}"
     is_existing = region_name in existing_region_names
 
-    # 构建 description（已存在和新建都一样）— 与当前 Pass 3 逻辑相同
-    summary = entity_summaries.get("summary", "")
-    entity_type_str = entity_summaries.get("entity_type", "unknown")
+    # 构建 description（已存在和新建都一样）— 与源码 Pass 3 完全一致
+    region_summary = self._generate_region_summary(entity_summaries)
+    representative = members[0].replace("<SEP>", "-").replace("|", "-") if members else ""
+    community_id = f"community_{partition.region_id}"
+    now = time.time()
     description = _encode_description(
-        summary=summary,
-        region_id=str(partition.community_id),
+        summary=region_summary,
+        region_id=community_id,
         size=len(members),
-        representative=members[0] if members else "",
-        updated_at=time.time(),
+        representative=representative,
+        updated_at=now,
     )
 
     # Always upsert entity (updates description for existing regions)
@@ -114,7 +116,7 @@ for (partition, members, entity_summaries), region_label in zip(valid_communitie
         continue
 
     # Below only for NEW regions — relationships + chunks
-    # Chunk（与当前 Pass 3 逻辑相同）
+    # Chunk（与源码 Pass 3 完全一致）
     top_members = members[:MAX_SUMMARY_ENTITIES]
     chunk_source_id = f"{REGION_SOURCE_ID}_{region_name}"
     all_chunks.append({
@@ -123,7 +125,7 @@ for (partition, members, entity_summaries), region_label in zip(valid_communitie
         "file_path": REGION_FILE_PATH,
     })
 
-    # 脑区锚点边（与当前 Pass 3 逻辑相同）
+    # 脑区锚点边（与源码 Pass 3 完全一致）
     all_relationships.append({
         "src_id": NIU_ENTITY,
         "tgt_id": region_name,
@@ -134,7 +136,7 @@ for (partition, members, entity_summaries), region_label in zip(valid_communitie
         "file_path": REGION_FILE_PATH,
     })
 
-    # 包含边（与当前 Pass 3 逻辑相同）
+    # 包含边（与源码 Pass 3 完全一致）
     for member in members:
         all_relationships.append({
             "src_id": region_name,
@@ -851,6 +853,17 @@ except Exception as e:
     logger.warning(f"[RegionSync] create_region_nodes failed: {e}")
     stats["errors"].append(f"create: {e}")
 
+# Step 4.5: Assign existing entities to default brain regions
+try:
+    from niu_api.internal.region_manager import assign_entities_to_default_regions
+    result = assign_entities_to_default_regions(adapter)
+    assigned = result.get("assigned", 0)
+    if assigned > 0:
+        logger.info(f"[RegionSync] Assigned {assigned} entities to default regions")
+        stats["entities_assigned"] = assigned
+except Exception as e:
+    logger.debug(f"[RegionSync] assign_entities_to_default_regions skipped: {e}")
+
 # Step 3b: 执行删除和漂移更新（仅在 create 成功且 dry_run 未失败时）
 # 如果 create 失败（created 为空且 detection_result 有分区），
 # 保留旧脑区，避免数据丢失
@@ -1095,13 +1108,10 @@ def run_sync(self) -> dict:
         self.release_sync()
 
 def _run_sync_impl(self) -> dict:
-    """实际同步逻辑（原 run_sync 方法体，不含锁逻辑）"""
-    stats = {"regions_created": 0, "regions_removed": 0, "regions_drifted": 0,
-             "entities_assigned": 0, "regions_updated": 0, "errors": []}
-    self._manage_region_nodes(stats)
-    self._refresh_activation_manager(stats)
-    self._merge_and_dissolve(stats)
-    return stats
+    """实际同步逻辑 — 原 run_sync 方法体完整移入此方法，不含锁逻辑。
+    实施时：将 region_sync.py:80-177 的 run_sync 方法体（LightRAG 检查、
+    社区检测、stop_event 检查、stats 填充、状态保存、缓存失效等）
+    全部移入此方法，run_sync 仅保留锁获取/释放包装。"""
 ```
 
 **注意**：当 `cleanup_stale_regions(dry_run=True)` 失败时，`drifted_cids` 为空集，`create_region_nodes` 不会跳过漂移分区。极端情况下 LLM 可能为漂移分区生成不同标签导致重复脑区。为降低此风险，在 dry_run 失败时用一个标志位跳过后续的 cleanup(dry_run=False)：
