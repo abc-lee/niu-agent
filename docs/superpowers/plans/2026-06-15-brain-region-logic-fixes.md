@@ -958,8 +958,8 @@ def incremental_update(self) -> dict:
             logger.warning("incremental_update create_region_nodes 异常，保留旧脑区")
 
         # Update summaries for stable regions (exclude created and drifted)
+        all_regions = self.get_all_regions()
         try:
-            all_regions = self.get_all_regions()
             created_set = set(created)
             drifted_set = set(actual_drifted) if cleanup_ok else set()
             existing_region_names = [r.name for r in all_regions
