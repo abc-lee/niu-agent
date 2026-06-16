@@ -682,18 +682,14 @@ class RegionManager:
         """Update regions whose membership has drifted.
 
         For each drifted region:
-        1. Remove all existing "包含" edges
-        2. Re-generate summary with type info from partition data
-        3. Update entity description (upsert)
-        4. Re-inject new membership "包含" edges
+        1. Re-generate summary with type info from partition data
+        2. Inject new entity description + membership edges (upsert)
+        3. Remove stale "包含" edges (members no longer in new_member_set)
 
-        Args:
-            drift_info: Mapping of region_name → (best_community_id, new_member_set)
-            current_partition: Current community detection result (for type info)
+        Order matters: inject-before-delete avoids the zero-member window
+        if inject_custom_kg fails after stale edges have been removed.
         """
-        from niu_api.internal.lightrag_manager import remove_region_edges
-
-        # Build community_id → partition lookup for type info
+        # Build community_id -> partition lookup for type info
         partition_map: dict[str, RegionPartition] = {}
         for partition in current_partition.partitions:
             cid = f"community_{partition.region_id}"
@@ -701,74 +697,68 @@ class RegionManager:
 
         all_entities: list[dict] = []
         all_relationships: list[dict] = []
+        region_new_members: dict[str, set[str]] = {}
 
         for region_name, (best_cid, new_members) in drift_info.items():
-            # Step 1: Remove stale "包含" edges
-            removed_count = remove_region_edges(region_name, BELONGS_TO_RELATION)
-            logger.debug(
-                "漂移更新: 移除 %s 的 %d 条旧包含边",
-                region_name, removed_count,
-            )
+            if not new_members:
+                continue
+            region_new_members[region_name] = new_members
 
-            # Step 2: Re-generate summary with type info from partition
+            # Step 1: Re-generate summary with type info from partition
             partition = partition_map.get(best_cid)
-            entity_types = partition.entity_types if partition else {}
-            entity_name_to_type = partition.entity_name_to_type if partition else {}
-
-            members_list = sorted(new_members)
             entity_summaries = self._build_entity_summaries(
-                members_list, entity_types, entity_name_to_type,
+                list(new_members),
+                partition.entity_types if partition else {},
+                partition.entity_name_to_type if partition else None,
             )
-            region_summary = self._generate_region_summary(entity_summaries)
-
-            # Step 3: Update entity description
-            representative = members_list[0].replace("<SEP>", "-").replace("|", "-") if members_list else ""
+            summary = self._generate_region_summary(entity_summaries)
+            representative = list(new_members)[0].replace("<SEP>", "-").replace("|", "-")
             now = time.time()
             description = _encode_description(
-                summary=region_summary,
-                region_id=best_cid,
-                size=len(members_list),
-                representative=representative,
+                summary=summary, region_id=best_cid,
+                size=len(new_members), representative=representative,
                 updated_at=now,
             )
-
             all_entities.append({
-                "entity_name": region_name,
-                "entity_type": REGION_ENTITY_TYPE,
-                "description": description,
+                "entity_name": region_name, "entity_type": REGION_ENTITY_TYPE,
+                "description": description, "source_id": REGION_SOURCE_ID,
             })
-
-            # Step 4: Re-inject new membership edges
-            for member in members_list:
+            # Step 2: New membership edges
+            for member in new_members:
                 all_relationships.append({
-                    "src_id": region_name,
-                    "tgt_id": member,
+                    "src_id": region_name, "tgt_id": member,
                     "keywords": BELONGS_TO_RELATION,
                     "description": f"{member} belongs to region {region_name}",
-                    "weight": 0.5,
-                    "source_id": REGION_SOURCE_ID,
+                    "weight": 0.5, "source_id": REGION_SOURCE_ID,
                     "file_path": REGION_FILE_PATH,
                 })
 
-            logger.info(
-                "漂移更新: %s → community %s (%d 新成员)",
-                region_name, best_cid, len(members_list),
-            )
-
-        # Batch inject all updates
+        # Step 3: Inject FIRST (before removing stale edges)
         if all_entities or all_relationships:
             try:
                 self._ingester.inject_custom_kg(
-                    entities=all_entities,
-                    relationships=all_relationships,
-                    chunks=[],
-                    source_id=REGION_SOURCE_ID,
+                    entities=all_entities, relationships=all_relationships,
+                    chunks=[], source_id=REGION_SOURCE_ID,
                 )
             except Exception as e:
                 logger.error(
-                    "漂移更新注入失败: %d entities, %d relationships — %s",
+                    "漂移更新注入失败: %d entities, %d relationships -- %s",
                     len(all_entities), len(all_relationships), e,
                 )
+                # Do NOT remove stale edges — inject failed,
+                # keeping old edges is safer than having zero members
+                return
+
+        # Step 4: Remove stale "包含" edges (only after successful inject)
+        from niu_api.internal.lightrag_manager import remove_region_stale_edges
+        for region_name, new_members in region_new_members.items():
+            removed_count = remove_region_stale_edges(
+                region_name, BELONGS_TO_RELATION, new_members,
+            )
+            logger.debug(
+                "漂移更新: 移除 %s 的 %d 条过期包含边",
+                region_name, removed_count,
+            )
 
     def dissolve_shrunk_regions(
         self,
