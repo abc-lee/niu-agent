@@ -219,6 +219,7 @@ class RegionManager:
         all_relationships: list[dict] = []
         all_chunks: list[dict] = []
         created_regions: list[str] = []
+        stale_edge_cleanup: list[tuple[str, set[str]]] = []  # (region_name, new_members_set)
 
         # Pre-fetch existing region labels and names for LLM dedup + skip logic
         existing_region_names: set[str] = set()
@@ -288,7 +289,42 @@ class RegionManager:
             })
 
             if is_existing:
-                logger.info("跳过已存在脑区的关系注入: %s (只更新描述)", region_name)
+                # D-7 fix: For stable regions with changed membership,
+                # inject new edges first then remove stale edges (same
+                # inject-before-delete pattern as _update_drifted_regions).
+                # Skip only when membership is identical.
+                current_members = {m.lower() if isinstance(m, str) else m for m in self.get_region_members(region_name)}
+                new_members_lower = {m.lower() if isinstance(m, str) else m for m in members}
+                if current_members == new_members_lower:
+                    logger.debug("稳定脑区成员未变: %s", region_name)
+                    continue
+
+                # Members changed — inject new edges for members not yet in graph
+                added_members = new_members_lower - current_members
+                if added_members:
+                    for member in members:
+                        if (member.lower() if isinstance(member, str) else member) not in current_members:
+                            all_relationships.append({
+                                "src_id": region_name,
+                                "tgt_id": member,
+                                "keywords": BELONGS_TO_RELATION,
+                                "description": f"{member} belongs to region {region_label}",
+                                "weight": 0.5,
+                                "source_id": REGION_SOURCE_ID,
+                                "file_path": REGION_FILE_PATH,
+                            })
+                    logger.info(
+                        "稳定脑区成员变更: %s (+%d 成员)",
+                        region_name, len(added_members),
+                    )
+                # Track stale edge removal (execute after batch inject)
+                removed_members = current_members - new_members_lower
+                if removed_members:
+                    stale_edge_cleanup.append((region_name, set(members)))
+                    logger.info(
+                        "稳定脑区成员变更: %s (-%d 旧成员, 将在注入后清理)",
+                        region_name, len(removed_members),
+                    )
                 continue
 
             # Below only for NEW regions — relationships + chunks
@@ -345,6 +381,7 @@ class RegionManager:
                     result.get("message", "unknown"),
                     len(created_regions),
                 )
+                stale_edge_cleanup.clear()  # 注入失败，不清理旧边
                 return []
             logger.info(
                 "批量注入 %d 个脑区实体, %d 条关系, %d 个chunks",
@@ -352,6 +389,26 @@ class RegionManager:
                 len(all_relationships),
                 len(all_chunks),
             )
+
+        # D-7 fix: Remove stale "包含" edges for stable regions with changed membership
+        # Execute AFTER batch inject to follow inject-before-delete pattern
+        if stale_edge_cleanup:
+            from niu_api.internal.lightrag_manager import remove_region_stale_edges
+            for region_name, new_members in stale_edge_cleanup:
+                try:
+                    removed_count = remove_region_stale_edges(
+                        region_name, BELONGS_TO_RELATION, new_members,
+                    )
+                    if removed_count > 0:
+                        logger.info(
+                            "稳定脑区旧边清理: %s 移除 %d 条过期包含边",
+                            region_name, removed_count,
+                        )
+                except Exception as e:
+                    logger.warning(
+                        "稳定脑区旧边清理失败: %s — %s (继续处理其他脑区)",
+                        region_name, e,
+                    )
 
         logger.info("共创建 %d 个脑区节点", len(created_regions))
         return created_regions
