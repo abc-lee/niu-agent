@@ -1464,7 +1464,7 @@ class RegionManager:
                 logger.debug("incremental_update update_region_summaries skipped: %s", e)
 
             # Decay structural edges
-            disconnected = self._decay_structural_edges(all_regions)
+            disconnected = self.decay_structural_edges(all_regions)
 
             return {
                 "regions_created": len(created),
@@ -1478,7 +1478,7 @@ class RegionManager:
             return {"regions_created": 0, "regions_removed": 0, "regions_drifted": 0,
                     "regions_updated": 0, "edges_disconnected": 0}
 
-    def _decay_structural_edges(
+    def decay_structural_edges(
         self,
         regions: list[BrainRegionInfo],
         decay_factor: float = 0.5,
@@ -1486,18 +1486,8 @@ class RegionManager:
     ) -> int:
         """Decay and disconnect low-weight structural edges.
 
-        Handles all brain region related edges:
-        - 包含 (region contains members)
-        - _session:* (session related)
-        - 脑区锚点 (region anchor)
-
-        Args:
-            regions: List of BrainRegionInfo to process.
-            decay_factor: Weight multiplier per decay cycle (default 0.5).
-            threshold: Minimum weight before disconnect (default 0.1).
-
-        Returns:
-            Number of disconnected edges.
+        Directly operates on the internal NetworkX graph under write lock,
+        following the same pattern as remove_region_stale_edges.
         """
         disconnected = 0
         try:
@@ -1511,39 +1501,27 @@ class RegionManager:
             if kg is None:
                 return 0
 
-            # NOTE: graph_write_lock only synchronizes with graph_read_lock holders.
-            # call_async-based writes (ainsert_custom_kg, adelete_by_entity, etc.)
-            # do NOT acquire this lock — they run in the asyncio loop. This means
-            # there is a theoretical race window where call_async modifies the
-            # NetworkX graph while we iterate edges under graph_write_lock.
-            # In practice this is safe because:
-            # 1. _decay_structural_edges runs infrequently (every 6h sync cycle)
-            # 2. call_async writes are serialized in the asyncio loop
-            # 3. If RuntimeError occurs, the except block handles it gracefully
+            nx_graph = kg._graph if hasattr(kg, "_graph") else kg
+            if nx_graph is None:
+                return 0
+
             with graph_write_lock():
                 for region in regions:
-                    try:
-                        neighbors = kg.get_neighbors(region.name)
-                    except AttributeError:
+                    region_key = region.name.lower() if isinstance(region.name, str) else region.name
+                    if region_key not in nx_graph:
                         continue
 
-                    if not neighbors:
-                        continue
-
-                    for neighbor_id, edge_data in list(neighbors.items()):
-                        if not isinstance(edge_data, dict):
+                    for neighbor_id in list(nx_graph.neighbors(region_key)):
+                        edge_data = nx_graph.get_edge_data(region_key, neighbor_id)
+                        if edge_data is None:
                             continue
-                        keywords = edge_data.get("keywords", "")
+                        keywords = edge_data.get("keywords") or edge_data.get("type", "")
                         kw_lower = keywords.lower()
-                        # Process all brain region related edges
                         if kw_lower in STRUCTURAL_EDGE_TYPES_LOWER or kw_lower.startswith("_session:"):
                             old_weight = float(edge_data.get("weight", 0.5))
                             new_weight = old_weight * decay_factor
                             if new_weight < threshold:
-                                try:
-                                    kg.remove_edge(region.name, neighbor_id)
-                                except Exception:
-                                    pass
+                                nx_graph.remove_edge(region_key, neighbor_id)
                                 disconnected += 1
                             else:
                                 edge_data["weight"] = new_weight
