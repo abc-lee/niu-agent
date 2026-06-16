@@ -556,8 +556,8 @@ Run: `python -m py_compile niu_api/internal/region_manager.py && python -m pytes
 **Bug 根因**：`REGION_KEYWORDS` 硬编码 6 个固定脑区名，但 `get_default_regions_config()` 从 preferences.json 动态读取。当前 preferences.json 已有 7 个默认脑区（含"组织机构"），但 `REGION_KEYWORDS` 没有对应条目，导致该脑区永远分不到实体。
 
 **设计原则**：
-- `preferences.json` 跟随仓库分发，程序启动时自动从仓库拷贝到运行目录，不存在"没有 keywords 字段"的问题
-- 不需要硬编码 fallback — 配置就是唯一的数据源
+- `preferences.json` 跟随仓库分发，程序启动时自动从仓库拷贝到运行目录
+- 但已安装用户的 `~/.niu/preferences.json` 可能缺少 `keywords` 字段（旧版本配置），需要 `_DEFAULT_KEYWORDS_FALLBACK` 兜底
 - `memory/skills/brain-region-management.md` 是主 Agent 的脑区管理手册，需要补充 `keywords` 字段的说明
 
 **Files:**
@@ -628,10 +628,23 @@ def assign_entities_to_default_regions(adapter, entity_keywords=None):
         return {"assigned": 0, "regions": 0}
 
     # 动态构建关键词映射（从配置读取，替代硬编码）
+    # Fallback: 当运行时 preferences.json 没有 keywords 字段时（旧版本配置文件），
+    # 使用硬编码默认值避免关键词映射完全为空
+    _DEFAULT_KEYWORDS_FALLBACK: dict[str, list[str]] = {
+        "聊天历史脑区": ["偏好", "习惯", "设置", "配置", "喜欢", "想要"],
+        "文档库脑区": ["文档", "文件", "PDF", "Word", "Markdown", "笔记"],
+        "知识体系脑区": ["概念", "理论", "方法", "原理", "定义", "技术"],
+        "人际关系脑区": ["人物", "家人", "朋友", "同事", "联系人", "人名"],
+        "工作事务脑区": ["项目", "任务", "会议", "决策", "工作", "进度"],
+        "生活事务脑区": ["日程", "健康", "财务", "旅行", "生活", "日常"],
+        "组织机构脑区": ["公司", "部门", "机构", "组织", "团队", "单位"],
+    }
     REGION_KEYWORDS: dict[str, list[str]] = {}
     for region_def in get_default_regions_config():
         region_name = f"{region_def['label']}{REGION_SUFFIX}"
         keywords = region_def.get("keywords", [])
+        if not keywords:
+            keywords = _DEFAULT_KEYWORDS_FALLBACK.get(region_name, [])
         if keywords:
             REGION_KEYWORDS[region_name] = keywords
 
@@ -639,7 +652,7 @@ def assign_entities_to_default_regions(adapter, entity_keywords=None):
     # ... 后续逻辑不变 ...
 ```
 
-不需要 fallback — `preferences.json` 跟随仓库分发，程序启动时自动拷贝到运行目录。
+不需要 fallback — `preferences.json` 跟随仓库分发，程序启动时自动拷贝到运行目录。但已安装用户的 `~/.niu/preferences.json` 可能缺少 `keywords` 字段（旧版本），此时 `_DEFAULT_KEYWORDS_FALLBACK` 提供兜底。
 
 - [ ] **Step 3.5: 修复 `assign_entities_to_default_regions` 的 size 膨胀 bug (D-15)**
 
