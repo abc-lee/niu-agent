@@ -396,15 +396,12 @@ def reinforce_on_tool_use(tool_name: str, reinforce_delta: float = REINFORCE_DEL
 def _reinforce_edge_weight(region_id: str, delta: float = REINFORCE_DELTA) -> None:
     """Boost weight of structural edges for a brain region node.
 
-    Boosts edges with brain region related prefixes:
-    - 包含 (region contains members)
-    - _session:* (session related)
-    - 脑区锚点 (region anchor)
-
-    Semantic edges (no prefix) are never boosted by tool usage.
+    Directly operates on the internal NetworkX graph under write lock,
+    following the same pattern as decay_structural_edges.
     """
     try:
         from niu_api.internal.lightrag_adapter import LightRAGAdapter
+        from niu_api.internal.lightrag_manager import graph_write_lock
 
         adapter = LightRAGAdapter()
         rag = adapter._get_rag()
@@ -415,32 +412,30 @@ def _reinforce_edge_weight(region_id: str, delta: float = REINFORCE_DELTA) -> No
         if kg is None:
             return
 
-        region_node = kg.get_node(region_id)
-        if region_node is None:
+        nx_graph = kg._graph if hasattr(kg, "_graph") else kg
+        if nx_graph is None:
             return
 
-        # get_neighbors may not exist on all graph storage backends
-        try:
-            neighbors = kg.get_neighbors(region_id)
-        except AttributeError:
-            return
-        if not neighbors:
-            return
+        region_key = region_id.lower() if isinstance(region_id, str) else region_id
 
-        for neighbor_id, edge_data in list(neighbors.items()):
-            if not isinstance(edge_data, dict):
-                continue
-            keywords = edge_data.get("keywords", "")
-            # Process all brain region related edges
-            kw_lower = keywords.lower()
-            if kw_lower in STRUCTURAL_EDGE_TYPES_LOWER or kw_lower.startswith("_session:"):
-                old_weight = edge_data.get("weight", 0.5)
-                new_weight = min(MAX_EDGE_WEIGHT, float(old_weight) + delta)
-                if new_weight > float(old_weight):
-                    edge_data["weight"] = new_weight
-                    logger.debug(
-                        "Edge weight reinforced: %s -> %s (%s): %.2f -> %.2f",
-                        region_id, neighbor_id, keywords, float(old_weight), new_weight,
-                    )
+        with graph_write_lock():
+            if region_key not in nx_graph:
+                return
+
+            for neighbor_id in list(nx_graph.neighbors(region_key)):
+                edge_data = nx_graph.get_edge_data(region_key, neighbor_id)
+                if edge_data is None:
+                    continue
+                keywords = edge_data.get("keywords") or edge_data.get("type", "")
+                kw_lower = keywords.lower()
+                if kw_lower in STRUCTURAL_EDGE_TYPES_LOWER or kw_lower.startswith("_session:"):
+                    old_weight = float(edge_data.get("weight", 0.5))
+                    new_weight = min(MAX_EDGE_WEIGHT, old_weight + delta)
+                    if new_weight > old_weight:
+                        edge_data["weight"] = new_weight
+                        logger.debug(
+                            "Edge weight reinforced: %s -> %s (%s): %.2f -> %.2f",
+                            region_key, neighbor_id, keywords, old_weight, new_weight,
+                        )
     except Exception as e:
         logger.debug("Edge weight reinforce failed: %s", e)
