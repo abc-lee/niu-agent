@@ -238,7 +238,9 @@ Run: `python -m py_compile agent/injector/region_sync.py && python -m pytest tes
 **Files:**
 - Modify: `niu_api/internal/region_manager.py:510-564`
 - Modify: `niu_api/internal/lightrag_manager.py` — 新增 `remove_region_edges` 函数
-- Modify: `tests/test_region_manager.py`
+- Modify: `agent/injector/region_sync.py` — 调用者更新（cleanup_stale_regions 三元组解包 + create_region_nodes skip_community_ids）
+- Modify: `niu_api/brain_region_api.py` — 调用者更新
+- Modify: `tests/test_region_manager.py` — 旧测试解包方式更新
 
 - [ ] **Step 1: 修改 `cleanup_stale_regions`**
 
@@ -809,7 +811,8 @@ Run: `python -m py_compile niu_api/internal/region_manager.py && python -m pytes
 **(b) D-13**：`cleanup_stale_regions` 成功删除旧脑区后，`create_region_nodes` 失败，此时 KG 中旧脑区已删、新脑区未创，所有检测脑区丢失直到下次同步（24小时后）。
 
 **Files:**
-- Modify: `agent/injector/region_sync.py:209-339`
+- Modify: `agent/injector/region_sync.py:209-339` — `_manage_region_nodes` dry_run 两阶段 + `_refresh_activation_manager` 空列表保护
+- Modify: `niu_api/internal/region_manager.py` — `cleanup_stale_regions` 新增 `dry_run` 参数 + `incremental_update` 两阶段模式
 
 - [ ] **Step 1: 修复 `_refresh_activation_manager` 空列表保护**
 
@@ -835,6 +838,7 @@ if not all_regions:
 
 ```python
 # Step 3a: 检测过时和漂移脑区（不执行删除/更新）
+cleanup_ok = True
 try:
     removed, drifted, drifted_cids = manager.cleanup_stale_regions(
         detection_result, dry_run=True,
@@ -842,6 +846,7 @@ try:
 except Exception as e:
     logger.warning(f"[RegionSync] cleanup detection failed: {e}")
     removed, drifted, drifted_cids = [], [], set()
+    cleanup_ok = False
 
 # Step 4: Create region nodes (skip drifted community partitions)
 created: list[str] = []
@@ -852,10 +857,11 @@ except Exception as e:
     logger.warning(f"[RegionSync] create_region_nodes failed: {e}")
     stats["errors"].append(f"create: {e}")
 
-# Step 3b: 执行删除和漂移更新（仅在 create 成功后）
+# Step 3b: 执行删除和漂移更新（仅在 create 成功且 dry_run 未失败时）
 # 如果 create 失败（created 为空且 detection_result 有分区），
 # 保留旧脑区，避免数据丢失
-if created or not detection_result.partitions:
+# 如果 dry_run 失败（cleanup_ok=False），跳过执行避免重复创建
+if (created or not detection_result.partitions) and cleanup_ok:
     try:
         actual_removed, actual_drifted, _ = manager.cleanup_stale_regions(
             detection_result, dry_run=False,
@@ -864,6 +870,8 @@ if created or not detection_result.partitions:
     except Exception as e:
         logger.warning(f"[RegionSync] cleanup execution failed: {e}")
         stats["errors"].append(f"cleanup: {e}")
+elif not cleanup_ok:
+    logger.warning("[RegionSync] dry_run 失败，跳过 cleanup 执行避免重复创建")
 else:
     logger.warning("[RegionSync] create_region_nodes 失败，保留旧脑区避免数据丢失")
 ```
