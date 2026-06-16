@@ -958,12 +958,15 @@ def incremental_update(self) -> dict:
             logger.warning("incremental_update create_region_nodes 异常，保留旧脑区")
 
         # Update summaries for stable regions (exclude created and drifted)
-        all_regions = self.get_all_regions()
-        created_set = set(created)
-        drifted_set = set(actual_drifted)
-        existing_region_names = [r.name for r in all_regions
-                                 if r.name not in created_set and r.name not in drifted_set]
-        self.update_region_summaries(existing_region_names)
+        try:
+            all_regions = self.get_all_regions()
+            created_set = set(created)
+            drifted_set = set(actual_drifted) if cleanup_ok else set()
+            existing_region_names = [r.name for r in all_regions
+                                     if r.name not in created_set and r.name not in drifted_set]
+            self.update_region_summaries(existing_region_names)
+        except Exception as e:
+            logger.debug("incremental_update update_region_summaries skipped: %s", e)
 
         # Decay structural edges
         disconnected = self._decay_structural_edges(all_regions)
@@ -1004,12 +1007,12 @@ except Exception as e:
     cleanup_ok = False
 
 # Step 3: Create region nodes (Phase 2)
+created: list[str] = []
 create_ok = True
 try:
     created = region_mgr.create_region_nodes(detection_result, skip_community_ids=drifted_cids)
 except Exception as e:
     logger.error("[Consolidate] create_region_nodes failed: %s", e)
-    created = []
     create_ok = False
 
 # Step 4: Execute cleanup only if create didn't throw and dry_run succeeded (Phase 3)
