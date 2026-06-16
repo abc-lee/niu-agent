@@ -166,14 +166,19 @@ Run: `python -m py_compile niu_api/internal/region_manager.py && python -m pytes
 
 ---
 
-## Task 2 [IMPORTANT]：`_manage_region_nodes` 中排除新建和漂移脑区的 summary 更新
+## Task 2 [IMPORTANT]：`_manage_region_nodes` 中排除新建和漂移脑区的 summary 更新 + `update_region_summaries` 类型信息保留
 
-**Bug 根因**：`_manage_region_nodes` 的 Step 5 对所有脑区调用 `update_region_summaries`，包括刚在 Step 4 创建的脑区和 Step 3 中漂移更新的脑区。新建脑区的 summary 已由 `create_region_nodes` 精确生成（含类型信息），漂移脑区的 summary 已由 `_update_drifted_regions` 精确生成（含类型信息），但 `update_region_summaries` 用 `_build_entity_summaries(members, {}, {})` 重建（空类型映射），覆盖为劣质 summary。
+**Bug 根因**：两个相关问题：
 
-`incremental_update` (region_manager.py:1217-1221) 已正确排除新建脑区，`_manage_region_nodes` 应采用相同模式，并额外排除漂移脑区。
+**(a)** `_manage_region_nodes` 的 Step 5 对所有脑区调用 `update_region_summaries`，包括刚在 Step 4 创建的脑区和 Step 3 中漂移更新的脑区。新建脑区的 summary 已由 `create_region_nodes` 精确生成（含类型信息），漂移脑区的 summary 已由 `_update_drifted_regions` 精确生成（含类型信息），但 `update_region_summaries` 用 `_build_entity_summaries(members, {}, {})` 重建（空类型映射），覆盖为劣质 summary。
+
+**(b) D-16**：即使排除了新建和漂移脑区，"稳定"脑区的 summary 仍然会被 `update_region_summaries` 用空类型映射覆盖，类型信息永久丢失。这是因为 `update_region_summaries`（region_manager.py:413）调用 `_build_entity_summaries(members, {}, {})`，第三个参数 `entity_name_to_type` 为空字典，导致所有实体被标记为 "unknown" 类型。
+
+`incremental_update` (region_manager.py:1217-1221) 已正确排除新建脑区，`_manage_region_nodes` 应采用相同模式，并额外排除漂移脑区。同时 `update_region_summaries` 应获取实体的实际类型信息。
 
 **Files:**
 - Modify: `agent/injector/region_sync.py:234-262`
+- Modify: `niu_api/internal/region_manager.py:413` — `update_region_summaries` 类型信息修复
 
 - [ ] **Step 1: 修改 `_manage_region_nodes` 的 Step 3-5**
 
@@ -221,9 +226,40 @@ except Exception as e:
     logger.debug(f"[RegionSync] update_region_summaries skipped: {e}")
 ```
 
-- [ ] **Step 2: 验证**
+- [ ] **Step 2: 修复 `update_region_summaries` 的类型信息丢失 (D-16)**
 
-Run: `python -m py_compile agent/injector/region_sync.py && python -m pytest tests/test_region_manager.py -v`
+当前代码（region_manager.py:413）使用空类型映射，导致稳定脑区的类型信息被覆盖为 "unknown"。修复方式：从 NetworkX 图中批量读取成员实体的 `entity_type` 属性，构建 `entity_name_to_type` 映射。
+
+```python
+# 在 update_region_summaries 方法中，替换 line 413：
+# 旧代码：entity_summaries = self._build_entity_summaries(members, {}, {})
+# 新代码：从图中批量读取成员实体的类型
+from niu_api.internal.lightrag_manager import get_lightrag, graph_read_lock
+entity_name_to_type: dict[str, str] = {}
+try:
+    rag = get_lightrag()
+    if rag is not None:
+        kg = rag.chunk_entity_relation_graph
+        nx_graph = kg._graph if hasattr(kg, "_graph") else kg
+        if nx_graph is not None:
+            with graph_read_lock():
+                for member in members:
+                    member_lower = member.lower() if isinstance(member, str) else member
+                    if member_lower in nx_graph:
+                        node_data = nx_graph.nodes[member_lower]
+                        etype = node_data.get("entity_type", "")
+                        if etype:
+                            entity_name_to_type[member] = etype
+except Exception:
+    pass  # 读取失败时回退到空映射，不影响功能
+entity_summaries = self._build_entity_summaries(members, {}, entity_name_to_type or None)
+```
+
+**设计说明**：从 `nx_graph.nodes[member]` 读取 `entity_type` 属性是最高效的方式（直接读内存，无需 API 调用）。如果读取失败（图不可用），回退到空映射——此时 summary 质量与当前代码一致，不会退化。
+
+- [ ] **Step 3: 验证**
+
+Run: `python -m py_compile agent/injector/region_sync.py && python -m py_compile niu_api/internal/region_manager.py`
 
 确认 `incremental_update` (region_manager.py:1217-1221) 的模式与新代码一致。
 
@@ -762,6 +798,28 @@ def assign_entities_to_default_regions(adapter, entity_keywords=None):
 ```
 
 不需要 fallback — `preferences.json` 跟随仓库分发，程序启动时自动拷贝到运行目录。
+
+- [ ] **Step 3.5: 修复 `assign_entities_to_default_regions` 的 size 膨胀 bug (D-15)**
+
+当前代码（region_manager.py:1565-1571）使用 `old_size + new_size` 累加，每次同步都会导致 size 膨胀（因为已分配的实体被重复计入）。修复为使用实际成员数：
+
+```python
+# 旧代码（会导致 size 膨胀）：
+# new_size = assigned_counts[name]
+# old_size = int(parsed.get("size", "0") or "0")
+# size=old_size + new_size,
+
+# 新代码：使用实际成员数，避免累加膨胀
+from niu_api.internal.lightrag_manager import get_region_members as lightrag_get_region_members
+actual_members = lightrag_get_region_members(name)
+updated_desc = _encode_description(
+    summary=parsed.get("summary", ""),
+    region_id=parsed.get("region_id", ""),
+    size=len(actual_members),  # 实际成员数，不累加
+    representative=parsed.get("representative", ""),
+    updated_at=time.time(),
+)
+```
 
 - [ ] **Step 4: 更新 `memory/skills/brain-region-management.md`**
 
