@@ -810,6 +810,7 @@ git commit -m "fix(brain-region): Task 3 — dynamic keywords + D-15 size fix + 
 
 **Files:**
 - Modify: `agent/injector/region_sync.py:209-339` — `_manage_region_nodes` dry_run 两阶段 + `_refresh_activation_manager` 空列表保护
+- Modify: `niu_api/internal/region_activation.py:146-192` — `initialize_from_regions` 双缓冲模式
 - Modify: `niu_api/internal/region_manager.py:1191-1234` — `incremental_update` 两阶段模式 + 三元组解包
 - Modify: `niu_api/brain_region_api.py:145-216` — `consolidate_brain_regions` 两阶段模式
 
@@ -826,6 +827,71 @@ if not all_regions:
     logger.warning("[RegionSync] get_all_regions 返回空，跳过激活管理器刷新")
     return
 ```
+
+- [ ] **Step 1.5: 修复 `initialize_from_regions` 的非原子性（双缓冲模式）**
+
+`region_activation.py:146-192` 的 `initialize_from_regions` 先 `clear()` 所有映射，再重建。如果重建中途抛异常（如 `region.members` 访问失败），激活管理器处于部分损坏状态——旧映射被清空，新映射只构建了一半。
+
+修复方案：在锁外先构建新状态，再在锁内原子性交换。与同文件 `refresh_entity_mapping`（line 268-272）的双缓冲模式一致。
+
+```python
+def initialize_from_regions(self, regions: list) -> None:
+    # Build new state outside lock first (non-destructive)
+    new_regions = {}
+    new_entity_to_region = {}
+    new_label_index = {}
+    new_descriptions = {}
+    new_member_counts = {}
+
+    with self._lock:
+        old_state = {
+            rid: (state.activation, state.last_activated_at, state.activation_count, state.manually_dimmed)
+            for rid, state in self._regions.items()
+        }
+
+    for region in regions:
+        prev_activation, prev_last_at, prev_count, prev_dimmed = old_state.get(
+            region.name, (0.0, 0.0, 0, False))
+        new_regions[region.name] = BrainRegionState(
+            region_id=region.name,
+            community_id=region.community_id,
+            label=region.label,
+            activation=prev_activation,
+            last_activated_at=prev_last_at,
+            activation_count=prev_count,
+            manually_dimmed=prev_dimmed,
+        )
+        new_label_index[region.label] = region.name
+        new_descriptions[region.name] = region.description or ""
+
+        for entity_name in region.members:
+            new_entity_to_region[entity_name] = region.name
+
+        new_member_counts[region.name] = len(region.members)
+
+    # Atomic swap under lock
+    with self._lock:
+        self._regions = new_regions
+        self._entity_to_region = new_entity_to_region
+        self._label_index = new_label_index
+        self._descriptions = new_descriptions
+        self._member_counts = new_member_counts
+        # _neighbors and _co_activation_counts preserved separately
+
+    # Update entity type counts (best-effort, failure is non-critical)
+    try:
+        self._entity_type_counts = self._build_entity_type_counts()
+    except Exception:
+        pass
+
+    preserved_count = sum(1 for rid in old_state if rid in new_regions)
+    logger.info(
+        "初始化脑区激活管理器: %d 个区域, %d 个实体映射, %d 个保留激活状态",
+        len(new_regions), len(new_entity_to_region), preserved_count,
+    )
+```
+
+**注意**：`_neighbors` 不在 `initialize_from_regions` 中重建（由 `set_region_neighbors` 独立调用），`_co_activation_counts` 和 `_total_activation_rounds` 不清除（跨初始化保留）。这些与当前行为一致。
 
 - [ ] **Step 2: 修复 `_manage_region_nodes` 的非原子性问题**
 
