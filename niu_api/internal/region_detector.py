@@ -123,7 +123,7 @@ class CommunityDetector:
             CommunityDetectionResult 包含所有检测结果
         """
         # 1. 获取图快照
-        snapshot = self._adapter.get_graph_snapshot()
+        snapshot = self._adapter.get_graph_snapshot(limit=0)
         if snapshot is None:
             logger.warning("图快照为空，跳过社区检测")
             return _empty_result()
@@ -348,8 +348,11 @@ class CommunityDetector:
                 filtered_count, min_community_size,
             )
 
-        # 按 region_id 排序
+        # 按原始 Leiden 索引排序后重新编号为连续 ID
         result.sort(key=lambda r: r.region_id)
+        for i, p in enumerate(result):
+            p.region_id = i
+            p.region_name = f"region_{i}"
         return result
 
     def _count_internal_edges(

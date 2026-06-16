@@ -158,6 +158,20 @@ def _clean_source_id(raw: str) -> str:
     return ""
 
 
+def _format_description(entity_type: str, description: str) -> str:
+    """Format node description for frontend display.
+
+    For brainregion entities, the raw description contains brain_meta_*
+    metadata that is meaningless to users. This function extracts and
+    formats the human-readable summary.
+    """
+    if entity_type.lower() == "brainregion" and "<SEP>" in description:
+        from niu_api.internal.region_manager import _parse_description, _format_summary_for_display
+        parsed = _parse_description(description)
+        return _format_summary_for_display(parsed)
+    return description
+
+
 def _normalize_nodes(nodes: list) -> list:
     """Convert adapter node format {id, name, type, description, file_path, source_id} to frontend-expected format.
 
@@ -176,13 +190,14 @@ def _normalize_nodes(nodes: list) -> list:
         else:
             node_id = raw_id
             normalized_type = "Entity"
+        description = _format_description(node_type, n.get("description", ""))
         result.append({
             "id": node_id,
             "label": n.get("name", n.get("id", "")),
             "name": n.get("name", ""),
             "nodeType": normalized_type,
             "entityType": node_type,
-            "description": n.get("description", ""),
+            "description": description,
             "uri": _clean_file_path(n.get("file_path", "")),
             "source": _clean_source_id(n.get("source_id", "")),
         })
@@ -640,7 +655,7 @@ def hub_entities(
                     "name": node_name,
                     "nodeType": "Entity",
                     "entityType": attrs.get("entity_type", "other"),
-                    "description": attrs.get("description", ""),
+                    "description": _format_description(attrs.get("entity_type", "other"), attrs.get("description", "")),
                     "uri": _clean_file_path(attrs.get("file_path", "")),
                     "source": attrs.get("source_id", ""),
                 }
@@ -695,13 +710,18 @@ def explore_node(request: ExploreRequest):
     if "center" in result and isinstance(result["center"], dict):
         c = result["center"]
         center_type = c.get("type", "other")
+        center_desc = c.get("description", "")
+        if center_type.lower() == "brainregion" and "<SEP>" in center_desc:
+            from niu_api.internal.region_manager import _parse_description, _format_summary_for_display
+            parsed = _parse_description(center_desc)
+            center_desc = _format_summary_for_display(parsed)
         result["center"] = {
             "id": c.get("id", ""),
             "label": c.get("name", c.get("id", "")),
             "name": c.get("name", ""),
             "nodeType": "Entity",
             "entityType": center_type,
-            "description": c.get("description", ""),
+            "description": center_desc,
             "uri": _clean_file_path(c.get("file_path", "")),
             "source": _clean_source_id(c.get("source_id", "")),
         }
@@ -748,7 +768,7 @@ def find_path(request: FindPathRequest):
                     "name": node_name,
                     "nodeType": "Entity",
                     "entityType": attrs.get("entity_type", "other"),
-                    "description": attrs.get("description", ""),
+                    "description": _format_description(attrs.get("entity_type", "other"), attrs.get("description", "")),
                     "uri": _clean_file_path(attrs.get("file_path", "")),
                     "source": attrs.get("source_id", ""),
                 }
@@ -828,7 +848,7 @@ def list_entities(
                     "name": node_name,
                     "nodeType": "Entity",
                     "entityType": attrs.get("entity_type", "other"),
-                    "description": attrs.get("description", ""),
+                    "description": _format_description(attrs.get("entity_type", "other"), attrs.get("description", "")),
                     "uri": _clean_file_path(attrs.get("file_path", "")),
                     "source": attrs.get("source_id", ""),
                 }
@@ -888,7 +908,7 @@ def list_concepts(limit: int = Query(default=100, ge=1, le=500)):
                     "name": node_name,
                     "nodeType": "Concept",
                     "entityType": attrs.get("entity_type", "other"),
-                    "description": attrs.get("description", ""),
+                    "description": _format_description(attrs.get("entity_type", "other"), attrs.get("description", "")),
                     "uri": _clean_file_path(attrs.get("file_path", "")),
                     "source": _clean_source_id(attrs.get("source_id", "")),
                 }
@@ -964,7 +984,7 @@ def surprising_connections(
                     "name": node_name,
                     "nodeType": "Entity",
                     "entityType": attrs.get("entity_type", "other"),
-                    "description": attrs.get("description", ""),
+                    "description": _format_description(attrs.get("entity_type", "other"), attrs.get("description", "")),
                     "uri": _clean_file_path(attrs.get("file_path", "")),
                     "source": attrs.get("source_id", ""),
                 }
