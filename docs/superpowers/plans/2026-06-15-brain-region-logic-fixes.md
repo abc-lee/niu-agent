@@ -31,6 +31,8 @@ Task 6 (问题6) ──── 独立（依赖 Task 5 的代码基础）
 
 **⚠️ 临时不可运行窗口**：Task 4 完成后到 Task 5 执行前，`_manage_region_nodes` 和 `incremental_update` 仍用旧方式调用 `cleanup_stale_regions`（只解包一个返回值），会触发 ValueError。因此 Task 4 到 Task 5 必须在同一工作会话中连续执行，中间不运行测试。
 
+**Commit 规则**：每个 Task 完成后必须 commit，commit 信息格式 `fix(brain-region): Task N — 简述`。Task 4 到 Task 5 之间虽然代码不可运行，仍需 commit 作为回退点。
+
 ---
 
 ## Task 1 [CRITICAL]：`create_region_nodes` 跳过已存在脑区的关系注入
@@ -88,17 +90,58 @@ for (partition, members, entity_summaries), region_label in zip(valid_communitie
     region_name = f"{region_label}{REGION_SUFFIX}"
     is_existing = region_name in existing_region_names
 
-    # ... 构建 description（已存在和新建都一样）...
+    # 构建 description（已存在和新建都一样）— 与当前 Pass 3 逻辑相同
+    summary = entity_summaries.get("summary", "")
+    entity_type_str = entity_summaries.get("entity_type", "unknown")
+    description = _encode_description(
+        summary=summary,
+        region_id=str(partition.community_id),
+        size=len(members),
+        representative=members[0] if members else "",
+        updated_at=time.time(),
+    )
 
     # Always upsert entity (updates description for existing regions)
-    all_entities.append({...})
+    all_entities.append({
+        "entity_name": region_name,
+        "entity_type": "脑区",
+        "description": description,
+        "source_id": "brain_region",
+    })
 
     if is_existing:
         logger.info("跳过已存在脑区的关系注入: %s (只更新描述)", region_name)
         continue
 
     # Below only for NEW regions — relationships + chunks
-    # ... 脑区锚点边 + 包含边 + chunk ...
+    # 脑区锚点边（与当前 Pass 3 逻辑相同）
+    all_relationships.append({
+        "src_id": f"brain_anchor_{region_label}",
+        "tgt_id": region_name,
+        "relation": "锚点",
+        "description": f"{region_label}的脑区锚点",
+        "weight": 1.0,
+        "source_id": "brain_region",
+    })
+
+    # 包含边（与当前 Pass 3 逻辑相同）
+    for member in members:
+        all_relationships.append({
+            "src_id": region_name,
+            "tgt_id": member,
+            "relation": "包含",
+            "description": f"{region_name}包含{member}",
+            "weight": 1.0,
+            "source_id": "brain_region",
+        })
+
+    # Chunk（与当前 Pass 3 逻辑相同）
+    if summary and entity_type_str:
+        chunk_content = f"{region_name}{GRAPH_FIELD_SEP}{entity_type_str}{GRAPH_FIELD_SEP}{summary}"
+        all_chunks.append({
+            "content": chunk_content,
+            "source_id": "brain_region",
+        })
 
     created_regions.append(region_name)
 ```
@@ -167,6 +210,13 @@ for partition in partition_result.partitions:
 
 Run: `python -m py_compile niu_api/internal/region_manager.py && python -m pytest tests/test_region_manager.py -v`
 
+- [ ] **Step 5: Commit**
+
+```bash
+git add niu_api/internal/region_manager.py tests/test_region_manager.py
+git commit -m "fix(brain-region): Task 1 — create_region_nodes skip existing regions + skip_community_ids"
+```
+
 ---
 
 ## Task 2 [IMPORTANT]：`update_region_summaries` 类型信息保留
@@ -209,9 +259,20 @@ entity_summaries = self._build_entity_summaries(members, {}, entity_name_to_type
 
 **设计说明**：从 `nx_graph.nodes[member]` 读取 `entity_type` 属性是最高效的方式（直接读内存，无需 API 调用）。如果读取失败（图不可用），回退到空映射——此时 summary 质量与当前代码一致，不会退化。
 
-- [ ] **Step 2: 验证**
+- [ ] **Step 2: 写测试**
+
+新增测试 `test_update_region_summaries_preserves_type_info`：验证 `update_region_summaries` 从图中读取 `entity_type` 并传入 `_build_entity_summaries`。mock `nx_graph.nodes` 返回含 `entity_type` 的节点数据，断言 summary 中包含类型信息而非 "unknown"。
+
+- [ ] **Step 3: 验证**
 
 Run: `python -m py_compile niu_api/internal/region_manager.py`
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add niu_api/internal/region_manager.py tests/test_region_manager.py
+git commit -m "fix(brain-region): Task 2 — update_region_summaries preserve entity type info (D-16)"
+```
 
 ---
 
@@ -549,6 +610,13 @@ def _update_drifted_regions(
 
 Run: `python -m py_compile niu_api/internal/region_manager.py && python -m pytest tests/test_region_manager.py::TestCleanupStaleRegions -v`
 
+- [ ] **Step 6: Commit**
+
+```bash
+git add niu_api/internal/region_manager.py niu_api/internal/lightrag_manager.py tests/test_region_manager.py
+git commit -m "fix(brain-region): Task 4 — Jaccard drift detection + 3-tuple return + dry_run + skip_community_ids"
+```
+
 ---
 
 ## Task 3 [IMPORTANT]：`assign_entities_to_default_regions` 的关键词与用户自定义脑区脱钩
@@ -713,6 +781,13 @@ The `keywords` field controls automatic entity assignment — when the system st
 
 Run: `python -m py_compile niu_api/internal/region_manager.py && python -m pytest tests/test_region_manager.py -v`
 
+- [ ] **Step 6: Commit**
+
+```bash
+git add niu_api/internal/region_manager.py memory/preferences.json memory/skills/brain-region-management.md
+git commit -m "fix(brain-region): Task 3 — dynamic keywords + D-15 size fix + fallback"
+```
+
 ---
 
 ## Task 5 [CRITICAL]：统一更新调用者 + 激活管理器保护 + 非原子性修复
@@ -809,18 +884,7 @@ except Exception as e:
     logger.debug(f"[RegionSync] update_region_summaries skipped: {e}")
 ```
 
-**注意**：需要为 `cleanup_stale_regions` 新增 `dry_run` 参数：
-- `dry_run=True`：只检测（计算 removed/drifted/drifted_cids），不执行删除和漂移更新
-- `dry_run=False`（默认）：执行完整逻辑（当前行为）
-
-```python
-def cleanup_stale_regions(
-    self,
-    current_partition: CommunityDetectionResult,
-    drift_threshold: float = 0.3,
-    dry_run: bool = False,
-) -> tuple[list[str], list[str], set[str]]:
-```
+**注意**：`dry_run` 参数已在 Task 4 Step 1 中添加到 `cleanup_stale_regions`，此处仅说明其使用方式，无需再次修改签名。
 
 在 `dry_run=True` 时，跳过 `delete_entity` 和 `_update_drifted_regions` 调用，只返回检测结果。
 
@@ -971,7 +1035,14 @@ return {
 
 - [ ] **Step 3: 验证**
 
-Run: `python -m py_compile agent/injector/region_sync.py && python -m py_compile niu_api/internal/region_manager.py`
+Run: `python -m py_compile agent/injector/region_sync.py && python -m py_compile niu_api/internal/region_manager.py && python -m py_compile niu_api/brain_region_api.py`
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add agent/injector/region_sync.py niu_api/internal/region_manager.py niu_api/brain_region_api.py
+git commit -m "fix(brain-region): Task 5 — caller updates + dry_run two-phase + D-12 D-13 fixes"
+```
 
 ---
 
@@ -1021,8 +1092,13 @@ def run_sync(self) -> dict:
         self.release_sync()
 
 def _run_sync_impl(self) -> dict:
-    """实际同步逻辑（原 run_sync 内容）"""
-    # ... 原有代码不变 ...
+    """实际同步逻辑（原 run_sync 方法体，不含锁逻辑）"""
+    stats = {"regions_created": 0, "regions_removed": 0, "regions_drifted": 0,
+             "entities_assigned": 0, "regions_updated": 0, "errors": []}
+    self._manage_region_nodes(stats)
+    self._refresh_activation_manager(stats)
+    self._merge_and_dissolve(stats)
+    return stats
 ```
 
 **注意**：当 `cleanup_stale_regions(dry_run=True)` 失败时，`drifted_cids` 为空集，`create_region_nodes` 不会跳过漂移分区。极端情况下 LLM 可能为漂移分区生成不同标签导致重复脑区。为降低此风险，在 dry_run 失败时用一个标志位跳过后续的 cleanup(dry_run=False)：
@@ -1075,6 +1151,13 @@ def consolidate_brain_regions(req: ConsolidateRequest = None):
 - [ ] **Step 3: 验证**
 
 Run: `python -m py_compile agent/injector/region_sync.py && python -m py_compile niu_api/brain_region_api.py`
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add agent/injector/region_sync.py niu_api/brain_region_api.py
+git commit -m "fix(brain-region): Task 6 — mutex lock for concurrent sync protection (D-14)"
+```
 
 ---
 
