@@ -225,7 +225,7 @@ class RegionManager:
         existing_labels: list[str] = []
         try:
             for region in self.get_all_regions():
-                existing_region_names.add(region.name)
+                existing_region_names.add(region.name.lower())
                 label = region.label or region.name.removesuffix(REGION_SUFFIX)
                 existing_labels.append(label)
         except Exception:
@@ -269,7 +269,7 @@ class RegionManager:
             community_id = f"community_{partition.region_id}"
             now = time.time()
             region_name = f"{region_label}{REGION_SUFFIX}"
-            is_existing = region_name in existing_region_names
+            is_existing = region_name.lower() in existing_region_names
 
             description = _encode_description(
                 summary=region_summary,
@@ -1738,8 +1738,13 @@ def assign_entities_to_default_regions(
     assigned_counts: dict[str, int] = {}
     all_relationships: list[dict] = []
 
+    # Take a snapshot under read lock to prevent RuntimeError from concurrent writes
+    from niu_api.internal.lightrag_manager import graph_read_lock
+    with graph_read_lock():
+        snapshot = kg._graph.copy()
+
     # Iterate all entity nodes
-    for node_id, node_data in kg._graph.nodes(data=True):
+    for node_id, node_data in snapshot.nodes(data=True):
         if not isinstance(node_data, dict):
             continue
         entity_name = node_data.get("entity_name", node_id)
