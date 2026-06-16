@@ -1574,6 +1574,9 @@ class RegionManager:
                             continue
                         keywords = edge_data.get("keywords") or edge_data.get("type", "")
                         kw_lower = keywords.lower()
+                        # 锚点边是永久结构边，不衰减
+                        if kw_lower == ANCHOR_RELATION.lower():
+                            continue
                         if kw_lower in STRUCTURAL_EDGE_TYPES_LOWER or kw_lower.startswith("_session:"):
                             old_weight = float(edge_data.get("weight", 0.5))
                             new_weight = old_weight * decay_factor
