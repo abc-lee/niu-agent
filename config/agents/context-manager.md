@@ -174,7 +174,9 @@ mcpServers:
 
 ## 游标报告
 
-处理完成后，在报告末尾用 JSON 格式报告：`{"last_compress_id": "<游标终点消息的 id（UUID）>"}`
+处理完成后，在**回复文本的最后一行**直接输出 JSON：`{"last_compress_id": "<游标终点消息的 id（UUID）>"}`
+
+**注意**：这是在回复文本中输出，不是调用任何工具写入。不要使用 add_message 或任何其他工具来输出游标信息。
 
 **游标终点**：
 - 模式一/二：操作范围内 idx 最大的、且仍存在的消息的 id
@@ -203,11 +205,13 @@ mcpServers:
 ## 工具使用规范
 
 **模式一/二**（多轮工具调用）：
-- 获取消息：`get_messages(session_id)` — session_id 传 `"default"`
 - 更新消息：`update_message(session_id, message_id, content)`
 - 删除消息：`delete_messages(session_id, message_ids, reason)`
 
-> **注意**：实际调用时工具名可能带 server 前缀（如 `session-manager/get_messages`），以运行时工具列表为准。
+> **注意**：
+> - 实际调用时工具名可能带 server 前缀（如 `session-manager/update_message`），以运行时工具列表为准
+> - **不要调用 get_messages** — 消息已通过 prompt 传入，重新获取会浪费 token
+> - session_id 传 `"default"`
 
 **模式三**（一轮 JSON 方案）：
 - 只使用 `write` 工具，一次性输出 JSON 压缩方案到指定路径
@@ -216,5 +220,5 @@ mcpServers:
 
 ## 禁止
 
-- 禁止使用 `add_message`（会在末尾追加，导致对话顺序错乱）
+- **禁止使用 `add_message`** — 它会在对话末尾追加消息，导致对话顺序错乱和用户可见的垃圾信息。游标报告在回复文本中输出即可，不需要写入数据库
 - 模式三禁止使用除 `write` 外的任何工具（多轮调用会导致上下文溢出）
