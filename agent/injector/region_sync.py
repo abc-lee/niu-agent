@@ -76,9 +76,36 @@ class RegionSync:
         self._stop_event = threading.Event()
         self._brain_ready = threading.Event()
         self._status_file = Path.home() / ".niu" / "last_region_sync.json"
+        self._sync_lock = threading.Lock()
+
+    def try_acquire_sync(self) -> bool:
+        """Try to acquire the sync lock (non-blocking). Prevents concurrent sync."""
+        return self._sync_lock.acquire(blocking=False)
+
+    def release_sync(self) -> None:
+        """Release the sync lock."""
+        self._sync_lock.release()
 
     def run_sync(self) -> dict:
-        """Execute one full sync cycle.
+        """Execute one full sync cycle with mutex protection.
+
+        Acquires a non-blocking lock to prevent concurrent sync runs
+        (e.g. API-triggered consolidate vs background timer sync).
+        If the lock cannot be acquired, returns immediately with a skip indicator.
+
+        Returns:
+            Stats dict with counts of regions created/removed/updated.
+        """
+        if not self.try_acquire_sync():
+            logger.warning("[RegionSync] 另一个同步正在运行，跳过本次")
+            return {"regions_created": 0, "regions_removed": 0, "errors": ["skipped: concurrent sync"]}
+        try:
+            return self._run_sync_impl()
+        finally:
+            self.release_sync()
+
+    def _run_sync_impl(self) -> dict:
+        """Actual sync logic — original run_sync body.
 
         Steps:
         1. Check if LightRAG is available
@@ -88,9 +115,6 @@ class RegionSync:
         5. Call RegionManager.update_region_summaries() (if available)
         6. Initialize activation manager with new regions
         7. Save status to file
-
-        Returns:
-            Stats dict with counts of regions created/removed/updated.
         """
         stats: dict[str, Any] = {
             "regions_created": 0,
