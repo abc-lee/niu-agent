@@ -777,6 +777,21 @@ elif not cleanup_ok:
     logger.warning("[RegionSync] dry_run 失败，跳过 cleanup 执行避免重复创建")
 else:
     logger.warning("[RegionSync] create_region_nodes 失败，保留旧脑区避免数据丢失")
+
+# Step 5: Update region summaries (exclude created and drifted)
+# created 脑区已有准确 summary（来自分区类型数据），drifted 脑区已由 _update_drifted_regions 更新
+# 对它们调用 update_region_summaries 会用空类型映射覆盖精确 summary（D-16 退化）
+try:
+    if hasattr(manager, "update_region_summaries"):
+        all_regions = manager.get_all_regions()
+        created_set = set(created)
+        drifted_set = set(actual_drifted) if cleanup_ok else set()
+        region_names = [r.name for r in all_regions
+                        if r.name not in created_set and r.name not in drifted_set]
+        manager.update_region_summaries(region_names)
+        stats["regions_updated"] = len(region_names)
+except Exception as e:
+    logger.debug(f"[RegionSync] update_region_summaries skipped: {e}")
 ```
 
 **注意**：需要为 `cleanup_stale_regions` 新增 `dry_run` 参数：
@@ -880,38 +895,52 @@ if not detection_result.partitions:
 region_mgr = _get_region_mgr()
 
 # Step 2: dry_run detect (Phase 1)
-removed, drifted, drifted_cids = region_mgr.cleanup_stale_regions(detection_result, dry_run=True)
+cleanup_ok = True
+try:
+    removed, drifted, drifted_cids = region_mgr.cleanup_stale_regions(detection_result, dry_run=True)
+except Exception as e:
+    logger.error("[Consolidate] cleanup detection failed: %s", e)
+    removed, drifted, drifted_cids = [], [], set()
+    cleanup_ok = False
 
 # Step 3: Create region nodes (Phase 2)
 created = region_mgr.create_region_nodes(detection_result, skip_community_ids=drifted_cids)
 
-# Step 4: Execute cleanup only if create succeeded (Phase 3)
-if created or not detection_result.partitions:
-    actual_removed, actual_drifted, _ = region_mgr.cleanup_stale_regions(detection_result, dry_run=False)
-    removed = actual_removed
-    drifted = actual_drifted
+# Step 4: Execute cleanup only if create succeeded and dry_run succeeded (Phase 3)
+if (created or not detection_result.partitions) and cleanup_ok:
+    try:
+        actual_removed, actual_drifted, _ = region_mgr.cleanup_stale_regions(detection_result, dry_run=False)
+        removed = actual_removed
+        drifted = actual_drifted
+    except Exception as e:
+        logger.error("[Consolidate] cleanup execution failed: %s", e)
+elif not cleanup_ok:
+    logger.warning("[Consolidate] dry_run failed, skipping cleanup execution")
 else:
     logger.warning("[Consolidate] create_region_nodes failed, preserving stale regions")
     created = []
 
-# Step 5: Initialize activation manager (unchanged)
+# Step 5: Initialize activation manager (with D-12 empty list protection)
 activation_mgr = _get_activation_mgr()
 if activation_mgr is not None:
     regions = region_mgr.get_all_regions()
-    from niu_api.internal.lightrag_manager import get_region_members as lightrag_get_region_members
-    for region in regions:
-        try:
-            region.members = lightrag_get_region_members(region.name)
-        except Exception as exc:
-            logger.warning("Failed to fetch members for region %s: %s", region.name, exc)
-    activation_mgr.initialize_from_regions(regions)
-    from niu_api.internal.region_neighbors import build_neighbor_map
-    neighbor_map = build_neighbor_map([
-        {"community_id": r.community_id, "members": r.members}
-        for r in regions
-    ])
-    activation_mgr.set_region_neighbors(neighbor_map)
-    logger.info("构建脑区邻居映射: %d 个区域有邻居", len(neighbor_map))
+    if not regions:
+        logger.warning("[Consolidate] get_all_regions returned empty, skipping activation init")
+    else:
+        from niu_api.internal.lightrag_manager import get_region_members as lightrag_get_region_members
+        for region in regions:
+            try:
+                region.members = lightrag_get_region_members(region.name)
+            except Exception as exc:
+                logger.warning("Failed to fetch members for region %s: %s", region.name, exc)
+        activation_mgr.initialize_from_regions(regions)
+        from niu_api.internal.region_neighbors import build_neighbor_map
+        neighbor_map = build_neighbor_map([
+            {"community_id": r.community_id, "members": r.members}
+            for r in regions
+        ])
+        activation_mgr.set_region_neighbors(neighbor_map)
+        logger.info("构建脑区邻居映射: %d 个区域有邻居", len(neighbor_map))
 
 return {
     "status": "ok",
