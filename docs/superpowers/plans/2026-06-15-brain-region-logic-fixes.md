@@ -1,8 +1,8 @@
-# 脑区系统 4 个逻辑 Bug 修复实施计划
+# 脑区系统 6 个逻辑 Bug 修复实施计划
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 修复脑区系统中 4 个运行逻辑层面的 bug，确保数据在创建、读取、更新路径上一致
+**Goal:** 修复脑区系统中 6 个运行逻辑层面的 bug，确保数据在创建、读取、更新路径上一致，并在异常和并发路径上安全
 
 **Architecture:** 修复遵循"最小修改"原则——每个 bug 只改必要的代码路径，修复之间不互相冲突。执行顺序按依赖关系排列。
 
@@ -16,13 +16,17 @@
 Task 4 (问题4) ──→ Task 1 (问题1) 依赖 Task 4 的 drifted_community_ids
 Task 1 (问题1) ──→ Task 2 (问题2) 依赖 Task 1 的返回值 + Task 4 的 drifted
 Task 3 (问题3) ──── 独立
+Task 5 (问题5) ──── 独立（与 Task 2 同文件，但无逻辑依赖）
+Task 6 (问题6) ──── 独立
 ```
 
-建议执行顺序：**Task 4 → Task 1 → Task 2 → Task 3**
+建议执行顺序：**Task 4 → Task 1 → Task 2 → Task 5 → Task 6 → Task 3**
 
 **注意**：
 - Task 1 依赖 Task 4 的 `drifted_community_ids` 返回值（`create_region_nodes` 的 `skip_community_ids` 参数），所以 Task 4 必须在 Task 1 之前执行。
 - Task 2 依赖 Task 1 的 `created` 返回值和 Task 4 的 `drifted` 返回值来排除 Step 5 的 summary 更新。
+- Task 5 修改 `region_sync.py` 的 `_refresh_activation_manager`，与 Task 2 同文件但不同方法，可并行但建议按顺序。
+- Task 6 添加互斥锁，独立于其他 Task。
 
 ---
 
@@ -731,6 +735,165 @@ The `keywords` field controls automatic entity assignment — when the system st
 - [ ] **Step 5: 验证**
 
 Run: `python -m py_compile niu_api/internal/region_manager.py && python -m pytest tests/test_region_manager.py -v`
+
+---
+
+## Task 5 [CRITICAL]：部分失败时激活管理器被清空 + cleanup/create 非原子
+
+**Bug 根因**：两个相关联的缺陷：
+
+**(a) D-12**：`_refresh_activation_manager` 在 `_manage_region_nodes` 的 cleanup/create 步骤失败后仍无条件执行。如果 `get_all_regions()` 因 LightRAG 不可用而返回空列表，`initialize_from_regions([])` 会清空所有激活状态（`_regions`、`_entity_to_region`、`_label_index` 全部重置），导致 agent 的脑区激活系统完全失效。
+
+**(b) D-13**：`cleanup_stale_regions` 成功删除旧脑区后，`create_region_nodes` 失败，此时 KG 中旧脑区已删、新脑区未创，所有检测脑区丢失直到下次同步（24小时后）。
+
+**Files:**
+- Modify: `agent/injector/region_sync.py:209-339`
+
+- [ ] **Step 1: 修复 `_refresh_activation_manager` 空列表保护**
+
+在 `initialize_from_regions` 调用前增加空列表检查：
+
+```python
+all_regions = manager.get_all_regions()
+
+# 安全检查：空列表意味着读取失败或图不可用，
+# 不应用空列表覆盖现有激活状态（会导致激活系统完全失效）
+if not all_regions:
+    logger.warning("[RegionSync] get_all_regions 返回空，跳过激活管理器刷新")
+    return
+```
+
+- [ ] **Step 2: 修复 `_manage_region_nodes` 的非原子性问题**
+
+核心思路：**create 成功后再 cleanup**，而非先删后创。这样即使 create 失败，旧脑区仍然存在。
+
+但 `cleanup_stale_regions` 现在包含漂移更新逻辑（Task 4），漂移更新必须在 create 之前执行（因为漂移脑区的分区需要被 create 跳过）。所以不能简单调换顺序。
+
+正确的方案是**将 cleanup 拆分为"检测 + 标记"和"执行删除"两步**：
+
+```python
+# Step 3a: 检测过时和漂移脑区（不执行删除/更新）
+try:
+    removed, drifted, drifted_cids = manager.cleanup_stale_regions(
+        detection_result, dry_run=True,
+    )
+except Exception as e:
+    logger.warning(f"[RegionSync] cleanup detection failed: {e}")
+    removed, drifted, drifted_cids = [], [], set()
+
+# Step 4: Create region nodes (skip drifted community partitions)
+created: list[str] = []
+try:
+    created = manager.create_region_nodes(detection_result, skip_community_ids=drifted_cids)
+    stats["regions_created"] = len(created)
+except Exception as e:
+    logger.warning(f"[RegionSync] create_region_nodes failed: {e}")
+    stats["errors"].append(f"create: {e}")
+
+# Step 3b: 执行删除和漂移更新（仅在 create 成功后）
+# 如果 create 失败（created 为空且 detection_result 有分区），
+# 保留旧脑区，避免数据丢失
+if created or not detection_result.partitions:
+    try:
+        actual_removed, actual_drifted, _ = manager.cleanup_stale_regions(
+            detection_result, dry_run=False,
+        )
+        stats["regions_removed"] = len(actual_removed)
+    except Exception as e:
+        logger.warning(f"[RegionSync] cleanup execution failed: {e}")
+        stats["errors"].append(f"cleanup: {e}")
+else:
+    logger.warning("[RegionSync] create_region_nodes 失败，保留旧脑区避免数据丢失")
+```
+
+**注意**：需要为 `cleanup_stale_regions` 新增 `dry_run` 参数：
+- `dry_run=True`：只检测（计算 removed/drifted/drifted_cids），不执行删除和漂移更新
+- `dry_run=False`（默认）：执行完整逻辑（当前行为）
+
+```python
+def cleanup_stale_regions(
+    self,
+    current_partition: CommunityDetectionResult,
+    drift_threshold: float = 0.3,
+    dry_run: bool = False,
+) -> tuple[list[str], list[str], set[str]]:
+```
+
+在 `dry_run=True` 时，跳过 `delete_entity` 和 `_update_drifted_regions` 调用，只返回检测结果。
+
+- [ ] **Step 3: 验证**
+
+Run: `python -m py_compile agent/injector/region_sync.py && python -m py_compile niu_api/internal/region_manager.py`
+
+---
+
+## Task 6 [IMPORTANT]：API 触发与定时同步无互斥保护
+
+**Bug 根因**：`POST /api/brain/regions/consolidate`（`brain_region_api.py`）与定时 `run_sync()`（`region_sync.py`）可能同时运行。两个线程同时调用 cleanup + create，导致：
+- 重复删除脑区
+- 重复创建脑区
+- KG 数据不一致（两次 `inject_custom_kg` 交叉写入）
+
+**Files:**
+- Modify: `agent/injector/region_sync.py` — 添加互斥锁
+- Modify: `niu_api/brain_region_api.py` — 使用同一把锁
+
+- [ ] **Step 1: 在 `RegionSync` 中添加互斥锁**
+
+```python
+class RegionSync:
+    def __init__(self, sync_interval: int = 86400) -> None:
+        self.sync_interval = sync_interval
+        self._thread: Optional[threading.Thread] = None
+        self._stop_event = threading.Event()
+        self._brain_ready = threading.Event()
+        self._status_file = Path.home() / ".niu" / "last_region_sync.json"
+        self._sync_lock = threading.Lock()  # 互斥：防止 API 触发与定时同步并发
+```
+
+在 `run_sync` 方法入口获取锁（非阻塞，获取失败时跳过）：
+
+```python
+def run_sync(self) -> dict:
+    """Execute one full sync cycle."""
+    if not self._sync_lock.acquire(blocking=False):
+        logger.warning("[RegionSync] 另一个同步正在运行，跳过本次")
+        return {"regions_created": 0, "regions_removed": 0, "errors": ["skipped: concurrent sync"]}
+    try:
+        return self._run_sync_impl()
+    finally:
+        self._sync_lock.release()
+
+def _run_sync_impl(self) -> dict:
+    """实际同步逻辑（原 run_sync 内容）"""
+    # ... 原有代码不变 ...
+```
+
+- [ ] **Step 2: `brain_region_api.py` 使用同一把锁**
+
+```python
+def consolidate_brain_regions(req: ConsolidateRequest = None):
+    # ... docstring ...
+
+    # 获取 RegionSync 的互斥锁，防止与定时同步并发
+    from agent.injector.region_sync import get_region_sync
+    sync = get_region_sync(auto_start=False)
+    if sync is not None and not sync._sync_lock.acquire(blocking=False):
+        raise HTTPException(
+            status_code=409,
+            detail="Another brain region sync is in progress. Please try again later.",
+        )
+    lock_acquired = sync is not None
+    try:
+        # ... 原有 consolidate 逻辑 ...
+    finally:
+        if lock_acquired:
+            sync._sync_lock.release()
+```
+
+- [ ] **Step 3: 验证**
+
+Run: `python -m py_compile agent/injector/region_sync.py && python -m py_compile niu_api/brain_region_api.py`
 
 ---
 
