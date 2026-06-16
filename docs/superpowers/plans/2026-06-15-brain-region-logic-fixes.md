@@ -891,7 +891,7 @@ def initialize_from_regions(self, regions: list) -> None:
     )
 ```
 
-**注意**：`_neighbors` 不在 `initialize_from_regions` 中重建（由 `set_region_neighbors` 独立调用），`_co_activation_counts` 和 `_total_activation_rounds` 不清除（跨初始化保留）。这些与当前行为一致。
+**注意**：`_neighbors` 不再 clear（当前代码会 clear，双缓冲模式保留旧 neighbors 直到 `set_region_neighbors` 被调用，更安全）。`_co_activation_counts` 和 `_total_activation_rounds` 不清除（跨初始化保留，与当前行为一致）。
 
 - [ ] **Step 2: 修复 `_manage_region_nodes` 的非原子性问题**
 
@@ -1139,7 +1139,7 @@ Run: `python -m py_compile agent/injector/region_sync.py && python -m py_compile
 - [ ] **Step 4: Commit**
 
 ```bash
-git add agent/injector/region_sync.py niu_api/internal/region_manager.py niu_api/brain_region_api.py
+git add agent/injector/region_sync.py niu_api/internal/region_activation.py niu_api/internal/region_manager.py niu_api/brain_region_api.py
 git commit -m "fix(brain-region): Task 5 — caller updates + dry_run two-phase + D-12 D-13 fixes"
 ```
 
