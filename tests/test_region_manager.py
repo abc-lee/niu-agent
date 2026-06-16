@@ -438,7 +438,7 @@ class TestCleanupStaleRegions:
 
     @pytest.mark.asyncio
     async def test_removes_stale_region_nodes(self):
-        """删除不在当前分区中的脑区节点"""
+        """删除不在当前分区中的脑区节点（Jaccard=0，无成员重叠）"""
         adapter, ingester = _make_mock_adapter_and_ingester()
         manager = RegionManager(adapter, ingester)
 
@@ -471,7 +471,17 @@ class TestCleanupStaleRegions:
             ),
         ])
 
-        removed = manager.cleanup_stale_regions(current_partition)
+        # Mock get_all_region_members: Python脑区 shares members with community_0,
+        # OldRegion脑区 has no overlap (will be removed)
+        with pytest.MonkeyPatch.context() as m:
+            m.setattr(
+                "niu_api.internal.lightrag_manager.get_all_region_members",
+                lambda: {
+                    "Python脑区": ["Python", "Django"],
+                    "OldRegion脑区": ["OldEntity", "LegacyLib"],
+                },
+            )
+            removed, drifted, drifted_cids = manager.cleanup_stale_regions(current_partition)
 
         # 只有 OldRegion 应被删除
         assert len(removed) == 1
@@ -480,7 +490,7 @@ class TestCleanupStaleRegions:
 
     @pytest.mark.asyncio
     async def test_no_stale_regions_returns_empty(self):
-        """所有脑区都在当前分区中，无需清理"""
+        """所有脑区成员与当前分区高度重叠，无需清理"""
         adapter, ingester = _make_mock_adapter_and_ingester()
         manager = RegionManager(adapter, ingester)
 
@@ -506,14 +516,22 @@ class TestCleanupStaleRegions:
             ),
         ])
 
-        removed = manager.cleanup_stale_regions(current_partition)
+        # Mock: Python脑区 members fully overlap with community_0
+        with pytest.MonkeyPatch.context() as m:
+            m.setattr(
+                "niu_api.internal.lightrag_manager.get_all_region_members",
+                lambda: {"Python脑区": ["Python", "Django"]},
+            )
+            removed, drifted, drifted_cids = manager.cleanup_stale_regions(current_partition)
 
         assert removed == []
+        assert drifted == []
+        assert drifted_cids == set()
         adapter.delete_entity.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_cleanup_all_when_no_current_partitions(self):
-        """当前分区为空时，所有脑区都被清理"""
+        """当前分区为空时，所有脑区都被清理（Jaccard=0，无分区可匹配）"""
         adapter, ingester = _make_mock_adapter_and_ingester()
         manager = RegionManager(adapter, ingester)
 
@@ -542,13 +560,149 @@ class TestCleanupStaleRegions:
             timestamp="2026-04-24T12:00:00+00:00",
         )
 
-        removed = manager.cleanup_stale_regions(empty_partition)
+        # Mock: both regions have members but no communities to match
+        with pytest.MonkeyPatch.context() as m:
+            m.setattr(
+                "niu_api.internal.lightrag_manager.get_all_region_members",
+                lambda: {
+                    "Python脑区": ["Python", "Django"],
+                    "React脑区": ["React", "Vue"],
+                },
+            )
+            removed, drifted, drifted_cids = manager.cleanup_stale_regions(empty_partition)
 
         assert len(removed) == 2
         assert adapter.delete_entity.call_count == 2
 
+    @pytest.mark.asyncio
+    async def test_detects_membership_drift(self):
+        """成员部分重叠时，触发漂移检测（0 < Jaccard < drift_threshold）"""
+        adapter, ingester = _make_mock_adapter_and_ingester()
+        manager = RegionManager(adapter, ingester)
 
-# ============== Description Encoding/Decoding Tests ==============
+        adapter.list_entities.return_value = {
+            "status": "ok",
+            "data": [
+                {
+                    "id": "OldCommunity脑区",
+                    "entity_type": "BrainRegion",
+                    "description": "summary | brain_meta_region_id:community_0 | brain_meta_size:5 | brain_meta_representative:A | brain_meta_updated_at:1745366400",
+                },
+            ],
+        }
+
+        # Partition has mostly different members — only 1 out of 10 overlap
+        # Jaccard = 1/10 = 0.1 < 0.3 threshold → drift
+        current_partition = _make_partition_result([
+            RegionPartition(
+                region_id=0,
+                region_name="region_0",
+                entity_names=["A", "X", "Y", "Z", "W", "Q", "R", "S", "T", "U"],
+                entity_types={"type1": 5, "type2": 5},
+                edge_count=5,
+                modularity_score=0.2,
+            ),
+        ])
+
+        # OldCommunity脑区 has 5 members, only "A" overlaps with community_0's 10 members
+        # Jaccard = |{A}| / |{A,B,C,D,E,X,Y,Z,W,Q,R,S,T,U}| = 1/14 ≈ 0.07
+        with pytest.MonkeyPatch.context() as m:
+            m.setattr(
+                "niu_api.internal.lightrag_manager.get_all_region_members",
+                lambda: {"OldCommunity脑区": ["A", "B", "C", "D", "E"]},
+            )
+            m.setattr(
+                "niu_api.internal.lightrag_manager.remove_region_edges",
+                lambda name, etype: 0,
+            )
+            removed, drifted, drifted_cids = manager.cleanup_stale_regions(current_partition)
+
+        # Should detect drift, not removal
+        assert removed == []
+        assert len(drifted) == 1
+        assert "OldCommunity脑区" in drifted
+        assert "community_0" in drifted_cids
+
+    @pytest.mark.asyncio
+    async def test_no_drift_when_membership_overlaps(self):
+        """成员重叠度高时不标记漂移（Jaccard >= drift_threshold）"""
+        adapter, ingester = _make_mock_adapter_and_ingester()
+        manager = RegionManager(adapter, ingester)
+
+        adapter.list_entities.return_value = {
+            "status": "ok",
+            "data": [
+                {
+                    "id": "Stable脑区",
+                    "entity_type": "BrainRegion",
+                    "description": "summary | brain_meta_region_id:community_0 | brain_meta_size:4 | brain_meta_representative:A | brain_meta_updated_at:1745366400",
+                },
+            ],
+        }
+
+        current_partition = _make_partition_result([
+            RegionPartition(
+                region_id=0,
+                region_name="region_0",
+                entity_names=["A", "B", "C", "D", "E"],
+                entity_types={"type1": 5},
+                edge_count=3,
+                modularity_score=0.2,
+            ),
+        ])
+
+        # Stable脑区 has 4 members, 3 overlap with community_0's 5 members
+        # Jaccard = |{A,B,C}| / |{A,B,C,D,E}| = 3/5 = 0.6 >= 0.3 → stable
+        with pytest.MonkeyPatch.context() as m:
+            m.setattr(
+                "niu_api.internal.lightrag_manager.get_all_region_members",
+                lambda: {"Stable脑区": ["A", "B", "C", "D"]},
+            )
+            removed, drifted, drifted_cids = manager.cleanup_stale_regions(current_partition)
+
+        assert removed == []
+        assert drifted == []
+        assert drifted_cids == set()
+
+    @pytest.mark.asyncio
+    async def test_default_regions_protected_from_drift(self):
+        """默认脑区不参与漂移检测和删除"""
+        adapter, ingester = _make_mock_adapter_and_ingester()
+        manager = RegionManager(adapter, ingester)
+
+        adapter.list_entities.return_value = {
+            "status": "ok",
+            "data": [
+                {
+                    "id": "聊天历史脑区",
+                    "entity_type": "BrainRegion",
+                    "description": "summary | brain_meta_region_id:community_default | brain_meta_size:2 | brain_meta_representative:User | brain_meta_updated_at:1745366400",
+                },
+            ],
+        }
+
+        # No matching community — would be Jaccard=0 (stale) if not protected
+        current_partition = _make_partition_result([
+            RegionPartition(
+                region_id=0,
+                region_name="region_0",
+                entity_names=["Python", "Django"],
+                entity_types={"language": 1, "framework": 1},
+                edge_count=1,
+                modularity_score=0.15,
+            ),
+        ])
+
+        with pytest.MonkeyPatch.context() as m:
+            m.setattr(
+                "niu_api.internal.lightrag_manager.get_all_region_members",
+                lambda: {"聊天历史脑区": ["User", "Session"]},
+            )
+            removed, drifted, drifted_cids = manager.cleanup_stale_regions(current_partition)
+
+        # Default region should not be removed or marked as drifted
+        assert "聊天历史脑区" not in removed
+        assert "聊天历史脑区" not in drifted
 
 
 class TestDescriptionEncoding:
