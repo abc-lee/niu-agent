@@ -193,9 +193,6 @@ def get_messages(session_id: str, **kwargs) -> dict:
 
 def add_message(session_id: str, role: str, content: str, **kwargs) -> dict:
     """Add a message via MessageStore (direct call)."""
-    if role == "assistant":
-        logger.warning("add_message rejected: role='assistant' not allowed via MCP tool")
-        return {"status": "error", "error": "role='assistant' is not allowed via add_message tool; assistant messages are managed by the agent loop"}
     try:
         store = _get_store()
         msg_id = _run_async(store.add_message(role=role, content=content))
@@ -410,8 +407,6 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             return [TextContent(type="text", text="Error: role is required")]
         if not content:
             return [TextContent(type="text", text="Error: content is required")]
-        if role == "assistant":
-            return [TextContent(type="text", text="Error: role='assistant' is not allowed via add_message tool")]
 
         result = call_api(
             "POST",
