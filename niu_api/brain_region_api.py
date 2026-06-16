@@ -148,11 +148,8 @@ def consolidate_brain_regions(
 ) -> dict[str, Any]:
     """Trigger community detection and create/update region nodes.
 
-    Steps:
-    1. Run Leiden community detection on the LightRAG graph
-    2. Create/update xxx脑区 master nodes via RegionManager
-    3. Clean up stale regions
-    4. Initialize activation manager with new regions
+    Uses dry_run two-phase pattern: detect → create → execute cleanup.
+    This ensures old regions are only deleted after new ones exist (D-13 fix).
     """
     try:
         from niu_api.internal.region_detector import CommunityDetector
@@ -161,7 +158,7 @@ def consolidate_brain_regions(
         adapter = LightRAGAdapter()
         detector = CommunityDetector(adapter)
 
-        # Step 1: Detect communities (sync method, no await needed)
+        # Step 1: Detect communities
         detection_result = detector.detect_communities(
             resolution=req.resolution,
             min_graph_size=REGION_CONFIG_DEFAULTS.get("min_graph_size", 50),
@@ -175,38 +172,67 @@ def consolidate_brain_regions(
                 "regions_created": 0,
             }
 
-        # Step 2: Clean up stale regions first (sync — no call_async)
         region_mgr = _get_region_mgr()
-        removed = region_mgr.cleanup_stale_regions(detection_result)
 
-        # Step 3: Create region master nodes (sync — no call_async)
-        created = region_mgr.create_region_nodes(detection_result)
+        # Step 2: dry_run detect (Phase 1)
+        cleanup_ok = True
+        try:
+            removed, drifted, drifted_cids = region_mgr.cleanup_stale_regions(detection_result, dry_run=True)
+        except Exception as e:
+            logger.error("[Consolidate] cleanup detection failed: %s", e)
+            removed, drifted, drifted_cids = [], [], set()
+            cleanup_ok = False
 
-        # Step 4: Initialize activation manager with new regions
+        # Step 3: Create region nodes (Phase 2)
+        created: list[str] = []
+        create_ok = True
+        try:
+            created = region_mgr.create_region_nodes(detection_result, skip_community_ids=drifted_cids)
+        except Exception as e:
+            logger.error("[Consolidate] create_region_nodes failed: %s", e)
+            create_ok = False
+
+        # Step 4: Execute cleanup only if create didn't throw and dry_run succeeded (Phase 3)
+        # create_ok=True but created=[] is normal (all regions exist), still run cleanup
+        if (create_ok or not detection_result.partitions) and cleanup_ok:
+            try:
+                actual_removed, actual_drifted, _ = region_mgr.cleanup_stale_regions(detection_result, dry_run=False)
+                removed = actual_removed
+                drifted = actual_drifted
+            except Exception as e:
+                logger.error("[Consolidate] cleanup execution failed: %s", e)
+        elif not cleanup_ok:
+            logger.warning("[Consolidate] dry_run failed, skipping cleanup execution")
+        else:
+            logger.warning("[Consolidate] create_region_nodes exception, preserving stale regions")
+
+        # Step 5: Initialize activation manager (with D-12 empty list protection)
         activation_mgr = _get_activation_mgr()
         if activation_mgr is not None:
             regions = region_mgr.get_all_regions()
-            # BUG 2 fix: Fetch members for each region
-            from niu_api.internal.lightrag_manager import get_region_members as lightrag_get_region_members
-            for region in regions:
-                try:
-                    region.members = lightrag_get_region_members(region.name)
-                except Exception as exc:
-                    logger.warning("Failed to fetch members for region %s: %s", region.name, exc)
-            activation_mgr.initialize_from_regions(regions)
-            # BUG 3 fix: Build neighbor map for spillover based on shared members
-            from niu_api.internal.region_neighbors import build_neighbor_map
-            neighbor_map = build_neighbor_map([
-                {"community_id": r.community_id, "members": r.members}
-                for r in regions
-            ])
-            activation_mgr.set_region_neighbors(neighbor_map)
-            logger.info("构建脑区邻居映射: %d 个区域有邻居", len(neighbor_map))
+            if not regions:
+                logger.warning("[Consolidate] get_all_regions returned empty, skipping activation init")
+            else:
+                from niu_api.internal.lightrag_manager import get_region_members as lightrag_get_region_members
+                for region in regions:
+                    try:
+                        region.members = lightrag_get_region_members(region.name)
+                    except Exception as exc:
+                        logger.warning("Failed to fetch members for region %s: %s", region.name, exc)
+                activation_mgr.initialize_from_regions(regions)
+                from niu_api.internal.region_neighbors import build_neighbor_map
+                neighbor_map = build_neighbor_map([
+                    {"community_id": r.community_id, "members": r.members}
+                    for r in regions
+                ])
+                activation_mgr.set_region_neighbors(neighbor_map)
+                logger.info("构建脑区邻居映射: %d 个区域有邻居", len(neighbor_map))
 
         return {
             "status": "ok",
             "regions_created": len(created),
             "regions_removed": len(removed),
+            "regions_drifted": len(drifted),
             "total_regions": detection_result.total_regions,
             "modularity": round(detection_result.modularity, 4),
         }
