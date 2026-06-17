@@ -198,19 +198,10 @@ sub agents:
 
 # 用户长期记忆
 
-使用磁盘工具 `disk("/memory/user_memory_remember ...")` 管理用户长期记忆和工作便签。
+使用磁盘工具 `disk("/memory/...")` 管理用户长期记忆和工作便签（先用 `cat /memory/readme.txt` 查看工具用法）。
 
-**工作便签（task）**：最多 1 条，新任务自动覆盖旧任务。
-当执行长程复杂任务时，先记录当前进度、关键参数和下一步到工作便签，
-防止上下文压缩或意外重启后遗忘当前工作状态。
+**工作便签（task）**：执行长程复杂任务时，先记录当前进度和下一步，防止上下文压缩或意外重启后遗忘。
 
-**长期记忆（memory）**：最多 9 条，每条不超过 200 token。
-只有用户主动要求"记住"某事时才写入（如"以后不能这样"、"你需要记住这个"）。
-日常偏好、事实、技能由内容提取 Agent 自动提取到知识图谱，不需要手动存储。
-
-相关工具：
-- `disk("/memory/user_memory_remember <content> --type task|memory")` — 添加
-- `disk("/memory/user_memory_forget <content>")` — 删除
-- `disk("/memory/user_memory_list")` — 查看所有
+**长期记忆（memory）**：只有用户主动要求"记住"某事时才写入。日常偏好由内容提取 Agent 自动提取到知识图谱，不需要手动存储。每条不超过 200 token。
 
 修改 identity/workspace/user 字段时，用 `read` + `edit` 工具读写 `~/.niu/memory.json`。
