@@ -142,7 +142,7 @@ memory-server:
 文件：`agent/runner.py`
 
 - `_render_permanent_section` 中的尾部提示从"共N/5条"改为"共N/10条"，工具引用从"memory-server/user_memory_remember"改为"disk"，"memory-server/user_memory_forget"改为"disk"
-- 删除 `_inject_dynamic_resources` 中 brain graph memory recall 块（含 import 行和 brain_memories_text 赋值）
+- 删除 `_inject_dynamic_resources` 中 brain graph memory recall 块（含 import 行、`brain_memories_text = ""` 初始化、brain_memories_text 赋值）
 - 删除 `_inject_dynamic_resources` 中 brain_memories_text 消费代码（`_strip_lightrag_error_lines(brain_memories_text)` + `if brain_memories_text: parts.append`）
 
 #### 4. __init__.py 清理
