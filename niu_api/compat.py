@@ -278,6 +278,7 @@ def _should_auto_tidy(current_tokens: int, context_window_tokens: int = 0) -> bo
 
 
 async def _check_and_trigger_auto_tidy(store):
+    # DEPRECATED: no callers — compress only triggers in agent_loop tool loop
     """
     检查是否需要自动增量整理，如需要则异步触发。
 
@@ -309,6 +310,7 @@ _tidy_lock = asyncio.Lock()
 
 
 async def _run_auto_tidy():
+    # DEPRECATED: no callers — compress only triggers in agent_loop tool loop
     """自动整理：非阻塞获取锁，避免与手动触发竞争或无限阻塞。"""
     try:
         # 非阻塞获取锁：如果锁已被占用（force tidy 或手动触发），直接跳过
@@ -1271,7 +1273,7 @@ async def _tidy_context_impl(request: dict):
                         _pids.insert(0, _mid)
                     if len(_pids) >= protect_recent_count:
                         break
-                protected_ids = _pids if _pids else compress_msg_ids[:]
+                protected_ids = _pids  # No fallback: tool output is never protected
 
                 prompt = f"""系统进入睡眠状态。
 
