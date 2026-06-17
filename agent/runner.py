@@ -1054,10 +1054,16 @@ class NiuRunner:
                                 logger.warning(f"[Runner] Force: Protecting {len(unsafe_updates)} messages after dream cursor from content replacement")
                                 valid_updates = [u for u in valid_updates if u.get("message_id", "") not in post_dream_ids]
 
-                    # 保护最近 N 条消息
+                    # 保护最近 N 条 user/assistant 消息（不保护 role=tool 的工具输出）
                     protect_recent_count = _read_protect_recent_count()
                     if protect_recent_count > 0 and len(fresh_messages) > protect_recent_count:
-                        protected_force_ids = {getattr(m, "id", "") for m in fresh_messages[-protect_recent_count:]}
+                        _pids = []
+                        for m in reversed(fresh_messages):
+                            if getattr(m, "role", "") in ("user", "assistant"):
+                                _pids.append(getattr(m, "id", ""))
+                            if len(_pids) >= protect_recent_count:
+                                break
+                        protected_force_ids = set(_pids)
                         removed_deletes = [mid for mid in valid_deletes if mid in protected_force_ids]
                         if removed_deletes:
                             logger.warning(f"[Runner] Force: Protecting {len(removed_deletes)} recent messages from deletion: {removed_deletes}")
