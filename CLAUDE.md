@@ -235,7 +235,7 @@ schemas = registry.get_schemas()
 | `lightrag-server` | 知识图谱 + 向量检索（LightRAG 统一管理） | ✅ |
 | `photo-server` | 照片管理 + 人脸识别（InsightFace） | ✅ |
 | `config-manager` | 配置管理（读/写用户配置和记忆） | ✅ |
-| `memory-server` | 智能记忆提取和检索 | ✅ |
+| `memory-server` | 用户长期记忆和工作便签（permanent array 10 条） | ✅ |
 | `session-manager` | 会话管理（消息压缩） | ❌ |
 | `browser-server` | 浏览器自动化（Playwright async_api + 守护线程） | ✅ |
 | `brain-region-server` | 脑区激活/调暗/状态管理 | ✅ |
