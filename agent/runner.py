@@ -789,9 +789,15 @@ class NiuRunner:
             estimated_tokens = sum(msg_tokens)
             message_count = len(db_messages)
             context_window_tokens = _read_context_window_tokens()
-            usage_percent = (estimated_tokens / context_window_tokens) * 100 if context_window_tokens > 0 else 0
 
-            logger.info(f"[Runner] Force compress: {message_count} messages, {estimated_tokens} tokens, {usage_percent:.1f}%")
+            # 优先用真实 prompt_tokens 计算 usage_percent
+            real_prompt_tokens = self.handler._last_prompt_tokens if hasattr(self.handler, '_last_prompt_tokens') else 0
+            if real_prompt_tokens > 0:
+                usage_percent = (real_prompt_tokens / context_window_tokens) * 100 if context_window_tokens > 0 else 0
+                logger.info(f"[Runner] Force compress: {message_count} messages, real_tokens={real_prompt_tokens}, est_tokens={estimated_tokens}, {usage_percent:.1f}%")
+            else:
+                usage_percent = (estimated_tokens / context_window_tokens) * 100 if context_window_tokens > 0 else 0
+                logger.info(f"[Runner] Force compress: {message_count} messages, {estimated_tokens} tokens, {usage_percent:.1f}%")
 
             # 构建全量消息列表文本（供 context-manager 使用）
             msg_lines = []
