@@ -1,7 +1,7 @@
 """
 Memory Server - 智能记忆管理 MCP 服务器
 
-提供记忆存储、检索功能。
+提供用户长期记忆和工作便签管理（permanent array）。
 """
 
 from mcp.server import Server

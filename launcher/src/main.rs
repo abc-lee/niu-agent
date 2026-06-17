@@ -746,7 +746,7 @@ fn main() {
     let _ = format_memory_for_prompt(&memory); // Memory injection handled by Python API
 
     // Extract workspace.path from memory and set as WORKSPACE_PATH env var
-    // so all child processes (Python API, MCP servers) use the correct vectors.db path
+    // so all child processes (Python API, MCP servers) use the correct workspace path
     // Skip placeholder values like "请询问用户指定工作目录" which are not real paths
     let mut workspace_path = String::new();
     if let Some(mem) = &memory {

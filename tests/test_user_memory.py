@@ -3,7 +3,6 @@
 
 import json
 import sys
-import asyncio
 import tempfile
 from pathlib import Path
 
@@ -62,7 +61,7 @@ def _mem(content, type="memory"):
     return {"type": type, "content": content}
 
 
-async def test_user_memory_remember():
+def test_user_memory_remember():
     """Adding memories up to limit"""
     with tempfile.TemporaryDirectory() as tmp:
         memory_path = Path(tmp) / ".niu" / "memory.json"
@@ -72,12 +71,12 @@ async def test_user_memory_remember():
         _setup_module(memory_path)
 
         # Add first memory
-        result = await mod.user_memory_remember_handler(content="我喜欢Python")
+        result = mod.user_memory_remember_handler(content="我喜欢Python")
         assert result["status"] == "success", f"Expected success, got {result}"
         assert result["current_memories"] == [_mem("我喜欢Python")]
 
         # Add second
-        result = await mod.user_memory_remember_handler(content="密码是abc")
+        result = mod.user_memory_remember_handler(content="密码是abc")
         assert result["status"] == "success"
         assert len(result["current_memories"]) == 2
 
@@ -85,7 +84,7 @@ async def test_user_memory_remember():
     print("PASS: test_user_memory_remember")
 
 
-async def test_user_memory_remember_full():
+def test_user_memory_remember_full():
     """Reject when memory is full"""
     with tempfile.TemporaryDirectory() as tmp:
         memory_path = Path(tmp) / ".niu" / "memory.json"
@@ -96,11 +95,11 @@ async def test_user_memory_remember_full():
 
         # Fill to max (4 memory items)
         for i in range(mod.MAX_MEMORY_ITEMS):
-            result = await mod.user_memory_remember_handler(content=f"记忆{i}")
+            result = mod.user_memory_remember_handler(content=f"记忆{i}")
             assert result["status"] == "success", f"Failed at item {i}: {result}"
 
         # Try to add one more
-        result = await mod.user_memory_remember_handler(content="超限记忆")
+        result = mod.user_memory_remember_handler(content="超限记忆")
         assert result["status"] == "error"
         assert "已满" in result["message"]
 
@@ -108,7 +107,7 @@ async def test_user_memory_remember_full():
     print("PASS: test_user_memory_remember_full")
 
 
-async def test_task_type():
+def test_task_type():
     """Task type: auto-replace when slot is full"""
     with tempfile.TemporaryDirectory() as tmp:
         memory_path = Path(tmp) / ".niu" / "memory.json"
@@ -118,18 +117,18 @@ async def test_task_type():
         _setup_module(memory_path)
 
         # Add first task
-        result = await mod.user_memory_remember_handler(content="修复登录bug", type="task")
+        result = mod.user_memory_remember_handler(content="修复登录bug", type="task")
         assert result["status"] == "success"
         assert result["current_memories"] == [_mem("修复登录bug", "task")]
 
         # Add second task — should auto-replace first
-        result = await mod.user_memory_remember_handler(content="重构数据库", type="task")
+        result = mod.user_memory_remember_handler(content="重构数据库", type="task")
         assert result["status"] == "success"
         assert result["current_memories"] == [_mem("重构数据库", "task")]
         assert "覆盖" in result["message"]
 
         # Add a memory item alongside task
-        result = await mod.user_memory_remember_handler(content="我喜欢Python", type="memory")
+        result = mod.user_memory_remember_handler(content="我喜欢Python", type="memory")
         assert result["status"] == "success"
         assert len(result["current_memories"]) == 2
 
@@ -137,7 +136,7 @@ async def test_task_type():
     print("PASS: test_task_type")
 
 
-async def test_user_memory_forget_by_index():
+def test_user_memory_forget_by_index():
     """Delete by 1-based index"""
     with tempfile.TemporaryDirectory() as tmp:
         memory_path = Path(tmp) / ".niu" / "memory.json"
@@ -147,7 +146,7 @@ async def test_user_memory_forget_by_index():
 
         _setup_module(memory_path)
 
-        result = await mod.user_memory_forget_handler(index=2)
+        result = mod.user_memory_forget_handler(index=2)
         assert result["status"] == "success"
         assert "B" in result["message"]
         assert result["current_memories"] == [_mem("A"), _mem("C")]
@@ -156,7 +155,7 @@ async def test_user_memory_forget_by_index():
     print("PASS: test_user_memory_forget_by_index")
 
 
-async def test_user_memory_forget_by_keyword():
+def test_user_memory_forget_by_keyword():
     """Delete by keyword substring match"""
     with tempfile.TemporaryDirectory() as tmp:
         memory_path = Path(tmp) / ".niu" / "memory.json"
@@ -166,7 +165,7 @@ async def test_user_memory_forget_by_keyword():
 
         _setup_module(memory_path)
 
-        result = await mod.user_memory_forget_handler(keyword="密码")
+        result = mod.user_memory_forget_handler(keyword="密码")
         assert result["status"] == "success"
         assert result["current_memories"] == [_mem("我喜欢Python"), _mem("每周五例会")]
 
@@ -174,7 +173,7 @@ async def test_user_memory_forget_by_keyword():
     print("PASS: test_user_memory_forget_by_keyword")
 
 
-async def test_user_memory_list():
+def test_user_memory_list():
     """List all memories"""
     with tempfile.TemporaryDirectory() as tmp:
         memory_path = Path(tmp) / ".niu" / "memory.json"
@@ -184,7 +183,7 @@ async def test_user_memory_list():
 
         _setup_module(memory_path)
 
-        result = await mod.user_memory_list_handler()
+        result = mod.user_memory_list_handler()
         assert result["status"] == "success"
         assert result["count"] == 2
         assert result["max_memory"] == 9
@@ -215,7 +214,7 @@ def test_truncate_over_limit():
     print("PASS: test_truncate_over_limit")
 
 
-async def test_preserve_other_fields():
+def test_preserve_other_fields():
     """_write_permanent_only preserves identity/workspace/user fields"""
     with tempfile.TemporaryDirectory() as tmp:
         memory_path = Path(tmp) / ".niu" / "memory.json"
@@ -232,7 +231,7 @@ async def test_preserve_other_fields():
         _setup_module(memory_path)
 
         # Add a new memory
-        result = await mod.user_memory_remember_handler(content="新记忆")
+        result = mod.user_memory_remember_handler(content="新记忆")
         assert result["status"] == "success"
 
         # Verify other fields are preserved
@@ -246,7 +245,7 @@ async def test_preserve_other_fields():
     print("PASS: test_preserve_other_fields")
 
 
-async def test_corrupted_file_rejection():
+def test_corrupted_file_rejection():
     """Corrupted memory.json should be rejected, not overwritten"""
     with tempfile.TemporaryDirectory() as tmp:
         memory_path = Path(tmp) / ".niu" / "memory.json"
@@ -255,7 +254,7 @@ async def test_corrupted_file_rejection():
 
         _setup_module(memory_path)
 
-        result = await mod.user_memory_remember_handler(content="测试")
+        result = mod.user_memory_remember_handler(content="测试")
         assert result["status"] == "error"
         assert "损坏" in result["message"]
 
@@ -266,7 +265,7 @@ async def test_corrupted_file_rejection():
     print("PASS: test_corrupted_file_rejection")
 
 
-async def test_dedup_remember():
+def test_dedup_remember():
     """Reject case-insensitive duplicate content"""
     with tempfile.TemporaryDirectory() as tmp:
         memory_path = Path(tmp) / ".niu" / "memory.json"
@@ -277,12 +276,12 @@ async def test_dedup_remember():
         _setup_module(memory_path)
 
         # Exact duplicate
-        result = await mod.user_memory_remember_handler(content="我喜欢Python")
+        result = mod.user_memory_remember_handler(content="我喜欢Python")
         assert result["status"] == "error"
         assert "已存在" in result["message"]
 
         # Case-insensitive duplicate
-        result = await mod.user_memory_remember_handler(content="我喜欢python")
+        result = mod.user_memory_remember_handler(content="我喜欢python")
         assert result["status"] == "error"
         assert "已存在" in result["message"]
 
@@ -294,7 +293,7 @@ async def test_dedup_remember():
     print("PASS: test_dedup_remember")
 
 
-async def test_multi_keyword_match_warning():
+def test_multi_keyword_match_warning():
     """Warn when multiple items match keyword"""
     with tempfile.TemporaryDirectory() as tmp:
         memory_path = Path(tmp) / ".niu" / "memory.json"
@@ -304,7 +303,7 @@ async def test_multi_keyword_match_warning():
 
         _setup_module(memory_path)
 
-        result = await mod.user_memory_forget_handler(keyword="Python")
+        result = mod.user_memory_forget_handler(keyword="Python")
         assert result["status"] == "success"
         assert "还有1条" in result["message"]
         assert len(result["current_memories"]) == 2
@@ -331,7 +330,7 @@ def test_normalize_permanent_migration():
     print("PASS: test_normalize_permanent_migration")
 
 
-async def test_forget_task_clears_not_removes():
+def test_forget_task_clears_not_removes():
     """Forgetting a task item clears content instead of removing it"""
     with tempfile.TemporaryDirectory() as tmp:
         memory_path = Path(tmp) / ".niu" / "memory.json"
@@ -342,7 +341,7 @@ async def test_forget_task_clears_not_removes():
         _setup_module(memory_path)
 
         # Forget by index (task is item 1)
-        result = await mod.user_memory_forget_handler(index=1)
+        result = mod.user_memory_forget_handler(index=1)
         assert result["status"] == "success"
         assert "清空" in result["message"]
         # Task slot still exists with empty content, memory item unchanged
@@ -352,7 +351,7 @@ async def test_forget_task_clears_not_removes():
     print("PASS: test_forget_task_clears_not_removes")
 
 
-async def test_forget_task_by_keyword_clears():
+def test_forget_task_by_keyword_clears():
     """Forgetting a task by keyword clears content instead of removing"""
     with tempfile.TemporaryDirectory() as tmp:
         memory_path = Path(tmp) / ".niu" / "memory.json"
@@ -362,7 +361,7 @@ async def test_forget_task_by_keyword_clears():
 
         _setup_module(memory_path)
 
-        result = await mod.user_memory_forget_handler(keyword="重构")
+        result = mod.user_memory_forget_handler(keyword="重构")
         assert result["status"] == "success"
         assert "清空" in result["message"]
         assert result["current_memories"] == [_mem("", "task"), _mem("我喜欢Python")]
@@ -371,7 +370,7 @@ async def test_forget_task_by_keyword_clears():
     print("PASS: test_forget_task_by_keyword_clears")
 
 
-async def test_truncated_rejects_remember():
+def test_truncated_rejects_remember():
     """When over limit, remember is rejected (no silent data loss)"""
     with tempfile.TemporaryDirectory() as tmp:
         memory_path = Path(tmp) / ".niu" / "memory.json"
@@ -383,7 +382,7 @@ async def test_truncated_rejects_remember():
         _setup_module(memory_path)
 
         # Remember should be rejected
-        result = await mod.user_memory_remember_handler(content="新记忆")
+        result = mod.user_memory_remember_handler(content="新记忆")
         assert result["status"] == "error"
         assert "超过" in result["message"] or "限制" in result["message"]
 
@@ -395,7 +394,7 @@ async def test_truncated_rejects_remember():
     print("PASS: test_truncated_rejects_remember")
 
 
-async def test_truncated_allows_forget():
+def test_truncated_allows_forget():
     """When over limit, forget is still allowed (to fix the over-limit)"""
     with tempfile.TemporaryDirectory() as tmp:
         memory_path = Path(tmp) / ".niu" / "memory.json"
@@ -406,7 +405,7 @@ async def test_truncated_allows_forget():
         _setup_module(memory_path)
 
         # Forget should work even when truncated
-        result = await mod.user_memory_forget_handler(index=1)
+        result = mod.user_memory_forget_handler(index=1)
         assert result["status"] == "success"
 
     mod._reset_memory_json_path()
@@ -463,7 +462,7 @@ def test_render_permanent_section_missing_type():
     print("PASS: test_render_permanent_section_missing_type")
 
 
-async def test_remember_empty_content_rejected():
+def test_remember_empty_content_rejected():
     """Reject empty or whitespace-only content"""
     with tempfile.TemporaryDirectory() as tmp:
         memory_path = Path(tmp) / ".niu" / "memory.json"
@@ -473,12 +472,12 @@ async def test_remember_empty_content_rejected():
         _setup_module(memory_path)
 
         # Empty string
-        result = await mod.user_memory_remember_handler(content="")
+        result = mod.user_memory_remember_handler(content="")
         assert result["status"] == "error"
         assert "空" in result["message"]
 
         # Whitespace only
-        result = await mod.user_memory_remember_handler(content="   ")
+        result = mod.user_memory_remember_handler(content="   ")
         assert result["status"] == "error"
 
         # File should not be modified
@@ -489,7 +488,7 @@ async def test_remember_empty_content_rejected():
     print("PASS: test_remember_empty_content_rejected")
 
 
-async def test_dedup_whitespace_normalized():
+def test_dedup_whitespace_normalized():
     """Dedup ignores leading/trailing whitespace"""
     with tempfile.TemporaryDirectory() as tmp:
         memory_path = Path(tmp) / ".niu" / "memory.json"
@@ -500,7 +499,7 @@ async def test_dedup_whitespace_normalized():
         _setup_module(memory_path)
 
         # Same content with extra spaces
-        result = await mod.user_memory_remember_handler(content="  我喜欢Python  ")
+        result = mod.user_memory_remember_handler(content="  我喜欢Python  ")
         assert result["status"] == "error"
         assert "已存在" in result["message"]
 
@@ -508,7 +507,7 @@ async def test_dedup_whitespace_normalized():
     print("PASS: test_dedup_whitespace_normalized")
 
 
-async def test_multiple_task_items_all_removed():
+def test_multiple_task_items_all_removed():
     """When manually edited file has multiple tasks, remember removes all"""
     with tempfile.TemporaryDirectory() as tmp:
         memory_path = Path(tmp) / ".niu" / "memory.json"
@@ -519,7 +518,7 @@ async def test_multiple_task_items_all_removed():
 
         _setup_module(memory_path)
 
-        result = await mod.user_memory_remember_handler(content="新任务", type="task")
+        result = mod.user_memory_remember_handler(content="新任务", type="task")
         assert result["status"] == "success"
         # Should have exactly 1 task and 1 memory
         tasks = [item for item in result["current_memories"] if item.get("type") == "task"]
@@ -533,27 +532,26 @@ async def test_multiple_task_items_all_removed():
 
 
 if __name__ == "__main__":
-    asyncio.run(test_user_memory_remember())
-    asyncio.run(test_user_memory_remember_full())
-    asyncio.run(test_task_type())
-    asyncio.run(test_user_memory_forget_by_index())
-    asyncio.run(test_user_memory_forget_by_keyword())
-    asyncio.run(test_user_memory_list())
+    test_user_memory_remember()
+    test_user_memory_remember_full()
+    test_task_type()
+    test_user_memory_forget_by_index()
+    test_user_memory_forget_by_keyword()
+    test_user_memory_list()
     test_truncate_over_limit()
-    asyncio.run(test_preserve_other_fields())
-    asyncio.run(test_corrupted_file_rejection())
-    asyncio.run(test_dedup_remember())
-    asyncio.run(test_multi_keyword_match_warning())
+    test_preserve_other_fields()
+    test_corrupted_file_rejection()
+    test_dedup_remember()
+    test_multi_keyword_match_warning()
     test_normalize_permanent_migration()
-    asyncio.run(test_forget_task_clears_not_removes())
-    asyncio.run(test_forget_task_by_keyword_clears())
-    asyncio.run(test_truncated_rejects_remember())
-    asyncio.run(test_truncated_allows_forget())
+    test_forget_task_clears_not_removes()
+    test_forget_task_by_keyword_clears()
+    test_truncated_rejects_remember()
+    test_truncated_allows_forget()
     test_sanitize_memory_content()
     test_render_permanent_section_old_format()
     test_render_permanent_section_missing_type()
-    asyncio.run(test_remember_empty_content_rejected())
-    asyncio.run(test_dedup_whitespace_normalized())
-    asyncio.run(test_multiple_task_items_all_removed())
-    print("\nAll tests passed!")
+    test_remember_empty_content_rejected()
+    test_dedup_whitespace_normalized()
+    test_multiple_task_items_all_removed()
     print("\nAll tests passed!")

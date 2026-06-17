@@ -4,10 +4,7 @@ Tests for BrainGraph — Memory brain graph on LightRAG.
 TDD GREEN phase: Tests define the BrainGraph API contract.
 """
 
-import re
-from unittest.mock import MagicMock, patch
-
-import pytest
+from unittest.mock import MagicMock
 
 
 # ============== normalize_name ==============
@@ -118,52 +115,6 @@ class TestBrainGraphEnsureNiu:
         assert len(entities) == 1
         assert entities[0]["entity_name"] == "Niu"
         assert entities[0]["entity_type"] == "Niu"
-
-
-class TestFormatMemoriesForPrompt:
-    """Test memory formatting for system prompt injection."""
-
-    def test_format_empty_memories(self):
-        from niu_api.internal.brain_graph import format_memories_for_prompt
-
-        result = format_memories_for_prompt([])
-        assert result == ""
-
-    def test_format_single_memory(self):
-        from niu_api.internal.brain_graph import format_memories_for_prompt
-
-        memories = [
-            {
-                "target": "Python",
-                "relation_type": "remembers",
-                "description": "从2019年开始用Python",
-                "weight": 0.85,
-            }
-        ]
-        result = format_memories_for_prompt(memories)
-        assert "Python" in result
-        assert "从2019年开始用Python" in result
-
-    def test_format_multiple_memories_sorted_by_weight(self):
-        from niu_api.internal.brain_graph import format_memories_for_prompt
-
-        memories = [
-            {
-                "target": "Rust",
-                "relation_type": "learned_from",
-                "description": "最近在学Rust",
-                "weight": 0.5,
-            },
-            {
-                "target": "Python",
-                "relation_type": "skilled_in",
-                "description": "擅长Python",
-                "weight": 0.9,
-            },
-        ]
-        result = format_memories_for_prompt(memories)
-        # Higher weight (Python) should appear first
-        assert result.index("Python") < result.index("Rust")
 
 
 class TestGetBrainGraphSingleton:

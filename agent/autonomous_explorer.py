@@ -174,7 +174,18 @@ class AutonomousExplorer:
 
     def _get_memory_stats(self) -> str:
         """获取记忆统计"""
-        # vector_search removed — memory stats no longer available via adapter
+        try:
+            from pathlib import Path
+            import json
+            mem_path = Path.home() / ".niu" / "memory.json"
+            if mem_path.exists():
+                data = json.loads(mem_path.read_text(encoding="utf-8"))
+                permanent = data.get("permanent", [])
+                task_count = sum(1 for m in permanent if m.get("type") == "task")
+                memory_count = sum(1 for m in permanent if m.get("type") == "memory")
+                return f"task:{task_count} memory:{memory_count}"
+        except Exception:
+            pass
         return "unknown"
 
     def _count_pending_experiences(self) -> int:
