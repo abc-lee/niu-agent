@@ -8,10 +8,7 @@ Routes:
     GET  /api/brain/regions             — list all regions with activation states
     POST /api/brain/regions/consolidate — trigger community detection
     GET  /api/brain/regions/{name}/members — get region members
-
-NOTE: The existing brain_api.py provides /api/brain/remember, /api/brain/recall,
-and /api/brain/status for memory operations. This router adds region-specific
-endpoints under the same /api/brain prefix.
+    GET  /api/brain/status              — check brain graph status
 
 Integration: Mount this router in niu_api/__main__.py:
     from niu_api.brain_region_api import router as brain_region_router
@@ -32,6 +29,7 @@ from niu_api.internal.region_activation import (
     STATUS_OFF,
     BrainRegionState,
 )
+from niu_api.internal.brain_graph import get_brain_graph
 from agent.injector.region_sync import REGION_CONFIG_DEFAULTS
 
 router = APIRouter(prefix="/api/brain", tags=["brain-regions"])
@@ -380,3 +378,14 @@ def get_region_members(name: str) -> dict[str, Any]:
     except Exception as e:
         logger.error(f"[Brain Region API] get_region_members failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/status")
+async def brain_status():
+    """Check brain graph status and ensure Niu entity exists."""
+    try:
+        bg = get_brain_graph()
+        bg.ensure_niu_entity()
+        return {"status": "ok", "message": "Brain graph is active. Niu entity ensured."}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
