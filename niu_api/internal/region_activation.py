@@ -184,6 +184,24 @@ class RegionActivationManager:
             self._descriptions = new_descriptions
             self._member_counts = new_member_counts
 
+            # M-2 fix: Clean up stale entries for deleted regions
+            valid_ids = set(new_regions.keys())
+
+            # Clean _co_activation_counts: remove pairs involving deleted regions
+            stale_co_keys = [
+                key for key in self._co_activation_counts
+                if key[0] not in valid_ids or key[1] not in valid_ids
+            ]
+            for key in stale_co_keys:
+                del self._co_activation_counts[key]
+
+            # Clean _neighbors: remove deleted region keys and references
+            stale_ids = set(rid for rid in self._neighbors if rid not in valid_ids)
+            for rid in stale_ids:
+                del self._neighbors[rid]
+            for neighbor_set in self._neighbors.values():
+                neighbor_set -= stale_ids
+
         # Update entity type counts (best-effort, failure is non-critical)
         try:
             self._entity_type_counts = self._build_entity_type_counts()
