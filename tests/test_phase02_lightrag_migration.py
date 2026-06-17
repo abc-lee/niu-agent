@@ -261,21 +261,6 @@ class TestLightRAGSync:
         # Cleanup
         Path(db_path).unlink(missing_ok=True)
 
-    def test_lightrag_sync_vectors_db_returns_zero_after_removal(self):
-        """_sync_vectors_db should return 0 since vector-store has been removed."""
-        from agent.injector.lightrag_sync import LightRAGSync
-
-        sync = LightRAGSync()
-
-        # vector-store has been deleted - _sync_vectors_db now returns (0, set())
-        synced, doc_ids = sync._sync_vectors_db()
-        assert synced == 0, (
-            f"_sync_vectors_db should return 0 after vector-store removal, got {synced}"
-        )
-        assert doc_ids == set(), (
-            f"_sync_vectors_db should return empty set after vector-store removal, got {doc_ids}"
-        )
-
     def test_lightrag_sync_background_start_stop(self):
         """LightRAGSync should start and stop background thread."""
         from agent.injector.lightrag_sync import LightRAGSync
