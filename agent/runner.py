@@ -1058,7 +1058,7 @@ class NiuRunner:
 
                     # 保护最近 N 条 user/assistant 消息（不保护 role=tool 的工具输出）
                     protect_recent_count = _read_protect_recent_count()
-                    if protect_recent_count > 0 and len(fresh_messages) > protect_recent_count:
+                    if protect_recent_count > 0:
                         _pids = []
                         for m in reversed(fresh_messages):
                             if getattr(m, "role", "") in ("user", "assistant"):
