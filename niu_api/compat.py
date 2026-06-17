@@ -496,13 +496,23 @@ async def get_stats() -> StatsResponse:
     except Exception as e:
         logger.debug(f"[Stats] LightRAG stats unavailable: {e}")
 
-    # 计算上下文使用率
+    # 计算上下文使用率（优先用 LLM API 返回的真实 prompt_tokens）
     context_usage = 0.0
     try:
-        all_msgs = await store.get_messages()
-        total_tokens = _estimate_total_tokens(all_msgs)
         context_window = _read_context_window_tokens()
-        context_usage = total_tokens / context_window if context_window > 0 else 0.0
+        real_tokens = 0
+        try:
+            from niu_api.chat import get_or_create_runner
+            runner = get_or_create_runner()
+            real_tokens = getattr(getattr(runner, 'handler', None), '_last_prompt_tokens', 0) or 0
+        except Exception:
+            pass
+        if real_tokens > 0:
+            context_usage = real_tokens / context_window if context_window > 0 else 0.0
+        else:
+            all_msgs = await store.get_messages()
+            total_tokens = _estimate_total_tokens(all_msgs)
+            context_usage = total_tokens / context_window if context_window > 0 else 0.0
     except Exception:
         context_usage = 0.0
 
