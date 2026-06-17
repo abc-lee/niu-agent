@@ -912,9 +912,21 @@ async def _tidy_context_impl(request: dict):
 
         # 读取上下文窗口大小（tokens）
         context_window_tokens = _read_context_window_tokens()
-        usage_percent = (estimated_tokens / context_window_tokens) * 100
 
-        logger.info(f"[Tidy] Current context: {message_count} messages, {estimated_tokens} tokens, {usage_percent:.1f}%")
+        # 优先用 LLM API 返回的真实 prompt_tokens 计算 usage_percent
+        real_prompt_tokens = 0
+        try:
+            from niu_api.chat import get_or_create_runner
+            _runner = get_or_create_runner()
+            real_prompt_tokens = getattr(getattr(_runner, 'handler', None), '_last_prompt_tokens', 0) or 0
+        except Exception:
+            pass
+        if real_prompt_tokens > 0:
+            usage_percent = (real_prompt_tokens / context_window_tokens) * 100
+            logger.info(f"[Tidy] Current context: {message_count} messages, real_tokens={real_prompt_tokens}, est_tokens={estimated_tokens}, {usage_percent:.1f}%")
+        else:
+            usage_percent = (estimated_tokens / context_window_tokens) * 100
+            logger.info(f"[Tidy] Current context: {message_count} messages, {estimated_tokens} tokens, {usage_percent:.1f}%")
 
         from agent.subagent import call_subagent
         from agent.runner import is_stop_requested, clear_stop
