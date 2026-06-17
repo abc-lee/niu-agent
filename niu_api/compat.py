@@ -232,8 +232,8 @@ def _truncate_task_for_subagent(task: str, max_tokens: int) -> str:
     if not task:
         return task
     try:
-        from litellm import token_counter
-        token_count = token_counter(model="gpt-4o", messages=[{"role": "user", "content": task}])
+        from agent.token_calculator import TokenCalculator
+        token_count = TokenCalculator.get().count_text(task)
     except Exception:
         # 回退估算：2 字符/token
         token_count = max(1, len(task) // 2)
@@ -259,12 +259,13 @@ def _truncate_task_for_subagent(task: str, max_tokens: int) -> str:
 def _estimate_total_tokens(messages) -> int:
     """估算消息列表的总 token 数（逐条计算，含角色开销）。"""
     try:
-        from litellm import token_counter
+        from agent.token_calculator import TokenCalculator
+        calc = TokenCalculator.get()
         total = 0
         for msg in messages:
             content = getattr(msg, "content", "") or ""
             role = getattr(msg, "role", "user") or "user"
-            total += token_counter(model="gpt-4o", messages=[{"role": role, "content": content}])
+            total += calc.count_message_single(role, content)
         return total
     except Exception:
         from agent.subagent import count_tokens_for_text
@@ -899,10 +900,11 @@ async def _tidy_context_impl(request: dict):
         message_count = len(messages)
         msg_tokens = []
         try:
-            from litellm import token_counter
+            from agent.token_calculator import TokenCalculator
+            calc = TokenCalculator.get()
             for msg in messages:
                 try:
-                    t = token_counter(model="gpt-4o", messages=[{"role": msg.role, "content": msg.content or ""}])
+                    t = calc.count_message_single(msg.role, msg.content or "")
                 except Exception:
                     t = max(1, len(msg.content or "") // 2) + 4
                 msg_tokens.append(t)
@@ -1087,10 +1089,11 @@ async def _tidy_context_impl(request: dict):
             messages = await store.get_messages()
             msg_tokens = []
             try:
-                from litellm import token_counter
+                from agent.token_calculator import TokenCalculator
+                calc = TokenCalculator.get()
                 for msg in messages:
                     try:
-                        t = token_counter(model="gpt-4o", messages=[{"role": msg.role, "content": msg.content or ""}])
+                        t = calc.count_message_single(msg.role, msg.content or "")
                     except Exception:
                         t = max(1, len(msg.content or "") // 2) + 4
                     msg_tokens.append(t)
@@ -1175,10 +1178,11 @@ async def _tidy_context_impl(request: dict):
                 messages = await store.get_messages()
                 msg_tokens = []
                 try:
-                    from litellm import token_counter
+                    from agent.token_calculator import TokenCalculator
+                    calc = TokenCalculator.get()
                     for msg in messages:
                         try:
-                            t = token_counter(model="gpt-4o", messages=[{"role": msg.role, "content": msg.content or ""}])
+                            t = calc.count_message_single(msg.role, msg.content or "")
                         except Exception:
                             t = max(1, len(msg.content or "") // 2) + 4
                         msg_tokens.append(t)
@@ -1266,10 +1270,11 @@ async def _tidy_context_impl(request: dict):
             messages = await store.get_messages()
             msg_tokens = []
             try:
-                from litellm import token_counter
+                from agent.token_calculator import TokenCalculator
+                calc = TokenCalculator.get()
                 for msg in messages:
                     try:
-                        t = token_counter(model="gpt-4o", messages=[{"role": msg.role, "content": msg.content or ""}])
+                        t = calc.count_message_single(msg.role, msg.content or "")
                     except Exception:
                         t = max(1, len(msg.content or "") // 2) + 4
                     msg_tokens.append(t)
@@ -1467,10 +1472,11 @@ async def _tidy_context_impl(request: dict):
             messages = await store.get_messages()
             msg_tokens = []
             try:
-                from litellm import token_counter
+                from agent.token_calculator import TokenCalculator
+                calc = TokenCalculator.get()
                 for msg in messages:
                     try:
-                        t = token_counter(model="gpt-4o", messages=[{"role": msg.role, "content": msg.content or ""}])
+                        t = calc.count_message_single(msg.role, msg.content or "")
                     except Exception:
                         t = max(1, len(msg.content or "") // 2) + 4
                     msg_tokens.append(t)
@@ -1555,10 +1561,11 @@ async def _tidy_context_impl(request: dict):
             messages = await store.get_messages()
             msg_tokens = []
             try:
-                from litellm import token_counter
+                from agent.token_calculator import TokenCalculator
+                calc = TokenCalculator.get()
                 for msg in messages:
                     try:
-                        t = token_counter(model="gpt-4o", messages=[{"role": msg.role, "content": msg.content or ""}])
+                        t = calc.count_message_single(msg.role, msg.content or "")
                     except Exception:
                         t = max(1, len(msg.content or "") // 2) + 4
                     msg_tokens.append(t)

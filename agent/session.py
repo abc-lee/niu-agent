@@ -313,8 +313,9 @@ class MessageStore:
         freed_tokens = 0
         for row in rows:
             try:
-                from litellm import token_counter
-                t = token_counter(model="gpt-4o", messages=[{"role": row["role"], "content": row["content"] or ""}])
+                from agent.token_calculator import TokenCalculator
+                calc = TokenCalculator.get()
+                t = calc.count_message_single(row["role"], row["content"] or "")
             except Exception:
                 t = max(1, len(row["content"] or "") // 2) + 4
             freed_tokens += t

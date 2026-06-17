@@ -41,15 +41,15 @@ def count_messages_tokens(messages: list) -> int:
     """
     估算消息列表的 token 数量
 
-    使用 litellm.token_counter，回退到字符数估算。
+    使用 TokenCalculator，回退到字符数估算。
     """
     try:
-        from litellm import token_counter
-        return token_counter(model="gpt-4o", messages=messages)
+        from agent.token_calculator import TokenCalculator
+        return TokenCalculator.get().count_messages(messages)
     except Exception:
         total = 0
-        for msg in messages:
-            content = msg.get("content", "") or ""
+        for m in messages:
+            content = m.get("content", "") if isinstance(m, dict) else str(m)
             total += max(1, len(content) // 2) + 4
         return total
 

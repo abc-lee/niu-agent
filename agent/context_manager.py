@@ -82,7 +82,7 @@ class ContextManager:
 
     def count_tokens_simple(self, messages: List[Dict[str, Any]]) -> int:
         """
-        使用 litellm.token_counter 计算 token 数量（基于 tiktoken）
+        使用 TokenCalculator 计算 token 数量
 
         回退到字符数估算（约 2 字符/token，偏保守避免低估）。
 
@@ -93,8 +93,8 @@ class ContextManager:
             token 数量
         """
         try:
-            from litellm import token_counter
-            return token_counter(model="gpt-4o", messages=messages)
+            from agent.token_calculator import TokenCalculator
+            return TokenCalculator.get().count_messages(messages)
         except Exception:
             # 回退：约 2 字符/token（偏保守，避免低估导致不触发压缩）
             total_tokens = 0

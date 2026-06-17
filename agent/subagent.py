@@ -20,7 +20,7 @@ def count_tokens_for_text(text: str) -> int:
     """
     计算文本的 token 数量（用于子 Agent prompt 分片判断）
 
-    使用 litellm.token_counter，回退到字符数估算。
+    使用 TokenCalculator，回退到字符数估算。
 
     Args:
         text: 纯文本字符串
@@ -31,8 +31,8 @@ def count_tokens_for_text(text: str) -> int:
     if not text:
         return 0
     try:
-        from litellm import token_counter
-        return token_counter(model="gpt-4o", messages=[{"role": "user", "content": text}])
+        from agent.token_calculator import TokenCalculator
+        return TokenCalculator.get().count_text(text)
     except Exception:
         # 回退：约 2 字符/token（偏保守）
         return max(1, len(text) // 2)

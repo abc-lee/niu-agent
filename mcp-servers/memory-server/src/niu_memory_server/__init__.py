@@ -133,16 +133,16 @@ MAX_TOKEN_PER_ITEM = 200  # ~300 Chinese chars
 
 
 def _count_tokens(text: str) -> int:
-    """Count tokens using litellm.token_counter (tiktoken-based).
-    Falls back to conservative char-based estimate if litellm unavailable.
+    """Count tokens using TokenCalculator.
+    Falls back to conservative CJK-aware char-based estimate if unavailable.
     """
     try:
-        import litellm
-        return litellm.token_counter(model="gpt-4o", text=text)
+        from agent.token_calculator import TokenCalculator
+        return TokenCalculator.get().count_text(text)
     except Exception:
         # Fallback: CJK ~1.5 tokens, ASCII ~0.25 tokens (conservative)
-        cjk_count = sum(1 for c in text if '\u4e00' <= c <= '\u9fff')
-        return int(cjk_count * 1.5 + (len(text) - cjk_count) * 0.25)
+        cjk = sum(1 for c in text if '\u4e00' <= c <= '\u9fff')
+        return max(1, int(cjk * 1.5 + (len(text) - cjk) * 0.25))
 
 
 def _get_memory_json_path():
