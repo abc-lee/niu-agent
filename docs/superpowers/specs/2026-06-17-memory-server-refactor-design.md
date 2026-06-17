@@ -34,9 +34,9 @@ Memory Server 当前包含两套完全独立的记忆体系：
 | `_extract_entity_label` | brain_graph.py | 仅 store_memory 使用 |
 | `_extract_brain_memories_from_structured` | brain_graph.py | 仅 recall_memories 使用 |
 | `_extract_brain_memories_from_text` | brain_graph.py | 仅 recall_memories 使用 |
-| `remember_memory` | brain_api.py | HTTP API 端点函数 + Request Model |
-| `recall_memories` | brain_api.py | HTTP API 端点函数 + Request Model |
-| runner.py recall_memories 调用 | runner.py 第 1489-1498 行 | `_inject_dynamic_resources` 中的 brain graph memory recall 步骤 |
+| `brain_api.py` 整个文件 | brain_api.py | 只剩 `/api/brain/status` 一个端点，整体删除。`/api/brain/status` 功能合并到 `brain_region_api.py` |
+| `brain_api.py` 路由注册 | `__main__.py` 第 28 行和第 387 行 | `from niu_api.brain_api import router` + `app.include_router(brain_router)` 一并删除 |
+| runner.py recall_memories 调用 | runner.py 第 1489-1498 行 | `_inject_dynamic_resources` 中的 brain graph memory recall 步骤（含 import 行和 brain_memories_text 处理逻辑） |
 | 6 个磁盘工具映射 | config/disk/memory-server.yaml | |
 | 6 个 hidden 工具声明 | config/mcp-servers.yaml | |
 | `scripts/reindex_vectors.py` | scripts | vectors.db 重索引脚本，已无意义 |
@@ -93,8 +93,8 @@ MAX_MEMORY_ITEMS: 4 → 9
 
 文件：`agent/runner.py`
 
-- `_render_permanent_section` 中的尾部提示从"共N/5条"改为"共N/10条"
-- 删除 `_inject_dynamic_resources` 中第 1489-1498 行的 `bg.recall_memories()` 调用块
+- `_render_permanent_section` 中的尾部提示从"共N/5条"改为"共N/10条"，工具引用从"memory-server/user_memory_remember"改为"disk"
+- 删除 `_inject_dynamic_resources` 中第 1489-1498 行的 `bg.recall_memories()` 调用块（含 import 行和 brain_memories_text 处理）
 
 #### 4. __init__.py 清理
 
@@ -118,6 +118,7 @@ MAX_MEMORY_ITEMS: 4 → 9
 - `runner.py` 的 `_load_memory_for_prompt` / `_render_permanent_section`（只微调常量）
 - 内容提取 Agent（自动提取知识到知识图谱）
 - `brain_graph.py` 的 `ensure_niu_entity`、`format_memories_for_prompt` 和其他非记忆方法
+- `format_memories_for_prompt` 当前无运行时调用者（唯一调用点在 runner.py 已删除），保留供测试和未来复用
 - `brain_api.py` 的 `/api/brain/status` 端点（保留）
 - `compat.py` 的已有 vectors.db 兼容代码（已是 skip 状态，后续可随整体清理）
 - `lightrag_sync.py` 的 `_sync_vectors_db()` 已硬编码 skip，保留不动（低优先级，后续清理）
@@ -136,3 +137,18 @@ MAX_MEMORY_ITEMS: 4 → 9
 | `MemoryStorage` (storage.py) | 仅 __init__.py 导入 | LOW |
 
 handler.py 的 `dispatch()` 使用 `hasattr(self, method_name)` 检查，删除 `do_save_memory` 后不会报错。前端无 `/api/brain/remember` 或 `/api/brain/recall` 调用。
+
+## 删除顺序
+
+按依赖链从上游到下游，避免中间状态编译失败或运行时错误：
+
+1. **handler.py** — 删除 `do_save_memory`（上游调用者先删）
+2. **runner.py** — 删除 `recall_memories` 调用块 + import 行
+3. **__init__.py** — 删除 `from .storage import MemoryStorage` + `storage = MemoryStorage()` + 6 个工具的 handler/schema/别名（**必须先于 storage.py 文件删除**，否则 MCP Loader 启动崩溃）
+4. **storage.py** — 删除文件（__init__.py 已清理完 import）
+5. **brain_graph.py** — 删除 `store_memory`/`recall_memories` + 辅助函数/常量
+6. **brain_api.py** — 删除整个文件
+7. **__main__.py** — 删除 brain_api 路由注册，把 `/api/brain/status` 合并到 `brain_region_api.py`
+8. **配置文件** — disk yaml、mcp-servers.yaml、config-manager
+9. **脚本和测试** — reindex_vectors.py、test_memory_server.py、test_brain_graph.py 4 个测试类
+10. **vectors.db 文件** — startup 时检测删除
