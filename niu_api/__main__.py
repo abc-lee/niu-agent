@@ -25,7 +25,6 @@ from niu_api.compat import router as compat_router
 from niu_api.injector import router as injector_router
 from niu_api.alerts_api import router as alerts_router
 from niu_api.kg_api import router as kg_router
-from niu_api.brain_api import router as brain_router
 from niu_api.brain_region_api import router as brain_region_router
 from niu_api.notes_api import router as notes_router
 from niu_api.llm_proxy import router as llm_proxy_router
@@ -203,6 +202,15 @@ async def lifespan(app: FastAPI):
         logger.info("Brain graph initialized (Niu entity ensured)")
     except Exception as e:
         logger.warning(f"Brain graph initialization failed: {e}")
+
+    # Clean up deprecated vectors.db
+    try:
+        vectors_db_path = Path.home() / ".niu" / "work" / "vectors.db"
+        if vectors_db_path.exists():
+            vectors_db_path.unlink()
+            logger.info("Removed deprecated vectors.db: %s", vectors_db_path)
+    except Exception as e:
+        logger.debug(f"vectors.db cleanup failed (non-blocking): {e}")
 
     # 8.02. Create default brain regions (must be before RegionSync so activation_mgr finds them)
     try:
@@ -384,7 +392,6 @@ app.include_router(chat_router)
 app.include_router(injector_router)  # Injector API
 app.include_router(alerts_router)  # Alerts API
 app.include_router(kg_router)  # Knowledge Graph API
-app.include_router(brain_router)  # Brain Graph API
 app.include_router(brain_region_router)  # Brain Region API
 app.include_router(notes_router)  # Notes API
 app.include_router(llm_proxy_router)
