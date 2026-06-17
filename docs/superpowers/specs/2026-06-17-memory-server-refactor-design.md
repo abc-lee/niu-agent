@@ -36,7 +36,8 @@ Memory Server 当前包含两套完全独立的记忆体系：
 | `_extract_brain_memories_from_text` | brain_graph.py | 仅 recall_memories 使用 |
 | `brain_api.py` 整个文件 | brain_api.py | 只剩 `/api/brain/status` 一个端点，整体删除。`/api/brain/status` 功能合并到 `brain_region_api.py` |
 | `brain_api.py` 路由注册 | `__main__.py` 第 28 行和第 387 行 | `from niu_api.brain_api import router` + `app.include_router(brain_router)` 一并删除 |
-| runner.py recall_memories 调用 | runner.py 第 1489-1498 行 | `_inject_dynamic_resources` 中的 brain graph memory recall 步骤（含 import 行和 brain_memories_text 处理逻辑） |
+| runner.py recall_memories 调用 | runner.py 第 1489-1498 行 | `_inject_dynamic_resources` 中的 brain graph memory recall 步骤（含 import 行和 brain_memories_text 赋值） |
+| runner.py brain_memories_text 消费 | runner.py 第 1561-1564 行 | `_strip_lightrag_error_lines(brain_memories_text)` + `if brain_memories_text: parts.append`，变量未定义必须一并删除 |
 | 6 个磁盘工具映射 | config/disk/memory-server.yaml | |
 | 6 个 hidden 工具声明 | config/mcp-servers.yaml | |
 | `scripts/reindex_vectors.py` | scripts | vectors.db 重索引脚本，已无意义 |
@@ -119,7 +120,7 @@ MAX_MEMORY_ITEMS: 4 → 9
 - 内容提取 Agent（自动提取知识到知识图谱）
 - `brain_graph.py` 的 `ensure_niu_entity`、`format_memories_for_prompt` 和其他非记忆方法
 - `format_memories_for_prompt` 当前无运行时调用者（唯一调用点在 runner.py 已删除），保留供测试和未来复用
-- `brain_api.py` 的 `/api/brain/status` 端点（保留）
+- `brain_region_api.py` 合并 `/api/brain/status` 端点（原 brain_api.py 的功能），同时更新第 12-14 行的过时注释
 - `compat.py` 的已有 vectors.db 兼容代码（已是 skip 状态，后续可随整体清理）
 - `lightrag_sync.py` 的 `_sync_vectors_db()` 已硬编码 skip，保留不动（低优先级，后续清理）
 
@@ -152,3 +153,14 @@ handler.py 的 `dispatch()` 使用 `hasattr(self, method_name)` 检查，删除 
 8. **配置文件** — disk yaml、mcp-servers.yaml、config-manager
 9. **脚本和测试** — reindex_vectors.py、test_memory_server.py、test_brain_graph.py 4 个测试类
 10. **vectors.db 文件** — startup 时检测删除
+
+## 端到端验证清单
+
+1. Memory Server 启动：`python -m niu_memory_server` 无 ImportError
+2. 3 个工具正常工作：ToolRegistry 调用 `user_memory_remember`/`forget`/`list` 返回正确结果
+3. 6 个旧工具不存在：`registry.get("memory-server/remember")` 返回 None
+4. 主 Agent 提示词渲染：permanent 数组正确渲染，尾部提示为"共N/10条"，工具引用为 disk
+5. `_inject_dynamic_resources` 不报 NameError，日志中无 brain graph recall 输出
+6. GET `/api/brain/status` 返回 200（已合并到 brain_region_api.py）
+7. GET `/api/brain/remember` 和 `/api/brain/recall` 返回 404（路由已移除）
+8. `~/.niu/work/vectors.db` 不存在（startup 时已清理）
