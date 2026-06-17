@@ -922,11 +922,11 @@ async def _tidy_context_impl(request: dict):
         except Exception:
             pass
         if real_prompt_tokens > 0:
-            usage_percent = (real_prompt_tokens / context_window_tokens) * 100
+            usage_percent = (real_prompt_tokens / context_window_tokens) * 100 if context_window_tokens > 0 else 0
             display_tokens = real_prompt_tokens
             logger.info(f"[Tidy] Current context: {message_count} messages, real_tokens={real_prompt_tokens}, est_tokens={estimated_tokens}, {usage_percent:.1f}%")
         else:
-            usage_percent = (estimated_tokens / context_window_tokens) * 100
+            usage_percent = (estimated_tokens / context_window_tokens) * 100 if context_window_tokens > 0 else 0
             display_tokens = estimated_tokens
             logger.info(f"[Tidy] Current context: {message_count} messages, {estimated_tokens} tokens, {usage_percent:.1f}%")
 
