@@ -214,6 +214,7 @@ def agent_runner_loop(
 
     turn = 0
     last_prompt_tokens = 0
+    handler._last_prompt_tokens = 0
     _compress_cooldown = False  # 回调冷却：同一轮 agent_runner_loop 只触发一次压缩
     handler._done_hooks = []
     handler.max_turns = max_turns
@@ -243,6 +244,7 @@ def agent_runner_loop(
                     on_context_high_usage(messages, last_prompt_tokens, context_window_tokens)
                     # 回调内部已完成压缩并原地修改 messages（messages[:] = ...）
                     last_prompt_tokens = 0  # 重置，下轮重新获取
+                    handler._last_prompt_tokens = 0
                     _compress_cooldown = True  # 冷却：本次 agent_runner_loop 不再触发压缩
                 else:
                     # 子 Agent：FIFO 裁剪到 target 阈值
@@ -291,6 +293,7 @@ def agent_runner_loop(
             _pt = u.get('prompt_tokens', 0) if isinstance(u, dict) else getattr(u, 'prompt_tokens', 0)
             if isinstance(_pt, (int, float)):
                 last_prompt_tokens = int(_pt)
+                handler._last_prompt_tokens = last_prompt_tokens
                 logger.info(f"[Context] prompt_tokens={last_prompt_tokens}, context_window={context_window_tokens}")
                 # 提取后立即检测：如果超阈值，在当前轮就触发回调/FIFO
                 # （无工具调用时循环会退出，下轮顶部检测不会执行，所以此处必须检测）
@@ -302,6 +305,7 @@ def agent_runner_loop(
                                         f"({usage_ratio:.1%} > {warning_threshold:.0%})")
                             on_context_high_usage(messages, last_prompt_tokens, context_window_tokens)
                             last_prompt_tokens = 0
+                            handler._last_prompt_tokens = 0
                             _compress_cooldown = True
                         else:
                             target_tokens = context_target_threshold if context_target_threshold > 0 else int(context_window_tokens * 0.50)

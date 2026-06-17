@@ -7,14 +7,17 @@ description: Use when writing or organizing user's daily work journal, or genera
 
 ## 支持的报告类型
 
+> **注意**：每天只写短格式日志条目（`- HH:MM xxx | 项目:xxx | 类型:xxx | 状态:xxx`），不生成日报报告。只有周报及以上才走报告生成流程。
+
 | 类型 | 时间范围 | 触发方式 |
 |------|----------|----------|
-| 日报 | 当天 | 每日 18:00 定时任务 |
 | 周报 | 本周一至周日 | 周一 9:00 提醒 / 用户主动触发 |
 | 月报 | 本月1日至月末 | 用户主动触发 |
 | 季报 | 本季度 | 用户主动触发 |
 | 年报 | 本年度 | 用户主动触发 |
 | 自定义 | 用户指定范围 | 用户主动触发 |
+
+*每日 18:00 定时任务触发 journal-agent 补充日志条目（非报告）。*
 
 ## 日志编写规则
 
@@ -33,8 +36,8 @@ description: Use when writing or organizing user's daily work journal, or genera
    - 标注进展状态
    - 提取关键成果
    - 识别问题和风险
-5. 生成 Markdown 格式报告
-6. 可选：用 office-docs Skill 输出为 Word/PPT
+5. 生成 Markdown 格式报告并追加写入 `journal.md`，禁止默认另建分散报告文件
+6. 仅在用户明确要求 Word/PPT 时，才用 office-docs Skill 另行输出副本
 
 ## 周报模板
 
@@ -103,7 +106,7 @@ description: Use when writing or organizing user's daily work journal, or genera
 
 ## 报告写入规则
 
-- **所有报告（日报/周报/月报/季报/年报）均追加写入 journal.md 文件**，不单独建文件
+- **所有报告（周报/月报/季报/年报）均追加写入 journal.md 文件**，不单独建文件
 - 报告按日期顺序写在 journal.md 末尾，格式如下：
 
 ```markdown
