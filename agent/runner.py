@@ -1486,17 +1486,6 @@ class NiuRunner:
         except Exception as e:
             logger.debug(f"Interaction habits search failed (non-blocking): {e}")
 
-        # 4. Brain graph memory recall
-        brain_memories_text = ""
-        try:
-            from niu_api.internal.brain_graph import get_brain_graph, format_memories_for_prompt
-            bg = get_brain_graph()
-            brain_memories = bg.recall_memories(context, top_k=10, min_weight=0.3, keywords=keywords)
-            if brain_memories:
-                brain_memories_text = format_memories_for_prompt(brain_memories)
-        except Exception as e:
-            logger.debug(f"Brain graph recall failed (non-blocking): {e}")
-
         # ============== Format & Inject ==============
         parts = []
         seen_names: set[str] = set()
@@ -1557,11 +1546,6 @@ class NiuRunner:
             )
             if habits_text:
                 parts.append(habits_text)
-
-        # Brain memories
-        brain_memories_text = _strip_lightrag_error_lines(brain_memories_text)
-        if brain_memories_text:
-            parts.append(brain_memories_text)
 
         injection = "\n".join(parts)
         if injection:
