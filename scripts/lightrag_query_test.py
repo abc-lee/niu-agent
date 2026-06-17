@@ -54,7 +54,7 @@ TEST_ENTITIES = [
         "entity_type": "mcp_tool",
         "description": "记忆存储工具，将用户偏好、身份信息和上下文记忆持久化到本地存储",
         "source_id": "test_data",
-        "file_path": "mcp_tool://memory-server/remember",
+        "file_path": "mcp_tool://memory-server/user_memory_remember",
     },
     {
         "entity_name": "Python",
@@ -133,7 +133,7 @@ TEST_CHUNKS = [
         "content": "memory_remember: Store user preferences, identity information, and contextual memories. "
                    "Called automatically by the agent loop to persist important information across sessions.",
         "source_id": "test_data",
-        "file_path": "mcp_tool://memory-server/remember",
+        "file_path": "mcp_tool://memory-server/user_memory_remember",
     },
     {
         "content": "Python is the primary implementation language for the ai-bot project. "
