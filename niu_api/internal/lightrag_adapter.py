@@ -1434,8 +1434,8 @@ class LightRAGIngester:
         Reads the current entity, updates success/fail counts, and re-injects
         it (LightRAG upsert). If fail_count >= 3, deletes the entity instead.
 
-        This replaces vector_search.update_habit_confidence() which used
-        direct SQLite operations on vectors.db.
+        This replaces the old vector_search.update_habit_confidence() which
+        used SQLite operations on the now-removed vectors.db.
 
         Args:
             entity_name: Entity name (e.g., "tool_dialect_kg-server").

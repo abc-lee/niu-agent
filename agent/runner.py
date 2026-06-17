@@ -19,7 +19,6 @@ from typing import Any, Dict, Generator, Optional
 
 from loguru import logger
 
-from niu_api.internal.lightrag_adapter import _LIGHTRAG_ERROR_MARKERS
 
 
 # --- Stop flag mechanism ---
@@ -93,36 +92,6 @@ def _sanitize_memory_content(content: str) -> str:
     if len(content) > 300:
         content = content[:300] + "..."
     return content.strip()
-
-
-def _strip_lightrag_error_lines(text: str) -> str:
-    """Remove lines containing LightRAG fail_response markers from text.
-
-    Filters out any line that contains LightRAG's canned error markers
-    (e.g. "not able to provide" or "[no-context]"), which indicate the
-    query returned no results.  These are NOT LLM-generated content and
-    must not appear in the system prompt.
-
-    Args:
-        text: Multi-line text that may contain LightRAG error lines.
-
-    Returns:
-        The text with error lines removed.  Returns empty string if all
-        lines are error lines or the result is whitespace-only.
-    """
-    if not text or not isinstance(text, str):
-        return ""
-    lower = text.lower()
-    # Fast path: if no markers present, return as-is
-    if not any(marker in lower for marker in _LIGHTRAG_ERROR_MARKERS):
-        return text
-    # Filter out lines containing any marker
-    filtered_lines = [
-        line for line in text.split("\n")
-        if not any(marker in line.lower() for marker in _LIGHTRAG_ERROR_MARKERS)
-    ]
-    result = "\n".join(filtered_lines).strip()
-    return result
 
 
 def _render_permanent_section(permanent: list) -> str:
