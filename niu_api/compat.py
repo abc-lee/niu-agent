@@ -1262,8 +1262,16 @@ async def _tidy_context_impl(request: dict):
 
             new_compress_id = last_compress_id
             if compress_msg_ids:
-                # 构建保护消息 UUID 列表
-                protected_ids = compress_msg_ids[-protect_recent_count:] if len(compress_msg_ids) > protect_recent_count else compress_msg_ids[:]
+                # 构建保护消息 UUID 列表（只含 user/assistant 消息，不含 tool 输出）
+                _pids = []
+                for i in range(len(compress_msg_ids) - 1, -1, -1):
+                    _mid = compress_msg_ids[i]
+                    _m = next((m for m in messages if getattr(m, "id", "") == _mid), None)
+                    if _m and getattr(_m, "role", "") in ("user", "assistant"):
+                        _pids.insert(0, _mid)
+                    if len(_pids) >= protect_recent_count:
+                        break
+                protected_ids = _pids if _pids else compress_msg_ids[:]
 
                 prompt = f"""系统进入睡眠状态。
 
@@ -1741,10 +1749,16 @@ async def _tidy_context_impl(request: dict):
                             if unsafe_updates:
                                 logger.warning(f"[Tidy] Force: Protecting {len(unsafe_updates)} messages after dream cursor from content replacement")
                                 valid_updates = [u for u in valid_updates if u.get("message_id", "") not in post_dream_ids]
-                    # 程序层面排除保护范围内的消息 ID
+                    # 程序层面排除保护范围内的消息 ID（只保护 user/assistant，不保护 tool 输出）
                     protect_recent_count = _read_protect_recent_count()
                     if protect_recent_count > 0 and len(fresh_messages) > protect_recent_count:
-                        protected_force_ids = {getattr(m, "id", "") for m in fresh_messages[-protect_recent_count:]}
+                        _pids = []
+                        for m in reversed(fresh_messages):
+                            if getattr(m, "role", "") in ("user", "assistant"):
+                                _pids.append(getattr(m, "id", ""))
+                            if len(_pids) >= protect_recent_count:
+                                break
+                        protected_force_ids = set(_pids)
                         removed_deletes = [mid for mid in valid_deletes if mid in protected_force_ids]
                         if removed_deletes:
                             logger.warning(f"[Tidy] Force: Protecting {len(removed_deletes)} recent messages from deletion: {removed_deletes}")
