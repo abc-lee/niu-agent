@@ -108,6 +108,12 @@ def load_mcp_tools(required_servers: Optional[List[Tuple[str, str]]] = None) -> 
 
     # Load MCP configuration and add workdirs to sys.path
     config = _load_mcp_config()
+    # 确保项目根目录在 sys.path（MCP 服务器需要 import agent.*）
+    from pathlib import Path as _Path
+    _project_root = str(_Path(__file__).resolve().parent.parent)
+    if _project_root not in sys.path:
+        sys.path.insert(0, _project_root)
+
     _add_server_workdirs_to_sys_path(config)
 
     registry = ToolRegistry()
