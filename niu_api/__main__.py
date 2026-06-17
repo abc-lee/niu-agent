@@ -205,10 +205,10 @@ async def lifespan(app: FastAPI):
 
     # Clean up deprecated vectors.db
     try:
-        vectors_db_path = Path.home() / ".niu" / "work" / "vectors.db"
-        if vectors_db_path.exists():
-            vectors_db_path.unlink()
-            logger.info("Removed deprecated vectors.db: %s", vectors_db_path)
+        for _vdb_path in [Path.home() / ".niu" / "work" / "vectors.db", Path.home() / ".niu" / "vectors.db"]:
+            if _vdb_path.exists():
+                _vdb_path.unlink()
+                logger.info("Removed deprecated vectors.db: %s", _vdb_path)
     except Exception as e:
         logger.debug(f"vectors.db cleanup failed (non-blocking): {e}")
 

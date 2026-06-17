@@ -81,7 +81,7 @@ def get_tool_definitions() -> list[Tool]:
     return [
         Tool(
             name="user_memory_remember",
-            description="添加用户长期记忆或工作便签。type='task'为当前工作便签(最多1条,新任务自动覆盖旧任务); type='memory'为用户长期记忆(最多9条)。记忆将永久驻留在系统提示词中，异常退出后下次继续。",
+            description="添加用户长期记忆或工作便签。type='task'为当前工作便签(最多1条,新任务自动覆盖旧任务,用于保存复杂任务的进度/关键参数/下一步); type='memory'为用户长期记忆(最多9条,仅在用户明确要求记住时添加)。记忆永久驻留系统提示词,异常退出后下次继续。",
             inputSchema={
                 "type": "object",
                 "properties": {

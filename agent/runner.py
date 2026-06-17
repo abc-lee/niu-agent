@@ -253,7 +253,7 @@ def _load_memory_for_prompt() -> str:
         user_str = "## 用户信息\n\n" + "\n".join(user_lines)
         parts.append(user_str)
 
-    # 用户长期记忆（驻留在 system prompt，最多5条，每条≤200 token）
+    # 用户长期记忆（驻留在 system prompt，最多10条(1 task + 9 memory)，每条≤200 token）
     permanent = memory.get("permanent", [])
     perm_str = _render_permanent_section(permanent)
     if perm_str:
