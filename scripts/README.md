@@ -25,44 +25,6 @@ python scripts/test_l0l1l2.py
 
 ---
 
-#### 2. Memory Server 功能测试
-```bash
-python scripts/test_memory_server.py
-```
-
-**测试内容**：
-- L0/L1/L2 三层存储
-- 记忆保存和检索
-- 统计和清理功能
-
-**预期结果**：
-```
-✓ 成功创建 L0/L1/L2 三层记录
-✓ L1 搜索返回 L1 记录
-✓ L2 搜索返回 L2 记录
-✓ 统计功能正常
-```
-
----
-
-#### 3. Agent 层自我进化测试
-```bash
-python scripts/test_agent_evolution.py
-```
-
-**测试内容**：
-- 记忆类型推断
-- 记忆内容生成
-- 重要性计算
-
-**预期结果**：
-```
-✓ 记忆类型推断正确
-✓ 重要性计算符合设计
-```
-
----
-
 ### 集成测试
 
 #### 向量库初始化
@@ -163,15 +125,9 @@ print(f'数据库路径: {vs.db_path}')
 "
 ```
 
-### 检查 Memory Server 状态
-```bash
-python scripts/test_memory_server.py
-```
-
 ### 清理测试数据
 ```bash
 # ⚠️ 警告：会删除所有记忆数据
-rm ~/.niu/vectors.db
 python scripts/init_vector_db.py
 ```
 
@@ -189,20 +145,6 @@ tail -f logs/api_stderr.log | grep "Dynamic injection"
 
 # 监控 MCP 调用
 tail -f logs/api_stderr.log | grep "MCP"
-```
-
-### 数据库查询
-```bash
-# 查看向量库记录
-sqlite3 ~/.niu/vectors.db "SELECT COUNT(*) FROM documents"
-
-# 查看记忆类型分布
-sqlite3 ~/.niu/vectors.db "
-SELECT json_extract(metadata, '$.memory_type'), COUNT(*)
-FROM documents
-WHERE json_extract(metadata, '$.level') = 'l1'
-GROUP BY json_extract(metadata, '$.memory_type')
-"
 ```
 
 ---
@@ -247,7 +189,7 @@ print(f'结果数量: {len(results)}')
 ## 注意事项
 
 1. **测试顺序**：
-   - 先运行基础测试（test_l0l1l2.py, test_memory_server.py, test_agent_evolution.py）
+   - 先运行基础测试（test_l0l1l2.py）
    - 再进行对话测试
    - 最后运行集成测试
 

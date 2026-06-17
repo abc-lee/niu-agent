@@ -46,7 +46,7 @@ def _render_permanent_section(permanent):
         lines.append("以下内容用户特别强调，必须始终遵守：")
         for i, item in enumerate(memory_items, 1):
             lines.append(f"{i}. {_sanitize_memory_content(item.get('content', str(item)))}")
-    lines.append(f"（共{len(normalized)}/5条，使用 memory-server/user_memory_remember 添加，memory-server/user_memory_forget 删除）")
+    lines.append(f"（共{len(normalized)}/10条，使用 disk 添加/删除）")
     return "<!--USER_MEMORY_START-->\n" + "\n".join(lines) + "\n<!--USER_MEMORY_END-->"
 
 
@@ -187,7 +187,7 @@ async def test_user_memory_list():
         result = await mod.user_memory_list_handler()
         assert result["status"] == "success"
         assert result["count"] == 2
-        assert result["max_memory"] == 4
+        assert result["max_memory"] == 9
         assert result["max_task"] == 1
         assert result["memories"] == [_mem("A"), _mem("B")]
 
@@ -196,20 +196,20 @@ async def test_user_memory_list():
 
 
 def test_truncate_over_limit():
-    """Truncate permanent array > 5 on load"""
+    """Truncate permanent array > 10 on load"""
     with tempfile.TemporaryDirectory() as tmp:
         memory_path = Path(tmp) / ".niu" / "memory.json"
         memory_path.parent.mkdir(parents=True, exist_ok=True)
-        data = {"permanent": [_mem(f"记忆{i}") for i in range(8)]}
+        data = {"permanent": [_mem(f"记忆{i}") for i in range(11)]}
         memory_path.write_text(json.dumps(data), encoding="utf-8")
 
         _setup_module(memory_path)
 
         result = mod._read_memory_json()
         assert len(result["permanent"]) == mod.MAX_PERMANENT_ITEMS
-        # Kept first 5
+        # Kept first 10
         assert result["permanent"][0] == _mem("记忆0")
-        assert result["permanent"][4] == _mem("记忆4")
+        assert result["permanent"][9] == _mem("记忆9")
 
     mod._reset_memory_json_path()
     print("PASS: test_truncate_over_limit")
@@ -376,8 +376,8 @@ async def test_truncated_rejects_remember():
     with tempfile.TemporaryDirectory() as tmp:
         memory_path = Path(tmp) / ".niu" / "memory.json"
         memory_path.parent.mkdir(parents=True, exist_ok=True)
-        # Write 8 items (over max 5)
-        data = {"permanent": [_mem(f"记忆{i}") for i in range(8)]}
+        # Write 12 items (over max 10)
+        data = {"permanent": [_mem(f"记忆{i}") for i in range(12)]}
         memory_path.write_text(json.dumps(data), encoding="utf-8")
 
         _setup_module(memory_path)
@@ -389,7 +389,7 @@ async def test_truncated_rejects_remember():
 
         # File should NOT be modified (no silent data loss)
         saved = json.loads(memory_path.read_text(encoding="utf-8"))
-        assert len(saved["permanent"]) == 8
+        assert len(saved["permanent"]) == 12
 
     mod._reset_memory_json_path()
     print("PASS: test_truncated_rejects_remember")
@@ -400,7 +400,7 @@ async def test_truncated_allows_forget():
     with tempfile.TemporaryDirectory() as tmp:
         memory_path = Path(tmp) / ".niu" / "memory.json"
         memory_path.parent.mkdir(parents=True, exist_ok=True)
-        data = {"permanent": [_mem(f"记忆{i}") for i in range(8)]}
+        data = {"permanent": [_mem(f"记忆{i}") for i in range(12)]}
         memory_path.write_text(json.dumps(data), encoding="utf-8")
 
         _setup_module(memory_path)
