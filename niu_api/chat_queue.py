@@ -355,9 +355,6 @@ class ChatQueue:
             from niu_api.compat import _tidy_context_impl, _tidy_lock
             async with _tidy_lock:
                 await _tidy_context_impl(request={"session_id": session_id, "mode": "force"})
-        elif full_reply.strip():
-            from niu_api.compat import _check_and_trigger_auto_tidy
-            await _check_and_trigger_auto_tidy(store)
 
 
 # ============== 全局单例 ==============

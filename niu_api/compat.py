@@ -261,19 +261,8 @@ def _estimate_total_tokens(messages) -> int:
 
 
 def _should_auto_tidy(current_tokens: int, context_window_tokens: int = 0) -> bool:
-    """
-    判断是否应该触发自动增量整理。
-
-    仅当上下文使用率 >= 80% 时触发。
-    工具输出的超长问题由 agent_loop 中的截断机制处理，
-    不再用 50K 增量阈值触发整理（该阈值在重启后容易误触发）。
-    """
-    if current_tokens <= 0:
-        return False
-    if context_window_tokens <= 0:
-        return False
-    usage_ratio = current_tokens / context_window_tokens
-    return usage_ratio >= 0.80
+    """已禁用：压缩只在 agent_loop 工具循环中同步触发，不在对话后异步触发。"""
+    return False
 
 
 async def _check_and_trigger_auto_tidy(store):
@@ -649,11 +638,6 @@ async def chat_session(request: ChatRequest) -> ChatResponse:
                 finally:
                     _tidy_lock.release()
                 logger.info(f"[Chat Session] Force compression result: {tidy_result.get('status')}")
-        else:
-            # 正常：异步触发增量整理检查（不阻塞）
-            if full_reply.strip():
-                await _check_and_trigger_auto_tidy(store)
-
         return ChatResponse(reply=full_reply, session_id="default", message_id=message_id)
     finally:
         from agent.runner import clear_stop, drain_supplements
