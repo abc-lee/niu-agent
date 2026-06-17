@@ -75,16 +75,15 @@ class TestContextManager:
         assert tokens < 100, "Simple messages should have less than 100 tokens"
 
     def test_should_compress_by_message_count(self):
-        """测试根据消息数量判断是否压缩"""
+        """测试 should_compress 已禁用：压缩只在 agent_loop 工具循环中同步触发"""
         manager = ContextManager(None, max_messages=50)
 
-        # 少于限制
+        # should_compress 已禁用，无论消息数量多少都返回 False
         messages = [{"role": "user", "content": f"Message {i}"} for i in range(40)]
-        assert not manager.should_compress(messages), "Should not compress when under limit"
+        assert not manager.should_compress(messages), "should_compress is disabled, should return False"
 
-        # 超过限制
         messages = [{"role": "user", "content": f"Message {i}"} for i in range(60)]
-        assert manager.should_compress(messages), "Should compress when over limit"
+        assert not manager.should_compress(messages), "should_compress is disabled, should return False"
 
     def test_compress_messages(self):
         """测试消息压缩"""
