@@ -640,10 +640,11 @@ class NiuRunner:
         """
         msg_tokens = []
         try:
-            from litellm import token_counter
+            from agent.token_calculator import TokenCalculator
+            calc = TokenCalculator.get()
             for msg in db_messages:
                 try:
-                    t = token_counter(model="gpt-4o", messages=[{"role": msg.role, "content": msg.content or ""}])
+                    t = calc.count_message_single(msg.role, msg.content or "")
                 except Exception:
                     t = max(1, len(msg.content or "") // 2) + 4
                 msg_tokens.append(t)

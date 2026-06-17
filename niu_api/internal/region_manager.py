@@ -1168,8 +1168,9 @@ class RegionManager:
 
         # Token truncation check
         try:
-            import litellm
-            token_count = litellm.token_counter(model="gpt-4o", text=prompt)
+            from agent.token_calculator import TokenCalculator
+            calc = TokenCalculator.get()
+            token_count = calc.count_text(prompt)
             context_window = _read_context_window_size()
             if token_count > context_window - 500:
                 while entity_list_parts and token_count > context_window - 500:
@@ -1186,7 +1187,7 @@ class RegionManager:
                         f"现有脑区：{existing_str}\n\n"
                         f"实体列表：{entity_list_str}"
                     )
-                    token_count = litellm.token_counter(model="gpt-4o", text=prompt)
+                    token_count = calc.count_text(prompt)
         except Exception:
             pass  # Token counting failure should not block
 
@@ -1399,8 +1400,9 @@ class RegionManager:
 
         # Token truncation
         try:
-            import litellm
-            token_count = litellm.token_counter(model="gpt-4o", text=prompt)
+            from agent.token_calculator import TokenCalculator
+            calc = TokenCalculator.get()
+            token_count = calc.count_text(prompt)
             context_window = _read_context_window_size()
             if token_count > context_window - 500:
                 while len(community_lines) > 1 and token_count > context_window - 500:
@@ -1417,7 +1419,7 @@ class RegionManager:
                         f"现有脑区：{existing_str}\n\n"
                         f"{communities_str}"
                     )
-                    token_count = litellm.token_counter(model="gpt-4o", text=prompt)
+                    token_count = calc.count_text(prompt)
         except Exception:
             pass
 

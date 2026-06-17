@@ -167,8 +167,8 @@ def get_messages(session_id: str, **kwargs) -> dict:
         for i, msg in enumerate(messages, 1):
             content = getattr(msg, "content", "") or ""
             try:
-                from litellm import token_counter
-                tokens = token_counter(model="gpt-4o", messages=[{"role": getattr(msg, "role", "user"), "content": content}])
+                from agent.token_calculator import TokenCalculator
+                tokens = TokenCalculator.get().count_message_single(getattr(msg, "role", "user"), content)
             except Exception:
                 tokens = max(1, len(content) // 2) + 4
             total_tokens += tokens
@@ -368,8 +368,8 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         for i, msg in enumerate(messages, 1):
             content = msg.get("content", "")
             try:
-                from litellm import token_counter
-                tokens = token_counter(model="gpt-4o", messages=[{"role": msg.get("role", "user"), "content": content}])
+                from agent.token_calculator import TokenCalculator
+                tokens = TokenCalculator.get().count_message_single(msg.get("role", "user"), content)
             except Exception:
                 tokens = max(1, len(content) // 2) + 4
             total_tokens += tokens
