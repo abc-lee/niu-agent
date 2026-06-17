@@ -16,7 +16,7 @@ ToolRegistry - MCP工具注册中心
     registry.register_server("memory-server", memory_module)
 
     # 获取工具函数
-    tool_fn = registry.get("memory-server/remember")
+    tool_fn = registry.get("memory-server/user_memory_remember")
 
     # 获取工具schema列表（用于LLM）
     schemas = registry.get_schemas()

@@ -186,10 +186,10 @@ from agent.tool_registry import get_registry
 
 # 获取工具函数
 registry = get_registry()
-tool_fn = registry.get("memory-server/remember")
+tool_fn = registry.get("memory-server/user_memory_remember")
 
 # 直接调用（无需 stdio 通信）
-result = tool_fn(content="用户喜欢 Python", metadata={"type": "preference"})
+result = tool_fn(content="用户喜欢 Python", type="memory")
 
 # 获取 schema 列表（用于 LLM）
 schemas = registry.get_schemas()
@@ -414,7 +414,7 @@ preload_face_model()
 
 **检查**：
 1. LightRAG 是否初始化：检查日志中是否有 "LightRAG initialized" 
-2. Memory Server 是否正常：`python scripts/test_memory_server.py`
+2. Memory Server 是否正常：`python -m niu_memory_server`
 3. 日志中是否有错误：`tail -f logs/api_stderr.log | grep "记忆|MEMORY|LightRAG"`
 
 **解决**：

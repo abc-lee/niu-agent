@@ -718,7 +718,6 @@ def set_workspace(path: str) -> dict[str, Any]:
 
     # Create subdirectories
     (workspace_path / "documents").mkdir(exist_ok=True)
-    (workspace_path / "vectors.db").parent.mkdir(exist_ok=True)
 
     memory["workspace"] = {
         "path": str(workspace_path.absolute()),
