@@ -147,7 +147,7 @@ def _render_permanent_section(permanent: list) -> str:
         lines.append("以下内容用户特别强调，必须始终遵守：")
         for i, item in enumerate(memory_items, 1):
             lines.append(f"{i}. {_sanitize_memory_content(item.get('content', str(item)))}")
-    lines.append(f"（共{len(normalized)}/5条，使用 memory-server/user_memory_remember 添加，memory-server/user_memory_forget 删除）")
+    lines.append(f"（共{len(normalized)}/10条，使用 disk 添加/删除）")
     return "<!--USER_MEMORY_START-->\n" + "\n".join(lines) + "\n<!--USER_MEMORY_END-->"
 
 # 修复Windows控制台编码问题
