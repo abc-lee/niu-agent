@@ -1755,7 +1755,7 @@ async def _tidy_context_impl(request: dict):
                                 valid_updates = [u for u in valid_updates if u.get("message_id", "") not in post_dream_ids]
                     # 程序层面排除保护范围内的消息 ID（只保护 user/assistant，不保护 tool 输出）
                     protect_recent_count = _read_protect_recent_count()
-                    if protect_recent_count > 0 and len(fresh_messages) > protect_recent_count:
+                    if protect_recent_count > 0:
                         _pids = []
                         for m in reversed(fresh_messages):
                             if getattr(m, "role", "") in ("user", "assistant"):
