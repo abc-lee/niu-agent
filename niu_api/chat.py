@@ -427,12 +427,6 @@ async def chat(request: ChatRequest) -> StreamingResponse:
                     tidy_result = await _tidy_context_impl(request={"session_id": session_id, "mode": "force"})
                 logger.info(f"[Chat SSE] Force compression result: {tidy_result.get('status')}")
                 yield f"data: {json.dumps({'force_compression_done': True, 'status': tidy_result.get('status')})}\n\n"
-            else:
-                # 正常：异步触发增量整理检查（不阻塞）
-                if full_reply.strip():
-                    from niu_api.compat import _check_and_trigger_auto_tidy
-                    await _check_and_trigger_auto_tidy(store)
-
             # Send final message
             yield f"data: {json.dumps({'done': True, 'session_id': session_id, 'message_id': message_id})}\n\n"
         finally:
@@ -532,12 +526,6 @@ async def chat_sync(request: ChatRequest) -> ChatResponse:
                 tidy_result = await _tidy_context_impl(request={"session_id": session_id, "mode": "force"})
             logger.info(f"[Chat] Force compression result: {tidy_result.get('status')}")
             # 压缩完成后不触发 auto_tidy（force 已包含完整3步整理）
-        else:
-            # 正常：异步触发增量整理检查（不阻塞）
-            if full_reply.strip():
-                from niu_api.compat import _check_and_trigger_auto_tidy
-                await _check_and_trigger_auto_tidy(store)
-
         return ChatResponse(session_id=session_id, reply=full_reply, message_id=message_id)
     finally:
         _chat_lock.release()

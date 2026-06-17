@@ -104,24 +104,7 @@ class ContextManager:
             return total_tokens
 
     def should_compress(self, messages: List[Dict[str, Any]]) -> bool:
-        """
-        判断是否需要压缩上下文
-
-        Args:
-            messages: 消息列表
-
-        Returns:
-            是否需要压缩
-        """
-        # 条件1: 消息数量超过限制
-        if len(messages) > self.max_messages:
-            return True
-
-        # 条件2: Token 数量超过 warningThreshold
-        tokens = self.count_tokens_simple(messages)
-        if tokens > self.max_tokens * self._warning_threshold:
-            return True
-
+        """已禁用：压缩只在 agent_loop 工具循环中同步触发。"""
         return False
 
     def compress_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
