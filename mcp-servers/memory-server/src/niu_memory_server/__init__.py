@@ -9,130 +9,18 @@ from mcp.types import Tool, TextContent
 from loguru import logger
 import json
 import asyncio
-from typing import Optional, Dict, Any
-
-from .storage import MemoryStorage
 
 # 创建 MCP 服务器
 server = Server("memory-server")
-
-# 初始化存储
-storage = MemoryStorage()
 
 # ============================================================================
 # Tool Schemas
 # ============================================================================
 
 TOOL_SCHEMAS = {
-    "remember": {
-        "name": "remember",
-        "description": "保存长期记忆",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "content": {"type": "string", "description": "记忆内容"},
-                "memory_type": {
-                    "type": "string",
-                    "description": "记忆类型（environment/preferences/skills/experiences/facts）",
-                    "enum": ["environment", "preferences", "skills", "experiences", "facts"],
-                },
-                "title": {
-                    "type": "string",
-                    "description": "记忆标题（≤20字符），可选，不提供则自动生成",
-                },
-                "importance": {
-                    "type": "number",
-                    "minimum": 0,
-                    "maximum": 1,
-                    "description": "重要性评分（0-1），可选，不提供则根据类型自动设置",
-                },
-                "metadata": {
-                    "type": "object",
-                    "description": "可选的元数据",
-                },
-            },
-            "required": ["content", "memory_type"],
-        },
-    },
-    "recall": {
-        "name": "recall",
-        "description": "检索相关记忆（语义搜索）",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string", "description": "搜索查询"},
-                "limit": {
-                    "type": "integer",
-                    "description": "返回数量限制",
-                    "default": 5,
-                },
-                "memory_type": {
-                    "type": "string",
-                    "description": "可选的记忆类型过滤",
-                },
-                "level": {
-                    "type": "string",
-                    "description": "搜索层级（l0/l1/l2）",
-                    "default": "l1",
-                },
-            },
-            "required": ["query"],
-        },
-    },
-    "update_memory": {
-        "name": "update_memory",
-        "description": "更新已有记忆",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "memory_id": {"type": "string", "description": "记忆 ID"},
-                "content": {"type": "string", "description": "新内容"},
-                "metadata": {
-                    "type": "object",
-                    "description": "可选的元数据更新",
-                },
-            },
-            "required": ["memory_id", "content"],
-        },
-    },
-    "get_memory_stats": {
-        "name": "get_memory_stats",
-        "description": "获取记忆统计信息",
-        "input_schema": {
-            "type": "object",
-            "properties": {},
-        },
-    },
-    "cleanup_memories": {
-        "name": "cleanup_memories",
-        "description": "清理过期记忆",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "days": {
-                    "type": "integer",
-                    "description": "清理多少天前的记忆",
-                    "default": 30,
-                },
-            },
-        },
-    },
-    "link_memories": {
-        "name": "link_memories",
-        "description": "关联两条记忆",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "memory_id_1": {"type": "string", "description": "记忆 ID 1"},
-                "memory_id_2": {"type": "string", "description": "记忆 ID 2"},
-                "relation": {"type": "string", "description": "关系描述"},
-            },
-            "required": ["memory_id_1", "memory_id_2", "relation"],
-        },
-    },
     "user_memory_remember": {
         "name": "user_memory_remember",
-        "description": "添加用户长期记忆或工作便签。type='task'为当前工作便签(最多1条,新任务自动覆盖旧任务,用于保存复杂任务的进度/关键参数/下一步); type='memory'为用户长期记忆(最多4条,仅在用户明确要求记住时添加)。记忆永久驻留系统提示词,异常退出后下次继续。",
+        "description": "添加用户长期记忆或工作便签。type='task'为当前工作便签(最多1条,新任务自动覆盖旧任务,用于保存复杂任务的进度/关键参数/下一步); type='memory'为用户长期记忆(最多9条,仅在用户明确要求记住时添加)。记忆永久驻留系统提示词,异常退出后下次继续。",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -143,7 +31,7 @@ TOOL_SCHEMAS = {
                 "type": {
                     "type": "string",
                     "enum": ["task", "memory"],
-                    "description": "task=当前工作便签(1条,自动覆盖), memory=用户长期记忆(4条,需手动删)",
+                    "description": "task=当前工作便签(1条,自动覆盖), memory=用户长期记忆(9条,需手动删)",
                     "default": "memory",
                 },
             },
@@ -158,7 +46,7 @@ TOOL_SCHEMAS = {
             "properties": {
                 "index": {
                     "type": "integer",
-                    "description": "记忆序号（1-5），优先于 keyword",
+                    "description": "记忆序号（1-10），优先于 keyword",
                 },
                 "keyword": {
                     "type": "string",
@@ -192,114 +80,8 @@ def get_tool_definitions() -> list[Tool]:
     """返回所有工具定义"""
     return [
         Tool(
-            name="remember",
-            description="保存长期记忆（自动生成 L0/L1/L2 三层）",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "content": {"type": "string", "description": "记忆内容"},
-                    "memory_type": {
-                        "type": "string",
-                        "description": "记忆类型（environment/preferences/skills/experiences/facts）",
-                        "enum": ["environment", "preferences", "skills", "experiences", "facts"],
-                    },
-                    "title": {
-                        "type": "string",
-                        "description": "记忆标题（≤20字符），可选，不提供则自动生成",
-                    },
-                    "importance": {
-                        "type": "number",
-                        "minimum": 0,
-                        "maximum": 1,
-                        "description": "重要性评分（0-1），可选，不提供则根据类型自动设置",
-                    },
-                    "metadata": {
-                        "type": "object",
-                        "description": "可选的元数据",
-                    },
-                },
-                "required": ["content", "memory_type"],
-            },
-        ),
-        Tool(
-            name="recall",
-            description="检索相关记忆（语义搜索）",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "搜索查询"},
-                    "limit": {
-                        "type": "integer",
-                        "description": "返回数量限制",
-                        "default": 5,
-                    },
-                    "memory_type": {
-                        "type": "string",
-                        "description": "可选的记忆类型过滤",
-                    },
-                    "level": {
-                        "type": "string",
-                        "description": "搜索层级（l0/l1/l2）",
-                        "default": "l1",
-                    },
-                },
-                "required": ["query"],
-            },
-        ),
-        Tool(
-            name="update_memory",
-            description="更新已有记忆",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "memory_id": {"type": "string", "description": "记忆 ID"},
-                    "content": {"type": "string", "description": "新内容"},
-                    "metadata": {
-                        "type": "object",
-                        "description": "可选的元数据更新",
-                    },
-                },
-                "required": ["memory_id", "content"],
-            },
-        ),
-        Tool(
-            name="get_memory_stats",
-            description="获取记忆统计信息",
-            inputSchema={
-                "type": "object",
-                "properties": {},
-            },
-        ),
-        Tool(
-            name="cleanup_memories",
-            description="清理过期记忆",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "days": {
-                        "type": "integer",
-                        "description": "清理多少天前的记忆",
-                        "default": 30,
-                    },
-                },
-            },
-        ),
-        Tool(
-            name="link_memories",
-            description="关联两条记忆",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "memory_id_1": {"type": "string", "description": "记忆 ID 1"},
-                    "memory_id_2": {"type": "string", "description": "记忆 ID 2"},
-                    "relation": {"type": "string", "description": "关系描述"},
-                },
-                "required": ["memory_id_1", "memory_id_2", "relation"],
-            },
-        ),
-        Tool(
             name="user_memory_remember",
-            description="添加用户长期记忆或工作便签。type='task'为当前工作便签(最多1条,新任务自动覆盖旧任务); type='memory'为用户长期记忆(最多4条)。记忆将永久驻留在系统提示词中，异常退出后下次继续。",
+            description="添加用户长期记忆或工作便签。type='task'为当前工作便签(最多1条,新任务自动覆盖旧任务); type='memory'为用户长期记忆(最多9条)。记忆将永久驻留在系统提示词中，异常退出后下次继续。",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -307,7 +89,7 @@ def get_tool_definitions() -> list[Tool]:
                     "type": {
                         "type": "string",
                         "enum": ["task", "memory"],
-                        "description": "task=当前工作便签(1条), memory=用户长期记忆(4条)",
+                        "description": "task=当前工作便签(1条), memory=用户长期记忆(9条)",
                         "default": "memory",
                     },
                 },
@@ -320,7 +102,7 @@ def get_tool_definitions() -> list[Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "index": {"type": "integer", "description": "记忆序号（1-5），优先于 keyword"},
+                    "index": {"type": "integer", "description": "记忆序号（1-10），优先于 keyword"},
                     "keyword": {"type": "string", "description": "不区分大小写的子串匹配"},
                 },
             },
@@ -337,112 +119,6 @@ def get_tool_definitions() -> list[Tool]:
 
 
 # ============================================================================
-# Tool implementations
-# ============================================================================
-
-
-def remember_handler(
-    content: str,
-    memory_type: str,
-    metadata: Optional[Dict[str, Any]] = None,
-    title: Optional[str] = None,
-    importance: Optional[float] = None,
-) -> dict:
-    """保存记忆（L0/L1/L2 三层）"""
-    logger.info(f"保存记忆: type={memory_type}, title={title}, importance={importance}")
-
-    memory_id = storage.store_memory(content, memory_type, metadata, title, importance)
-
-    return {
-        "status": "success",
-        "memory_id": memory_id,
-        "message": f"✅ 已保存记忆（L0/L1/L2）: {memory_id}",
-    }
-
-
-def recall_handler(
-    query: str, limit: int = 5, memory_type: Optional[str] = None, level: str = "l1"
-) -> list[dict]:
-    """检索相关记忆"""
-    logger.info(f"搜索记忆: query={query[:50]}..., limit={limit}, level={level}")
-
-    # 构建过滤条件
-    filter_dict = {}
-    if memory_type:
-        filter_dict["memory_type"] = memory_type
-
-    # 搜索
-    results = storage.search_memories(
-        query=query, limit=limit, filter_dict=filter_dict if filter_dict else None, level=level
-    )
-
-    logger.info(f"搜索完成: 找到 {len(results)} 条相关记忆")
-    return results
-
-
-def update_memory_handler(
-    memory_id: str, content: str, metadata: Optional[Dict[str, Any]] = None
-) -> dict:
-    """更新记忆"""
-    logger.info(f"更新记忆: {memory_id}")
-
-    try:
-        new_id = storage.update_memory(memory_id, content, metadata)
-        return {
-            "status": "success",
-            "memory_id": new_id,
-            "message": f"✅ 已更新记忆: {new_id}",
-        }
-    except Exception as e:
-        return {
-            "status": "error",
-            "message": f"❌ 更新失败: {str(e)}",
-        }
-
-
-def get_memory_stats_handler() -> dict:
-    """获取记忆统计"""
-    stats = storage.get_memory_stats()
-    return {
-        "status": "success",
-        "stats": stats,
-    }
-
-
-def cleanup_memories_handler(days: int = 30) -> dict:
-    """清理过期记忆"""
-    logger.info(f"清理记忆: {days} 天前")
-
-    deleted_count = storage.cleanup_memories(days)
-
-    return {
-        "status": "success",
-        "deleted_count": deleted_count,
-        "message": f"✅ 已清理 {deleted_count} 条过期记忆",
-    }
-
-
-def link_memories_handler(
-    memory_id_1: str, memory_id_2: str, relation: str
-) -> dict:
-    """关联两条记忆"""
-    logger.info(f"关联记忆: {memory_id_1} <-> {memory_id_2}")
-
-    success = storage.link_memories(memory_id_1, memory_id_2, relation)
-
-    if success:
-        return {
-            "status": "success",
-            "message": f"✅ 已关联记忆: {memory_id_1} <-> {memory_id_2} ({relation})",
-        }
-    else:
-        return {
-            "status": "error",
-            "message": "❌ 关联失败",
-        }
-
-
-# ============================================================================
 # User memory tools (memory.json permanent array)
 # ============================================================================
 
@@ -450,9 +126,9 @@ MEMORY_JSON_PATH = None  # Set at first call
 import threading
 _memory_file_lock = threading.Lock()
 
-MAX_PERMANENT_ITEMS = 5
+MAX_PERMANENT_ITEMS = 10
 MAX_TASK_ITEMS = 1
-MAX_MEMORY_ITEMS = 4  # MAX_TASK_ITEMS + MAX_MEMORY_ITEMS = MAX_PERMANENT_ITEMS
+MAX_MEMORY_ITEMS = 9  # MAX_TASK_ITEMS + MAX_MEMORY_ITEMS = MAX_PERMANENT_ITEMS
 MAX_TOKEN_PER_ITEM = 200  # ~300 Chinese chars
 
 
@@ -563,7 +239,7 @@ def user_memory_remember_handler(content: str, type: str = "memory") -> dict:
     """添加用户长期记忆到 memory.json permanent 数组
 
     type="task": 当前工作便签（最多1条，新任务覆盖旧的）
-    type="memory": 用户长期记忆（最多4条）
+    type="memory": 用户长期记忆（最多9条）
     """
     if type not in ("task", "memory"):
         return {"status": "error", "message": f"type 必须是 'task' 或 'memory'，收到 '{type}'"}
@@ -731,24 +407,6 @@ def user_memory_forget(**kwargs):
 def user_memory_list(**kwargs):
     return user_memory_list_handler(**kwargs)
 
-def remember(content: str, memory_type: str, **kwargs):
-    return remember_handler(content=content, memory_type=memory_type, **kwargs)
-
-def recall(query: str, **kwargs):
-    return recall_handler(query=query, **kwargs)
-
-def update_memory(memory_id: str, content: str, **kwargs):
-    return update_memory_handler(memory_id=memory_id, content=content, **kwargs)
-
-def get_memory_stats(**kwargs):
-    return get_memory_stats_handler(**kwargs)
-
-def cleanup_memories(**kwargs):
-    return cleanup_memories_handler(**kwargs)
-
-def link_memories(memory_id_1: str, memory_id_2: str, relation: str, **kwargs):
-    return link_memories_handler(memory_id_1=memory_id_1, memory_id_2=memory_id_2, relation=relation, **kwargs)
-
 
 # ============================================================================
 # MCP handlers
@@ -765,40 +423,7 @@ async def list_tools() -> list[Tool]:
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     """Handle tool calls."""
     try:
-        if name == "remember":
-            result = remember_handler(
-                content=arguments["content"],
-                memory_type=arguments["memory_type"],
-                metadata=arguments.get("metadata"),
-                title=arguments.get("title"),
-                importance=arguments.get("importance"),
-            )
-        elif name == "recall":
-            result = recall_handler(
-                query=arguments["query"],
-                limit=arguments.get("limit", 5),
-                memory_type=arguments.get("memory_type"),
-                level=arguments.get("level", "l1"),
-            )
-        elif name == "update_memory":
-            result = update_memory_handler(
-                memory_id=arguments["memory_id"],
-                content=arguments["content"],
-                metadata=arguments.get("metadata"),
-            )
-        elif name == "get_memory_stats":
-            result = get_memory_stats_handler()
-        elif name == "cleanup_memories":
-            result = cleanup_memories_handler(
-                days=arguments.get("days", 30),
-            )
-        elif name == "link_memories":
-            result = link_memories_handler(
-                memory_id_1=arguments["memory_id_1"],
-                memory_id_2=arguments["memory_id_2"],
-                relation=arguments["relation"],
-            )
-        elif name == "user_memory_remember":
+        if name == "user_memory_remember":
             result = user_memory_remember_handler(
                 content=arguments["content"],
                 type=arguments.get("type", "memory"),
