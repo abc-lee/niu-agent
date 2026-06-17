@@ -756,7 +756,6 @@ class NiuRunner:
         from niu_api.compat import (
             _build_incremental_msg_text,
             _truncate_task_for_subagent,
-            _estimate_total_tokens,
         )
         from agent.subagent import (
             call_subagent,
