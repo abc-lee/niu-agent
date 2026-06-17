@@ -83,4 +83,8 @@ async def delete_session(session_id: str) -> dict:
     """Delete a session (deprecated - clears all messages)"""
     store = await get_message_store()
     await store.clear_messages()
+    from niu_api.chat import get_or_create_runner
+    runner = get_or_create_runner()
+    if runner and runner.handler:
+        runner.handler._last_prompt_tokens = 0
     return {"deleted": True}
