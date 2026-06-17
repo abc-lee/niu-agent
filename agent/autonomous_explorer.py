@@ -179,10 +179,22 @@ class AutonomousExplorer:
             import json
             mem_path = Path.home() / ".niu" / "memory.json"
             if mem_path.exists():
-                data = json.loads(mem_path.read_text(encoding="utf-8"))
+                try:
+                    from niu_memory_server import _memory_file_lock
+                    with _memory_file_lock:
+                        data = json.loads(mem_path.read_text(encoding="utf-8"))
+                except ImportError:
+                    data = json.loads(mem_path.read_text(encoding="utf-8"))
                 permanent = data.get("permanent", [])
-                task_count = sum(1 for m in permanent if m.get("type") == "task")
-                memory_count = sum(1 for m in permanent if m.get("type") == "memory")
+                task_count = 0
+                memory_count = 0
+                for m in permanent:
+                    if isinstance(m, str):
+                        memory_count += 1
+                    elif isinstance(m, dict) and m.get("type") == "task":
+                        task_count += 1
+                    elif isinstance(m, dict):
+                        memory_count += 1
                 return f"task:{task_count} memory:{memory_count}"
         except Exception:
             pass
