@@ -130,6 +130,18 @@ def _build_incremental_msg_text(messages, last_cursor_id: str, out_msg_ids: list
 
     lines = []
     total_count = len(range_messages_with_pos)
+    # 预计算保护位置：从尾部向前找 N 条 user/assistant 消息的相对位置
+    _protected_positions = None
+    if protect_recent > 0:
+        _protected_positions = set()
+        _count = 0
+        for rp in range(total_count - 1, -1, -1):
+            _, m = range_messages_with_pos[rp]
+            if getattr(m, "role", "") in ("user", "assistant"):
+                _protected_positions.add(rp)
+                _count += 1
+                if _count >= protect_recent:
+                    break
     for rel_pos, (orig_pos, msg) in enumerate(range_messages_with_pos):
         original_idx = start + orig_pos + 1  # 1-based display index（使用原始位置）
         msg_id = getattr(msg, "id", "") or ""
@@ -138,9 +150,9 @@ def _build_incremental_msg_text(messages, last_cursor_id: str, out_msg_ids: list
         token_annotation = ""
         if msg_tokens and (start + orig_pos) < len(msg_tokens):
             token_annotation = f"{msg_tokens[start + orig_pos]}tokens "
-        # protect_recent: 对最后 N 条消息加 [PROTECTED] 标签
+        # protect_recent: 对最后 N 条 user/assistant 消息加 [PROTECTED] 标签（不保护 role=tool 的工具输出）
         protected_label = ""
-        if protect_recent > 0 and rel_pos >= total_count - protect_recent:
+        if protect_recent > 0 and _protected_positions is not None and rel_pos in _protected_positions:
             protected_label = "[PROTECTED] "
         lines.append(f"[id:{msg_id}] [idx:{original_idx}] {token_annotation}{msg.role}: {protected_label}{content}")
 
