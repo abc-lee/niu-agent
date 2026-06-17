@@ -132,18 +132,6 @@ memory-server:
   workdir: mcp-servers/memory-server/src
   preload: true
   tools:
-    remember:
-      visibility: hidden
-    recall:
-      visibility: hidden
-    update_memory:
-      visibility: hidden
-    get_memory_stats:
-      visibility: hidden
-    cleanup_memories:
-      visibility: hidden
-    link_memories:
-      visibility: hidden
     user_memory_remember:
       visibility: hidden
     user_memory_forget:

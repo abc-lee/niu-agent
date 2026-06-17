@@ -100,7 +100,7 @@ Niu 是一个**本地运行**的个人知识管理助手，核心理念：
 
 **niu 根节点规则**：
 - `niu` 是知识图谱根节点，只与脑区连接，不与普通实体直接连接
-- 运行时代码（`lightrag_insert_entity`、`store_memory`）不创建 niu→实体锚边
+- 运行时代码（`lightrag_insert_entity`）不创建 niu→实体锚边
 - 实体可达性由脑区 `_region:contains` 边保证
 
 **LightRAG 实体类型（entity_type）：**
