@@ -817,6 +817,7 @@ async def clear_chat() -> dict:
             # 重置 handler 的工作记忆
             if runner.handler:
                 runner.handler.reset_working_memory()
+                runner.handler._last_prompt_tokens = 0
 
             # Note: LLM session history is managed by ContextManager,
             # which reloads from message store each call.

@@ -586,4 +586,7 @@ async def clear_session(session_id: str):
     """Clear a chat session"""
     store = await get_message_store()
     await store.clear_messages()
+    runner = get_or_create_runner()
+    if runner and runner.handler:
+        runner.handler._last_prompt_tokens = 0
     return {"status": "ok", "session_id": session_id}
