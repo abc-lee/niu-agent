@@ -323,7 +323,7 @@ def agent_runner_loop(
                 "data": {
                     "overflow": True,
                     "turns_completed": turn - 1,
-                    "tokens_used": count_messages_tokens(messages),
+                    "tokens_used": last_prompt_tokens if last_prompt_tokens > 0 else count_messages_tokens(messages),
                     "tokens_limit": context_window_tokens,
                 },
                 "messages": messages,
