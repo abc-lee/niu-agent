@@ -397,8 +397,8 @@ def test_truncate_tool_content_with_name():
     """截断标记应包含工具名"""
     from agent.generic.agent_loop import _truncate_tool_content, MAX_TOOL_RESULT_CHARS
     long_content = "x" * (MAX_TOOL_RESULT_CHARS + 1000)
-    result = _truncate_tool_content(long_content, "memory-server/remember")
-    assert "memory-server/remember" in result
+    result = _truncate_tool_content(long_content, "memory-server/user_memory_remember")
+    assert "memory-server/user_memory_remember" in result
     assert "[截断]" in result
     assert len(result) <= MAX_TOOL_RESULT_CHARS
 

@@ -47,7 +47,6 @@ class LightRAGSync:
             Stats dict with counts of synced items.
         """
         stats = {
-            "documents_synced": 0,
             "skills_synced": 0,
             "tools_synced": 0,
             "errors": [],
@@ -59,16 +58,7 @@ class LightRAGSync:
         prev_skill_ids = set(prev_state.get("synced_skill_ids", []))
         prev_tool_ids = set(prev_state.get("synced_tool_ids", []))
 
-        # 1. Sync documents from vectors.db
-        try:
-            d, new_doc_ids = self._sync_vectors_db()
-            stats["documents_synced"] = d
-        except Exception as e:
-            logger.warning(f"[LightRAGSync] vectors.db sync failed: {e}")
-            stats["errors"].append(f"vectors: {e}")
-            new_doc_ids = set()
-
-        # 2. Sync skills and tools (delegated to SkillSync — returns zeros)
+        # 1. Sync skills and tools (delegated to SkillSync)
         try:
             skills_count, tools_count, new_skill_ids, new_tool_ids = self._sync_skills_and_tools()
             stats["skills_synced"] = skills_count
@@ -79,30 +69,19 @@ class LightRAGSync:
             new_skill_ids = set()
             new_tool_ids = set()
 
-        # 3. Merge previous + newly synced IDs and save
-        all_doc_ids = prev_doc_ids | new_doc_ids
+        # 2. Merge previous + newly synced IDs and save
+        all_doc_ids = prev_doc_ids
         all_skill_ids = prev_skill_ids | new_skill_ids
         all_tool_ids = prev_tool_ids | new_tool_ids
         self._save_status(stats, all_doc_ids, all_skill_ids, all_tool_ids)
 
         logger.info(
             f"[LightRAGSync] Sync complete: "
-            f"{stats['documents_synced']} documents, "
             f"{stats['skills_synced']} skills, {stats['tools_synced']} tools | "
             f"tracked IDs: "
-            f"{len(all_doc_ids)} docs, {len(all_skill_ids)} skills, {len(all_tool_ids)} tools"
+            f"{len(all_skill_ids)} skills, {len(all_tool_ids)} tools"
         )
         return stats
-
-    def _sync_vectors_db(self) -> tuple[int, set]:
-        """Sync documents from vectors.db into LightRAG.
-
-        Returns:
-            (documents_synced, new_doc_ids)
-        """
-        # vector-store deleted — vectors.db sync no longer available
-        logger.info("[LightRAGSync] vectors.db sync skipped (vector-store removed)")
-        return 0, set()  # removed: vector-store deleted
 
     def _sync_skills_and_tools(
         self,
