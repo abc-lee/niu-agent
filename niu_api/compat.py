@@ -923,9 +923,11 @@ async def _tidy_context_impl(request: dict):
             pass
         if real_prompt_tokens > 0:
             usage_percent = (real_prompt_tokens / context_window_tokens) * 100
+            display_tokens = real_prompt_tokens
             logger.info(f"[Tidy] Current context: {message_count} messages, real_tokens={real_prompt_tokens}, est_tokens={estimated_tokens}, {usage_percent:.1f}%")
         else:
             usage_percent = (estimated_tokens / context_window_tokens) * 100
+            display_tokens = estimated_tokens
             logger.info(f"[Tidy] Current context: {message_count} messages, {estimated_tokens} tokens, {usage_percent:.1f}%")
 
         from agent.subagent import call_subagent
@@ -1300,7 +1302,7 @@ async def _tidy_context_impl(request: dict):
 
                 prompt = f"""系统进入睡眠状态。
 
-当前上下文：{estimated_tokens} tokens（{usage_percent:.1f}%）
+当前上下文：{display_tokens} tokens（{usage_percent:.1f}%）
 
 以下消息已标注 [PROTECTED]，不可删除或压缩：
 保护消息ID: {json.dumps(protected_ids)}
@@ -1381,7 +1383,7 @@ async def _tidy_context_impl(request: dict):
             else:
                 logger.info("[Tidy] context-manager: no messages in range [compress_cursor, dream_cursor_new]")
 
-            return {"status": "ok", "mode": "sleep", "tokens_before": estimated_tokens}
+            return {"status": "ok", "mode": "sleep", "tokens_before": display_tokens}
 
         elif mode == "force":
             # Force mode: entity-extractor 全量 → dream-evolver 全量 → context-manager 强制压缩
@@ -1647,7 +1649,7 @@ async def _tidy_context_impl(request: dict):
                 except Exception as e:
                     logger.warning(f"[Tidy] Failed to read compress cursor in force mode: {e}")
 
-            target_tokens = int(estimated_tokens * _read_target_threshold())
+            target_tokens = int(display_tokens * _read_target_threshold())
             compress_plan_path = os.path.expanduser("~/.niu/compress_plan.json")
             # 清理上次的残留计划文件
             if os.path.exists(compress_plan_path):
@@ -1670,9 +1672,9 @@ async def _tidy_context_impl(request: dict):
 
     当前上下文状态：
     - 总消息数：{message_count}
-    - 当前 token 总数：{estimated_tokens}（{usage_percent:.1f}%）
+    - 当前 token 总数：{display_tokens}（{usage_percent:.1f}%）
     - 目标 token 总数：{target_tokens}
-    - 需释放至少 {estimated_tokens - target_tokens} tokens
+    - 需释放至少 {display_tokens - target_tokens} tokens
     - 上次压缩游标：{last_compress_id or '（无，从最早消息开始）'}
 
     安全边界：先从消息列表中找到 last_dream_evolve_id={new_dream_id} 对应的 idx，idx > 该idx 的消息（dream-evolver 未提取知识），不得直接删除，必须用 update 压缩为[摘要]格式后保留（不删除）。
@@ -1846,7 +1848,7 @@ async def _tidy_context_impl(request: dict):
                 }, ensure_ascii=False, indent=2), encoding="utf-8")
                 logger.info(f"[Tidy] Force: Compress cursor updated: last_compress_id={new_compress_id}")
 
-            return {"status": "ok", "mode": "force", "tokens_before": estimated_tokens}
+            return {"status": "ok", "mode": "force", "tokens_before": display_tokens}
 
         else:
             logger.warning(f"[Tidy] Unknown mode: {mode}, skipping")
