@@ -7,6 +7,7 @@ and returns structured content for knowledge graph ingestion.
 
 import asyncio
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -172,7 +173,7 @@ def parse_file(file_path: str) -> dict[str, Any]:
     Dispatches to the appropriate parser based on file extension.
     Returns a dict with parsed content plus file_path and file_name fields.
     """
-    path = Path(file_path)
+    path = Path(os.path.expanduser(file_path))
 
     if not path.exists():
         return {"error": f"File not found: {file_path}"}
@@ -264,7 +265,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
 
     if name == "parse_file":
         file_path = arguments.get("file_path", "")
-        path = Path(file_path)
+        path = Path(os.path.expanduser(file_path))
 
         if not path.exists():
             return [

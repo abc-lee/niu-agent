@@ -12,6 +12,7 @@ Tool groups:
 """
 
 import re
+import os
 
 from typing import Any, Dict, List, Optional
 import inspect
@@ -832,8 +833,8 @@ def lightrag_insert_file(
     import tempfile
     import shutil
 
-    original_path = str(_Path(file_path).resolve())
-    file = _Path(file_path)
+    original_path = str(_Path(os.path.expanduser(file_path)).resolve())
+    file = _Path(os.path.expanduser(file_path))
     if not file.is_file():
         return {"status": "error", "message": f"File not found: {file_path}"}
 
