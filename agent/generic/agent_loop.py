@@ -119,8 +119,9 @@ def get_pretty_json(data):
 
 
 def _fifo_prune(messages, target_tokens):
-    """FIFO 裁剪：从 messages[2] 开始删除，直到 token 数低于 target。
-    assistant+tool_calls 消息会连带后续 tool 消息一起删除。
+    """FIFO 裁剪：按轮次组从 messages[2] 开始删除，直到 token 数低于 target。
+    一个轮次组 = assistant(+tool_calls?) -> tool* -> user(next_prompt)
+    保护 messages[0](system) 和 messages[1](初始user)。
     返回删除的消息数。
     """
     if len(messages) <= 2:
@@ -128,13 +129,43 @@ def _fifo_prune(messages, target_tokens):
     removed = 0
     current_tokens = count_messages_tokens(messages)
     while len(messages) > 2 and current_tokens > target_tokens:
-        first = messages[2]
-        messages.pop(2)
-        removed += 1
-        if first.get("role") == "assistant" and first.get("tool_calls"):
-            while len(messages) > 2 and messages[2].get("role") == "tool":
-                messages.pop(2)
-                removed += 1
+        batch_removed = 0
+        i = 2  # 始终从 messages[2] 删除
+
+        # 1. 删除 assistant（纯文本或 tool_calls）
+        if i < len(messages) and messages[i].get("role") == "assistant":
+            first = messages.pop(i)
+            batch_removed += 1
+            # 连带删除后续 tool 消息
+            if first.get("tool_calls"):
+                while i < len(messages) and messages[i].get("role") == "tool":
+                    messages.pop(i)
+                    batch_removed += 1
+
+        # 2. 删除组末尾的 user（next_prompt），连带后续 assistant+tool*
+        if i < len(messages) and messages[i].get("role") == "user":
+            messages.pop(i)
+            batch_removed += 1
+            # 连带删除该 user 对应的 assistant 回复
+            if i < len(messages) and messages[i].get("role") == "assistant":
+                first = messages.pop(i)
+                batch_removed += 1
+                if first.get("tool_calls"):
+                    while i < len(messages) and messages[i].get("role") == "tool":
+                        messages.pop(i)
+                        batch_removed += 1
+
+        # 3. 保底：如果本轮没删任何消息（意外角色如孤立 tool），强制删 messages[2]
+        if batch_removed == 0 and len(messages) > 2:
+            orphan = messages.pop(2)
+            batch_removed = 1
+            # 孤立 tool 消息：连带删后续连续 tool
+            if orphan.get("role") == "tool":
+                while len(messages) > 2 and messages[2].get("role") == "tool":
+                    messages.pop(2)
+                    batch_removed += 1
+
+        removed += batch_removed
         current_tokens = count_messages_tokens(messages)
     return removed
 
