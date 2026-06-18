@@ -102,7 +102,7 @@ def write_file(file_path: str, content: str, mode: str = "overwrite") -> dict:
     try:
         if mode not in ("overwrite", "append"):
             return {"status": "error", "msg": f"Invalid mode '{mode}'. Use 'overwrite' or 'append'."}
-        file_path = str(Path(file_path).resolve())
+        file_path = str(Path(os.path.expanduser(file_path)).resolve())
         dir_path = os.path.dirname(file_path)
         if dir_path and not os.path.exists(dir_path):
             os.makedirs(dir_path, exist_ok=True)
@@ -119,7 +119,7 @@ def write_file(file_path: str, content: str, mode: str = "overwrite") -> dict:
 def edit_file(file_path: str, old_string: str, new_string: str, replace_all: bool = False) -> dict:
     """局部修改文件（精确字符串替换）"""
     try:
-        file_path = str(Path(file_path).resolve())
+        file_path = str(Path(os.path.expanduser(file_path)).resolve())
         if not os.path.exists(file_path):
             return {"status": "error", "msg": "File not found"}
 
@@ -262,7 +262,7 @@ def file_read(
 def file_write(path: str, content: str, mode: str = "write") -> dict:
     """写入文件"""
     try:
-        path = str(Path(path).resolve())
+        path = str(Path(os.path.expanduser(path)).resolve())
         os.makedirs(os.path.dirname(path), exist_ok=True)
 
         if mode == "append":
@@ -280,7 +280,7 @@ def file_write(path: str, content: str, mode: str = "write") -> dict:
 def file_patch(path: str, old_content: str, new_content: str) -> dict:
     """局部修改文件"""
     try:
-        path = str(Path(path).resolve())
+        path = str(Path(os.path.expanduser(path)).resolve())
         if not os.path.exists(path):
             return {"status": "error", "msg": "File not found"}
 
