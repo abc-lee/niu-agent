@@ -50,14 +50,14 @@ class TestContextManager:
 
     @pytest.mark.asyncio
     async def test_load_history_default_limit(self, store_with_messages):
-        """测试使用默认限制加载历史"""
+        """测试使用默认限制加载历史（默认0=不限制，返回全部消息）"""
         store = store_with_messages
-        manager = ContextManager(store, max_messages=50)
+        manager = ContextManager(store)  # max_messages 默认 0 = 不限制
 
         history = await manager.load_history()
 
-        # 验证加载了 50 条（默认）
-        assert len(history) == 50, f"Expected 50 messages, got {len(history)}"
+        # 验证返回全部消息（fixture 创建了 60 条）
+        assert len(history) == 60, f"Expected 60 messages (all), got {len(history)}"
 
     def test_count_tokens_simple(self):
         """测试简单 token 计数"""

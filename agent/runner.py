@@ -530,7 +530,7 @@ class NiuRunner:
         # No schema refresh — tools_schema stays base + disk
         return tools_schema
 
-    def _sync_get_messages(self, limit=1000):
+    def _sync_get_messages(self, limit=None):
         """同步从 DB 读取消息（桥接 async MessageStore）
 
         Returns:
