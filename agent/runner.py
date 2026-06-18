@@ -757,6 +757,7 @@ class NiuRunner:
         from niu_api.compat import (
             _build_incremental_msg_text,
             _truncate_task_for_subagent,
+            _build_journal_task,
         )
         from agent.subagent import (
             call_subagent,
@@ -906,15 +907,8 @@ class NiuRunner:
             logger.info(f"[Runner] Force: starting journal-agent ({len(journal_force_msg_ids)} incremental messages)")
 
             if journal_force_msg_ids:
-                journal_force_prompt = f"""以下是对话消息（每条带 [id:UUID] [idx:N] 序号标注）。请从中识别工作内容，提取为日志条目追加写入 journal.md。
-
-{journal_force_msg_text}
-
-处理完成后，在报告末尾用 JSON 格式报告：{{"last_journal_id": "<收到的消息中 idx 最大的消息的 id（UUID）>"}}
-**必须推进游标**：即使没有可提取的工作内容，也必须输出 idx 最大的消息的 UUID。"""
-
                 safe_tokens = int(_read_context_window_tokens() * 0.6)
-                truncated_journal_prompt = _truncate_task_for_subagent(journal_force_prompt, safe_tokens)
+                truncated_journal_prompt = _build_journal_task(journal_force_msg_text, safe_tokens)
 
                 _, new_journal_id = self._run_subagent_step(
                     "journal-agent", journal_cursor_path, "last_journal_id",
