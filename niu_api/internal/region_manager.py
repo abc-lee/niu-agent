@@ -1521,8 +1521,9 @@ class RegionManager:
             except Exception as e:
                 logger.debug("incremental_update update_region_summaries skipped: %s", e)
 
-            # Decay structural edges
-            disconnected = self.decay_structural_edges(all_regions)
+            # Decay structural edges — DISABLED: edge decay deleted 700+ "包含" edges in 3 days
+            # disconnected = self.decay_structural_edges(all_regions)
+            disconnected = 0
 
             return {
                 "regions_created": len(created),
