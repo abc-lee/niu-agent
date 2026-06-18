@@ -73,6 +73,8 @@ class DiskExecutor:
             func = registry.get(full_name)
             if func is None:
                 return ExecutorResult(is_error=True, value=self.errors.execution_failure(tool_path, f"Tool '{full_name}' not found in registry"))
+            from agent.handler import expand_path_args
+            expand_path_args(kwargs)
             result = func(**kwargs)
             # Reset error tracking on success
             self._error_count.pop(tool_path, None)
