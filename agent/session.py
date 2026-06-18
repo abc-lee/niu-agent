@@ -328,7 +328,7 @@ class MessageStore:
                 from agent.token_calculator import TokenCalculator
                 calc = TokenCalculator.get()
                 tc_raw = row.get("tool_calls")
-                tc = json.loads(tc_raw) if tc_raw else None
+                tc = _safe_json(tc_raw, default=None)
                 t = calc.count_message_single(row["role"], row["content"] or "", tool_calls=tc)
             except Exception:
                 t = max(1, len(row["content"] or "") // 2) + 4
