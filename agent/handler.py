@@ -833,11 +833,143 @@ class NiuHandler(BaseHandler):
         # 正常情况：返回给用户，使用空字符串作为 next_prompt 而不是 None
         return StepOutcome(response, next_prompt="")
 
+    def _sync_get_messages(self):
+        """同步获取消息列表 — 复用 runner 的桥接方法"""
+        from .runner import get_runner
+        runner = get_runner()
+        if runner is None:
+            return []
+        return runner._sync_get_messages()
+
+    def _build_journal_task_for_handler(self, original_task: str) -> tuple:
+        """为主Agent调用 journal-agent 构建增量消息 task。"""
+        import json
+        from niu_api.compat import _build_journal_task, _build_incremental_msg_text
+        from agent.subagent import _read_context_window_tokens
+
+        # 报告生成指令不替换为增量消息 task — journal-agent 自己读 journal.md 聚合
+        report_keywords = ("周报", "月报", "季报", "年报")
+        if any(kw in original_task for kw in report_keywords):
+            return original_task, []
+
+        # 1. 读取游标
+        journal_cursor_path = Path.home() / ".niu" / "last_journal.json"
+        last_journal_id = ""
+        if journal_cursor_path.exists():
+            try:
+                cursor_data = json.loads(journal_cursor_path.read_text(encoding="utf-8"))
+                last_journal_id = cursor_data.get("last_journal_id", "")
+            except Exception:
+                pass
+
+        # 2. 获取消息列表
+        messages = self._sync_get_messages()
+        if not messages:
+            return original_task, []
+
+        # 3. 游标为空且消息过多时，限制为最近200条（防止全量嵌入超限）
+        if not last_journal_id and len(messages) > 200:
+            from loguru import logger
+            logger.warning(f"[Handler] Journal cursor empty, {len(messages)} messages total, limiting to last 200")
+            messages = messages[-200:]
+
+        # 4. 计算 token
+        msg_tokens = []
+        try:
+            from agent.token_calculator import TokenCalculator
+            calc = TokenCalculator.get()
+            for msg in messages:
+                try:
+                    t = calc.count_message_single(msg.role, msg.content or "", tool_calls=msg.tool_calls)
+                except Exception:
+                    t = max(1, len(msg.content or "") // 2) + 4
+                msg_tokens.append(t)
+        except ImportError:
+            msg_tokens = [max(1, len(msg.content or "") // 2) + 4 for msg in messages]
+
+        # 5. 构建增量消息文本
+        journal_msg_ids = []
+        journal_msg_text = _build_incremental_msg_text(
+            messages, last_journal_id, journal_msg_ids, msg_tokens
+        )
+
+        if not journal_msg_ids:
+            return original_task, []
+
+        # 6. 构建完整 task
+        context_window_for_truncate = _read_context_window_tokens()
+        safe_tokens = int(context_window_for_truncate * 0.6)
+        return _build_journal_task(journal_msg_text, safe_tokens), journal_msg_ids
+
+    def _update_journal_cursor(self, journal_result: str, journal_msg_ids: list):
+        """从 journal-agent 结果中提取游标并更新 last_journal.json"""
+        import json
+        import fcntl
+        from datetime import datetime
+        from niu_api.compat import _extract_cursor_id, _is_subagent_overflow, _extract_overflow_info
+
+        # 在获取文件锁之前读取消息列表 — 避免在锁内调用 _sync_get_messages() 导致死锁
+        messages = self._sync_get_messages()
+        msg_id_set = {getattr(m, "id", "") for m in messages}
+
+        journal_cursor_path = Path.home() / ".niu" / "last_journal.json"
+        lock_path = journal_cursor_path.with_suffix(".lock")
+
+        # 文件锁保护 — 防止与 tidy 管道并发读写
+        with open(lock_path, 'w') as lock_f:
+            fcntl.flock(lock_f, fcntl.LOCK_EX)
+            try:
+                # 读取当前游标（在锁内读取，保证原子性）
+                last_journal_id = ""
+                if journal_cursor_path.exists():
+                    try:
+                        cursor_data = json.loads(journal_cursor_path.read_text(encoding="utf-8"))
+                        last_journal_id = cursor_data.get("last_journal_id", "")
+                    except Exception:
+                        pass
+
+                new_journal_id = last_journal_id
+
+                # 完整 fallback 链（与 compat.py 路径2/3 一致）
+                if _is_subagent_overflow(journal_result):
+                    overflow_info = _extract_overflow_info(journal_result)
+                    partial = overflow_info.get("partial_result", "")
+                    recovered = _extract_cursor_id(partial, "last_journal_id", msg_id_set)
+                    if recovered and recovered != "NULL":
+                        new_journal_id = recovered
+                    else:
+                        new_journal_id = journal_msg_ids[-1] if journal_msg_ids else last_journal_id
+                else:
+                    extracted = _extract_cursor_id(journal_result, "last_journal_id", msg_id_set)
+                    if extracted and extracted != "NULL":
+                        new_journal_id = extracted
+                    elif extracted == "NULL" or not extracted:
+                        new_journal_id = journal_msg_ids[-1] if journal_msg_ids else last_journal_id
+
+                # 校验游标
+                if new_journal_id and new_journal_id not in msg_id_set:
+                    new_journal_id = last_journal_id
+
+                # 写入
+                if new_journal_id:
+                    journal_cursor_path.parent.mkdir(parents=True, exist_ok=True)
+                    journal_cursor_path.write_text(json.dumps({
+                        "last_journal_id": new_journal_id,
+                        "last_journal_at": datetime.now().isoformat(),
+                    }, ensure_ascii=False, indent=2), encoding="utf-8")
+            finally:
+                fcntl.flock(lock_f, fcntl.LOCK_UN)
+
     def _call_subagent_gen(self, agent_name: str, args: dict):
         """调用子 Agent（生成器版本）"""
         from .subagent import call_subagent
 
         task = args.get("task", "")
+
+        # journal-agent 特殊处理：构建增量消息 task，与 tidy 管道一致
+        journal_msg_ids_for_cursor = []  # 默认空列表，仅 journal-agent 时填充
+        if agent_name == "journal-agent":
+            task, journal_msg_ids_for_cursor = self._build_journal_task_for_handler(task)
 
         # 获取完整的 LLM 配置（从全局 runner）
         from .runner import get_runner
@@ -865,6 +997,10 @@ class NiuHandler(BaseHandler):
                 mcp_client=self.mcp_client,
                 history=_history,
             )
+
+            # journal-agent 特殊处理：更新游标（仅当有增量消息时才更新）
+            if agent_name == "journal-agent" and journal_msg_ids_for_cursor:
+                self._update_journal_cursor(result, journal_msg_ids_for_cursor)
 
             # 验证结果：检查 event-manager 是否真正创建了任务
             if agent_name == "event-manager" and ("提醒" in task or "定时" in task or "提醒我" in task):
