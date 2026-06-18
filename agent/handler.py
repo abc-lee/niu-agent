@@ -417,6 +417,26 @@ def code_run(code: str, code_type: str = "python", timeout: int = 60, cwd: str =
             os.remove(tmp_path)
 
 
+# 统一路径参数展开 — 像 Shell 处理 ~ 一样
+_PATH_ARG_NAMES = frozenset({
+    "file_path", "path", "cwd", "output_path",
+    "source_path", "dest_path", "workspace_path",
+    "document_root", "database_path",
+})
+
+
+def expand_path_args(args: dict) -> None:
+    """原地展开 args 中已知路径参数名的 ~/ 前缀。
+
+    像 Shell 处理 ~ 一样，在工具调用入口统一展开。
+    只展开以 ~/ 开头的值，不影响其他路径格式。
+    """
+    for key in _PATH_ARG_NAMES:
+        val = args.get(key)
+        if isinstance(val, str) and val.startswith("~/"):
+            args[key] = os.path.expanduser(val)
+
+
 class NiuHandler(BaseHandler):
     """
     Niu Agent 工具处理器
@@ -908,6 +928,9 @@ class NiuHandler(BaseHandler):
 
     def dispatch(self, tool_name: str, args, response, index=0):
         """分发工具调用（支持 MCP 工具）- 必须是生成器"""
+
+        # 统一路径参数展开（~/ → 实际 home 目录）
+        expand_path_args(args)
 
         # Apply backward compatibility aliases
         resolved_name = self._TOOL_ALIASES.get(tool_name, tool_name)
