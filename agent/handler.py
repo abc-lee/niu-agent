@@ -946,9 +946,11 @@ class NiuHandler(BaseHandler):
                     elif extracted == "NULL" or not extracted:
                         new_journal_id = journal_msg_ids[-1] if journal_msg_ids else last_journal_id
 
-                # 校验游标
+                # 校验游标（二次校验，与 compat.py 一致）
                 if new_journal_id and new_journal_id not in msg_id_set:
                     new_journal_id = last_journal_id
+                    if new_journal_id and new_journal_id not in msg_id_set:
+                        new_journal_id = ""
 
                 # 写入
                 if new_journal_id:
