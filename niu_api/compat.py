@@ -265,7 +265,7 @@ def _estimate_total_tokens(messages) -> int:
         for msg in messages:
             content = getattr(msg, "content", "") or ""
             role = getattr(msg, "role", "user") or "user"
-            total += calc.count_message_single(role, content)
+            total += calc.count_message_single(role, content, tool_calls=getattr(msg, "tool_calls", None))
         return total
     except Exception:
         from agent.subagent import count_tokens_for_text
@@ -904,7 +904,7 @@ async def _tidy_context_impl(request: dict):
             calc = TokenCalculator.get()
             for msg in messages:
                 try:
-                    t = calc.count_message_single(msg.role, msg.content or "")
+                    t = calc.count_message_single(msg.role, msg.content or "", tool_calls=msg.tool_calls)
                 except Exception:
                     t = max(1, len(msg.content or "") // 2) + 4
                 msg_tokens.append(t)
@@ -1093,7 +1093,7 @@ async def _tidy_context_impl(request: dict):
                 calc = TokenCalculator.get()
                 for msg in messages:
                     try:
-                        t = calc.count_message_single(msg.role, msg.content or "")
+                        t = calc.count_message_single(msg.role, msg.content or "", tool_calls=msg.tool_calls)
                     except Exception:
                         t = max(1, len(msg.content or "") // 2) + 4
                     msg_tokens.append(t)
@@ -1182,7 +1182,7 @@ async def _tidy_context_impl(request: dict):
                     calc = TokenCalculator.get()
                     for msg in messages:
                         try:
-                            t = calc.count_message_single(msg.role, msg.content or "")
+                            t = calc.count_message_single(msg.role, msg.content or "", tool_calls=msg.tool_calls)
                         except Exception:
                             t = max(1, len(msg.content or "") // 2) + 4
                         msg_tokens.append(t)
@@ -1274,7 +1274,7 @@ async def _tidy_context_impl(request: dict):
                 calc = TokenCalculator.get()
                 for msg in messages:
                     try:
-                        t = calc.count_message_single(msg.role, msg.content or "")
+                        t = calc.count_message_single(msg.role, msg.content or "", tool_calls=msg.tool_calls)
                     except Exception:
                         t = max(1, len(msg.content or "") // 2) + 4
                     msg_tokens.append(t)
@@ -1476,7 +1476,7 @@ async def _tidy_context_impl(request: dict):
                 calc = TokenCalculator.get()
                 for msg in messages:
                     try:
-                        t = calc.count_message_single(msg.role, msg.content or "")
+                        t = calc.count_message_single(msg.role, msg.content or "", tool_calls=msg.tool_calls)
                     except Exception:
                         t = max(1, len(msg.content or "") // 2) + 4
                     msg_tokens.append(t)
@@ -1565,7 +1565,7 @@ async def _tidy_context_impl(request: dict):
                 calc = TokenCalculator.get()
                 for msg in messages:
                     try:
-                        t = calc.count_message_single(msg.role, msg.content or "")
+                        t = calc.count_message_single(msg.role, msg.content or "", tool_calls=msg.tool_calls)
                     except Exception:
                         t = max(1, len(msg.content or "") // 2) + 4
                     msg_tokens.append(t)

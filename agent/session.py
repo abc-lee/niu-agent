@@ -315,7 +315,7 @@ class MessageStore:
             try:
                 from agent.token_calculator import TokenCalculator
                 calc = TokenCalculator.get()
-                t = calc.count_message_single(row["role"], row["content"] or "")
+                t = calc.count_message_single(row["role"], row["content"] or "", tool_calls=row.get("tool_calls"))
             except Exception:
                 t = max(1, len(row["content"] or "") // 2) + 4
             freed_tokens += t

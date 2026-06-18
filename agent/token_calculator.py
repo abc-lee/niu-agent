@@ -115,11 +115,14 @@ class TokenCalculator:
                 total += _TOOL_CALL_ID_OVERHEAD
         return total
 
-    def count_message_single(self, role: str, content: str) -> int:
+    def count_message_single(self, role: str, content: str, tool_calls: list | None = None) -> int:
         """计算单条消息的 token 数（含结构开销）。"""
+        content = content or ""
         overhead = _MSG_OVERHEAD
         if role == "tool":
             overhead += _TOOL_CALL_ID_OVERHEAD
+        if tool_calls:
+            overhead += len(tool_calls) * _TOOL_CALL_OVERHEAD
         return self.count_text(content) + overhead
 
 

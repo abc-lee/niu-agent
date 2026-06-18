@@ -359,6 +359,43 @@ class TestCountMessageSingle:
         assert tool_count > user_count
         assert tool_count - user_count == _TOOL_CALL_ID_OVERHEAD
 
+    def test_assistant_with_tool_calls(self, calc: TokenCalculator):
+        """带 tool_calls 的 assistant 消息应累加 _TOOL_CALL_OVERHEAD。"""
+        tool_calls = [{"id": "call_1", "type": "function", "function": {"name": "test", "arguments": "{}"}}]
+        count = calc.count_message_single("assistant", "调用工具", tool_calls=tool_calls)
+        expected = calc.count_text("调用工具") + _MSG_OVERHEAD + 1 * _TOOL_CALL_OVERHEAD
+        assert count == expected
+
+    def test_assistant_with_multiple_tool_calls(self, calc: TokenCalculator):
+        """多条 tool_calls 应按数量累加开销。"""
+        tool_calls = [
+            {"id": "call_1", "type": "function", "function": {"name": "a", "arguments": "{}"}},
+            {"id": "call_2", "type": "function", "function": {"name": "b", "arguments": "{}"}},
+            {"id": "call_3", "type": "function", "function": {"name": "c", "arguments": "{}"}},
+        ]
+        count = calc.count_message_single("assistant", "三次调用", tool_calls=tool_calls)
+        expected = calc.count_text("三次调用") + _MSG_OVERHEAD + 3 * _TOOL_CALL_OVERHEAD
+        assert count == expected
+
+    def test_tool_calls_none_default(self, calc: TokenCalculator):
+        """不传 tool_calls 时行为与修改前一致。"""
+        count = calc.count_message_single("assistant", "普通回复")
+        expected = calc.count_text("普通回复") + _MSG_OVERHEAD
+        assert count == expected
+
+    def test_tool_calls_empty_list(self, calc: TokenCalculator):
+        """空 tool_calls 列表不增加开销。"""
+        count = calc.count_message_single("assistant", "无调用", tool_calls=[])
+        expected = calc.count_text("无调用") + _MSG_OVERHEAD
+        assert count == expected
+
+    def test_none_content_with_tool_calls(self, calc: TokenCalculator):
+        """content 为 None 时带 tool_calls 不崩溃。"""
+        tool_calls = [{"id": "call_1", "type": "function", "function": {"name": "x", "arguments": "{}"}}]
+        count = calc.count_message_single("assistant", None, tool_calls=tool_calls)
+        expected = calc.count_text("") + _MSG_OVERHEAD + 1 * _TOOL_CALL_OVERHEAD
+        assert count == expected
+
 
 # ---------------------------------------------------------------------------
 # 5. 单例测试
