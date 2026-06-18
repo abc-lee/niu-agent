@@ -313,14 +313,14 @@ def consolidate_brain_regions(
             except Exception as e:
                 logger.debug("[Consolidate] Dissolve check skipped: %s", e)
 
-            # Step 8: Decay structural edges
+            # Step 8: Decay structural edges — DISABLED: edge decay deleted 700+ "包含" edges in 3 days
             edges_disconnected = 0
-            try:
-                all_regions_for_decay = region_mgr.get_all_regions()
-                if all_regions_for_decay:
-                    edges_disconnected = region_mgr.decay_structural_edges(all_regions_for_decay)
-            except Exception as e:
-                logger.debug("[Consolidate] Edge decay skipped: %s", e)
+            # try:
+            #     all_regions_for_decay = region_mgr.get_all_regions()
+            #     if all_regions_for_decay:
+            #         edges_disconnected = region_mgr.decay_structural_edges(all_regions_for_decay)
+            # except Exception as e:
+            #     logger.debug("[Consolidate] Edge decay skipped: %s", e)
 
             # Step 9: Invalidate cached tool-to-region mapping
             try:

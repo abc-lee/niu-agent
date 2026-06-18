@@ -386,9 +386,9 @@ def reinforce_on_tool_use(tool_name: str, reinforce_delta: float = REINFORCE_DEL
 
     region_id = mgr.reinforce_by_tool_use(tool_name, tool_to_region)
 
-    # Boost structural edge weights in LightRAG graph
-    if region_id:
-        _reinforce_edge_weight(region_id, reinforce_delta)
+    # Boost structural edge weights — DISABLED: edge reinforce without decay causes unbounded weight growth
+    # if region_id:
+    #     _reinforce_edge_weight(region_id, reinforce_delta)
 
     return region_id
 
