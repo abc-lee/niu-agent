@@ -111,7 +111,7 @@ class TokenCalculator:
             if tool_calls:
                 total += len(tool_calls) * _TOOL_CALL_OVERHEAD
             # tool 角色消息的 tool_call_id 开销
-            if msg.get("role") == "tool" and msg.get("tool_call_id"):
+            if msg.get("role") == "tool":
                 total += _TOOL_CALL_ID_OVERHEAD
         return total
 
