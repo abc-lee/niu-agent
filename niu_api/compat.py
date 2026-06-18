@@ -162,6 +162,28 @@ def _build_incremental_msg_text(messages, last_cursor_id: str, out_msg_ids: list
     return f"共 {len(lines)} 条新消息\n\n" + "\n".join(lines)
 
 
+def _build_journal_task(journal_msg_text: str, safe_tokens: int = 0) -> str:
+    """构建 journal-agent 的 task prompt（增量消息嵌入）。
+
+    Args:
+        journal_msg_text: _build_incremental_msg_text() 返回的增量消息文本
+        safe_tokens: 截断 token 上限（0 表示不截断）
+
+    Returns:
+        完整的 task prompt 字符串
+    """
+    prompt = f"""以下是对话消息（每条带 [id:UUID] [idx:N] 序号标注）。请从中识别工作内容，提取为日志条目追加写入 journal.md。
+
+{journal_msg_text}
+
+处理完成后，在报告末尾用 JSON 格式报告：{{"last_journal_id": "<收到的消息中 idx 最大的消息的 id（UUID）>"}}
+**必须推进游标**：即使没有可提取的工作内容，也必须输出 idx 最大的消息的 UUID。"""
+
+    if safe_tokens > 0:
+        prompt = _truncate_task_for_subagent(prompt, safe_tokens)
+    return prompt
+
+
 
 def truncate_message_content(content: str, max_chars: int = 500) -> str:
     """
@@ -1208,17 +1230,9 @@ async def _tidy_context_impl(request: dict):
                 logger.info(f"[Tidy] Sleep: starting journal-agent ({len(journal_msg_ids)} incremental messages)")
 
                 if journal_msg_ids:
-                    journal_prompt = f"""以下是对话消息（每条带 [id:UUID] [idx:N] 序号标注）。请从中识别工作内容，提取为日志条目追加写入 journal.md。
-
-{journal_msg_text}
-
-处理完成后，在报告末尾用 JSON 格式报告：{{"last_journal_id": "<收到的消息中 idx 最大的消息的 id（UUID）>"}}
-**必须推进游标**：即使没有可提取的工作内容，也必须输出 idx 最大的消息的 UUID。"""
-
-                    # 截断 task 防止子Agent超限
                     context_window_for_truncate = _read_context_window_tokens()
                     safe_tokens = int(context_window_for_truncate * 0.6)
-                    truncated_journal_prompt = _truncate_task_for_subagent(journal_prompt, safe_tokens)
+                    truncated_journal_prompt = _build_journal_task(journal_msg_text, safe_tokens)
 
                     def run_journal_agent():
                         return call_subagent(
@@ -1591,17 +1605,9 @@ async def _tidy_context_impl(request: dict):
             logger.info(f"[Tidy] Force: starting journal-agent ({len(journal_force_msg_ids)} incremental messages)")
 
             if journal_force_msg_ids:
-                journal_force_prompt = f"""以下是对话消息（每条带 [id:UUID] [idx:N] 序号标注）。请从中识别工作内容，提取为日志条目追加写入 journal.md。
-
-{journal_force_msg_text}
-
-处理完成后，在报告末尾用 JSON 格式报告：{{"last_journal_id": "<收到的消息中 idx 最大的消息的 id（UUID）>"}}
-**必须推进游标**：即使没有可提取的工作内容，也必须输出 idx 最大的消息的 UUID。"""
-
-                # 截断 task 防止子Agent超限
                 context_window_for_truncate = _read_context_window_tokens()
                 safe_tokens = int(context_window_for_truncate * 0.6)
-                truncated_journal_force_prompt = _truncate_task_for_subagent(journal_force_prompt, safe_tokens)
+                truncated_journal_force_prompt = _build_journal_task(journal_force_msg_text, safe_tokens)
 
                 def run_journal_agent_force():
                     return call_subagent(
