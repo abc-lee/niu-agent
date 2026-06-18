@@ -312,7 +312,7 @@ def _estimate_total_tokens(messages) -> int:
     except Exception:
         from agent.subagent import count_tokens_for_text
         total_content = "".join(
-            (m.content[:_MAX_TOOL_RESULT_CHARS] if getattr(m, "role", "") == "tool" and len(getattr(m, "content", "") or "") > _MAX_TOOL_RESULT_CHARS else getattr(m, "content", ""))
+            (m.content[:_MAX_TOOL_RESULT_CHARS] if getattr(m, "role", "") == "tool" and len(getattr(m, "content", "") or "") > _MAX_TOOL_RESULT_CHARS else (m.content or ""))
             for m in messages
         )
         return count_tokens_for_text(total_content)

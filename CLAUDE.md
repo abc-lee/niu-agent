@@ -27,7 +27,7 @@ MCP 服务器集群 (mcp-servers/)
 4. **修改前必须用 gitnexus 分析影响范围** — 评估 blast radius 后再动手
 5. **测试必须用真实数据+真实LLM** — 绕过LLM的测试是假测试
 6. **python/ 目录必须是完整的自包含 Python 安装** — 所有二进制文件、库、依赖必须真实存在于 python/ 目录内，禁止使用符号链接指向外部路径（如 /Library/Frameworks/Python.framework/）。这个目录最终要打包分发，客户不需要自己安装 Python 环境，也不需要自己安装依赖。
-7. **git 操作后必须修复文件权限** — git checkout/reset 会丢失可执行权限，执行后必须运行：`find python/bin/ -type f -exec grep -l '^#!' {} \; | xargs chmod +x`
+7. **git 操作后必须修复文件权限** — git checkout/reset 会丢失可执行权限，执行后必须运行：`find python/bin/ -type f -exec grep -l '^#!' {} \; | xargs chmod +x` 和 `find ui/assistant/node_modules/.bin/ -type f ! -perm -u+x -exec chmod +x {} \;`
 
 **违反任何一条就停下来，不要继续。**
 
@@ -47,17 +47,13 @@ MCP 服务器集群 (mcp-servers/)
 ### 前置要求
 
 - **Go**: 不再使用
-- **Rust**: 用于启动器 (launcher/)
+- **Rust**: 用于启动器 (launcher/)，前端已集成在 Iced GUI 中
 - **Python**: 3.11+ (用于 Agent 和 MCP 服务器)
-- **Node.js**: 18+ (用于 Electron 前端)
 - **SQLite**: 用于会话持久化
 
 ### 安装依赖
 
 ```bash
-# Go 依赖
-go mod download
-
 # Python 依赖（Agent 核心）
 cd agent
 pip install -e .
@@ -69,10 +65,6 @@ cd mcp-servers/file-parser && pip install -e .
 cd mcp-servers/config-manager && pip install -e .
 cd mcp-servers/memory-server && pip install -e .
 cd mcp-servers/session-manager && pip install -e .
-
-# Electron 前端依赖
-cd ui/assistant
-npm install
 ```
 
 ### 运行项目
