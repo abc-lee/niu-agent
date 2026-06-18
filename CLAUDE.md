@@ -4,13 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概览
 
-这是一个个人知识管理助手项目，采用 **Electron 前端 + Go 后端启动器 + Python Agent 核心 + 多个 MCP 服务器** 的混合架构。
+这是一个个人知识管理助手项目，采用 **Iced 前端 + Rust 启动器 + Python Agent 核心 + 多个 MCP 服务器** 的混合架构。
 
 **核心架构**：
 ```
-用户界面 (Electron)
+用户界面 (Iced/GPU)
     ↓ HTTP/SSE
-Go 启动器 (main.go)
+Rust 启动器 (launcher/)
     ↓ 启动 + 监控
 Python API 服务 (niu_api/)
     ↓ 调用
@@ -27,7 +27,7 @@ MCP 服务器集群 (mcp-servers/)
 4. **修改前必须用 gitnexus 分析影响范围** — 评估 blast radius 后再动手
 5. **测试必须用真实数据+真实LLM** — 绕过LLM的测试是假测试
 6. **python/ 目录必须是完整的自包含 Python 安装** — 所有二进制文件、库、依赖必须真实存在于 python/ 目录内，禁止使用符号链接指向外部路径（如 /Library/Frameworks/Python.framework/）。这个目录最终要打包分发，客户不需要自己安装 Python 环境，也不需要自己安装依赖。
-7. **git 操作后必须修复文件权限** — git checkout/reset 会丢失可执行权限，执行后必须运行：`find python/bin/ -type f -exec grep -l '^#!' {} \; | xargs chmod +x` 和 `find ui/assistant/node_modules/.bin/ -type f ! -perm -u+x -exec chmod +x {} \;`
+7. **git 操作后必须修复文件权限** — git checkout/reset 会丢失可执行权限，执行后必须运行：`find python/bin/ -type f -exec grep -l '^#!' {} \; | xargs chmod +x`
 
 **违反任何一条就停下来，不要继续。**
 
@@ -46,7 +46,8 @@ MCP 服务器集群 (mcp-servers/)
 
 ### 前置要求
 
-- **Go**: 1.26+ (用于启动器)
+- **Go**: 不再使用
+- **Rust**: 用于启动器 (launcher/)
 - **Python**: 3.11+ (用于 Agent 和 MCP 服务器)
 - **Node.js**: 18+ (用于 Electron 前端)
 - **SQLite**: 用于会话持久化
@@ -78,17 +79,13 @@ npm install
 
 **完整启动**：
 ```bash
-# 构建并运行（推荐）
-go build -o niu.exe && ./niu.exe
-
-# 或者直接运行
-go run main.go
+# 直接运行编译好的二进制
+./niu
 ```
 
 **单独启动前端**：
 ```bash
-cd ui/assistant
-npm start
+# 前端已集成在 Rust 启动器中，无需单独启动
 ```
 
 **单独启动 Python API**：
@@ -103,9 +100,6 @@ python -m niu_api
 # Python Agent 测试
 cd agent
 pytest
-
-# Go 测试
-go test ./...
 ```
 
 ### 代码检查
@@ -117,9 +111,6 @@ ruff check .
 
 # Python 自动格式化
 ruff format .
-
-# Go 代码检查
-go fmt ./...
 ```
 
 ## 核心架构
@@ -376,15 +367,17 @@ preload_face_model()
 }
 ```
 
-### Electron 窗口管理
+### Electron 窗口管理（已迁移至 Iced）
+
+前端已从 Electron 迁移至 Iced (Rust GPU GUI)，以下内容保留供历史参考。
 
 **关闭流程**：
-1. Electron 窗口关闭 → 触发 `close-all` 事件
+1. 前端窗口关闭 → 触发关闭事件
 2. 调用 `/api/shutdown` 通知 Python API
 3. Python API 清理资源
-4. Go 启动器终止所有子进程
+4. Rust 启动器终止所有子进程
 
-**修改文件**：`main.go` + `ui/assistant/main.js`
+**修改文件**：Rust 启动器 + Python API
 
 ## 常见问题
 
