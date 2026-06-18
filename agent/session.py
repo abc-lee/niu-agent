@@ -13,6 +13,18 @@ import asyncio
 import aiosqlite
 from datetime import datetime
 from uuid import uuid4
+
+
+def _safe_json(raw, default=None):
+    """Parse JSON from DB column, returning default on any failure."""
+    if default is None:
+        default = []
+    if not raw:
+        return default
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return default
 from typing import Optional, List, Dict
 from dataclasses import dataclass, field, asdict
 from loguru import logger
@@ -190,8 +202,8 @@ class MessageStore:
                         id=row["id"],
                         role=row["role"],
                         content=row["content"] or "",
-                        tool_calls=json.loads(row["tool_calls"] or "[]"),
-                        tool_results=json.loads(row["tool_results"] or "[]"),
+                        tool_calls=_safe_json(row["tool_calls"]),
+                        tool_results=_safe_json(row["tool_results"]),
                         tool_call_id=row["tool_call_id"] if "tool_call_id" in row.keys() else "",
                         created_at=row["created_at"],
                         rowid=row["rowid"],
