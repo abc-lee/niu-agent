@@ -184,6 +184,19 @@ def _build_journal_task(journal_msg_text: str, safe_tokens: int = 0) -> str:
     return prompt
 
 
+def _write_cursor_with_lock(cursor_path, data: dict) -> None:
+    """带文件锁保护的游标写入 — 防止 handler/compat/runner 并发竞争。"""
+    import fcntl
+    lock_path = cursor_path.with_suffix(".lock")
+    cursor_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock_path, 'w') as lock_f:
+        fcntl.flock(lock_f, fcntl.LOCK_EX)
+        try:
+            cursor_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        finally:
+            fcntl.flock(lock_f, fcntl.LOCK_UN)
+
+
 
 def truncate_message_content(content: str, max_chars: int = 500) -> str:
     """
@@ -1278,11 +1291,10 @@ async def _tidy_context_impl(request: dict):
                                 new_journal_id = ""
 
                     if new_journal_id:
-                        journal_cursor_path.parent.mkdir(parents=True, exist_ok=True)
-                        journal_cursor_path.write_text(json.dumps({
+                        _write_cursor_with_lock(journal_cursor_path, {
                             "last_journal_id": new_journal_id,
                             "last_journal_at": datetime.now().isoformat(),
-                        }, ensure_ascii=False, indent=2), encoding="utf-8")
+                        })
                         logger.info(f"[Tidy] Journal cursor updated: last_journal_id={new_journal_id}")
                 else:
                     logger.info("[Tidy] journal-agent: no new messages since cursor")
@@ -1653,11 +1665,10 @@ async def _tidy_context_impl(request: dict):
                             new_journal_id = ""
 
                 if new_journal_id:
-                    journal_cursor_path.parent.mkdir(parents=True, exist_ok=True)
-                    journal_cursor_path.write_text(json.dumps({
+                    _write_cursor_with_lock(journal_cursor_path, {
                         "last_journal_id": new_journal_id,
                         "last_journal_at": datetime.now().isoformat(),
-                    }, ensure_ascii=False, indent=2), encoding="utf-8")
+                    })
                     logger.info(f"[Tidy] Force: Journal cursor updated: last_journal_id={new_journal_id}")
             else:
                 logger.info("[Tidy] Force: journal-agent no incremental messages")

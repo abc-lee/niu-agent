@@ -688,7 +688,7 @@ class NiuRunner:
             new_cursor_id is the validated cursor after the step.
         """
         import concurrent.futures as _cf
-        from niu_api.compat import _extract_cursor_id, _is_subagent_overflow, _extract_overflow_info
+        from niu_api.compat import _extract_cursor_id, _is_subagent_overflow, _extract_overflow_info, _write_cursor_with_lock
         from agent.subagent import call_subagent
 
         # --- call sub-agent ---
@@ -734,11 +734,10 @@ class NiuRunner:
 
         # --- cursor write-back ---
         if new_cursor_id:
-            cursor_path.parent.mkdir(parents=True, exist_ok=True)
-            cursor_path.write_text(json.dumps({
+            _write_cursor_with_lock(cursor_path, {
                 cursor_field: new_cursor_id,
                 timestamp_field: datetime.now().isoformat(),
-            }, ensure_ascii=False, indent=2), encoding="utf-8")
+            })
 
         return result, new_cursor_id
 
@@ -758,6 +757,7 @@ class NiuRunner:
             _build_incremental_msg_text,
             _truncate_task_for_subagent,
             _build_journal_task,
+            _write_cursor_with_lock,
         )
         from agent.subagent import (
             call_subagent,
