@@ -644,7 +644,7 @@ class NiuRunner:
             calc = TokenCalculator.get()
             for msg in db_messages:
                 try:
-                    t = calc.count_message_single(msg.role, msg.content or "")
+                    t = calc.count_message_single(msg.role, msg.content or "", tool_calls=msg.tool_calls)
                 except Exception:
                     t = max(1, len(msg.content or "") // 2) + 4
                 msg_tokens.append(t)

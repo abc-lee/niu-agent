@@ -168,7 +168,7 @@ def get_messages(session_id: str, **kwargs) -> dict:
             content = getattr(msg, "content", "") or ""
             try:
                 from agent.token_calculator import TokenCalculator
-                tokens = TokenCalculator.get().count_message_single(getattr(msg, "role", "user"), content)
+                tokens = TokenCalculator.get().count_message_single(getattr(msg, "role", "user"), content, tool_calls=getattr(msg, "tool_calls", None))
             except Exception:
                 tokens = max(1, len(content) // 2) + 4
             total_tokens += tokens
@@ -369,7 +369,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             content = msg.get("content", "")
             try:
                 from agent.token_calculator import TokenCalculator
-                tokens = TokenCalculator.get().count_message_single(msg.get("role", "user"), content)
+                tokens = TokenCalculator.get().count_message_single(msg.get("role", "user"), content, tool_calls=msg.get("tool_calls"))
             except Exception:
                 tokens = max(1, len(content) // 2) + 4
             total_tokens += tokens
