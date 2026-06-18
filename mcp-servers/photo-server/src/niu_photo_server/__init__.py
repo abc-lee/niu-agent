@@ -3151,7 +3151,7 @@ def ingest(path: str, category: str = "", mode: str = "copy", action: str = "") 
     单文件：无状态，直接入库
     目录：有状态三阶段交互（start → interact → ... → success/abort）
     """
-    source = Path(path)
+    source = Path(os.path.expanduser(path))
     
     if not source.exists():
         return {
@@ -3325,7 +3325,7 @@ def ingest_document(file_path: str, category: str = "", mode: str = "copy") -> d
     """
     try:
         logger.info(f"[INGEST] 开始处理: {file_path}")
-        source = Path(file_path)
+        source = Path(os.path.expanduser(file_path))
         if not source.exists():
             logger.error(f"[INGEST] 文件不存在: {file_path}")
             return {

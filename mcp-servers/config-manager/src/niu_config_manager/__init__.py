@@ -646,6 +646,8 @@ def set_storage_config(
     document_root: str = None, database_path: str = None
 ) -> dict[str, Any]:
     """Set storage configuration."""
+    document_root = os.path.expanduser(document_root) if document_root else document_root
+    database_path = os.path.expanduser(database_path) if database_path else database_path
     config = load_user_config()
     storage = config.get("storage", {})
 
@@ -710,6 +712,7 @@ def get_workspace() -> dict[str, Any]:
 
 def set_workspace(path: str) -> dict[str, Any]:
     """Set workspace path."""
+    path = os.path.expanduser(path) if path else path
     memory = load_memory()
 
     # Create directory if it doesn't exist
@@ -788,6 +791,7 @@ def complete_setup(
     user_organization: str = None,
 ) -> dict[str, Any]:
     """Complete initial setup."""
+    workspace_path = os.path.expanduser(workspace_path) if workspace_path else workspace_path
     memory = load_memory()
 
     # Set workspace if provided
@@ -866,6 +870,7 @@ def mkdir(path: str) -> dict[str, Any]:
     Returns:
         dict with status and path
     """
+    path = os.path.expanduser(path) if path else path
     try:
         dir_path = Path(path)
         dir_path.mkdir(parents=True, exist_ok=True)
@@ -891,6 +896,8 @@ def copy_to_path(source_path: str, dest_path: str) -> dict[str, Any]:
     Returns:
         dict with status, source, destination, size
     """
+    source_path = os.path.expanduser(source_path) if source_path else source_path
+    dest_path = os.path.expanduser(dest_path) if dest_path else dest_path
     source = Path(source_path)
     if not source.exists():
         return {"status": "error", "message": f"Source file not found: {source_path}"}
@@ -924,6 +931,8 @@ def move_to_path(source_path: str, dest_path: str) -> dict[str, Any]:
     Returns:
         dict with status, source, destination, size
     """
+    source_path = os.path.expanduser(source_path) if source_path else source_path
+    dest_path = os.path.expanduser(dest_path) if dest_path else dest_path
     source = Path(source_path)
     if not source.exists():
         return {"status": "error", "message": f"Source file not found: {source_path}"}
