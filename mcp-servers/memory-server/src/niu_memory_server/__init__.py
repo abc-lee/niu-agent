@@ -137,6 +137,12 @@ def _count_tokens(text: str) -> int:
     Falls back to conservative CJK-aware char-based estimate if unavailable.
     """
     try:
+        # Ensure agent package is importable in stdio mode (project root may not be in sys.path)
+        import sys as _sys
+        from pathlib import Path as _Path
+        _project_root = str(_Path(__file__).resolve().parent.parent.parent.parent.parent)
+        if _project_root not in _sys.path:
+            _sys.path.insert(0, _project_root)
         from agent.token_calculator import TokenCalculator
         return TokenCalculator.get().count_text(text)
     except Exception:

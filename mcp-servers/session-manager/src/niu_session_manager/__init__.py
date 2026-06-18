@@ -167,10 +167,18 @@ def get_messages(session_id: str, **kwargs) -> dict:
         for i, msg in enumerate(messages, 1):
             content = getattr(msg, "content", "") or ""
             try:
+                # Ensure agent package is importable in stdio mode (project root may not be in sys.path)
+                import sys as _sys
+                from pathlib import Path as _Path
+                _project_root = str(_Path(__file__).resolve().parent.parent.parent.parent.parent)
+                if _project_root not in _sys.path:
+                    _sys.path.insert(0, _project_root)
                 from agent.token_calculator import TokenCalculator
                 tokens = TokenCalculator.get().count_message_single(getattr(msg, "role", "user"), content, tool_calls=getattr(msg, "tool_calls", None))
             except Exception:
-                tokens = max(1, len(content) // 2) + 4
+                # Fallback: CJK ~1.5 tokens, ASCII ~0.25 tokens (conservative, same as memory-server)
+                cjk = sum(1 for c in content if '一' <= c <= '鿿')
+                tokens = max(1, int(cjk * 1.5 + (len(content) - cjk) * 0.25))
             total_tokens += tokens
 
             formatted.append({
@@ -368,10 +376,18 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         for i, msg in enumerate(messages, 1):
             content = msg.get("content", "")
             try:
+                # Ensure agent package is importable in stdio mode (project root may not be in sys.path)
+                import sys as _sys
+                from pathlib import Path as _Path
+                _project_root = str(_Path(__file__).resolve().parent.parent.parent.parent.parent)
+                if _project_root not in _sys.path:
+                    _sys.path.insert(0, _project_root)
                 from agent.token_calculator import TokenCalculator
                 tokens = TokenCalculator.get().count_message_single(msg.get("role", "user"), content, tool_calls=msg.get("tool_calls"))
             except Exception:
-                tokens = max(1, len(content) // 2) + 4
+                # Fallback: CJK ~1.5 tokens, ASCII ~0.25 tokens (conservative, same as memory-server)
+                cjk = sum(1 for c in content if '一' <= c <= '鿿')
+                tokens = max(1, int(cjk * 1.5 + (len(content) - cjk) * 0.25))
             total_tokens += tokens
 
             formatted.append(
