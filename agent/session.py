@@ -297,7 +297,7 @@ class MessageStore:
             placeholders = ",".join("?" * len(message_ids))
             # Collect content before deleting (for token estimation + temp cleanup)
             cursor = await db.execute(
-                f"SELECT role, content FROM messages WHERE id IN ({placeholders})",
+                f"SELECT role, content, tool_calls FROM messages WHERE id IN ({placeholders})",
                 message_ids,
             )
             rows = await cursor.fetchall()
@@ -315,7 +315,9 @@ class MessageStore:
             try:
                 from agent.token_calculator import TokenCalculator
                 calc = TokenCalculator.get()
-                t = calc.count_message_single(row["role"], row["content"] or "", tool_calls=row.get("tool_calls"))
+                tc_raw = row.get("tool_calls")
+                tc = json.loads(tc_raw) if tc_raw else None
+                t = calc.count_message_single(row["role"], row["content"] or "", tool_calls=tc)
             except Exception:
                 t = max(1, len(row["content"] or "") // 2) + 4
             freed_tokens += t
