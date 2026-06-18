@@ -256,8 +256,13 @@ def _truncate_task_for_subagent(task: str, max_tokens: int) -> str:
     return truncated
 
 
+_MAX_TOOL_RESULT_CHARS = 30000
+
 def _estimate_total_tokens(messages) -> int:
-    """估算消息列表的总 token 数（逐条计算，含角色开销）。"""
+    """估算消息列表的总 token 数（逐条计算，含角色开销）。
+
+    tool 消息的 content 按 MAX_TOOL_RESULT_CHARS 截断，与 agent_loop 一致。
+    """
     try:
         from agent.token_calculator import TokenCalculator
         calc = TokenCalculator.get()
@@ -265,11 +270,16 @@ def _estimate_total_tokens(messages) -> int:
         for msg in messages:
             content = getattr(msg, "content", "") or ""
             role = getattr(msg, "role", "user") or "user"
+            if role == "tool" and len(content) > _MAX_TOOL_RESULT_CHARS:
+                content = content[:_MAX_TOOL_RESULT_CHARS]
             total += calc.count_message_single(role, content, tool_calls=getattr(msg, "tool_calls", None))
         return total
     except Exception:
         from agent.subagent import count_tokens_for_text
-        total_content = "".join(getattr(m, "content", "") or "" for m in messages)
+        total_content = "".join(
+            (m.content[:_MAX_TOOL_RESULT_CHARS] if getattr(m, "role", "") == "tool" and len(getattr(m, "content", "") or "") > _MAX_TOOL_RESULT_CHARS else getattr(m, "content", ""))
+            for m in messages
+        )
         return count_tokens_for_text(total_content)
 
 
