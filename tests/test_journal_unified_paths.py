@@ -37,7 +37,7 @@ def test_send_chat_messages():
     ]
     for msg in messages:
         resp = requests.post(
-            f"{API_BASE}/api/chat",
+            f"{API_BASE}/chat",
             json={"message": msg},
             timeout=60,
         )
@@ -81,7 +81,7 @@ def test_chat_triggers_journal_via_handler():
     old_cursor = json.loads(CURSOR_PATH.read_text()).get("last_journal_id", "")
 
     resp = requests.post(
-        f"{API_BASE}/api/chat",
+        f"{API_BASE}/chat",
         json={"message": "记录一下今天的工作"},
         timeout=120,
     )
@@ -116,7 +116,7 @@ def test_journal_format_consistency():
 
 if __name__ == "__main__":
     print("=== Journal-Agent 三路径统一集成测试 ===\n")
-    print("前置条件：程序已启动（go run main.go）\n")
+    print("前置条件：程序已启动（./niu）\n")
 
     try:
         test_api_health()
