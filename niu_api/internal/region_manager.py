@@ -127,6 +127,7 @@ def _encode_description(
     size: int,
     representative: str,
     updated_at: float,
+    priority: str = DEFAULT_PRIORITY,
 ) -> str:
     """Encode region metadata into description using <SEP> separator.
 
@@ -140,8 +141,33 @@ def _encode_description(
         f"brain_meta_size:{size}",
         f"brain_meta_representative:{representative}",
         f"brain_meta_updated_at:{int(updated_at)}",
+        f"brain_meta_priority:{priority}",
     ]
     return "<SEP>".join(parts)
+
+
+def parse_priority_from_description(description: str) -> str:
+    """从 description 中解析 brain_meta_priority 字段"""
+    import re
+    if not description:
+        return DEFAULT_PRIORITY
+    # 使用与 _parse_description() 相同的分隔符处理方式
+    parts = re.split(r'<SEP>|\s\|\s', description)
+    for part in parts:
+        part = part.strip()
+        if part.startswith("brain_meta_priority:"):
+            val = part[len("brain_meta_priority:"):]
+            if val in PRIORITY_HALFLIFE:
+                return val
+            # 旧配置值警告（设计文档6.2节要求）
+            if val in ("core", "category"):
+                logger.warning(
+                    "旧优先级值 '%s' 不再支持，回退到 DEFAULT_PRIORITY ('%s')。"
+                    "请更新 preferences.json 中的 priority 字段。",
+                    val, DEFAULT_PRIORITY,
+                )
+            return DEFAULT_PRIORITY
+    return DEFAULT_PRIORITY
 
 
 def _parse_description(description: str) -> dict[str, str]:
@@ -296,6 +322,7 @@ class RegionManager:
                 size=len(members),
                 representative=representative,
                 updated_at=now,
+                priority=DEFAULT_PRIORITY,
             )
 
             # Always upsert entity (updates description for existing regions)
@@ -495,7 +522,7 @@ class RegionManager:
 
             # Preserve dynamic metadata keys (e.g. shrink_count) that
             # _encode_description does not include in its standard 5 fields
-            STANDARD_KEYS = {"summary", "region_id", "size", "representative", "updated_at"}
+            STANDARD_KEYS = {"summary", "region_id", "size", "representative", "updated_at", "priority"}
             extra_meta = {
                 k: v for k, v in parsed.items()
                 if k not in STANDARD_KEYS and v
@@ -525,12 +552,14 @@ class RegionManager:
             region_summary = self._generate_region_summary(entity_summaries)
 
             now = time.time()
+            priority = parse_priority_from_description(current_desc)
             description = _encode_description(
                 summary=region_summary,
                 region_id=community_id,
                 size=len(members),
                 representative=representative,
                 updated_at=now,
+                priority=priority,
             )
 
             # Append preserved dynamic metadata
@@ -794,11 +823,24 @@ class RegionManager:
             )
             summary = self._generate_region_summary(entity_summaries)
             representative = list(new_members)[0].replace("<SEP>", "-").replace("|", "-")
+            # Preserve priority from existing region description
+            old_desc = ""
+            try:
+                explore_result = self._adapter.explore_node(region_name, depth=0)
+                if explore_result and explore_result.get("center"):
+                    for node in explore_result.get("nodes", []):
+                        if node.get("id") == region_name or node.get("name") == region_name:
+                            old_desc = node.get("description", "")
+                            break
+            except Exception:
+                pass
+            priority = parse_priority_from_description(old_desc)
             now = time.time()
             description = _encode_description(
                 summary=summary, region_id=best_cid,
                 size=len(new_members), representative=representative,
                 updated_at=now,
+                priority=priority,
             )
             all_entities.append({
                 "entity_name": region_name, "entity_type": REGION_ENTITY_TYPE,
@@ -966,16 +1008,18 @@ class RegionManager:
                 # Persist shrink_count (incremented or reset to 0)
                 # Reset-to-0 write is needed so next sync doesn't read stale count
                 now = time.time()
+                priority = parse_priority_from_description(raw_desc)
                 updated_desc = _encode_description(
                     summary=parsed.get("summary", ""),
                     region_id=region.community_id,
                     size=current_size,
                     representative=region.representative,
                     updated_at=now,
+                    priority=priority,
                 )
                 # Append shrink_count + preserve other dynamic metadata
                 updated_desc += f"<SEP>brain_meta_shrink_count:{shrink_count}"
-                STANDARD_KEYS = {"summary", "region_id", "size", "representative", "updated_at", "shrink_count"}
+                STANDARD_KEYS = {"summary", "region_id", "size", "representative", "updated_at", "shrink_count", "priority"}
                 for key, value in parsed.items():
                     if key not in STANDARD_KEYS and value:
                         updated_desc += f"<SEP>brain_meta_{key}:{value}"
@@ -1699,6 +1743,7 @@ def create_default_regions(
             size=0,
             representative="",
             updated_at=time.time(),
+            priority=region_def.get("priority", DEFAULT_PRIORITY),
         )
         all_entities.append({
             "entity_name": region_name,
@@ -1881,12 +1926,14 @@ def assign_entities_to_default_regions(
                         # D-15 fix: Use actual member count instead of cumulative size
                         from niu_api.internal.lightrag_manager import get_region_members as lightrag_get_region_members
                         actual_members = lightrag_get_region_members(name)
+                        priority = parse_priority_from_description(desc)
                         updated_desc = _encode_description(
                             summary=parsed.get("summary", ""),
                             region_id=parsed.get("region_id", ""),
                             size=len(actual_members),
                             representative=parsed.get("representative", ""),
                             updated_at=time.time(),
+                            priority=priority,
                         )
                         update_entities.append({
                             "entity_name": name,
