@@ -370,13 +370,14 @@ class RegionManager:
             )
             valid_communities.append((partition, members, entity_summaries))
 
-        # Pass 2: Generate all labels (batch for 3+, individual for fewer)
+        # Pass 2: Generate all labels + descriptions (batch for 3+, individual for fewer)
         entity_summaries_list = [es for _, _, es in valid_communities]
-        labels = self._generate_labels(entity_summaries_list, existing_labels)
+        label_desc_pairs = self._generate_labels(entity_summaries_list, existing_labels)
 
         # Pass 3: Build entities, relationships, chunks using generated labels
-        for (partition, members, entity_summaries), region_label in zip(valid_communities, labels):
-            region_summary = self._generate_region_summary(entity_summaries)
+        for (partition, members, entity_summaries), (region_label, region_llm_desc) in zip(valid_communities, label_desc_pairs):
+            # Use LLM description if available, otherwise fall back to entity name concatenation
+            region_summary = region_llm_desc if region_llm_desc else self._generate_region_summary(entity_summaries)
             representative = members[0].replace("<SEP>", "-").replace("|", "-") if members else ""
             community_id = f"community_{partition.region_id}"
             now = time.time()
@@ -1441,17 +1442,17 @@ class RegionManager:
         self,
         entity_summaries_list: list[list[str]],
         existing_regions: list[str],
-    ) -> list[str]:
-        """Generate labels for multiple regions, using batch or individual calls.
+    ) -> list[tuple[str, str]]:
+        """Generate labels and descriptions for multiple regions.
 
         Uses batch LLM call for 3+ regions, individual for fewer.
+        Returns list of (label, description) tuples.
         """
         if len(entity_summaries_list) >= 3:
             try:
                 batch_result = self._generate_region_labels_batch(
                     entity_summaries_list, existing_regions
                 )
-                # Check if batch returned all labels
                 labels = []
                 missing_indices = []
                 for i in range(len(entity_summaries_list)):
@@ -1461,49 +1462,45 @@ class RegionManager:
                         labels.append(None)
                         missing_indices.append(i)
 
-                # Fallback to individual for missing
-                extended_existing = list(existing_regions) + [labels[j] for j in range(len(labels)) if labels[j] is not None and j not in missing_indices]
+                extended_existing = list(existing_regions) + [labels[j][0] for j in range(len(labels)) if labels[j] is not None and j not in missing_indices]
                 for i in missing_indices:
                     try:
-                        label = self._generate_region_label(
+                        label, desc = self._generate_region_label(
                             entity_summaries_list[i], extended_existing
                         )
-                        labels[i] = label
+                        labels[i] = (label, desc)
                         extended_existing.append(label)
                     except Exception:
                         fallback = entity_summaries_list[i][0].split("(")[0] if entity_summaries_list[i] else "unknown"
-                        labels[i] = fallback
+                        labels[i] = (fallback, "")
                         extended_existing.append(fallback)
 
-                # De-duplicate: if batch LLM returned same label for multiple regions
                 seen_labels = set(existing_regions)
-                for i, label in enumerate(labels):
-                    if label is not None and label in seen_labels:
-                        base = label[:7]
+                for i, item in enumerate(labels):
+                    if item is not None and item[0] in seen_labels:
+                        base = item[0][:7]
                         n = 2
                         candidate = f"{base}{n}"
                         while candidate in seen_labels and n < 10:
                             n += 1
                             candidate = f"{base}{n}"
-                        labels[i] = candidate
-                    if label is not None:
-                        seen_labels.add(labels[i])
+                        labels[i] = (candidate, item[1])
+                    if item is not None:
+                        seen_labels.add(labels[i][0])
 
-                # Final truncation to 8 chars (safety net)
-                for i, label in enumerate(labels):
-                    if label is not None and len(label) > 8:
-                        labels[i] = label[:8]
+                for i, item in enumerate(labels):
+                    if item is not None and len(item[0]) > 8:
+                        labels[i] = (item[0][:8], item[1])
 
                 return labels
             except Exception as e:
                 logger.warning("Batch label generation failed: %s, falling back to individual", e)
 
-        # Individual calls for < 3 regions or batch failure
         labels = []
         for entity_summaries in entity_summaries_list:
-            label = self._generate_region_label(entity_summaries, existing_regions)
-            labels.append(label)
-            existing_regions = existing_regions + [label]  # Avoid in-place mutation
+            label, desc = self._generate_region_label(entity_summaries, existing_regions)
+            labels.append((label, desc))
+            existing_regions = existing_regions + [label]
 
         return labels
 
