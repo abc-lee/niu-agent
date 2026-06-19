@@ -19,7 +19,7 @@ Niu 是一个**本地运行**的个人知识管理助手，核心理念：
 | 语义搜索 | LightRAG 统一检索（local/global/hybrid/mix/naive 模式） |
 | 人脸识别 | 拖入照片 → 自动检测人脸 → 相册管理 |
 | 定时任务 | 自然语言创建提醒，支持循环任务 |
-| 智能记忆 | 自动学习用户偏好和习惯 |
+| 智能记忆 | 自动学习用户偏好和习惯，按脑区优先级差异化遗忘曲线 |
 | 浏览器辅助 | Chrome Extension，AI 操作网页 |
 | /stop 指令 | 停止当前 Agent 工作，支持 Electron 和 IM 通用 |
 | /clear 指令 | 先停止 Agent 再清空对话，支持 Electron 和 IM 通用 |
@@ -41,9 +41,9 @@ Niu 是一个**本地运行**的个人知识管理助手，核心理念：
 
 | 层 | 技术 | 说明 |
 |----|------|------|
-| 前端 | Electron | 桌面应用 |
+| 前端 | Iced (Rust GPU) | 桌面应用 |
 | 后端 | Python FastAPI | API 服务 + Agent 核心 |
-| 启动器 | Go | 进程管理 + 自动更新 |
+| 启动器 | Rust | 进程管理 + Iced GUI + 自动更新 |
 | 数据库 | SQLite | 消息/图谱/任务 |
 | 知识检索 | LightRAG + Sentence Transformers | 知识图谱 + 语义搜索（统一架构） |
 | 人脸 | InsightFace + ONNX | 人脸检测/识别 |

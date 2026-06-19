@@ -236,6 +236,7 @@ source_id = "skill://{skill_name}"
 3. 清理已消失的脑区
 4. 刷新激活管理器
 5. 合并共激活脑区 + 溶解萎缩脑区
+6. 衰减脑区边权重（半衰期模型 + 保底机制）
 
 **缺省脑区配置化**：
 
@@ -245,12 +246,13 @@ source_id = "skill://{skill_name}"
 {
   "brain_regions": {
     "defaults": [
-      {"label": "聊天历史", "description": "日常对话中提炼的偏好、技能和经验记忆", "priority": "core"},
-      {"label": "文档库", "description": "用户导入的文档和资料，经解析后入库的知识", "priority": "core"},
-      {"label": "知识体系", "description": "系统化组织的概念、关系和理论体系", "priority": "core"},
-      {"label": "人际关系", "description": "人物实体、关系网络、社交图谱", "priority": "category"},
-      {"label": "工作事务", "description": "工作相关的项目、任务、决策记录", "priority": "category"},
-      {"label": "生活事务", "description": "日常生活相关的日程、健康、财务", "priority": "category"}
+      {"label": "聊天历史", "description": "日常对话中提炼的偏好、技能和经验记忆", "priority": "medium"},
+      {"label": "文档库", "description": "用户导入的文档和资料，经解析后入库的知识", "priority": "permanent"},
+      {"label": "知识体系", "description": "系统化组织的概念、关系和理论体系", "priority": "long"},
+      {"label": "人际关系", "description": "人物实体、关系网络、社交图谱", "priority": "permanent"},
+      {"label": "工作事务", "description": "工作相关的项目、任务、决策记录", "priority": "medium"},
+      {"label": "生活事务", "description": "日常生活相关的日程、健康、财务", "priority": "short"},
+      {"label": "组织机构", "description": "组织结构、部门、团队信息", "priority": "permanent"}
     ]
   }
 }
@@ -260,6 +262,38 @@ source_id = "skill://{skill_name}"
 - 声明式保护：配置文件里声明的就是缺省脑区，程序不靠推断
 - 配置驱动创建：缺省脑区的名称、描述、优先级都从 preferences.json 读取
 - 向后兼容：旧版 preferences.json 没有 `brain_regions` 段时，使用代码中的默认值
+
+### 7.3b 脑区边衰减增强机制
+
+**设计目标**：防止实体变成孤立节点，同时按脑区优先级实现差异化遗忘曲线。
+
+**边分类**：
+- **脑区边**：实体↔脑区节点的边（对端节点 entity_type == "brainregion"）。逻辑边，表示归属关系，参与衰减/增强/保底机制。
+- **知识关系边**：实体↔实体的边（如"认识"、"擅长"）。真实边，由 LLM 从内容中提取，不参与衰减。
+- **锚点边**：脑区↔脑区节点的边（导航结构），不参与衰减/增强。
+- **_session: 前缀边**：会话临时边，不参与衰减/增强。
+
+**优先级体系与半衰期**：
+
+| 优先级 | 半衰期 | 日衰减率 | 含义 |
+|--------|--------|----------|------|
+| `permanent` | 360天 | 0.99808 | 衰减但保底冻结，永不删除 |
+| `long` | 360天 | 0.99808 | 长期记忆 |
+| `medium` | 180天 | 0.99615 | 中期记忆 |
+| `short` | 90天 | 0.99232 | 短期记忆 |
+
+**保底逻辑**（FLOOR_WEIGHT = 0.1）：
+- 总边数 == 1（只剩这一条边） → 保底冻结，权重不低于 0.1
+- total_degree >= 2 且 priority == "permanent" → 保底冻结，永不删除
+- total_degree >= 2 且 priority != "permanent" → 允许正常衰减，低于 0.1 时删除边
+
+**增强机制**：工具使用时，对应脑区的边权重恢复到 1.0（"用一次就满血"）。无论优先级，恢复目标都是 1.0。次日衰减从 1.0 重新按各脑区半衰期下降。
+
+**priority 存储**：脑区节点的 description 字段中包含 `brain_meta_priority:{priority}`，由 `_encode_description()` 写入、`parse_priority_from_description()` 解析。旧值 `"core"`/`"category"` 输出 info 日志并回退到 `"medium"`。
+
+**触发时机**：
+- 衰减：RegionSync 守护线程每24小时执行一次
+- 增强：handler.py 工具调用成功后触发 `reinforce_on_tool_use(tool_name)`
 
 **脑区内过滤检索机制**：
 
