@@ -106,3 +106,148 @@ class TestEncodeDescriptionPriority:
         from niu_api.internal.region_manager import parse_priority_from_description, DEFAULT_PRIORITY
         desc = "brain_meta_priority:core<SEP>brain_meta_source:default"
         assert parse_priority_from_description(desc) == DEFAULT_PRIORITY
+
+
+import networkx as nx
+
+
+class TestDecayStructuralEdges:
+    """衰减算法测试 — 使用内存 NetworkX 图"""
+
+    def _build_test_graph(self):
+        """构建测试用图：2个脑区 + 3个实体"""
+        G = nx.Graph()
+        # 脑区节点
+        G.add_node("region_permanent", entity_type="brainregion",
+                   description="brain_meta_priority:permanent<SEP>brain_meta_source:default<SEP>永久脑区")
+        G.add_node("region_short", entity_type="brainregion",
+                   description="brain_meta_priority:short<SEP>brain_meta_source:default<SEP>短期脑区")
+        # 实体节点
+        G.add_node("entity_a", entity_type="person", description="人物A")
+        G.add_node("entity_b", entity_type="skill", description="技能B")
+        G.add_node("entity_c", entity_type="topic", description="话题C")
+        # 脑区边（权重1.0）
+        G.add_edge("region_permanent", "entity_a", weight=1.0, description="包含")
+        G.add_edge("region_short", "entity_a", weight=1.0, description="包含")
+        G.add_edge("region_short", "entity_b", weight=1.0, description="包含")
+        # 知识关系边（不应被衰减）
+        G.add_edge("entity_a", "entity_c", weight=1.0, description="讨论")
+        return G
+
+    def test_decay_short_priority(self):
+        """short 级（90天半衰期）边权重衰减"""
+        from niu_api.internal.region_manager import _decay_brain_region_edges, daily_decay_rate
+        G = self._build_test_graph()
+        _decay_brain_region_edges(G)
+        # entity_b 只有1条脑区边 + 0条知识边 = 总边数1 → 保底
+        weight_b = G["region_short"]["entity_b"]["weight"]
+        expected = 1.0 * daily_decay_rate("short")
+        assert weight_b == pytest.approx(max(expected, 0.1), rel=1e-6)
+
+    def test_permanent_freeze_at_floor(self):
+        """permanent 级边权重衰减到保底值冻结"""
+        from niu_api.internal.region_manager import _decay_brain_region_edges, FLOOR_WEIGHT
+        G = nx.Graph()
+        G.add_node("region_perm", entity_type="brainregion",
+                   description="brain_meta_priority:permanent<SEP>永久脑区")
+        G.add_node("entity_x", entity_type="person", description="人物X")
+        G.add_edge("region_perm", "entity_x", weight=0.11, description="包含")
+        _decay_brain_region_edges(G)
+        weight = G["region_perm"]["entity_x"]["weight"]
+        assert weight >= FLOOR_WEIGHT
+
+    def test_floor_protection_orphan(self):
+        """总边数==1时保底保护"""
+        from niu_api.internal.region_manager import _decay_brain_region_edges, FLOOR_WEIGHT
+        G = nx.Graph()
+        G.add_node("region_short", entity_type="brainregion",
+                   description="brain_meta_priority:short<SEP>短期脑区")
+        G.add_node("entity_lonely", entity_type="topic", description="孤独话题")
+        G.add_edge("region_short", "entity_lonely", weight=0.05, description="包含")
+        _decay_brain_region_edges(G)
+        weight = G["region_short"]["entity_lonely"]["weight"]
+        assert weight >= FLOOR_WEIGHT
+
+    def test_delete_below_floor_with_other_edges(self):
+        """非 permanent + 总边数>=2 + 低于保底 → 删除边"""
+        from niu_api.internal.region_manager import _decay_brain_region_edges, FLOOR_WEIGHT
+        G = nx.Graph()
+        G.add_node("region_short", entity_type="brainregion",
+                   description="brain_meta_priority:short<SEP>短期脑区")
+        G.add_node("entity_multi", entity_type="person", description="多边人物")
+        G.add_node("entity_other", entity_type="skill", description="其他技能")
+        G.add_edge("region_short", "entity_multi", weight=0.03, description="包含")
+        G.add_edge("entity_multi", "entity_other", weight=1.0, description="擅长")
+        _decay_brain_region_edges(G)
+        assert not G.has_edge("region_short", "entity_multi")
+
+    def test_permanent_not_deleted_with_other_edges(self):
+        """permanent + 总边数>=2 + 低于保底 → 不删除，冻结在保底"""
+        from niu_api.internal.region_manager import _decay_brain_region_edges, FLOOR_WEIGHT
+        G = nx.Graph()
+        G.add_node("region_perm", entity_type="brainregion",
+                   description="brain_meta_priority:permanent<SEP>永久脑区")
+        G.add_node("entity_multi", entity_type="person", description="多边人物")
+        G.add_node("entity_other", entity_type="skill", description="其他技能")
+        G.add_edge("region_perm", "entity_multi", weight=0.03, description="包含")
+        G.add_edge("entity_multi", "entity_other", weight=1.0, description="擅长")
+        _decay_brain_region_edges(G)
+        assert G.has_edge("region_perm", "entity_multi")
+        assert G["region_perm"]["entity_multi"]["weight"] == FLOOR_WEIGHT
+
+    def test_knowledge_edge_not_decayed(self):
+        """知识关系边（实体→实体）不被衰减"""
+        from niu_api.internal.region_manager import _decay_brain_region_edges
+        G = self._build_test_graph()
+        _decay_brain_region_edges(G)
+        weight = G["entity_a"]["entity_c"]["weight"]
+        assert weight == 1.0
+
+    def test_anchor_edge_not_decayed(self):
+        """脑区之间的锚点边不被衰减"""
+        from niu_api.internal.region_manager import _decay_brain_region_edges
+        G = nx.Graph()
+        G.add_node("Niu", entity_type="brainregion", description="根节点")
+        G.add_node("region_perm", entity_type="brainregion",
+                   description="brain_meta_priority:permanent<SEP>永久脑区")
+        G.add_edge("Niu", "region_perm", weight=0.5, description="锚点")
+        _decay_brain_region_edges(G)
+        weight = G["Niu"]["region_perm"]["weight"]
+        assert weight == 0.5
+
+    def test_missing_priority_fallback(self):
+        """description 中缺少 brain_meta_priority 时回退到 medium"""
+        from niu_api.internal.region_manager import _decay_brain_region_edges, daily_decay_rate, DEFAULT_PRIORITY
+        G = nx.Graph()
+        G.add_node("region_no_priority", entity_type="brainregion",
+                   description="brain_meta_source:leiden<SEP>无优先级脑区")
+        G.add_node("entity_y", entity_type="topic", description="话题Y")
+        G.add_node("entity_z", entity_type="skill", description="技能Z")
+        G.add_edge("region_no_priority", "entity_y", weight=1.0, description="包含")
+        G.add_edge("entity_y", "entity_z", weight=1.0, description="相关")
+        _decay_brain_region_edges(G)
+        expected = 1.0 * daily_decay_rate(DEFAULT_PRIORITY)
+        weight = G["region_no_priority"]["entity_y"]["weight"]
+        assert weight == pytest.approx(expected, rel=1e-6)
+
+    def test_empty_graph_safe(self):
+        """空图不会报错"""
+        from niu_api.internal.region_manager import _decay_brain_region_edges
+        G = nx.Graph()
+        _decay_brain_region_edges(G)
+
+    def test_session_edge_not_decayed(self):
+        """_session: 前缀边不被衰减"""
+        from niu_api.internal.region_manager import _decay_brain_region_edges
+        G = nx.Graph()
+        G.add_node("region_short", entity_type="brainregion",
+                   description="brain_meta_priority:short<SEP>短期脑区")
+        G.add_node("entity_a", entity_type="person", description="人物A")
+        G.add_node("entity_b", entity_type="topic", description="话题B")
+        G.add_edge("region_short", "entity_a", weight=1.0, description="包含")
+        G.add_edge("region_short", "entity_b", weight=1.0, keywords="_session:xyz")
+        _decay_brain_region_edges(G)
+        weight_a = G["region_short"]["entity_a"]["weight"]
+        assert weight_a < 1.0
+        weight_b = G["region_short"]["entity_b"]["weight"]
+        assert weight_b == 1.0

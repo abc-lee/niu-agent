@@ -83,6 +83,76 @@ def daily_decay_rate(priority: str) -> float:
         halflife = PRIORITY_HALFLIFE[DEFAULT_PRIORITY]
     return 0.5 ** (1.0 / halflife)
 
+
+def _decay_brain_region_edges(nx_graph) -> dict:
+    """衰减脑区边权重 — 半衰期模型 + 保底机制（核心逻辑，供测试直接调用）
+
+    只衰减实体→脑区的归属边。知识关系边（实体→实体）不受影响。
+    锚点边（脑区→脑区）和 _session: 前缀边被跳过。
+    """
+    decayed = 0
+    deleted = 0
+    protected = 0
+    skipped_anchor = 0
+
+    brain_regions = [
+        n for n in nx_graph.nodes()
+        if nx_graph.nodes[n].get("entity_type") == "brainregion"
+    ]
+
+    for region_key in brain_regions:
+        desc = nx_graph.nodes[region_key].get("description", "")
+        priority = parse_priority_from_description(desc)
+        decay_rate = daily_decay_rate(priority)
+
+        neighbors = list(nx_graph.neighbors(region_key))
+
+        for entity_key in neighbors:
+            # 跳过锚点边（脑区之间的导航边）
+            if nx_graph.nodes[entity_key].get("entity_type") == "brainregion":
+                skipped_anchor += 1
+                continue
+
+            edge_data = nx_graph.edges[region_key, entity_key]
+            # 跳过 _session: 前缀边（会话临时边，不参与衰减）
+            keywords = edge_data.get("keywords") or edge_data.get("type", "")
+            if keywords.lower().startswith("_session:"):
+                continue
+
+            old_weight = edge_data.get("weight", INITIAL_WEIGHT)
+
+            new_weight = old_weight * decay_rate
+
+            total_degree = nx_graph.degree(entity_key)
+
+            if priority == "permanent":
+                # permanent 级：保底冻结，永不删除
+                new_weight = max(new_weight, FLOOR_WEIGHT)
+                nx_graph.edges[region_key, entity_key]["weight"] = new_weight
+                decayed += 1
+                protected += 1
+            elif total_degree <= 1:
+                # 孤立实体：保底保护
+                new_weight = max(new_weight, FLOOR_WEIGHT)
+                nx_graph.edges[region_key, entity_key]["weight"] = new_weight
+                decayed += 1
+                protected += 1
+            elif new_weight < FLOOR_WEIGHT:
+                # 非 permanent + 总边数>=2 + 低于保底 → 删除
+                nx_graph.remove_edge(region_key, entity_key)
+                deleted += 1
+            else:
+                nx_graph.edges[region_key, entity_key]["weight"] = new_weight
+                decayed += 1
+
+    return {
+        "decayed": decayed,
+        "deleted": deleted,
+        "protected": protected,
+        "skipped_anchor": skipped_anchor,
+    }
+
+
 # Source identifiers for injected data
 REGION_SOURCE_ID = "brain"
 REGION_FILE_PATH = "brain://region"
@@ -1600,57 +1670,40 @@ class RegionManager:
             return {"regions_created": 0, "regions_removed": 0, "regions_drifted": 0,
                     "regions_updated": 0, "edges_disconnected": 0}
 
-    def decay_structural_edges(
-        self,
-        regions: list[BrainRegionInfo],
-        decay_factor: float = 0.5,
-        threshold: float = 0.1,
-    ) -> int:
-        """Decay and disconnect low-weight structural edges.
+    def decay_structural_edges(self) -> dict:
+        """Decay brain region edges — half-life model with floor protection.
 
-        Directly operates on the internal NetworkX graph under write lock,
-        following the same pattern as remove_region_stale_edges.
+        Only decays entity→brainregion attribution edges.
+        Knowledge edges (entity→entity) are not affected.
+        Anchor edges (brainregion→brainregion) are skipped.
         """
-        disconnected = 0
         try:
             from niu_api.internal.lightrag_manager import graph_write_lock
 
             rag = self._adapter._get_rag()
             if rag is None:
-                return 0
+                return {"decayed": 0, "deleted": 0, "protected": 0, "skipped_anchor": 0}
 
             kg = rag.chunk_entity_relation_graph
             if kg is None:
-                return 0
+                return {"decayed": 0, "deleted": 0, "protected": 0, "skipped_anchor": 0}
 
             nx_graph = kg._graph if hasattr(kg, "_graph") else kg
             if nx_graph is None:
-                return 0
+                return {"decayed": 0, "deleted": 0, "protected": 0, "skipped_anchor": 0}
 
             with graph_write_lock():
-                for region in regions:
-                    region_key = region.name.lower() if isinstance(region.name, str) else region.name
-                    if region_key not in nx_graph:
-                        continue
+                result = _decay_brain_region_edges(nx_graph)
 
-                    for neighbor_id in list(nx_graph.neighbors(region_key)):
-                        edge_data = nx_graph.get_edge_data(region_key, neighbor_id)
-                        if edge_data is None:
-                            continue
-                        keywords = edge_data.get("keywords") or edge_data.get("type", "")
-                        kw_lower = keywords.lower()
-                        if kw_lower in STRUCTURAL_EDGE_TYPES_LOWER or kw_lower.startswith("_session:"):
-                            old_weight = float(edge_data.get("weight", 0.5))
-                            new_weight = old_weight * decay_factor
-                            if new_weight < threshold:
-                                nx_graph.remove_edge(region_key, neighbor_id)
-                                disconnected += 1
-                            else:
-                                edge_data["weight"] = new_weight
         except Exception as e:
             logger.warning("Edge decay failed: %s", e)
+            result = {"decayed": 0, "deleted": 0, "protected": 0, "skipped_anchor": 0}
 
-        return disconnected
+        logger.info(
+            f"[Decay] brain region edges: decayed={result['decayed']}, deleted={result['deleted']}, "
+            f"protected={result['protected']}, skipped_anchor={result['skipped_anchor']}"
+        )
+        return result
 
 
 def get_default_regions_config() -> list[dict]:
