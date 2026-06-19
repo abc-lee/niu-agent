@@ -1347,7 +1347,7 @@ class RegionManager:
                 candidate = f"{base}{n}"
             label = candidate
 
-        return label, llm_description
+        return label, llm_description[:20] if len(llm_description) > 20 else llm_description
 
     def _parse_label_from_llm(self, prompt: str, fallback: str) -> tuple[str, str]:
         """Call LLM and parse label + description with retry logic."""
