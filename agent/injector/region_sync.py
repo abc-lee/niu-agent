@@ -319,16 +319,14 @@ class RegionSync:
             except Exception as e:
                 logger.debug(f"[RegionSync] update_region_summaries skipped: {e}")
 
-            # Step 6: Decay structural edges — DISABLED: edge decay deleted 700+ "包含" edges in 3 days
-            # try:
-            #     all_regions_for_decay = manager.get_all_regions()
-            #     if all_regions_for_decay:
-            #         disconnected = manager.decay_structural_edges(all_regions_for_decay)
-            #         if disconnected > 0:
-            #             stats["edges_disconnected"] = disconnected
-            #             logger.info("[RegionSync] 衰减断开 %d 条结构性边", disconnected)
-            # except Exception as e:
-            #     logger.debug("[RegionSync] Edge decay skipped: %s", e)
+            # Step 6: Decay structural edges
+            try:
+                disconnected = manager.decay_structural_edges()
+                if disconnected.get("deleted", 0) > 0 or disconnected.get("decayed", 0) > 0:
+                    stats["edges_disconnected"] = disconnected.get("deleted", 0)
+                    logger.info("[RegionSync] 衰减结果: %s", disconnected)
+            except Exception as e:
+                logger.debug("[RegionSync] Edge decay skipped: %s", e)
 
         except Exception as e:
             logger.warning(f"[RegionSync] Region management failed: {e}")
