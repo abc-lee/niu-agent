@@ -1511,10 +1511,10 @@ class RegionManager:
         self,
         entity_summaries_list: list[list[str]],
         existing_regions: list[str],
-    ) -> dict[int, str]:
-        """Generate labels for all regions in a single LLM call.
+    ) -> dict[int, tuple[str, str]]:
+        """Generate labels and descriptions for all regions in a single LLM call.
 
-        Returns dict of {index: label} for successfully parsed regions.
+        Returns dict of {index: (label, description)} for successfully parsed regions.
         """
         # Build batch prompt
         community_lines = []
@@ -1528,12 +1528,12 @@ class RegionManager:
         communities_str = "\n".join(community_lines)
 
         prompt = (
-            "你是一个知识图谱分析师。根据以下社区内的实体列表，为每个社区生成一个简洁的中文标签名。\n\n"
+            "你是一个知识图谱分析师。根据以下社区内的实体列表，为每个社区生成一个简洁的中文标签名和一句话描述。\n\n"
             "要求：\n"
             "- 每个标签8个字以下\n"
-            "- 概括该社区实体的共同主题\n"
+            "- 每个描述20个字以内，概括该社区实体的共同主题或用途\n"
             "- 不要跟现有脑区重名或语义接近\n"
-            "- 只能返回JSON格式：{\"regions\": [{\"id\": 0, \"label\": \"标签1\"}, ...]}\n"
+            "- 只能返回JSON格式：{\"regions\": [{\"id\": 0, \"label\": \"标签1\", \"description\": \"描述1\"}, ...]}\n"
             "- 返回其他任何格式或内容将判定失败\n\n"
             f"现有脑区：{existing_str}\n\n"
             f"{communities_str}"
@@ -1550,12 +1550,12 @@ class RegionManager:
                     community_lines.pop()
                     communities_str = "\n".join(community_lines)
                     prompt = (
-                        "你是一个知识图谱分析师。根据以下社区内的实体列表，为每个社区生成一个简洁的中文标签名。\n\n"
+                        "你是一个知识图谱分析师。根据以下社区内的实体列表，为每个社区生成一个简洁的中文标签名和一句话描述。\n\n"
                         "要求：\n"
                         "- 每个标签8个字以下\n"
-                        "- 概括该社区实体的共同主题\n"
+                        "- 每个描述20个字以内，概括该社区实体的共同主题或用途\n"
                         "- 不要跟现有脑区重名或语义接近\n"
-                        "- 只能返回JSON格式：{\"regions\": [{\"id\": 0, \"label\": \"标签1\"}, ...]}\n"
+                        "- 只能返回JSON格式：{\"regions\": [{\"id\": 0, \"label\": \"标签1\", \"description\": \"描述1\"}, ...]}\n"
                         "- 返回其他任何格式或内容将判定失败\n\n"
                         f"现有脑区：{existing_str}\n\n"
                         f"{communities_str}"
@@ -1575,19 +1575,26 @@ class RegionManager:
                 for item in data["regions"]:
                     idx = item.get("id")
                     label = str(item.get("label", "")).strip()
+                    description = str(item.get("description", "")).strip()
                     if idx is not None and label and len(label) <= 8:
-                        result[int(idx)] = label
+                        result[int(idx)] = (label, description)
                 return result
         except (json.JSONDecodeError, ValueError):
             pass
 
-        # Try regex fallback for batch
+        # Try regex fallback for batch — flexible two-step approach
         result = {}
-        for match in re.finditer(r'"id"\s*:\s*(\d+)\s*,\s*"label"\s*:\s*"([^"]+)"', content):
-            idx = int(match.group(1))
-            label = match.group(2).strip()
-            if label and len(label) <= 8:
-                result[idx] = label
+        for obj_match in re.finditer(r'\{[^}]+\}', content):
+            obj_str = obj_match.group(0)
+            id_match = re.search(r'"id"\s*:\s*(\d+)', obj_str)
+            label_match = re.search(r'"label"\s*:\s*"([^"]+)"', obj_str)
+            if id_match and label_match:
+                idx = int(id_match.group(1))
+                label = label_match.group(1).strip()
+                if label and len(label) <= 8:
+                    desc_match = re.search(r'"description"\s*:\s*"([^"]+)"', obj_str)
+                    description = desc_match.group(1).strip() if desc_match else ""
+                    result[idx] = (label, description)
 
         return result
 
