@@ -59,11 +59,6 @@ REGION_ENTITY_TYPE = "brainregion"
 ANCHOR_RELATION = "脑区锚点"
 BELONGS_TO_RELATION = "包含"
 
-# Structural edge types (lowercase) for matching
-STRUCTURAL_EDGE_TYPES_LOWER = frozenset({
-    BELONGS_TO_RELATION.lower(),      # "包含" — 可衰减/强化的结构边类型
-})
-
 # 脑区边衰减优先级体系
 PRIORITY_HALFLIFE = {
     "permanent": 360,  # 衰减但保底冻结，永不删除
@@ -424,7 +419,7 @@ class RegionManager:
                                 "tgt_id": member,
                                 "keywords": BELONGS_TO_RELATION,
                                 "description": f"{member} belongs to region {region_label}",
-                                "weight": 0.5,
+                                "weight": INITIAL_WEIGHT,
                                 "source_id": REGION_SOURCE_ID,
                                 "file_path": REGION_FILE_PATH,
                             })
@@ -457,7 +452,7 @@ class RegionManager:
                 "tgt_id": region_name,
                 "keywords": ANCHOR_RELATION,
                 "description": f"Brain region anchor: {region_label}",
-                "weight": 0.5,
+                "weight": INITIAL_WEIGHT,
                 "source_id": REGION_SOURCE_ID,
                 "file_path": REGION_FILE_PATH,
             })
@@ -468,7 +463,7 @@ class RegionManager:
                     "tgt_id": member,
                     "keywords": BELONGS_TO_RELATION,
                     "description": f"{member} belongs to region {region_label}",
-                    "weight": 0.5,
+                    "weight": INITIAL_WEIGHT,
                     "source_id": REGION_SOURCE_ID,
                     "file_path": REGION_FILE_PATH,
                 })
@@ -922,7 +917,7 @@ class RegionManager:
                     "src_id": region_name, "tgt_id": member,
                     "keywords": BELONGS_TO_RELATION,
                     "description": f"{member} belongs to region {region_name}",
-                    "weight": 0.5, "source_id": REGION_SOURCE_ID,
+                    "weight": INITIAL_WEIGHT, "source_id": REGION_SOURCE_ID,
                     "file_path": REGION_FILE_PATH,
                 })
 
@@ -1044,7 +1039,7 @@ class RegionManager:
                             "tgt_id": member,
                             "keywords": BELONGS_TO_RELATION,
                             "description": f"{member} belongs to region {target_region.label}",
-                            "weight": 0.5,  # Unified initial weight
+                            "weight": INITIAL_WEIGHT,  # Unified initial weight
                             "source_id": REGION_SOURCE_ID,
                             "file_path": REGION_FILE_PATH,
                         })
@@ -1725,13 +1720,13 @@ def get_default_regions_config() -> list[dict]:
         pass
     # Fallback ONLY when preferences.json has no brain_regions section
     return [
-        {"label": "聊天历史", "description": "日常对话中提炼的偏好、技能和经验记忆", "priority": "core", "keywords": ["偏好", "习惯", "设置", "配置", "喜欢", "想要"]},
-        {"label": "文档库", "description": "用户导入的文档和资料，经解析后入库的知识", "priority": "core", "keywords": ["文档", "文件", "PDF", "Word", "Markdown", "笔记"]},
-        {"label": "知识体系", "description": "系统化组织的概念、关系和理论体系", "priority": "core", "keywords": ["概念", "理论", "方法", "原理", "定义", "技术"]},
-        {"label": "人际关系", "description": "人物实体、关系网络、社交图谱", "priority": "category", "keywords": ["人物", "家人", "朋友", "同事", "联系人", "人名"]},
-        {"label": "工作事务", "description": "工作相关的项目、任务、决策记录", "priority": "category", "keywords": ["项目", "任务", "会议", "决策", "工作", "进度"]},
-        {"label": "生活事务", "description": "日常生活相关的日程、健康、财务", "priority": "category", "keywords": ["日程", "健康", "财务", "旅行", "生活", "日常"]},
-        {"label": "组织机构", "description": "公司、部门、机构等组织实体和关系网络", "priority": "category", "keywords": ["公司", "部门", "机构", "组织", "团队", "单位"]},
+        {"label": "聊天历史", "description": "日常对话中提炼的偏好、技能和经验记忆", "priority": "medium", "keywords": ["偏好", "习惯", "设置", "配置", "喜欢", "想要"]},
+        {"label": "文档库", "description": "用户导入的文档和资料，经解析后入库的知识", "priority": "permanent", "keywords": ["文档", "文件", "PDF", "Word", "Markdown", "笔记"]},
+        {"label": "知识体系", "description": "系统化组织的概念、关系和理论体系", "priority": "long", "keywords": ["概念", "理论", "方法", "原理", "定义", "技术"]},
+        {"label": "人际关系", "description": "人物实体、关系网络、社交图谱", "priority": "permanent", "keywords": ["人物", "家人", "朋友", "同事", "联系人", "人名"]},
+        {"label": "工作事务", "description": "工作相关的项目、任务、决策记录", "priority": "medium", "keywords": ["项目", "任务", "会议", "决策", "工作", "进度"]},
+        {"label": "生活事务", "description": "日常生活相关的日程、健康、财务", "priority": "short", "keywords": ["日程", "健康", "财务", "旅行", "生活", "日常"]},
+        {"label": "组织机构", "description": "公司、部门、机构等组织实体和关系网络", "priority": "permanent", "keywords": ["公司", "部门", "机构", "组织", "团队", "单位"]},
     ]
 
 
@@ -1779,7 +1774,7 @@ def create_default_regions(
     for region_def in get_default_regions_config():
         region_label = region_def["label"]
         # Skip category regions unless explicitly requested
-        if region_def.get("priority") == "category" and not include_category:
+        if region_def.get("priority") in ("short", "medium") and not include_category:
             continue
 
         region_name = f"{region_label}{REGION_SUFFIX}"
@@ -1808,6 +1803,7 @@ def create_default_regions(
             "tgt_id": region_name,
             "keywords": ANCHOR_RELATION,
             "description": f"缺省脑区锚点: {region_label}",
+            "weight": INITIAL_WEIGHT,
             "source_id": REGION_SOURCE_ID,
             "file_path": REGION_FILE_PATH,
         })
@@ -1935,7 +1931,7 @@ def assign_entities_to_default_regions(
                 "tgt_id": entity_name,
                 "keywords": BELONGS_TO_RELATION,
                 "description": f"{entity_name} 属于 {best_region}",
-                "weight": 0.5,
+                "weight": INITIAL_WEIGHT,
                 "source_id": REGION_SOURCE_ID,
                 "file_path": REGION_FILE_PATH,
             })
