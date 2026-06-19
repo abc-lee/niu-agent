@@ -416,6 +416,7 @@ typeof NiuDomTree !== 'undefined'
 | brain-region-server 工具不可用 | 模块未加载 | 检查 `agent/mcp_loader.py` 的 REQUIRED_SERVERS 是否包含 brain-region-server |
 | 脑区同步失败 | region_sync 数据源异常 | 查看 API 日志中 `region_sync` 相关错误；检查 `config/mcp-servers.yaml` 中 brain-region-server 配置 |
 | 脑区查询返回 UNKNOWN source_id | 数据源标识缺失 | 检查 region_sync 注入时是否正确设置 source_id 参数 |
+| 脑区边被意外删除 | 衰减算法配置错误 | 检查 preferences.json 中脑区 priority 是否为新值（permanent/long/medium/short），旧值 core/category 会回退到 medium |
 
 ---
 
