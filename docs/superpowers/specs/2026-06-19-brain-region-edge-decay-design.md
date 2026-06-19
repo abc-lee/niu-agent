@@ -54,8 +54,12 @@
 **非默认脑区**（Leiden 社区检测自动发现的）默认 priority 为 `"medium"`。
 
 **priority 写入时机**：
-- 创建脑区时（`create_region_nodes()`）：从 preferences.json 读取 priority 写入 description
-- 更新脑区时（`_encode_description()`）：保留已有 priority，新增脑区从配置读取
+- 创建脑区时（`create_region_nodes()`）：默认脑区从 preferences.json 读取 priority；Leiden 新建脑区传入 `DEFAULT_PRIORITY ("medium")`
+- 更新脑区时（`_encode_description()`）：priority 作为标准字段，所有调用点显式传递，不依赖 `extra_meta` 隐式保留
+
+**priority 是 `_encode_description()` 的标准字段**：新增 `priority` 参数（第6个参数），所有调用 `_encode_description()` 的地方都必须传递 priority 值。这确保 Leiden 漂移更新（`_update_drifted_regions()`）和摘要更新（`update_region_summaries()`）不会丢失 priority 信息。
+
+**priority 读取**：衰减/增强函数从 NetworkX 节点属性中读取 priority（解析 description 中的 `brain_meta_priority` 前缀），不直接读 preferences.json。如果 description 中缺少 `brain_meta_priority`，fallback 到 `DEFAULT_PRIORITY ("medium")`。
 
 ---
 
@@ -77,6 +81,7 @@
 ```
 对每个脑区节点 R (entity_type == "brainregion"):
   读取 R 的优先级 priority（从 description 中解析 brain_meta_priority）
+  如果 priority 为空或不在 PRIORITY_HALFLIFE 中: priority = DEFAULT_PRIORITY ("medium")
   如果 priority == "permanent": 跳过此脑区（永久级不衰减）
 
   对 R 的每个邻居实体 E:
@@ -126,6 +131,8 @@
   恢复权重: weight = INITIAL_WEIGHT (1.0)
   写回 weight
 ```
+
+**增强范围**：`reinforce_on_tool_use()` 通过 `tool_to_region` 映射找到工具对应的脑区，只增强该脑区的边。如果实体同时属于多个脑区，只有被调用工具对应的脑区边被增强，其他脑区边继续按各自半衰期衰减。这符合设计意图——工具使用只应增强与该工具相关的脑区。
 
 ### 3.3 与旧实现的区别
 
@@ -214,7 +221,7 @@ DEFAULT_PRIORITY = "medium"  # 非默认脑区和旧配置的回退值
 
 | 文件 | 改动内容 |
 |------|----------|
-| `niu_api/internal/region_manager.py` | (1) 改造 `decay_structural_edges()`：判断逻辑从边类型改为目标节点 entity_type；加入优先级→半衰期映射；加入保底逻辑（G.degree==1时冻结）；新增常量 PRIORITY_HALFLIFE/FLOOR_WEIGHT/INITIAL_WEIGHT/DEFAULT_PRIORITY (2) 取消注释 `incremental_update()` 第 1524-1526 行的衰减调用 (3) `_encode_description()` 增加 `brain_meta_priority` 字段 (4) 结构边初始权重从 0.5 改为 1.0（6处） (5) `create_default_regions()` 第 1666 行 category 跳过逻辑改为基于新优先级 |
+| `niu_api/internal/region_manager.py` | (1) 改造 `decay_structural_edges()`：判断逻辑从边类型改为目标节点 entity_type；加入优先级→半衰期映射；加入保底逻辑（G.degree==1时冻结）；新增常量 PRIORITY_HALFLIFE/FLOOR_WEIGHT/INITIAL_WEIGHT/DEFAULT_PRIORITY (2) 取消注释 `incremental_update()` 第 1524-1526 行的衰减调用 (3) `_encode_description()` 新增 `priority` 标准参数，写入 `brain_meta_priority` 字段 (4) 所有调用 `_encode_description()` 的地方传递 priority：`create_region_nodes()` 传配置值或 DEFAULT_PRIORITY，`_update_drifted_regions()` 和 `update_region_summaries()` 从旧 description 解析后传递 (5) 结构边初始权重从 0.5 改为 1.0（6处） (6) `create_default_regions()` 第 1666 行 category 跳过逻辑改为基于新优先级 |
 | `agent/brain_tools.py` | (1) 改造 `_reinforce_edge_weight()`：判断逻辑改为对端节点 entity_type；增强改为恢复到 INITIAL_WEIGHT (2) 删除旧常量 REINFORCE_DELTA/MAX_EDGE_WEIGHT (3) `reinforce_on_tool_use()` 删除 reinforce_delta 参数 (4) 取消注释第 389-391 行的增强调用 |
 | `agent/injector/region_sync.py` | 取消注释 `decay_structural_edges()` 调用（Step 6，第 322-331 行） |
 | `niu_api/brain_region_api.py` | 取消注释 `decay_structural_edges()` 调用（Step 8，第 316-323 行） |
@@ -233,21 +240,11 @@ DEFAULT_PRIORITY = "medium"  # 非默认脑区和旧配置的回退值
 
 ---
 
-## 6. 首次运行迁移
-
-恢复衰减后，需要处理已有数据的迁移：
-
-1. **permanent 级脑区边权重恢复**：将所有 permanent 级脑区边的权重恢复到 `INITIAL_WEIGHT (1.0)`。当前图中 permanent 级边（人际关系、组织机构、文档库）的权重可能是 0.5（创建时的旧值），需要一次性恢复。
-
-2. **priority 字段注入**：已有脑区节点的 description 中没有 `brain_meta_priority` 字段，需要在首次运行时注入。在 `decay_structural_edges()` 开始时检查：如果脑区节点 description 缺少 `brain_meta_priority`，从 preferences.json 读取并补写。
-
-3. **衰减日志**：首次运行衰减后，输出日志记录衰减/删除边数量，便于人工确认。不建议首次运行就删除大量边，可先以日志模式运行一次（只记录不删除），确认后再放开。
-
----
-
-## 7. 风险与注意事项
+## 6. 风险与注意事项
 
 1. **并发安全**：衰减在 `graph_write_lock()` 下执行，增强也在 `graph_write_lock()` 下，无冲突。
 2. **旧配置兼容**：如果运行时遇到旧值 `"core"`/`"category"`，输出警告日志并使用默认优先级 `"medium"`。不做通用映射（因为同一旧值下不同脑区应有不同新值）。
 3. **G.degree() 语义**：LightRAG 使用 `nx.Graph()` 无向图，`G.degree(node)` 即总边数，无需区分出入边。
 4. **create_default_regions() 跳过逻辑**：第 1666 行的 `priority == "category"` 判断需更新为基于新优先级体系，例如 `priority in ("short", "medium") and not include_category`。
+5. **Leiden 新建脑区**：Leiden 社区检测创建的脑区不在 preferences.json 中，使用 `DEFAULT_PRIORITY ("medium")`。`_encode_description()` 的 `priority` 参数确保 priority 信息在漂移更新和摘要更新时不丢失。
+6. **衰减日志**：每次衰减运行后输出日志记录衰减/删除边数量，便于监控。
