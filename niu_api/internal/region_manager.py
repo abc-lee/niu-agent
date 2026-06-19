@@ -64,6 +64,25 @@ STRUCTURAL_EDGE_TYPES_LOWER = frozenset({
     BELONGS_TO_RELATION.lower(),      # "包含" — 可衰减/强化的结构边类型
 })
 
+# 脑区边衰减优先级体系
+PRIORITY_HALFLIFE = {
+    "permanent": 360,  # 衰减但保底冻结，永不删除
+    "long": 360,
+    "medium": 180,
+    "short": 90,
+}
+FLOOR_WEIGHT = 0.1       # 保底权重 / 删除阈值
+INITIAL_WEIGHT = 1.0     # 边初始权重 / 增强恢复目标值
+DEFAULT_PRIORITY = "medium"  # 非默认脑区和旧配置的回退值
+
+
+def daily_decay_rate(priority: str) -> float:
+    """根据优先级计算日衰减率（半衰期模型）"""
+    halflife = PRIORITY_HALFLIFE.get(priority)
+    if halflife is None:
+        halflife = PRIORITY_HALFLIFE[DEFAULT_PRIORITY]
+    return 0.5 ** (1.0 / halflife)
+
 # Source identifiers for injected data
 REGION_SOURCE_ID = "brain"
 REGION_FILE_PATH = "brain://region"
