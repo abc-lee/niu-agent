@@ -57,7 +57,7 @@
 - 创建脑区时（`create_region_nodes()`）：默认脑区从 preferences.json 读取 priority；Leiden 新建脑区传入 `DEFAULT_PRIORITY ("medium")`
 - 更新脑区时（`_encode_description()`）：priority 作为标准字段，所有调用点显式传递，不依赖 `extra_meta` 隐式保留
 
-**priority 是 `_encode_description()` 的标准字段**：新增 `priority` 参数（第6个参数），所有调用 `_encode_description()` 的地方都必须传递 priority 值。这确保 Leiden 漂移更新（`_update_drifted_regions()`）和摘要更新（`update_region_summaries()`）不会丢失 priority 信息。
+**priority 是 `_encode_description()` 的标准字段**：新增 `priority` 参数（第6个参数），所有调用 `_encode_description()` 的地方都必须传递 priority 值。这确保 Leiden 漂移更新（`_update_drifted_regions()`）、摘要更新（`update_region_summaries()`）、解散重建（`dissolve_shrunk_regions()`）和默认分配（`assign_entities_to_default_regions()`）不会丢失 priority 信息。所有调用点的 priority 获取方式：从旧 description 解析 `brain_meta_priority`，fallback 到 `DEFAULT_PRIORITY`；新建脑区从 preferences.json 读取或使用 `DEFAULT_PRIORITY`。
 
 **priority 读取**：衰减/增强函数从 NetworkX 节点属性中读取 priority（解析 description 中的 `brain_meta_priority` 前缀），不直接读 preferences.json。如果 description 中缺少 `brain_meta_priority`，fallback 到 `DEFAULT_PRIORITY ("medium")`。
 
@@ -85,6 +85,7 @@
   如果 priority == "permanent": 跳过此脑区（永久级不衰减）
 
   对 R 的每个邻居实体 E:
+    如果 E.entity_type == "brainregion": 跳过（锚点边不衰减，脑区之间的导航边不属于归属关系）
     获取 R-E 边的权重 weight
     计算新权重: new_weight = weight * daily_decay(priority)
 
@@ -206,6 +207,7 @@ DEFAULT_PRIORITY = "medium"  # 非默认脑区和旧配置的回退值
 
 - `region_manager.py` 第 311 行（`create_region_nodes` 新增成员边）
 - `region_manager.py` 第 344 行（锚点边）
+- `region_manager.py` 第 1694 行（`create_default_regions` 锚点边，当前无 weight 字段，需显式添加 `"weight": INITIAL_WEIGHT`）
 - `region_manager.py` 第 355 行（新脑区成员边）
 - `region_manager.py` 第 794 行（`_update_drifted_regions` 漂移更新边）
 - `region_manager.py` 第 916 行（`dissolve_shrunk_regions` 重新分配边）
