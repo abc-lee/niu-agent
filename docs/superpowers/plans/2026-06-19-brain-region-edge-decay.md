@@ -245,21 +245,25 @@ def _encode_description(
 ```python
 def parse_priority_from_description(description: str) -> str:
     """从 description 中解析 brain_meta_priority 字段"""
+    import re
     if not description:
         return DEFAULT_PRIORITY
-    for part in description.split("<SEP>"):
+    # 使用与 _parse_description() 相同的分隔符处理方式
+    parts = re.split(r'<SEP>|\s\|\s', description)
+    for part in parts:
         part = part.strip()
         if part.startswith("brain_meta_priority:"):
             val = part[len("brain_meta_priority:"):]
             if val in PRIORITY_HALFLIFE:
                 return val
-    # fallback: 尝试 | 分隔符（兼容旧格式）
-    for part in description.split("|"):
-        part = part.strip()
-        if part.startswith("brain_meta_priority:"):
-            val = part[len("brain_meta_priority:"):]
-            if val in PRIORITY_HALFLIFE:
-                return val
+            # 旧配置值警告（设计文档6.2节要求）
+            if val in ("core", "category"):
+                logger.warning(
+                    "旧优先级值 '%s' 不再支持，回退到 DEFAULT_PRIORITY ('%s')。"
+                    "请更新 preferences.json 中的 priority 字段。",
+                    val, DEFAULT_PRIORITY,
+                )
+            return DEFAULT_PRIORITY
     return DEFAULT_PRIORITY
 ```
 
@@ -549,9 +553,103 @@ class TestDecayStructuralEdges:
         from niu_api.internal.region_manager import _decay_brain_region_edges
         G = nx.Graph()
         _decay_brain_region_edges(G)  # 不应抛异常
+
+    def test_session_edge_not_decayed(self):
+        """_session: 前缀边不被衰减"""
+        from niu_api.internal.region_manager import _decay_brain_region_edges
+        G = nx.Graph()
+        G.add_node("region_short", entity_type="brainregion",
+                   description="brain_meta_priority:short|短期脑区")
+        G.add_node("entity_a", entity_type="person", description="人物A")
+        G.add_node("entity_b", entity_type="topic", description="话题B")
+        # 正常边
+        G.add_edge("region_short", "entity_a", weight=1.0, description="包含")
+        # _session: 前缀边
+        G.add_edge("region_short", "entity_b", weight=1.0, keywords="_session:xyz")
+        _decay_brain_region_edges(G)
+        # 正常边被衰减
+        weight_a = G["region_short"]["entity_a"]["weight"]
+        assert weight_a < 1.0
+        # _session: 边不变
+        weight_b = G["region_short"]["entity_b"]["weight"]
+        assert weight_b == 1.0
 ```
 
 **注意**：`decay_structural_edges` 是 `RegionManager` 实例方法，单元测试直接构造 nx_graph 调用方法不现实（需要 mock 整个 adapter）。因此将核心衰减逻辑提取为独立函数 `_decay_brain_region_edges(nx_graph)` 供测试直接调用，实例方法 `decay_structural_edges(self)` 内部获取 nx_graph 后调用它。测试代码中直接导入 `_decay_brain_region_edges`。
+
+独立函数 `_decay_brain_region_edges(nx_graph)` 实现代码：
+
+```python
+def _decay_brain_region_edges(nx_graph) -> dict:
+    """衰减脑区边权重 — 半衰期模型 + 保底机制（核心逻辑，供测试直接调用）
+
+    只衰减实体→脑区的归属边。知识关系边（实体→实体）不受影响。
+    锚点边（脑区→脑区）和 _session: 前缀边被跳过。
+    """
+    decayed = 0
+    deleted = 0
+    protected = 0
+    skipped_anchor = 0
+
+    brain_regions = [
+        n for n in nx_graph.nodes()
+        if nx_graph.nodes[n].get("entity_type") == "brainregion"
+    ]
+
+    for region_key in brain_regions:
+        desc = nx_graph.nodes[region_key].get("description", "")
+        priority = parse_priority_from_description(desc)
+        decay_rate = daily_decay_rate(priority)
+
+        neighbors = list(nx_graph.neighbors(region_key))
+
+        for entity_key in neighbors:
+            # 跳过锚点边（脑区之间的导航边）
+            if nx_graph.nodes[entity_key].get("entity_type") == "brainregion":
+                skipped_anchor += 1
+                continue
+
+            edge_data = nx_graph.edges[region_key, entity_key]
+            # 跳过 _session: 前缀边（会话临时边，不参与衰减）
+            keywords = edge_data.get("keywords") or edge_data.get("type", "")
+            if keywords.lower().startswith("_session:"):
+                continue
+
+            old_weight = edge_data.get("weight", INITIAL_WEIGHT)
+
+            new_weight = old_weight * decay_rate
+
+            total_degree = nx_graph.degree(entity_key)
+
+            if priority == "permanent":
+                # permanent 级：保底冻结，永不删除
+                new_weight = max(new_weight, FLOOR_WEIGHT)
+                nx_graph.edges[region_key, entity_key]["weight"] = new_weight
+                decayed += 1
+                protected += 1
+            elif total_degree <= 1:
+                # 孤立实体：保底保护
+                new_weight = max(new_weight, FLOOR_WEIGHT)
+                nx_graph.edges[region_key, entity_key]["weight"] = new_weight
+                decayed += 1
+                protected += 1
+            elif new_weight < FLOOR_WEIGHT:
+                # 非 permanent + 总边数>=2 + 低于保底 → 删除
+                nx_graph.remove_edge(region_key, entity_key)
+                deleted += 1
+            else:
+                nx_graph.edges[region_key, entity_key]["weight"] = new_weight
+                decayed += 1
+
+    return {
+        "decayed": decayed,
+        "deleted": deleted,
+        "protected": protected,
+        "skipped_anchor": skipped_anchor,
+    }
+```
+
+实例方法 `decay_structural_edges(self)` 内部获取 nx_graph 后调用 `_decay_brain_region_edges(nx_graph)`，并添加日志输出。
 
 - [ ] **Step 3: 实现 — 改造 `decay_structural_edges()`**
 
@@ -615,6 +713,11 @@ def decay_structural_edges(self) -> dict:
                         continue
 
                     edge_data = nx_graph.edges[region_key, entity_key]
+                    # 跳过 _session: 前缀边（会话临时边，不参与衰减）
+                    keywords = edge_data.get("keywords") or edge_data.get("type", "")
+                    if keywords.lower().startswith("_session:"):
+                        continue
+
                     old_weight = edge_data.get("weight", INITIAL_WEIGHT)
 
                     new_weight = old_weight * decay_rate
@@ -1038,6 +1141,20 @@ Run: `grep -n 'weight.*0\.5\|"weight": 0\.5' REDACTED_USER_PATH/tools/ai-bot/niu
 if priority in ("short", "medium") and not include_category:
     continue
 ```
+
+**语义变化说明**：旧逻辑 `priority == "category"` 跳过所有非核心脑区（人际关系、工作事务、生活事务、组织机构）。新逻辑 `priority in ("short", "medium")` 只跳过短期和中期脑区（工作事务、生活事务），而 permanent 级脑区（人际关系、组织机构）不再被跳过。当前唯一调用点使用 `include_category=True`（默认值），所以实际运行不受影响。
+
+- [ ] **Step 4b: 更新 `get_default_regions_config()` 硬编码回退值**
+
+`get_default_regions_config()` 在 `preferences.json` 缺少 `brain_regions` 段时返回硬编码回退值。当前回退值中 `priority` 仍为旧值 `"core"`/`"category"`，必须更新为新优先级。
+
+Run: `grep -n "get_default_regions_config" REDACTED_USER_PATH/tools/ai-bot/niu_api/internal/region_manager.py`
+
+将回退值中的 `priority` 更新为与 `preferences.json` 一致的新值：
+- `"core"` → 对应脑区的新优先级（如人际关系→`"permanent"`，知识体系→`"long"`）
+- `"category"` → 对应脑区的新优先级（如聊天历史→`"medium"`，工作事务→`"medium"`，生活事务→`"short"`）
+
+具体映射需 Read 函数确认每个脑区的旧值和新值对应关系。
 
 - [ ] **Step 5: 清理 STRUCTURAL_EDGE_TYPES_LOWER**
 
