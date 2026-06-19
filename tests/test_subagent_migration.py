@@ -104,19 +104,8 @@ class TestSubagentMigrationIntegration:
         assert "lightrag_get_document" in TOOL_SCHEMAS
         assert "lightrag_delete_document" in TOOL_SCHEMAS
 
-    def test_reinforce_on_tool_use_has_reinforce_delta(self):
-        """reinforce_on_tool_use should accept reinforce_delta parameter."""
-        import inspect
-        from agent.brain_tools import reinforce_on_tool_use
-        sig = inspect.signature(reinforce_on_tool_use)
-        assert "reinforce_delta" in sig.parameters
-
-    def test_region_manager_has_incremental_update(self):
-        """RegionManager should have incremental_update method."""
-        from niu_api.internal.region_manager import RegionManager
-        assert hasattr(RegionManager, "incremental_update")
-
     def test_region_manager_has_decay_structural_edges(self):
-        """RegionManager should have _decay_structural_edges method."""
-        from niu_api.internal.region_manager import RegionManager
-        assert hasattr(RegionManager, "_decay_structural_edges")
+        """RegionManager should have decay_structural_edges method, and module-level _decay_brain_region_edges function."""
+        from niu_api.internal.region_manager import RegionManager, _decay_brain_region_edges
+        assert hasattr(RegionManager, "decay_structural_edges")
+        assert callable(_decay_brain_region_edges)
