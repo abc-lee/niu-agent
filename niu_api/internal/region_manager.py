@@ -1260,13 +1260,14 @@ class RegionManager:
         self,
         entity_summaries: list[str],
         existing_regions: list[str],
-    ) -> str:
-        """Generate a semantic Chinese label for a brain region via LLM.
+    ) -> tuple[str, str]:
+        """Generate a semantic Chinese label and description for a brain region via LLM.
 
         Falls back to heuristic (entity_names[0]) on any LLM failure.
+        Returns (label, description) tuple.
         """
         if not entity_summaries:
-            return "unknown"
+            return ("unknown", "")
 
         # Extract entity names for prompt and fallback
         entity_names: list[str] = []
@@ -1283,7 +1284,7 @@ class RegionManager:
                 entity_list_parts.append(summary.strip())
 
         if not entity_names:
-            return "unknown"
+            return ("unknown", "")
 
         fallback_label = entity_names[0].replace("<SEP>", "-").replace("|", "-")
 
@@ -1292,12 +1293,12 @@ class RegionManager:
         existing_str = ", ".join(existing_regions) if existing_regions else "无"
 
         prompt = (
-            "你是一个知识图谱分析师。根据以下社区内的实体列表，为这个社区生成一个简洁的中文标签名。\n\n"
+            "你是一个知识图谱分析师。根据以下社区内的实体列表，为这个社区生成一个简洁的中文标签名和一句话描述。\n\n"
             "要求：\n"
-            "- 8个字以下\n"
-            "- 概括这些实体的共同主题\n"
+            "- 标签8个字以下\n"
+            "- 描述20个字以内，概括这些实体的共同主题或用途\n"
             "- 不要跟现有脑区重名或语义接近\n"
-            "- 只能返回JSON格式：{\"label\": \"标签名\"}\n"
+            "- 只能返回JSON格式：{\"label\": \"标签名\", \"description\": \"一句话描述\"}\n"
             "- 返回其他任何格式或内容将判定失败\n\n"
             f"现有脑区：{existing_str}\n\n"
             f"实体列表：{entity_list_str}"
@@ -1314,12 +1315,12 @@ class RegionManager:
                     entity_list_parts.pop()
                     entity_list_str = ", ".join(entity_list_parts)
                     prompt = (
-                        "你是一个知识图谱分析师。根据以下社区内的实体列表，为这个社区生成一个简洁的中文标签名。\n\n"
+                        "你是一个知识图谱分析师。根据以下社区内的实体列表，为这个社区生成一个简洁的中文标签名和一句话描述。\n\n"
                         "要求：\n"
-                        "- 8个字以下\n"
-                        "- 概括这些实体的共同主题\n"
+                        "- 标签8个字以下\n"
+                        "- 描述20个字以内，概括这些实体的共同主题或用途\n"
                         "- 不要跟现有脑区重名或语义接近\n"
-                        "- 只能返回JSON格式：{\"label\": \"标签名\"}\n"
+                        "- 只能返回JSON格式：{\"label\": \"标签名\", \"description\": \"一句话描述\"}\n"
                         "- 返回其他任何格式或内容将判定失败\n\n"
                         f"现有脑区：{existing_str}\n\n"
                         f"实体列表：{entity_list_str}"
@@ -1329,7 +1330,7 @@ class RegionManager:
             pass  # Token counting failure should not block
 
         # Call LLM with retry
-        label = self._parse_label_from_llm(prompt, fallback_label)
+        label, llm_description = self._parse_label_from_llm(prompt, fallback_label)
 
         # Truncate to 8 chars first
         if len(label) > 8:
@@ -1345,26 +1346,26 @@ class RegionManager:
                 candidate = f"{base}{n}"
             label = candidate
 
-        return label
+        return label, llm_description
 
-    def _parse_label_from_llm(self, prompt: str, fallback: str) -> str:
-        """Call LLM and parse label with retry logic."""
+    def _parse_label_from_llm(self, prompt: str, fallback: str) -> tuple[str, str]:
+        """Call LLM and parse label + description with retry logic."""
         for attempt in range(2):
             try:
                 content = self._call_llm_for_label(prompt)
-                label = self._extract_label_from_content(content)
+                label, description = self._extract_label_from_content(content)
                 if label:
                     if len(label) > 8:
                         label = label[:8]
-                    return label
+                    return label, description
             except Exception as e:
                 logger.debug("LLM label generation attempt %d failed: %s", attempt + 1, e)
 
         logger.warning("LLM label generation failed after retry, fallback to: %s", fallback)
-        return fallback
+        return fallback, ""
 
-    def _extract_label_from_content(self, content: str) -> str:
-        """Extract label from LLM response content."""
+    def _extract_label_from_content(self, content: str) -> tuple[str, str]:
+        """Extract label and description from LLM response content."""
         content = content.strip()
 
         # Try JSON parse
@@ -1372,8 +1373,9 @@ class RegionManager:
             data = json.loads(content)
             if isinstance(data, dict) and "label" in data:
                 label = str(data["label"]).strip()
+                description = str(data.get("description", "")).strip()
                 if label:
-                    return label
+                    return label, description
         except (json.JSONDecodeError, ValueError):
             pass
 
@@ -1381,10 +1383,12 @@ class RegionManager:
         match = re.search(r'"label"\s*:\s*"([^"]+)"', content)
         if match:
             label = match.group(1).strip()
+            desc_match = re.search(r'"description"\s*:\s*"([^"]+)"', content)
+            description = desc_match.group(1).strip() if desc_match else ""
             if label:
-                return label
+                return label, description
 
-        return ""
+        return "", ""
 
     def _call_llm_for_label(self, prompt: str) -> str:
         """Call LLM via LiteLLMSession to generate a label.
