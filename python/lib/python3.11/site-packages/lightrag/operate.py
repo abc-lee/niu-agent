@@ -1244,7 +1244,9 @@ async def _rebuild_single_entity(
         description_list = list(dict.fromkeys(relationship_descriptions))
 
         # Generate final description from relationships or fallback to current
-        if description_list:
+        if is_brain_region:
+            final_description = current_entity.get("description", "")
+        elif description_list:
             final_description, _ = await _handle_entity_relation_summary(
                 "Entity",
                 entity_name,
@@ -1317,7 +1319,9 @@ async def _rebuild_single_entity(
     )
 
     # Generate final description from entities or fallback to current
-    if description_list:
+    if is_brain_region:
+        final_description = current_entity.get("description", "")
+    elif description_list:
         final_description, _ = await _handle_entity_relation_summary(
             "Entity",
             entity_name,
@@ -1826,14 +1830,20 @@ async def _merge_nodes_then_upsert(
                     )
 
         # 8. Get summary description an LLM usage status
-        description, llm_was_used = await _handle_entity_relation_summary(
-            "Entity",
-            entity_name,
-            description_list,
-            GRAPH_FIELD_SEP,
-            global_config,
-            llm_response_cache,
-        )
+        if is_brain_region and already_node:
+            # Brain region protection: skip LLM summary for brainregion nodes —
+            # their description contains structured metadata that must be preserved
+            description = already_node.get("description", "")
+            llm_was_used = False
+        else:
+            description, llm_was_used = await _handle_entity_relation_summary(
+                "Entity",
+                entity_name,
+                description_list,
+                GRAPH_FIELD_SEP,
+                global_config,
+                llm_response_cache,
+            )
 
         # 9. Build file_path within MAX_FILE_PATHS
         file_paths_list = []
