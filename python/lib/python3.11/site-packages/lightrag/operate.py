@@ -1258,7 +1258,10 @@ async def _rebuild_single_entity(
         else:
             final_description = current_entity.get("description", "")
 
-        entity_type = str(current_entity.get("entity_type", "unknown") or "unknown").replace(" ", "").lower()
+        if is_brain_region:
+            entity_type = str(current_entity.get("entity_type", "brainregion") or "brainregion").replace(" ", "").lower()
+        else:
+            entity_type = str(current_entity.get("entity_type", "unknown") or "unknown").replace(" ", "").lower()
         await _update_entity_storage(
             final_description,
             entity_type,
@@ -1317,6 +1320,10 @@ async def _rebuild_single_entity(
         if entity_types
         else str(current_entity.get("entity_type", "unknown") or "unknown").replace(" ", "").lower()
     )
+
+    # Brain region protection: override entity_type to preserve "brainregion"
+    if is_brain_region:
+        entity_type = str(current_entity.get("entity_type", "brainregion") or "brainregion").replace(" ", "").lower()
 
     # Generate final description from entities or fallback to current
     if is_brain_region:
