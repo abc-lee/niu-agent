@@ -25,7 +25,7 @@
 
 | 优先级 | 半衰期 | 日衰减率 | 含义 |
 |--------|--------|----------|------|
-| `permanent` | 无衰减 | 1.0 | 永久保留，权重只衰减到保底值 |
+| `permanent` | 无衰减 | N/A（不衰减） | 永久保留，权重只衰减到保底值 |
 | `long` | 360天 | 0.5^(1/360) ≈ 0.99808 | 长期记忆 |
 | `medium` | 180天 | 0.5^(1/180) ≈ 0.99615 | 中期记忆 |
 | `short` | 90天 | 0.5^(1/90) ≈ 0.99232 | 短期记忆 |
@@ -223,7 +223,7 @@ DEFAULT_PRIORITY = "medium"  # 非默认脑区和旧配置的回退值
 
 | 文件 | 改动内容 |
 |------|----------|
-| `niu_api/internal/region_manager.py` | (1) 改造 `decay_structural_edges()`：判断逻辑从边类型改为目标节点 entity_type；加入优先级→半衰期映射；加入保底逻辑（G.degree==1时冻结）；新增常量 PRIORITY_HALFLIFE/FLOOR_WEIGHT/INITIAL_WEIGHT/DEFAULT_PRIORITY (2) 取消注释 `incremental_update()` 第 1524-1526 行的衰减调用 (3) `_encode_description()` 新增 `priority` 标准参数，写入 `brain_meta_priority` 字段 (4) 所有调用 `_encode_description()` 的地方传递 priority：`create_region_nodes()` 传配置值或 DEFAULT_PRIORITY，`_update_drifted_regions()` 和 `update_region_summaries()` 从旧 description 解析后传递 (5) 结构边初始权重从 0.5 改为 1.0（6处） (6) `create_default_regions()` 第 1666 行 category 跳过逻辑改为基于新优先级 |
+| `niu_api/internal/region_manager.py` | (1) 改造 `decay_structural_edges()`：判断逻辑从边类型改为目标节点 entity_type；加入优先级→半衰期映射；加入保底逻辑（G.degree==1时冻结）；新增常量 PRIORITY_HALFLIFE/FLOOR_WEIGHT/INITIAL_WEIGHT/DEFAULT_PRIORITY (2) 取消注释 `incremental_update()` 第 1524-1526 行的衰减调用 (3) `_encode_description()` 新增 `priority` 标准参数，写入 `brain_meta_priority` 字段 (4) 所有7处 `_encode_description()` 调用点传递 priority：① `create_region_nodes()` 行274 传配置值或 DEFAULT_PRIORITY ② `update_region_summaries()` 行509 从旧description解析 ③ `_update_drifted_regions()` 行779 从旧description解析 ④ `dissolve_shrunk_regions()` 行950 从旧description解析 ⑤ `create_default_regions()` 行1677 传 region_def["priority"] ⑥ `assign_entities_to_default_regions()` 行1865 从旧description解析 (5) 结构边初始权重从 0.5 改为 1.0（7处，含 create_default_regions 锚点边行1694） (6) `create_default_regions()` 第 1666 行 category 跳过逻辑改为基于新优先级 |
 | `agent/brain_tools.py` | (1) 改造 `_reinforce_edge_weight()`：判断逻辑改为对端节点 entity_type；增强改为恢复到 INITIAL_WEIGHT (2) 删除旧常量 REINFORCE_DELTA/MAX_EDGE_WEIGHT (3) `reinforce_on_tool_use()` 删除 reinforce_delta 参数 (4) 取消注释第 389-391 行的增强调用 |
 | `agent/injector/region_sync.py` | 取消注释 `decay_structural_edges()` 调用（Step 6，第 322-331 行） |
 | `niu_api/brain_region_api.py` | 取消注释 `decay_structural_edges()` 调用（Step 8，第 316-323 行） |
@@ -236,9 +236,11 @@ DEFAULT_PRIORITY = "medium"  # 非默认脑区和旧配置的回退值
 - RegionSync 守护线程调度——24小时周期不变
 - 定时任务调度——边衰减不在 cron 中，在 RegionSync 中
 
-### 5.3 需要删除的旧常量
+### 5.3 需要删除/清理的旧常量和旧代码
 
 - `brain_tools.py` 中的 `REINFORCE_DELTA = 0.15` 和 `MAX_EDGE_WEIGHT = 2.0`
+- `brain_tools.py` 中 `from niu_api.internal.region_manager import STRUCTURAL_EDGE_TYPES_LOWER` 的 import — 判断逻辑从边类型改为 entity_type 后不再使用
+- `region_manager.py` 中的 `STRUCTURAL_EDGE_TYPES_LOWER` — 如果无其他调用方则删除；如有其他调用方保留但加注释说明衰减/增强不再依赖此常量
 
 ---
 
