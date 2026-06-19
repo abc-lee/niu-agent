@@ -790,6 +790,8 @@ git commit -m "feat: rewrite decay_structural_edges with half-life model and flo
 - 日志输出是否包含所有关键指标
 - 空图、空脑区、无邻居等边界情况是否安全
 
+**行为变更说明**：旧代码中 `_session:` 前缀边与 "包含" 边一起参与衰减和删除；新代码中 `_session:` 前缀边被完全跳过（不衰减、不删除）。这是有意的改进——会话临时边不应参与长期衰减机制。旧增强代码中 `_session:` 前缀边也会被增强，新代码同样跳过。
+
 ---
 
 ### Task 4: 改造 `_reinforce_edge_weight()` — 恢复到初始值
@@ -980,6 +982,22 @@ from niu_api.internal.region_manager import STRUCTURAL_EDGE_TYPES_LOWER
 搜索 `handler.py` 中调用 `reinforce_on_tool_use` 的位置，确认没有传递 `reinforce_delta` 参数。如果传递了，删除该参数。
 
 Run: `grep -n "reinforce_on_tool_use" REDACTED_USER_PATH/tools/ai-bot/agent/handler.py`
+
+- [ ] **Step 4b: 更新旧测试文件 `tests/test_subagent_migration.py`**
+
+删除 `reinforce_delta` 参数断言（行107-112），因为该参数将被移除。同时修正 `_decay_structural_edges` 方法名断言（行119-122）——当前源码中方法名是 `decay_structural_edges`（无下划线前缀），该测试现在就已经失败。
+
+修改后：
+```python
+# 删除整个 test_reinforce_on_tool_use_has_reinforce_delta 方法
+
+# 修正方法名（无下划线前缀）+ 验证模块级独立函数也存在
+def test_region_manager_has_decay_structural_edges(self):
+    """RegionManager should have decay_structural_edges method, and module-level _decay_brain_region_edges function."""
+    from niu_api.internal.region_manager import RegionManager, _decay_brain_region_edges
+    assert hasattr(RegionManager, "decay_structural_edges")
+    assert callable(_decay_brain_region_edges)
+```
 
 - [ ] **Step 5: 运行测试确认通过**
 
