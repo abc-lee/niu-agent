@@ -57,43 +57,43 @@
       {
         "label": "聊天历史",
         "description": "日常对话中提炼的偏好、技能和经验记忆",
-        "priority": "core",
+        "priority": "medium",
         "keywords": ["偏好", "习惯", "设置", "配置", "喜欢", "想要"]
       },
       {
         "label": "文档库",
         "description": "用户导入的文档和资料，经解析后入库的知识",
-        "priority": "core",
+        "priority": "permanent",
         "keywords": ["文档", "文件", "PDF", "Word", "Markdown", "笔记"]
       },
       {
         "label": "知识体系",
         "description": "系统化组织的概念、关系和理论体系",
-        "priority": "core",
+        "priority": "long",
         "keywords": ["概念", "理论", "方法", "原理", "定义", "技术"]
       },
       {
         "label": "人际关系",
         "description": "人物实体、关系网络、社交图谱",
-        "priority": "category",
+        "priority": "permanent",
         "keywords": ["人物", "家人", "朋友", "同事", "联系人", "人名"]
       },
       {
         "label": "工作事务",
         "description": "工作相关的项目、任务、决策记录",
-        "priority": "category",
+        "priority": "medium",
         "keywords": ["项目", "任务", "会议", "决策", "工作", "进度"]
       },
       {
         "label": "生活事务",
         "description": "日常生活相关的日程、健康、财务",
-        "priority": "category",
+        "priority": "short",
         "keywords": ["日程", "健康", "财务", "旅行", "生活", "日常"]
       },
       {
         "label": "组织机构",
         "description": "公司、部门、机构等组织实体和关系网络",
-        "priority": "category",
+        "priority": "permanent",
         "keywords": ["公司", "部门", "机构", "组织", "团队", "单位"]
       }
     ]
