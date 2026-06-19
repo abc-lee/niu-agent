@@ -25,7 +25,7 @@
 
 | 优先级 | 半衰期 | 日衰减率 | 含义 |
 |--------|--------|----------|------|
-| `permanent` | 无衰减 | N/A（不衰减） | 永久保留，权重只衰减到保底值 |
+| `permanent` | 360天 | 0.5^(1/360) ≈ 0.99808 | 永久保留，正常衰减但到保底值冻结，永不删除 |
 | `long` | 360天 | 0.5^(1/360) ≈ 0.99808 | 长期记忆 |
 | `medium` | 180天 | 0.5^(1/180) ≈ 0.99615 | 中期记忆 |
 | `short` | 90天 | 0.5^(1/90) ≈ 0.99232 | 短期记忆 |
@@ -34,9 +34,9 @@
 
 | 脑区 | 优先级 | 半衰期 |
 |------|--------|--------|
-| 人际关系 | `permanent` | 无衰减 |
-| 组织机构 | `permanent` | 无衰减 |
-| 文档库 | `permanent` | 无衰减 |
+| 人际关系 | `permanent` | 360天（保底冻结） |
+| 组织机构 | `permanent` | 360天（保底冻结） |
+| 文档库 | `permanent` | 360天（保底冻结） |
 | 知识体系 | `long` | 360天 |
 | 聊天历史 | `medium` | 180天 |
 | 工作事务 | `medium` | 180天 |
@@ -82,7 +82,6 @@
 对每个脑区节点 R (entity_type == "brainregion"):
   读取 R 的优先级 priority（从 description 中解析 brain_meta_priority）
   如果 priority 为空或不在 PRIORITY_HALFLIFE 中: priority = DEFAULT_PRIORITY ("medium")
-  如果 priority == "permanent": 跳过此脑区（永久级不衰减）
 
   对 R 的每个邻居实体 E:
     如果 E.entity_type == "brainregion": 跳过（锚点边不衰减，脑区之间的导航边不属于归属关系）
@@ -91,9 +90,10 @@
 
     保底检查: 统计 E 的总边数（G.degree(E)，包括所有类型）
     - 总边数 == 1（只剩这一条边）→ new_weight = max(new_weight, FLOOR_WEIGHT)
-    - 总边数 >= 2 → 允许继续衰减
+    - 总边数 >= 2 且 priority == "permanent" → new_weight = max(new_weight, FLOOR_WEIGHT)（permanent 级永不删除，保底冻结）
+    - 总边数 >= 2 且 priority != "permanent" → 允许继续衰减
 
-    如果 new_weight < FLOOR_WEIGHT (0.1) 且总边数 >= 2 → 删除边
+    如果 new_weight < FLOOR_WEIGHT (0.1) 且总边数 >= 2 且 priority != "permanent" → 删除边
     否则写回 weight = new_weight
 ```
 
@@ -188,7 +188,7 @@ def reinforce_on_tool_use(tool_name: str) -> str | None:
 
 ```python
 PRIORITY_HALFLIFE = {
-    "permanent": None,   # 不衰减
+    "permanent": 360,  # 衰减但保底冻结，永不删除
     "long": 360,
     "medium": 180,
     "short": 90,
