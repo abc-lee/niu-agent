@@ -226,7 +226,7 @@ def parse_priority_from_description(description: str) -> str:
                 return val
             # 旧配置值警告（设计文档6.2节要求）
             if val in ("core", "category"):
-                logger.warning(
+                logger.info(
                     "旧优先级值 '%s' 不再支持，回退到 DEFAULT_PRIORITY ('%s')。"
                     "请更新 preferences.json 中的 priority 字段。",
                     val, DEFAULT_PRIORITY,
@@ -330,12 +330,14 @@ class RegionManager:
         created_regions: list[str] = []
         stale_edge_cleanup: list[tuple[str, set[str]]] = []  # (region_name, new_members_set)
 
-        # Pre-fetch existing region labels and names for LLM dedup + skip logic
+        # Pre-fetch existing region labels, names, and descriptions for LLM dedup + skip logic + priority preservation
         existing_region_names: set[str] = set()
         existing_labels: list[str] = []
+        existing_region_descriptions: dict[str, str] = {}
         try:
             for region in self.get_all_regions():
                 existing_region_names.add(region.name.lower())
+                existing_region_descriptions[region.name.lower()] = region.description or ""
                 label = region.label or region.name.removesuffix(REGION_SUFFIX)
                 existing_labels.append(label)
         except Exception:
@@ -381,13 +383,20 @@ class RegionManager:
             region_name = f"{region_label}{REGION_SUFFIX}"
             is_existing = region_name.lower() in existing_region_names
 
+            # Preserve priority for existing regions, use DEFAULT_PRIORITY for new ones
+            if is_existing:
+                old_desc = existing_region_descriptions.get(region_name.lower(), "")
+                priority = parse_priority_from_description(old_desc)
+            else:
+                priority = DEFAULT_PRIORITY
+
             description = _encode_description(
                 summary=region_summary,
                 region_id=community_id,
                 size=len(members),
                 representative=representative,
                 updated_at=now,
-                priority=DEFAULT_PRIORITY,
+                priority=priority,
             )
 
             # Always upsert entity (updates description for existing regions)

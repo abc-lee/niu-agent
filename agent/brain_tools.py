@@ -359,6 +359,10 @@ def _reinforce_brain_region_edges(nx_graph, region_key: str) -> int:
     """增强脑区边权重 — 恢复到 INITIAL_WEIGHT（核心逻辑，供测试直接调用）
 
     只增强实体→脑区的归属边，跳过锚点边（脑区→脑区）和 _session: 前缀边。
+
+    注意：增强不区分优先级 — "用一次就满血"（设计文档3.2节）。
+    无论 permanent/long/medium/short，使用后都恢复到 INITIAL_WEIGHT。
+    次日衰减从 1.0 重新按各脑区半衰期下降，相当于"遗忘计时器重置"。
     """
     from niu_api.internal.region_manager import INITIAL_WEIGHT
 
@@ -423,27 +427,28 @@ def _reinforce_edge_weight(region_id: str) -> int:
     """增强脑区边权重 — 恢复到 INITIAL_WEIGHT（包装函数）
 
     内部获取 nx_graph，调用 _reinforce_brain_region_edges。
+    图引用获取在锁内，避免与衰减线程竞争。
     """
     try:
         from niu_api.internal.lightrag_adapter import LightRAGAdapter
         from niu_api.internal.lightrag_manager import graph_write_lock
 
         adapter = LightRAGAdapter()
-        rag = adapter._get_rag()
-        if rag is None:
-            return 0
-
-        kg = rag.chunk_entity_relation_graph
-        if kg is None:
-            return 0
-
-        nx_graph = kg._graph if hasattr(kg, "_graph") else kg
-        if nx_graph is None:
-            return 0
-
         region_key = region_id.lower() if isinstance(region_id, str) else region_id
 
         with graph_write_lock():
+            rag = adapter._get_rag()
+            if rag is None:
+                return 0
+
+            kg = rag.chunk_entity_relation_graph
+            if kg is None:
+                return 0
+
+            nx_graph = kg._graph if hasattr(kg, "_graph") else kg
+            if nx_graph is None:
+                return 0
+
             return _reinforce_brain_region_edges(nx_graph, region_key)
 
     except Exception as e:
