@@ -171,11 +171,11 @@ class TestEncodeDescriptionPriority:
     def test_encode_description_includes_priority(self):
         from niu_api.internal.region_manager import _encode_description
         desc = _encode_description(
-            label="测试脑区",
             summary="测试摘要",
-            entity_count=5,
-            keywords=["k1", "k2"],
-            extra_meta={"source": "default"},
+            region_id="community_1",
+            size=5,
+            representative="代表实体",
+            updated_at=1000000,
             priority="permanent",
         )
         assert "brain_meta_priority:permanent" in desc
@@ -183,11 +183,11 @@ class TestEncodeDescriptionPriority:
     def test_encode_description_default_priority(self):
         from niu_api.internal.region_manager import _encode_description, DEFAULT_PRIORITY
         desc = _encode_description(
-            label="测试脑区",
             summary="测试摘要",
-            entity_count=5,
-            keywords=["k1", "k2"],
-            extra_meta={},
+            region_id="community_1",
+            size=5,
+            representative="代表实体",
+            updated_at=1000000,
             priority=DEFAULT_PRIORITY,
         )
         assert "brain_meta_priority:medium" in desc
@@ -214,29 +214,30 @@ Expected: FAIL — `_encode_description()` 接受5个位置参数，给了6个
 
 - [ ] **Step 3: 实现 — 修改 `_encode_description()` 和新增 `parse_priority_from_description()`**
 
-修改 `_encode_description()` 函数签名，新增 `priority` 参数：
+修改 `_encode_description()` 函数签名，新增 `priority` 参数（保留当前5个参数名不变）：
 
 ```python
 def _encode_description(
-    label: str,
     summary: str,
-    entity_count: int,
-    keywords: list,
-    extra_meta: dict,
+    region_id: str,
+    size: int,
+    representative: str,
+    updated_at: float,
     priority: str = DEFAULT_PRIORITY,  # 新增参数
 ) -> str:
 ```
 
-在函数体中，`meta_parts` 构建处增加 priority 字段。当前代码约第274-285行：
+在函数体的 `parts` 列表末尾增加 priority 字段。当前代码约第116-124行：
 
 ```python
-    # 构建 meta 信息
-    meta_parts = []
-    if extra_meta:
-        for k, v in extra_meta.items():
-            meta_parts.append(f"brain_meta_{k}:{v}")
-    # 新增：priority 字段
-    meta_parts.append(f"brain_meta_priority:{priority}")
+    parts = [
+        summary,
+        f"brain_meta_region_id:{region_id}",
+        f"brain_meta_size:{size}",
+        f"brain_meta_representative:{representative}",
+        f"brain_meta_updated_at:{int(updated_at)}",
+        f"brain_meta_priority:{priority}",  # 新增
+    ]
 ```
 
 新增解析函数（在 `_encode_description` 下方）：
@@ -246,7 +247,15 @@ def parse_priority_from_description(description: str) -> str:
     """从 description 中解析 brain_meta_priority 字段"""
     if not description:
         return DEFAULT_PRIORITY
+    for part in description.split("<SEP>"):
+        part = part.strip()
+        if part.startswith("brain_meta_priority:"):
+            val = part[len("brain_meta_priority:"):]
+            if val in PRIORITY_HALFLIFE:
+                return val
+    # fallback: 尝试 | 分隔符（兼容旧格式）
     for part in description.split("|"):
+        part = part.strip()
         if part.startswith("brain_meta_priority:"):
             val = part[len("brain_meta_priority:"):]
             if val in PRIORITY_HALFLIFE:
@@ -256,13 +265,20 @@ def parse_priority_from_description(description: str) -> str:
 
 - [ ] **Step 4: 更新所有 `_encode_description()` 调用点**
 
-**6处调用点**，全部增加 `priority=` 参数。如果原调用有 `extra_meta` 中含 `source` 等字段，保持不变，只增加 `priority` 参数。
+**6处调用点**，全部增加 `priority=` 关键字参数。保留当前5个参数名不变，只新增 `priority` 参数。
 
 1. **行274附近** `create_region_nodes()` — 新建脑区时：
 ```python
 # 从 preferences.json 读取 priority，fallback 到 DEFAULT_PRIORITY
 priority = region_def.get("priority", DEFAULT_PRIORITY) if region_def else DEFAULT_PRIORITY
-desc = _encode_description(label, summary, entity_count, keywords, extra_meta, priority=priority)
+description = _encode_description(
+    summary=region_summary,
+    region_id=community_id,
+    size=len(members),
+    representative=representative,
+    updated_at=now,
+    priority=priority,
+)
 ```
 
 2. **行509附近** `update_region_summaries()` — 摘要更新：
@@ -270,37 +286,88 @@ desc = _encode_description(label, summary, entity_count, keywords, extra_meta, p
 # 从旧 description 解析 priority
 old_desc = nx_graph.nodes[region_key].get("description", "")
 priority = parse_priority_from_description(old_desc)
-desc = _encode_description(label, summary, entity_count, keywords, extra_meta, priority=priority)
+description = _encode_description(
+    summary=region_summary,
+    region_id=community_id,
+    size=len(members),
+    representative=representative,
+    updated_at=now,
+    priority=priority,
+)
 ```
 
 3. **行779附近** `_update_drifted_regions()` — 漂移更新：
 ```python
 old_desc = nx_graph.nodes[region_key].get("description", "")
 priority = parse_priority_from_description(old_desc)
-desc = _encode_description(label, summary, entity_count, keywords, extra_meta, priority=priority)
+description = _encode_description(
+    summary=summary,
+    region_id=best_cid,
+    size=len(new_members),
+    representative=representative,
+    updated_at=now,
+    priority=priority,
+)
 ```
 
 4. **行950附近** `dissolve_shrunk_regions()` — 解散重建：
 ```python
 old_desc = nx_graph.nodes[region_key].get("description", "")
 priority = parse_priority_from_description(old_desc)
-desc = _encode_description(label, summary, entity_count, keywords, extra_meta, priority=priority)
+updated_desc = _encode_description(
+    summary=parsed.get("summary", ""),
+    region_id=region.community_id,
+    size=current_size,
+    representative=region.representative,
+    updated_at=now,
+    priority=priority,
+)
 ```
 
 5. **行1677附近** `create_default_regions()` — 默认创建：
 ```python
 priority = region_def.get("priority", DEFAULT_PRIORITY)
-desc = _encode_description(label, summary, 0, keywords, extra_meta, priority=priority)
+description = _encode_description(
+    summary=region_def["description"],
+    region_id=f"default_{region_label}",
+    size=0,
+    representative="",
+    updated_at=time.time(),
+    priority=priority,
+)
 ```
 
 6. **行1865附近** `assign_entities_to_default_regions()` — 关键词分配：
 ```python
 old_desc = nx_graph.nodes[region_key].get("description", "")
 priority = parse_priority_from_description(old_desc)
-desc = _encode_description(label, summary, entity_count, keywords, extra_meta, priority=priority)
+updated_desc = _encode_description(
+    summary=parsed.get("summary", ""),
+    region_id=parsed.get("region_id", ""),
+    size=len(actual_members),
+    representative=parsed.get("representative", ""),
+    updated_at=time.time(),
+    priority=priority,
+)
 ```
 
 注意：以上行号为近似值，实现者需要用 grep 精确定位每个调用点。每个调用点修改前必须先 Read 确认上下文。
+
+- [ ] **Step 4b: 更新 STANDARD_KEYS 集合，添加 "priority"**
+
+`_encode_description()` 的调用方 `update_region_summaries()` 和 `dissolve_shrunk_regions()` 使用 `STANDARD_KEYS` 集合过滤 `extra_meta`，防止标准字段被重复写入。新增 `priority` 为标准字段后，必须将其加入 `STANDARD_KEYS`，否则 `brain_meta_priority` 会在 description 中出现两次。
+
+两处 STANDARD_KEYS 需要更新：
+
+1. **行479附近** `update_region_summaries()` 中：
+```python
+STANDARD_KEYS = {"summary", "region_id", "size", "representative", "updated_at", "priority"}
+```
+
+2. **行959附近** `dissolve_shrunk_regions()` 中：
+```python
+STANDARD_KEYS = {"summary", "region_id", "size", "representative", "updated_at", "shrink_count", "priority"}
+```
 
 - [ ] **Step 5: 运行测试确认通过**
 
@@ -325,6 +392,7 @@ git commit -m "feat: add priority param to _encode_description and parse_priorit
 
 检查：
 - 旧 description 中已有 `brain_meta_priority` 时，新写入是否会重复（应替换旧值或确保不会重复写入）
+- `STANDARD_KEYS` 是否已添加 `"priority"`（两处：`update_region_summaries` 和 `dissolve_shrunk_regions`），否则 extra_meta 过滤会遗漏 priority 导致重复写入
 - `parse_priority_from_description` 是否处理了 `priority` 值不在 `PRIORITY_HALFLIFE` 中的情况
 - 调用点是否遗漏（用 `grep "_encode_description(" region_manager.py` 验证）
 
@@ -367,9 +435,9 @@ class TestDecayStructuralEdges:
 
     def test_decay_short_priority(self):
         """short 级（90天半衰期）边权重衰减"""
-        from niu_api.internal.region_manager import decay_structural_edges, daily_decay_rate
+        from niu_api.internal.region_manager import _decay_brain_region_edges, daily_decay_rate
         G = self._build_test_graph()
-        decay_structural_edges(G)
+        _decay_brain_region_edges(G)
 
         # entity_b 只有1条脑区边 + 0条知识边 = 总边数1 → 保底
         weight_b = G["region_short"]["entity_b"]["weight"]
@@ -378,7 +446,7 @@ class TestDecayStructuralEdges:
 
     def test_permanent_freeze_at_floor(self):
         """permanent 级边权重衰减到保底值冻结"""
-        from niu_api.internal.region_manager import decay_structural_edges, FLOOR_WEIGHT
+        from niu_api.internal.region_manager import _decay_brain_region_edges, FLOOR_WEIGHT
         G = nx.Graph()
         G.add_node("region_perm", entity_type="brainregion",
                    description="brain_meta_priority:permanent|永久脑区")
@@ -386,28 +454,28 @@ class TestDecayStructuralEdges:
         # 设一个已经接近保底的权重
         G.add_edge("region_perm", "entity_x", weight=0.11, description="包含")
 
-        decay_structural_edges(G)
+        _decay_brain_region_edges(G)
         # permanent 级：max(0.11 * decay, FLOOR_WEIGHT)，但 0.11*decay > 0.1 所以正常衰减
         weight = G["region_perm"]["entity_x"]["weight"]
         assert weight >= FLOOR_WEIGHT
 
     def test_floor_protection_orphan(self):
         """总边数==1时保底保护"""
-        from niu_api.internal.region_manager import decay_structural_edges, FLOOR_WEIGHT
+        from niu_api.internal.region_manager import _decay_brain_region_edges, FLOOR_WEIGHT
         G = nx.Graph()
         G.add_node("region_short", entity_type="brainregion",
                    description="brain_meta_priority:short|短期脑区")
         G.add_node("entity_lonely", entity_type="topic", description="孤独话题")
         G.add_edge("region_short", "entity_lonely", weight=0.05, description="包含")
 
-        decay_structural_edges(G)
+        _decay_brain_region_edges(G)
         # 孤立实体，权重不应低于 FLOOR_WEIGHT
         weight = G["region_short"]["entity_lonely"]["weight"]
         assert weight >= FLOOR_WEIGHT
 
     def test_delete_below_floor_with_other_edges(self):
         """非 permanent + 总边数>=2 + 低于保底 → 删除边"""
-        from niu_api.internal.region_manager import decay_structural_edges, FLOOR_WEIGHT
+        from niu_api.internal.region_manager import _decay_brain_region_edges, FLOOR_WEIGHT
         G = nx.Graph()
         G.add_node("region_short", entity_type="brainregion",
                    description="brain_meta_priority:short|短期脑区")
@@ -416,13 +484,13 @@ class TestDecayStructuralEdges:
         G.add_edge("region_short", "entity_multi", weight=0.03, description="包含")
         G.add_edge("entity_multi", "entity_other", weight=1.0, description="擅长")
 
-        decay_structural_edges(G)
+        _decay_brain_region_edges(G)
         # 总边数2，weight 0.03 * decay < FLOOR_WEIGHT → 删除
         assert not G.has_edge("region_short", "entity_multi")
 
     def test_permanent_not_deleted_with_other_edges(self):
         """permanent + 总边数>=2 + 低于保底 → 不删除，冻结在保底"""
-        from niu_api.internal.region_manager import decay_structural_edges, FLOOR_WEIGHT
+        from niu_api.internal.region_manager import _decay_brain_region_edges, FLOOR_WEIGHT
         G = nx.Graph()
         G.add_node("region_perm", entity_type="brainregion",
                    description="brain_meta_priority:permanent|永久脑区")
@@ -431,37 +499,37 @@ class TestDecayStructuralEdges:
         G.add_edge("region_perm", "entity_multi", weight=0.03, description="包含")
         G.add_edge("entity_multi", "entity_other", weight=1.0, description="擅长")
 
-        decay_structural_edges(G)
+        _decay_brain_region_edges(G)
         # permanent 级：冻结在 FLOOR_WEIGHT，不删除
         assert G.has_edge("region_perm", "entity_multi")
         assert G["region_perm"]["entity_multi"]["weight"] == FLOOR_WEIGHT
 
     def test_knowledge_edge_not_decayed(self):
         """知识关系边（实体→实体）不被衰减"""
-        from niu_api.internal.region_manager import decay_structural_edges
+        from niu_api.internal.region_manager import _decay_brain_region_edges
         G = self._build_test_graph()
-        decay_structural_edges(G)
+        _decay_brain_region_edges(G)
         # entity_a ↔ entity_c 是知识关系边，权重不变
         weight = G["entity_a"]["entity_c"]["weight"]
         assert weight == 1.0
 
     def test_anchor_edge_not_decayed(self):
         """脑区之间的锚点边不被衰减"""
-        from niu_api.internal.region_manager import decay_structural_edges
+        from niu_api.internal.region_manager import _decay_brain_region_edges
         G = nx.Graph()
         G.add_node("Niu", entity_type="brainregion", description="根节点")
         G.add_node("region_perm", entity_type="brainregion",
                    description="brain_meta_priority:permanent|永久脑区")
         G.add_edge("Niu", "region_perm", weight=0.5, description="锚点")
 
-        decay_structural_edges(G)
+        _decay_brain_region_edges(G)
         # Niu 的邻居 region_perm 也是 brainregion → 跳过
         weight = G["Niu"]["region_perm"]["weight"]
         assert weight == 0.5
 
     def test_missing_priority_fallback(self):
         """description 中缺少 brain_meta_priority 时回退到 medium"""
-        from niu_api.internal.region_manager import decay_structural_edges, daily_decay_rate, DEFAULT_PRIORITY
+        from niu_api.internal.region_manager import _decay_brain_region_edges, daily_decay_rate, DEFAULT_PRIORITY
         G = nx.Graph()
         G.add_node("region_no_priority", entity_type="brainregion",
                    description="brain_meta_source:leiden|无优先级脑区")
@@ -470,7 +538,7 @@ class TestDecayStructuralEdges:
         G.add_edge("region_no_priority", "entity_y", weight=1.0, description="包含")
         G.add_edge("entity_y", "entity_z", weight=1.0, description="相关")
 
-        decay_structural_edges(G)
+        _decay_brain_region_edges(G)
         # 应使用 medium (180天) 的衰减率
         expected = 1.0 * daily_decay_rate(DEFAULT_PRIORITY)
         weight = G["region_no_priority"]["entity_y"]["weight"]
@@ -478,19 +546,16 @@ class TestDecayStructuralEdges:
 
     def test_empty_graph_safe(self):
         """空图不会报错"""
-        from niu_api.internal.region_manager import decay_structural_edges
+        from niu_api.internal.region_manager import _decay_brain_region_edges
         G = nx.Graph()
-        decay_structural_edges(G)  # 不应抛异常
+        _decay_brain_region_edges(G)  # 不应抛异常
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
-
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_brain_region_edge_decay.py -v -k "TestDecayStructuralEdges" 2>&1 | head -30`
-Expected: FAIL — 当前 `decay_structural_edges` 逻辑不符合新设计
+**注意**：`decay_structural_edges` 是 `RegionManager` 实例方法，单元测试直接构造 nx_graph 调用方法不现实（需要 mock 整个 adapter）。因此将核心衰减逻辑提取为独立函数 `_decay_brain_region_edges(nx_graph)` 供测试直接调用，实例方法 `decay_structural_edges(self)` 内部获取 nx_graph 后调用它。测试代码中直接导入 `_decay_brain_region_edges`。
 
 - [ ] **Step 3: 实现 — 改造 `decay_structural_edges()`**
 
-替换整个 `decay_structural_edges()` 函数体。当前函数约在第1490-1560行。关键改动：
+替换 `decay_structural_edges()` 函数体。**保留为 `RegionManager` 实例方法**，方法内部获取 `nx_graph`，调用方改动最小。当前函数约在第1540-1590行。关键改动：
 
 1. 判断逻辑从 `edge_type in STRUCTURAL_EDGE_TYPES_LOWER` 改为 `neighbor_node.entity_type == "brainregion"`
 2. 遍历从脑区节点出发（获取所有 `entity_type == "brainregion"` 的节点）
@@ -502,66 +567,82 @@ Expected: FAIL — 当前 `decay_structural_edges` 逻辑不符合新设计
 8. 非 permanent：总边数==1 时 `max(new_weight, FLOOR_WEIGHT)`，总边数>=2 且 new_weight < FLOOR_WEIGHT 时删除边
 
 ```python
-def decay_structural_edges(nx_graph: nx.Graph, stats: dict | None = None) -> dict:
-    """脑区边衰减 — 半衰期模型 + 保底机制
+def decay_structural_edges(self) -> dict:
+    """Decay brain region edges — half-life model with floor protection.
 
-    只衰减实体→脑区的归属边（目标节点 entity_type == "brainregion"）。
-    不衰减知识关系边（实体→实体）。
+    Only decays entity→brainregion attribution edges.
+    Knowledge edges (entity→entity) are not affected.
+    Anchor edges (brainregion→brainregion) are skipped.
     """
     decayed = 0
     deleted = 0
     protected = 0
-    skipped_permanent = 0
     skipped_anchor = 0
 
-    # 从脑区节点出发遍历
-    brain_regions = [
-        n for n in nx_graph.nodes()
-        if nx_graph.nodes[n].get("entity_type") == "brainregion"
-    ]
+    try:
+        from niu_api.internal.lightrag_manager import graph_write_lock
 
-    for region_key in brain_regions:
-        desc = nx_graph.nodes[region_key].get("description", "")
-        priority = parse_priority_from_description(desc)
-        decay_rate = daily_decay_rate(priority)
+        rag = self._adapter._get_rag()
+        if rag is None:
+            return {"decayed": 0, "deleted": 0, "protected": 0, "skipped_anchor": 0}
 
-        # 收集需要处理的邻居（避免遍历时修改图）
-        neighbors = list(nx_graph.neighbors(region_key))
+        kg = rag.chunk_entity_relation_graph
+        if kg is None:
+            return {"decayed": 0, "deleted": 0, "protected": 0, "skipped_anchor": 0}
 
-        for entity_key in neighbors:
-            # 跳过锚点边（脑区之间的导航边）
-            if nx_graph.nodes[entity_key].get("entity_type") == "brainregion":
-                skipped_anchor += 1
-                continue
+        nx_graph = kg._graph if hasattr(kg, "_graph") else kg
+        if nx_graph is None:
+            return {"decayed": 0, "deleted": 0, "protected": 0, "skipped_anchor": 0}
 
-            edge_data = nx_graph.edges[region_key, entity_key]
-            old_weight = edge_data.get("weight", INITIAL_WEIGHT)
+        with graph_write_lock():
+            # 从脑区节点出发遍历
+            brain_regions = [
+                n for n in nx_graph.nodes()
+                if nx_graph.nodes[n].get("entity_type") == "brainregion"
+            ]
 
-            # 计算衰减后权重
-            new_weight = old_weight * decay_rate
+            for region_key in brain_regions:
+                desc = nx_graph.nodes[region_key].get("description", "")
+                priority = parse_priority_from_description(desc)
+                decay_rate = daily_decay_rate(priority)
 
-            # 保底检查
-            total_degree = nx_graph.degree(entity_key)
+                neighbors = list(nx_graph.neighbors(region_key))
 
-            if priority == "permanent":
-                # permanent 级：保底冻结，永不删除
-                new_weight = max(new_weight, FLOOR_WEIGHT)
-                nx_graph.edges[region_key, entity_key]["weight"] = new_weight
-                decayed += 1
-                protected += 1
-            elif total_degree <= 1:
-                # 孤立实体：保底保护
-                new_weight = max(new_weight, FLOOR_WEIGHT)
-                nx_graph.edges[region_key, entity_key]["weight"] = new_weight
-                decayed += 1
-                protected += 1
-            elif new_weight < FLOOR_WEIGHT:
-                # 非 permanent + 总边数>=2 + 低于保底 → 删除
-                nx_graph.remove_edge(region_key, entity_key)
-                deleted += 1
-            else:
-                nx_graph.edges[region_key, entity_key]["weight"] = new_weight
-                decayed += 1
+                for entity_key in neighbors:
+                    # 跳过锚点边（脑区之间的导航边）
+                    if nx_graph.nodes[entity_key].get("entity_type") == "brainregion":
+                        skipped_anchor += 1
+                        continue
+
+                    edge_data = nx_graph.edges[region_key, entity_key]
+                    old_weight = edge_data.get("weight", INITIAL_WEIGHT)
+
+                    new_weight = old_weight * decay_rate
+
+                    total_degree = nx_graph.degree(entity_key)
+
+                    if priority == "permanent":
+                        # permanent 级：保底冻结，永不删除
+                        new_weight = max(new_weight, FLOOR_WEIGHT)
+                        nx_graph.edges[region_key, entity_key]["weight"] = new_weight
+                        decayed += 1
+                        protected += 1
+                    elif total_degree <= 1:
+                        # 孤立实体：保底保护
+                        new_weight = max(new_weight, FLOOR_WEIGHT)
+                        nx_graph.edges[region_key, entity_key]["weight"] = new_weight
+                        decayed += 1
+                        protected += 1
+                    elif new_weight < FLOOR_WEIGHT:
+                        # 非 permanent + 总边数>=2 + 低于保底 → 删除
+                        nx_graph.remove_edge(region_key, entity_key)
+                        deleted += 1
+                    else:
+                        nx_graph.edges[region_key, entity_key]["weight"] = new_weight
+                        decayed += 1
+
+    except Exception as e:
+        logger.warning("Edge decay failed: %s", e)
 
     result = {
         "decayed": decayed,
@@ -618,7 +699,7 @@ git commit -m "feat: rewrite decay_structural_edges with half-life model and flo
 
 ```python
 class TestReinforceEdgeWeight:
-    """增强算法测试"""
+    """增强算法测试 — 使用独立函数 _reinforce_brain_region_edges"""
 
     def _build_test_graph(self):
         G = nx.Graph()
@@ -637,39 +718,59 @@ class TestReinforceEdgeWeight:
 
     def test_reinforce_restores_to_initial_weight(self):
         """增强将权重恢复到 INITIAL_WEIGHT (1.0)"""
-        from agent.brain_tools import _reinforce_edge_weight
+        from agent.brain_tools import _reinforce_brain_region_edges
         from niu_api.internal.region_manager import INITIAL_WEIGHT
         G = self._build_test_graph()
-        _reinforce_edge_weight(G, "region_permanent")
+        _reinforce_brain_region_edges(G, "region_permanent")
         weight = G["region_permanent"]["entity_a"]["weight"]
         assert weight == INITIAL_WEIGHT
 
     def test_reinforce_skips_anchor_edges(self):
         """增强跳过锚点边（脑区→脑区）"""
-        from agent.brain_tools import _reinforce_edge_weight
+        from agent.brain_tools import _reinforce_brain_region_edges
         G = self._build_test_graph()
-        _reinforce_edge_weight(G, "region_permanent")
+        _reinforce_brain_region_edges(G, "region_permanent")
         # Niu ↔ region_permanent 锚点边权重不变
         weight = G["Niu"]["region_permanent"]["weight"]
         assert weight == 0.5
 
     def test_reinforce_only_target_region(self):
         """增强只影响目标脑区的边，不影响其他脑区"""
-        from agent.brain_tools import _reinforce_edge_weight
+        from agent.brain_tools import _reinforce_brain_region_edges
         G = self._build_test_graph()
-        _reinforce_edge_weight(G, "region_permanent")
+        _reinforce_brain_region_edges(G, "region_permanent")
         # region_short 的边不受影响
         weight = G["region_short"]["entity_a"]["weight"]
         assert weight == 0.2
 
     def test_reinforce_no_brainregion_neighbors(self):
         """脑区没有实体邻居时安全返回"""
-        from agent.brain_tools import _reinforce_edge_weight
+        from agent.brain_tools import _reinforce_brain_region_edges
         G = nx.Graph()
         G.add_node("region_empty", entity_type="brainregion",
                    description="brain_meta_priority:short|空脑区")
-        _reinforce_edge_weight(G, "region_empty")  # 不应抛异常
+        _reinforce_brain_region_edges(G, "region_empty")  # 不应抛异常
+
+    def test_reinforce_skips_session_edges(self):
+        """增强跳过 _session: 前缀边（会话临时边）"""
+        from agent.brain_tools import _reinforce_brain_region_edges
+        G = nx.Graph()
+        G.add_node("region_short", entity_type="brainregion",
+                   description="brain_meta_priority:short|短期脑区")
+        G.add_node("entity_a", entity_type="person", description="人物A")
+        G.add_node("entity_b", entity_type="topic", description="话题B")
+        # 正常边
+        G.add_edge("region_short", "entity_a", weight=0.3, description="包含")
+        # _session: 前缀边
+        G.add_edge("region_short", "entity_b", weight=0.3, keywords="_session:xyz")
+        _reinforce_brain_region_edges(G, "region_short")
+        # 正常边被增强
+        assert G["region_short"]["entity_a"]["weight"] == 1.0
+        # _session: 边不变
+        assert G["region_short"]["entity_b"]["weight"] == 0.3
 ```
+
+**注意**：与 Task 3 类似，增强核心逻辑提取为独立函数 `_reinforce_brain_region_edges(nx_graph, region_key)` 供测试直接调用，`_reinforce_edge_weight(region_id)` 内部获取 nx_graph 后调用它。
 
 - [ ] **Step 2: 运行测试确认失败**
 
@@ -678,13 +779,15 @@ Expected: FAIL — 当前 `_reinforce_edge_weight` 使用增量式增强
 
 - [ ] **Step 3: 实现 — 改造 `_reinforce_edge_weight()`**
 
-替换 `_reinforce_edge_weight()` 函数体：
+**关键**：保留函数内部获取 `nx_graph` 的方式（通过 `LightRAGAdapter`），与当前实现一致。**不**将 `nx_graph` 改为参数传入，因为调用方 `reinforce_on_tool_use()` 没有 `nx_graph` 可用。
+
+新增独立函数 `_reinforce_brain_region_edges(nx_graph, region_key)` 供测试直接调用，`_reinforce_edge_weight(region_id)` 内部获取 nx_graph 后调用它。
 
 ```python
-def _reinforce_edge_weight(nx_graph, region_key: str) -> int:
-    """增强脑区边权重 — 恢复到 INITIAL_WEIGHT
+def _reinforce_brain_region_edges(nx_graph, region_key: str) -> int:
+    """增强脑区边权重 — 恢复到 INITIAL_WEIGHT（核心逻辑，供测试直接调用）
 
-    只增强实体→脑区的归属边，跳过锚点边（脑区→脑区）。
+    只增强实体→脑区的归属边，跳过锚点边（脑区→脑区）和 _session: 前缀边。
     """
     from niu_api.internal.region_manager import INITIAL_WEIGHT
 
@@ -692,14 +795,16 @@ def _reinforce_edge_weight(nx_graph, region_key: str) -> int:
         return 0
 
     reinforced = 0
-    neighbors = list(nx_graph.neighbors(region_key))
-
-    for entity_key in neighbors:
-        # 跳过锚点边
+    for entity_key in list(nx_graph.neighbors(region_key)):
+        # 跳过锚点边（脑区→脑区）
         if nx_graph.nodes[entity_key].get("entity_type") == "brainregion":
             continue
-
+        # 跳过 _session: 前缀边（会话临时边，不参与增强）
         edge_data = nx_graph.edges[region_key, entity_key]
+        keywords = edge_data.get("keywords") or edge_data.get("type", "")
+        if keywords.lower().startswith("_session:"):
+            continue
+
         old_weight = edge_data.get("weight", INITIAL_WEIGHT)
 
         if old_weight < INITIAL_WEIGHT:
@@ -710,6 +815,38 @@ def _reinforce_edge_weight(nx_graph, region_key: str) -> int:
         logger.debug(f"[Reinforce] region={region_key}: {reinforced} edges restored to {INITIAL_WEIGHT}")
 
     return reinforced
+
+
+def _reinforce_edge_weight(region_id: str) -> int:
+    """增强脑区边权重 — 恢复到 INITIAL_WEIGHT（实例方法包装）
+
+    内部获取 nx_graph，调用 _reinforce_brain_region_edges。
+    """
+    try:
+        from niu_api.internal.lightrag_adapter import LightRAGAdapter
+        from niu_api.internal.lightrag_manager import graph_write_lock
+
+        adapter = LightRAGAdapter()
+        rag = adapter._get_rag()
+        if rag is None:
+            return 0
+
+        kg = rag.chunk_entity_relation_graph
+        if kg is None:
+            return 0
+
+        nx_graph = kg._graph if hasattr(kg, "_graph") else kg
+        if nx_graph is None:
+            return 0
+
+        region_key = region_id.lower() if isinstance(region_id, str) else region_id
+
+        with graph_write_lock():
+            return _reinforce_brain_region_edges(nx_graph, region_key)
+
+    except Exception as e:
+        logger.warning("Edge reinforce failed: %s", e)
+        return 0
 ```
 
 修改 `reinforce_on_tool_use()` — 删除 `reinforce_delta` 参数：
@@ -717,8 +854,8 @@ def _reinforce_edge_weight(nx_graph, region_key: str) -> int:
 ```python
 def reinforce_on_tool_use(tool_name: str) -> str | None:
     """工具使用时增强对应脑区边权重"""
-    # ... 保持现有逻辑，只删除 reinforce_delta 参数和调用处的传递
-    # 内部调用改为: _reinforce_edge_weight(nx_graph, region_id)
+    # ... 保持现有逻辑，只删除 reinforce_delta 参数
+    # 内部调用改为: _reinforce_edge_weight(region_id)
     # 不再传递 reinforce_delta
 ```
 
@@ -757,17 +894,21 @@ git commit -m "feat: rewrite _reinforce_edge_weight to restore INITIAL_WEIGHT, r
 
 对照设计文档第3节增强算法，确认：
 - 增强是否恢复到 `INITIAL_WEIGHT (1.0)` 而非增量
-- 是否跳过锚点边
+- 是否跳过锚点边（脑区→脑区）
+- 是否跳过 `_session:` 前缀边（会话临时边）
 - `reinforce_delta` 参数是否已删除
 - 旧常量 `REINFORCE_DELTA` / `MAX_EDGE_WEIGHT` 是否已删除
 - `STRUCTURAL_EDGE_TYPES_LOWER` import 是否已清理
+- `_reinforce_edge_weight(region_id)` 是否保留内部获取 nx_graph（不作为参数传入）
 
 - [ ] **Step 8: 代码审查**
 
 检查：
-- 函数签名变更是否影响所有调用方
+- `_reinforce_edge_weight(region_id)` 签名是否与调用方 `reinforce_on_tool_use()` 匹配（不传 nx_graph）
+- `_reinforce_brain_region_edges(nx_graph, region_key)` 是否被测试正确导入
 - `handler.py` 中是否有其他地方依赖 `REINFORCE_DELTA` 或 `MAX_EDGE_WEIGHT`
 - 增强逻辑是否与衰减逻辑的遍历方向一致（从脑区出发）
+- `_session:` 前缀边跳过逻辑是否保留（当前实现有此逻辑，不可丢失）
 
 ---
 
@@ -785,31 +926,46 @@ git commit -m "feat: rewrite _reinforce_edge_weight to restore INITIAL_WEIGHT, r
 
 Run: `grep -n "decay_structural_edges\|Step 6" REDACTED_USER_PATH/tools/ai-bot/agent/injector/region_sync.py`
 
-将被注释的代码恢复为：
+旧代码通过 `manager.decay_structural_edges(all_regions_for_decay)` 调用。新签名 `decay_structural_edges(self)` 不再需要 `regions` 参数，返回值从 `int` 改为 `dict`。恢复为：
+
 ```python
             # Step 6: Decay structural edges
-            decay_result = decay_structural_edges(nx_graph)
-            if decay_result:
-                stats["decay"] = decay_result
+            try:
+                disconnected = manager.decay_structural_edges()
+                if disconnected.get("deleted", 0) > 0 or disconnected.get("decayed", 0) > 0:
+                    stats["edges_disconnected"] = disconnected.get("deleted", 0)
+                    logger.info("[RegionSync] 衰减结果: %s", disconnected)
+            except Exception as e:
+                logger.debug("[RegionSync] Edge decay skipped: %s", e)
 ```
 
 - [ ] **Step 2: 恢复 brain_region_api.py 中的衰减调用**
 
 Run: `grep -n "decay_structural_edges\|Step 8" REDACTED_USER_PATH/tools/ai-bot/niu_api/brain_region_api.py`
 
-将被注释的代码恢复为：
+旧代码通过 `region_mgr.decay_structural_edges(all_regions_for_decay)` 调用。恢复为：
+
 ```python
         # Step 8: Decay structural edges
-        decay_result = decay_structural_edges(nx_graph)
-        if decay_result:
-            stats["decay"] = decay_result
+        edges_disconnected = 0
+        try:
+            decay_result = region_mgr.decay_structural_edges()
+            edges_disconnected = decay_result.get("deleted", 0)
+        except Exception as e:
+            logger.debug("[Consolidate] Edge decay skipped: %s", e)
 ```
 
 - [ ] **Step 3: 恢复 region_manager.py incremental_update 中的衰减调用**
 
 Run: `grep -n "decay_structural_edges" REDACTED_USER_PATH/tools/ai-bot/niu_api/internal/region_manager.py`
 
-在 `incremental_update()` 函数中，恢复被注释的衰减调用。
+在 `incremental_update()` 函数中，恢复被注释的衰减调用。旧代码是 `disconnected = self.decay_structural_edges(all_regions)`，新签名不需要参数：
+
+```python
+            # Decay structural edges
+            decay_result = self.decay_structural_edges()
+            disconnected = decay_result.get("deleted", 0)
+```
 
 - [ ] **Step 4: 恢复 brain_tools.py 中的增强调用**
 
@@ -857,6 +1013,8 @@ Run: `grep -n 'weight.*0\.5\|"weight": 0\.5' REDACTED_USER_PATH/tools/ai-bot/niu
 每处修改前先 Read 确认上下文，然后将 `"weight": 0.5` 改为 `"weight": INITIAL_WEIGHT`。
 
 对于行1694的锚点边，如果没有 weight 字段，添加 `"weight": INITIAL_WEIGHT`。
+
+**特别注意**：`create_default_regions()` 中的锚点边（约行1694）当前可能没有显式 `weight` 字段（LightRAG 默认 weight=0.5）。需要显式添加 `"weight": INITIAL_WEIGHT`，否则该边权重为 LightRAG 默认值 0.5，与 `INITIAL_WEIGHT (1.0)` 不一致。
 
 - [ ] **Step 3: 更新 memory/preferences.json 中的 priority 字段**
 
