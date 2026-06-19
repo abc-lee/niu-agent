@@ -105,7 +105,7 @@ class TestCreateRegionNodes:
         adapter, ingester = _make_mock_adapter_and_ingester()
         manager = RegionManager(adapter, ingester)
         manager._generate_labels = lambda summaries_list, existing: [
-            summaries[0].split("(")[0] if summaries else "unknown"
+            (summaries[0].split("(")[0] if summaries else "unknown", "")
             for summaries in summaries_list
         ]
 
@@ -152,7 +152,7 @@ class TestCreateRegionNodes:
         adapter, ingester = _make_mock_adapter_and_ingester()
         manager = RegionManager(adapter, ingester)
         manager._generate_labels = lambda summaries_list, existing: [
-            summaries[0].split("(")[0] if summaries else "unknown"
+            (summaries[0].split("(")[0] if summaries else "unknown", "")
             for summaries in summaries_list
         ]
 
@@ -203,7 +203,7 @@ class TestCreateRegionNodes:
         adapter, ingester = _make_mock_adapter_and_ingester()
         manager = RegionManager(adapter, ingester)
         manager._generate_labels = lambda summaries_list, existing: [
-            summaries[0].split("(")[0] if summaries else "unknown"
+            (summaries[0].split("(")[0] if summaries else "unknown", "")
             for summaries in summaries_list
         ]
 
@@ -827,7 +827,8 @@ class TestGenerateRegionLabel:
         existing_regions = []
 
         result = manager._generate_region_label(entity_summaries, existing_regions)
-        assert result == "编程开发"
+        label, desc = result
+        assert label == "编程开发"
 
     def test_fallback_on_json_parse_failure(self):
         """Should fallback to entity_names[0] when JSON parse fails after retry."""
@@ -842,7 +843,8 @@ class TestGenerateRegionLabel:
         existing_regions = []
 
         result = manager._generate_region_label(entity_summaries, existing_regions)
-        assert result == "Python"
+        label, desc = result
+        assert label == "Python"
 
     def test_regex_fallback_on_malformed_json(self):
         """Should try regex extraction when JSON parse fails."""
@@ -855,7 +857,8 @@ class TestGenerateRegionLabel:
         existing_regions = []
 
         result = manager._generate_region_label(entity_summaries, existing_regions)
-        assert result == "编程开发"
+        label, desc = result
+        assert label == "编程开发"
 
     def test_label_truncated_over_8_chars(self):
         """Label should be truncated to 8 characters."""
@@ -868,7 +871,8 @@ class TestGenerateRegionLabel:
         existing_regions = []
 
         result = manager._generate_region_label(entity_summaries, existing_regions)
-        assert len(result) <= 8
+        label, desc = result
+        assert len(label) <= 8
 
     def test_duplicate_label_gets_suffix(self):
         """Should add numeric suffix when label duplicates existing region."""
@@ -881,8 +885,9 @@ class TestGenerateRegionLabel:
         existing_regions = ["编程开发"]
 
         result = manager._generate_region_label(entity_summaries, existing_regions)
-        assert result.startswith("编程开发")
-        assert result != "编程开发"
+        label, desc = result
+        assert label.startswith("编程开发")
+        assert label != "编程开发"
 
     def test_empty_input_returns_unknown(self):
         """Empty entity_summaries should return 'unknown'."""
@@ -890,7 +895,8 @@ class TestGenerateRegionLabel:
         manager = RegionManager(adapter, ingester)
 
         result = manager._generate_region_label([], [])
-        assert result == "unknown"
+        label, desc = result
+        assert label == "unknown"
 
 
 class TestCreateRegionNodesWithLLMLabel:
@@ -900,7 +906,7 @@ class TestCreateRegionNodesWithLLMLabel:
         """Region name should use _generate_region_label result."""
         adapter, ingester = _make_mock_adapter_and_ingester()
         manager = RegionManager(adapter, ingester)
-        manager._generate_labels = lambda summaries_list, existing: ["编程开发"] * len(summaries_list)
+        manager._generate_labels = lambda summaries_list, existing: [("编程开发", "")] * len(summaries_list)
 
         partitions = [
             RegionPartition(
@@ -922,7 +928,7 @@ class TestCreateRegionNodesWithLLMLabel:
         """Chunks should have source_id matching entity's rewritten source_id format."""
         adapter, ingester = _make_mock_adapter_and_ingester()
         manager = RegionManager(adapter, ingester)
-        manager._generate_labels = lambda summaries_list, existing: ["编程开发"] * len(summaries_list)
+        manager._generate_labels = lambda summaries_list, existing: [("编程开发", "")] * len(summaries_list)
 
         partitions = [
             RegionPartition(
@@ -947,7 +953,7 @@ class TestCreateRegionNodesWithLLMLabel:
         """Entity source_id should be base 'brain' (inject_custom_kg will rewrite it)."""
         adapter, ingester = _make_mock_adapter_and_ingester()
         manager = RegionManager(adapter, ingester)
-        manager._generate_labels = lambda summaries_list, existing: ["编程开发"] * len(summaries_list)
+        manager._generate_labels = lambda summaries_list, existing: [("编程开发", "")] * len(summaries_list)
 
         partitions = [
             RegionPartition(
@@ -971,7 +977,7 @@ class TestCreateRegionNodesWithLLMLabel:
         """Chunk content should include region label and top member names."""
         adapter, ingester = _make_mock_adapter_and_ingester()
         manager = RegionManager(adapter, ingester)
-        manager._generate_labels = lambda summaries_list, existing: ["编程开发"] * len(summaries_list)
+        manager._generate_labels = lambda summaries_list, existing: [("编程开发", "")] * len(summaries_list)
 
         partitions = [
             RegionPartition(
@@ -1069,7 +1075,7 @@ class TestBatchLabelGeneration:
         batch_called = []
         def mock_batch(prompts_list, existing):
             batch_called.append(len(prompts_list))
-            return {i: f"标签{i}" for i in range(len(prompts_list))}
+            return {i: (f"标签{i}", "") for i in range(len(prompts_list))}
         manager._generate_region_labels_batch = mock_batch
 
         single_called = []
@@ -1096,7 +1102,7 @@ class TestBatchLabelGeneration:
         adapter, ingester = _make_mock_adapter_and_ingester()
         manager = RegionManager(adapter, ingester)
 
-        manager._generate_region_label = lambda summaries, existing: "测试标签"
+        manager._generate_region_label = lambda summaries, existing: ("测试标签", "")
 
         entity_summaries_list = [
             ["Python(skill)"],
@@ -1114,7 +1120,7 @@ class TestBatchLabelGeneration:
 
         # Mock batch to return the same label for regions 0 and 1
         def mock_batch(prompts_list, existing):
-            return {0: "编程", 1: "编程", 2: "开发"}
+            return {0: ("编程", ""), 1: ("编程", ""), 2: ("开发", "")}
         manager._generate_region_labels_batch = mock_batch
 
         entity_summaries_list = [
@@ -1127,14 +1133,14 @@ class TestBatchLabelGeneration:
 
         assert len(labels) == 3
         # labels[0] and labels[1] must be different (one gets a numeric suffix)
-        assert labels[0] != labels[1]
+        assert labels[0][0] != labels[1][0]
         # The first occurrence keeps the original label
-        assert labels[0] == "编程"
+        assert labels[0][0] == "编程"
         # The duplicate gets a suffix like "编程2"
-        assert labels[1].startswith("编程")
-        assert labels[1] != "编程"
+        assert labels[1][0].startswith("编程")
+        assert labels[1][0] != "编程"
         # The third label is unaffected
-        assert labels[2] == "开发"
+        assert labels[2][0] == "开发"
 
     def test_batch_fallback_on_missing_regions(self):
         """When batch returns fewer labels than input, fallback to individual."""
@@ -1142,9 +1148,9 @@ class TestBatchLabelGeneration:
         manager = RegionManager(adapter, ingester)
 
         def mock_batch(prompts_list, existing):
-            return {0: "标签0", 1: "标签1"}
+            return {0: ("标签0", ""), 1: ("标签1", "")}
         manager._generate_region_labels_batch = mock_batch
-        manager._generate_region_label = lambda summaries, existing: "备用名"
+        manager._generate_region_label = lambda summaries, existing: ("备用名", "")
 
         entity_summaries_list = [
             ["Python(skill)"],
@@ -1155,9 +1161,9 @@ class TestBatchLabelGeneration:
         labels = manager._generate_labels(entity_summaries_list, existing)
 
         assert len(labels) == 3
-        assert labels[0] == "标签0"
-        assert labels[1] == "标签1"
-        assert labels[2] == "备用名"
+        assert labels[0][0] == "标签0"
+        assert labels[1][0] == "标签1"
+        assert labels[2][0] == "备用名"
 
 
 class TestSummaryDisplayFormat:
@@ -1199,7 +1205,7 @@ class TestSkipRelationshipInjectionForExistingRegions:
         manager = RegionManager(adapter, ingester)
 
         # Mock _generate_labels to return "编程开发" for partition 0 and "React" for partition 1
-        manager._generate_labels = lambda summaries_list, existing: ["编程开发", "React"]
+        manager._generate_labels = lambda summaries_list, existing: [("编程开发", ""), ("React", "")]
 
         # Mock get_all_regions to return an existing region "编程开发脑区"
         adapter.list_entities.return_value = {
@@ -1276,7 +1282,7 @@ class TestSkipRelationshipInjectionForExistingRegions:
         adapter, ingester = _make_mock_adapter_and_ingester()
         manager = RegionManager(adapter, ingester)
         manager._generate_labels = lambda summaries_list, existing: [
-            summaries[0].split("(")[0] if summaries else "unknown"
+            (summaries[0].split("(")[0] if summaries else "unknown", "")
             for summaries in summaries_list
         ]
 
@@ -1315,7 +1321,7 @@ class TestSkipRelationshipInjectionForExistingRegions:
         adapter, ingester = _make_mock_adapter_and_ingester()
         manager = RegionManager(adapter, ingester)
         manager._generate_labels = lambda summaries_list, existing: [
-            summaries[0].split("(")[0] if summaries else "unknown"
+            (summaries[0].split("(")[0] if summaries else "unknown", "")
             for summaries in summaries_list
         ]
 
