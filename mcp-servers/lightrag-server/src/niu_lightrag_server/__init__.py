@@ -539,7 +539,7 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
                 },
                 "merge_strategy": {
                     "type": "object",
-                    "description": "Merge strategy per field. Keys are field names (e.g. 'description'), values are strategy names ('concatenate', 'keep_first', 'keep_last', 'overwrite'). Default: {'description': 'concatenate', 'entity_type': 'keep_first'}",
+                    "description": "Merge strategy per field. Keys are field names (e.g. 'description'), values are strategy names ('concatenate', 'keep_first', 'keep_last', 'join_unique'). Default: {'description': 'concatenate', 'entity_type': 'keep_first'}",
                 },
                 "target_entity_data": {
                     "type": "object",

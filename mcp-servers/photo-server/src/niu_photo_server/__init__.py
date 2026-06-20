@@ -685,7 +685,7 @@ def _do_sync_photo_to_kg_sync(file_path: str, abstract: str, detected_persons: l
                                 _existing_persons.add(ent["entity_name"])
                             else:
                                 _new_entities.append(ent)
-                        data["entities"] = _new_entities
+                    data["entities"] = _new_entities
                     if _existing_persons:
                         logger.info(f"[KG] Skipping existing person entities: {_existing_persons}")
         except Exception as e:
@@ -2205,6 +2205,7 @@ def _merge_duplicate_person_entities(registry, target_name: str) -> None:
                 source_entities=unique_similar,
                 target_entity=target_name,
                 merge_strategy={"description": "keep_last"},
+                target_entity_data={"description": target_name},
             )
             logger.info(
                 f"[NAME_PERSON] Merged {len(unique_similar)} similar person entities "
@@ -2365,6 +2366,7 @@ def name_person(person_id: str, name: str) -> dict:
                     source_entities=[source_entity],
                     target_entity=name,
                     merge_strategy={"description": "keep_last"},
+                    target_entity_data={"description": name},
                 )
                 logger.info(f"[NAME_PERSON] KG renamed: {source_entity} → {name}")
 
@@ -2604,6 +2606,7 @@ def merge_persons(person_a_id: str, person_b_id: str) -> dict:
                         source_entities=[kg_name_b],
                         target_entity=kg_name_a,
                         merge_strategy={"description": "keep_last"},
+                        target_entity_data={"description": kg_name_a},
                     )
                     kg_synced = True
                 logger.info(f"[MERGE_PERSONS] Merged KG entity {kg_name_b} into {kg_name_a}")
