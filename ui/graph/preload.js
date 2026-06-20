@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('kg-explore', entityId, depth, minConfidence, direction),
   findPath: (fromId, toId) => ipcRenderer.invoke('kg-find-path', fromId, toId),
   listEntities: (limit, entityType) => ipcRenderer.invoke('kg-entities', limit, entityType),
+  searchEntities: (query, topK) => ipcRenderer.invoke('kg-search-entities', query, topK),
   listConcepts: (limit) => ipcRenderer.invoke('kg-concepts', limit),
   getSurprisingConnections: (minShared) => ipcRenderer.invoke('kg-surprising', minShared),
   // File operations
