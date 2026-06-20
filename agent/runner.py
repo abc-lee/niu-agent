@@ -498,10 +498,10 @@ class NiuRunner:
                     fn = tc.get("function", {})
                     name = fn.get("name", "")
                     if name:
-                        call_str = f"{name}({fn.get('arguments', '')})"
+                        call_str = f"{name}({fn.get('arguments', '')})"[:300]
                         context_parts.append(call_str)
 
-        return " ".join(context_parts) if context_parts else ""
+        return "\n".join(context_parts) if context_parts else ""
 
     def _on_turn_end(self, messages: list, tools_schema: list, turn: int) -> list:
         """每轮循环结束后刷新动态注入（skills/knowledge only, no MCP schema refresh)."""
@@ -1153,7 +1153,9 @@ class NiuRunner:
                         d["tool_calls"] = msg.tool_calls
                     if msg.tool_call_id:
                         d["tool_call_id"] = msg.tool_call_id
-                        d["name"] = _tc_id_to_name.get(msg.tool_call_id, "")
+                        _tn = _tc_id_to_name.get(msg.tool_call_id, "")
+                        if _tn:
+                            d["name"] = _tn
                     fresh_msgs.append(d)
                 # 保留 system prompt（messages[0]），替换其余消息
                 system_msg = messages[0] if messages and messages[0].get("role") == "system" else None
@@ -1311,7 +1313,7 @@ class NiuRunner:
                     fn = tc.get("function", {})
                     name = fn.get("name", "")
                     if name:
-                        call_str = f"{name}({fn.get('arguments', '')})"
+                        call_str = f"{name}({fn.get('arguments', '')})"[:300]
                         context_parts.append(call_str)
 
         # 添加当前用户输入
