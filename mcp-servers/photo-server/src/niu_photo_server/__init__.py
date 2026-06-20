@@ -2204,6 +2204,7 @@ def _merge_duplicate_person_entities(registry, target_name: str) -> None:
             merge_fn(
                 source_entities=unique_similar,
                 target_entity=target_name,
+                merge_strategy={"description": "keep_last"},
             )
             logger.info(
                 f"[NAME_PERSON] Merged {len(unique_similar)} similar person entities "
@@ -2353,7 +2354,7 @@ def name_person(person_id: str, name: str) -> dict:
                     entities=[{
                         "entity_name": name,
                         "entity_type": "person",
-                        "description": f"{name}，原名{source_entity}",
+                        "description": name,
                     }],
                     relationships=[],
                     chunks=[],
@@ -2363,6 +2364,7 @@ def name_person(person_id: str, name: str) -> dict:
                 merge_fn(
                     source_entities=[source_entity],
                     target_entity=name,
+                    merge_strategy={"description": "keep_last"},
                 )
                 logger.info(f"[NAME_PERSON] KG renamed: {source_entity} → {name}")
 
@@ -2588,7 +2590,7 @@ def merge_persons(person_a_id: str, person_b_id: str) -> dict:
                     entities=[{
                         "entity_name": kg_name_a,
                         "entity_type": "person",
-                        "description": f"{kg_name_a}，合并自{kg_name_b}",
+                        "description": kg_name_a,
                     }],
                     relationships=[],
                     chunks=[],
@@ -2601,6 +2603,7 @@ def merge_persons(person_a_id: str, person_b_id: str) -> dict:
                     merge_fn(
                         source_entities=[kg_name_b],
                         target_entity=kg_name_a,
+                        merge_strategy={"description": "keep_last"},
                     )
                     kg_synced = True
                 logger.info(f"[MERGE_PERSONS] Merged KG entity {kg_name_b} into {kg_name_a}")
