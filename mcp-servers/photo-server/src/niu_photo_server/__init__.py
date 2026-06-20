@@ -2212,17 +2212,21 @@ def _merge_duplicate_person_entities(registry, target_name: str) -> None:
             unnamed_sources = [s for s in unique_similar if s.startswith("未命名人物")]
             named_sources = [s for s in unique_similar if not s.startswith("未命名人物")]
             if unnamed_sources:
-                merge_fn(
+                r = merge_fn(
                     source_entities=unnamed_sources,
                     target_entity=target_name,
                     merge_strategy={"description": "keep_last"},
                 )
+                if r.get("status") == "error":
+                    logger.warning(f"[NAME_PERSON] merge unnamed failed: {r.get('message')}")
             if named_sources:
-                merge_fn(
+                r = merge_fn(
                     source_entities=named_sources,
                     target_entity=target_name,
                     merge_strategy={"description": "concatenate"},
                 )
+                if r.get("status") == "error":
+                    logger.warning(f"[NAME_PERSON] merge named failed: {r.get('message')}")
             logger.info(
                 f"[NAME_PERSON] Merged {len(unique_similar)} similar person entities "
                 f"({unique_similar}) → '{target_name}'"
@@ -2640,7 +2644,7 @@ def merge_persons(person_a_id: str, person_b_id: str) -> dict:
                     logger.warning(f"[MERGE_PERSONS] merge_fn failed: {merge_result.get('message')}")
                 else:
                     kg_synced = True
-                logger.info(f"[MERGE_PERSONS] Merged KG entity {kg_name_b} into {kg_name_a}")
+                    logger.info(f"[MERGE_PERSONS] Merged KG entity {kg_name_b} into {kg_name_a}")
                 # M5: After merging, if both source entities had edges to the same
                 # third-party entity, duplicate edges may exist. Dedup requires
                 # modifying LightRAG core code, so we log a warning instead.
