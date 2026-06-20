@@ -537,6 +537,14 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
                     "type": "string",
                     "description": "Name of the merged target entity",
                 },
+                "merge_strategy": {
+                    "type": "object",
+                    "description": "Merge strategy per field. Keys are field names (e.g. 'description'), values are strategy names ('concatenate', 'keep_first', 'keep_last', 'overwrite'). Default: {'description': 'concatenate', 'entity_type': 'keep_first'}",
+                },
+                "target_entity_data": {
+                    "type": "object",
+                    "description": "Specific values to set for target entity after merge. Overrides merged data. E.g. {'description': 'custom desc'}",
+                },
             },
             "required": ["source_entities", "target_entity"],
         },
@@ -1424,6 +1432,8 @@ def lightrag_list_entities(
 def lightrag_merge_entities(
     source_entities: List[str],
     target_entity: str,
+    merge_strategy: dict = None,
+    target_entity_data: dict = None,
 ) -> Dict[str, Any]:
     """Merge multiple entities into one."""
     try:
@@ -1431,6 +1441,8 @@ def lightrag_merge_entities(
         return adapter.merge_entities(
             source_entities=source_entities,
             target_entity=target_entity,
+            merge_strategy=merge_strategy,
+            target_entity_data=target_entity_data,
         )
     except Exception as e:
         logger.error(f"lightrag_merge_entities failed: {e}")
