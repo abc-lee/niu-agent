@@ -888,7 +888,8 @@ searchInput.addEventListener('keydown', async (e) => {
     const entities = result.entities || [];
 
     if (entities.length === 0) {
-      searchDropdown.innerHTML = '<div class="search-dropdown-empty">未找到匹配实体</div>';
+      const msg = result.error ? `搜索出错` : '未找到匹配实体';
+      searchDropdown.innerHTML = `<div class="search-dropdown-empty">${msg}</div>`;
       return;
     }
 
@@ -896,7 +897,7 @@ searchInput.addEventListener('keydown', async (e) => {
     entities.forEach(ent => {
       const item = document.createElement('div');
       item.className = 'search-dropdown-item';
-      item.innerHTML = `<span class="entity-name">${escapeHtml(ent.name)}</span><span class="entity-type">${escapeHtml(ent.entity_type || '')}</span>`;
+      item.innerHTML = `<span class="entity-name">${escapeHtml(ent.name)}</span><span class="entity-type">${escapeHtml(ent.entityType || '')}</span>`;
       item.addEventListener('click', () => selectSearchEntity(ent));
       searchDropdown.appendChild(item);
     });
@@ -944,6 +945,7 @@ async function selectSearchEntity(entity) {
     setTimeout(() => flashNodes([entity.id]), 600);
   } catch (err) {
     console.error('Failed to navigate to entity:', err);
+    _justReplacedData = false;  // Reset on exception
   }
 }
 

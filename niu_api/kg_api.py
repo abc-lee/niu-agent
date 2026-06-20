@@ -1110,7 +1110,7 @@ def search_entities(query: str = Query(default=""), top_k: int = Query(default=2
                 entities.append({
                     "id": name,
                     "name": name,
-                    "entity_type": ent.get("entity_type", ""),
+                    "entityType": ent.get("entity_type", ""),
                     "description": (ent.get("description", "") or "")[:120],
                 })
 
