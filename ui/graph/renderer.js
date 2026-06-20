@@ -74,6 +74,8 @@ function isLocalFilePath(uri) {
 let currentData = { nodes: [], edges: [] };
 let currentPerspective = null;
 let currentMatchIds = null; // null = no search active
+let _justReplacedData = false;
+let _searchInProgress = false;
 
 // ===== Edge Count Cache =====
 let edgeCountCache = {};
@@ -383,6 +385,14 @@ async function pollChangelog() {
     const latestTs = changes.reduce((max, c) => {
       return (!max || c.timestamp > max) ? c.timestamp : max;
     }, null);
+
+    // Skip incremental merge if we just replaced the entire graph
+    // (selectSearchEntity already set syncSince to current time)
+    if (_justReplacedData) {
+      _justReplacedData = false;
+      if (latestTs) syncSince = latestTs;
+      return;
+    }
 
     // Merge incremental changes into currentData
     let changed = false;
@@ -835,34 +845,104 @@ async function expandNode(nodeId) {
 
 // ===== Search =====
 const searchInput = document.getElementById('searchInput');
+const searchDropdown = document.getElementById('search-dropdown');
 
-searchInput.addEventListener('input', (e) => {
-  const query = e.target.value.toLowerCase().trim();
+// 关闭下拉列表
+function closeSearchDropdown() {
+  searchDropdown.classList.add('hidden');
+  searchDropdown.innerHTML = '';
+}
 
+// 点击页面其他区域时关闭下拉列表
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('.search-wrapper')) {
+    closeSearchDropdown();
+  }
+});
+
+// 搜索框键盘事件：Enter 搜索，Escape 关闭下拉
+searchInput.addEventListener('keydown', async (e) => {
+  if (e.key === 'Escape') {
+    closeSearchDropdown();
+    return;
+  }
+  if (e.key !== 'Enter') return;
+
+  const query = searchInput.value.trim();
   if (!query) {
+    closeSearchDropdown();
     currentMatchIds = null;
     if (flashTimer) { clearInterval(flashTimer); flashTimer = null; flashNodeIds = new Set(); }
-    reLayout();
     return;
   }
 
-  currentMatchIds = new Set();
-  currentData.nodes.forEach(node => {
-    const label = (node.label || node.name || '').toLowerCase();
-    const desc = (node.description || '').toLowerCase();
-    if (label.includes(query) || desc.includes(query)) {
-      currentMatchIds.add(node.id);
+  if (_searchInProgress) return;
+  _searchInProgress = true;
+
+  // 显示加载状态
+  searchDropdown.innerHTML = '<div class="search-dropdown-loading">搜索中...</div>';
+  searchDropdown.classList.remove('hidden');
+
+  try {
+    const result = await window.electronAPI.searchEntities(query, 20);
+    const entities = result.entities || [];
+
+    if (entities.length === 0) {
+      searchDropdown.innerHTML = '<div class="search-dropdown-empty">未找到匹配实体</div>';
+      return;
     }
-  });
 
-  reLayout();
-
-  // 搜索匹配后，所有选中节点同时闪3下（延迟等待布局稳定）
-  if (currentMatchIds.size > 0) {
-    const matchIds = Array.from(currentMatchIds);
-    setTimeout(() => flashNodes(matchIds), 600);
+    searchDropdown.innerHTML = '';
+    entities.forEach(ent => {
+      const item = document.createElement('div');
+      item.className = 'search-dropdown-item';
+      item.innerHTML = `<span class="entity-name">${escapeHtml(ent.name)}</span><span class="entity-type">${escapeHtml(ent.entity_type || '')}</span>`;
+      item.addEventListener('click', () => selectSearchEntity(ent));
+      searchDropdown.appendChild(item);
+    });
+  } catch (err) {
+    console.error('Search entities failed:', err);
+    searchDropdown.innerHTML = '<div class="search-dropdown-empty">搜索失败</div>';
+  } finally {
+    _searchInProgress = false;
   }
 });
+
+// 选中实体 — 以该实体为根替换刷新图谱
+async function selectSearchEntity(entity) {
+  closeSearchDropdown();
+
+  try {
+    const result = await window.electronAPI.exploreNode(entity.id, 2, 0, 'both');
+    if (!result.nodes || result.nodes.length === 0) return;
+
+    // /api/kg/explore 已通过 _normalize_nodes/_normalize_edges 返回标准格式，直接使用
+    currentData = {
+      nodes: result.nodes,
+      edges: result.edges || [],
+    };
+
+    // 清除旧位置缓存，确保全新布局
+    _prevNodePositions = {};
+
+    // 重置 changelog 同步时间戳，防止旧增量数据污染替换后的聚焦视图
+    syncSince = new Date().toISOString();
+    _justReplacedData = true;
+
+    currentPerspective = null;
+    currentMatchIds = null;
+    buildEdgeCountCache();
+    const freshData = buildGraphData();
+    graph.graphData(freshData);
+    graph.zoomToFit(400, 40);
+    updateStats();
+
+    // 中心节点闪烁
+    setTimeout(() => flashNodes([entity.id]), 600);
+  } catch (err) {
+    console.error('Failed to navigate to entity:', err);
+  }
+}
 
 // ===== Handle Window Resize =====
 let resizeTimer = null;
