@@ -851,6 +851,7 @@ const searchDropdown = document.getElementById('search-dropdown');
 function closeSearchDropdown() {
   searchDropdown.classList.add('hidden');
   searchDropdown.innerHTML = '';
+  startSync();  // Resume pollChangelog when dropdown closes
 }
 
 // 点击页面其他区域时关闭下拉列表
@@ -878,6 +879,9 @@ searchInput.addEventListener('keydown', async (e) => {
 
   if (_searchInProgress) return;
   _searchInProgress = true;
+
+  // 暂停 changelog 同步，防止 pollChangelog 重启 force-graph 模拟干扰下拉菜单交互
+  stopSync();
 
   // 显示加载状态
   searchDropdown.innerHTML = '<div class="search-dropdown-loading">搜索中...</div>';
