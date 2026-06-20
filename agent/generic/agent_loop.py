@@ -231,7 +231,7 @@ def agent_runner_loop(
                 # tool 消息必须有 tool_call_id 和 content，否则 OpenAI API 返回 400
                 # 截断超长的 tool 内容（DB 中保存了完整内容，但 LLM 上下文需要保护）
                 tool_name = _tc_id_to_name.get(msg["tool_call_id"], "")
-                entry = {"role": role, "content": _truncate_tool_content(content, tool_name), "tool_call_id": msg["tool_call_id"]}
+                entry = {"role": role, "content": _truncate_tool_content(content, tool_name), "tool_call_id": msg["tool_call_id"], "name": tool_name}
                 messages.append(entry)
 
     # Add current user message
@@ -456,7 +456,8 @@ def agent_runner_loop(
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tool_result["tool_use_id"],
-                        "content": _truncate_tool_content(tool_result["content"], tool_result.get("tool_name", ""))
+                        "content": _truncate_tool_content(tool_result["content"], tool_result.get("tool_name", "")),
+                        "name": tool_result.get("tool_name", ""),
                     })
                 # V4: yield每条tool结果的persist事件
                 for tool_result in tool_results:
@@ -499,7 +500,8 @@ def agent_runner_loop(
             messages.append({
                 "role": "tool",
                 "tool_call_id": tool_result["tool_use_id"],
-                "content": _truncate_tool_content(tool_result["content"], tool_result.get("tool_name", ""))
+                "content": _truncate_tool_content(tool_result["content"], tool_result.get("tool_name", "")),
+                "name": tool_result.get("tool_name", ""),
             })
         # V4: yield每条tool结果的persist事件
         for tool_result in tool_results:
