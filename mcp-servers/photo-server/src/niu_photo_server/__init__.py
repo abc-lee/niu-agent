@@ -665,25 +665,41 @@ def _do_sync_photo_to_kg_sync(file_path: str, abstract: str, detected_persons: l
         from agent.tool_registry import get_registry
 
         data = format_photo_ingest_data(file_path, abstract, detected_persons)
+        all_entity_names = [e["entity_name"] for e in data["entities"]]
+        all_person_names = [e["entity_name"] for e in data["entities"] if e.get("entity_type") == "person"]
+
+        try:
+            from niu_api.internal.lightrag_adapter import LightRAGAdapter
+            from niu_api.internal.lightrag_manager import graph_read_lock
+            _adapter = LightRAGAdapter()
+            _rag = _adapter._get_rag()
+            if _rag is not None:
+                _graph_obj = getattr(_rag, "chunk_entity_relation_graph", None)
+                _nx_graph = _graph_obj._graph if hasattr(_graph_obj, "_graph") else _graph_obj
+                with graph_read_lock():
+                    _existing_persons = set()
+                    _new_entities = []
+                    for ent in data["entities"]:
+                        if ent.get("entity_type") == "person" and _nx_graph.has_node(ent["entity_name"].lower()):
+                            _existing_persons.add(ent["entity_name"])
+                        else:
+                            _new_entities.append(ent)
+                    data["entities"] = _new_entities
+                if _existing_persons:
+                    logger.info(f"[KG] Skipping existing person entities: {_existing_persons}")
+        except Exception as e:
+            logger.warning(f"[KG] Person entity filter failed, injecting all entities: {e}")
+
         normalized_path = file_path.replace("\\", "/").lower()
         normalized_stem = Path(normalized_path).stem
         registry = get_registry()
 
-        # --- 构建 chunk_text（Step 2 用，明确引用实体名让 LLM 能识别） ---
-        # 照片实体名 = 文件名 stem（如"20090603_092316"），稳定不变；
-        # 人物实体名 = 自然语言名（如"任飞"、"未命名人物_1"）
-        # LLM 在 ainsert 时能识别这些名称并建立语义边
-        entity_names = [e["entity_name"] for e in data["entities"]]
         chunk_text = (
             f"照片 {normalized_stem}：{abstract}\n"
-            f"实体：{', '.join(entity_names)}\n"
+            f"实体：{', '.join(all_entity_names)}\n"
         )
-        person_list = ", ".join(
-            e["entity_name"] for e in data["entities"]
-            if e.get("entity_type") == "person"
-        )
-        if person_list:
-            chunk_text += f"人物：{person_list}\n"
+        if all_person_names:
+            chunk_text += f"人物：{', '.join(all_person_names)}\n"
 
         custom_kg_fn = registry.get("lightrag-server/lightrag_insert_custom_kg")
         if not custom_kg_fn:
