@@ -515,6 +515,24 @@ def _generate_stable_description(normalized_stem: str, abstract: str) -> str:
     return "，".join(parts)
 
 
+def _entity_exists_in_kg(entity_name: str) -> bool:
+    try:
+        from niu_api.internal.lightrag_adapter import LightRAGAdapter
+        from niu_api.internal.lightrag_manager import graph_read_lock
+        _adapter = LightRAGAdapter()
+        _rag = _adapter._get_rag()
+        if _rag is None:
+            return False
+        _graph_obj = getattr(_rag, "chunk_entity_relation_graph", None)
+        _nx_graph = _graph_obj._graph if hasattr(_graph_obj, "_graph") else _graph_obj
+        if _nx_graph is None:
+            return False
+        with graph_read_lock():
+            return _nx_graph.has_node(entity_name.lower())
+    except Exception:
+        return False
+
+
 def format_photo_ingest_data(
     file_path: str, abstract: str, detected_persons: list
 ) -> dict:
@@ -669,25 +687,16 @@ def _do_sync_photo_to_kg_sync(file_path: str, abstract: str, detected_persons: l
         all_person_names = [e["entity_name"] for e in data["entities"] if e.get("entity_type") == "person"]
 
         try:
-            from niu_api.internal.lightrag_adapter import LightRAGAdapter
-            from niu_api.internal.lightrag_manager import graph_read_lock
-            _adapter = LightRAGAdapter()
-            _rag = _adapter._get_rag()
-            if _rag is not None:
-                _graph_obj = getattr(_rag, "chunk_entity_relation_graph", None)
-                _nx_graph = _graph_obj._graph if hasattr(_graph_obj, "_graph") else _graph_obj
-                if _nx_graph is not None:
-                    with graph_read_lock():
-                        _existing_persons = set()
-                        _new_entities = []
-                        for ent in data["entities"]:
-                            if ent.get("entity_type") == "person" and _nx_graph.has_node(ent["entity_name"].lower()):
-                                _existing_persons.add(ent["entity_name"])
-                            else:
-                                _new_entities.append(ent)
-                    data["entities"] = _new_entities
-                    if _existing_persons:
-                        logger.info(f"[KG] Skipping existing person entities: {_existing_persons}")
+            _existing_persons = set()
+            _new_entities = []
+            for ent in data["entities"]:
+                if ent.get("entity_type") == "person" and _entity_exists_in_kg(ent["entity_name"]):
+                    _existing_persons.add(ent["entity_name"])
+                else:
+                    _new_entities.append(ent)
+            data["entities"] = _new_entities
+            if _existing_persons:
+                logger.info(f"[KG] Skipping existing person entities: {_existing_persons}")
         except Exception as e:
             logger.warning(f"[KG] Person entity filter failed, injecting all entities: {e}")
 
@@ -2199,13 +2208,12 @@ def _merge_duplicate_person_entities(registry, target_name: str) -> None:
         # 情况2：存在名称近似的 person 实体（ainsert LLM 提取的变体）
         # 执行合并：将近似实体合并到目标实体
         if similar_name_entities:
-            # 去重
             unique_similar = list(dict.fromkeys(similar_name_entities))
+            all_unnamed = all(s.startswith("未命名人物") for s in unique_similar)
             merge_fn(
                 source_entities=unique_similar,
                 target_entity=target_name,
-                merge_strategy={"description": "keep_last"},
-                target_entity_data={"description": target_name},
+                merge_strategy={"description": "keep_last" if all_unnamed else "concatenate"},
             )
             logger.info(
                 f"[NAME_PERSON] Merged {len(unique_similar)} similar person entities "
@@ -2350,7 +2358,7 @@ def name_person(person_id: str, name: str) -> dict:
             merge_fn = registry.get("lightrag-server/lightrag_merge_entities")
             inject_fn = registry.get("lightrag-server/lightrag_insert_custom_kg")
             # 先确保目标实体存在（merge_entities 不创建新实体，只迁移边）
-            if inject_fn:
+            if inject_fn and not _entity_exists_in_kg(name):
                 inject_fn(
                     entities=[{
                         "entity_name": name,
@@ -2362,11 +2370,11 @@ def name_person(person_id: str, name: str) -> dict:
                     source_id=f"rename_{source_entity}",
                 )
             if merge_fn:
+                is_unnamed_source = source_entity.startswith("未命名人物")
                 merge_fn(
                     source_entities=[source_entity],
                     target_entity=name,
-                    merge_strategy={"description": "keep_last"},
-                    target_entity_data={"description": name},
+                    merge_strategy={"description": "keep_last" if is_unnamed_source else "concatenate"},
                 )
                 logger.info(f"[NAME_PERSON] KG renamed: {source_entity} → {name}")
 
@@ -2583,11 +2591,9 @@ def merge_persons(person_a_id: str, person_b_id: str) -> dict:
             auto_label_b = person_b[2]
             kg_name_b = name_b if name_b else auto_label_b
 
-            # 1. 用 inject_custom_kg 确保目标实体存在并更新描述（chunks=[] → 不触发 LLM）
+            # 1. 只在目标实体不存在时才 inject（避免覆盖已有描述）
             inject_fn = registry.get("lightrag-server/lightrag_insert_custom_kg")
-            if not inject_fn:
-                logger.warning("[MERGE_PERSONS] lightrag_insert_custom_kg not available, skipping KG sync")
-            else:
+            if inject_fn and not _entity_exists_in_kg(kg_name_a):
                 inject_fn(
                     entities=[{
                         "entity_name": kg_name_a,
@@ -2599,16 +2605,16 @@ def merge_persons(person_a_id: str, person_b_id: str) -> dict:
                     source_id=f"merge_{kg_name_a}",
                 )
 
-                # 2. 合并：kg_name_b 的边迁移到 kg_name_a（依赖步骤1确保目标实体存在）
-                merge_fn = registry.get("lightrag-server/lightrag_merge_entities")
-                if merge_fn:
-                    merge_fn(
-                        source_entities=[kg_name_b],
-                        target_entity=kg_name_a,
-                        merge_strategy={"description": "keep_last"},
-                        target_entity_data={"description": kg_name_a},
-                    )
-                    kg_synced = True
+            # 2. 合并：kg_name_b 的边迁移到 kg_name_a
+            merge_fn = registry.get("lightrag-server/lightrag_merge_entities")
+            if merge_fn:
+                is_unnamed_source = kg_name_b.startswith("未命名人物")
+                merge_fn(
+                    source_entities=[kg_name_b],
+                    target_entity=kg_name_a,
+                    merge_strategy={"description": "keep_last" if is_unnamed_source else "concatenate"},
+                )
+                kg_synced = True
                 logger.info(f"[MERGE_PERSONS] Merged KG entity {kg_name_b} into {kg_name_a}")
                 # M5: After merging, if both source entities had edges to the same
                 # third-party entity, duplicate edges may exist. Dedup requires
