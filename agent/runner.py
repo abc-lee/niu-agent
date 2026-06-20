@@ -487,11 +487,11 @@ class NiuRunner:
                 # next_prompt（"工具调用成功。请向用户简洁汇报结果：{...}"）是 user 角色
                 # 包含大量工具返回 JSON，只取前 50 字符
                 if content.startswith("工具调用成功") or content.startswith("Tool call succeeded"):
-                    context_parts.append(content[:50])
+                    context_parts.append(f"{role}: {content[:50]}" + ("..." if len(content) > 50 else ""))
                 else:
-                    context_parts.append(content[:80])
+                    context_parts.append(f"{role}: {content[:80]}" + ("..." if len(content) > 80 else ""))
             elif role == "assistant" and content:
-                context_parts.append(content[:80])
+                context_parts.append(f"{role}: {content[:80]}" + ("..." if len(content) > 80 else ""))
 
             if role == "assistant":
                 for tc in msg.get("tool_calls", [])[:3]:
@@ -1303,8 +1303,10 @@ class NiuRunner:
             role = msg.get("role", "")
             content = msg.get("content", "")
             if content and role in ("user", "assistant"):
-                # 截断过长的内容（80字符，保持向量匹配精度）
-                if len(content) > 80:
+                # "工具调用成功"类消息包含大量工具返回 JSON，只取前 50 字符
+                if role == "user" and (content.startswith("工具调用成功") or content.startswith("Tool call succeeded")):
+                    content = content[:50] + ("..." if len(content) > 50 else "")
+                elif len(content) > 80:
                     content = content[:80] + "..."
                 context_parts.append(f"{role}: {content}")
 
