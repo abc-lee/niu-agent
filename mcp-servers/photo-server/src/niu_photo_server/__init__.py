@@ -578,7 +578,7 @@ def format_photo_ingest_data(
         person_names.append(entity_name)
         # 保留 person_id（UUID）到 description 中，便于 KG 实体溯源
         person_pid = p.get("id", "")
-        desc = f"{entity_name}，出现在照片{normalized_stem}中"
+        desc = entity_name
         if person_pid:
             desc += f"（person_id={person_pid}）"
         entities.append({
