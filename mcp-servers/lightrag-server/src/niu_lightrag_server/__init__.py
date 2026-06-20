@@ -1432,8 +1432,8 @@ def lightrag_list_entities(
 def lightrag_merge_entities(
     source_entities: List[str],
     target_entity: str,
-    merge_strategy: dict = None,
-    target_entity_data: dict = None,
+    merge_strategy: dict | None = None,
+    target_entity_data: dict | None = None,
 ) -> Dict[str, Any]:
     """Merge multiple entities into one."""
     try:
