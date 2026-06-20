@@ -2384,16 +2384,19 @@ def name_person(person_id: str, name: str) -> dict:
                     target_needs_create = False
             if merge_fn and not target_needs_create:
                 is_unnamed_source = source_entity.startswith("未命名人物")
-                merge_fn(
+                merge_result = merge_fn(
                     source_entities=[source_entity],
                     target_entity=name,
                     merge_strategy={"description": "keep_last" if is_unnamed_source else "concatenate"},
                 )
-                logger.info(f"[NAME_PERSON] KG renamed: {source_entity} → {name}")
-
-                # H2 fix: 合并 KG 中已存在的同名独立实体（如 ainsert 创建的人名实体）
-                _merge_duplicate_person_entities(registry, name)
-                kg_synced = True
+                if merge_result.get("status") == "error":
+                    logger.warning(f"[NAME_PERSON] merge_fn failed: {merge_result.get('message')}")
+                else:
+                    logger.info(f"[NAME_PERSON] KG renamed: {source_entity} → {name}")
+                    _merge_duplicate_person_entities(registry, name)
+                    kg_synced = True
+            elif target_needs_create:
+                logger.warning("[NAME_PERSON] target entity not created, skipping merge")
             else:
                 logger.warning("[NAME_PERSON] lightrag_merge_entities not available in registry")
         except Exception as e:
@@ -2628,12 +2631,15 @@ def merge_persons(person_a_id: str, person_b_id: str) -> dict:
             merge_fn = registry.get("lightrag-server/lightrag_merge_entities")
             if merge_fn and not target_needs_create:
                 is_unnamed_source = kg_name_b.startswith("未命名人物")
-                merge_fn(
+                merge_result = merge_fn(
                     source_entities=[kg_name_b],
                     target_entity=kg_name_a,
                     merge_strategy={"description": "keep_last" if is_unnamed_source else "concatenate"},
                 )
-                kg_synced = True
+                if merge_result.get("status") == "error":
+                    logger.warning(f"[MERGE_PERSONS] merge_fn failed: {merge_result.get('message')}")
+                else:
+                    kg_synced = True
                 logger.info(f"[MERGE_PERSONS] Merged KG entity {kg_name_b} into {kg_name_a}")
                 # M5: After merging, if both source entities had edges to the same
                 # third-party entity, duplicate edges may exist. Dedup requires
