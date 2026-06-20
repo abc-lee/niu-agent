@@ -23,9 +23,12 @@
 
   <!-- Toolbar -->
   <div class="toolbar">
-    <div class="search-box">
-      <span class="search-icon">🔍</span>
-      <input type="text" id="searchInput" placeholder="搜索节点...">
+    <div class="search-wrapper">
+      <div class="search-box">
+        <span class="search-icon">🔍</span>
+        <input type="text" id="searchInput" placeholder="输入关键词，回车搜索...">
+      </div>
+      <div id="search-dropdown" class="search-dropdown hidden"></div>
     </div>
     <div class="perspective-btns">
       <button class="persp-btn" data-core="person">人物</button>
