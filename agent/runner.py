@@ -1134,6 +1134,16 @@ class NiuRunner:
             # === 重新加载消息，原地修改 agent_loop 的 messages 列表 ===
             fresh_db_msgs = self._sync_get_messages()
             if fresh_db_msgs:
+                # 从 assistant 消息的 tool_calls 构建 tool_call_id → tool_name 映射
+                # （与 agent_loop.py 历史还原路径相同逻辑）
+                _tc_id_to_name: dict[str, str] = {}
+                for m in fresh_db_msgs:
+                    if m.role == "assistant" and m.tool_calls:
+                        for tc in m.tool_calls:
+                            tc_id = tc.get("id", "")
+                            tc_name = tc.get("function", {}).get("name", "")
+                            if tc_id and tc_name:
+                                _tc_id_to_name[tc_id] = tc_name
                 # Message 对象 → dict（保留 agent_loop 需要的字段）
                 fresh_msgs = []
                 for msg in fresh_db_msgs:
@@ -1145,6 +1155,7 @@ class NiuRunner:
                         d["tool_calls"] = msg.tool_calls
                     if msg.tool_call_id:
                         d["tool_call_id"] = msg.tool_call_id
+                        d["name"] = _tc_id_to_name.get(msg.tool_call_id, "")
                     fresh_msgs.append(d)
                 # 保留 system prompt（messages[0]），替换其余消息
                 system_msg = messages[0] if messages and messages[0].get("role") == "system" else None
