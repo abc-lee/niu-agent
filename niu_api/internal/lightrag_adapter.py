@@ -1258,6 +1258,8 @@ class LightRAGAdapter:
         self,
         source_entities: List[str],
         target_entity: str,
+        merge_strategy: dict | None = None,
+        target_entity_data: dict | None = None,
     ) -> Dict[str, Any]:
         """Merge multiple entities into one, consolidating all relations.
 
@@ -1330,7 +1332,7 @@ class LightRAGAdapter:
             # readers use graph_read_lock + copy() snapshot to avoid
             # RuntimeError("Graph changed during iteration").
             result = call_async(
-                rag.amerge_entities(resolved_sources, resolved_target),
+                rag.amerge_entities(resolved_sources, resolved_target, merge_strategy=merge_strategy, target_entity_data=target_entity_data),
                 timeout=300,
             )
 
