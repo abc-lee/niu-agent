@@ -1079,3 +1079,41 @@ def cleanup_failed_docs():
 
     result = _cleanup_failed_docs(rag)
     return {"status": "ok", **result}
+
+
+@app.get("/api/kg/search_entities")
+def search_entities(query: str = "", top_k: int = 20):
+    """按关键词语义搜索实体，返回匹配的实体列表（供前端搜索栏使用）。"""
+    if not query.strip():
+        return {"entities": []}
+
+    try:
+        adapter = _get_adapter()
+        result = adapter.query_data(query=query, mode="local", top_k=top_k)
+
+        if result is None:
+            return {"entities": []}
+
+        # query_data returns {status, data: {entities: [...], relationships: [...], chunks: [...]}}
+        data = result.get("data", {})
+        if not data:
+            data = result
+        raw_entities = data.get("entities", [])
+
+        entities = []
+        seen = set()
+        for ent in raw_entities:
+            name = ent.get("entity_name", "")
+            if name and name not in seen:
+                seen.add(name)
+                entities.append({
+                    "id": name,
+                    "name": name,
+                    "entity_type": ent.get("entity_type", ""),
+                    "description": (ent.get("description", "") or "")[:120],
+                })
+
+        return {"entities": entities[:top_k]}
+    except Exception as e:
+        logger.error(f"search_entities failed: {e}")
+        return {"entities": [], "error": str(e)}
