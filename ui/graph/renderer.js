@@ -359,6 +359,21 @@ async function pollChangelog() {
     const result = await window.electronAPI.kgChangelog(syncSince);
     const changes = result.changes || [];
 
+    if (changes.length === 0) return;
+
+    // Track latest timestamp — but defer update until after snapshot_refresh
+    // to avoid advancing syncSince past a failed refresh event.
+    const latestTs = changes.reduce((max, c) => {
+      return (!max || c.timestamp > max) ? c.timestamp : max;
+    }, null);
+
+    // Skip incremental merge if we just replaced the entire graph
+    // (selectSearchEntity already set syncSince to current time)
+    if (_justReplacedData) {
+      if (latestTs) syncSince = latestTs;
+      return;
+    }
+
     // Health check: detect and auto-repair NaN positions in force-graph.
     // When d3-force computes NaN (e.g. from dangling edges or force misconfiguration),
     // canvas arc() silently fails — nodes become invisible but still clickable.
@@ -377,22 +392,6 @@ async function pollChangelog() {
         }
       }
     } catch (_) { /* graph not initialized yet */ }
-
-    if (changes.length === 0) return;
-
-    // Track latest timestamp — but defer update until after snapshot_refresh
-    // to avoid advancing syncSince past a failed refresh event.
-    const latestTs = changes.reduce((max, c) => {
-      return (!max || c.timestamp > max) ? c.timestamp : max;
-    }, null);
-
-    // Skip incremental merge if we just replaced the entire graph
-    // (selectSearchEntity already set syncSince to current time)
-    if (_justReplacedData) {
-      _justReplacedData = false;
-      if (latestTs) syncSince = latestTs;
-      return;
-    }
 
     // Merge incremental changes into currentData
     let changed = false;
@@ -851,11 +850,14 @@ const searchDropdown = document.getElementById('search-dropdown');
 function closeSearchDropdown() {
   searchDropdown.classList.add('hidden');
   searchDropdown.innerHTML = '';
+  searchDropdown.style.left = '';
+  searchDropdown.style.top = '';
+  searchDropdown.style.minWidth = '';
 }
 
 // 点击页面其他区域时关闭下拉列表
 document.addEventListener('click', (e) => {
-  if (!e.target.closest('.search-wrapper')) {
+  if (!e.target.closest('.search-wrapper') && !e.target.closest('#search-dropdown')) {
     closeSearchDropdown();
   }
 });
@@ -882,6 +884,11 @@ searchInput.addEventListener('keydown', async (e) => {
   // 显示加载状态
   searchDropdown.innerHTML = '<div class="search-dropdown-loading">搜索中...</div>';
   searchDropdown.classList.remove('hidden');
+  // Position dropdown below the search input (body-level element)
+  const inputRect = searchInput.getBoundingClientRect();
+  searchDropdown.style.left = inputRect.left + 'px';
+  searchDropdown.style.top = (inputRect.bottom + 4) + 'px';
+  searchDropdown.style.minWidth = inputRect.width + 'px';
 
   try {
     const result = await window.electronAPI.searchEntities(query, 20);
@@ -940,8 +947,11 @@ async function selectSearchEntity(entity) {
     graph.graphData(freshData);
     graph.zoomToFit(400, 40);
     updateStats();
+    _justReplacedData = false;
 
-    // 中心节点闪烁
+    // 选中并显示详情，确保用户能定位到该实体
+    currentSelectedNode = entity.id;
+    showDetail(entity.id);
     setTimeout(() => flashNodes([entity.id]), 600);
   } catch (err) {
     console.error('Failed to navigate to entity:', err);
