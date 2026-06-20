@@ -28,7 +28,6 @@
         <span class="search-icon">🔍</span>
         <input type="text" id="searchInput" placeholder="输入关键词，回车搜索...">
       </div>
-      <div id="search-dropdown" class="search-dropdown hidden"></div>
     </div>
     <div class="perspective-btns">
       <button class="persp-btn" data-core="person">人物</button>
@@ -53,6 +52,9 @@
 
   <!-- Graph Container -->
   <div id="graph-container"></div>
+
+  <!-- Search Dropdown (body-level for proper z-index stacking) -->
+  <div id="search-dropdown" class="search-dropdown hidden"></div>
 
   <!-- Node Tooltip -->
   <div id="node-tooltip" class="tooltip hidden"></div>

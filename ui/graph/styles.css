@@ -66,8 +66,8 @@ body {
 
 .search-dropdown {
   position: absolute;
-  top: 100%;
-  left: 0;
+  top: 56px;
+  left: 16px;
   min-width: 240px;
   max-width: 360px;
   max-height: 320px;
@@ -77,7 +77,6 @@ body {
   border-radius: 8px;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
   z-index: 100;
-  margin-top: 4px;
 }
 
 .search-dropdown.hidden {
