@@ -1082,14 +1082,15 @@ def cleanup_failed_docs():
 
 
 @router.get("/search_entities")
-def search_entities(query: str = "", top_k: int = 20):
+def search_entities(query: str = Query(default=""), top_k: int = Query(default=20, ge=1, le=100)):
     """按关键词语义搜索实体，返回匹配的实体列表（供前端搜索栏使用）。"""
     if not query.strip():
         return {"entities": []}
 
     try:
         adapter = _get_adapter()
-        result = adapter.query_data(query=query, mode="local", top_k=top_k)
+        # Pass query as keywords to skip LLM keyword extraction (5-30s overhead)
+        result = adapter.query_data(query=query, mode="local", top_k=top_k, keywords=[query])
 
         if result is None:
             return {"entities": []}

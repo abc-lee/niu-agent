@@ -911,10 +911,14 @@ searchInput.addEventListener('keydown', async (e) => {
 // 选中实体 — 以该实体为根替换刷新图谱
 async function selectSearchEntity(entity) {
   closeSearchDropdown();
+  _justReplacedData = true;  // Block pollChangelog BEFORE the await
 
   try {
     const result = await window.electronAPI.exploreNode(entity.id, 2, 0, 'both');
-    if (!result.nodes || result.nodes.length === 0) return;
+    if (!result.nodes || result.nodes.length === 0) {
+      _justReplacedData = false;  // Reset on failure
+      return;
+    }
 
     // /api/kg/explore 已通过 _normalize_nodes/_normalize_edges 返回标准格式，直接使用
     currentData = {
@@ -927,7 +931,6 @@ async function selectSearchEntity(entity) {
 
     // 重置 changelog 同步时间戳，防止旧增量数据污染替换后的聚焦视图
     syncSince = new Date().toISOString();
-    _justReplacedData = true;
 
     currentPerspective = null;
     currentMatchIds = null;
