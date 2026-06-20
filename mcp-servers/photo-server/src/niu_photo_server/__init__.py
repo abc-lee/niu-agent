@@ -676,17 +676,18 @@ def _do_sync_photo_to_kg_sync(file_path: str, abstract: str, detected_persons: l
             if _rag is not None:
                 _graph_obj = getattr(_rag, "chunk_entity_relation_graph", None)
                 _nx_graph = _graph_obj._graph if hasattr(_graph_obj, "_graph") else _graph_obj
-                with graph_read_lock():
-                    _existing_persons = set()
-                    _new_entities = []
-                    for ent in data["entities"]:
-                        if ent.get("entity_type") == "person" and _nx_graph.has_node(ent["entity_name"].lower()):
-                            _existing_persons.add(ent["entity_name"])
-                        else:
-                            _new_entities.append(ent)
-                    data["entities"] = _new_entities
-                if _existing_persons:
-                    logger.info(f"[KG] Skipping existing person entities: {_existing_persons}")
+                if _nx_graph is not None:
+                    with graph_read_lock():
+                        _existing_persons = set()
+                        _new_entities = []
+                        for ent in data["entities"]:
+                            if ent.get("entity_type") == "person" and _nx_graph.has_node(ent["entity_name"].lower()):
+                                _existing_persons.add(ent["entity_name"])
+                            else:
+                                _new_entities.append(ent)
+                        data["entities"] = _new_entities
+                    if _existing_persons:
+                        logger.info(f"[KG] Skipping existing person entities: {_existing_persons}")
         except Exception as e:
             logger.warning(f"[KG] Person entity filter failed, injecting all entities: {e}")
 
