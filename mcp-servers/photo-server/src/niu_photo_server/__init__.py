@@ -2209,12 +2209,20 @@ def _merge_duplicate_person_entities(registry, target_name: str) -> None:
         # 执行合并：将近似实体合并到目标实体
         if similar_name_entities:
             unique_similar = list(dict.fromkeys(similar_name_entities))
-            all_unnamed = all(s.startswith("未命名人物") for s in unique_similar)
-            merge_fn(
-                source_entities=unique_similar,
-                target_entity=target_name,
-                merge_strategy={"description": "keep_last" if all_unnamed else "concatenate"},
-            )
+            unnamed_sources = [s for s in unique_similar if s.startswith("未命名人物")]
+            named_sources = [s for s in unique_similar if not s.startswith("未命名人物")]
+            if unnamed_sources:
+                merge_fn(
+                    source_entities=unnamed_sources,
+                    target_entity=target_name,
+                    merge_strategy={"description": "keep_last"},
+                )
+            if named_sources:
+                merge_fn(
+                    source_entities=named_sources,
+                    target_entity=target_name,
+                    merge_strategy={"description": "concatenate"},
+                )
             logger.info(
                 f"[NAME_PERSON] Merged {len(unique_similar)} similar person entities "
                 f"({unique_similar}) → '{target_name}'"
@@ -2357,9 +2365,9 @@ def name_person(person_id: str, name: str) -> dict:
             source_entity = current_name if current_name else auto_label
             merge_fn = registry.get("lightrag-server/lightrag_merge_entities")
             inject_fn = registry.get("lightrag-server/lightrag_insert_custom_kg")
-            # 先确保目标实体存在（merge_entities 不创建新实体，只迁移边）
-            if inject_fn and not _entity_exists_in_kg(name):
-                inject_fn(
+            target_needs_create = not _entity_exists_in_kg(name)
+            if target_needs_create and inject_fn:
+                result = inject_fn(
                     entities=[{
                         "entity_name": name,
                         "entity_type": "person",
@@ -2369,7 +2377,12 @@ def name_person(person_id: str, name: str) -> dict:
                     chunks=[],
                     source_id=f"rename_{source_entity}",
                 )
-            if merge_fn:
+                if result.get("status") == "error":
+                    logger.warning(f"[NAME_PERSON] inject_fn failed: {result.get('message')}, skipping merge")
+                    target_needs_create = True
+                else:
+                    target_needs_create = False
+            if merge_fn and not target_needs_create:
                 is_unnamed_source = source_entity.startswith("未命名人物")
                 merge_fn(
                     source_entities=[source_entity],
@@ -2593,8 +2606,9 @@ def merge_persons(person_a_id: str, person_b_id: str) -> dict:
 
             # 1. 只在目标实体不存在时才 inject（避免覆盖已有描述）
             inject_fn = registry.get("lightrag-server/lightrag_insert_custom_kg")
-            if inject_fn and not _entity_exists_in_kg(kg_name_a):
-                inject_fn(
+            target_needs_create = not _entity_exists_in_kg(kg_name_a)
+            if target_needs_create and inject_fn:
+                result = inject_fn(
                     entities=[{
                         "entity_name": kg_name_a,
                         "entity_type": "person",
@@ -2604,10 +2618,15 @@ def merge_persons(person_a_id: str, person_b_id: str) -> dict:
                     chunks=[],
                     source_id=f"merge_{kg_name_a}",
                 )
+                if result.get("status") == "error":
+                    logger.warning(f"[MERGE_PERSONS] inject_fn failed: {result.get('message')}, skipping merge")
+                    target_needs_create = True
+                else:
+                    target_needs_create = False
 
             # 2. 合并：kg_name_b 的边迁移到 kg_name_a
             merge_fn = registry.get("lightrag-server/lightrag_merge_entities")
-            if merge_fn:
+            if merge_fn and not target_needs_create:
                 is_unnamed_source = kg_name_b.startswith("未命名人物")
                 merge_fn(
                     source_entities=[kg_name_b],
