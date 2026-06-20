@@ -76,6 +76,10 @@ let currentPerspective = null;
 let currentMatchIds = null; // null = no search active
 let _justReplacedData = false;
 let _searchInProgress = false;
+let _subgraphMode = false;        // 是否处于子图态
+let _subgraphCenterId = null;     // 子图中心实体 ID
+let _subgraphDepth = 1;           // 当前扩散层数（1-5）
+let _subgraphRequestId = 0;       // 请求序列号，防止快速点击竞态
 
 // ===== Edge Count Cache =====
 let edgeCountCache = {};
@@ -270,9 +274,13 @@ const graph = ForceGraph()(container)
   .onNodeClick(node => {
     showDetail(node.id);
   })
-  .onNodeRightClick(node => {
-    // Double-click expand
-    expandNode(node.id);
+  .onNodeRightClick(async (node) => {
+    if (_subgraphMode) {
+      const success = await enterSubgraph(node.id, _subgraphDepth);
+      if (success) _subgraphCenterId = node.id;
+    } else {
+      expandNode(node.id);
+    }
   })
   .onBackgroundClick(() => {
     hideDetail();
@@ -372,6 +380,10 @@ async function pollChangelog() {
     if (_justReplacedData) {
       if (latestTs) syncSince = latestTs;
       return;
+    }
+
+    if (_subgraphMode) {
+      return;  // 不推进 syncSince，退出子图态后自然恢复
     }
 
     // Health check: detect and auto-repair NaN positions in force-graph.
@@ -566,8 +578,9 @@ document.addEventListener('visibilitychange', () => {
 
 // ===== Update Stats =====
 const updateStats = () => {
+  const prefix = _subgraphMode ? '子图: ' : '';
   const statsEl = document.getElementById('stats');
-  statsEl.innerHTML = `<span class="stat-item"><strong>${currentData.nodes.length}</strong> 节点</span><span class="stat-item"><strong>${currentData.edges.length}</strong> 关系</span>`;
+  statsEl.innerHTML = `<span class="stat-item"><strong>${prefix}${currentData.nodes.length}</strong> 节点</span><span class="stat-item"><strong>${currentData.edges.length}</strong> 关系</span>`;
 };
 
 // ===== Re-layout helper =====
@@ -624,6 +637,9 @@ function showTooltip(node) {
   const name = orig.label || orig.name || orig.id;
   const typeLabel = getNodeLabel(orig);
   tooltip.innerHTML = `<div>${escapeHtml(name)}</div><div class="tooltip-type">${escapeHtml(typeLabel)}</div>`;
+  if (_subgraphMode) {
+    tooltip.innerHTML += '<div class="tooltip-type" style="margin-top:4px;opacity:0.5;">右键：以此为中心扩散</div>';
+  }
   tooltip.classList.remove('hidden');
   // Position near mouse — force-graph doesn't give mouse coords in hover,
   // so we position near the node's screen coordinates
@@ -916,30 +932,34 @@ searchInput.addEventListener('keydown', async (e) => {
   }
 });
 
-// 选中实体 — 以该实体为根替换刷新图谱
+// 选中实体 — 进入子图模式
 async function selectSearchEntity(entity) {
   closeSearchDropdown();
   _justReplacedData = true;  // Block pollChangelog BEFORE the await
+  _subgraphDepth = 1;
 
+  const success = await enterSubgraph(entity.id, 1);
+  if (success) {
+    _subgraphMode = true;
+    _subgraphCenterId = entity.id;
+    updateSubgraphControls();
+  }
+}
+
+async function enterSubgraph(entityId, depth) {
+  _subgraphRequestId++;
+  const myRequestId = _subgraphRequestId;
+  _justReplacedData = true;
   try {
-    const result = await window.electronAPI.exploreNode(entity.id, 2, 0, 'both');
+    const result = await window.electronAPI.exploreNode(entityId, depth, 0, 'both');
+    if (myRequestId !== _subgraphRequestId) return false;
     if (!result.nodes || result.nodes.length === 0) {
-      _justReplacedData = false;  // Reset on failure
-      return;
+      _justReplacedData = false;
+      if (_subgraphMode) await exitSubgraph();
+      return false;
     }
-
-    // /api/kg/explore 已通过 _normalize_nodes/_normalize_edges 返回标准格式，直接使用
-    currentData = {
-      nodes: result.nodes,
-      edges: result.edges || [],
-    };
-
-    // 清除旧位置缓存，确保全新布局
+    currentData = { nodes: result.nodes, edges: result.edges || [] };
     _prevNodePositions = {};
-
-    // 重置 changelog 同步时间戳，防止旧增量数据污染替换后的聚焦视图
-    syncSince = new Date().toISOString();
-
     currentPerspective = null;
     currentMatchIds = null;
     buildEdgeCountCache();
@@ -949,15 +969,102 @@ async function selectSearchEntity(entity) {
     updateStats();
     _justReplacedData = false;
 
-    // 选中并显示详情，确保用户能定位到该实体
-    currentSelectedNode = entity.id;
-    showDetail(entity.id);
-    setTimeout(() => flashNodes([entity.id]), 600);
+    currentSelectedNode = entityId;
+    showDetail(entityId);
+    setTimeout(() => flashNodes([entityId]), 600);
+    return true;
   } catch (err) {
-    console.error('Failed to navigate to entity:', err);
-    _justReplacedData = false;  // Reset on exception
+    console.error('Failed to enter subgraph:', err);
+    if (myRequestId !== _subgraphRequestId) return false;
+    _justReplacedData = false;
+    return false;
   }
 }
+
+async function exitSubgraph() {
+  _subgraphRequestId++;
+  _justReplacedData = true;
+  showLoading();
+
+  try {
+    const snapshot = await window.electronAPI.getGraphSnapshot(2000, 0);
+    if (snapshot.nodes && snapshot.nodes.length > 0) {
+      currentData = { nodes: snapshot.nodes, edges: snapshot.edges || [] };
+      hideEmpty();
+    } else {
+      currentData = { nodes: [], edges: [] };
+      hideLoading();
+      showEmpty();
+      _justReplacedData = false;
+      return;
+    }
+  } catch (err) {
+    console.error('Failed to re-fetch snapshot on exit:', err);
+    _justReplacedData = false;
+    hideLoading();
+    return;
+  }
+
+  _subgraphMode = false;
+  _subgraphCenterId = null;
+  _subgraphDepth = 1;
+  updateSubgraphControls();
+  syncSince = new Date().toISOString();
+
+  try {
+    _prevNodePositions = {};
+    currentPerspective = null;
+    currentMatchIds = null;
+    buildEdgeCountCache();
+    const freshData = buildGraphData();
+    graph.graphData(freshData);
+    graph.zoomToFit(400, 40);
+    updateStats();
+  } finally {
+    _justReplacedData = false;
+    hideLoading();
+    hideDetail();
+  }
+}
+
+function updateSubgraphControls() {
+  const controls = document.getElementById('subgraph-controls');
+  if (_subgraphMode) {
+    controls.classList.remove('hidden');
+    document.getElementById('depth-display').textContent = _subgraphDepth;
+  } else {
+    controls.classList.add('hidden');
+  }
+  perspBtns.forEach(btn => {
+    btn.disabled = _subgraphMode;
+    btn.style.opacity = _subgraphMode ? '0.35' : '';
+    btn.style.cursor = _subgraphMode ? 'not-allowed' : '';
+  });
+}
+
+document.getElementById('depth-up').addEventListener('click', async () => {
+  if (!_subgraphMode) return;
+  const newDepth = Math.min(5, _subgraphDepth + 1);
+  const success = await enterSubgraph(_subgraphCenterId, newDepth);
+  if (success) {
+    _subgraphDepth = newDepth;
+    document.getElementById('depth-display').textContent = newDepth;
+  }
+});
+
+document.getElementById('depth-down').addEventListener('click', async () => {
+  if (!_subgraphMode) return;
+  const newDepth = Math.max(1, _subgraphDepth - 1);
+  const success = await enterSubgraph(_subgraphCenterId, newDepth);
+  if (success) {
+    _subgraphDepth = newDepth;
+    document.getElementById('depth-display').textContent = newDepth;
+  }
+});
+
+document.getElementById('exit-subgraph').addEventListener('click', () => {
+  exitSubgraph();
+});
 
 // ===== Handle Window Resize =====
 let resizeTimer = null;
