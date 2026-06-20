@@ -413,6 +413,80 @@ body {
   gap: 4px;
 }
 
+/* Subgraph Controls */
+.subgraph-controls {
+  position: absolute;
+  bottom: 66px;
+  right: 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background-color: rgba(250, 248, 240, 0.96);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 8px;
+  padding: 8px 12px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
+  z-index: 100;
+  backdrop-filter: blur(8px);
+  font-size: 13px;
+}
+
+.subgraph-controls.hidden {
+  display: none;
+}
+
+.subgraph-depth {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.depth-btn {
+  width: 28px;
+  height: 28px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 6px;
+  background-color: #fff;
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #555;
+  transition: all 0.15s;
+}
+
+.depth-btn:hover {
+  background-color: rgba(0, 0, 0, 0.03);
+  border-color: rgba(0, 0, 0, 0.15);
+}
+
+#depth-display {
+  min-width: 20px;
+  text-align: center;
+  font-weight: 600;
+  color: #333;
+}
+
+.exit-btn {
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 6px 12px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 6px;
+  background-color: #fff;
+  cursor: pointer;
+  color: #555;
+  transition: all 0.15s;
+}
+
+.exit-btn:hover {
+  background-color: rgba(0, 0, 0, 0.03);
+  border-color: rgba(0, 0, 0, 0.15);
+}
+
 /* Canvas overrides */
 #graph-container canvas {
   background: transparent !important;
