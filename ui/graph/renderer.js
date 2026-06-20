@@ -848,10 +848,9 @@ const searchInput = document.getElementById('searchInput');
 const searchDropdown = document.getElementById('search-dropdown');
 
 // 关闭下拉列表
-function closeSearchDropdown(resumeSync = true) {
+function closeSearchDropdown() {
   searchDropdown.classList.add('hidden');
   searchDropdown.innerHTML = '';
-  if (resumeSync) startSync();
 }
 
 // 点击页面其他区域时关闭下拉列表
@@ -879,9 +878,6 @@ searchInput.addEventListener('keydown', async (e) => {
 
   if (_searchInProgress) return;
   _searchInProgress = true;
-
-  // 暂停 changelog 同步，防止 pollChangelog 重启 force-graph 模拟干扰下拉菜单交互
-  stopSync();
 
   // 显示加载状态
   searchDropdown.innerHTML = '<div class="search-dropdown-loading">搜索中...</div>';
@@ -915,24 +911,26 @@ searchInput.addEventListener('keydown', async (e) => {
 
 // 选中实体 — 以该实体为根替换刷新图谱
 async function selectSearchEntity(entity) {
-  _justReplacedData = true;  // Block pollChangelog BEFORE closing dropdown (which may resume sync)
-  closeSearchDropdown(false); // Close dropdown but DON'T resume sync yet
+  closeSearchDropdown();
+  _justReplacedData = true;  // Block pollChangelog BEFORE the await
 
   try {
     const result = await window.electronAPI.exploreNode(entity.id, 2, 0, 'both');
     if (!result.nodes || result.nodes.length === 0) {
-      _justReplacedData = false;
-      startSync();
+      _justReplacedData = false;  // Reset on failure
       return;
     }
 
+    // /api/kg/explore 已通过 _normalize_nodes/_normalize_edges 返回标准格式，直接使用
     currentData = {
       nodes: result.nodes,
       edges: result.edges || [],
     };
 
+    // 清除旧位置缓存，确保全新布局
     _prevNodePositions = {};
 
+    // 重置 changelog 同步时间戳，防止旧增量数据污染替换后的聚焦视图
     syncSince = new Date().toISOString();
 
     currentPerspective = null;
@@ -943,12 +941,11 @@ async function selectSearchEntity(entity) {
     graph.zoomToFit(400, 40);
     updateStats();
 
+    // 中心节点闪烁
     setTimeout(() => flashNodes([entity.id]), 600);
-    startSync();  // Resume sync only after graph data is fully replaced
   } catch (err) {
     console.error('Failed to navigate to entity:', err);
-    _justReplacedData = false;
-    startSync();
+    _justReplacedData = false;  // Reset on exception
   }
 }
 
