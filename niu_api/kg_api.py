@@ -1081,7 +1081,7 @@ def cleanup_failed_docs():
     return {"status": "ok", **result}
 
 
-@app.get("/api/kg/search_entities")
+@router.get("/search_entities")
 def search_entities(query: str = "", top_k: int = 20):
     """按关键词语义搜索实体，返回匹配的实体列表（供前端搜索栏使用）。"""
     if not query.strip():
