@@ -152,6 +152,7 @@ sub agents:
 - `boxed_path`：从子Agent返回的JSON `boxed_path` 字段提取，完整绝对路径
 
 详细操作请读取 skill：~/.niu/skills/photo-face-display.md
+当子Agent返回照片的地点只有坐标，没有位置信息时，说明高德API Key没有设置。阅读 docs/manual-amap-setup.md
 
 ## 人物命名传参
 
