@@ -487,7 +487,7 @@ def call_embedding_service(endpoint: str, data: dict) -> dict | None:
 # ============== 知识图谱同步 ==============
 
 
-def _generate_stable_description(normalized_stem: str, abstract: str, location_info: str | None = None) -> str:
+def _generate_stable_description(normalized_stem: str, abstract: str, location_info: str | None = None, camera: str | None = None) -> str:
     """Generate a stable description for photo entity in KG.
 
     Only includes immutable attributes (file name, date from stem).
@@ -513,6 +513,8 @@ def _generate_stable_description(normalized_stem: str, abstract: str, location_i
         parts.append(f"拍摄于{date_part}")
     if location_info:
         parts.append(location_info)
+    if camera:
+        parts.append(camera)
 
     return "，".join(parts)
 
@@ -582,7 +584,7 @@ def format_photo_ingest_data(
         {
             "entity_name": photo_entity_name,
             "entity_type": "Photo",
-            "description": _generate_stable_description(normalized_stem, abstract, location_info),
+            "description": _generate_stable_description(normalized_stem, abstract, location_info, exif.get("camera") if exif else None),
             "file_path": normalized_path,
             "source_id": normalized_path,
         }
