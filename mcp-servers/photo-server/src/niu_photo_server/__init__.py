@@ -1208,25 +1208,19 @@ def extract_exif(file_path: str) -> dict:
     }
 
     try:
-        from PIL import Image
-        from PIL.ExifTags import TAGS, GPSTAGS
+        from PIL import Image, UnidentifiedImageError
+        from PIL.ExifTags import TAGS, GPSTAGS, IFD as ExifIFD
 
         img = Image.open(file_path)
-        exif_data = img._getexif()  # type: ignore
+        exif_data = img.getexif()
 
         if not exif_data:
             return result
 
-        # Extract datetime
+        # IFD0 顶层标签（Make, Model 等）
         for tag_id, value in exif_data.items():
             tag = TAGS.get(tag_id, tag_id)
-
-            if tag == "DateTimeOriginal":
-                result["taken_at"] = value
-            elif tag == "DateTimeDigitized":
-                if not result["taken_at"]:
-                    result["taken_at"] = value
-            elif tag == "Model":
+            if tag == "Model":
                 result["camera"] = value
             elif tag == "Make":
                 if result["camera"]:
@@ -1234,31 +1228,41 @@ def extract_exif(file_path: str) -> dict:
                 else:
                     result["camera"] = value
 
-        # Extract GPS
-        for tag_id, value in exif_data.items():
-            tag = TAGS.get(tag_id, tag_id)
-            if tag == "GPSInfo":
-                gps_data: dict[str, Any] = {}
-                for gps_tag, gps_val in value.items():
-                    gps_tag_name = str(GPSTAGS.get(gps_tag, gps_tag))
-                    gps_data[gps_tag_name] = gps_val
+        # Exif 子 IFD（DateTimeOriginal 等）
+        exif_ifd = exif_data.get_ifd(ExifIFD.Exif)
+        if exif_ifd:
+            for tag_id, value in exif_ifd.items():
+                tag = TAGS.get(tag_id, tag_id)
+                if tag == "DateTimeOriginal":
+                    result["taken_at"] = value
+                elif tag == "DateTimeDigitized":
+                    if not result["taken_at"]:
+                        result["taken_at"] = value
 
-                lat = gps_data.get("GPSLatitude")
-                lat_ref = gps_data.get("GPSLatitudeRef")
-                lon = gps_data.get("GPSLongitude")
-                lon_ref = gps_data.get("GPSLongitudeRef")
+        # GPS 子 IFD
+        gps_ifd = exif_data.get_ifd(ExifIFD.GPSInfo)
+        if gps_ifd:
+            gps_data: dict[str, Any] = {}
+            for gps_tag, gps_val in gps_ifd.items():
+                gps_tag_name = str(GPSTAGS.get(gps_tag, gps_tag))
+                gps_data[gps_tag_name] = gps_val
 
-                if lat and lat_ref and lon and lon_ref:
-                    lat_val = lat[0] + lat[1] / 60 + lat[2] / 3600
-                    if lat_ref == "S":
-                        lat_val = -lat_val
-                    lon_val = lon[0] + lon[1] / 60 + lon[2] / 3600
-                    if lon_ref == "W":
-                        lon_val = -lon_val
-                    result["location"] = f"{lat_val:.6f},{lon_val:.6f}"
+            lat = gps_data.get("GPSLatitude")
+            lat_ref = gps_data.get("GPSLatitudeRef")
+            lon = gps_data.get("GPSLongitude")
+            lon_ref = gps_data.get("GPSLongitudeRef")
 
-                break
+            if lat and lat_ref and lon and lon_ref:
+                lat_val = lat[0] + lat[1] / 60 + lat[2] / 3600
+                if lat_ref == "S":
+                    lat_val = -lat_val
+                lon_val = lon[0] + lon[1] / 60 + lon[2] / 3600
+                if lon_ref == "W":
+                    lon_val = -lon_val
+                result["location"] = f"{lat_val:.6f},{lon_val:.6f}"
 
+    except UnidentifiedImageError:
+        logger.info(f"EXIF extraction skipped for {file_path} (unsupported format, possibly HEIC/HEIF)")
     except ImportError:
         logger.warning("PIL not installed, EXIF extraction disabled")
     except Exception as e:
