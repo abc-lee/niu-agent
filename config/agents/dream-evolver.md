@@ -6,6 +6,23 @@ temperature: 0.3
 mcpServers:
   - lightrag-server
   - session-manager
+mcpToolFilter:
+  lightrag-server:
+    - lightrag_search_entities
+    - lightrag_get_graph
+    - lightrag_timeline_query
+    - lightrag_list_entities
+    - lightrag_get_entity_info
+    - lightrag_get_relation_info
+    - lightrag_insert_entity
+    - lightrag_insert_relation
+    - lightrag_edit_entity
+    - lightrag_edit_relation
+    - lightrag_delete_entity
+    - lightrag_delete_relation
+    - lightrag_merge_entities
+  session-manager:
+    - get_messages
 ---
 
 # 梦境进化（Dream Evolver）
@@ -374,6 +391,11 @@ description: Use when processing Office documents (Word, Excel, PowerPoint) that
 - `lightrag_insert_relation(src_id, tgt_id, relation, description, source_id, file_path)`
   - `src_id`/`tgt_id`：源/目标实体名称（必填）
   - `relation`：关系类型（必填，有语义的动词或名词）
+- `lightrag_edit_entity(entity_name, description, entity_type)` — 修改已有实体的属性（不改创建新实体）。`description` 参数会直接覆盖旧描述，必须自行用 `<SEP>` 拼接保留旧信息
+- `lightrag_edit_relation(src_id, tgt_id, relation, new_relation, new_description)` — 修改已有关系的类型或描述
+- `lightrag_merge_entities(source_entity, target_entity)` — 将两个碎片实体合并为一个（用于修复实体碎片化）
+- `lightrag_delete_entity(entity_name)` — 删除实体（慎用，仅用于纠错）
+- `lightrag_delete_relation(src_id, tgt_id, relation)` — 删除关系（慎用，仅用于纠错）
 - `lightrag_search_entities(query, keywords, top_k)` — **必须提供 keywords 参数**：你是大模型，自己就能从 query 中提取核心关键词，不需要 LightRAG 再调 LLM 提取。提供 keywords 近即时返回（<1秒），不提供需 5-30 秒且可能失败。top_k=5（硬性要求）
 - `lightrag_list_entities(list_type, entity_type, limit)` — 按类型枚举实体（如查看所有人物、所有技能）。entity_type 支持按类型过滤（person/skill/tool/knowledge/photo/concept）
 - `lightrag_get_graph(action="explore", entity_name, depth)` — depth 建议 1-2
@@ -452,7 +474,8 @@ LightRAG 的实体去重依赖实体名称匹配。原始名称和最终名称�
 
 ## 禁止
 
-- 禁止使用 `lightrag_insert`（精炼文档注入由其他agent负责，你只做精加工）
+- 禁止使用 `lightrag_insert`、`lightrag_insert_file`、`lightrag_insert_custom_kg`（精炼文档注入由其他agent负责，你只做精加工）
+- 禁止使用 `lightrag_query`、`lightrag_query_data`（查询由主流程负责，你用 `lightrag_search_entities` 替代）
 - 禁止修改照片实体的文件路径属性
 - 禁止覆盖已有实体的描述，只能用 `<SEP>` 追加
 
