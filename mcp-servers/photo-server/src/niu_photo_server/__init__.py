@@ -572,9 +572,9 @@ def format_photo_ingest_data(
             from .geocode import reverse_geocode, AMAP_KEY_NOT_CONFIGURED
             geocode_result = reverse_geocode(lat, lon)
             if geocode_result is AMAP_KEY_NOT_CONFIGURED:
-                # Key 未配置：提示文字写入 description，但不创建 location 实体
+                # Key 未配置：不创建 location 实体，description 显示坐标而非提示文字
                 location_name = None
-                location_info = str(geocode_result)
+                location_info = f"GPS {lat:.4f},{lon:.4f}"
             elif geocode_result:
                 location_name = geocode_result
                 location_info = f"{location_name} ({lat:.4f},{lon:.4f})"
