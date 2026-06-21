@@ -1253,10 +1253,10 @@ def extract_exif(file_path: str) -> dict:
             lon_ref = gps_data.get("GPSLongitudeRef")
 
             if lat and lat_ref and lon and lon_ref:
-                lat_val = lat[0] + lat[1] / 60 + lat[2] / 3600
+                lat_val = float(lat[0]) + float(lat[1]) / 60 + float(lat[2]) / 3600
                 if lat_ref == "S":
                     lat_val = -lat_val
-                lon_val = lon[0] + lon[1] / 60 + lon[2] / 3600
+                lon_val = float(lon[0]) + float(lon[1]) / 60 + float(lon[2]) / 3600
                 if lon_ref == "W":
                     lon_val = -lon_val
                 result["location"] = f"{lat_val:.6f},{lon_val:.6f}"
