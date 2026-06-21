@@ -187,7 +187,7 @@ Skills 是存储在 `memory/skills/` 目录下的 Markdown 文件，定义了特
 | `office-docs.md` | Office 文档处理规范 |
 | `photo-face-display.md` | 照片人脸显示规范 |
 | `report-skill.md` | 报告生成模板与聚合规则 |
-| `Write-SKILL.md` | 创建新 Skill 的规范（RED-GREEN-REFACTOR 流程） |
+| ~~Write-SKILL.md~~ | Skill 编写已转移至 dream-evolver 子 Agent 统一负责 |
 
 **report-skill 触发条件：** 当 Agent 编写或整理用户日志、生成周报/月报等报告时，向量检索会自动匹配并注入 `report-skill.md`，Agent 按其中定义的聚合规则和模板生成报告。
 
