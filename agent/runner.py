@@ -1373,6 +1373,8 @@ class NiuRunner:
                 lines.append(f"{added + 1}. **{display_name}**")
             if is_skill_section:
                 lines.append(f"   路径: ~/.niu/skills/{display_name}.md")
+                if description.startswith("[草稿]"):
+                    lines.append(f"   ⚠️ 草稿skill — 使用后反馈效果")
             added += 1
 
         if added == 0:
