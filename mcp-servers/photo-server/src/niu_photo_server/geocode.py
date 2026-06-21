@@ -124,9 +124,13 @@ def _transform_lon(x: float, y: float) -> float:
 
 
 def _wgs84_to_gcj02(lat: float, lon: float) -> tuple[float, float]:
-    """WGS-84 坐标转 GCJ-02（高德坐标）"""
+    """WGS-84 坐标转 GCJ-02（高德坐标）
+
+    Returns:
+        (gcj_lat, gcj_lon) — 与参数顺序一致
+    """
     if _out_of_china(lat, lon):
-        return lon, lat
+        return lat, lon
     d_lat = _transform_lat(lon - 105.0, lat - 35.0)
     d_lon = _transform_lon(lon - 105.0, lat - 35.0)
     rad_lat = lat / 180.0 * _PI
@@ -134,7 +138,7 @@ def _wgs84_to_gcj02(lat: float, lon: float) -> tuple[float, float]:
     sqrt_magic = magic ** 0.5
     d_lat = (d_lat * 180.0) / ((_A * (1 - _EE)) / (magic * sqrt_magic) * _PI)
     d_lon = (d_lon * 180.0) / (_A / sqrt_magic * math.cos(rad_lat) * _PI)
-    return lon + d_lon, lat + d_lat
+    return lat + d_lat, lon + d_lon
 
 
 def reverse_geocode(lat: float, lon: float) -> str | _AmapKeyNotConfigured | None:
@@ -179,7 +183,7 @@ def reverse_geocode(lat: float, lon: float) -> str | _AmapKeyNotConfigured | Non
         return AMAP_KEY_NOT_CONFIGURED
 
     # 3. 调用高德逆地理编码 API
-    gcj_lon, gcj_lat = _wgs84_to_gcj02(lat, lon)
+    gcj_lat, gcj_lon = _wgs84_to_gcj02(lat, lon)
     try:
         # 注意：api_key 在 URL 中，不要将此 URL 写入日志
         url = (
@@ -229,5 +233,6 @@ def reverse_geocode(lat: float, lon: float) -> str | _AmapKeyNotConfigured | Non
         return location_name
 
     except Exception as e:
-        logger.warning(f"[Geocode] Amap API failed for {lat},{lon}: {e}")
+        # 不输出原始异常消息，可能包含 URL（含 API Key）
+        logger.warning(f"[Geocode] Amap API failed for {lat},{lon}: {type(e).__name__}")
         return None

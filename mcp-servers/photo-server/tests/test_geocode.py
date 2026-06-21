@@ -99,7 +99,7 @@ def test_wgs84_to_gcj02_in_china():
     """中国境内坐标需要偏移"""
     from niu_photo_server.geocode import _wgs84_to_gcj02
     # 北京天安门 WGS-84 坐标
-    gcj_lon, gcj_lat = _wgs84_to_gcj02(39.9087, 116.3975)
+    gcj_lat, gcj_lon = _wgs84_to_gcj02(39.9087, 116.3975)
     # GCJ-02 坐标应该与 WGS-84 不同（有偏移）
     assert gcj_lon != 116.3975 or gcj_lat != 39.9087
 
@@ -108,10 +108,10 @@ def test_wgs84_to_gcj02_outside_china():
     """境外坐标不需要偏移"""
     from niu_photo_server.geocode import _wgs84_to_gcj02
     # 纽约 WGS-84 坐标
-    gcj_lon, gcj_lat = _wgs84_to_gcj02(40.7128, -74.0060)
+    gcj_lat, gcj_lon = _wgs84_to_gcj02(40.7128, -74.0060)
     # 境外坐标不变
-    assert gcj_lon == pytest.approx(-74.0060, abs=1e-6)
     assert gcj_lat == pytest.approx(40.7128, abs=1e-6)
+    assert gcj_lon == pytest.approx(-74.0060, abs=1e-6)
 
 
 def test_reverse_geocode_no_api_key():
