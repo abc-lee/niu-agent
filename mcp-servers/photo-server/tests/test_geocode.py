@@ -68,6 +68,8 @@ def test_reverse_geocode_api_call():
                 "province": "河北省",
                 "city": "石家庄市",
                 "district": "平山县",
+                "township": "平山镇",
+                "neighborhood": {"name": "中山广场", "type": "商业服务;商场"},
             }
         }
     }).encode("utf-8")
