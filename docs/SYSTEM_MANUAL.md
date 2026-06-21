@@ -160,7 +160,7 @@ ai-bot/
 | `context-manager` | 上下文管理：内容压缩 | auto-tidy 管线自动调度 | 0.2 |
 | `journal-agent` | 工作日志：从对话提取工作内容写入日志 | 主 Agent 委托或 auto-tidy | 0.3 |
 | `entity-extractor` | 内容提炼：从对话筛选有价值内容入库 | auto-tidy 管线自动调度 | 0.3 |
-| `dream-evolver` | 梦境进化：精加工知识图谱 + skill 维护 | auto-tidy 管线自动调度 | 0.3 |
+| `dream-evolver` | 梦境进化：精加工知识图谱 + skill 编写与优化 | auto-tidy 管线自动调度 | 0.3 |
 
 **BLOCKED_SUBAGENTS 机制：**
 
@@ -178,16 +178,84 @@ Skills 是存储在 `memory/skills/` 目录下的 Markdown 文件，定义了特
 2. Agent 每轮对话时，通过 `_inject_dynamic_resources()` 按语义搜索匹配相关 Skill
 3. 匹配到的 Skill 内容动态注入到 Agent 上下文，指导 Agent 按规范执行任务
 
+**Skill 编写职责：**
+- **dream-evolver** 是新 skill 的唯一创建者——它根据对话中观察到的信号（重复模式、失败后解决、skill 反馈等）自动创建草稿 skill
+- **主 Agent（niu）** 可以修改已有 skill 的内容（用 edit 工具），但不能创建新 skill 文件
+- **ExperienceSummarizer** 已关闭，不再生成 skill
+
+**草稿→验证→转正流程：**
+
+```
+dream-evolver 观察到信号 → 创建草稿 skill (status: draft)
+  ↓
+SkillSync 同步到 LightRAG，description 加 [草稿] 前缀
+  ↓
+runner.py 注入时显示 "⚠️ 草稿skill — 使用后反馈效果"
+  ↓
+主 Agent 使用草稿 skill 后必须明确反馈效果
+  ↓
+dream-evolver 从反馈中识别信号 → 转正 (status: active) 或修改
+```
+
+**Skill Frontmatter 规范：**
+
+```yaml
+---
+name: skill-name-with-hyphens
+description: Use when [触发条件，不写工作流]
+status: draft | active
+created: YYYY-MM-DD
+last_tested: YYYY-MM-DD
+---
+```
+
+字段说明：
+- `name`：只含字母、数字、连字符
+- `description`：以 "Use when..." 开头，只写触发条件，不写工作流，500 字符以内
+- `status`：新建时 `draft`，验证通过后 `active`
+- `created`：创建日期
+- `last_tested`：最近一次验证或修改日期
+
+**Skill 正文结构：**
+
+```markdown
+# Skill Name
+
+## Overview
+核心原则，1-2 句话。
+
+## When to Use
+- 触发条件
+- 不适用的情况
+（草稿 skill 会在此区域显示"⚠️ 此 skill 为草稿状态，使用后请反馈效果"提示）
+
+## Steps
+关键步骤。
+
+## Common Mistakes
+常见错误和修复。
+
+<!-- 执行提醒 -->
+<!-- 此区域用于重申已有规则，不引入新规则。规则没错但没被遵守时在这里添加提醒。 -->
+```
+
+**Skill-Aware Reflection：**
+
+dream-evolver 修改 skill 时遵循 Skill-Aware Reflection 方法论：
+- **规则有错**（SKILL_DEFECT）→ 修改 skill 正文
+- **规则没错但没被遵守**（EXECUTION_LAPSE）→ 不改正文，只在"执行提醒"区域添加提醒重申已有规则
+- 拿不准时默认规则没错，不要因为一次没被遵守就改掉有效规则
+
 **已定义的 Skills：**
 
-| Skill 文件 | 功能 |
-|-----------|------|
-| `browser-automation.md` | 浏览器自动化操作规范 |
-| `note-management.md` | 笔记管理流程 |
-| `office-docs.md` | Office 文档处理规范 |
-| `photo-face-display.md` | 照片人脸显示规范 |
-| `report-skill.md` | 报告生成模板与聚合规则 |
-| ~~Write-SKILL.md~~ | Skill 编写已转移至 dream-evolver 子 Agent 统一负责 |
+| Skill 文件 | 功能 | 状态 |
+|-----------|------|------|
+| `brain-region-management.md` | 脑区管理规范 | active |
+| `browser-automation.md` | 浏览器自动化操作规范 | active |
+| `note-management.md` | 笔记管理流程 | active |
+| `office-docs.md` | Office 文档处理规范 | active |
+| `photo-face-display.md` | 照片人脸显示规范 | active |
+| `report-skill.md` | 报告生成模板与聚合规则 | active |
 
 **report-skill 触发条件：** 当 Agent 编写或整理用户日志、生成周报/月报等报告时，向量检索会自动匹配并注入 `report-skill.md`，Agent 按其中定义的聚合规则和模板生成报告。
 
