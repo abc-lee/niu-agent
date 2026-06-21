@@ -1,6 +1,9 @@
 ---
 name: photo-face-display
 description: Use when user asks about unnamed persons, wants to name someone in photos, or queries face recognition results
+status: active
+created: 2026-06-02
+last_tested: 2026-06-02
 ---
 
 # Photo Face Display
@@ -128,3 +131,6 @@ description: Use when user asks about unnamed persons, wants to name someone in 
 | 多人照没有红框 | 必须用 `boxed_path` 而非 `file_path` |
 | alt中用name(null) | 未命名人物 `name` 为 null，alt必须用 `auto_label` |
 | 简写格式省略person_id | 禁止简写格式，alt必须包含UUID |
+
+<!-- 执行提醒 -->
+<!-- 此区域用于重申已有规则，不引入新规则。规则没错但没被遵守时在这里添加提醒。 -->

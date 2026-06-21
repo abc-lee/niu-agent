@@ -1,6 +1,9 @@
 ---
 name: browser-automation
 description: Use when user asks to browse websites, fill web forms, click buttons, automate browser tasks, or interact with web pages
+status: active
+created: 2026-04-26
+last_tested: 2026-04-26
 ---
 
 # Browser Automation
@@ -98,3 +101,6 @@ cat /browser/readme.txt           # 先看目录说明，了解所有工具用�
 - 位置参数直接写，flag 参数用 `--key value` 格式
 - 每次交互后检查返回的 `elements` 和 `tabSummary`
 - 不要猜测元素编号，始终基于最新返回结果操作
+
+<!-- 执行提醒 -->
+<!-- 此区域用于重申已有规则，不引入新规则。规则没错但没被遵守时在这里添加提醒。 -->
