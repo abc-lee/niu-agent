@@ -198,13 +198,17 @@ def reverse_geocode(lat: float, lon: float) -> str | _AmapKeyNotConfigured | Non
         addr = data.get("regeocode", {}).get("addressComponent", {})
         # 从宽泛到具体拼接
         parts = []
-        for key in ["province", "city", "district", "township", "neighborhood"]:
+        for key in ["province", "city", "district", "township"]:
             val = addr.get(key, "")
             if val and val not in parts:
                 # city 可能和 province 相同（直辖市）
                 if key == "city" and val == addr.get("province", ""):
                     continue
                 parts.append(val)
+        # neighborhood 返回 dict 或空列表，需提取 name
+        neighborhood = addr.get("neighborhood", "")
+        if isinstance(neighborhood, dict) and neighborhood.get("name"):
+            parts.append(neighborhood["name"])
 
         location_name = "".join(parts) if parts else None
 
