@@ -3,6 +3,8 @@ import pytest
 import os
 import sqlite3
 import tempfile
+import json
+from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 
@@ -34,6 +36,14 @@ def test_reverse_geocode_cache_hit():
             "INSERT INTO geocode_cache VALUES (?, ?, ?)",
             ("39.90", "116.41", "北京市东城区"),
         )
+        # 写入缓存版本号，避免 _ensure_cache_db 重建
+        conn.execute(
+            "CREATE TABLE cache_meta (key TEXT PRIMARY KEY, value TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO cache_meta VALUES (?, ?)",
+            ("version", str(geocode._CACHE_VERSION)),
+        )
         conn.commit()
         conn.close()
 
@@ -47,21 +57,77 @@ def test_reverse_geocode_cache_hit():
 
 
 def test_reverse_geocode_api_call():
-    """缓存未命中时调用 Nominatim API"""
+    """缓存未命中时调用高德逆地理编码 API"""
     from niu_photo_server import geocode
 
     mock_response = MagicMock()
-    mock_response.read.return_value = '{"address": {"city": "石家庄市", "state": "河北省"}, "display_name": "test"}'.encode("utf-8")
+    mock_response.read.return_value = json.dumps({
+        "status": "1",
+        "regeocode": {
+            "addressComponent": {
+                "province": "河北省",
+                "city": "石家庄市",
+                "district": "平山县",
+            }
+        }
+    }).encode("utf-8")
     mock_response.__enter__ = lambda s: s
     mock_response.__exit__ = MagicMock(return_value=False)
 
     with tempfile.TemporaryDirectory() as tmpdir:
         cache_path = os.path.join(tmpdir, "geocode_cache.db")
+        # 写入含 amap key 的 preferences.json
+        tmp_prefs = os.path.join(tmpdir, "preferences.json")
+        with open(tmp_prefs, "w") as f:
+            json.dump({"amap": {"api_key": "test_key"}}, f)
+
         geocode._cache_db_path = cache_path
+        geocode.PREFS_PATH = Path(tmp_prefs)
         try:
-            with patch("urllib.request.urlopen", return_value=mock_response):
+            with patch("niu_photo_server.geocode.urllib.request.urlopen", return_value=mock_response):
                 result = geocode.reverse_geocode(38.345, 114.234)
-            assert result is not None
-            assert "石家庄市" in result
+            assert result is not None and not isinstance(result, type(geocode.AMAP_KEY_NOT_CONFIGURED))
+            assert "河北省石家庄市平山县" in str(result)
         finally:
             geocode._cache_db_path = None
+            geocode.PREFS_PATH = Path.home() / ".niu" / "preferences.json"
+
+
+def test_wgs84_to_gcj02_in_china():
+    """中国境内坐标需要偏移"""
+    from niu_photo_server.geocode import _wgs84_to_gcj02
+    # 北京天安门 WGS-84 坐标
+    gcj_lon, gcj_lat = _wgs84_to_gcj02(39.9087, 116.3975)
+    # GCJ-02 坐标应该与 WGS-84 不同（有偏移）
+    assert gcj_lon != 116.3975 or gcj_lat != 39.9087
+
+
+def test_wgs84_to_gcj02_outside_china():
+    """境外坐标不需要偏移"""
+    from niu_photo_server.geocode import _wgs84_to_gcj02
+    # 纽约 WGS-84 坐标
+    gcj_lon, gcj_lat = _wgs84_to_gcj02(40.7128, -74.0060)
+    # 境外坐标不变
+    assert gcj_lon == pytest.approx(-74.0060, abs=1e-6)
+    assert gcj_lat == pytest.approx(40.7128, abs=1e-6)
+
+
+def test_reverse_geocode_no_api_key():
+    """API Key 未配置时返回提示文字"""
+    from niu_photo_server import geocode
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cache_path = os.path.join(tmpdir, "geocode_cache.db")
+        tmp_prefs = os.path.join(tmpdir, "preferences.json")
+        with open(tmp_prefs, "w") as f:
+            json.dump({"version": "1.0"}, f)
+
+        geocode._cache_db_path = cache_path
+        geocode.PREFS_PATH = Path(tmp_prefs)
+        try:
+            result = geocode.reverse_geocode(39.904, 116.407)
+            assert result is geocode.AMAP_KEY_NOT_CONFIGURED
+            assert "高德地图 API Key 未配置" in str(result)
+        finally:
+            geocode._cache_db_path = None
+            geocode.PREFS_PATH = Path.home() / ".niu" / "preferences.json"
