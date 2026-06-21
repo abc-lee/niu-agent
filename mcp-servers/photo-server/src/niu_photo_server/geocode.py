@@ -1,6 +1,7 @@
 """逆地理编码模块：GPS 坐标 → 人可读地名，带本地缓存"""
 
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 from loguru import logger
 
@@ -60,33 +61,33 @@ _CACHE_VERSION = 2  # Nominatim=1, Amap=2
 def _ensure_cache_db():
     """确保缓存数据库和表存在，版本不匹配时重建"""
     db_path = _get_cache_db_path()
-    with sqlite3.connect(db_path) as conn:
-        # 检查缓存版本
-        try:
-            version = conn.execute("SELECT value FROM cache_meta WHERE key = 'version'").fetchone()
-            if version and version[0] == str(_CACHE_VERSION):
-                return  # 版号匹配，无需重建
-        except sqlite3.OperationalError:
-            pass  # 旧表没有 cache_meta
-        # 版号不匹配或表不存在，重建
-        conn.execute("DROP TABLE IF EXISTS geocode_cache")
-        conn.execute("""
-            CREATE TABLE geocode_cache (
-                lat_key TEXT NOT NULL,
-                lon_key TEXT NOT NULL,
-                location_name TEXT NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY (lat_key, lon_key)
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS cache_meta (
-                key TEXT PRIMARY KEY,
-                value TEXT
-            )
-        """)
-        conn.execute("INSERT OR REPLACE INTO cache_meta VALUES (?, ?)", ("version", str(_CACHE_VERSION)))
-        conn.commit()
+    with closing(sqlite3.connect(db_path)) as conn:
+        with conn:
+            # 检查缓存版本
+            try:
+                version = conn.execute("SELECT value FROM cache_meta WHERE key = 'version'").fetchone()
+                if version and version[0] == str(_CACHE_VERSION):
+                    return  # 版号匹配，无需重建
+            except sqlite3.OperationalError:
+                pass  # 旧表没有 cache_meta
+            # 版号不匹配或表不存在，重建
+            conn.execute("DROP TABLE IF EXISTS geocode_cache")
+            conn.execute("""
+                CREATE TABLE geocode_cache (
+                    lat_key TEXT NOT NULL,
+                    lon_key TEXT NOT NULL,
+                    location_name TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (lat_key, lon_key)
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS cache_meta (
+                    key TEXT PRIMARY KEY,
+                    value TEXT
+                )
+            """)
+            conn.execute("INSERT OR REPLACE INTO cache_meta VALUES (?, ?)", ("version", str(_CACHE_VERSION)))
 
 
 def _round_coord(value: float, decimals: int = 2) -> str:
@@ -164,7 +165,7 @@ def reverse_geocode(lat: float, lon: float) -> str | _AmapKeyNotConfigured | Non
     # 1. 查缓存
     try:
         _ensure_cache_db()
-        with sqlite3.connect(_get_cache_db_path()) as conn:
+        with closing(sqlite3.connect(_get_cache_db_path())) as conn:
             cursor = conn.execute(
                 "SELECT location_name FROM geocode_cache WHERE lat_key = ? AND lon_key = ?",
                 (lat_key, lon_key),
@@ -219,13 +220,12 @@ def reverse_geocode(lat: float, lon: float) -> str | _AmapKeyNotConfigured | Non
         # 4. 写入缓存
         if location_name:
             try:
-                _ensure_cache_db()
-                with sqlite3.connect(_get_cache_db_path()) as conn:
-                    conn.execute(
-                        "INSERT OR REPLACE INTO geocode_cache (lat_key, lon_key, location_name) VALUES (?, ?, ?)",
-                        (lat_key, lon_key, location_name),
-                    )
-                    conn.commit()
+                with closing(sqlite3.connect(_get_cache_db_path())) as conn:
+                    with conn:
+                        conn.execute(
+                            "INSERT OR REPLACE INTO geocode_cache (lat_key, lon_key, location_name) VALUES (?, ?, ?)",
+                            (lat_key, lon_key, location_name),
+                        )
                 logger.info(f"[Geocode] Cached: {lat_key},{lon_key} → {location_name}")
             except Exception as e:
                 logger.warning(f"[Geocode] Cache write failed: {e}")
