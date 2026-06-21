@@ -1208,7 +1208,7 @@ def extract_exif(file_path: str) -> dict:
     }
 
     try:
-        from PIL import Image, UnidentifiedImageError
+        from PIL import Image
         from PIL.ExifTags import TAGS, GPSTAGS, IFD as ExifIFD
 
         img = Image.open(file_path)
@@ -1261,12 +1261,13 @@ def extract_exif(file_path: str) -> dict:
                     lon_val = -lon_val
                 result["location"] = f"{lat_val:.6f},{lon_val:.6f}"
 
-    except UnidentifiedImageError:
-        logger.info(f"EXIF extraction skipped for {file_path} (unsupported format, possibly HEIC/HEIF)")
     except ImportError:
         logger.warning("PIL not installed, EXIF extraction disabled")
     except Exception as e:
-        logger.warning(f"EXIF extraction failed: {e}")
+        if type(e).__name__ == "UnidentifiedImageError":
+            logger.info(f"EXIF extraction skipped for {file_path} (unsupported format, possibly HEIC/HEIF)")
+        else:
+            logger.warning(f"EXIF extraction failed: {e}")
 
     return result
 
