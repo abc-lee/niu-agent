@@ -78,7 +78,6 @@ def reverse_geocode(lat: float, lon: float) -> str | None:
     # 2. 调用 Nominatim API
     try:
         import urllib.request
-        import urllib.parse
         import json
 
         url = (
