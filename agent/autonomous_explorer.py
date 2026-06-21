@@ -202,8 +202,7 @@ class AutonomousExplorer:
 
     def _count_pending_experiences(self) -> int:
         """统计待总结的经验数量"""
-        # 检查 experience_summarizer 是否有未处理的上下文
-        # 这个实现比较简单，后续可以增强
+        # ExperienceSummarizer disabled
         return 0
 
     def _generate_suggestions(self, skills_count: int, experience_count: int) -> str:
