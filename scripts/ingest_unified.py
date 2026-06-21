@@ -160,6 +160,7 @@ def _ingest_single_photo(path: str, category: str | None = None, mode: str = "co
                 detected_persons.append({
                     "id": person_id,
                     "name": person_name,
+                    "auto_label": row[1] if row else "",
                     "similarity": similarity,
                     "bbox": bbox,
                     "confidence": confidence,
@@ -249,7 +250,7 @@ def _ingest_single_photo(path: str, category: str | None = None, mode: str = "co
     # 8. LightRAG 同步
     kg_result = None
     try:
-        kg_result = ps.sync_photo_to_kg(str(final_path), abstract, detected_persons)
+        kg_result = ps.sync_photo_to_kg(str(final_path), abstract, detected_persons, exif=exif)
     except Exception as e:
         print(f"[ingest] LightRAG 同步失败: {e}", file=sys.stderr)
 

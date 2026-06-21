@@ -487,7 +487,7 @@ def call_embedding_service(endpoint: str, data: dict) -> dict | None:
 # ============== 知识图谱同步 ==============
 
 
-def _generate_stable_description(normalized_stem: str, abstract: str) -> str:
+def _generate_stable_description(normalized_stem: str, abstract: str, location_info: str | None = None) -> str:
     """Generate a stable description for photo entity in KG.
 
     Only includes immutable attributes (file name, date from stem).
@@ -511,6 +511,8 @@ def _generate_stable_description(normalized_stem: str, abstract: str) -> str:
     parts = [f"照片 {normalized_stem}"]
     if date_part:
         parts.append(f"拍摄于{date_part}")
+    if location_info:
+        parts.append(location_info)
 
     return "，".join(parts)
 
@@ -534,7 +536,7 @@ def _entity_exists_in_kg(entity_name: str) -> bool:
 
 
 def format_photo_ingest_data(
-    file_path: str, abstract: str, detected_persons: list
+    file_path: str, abstract: str, detected_persons: list, exif: dict | None = None
 ) -> dict:
     """格式化照片信息为结构化实体+关系，供 inject_custom_kg 注入。
 
@@ -558,18 +560,51 @@ def format_photo_ingest_data(
     # abstract 仅放入 description，用于搜索和语义理解
     photo_entity_name = normalized_stem
 
+    # 位置信息：从 EXIF GPS 坐标逆地理编码获取地名
+    location_name = None
+    location_info = None  # "地名 (lat,lon)" 格式，用于 description
+    if exif and exif.get("location"):
+        try:
+            parts = exif["location"].split(",")
+            lat, lon = float(parts[0]), float(parts[1])
+            from .geocode import reverse_geocode
+            location_name = reverse_geocode(lat, lon)
+            if location_name:
+                location_info = f"{location_name} ({lat:.4f},{lon:.4f})"
+            else:
+                location_info = f"{lat:.4f},{lon:.4f}"
+        except Exception as e:
+            logger.warning(f"[KG] Geocode failed for {exif.get('location')}: {e}")
+            location_info = exif["location"]
+
     # 照片实体
     entities = [
         {
             "entity_name": photo_entity_name,
             "entity_type": "Photo",
-            "description": _generate_stable_description(normalized_stem, abstract),
+            "description": _generate_stable_description(normalized_stem, abstract, location_info),
             "file_path": normalized_path,
             "source_id": normalized_path,
         }
     ]
 
     relationships = []
+
+    if location_name:
+        entities.append({
+            "entity_name": location_name,
+            "entity_type": "location",
+            "description": f"地点：{location_name}，GPS坐标：{exif['location']}",
+            "file_path": normalized_path,
+            "source_id": normalized_path,
+        })
+        relationships.append({
+            "src_id": photo_entity_name,
+            "tgt_id": location_name,
+            "keywords": "拍摄于",
+            "file_path": normalized_path,
+            "source_id": normalized_path,
+        })
 
     # 注意：照片和人物实体不直接连接 Niu 根节点。
     # 照片通过 photo → person (features) 关系自然可达。
@@ -639,7 +674,7 @@ def format_photo_ingest_data(
     return {"entities": entities, "relationships": relationships}
 
 
-def sync_photo_to_kg(file_path: str, abstract: str, detected_persons: list, force: bool = False) -> dict:
+def sync_photo_to_kg(file_path: str, abstract: str, detected_persons: list, force: bool = False, exif: dict | None = None) -> dict:
     """同步照片信息到知识图谱（结构化注入）
 
     流程：
@@ -674,17 +709,18 @@ def sync_photo_to_kg(file_path: str, abstract: str, detected_persons: list, forc
             logger.warning(f"[KG] kg_synced check failed for {file_path}: {e}")
 
     # 直接同步执行（不再使用异步模式，避免阻塞 LightRAG 事件循环）
-    return _do_sync_photo_to_kg_sync(file_path, abstract, detected_persons)
+    return _do_sync_photo_to_kg_sync(file_path, abstract, detected_persons, exif)
 
 
-def _do_sync_photo_to_kg_sync(file_path: str, abstract: str, detected_persons: list) -> dict:
+def _do_sync_photo_to_kg_sync(file_path: str, abstract: str, detected_persons: list, exif: dict | None = None) -> dict:
     """同步执行 KG 同步（内部函数）"""
     try:
         from agent.tool_registry import get_registry
 
-        data = format_photo_ingest_data(file_path, abstract, detected_persons)
+        data = format_photo_ingest_data(file_path, abstract, detected_persons, exif)
         all_entity_names = [e["entity_name"] for e in data["entities"]]
         all_person_names = [e["entity_name"] for e in data["entities"] if e.get("entity_type") == "person"]
+        all_location_names = [e["entity_name"] for e in data["entities"] if e.get("entity_type") == "location"]
 
         try:
             _existing_persons = set()
@@ -710,6 +746,8 @@ def _do_sync_photo_to_kg_sync(file_path: str, abstract: str, detected_persons: l
         )
         if all_person_names:
             chunk_text += f"人物：{', '.join(all_person_names)}\n"
+        if all_location_names:
+            chunk_text += f"地点：{', '.join(all_location_names)}\n"
 
         custom_kg_fn = registry.get("lightrag-server/lightrag_insert_custom_kg")
         if not custom_kg_fn:
@@ -2095,7 +2133,7 @@ def ingest_photo(file_path: str, category: str | None = None, mode: str = "copy"
 
         # 8. 同步到知识图谱（失败不影响照片入库）
         final_path_resolved = str(Path(final_path).resolve())
-        kg_result = sync_photo_to_kg(final_path_resolved, abstract, detected_persons)
+        kg_result = sync_photo_to_kg(final_path_resolved, abstract, detected_persons, exif=exif)
         kg_entities = kg_result.get("kg_entities", []) if isinstance(kg_result, dict) else []
 
         # 9. Unload face model to release memory (optional, for single photo)
