@@ -574,7 +574,7 @@ def format_photo_ingest_data(
             if location_name:
                 location_info = f"{location_name} ({lat:.4f},{lon:.4f})"
             else:
-                location_info = f"{lat:.4f},{lon:.4f}"
+                location_info = f"GPS {lat:.4f},{lon:.4f}"
         except Exception as e:
             logger.warning(f"[KG] Geocode failed for {exif.get('location')}: {e}")
             location_info = exif["location"]
