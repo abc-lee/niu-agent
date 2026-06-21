@@ -1,6 +1,9 @@
 ---
 name: brain-region-management
 description: Use when managing or configuring brain regions, adding new regions, or modifying region settings
+status: active
+created: 2026-06-16
+last_tested: 2026-06-16
 ---
 
 # Brain Region Management
@@ -95,3 +98,6 @@ Manually try to connect entities
 - Configuration in preferences ensures proper setup and connections
 - Prevents orphaned entities and cleanup work
 - Makes brain regions persistent and manageable
+
+<!-- 执行提醒 -->
+<!-- 此区域用于重申已有规则，不引入新规则。规则没错但没被遵守时在这里添加提醒。 -->

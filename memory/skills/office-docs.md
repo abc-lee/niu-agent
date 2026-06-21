@@ -1,6 +1,9 @@
 ---
 name: office-docs
 description: Use when user asks to create or edit Word documents, Excel spreadsheets, or PowerPoint presentations
+status: active
+created: 2026-04-26
+last_tested: 2026-04-26
 ---
 
 # Office Document Generation
@@ -185,3 +188,6 @@ for r, row in enumerate([['项目A', '80%', '张三'], ['项目B', '60%', '李�
 | 中文乱码 | 设置 `style.font.name = '宋体'` |
 | 表格无边框 | 使用 `style='Table Grid'` |
 | 列宽不合适 | 手动设置 `ws.column_dimensions['A'].width = 12` |
+
+<!-- 执行提醒 -->
+<!-- 此区域用于重申已有规则，不引入新规则。规则没错但没被遵守时在这里添加提醒。 -->

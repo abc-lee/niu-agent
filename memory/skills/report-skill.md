@@ -1,6 +1,9 @@
 ---
 name: report-skill
 description: Use when writing or organizing user's daily work journal, or generating reports (weekly/monthly/quarterly/annual report, performance review, or custom time range summary). Must be read before any journal write or report generation to ensure correct format and time rules.
+status: active
+created: 2026-06-17
+last_tested: 2026-06-17
 ---
 
 # 报告生成技能
@@ -136,3 +139,6 @@ description: Use when writing or organizing user's daily work journal, or genera
 - 用户说"周报要加数据指标" → 增加数据指标部分
 - 用户说"报告要按项目优先级排序" → 更新排序规则
 - 用户说"周报不要独立建文件" → 确认写入规则为追加到 journal.md
+
+<!-- 执行提醒 -->
+<!-- 此区域用于重申已有规则，不引入新规则。规则没错但没被遵守时在这里添加提醒。 -->

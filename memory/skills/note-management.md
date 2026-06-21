@@ -1,6 +1,9 @@
 ---
 name: note-management
 description: Use when user asks to create, read, update, or delete sticky notes, or when user mentions notes, 便签, 便利贴, or reminders
+status: active
+created: 2026-05-22
+last_tested: 2026-05-22
 ---
 
 # Note Management
@@ -64,3 +67,6 @@ bash(command="curl -s -X DELETE http://localhost:9876/api/notes/shopping")
 - 创建/更新便签时，后台任务自动将便签注入 LightRAG（`entity_type="knowledge"`，`name="note:{id}"`）
 - SkillSync 定时扫描 `notes.json`，检测内容变化并同步
 - 删除便签时自动从 LightRAG 删除对应实体
+
+<!-- 执行提醒 -->
+<!-- 此区域用于重申已有规则，不引入新规则。规则没错但没被遵守时在这里添加提醒。 -->
