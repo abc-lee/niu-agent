@@ -4,6 +4,9 @@ import sys
 import tempfile
 import os
 from pathlib import Path
+
+pytestmark = pytest.mark.skip(reason="ExperienceSummarizer disabled — skill writing now handled by dream-evolver")
+
 sys.path.insert(0, "E:/tools/ai-bot")
 
 from agent.experience_summarizer import (
