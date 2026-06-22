@@ -326,8 +326,9 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
     "lightrag_insert": {
         "name": "lightrag_insert",
         "description": (
-            "Insert document(s) into the knowledge base. LightRAG automatically "
-            "extracts entities and relations via LLM. Use file_path for large content."
+            "Insert document text content into the knowledge base. LightRAG automatically "
+            "extracts entities and relations via LLM. Pass the full text in 'content' parameter. "
+            "The file_path parameter is for citation/reference only — it does NOT read file content."
         ),
         "input_schema": {
             "type": "object",

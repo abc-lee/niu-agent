@@ -418,6 +418,14 @@ def call_subagent(
         t for t in tools_schema
         if not t.get("function", {}).get("name", "").startswith("chat-with-")
     ]
+    # 根据 disableBaseTools 配置移除基础工具
+    disabled_base = agent_config.get("disableBaseTools", [])
+    if disabled_base:
+        tools_schema = [
+            t for t in tools_schema
+            if t.get("function", {}).get("name", "") not in disabled_base
+        ]
+        logger.info(f"[SubAgent] {agent_name}: Disabled base tools: {disabled_base}")
 
     # 6. 获取子 Agent 的 MCP 工具 schema
     mcp_tools_schema = get_subagent_mcp_tools_schema(agent_name)
