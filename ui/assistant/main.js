@@ -618,7 +618,7 @@ ipcMain.handle('get-image-url', async (event, filePath) => {
 // 处理拖入的图片（调用后端 API）
 ipcMain.handle('process-image', async (event, filePath) => {
   return new Promise((resolve) => {
-    const isImage = /\.(jpg|jpeg|png|gif|bmp|webp|tiff?)$/i.test(filePath);
+    const isImage = /\.(jpg|jpeg|png|gif|bmp|webp|tiff?|heic|heif)$/i.test(filePath);
     const action = isImage ? '入库照片' : '入库文件';
     const data = JSON.stringify({
       session_id: config.chatSessionId || null,
