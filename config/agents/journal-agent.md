@@ -76,13 +76,25 @@ task 中可能包含两种内容：
 
 ## 输出格式
 
-完成后必须返回操作报告，格式如下：
+完成后必须返回操作报告。**日志记录和报告生成使用不同格式**：
+
+### 日志记录结果
 
 ```
 [工作日志报告]
 处理范围：消息 idx {start_idx} ~ {end_idx}（共 {count} 条）
 提取条目：{n} 条工作日志
 游标更新：last_journal_id = {new_cursor_id}
+```
+
+### 报告生成结果
+
+```
+[报告生成结果]
+report_generated: true
+report_type: {周报|月报|季报|年报}
+date_range: {覆盖的日期范围}
+sections: {包含的板块，逗号分隔}
 ```
 
 处理完成后，在报告末尾用 JSON 格式报告：`{"last_journal_id": "<操作范围内 idx 最大的、且仍存在的消息的 id（UUID）>"}`
