@@ -104,3 +104,4 @@ cat /browser/readme.txt           # 先看目录说明，了解所有工具用�
 
 <!-- 执行提醒 -->
 <!-- 此区域用于重申已有规则，不引入新规则。规则没错但没被遵守时在这里添加提醒。 -->
+<!-- 提醒：向输入框填写文本时，action 必须用 input 而非 type（browser_interact 支持的 action 只有 click/input/select/scroll/get_state）；不确定时先 cat /browser/browser_interact 查看用法。 -->
