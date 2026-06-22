@@ -271,13 +271,8 @@ const graph = ForceGraph()(container)
   .d3AlphaDecay(0.0228)
   .d3VelocityDecay(0.4)
   .cooldownTime(15000)
-  .onNodeClick(async (node) => {
-    if (_subgraphMode) {
-      const success = await enterSubgraph(node.id, _subgraphDepth);
-      if (success) _subgraphCenterId = node.id;
-    } else {
-      showDetail(node.id);
-    }
+  .onNodeClick((node) => {
+    showDetail(node.id);
   })
   .onNodeRightClick(async (node) => {
     if (_subgraphMode) {
@@ -643,7 +638,7 @@ function showTooltip(node) {
   const typeLabel = getNodeLabel(orig);
   tooltip.innerHTML = `<div>${escapeHtml(name)}</div><div class="tooltip-type">${escapeHtml(typeLabel)}</div>`;
   if (_subgraphMode) {
-    tooltip.innerHTML += '<div class="tooltip-type" style="margin-top:4px;opacity:0.5;">点击：以此为中心扩散</div>';
+    tooltip.innerHTML += '<div class="tooltip-type" style="margin-top:4px;opacity:0.5;">右键点击：以此为中心扩散</div>';
   }
   tooltip.classList.remove('hidden');
   // Position near mouse — force-graph doesn't give mouse coords in hover,
