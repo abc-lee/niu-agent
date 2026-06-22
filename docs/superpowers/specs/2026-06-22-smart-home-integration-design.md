@@ -34,7 +34,14 @@
 
 ### 2.1 ha_status — 一次查询，全部呈现
 
-**无参数。** 调用即返回所有设备、场景、自动化、区域信息。
+**可选参数：**
+
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| area | 否 | 按区域过滤，如 "书房" |
+| domain | 否 | 按设备类型过滤，如 "light"、"climate" |
+
+不传参数时返回所有设备、场景、自动化、区域信息。传 `area` 或 `domain` 时只返回匹配项，减少上下文占用。
 
 **前置检查：** 如果 `~/.niu/ha-config.json` 不存在或无法连接 HA，返回：
 
@@ -143,7 +150,7 @@
 {"success": false, "error": "实体不存在或服务调用失败: ..."}
 ```
 
-**实现：** 从 entity_id 提取 domain，先校验 action 是否在该 domain 允许的 actions 列表中（参照上方映射表），不合法则返回 `{"success": false, "error": "动作 '{action}' 不适用于 {type} 设备，可用动作: {actions}"}`。校验通过后映射到 service，调用 `POST /api/services/{domain}/{service}`。set_brightness 额外传 `brightness` 参数（value × 2.55 取整）。set_temperature 额外传 `temperature` 参数。
+**实现：** 从 entity_id 提取 domain，先校验 action 是否在该 domain 允许的 actions 列表中（参照上方映射表），不合法则返回 `{"success": false, "error": "动作 '{action}' 不适用于 {type} 设备，可用动作: {actions}"}`。校验通过后映射到 service，调用 `POST /api/services/{domain}/{service}`。HA 的服务调用返回变更实体数组，需从中找到目标 entity_id 提取 state 和 attributes；如目标不在数组中，回退 `GET /api/states/{entity_id}` 确认新状态。set_brightness 额外传 `brightness` 参数（value × 2.55 取整）。set_temperature 额外传 `temperature` 参数。
 
 ### 2.3 ha_subscribe — 条件监听与推送
 
@@ -158,7 +165,7 @@
 | to_state | 否 | state_change 时的目标状态过滤，如 "on" |
 | description | 否 | 触发时的描述文本，默认 "{entity_id} {condition} {value}" |
 | trigger_id | 否 | 触发器唯一标识；不传时由工具自动生成（推荐），返回中包含生成的 ID |
-| action | 否 | "unsubscribe" 表示取消，不传表示新增 |
+| operation | 否 | "unsubscribe" 表示取消，"list" 表示查询当前订阅列表，不传表示新增 |
 
 **新增订阅流程：**
 1. 生成唯一 trigger_id（格式 `ha_trig_{timestamp}_{random}`，确保不与已有 ID 重复）
@@ -186,10 +193,18 @@
 
 ```json
 // 新增成功
-{"success": true, "trigger_id": "trig_001", "message": "已订阅: 温度超过25度"}
+{"success": true, "trigger_id": "ha_trig_1719014400_a3f2", "message": "已订阅: 温度超过25度"}
 
 // 取消成功
-{"success": true, "trigger_id": "trig_001", "message": "已取消订阅"}
+{"success": true, "trigger_id": "ha_trig_1719014400_a3f2", "message": "已取消订阅"}
+
+// 查询订阅列表
+{
+  "triggers": [
+    {"id": "ha_trig_1719014400_a3f2", "entity_id": "sensor.xxx_temperature", "condition": "above", "threshold": 25, "description": "温度超过25度"},
+    {"id": "ha_trig_1719014400_b7e1", "entity_id": "light.xxx", "condition": "state_change", "from_state": "on", "to_state": "off", "description": "灯关了"}
+  ]
+}
 
 // 失败
 {"success": false, "error": "..."}
@@ -226,7 +241,7 @@
   "ha_url": "http://localhost:8123",
   "version": "2026.6.0",
   "triggers": [
-    {"id": "ha_trig_001", "entity_id": "sensor.xxx_temperature", "condition": "above", "value": 25, "description": "温度超过25度"}
+    {"id": "ha_trig_001", "entity_id": "sensor.xxx_temperature", "condition": "above", "threshold": 25, "description": "温度超过25度"}
   ]
 }
 ```
@@ -239,8 +254,8 @@
 |------|------|------|
 | handler | 是 | 集成域名，如 `xiaomi_miot` |
 | flow_id | 否 | 配置流 ID（后续步骤必填） |
-| data | 否 | 表单数据后续步骤必填） |
-| action | 否 | "delete" 表示删除集成 |
+| data | 否 | 表单数据，类型 object，键值对如 `{"username": "xxx", "password": "yyy"}`（后续步骤必填） |
+| operation | 否 | "delete" 表示删除集成 |
 | entry_id | 否 | 删除集成时必填 |
 
 **多步配置流流程：**
@@ -248,7 +263,7 @@
 1. **发起：** `ha_integrate(handler="xiaomi_miot")` → 调用 `POST /api/config/config_entries/flow` → 返回第一步表单字段
 2. **推进：** `ha_integrate(handler="xiaomi_miot", flow_id="xxx", data={"username": "...", "password": "..."})` → 调用 `POST /api/config/config_entries/flow/{flow_id}` → 返回下一步或 create_entry
 3. **重复步骤 2** 直到返回 `create_entry`
-4. **删除：** `ha_integrate(action="delete", entry_id="xxx")` → 调用 `DELETE /api/config/config_entries/entry/{entry_id}`
+4. **删除：** `ha_integrate(operation="delete", entry_id="xxx")` → 调用 `DELETE /api/config/config_entries/entry/{entry_id}`
 
 **返回格式：**
 
@@ -304,9 +319,13 @@
 
 **路径：** `~/.niu/ha-config.json`
 
-**安全：** 文件权限 600（仅 owner 可读写），ha_setup 创建时设置。
+**安全：** 文件权限 600（仅 owner 可读写），ha_setup 创建时设置。ha_token 不得出现在工具返回值或日志输出中，实现时必须在写入 stderr/log 前脱敏。LLM 工具调用参数中的 token 在对话历史中可见，此为已知限制。
 
 **原子写入：** 所有写入操作使用"写临时文件 + os.rename()"模式，防止 HAWatcher 读到半写状态。写入后通过 `threading.Event` 通知 HAWatcher 立即重读。
+
+**写入锁：** 模块级 `threading.Lock`（与 memory-server 的 `_memory_file_lock` 同模式），序列化所有 read-modify-write 操作：acquire → 读文件 → 修改内存 → 原子写入 → release → set Event。
+
+**字段映射：** 工具参数名 `value` 在写入配置文件时映射为 `threshold`（更明确的持久化语义），读取时反向映射。
 
 ```json
 {
@@ -340,14 +359,16 @@
 
 **WebSocket 连接管理：** HAWatcher 维护一个独立的 WebSocket 长连接，与 ha_status 等工具的 REST/WebSocket 调用无关。ha_status 的 WebSocket 调用（device_registry/area_registry）使用短连接：连接 → 认证 → 发送命令 → 接收结果 → 关闭。HAWatcher 的长连接仅用于 subscribe_trigger 事件监听。
 
-**生命周期：**
-1. `ha_setup` 成功后启动 HAWatcher
-2. 连接 WebSocket，认证，订阅 triggers
-3. 触发时调用 `trigger_callback(description)` → ChatQueue 推送
-4. 30 秒心跳（ping/pong）
-5. 断线 5 秒自动重连
-6. `ha-config.json` 被删除时停止 HAWatcher
-7. triggers 列表为空时不建立 WebSocket 连接（仅监控配置文件变化）
+**生命周期（由 niu_api 管理，非 MCP Server）：**
+1. `niu_api` 启动时检查 `~/.niu/ha-config.json` 是否存在且有效，如有效则自动启动 HAWatcher
+2. `ha_setup` 写入配置后调用 `niu_api.internal.ha_watcher.start_watcher()`（MCP Server 不直接启动线程，只写配置 + 调用 niu_api 提供的启动函数）
+3. 连接 WebSocket，认证，订阅 triggers
+4. 触发时调用 `trigger_callback(description)` → ChatQueue 推送
+5. 30 秒心跳（ping/pong）
+6. 断线 5 秒自动重连
+7. `ha-config.json` 被删除时停止 HAWatcher
+8. triggers 列表为空时不建立 WebSocket 连接（仅监控配置文件变化）
+9. `niu_api` 关闭时停止 HAWatcher
 
 **重连序列：** 重连时始终先读取最新配置文件，再按最新 triggers 列表订阅，不继承旧连接的订阅状态。
 
@@ -356,11 +377,11 @@
 - 保留 mtime 轮询作为兜底机制（每 5 秒检查），防止 Event 通知丢失
 - triggers 增减时动态订阅/取消订阅
 
-**推送格式：**
-```
-[智能家居] 温度超过25度
-[智能家居] 书房灯状态变化
-```
+**推送格式与 ChatQueue 集成：**
+- 触发消息使用 `source="ha-watcher"`, `channel="ha"` 入队（与 scheduler 的 `source="scheduler"`, `channel="scheduler"` 同模式）
+- 使用 `enqueue_sync`（fire-and-forget），不等待 Agent 回复
+- 推送文本格式：`[智能家居] {description}`
+- Agent 系统提示词应包含指引：收到 `[智能家居]` 前缀消息时，主动告知用户并询问是否需要操作
 
 ---
 
@@ -375,6 +396,37 @@ mcp-servers/ha-server/
 │       ├── __init__.py      # TOOL_SCHEMAS + 工具函数
 │       └── __main__.py      # 入口点
 └── pyproject.toml
+```
+
+### 5.2 TOOL_SCHEMAS 规范
+
+每个工具必须定义完整的 `description`（含用途、何时调用、参数说明、使用示例）和 `input_schema`（JSON Schema），遵循现有 MCP Server 模式（参照 scheduler-server / memory-server）。
+
+**工具描述：**
+
+- **ha_status**: `"查询智能家居设备、场景、自动化的当前状态。首次使用或需要了解可用设备时调用。返回按区域分类的设备列表，包含每个设备的可用操作。调用 ha_control 前建议先调用此工具确认设备状态和可用操作。可按 area 或 domain 过滤减少返回量。"`
+- **ha_control**: `"控制智能家居设备。需要 entity_id 和 action 参数。entity_id 从 ha_status 获取，action 必须在该设备允许的 actions 列表中。set_brightness 的 value 范围 0-100，set_temperature 的 value 为目标温度。"`
+- **ha_subscribe**: `"订阅智能家居设备状态变化通知。支持 state_change（状态变化）、above（超过阈值）、below（低于阈值）三种条件。触发时通过 [智能家居] 前缀消息推送。operation='list' 查看当前订阅，operation='unsubscribe' 取消订阅。"`
+- **ha_setup**: `"配置 Home Assistant 连接。首次使用时传入 ha_url 和 ha_token。无参数时返回当前连接状态和订阅列表。ha_token 从 HA Web UI → 用户头像 → Security → Long-Lived Access Tokens 获取。"`
+- **ha_integrate**: `"管理 Home Assistant 集成（添加/删除设备品牌集成）。发起配置流时只需 handler 参数，返回表单字段后由 Agent 引导用户填写，再用 flow_id + data 推进。operation='delete' 删除已有集成。"`
+
+**input_schema 示例（ha_subscribe）：**
+
+```python
+"input_schema": {
+    "type": "object",
+    "properties": {
+        "entity_id": {"type": "string", "description": "监听的实体 ID，如 sensor.xxx_temperature"},
+        "condition": {"type": "string", "enum": ["state_change", "above", "below"], "description": "条件类型"},
+        "value": {"type": "number", "description": "above/below 时的阈值"},
+        "from_state": {"type": "string", "description": "state_change 起始状态过滤，如 'off'"},
+        "to_state": {"type": "string", "description": "state_change 目标状态过滤，如 'on'"},
+        "description": {"type": "string", "description": "触发时的描述文本"},
+        "trigger_id": {"type": "string", "description": "触发器唯一标识，取消订阅时需要"},
+        "operation": {"type": "string", "enum": ["unsubscribe", "list"], "description": "操作类型，不传表示新增"}
+    },
+    "required": ["entity_id", "condition"]
+}
 ```
 
 ### 5.2 mcp-servers.yaml 配置
@@ -438,3 +490,20 @@ ha-server:
 | ha_status WebSocket 连接管理未指定 | Medium | 明确 ha_status 用短连接，HAWatcher 用独立长连接 |
 | ha_control 响应缺 attributes | Medium | 成功响应增加 attributes 字段 |
 | ha_setup 无参数行为未定义 | Medium | 明确返回配置状态 + 连接验证 + triggers 列表 |
+
+### 第三轮
+
+| 原问题 | 严重度 | 修复方案 |
+|--------|--------|----------|
+| 配置文件字段名不一致（value vs threshold） | Critical | 统一配置文件和返回值用 `threshold`，工具参数用 `value`，实现时做映射 |
+| action 参数名冲突（ha_subscribe vs ha_control） | Critical | ha_subscribe 和 ha_integrate 的 action 改名为 `operation` |
+| HAWatcher → ChatQueue 无 source/channel | Critical | 使用 `source="ha-watcher"`, `channel="ha"`, `enqueue_sync`（fire-and-forget），Agent 提示词加 `[智能家居]` 消息处理指引 |
+| HAWatcher 谁启动？（MCP Server vs niu_api） | High | 由 niu_api 管理，ha_setup 调用 `niu_api.internal.ha_watcher.start_watcher()`，MCP Server 只写配置 |
+| 缺少 input_schema | High | 添加完整 TOOL_SCHEMAS 规范，含 description + input_schema，参照现有 MCP Server |
+| ha_status 无过滤参数（500+ 实体淹没上下文） | High | 增加 `area` 和 `domain` 可选过滤参数 |
+| read-modify-write 竞态无锁 | High | 添加模块级 `threading.Lock`，与 memory-server `_memory_file_lock` 同模式 |
+| ha_control 响应假设单一实体 | Medium | 实现说明：HA 返回变更实体数组，需查找目标或回退 GET |
+| ha_integrate data 参数类型不明确 | Medium | 明确 `data` 为 `type: object`，键值对 |
+| 订阅列表隐藏在 ha_setup | Medium | ha_subscribe 增加 `operation="list"` 模式 |
+| Token 日志/对话泄露风险 | Medium | ha_token 不得出现在工具返回值或日志中，实现时脱敏 |
+| TOOL_SCHEMAS description 缺失 | Medium | 添加 5 个工具的完整描述字符串和 input_schema 示例 |
