@@ -1962,6 +1962,44 @@ def build_photo_file_name(source_name: str, taken_at: str | None = None) -> str:
     return f"{date_str}_{time_str}{suffix}"
 
 
+def convert_heic_to_jpeg(source_path: str, target_path: str, quality: int = 95) -> tuple[bool, str]:
+    """将 HEIC/HEIF 转为 JPEG。返回 (success, hint)，hint 在失败时包含根因提示。"""
+    try:
+        from PIL import Image, ImageOps
+        img = Image.open(source_path)
+        img = ImageOps.exif_transpose(img)
+        # EXIF 提取单独 try/except，失败不影响转换
+        exif_bytes = None
+        try:
+            exif_data = img.getexif()
+            if exif_data:
+                exif_bytes = exif_data.tobytes()
+        except Exception as e:
+            logger.warning(f"[HEIC_CONVERT] EXIF extraction failed, saving without EXIF: {e}")
+        if img.mode in ("RGBA", "LA", "P"):
+            img = img.convert("RGB")
+        save_kwargs = {"quality": quality, "optimize": True}
+        if exif_bytes:
+            save_kwargs["exif"] = exif_bytes
+        img.save(target_path, "JPEG", **save_kwargs)
+        return True, ""
+    except Exception as e:
+        err_type = type(e).__name__
+        hint = ""
+        if err_type == "UnidentifiedImageError":
+            hint = "（可能未安装 pillow-heif）"
+        elif err_type == "FileNotFoundError":
+            hint = "（源文件不存在）"
+        logger.error(f"[HEIC_CONVERT] Failed to convert {source_path}: {e}")
+        # 清理可能已创建的部分文件
+        try:
+            if os.path.exists(target_path):
+                os.remove(target_path)
+        except Exception:
+            pass
+        return False, hint
+
+
 def handle_photo_conflict(target_path: Path) -> str:
     """
     处理照片文件重名（防重名，不做相似度检测）
@@ -2000,6 +2038,11 @@ def ingest_photo(file_path: str, category: str | None = None, mode: str = "copy"
                 "message": f"File not found: {file_path}",
                 "kg_entities": [],
             }
+
+        if mode == "reference" and source.suffix.lower() in HEIF_EXTENSIONS:
+            return {"status": "error", "error_code": "HEIC_REFERENCE_UNSUPPORTED",
+                    "message": "HEIC/HEIF 文件不支持 reference 模式，请使用 copy 或 move 模式（HEIC 将自动转换为 JPEG）",
+                    "kg_entities": []}
 
         # Get default category from preferences
         if category is None:
@@ -2091,22 +2134,31 @@ def ingest_photo(file_path: str, category: str | None = None, mode: str = "copy"
                 target_dir.mkdir(parents=True, exist_ok=True)
 
                 # 构建文件名（日期_时间）
-                new_file_name = build_photo_file_name(source.name, exif.get("taken_at"))
+                source_suffix = source.suffix.lower()
+                needs_conversion = source_suffix in HEIF_EXTENSIONS
 
-                # 检查重名
+                if needs_conversion:
+                    new_file_name = build_photo_file_name(source.name, exif.get("taken_at"))
+                    new_file_name = Path(new_file_name).stem + ".jpg"
+                else:
+                    new_file_name = build_photo_file_name(source.name, exif.get("taken_at"))
+
                 target_path = target_dir / new_file_name
                 final_path = handle_photo_conflict(target_path)
 
-                # 文件操作
-                if mode == "move":
-                    shutil.move(str(source), final_path)
-                    logger.info(f"[INGEST_PHOTO] Moved to: {final_path}")
-                elif mode == "reference":
+                if mode == "reference":
                     final_path = str(source)
-                    logger.info(f"[INGEST_PHOTO] Referenced: {final_path}")
+                elif needs_conversion:
+                    success, hint = convert_heic_to_jpeg(str(source), final_path)
+                    if not success:
+                        return {"status": "error", "error_code": "HEIC_CONVERT_FAILED",
+                                "message": f"HEIC 转换失败{hint}: {source}",
+                                "kg_entities": []}
                 else:
-                    shutil.copy2(str(source), final_path)
-                    logger.info(f"[INGEST_PHOTO] Copied to: {final_path}")
+                    if mode == "move":
+                        shutil.move(str(source), final_path)
+                    else:  # copy
+                        shutil.copy2(str(source), final_path)
 
                 # 5. Create photo record
                 photo_id = str(uuid.uuid4())
@@ -2170,6 +2222,15 @@ def ingest_photo(file_path: str, category: str | None = None, mode: str = "copy"
         final_path_resolved = str(Path(final_path).resolve())
         kg_result = sync_photo_to_kg(final_path_resolved, abstract, detected_persons, exif=exif)
         kg_entities = kg_result.get("kg_entities", []) if isinstance(kg_result, dict) else []
+
+        # move 模式 + HEIC 转换成功后删除源文件
+        if mode == "move" and needs_conversion and str(final_path) != str(source):
+            try:
+                if os.path.exists(str(source)):
+                    os.remove(str(source))
+                    logger.info(f"[INGEST_PHOTO] Removed source HEIC: {source}")
+            except Exception as e:
+                logger.warning(f"[INGEST_PHOTO] Failed to remove source HEIC {source}: {e}")
 
         # 9. Unload face model to release memory (optional, for single photo)
         # For batch processing, keep model loaded
@@ -2758,6 +2819,7 @@ def merge_persons(person_a_id: str, person_b_id: str) -> dict:
 # ============== 照片批量处理 ==============
 
 PHOTO_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".heic", ".heif"}
+HEIF_EXTENSIONS = {".heic", ".heif"}
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".flv", ".wmv", ".m4v"}
 
 
@@ -3147,7 +3209,7 @@ def _find_next_processable(all_files: list[dict], offset: int) -> int | None:
 
 def _build_success_summary(all_files: list[dict], processed: list[dict]) -> dict:
     """构建最终成功摘要"""
-    photos = [p for p in processed if p["type"] == "image"]
+    photos = [p for p in processed if p["type"] == "image" and p.get("result", {}).get("status") != "error"]
     documents = [p for p in processed if p["type"] == "document"]
     skipped = [f for f in all_files if f["type"] == "skipped"]
     errors = [p for p in processed if isinstance(p.get("result"), dict) and p["result"].get("status") == "error"]
@@ -3200,6 +3262,15 @@ def _process_next_file(session: dict, category: str = "") -> dict:
 
         try:
             if current["type"] == "image":
+                # HEIC reference 模式不支持，跳过
+                if mode == "reference" and Path(current["path"]).suffix.lower() in HEIF_EXTENSIONS:
+                    session["offset"] = next_idx + 1
+                    session["processed"].append({
+                        "file": current["path"], "type": "image",
+                        "result": {"status": "error", "error_code": "HEIC_REFERENCE_UNSUPPORTED",
+                                   "message": "HEIC/HEIF 文件不支持 reference 模式"}
+                    })
+                    continue
                 # 照片不需要分类判断，始终自动继续
                 session["offset"] = next_idx + 1  # 先推进 offset，防止 append 失败导致重复处理
                 result = ingest_photo(current["path"], category=None, mode=mode)
