@@ -46,7 +46,7 @@ disableBaseTools:
 
 ### 输出格式
 将提炼结果直接作为 `lightrag_insert` 的 `content` 参数传入入库，不要写入文件：
-- 调用 `lightrag_insert(content=提炼内容文本, doc_id="refined:{date}:{seq}")` — content 参数直接传提炼文本，不要先写文件再入库
+- 调用 `lightrag_insert(content=精炼文档, doc_id="refined:{date}:{seq}")` — content 参数直接传精炼文档文本，不要先写文件再入库
 - 每条提炼内容一行，包含：类型标签 + 时间戳 + 精炼摘要
 - 无价值内容不输出（纯确认如"好的""收到"、系统状态通知等跳过）
 - **注意**：用户的提问本身可能蕴含兴趣或偏好，不要因为"只是问了个问题"就跳过。判断标准是：如果用户主动发起了一个话题（而非被动回应系统提示），这个话题反映了用户的关注点，就值得提取
