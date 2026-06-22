@@ -18,6 +18,12 @@ from pathlib import Path
 from typing import Any, Optional
 
 import numpy as np
+# 注册 HEIF/HEIC 格式支持（pillow-heif wheel 自带 libheif，无需系统依赖）
+try:
+    import pillow_heif
+    pillow_heif.register_heif_opener()
+except ImportError:
+    pass
 from loguru import logger
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
@@ -1624,8 +1630,16 @@ def draw_face_boxes_on_image(file_path: str, bbox_list: list[list[float]]) -> st
             img_bytes = np.frombuffer(f.read(), dtype=np.uint8)
         img = cv2.imdecode(img_bytes, cv2.IMREAD_COLOR)
         if img is None:
-            logger.warning(f"[DrawBox] Cannot read image: {file_path}")
-            return None
+            # cv2 不支持 HEIC/HEIF 等格式，尝试 Pillow fallback
+            try:
+                from PIL import Image, ImageOps
+                pil_img = Image.open(file_path)
+                pil_img = ImageOps.exif_transpose(pil_img)
+                pil_img = pil_img.convert("RGB")
+                img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+            except Exception as e:
+                logger.warning(f"[DrawBox] Cannot read image (cv2 + Pillow fallback failed): {file_path}, error: {e}")
+                return None
 
         # 画红框
         for bbox in bbox_list:
@@ -1835,8 +1849,16 @@ def detect_faces(file_path: str) -> list[dict]:
         img = cv2.imdecode(img_bytes, cv2.IMREAD_COLOR)
 
         if img is None:
-            logger.error(f"[DETECT_FACES] Cannot read image: {file_path}")
-            return []
+            # cv2 不支持 HEIC/HEIF 等格式，尝试 Pillow fallback
+            try:
+                from PIL import Image, ImageOps
+                pil_img = Image.open(file_path)
+                pil_img = ImageOps.exif_transpose(pil_img)
+                pil_img = pil_img.convert("RGB")
+                img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+            except Exception as e:
+                logger.error(f"[DETECT_FACES] Cannot read image (cv2 + Pillow fallback failed): {file_path}, error: {e}")
+                return []
 
         logger.info(f"[DETECT_FACES] Image decoded, shape: {img.shape}")
 

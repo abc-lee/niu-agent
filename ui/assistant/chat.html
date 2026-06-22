@@ -1382,7 +1382,9 @@
       const imageFiles = [];
       const otherFiles = [];
       Array.from(files).forEach(f => {
-        if (f.type.startsWith('image/')) {
+        const isImageByMime = f.type.startsWith('image/');
+        const isImageByExt = /\.(jpg|jpeg|png|gif|bmp|webp|tiff?|heic|heif)$/i.test(f.name || f.path || '');
+        if (isImageByMime || isImageByExt) {
           imageFiles.push(f);
         } else {
           otherFiles.push(f);
@@ -1415,11 +1417,20 @@
         // 铁律1：先刷新页面（显示预览）
         const previewDiv = document.createElement('div');
         previewDiv.className = 'image-preview uploading';
-        const imgEl = document.createElement('img');
-        imgEl.src = await window.electronAPI.getImageUrl(filePath);
-        imgEl.dataset.filePath = filePath;
-        previewDiv.appendChild(imgEl);
-        imgEl.addEventListener('dblclick', () => {
+        const isHeic = /\.(heic|heif)$/i.test(filePath);
+        if (isHeic) {
+          // HEIC 无法在浏览器中预览，显示文件名占位符
+          const placeholder = document.createElement('div');
+          placeholder.style.cssText = 'display:flex;align-items:center;justify-content:center;width:100%;height:100%;color:#999;font-size:14px;';
+          placeholder.textContent = '📷 ' + filePath.split('/').pop();
+          previewDiv.appendChild(placeholder);
+        } else {
+          const imgEl = document.createElement('img');
+          imgEl.src = await window.electronAPI.getImageUrl(filePath);
+          imgEl.dataset.filePath = filePath;
+          previewDiv.appendChild(imgEl);
+        }
+        previewDiv.addEventListener('dblclick', () => {
           window.electronAPI.openWithSystemViewer(filePath);
         });
         const overlayDiv = document.createElement('div');

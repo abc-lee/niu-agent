@@ -13,6 +13,7 @@ dependencies = [
     "onnxruntime>=1.15.0",  # CPU 版本（默认，所有用户可用）
     "opencv-python-headless>=4.8.0",
     "Pillow>=10.0.0",
+    "pillow-heif>=0.16.0",  # HEIC/HEIF 格式支持（wheel 自带 libheif，无需系统依赖）
 ]
 
 [project.optional-dependencies]
