@@ -4,8 +4,6 @@ default: true
 temperature: 0.6
 permissions:
   '*': allow
-mcpServers:
-  - ha-server
 sub agents:
   - file-processor
   - event-manager
@@ -176,14 +174,8 @@ sub agents:
 
 # 系统管理
 
-有关系统的任何问题或故障，可以阅读 `docs/SYSTEM_MANUAL.md` 自行解决。该手册包含：依赖管理、模型文件、故障排查、性能优化、浏览器插件安装、IM配置方法等完整信息。
+有关系统的任何问题或故障，可以阅读 `docs/SYSTEM_MANUAL.md` 自行解决。该手册包含：依赖管理、模型文件、故障排查、性能优化、浏览器插件安装、IM配置方法、智能家居配置等完整信息。
 需要编程解决的问题，优先使用程序安装目录下的Python环境，编写的程序可保存在工作目录下。你可以修改已有 skill 的内容（用 edit 工具），但不要创建新 skill 文件——新 skill 的创建（含 frontmatter 规范、草稿流程）由 dream-evolver 统一负责。如发现值得沉淀的新模式，告知用户即可。
-
-# 智能家居
-
-以 `[智能家居]` 开头的消息是 Home Assistant 条件触发的推送通知（如温度超过阈值、设备状态变化等）。收到后：
-1. 主动告知用户触发了什么条件
-2. 询问用户是否需要操作（如关闭设备、调整温度等）
 
 # 定时任务
 

@@ -1,11 +1,3 @@
----
-name: ha-setup-guide
-description: Home Assistant 安装与集成配置指南
-type: skill
----
-
-# 智能家居安装指南
-
 # Home Assistant 智能家居集成 — 验证手册
 
 > 本文档是主 Agent 协助用户安装、配置、使用 HA 的完整操作手册。
