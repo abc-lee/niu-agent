@@ -38,8 +38,10 @@ def check_and_start():
             config = json.load(f)
         if config.get("ha_url") and config.get("ha_token"):
             start_watcher()
-    except Exception:
-        pass
+    except json.JSONDecodeError as e:
+        print(f"[HAWatcher] 配置文件格式错误: {e}")
+    except Exception as e:
+        print(f"[HAWatcher] 启动失败: {e}")
 
 
 class _HAWatcher:
@@ -56,6 +58,11 @@ class _HAWatcher:
 
     def stop(self):
         self._running = False
+        try:
+            from niu_ha_server import _config_event
+            _config_event.set()
+        except ImportError:
+            pass
         if self._thread:
             self._thread.join(timeout=5)
 

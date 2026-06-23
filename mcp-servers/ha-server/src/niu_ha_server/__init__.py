@@ -139,7 +139,7 @@ def _ws_call(ha_url: str, ha_token: str, command: dict, timeout: float = 15) -> 
             await ws.send(json.dumps({"type": "auth", "access_token": ha_token}))
             msg = json.loads(await ws.recv())
             if msg.get("type") != "auth_ok":
-                raise ValueError(f"HA 认证失败: {msg}")
+                raise ValueError("HA 认证失败")
             await ws.send(json.dumps(command))
             msg = json.loads(await ws.recv())
             if msg.get("type") == "result" and msg.get("success"):
@@ -180,7 +180,10 @@ def _ws_batch_call(ha_url: str, ha_token: str, commands: list, timeout: float = 
                 cmd_copy = dict(cmd)
                 cmd_copy["id"] = i
                 await ws.send(json.dumps(cmd_copy))
-                resp = json.loads(await ws.recv())
+                while True:
+                    resp = json.loads(await ws.recv())
+                    if resp.get("id") == i:
+                        break
                 if resp.get("type") == "result" and resp.get("success"):
                     results.append(resp.get("result"))
                 else:
@@ -455,6 +458,9 @@ def ha_subscribe(entity_id: str = "", condition: str = "", value: float = None,
         return {"success": False, "error": f"无效的 condition: {condition}，可选: state_change, above, below"}
     if condition in ("above", "below") and value is None:
         return {"success": False, "error": f"condition 为 {condition} 时 value 必填"}
+    config = _read_config()
+    if not config.get("ha_url") or not config.get("ha_token"):
+        return {"success": False, "error": "请先使用 ha_setup 配置 Home Assistant 连接"}
 
     if not description:
         if value is not None:
