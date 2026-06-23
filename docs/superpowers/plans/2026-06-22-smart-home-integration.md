@@ -526,7 +526,12 @@ def ha_control(entity_id: str, action: str, value: float = None, **kwargs) -> di
         if resp.status_code != 200:
             return {"success": False, "error": f"服务调用失败: HTTP {resp.status_code}"}
 
-        changed = resp.json() if resp.json() else []
+        try:
+            changed = resp.json()
+        except _requests.exceptions.JSONDecodeError:
+            changed = []
+        if not isinstance(changed, list):
+            changed = []
         target = None
         for item in changed:
             if isinstance(item, dict) and item.get("entity_id") == entity_id:
@@ -982,6 +987,12 @@ class _HAWatcher:
                 if result.get("success"):
                     self._current_subscriptions[trigger["id"]] = msg_id
 
+            # 订阅完成后记录当前 mtime，避免立即重连
+            try:
+                self._last_mtime = os.path.getmtime(CONFIG_PATH)
+            except OSError:
+                pass
+
             last_ping = time.time()
             while self._running:
                 if self._check_config_changed():
@@ -1019,16 +1030,24 @@ class _HAWatcher:
 
     def _handle_trigger_event(self, msg: dict, triggers: list):
         event = msg.get("event", {})
-        trigger_data = event.get("variables", {}).get("trigger", {})
-        entity_id = trigger_data.get("entity_id", "")
+        sub_id = msg.get("id")  # subscribe_trigger 返回的 msg_id
+
+        # 通过 msg_id 查找 trigger_id，再查找描述
+        trigger_id = None
+        for tid, mid in self._current_subscriptions.items():
+            if mid == sub_id:
+                trigger_id = tid
+                break
 
         description = ""
         for t in triggers:
-            if t.get("entity_id") == entity_id:
-                description = t.get("description", f"{entity_id} 状态变化")
+            if t.get("id") == trigger_id:
+                description = t.get("description", f"{t.get('entity_id', '')} 状态变化")
                 break
 
         if not description:
+            trigger_data = event.get("variables", {}).get("trigger", {})
+            entity_id = trigger_data.get("entity_id", "")
             description = f"{entity_id} 状态变化"
 
         self._push_to_chat(description)
@@ -1056,20 +1075,21 @@ class _HAWatcher:
             return {}
 
     def _check_config_changed(self) -> bool:
-        try:
-            mtime = os.path.getmtime(CONFIG_PATH)
-            if mtime != self._last_mtime:
-                self._last_mtime = mtime
-                return True
-        except OSError:
-            pass
-
+        # 先检查 Event（并立即清除），避免 mtime + event 双重触发
         try:
             from niu_ha_server import _config_event
             if _config_event.is_set():
                 _config_event.clear()
                 return True
         except ImportError:
+            pass
+
+        try:
+            mtime = os.path.getmtime(CONFIG_PATH)
+            if mtime != self._last_mtime:
+                self._last_mtime = mtime
+                return True
+        except OSError:
             pass
 
         return False
@@ -1119,7 +1139,7 @@ ha-server:
     - "-m"
     - "niu_ha_server"
   workdir: mcp-servers/ha-server/src
-  preload: true
+  optional: true
   tools:
     ha_status:
       visibility: hidden
@@ -1133,15 +1153,20 @@ ha-server:
       visibility: hidden
 ```
 
-- [ ] **Step 2: 在 mcp_loader.py 的 REQUIRED_SERVERS 添加 ha-server**
+- [ ] **Step 2: 在 mcp_loader.py 添加 ha-server**
 
-在 `REQUIRED_SERVERS` 列表中添加：
+ha-server 是可选功能（非所有用户都有 Home Assistant），添加到 `OPTIONAL_SERVERS` 而非 `REQUIRED_SERVERS`：
 
 ```python
+OPTIONAL_SERVERS: List[Tuple[str, str]] = [
+    ("feishu-server", "niu_feishu_server"),
     ("ha-server", "niu_ha_server"),
+]
 ```
 
-- [ ] **Step 3: 在 niu_api 启动时初始化 HAWatcher**
+同时确认 mcp-servers.yaml 中有 `optional: true`。
+
+- [ ] **Step 3: 在 niu_api 启动时初始化 HAWatcher，关闭时停止**
 
 找到 niu_api 启动入口中 scheduler 的 `signal_scheduler_ready()` 或 `start_scheduler()` 附近，添加：
 
@@ -1151,6 +1176,16 @@ try:
     check_and_start()
 except Exception as e:
     print(f"[HA] 启动检查失败: {e}")
+```
+
+在 niu_api 关闭流程中（`stop_scheduler()` 或 `shutdown` 函数附近），添加：
+
+```python
+try:
+    from niu_api.internal.ha_watcher import stop_watcher
+    stop_watcher()
+except Exception as e:
+    print(f"[HA] 停止失败: {e}")
 ```
 
 - [ ] **Step 4: 验证注册成功**
