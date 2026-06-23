@@ -162,6 +162,29 @@ def _build_incremental_msg_text(messages, last_cursor_id: str, out_msg_ids: list
     return f"共 {len(lines)} 条新消息\n\n" + "\n".join(lines)
 
 
+def _estimate_text_tokens(text: str) -> int:
+    """粗略估算文本 token 数（中文约1.5字/token，英文约4字/token，取中间值2字/token）"""
+    return len(text) // 2
+
+
+def _truncate_preserving_tail(text: str, max_tokens: int) -> str:
+    """截断文本，保留末尾近端消息（远端从开头截断）。
+    消息列表在 prompt 末尾，开头是远端(idx小的)，末尾是近端(idx大的)。
+    截断远端保留近端，确保 LLM 能看到需要保护的消息。"""
+    max_chars = max_tokens * 2  # 反向估算字符数
+    if len(text) <= max_chars:
+        return text
+    # 保留末尾近端部分，截断开头远端
+    kept_tail = text[-max_chars:]
+    # 找到第一个完整的消息行（以 [id: 开头）
+    first_line_pos = kept_tail.find("[id:")
+    if first_line_pos > 0:
+        kept_tail = kept_tail[first_line_pos:]
+    # 更新消息计数
+    line_count = kept_tail.count("[id:")
+    return f"共约 {line_count} 条消息（远端部分已省略）\n\n" + kept_tail
+
+
 def _build_journal_task(journal_msg_text: str, safe_tokens: int = 0) -> str:
     """构建 journal-agent 的 task prompt（增量消息嵌入）。
 
@@ -1415,10 +1438,23 @@ async def _tidy_context_impl(request: dict):
             # 读取保护数量配置
             protect_recent_count = _read_protect_recent_count()
 
+            # 模式二：如果游标位置在消息列表前半段（远端有大量未压缩内容），重置游标从头开始；
+            # 否则仍用增量范围，避免已压缩的摘要被级联再压缩
+            _compress_cursor = last_compress_id
+            if usage_percent >= 50 and last_compress_id:
+                cursor_pos = next((i for i, m in enumerate(messages) if getattr(m, "id", "") == last_compress_id), -1)
+                if cursor_pos < 0 or cursor_pos < len(messages) * 0.5:
+                    _compress_cursor = ""  # 游标太旧或无效，从头开始
+
             compress_msg_text = _build_incremental_msg_text(
-                messages, last_compress_id, compress_msg_ids, msg_tokens,
+                messages, _compress_cursor, compress_msg_ids, msg_tokens,
                 end_cursor_id=new_dream_id, protect_recent=protect_recent_count
             )
+
+            # 限制全量范围的 token 总量，避免截断砍掉近端消息
+            _compress_window = int(_read_context_window_tokens() * 0.4)
+            if compress_msg_text and _estimate_text_tokens(compress_msg_text) > _compress_window:
+                compress_msg_text = _truncate_preserving_tail(compress_msg_text, _compress_window)
             compress_mode = "模式二：睡眠整理（半破坏性）" if usage_percent >= 50 else "模式一：睡眠整理（非破坏性）"
             logger.info(f"[Tidy] Sleep: usage={usage_percent:.1f}%, selecting {compress_mode}")
 
