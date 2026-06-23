@@ -1533,24 +1533,43 @@ async def _tidy_context_impl(request: dict):
                         if new_compress_id and new_compress_id not in fresh_ids:
                             new_compress_id = ""
 
-                # 事后校验：保护范围内的消息是否被误删
+                compress_integrity_ok = True  # 压缩完整性标记，用于决定是否推进游标
                 if protected_ids:
                     try:
+                        # 构建受保护消息的原始内容映射（内存中的 messages 列表未被子Agent修改）
+                        protected_originals = {}
+                        for pid in protected_ids:
+                            _m = next((m for m in messages if getattr(m, "id", "") == pid), None)
+                            if _m:
+                                protected_originals[pid] = getattr(_m, "content", "") or ""
+
                         post_msgs = await store.get_messages()
                         post_ids = {getattr(m, "id", "") for m in post_msgs}
+                        post_content_map = {getattr(m, "id", ""): (getattr(m, "content", "") or "") for m in post_msgs}
+
                         for pid in protected_ids:
                             if pid not in post_ids:
-                                logger.warning(f"[Tidy] PROTECTED message {pid} was deleted by context-manager!")
+                                logger.error(f"[Tidy] PROTECTED message {pid} was deleted by context-manager! Cannot restore (add_message would disorder sequence). Blocking cursor advance.")
+                                compress_integrity_ok = False
+                            elif pid in protected_originals and pid in post_content_map:
+                                original = protected_originals[pid]
+                                current = post_content_map[pid]
+                                if original != current:
+                                    logger.warning(f"[Tidy] PROTECTED message {pid} was modified by context-manager! Rolling back content...")
+                                    await store.update_message(pid, original)
                     except Exception as e:
                         logger.warning(f"[Tidy] Failed to verify protected messages: {e}")
 
                 if new_compress_id:
-                    compress_cursor_path.parent.mkdir(parents=True, exist_ok=True)
-                    compress_cursor_path.write_text(json.dumps({
-                        "last_compress_id": new_compress_id,
-                        "last_compress_at": datetime.now().isoformat(),
-                    }, ensure_ascii=False, indent=2), encoding="utf-8")
-                    logger.info(f"[Tidy] Compress cursor updated: last_compress_id={new_compress_id}")
+                    if compress_integrity_ok:
+                        compress_cursor_path.parent.mkdir(parents=True, exist_ok=True)
+                        compress_cursor_path.write_text(json.dumps({
+                            "last_compress_id": new_compress_id,
+                            "last_compress_at": datetime.now().isoformat(),
+                        }, ensure_ascii=False, indent=2), encoding="utf-8")
+                        logger.info(f"[Tidy] Compress cursor updated: last_compress_id={new_compress_id}")
+                    else:
+                        logger.warning("[Tidy] Skipping cursor advance due to protected message integrity failure")
             else:
                 logger.info("[Tidy] context-manager: no messages in range [compress_cursor, dream_cursor_new]")
 
