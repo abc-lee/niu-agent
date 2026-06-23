@@ -10,10 +10,11 @@ tools:
     parameters:
       - name: ha_url
         type: string
-        short: "HA 地址"
+        description: "HA 地址，如 http://localhost:8123"
       - name: ha_token
         type: string
-        short: "Long-Lived Access Token"
+        sensitive: true
+        description: "Long-Lived Access Token"
 
   - name: ha_status
     category: read
@@ -21,13 +22,13 @@ tools:
     long: "查询智能家居设备、场景、自动化的当前状态。返回按区域分类的设备列表及可用操作"
     parameters:
       - name: area
-        position: 1
+        flag: area
         type: string
-        short: "按区域过滤"
+        description: "按区域过滤，如 书房"
       - name: domain
-        position: 2
+        flag: domain
         type: string
-        short: "按设备类型过滤"
+        description: "按设备类型过滤，如 light、climate"
 
   - name: ha_control
     category: write
@@ -38,12 +39,15 @@ tools:
         position: 1
         type: string
         required: true
+        description: "实体 ID，如 light.xxx"
       - name: action
         position: 2
         type: string
         required: true
+        description: "动作名，如 turn_on/turn_off/toggle/set_brightness"
       - name: value
         type: number
+        description: "亮度 0-100 或目标温度"
 
   - name: ha_subscribe
     category: write
@@ -53,23 +57,34 @@ tools:
       - name: entity_id
         position: 1
         type: string
+        description: "监听的实体 ID"
       - name: condition
         position: 2
         type: string
         enum: [state_change, above, below]
+        description: "条件类型"
       - name: value
         type: number
+        description: "above/below 时的阈值"
       - name: from_state
+        flag: from-state
         type: string
+        description: "state_change 起始状态过滤"
       - name: to_state
+        flag: to-state
         type: string
+        description: "state_change 目标状态过滤"
       - name: description
         type: string
+        description: "触发时的描述文本"
       - name: trigger_id
+        flag: trigger-id
         type: string
+        description: "触发器标识，取消订阅时必填"
       - name: operation
         type: string
-        enum: ["", unsubscribe, list]
+        enum: [unsubscribe, list]
+        description: "操作类型，不传表示新增"
 
   - name: ha_integrate
     category: write
@@ -79,12 +94,20 @@ tools:
       - name: handler
         position: 1
         type: string
+        description: "集成域名，如 xiaomi_miot"
       - name: flow_id
+        flag: flow-id
         type: string
+        description: "配置流 ID，推进步骤时必填"
       - name: data
         type: object
+        cli_format: json
+        description: "表单数据键值对"
       - name: operation
         type: string
-        enum: ["", delete]
+        enum: [delete]
+        description: "操作类型，delete 表示删除集成"
       - name: entry_id
+        flag: entry-id
         type: string
+        description: "集成条目 ID，删除时必填"
