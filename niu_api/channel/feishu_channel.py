@@ -447,6 +447,7 @@ class FeishuChannelAdapter(ChannelAdapter):
             self._accumulated_text = ""
             self._stream_pending_images = []
             self._stream_pending_files = []
+            self._stream_sent_media_paths.clear()
 
     async def push(self, channel_id: str, content: str) -> None:
         """主动推送 — 没有 ID 就不发，优先 open_id"""
