@@ -64,7 +64,9 @@ class _HAWatcher:
         asyncio.set_event_loop(loop)
         while self._running:
             try:
-                loop.run_until_complete(self._connect_and_listen())
+                result = loop.run_until_complete(self._connect_and_listen())
+                if result == "no_triggers":
+                    break
             except Exception as e:
                 print(f"[HAWatcher] 连接异常: {e}, 5秒后重连...")
                 time.sleep(5)
@@ -82,8 +84,7 @@ class _HAWatcher:
         triggers = config.get("triggers", [])
 
         if not triggers:
-            self._wait_for_config_change(timeout=30)
-            return
+            return "no_triggers"
 
         ws_url = ha_url.replace("http://", "ws://").replace("https://", "wss://") + "/api/websocket"
 

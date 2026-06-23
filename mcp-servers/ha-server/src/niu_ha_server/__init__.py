@@ -484,6 +484,11 @@ def ha_subscribe(entity_id: str = "", condition: str = "", value: float = None,
         return {"trigger_id": tid}
 
     result = _atomic_update(_add)
+    try:
+        from niu_api.internal.ha_watcher import check_and_start
+        check_and_start()
+    except Exception:
+        pass
     return {
         "success": True,
         "trigger_id": result.get("trigger_id", ""),
