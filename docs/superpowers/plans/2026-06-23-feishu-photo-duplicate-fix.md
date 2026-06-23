@@ -14,7 +14,7 @@
 
 | 文件 | 职责 |
 |------|------|
-| `niu_api/channel/feishu_channel.py` | 修复 resolve_outbound_content：流式推送已处理的图片不重复发送 |
+| `niu_api/channel/feishu_channel.py` | 修复 resolve_outbound_content：流式推送已处理的图片不重复发送；修复 send() 卡片未创建时图片丢失 |
 | `config/agents/niu.md` | 统一照片展示格式，去掉 person_id\|auto_label，强调展示人脸必须先读 skill |
 | `~/.niu/skills/photo-face-display.md` | 统一为标准 `![描述](路径)` 格式，去掉 person_id 在 alt 中的说明 |
 | `ui/assistant/chat.html` | 去掉 alt 文本中 person_id 的提取逻辑（存了但没用） |
@@ -50,21 +50,33 @@ if is_image:
     elif not Path(img_path).exists():
         replacement = "[图片不存在]"
     else:
-        display_name = alt_text
-        if "|" in alt_text:
-            parts = alt_text.split("|", 1)
-            if len(parts[0]) >= 8 and "-" in parts[0]:
-                display_name = parts[1]
+        display_name = alt_text or "照片"
         media_messages.append(ResolvedMessage(kind="image", local_path=img_path, caption=alt_text))
-        replacement = f"↑ {display_name}的照片" if display_name else "↑ 照片"
+        replacement = f"↑ {display_name}的照片" if alt_text else "↑ 照片"
     replacements.append((start_idx, end_idx, replacement))
 ```
 
-- [ ] **Step 2: Python 语法验证**
+- [ ] **Step 2: 修复 send() 中卡片未创建时的图片丢失**
+
+当 `_stream_card_created = False`（卡片未创建成功）时，`_filter_media_markers` 已将图片路径加入 `_stream_sent_media_paths`，但 `send()` 的 fallback 路径不经过 `route_out`，导致 `resolve_outbound_content` 的去重跳过这些图片，图片丢失。
+
+在 `send()` 方法中，plain markdown 发送之前（约第419行），添加卡片未创建时的图片发送逻辑：
+
+```python
+# 卡片未创建时，清理去重集并发送待处理图片
+if not self._stream_card_created and (self._stream_pending_images or self._stream_pending_files):
+    self._stream_sent_media_paths.clear()
+    try:
+        await self._send_pending_media(channel_id)
+    except Exception as me:
+        logger.error(f"[FeishuStream] Send pending media (no card) failed: {me}")
+```
+
+- [ ] **Step 3: Python 语法验证**
 
 Run: `python3 -c "import py_compile; py_compile.compile('niu_api/channel/feishu_channel.py', doraise=True); print('OK')"`
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 git add niu_api/channel/feishu_channel.py
@@ -219,7 +231,27 @@ if (alt && alt.includes('|')) {
 }
 ```
 
-- [ ] **Step 2: Commit**
+- [ ] **Step 2: 更新相关注释**
+
+第933行注释从：
+```javascript
+// Markdown 图片 ![person_id|name](path) 由 marked.js 渲染，然后后处理添加交互
+```
+改为：
+```javascript
+// Markdown 图片 ![描述](路径) 由 marked.js 渲染，然后后处理添加交互
+```
+
+第949行注释从：
+```javascript
+// 后处理：将本地路径图片转为 file:/// URL，并提取 person_id 添加交互
+```
+改为：
+```javascript
+// 后处理：将本地路径图片转为 file:/// URL 并添加交互
+```
+
+- [ ] **Step 3: Commit**
 
 ```bash
 git add ui/assistant/chat.html
