@@ -223,6 +223,7 @@ ha-server:
   - -m
   - niu_ha_server
   workdir: mcp-servers/ha-server/src
+  preload: true
   optional: true
   tools:
     ha_status:

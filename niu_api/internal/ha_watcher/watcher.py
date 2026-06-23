@@ -73,9 +73,8 @@ class _HAWatcher:
             while self._running:
                 try:
                     result = loop.run_until_complete(self._connect_and_listen())
-                    if result in ("no_triggers", "auth_failed"):
-                        if result == "auth_failed":
-                            print("[HAWatcher] HA 认证失败，等待配置变更...")
+                    if result == "auth_failed":
+                        print("[HAWatcher] HA 认证失败，等待配置变更...")
                         break
                 except Exception as e:
                     print(f"[HAWatcher] 连接异常: {e}, 5秒后重连...")
@@ -96,7 +95,8 @@ class _HAWatcher:
         triggers = config.get("triggers", [])
 
         if not triggers:
-            return "no_triggers"
+            self._wait_for_config_change(timeout=30)
+            return
 
         ws_url = ha_url.replace("http://", "ws://").replace("https://", "wss://") + "/api/websocket"
 
