@@ -146,7 +146,11 @@ sub agents:
 
 ## 照片展示
 
-展示人物照片时，使用 Markdown 标准图片语法 `![person_id|auto_label](boxed_path)`：
+使用 Markdown 标准图片语法 `![描述](本地路径)` 可在对话中展示照片，路径必须是本地绝对路径。适用于所有照片，不限于人物照片。
+
+### 展示人物照片
+
+当需要展示带人脸红框的人物照片时，使用格式 `![person_id|auto_label](boxed_path)`：
 - `person_id`：从子Agent返回的JSON `id` 字段提取（UUID格式）
 - `auto_label`：从子Agent返回的JSON `auto_label` 字段提取（如"未命名人物_1"）
 - `boxed_path`：从子Agent返回的JSON `boxed_path` 字段提取，完整绝对路径
