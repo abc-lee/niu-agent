@@ -519,19 +519,24 @@ async def test_llm(request: Request) -> dict:
         def _sync_test():
             gen = session.chat(messages=[{"role": "user", "content": "hi"}])
             chunks = []
-            got_any = False
+            mock_resp = None
             try:
                 while True:
                     chunk = next(gen)
-                    got_any = True
                     if isinstance(chunk, str):
                         chunks.append(chunk)
-            except StopIteration:
-                pass
-            return "".join(chunks), got_any
+            except StopIteration as e:
+                mock_resp = e.value
+            # 思考模型可能只输出 reasoning_content 而无文本 chunk，
+            # 但 MockResponse 会包含 thinking/content 字段
+            text = "".join(chunks)
+            has_content = bool(text.strip()) or (
+                mock_resp is not None and (getattr(mock_resp, 'content', None) or getattr(mock_resp, 'thinking', None))
+            )
+            return text, has_content
 
-        result, got_any = await asyncio.wait_for(asyncio.to_thread(_sync_test), timeout=20)
-        if not got_any:
+        result, has_content = await asyncio.wait_for(asyncio.to_thread(_sync_test), timeout=20)
+        if not has_content:
             return {"success": False, "error": "模型返回空响应"}
 
         provider = config.get("provider", "") or config.get("type", "openai")
@@ -544,9 +549,10 @@ async def test_llm(request: Request) -> dict:
             return {"success": False, "error": "API Key 无效或未授权"}
         if "404" in error_msg or "not found" in error_msg.lower():
             return {"success": False, "error": "模型或 API 端点不存在，请检查模型名称和地址"}
-        # Sanitize error message to avoid leaking API keys in URLs
+        # Sanitize error message to avoid leaking API keys in URLs/headers
         import re
-        safe_msg = re.sub(r'key=[^&\s]+', 'key=***', error_msg)[:200]
+        safe_msg = re.sub(r'key=[^&\s]+', 'key=***', error_msg)
+        safe_msg = re.sub(r'Bearer\s+[^\s]+', 'Bearer ***', safe_msg)[:200]
         if "provider" in error_msg.lower() or "unmapped" in error_msg.lower():
             return {"success": False, "error": f"Provider 路由错误: {safe_msg}"}
         return {"success": False, "error": f"模型测试失败: {safe_msg}"}

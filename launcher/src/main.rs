@@ -956,8 +956,12 @@ fn main() {
 
         let llm_status_url = format!("http://127.0.0.1:{}/api/llm-status", port);
         let llm_configured = match check_client.get(&llm_status_url).send() {
-            Ok(resp) if resp.status().is_success() =>
-                resp.json::<LlmStatus>().ok().map_or(false, |s| s.ready),
+            Ok(resp) if resp.status().is_success() => {
+                match resp.json::<LlmStatus>() {
+                    Ok(s) => s.ready,
+                    Err(e) => { warn!("Failed to deserialize llm-status response: {}", e); false }
+                }
+            }
             _ => false,
         };
 
@@ -971,10 +975,16 @@ fn main() {
             let poll_client = reqwest::blocking::Client::builder()
                 .timeout(Duration::from_secs(25))
                 .build().unwrap_or_else(|_| check_client.clone());
-            for _ in 0..200 {
+            let mut reopen_count = 0;
+            for _ in 0..60 {
                 if cancelled_bg.load(Ordering::SeqCst) { break; }
                 if let Ok(Some(_exit_status)) = settings_child.try_wait() {
-                    warn!("Settings window closed without completing test, re-opening...");
+                    reopen_count += 1;
+                    if reopen_count > 3 {
+                        warn!("Settings window closed {} times without test, giving up", reopen_count);
+                        break;
+                    }
+                    warn!("Settings window closed without completing test, re-opening... (attempt {}/3)", reopen_count);
                     settings_child = launch_window("settings")
                         .expect("Failed to re-launch settings window");
                 }
@@ -1019,10 +1029,16 @@ fn main() {
                                 let poll_client2 = reqwest::blocking::Client::builder()
                                     .timeout(Duration::from_secs(25))
                                     .build().unwrap_or_else(|_| check_client.clone());
-                                for _ in 0..200 {
+                                let mut reopen_count2 = 0;
+                                for _ in 0..60 {
                                     if cancelled_bg.load(Ordering::SeqCst) { break; }
                                     if let Ok(Some(_)) = settings_child.try_wait() {
-                                        warn!("Settings window closed, re-opening...");
+                                        reopen_count2 += 1;
+                                        if reopen_count2 > 3 {
+                                            warn!("Settings window closed {} times without test, giving up", reopen_count2);
+                                            break;
+                                        }
+                                        warn!("Settings window closed, re-opening... (attempt {}/3)", reopen_count2);
                                         settings_child = launch_window("settings")
                                             .expect("Failed to re-launch settings window");
                                     }
