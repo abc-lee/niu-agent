@@ -930,7 +930,7 @@
       div.className = `message ${role}`;
       
       // 所有消息统一走 Markdown 渲染（包括含图片的消息）
-      // Markdown 图片 ![person_id|name](path) 由 marked.js 渲染，然后后处理添加交互
+      // Markdown 图片 ![描述](路径) 由 marked.js 渲染，然后后处理添加交互
       if (text) {
         const textDiv = document.createElement('div');
         textDiv.className = 'message-text';
@@ -946,7 +946,7 @@
                 })
               : marked.parse(safeText);
             textDiv.innerHTML = htmlContent;
-            // 后处理：将本地路径图片转为 file:/// URL，并提取 person_id 添加交互
+            // 后处理：将本地路径图片转为 file:/// URL 并添加交互
             textDiv.querySelectorAll('img').forEach(img => {
               let src = img.getAttribute('src');
               // 兼容模型输出 file:/// 前缀：去掉后统一由下面的逻辑处理
@@ -967,16 +967,6 @@
               // 给本地路径图片添加 chat-image class（自适应缩放）
               if (src && (/^[A-Za-z]:[\/]/.test(src) || /^\//.test(src) || src.startsWith('file://'))) {
                 img.classList.add('chat-image');
-              }
-              // 处理 alt 文本中的 person_id|name 格式
-              const alt = img.getAttribute('alt') || '';
-              if (alt && alt.includes('|')) {
-                const parts = alt.split('|');
-                // person_id 是 UUID 格式
-                if (parts[0] && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(parts[0])) {
-                  img.dataset.personId = parts[0];
-                  img.setAttribute('alt', parts[1] || '');
-                }
               }
               // 添加双击用系统查看器打开
               const imgSrc = img.getAttribute('src') || src;
