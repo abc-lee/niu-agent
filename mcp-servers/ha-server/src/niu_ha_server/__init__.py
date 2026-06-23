@@ -384,6 +384,66 @@ def ha_control(entity_id: str, action: str, value: float = None, **kwargs) -> di
         return {"success": False, "error": f"控制失败: {e}"}
 
 
+# --- ha_subscribe ---
+
+def ha_subscribe(entity_id: str = "", condition: str = "", value: float = None,
+                 from_state: str = "", to_state: str = "",
+                 description: str = "", trigger_id: str = "",
+                 operation: str = "", **kwargs) -> dict:
+    """订阅智能家居设备状态变化通知。"""
+    if operation == "list":
+        config = _read_config()
+        return {"triggers": config.get("triggers", [])}
+
+    if operation == "unsubscribe":
+        if not trigger_id:
+            return {"success": False, "error": "取消订阅时 trigger_id 必填"}
+
+        def _remove(config):
+            triggers = config.get("triggers", [])
+            config["triggers"] = [t for t in triggers if t["id"] != trigger_id]
+            return config
+
+        _atomic_update(_remove)
+        return {"success": True, "trigger_id": trigger_id, "message": "已取消订阅"}
+
+    if not entity_id or not condition:
+        return {"success": False, "error": "新增订阅时 entity_id 和 condition 必填"}
+    if condition in ("above", "below") and value is None:
+        return {"success": False, "error": f"condition 为 {condition} 时 value 必填"}
+
+    if not description:
+        description = f"{entity_id} {condition} {value or ''}".strip()
+
+    def _add(config):
+        if "triggers" not in config:
+            config["triggers"] = []
+        existing_ids = {t["id"] for t in config["triggers"]}
+        tid = trigger_id or _generate_trigger_id(existing_ids)
+        trigger_entry = {
+            "id": tid,
+            "entity_id": entity_id,
+            "condition": condition,
+        }
+        if condition in ("above", "below") and value is not None:
+            trigger_entry["threshold"] = value
+        if condition == "state_change":
+            if from_state:
+                trigger_entry["from_state"] = from_state
+            if to_state:
+                trigger_entry["to_state"] = to_state
+        trigger_entry["description"] = description
+        config["triggers"].append(trigger_entry)
+        return {"trigger_id": tid}
+
+    result = _atomic_update(_add)
+    return {
+        "success": True,
+        "trigger_id": result.get("trigger_id", ""),
+        "message": f"已订阅: {description}",
+    }
+
+
 # --- TOOL_SCHEMAS ---
 
 TOOL_SCHEMAS = {
@@ -422,6 +482,24 @@ TOOL_SCHEMAS = {
                 "value": {"type": "number", "description": "动作参数：亮度 0-100 或温度值"},
             },
             "required": ["entity_id", "action"],
+        },
+    },
+    "ha_subscribe": {
+        "name": "ha_subscribe",
+        "description": "订阅智能家居设备状态变化通知。支持 state_change（状态变化）、above（超过阈值）、below（低于阈值）三种条件。触发时通过 [智能家居] 前缀消息推送。operation='list' 查看当前订阅，operation='unsubscribe' 取消订阅。",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "entity_id": {"type": "string", "description": "监听的实体 ID（新增订阅时必填）"},
+                "condition": {"type": "string", "enum": ["state_change", "above", "below"], "description": "条件类型（新增订阅时必填）"},
+                "value": {"type": "number", "description": "above/below 时的阈值"},
+                "from_state": {"type": "string", "description": "state_change 起始状态过滤"},
+                "to_state": {"type": "string", "description": "state_change 目标状态过滤"},
+                "description": {"type": "string", "description": "触发时的描述文本"},
+                "trigger_id": {"type": "string", "description": "触发器标识，取消订阅时必填"},
+                "operation": {"type": "string", "enum": ["unsubscribe", "list"], "description": "操作类型，不传表示新增"},
+            },
+            "required": [],
         },
     },
 }
