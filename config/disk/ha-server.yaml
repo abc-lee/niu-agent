@@ -1,0 +1,90 @@
+server: ha-server
+directory: ha
+description: "智能家居控制 — 查询设备状态、控制设备、订阅状态变化通知、管理集成"
+
+tools:
+  - name: ha_setup
+    category: write
+    short: "配置 HA 连接"
+    long: "配置 Home Assistant 连接。首次使用时传入 ha_url 和 ha_token。无参数时返回当前连接状态和订阅列表"
+    parameters:
+      - name: ha_url
+        type: string
+        short: "HA 地址"
+      - name: ha_token
+        type: string
+        short: "Long-Lived Access Token"
+
+  - name: ha_status
+    category: read
+    short: "查询设备状态"
+    long: "查询智能家居设备、场景、自动化的当前状态。返回按区域分类的设备列表及可用操作"
+    parameters:
+      - name: area
+        position: 1
+        type: string
+        short: "按区域过滤"
+      - name: domain
+        position: 2
+        type: string
+        short: "按设备类型过滤"
+
+  - name: ha_control
+    category: write
+    short: "控制设备"
+    long: "控制智能家居设备。entity_id 从 ha_status 获取，action 必须在设备允许的 actions 列表中。set_brightness value 0-100，set_temperature value 为目标温度"
+    parameters:
+      - name: entity_id
+        position: 1
+        type: string
+        required: true
+      - name: action
+        position: 2
+        type: string
+        required: true
+      - name: value
+        type: number
+
+  - name: ha_subscribe
+    category: write
+    short: "订阅状态通知"
+    long: "订阅设备状态变化通知。支持 state_change/above/below 三种条件。触发时通过 [智能家居] 前缀推送。operation=list 查看，operation=unsubscribe 取消"
+    parameters:
+      - name: entity_id
+        position: 1
+        type: string
+      - name: condition
+        position: 2
+        type: string
+        enum: [state_change, above, below]
+      - name: value
+        type: number
+      - name: from_state
+        type: string
+      - name: to_state
+        type: string
+      - name: description
+        type: string
+      - name: trigger_id
+        type: string
+      - name: operation
+        type: string
+        enum: ["", unsubscribe, list]
+
+  - name: ha_integrate
+    category: write
+    short: "管理集成"
+    long: "管理 HA 集成（添加/删除设备品牌）。发起配置流只需 handler，返回表单后用 flow_id+data 推进。operation=delete 删除集成"
+    parameters:
+      - name: handler
+        position: 1
+        type: string
+      - name: flow_id
+        type: string
+      - name: data
+        type: object
+      - name: operation
+        type: string
+        enum: ["", delete]
+      - name: entry_id
+        type: string
