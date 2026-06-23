@@ -480,6 +480,9 @@ async def test_llm(request: Request) -> dict:
     except Exception:
         body = {}
 
+    # 统一键名为小写（前端传 apiKey/apiBase，get_llm_config 返回小写，需统一）
+    body = {k.lower(): v for k, v in body.items()} if body else {}
+
     if body and body.get("apikey"):
         # 配置页面传入的表单值（预保存测试）
         config = body
@@ -490,7 +493,7 @@ async def test_llm(request: Request) -> dict:
         except Exception as e:
             return {"success": False, "error": f"读取配置失败: {e}"}
 
-    # 统一键名为小写（前端传 apiKey/apiBase，get_llm_config 返回小写，需统一）
+    # body 已归一化，config 也需要确保小写
     config = {k.lower(): v for k, v in config.items()}
 
     if not config.get("apikey"):
@@ -516,17 +519,19 @@ async def test_llm(request: Request) -> dict:
         def _sync_test():
             gen = session.chat(messages=[{"role": "user", "content": "hi"}])
             chunks = []
+            got_any = False
             try:
                 while True:
                     chunk = next(gen)
+                    got_any = True
                     if isinstance(chunk, str):
                         chunks.append(chunk)
             except StopIteration:
                 pass
-            return "".join(chunks)
+            return "".join(chunks), got_any
 
-        result = await asyncio.wait_for(asyncio.to_thread(_sync_test), timeout=20)
-        if not result.strip():
+        result, got_any = await asyncio.wait_for(asyncio.to_thread(_sync_test), timeout=20)
+        if not got_any:
             return {"success": False, "error": "模型返回空响应"}
 
         provider = config.get("provider", "") or config.get("type", "openai")
