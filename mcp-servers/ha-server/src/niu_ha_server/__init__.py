@@ -133,15 +133,15 @@ def _ws_call(ha_url: str, ha_token: str, command: dict, timeout: float = 15) -> 
 
     async def _run():
         async with websockets.connect(ws_url, max_size=5_000_000) as ws:
-            msg = json.loads(await ws.recv())
+            msg = json.loads(await _asyncio.wait_for(ws.recv(), timeout=10))
             if msg.get("type") != "auth_required":
                 raise ValueError(f"Unexpected first message: {msg}")
             await ws.send(json.dumps({"type": "auth", "access_token": ha_token}))
-            msg = json.loads(await ws.recv())
+            msg = json.loads(await _asyncio.wait_for(ws.recv(), timeout=10))
             if msg.get("type") != "auth_ok":
                 raise ValueError("HA 认证失败")
             await ws.send(json.dumps(command))
-            msg = json.loads(await ws.recv())
+            msg = json.loads(await _asyncio.wait_for(ws.recv(), timeout=10))
             if msg.get("type") == "result" and msg.get("success"):
                 return msg.get("result")
             elif msg.get("type") == "result":
@@ -168,11 +168,11 @@ def _ws_batch_call(ha_url: str, ha_token: str, commands: list, timeout: float = 
 
     async def _run():
         async with websockets.connect(ws_url, max_size=5_000_000) as ws:
-            msg = json.loads(await ws.recv())
+            msg = json.loads(await _asyncio.wait_for(ws.recv(), timeout=10))
             if msg.get("type") != "auth_required":
                 raise ValueError(f"Unexpected first message: {msg}")
             await ws.send(json.dumps({"type": "auth", "access_token": ha_token}))
-            msg = json.loads(await ws.recv())
+            msg = json.loads(await _asyncio.wait_for(ws.recv(), timeout=10))
             if msg.get("type") != "auth_ok":
                 raise ValueError(f"HA 认证失败")
             results = []
@@ -181,7 +181,7 @@ def _ws_batch_call(ha_url: str, ha_token: str, commands: list, timeout: float = 
                 cmd_copy["id"] = i
                 await ws.send(json.dumps(cmd_copy))
                 while True:
-                    resp = json.loads(await ws.recv())
+                    resp = json.loads(await _asyncio.wait_for(ws.recv(), timeout=10))
                     if resp.get("id") == i:
                         break
                 if resp.get("type") == "result" and resp.get("success"):

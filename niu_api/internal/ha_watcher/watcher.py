@@ -69,16 +69,19 @@ class _HAWatcher:
     def _run_loop(self):
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        while self._running:
-            try:
-                result = loop.run_until_complete(self._connect_and_listen())
-                if result in ("no_triggers", "auth_failed"):
-                    if result == "auth_failed":
-                        print("[HAWatcher] HA 认证失败，等待配置变更...")
-                    break
-            except Exception as e:
-                print(f"[HAWatcher] 连接异常: {e}, 5秒后重连...")
-                time.sleep(5)
+        try:
+            while self._running:
+                try:
+                    result = loop.run_until_complete(self._connect_and_listen())
+                    if result in ("no_triggers", "auth_failed"):
+                        if result == "auth_failed":
+                            print("[HAWatcher] HA 认证失败，等待配置变更...")
+                        break
+                except Exception as e:
+                    print(f"[HAWatcher] 连接异常: {e}, 5秒后重连...")
+                    time.sleep(5)
+        finally:
+            loop.close()
 
     async def _connect_and_listen(self):
         import websockets
