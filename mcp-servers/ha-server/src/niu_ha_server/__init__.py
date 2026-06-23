@@ -160,6 +160,45 @@ def _ws_call(ha_url: str, ha_token: str, command: dict, timeout: float = 15) -> 
         return _asyncio.run(_run())
 
 
+def _ws_batch_call(ha_url: str, ha_token: str, commands: list, timeout: float = 20) -> tuple:
+    """WebSocket 短连接单次握手发多个命令，返回结果元组。"""
+    import websockets
+
+    ws_url = ha_url.replace("http://", "ws://").replace("https://", "wss://") + "/api/websocket"
+
+    async def _run():
+        async with websockets.connect(ws_url, max_size=5_000_000) as ws:
+            msg = json.loads(await ws.recv())
+            if msg.get("type") != "auth_required":
+                raise ValueError(f"Unexpected first message: {msg}")
+            await ws.send(json.dumps({"type": "auth", "access_token": ha_token}))
+            msg = json.loads(await ws.recv())
+            if msg.get("type") != "auth_ok":
+                raise ValueError(f"HA 认证失败")
+            results = []
+            for i, cmd in enumerate(commands, 1):
+                cmd_copy = dict(cmd)
+                cmd_copy["id"] = i
+                await ws.send(json.dumps(cmd_copy))
+                resp = json.loads(await ws.recv())
+                if resp.get("type") == "result" and resp.get("success"):
+                    results.append(resp.get("result"))
+                else:
+                    results.append(None)
+            return tuple(results)
+
+    try:
+        loop = _asyncio.get_event_loop()
+        if loop.is_running():
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                future = pool.submit(_asyncio.run, _run())
+                return future.result(timeout=timeout)
+        return loop.run_until_complete(_run())
+    except RuntimeError:
+        return _asyncio.run(_run())
+
+
 # --- ha_status ---
 
 def ha_status(area: str = "", domain: str = "") -> dict:
@@ -167,7 +206,7 @@ def ha_status(area: str = "", domain: str = "") -> dict:
     config = _read_config()
     url, headers, err = _get_ha_client(config)
     if err:
-        return {"connected": False, "error": err}
+        return {"connected": False, "error": "未配置 Home Assistant，请先使用 ha_setup 工具连接"}
 
     try:
         states_resp = _requests.get(f"{url}/api/states", headers=headers, timeout=30)
@@ -176,8 +215,11 @@ def ha_status(area: str = "", domain: str = "") -> dict:
         states = states_resp.json()
 
         token = config.get("ha_token", "")
-        devices = _ws_call(url, token, {"id": 1, "type": "config/device_registry/list"}) or []
-        areas = _ws_call(url, token, {"id": 2, "type": "config/area_registry/list"}) or []
+        devices, areas, entities = _ws_batch_call(url, token, [
+            {"type": "config/device_registry/list"},
+            {"type": "config/area_registry/list"},
+            {"type": "config/entity_registry/list"},
+        ])
     except Exception as e:
         return {"connected": False, "error": f"查询失败: {e}"}
 
@@ -191,9 +233,7 @@ def ha_status(area: str = "", domain: str = "") -> dict:
 
     entity_device_map = {}
     try:
-        token = config.get("ha_token", "")
-        entities = _ws_call(url, token, {"id": 3, "type": "config/entity_registry/list"}) or []
-        for ent in entities:
+        for ent in (entities or []):
             did = ent.get("device_id")
             if did and did in device_info:
                 entity_device_map[ent.get("entity_id", "")] = device_info[did]
@@ -285,7 +325,7 @@ def ha_setup(ha_url: str = "", ha_token: str = "") -> dict:
     config = _read_config()
     url, headers, err = _get_ha_client(config)
     if err:
-        return {"connected": False, "error": "未配置 Home Assistant"}
+        return {"connected": False, "error": "未配置 Home Assistant，请先使用 ha_setup 工具连接"}
 
     conn = _check_ha_connection(url, headers)
     if not conn["connected"]:
@@ -313,7 +353,7 @@ def ha_control(entity_id: str, action: str, value: float = None, **kwargs) -> di
     config = _read_config()
     url, headers, err = _get_ha_client(config)
     if err:
-        return {"success": False, "error": err}
+        return {"success": False, "error": "未配置 Home Assistant，请先使用 ha_setup 工具连接"}
 
     domain = entity_id.split(".")[0]
     info = DOMAIN_MAP.get(domain)
@@ -330,6 +370,8 @@ def ha_control(entity_id: str, action: str, value: float = None, **kwargs) -> di
 
     service_data = {"entity_id": entity_id}
     if action == "set_brightness" and value is not None:
+        if value < 0 or value > 100:
+            return {"success": False, "error": f"brightness 范围 0-100，当前值: {value}"}
         service_data["brightness"] = int(value * 2.55)
     elif action == "set_temperature" and value is not None:
         service_data["temperature"] = value
@@ -409,11 +451,16 @@ def ha_subscribe(entity_id: str = "", condition: str = "", value: float = None,
 
     if not entity_id or not condition:
         return {"success": False, "error": "新增订阅时 entity_id 和 condition 必填"}
+    if condition not in ("state_change", "above", "below"):
+        return {"success": False, "error": f"无效的 condition: {condition}，可选: state_change, above, below"}
     if condition in ("above", "below") and value is None:
         return {"success": False, "error": f"condition 为 {condition} 时 value 必填"}
 
     if not description:
-        description = f"{entity_id} {condition} {value or ''}".strip()
+        if value is not None:
+            description = f"{entity_id} {condition} {value}"
+        else:
+            description = f"{entity_id} {condition}"
 
     def _add(config):
         if "triggers" not in config:
@@ -473,7 +520,7 @@ def ha_integrate(handler: str = "", flow_id: str = "", data: dict = None,
     config = _read_config()
     url, headers, err = _get_ha_client(config)
     if err:
-        return {"success": False, "error": err}
+        return {"success": False, "error": "未配置 Home Assistant，请先使用 ha_setup 工具连接"}
 
     if operation == "delete":
         if not entry_id:

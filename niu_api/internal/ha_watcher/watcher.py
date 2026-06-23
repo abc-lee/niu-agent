@@ -16,8 +16,10 @@ def start_watcher():
     with _init_lock:
         if _watcher is not None:
             _watcher.stop()
-        _watcher = _HAWatcher()
-        _watcher.start()
+            _watcher = None
+        w = _HAWatcher()
+        w.start()
+        _watcher = w
 
 
 def stop_watcher():
@@ -71,7 +73,7 @@ class _HAWatcher:
         import websockets
 
         config = self._read_config()
-        if not config or not config.get("ha_url"):
+        if not config or not config.get("ha_url") or not config.get("ha_token"):
             self._wait_for_config_change(timeout=30)
             return
 
@@ -93,7 +95,7 @@ class _HAWatcher:
             await ws.send(json.dumps({"type": "auth", "access_token": ha_token}))
             msg = json.loads(await ws.recv())
             if msg.get("type") != "auth_ok":
-                raise ValueError(f"HA 认证失败: {msg}")
+                raise ValueError("HA 认证失败")
 
             self._current_subscriptions = {}
             msg_id = 1
@@ -105,7 +107,13 @@ class _HAWatcher:
                     "type": "subscribe_trigger",
                     "trigger": trigger_config,
                 }))
-                result = json.loads(await ws.recv())
+                # 按匹配 id 读取响应，跳过中间消息（pong/event）
+                while True:
+                    result = json.loads(await ws.recv())
+                    if result.get("id") == msg_id:
+                        break
+                    if result.get("type") == "event":
+                        self._handle_trigger_event(result, triggers)
                 if result.get("success"):
                     self._current_subscriptions[trigger["id"]] = msg_id
 
