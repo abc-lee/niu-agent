@@ -599,13 +599,7 @@ class FeishuChannelAdapter(ChannelAdapter):
                 if not _is_local_path(img_path):
                     replacements.append((start_idx, end_idx, ""))
                 elif img_path and Path(img_path).exists():
-                    name = alt_text
-                    if "|" in alt_text:
-                        parts = alt_text.split("|", 1)
-                        if len(parts[0]) >= 8 and "-" in parts[0]:
-                            name = parts[1]
-                        else:
-                            name = alt_text
+                    name = alt_text or "照片"
 
                     try:
                         img_key = await self._upload_image_to_feishu(img_path)
