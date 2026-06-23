@@ -416,6 +416,13 @@ class FeishuChannelAdapter(ChannelAdapter):
                             await self._send_pending_media(channel_id)
                         except Exception as me:
                             logger.error(f"[FeishuStream] Send pending media also failed: {me}")
+            # 卡片未创建时，清理去重集并发送待处理图片
+            if not self._stream_card_created and (self._stream_pending_images or self._stream_pending_files):
+                self._stream_sent_media_paths.clear()
+                try:
+                    await self._send_pending_media(channel_id)
+                except Exception as me:
+                    logger.error(f"[FeishuStream] Send pending media (no card) failed: {me}")
             # 普通发送逻辑（无流式卡片 或 终结失败时的 fallback）
             target = channel_id or self._user_open_id or self._user_p2p_chat_id
             if not target:
@@ -977,20 +984,20 @@ class FeishuChannelAdapter(ChannelAdapter):
             if is_image:
                 img_path = _normalize_path(raw_path)
                 if not _is_local_path(img_path):
-                    # URL/data URI 图片不允许，跳过（不添加到替换列表）
+                    # URL/data URI 图片不允许，跳过
+                    continue
+                if img_path and img_path in self._stream_sent_media_paths:
+                    # 流式推送已处理（已嵌入卡片），移除标记避免重复，不独立发送
+                    replacements.append((start_idx, end_idx, ""))
                     continue
                 if not img_path:
                     replacement = "[图片信息缺失]"
                 elif not Path(img_path).exists():
                     replacement = "[图片不存在]"
                 else:
-                    display_name = alt_text
-                    if "|" in alt_text:
-                        parts = alt_text.split("|", 1)
-                        if len(parts[0]) >= 8 and "-" in parts[0]:
-                            display_name = parts[1]
+                    display_name = alt_text or "照片"
                     media_messages.append(ResolvedMessage(kind="image", local_path=img_path, caption=alt_text))
-                    replacement = f"↑ {display_name}的照片" if display_name else "↑ 照片"
+                    replacement = f"↑ {display_name}的照片" if alt_text else "↑ 照片"
                 replacements.append((start_idx, end_idx, replacement))
             else:
                 # 文件链接
