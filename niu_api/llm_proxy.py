@@ -284,6 +284,7 @@ async def call_llm_via_litellm(
         "reasoning_effort": config.get("reasoning_effort"),
         "provider": config.get("provider", ""),
         "litellm_kwargs": config.get("litellm_kwargs", {}),
+        "read_timeout": config.get("read_timeout", 300),
     }
 
     # Create independent session (not shared with main chat)

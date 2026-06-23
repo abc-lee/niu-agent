@@ -14,7 +14,7 @@ from datetime import datetime
 
 from agent.session import get_message_store
 from agent.subagent import _read_context_window_tokens, _read_target_threshold, _read_protect_recent_count
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from loguru import logger
 from pydantic import BaseModel
 
@@ -462,6 +462,89 @@ async def get_llm_status() -> dict:
         return {"ready": True}
     except Exception as e:
         return {"ready": False, "error": str(e)}
+
+
+@router.post("/api/test-llm")
+async def test_llm(request: Request) -> dict:
+    """通过真实 LLM 调用验证配置。验证完整链路：config → LiteLLM → provider 路由 → API 调用 → 响应。
+
+    请求体可选：传入 config 字典则用它测试（配置页面预保存测试）；
+    不传或为空则从 user-config.json 读取（启动器验证）。
+    """
+    from niu_api.llm_proxy import get_llm_config
+    from agent.generic.litellm_adapter import LiteLLMSession
+
+    # 读取配置：优先用请求体，否则从文件读取
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    if body and body.get("apikey"):
+        # 配置页面传入的表单值（预保存测试）
+        config = body
+    else:
+        # 启动器调用：从文件读取
+        try:
+            config = get_llm_config()
+        except Exception as e:
+            return {"success": False, "error": f"读取配置失败: {e}"}
+
+    # 统一键名为小写（前端传 apiKey/apiBase，get_llm_config 返回小写，需统一）
+    config = {k.lower(): v for k, v in config.items()}
+
+    if not config.get("apikey"):
+        return {"success": False, "error": "API Key 未配置"}
+    if not config.get("apibase"):
+        return {"success": False, "error": "API 地址未配置"}
+    if not config.get("model"):
+        return {"success": False, "error": "模型名称未配置"}
+
+    try:
+        llm_config = {
+            "api_type": config.get("type", "openai"),
+            "apikey": config["apikey"],
+            "apibase": config["apibase"],
+            "model": config["model"],
+            "reasoning_effort": None,
+            "provider": config.get("provider", ""),
+            "litellm_kwargs": {**config.get("litellm_kwargs", {}), "max_tokens": 5},
+            "read_timeout": 10,
+        }
+        session = LiteLLMSession(cfg=llm_config)
+
+        def _sync_test():
+            gen = session.chat(messages=[{"role": "user", "content": "hi"}])
+            chunks = []
+            try:
+                while True:
+                    chunk = next(gen)
+                    if isinstance(chunk, str):
+                        chunks.append(chunk)
+            except StopIteration:
+                pass
+            return "".join(chunks)
+
+        result = await asyncio.wait_for(asyncio.to_thread(_sync_test), timeout=20)
+        if not result.strip():
+            return {"success": False, "error": "模型返回空响应"}
+
+        provider = config.get("provider", "") or config.get("type", "openai")
+        return {"success": True, "message": f"模型测试通过 (model={config.get('model')}, provider={provider})"}
+    except asyncio.TimeoutError:
+        return {"success": False, "error": "连接超时，请检查网络和 API 地址"}
+    except Exception as e:
+        error_msg = str(e)
+        if "401" in error_msg or "unauthorized" in error_msg.lower() or "invalid api key" in error_msg.lower():
+            return {"success": False, "error": "API Key 无效或未授权"}
+        if "404" in error_msg or "not found" in error_msg.lower():
+            return {"success": False, "error": "模型或 API 端点不存在，请检查模型名称和地址"}
+        # Sanitize error message to avoid leaking API keys in URLs
+        import re
+        safe_msg = re.sub(r'key=[^&\s]+', 'key=***', error_msg)[:200]
+        if "provider" in error_msg.lower() or "unmapped" in error_msg.lower():
+            return {"success": False, "error": f"Provider 路由错误: {safe_msg}"}
+        return {"success": False, "error": f"模型测试失败: {safe_msg}"}
 
 
 @router.get("/api/preload-status")

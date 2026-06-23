@@ -210,7 +210,7 @@
 <body>
   <div class="titlebar">
     <h1 class="pencil-text">🤖 小妞设置</h1>
-    <button class="close-btn" onclick="window.electron.closeWindow()">×</button>
+    <button class="close-btn">×</button>
   </div>
   
   <div class="container">
@@ -257,6 +257,18 @@
         <label class="pencil-text">模型名称</label>
         <input type="text" id="model" placeholder="gpt-4o-mini">
       </div>
+      <div class="form-group" style="margin-top: 12px;">
+        <label class="pencil-text">Provider (LiteLLM 路由)</label>
+        <select id="provider">
+          <option value="">自动 (跟随 API 类型)</option>
+          <option value="openai">openai</option>
+          <option value="anthropic">anthropic</option>
+          <option value="volcengine">volcengine (豆包)</option>
+        </select>
+        <div style="font-size: 12px; color: #666; margin-top: 4px;">
+          LiteLLM provider 路由，通常选"自动"即可。选错会导致 LLM 调用失败。
+        </div>
+      </div>
 
       <div class="note-card mint" style="margin-top: 15px;">
         <div class="form-group">
@@ -292,6 +304,7 @@
 
   <script>
     let presets = [];
+    let testPassedInSession = false;
     
     async function init() {
       presets = await window.electronAPI.getPresets();
@@ -311,6 +324,7 @@
         document.getElementById('apiBase').value = config.llm.apiBase || '';
         document.getElementById('model').value = config.llm.model || '';
         document.getElementById('apiType').value = config.llm.type || 'openai';
+        document.getElementById('provider').value = config.llm.provider || '';
       }
 
       if (config.context) {
@@ -329,14 +343,21 @@
     }
     
     document.getElementById('preset').addEventListener('change', (e) => {
+      testPassedInSession = false;
       const preset = presets.find(p => p.id === e.target.value);
       if (preset) {
         document.getElementById('apiBase').value = preset.apiBase;
         document.getElementById('model').value = preset.model;
         document.getElementById('apiType').value = preset.type || 'openai';
+        document.getElementById('provider').value = preset.provider || '';
       }
     });
-    
+
+    ['apiKey', 'apiBase', 'model', 'apiType', 'provider'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.addEventListener('change', () => { testPassedInSession = false; });
+    });
+
     async function testAndSave() {
       const existingConfig = await window.electronAPI.getConfig();
       const presetId = document.getElementById('preset').value;
@@ -344,33 +365,29 @@
       const apiBase = document.getElementById('apiBase').value;
       const model = document.getElementById('model').value;
       const type = document.getElementById('apiType').value;
+      const provider = document.getElementById('provider').value;
 
-      if (!apiKey) {
-        setStatus('请输入 API Key', 'error');
-        return;
-      }
-
-      if (!apiBase) {
-        setStatus('请选择预设或填写 API 地址', 'error');
-        return;
-      }
-
-      if (!model) {
-        setStatus('请输入模型名称', 'error');
-        return;
-      }
+      if (!apiKey) { setStatus('请输入 API Key', 'error'); return; }
+      if (!apiBase) { setStatus('请选择预设或填写 API 地址', 'error'); return; }
+      if (!model) { setStatus('请输入模型名称', 'error'); return; }
 
       setStatus('测试模型连接中...', 'loading');
       document.getElementById('testBtn').disabled = true;
 
-      // Test connection FIRST — only save if model responds
-      const result = await window.electronAPI.testConnection({ apiBase, apiKey, type, model });
+      // 第一步：测试（传表单值到请求体，不保存文件）
+      const config = {
+        apiKey, apiBase, model, type,
+        provider: provider,
+        litellm_kwargs: existingConfig.llm?.litellm_kwargs || {}
+      };
+      const result = await window.electronAPI.testConnection(config);
 
       if (result.success) {
-        // Model responded, save config
-        const config = {
-          llm: { presetId, apiKey, apiBase, model, type, reasoning_effort: existingConfig.llm?.reasoning_effort || "" },
-          lightrag_llm: existingConfig.lightrag_llm || { presetId: "", apiKey: "", apiBase: "", model: "", type: "openai", reasoning_effort: "xhigh" },
+        // 第二步：测试通过，保存配置
+        setStatus('保存配置中...', 'loading');
+        const saveResult = await window.electronAPI.saveConfig({
+          llm: { ...config, presetId: presetId, reasoning_effort: existingConfig.llm?.reasoning_effort || "" },
+          lightrag_llm: existingConfig.lightrag_llm || {},
           context: {
             contextWindowSize: parseInt(document.getElementById('contextWindowSize').value) || 200000,
             warningThreshold: parseFloat(document.getElementById('warningThreshold').value) || 0.8,
@@ -379,25 +396,18 @@
           },
           storage: existingConfig.storage || {},
           firstRun: false
-        };
-
-        const saveResult = await window.electronAPI.saveConfig(config);
-
-        if (!saveResult.success) {
-          setStatus('❌ 保存失败: ' + saveResult.error, 'error');
-          document.getElementById('testBtn').disabled = false;
-          return;
+        });
+        if (saveResult.success) {
+          testPassedInSession = true;  // 标记本次会话已通过测试
+          setStatus('模型测试通过，配置已保存！', 'success');
+          setTimeout(() => { window.electronAPI.closeWindow(); }, 1500);
+        } else {
+          setStatus('保存失败: ' + saveResult.error, 'error');
         }
-
-        setStatus('✅ ' + (result.message || '模型测试通过，配置已保存！'), 'success');
-
-        setTimeout(() => {
-          window.electronAPI.closeWindow();
-        }, 1500);
       } else {
-        setStatus('❌ ' + (result.message || '模型测试失败，请检查配置'), 'error');
+        setStatus('模型测试失败: ' + (result.message || '请检查配置'), 'error');
+        // 不保存，窗口保持打开
       }
-
       document.getElementById('testBtn').disabled = false;
     }
     
@@ -409,6 +419,11 @@
     
     // Close button handler
     document.querySelector('.close-btn').addEventListener('click', () => {
+      if (!testPassedInSession) {
+        if (!confirm('模型配置尚未验证通过，确定要退出吗？退出后应用可能无法正常工作。')) {
+          return;
+        }
+      }
       window.electronAPI.closeWindow();
     });
     

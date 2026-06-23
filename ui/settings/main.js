@@ -63,11 +63,44 @@ ipcMain.handle('save-config', (event, config) => {
   }
 });
 
-ipcMain.handle('test-connection', async (event, { apiBase, apiKey, type, model }) => {
+ipcMain.handle('test-connection', async (event, config) => {
+  const http = require('http');
+  const https = require('https');
+  const { apiBase, apiKey, type, model } = config;
+  const port = parseInt(process.env.NIU_API_PORT || '9876');
+
+  // 优先走 Python API（验证完整 LiteLLM 链路，包括 provider 路由）
+  try {
+    const result = await new Promise((resolve) => {
+      const body = JSON.stringify(config || {});
+      const req = http.request({
+        hostname: '127.0.0.1', port,
+        path: '/api/test-llm', method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+        timeout: 20000
+      }, (res) => {
+        let data = '';
+        res.on('data', (chunk) => { data += chunk; });
+        res.on('end', () => {
+          try { resolve(JSON.parse(data)); }
+          catch (e) { resolve({ success: false, error: `API 返回非 JSON 响应 (HTTP ${res.statusCode})` }); }
+        });
+      });
+      req.on('error', () => { resolve(null); });  // API 不可达 → fallback
+      req.on('timeout', () => { req.destroy(); resolve(null); });
+      req.write(body);
+      req.end();
+    });
+
+    if (result !== null) {
+      return { success: result.success, message: result.success ? (result.message || '测试通过') : (result.error || '未知错误') };
+    }
+  } catch (e) { /* fallback below */ }
+
+  // Fallback: 直接 HTTP 调用 LLM（niu --settings 独立模式，API 未启动）
+
   // Skip test for Ollama (local) — just verify server is reachable
   if (apiBase.includes('localhost') || apiBase.includes('127.0.0.1')) {
-    const https = require('https');
-    const http = require('http');
     try {
       const url = new URL(apiBase);
       const client = url.protocol === 'https:' ? https : http;
@@ -84,7 +117,7 @@ ipcMain.handle('test-connection', async (event, { apiBase, apiKey, type, model }
         req.end();
       });
       if (reachable) {
-        return { success: true, message: '本地模型服务已连接' };
+        return { success: true, message: '本地模型服务已连接（未验证 provider 路由）' };
       } else {
         return { success: false, message: '本地模型服务未启动，请确认 Ollama 正在运行' };
       }
@@ -94,9 +127,6 @@ ipcMain.handle('test-connection', async (event, { apiBase, apiKey, type, model }
   }
 
   // Real LLM test: send a minimal chat completion request
-  const https = require('https');
-  const http = require('http');
-
   try {
     const url = new URL(apiBase);
     const client = url.protocol === 'https:' ? https : http;
@@ -130,9 +160,9 @@ ipcMain.handle('test-connection', async (event, { apiBase, apiKey, type, model }
               try {
                 const json = JSON.parse(data);
                 const content = json.content && json.content[0] && json.content[0].text;
-                resolve({ success: true, message: `模型响应正常 (${model})` });
+                resolve({ success: true, message: `模型响应正常 (${model})（未验证 provider 路由）` });
               } catch (e) {
-                resolve({ success: true, message: `模型响应正常 (${model})` });
+                resolve({ success: true, message: `模型响应正常 (${model})（未验证 provider 路由）` });
               }
             } else {
               let errorMsg = `HTTP ${res.statusCode}`;
@@ -182,7 +212,7 @@ ipcMain.handle('test-connection', async (event, { apiBase, apiKey, type, model }
           res.on('data', (chunk) => { data += chunk; });
           res.on('end', () => {
             if (res.statusCode === 200) {
-              resolve({ success: true, message: `模型响应正常 (${model})` });
+              resolve({ success: true, message: `模型响应正常 (${model})（未验证 provider 路由）` });
             } else {
               let errorMsg = `HTTP ${res.statusCode}`;
               try {

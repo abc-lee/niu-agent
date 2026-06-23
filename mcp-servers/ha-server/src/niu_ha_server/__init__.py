@@ -80,6 +80,41 @@ DOMAIN_MAP = {
     "automation": {"type": "自动化", "actions": ["trigger", "turn_on", "turn_off"]},
 }
 
+ATTR_WHITELIST = {
+    "climate": [
+        "current_temperature", "temperature", "target_temp_temp", "target_temp_high",
+        "target_temp_low", "indoor_temperature", "indoor_humidity",
+        "hvac_action", "hvac_mode", "preset_mode",
+    ],
+    "sensor": [
+        "unit_of_measurement", "device_class", "state_class",
+    ],
+    "light": [
+        "brightness", "color_mode", "supported_color_modes",
+    ],
+    "switch": [],
+    "fan": [
+        "percentage", "percentage_step", "preset_modes",
+    ],
+    "cover": [
+        "current_position", "current_tilt_position",
+    ],
+    "lock": [],
+    "humidifier": [
+        "humidity", "target_humidity", "mode", "available_modes",
+    ],
+    "vacuum": [],
+    "media_player": [
+        "source", "source_list", "media_title", "volume_level",
+    ],
+    "camera": [],
+    "scene": [],
+    "script": [],
+    "automation": [
+        "last_triggered",
+    ],
+}
+
 EXCLUDED_DOMAINS = {
     "input_boolean", "input_number", "input_select", "input_button",
     "sun", "zone", "person", "update", "weather",
@@ -279,6 +314,16 @@ def ha_status(area: str = "", domain: str = "") -> dict:
             "state": state,
             "actions": info["actions"],
         }
+        # Extract useful properties from attributes
+        whitelist = ATTR_WHITELIST.get(ent_domain, [])
+        if whitelist:
+            props = {}
+            for attr_name in whitelist:
+                val = attrs.get(attr_name)
+                if val is not None:
+                    props[attr_name] = val
+            if props:
+                entry["properties"] = props
 
         if ent_domain == "scene":
             result_scenes.append(entry)
@@ -653,7 +698,7 @@ TOOL_SCHEMAS = {
     },
     "ha_status": {
         "name": "ha_status",
-        "description": "查询智能家居设备、场景、自动化的当前状态。首次使用或需要了解可用设备时调用。返回按区域分类的设备列表，包含每个设备的可用操作。调用 ha_control 前建议先调用此工具确认设备状态和可用操作。可按 area 或 domain 过滤减少返回量。",
+        "description": "查询智能家居设备、场景、自动化的当前状态。首次使用或需要了解可用设备时调用。返回按区域分类的设备列表，包含每个设备的可用操作及关键属性（温度、湿度等）。调用 ha_control 前建议先调用此工具确认设备状态和可用操作。可按 area 或 domain 过滤减少返回量。",
         "input_schema": {
             "type": "object",
             "properties": {
