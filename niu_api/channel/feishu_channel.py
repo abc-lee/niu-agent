@@ -411,6 +411,7 @@ class FeishuChannelAdapter(ChannelAdapter):
                                 "filename": img_info.get("alt", Path(local_path).name),
                                 "kind": "image",
                             })
+                    self._stream_pending_images.clear()
                     if self._stream_pending_files:
                         try:
                             await self._send_pending_media(channel_id)
@@ -447,6 +448,7 @@ class FeishuChannelAdapter(ChannelAdapter):
             self._accumulated_text = ""
             self._stream_pending_images = []
             self._stream_pending_files = []
+            self._stream_sent_media_paths = set()
 
     async def push(self, channel_id: str, content: str) -> None:
         """主动推送 — 没有 ID 就不发，优先 open_id"""
