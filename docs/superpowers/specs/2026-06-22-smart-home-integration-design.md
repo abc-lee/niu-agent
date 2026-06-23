@@ -307,9 +307,9 @@
 {"success": true, "message": "集成已删除"}
 ```
 
-**Config Flow API（HA 2026.6 实测通过）：**
+**Config Flow API（HA 2026.6，实施前必须验证）：**
 - 发起：`POST /api/config/config_entries/flow`，body `{"handler": "xiaomi_miot", "show_options": false}`
-- 推进：`POST /api/config/config_entries/flow/{flow_id}`，body `{"action": "account", ...data}`（action 值由上一步返回的 step_id 决定）
+- 推进：`POST /api/config/config_entries/flow/{flow_id}`，body 为表单字段键值对（data 参数直接展开）。注意：body 格式尚未实际验证，可能是 `{"user_input": {...data}}` 或直接展开 data 字段，实施时必须用真实 HA 实例测试确认
 - 删除：`DELETE /api/config/config_entries/entry/{entry_id}`
 
 **注意：** HA 2026.6 中 Config Flow 的 WebSocket API（`config/integration/initialize` / `config/integration/step`）已废弃，必须使用 REST API。实施前需再次验证 REST 端点可用性，如不可用则回退到 WebSocket 方案。
@@ -537,3 +537,9 @@ ha-server:
 | 配置文件 trigger id 格式不一致（trig_001 vs ha_trig_xxx） | High | 统一为 ha_trig_{timestamp}_{random} 格式 |
 | threshold 字段有无未明确 | Medium | 加注"threshold 仅在 above/below 时存在" |
 | ha_integrate 缺少 input_schema | Medium | 添加完整 input_schema 示例 |
+
+### 第五轮
+
+| 原问题 | 严重度 | 修复方案 |
+|--------|--------|----------|
+| Config Flow 推进步骤 body 格式未验证（"action": "account" 可能不正确） | Medium | 移除具体 action 示例，改为"data 参数直接展开"，加注实施时必须用真实 HA 实例验证 body 格式 |
