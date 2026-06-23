@@ -1471,11 +1471,18 @@ async def _tidy_context_impl(request: dict):
                         break
                 protected_ids = _pids  # No fallback: tool output is never protected
 
+                # 模式二量化目标：基于 targetThreshold 计算动态目标
+                _compress_target = ""
+                if usage_percent >= 50:
+                    target_threshold = _read_target_threshold()
+                    target_tokens = int(display_tokens * target_threshold)
+                    suggest_release = max(display_tokens - target_tokens, int(display_tokens * 0.1))
+                    _compress_target = f"\n压缩目标：建议释放约 {suggest_release} tokens，将上下文从 {usage_percent:.1f}% 降至约 {target_threshold*100:.0f}%。优先压缩远端（idx 小的）消息；如果远端释放量不足目标，继续压缩近端非保护消息直到达标\n"
+
                 prompt = f"""系统进入睡眠状态。
 
 当前上下文：{display_tokens} tokens（{usage_percent:.1f}%）
-
-以下消息已标注 [PROTECTED]，不可删除或压缩：
+{_compress_target}以下消息已标注 [PROTECTED]，完全不可动（不可删除、不可压缩、不可修改内容、不可合并），在单元内应排除不参与压缩：
 保护消息ID: {json.dumps(protected_ids)}
 
 消息列表：
