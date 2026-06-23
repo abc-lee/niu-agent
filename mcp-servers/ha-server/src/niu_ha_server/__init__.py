@@ -306,6 +306,84 @@ def ha_setup(ha_url: str = "", ha_token: str = "") -> dict:
     return conn
 
 
+# --- ha_control ---
+
+def ha_control(entity_id: str, action: str, value: float = None, **kwargs) -> dict:
+    """控制智能家居设备。"""
+    config = _read_config()
+    url, headers, err = _get_ha_client(config)
+    if err:
+        return {"success": False, "error": err}
+
+    domain = entity_id.split(".")[0]
+    info = DOMAIN_MAP.get(domain)
+    if not info:
+        return {"success": False, "error": f"未知的设备类型: {domain}"}
+
+    if action not in info["actions"]:
+        return {
+            "success": False,
+            "error": f"动作 '{action}' 不适用于 {info['type']} 设备，可用动作: {info['actions']}",
+        }
+
+    service = ACTION_SERVICE_MAP[action](domain)
+
+    service_data = {"entity_id": entity_id}
+    if action == "set_brightness" and value is not None:
+        service_data["brightness"] = int(value * 2.55)
+    elif action == "set_temperature" and value is not None:
+        service_data["temperature"] = value
+
+    try:
+        resp = _requests.post(
+            f"{url}/api/services/{service}",
+            headers=headers,
+            json=service_data,
+            timeout=15,
+        )
+        if resp.status_code != 200:
+            return {"success": False, "error": f"服务调用失败: HTTP {resp.status_code}"}
+
+        try:
+            changed = resp.json()
+        except Exception:
+            changed = []
+        if not isinstance(changed, list):
+            changed = []
+        target = None
+        for item in changed:
+            if isinstance(item, dict) and item.get("entity_id") == entity_id:
+                target = item
+                break
+
+        if target:
+            return {
+                "success": True,
+                "entity_id": entity_id,
+                "state": target.get("state", ""),
+                "attributes": target.get("attributes", {}),
+            }
+
+        state_resp = _requests.get(
+            f"{url}/api/states/{entity_id}",
+            headers=headers,
+            timeout=10,
+        )
+        if state_resp.status_code == 200:
+            target = state_resp.json()
+            return {
+                "success": True,
+                "entity_id": entity_id,
+                "state": target.get("state", ""),
+                "attributes": target.get("attributes", {}),
+            }
+
+        return {"success": True, "entity_id": entity_id, "state": "unknown"}
+
+    except Exception as e:
+        return {"success": False, "error": f"控制失败: {e}"}
+
+
 # --- TOOL_SCHEMAS ---
 
 TOOL_SCHEMAS = {
@@ -331,6 +409,19 @@ TOOL_SCHEMAS = {
                 "domain": {"type": "string", "description": "按设备类型过滤，如 'light'、'climate'"},
             },
             "required": [],
+        },
+    },
+    "ha_control": {
+        "name": "ha_control",
+        "description": "控制智能家居设备。需要 entity_id 和 action 参数。entity_id 从 ha_status 获取，action 必须在该设备允许的 actions 列表中。set_brightness 的 value 范围 0-100，set_temperature 的 value 为目标温度。",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "entity_id": {"type": "string", "description": "实体 ID，如 light.xxx"},
+                "action": {"type": "string", "description": "动作名，如 turn_on/turn_off/toggle/set_brightness 等"},
+                "value": {"type": "number", "description": "动作参数：亮度 0-100 或温度值"},
+            },
+            "required": ["entity_id", "action"],
         },
     },
 }
