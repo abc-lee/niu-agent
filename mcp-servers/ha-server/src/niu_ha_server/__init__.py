@@ -8,6 +8,8 @@ import time
 import random
 import string
 
+import requests as _requests
+
 # --- 配置文件 ---
 
 CONFIG_PATH = os.path.expanduser("~/.niu/ha-config.json")
@@ -97,9 +99,99 @@ ACTION_SERVICE_MAP = {
 }
 
 
+# --- HA 连接辅助 ---
+
+def _get_ha_client(config: dict):
+    url = config.get("ha_url", "").rstrip("/")
+    token = config.get("ha_token", "")
+    if not url or not token:
+        return None, None, "未配置 Home Assistant"
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    return url, headers, None
+
+
+def _check_ha_connection(ha_url: str, headers: dict) -> dict:
+    try:
+        resp = _requests.get(f"{ha_url}/api/", headers=headers, timeout=5)
+        if resp.status_code == 200:
+            data = resp.json()
+            return {"connected": True, "version": data.get("ha_version", "unknown")}
+        return {"connected": False, "error": f"HA 返回状态码 {resp.status_code}"}
+    except _requests.ConnectionError:
+        return {"connected": False, "error": f"无法连接到 Home Assistant: {ha_url}"}
+    except Exception as e:
+        return {"connected": False, "error": f"连接异常: {str(e)}"}
+
+
+# --- ha_setup ---
+
+def ha_setup(ha_url: str = "", ha_token: str = "") -> dict:
+    """配置 Home Assistant 连接。"""
+    if ha_url and ha_token:
+        ha_url = ha_url.rstrip("/")
+        headers = {"Authorization": f"Bearer {ha_token}", "Content-Type": "application/json"}
+        conn = _check_ha_connection(ha_url, headers)
+        if not conn["connected"]:
+            return conn
+
+        def _setup(config):
+            config["ha_url"] = ha_url
+            config["ha_token"] = ha_token
+            if "triggers" not in config:
+                config["triggers"] = []
+            return conn
+
+        result = _atomic_update(_setup)
+        result["ha_url"] = ha_url
+
+        try:
+            from niu_api.internal.ha_watcher import check_and_start
+            check_and_start()
+        except Exception:
+            pass
+
+        return result
+
+    config = _read_config()
+    url, headers, err = _get_ha_client(config)
+    if err:
+        return {"connected": False, "error": "未配置 Home Assistant"}
+
+    conn = _check_ha_connection(url, headers)
+    if not conn["connected"]:
+        return conn
+
+    conn["ha_url"] = url
+    triggers = config.get("triggers", [])
+    conn["triggers"] = [
+        {
+            "id": t["id"],
+            "entity_id": t["entity_id"],
+            "condition": t["condition"],
+            **({"threshold": t["threshold"]} if "threshold" in t else {}),
+            "description": t.get("description", ""),
+        }
+        for t in triggers
+    ]
+    return conn
+
+
 # --- TOOL_SCHEMAS ---
 
-TOOL_SCHEMAS = {}
+TOOL_SCHEMAS = {
+    "ha_setup": {
+        "name": "ha_setup",
+        "description": "配置 Home Assistant 连接。首次使用时传入 ha_url 和 ha_token。无参数时返回当前连接状态和订阅列表。ha_token 从 HA Web UI → 用户头像 → Security → Long-Lived Access Tokens 获取。",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "ha_url": {"type": "string", "description": "HA 地址，如 http://localhost:8123"},
+                "ha_token": {"type": "string", "description": "Long-Lived Access Token"},
+            },
+            "required": [],
+        },
+    },
+}
 
 
 def get_tool_schemas():
