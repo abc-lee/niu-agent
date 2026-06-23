@@ -77,7 +77,7 @@ def _get_litellm_session(config: dict) -> Any:
 
         _cached_session = LiteLLMSession(cfg=llm_config)
         _cached_config_key = config_key
-        logger.info("Created LiteLLMSession for LightRAG: model=%s, api_type=%s", config.get("model"), config.get("type"))
+        logger.info("Created LiteLLMSession for LightRAG: model=%s, api_type=%s, provider=%s", config.get("model"), config.get("type"), config.get("provider"))
         return _cached_session
 
 

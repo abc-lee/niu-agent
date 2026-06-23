@@ -946,8 +946,108 @@ fn main() {
             warn!("Preload may not be complete, proceeding anyway");
         }
 
-        // Signal the splash window to close
-        let _ = splash_tx.send(());
+        // --- LLM 配置验证 ---
+        info!("Checking LLM configuration...");
+
+        #[derive(Debug, Deserialize)]
+        struct LlmStatus { ready: bool, #[allow(dead_code)] error: Option<String> }
+        #[derive(Debug, Deserialize)]
+        struct TestLlmResult { success: bool, message: Option<String>, error: Option<String> }
+
+        let llm_status_url = format!("http://127.0.0.1:{}/api/llm-status", port);
+        let llm_configured = match check_client.get(&llm_status_url).send() {
+            Ok(resp) if resp.status().is_success() =>
+                resp.json::<LlmStatus>().ok().map_or(false, |s| s.ready),
+            _ => false,
+        };
+
+        if !llm_configured {
+            info!("LLM not configured, opening settings...");
+            let _ = splash_tx.send(());  // 关闭 splash
+            let mut settings_child = launch_window("settings")
+                .expect("Failed to launch settings window");
+            let test_url = format!("http://127.0.0.1:{}/api/test-llm", port);
+            // 轮询客户端需要足够长的超时（端点本身最多 20 秒）
+            let poll_client = reqwest::blocking::Client::builder()
+                .timeout(Duration::from_secs(25))
+                .build().unwrap_or_else(|_| check_client.clone());
+            for _ in 0..200 {
+                if cancelled_bg.load(Ordering::SeqCst) { break; }
+                if let Ok(Some(_exit_status)) = settings_child.try_wait() {
+                    warn!("Settings window closed without completing test, re-opening...");
+                    settings_child = launch_window("settings")
+                        .expect("Failed to re-launch settings window");
+                }
+                thread::sleep(Duration::from_secs(3));
+                if let Ok(resp) = poll_client.post(&test_url)
+                    .header("Content-Type", "application/json").body("{}").send() {
+                    if let Ok(v) = resp.json::<TestLlmResult>() {
+                        if v.success { info!("LLM test passed after reconfiguration"); break; }
+                    }
+                }
+            }
+        } else {
+            info!("LLM configured, running real test...");
+            let test_client = reqwest::blocking::Client::builder()
+                .timeout(Duration::from_secs(25)).build().unwrap_or_else(|_| check_client.clone());
+            let test_url = format!("http://127.0.0.1:{}/api/test-llm", port);
+
+            match test_client.post(&test_url)
+                .header("Content-Type", "application/json").body("{}").send() {
+                Ok(resp) if resp.status().is_success() => {
+                    if let Ok(v) = resp.json::<TestLlmResult>() {
+                        if !v.success {
+                            warn!("LLM test failed: {}", v.error.unwrap_or_default());
+                            // 重试一次（5 秒后），避免瞬时网络错误误判
+                            thread::sleep(Duration::from_secs(5));
+                            let retry = test_client.post(&test_url)
+                                .header("Content-Type", "application/json").body("{}").send();
+                            let retry_passed = match retry {
+                                Ok(resp) if resp.status().is_success() => {
+                                    resp.json::<TestLlmResult>().ok().map_or(false, |v| v.success)
+                                }
+                                _ => false
+                            };
+                            if retry_passed {
+                                info!("LLM test passed on retry (transient error)");
+                            } else {
+                                // 连续两次失败 → 打开配置页面
+                                let _ = splash_tx.send(());  // 关闭 splash
+                                let mut settings_child = launch_window("settings")
+                                    .expect("Failed to launch settings window");
+                                let test_url = format!("http://127.0.0.1:{}/api/test-llm", port);
+                                let poll_client2 = reqwest::blocking::Client::builder()
+                                    .timeout(Duration::from_secs(25))
+                                    .build().unwrap_or_else(|_| check_client.clone());
+                                for _ in 0..200 {
+                                    if cancelled_bg.load(Ordering::SeqCst) { break; }
+                                    if let Ok(Some(_)) = settings_child.try_wait() {
+                                        warn!("Settings window closed, re-opening...");
+                                        settings_child = launch_window("settings")
+                                            .expect("Failed to re-launch settings window");
+                                    }
+                                    thread::sleep(Duration::from_secs(3));
+                                    if let Ok(resp2) = poll_client2.post(&test_url)
+                                        .header("Content-Type", "application/json").body("{}").send() {
+                                        if let Ok(v2) = resp2.json::<TestLlmResult>() {
+                                            if v2.success { info!("LLM test passed after reconfiguration"); break; }
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            info!("LLM test passed: {}", v.message.unwrap_or_default());
+                        }
+                    }
+                }
+                _ => {
+                    // 端点出错 → 降级继续启动
+                    warn!("LLM test endpoint failed, proceeding anyway");
+                }
+            }
+        }
+
+        let _ = splash_tx.send(());  // 关闭 splash
 
         // Launch assistant window
         let mut electron_child = match launch_window("assistant") {

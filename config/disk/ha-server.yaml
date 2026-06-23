@@ -19,7 +19,7 @@ tools:
   - name: ha_status
     category: read
     short: "查询设备状态"
-    long: "查询智能家居设备、场景、自动化的当前状态。返回按区域分类的设备列表及可用操作"
+    long: "查询智能家居设备、场景、自动化的当前状态。返回按区域分类的设备列表，含可用操作及关键属性（温度、湿度等）"
     parameters:
       - name: area
         flag: area
