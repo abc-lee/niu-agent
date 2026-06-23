@@ -126,64 +126,63 @@ def _check_ha_connection(ha_url: str, headers: dict) -> dict:
 
 
 def _ws_call(ha_url: str, ha_token: str, command: dict, timeout: float = 15) -> dict:
-    """WebSocket 短连接：连接 → 认证 → 发送命令 → 接收结果 → 关闭。"""
+    """WebSocket 单命令调用。"""
     import websockets
 
-    ws_url = ha_url.replace("http://", "ws://").replace("https://", "wss://") + "/api/websocket"
-
     async def _run():
+        ws_url = ha_url.replace("http://", "ws://").replace("https://", "wss://") + "/api/websocket"
         async with websockets.connect(ws_url, max_size=5_000_000) as ws:
             msg = json.loads(await _asyncio.wait_for(ws.recv(), timeout=10))
             if msg.get("type") != "auth_required":
-                raise ValueError(f"Unexpected first message: {msg}")
+                return {"error": f"Unexpected: {msg}"}
             await ws.send(json.dumps({"type": "auth", "access_token": ha_token}))
             msg = json.loads(await _asyncio.wait_for(ws.recv(), timeout=10))
             if msg.get("type") != "auth_ok":
-                raise ValueError("HA 认证失败")
+                return {"error": "HA 认证失败"}
             await ws.send(json.dumps(command))
-            msg = json.loads(await _asyncio.wait_for(ws.recv(), timeout=10))
-            if msg.get("type") == "result" and msg.get("success"):
-                return msg.get("result")
-            elif msg.get("type") == "result":
-                raise ValueError(f"WS 命令失败: {msg.get('error')}")
-            return msg
+            while True:
+                result = json.loads(await _asyncio.wait_for(ws.recv(), timeout=timeout))
+                if result.get("id") == command.get("id"):
+                    return result
+                if result.get("type") == "event":
+                    continue
 
     try:
-        loop = _asyncio.get_event_loop()
-        if loop.is_running():
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor() as pool:
-                future = pool.submit(_asyncio.run, _run())
-                return future.result(timeout=timeout)
-        return loop.run_until_complete(_run())
+        _asyncio.get_running_loop()
+        # 在运行中的事件循环内，用线程池隔离
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            future = pool.submit(_asyncio.run, _run())
+            return future.result(timeout=timeout)
     except RuntimeError:
         return _asyncio.run(_run())
 
 
 def _ws_batch_call(ha_url: str, ha_token: str, commands: list, timeout: float = 20) -> tuple:
-    """WebSocket 短连接单次握手发多个命令，返回结果元组。"""
+    """WebSocket 批量命令调用（单连接多命令）。"""
     import websockets
 
-    ws_url = ha_url.replace("http://", "ws://").replace("https://", "wss://") + "/api/websocket"
-
     async def _run():
+        ws_url = ha_url.replace("http://", "ws://").replace("https://", "wss://") + "/api/websocket"
         async with websockets.connect(ws_url, max_size=5_000_000) as ws:
             msg = json.loads(await _asyncio.wait_for(ws.recv(), timeout=10))
             if msg.get("type") != "auth_required":
-                raise ValueError(f"Unexpected first message: {msg}")
+                raise ValueError(f"Unexpected: {msg}")
             await ws.send(json.dumps({"type": "auth", "access_token": ha_token}))
             msg = json.loads(await _asyncio.wait_for(ws.recv(), timeout=10))
             if msg.get("type") != "auth_ok":
-                raise ValueError(f"HA 认证失败")
+                raise ValueError("HA 认证失败")
             results = []
             for i, cmd in enumerate(commands, 1):
                 cmd_copy = dict(cmd)
                 cmd_copy["id"] = i
                 await ws.send(json.dumps(cmd_copy))
                 while True:
-                    resp = json.loads(await _asyncio.wait_for(ws.recv(), timeout=10))
+                    resp = json.loads(await _asyncio.wait_for(ws.recv(), timeout=timeout))
                     if resp.get("id") == i:
                         break
+                    if resp.get("type") == "event":
+                        continue
                 if resp.get("type") == "result" and resp.get("success"):
                     results.append(resp.get("result"))
                 else:
@@ -191,13 +190,11 @@ def _ws_batch_call(ha_url: str, ha_token: str, commands: list, timeout: float = 
             return tuple(results)
 
     try:
-        loop = _asyncio.get_event_loop()
-        if loop.is_running():
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor() as pool:
-                future = pool.submit(_asyncio.run, _run())
-                return future.result(timeout=timeout)
-        return loop.run_until_complete(_run())
+        _asyncio.get_running_loop()
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            future = pool.submit(_asyncio.run, _run())
+            return future.result(timeout=timeout)
     except RuntimeError:
         return _asyncio.run(_run())
 
@@ -453,6 +450,11 @@ def ha_subscribe(entity_id: str = "", condition: str = "", value: float = None,
             return config
 
         _atomic_update(_remove)
+        try:
+            from niu_api.internal.ha_watcher import check_and_start
+            check_and_start()
+        except Exception:
+            pass
         return {"success": True, "trigger_id": trigger_id, "message": "已取消订阅"}
 
     if not entity_id or not condition:
@@ -555,7 +557,7 @@ def ha_integrate(handler: str = "", flow_id: str = "", data: dict = None,
             resp = _requests.post(
                 f"{url}/api/config/config_entries/flow",
                 headers=headers,
-                json={"handler": handler, "show_options": False},
+                json={"handler": handler, "show_advanced_options": False, "context": {"source": "user"}},
                 timeout=15,
             )
             if resp.status_code != 200:

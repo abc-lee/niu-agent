@@ -75,7 +75,7 @@ class _HAWatcher:
                     result = loop.run_until_complete(self._connect_and_listen())
                     if result == "auth_failed":
                         print("[HAWatcher] HA 认证失败，等待配置变更...")
-                        break
+                        self._wait_for_config_change(timeout=300)
                 except Exception as e:
                     print(f"[HAWatcher] 连接异常: {e}, 5秒后重连...")
                     time.sleep(5)
