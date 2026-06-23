@@ -201,7 +201,7 @@ TOOL_SCHEMAS = {
 返回:
 - 未命名人物列表，按出现次数排序
 - 包含：id, auto_label, photo_count, has_valid_photos, photos: [{file_path, boxed_path}]
-- boxed_path 是带人脸红框的图片路径，前端用 Markdown 图片语法 ![person_id|name](path) 显示
+- boxed_path 是带人脸红框的图片路径，前端用 Markdown 图片语法 ![人物名](boxed_path) 显示，person_id 从 JSON 的 id 字段获取，不编码在 alt 文本中
 - has_valid_photos=false 表示该人物的照片文件已不存在""",
         "input_schema": {
             "type": "object",
@@ -262,7 +262,7 @@ TOOL_SCHEMAS = {
 - person_id, person_name
 - photos: [{file_path, boxed_path, taken_at}, ...]
 
-boxed_path 是带人脸红框的图片路径，前端用 Markdown 图片语法 ![person_id|name](path) 显示。""",
+boxed_path 是带人脸红框的图片路径，前端用 Markdown 图片语法 ![人物名](boxed_path) 显示，person_id 从 JSON 的 id 字段获取，不编码在 alt 文本中。""",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -3975,7 +3975,7 @@ async def list_tools() -> list[Tool]:
 返回:
 - 未命名人物列表，按出现次数排序
 - 包含：id, auto_label, photo_count, has_valid_photos, photos: [{file_path, boxed_path}]
-- boxed_path 是带人脸红框的图片路径，前端用 Markdown 图片语法 ![person_id|name](path) 显示
+- boxed_path 是带人脸红框的图片路径，前端用 Markdown 图片语法 ![人物名](boxed_path) 显示，person_id 从 JSON 的 id 字段获取，不编码在 alt 文本中
 - has_valid_photos=false 表示该人物的照片文件已不存在""",
             inputSchema={
                 "type": "object",
@@ -4036,7 +4036,7 @@ async def list_tools() -> list[Tool]:
 - person_id, person_name
 - photos: [{file_path, boxed_path, taken_at}, ...]
 
-boxed_path 是带人脸红框的图片路径，前端用 Markdown 图片语法 ![person_id|name](path) 显示。""",
+boxed_path 是带人脸红框的图片路径，前端用 Markdown 图片语法 ![人物名](boxed_path) 显示，person_id 从 JSON 的 id 字段获取，不编码在 alt 文本中。""",
             inputSchema={
                 "type": "object",
                 "properties": {
