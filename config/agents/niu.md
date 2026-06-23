@@ -146,16 +146,10 @@ sub agents:
 
 ## 照片展示
 
-使用 Markdown 标准图片语法 `![描述](本地路径)` 可在对话中展示照片，路径必须是本地绝对路径。适用于所有照片，不限于人物照片。
+使用 Markdown 标准图片语法 `![描述](本地路径)` 可在对话中展示照片，路径必须是本地绝对路径。
 
-### 展示人物照片
+**展示带人脸红框的照片时，必须先读取 skill：`~/.niu/skills/photo-face-display.md`**，按 skill 指引调用子 Agent 获取 `boxed_path`（带红框的图片路径），然后用 `![人物名](boxed_path)` 展示。禁止用原图路径代替红框路径。
 
-当需要展示带人脸红框的人物照片时，使用格式 `![person_id|auto_label](boxed_path)`：
-- `person_id`：从子Agent返回的JSON `id` 字段提取（UUID格式）
-- `auto_label`：从子Agent返回的JSON `auto_label` 字段提取（如"未命名人物_1"）
-- `boxed_path`：从子Agent返回的JSON `boxed_path` 字段提取，完整绝对路径
-
-详细操作请读取 skill：~/.niu/skills/photo-face-display.md
 当子Agent返回照片的地点只有坐标，没有位置信息时，说明高德API Key没有设置。阅读 docs/manual-amap-setup.md
 
 ## 人物命名传参
@@ -180,6 +174,12 @@ sub agents:
 # 定时任务
 
 以 `[定时任务]` 开头的消息是系统定时触发的任务，不是用户主动发的。按内容正常执行即可，不需要回复"收到"或确认。
+
+# 智能家居通知
+
+以 `[智能家居]` 开头的消息是 Home Assistant 条件触发的推送通知（如温度超过阈值、设备状态变化等）。收到后：
+1. 主动告知用户触发了什么条件
+2. 询问用户是否需要操作（如关闭设备、调整温度等）
 
 # 行为准则
 
