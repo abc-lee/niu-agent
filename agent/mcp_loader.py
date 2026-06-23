@@ -32,6 +32,7 @@ REQUIRED_SERVERS: List[Tuple[str, str]] = [
 
 OPTIONAL_SERVERS: List[Tuple[str, str]] = [
     ("feishu-server", "niu_feishu_server"),
+    ("ha-server", "niu_ha_server"),
 ]
 
 

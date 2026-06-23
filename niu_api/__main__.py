@@ -67,6 +67,14 @@ async def lifespan(app: FastAPI):
     start_scheduler()
     logger.info("Internal scheduler started")
 
+    # 3.1. Start HAWatcher (if HA configured)
+    try:
+        from niu_api.internal.ha_watcher import check_and_start
+        check_and_start()
+        logger.info("HAWatcher check done")
+    except Exception as e:
+        logger.debug(f"HAWatcher not started: {e}")
+
     # 3.5. Start page-agent-mcp (Node.js browser automation)
     # NOTE: page-agent-mcp should run as a standalone process, NOT started here.
     # The hub-bridge.js creates an HTTP server on port 38401, and if started via
@@ -365,6 +373,13 @@ async def lifespan(app: FastAPI):
 
     from niu_api.internal.scheduler import stop_scheduler
     stop_scheduler()
+
+    try:
+        from niu_api.internal.ha_watcher import stop_watcher
+        stop_watcher()
+    except Exception as e:
+        logger.debug(f"HAWatcher stop skipped: {e}")
+
     logger.info("Niu API Server shutdown complete")
 
 
