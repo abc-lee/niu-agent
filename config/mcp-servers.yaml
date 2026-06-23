@@ -235,4 +235,3 @@ ha-server:
       visibility: hidden
     ha_integrate:
       visibility: hidden
-nanobot.system: null
