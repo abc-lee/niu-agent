@@ -223,6 +223,9 @@ def ha_status(area: str = "", domain: str = "") -> dict:
             {"type": "config/area_registry/list"},
             {"type": "config/entity_registry/list"},
         ])
+        devices = devices or []
+        areas = areas or []
+        entities = entities or []
     except Exception as e:
         return {"connected": False, "error": f"查询失败: {e}"}
 

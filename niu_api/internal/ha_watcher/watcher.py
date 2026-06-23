@@ -72,7 +72,9 @@ class _HAWatcher:
         while self._running:
             try:
                 result = loop.run_until_complete(self._connect_and_listen())
-                if result == "no_triggers":
+                if result in ("no_triggers", "auth_failed"):
+                    if result == "auth_failed":
+                        print("[HAWatcher] HA 认证失败，等待配置变更...")
                     break
             except Exception as e:
                 print(f"[HAWatcher] 连接异常: {e}, 5秒后重连...")
@@ -103,7 +105,7 @@ class _HAWatcher:
             await ws.send(json.dumps({"type": "auth", "access_token": ha_token}))
             msg = json.loads(await ws.recv())
             if msg.get("type") != "auth_ok":
-                raise ValueError("HA 认证失败")
+                return "auth_failed"
 
             self._current_subscriptions = {}
             msg_id = 1
