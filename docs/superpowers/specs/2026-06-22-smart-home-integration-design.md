@@ -158,14 +158,14 @@
 
 | 参数 | 必填 | 说明 |
 |------|------|------|
-| entity_id | 是 | 监听的实体 ID |
-| condition | 是 | 条件类型：state_change / above / below |
+| entity_id | 否 | 监听的实体 ID（新增订阅时必填） |
+| condition | 否 | 条件类型：state_change / above / below（新增订阅时必填） |
 | value | 否 | above/below 时必填，阈值 |
 | from_state | 否 | state_change 时的起始状态过滤，如 "off" |
 | to_state | 否 | state_change 时的目标状态过滤，如 "on" |
 | description | 否 | 触发时的描述文本，默认 "{entity_id} {condition} {value}" |
-| trigger_id | 否 | 触发器唯一标识；不传时由工具自动生成（推荐），返回中包含生成的 ID |
-| operation | 否 | "unsubscribe" 表示取消，"list" 表示查询当前订阅列表，不传表示新增 |
+| trigger_id | 否 | 触发器唯一标识；不传时由工具自动生成（推荐）；取消订阅时必填 |
+| operation | 否 | "unsubscribe" 表示取消（需配合 trigger_id），"list" 表示查询当前订阅列表，不传表示新增 |
 
 **新增订阅流程：**
 1. 生成唯一 trigger_id（格式 `ha_trig_{timestamp}_{random}`，确保不与已有 ID 重复）
@@ -199,6 +199,7 @@
 {"success": true, "trigger_id": "ha_trig_1719014400_a3f2", "message": "已取消订阅"}
 
 // 查询订阅列表
+// threshold 字段仅在 condition 为 above/below 时存在，state_change 条件无此字段
 {
   "triggers": [
     {"id": "ha_trig_1719014400_a3f2", "entity_id": "sensor.xxx_temperature", "condition": "above", "threshold": 25, "description": "温度超过25度"},
@@ -333,14 +334,14 @@
   "ha_token": "eyJhbGciOi...",
   "triggers": [
     {
-      "id": "trig_001",
+      "id": "ha_trig_1719014400_a3f2",
       "entity_id": "sensor.miaomiaoce_t1_4d15_temperature",
       "condition": "above",
       "threshold": 25,
       "description": "温度超过25度"
     },
     {
-      "id": "trig_002",
+      "id": "ha_trig_1719014400_b7e1",
       "entity_id": "light.yeelink_bslamp2_b1ce_light",
       "condition": "state_change",
       "description": "书房灯状态变化"
@@ -425,7 +426,25 @@ mcp-servers/ha-server/
         "trigger_id": {"type": "string", "description": "触发器唯一标识，取消订阅时需要"},
         "operation": {"type": "string", "enum": ["unsubscribe", "list"], "description": "操作类型，不传表示新增"}
     },
-    "required": ["entity_id", "condition"]
+    "required": [],
+    # 条件必填规则：新增订阅时 entity_id 和 condition 必填；取消订阅时 trigger_id 必填；查询列表时无需其他参数
+}
+```
+
+**input_schema 示例（ha_integrate）：**
+
+```python
+"input_schema": {
+    "type": "object",
+    "properties": {
+        "handler": {"type": "string", "description": "集成域名，如 xiaomi_miot"},
+        "flow_id": {"type": "string", "description": "配置流 ID，推进步骤时必填"},
+        "data": {"type": "object", "description": "表单数据键值对，如 {\"username\": \"xxx\", \"password\": \"yyy\"}"},
+        "operation": {"type": "string", "enum": ["delete"], "description": "操作类型，delete 表示删除集成"},
+        "entry_id": {"type": "string", "description": "集成条目 ID，删除时必填"}
+    },
+    "required": [],
+    # 条件必填规则：发起配置流时 handler 必填；推进步骤时 flow_id 和 data 必填；删除时 operation 和 entry_id 必填
 }
 ```
 
@@ -507,3 +526,14 @@ ha-server:
 | 订阅列表隐藏在 ha_setup | Medium | ha_subscribe 增加 `operation="list"` 模式 |
 | Token 日志/对话泄露风险 | Medium | ha_token 不得出现在工具返回值或日志中，实现时脱敏 |
 | TOOL_SCHEMAS description 缺失 | Medium | 添加 5 个工具的完整描述字符串和 input_schema 示例 |
+
+### 第四轮
+
+| 原问题 | 严重度 | 修复方案 |
+|--------|--------|----------|
+| ha_subscribe required 字段对 list/unsubscribe 模式不适用 | Critical | required 改为空列表，加条件必填规则注释 |
+| unsubscribe 时 trigger_id 实际必填但 schema 未强制 | High | 参数表标注"取消订阅时必填"，input_schema 描述中明确 |
+| ha_integrate delete 时 entry_id 未强制 | High | 参数表已有"删除集成时必填"，input_schema 加条件必填规则注释 |
+| 配置文件 trigger id 格式不一致（trig_001 vs ha_trig_xxx） | High | 统一为 ha_trig_{timestamp}_{random} 格式 |
+| threshold 字段有无未明确 | Medium | 加注"threshold 仅在 above/below 时存在" |
+| ha_integrate 缺少 input_schema | Medium | 添加完整 input_schema 示例 |
