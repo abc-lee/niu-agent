@@ -444,6 +444,135 @@ def ha_subscribe(entity_id: str = "", condition: str = "", value: float = None,
     }
 
 
+# --- ha_integrate ---
+
+def _parse_data_schema(data_schema: list) -> list:
+    fields = []
+    if not data_schema:
+        return fields
+    for item in data_schema:
+        if not isinstance(item, dict):
+            continue
+        field = {
+            "name": item.get("name", ""),
+            "type": item.get("type", "string"),
+            "required": item.get("required", False),
+            "label": item.get("label", item.get("name", "")),
+        }
+        if "options" in item:
+            field["options"] = item["options"]
+        if "default" in item:
+            field["default"] = item["default"]
+        fields.append(field)
+    return fields
+
+
+def ha_integrate(handler: str = "", flow_id: str = "", data: dict = None,
+                 operation: str = "", entry_id: str = "", **kwargs) -> dict:
+    """管理 Home Assistant 集成（添加/删除设备品牌集成）。"""
+    config = _read_config()
+    url, headers, err = _get_ha_client(config)
+    if err:
+        return {"success": False, "error": err}
+
+    if operation == "delete":
+        if not entry_id:
+            return {"success": False, "error": "删除集成时 entry_id 必填"}
+        resp = _requests.delete(
+            f"{url}/api/config/config_entries/entry/{entry_id}",
+            headers=headers, timeout=15,
+        )
+        if resp.status_code in (200, 204):
+            return {"success": True, "message": "集成已删除"}
+        return {"success": False, "error": f"删除失败: HTTP {resp.status_code}"}
+
+    if not handler:
+        return {"success": False, "error": "发起配置流时 handler 必填"}
+
+    if not flow_id:
+        try:
+            resp = _requests.post(
+                f"{url}/api/config/config_entries/flow",
+                headers=headers,
+                json={"handler": handler, "show_options": False},
+                timeout=15,
+            )
+            if resp.status_code != 200:
+                return {"success": False, "error": f"发起配置流失败: HTTP {resp.status_code}"}
+            result = resp.json()
+        except Exception as e:
+            return {"success": False, "error": f"发起配置流失败: {e}"}
+    else:
+        if not data:
+            return {"success": False, "error": "推进配置流时 data 必填"}
+        try:
+            resp = _requests.post(
+                f"{url}/api/config/config_entries/flow/{flow_id}",
+                headers=headers,
+                json=dict(data),
+                timeout=15,
+            )
+            if resp.status_code != 200:
+                return {"success": False, "error": f"推进配置流失败: HTTP {resp.status_code}"}
+            result = resp.json()
+        except Exception as e:
+            return {"success": False, "error": f"推进配置流失败: {e}"}
+
+    flow_type = result.get("type", "")
+    if flow_type == "form":
+        fields = _parse_data_schema(result.get("data_schema", []))
+        return {
+            "type": "form",
+            "flow_id": result.get("flow_id", ""),
+            "step_id": result.get("step_id", ""),
+            "title": result.get("title", handler),
+            "fields": fields,
+            "description": result.get("description", ""),
+        }
+    elif flow_type == "create_entry":
+        entry = result.get("result", {}) if isinstance(result.get("result"), dict) else {}
+        return {
+            "type": "create_entry",
+            "title": result.get("title", handler),
+            "entry_id": entry.get("entry_id", ""),
+            "message": f"集成配置成功: {result.get('title', handler)}",
+        }
+    elif flow_type == "abort":
+        return {
+            "type": "abort",
+            "reason": result.get("reason", "未知原因"),
+            "description": result.get("description", ""),
+        }
+    else:
+        return result
+
+
+def run_server():
+    """MCP stdio server entry point (backup, same-process mode is primary)."""
+    try:
+        from mcp.server.stdio import stdio_server
+        from mcp.server import Server
+        server = Server("ha-server")
+
+        @server.list_tools()
+        async def list_tools():
+            return get_tool_schemas()
+
+        @server.call_tool()
+        async def call_tool(name, arguments):
+            fn = globals().get(name)
+            if fn:
+                result = fn(**arguments)
+                from mcp.types import TextContent
+                return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False))]
+            return []
+
+        import asyncio
+        asyncio.run(stdio_server(server))
+    except ImportError:
+        print("MCP stdio mode requires 'mcp' package")
+
+
 # --- TOOL_SCHEMAS ---
 
 TOOL_SCHEMAS = {
@@ -498,6 +627,21 @@ TOOL_SCHEMAS = {
                 "description": {"type": "string", "description": "触发时的描述文本"},
                 "trigger_id": {"type": "string", "description": "触发器标识，取消订阅时必填"},
                 "operation": {"type": "string", "enum": ["unsubscribe", "list"], "description": "操作类型，不传表示新增"},
+            },
+            "required": [],
+        },
+    },
+    "ha_integrate": {
+        "name": "ha_integrate",
+        "description": "管理 Home Assistant 集成（添加/删除设备品牌集成）。发起配置流时只需 handler 参数，返回表单字段后由 Agent 引导用户填写，再用 flow_id + data 推进。operation='delete' 删除已有集成。",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "handler": {"type": "string", "description": "集成域名，如 xiaomi_miot"},
+                "flow_id": {"type": "string", "description": "配置流 ID，推进步骤时必填"},
+                "data": {"type": "object", "description": "表单数据键值对，推进步骤时必填"},
+                "operation": {"type": "string", "enum": ["delete"], "description": "操作类型，delete 表示删除集成"},
+                "entry_id": {"type": "string", "description": "集成条目 ID，删除时必填"},
             },
             "required": [],
         },
