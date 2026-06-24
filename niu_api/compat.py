@@ -1639,7 +1639,11 @@ async def _tidy_context_impl(request: dict):
                 # 但游标不推进，下次压缩会重新处理该范围（部分消息已被压缩/删除）
                 if protected_ids:
                     try:
-                        # 构建受保护消息的原始内容映射（内存中的 messages 列表未被子Agent修改）
+                        # 构建受保护消息的原始内容映射
+                        # 注意：内存中的 messages 列表是 context-manager 运行前从 DB 加载的，
+                        # 未被子Agent修改。但如果 dream-evolver 在同一次 tidy 中修改了受保护消息
+                        # （实际上 dream-evolver 不修改消息内容，只调 lightrag），这里取的是
+                        # dream-evolver 之后的版本。如需更严格，应在子Agent调用前从 DB 重新读取。
                         protected_originals = {}
                         for pid in protected_ids:
                             _m = next((m for m in messages if getattr(m, "id", "") == pid), None)
@@ -1681,7 +1685,10 @@ async def _tidy_context_impl(request: dict):
                     else:
                         logger.info("[Tidy] Mode-2: protected messages intact after compression")
             else:
-                logger.info("[Tidy] context-manager: no messages to process")
+                if _skip_compress:
+                    logger.info("[Tidy] context-manager: skipped (suggest_release below threshold or already at target)")
+                else:
+                    logger.info("[Tidy] context-manager: no messages to process")
 
             return {"status": "ok", "mode": "sleep", "tokens_before": display_tokens}
 
