@@ -197,14 +197,44 @@ class _HAWatcher:
 
     def _push_to_chat(self, description: str):
         try:
+            import asyncio
+            from niu_api.chat import _main_loop
             from niu_api.chat_queue import get_chat_queue
+
+            loop = _main_loop
+            if loop is None or loop.is_closed():
+                print(f"[HAWatcher] Main event loop not available, cannot push: {description}")
+                return
+
+            # 通过 ChatQueue 入队并等待 Agent 回复
             q = get_chat_queue()
-            q.enqueue_sync(
-                content=f"[智能家居] {description}",
-                source="ha-watcher",
-                channel="ha",
-                session_id="default",
+            future = asyncio.run_coroutine_threadsafe(
+                q.enqueue_and_wait(
+                    content=f"[智能家居] {description}",
+                    source="ha-watcher",
+                    session_id="default",
+                ),
+                loop,
             )
+            agent_reply = future.result(timeout=300)
+
+            if not agent_reply:
+                print(f"[HAWatcher] Agent returned empty reply for: {description}")
+                return
+
+            # 飞书通道推送
+            try:
+                from niu_api.channel import get_channel_router
+                router = get_channel_router()
+                if router.has_channel("feishu"):
+                    push_future = asyncio.run_coroutine_threadsafe(
+                        router.push(agent_reply, "feishu", ""),
+                        loop,
+                    )
+                    push_future.result(timeout=30)
+            except Exception as e:
+                print(f"[HAWatcher] Feishu push failed: {e}")
+
         except Exception as e:
             print(f"[HAWatcher] 推送失败: {e}")
 
