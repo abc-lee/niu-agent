@@ -210,6 +210,8 @@ def agent_runner_loop(
         # 从 assistant 消息的 tool_calls 构建 tool_call_id → tool_name 映射
         # 用于截断标记中显示工具名（DB 不存 tool_name，需从关联的 assistant 消息提取）
         _tc_id_to_name: dict[str, str] = {}
+        # 收集所有有效的 tool_call_id（压缩可能留下孤立的 tool 消息）
+        _valid_tc_ids: set[str] = set()
         for msg in history:
             role = msg.get("role", "user")
             if role == "assistant" and msg.get("tool_calls"):
@@ -218,6 +220,15 @@ def agent_runner_loop(
                     tc_name = tc.get("function", {}).get("name", "")
                     if tc_id and tc_name:
                         _tc_id_to_name[tc_id] = tc_name
+                    if tc_id:
+                        _valid_tc_ids.add(tc_id)
+
+        # 收集所有 tool 消息的 tool_call_id，用于验证 assistant tool_calls 完整性
+        _tool_response_ids: set[str] = set()
+        for msg in history:
+            if msg.get("role") == "tool" and msg.get("tool_call_id"):
+                _tool_response_ids.add(msg["tool_call_id"])
+
         for msg in history:
             role = msg.get("role", "user")
             content = msg.get("content", "")
@@ -225,9 +236,17 @@ def agent_runner_loop(
                 entry = {"role": role, "content": content}
                 # 还原 tool_calls（assistant 消息可能携带工具调用）
                 if msg.get("tool_calls"):
-                    entry["tool_calls"] = msg["tool_calls"]
+                    # 过滤掉没有对应 tool 响应的 tool_calls（压缩可能删除了 tool 输出）
+                    valid_tcs = [tc for tc in msg["tool_calls"] if tc.get("id") in _tool_response_ids]
+                    if valid_tcs:
+                        entry["tool_calls"] = valid_tcs
+                    # 如果所有 tool_calls 都没有响应，不设置 tool_calls（变成纯文本消息）
                 messages.append(entry)
             elif role == "tool" and msg.get("tool_call_id") and content is not None:
+                # 跳过孤立的 tool 消息（没有对应的 assistant tool_calls）
+                if msg["tool_call_id"] not in _valid_tc_ids:
+                    logger.warning(f"[AgentLoop] Skipping orphan tool message: tool_call_id={msg['tool_call_id']}")
+                    continue
                 # tool 消息必须有 tool_call_id 和 content，否则 OpenAI API 返回 400
                 # 截断超长的 tool 内容（DB 中保存了完整内容，但 LLM 上下文需要保护）
                 tool_name = _tc_id_to_name.get(msg["tool_call_id"], "")

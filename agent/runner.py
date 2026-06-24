@@ -583,12 +583,13 @@ class NiuRunner:
             logger.warning(f"[Runner] sync_delete_messages failed: {e}")
             return None
 
-    def _sync_update_message(self, message_id, content):
+    def _sync_update_message(self, message_id, content, clear_tool_calls=False):
         """同步更新 DB 中的消息内容（桥接 async MessageStore）
 
         Args:
             message_id: 消息 UUID
             content: 新内容
+            clear_tool_calls: 是否同时清空 tool_calls 字段
 
         Returns:
             bool 更新是否成功
@@ -604,7 +605,7 @@ class NiuRunner:
 
         async def _do():
             store = await get_message_store()
-            return await store.update_message(message_id=message_id, content=content)
+            return await store.update_message(message_id=message_id, content=content, clear_tool_calls=clear_tool_calls)
 
         try:
             future = asyncio.run_coroutine_threadsafe(_do(), loop)
@@ -1088,6 +1089,11 @@ class NiuRunner:
                     if len(valid_updates) < len(updates):
                         logger.warning(f"[Runner] Force: Filtered {len(updates) - len(valid_updates)} invalid update IDs")
 
+                    # 级联删除：确保 tool 调用链完整性
+                    from niu_api.compat import _cascade_tool_chain_deletes, _cascade_tool_chain_updates
+                    valid_deletes = _cascade_tool_chain_deletes(fresh_messages, valid_deletes)
+                    valid_updates = _cascade_tool_chain_updates(fresh_messages, valid_updates)
+
                     # 执行删除
                     if valid_deletes:
                         del_result = self._sync_delete_messages(valid_deletes)
@@ -1099,7 +1105,8 @@ class NiuRunner:
                         mid = upd.get("message_id", "")
                         content = upd.get("content", "")
                         if mid and content:
-                            ok = self._sync_update_message(mid, content)
+                            clear_tc = upd.get("clear_tool_calls", False)
+                            ok = self._sync_update_message(mid, content, clear_tool_calls=clear_tc)
                             if ok:
                                 logger.info(f"[Runner] Force: Updated message {mid}")
                             else:

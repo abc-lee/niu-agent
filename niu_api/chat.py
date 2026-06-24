@@ -434,7 +434,7 @@ async def chat(request: ChatRequest) -> StreamingResponse:
                     logger.warning("[Chat SSE] Tidy lock busy, skipping force compression")
                 if _tidy_acquired:
                     try:
-                        tidy_result = await _tidy_context_impl(request={"session_id": session_id, "mode": "force"})
+                        tidy_result = await _tidy_context_impl(request={"session_id": session_id, "mode": "force"}, chat_lock_already_held=True)
                     finally:
                         _tidy_lock.release()
                     logger.info(f"[Chat SSE] Force compression result: {tidy_result.get('status')}")
@@ -543,7 +543,7 @@ async def chat_sync(request: ChatRequest) -> ChatResponse:
                 logger.warning("[Chat] Tidy lock busy, skipping force compression")
             if _tidy_acquired:
                 try:
-                    tidy_result = await _tidy_context_impl(request={"session_id": session_id, "mode": "force"})
+                    tidy_result = await _tidy_context_impl(request={"session_id": session_id, "mode": "force"}, chat_lock_already_held=True)
                 finally:
                     _tidy_lock.release()
                 logger.info(f"[Chat] Force compression result: {tidy_result.get('status')}")

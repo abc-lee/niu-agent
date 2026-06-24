@@ -53,6 +53,7 @@ class ChatQueue:
         self._processing_done = asyncio.Event()
         self._processing_done.set()  # 初始状态：未在处理
         self._request_counter = itertools.count(1)
+        self._bg_tasks: set = set()  # 后台任务引用集合，防止 GC 回收
 
     @property
     def is_processing(self) -> bool:
@@ -345,27 +346,44 @@ class ChatQueue:
                 clear_stop()
 
     async def _check_overflow(self, session_id: str, store, full_reply: str):
-        """检测上下文溢出，触发压缩"""
+        """检测上下文溢出，触发压缩
+
+        不在 ChatQueue worker 内部直接调用 _tidy_context_impl(force)，
+        因为 force 模式会 pause ChatQueue + 等待 _processing_done，
+        而当前协程就是 ChatQueue worker，会导致死锁。
+        改为调度延迟任务，让 worker 先完成当前消息处理。
+        """
         rv = getattr(self._runner, "last_return_value", None)
         if rv and isinstance(rv, dict) and rv.get("result") == "CONTEXT_OVERFLOW":
             overflow_data = rv.get("data", {})
             logger.warning(
-                f"[ChatQueue] CONTEXT_OVERFLOW at {overflow_data.get('tokens_used', 0)} tokens"
+                f"[ChatQueue] CONTEXT_OVERFLOW at {overflow_data.get('tokens_used', 0)} tokens, "
+                f"scheduling delayed force compression"
             )
-            from niu_api.compat import _tidy_context_impl, _tidy_lock
-            # 使用带超时的acquire避免阻塞ChatQueue worker数分钟
-            # （模式2压缩可能持有_tidy_lock很长时间）
-            _tidy_acquired = False
+            _task = asyncio.create_task(self._retry_force_compression(session_id, delay=1.0))
+            self._bg_tasks.add(_task)
+            _task.add_done_callback(lambda t: self._bg_tasks.discard(t))
+
+    async def _retry_force_compression(self, session_id: str, delay: float = 5.0, max_retries: int = 3):
+        """延迟重试强制压缩（当 _tidy_lock 被占用时调度）"""
+        from niu_api.compat import _tidy_context_impl, _tidy_lock
+        for attempt in range(max_retries):
+            await asyncio.sleep(delay)
             try:
-                await asyncio.wait_for(_tidy_lock.acquire(), timeout=10.0)
-                _tidy_acquired = True
+                await asyncio.wait_for(_tidy_lock.acquire(), timeout=30.0)
             except asyncio.TimeoutError:
-                logger.warning("[ChatQueue] Tidy lock busy, skipping force compression")
-            if _tidy_acquired:
-                try:
-                    await _tidy_context_impl(request={"session_id": session_id, "mode": "force"})
-                finally:
-                    _tidy_lock.release()
+                logger.warning(f"[ChatQueue] Force compression retry {attempt+1}/{max_retries}: tidy lock still busy")
+                continue
+            try:
+                await _tidy_context_impl(request={"session_id": session_id, "mode": "force"})
+                logger.info("[ChatQueue] Force compression retry succeeded")
+                return
+            except Exception as e:
+                logger.error(f"[ChatQueue] Force compression retry failed: {e}")
+                return
+            finally:
+                _tidy_lock.release()
+        logger.error(f"[ChatQueue] Force compression failed after {max_retries} retries")
 
 
 # ============== 全局单例 ==============
@@ -397,5 +415,10 @@ async def stop_chat_queue():
     global _queue, _queue_stopped
     _queue_stopped = True
     if _queue:
+        # Cancel background tasks (e.g., _retry_force_compression)
+        for task in list(_queue._bg_tasks):
+            task.cancel()
+        if _queue._bg_tasks:
+            await asyncio.gather(*_queue._bg_tasks, return_exceptions=True)
         await _queue.stop()
         _queue = None
