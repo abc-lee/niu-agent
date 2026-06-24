@@ -1663,6 +1663,7 @@ async def _tidy_context_impl(request: dict):
                                     await store.update_message(pid, original)
                     except Exception as e:
                         logger.warning(f"[Tidy] Failed to verify protected messages: {e}")
+                        compress_integrity_ok = False
 
                 if new_compress_id and not _is_mode2:
                     # 仅模式一推进压缩游标（模式二无游标机制）
