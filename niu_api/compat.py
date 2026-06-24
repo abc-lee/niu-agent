@@ -182,7 +182,7 @@ def _truncate_preserving_tail(text: str, max_tokens: int) -> str:
         kept_tail = kept_tail[first_line_pos:]
     # 更新消息计数
     line_count = kept_tail.count("[id:")
-    return f"共约 {line_count} 条消息（远端部分已省略）\n\n" + kept_tail
+    return f"共约 {line_count} 条消息（远端部分已省略。当前可见消息均属于中端区和近端区，按相对位置划分区域即可）\n\n" + kept_tail
 
 
 def _truncate_preserving_both(text: str, max_tokens: int) -> str:
@@ -210,7 +210,7 @@ def _truncate_preserving_both(text: str, max_tokens: int) -> str:
             if first_msg > 0:
                 tail = tail[first_msg:]
             msg_count = tail.count("[id:")
-            return head + f"[远端消息已省略，保留近端 {msg_count} 条消息]\n\n" + tail
+            return head + f"[远端消息已省略，保留近端 {msg_count} 条消息。可见消息从远端区中后段开始，按相对位置划分区域]\n\n" + tail
         return text
     # fallback：纯字符截断（指令部分过大）
     # 先提取保护 ID 行，确保 fallback 路径不丢失关键信息
@@ -233,7 +233,7 @@ def _truncate_preserving_both(text: str, max_tokens: int) -> str:
     if first_msg > 0:
         tail = tail[first_msg:]
     msg_count = tail.count("[id:")
-    return head + "\n\n[中间远端消息已省略，保留近端 " + str(msg_count) + " 条消息]\n\n" + tail
+    return head + "\n\n[中间远端消息已省略，保留近端 " + str(msg_count) + " 条消息。可见消息从远端区中后段开始，按相对位置划分区域]\n\n" + tail
 
 
 def _build_journal_task(journal_msg_text: str, safe_tokens: int = 0) -> str:
@@ -1512,6 +1512,29 @@ async def _tidy_context_impl(request: dict):
             compress_mode = "模式二：睡眠整理（半破坏性）" if usage_percent >= 50 else "模式一：睡眠整理（非破坏性）"
             _is_mode2 = usage_percent >= 50
             _skip_compress = False
+            # 模式二量化目标：基于 targetThreshold 计算动态目标（提前计算，决定是否跳过）
+            _compress_target = ""
+            _cursor_instruction = ""
+            if _is_mode2:
+                target_threshold = _read_target_threshold()
+                target_tokens = int(context_window_tokens * target_threshold)
+                suggest_release = max(display_tokens - target_tokens, 0)
+                if suggest_release == 0:
+                    # 当前已在目标范围内，不需要压缩
+                    logger.info(f"[Tidy] Mode-2: already at target, skipping compression")
+                    _skip_compress = True
+                elif suggest_release < int(display_tokens * 0.05):
+                    # 释放量太小（<5%），不值得压缩一轮，跳过
+                    logger.info(f"[Tidy] Mode-2: suggest_release {suggest_release} < 5%, skipping compression")
+                    _skip_compress = True
+                elif suggest_release > 0:
+                    _compress_target = f"\n压缩目标：建议释放约 {suggest_release} tokens，将上下文从 {usage_percent:.1f}% 降至约 {target_threshold*100:.0f}%。优先压缩远端（idx 小的）消息；如果远端释放量不足目标，继续压缩近端非保护消息直到达标\n"
+                # 模式二无游标机制，不需要报告游标
+                _cursor_instruction = "处理完成后，简要报告你的操作（删除了哪些消息、合并了哪些单元）。"
+            else:
+                # 模式一需要报告游标
+                _cursor_instruction = """处理完成后，在报告末尾用 JSON 格式报告：{"last_compress_id": "<收到的消息中 idx 最大的消息的 id（UUID）>"}
+**必须推进游标**：即使没有需要处理的内容，也必须输出 idx 最大的消息的 UUID。"""
             logger.info(f"[Tidy] Sleep: usage={usage_percent:.1f}%, selecting {compress_mode}")
 
             new_compress_id = last_compress_id
@@ -1526,26 +1549,6 @@ async def _tidy_context_impl(request: dict):
                     if len(_pids) >= protect_recent_count:
                         break
                 protected_ids = _pids  # No fallback: tool output is never protected
-
-                # 模式二量化目标：基于 targetThreshold 计算动态目标
-                _compress_target = ""
-                _cursor_instruction = ""
-                if _is_mode2:
-                    target_threshold = _read_target_threshold()
-                    target_tokens = int(context_window_tokens * target_threshold)
-                    suggest_release = max(display_tokens - target_tokens, 0)
-                    if suggest_release > 0 and suggest_release < int(display_tokens * 0.05):
-                        # 释放量太小（<5%），不值得压缩一轮，跳过
-                        logger.info(f"[Tidy] Mode-2: suggest_release {suggest_release} < 5%, skipping compression")
-                        _skip_compress = True
-                    elif suggest_release > 0:
-                        _compress_target = f"\n压缩目标：建议释放约 {suggest_release} tokens，将上下文从 {usage_percent:.1f}% 降至约 {target_threshold*100:.0f}%。优先压缩远端（idx 小的）消息；如果远端释放量不足目标，继续压缩近端非保护消息直到达标\n"
-                    # 模式二无游标机制，不需要报告游标
-                    _cursor_instruction = "处理完成后，简要报告你的操作（删除了哪些消息、合并了哪些单元）。"
-                else:
-                    # 模式一需要报告游标
-                    _cursor_instruction = """处理完成后，在报告末尾用 JSON 格式报告：{"last_compress_id": "<收到的消息中 idx 最大的消息的 id（UUID）>"}
-**必须推进游标**：即使没有需要处理的内容，也必须输出 idx 最大的消息的 UUID。"""
 
                 prompt = f"""系统进入睡眠状态。
 
@@ -1570,14 +1573,14 @@ async def _tidy_context_impl(request: dict):
                     except Exception:
                         _tc = len(prompt) // 2
                     context_window_for_truncate = _read_context_window_tokens()
-                    if _tc > context_window_for_truncate * 0.7:
+                    if _tc >= context_window_for_truncate * 0.6:
                         truncated_prompt = _truncate_preserving_both(prompt, int(context_window_for_truncate * 0.6))
-                        # 双向截断后重建 compress_msg_ids 和 protected_ids，只保留 LLM 可见的消息
+                        # 双向截断后重建 compress_msg_ids，只保留 LLM 可见的消息
                         _visible_ids_2 = re.findall(r'\[id:([a-f0-9-]+)\]', truncated_prompt)
                         _visible_set_2 = set(_visible_ids_2)
                         compress_msg_ids = [mid for mid in compress_msg_ids if mid in _visible_set_2]
-                        # 重建 protected_ids：只保留 LLM 可见的受保护消息
-                        protected_ids = [pid for pid in protected_ids if pid in _visible_set_2]
+                        # 注意：不修改 protected_ids，完整性检查需要验证所有受保护消息（包括不可见的）
+                        # prompt 中的保护列表已由 _truncate_preserving_both 保留（fallback 路径有兜底）
                 else:
                     # 模式一：增量范围，用传统截断
                     context_window_for_truncate = _read_context_window_tokens()
