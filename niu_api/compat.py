@@ -1498,14 +1498,14 @@ async def _tidy_context_impl(request: dict):
                 end_cursor_id=_end_cursor, protect_recent=protect_recent_count
             )
 
-            # 限制全量范围的 token 总量，避免截断砍掉近端消息
-            _compress_window = int(_read_context_window_tokens() * 0.4)
-            if compress_msg_text and _estimate_text_tokens(compress_msg_text) > _compress_window:
-                compress_msg_text = _truncate_preserving_tail(compress_msg_text, _compress_window)
-                # 截断后重建 compress_msg_ids，只保留可见消息的 ID
-                _visible_ids = re.findall(r'\[id:([a-f0-9-]+)\]', compress_msg_text)
-                _visible_set = set(_visible_ids)
-                compress_msg_ids = [mid for mid in compress_msg_ids if mid in _visible_set]
+            if not _is_mode2:
+                # 模式一：限制增量范围的 token 总量，避免截断砍掉近端消息
+                _compress_window = int(_read_context_window_tokens() * 0.4)
+                if compress_msg_text and _estimate_text_tokens(compress_msg_text) > _compress_window:
+                    compress_msg_text = _truncate_preserving_tail(compress_msg_text, _compress_window)
+                    _visible_ids = re.findall(r'\[id:([a-f0-9-]+)\]', compress_msg_text)
+                    _visible_set = set(_visible_ids)
+                    compress_msg_ids = [mid for mid in compress_msg_ids if mid in _visible_set]
             compress_mode = "模式二：睡眠整理（半破坏性）" if _is_mode2 else "模式一：睡眠整理（非破坏性）"
             _skip_compress = False
             # 模式二量化目标：基于 targetThreshold 计算动态目标（提前计算，决定是否跳过）
@@ -1525,8 +1525,8 @@ async def _tidy_context_impl(request: dict):
                     _skip_compress = True
                 elif suggest_release > 0:
                     _compress_target = f"\n压缩目标：建议释放约 {suggest_release} tokens，将上下文从 {usage_percent:.1f}% 降至约 {target_threshold*100:.0f}%。优先压缩远端（idx 小的）消息；如果远端释放量不足目标，继续压缩近端非保护消息直到达标\n"
-                # 模式二无游标机制，不需要报告游标
-                _cursor_instruction = "处理完成后，简要报告你的操作（删除了哪些消息、合并了哪些单元）。"
+                # 模式二改为一轮JSON方案，不要求游标报告
+                _cursor_instruction = ""
             else:
                 # 模式一需要报告游标
                 _cursor_instruction = """处理完成后，在报告末尾用 JSON 格式报告：{"last_compress_id": "<收到的消息中 idx 最大的消息的 id（UUID）>"}
@@ -1547,7 +1547,36 @@ async def _tidy_context_impl(request: dict):
                         break
                 protected_ids = _pids  # No fallback: tool output is never protected
 
-                prompt = f"""系统进入睡眠状态。
+                if _is_mode2:
+                    compress_plan_path = os.path.expanduser("~/.niu/compress_plan_mode2.json")
+                    if os.path.exists(compress_plan_path):
+                        try:
+                            os.remove(compress_plan_path)
+                        except OSError:
+                            pass
+
+                    prompt = f"""系统进入睡眠状态。
+
+当前上下文：{display_tokens} tokens（{usage_percent:.1f}%）
+{_compress_target}以下消息已标注 [PROTECTED]，完全不可动（不可删除、不可压缩、不可修改内容、不可合并），在单元内应排除不参与压缩：
+保护消息ID: {json.dumps(protected_ids)}
+
+消息列表：
+{compress_msg_text}
+
+请按照【模式二：睡眠整理（半破坏性）】的规则处理。
+
+CRITICAL: 你只有一轮机会完成所有压缩决策。多轮工具调用会浪费上下文，降低压缩质量。
+- 禁止使用 delete_messages、update_message、get_messages 等会话管理工具。
+- 禁止使用 bash、code_run、read、edit 等工具。
+- 只允许使用 write 工具一次性输出压缩方案。
+
+用 write 工具写入 {compress_plan_path}，内容为 JSON：
+{{"deletes": ["要删除的消息id1", "id2", ...], "updates": [{{"message_id": "id", "content": "压缩后的摘要内容"}}], "last_compress_id": "操作范围内 idx 最大的、且仍存在的消息 id（UUID）"}}
+
+REMINDER: 从远端（idx小的）开始压缩，近端保护消息不要动。只使用 write 工具。"""
+                else:
+                    prompt = f"""系统进入睡眠状态。
 
 当前上下文：{display_tokens} tokens（{usage_percent:.1f}%）
 {_compress_target}以下消息已标注 [PROTECTED]，完全不可动（不可删除、不可压缩、不可修改内容、不可合并），在单元内应排除不参与压缩：
@@ -1558,130 +1587,272 @@ async def _tidy_context_impl(request: dict):
 
 请按照【{compress_mode}】的规则处理。{_cursor_instruction}"""
 
-                # 截断 task 防止子Agent超限
+                # 截断 task 防止子Agent超限 + 子Agent调用 + 结果处理
                 if _is_mode2:
-                    # 模式二：全量传入，用双向截断（保头+保尾）或保留近端截断
-                    # 已通过 _truncate_preserving_tail 截断远端消息保留近端，
-                    # 但仍需检查总 token 是否超限
-                    truncated_prompt = prompt
+                    # === 模式二：一轮write JSON方案 + 程序化安全执行 ===
+                    # 对完整prompt做一次截断（保头保尾弃中间），预算 0.55
                     try:
                         from agent.token_calculator import TokenCalculator
                         _tc = TokenCalculator.get().count_text(prompt)
                     except Exception:
                         _tc = len(prompt) // 2
                     context_window_for_truncate = _read_context_window_tokens()
-                    if _tc >= context_window_for_truncate * 0.6:
-                        truncated_prompt = _truncate_preserving_both(prompt, int(context_window_for_truncate * 0.6))
-                        # 双向截断后重建 compress_msg_ids，只保留 LLM 可见的消息
-                        _visible_ids_2 = re.findall(r'\[id:([a-f0-9-]+)\]', truncated_prompt)
+                    if _tc >= context_window_for_truncate * 0.55:
+                        prompt = _truncate_preserving_both(prompt, int(context_window_for_truncate * 0.55))
+                        _visible_ids_2 = re.findall(r'\[id:([a-f0-9-]+)\]', prompt)
                         _visible_set_2 = set(_visible_ids_2)
                         compress_msg_ids = [mid for mid in compress_msg_ids if mid in _visible_set_2]
-                        # 注意：不修改 protected_ids，完整性检查需要验证所有受保护消息（包括不可见的）
-                        # prompt 中的保护列表已由 _truncate_preserving_both 保留（fallback 路径有兜底）
+
+                    def run_context_manager_mode2():
+                        return call_subagent(
+                            agent_name="context-manager",
+                            task=prompt,
+                            llm_config=llm_config,
+                            mcp_client=None,
+                            context_fifo_threshold=0,  # 关闭FIFO，保留完整上下文
+                        )
+
+                    compress_result = await asyncio.to_thread(run_context_manager_mode2)
+                    if is_stop_requested():
+                        logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
+                        clear_stop()
+                        return {"status": "aborted", "message": "Stopped by user"}
+                    logger.info(f"[Tidy] Mode-2: context-manager completed, length={len(compress_result)}")
+
+                    # 程序化执行JSON压缩方案
+                    if os.path.exists(compress_plan_path):
+                        try:
+                            from pathlib import Path as _Path
+                            plan_text = _Path(compress_plan_path).read_text(encoding="utf-8")
+                            plan = json.loads(plan_text)
+                            deletes = plan.get("deletes", [])
+                            updates = plan.get("updates", [])
+                            plan_compress_id = plan.get("last_compress_id", "")
+
+                            # 类型校验
+                            if not isinstance(deletes, list):
+                                deletes = []
+                            if not isinstance(updates, list):
+                                updates = []
+                            else:
+                                updates = [u for u in updates if isinstance(u, dict)]
+
+                            # 安全协议：pause + 等待worker空闲 + acquire chat_lock
+                            from niu_api.chat_queue import get_chat_queue
+                            _q = get_chat_queue()
+                            _q.pause()
+
+                            # 等待worker当前处理完成（不用drain，drain会清空队列丢弃用户消息）
+                            if _q._processing:
+                                try:
+                                    await asyncio.wait_for(_q._processing_done.wait(), timeout=30.0)
+                                except asyncio.TimeoutError:
+                                    logger.warning("[Tidy] Mode-2: ChatQueue processing timeout, aborting execution")
+                                    _q.resume()
+                                    try:
+                                        os.remove(compress_plan_path)
+                                    except OSError:
+                                        pass
+                                    raise RuntimeError("ChatQueue processing timeout")
+
+                            # acquire chat_lock：阻止其他chat请求修改DB
+                            from niu_api.chat import _chat_lock
+                            _chat_lock_acquired = False
+                            try:
+                                await asyncio.wait_for(_chat_lock.acquire(), timeout=60.0)
+                                _chat_lock_acquired = True
+                            except asyncio.TimeoutError:
+                                logger.warning("[Tidy] Mode-2: chat_lock 60s timeout, aborting execution")
+
+                            if not _chat_lock_acquired:
+                                _q.resume()
+                                try:
+                                    os.remove(compress_plan_path)
+                                except OSError:
+                                    pass
+                                raise RuntimeError("chat_lock timeout")
+
+                            # === 在 chat_lock 保护下执行 ===
+                            try:
+                                # 重新获取最新消息快照
+                                fresh_messages = await store.get_messages()
+                                existing_ids = {getattr(m, "id", "") for m in fresh_messages}
+
+                                # ID有效性校验
+                                valid_deletes = [mid for mid in deletes if mid in existing_ids]
+                                valid_deletes = list(dict.fromkeys(valid_deletes))  # 去重
+                                valid_updates = [u for u in updates if u.get("message_id") and u["message_id"] in existing_ids]
+
+                                # 游标保护：禁止删除/压缩游标指向的消息
+                                cursor_ids_set = {cid for cid in [new_entity_id, new_dream_id] if cid}
+                                valid_deletes = [mid for mid in valid_deletes if mid not in cursor_ids_set]
+                                valid_updates = [u for u in valid_updates if u.get("message_id", "") not in cursor_ids_set]
+
+                                # dream安全边界：dream游标之后的消息不得删除，也不得update（内容替换会丢失未提取知识）
+                                if new_dream_id:
+                                    dream_boundary_idx = -1
+                                    for i, m in enumerate(fresh_messages):
+                                        if (getattr(m, "id", "") or "") == new_dream_id:
+                                            dream_boundary_idx = i
+                                            break
+                                    if dream_boundary_idx >= 0:
+                                        post_dream_ids = {getattr(m, "id", "") for m in fresh_messages[dream_boundary_idx + 1:]}
+                                        unsafe_deletes = [mid for mid in valid_deletes if mid in post_dream_ids]
+                                        unsafe_updates = [u for u in valid_updates if u.get("message_id", "") in post_dream_ids]
+                                        if unsafe_deletes:
+                                            logger.warning(f"[Tidy] Mode-2: Protecting {len(unsafe_deletes)} post-dream messages from deletion")
+                                            valid_deletes = [mid for mid in valid_deletes if mid not in post_dream_ids]
+                                        if unsafe_updates:
+                                            logger.warning(f"[Tidy] Mode-2: Protecting {len(unsafe_updates)} post-dream messages from content replacement")
+                                            valid_updates = [u for u in valid_updates if u.get("message_id", "") not in post_dream_ids]
+
+                                # protected保护：最近N条user/assistant消息不可动
+                                protect_recent_count = _read_protect_recent_count()
+                                if protect_recent_count > 0:
+                                    _pids = []
+                                    for m in reversed(fresh_messages):
+                                        if getattr(m, "role", "") in ("user", "assistant"):
+                                            _pids.append(getattr(m, "id", ""))
+                                        if len(_pids) >= protect_recent_count:
+                                            break
+                                    protected_set = set(_pids)
+                                    valid_deletes = [mid for mid in valid_deletes if mid not in protected_set]
+                                    valid_updates = [u for u in valid_updates if u.get("message_id", "") not in protected_set]
+
+                                # delete/update重叠处理：保留update，移除deletes中的重叠
+                                update_ids = {u.get("message_id", "") for u in valid_updates}
+                                overlap_ids = update_ids & set(valid_deletes)
+                                if overlap_ids:
+                                    logger.warning(f"[Tidy] Mode-2: Removing {len(overlap_ids)} IDs from deletes that also appear in updates")
+                                    valid_deletes = [mid for mid in valid_deletes if mid not in overlap_ids]
+
+                                # 执行删除
+                                if valid_deletes:
+                                    del_result = await store.delete_messages_by_ids(valid_deletes)
+                                    logger.info(f"[Tidy] Mode-2: Deleted {del_result.get('deleted_count', 0)} messages, freed {del_result.get('freed_tokens', 0)} tokens")
+
+                                # 执行更新
+                                for upd in valid_updates:
+                                    mid = upd.get("message_id", "")
+                                    content = upd.get("content", "")
+                                    if mid and content:
+                                        ok = await store.update_message(message_id=mid, content=content)
+                                        if ok:
+                                            logger.info(f"[Tidy] Mode-2: Updated message {mid}")
+                                        else:
+                                            logger.warning(f"[Tidy] Mode-2: Failed to update message {mid}")
+
+                                logger.info(f"[Tidy] Mode-2: Compression plan executed: {len(valid_deletes)} deletes, {len(valid_updates)} updates")
+                            finally:
+                                if _chat_lock_acquired:
+                                    _chat_lock.release()
+                                _q.resume()
+
+                        except json.JSONDecodeError as e:
+                            logger.error(f"[Tidy] Mode-2: Failed to parse compress plan JSON: {e}")
+                        except RuntimeError:
+                            pass  # 已在上方处理（ChatQueue timeout / chat_lock timeout）
+                        except Exception as e:
+                            logger.error(f"[Tidy] Mode-2: Failed to execute compress plan: {e}")
+                        finally:
+                            if os.path.exists(compress_plan_path):
+                                try:
+                                    os.remove(compress_plan_path)
+                                except OSError:
+                                    pass
+                    else:
+                        logger.warning("[Tidy] Mode-2: No compress plan file found, sub-agent may not have used write")
+
+                    # 模式二不写游标：保持"无游标"设计，每次始终全量处理
+                    logger.info("[Tidy] Mode-2: Compression complete (no cursor update, mode-2 is always full-range)")
                 else:
-                    # 模式一：增量范围，用传统截断
+                    # === 模式一：原有逻辑完整保留 ===
                     context_window_for_truncate = _read_context_window_tokens()
                     safe_tokens = int(context_window_for_truncate * 0.6)
                     truncated_prompt = _truncate_task_for_subagent(prompt, safe_tokens)
 
-                def run_context_manager():
-                    return call_subagent(
-                        agent_name="context-manager",
-                        task=truncated_prompt,
-                        llm_config=llm_config,
-                        mcp_client=None,
-                    )
+                    def run_context_manager():
+                        return call_subagent(
+                            agent_name="context-manager",
+                            task=truncated_prompt,
+                            llm_config=llm_config,
+                            mcp_client=None,
+                        )
 
-                cm_result = await asyncio.to_thread(run_context_manager)
-                if is_stop_requested():
-                    logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
-                    clear_stop()
-                    return {"status": "aborted", "message": "Stopped by user"}
-                logger.info(f"[Tidy] context-manager result: {cm_result[:200]}")
+                    cm_result = await asyncio.to_thread(run_context_manager)
+                    if is_stop_requested():
+                        logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
+                        clear_stop()
+                        return {"status": "aborted", "message": "Stopped by user"}
+                    logger.info(f"[Tidy] context-manager result: {cm_result[:200]}")
 
-                # 游标提取（仅模式一需要）
-                if _is_mode2:
-                    # 模式二无游标机制，不提取游标
-                    new_compress_id = last_compress_id
-                elif _is_subagent_overflow(cm_result):
-                    overflow_info = _extract_overflow_info(cm_result)
-                    logger.warning(f"[Tidy] context-manager overflow: {overflow_info.get('turns_completed', 0)} turns")
-                    partial = overflow_info.get("partial_result", "")
-                    recovered = _extract_cursor_id(partial, "last_compress_id", msg_id_set)
-                    if recovered and recovered != "NULL":
-                        new_compress_id = recovered
+                    # 游标提取
+                    if _is_subagent_overflow(cm_result):
+                        overflow_info = _extract_overflow_info(cm_result)
+                        logger.warning(f"[Tidy] context-manager overflow: {overflow_info.get('turns_completed', 0)} turns")
+                        partial = overflow_info.get("partial_result", "")
+                        recovered = _extract_cursor_id(partial, "last_compress_id", msg_id_set)
+                        if recovered and recovered != "NULL":
+                            new_compress_id = recovered
+                        else:
+                            new_compress_id = compress_msg_ids[-1]
+                            logger.warning(f"[Tidy] Compress cursor overflow fallback: {new_compress_id}")
                     else:
-                        new_compress_id = compress_msg_ids[-1]
-                        logger.warning(f"[Tidy] Compress cursor overflow fallback: {new_compress_id}")
-                else:
-                    extracted = _extract_cursor_id(cm_result, "last_compress_id", msg_id_set)
-                    if extracted and extracted != "NULL":
-                        new_compress_id = extracted
-                    elif extracted == "NULL" or not extracted:
-                        new_compress_id = compress_msg_ids[-1]
-                        logger.warning(f"[Tidy] Compress cursor not matched, fallback: {new_compress_id}")
+                        extracted = _extract_cursor_id(cm_result, "last_compress_id", msg_id_set)
+                        if extracted and extracted != "NULL":
+                            new_compress_id = extracted
+                        elif extracted == "NULL" or not extracted:
+                            new_compress_id = compress_msg_ids[-1]
+                            logger.warning(f"[Tidy] Compress cursor not matched, fallback: {new_compress_id}")
 
-                # 校验游标
-                if new_compress_id:
-                    fresh_msgs = await store.get_messages()
-                    fresh_ids = {getattr(m, "id", "") for m in fresh_msgs}
-                    if new_compress_id not in fresh_ids:
-                        logger.warning(f"[Tidy] Compress cursor {new_compress_id} deleted, reverting to {last_compress_id}")
-                        new_compress_id = last_compress_id
-                        if new_compress_id and new_compress_id not in fresh_ids:
-                            new_compress_id = ""
+                    # 校验游标
+                    if new_compress_id:
+                        fresh_msgs = await store.get_messages()
+                        fresh_ids = {getattr(m, "id", "") for m in fresh_msgs}
+                        if new_compress_id not in fresh_ids:
+                            logger.warning(f"[Tidy] Compress cursor {new_compress_id} deleted, reverting to {last_compress_id}")
+                            new_compress_id = last_compress_id
+                            if new_compress_id and new_compress_id not in fresh_ids:
+                                new_compress_id = ""
 
-                compress_integrity_ok = True  # 压缩完整性标记，用于决定是否推进游标
-                # 注意：如果完整性失败，非保护消息的操作不会被回滚（技术限制），
-                # 但游标不推进，下次压缩会重新处理该范围（部分消息已被压缩/删除）
-                if protected_ids:
-                    try:
-                        # 构建受保护消息的原始内容映射
-                        # 注意：内存中的 messages 列表是 context-manager 运行前从 DB 加载的，
-                        # 未被子Agent修改。但如果 dream-evolver 在同一次 tidy 中修改了受保护消息
-                        # （实际上 dream-evolver 不修改消息内容，只调 lightrag），这里取的是
-                        # dream-evolver 之后的版本。如需更严格，应在子Agent调用前从 DB 重新读取。
-                        protected_originals = {}
-                        for pid in protected_ids:
-                            _m = next((m for m in messages if getattr(m, "id", "") == pid), None)
-                            if _m:
-                                protected_originals[pid] = getattr(_m, "content", "") or ""
+                    compress_integrity_ok = True
+                    if protected_ids:
+                        try:
+                            protected_originals = {}
+                            for pid in protected_ids:
+                                _m = next((m for m in messages if getattr(m, "id", "") == pid), None)
+                                if _m:
+                                    protected_originals[pid] = getattr(_m, "content", "") or ""
 
-                        post_msgs = await store.get_messages()
-                        post_ids = {getattr(m, "id", "") for m in post_msgs}
-                        post_content_map = {getattr(m, "id", ""): (getattr(m, "content", "") or "") for m in post_msgs}
+                            post_msgs = await store.get_messages()
+                            post_ids = {getattr(m, "id", "") for m in post_msgs}
+                            post_content_map = {getattr(m, "id", ""): (getattr(m, "content", "") or "") for m in post_msgs}
 
-                        for pid in protected_ids:
-                            if pid not in post_ids:
-                                logger.error(f"[Tidy] PROTECTED message {pid} was deleted by context-manager! Cannot restore (add_message would disorder sequence). Blocking cursor advance.")
-                                compress_integrity_ok = False
-                            elif pid in protected_originals and pid in post_content_map:
-                                original = protected_originals[pid]
-                                current = post_content_map[pid]
-                                if original != current:
-                                    logger.warning(f"[Tidy] PROTECTED message {pid} was modified by context-manager! Rolling back content...")
-                                    await store.update_message(pid, original)
-                    except Exception as e:
-                        logger.warning(f"[Tidy] Failed to verify protected messages: {e}")
-                        compress_integrity_ok = False
+                            for pid in protected_ids:
+                                if pid not in post_ids:
+                                    logger.error(f"[Tidy] PROTECTED message {pid} was deleted by context-manager! Cannot restore (add_message would disorder sequence). Blocking cursor advance.")
+                                    compress_integrity_ok = False
+                                elif pid in protected_originals and pid in post_content_map:
+                                    original = protected_originals[pid]
+                                    current = post_content_map[pid]
+                                    if original != current:
+                                        logger.warning(f"[Tidy] PROTECTED message {pid} was modified by context-manager! Rolling back content...")
+                                        await store.update_message(pid, original)
+                        except Exception as e:
+                            logger.warning(f"[Tidy] Failed to verify protected messages: {e}")
+                            compress_integrity_ok = False
 
-                if new_compress_id and not _is_mode2:
-                    # 仅模式一推进压缩游标（模式二无游标机制）
-                    if compress_integrity_ok:
-                        compress_cursor_path.parent.mkdir(parents=True, exist_ok=True)
-                        compress_cursor_path.write_text(json.dumps({
-                            "last_compress_id": new_compress_id,
-                            "last_compress_at": datetime.now().isoformat(),
-                        }, ensure_ascii=False, indent=2), encoding="utf-8")
-                        logger.info(f"[Tidy] Compress cursor updated: last_compress_id={new_compress_id}")
-                    else:
-                        logger.warning("[Tidy] Skipping cursor advance due to protected message integrity failure")
-                elif _is_mode2:
-                    # 模式二：不推进游标，但记录完整性检查结果
-                    if not compress_integrity_ok:
-                        logger.warning("[Tidy] Mode-2: protected message integrity failure detected (content rolled back)")
-                    else:
-                        logger.info("[Tidy] Mode-2: protected messages intact after compression")
+                    # 模式一：推进压缩游标
+                    if new_compress_id:
+                        if compress_integrity_ok:
+                            compress_cursor_path.parent.mkdir(parents=True, exist_ok=True)
+                            compress_cursor_path.write_text(json.dumps({
+                                "last_compress_id": new_compress_id,
+                                "last_compress_at": datetime.now().isoformat(),
+                            }, ensure_ascii=False, indent=2), encoding="utf-8")
+                            logger.info(f"[Tidy] Compress cursor updated: last_compress_id={new_compress_id}")
+                        else:
+                            logger.warning("[Tidy] Skipping cursor advance due to protected message integrity failure")
             else:
                 if _skip_compress:
                     logger.info("[Tidy] context-manager: skipped (suggest_release below threshold or already at target)")
