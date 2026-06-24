@@ -262,8 +262,13 @@ class MessageStore:
         logger.info(f"Cleared {count} messages, cleaned {cleaned} temp files")
         return count
 
-    async def update_message(self, message_id: str, content: str) -> bool:
-        """Update message content by ID. Returns True if updated."""
+    async def update_message(self, message_id: str, content: str, clear_tool_calls: bool = False) -> bool:
+        """Update message content by ID. Returns True if updated.
+
+        Args:
+            clear_tool_calls: If True, also clear the tool_calls field (for compression
+                that replaces assistant(tool_calls) content with summary text).
+        """
         # Read old content to cleanup temp file references
         old_content = None
         async with aiosqlite.connect(self.db_path) as db:
@@ -276,11 +281,17 @@ class MessageStore:
             if row:
                 old_content = row["content"]
 
-            # Update
-            cursor = await db.execute(
-                "UPDATE messages SET content = ? WHERE id = ?",
-                (content, message_id),
-            )
+            # Update content + optionally clear tool_calls
+            if clear_tool_calls:
+                cursor = await db.execute(
+                    "UPDATE messages SET content = ?, tool_calls = '[]' WHERE id = ?",
+                    (content, message_id),
+                )
+            else:
+                cursor = await db.execute(
+                    "UPDATE messages SET content = ? WHERE id = ?",
+                    (content, message_id),
+                )
             updated = cursor.rowcount
             await db.commit()
 

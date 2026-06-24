@@ -13,7 +13,7 @@ import time
 from datetime import datetime
 
 from agent.session import get_message_store
-from agent.subagent import _read_context_window_tokens, _read_target_threshold, _read_protect_recent_count
+from agent.subagent import _read_context_window_tokens, _read_target_threshold, _read_protect_recent_count, _read_warning_threshold
 from fastapi import APIRouter, Request
 from loguru import logger
 from pydantic import BaseModel
@@ -77,6 +77,129 @@ def _extract_overflow_info(result: str) -> dict:
         return json.loads(result)
     except (json.JSONDecodeError, ValueError):
         return {"overflow": True, "raw": result}
+
+
+def _cascade_tool_chain_deletes(fresh_messages, delete_ids: list[str]) -> list[str]:
+    """级联删除：确保 tool 调用链完整性。
+
+    当删除 assistant(tool_calls) 时，对应的 tool 输出也必须删除；
+    当删除 tool 输出时，发起调用的 assistant(tool_calls) 也必须删除。
+
+    返回级联后的完整删除 ID 列表（包含原始 + 级联添加的）。
+    """
+    delete_set = set(delete_ids)
+    added = set()
+
+    # 构建消息 ID → 消息 映射
+    msg_map = {}
+    for m in fresh_messages:
+        mid = getattr(m, "id", "") or ""
+        if mid:
+            msg_map[mid] = m
+
+    # Pass 1: 删除 assistant(tool_calls) → 级联删除对应的 tool 输出
+    tc_ids_from_deleted_assistant = set()
+    for mid in delete_ids:
+        m = msg_map.get(mid)
+        if not m:
+            continue
+        role = getattr(m, "role", "")
+        tcs = getattr(m, "tool_calls", None)
+        if role == "assistant" and tcs:
+            try:
+                if isinstance(tcs, str):
+                    tcs = json.loads(tcs)
+                for tc in tcs:
+                    tc_id = tc.get("id", "")
+                    if tc_id:
+                        tc_ids_from_deleted_assistant.add(tc_id)
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+    if tc_ids_from_deleted_assistant:
+        for m in fresh_messages:
+            mid = getattr(m, "id", "") or ""
+            role = getattr(m, "role", "")
+            tc_call_id = getattr(m, "tool_call_id", "")
+            if role == "tool" and tc_call_id in tc_ids_from_deleted_assistant and mid not in delete_set:
+                added.add(mid)
+
+    # Pass 2: 删除 tool 输出 → 级联删除发起调用的 assistant(tool_calls)
+    deleted_tool_call_ids = set()
+    for mid in delete_ids:
+        m = msg_map.get(mid)
+        if not m:
+            continue
+        role = getattr(m, "role", "")
+        tc_call_id = getattr(m, "tool_call_id", "")
+        if role == "tool" and tc_call_id:
+            deleted_tool_call_ids.add(tc_call_id)
+
+    if deleted_tool_call_ids:
+        for m in fresh_messages:
+            mid = getattr(m, "id", "") or ""
+            role = getattr(m, "role", "")
+            tcs = getattr(m, "tool_calls", None)
+            if role == "assistant" and tcs and mid not in delete_set and mid not in added:
+                try:
+                    if isinstance(tcs, str):
+                        tcs = json.loads(tcs)
+                    for tc in tcs:
+                        if tc.get("id", "") in deleted_tool_call_ids:
+                            added.add(mid)
+                            # 级联：这个 assistant 的其他 tool_calls 对应的 tool 输出也要删
+                            for tc2 in tcs:
+                                tc2_id = tc2.get("id", "")
+                                if tc2_id and tc2_id not in deleted_tool_call_ids:
+                                    # 找对应的 tool 消息
+                                    for m2 in fresh_messages:
+                                        m2_id = getattr(m2, "id", "") or ""
+                                        if getattr(m2, "role", "") == "tool" and getattr(m2, "tool_call_id", "") == tc2_id and m2_id not in delete_set and m2_id not in added:
+                                            added.add(m2_id)
+                            break
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
+    if added:
+        logger.info(f"[Tidy] Cascade: adding {len(added)} tool-chain messages to deletes: {added}")
+    return delete_ids + list(added)
+
+
+def _cascade_tool_chain_updates(fresh_messages, updates: list[dict]) -> list[dict]:
+    """级联更新：更新 assistant(tool_calls) 时清除悬空的 tool_calls。
+
+    当 assistant 消息有 tool_calls 但其对应的 tool 输出已被删除时，
+    将 tool_calls 清空，避免 LLM API 收到没有响应的工具调用。
+    同时，如果 update 的目标消息有 tool_calls，清空 tool_calls。
+    """
+    import copy
+    result = []
+    for upd in updates:
+        mid = upd.get("message_id", "")
+        content = upd.get("content", "")
+        if not mid or not content:
+            result.append(upd)
+            continue
+        # 检查目标消息是否有 tool_calls
+        msg = None
+        for m in fresh_messages:
+            if getattr(m, "id", "") == mid:
+                msg = m
+                break
+        if msg and getattr(msg, "role", "") == "assistant":
+            tcs = getattr(msg, "tool_calls", None)
+            if tcs:
+                try:
+                    if isinstance(tcs, str):
+                        tcs = json.loads(tcs)
+                    if tcs:  # 非空 tool_calls → 清空
+                        logger.info(f"[Tidy] Cascade: clearing tool_calls on updated message {mid}")
+                        result.append({"message_id": mid, "content": content, "clear_tool_calls": True})
+                        continue
+                except (json.JSONDecodeError, TypeError):
+                    pass
+        result.append(upd)
+    return result
 
 
 def _build_incremental_msg_text(messages, last_cursor_id: str, out_msg_ids: list, msg_tokens: list | None = None, end_cursor_id: str | None = None, protect_recent: int = 0) -> str:
@@ -872,7 +995,7 @@ async def chat_session(request: ChatRequest) -> ChatResponse:
                 tidy_result = {"status": "skipped", "reason": "lock_busy"}
             else:
                 try:
-                    tidy_result = await _tidy_context_impl(request={"session_id": session_id, "mode": "force"})
+                    tidy_result = await _tidy_context_impl(request={"session_id": session_id, "mode": "force"}, chat_lock_already_held=True)
                 finally:
                     _tidy_lock.release()
                 logger.info(f"[Chat Session] Force compression result: {tidy_result.get('status')}")
@@ -1093,8 +1216,14 @@ async def tidy_context(request: dict):
         _tidy_lock.release()
 
 
-async def _tidy_context_impl(request: dict):
-    """tidy_context 的内部实现（不加锁，由调用方负责并发控制）。"""
+async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False):
+    """tidy_context 的内部实现（不加锁，由调用方负责并发控制）。
+
+    Args:
+        chat_lock_already_held: 调用方已持有 _chat_lock 时传 True，
+            跳过内部的 _chat_lock 获取和 ChatQueue pause/resume，
+            避免自死锁（asyncio.Lock 不可重入）。
+    """
     session_id = request.get("session_id", "default")
     mode = request.get("mode", "sleep")
 
@@ -1508,10 +1637,19 @@ async def _tidy_context_impl(request: dict):
                     compress_msg_ids = [mid for mid in compress_msg_ids if mid in _visible_set]
             compress_mode = "模式二：睡眠整理（半破坏性）" if _is_mode2 else "模式一：睡眠整理（非破坏性）"
             _skip_compress = False
+            # 接近强制压缩阈值时跳过睡眠压缩，避免与强制压缩并发冲突
+            # 阈值 = warningThreshold - 0.1（默认0.8-0.1=0.7，即70%以上跳过）
+            _warning_threshold = _read_warning_threshold()
+            _skip_compress_threshold = (_warning_threshold - 0.1) * 100
+            if usage_percent >= _skip_compress_threshold:
+                logger.info(f"[Tidy] Sleep: usage {usage_percent:.1f}% >= skip threshold {_skip_compress_threshold:.0f}% (warningThreshold-0.1), skipping compression — will be handled by force mode")
+                _skip_compress = True
             # 模式二量化目标：基于 targetThreshold 计算动态目标（提前计算，决定是否跳过）
             _compress_target = ""
             _cursor_instruction = ""
-            if _is_mode2:
+            if _skip_compress:
+                pass  # 接近强制阈值，跳过所有压缩
+            elif _is_mode2:
                 target_threshold = _read_target_threshold()
                 target_tokens = int(context_window_tokens * target_threshold)
                 suggest_release = max(display_tokens - target_tokens, 0)
@@ -1662,7 +1800,9 @@ REMINDER: 从远端（idx小的）开始压缩，近端保护消息不要动。�
                                 raise RuntimeError("chat_lock timeout")
 
                             # 在chat_lock保护下等待worker当前处理完成
-                            if _q._processing:
+                            if _q._processing and _q._processing_done.is_set():
+                                pass  # worker 刚完成，_processing 尚未清除
+                            elif _q._processing:
                                 try:
                                     await asyncio.wait_for(_q._processing_done.wait(), timeout=30.0)
                                 except asyncio.TimeoutError:
@@ -1730,6 +1870,11 @@ REMINDER: 从远端（idx小的）开始压缩，近端保护消息不要动。�
                                     logger.warning(f"[Tidy] Mode-2: Removing {len(overlap_ids)} IDs from deletes that also appear in updates")
                                     valid_deletes = [mid for mid in valid_deletes if mid not in overlap_ids]
 
+                                # 级联删除：确保 tool 调用链完整性
+                                valid_deletes = _cascade_tool_chain_deletes(fresh_messages, valid_deletes)
+                                # 级联更新：清除更新消息的悬空 tool_calls
+                                valid_updates = _cascade_tool_chain_updates(fresh_messages, valid_updates)
+
                                 # 执行删除
                                 if valid_deletes:
                                     del_result = await store.delete_messages_by_ids(valid_deletes)
@@ -1740,7 +1885,8 @@ REMINDER: 从远端（idx小的）开始压缩，近端保护消息不要动。�
                                     mid = upd.get("message_id", "")
                                     content = upd.get("content", "")
                                     if mid and content:
-                                        ok = await store.update_message(message_id=mid, content=content)
+                                        clear_tc = upd.get("clear_tool_calls", False)
+                                        ok = await store.update_message(message_id=mid, content=content, clear_tool_calls=clear_tc)
                                         if ok:
                                             logger.info(f"[Tidy] Mode-2: Updated message {mid}")
                                         else:
@@ -1862,7 +2008,10 @@ REMINDER: 从远端（idx小的）开始压缩，近端保护消息不要动。�
                             logger.warning("[Tidy] Skipping cursor advance due to protected message integrity failure")
             else:
                 if _skip_compress:
-                    logger.info("[Tidy] context-manager: skipped (suggest_release below threshold or already at target)")
+                    if usage_percent >= _skip_compress_threshold:
+                        logger.info(f"[Tidy] context-manager: skipped (usage {usage_percent:.1f}% >= skip threshold {_skip_compress_threshold:.0f}%, waiting for force mode)")
+                    else:
+                        logger.info("[Tidy] context-manager: skipped (suggest_release below threshold or already at target)")
                 else:
                     logger.info("[Tidy] context-manager: no messages to process")
 
@@ -2207,41 +2356,57 @@ REMINDER: 从远端（idx小的）开始压缩，近端保护消息不要动。�
                     else:
                         updates = [u for u in updates if isinstance(u, dict)]
 
-                    # 安全协议：pause ChatQueue + acquire chat_lock（与模式2一致）
-                    from niu_api.chat_queue import get_chat_queue
-                    _fq = get_chat_queue()
-                    _fq.pause()
-
+                    # 安全协议：pause ChatQueue + acquire chat_lock
+                    # 当调用方已持有 _chat_lock 时（SSE /chat 自死锁场景），
+                    # 跳过 ChatQueue pause/resume 和 _chat_lock 获取：
+                    # 调用方持有 _chat_lock → 没有 runner.chat() 可以并发 → DB 安全
                     from niu_api.chat import _chat_lock
                     _f_chat_lock_acquired = False
-                    try:
-                        await asyncio.wait_for(_chat_lock.acquire(), timeout=60.0)
-                        _f_chat_lock_acquired = True
-                    except asyncio.TimeoutError:
-                        logger.warning("[Tidy] Force: chat_lock 60s timeout, aborting execution")
+                    _fq = None
 
-                    if not _f_chat_lock_acquired:
-                        _fq.resume()
-                        try:
-                            os.remove(compress_plan_path)
-                        except OSError:
-                            pass
-                        raise RuntimeError("Force: chat_lock timeout")
+                    if chat_lock_already_held:
+                        # 调用方已持有 _chat_lock，不需要 ChatQueue 交互
+                        _f_chat_lock_acquired = False
+                        logger.info("[Tidy] Force: chat_lock already held by caller, skipping ChatQueue pause+lock acquire")
+                    else:
+                        # 正常路径：pause ChatQueue + acquire _chat_lock
+                        from niu_api.chat_queue import get_chat_queue
+                        _fq = get_chat_queue()
+                        _fq.pause()
 
-                    # 在chat_lock保护下等待worker当前处理完成
-                    if _fq._processing:
                         try:
-                            await asyncio.wait_for(_fq._processing_done.wait(), timeout=30.0)
+                            await asyncio.wait_for(_chat_lock.acquire(), timeout=60.0)
+                            _f_chat_lock_acquired = True
                         except asyncio.TimeoutError:
-                            logger.warning("[Tidy] Force: ChatQueue processing timeout, aborting execution")
-                            if _f_chat_lock_acquired:
-                                _chat_lock.release()
+                            logger.warning("[Tidy] Force: chat_lock 60s timeout, aborting execution")
+
+                        if not _f_chat_lock_acquired:
                             _fq.resume()
                             try:
                                 os.remove(compress_plan_path)
                             except OSError:
                                 pass
-                            raise RuntimeError("Force: ChatQueue processing timeout")
+                            raise RuntimeError("Force: chat_lock timeout")
+
+                        # 在chat_lock保护下等待worker当前处理完成
+                        # 但如果 _processing=True 是因为调用方就在 ChatQueue worker 内部
+                        # （_check_overflow 路径），则跳过等待（等了会死锁）
+                        if _fq._processing and _fq._processing_done.is_set():
+                            pass  # worker 刚完成，_processing 尚未清除
+                        elif _fq._processing:
+                            # ChatQueue worker 正在处理，等待完成
+                            try:
+                                await asyncio.wait_for(_fq._processing_done.wait(), timeout=30.0)
+                            except asyncio.TimeoutError:
+                                logger.warning("[Tidy] Force: ChatQueue processing timeout, aborting execution")
+                                if _f_chat_lock_acquired:
+                                    _chat_lock.release()
+                                _fq.resume()
+                                try:
+                                    os.remove(compress_plan_path)
+                                except OSError:
+                                    pass
+                                raise RuntimeError("Force: ChatQueue processing timeout")
 
                     try:
                         # H4: 重新获取消息列表（子 Agent 调用期间可能已变化）
@@ -2321,6 +2486,11 @@ REMINDER: 从远端（idx小的）开始压缩，近端保护消息不要动。�
                         if len(valid_updates) < len(updates):
                             logger.warning(f"[Tidy] Force: Filtered {len(updates) - len(valid_updates)} invalid update IDs")
 
+                        # 级联删除：确保 tool 调用链完整性
+                        valid_deletes = _cascade_tool_chain_deletes(fresh_messages, valid_deletes)
+                        # 级联更新：清除更新消息的悬空 tool_calls
+                        valid_updates = _cascade_tool_chain_updates(fresh_messages, valid_updates)
+
                         # 执行删除
                         if valid_deletes:
                             del_result = await store.delete_messages_by_ids(valid_deletes)
@@ -2331,7 +2501,8 @@ REMINDER: 从远端（idx小的）开始压缩，近端保护消息不要动。�
                             mid = upd.get("message_id", "")
                             content = upd.get("content", "")
                             if mid and content:
-                                ok = await store.update_message(message_id=mid, content=content)
+                                clear_tc = upd.get("clear_tool_calls", False)
+                                ok = await store.update_message(message_id=mid, content=content, clear_tool_calls=clear_tc)
                                 if ok:
                                     logger.info(f"[Tidy] Force: Updated message {mid}")
                                 else:
@@ -2341,10 +2512,8 @@ REMINDER: 从远端（idx小的）开始压缩，近端保护消息不要动。�
                     finally:
                         if _f_chat_lock_acquired:
                             _chat_lock.release()
-                        try:
+                        if _fq is not None:
                             _fq.resume()
-                        except NameError:
-                            pass
                 except json.JSONDecodeError as e:
                     logger.error(f"[Tidy] Force: Failed to parse compress plan JSON: {e}")
                 except Exception as e:
