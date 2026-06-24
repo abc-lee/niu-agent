@@ -423,10 +423,22 @@ async def chat(request: ChatRequest) -> StreamingResponse:
                     f"triggering force compression (blocking)"
                 )
                 from niu_api.compat import _tidy_context_impl, _tidy_lock
-                async with _tidy_lock:
-                    tidy_result = await _tidy_context_impl(request={"session_id": session_id, "mode": "force"})
-                logger.info(f"[Chat SSE] Force compression result: {tidy_result.get('status')}")
-                yield f"data: {json.dumps({'force_compression_done': True, 'status': tidy_result.get('status')})}\n\n"
+                # 使用带超时的acquire避免AB-BA死锁：
+                # SSE /chat 持有 _chat_lock → 等待 _tidy_lock，
+                # 模式2压缩持有 _tidy_lock → 等待 _chat_lock
+                _tidy_acquired = False
+                try:
+                    await asyncio.wait_for(_tidy_lock.acquire(), timeout=10.0)
+                    _tidy_acquired = True
+                except asyncio.TimeoutError:
+                    logger.warning("[Chat SSE] Tidy lock busy, skipping force compression")
+                if _tidy_acquired:
+                    try:
+                        tidy_result = await _tidy_context_impl(request={"session_id": session_id, "mode": "force"})
+                    finally:
+                        _tidy_lock.release()
+                    logger.info(f"[Chat SSE] Force compression result: {tidy_result.get('status')}")
+                    yield f"data: {json.dumps({'force_compression_done': True, 'status': tidy_result.get('status')})}\n\n"
             # Send final message
             yield f"data: {json.dumps({'done': True, 'session_id': session_id, 'message_id': message_id})}\n\n"
         finally:
@@ -522,9 +534,19 @@ async def chat_sync(request: ChatRequest) -> ChatResponse:
                 f"triggering force compression (blocking)"
             )
             from niu_api.compat import _tidy_context_impl, _tidy_lock
-            async with _tidy_lock:
-                tidy_result = await _tidy_context_impl(request={"session_id": session_id, "mode": "force"})
-            logger.info(f"[Chat] Force compression result: {tidy_result.get('status')}")
+            # 使用带超时的acquire避免AB-BA死锁（同SSE /chat路径）
+            _tidy_acquired = False
+            try:
+                await asyncio.wait_for(_tidy_lock.acquire(), timeout=10.0)
+                _tidy_acquired = True
+            except asyncio.TimeoutError:
+                logger.warning("[Chat] Tidy lock busy, skipping force compression")
+            if _tidy_acquired:
+                try:
+                    tidy_result = await _tidy_context_impl(request={"session_id": session_id, "mode": "force"})
+                finally:
+                    _tidy_lock.release()
+                logger.info(f"[Chat] Force compression result: {tidy_result.get('status')}")
             # 压缩完成后不触发 auto_tidy（force 已包含完整3步整理）
         return ChatResponse(session_id=session_id, reply=full_reply, message_id=message_id)
     finally:
