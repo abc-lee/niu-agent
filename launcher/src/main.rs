@@ -181,7 +181,7 @@ struct ContextConfig {
 fn default_context_config() -> ContextConfig {
     ContextConfig {
         warning_threshold: 0.80,
-        target_threshold: 0.50,
+        target_threshold: 0.30,
         sleep_trigger_minutes: 5,
         context_window_size: 200_000,
     }

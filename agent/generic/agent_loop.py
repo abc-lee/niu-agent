@@ -281,7 +281,7 @@ def agent_runner_loop(
                     _compress_cooldown = True  # 冷却：本次 agent_runner_loop 不再触发压缩
                 else:
                     # 子 Agent：FIFO 裁剪到 target 阈值
-                    target_tokens = context_target_threshold if context_target_threshold > 0 else int(context_window_tokens * 0.50)
+                    target_tokens = context_target_threshold if context_target_threshold > 0 else int(context_window_tokens * 0.30)
                     removed = _fifo_prune(messages, target_tokens)
                     if removed > 0:
                         logger.info(f"[FIFO] Proactive pruning: {last_prompt_tokens}/{context_window_tokens} tokens "
@@ -341,7 +341,7 @@ def agent_runner_loop(
                             handler._last_prompt_tokens = 0
                             _compress_cooldown = True
                         else:
-                            target_tokens = context_target_threshold if context_target_threshold > 0 else int(context_window_tokens * 0.50)
+                            target_tokens = context_target_threshold if context_target_threshold > 0 else int(context_window_tokens * 0.30)
                             removed = _fifo_prune(messages, target_tokens)
                             if removed > 0:
                                 logger.info(f"[FIFO] Proactive pruning: removed {removed} messages")
