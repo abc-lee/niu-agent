@@ -15,6 +15,7 @@ import requests as _requests
 # --- 配置文件 ---
 
 CONFIG_PATH = os.path.expanduser("~/.niu/ha-config.json")
+SERVICES_CACHE_PATH = os.path.expanduser("~/.niu/ha-services.json")
 _config_lock = threading.Lock()
 _config_event = threading.Event()
 
@@ -42,6 +43,85 @@ def _write_config(config: dict) -> None:
             os.unlink(tmp_path)
         raise
     _config_event.set()
+
+
+def _read_services_cache() -> dict:
+    if not os.path.exists(SERVICES_CACHE_PATH):
+        return {}
+    try:
+        with open(SERVICES_CACHE_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _write_services_cache(services: dict) -> None:
+    dir_path = os.path.dirname(SERVICES_CACHE_PATH) or "."
+    os.makedirs(dir_path, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir=dir_path, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(services, f, ensure_ascii=False, indent=2)
+        os.chmod(tmp_path, 0o600)
+        os.rename(tmp_path, SERVICES_CACHE_PATH)
+    except Exception:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+        raise
+
+
+def _fetch_and_cache_services(ha_url: str, headers: dict) -> dict:
+    """从 HA API 获取服务列表并缓存。返回 {domain: {service_name: {fields: {...}}}} 格式。
+    仅在获取成功时写入缓存文件，失败时不写入（避免空文件覆盖旧缓存）。"""
+    try:
+        resp = _requests.get(f"{ha_url}/api/services", headers=headers, timeout=15)
+        if resp.status_code != 200:
+            print(f"[HA] 获取服务列表失败: HTTP {resp.status_code}")
+            return {}
+        raw = resp.json()
+        # raw 格式: [{domain: "vacuum", services: {svc_name: {...}}}, ...]
+        cache = {}
+        for item in raw:
+            domain = item.get("domain", "")
+            services = item.get("services", {})
+            if not domain or not services:
+                continue
+            cache[domain] = {}
+            for svc_name, svc_info in services.items():
+                fields = {}
+                for fname, finfo in (svc_info.get("fields") or {}).items():
+                    # 跳过 entity_id 字段（已作为顶层参数传递）
+                    if fname == "entity_id":
+                        continue
+                    field_def = {"required": finfo.get("required", False)}
+                    if finfo.get("description"):
+                        field_def["description"] = finfo["description"]
+                    if finfo.get("example") is not None:
+                        field_def["example"] = finfo["example"]
+                    # 提取 selector 中的选项（如 fan_speed 的可选值）
+                    selector = finfo.get("selector", {})
+                    if selector:
+                        for sel_type, sel_data in selector.items():
+                            if sel_type == "select" and "options" in sel_data:
+                                opts = sel_data["options"]
+                                if isinstance(opts, list):
+                                    field_def["options"] = [
+                                        o if isinstance(o, str) else (o.get("value", str(o)) if isinstance(o, dict) else str(o))
+                                        for o in opts if o is not None
+                                    ]
+                            elif sel_type == "number":
+                                if "min" in sel_data:
+                                    field_def["min"] = sel_data["min"]
+                                if "max" in sel_data:
+                                    field_def["max"] = sel_data["max"]
+                    fields[fname] = field_def
+                cache[domain][svc_name] = {"fields": fields}
+        if cache:
+            _write_services_cache(cache)
+        return cache
+    except Exception as e:
+        print(f"[HA] 获取服务列表异常: {e}")
+        return {}
 
 
 def _atomic_update(update_fn):
@@ -85,6 +165,8 @@ ATTR_WHITELIST = {
         "current_temperature", "temperature", "target_temp_temp", "target_temp_high",
         "target_temp_low", "indoor_temperature", "indoor_humidity",
         "hvac_action", "hvac_mode", "preset_mode",
+        "hvac_modes", "preset_modes", "fan_modes", "swing_modes",
+        "swing_horizontal_modes",
     ],
     "sensor": [
         "unit_of_measurement", "device_class", "state_class",
@@ -95,17 +177,23 @@ ATTR_WHITELIST = {
     "switch": [],
     "fan": [
         "percentage", "percentage_step", "preset_modes",
+        "speed_list", "direction",
     ],
     "cover": [
         "current_position", "current_tilt_position",
+        "supported_features",
     ],
     "lock": [],
     "humidifier": [
         "humidity", "target_humidity", "mode", "available_modes",
     ],
-    "vacuum": [],
+    "vacuum": [
+        "fan_speed", "fan_speed_list", "rooms",
+        "supported_features",
+    ],
     "media_player": [
         "source", "source_list", "media_title", "volume_level",
+        "supported_features",
     ],
     "camera": [],
     "scene": [],
@@ -133,6 +221,28 @@ ACTION_SERVICE_MAP = {
     "close": lambda d: "cover/close_cover",
     "lock": lambda d: "lock/lock",
     "unlock": lambda d: "lock/unlock",
+}
+
+# 向后兼容：旧 action 参数到 service 的映射
+ACTION_COMPAT_MAP = {
+    "turn_on": "turn_on",
+    "turn_off": "turn_off",
+    "toggle": "toggle",
+    "set_brightness": "turn_on",
+    "set_temperature": "set_temperature",
+    "open": "open_cover",
+    "close": "close_cover",
+    "lock": "lock",
+    "unlock": "unlock",
+    "activate": "turn_on",
+    "run": "turn_on",
+    "trigger": "trigger",
+}
+
+# vacuum 域的 action 特殊映射（vacuum 没有 turn_on/turn_off）
+VACUUM_ACTION_MAP = {
+    "turn_on": "start",
+    "turn_off": "return_to_base",
 }
 
 
@@ -234,11 +344,167 @@ def _ws_batch_call(ha_url: str, ha_token: str, commands: list, timeout: float = 
         return _asyncio.run(_run())
 
 
+# --- supported_features 位掩码常量 ---
+# 来源：HA homeassistant/components/{domain}/const.py 的 EntityFeature 枚举
+# vacuum: VacuumEntityFeature
+VACUUM_TURN_ON = 1
+VACUUM_TURN_OFF = 2
+VACUUM_PAUSE = 4
+VACUUM_STOP = 8
+VACUUM_RETURN = 16
+VACUUM_FAN_SPEED = 32
+VACUUM_BATTERY = 64
+VACUUM_STATUS = 128
+VACUUM_SEND_COMMAND = 256
+VACUUM_LOCATE = 512
+VACUUM_CLEAN_SPOT = 1024
+VACUUM_MAP = 2048
+VACUUM_STATE = 4096
+VACUUM_START = 8192
+
+# fan: FanEntityFeature
+FAN_SET_SPEED = 1
+FAN_DIRECTION = 2
+FAN_OSCILLATE = 4
+FAN_PRESET_MODE = 8
+
+# cover: CoverEntityFeature
+COVER_OPEN = 1
+COVER_CLOSE = 2
+COVER_SET_POSITION = 4
+COVER_STOP = 8
+COVER_OPEN_TILT = 16
+COVER_CLOSE_TILT = 32
+COVER_SET_TILT_POSITION = 64
+COVER_STOP_TILT = 128
+
+# media_player: MediaPlayerEntityFeature
+MEDIA_VOLUME_SET = 4
+MEDIA_VOLUME_MUTE = 8
+MEDIA_VOLUME_STEP = 1024
+MEDIA_SELECT_SOURCE = 2048
+
+
+def _entity_supports_service(attrs: dict, domain: str, service: str) -> bool:
+    """判断实体是否支持某个服务。基于 supported_features 位掩码和属性列表。"""
+    sf = attrs.get("supported_features")
+
+    if service in ("turn_on", "turn_off", "toggle"):
+        # 有位掩码的 domain 需要检查；其他 domain 这些服务通用
+        if domain == "vacuum":
+            if service == "turn_on":
+                return isinstance(sf, int) and bool(sf & VACUUM_START)
+            if service == "turn_off":
+                return isinstance(sf, int) and bool(sf & VACUUM_RETURN)
+        return True
+
+    if domain == "vacuum":
+        vacuum_map = {
+            "start": VACUUM_START, "pause": VACUUM_PAUSE, "stop": VACUUM_STOP,
+            "return_to_base": VACUUM_RETURN, "set_fan_speed": VACUUM_FAN_SPEED,
+            "clean_spot": VACUUM_CLEAN_SPOT, "locate": VACUUM_LOCATE,
+            "clean_area": VACUUM_MAP, "send_command": VACUUM_SEND_COMMAND,
+        }
+        bit = vacuum_map.get(service)
+        if bit is not None:
+            return isinstance(sf, int) and bool(sf & bit)
+        return True
+
+    if domain == "light":
+        return True
+
+    if domain == "climate":
+        if service == "set_hvac_mode":
+            return bool(attrs.get("hvac_modes"))
+        if service == "set_preset_mode":
+            return bool(attrs.get("preset_modes"))
+        if service == "set_fan_mode":
+            return bool(attrs.get("fan_modes"))
+        if service == "set_swing_mode":
+            return bool(attrs.get("swing_modes"))
+        if service == "set_swing_horizontal_mode":
+            return bool(attrs.get("swing_horizontal_modes"))
+        if service == "set_humidity":
+            return "humidity" in attrs or "target_humidity" in attrs
+        return True
+
+    if domain == "fan":
+        if service in ("set_percentage", "increase_speed", "decrease_speed"):
+            return isinstance(sf, int) and bool(sf & FAN_SET_SPEED)
+        if service == "set_preset_mode":
+            return (isinstance(sf, int) and bool(sf & FAN_PRESET_MODE)) or bool(attrs.get("preset_modes"))
+        if service == "oscillate":
+            return isinstance(sf, int) and bool(sf & FAN_OSCILLATE)
+        if service == "set_direction":
+            return isinstance(sf, int) and bool(sf & FAN_DIRECTION)
+        return True
+
+    if domain == "cover":
+        cover_map = {
+            "open_cover": COVER_OPEN, "close_cover": COVER_CLOSE,
+            "set_cover_position": COVER_SET_POSITION, "stop_cover": COVER_STOP,
+            "open_cover_tilt": COVER_OPEN_TILT, "close_cover_tilt": COVER_CLOSE_TILT,
+            "set_cover_tilt_position": COVER_SET_TILT_POSITION,
+            "stop_cover_tilt": COVER_STOP_TILT,
+            "toggle_cover_tilt": COVER_OPEN_TILT | COVER_CLOSE_TILT,
+        }
+        bit = cover_map.get(service)
+        if bit is not None:
+            return isinstance(sf, int) and bool(sf & bit)
+        return True
+
+    if domain == "humidifier":
+        if service == "set_mode":
+            return bool(attrs.get("available_modes"))
+        if service == "set_humidity":
+            return "target_humidity" in attrs or "humidity" in attrs
+        return True
+
+    if domain == "media_player":
+        if service == "volume_set":
+            return isinstance(sf, int) and bool(sf & MEDIA_VOLUME_SET)
+        if service in ("volume_up", "volume_down"):
+            return isinstance(sf, int) and bool(sf & MEDIA_VOLUME_STEP)
+        if service == "select_source":
+            return (isinstance(sf, int) and bool(sf & MEDIA_SELECT_SOURCE)) or bool(attrs.get("source_list"))
+        return True
+
+    return True
+
+
+def _get_entity_actions(domain: str, attrs: dict, services_cache: dict) -> list:
+    """根据服务缓存和实体属性计算可用 actions 列表。"""
+    domain_services = services_cache.get(domain, {})
+    if not domain_services:
+        info = DOMAIN_MAP.get(domain, {})
+        # 映射旧式 action 名为 HA 服务名，去重保持与动态路径一致
+        mapped = []
+        seen = set()
+        for act in info.get("actions", []):
+            if domain == "vacuum" and act in VACUUM_ACTION_MAP:
+                name = VACUUM_ACTION_MAP[act]
+            elif act in ACTION_COMPAT_MAP:
+                name = ACTION_COMPAT_MAP[act]
+            else:
+                name = act
+            if name not in seen:
+                seen.add(name)
+                mapped.append(name)
+        return mapped
+
+    actions = []
+    for svc_name in sorted(domain_services.keys()):
+        if _entity_supports_service(attrs, domain, svc_name):
+            actions.append(svc_name)
+    return actions
+
+
 # --- ha_status ---
 
 def ha_status(area: str = "", domain: str = "") -> dict:
     """查询智能家居设备、场景、自动化的当前状态。"""
     config = _read_config()
+    services_cache = _read_services_cache()
     url, headers, err = _get_ha_client(config)
     if err:
         return {"connected": False, "error": "未配置 Home Assistant，请先使用 ha_setup 工具连接"}
@@ -310,10 +576,38 @@ def ha_status(area: str = "", domain: str = "") -> dict:
             "name": name,
             "area": area_name,
             "entity_id": eid,
-            "type": info["type"],
+            "type": info["type"] if info else ent_domain,
             "state": state,
-            "actions": info["actions"],
+            "actions": _get_entity_actions(ent_domain, attrs, services_cache),
         }
+        # 添加有参数的服务定义（用实体属性覆盖 domain 级别选项）
+        entity_services = {}
+        domain_svcs = services_cache.get(ent_domain, {})
+        for act in entry["actions"]:
+            if act in domain_svcs:
+                fields = domain_svcs[act].get("fields", {})
+                if fields:
+                    svc_def = {"fields": {k: dict(v) for k, v in fields.items()}}
+                    for fname, finfo in svc_def["fields"].items():
+                        if ent_domain == "vacuum" and fname == "fan_speed" and attrs.get("fan_speed_list"):
+                            finfo["options"] = attrs["fan_speed_list"]
+                        elif ent_domain == "climate" and fname == "hvac_mode" and attrs.get("hvac_modes"):
+                            finfo["options"] = attrs["hvac_modes"]
+                        elif ent_domain == "climate" and fname == "preset_mode" and attrs.get("preset_modes"):
+                            finfo["options"] = attrs["preset_modes"]
+                        elif ent_domain == "climate" and fname == "fan_mode" and attrs.get("fan_modes"):
+                            finfo["options"] = attrs["fan_modes"]
+                        elif ent_domain == "climate" and fname == "swing_mode" and attrs.get("swing_modes"):
+                            finfo["options"] = attrs["swing_modes"]
+                        elif ent_domain == "humidifier" and fname == "mode" and attrs.get("available_modes"):
+                            finfo["options"] = attrs["available_modes"]
+                        elif ent_domain == "fan" and fname == "preset_mode" and attrs.get("preset_modes"):
+                            finfo["options"] = attrs["preset_modes"]
+                        elif ent_domain == "media_player" and fname == "source" and attrs.get("source_list"):
+                            finfo["options"] = attrs["source_list"]
+                    entity_services[act] = svc_def
+        if entity_services:
+            entry["services"] = entity_services
         # Extract useful properties from attributes
         whitelist = ATTR_WHITELIST.get(ent_domain, [])
         if whitelist:
@@ -362,6 +656,9 @@ def ha_setup(ha_url: str = "", ha_token: str = "") -> dict:
         result = _atomic_update(_setup)
         result["ha_url"] = ha_url
 
+        # 缓存 HA 服务列表
+        _fetch_and_cache_services(ha_url, headers)
+
         try:
             from niu_api.internal.ha_watcher import check_and_start
             check_and_start()
@@ -378,6 +675,9 @@ def ha_setup(ha_url: str = "", ha_token: str = "") -> dict:
     conn = _check_ha_connection(url, headers)
     if not conn["connected"]:
         return conn
+
+    # 刷新服务缓存
+    _fetch_and_cache_services(url, headers)
 
     conn["ha_url"] = url
     triggers = config.get("triggers", [])
@@ -396,43 +696,98 @@ def ha_setup(ha_url: str = "", ha_token: str = "") -> dict:
 
 # --- ha_control ---
 
-def ha_control(entity_id: str, action: str, value: float = None, **kwargs) -> dict:
-    """控制智能家居设备。"""
+def ha_control(entity_id: str, action: str = "", service: str = "",
+               value: float = None, service_data: dict = None, **kwargs) -> dict:
+    """控制智能家居设备。支持两种调用方式：
+    1. 新方式：service + service_data（直接调用 HA 服务）
+    2. 旧方式：action + value（向后兼容）
+    service 和 action 不应同时传入；若同时传入，service 优先。"""
     config = _read_config()
     url, headers, err = _get_ha_client(config)
     if err:
         return {"success": False, "error": "未配置 Home Assistant，请先使用 ha_setup 工具连接"}
 
-    domain = entity_id.split(".")[0]
-    info = DOMAIN_MAP.get(domain)
-    if not info:
-        return {"success": False, "error": f"未知的设备类型: {domain}"}
+    # 验证 entity_id 格式
+    if not entity_id or "." not in entity_id or "/" in entity_id or ".." in entity_id:
+        return {"success": False, "error": f"无效的 entity_id: '{entity_id}'，格式应为 'domain.name'"}
 
-    if action not in info["actions"]:
+    domain = entity_id.split(".")[0]
+    _used_action_compat = False
+
+    if not service and action:
+        _used_action_compat = True
+        if domain == "vacuum" and action in VACUUM_ACTION_MAP:
+            service = VACUUM_ACTION_MAP[action]
+        else:
+            compat = ACTION_COMPAT_MAP.get(action)
+            if compat:
+                service = compat
+            else:
+                service = action
+
+    if not service:
+        return {"success": False, "error": "必须提供 service 或 action 参数"}
+
+    # 支持 "domain.service" 格式，提取纯 service 名
+    if "." in service:
+        svc_prefix, svc_name = service.split(".", 1)
+        if svc_prefix == domain:
+            service = svc_name
+        else:
+            return {"success": False, "error": f"服务 '{service}' 的域 '{svc_prefix}' 与实体域 '{domain}' 不匹配，请使用 '{domain}.{svc_name}' 或纯服务名 '{svc_name}'"}
+
+    # 验证 service 名无路径遍历字符
+    if "/" in service or ".." in service:
+        return {"success": False, "error": f"无效的 service 名称: '{service}'"}
+
+    data = {"entity_id": entity_id}
+
+    if service_data:
+        # 过滤 entity_id 防止覆盖
+        data.update({k: v for k, v in service_data.items() if k != "entity_id"})
+
+    if value is not None and _used_action_compat:
+        if action == "set_brightness":
+            if value < 0 or value > 100:
+                return {"success": False, "error": f"brightness 范围 0-100，当前值: {value}"}
+            data["brightness_pct"] = value
+        elif action == "set_temperature":
+            data["temperature"] = value
+
+    # 验证 service 是否在缓存中
+    services_cache = _read_services_cache()
+    domain_services = services_cache.get(domain, {})
+    if not services_cache:
+        # 缓存未初始化，无法验证但给出提示
+        pass
+    elif service not in domain_services:
+        available = sorted(domain_services.keys())
         return {
             "success": False,
-            "error": f"动作 '{action}' 不适用于 {info['type']} 设备，可用动作: {info['actions']}",
+            "error": f"服务 '{service}' 不适用于 {domain} 设备，可用服务: {available}",
         }
 
-    service = ACTION_SERVICE_MAP[action](domain)
+    # 验证必填字段
+    if domain_services and service in domain_services:
+        fields = domain_services[service].get("fields", {})
+        for fname, finfo in fields.items():
+            if finfo.get("required") and fname not in data:
+                return {
+                    "success": False,
+                    "error": f"服务 {domain}.{service} 缺少必填参数: {fname}",
+                    "missing_fields": [f for f, i in fields.items() if i.get("required") and f not in data],
+                }
 
-    service_data = {"entity_id": entity_id}
-    if action == "set_brightness" and value is not None:
-        if value < 0 or value > 100:
-            return {"success": False, "error": f"brightness 范围 0-100，当前值: {value}"}
-        service_data["brightness"] = int(value * 2.55)
-    elif action == "set_temperature" and value is not None:
-        service_data["temperature"] = value
-
+    ha_service = f"{domain}/{service}"
     try:
         resp = _requests.post(
-            f"{url}/api/services/{service}",
+            f"{url}/api/services/{ha_service}",
             headers=headers,
-            json=service_data,
+            json=data,
             timeout=15,
         )
         if resp.status_code != 200:
-            return {"success": False, "error": f"服务调用失败: HTTP {resp.status_code}"}
+            return {"success": False, "error": f"服务调用失败: HTTP {resp.status_code} - {resp.text[:200]}"}
 
         try:
             changed = resp.json()
@@ -504,6 +859,8 @@ def ha_subscribe(entity_id: str = "", condition: str = "", value: float = None,
 
     if not entity_id or not condition:
         return {"success": False, "error": "新增订阅时 entity_id 和 condition 必填"}
+    if "." not in entity_id or "/" in entity_id or ".." in entity_id:
+        return {"success": False, "error": f"无效的 entity_id: '{entity_id}'，格式应为 'domain.name'"}
     if condition not in ("state_change", "above", "below"):
         return {"success": False, "error": f"无效的 condition: {condition}，可选: state_change, above, below"}
     if condition in ("above", "below") and value is None:
@@ -710,15 +1067,17 @@ TOOL_SCHEMAS = {
     },
     "ha_control": {
         "name": "ha_control",
-        "description": "控制智能家居设备。需要 entity_id 和 action 参数。entity_id 从 ha_status 获取，action 必须在该设备允许的 actions 列表中。set_brightness 的 value 范围 0-100，set_temperature 的 value 为目标温度。",
+        "description": "控制智能家居设备。两种调用方式：1) service + service_data（推荐，直接调用 HA 服务，如 service='start' 或 service='set_fan_speed' + service_data={'fan_speed': 'max'}）；2) action + value（兼容旧方式，如 action='turn_on'）。entity_id 从 ha_status 获取，可用 service 从 ha_status 返回的 actions 列表查看。有参数的服务其参数定义在 ha_status 返回的 services 字段中。service 和 action 至少提供一个。",
         "input_schema": {
             "type": "object",
             "properties": {
-                "entity_id": {"type": "string", "description": "实体 ID，如 light.xxx"},
-                "action": {"type": "string", "description": "动作名，如 turn_on/turn_off/toggle/set_brightness 等"},
-                "value": {"type": "number", "description": "动作参数：亮度 0-100 或温度值"},
+                "entity_id": {"type": "string", "description": "实体 ID，如 vacuum.18603118098"},
+                "action": {"type": "string", "description": "（兼容）动作名，如 turn_on/turn_off/toggle/set_brightness。与 service 互斥，优先使用 service"},
+                "service": {"type": "string", "description": "HA 服务名，如 start/pause/stop/return_to_base/set_fan_speed。从 ha_status 的 actions 列表获取。与 action 互斥，优先使用此参数"},
+                "value": {"type": "number", "description": "（兼容）亮度 0-100 或目标温度。仅在使用 action 模式时有效"},
+                "service_data": {"type": "object", "description": "服务参数键值对，如 {'fan_speed': 'max'} 或 {'temperature': 26}。参数定义见 ha_status 的 services 字段"},
             },
-            "required": ["entity_id", "action"],
+            "required": ["entity_id"],
         },
     },
     "ha_subscribe": {
