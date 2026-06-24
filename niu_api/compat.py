@@ -213,12 +213,21 @@ def _truncate_preserving_both(text: str, max_tokens: int) -> str:
             return head + f"[远端消息已省略，保留近端 {msg_count} 条消息]\n\n" + tail
         return text
     # fallback：纯字符截断（指令部分过大）
+    # 先提取保护 ID 行，确保 fallback 路径不丢失关键信息
+    protected_line = ""
+    for _line in text.split('\n'):
+        if _line.startswith('保护消息ID:'):
+            protected_line = _line
+            break
     head_chars = int(max_chars * 0.2)
     tail_chars = max_chars - head_chars - 200
     head = text[:head_chars]
     last_nl = head.rfind('\n')
     if last_nl > head_chars // 2:
         head = head[:last_nl]
+    # 如果 head 中没有保护 ID 行，追加到 head 末尾
+    if protected_line and '保护消息ID:' not in head:
+        head = head + '\n' + protected_line
     tail = text[-tail_chars:]
     first_msg = tail.find("[id:")
     if first_msg > 0:
@@ -1497,16 +1506,16 @@ async def _tidy_context_impl(request: dict):
             if compress_msg_text and _estimate_text_tokens(compress_msg_text) > _compress_window:
                 compress_msg_text = _truncate_preserving_tail(compress_msg_text, _compress_window)
                 # 截断后重建 compress_msg_ids，只保留可见消息的 ID
-                import re as _re
-                _visible_ids = _re.findall(r'\[id:([a-f0-9-]+)\]', compress_msg_text)
+                _visible_ids = re.findall(r'\[id:([a-f0-9-]+)\]', compress_msg_text)
                 _visible_set = set(_visible_ids)
                 compress_msg_ids = [mid for mid in compress_msg_ids if mid in _visible_set]
             compress_mode = "模式二：睡眠整理（半破坏性）" if usage_percent >= 50 else "模式一：睡眠整理（非破坏性）"
             _is_mode2 = usage_percent >= 50
+            _skip_compress = False
             logger.info(f"[Tidy] Sleep: usage={usage_percent:.1f}%, selecting {compress_mode}")
 
             new_compress_id = last_compress_id
-            if compress_msg_ids:
+            if compress_msg_ids and not _skip_compress:
                 # 构建保护消息 UUID 列表（只含 user/assistant 消息，不含 tool 输出）
                 _pids = []
                 for i in range(len(compress_msg_ids) - 1, -1, -1):
@@ -1527,8 +1536,8 @@ async def _tidy_context_impl(request: dict):
                     suggest_release = max(display_tokens - target_tokens, 0)
                     if suggest_release > 0 and suggest_release < int(display_tokens * 0.05):
                         # 释放量太小（<5%），不值得压缩一轮，跳过
-                        suggest_release = 0
-                        _compress_target = ""
+                        logger.info(f"[Tidy] Mode-2: suggest_release {suggest_release} < 5%, skipping compression")
+                        _skip_compress = True
                     elif suggest_release > 0:
                         _compress_target = f"\n压缩目标：建议释放约 {suggest_release} tokens，将上下文从 {usage_percent:.1f}% 降至约 {target_threshold*100:.0f}%。优先压缩远端（idx 小的）消息；如果远端释放量不足目标，继续压缩近端非保护消息直到达标\n"
                     # 模式二无游标机制，不需要报告游标
@@ -1564,7 +1573,7 @@ async def _tidy_context_impl(request: dict):
                     if _tc > context_window_for_truncate * 0.7:
                         truncated_prompt = _truncate_preserving_both(prompt, int(context_window_for_truncate * 0.6))
                         # 双向截断后重建 compress_msg_ids 和 protected_ids，只保留 LLM 可见的消息
-                        _visible_ids_2 = _re.findall(r'\[id:([a-f0-9-]+)\]', truncated_prompt)
+                        _visible_ids_2 = re.findall(r'\[id:([a-f0-9-]+)\]', truncated_prompt)
                         _visible_set_2 = set(_visible_ids_2)
                         compress_msg_ids = [mid for mid in compress_msg_ids if mid in _visible_set_2]
                         # 重建 protected_ids：只保留 LLM 可见的受保护消息
