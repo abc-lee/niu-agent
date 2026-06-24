@@ -83,8 +83,8 @@ def _read_warning_threshold() -> float:
 
 
 def _read_target_threshold() -> float:
-    """Read target threshold (force compress target). Default 0.50, matching Rust launcher."""
-    return _read_context_threshold("targetThreshold", 0.50)
+    """Read target threshold (compress target usage). Default 0.30 — compress to 30% of window to reduce forced compression frequency."""
+    return _read_context_threshold("targetThreshold", 0.30)
 
 
 DEFAULT_PROTECT_RECENT_COUNT = 10
