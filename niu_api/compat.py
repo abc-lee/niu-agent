@@ -1490,13 +1490,8 @@ async def _tidy_context_impl(request: dict):
             protect_recent_count = _read_protect_recent_count()
 
             # 模式二：始终全量传入（无游标机制），模式一：增量范围
-            _compress_cursor = last_compress_id
-            if usage_percent >= 50:
-                # 模式二：全量传入，不使用游标限制范围
-                _compress_cursor = ""
-            # 模式一：使用增量范围（_compress_cursor = last_compress_id）
-
-            # 模式二全量到末尾（end_cursor=None），模式一到 dream 游标
+            _is_mode2 = usage_percent >= 50
+            _compress_cursor = "" if _is_mode2 else last_compress_id
             _end_cursor = None if _is_mode2 else new_dream_id
             compress_msg_text = _build_incremental_msg_text(
                 messages, _compress_cursor, compress_msg_ids, msg_tokens,
@@ -1511,8 +1506,7 @@ async def _tidy_context_impl(request: dict):
                 _visible_ids = re.findall(r'\[id:([a-f0-9-]+)\]', compress_msg_text)
                 _visible_set = set(_visible_ids)
                 compress_msg_ids = [mid for mid in compress_msg_ids if mid in _visible_set]
-            compress_mode = "模式二：睡眠整理（半破坏性）" if usage_percent >= 50 else "模式一：睡眠整理（非破坏性）"
-            _is_mode2 = usage_percent >= 50
+            compress_mode = "模式二：睡眠整理（半破坏性）" if _is_mode2 else "模式一：睡眠整理（非破坏性）"
             _skip_compress = False
             # 模式二量化目标：基于 targetThreshold 计算动态目标（提前计算，决定是否跳过）
             _compress_target = ""
