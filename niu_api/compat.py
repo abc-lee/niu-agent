@@ -187,20 +187,39 @@ def _truncate_preserving_tail(text: str, max_tokens: int) -> str:
 
 def _truncate_preserving_both(text: str, max_tokens: int) -> str:
     """双向截断：保留开头指令 + 末尾近端消息，截断中间远端消息。
-    用于全量范围压缩模式，确保 LLM 能同时看到指令和受保护消息。"""
+    用于全量范围压缩模式，确保 LLM 能同时看到指令和受保护消息。
+    结构化截断：以"消息列表："为分割点，确保指令部分完整保留。"""
     max_chars = max_tokens * 2
     if len(text) <= max_chars:
         return text
-    # 保留开头 20%（指令部分）和末尾 70%（近端消息），截断中间 10%
+    # 找到"消息列表："分割点，确保指令部分完整
+    msg_marker = "\n消息列表：\n"
+    marker_pos = text.find(msg_marker)
+    if marker_pos < 0:
+        msg_marker = "消息列表："
+        marker_pos = text.find(msg_marker)
+    if marker_pos > 0 and marker_pos < max_chars * 0.5:
+        # 指令部分在合理范围内，完整保留指令 + 截断消息列表
+        head = text[:marker_pos + len(msg_marker)]
+        msg_text = text[marker_pos + len(msg_marker):]
+        # 消息列表部分：保留末尾近端消息
+        tail_budget = max_chars - len(head) - 200
+        if tail_budget > 0 and len(msg_text) > tail_budget:
+            tail = msg_text[-tail_budget:]
+            first_msg = tail.find("[id:")
+            if first_msg > 0:
+                tail = tail[first_msg:]
+            msg_count = tail.count("[id:")
+            return head + f"[远端消息已省略，保留近端 {msg_count} 条消息]\n\n" + tail
+        return text
+    # fallback：纯字符截断（指令部分过大）
     head_chars = int(max_chars * 0.2)
-    tail_chars = max_chars - head_chars - 200  # 200 chars for truncation marker
+    tail_chars = max_chars - head_chars - 200
     head = text[:head_chars]
-    # 在 head 中找到最后一个完整行
     last_nl = head.rfind('\n')
     if last_nl > head_chars // 2:
         head = head[:last_nl]
     tail = text[-tail_chars:]
-    # 在 tail 中找到第一个完整消息行
     first_msg = tail.find("[id:")
     if first_msg > 0:
         tail = tail[first_msg:]
@@ -1504,11 +1523,14 @@ async def _tidy_context_impl(request: dict):
                 _cursor_instruction = ""
                 if _is_mode2:
                     target_threshold = _read_target_threshold()
-                    target_tokens = int(display_tokens * target_threshold)
+                    target_tokens = int(context_window_tokens * target_threshold)
                     suggest_release = max(display_tokens - target_tokens, 0)
-                    if suggest_release > 0:
-                        suggest_release = max(suggest_release, int(display_tokens * 0.1))
-                    _compress_target = f"\n压缩目标：建议释放约 {suggest_release} tokens，将上下文从 {usage_percent:.1f}% 降至约 {target_threshold*100:.0f}%。优先压缩远端（idx 小的）消息；如果远端释放量不足目标，继续压缩近端非保护消息直到达标\n"
+                    if suggest_release > 0 and suggest_release < int(display_tokens * 0.05):
+                        # 释放量太小（<5%），不值得压缩一轮，跳过
+                        suggest_release = 0
+                        _compress_target = ""
+                    elif suggest_release > 0:
+                        _compress_target = f"\n压缩目标：建议释放约 {suggest_release} tokens，将上下文从 {usage_percent:.1f}% 降至约 {target_threshold*100:.0f}%。优先压缩远端（idx 小的）消息；如果远端释放量不足目标，继续压缩近端非保护消息直到达标\n"
                     # 模式二无游标机制，不需要报告游标
                     _cursor_instruction = "处理完成后，简要报告你的操作（删除了哪些消息、合并了哪些单元）。"
                 else:
@@ -1541,6 +1563,12 @@ async def _tidy_context_impl(request: dict):
                     context_window_for_truncate = _read_context_window_tokens()
                     if _tc > context_window_for_truncate * 0.7:
                         truncated_prompt = _truncate_preserving_both(prompt, int(context_window_for_truncate * 0.6))
+                        # 双向截断后重建 compress_msg_ids 和 protected_ids，只保留 LLM 可见的消息
+                        _visible_ids_2 = _re.findall(r'\[id:([a-f0-9-]+)\]', truncated_prompt)
+                        _visible_set_2 = set(_visible_ids_2)
+                        compress_msg_ids = [mid for mid in compress_msg_ids if mid in _visible_set_2]
+                        # 重建 protected_ids：只保留 LLM 可见的受保护消息
+                        protected_ids = [pid for pid in protected_ids if pid in _visible_set_2]
                 else:
                     # 模式一：增量范围，用传统截断
                     context_window_for_truncate = _read_context_window_tokens()
@@ -1902,7 +1930,7 @@ async def _tidy_context_impl(request: dict):
                 except Exception as e:
                     logger.warning(f"[Tidy] Failed to read compress cursor in force mode: {e}")
 
-            target_tokens = int(display_tokens * _read_target_threshold())
+            target_tokens = int(context_window_tokens * _read_target_threshold())
             compress_plan_path = os.path.expanduser("~/.niu/compress_plan.json")
             # 清理上次的残留计划文件
             if os.path.exists(compress_plan_path):
