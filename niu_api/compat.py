@@ -2341,7 +2341,10 @@ REMINDER: 从远端（idx小的）开始压缩，近端保护消息不要动。�
                     finally:
                         if _f_chat_lock_acquired:
                             _chat_lock.release()
-                        _fq.resume()
+                        try:
+                            _fq.resume()
+                        except NameError:
+                            pass
                 except json.JSONDecodeError as e:
                     logger.error(f"[Tidy] Force: Failed to parse compress plan JSON: {e}")
                 except Exception as e:
