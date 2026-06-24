@@ -265,7 +265,7 @@ JSON 方案格式与模式三相同：
 
 ## 工具使用规范
 
-**模式一/二**（多轮工具调用）：
+**模式一**（多轮工具调用）：
 - 更新消息：`update_message(session_id, message_id, content)`
 - 删除消息：`delete_messages(session_id, message_ids, reason)`
 
