@@ -1461,13 +1461,12 @@ async def _tidy_context_impl(request: dict):
             # 读取保护数量配置
             protect_recent_count = _read_protect_recent_count()
 
-            # 模式二：如果游标位置在消息列表前半段（远端有大量未压缩内容），重置游标从头开始；
-            # 否则仍用增量范围，避免已压缩的摘要被级联再压缩
+            # 模式二：始终全量传入（无游标机制），模式一：增量范围
             _compress_cursor = last_compress_id
-            if usage_percent >= 50 and last_compress_id:
-                cursor_pos = next((i for i, m in enumerate(messages) if getattr(m, "id", "") == last_compress_id), -1)
-                if cursor_pos < 0 or cursor_pos < len(messages) * 0.2:
-                    _compress_cursor = ""  # 游标太旧或无效，从头开始
+            if usage_percent >= 50:
+                # 模式二：全量传入，不使用游标限制范围
+                _compress_cursor = ""
+            # 模式一：使用增量范围（_compress_cursor = last_compress_id）
 
             compress_msg_text = _build_incremental_msg_text(
                 messages, _compress_cursor, compress_msg_ids, msg_tokens,
@@ -1484,6 +1483,7 @@ async def _tidy_context_impl(request: dict):
                 _visible_set = set(_visible_ids)
                 compress_msg_ids = [mid for mid in compress_msg_ids if mid in _visible_set]
             compress_mode = "模式二：睡眠整理（半破坏性）" if usage_percent >= 50 else "模式一：睡眠整理（非破坏性）"
+            _is_mode2 = usage_percent >= 50
             logger.info(f"[Tidy] Sleep: usage={usage_percent:.1f}%, selecting {compress_mode}")
 
             new_compress_id = last_compress_id
@@ -1501,13 +1501,20 @@ async def _tidy_context_impl(request: dict):
 
                 # 模式二量化目标：基于 targetThreshold 计算动态目标
                 _compress_target = ""
-                if usage_percent >= 50:
+                _cursor_instruction = ""
+                if _is_mode2:
                     target_threshold = _read_target_threshold()
                     target_tokens = int(display_tokens * target_threshold)
                     suggest_release = max(display_tokens - target_tokens, 0)
                     if suggest_release > 0:
                         suggest_release = max(suggest_release, int(display_tokens * 0.1))
                     _compress_target = f"\n压缩目标：建议释放约 {suggest_release} tokens，将上下文从 {usage_percent:.1f}% 降至约 {target_threshold*100:.0f}%。优先压缩远端（idx 小的）消息；如果远端释放量不足目标，继续压缩近端非保护消息直到达标\n"
+                    # 模式二无游标机制，不需要报告游标
+                    _cursor_instruction = "处理完成后，简要报告你的操作（删除了哪些消息、合并了哪些单元）。"
+                else:
+                    # 模式一需要报告游标
+                    _cursor_instruction = """处理完成后，在报告末尾用 JSON 格式报告：{"last_compress_id": "<收到的消息中 idx 最大的消息的 id（UUID）>"}
+**必须推进游标**：即使没有需要处理的内容，也必须输出 idx 最大的消息的 UUID。"""
 
                 prompt = f"""系统进入睡眠状态。
 
@@ -1518,17 +1525,14 @@ async def _tidy_context_impl(request: dict):
 消息列表：
 {compress_msg_text}
 
-请按照【{compress_mode}】的规则处理。处理完成后，在报告末尾用 JSON 格式报告：{{"last_compress_id": "<收到的消息中 idx 最大的消息的 id（UUID）>"}}
-**必须推进游标**：即使没有需要处理的内容，也必须输出 idx 最大的消息的 UUID。"""
+请按照【{compress_mode}】的规则处理。{_cursor_instruction}"""
 
                 # 截断 task 防止子Agent超限
-                # 注意：睡眠模式下已通过 _truncate_preserving_tail 截断远端消息保留近端，
-                # 如果再用 _truncate_task_for_subagent（保留开头截末尾）会砍掉近端受保护消息。
-                # 因此睡眠模式下跳过此截断，仅在其他模式（如 force）下使用。
-                if _compress_cursor == "" and usage_percent >= 50:
-                    # 全量范围模式：已在 _truncate_preserving_tail 中截断，跳过二次截断
+                if _is_mode2:
+                    # 模式二：全量传入，用双向截断（保头+保尾）或保留近端截断
+                    # 已通过 _truncate_preserving_tail 截断远端消息保留近端，
+                    # 但仍需检查总 token 是否超限
                     truncated_prompt = prompt
-                    # 但仍需检查总 token 是否超限（极端情况）
                     try:
                         from agent.token_calculator import TokenCalculator
                         _tc = TokenCalculator.get().count_text(prompt)
@@ -1536,9 +1540,9 @@ async def _tidy_context_impl(request: dict):
                         _tc = len(prompt) // 2
                     context_window_for_truncate = _read_context_window_tokens()
                     if _tc > context_window_for_truncate * 0.7:
-                        # 仍然超限，用双向截断：保留开头指令+末尾近端消息
                         truncated_prompt = _truncate_preserving_both(prompt, int(context_window_for_truncate * 0.6))
                 else:
+                    # 模式一：增量范围，用传统截断
                     context_window_for_truncate = _read_context_window_tokens()
                     safe_tokens = int(context_window_for_truncate * 0.6)
                     truncated_prompt = _truncate_task_for_subagent(prompt, safe_tokens)
@@ -1558,8 +1562,11 @@ async def _tidy_context_impl(request: dict):
                     return {"status": "aborted", "message": "Stopped by user"}
                 logger.info(f"[Tidy] context-manager result: {cm_result[:200]}")
 
-                # 游标提取
-                if _is_subagent_overflow(cm_result):
+                # 游标提取（仅模式一需要）
+                if _is_mode2:
+                    # 模式二无游标机制，不提取游标
+                    new_compress_id = last_compress_id
+                elif _is_subagent_overflow(cm_result):
                     overflow_info = _extract_overflow_info(cm_result)
                     logger.warning(f"[Tidy] context-manager overflow: {overflow_info.get('turns_completed', 0)} turns")
                     partial = overflow_info.get("partial_result", "")
@@ -1616,7 +1623,8 @@ async def _tidy_context_impl(request: dict):
                     except Exception as e:
                         logger.warning(f"[Tidy] Failed to verify protected messages: {e}")
 
-                if new_compress_id:
+                if new_compress_id and not _is_mode2:
+                    # 仅模式一推进压缩游标（模式二无游标机制）
                     if compress_integrity_ok:
                         compress_cursor_path.parent.mkdir(parents=True, exist_ok=True)
                         compress_cursor_path.write_text(json.dumps({
@@ -1626,8 +1634,14 @@ async def _tidy_context_impl(request: dict):
                         logger.info(f"[Tidy] Compress cursor updated: last_compress_id={new_compress_id}")
                     else:
                         logger.warning("[Tidy] Skipping cursor advance due to protected message integrity failure")
+                elif _is_mode2:
+                    # 模式二：不推进游标，但记录完整性检查结果
+                    if not compress_integrity_ok:
+                        logger.warning("[Tidy] Mode-2: protected message integrity failure detected (content rolled back)")
+                    else:
+                        logger.info("[Tidy] Mode-2: protected messages intact after compression")
             else:
-                logger.info("[Tidy] context-manager: no messages in range [compress_cursor, dream_cursor_new]")
+                logger.info("[Tidy] context-manager: no messages to process")
 
             return {"status": "ok", "mode": "sleep", "tokens_before": display_tokens}
 
