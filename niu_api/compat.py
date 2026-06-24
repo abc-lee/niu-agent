@@ -1628,6 +1628,8 @@ REMINDER: 从远端（idx小的）开始压缩，近端保护消息不要动。�
                             deletes = plan.get("deletes", [])
                             updates = plan.get("updates", [])
                             plan_compress_id = plan.get("last_compress_id", "")
+                            logger.info(f"[Tidy] Mode-2: Compress plan received: {len(deletes)} deletes, {len(updates)} updates, last_compress_id={plan_compress_id}")
+                            # 模式二不写游标，plan_compress_id仅用于日志排查
 
                             # 类型校验
                             if not isinstance(deletes, list):
@@ -1637,25 +1639,12 @@ REMINDER: 从远端（idx小的）开始压缩，近端保护消息不要动。�
                             else:
                                 updates = [u for u in updates if isinstance(u, dict)]
 
-                            # 安全协议：pause + 等待worker空闲 + acquire chat_lock
+                            # 安全协议：pause + acquire chat_lock + 等待worker空闲
                             from niu_api.chat_queue import get_chat_queue
                             _q = get_chat_queue()
                             _q.pause()
 
-                            # 等待worker当前处理完成（不用drain，drain会清空队列丢弃用户消息）
-                            if _q._processing:
-                                try:
-                                    await asyncio.wait_for(_q._processing_done.wait(), timeout=30.0)
-                                except asyncio.TimeoutError:
-                                    logger.warning("[Tidy] Mode-2: ChatQueue processing timeout, aborting execution")
-                                    _q.resume()
-                                    try:
-                                        os.remove(compress_plan_path)
-                                    except OSError:
-                                        pass
-                                    raise RuntimeError("ChatQueue processing timeout")
-
-                            # acquire chat_lock：阻止其他chat请求修改DB
+                            # 先获取chat_lock：阻止其他chat请求修改DB
                             from niu_api.chat import _chat_lock
                             _chat_lock_acquired = False
                             try:
@@ -1671,6 +1660,21 @@ REMINDER: 从远端（idx小的）开始压缩，近端保护消息不要动。�
                                 except OSError:
                                     pass
                                 raise RuntimeError("chat_lock timeout")
+
+                            # 在chat_lock保护下等待worker当前处理完成
+                            if _q._processing:
+                                try:
+                                    await asyncio.wait_for(_q._processing_done.wait(), timeout=30.0)
+                                except asyncio.TimeoutError:
+                                    logger.warning("[Tidy] Mode-2: ChatQueue processing timeout, aborting execution")
+                                    if _chat_lock_acquired:
+                                        _chat_lock.release()
+                                    _q.resume()
+                                    try:
+                                        os.remove(compress_plan_path)
+                                    except OSError:
+                                        pass
+                                    raise RuntimeError("ChatQueue processing timeout")
 
                             # === 在 chat_lock 保护下执行 ===
                             try:
@@ -1750,8 +1754,11 @@ REMINDER: 从远端（idx小的）开始压缩，近端保护消息不要动。�
 
                         except json.JSONDecodeError as e:
                             logger.error(f"[Tidy] Mode-2: Failed to parse compress plan JSON: {e}")
-                        except RuntimeError:
-                            pass  # 已在上方处理（ChatQueue timeout / chat_lock timeout）
+                        except RuntimeError as e:
+                            # 预期的RuntimeError（ChatQueue timeout / chat_lock timeout）已在上方处理
+                            # 非预期的RuntimeError需要记录
+                            if "ChatQueue processing timeout" not in str(e) and "chat_lock timeout" not in str(e):
+                                logger.error(f"[Tidy] Mode-2: Unexpected RuntimeError during execution: {e}")
                         except Exception as e:
                             logger.error(f"[Tidy] Mode-2: Failed to execute compress plan: {e}")
                         finally:
@@ -2200,100 +2207,141 @@ REMINDER: 从远端（idx小的）开始压缩，近端保护消息不要动。�
                     else:
                         updates = [u for u in updates if isinstance(u, dict)]
 
-                    # H4: 重新获取消息列表（子 Agent 调用期间可能已变化）
-                    fresh_messages = await store.get_messages()
-                    existing_ids = {getattr(m, "id", "") for m in fresh_messages}
-                    valid_deletes = [mid for mid in deletes if mid in existing_ids]
-                    # 去重：防止 LLM 输出重复 ID 绕过游标保护（list.remove 只删第一个）
-                    valid_deletes = list(dict.fromkeys(valid_deletes))
-                    # 校验游标有效性
-                    if new_compress_id and new_compress_id not in existing_ids:
-                        logger.warning(f"[Tidy] Force: last_compress_id {new_compress_id} not in messages, reverting to {last_compress_id}")
-                        new_compress_id = last_compress_id
-                    # 二次校验：回退值也必须有效，否则置空（避免悬空游标）
-                    if new_compress_id and new_compress_id not in existing_ids:
-                        logger.warning(f"[Tidy] Force: Fallback last_compress_id {new_compress_id} also invalid, clearing cursor")
-                        new_compress_id = ""
+                    # 安全协议：pause ChatQueue + acquire chat_lock（与模式2一致）
+                    from niu_api.chat_queue import get_chat_queue
+                    _fq = get_chat_queue()
+                    _fq.pause()
 
-                    # 保护游标：禁止删除游标指向的消息，避免悬空游标
-                    # 在游标回退解决后再做保护，确保回退值也在保护列表中
-                    cursor_ids_set = {cid for cid in [new_compress_id, new_entity_id, new_dream_id] if cid}
-                    for cursor_id in cursor_ids_set:
-                        if cursor_id in valid_deletes:
-                            valid_deletes.remove(cursor_id)
-                            logger.warning(f"[Tidy] Force: Protected cursor message {cursor_id} from deletion")
-                    valid_updates = [u for u in updates if isinstance(u, dict) and u.get("message_id") and u["message_id"] in existing_ids]
-                    # 游标保护也覆盖 updates：禁止压缩游标指向的消息（内容被替换会导致边界标记丢失）
-                    cursor_updates = [u for u in valid_updates if u.get("message_id", "") in cursor_ids_set]
-                    if cursor_updates:
-                        logger.warning(f"[Tidy] Force: Removing cursor messages from updates: {[u.get('message_id') for u in cursor_updates]}")
-                        valid_updates = [u for u in valid_updates if u.get("message_id", "") not in cursor_ids_set]
-                    # 程序化执行 dream 安全边界：dream-evolver 游标之后的消息不得删除或替换
-                    # sleep mode 通过 end_cursor_id 结构性限制 context-manager 可见范围，
-                    # force mode 必须程序化过滤，否则 LLM 可能忽略 prompt 指令删除未提取的消息
-                    if new_dream_id:
-                        dream_boundary_idx = -1
-                        for i, m in enumerate(fresh_messages):
-                            if (getattr(m, "id", "") or "") == new_dream_id:
-                                dream_boundary_idx = i
-                                break
-                        if dream_boundary_idx >= 0:
-                            post_dream_ids = {getattr(m, "id", "") for m in fresh_messages[dream_boundary_idx + 1:]}
-                            unsafe_deletes = [mid for mid in valid_deletes if mid in post_dream_ids]
-                            if unsafe_deletes:
-                                logger.warning(f"[Tidy] Force: Protecting {len(unsafe_deletes)} messages after dream cursor from deletion")
-                                valid_deletes = [mid for mid in valid_deletes if mid not in post_dream_ids]
-                            unsafe_updates = [u for u in valid_updates if u.get("message_id", "") in post_dream_ids]
-                            if unsafe_updates:
-                                logger.warning(f"[Tidy] Force: Protecting {len(unsafe_updates)} messages after dream cursor from content replacement")
-                                valid_updates = [u for u in valid_updates if u.get("message_id", "") not in post_dream_ids]
-                    # 程序层面排除保护范围内的消息 ID（只保护 user/assistant，不保护 tool 输出）
-                    protect_recent_count = _read_protect_recent_count()
-                    if protect_recent_count > 0:
-                        _pids = []
-                        for m in reversed(fresh_messages):
-                            if getattr(m, "role", "") in ("user", "assistant"):
-                                _pids.append(getattr(m, "id", ""))
-                            if len(_pids) >= protect_recent_count:
-                                break
-                        protected_force_ids = set(_pids)
-                        removed_deletes = [mid for mid in valid_deletes if mid in protected_force_ids]
-                        if removed_deletes:
-                            logger.warning(f"[Tidy] Force: Protecting {len(removed_deletes)} recent messages from deletion: {removed_deletes}")
-                            valid_deletes = [mid for mid in valid_deletes if mid not in protected_force_ids]
-                        removed_updates = [u for u in valid_updates if u.get("message_id", "") in protected_force_ids]
-                        if removed_updates:
-                            logger.warning(f"[Tidy] Force: Protecting {len(removed_updates)} recent messages from update")
-                            valid_updates = [u for u in valid_updates if u.get("message_id", "") not in protected_force_ids]
-                    # 防止 delete/update 重叠：同一 ID 同时出现在 deletes 和 updates 中时，
-                    # 保留 update（摘要），从 deletes 中移除（否则先删后更新，消息丢失）
-                    update_ids = {u.get("message_id", "") for u in valid_updates}
-                    overlap_ids = update_ids & set(valid_deletes)
-                    if overlap_ids:
-                        logger.warning(f"[Tidy] Force: Removing {len(overlap_ids)} IDs from deletes that also appear in updates: {overlap_ids}")
-                        valid_deletes = [mid for mid in valid_deletes if mid not in overlap_ids]
-                    if len(valid_deletes) < len(deletes):
-                        logger.warning(f"[Tidy] Force: Filtered {len(deletes) - len(valid_deletes)} invalid delete IDs")
-                    if len(valid_updates) < len(updates):
-                        logger.warning(f"[Tidy] Force: Filtered {len(updates) - len(valid_updates)} invalid update IDs")
+                    from niu_api.chat import _chat_lock
+                    _f_chat_lock_acquired = False
+                    try:
+                        await asyncio.wait_for(_chat_lock.acquire(), timeout=60.0)
+                        _f_chat_lock_acquired = True
+                    except asyncio.TimeoutError:
+                        logger.warning("[Tidy] Force: chat_lock 60s timeout, aborting execution")
 
-                    # 执行删除
-                    if valid_deletes:
-                        del_result = await store.delete_messages_by_ids(valid_deletes)
-                        logger.info(f"[Tidy] Force: Deleted {del_result.get('deleted_count', 0)} messages, freed {del_result.get('freed_tokens', 0)} tokens")
+                    if not _f_chat_lock_acquired:
+                        _fq.resume()
+                        try:
+                            os.remove(compress_plan_path)
+                        except OSError:
+                            pass
+                        raise RuntimeError("Force: chat_lock timeout")
 
-                    # 执行更新
-                    for upd in valid_updates:
-                        mid = upd.get("message_id", "")
-                        content = upd.get("content", "")
-                        if mid and content:
-                            ok = await store.update_message(message_id=mid, content=content)
-                            if ok:
-                                logger.info(f"[Tidy] Force: Updated message {mid}")
-                            else:
-                                logger.warning(f"[Tidy] Force: Failed to update message {mid}")
+                    # 在chat_lock保护下等待worker当前处理完成
+                    if _fq._processing:
+                        try:
+                            await asyncio.wait_for(_fq._processing_done.wait(), timeout=30.0)
+                        except asyncio.TimeoutError:
+                            logger.warning("[Tidy] Force: ChatQueue processing timeout, aborting execution")
+                            if _f_chat_lock_acquired:
+                                _chat_lock.release()
+                            _fq.resume()
+                            try:
+                                os.remove(compress_plan_path)
+                            except OSError:
+                                pass
+                            raise RuntimeError("Force: ChatQueue processing timeout")
 
-                    logger.info(f"[Tidy] Force: Compression plan executed: {len(valid_deletes)} deletes, {len(valid_updates)} updates")
+                    try:
+                        # H4: 重新获取消息列表（子 Agent 调用期间可能已变化）
+                        fresh_messages = await store.get_messages()
+                        existing_ids = {getattr(m, "id", "") for m in fresh_messages}
+                        valid_deletes = [mid for mid in deletes if mid in existing_ids]
+                        # 去重：防止 LLM 输出重复 ID 绕过游标保护（list.remove 只删第一个）
+                        valid_deletes = list(dict.fromkeys(valid_deletes))
+                        # 校验游标有效性
+                        if new_compress_id and new_compress_id not in existing_ids:
+                            logger.warning(f"[Tidy] Force: last_compress_id {new_compress_id} not in messages, reverting to {last_compress_id}")
+                            new_compress_id = last_compress_id
+                        # 二次校验：回退值也必须有效，否则置空（避免悬空游标）
+                        if new_compress_id and new_compress_id not in existing_ids:
+                            logger.warning(f"[Tidy] Force: Fallback last_compress_id {new_compress_id} also invalid, clearing cursor")
+                            new_compress_id = ""
+
+                        # 保护游标：禁止删除游标指向的消息，避免悬空游标
+                        # 在游标回退解决后再做保护，确保回退值也在保护列表中
+                        cursor_ids_set = {cid for cid in [new_compress_id, new_entity_id, new_dream_id] if cid}
+                        for cursor_id in cursor_ids_set:
+                            if cursor_id in valid_deletes:
+                                valid_deletes.remove(cursor_id)
+                                logger.warning(f"[Tidy] Force: Protected cursor message {cursor_id} from deletion")
+                        valid_updates = [u for u in updates if isinstance(u, dict) and u.get("message_id") and u["message_id"] in existing_ids]
+                        # 游标保护也覆盖 updates：禁止压缩游标指向的消息（内容被替换会导致边界标记丢失）
+                        cursor_updates = [u for u in valid_updates if u.get("message_id", "") in cursor_ids_set]
+                        if cursor_updates:
+                            logger.warning(f"[Tidy] Force: Removing cursor messages from updates: {[u.get('message_id') for u in cursor_updates]}")
+                            valid_updates = [u for u in valid_updates if u.get("message_id", "") not in cursor_ids_set]
+                        # 程序化执行 dream 安全边界：dream-evolver 游标之后的消息不得删除或替换
+                        # sleep mode 通过 end_cursor_id 结构性限制 context-manager 可见范围，
+                        # force mode 必须程序化过滤，否则 LLM 可能忽略 prompt 指令删除未提取的消息
+                        if new_dream_id:
+                            dream_boundary_idx = -1
+                            for i, m in enumerate(fresh_messages):
+                                if (getattr(m, "id", "") or "") == new_dream_id:
+                                    dream_boundary_idx = i
+                                    break
+                            if dream_boundary_idx >= 0:
+                                post_dream_ids = {getattr(m, "id", "") for m in fresh_messages[dream_boundary_idx + 1:]}
+                                unsafe_deletes = [mid for mid in valid_deletes if mid in post_dream_ids]
+                                if unsafe_deletes:
+                                    logger.warning(f"[Tidy] Force: Protecting {len(unsafe_deletes)} messages after dream cursor from deletion")
+                                    valid_deletes = [mid for mid in valid_deletes if mid not in post_dream_ids]
+                                unsafe_updates = [u for u in valid_updates if u.get("message_id", "") in post_dream_ids]
+                                if unsafe_updates:
+                                    logger.warning(f"[Tidy] Force: Protecting {len(unsafe_updates)} messages after dream cursor from content replacement")
+                                    valid_updates = [u for u in valid_updates if u.get("message_id", "") not in post_dream_ids]
+                        # 程序层面排除保护范围内的消息 ID（只保护 user/assistant，不保护 tool 输出）
+                        protect_recent_count = _read_protect_recent_count()
+                        if protect_recent_count > 0:
+                            _pids = []
+                            for m in reversed(fresh_messages):
+                                if getattr(m, "role", "") in ("user", "assistant"):
+                                    _pids.append(getattr(m, "id", ""))
+                                if len(_pids) >= protect_recent_count:
+                                    break
+                            protected_force_ids = set(_pids)
+                            removed_deletes = [mid for mid in valid_deletes if mid in protected_force_ids]
+                            if removed_deletes:
+                                logger.warning(f"[Tidy] Force: Protecting {len(removed_deletes)} recent messages from deletion: {removed_deletes}")
+                                valid_deletes = [mid for mid in valid_deletes if mid not in protected_force_ids]
+                            removed_updates = [u for u in valid_updates if u.get("message_id", "") in protected_force_ids]
+                            if removed_updates:
+                                logger.warning(f"[Tidy] Force: Protecting {len(removed_updates)} recent messages from update")
+                                valid_updates = [u for u in valid_updates if u.get("message_id", "") not in protected_force_ids]
+                        # 防止 delete/update 重叠：同一 ID 同时出现在 deletes 和 updates 中时，
+                        # 保留 update（摘要），从 deletes 中移除（否则先删后更新，消息丢失）
+                        update_ids = {u.get("message_id", "") for u in valid_updates}
+                        overlap_ids = update_ids & set(valid_deletes)
+                        if overlap_ids:
+                            logger.warning(f"[Tidy] Force: Removing {len(overlap_ids)} IDs from deletes that also appear in updates: {overlap_ids}")
+                            valid_deletes = [mid for mid in valid_deletes if mid not in overlap_ids]
+                        if len(valid_deletes) < len(deletes):
+                            logger.warning(f"[Tidy] Force: Filtered {len(deletes) - len(valid_deletes)} invalid delete IDs")
+                        if len(valid_updates) < len(updates):
+                            logger.warning(f"[Tidy] Force: Filtered {len(updates) - len(valid_updates)} invalid update IDs")
+
+                        # 执行删除
+                        if valid_deletes:
+                            del_result = await store.delete_messages_by_ids(valid_deletes)
+                            logger.info(f"[Tidy] Force: Deleted {del_result.get('deleted_count', 0)} messages, freed {del_result.get('freed_tokens', 0)} tokens")
+
+                        # 执行更新
+                        for upd in valid_updates:
+                            mid = upd.get("message_id", "")
+                            content = upd.get("content", "")
+                            if mid and content:
+                                ok = await store.update_message(message_id=mid, content=content)
+                                if ok:
+                                    logger.info(f"[Tidy] Force: Updated message {mid}")
+                                else:
+                                    logger.warning(f"[Tidy] Force: Failed to update message {mid}")
+
+                        logger.info(f"[Tidy] Force: Compression plan executed: {len(valid_deletes)} deletes, {len(valid_updates)} updates")
+                    finally:
+                        if _f_chat_lock_acquired:
+                            _chat_lock.release()
+                        _fq.resume()
                 except json.JSONDecodeError as e:
                     logger.error(f"[Tidy] Force: Failed to parse compress plan JSON: {e}")
                 except Exception as e:

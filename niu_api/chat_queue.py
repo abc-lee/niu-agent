@@ -353,8 +353,19 @@ class ChatQueue:
                 f"[ChatQueue] CONTEXT_OVERFLOW at {overflow_data.get('tokens_used', 0)} tokens"
             )
             from niu_api.compat import _tidy_context_impl, _tidy_lock
-            async with _tidy_lock:
-                await _tidy_context_impl(request={"session_id": session_id, "mode": "force"})
+            # 使用带超时的acquire避免阻塞ChatQueue worker数分钟
+            # （模式2压缩可能持有_tidy_lock很长时间）
+            _tidy_acquired = False
+            try:
+                await asyncio.wait_for(_tidy_lock.acquire(), timeout=10.0)
+                _tidy_acquired = True
+            except asyncio.TimeoutError:
+                logger.warning("[ChatQueue] Tidy lock busy, skipping force compression")
+            if _tidy_acquired:
+                try:
+                    await _tidy_context_impl(request={"session_id": session_id, "mode": "force"})
+                finally:
+                    _tidy_lock.release()
 
 
 # ============== 全局单例 ==============
