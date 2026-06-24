@@ -185,6 +185,29 @@ def _truncate_preserving_tail(text: str, max_tokens: int) -> str:
     return f"共约 {line_count} 条消息（远端部分已省略）\n\n" + kept_tail
 
 
+def _truncate_preserving_both(text: str, max_tokens: int) -> str:
+    """双向截断：保留开头指令 + 末尾近端消息，截断中间远端消息。
+    用于全量范围压缩模式，确保 LLM 能同时看到指令和受保护消息。"""
+    max_chars = max_tokens * 2
+    if len(text) <= max_chars:
+        return text
+    # 保留开头 20%（指令部分）和末尾 70%（近端消息），截断中间 10%
+    head_chars = int(max_chars * 0.2)
+    tail_chars = max_chars - head_chars - 200  # 200 chars for truncation marker
+    head = text[:head_chars]
+    # 在 head 中找到最后一个完整行
+    last_nl = head.rfind('\n')
+    if last_nl > head_chars // 2:
+        head = head[:last_nl]
+    tail = text[-tail_chars:]
+    # 在 tail 中找到第一个完整消息行
+    first_msg = tail.find("[id:")
+    if first_msg > 0:
+        tail = tail[first_msg:]
+    msg_count = tail.count("[id:")
+    return head + "\n\n[中间远端消息已省略，保留近端 " + str(msg_count) + " 条消息]\n\n" + tail
+
+
 def _build_journal_task(journal_msg_text: str, safe_tokens: int = 0) -> str:
     """构建 journal-agent 的 task prompt（增量消息嵌入）。
 
@@ -1443,7 +1466,7 @@ async def _tidy_context_impl(request: dict):
             _compress_cursor = last_compress_id
             if usage_percent >= 50 and last_compress_id:
                 cursor_pos = next((i for i, m in enumerate(messages) if getattr(m, "id", "") == last_compress_id), -1)
-                if cursor_pos < 0 or cursor_pos < len(messages) * 0.5:
+                if cursor_pos < 0 or cursor_pos < len(messages) * 0.2:
                     _compress_cursor = ""  # 游标太旧或无效，从头开始
 
             compress_msg_text = _build_incremental_msg_text(
@@ -1455,6 +1478,11 @@ async def _tidy_context_impl(request: dict):
             _compress_window = int(_read_context_window_tokens() * 0.4)
             if compress_msg_text and _estimate_text_tokens(compress_msg_text) > _compress_window:
                 compress_msg_text = _truncate_preserving_tail(compress_msg_text, _compress_window)
+                # 截断后重建 compress_msg_ids，只保留可见消息的 ID
+                import re as _re
+                _visible_ids = _re.findall(r'\[id:([a-f0-9-]+)\]', compress_msg_text)
+                _visible_set = set(_visible_ids)
+                compress_msg_ids = [mid for mid in compress_msg_ids if mid in _visible_set]
             compress_mode = "模式二：睡眠整理（半破坏性）" if usage_percent >= 50 else "模式一：睡眠整理（非破坏性）"
             logger.info(f"[Tidy] Sleep: usage={usage_percent:.1f}%, selecting {compress_mode}")
 
@@ -1476,7 +1504,9 @@ async def _tidy_context_impl(request: dict):
                 if usage_percent >= 50:
                     target_threshold = _read_target_threshold()
                     target_tokens = int(display_tokens * target_threshold)
-                    suggest_release = max(display_tokens - target_tokens, int(display_tokens * 0.1))
+                    suggest_release = max(display_tokens - target_tokens, 0)
+                    if suggest_release > 0:
+                        suggest_release = max(suggest_release, int(display_tokens * 0.1))
                     _compress_target = f"\n压缩目标：建议释放约 {suggest_release} tokens，将上下文从 {usage_percent:.1f}% 降至约 {target_threshold*100:.0f}%。优先压缩远端（idx 小的）消息；如果远端释放量不足目标，继续压缩近端非保护消息直到达标\n"
 
                 prompt = f"""系统进入睡眠状态。
@@ -1492,9 +1522,26 @@ async def _tidy_context_impl(request: dict):
 **必须推进游标**：即使没有需要处理的内容，也必须输出 idx 最大的消息的 UUID。"""
 
                 # 截断 task 防止子Agent超限
-                context_window_for_truncate = _read_context_window_tokens()
-                safe_tokens = int(context_window_for_truncate * 0.6)
-                truncated_prompt = _truncate_task_for_subagent(prompt, safe_tokens)
+                # 注意：睡眠模式下已通过 _truncate_preserving_tail 截断远端消息保留近端，
+                # 如果再用 _truncate_task_for_subagent（保留开头截末尾）会砍掉近端受保护消息。
+                # 因此睡眠模式下跳过此截断，仅在其他模式（如 force）下使用。
+                if _compress_cursor == "" and usage_percent >= 50:
+                    # 全量范围模式：已在 _truncate_preserving_tail 中截断，跳过二次截断
+                    truncated_prompt = prompt
+                    # 但仍需检查总 token 是否超限（极端情况）
+                    try:
+                        from agent.token_calculator import TokenCalculator
+                        _tc = TokenCalculator.get().count_text(prompt)
+                    except Exception:
+                        _tc = len(prompt) // 2
+                    context_window_for_truncate = _read_context_window_tokens()
+                    if _tc > context_window_for_truncate * 0.7:
+                        # 仍然超限，用双向截断：保留开头指令+末尾近端消息
+                        truncated_prompt = _truncate_preserving_both(prompt, int(context_window_for_truncate * 0.6))
+                else:
+                    context_window_for_truncate = _read_context_window_tokens()
+                    safe_tokens = int(context_window_for_truncate * 0.6)
+                    truncated_prompt = _truncate_task_for_subagent(prompt, safe_tokens)
 
                 def run_context_manager():
                     return call_subagent(
@@ -1541,6 +1588,8 @@ async def _tidy_context_impl(request: dict):
                             new_compress_id = ""
 
                 compress_integrity_ok = True  # 压缩完整性标记，用于决定是否推进游标
+                # 注意：如果完整性失败，非保护消息的操作不会被回滚（技术限制），
+                # 但游标不推进，下次压缩会重新处理该范围（部分消息已被压缩/删除）
                 if protected_ids:
                     try:
                         # 构建受保护消息的原始内容映射（内存中的 messages 列表未被子Agent修改）
