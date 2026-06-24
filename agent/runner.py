@@ -929,7 +929,7 @@ class NiuRunner:
             # 重新读取 compress 游标
             last_compress_id = self._read_cursor(compress_cursor_path, "last_compress_id")
 
-            target_tokens = int(display_tokens * _read_target_threshold())
+            target_tokens = int(context_window_tokens * _read_target_threshold())
             compress_plan_path = os.path.expanduser("~/.niu/compress_plan.json")
             # 清理上次的残留计划文件
             if os.path.exists(compress_plan_path):

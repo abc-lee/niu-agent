@@ -1496,9 +1496,11 @@ async def _tidy_context_impl(request: dict):
                 _compress_cursor = ""
             # 模式一：使用增量范围（_compress_cursor = last_compress_id）
 
+            # 模式二全量到末尾（end_cursor=None），模式一到 dream 游标
+            _end_cursor = None if _is_mode2 else new_dream_id
             compress_msg_text = _build_incremental_msg_text(
                 messages, _compress_cursor, compress_msg_ids, msg_tokens,
-                end_cursor_id=new_dream_id, protect_recent=protect_recent_count
+                end_cursor_id=_end_cursor, protect_recent=protect_recent_count
             )
 
             # 限制全量范围的 token 总量，避免截断砍掉近端消息
@@ -1540,12 +1542,13 @@ async def _tidy_context_impl(request: dict):
             new_compress_id = last_compress_id
             if compress_msg_ids and not _skip_compress:
                 # 构建保护消息 UUID 列表（只含 user/assistant 消息，不含 tool 输出）
+                # 直接从完整 messages 列表计算，不依赖截断后的 compress_msg_ids
+                # 这样即使截断移除了近端消息，受保护消息的 ID 仍然完整
                 _pids = []
-                for i in range(len(compress_msg_ids) - 1, -1, -1):
-                    _mid = compress_msg_ids[i]
-                    _m = next((m for m in messages if getattr(m, "id", "") == _mid), None)
-                    if _m and getattr(_m, "role", "") in ("user", "assistant"):
-                        _pids.insert(0, _mid)
+                for i in range(len(messages) - 1, -1, -1):
+                    _m = messages[i]
+                    if getattr(_m, "role", "") in ("user", "assistant"):
+                        _pids.insert(0, getattr(_m, "id", "") or "")
                     if len(_pids) >= protect_recent_count:
                         break
                 protected_ids = _pids  # No fallback: tool output is never protected
