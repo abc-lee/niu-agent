@@ -165,6 +165,12 @@ JSON 方案格式（与模式三不同，不含 last_compress_id，因为模式�
 
 **压缩规则仍按模式二的区域划分+分层压缩执行**——远端区多压、中端区适度、近端区轻度、保护区不动。区别只是执行方式从多轮工具调用变为一轮write输出方案。
 
+**工具链级联效应**（程序自动处理，但你应了解以正确计算释放量）：
+- 如果你删除了一条 assistant(tool_calls) 消息，其所有 tool 输出也会被自动删除（额外释放 token）
+- 如果你删除了一条 tool 输出：当父 assistant 是受保护消息时，assistant 会被改写为摘要+清空 tool_calls（tool 输出仍被删除）；当父 assistant 是非保护消息且所有 tool 输出都被删除时，assistant 也会被自动删除
+- 如果你更新了一条 assistant(tool_calls) 的内容，其 tool_calls 会被清空且对应 tool 输出会被自动删除
+- 因此：你的 JSON 方案中只需列出你决定删除/更新的消息，级联效应由程序处理。但计算释放量时应考虑级联带来的额外释放
+
 **安全边界**：
 - 带 [PROTECTED] 标签的消息完全不可动（不可删除、不可压缩、不可修改内容、不可合并）
 - 如果单元内有 [PROTECTED] 消息，排除所有 [PROTECTED] 消息；排除后剩余 >= 2 条则正常压缩，剩余 < 2 条则跳过该单元
@@ -209,6 +215,14 @@ JSON 方案格式（与模式三不同，不含 last_compress_id，因为模式�
    - 否则：将其 id 加入 `deletes` 列表
    - 累加待删除消息的 token 数，当 初始token数 - 累计待删除 ≤ 目标token数 时停止收集
 5. 用 `write` 工具一次性输出 JSON 压缩方案
+
+**工具链级联效应**（程序自动处理，但你应了解以正确计算释放量）：
+- 如果你删除了一条 assistant(tool_calls) 消息，其所有 tool 输出也会被自动删除（额外释放 token）
+- 如果你删除了一条 tool 输出：当父 assistant 是受保护消息时，assistant 会被改写为摘要+清空 tool_calls（tool 输出仍被删除）；当父 assistant 是非保护消息且所有 tool 输出都被删除时，assistant 也会被自动删除
+- 如果你更新了一条 assistant(tool_calls) 的内容，其 tool_calls 会被清空且对应 tool 输出会被自动删除
+- 因此：你的 JSON 方案中只需列出你决定删除/更新的消息，级联效应由程序处理。但计算释放量时应考虑级联带来的额外释放
+
+**禁止策略性删除**：不得为了间接删除受保护消息的 tool 输出而故意删除其父 assistant(tool_calls)。受保护消息的 tool 输出受程序层面保护——删除受保护的 assistant 会被阻止，但其 tool 输出可能被级联删除。请勿在方案中包含此类意图，程序会自动阻止删除受保护的 assistant 本身。
 
 **JSON 压缩方案格式**：
 ```json
