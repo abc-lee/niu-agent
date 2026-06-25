@@ -220,7 +220,7 @@ lightrag_get_graph(entity_name="FastAPI", depth=1)
 #### 步骤C3：执行操作
 
 **创建新 skill：**
-1. `read` 查看工作目录下 skills/ 目录中的已有 skill，确认无重复
+1. `read` 查看 ~/.niu/skills/ 目录中的已有 skill，确认无重复
 2. `write` 创建新文件，frontmatter 中 `status: draft`
 3. 命名使用动词优先、连字符分隔（如 note-management.md）
 4. 内容格式：
@@ -387,19 +387,20 @@ description: Use when processing Office documents (Word, Excel, PowerPoint) that
 - `lightrag_insert_entity(name, entity_type, description, source_id, file_path)`
   - `name`：实体名称（必填，唯一标识）
   - `entity_type`：实体类型（必填，小写：person/concept/project/tool/event/skill/location）
-  - `description`：描述（必填，只写实体含义，≤ 80 字符）
+  - `description`：描述（非必填，默认空字符串，只写实体含义，≤ 80 字符）
+  - `source_id`/`file_path`：非必填
 - `lightrag_insert_relation(src_id, tgt_id, relation, description, source_id, file_path)`
   - `src_id`/`tgt_id`：源/目标实体名称（必填）
   - `relation`：关系类型（必填，有语义的动词或名词）
-- `lightrag_edit_entity(entity_name, description, entity_type)` — 修改已有实体的属性（不改创建新实体）。`description` 参数会直接覆盖旧描述，必须自行用 `<SEP>` 拼接保留旧信息
-- `lightrag_edit_relation(src_id, tgt_id, relation, new_relation, new_description)` — 修改已有关系的类型或描述
-- `lightrag_merge_entities(source_entity, target_entity)` — 将两个碎片实体合并为一个（用于修复实体碎片化）
+- `lightrag_edit_entity(entity_name, description, entity_type, new_name, allow_rename, allow_merge)` — 修改已有实体的属性（不改创建新实体）。`description`/`entity_type` 会直接覆盖旧值，必须自行用 `<SEP>` 拼接保留旧信息。`new_name` 可重命名实体（需 `allow_rename=True`）。`allow_merge=True` 时，如果 `new_name` 对应的实体已存在，则合并而非报错
+- `lightrag_edit_relation(source_entity, target_entity, keywords, new_keywords, new_description, new_weight)` — 修改已有关系。`source_entity`/`target_entity`/`keywords` 用于定位关系（`keywords` 是关系关键词，非必填，不指定则匹配两实体间所有关系）。`new_keywords`/`new_description`/`new_weight` 为新值
+- `lightrag_merge_entities(source_entities, target_entity, merge_strategy, target_entity_data)` — 合并多个实体为一个（用于修复实体碎片化）。`source_entities` 是数组（可合并多个源实体）。`merge_strategy` 指定合并策略。`target_entity_data` 指定目标实体的属性
 - `lightrag_delete_entity(entity_name)` — 删除实体（慎用，仅用于纠错）
-- `lightrag_delete_relation(src_id, tgt_id, relation)` — 删除关系（慎用，仅用于纠错）
-- `lightrag_search_entities(query, keywords, top_k)` — **必须提供 keywords 参数**：你是大模型，自己就能从 query 中提取核心关键词，不需要 LightRAG 再调 LLM 提取。提供 keywords 近即时返回（<1秒），不提供需 5-30 秒且可能失败。top_k=5（硬性要求）
+- `lightrag_delete_relation(source_entity, target_entity, keywords)` — 删除关系（慎用，仅用于纠错）。`source_entity`/`target_entity` 定位两端实体。`keywords` 非必填，不指定则删除两实体间所有关系
+- `lightrag_search_entities(query, top_k, keywords, fields)` — 搜索实体。`query` 必填。`top_k` 默认 10，建议设为 5。`keywords` 为字符串数组，非必填（提供可加速返回）。`fields` 指定返回字段
 - `lightrag_list_entities(list_type, entity_type, limit)` — 按类型枚举实体（如查看所有人物、所有技能）。entity_type 支持按类型过滤（person/skill/tool/knowledge/photo/concept）
-- `lightrag_get_graph(action="explore", entity_name, depth)` — depth 建议 1-2
-- `lightrag_timeline_query(query, direction, max_depth, max_results)`
+- `lightrag_get_graph(action, entity_name, depth, limit, edge_types)` — 获取图谱子图。`action` 必填（"explore"/"snapshot"）。`limit` 用于 snapshot 模式限制节点数。`edge_types` 按关系类型过滤。depth 建议 1-2
+- `lightrag_timeline_query(query, start_entities, direction, max_depth, top_k, max_results)` — 时间线查询。`query` 非必填（可用 `start_entities` 替代）。`start_entities` 为字符串数组，直接指定起始实体。`top_k` 控制向量搜索返回实体数
 
 其他工具：
 - `get_messages(session_id)` — session_id 传 `"default"`（但消息已在 prompt 中提供，通常不需要调用）
@@ -428,9 +429,11 @@ description: Use when processing Office documents (Word, Excel, PowerPoint) that
 - `Xtokens` 为该条消息的 token 估算值（基于完整内容计算）
 - `role` 为消息角色（user / assistant / tool）
 
-## 输出格式
+## 回复格式（直接在回复中输出，不要写文件）
 
-完成后必须返回操作报告，格式如下：
+完成后必须**在回复消息中**直接输出操作报告，格式如下（这是回复文本格式，不是文件内容，禁止使用 write 工具写入文件）：
+
+> 以下是你回复消息时应使用的文本格式，直接输出在回复中即可。不要使用 write 工具将此报告写入文件。
 
 ```
 [梦境进化报告]
@@ -447,7 +450,7 @@ Skill 操作：{n5} 个（新建: {n6}, 修改正文: {n7}, 添加提醒: {n8}, 
 {如有异常或跳过，在此说明原因}
 ```
 
-处理完成后，在报告末尾用 JSON 格式报告：`{"last_dream_evolve_id": "<操作范围内 idx 最大的、且仍存在的消息的 id（UUID）>"}`
+处理完成后，在报告末尾的回复文本中附上以下 JSON（直接写在回复里，不要写文件）：`{"last_dream_evolve_id": "<操作范围内 idx 最大的、且仍存在的消息的 id（UUID）>"}`
 
 注意：游标应推进到操作范围的终点（范围内 idx 最大的那条消息的 id），而不是最后被操作的那条。游标指向的消息必须仍存在。
 

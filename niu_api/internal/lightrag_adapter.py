@@ -950,16 +950,44 @@ class LightRAGAdapter:
             # RuntimeError("Graph changed during iteration").
             result = call_async(rag.adelete_by_entity(entity_name), timeout=300)
 
-            # Record change for frontend changelog polling (best-effort)
-            try:
-                from niu_api.internal.lightrag_manager import get_change_log
+            # Check DeletionResult status (LightRAG returns a DeletionResult object)
+            if hasattr(result, "status"):
+                if result.status == "not_found" or (hasattr(result, "status_code") and getattr(result, "status_code", None) == 404):
+                    logger.info(f"LightRAG delete_entity: entity '{entity_name}' not found, treated as ok")
+                    return {"status": "ok", "entity_name": entity_name, "note": "not_found_treated_as_ok"}
+                elif result.status in ("not_allowed", "fail"):
+                    logger.warning(f"LightRAG delete_entity failed for '{entity_name}': status={result.status}")
+                    return {"status": "error", "message": f"DeletionResult status: {result.status}", "entity_name": entity_name}
+                else:
+                    # status == "success"
+                    # Record change for frontend changelog polling (best-effort)
+                    try:
+                        from niu_api.internal.lightrag_manager import get_change_log
 
-                get_change_log().record_change("entity_deleted", {"id": entity_name})
-            except Exception as e:
-                logger.debug(f"changelog record_change failed: {e}")
+                        get_change_log().record_change("entity_deleted", {"id": entity_name})
+                    except Exception as e:
+                        logger.debug(f"changelog record_change failed: {e}")
 
-            return {"status": "ok", "entity_name": entity_name, "result": str(result)}
+                    return {"status": "ok", "entity_name": entity_name, "result": str(result)}
+            elif hasattr(result, "status_code") and getattr(result, "status_code", None) == 404:
+                logger.info(f"LightRAG delete_entity: entity '{entity_name}' not found (404), treated as ok")
+                return {"status": "ok", "entity_name": entity_name, "note": "not_found_treated_as_ok"}
+            else:
+                # No status attribute — assume success for backward compatibility
+                # Record change for frontend changelog polling (best-effort)
+                try:
+                    from niu_api.internal.lightrag_manager import get_change_log
+
+                    get_change_log().record_change("entity_deleted", {"id": entity_name})
+                except Exception as e:
+                    logger.debug(f"changelog record_change failed: {e}")
+
+                return {"status": "ok", "entity_name": entity_name, "result": str(result)}
         except Exception as e:
+            err_str = str(e).lower()
+            if "not found" in err_str or "404" in err_str:
+                logger.info(f"LightRAG delete_entity: entity '{entity_name}' not found, treated as ok")
+                return {"status": "ok", "entity_name": entity_name, "note": "not_found_treated_as_ok"}
             logger.error(f"LightRAG delete_entity failed: {e}")
             return {"status": "error", "message": str(e)}
 

@@ -115,9 +115,18 @@ class SkillFileHandler(_SkillFileHandlerBase):  # type: ignore[misc]
         try:
             name = Path(path).stem
             if action == "sync":
-                self._sync._sync_skill(name, Path(path))
+                if self._sync._sync_skill(name, Path(path)):
+                    # 更新 hash 到状态文件，避免下次定时扫描重复注入
+                    content_hash = self._sync._compute_file_hash(Path(path))
+                    if content_hash:
+                        with self._sync._lock:
+                            self._sync._last_scan[name] = content_hash
+                        self._sync._save_state()
             elif action == "delete":
-                self._sync._delete_skill_from_lightrag(name)
+                if self._sync._delete_skill_from_lightrag(name):
+                    with self._sync._lock:
+                        self._sync._last_scan.pop(name, None)
+                    self._sync._save_state()
         except Exception as e:
             logger.error(f"[SkillFileHandler] Failed to execute {action} for {path}: {e}")
 
@@ -288,27 +297,28 @@ class SkillSync:
             known_hash = known_skills.get(name)
             if known_hash is None:
                 # 新增
-                try:
-                    skill_file = self.skills_dir / f"{name}.md"
-                    self._sync_skill(name, skill_file)
+                skill_file = self.skills_dir / f"{name}.md"
+                if self._sync_skill(name, skill_file):
                     next_scan[name] = current_hash  # 成功才写入新 hash
                     added += 1
                     logger.info(f"[SkillSync] Added skill: {name}")
-                except Exception as e:
-                    logger.error(f"[SkillSync] Failed to add skill {name}: {e}")
-                    # 不写入 next_scan，下次扫描仍视为"新增"
+                else:
+                    logger.error(f"[SkillSync] Failed to add skill {name}, will retry next scan")
+                    # 不写入 next_scan，下次扫描仍视为新增
             elif known_hash != current_hash:
-                # 修改
-                try:
-                    self._delete_skill_from_lightrag(name)
+                # 修改：先删旧再注新，任一步失败都保留旧 hash
+                if self._delete_skill_from_lightrag(name):
                     skill_file = self.skills_dir / f"{name}.md"
-                    self._sync_skill(name, skill_file)
-                    next_scan[name] = current_hash  # 成功才更新 hash
-                    updated += 1
-                    logger.info(f"[SkillSync] Updated skill: {name} (content changed)")
-                except Exception as e:
-                    logger.error(f"[SkillSync] Failed to update skill {name}: {e}")
-                    # 保留旧 hash，下次扫描仍检测到 hash 不同，会重试
+                    if self._sync_skill(name, skill_file):
+                        next_scan[name] = current_hash  # 成功才更新 hash
+                        updated += 1
+                        logger.info(f"[SkillSync] Updated skill: {name} (content changed)")
+                    else:
+                        logger.error(f"[SkillSync] Failed to inject updated skill {name}, keeping old hash for retry")
+                        next_scan[name] = known_hash
+                else:
+                    logger.error(f"[SkillSync] Failed to delete old skill {name}, keeping old hash for retry")
+                    next_scan[name] = known_hash
             else:
                 # 不变：hash 相同 → 保留
                 next_scan[name] = current_hash
@@ -316,14 +326,13 @@ class SkillSync:
         # 删除：在 known_skills 中但不在 current_hashes 中 → 从图谱删除
         for name in known_skills:
             if name not in current_hashes:
-                try:
-                    self._delete_skill_from_lightrag(name)
-                    next_scan.pop(name, None)  # 成功才移除
+                if self._delete_skill_from_lightrag(name):
+                    next_scan.pop(name, None)
                     deleted += 1
                     logger.info(f"[SkillSync] Deleted skill: {name}")
-                except Exception as e:
-                    logger.error(f"[SkillSync] Failed to delete skill {name}: {e}")
-                    # 保留旧 hash，下次扫描仍会重试删除
+                else:
+                    logger.error(f"[SkillSync] Failed to delete '{name}' from LightRAG, keeping in state for retry")
+                    next_scan[name] = known_skills[name]
 
         # Scan notes
         try:
@@ -340,16 +349,20 @@ class SkillSync:
 
         return added, updated, deleted
 
-    def _sync_skill(self, name: str, skill_file: Path):
+    def _sync_skill(self, name: str, skill_file: Path) -> bool:
         """同步单个 skill 到 LightRAG 知识图谱
 
         读取文件全文，调用 _inject_skill_to_lightrag 做结构化注入。
+
+        Returns:
+            True on success, False on failure.
         """
         try:
             content = skill_file.read_text(encoding="utf-8")
-            self._inject_skill_to_lightrag(name, content)
+            return self._inject_skill_to_lightrag(name, content)
         except Exception as e:
             logger.error(f"[SkillSync] Failed to sync skill {name}: {e}")
+            return False
 
     def _get_ingester(self):
         """Get LightRAGIngester instance."""
@@ -412,7 +425,13 @@ class SkillSync:
                             logger.warning(
                                 "[SkillSync] lightrag_delete_entity not in registry, fallback to adapter"
                             )
-                            adapter.delete_entity(skill_name)
+                            del_result = adapter.delete_entity(skill_name)
+                            if isinstance(del_result, dict) and del_result.get("status") != "ok":
+                                logger.warning(
+                                    "[SkillSync] Fallback adapter delete returned non-ok for '%s': %s",
+                                    skill_name,
+                                    del_result.get("message", ""),
+                                )
                     except Exception as del_err:
                         # 删除失败不阻断注入，inject_custom_kg 本身是 upsert 语义
                         logger.warning(
@@ -502,7 +521,7 @@ class SkillSync:
             logger.warning("[SkillSync] LightRAG skill inject failed for '%s': %s", skill_name, e)
             return False
 
-    def _delete_skill_from_lightrag(self, skill_name: str) -> None:
+    def _delete_skill_from_lightrag(self, skill_name: str) -> bool:
         """从 LightRAG 知识图谱删除 skill 节点
 
         调用 adapter.delete_entity(entity_name) 删除实体。
@@ -510,23 +529,34 @@ class SkillSync:
 
         Args:
             skill_name: skill 名称（自然语言，不含前缀）
+
+        Returns:
+            True if deletion succeeded, False otherwise.
         """
         try:
             from niu_api.internal.lightrag_adapter import LightRAGAdapter
 
             adapter = LightRAGAdapter()
-            entity_name = skill_name
+        except Exception as e:
+            logger.warning("[SkillSync] LightRAG adapter construction failed for '%s': %s", skill_name, e)
+            return False
+
+        entity_name = skill_name
+        try:
             result = adapter.delete_entity(entity_name)
             if isinstance(result, dict) and result.get("status") == "ok":
                 logger.info("[SkillSync] Deleted skill '%s' from KG (entity: %s)", skill_name, entity_name)
+                return True
             else:
                 logger.warning(
                     "[SkillSync] delete_entity returned non-ok for '%s': %s",
                     skill_name,
                     result.get("message", "") if isinstance(result, dict) else result,
                 )
+                return False
         except Exception as e:
             logger.warning("[SkillSync] LightRAG skill delete failed for '%s': %s", skill_name, e)
+            return False
 
     def _scan_notes(self) -> tuple[int, int]:
         """扫描 workspace/notes/notes.json，将变化同步到 LightRAG"""
@@ -551,6 +581,7 @@ class SkillSync:
 
         # Collect changed notes for full-file injection
         changed_notes: list[dict] = []
+        old_hashes: dict[str, Optional[str]] = {}  # note_id -> old_hash for rollback
 
         for note in notes:
             note_id = note.get("id", "")
@@ -562,6 +593,7 @@ class SkillSync:
                 json.dumps({"c": note.get("content") or "", "t": note.get("tags") or []}, sort_keys=True).encode()
             ).hexdigest()
             last_hash = self._last_notes_scan.get(note_id)
+            old_hashes[note_id] = last_hash
 
             if last_hash is None:
                 changed_notes.append(note)
@@ -583,12 +615,16 @@ class SkillSync:
         # Inject all changed notes as a single full-file document
         if changed_notes:
             if not self._inject_note_to_lightrag(changed_notes):
-                # Rollback: remove hashes for failed notes so they are retried
+                # Rollback: restore old hashes for failed notes
                 with self._lock:
                     for note in changed_notes:
                         nid = note.get("id", "")
                         if nid:
-                            self._last_notes_scan.pop(nid, None)
+                            old_h = old_hashes.get(nid)
+                            if old_h is not None:
+                                self._last_notes_scan[nid] = old_h
+                            else:
+                                self._last_notes_scan.pop(nid, None)
                 # Don't count as added/updated if injection failed
                 added = 0
                 updated = 0
@@ -603,14 +639,18 @@ class SkillSync:
                 adapter = LightRAGAdapter()
                 for note_id in deleted_ids:
                     try:
-                        result = adapter.delete_entity(f"note:{note_id}")
-                        adapter.delete_entity(f"便签_{note_id[:8]}")
-                        if result.get("status") == "ok":
+                        result1 = adapter.delete_entity(f"note:{note_id}")
+                        result2 = adapter.delete_entity(f"便签_{note_id[:8]}")
+                        both_ok = (
+                            isinstance(result1, dict) and result1.get("status") == "ok"
+                            and isinstance(result2, dict) and result2.get("status") == "ok"
+                        )
+                        if both_ok:
                             with self._lock:
                                 self._last_notes_scan.pop(note_id, None)
                             logger.info(f"[SkillSync] Deleted note: {note_id}")
                         else:
-                            logger.warning(f"[SkillSync] Note deletion returned error for {note_id}: {result.get('message', '')}")
+                            logger.warning(f"[SkillSync] Note deletion partial failure for {note_id}")
                     except Exception as e:
                         # Keep hash so deletion is retried on next scan
                         logger.warning(f"[SkillSync] Failed to delete note {note_id}: {e}")
