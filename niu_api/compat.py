@@ -1820,7 +1820,9 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                         except OSError:
                             pass
 
-                    prompt = f"""压缩上下文：当前{display_tokens} tokens（{usage_percent:.1f}%），需释放至{target_tokens} tokens以下。
+                    prompt = f"""CRITICAL: 你只有一轮机会完成压缩决策。禁止调用任何工具，直接回复压缩方案。
+
+压缩上下文：当前{display_tokens} tokens（{usage_percent:.1f}%），需释放至{target_tokens} tokens以下。
 
 消息列表（每条带[idx:N]序号）：
 {compress_msg_text}
