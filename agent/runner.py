@@ -1060,6 +1060,7 @@ class NiuRunner:
 
                     # 保护最近 N 条 user/assistant 消息（不保护 role=tool 的工具输出）
                     protect_recent_count = _read_protect_recent_count()
+                    protected_force_ids: set[str] = set()
                     if protect_recent_count > 0:
                         _pids = []
                         for m in reversed(fresh_messages):
@@ -1091,8 +1092,37 @@ class NiuRunner:
 
                     # 级联删除：确保 tool 调用链完整性
                     from niu_api.compat import _cascade_tool_chain_deletes, _cascade_tool_chain_updates
-                    valid_deletes = _cascade_tool_chain_deletes(fresh_messages, valid_deletes)
-                    valid_updates = _cascade_tool_chain_updates(fresh_messages, valid_updates)
+                    _cascade_protected = cursor_ids_set | (protected_force_ids if protect_recent_count > 0 else set())
+                    valid_deletes, dangling_tc_cleanups = _cascade_tool_chain_deletes(fresh_messages, valid_deletes, protected_ids=_cascade_protected)
+                    valid_updates, cascade_delete_ids = _cascade_tool_chain_updates(fresh_messages, valid_updates)
+                    if cascade_delete_ids:
+                        existing = set(valid_deletes)
+                        for cid in cascade_delete_ids:
+                            if cid not in existing:
+                                valid_deletes.append(cid)
+                                existing.add(cid)
+
+                    # 清理受保护 assistant 的悬空 tool_calls（同步 DB 操作）
+                    if dangling_tc_cleanups:
+                        import sqlite3
+                        _db_path = os.path.join(os.path.expanduser("~"), ".niu", "messages.db")
+                        for cleanup in dangling_tc_cleanups:
+                            mid = cleanup["message_id"]
+                            dangling_ids = cleanup["dangling_tc_ids"]
+                            m = next((m for m in fresh_messages if getattr(m, "id", "") == mid), None)
+                            if m and getattr(m, "tool_calls", None):
+                                tcs = getattr(m, "tool_calls")
+                                if isinstance(tcs, str):
+                                    tcs = json.loads(tcs)
+                                valid_tcs = [tc for tc in tcs if tc.get("id", "") not in dangling_ids]
+                                with sqlite3.connect(_db_path) as conn:
+                                    if valid_tcs:
+                                        conn.execute("UPDATE messages SET tool_calls = ? WHERE id = ?",
+                                                   (json.dumps(valid_tcs, ensure_ascii=False), mid))
+                                    else:
+                                        conn.execute("UPDATE messages SET tool_calls = '[]' WHERE id = ?", (mid,))
+                                    conn.commit()
+                                logger.info(f"[Runner] Force: Cleaned {len(dangling_ids)} dangling tool_calls from protected assistant {mid}")
 
                     # 执行删除
                     if valid_deletes:
@@ -1140,8 +1170,10 @@ class NiuRunner:
             fresh_db_msgs = self._sync_get_messages()
             if fresh_db_msgs:
                 # 从 assistant 消息的 tool_calls 构建 tool_call_id → tool_name 映射
+                # 同时收集所有有效的 tool_call_id（压缩可能留下孤立的 tool 消息）
                 # （与 agent_loop.py 历史还原路径相同逻辑）
                 _tc_id_to_name: dict[str, str] = {}
+                _valid_tc_ids: set[str] = set()
                 for m in fresh_db_msgs:
                     if m.role == "assistant" and m.tool_calls:
                         for tc in m.tool_calls:
@@ -1149,6 +1181,15 @@ class NiuRunner:
                             tc_name = tc.get("function", {}).get("name", "")
                             if tc_id and tc_name:
                                 _tc_id_to_name[tc_id] = tc_name
+                            if tc_id:
+                                _valid_tc_ids.add(tc_id)
+
+                # 收集所有 tool 消息的 tool_call_id，用于验证 assistant tool_calls 完整性
+                _tool_response_ids: set[str] = set()
+                for m in fresh_db_msgs:
+                    if m.role == "tool" and m.tool_call_id:
+                        _tool_response_ids.add(m.tool_call_id)
+
                 # Message 对象 → dict（保留 agent_loop 需要的字段）
                 fresh_msgs = []
                 for msg in fresh_db_msgs:
@@ -1157,8 +1198,16 @@ class NiuRunner:
                         "content": msg.content or "",
                     }
                     if msg.tool_calls:
-                        d["tool_calls"] = msg.tool_calls
+                        # 过滤掉没有对应 tool 响应的 tool_calls（压缩可能删除了 tool 输出）
+                        valid_tcs = [tc for tc in msg.tool_calls if tc.get("id") in _tool_response_ids]
+                        if valid_tcs:
+                            d["tool_calls"] = valid_tcs
+                        # 如果所有 tool_calls 都没有响应，不设置 tool_calls（变成纯文本消息）
                     if msg.tool_call_id:
+                        # 跳过孤立的 tool 消息（没有对应的 assistant tool_calls）
+                        if msg.tool_call_id not in _valid_tc_ids:
+                            logger.warning(f"[Runner] Force: Skipping orphan tool message: tool_call_id={msg.tool_call_id}")
+                            continue
                         d["tool_call_id"] = msg.tool_call_id
                         _tn = _tc_id_to_name.get(msg.tool_call_id, "")
                         if _tn:
