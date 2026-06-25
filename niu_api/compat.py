@@ -1437,19 +1437,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
             except Exception as e:
                 logger.warning(f"[Tidy] Failed to read journal cursor: {e}")
 
-        # 构建消息列表（包含 UUID，完整内容不截断）
-        # 真实环境下 force 模式触发时上下文约 contextWindowSize * warningThreshold tokens
-        # 全量消息列表 ≤ contextWindowSize * 95%，子 Agent 有 ~5-15% 输出空间，不会溢出
-        msg_lines = []
-        msg_ids = []
-        for idx, msg in enumerate(messages, 1):
-            tokens = msg_tokens[idx - 1]
-            msg_id = getattr(msg, "id", "") or ""
-            msg_ids.append(msg_id)
-            msg_lines.append(f"[id:{msg_id}] [idx:{idx}] {tokens}tokens {msg.role}: {msg.content}")
-
-        msg_list_text = "\n".join(msg_lines)
-        msg_id_set = set(msg_ids)  # 用于游标 ID 有效性校验
+        msg_id_set = {getattr(m, "id", "") or "" for m in messages}  # 用于游标 ID 有效性校验
 
         if mode == "sleep":
             # Sleep mode: entity-extractor (增量) → dream-evolver (增量) → context-manager (增量)
@@ -2488,6 +2476,26 @@ REMINDER: 从远端（idx小的）开始压缩，近端保护消息不要动。�
 
             protect_recent_count = _read_protect_recent_count()
 
+            # 使用统一的 _build_incremental_msg_text 构建（与模式二一致）
+            # 传入 protect_recent 参数，自动标注 [PROTECTED]
+            _force_msg_ids = []
+            msg_list_text = _build_incremental_msg_text(
+                messages, "", _force_msg_ids, msg_tokens,
+                end_cursor_id=None, protect_recent=protect_recent_count
+            )
+            msg_list_text = msg_list_text.replace("条新消息", "条消息", 1)
+            msg_id_set = set(_force_msg_ids)
+
+            # 计算 force 路径的受保护 ID
+            _f_pids = []
+            for i in range(len(messages) - 1, -1, -1):
+                _m = messages[i]
+                if getattr(_m, "role", "") in ("user", "assistant"):
+                    _f_pids.insert(0, getattr(_m, "id", "") or "")
+                if len(_f_pids) >= protect_recent_count:
+                    break
+            protected_force_ids = _f_pids
+
             prompt = f"""CRITICAL: 你只有一轮机会完成所有压缩决策。多轮工具调用会导致上下文溢出，任务失败。
 
     - 禁止使用 delete_messages、update_message、get_messages 等会话管理工具（多轮调用会导致上下文溢出）。
@@ -2505,6 +2513,9 @@ REMINDER: 从远端（idx小的）开始压缩，近端保护消息不要动。�
     - 需释放至少 {display_tokens - target_tokens} tokens
     - 上次压缩游标：{last_compress_id or '（无，从最早消息开始）'}
 
+    保护消息ID：{json.dumps(protected_force_ids)}
+    受保护消息ID已在上方列出，这些消息绝不删除。安全边界优先于模式三决策流程。
+
     安全边界：先从消息列表中找到 last_dream_evolve_id={new_dream_id} 对应的 idx，idx > 该idx 的消息（dream-evolver 未提取知识），不得直接删除，必须用 update 压缩为[摘要]格式后保留（不删除）。
     保护规则：操作开始时记录 idx 最大的 {protect_recent_count} 条 user/assistant 消息的 id（UUID），这些消息绝不删除。role=tool 的工具输出不在保护范围内，可以删除或压缩。
     游标用 id（UUID）存储（持久化），时间顺序用 idx 判断（idx 是动态位置索引，删除消息后会变，不能当游标存储）。UUID v4 字典序不代表时间先后。
@@ -2515,6 +2526,7 @@ REMINDER: 从远端（idx小的）开始压缩，近端保护消息不要动。�
     {msg_list_text}
     --- 消息列表数据结束 ---
 
+    请按照【模式三】执行压缩决策，安全边界优先于模式三决策流程。
     REMINDER: 只使用 write 工具。其他工具调用将浪费你唯一的轮次。"""
 
             # Force 模式只做一轮交互（prompt → 回复 JSON → 结束），不会有第二轮
