@@ -1093,8 +1093,12 @@ class NiuRunner:
                     # 级联删除：确保 tool 调用链完整性
                     from niu_api.compat import _cascade_tool_chain_deletes, _cascade_tool_chain_updates
                     _cascade_protected = cursor_ids_set | (protected_force_ids if protect_recent_count > 0 else set())
-                    valid_deletes, dangling_tc_cleanups = _cascade_tool_chain_deletes(fresh_messages, valid_deletes, protected_ids=_cascade_protected)
-                    valid_updates, cascade_delete_ids = _cascade_tool_chain_updates(fresh_messages, valid_updates)
+                    cascade_del = _cascade_tool_chain_deletes(fresh_messages, valid_deletes, protected_ids=_cascade_protected)
+                    valid_deletes = cascade_del.delete_ids
+                    dangling_tc_cleanups = cascade_del.dangling_cleanups
+                    cascade_upd = _cascade_tool_chain_updates(fresh_messages, valid_updates)
+                    valid_updates = cascade_upd.updates
+                    cascade_delete_ids = cascade_upd.cascade_delete_ids
                     if cascade_delete_ids:
                         existing = set(valid_deletes)
                         for cid in cascade_delete_ids:

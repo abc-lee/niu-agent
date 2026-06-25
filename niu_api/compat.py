@@ -17,6 +17,17 @@ from agent.subagent import _read_context_window_tokens, _read_target_threshold, 
 from fastapi import APIRouter, Request
 from loguru import logger
 from pydantic import BaseModel
+from typing import NamedTuple
+
+
+class CascadeDeleteResult(NamedTuple):
+    delete_ids: list[str]
+    dangling_cleanups: list[dict]
+
+
+class CascadeUpdateResult(NamedTuple):
+    updates: list[dict]
+    cascade_delete_ids: list[str]
 
 
 def _extract_cursor_id(text: str, field_name: str, valid_ids: set) -> str | None:
@@ -79,7 +90,7 @@ def _extract_overflow_info(result: str) -> dict:
         return {"overflow": True, "raw": result}
 
 
-def _cascade_tool_chain_deletes(fresh_messages, delete_ids: list[str], protected_ids: set[str] | None = None) -> tuple[list[str], list[dict]]:
+def _cascade_tool_chain_deletes(fresh_messages, delete_ids: list[str], protected_ids: set[str] | None = None) -> CascadeDeleteResult:
     """级联删除：确保 tool 调用链完整性。
 
     当删除 assistant(tool_calls) 时，对应的 tool 输出也必须删除；
@@ -202,10 +213,10 @@ def _cascade_tool_chain_deletes(fresh_messages, delete_ids: list[str], protected
         logger.warning(f"[Tidy] Cascade: skipped {len(skipped_protected)} protected messages from cascade deletes: {skipped_protected}")
     if added:
         logger.info(f"[Tidy] Cascade: adding {len(added)} tool-chain messages to deletes: {added}")
-    return delete_ids + list(added), dangling_tc_cleanups
+    return CascadeDeleteResult(delete_ids + list(added), dangling_tc_cleanups)
 
 
-def _cascade_tool_chain_updates(fresh_messages, updates: list[dict]) -> tuple[list[dict], list[str]]:
+def _cascade_tool_chain_updates(fresh_messages, updates: list[dict]) -> CascadeUpdateResult:
     """级联更新：更新 assistant(tool_calls) 时清除悬空的 tool_calls，并返回需级联删除的 tool output ID。
 
     当 assistant 消息有 tool_calls 但其对应的 tool 输出已被删除时，
@@ -251,7 +262,7 @@ def _cascade_tool_chain_updates(fresh_messages, updates: list[dict]) -> tuple[li
                 except (json.JSONDecodeError, TypeError):
                     pass
         result.append(upd)
-    return result, cascade_delete_ids
+    return CascadeUpdateResult(result, cascade_delete_ids)
 
 
 async def _clean_dangling_tool_calls(store, message_id: str, valid_tcs: list[dict]):
@@ -1938,9 +1949,13 @@ REMINDER: 从远端（idx小的）开始压缩，近端保护消息不要动。�
 
                                 # 级联删除：确保 tool 调用链完整性
                                 _cascade_protected = cursor_ids_set | (protected_set if protect_recent_count > 0 else set())
-                                valid_deletes, dangling_tc_cleanups = _cascade_tool_chain_deletes(fresh_messages, valid_deletes, protected_ids=_cascade_protected)
+                                cascade_del = _cascade_tool_chain_deletes(fresh_messages, valid_deletes, protected_ids=_cascade_protected)
+                                valid_deletes = cascade_del.delete_ids
+                                dangling_tc_cleanups = cascade_del.dangling_cleanups
                                 # 级联更新：清除更新消息的悬空 tool_calls，并收集孤立 tool output
-                                valid_updates, cascade_delete_ids = _cascade_tool_chain_updates(fresh_messages, valid_updates)
+                                cascade_upd = _cascade_tool_chain_updates(fresh_messages, valid_updates)
+                                valid_updates = cascade_upd.updates
+                                cascade_delete_ids = cascade_upd.cascade_delete_ids
                                 if cascade_delete_ids:
                                     existing = set(valid_deletes)
                                     for cid in cascade_delete_ids:
@@ -2085,47 +2100,13 @@ REMINDER: 从远端（idx小的）开始压缩，近端保护消息不要动。�
                             logger.warning(f"[Tidy] Failed to verify protected messages: {e}")
                             compress_integrity_ok = False
 
-                    # 工具链完整性验证：检测并修复模式1子Agent可能遗留的孤立 tool 消息和悬空 tool_calls
+                    # 工具链完整性验证：迭代收敛，检测并修复孤立 tool 消息和悬空 tool_calls
+                    # 清除 tool_calls 后可能产生新孤立 tool 消息，需要反复扫描直到收敛
                     try:
-                        post_msgs = await store.get_messages()
-                        # 收集所有 assistant tool_calls 的 id
-                        _valid_tc_ids: set[str] = set()
-                        _tc_id_to_msg_id: dict[str, str] = {}  # tc_id → assistant msg id
-                        for m in post_msgs:
-                            if getattr(m, "role", "") == "assistant":
-                                tcs = getattr(m, "tool_calls", None)
-                                if tcs:
-                                    try:
-                                        if isinstance(tcs, str):
-                                            tcs = json.loads(tcs)
-                                        for tc in tcs:
-                                            tc_id = tc.get("id", "")
-                                            if tc_id:
-                                                _valid_tc_ids.add(tc_id)
-                                                _tc_id_to_msg_id[tc_id] = getattr(m, "id", "")
-                                    except (json.JSONDecodeError, TypeError):
-                                        pass
-                        # 收集所有 tool 消息的 tool_call_id
-                        _tool_response_ids: set[str] = set()
-                        _orphan_tool_mids: list[str] = []
-                        for m in post_msgs:
-                            if getattr(m, "role", "") == "tool":
-                                tc_call_id = getattr(m, "tool_call_id", "") or ""
-                                if tc_call_id:
-                                    _tool_response_ids.add(tc_call_id)
-                                    if tc_call_id not in _valid_tc_ids:
-                                        _orphan_tool_mids.append(getattr(m, "id", ""))
-                        # 检测悬空 tool_calls（assistant 有 tool_calls 但没有对应 tool 响应）
-                        _dangling_tc_ids: set[str] = set()
-                        for tc_id in _valid_tc_ids:
-                            if tc_id not in _tool_response_ids:
-                                _dangling_tc_ids.add(tc_id)
-                        # 修复：删除孤立 tool 消息
-                        if _orphan_tool_mids:
-                            logger.warning(f"[Tidy] Mode-1 integrity: deleting {len(_orphan_tool_mids)} orphan tool messages: {_orphan_tool_mids}")
-                            await store.delete_messages_by_ids(_orphan_tool_mids)
-                        # 修复：清除悬空 tool_calls（将 assistant 的 tool_calls 过滤为只保留有响应的）
-                        if _dangling_tc_ids:
+                        for _round in range(5):  # 最多 5 轮收敛
+                            post_msgs = await store.get_messages()
+                            # 收集所有 assistant tool_calls 的 id
+                            _valid_tc_ids: set[str] = set()
                             for m in post_msgs:
                                 if getattr(m, "role", "") == "assistant":
                                     tcs = getattr(m, "tool_calls", None)
@@ -2133,18 +2114,56 @@ REMINDER: 从远端（idx小的）开始压缩，近端保护消息不要动。�
                                         try:
                                             if isinstance(tcs, str):
                                                 tcs = json.loads(tcs)
-                                            valid_tcs = [tc for tc in tcs if tc.get("id", "") not in _dangling_tc_ids]
-                                            if len(valid_tcs) < len(tcs):
-                                                mid = getattr(m, "id", "")
-                                                if valid_tcs:
-                                                    await _clean_dangling_tool_calls(store, mid, valid_tcs)
-                                                    logger.warning(f"[Tidy] Mode-1 integrity: cleaned {len(tcs) - len(valid_tcs)} dangling tool_calls from {mid}")
-                                                else:
-                                                    await store.update_message(mid, getattr(m, "content", "") or "",
-                                                                               clear_tool_calls=True)
-                                                    logger.warning(f"[Tidy] Mode-1 integrity: cleared all tool_calls from {mid} (no tool responses)")
+                                            for tc in tcs:
+                                                tc_id = tc.get("id", "")
+                                                if tc_id:
+                                                    _valid_tc_ids.add(tc_id)
                                         except (json.JSONDecodeError, TypeError):
                                             pass
+                            # 收集所有 tool 消息的 tool_call_id + 孤立 tool 消息
+                            _tool_response_ids: set[str] = set()
+                            _orphan_tool_mids: list[str] = []
+                            for m in post_msgs:
+                                if getattr(m, "role", "") == "tool":
+                                    tc_call_id = getattr(m, "tool_call_id", "") or ""
+                                    if tc_call_id:
+                                        _tool_response_ids.add(tc_call_id)
+                                        if tc_call_id not in _valid_tc_ids:
+                                            _orphan_tool_mids.append(getattr(m, "id", ""))
+                            # 检测悬空 tool_calls
+                            _dangling_tc_ids: set[str] = set()
+                            for tc_id in _valid_tc_ids:
+                                if tc_id not in _tool_response_ids:
+                                    _dangling_tc_ids.add(tc_id)
+
+                            if not _orphan_tool_mids and not _dangling_tc_ids:
+                                break  # 收敛，无需继续
+
+                            # 修复：删除孤立 tool 消息
+                            if _orphan_tool_mids:
+                                logger.warning(f"[Tidy] Mode-1 integrity round {_round+1}: deleting {len(_orphan_tool_mids)} orphan tool messages")
+                                await store.delete_messages_by_ids(_orphan_tool_mids)
+                            # 修复：清除悬空 tool_calls
+                            if _dangling_tc_ids:
+                                for m in post_msgs:
+                                    if getattr(m, "role", "") == "assistant":
+                                        tcs = getattr(m, "tool_calls", None)
+                                        if tcs:
+                                            try:
+                                                if isinstance(tcs, str):
+                                                    tcs = json.loads(tcs)
+                                                valid_tcs = [tc for tc in tcs if tc.get("id", "") not in _dangling_tc_ids]
+                                                if len(valid_tcs) < len(tcs):
+                                                    mid = getattr(m, "id", "")
+                                                    if valid_tcs:
+                                                        await _clean_dangling_tool_calls(store, mid, valid_tcs)
+                                                        logger.warning(f"[Tidy] Mode-1 integrity round {_round+1}: cleaned {len(tcs) - len(valid_tcs)} dangling tool_calls from {mid}")
+                                                    else:
+                                                        await store.update_message(mid, getattr(m, "content", "") or "",
+                                                                                   clear_tool_calls=True)
+                                                        logger.warning(f"[Tidy] Mode-1 integrity round {_round+1}: cleared all tool_calls from {mid}")
+                                            except (json.JSONDecodeError, TypeError):
+                                                pass
                     except Exception as e:
                         logger.warning(f"[Tidy] Mode-1 tool chain integrity check failed: {e}")
 
@@ -2642,9 +2661,13 @@ REMINDER: 从远端（idx小的）开始压缩，近端保护消息不要动。�
 
                         # 级联删除：确保 tool 调用链完整性
                         _cascade_protected = cursor_ids_set | (protected_force_ids if protect_recent_count > 0 else set())
-                        valid_deletes, dangling_tc_cleanups = _cascade_tool_chain_deletes(fresh_messages, valid_deletes, protected_ids=_cascade_protected)
+                        cascade_del = _cascade_tool_chain_deletes(fresh_messages, valid_deletes, protected_ids=_cascade_protected)
+                        valid_deletes = cascade_del.delete_ids
+                        dangling_tc_cleanups = cascade_del.dangling_cleanups
                         # 级联更新：清除更新消息的悬空 tool_calls，并收集孤立 tool output
-                        valid_updates, cascade_delete_ids = _cascade_tool_chain_updates(fresh_messages, valid_updates)
+                        cascade_upd = _cascade_tool_chain_updates(fresh_messages, valid_updates)
+                        valid_updates = cascade_upd.updates
+                        cascade_delete_ids = cascade_upd.cascade_delete_ids
                         if cascade_delete_ids:
                             existing = set(valid_deletes)
                             for cid in cascade_delete_ids:
