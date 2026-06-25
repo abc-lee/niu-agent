@@ -1512,11 +1512,10 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                             new_entity_id = ""
 
                 if new_entity_id:
-                    entity_cursor_path.parent.mkdir(parents=True, exist_ok=True)
-                    entity_cursor_path.write_text(json.dumps({
+                    _write_cursor_with_lock(entity_cursor_path, {
                         "last_entity_extract_id": new_entity_id,
                         "last_entity_extract_at": datetime.now().isoformat(),
-                    }, ensure_ascii=False, indent=2), encoding="utf-8")
+                    })
                     logger.info(f"[Tidy] entity cursor updated: last_entity_extract_id={new_entity_id}")
             else:
                 logger.info("[Tidy] entity-extractor: no new messages since cursor")
@@ -1599,11 +1598,10 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                         if new_dream_id and new_dream_id not in fresh_ids:
                             new_dream_id = ""
                 if new_dream_id:
-                    dream_cursor_path.parent.mkdir(parents=True, exist_ok=True)
-                    dream_cursor_path.write_text(json.dumps({
+                    _write_cursor_with_lock(dream_cursor_path, {
                         "last_dream_evolve_id": new_dream_id,
                         "last_evolve_at": datetime.now().isoformat(),
-                    }, ensure_ascii=False, indent=2), encoding="utf-8")
+                    })
                     logger.info(f"[Tidy] Dream cursor updated: last_dream_evolve_id={new_dream_id}")
             else:
                 logger.info("[Tidy] dream-evolver: no new messages since cursor")
@@ -2197,11 +2195,10 @@ REMINDER: 从远端（idx小的）开始压缩，近端保护消息不要动。�
                     # 模式一：推进压缩游标
                     if new_compress_id:
                         if compress_integrity_ok:
-                            compress_cursor_path.parent.mkdir(parents=True, exist_ok=True)
-                            compress_cursor_path.write_text(json.dumps({
+                            _write_cursor_with_lock(compress_cursor_path, {
                                 "last_compress_id": new_compress_id,
                                 "last_compress_at": datetime.now().isoformat(),
-                            }, ensure_ascii=False, indent=2), encoding="utf-8")
+                            })
                             logger.info(f"[Tidy] Compress cursor updated: last_compress_id={new_compress_id}")
                         else:
                             logger.warning("[Tidy] Skipping cursor advance due to protected message integrity failure")
@@ -2285,11 +2282,10 @@ REMINDER: 从远端（idx小的）开始压缩，近端保护消息不要动。�
                         if new_entity_id and new_entity_id not in fresh_ids:
                             new_entity_id = ""
                 if new_entity_id:
-                    entity_cursor_path.parent.mkdir(parents=True, exist_ok=True)
-                    entity_cursor_path.write_text(json.dumps({
+                    _write_cursor_with_lock(entity_cursor_path, {
                         "last_entity_extract_id": new_entity_id,
                         "last_entity_extract_at": datetime.now().isoformat(),
-                    }, ensure_ascii=False, indent=2), encoding="utf-8")
+                    })
             else:
                 logger.info("[Tidy] Force mode: entity-extractor skipped, no messages")
 
@@ -2376,11 +2372,10 @@ REMINDER: 从远端（idx小的）开始压缩，近端保护消息不要动。�
                         new_dream_id = ""
 
             if new_dream_id:
-                dream_cursor_path.parent.mkdir(parents=True, exist_ok=True)
-                dream_cursor_path.write_text(json.dumps({
+                _write_cursor_with_lock(dream_cursor_path, {
                     "last_dream_evolve_id": new_dream_id,
                     "last_evolve_at": datetime.now().isoformat(),
-                }, ensure_ascii=False, indent=2), encoding="utf-8")
+                })
 
             # 2.5/3. journal-agent（force 模式，始终调用）
             # 重新获取消息列表
@@ -2788,11 +2783,10 @@ REMINDER: 从远端（idx小的）开始压缩，近端保护消息不要动。�
 
             # 写入 compress 游标
             if new_compress_id:
-                compress_cursor_path.parent.mkdir(parents=True, exist_ok=True)
-                compress_cursor_path.write_text(json.dumps({
+                _write_cursor_with_lock(compress_cursor_path, {
                     "last_compress_id": new_compress_id,
                     "last_compress_at": datetime.now().isoformat(),
-                }, ensure_ascii=False, indent=2), encoding="utf-8")
+                })
                 logger.info(f"[Tidy] Force: Compress cursor updated: last_compress_id={new_compress_id}")
 
             return {"status": "ok", "mode": "force", "tokens_before": display_tokens}

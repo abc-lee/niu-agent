@@ -1180,11 +1180,10 @@ class NiuRunner:
 
             # 写入 compress 游标
             if new_compress_id:
-                compress_cursor_path.parent.mkdir(parents=True, exist_ok=True)
-                compress_cursor_path.write_text(json.dumps({
+                _write_cursor_with_lock(compress_cursor_path, {
                     "last_compress_id": new_compress_id,
                     "last_compress_at": datetime.now().isoformat(),
-                }, ensure_ascii=False, indent=2), encoding="utf-8")
+                })
                 logger.info(f"[Runner] Force: Compress cursor updated: {new_compress_id}")
 
             # === 重新加载消息，原地修改 agent_loop 的 messages 列表 ===
