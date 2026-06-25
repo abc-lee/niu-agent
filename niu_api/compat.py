@@ -2047,8 +2047,13 @@ REMINDER: 从远端（idx小的）开始压缩，近端保护消息不要动。�
                     else:
                         logger.warning("[Tidy] Mode-2: No compress plan file found, sub-agent may not have used write")
 
-                    # 模式二不写游标：保持"无游标"设计，每次始终全量处理
-                    logger.info("[Tidy] Mode-2: Compression complete (no cursor update, mode-2 is always full-range)")
+                    # 模式二完成后清空压缩游标：模式二全量重组了消息列表，旧游标语义失效
+                    # 清空后下次模式一自然全量处理，行为明确且一致
+                    _write_cursor_with_lock(compress_cursor_path, {
+                        "last_compress_id": "",
+                        "last_compress_at": datetime.now().isoformat(),
+                    })
+                    logger.info("[Tidy] Mode-2: Cleared compress cursor (full-range reorg invalidated old cursor)")
                 else:
                     # === 模式一：原有逻辑完整保留 ===
                     context_window_for_truncate = _read_context_window_tokens()
