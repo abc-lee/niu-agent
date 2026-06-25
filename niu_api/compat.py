@@ -311,120 +311,6 @@ async def _cleanup_orphan_tool_messages(store):
         await store.delete_messages_by_ids(_orphan_mids)
 
 
-def _extract_json_plan(text: str) -> dict | None:
-    """从 LLM 输出文本中提取 JSON 压缩方案（fallback for write tool failure）。
-
-    处理三种情况：
-    1. 整个 text 就是 JSON
-    2. JSON 嵌在文本中（需要找边界）
-    3. JSON 被截断（尝试修复）
-    """
-    if not text or not text.strip():
-        return None
-
-    text = text.strip()
-
-    # 尝试 1: 整个文本就是有效 JSON
-    try:
-        plan = json.loads(text)
-        if isinstance(plan, dict) and ("deletes" in plan or "updates" in plan):
-            return plan
-    except (json.JSONDecodeError, ValueError):
-        pass
-
-    # 尝试 2: 从文本中找第一个 { 到最后一个 } 的子串
-    first_brace = text.find('{')
-    last_brace = text.rfind('}')
-    if first_brace >= 0 and last_brace > first_brace:
-        candidate = text[first_brace:last_brace + 1]
-        try:
-            plan = json.loads(candidate)
-            if isinstance(plan, dict) and ("deletes" in plan or "updates" in plan):
-                return plan
-        except (json.JSONDecodeError, ValueError):
-            pass
-
-        # 尝试 3: 截断 JSON 修复（补全缺失的括号）
-        repaired = _repair_truncated_json(candidate)
-        if repaired:
-            return repaired
-
-    return None
-
-
-def _repair_truncated_json(text: str) -> dict | None:
-    """尝试修复被截断的 JSON 压缩方案。
-
-    常见截断场景：
-    - deletes 数组完整，updates 数组中对象被截断
-    - 整个 JSON 在 updates 数组中间被截断
-    """
-    import re
-
-    # 策略 1: 找到最后一个完整的 updates 对象，截断后补全
-    updates_idx = text.find('"updates"')
-    if updates_idx < 0:
-        updates_idx = text.find("'updates'")
-    if updates_idx < 0:
-        # 没有 updates 字段，尝试只提取 deletes
-        deletes_idx = text.find('"deletes"')
-        if deletes_idx < 0:
-            return None
-        bracket_start = text.find('[', deletes_idx)
-        bracket_end = text.find(']', bracket_start)
-        if bracket_start >= 0 and bracket_end >= 0:
-            try:
-                partial = '{"deletes": ' + text[bracket_start:bracket_end+1] + '}'
-                plan = json.loads(partial)
-                if isinstance(plan, dict) and "deletes" in plan:
-                    return plan
-            except Exception:
-                pass
-        return None
-
-    # 在 updates 区域，找最后一个完整的对象
-    updates_area = text[updates_idx:]
-    last_complete_obj = -1
-    for m in re.finditer(r'"content"\s*:\s*"[^"]*"\s*\}', updates_area):
-        last_complete_obj = m.end()
-
-    if last_complete_obj > 0:
-        truncated = updates_area[:last_complete_obj]
-        if truncated.rstrip().endswith('}'):
-            truncated = truncated.rstrip() + ']'
-        # 保留 deletes 部分
-        deletes_part = text[:updates_idx]
-        bracket_start = deletes_part.rfind('[')
-        bracket_end = deletes_part.rfind(']')
-        if bracket_start >= 0 and bracket_end >= bracket_start:
-            deletes_text = deletes_part[bracket_start:bracket_end+1]
-        else:
-            deletes_text = '[]'
-        try:
-            full = '{"deletes": ' + deletes_text + ', ' + truncated + '}'
-            plan = json.loads(full)
-            if isinstance(plan, dict):
-                return plan
-        except Exception:
-            pass
-
-    # 策略 2: 只提取 deletes
-    deletes_idx = text.find('"deletes"')
-    if deletes_idx >= 0:
-        bracket_start = text.find('[', deletes_idx)
-        bracket_end = text.find(']', bracket_start)
-        if bracket_start >= 0 and bracket_end >= 0:
-            try:
-                partial = '{"deletes": ' + text[bracket_start:bracket_end+1] + ', "updates": []}'
-                plan = json.loads(partial)
-                if isinstance(plan, dict) and "deletes" in plan:
-                    return plan
-            except Exception:
-                pass
-
-    return None
-
-
 def _build_incremental_msg_text(messages, last_cursor_id: str, out_msg_ids: list, msg_tokens: list | None = None, end_cursor_id: str | None = None, protect_recent: int = 0) -> str:
     """
     构建增量消息文本：只包含游标之后的新消息。
@@ -1965,19 +1851,6 @@ REMINDER: 从远端（idx小的）开始压缩，近端保护消息不要动。�
                         return {"status": "aborted", "message": "Stopped by user"}
                     logger.info(f"[Tidy] Mode-2: context-manager completed, length={len(compress_result)}")
 
-                    # Fallback: 如果文件不存在，尝试从 LLM content 中提取 JSON 方案
-                    if not os.path.exists(compress_plan_path) and compress_result:
-                        extracted = _extract_json_plan(compress_result)
-                        if extracted:
-                            logger.info(f"[Tidy] Mode-2: Extracted plan from content (LLM did not use write tool): {len(extracted.get('deletes',[]))} deletes, {len(extracted.get('updates',[]))} updates")
-                            try:
-                                with open(compress_plan_path, 'w', encoding='utf-8') as f:
-                                    json.dump(extracted, f, ensure_ascii=False)
-                            except Exception as e:
-                                logger.warning(f"[Tidy] Mode-2: Failed to write extracted plan to file: {e}")
-                        else:
-                            logger.warning("[Tidy] Mode-2: No compress plan file found, and content extraction failed")
-
                     # 程序化执行JSON压缩方案
                     if os.path.exists(compress_plan_path):
                         try:
@@ -2172,7 +2045,7 @@ REMINDER: 从远端（idx小的）开始压缩，近端保护消息不要动。�
                                 except OSError:
                                     pass
                     else:
-                        logger.warning("[Tidy] Mode-2: No compress plan available (neither file nor content extraction)")
+                        logger.warning("[Tidy] Mode-2: No compress plan file found, sub-agent may not have used write")
 
                     # 模式二完成后清空压缩游标：模式二全量重组了消息列表，旧游标语义失效
                     # 清空后下次模式一自然全量处理，行为明确且一致
@@ -2692,19 +2565,6 @@ REMINDER: 从远端（idx小的）开始压缩，近端保护消息不要动。�
 
             # 读取并执行压缩计划
             new_compress_id = last_compress_id
-            # Fallback: 如果文件不存在，尝试从 LLM content 中提取 JSON 方案
-            if not os.path.exists(compress_plan_path) and result:
-                extracted = _extract_json_plan(result)
-                if extracted:
-                    logger.info(f"[Tidy] Force: Extracted plan from content (LLM did not use write tool): {len(extracted.get('deletes',[]))} deletes, {len(extracted.get('updates',[]))} updates")
-                    try:
-                        with open(compress_plan_path, 'w', encoding='utf-8') as f:
-                            json.dump(extracted, f, ensure_ascii=False)
-                    except Exception as e:
-                        logger.warning(f"[Tidy] Force: Failed to write extracted plan to file: {e}")
-                else:
-                    logger.warning("[Tidy] Force: No compress plan file found, and content extraction failed")
-
             if os.path.exists(compress_plan_path):
                 try:
                     from pathlib import Path as _Path
@@ -2930,7 +2790,7 @@ REMINDER: 从远端（idx小的）开始压缩，近端保护消息不要动。�
                         except OSError:
                             logger.warning("[Tidy] Failed to cleanup compress_plan.json")
             else:
-                logger.warning("[Tidy] Force: No compress plan available (neither file nor content extraction)")
+                logger.warning("[Tidy] Force: No compress plan file found, sub-agent may not have used write")
 
             # 写入 compress 游标
             if new_compress_id:
