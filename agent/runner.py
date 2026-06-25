@@ -1045,7 +1045,10 @@ REMINDER: 禁止调用任何工具，直接在回复中输出 keep=/update=/curs
                                     idx_str, content = part.split("|", 1)
                                     try:
                                         idx = int(idx_str.strip())
-                                        update_list.append((idx, content.strip()))
+                                        _c = content.strip()
+                                        if not _c.startswith('[摘要]') and not _c.startswith('[合并]'):
+                                            _c = f'[摘要] {_c}'
+                                        update_list.append((idx, _c))
                                     except ValueError:
                                         pass
                     elif line.lower().startswith("cursor="):
