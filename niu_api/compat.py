@@ -2480,6 +2480,11 @@ REMINDER: 从远端（idx小的）开始压缩，近端保护消息不要动。�
                     pass  # Windows 文件锁，忽略
 
             protect_recent_count = _read_protect_recent_count()
+            # 降级策略：允许外部传入更低的保护数量
+            _force_protect_recent = request.get("force_protect_recent") if isinstance(request, dict) else None
+            if _force_protect_recent is not None and isinstance(_force_protect_recent, int) and _force_protect_recent >= 1:
+                protect_recent_count = min(protect_recent_count, _force_protect_recent)
+                logger.info(f"[Tidy] Force: protect_recent_count degraded to {protect_recent_count} (from request)")
 
             # 使用统一的 _build_incremental_msg_text 构建（与模式二一致）
             # 传入 protect_recent 参数，自动标注 [PROTECTED]
@@ -2675,7 +2680,6 @@ REMINDER: 从远端（idx小的）开始压缩，近端保护消息不要动。�
                                     logger.warning(f"[Tidy] Force: Protecting {len(unsafe_updates)} messages after dream cursor from content replacement")
                                     valid_updates = [u for u in valid_updates if u.get("message_id", "") not in post_dream_ids]
                         # 程序层面排除保护范围内的消息 ID（只保护 user/assistant，不保护 tool 输出）
-                        protect_recent_count = _read_protect_recent_count()
                         protected_force_ids: set[str] = set()
                         if protect_recent_count > 0:
                             _pids = []
@@ -2791,7 +2795,24 @@ REMINDER: 从远端（idx小的）开始压缩，近端保护消息不要动。�
                 })
                 logger.info(f"[Tidy] Force: Compress cursor updated: last_compress_id={new_compress_id}")
 
-            return {"status": "ok", "mode": "force", "tokens_before": display_tokens}
+            # 计算压缩后 token 数（用于降级判断）
+            tokens_after = display_tokens  # 默认值
+            try:
+                post_messages = await store.get_messages()
+                from agent.token_calculator import TokenCalculator
+                calc = TokenCalculator.get()
+                post_total = 0
+                for pm in post_messages:
+                    try:
+                        t = calc.count_message_single(pm.role, pm.content or "", tool_calls=getattr(pm, "tool_calls", None))
+                    except Exception:
+                        t = max(1, len(pm.content or "") // 2) + 4
+                    post_total += t
+                tokens_after = post_total
+            except Exception:
+                pass
+
+            return {"status": "ok", "mode": "force", "tokens_before": display_tokens, "tokens_after": tokens_after}
 
         else:
             logger.warning(f"[Tidy] Unknown mode: {mode}, skipping")
