@@ -639,18 +639,14 @@ class SkillSync:
                 adapter = LightRAGAdapter()
                 for note_id in deleted_ids:
                     try:
-                        result1 = adapter.delete_entity(f"note:{note_id}")
-                        result2 = adapter.delete_entity(f"便签_{note_id[:8]}")
-                        both_ok = (
-                            isinstance(result1, dict) and result1.get("status") == "ok"
-                            and isinstance(result2, dict) and result2.get("status") == "ok"
-                        )
-                        if both_ok:
+                        doc_id = f"note:{note_id}"
+                        result = adapter.delete_document(doc_id)
+                        if isinstance(result, dict) and result.get("status") == "ok":
                             with self._lock:
                                 self._last_notes_scan.pop(note_id, None)
-                            logger.info(f"[SkillSync] Deleted note: {note_id}")
+                            logger.info(f"[SkillSync] Deleted note: {note_id} (doc_id={doc_id})")
                         else:
-                            logger.warning(f"[SkillSync] Note deletion partial failure for {note_id}")
+                            logger.warning(f"[SkillSync] Note deletion failed for {note_id}: {result}")
                     except Exception as e:
                         # Keep hash so deletion is retried on next scan
                         logger.warning(f"[SkillSync] Failed to delete note {note_id}: {e}")
@@ -664,13 +660,13 @@ class SkillSync:
         return added, updated
 
     def _inject_note_to_lightrag(self, notes_data: list[dict]) -> bool:
-        """将便签 JSON 整文件传给 LightRAG ainsert
+        """将便签注入 LightRAG，每个 note 使用独立 doc_id 以便按文档级联删除
 
         Args:
             notes_data: 便签数据列表，每项包含 id/content/tags 等字段
 
         Returns:
-            True 插入成功, False 失败
+            True 全部插入成功, False 任一失败
         """
         if not notes_data:
             return True
@@ -680,17 +676,27 @@ class SkillSync:
 
             from agent.tool_registry import get_registry
 
-            content = json.dumps(notes_data, ensure_ascii=False, indent=2)
             registry = get_registry()
             insert_tool = registry.get("lightrag-server/lightrag_insert")
             if insert_tool is None:
                 logger.warning("lightrag-server/lightrag_insert tool not found in registry")
                 return False
-            result = insert_tool(content=content, source="notes")
-            if isinstance(result, dict) and result.get("status") == "ok":
-                return True
-            logger.warning("lightrag_insert returned non-ok: %s", result)
-            return False
+
+            all_ok = True
+            for note in notes_data:
+                note_id = note.get("id", "")
+                if not note_id:
+                    continue
+                content = json.dumps(note, ensure_ascii=False, indent=2)
+                doc_id = f"note:{note_id}"
+                result = insert_tool(content=content, doc_id=doc_id)
+                if isinstance(result, dict) and result.get("status") == "ok":
+                    logger.debug(f"[SkillSync] Injected note '{note_id}' with doc_id={doc_id}")
+                else:
+                    logger.warning("[SkillSync] lightrag_insert returned non-ok for note '%s': %s", note_id, result)
+                    all_ok = False
+
+            return all_ok
         except Exception:
             logger.exception("Failed to inject notes to LightRAG")
             return False
