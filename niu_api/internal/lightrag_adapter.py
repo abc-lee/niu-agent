@@ -931,6 +931,59 @@ class LightRAGAdapter:
 
     # ============== Management Methods ==============
 
+    def delete_document(self, doc_id: str) -> Dict[str, Any]:
+        """Delete a document and all its related entities/relations by doc_id.
+
+        Uses LightRAG's adelete_by_doc_id for cascading deletion: removes the
+        document's chunks, entities (if fully owned), and relationships (if
+        fully owned).  Partially-owned entities/relationships are rebuilt from
+        remaining documents.
+
+        Args:
+            doc_id: Document ID (e.g., "note:shopping").
+
+        Returns:
+            Dict with status and details.
+        """
+        rag = self._get_rag()
+        if rag is None:
+            return {"status": "error", "message": "LightRAG not available"}
+        try:
+            result = call_async(rag.adelete_by_doc_id(doc_id), timeout=300)
+
+            # Check DeletionResult status
+            if hasattr(result, "status"):
+                if result.status == "not_found" or (hasattr(result, "status_code") and getattr(result, "status_code", None) == 404):
+                    logger.info(f"LightRAG delete_document: doc '{doc_id}' not found, treated as ok")
+                    return {"status": "ok", "doc_id": doc_id, "note": "not_found_treated_as_ok"}
+                elif result.status in ("not_allowed", "fail"):
+                    logger.warning(f"LightRAG delete_document failed for '{doc_id}': status={result.status}")
+                    return {"status": "error", "message": f"DeletionResult status: {result.status}", "doc_id": doc_id}
+                else:
+                    # status == "success"
+                    # Record change for frontend changelog polling (best-effort)
+                    try:
+                        from niu_api.internal.lightrag_manager import get_change_log
+                        get_change_log().record_change("document_deleted", {"id": doc_id})
+                    except Exception as e:
+                        logger.debug(f"changelog record_change failed: {e}")
+                    return {"status": "ok", "doc_id": doc_id, "result": str(result)}
+            else:
+                # No status attribute — assume success for backward compatibility
+                try:
+                    from niu_api.internal.lightrag_manager import get_change_log
+                    get_change_log().record_change("document_deleted", {"id": doc_id})
+                except Exception as e:
+                    logger.debug(f"changelog record_change failed: {e}")
+                return {"status": "ok", "doc_id": doc_id, "result": str(result)}
+        except Exception as e:
+            err_str = str(e).lower()
+            if "not found" in err_str or "404" in err_str:
+                logger.info(f"LightRAG delete_document: doc '{doc_id}' not found, treated as ok")
+                return {"status": "ok", "doc_id": doc_id, "note": "not_found_treated_as_ok"}
+            logger.error(f"LightRAG delete_document failed: {e}")
+            return {"status": "error", "message": str(e)}
+
     def delete_entity(self, entity_name: str) -> Dict[str, Any]:
         """Delete an entity and all its relations from the knowledge graph.
 
