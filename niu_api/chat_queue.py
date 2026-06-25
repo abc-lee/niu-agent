@@ -404,8 +404,8 @@ class ChatQueue:
                         logger.warning(f"[ChatQueue] Force compression retry {attempt+1}: tokens_after={tokens_after} still above warning_threshold={_safe_level}")
                         # 继续降级重试，不 return
                 else:
-                    logger.info(f"[ChatQueue] Force compression retry {attempt+1} completed (no tokens_after in result)")
-                    return
+                    logger.warning(f"[ChatQueue] Force compression retry {attempt+1}: no tokens_after in result, continuing degradation")
+                    # 继续降级重试，不 return
             except Exception as e:
                 logger.error(f"[ChatQueue] Force compression retry {attempt+1} failed: {e}")
                 # 继续降级重试，不 return——降级策略需要多轮才能生效
