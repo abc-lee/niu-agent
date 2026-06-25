@@ -1769,7 +1769,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                     logger.info(f"[Tidy] Mode-2: suggest_release {suggest_release} < 5%, skipping compression")
                     _skip_compress = True
                 elif suggest_release > 0:
-                    _compress_target = f"\n压缩目标：建议释放约 {suggest_release} tokens，将上下文从 {usage_percent:.1f}% 降至约 {target_threshold*100:.0f}%。优先压缩远端（idx 小的）消息；如果远端释放量不足目标，继续压缩近端非保护消息直到达标\n"
+                    _compress_target = f"\n压缩目标（必须达标）：\n- 目标 token 总数：{target_tokens}（{target_threshold*100:.0f}%）\n- 需释放至少 {suggest_release} tokens\n优先压缩远端（idx 小的）消息；如果远端释放量不足目标，继续压缩近端非保护消息直到达标。未达标视为压缩失败。\n"
                 # 模式二改为一轮JSON方案，不要求游标报告
                 _cursor_instruction = ""
             else:
@@ -1835,18 +1835,10 @@ REMINDER: 从远端（idx小的）开始压缩，近端保护消息不要动。�
                 # 截断 task 防止子Agent超限 + 子Agent调用 + 结果处理
                 if _is_mode2:
                     # === 模式二：一轮write JSON方案 + 程序化安全执行 ===
-                    # 对完整prompt做一次截断（保头保尾弃中间），预算 0.55
-                    try:
-                        from agent.token_calculator import TokenCalculator
-                        _tc = TokenCalculator.get().count_text(prompt)
-                    except Exception:
-                        _tc = len(prompt) // 2
-                    context_window_for_truncate = _read_context_window_tokens()
-                    if _tc >= context_window_for_truncate * 0.55:
-                        prompt = _truncate_preserving_both(prompt, int(context_window_for_truncate * 0.55))
-                        _visible_ids_2 = re.findall(r'\[id:([a-f0-9-]+)\]', prompt)
-                        _visible_set_2 = set(_visible_ids_2)
-                        compress_msg_ids = [mid for mid in compress_msg_ids if mid in _visible_set_2]
+                    # 模式二只做一轮交互（prompt → 回复 JSON → 结束），不会有第二轮
+                    # 所以 prompt 不可能超上下文窗口，不需要截断
+                    # 且模式二的核心任务是压缩远端消息，截断远端会导致无法完成压缩
+                    # 因此：不做截断，传全量消息给 LLM
 
                     def run_context_manager_mode2():
                         return call_subagent(
@@ -2035,6 +2027,7 @@ REMINDER: 从远端（idx小的）开始压缩，近端保护消息不要动。�
                                         else:
                                             logger.warning(f"[Tidy] Mode-2: Failed to update message {mid}")
 
+                                await _cleanup_orphan_tool_messages(store)
                                 logger.info(f"[Tidy] Mode-2: Compression plan executed: {len(valid_deletes)} deletes, {len(valid_updates)} updates")
                             finally:
                                 if _chat_lock_acquired:
@@ -2060,7 +2053,6 @@ REMINDER: 从远端（idx小的）开始压缩，近端保护消息不要动。�
                         logger.warning("[Tidy] Mode-2: No compress plan file found, sub-agent may not have used write")
 
                     # 模式二不写游标：保持"无游标"设计，每次始终全量处理
-                    await _cleanup_orphan_tool_messages(store)
                     logger.info("[Tidy] Mode-2: Compression complete (no cursor update, mode-2 is always full-range)")
                 else:
                     # === 模式一：原有逻辑完整保留 ===
@@ -2525,15 +2517,13 @@ REMINDER: 从远端（idx小的）开始压缩，近端保护消息不要动。�
 
     REMINDER: 只使用 write 工具。其他工具调用将浪费你唯一的轮次。"""
 
-            # 截断 task 防止子Agent超限
-            context_window_for_truncate = _read_context_window_tokens()
-            safe_tokens = int(context_window_for_truncate * 0.6)
-            truncated_force_prompt = _truncate_task_for_subagent(prompt, safe_tokens)
-
+            # Force 模式只做一轮交互（prompt → 回复 JSON → 结束），不会有第二轮
+            # prompt 不可能超上下文窗口，不需要截断
+            # 且需要全量消息才能按优先级排序压缩
             def run_context_manager_force():
                 return call_subagent(
                     agent_name="context-manager",
-                    task=truncated_force_prompt,
+                    task=prompt,
                     llm_config=llm_config,
                     mcp_client=None,
                     context_fifo_threshold=0,
