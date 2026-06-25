@@ -2061,6 +2061,7 @@ REMINDER: 从远端（idx小的）开始压缩，近端保护消息不要动。�
                             task=truncated_prompt,
                             llm_config=llm_config,
                             mcp_client=None,
+                            context_fifo_threshold=0,  # 关闭FIFO，保留完整上下文
                         )
 
                     cm_result = await asyncio.to_thread(run_context_manager)
