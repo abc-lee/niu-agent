@@ -365,25 +365,54 @@ class ChatQueue:
             _task.add_done_callback(lambda t: self._bg_tasks.discard(t))
 
     async def _retry_force_compression(self, session_id: str, delay: float = 5.0, max_retries: int = 3):
-        """延迟重试强制压缩（当 _tidy_lock 被占用时调度）"""
+        """重试 force 压缩，逐步放宽保护"""
         from niu_api.compat import _tidy_context_impl, _tidy_lock
+        # 降级策略：每次重试减少保护消息数量
+        # 第 1 次：默认 protect_recent_count（10）
+        # 第 2 次：protect_recent_count = 5
+        # 第 3 次：protect_recent_count = 2
+        degrade_schedule = [None, 5, 2]  # None = 使用默认值
+
         for attempt in range(max_retries):
             await asyncio.sleep(delay)
+
             try:
                 await asyncio.wait_for(_tidy_lock.acquire(), timeout=30.0)
             except asyncio.TimeoutError:
                 logger.warning(f"[ChatQueue] Force compression retry {attempt+1}/{max_retries}: tidy lock still busy")
                 continue
+
             try:
-                await _tidy_context_impl(request={"session_id": session_id, "mode": "force"})
-                logger.info("[ChatQueue] Force compression retry succeeded")
-                return
+                request = {"session_id": session_id, "mode": "force"}
+                if attempt < len(degrade_schedule) and degrade_schedule[attempt] is not None:
+                    request["force_protect_recent"] = degrade_schedule[attempt]
+                    logger.info(f"[ChatQueue] Force compression retry {attempt+1} with degraded protect_recent={degrade_schedule[attempt]}")
+
+                result = await _tidy_context_impl(request=request)
+
+                # 检查压缩后 token 是否降到安全水平
+                tokens_after = result.get("tokens_after", 0) if isinstance(result, dict) else 0
+                if tokens_after > 0:
+                    from agent.subagent import _read_context_window_tokens, _read_warning_threshold
+                    _cw = _read_context_window_tokens()
+                    _wt = _read_warning_threshold()
+                    _safe_level = int(_cw * _wt)
+                    if tokens_after <= _safe_level:
+                        logger.info(f"[ChatQueue] Force compression retry {attempt+1} succeeded: tokens_after={tokens_after} <= warning_threshold={_safe_level}")
+                        return
+                    else:
+                        logger.warning(f"[ChatQueue] Force compression retry {attempt+1}: tokens_after={tokens_after} still above warning_threshold={_safe_level}")
+                        # 继续降级重试，不 return
+                else:
+                    logger.info(f"[ChatQueue] Force compression retry {attempt+1} completed (no tokens_after in result)")
+                    return
             except Exception as e:
-                logger.error(f"[ChatQueue] Force compression retry failed: {e}")
-                return
+                logger.error(f"[ChatQueue] Force compression retry {attempt+1} failed: {e}")
+                # 继续降级重试，不 return——降级策略需要多轮才能生效
             finally:
                 _tidy_lock.release()
-        logger.error(f"[ChatQueue] Force compression failed after {max_retries} retries")
+
+        logger.error(f"[ChatQueue] All {max_retries} force compression retries exhausted")
 
 
 # ============== 全局单例 ==============
