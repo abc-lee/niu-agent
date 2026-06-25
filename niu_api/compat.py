@@ -1812,7 +1812,7 @@ CRITICAL: 你只有一轮机会完成所有压缩决策。多轮工具调用会�
 - 只允许使用 write 工具一次性输出压缩方案。
 
 用 write 工具写入 {compress_plan_path}，内容为 JSON：
-{{"deletes": ["要删除的消息id1", "id2", ...], "updates": [{{"message_id": "id", "content": "压缩后的摘要内容"}}], "last_compress_id": "操作范围内 idx 最大的、且仍存在的消息 id（UUID）"}}
+{{"deletes": ["要删除的消息id1", "id2", ...], "updates": [{{"message_id": "id", "content": "压缩后的摘要内容"}}]}}
 
 REMINDER: 从远端（idx小的）开始压缩，近端保护消息不要动。只使用 write 工具。"""
                 else:
