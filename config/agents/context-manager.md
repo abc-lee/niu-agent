@@ -274,6 +274,16 @@ JSON 方案格式与模式三相同：
 > - **不要调用 get_messages** — 消息已通过 prompt 传入，重新获取会浪费 token
 > - session_id 传 `"default"`
 
+**工具调用链完整性规则**（模式一必须遵守）：
+
+LLM API 要求每条 tool 消息必须有对应的 assistant tool_calls，每个 tool_calls 必须有对应的 tool 响应。违反此规则会导致 API 400 错误。
+
+1. **删除 assistant(tool_calls) 时**：必须同时删除其所有 tool 输出消息。例如：assistant 消息调用了 3 个工具（tool_call_id: tc1, tc2, tc3），删除该 assistant 时，必须把 role=tool 且 tool_call_id 为 tc1/tc2/tc3 的消息一并加入 delete_messages
+2. **删除 tool 输出时**：必须同时删除发起调用的 assistant(tool_calls) 消息。例如：删除 tool_call_id=tc1 的 tool 消息时，如果对应的 assistant 还有其他 tool_calls（tc2, tc3），则：
+   - 如果 tc2/tc3 的 tool 输出也一起删除 → 直接删除该 assistant
+   - 如果 tc2/tc3 的 tool 输出保留 → **不能删除该 assistant**，改为用 update_message 将 assistant 内容改写为摘要，程序会自动清空其 tool_calls
+3. **更新 assistant(tool_calls) 内容时**：如果 assistant 消息有 tool_calls 字段，程序会自动清空 tool_calls（因为摘要文本不能携带工具调用）。对应的 tool 输出消息会由程序自动级联删除，你不需要手动处理
+
 **模式三**（一轮 JSON 方案）：
 - 只使用 `write` 工具，一次性输出 JSON 压缩方案到指定路径
 - 禁止使用 `get_messages`、`update_message`、`delete_messages` 等会话管理工具
