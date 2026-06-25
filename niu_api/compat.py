@@ -277,6 +277,38 @@ async def _clean_dangling_tool_calls(store, message_id: str, valid_tcs: list[dic
         await db.commit()
 
 
+async def _cleanup_orphan_tool_messages(store):
+    """清理 DB 中所有孤立的 tool 消息（没有对应 assistant tool_calls 的 tool 输出）。
+
+    压缩可能遗留孤立 tool 消息（旧 bug 或模式2/3 没有完整性验证步骤）。
+    这些消息在 agent_loop 加载时会被安全网跳过，但占用 DB 空间。
+    """
+    post_msgs = await store.get_messages()
+    _valid_tc_ids: set[str] = set()
+    for m in post_msgs:
+        if getattr(m, "role", "") == "assistant":
+            tcs = getattr(m, "tool_calls", None)
+            if tcs:
+                try:
+                    if isinstance(tcs, str):
+                        tcs = json.loads(tcs)
+                    for tc in tcs:
+                        tc_id = tc.get("id", "")
+                        if tc_id:
+                            _valid_tc_ids.add(tc_id)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+    _orphan_mids: list[str] = []
+    for m in post_msgs:
+        if getattr(m, "role", "") == "tool":
+            tc_call_id = getattr(m, "tool_call_id", "") or ""
+            if tc_call_id and tc_call_id not in _valid_tc_ids:
+                _orphan_mids.append(getattr(m, "id", ""))
+    if _orphan_mids:
+        logger.info(f"[Tidy] Cleaning up {len(_orphan_mids)} orphan tool messages from DB")
+        await store.delete_messages_by_ids(_orphan_mids)
+
+
 def _build_incremental_msg_text(messages, last_cursor_id: str, out_msg_ids: list, msg_tokens: list | None = None, end_cursor_id: str | None = None, protect_recent: int = 0) -> str:
     """
     构建增量消息文本：只包含游标之后的新消息。
@@ -2028,6 +2060,7 @@ REMINDER: 从远端（idx小的）开始压缩，近端保护消息不要动。�
                         logger.warning("[Tidy] Mode-2: No compress plan file found, sub-agent may not have used write")
 
                     # 模式二不写游标：保持"无游标"设计，每次始终全量处理
+                    await _cleanup_orphan_tool_messages(store)
                     logger.info("[Tidy] Mode-2: Compression complete (no cursor update, mode-2 is always full-range)")
                 else:
                     # === 模式一：原有逻辑完整保留 ===
@@ -2723,6 +2756,7 @@ REMINDER: 从远端（idx小的）开始压缩，近端保护消息不要动。�
                                     logger.warning(f"[Tidy] Force: Failed to update message {mid}")
 
                         logger.info(f"[Tidy] Force: Compression plan executed: {len(valid_deletes)} deletes, {len(valid_updates)} updates")
+                        await _cleanup_orphan_tool_messages(store)
                     finally:
                         if _f_chat_lock_acquired:
                             _chat_lock.release()
