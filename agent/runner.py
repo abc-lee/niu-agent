@@ -1106,6 +1106,13 @@ class NiuRunner:
                                 valid_deletes.append(cid)
                                 existing.add(cid)
 
+                    # 级联后重新检查 delete/update 重叠
+                    _post_update_ids = {u.get("message_id", "") for u in valid_updates}
+                    _post_overlap = _post_update_ids & set(valid_deletes)
+                    if _post_overlap:
+                        logger.warning(f"[Runner] Force: Cascade created delete/update overlap: {_post_overlap}")
+                        valid_deletes = [mid for mid in valid_deletes if mid not in _post_overlap]
+
                     # 清理受保护 assistant 的悬空 tool_calls（同步 DB 操作）
                     if dangling_tc_cleanups:
                         import sqlite3
