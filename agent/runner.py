@@ -1211,7 +1211,10 @@ class NiuRunner:
                     if m.role == "tool" and m.tool_call_id:
                         _tool_response_ids.add(m.tool_call_id)
 
-                # Message 对象 → dict（保留 agent_loop 需要的字段）
+                # 收集需要清理的消息
+                _orphan_tool_mids = []  # 孤立 tool 消息 ID（需从 DB 删除）
+                _dangling_tc_updates = []  # 悬空 tool_calls 更新（需更新 DB）
+
                 fresh_msgs = []
                 for msg in fresh_db_msgs:
                     d = {
@@ -1219,21 +1222,59 @@ class NiuRunner:
                         "content": msg.content or "",
                     }
                     if msg.tool_calls:
-                        # 过滤掉没有对应 tool 响应的 tool_calls（压缩可能删除了 tool 输出）
                         valid_tcs = [tc for tc in msg.tool_calls if tc.get("id") in _tool_response_ids]
-                        if valid_tcs:
+                        if valid_tcs and len(valid_tcs) < len(msg.tool_calls):
+                            d["tool_calls"] = valid_tcs
+                            # 收集悬空 tool_calls 清理（循环后统一执行）
+                            _dangling_tc_updates.append({
+                                "message_id": msg.id,
+                                "valid_tcs": valid_tcs,
+                                "original_count": len(msg.tool_calls),
+                            })
+                        elif valid_tcs:
                             d["tool_calls"] = valid_tcs
                         # 如果所有 tool_calls 都没有响应，不设置 tool_calls（变成纯文本消息）
+                        elif msg.tool_calls:
+                            # 收集清空 tool_calls（保留原始 content）
+                            _dangling_tc_updates.append({
+                                "message_id": msg.id,
+                                "valid_tcs": [],
+                                "original_count": len(msg.tool_calls),
+                            })
                     if msg.tool_call_id:
-                        # 跳过孤立的 tool 消息（没有对应的 assistant tool_calls）
                         if msg.tool_call_id not in _valid_tc_ids:
                             logger.warning(f"[Runner] Force: Skipping orphan tool message: tool_call_id={msg.tool_call_id}")
+                            _orphan_tool_mids.append(msg.id)
                             continue
                         d["tool_call_id"] = msg.tool_call_id
                         _tn = _tc_id_to_name.get(msg.tool_call_id, "")
                         if _tn:
                             d["name"] = _tn
                     fresh_msgs.append(d)
+
+                # 统一执行 DB 清理（遍历后执行，避免遍历中修改）
+                if _orphan_tool_mids or _dangling_tc_updates:
+                    try:
+                        import sqlite3
+                        with sqlite3.connect(_db_path) as _c:
+                            for mid in _orphan_tool_mids:
+                                _c.execute("DELETE FROM messages WHERE id = ?", (mid,))
+                                logger.info(f"[Force-reload] Deleted orphan tool message {mid}")
+                            for upd in _dangling_tc_updates:
+                                mid = upd["message_id"]
+                                if upd["valid_tcs"]:
+                                    _c.execute(
+                                        "UPDATE messages SET tool_calls = ? WHERE id = ?",
+                                        (json.dumps(upd["valid_tcs"], ensure_ascii=False), mid),
+                                    )
+                                    logger.info(f"[Force-reload] Cleaned dangling tool_calls for assistant {mid}: {upd['original_count']} -> {len(upd['valid_tcs'])}")
+                                else:
+                                    # 清空 tool_calls 但保留原始 content
+                                    _c.execute("UPDATE messages SET tool_calls = '[]' WHERE id = ?", (mid,))
+                                    logger.info(f"[Force-reload] Cleared all tool_calls for assistant {mid}")
+                            _c.commit()
+                    except Exception as e:
+                        logger.warning(f"[Force-reload] DB cleanup failed: {e}")
                 # 保留 system prompt（messages[0]），替换其余消息
                 system_msg = messages[0] if messages and messages[0].get("role") == "system" else None
                 if system_msg:
