@@ -155,12 +155,11 @@ mcpServers:
 3. 禁止调用 delete_messages、update_message、get_messages 等会话管理工具
 4. 禁止调用 bash、code_run 等其他工具
 
-JSON 方案格式与模式三相同：
+JSON 方案格式（与模式三不同，不含 last_compress_id，因为模式二无游标机制）：
 ```json
 {
   "deletes": ["要删除的消息id1", "id2", ...],
-  "updates": [{"message_id": "id", "content": "压缩后的摘要内容"}, ...],
-  "last_compress_id": "操作范围内 idx 最大的、且仍存在的消息 id（UUID）"
+  "updates": [{"message_id": "id", "content": "压缩后的摘要内容"}, ...]
 }
 ```
 
