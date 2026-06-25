@@ -1886,23 +1886,32 @@ update=3|用户讨论了XX方案;11|工具执行了YY操作
 
                     keep_idxs: set[int] = set()
                     update_list: list[tuple[int, str]] = []
-                    for line in compress_result.split('\n'):
+                    for line in compress_result.splitlines():
                         line = line.strip()
                         if line.lower().startswith('keep='):
                             keep_idxs = _parse_idx_list(line.split('=', 1)[1].strip())
                         elif line.lower().startswith('update='):
                             update_str = line.split('=', 1)[1].strip()
-                            for item in update_str.split(';'):
-                                if '|' in item:
-                                    idx_str, content = item.split('|', 1)
-                                    try:
-                                        update_list.append((int(idx_str.strip()), content.strip()))
-                                    except ValueError:
-                                        pass
+                            if update_str:
+                                for part in update_str.split(';'):
+                                    part = part.strip()
+                                    if '|' in part:
+                                        idx_str, content = part.split('|', 1)
+                                        try:
+                                            update_list.append((int(idx_str.strip()), content.strip()))
+                                        except ValueError:
+                                            pass
 
                     if not keep_idxs:
                         logger.error("[Tidy] Mode-2: No keep= line found in LLM response, compression skipped")
                     else:
+                        # 确保 update 中的 idx 也在 keep 中
+                        update_idxs = {idx for idx, _ in update_list}
+                        missing_in_keep = update_idxs - keep_idxs
+                        if missing_in_keep:
+                            logger.warning(f"[Tidy] Mode-2: Adding update idxs to keep: {missing_in_keep}")
+                            keep_idxs |= missing_in_keep
+
                         all_idxs = set(_idx_to_id.keys())
                         delete_idxs = all_idxs - keep_idxs
                         deletes = [_idx_to_id[i] for i in sorted(delete_idxs) if i in _idx_to_id]
@@ -1910,9 +1919,6 @@ update=3|用户讨论了XX方案;11|工具执行了YY操作
                             {"message_id": _idx_to_id[idx], "content": content}
                             for idx, content in update_list if idx in _idx_to_id
                         ]
-                        for idx, content in update_list:
-                            if idx not in keep_idxs and idx in _idx_to_id:
-                                logger.warning(f"[Tidy] Mode-2: update idx {idx} not in keep set")
                         logger.info(f"[Tidy] Mode-2: Plan parsed: {len(deletes)} deletes, {len(updates)} updates (keep={len(keep_idxs)})")
 
                         # 安全协议：pause + acquire chat_lock + 等待worker空闲
