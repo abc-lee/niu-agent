@@ -3,7 +3,7 @@ name: photo-face-display
 description: Use when user asks about unnamed persons, wants to name someone in photos, or queries face recognition results
 status: active
 created: 2026-06-02
-last_tested: 2026-06-02
+last_tested: 2026-06-21
 ---
 
 # Photo Face Display
@@ -19,15 +19,14 @@ last_tested: 2026-06-02
 使用 Markdown 标准图片语法展示带人脸红框的照片：
 
 ```
-![person_id|auto_label](boxed_path)
+![人物名](boxed_path)
 ```
 
-**参数说明**（编码在 alt 文本中，用 `|` 分隔）：
-- `person_id`：从子Agent返回的 `id` 字段提取（UUID格式，如 `368f1c93-944b-4adf-88f9-e5eda47dc474`），前端会自动提取并隐藏
-- `auto_label`：从子Agent返回的 `auto_label` 字段提取（如"未命名人物_1"），前端显示为图片说明文字
+**参数说明**：
+- `人物名`：从子Agent返回的 `auto_label` 字段提取（如"未命名人物_1"），作为图片描述文字
 - `boxed_path`：从子Agent返回的 `boxed_path` 字段提取，完整绝对路径，禁止修改
 
-**禁止使用简写格式**。每个人物的图片必须包含 person_id，否则无法完成后续命名。
+person_id 不编码在 Markdown 中，仅通过子Agent返回的 JSON `id` 字段传递，用于后续命名操作。
 
 ## 命名传参规则
 
@@ -51,8 +50,8 @@ last_tested: 2026-06-02
 ```
 查询到 3 个未命名人物：
 
-![368f1c93-944b-4adf-88f9-e5eda47dc474|未命名人物_1](/Users/xxx/.niu/tmp/facebox_88ce85b64781.png)
-![a1b2c3d4-5678-90ab-cdef-1234567890ab|未命名人物_2](/Users/xxx/.niu/tmp/facebox_de53c91d05c1.png)
+![未命名人物_1](/Users/xxx/.niu/tmp/facebox_88ce85b64781.png)
+![未命名人物_2](/Users/xxx/.niu/tmp/facebox_de53c91d05c1.png)
 
 这是谁？请告诉我名字。
 ```
@@ -72,7 +71,7 @@ last_tested: 2026-06-02
 
 逐个展示未命名人物，每次展示一个：
 ```
-![368f1c93-944b-4adf-88f9-e5eda47dc474|未命名人物_1](/Users/xxx/.niu/tmp/facebox_88ce85b64781.png)
+![未命名人物_1](/Users/xxx/.niu/tmp/facebox_88ce85b64781.png)
 
 这是谁？请告诉我名字。
 ```
@@ -130,7 +129,7 @@ last_tested: 2026-06-02
 | 修改boxed_path | 必须原样使用子Agent返回的 `boxed_path`，禁止修改或编造路径 |
 | 多人照没有红框 | 必须用 `boxed_path` 而非 `file_path` |
 | alt中用name(null) | 未命名人物 `name` 为 null，alt必须用 `auto_label` |
-| 简写格式省略person_id | 禁止简写格式，alt必须包含UUID |
 
 <!-- 执行提醒 -->
 <!-- 此区域用于重申已有规则，不引入新规则。规则没错但没被遵守时在这里添加提醒。 -->
+<!-- 提醒：展示人脸照片时必须使用工具返回的boxed_path，禁止根据photo_id自行编造路径文件名；第二次展示时同样必须从工具结果获取路径。 -->
