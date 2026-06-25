@@ -360,6 +360,7 @@ def call_subagent(
     mcp_client=None,
     history: Optional[list] = None,
     context_fifo_threshold: int = -1,
+    no_tools: bool = False,
 ) -> str:
     """
     调用子 Agent
@@ -372,7 +373,9 @@ def call_subagent(
         task: 任务描述
         llm_config: LLM 配置
         mcp_client: MCP 客户端
+        history: 历史消息
         context_fifo_threshold: FIFO 截断阈值。-1 = 默认 75%，0 = 关闭 FIFO，>0 = 自定义值
+        no_tools: 禁用所有工具（LLM 只能直接回复文本，不能调用任何工具）
 
     Returns:
         子 Agent 执行结果
@@ -438,6 +441,11 @@ def call_subagent(
     # 列出关键工具（调试）
     tool_names = [t.get("function", {}).get("name", "") for t in tools_schema]
     logger.debug(f"[SubAgent] {agent_name}: Tools = {tool_names}")
+
+    # no_tools 模式：清空所有工具，LLM 只能直接回复文本
+    if no_tools:
+        tools_schema = []
+        logger.info(f"[SubAgent] {agent_name}: no_tools=True, all tools disabled")
 
     # 7. 执行（单次，不分片）
     context_window_tokens = _read_context_window_tokens()
