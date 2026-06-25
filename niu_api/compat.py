@@ -172,12 +172,14 @@ def _cascade_tool_chain_deletes(fresh_messages, delete_ids: list[str], protected
                 for tc in tcs:
                     if tc.get("id", "") in deleted_tool_call_ids:
                         _try_add(mid)
-                        # 级联：这个 assistant 的其他 tool_calls 对应的 tool 输出也要删
-                        for tc2 in tcs:
-                            tc2_id = tc2.get("id", "")
-                            if tc2_id and tc2_id not in deleted_tool_call_ids:
-                                for tool_mid in tc_id_to_tool_mids.get(tc2_id, []):
-                                    _try_add(tool_mid)
+                        # 只有当 assistant 未被保护跳过时，才级联删除其其他 tool 输出
+                        # 受保护的 assistant 需要保持 tool 调用链完整性
+                        if mid not in skipped_protected:
+                            for tc2 in tcs:
+                                tc2_id = tc2.get("id", "")
+                                if tc2_id and tc2_id not in deleted_tool_call_ids:
+                                    for tool_mid in tc_id_to_tool_mids.get(tc2_id, []):
+                                        _try_add(tool_mid)
                         break
             except (json.JSONDecodeError, TypeError):
                 pass
