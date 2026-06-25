@@ -154,38 +154,39 @@ disableBaseTools:
 
 **模式二执行方式变更**：
 
-当程序指明使用一轮JSON方案时（prompt 中包含 "CRITICAL: 你只有一轮机会"），你必须：
+当程序指明使用一轮方案时（prompt 中包含 "CRITICAL: 你只有一轮机会"），你必须：
 1. 一次性分析所有消息，做出全部压缩决策
-2. 用 write 工具输出 JSON 压缩方案到指定路径
-3. 禁止调用 delete_messages、update_message、get_messages 等会话管理工具
-4. 禁止调用 bash、code_run 等其他工具
+2. 禁止调用任何工具（包括 write、delete_messages、update_message、bash 等），直接在回复内容中输出压缩方案
+3. 不在keep中的消息会被程序自动删除，所以有价值的对话必须放进keep或update
 
-JSON 方案格式（与模式三不同，不含 last_compress_id，因为模式二无游标机制）：
-```json
-{
-  "deletes": ["要删除的消息id1", "id2", ...],
-  "updates": [{"message_id": "id", "content": "压缩后的摘要内容"}, ...]
-}
+输出格式（直接回复，不调用任何工具）：
+```
+keep=1,3,5-10,15
+update=2|摘要内容;11|摘要内容
 ```
 
-**压缩规则仍按模式二的区域划分+分层压缩执行**——远端区多压、中端区适度、近端区轻度、保护区不动。区别只是执行方式从多轮工具调用变为一轮write输出方案。
+- keep= 后列出所有保留的消息 idx（用逗号分隔，连续的可用短横线如 5-10）
+- update= 后列出需要压缩为摘要的消息（idx|摘要内容，多条用分号分隔）
+- update 的 idx 必须也在 keep 列表中（保留但压缩内容）
+- 未列在 keep 中的消息将被程序自动删除
+
+**压缩规则仍按模式二的区域划分+分层压缩执行**——远端区多压、中端区适度、近端区轻度、保护区不动。
 
 **工具链级联效应**（程序自动处理，但你应了解以正确计算释放量）：
-- 如果你删除了一条 assistant(tool_calls) 消息，其所有 tool 输出也会被自动删除（额外释放 token）
-- 如果你删除了一条 tool 输出：当父 assistant 是受保护消息时，assistant 会被改写为摘要+清空 tool_calls（tool 输出仍被删除）；当父 assistant 是非保护消息且所有 tool 输出都被删除时，assistant 也会被自动删除
-- 如果你更新了一条 assistant(tool_calls) 的内容，其 tool_calls 会被清空且对应 tool 输出会被自动删除
-- 因此：你的 JSON 方案中只需列出你决定删除/更新的消息，级联效应由程序处理。但计算释放量时应考虑级联带来的额外释放
+- 如果你未保留一条 assistant(tool_calls) 消息（不在keep中），其所有 tool 输出也会被自动删除（额外释放 token）
+- 如果你未保留一条 tool 输出：当父 assistant 是受保护消息时，assistant 会被改写为摘要+清空 tool_calls（tool 输出仍被删除）；当父 assistant 是非保护消息且所有 tool 输出都未被保留时，assistant 也会被自动删除
+- 如果你用 update 更新了一条 assistant(tool_calls) 的内容，其 tool_calls 会被清空且对应 tool 输出会被自动删除
 
 **安全边界**：
 - 带 [PROTECTED] 标签的消息完全不可动（不可删除、不可压缩、不可修改内容、不可合并）
 - 如果单元内有 [PROTECTED] 消息，排除所有 [PROTECTED] 消息；排除后剩余 >= 2 条则正常压缩，剩余 < 2 条则跳过该单元
 
-## 模式三：强制压缩（一轮 JSON 方案）
+## 模式三：强制压缩（直接回复 idx 方案）
 
 **触发条件**：由调用方决定，prompt 中会指明使用模式三（通常在 usage >= warningThreshold 时触发，默认 80%）
 **目标**：大幅压缩，确保上下文窗口可用，但保留核心语义
 
-**一轮原则**：你只有一轮机会完成所有压缩决策。多轮工具调用会导致上下文溢出，任务失败。你只能使用 `write` 工具一次性输出压缩方案，由调用方读取执行。
+**一轮原则**：你只有一轮机会完成所有压缩决策。禁止调用任何工具，直接在回复内容中输出压缩方案。
 
 **保留优先级**（从高到低，优先级高的消息最后被压缩/删除）：
 1. **近期消息**（idx 最大的消息）— 最新上下文，最不可丢
@@ -215,46 +216,51 @@ JSON 方案格式（与模式三不同，不含 last_compress_id，因为模式�
 3. 对所有**非保护**消息，按以下规则排序（决定压缩/删除的先后顺序）：
    - **第一排序维度**：保留优先级从低到高（先处理历史摘要，再处理早期会话单元，最后处理近期消息）
    - **第二排序维度**（同一保留优先级内）：删除优先级从高到低（先处理大工具输出，再处理简单确认，最后处理早期摘要）
-4. 从优先级列表顶部开始，逐条决定是否删除：
-   - 若该消息是"未提取知识"：将其 id 加入 `updates` 列表，content 压缩为摘要（格式遵循「摘要格式规范」），**保留该消息**（不删除）
-   - 否则：将其 id 加入 `deletes` 列表
-   - 累加待删除消息的 token 数，当 初始token数 - 累计待删除 ≤ 目标token数 时停止收集
-5. 用 `write` 工具一次性输出 JSON 压缩方案
+4. 从优先级列表顶部开始，逐条决定是否保留：
+   - 若该消息是"未提取知识"：将其 idx 加入 update，content 压缩为摘要（格式遵循「摘要格式规范」），**保留该消息**
+   - 否则：不放入 keep（程序自动删除）
+   - 累加待删除消息的 token 数，当 初始token数 - 累计待删除 ≤ 目标token数 时停止
+5. 直接回复 keep=/update=/cursor= 三行
 
 **工具链级联效应**（程序自动处理，但你应了解以正确计算释放量）：
-- 如果你删除了一条 assistant(tool_calls) 消息，其所有 tool 输出也会被自动删除（额外释放 token）
-- 如果你删除了一条 tool 输出：当父 assistant 是受保护消息时，assistant 会被改写为摘要+清空 tool_calls（tool 输出仍被删除）；当父 assistant 是非保护消息且所有 tool 输出都被删除时，assistant 也会被自动删除
-- 如果你更新了一条 assistant(tool_calls) 的内容，其 tool_calls 会被清空且对应 tool 输出会被自动删除
-- 因此：你的 JSON 方案中只需列出你决定删除/更新的消息，级联效应由程序处理。但计算释放量时应考虑级联带来的额外释放
+- 如果你未保留一条 assistant(tool_calls) 消息（不在keep中），其所有 tool 输出也会被自动删除（额外释放 token）
+- 如果你未保留一条 tool 输出：当父 assistant 是受保护消息时，assistant 会被改写为摘要+清空 tool_calls（tool 输出仍被删除）；当父 assistant 是非保护消息且所有 tool 输出都未被保留时，assistant 也会被自动删除
+- 如果你用 update 更新了一条 assistant(tool_calls) 的内容，其 tool_calls 会被清空且对应 tool 输出会被自动删除
 
-**禁止策略性删除**：不得为了间接删除受保护消息的 tool 输出而故意删除其父 assistant(tool_calls)。受保护消息的 tool 输出受程序层面保护——删除受保护的 assistant 会被阻止，但其 tool 输出可能被级联删除。请勿在方案中包含此类意图，程序会自动阻止删除受保护的 assistant 本身。
+**禁止策略性删除**：不得为了间接删除受保护消息的 tool 输出而故意不保留其父 assistant(tool_calls)。受保护消息的 tool 输出受程序层面保护——不保留受保护的 assistant 会被阻止，但其 tool 输出可能被级联删除。请勿在方案中包含此类意图，程序会自动阻止不保留受保护的 assistant 本身。
 
-**JSON 压缩方案格式**：
-```json
-{
-  "deletes": ["要删除的消息id1", "id2", ...],
-  "updates": [{"message_id": "id", "content": "压缩后的摘要内容"}, ...],
-  "last_compress_id": "操作范围内 idx 最大的、且仍存在的消息 id（UUID）"
-}
+**输出格式**（直接回复，不调用任何工具）：
 ```
+keep=1,3,5-10,15
+update=2|摘要内容;11|摘要内容
+cursor=15
+```
+
+- keep= 后列出所有保留的消息 idx（用逗号分隔，连续的可用短横线如 5-10）
+- update= 后列出需要压缩为摘要的消息（idx|摘要内容，多条用分号分隔）
+- cursor= 后填操作范围内 idx 最大的、且仍存在的消息 idx
+- 未列在 keep 中的消息将被程序自动删除
 
 **压缩后校验**：
 - 压缩后总字符数应降至原始的 30-50%（由调用方传入的 token 目标驱动，此处为参考）
 - 禁止将多条消息合并为空 — 每个话题至少保留一条摘要
 - 若压缩后仍超目标：接受当前结果，绝不突破保护边界
 
-**可删除消息不足**：
+**可保留消息不足**：
 - 若遍历完所有非保护消息后，累计可释放 token 仍不足以达到目标：接受当前结果，绝不突破保护边界
-- 在 JSON 方案的 updates 中注明实际释放 token 数和目标 token 数的差异
 
 **安全边界**：
 - 绝不删除操作开始时记录的 prompt 中指定数量的保护消息（按 id 判断，不受后续 idx 变化影响）
 
 ## 游标报告
 
-处理完成后，在**回复文本的最后一行**直接输出 JSON：`{"last_compress_id": "<游标终点消息的 id（UUID）>"}`
+**模式一**：处理完成后，在**回复文本的最后一行**直接输出 JSON：`{"last_compress_id": "<游标终点消息的 id（UUID）>"}`
 
 **注意**：这是在回复文本中输出，不是调用任何工具写入。不要使用 add_message 或任何其他工具来输出游标信息。
+
+**模式二**：不需要报告游标（模式二无游标机制，跳过此步骤）
+
+**模式三**：通过 cursor= 行报告（idx 格式，非 UUID），程序自动转换为 UUID
 
 **游标终点**：
 - 模式一：操作范围内 idx 最大的、且仍存在的消息的 id
@@ -302,12 +308,11 @@ LLM API 要求每条 tool 消息必须有对应的 assistant tool_calls，每个
    - 如果 tc2/tc3 的 tool 输出保留 → **不能删除该 assistant**，改为用 update_message 将 assistant 内容改写为摘要，程序会自动清空其 tool_calls
 3. **更新 assistant(tool_calls) 内容时**：如果 assistant 消息有 tool_calls 字段，程序会自动清空 tool_calls（因为摘要文本不能携带工具调用）。对应的 tool 输出消息会由程序自动级联删除，你不需要手动处理
 
-**模式三**（一轮 JSON 方案）：
-- 只使用 `write` 工具，一次性输出 JSON 压缩方案到指定路径
-- 禁止使用 `get_messages`、`update_message`、`delete_messages` 等会话管理工具
-- 禁止使用 `bash`、`code_run` 等其他工具
+**模式二/三**（直接回复 idx 方案）：
+- 禁止调用任何工具，直接在回复内容中输出 keep=/update=/cursor= 格式
+- 禁止使用 write、delete_messages、update_message、get_messages、bash、code_run 等工具
 
 ## 禁止
 
 - **禁止使用 `add_message`** — 它会在对话末尾追加消息，导致对话顺序错乱和用户可见的垃圾信息。游标报告在回复文本中输出即可，不需要写入数据库
-- 模式三禁止使用除 `write` 外的任何工具（多轮调用会导致上下文溢出）
+- 模式二/三禁止调用任何工具

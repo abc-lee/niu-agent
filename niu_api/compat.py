@@ -316,15 +316,21 @@ def _parse_idx_list(s: str) -> set[int]:
     result = set()
     for part in s.split(','):
         part = part.strip()
+        if not part:
+            continue
         if '-' in part:
             try:
                 a, b = part.split('-', 1)
-                result.update(range(int(a), int(b) + 1))
+                a_val, b_val = int(a), int(b)
+                if a_val > 0 and b_val > 0 and a_val <= b_val:
+                    result.update(range(a_val, b_val + 1))
             except ValueError:
                 pass
         else:
             try:
-                result.add(int(part))
+                val = int(part)
+                if val > 0:
+                    result.add(val)
             except ValueError:
                 pass
     return result
@@ -1880,10 +1886,11 @@ update=3|用户讨论了XX方案;11|工具执行了YY操作
                     update_list: list[tuple[int, str]] = []
                     for line in compress_result.split('\n'):
                         line = line.strip()
-                        if line.startswith('keep='):
-                            keep_idxs = _parse_idx_list(line[5:])
-                        elif line.startswith('update='):
-                            for item in line[7:].split(';'):
+                        if line.lower().startswith('keep='):
+                            keep_idxs = _parse_idx_list(line.split('=', 1)[1].strip())
+                        elif line.lower().startswith('update='):
+                            update_str = line.split('=', 1)[1].strip()
+                            for item in update_str.split(';'):
                                 if '|' in item:
                                     idx_str, content = item.split('|', 1)
                                     try:
