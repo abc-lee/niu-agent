@@ -1256,7 +1256,9 @@ class NiuRunner:
                 if _orphan_tool_mids or _dangling_tc_updates:
                     try:
                         import sqlite3
-                        with sqlite3.connect(_db_path) as _c:
+                        _cleanup_db_path = os.path.join(os.path.expanduser("~"), ".niu", "messages.db")
+                        with sqlite3.connect(_cleanup_db_path) as _c:
+                            _c.execute("PRAGMA busy_timeout=5000")
                             for mid in _orphan_tool_mids:
                                 _c.execute("DELETE FROM messages WHERE id = ?", (mid,))
                                 logger.info(f"[Force-reload] Deleted orphan tool message {mid}")
