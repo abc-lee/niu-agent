@@ -802,15 +802,6 @@ class NiuRunner:
                 display_tokens = estimated_tokens
                 logger.info(f"[Runner] Force compress: {message_count} messages, {estimated_tokens} tokens, {usage_percent:.1f}%")
 
-            # 构建全量消息列表文本（供 context-manager 使用）
-            msg_lines = []
-            msg_ids = []
-            for idx, msg in enumerate(db_messages, 1):
-                tokens = msg_tokens[idx - 1]
-                msg_id = getattr(msg, "id", "") or ""
-                msg_ids.append(msg_id)
-                msg_lines.append(f"[id:{msg_id}] [idx:{idx}] {tokens}tokens {msg.role}: {msg.content}")
-            msg_list_text = "\n".join(msg_lines)
 
             llm_config = self.llm_config
 
@@ -941,6 +932,25 @@ class NiuRunner:
 
             protect_recent_count = _read_protect_recent_count()
 
+            # 使用统一的 _build_incremental_msg_text 构建（与 compat.py force 路径一致）
+            _force_msg_ids = []
+            msg_list_text = _build_incremental_msg_text(
+                db_messages, "", _force_msg_ids, msg_tokens,
+                end_cursor_id=None, protect_recent=protect_recent_count
+            )
+            msg_list_text = msg_list_text.replace("条新消息", "条消息", 1)
+            msg_id_set = set(_force_msg_ids)
+
+            # 计算 force 路径的受保护 ID
+            _f_pids = []
+            for i in range(len(db_messages) - 1, -1, -1):
+                _m = db_messages[i]
+                if getattr(_m, "role", "") in ("user", "assistant"):
+                    _f_pids.insert(0, getattr(_m, "id", "") or "")
+                if len(_f_pids) >= protect_recent_count:
+                    break
+            protected_force_ids = _f_pids
+
             prompt = f"""CRITICAL: 你只有一轮机会完成所有压缩决策。多轮工具调用会导致上下文溢出，任务失败。
 
     - 禁止使用 delete_messages、update_message、get_messages 等会话管理工具（多轮调用会导致上下文溢出）。
@@ -958,6 +968,9 @@ class NiuRunner:
     - 需释放至少 {display_tokens - target_tokens} tokens
     - 上次压缩游标：{last_compress_id or '（无，从最早消息开始）'}
 
+    保护消息ID：{json.dumps(protected_force_ids)}
+    受保护消息ID已在上方列出，这些消息绝不删除。安全边界优先于模式三决策流程。
+
     安全边界：先从消息列表中找到 last_dream_evolve_id={new_dream_id} 对应的 idx，idx > 该idx 的消息（dream-evolver 未提取知识），不得直接删除，必须用 update 压缩为[摘要]格式后保留（不删除）。
     保护规则：操作开始时记录 idx 最大的 {protect_recent_count} 条 user/assistant 消息的 id（UUID），这些消息绝不删除。role=tool 的工具输出不在保护范围内，可以删除或压缩（按 id 判断，不受后续 idx 变化影响）。
     游标用 id（UUID）存储（持久化），时间顺序用 idx 判断（idx 是动态位置索引，删除消息后会变，不能当游标存储）。UUID v4 字典序不代表时间先后。
@@ -968,16 +981,13 @@ class NiuRunner:
     {msg_list_text}
     --- 消息列表数据结束 ---
 
+    请按照【模式三】执行压缩决策，安全边界优先于模式三决策流程。
     REMINDER: 只使用 write 工具。其他工具调用将浪费你唯一的轮次。"""
-
-            context_window_for_truncate = _read_context_window_tokens()
-            safe_tokens = int(context_window_for_truncate * 0.6)
-            truncated_force_prompt = _truncate_task_for_subagent(prompt, safe_tokens)
 
             with _cf.ThreadPoolExecutor(max_workers=1) as executor:
                 future = executor.submit(
                     call_subagent,
-                    "context-manager", truncated_force_prompt, llm_config, None,
+                    "context-manager", prompt, llm_config, None,
                     None, 0,  # context_fifo_threshold=0
                 )
                 try:
