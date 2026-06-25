@@ -1757,7 +1757,14 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                     logger.info(f"[Tidy] Mode-2: suggest_release {suggest_release} < 5%, skipping compression")
                     _skip_compress = True
                 elif suggest_release > 0:
-                    _compress_target = f"\n压缩目标（必须达标）：\n- 目标 token 总数：{target_tokens}（{target_threshold*100:.0f}%）\n- 需释放至少 {suggest_release} tokens\n优先压缩远端（idx 小的）消息；如果远端释放量不足目标，继续压缩近端非保护消息直到达标。未达标视为压缩失败。\n"
+                    _compress_target = (
+                        f"\n压缩目标：\n"
+                        f"- 目标 token 总数：{target_tokens}（{target_threshold*100:.0f}%）\n"
+                        f"- 需释放至少 {suggest_release} tokens\n"
+                        f"优先压缩远端（idx 小的）消息；"
+                        f"如果远端+中端释放量不足目标，可对近端非保护消息按中端区规则（合并为摘要）处理，但不突破 [PROTECTED] 边界；"
+                        f"如果近端非保护消息也全部处理后仍不足目标，接受当前结果。\n"
+                    )
                 # 模式二改为一轮JSON方案，不要求游标报告
                 _cursor_instruction = ""
             else:
