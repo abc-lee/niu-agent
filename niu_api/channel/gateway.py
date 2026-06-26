@@ -191,7 +191,7 @@ class IMGateway(ChannelAdapter):
         with self._lock:
             self._adapter_name = msg.get("adapter", "im")
             self._push_target = msg.get("push_target")
-        logger.info(f"[IMGateway] Adapter ready: {self._adapter_name}, push_target={self._push_target}")
+            logger.info(f"[IMGateway] Adapter ready: {self._adapter_name}, push_target={self._push_target}")
 
     async def _async_send(self, cmd: dict):
         """发送指令给 Adapter（async，带 drain）"""
@@ -229,15 +229,22 @@ class IMGateway(ChannelAdapter):
         await self._async_send({"type": "SEND", "channel_id": channel_id, "content": content})
 
     async def push(self, channel_id: str, content: str) -> None:
-        if not self._connected.is_set():
+        with self._lock:
+            target = channel_id or self._push_target or ""
+            connected = self._connected.is_set()
+        if not connected:
             logger.debug("[IMGateway] Adapter not connected, cannot push")
             return
-        target = channel_id or self._push_target or ""
         await self._async_send({"type": "PUSH", "channel_id": target, "content": content})
 
     def notify_stream(self, channel_id: str):
         """通知 Adapter 有新内容。channel_id 可为空，Adapter 通过内部状态确定推送目标。"""
         self._send_command({"type": "STREAM", "channel_id": channel_id or ""})
+
+    async def send_media(self, channel_id: str, msg) -> None:
+        """IM 通道统一 Markdown 透传，不拆分媒体。如果 route_out 调用了 send_media，
+        说明 resolve_outbound_content 返回了非 text kind — 记录但不发送。"""
+        logger.debug(f"[IMGateway] send_media called with kind={getattr(msg, 'kind', '?')}, IM channel uses Markdown passthrough")
 
     @property
     def is_connected(self) -> bool:
