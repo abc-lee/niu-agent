@@ -131,7 +131,7 @@ async def lifespan(app: FastAPI):
         im_config = _prefs.get("im", {})
         if im_config.get("enabled"):
             from niu_api.channel.gateway import IMGateway, set_im_gateway
-            gateway = IMGateway(channel_router=channel_router, port=im_config.get("gateway_port", 19876))
+            gateway = IMGateway(channel_router=channel_router, port=im_config.get("gateway_port", 19877))
             channel_router.register("im", gateway)
             set_im_gateway(gateway)
             gateway_task = asyncio.create_task(gateway.start())

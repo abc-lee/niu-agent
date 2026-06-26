@@ -19,7 +19,7 @@ class IMGateway(ChannelAdapter):
     Gateway 通过 TCP 发送 SEND/PUSH/STREAM 指令给 Adapter。
     """
 
-    def __init__(self, channel_router, port: int = 19876):
+    def __init__(self, channel_router, port: int = 19877):
         self._port = port
         self._server = None
         self._writer = None
