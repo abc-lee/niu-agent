@@ -14,7 +14,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 GATEWAY_HOST = "127.0.0.1"
-GATEWAY_PORT = 19876
+GATEWAY_PORT = 19877
 TEST_CHANNEL_ID = "test_chat_001"
 TEST_SENDER_ID = "test_user_001"
 
