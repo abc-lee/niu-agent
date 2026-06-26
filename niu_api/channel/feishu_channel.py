@@ -733,6 +733,9 @@ class FeishuChannelAdapter(ChannelAdapter):
                         .build()) \
                     .build()
                 send_resp = self.channel.client.im.v1.message.reply(send_req)
+            elif not self._stream_target:
+                logger.error("[FeishuStream] Cannot create stream card: no target (reply_to_id and stream_target both missing)")
+                return None
             else:
                 # 单聊 — 使用 create API 发送新消息
                 receive_id_type = self._infer_receive_id_type(self._stream_target)
@@ -1448,6 +1451,8 @@ class FeishuChannelAdapter(ChannelAdapter):
         - on_ → union_id（用户，跨应用）
         - 其他 → open_id（默认，与 SDK 行为一致）
         """
+        if not receive_id:
+            return "open_id"
         if receive_id.startswith("oc_"):
             return "chat_id"
         elif receive_id.startswith("ou_"):
