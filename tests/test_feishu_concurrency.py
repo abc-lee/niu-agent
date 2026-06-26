@@ -36,8 +36,10 @@ class FakeStreamAdapter:
                 last_pushed_rowid=new_state.last_pushed_rowid,
             )
 
-    def _update_stream(self, **kwargs):
+    def _update_stream(self, expected_generation: int | None = None, **kwargs):
         with self._stream_lock:
+            if expected_generation is not None and self._stream.generation != expected_generation:
+                return None
             for k, v in kwargs.items():
                 setattr(self._stream, k, v)
             return StreamState(
@@ -148,3 +150,39 @@ class TestConcurrentNewGeneration:
         state = adapter._get_stream()
         assert state.generation == 20
         assert state.waiting is True
+
+
+class TestExpectedGeneration:
+    """_update_stream expected_generation 守卫。"""
+
+    def test_update_stream_rejects_wrong_generation(self):
+        """expected_generation 不匹配时，_update_stream 返回 None 且不修改状态。"""
+        adapter = FakeStreamAdapter()
+        adapter._new_generation(waiting=True, target="chat_A")
+
+        # generation 已递增到 1，但传 expected_generation=0（过期）
+        result = adapter._update_stream(expected_generation=0, target="chat_B")
+        assert result is None
+        # 状态未被修改
+        assert adapter._get_stream().target == "chat_A"
+
+    def test_update_stream_accepts_matching_generation(self):
+        """expected_generation 匹配时，_update_stream 正常执行。"""
+        adapter = FakeStreamAdapter()
+        adapter._new_generation(waiting=True, target="chat_A")
+        current_gen = adapter._get_stream().generation
+
+        result = adapter._update_stream(expected_generation=current_gen, target="chat_B")
+        assert result is not None
+        assert adapter._get_stream().target == "chat_B"
+
+    def test_update_stream_without_expected_generation_always_succeeds(self):
+        """不传 expected_generation 时，_update_stream 总是成功。"""
+        adapter = FakeStreamAdapter()
+        adapter._new_generation(waiting=True, target="chat_A")
+        adapter._new_generation(waiting=True, target="chat_B")
+
+        # generation=2，但不传 expected_generation
+        result = adapter._update_stream(target="chat_C")
+        assert result is not None
+        assert adapter._get_stream().target == "chat_C"
