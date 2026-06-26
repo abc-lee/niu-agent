@@ -120,7 +120,8 @@ class FeishuChannelAdapter(ChannelAdapter):
             feishu_message_id = str(getattr(msg, 'id', '') or getattr(msg, 'message_id', '') or '')
             logger.debug(f"[FeishuChannel] msg.id={getattr(msg, 'id', 'N/A')}, msg.message_id={getattr(msg, 'message_id', 'N/A')}, resolved message_id={feishu_message_id}")
             logger.debug(f"[FeishuChannel] msg type: {type(msg).__name__}, resources: {len(unified.resources) if unified.resources else 0}")
-            local_resources = self.resolve_inbound_resources(unified.resources, message_id=feishu_message_id)
+            # 在独立线程中下载资源，避免阻塞 SDK WebSocket 线程
+            local_resources = self._download_resources_async(unified.resources, feishu_message_id)
 
             # 将 resources 转为文本描述
             resource_text = self._format_resources(unified.resources)
@@ -173,7 +174,7 @@ class FeishuChannelAdapter(ChannelAdapter):
             self._stream_reply_to_id = None  # F3c: 重置群聊回复目标
             # F3b: 群聊消息设置 reply_to_id（必须在重置之后）
             if not is_p2p:
-                self._stream_reply_to_id = getattr(msg, 'message_id', None)
+                self._stream_reply_to_id = getattr(msg, 'id', None) or getattr(msg, 'message_id', None)
             # 流式推送状态初始化
             self._feishu_waiting = True
             self._stream_target = unified.channel_id or self._user_open_id or self._user_p2p_chat_id
@@ -618,6 +619,7 @@ class FeishuChannelAdapter(ChannelAdapter):
                                 "filename": name or Path(img_path).name,
                                 "kind": "image",
                             })
+                            self._stream_sent_media_paths.add(img_path)
                             replacements.append((start_idx, end_idx, ""))
                     except Exception as e:
                         logger.warning(f"[FeishuStream] Upload image failed, will send as media: {e}")
@@ -626,6 +628,7 @@ class FeishuChannelAdapter(ChannelAdapter):
                             "filename": name or Path(img_path).name,
                             "kind": "image",
                         })
+                        self._stream_sent_media_paths.add(img_path)
                         replacements.append((start_idx, end_idx, ""))
                 else:
                     if img_path:
@@ -736,6 +739,13 @@ class FeishuChannelAdapter(ChannelAdapter):
                 send_resp = self.channel.client.im.v1.message.reply(send_req)
             elif not self._stream_target:
                 logger.error("[FeishuStream] Cannot create stream card: no target (reply_to_id and stream_target both missing)")
+                # 清理已创建的孤立卡片实体
+                try:
+                    from lark_oapi.api.cardkit.v1 import DeleteCardRequest
+                    del_req = DeleteCardRequest.builder().card_id(card_id).build()
+                    self.channel.client.cardkit.v1.card.delete(del_req)
+                except Exception as del_e:
+                    logger.warning(f"[FeishuStream] Failed to delete orphan card {card_id}: {del_e}")
                 return None
             else:
                 # 单聊 — 使用 create API 发送新消息
@@ -751,6 +761,13 @@ class FeishuChannelAdapter(ChannelAdapter):
                 send_resp = self.channel.client.im.v1.message.create(send_req)
             if not send_resp.success():
                 logger.error(f"[FeishuStream] SendMessage failed: {send_resp.code} {send_resp.msg}")
+                # 清理已创建的孤立卡片实体，避免泄漏
+                try:
+                    from lark_oapi.api.cardkit.v1 import DeleteCardRequest
+                    del_req = DeleteCardRequest.builder().card_id(card_id).build()
+                    self.channel.client.cardkit.v1.card.delete(del_req)
+                except Exception as del_e:
+                    logger.warning(f"[FeishuStream] Failed to delete orphan card {card_id}: {del_e}")
                 return None
             self._stream_message_id = send_resp.data.message_id
 
@@ -824,7 +841,7 @@ class FeishuChannelAdapter(ChannelAdapter):
         return elements
 
     async def _finalize_stream_card(self, final_content: str):
-        """终结流式卡片：flush 最后内容 → settings API → UpdateCard 完整内容"""
+        """终结流式卡片：settings API → UpdateCard 完整内容"""
         try:
             # 如果流式推送已处理过图片，使用已处理的文本；否则对 final_content 做兜底处理
             if self._stream_pending_images:
@@ -833,13 +850,7 @@ class FeishuChannelAdapter(ChannelAdapter):
                 filtered_content = await self._filter_media_markers(final_content)
                 self._accumulated_text = filtered_content
 
-            # 1. 如果还有未推送的内容，先 flush
-            if filtered_content and filtered_content.strip() != self._accumulated_text.strip():
-                self._stream_seq += 1
-                self._update_stream_element(filtered_content, self._stream_seq)
-                self._accumulated_text = filtered_content
-
-            # 2. Settings API 关闭 streaming_mode
+            # 1. Settings API 关闭 streaming_mode
             self._stream_seq += 1
             settings_json = json.dumps({"config": {"streaming_mode": False}})
             settings_req = SettingsCardRequest.builder() \
@@ -855,7 +866,7 @@ class FeishuChannelAdapter(ChannelAdapter):
                 logger.error(f"[FeishuStream] Settings API failed: {settings_resp.code} {settings_resp.msg}")
                 raise RuntimeError(f"Settings API failed: {settings_resp.code} {settings_resp.msg}")
 
-            # 3. UpdateCard 更新完整卡片内容（移除 subtitle，图片嵌入卡片）
+            # 2. UpdateCard 更新完整卡片内容（移除 subtitle，图片嵌入卡片）
             self._stream_seq += 1
             content = filtered_content if filtered_content and filtered_content.strip() else ""
             if len(content) > 18000:
@@ -893,6 +904,7 @@ class FeishuChannelAdapter(ChannelAdapter):
             update_resp = self.channel.client.cardkit.v1.card.update(update_req)
             if not update_resp.success():
                 logger.error(f"[FeishuStream] UpdateCard failed: {update_resp.code} {update_resp.msg}")
+                raise RuntimeError(f"UpdateCard failed: {update_resp.code} {update_resp.msg}")
             else:
                 logger.info("[FeishuStream] Card finalized successfully")
                 # 将嵌入卡片的图片路径加入去重集合，阻止 route_out 的 send_media 重复发送
@@ -1056,11 +1068,25 @@ class FeishuChannelAdapter(ChannelAdapter):
 
         return local_resources
 
+    def _download_resources_async(self, resources, message_id: str) -> list:
+        """在独立线程中下载资源，避免阻塞 SDK WebSocket 线程
+
+        SDK WebSocket 线程需要及时处理心跳和重连事件，
+        同步下载大文件可能导致心跳超时、WebSocket 断连。
+        """
+        import concurrent.futures
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(self.resolve_inbound_resources, resources, message_id)
+                return future.result(timeout=30)
+        except Exception as e:
+            logger.warning(f"[FeishuChannel] Resource download thread failed: {e}")
+            return []
+
     def _download_sync(self, file_key: str, rtype: str, file_name: str, *, message_id: str = "") -> str | None:
         """同步下载飞书资源到本地 — 使用 SDK 同步 API（requests 库），无需 event loop
 
-        在 _on_message 的 SDK WebSocket 线程中直接调用，下载完成后才入队。
-        飞书资源下载通常 1-3 秒，不会长时间阻塞 SDK 线程。
+        在独立线程中调用，不直接阻塞 SDK WebSocket 线程。
         """
         local_dir = Path.home() / ".niu" / "tmp"
         local_dir.mkdir(parents=True, exist_ok=True)
