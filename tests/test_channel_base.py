@@ -50,7 +50,7 @@ class TestUnifiedMessage:
     def test_resources_and_raw_populated(self):
         msg = UnifiedMessage(
             content="photo",
-            channel="feishu",
+            channel="im",
             channel_id="c2",
             sender_id="u2",
             message_type="image",
@@ -83,16 +83,16 @@ class TestChannelRouterRegister:
         adapter = _make_mock_adapter()
         router.register("electron", adapter)
         assert router.has_channel("electron") is True
-        assert router.has_channel("feishu") is False
+        assert router.has_channel("im") is False
 
     def test_register_multiple_channels(self):
         router = ChannelRouter()
         electron = _make_mock_adapter()
-        feishu = _make_mock_adapter()
+        im = _make_mock_adapter()
         router.register("electron", electron)
-        router.register("feishu", feishu)
+        router.register("im", im)
         assert router.has_channel("electron") is True
-        assert router.has_channel("feishu") is True
+        assert router.has_channel("im") is True
 
 
 # ---------------------------------------------------------------------------
@@ -130,7 +130,7 @@ class TestChannelRouterRouteOut:
     async def test_route_out_unknown_channel_no_error(self):
         """If channel not registered, route_out silently does nothing."""
         router = ChannelRouter()
-        await router.route_out("reply", "feishu", "c1")
+        await router.route_out("reply", "im", "c1")
 
 
 # ---------------------------------------------------------------------------
@@ -140,9 +140,9 @@ class TestChannelRouterPush:
     async def test_push_calls_adapter_push(self):
         router = ChannelRouter()
         adapter = _make_mock_adapter()
-        router.register("feishu", adapter)
+        router.register("im", adapter)
 
-        await router.push("reminder text", "feishu", "c1")
+        await router.push("reminder text", "im", "c1")
         adapter.push.assert_awaited_once_with("c1", "reminder text")
 
     async def test_push_unknown_channel_no_error(self):
