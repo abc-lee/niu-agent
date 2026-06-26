@@ -5,6 +5,7 @@ import shlex
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 from loguru import logger
 
@@ -29,12 +30,14 @@ class IMGateway(ChannelAdapter):
         self._channel_router = channel_router
         self._channel_name = "im"
         self._lock = threading.Lock()
+        self._write_lock = asyncio.Lock()
         self._connected = threading.Event()
         self._loop = None
         self._stopping = False
         self._restart_count = 0
         self._MAX_RESTARTS = 3
         self._MAX_MESSAGE_SIZE = 10 * 1024 * 1024  # 10MB
+        self._connected_since = 0.0
 
     async def start_server(self):
         """启动 TCP Server"""
@@ -56,6 +59,11 @@ class IMGateway(ChannelAdapter):
             await asyncio.sleep(10)
             if self._stopping:
                 break
+            # 稳定连接超过 60 秒 → 重置重启计数器
+            if self._connected.is_set() and self._restart_count > 0:
+                if time.monotonic() - self._connected_since > 60:
+                    logger.info("[IMGateway] Adapter stable for 60s, resetting restart count")
+                    self._restart_count = 0
             if self._adapter_proc is not None:
                 retcode = self._adapter_proc.poll()
                 if retcode is not None:
@@ -76,10 +84,14 @@ class IMGateway(ChannelAdapter):
     async def stop(self):
         """停止 Server + 终止 Adapter"""
         self._stopping = True
-        if self._writer:
+        async with self._write_lock:
+            with self._lock:
+                writer = self._writer
+                self._writer = None
+        if writer:
             try:
-                self._writer.close()
-                await self._writer.wait_closed()
+                writer.close()
+                await asyncio.wait_for(writer.wait_closed(), timeout=5.0)
             except Exception:
                 pass
         if self._server:
@@ -120,15 +132,20 @@ class IMGateway(ChannelAdapter):
 
     async def _handle_adapter(self, reader, writer):
         """处理 Adapter 连接"""
-        with self._lock:
-            if self._writer is not None:
-                logger.warning("[IMGateway] Previous adapter disconnected, accepting new connection")
+        async with self._write_lock:
+            with self._lock:
+                old_writer = self._writer
+                if old_writer is not None:
+                    logger.warning("[IMGateway] Previous adapter disconnected, accepting new connection")
+                self._writer = writer
+                self._connected.set()
+                self._connected_since = time.monotonic()
+            if old_writer is not None:
                 try:
-                    self._writer.close()
+                    old_writer.close()
+                    await asyncio.wait_for(old_writer.wait_closed(), timeout=5.0)
                 except Exception:
                     pass
-            self._writer = writer
-            self._connected.set()
 
         addr = writer.get_extra_info("peername")
         logger.info(f"[IMGateway] Adapter connected from {addr}")
@@ -149,11 +166,17 @@ class IMGateway(ChannelAdapter):
         except Exception as e:
             logger.error(f"[IMGateway] Adapter connection error: {e}")
         finally:
-            with self._lock:
-                self._writer = None
-                self._connected.clear()
-                self._adapter_name = None
-                self._push_target = None
+            async with self._write_lock:
+                with self._lock:
+                    self._writer = None
+                    self._connected.clear()
+                    self._adapter_name = None
+                    self._push_target = None
+                try:
+                    writer.close()
+                    await asyncio.wait_for(writer.wait_closed(), timeout=5.0)
+                except Exception:
+                    pass
             logger.info("[IMGateway] Adapter disconnected")
 
     async def _dispatch(self, msg: dict):
@@ -194,31 +217,46 @@ class IMGateway(ChannelAdapter):
             logger.info(f"[IMGateway] Adapter ready: {self._adapter_name}, push_target={self._push_target}")
 
     async def _async_send(self, cmd: dict):
-        """发送指令给 Adapter（async，带 drain）"""
+        """发送指令给 Adapter（async，带 drain）
+
+        _lock 保护 writer 引用的读取（跨线程安全）。
+        _write_lock 序列化 write+drain（协程级安全，防止两个协程交错写入破坏协议）。
+        """
         with self._lock:
             writer = self._writer
         if writer is None:
             return
-        try:
-            payload = json.dumps(cmd, ensure_ascii=False).encode("utf-8")
-            header = len(payload).to_bytes(4, "big")
-            writer.write(header + payload)
-            await writer.drain()
-        except Exception as e:
-            logger.error(f"[IMGateway] Send command failed: {e}")
-            with self._lock:
-                if self._writer is writer:
-                    self._writer = None
-                    self._connected.clear()
+        async with self._write_lock:
             try:
-                writer.close()
-            except Exception:
-                pass
+                payload = json.dumps(cmd, ensure_ascii=False).encode("utf-8")
+                header = len(payload).to_bytes(4, "big")
+                writer.write(header + payload)
+                await writer.drain()
+            except Exception as e:
+                logger.error(f"[IMGateway] Send command failed: {e}")
+                with self._lock:
+                    if self._writer is writer:
+                        self._writer = None
+                        self._connected.clear()
+                try:
+                    writer.close()
+                except Exception:
+                    pass
+
+    @staticmethod
+    def _on_send_done(f):
+        """run_coroutine_threadsafe 的 done callback — 记录异常"""
+        if f.cancelled():
+            return
+        exc = f.exception()
+        if exc:
+            logger.error(f"[IMGateway] Async send failed: {exc}")
 
     def _send_command(self, cmd: dict):
         """线程安全发送 — 从 executor 线程调用"""
         if self._loop and self._loop.is_running():
-            asyncio.run_coroutine_threadsafe(self._async_send(cmd), self._loop)
+            future = asyncio.run_coroutine_threadsafe(self._async_send(cmd), self._loop)
+            future.add_done_callback(self._on_send_done)
 
     # ── ChannelAdapter 接口 ──
 
@@ -252,11 +290,13 @@ class IMGateway(ChannelAdapter):
 
     @property
     def push_target(self) -> str | None:
-        return self._push_target
+        with self._lock:
+            return self._push_target
 
     @property
     def adapter_name(self) -> str | None:
-        return self._adapter_name
+        with self._lock:
+            return self._adapter_name
 
 
 _gateway: IMGateway | None = None
