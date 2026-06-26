@@ -448,6 +448,7 @@ class FeishuChannelAdapter(ChannelAdapter):
             self._accumulated_text = ""
             self._stream_pending_images = []
             self._stream_pending_files = []
+            self._stream_sent_media_paths = set()
 
     async def push(self, channel_id: str, content: str) -> None:
         """主动推送 — 没有 ID 就不发，优先 open_id"""
@@ -1445,14 +1446,18 @@ class FeishuChannelAdapter(ChannelAdapter):
     def _infer_receive_id_type(receive_id: str) -> str:
         """根据 receive_id 前缀推断 receive_id_type
 
-        飞书 ID 前缀规范：
+        与 lark_oapi SDK 的 infer_receive_id_type 保持一致：
         - oc_ → chat_id（群聊）
         - ou_ → open_id（用户）
         - on_ → union_id（用户，跨应用）
-        - 其他 → open_id（默认，与 SDK 行为一致）
+        - 含@ → email
+        - 其他 → user_id
+        - 空值 → chat_id
         """
         if not receive_id:
-            return "open_id"
+            return "chat_id"
+        if "@" in receive_id:
+            return "email"
         if receive_id.startswith("oc_"):
             return "chat_id"
         elif receive_id.startswith("ou_"):
@@ -1460,7 +1465,7 @@ class FeishuChannelAdapter(ChannelAdapter):
         elif receive_id.startswith("on_"):
             return "union_id"
         else:
-            return "open_id"
+            return "user_id"
 
     # ── Tenant Token ──────────────────────────────────────────
 
