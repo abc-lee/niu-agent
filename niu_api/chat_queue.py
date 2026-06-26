@@ -1,7 +1,7 @@
 """
 ChatQueue — 消息队列 + 串行处理 + 上下文合并
 
-替代 _chat_lock，所有消息来源（Electron、飞书、Scheduler）统一入队，
+替代 _chat_lock，所有消息来源（Electron、IM、Scheduler）统一入队，
 ChatWorker 串行处理，补充消息在下一轮合并到上下文中。
 """
 import asyncio
