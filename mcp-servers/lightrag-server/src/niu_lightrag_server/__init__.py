@@ -1396,14 +1396,8 @@ def lightrag_get_document(doc_id: str) -> Dict[str, Any]:
 def lightrag_delete_document(doc_id: str) -> Dict[str, Any]:
     """Cascade delete a document and its associated chunks, entities, relationships."""
     try:
-        from niu_api.internal.lightrag_manager import call_async
-
         adapter = _get_adapter()
-        rag = adapter._get_rag()
-        if rag is None:
-            return {"status": "error", "message": "LightRAG not initialized"}
-        result = call_async(rag.adelete_by_doc_id(doc_id), timeout=600)
-        return {"status": "ok", "doc_id": doc_id, "result": result}
+        return adapter.delete_document(doc_id)
     except Exception as e:
         logger.error(f"lightrag_delete_document failed: {e}")
         return {"status": "error", "message": str(e)}

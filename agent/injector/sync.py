@@ -324,15 +324,41 @@ class SkillSync:
                 next_scan[name] = current_hash
 
         # 删除：在 known_skills 中但不在 current_hashes 中 → 从图谱删除
+        step3_deleted: set[str] = set()
         for name in known_skills:
             if name not in current_hashes:
                 if self._delete_skill_from_lightrag(name):
                     next_scan.pop(name, None)
                     deleted += 1
+                    step3_deleted.add(name)
                     logger.info(f"[SkillSync] Deleted skill: {name}")
                 else:
                     logger.error(f"[SkillSync] Failed to delete '{name}' from LightRAG, keeping in state for retry")
                     next_scan[name] = known_skills[name]
+
+        # 3.5 交叉比对：向量库中的 skill 实体 vs 磁盘文件
+        # 从非 SkillSync 路径（ainsert/MCP工具）进入向量库的 skill 实体，
+        # SkillSync 的 hash 对比看不到它们，需要单独清理
+        try:
+            from niu_api.internal.lightrag_adapter import LightRAGAdapter
+            adapter = LightRAGAdapter()
+            kg_result = adapter.list_entities(list_type="entities", entity_type="skill", limit=200)
+            if isinstance(kg_result, dict) and kg_result.get("status") == "ok":
+                kg_skills = kg_result.get("data", [])
+                current_hashes_lower = {k.lower() for k in current_hashes}
+                for entity in kg_skills:
+                    entity_name = entity.get("entity_name", "")
+                    if entity_name and entity_name.lower() not in current_hashes_lower and entity_name not in step3_deleted:
+                        # 向量库中有但磁盘上不存在 → 幽灵 skill，删除
+                        if self._delete_skill_from_lightrag(entity_name):
+                            logger.info(f"[SkillSync] Cleaned ghost skill '{entity_name}' from KG (not on disk)")
+                            next_scan.pop(entity_name, None)
+                            deleted += 1
+                        else:
+                            logger.warning(f"[SkillSync] Failed to delete ghost skill '{entity_name}' from KG")
+                            next_scan[entity_name] = next_scan.get(entity_name, "")
+        except Exception as e:
+            logger.warning(f"[SkillSync] KG skill cleanup failed: {e}")
 
         # Scan notes
         try:
@@ -342,8 +368,12 @@ class SkillSync:
         except Exception as e:
             logger.error(f"[SkillSync] Notes scan failed: {e}")
 
-        # 4. 将 next_scan 写入状态文件
+        # 4. 将 next_scan 写入状态文件（合并 watchdog 并发修改）
         with self._lock:
+            # 保留 scan 期间 watchdog 新增/修改的条目（不在 known_keys 快照中的）
+            for name, hash_val in self._last_scan.items():
+                if name not in known_skills:
+                    next_scan[name] = hash_val
             self._last_scan = next_scan
         self._save_state()
 
@@ -582,6 +612,7 @@ class SkillSync:
         # Collect changed notes for full-file injection
         changed_notes: list[dict] = []
         old_hashes: dict[str, Optional[str]] = {}  # note_id -> old_hash for rollback
+        updated_note_ids: set[str] = set()  # note_ids that were modified (not new)
 
         for note in notes:
             note_id = note.get("id", "")
@@ -605,6 +636,7 @@ class SkillSync:
                 changed_notes.append(note)
                 with self._lock:
                     self._last_notes_scan[note_id] = content_hash
+                updated_note_ids.add(note_id)
                 updated += 1
                 logger.info(f"[SkillSync] Updated note: {note_id}")
             else:
@@ -614,20 +646,21 @@ class SkillSync:
 
         # Inject all changed notes as a single full-file document
         if changed_notes:
-            if not self._inject_note_to_lightrag(changed_notes):
-                # Rollback: restore old hashes for failed notes
+            failed_ids = self._inject_note_to_lightrag(changed_notes, updated_ids=updated_note_ids)
+            if failed_ids:
+                # Rollback: only restore hashes for failed notes
                 with self._lock:
                     for note in changed_notes:
                         nid = note.get("id", "")
-                        if nid:
+                        if nid and nid in failed_ids:
                             old_h = old_hashes.get(nid)
                             if old_h is not None:
                                 self._last_notes_scan[nid] = old_h
                             else:
                                 self._last_notes_scan.pop(nid, None)
-                # Don't count as added/updated if injection failed
-                added = 0
-                updated = 0
+                # Adjust counts for failures
+                added -= sum(1 for n in changed_notes if n.get("id", "") in failed_ids and n.get("id", "") not in updated_note_ids)
+                updated -= sum(1 for n in changed_notes if n.get("id", "") in failed_ids and n.get("id", "") in updated_note_ids)
 
         # Detect deleted notes
         with self._lock:
@@ -659,17 +692,31 @@ class SkillSync:
 
         return added, updated
 
-    def _inject_note_to_lightrag(self, notes_data: list[dict]) -> bool:
+    def _inject_note_to_lightrag(self, notes_data: list[dict], updated_ids: set[str] | None = None) -> set[str]:
         """将便签注入 LightRAG，每个 note 使用独立 doc_id 以便按文档级联删除
 
         Args:
             notes_data: 便签数据列表，每项包含 id/content/tags 等字段
+            updated_ids: 修改过的 note_id 集合，注入前先删除旧文档避免去重拒绝
 
         Returns:
-            True 全部插入成功, False 任一失败
+            失败的 note_id 集合（空集合表示全部成功）
         """
         if not notes_data:
-            return True
+            return set()
+
+        # 对修改的 note 先删除旧文档，避免 LightRAG ainsert 去重拒绝
+        if updated_ids:
+            try:
+                from niu_api.internal.lightrag_adapter import LightRAGAdapter
+                adapter = LightRAGAdapter()
+                for note_id in updated_ids:
+                    doc_id = f"note:{note_id}"
+                    del_result = adapter.delete_document(doc_id)
+                    if isinstance(del_result, dict) and del_result.get("status") != "ok":
+                        logger.warning("[SkillSync] Failed to delete old note doc %s: %s", doc_id, del_result.get("message", ""))
+            except Exception as e:
+                logger.warning("[SkillSync] Failed to delete old note documents: %s", e)
 
         try:
             import json
@@ -680,9 +727,9 @@ class SkillSync:
             insert_tool = registry.get("lightrag-server/lightrag_insert")
             if insert_tool is None:
                 logger.warning("lightrag-server/lightrag_insert tool not found in registry")
-                return False
+                return {n.get("id", "") for n in notes_data if n.get("id")}
 
-            all_ok = True
+            failed_ids: set[str] = set()
             for note in notes_data:
                 note_id = note.get("id", "")
                 if not note_id:
@@ -694,12 +741,12 @@ class SkillSync:
                     logger.debug(f"[SkillSync] Injected note '{note_id}' with doc_id={doc_id}")
                 else:
                     logger.warning("[SkillSync] lightrag_insert returned non-ok for note '%s': %s", note_id, result)
-                    all_ok = False
+                    failed_ids.add(note_id)
 
-            return all_ok
+            return failed_ids
         except Exception:
             logger.exception("Failed to inject notes to LightRAG")
-            return False
+            return {n.get("id", "") for n in notes_data if n.get("id")}
 
     def _start_watchdog(self):
         """启动 watchdog 监控"""

@@ -424,8 +424,8 @@ class TestNoteInjectUsesLightragInsert:
 
         result = sync._inject_note_to_lightrag(notes_data)
 
-        # Must return True on success
-        assert result is True
+        # Must return empty set on success
+        assert result == set()
 
         # Must use ToolRegistry
         mock_get_registry.assert_called_once()
@@ -467,7 +467,7 @@ class TestNoteInjectUsesLightragInsert:
 
     @patch("agent.tool_registry.get_registry")
     def test_inject_note_failure_returns_false(self, mock_get_registry):
-        """If lightrag_insert fails, _inject_note_to_lightrag must return False."""
+        """If lightrag_insert fails, _inject_note_to_lightrag must return failed note IDs."""
         import sys
         sys.path.insert(0, "E:/tools/ai-bot/agent")
         from injector.sync import SkillSync
@@ -481,11 +481,11 @@ class TestNoteInjectUsesLightragInsert:
 
         notes_data = [{"id": "n1", "content": "Test", "tags": []}]
         result = sync._inject_note_to_lightrag(notes_data)
-        assert result is False
+        assert result == {"n1"}
 
     @patch("agent.tool_registry.get_registry")
     def test_inject_note_exception_returns_false(self, mock_get_registry):
-        """If ToolRegistry raises, _inject_note_to_lightrag must return False (not raise)."""
+        """If ToolRegistry raises, _inject_note_to_lightrag must return all note IDs as failed."""
         import sys
         sys.path.insert(0, "E:/tools/ai-bot/agent")
         from injector.sync import SkillSync
@@ -498,7 +498,7 @@ class TestNoteInjectUsesLightragInsert:
 
         notes_data = [{"id": "n1", "content": "Test", "tags": []}]
         result = sync._inject_note_to_lightrag(notes_data)
-        assert result is False
+        assert result == {"n1"}
 
     @patch("agent.tool_registry.get_registry")
     def test_scan_notes_passes_changed_notes_as_full_list(self, mock_get_registry):

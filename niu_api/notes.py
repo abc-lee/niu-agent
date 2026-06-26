@@ -139,7 +139,7 @@ def update_note(note_id: str, content: Optional[str] = None, tags: Optional[List
 
 
 def delete_note(note_id: str) -> Dict:
-    """Remove note from JSON + call LightRAGAdapter().delete_entity().
+    """Remove note from JSON + call LightRAGAdapter().delete_document().
 
     Return {"id": note_id, "status": "deleted|not_found|invalid_id"}.
     """

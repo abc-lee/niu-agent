@@ -124,13 +124,13 @@ class TestNotesJsonStorage:
         assert len(notes) == 1
         assert notes[0]["id"] == "n2"
 
-    def test_delete_note_calls_lightrag_delete_entity(self, tmp_workspace):
+    def test_delete_note_calls_lightrag_delete_document(self, tmp_workspace):
         create_note(note_id="n1", content="KG note")
 
         with patch("niu_api.internal.lightrag_adapter.LightRAGAdapter") as mock_adapter_cls:
             mock_adapter = mock_adapter_cls.return_value
             result = delete_note(note_id="n1")
-            mock_adapter.delete_entity.assert_called_once_with("note:n1")
+            mock_adapter.delete_document.assert_called_once_with("note:n1")
 
         assert result["status"] == "deleted"
 
@@ -199,7 +199,7 @@ class TestSkillSyncNotes:
 
         sync = SkillSync(skills_dir=str(tmp_workspace / "skills"), use_watchdog=False)
         with patch.dict(os.environ, {"WORKSPACE_PATH": str(tmp_workspace)}):
-            with patch.object(sync, "_inject_note_to_lightrag") as mock_inject:
+            with patch.object(sync, "_inject_note_to_lightrag", return_value=set()) as mock_inject:
                 added, updated = sync._scan_notes()
                 assert added == 1
                 assert updated == 0
@@ -226,7 +226,7 @@ class TestSkillSyncNotes:
                 json.dumps([{"id": "n1", "content": "Original", "tags": []}]),
                 encoding="utf-8",
             )
-            with patch.object(sync, "_inject_note_to_lightrag"):
+            with patch.object(sync, "_inject_note_to_lightrag", return_value=set()):
                 sync._scan_notes()
 
             # Second scan — content changed
@@ -234,7 +234,7 @@ class TestSkillSyncNotes:
                 json.dumps([{"id": "n1", "content": "Changed", "tags": []}]),
                 encoding="utf-8",
             )
-            with patch.object(sync, "_inject_note_to_lightrag") as mock_inject:
+            with patch.object(sync, "_inject_note_to_lightrag", return_value=set()) as mock_inject:
                 added, updated = sync._scan_notes()
                 assert added == 0
                 assert updated == 1
@@ -259,11 +259,11 @@ class TestSkillSyncNotes:
 
         sync = SkillSync(skills_dir=str(tmp_workspace / "skills"), use_watchdog=False)
         with patch.dict(os.environ, {"WORKSPACE_PATH": str(tmp_workspace)}):
-            with patch.object(sync, "_inject_note_to_lightrag"):
+            with patch.object(sync, "_inject_note_to_lightrag", return_value=set()):
                 sync._scan_notes()
 
             # Second scan — same content
-            with patch.object(sync, "_inject_note_to_lightrag") as mock_inject:
+            with patch.object(sync, "_inject_note_to_lightrag", return_value=set()) as mock_inject:
                 added, updated = sync._scan_notes()
                 assert added == 0
                 assert updated == 0
@@ -287,7 +287,7 @@ class TestSkillSyncNotes:
                 ]),
                 encoding="utf-8",
             )
-            with patch.object(sync, "_inject_note_to_lightrag"):
+            with patch.object(sync, "_inject_note_to_lightrag", return_value=set()):
                 sync._scan_notes()
 
             # Second scan — n2 removed
@@ -295,12 +295,12 @@ class TestSkillSyncNotes:
                 json.dumps([{"id": "n1", "content": "Keep", "tags": []}]),
                 encoding="utf-8",
             )
-            with patch.object(sync, "_inject_note_to_lightrag"):
+            with patch.object(sync, "_inject_note_to_lightrag", return_value=set()):
                 with patch("niu_api.internal.lightrag_adapter.LightRAGAdapter") as mock_cls:
                     mock_adapter = MagicMock()
                     mock_cls.return_value = mock_adapter
                     added, updated = sync._scan_notes()
-                    mock_adapter.delete_entity.assert_called_once_with("note:n2")
+                    mock_adapter.delete_document.assert_called_once_with("note:n2")
 
     def test_scan_notes_handles_corrupt_json(self, tmp_workspace):
         """Corrupt JSON should not crash."""
@@ -331,7 +331,7 @@ class TestSkillSyncNotes:
 
         sync = SkillSync(skills_dir=str(tmp_workspace / "skills"), use_watchdog=False)
         with patch.dict(os.environ, {"WORKSPACE_PATH": str(tmp_workspace)}):
-            with patch.object(sync, "_inject_note_to_lightrag") as mock_inject:
+            with patch.object(sync, "_inject_note_to_lightrag", return_value=set()) as mock_inject:
                 added, updated = sync._scan_notes()
                 assert added == 1
                 mock_inject.assert_called_once()
@@ -355,13 +355,13 @@ class TestSkillSyncNotes:
         sync = SkillSync(skills_dir=str(tmp_workspace / "skills"), use_watchdog=False)
         with patch.dict(os.environ, {"WORKSPACE_PATH": str(tmp_workspace)}):
             # First scan — injection fails
-            with patch.object(sync, "_inject_note_to_lightrag", return_value=False):
+            with patch.object(sync, "_inject_note_to_lightrag", return_value={"n1"}):
                 added, updated = sync._scan_notes()
                 assert added == 0  # not counted because injection failed
                 assert "n1" not in sync._last_notes_scan  # hash not recorded
 
             # Second scan — injection succeeds, note is retried
-            with patch.object(sync, "_inject_note_to_lightrag", return_value=True):
+            with patch.object(sync, "_inject_note_to_lightrag", return_value=set()):
                 added, updated = sync._scan_notes()
                 assert added == 1  # now counted as new
                 assert "n1" in sync._last_notes_scan
@@ -384,7 +384,7 @@ class TestSkillSyncNotes:
                 ]),
                 encoding="utf-8",
             )
-            with patch.object(sync, "_inject_note_to_lightrag"):
+            with patch.object(sync, "_inject_note_to_lightrag", return_value=set()):
                 sync._scan_notes()
             assert "n2" in sync._last_notes_scan
 
@@ -394,7 +394,7 @@ class TestSkillSyncNotes:
                 encoding="utf-8",
             )
             with patch("niu_api.internal.lightrag_adapter.LightRAGAdapter") as mock_cls:
-                mock_cls.return_value.delete_entity.side_effect = RuntimeError("LightRAG down")
+                mock_cls.return_value.delete_document.side_effect = RuntimeError("LightRAG down")
                 added, updated = sync._scan_notes()
 
             # Hash should still be present for retry
@@ -420,11 +420,11 @@ class TestNotesDeleteFailure:
     """Tests for delete_note behavior when LightRAG fails."""
 
     def test_delete_note_succeeds_even_if_lightrag_fails(self, tmp_workspace):
-        """Note should be deleted from JSON even if LightRAG delete_entity raises."""
+        """Note should be deleted from JSON even if LightRAG delete_document raises."""
         create_note(note_id="n1", content="Delete me")
 
         with patch("niu_api.internal.lightrag_adapter.LightRAGAdapter") as mock_cls:
-            mock_cls.return_value.delete_entity.side_effect = RuntimeError("LightRAG down")
+            mock_cls.return_value.delete_document.side_effect = RuntimeError("LightRAG down")
             result = delete_note(note_id="n1")
 
         # Note is still deleted from JSON despite LightRAG failure
