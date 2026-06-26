@@ -108,9 +108,13 @@ class FeishuChannelAdapter(ChannelAdapter):
         with self._stream_lock:
             self._stream = state
 
-    def _update_stream(self, **kwargs) -> StreamState:
-        """原地更新流式状态字段（线程安全），返回更新后的快照。"""
+    def _update_stream(self, expected_generation: int | None = None, **kwargs) -> StreamState | None:
+        """原地更新流式状态字段（线程安全），返回更新后的快照。
+        如果指定 expected_generation 且不匹配当前 generation，返回 None（放弃修改）。
+        """
         with self._stream_lock:
+            if expected_generation is not None and self._stream.generation != expected_generation:
+                return None
             for k, v in kwargs.items():
                 setattr(self._stream, k, v)
             return self._get_stream_unlocked()
@@ -123,37 +127,51 @@ class FeishuChannelAdapter(ChannelAdapter):
             self._stream = new_state
             return self._get_stream_unlocked()
 
-    def _append_stream_list(self, field_name: str, item) -> StreamState:
+    def _append_stream_list(self, field_name: str, item, expected_generation: int | None = None) -> StreamState | None:
         """原子地追加元素到 StreamState 的列表字段（线程安全）。
 
         避免读取-修改-写入竞态：读取和写入在同一把锁内完成。
+        如果指定 expected_generation 且不匹配，返回 None（放弃修改）。
         """
         with self._stream_lock:
+            if expected_generation is not None and self._stream.generation != expected_generation:
+                return None
             current_list = getattr(self._stream, field_name)
             new_list = current_list + [item]
             setattr(self._stream, field_name, new_list)
             return self._get_stream_unlocked()
 
-    def _add_to_stream_set(self, field_name: str, item) -> StreamState:
+    def _add_to_stream_set(self, field_name: str, item, expected_generation: int | None = None) -> StreamState | None:
         """原子地添加元素到 StreamState 的集合字段（线程安全）。
 
         避免读取-修改-写入竞态：读取和写入在同一把锁内完成。
+        如果指定 expected_generation 且不匹配，返回 None（放弃修改）。
         """
         with self._stream_lock:
+            if expected_generation is not None and self._stream.generation != expected_generation:
+                return None
             current_set = getattr(self._stream, field_name)
             new_set = current_set | {item}
             setattr(self._stream, field_name, new_set)
             return self._get_stream_unlocked()
 
-    def _clear_stream_list(self, field_name: str) -> StreamState:
-        """原子地清空 StreamState 的列表字段（线程安全）。"""
+    def _clear_stream_list(self, field_name: str, expected_generation: int | None = None) -> StreamState | None:
+        """原子地清空 StreamState 的列表字段（线程安全）。
+        如果指定 expected_generation 且不匹配，返回 None（放弃修改）。
+        """
         with self._stream_lock:
+            if expected_generation is not None and self._stream.generation != expected_generation:
+                return None
             setattr(self._stream, field_name, [])
             return self._get_stream_unlocked()
 
-    def _clear_stream_set(self, field_name: str) -> StreamState:
-        """原子地清空 StreamState 的集合字段（线程安全）。"""
+    def _clear_stream_set(self, field_name: str, expected_generation: int | None = None) -> StreamState | None:
+        """原子地清空 StreamState 的集合字段（线程安全）。
+        如果指定 expected_generation 且不匹配，返回 None（放弃修改）。
+        """
         with self._stream_lock:
+            if expected_generation is not None and self._stream.generation != expected_generation:
+                return None
             setattr(self._stream, field_name, set())
             return self._get_stream_unlocked()
 
@@ -465,63 +483,75 @@ class FeishuChannelAdapter(ChannelAdapter):
                     await self._push_incremental()
                 except Exception as e:
                     logger.warning(f"[FeishuStream] Pre-send push failed: {e}")
+                # await 后检查 generation
+                if self._get_stream().generation != entry_gen:
+                    logger.debug("[FeishuStream] Generation changed after pre-send push, aborting send")
+                    return
 
             state = self._get_stream()
             if state.card_created:
                 # 流式卡片存在，先尝试终结（无论 fallback 标记）
                 try:
                     await self._finalize_stream_card(content)
-                    # 终结成功后，发送待处理的文件（图片已嵌入卡片，文件需要独立发送）
+                    # 终结成功后，发送待处理的文件（仅同代状态下）
+                    # generation 检查：finalize 期间新消息可能已到达
+                    if self._get_stream().generation != entry_gen:
+                        logger.debug("[FeishuStream] Generation changed after finalize, skipping pending media")
+                        return
                     # 清空 pending_images 避免重复发送（图片已通过 image_key 嵌入卡片）
-                    self._clear_stream_list("pending_images")
+                    self._clear_stream_list("pending_images", expected_generation=entry_gen)
                     state = self._get_stream()
                     if state.pending_files:
                         try:
-                            await self._send_pending_media(channel_id, state.pending_images, state.pending_files)
+                            await self._send_pending_media(channel_id, state.pending_images)
                         except Exception as me:
                             logger.error(f"[FeishuStream] Send pending files after finalize failed: {me}")
                         finally:
-                            self._clear_stream_list("pending_files")
+                            self._clear_stream_list("pending_files", expected_generation=entry_gen)
                     return  # 图片已嵌入卡片，不再独立发送
                 except Exception as e:
                     logger.error(f"[FeishuStream] Finalize failed, falling back to markdown: {e}")
-                    # 终结失败：清除去重集合，允许图片重新发送（卡片终结失败，图片未展示）
-                    self._clear_stream_set("sent_media_paths")
-                    # 剥离内容中的媒体标记，避免 markdown 中出现原始标记
+                    # 回退路径：仅在同代状态下修改流式状态
+                    current = self._get_stream()
+                    if current.generation == entry_gen:
+                        # 终结失败：清除去重集合，允许图片重新发送（卡片终结失败，图片未展示）
+                        self._clear_stream_set("sent_media_paths", expected_generation=entry_gen)
+                        # 终结失败：将未嵌入卡片的图片转为独立消息发送
+                        for img_info in current.pending_images:
+                            local_path = img_info.get("local_path")
+                            if local_path:
+                                self._append_stream_list("pending_files", {
+                                    "local_path": local_path,
+                                    "filename": img_info.get("alt", Path(local_path).name),
+                                    "kind": "image",
+                                }, expected_generation=entry_gen)
+                        self._clear_stream_list("pending_images", expected_generation=entry_gen)
+                        state = self._get_stream()
+                        if state.pending_files:
+                            try:
+                                await self._send_pending_media(channel_id, state.pending_images)
+                            except Exception as me:
+                                logger.error(f"[FeishuStream] Send pending media also failed: {me}")
+                    else:
+                        logger.debug(f"[FeishuStream] Generation changed during finalize, skipping fallback state cleanup")
+                    # 剥离内容中的媒体标记（纯文本操作，不涉及共享状态，始终执行）
                     content = re.sub(r'::person_photo::.*?::', '', content)  # 兼容极旧格式
                     from agent.output_validator import _extract_md_refs
-                    # 从后向前移除图片标记，避免偏移
                     img_removals = []
                     for _, _, full_match, is_image, start_idx in _extract_md_refs(content):
                         if is_image:
                             img_removals.append((start_idx, start_idx + len(full_match)))
                     for start, end in sorted(img_removals, key=lambda x: x[0], reverse=True):
                         content = content[:start] + content[end:]
-                    # 终结失败：将未嵌入卡片的图片转为独立消息发送
-                    state = self._get_stream()
-                    for img_info in state.pending_images:
-                        local_path = img_info.get("local_path")
-                        if local_path:
-                            self._append_stream_list("pending_files", {
-                                "local_path": local_path,
-                                "filename": img_info.get("alt", Path(local_path).name),
-                                "kind": "image",
-                            })
-                    self._clear_stream_list("pending_images")
-                    state = self._get_stream()
-                    if state.pending_files:
-                        try:
-                            await self._send_pending_media(channel_id, state.pending_images, state.pending_files)
-                        except Exception as me:
-                            logger.error(f"[FeishuStream] Send pending media also failed: {me}")
-            # 卡片未创建时，清理去重集并发送待处理图片
-            state = self._get_stream()
-            if not state.card_created and (state.pending_images or state.pending_files):
-                self._clear_stream_set("sent_media_paths")
-                try:
-                    await self._send_pending_media(channel_id, state.pending_images, state.pending_files)
-                except Exception as me:
-                    logger.error(f"[FeishuStream] Send pending media (no card) failed: {me}")
+            # 卡片未创建时，清理去重集并发送待处理图片（仅同代）
+            if self._get_stream().generation == entry_gen:
+                state = self._get_stream()
+                if not state.card_created and (state.pending_images or state.pending_files):
+                    self._clear_stream_set("sent_media_paths", expected_generation=entry_gen)
+                    try:
+                        await self._send_pending_media(channel_id, state.pending_images)
+                    except Exception as me:
+                        logger.error(f"[FeishuStream] Send pending media (no card) failed: {me}")
             # 普通发送逻辑（无流式卡片 或 终结失败时的 fallback）
             target = channel_id or self._user_open_id or self._user_p2p_chat_id
             if not target:
@@ -654,7 +684,9 @@ class FeishuChannelAdapter(ChannelAdapter):
                 return
             state = current
 
-            self._update_stream(accumulated_text=filtered_text)
+            if self._update_stream(expected_generation=state.generation, accumulated_text=filtered_text) is None:
+                logger.debug(f"[FeishuStream] Generation changed before updating accumulated_text, aborting")
+                return
             # 保留 [PHOTO_SEP] 供终结时拆分文本+插入img
             display_text = filtered_text.replace("[PHOTO_SEP]", "")
             content = display_text
@@ -664,27 +696,26 @@ class FeishuChannelAdapter(ChannelAdapter):
             state = self._get_stream()
             if not state.card_created:
                 # 首次：创建流式卡片
-                card_id = self._create_stream_card(content)
+                card_id = self._create_stream_card(content, entry_gen=state.generation)
                 if card_id:
-                    self._update_stream(
-                        card_id=card_id,
-                        card_created=True,
-                        last_pushed_rowid=latest_rowid,
-                        seq=1,
-                    )
+                    if self._update_stream(expected_generation=state.generation, card_id=card_id, card_created=True, last_pushed_rowid=latest_rowid, seq=1) is None:
+                        logger.debug("[FeishuStream] Generation changed after card creation, aborting")
+                        return
                     logger.info(f"[FeishuStream] Card created: card_id={card_id}")
                 else:
-                    self._update_stream(fallback_used=True)
+                    self._update_stream(expected_generation=state.generation, fallback_used=True)
                     logger.warning("[FeishuStream] Card creation failed, will fallback to markdown")
             else:
                 # 后续：元素级更新
                 new_seq = state.seq + 1
                 success = self._update_stream_element(content, new_seq)
                 if success:
-                    self._update_stream(seq=new_seq, last_pushed_rowid=latest_rowid)
+                    if self._update_stream(expected_generation=state.generation, seq=new_seq, last_pushed_rowid=latest_rowid) is None:
+                        logger.debug("[FeishuStream] Generation changed after element update, aborting")
+                        return
                     logger.info(f"[FeishuStream] Element updated: seq={new_seq}")
                 else:
-                    self._update_stream(fallback_used=True)
+                    self._update_stream(expected_generation=state.generation, fallback_used=True)
                     logger.warning("[FeishuStream] Element update failed, will fallback to markdown")
 
         except Exception as e:
@@ -770,15 +801,15 @@ class FeishuChannelAdapter(ChannelAdapter):
         for start, end, repl in sorted(replacements, key=lambda x: x[0], reverse=True):
             text = text[:start] + repl + text[end:]
 
-        # 更新前检查 generation 是否变化（新消息可能已到达）
-        current = self._get_stream()
-        if current.generation != state.generation:
-            return text  # 新消息到达，丢弃本地修改，新消息会重新处理
-        self._update_stream(
+        # 原子更新：锁内检查 generation + 写入，防止 TOCTOU 竞态
+        result = self._update_stream(
+            expected_generation=state.generation,
             pending_images=new_pending_images,
             pending_files=new_pending_files,
             sent_media_paths=new_sent_media_paths,
         )
+        if result is None:
+            logger.debug("[FeishuStream] Generation changed during _filter_media_markers, discarding local changes")
 
         return text
 
@@ -837,7 +868,7 @@ class FeishuChannelAdapter(ChannelAdapter):
                 except Exception:
                     pass
 
-    def _create_stream_card(self, content: str) -> str | None:
+    def _create_stream_card(self, content: str, entry_gen: int | None = None) -> str | None:
         """创建流式卡片实体 + 用 card_id 引用发送消息"""
         state = self._get_stream()
         try:
@@ -896,7 +927,7 @@ class FeishuChannelAdapter(ChannelAdapter):
                 except Exception as del_e:
                     logger.warning(f"[FeishuStream] Failed to delete orphan card {card_id}: {del_e}")
                 return None
-            self._update_stream(message_id=send_resp.data.message_id)
+            self._update_stream(expected_generation=entry_gen, message_id=send_resp.data.message_id)
 
             return card_id
         except Exception as e:
@@ -985,7 +1016,7 @@ class FeishuChannelAdapter(ChannelAdapter):
                 if current.generation != entry_gen:
                     raise RuntimeError(f"Generation changed during finalize ({entry_gen}→{current.generation})")
                 state = current
-                self._update_stream(accumulated_text=filtered_content)
+                self._update_stream(expected_generation=entry_gen, accumulated_text=filtered_content)
 
             # 1. Settings API 关闭 streaming_mode
             new_seq = state.seq + 1
@@ -1053,16 +1084,17 @@ class FeishuChannelAdapter(ChannelAdapter):
                 # 将嵌入卡片的图片路径加入去重集合，阻止 route_out 的 send_media 重复发送
                 for img_info in state.pending_images:
                     if img_info.get("local_path"):
-                        self._add_to_stream_set("sent_media_paths", img_info["local_path"])
-                self._update_stream(seq=new_seq)
+                        self._add_to_stream_set("sent_media_paths", img_info["local_path"], expected_generation=entry_gen)
+                self._update_stream(expected_generation=entry_gen, seq=new_seq)
 
         except Exception as e:
             logger.error(f"[FeishuStream] Finalize exception: {e}")
-            self._update_stream(fallback_used=True)
+            self._update_stream(expected_generation=entry_gen, fallback_used=True)
             raise  # 重新抛出，让 send() 的回退路径执行
 
-    async def _send_pending_media(self, channel_id: str, pending_images: list, pending_files: list):
+    async def _send_pending_media(self, channel_id: str, pending_images: list):
         """终结后发送待处理的图片和文件，通过 send_media 发送"""
+        entry_gen = self._get_stream().generation
         # 先把 pending_images 转为 pending_files 格式
         for img_info in pending_images:
             local_path = img_info.get("local_path")
@@ -1071,7 +1103,7 @@ class FeishuChannelAdapter(ChannelAdapter):
                     "local_path": local_path,
                     "filename": img_info.get("alt", Path(local_path).name),
                     "kind": "image",
-                })
+                }, expected_generation=entry_gen)
         state = self._get_stream()
         for item in state.pending_files:
             try:
@@ -1084,8 +1116,8 @@ class FeishuChannelAdapter(ChannelAdapter):
                 await self.send_media(channel_id, msg, from_pending=True)
             except Exception as e:
                 logger.error(f"[FeishuStream] Send pending media failed: {e}")
-        # 清空已处理的列表
-        self._clear_stream_list("pending_files")
+        # 仅清空同代的 pending_files
+        self._clear_stream_list("pending_files", expected_generation=entry_gen)
 
     @staticmethod
     def _build_streaming_card_dict(content: str) -> str:
