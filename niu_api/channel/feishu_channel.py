@@ -735,8 +735,9 @@ class FeishuChannelAdapter(ChannelAdapter):
                 send_resp = self.channel.client.im.v1.message.reply(send_req)
             else:
                 # 单聊 — 使用 create API 发送新消息
+                receive_id_type = self._infer_receive_id_type(self._stream_target)
                 send_req = CreateMessageRequest.builder() \
-                    .receive_id_type("chat_id") \
+                    .receive_id_type(receive_id_type) \
                     .request_body(CreateMessageRequestBody.builder()
                         .receive_id(self._stream_target)
                         .msg_type("interactive")
@@ -1439,15 +1440,22 @@ class FeishuChannelAdapter(ChannelAdapter):
 
     @staticmethod
     def _infer_receive_id_type(receive_id: str) -> str:
-        """根据 receive_id 前缀推断 receive_id_type"""
+        """根据 receive_id 前缀推断 receive_id_type
+
+        飞书 ID 前缀规范：
+        - oc_ → chat_id（群聊）
+        - ou_ → open_id（用户）
+        - on_ → union_id（用户，跨应用）
+        - 其他 → open_id（默认，与 SDK 行为一致）
+        """
         if receive_id.startswith("oc_"):
             return "chat_id"
         elif receive_id.startswith("ou_"):
             return "open_id"
         elif receive_id.startswith("on_"):
-            return "open_id"
+            return "union_id"
         else:
-            return "chat_id"  # 默认
+            return "open_id"
 
     # ── Tenant Token ──────────────────────────────────────────
 
