@@ -17,9 +17,9 @@ class ChannelRouter:
     async def route_in(self, message: UnifiedMessage) -> str:
         """所有通道的消息统一交给 ChatQueue 处理（异步入队）
 
-        飞书 SDK 在后台线程中调用 _on_message，此时 asyncio.to_thread
-        会使用 SDK 的后台事件循环而非 FastAPI 主循环，导致上下文错误。
-        因此飞书通道使用 route_in_sync（同步入队），而非此方法。
+        IM Gateway 在后台线程中调用 _on_message，此时 asyncio.to_thread
+        会使用 Gateway 的后台事件循环而非 FastAPI 主循环，导致上下文错误。
+        因此 IM 通道使用 route_in_sync（同步入队），而非此方法。
         """
         from niu_api.chat_queue import get_chat_queue
         q = get_chat_queue()
@@ -37,14 +37,14 @@ class ChannelRouter:
 
     def route_in_sync(self, message: UnifiedMessage, session_id: str | None = None,
                       message_override: str | None = None):
-        """同步路由消息到 ChatQueue — 供飞书等通道线程中调用
+        """同步路由消息到 ChatQueue — 供 IM 等通道线程中调用
 
         返回 EnqueueResult，不再返回回复文本。
-        回复由 ChatQueue Worker 处理后自动推送到飞书。
+        回复由 ChatQueue Worker 处理后自动推送到 IM 通道。
         """
         from niu_api.chat_queue import get_chat_queue
         content = message_override if message_override is not None else message.content
-        channel = message.channel or "feishu"
+        channel = message.channel or "im"
         if session_id is None:
             session_id = f"{channel}:{message.sender_id}"
         q = get_chat_queue()

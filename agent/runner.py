@@ -1955,10 +1955,12 @@ REMINDER: 禁止调用任何工具，直接在回复中输出 keep=/update=/curs
         if role == "assistant" and content.strip():
             notify_new_message_sync(msg_id, "assistant", content, source="electron")
 
-            # 触发飞书流式推送
+            # 触发 IM Gateway 流式推送
             try:
-                from niu_api.channel.feishu_channel import FeishuChannelAdapter
-                FeishuChannelAdapter.trigger_feishu_stream_push()
+                from niu_api.channel.gateway import get_im_gateway
+                _gw = get_im_gateway()
+                if _gw and _gw.is_connected:
+                    _gw.notify_stream("")
             except Exception:
                 pass
 

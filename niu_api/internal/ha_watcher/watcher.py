@@ -222,18 +222,18 @@ class _HAWatcher:
                 print(f"[HAWatcher] Agent returned empty reply for: {description}")
                 return
 
-            # 飞书通道推送
+            # IM 通道推送
             try:
                 from niu_api.channel import get_channel_router
                 router = get_channel_router()
-                if router.has_channel("feishu"):
+                if router.has_channel("im"):
                     push_future = asyncio.run_coroutine_threadsafe(
-                        router.push(agent_reply, "feishu", ""),
+                        router.push(agent_reply, "im", ""),
                         loop,
                     )
                     push_future.result(timeout=30)
             except Exception as e:
-                print(f"[HAWatcher] Feishu push failed: {e}")
+                print(f"[HAWatcher] IM push failed: {e}")
 
         except Exception as e:
             print(f"[HAWatcher] 推送失败: {e}")

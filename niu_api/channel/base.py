@@ -17,7 +17,7 @@ class ResolvedMessage:
 @dataclass
 class LocalResource:
     """已下载到本地的远端资源"""
-    original_key: str      # 飞书 file_key / image_key
+    original_key: str      # IM file_key / image_key
     resource_type: str     # "image" | "file"
     local_path: str        # 本地文件路径
     filename: str          # 原始文件名
@@ -51,7 +51,7 @@ class ChannelAdapter(ABC):
         """解析出方向消息中的本地文件标记，返回待发送的消息列表。
 
         默认实现：不转换，返回一条 ResolvedMessage(kind="text", content=content)
-        飞书通道重写：提取 Markdown 图片 ![alt](path) / 文件链接 [name](path) 标记 → 返回多条消息
+        IM 通道重写：提取 Markdown 图片 ![alt](path) / 文件链接 [name](path) 标记 → 返回多条消息
         Electron 通道：使用默认实现（前端自行解析 Markdown 图片）
         """
         return [ResolvedMessage(kind="text", content=content)]
@@ -60,7 +60,7 @@ class ChannelAdapter(ABC):
         """解析入方向消息中的远端资源引用，下载到本地。
 
         默认实现：不处理，返回空列表
-        飞书通道重写：下载飞书图片/文件 → 写入 ~/.niu/tmp/ → 返回 LocalResource 列表
+        IM 通道重写：下载 IM 图片/文件 → 写入 ~/.niu/tmp/ → 返回 LocalResource 列表
 
         注意：此方法是同步的，因为 _on_message 在 SDK 线程中调用。
         """

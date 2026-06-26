@@ -19,8 +19,8 @@ from agent.session import get_message_store
 class ChatRequest:
     """入队消息"""
     content: str
-    source: str = "frontend"  # "frontend" | "feishu" | "scheduler"
-    channel: str = "electron"  # 消息来源通道: "electron" | "feishu" | "scheduler" 等
+    source: str = "frontend"  # "frontend" | "im" | "scheduler"
+    channel: str = "electron"  # 消息来源通道: "electron" | "im" | "scheduler" 等
     channel_id: str = ""
     sender_id: str = ""
     session_id: str = "default"
@@ -97,7 +97,7 @@ class ChatQueue:
         return EnqueueResult(queued=True, request_id=request_id)
 
     def enqueue_sync(self, content: str, source: str = "frontend",
-                     channel: str = "feishu", channel_id: str = "",
+                     channel: str = "im", channel_id: str = "",
                      sender_id: str = "", session_id: str = "default") -> EnqueueResult:
         """同步入队 — 供外部线程调用（通过 call_soon_threadsafe）"""
         from niu_api.chat import _main_loop
