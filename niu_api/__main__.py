@@ -103,7 +103,14 @@ async def lifespan(app: FastAPI):
     set_preload_complete()
     logger.info("Preload complete, ready to show window")
 
-    # 6.0. Backup critical user files
+    # 6.0. Enable SQLite WAL mode for messages.db
+    import sqlite3
+    db_path = Path.home() / ".niu" / "messages.db"
+    if db_path.exists():
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.close()
+        logger.info("messages.db WAL mode enabled")
 
     # 6.1. Initialize channel router
     from niu_api.channel import get_channel_router
@@ -113,45 +120,34 @@ async def lifespan(app: FastAPI):
     channel_router.register("electron", ElectronChannelAdapter())
     logger.info("Channel router initialized (electron channel registered)")
 
-    # 6.2. Start Feishu channel (if configured)
+    # 6.2. Start IM Gateway (if configured)
     try:
-        import json
-        from pathlib import Path
+        import json as _json
         prefs_path = Path.home() / ".niu" / "preferences.json"
         if prefs_path.exists():
-            prefs = json.loads(prefs_path.read_text(encoding="utf-8"))
-            feishu_config = prefs.get("feishu", {})
-            if feishu_config.get("enabled"):
-                app_id = feishu_config.get("app_id", "").strip()
-                app_secret = feishu_config.get("app_secret", "").strip()
-                if not app_id or not app_secret:
-                    logger.warning("Feishu channel enabled but app_id/app_secret missing, skipping")
-                else:
-                    from niu_api.channel.feishu_channel import FeishuChannelAdapter
-
-                    feishu_adapter = FeishuChannelAdapter(
-                        app_id=app_id,
-                        app_secret=app_secret,
-                        channel_router=channel_router,
-                    )
-                    channel_router.register("feishu", feishu_adapter)
-
-                    feishu_task = asyncio.create_task(feishu_adapter.start())
-
-                    def _on_feishu_done(t: asyncio.Task):
-                        if not t.cancelled():
-                            exc = t.exception()
-                            if exc:
-                                logger.error(f"Feishu channel startup failed: {exc}")
-
-                    feishu_task.add_done_callback(_on_feishu_done)
-                    logger.info("Feishu channel starting (WebSocket)")
-            else:
-                logger.info("Feishu channel disabled (not enabled in preferences)")
+            _prefs = _json.loads(prefs_path.read_text(encoding="utf-8"))
         else:
-            logger.debug("No preferences.json, Feishu channel skipped")
+            _prefs = {}
+        im_config = _prefs.get("im", {})
+        if im_config.get("enabled"):
+            from niu_api.channel.gateway import IMGateway, set_im_gateway
+            gateway = IMGateway(channel_router=channel_router, port=im_config.get("gateway_port", 19876))
+            channel_router.register("im", gateway)
+            set_im_gateway(gateway)
+            gateway_task = asyncio.create_task(gateway.start())
+
+            def _on_gateway_done(t: asyncio.Task):
+                if not t.cancelled():
+                    exc = t.exception()
+                    if exc:
+                        logger.error(f"IM Gateway startup failed: {exc}")
+
+            gateway_task.add_done_callback(_on_gateway_done)
+            logger.info("IM Gateway starting (TCP Server)")
+        else:
+            logger.info("IM Gateway disabled")
     except Exception as e:
-        logger.warning(f"Feishu channel setup failed: {e}")
+        logger.warning(f"IM Gateway setup failed: {e}")
 
     # 6.5. Save main event loop for SSE sync notifications
     from niu_api.chat import set_main_event_loop
@@ -360,16 +356,15 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Failed to stop ChatQueue: {e}")
 
-    # 停止飞书通道
+    # 停止 IM Gateway
     try:
-        from niu_api.channel import get_channel_router
-        router = get_channel_router()
-        feishu_adapter = router.channels.get("feishu")
-        if feishu_adapter:
-            await feishu_adapter.disconnect()
-            logger.info("Feishu channel disconnected")
+        from niu_api.channel.gateway import get_im_gateway
+        gateway = get_im_gateway()
+        if gateway:
+            await gateway.stop()
+            logger.info("IM Gateway stopped")
     except Exception as e:
-        logger.warning(f"Failed to disconnect Feishu channel: {e}")
+        logger.warning(f"Failed to stop IM Gateway: {e}")
 
     from niu_api.internal.scheduler import stop_scheduler
     stop_scheduler()

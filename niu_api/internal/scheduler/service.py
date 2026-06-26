@@ -99,19 +99,19 @@ def trigger_callback(task: dict) -> Optional[str]:
         # 触发小女孩蹦高提醒（仅用于视觉提示，不传递消息内容）
         add_pending_alert("⏰")
 
-        # 飞书通道推送：有推送目标时才推送
+        # IM 通道推送：有推送目标时才推送
         try:
             from niu_api.channel import get_channel_router
             router = get_channel_router()
-            if router.has_channel("feishu"):
+            if router.has_channel("im"):
                 push_chat_id = task.get("chat_id") or ""
                 push_future = asyncio.run_coroutine_threadsafe(
-                    router.push(agent_reply, "feishu", push_chat_id),
+                    router.push(agent_reply, "im", push_chat_id),
                     loop,
                 )
                 push_future.result(timeout=30)
         except Exception as e:
-            logger.warning(f"[SCHEDULER] Feishu push failed: {e}")
+            logger.warning(f"[SCHEDULER] IM push failed: {e}")
 
         return agent_reply
 
