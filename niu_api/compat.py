@@ -1714,7 +1714,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                 # 模式二改为一轮JSON方案，不要求游标报告
                 _cursor_instruction = ""
             else:
-                # 模式一需要报告游标
+                # 模式一：游标由程序自动推进，不需要报告指令
                 _cursor_instruction = ""
             logger.info(f"[Tidy] Sleep: usage={usage_percent:.1f}%, selecting {compress_mode}")
 
