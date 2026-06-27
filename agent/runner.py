@@ -654,7 +654,7 @@ class NiuRunner:
         return msg_tokens, msg_id_set
 
     def _run_subagent_step(self, step_name, cursor_path, cursor_field,
-                           prompt, llm_config, msg_id_set, last_cursor_id,
+                           prompt, llm_config, last_cursor_id,
                            fallback_ids, timestamp_field):
         """Run a sub-agent step with timeout, cursor extraction, validation and write-back.
 
@@ -670,8 +670,6 @@ class NiuRunner:
             The task prompt for the sub-agent (already truncated).
         llm_config : dict
             LLM configuration forwarded to call_subagent.
-        msg_id_set : set[str]
-            Set of currently-valid message IDs (for cursor validation).
         last_cursor_id : str
             Previous cursor value — used as revert target on validation failure.
         fallback_ids : list[str]
@@ -688,7 +686,7 @@ class NiuRunner:
             new_cursor_id is the validated cursor after the step.
         """
         import concurrent.futures as _cf
-        from niu_api.compat import _extract_cursor_id, _is_subagent_overflow, _extract_overflow_info, _write_cursor_with_lock
+        from niu_api.compat import _is_subagent_overflow, _extract_overflow_info, _write_cursor_with_lock
         from agent.subagent import call_subagent
 
         # --- call sub-agent ---
@@ -702,35 +700,29 @@ class NiuRunner:
 
         logger.info(f"[Runner] Force: {step_name} completed, length={len(result)}")
 
-        # --- cursor extraction ---
+        # --- cursor auto-advance: success→advance to end of incremental range, overflow→don't move ---
         new_cursor_id = last_cursor_id
         if _is_subagent_overflow(result):
             overflow_info = _extract_overflow_info(result)
-            logger.warning(f"[Runner] Force: {step_name} overflow: {overflow_info.get('turns_completed', 0)} turns")
-            partial = overflow_info.get("partial_result", "")
-            recovered = _extract_cursor_id(partial, cursor_field, msg_id_set)
-            if recovered and recovered != "NULL":
-                new_cursor_id = recovered
-            else:
-                new_cursor_id = fallback_ids[-1] if fallback_ids else last_cursor_id
-                logger.warning(f"[Runner] Force: {step_name} cursor overflow fallback: {new_cursor_id}")
+            logger.warning(f"[{step_name}] overflow: {overflow_info.get('turns_completed', 0)} turns")
+            # overflow 时游标不动
+            new_cursor_id = last_cursor_id
         else:
-            extracted = _extract_cursor_id(result, cursor_field, msg_id_set)
-            if extracted and extracted != "NULL":
-                new_cursor_id = extracted
-            elif extracted == "NULL" or not extracted:
-                new_cursor_id = fallback_ids[-1] if fallback_ids else last_cursor_id
-                logger.warning(f"[Runner] Force: {step_name} cursor not matched, fallback: {new_cursor_id}")
+            new_cursor_id = fallback_ids[-1] if fallback_ids else last_cursor_id
+            logger.info(f"[{step_name}] Cursor auto-advanced to: {new_cursor_id}")
 
         # --- cursor validation ---
         if new_cursor_id:
-            fresh_msgs = self._sync_get_messages()
-            fresh_ids = {getattr(m, "id", "") for m in fresh_msgs}
-            if new_cursor_id not in fresh_ids:
-                logger.warning(f"[Runner] Force: {step_name} cursor {new_cursor_id} deleted, reverting to {last_cursor_id}")
-                new_cursor_id = last_cursor_id
-                if new_cursor_id and new_cursor_id not in fresh_ids:
-                    new_cursor_id = ""
+            try:
+                fresh_msgs = self._sync_get_messages()
+                fresh_ids = {getattr(m, "id", "") for m in fresh_msgs}
+                if new_cursor_id not in fresh_ids:
+                    logger.warning(f"[{step_name}] Cursor {new_cursor_id} deleted, reverting to {last_cursor_id}")
+                    new_cursor_id = last_cursor_id
+                    if new_cursor_id and new_cursor_id not in fresh_ids:
+                        new_cursor_id = ""
+            except Exception:
+                logger.warning(f"[{step_name}] Could not verify cursor, keeping {new_cursor_id}")
 
         # --- cursor write-back ---
         if new_cursor_id:
@@ -824,17 +816,14 @@ class NiuRunner:
 
 注意：对话历史中包含工具调用结果（role=tool），这些是程序化操作的结果。照片入库、人物命名等操作已经自动完成了知识图谱写入，不要重复创建这些实体。如果需要关联已有实体，请使用入库后的实体名称。
 
-{entity_force_msg_text}
-
-处理完成后，在报告末尾用 JSON 格式报告：{{"last_entity_extract_id": "<收到的消息中 idx 最大的消息的 id（UUID）>"}}
-**必须推进游标**：即使没有可提取的内容，也必须输出 idx 最大的消息的 UUID。"""
+{entity_force_msg_text}"""
 
                 safe_tokens = int(_read_context_window_tokens() * 0.6)
                 truncated_entity_prompt = _truncate_task_for_subagent(entity_force_prompt, safe_tokens)
 
                 _, new_entity_id = self._run_subagent_step(
                     "entity-extractor", entity_cursor_path, "last_entity_extract_id",
-                    truncated_entity_prompt, llm_config, msg_id_set, last_entity_extract_id,
+                    truncated_entity_prompt, llm_config, last_entity_extract_id,
                     entity_force_msg_ids, "last_entity_extract_at",
                 )
 
@@ -863,17 +852,14 @@ class NiuRunner:
             if dream_force_msg_ids:
                 dream_force_prompt = f"""对以下消息中涉及的实体进行精加工（打标签、建关系、关联脑区、更新画像），并维护 skill 文件。
 
-{dream_force_msg_text}
-
-处理完成后，在报告末尾用 JSON 格式报告：{{"last_dream_evolve_id": "<收到的消息中 idx 最大的消息的 id（UUID）>"}}
-**必须推进游标**：即使没有需要精加工的内容，也必须输出 idx 最大的消息的 UUID。"""
+{dream_force_msg_text}"""
 
                 safe_tokens = int(_read_context_window_tokens() * 0.6)
                 truncated_dream_prompt = _truncate_task_for_subagent(dream_force_prompt, safe_tokens)
 
                 _, new_dream_id = self._run_subagent_step(
                     "dream-evolver", dream_cursor_path, "last_dream_evolve_id",
-                    truncated_dream_prompt, llm_config, msg_id_set, last_dream_evolve_id,
+                    truncated_dream_prompt, llm_config, last_dream_evolve_id,
                     dream_force_msg_ids, "last_evolve_at",
                 )
 
@@ -904,7 +890,7 @@ class NiuRunner:
 
                 _, new_journal_id = self._run_subagent_step(
                     "journal-agent", journal_cursor_path, "last_journal_id",
-                    truncated_journal_prompt, llm_config, msg_id_set, last_journal_id,
+                    truncated_journal_prompt, llm_config, last_journal_id,
                     journal_force_msg_ids, "last_journal_at",
                 )
                 logger.info(f"[Runner] Force: Journal cursor updated: {new_journal_id}")
