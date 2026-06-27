@@ -154,6 +154,27 @@ async def lifespan(app: FastAPI):
     set_main_event_loop(asyncio.get_running_loop())
     logger.info("SSE event loop captured")
 
+    # 6.5.1. Start daily tmp cleanup background task
+    async def _daily_tmp_cleanup():
+        """每天凌晨4点清理非当天的临时文件"""
+        while True:
+            now = datetime.now()
+            # 计算到下一个凌晨4点的时间
+            next_run = now.replace(hour=4, minute=0, second=0, microsecond=0)
+            if next_run <= now:
+                next_run += timedelta(days=1)
+            wait_seconds = (next_run - now).total_seconds()
+            await asyncio.sleep(wait_seconds)
+            try:
+                from agent.tmp_dir import cleanup_old_tmp
+                cleaned = cleanup_old_tmp()
+                if cleaned > 0:
+                    logger.info(f"[TmpCleanup] Cleaned {cleaned} old temp files")
+            except Exception as e:
+                logger.error(f"[TmpCleanup] Error: {e}")
+
+    _cleanup_task = asyncio.create_task(_daily_tmp_cleanup())
+
     # 6.6. Start ChatQueue (serial message processing)
     from niu_api.chat_queue import start_chat_queue
     await start_chat_queue()
@@ -319,6 +340,13 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     logger.info("Niu API Server shutting down...")
+
+    # Cancel daily tmp cleanup task
+    try:
+        _cleanup_task.cancel()
+        logger.info("Daily tmp cleanup task cancelled")
+    except Exception:
+        pass
 
     # 停止 brain region 后台同步 (must stop before LightRAG — depends on it)
     try:
