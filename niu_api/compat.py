@@ -2266,7 +2266,7 @@ update=3|用户讨论了XX方案;11|工具执行了YY操作
                     logger.warning(f"[Tidy] Force: Dream-evolver overflow: {overflow_info.get('turns_completed', 0)} turns, {overflow_info.get('tokens_used', 0)} tokens")
                     # overflow 时游标不动
                 else:
-                    new_dream_id = dream_force_msg_ids[-1]
+                    new_dream_id = dream_force_msg_ids[-1] if dream_force_msg_ids else last_dream_evolve_id
                     logger.info(f"[Tidy] Force: Dream cursor auto-advanced to: {new_dream_id}")
             else:
                 logger.info("[Tidy] Force: dream-evolver no incremental messages")
