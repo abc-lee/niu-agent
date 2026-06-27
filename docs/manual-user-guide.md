@@ -113,6 +113,29 @@ Go 启动器首次运行时，会自动执行 `initNiuDir()`：
 
 > **重要**：LightRAG 的 keyword_extraction 依赖 `response_format`，必须使用标准端点。如果误用 Coding Plan 端点，系统会自动 fallback 到纯 prompt JSON 返回（功能正常但多一次无效请求）。
 
+**火山方舟深度思考模型 + 工具调用配置**（重要）：
+
+火山方舟的 `doubao-seed` 系列模型（包括 `ark-code-latest`）默认启用深度思考模式。当 `litellm_kwargs` 中未显式传递 `thinking` 参数时，API 没有结构化工具调用保障——模型偶发将 tool_call 放入 `reasoning_content` 的 `<seed:tool_call>` XML 格式，而非标准的 `tool_calls` 字段，导致工具调用丢失。
+
+**主 Agent 必须配置**：
+```json
+"llm": {
+  ...
+  "litellm_kwargs": {
+    "thinking": {"type": "enabled"}
+  }
+}
+```
+
+| `thinking` 值 | 效果 | 适用场景 |
+|---------------|------|----------|
+| `{"type": "enabled"}` | 显式启用深度思考，API 网关保障 tool_call 走标准通道 | **主 Agent（必须）** |
+| `{"type": "disabled"}` | 禁用深度思考 | LightRAG 入库（需配合 `response_format`） |
+| `{"type": "auto"}` | 模型自行决定 | 不推荐（行为不确定） |
+| 不传 | 模型默认启用思考，但无 tool_call 保障 | **危险：工具调用可能丢失** |
+
+> **注意**：`thinking` 参数通过 `litellm_kwargs` 原样透传给 LiteLLM，再由 VolcEngine 适配器转为 API 请求的 `extra_body.thinking` 字段。代码不做任何厂商判断，所有厂商特有参数都走这个透传通道。
+
 **模型名格式差异**：
 
 两种端点的模型池相同，但模型名格式不同：
@@ -194,6 +217,22 @@ LightRAG 入库（实体提取、关系构建）使用与主 Agent 独立的 LLM
 6. 如发现问题，调整 reasoning_effort 重新入库测试
 
 **配置示例**：
+
+主 Agent 用火山方舟 Coding Plan（完整配置）：
+```json
+"llm": {
+  "presetId": "ark-code-latest",
+  "apiKey": "你的API Key",
+  "apiBase": "https://ark.cn-beijing.volces.com/api/coding/v3",
+  "model": "ark-code-latest",
+  "type": "openai",
+  "provider": "volcengine",
+  "reasoning_effort": "",
+  "litellm_kwargs": {
+    "thinking": {"type": "enabled"}
+  }
+}
+```
 
 场景一：主 Agent 用思考链模型，LightRAG 用轻量模型（推荐）：
 ```json
