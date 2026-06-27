@@ -276,3 +276,4 @@ dream-evolver 修改 skill 时遵循 Skill-Aware Reflection 方法论：
 | 高德开通 | [manual-amap-setup.md](manual-amap-setup.md) | 高德地图 API Key 获取流程、浏览器操作步骤、配置写入、故障排查 |
 | 智能家居开通 | [manual-ha-setup.md](manual-ha-setup.md) | Home Assistant 安装部署、长期访问令牌、设备集成、智能触发配置、故障排查 |
 | MCP与虚拟磁盘 | [manual-mcp-disk.md](manual-mcp-disk.md) | MCP 服务器同进程架构、新增服务器步骤、虚拟磁盘 YAML 配置格式、校验规则 |
+| IM Gateway 接入 | [manual-im-gateway.md](manual-im-gateway.md) | Gateway+Adapter 分离架构、TCP 协议、配置格式、目录规范、开发新 Adapter 步骤 |
