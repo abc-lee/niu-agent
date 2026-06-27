@@ -1,11 +1,12 @@
 """IM 网关 — TCP Server，与 IM Adapter 通讯"""
 import asyncio
 import json
-import shlex
+import os
 import subprocess
 import sys
 import threading
 import time
+from collections import deque
 from pathlib import Path
 from loguru import logger
 
@@ -38,6 +39,9 @@ class IMGateway(ChannelAdapter):
         self._MAX_RESTARTS = 3
         self._MAX_MESSAGE_SIZE = 10 * 1024 * 1024  # 10MB
         self._connected_since = 0.0
+        self._send_buffer: deque = deque(maxlen=10)
+        self._reply_to_ids: dict[str, str] = {}   # channel_id → reply_to_id 映射（群聊回复目标）
+        self._finalized_channels: set[str] = set() # 已通过 STREAM(is_final) 终结的 channel_id
 
     async def start_server(self):
         """启动 TCP Server"""
@@ -67,6 +71,10 @@ class IMGateway(ChannelAdapter):
             if self._adapter_proc is not None:
                 retcode = self._adapter_proc.poll()
                 if retcode is not None:
+                    if retcode == 2:
+                        logger.error("[IMGateway] Adapter permanent error (code=2), not restarting")
+                        self._adapter_proc = None
+                        break
                     self._restart_count += 1
                     if self._restart_count > self._MAX_RESTARTS:
                         logger.error(f"[IMGateway] Adapter exited {self._restart_count} times, giving up restart")
@@ -113,22 +121,47 @@ class IMGateway(ChannelAdapter):
                 return
             prefs = json.loads(prefs_path.read_text(encoding="utf-8"))
             im_config = prefs.get("im", {})
-            cmd = im_config.get("adapter_command", "").strip()
-            if not cmd:
+            adapter_type = im_config.get("adapter", "").strip()
+            if not adapter_type:
+                logger.info("[IMGateway] No adapter configured, skipping launch")
                 return
-            argv = shlex.split(cmd) + ["--gateway-port", str(self._port)]
-            if argv[0] == "python":
-                argv[0] = sys.executable
+
+            adapter_module = f"niu_{adapter_type}_adapter"
+            adapter_workdir = Path(__file__).resolve().parent.parent.parent / "im-adapters" / adapter_type / "src"
+            if not adapter_workdir.exists():
+                logger.error(f"[IMGateway] Adapter not found: {adapter_workdir}")
+                return
+
+            env = dict(os.environ)
+            env["NIU_IM_ADAPTER"] = adapter_type
+            env["NIU_GATEWAY_PORT"] = str(self._port)
+            python_path = env.get("PYTHONPATH", "")
+            env["PYTHONPATH"] = f"{adapter_workdir}:{python_path}" if python_path else str(adapter_workdir)
+
+            adapter_config = prefs.get(adapter_type, {})
+            app_id = adapter_config.get("app_id", "")
+            app_secret = adapter_config.get("app_secret", "")
+            if not app_id or not app_secret:
+                logger.error(f"[IMGateway] {adapter_type} credentials missing, skipping")
+                return
+            env[f"NIU_{adapter_type.upper()}_APP_ID"] = app_id
+            env[f"NIU_{adapter_type.upper()}_APP_SECRET"] = app_secret
+            for key in ("user_p2p_chat_id", "user_open_id"):
+                val = adapter_config.get(key, "")
+                if val:
+                    env[f"NIU_{adapter_type.upper()}_{key.upper()}"] = val
+
+            argv = [sys.executable, "-m", adapter_module]
             log_dir = Path.home() / ".niu" / "logs"
             log_dir.mkdir(parents=True, exist_ok=True)
             adapter_stderr = open(log_dir / "im_adapter_stderr.log", "a")
             self._adapter_proc = subprocess.Popen(
-                argv, stdout=subprocess.DEVNULL, stderr=adapter_stderr,
+                argv, stdout=subprocess.DEVNULL, stderr=adapter_stderr, env=env,
             )
             adapter_stderr.close()
-            logger.info(f"[IMGateway] Adapter process launched: PID={self._adapter_proc.pid}")
+            logger.info(f"[IMGateway] Adapter launched: {adapter_type}, PID={self._adapter_proc.pid}")
         except Exception as e:
-            logger.error(f"[IMGateway] Failed to launch adapter: {e}")
+            logger.error(f"[IMGateway] Launch failed: {e}")
 
     async def _handle_adapter(self, reader, writer):
         """处理 Adapter 连接"""
@@ -172,6 +205,8 @@ class IMGateway(ChannelAdapter):
                     self._connected.clear()
                     self._adapter_name = None
                     self._push_target = None
+                    self._reply_to_ids.clear()
+                    self._finalized_channels.clear()
                 try:
                     writer.close()
                     await asyncio.wait_for(writer.wait_closed(), timeout=5.0)
@@ -185,7 +220,7 @@ class IMGateway(ChannelAdapter):
         if t == "MSG":
             self._on_msg(msg)
         elif t == "READY":
-            self._on_ready(msg)
+            await self._on_ready(msg)
         elif t == "PING":
             await self._async_send({"type": "PONG"})
 
@@ -203,29 +238,50 @@ class IMGateway(ChannelAdapter):
             resources=[],
             raw={"is_group": msg.get("is_group", False)},
         )
+        reply_to_id = msg.get("reply_to_id")
+        if reply_to_id:
+            with self._lock:
+                self._reply_to_ids[msg.get("channel_id", "")] = reply_to_id
         self._channel_router.route_in_sync(
             unified,
             session_id=msg.get("session_id"),
             message_override=msg.get("content"),
         )
 
-    def _on_ready(self, msg: dict):
-        """处理 READY 指令"""
+    async def _on_ready(self, msg: dict):
+        """处理 READY — 记录信息 + 重放缓冲"""
         with self._lock:
             self._adapter_name = msg.get("adapter", "im")
             self._push_target = msg.get("push_target")
             logger.info(f"[IMGateway] Adapter ready: {self._adapter_name}, push_target={self._push_target}")
+        if self._send_buffer:
+            logger.info(f"[IMGateway] Replaying {len(self._send_buffer)} buffered messages")
+            for cmd in list(self._send_buffer):
+                try:
+                    await self._async_send(cmd, _skip_buffer=True)
+                except Exception as e:
+                    logger.error(f"[IMGateway] Replay failed: {e}")
+            self._send_buffer.clear()
 
-    async def _async_send(self, cmd: dict):
+    async def _async_send(self, cmd: dict, _skip_buffer=False):
         """发送指令给 Adapter（async，带 drain）
 
         _lock 保护 writer 引用的读取（跨线程安全）。
         _write_lock 序列化 write+drain（协程级安全，防止两个协程交错写入破坏协议）。
+        _skip_buffer=True 时跳过缓冲（重放时避免循环）。
         """
         with self._lock:
             writer = self._writer
         if writer is None:
             return
+        if not _skip_buffer and cmd.get("type") in ("SEND", "PUSH"):
+            cid = cmd.get("channel_id", "__global__")
+            existing = next((i for i, c in enumerate(self._send_buffer)
+                             if c.get("channel_id") == cid and c.get("type") == cmd.get("type")), None)
+            if existing is not None:
+                self._send_buffer[existing] = cmd
+            else:
+                self._send_buffer.append(cmd)
         async with self._write_lock:
             try:
                 payload = json.dumps(cmd, ensure_ascii=False).encode("utf-8")
@@ -264,7 +320,16 @@ class IMGateway(ChannelAdapter):
         if not self._connected.is_set():
             logger.debug("[IMGateway] Adapter not connected, cannot send")
             return
-        await self._async_send({"type": "SEND", "channel_id": channel_id, "content": content})
+        with self._lock:
+            if channel_id in self._finalized_channels:
+                self._finalized_channels.discard(channel_id)
+                self._reply_to_ids.pop(channel_id, None)
+                logger.debug(f"[IMGateway] Channel {channel_id} already finalized via STREAM, skipping SEND")
+                return
+            reply_to_id = self._reply_to_ids.get(channel_id, "")
+        await self._async_send({"type": "SEND", "channel_id": channel_id, "content": content, "reply_to_id": reply_to_id})
+        with self._lock:
+            self._reply_to_ids.pop(channel_id, None)
 
     async def push(self, channel_id: str, content: str) -> None:
         with self._lock:
@@ -275,9 +340,20 @@ class IMGateway(ChannelAdapter):
             return
         await self._async_send({"type": "PUSH", "channel_id": target, "content": content})
 
-    def notify_stream(self, channel_id: str):
-        """通知 Adapter 有新内容。channel_id 可为空，Adapter 通过内部状态确定推送目标。"""
-        self._send_command({"type": "STREAM", "channel_id": channel_id or ""})
+    def notify_stream(self, content: str, channel_id: str = "", is_final: bool = False):
+        """通知 Adapter 有新增量内容"""
+        with self._lock:
+            reply_to_id = self._reply_to_ids.get(channel_id, "")
+        self._send_command({
+            "type": "STREAM",
+            "channel_id": channel_id,
+            "content": content,
+            "is_final": is_final,
+            "reply_to_id": reply_to_id,
+        })
+        if is_final:
+            with self._lock:
+                self._finalized_channels.add(channel_id)
 
     async def send_media(self, channel_id: str, msg) -> None:
         """IM 通道统一 Markdown 透传，不拆分媒体。如果 route_out 调用了 send_media，
