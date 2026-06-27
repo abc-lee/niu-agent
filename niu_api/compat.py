@@ -1899,6 +1899,7 @@ update=3|用户讨论了XX方案;11|工具执行了YY操作
                                         valid_updates = [u for u in valid_updates if u.get("message_id", "") not in post_dream_ids]
 
                             protect_recent_count = _read_protect_recent_count()
+                            # 防御 UUID 幻觉：PROTECTED 消息已从输入中排除，但 LLM 可能幻觉出其 UUID
                             protected_set: set[str] = set()
                             if protect_recent_count > 0:
                                 _pids = []
@@ -2022,39 +2023,18 @@ update=3|用户讨论了XX方案;11|工具执行了YY操作
                             new_compress_id = last_compress_id
                             if new_compress_id and new_compress_id not in fresh_ids:
                                 new_compress_id = ""
-                        # 防御：游标指向 PROTECTED 消息会导致下次增量范围卡死
-                        if new_compress_id and protected_ids and new_compress_id in protected_ids:
-                            logger.warning(f"[Tidy] Compress cursor {new_compress_id} is PROTECTED, reverting to non-protected message")
-                            _pid_set = set(protected_ids)
-                            new_compress_id = ""
-                            for mid in reversed(compress_msg_ids):
-                                if mid not in _pid_set and mid in fresh_ids:
-                                    new_compress_id = mid
-                                    break
+                        # PROTECTED 消息已从 compress_msg_ids 中排除，游标不可能指向 PROTECTED 消息
 
                     compress_integrity_ok = True
                     if protected_ids:
                         try:
-                            protected_originals = {}
-                            for pid in protected_ids:
-                                _m = next((m for m in messages if getattr(m, "id", "") == pid), None)
-                                if _m:
-                                    protected_originals[pid] = getattr(_m, "content", "") or ""
-
                             post_msgs = await store.get_messages()
                             post_ids = {getattr(m, "id", "") for m in post_msgs}
-                            post_content_map = {getattr(m, "id", ""): (getattr(m, "content", "") or "") for m in post_msgs}
-
                             for pid in protected_ids:
                                 if pid not in post_ids:
-                                    logger.error(f"[Tidy] PROTECTED message {pid} was deleted by context-manager! Cannot restore (add_message would disorder sequence). Blocking cursor advance.")
+                                    logger.error(f"[Tidy] PROTECTED message {pid} missing after compress! Blocking cursor advance.")
                                     compress_integrity_ok = False
-                                elif pid in protected_originals and pid in post_content_map:
-                                    original = protected_originals[pid]
-                                    current = post_content_map[pid]
-                                    if original != current:
-                                        logger.warning(f"[Tidy] PROTECTED message {pid} was modified by context-manager! Rolling back content...")
-                                        await store.update_message(pid, original)
+                                    break
                         except Exception as e:
                             logger.warning(f"[Tidy] Failed to verify protected messages: {e}")
                             compress_integrity_ok = False
@@ -2603,6 +2583,7 @@ REMINDER: 禁止调用任何工具，直接在回复中输出 keep=/update=/curs
                                 logger.warning(f"[Tidy] Force: Protecting {len(unsafe_updates)} messages after dream cursor from content replacement")
                                 valid_updates = [u for u in valid_updates if u.get("message_id", "") not in post_dream_ids]
                     # 保护近期消息
+                    # 防御 UUID 幻觉：PROTECTED 消息已从输入中排除，但 LLM 可能幻觉出其 UUID
                     protected_force_ids: set[str] = set()
                     if protect_recent_count > 0:
                         _pids = []
