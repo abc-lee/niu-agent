@@ -152,7 +152,7 @@ class IMGateway(ChannelAdapter):
                     env[f"NIU_{adapter_type.upper()}_{key.upper()}"] = val
 
             argv = [sys.executable, "-m", adapter_module]
-            log_dir = Path.home() / ".niu" / "logs"
+            log_dir = Path(__file__).resolve().parent.parent.parent / "logs"
             log_dir.mkdir(parents=True, exist_ok=True)
             adapter_stderr = open(log_dir / "im_adapter_stderr.log", "a")
             self._adapter_proc = subprocess.Popen(

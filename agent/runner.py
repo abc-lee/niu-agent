@@ -1974,14 +1974,8 @@ REMINDER: 禁止调用任何工具，直接在回复中输出 keep=/update=/curs
         if role == "assistant" and content.strip():
             notify_new_message_sync(msg_id, "assistant", content, source="electron")
 
-            # 触发 IM Gateway 流式推送
-            try:
-                from niu_api.channel.gateway import get_im_gateway
-                _gw = get_im_gateway()
-                if _gw and _gw.is_connected:
-                    _gw.notify_stream("", channel_id=self._current_channel_id)
-            except Exception:
-                pass
+            # IM Gateway 流式推送已通过 reply chunk 路径（行 1849）发送完整内容，
+            # 此处不再发空信号（避免冗余 CardKit API 调用）
 
         return msg_id
 

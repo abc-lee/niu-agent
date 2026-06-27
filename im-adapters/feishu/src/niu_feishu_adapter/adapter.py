@@ -1,0 +1,403 @@
+"""飞书 Adapter — TCP Client + 飞书 SDK，纯中转
+
+入方向：飞书消息 → 下载附件 → 构造 MSG → 发给 Gateway
+出方向：Gateway 指令 → 调飞书 API → 结果留在飞书侧
+"""
+import asyncio
+import json
+import re
+import threading
+from pathlib import Path
+from typing import Optional
+
+from loguru import logger
+
+MAX_MSG_SIZE = 10 * 1024 * 1024  # 10MB
+_LOCAL_PATH_PREFIX = str(Path.home() / ".niu" / "tmp")
+
+
+class CardState:
+    """单个 channel 的流式卡片状态"""
+    __slots__ = ("card_id", "seq", "message_id", "receive_id", "reply_to_id",
+                 "pending_images", "last_content")
+
+    def __init__(self, card_id: str, receive_id: str, reply_to_id: str | None = None):
+        self.card_id = card_id
+        self.seq = 0
+        self.message_id: str | None = None
+        self.receive_id = receive_id
+        self.reply_to_id = reply_to_id
+        self.pending_images: list[dict] = []
+        self.last_content = ""
+
+
+class FeishuAdapter:
+    """飞书 IM Adapter — TCP Client"""
+
+    def __init__(self, gateway_port: int, app_id: str, app_secret: str,
+                 push_chat_id: str = "", push_open_id: str = ""):
+        self._gateway_port = gateway_port
+        self._app_id = app_id
+        self._app_secret = app_secret
+        self._push_chat_id = push_chat_id
+        self._push_open_id = push_open_id
+        self._reader: Optional[asyncio.StreamReader] = None
+        self._writer: Optional[asyncio.StreamWriter] = None
+        self._write_lock = asyncio.Lock()
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._client = None
+        self._card_states: dict[str, CardState] = {}
+
+    async def run(self):
+        self._loop = asyncio.get_running_loop()
+        self._init_sdk()
+        await self._connect_gateway()
+        await self._send_ready()
+        self._start_listener()
+        await self._read_loop()
+
+    # ── 飞书 SDK ──
+
+    def _init_sdk(self):
+        import lark_oapi as lark
+        self._client = lark.Client.builder() \
+            .app_id(self._app_id).app_secret(self._app_secret) \
+            .log_level(lark.LogLevel.DEBUG).build()
+        logger.info("[FeishuAdapter] SDK initialized")
+
+    def _start_listener(self):
+        import lark_oapi as lark
+        from lark_oapi.api.im.v1 import P2ImMessageReceiveV1
+
+        # 修补 lark_oapi.ws.client 模块级 loop — 防止捕获运行中的 loop
+        # ws/client.py 在 import 时通过 asyncio.get_event_loop() 捕获当前 loop，
+        # 如果此时 loop 已在运行，WSClient.start() 的 loop.run_until_complete()
+        # 会抛出 RuntimeError: This event loop is already running
+        import lark_oapi.ws.client as _ws_client
+        if _ws_client.loop.is_running():
+            _ws_client.loop = asyncio.new_event_loop()
+
+        def on_message(data: P2ImMessageReceiveV1) -> None:
+            try:
+                asyncio.run_coroutine_threadsafe(self._on_feishu_msg(data), self._loop)
+            except Exception as e:
+                logger.error(f"[FeishuAdapter] Event error: {e}")
+
+        handler = lark.EventDispatcherHandler.builder("", "") \
+            .register_p2_im_message_receive_v1(on_message).build()
+        ws = lark.ws.Client(self._app_id, self._app_secret,
+                            event_handler=handler, log_level=lark.LogLevel.DEBUG)
+        threading.Thread(target=ws.start, daemon=True).start()
+        logger.info("[FeishuAdapter] Listener started")
+
+    async def _on_feishu_msg(self, data):
+        """飞书消息回调"""
+        try:
+            msg = data.event.message
+            sender = data.event.sender
+        except AttributeError:
+            return
+
+        content_str = msg.content or "{}"
+        chat_id = msg.chat_id or ""
+        sender_id = sender.sender_id.open_id if sender.sender_id else ""
+        msg_type = msg.message_type or "text"
+        is_group = msg.chat_type == "group"
+        message_id = getattr(msg, 'message_id', '') or ''
+
+        # 群聊 @bot 过滤
+        if is_group:
+            mentions = getattr(msg, 'mentions', None) or []
+            bot_mentioned = any(
+                getattr(getattr(m, 'id', None), 'open_id', '') == self._app_id
+                for m in mentions if m
+            )
+            if not bot_mentioned:
+                return
+
+        # 文本内容
+        if msg_type == "text":
+            try:
+                text = json.loads(content_str).get("text", "")
+            except Exception:
+                text = content_str
+        else:
+            text = content_str
+
+        # 资源下载
+        from niu_feishu_adapter.feishu_api import download_resource
+        try:
+            if msg_type == "image":
+                image_key = json.loads(content_str).get("image_key", "")
+                if image_key:
+                    local = await asyncio.to_thread(
+                        download_resource, self._app_id, self._app_secret,
+                        image_key, "image", message_id=message_id)
+                    if local:
+                        text = f"![图片]({local})"
+                    else:
+                        text = f"[图片下载失败: {image_key}]"
+            elif msg_type == "file":
+                cj = json.loads(content_str)
+                file_key = cj.get("file_key", "")
+                file_name = cj.get("file_name", "unknown")
+                if file_key:
+                    local = await asyncio.to_thread(
+                        download_resource, self._app_id, self._app_secret,
+                        file_key, "file", file_name, message_id=message_id)
+                    if local:
+                        text = f"[{file_name}]({local})"
+                    else:
+                        text = f"[文件下载失败: {file_name}]"
+        except (json.JSONDecodeError, KeyError, TypeError) as e:
+            logger.warning(f"[FeishuAdapter] Resource parse error: {e}, raw: {content_str[:200]}")
+
+        # 群聊处理
+        reply_to_id = None
+        if is_group:
+            # 清理 @bot 文本
+            text = re.sub(r'@_user_\d+\s*', '', text).strip()
+            # 发送者前缀（EventSender 没有 name，用 sender_id 前6位作标识）
+            sender_name = f"用户{sender_id[:6]}" if sender_id else "未知"
+            text = f"[群聊] {sender_name}: {text}"
+            reply_to_id = message_id
+
+        await self._send({
+            "type": "MSG",
+            "content": text,
+            "channel_id": chat_id,
+            "sender_id": sender_id,
+            "session_id": f"feishu:{sender_id}" if not is_group else f"feishu:group:{chat_id}",
+            "is_group": is_group,
+            "reply_to_id": reply_to_id,
+        })
+
+    # ── Gateway TCP ──
+
+    async def _connect_gateway(self):
+        """连接 Gateway，最多重试 30 次（等待 Gateway 启动）"""
+        for attempt in range(30):
+            try:
+                self._reader, self._writer = await asyncio.open_connection("127.0.0.1", self._gateway_port)
+                self._card_states.clear()  # 重连后清空旧卡片状态，避免用过时状态更新
+                logger.info(f"[FeishuAdapter] Connected to Gateway :{self._gateway_port}")
+                return
+            except ConnectionRefusedError:
+                if attempt == 0:
+                    logger.info("[FeishuAdapter] Waiting for Gateway...")
+                await asyncio.sleep(1)
+        raise RuntimeError(f"Gateway not available after 30s on port {self._gateway_port}")
+
+    async def _send_ready(self):
+        await self._send({"type": "READY", "adapter": "feishu", "push_target": self._push_chat_id})
+
+    async def _read_loop(self):
+        try:
+            while True:
+                header = await self._reader.readexactly(4)
+                length = int.from_bytes(header, "big")
+                if length > MAX_MSG_SIZE:
+                    logger.error(f"[FeishuAdapter] Message too large: {length}")
+                    break
+                data = await self._reader.readexactly(length)
+                try:
+                    cmd = json.loads(data.decode("utf-8"))
+                except Exception:
+                    continue
+                try:
+                    await self._dispatch(cmd)
+                except Exception as e:
+                    logger.error(f"[FeishuAdapter] Error dispatching command: {e}")
+        except Exception as e:
+            logger.error(f"[FeishuAdapter] Connection error: {e}")
+        finally:
+            if self._writer:
+                self._writer.close()
+
+    async def _dispatch(self, cmd: dict):
+        t = cmd.get("type")
+        if t == "STREAM":
+            await self._on_stream(cmd)
+        elif t == "SEND":
+            await self._on_send(cmd)
+        elif t == "PUSH":
+            await self._on_push(cmd)
+
+    async def _on_stream(self, cmd: dict):
+        """STREAM = 完整内容 → 创建/更新卡片
+
+        注意：当前生产环境 verbose=False，每次 STREAM 的 content 是该轮 LLM 的完整输出，
+        不是增量文本。所以不累积，直接用 content 替换卡片显示。
+
+        如果 content 为空（仅信号通知），只递增 seq 保持卡片活跃，不更新显示内容。
+        """
+        receive_id = cmd.get("channel_id", "") or self._push_chat_id
+        content = cmd.get("content", "")
+        is_final = cmd.get("is_final", False)
+        reply_to_id = cmd.get("reply_to_id")
+
+        from niu_feishu_adapter.feishu_api import (
+            create_card, update_card_element, finalize_card,
+        )
+
+        state = self._card_states.get(receive_id)
+
+        # 空内容 = 信号通知（保持卡片活跃），只递增 seq
+        if not content:
+            if not state:
+                if is_final:
+                    logger.debug(f"[FeishuAdapter] STREAM(is_final) with no content and no card for {receive_id}")
+                return
+            state.seq += 1
+            # 不更新卡片显示，但递增 seq 以保持流式连接活跃
+            if is_final:
+                self._card_states.pop(receive_id, None)
+                await self._do_finalize(state, state.last_content)
+            return
+
+        # 有内容 = 更新卡片显示
+        filtered, images = await asyncio.to_thread(self._filter_media, content)
+        display = filtered.replace("[PHOTO_SEP]", "")
+        if len(display) > 18000:
+            display = display[:17900] + "\n\n...[内容已截断]"
+
+        if not state:
+            card_id, msg_id = await create_card(self._client, receive_id, display, reply_to_id)
+            if not card_id:
+                logger.error(f"[FeishuAdapter] Card creation failed for {receive_id}")
+                return
+            state = CardState(card_id, receive_id, reply_to_id)
+            state.message_id = msg_id
+            state.seq = 1
+            self._card_states[receive_id] = state
+        else:
+            state.seq += 1
+            await update_card_element(self._client, state.card_id, display, state.seq)
+
+        state.pending_images = images
+        state.last_content = content
+
+        if is_final:
+            self._card_states.pop(receive_id, None)
+            await self._do_finalize(state, content, pre_filtered=(filtered, images))
+
+    async def _on_send(self, cmd: dict):
+        """SEND = 最终回复 → 终结卡片（无卡片时发 Markdown 文本）"""
+        receive_id = cmd.get("channel_id", "")
+        content = cmd.get("content", "")
+        state = self._card_states.pop(receive_id, None)
+        if state:
+            await self._do_finalize(state, content)
+        else:
+            if not receive_id:
+                logger.warning("[FeishuAdapter] SEND fallback with empty receive_id, dropping")
+                return
+            # 异常回退：无卡片，发纯 Markdown（图片标记替换为文字提示）
+            from niu_feishu_adapter.feishu_api import send_markdown
+            text = re.sub(r'!\[([^\]]*)\]\([^)]+\)', lambda m: f'↑ {m.group(1) or "照片"}', content)
+            await send_markdown(self._client, receive_id, text)
+
+    async def _on_push(self, cmd: dict):
+        """PUSH = 主动推送 → Markdown 消息"""
+        receive_id = cmd.get("channel_id", "")
+        if not receive_id:
+            logger.warning("[FeishuAdapter] PUSH without channel_id, dropping")
+            return
+        content = cmd.get("content", "")
+        from niu_feishu_adapter.feishu_api import send_markdown
+        await send_markdown(self._client, receive_id, content)
+
+    async def _do_finalize(self, state: CardState, final_content: str, pre_filtered: tuple | None = None):
+        """终结卡片：图片嵌入卡片 body"""
+        from niu_feishu_adapter.feishu_api import finalize_card
+
+        # 终结时重新过滤图片（确保所有图片都已上传）
+        if pre_filtered:
+            filtered, images = pre_filtered
+        else:
+            filtered, images = await asyncio.to_thread(self._filter_media, final_content)
+        state.pending_images = images
+
+        # 构建终结卡片 body
+        if state.pending_images and "[PHOTO_SEP]" in filtered:
+            elements = self._build_final_body(filtered, state.pending_images)
+        else:
+            display = filtered.replace("[PHOTO_SEP]", "")
+            if len(display) > 18000:
+                display = display[:17900] + "\n\n...[内容已截断]"
+            elements = [{"tag": "markdown", "content": display, "element_id": "md1"}]
+
+        final_card = {
+            "schema": "2.0",
+            "header": {"title": {"content": "Niu助手", "tag": "plain_text"},
+                       "subtitle": {"content": "", "tag": "plain_text"}},
+            "config": {"streaming_mode": False, "update_multi": True},
+            "body": {"elements": elements},
+        }
+        final_json = json.dumps(final_card, ensure_ascii=False)
+        state.seq += 1
+        ok = await finalize_card(self._client, state.card_id, final_json, state.seq)
+        if not ok:
+            logger.error(f"[FeishuAdapter] Finalize failed for card {state.card_id}")
+
+    # ── 图片处理 ──
+
+    def _filter_media(self, content: str) -> tuple[str, list[dict]]:
+        """过滤 Markdown 图片：上传 → 替换为 [PHOTO_SEP]，返回 (filtered, images)
+
+        每次调用独立处理完整 content（非增量），返回本次所有图片。
+        """
+        from niu_feishu_adapter.feishu_api import upload_image
+        images: list[dict] = []
+        replacements: list[tuple[int, int, str]] = []
+        for m in re.finditer(r'!\[([^\]]*)\]\(([^)]+)\)', content):
+            path = m.group(2)
+            if not path.startswith(_LOCAL_PATH_PREFIX) or not Path(path).exists():
+                replacements.append((m.start(), m.end(), ""))
+                continue
+            img_key = upload_image(self._app_id, self._app_secret, path)
+            if img_key:
+                images.append({"img_key": img_key, "alt": m.group(1) or "照片"})
+                replacements.append((m.start(), m.end(), "[PHOTO_SEP]"))
+            else:
+                replacements.append((m.start(), m.end(), ""))
+        for start, end, repl in sorted(replacements, key=lambda x: x[0], reverse=True):
+            content = content[:start] + repl + content[end:]
+        return content, images
+
+    @staticmethod
+    def _build_final_body(filtered_content: str, pending_images: list) -> list:
+        """构建终结卡片 body：markdown + img 交替"""
+        elements = []
+        parts = filtered_content.split("[PHOTO_SEP]")
+        md_idx, img_idx = 1, 0
+        for i, part in enumerate(parts):
+            part = part.strip()
+            if part:
+                if len(part) > 18000:
+                    part = part[:17900] + "\n\n...[内容已截断]"
+                elements.append({"tag": "markdown", "content": part, "element_id": f"md{md_idx}"})
+                md_idx += 1
+            if i < len(pending_images):
+                info = pending_images[i]
+                elements.append({
+                    "tag": "img",
+                    "img_key": info["img_key"],
+                    "alt": {"tag": "plain_text", "content": info.get("alt", "照片")},
+                    "element_id": f"img_{img_idx}",
+                })
+                img_idx += 1
+        if not elements:
+            elements.append({"tag": "markdown", "content": filtered_content.replace("[PHOTO_SEP]", ""),
+                             "element_id": "md1"})
+        return elements
+
+    # ── 通用 TCP 发送 ──
+
+    async def _send(self, cmd: dict):
+        if not self._writer:
+            return
+        async with self._write_lock:
+            payload = json.dumps(cmd, ensure_ascii=False).encode("utf-8")
+            self._writer.write(len(payload).to_bytes(4, "big") + payload)
+            await self._writer.drain()
