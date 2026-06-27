@@ -275,7 +275,7 @@ def compress_image(img_path: Path) -> Path | None:
     try:
         from PIL import Image
         img = Image.open(str(img_path))
-        rgb = img.convert("RGB") if img.mode in ("RGBA", "P") else img
+        rgb = img.convert("RGB") if img.mode != "RGB" else img
         tmp = TEMP_DIR / f"compressed_{img_path.stem}.jpg"
         for quality in (85, 70, 55, 40, 25):
             rgb.save(str(tmp), "JPEG", quality=quality)
