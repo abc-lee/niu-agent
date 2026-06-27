@@ -61,6 +61,55 @@ def infer_receive_id_type(receive_id: str) -> str:
     return "user_id"
 
 
+def extract_md_refs(content: str) -> list[tuple[str, str, str, bool, int]]:
+    """括号平衡解析 Markdown 图片和链接引用，支持文件名中的括号"""
+    results = []
+    i = 0
+    while i < len(content):
+        # 检测 ![ (图片) 或 [ (链接)
+        is_image = False
+        if content[i] == '!' and i + 1 < len(content) and content[i + 1] == '[':
+            is_image = True
+            start = i
+            i += 2  # 跳过 ![
+        elif content[i] == '[':
+            start = i
+            i += 1
+        else:
+            i += 1
+            continue
+
+        # 找 alt_text（到第一个 ]）
+        alt_start = i
+        while i < len(content) and content[i] != ']':
+            i += 1
+        if i >= len(content):
+            continue
+        alt_text = content[alt_start:i]
+        i += 1  # 跳过 ]
+
+        # 必须紧跟 (
+        if i >= len(content) or content[i] != '(':
+            continue
+        i += 1  # 跳过 (
+
+        # 括号平衡找 path
+        path_start = i
+        depth = 1
+        while i < len(content) and depth > 0:
+            if content[i] == '(':
+                depth += 1
+            elif content[i] == ')':
+                depth -= 1
+            i += 1
+        if depth != 0:
+            continue
+        raw_path = content[path_start:i - 1]
+        full_match = content[start:i]
+        results.append((alt_text, raw_path, full_match, is_image, start))
+    return results
+
+
 # ── 上传 ──
 
 def upload_image(app_id: str, app_secret: str, local_path: str) -> str | None:
@@ -71,8 +120,12 @@ def upload_image(app_id: str, app_secret: str, local_path: str) -> str | None:
     p = Path(local_path)
     if not p.exists():
         return None
+    is_compressed = False
+    actual_path = p
     try:
-        with open(str(p), "rb") as f:
+        actual_path = compress_image(p) or p
+        is_compressed = actual_path != p
+        with open(str(actual_path), "rb") as f:
             resp = _requests.post(
                 "https://open.feishu.cn/open-apis/im/v1/images",
                 headers={"Authorization": f"Bearer {token}"},
@@ -88,6 +141,12 @@ def upload_image(app_id: str, app_secret: str, local_path: str) -> str | None:
     except Exception as e:
         logger.error(f"[FeishuAPI] Upload image error: {e}")
         return None
+    finally:
+        if is_compressed and actual_path.exists():
+            try:
+                actual_path.unlink()
+            except Exception:
+                pass
 
 
 def upload_file(app_id: str, app_secret: str, local_path: str, filename: str) -> str | None:
@@ -161,9 +220,55 @@ def download_resource(app_id: str, app_secret: str, file_key: str,
         return None
 
 
+async def send_file_message(client, receive_id: str, file_key: str, filename: str) -> bool:
+    """发送飞书文件消息（独立于卡片）"""
+    receive_id_type = infer_receive_id_type(receive_id)
+    content = json.dumps({"file_key": file_key})
+    try:
+        from lark_oapi.api.im.v1 import CreateMessageRequest, CreateMessageRequestBody
+        req = CreateMessageRequest.builder() \
+            .receive_id_type(receive_id_type) \
+            .request_body(CreateMessageRequestBody.builder()
+                .receive_id(receive_id)
+                .msg_type("file")
+                .content(content)
+                .build()) \
+            .build()
+        resp = await asyncio.to_thread(client.im.v1.message.create, req)
+        if not resp.success():
+            logger.error(f"[FeishuAPI] Send file message failed: {resp.code} {resp.msg}")
+            return False
+        return True
+    except Exception as e:
+        logger.error(f"[FeishuAPI] Send file message error: {e}")
+        return False
+
+
+def compress_image(img_path: Path) -> Path | None:
+    """压缩超过10MB的图片为JPEG，返回原路径或临时压缩路径。无法压缩时返回None"""
+    if img_path.stat().st_size <= 10 * 1024 * 1024:
+        return img_path
+    try:
+        from PIL import Image
+        img = Image.open(str(img_path))
+        rgb = img.convert("RGB") if img.mode in ("RGBA", "P") else img
+        tmp = TEMP_DIR / f"compressed_{img_path.stem}.jpg"
+        for quality in (85, 70, 55, 40, 25):
+            rgb.save(str(tmp), "JPEG", quality=quality)
+            if tmp.stat().st_size <= 10 * 1024 * 1024:
+                img.close()
+                return tmp
+        img.close()
+        logger.warning(f"[FeishuAPI] Image still >10MB after compression: {img_path.name}")
+        return None
+    except Exception as e:
+        logger.error(f"[FeishuAPI] compress_image error: {e}")
+        return None
+
+
 # ── 发送消息 ──
 
-async def send_markdown(client, target: str, content: str):
+async def send_markdown(client, target: str, content: str) -> bool:
     """发送 Markdown 消息（包装为流式卡片格式，确保正确渲染）"""
     receive_id_type = infer_receive_id_type(target)
     card = json.dumps({
@@ -184,8 +289,11 @@ async def send_markdown(client, target: str, content: str):
         resp = await asyncio.to_thread(client.im.v1.message.create, req)
         if not resp.success():
             logger.error(f"[FeishuAPI] Send markdown failed: {resp.code} {resp.msg}")
+            return False
+        return True
     except Exception as e:
         logger.error(f"[FeishuAPI] Send markdown error: {e}")
+        return False
 
 
 # ── 流式卡片操作 ──
@@ -216,7 +324,7 @@ async def create_card(client, receive_id: str, content: str,
         if not resp.success():
             logger.error(f"[FeishuAPI] Create card entity failed: {resp.code} {resp.msg}")
             return "", None
-        card_id = resp.data.card.card_id
+        card_id = resp.data.card_id
 
         # 发送卡片消息
         card_ref = json.dumps({"type": "card", "data": {"card_id": card_id}}, ensure_ascii=False)
@@ -291,7 +399,10 @@ async def finalize_card(client, card_id: str, final_json: str, seq: int):
                 .settings(settings_json).sequence(seq)
                 .uuid("niu-finalize-settings").build()) \
             .build()
-        await asyncio.to_thread(client.cardkit.v1.card.settings, settings_req)
+        settings_resp = await asyncio.to_thread(client.cardkit.v1.card.settings, settings_req)
+        if not settings_resp.success():
+            logger.error(f"[FeishuAPI] Finalize settings failed: {settings_resp.code} {settings_resp.msg}")
+            return False
 
         # 2. 更新完整内容
         new_seq = seq + 1

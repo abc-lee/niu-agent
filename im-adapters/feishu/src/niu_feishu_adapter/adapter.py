@@ -19,7 +19,7 @@ _LOCAL_PATH_PREFIX = str(Path.home() / ".niu" / "tmp")
 class CardState:
     """单个 channel 的流式卡片状态"""
     __slots__ = ("card_id", "seq", "message_id", "receive_id", "reply_to_id",
-                 "pending_images", "last_content")
+                 "pending_images", "pending_files", "last_content")
 
     def __init__(self, card_id: str, receive_id: str, reply_to_id: str | None = None):
         self.card_id = card_id
@@ -28,6 +28,7 @@ class CardState:
         self.receive_id = receive_id
         self.reply_to_id = reply_to_id
         self.pending_images: list[dict] = []
+        self.pending_files: list[dict] = []
         self.last_content = ""
 
 
@@ -162,6 +163,14 @@ class FeishuAdapter:
             text = f"[群聊] {sender_name}: {text}"
             reply_to_id = message_id
 
+        # P2P 消息：更新推送目标并写回配置
+        if not is_group:
+            if chat_id and chat_id != self._push_chat_id:
+                self._push_chat_id = chat_id
+            if sender_id and sender_id != self._push_open_id:
+                self._push_open_id = sender_id
+            await asyncio.to_thread(self._update_push_target, chat_id, sender_id)
+
         await self._send({
             "type": "MSG",
             "content": text,
@@ -249,14 +258,13 @@ class FeishuAdapter:
                     logger.debug(f"[FeishuAdapter] STREAM(is_final) with no content and no card for {receive_id}")
                 return
             state.seq += 1
-            # 不更新卡片显示，但递增 seq 以保持流式连接活跃
             if is_final:
-                self._card_states.pop(receive_id, None)
-                await self._do_finalize(state, state.last_content)
+                # 不 pop state — 终结由后续 SEND 指令完成（SEND 携带正确的累积内容）
+                logger.debug(f"[FeishuAdapter] STREAM(is_final) for {receive_id}, card will be finalized by SEND")
             return
 
         # 有内容 = 更新卡片显示
-        filtered, images = await asyncio.to_thread(self._filter_media, content)
+        filtered, images, files = await asyncio.to_thread(self._filter_media, content)
         display = filtered.replace("[PHOTO_SEP]", "")
         if len(display) > 18000:
             display = display[:17900] + "\n\n...[内容已截断]"
@@ -275,48 +283,96 @@ class FeishuAdapter:
             await update_card_element(self._client, state.card_id, display, state.seq)
 
         state.pending_images = images
+        state.pending_files = files
         state.last_content = content
 
         if is_final:
-            self._card_states.pop(receive_id, None)
-            await self._do_finalize(state, content, pre_filtered=(filtered, images))
+            # 不 pop state — 终结由后续 SEND 指令完成（SEND 携带正确的累积内容）
+            logger.debug(f"[FeishuAdapter] STREAM(is_final) with content for {receive_id}, card will be finalized by SEND")
 
     async def _on_send(self, cmd: dict):
-        """SEND = 最终回复 → 终结卡片（无卡片时发 Markdown 文本）"""
-        receive_id = cmd.get("channel_id", "")
+        """SEND = 最终回复 → 终结卡片（无卡片时发 Markdown 文本）
+
+        终结失败不重发：超时可能已成功（重发=重复），业务错误重试也失败。
+        """
+        receive_id = cmd.get("channel_id", "") or self._push_chat_id
         content = cmd.get("content", "")
         state = self._card_states.pop(receive_id, None)
         if state:
-            await self._do_finalize(state, content)
+            # 保存 pending_files 副本，防止 _do_finalize 内部 _filter_media 覆盖
+            saved_files = list(state.pending_files)
+            try:
+                await self._do_finalize(state, content)
+            except Exception as e:
+                logger.error(f"[FeishuAdapter] Finalize failed for {receive_id}: {e}, card content already visible, not resending")
+            # 不管终结成功失败，都发 pending_files（文件不在卡片中，不受终结影响）
+            if saved_files:
+                from niu_feishu_adapter.feishu_api import send_file_message
+                for file_info in saved_files:
+                    try:
+                        await send_file_message(self._client, receive_id, file_info["file_key"], file_info["filename"])
+                    except Exception as e:
+                        logger.error(f"[FeishuAdapter] Send file failed: {e}")
         else:
             if not receive_id:
-                logger.warning("[FeishuAdapter] SEND fallback with empty receive_id, dropping")
+                logger.warning("[FeishuAdapter] SEND without receive_id and no card, dropping")
                 return
-            # 异常回退：无卡片，发纯 Markdown（图片标记替换为文字提示）
-            from niu_feishu_adapter.feishu_api import send_markdown
-            text = re.sub(r'!\[([^\]]*)\]\([^)]+\)', lambda m: f'↑ {m.group(1) or "照片"}', content)
-            await send_markdown(self._client, receive_id, text)
+            from niu_feishu_adapter.feishu_api import send_markdown, extract_md_refs
+            # 清理 Markdown 图片标记（文件链接保留，用户可看到 ↑ 文件名）
+            img_removals = []
+            for _, _, full_match, is_image, start_idx in extract_md_refs(content):
+                if is_image:
+                    img_removals.append((start_idx, start_idx + len(full_match)))
+            for start, end in sorted(img_removals, reverse=True):
+                content = content[:start] + content[end:]
+            if content.strip():
+                await send_markdown(self._client, receive_id, content)
 
     async def _on_push(self, cmd: dict):
-        """PUSH = 主动推送 → Markdown 消息"""
-        receive_id = cmd.get("channel_id", "")
-        if not receive_id:
-            logger.warning("[FeishuAdapter] PUSH without channel_id, dropping")
-            return
+        """PUSH = 主动推送 → 先推 chat_id，失败后回退 open_id"""
+        receive_id = cmd.get("channel_id", "") or self._push_chat_id
         content = cmd.get("content", "")
+        if not receive_id:
+            logger.warning("[FeishuAdapter] PUSH without target, dropping")
+            return
         from niu_feishu_adapter.feishu_api import send_markdown
-        await send_markdown(self._client, receive_id, content)
+        ok = await send_markdown(self._client, receive_id, content)
+        if not ok and self._push_open_id and self._push_open_id != receive_id:
+            logger.warning(f"[FeishuAdapter] Push to {receive_id} failed, retrying with {self._push_open_id}")
+            ok = await send_markdown(self._client, self._push_open_id, content)
+        if not ok:
+            logger.error(f"[FeishuAdapter] Push failed for all targets")
 
-    async def _do_finalize(self, state: CardState, final_content: str, pre_filtered: tuple | None = None):
+    def _update_push_target(self, chat_id: str, open_id: str):
+        """更新推送目标并写回 preferences.json"""
+        try:
+            prefs_path = Path.home() / ".niu" / "preferences.json"
+            if not prefs_path.exists():
+                return
+            prefs = json.loads(prefs_path.read_text(encoding="utf-8"))
+            feishu = prefs.get("feishu", {})
+            updated = False
+            if chat_id and chat_id != feishu.get("user_p2p_chat_id"):
+                feishu["user_p2p_chat_id"] = chat_id
+                updated = True
+            if open_id and open_id != feishu.get("user_open_id"):
+                feishu["user_open_id"] = open_id
+                updated = True
+            if updated:
+                prefs["feishu"] = feishu
+                prefs_path.write_text(json.dumps(prefs, ensure_ascii=False, indent=2), encoding="utf-8")
+                logger.info(f"[FeishuAdapter] Push target updated: chat_id={chat_id}, open_id={open_id}")
+        except Exception as e:
+            logger.warning(f"[FeishuAdapter] Update push target failed: {e}")
+
+    async def _do_finalize(self, state: CardState, final_content: str):
         """终结卡片：图片嵌入卡片 body"""
         from niu_feishu_adapter.feishu_api import finalize_card
 
-        # 终结时重新过滤图片（确保所有图片都已上传）
-        if pre_filtered:
-            filtered, images = pre_filtered
-        else:
-            filtered, images = await asyncio.to_thread(self._filter_media, final_content)
+        # 终结时重新过滤图片和文件（确保所有图片都已上传）
+        filtered, images, files = await asyncio.to_thread(self._filter_media, final_content)
         state.pending_images = images
+        state.pending_files = files
 
         # 构建终结卡片 body
         if state.pending_images and "[PHOTO_SEP]" in filtered:
@@ -342,28 +398,47 @@ class FeishuAdapter:
 
     # ── 图片处理 ──
 
-    def _filter_media(self, content: str) -> tuple[str, list[dict]]:
-        """过滤 Markdown 图片：上传 → 替换为 [PHOTO_SEP]，返回 (filtered, images)
+    def _filter_media(self, content: str) -> tuple[str, list[dict], list[dict]]:
+        """过滤 Markdown 图片和文件链接：上传 → 替换标记，返回 (filtered, images, files)
 
-        每次调用独立处理完整 content（非增量），返回本次所有图片。
+        图片：上传获取 img_key → 替换为 [PHOTO_SEP] → 记录到 images
+        文件：上传获取 file_key → 替换为 ↑ 文件名 → 记录到 files
         """
-        from niu_feishu_adapter.feishu_api import upload_image
+        from niu_feishu_adapter.feishu_api import upload_image, upload_file, extract_md_refs
         images: list[dict] = []
+        files: list[dict] = []
         replacements: list[tuple[int, int, str]] = []
-        for m in re.finditer(r'!\[([^\]]*)\]\(([^)]+)\)', content):
-            path = m.group(2)
-            if not path.startswith(_LOCAL_PATH_PREFIX) or not Path(path).exists():
-                replacements.append((m.start(), m.end(), ""))
-                continue
-            img_key = upload_image(self._app_id, self._app_secret, path)
-            if img_key:
-                images.append({"img_key": img_key, "alt": m.group(1) or "照片"})
-                replacements.append((m.start(), m.end(), "[PHOTO_SEP]"))
+
+        for alt_text, raw_path, full_match, is_image, start_idx in extract_md_refs(content):
+            end_idx = start_idx + len(full_match)
+            path = raw_path
+
+            if is_image:
+                if not path.startswith(_LOCAL_PATH_PREFIX) or not Path(path).exists():
+                    replacements.append((start_idx, end_idx, ""))
+                    continue
+                img_key = upload_image(self._app_id, self._app_secret, path)
+                if img_key:
+                    images.append({"img_key": img_key, "alt": alt_text or "照片"})
+                    replacements.append((start_idx, end_idx, "[PHOTO_SEP]"))
+                else:
+                    replacements.append((start_idx, end_idx, ""))
             else:
-                replacements.append((m.start(), m.end(), ""))
+                # 文件链接
+                if not path.startswith(_LOCAL_PATH_PREFIX) or not Path(path).exists():
+                    # 不是本地 tmp 文件，保留原样（可能是 URL 或其他路径）
+                    continue
+                file_key = upload_file(self._app_id, self._app_secret, path, alt_text or Path(path).name)
+                if file_key:
+                    display_name = alt_text or Path(path).name
+                    files.append({"file_key": file_key, "filename": display_name})
+                    replacements.append((start_idx, end_idx, f"↑ {display_name}"))
+                else:
+                    replacements.append((start_idx, end_idx, f"[文件上传失败: {alt_text or Path(path).name}]"))
+
         for start, end, repl in sorted(replacements, key=lambda x: x[0], reverse=True):
             content = content[:start] + repl + content[end:]
-        return content, images
+        return content, images, files
 
     @staticmethod
     def _build_final_body(filtered_content: str, pending_images: list) -> list:
