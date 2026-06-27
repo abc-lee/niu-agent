@@ -135,7 +135,7 @@ class FeishuAdapter:
                         download_resource, self._app_id, self._app_secret,
                         image_key, "image", message_id=message_id)
                     if local:
-                        text = f"![图片]({local})"
+                        text = f"入库照片：![图片]({local})"
                     else:
                         text = f"[图片下载失败: {image_key}]"
             elif msg_type == "file":
@@ -147,7 +147,7 @@ class FeishuAdapter:
                         download_resource, self._app_id, self._app_secret,
                         file_key, "file", file_name, message_id=message_id)
                     if local:
-                        text = f"[{file_name}]({local})"
+                        text = f"入库文件：[{file_name}]({local})"
                     else:
                         text = f"[文件下载失败: {file_name}]"
         except (json.JSONDecodeError, KeyError, TypeError) as e:
@@ -299,8 +299,9 @@ class FeishuAdapter:
         content = cmd.get("content", "")
         state = self._card_states.pop(receive_id, None)
         if state:
-            # 保存 pending_files 副本，防止 _do_finalize 内部 _filter_media 覆盖
+            # 保存副本，防止 _do_finalize 内部 _filter_media 覆盖
             saved_files = list(state.pending_files)
+            saved_images = list(state.pending_images)
             try:
                 await self._do_finalize(state, content)
             except Exception as e:
@@ -313,11 +314,24 @@ class FeishuAdapter:
                         await send_file_message(self._client, receive_id, file_info["file_key"], file_info["filename"])
                     except Exception as e:
                         logger.error(f"[FeishuAdapter] Send file failed: {e}")
+            # 对上传失败的图片，重新尝试上传并发独立图片消息
+            failed_images = [img for img in saved_images if img.get("failed")]
+            if failed_images:
+                from niu_feishu_adapter.feishu_api import upload_image, send_image_message
+                for img_info in failed_images:
+                    try:
+                        img_key = await asyncio.to_thread(upload_image, self._app_id, self._app_secret, img_info["path"])
+                        if img_key:
+                            await send_image_message(self._client, receive_id, img_key)
+                        else:
+                            logger.warning(f"[FeishuAdapter] Image re-upload failed: {img_info.get('path', '')}")
+                    except Exception as e:
+                        logger.error(f"[FeishuAdapter] Send image fallback failed: {e}")
         else:
             if not receive_id:
                 logger.warning("[FeishuAdapter] SEND without receive_id and no card, dropping")
                 return
-            from niu_feishu_adapter.feishu_api import send_markdown, extract_md_refs
+            from niu_feishu_adapter.feishu_api import send_markdown, send_markdown_reply, extract_md_refs
             # 清理 Markdown 图片标记（文件链接保留，用户可看到 ↑ 文件名）
             img_removals = []
             for _, _, full_match, is_image, start_idx in extract_md_refs(content):
@@ -326,25 +340,34 @@ class FeishuAdapter:
             for start, end in sorted(img_removals, reverse=True):
                 content = content[:start] + content[end:]
             if content.strip():
-                await send_markdown(self._client, receive_id, content)
+                reply_to_id = cmd.get("reply_to_id")
+                if reply_to_id:
+                    await send_markdown_reply(self._client, reply_to_id, content)
+                else:
+                    await send_markdown(self._client, receive_id, content)
 
     async def _on_push(self, cmd: dict):
-        """PUSH = 主动推送 → 先推 chat_id，失败后回退 open_id"""
-        receive_id = cmd.get("channel_id", "") or self._push_chat_id
+        """PUSH = 主动推送 → 先推 open_id（个人），失败后回退 chat_id（群聊）"""
+        override_id = cmd.get("channel_id", "")
+        # 优先使用 open_id（个人消息），回退 chat_id（群聊）
+        receive_id = override_id or self._push_open_id or self._push_chat_id
+        fallback_id = self._push_chat_id if receive_id == self._push_open_id else self._push_open_id
         content = cmd.get("content", "")
         if not receive_id:
             logger.warning("[FeishuAdapter] PUSH without target, dropping")
             return
         from niu_feishu_adapter.feishu_api import send_markdown
         ok = await send_markdown(self._client, receive_id, content)
-        if not ok and self._push_open_id and self._push_open_id != receive_id:
-            logger.warning(f"[FeishuAdapter] Push to {receive_id} failed, retrying with {self._push_open_id}")
-            ok = await send_markdown(self._client, self._push_open_id, content)
+        if not ok and fallback_id and fallback_id != receive_id:
+            logger.warning(f"[FeishuAdapter] Push to {receive_id} failed, retrying with {fallback_id}")
+            ok = await send_markdown(self._client, fallback_id, content)
         if not ok:
             logger.error(f"[FeishuAdapter] Push failed for all targets")
 
     def _update_push_target(self, chat_id: str, open_id: str):
-        """更新推送目标并写回 preferences.json"""
+        """更新推送目标并写回 preferences.json（原子写入）"""
+        import os
+        import tempfile
         try:
             prefs_path = Path.home() / ".niu" / "preferences.json"
             if not prefs_path.exists():
@@ -360,7 +383,15 @@ class FeishuAdapter:
                 updated = True
             if updated:
                 prefs["feishu"] = feishu
-                prefs_path.write_text(json.dumps(prefs, ensure_ascii=False, indent=2), encoding="utf-8")
+                dir_name = str(prefs_path.parent)
+                fd, tmp_path = tempfile.mkstemp(dir=dir_name, suffix=".tmp")
+                try:
+                    with os.fdopen(fd, "w", encoding="utf-8") as f:
+                        json.dump(prefs, f, ensure_ascii=False, indent=2)
+                    os.replace(tmp_path, str(prefs_path))
+                except Exception:
+                    os.unlink(tmp_path)
+                    raise
                 logger.info(f"[FeishuAdapter] Push target updated: chat_id={chat_id}, open_id={open_id}")
         except Exception as e:
             logger.warning(f"[FeishuAdapter] Update push target failed: {e}")
@@ -374,9 +405,10 @@ class FeishuAdapter:
         state.pending_images = images
         state.pending_files = files
 
-        # 构建终结卡片 body
-        if state.pending_images and "[PHOTO_SEP]" in filtered:
-            elements = self._build_final_body(filtered, state.pending_images)
+        # 构建终结卡片 body（只用成功上传的图片，失败的留给 SEND fallback）
+        success_images = [img for img in state.pending_images if not img.get("failed")]
+        if success_images and "[PHOTO_SEP]" in filtered:
+            elements = self._build_final_body(filtered, success_images)
         else:
             display = filtered.replace("[PHOTO_SEP]", "")
             if len(display) > 18000:
@@ -422,6 +454,8 @@ class FeishuAdapter:
                     images.append({"img_key": img_key, "alt": alt_text or "照片"})
                     replacements.append((start_idx, end_idx, "[PHOTO_SEP]"))
                 else:
+                    # 上传失败，记录为 failed_image，终结后发独立图片消息重试
+                    images.append({"img_key": None, "alt": alt_text or "照片", "path": path, "failed": True})
                     replacements.append((start_idx, end_idx, ""))
             else:
                 # 文件链接

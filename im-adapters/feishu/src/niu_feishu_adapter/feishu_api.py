@@ -244,6 +244,30 @@ async def send_file_message(client, receive_id: str, file_key: str, filename: st
         return False
 
 
+async def send_image_message(client, receive_id: str, image_key: str) -> bool:
+    """发送飞书图片消息（独立于卡片，用于图片无法嵌入卡片时的 fallback）"""
+    receive_id_type = infer_receive_id_type(receive_id)
+    content = json.dumps({"image_key": image_key})
+    try:
+        from lark_oapi.api.im.v1 import CreateMessageRequest, CreateMessageRequestBody
+        req = CreateMessageRequest.builder() \
+            .receive_id_type(receive_id_type) \
+            .request_body(CreateMessageRequestBody.builder()
+                .receive_id(receive_id)
+                .msg_type("image")
+                .content(content)
+                .build()) \
+            .build()
+        resp = await asyncio.to_thread(client.im.v1.message.create, req)
+        if not resp.success():
+            logger.error(f"[FeishuAPI] Send image message failed: {resp.code} {resp.msg}")
+            return False
+        return True
+    except Exception as e:
+        logger.error(f"[FeishuAPI] Send image message error: {e}")
+        return False
+
+
 def compress_image(img_path: Path) -> Path | None:
     """压缩超过10MB的图片为JPEG，返回原路径或临时压缩路径。无法压缩时返回None"""
     if img_path.stat().st_size <= 10 * 1024 * 1024:
@@ -293,6 +317,30 @@ async def send_markdown(client, target: str, content: str) -> bool:
         return True
     except Exception as e:
         logger.error(f"[FeishuAPI] Send markdown error: {e}")
+        return False
+
+
+async def send_markdown_reply(client, message_id: str, content: str) -> bool:
+    """回复消息（Markdown 卡片格式），用于群聊回复"""
+    card = json.dumps({
+        "schema": "2.0",
+        "config": {"streaming_mode": False},
+        "body": {"elements": [{"tag": "markdown", "content": content}]},
+    }, ensure_ascii=False)
+    try:
+        from lark_oapi.api.im.v1 import ReplyMessageRequest, ReplyMessageRequestBody
+        req = ReplyMessageRequest.builder() \
+            .message_id(message_id) \
+            .request_body(ReplyMessageRequestBody.builder()
+                .msg_type("interactive").content(card).build()) \
+            .build()
+        resp = await asyncio.to_thread(client.im.v1.message.reply, req)
+        if not resp.success():
+            logger.error(f"[FeishuAPI] Send markdown reply failed: {resp.code} {resp.msg}")
+            return False
+        return True
+    except Exception as e:
+        logger.error(f"[FeishuAPI] Send markdown reply error: {e}")
         return False
 
 
