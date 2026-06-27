@@ -1845,7 +1845,7 @@ REMINDER: 禁止调用任何工具，直接在回复中输出 keep=/update=/curs
                                 try:
                                     from niu_api.channel.gateway import get_im_gateway
                                     _gw = get_im_gateway()
-                                    if _gw and _gw.is_connected and chunk.content:
+                                    if _gw and _gw.is_connected and chunk.content and self._current_channel_id:
                                         _gw.notify_stream(chunk.content, channel_id=self._current_channel_id)
                                 except Exception:
                                     pass
@@ -1883,7 +1883,7 @@ REMINDER: 禁止调用任何工具，直接在回复中输出 keep=/update=/curs
             try:
                 from niu_api.channel.gateway import get_im_gateway
                 _gw = get_im_gateway()
-                if _gw and _gw.is_connected:
+                if _gw and _gw.is_connected and self._current_channel_id:
                     _gw.notify_stream("", channel_id=self._current_channel_id, is_final=True)
             except Exception:
                 pass

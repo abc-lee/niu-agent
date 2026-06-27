@@ -41,7 +41,6 @@ class IMGateway(ChannelAdapter):
         self._connected_since = 0.0
         self._send_buffer: deque = deque(maxlen=10)
         self._reply_to_ids: dict[str, str] = {}   # channel_id → reply_to_id 映射（群聊回复目标）
-        self._finalized_channels: set[str] = set() # 已通过 STREAM(is_final) 终结的 channel_id
 
     async def start_server(self):
         """启动 TCP Server"""
@@ -201,12 +200,13 @@ class IMGateway(ChannelAdapter):
         finally:
             async with self._write_lock:
                 with self._lock:
-                    self._writer = None
-                    self._connected.clear()
-                    self._adapter_name = None
-                    self._push_target = None
-                    self._reply_to_ids.clear()
-                    self._finalized_channels.clear()
+                    # 只清除当前 writer，避免杀死新适配器的连接
+                    if self._writer is writer:
+                        self._writer = None
+                        self._connected.clear()
+                        self._adapter_name = None
+                        self._push_target = None
+                        self._reply_to_ids.clear()
                 try:
                     writer.close()
                     await asyncio.wait_for(writer.wait_closed(), timeout=5.0)
@@ -321,11 +321,6 @@ class IMGateway(ChannelAdapter):
             logger.debug("[IMGateway] Adapter not connected, cannot send")
             return
         with self._lock:
-            if channel_id in self._finalized_channels:
-                self._finalized_channels.discard(channel_id)
-                self._reply_to_ids.pop(channel_id, None)
-                logger.debug(f"[IMGateway] Channel {channel_id} already finalized via STREAM, skipping SEND")
-                return
             reply_to_id = self._reply_to_ids.get(channel_id, "")
         await self._async_send({"type": "SEND", "channel_id": channel_id, "content": content, "reply_to_id": reply_to_id})
         with self._lock:
@@ -351,9 +346,6 @@ class IMGateway(ChannelAdapter):
             "is_final": is_final,
             "reply_to_id": reply_to_id,
         })
-        if is_final:
-            with self._lock:
-                self._finalized_channels.add(channel_id)
 
     async def send_media(self, channel_id: str, msg) -> None:
         """IM 通道统一 Markdown 透传，不拆分媒体。如果 route_out 调用了 send_media，
