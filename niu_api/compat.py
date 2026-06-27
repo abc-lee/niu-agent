@@ -1508,6 +1508,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                     msg_tokens.append(t)
             except ImportError:
                 msg_tokens = [max(1, len(msg.content or "") // 2) + 4 for msg in messages]
+            dream_msg_ids = []
             dream_msg_text = _build_incremental_msg_text(
                 messages, last_dream_evolve_id, dream_msg_ids, msg_tokens
             )
@@ -1661,6 +1662,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
             _is_mode2 = usage_percent >= 50
             _compress_cursor = "" if _is_mode2 else last_compress_id
             _end_cursor = None if _is_mode2 else new_dream_id
+            compress_msg_ids = []
             compress_msg_text = _build_incremental_msg_text(
                 messages, _compress_cursor, compress_msg_ids, msg_tokens,
                 end_cursor_id=_end_cursor, protect_recent=protect_recent_count

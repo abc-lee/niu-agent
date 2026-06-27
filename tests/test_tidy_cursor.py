@@ -248,7 +248,7 @@ class TestTidyContextImplIntegration:
         messages = make_messages(10)
         entity_ids = []
         _build_incremental_msg_text(messages, "uuid-3", entity_ids)
-        # 如果 _extract_cursor_id 返回 None 或 "NULL"，应推进到 entity_ids[-1]
+        # 游标自动推进：成功时推进到增量消息最后一条
         fallback_cursor = entity_ids[-1] if entity_ids else None
         assert fallback_cursor == "uuid-9"
 
