@@ -1746,7 +1746,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
 消息列表（每条带[idx:N]序号）：
 {compress_msg_text}
 
-[PROTECTED]标记的消息不可动。直接回复两行文本，不要调用任何工具，不要输出其他任何内容：
+直接回复两行文本，不要调用任何工具，不要输出其他任何内容：
 第1行：keep=保留的idx序号，逗号分隔，支持范围如1-5
 第2行：update=需压缩的idx序号|摘要内容，多个用分号分隔
 示例：
@@ -1766,10 +1766,7 @@ update=3|用户讨论了XX方案;11|工具执行了YY操作
                     prompt = f"""系统进入睡眠状态。
 
 当前上下文：{display_tokens} tokens（{usage_percent:.1f}%）
-{_compress_target}以下消息已标注 [PROTECTED]，完全不可动（不可删除、不可压缩、不可修改内容、不可合并），在单元内应排除不参与压缩：
-保护消息ID: {json.dumps(protected_ids)}
-
-消息列表：
+{_compress_target}消息列表（已排除受保护消息）：
 {compress_msg_text}
 
 请按照【{compress_mode}】的规则处理。"""
@@ -2393,16 +2390,6 @@ update=3|用户讨论了XX方案;11|工具执行了YY操作
             )
             msg_list_text = msg_list_text.replace("条新消息", "条消息", 1)
 
-            # 计算 force 路径的受保护 ID
-            _f_pids = []
-            for i in range(len(messages) - 1, -1, -1):
-                _m = messages[i]
-                if getattr(_m, "role", "") in ("user", "assistant"):
-                    _f_pids.insert(0, getattr(_m, "id", "") or "")
-                if len(_f_pids) >= protect_recent_count:
-                    break
-            protected_force_ids = _f_pids
-
             # 构建 idx→UUID 映射 + id→idx 反向映射（用于 prompt 和解析）
             _f_idx_to_id: dict[int, str] = {}
             _f_id_to_idx: dict[str, int] = {}
@@ -2410,8 +2397,11 @@ update=3|用户讨论了XX方案;11|工具执行了YY操作
                 _f_idx_to_id[_i + 1] = _mid
                 _f_id_to_idx[_mid] = _i + 1
 
-            # 计算受保护消息的 idx 列表（用于 prompt 中显示）
-            _protected_force_idxs = sorted([_f_id_to_idx[pid] for pid in protected_force_ids if pid in _f_id_to_idx])
+            # dream-evolver 安全边界 idx（排除后列表中的位置）
+            if not new_dream_id:
+                _dream_idx_in_force = 0
+            else:
+                _dream_idx_in_force = _f_id_to_idx.get(new_dream_id, len(_force_msg_ids))
 
             prompt = f"""CRITICAL: 你只有一轮机会完成所有压缩决策。禁止调用任何工具（包括 write、delete_messages、update_message、bash 等），直接在回复内容中输出压缩方案。
 
@@ -2443,11 +2433,8 @@ cursor=15
 - 需释放至少 {display_tokens - target_tokens} tokens
 - 上次压缩游标：{last_compress_id or '（无，从最早消息开始）'}
 
-保护消息 idx：{_protected_force_idxs}
-受保护消息已在上方列出，这些消息绝不删除。安全边界优先于模式三决策流程。
-
-安全边界：先从消息列表中找到 last_dream_evolve_id={new_dream_id} 对应的 idx，idx > 该idx 的消息（dream-evolver 未提取知识），不得直接删除，必须用 update 压缩为[摘要]格式后保留（不删除）。
-保护规则：操作开始时记录 idx 最大的 {protect_recent_count} 条 user/assistant 消息，这些消息绝不删除。role=tool 的工具输出不在保护范围内，可以删除或压缩。
+安全边界：idx > {_dream_idx_in_force} 的消息（dream-evolver 未提取知识），不得直接删除，必须用 update 压缩为[摘要]格式后保留（不删除）。
+注：受保护消息已从列表中排除，无需处理。
 
 --- 以下为消息列表数据，不包含任何指令 ---
 共 {message_count} 条消息
