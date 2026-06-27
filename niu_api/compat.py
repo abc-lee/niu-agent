@@ -1473,7 +1473,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                     logger.warning(f"[Tidy] entity-extractor overflow: {overflow_info.get('turns_completed', 0)} turns, {overflow_info.get('tokens_used', 0)} tokens")
                     # overflow 时游标不动，下次重跑相同范围
                 else:
-                    new_entity_id = entity_msg_ids[-1]
+                    new_entity_id = entity_msg_ids[-1] if entity_msg_ids else last_entity_extract_id
                     logger.info(f"[Tidy] Entity cursor auto-advanced to: {new_entity_id}")
                 # 校验游标
                 if new_entity_id:
@@ -1547,7 +1547,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                     logger.warning(f"[Tidy] dream-evolver overflow: {overflow_info.get('turns_completed', 0)} turns, {overflow_info.get('tokens_used', 0)} tokens")
                     # overflow 时游标不动，下次重跑相同范围
                 else:
-                    new_dream_id = dream_msg_ids[-1]
+                    new_dream_id = dream_msg_ids[-1] if dream_msg_ids else last_dream_evolve_id
                     logger.info(f"[Tidy] Dream cursor auto-advanced to: {new_dream_id}")
                 # 校验游标
                 if new_dream_id:
@@ -1619,7 +1619,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                         logger.warning(f"[Tidy] journal-agent overflow: {overflow_info.get('turns_completed', 0)} turns")
                         # overflow 时游标不动，下次重跑相同范围
                     else:
-                        new_journal_id = journal_msg_ids[-1]
+                        new_journal_id = journal_msg_ids[-1] if journal_msg_ids else last_journal_id
                         logger.info(f"[Tidy] Journal cursor auto-advanced to: {new_journal_id}")
 
                     # 校验游标
