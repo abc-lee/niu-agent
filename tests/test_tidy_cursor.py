@@ -34,7 +34,6 @@ def make_messages(n: int, start_idx: int = 0) -> list[FakeMessage]:
 import sys
 sys.path.insert(0, ".")
 from niu_api.compat import _build_incremental_msg_text
-from niu_api.compat import _extract_cursor_id
 
 
 class TestBuildIncrementalMsgTextEndCursor:
@@ -160,56 +159,6 @@ class TestBuildIncrementalMsgTextProtectRecent:
         protected_lines = [l for l in lines if "[PROTECTED]" in l]
         assert len(protected_lines) == 3  # 全部 3 条
 
-
-
-
-class TestExtractCursorIdNull:
-    """测试 _extract_cursor_id 对 null 值的检测"""
-
-    def test_normal_uuid_extraction(self):
-        """正常提取 UUID"""
-        result = _extract_cursor_id(
-            '处理完成 {"last_entity_extract_id": "uuid-abc123"} 收尾',
-            "last_entity_extract_id",
-            {"uuid-abc123"},
-        )
-        assert result == "uuid-abc123"
-
-    def test_null_returns_sentinel(self):
-        """明确返回 null 时，返回特殊标记 'NULL'（区分'没报告'和'明确返回null'）"""
-        result = _extract_cursor_id(
-            '处理完成 {"last_entity_extract_id": null} 收尾',
-            "last_entity_extract_id",
-            set(),
-        )
-        assert result == "NULL"
-
-    def test_no_match_returns_none(self):
-        """没有匹配时返回 None"""
-        result = _extract_cursor_id(
-            "没有任何游标信息",
-            "last_entity_extract_id",
-            set(),
-        )
-        assert result is None
-
-    def test_invalid_uuid_not_in_valid_ids(self):
-        """UUID 不在 valid_ids 中时返回 None"""
-        result = _extract_cursor_id(
-            '{"last_entity_extract_id": "uuid-nonexistent"}',
-            "last_entity_extract_id",
-            {"uuid-other"},
-        )
-        assert result is None
-
-    def test_null_with_whitespace(self):
-        """null 带各种空白格式"""
-        result = _extract_cursor_id(
-            '{"last_entity_extract_id" :  null  }',
-            "last_entity_extract_id",
-            set(),
-        )
-        assert result == "NULL"
 
 
 class TestTidyContextImplIntegration:

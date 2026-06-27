@@ -846,7 +846,7 @@ class NiuHandler(BaseHandler):
         import json
         import fcntl
         from datetime import datetime
-        from niu_api.compat import _extract_cursor_id, _is_subagent_overflow, _extract_overflow_info
+        from niu_api.compat import _is_subagent_overflow, _extract_overflow_info, _write_cursor_with_lock
 
         # 在获取文件锁之前读取消息列表 — 避免在锁内调用 _sync_get_messages() 导致死锁
         messages = self._sync_get_messages()
@@ -870,21 +870,15 @@ class NiuHandler(BaseHandler):
 
                 new_journal_id = last_journal_id
 
-                # 完整 fallback 链（与 compat.py 路径2/3 一致）
+                # 游标自动推进：成功→推进到增量范围末尾，overflow→不动
                 if _is_subagent_overflow(journal_result):
                     overflow_info = _extract_overflow_info(journal_result)
-                    partial = overflow_info.get("partial_result", "")
-                    recovered = _extract_cursor_id(partial, "last_journal_id", msg_id_set)
-                    if recovered and recovered != "NULL":
-                        new_journal_id = recovered
-                    else:
-                        new_journal_id = journal_msg_ids[-1] if journal_msg_ids else last_journal_id
+                    logger.warning(f"[Journal] overflow: {overflow_info.get('turns_completed', 0)} turns")
+                    # overflow 时游标不动
+                    new_journal_id = last_journal_id
                 else:
-                    extracted = _extract_cursor_id(journal_result, "last_journal_id", msg_id_set)
-                    if extracted and extracted != "NULL":
-                        new_journal_id = extracted
-                    elif extracted == "NULL" or not extracted:
-                        new_journal_id = journal_msg_ids[-1] if journal_msg_ids else last_journal_id
+                    new_journal_id = journal_msg_ids[-1] if journal_msg_ids else last_journal_id
+                    logger.info(f"[Journal] Cursor auto-advanced to: {new_journal_id}")
 
                 # 校验游标（二次校验，与 compat.py 一致）
                 if new_journal_id and new_journal_id not in msg_id_set:

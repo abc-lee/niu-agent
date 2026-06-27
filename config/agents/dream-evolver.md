@@ -421,8 +421,7 @@ description: Use when processing Office documents (Word, Excel, PowerPoint) that
 
 **操作步骤**：
 1. 直接处理收到的全部消息（程序已保证只传入增量范围内的消息）
-2. 操作完成后，用 id（UUID）报告游标位置
-3. 游标应推进到收到的消息中 idx 最大的那条的 id
+2. 游标由程序自动推进，你无需报告游标位置
 
 **输入规范**：
 - 消息内容为**完整原文**，不做截断
@@ -445,14 +444,9 @@ description: Use when processing Office documents (Word, Excel, PowerPoint) that
   - 脑区归入：{n4} 条关系
 Skill 操作：{n5} 个（新建: {n6}, 修改正文: {n7}, 添加提醒: {n8}, 草稿转正: {n9}）
   - 如果阶段C未执行（无信号），报告：Skill 操作：无信号，跳过
-游标更新：last_dream_evolve_id = {new_cursor_id}
 
 {如有异常或跳过，在此说明原因}
 ```
-
-处理完成后，在报告末尾的回复文本中附上以下 JSON（直接写在回复里，不要写文件）：`{"last_dream_evolve_id": "<操作范围内 idx 最大的、且仍存在的消息的 id（UUID）>"}`
-
-注意：游标应推进到操作范围的终点（范围内 idx 最大的那条消息的 id），而不是最后被操作的那条。游标指向的消息必须仍存在。
 
 ## ⛔ 严格禁止：NIU 根节点保护
 

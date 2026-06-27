@@ -30,42 +30,6 @@ class CascadeUpdateResult(NamedTuple):
     cascade_delete_ids: list[str]
 
 
-def _extract_cursor_id(text: str, field_name: str, valid_ids: set) -> str | None:
-    """
-    从文本中提取游标 UUID 并验证其存在于消息列表中。
-
-    支持多种 JSON 格式变体：
-    - {"field": "uuid"}
-    - {"field":"uuid"}（无空格）
-    - {"field" : "uuid"}（多空格）
-    - 带换行符的 JSON
-
-    Args:
-        text: 待搜索的文本（子 Agent 结果或 partial_result）
-        field_name: 游标字段名（如 "last_entity_extract_id"）
-        valid_ids: 当前消息列表中有效的 UUID 集合
-
-    Returns:
-        验证通过的 UUID，"NULL"（明确返回 null），或 None（未找到或无效）
-    """
-    if not text:
-        return None
-    # 先检查 null 匹配：区分"没报告"和"明确返回null"
-    null_pattern = rf'\{{\s*"{re.escape(field_name)}"\s*:\s*null\s*[,\}}]'
-    if re.search(null_pattern, text, re.DOTALL):
-        return "NULL"
-    # 宽松匹配：允许各种空白格式
-    pattern = rf'\{{\s*"{re.escape(field_name)}"\s*:\s*"([^"]+)"\s*'
-    match = re.search(pattern, text, re.DOTALL)
-    if not match:
-        return None
-    candidate = match.group(1)
-    if valid_ids is not None and candidate not in valid_ids:
-        logger.warning(f"[Tidy] Extracted {field_name}={candidate} not in message list, discarding")
-        return None
-    return candidate
-
-
 def _is_subagent_overflow(result: str) -> bool:
     """检测子 Agent 是否因上下文溢出而退出（需匹配 overflow + agent + tokens_used 三个特征键）"""
     if not result or not result.strip().startswith("{"):
@@ -505,10 +469,7 @@ def _build_journal_task(journal_msg_text: str, safe_tokens: int = 0) -> str:
     """
     prompt = f"""以下是对话消息（每条带 [id:UUID] [idx:N] 序号标注）。请从中识别工作内容，提取为日志条目追加写入 journal.md。
 
-{journal_msg_text}
-
-处理完成后，在报告末尾用 JSON 格式报告：{{"last_journal_id": "<收到的消息中 idx 最大的消息的 id（UUID）>"}}
-**必须推进游标**：即使没有可提取的工作内容，也必须输出 idx 最大的消息的 UUID。"""
+{journal_msg_text}"""
 
     if safe_tokens > 0:
         prompt = _truncate_task_for_subagent(prompt, safe_tokens)
@@ -1480,10 +1441,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
 注意：对话历史中包含工具调用结果（role=tool），这些是程序化操作的结果。照片入库、人物命名等操作已经自动完成了知识图谱写入，不要重复创建这些实体。如果需要关联已有实体，请使用入库后的实体名称。
 
 """
-            entity_prompt_suffix = """
-
-处理完成后，在报告末尾用 JSON 格式报告：{"last_entity_extract_id": "<收到的消息中 idx 最大的消息的 id（UUID）>"}
-**必须推进游标**：即使没有可提取的内容（全是程序化操作、闲聊等），也必须输出 idx 最大的消息的 UUID。只有当传入的消息列表本身为空（一条消息都没有）时，才输出 {"last_entity_extract_id": null}"""
+            entity_prompt_suffix = ""
             if entity_msg_ids:
                 logger.info(f"[Tidy] entity-extractor: {len(entity_msg_ids)} new messages since cursor")
                 entity_full_prompt = entity_prompt_prefix + entity_msg_text + entity_prompt_suffix
@@ -1509,25 +1467,14 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                     return {"status": "aborted", "message": "Stopped by user"}
                 logger.info(f"[Tidy] entity-extractor result: {entity_result[:200]}")
 
-                # 游标提取和推进
+                # 游标自动推进：成功→推进到增量范围末尾，overflow→不动
                 if _is_subagent_overflow(entity_result):
                     overflow_info = _extract_overflow_info(entity_result)
                     logger.warning(f"[Tidy] entity-extractor overflow: {overflow_info.get('turns_completed', 0)} turns, {overflow_info.get('tokens_used', 0)} tokens")
-                    partial = overflow_info.get("partial_result", "")
-                    recovered = _extract_cursor_id(partial, "last_entity_extract_id", msg_id_set)
-                    if recovered and recovered != "NULL":
-                        new_entity_id = recovered
-                        logger.info(f"[Tidy] Entity cursor recovered from partial_result: {new_entity_id}")
-                    else:
-                        new_entity_id = entity_msg_ids[-1]
-                        logger.warning(f"[Tidy] Entity cursor overflow fallback to last incremental msg: {new_entity_id}")
+                    # overflow 时游标不动，下次重跑相同范围
                 else:
-                    extracted = _extract_cursor_id(entity_result, "last_entity_extract_id", msg_id_set)
-                    if extracted and extracted != "NULL":
-                        new_entity_id = extracted
-                    elif extracted == "NULL" or not extracted:
-                        new_entity_id = entity_msg_ids[-1]
-                        logger.warning(f"[Tidy] Entity cursor not matched or null, advancing to last incremental msg: {new_entity_id}")
+                    new_entity_id = entity_msg_ids[-1]
+                    logger.info(f"[Tidy] Entity cursor auto-advanced to: {new_entity_id}")
                 # 校验游标
                 if new_entity_id:
                     fresh_msgs = await store.get_messages()
@@ -1572,10 +1519,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                 logger.info(f"[Tidy] dream-evolver: {len(dream_msg_ids)} new messages since cursor")
                 dream_prompt = f"""对以下消息中涉及的实体进行精加工（打标签、建关系、关联脑区、更新画像），并维护 skill 文件。
 
-{dream_msg_text}
-
-处理完成后，在报告末尾用 JSON 格式报告：{{"last_dream_evolve_id": "<收到的消息中 idx 最大的消息的 id（UUID）>"}}
-**必须推进游标**：即使没有需要精加工的内容，也必须输出 idx 最大的消息的 UUID。"""
+{dream_msg_text}"""
 
                 # 截断 task 防止子Agent超限
                 context_window_for_truncate = _read_context_window_tokens()
@@ -1597,24 +1541,14 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                     return {"status": "aborted", "message": "Stopped by user"}
                 logger.info(f"[Tidy] Dream-evolver result: {dream_result[:200]}")
 
+                # 游标自动推进：成功→推进到增量范围末尾，overflow→不动
                 if _is_subagent_overflow(dream_result):
                     overflow_info = _extract_overflow_info(dream_result)
-                    logger.warning(f"[Tidy] Dream-evolver overflow: {overflow_info.get('turns_completed', 0)} turns, {overflow_info.get('tokens_used', 0)} tokens")
-                    partial = overflow_info.get("partial_result", "")
-                    recovered = _extract_cursor_id(partial, "last_dream_evolve_id", msg_id_set)
-                    if recovered and recovered != "NULL":
-                        new_dream_id = recovered
-                        logger.info(f"[Tidy] Dream cursor recovered from partial_result: {new_dream_id}")
-                    else:
-                        new_dream_id = dream_msg_ids[-1]
-                        logger.warning(f"[Tidy] Dream cursor overflow fallback to last incremental msg: {new_dream_id}")
+                    logger.warning(f"[Tidy] dream-evolver overflow: {overflow_info.get('turns_completed', 0)} turns, {overflow_info.get('tokens_used', 0)} tokens")
+                    # overflow 时游标不动，下次重跑相同范围
                 else:
-                    extracted = _extract_cursor_id(dream_result, "last_dream_evolve_id", msg_id_set)
-                    if extracted and extracted != "NULL":
-                        new_dream_id = extracted
-                    elif extracted == "NULL" or not extracted:
-                        new_dream_id = dream_msg_ids[-1]
-                        logger.warning(f"[Tidy] Dream cursor not matched or null, advancing to last incremental msg: {new_dream_id}")
+                    new_dream_id = dream_msg_ids[-1]
+                    logger.info(f"[Tidy] Dream cursor auto-advanced to: {new_dream_id}")
                 # 校验游标
                 if new_dream_id:
                     fresh_msgs = await store.get_messages()
@@ -1679,23 +1613,14 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                         return {"status": "aborted", "message": "Stopped by user"}
                     logger.info(f"[Tidy] journal-agent result: {journal_result[:200]}")
 
+                    # 游标自动推进：成功→推进到增量范围末尾，overflow→不动
                     if _is_subagent_overflow(journal_result):
                         overflow_info = _extract_overflow_info(journal_result)
                         logger.warning(f"[Tidy] journal-agent overflow: {overflow_info.get('turns_completed', 0)} turns")
-                        partial = overflow_info.get("partial_result", "")
-                        recovered = _extract_cursor_id(partial, "last_journal_id", msg_id_set)
-                        if recovered and recovered != "NULL":
-                            new_journal_id = recovered
-                        else:
-                            new_journal_id = journal_msg_ids[-1]
-                            logger.warning(f"[Tidy] Journal cursor overflow fallback: {new_journal_id}")
+                        # overflow 时游标不动，下次重跑相同范围
                     else:
-                        extracted = _extract_cursor_id(journal_result, "last_journal_id", msg_id_set)
-                        if extracted and extracted != "NULL":
-                            new_journal_id = extracted
-                        elif extracted == "NULL" or not extracted:
-                            new_journal_id = journal_msg_ids[-1]
-                            logger.warning(f"[Tidy] Journal cursor not matched, fallback: {new_journal_id}")
+                        new_journal_id = journal_msg_ids[-1]
+                        logger.info(f"[Tidy] Journal cursor auto-advanced to: {new_journal_id}")
 
                     # 校验游标
                     if new_journal_id:
@@ -1794,9 +1719,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                 _cursor_instruction = ""
             else:
                 # 模式一需要报告游标
-                _cursor_instruction = """处理完成后，在报告末尾用 JSON 格式报告：{"last_compress_id": "<收到的消息中 idx 最大的、非 [PROTECTED] 标记的消息的 id（UUID）>"}
-**必须推进游标**：即使没有需要处理的内容，也必须输出 idx 最大的非 [PROTECTED] 消息的 UUID。
-**禁止将游标指向 [PROTECTED] 消息**：[PROTECTED] 消息不受你的处理范围控制，游标指向它们会导致下次增量范围卡死。"""
+                _cursor_instruction = ""
             logger.info(f"[Tidy] Sleep: usage={usage_percent:.1f}%, selecting {compress_mode}")
 
             new_compress_id = last_compress_id
@@ -2089,24 +2012,14 @@ update=3|用户讨论了XX方案;11|工具执行了YY操作
                         return {"status": "aborted", "message": "Stopped by user"}
                     logger.info(f"[Tidy] context-manager result: {cm_result[:200]}")
 
-                    # 游标提取
+                    # 游标自动推进：成功→推进到增量范围末尾，overflow→不动
                     if _is_subagent_overflow(cm_result):
                         overflow_info = _extract_overflow_info(cm_result)
                         logger.warning(f"[Tidy] context-manager overflow: {overflow_info.get('turns_completed', 0)} turns")
-                        partial = overflow_info.get("partial_result", "")
-                        recovered = _extract_cursor_id(partial, "last_compress_id", msg_id_set)
-                        if recovered and recovered != "NULL":
-                            new_compress_id = recovered
-                        else:
-                            new_compress_id = compress_msg_ids[-1]
-                            logger.warning(f"[Tidy] Compress cursor overflow fallback: {new_compress_id}")
+                        # overflow 时游标不动
                     else:
-                        extracted = _extract_cursor_id(cm_result, "last_compress_id", msg_id_set)
-                        if extracted and extracted != "NULL":
-                            new_compress_id = extracted
-                        elif extracted == "NULL" or not extracted:
-                            new_compress_id = compress_msg_ids[-1]
-                            logger.warning(f"[Tidy] Compress cursor not matched, fallback: {new_compress_id}")
+                        new_compress_id = compress_msg_ids[-1] if compress_msg_ids else last_compress_id
+                        logger.info(f"[Tidy] Compress cursor auto-advanced to: {new_compress_id}")
 
                     # 校验游标
                     if new_compress_id:
@@ -2120,7 +2033,6 @@ update=3|用户讨论了XX方案;11|工具执行了YY操作
                         # 防御：游标指向 PROTECTED 消息会导致下次增量范围卡死
                         if new_compress_id and protected_ids and new_compress_id in protected_ids:
                             logger.warning(f"[Tidy] Compress cursor {new_compress_id} is PROTECTED, reverting to non-protected message")
-                            # 从 compress_msg_ids 中找 idx 最大的非 PROTECTED 消息
                             _pid_set = set(protected_ids)
                             new_compress_id = ""
                             for mid in reversed(compress_msg_ids):
@@ -2257,10 +2169,7 @@ update=3|用户讨论了XX方案;11|工具执行了YY操作
 
 注意：对话历史中包含工具调用结果（role=tool），这些是程序化操作的结果。照片入库、人物命名等操作已经自动完成了知识图谱写入，不要重复创建这些实体。如果需要关联已有实体，请使用入库后的实体名称。
 
-{entity_force_msg_text}
-
-处理完成后，在报告末尾用 JSON 格式报告：{{"last_entity_extract_id": "<收到的消息中 idx 最大的消息的 id（UUID）>"}}
-**必须推进游标**：即使没有可提取的内容，也必须输出 idx 最大的消息的 UUID。"""
+{entity_force_msg_text}"""
 
             # 截断 task 防止子Agent超限
             context_window_for_truncate = _read_context_window_tokens()
@@ -2284,24 +2193,14 @@ update=3|用户讨论了XX方案;11|工具执行了YY操作
                     return {"status": "aborted", "message": "Stopped by user"}
                 logger.info(f"[Tidy] Force: entity-extractor completed, length={len(entity_result)}")
 
+                # 游标自动推进：成功→推进到增量范围末尾，overflow→不动
                 if _is_subagent_overflow(entity_result):
                     overflow_info = _extract_overflow_info(entity_result)
                     logger.warning(f"[Tidy] Force: entity-extractor overflow: {overflow_info.get('turns_completed', 0)} turns, {overflow_info.get('tokens_used', 0)} tokens")
-                    partial = overflow_info.get("partial_result", "")
-                    recovered = _extract_cursor_id(partial, "last_entity_extract_id", msg_id_set)
-                    if recovered and recovered != "NULL":
-                        new_entity_id = recovered
-                        logger.info(f"[Tidy] Force: Entity cursor recovered from partial_result: {new_entity_id}")
-                    else:
-                        new_entity_id = entity_force_msg_ids[-1] if entity_force_msg_ids else last_entity_extract_id
-                        logger.warning(f"[Tidy] Force: Entity cursor overflow fallback: {new_entity_id}")
+                    # overflow 时游标不动
                 else:
-                    extracted = _extract_cursor_id(entity_result, "last_entity_extract_id", msg_id_set)
-                    if extracted and extracted != "NULL":
-                        new_entity_id = extracted
-                    elif extracted == "NULL" or not extracted:
-                        new_entity_id = entity_force_msg_ids[-1] if entity_force_msg_ids else last_entity_extract_id
-                        logger.warning(f"[Tidy] Force: Entity cursor not matched, fallback to last msg: {new_entity_id}")
+                    new_entity_id = entity_force_msg_ids[-1] if entity_force_msg_ids else last_entity_extract_id
+                    logger.info(f"[Tidy] Force: Entity cursor auto-advanced to: {new_entity_id}")
                 # 校验游标
                 if new_entity_id:
                     fresh_msgs = await store.get_messages()
@@ -2345,10 +2244,7 @@ update=3|用户讨论了XX方案;11|工具执行了YY操作
             if dream_force_msg_ids:
                 dream_force_prompt = f"""对以下消息中涉及的实体进行精加工（打标签、建关系、关联脑区、更新画像），并维护 skill 文件。
 
-{dream_force_msg_text}
-
-处理完成后，在报告末尾用 JSON 格式报告：{{"last_dream_evolve_id": "<收到的消息中 idx 最大的消息的 id（UUID）>"}}
-**必须推进游标**：即使没有需要精加工的内容，也必须输出 idx 最大的消息的 UUID。"""
+{dream_force_msg_text}"""
 
                 # 截断 task 防止子Agent超限
                 context_window_for_truncate = _read_context_window_tokens()
@@ -2370,24 +2266,14 @@ update=3|用户讨论了XX方案;11|工具执行了YY操作
                     return {"status": "aborted", "message": "Stopped by user"}
                 logger.info(f"[Tidy] Force: dream-evolver completed, length={len(dream_result)}")
 
+                # 游标自动推进：成功→推进到增量范围末尾，overflow→不动
                 if _is_subagent_overflow(dream_result):
                     overflow_info = _extract_overflow_info(dream_result)
                     logger.warning(f"[Tidy] Force: Dream-evolver overflow: {overflow_info.get('turns_completed', 0)} turns, {overflow_info.get('tokens_used', 0)} tokens")
-                    partial = overflow_info.get("partial_result", "")
-                    recovered = _extract_cursor_id(partial, "last_dream_evolve_id", msg_id_set)
-                    if recovered and recovered != "NULL":
-                        new_dream_id = recovered
-                        logger.info(f"[Tidy] Force: Dream cursor recovered from partial_result: {new_dream_id}")
-                    else:
-                        new_dream_id = dream_force_msg_ids[-1]
-                        logger.warning(f"[Tidy] Force: Dream cursor overflow fallback: {new_dream_id}")
+                    # overflow 时游标不动
                 else:
-                    extracted = _extract_cursor_id(dream_result, "last_dream_evolve_id", msg_id_set)
-                    if extracted and extracted != "NULL":
-                        new_dream_id = extracted
-                    elif extracted == "NULL" or not extracted:
-                        new_dream_id = dream_force_msg_ids[-1]
-                        logger.warning(f"[Tidy] Force: Dream cursor not matched, fallback to last msg: {new_dream_id}")
+                    new_dream_id = dream_force_msg_ids[-1]
+                    logger.info(f"[Tidy] Force: Dream cursor auto-advanced to: {new_dream_id}")
             else:
                 logger.info("[Tidy] Force: dream-evolver no incremental messages")
 
@@ -2451,23 +2337,14 @@ update=3|用户讨论了XX方案;11|工具执行了YY操作
                     return {"status": "aborted", "message": "Stopped by user"}
                 logger.info(f"[Tidy] Force: journal-agent completed, length={len(journal_result)}")
 
+                # 游标自动推进：成功→推进到增量范围末尾，overflow→不动
                 if _is_subagent_overflow(journal_result):
                     overflow_info = _extract_overflow_info(journal_result)
                     logger.warning(f"[Tidy] Force: journal-agent overflow: {overflow_info.get('turns_completed', 0)} turns")
-                    partial = overflow_info.get("partial_result", "")
-                    recovered = _extract_cursor_id(partial, "last_journal_id", msg_id_set)
-                    if recovered and recovered != "NULL":
-                        new_journal_id = recovered
-                    else:
-                        new_journal_id = journal_force_msg_ids[-1]
-                        logger.warning(f"[Tidy] Force: Journal cursor overflow fallback: {new_journal_id}")
+                    # overflow 时游标不动，下次重跑相同范围
                 else:
-                    extracted = _extract_cursor_id(journal_result, "last_journal_id", msg_id_set)
-                    if extracted and extracted != "NULL":
-                        new_journal_id = extracted
-                    elif extracted == "NULL" or not extracted:
-                        new_journal_id = journal_force_msg_ids[-1]
-                        logger.warning(f"[Tidy] Force: Journal cursor not matched, fallback: {new_journal_id}")
+                    new_journal_id = journal_force_msg_ids[-1] if journal_force_msg_ids else last_journal_id
+                    logger.info(f"[Tidy] Force: Journal cursor auto-advanced to: {new_journal_id}")
 
                 # 校验游标
                 if new_journal_id:
