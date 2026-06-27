@@ -300,7 +300,7 @@ def _parse_idx_list(s: str) -> set[int]:
     return result
 
 
-def _build_incremental_msg_text(messages, last_cursor_id: str, out_msg_ids: list, msg_tokens: list | None = None, end_cursor_id: str | None = None, protect_recent: int = 0) -> str:
+def _build_incremental_msg_text(messages, last_cursor_id: str, out_msg_ids: list, msg_tokens: list | None = None, end_cursor_id: str | None = None, protect_recent: int = 0, exclude_protected: bool = False) -> str:
     """
     构建增量消息文本：只包含游标之后的新消息。
 
@@ -363,10 +363,9 @@ def _build_incremental_msg_text(messages, last_cursor_id: str, out_msg_ids: list
                 _count += 1
                 if _count >= protect_recent:
                     break
+    display_idx = 0
     for rel_pos, (orig_pos, msg) in enumerate(range_messages_with_pos):
-        original_idx = start + orig_pos + 1  # 1-based display index（使用原始位置）
         msg_id = getattr(msg, "id", "") or ""
-        out_msg_ids.append(msg_id)
         content = msg.content or ""
         token_annotation = ""
         if msg_tokens and (start + orig_pos) < len(msg_tokens):
@@ -374,8 +373,12 @@ def _build_incremental_msg_text(messages, last_cursor_id: str, out_msg_ids: list
         # protect_recent: 对最后 N 条 user/assistant 消息加 [PROTECTED] 标签（不保护 role=tool 的工具输出）
         protected_label = ""
         if protect_recent > 0 and _protected_positions is not None and rel_pos in _protected_positions:
+            if exclude_protected:
+                continue  # 排除 PROTECTED 消息：不加入 out_msg_ids 和 lines
             protected_label = "[PROTECTED] "
-        lines.append(f"[id:{msg_id}] [idx:{original_idx}] {token_annotation}{msg.role}: {protected_label}{content}")
+        display_idx += 1
+        out_msg_ids.append(msg_id)
+        lines.append(f"[id:{msg_id}] [idx:{display_idx}] {token_annotation}{msg.role}: {protected_label}{content}")
 
     if not lines:
         return "（无新增消息）"
