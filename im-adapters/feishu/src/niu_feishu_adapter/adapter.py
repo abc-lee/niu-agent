@@ -83,7 +83,9 @@ class FeishuAdapter:
             )
             result = resp.json()
             if result.get("code") == 0:
-                open_id = result.get("bot", {}).get("open_id", "")
+                # 飞书 API 可能返回 data 信封格式或顶层格式
+                data = result.get("data") or {k: v for k, v in result.items() if k not in ("code", "msg")}
+                open_id = data.get("bot", {}).get("open_id", "")
                 if open_id:
                     logger.info(f"[FeishuAdapter] Bot open_id: {open_id}")
                     return open_id
@@ -136,7 +138,7 @@ class FeishuAdapter:
         if is_group:
             mentions = getattr(msg, 'mentions', None) or []
             bot_mentioned = any(
-                m.id == self._bot_open_id
+                getattr(m.id, 'open_id', '') == self._bot_open_id
                 for m in mentions if m and m.id
             ) if self._bot_open_id else False
             if not bot_mentioned:
