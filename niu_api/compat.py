@@ -1668,7 +1668,8 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
             compress_msg_ids = []
             compress_msg_text = _build_incremental_msg_text(
                 messages, _compress_cursor, compress_msg_ids, msg_tokens,
-                end_cursor_id=_end_cursor, protect_recent=protect_recent_count
+                end_cursor_id=_end_cursor, protect_recent=protect_recent_count,
+                exclude_protected=True
             )
 
             if not _is_mode2:
@@ -2387,7 +2388,8 @@ update=3|用户讨论了XX方案;11|工具执行了YY操作
             _force_msg_ids = []
             msg_list_text = _build_incremental_msg_text(
                 messages, "", _force_msg_ids, msg_tokens,
-                end_cursor_id=None, protect_recent=protect_recent_count
+                end_cursor_id=None, protect_recent=protect_recent_count,
+                exclude_protected=True
             )
             msg_list_text = msg_list_text.replace("条新消息", "条消息", 1)
 
