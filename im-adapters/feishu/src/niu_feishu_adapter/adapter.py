@@ -292,6 +292,7 @@ class FeishuAdapter:
 
         # 有内容 = 更新卡片显示
         filtered, images, files = await asyncio.to_thread(self._filter_media, content)
+        logger.info(f"[STREAM] content_len={len(content)} images={len(images)} files={len(files)} PHOTO_SEP={'[PHOTO_SEP]' in filtered}")
         display = filtered.replace("[PHOTO_SEP]", "")
         if len(display) > 18000:
             display = display[:17900] + "\n\n...[内容已截断]"
@@ -325,6 +326,7 @@ class FeishuAdapter:
         receive_id = cmd.get("channel_id", "") or self._push_chat_id
         content = cmd.get("content", "")
         state = self._card_states.pop(receive_id, None)
+        logger.info(f"[SEND] receive_id={receive_id} has_state={bool(state)} content_len={len(content)}")
         if state:
             # 保存 pending_files 副本（_do_finalize 不改变文件列表）
             saved_files = list(state.pending_files)
@@ -433,6 +435,8 @@ class FeishuAdapter:
         state.pending_files = files
 
         # 构建终结卡片 body（只用成功上传的图片，失败的留给 SEND fallback）
+        success_images = [img for img in state.pending_images if not img.get("failed")]
+        logger.info(f"[FINALIZE] images={len(images)} success={len(success_images)} files={len(files)} PHOTO_SEP={'[PHOTO_SEP]' in filtered}")
         success_images = [img for img in state.pending_images if not img.get("failed")]
         if success_images and "[PHOTO_SEP]" in filtered:
             elements = self._build_final_body(filtered, success_images)
