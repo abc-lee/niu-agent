@@ -97,5 +97,19 @@
         "keywords": ["公司", "部门", "机构", "组织", "团队", "单位"]
       }
     ]
+  },
+  "feishu": {
+    "app_id": "",
+    "app_secret": "",
+    "enabled": false
+  },
+  "amap": {
+    "api_key": "",
+    "enabled": false
+  },
+  "im": {
+    "enabled": false,
+    "gateway_port": 19877,
+    "adapter": ""
   }
 }
