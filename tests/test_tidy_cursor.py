@@ -374,3 +374,38 @@ def test_exclude_protected_with_tool_messages():
     assert "uuid-0" in out_ids
     assert "uuid-1" in out_ids
     assert "uuid-3" in out_ids
+
+
+def test_exclude_protected_display_idx_consecutive():
+    """exclude_protected=True 时，[idx:N] 编号连续无间隔"""
+    import re
+    messages = make_messages(10)
+    out_ids = []
+    text = _build_incremental_msg_text(
+        messages, "", out_ids,
+        protect_recent=3, exclude_protected=True
+    )
+    idx_values = [int(m) for m in re.findall(r'\[idx:(\d+)\]', text)]
+    assert idx_values == list(range(1, len(idx_values) + 1))
+    # idx 数量与 out_ids 一致
+    assert len(idx_values) == len(out_ids)
+
+
+def test_exclude_protected_with_end_cursor():
+    """end_cursor_id + exclude_protected 组合：排除 PROTECTED 后仍尊重上界"""
+    messages = make_messages(10)  # uuid-0 ~ uuid-9
+    out_ids = []
+    text = _build_incremental_msg_text(
+        messages, "uuid-2", out_ids,
+        end_cursor_id="uuid-7", protect_recent=2,
+        exclude_protected=True
+    )
+    # 范围 uuid-3~uuid-7，protect_recent=2 保护 uuid-6,uuid-7
+    # exclude_protected=True → out_ids 不含 uuid-6, uuid-7
+    assert "uuid-6" not in out_ids
+    assert "uuid-7" not in out_ids
+    assert "uuid-3" in out_ids
+    assert "uuid-5" in out_ids
+    # end_cursor 上界仍生效：uuid-8, uuid-9 不在
+    assert "uuid-8" not in out_ids
+    assert "uuid-9" not in out_ids
