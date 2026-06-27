@@ -1687,7 +1687,6 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                 _skip_compress = True
             # 模式二量化目标：基于 targetThreshold 计算动态目标（提前计算，决定是否跳过）
             _compress_target = ""
-            _cursor_instruction = ""
             if _skip_compress:
                 pass  # 接近强制阈值，跳过所有压缩
             elif _is_mode2:
@@ -1711,11 +1710,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                         f"如果远端+中端释放量不足目标，可对近端非保护消息按中端区规则（合并为摘要）处理，但不突破 [PROTECTED] 边界；"
                         f"如果近端非保护消息也全部处理后仍不足目标，接受当前结果。\n"
                     )
-                # 模式二改为一轮JSON方案，不要求游标报告
-                _cursor_instruction = ""
-            else:
-                # 模式一：游标由程序自动推进，不需要报告指令
-                _cursor_instruction = ""
+                # 模式一/二：游标均由程序自动推进，不需要报告指令
             logger.info(f"[Tidy] Sleep: usage={usage_percent:.1f}%, selecting {compress_mode}")
 
             new_compress_id = last_compress_id
@@ -1773,7 +1768,7 @@ update=3|用户讨论了XX方案;11|工具执行了YY操作
 消息列表：
 {compress_msg_text}
 
-请按照【{compress_mode}】的规则处理。{_cursor_instruction}"""
+请按照【{compress_mode}】的规则处理。"""
 
                 # 截断 task 防止子Agent超限 + 子Agent调用 + 结果处理
                 if _is_mode2:
