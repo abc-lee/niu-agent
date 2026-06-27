@@ -846,7 +846,7 @@ class NiuHandler(BaseHandler):
         import json
         import fcntl
         from datetime import datetime
-        from niu_api.compat import _is_subagent_overflow, _extract_overflow_info, _write_cursor_with_lock
+        from niu_api.compat import _is_subagent_overflow, _extract_overflow_info
 
         # 在获取文件锁之前读取消息列表 — 避免在锁内调用 _sync_get_messages() 导致死锁
         messages = self._sync_get_messages()
