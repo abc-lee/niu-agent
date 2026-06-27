@@ -260,40 +260,30 @@ class FeishuAdapter:
             await self._on_push(cmd)
 
     async def _on_stream(self, cmd: dict):
-        """STREAM = 完整内容 → 创建/更新卡片
+        """STREAM = 增量内容 → 创建/更新卡片（纯文本显示，不处理图片）
 
-        注意：当前生产环境 verbose=False，每次 STREAM 的 content 是该轮 LLM 的完整输出，
-        不是增量文本。所以不累积，直接用 content 替换卡片显示。
-
-        如果 content 为空（仅信号通知），只递增 seq 保持卡片活跃，不更新显示内容。
+        图片上传和嵌入只在 SEND 终结阶段做，原因：
+        1. STREAM 发的是增量 chunk，图片引用可能不完整
+        2. 流式阶段上传图片后 [PHOTO_SEP] 被删掉，图片信息丢失
+        3. 同一张图片被上传两次（STREAM + SEND），浪费且 img_key 不一致
         """
         receive_id = cmd.get("channel_id", "") or self._push_chat_id
         content = cmd.get("content", "")
-        is_final = cmd.get("is_final", False)
         reply_to_id = cmd.get("reply_to_id")
 
-        from niu_feishu_adapter.feishu_api import (
-            create_card, update_card_element, finalize_card,
-        )
+        from niu_feishu_adapter.feishu_api import create_card, update_card_element
 
         state = self._card_states.get(receive_id)
 
         # 空内容 = 信号通知（保持卡片活跃），只递增 seq
         if not content:
             if not state:
-                if is_final:
-                    logger.debug(f"[FeishuAdapter] STREAM(is_final) with no content and no card for {receive_id}")
                 return
             state.seq += 1
-            if is_final:
-                # 不 pop state — 终结由后续 SEND 指令完成（SEND 携带正确的累积内容）
-                logger.debug(f"[FeishuAdapter] STREAM(is_final) for {receive_id}, card will be finalized by SEND")
             return
 
-        # 有内容 = 更新卡片显示
-        filtered, images, files = await asyncio.to_thread(self._filter_media, content)
-        logger.info(f"[STREAM] content_len={len(content)} images={len(images)} files={len(files)} PHOTO_SEP={'[PHOTO_SEP]' in filtered}")
-        display = filtered.replace("[PHOTO_SEP]", "")
+        # 有内容 = 更新卡片显示（纯文本，图片引用原样显示，终结时再处理）
+        display = content
         if len(display) > 18000:
             display = display[:17900] + "\n\n...[内容已截断]"
 
@@ -310,13 +300,7 @@ class FeishuAdapter:
             state.seq += 1
             await update_card_element(self._client, state.card_id, display, state.seq)
 
-        state.pending_images = images
-        state.pending_files = files
         state.last_content = content
-
-        if is_final:
-            # 不 pop state — 终结由后续 SEND 指令完成（SEND 携带正确的累积内容）
-            logger.debug(f"[FeishuAdapter] STREAM(is_final) with content for {receive_id}, card will be finalized by SEND")
 
     async def _on_send(self, cmd: dict):
         """SEND = 最终回复 → 终结卡片（无卡片时发 Markdown 文本）
@@ -326,24 +310,20 @@ class FeishuAdapter:
         receive_id = cmd.get("channel_id", "") or self._push_chat_id
         content = cmd.get("content", "")
         state = self._card_states.pop(receive_id, None)
-        logger.info(f"[SEND] receive_id={receive_id} has_state={bool(state)} content_len={len(content)}")
         if state:
-            # 保存 pending_files 副本（_do_finalize 不改变文件列表）
-            saved_files = list(state.pending_files)
             try:
                 await self._do_finalize(state, content)
             except Exception as e:
-                logger.error(f"[FeishuAdapter] Finalize failed for {receive_id}: {e}, card content already visible, not resending")
-            # 不管终结成功失败，都发 pending_files（文件不在卡片中，不受终结影响）
-            if saved_files:
+                logger.error(f"[FeishuAdapter] Finalize failed for {receive_id}: {e}")
+            # 终结后发送独立文件消息（文件不在卡片中）
+            if state.pending_files:
                 from niu_feishu_adapter.feishu_api import send_file_message
-                for file_info in saved_files:
+                for file_info in state.pending_files:
                     try:
                         await send_file_message(self._client, receive_id, file_info["file_key"], file_info["filename"])
                     except Exception as e:
                         logger.error(f"[FeishuAdapter] Send file failed: {e}")
-            # 对终结后仍然失败的图片，重新上传并发独立图片消息
-            # 使用 state.pending_images（终结阶段 _filter_media 的结果，而非流式阶段快照）
+            # 终结后对上传失败的图片，重新上传并发独立图片消息
             failed_images = [img for img in state.pending_images if img.get("failed")]
             if failed_images:
                 from niu_feishu_adapter.feishu_api import upload_image, send_image_message
@@ -352,10 +332,8 @@ class FeishuAdapter:
                         img_key = await asyncio.to_thread(upload_image, self._app_id, self._app_secret, img_info["path"])
                         if img_key:
                             await send_image_message(self._client, receive_id, img_key)
-                        else:
-                            logger.warning(f"[FeishuAdapter] Image re-upload failed: {img_info.get('path', '')}")
                     except Exception as e:
-                        logger.error(f"[FeishuAdapter] Send image fallback failed: {e}")
+                        logger.error(f"[FeishuAdapter] Image fallback failed: {e}")
         else:
             if not receive_id:
                 logger.warning("[FeishuAdapter] SEND without receive_id and no card, dropping")
@@ -435,8 +413,6 @@ class FeishuAdapter:
         state.pending_files = files
 
         # 构建终结卡片 body（只用成功上传的图片，失败的留给 SEND fallback）
-        success_images = [img for img in state.pending_images if not img.get("failed")]
-        logger.info(f"[FINALIZE] images={len(images)} success={len(success_images)} files={len(files)} PHOTO_SEP={'[PHOTO_SEP]' in filtered}")
         success_images = [img for img in state.pending_images if not img.get("failed")]
         if success_images and "[PHOTO_SEP]" in filtered:
             elements = self._build_final_body(filtered, success_images)
