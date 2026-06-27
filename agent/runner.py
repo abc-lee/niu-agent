@@ -634,9 +634,9 @@ class NiuRunner:
 
     @staticmethod
     def _recalc_msg_stats(db_messages):
-        """Recalculate per-message token counts and the id set.
+        """Recalculate per-message token counts.
 
-        Returns (msg_tokens: list[int], msg_id_set: set[str]).
+        Returns list[int] of token counts per message.
         """
         msg_tokens = []
         try:
@@ -650,8 +650,7 @@ class NiuRunner:
                 msg_tokens.append(t)
         except ImportError:
             msg_tokens = [max(1, len(msg.content or "") // 2) + 4 for msg in db_messages]
-        msg_id_set = {getattr(m, "id", "") for m in db_messages}
-        return msg_tokens, msg_id_set
+        return msg_tokens
 
     def _run_subagent_step(self, step_name, cursor_path, cursor_field,
                            prompt, llm_config, last_cursor_id,
@@ -780,7 +779,7 @@ class NiuRunner:
                 logger.info("[Runner] No messages in DB, skipping compress")
                 return
 
-            msg_tokens, msg_id_set = self._recalc_msg_stats(db_messages)
+            msg_tokens = self._recalc_msg_stats(db_messages)
             estimated_tokens = sum(msg_tokens)
             message_count = len(db_messages)
             context_window_tokens = _read_context_window_tokens()
@@ -840,7 +839,7 @@ class NiuRunner:
 
             # 重新获取消息列表（entity 可能已修改 DB）
             db_messages = self._sync_get_messages()
-            msg_tokens, msg_id_set = self._recalc_msg_stats(db_messages)
+            msg_tokens = self._recalc_msg_stats(db_messages)
 
             new_dream_id = last_dream_evolve_id
             dream_force_msg_ids = []
@@ -875,7 +874,7 @@ class NiuRunner:
                 return
 
             db_messages = self._sync_get_messages()
-            msg_tokens, msg_id_set = self._recalc_msg_stats(db_messages)
+            msg_tokens = self._recalc_msg_stats(db_messages)
 
             new_journal_id = last_journal_id
             journal_force_msg_ids = []
@@ -927,7 +926,6 @@ class NiuRunner:
                 end_cursor_id=None, protect_recent=protect_recent_count
             )
             msg_list_text = msg_list_text.replace("条新消息", "条消息", 1)
-            msg_id_set = set(_force_msg_ids)
 
             # 计算 force 路径的受保护 ID
             _f_pids = []
