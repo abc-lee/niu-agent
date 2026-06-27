@@ -389,6 +389,7 @@ class NiuRunner:
 
         # 用户记忆脏标记（remember/forget 工具调用后 set）
         self._memory_dirty = threading.Event()
+        self._current_channel_id = ""
 
         # Brain context injector chain (lazy-cached, created once per runner)
         self._brain_adapter = None      # LightRAGAdapter
@@ -1728,7 +1729,7 @@ REMINDER: 禁止调用任何工具，直接在回复中输出 keep=/update=/curs
         return injection, {}
 
     def chat(
-        self, session_id: str, user_input: str, stream: bool = True, max_turns: int = 40, history: list = None, resources: list | None = None
+        self, session_id: str, user_input: str, stream: bool = True, max_turns: int = 40, history: list = None, resources: list | None = None, channel_id: str = ""
     ) -> Generator[str, None, None]:
         """执行对话 — disk mode: base tools + disk only.
 
@@ -1740,6 +1741,7 @@ REMINDER: 禁止调用任何工具，直接在回复中输出 keep=/update=/curs
             history: 可选的历史消息列表
         """
         logger.info(f"[Runner] chat() called, session_id={session_id}, input={user_input[:50]}")
+        self._current_channel_id = channel_id
         # 从消息历史中提取上下文
         context = self._extract_context_from_history(history, user_input)
 
@@ -1839,6 +1841,14 @@ REMINDER: 禁止调用任何工具，直接在回复中输出 keep=/update=/curs
                             full_resp += chunk.content
                             if chunk.content:  # SSE 管道：只推送非空 reply
                                 yield chunk.content
+                                # IM Gateway 流式推送（完整内容，非增量）
+                                try:
+                                    from niu_api.channel.gateway import get_im_gateway
+                                    _gw = get_im_gateway()
+                                    if _gw and _gw.is_connected and chunk.content:
+                                        _gw.notify_stream(chunk.content, channel_id=self._current_channel_id)
+                                except Exception:
+                                    pass
                         elif chunk.type == "persist":
                             # V4: 逐条持久化消息到 DB + 通知 SSE
                             try:
@@ -1869,6 +1879,15 @@ REMINDER: 禁止调用任何工具，直接在回复中输出 keep=/update=/curs
             # 确保停止标志被清除（无论正常退出、停止退出还是异常退出）
             if is_stop_requested():
                 clear_stop()
+            # IM Gateway 流式结束通知
+            try:
+                from niu_api.channel.gateway import get_im_gateway
+                _gw = get_im_gateway()
+                if _gw and _gw.is_connected:
+                    _gw.notify_stream("", channel_id=self._current_channel_id, is_final=True)
+            except Exception:
+                pass
+            self._current_channel_id = ""
             # 防御性推送 chat_idle：gen.close() 可能中断 agent_loop 的正常退出路径
             # 只在未推送过时才推送，避免重复
             if not chat_idle_pushed:
@@ -1960,7 +1979,7 @@ REMINDER: 禁止调用任何工具，直接在回复中输出 keep=/update=/curs
                 from niu_api.channel.gateway import get_im_gateway
                 _gw = get_im_gateway()
                 if _gw and _gw.is_connected:
-                    _gw.notify_stream("")
+                    _gw.notify_stream("", channel_id=self._current_channel_id)
             except Exception:
                 pass
 
