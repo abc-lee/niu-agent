@@ -80,7 +80,9 @@ disableBaseTools:
 **操作范围**：last_compress_id 对应idx < idx ≤ last_dream_evolve_id 对应idx 的消息（先从消息列表中找到游标UUID对应的idx，再用idx确定范围）
 **操作**：
 1. 合并连续的简单确认回复（"好的"、"明白了"、"谢谢"）为一条摘要
-2. 精简大工具输出（保留关键结果，删除中间过程）
+2. 精简大工具输出：**禁止单独删除 tool 消息**，只能用以下两种方式之一处理：
+   - **有价值的工具输出**：用 `update_message` 将 tool 输出总结为一句话（如 `[工具结果] 找到3个匹配文件`），保留 assistant 的 tool_calls 不动
+   - **无价值的工具输出**：连同发起调用的 assistant(tool_calls) 一起删除（如果 assistant 还有其他有价值的 tool 输出，则保留 assistant 并用 update_message 改写为摘要，程序自动清空 tool_calls）
 3. 压缩冗余的系统消息和重复内容
 4. **不删除核心对话内容**，只做合并和精简
 
@@ -302,11 +304,20 @@ cursor=15
 
 LLM API 要求每条 tool 消息必须有对应的 assistant tool_calls，每个 tool_calls 必须有对应的 tool 响应。违反此规则会导致 API 400 错误。
 
+**⛔ 绝对禁止：单独删除 tool 输出而不处理对应的 assistant(tool_calls)** — 这会留下悬空的 tool_calls，导致 API 调用失败。tool 输出只有两种合法处理方式：
+
+**方式一：总结保留**（推荐，适用于有价值的工具输出）
+- 用 `update_message` 将 tool 输出内容改写为一句话总结（如 `[工具结果] 找到3个匹配文件`）
+- assistant 的 tool_calls 保持不变
+- 这是最安全的处理方式，不破坏任何链路
+
+**方式二：连同 assistant 一起删除**（适用于完全无价值的工具调用）
+- 将 tool 输出和发起调用的 assistant 同时加入 `delete_messages`
+- 如果 assistant 还有其他有价值的 tool 输出：不能删除 assistant，改为用 `update_message` 将 assistant 内容改写为摘要，程序会自动清空其 tool_calls 并级联删除对应的 tool 输出
+
+**补充规则**：
 1. **删除 assistant(tool_calls) 时**：必须同时删除其所有 tool 输出消息。例如：assistant 消息调用了 3 个工具（tool_call_id: tc1, tc2, tc3），删除该 assistant 时，必须把 role=tool 且 tool_call_id 为 tc1/tc2/tc3 的消息一并加入 delete_messages
-2. **删除 tool 输出时**：必须同时删除发起调用的 assistant(tool_calls) 消息。例如：删除 tool_call_id=tc1 的 tool 消息时，如果对应的 assistant 还有其他 tool_calls（tc2, tc3），则：
-   - 如果 tc2/tc3 的 tool 输出也一起删除 → 直接删除该 assistant
-   - 如果 tc2/tc3 的 tool 输出保留 → **不能删除该 assistant**，改为用 update_message 将 assistant 内容改写为摘要，程序会自动清空其 tool_calls
-3. **更新 assistant(tool_calls) 内容时**：如果 assistant 消息有 tool_calls 字段，程序会自动清空 tool_calls（因为摘要文本不能携带工具调用）。对应的 tool 输出消息会由程序自动级联删除，你不需要手动处理
+2. **更新 assistant(tool_calls) 内容时**：如果 assistant 消息有 tool_calls 字段，程序会自动清空 tool_calls（因为摘要文本不能携带工具调用）。对应的 tool 输出消息会由程序自动级联删除，你不需要手动处理
 
 **模式二/三**（直接回复 idx 方案）：
 - 禁止调用任何工具，直接在回复内容中输出 keep=/update=/cursor= 格式
