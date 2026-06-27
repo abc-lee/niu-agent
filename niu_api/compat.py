@@ -1794,8 +1794,9 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                 _cursor_instruction = ""
             else:
                 # 模式一需要报告游标
-                _cursor_instruction = """处理完成后，在报告末尾用 JSON 格式报告：{"last_compress_id": "<收到的消息中 idx 最大的消息的 id（UUID）>"}
-**必须推进游标**：即使没有需要处理的内容，也必须输出 idx 最大的消息的 UUID。"""
+                _cursor_instruction = """处理完成后，在报告末尾用 JSON 格式报告：{"last_compress_id": "<收到的消息中 idx 最大的、非 [PROTECTED] 标记的消息的 id（UUID）>"}
+**必须推进游标**：即使没有需要处理的内容，也必须输出 idx 最大的非 [PROTECTED] 消息的 UUID。
+**禁止将游标指向 [PROTECTED] 消息**：[PROTECTED] 消息不受你的处理范围控制，游标指向它们会导致下次增量范围卡死。"""
             logger.info(f"[Tidy] Sleep: usage={usage_percent:.1f}%, selecting {compress_mode}")
 
             new_compress_id = last_compress_id
@@ -2116,6 +2117,16 @@ update=3|用户讨论了XX方案;11|工具执行了YY操作
                             new_compress_id = last_compress_id
                             if new_compress_id and new_compress_id not in fresh_ids:
                                 new_compress_id = ""
+                        # 防御：游标指向 PROTECTED 消息会导致下次增量范围卡死
+                        if new_compress_id and protected_ids and new_compress_id in protected_ids:
+                            logger.warning(f"[Tidy] Compress cursor {new_compress_id} is PROTECTED, reverting to non-protected message")
+                            # 从 compress_msg_ids 中找 idx 最大的非 PROTECTED 消息
+                            _pid_set = set(protected_ids)
+                            new_compress_id = ""
+                            for mid in reversed(compress_msg_ids):
+                                if mid not in _pid_set and mid in fresh_ids:
+                                    new_compress_id = mid
+                                    break
 
                     compress_integrity_ok = True
                     if protected_ids:
