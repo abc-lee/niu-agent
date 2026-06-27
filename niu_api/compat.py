@@ -1425,7 +1425,6 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
             except Exception as e:
                 logger.warning(f"[Tidy] Failed to read journal cursor: {e}")
 
-        msg_id_set = {getattr(m, "id", "") or "" for m in messages}  # 用于游标 ID 有效性校验
 
         if mode == "sleep":
             # Sleep mode: entity-extractor (增量) → dream-evolver (增量) → context-manager (增量)
@@ -1509,8 +1508,6 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                     msg_tokens.append(t)
             except ImportError:
                 msg_tokens = [max(1, len(msg.content or "") // 2) + 4 for msg in messages]
-            msg_id_set = {getattr(m, "id", "") for m in messages}
-            dream_msg_ids = []
             dream_msg_text = _build_incremental_msg_text(
                 messages, last_dream_evolve_id, dream_msg_ids, msg_tokens
             )
@@ -1584,7 +1581,6 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                         msg_tokens.append(t)
                 except ImportError:
                     msg_tokens = [max(1, len(msg.content or "") // 2) + 4 for msg in messages]
-                msg_id_set = {getattr(m, "id", "") for m in messages}
 
                 new_journal_id = last_journal_id
                 journal_msg_ids = []
@@ -1658,8 +1654,6 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                     msg_tokens.append(t)
             except ImportError:
                 msg_tokens = [max(1, len(msg.content or "") // 2) + 4 for msg in messages]
-            msg_id_set = {getattr(m, "id", "") for m in messages}
-            compress_msg_ids = []
             # 读取保护数量配置
             protect_recent_count = _read_protect_recent_count()
 
@@ -2233,8 +2227,6 @@ update=3|用户讨论了XX方案;11|工具执行了YY操作
                     msg_tokens.append(t)
             except ImportError:
                 msg_tokens = [max(1, len(msg.content or "") // 2) + 4 for msg in messages]
-            msg_id_set = {getattr(m, "id", "") for m in messages}
-            new_dream_id = last_dream_evolve_id  # 默认保留旧游标
             dream_force_msg_ids = []
             dream_force_msg_text = _build_incremental_msg_text(
                 messages, last_dream_evolve_id, dream_force_msg_ids, msg_tokens
@@ -2308,7 +2300,6 @@ update=3|用户讨论了XX方案;11|工具执行了YY操作
                     msg_tokens.append(t)
             except ImportError:
                 msg_tokens = [max(1, len(msg.content or "") // 2) + 4 for msg in messages]
-            msg_id_set = {getattr(m, "id", "") for m in messages}
 
             new_journal_id = last_journal_id
             journal_force_msg_ids = []
@@ -2399,7 +2390,6 @@ update=3|用户讨论了XX方案;11|工具执行了YY操作
                 end_cursor_id=None, protect_recent=protect_recent_count
             )
             msg_list_text = msg_list_text.replace("条新消息", "条消息", 1)
-            msg_id_set = set(_force_msg_ids)
 
             # 计算 force 路径的受保护 ID
             _f_pids = []
