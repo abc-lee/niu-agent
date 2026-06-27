@@ -13,7 +13,6 @@ from typing import Optional
 from loguru import logger
 
 MAX_MSG_SIZE = 10 * 1024 * 1024  # 10MB
-_LOCAL_PATH_PREFIX = str(Path.home() / ".niu" / "tmp")
 
 
 class CardState:
@@ -474,7 +473,10 @@ class FeishuAdapter:
             path = raw_path
 
             if is_image:
-                if not path.startswith(_LOCAL_PATH_PREFIX) or not Path(path).exists():
+                # 本地路径检查：只要不是 URL/data URI 且文件存在就上传（与旧代码一致）
+                if not path or path.startswith(("http://", "https://", "ftp://", "data:")):
+                    continue
+                if not Path(path).exists():
                     replacements.append((start_idx, end_idx, ""))
                     continue
                 img_key = upload_image(self._app_id, self._app_secret, path)
@@ -487,8 +489,9 @@ class FeishuAdapter:
                     replacements.append((start_idx, end_idx, ""))
             else:
                 # 文件链接
-                if not path.startswith(_LOCAL_PATH_PREFIX) or not Path(path).exists():
-                    # 不是本地 tmp 文件，保留原样（可能是 URL 或其他路径）
+                if not path or path.startswith(("http://", "https://", "ftp://", "data:", "mailto:")):
+                    continue
+                if not Path(path).exists():
                     continue
                 file_key = upload_file(self._app_id, self._app_secret, path, alt_text or Path(path).name)
                 if file_key:
