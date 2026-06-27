@@ -304,3 +304,73 @@ class TestTidyContextImplIntegration:
         lines = result.split("\n")
         protected_lines = [l for l in lines if "[PROTECTED]" in l]
         assert len(protected_lines) == 5
+
+
+def test_exclude_protected_removes_protected_messages():
+    """exclude_protected=True 时，PROTECTED 消息不出现在输出文本和 out_msg_ids 中"""
+    messages = make_messages(10)  # 10 条消息
+    out_ids = []
+    text = _build_incremental_msg_text(
+        messages, "", out_ids,
+        protect_recent=3,  # 最后 3 条 user/assistant 标记为 PROTECTED
+        exclude_protected=True
+    )
+    # PROTECTED 消息不应在 text 中出现
+    assert "[PROTECTED]" not in text
+    # out_ids 不应包含最后 3 条消息的 ID
+    all_ids = [getattr(m, "id", "") for m in messages]
+    protected_ids = all_ids[-3:]  # 最后 3 条是 user/assistant（make_messages 交替 user/assistant）
+    for pid in protected_ids:
+        assert pid not in out_ids
+    # 非保护消息应在 out_ids 中
+    non_protected_ids = all_ids[:-3]
+    for npid in non_protected_ids:
+        assert npid in out_ids
+
+
+def test_exclude_protected_false_keeps_protected_messages():
+    """exclude_protected=False 时，PROTECTED 消息正常出现在输出中"""
+    messages = make_messages(10)
+    out_ids = []
+    text = _build_incremental_msg_text(
+        messages, "", out_ids,
+        protect_recent=3,
+        exclude_protected=False
+    )
+    assert "[PROTECTED]" in text
+    # 所有消息 ID 都在 out_ids 中
+    all_ids = [getattr(m, "id", "") for m in messages]
+    assert set(out_ids) == set(all_ids)
+
+
+def test_exclude_protected_without_protect_recent_is_noop():
+    """protect_recent=0 时，exclude_protected 无效（没有消息被标记为 PROTECTED）"""
+    messages = make_messages(10)
+    out_ids_exclude = []
+    out_ids_normal = []
+    _build_incremental_msg_text(messages, "", out_ids_exclude, protect_recent=0, exclude_protected=True)
+    _build_incremental_msg_text(messages, "", out_ids_normal, protect_recent=0, exclude_protected=False)
+    assert out_ids_exclude == out_ids_normal
+
+
+def test_exclude_protected_with_tool_messages():
+    """包含 tool 消息时，exclude_protected 只排除 PROTECTED 的 user/assistant 消息"""
+    messages = [
+        FakeMessage(id="uuid-0", role="user", content="用户消息 0"),
+        FakeMessage(id="uuid-1", role="assistant", content="助手消息 1", tool_calls=[{"id": "tc1"}]),
+        FakeMessage(id="uuid-2", role="tool", content="工具输出 2", tool_call_id="tc1"),
+        FakeMessage(id="uuid-3", role="user", content="用户消息 3"),
+        FakeMessage(id="uuid-4", role="assistant", content="助手消息 4"),
+    ]
+    out_ids = []
+    text = _build_incremental_msg_text(
+        messages, "", out_ids,
+        protect_recent=1,  # 保护最后 1 条 user/assistant = uuid-4
+        exclude_protected=True
+    )
+    # uuid-4 被排除（PROTECTED），uuid-2（tool）不被排除
+    assert "uuid-4" not in out_ids
+    assert "uuid-2" in out_ids
+    assert "uuid-0" in out_ids
+    assert "uuid-1" in out_ids
+    assert "uuid-3" in out_ids
