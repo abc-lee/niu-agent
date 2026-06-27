@@ -64,7 +64,33 @@ class FeishuAdapter:
         self._client = lark.Client.builder() \
             .app_id(self._app_id).app_secret(self._app_secret) \
             .log_level(lark.LogLevel.DEBUG).build()
+        # 获取 bot open_id（群聊 @bot 检测需要）
+        self._bot_open_id = self._fetch_bot_open_id()
         logger.info("[FeishuAdapter] SDK initialized")
+
+    def _fetch_bot_open_id(self) -> str:
+        """调用飞书 API 获取 bot 的 open_id"""
+        from niu_feishu_adapter.feishu_api import _get_tenant_token
+        import requests
+        token = _get_tenant_token(self._app_id, self._app_secret)
+        if not token:
+            return ""
+        try:
+            resp = requests.get(
+                "https://open.feishu.cn/open-apis/bot/v3/info/",
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=10,
+            )
+            result = resp.json()
+            if result.get("code") == 0:
+                open_id = result.get("bot", {}).get("open_id", "")
+                if open_id:
+                    logger.info(f"[FeishuAdapter] Bot open_id: {open_id}")
+                    return open_id
+            logger.warning(f"[FeishuAdapter] Failed to get bot open_id: {result.get('msg', '')}")
+        except Exception as e:
+            logger.warning(f"[FeishuAdapter] Get bot open_id error: {e}")
+        return ""
 
     def _start_listener(self):
         import lark_oapi as lark
@@ -110,9 +136,9 @@ class FeishuAdapter:
         if is_group:
             mentions = getattr(msg, 'mentions', None) or []
             bot_mentioned = any(
-                getattr(getattr(m, 'id', None), 'open_id', '') == self._app_id
-                for m in mentions if m
-            )
+                m.id == self._bot_open_id
+                for m in mentions if m and m.id
+            ) if self._bot_open_id else False
             if not bot_mentioned:
                 return
 
@@ -299,9 +325,8 @@ class FeishuAdapter:
         content = cmd.get("content", "")
         state = self._card_states.pop(receive_id, None)
         if state:
-            # 保存副本，防止 _do_finalize 内部 _filter_media 覆盖
+            # 保存 pending_files 副本（_do_finalize 不改变文件列表）
             saved_files = list(state.pending_files)
-            saved_images = list(state.pending_images)
             try:
                 await self._do_finalize(state, content)
             except Exception as e:
@@ -314,8 +339,9 @@ class FeishuAdapter:
                         await send_file_message(self._client, receive_id, file_info["file_key"], file_info["filename"])
                     except Exception as e:
                         logger.error(f"[FeishuAdapter] Send file failed: {e}")
-            # 对上传失败的图片，重新尝试上传并发独立图片消息
-            failed_images = [img for img in saved_images if img.get("failed")]
+            # 对终结后仍然失败的图片，重新上传并发独立图片消息
+            # 使用 state.pending_images（终结阶段 _filter_media 的结果，而非流式阶段快照）
+            failed_images = [img for img in state.pending_images if img.get("failed")]
             if failed_images:
                 from niu_feishu_adapter.feishu_api import upload_image, send_image_message
                 for img_info in failed_images:
