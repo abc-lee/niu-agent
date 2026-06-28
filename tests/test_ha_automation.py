@@ -39,3 +39,70 @@ class TestHaAutomation:
         if "automations" in result and result["automations"]:
             first = result["automations"][0]
             assert "config" in first
+
+    def test_create_and_get(self):
+        """创建自动化后可以 get 到"""
+        _ensure_connected()
+        # 使用真实存在的 entity（从 ha_status 获取第一个灯设备）
+        from niu_ha_server import ha_status
+        status = ha_status()
+        real_entity = None
+        if status.get("connected") and status.get("devices"):
+            light = next((d for d in status["devices"] if d["entity_id"].startswith("light.")), None)
+            if light:
+                real_entity = light["entity_id"]
+        if not real_entity:
+            pytest.skip("No light entity available for test")
+        result = ha_automation(action="create", name="测试自动删除", config={
+            "triggers": [{"platform": "time", "at": "08:00:00"}],
+            "actions": [{"action": "light.turn_on", "target": {"entity_id": real_entity}}],
+            "mode": "single",
+        })
+        assert result.get("success"), f"创建失败: {result}"
+        import time; time.sleep(3)  # 等待 HA reload 注册 entity
+        # 验证 get
+        get_result = ha_automation(action="get", name="测试自动删除")
+        assert get_result.get("config"), f"获取配置失败: {get_result}"
+        # 清理
+        ha_automation(action="delete", name="测试自动删除", confirm=True)
+
+    def test_delete_preview(self):
+        """delete 不带 confirm 返回预览"""
+        _ensure_connected()
+        # 先创建
+        ha_automation(action="create", name="测试删除预览", config={
+            "triggers": [{"platform": "time", "at": "09:00:00"}],
+            "actions": [{"action": "persistent_notification.create", "data": {"message": "test"}}],
+            "mode": "single",
+        })
+        import time; time.sleep(3)
+        result = ha_automation(action="delete", name="测试删除预览")
+        assert result.get("preview"), f"应返回预览: {result}"
+        # 确认删除
+        result = ha_automation(action="delete", name="测试删除预览", confirm=True)
+        assert result.get("success"), f"删除失败: {result}"
+
+    def test_enable_disable(self):
+        """启用/禁用自动化"""
+        _ensure_connected()
+        # 先创建
+        ha_automation(action="create", name="测试开关", config={
+            "triggers": [{"platform": "time", "at": "10:00:00"}],
+            "actions": [{"action": "persistent_notification.create", "data": {"message": "test"}}],
+            "mode": "single",
+        })
+        import time; time.sleep(3)
+        # 禁用
+        result = ha_automation(action="disable", name="测试开关")
+        assert result.get("success"), f"禁用失败: {result}"
+        # 启用
+        result = ha_automation(action="enable", name="测试开关")
+        assert result.get("success"), f"启用失败: {result}"
+        # 清理
+        ha_automation(action="delete", name="测试开关", confirm=True)
+
+    def test_name_not_found(self):
+        """名称不存在时返回错误"""
+        _ensure_connected()
+        result = ha_automation(action="get", name="不存在的自动化_xyz")
+        assert "error" in result
