@@ -1102,6 +1102,64 @@ def ha_integrate(handler: str = "", flow_id: str = "", data: dict = None,
         return result
 
 
+# --- ha_automation ---
+
+def ha_automation(action: str, name: str = "", config: dict = None, confirm: bool = False, detail: bool = False, **kwargs) -> dict:
+    """管理自动化"""
+    cfg = _read_config()
+    ha_url, headers, err = _get_ha_client(cfg)
+    if err:
+        return {"error": err}
+
+    if action == "list":
+        states = _fetch_domain_states(ha_url, headers, "automation")
+        # detail=true 时一次性获取 entity_registry，避免循环中重复 WebSocket 连接
+        entity_registry = None
+        if detail:
+            entity_registry = _fetch_entity_registry(ha_url, headers)
+        automations = []
+        for s in states:
+            attrs = s.get("attributes", {})
+            entry = {
+                "name": attrs.get("friendly_name", s["entity_id"]),
+                "entity_id": s["entity_id"],
+                "state": s.get("state", "off"),
+                "last_triggered": attrs.get("last_triggered"),
+            }
+            if detail:
+                config_key = _resolve_config_key(ha_url, headers, "automation", s["entity_id"], entity_registry)
+                if config_key:
+                    try:
+                        resp = _requests.get(f"{ha_url}/api/config/automation/config/{config_key}", headers=headers, timeout=10)
+                        if resp.status_code == 200:
+                            entry["config"] = resp.json()
+                    except Exception:
+                        pass
+            automations.append(entry)
+        return {"automations": automations}
+
+    if action == "get":
+        if not name:
+            return {"error": "name 参数必填"}
+        states = _fetch_domain_states(ha_url, headers, "automation")
+        entity_id = _find_entity_by_name(states, "automation", name)
+        if not entity_id:
+            return {"error": f"未找到名为 '{name}' 的自动化，请先 list 查看可用列表"}
+        config_key = _resolve_config_key(ha_url, headers, "automation", entity_id)
+        if not config_key:
+            return {"error": f"无法解析自动化的配置 ID: {entity_id}"}
+        try:
+            resp = _requests.get(f"{ha_url}/api/config/automation/config/{config_key}", headers=headers, timeout=10)
+            if resp.status_code == 200:
+                return {"name": name, "entity_id": entity_id, "config": resp.json()}
+            return {"error": f"HA API 返回 {resp.status_code}: {resp.text[:200]}"}
+        except Exception as e:
+            return {"error": str(e)}
+
+    # create / update / delete / enable / disable / trigger 见 Task 3
+    return {"error": f"未知操作: {action}"}
+
+
 def run_server():
     """MCP stdio server entry point (backup, same-process mode is primary)."""
     try:
