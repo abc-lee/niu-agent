@@ -173,6 +173,7 @@ tools:
         description: "list 时返回完整配置"
       - name: entity_ids
         type: array
+        cli_format: json
         items:
           type: string
         flag: entity-ids
