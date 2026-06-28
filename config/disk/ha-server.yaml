@@ -1,6 +1,6 @@
 server: ha-server
 directory: ha
-description: "智能家居控制 — 查询设备状态、控制设备、订阅状态变化通知、管理集成"
+description: "智能家居 — 立即执行用 ha_control；定时一次用 scheduler；条件触发持续生效用 ha_automation；多设备瞬间切换用 ha_scene；有序列有延时用 ha_script"
 
 tools:
   - name: ha_setup
@@ -117,3 +117,90 @@ tools:
         flag: entry-id
         type: string
         description: "集成条目 ID，删除时必填"
+
+  - name: ha_automation
+    category: write
+    short: "管理自动化"
+    long: "管理自动化：创建/查看/修改/删除/启用/禁用/手动触发。自动化是条件触发持续生效的规则。立即执行一次用 ha_control，定时一次用 scheduler。trigger platform: state/numeric_state/time/time_pattern/sun/zone/event/template/mqtt/calendar。condition type: state/numeric_state/time/sun/zone/template/and/or/not。action type: 服务调用(用action键)/delay/wait_for_trigger/choose/if/repeat/parallel/scene/stop。mode: single|restart|queued|parallel"
+    parameters:
+      - name: action
+        position: 1
+        type: string
+        required: true
+        enum: [list, get, create, update, delete, enable, disable, trigger]
+        description: "操作类型"
+      - name: name
+        type: string
+        description: "自动化名称"
+      - name: config
+        type: object
+        cli_format: json
+        description: "自动化配置 JSON"
+      - name: confirm
+        type: boolean
+        flag: confirm
+        description: "删除确认，传 true"
+      - name: detail
+        type: boolean
+        flag: detail
+        description: "list 时返回完整配置"
+
+  - name: ha_scene
+    category: write
+    short: "管理场景"
+    long: "管理场景：创建/查看/修改/删除/激活/快照。场景是多设备瞬间切换到预设状态。有序列有延时用 ha_script，条件触发用 ha_automation。entities 支持设备: light(亮度/色温)/climate(温度/模式)/switch/lock/cover(位置)/fan(转速)/humidifier(湿度)"
+    parameters:
+      - name: action
+        position: 1
+        type: string
+        required: true
+        enum: [list, get, create, update, delete, activate, snapshot]
+        description: "操作类型"
+      - name: name
+        type: string
+        description: "场景名称"
+      - name: config
+        type: object
+        cli_format: json
+        description: "场景配置 JSON"
+      - name: confirm
+        type: boolean
+        flag: confirm
+        description: "删除确认，传 true"
+      - name: detail
+        type: boolean
+        flag: detail
+        description: "list 时返回完整配置"
+      - name: entity_ids
+        type: array
+        items:
+          type: string
+        flag: entity-ids
+        description: "snapshot 操作要快照的设备 ID 列表"
+
+  - name: ha_script
+    category: write
+    short: "管理脚本"
+    long: "管理脚本：创建/查看/修改/删除/运行。脚本是有序列、有延时的多步骤操作。瞬间切换用 ha_scene，条件触发用 ha_automation。sequence 动作: 服务调用(action键)/delay/wait_for_trigger/choose/if/repeat/parallel/condition。mode: single|restart|queued|parallel"
+    parameters:
+      - name: action
+        position: 1
+        type: string
+        required: true
+        enum: [list, get, create, update, delete, run]
+        description: "操作类型"
+      - name: name
+        type: string
+        description: "脚本名称"
+      - name: config
+        type: object
+        cli_format: json
+        description: "脚本配置 JSON"
+      - name: confirm
+        type: boolean
+        flag: confirm
+        description: "删除确认，传 true"
+      - name: detail
+        type: boolean
+        flag: detail
+        description: "list 时返回完整配置"
