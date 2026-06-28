@@ -133,7 +133,7 @@ class TestHaScene:
         })
         assert result.get("success"), f"创建失败: {result}"
         try:
-            import time; time.sleep(3)
+            import time; time.sleep(1)
             result = ha_scene(action="activate", name="测试场景删除")
             assert result.get("success"), f"激活失败: {result}"
         finally:
@@ -150,7 +150,9 @@ class TestHaScene:
         result = ha_scene(action="snapshot", name="测试快照删除", entity_ids=entity_ids)
         assert result.get("success"), f"快照失败: {result}"
         try:
-            pass  # snapshot test just verifies creation
+            # Verify config API can read it back
+            get_result = ha_scene(action="get", name="测试快照删除")
+            assert get_result.get("config"), f"获取快照配置失败: {get_result}"
         finally:
             ha_scene(action="delete", name="测试快照删除", confirm=True)
 
