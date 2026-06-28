@@ -177,7 +177,10 @@ def _make_slug(name: str) -> str:
         name.encode('ascii')
     except UnicodeEncodeError:
         return uuid.uuid4().hex
-    slug = re.sub(r'[^a-z0-9_]', '_', name.lower()).strip('_')
+    slug = re.sub(r'[^a-z0-9_]', '_', name.lower())
+    slug = re.sub(r'_+', '_', slug).strip('_')
+    if len(slug) > 255:
+        slug = slug[:255].rstrip('_')
     if not slug:
         slug = uuid.uuid4().hex
     return slug
@@ -405,8 +408,10 @@ def _validate_entity_state(ha_url, headers, entity_id, timeout=5):
                 info = {"state": state}
                 # 自动化特有：last_triggered 没有报错说明配置被 HA 接受
                 if entity_id.startswith("automation."):
-                    if state == "off":
-                        info["note"] = "自动化已创建但未启用，可能配置有误导致 HA 禁用了它"
+                    if state == "unavailable":
+                        info["warning"] = "自动化配置有误，HA 无法加载此自动化，请检查 triggers/conditions/actions 配置"
+                    elif state == "off":
+                        info["note"] = "自动化已禁用（用户手动关闭或 initial_state: false），配置正常"
                     elif state == "on":
                         info["note"] = "自动化已启用，配置被 HA 接受"
                 # 脚本特有
@@ -806,6 +811,23 @@ def ha_status(area: str = "", domain: str = "") -> dict:
             result_automations.append(entry)
         else:
             result_devices.append(entry)
+
+    # 补充 config API 创建但不在 states 中的场景和脚本
+    seen_scene_ids = {s["entity_id"] for s in result_scenes}
+    scene_name_map = config.get("scene_name_map", {})
+    for map_name, map_slug in scene_name_map.items():
+        eid = f"scene.{map_slug}"
+        if eid not in seen_scene_ids:
+            result_scenes.append({"name": map_name, "entity_id": eid, "state": "idle", "actions": ["activate"]})
+            seen_scene_ids.add(eid)
+
+    seen_script_ids = set()
+    script_name_map = config.get("script_name_map", {})
+    for map_name, map_slug in script_name_map.items():
+        eid = f"script.{map_slug}"
+        if eid not in seen_script_ids:
+            result_devices.append({"name": map_name, "entity_id": eid, "type": "脚本", "state": "idle", "actions": ["run"]})
+            seen_script_ids.add(eid)
 
     return {
         "connected": True,
@@ -1295,7 +1317,8 @@ def ha_automation(action: str, name: str = "", config: dict = None, confirm: boo
                     _requests.post(f"{ha_url}/api/services/automation/reload", headers=headers, json={}, timeout=10)
                 except Exception:
                     pass
-                return {"success": True, "name": name, "entity_id": entity_id}
+                validation = _validate_entity_state(ha_url, headers, entity_id)
+                return {"success": True, "name": name, "entity_id": entity_id, "validation": validation}
             return {"error": f"HA API 返回 {resp.status_code}: {resp.text[:200]}"}
         except Exception as e:
             return {"error": str(e)}
@@ -1457,7 +1480,12 @@ def ha_scene(action: str, name: str = "", config: dict = None, confirm: bool = F
                 try:
                     cfg_resp = _requests.get(f"{ha_url}/api/config/scene/config/{config_key}", headers=headers, timeout=10)
                     if cfg_resp.status_code == 200:
-                        result["validation"] = {"state": "persisted", "note": "场景配置已持久化到 HA，可通过 activate 激活"}
+                        read_back = cfg_resp.json()
+                        missing_keys = set(config.keys()) - set(read_back.keys()) - {"id", "name"}
+                        if missing_keys:
+                            result["validation"] = {"state": "partial", "warning": f"配置写入成功但以下字段在回读中缺失: {sorted(missing_keys)}"}
+                        else:
+                            result["validation"] = {"state": "persisted", "note": "场景配置已持久化到 HA，可通过 activate 激活"}
                     else:
                         result["validation"] = {"state": "error", "warning": f"配置写入成功但回读失败: HTTP {cfg_resp.status_code}"}
                 except Exception:
@@ -1494,7 +1522,16 @@ def ha_scene(action: str, name: str = "", config: dict = None, confirm: bool = F
                     _requests.post(f"{ha_url}/api/services/scene/reload", headers=headers, json={}, timeout=10)
                 except Exception:
                     pass
-                return {"success": True, "name": name, "entity_id": entity_id}
+                result = {"success": True, "name": name, "entity_id": entity_id}
+                try:
+                    cfg_resp = _requests.get(f"{ha_url}/api/config/scene/config/{config_key}", headers=headers, timeout=10)
+                    if cfg_resp.status_code == 200:
+                        result["validation"] = {"state": "persisted", "note": "场景配置已更新并持久化"}
+                    else:
+                        result["validation"] = {"state": "error", "warning": f"更新成功但回读失败: HTTP {cfg_resp.status_code}"}
+                except Exception:
+                    pass
+                return result
             return {"error": f"HA API 返回 {resp.status_code}: {resp.text[:200]}"}
         except Exception as e:
             return {"error": str(e)}
@@ -1533,20 +1570,60 @@ def ha_scene(action: str, name: str = "", config: dict = None, confirm: bool = F
     if action == "activate":
         if not name:
             return {"error": "name 参数必填"}
-        # 查找 entity_id
+        # 查找场景配置 — config API 创建的场景不在 states 中，必须从 config API 读取 entities
+        config_key = None
+        # 1) 先尝试在 states 中查找（YAML/UI 创建的场景可能在 states 中）
         states = _fetch_domain_states(ha_url, headers, "scene")
         entity_id = _find_entity_by_name(states, "scene", name)
-        if not entity_id:
-            # 尝试通过 name_map
-            config_key = _lookup_slug("scene", name)
+        if entity_id:
+            entity_registry = _fetch_entity_registry(ha_url, headers)
+            config_key = _resolve_config_key(ha_url, headers, "scene", entity_id, entity_registry)
             if config_key:
-                entity_id = f"scene.{config_key}"
-        if not entity_id:
+                # states 中能找到的场景，用 scene.turn_on 激活
+                try:
+                    resp = _requests.post(f"{ha_url}/api/services/scene/turn_on", headers=headers, json={"entity_id": entity_id}, timeout=10)
+                    if resp.status_code in (200, 201):
+                        affected = []
+                        try:
+                            changed = resp.json()
+                            if isinstance(changed, list):
+                                affected = [e.get("entity_id", "") for e in changed if isinstance(e, dict) and not e.get("entity_id", "").startswith("scene.")]
+                        except Exception:
+                            pass
+                        result = {"success": True, "name": name, "activated": True}
+                        if affected:
+                            result["affected_entities"] = affected
+                        return result
+                    return {"error": f"HA API 返回 {resp.status_code}: {resp.text[:200]}"}
+                except Exception as e:
+                    return {"error": str(e)}
+        # 2) config API 创建的场景不在 states 中，用 name_map 查找 config_key，然后读取 entities 用 scene.apply 激活
+        if not config_key:
+            config_key = _lookup_slug("scene", name)
+        if not config_key:
             return {"error": f"未找到名为 '{name}' 的场景"}
         try:
-            resp = _requests.post(f"{ha_url}/api/services/scene/turn_on", headers=headers, json={"entity_id": entity_id}, timeout=10)
+            cfg_resp = _requests.get(f"{ha_url}/api/config/scene/config/{config_key}", headers=headers, timeout=10)
+            if cfg_resp.status_code != 200:
+                return {"error": f"读取场景配置失败: HTTP {cfg_resp.status_code}"}
+            scene_cfg = cfg_resp.json()
+            entities = scene_cfg.get("entities")
+            if not entities:
+                return {"error": f"场景 '{name}' 配置中没有 entities"}
+            # 用 scene.apply 直接应用（不需要场景实体存在）
+            resp = _requests.post(f"{ha_url}/api/services/scene/apply", headers=headers, json={"entities": entities}, timeout=10)
             if resp.status_code in (200, 201):
-                return {"success": True, "name": name, "activated": True}
+                affected = []
+                try:
+                    changed = resp.json()
+                    if isinstance(changed, list):
+                        affected = [e.get("entity_id", "") for e in changed if isinstance(e, dict) and not e.get("entity_id", "").startswith("scene.")]
+                except Exception:
+                    pass
+                result = {"success": True, "name": name, "activated": True, "method": "apply"}
+                if affected:
+                    result["affected_entities"] = affected
+                return result
             return {"error": f"HA API 返回 {resp.status_code}: {resp.text[:200]}"}
         except Exception as e:
             return {"error": str(e)}
@@ -1730,7 +1807,12 @@ def ha_script(action: str, name: str = "", config: dict = None, confirm: bool = 
                 try:
                     cfg_resp = _requests.get(f"{ha_url}/api/config/script/config/{slug}", headers=headers, timeout=10)
                     if cfg_resp.status_code == 200:
-                        result["validation"] = {"state": "persisted", "note": "脚本配置已持久化到 HA，可通过 run 执行"}
+                        read_back = cfg_resp.json()
+                        missing_keys = set(config.keys()) - set(read_back.keys()) - {"id", "alias"}
+                        if missing_keys:
+                            result["validation"] = {"state": "partial", "warning": f"配置写入成功但以下字段在回读中缺失: {sorted(missing_keys)}"}
+                        else:
+                            result["validation"] = {"state": "persisted", "note": "脚本配置已持久化到 HA，可通过 run 执行"}
                     else:
                         result["validation"] = {"state": "error", "warning": f"配置写入成功但回读失败: HTTP {cfg_resp.status_code}"}
                 except Exception:
@@ -1767,7 +1849,16 @@ def ha_script(action: str, name: str = "", config: dict = None, confirm: bool = 
                     _requests.post(f"{ha_url}/api/services/script/reload", headers=headers, json={}, timeout=10)
                 except Exception:
                     pass
-                return {"success": True, "name": name, "entity_id": entity_id or f"script.{slug}"}
+                result = {"success": True, "name": name, "entity_id": entity_id or f"script.{slug}"}
+                try:
+                    cfg_resp = _requests.get(f"{ha_url}/api/config/script/config/{slug}", headers=headers, timeout=10)
+                    if cfg_resp.status_code == 200:
+                        result["validation"] = {"state": "persisted", "note": "脚本配置已更新并持久化"}
+                    else:
+                        result["validation"] = {"state": "error", "warning": f"更新成功但回读失败: HTTP {cfg_resp.status_code}"}
+                except Exception:
+                    pass
+                return result
             # create failed, try rollback
             if backup:
                 try:
@@ -1814,7 +1905,16 @@ def ha_script(action: str, name: str = "", config: dict = None, confirm: bool = 
         try:
             resp = _requests.post(f"{ha_url}/api/services/script/turn_on", headers=headers, json={"entity_id": entity_id or f"script.{slug}"}, timeout=10)
             if resp.status_code in (200, 201):
-                return {"success": True, "name": name, "running": True}
+                result = {"success": True, "name": name, "running": True}
+                try:
+                    changed = resp.json()
+                    if isinstance(changed, list):
+                        affected = [e.get("entity_id", "") for e in changed if isinstance(e, dict) and not e.get("entity_id", "").startswith("script.")]
+                        if affected:
+                            result["affected_entities"] = affected
+                except Exception:
+                    pass
+                return result
             return {"error": f"HA API 返回 {resp.status_code}: {resp.text[:200]}"}
         except Exception as e:
             return {"error": str(e)}
