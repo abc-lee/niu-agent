@@ -173,6 +173,10 @@ def _lookup_slug(domain: str, name: str) -> str:
 
 def _make_slug(name: str) -> str:
     """从名称生成合法的 HA entity_id slug。中文名称生成 UUID slug。"""
+    try:
+        name.encode('ascii')
+    except UnicodeEncodeError:
+        return uuid.uuid4().hex
     slug = re.sub(r'[^a-z0-9_]', '_', name.lower()).strip('_')
     if not slug:
         slug = uuid.uuid4().hex
@@ -1212,7 +1216,7 @@ def ha_automation(action: str, name: str = "", config: dict = None, confirm: boo
                     pass
                 # 验证 entity 已注册
                 actual_entity_id = _verify_entity_exists(ha_url, headers, "automation", config_key)
-                return {"success": True, "name": name, "entity_id": actual_entity_id or f"automation.{config_key}", "config_key": config_key}
+                return {"success": True, "name": name, "entity_id": actual_entity_id or f"automation.{_make_slug(name)}", "config_key": config_key}
             return {"error": f"HA API 返回 {resp.status_code}: {resp.text[:200]}"}
         except Exception as e:
             return {"error": str(e)}
@@ -1488,6 +1492,10 @@ def ha_scene(action: str, name: str = "", config: dict = None, confirm: bool = F
         """从当前设备状态创建场景快照并持久化。"""
         if not name or not entity_ids:
             return {"error": "name 和 entity_ids 参数必填"}
+        # Validate entity_ids format
+        for eid in entity_ids:
+            if "." not in eid or "/" in eid or ".." in eid:
+                return {"error": f"无效的 entity_id: '{eid}'，格式应为 'domain.name'"}
         entities_config = {}
         for eid in entity_ids:
             try:
