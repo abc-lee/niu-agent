@@ -23,9 +23,10 @@
 三个工具共用以下辅助函数（在 Task 1 中实现）：
 
 ```python
-def _resolve_config_key(ha_url, headers, domain, entity_id):
+def _resolve_config_key(ha_url, headers, domain, entity_id, entity_registry=None):
     """通过 entity_id 查找 config_key（entity_registry 的 unique_id）。
-    脚本域直接从 entity_id 提取 slug，无需查注册表。"""
+    脚本域直接从 entity_id 提取 slug，无需查注册表。
+    entity_registry: 可选的预查询结果，避免重复 WebSocket 调用。"""
 
 def _find_entity_by_name(states, domain, name):
     """在 states 列表中按 friendly_name 匹配 entity_id。
@@ -33,7 +34,23 @@ def _find_entity_by_name(states, domain, name):
 
 def _fetch_domain_states(ha_url, headers, domain):
     """GET /api/states 过滤指定 domain，返回 [{name, entity_id, state, ...}]"""
+
+def _fetch_entity_registry(ha_url, headers):
+    """通过 WebSocket 一次性获取 entity_registry，返回 [{entity_id, unique_id, ...}]。
+    避免在循环中重复建立 WebSocket 连接。"""
+
+def _verify_entity_exists(ha_url, headers, domain, config_key, timeout=3):
+    """创建后验证 entity 已注册。返回 entity_id 或 None。"""
 ```
+
+## 关键设计决策（审查后修正）
+
+1. **脚本 POST 请求体直接传 config** — HA 的 `EditKeyBasedConfigView._write_value` 会自动将请求体挂到 `data[config_key]` 下，所以 `POST /api/config/script/config/{slug}` 的请求体应为 `config` 本身，而非 `{slug: config}` 包装
+2. **snapshot 直接读取各 entity 当前状态** — `scene.create` 创建的是临时场景（内存中，不可通过配置 API 持久化），所以改为读取各 entity 当前 state + attributes，手动构建 scene config 后持久化
+3. **create/update 前移除用户传入的 id** — HA 内部会自动设置 `id = config_key`，用户传入的 `id` 会覆盖导致不一致，所以创建前 `config.pop("id", None)`
+4. **_resolve_config_key 直接使用传入参数** — 不再重复调用 `_read_config()` + `_get_ha_client()`，支持传入预查询的 `entity_registry` 避免循环中重复 WebSocket 连接
+5. **create 后验证 entity 已注册** — HA 创建后需短暂时间注册 entity，create 操作后通过 states API 验证
+6. **测试使用真实 entity** — 用 fixture 从 ha_status 动态获取真实存在的 entity_id，避免使用不存在的 `light.test`
 
 ---
 
@@ -66,19 +83,24 @@ def _find_entity_by_name(states, domain, name):
     return None
 
 
-def _resolve_config_key(ha_url, headers, domain, entity_id):
-    """通过 entity_id 查找 config_key（entity_registry 的 unique_id）"""
+def _fetch_entity_registry(ha_url, headers):
+    """通过 WebSocket 一次性获取 entity_registry"""
+    token = headers.get("Authorization", "").replace("Bearer ", "")
+    commands = [{"type": "config/entity_registry/list"}]
+    results = _ws_batch_call(ha_url, token, commands)
+    if not results or not results[0]:
+        return []
+    return results[0]
+
+
+def _resolve_config_key(ha_url, headers, domain, entity_id, entity_registry=None):
+    """通过 entity_id 查找 config_key（entity_registry 的 unique_id）。
+    entity_registry: 可选的预查询结果，避免重复 WebSocket 调用。"""
     if domain == "script":
         return entity_id.split(".", 1)[1]
-    config = _read_config()
-    url, hdrs, err = _get_ha_client(config)
-    if err:
-        return None
-    commands = [{"type": "config/entity_registry/list"}]
-    results = _ws_batch_call(url, headers.get("Authorization", "").replace("Bearer ", ""), commands)
-    if not results or not results[0]:
-        return None
-    for entry in results[0]:
+    if entity_registry is None:
+        entity_registry = _fetch_entity_registry(ha_url, headers)
+    for entry in entity_registry:
         if entry.get("entity_id") == entity_id:
             return entry.get("unique_id")
     return None
@@ -94,6 +116,25 @@ def _fetch_domain_states(ha_url, headers, domain):
         return [s for s in resp.json() if s.get("entity_id", "").startswith(prefix)]
     except Exception:
         return []
+
+
+def _verify_entity_exists(ha_url, headers, domain, config_key, timeout=3):
+    """创建后验证 entity 已注册。返回 entity_id 或 None。"""
+    import time
+    prefix = f"{domain}."
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            resp = _requests.get(f"{ha_url}/api/states", headers=headers, timeout=10)
+            if resp.status_code == 200:
+                for s in resp.json():
+                    eid = s.get("entity_id", "")
+                    if eid.startswith(prefix) and eid == f"{domain}.{config_key}":
+                        return eid
+            time.sleep(0.3)
+        except Exception:
+            time.sleep(0.3)
+    return None
 ```
 
 - [ ] **Step 2: 添加 ha_automation TOOL_SCHEMA**
@@ -215,6 +256,10 @@ def ha_automation(action: str, name: str = "", config: dict = None, confirm: boo
 
     if action == "list":
         states = _fetch_domain_states(ha_url, headers, "automation")
+        # detail=true 时一次性获取 entity_registry，避免循环中重复 WebSocket 连接
+        entity_registry = None
+        if detail:
+            entity_registry = _fetch_entity_registry(ha_url, headers)
         automations = []
         for s in states:
             attrs = s.get("attributes", {})
@@ -225,7 +270,7 @@ def ha_automation(action: str, name: str = "", config: dict = None, confirm: boo
                 "last_triggered": attrs.get("last_triggered"),
             }
             if detail:
-                config_key = _resolve_config_key(ha_url, headers, "automation", s["entity_id"])
+                config_key = _resolve_config_key(ha_url, headers, "automation", s["entity_id"], entity_registry)
                 if config_key:
                     try:
                         resp = _requests.get(f"{ha_url}/api/config/automation/config/{config_key}", headers=headers, timeout=10)
@@ -288,13 +333,16 @@ git commit -m "feat: implement ha_automation list + get"
     if action == "create":
         if not name or not config:
             return {"error": "name 和 config 参数必填"}
+        config.pop("id", None)  # 移除用户可能传入的 id，由 HA 内部设置
         config_key = uuid.uuid4().hex
         config["id"] = config_key
         config["alias"] = name
         try:
             resp = _requests.post(f"{ha_url}/api/config/automation/config/{config_key}", headers=headers, json=config, timeout=10)
             if resp.status_code in (200, 201):
-                return {"success": True, "name": name, "entity_id": f"automation.{config_key}", "config_key": config_key}
+                # 验证 entity 已注册
+                actual_entity_id = _verify_entity_exists(ha_url, headers, "automation", config_key)
+                return {"success": True, "name": name, "entity_id": actual_entity_id or f"automation.{config_key}", "config_key": config_key}
             return {"error": f"HA API 返回 {resp.status_code}: {resp.text[:200]}"}
         except Exception as e:
             return {"error": str(e)}
@@ -309,6 +357,7 @@ git commit -m "feat: implement ha_automation list + get"
         config_key = _resolve_config_key(ha_url, headers, "automation", entity_id)
         if not config_key:
             return {"error": f"无法解析自动化的配置 ID: {entity_id}"}
+        config.pop("id", None)  # 移除用户可能传入的 id
         config["id"] = config_key
         config["alias"] = name
         try:
@@ -380,12 +429,21 @@ git commit -m "feat: implement ha_automation list + get"
     def test_create_and_get(self):
         """创建自动化后可以 get 到"""
         _ensure_connected()
+        # 使用真实存在的 entity（从 ha_status 获取第一个灯设备）
+        from niu_ha_server import ha_status
+        status = ha_status()
+        real_entity = "light.test"
+        if status.get("connected") and status.get("devices"):
+            light = next((d for d in status["devices"] if d["entity_id"].startswith("light.")), None)
+            if light:
+                real_entity = light["entity_id"]
         result = ha_automation(action="create", name="测试自动删除", config={
             "triggers": [{"platform": "time", "at": "08:00:00"}],
-            "actions": [{"action": "light.turn_on", "target": {"entity_id": "light.test"}}],
+            "actions": [{"action": "light.turn_on", "target": {"entity_id": real_entity}}],
             "mode": "single",
         })
         assert result.get("success"), f"创建失败: {result}"
+        import time; time.sleep(0.5)  # 等待 HA 注册 entity
         # 验证 get
         get_result = ha_automation(action="get", name="测试自动删除")
         assert get_result.get("config"), f"获取配置失败: {get_result}"
@@ -398,9 +456,10 @@ git commit -m "feat: implement ha_automation list + get"
         # 先创建
         ha_automation(action="create", name="测试删除预览", config={
             "triggers": [{"platform": "time", "at": "09:00:00"}],
-            "actions": [{"action": "light.turn_off", "target": {"entity_id": "light.test"}}],
+            "actions": [{"action": "persistent_notification.create", "data": {"message": "test"}}],
             "mode": "single",
         })
+        import time; time.sleep(0.5)
         result = ha_automation(action="delete", name="测试删除预览")
         assert result.get("preview"), f"应返回预览: {result}"
         # 确认删除
@@ -413,9 +472,10 @@ git commit -m "feat: implement ha_automation list + get"
         # 先创建
         ha_automation(action="create", name="测试开关", config={
             "triggers": [{"platform": "time", "at": "10:00:00"}],
-            "actions": [{"action": "light.turn_on", "target": {"entity_id": "light.test"}}],
+            "actions": [{"action": "persistent_notification.create", "data": {"message": "test"}}],
             "mode": "single",
         })
+        import time; time.sleep(0.5)
         # 禁用
         result = ha_automation(action="disable", name="测试开关")
         assert result.get("success"), f"禁用失败: {result}"
@@ -523,12 +583,15 @@ def ha_scene(action: str, name: str = "", config: dict = None, confirm: bool = F
 
     if action == "list":
         states = _fetch_domain_states(ha_url, headers, "scene")
+        entity_registry = None
+        if detail:
+            entity_registry = _fetch_entity_registry(ha_url, headers)
         scenes = []
         for s in states:
             attrs = s.get("attributes", {})
             entry = {"name": attrs.get("friendly_name", s["entity_id"]), "entity_id": s["entity_id"], "state": s.get("state", "off")}
             if detail:
-                config_key = _resolve_config_key(ha_url, headers, "scene", s["entity_id"])
+                config_key = _resolve_config_key(ha_url, headers, "scene", s["entity_id"], entity_registry)
                 if config_key:
                     try:
                         resp = _requests.get(f"{ha_url}/api/config/scene/config/{config_key}", headers=headers, timeout=10)
@@ -560,13 +623,15 @@ def ha_scene(action: str, name: str = "", config: dict = None, confirm: bool = F
     if action == "create":
         if not name or not config:
             return {"error": "name 和 config 参数必填"}
+        config.pop("id", None)  # 移除用户可能传入的 id
         config_key = uuid.uuid4().hex
         config["name"] = name
         config["id"] = config_key
         try:
             resp = _requests.post(f"{ha_url}/api/config/scene/config/{config_key}", headers=headers, json=config, timeout=10)
             if resp.status_code in (200, 201):
-                return {"success": True, "name": name, "entity_id": f"scene.{config_key}"}
+                actual_entity_id = _verify_entity_exists(ha_url, headers, "scene", config_key)
+                return {"success": True, "name": name, "entity_id": actual_entity_id or f"scene.{config_key}"}
             return {"error": f"HA API 返回 {resp.status_code}: {resp.text[:200]}"}
         except Exception as e:
             return {"error": str(e)}
@@ -581,6 +646,7 @@ def ha_scene(action: str, name: str = "", config: dict = None, confirm: bool = F
         config_key = _resolve_config_key(ha_url, headers, "scene", entity_id)
         if not config_key:
             return {"error": f"无法解析场景的配置 ID: {entity_id}"}
+        config.pop("id", None)
         config["name"] = name
         config["id"] = config_key
         try:
@@ -627,24 +693,35 @@ def ha_scene(action: str, name: str = "", config: dict = None, confirm: bool = F
             return {"error": str(e)}
 
     if action == "snapshot":
+        """从当前设备状态创建场景快照并持久化。
+        scene.create 创建的是临时场景（内存中），无法通过配置 API 持久化。
+        所以改为直接读取各 entity 当前状态，手动构建 scene config 后持久化。"""
         if not name or not entity_ids:
             return {"error": "name 和 entity_ids 参数必填"}
+        entities_config = {}
+        for eid in entity_ids:
+            try:
+                resp = _requests.get(f"{ha_url}/api/states/{eid}", headers=headers, timeout=10)
+                if resp.status_code == 200:
+                    state_data = resp.json()
+                    entities_config[eid] = {"state": state_data["state"]}
+                    # 提取关键属性（亮度、色温等）
+                    attrs = state_data.get("attributes", {})
+                    for key in ("brightness", "color_temp_kelvin", "temperature", "hvac_mode", "percentage", "position", "humidity"):
+                        if key in attrs:
+                            entities_config[eid][key] = attrs[key]
+            except Exception:
+                pass
+        if not entities_config:
+            return {"error": "无法读取任何设备状态，请检查 entity_ids"}
         config_key = uuid.uuid4().hex
+        scene_config = {"name": name, "id": config_key, "entities": entities_config}
         try:
-            # 调用 scene.create 获取当前状态
-            resp = _requests.post(f"{ha_url}/api/services/scene/create", headers=headers, json={"scene_id": config_key, "snapshot_entities": entity_ids}, timeout=10)
-            if resp.status_code not in (200, 201):
-                return {"error": f"快照创建失败: {resp.status_code}"}
-            # 获取临时场景的配置
-            resp2 = _requests.get(f"{ha_url}/api/config/scene/config/{config_key}", headers=headers, timeout=10)
-            if resp2.status_code == 200:
-                scene_config = resp2.json()
-                scene_config["name"] = name
-                # 持久化
-                resp3 = _requests.post(f"{ha_url}/api/config/scene/config/{config_key}", headers=headers, json=scene_config, timeout=10)
-                if resp3.status_code in (200, 201):
-                    return {"success": True, "name": name, "entity_id": f"scene.{config_key}"}
-            return {"error": "快照持久化失败"}
+            resp = _requests.post(f"{ha_url}/api/config/scene/config/{config_key}", headers=headers, json=scene_config, timeout=10)
+            if resp.status_code in (200, 201):
+                actual_entity_id = _verify_entity_exists(ha_url, headers, "scene", config_key)
+                return {"success": True, "name": name, "entity_id": actual_entity_id or f"scene.{config_key}", "entities": list(entities_config.keys())}
+            return {"error": f"快照持久化失败: HA API 返回 {resp.status_code}: {resp.text[:200]}"}
         except Exception as e:
             return {"error": str(e)}
 
@@ -701,9 +778,12 @@ def ha_script(action: str, name: str = "", config: dict = None, confirm: bool = 
         if not name or not config:
             return {"error": "name 和 config 参数必填"}
         slug = re.sub(r'[^a-z0-9_]', '_', name.lower()).strip('_')
+        config.pop("id", None)
         config["alias"] = name
+        # 关键：POST 请求体直接传 config，不是 {slug: config}
+        # HA 的 EditKeyBasedConfigView._write_value 会自动将请求体挂到 data[config_key] 下
         try:
-            resp = _requests.post(f"{ha_url}/api/config/script/config/{slug}", headers=headers, json={slug: config}, timeout=10)
+            resp = _requests.post(f"{ha_url}/api/config/script/config/{slug}", headers=headers, json=config, timeout=10)
             if resp.status_code in (200, 201):
                 return {"success": True, "name": name, "entity_id": f"script.{slug}"}
             return {"error": f"HA API 返回 {resp.status_code}: {resp.text[:200]}"}
@@ -718,9 +798,11 @@ def ha_script(action: str, name: str = "", config: dict = None, confirm: bool = 
         if not entity_id:
             return {"error": f"未找到名为 '{name}' 的脚本"}
         slug = entity_id.split(".", 1)[1]
+        config.pop("id", None)
         config["alias"] = name
+        # 同 create：直接传 config
         try:
-            resp = _requests.post(f"{ha_url}/api/config/script/config/{slug}", headers=headers, json={slug: config}, timeout=10)
+            resp = _requests.post(f"{ha_url}/api/config/script/config/{slug}", headers=headers, json=config, timeout=10)
             if resp.status_code in (200, 201):
                 return {"success": True, "name": name, "entity_id": entity_id}
             return {"error": f"HA API 返回 {resp.status_code}: {resp.text[:200]}"}
@@ -776,18 +858,41 @@ class TestHaScene:
         assert "scenes" in result or "error" in result
 
     def test_create_activate_delete(self):
+        """创建场景并激活，使用真实 entity"""
         _ensure_connected()
+        # 从 ha_status 获取真实 entity
+        from niu_ha_server import ha_status
+        status = ha_status()
+        real_entity = "light.test"
+        if status.get("connected") and status.get("devices"):
+            light = next((d for d in status["devices"] if d["entity_id"].startswith("light.")), None)
+            if light:
+                real_entity = light["entity_id"]
         # 创建场景
         result = ha_scene(action="create", name="测试场景删除", config={
-            "entities": {"light.test": {"state": "on", "brightness": 128}}
+            "entities": {real_entity: {"state": "on", "brightness": 128}}
         })
         assert result.get("success"), f"创建失败: {result}"
-        # 激活
+        # 激活（只测试 API 调用成功，不验证设备状态变化）
         result = ha_scene(action="activate", name="测试场景删除")
         assert result.get("success"), f"激活失败: {result}"
         # 删除
         result = ha_scene(action="delete", name="测试场景删除", confirm=True)
         assert result.get("success"), f"删除失败: {result}"
+
+    def test_snapshot_with_real_entities(self):
+        """snapshot 使用真实 entity_ids 创建快照"""
+        _ensure_connected()
+        from niu_ha_server import ha_status
+        status = ha_status()
+        if not status.get("connected") or not status.get("devices"):
+            pytest.skip("No devices available for snapshot test")
+        # 取前 2 个真实 entity
+        entity_ids = [d["entity_id"] for d in status["devices"][:2]]
+        result = ha_scene(action="snapshot", name="测试快照删除", entity_ids=entity_ids)
+        assert result.get("success"), f"快照失败: {result}"
+        # 删除
+        ha_scene(action="delete", name="测试快照删除", confirm=True)
 
 
 class TestHaScript:
@@ -798,12 +903,14 @@ class TestHaScript:
         assert "scripts" in result or "error" in result
 
     def test_create_run_delete(self):
+        """创建脚本并运行，使用 delay 避免依赖真实 entity"""
         _ensure_connected()
         result = ha_script(action="create", name="测试脚本删除", config={
             "mode": "single",
             "sequence": [{"delay": {"seconds": 1}}],
         })
         assert result.get("success"), f"创建失败: {result}"
+        import time; time.sleep(0.5)
         # 运行
         result = ha_script(action="run", name="测试脚本删除")
         assert result.get("success"), f"运行失败: {result}"
@@ -815,7 +922,7 @@ class TestHaScript:
 - [ ] **Step 5: 运行全部测试**
 
 Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_ha_automation.py -v`
-Expected: 10 passed
+Expected: 11 passed
 
 - [ ] **Step 6: Commit**
 
