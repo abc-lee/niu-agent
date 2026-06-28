@@ -119,18 +119,16 @@ def _fetch_domain_states(ha_url, headers, domain):
 
 
 def _verify_entity_exists(ha_url, headers, domain, config_key, timeout=3):
-    """创建后验证 entity 已注册。返回 entity_id 或 None。"""
+    """创建后验证 entity 已注册。通过 entity_registry 的 unique_id 查找实际 entity_id。
+    自动化/场景的 entity_id 由 HA 从 alias/name slugify 生成，不是 config_key 本身。"""
     import time
-    prefix = f"{domain}."
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
-            resp = _requests.get(f"{ha_url}/api/states", headers=headers, timeout=10)
-            if resp.status_code == 200:
-                for s in resp.json():
-                    eid = s.get("entity_id", "")
-                    if eid.startswith(prefix) and eid == f"{domain}.{config_key}":
-                        return eid
+            entity_registry = _fetch_entity_registry(ha_url, headers)
+            for entry in entity_registry:
+                if entry.get("unique_id") == config_key and entry.get("entity_id", "").startswith(f"{domain}."):
+                    return entry["entity_id"]
             time.sleep(0.3)
         except Exception:
             time.sleep(0.3)
@@ -199,7 +197,10 @@ git commit -m "feat: add helper functions and ha_automation TOOL_SCHEMA"
 
 ```python
 """HA 自动化/场景/脚本集成测试 — 使用真实 HA 环境"""
+import os
 import sys
+import pytest
+
 sys.path.insert(0, "mcp-servers/ha-server/src")
 from niu_ha_server import ha_automation, ha_setup, ha_scene, ha_script
 
@@ -214,10 +215,6 @@ def _ensure_connected():
             pytest.skip("HA_TOKEN not set")
         result = ha_setup(ha_url=ha_url, ha_token=ha_token)
         assert result.get("connected"), f"HA connection failed: {result}"
-
-
-import os
-import pytest
 
 
 class TestHaAutomation:
@@ -805,8 +802,10 @@ def ha_script(action: str, name: str = "", config: dict = None, confirm: bool = 
         slug = entity_id.split(".", 1)[1]
         config.pop("id", None)
         config["alias"] = name
-        # 同 create：直接传 config
+        # 脚本的 config API 使用 merge 语义（.update()），不是替换。
+        # 为实现替换式更新（与自动化/场景一致），先 delete 再 create。
         try:
+            _requests.delete(f"{ha_url}/api/config/script/config/{slug}", headers=headers, timeout=10)
             resp = _requests.post(f"{ha_url}/api/config/script/config/{slug}", headers=headers, json=config, timeout=10)
             if resp.status_code in (200, 201):
                 return {"success": True, "name": name, "entity_id": entity_id}
@@ -992,11 +991,11 @@ description: "智能家居 — 立即执行用 ha_control；定时一次用 sche
         cli_format: json
         description: "自动化配置 JSON"
       - name: confirm
-        type: string
+        type: boolean
         flag: confirm
         description: "删除确认，传 true"
       - name: detail
-        type: string
+        type: boolean
         flag: detail
         description: "list 时返回完整配置"
 
@@ -1019,15 +1018,17 @@ description: "智能家居 — 立即执行用 ha_control；定时一次用 sche
         cli_format: json
         description: "场景配置 JSON"
       - name: confirm
-        type: string
+        type: boolean
         flag: confirm
         description: "删除确认，传 true"
       - name: detail
-        type: string
+        type: boolean
         flag: detail
         description: "list 时返回完整配置"
       - name: entity_ids
-        type: string
+        type: array
+        items:
+          type: string
         flag: entity-ids
         description: "snapshot 操作要快照的设备 ID 列表"
 
@@ -1050,11 +1051,11 @@ description: "智能家居 — 立即执行用 ha_control；定时一次用 sche
         cli_format: json
         description: "脚本配置 JSON"
       - name: confirm
-        type: string
+        type: boolean
         flag: confirm
         description: "删除确认，传 true"
       - name: detail
-        type: string
+        type: boolean
         flag: detail
         description: "list 时返回完整配置"
 ```
