@@ -742,6 +742,7 @@ def ha_script(action: str, name: str = "", config: dict = None, confirm: bool = 
     if err:
         return {"error": err}
     import re
+    import uuid
 
     if action == "list":
         states = _fetch_domain_states(ha_url, headers, "script")
