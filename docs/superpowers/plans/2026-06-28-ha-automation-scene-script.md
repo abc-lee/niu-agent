@@ -120,18 +120,30 @@ def _fetch_domain_states(ha_url, headers, domain):
 
 def _verify_entity_exists(ha_url, headers, domain, config_key, timeout=3):
     """创建后验证 entity 已注册。通过 entity_registry 的 unique_id 查找实际 entity_id。
-    自动化/场景的 entity_id 由 HA 从 alias/name slugify 生成，不是 config_key 本身。"""
+    自动化/场景的 entity_id 由 HA 从 alias/name slugify 生成，不是 config_key 本身。
+    先轮询轻量 REST states API 等待 entity 出现，再用一次 entity_registry 确认 unique_id。"""
     import time
     deadline = time.time() + timeout
+    # 阶段 1: 用轻量 REST states API 轮询，等待新 entity 出现
+    found_candidates = []
     while time.time() < deadline:
         try:
-            entity_registry = _fetch_entity_registry(ha_url, headers)
-            for entry in entity_registry:
-                if entry.get("unique_id") == config_key and entry.get("entity_id", "").startswith(f"{domain}."):
-                    return entry["entity_id"]
-            time.sleep(0.3)
+            resp = _requests.get(f"{ha_url}/api/states", headers=headers, timeout=10)
+            if resp.status_code == 200:
+                for s in resp.json():
+                    eid = s.get("entity_id", "")
+                    if eid.startswith(f"{domain}."):
+                        found_candidates.append(eid)
+                if found_candidates:
+                    break
+            time.sleep(0.5)
         except Exception:
-            time.sleep(0.3)
+            time.sleep(0.5)
+    # 阶段 2: 用一次 WebSocket 查询 entity_registry，通过 unique_id 确认
+    entity_registry = _fetch_entity_registry(ha_url, headers)
+    for entry in entity_registry:
+        if entry.get("unique_id") == config_key and entry.get("entity_id", "").startswith(f"{domain}."):
+            return entry["entity_id"]
     return None
 ```
 
@@ -202,7 +214,7 @@ import sys
 import pytest
 
 sys.path.insert(0, "mcp-servers/ha-server/src")
-from niu_ha_server import ha_automation, ha_setup, ha_scene, ha_script
+from niu_ha_server import ha_automation, ha_setup
 
 
 def _ensure_connected():
@@ -804,14 +816,33 @@ def ha_script(action: str, name: str = "", config: dict = None, confirm: bool = 
         config["alias"] = name
         # 脚本的 config API 使用 merge 语义（.update()），不是替换。
         # 为实现替换式更新（与自动化/场景一致），先 delete 再 create。
+        # 备份当前配置以防 create 失败导致数据丢失。
+        backup = None
+        try:
+            bk_resp = _requests.get(f"{ha_url}/api/config/script/config/{slug}", headers=headers, timeout=10)
+            if bk_resp.status_code == 200:
+                backup = bk_resp.json()
+        except Exception:
+            pass
         try:
             _requests.delete(f"{ha_url}/api/config/script/config/{slug}", headers=headers, timeout=10)
             resp = _requests.post(f"{ha_url}/api/config/script/config/{slug}", headers=headers, json=config, timeout=10)
             if resp.status_code in (200, 201):
                 return {"success": True, "name": name, "entity_id": entity_id}
-            return {"error": f"HA API 返回 {resp.status_code}: {resp.text[:200]}"}
+            # create 失败，尝试回滚
+            if backup:
+                try:
+                    _requests.post(f"{ha_url}/api/config/script/config/{slug}", headers=headers, json=backup, timeout=10)
+                except Exception:
+                    pass
+            return {"error": f"更新失败（已尝试回滚）: HA API 返回 {resp.status_code}: {resp.text[:200]}"}
         except Exception as e:
-            return {"error": str(e)}
+            if backup:
+                try:
+                    _requests.post(f"{ha_url}/api/config/script/config/{slug}", headers=headers, json=backup, timeout=10)
+                except Exception:
+                    pass
+            return {"error": f"更新失败（已尝试回滚）: {e}"}
 
     if action == "delete":
         if not name:
@@ -854,6 +885,9 @@ def ha_script(action: str, name: str = "", config: dict = None, confirm: bool = 
 在 `tests/test_ha_automation.py` 中添加：
 
 ```python
+# Task 4: 追加 import
+from niu_ha_server import ha_scene, ha_script
+
 class TestHaScene:
     def test_list(self):
         _ensure_connected()
