@@ -1156,7 +1156,108 @@ def ha_automation(action: str, name: str = "", config: dict = None, confirm: boo
         except Exception as e:
             return {"error": str(e)}
 
-    # create / update / delete / enable / disable / trigger 见 Task 3
+    import uuid
+
+    if action == "create":
+        if not name or not config:
+            return {"error": "name 和 config 参数必填"}
+        config.pop("id", None)  # 移除用户可能传入的 id，由 HA 内部设置
+        config_key = uuid.uuid4().hex
+        config["id"] = config_key
+        config["alias"] = name
+        try:
+            resp = _requests.post(f"{ha_url}/api/config/automation/config/{config_key}", headers=headers, json=config, timeout=10)
+            if resp.status_code in (200, 201):
+                # 重载自动化集成使新 entity 立即可用
+                try:
+                    _requests.post(f"{ha_url}/api/services/automation/reload", headers=headers, json={}, timeout=10)
+                except Exception:
+                    pass
+                # 验证 entity 已注册
+                actual_entity_id = _verify_entity_exists(ha_url, headers, "automation", config_key)
+                return {"success": True, "name": name, "entity_id": actual_entity_id or f"automation.{config_key}", "config_key": config_key}
+            return {"error": f"HA API 返回 {resp.status_code}: {resp.text[:200]}"}
+        except Exception as e:
+            return {"error": str(e)}
+
+    if action == "update":
+        if not name or not config:
+            return {"error": "name 和 config 参数必填"}
+        states = _fetch_domain_states(ha_url, headers, "automation")
+        entity_id = _find_entity_by_name(states, "automation", name)
+        if not entity_id:
+            return {"error": f"未找到名为 '{name}' 的自动化"}
+        config_key = _resolve_config_key(ha_url, headers, "automation", entity_id)
+        if not config_key:
+            return {"error": f"无法解析自动化的配置 ID: {entity_id}"}
+        config.pop("id", None)  # 移除用户可能传入的 id
+        config["id"] = config_key
+        config["alias"] = name
+        try:
+            resp = _requests.post(f"{ha_url}/api/config/automation/config/{config_key}", headers=headers, json=config, timeout=10)
+            if resp.status_code in (200, 201):
+                return {"success": True, "name": name, "entity_id": entity_id}
+            return {"error": f"HA API 返回 {resp.status_code}: {resp.text[:200]}"}
+        except Exception as e:
+            return {"error": str(e)}
+
+    if action == "delete":
+        if not name:
+            return {"error": "name 参数必填"}
+        states = _fetch_domain_states(ha_url, headers, "automation")
+        entity_id = _find_entity_by_name(states, "automation", name)
+        if not entity_id:
+            return {"error": f"未找到名为 '{name}' 的自动化"}
+        if not confirm:
+            attrs = next((s.get("attributes", {}) for s in states if s["entity_id"] == entity_id), {})
+            return {"preview": True, "name": name, "entity_id": entity_id, "state": next((s.get("state") for s in states if s["entity_id"] == entity_id), ""), "last_triggered": attrs.get("last_triggered"), "message": "确认删除？请再次调用并传 confirm=true"}
+        config_key = _resolve_config_key(ha_url, headers, "automation", entity_id)
+        if not config_key:
+            return {"error": f"无法解析自动化的配置 ID: {entity_id}"}
+        try:
+            resp = _requests.delete(f"{ha_url}/api/config/automation/config/{config_key}", headers=headers, timeout=10)
+            if resp.status_code in (200, 204):
+                # 重载自动化集成使删除生效
+                try:
+                    _requests.post(f"{ha_url}/api/services/automation/reload", headers=headers, json={}, timeout=10)
+                except Exception:
+                    pass
+                return {"success": True, "deleted": name}
+            return {"error": f"HA API 返回 {resp.status_code}: {resp.text[:200]}"}
+        except Exception as e:
+            return {"error": str(e)}
+
+    if action in ("enable", "disable"):
+        if not name:
+            return {"error": "name 参数必填"}
+        states = _fetch_domain_states(ha_url, headers, "automation")
+        entity_id = _find_entity_by_name(states, "automation", name)
+        if not entity_id:
+            return {"error": f"未找到名为 '{name}' 的自动化"}
+        service = "automation.turn_on" if action == "enable" else "automation.turn_off"
+        try:
+            resp = _requests.post(f"{ha_url}/api/services/{service.replace('.', '/', 1)}", headers=headers, json={"entity_id": entity_id}, timeout=10)
+            if resp.status_code in (200, 201):
+                return {"success": True, "name": name, "action": action + "d"}
+            return {"error": f"HA API 返回 {resp.status_code}: {resp.text[:200]}"}
+        except Exception as e:
+            return {"error": str(e)}
+
+    if action == "trigger":
+        if not name:
+            return {"error": "name 参数必填"}
+        states = _fetch_domain_states(ha_url, headers, "automation")
+        entity_id = _find_entity_by_name(states, "automation", name)
+        if not entity_id:
+            return {"error": f"未找到名为 '{name}' 的自动化"}
+        try:
+            resp = _requests.post(f"{ha_url}/api/services/automation/trigger", headers=headers, json={"entity_id": entity_id}, timeout=10)
+            if resp.status_code in (200, 201):
+                return {"success": True, "name": name, "triggered": True}
+            return {"error": f"HA API 返回 {resp.status_code}: {resp.text[:200]}"}
+        except Exception as e:
+            return {"error": str(e)}
+
     return {"error": f"未知操作: {action}"}
 
 
