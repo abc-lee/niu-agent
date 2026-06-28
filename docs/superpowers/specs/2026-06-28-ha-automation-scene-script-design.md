@@ -27,13 +27,17 @@ Agent 和用户都用名称引用自动化/场景/脚本，不用 entity_id 或 
 - **list**：返回 `[{name, entity_id, state}, ...]`
 - **get/create/update/delete**：参数统一为 `name`（字符串），工具内部通过 `GET /api/states` 过滤 domain 找到 entity_id，再通过 WebSocket `config/entity_registry/list` 找到 config_object_id，最后调用配置 API
 
-这样 Agent 不需要知道 entity_id 和 object_id 的区别，用户说"看看晚安模式"就够了。
+这样 Agent 不需要知道 entity_id 和 object_id 的区别，用户说"看看晚安模式"就够了。但完整配置必须透明可见——Agent 需要看到 triggers/conditions/actions 的完整结构才能帮用户编写和修改自动化。
 
-### 2. list 用 `/api/states` 过滤 domain
+### 2. list 用 `/api/states` 过滤 domain，返回摘要+完整配置
 
-HA 没有 `/config/automation/config/list` 端点。list 操作直接用 `GET /api/states` 过滤 `automation.*` / `scene.*` / `script.*` 实体，返回名称和状态。用户想看完整配置时再用 get 拉取。
+HA 没有 `/config/automation/config/list` 端点。list 操作用 `GET /api/states` 过滤 domain，但不仅返回名称和状态，还需通过 WebSocket `config/automation/config` 批量获取完整配置，让 Agent 一次就能看到所有自动化的完整内容（trigger/condition/action 结构），无需逐个 get。
 
-### 3. 数据格式用 HA 最新标准
+如果自动化数量较多（>20 条），为避免响应过大，list 返回摘要（名称+状态+trigger 摘要），get 返回完整配置。
+
+### 3. 工具 description 包含完整 schema 参考
+
+磁盘映射的 `long` 字段必须包含 HA 自动化/场景/脚本的完整 schema（trigger platform 列表及参数、condition 类型、action 类型），让 Agent 不需要额外查询就知道怎么写配置。这是帮用户编写自动化的前提——如果连 trigger 有哪些 platform 都不知道，Agent 无法帮用户组合出正确的自动化。
 
 - 键名用复数：`triggers` / `conditions` / `actions`（非弃用的单数形式）
 - 动作内用 `action` 替代 `service`：`{"action": "light.turn_on", ...}`
