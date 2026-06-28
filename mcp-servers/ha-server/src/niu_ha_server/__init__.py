@@ -207,7 +207,7 @@ DOMAIN_MAP = {
 
 ATTR_WHITELIST = {
     "climate": [
-        "current_temperature", "temperature", "target_temp_temp", "target_temp_high",
+        "current_temperature", "temperature", "target_temp_high",
         "target_temp_low", "indoor_temperature", "indoor_humidity",
         "hvac_action", "hvac_mode", "preset_mode",
         "hvac_modes", "preset_modes", "fan_modes", "swing_modes",
@@ -218,11 +218,12 @@ ATTR_WHITELIST = {
     ],
     "light": [
         "brightness", "color_mode", "supported_color_modes",
+        "color_temp_kelvin",
     ],
     "switch": [],
     "fan": [
         "percentage", "percentage_step", "preset_modes",
-        "speed_list", "direction",
+        "direction",
     ],
     "cover": [
         "current_position", "current_tilt_position",
@@ -230,7 +231,7 @@ ATTR_WHITELIST = {
     ],
     "lock": [],
     "humidifier": [
-        "humidity", "target_humidity", "mode", "available_modes",
+        "humidity", "current_humidity", "mode", "available_modes",
     ],
     "vacuum": [
         "fan_speed", "fan_speed_list", "rooms",
@@ -247,6 +248,91 @@ ATTR_WHITELIST = {
         "last_triggered",
     ],
 }
+
+# 服务参数名 ↔ REST API 状态属性名 双向映射
+# key: (domain, service_param_name)
+# value: (rest_api_attr_name, svc_to_attr_transform, attr_to_svc_transform)
+# transform: None=直接映射（名字不同但值相同），callable=值需要转换
+SVC_ATTR_MAP = {
+    ("light", "brightness_pct"): ("brightness", lambda v: int(round(v * 255 / 100)), lambda v: int(round(v * 100 / 255))),
+    ("cover", "position"): ("current_position", None, None),
+    ("cover", "tilt_position"): ("current_tilt_position", None, None),
+}
+
+
+def _normalize_scene_entities(entities: dict) -> dict:
+    """将 scene entities 中的服务参数名转换为 REST API 状态属性名（入参方向）。
+
+    Agent 传入服务参数名（从 ha_status services 字段获取），
+    但 scene config 和 scene.apply 需要 REST API 状态属性名。
+    幂等：已是 REST API 属性名的不会被二次转换。
+    """
+    if not entities:
+        return entities
+    # 预构建已转换后的属性名集合，用于幂等保护
+    _attr_names = {v[0] for v in SVC_ATTR_MAP.values() if v is not None}
+    normalized = {}
+    for eid, attrs in entities.items():
+        if not isinstance(attrs, dict):
+            normalized[eid] = attrs
+            continue
+        domain = eid.split(".")[0] if "." in eid else ""
+        new_attrs = {}
+        for key, val in attrs.items():
+            if key in _attr_names:
+                new_attrs[key] = val
+                continue
+            mapping = SVC_ATTR_MAP.get((domain, key))
+            if mapping is not None:
+                attr_name, fwd_transform, _ = mapping
+                try:
+                    new_attrs[attr_name] = fwd_transform(val) if fwd_transform else val
+                except (TypeError, ValueError):
+                    new_attrs[key] = val
+            else:
+                new_attrs[key] = val
+        normalized[eid] = new_attrs
+    return normalized
+
+
+# 反向映射：REST API 状态属性名 → 服务参数名
+_ATTR_SVC_MAP = {}
+for _k, _v in SVC_ATTR_MAP.items():
+    if _v is not None:
+        _ATTR_SVC_MAP[_v[0]] = (_k[0], _k[1], _v[2])  # (domain, svc_name, rev_transform)
+
+
+def _denormalize_scene_entities(entities: dict) -> dict:
+    """将 scene entities 中的 REST API 状态属性名转换回服务参数名（出参方向）。
+
+    ha_scene get/list 返回 HA config API 中的配置，使用 REST API 状态属性名。
+    转换回服务参数名，确保 Agent 始终只看到一套名字。
+    不在反向映射表中的属性名原样保留。
+    """
+    if not entities:
+        return entities
+    denormalized = {}
+    for eid, attrs in entities.items():
+        if not isinstance(attrs, dict):
+            denormalized[eid] = attrs
+            continue
+        domain = eid.split(".")[0] if "." in eid else ""
+        new_attrs = {}
+        for key, val in attrs.items():
+            if key in _ATTR_SVC_MAP:
+                svc_domain, svc_name, rev_transform = _ATTR_SVC_MAP[key]
+                if svc_domain == domain:
+                    try:
+                        new_attrs[svc_name] = rev_transform(val) if rev_transform else val
+                    except (TypeError, ValueError):
+                        new_attrs[key] = val
+                else:
+                    new_attrs[key] = val
+            else:
+                new_attrs[key] = val
+        denormalized[eid] = new_attrs
+    return denormalized
+
 
 EXCLUDED_DOMAINS = {
     "input_boolean", "input_number", "input_select", "input_button",
@@ -1411,6 +1497,8 @@ def ha_scene(action: str, name: str = "", config: dict = None, confirm: bool = F
                         resp = _requests.get(f"{ha_url}/api/config/scene/config/{config_key}", headers=headers, timeout=10)
                         if resp.status_code == 200:
                             entry["config"] = resp.json()
+                            if "entities" in entry["config"]:
+                                entry["config"]["entities"] = _denormalize_scene_entities(entry["config"]["entities"])
                     except Exception:
                         pass
                 eid_attr = attrs.get("entity_id")
@@ -1428,6 +1516,8 @@ def ha_scene(action: str, name: str = "", config: dict = None, confirm: bool = F
                         resp = _requests.get(f"{ha_url}/api/config/scene/config/{map_slug}", headers=headers, timeout=10)
                         if resp.status_code == 200:
                             entry["config"] = resp.json()
+                            if "entities" in entry["config"]:
+                                entry["config"]["entities"] = _denormalize_scene_entities(entry["config"]["entities"])
                     except Exception:
                         pass
                 scenes.append(entry)
@@ -1454,7 +1544,10 @@ def ha_scene(action: str, name: str = "", config: dict = None, confirm: bool = F
         try:
             resp = _requests.get(f"{ha_url}/api/config/scene/config/{config_key}", headers=headers, timeout=10)
             if resp.status_code == 200:
-                return {"name": name, "entity_id": entity_id, "config": resp.json()}
+                config = resp.json()
+                if "entities" in config:
+                    config["entities"] = _denormalize_scene_entities(config["entities"])
+                return {"name": name, "entity_id": entity_id, "config": config}
             return {"error": f"HA API 返回 {resp.status_code}: {resp.text[:200]}"}
         except Exception as e:
             return {"error": str(e)}
@@ -1464,6 +1557,8 @@ def ha_scene(action: str, name: str = "", config: dict = None, confirm: bool = F
             return {"error": "name 和 config 参数必填"}
         config = {**config}
         config.pop("id", None)
+        if "entities" in config:
+            config["entities"] = _normalize_scene_entities(config["entities"])
         config_key = uuid.uuid4().hex
         config["name"] = name
         config["id"] = config_key
@@ -1513,6 +1608,8 @@ def ha_scene(action: str, name: str = "", config: dict = None, confirm: bool = F
             return {"error": f"未找到名为 '{name}' 的场景"}
         config = {**config}
         config.pop("id", None)
+        if "entities" in config:
+            config["entities"] = _normalize_scene_entities(config["entities"])
         config["name"] = name
         config["id"] = config_key
         try:
@@ -1610,6 +1707,7 @@ def ha_scene(action: str, name: str = "", config: dict = None, confirm: bool = F
             entities = scene_cfg.get("entities")
             if not entities:
                 return {"error": f"场景 '{name}' 配置中没有 entities"}
+            entities = _normalize_scene_entities(entities)
             # 用 scene.apply 直接应用（不需要场景实体存在）
             resp = _requests.post(f"{ha_url}/api/services/scene/apply", headers=headers, json={"entities": entities}, timeout=10)
             if resp.status_code in (200, 201):
@@ -1644,7 +1742,8 @@ def ha_scene(action: str, name: str = "", config: dict = None, confirm: bool = F
                     state_data = resp.json()
                     entities_config[eid] = {"state": state_data["state"]}
                     attrs = state_data.get("attributes", {})
-                    for key in ("brightness", "color_temp_kelvin", "target_temperature", "hvac_mode", "percentage", "current_cover_position", "target_humidity", "preset_mode", "fan_mode"):
+                    ent_domain = eid.split(".")[0]
+                    for key in ATTR_WHITELIST.get(ent_domain, []):
                         if key in attrs:
                             entities_config[eid][key] = attrs[key]
             except Exception:
@@ -2056,7 +2155,7 @@ TOOL_SCHEMAS = {
     },
     "ha_scene": {
         "name": "ha_scene",
-        "description": "管理场景：创建/查看/修改(update)/删除/激活/快照场景。场景是多设备瞬间切换到预设状态（如'阅读模式'、'晚安模式'）。有序列有延时用 ha_script，条件触发用 ha_automation。",
+        "description": "管理场景：创建/查看/修改(update)/删除/激活/快照场景。场景是多设备瞬间切换到预设状态（如'阅读模式'、'晚安模式'）。有序列有延时用 ha_script，条件触发用 ha_automation。entities 参数名使用 ha_status services 字段中的服务参数名（如 brightness_pct），程序自动转换",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -2068,7 +2167,7 @@ TOOL_SCHEMAS = {
                 "name": {"type": "string", "description": "场景名称"},
                 "config": {
                     "type": "object",
-                    "description": "场景配置 JSON。entities: 设备状态快照，键为 entity_id，值为目标状态字典。支持 light(亮度/色温)、climate(温度/模式)、switch、lock、cover(位置)、fan(转速)、humidifier(湿度)",
+                    "description": "场景配置 JSON。entities: 设备目标状态，键为 entity_id，值为目标状态字典。参数名使用 ha_status services 字段中的服务参数名（如 brightness_pct、position、tilt_position），程序自动转换为 HA 内部格式",
                 },
                 "confirm": {"type": "boolean", "description": "删除确认"},
                 "detail": {"type": "boolean", "description": "list 时是否返回完整配置"},
