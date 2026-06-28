@@ -2,11 +2,11 @@
 
 ## 目标
 
-在 ha-server MCP 中新增自动化、场景、脚本的完整 CRUD 能力，让 Agent 能通过自然语言创建和管理"条件触发"、"多设备切换"、"有序步骤"三类智能家居逻辑。
+在 ha-server MCP 中新增自动化、场景、脚本的 CRUD 能力，让 Agent 用一条自然语言指令就能完成"条件触发"、"多设备切换"、"有序步骤"等智能家居逻辑，无需了解 HA 底层 API 细节。
 
-## 背景
+## 设计原则
 
-当前 ha-server 只有查询和控制能力（ha_status / ha_control / ha_subscribe / ha_integrate / ha_setup），无法创建、编辑、查看或删除自动化、场景和脚本。用户说"湿度超过 70% 就开除湿"这类需求，Agent 只能用定时任务模拟，无法实现真正的条件触发。
+**高层封装，不是 HA API 薄包装**。HA 官方 MCP 有 89 个工具，太底层不适合 Agent 使用。我们的工具应该吞掉 entity_id/object_id 映射、API 端点细节、数据格式差异等复杂性，只暴露用户能理解的概念：名字、功能、操作。
 
 ## 工具职责边界
 
@@ -18,73 +18,97 @@
 | 多设备瞬间切换 | `ha_scene` (新增) | "阅读模式"、"晚安模式" |
 | 有序列、有延时 | `ha_script` (新增) | "先关灯，等 5 秒，再锁门" |
 
+## 核心设计决策
+
+### 1. 统一用名称（alias/name）作为标识
+
+Agent 和用户都用名称引用自动化/场景/脚本，不用 entity_id 或 object_id。工具内部处理映射：
+
+- **list**：返回 `[{name, entity_id, state}, ...]`
+- **get/create/update/delete**：参数统一为 `name`（字符串），工具内部通过 `GET /api/states` 过滤 domain 找到 entity_id，再通过 WebSocket `config/entity_registry/list` 找到 config_object_id，最后调用配置 API
+
+这样 Agent 不需要知道 entity_id 和 object_id 的区别，用户说"看看晚安模式"就够了。
+
+### 2. list 用 `/api/states` 过滤 domain
+
+HA 没有 `/config/automation/config/list` 端点。list 操作直接用 `GET /api/states` 过滤 `automation.*` / `scene.*` / `script.*` 实体，返回名称和状态。用户想看完整配置时再用 get 拉取。
+
+### 3. 数据格式用 HA 最新标准
+
+- 键名用复数：`triggers` / `conditions` / `actions`（非弃用的单数形式）
+- 动作内用 `action` 替代 `service`：`{"action": "light.turn_on", ...}`
+- 自动化 config 必须包含 `id` 字段（工具自动生成 UUID hex）
+
+### 4. create 时工具自动生成 object_id 和 id
+
+- 自动化：`object_id` = `uuid4().hex`，config 中的 `id` = 同一个值
+- 场景：`object_id` = `uuid4().hex`
+- 脚本：`object_id` = 从 alias 生成 slug（小写字母+数字+下划线）
+
+### 5. delete 前返回预览
+
+delete 操作先返回待删除项的名称和摘要信息，Agent 需向用户确认后再传 `confirm=true` 真正执行。防止误删。
+
 ## 新增工具
 
 ### ha_automation
 
 操作类型（`action` 参数）：`list` / `get` / `create` / `update` / `delete`
 
-| action | 必填参数 | 说明 |
-|--------|----------|------|
-| `list` | 无 | 列出所有自动化的 ID、名称、状态 |
-| `get` | `automation_id` | 获取完整配置（trigger/condition/action/mode） |
-| `create` | `config` | 创建自动化，config 为 JSON |
-| `update` | `automation_id` + `config` | 更新自动化配置（全量替换） |
-| `delete` | `automation_id` | 删除自动化 |
+| action | 参数 | 说明 |
+|--------|------|------|
+| `list` | 无 | 列出所有自动化的名称、entity_id、状态、last_triggered |
+| `get` | `name` | 获取完整配置（triggers/conditions/actions/mode） |
+| `create` | `name` + `config` | 创建自动化，object_id 自动生成 |
+| `update` | `name` + `config` | 更新自动化（先获取当前配置合并后再提交，防止丢失字段） |
+| `delete` | `name` + `confirm`(可选) | 不带 confirm 返回预览；带 confirm=true 执行删除 |
 
-`config` JSON 结构：
+`config` JSON 结构（HA 2024.8+ 格式）：
 ```json
 {
-  "alias": "名称",
-  "description": "描述（可选）",
-  "mode": "single | parallel | queued | restart",
-  "trigger": [
-    {"platform": "state", "entity_id": "...", "from": "...", "to": "..."},
-    {"platform": "numeric_state", "entity_id": "...", "above": 28},
+  "mode": "single",
+  "triggers": [
+    {"platform": "state", "entity_id": "sensor.humidity", "above": 70},
     {"platform": "time", "at": "08:00:00"},
-    {"platform": "sun", "event": "sunset", "offset": "-00:30:00"},
-    {"platform": "zone", "entity_id": "...", "zone": "zone.home"},
-    {"platform": "homeassistant", "event": "start"},
-    {"platform": "webhook", "webhook_id": "..."}
+    {"platform": "sun", "event": "sunset"},
+    {"platform": "numeric_state", "entity_id": "sensor.temp", "above": 28},
+    {"platform": "zone", "entity_id": "person.xxx", "zone": "zone.home"}
   ],
-  "condition": [
-    {"condition": "state", "entity_id": "...", "state": "on"},
-    {"condition": "numeric_state", "entity_id": "...", "below": 30},
-    {"condition": "time", "after": "09:00", "before": "22:00"},
-    {"condition": "template", "value_template": "{{ ... }}"}
+  "conditions": [
+    {"condition": "state", "entity_id": "input_boolean.home", "state": "on"},
+    {"condition": "time", "after": "09:00", "before": "22:00"}
   ],
-  "action": [
-    {"service": "light.turn_on", "target": {"entity_id": "..."}, "data": {"brightness_pct": 80}},
-    {"service": "notify.notify", "data": {"message": "..."}},
+  "actions": [
+    {"action": "climate.set_hvac_mode", "target": {"entity_id": "climate.ac"}, "data": {"hvac_mode": "dry"}},
+    {"action": "notify.notify", "data": {"message": "湿度已超过70%，已开除湿"}},
     {"delay": {"seconds": 30}},
-    {"choose": [{"conditions": [...], "sequence": [...]}], "default": [...]},
-    {"repeat": {"count": 3, "sequence": [...]}}
+    {"choose": [{"conditions": [...], "sequence": [...]}], "default": [...]}
   ]
 }
 ```
 
-HA REST API：
-- `GET /api/config/automation/config/list` — 列出所有
-- `GET /api/config/automation/config/{object_id}` — 获取单个
-- `POST /api/config/automation/config/{object_id}` — 创建/更新
-- `DELETE /api/config/automation/config/{object_id}` — 删除
+实现细节：
+- `list`：`GET /api/states` 过滤 `automation.*`，返回 `[{name, entity_id, state, last_triggered}]`
+- `get`：name → 通过 states 找 entity_id → entity_registry 找 config_object_id → `GET /api/config/automation/config/{object_id}`
+- `create`：生成 `object_id = uuid4().hex`，`config.id = object_id`，`POST /api/config/automation/config/{object_id}`
+- `update`：先 get 当前配置，深度合并用户提供的 config，再 POST
+- `delete`：先 get 返回预览，`confirm=true` 时 `DELETE /api/config/automation/config/{object_id}`
 
 ### ha_scene
 
 操作类型（`action` 参数）：`list` / `get` / `create` / `update` / `delete`
 
-| action | 必填参数 | 说明 |
-|--------|----------|------|
-| `list` | 无 | 列出所有场景的 ID、名称 |
-| `get` | `scene_id` | 获取完整配置（entities 设备状态快照） |
-| `create` | `config` | 创建场景，config 为 JSON |
-| `update` | `scene_id` + `config` | 更新场景配置（全量替换） |
-| `delete` | `scene_id` | 删除场景 |
+| action | 参数 | 说明 |
+|--------|------|------|
+| `list` | 无 | 列出所有场景的名称、entity_id |
+| `get` | `name` | 获取完整配置（entities 设备状态快照） |
+| `create` | `name` + `config` | 创建场景，object_id 自动生成 |
+| `update` | `name` + `config` | 更新场景 |
+| `delete` | `name` + `confirm`(可选) | 不带 confirm 返回预览；带 confirm=true 执行删除 |
 
 `config` JSON 结构：
 ```json
 {
-  "name": "阅读模式",
   "entities": {
     "light.desk": {"state": "on", "brightness": 200, "color_temp_kelvin": 4000},
     "fan.xxx": {"state": "on", "percentage": 30},
@@ -93,70 +117,66 @@ HA REST API：
 }
 ```
 
-HA REST API：
-- `GET /api/config/scene/config/list`
-- `GET /api/config/scene/config/{object_id}`
-- `POST /api/config/scene/config/{object_id}`
-- `DELETE /api/config/scene/config/{object_id}`
+实现细节同自动化，API 路径中 `automation` 换成 `scene`。
 
 ### ha_script
 
 操作类型（`action` 参数）：`list` / `get` / `create` / `update` / `delete`
 
-| action | 必填参数 | 说明 |
-|--------|----------|------|
-| `list` | 无 | 列出所有脚本的 ID、名称、状态 |
-| `get` | `script_id` | 获取完整配置（sequence 步骤序列） |
-| `create` | `config` | 创建脚本，config 为 JSON |
-| `update` | `script_id` + `config` | 更新脚本配置（全量替换） |
-| `delete` | `script_id` | 删除脚本 |
+| action | 参数 | 说明 |
+|--------|------|------|
+| `list` | 无 | 列出所有脚本的名称、entity_id、状态 |
+| `get` | `name` | 获取完整配置（sequence 步骤序列） |
+| `create` | `name` + `config` | 创建脚本，object_id 从 name 生成 slug |
+| `update` | `name` + `config` | 更新脚本 |
+| `delete` | `name` + `confirm`(可选) | 不带 confirm 返回预览；带 confirm=true 执行删除 |
 
-`config` JSON 结构：
+`config` JSON 结构（HA 2024.8+ 格式）：
 ```json
 {
   "alias": "晚安模式",
-  "mode": "single | parallel | queued | restart",
+  "mode": "single",
   "sequence": [
-    {"service": "light.turn_off", "target": {"entity_id": "all"}},
+    {"action": "light.turn_off", "target": {"entity_id": "all"}},
     {"delay": {"seconds": 5}},
-    {"service": "lock.lock", "target": {"entity_id": "lock.door"}},
-    {"service": "climate.set_hvac_mode", "target": {"entity_id": "climate.ac"}, "data": {"hvac_mode": "off"}}
+    {"action": "lock.lock", "target": {"entity_id": "lock.door"}},
+    {"action": "climate.set_hvac_mode", "target": {"entity_id": "climate.ac"}, "data": {"hvac_mode": "off"}}
   ]
 }
 ```
 
-HA REST API：
-- `GET /api/config/script/config/list`
-- `GET /api/config/script/config/{object_id}`
-- `POST /api/config/script/config/{object_id}`
-- `DELETE /api/config/script/config/{object_id}`
+实现细节：
+- 脚本的 object_id 是 slug 格式（从 name 生成），与 entity_id 直接对应（`script.{slug}`），无需额外映射
+- API 路径中 `automation` 换成 `script`
+- 脚本不需要 `id` 字段
 
 ## 磁盘映射
 
 更新 `config/disk/ha-server.yaml`：
 
 1. `description` 改为包含职责边界的指引
-2. 新增 `ha_automation`、`ha_scene`、`ha_script` 三个工具条目，每个工具的 `long` 字段写清适用场景和与其他工具的区分
+2. 新增 3 个工具条目，每个工具的 `long` 字段写清适用场景和与其他工具的区分
 
 目录级 description：
 > 智能家居 — 立即执行用 ha_control；定时一次用 scheduler；条件触发持续生效用 ha_automation；多设备瞬间切换用 ha_scene；有序列有延时用 ha_script
 
 ## 实现位置
 
-- **代码**：`mcp-servers/ha-server/src/niu_ha_server/__init__.py` — 新增 3 个 TOOL_SCHEMAS + 3 个实现函数，复用现有 `_ha_request()` 发 REST 请求
+- **代码**：`mcp-servers/ha-server/src/niu_ha_server/__init__.py` — 新增 3 个 TOOL_SCHEMAS + 3 个实现函数，复用现有 `_get_ha_client()` + `_requests` 调用 HA API
 - **配置**：`config/disk/ha-server.yaml` — 新增 3 个工具条目 + 更新 description
 
 ## 错误处理
 
-- HA 未连接时返回明确错误提示（复用现有 `_ensure_connected()` 检查）
+- HA 未连接时返回明确错误提示（复用现有 `_get_ha_client()` 检查模式）
+- 名称找不到时返回"未找到名为 xxx 的自动化/场景/脚本，请先 list 查看可用列表"
 - `config` JSON 格式错误时返回具体字段提示
 - HA API 返回非 200 时返回错误码和响应体
-- `delete` 操作前确认自动化/场景/脚本存在，不存在返回 404 提示
+- HA token 非管理员时提示"此操作需要管理员权限的 HA token"
 
 ## 不在范围内
 
 - 历史数据查询（可后续迭代）
 - 区域管理 CRUD
 - 实体/设备管理
-- scene.apply 临时应用（不保存场景的一次性状态切换）
+- scene.apply 临时应用
 - ha_subscribe 增强（组合条件触发、定时触发 — 这些应通过自动化实现）
