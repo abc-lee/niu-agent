@@ -432,11 +432,13 @@ git commit -m "feat: implement ha_automation list + get"
         # 使用真实存在的 entity（从 ha_status 获取第一个灯设备）
         from niu_ha_server import ha_status
         status = ha_status()
-        real_entity = "light.test"
+        real_entity = None
         if status.get("connected") and status.get("devices"):
             light = next((d for d in status["devices"] if d["entity_id"].startswith("light.")), None)
             if light:
                 real_entity = light["entity_id"]
+        if not real_entity:
+            pytest.skip("No light entity available for test")
         result = ha_automation(action="create", name="测试自动删除", config={
             "triggers": [{"platform": "time", "at": "08:00:00"}],
             "actions": [{"action": "light.turn_on", "target": {"entity_id": real_entity}}],
@@ -707,7 +709,7 @@ def ha_scene(action: str, name: str = "", config: dict = None, confirm: bool = F
                     entities_config[eid] = {"state": state_data["state"]}
                     # 提取关键属性（亮度、色温等）
                     attrs = state_data.get("attributes", {})
-                    for key in ("brightness", "color_temp_kelvin", "temperature", "hvac_mode", "percentage", "position", "humidity"):
+                    for key in ("brightness", "color_temp_kelvin", "target_temperature", "hvac_mode", "percentage", "current_cover_position", "target_humidity", "preset_mode", "fan_mode"):
                         if key in attrs:
                             entities_config[eid][key] = attrs[key]
             except Exception:
@@ -778,6 +780,8 @@ def ha_script(action: str, name: str = "", config: dict = None, confirm: bool = 
         if not name or not config:
             return {"error": "name 和 config 参数必填"}
         slug = re.sub(r'[^a-z0-9_]', '_', name.lower()).strip('_')
+        if not slug:  # 非 ASCII 名称（如中文）会产生空字符串，回退到 UUID hex
+            slug = uuid.uuid4().hex
         config.pop("id", None)
         config["alias"] = name
         # 关键：POST 请求体直接传 config，不是 {slug: config}
@@ -863,11 +867,13 @@ class TestHaScene:
         # 从 ha_status 获取真实 entity
         from niu_ha_server import ha_status
         status = ha_status()
-        real_entity = "light.test"
+        real_entity = None
         if status.get("connected") and status.get("devices"):
             light = next((d for d in status["devices"] if d["entity_id"].startswith("light.")), None)
             if light:
                 real_entity = light["entity_id"]
+        if not real_entity:
+            pytest.skip("No light entity available for test")
         # 创建场景
         result = ha_scene(action="create", name="测试场景删除", config={
             "entities": {real_entity: {"state": "on", "brightness": 128}}
