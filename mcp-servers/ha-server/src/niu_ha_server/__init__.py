@@ -7,6 +7,7 @@ import threading
 import time
 import random
 import string
+import uuid
 
 import asyncio as _asyncio
 
@@ -1156,11 +1157,10 @@ def ha_automation(action: str, name: str = "", config: dict = None, confirm: boo
         except Exception as e:
             return {"error": str(e)}
 
-    import uuid
-
     if action == "create":
         if not name or not config:
             return {"error": "name 和 config 参数必填"}
+        config = {**config}
         config.pop("id", None)  # 移除用户可能传入的 id，由 HA 内部设置
         config_key = uuid.uuid4().hex
         config["id"] = config_key
@@ -1190,12 +1190,17 @@ def ha_automation(action: str, name: str = "", config: dict = None, confirm: boo
         config_key = _resolve_config_key(ha_url, headers, "automation", entity_id)
         if not config_key:
             return {"error": f"无法解析自动化的配置 ID: {entity_id}"}
+        config = {**config}
         config.pop("id", None)  # 移除用户可能传入的 id
         config["id"] = config_key
         config["alias"] = name
         try:
             resp = _requests.post(f"{ha_url}/api/config/automation/config/{config_key}", headers=headers, json=config, timeout=10)
             if resp.status_code in (200, 201):
+                try:
+                    _requests.post(f"{ha_url}/api/services/automation/reload", headers=headers, json={}, timeout=10)
+                except Exception:
+                    pass
                 return {"success": True, "name": name, "entity_id": entity_id}
             return {"error": f"HA API 返回 {resp.status_code}: {resp.text[:200]}"}
         except Exception as e:
