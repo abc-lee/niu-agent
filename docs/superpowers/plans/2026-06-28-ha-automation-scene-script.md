@@ -124,17 +124,24 @@ def _verify_entity_exists(ha_url, headers, domain, config_key, timeout=3):
     先轮询轻量 REST states API 等待 entity 出现，再用一次 entity_registry 确认 unique_id。"""
     import time
     deadline = time.time() + timeout
-    # 阶段 1: 用轻量 REST states API 轮询，等待新 entity 出现
-    found_candidates = []
+    # 记录创建前已有的 entity
+    pre_existing = set()
+    try:
+        resp = _requests.get(f"{ha_url}/api/states", headers=headers, timeout=10)
+        if resp.status_code == 200:
+            for s in resp.json():
+                eid = s.get("entity_id", "")
+                if eid.startswith(f"{domain}."):
+                    pre_existing.add(eid)
+    except Exception:
+        pass
+    # 阶段 1: 轮询 REST states，等待新 entity 出现
     while time.time() < deadline:
         try:
             resp = _requests.get(f"{ha_url}/api/states", headers=headers, timeout=10)
             if resp.status_code == 200:
-                for s in resp.json():
-                    eid = s.get("entity_id", "")
-                    if eid.startswith(f"{domain}."):
-                        found_candidates.append(eid)
-                if found_candidates:
+                current = {s.get("entity_id") for s in resp.json() if s.get("entity_id", "").startswith(f"{domain}.")}
+                if current - pre_existing:
                     break
             time.sleep(0.5)
         except Exception:
