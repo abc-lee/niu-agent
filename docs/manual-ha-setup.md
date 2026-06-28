@@ -812,17 +812,17 @@ Xiaomi Miot 安装后，HA 中新增以下服务域：
 
 | 操作 | 命令示例 |
 |------|----------|
-| 创建 | `/ha/ha_scene create --name "回家模式" --config '{"entities": {"light.xxx": {"state": "on", "brightness": 200}}}'` |
+| 创建 | `/ha/ha_scene create --name "回家模式" --config '{"entities": {"light.xxx": {"state": "on", "brightness_pct": 78}}}'` |
 | 激活 | `/ha/ha_scene activate --name "回家模式"` |
 | 快照 | `/ha/ha_scene snapshot --name "当前状态" --entity-ids '["light.xxx"]'` |
 | 查看列表 | `/ha/ha_scene list` |
 | 修改 | `/ha/ha_scene update --name "回家模式" --config '...'` |
 | 删除 | `/ha/ha_scene delete --name "回家模式" --confirm true` |
 
-**entities 支持的设备属性**：
-- `light`：`state` / `brightness` (0-255) / `color_temp_kelvin`
-- `climate`：`state` / `temperature` / `hvac_mode`
-- `switch` / `lock` / `cover`（`current_cover_position`）/ `fan`（`percentage`）/ `humidifier`（`target_humidity`）
+**entities 参数名使用 ha_status services 字段中的服务参数名（程序自动转换）**：
+- `light`：`brightness_pct` (0-100) / `color_temp_kelvin`
+- `climate`：`temperature` / `hvac_mode`
+- `switch` / `lock` / `cover`（`position`）/ `fan`（`percentage`）/ `humidifier`（`humidity`）
 
 > **注意**：场景通过 REST Config API 持久化，不会出现在 HA states 中（显示 idle 是正常的），但激活功能正常工作。
 
