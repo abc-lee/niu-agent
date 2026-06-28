@@ -618,13 +618,6 @@ class NiuHandler(BaseHandler):
                         f"---\n\n原始提示：{next_prompt}"
                     )
 
-        # 每 7 轮警告禁止无效重试（35轮强制询问已移除——长程工作流可能超过35轮）
-        if turn % 7 == 0:
-            next_prompt += (
-                f"\n\n[DANGER] 已连续执行第 {turn} 轮。禁止无效重试。"
-                "若无有效进展，必须切换策略或请求用户协助。"
-            )
-
         return next_prompt
 
     def reset_working_memory(self):
