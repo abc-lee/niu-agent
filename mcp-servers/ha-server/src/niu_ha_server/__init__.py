@@ -416,10 +416,13 @@ def _ws_call(ha_url: str, ha_token: str, command: dict, timeout: float = 15) -> 
             msg = json.loads(await _asyncio.wait_for(ws.recv(), timeout=10))
             if msg.get("type") != "auth_ok":
                 return {"error": "HA 认证失败"}
+            command = dict(command)
+            if "id" not in command:
+                command["id"] = 1
             await ws.send(json.dumps(command))
             while True:
                 result = json.loads(await _asyncio.wait_for(ws.recv(), timeout=timeout))
-                if result.get("id") == command.get("id"):
+                if result.get("id") == command["id"]:
                     return result
                 if result.get("type") == "event":
                     continue
