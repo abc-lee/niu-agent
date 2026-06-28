@@ -1688,7 +1688,9 @@ def ha_script(action: str, name: str = "", config: dict = None, confirm: bool = 
         except Exception:
             pass
         try:
-            _requests.delete(f"{ha_url}/api/config/script/config/{slug}", headers=headers, timeout=10)
+            del_resp = _requests.delete(f"{ha_url}/api/config/script/config/{slug}", headers=headers, timeout=10)
+            if del_resp.status_code not in (200, 204):
+                return {"error": f"删除旧脚本失败 (HTTP {del_resp.status_code})，无法执行替换更新: {del_resp.text[:200]}"}
             resp = _requests.post(f"{ha_url}/api/config/script/config/{slug}", headers=headers, json=config, timeout=10)
             if resp.status_code in (200, 201):
                 try:
