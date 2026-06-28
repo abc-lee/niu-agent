@@ -1349,7 +1349,7 @@ def ha_scene(action: str, name: str = "", config: dict = None, confirm: bool = F
         for map_name, map_slug in scene_name_map.items():
             eid = f"scene.{map_slug}"
             if eid not in seen_entity_ids:
-                entry = {"name": map_name, "entity_id": eid, "state": "unavailable"}
+                entry = {"name": map_name, "entity_id": eid, "state": "idle"}
                 if detail:
                     try:
                         resp = _requests.get(f"{ha_url}/api/config/scene/config/{map_slug}", headers=headers, timeout=10)
@@ -1617,7 +1617,7 @@ def ha_script(action: str, name: str = "", config: dict = None, confirm: bool = 
         for map_name, map_slug in script_name_map.items():
             eid = f"script.{map_slug}"
             if eid not in seen_entity_ids:
-                entry = {"name": map_name, "entity_id": eid, "state": "unavailable"}
+                entry = {"name": map_name, "entity_id": eid, "state": "idle"}
                 if detail:
                     try:
                         resp = _requests.get(f"{ha_url}/api/config/script/config/{map_slug}", headers=headers, timeout=10)
@@ -1853,7 +1853,7 @@ TOOL_SCHEMAS = {
     },
     "ha_automation": {
         "name": "ha_automation",
-        "description": "管理自动化：创建/查看/修改/删除/启用/禁用/手动触发自动化。自动化是条件触发持续生效的规则（如'湿度>70%开除湿'、'日落开灯'）。立即执行一次用 ha_control，定时一次用 scheduler。",
+        "description": "管理自动化：创建/查看/修改(update)/删除/启用/禁用/手动触发自动化。自动化是条件触发持续生效的规则（如'湿度>70%开除湿'、'日落开灯'）。立即执行一次用 ha_control，定时一次用 scheduler。",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -1884,7 +1884,7 @@ TOOL_SCHEMAS = {
     },
     "ha_scene": {
         "name": "ha_scene",
-        "description": "管理场景：创建/查看/修改/删除/激活/快照场景。场景是多设备瞬间切换到预设状态（如'阅读模式'、'晚安模式'）。有序列有延时用 ha_script，条件触发用 ha_automation。",
+        "description": "管理场景：创建/查看/修改(update)/删除/激活/快照场景。场景是多设备瞬间切换到预设状态（如'阅读模式'、'晚安模式'）。有序列有延时用 ha_script，条件触发用 ha_automation。",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -1911,7 +1911,7 @@ TOOL_SCHEMAS = {
     },
     "ha_script": {
         "name": "ha_script",
-        "description": "管理脚本：创建/查看/修改/删除/运行脚本。脚本是有序列、有延时的多步骤操作（如'先关灯等5秒再锁门'）。瞬间切换用 ha_scene，条件触发用 ha_automation。sequence 动作类型与自动化 actions 相同。",
+        "description": "管理脚本：创建/查看/修改(update)/删除/运行脚本。脚本是有序列、有延时的多步骤操作（如'先关灯等5秒再锁门'）。瞬间切换用 ha_scene，条件触发用 ha_automation。sequence 动作类型与自动化 actions 相同。",
         "input_schema": {
             "type": "object",
             "properties": {
