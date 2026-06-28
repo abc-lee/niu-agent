@@ -389,6 +389,52 @@ def _verify_entity_exists(ha_url, headers, domain, config_key, timeout=3):
     return None
 
 
+def _validate_entity_state(ha_url, headers, entity_id, timeout=5):
+    """创建/更新后验证 entity 状态，返回验证信息供 Agent troubleshooting。
+    检查：entity 是否在 states 中、state 是否正常、是否有 HA 报错。"""
+    import time
+    deadline = time.time() + timeout
+    # 轮询等待 entity 出现
+    while time.time() < deadline:
+        try:
+            resp = _requests.get(f"{ha_url}/api/states/{entity_id}", headers=headers, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                state = data.get("state", "")
+                attrs = data.get("attributes", {})
+                info = {"state": state}
+                # 自动化特有：last_triggered 没有报错说明配置被 HA 接受
+                if entity_id.startswith("automation."):
+                    if state == "off":
+                        info["note"] = "自动化已创建但未启用，可能配置有误导致 HA 禁用了它"
+                    elif state == "on":
+                        info["note"] = "自动化已启用，配置被 HA 接受"
+                # 脚本特有
+                if entity_id.startswith("script."):
+                    if state in ("on", "off"):
+                        info["note"] = "脚本配置被 HA 接受"
+                # 场景特有
+                if entity_id.startswith("scene."):
+                    info["note"] = "场景配置已持久化"
+                # 检查是否有 HA 报错属性
+                for err_key in ("error", "exception", "message"):
+                    if err_key in attrs and attrs[err_key]:
+                        info["warning"] = f"HA 报告: {attrs[err_key]}"
+                return info
+            elif resp.status_code == 404:
+                # Entity 还没出现，继续等待
+                time.sleep(0.5)
+            else:
+                return {"state": "unknown", "warning": f"查询状态失败: HTTP {resp.status_code}"}
+        except Exception:
+            time.sleep(0.5)
+    # 超时：entity 未在 states 中出现（对 scene/script 是正常的）
+    domain = entity_id.split(".", 1)[0]
+    if domain in ("scene", "script"):
+        return {"state": "not_in_states", "note": f"{domain} 通过 config API 创建，不出现在 HA states 中，但功能正常"}
+    return {"state": "not_found", "warning": f"创建后 {timeout} 秒内未在 HA states 中找到 {entity_id}，可能配置有误"}
+
+
 def _check_ha_connection(ha_url: str, headers: dict) -> dict:
     try:
         resp = _requests.get(f"{ha_url}/api/", headers=headers, timeout=5)
@@ -1219,7 +1265,11 @@ def ha_automation(action: str, name: str = "", config: dict = None, confirm: boo
                     pass
                 # 验证 entity 已注册
                 actual_entity_id = _verify_entity_exists(ha_url, headers, "automation", config_key)
-                return {"success": True, "name": name, "entity_id": actual_entity_id or f"automation.{_make_slug(name)}", "config_key": config_key}
+                result = {"success": True, "name": name, "entity_id": actual_entity_id or f"automation.{_make_slug(name)}", "config_key": config_key}
+                if actual_entity_id:
+                    validation = _validate_entity_state(ha_url, headers, actual_entity_id)
+                    result["validation"] = validation
+                return result
             return {"error": f"HA API 返回 {resp.status_code}: {resp.text[:200]}"}
         except Exception as e:
             return {"error": str(e)}
@@ -1402,7 +1452,17 @@ def ha_scene(action: str, name: str = "", config: dict = None, confirm: bool = F
                 except Exception:
                     pass
                 _register_name("scene", name, config_key)
-                return {"success": True, "name": name, "entity_id": f"scene.{config_key}", "config_key": config_key}
+                result = {"success": True, "name": name, "entity_id": f"scene.{config_key}", "config_key": config_key}
+                # 验证配置可被 HA 读取
+                try:
+                    cfg_resp = _requests.get(f"{ha_url}/api/config/scene/config/{config_key}", headers=headers, timeout=10)
+                    if cfg_resp.status_code == 200:
+                        result["validation"] = {"state": "persisted", "note": "场景配置已持久化到 HA，可通过 activate 激活"}
+                    else:
+                        result["validation"] = {"state": "error", "warning": f"配置写入成功但回读失败: HTTP {cfg_resp.status_code}"}
+                except Exception:
+                    pass
+                return result
             return {"error": f"HA API 返回 {resp.status_code}: {resp.text[:200]}"}
         except Exception as e:
             return {"error": str(e)}
@@ -1665,7 +1725,17 @@ def ha_script(action: str, name: str = "", config: dict = None, confirm: bool = 
                 except Exception:
                     pass
                 _register_name("script", name, slug)
-                return {"success": True, "name": name, "entity_id": f"script.{slug}"}
+                result = {"success": True, "name": name, "entity_id": f"script.{slug}"}
+                # 验证配置可被 HA 读取
+                try:
+                    cfg_resp = _requests.get(f"{ha_url}/api/config/script/config/{slug}", headers=headers, timeout=10)
+                    if cfg_resp.status_code == 200:
+                        result["validation"] = {"state": "persisted", "note": "脚本配置已持久化到 HA，可通过 run 执行"}
+                    else:
+                        result["validation"] = {"state": "error", "warning": f"配置写入成功但回读失败: HTTP {cfg_resp.status_code}"}
+                except Exception:
+                    pass
+                return result
             return {"error": f"HA API 返回 {resp.status_code}: {resp.text[:200]}"}
         except Exception as e:
             return {"error": str(e)}
