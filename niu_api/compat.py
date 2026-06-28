@@ -1711,8 +1711,8 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                         f"- 目标 token 总数：{target_tokens}（{target_threshold*100:.0f}%）\n"
                         f"- 需释放至少 {suggest_release} tokens\n"
                         f"优先压缩远端（idx 小的）消息；"
-                        f"如果远端+中端释放量不足目标，可对近端非保护消息按中端区规则（合并为摘要）处理，但不突破 [PROTECTED] 边界；"
-                        f"如果近端非保护消息也全部处理后仍不足目标，接受当前结果。\n"
+                        f"如果远端+中端释放量不足目标，可对近端消息按中端区规则（合并为摘要）处理；"
+                        f"如果近端消息也全部处理后仍不足目标，接受当前结果（受保护消息已排除，无需考虑）。\n"
                     )
                 # 模式一/二：游标均由程序自动推进，不需要报告指令
             logger.info(f"[Tidy] Sleep: usage={usage_percent:.1f}%, selecting {compress_mode}")
@@ -2361,7 +2361,7 @@ update=3|用户讨论了XX方案;11|工具执行了YY操作
                 logger.info(f"[Tidy] Force: protect_recent_count degraded to {protect_recent_count} (from request)")
 
             # 使用统一的 _build_incremental_msg_text 构建（与模式二一致）
-            # 传入 protect_recent 参数，自动标注 [PROTECTED]
+            # 传入 protect_recent + exclude_protected=True，排除受保护消息
             _force_msg_ids = []
             msg_list_text = _build_incremental_msg_text(
                 messages, "", _force_msg_ids, msg_tokens,
