@@ -257,6 +257,96 @@ def _get_ha_client(config: dict):
     return url, headers, None
 
 
+def _find_entity_by_name(states, domain, name):
+    """在 states 列表中按 friendly_name 匹配 entity_id"""
+    prefix = f"{domain}."
+    candidates = [s for s in states if s.get("entity_id", "").startswith(prefix)]
+    # 精确匹配 friendly_name 或 entity_id
+    for s in candidates:
+        if s.get("attributes", {}).get("friendly_name", "") == name:
+            return s["entity_id"]
+        if s["entity_id"] == f"{domain}.{name}":
+            return s["entity_id"]
+    # 模糊匹配
+    name_lower = name.lower()
+    for s in candidates:
+        fn = s.get("attributes", {}).get("friendly_name", "").lower()
+        if name_lower in fn or fn in name_lower:
+            return s["entity_id"]
+    return None
+
+
+def _fetch_entity_registry(ha_url, headers):
+    """通过 WebSocket 一次性获取 entity_registry"""
+    token = headers.get("Authorization", "").replace("Bearer ", "")
+    commands = [{"type": "config/entity_registry/list"}]
+    results = _ws_batch_call(ha_url, token, commands)
+    if not results or not results[0]:
+        return []
+    return results[0]
+
+
+def _resolve_config_key(ha_url, headers, domain, entity_id, entity_registry=None):
+    """通过 entity_id 查找 config_key（entity_registry 的 unique_id）。
+    entity_registry: 可选的预查询结果，避免重复 WebSocket 调用。"""
+    if domain == "script":
+        return entity_id.split(".", 1)[1]
+    if entity_registry is None:
+        entity_registry = _fetch_entity_registry(ha_url, headers)
+    for entry in entity_registry:
+        if entry.get("entity_id") == entity_id:
+            return entry.get("unique_id")
+    return None
+
+
+def _fetch_domain_states(ha_url, headers, domain):
+    """GET /api/states 过滤指定 domain"""
+    try:
+        resp = _requests.get(f"{ha_url}/api/states", headers=headers, timeout=15)
+        if resp.status_code != 200:
+            return []
+        prefix = f"{domain}."
+        return [s for s in resp.json() if s.get("entity_id", "").startswith(prefix)]
+    except Exception:
+        return []
+
+
+def _verify_entity_exists(ha_url, headers, domain, config_key, timeout=3):
+    """创建后验证 entity 已注册。通过 entity_registry 的 unique_id 查找实际 entity_id。
+    自动化/场景的 entity_id 由 HA 从 alias/name slugify 生成，不是 config_key 本身。
+    先轮询轻量 REST states API 等待 entity 出现，再用一次 entity_registry 确认 unique_id。"""
+    import time
+    deadline = time.time() + timeout
+    # 记录创建前已有的 entity
+    pre_existing = set()
+    try:
+        resp = _requests.get(f"{ha_url}/api/states", headers=headers, timeout=10)
+        if resp.status_code == 200:
+            for s in resp.json():
+                eid = s.get("entity_id", "")
+                if eid.startswith(f"{domain}."):
+                    pre_existing.add(eid)
+    except Exception:
+        pass
+    # 阶段 1: 轮询 REST states，等待新 entity 出现
+    while time.time() < deadline:
+        try:
+            resp = _requests.get(f"{ha_url}/api/states", headers=headers, timeout=10)
+            if resp.status_code == 200:
+                current = {s.get("entity_id") for s in resp.json() if s.get("entity_id", "").startswith(f"{domain}.")}
+                if current - pre_existing:
+                    break
+            time.sleep(0.5)
+        except Exception:
+            time.sleep(0.5)
+    # 阶段 2: 用一次 WebSocket 查询 entity_registry，通过 unique_id 确认
+    entity_registry = _fetch_entity_registry(ha_url, headers)
+    for entry in entity_registry:
+        if entry.get("unique_id") == config_key and entry.get("entity_id", "").startswith(f"{domain}."):
+            return entry["entity_id"]
+    return None
+
+
 def _check_ha_connection(ha_url: str, headers: dict) -> dict:
     try:
         resp = _requests.get(f"{ha_url}/api/", headers=headers, timeout=5)
@@ -1111,6 +1201,37 @@ TOOL_SCHEMAS = {
                 "entry_id": {"type": "string", "description": "集成条目 ID，删除时必填"},
             },
             "required": [],
+        },
+    },
+    "ha_automation": {
+        "name": "ha_automation",
+        "description": "管理自动化：创建/查看/修改/删除/启用/禁用/手动触发自动化。自动化是条件触发持续生效的规则（如'湿度>70%开除湿'、'日落开灯'）。立即执行一次用 ha_control，定时一次用 scheduler。",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["list", "get", "create", "update", "delete", "enable", "disable", "trigger"],
+                    "description": "操作类型：list=列出所有，get=查看配置，create=创建，update=更新，delete=删除，enable=启用，disable=禁用，trigger=手动触发",
+                },
+                "name": {
+                    "type": "string",
+                    "description": "自动化名称（get/create/update/delete/enable/disable/trigger 时必填）",
+                },
+                "config": {
+                    "type": "object",
+                    "description": "自动化配置 JSON。triggers: 触发条件列表，conditions: 执行条件列表，actions: 动作列表。trigger platform: state/numeric_state/time/time_pattern/sun/zone/event/template/mqtt/calendar/webhook/homeassistant。condition type: state/numeric_state/time/sun/zone/template/trigger/and/or/not。action type: 服务调用(用action键)/delay/wait_for_trigger/wait_template/choose/if/repeat/parallel/condition/variables/event/scene/stop。mode: single|restart|queued|parallel",
+                },
+                "confirm": {
+                    "type": "boolean",
+                    "description": "删除确认（delete 操作第二次调用时传 true）",
+                },
+                "detail": {
+                    "type": "boolean",
+                    "description": "list 时是否返回完整配置（默认 false，只返回摘要）",
+                },
+            },
+            "required": ["action"],
         },
     },
 }
