@@ -8,6 +8,7 @@ import time
 import random
 import string
 import uuid
+import re
 
 import asyncio as _asyncio
 
@@ -140,6 +141,42 @@ def _generate_trigger_id(existing_ids: set) -> str:
         tid = f"ha_trig_{ts}_{rand}"
         if tid not in existing_ids:
             return tid
+
+
+def _register_name(domain: str, name: str, slug: str) -> None:
+    """在 HA config 中注册 name -> slug 映射，用于中文名称查找。"""
+    def _update(config):
+        key = f"{domain}_name_map"
+        if key not in config:
+            config[key] = {}
+        config[key][name] = slug
+        return config
+    _atomic_update(_update)
+
+
+def _unregister_name(domain: str, name: str) -> None:
+    """从 HA config 中删除 name -> slug 映射。"""
+    def _update(config):
+        key = f"{domain}_name_map"
+        if key in config and name in config[key]:
+            del config[key][name]
+        return config
+    _atomic_update(_update)
+
+
+def _lookup_slug(domain: str, name: str) -> str:
+    """从 HA config 中查找 name 对应的 slug。"""
+    config = _read_config()
+    key = f"{domain}_name_map"
+    return config.get(key, {}).get(name, "")
+
+
+def _make_slug(name: str) -> str:
+    """从名称生成合法的 HA entity_id slug。中文名称生成 UUID slug。"""
+    slug = re.sub(r'[^a-z0-9_]', '_', name.lower()).strip('_')
+    if not slug:
+        slug = uuid.uuid4().hex
+    return slug
 
 
 # --- Domain 映射 ---
@@ -1266,6 +1303,398 @@ def ha_automation(action: str, name: str = "", config: dict = None, confirm: boo
     return {"error": f"未知操作: {action}"}
 
 
+# --- ha_scene ---
+
+def _find_scene_by_name(ha_url, headers, name):
+    """在场景 states 中按 friendly_name 或 entity_id slug 查找场景。
+    同时检查本地 name_map 用于中文名称映射。
+    返回 entity_id 或 None。"""
+    states = _fetch_domain_states(ha_url, headers, "scene")
+    # 精确匹配
+    for s in states:
+        if s.get("attributes", {}).get("friendly_name", "") == name:
+            return s["entity_id"]
+        if s["entity_id"] == f"scene.{name}":
+            return s["entity_id"]
+    # 模糊匹配
+    name_lower = name.lower()
+    for s in states:
+        fn = s.get("attributes", {}).get("friendly_name", "").lower()
+        if name_lower in fn or fn in name_lower:
+            return s["entity_id"]
+    # 按 slug 匹配（scene_id）
+    for s in states:
+        slug = s["entity_id"].split(".", 1)[1]
+        if slug == name:
+            return s["entity_id"]
+    # 检查本地 name_map
+    mapped_slug = _lookup_slug("scene", name)
+    if mapped_slug:
+        # 验证场景仍存在
+        for s in states:
+            if s["entity_id"] == f"scene.{mapped_slug}":
+                return s["entity_id"]
+    return None
+
+
+def ha_scene(action: str, name: str = "", config: dict = None, confirm: bool = False, detail: bool = False, entity_ids: list = None, **kwargs) -> dict:
+    """管理场景"""
+    cfg = _read_config()
+    ha_url, headers, err = _get_ha_client(cfg)
+    if err:
+        return {"error": err}
+
+    if action == "list":
+        states = _fetch_domain_states(ha_url, headers, "scene")
+        scenes = []
+        for s in states:
+            attrs = s.get("attributes", {})
+            entry = {"name": attrs.get("friendly_name", s["entity_id"]), "entity_id": s["entity_id"], "state": s.get("state", "off")}
+            if detail:
+                slug = s["entity_id"].split(".", 1)[1]
+                try:
+                    resp = _requests.get(f"{ha_url}/api/config/scene/config/{slug}", headers=headers, timeout=10)
+                    if resp.status_code == 200:
+                        entry["config"] = resp.json()
+                except Exception:
+                    pass
+                # Also include entity_id list from attributes
+                eid_attr = attrs.get("entity_id")
+                if eid_attr:
+                    entry["entities"] = eid_attr if isinstance(eid_attr, list) else [eid_attr]
+            scenes.append(entry)
+        return {"scenes": scenes}
+
+    if action == "get":
+        if not name:
+            return {"error": "name 参数必填"}
+        entity_id = _find_scene_by_name(ha_url, headers, name)
+        if not entity_id:
+            return {"error": f"未找到名为 '{name}' 的场景"}
+        result = {"name": name, "entity_id": entity_id}
+        # 尝试获取配置
+        slug = entity_id.split(".", 1)[1]
+        try:
+            resp = _requests.get(f"{ha_url}/api/config/scene/config/{slug}", headers=headers, timeout=10)
+            if resp.status_code == 200:
+                result["config"] = resp.json()
+        except Exception:
+            pass
+        # 获取状态中的属性
+        states = _fetch_domain_states(ha_url, headers, "scene")
+        for s in states:
+            if s["entity_id"] == entity_id:
+                result["state"] = s.get("state", "off")
+                attrs = s.get("attributes", {})
+                eid_attr = attrs.get("entity_id")
+                if eid_attr:
+                    result["entities"] = eid_attr if isinstance(eid_attr, list) else [eid_attr]
+                break
+        return result
+
+    if action == "create":
+        if not name or not config:
+            return {"error": "name 和 config 参数必填"}
+        # 使用 scene.create 服务创建场景（会在 states 中生成实体）
+        scene_id = _make_slug(name)
+        create_params = {"scene_id": scene_id}
+        entities = config.get("entities", config)
+        if isinstance(entities, dict):
+            create_params["entities"] = entities
+        try:
+            resp = _requests.post(f"{ha_url}/api/services/scene/create", headers=headers, json=create_params, timeout=10)
+            if resp.status_code in (200, 201):
+                import time as _time; _time.sleep(2)
+                # 注册名称映射（中文名称需要通过映射查找）
+                _register_name("scene", name, scene_id)
+                # 验证场景已创建
+                actual_entity_id = _find_scene_by_name(ha_url, headers, name)
+                return {"success": True, "name": name, "entity_id": actual_entity_id or f"scene.{scene_id}"}
+            return {"error": f"HA API 返回 {resp.status_code}: {resp.text[:200]}"}
+        except Exception as e:
+            return {"error": str(e)}
+
+    if action == "update":
+        if not name or not config:
+            return {"error": "name 和 config 参数必填"}
+        entity_id = _find_scene_by_name(ha_url, headers, name)
+        if not entity_id:
+            return {"error": f"未找到名为 '{name}' 的场景"}
+        # 场景更新：删除旧场景 + 创建新场景
+        entities = config.get("entities", config)
+        if not isinstance(entities, dict):
+            return {"error": "config.entities 必须是字典"}
+        try:
+            # 删除旧场景
+            _requests.post(f"{ha_url}/api/services/scene/delete", headers=headers, json={"entity_id": entity_id}, timeout=10)
+            import time as _time; _time.sleep(1)
+            # 创建新场景
+            create_params = {"scene_id": name, "entities": entities}
+            resp = _requests.post(f"{ha_url}/api/services/scene/create", headers=headers, json=create_params, timeout=10)
+            if resp.status_code in (200, 201):
+                _time.sleep(2)
+                actual_entity_id = _find_scene_by_name(ha_url, headers, name)
+                return {"success": True, "name": name, "entity_id": actual_entity_id or entity_id}
+            return {"error": f"更新失败（旧场景已删除）: HA API 返回 {resp.status_code}: {resp.text[:200]}"}
+        except Exception as e:
+            return {"error": str(e)}
+
+    if action == "delete":
+        if not name:
+            return {"error": "name 参数必填"}
+        entity_id = _find_scene_by_name(ha_url, headers, name)
+        if not entity_id:
+            return {"error": f"未找到名为 '{name}' 的场景"}
+        if not confirm:
+            return {"preview": True, "name": name, "entity_id": entity_id, "message": "确认删除？请再次调用并传 confirm=true"}
+        try:
+            resp = _requests.post(f"{ha_url}/api/services/scene/delete", headers=headers, json={"entity_id": entity_id}, timeout=10)
+            if resp.status_code in (200, 201):
+                _unregister_name("scene", name)
+                return {"success": True, "deleted": name}
+            return {"error": f"HA API 返回 {resp.status_code}: {resp.text[:200]}"}
+        except Exception as e:
+            return {"error": str(e)}
+
+    if action == "activate":
+        if not name:
+            return {"error": "name 参数必填"}
+        entity_id = _find_scene_by_name(ha_url, headers, name)
+        if not entity_id:
+            return {"error": f"未找到名为 '{name}' 的场景"}
+        try:
+            resp = _requests.post(f"{ha_url}/api/services/scene/turn_on", headers=headers, json={"entity_id": entity_id}, timeout=10)
+            if resp.status_code in (200, 201):
+                return {"success": True, "name": name, "activated": True}
+            return {"error": f"HA API 返回 {resp.status_code}: {resp.text[:200]}"}
+        except Exception as e:
+            return {"error": str(e)}
+
+    if action == "snapshot":
+        if not name or not entity_ids:
+            return {"error": "name 和 entity_ids 参数必填"}
+        # 使用 scene.create 服务的 snapshot_entities 参数创建快照
+        scene_id = _make_slug(name)
+        try:
+            resp = _requests.post(f"{ha_url}/api/services/scene/create", headers=headers, json={
+                "scene_id": scene_id,
+                "snapshot_entities": entity_ids,
+            }, timeout=10)
+            if resp.status_code in (200, 201):
+                import time as _time; _time.sleep(2)
+                _register_name("scene", name, scene_id)
+                actual_entity_id = _find_scene_by_name(ha_url, headers, name)
+                return {"success": True, "name": name, "entity_id": actual_entity_id or f"scene.{scene_id}", "entities": entity_ids}
+            return {"error": f"快照失败: HA API 返回 {resp.status_code}: {resp.text[:200]}"}
+        except Exception as e:
+            return {"error": str(e)}
+
+    return {"error": f"未知操作: {action}"}
+
+
+# --- ha_script ---
+
+def _find_script_by_name(ha_url, headers, name):
+    """在脚本 states 或 config API 中按名称查找脚本。
+    返回 (entity_id, slug) 或 (None, None)。
+    HA 2026+ 通过 config API 创建的脚本不在 states 中出现，
+    但仍可通过 config API 按 slug 读取。"""
+
+    # 方式 1: 在 states 中查找（YAML/UI 创建的脚本可能在 states 中）
+    states = _fetch_domain_states(ha_url, headers, "script")
+    for s in states:
+        if s.get("attributes", {}).get("friendly_name", "") == name:
+            slug = s["entity_id"].split(".", 1)[1]
+            return s["entity_id"], slug
+        if s["entity_id"] == f"script.{name}":
+            return s["entity_id"], name
+    # 模糊匹配
+    name_lower = name.lower()
+    for s in states:
+        fn = s.get("attributes", {}).get("friendly_name", "").lower()
+        if name_lower in fn or fn in name_lower:
+            slug = s["entity_id"].split(".", 1)[1]
+            return s["entity_id"], slug
+
+    # 方式 2: 检查本地 name_map
+    mapped_slug = _lookup_slug("script", name)
+    if mapped_slug:
+        # 验证脚本仍存在
+        try:
+            resp = _requests.get(f"{ha_url}/api/config/script/config/{mapped_slug}", headers=headers, timeout=10)
+            if resp.status_code == 200:
+                return f"script.{mapped_slug}", mapped_slug
+        except Exception:
+            pass
+        # 映射失效，清除
+        _unregister_name("script", name)
+
+    # 方式 3: 按 slug 推算并在 config API 中验证
+    slug = re.sub(r'[^a-z0-9_]', '_', name.lower()).strip('_')
+    if slug:
+        try:
+            resp = _requests.get(f"{ha_url}/api/config/script/config/{slug}", headers=headers, timeout=10)
+            if resp.status_code == 200:
+                config_data = resp.json()
+                # 检查 alias 是否匹配
+                alias = config_data.get("alias", "")
+                if alias == name or name_lower in alias.lower():
+                    return f"script.{slug}", slug
+        except Exception:
+            pass
+
+    return None, None
+
+
+def ha_script(action: str, name: str = "", config: dict = None, confirm: bool = False, detail: bool = False, **kwargs) -> dict:
+    """管理脚本"""
+    cfg = _read_config()
+    ha_url, headers, err = _get_ha_client(cfg)
+    if err:
+        return {"error": err}
+
+    if action == "list":
+        # 优先从 states 获取（YAML/UI 创建的脚本）
+        states = _fetch_domain_states(ha_url, headers, "script")
+        scripts = []
+        seen_slugs = set()
+        for s in states:
+            attrs = s.get("attributes", {})
+            slug = s["entity_id"].split(".", 1)[1]
+            seen_slugs.add(slug)
+            entry = {"name": attrs.get("friendly_name", s["entity_id"]), "entity_id": s["entity_id"], "state": s.get("state", "off")}
+            if detail:
+                try:
+                    resp = _requests.get(f"{ha_url}/api/config/script/config/{slug}", headers=headers, timeout=10)
+                    if resp.status_code == 200:
+                        entry["config"] = resp.json()
+                except Exception:
+                    pass
+            scripts.append(entry)
+        return {"scripts": scripts}
+
+    if action == "get":
+        if not name:
+            return {"error": "name 参数必填"}
+        entity_id, slug = _find_script_by_name(ha_url, headers, name)
+        if not slug:
+            return {"error": f"未找到名为 '{name}' 的脚本"}
+        try:
+            resp = _requests.get(f"{ha_url}/api/config/script/config/{slug}", headers=headers, timeout=10)
+            if resp.status_code == 200:
+                result = {"name": name, "entity_id": entity_id or f"script.{slug}", "config": resp.json()}
+                # 补充 state 信息
+                if entity_id:
+                    states = _fetch_domain_states(ha_url, headers, "script")
+                    for s in states:
+                        if s["entity_id"] == entity_id:
+                            result["state"] = s.get("state", "off")
+                            break
+                return result
+            return {"error": f"HA API 返回 {resp.status_code}: {resp.text[:200]}"}
+        except Exception as e:
+            return {"error": str(e)}
+
+    if action == "create":
+        if not name or not config:
+            return {"error": "name 和 config 参数必填"}
+        config = {**config}
+        slug = _make_slug(name)
+        config.pop("id", None)
+        config["alias"] = name
+        try:
+            resp = _requests.post(f"{ha_url}/api/config/script/config/{slug}", headers=headers, json=config, timeout=10)
+            if resp.status_code in (200, 201):
+                try:
+                    _requests.post(f"{ha_url}/api/services/script/reload", headers=headers, json={}, timeout=10)
+                except Exception:
+                    pass
+                _register_name("script", name, slug)
+                return {"success": True, "name": name, "entity_id": f"script.{slug}"}
+            return {"error": f"HA API 返回 {resp.status_code}: {resp.text[:200]}"}
+        except Exception as e:
+            return {"error": str(e)}
+
+    if action == "update":
+        if not name or not config:
+            return {"error": "name 和 config 参数必填"}
+        entity_id, slug = _find_script_by_name(ha_url, headers, name)
+        if not slug:
+            return {"error": f"未找到名为 '{name}' 的脚本"}
+        config = {**config}
+        config.pop("id", None)
+        config["alias"] = name
+        # Script config API uses merge semantics — need delete+create for replace
+        backup = None
+        try:
+            bk_resp = _requests.get(f"{ha_url}/api/config/script/config/{slug}", headers=headers, timeout=10)
+            if bk_resp.status_code == 200:
+                backup = bk_resp.json()
+        except Exception:
+            pass
+        try:
+            _requests.delete(f"{ha_url}/api/config/script/config/{slug}", headers=headers, timeout=10)
+            resp = _requests.post(f"{ha_url}/api/config/script/config/{slug}", headers=headers, json=config, timeout=10)
+            if resp.status_code in (200, 201):
+                try:
+                    _requests.post(f"{ha_url}/api/services/script/reload", headers=headers, json={}, timeout=10)
+                except Exception:
+                    pass
+                return {"success": True, "name": name, "entity_id": entity_id or f"script.{slug}"}
+            # create failed, try rollback
+            if backup:
+                try:
+                    _requests.post(f"{ha_url}/api/config/script/config/{slug}", headers=headers, json=backup, timeout=10)
+                except Exception:
+                    pass
+            return {"error": f"更新失败（已尝试回滚）: HA API 返回 {resp.status_code}: {resp.text[:200]}"}
+        except Exception as e:
+            if backup:
+                try:
+                    _requests.post(f"{ha_url}/api/config/script/config/{slug}", headers=headers, json=backup, timeout=10)
+                except Exception:
+                    pass
+            return {"error": f"更新失败（已尝试回滚）: {e}"}
+
+    if action == "delete":
+        if not name:
+            return {"error": "name 参数必填"}
+        entity_id, slug = _find_script_by_name(ha_url, headers, name)
+        if not slug:
+            return {"error": f"未找到名为 '{name}' 的脚本"}
+        if not confirm:
+            return {"preview": True, "name": name, "entity_id": entity_id or f"script.{slug}", "message": "确认删除？请再次调用并传 confirm=true"}
+        try:
+            resp = _requests.delete(f"{ha_url}/api/config/script/config/{slug}", headers=headers, timeout=10)
+            if resp.status_code in (200, 204):
+                try:
+                    _requests.post(f"{ha_url}/api/services/script/reload", headers=headers, json={}, timeout=10)
+                except Exception:
+                    pass
+                _unregister_name("script", name)
+                return {"success": True, "deleted": name}
+            return {"error": f"HA API 返回 {resp.status_code}: {resp.text[:200]}"}
+        except Exception as e:
+            return {"error": str(e)}
+
+    if action == "run":
+        if not name:
+            return {"error": "name 参数必填"}
+        entity_id, slug = _find_script_by_name(ha_url, headers, name)
+        if not slug:
+            return {"error": f"未找到名为 '{name}' 的脚本"}
+        # 脚本即使不在 states 中，仍可通过 script/turn_on 调用
+        try:
+            resp = _requests.post(f"{ha_url}/api/services/script/turn_on", headers=headers, json={"entity_id": entity_id or f"script.{slug}"}, timeout=10)
+            if resp.status_code in (200, 201):
+                return {"success": True, "name": name, "running": True}
+            return {"error": f"HA API 返回 {resp.status_code}: {resp.text[:200]}"}
+        except Exception as e:
+            return {"error": str(e)}
+
+    return {"error": f"未知操作: {action}"}
+
+
 def run_server():
     """MCP stdio server entry point (backup, same-process mode is primary)."""
     try:
@@ -1394,6 +1823,55 @@ TOOL_SCHEMAS = {
                     "type": "boolean",
                     "description": "list 时是否返回完整配置（默认 false，只返回摘要）",
                 },
+            },
+            "required": ["action"],
+        },
+    },
+    "ha_scene": {
+        "name": "ha_scene",
+        "description": "管理场景：创建/查看/修改/删除/激活/快照场景。场景是多设备瞬间切换到预设状态（如'阅读模式'、'晚安模式'）。有序列有延时用 ha_script，条件触发用 ha_automation。",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["list", "get", "create", "update", "delete", "activate", "snapshot"],
+                    "description": "操作类型：list=列出所有，get=查看配置，create=创建，update=更新，delete=删除，activate=激活场景，snapshot=从当前设备状态创建场景快照",
+                },
+                "name": {"type": "string", "description": "场景名称"},
+                "config": {
+                    "type": "object",
+                    "description": "场景配置 JSON。entities: 设备状态快照，键为 entity_id，值为目标状态字典。支持 light(亮度/色温)、climate(温度/模式)、switch、lock、cover(位置)、fan(转速)、humidifier(湿度)",
+                },
+                "confirm": {"type": "boolean", "description": "删除确认"},
+                "detail": {"type": "boolean", "description": "list 时是否返回完整配置"},
+                "entity_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "snapshot 操作要快照的设备 entity_id 列表",
+                },
+            },
+            "required": ["action"],
+        },
+    },
+    "ha_script": {
+        "name": "ha_script",
+        "description": "管理脚本：创建/查看/修改/删除/运行脚本。脚本是有序列、有延时的多步骤操作（如'先关灯等5秒再锁门'）。瞬间切换用 ha_scene，条件触发用 ha_automation。sequence 动作类型与自动化 actions 相同。",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["list", "get", "create", "update", "delete", "run"],
+                    "description": "操作类型：list=列出所有，get=查看配置，create=创建，update=更新，delete=删除，run=执行脚本",
+                },
+                "name": {"type": "string", "description": "脚本名称"},
+                "config": {
+                    "type": "object",
+                    "description": "脚本配置 JSON。alias: 名称，mode: single|restart|queued|parallel，sequence: 步骤列表。步骤类型: 服务调用(action键)/delay/wait_for_trigger/choose/if/repeat/parallel/condition",
+                },
+                "confirm": {"type": "boolean", "description": "删除确认"},
+                "detail": {"type": "boolean", "description": "list 时是否返回完整配置"},
             },
             "required": ["action"],
         },
