@@ -59,12 +59,12 @@ class TestHaAutomation:
             "mode": "single",
         })
         assert result.get("success"), f"创建失败: {result}"
-        import time; time.sleep(3)  # 等待 HA reload 注册 entity
-        # 验证 get
-        get_result = ha_automation(action="get", name="测试自动删除")
-        assert get_result.get("config"), f"获取配置失败: {get_result}"
-        # 清理
-        ha_automation(action="delete", name="测试自动删除", confirm=True)
+        try:
+            import time; time.sleep(3)
+            get_result = ha_automation(action="get", name="测试自动删除")
+            assert get_result.get("config"), f"获取配置失败: {get_result}"
+        finally:
+            ha_automation(action="delete", name="测试自动删除", confirm=True)
 
     def test_delete_preview(self):
         """delete 不带 confirm 返回预览"""
@@ -76,11 +76,11 @@ class TestHaAutomation:
             "mode": "single",
         })
         import time; time.sleep(3)
-        result = ha_automation(action="delete", name="测试删除预览")
-        assert result.get("preview"), f"应返回预览: {result}"
-        # 确认删除
-        result = ha_automation(action="delete", name="测试删除预览", confirm=True)
-        assert result.get("success"), f"删除失败: {result}"
+        try:
+            result = ha_automation(action="delete", name="测试删除预览")
+            assert result.get("preview"), f"应返回预览: {result}"
+        finally:
+            ha_automation(action="delete", name="测试删除预览", confirm=True)
 
     def test_enable_disable(self):
         """启用/禁用自动化"""
@@ -92,14 +92,15 @@ class TestHaAutomation:
             "mode": "single",
         })
         import time; time.sleep(3)
-        # 禁用
-        result = ha_automation(action="disable", name="测试开关")
-        assert result.get("success"), f"禁用失败: {result}"
-        # 启用
-        result = ha_automation(action="enable", name="测试开关")
-        assert result.get("success"), f"启用失败: {result}"
-        # 清理
-        ha_automation(action="delete", name="测试开关", confirm=True)
+        try:
+            # 禁用
+            result = ha_automation(action="disable", name="测试开关")
+            assert result.get("success"), f"禁用失败: {result}"
+            # 启用
+            result = ha_automation(action="enable", name="测试开关")
+            assert result.get("success"), f"启用失败: {result}"
+        finally:
+            ha_automation(action="delete", name="测试开关", confirm=True)
 
     def test_name_not_found(self):
         """名称不存在时返回错误"""
