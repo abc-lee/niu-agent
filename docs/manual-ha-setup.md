@@ -1,7 +1,7 @@
 # Home Assistant 智能家居集成 — 验证手册
 
 > 本文档是主 Agent 协助用户安装、配置、使用 HA 的完整操作手册。
-> 包含所有已验证的 API 行为、配置方法、接入模式和踩坑记录。
+> 包含所有已验证的 API 行为、配置方法、接入模式、自动化/场景/脚本管理、踩坑记录。
 
 ## 1. Docker 安装与配置
 
@@ -578,23 +578,38 @@ curl -X POST http://localhost:8123/api/services/light/turn_on \
         → 返回 create_entry，集成创建成功
 ```
 
-## 9. 下一步：ha-server MCP Server 开发
+## 9. ha-server MCP 工具清单
 
-基于验证结果（Phase 1-3 全部通过），可开始开发 `ha-server` MCP Server，核心功能：
+ha-server 提供 8 个 MCP 工具，通过虚拟磁盘 `/ha/` 目录访问：
 
-1. **设备发现** — 通过 Config Flow REST API 查询可用集成 + zeroconf 自动发现
-2. **设备接入** — 根据 Config Flow schema 自动引导用户完成配置
-3. **设备控制** — 封装 REST API 的设备查询和控制
-4. **条件推送** — 封装 WebSocket subscribe_trigger，支持守护线程
-5. **浏览器辅助** — 对 OAuth 型集成，通过 browser-server 自动完成认证
+| 工具 | 类别 | 短描述 | 说明 |
+|------|------|--------|------|
+| `ha_setup` | 写 | 配置 HA 连接 | 首次使用传入 ha_url/ha_token，无参数返回连接状态 |
+| `ha_status` | 读 | 查询设备状态 | 按区域/类型过滤，返回设备列表和可用操作 |
+| `ha_control` | 写 | 控制设备 | 立即执行一次操作。优先用 service 参数指定 HA 服务 |
+| `ha_subscribe` | 写 | 订阅状态通知 | 条件触发推送。支持 state_change/above/below 三种条件 |
+| `ha_integrate` | 写 | 管理集成 | 添加/删除设备品牌集成，通过 Config Flow REST API |
+| `ha_automation` | 写 | 管理自动化 | 条件触发持续生效的规则 |
+| `ha_scene` | 写 | 管理场景 | 多设备瞬间切换到预设状态 |
+| `ha_script` | 写 | 管理脚本 | 有序列、有延时的多步骤操作 |
 
-## 9. HACS 安装（已验证）
+### 9.1 工具选择指南
 
-### 9.1 HACS 简介
+| 需求 | 使用工具 | 说明 |
+|------|----------|------|
+| 立即执行一次 | `ha_control` | 开关灯、设温度等即时操作 |
+| 定时执行一次 | `scheduler` | 定时任务（非 HA 工具） |
+| 条件触发持续生效 | `ha_automation` | 如"温度>30°C自动开空调" |
+| 多设备瞬间切换 | `ha_scene` | 如"回家模式"同时开灯+开空调 |
+| 有序列有延时 | `ha_script` | 如"先开灯→等2秒→调色温" |
+
+## 10. HACS 安装（已验证）
+
+### 10.1 HACS 简介
 
 HACS (Home Assistant Community Store) 是 HA 的社区商店，用于安装第三方集成和前端组件。很多品牌的集成（如 Xiaomi Miot Auto）不在 HA 官方内置，必须通过 HACS 安装。
 
-### 9.2 安装步骤
+### 10.2 安装步骤
 
 **方法 1：浏览器自动化（Agent 辅助用户）**
 
@@ -629,15 +644,15 @@ until curl -s http://localhost:8123/api/ > /dev/null 2>&1; do sleep 5; done
 2. 用户在浏览器中打开 URL，输入设备码，授权
 3. Agent 可以通过 browser-server 自动完成此步骤，但需要用户已登录 GitHub
 
-### 9.3 踩坑记录
+### 10.3 踩坑记录
 
 - HACS 首次安装后，HA 侧边栏不会立即显示 HACS 图标，需要先在"设置 → 设备与服务"中添加 HACS 集成
 - GitHub 授权流程需要 VPN（访问 github.com）
 - HACS 仓库数据缓存可能需要几分钟更新
 
-## 10. Xiaomi Miot Auto 集成（已验证）
+## 11. Xiaomi Miot Auto 集成（已验证）
 
-### 10.1 安装
+### 11.1 安装
 
 **通过 HACS 下载安装：**
 
@@ -659,7 +674,7 @@ curl -s -X POST http://localhost:8123/api/config/config_entries/flow \
   -d '{"handler": "xiaomi_miot", "show_advanced_options": false, "context": {"source": "user"}}'
 ```
 
-### 10.2 Config Flow 实测结果
+### 11.2 Config Flow 实测结果
 
 **第一步（选择接入模式）：**
 
@@ -715,7 +730,7 @@ curl -s -X POST http://localhost:8123/api/config/config_entries/flow \
 
 （待用户测试时记录字段）
 
-### 10.3 Xiaomi Miot 提供的服务
+### 11.3 Xiaomi Miot 提供的服务
 
 Xiaomi Miot 安装后，HA 中新增以下服务域：
 
@@ -732,7 +747,7 @@ Xiaomi Miot 安装后，HA 中新增以下服务域：
 | `xiaomi_miot.renew_devices` | 刷新设备列表 |
 | `xiaomi_miot.request_xiaomi_api` | 请求小米 API |
 
-### 10.4 连接模式说明
+### 11.4 连接模式说明
 
 | 模式 | 说明 | 适用设备 |
 |------|------|----------|
@@ -740,9 +755,9 @@ Xiaomi Miot 安装后，HA 中新增以下服务域：
 | **Local (本地)** | 所有设备仅使用局域网直连 | 仅支持 MIoT-Spec 的 Wi-Fi 设备 |
 | **Cloud (云端)** | 所有设备通过小米云端连接 | BLE、ZigBee、miio 设备 |
 
-## 11. Agent 辅助接入的完整流程（验证结论）
+## 12. Agent 辅助接入的完整流程（验证结论）
 
-### 11.1 首次安装 HA（Agent 协助步骤）
+### 12.1 首次安装 HA（Agent 协助步骤）
 
 1. **安装 Docker** — `brew install --cask docker`（macOS）
 2. **拉取 HA 镜像** — 需 VPN
@@ -751,27 +766,81 @@ Xiaomi Miot 安装后，HA 中新增以下服务域：
 5. **首次设置（Onboarding）** — 浏览器自动化辅助
 6. **创建 Long-Lived Access Token** — 浏览器自动化辅助
 
-### 11.2 安装 HACS（Agent 协助步骤）
+### 12.2 安装 HACS（Agent 协助步骤）
 
 1. **下载 HACS** — 命令行全自动
 2. **重启 HA** — 命令行全自动
 3. **添加 HACS 集成** — Config Flow API（需 GitHub 授权，可能需 browser-server）
 
-### 11.3 安装品牌集成（Agent 协助步骤）
+### 12.3 安装品牌集成（Agent 协助步骤）
 
 1. **HACS 下载集成** — 浏览器自动化（搜索 → Download）
 2. **重启 HA** — 命令行全自动
 3. **添加集成** — Config Flow REST API 全自动
 4. **填写账密** — 问用户要（账号密码型）/ 自动发现（局域网型）
 
-### 11.4 设备控制（Agent 全自动）
+### 12.4 设备控制（Agent 全自动）
 
 1. **查询设备列表** — `GET /api/states`
 2. **控制设备** — `POST /api/services/{domain}/{service}`
 3. **监听状态变化** — WebSocket `subscribe_trigger`
 4. **历史查询** — `GET /api/history/period/{timestamp}`
 
-### 11.5 各步骤的自动化程度
+### 12.5 自动化、场景与脚本（Agent 全自动）
+
+**自动化（ha_automation）** — 条件触发持续生效的规则：
+
+| 操作 | 命令示例 |
+|------|----------|
+| 创建 | `/ha/ha_automation create --name "自动开灯" --config '{"triggers": [{"platform": "state", "entity_id": "light.xxx", "to": "on"}], "actions": [{"action": "light.turn_on", "target": {"entity_id": "light.yyy"}}], "mode": "single"}'` |
+| 查看列表 | `/ha/ha_automation list` |
+| 查看详情 | `/ha/ha_automation get --name "自动开灯"` |
+| 修改 | `/ha/ha_automation update --name "自动开灯" --config '...'` |
+| 删除 | `/ha/ha_automation delete --name "自动开灯" --confirm true` |
+| 启用/禁用 | `/ha/ha_automation enable --name "自动开灯"` / `disable` |
+| 手动触发 | `/ha/ha_automation trigger --name "自动开灯"` |
+
+**trigger 平台**：`state` / `numeric_state` / `time` / `time_pattern` / `sun` / `zone` / `event` / `template` / `mqtt` / `calendar`
+
+**condition 类型**：`state` / `numeric_state` / `time` / `sun` / `zone` / `template` / `and` / `or` / `not`
+
+**action 类型**：服务调用(用 `action` 键) / `delay` / `wait_for_trigger` / `choose` / `if` / `repeat` / `parallel` / `scene` / `stop`
+
+**mode**：`single`（默认，只运行一次）| `restart`（重新开始）| `queued`（排队）| `parallel`（并行）
+
+**场景（ha_scene）** — 多设备瞬间切换到预设状态：
+
+| 操作 | 命令示例 |
+|------|----------|
+| 创建 | `/ha/ha_scene create --name "回家模式" --config '{"entities": {"light.xxx": {"state": "on", "brightness": 200}}}'` |
+| 激活 | `/ha/ha_scene activate --name "回家模式"` |
+| 快照 | `/ha/ha_scene snapshot --name "当前状态" --entity-ids '["light.xxx"]'` |
+| 查看列表 | `/ha/ha_scene list` |
+| 修改 | `/ha/ha_scene update --name "回家模式" --config '...'` |
+| 删除 | `/ha/ha_scene delete --name "回家模式" --confirm true` |
+
+**entities 支持的设备属性**：
+- `light`：`state` / `brightness` (0-255) / `color_temp_kelvin`
+- `climate`：`state` / `temperature` / `hvac_mode`
+- `switch` / `lock` / `cover`（`current_cover_position`）/ `fan`（`percentage`）/ `humidifier`（`target_humidity`）
+
+> **注意**：场景通过 REST Config API 持久化，不会出现在 HA states 中（显示 idle 是正常的），但激活功能正常工作。
+
+**脚本（ha_script）** — 有序列、有延时的多步骤操作：
+
+| 操作 | 命令示例 |
+|------|----------|
+| 创建 | `/ha/ha_script create --name "晚安" --config '{"mode": "single", "sequence": [{"action": "light.turn_off", "target": {"entity_id": "light.xxx"}}, {"delay": {"seconds": 2}}, {"action": "light.turn_on", "target": {"entity_id": "light.yyy"}}]}'` |
+| 运行 | `/ha/ha_script run --name "晚安"` |
+| 查看列表 | `/ha/ha_script list` |
+| 修改 | `/ha/ha_script update --name "晚安" --config '...'` |
+| 删除 | `/ha/ha_script delete --name "晚安" --confirm true` |
+
+**sequence 动作**：服务调用(`action` 键) / `delay` / `wait_for_trigger` / `choose` / `if` / `repeat` / `parallel` / `condition`
+
+**mode**：`single` | `restart` | `queued` | `parallel`
+
+### 12.6 各步骤的自动化程度
 
 | 步骤 | 自动化程度 | 需要用户配合 |
 |------|-----------|-------------|
@@ -784,4 +853,5 @@ Xiaomi Miot 安装后，HA 中新增以下服务域：
 | 添加账号集成 | 90% | 口述账密 |
 | 添加局域网集成 | 95% | 确认设备 |
 | 设备控制 | 100% | 无 |
+| 自动化/场景/脚本 | 100% | 无 |
 | 条件推送 | 100% | 无 |

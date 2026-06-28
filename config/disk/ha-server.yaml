@@ -148,7 +148,7 @@ tools:
   - name: ha_scene
     category: write
     short: "管理场景"
-    long: "管理场景：创建/查看/修改/删除/激活/快照。场景是多设备瞬间切换到预设状态。有序列有延时用 ha_script，条件触发用 ha_automation。entities 支持设备: light(亮度/色温)/climate(温度/模式)/switch/lock/cover(位置)/fan(转速)/humidifier(湿度)"
+    long: "管理场景：创建/查看/修改/删除/激活/快照。场景是多设备瞬间切换到预设状态。有序列有延时用 ha_script，条件触发用 ha_automation。entities 参数名使用 ha_status services 字段中的服务参数名（如 brightness_pct），程序自动转换为 HA 内部格式"
     parameters:
       - name: action
         position: 1
