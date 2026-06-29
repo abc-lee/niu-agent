@@ -188,7 +188,7 @@ def _make_slug(name: str) -> str:
 
 # --- Domain 映射 ---
 
-DOMAIN_MAP = {
+DOMAIN_OVERRIDES = {
     "light": {"type": "灯", "actions": ["turn_on", "turn_off", "toggle", "set_brightness"]},
     "climate": {"type": "空调/温控", "actions": ["turn_on", "turn_off", "set_temperature"]},
     "sensor": {"type": "传感器", "actions": []},
@@ -770,7 +770,9 @@ def _get_entity_actions(domain: str, attrs: dict, services_cache: dict) -> list:
     """根据服务缓存和实体属性计算可用 actions 列表。"""
     domain_services = services_cache.get(domain, {})
     if not domain_services:
-        info = DOMAIN_MAP.get(domain, {})
+        info = DOMAIN_OVERRIDES.get(domain, {})
+        if not info:
+            print(f"[HA] warning: no services_cache for domain '{domain}', run ha_setup to refresh")
         # 映射旧式 action 名为 HA 服务名，去重保持与动态路径一致
         mapped = []
         seen = set()
@@ -852,9 +854,7 @@ def ha_status(area: str = "", domain: str = "") -> dict:
         if domain and ent_domain != domain:
             continue
 
-        info = DOMAIN_MAP.get(ent_domain)
-        if not info:
-            continue
+        info = DOMAIN_OVERRIDES.get(ent_domain)
 
         attrs = entity.get("attributes", {})
         name = attrs.get("friendly_name", eid)
