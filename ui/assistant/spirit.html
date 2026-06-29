@@ -162,7 +162,7 @@
 
   <script>
     // ========== 配置 ==========
-    const IDLE_TIMEOUT = 5 * 60 * 1000;
+    const IDLE_TIMEOUT = (window.electronAPI && window.electronAPI.IDLE_TIMEOUT) || (5 * 60 * 1000);
     const IDLE_SWITCH_INTERVAL = 10 * 1000;
     const TRANSITION_DURATION = 5000;
     
