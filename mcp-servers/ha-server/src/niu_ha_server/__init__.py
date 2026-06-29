@@ -887,6 +887,15 @@ def ha_status(area: str = "", domain: str = "") -> dict:
             for attr_name in whitelist:
                 val = attrs.get(attr_name)
                 if val is not None:
+                    # 将 REST API 属性名转换为服务参数名
+                    if attr_name in _ATTR_SVC_MAP:
+                        svc_domain, svc_name, rev_transform = _ATTR_SVC_MAP[attr_name]
+                        if svc_domain == ent_domain:
+                            try:
+                                props[svc_name] = rev_transform(val) if rev_transform else val
+                            except (TypeError, ValueError):
+                                props[attr_name] = val
+                            continue
                     props[attr_name] = val
             if props:
                 entry["properties"] = props
@@ -1743,7 +1752,17 @@ def ha_scene(action: str, name: str = "", config: dict = None, confirm: bool = F
                     entities_config[eid] = {"state": state_data["state"]}
                     attrs = state_data.get("attributes", {})
                     ent_domain = eid.split(".")[0]
-                    for key in ATTR_WHITELIST.get(ent_domain, []):
+                    # scene 只能设置可写属性，排除 current_*/supported_*/*_modes/*_list/*_class 等只读属性
+                    _writable = {
+                        "climate": ("temperature", "target_temp_high", "target_temp_low", "hvac_mode", "preset_mode", "fan_mode", "swing_mode", "swing_horizontal_mode"),
+                        "light": ("brightness", "color_mode", "color_temp_kelvin"),
+                        "fan": ("percentage", "direction", "preset_mode"),
+                        "cover": ("current_position", "current_tilt_position"),
+                        "humidifier": ("humidity", "mode"),
+                        "vacuum": ("fan_speed",),
+                        "media_player": ("source", "volume_level"),
+                    }
+                    for key in _writable.get(ent_domain, ()):
                         if key in attrs:
                             entities_config[eid][key] = attrs[key]
             except Exception:
