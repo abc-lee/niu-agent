@@ -334,6 +334,28 @@ def _denormalize_scene_entities(entities: dict) -> dict:
     return denormalized
 
 
+def _convert_attrs_to_svc_names(attrs: dict, domain: str) -> dict:
+    """将 attributes 中的 REST API 属性名转换为服务参数名。
+
+    用于 ha_status properties 和 ha_control 返回值的统一转换。
+    不在 _ATTR_SVC_MAP 中的属性原样保留。
+    """
+    if not attrs:
+        return attrs
+    converted = {}
+    for key, val in attrs.items():
+        if key in _ATTR_SVC_MAP:
+            svc_domain, svc_name, rev_transform = _ATTR_SVC_MAP[key]
+            if svc_domain == domain:
+                try:
+                    converted[svc_name] = rev_transform(val) if rev_transform else val
+                except (TypeError, ValueError):
+                    converted[key] = val
+                continue
+        converted[key] = val
+    return converted
+
+
 EXCLUDED_DOMAINS = {
     "input_boolean", "input_number", "input_select", "input_button",
     "sun", "zone", "person", "update", "weather",
@@ -887,18 +909,9 @@ def ha_status(area: str = "", domain: str = "") -> dict:
             for attr_name in whitelist:
                 val = attrs.get(attr_name)
                 if val is not None:
-                    # 将 REST API 属性名转换为服务参数名
-                    if attr_name in _ATTR_SVC_MAP:
-                        svc_domain, svc_name, rev_transform = _ATTR_SVC_MAP[attr_name]
-                        if svc_domain == ent_domain:
-                            try:
-                                props[svc_name] = rev_transform(val) if rev_transform else val
-                            except (TypeError, ValueError):
-                                props[attr_name] = val
-                            continue
                     props[attr_name] = val
             if props:
-                entry["properties"] = props
+                entry["properties"] = _convert_attrs_to_svc_names(props, ent_domain)
 
         if ent_domain == "scene":
             result_scenes.append(entry)
@@ -1104,7 +1117,7 @@ def ha_control(entity_id: str, action: str = "", service: str = "",
                 "success": True,
                 "entity_id": entity_id,
                 "state": target.get("state", ""),
-                "attributes": target.get("attributes", {}),
+                "attributes": _convert_attrs_to_svc_names(target.get("attributes", {}), domain),
             }
 
         state_resp = _requests.get(
@@ -1118,7 +1131,7 @@ def ha_control(entity_id: str, action: str = "", service: str = "",
                 "success": True,
                 "entity_id": entity_id,
                 "state": target.get("state", ""),
-                "attributes": target.get("attributes", {}),
+                "attributes": _convert_attrs_to_svc_names(target.get("attributes", {}), domain),
             }
 
         return {"success": True, "entity_id": entity_id, "state": "unknown"}
@@ -1755,7 +1768,7 @@ def ha_scene(action: str, name: str = "", config: dict = None, confirm: bool = F
                     # scene 只能设置可写属性，排除 current_*/supported_*/*_modes/*_list/*_class 等只读属性
                     _writable = {
                         "climate": ("temperature", "target_temp_high", "target_temp_low", "hvac_mode", "preset_mode", "fan_mode", "swing_mode", "swing_horizontal_mode"),
-                        "light": ("brightness", "color_mode", "color_temp_kelvin"),
+                        "light": ("brightness", "color_mode", "color_temp_kelvin", "effect"),
                         "fan": ("percentage", "direction", "preset_mode"),
                         "cover": ("current_position", "current_tilt_position"),
                         "humidifier": ("humidity", "mode"),
