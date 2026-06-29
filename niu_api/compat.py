@@ -2006,6 +2006,7 @@ update=3|用户讨论了XX方案;11|工具执行了YY操作
                     logger.info(f"[Tidy] context-manager result: {cm_result[:200]}")
 
                     # 游标自动推进：成功→推进到范围内仍存在的最后一条，overflow→不动
+                    fresh_ids = None
                     if _is_subagent_overflow(cm_result):
                         overflow_info = _extract_overflow_info(cm_result)
                         logger.warning(f"[Tidy] context-manager overflow: {overflow_info.get('turns_completed', 0)} turns")
@@ -2019,9 +2020,9 @@ update=3|用户讨论了XX方案;11|工具执行了YY操作
                         new_compress_id = surviving[-1] if surviving else last_compress_id
                         logger.info(f"[Tidy] Compress cursor auto-advanced to: {new_compress_id}")
 
-                    # 校验游标（防御性：确保游标指向存在的消息）
+                    # 校验游标（防御性：主要应对 overflow 路径 new_compress_id=last_compress_id 可能失效）
                     if new_compress_id:
-                        if 'fresh_ids' not in dir():
+                        if fresh_ids is None:
                             fresh_msgs = await store.get_messages()
                             fresh_ids = {getattr(m, "id", "") for m in fresh_msgs}
                         if new_compress_id not in fresh_ids:
