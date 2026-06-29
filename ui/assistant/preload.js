@@ -1,6 +1,23 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
+// 同步读取睡眠触发时间配置（preload 在页面脚本前执行，零时序风险）
+let _idleTimeoutMs = 5 * 60 * 1000;  // 默认 5 分钟
+try {
+  const fs = require('fs');
+  const path = require('path');
+  const userConfigPath = path.join(__dirname, '..', '..', 'config', 'user-config.json');
+  const raw = fs.readFileSync(userConfigPath, 'utf-8');
+  const cfg = JSON.parse(raw);
+  const minutes = cfg?.context?.sleepTriggerMinutes;
+  if (typeof minutes === 'number' && minutes > 0) {
+    _idleTimeoutMs = minutes * 60 * 1000;
+  }
+} catch (e) {
+  // 读取失败用默认值
+}
+
 contextBridge.exposeInMainWorld('electronAPI', {
+  IDLE_TIMEOUT: _idleTimeoutMs,  // 睡眠触发时间（毫秒），从 user-config.json 读取
   // 移动小女孩窗口
   setPosition: (x, y) => ipcRenderer.send('set-spirit-position', { x, y }),
   
