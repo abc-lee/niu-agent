@@ -300,6 +300,28 @@ def _normalize_scene_entities(entities: dict) -> dict:
     return normalized
 
 
+def _get_writable_attrs(domain: str, services_cache: dict = None) -> tuple:
+    """从 services_cache 推断指定域的可写属性名（服务参数名）。
+
+    返回的服务参数名需要在 snapshot 中通过 _svc_to_attr 映射为 REST API 属性名。
+    当 services_cache 不可用时返回空 tuple（调用方应记录警告）。
+    """
+    if services_cache is None:
+        services_cache = _read_services_cache()
+    domain_services = services_cache.get(domain, {})
+    if not domain_services:
+        return ()
+    # 排除动作性服务的非状态参数（这些不是可快照的属性）
+    _ACTION_ONLY_FIELDS = {"command", "params", "message", "text", "url"}
+    writable = set()
+    for svc_name, svc_info in domain_services.items():
+        fields = svc_info.get("fields", {})
+        for fname, finfo in fields.items():
+            if fname != "entity_id" and not fname.startswith("additional_") and fname not in _ACTION_ONLY_FIELDS:
+                writable.add(fname)
+    return tuple(sorted(writable))
+
+
 # 反向映射：REST API 状态属性名 → 服务参数名
 _ATTR_SVC_MAP = {}
 for _k, _v in SVC_ATTR_MAP.items():
@@ -1770,6 +1792,7 @@ def ha_scene(action: str, name: str = "", config: dict = None, confirm: bool = F
             if "." not in eid or "/" in eid or ".." in eid:
                 return {"error": f"无效的 entity_id: '{eid}'，格式应为 'domain.name'"}
         entities_config = {}
+        _services_cache = _read_services_cache()
         for eid in entity_ids:
             try:
                 resp = _requests.get(f"{ha_url}/api/states/{eid}", headers=headers, timeout=10)
@@ -1779,18 +1802,22 @@ def ha_scene(action: str, name: str = "", config: dict = None, confirm: bool = F
                     attrs = state_data.get("attributes", {})
                     ent_domain = eid.split(".")[0]
                     # scene 只能设置可写属性，排除 current_*/supported_*/*_modes/*_list/*_class 等只读属性
-                    _writable = {
-                        "climate": ("temperature", "target_temp_high", "target_temp_low", "hvac_mode", "preset_mode", "fan_mode", "swing_mode", "swing_horizontal_mode"),
-                        "light": ("brightness", "color_mode", "color_temp_kelvin", "effect"),
-                        "fan": ("percentage", "direction", "preset_mode"),
-                        "cover": ("current_position", "current_tilt_position"),
-                        "humidifier": ("humidity", "mode"),
-                        "vacuum": ("fan_speed",),
-                        "media_player": ("source", "volume_level"),
-                    }
-                    for key in _writable.get(ent_domain, ()):
-                        if key in attrs:
-                            entities_config[eid][key] = attrs[key]
+                    writable = _get_writable_attrs(ent_domain, _services_cache)
+                    if not writable and ent_domain not in EXCLUDED_DOMAINS:
+                        print(f"[HA] warning: no writable attrs for {ent_domain}, services_cache may be empty")
+                    # 将服务参数名映射为 REST API 属性名，用于从 attrs 中查找
+                    # 重要假设：不在 SVC_ATTR_MAP 中的服务参数名，假设与 REST API 属性名相同
+                    # 如果 HA 未来引入新的名称差异，必须同步更新 SVC_ATTR_MAP
+                    _svc_to_attr = {}
+                    for param_name in writable:
+                        mapping = SVC_ATTR_MAP.get((ent_domain, param_name))
+                        if mapping:
+                            _svc_to_attr[mapping[0]] = param_name  # rest_attr -> param_name
+                        else:
+                            _svc_to_attr[param_name] = param_name  # 名字相同
+                    for attr_key in _svc_to_attr:
+                        if attr_key in attrs:
+                            entities_config[eid][attr_key] = attrs[attr_key]
             except Exception:
                 pass
         if not entities_config:
