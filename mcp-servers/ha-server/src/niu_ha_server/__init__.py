@@ -402,6 +402,18 @@ OPTIONS_ATTR_MAP = {
     ("select", "option"): "options",
 }
 
+
+def _infer_opts_key(fname: str, attrs: dict) -> str | None:
+    """自动推断选项列表的属性键名，尝试 {fname}_list 和 {fname}s 两种命名约定。"""
+    list_key = f"{fname}_list"
+    if attrs.get(list_key):
+        return list_key
+    plural_key = f"{fname}s"
+    if attrs.get(plural_key):
+        return plural_key
+    return None
+
+
 ACTION_SERVICE_MAP = {
     "turn_on": lambda d: f"{d}/turn_on",
     "turn_off": lambda d: f"{d}/turn_off",
@@ -927,8 +939,7 @@ def ha_status(area: str = "", domain: str = "") -> dict:
                         # 查找选项列表：先查映射表，再自动推断
                         opts_key = OPTIONS_ATTR_MAP.get((ent_domain, fname))
                         if not opts_key:
-                            # 自动推断：尝试 {fname}_list 和 {fname}s
-                            opts_key = f"{fname}_list" if attrs.get(f"{fname}_list") else (f"{fname}s" if attrs.get(f"{fname}s") else None)
+                            opts_key = _infer_opts_key(fname, attrs)
                         if opts_key and attrs.get(opts_key):
                             finfo["options"] = attrs[opts_key]
                     entity_services[act] = svc_def
