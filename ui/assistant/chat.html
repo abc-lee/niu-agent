@@ -1148,6 +1148,9 @@
     // 监听工具调用状态（实时显示 Agent 正在做什么）
     window.electronAPI.onToolStatus((data) => {
       updateStatusBubble(data);
+      // 每个工具调用刷新 token 使用率（_last_prompt_tokens 在 LLM 响应后已实时更新）
+      // 子 Agent 工具调用不触发 onToolStatus（_is_subagent 守卫），不会污染主窗口
+      loadStats();
     });
 
     // 监听入库进度SSE事件（由后端pipeline watcher推送）
