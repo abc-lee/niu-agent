@@ -244,6 +244,7 @@ description: Use when [触发条件，不写工作流]
 status: draft
 created: YYYY-MM-DD
 last_tested: YYYY-MM-DD
+issue_count: 0
 ---
 
 # Skill Name
