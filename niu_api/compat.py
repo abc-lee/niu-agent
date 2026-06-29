@@ -2005,21 +2005,27 @@ update=3|用户讨论了XX方案;11|工具执行了YY操作
                         return {"status": "aborted", "message": "Stopped by user"}
                     logger.info(f"[Tidy] context-manager result: {cm_result[:200]}")
 
-                    # 游标自动推进：成功→推进到增量范围末尾，overflow→不动
+                    # 游标自动推进：成功→推进到范围内仍存在的最后一条，overflow→不动
                     if _is_subagent_overflow(cm_result):
                         overflow_info = _extract_overflow_info(cm_result)
                         logger.warning(f"[Tidy] context-manager overflow: {overflow_info.get('turns_completed', 0)} turns")
                         # overflow 时游标不动
                     else:
-                        new_compress_id = compress_msg_ids[-1] if compress_msg_ids else last_compress_id
-                        logger.info(f"[Tidy] Compress cursor auto-advanced to: {new_compress_id}")
-
-                    # 校验游标
-                    if new_compress_id:
+                        # 不盲取 compress_msg_ids[-1]（可能被 context-manager 删除），
+                        # 而是重新读取 DB，取范围内仍存在的最后一条
                         fresh_msgs = await store.get_messages()
                         fresh_ids = {getattr(m, "id", "") for m in fresh_msgs}
+                        surviving = [mid for mid in compress_msg_ids if mid in fresh_ids]
+                        new_compress_id = surviving[-1] if surviving else last_compress_id
+                        logger.info(f"[Tidy] Compress cursor auto-advanced to: {new_compress_id}")
+
+                    # 校验游标（防御性：确保游标指向存在的消息）
+                    if new_compress_id:
+                        if 'fresh_ids' not in dir():
+                            fresh_msgs = await store.get_messages()
+                            fresh_ids = {getattr(m, "id", "") for m in fresh_msgs}
                         if new_compress_id not in fresh_ids:
-                            logger.warning(f"[Tidy] Compress cursor {new_compress_id} deleted, reverting to {last_compress_id}")
+                            logger.warning(f"[Tidy] Compress cursor {new_compress_id} not in DB, reverting to {last_compress_id}")
                             new_compress_id = last_compress_id
                             if new_compress_id and new_compress_id not in fresh_ids:
                                 new_compress_id = ""
