@@ -285,7 +285,7 @@ async def lifespan(app: FastAPI):
         },
         {
             "name": "weekly-report-reminder",
-            "content": "提醒用户本周工作已汇总，询问是否需要生成周报。如需生成，请调用 journal-agent",
+            "content": "请调用 journal-agent 生成本周周报，整理后展示给用户确认是否需要修改",
             "cron_expr": "0 9 * * 1",
             "hour": 9,
             "dow": 1,
