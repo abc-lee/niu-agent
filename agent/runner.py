@@ -1530,6 +1530,8 @@ REMINDER: 禁止调用任何工具，直接在回复中输出 keep=/update=/curs
                 lines.append(f"   路径: ~/.niu/skills/{display_name}.md")
                 if description.startswith("[草稿]"):
                     lines.append(f"   ⚠️ 草稿skill — 使用后反馈效果")
+                elif description.startswith("[待观察]"):
+                    lines.append(f"   ⚠️ 待观察skill — 此skill有历史问题，使用后必须反馈效果（成功或失败）")
             added += 1
 
         if added == 0:
