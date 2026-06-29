@@ -384,8 +384,14 @@ def _convert_attrs_to_svc_names(attrs: dict, domain: str) -> dict:
 
 
 EXCLUDED_DOMAINS = {
+    # HA 辅助元素
     "input_boolean", "input_number", "input_select", "input_button",
+    # 系统域
     "sun", "zone", "person", "update", "weather",
+    "persistent_notification", "tag",
+    "cloud", "system_health", "hassio",
+    # HA 内部实体
+    "conversation", "homeassistant", "stt", "tts", "wake_word",
 }
 
 # 服务参数 → 状态属性中的选项列表键名映射
