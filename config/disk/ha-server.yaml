@@ -50,7 +50,7 @@ tools:
         description: "兼容动作名，如 turn_on/turn_off/toggle/set_brightness/set_temperature。优先使用 service 参数"
       - name: service
         type: string
-        description: "HA 服务名（domain.service），如 vacuum.start、fan.set_preset_mode、climate.set_hvac_mode。ha_status 返回的 services 列表中可查"
+        description: "HA 服务名（domain.service），如 vacuum.start、fan.set_preset_mode、climate.set_hvac_mode。ha_status(entity_id=...) 返回的 services 列表中可查（精简模式不返回 services，需先用 entity_id 查询）"
       - name: value
         type: number
         description: "亮度 0-100 或目标温度（仅 action 兼容模式）"
@@ -152,7 +152,7 @@ tools:
   - name: ha_scene
     category: write
     short: "管理场景"
-    long: "管理场景：创建/查看/修改/删除/激活/快照。场景是多设备瞬间切换到预设状态。有序列有延时用 ha_script，条件触发用 ha_automation。entities 参数名使用 ha_status services 字段中的服务参数名（如 brightness_pct），程序自动转换为 HA 内部格式"
+    long: "管理场景：创建/查看/修改/删除/激活/快照。场景是多设备瞬间切换到预设状态。有序列有延时用 ha_script，条件触发用 ha_automation。entities 参数名使用 ha_status(entity_id=...) 返回的 services 字段中的服务参数名（如 brightness_pct，精简模式不返回 services，需先用 entity_id 查询），程序自动转换为 HA 内部格式"
     parameters:
       - name: action
         position: 1
