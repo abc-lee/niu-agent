@@ -494,8 +494,11 @@ class SkillSync:
                 return False
 
             # 标记草稿 skill（fm 已在上方由 parse_yaml_frontmatter 解析）
-            if isinstance(fm, dict) and fm.get("status") == "draft":
+            status = fm.get("status") if isinstance(fm, dict) else None
+            if status == "draft":
                 description = f"[草稿] {description}"
+            elif status == "deprecated":
+                description = f"[待观察] {description}"
 
             # Build triggers/tags for enriched description
             triggers = extract_triggers(content, fm)
