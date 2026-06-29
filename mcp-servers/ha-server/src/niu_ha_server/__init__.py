@@ -2161,7 +2161,7 @@ TOOL_SCHEMAS = {
     },
     "ha_control": {
         "name": "ha_control",
-        "description": "控制智能家居设备。两种调用方式：1) service + service_data（推荐，直接调用 HA 服务，如 service='start' 或 service='set_fan_speed' + service_data={'fan_speed': 'max'}）；2) action + value（兼容旧方式，如 action='turn_on'）。entity_id 从 ha_status 获取，可用 service 从 ha_status 返回的 actions 列表查看。有参数的服务其参数定义在 ha_status 返回的 services 字段中。service 和 action 至少提供一个。",
+        "description": "控制智能家居设备。两种调用方式：1) service + service_data（推荐，直接调用 HA 服务，如 service='start' 或 service='set_fan_speed' + service_data={'fan_speed': 'max'}）；2) action + value（兼容旧方式，如 action='turn_on'）。entity_id 从 ha_status 获取，可用 service 从 ha_status 返回的 actions 列表查看。有参数的服务其参数定义在 ha_status(entity_id=...) 返回的 services 字段中（精简模式不返回 services，需先用 entity_id 查询）。service 和 action 至少提供一个。",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -2169,7 +2169,7 @@ TOOL_SCHEMAS = {
                 "action": {"type": "string", "description": "（兼容）动作名，如 turn_on/turn_off/toggle/set_brightness。与 service 互斥，优先使用 service"},
                 "service": {"type": "string", "description": "HA 服务名，如 start/pause/stop/return_to_base/set_fan_speed。从 ha_status 的 actions 列表获取。与 action 互斥，优先使用此参数"},
                 "value": {"type": "number", "description": "（兼容）亮度 0-100 或目标温度。仅在使用 action 模式时有效"},
-                "service_data": {"type": "object", "description": "服务参数键值对，如 {'fan_speed': 'max'} 或 {'temperature': 26}。参数定义见 ha_status 的 services 字段"},
+                "service_data": {"type": "object", "description": "服务参数键值对，如 {'fan_speed': 'max'} 或 {'temperature': 26}。参数定义见 ha_status(entity_id=...) 的 services 字段（精简模式不返回 services，需先用 entity_id 查询）"},
             },
             "required": ["entity_id"],
         },
@@ -2240,7 +2240,7 @@ TOOL_SCHEMAS = {
     },
     "ha_scene": {
         "name": "ha_scene",
-        "description": "管理场景：创建/查看/修改(update)/删除/激活/快照场景。场景是多设备瞬间切换到预设状态（如'阅读模式'、'晚安模式'）。有序列有延时用 ha_script，条件触发用 ha_automation。entities 参数名使用 ha_status services 字段中的服务参数名（如 brightness_pct），程序自动转换",
+        "description": "管理场景：创建/查看/修改(update)/删除/激活/快照场景。场景是多设备瞬间切换到预设状态（如'阅读模式'、'晚安模式'）。有序列有延时用 ha_script，条件触发用 ha_automation。entities 参数名使用 ha_status(entity_id=...) 返回的 services 字段中的服务参数名（如 brightness_pct，精简模式不返回 services，需先用 entity_id 查询），程序自动转换",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -2252,7 +2252,7 @@ TOOL_SCHEMAS = {
                 "name": {"type": "string", "description": "场景名称"},
                 "config": {
                     "type": "object",
-                    "description": "场景配置 JSON。entities: 设备目标状态，键为 entity_id，值为目标状态字典。参数名使用 ha_status services 字段中的服务参数名（如 brightness_pct、position、tilt_position），程序自动转换为 HA 内部格式",
+                    "description": "场景配置 JSON。entities: 设备目标状态，键为 entity_id，值为目标状态字典。参数名使用 ha_status(entity_id=...) 返回的 services 字段中的服务参数名（如 brightness_pct、position、tilt_position，精简模式不返回 services，需先用 entity_id 查询），程序自动转换为 HA 内部格式",
                 },
                 "confirm": {"type": "boolean", "description": "删除确认"},
                 "detail": {"type": "boolean", "description": "list 时是否返回完整配置"},
