@@ -420,21 +420,6 @@ def _infer_opts_key(fname: str, attrs: dict) -> str | None:
     return None
 
 
-ACTION_SERVICE_MAP = {
-    "turn_on": lambda d: f"{d}/turn_on",
-    "turn_off": lambda d: f"{d}/turn_off",
-    "toggle": lambda d: f"{d}/toggle",
-    "activate": lambda d: "scene/turn_on",
-    "run": lambda d: "script/turn_on",
-    "trigger": lambda d: "automation/trigger",
-    "set_brightness": lambda d: "light/turn_on",
-    "set_temperature": lambda d: "climate/set_temperature",
-    "open": lambda d: "cover/open_cover",
-    "close": lambda d: "cover/close_cover",
-    "lock": lambda d: "lock/lock",
-    "unlock": lambda d: "lock/unlock",
-}
-
 # 向后兼容：旧 action 参数到 service 的映射
 ACTION_COMPAT_MAP = {
     "turn_on": "turn_on",
