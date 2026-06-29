@@ -388,6 +388,20 @@ EXCLUDED_DOMAINS = {
     "sun", "zone", "person", "update", "weather",
 }
 
+# 服务参数 → 状态属性中的选项列表键名映射
+# 自动推断规则：先查此映射，未命中则尝试 {fname}_list 和 {fname}s
+OPTIONS_ATTR_MAP = {
+    ("vacuum", "fan_speed"): "fan_speed_list",
+    ("climate", "hvac_mode"): "hvac_modes",
+    ("climate", "preset_mode"): "preset_modes",
+    ("climate", "fan_mode"): "fan_modes",
+    ("climate", "swing_mode"): "swing_modes",
+    ("humidifier", "mode"): "available_modes",
+    ("fan", "preset_mode"): "preset_modes",
+    ("media_player", "source"): "source_list",
+    ("select", "option"): "options",
+}
+
 ACTION_SERVICE_MAP = {
     "turn_on": lambda d: f"{d}/turn_on",
     "turn_off": lambda d: f"{d}/turn_off",
@@ -910,22 +924,13 @@ def ha_status(area: str = "", domain: str = "") -> dict:
                 if fields:
                     svc_def = {"fields": {k: dict(v) for k, v in fields.items()}}
                     for fname, finfo in svc_def["fields"].items():
-                        if ent_domain == "vacuum" and fname == "fan_speed" and attrs.get("fan_speed_list"):
-                            finfo["options"] = attrs["fan_speed_list"]
-                        elif ent_domain == "climate" and fname == "hvac_mode" and attrs.get("hvac_modes"):
-                            finfo["options"] = attrs["hvac_modes"]
-                        elif ent_domain == "climate" and fname == "preset_mode" and attrs.get("preset_modes"):
-                            finfo["options"] = attrs["preset_modes"]
-                        elif ent_domain == "climate" and fname == "fan_mode" and attrs.get("fan_modes"):
-                            finfo["options"] = attrs["fan_modes"]
-                        elif ent_domain == "climate" and fname == "swing_mode" and attrs.get("swing_modes"):
-                            finfo["options"] = attrs["swing_modes"]
-                        elif ent_domain == "humidifier" and fname == "mode" and attrs.get("available_modes"):
-                            finfo["options"] = attrs["available_modes"]
-                        elif ent_domain == "fan" and fname == "preset_mode" and attrs.get("preset_modes"):
-                            finfo["options"] = attrs["preset_modes"]
-                        elif ent_domain == "media_player" and fname == "source" and attrs.get("source_list"):
-                            finfo["options"] = attrs["source_list"]
+                        # 查找选项列表：先查映射表，再自动推断
+                        opts_key = OPTIONS_ATTR_MAP.get((ent_domain, fname))
+                        if not opts_key:
+                            # 自动推断：尝试 {fname}_list 和 {fname}s
+                            opts_key = f"{fname}_list" if attrs.get(f"{fname}_list") else (f"{fname}s" if attrs.get(f"{fname}s") else None)
+                        if opts_key and attrs.get(opts_key):
+                            finfo["options"] = attrs[opts_key]
                     entity_services[act] = svc_def
         if entity_services:
             entry["services"] = entity_services
