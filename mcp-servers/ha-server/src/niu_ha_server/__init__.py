@@ -205,7 +205,12 @@ DOMAIN_OVERRIDES = {
     "automation": {"type": "自动化", "actions": ["trigger", "turn_on", "turn_off"]},
 }
 
-ATTR_WHITELIST = {
+# 通用属性：对未知域提取这些属性（如果存在）
+# 注意：不含 "option"（当前选中值已作为 state 返回，冗余）
+ATTR_COMMON = {"options", "min", "max", "step", "mode", "available_modes",
+               "unit_of_measurement", "device_class", "state_class"}
+
+ATTR_OVERRIDES = {
     "climate": [
         "current_temperature", "temperature", "target_temp_high",
         "target_temp_low", "indoor_temperature", "indoor_humidity",
@@ -903,15 +908,23 @@ def ha_status(area: str = "", domain: str = "") -> dict:
         if entity_services:
             entry["services"] = entity_services
         # Extract useful properties from attributes
-        whitelist = ATTR_WHITELIST.get(ent_domain, [])
-        if whitelist:
+        override_list = ATTR_OVERRIDES.get(ent_domain)
+        if override_list is not None:
+            # 有显式覆盖配置的域：只提取列出的属性
             props = {}
-            for attr_name in whitelist:
+            for attr_name in override_list:
                 val = attrs.get(attr_name)
                 if val is not None:
                     props[attr_name] = val
-            if props:
-                entry["properties"] = _convert_attrs_to_svc_names(props, ent_domain)
+        else:
+            # 未知域：提取通用属性
+            props = {}
+            for attr_name in ATTR_COMMON:
+                val = attrs.get(attr_name)
+                if val is not None:
+                    props[attr_name] = val
+        if props:
+            entry["properties"] = _convert_attrs_to_svc_names(props, ent_domain)
 
         if ent_domain == "scene":
             result_scenes.append(entry)
