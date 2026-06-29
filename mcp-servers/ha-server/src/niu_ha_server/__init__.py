@@ -2148,12 +2148,13 @@ TOOL_SCHEMAS = {
     },
     "ha_status": {
         "name": "ha_status",
-        "description": "查询智能家居设备、场景、自动化的当前状态。首次使用或需要了解可用设备时调用。返回按区域分类的设备列表，包含每个设备的可用操作及关键属性（温度、湿度等）。调用 ha_control 前建议先调用此工具确认设备状态和可用操作。可按 area 或 domain 过滤减少返回量。",
+        "description": "查询智能家居设备、场景、自动化的当前状态。默认返回所有设备的精简列表（name/area/entity_id/type/state/actions），用于浏览全局设备。传入 entity_id 返回该设备的完整信息（含 services 服务参数定义和 properties 状态属性）。调用带参数的服务（如 set_temperature/set_fan_mode/select_option）前，先用 entity_id 查询获取参数名和可选值。可按 area 或 domain 过滤减少返回量。",
         "input_schema": {
             "type": "object",
             "properties": {
-                "area": {"type": "string", "description": "按区域过滤，如 '书房'"},
+                "area": {"type": "string", "description": "按区域过滤（模糊匹配），如 '书房'"},
                 "domain": {"type": "string", "description": "按设备类型过滤，如 'light'、'climate'"},
+                "entity_id": {"type": "string", "description": "查询单个设备的完整信息（含服务参数定义）。传入时只返回该设备，含 services 和 properties 字段"},
             },
             "required": [],
         },
