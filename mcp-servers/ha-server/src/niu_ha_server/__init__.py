@@ -841,7 +841,7 @@ def _get_entity_actions(domain: str, attrs: dict, services_cache: dict) -> list:
 
 # --- ha_status ---
 
-def ha_status(area: str = "", domain: str = "") -> dict:
+def ha_status(area: str = "", domain: str = "", entity_id: str = "") -> dict:
     """查询智能家居设备、场景、自动化的当前状态。"""
     config = _read_config()
     services_cache = _read_services_cache()
@@ -897,6 +897,8 @@ def ha_status(area: str = "", domain: str = "") -> dict:
             continue
         if domain and ent_domain != domain:
             continue
+        if entity_id and eid != entity_id:
+            continue
 
         info = DOMAIN_OVERRIDES.get(ent_domain)
 
@@ -918,42 +920,45 @@ def ha_status(area: str = "", domain: str = "") -> dict:
             "state": state,
             "actions": _get_entity_actions(ent_domain, attrs, services_cache),
         }
-        # 添加有参数的服务定义（用实体属性覆盖 domain 级别选项）
-        entity_services = {}
-        domain_svcs = services_cache.get(ent_domain, {})
-        for act in entry["actions"]:
-            if act in domain_svcs:
-                fields = domain_svcs[act].get("fields", {})
-                if fields:
-                    svc_def = {"fields": {k: dict(v) for k, v in fields.items()}}
-                    for fname, finfo in svc_def["fields"].items():
-                        # 查找选项列表：先查映射表，再自动推断
-                        opts_key = OPTIONS_ATTR_MAP.get((ent_domain, fname))
-                        if not opts_key:
-                            opts_key = _infer_opts_key(fname, attrs)
-                        if opts_key and attrs.get(opts_key):
-                            finfo["options"] = attrs[opts_key]
-                    entity_services[act] = svc_def
-        if entity_services:
-            entry["services"] = entity_services
-        # Extract useful properties from attributes
-        override_list = ATTR_OVERRIDES.get(ent_domain)
-        if override_list is not None:
-            # 有显式覆盖配置的域：只提取列出的属性
-            props = {}
-            for attr_name in override_list:
-                val = attrs.get(attr_name)
-                if val is not None:
-                    props[attr_name] = val
-        else:
-            # 未知域：提取通用属性
-            props = {}
-            for attr_name in ATTR_COMMON:
-                val = attrs.get(attr_name)
-                if val is not None:
-                    props[attr_name] = val
-        if props:
-            entry["properties"] = _convert_attrs_to_svc_names(props, ent_domain)
+        # 单设备全量模式：添加服务参数定义（精简模式跳过以减少输出体积）
+        if entity_id:
+            entity_services = {}
+            domain_svcs = services_cache.get(ent_domain, {})
+            for act in entry["actions"]:
+                if act in domain_svcs:
+                    fields = domain_svcs[act].get("fields", {})
+                    if fields:
+                        svc_def = {"fields": {k: dict(v) for k, v in fields.items()}}
+                        for fname, finfo in svc_def["fields"].items():
+                            # 查找选项列表：先查映射表，再自动推断
+                            opts_key = OPTIONS_ATTR_MAP.get((ent_domain, fname))
+                            if not opts_key:
+                                opts_key = _infer_opts_key(fname, attrs)
+                            if opts_key and attrs.get(opts_key):
+                                finfo["options"] = attrs[opts_key]
+                        entity_services[act] = svc_def
+            if entity_services:
+                entry["services"] = entity_services
+        # 单设备全量模式：提取状态属性（精简模式跳过）
+        if entity_id:
+            # Extract useful properties from attributes
+            override_list = ATTR_OVERRIDES.get(ent_domain)
+            if override_list is not None:
+                # 有显式覆盖配置的域：只提取列出的属性
+                props = {}
+                for attr_name in override_list:
+                    val = attrs.get(attr_name)
+                    if val is not None:
+                        props[attr_name] = val
+            else:
+                # 未知域：提取通用属性
+                props = {}
+                for attr_name in ATTR_COMMON:
+                    val = attrs.get(attr_name)
+                    if val is not None:
+                        props[attr_name] = val
+            if props:
+                entry["properties"] = _convert_attrs_to_svc_names(props, ent_domain)
 
         if ent_domain == "scene":
             result_scenes.append(entry)
