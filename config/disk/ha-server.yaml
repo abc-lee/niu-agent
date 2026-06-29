@@ -18,8 +18,8 @@ tools:
 
   - name: ha_status
     category: read
-    short: "查询设备状态"
-    long: "查询智能家居设备、场景、自动化的当前状态。返回按区域分类的设备列表，含可用操作及关键属性（温度、湿度等）"
+    short: "查询设备状态（默认精简，entity_id查全量）"
+    long: "查询智能家居设备、场景、自动化的当前状态。默认返回所有设备的精简列表（name/area/entity_id/type/state/actions）。传入 entity_id 返回该设备完整信息（含 services 服务参数定义和 properties 状态属性）。调用带参数服务前先用 entity_id 查询获取参数详情。"
     parameters:
       - name: area
         flag: area
@@ -29,6 +29,10 @@ tools:
         flag: domain
         type: string
         description: "按设备类型过滤，如 light、climate"
+      - name: entity_id
+        flag: entity_id
+        type: string
+        description: "查询单个设备的完整信息（含服务参数定义）。传入时只返回该设备"
 
   - name: ha_control
     category: write
