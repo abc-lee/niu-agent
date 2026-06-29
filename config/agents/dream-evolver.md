@@ -151,6 +151,8 @@ lightrag_get_graph(entity_name="FastAPI", depth=1)
 - ✦ **skill 被使用且成功**：assistant 消息中的 tool_calls 包含 `read` 且参数路径包含 skills/ 目录，且后续消息显示任务成功
 - ✦ **skill 被使用但失败**：assistant 消息中的 tool_calls 包含 `read` 且参数路径包含 skills/ 目录，但后续消息显示任务失败
 - ✦ **有效规则没被遵守**：skill 中的规则是正确的，但对话中的 assistant 行为没有遵循
+- ✦ **待观察 skill 的成功反馈**：assistant 消息中包含"待观察 skill [name] 本次使用成功"或类似表述——识别后走步骤 C4 成功路径（deprecated → active 复活）
+- ✦ **待观察 skill 的失败反馈**：assistant 消息中包含"待观察 skill [name] 本次使用失败"或类似表述——识别后走步骤 C5 删除路径
 
 不需要主动扫描 skill 目录，只关注消息中呈现的信号。
 
@@ -196,14 +198,24 @@ lightrag_get_graph(entity_name="FastAPI", depth=1)
 
 | 信号 | 操作 |
 |------|------|
-| assistant 消息中明确反馈 skill 成功 | 如果 skill 状态是 draft → 改为 active |
-| assistant 消息中明确反馈 skill 有问题 | 进入步骤 C2 判断 |
+| assistant 消息中明确反馈 skill 成功 | 进入步骤 C4 成功路径（按当前 status 处理） |
+| assistant 消息中明确反馈 skill 有问题 | 进入步骤 C2 判断失败原因，再走 C4 失败路径 |
 | 重复模式（出现 2 次以上）且无对应 skill | 创建新 skill（草稿） |
 | 多轮失败后找到方案 | 创建新 skill（草稿），记录坑点 |
-| skill 被使用且任务成功（无明确反馈时） | 如果 skill 状态是 draft → 改为 active |
-| skill 被使用但任务失败（无明确反馈时） | 进入步骤 C2 判断 |
+| skill 被使用且任务成功（无明确反馈时） | 进入步骤 C4 成功路径（draft 状态转 active，active 状态 issue_count-=1） |
+| skill 被使用但任务失败（无明确反馈时） | 进入步骤 C2 判断，再走 C4 失败路径 |
 | 有效规则没被遵守 | 不改正文，在"执行提醒"区域添加提醒 |
 | skill 被读取但未被引用 | 视为"未使用"，不触发任何操作 |
+
+**降级机制速查**（步骤 C4 依据）：
+| 当前 status | 反馈类型 | 操作 |
+|-------------|---------|------|
+| draft | 成功 | 改 status=active，issue_count=0 |
+| draft | 失败 | 按 C2 修改正文（draft 阶段不计 issue_count） |
+| active | 成功 | issue_count-=1（最低 0） |
+| active | 失败 | issue_count+=1；若 ≥3 改 status=deprecated |
+| deprecated | 成功 | 改 status=active，issue_count=0（复活） |
+| deprecated | 失败 | 执行删除操作（步骤 C5） |
 
 识别方法：tool 消息中 `read` 的参数路径包含 skills/ → 说明正在读取 skill 文件；读取 skill 后的 assistant 回复和后续 tool 结果反映任务是否成功。如果 skill 被读取但 assistant 的后续操作中没有引用该 skill 的内容，说明 skill 被跳过了，不应视为"使用"。
 
@@ -260,15 +272,47 @@ last_tested: YYYY-MM-DD
 2. `edit(file_path, old_string, new_string)` 修改，old_string 必须在文件中唯一匹配
 3. 修改正文时更新 `last_tested` 日期
 
-**验证草稿 skill：**
+**验证草稿 skill / 成功反馈路径（步骤 C4 成功）：**
 1. `read` 读取目标 skill 文件
-2. 如果信号表明该 skill 被使用且任务成功 → `edit` 把 `status: draft` 改为 `status: active`，同时删除 When to Use 区域下的 `> ⚠️ 此 skill 为草稿状态，使用后请反馈效果` 提示行
-3. 如果信号表明该 skill 被使用但任务失败 → 按步骤 C2 处理
+2. 根据 frontmatter 中的 `status` 决定操作：
+   - **status=draft** → `edit` 把 `status: draft` 改为 `status: active`，确保 `issue_count: 0` 存在，同时删除 When to Use 区域下的 `> ⚠️ 此 skill 为草稿状态，使用后请反馈效果` 提示行
+   - **status=active** → `edit` 把 `issue_count` 减 1（最低 0）。若当前值已是 0 则不改
+   - **status=deprecated** → `edit` 把 `status: deprecated` 改为 `status: active`，`issue_count` 改为 `0`（复活）
+3. 更新 `last_tested` 日期
+
+**失败反馈路径（步骤 C4 失败）：**
+1. `read` 读取目标 skill 文件
+2. 先按步骤 C2 判断失败原因并修改正文（如需要）
+3. 根据 frontmatter 中的 `status` 决定后续：
+   - **status=draft** → 不改 status（draft 阶段不计 issue_count，只改正文）
+   - **status=active** → `edit` 把 `issue_count` 加 1。若加 1 后 ≥3，同时把 `status: active` 改为 `status: deprecated`
+   - **status=deprecated** → 执行步骤 C5 删除操作
+4. 更新 `last_tested` 日期
 
 **添加执行提醒：**
 1. `read` 读取目标 skill 文件
 2. `edit` 在 `<!-- 执行提醒 -->` 下方添加一条简短提醒，重申已有规则（不引入新规则）
 3. 如果提醒已超过 5 条，合并去重
+
+**删除 skill（步骤 C5 — 仅 deprecated 状态 + 失败反馈时执行）：**
+1. `read` 读取目标 skill 文件，确认 `status: deprecated`（非 deprecated 禁止删除）
+2. 用 `bash` 工具执行以下命令（将 `<skill-name>` 替换为实际 skill 文件名，不含 .md 后缀）：
+   ```bash
+   mkdir -p ~/.niu/skills/.trash && mv ~/.niu/skills/<skill-name>.md ~/.niu/skills/.trash/<skill-name>.$(date +%Y%m%d%H%M%S).md && echo "已移动到 .trash/"
+   ```
+   说明：
+   - `mkdir -p` 确保 .trash 目录存在
+   - `mv` 直接移动文件，失败时 bash 会返回非零退出码，dream-evolver 在报告中说明失败原因
+   - 文件名用 `$(date +%Y%m%d%H%M%S)` 精确到秒，避免同一天多次删除同名 skill 冲突
+   - 不要用 `if/then/else/fi` 嵌套在 `&&` 链中（bash 语法不允许）
+3. **LightRAG 实体清理**：文件移动后，由 SkillSync 清理 LightRAG 实体。注意 watchdog 的 `on_deleted` 在 macOS 上对 `mv` 到子目录**不触发**（产生 FileMovedEvent 而非 FileDeletedEvent），所以清理依赖 `scan_and_sync` 的60秒定时扫描（检测到磁盘文件消失后调 `_delete_skill_from_lightrag`）。最长延迟约60秒，期间主Agent可能仍检索到该 skill 的残留实体——这是可接受的（文件已不在，主Agent即使检索到也读取不到内容）。
+4. 在回复报告中记录删除操作
+
+**安全约束**：
+- 只能删除 `status: deprecated` 的 skill，禁止删除 active/draft 状态的 skill
+- 移动而非 `rm`，保留备份在 `.trash/` 目录
+- 文件名加日期时间戳后缀（`.YYYYMMDDHHMMSS.md`，精确到秒），避免同名 skill 多次删除时冲突
+- 如果 `mv` 失败（如权限问题），不要重试，在报告中说明失败原因
 
 ## Skill 文件规范（知识储备）
 
@@ -280,7 +324,8 @@ last_tested: YYYY-MM-DD
 ---
 name: skill-name-with-hyphens
 description: Use when [触发条件，不写工作流]
-status: draft | active
+status: draft | active | deprecated
+issue_count: 0
 created: YYYY-MM-DD
 last_tested: YYYY-MM-DD
 ---
@@ -289,7 +334,16 @@ last_tested: YYYY-MM-DD
 字段说明：
 - `name`：只含字母、数字、连字符，不用下划线、不用中文、不用空格
 - `description`：以 "Use when..." 开头，**只写触发条件，不写工作流**。包含具体症状和情境，500 字符以内
-- `status`：新建时写 `draft`，验证通过后改为 `active`
+- `status`：三态生命周期
+  - `draft`：新建草稿，使用后根据反馈转 `active` 或继续修改
+  - `active`：正常使用，issue_count 跟踪失败次数
+  - `deprecated`：待观察态，仍注入主 Agent 但加 `[待观察]` 前缀；下次成功反馈复活，下次失败反馈删除
+- `issue_count`：失败反馈累计计数（仅 active 状态有意义）
+  - active 下每次失败反馈 +1；达到 3 时降级为 deprecated
+  - active 下每次成功反馈 -1（最低 0，衰减机制，避免历史问题永久累积）
+  - 降级为 deprecated 时保留当前值
+  - 复活为 active 时清零为 0
+  - 新建 skill 默认为 0
 - `created`：创建日期
 - `last_tested`：最近一次验证或修改日期
 
@@ -404,9 +458,10 @@ description: Use when processing Office documents (Word, Excel, PowerPoint) that
 
 其他工具：
 - `get_messages(session_id)` — session_id 传 `"default"`（但消息已在 prompt 中提供，通常不需要调用）
-- `edit(file_path, old_string, new_string)` — Skill 修改
+- `edit(file_path, old_string, new_string)` — Skill 修改（含 frontmatter status/issue_count 字段修改）
 - `write(file_path, content)` — Skill 创建
 - `read(file_path)` — Skill 读取
+- `bash(command)` — 执行 shell 命令，仅用于步骤 C5 删除 skill（mv 到 .trash/）
 
 ## 游标机制
 
@@ -442,8 +497,9 @@ description: Use when processing Office documents (Word, Excel, PowerPoint) that
   - 时间链创建：{n2} 条关系
   - 脑区关联：{n3} 条关系
   - 脑区归入：{n4} 条关系
-Skill 操作：{n5} 个（新建: {n6}, 修改正文: {n7}, 添加提醒: {n8}, 草稿转正: {n9}）
+Skill 操作：{n5} 个（新建: {n6}, 修改正文: {n7}, 添加提醒: {n8}, 草稿转正: {n9}, 降级: {n10}, 复活: {n11}, 删除: {n12}）
   - 如果阶段C未执行（无信号），报告：Skill 操作：无信号，跳过
+  - 删除操作需列出 skill 名和 .trash/ 中的目标路径
 
 {如有异常或跳过，在此说明原因}
 ```
