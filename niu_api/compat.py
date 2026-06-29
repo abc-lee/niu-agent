@@ -2020,7 +2020,7 @@ update=3|用户讨论了XX方案;11|工具执行了YY操作
                         new_compress_id = surviving[-1] if surviving else last_compress_id
                         logger.info(f"[Tidy] Compress cursor auto-advanced to: {new_compress_id}")
 
-                    # 校验游标（防御性：主要应对 overflow 路径 new_compress_id=last_compress_id 可能失效）
+                    # 校验游标指向的消息仍存在（last_compress_id 可能已失效）
                     if new_compress_id:
                         if fresh_ids is None:
                             fresh_msgs = await store.get_messages()
@@ -2030,7 +2030,6 @@ update=3|用户讨论了XX方案;11|工具执行了YY操作
                             new_compress_id = last_compress_id
                             if new_compress_id and new_compress_id not in fresh_ids:
                                 new_compress_id = ""
-                        # PROTECTED 消息已从 compress_msg_ids 中排除，游标不可能指向 PROTECTED 消息
 
                     compress_integrity_ok = True
                     if protected_ids:
