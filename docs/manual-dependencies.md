@@ -7,33 +7,45 @@
 
 ### 1.1 Python 依赖
 
-**核心依赖（agent 核心）：**
+#### 关键版本约束（铁律）
+
+以下 5 条版本约束来自 `requirements.txt` 顶部，**违反任意一条都会导致崩溃**：
+
+| 序号 | 约束 | 原因 |
+|------|------|------|
+| 1 | `numpy<2` | torch 2.2.2 和 insightface 的 C 扩展用 NumPy 1.x 编译，numpy 2.x 会崩溃 |
+| 2 | `torch==2.2.2` | 项目固定版本，不要升级 |
+| 3 | `transformers>=4.41,<5.0` | transformers 5.x 要求 torch>=2.4，与 torch 2.2.2 不兼容 |
+| 4 | `huggingface_hub<1` | 1.x 与 sentence-transformers 不兼容 |
+| 5 | `lightrag-hku` 必须从 Fork 安装 | `git+https://github.com/abc-lee/LightRAG.git`，不能用 PyPI 版本（缺 PR#2990 修复） |
+
+#### 核心依赖（agent 核心）
 
 | 包名 | 版本 | 用途 |
 |------|------|------|
-| `litellm` | >=1.80.0 | LLM 统一接口 |
-| `mcp` | >=1.0.0 | MCP 协议 |
-| `aiosqlite` | >=0.20.0 | 异步 SQLite |
-| `pydantic` | >=2.0.0 | 数据验证 |
-| `httpx` | >=0.27.0 | HTTP 客户端 |
-| `loguru` | >=0.7.0 | 日志 |
-| `watchdog` | >=3.0.0 | 文件监控 |
+| `litellm` | ==1.88.1 | LLM 统一接口 |
+| `mcp` | ==1.27.1 | MCP 协议 |
+| `aiosqlite` | ==0.22.1 | 异步 SQLite |
+| `pydantic` | ==2.13.4 | 数据验证 |
+| `httpx` | ==0.28.1 | HTTP 客户端 |
+| `loguru` | ==0.7.3 | 日志 |
+| `watchdog` | ==6.0.0 | 文件监控 |
 
 **API 服务依赖（niu_api）：**
 
 | 包名 | 版本 | 用途 |
 |------|------|------|
-| `fastapi` | >=0.115.0 | Web 框架 |
-| `uvicorn` | >=0.34.0 | ASGI 服务器 |
-| `sentence-transformers` | >=2.2.0 | 向量模型加载与推理 |
-| `numpy` | >=1.24.0 | 数值计算 |
+| `fastapi` | ==0.136.1 | Web 框架 |
+| `uvicorn` | ==0.47.0 | ASGI 服务器 |
+| `sentence-transformers` | ==5.5.1 | 向量模型加载与推理 |
+| `numpy` | ==1.26.4 | 数值计算 |
 
 **人脸识别依赖（photo-server）：**
 
 | 包名 | 版本 | 用途 |
 |------|------|------|
 | `insightface` | >=0.7.3 | 人脸识别 |
-| `onnxruntime` | >=1.15.0 | ONNX 推理（CPU） |
+| `onnxruntime` | ==1.23.2 | ONNX 推理（CPU） |
 | `opencv-python-headless` | >=4.8.0 | 图像处理（无 GUI） |
 | `Pillow` | >=10.0.0 | 图像操作 |
 
@@ -43,6 +55,14 @@
 |------|------|------|
 | `onnxruntime-gpu` | CUDA GPU 加速 | 需要 NVIDIA GPU + CUDA |
 | `onnxruntime-directml` | Windows GPU 加速 | 无需 CUDA，但仅 Windows |
+
+**知识图谱依赖（LightRAG fork）：**
+
+```text
+lightrag-hku @ git+https://github.com/abc-lee/LightRAG.git
+```
+
+**禁止使用 PyPI 官方版本**：fork 版本包含 PR#2990 修复（`explore_node` 方向/边类型过滤，避免高连接度实体输出爆炸），PyPI 官方版缺此修复。安装命令：`pip install git+https://github.com/abc-lee/LightRAG.git`。
 
 ### 1.2 GPU 支持策略
 
