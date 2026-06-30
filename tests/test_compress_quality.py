@@ -2,6 +2,7 @@
 import json
 from unittest.mock import patch
 
+from agent.generic.llmcore import MockResponse
 from agent.subagent import (
     _read_compress_target_tokens,
     _read_max_output_tokens,
@@ -108,9 +109,6 @@ cursor=30"""
     assert "keep=1,5,15,30" in result
     assert "cursor=30" in result
     assert "会话单元" not in result
-
-
-from agent.generic.llmcore import MockResponse
 
 
 def test_mock_response_has_finish_reason_default():
