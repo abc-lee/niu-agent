@@ -66,15 +66,19 @@ done
 3. 名称填 `agent-test`（或其他标识），复制 Token
 4. **Token 只显示一次，必须立即保存**
 
-设置环境变量：
-```bash
-export HA_URL=http://localhost:8123
-export HA_TOKEN=<复制的Token>
+调用 `ha_setup` 工具传入 `ha_url` 和 `ha_token` 参数，系统会持久化到 `~/.niu/ha-config.json`：
+
 ```
+/ha/ha_setup --ha-url http://localhost:8123 --ha-token <复制的Token>
+```
+
+> **注意**：`ha_setup` 不读取 `os.environ`/`HA_URL`/`HA_TOKEN` 环境变量。配置仅通过工具参数写入 `~/.niu/ha-config.json`。后续无参数调用 `ha_setup` 可查询当前连接状态。
 
 ## 2. 模拟实体配置
 
 HA 的 `configuration.yaml` 可以定义模拟实体用于测试，无需真实硬件：
+
+> **注意**：`input_boolean`/`input_number`/`input_select`/`input_button` 等模拟实体仅供 REST API 测试（`/api/states`），`ha_status` 工具会通过 `EXCLUDED_DOMAINS` 过滤掉这些 domain，永远不返回。真实设备接入后请用真实 domain（`light`/`climate`/`sensor` 等）。
 
 ```yaml
 # ~/ha-config/configuration.yaml
@@ -585,7 +589,7 @@ ha-server 提供 8 个 MCP 工具，通过虚拟磁盘 `/ha/` 目录访问：
 | 工具 | 类别 | 短描述 | 说明 |
 |------|------|--------|------|
 | `ha_setup` | 写 | 配置 HA 连接 | 首次使用传入 ha_url/ha_token，无参数返回连接状态 |
-| `ha_status` | 读 | 查询设备状态 | 按区域/类型过滤，返回设备列表和可用操作 |
+| `ha_status` | 读 | 查询设备状态 | 默认返回精简列表（name/area/entity_id/type/state/actions）；传 `entity_id` 返回含 `services`/`properties` 的全量信息；还额外返回 `areas`/`scenes`/`automations` 三类 |
 | `ha_control` | 写 | 控制设备 | 立即执行一次操作。优先用 service 参数指定 HA 服务 |
 | `ha_subscribe` | 写 | 订阅状态通知 | 条件触发推送。支持 state_change/above/below 三种条件 |
 | `ha_integrate` | 写 | 管理集成 | 添加/删除设备品牌集成，通过 Config Flow REST API |
@@ -602,6 +606,10 @@ ha-server 提供 8 个 MCP 工具，通过虚拟磁盘 `/ha/` 目录访问：
 | 条件触发持续生效 | `ha_automation` | 如"温度>30°C自动开空调" |
 | 多设备瞬间切换 | `ha_scene` | 如"回家模式"同时开灯+开空调 |
 | 有序列有延时 | `ha_script` | 如"先开灯→等2秒→调色温" |
+
+### 9.2 相关 Skills
+
+设备控制详细流程见 `ha-device-control` skill，场景/自动化/脚本管理见 `ha-scene-automation` skill（两者均为 `status: active`，已更新至 06-29 版本）。调用 `ha_control`/`ha_scene`/`ha_automation`/`ha_script` 前应先加载对应 skill 获取完整参数和示例。
 
 ## 10. HACS 安装（已验证）
 
@@ -855,3 +863,37 @@ Xiaomi Miot 安装后，HA 中新增以下服务域：
 | 设备控制 | 100% | 无 |
 | 自动化/场景/脚本 | 100% | 无 |
 | 条件推送 | 100% | 无 |
+
+## 13. 故障排查
+
+### 13.1 配置文件位置
+
+| 文件 | 用途 |
+|------|------|
+| `~/.niu/ha-config.json` | HA 连接配置（ha_url/ha_token），由 `ha_setup` 写入 |
+| `~/.niu/ha-services.json` | HA 服务缓存（`ha_status`/`ha_control` 使用） |
+
+### 13.2 查询连接状态
+
+无参数调用 `ha_setup` 可返回当前 HA 连接状态（URL、是否可达、Token 是否有效）：
+
+```
+/ha/ha_setup
+```
+
+### 13.3 ha_watcher 日志
+
+`ha_watcher`（`niu_api/internal/ha_watcher/watcher.py`）通过 `print` 输出到 stdout，**无独立日志文件**。如需排查事件推送问题：
+
+- 在 API 进程的 stdout 中查看（启动器会重定向到 `logs/api_stdout.log` 或终端）
+- 关注 WebSocket 连接、重连、trigger 事件识别相关输出
+
+### 13.4 常见问题排查路径
+
+| 症状 | 检查项 |
+|------|--------|
+| `ha_status` 返回空 | 确认 `~/.niu/ha-config.json` 中 URL/Token 有效；确认 HA 已启动且实体未被 `EXCLUDED_DOMAINS` 过滤 |
+| `ha_control` 报错 | 用 `ha_status --entity-id <id>` 查看该实体的 `services` 是否包含目标服务 |
+| 模拟实体不可见 | `input_*` domain 被 `ha_status` 过滤，只能通过 REST API `/api/states` 访问 |
+| 事件推送未收到 | 查 `ha_watcher` stdout 日志；确认 `subscribe_trigger` 订阅成功且条件正确 |
+
