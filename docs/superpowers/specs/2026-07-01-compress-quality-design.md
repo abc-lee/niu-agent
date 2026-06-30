@@ -243,6 +243,8 @@ mock_response.finish_reason = last_finish_reason or "stop"
 return {"result": "CURRENT_TASK_DONE", "data": ..., "finish_reason": response.finish_reason}
 ```
 
+**注意**：`response` 变量在 L331/L336 赋值后在该函数作用域内可见，正常退出路径（L570/L583 纯文本回复无工具调用，这是 context-manager 禁工具模式实际触发的路径）return 时可直接引用 `response.finish_reason`。MAX_TURNS_EXCEEDED 路径（L610）没有 response，`finish_reason` 置 None。
+
 **改造 4：`agent/subagent.py` 的 `call_subagent` 检测截断**
 
 ```python
@@ -399,9 +401,12 @@ LLM 输出什么就用什么，靠 prompt 让它一次做对。
 解析时保留最基本的 `idx in _idx_to_id` 映射检查（防止 LLM 幻觉 idx 导致 KeyError）：
 
 ```python
-# 模式二 L1956-1958 现有逻辑保留
+# 模式二 L1956-1958 现有逻辑保留（if idx in _idx_to_id 过滤）
 updates = [{"message_id": _idx_to_id[idx], ...} for idx, content in update_list if idx in _idx_to_id]
-# 越界 idx 静默丢弃 + 记 warning 日志（便于排查）
+# 新增：越界 idx 记 warning 日志（便于排查），不补救不重试
+for idx, _ in update_list:
+    if idx not in _idx_to_id:
+        logger.warning(f"[Compact] LLM returned out-of-range update idx {idx}, silently dropped")
 ```
 
 **设计取舍**：越界 idx 静默丢弃（不补救、不重试）。这是用户明确要求的——"不能给 LLM 留犯错后程序补救的后门"。如果 LLM 回了越界 idx，对应消息既不在 keep 也不在 update，会被当 delete 删掉。这虽然可能偏离 LLM 原意，但靠 prompt 的硬约束（update idx 必须在 keep 中）让 LLM 一次做对，不靠程序补救。记 warning 日志便于排查。
