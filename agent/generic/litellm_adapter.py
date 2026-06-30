@@ -268,9 +268,12 @@ def get_provider_params(model: str, reasoning_effort: Optional[str] = None) -> D
     return params
 
 
-def _convert_tools_schema(tools: Optional[List]) -> Optional[List]:
+def _convert_tools_schema(tools: Optional[List], model: str = "") -> Optional[List]:
     """
     将工具schema转换为LiteLLM格式（OpenAI格式）。
+
+    Claude 模型在最后一个 tool 打 cache_control breakpoint，
+    让 tools 也命中 prompt cache（tools_schema 稳定，每轮不变）。
     """
     if not tools:
         return None
@@ -303,7 +306,16 @@ def _convert_tools_schema(tools: Optional[List]) -> Optional[List]:
                 }
             })
 
-    return converted if converted else None
+    if not converted:
+        return None
+
+    # Claude: 最后一个 tool 打 cache_control breakpoint
+    # tools_schema 每轮稳定（base + static MCP + disk），可安全 cache
+    model_lower = (model or "").lower()
+    if "claude" in model_lower:
+        converted[-1] = {**converted[-1], "cache_control": {"type": "ephemeral"}}
+
+    return converted
 
 
 class LiteLLMSession(BaseSession):
@@ -336,7 +348,7 @@ class LiteLLMSession(BaseSession):
         """
         custom_provider = self.provider or ("anthropic" if self.api_type == "anthropic" else "openai")
         provider_params = get_provider_params(self.default_model, getattr(self, 'reasoning_effort', None))
-        litellm_tools = _convert_tools_schema(tools)
+        litellm_tools = _convert_tools_schema(tools, self.default_model)
 
         request_params: Dict[str, Any] = {
             "model": self.default_model,
