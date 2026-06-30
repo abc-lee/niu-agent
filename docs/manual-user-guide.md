@@ -9,7 +9,7 @@
 
 **初始化用户目录**
 
-Go 启动器首次运行时，会自动执行 `initNiuDir()`：
+Rust 启动器首次运行时，会自动执行 `initNiuDir()`：
 1. 创建 `~/.niu/` 目录（如果不存在）
 2. 将 `memory/` 目录下的模板文件（`memory.json`、`preferences.json`）拷贝到 `~/.niu/`（仅当目标文件不存在时才拷贝，避免覆盖已有配置）
 
@@ -368,17 +368,11 @@ Niu 有两种入库能力，格式支持范围不同：
 |------|--------|-------------|
 | PDF | .pdf | 支持 |
 | Word | .docx | 支持 |
-| Word（旧版） | .doc | **不支持** |
 | Excel | .xlsx | 支持 |
-| Excel（旧版） | .xls | **不支持** |
 | PowerPoint | .pptx | 支持 |
-| PowerPoint（旧版） | .ppt | **不支持** |
 | 纯文本 | .txt | 支持 |
 | Markdown | .md | 支持 |
-| CSV | .csv | 支持 |
-| JSON | .json | 支持 |
-| 日志 | .log | 支持 |
-| HTML | .html / .htm | 支持 |
+| HTML | .html | 支持 |
 
 #### 不支持知识图谱入库的格式及原因
 
@@ -413,7 +407,7 @@ Niu 有两种入库能力，格式支持范围不同：
 **1. 用户长期记忆（memory.json，驻留系统提示词）**
 - 存储路径：`~/.niu/memory.json` 的 `permanent` 数组
 - 工具：`user_memory_remember`、`user_memory_forget`、`user_memory_list`
-- 容量：最多 5 条（1 条工作便签 + 4 条长期记忆），每条不超过 200 token
+- 容量：最多 10 条（1 条工作便签 + 9 条长期记忆），每条不超过 200 token
 - 便签（type=task）：新任务自动覆盖旧便签
 - 特点：每轮对话自动注入系统提示词，大模型始终可见
 
