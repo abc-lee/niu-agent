@@ -6,6 +6,7 @@ from agent.subagent import (
     _read_compress_target_tokens,
     _read_max_output_tokens,
 )
+from niu_api.compat import _strip_analysis
 
 
 def test_read_compress_target_tokens_default(tmp_path):
@@ -56,9 +57,6 @@ def test_read_max_output_tokens_invalid_returns_default(tmp_path):
         config_file.write_text(json.dumps({"context": {"maxOutputTokens": invalid_val}}))
         with patch("agent.subagent._get_user_config_path", return_value=config_file):
             assert _read_max_output_tokens() == 16384, f"非法值 {invalid_val!r} 应返回默认 16384"
-
-
-from niu_api.compat import _strip_analysis
 
 
 def test_strip_analysis_closed():
