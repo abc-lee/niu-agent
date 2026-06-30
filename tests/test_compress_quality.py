@@ -378,3 +378,137 @@ def test_mode2_prompt_contains_methodology(monkeypatch):
     assert "<analysis>" in captured["task"]
     # llm_config 注入了 max_tokens
     assert captured["llm_config"].get("litellm_kwargs", {}).get("max_tokens") == 16384
+
+
+def test_mode2_degradation_first_truncate_second_success(monkeypatch):
+    """模式二降级循环：第 1 次截断 → 第 2 次成功。"""
+    import asyncio
+    import niu_api.compat as compat
+    import niu_api.chat as chat_module
+    import agent.subagent as subagent_module
+
+    messages = [
+        FakeMsg(id="msg-1", role="user", content="你好"),
+        FakeMsg(id="msg-2", role="assistant", content="你好"),
+    ]
+
+    class FakeStore:
+        async def get_messages(self, limit=None, before_id=None):
+            return messages
+        async def delete_messages(self, *a, **kw):
+            return 0
+        async def update_message(self, *a, **kw):
+            return True
+
+    async def fake_get_message_store():
+        return FakeStore()
+
+    class FakeRunner:
+        handler = type("H", (), {"_last_prompt_tokens": 120000})()
+        llm_config = {}
+
+    def fake_get_or_create_runner():
+        return FakeRunner()
+
+    # 第 1 次返回 COMPACT_TRUNCATED，第 2 次返回正常结果
+    call_count = {"n": 0}
+    captured_targets = []
+    def fake_call_subagent(*args, **kwargs):
+        agent_name = kwargs.get("agent_name") or (args[0] if args else "")
+        if agent_name == "context-manager":
+            call_count["n"] += 1
+            captured_targets.append(kwargs.get("task", ""))
+            if call_count["n"] == 1:
+                return "COMPACT_TRUNCATED"  # 第 1 次截断
+            return "<analysis>分析</analysis>\nkeep=1,2\nupdate="  # 第 2 次成功
+        return "skip"
+
+    monkeypatch.setattr(compat, "get_message_store", fake_get_message_store)
+    monkeypatch.setattr(chat_module, "get_or_create_runner", fake_get_or_create_runner)
+    monkeypatch.setattr(subagent_module, "call_subagent", fake_call_subagent)
+    monkeypatch.setattr(compat, "_read_context_window_tokens", lambda: 200000, raising=False)
+    monkeypatch.setattr(compat, "_read_warning_threshold", lambda: 0.8, raising=False)
+    monkeypatch.setattr(compat, "_read_protect_recent_count", lambda: 0, raising=False)
+    monkeypatch.setattr(compat, "_write_cursor_with_lock", lambda *a, **kw: None, raising=False)
+    monkeypatch.setattr(compat, "_read_compress_target_tokens", lambda: 60000, raising=False)
+    monkeypatch.setattr(compat, "_read_max_output_tokens", lambda: 16384, raising=False)
+
+    request = {"session_id": "test", "mode": "sleep"}
+    asyncio.run(compat._tidy_context_impl(request))
+
+    # 验证调用了 2 次
+    assert call_count["n"] == 2, f"应调用 2 次（第 1 次截断 + 第 2 次成功），实际 {call_count['n']}"
+    # 第 2 次 prompt 含缩短提示
+    assert "精简" in captured_targets[1] or "缩短" in captured_targets[1], "第 2 次 prompt 应含缩短 analysis 提示"
+
+
+def test_mode2_degradation_all_three_truncate(monkeypatch):
+    """模式二降级循环：3 次都截断 → 放弃压缩，返回 skipped。"""
+    import asyncio
+    import niu_api.compat as compat
+    import niu_api.chat as chat_module
+    import agent.subagent as subagent_module
+
+    messages = [
+        FakeMsg(id="msg-1", role="user", content="你好"),
+        FakeMsg(id="msg-2", role="assistant", content="你好"),
+    ]
+
+    class FakeStore:
+        async def get_messages(self, limit=None, before_id=None):
+            return messages
+
+    async def fake_get_message_store():
+        return FakeStore()
+
+    class FakeRunner:
+        handler = type("H", (), {"_last_prompt_tokens": 120000})()
+        llm_config = {}
+
+    def fake_get_or_create_runner():
+        return FakeRunner()
+
+    # 每次都返回 COMPACT_TRUNCATED
+    call_count = {"n": 0}
+    def fake_call_subagent(*args, **kwargs):
+        agent_name = kwargs.get("agent_name") or (args[0] if args else "")
+        if agent_name == "context-manager":
+            call_count["n"] += 1
+            return "COMPACT_TRUNCATED"
+        return "skip"
+
+    monkeypatch.setattr(compat, "get_message_store", fake_get_message_store)
+    monkeypatch.setattr(chat_module, "get_or_create_runner", fake_get_or_create_runner)
+    monkeypatch.setattr(subagent_module, "call_subagent", fake_call_subagent)
+    monkeypatch.setattr(compat, "_read_context_window_tokens", lambda: 200000, raising=False)
+    monkeypatch.setattr(compat, "_read_warning_threshold", lambda: 0.8, raising=False)
+    monkeypatch.setattr(compat, "_read_protect_recent_count", lambda: 0, raising=False)
+    monkeypatch.setattr(compat, "_write_cursor_with_lock", lambda *a, **kw: None, raising=False)
+    monkeypatch.setattr(compat, "_read_compress_target_tokens", lambda: 60000, raising=False)
+    monkeypatch.setattr(compat, "_read_max_output_tokens", lambda: 16384, raising=False)
+
+    request = {"session_id": "test", "mode": "sleep"}
+    result = asyncio.run(compat._tidy_context_impl(request))
+
+    # 验证调用了 3 次
+    assert call_count["n"] == 3, f"应调用 3 次，实际 {call_count['n']}"
+    # 验证返回 skipped（不返回 None）
+    assert result is not None, "3 次截断应返回 dict，不应是 None"
+    assert isinstance(result, dict)
+    assert result.get("status") == "skipped", f"应返回 skipped，实际 {result}"
+
+
+def test_strip_analysis_missing_then_parse():
+    """LLM 没写 <analysis> 块时，_strip_analysis 原样返回，解析正常。"""
+    from niu_api.compat import _strip_analysis
+
+    # LLM 直接输出 keep/update，无 analysis 块
+    raw = "keep=1,2,3\nupdate=1|摘要"
+    result = _strip_analysis(raw)
+    # 原样返回
+    assert result == raw
+    # 解析 keep/update 仍可用
+    lines = result.strip().splitlines()
+    keep_line = [l for l in lines if l.lower().startswith("keep=")]
+    assert len(keep_line) == 1
+    assert "1,2,3" in keep_line[0]
