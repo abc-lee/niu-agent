@@ -527,6 +527,53 @@ class NiuRunner:
 
         return "\n".join(context_parts) if context_parts else ""
 
+    def _assemble_system_message(
+        self,
+        messages: list,
+        injection: str,
+        model: str,
+    ) -> None:
+        """组装 system message，根据 model 决定是否用 cache_control。
+
+        原地修改 messages[0]["content"]。
+
+        - Claude 模型：content 改为 list 格式，静态段末尾打 cache_control breakpoint。
+          静态段（niu.md + memory）被 cache，命中后 input token 计费降至 10%。
+          动态段（Current Time + disk_desc + injection）每轮重新发送。
+        - 其他模型（火山方舟/DeepSeek/Qwen 等）：content 保持字符串格式。
+          静态段在开头且字节稳定，靠服务端自动 prefix cache 命中。
+
+        Args:
+            messages: 消息列表，messages[0] 必须是 role=system
+            injection: 动态注入内容（skills/knowledge/brain region）
+            model: 当前模型名，用于判断是否 Claude
+        """
+        if not messages or messages[0].get("role") != "system":
+            return
+
+        # 动态段 = Current Time + disk_desc + injection
+        dynamic_text = self.dynamic_system_prefix
+        if injection:
+            dynamic_text += injection
+
+        model_lower = (model or "").lower()
+        if "claude" in model_lower:
+            # Claude：list 格式 + cache_control breakpoint
+            messages[0]["content"] = [
+                {
+                    "type": "text",
+                    "text": self.static_system_prompt,
+                    "cache_control": {"type": "ephemeral"},
+                },
+                {
+                    "type": "text",
+                    "text": dynamic_text,
+                },
+            ]
+        else:
+            # 其他模型：字符串格式，静态段在开头
+            messages[0]["content"] = self.static_system_prompt + dynamic_text
+
     def _on_turn_end(self, messages: list, tools_schema: list, turn: int) -> list:
         """每轮循环结束后刷新动态注入（skills/knowledge only, no MCP schema refresh)."""
         # Refresh user memories if dirty
