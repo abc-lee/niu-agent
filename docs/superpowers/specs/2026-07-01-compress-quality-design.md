@@ -207,27 +207,61 @@ REMINDER: 禁止调用任何工具，直接在回复中输出 <analysis> 块和 
 
 #### 检测输出截断
 
-在 `agent/subagent.py` 的 `call_subagent` 函数内检测截断（不分散到 litellm_adapter，集中在一处）：
+当前代码不捕获 `finish_reason`，需要新增传递链。改造涉及 3 个文件：
+
+**改造 1：`agent/generic/llmcore.py` 的 `MockResponse` 增加 `finish_reason` 字段**
 
 ```python
-def call_subagent(..., max_output_tokens: int = None) -> str:
+class MockResponse:
+    def __init__(self, content="", ...):
+        ...
+        self.finish_reason = None  # 新增，由 litellm_adapter 流式循环填充
+```
+
+**改造 2：`agent/generic/litellm_adapter.py` 流式循环捕获 `finish_reason`**
+
+在流式 chunk 循环（L434-521 附近）里，每个 chunk 检查 `choices[0].finish_reason`，最后一个非空的 finish_reason 保留；构造 `MockResponse`（L578-583）时传入：
+
+```python
+# 流式循环里捕获
+last_finish_reason = None
+for chunk in response:
+    ...
+    if chunk.choices and chunk.choices[0].finish_reason:
+        last_finish_reason = chunk.choices[0].finish_reason
+
+# 构造 MockResponse 时传入
+mock_response = MockResponse(content=..., ...)
+mock_response.finish_reason = last_finish_reason or "stop"
+```
+
+**改造 3：`agent/generic/agent_loop.py` 把 `finish_reason` 放进 `return_value`**
+
+`agent_runner_loop` 的所有 `return_value` dict 里增加 `finish_reason` 字段，从 `response.finish_reason` 取值：
+
+```python
+return {"result": "CURRENT_TASK_DONE", "data": ..., "finish_reason": response.finish_reason}
+```
+
+**改造 4：`agent/subagent.py` 的 `call_subagent` 检测截断**
+
+```python
+def call_subagent(...) -> str:
     ...
     result_text, return_value = _run_agent_loop(...)
     
-    # 检测输出截断（finish_reason=length）
+    # 检测输出截断（finish_reason == "length"）
     if return_value and isinstance(return_value, dict):
         if return_value.get("finish_reason") == "length":
             logger.warning(f"[SubAgent] {agent_name}: Output truncated (finish_reason=length)")
-            return "COMPACT_TRUNCATED"  # 控制流信号，compat.py 降级循环识别
+            return "COMPACT_TRUNCATED"
     
     # 原有逻辑：提取结构化结果
     ...
     return result_text
 ```
 
-`_run_agent_loop` 需要把 `finish_reason` 包含在 `return_value` 里返回（当前 `return_value` 是 agent_runner_loop 的 StopIteration.value，需要确认是否含 finish_reason；如果不含，在 agent_runner_loop 末尾收集最后一次 chunk 的 finish_reason 放进 return_value）。
-
-**传递路径**：`agent_runner_loop` 收集 finish_reason → `_run_agent_loop` 透传 → `call_subagent` 检测并返回 `"COMPACT_TRUNCATED"` 字符串 → `compat.py` 降级循环识别字符串触发降级。
+**传递路径**：`litellm` 流式 chunk → `litellm_adapter` 捕获 finish_reason → `MockResponse.finish_reason` → `agent_runner_loop` 放进 return_value → `_run_agent_loop` 透传 → `call_subagent` 检测并返回 `"COMPACT_TRUNCATED"` 字符串 → `compat.py` 降级循环识别字符串触发降级。
 
 用字符串 `"COMPACT_TRUNCATED"` 而非新异常类型，避免改动 `call_subagent` 的返回签名（当前返回 str）。compat.py 降级循环里检查 `result == "COMPACT_TRUNCATED"`。
 
@@ -265,20 +299,60 @@ else:
 - 第 1 次：用配置目标（如 60K）
 - 第 2 次（截断降级）：目标降到 50%（30K）——目标更低意味着要释放更多，LLM 压更激进，analysis 决策更直接（更短）
 - 第 3 次（再截断）：目标再降 50%（15K）
-- 3 次都截断：放弃，记错误日志（几乎不会发生）
+- 3 次都截断：放弃压缩，记错误日志（几乎不会发生）
+
+#### 3 次都截断的兜底
+
+3 次降级都截断时，说明 LLM 的 analysis 块写得太长（跟压缩目标无关）。兜底策略：
+
+```python
+else:
+    logger.error("[Compact] All 3 attempts truncated, giving up compression")
+    # 兜底：不压缩，保留全部消息（避免"放弃=啥也没做"导致下一轮还触发）
+    # 下一轮 force 触发时会重试，可能 LLM 这次输出更短
+```
+
+不主动做"保留全部消息"的兜底动作（因为本来就没执行压缩，消息没动），只记日志。下一轮触发时 LLM 可能输出更短的 analysis。这是技术性失败的合理处理，不违反"不做内容质量重试"原则。
+
+#### analysis 块超长的降级提示
+
+如果第 1 次截断，降级 prompt 里显式提示 LLM 缩短 analysis：
+
+```python
+if attempt > 0:
+    prompt += "\n\n注意：上次输出被截断，请精简 <analysis> 块，只保留关键决策依据，不要逐条分析每条消息。"
+```
+
+这解决 I3——降级不只是降目标，还显式提示 LLM 缩短 analysis。
 
 #### max_tokens 传递
 
-`call_subagent` 和 `_run_agent_loop` 新增 `max_output_tokens` 参数，透传到 litellm 调用：
+`max_tokens` 通过 `llm_config["litellm_kwargs"]` 注入，**不需要改 `call_subagent` / `_run_agent_loop` / `agent_runner_loop` 签名**。
+
+`litellm_adapter.py:377-378` 的 `request_params.update(self.litellm_kwargs)` 会把 `litellm_kwargs` 里的所有键合并进 litellm 请求。`litellm_kwargs` 来自 `llm_config`（`agent/runner.py:285` 的 `cfg["litellm_kwargs"] = config.get("litellm_kwargs", {})`）。
+
+所以 `call_subagent` 调用前，把 `max_tokens` 塞进 `llm_config["litellm_kwargs"]["max_tokens"]` 即可：
 
 ```python
-def call_subagent(..., max_output_tokens: int = None):
+# compat.py 模式二/三降级循环里
+llm_config_with_max = dict(llm_config)
+llm_config_with_max["litellm_kwargs"] = {
+    **llm_config.get("litellm_kwargs", {}),
+    "max_tokens": read_max_output_tokens(),  # 如 16384
+}
+
+result = call_subagent(
+    agent_name="context-manager",
+    task=prompt,
+    llm_config=llm_config_with_max,  # 带 max_tokens
+    history=history,
     ...
-    # 传给 litellm
-    request_params["max_tokens"] = max_output_tokens  # 如 16384
+)
 ```
 
-context-manager 调用时传 `max_output_tokens = read_max_output_tokens()`（配置值 16384）。
+`call_subagent` 签名**不变**（不需要新增 `max_output_tokens` 参数），`_run_agent_loop` / `agent_runner_loop` / `client.chat` / `litellm_adapter.chat` 签名都不变。`max_tokens` 通过 `llm_config` → `litellm_kwargs` → `request_params` 自然到达 litellm。
+
+**注意**：`config/user-config.json` 里的 `litellm_kwargs` 当前只有 `{"thinking":{"type":"enabled"}}`，不设 `max_tokens`（依赖平台默认 4K）。compat.py 调 context-manager 时动态注入 `max_tokens`，不影响其他子 Agent。
 
 ### 4. 解析层：analysis 剥离
 
@@ -318,7 +392,19 @@ else:
 - ~~update 摘要为空跳过~~ → 删
 - ~~cursor idx 不在 keep 降级取 max~~ → 删
 
-LLM 输出什么就用什么，靠 prompt 让它一次做对。解析时只做最基本的"idx 是否在 `_idx_to_id` 映射里"检查（防止 LLM 幻觉 idx 导致 KeyError），不做内容修正。
+LLM 输出什么就用什么，靠 prompt 让它一次做对。
+
+**删除后的健壮性保证**：
+
+解析时保留最基本的 `idx in _idx_to_id` 映射检查（防止 LLM 幻觉 idx 导致 KeyError）：
+
+```python
+# 模式二 L1956-1958 现有逻辑保留
+updates = [{"message_id": _idx_to_id[idx], ...} for idx, content in update_list if idx in _idx_to_id]
+# 越界 idx 静默丢弃 + 记 warning 日志（便于排查）
+```
+
+**设计取舍**：越界 idx 静默丢弃（不补救、不重试）。这是用户明确要求的——"不能给 LLM 留犯错后程序补救的后门"。如果 LLM 回了越界 idx，对应消息既不在 keep 也不在 update，会被当 delete 删掉。这虽然可能偏离 LLM 原意，但靠 prompt 的硬约束（update idx 必须在 keep 中）让 LLM 一次做对，不靠程序补救。记 warning 日志便于排查。
 
 ### 6. 术语清理（全项目）
 
@@ -335,6 +421,8 @@ L0/L1/L2 残留清理范围（实施时 grep 全项目）：
 - `docs/SYSTEM_MANUAL.md` 及子文档
 - `AGENTS.md`
 - 代码注释
+
+**清理边界**：只清理"压缩相关的 L0/L1/L2 说法"（如"L0 摘要""L1 摘要""L2 原文""L2→L1→L0 删除优先级"）。**不动** LightRAG 知识库的 `l1`/`l2` 标签语义（那是知识图谱的层级标签，与压缩无关，保留）。实施时 grep 注意区分上下文。
 
 ### 7. 配置读取函数
 
@@ -360,14 +448,15 @@ def _read_max_output_tokens() -> int:
 
 改造后：
 - 模式二/三的 task prompt 直接内联方法论（不用 `_compress_target` 变量）
-- 模式一实施时评估：如果模式一也按新方法论走，统一内联；如果模式一逻辑不同（增量压缩强度低），保留 `_compress_target` 给模式一用
+- 模式一**不改**（增量压缩逻辑独立，不在本次修复范围），`_compress_target` 保留给模式一用，不算死代码
+- 如果模式一未来也要按新方法论走，单独开任务处理，不在本次范围内
 
-实施时评估，不预先决定。
+明确保留 `_compress_target` 给模式一，避免实施者误删。
 
 ## 不改动的部分
 
 - `_build_compress_history` 函数（history 列表构造，已验证正确）
-- `call_subagent` / `_run_agent_loop` / `agent_runner_loop` 签名（只加 `max_output_tokens` 参数）
+- `call_subagent` / `_run_agent_loop` / `agent_runner_loop` 签名（`max_tokens` 通过 `llm_config["litellm_kwargs"]` 注入，不改签名）
 - keep/update/cursor 三行输出格式（解析逻辑不大改，只加 analysis 剥离）
 - 压缩执行逻辑（DB 删除/更新/级联清理不变）
 - system prompt 的有效规则（会话单元、摘要格式、禁止无限衰减等保留，只清理 L0/L1/L2 和术语）
@@ -392,13 +481,12 @@ def _read_max_output_tokens() -> int:
 
 ## 实施顺序建议
 
-1. 配置层变更（`config/user-config.json` + 读取函数）
+1. 配置层变更（`config/user-config.json` + 读取函数 `read_compress_target_tokens` / `read_max_output_tokens`）
 2. 新增 `_strip_analysis` 辅助函数 + 单元测试
-3. 新增 `COMPACT_TRUNCATED` 控制流信号 + 截断检测
-4. `call_subagent` / `_run_agent_loop` 加 `max_output_tokens` 参数
-5. 模式二 task prompt 重写 + 降级重压循环
-6. 模式三 task prompt 重写 + 降级重压循环
-7. 删除校验兜底逻辑
-8. 术语清理（L0/L1/L2 + 事务→会话单元 + 远端中端近端→三份）
-9. `_compress_target` 评估处理
-10. 端到端验证
+3. finish_reason 传递链改造（`MockResponse` 加字段 + `litellm_adapter` 流式捕获 + `agent_loop` return_value + `call_subagent` 检测）
+4. 模式二 task prompt 重写 + 降级重压循环（llm_config 动态注入 max_tokens）
+5. 模式三 task prompt 重写 + 降级重压循环
+6. 删除校验兜底逻辑
+7. 术语清理（L0/L1/L2 + 事务→会话单元 + 远端中端近端→三份）
+8. `_compress_target` 评估处理
+9. 端到端验证
