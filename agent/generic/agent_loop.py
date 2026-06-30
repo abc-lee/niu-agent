@@ -567,7 +567,12 @@ def agent_runner_loop(
                     should_exit["messages"] = messages
                     return should_exit
                 # should_exit 为 None 时（无工具调用），返回标准格式
-                return {"result": "CURRENT_TASK_DONE", "data": None, "messages": messages}
+                return {
+                    "result": "CURRENT_TASK_DONE",
+                    "data": None,
+                    "messages": messages,
+                    "finish_reason": response.finish_reason if response else None,
+                }
             next_prompts.add(handler._done_hooks.pop(0))
         next_prompt = handler.next_prompt_patcher("\n".join(next_prompts), None, turn)
 
@@ -580,7 +585,12 @@ def agent_runner_loop(
             if isinstance(should_exit, dict):
                 should_exit["messages"] = messages
                 return should_exit
-            return {"result": "CURRENT_TASK_DONE", "data": None, "messages": messages}
+            return {
+                "result": "CURRENT_TASK_DONE",
+                "data": None,
+                "messages": messages,
+                "finish_reason": response.finish_reason,
+            }
 
         # --- 见缝插针：读取用户在 Agent 运行期间发送的补充消息 ---
         supplement = drain_supplement() if enable_supplement else None
