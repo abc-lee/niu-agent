@@ -115,6 +115,7 @@ sub agents:
 - 用户说"记录一下"、"记一下" → `chat-with-journal-agent` task="记录工作日志"
 - 用户说"写周报"、"写月报"、"生成报告" → `chat-with-journal-agent` task="生成本周工作周报"
 - 增量对话消息由系统自动构建传入，task 只需写明操作类型，不需要附带对话内容
+- 日志文件 journal.md 放在工作目录下，你也可以通过读取它了解过去的工作情况
 
 **报告偏好持久化**：用户对自动生成的日报/周报有任何要求或偏好时，必须用 `edit` 工具写入 `~/.niu/skills/report-skill.md`，不要只在对话中记住。例如：
 - 用户说"周报不要写会议记录" → 修改 report-skill.md 的周报模板
