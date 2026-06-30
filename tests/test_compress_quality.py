@@ -124,3 +124,50 @@ def test_mock_response_has_finish_reason_set():
         finish_reason="length"
     )
     assert resp.finish_reason == "length"
+
+
+def test_litellm_adapter_finish_reason_from_stream(monkeypatch):
+    """litellm_adapter 流式循环应捕获最后一个 chunk 的 finish_reason 传入 MockResponse。"""
+    from agent.generic.litellm_adapter import LiteLLMSession
+    from types import SimpleNamespace
+
+    # 构造 fake chunk 流：3 个 chunk，最后一个 finish_reason='length'
+    def make_chunk(content=None, finish_reason=None):
+        delta = SimpleNamespace(content=content, reasoning_content=None, tool_calls=None)
+        return SimpleNamespace(
+            choices=[SimpleNamespace(delta=delta, finish_reason=finish_reason)],
+            usage=None,
+        )
+
+    fake_chunks = [
+        make_chunk(content="hello"),
+        make_chunk(content=" world"),
+        make_chunk(finish_reason="length"),  # 最后一个 chunk 带 finish_reason
+    ]
+
+    # mock litellm.completion 返回 fake_chunks 迭代器
+    import litellm
+    monkeypatch.setattr(litellm, "completion", lambda **kwargs: iter(fake_chunks))
+
+    # LiteLLMSession 接收 cfg dict（不是关键字参数），见 BaseSession.__init__
+    cfg = {
+        "apikey": "test",
+        "apibase": "http://test",
+        "model": "test-model",
+        "read_timeout": 30,
+    }
+    session = LiteLLMSession(cfg)
+    messages = [{"role": "user", "content": "test"}]
+    gen = session.chat(messages=messages, tools=None)
+    # 消费生成器拿 MockResponse（通过 StopIteration.value）
+    result = None
+    try:
+        while True:
+            next(gen)
+    except StopIteration as e:
+        result = e.value
+
+    assert result is not None
+    assert isinstance(result, MockResponse)
+    assert result.finish_reason == "length"
+    assert result.content == "hello world"

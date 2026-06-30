@@ -425,6 +425,7 @@ class LiteLLMSession(BaseSession):
         reasoning_content = ""
         tool_calls: List[MockToolCall] = []
         usage = None
+        last_finish_reason = None  # 捕获流式最后一个非空 finish_reason
 
         try:
             chunk_count = 0
@@ -480,6 +481,13 @@ class LiteLLMSession(BaseSession):
                 if hasattr(chunk, 'usage') and chunk.usage:
                     usage = chunk.usage
 
+                # 捕获 finish_reason（最后一个非空的覆盖）
+                try:
+                    if chunk.choices and chunk.choices[0].finish_reason:
+                        last_finish_reason = chunk.choices[0].finish_reason
+                except (AttributeError, IndexError):
+                    pass
+
             # 处理累积完成后的tool_calls
             was_stopped = is_stop_requested()
             for idx in sorted(tool_calls_accumulator.keys()):
@@ -533,6 +541,7 @@ class LiteLLMSession(BaseSession):
                     raw=full_content or "",
                     context_overflow=True,
                     usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                    finish_reason=last_finish_reason or "stop",
                 )
 
             is_socket_error = "10038" in error_msg or "10054" in error_msg or "non-socket" in error_msg.lower()
@@ -580,6 +589,7 @@ class LiteLLMSession(BaseSession):
             content=full_content,
             tool_calls=tool_calls,
             raw=full_content,
+            finish_reason=last_finish_reason or "stop",
         )
 
         if usage:
