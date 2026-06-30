@@ -45,11 +45,18 @@ def test_convert_tools_schema_backward_compatible():
 
 
 def test_build_static_system_prompt_excludes_current_time():
-    """静态段不应包含 Current Time（Current Time 每分钟变化，会切断前缀 cache）。"""
+    """静态段不含 Current Time/disk_desc，含 niu.md 正文 + memory 段。"""
     from agent.runner import NiuRunner
 
     static = NiuRunner._build_static_system_prompt()
+
+    # 不含动态段内容
     assert "Current Time" not in static, \
         f"静态段不应包含 Current Time，但找到: {static[-200:]}"
+
+    # 含 niu.md 正文（身份描述关键词——niu.md 以"你是一个全能型个人AI助理"开头）
+    assert "全能型" in static or "Role: Niu" in static or "Niu Agent" in static, \
+        f"静态段应含 niu.md 正文关键词，实际开头: {static[:100]}"
+
     assert len(static) > 500, \
         f"静态段应包含 niu.md 正文，长度应 > 500，实际 {len(static)}"
