@@ -547,6 +547,13 @@ def call_subagent(
         history=history,
     )
 
+    # 检测输出截断（finish_reason == "length"）
+    # LLM 输出被截断时无法产出合法 keep/update 结构，返回字符串信号让降级循环识别
+    if return_value and isinstance(return_value, dict):
+        if return_value.get("finish_reason") == "length":
+            logger.warning(f"[SubAgent] {agent_name}: Output truncated (finish_reason=length)")
+            return "COMPACT_TRUNCATED"
+
     # CONTEXT_OVERFLOW：返回结构化进度报告
     if return_value and isinstance(return_value, dict) and return_value.get("result") == "CONTEXT_OVERFLOW":
         data = return_value.get("data", {})

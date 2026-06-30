@@ -245,3 +245,65 @@ def test_agent_loop_return_value_contains_finish_reason(monkeypatch):
     assert isinstance(return_value, dict)
     assert return_value.get("result") == "CURRENT_TASK_DONE"
     assert return_value.get("finish_reason") == "length"
+
+
+def test_call_subagent_detects_truncation(monkeypatch):
+    """call_subagent 检测 finish_reason=='length' 时返回 'COMPACT_TRUNCATED'。"""
+    from agent import subagent
+
+    # mock _run_agent_loop 返回 finish_reason='length' 的 return_value
+    def fake_run_agent_loop(**kwargs):
+        return "部分输出...", {"result": "CURRENT_TASK_DONE", "data": {}, "finish_reason": "length"}
+
+    monkeypatch.setattr(subagent, "_run_agent_loop", fake_run_agent_loop)
+
+    # call_subagent 内部 from .handler import NiuHandler / from .runner import create_client, get_tools_schema
+    # 函数内 import 直接从源模块拿，必须 patch 源模块（不是 subagent 模块）
+    import agent.handler as handler_module
+    import agent.runner as runner_module
+    class FakeClient:
+        pass
+    monkeypatch.setattr(runner_module, "create_client", lambda cfg: FakeClient())
+    monkeypatch.setattr(runner_module, "get_tools_schema", lambda: [])
+    # NiuHandler 需要支持 _disable_memory_recall / _is_subagent 属性赋值
+    class FakeHandler:
+        def __init__(self, mcp_client=None):
+            self._disable_memory_recall = False
+            self._is_subagent = False
+    monkeypatch.setattr(handler_module, "NiuHandler", FakeHandler)
+
+    result = subagent.call_subagent(
+        agent_name="context-manager",
+        task="test",
+        llm_config={"model": "test"},
+    )
+    assert result == "COMPACT_TRUNCATED"
+
+
+def test_call_subagent_normal_return(monkeypatch):
+    """call_subagent 正常完成时返回 result_text。"""
+    from agent import subagent
+
+    def fake_run_agent_loop(**kwargs):
+        return "keep=1,2,3\nupdate=", {"result": "CURRENT_TASK_DONE", "data": {}, "finish_reason": "stop"}
+
+    monkeypatch.setattr(subagent, "_run_agent_loop", fake_run_agent_loop)
+
+    import agent.handler as handler_module
+    import agent.runner as runner_module
+    class FakeClient:
+        pass
+    monkeypatch.setattr(runner_module, "create_client", lambda cfg: FakeClient())
+    monkeypatch.setattr(runner_module, "get_tools_schema", lambda: [])
+    class FakeHandler:
+        def __init__(self, mcp_client=None):
+            self._disable_memory_recall = False
+            self._is_subagent = False
+    monkeypatch.setattr(handler_module, "NiuHandler", FakeHandler)
+
+    result = subagent.call_subagent(
+        agent_name="context-manager",
+        task="test",
+        llm_config={"model": "test"},
+    )
+    assert "keep=1,2,3" in result
