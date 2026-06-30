@@ -495,7 +495,7 @@ def _build_compress_history(
 def _strip_analysis(response: str) -> str:
     """剥离 <analysis>...</analysis> 块，只保留 keep/update/cursor 部分。
 
-    处理三种情况：
+    处理以下情况：
     1. 闭合的 <analysis>...</analysis>（含跨行）
     2. 未闭合的 <analysis>（有开始无结束，剥离到字符串末尾）
     3. 大小写不敏感（<ANALYSIS> 也识别）
