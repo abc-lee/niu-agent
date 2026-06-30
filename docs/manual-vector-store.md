@@ -53,7 +53,7 @@ LLM 提取实体时被约束为上述类型，确保前端分类按钮与图谱�
 |------|------|
 | src_id | 源实体名 |
 | tgt_id | 目标实体名 |
-| keywords | 关系类型（如 "skilled_in"、"_region:contains"） |
+| keywords | 关系类型（如 "skilled_in"、"包含"） |
 | description | 关系描述 |
 | weight | 边权重 |
 
@@ -86,7 +86,7 @@ NanoVectorDB 格式，存储在 `~/.niu/lightrag_storage/` 下：
 | concept | 概念/知识实体 | 文档入库时 LightRAG 自动提取 |
 | photo | 照片摘要 | photo-server 照片入库时创建 |
 | brainregion | 脑区节点 | injector/region_sync.py 定期运行 Leiden 社区检测生成 |
-| interactionhabit | 交互习惯 | handler.py 工具调用反馈时写入 |
+| interactionhabit | 交互习惯 | 类型已在 `CUSTOM_ENTITY_TYPES` 声明，当前无主动创建路径，预留给交互习惯分析 |
 | document | 文档 | 文档入库时 LightRAG 自动提取 |
 | organization | 组织 | 文档入库时 LightRAG 自动提取 |
 | technology | 技术 | 文档入库时 LightRAG 自动提取 |
@@ -94,7 +94,10 @@ NanoVectorDB 格式，存储在 `~/.niu/lightrag_storage/` 下：
 
 **实体命名规范**：所有实体名使用自然语言（如 "Python"、"任飞"、"影像记忆脑区"），不使用冒号前缀格式（如 ~~"skill:Python"~~、~~"person:uuid"~~）。`_normalize_entity_name()` 保留为恒等函数做向后兼容。
 
-**大小写规范**：所有 entity_type 和 keywords 统一小写存储（写入时 `.lower()`），查询时 `.lower()` 比较。此规范在 LightRAG fork 的所有写入路径（`ainsert_custom_kg`、`acreate_entity`、`acreate_relation`、`_edit_entity_impl`、`_merge_entities_impl`）和查询路径（`get_brain_regions`、`has_edge`、dict 查找）中统一执行。
+**大小写规范**：写入路径与查询路径均做小写归一化，但归一化时机不同：
+- **写入路径**：LightRAG fork 的所有写入入口（`ainsert_custom_kg`、`acreate_entity`、`acreate_relation`、`_edit_entity_impl`、`_merge_entities_impl`）在落库时对 entity_type 和 keywords 统一 `.lower()`。
+- **查询路径**：adapter 层过滤（`lightrag_adapter.py:324` 的 `target_type = entity_type.lower().strip()`）在比较时归一化。调用方传入 title case（如 `filter_by_entity_type(result, "Skill")`、`"InteractionHabit"`）也能被正确匹配，不要求调用方预先小写化。
+- 此规范消除了大小写不一致导致的重复实体和 Counter 投票分裂问题。
 
 ## 四、检索模式
 
@@ -204,12 +207,12 @@ photo-server/ingest_document
 
 ```python
 entity_name = skill_name  # 自然语言，如 "photo-processing"
-entity_type = "skill"
+entity_type = "Skill"  # 写入时用 title case，LightRAG fork 写入路径会归一化为小写 "skill"
 description = "{描述} | 触发词: {triggers}; 标签: {tags}"
 source_id = "skill://{skill_name}"
 ```
 
-同时创建 `知识体系脑区 -> skill_name` 的 `_region:contains` 关系，确保 skill 可从脑区遍历到达。
+同时创建 `知识体系脑区 -> skill_name` 的 `包含` 关系（`BELONGS_TO_RELATION`，定义于 `niu_api/internal/region_manager.py`），确保 skill 可从脑区遍历到达。
 
 **便签同步**：`_scan_notes()` 将 `workspace/notes/notes.json` 的变化作为整文件文档提交给 `lightrag_insert`，entity_type 为 `"knowledge"`。
 
@@ -223,6 +226,10 @@ source_id = "skill://{skill_name}"
 - MCP 工具同步：已禁用（工具走 disk YAML 模式发现，不再通过 LightRAG 检索）
 - 同步间隔：默认 6 小时（21600 秒）
 - 状态文件：`~/.niu/last_lightrag_sync.json`
+
+**兼容层模块**（保留但非主路径）：
+- `injector/kg_sync.py`：旧接口兼容层。`KGSync` 类的 `sync_once()` / `stop()` 委托给 `LightRAGSync` 单例后台线程，无独立逻辑。
+- `injector/kg_scanner.py`：已禁用。仅保留 `get_kg_scanner()` 占位函数（调用时打 warning），`KGScanner` 类的所有方法均返回 disabled 提示。实体提取由 LightRAG `ainsert()` 接管。
 
 ### 7.3 脑区同步（injector/region_sync.py）
 
@@ -299,7 +306,7 @@ source_id = "skill://{skill_name}"
 
 点亮脑区后，系统通过 LightRAG 的 `filter_lambda` 参数在脑区成员范围内做语义检索，而非全图谱匹配。这确保了：
 - 同一查询在不同脑区范围内返回不同结果（如"差旅费"在财务脑区匹配报销制度，在技术脑区匹配出差部署）
-- 脑区成员实体通过 `_region:contains` 边维护，`get_all_region_members()` 直接从 NetworkX 图读取
+- 脑区成员实体通过 `包含` 边（`BELONGS_TO_RELATION`）维护，`get_all_region_members()` 直接从 NetworkX 图读取
 - 检索结果与全局向量检索结果通过 seen_names 去重，避免重复注入
 
 ## 八、运维操作
@@ -448,8 +455,8 @@ LightRAG 官方明确建议不要使用带思考链的模型做入库。
 | VectorSearchAdapter | lightrag-server 工具（LightRAGAdapter / LightRAGIngester） |
 | 递归查询（is_recursive） | LightRAG 检索模式（local/global/hybrid/mix） |
 | query_pattern | 不存在，LightRAG 自动处理语义匹配 |
-| vector-store MCP 工具（7 个） | lightrag-server MCP 工具（16 个） |
-| kg-server MCP 工具（20 个） | lightrag-server MCP 工具（16 个），统一替代 |
+| vector-store MCP 工具（7 个） | lightrag-server MCP 工具（23 个） |
+| kg-server MCP 工具（20 个） | lightrag-server MCP 工具（23 个），统一替代 |
 | 双存储（vectors.db + LightRAG） | 单存储（LightRAG only） |
 | workspace.path/vectors.db | 固定路径 `~/.niu/lightrag_storage/` |
 | mtime 变化检测 | SHA256 内容哈希检测 |
