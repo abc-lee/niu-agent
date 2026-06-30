@@ -386,6 +386,112 @@ def _build_incremental_msg_text(messages, last_cursor_id: str, out_msg_ids: list
     return f"共 {len(lines)} 条新消息\n\n" + "\n".join(lines)
 
 
+def _build_compress_history(
+    messages,
+    msg_tokens: list | None = None,
+    out_msg_ids: list | None = None,
+    protect_recent: int = 0,
+    exclude_protected: bool = False,
+) -> tuple[list[dict], dict[int, str]]:
+    """构造 context-manager 模式二的 history 列表（每条 message 加 idx 前缀）。
+
+    与 _build_incremental_msg_text 的区别：
+    - 输出 history 列表（role/content/tool_calls/tool_call_id 原样），而非序列化文本
+    - content 开头加 `[idx:N] Ntokens ` 前缀（简易 idx，不用 UUID）
+    - 单条 message 不会超限（每条就是原大小 + 前缀）
+    - 同步排除孤立 tool 消息：若父 assistant 被 PROTECTED 排除，其 tool 消息也排除
+      （避免 agent_runner_loop 过滤孤立 tool 导致 LLM 看到的 idx 不连续）
+
+    Args:
+        messages: 全量消息列表（Message 对象，含 id/role/content/tool_calls/tool_call_id）
+        msg_tokens: 每条消息的 token 数列表（与 messages 等长），None 则不加 tokens 前缀
+        out_msg_ids: 输出参数，收集保留消息的真实 ID 列表（与 idx 顺序一致）
+        protect_recent: 对最后 N 条 user/assistant 消息加 PROTECTED 标签（0 表示不加）
+        exclude_protected: True 则排除 PROTECTED 消息（不进 history、不进 out_msg_ids、不分配 idx）
+
+    Returns:
+        (history, idx_to_id):
+        - history: [{"role":..., "content": "[idx:N] Ntokens ...原content", "tool_calls"?:..., "tool_call_id"?:...}, ...]
+        - idx_to_id: {idx: 真实 message_id}，用于解析 context-manager 输出的 keep=/update=
+    """
+    if out_msg_ids is None:
+        out_msg_ids = []
+
+    total_count = len(messages)
+    # 预计算保护位置：从尾部向前找 N 条 user/assistant 消息的相对位置
+    _protected_positions: set[int] = set()
+    if protect_recent > 0:
+        _count = 0
+        for rp in range(total_count - 1, -1, -1):
+            m = messages[rp]
+            if getattr(m, "role", "") in ("user", "assistant"):
+                _protected_positions.add(rp)
+                _count += 1
+                if _count >= protect_recent:
+                    break
+
+    # 第一遍：确定哪些位置被排除（PROTECTED 排除 + 孤立 tool 同步排除）
+    excluded_positions: set[int] = set()
+
+    # 1) PROTECTED 排除
+    if exclude_protected:
+        for rp in _protected_positions:
+            excluded_positions.add(rp)
+
+    # 2) 孤立 tool 同步排除：若 tool 消息的父 assistant（持有对应 tool_call_id）被排除，则 tool 也排除
+    #    收集所有被排除的 assistant 的 tool_call_id
+    orphaned_tool_call_ids: set[str] = set()
+    for rp in excluded_positions:
+        m = messages[rp]
+        if getattr(m, "role", "") == "assistant" and getattr(m, "tool_calls", None):
+            for tc in m.tool_calls:
+                tc_id = tc.get("id", "") if isinstance(tc, dict) else ""
+                if tc_id:
+                    orphaned_tool_call_ids.add(tc_id)
+    # 排除孤立 tool 消息
+    for rp, m in enumerate(messages):
+        if getattr(m, "role", "") == "tool":
+            tc_id = getattr(m, "tool_call_id", "") or ""
+            if tc_id in orphaned_tool_call_ids:
+                excluded_positions.add(rp)
+
+    # 第二遍：构造 history（只含未被排除的消息，idx 连续编号）
+    history: list[dict] = []
+    idx_to_id: dict[int, str] = {}
+    display_idx = 0
+
+    for rel_pos, msg in enumerate(messages):
+        if rel_pos in excluded_positions:
+            continue
+
+        msg_id = getattr(msg, "id", "") or ""
+        role = getattr(msg, "role", "user")
+        content = getattr(msg, "content", "") or ""
+        tool_calls = getattr(msg, "tool_calls", None)
+        tool_call_id = getattr(msg, "tool_call_id", None)
+
+        display_idx += 1
+        out_msg_ids.append(msg_id)
+        idx_to_id[display_idx] = msg_id
+
+        # 构造前缀
+        token_annotation = ""
+        if msg_tokens and rel_pos < len(msg_tokens):
+            token_annotation = f"{msg_tokens[rel_pos]}tokens "
+        prefix = f"[idx:{display_idx}] {token_annotation}"
+
+        # 构造 history entry（原样保留 role/tool_calls/tool_call_id）
+        entry: dict = {"role": role, "content": prefix + content}
+        if tool_calls:
+            entry["tool_calls"] = tool_calls
+        if tool_call_id:
+            entry["tool_call_id"] = tool_call_id
+
+        history.append(entry)
+
+    return history, idx_to_id
+
+
 def _estimate_text_tokens(text: str) -> int:
     """粗略估算文本 token 数（中文约1.5字/token，英文约4字/token，取中间值2字/token）"""
     return len(text) // 2
