@@ -88,8 +88,8 @@ my-server:
     - "-m"
     - "niu_my_server"
   workdir: mcp-servers/my-server/src
-  preload: true        # 启动时预加载（大多数服务器设 true）
-  optional: true       # 可选服务器，加载失败不终止启动（仅外部依赖服务器设 true）
+  preload: true        # 仅作文档标记，加载器不读取（所有 REQUIRED_SERVERS 启动时加载）
+  optional: true       # 仅作文档标记，加载器不读取（可选性由 mcp_loader.py 的 OPTIONAL_SERVERS 列表控制）
   tools:
     my_tool:
       visibility: hidden   # 所有工具必须 hidden，由虚拟磁盘管理展示
@@ -102,11 +102,11 @@ my-server:
 | `command` | 固定 `${PYTHON_PATH}`，由启动器自动替换 |
 | `args` | 固定 `["-m", "niu_<name>"]`，对应 Python 模块名 |
 | `workdir` | 指向 `src/` 目录，相对于项目根目录 |
-| `preload` | `true` = 启动时预加载；`false` = 懒加载（首次调用时加载） |
-| `optional` | `true` = 加载失败不终止启动；缺省或 `false` = 加载失败终止启动 |
+| `preload` | 当前仅作文档标记，加载器不区分 preload true/false，所有 REQUIRED_SERVERS 启动时加载 |
+| `optional` | 当前由 `mcp_loader.py` 的 `OPTIONAL_SERVERS` 列表控制，yaml 的 `optional` 字段仅作文档标记，加载器不读取 |
 | `tools.*.visibility` | **必须设 `hidden`**，由虚拟磁盘统一管理 |
 
-**何时设 optional: true**：服务器依赖外部服务（如 ha-server 依赖 Home Assistant、feishu-server 依赖飞书 API），用户环境可能没有这些服务。核心服务器（memory-server、config-manager 等）不应设 optional。
+**何时将服务器设为可选**：服务器依赖外部服务（如 ha-server 依赖 Home Assistant、feishu-server 依赖飞书 API），用户环境可能没有这些服务。核心服务器（memory-server、config-manager 等）必须放在 REQUIRED_SERVERS 中。可选性通过在 `mcp_loader.py` 中将元组从 `REQUIRED_SERVERS` 移到 `OPTIONAL_SERVERS` 列表实现（详见 2.3 节）。
 
 ### 2.3 注册到 mcp_loader.py
 
@@ -195,7 +195,7 @@ disk("/mydir/my_tool value1") → 应执行工具并返回结果
 ```yaml
 version: 1
 exclude_tools:
-  - nanobot.system/code_run    # 排除内建工具，不在 disk 中展示
+  - nanobot.system/code_run    # 历史遗留死配置：当前无对应注册工具，保留不影响运行
   - nanobot.system/read
   - nanobot.system/edit
   - nanobot.system/write
@@ -205,7 +205,7 @@ disk_mode: true                 # true = 启用虚拟磁盘模式
 
 | 字段 | 说明 |
 |------|------|
-| `exclude_tools` | 排除的工具全名列表（server/tool 格式），这些工具不在 disk 中出现 |
+| `exclude_tools` | 排除的工具全名列表（server/tool 格式），这些工具不在 disk 中出现。注：`exclude_tools` 机制本身有效（启动时按字符串匹配隐藏对应工具），但当前列表中的 `nanobot.system/*` 条目是历史遗留死配置——代码中无任何工具以 `nanobot.system/` 前缀注册到 ToolRegistry，故这些条目实际不匹配任何工具，保留不影响运行。 |
 | `show_hidden` | 是否在 ls 中显示 hidden=true 的工具 |
 | `disk_mode` | 是否启用磁盘模式。关闭后回退到旧 static/dynamic 注入方式 |
 
@@ -440,7 +440,7 @@ Critical MCP servers failed to load:
 2. 检查模块目录名是否与元组中的模块名一致 — `niu_<name>` 包名与目录名匹配
 3. 检查 `__init__.py` 是否存在且有 `get_tool_schemas` 函数
 
-**如果服务器是可选的**，将元组从 REQUIRED_SERVERS 移到 OPTIONAL_SERVERS，或在 `mcp-servers.yaml` 中加 `optional: true`。
+**如果服务器是可选的**，将元组从 REQUIRED_SERVERS 移到 OPTIONAL_SERVERS（可选性仅由 `mcp_loader.py` 的 `OPTIONAL_SERVERS` 列表控制，在 `mcp-servers.yaml` 中加 `optional: true` 无效）。
 
 ### 5.5 工具调用返回空结果或报错
 
