@@ -41,9 +41,9 @@ Niu 是一个**本地运行**的个人知识管理助手，核心理念：
 
 | 层 | 技术 | 说明 |
 |----|------|------|
-| 前端 | Iced (Rust GPU) | 桌面应用 |
+| 前端 | Electron | 桌面应用（精灵窗口 + 聊天窗口） |
 | 后端 | Python FastAPI | API 服务 + Agent 核心 |
-| 启动器 | Rust | 进程管理 + Iced GUI + 自动更新 |
+| 启动器 | Rust (Iced splash) | 进程管理 + 启动画面 + 自动更新 |
 | 数据库 | SQLite | 消息/图谱/任务 |
 | 知识检索 | LightRAG + Sentence Transformers | 知识图谱 + 语义搜索（统一架构） |
 | 人脸 | InsightFace + ONNX | 人脸检测/识别 |
@@ -78,11 +78,12 @@ Niu 是一个**本地运行**的个人知识管理助手，核心理念：
 | `file-parser` | 文档解析 | Yes |
 | `session-manager` | 会话管理 | No |
 | `browser-server` | 浏览器自动化 | No |
-| `feishu-server` | 飞书消息收发（日历/任务） | No（可选） |
+| `ha-server` | 智能家居（Home Assistant 设备控制/场景/自动化） | Yes（可选） |
 
 > `kg-server`、`vector-store`、`embedding-service` 已移除，由 `lightrag-server` 统一替代。`mcp-servers/embedding-service/` 目录仍残留但不再加载。
 > `nanobot.system` 为内置系统工具（code_run/read/edit/write），非 MCP 服务器模块，通过 disk 配置管理。
-> `feishu-server` 为可选服务器，需配置飞书机器人凭证后才会启用（`optional: true`）。
+> `ha-server` 为可选服务器，需配置 Home Assistant 长期访问令牌后才会启用（`optional: true`）。
+> `feishu-server` 已迁移至 `im-adapters/feishu/` IM Gateway 架构，不再是 MCP 服务器，`mcp-servers/feishu-server/` 为孤儿目录。
 
 ### 2.2 工具注入机制
 
@@ -109,6 +110,8 @@ Niu 是一个**本地运行**的个人知识管理助手，核心理念：
 - `person` — 人物（照片识别）
 - `concept` — 概念/知识实体
 - `photo` — 照片摘要
+- `preference` — 用户偏好
+- `brainregion` — 脑区实体
 
 > 所有 entity_type 和 keywords 统一使用小写存储和比较（写入时 `.lower()`，查询时 `.lower()` 匹配），消除大小写不一致导致的重复实体和 Counter 投票分裂问题。
 
@@ -139,6 +142,7 @@ ai-bot/
 │   └── injector/       # 动态注入
 ├── niu_api/            # FastAPI 服务
 ├── mcp-servers/        # MCP 服务器（10个）
+├── im-adapters/       # IM Gateway 适配器（飞书等）
 ├── ui/assistant/       # Electron 前端
 ├── config/             # 配置文件
 ├── models/             # 模型文件
@@ -171,7 +175,7 @@ ai-bot/
 
 ### 2.6 Skills 机制
 
-Skills 是存储在 `memory/skills/` 目录下的 Markdown 文件，定义了特定任务的执行规范和模板。
+Skills 是存储在 `~/.niu/skills/` 目录下的 Markdown 文件（`memory/skills/` 是仓库内开发副本），定义了特定任务的执行规范和模板。
 
 **核心流程：**
 1. Skills 文件通过 `agent/injector/sync.py` 定时同步到 LightRAG 向量库（entity_type = `Skill`）
@@ -179,7 +183,12 @@ Skills 是存储在 `memory/skills/` 目录下的 Markdown 文件，定义了特
 3. 匹配到的 Skill 内容动态注入到 Agent 上下文，指导 Agent 按规范执行任务
 
 **Skill 编写职责：**
-- **dream-evolver** 是新 skill 的唯一创建者——它根据对话中观察到的信号（重复模式、失败后解决、skill 反馈等）自动创建草稿 skill
+- **dream-evolver** 是 skill 生命周期的管理者——负责创建草稿、转正、降级、复活、淘汰全流程：
+  - **创建**：观察到信号（重复模式、失败后解决、skill 反馈等）自动创建草稿 skill (status: draft)
+  - **转正**：草稿 skill 使用反馈成功 → 转 active
+  - **降级**：active skill 反复失败（issue_count ≥ 3）→ 降级为 deprecated（待观察）
+  - **复活**：deprecated skill 反馈成功 → 转回 active
+  - **淘汰**：deprecated skill 仍失败 → 移动到 `~/.niu/skills/.trash/` 归档
 - **主 Agent（niu）** 可以修改已有 skill 的内容（用 edit 工具），但不能创建新 skill 文件
 - **ExperienceSummarizer** 已关闭，不再生成 skill
 
@@ -197,24 +206,31 @@ runner.py 注入时显示 "⚠️ 草稿skill — 使用后反馈效果"
 dream-evolver 从反馈中识别信号 → 转正 (status: active) 或修改
 ```
 
+**deprecated（待观察）skill：**
+- description 加 `[待观察]` 前缀
+- runner.py 注入时显示 "⚠️ 待观察skill — 此skill有历史问题，使用后必须反馈效果（成功或失败）"
+- 主 Agent 使用 deprecated skill 后必须明确反馈，dream-evolver 据此决定复活或淘汰
+
 **Skill Frontmatter 规范：**
 
 ```yaml
 ---
 name: skill-name-with-hyphens
 description: Use when [触发条件，不写工作流]
-status: draft | active
+status: draft | active | deprecated
 created: YYYY-MM-DD
 last_tested: YYYY-MM-DD
+issue_count: 0
 ---
 ```
 
 字段说明：
 - `name`：只含字母、数字、连字符
 - `description`：以 "Use when..." 开头，只写触发条件，不写工作流，500 字符以内
-- `status`：新建时 `draft`，验证通过后 `active`
+- `status`：新建时 `draft`，验证通过后 `active`，反复失败后降级为 `deprecated`（待观察）
 - `created`：创建日期
 - `last_tested`：最近一次验证或修改日期
+- `issue_count`：失败计数，active 状态下累计 ≥3 次降级为 deprecated
 
 **Skill 正文结构：**
 
@@ -256,6 +272,8 @@ dream-evolver 修改 skill 时遵循 Skill-Aware Reflection 方法论：
 | `office-docs.md` | Office 文档处理规范 | active |
 | `photo-face-display.md` | 照片人脸显示规范 | active |
 | `report-skill.md` | 报告生成模板与聚合规则 | active |
+| `ha-device-control.md` | 智能家居设备控制规范 | active |
+| `ha-scene-automation.md` | 智能家居场景与自动化规范 | active |
 
 **report-skill 触发条件：** 当 Agent 编写或整理用户日志、生成周报/月报等报告时，向量检索会自动匹配并注入 `report-skill.md`，Agent 按其中定义的聚合规则和模板生成报告。
 
