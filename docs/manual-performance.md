@@ -46,19 +46,20 @@
    # 不影响模块注册本身
    ```
 
-**9 个 MCP 服务器一览：**
+**MCP 服务器一览（9 必需 + 1 可选）：**
 
 | 服务器 | 工具数 | preload | 说明 |
 |--------|--------|---------|------|
-| photo-server | 16 | true | 照片管理 + 人脸识别，按需加载 InsightFace 模型 |
-| config-manager | 16 | true | 配置管理（LLM/存储/身份/偏好） |
-| memory-server | 10 | true | 智能记忆提取和检索 |
+| photo-server | 10 | true | 照片管理 + 人脸识别，按需加载 InsightFace 模型 |
+| config-manager | 22 | true | 配置管理（LLM/存储/身份/偏好） |
+| memory-server | 3 | true | 智能记忆提取和检索 |
 | lightrag-server | 23 | true | 知识图谱 + 向量检索（LightRAG 统一管理） |
 | file-parser | 2 | true | 文档解析（PDF/Word/PPT/Excel/MD/HTML） |
 | session-manager | 4 | false | 会话管理（消息压缩） |
 | scheduler-server | 4 | true | 定时任务（单次/循环提醒） |
 | browser-server | 5 | false | 浏览器自动化（Chrome Extension + WSBridge） |
 | brain-region-server | 3 | true | 脑区激活控制（手动点亮/熄灭/查询状态） |
+| ha-server | 8 | true | Home Assistant 设备控制/场景/自动化/脚本（可选，OPTIONAL_SERVERS） |
 
 ### 1.2 启动速度优化
 
@@ -132,9 +133,12 @@
 
 **启用 GPU 加速：**
 
+> 默认 `requirements.txt` 安装的是 CPU 版 `onnxruntime`（`onnxruntime==1.23.2`），GPU 版本（onnxruntime-gpu / onnxruntime-directml）在 requirements.txt 中被注释掉。启用 GPU 需先卸载 CPU 版再安装对应 GPU 版。
+
 1. **NVIDIA GPU（CUDA）**
    ```bash
-   # 安装 GPU 版本 ONNX Runtime
+   # 卸载 CPU 版后安装 GPU 版本 ONNX Runtime
+   pip uninstall onnxruntime
    pip install onnxruntime-gpu
 
    # 验证
@@ -165,7 +169,7 @@
 
 ```python
 # niu_api/__main__.py
-# uvicorn.run(..., workers=1)  — 单 worker，避免多进程竞态
+# uvicorn.run(...) 未显式传 workers 参数（默认单 worker），避免多进程竞态
 ```
 
 **聊天请求序列化：**
