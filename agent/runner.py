@@ -379,6 +379,8 @@ class NiuRunner:
         self.llm_config = llm_config
         self.mcp_client = mcp_client
         self.client = create_client(llm_config)
+        # 当前模型名（用于 _assemble_system_message 判断是否 Claude 走 cache_control）
+        self.default_model = llm_config.get("model", "")
         project_root = os.path.dirname(os.path.dirname(__file__))
         self.handler = NiuHandler(cwd=project_root, mcp_client=mcp_client)
         # 静态段：niu.md + memory（cache 友好，字节稳定）
@@ -592,9 +594,9 @@ class NiuRunner:
         context = self._extract_context_from_messages(messages)
         injection, _ = self._inject_dynamic_resources(context)
 
-        # Update system_prompt
-        if messages and messages[0].get("role") == "system":
-            messages[0]["content"] = self.base_system_prompt + injection
+        # Update system_prompt（静态段 + 动态段，Claude 走 cache_control）
+        # messages 是 agent_loop 内部列表的引用，原地修改生效
+        self._assemble_system_message(messages, injection, self.default_model)
 
         # No schema refresh — tools_schema stays base + disk
         return tools_schema
@@ -1385,6 +1387,9 @@ REMINDER: 禁止调用任何工具，直接在回复中输出 keep=/update=/curs
                 # 保留 system prompt（messages[0]），替换其余消息
                 system_msg = messages[0] if messages and messages[0].get("role") == "system" else None
                 if system_msg:
+                    # 压缩后重建 system message（确保 Claude cache_control 不丢失）
+                    # injection 为空，下一轮 _on_turn_end 会重新注入
+                    self._assemble_system_message([system_msg], "", self.default_model)
                     messages[:] = [system_msg] + fresh_msgs
                 else:
                     messages[:] = fresh_msgs
@@ -1808,12 +1813,8 @@ REMINDER: 禁止调用任何工具，直接在回复中输出 keep=/update=/curs
         # 动态注入资源（skills/knowledge only）
         injection, _ = self._inject_dynamic_resources(context)
 
-        # 组装 system_prompt
-        system_prompt = self.base_system_prompt
-        if injection:
-            system_prompt += injection
-
-        # 注入 resources（拖入文件的模式信息）
+        # 注入 resources（拖入文件的模式信息）到动态段
+        # （首轮特有，后续轮次 _on_turn_end 不会重新加，符合预期）
         if resources:
             # 防御性过滤：只处理格式正确的资源条目
             valid_resources = [r for r in resources if isinstance(r, dict) and "path" in r and "mode" in r]
@@ -1828,7 +1829,11 @@ REMINDER: 禁止调用任何工具，直接在回复中输出 keep=/update=/curs
                         resource_lines.append(f"- 文件 {path}：必须使用移动模式（mode=move），将文件移动到存储目录")
                     # mode="copy" 不需要额外提示，这是默认行为
                 if resource_lines:
-                    system_prompt += "\n\n【文件操作模式要求】\n以下文件的操作模式由用户指定，调用 ingest 工具时必须传递对应的 mode 参数：\n" + "\n".join(resource_lines)
+                    injection += "\n\n【文件操作模式要求】\n以下文件的操作模式由用户指定，调用 ingest 工具时必须传递对应的 mode 参数：\n" + "\n".join(resource_lines)
+
+        # 组装 system message（首轮就按 model 决定格式，Claude 走 cache_control）
+        system_message = {"role": "system", "content": ""}
+        self._assemble_system_message([system_message], injection, self.default_model)
 
         # 组装 tools_schema = base tools + static MCP tools + disk
         tools_schema = self.base_tools_schema.copy()
@@ -1867,7 +1872,8 @@ REMINDER: 禁止调用任何工具，直接在回复中输出 keep=/update=/curs
 
         gen = agent_runner_loop(
             client=self.client,
-            system_prompt=system_prompt,
+            system_prompt="",  # 向后兼容（system_message 非 None 时分支选择生效）
+            system_message=system_message,
             user_input=user_input,
             handler=self.handler,
             tools_schema=tools_schema,

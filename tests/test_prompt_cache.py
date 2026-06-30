@@ -145,6 +145,37 @@ def test_assemble_system_message_non_system_first_msg():
     assert messages[0]["content"] == "hello"
 
 
+def test_count_messages_tokens_handles_list_content():
+    """count_messages_tokens 应兼容 list 格式 content（Claude cache_control 模式）。"""
+    from agent.generic.agent_loop import count_messages_tokens
+
+    messages = [
+        {
+            "role": "system",
+            "content": [
+                {"type": "text", "text": "static content here"},
+                {"type": "text", "text": "dynamic content here"},
+            ],
+        },
+        {"role": "user", "content": "hello"},
+    ]
+    tokens = count_messages_tokens(messages)
+    assert isinstance(tokens, int)
+    assert tokens > 0
+
+
+def test_agent_runner_loop_accepts_system_message_param():
+    """agent_runner_loop 应支持可选 system_message 参数。"""
+    from agent.generic.agent_loop import agent_runner_loop
+    import inspect
+
+    sig = inspect.signature(agent_runner_loop)
+    params = sig.parameters
+    assert "system_message" in params, "agent_runner_loop 应新增 system_message 可选参数"
+    assert params["system_message"].default is None, "system_message 默认 None"
+    assert "system_prompt" in params, "system_prompt 保留（向后兼容）"
+
+
 def test_refresh_user_memories_updates_static_and_recomputes_base():
     """memory 变化时 _refresh_user_memories 应同步更新 static_system_prompt
     并重算 base_system_prompt = static + dynamic_system_prefix。"""

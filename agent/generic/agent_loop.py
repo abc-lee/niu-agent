@@ -50,6 +50,13 @@ def count_messages_tokens(messages: list) -> int:
         total = 0
         for m in messages:
             content = m.get("content", "") if isinstance(m, dict) else str(m)
+            # 兼容 list 格式 content（Claude cache_control 模式）
+            # 用 " ".join 与 TokenCalculator 主路径一致
+            if isinstance(content, list):
+                content = " ".join(
+                    block.get("text", "") if isinstance(block, dict) else str(block)
+                    for block in content
+                )
             total += max(1, len(content) // 2) + 4
         return total
 
@@ -185,10 +192,10 @@ def _truncate_tool_content(content: str, tool_name: str = "") -> str:
 
 def agent_runner_loop(
     client,
-    system_prompt,
-    user_input,
-    handler,
-    tools_schema,
+    system_prompt: str = "",  # 向后兼容（system_message 优先）
+    user_input=None,
+    handler=None,
+    tools_schema=None,
     max_turns=40,
     verbose=True,
     initial_user_content=None,
@@ -199,11 +206,16 @@ def agent_runner_loop(
     context_target_threshold=0,  # FIFO 裁剪目标 token 量
     on_context_high_usage=None,  # 主Agent超阈值回调；None=子Agent走FIFO
     enable_supplement=True,  # False for sub-agents to prevent stealing main agent's supplements
+    system_message: Optional[dict] = None,  # 已组装好的 system message（首轮即带 cache_control）
 ):
     from agent.runner import is_stop_requested, clear_stop, drain_supplement
 
     # Build messages: system + history + current user
-    messages = [{"role": "system", "content": system_prompt}]
+    # system_message 优先（首轮即带 cache_control）；否则回退到 system_prompt 字符串
+    if system_message is not None:
+        messages = [system_message]
+    else:
+        messages = [{"role": "system", "content": system_prompt}]
 
     # Add conversation history if provided
     if history:
