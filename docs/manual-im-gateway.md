@@ -41,6 +41,7 @@ IM 通信层采用 **Gateway + Adapter** 分离架构：
 - 两者通过 TCP 长连接通信，协议为 **4 字节大端长度前缀 + UTF-8 JSON**
 - Gateway 不知道任何具体 IM 平台的存在，所有平台逻辑封装在 Adapter 中
 - Gateway 负责 Adapter 子进程的健康检查和自动重启（最多 3 次）
+- **Gateway 自动维护 reply_to_id 映射**：内部维护 `_reply_to_ids` 字典（channel_id → reply_to_id），收到 Adapter 的 MSG 指令时记录映射关系；当 Agent 发送 SEND/STREAM 指令时，Gateway 自动注入对应的 `reply_to_id` 字段并消费该映射，使出方向消息能定位到入方向消息（群聊回复场景）。Adapter 无需自行管理回复关系。
 
 ---
 
@@ -135,7 +136,9 @@ Gateway 收到 READY 后会重放缓冲期间积压的 SEND/PUSH 消息。
 {"type": "PING"}
 ```
 
-Gateway 每 10 秒发送一次 PING，Adapter 也可以主动发送。Gateway 回复 PONG。
+Gateway watchdog 每 10 秒向 Adapter 发送 PING，Adapter 应回复 PONG（`{"type": "PONG"}`）。
+
+> ⚠️ **当前实现隐患**：飞书 Adapter 的 `_dispatch` 仅处理 STREAM/SEND/PUSH，**未实现 PING 的接收与 PONG 回复**。新 Adapter 必须在 `_dispatch` 中处理 PING 并回 PONG，否则在长时间空闲后可能被 Gateway 判定为连接异常。
 
 ### 2.3 Gateway → Adapter 指令
 
@@ -242,9 +245,21 @@ Adapter 应在 STREAM 阶段创建可更新的消息卡片（或等效机制）�
   "feishu": {
     "app_id": "cli_xxx",
     "app_secret": "xxx",
-    "enabled": true
+    "enabled": true,
+    "user_p2p_chat_id": "oc_xxx",
+    "user_open_id": "ou_xxx"
   }
 }
+```
+
+可选字段说明：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `user_p2p_chat_id` | string | 用户私聊 chat_id（运行时自动写回，首次配置无需填写） |
+| `user_open_id` | string | 用户 open_id（运行时自动写回，首次配置无需填写） |
+
+> 说明：飞书 Adapter 会在运行时将首个发消息用户的 `user_p2p_chat_id` 和 `user_open_id` 写回到 `preferences.json`，用于后续主动推送。Gateway 通过环境变量 `NIU_{ADAPTER_NAME}_USER_P2P_CHAT_ID` / `NIU_{ADAPTER_NAME}_USER_OPEN_ID` 传给 Adapter。
 ```
 
 配置关系说明：
@@ -263,12 +278,14 @@ Adapter 应在 STREAM 阶段创建可更新的消息卡片（或等效机制）�
     "adapter": "dingtalk"
   },
   "dingtalk": {
-    "client_id": "dingxxx",
-    "client_secret": "xxx",
+    "app_id": "dingxxx",
+    "app_secret": "xxx",
     "enabled": true
   }
 }
 ```
+
+> 注意：钉钉官方 SDK 使用 `client_id` / `client_secret` 命名，但 **Gateway 当前仅自动传递 `app_id` 和 `app_secret` 两个字段**（硬编码在 `_launch_adapter` 中）。请在 `preferences.json` 中使用 `app_id` / `app_secret` 作为键名存放钉钉的 Client ID / Client Secret，否则 Gateway 不会将凭证传给 Adapter。
 
 ---
 
@@ -490,13 +507,16 @@ ChannelRouter.route_out() → Gateway.send() → SEND 指令
        ▼
 Adapter 收到 SEND
        │
-       ├── 解析 Markdown 图片标记：![alt](path)
-       ├── 上传图片到 IM 平台获取 img_key
-       ├── 上传文件到 IM 平台获取 file_key
-       ├── 替换 Markdown 标记为 IM 平台格式
+       ├── 有 CardState（经过 STREAM 阶段）：
+       │     ├── 解析 Markdown 图片标记：![alt](path)
+       │     ├── 上传图片到 IM 平台获取 img_key
+       │     ├── 上传文件到 IM 平台获取 file_key
+       │     ├── 替换 Markdown 标记为 IM 平台格式
+       │     └── 终结卡片（将图片嵌入卡片 body）
        │
-       ▼
-终结卡片（或发送独立消息）
+       └── 无 CardState（如推送通知、非流式回复、跳过 STREAM）：
+             ├── 直接走 send_markdown / send_markdown_reply 发送纯文本
+             └── 清理内部图片标记（无卡片可终结）
 ```
 
 ### 主动推送（定时提醒等）
@@ -510,9 +530,15 @@ ChannelRouter.push() → Gateway.push() → PUSH 指令
        ▼
 Adapter 收到 PUSH
        │
-       ├── channel_id 非空 → 发送到指定会话
-       └── channel_id 为空 → 使用 READY 中声明的 push_target
+       ├── channel_id 非空（override_id） → 直接发送到指定会话
+       │
+       └── channel_id 为空 → 使用 push_target：
+             ├── 优先尝试 push_target 作为 open_id 发送 P2P 消息
+             ├── open_id 发送失败 → 自动回退用 chat_id 发送
+             └── P2P 消息发送成功后，更新 push_target 到 preferences.json
 ```
+
+**push 目标优先级**：`override_id`（PUSH 指令中的 channel_id）→ `open_id` → `chat_id`。open_id 发送失败时自动回退到 chat_id，确保推送可达。当用户首次与 Adapter 交互后，Adapter 会将有效的 open_id 写回 `preferences.json` 的 `push_target` 字段，供后续 PUSH 使用。
 
 ---
 
@@ -558,6 +584,16 @@ SEND 阶段（终结）：
 - 图片上传失败的，建议在终结后重试发送独立图片消息（参考飞书 Adapter 的 `failed_images` 逻辑）
 - 文本过长时需要截断（飞书卡片限制约 18000 字符，其他平台参考各自文档）
 - 文件发送应为独立消息，不嵌入文本卡片
+
+### 图片自动压缩
+
+飞书 Adapter 在上传图片前会自动检查文件大小：
+
+- 文件 ≤ 10MB：直接上传原图
+- 文件 > 10MB：使用 PIL 压缩为 JPEG 格式，quality 从 85 起逐级递降（85 → 75 → 65 → ... → 25），直到压缩后体积 ≤ 10MB 或 quality 降至 25
+- 压缩产生的临时文件上传完成后自动删除，不残留
+
+> 该机制仅在飞书 Adapter 中实现，新 Adapter 如需支持大图上传，应参考 `feishu_api.py:compress_image` 自行实现类似逻辑。
 
 ---
 
