@@ -42,3 +42,14 @@ def test_convert_tools_schema_backward_compatible():
     converted = _convert_tools_schema(tools)
     assert len(converted) == 1
     assert "cache_control" not in converted[0]
+
+
+def test_build_static_system_prompt_excludes_current_time():
+    """静态段不应包含 Current Time（Current Time 每分钟变化，会切断前缀 cache）。"""
+    from agent.runner import NiuRunner
+
+    static = NiuRunner._build_static_system_prompt()
+    assert "Current Time" not in static, \
+        f"静态段不应包含 Current Time，但找到: {static[-200:]}"
+    assert len(static) > 500, \
+        f"静态段应包含 niu.md 正文，长度应 > 500，实际 {len(static)}"
