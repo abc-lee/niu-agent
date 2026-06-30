@@ -177,3 +177,80 @@ def test_build_compress_history_no_tokens():
     # 前缀格式 [idx:1] 内容（无 tokens）
     assert history[0]["content"].startswith("[idx:1] ")
     assert "你好" in history[0]["content"]
+
+
+def test_mode2_passes_history_to_call_subagent(monkeypatch):
+    """模式二应构造 history 列表传给 call_subagent，而非序列化文本塞进 task。"""
+    import asyncio
+    import niu_api.compat as compat
+
+    messages = [
+        FakeMsg(id="msg-1", role="user", content="你好"),
+        FakeMsg(id="msg-2", role="assistant", content="你好，我是 Niu"),
+    ]
+
+    class FakeStore:
+        async def get_messages(self, limit=None, before_id=None):
+            return messages
+
+    async def fake_get_message_store():
+        return FakeStore()
+
+    # mock runner 控制 usage_percent（>50 触发模式二）
+    # 注意：compat.py 是函数内 import `from niu_api.chat import get_or_create_runner`
+    # 必须 patch 源模块 niu_api.chat.get_or_create_runner，patch compat.get_or_create_runner 无效
+    import niu_api.chat as chat_module
+    import agent.subagent as subagent_module
+    class FakeRunner:
+        handler = type("H", (), {"_last_prompt_tokens": 120000})()  # 120K tokens
+        llm_config = {}  # compat.py L1385 runner.llm_config 需要
+
+    def fake_get_or_create_runner():
+        return FakeRunner()
+
+    # mock call_subagent 捕获参数，返回 keep= 方案，短路后续执行
+    # 注意：compat.py L1375 是函数内 import `from agent.subagent import call_subagent`
+    # 必须 patch 源模块 agent.subagent.call_subagent，patch compat.call_subagent 无效
+    captured = {}
+    def fake_call_subagent(*args, **kwargs):
+        # 兼容 entity-extractor / dream-evolver / journal-agent / context-manager 多种调用形式
+        agent_name = kwargs.get("agent_name") or (args[0] if args else None)
+        if agent_name != "context-manager":
+            # 其他子Agent（entity-extractor 等）返回空结果，让 pipeline 继续推进
+            return "skip"
+        captured["agent_name"] = agent_name
+        captured["task"] = kwargs.get("task")
+        captured["history"] = kwargs.get("history")
+        return "keep=1,2\nupdate="
+
+    # mock 压缩执行（避免触发 chat_lock/DB 操作）
+    async def fake_noop(*a, **kw):
+        return None
+
+    monkeypatch.setattr(compat, "get_message_store", fake_get_message_store)
+    # 关键：patch 源模块（compat.py 函数内 import 从 niu_api.chat 取）
+    monkeypatch.setattr(chat_module, "get_or_create_runner", fake_get_or_create_runner)
+    # 关键：patch 源模块（compat.py 函数内 import 从 agent.subagent 取）
+    monkeypatch.setattr(subagent_module, "call_subagent", fake_call_subagent)
+    # _read_context_window_tokens 等配置读取 mock（这些是模块级 import，patch compat 正确）
+    monkeypatch.setattr(compat, "_read_context_window_tokens", lambda: 200000, raising=False)
+    monkeypatch.setattr(compat, "_read_warning_threshold", lambda: 0.8, raising=False)
+    monkeypatch.setattr(compat, "_read_target_threshold", lambda: 0.3, raising=False)
+    monkeypatch.setattr(compat, "_read_protect_recent_count", lambda: 0, raising=False)  # 不保护，2 条都进 history
+
+    # 调用 _tidy_context_impl（request dict 形式）
+    request = {"session_id": "test", "mode": "sleep"}
+    try:
+        asyncio.run(compat._tidy_context_impl(request))
+    except Exception:
+        pass  # 后续执行可能报错（未 mock 全部），只关心 call_subagent 是否被正确调用
+
+    # 验证 call_subagent 收到 history 参数
+    assert captured.get("agent_name") == "context-manager"
+    assert captured.get("history") is not None
+    assert isinstance(captured["history"], list)
+    assert len(captured["history"]) == 2
+    # task 是压缩指令（不含序列化消息文本）
+    assert "CRITICAL" in captured["task"] or "压缩" in captured["task"]
+    # task 不应含 [id:UUID] 格式（那是旧序列化文本的特征）
+    assert "[id:" not in captured["task"]
