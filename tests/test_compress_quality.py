@@ -1,6 +1,5 @@
 """context-manager 压缩质量修复测试。"""
 import json
-from pathlib import Path
 from unittest.mock import patch
 
 from agent.subagent import (
@@ -9,41 +8,51 @@ from agent.subagent import (
 )
 
 
-def test_read_compress_target_tokens_default():
+def test_read_compress_target_tokens_default(tmp_path):
     """配置无 compressTargetTokens 时返回默认 60000。"""
-    with patch("agent.subagent._get_user_config_path") as mock_path:
-        tmp = Path("/tmp/test_niu_config_empty.json")
-        tmp.write_text(json.dumps({"context": {}}))
-        mock_path.return_value = tmp
+    config_file = tmp_path / "config.json"
+    config_file.write_text(json.dumps({"context": {}}))
+    with patch("agent.subagent._get_user_config_path", return_value=config_file):
         assert _read_compress_target_tokens() == 60000
-    tmp.unlink()
 
 
-def test_read_compress_target_tokens_custom():
+def test_read_compress_target_tokens_custom(tmp_path):
     """配置有 compressTargetTokens 时返回自定义值。"""
-    with patch("agent.subagent._get_user_config_path") as mock_path:
-        tmp = Path("/tmp/test_niu_config_custom.json")
-        tmp.write_text(json.dumps({"context": {"compressTargetTokens": 80000}}))
-        mock_path.return_value = tmp
+    config_file = tmp_path / "config.json"
+    config_file.write_text(json.dumps({"context": {"compressTargetTokens": 80000}}))
+    with patch("agent.subagent._get_user_config_path", return_value=config_file):
         assert _read_compress_target_tokens() == 80000
-    tmp.unlink()
 
 
-def test_read_max_output_tokens_default():
+def test_read_max_output_tokens_default(tmp_path):
     """配置无 maxOutputTokens 时返回默认 16384。"""
-    with patch("agent.subagent._get_user_config_path") as mock_path:
-        tmp = Path("/tmp/test_niu_config_empty2.json")
-        tmp.write_text(json.dumps({"context": {}}))
-        mock_path.return_value = tmp
+    config_file = tmp_path / "config.json"
+    config_file.write_text(json.dumps({"context": {}}))
+    with patch("agent.subagent._get_user_config_path", return_value=config_file):
         assert _read_max_output_tokens() == 16384
-    tmp.unlink()
 
 
-def test_read_max_output_tokens_custom():
+def test_read_max_output_tokens_custom(tmp_path):
     """配置有 maxOutputTokens 时返回自定义值。"""
-    with patch("agent.subagent._get_user_config_path") as mock_path:
-        tmp = Path("/tmp/test_niu_config_custom2.json")
-        tmp.write_text(json.dumps({"context": {"maxOutputTokens": 32768}}))
-        mock_path.return_value = tmp
+    config_file = tmp_path / "config.json"
+    config_file.write_text(json.dumps({"context": {"maxOutputTokens": 32768}}))
+    with patch("agent.subagent._get_user_config_path", return_value=config_file):
         assert _read_max_output_tokens() == 32768
-    tmp.unlink()
+
+
+def test_read_compress_target_tokens_invalid_returns_default(tmp_path):
+    """配置 compressTargetTokens 为非法值（0/负数/字符串/bool）时返回默认 60000。"""
+    config_file = tmp_path / "config.json"
+    for invalid_val in [0, -100, "60000", True, None]:
+        config_file.write_text(json.dumps({"context": {"compressTargetTokens": invalid_val}}))
+        with patch("agent.subagent._get_user_config_path", return_value=config_file):
+            assert _read_compress_target_tokens() == 60000, f"非法值 {invalid_val!r} 应返回默认 60000"
+
+
+def test_read_max_output_tokens_invalid_returns_default(tmp_path):
+    """配置 maxOutputTokens 为非法值时返回默认 16384。"""
+    config_file = tmp_path / "config.json"
+    for invalid_val in [0, -100, "16384", True, None]:
+        config_file.write_text(json.dumps({"context": {"maxOutputTokens": invalid_val}}))
+        with patch("agent.subagent._get_user_config_path", return_value=config_file):
+            assert _read_max_output_tokens() == 16384, f"非法值 {invalid_val!r} 应返回默认 16384"
