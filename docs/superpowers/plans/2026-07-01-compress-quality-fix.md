@@ -431,51 +431,111 @@ finish_reason=='length' 触发降级重压。
 
 读 L578-583 的 MockResponse 构造代码（正常路径主构造点）。
 
-当前代码大致：
+当前代码（L578-583，只传 4 个参数，usage 在 L585-590 后赋值）：
 ```python
-mock_response = MockResponse(
-    thinking=...,
-    content=...,
-    tool_calls=...,
-    raw=...,
-    stop_reason=...,
-    context_overflow=...,
-    usage=usage,
-)
+        mock_resp = MockResponse(
+            thinking=reasoning_content,
+            content=full_content,
+            tool_calls=tool_calls,
+            raw=full_content,
+        )
+
+        if usage:
+            mock_resp.usage = {...}
 ```
 
-改为（加 `finish_reason=last_finish_reason or "stop"`）：
+改为（加 `finish_reason=last_finish_reason or "stop"` 参数）：
 ```python
-mock_response = MockResponse(
-    thinking=...,
-    content=...,
-    tool_calls=...,
-    raw=...,
-    stop_reason=...,
-    context_overflow=...,
-    usage=usage,
-    finish_reason=last_finish_reason or "stop",
-)
+        mock_resp = MockResponse(
+            thinking=reasoning_content,
+            content=full_content,
+            tool_calls=tool_calls,
+            raw=full_content,
+            finish_reason=last_finish_reason or "stop",
+        )
+
+        if usage:
+            mock_resp.usage = {...}
 ```
 
-注意：保留原有的参数值不变，只新增 `finish_reason` 参数。读实际代码确认其他参数的赋值方式，不要改。
+注意：保留原有 4 个参数不变，只新增 `finish_reason` 关键字参数。usage 仍在构造后赋值（L585-590 不动）。
 
-- [ ] **Step 5: 语法检查**
+另外读 L529-536 的 context_overflow 分支（流中检测到 overflow 时提前构造 MockResponse），也要加 `finish_reason` 参数（否则 overflow 时无 finish_reason）。读实际代码确认该分支的 MockResponse 构造，加 `finish_reason=last_finish_reason or "stop"`。
+
+- [ ] **Step 5: 写行为测试 — finish_reason 从流式 chunk 流到 MockResponse**
+
+在 `tests/test_compress_quality.py` 追加（用 fake streamable response 驱动 LiteLLMSession，验证 finish_reason 真实流通）：
+
+```python
+def test_litellm_adapter_finish_reason_from_stream(monkeypatch):
+    """litellm_adapter 流式循环应捕获最后一个 chunk 的 finish_reason 传入 MockResponse。"""
+    from agent.generic.litellm_adapter import LiteLLMSession
+    from agent.generic.llmcore import MockResponse
+    from types import SimpleNamespace
+
+    # 构造 fake chunk 流：3 个 chunk，最后一个 finish_reason='length'
+    def make_chunk(content=None, finish_reason=None):
+        delta = SimpleNamespace(content=content, reasoning_content=None, tool_calls=None)
+        return SimpleNamespace(
+            choices=[SimpleNamespace(delta=delta, finish_reason=finish_reason)],
+            usage=None,
+        )
+
+    fake_chunks = [
+        make_chunk(content="hello"),
+        make_chunk(content=" world"),
+        make_chunk(finish_reason="length"),  # 最后一个 chunk 带 finish_reason
+    ]
+
+    # mock litellm.completion 返回 fake_chunks 迭代器
+    import litellm
+    monkeypatch.setattr(litellm, "completion", lambda **kwargs: iter(fake_chunks))
+
+    session = LiteLLMSession(
+        default_model="test-model",
+        api_base="http://test",
+        api_key="test",
+        read_timeout=30,
+    )
+    messages = [{"role": "user", "content": "test"}]
+    gen = session.chat(messages=messages, tools=None)
+    # 消费生成器拿 MockResponse（通过 StopIteration.value）
+    result = None
+    try:
+        while True:
+            next(gen)
+    except StopIteration as e:
+        result = e.value
+
+    assert result is not None
+    assert isinstance(result, MockResponse)
+    assert result.finish_reason == "length"
+    assert result.content == "hello world"
+```
+
+- [ ] **Step 6: 运行行为测试确认通过**
+
+Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_compress_quality.py::test_litellm_adapter_finish_reason_from_stream -v`
+Expected: PASS（finish_reason='length' 被正确捕获）
+
+如果测试因 LiteLLMSession 初始化参数不对而失败，读 `agent/generic/litellm_adapter.py` 的 `LiteLLMSession.__init__` 确认必需参数，调整测试。
+
+- [ ] **Step 7: 语法检查**
 
 Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "import ast; ast.parse(open('agent/generic/litellm_adapter.py').read())"`
 Expected: 无输出
 
-- [ ] **Step 6: 验证 MockResponse 构造不报错**
+- [ ] **Step 8: 验证 MockResponse 构造不报错**
 
 Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "from agent.generic.litellm_adapter import LiteLLMSession; print('OK')"`
 Expected: 输出 `OK`（import 不报错）
 
-- [ ] **Step 7: 运行现有测试不破坏**
+- [ ] **Step 9: 运行现有测试不破坏**
 
 Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_compress_quality.py tests/test_compress_history.py -v 2>&1 | tail -20`
 Expected: 无新增 FAIL
 
-- [ ] **Step 8: 临时提交**
+- [ ] **Step 10: 临时提交**
 
 ```bash
 cd REDACTED_USER_PATH/tools/ai-bot
@@ -552,12 +612,78 @@ git commit -m "feat(litellm_adapter): 流式循环捕获 finish_reason 传入 Mo
             }
 ```
 
-- [ ] **Step 4: 语法检查**
+- [ ] **Step 4: 写行为测试 — agent_runner_loop return_value 含 finish_reason**
+
+在 `tests/test_compress_quality.py` 追加（mock LLM 返回带 finish_reason 的 MockResponse，验证 return_value 真实携带）：
+
+```python
+def test_agent_loop_return_value_contains_finish_reason(monkeypatch):
+    """agent_runner_loop 正常完成时 return_value 应含 response 的 finish_reason。"""
+    from agent.generic import agent_loop
+    from agent.generic.llmcore import MockResponse
+
+    # mock LLM 客户端：返回 finish_reason='length' 的 MockResponse
+    def fake_chat(self, messages, tools=None, response_format=None):
+        resp = MockResponse(
+            thinking="",
+            content="keep=1,2,3\nupdate=",
+            tool_calls=[],
+            raw="keep=1,2,3",
+            finish_reason="length",
+        )
+        # chat 是 generator，yield content chunks 然后 StopIteration 返回 resp
+        yield "keep=1,2,3\nupdate="
+        return resp
+
+    # mock 依赖避免真实初始化
+    monkeypatch.setattr(agent_loop, "is_stop_requested", lambda: False)
+
+    # 构造最小 client mock
+    class FakeClient:
+        def chat(self, messages, tools=None, response_format=None):
+            return fake_chat(self, messages, tools, response_format)
+
+    gen = agent_loop.agent_runner_loop(
+        client=FakeClient(),
+        system_prompt="test",
+        user_input="test",
+        handler=None,
+        tools_schema=[],
+        max_turns=1,
+        initial_user_content="test",
+    )
+
+    result_text = ""
+    return_value = None
+    try:
+        while True:
+            chunk = next(gen)
+            if isinstance(chunk, str):
+                result_text += chunk
+    except StopIteration as e:
+        return_value = e.value
+
+    assert return_value is not None
+    assert isinstance(return_value, dict)
+    assert return_value.get("result") == "CURRENT_TASK_DONE"
+    assert return_value.get("finish_reason") == "length"
+```
+
+注意：如果 `agent_runner_loop` 的实际签名或 `client.chat` 调用方式跟测试不匹配，读 `agent/generic/agent_loop.py` 确认参数名和调用约定，调整测试。关键断言是 `return_value.get("finish_reason") == "length"`。
+
+- [ ] **Step 5: 运行行为测试确认通过**
+
+Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_compress_quality.py::test_agent_loop_return_value_contains_finish_reason -v`
+Expected: PASS（return_value 含 finish_reason='length'）
+
+如果测试因 agent_runner_loop 签名复杂而难以构造，可以简化：直接 mock `_run_agent_loop` 内部的 LLM 调用，或读现有测试文件找 agent_runner_loop 的测试模式参考。
+
+- [ ] **Step 6: 语法检查**
 
 Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "import ast; ast.parse(open('agent/generic/agent_loop.py').read())"`
 Expected: 无输出
 
-- [ ] **Step 5: 验证 import 不报错**
+- [ ] **Step 7: 验证 import 不报错**
 
 Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "from agent.generic.agent_loop import agent_runner_loop; print('OK')"`
 Expected: 输出 `OK`
@@ -592,23 +718,32 @@ MAX_TURNS_EXCEEDED / STOPPED 路径不带 finish_reason（非正常完成）。"
 
 - [ ] **Step 1: 写失败测试 — call_subagent 检测截断返回 COMPACT_TRUNCATED**
 
-在 `tests/test_compress_quality.py` 追加：
+在 `tests/test_compress_quality.py` 追加。
+
+**注意 mock 边界**：Task 6 的核心改动是"call_subagent 检测 return_value 的 finish_reason"。单元测试 mock `_run_agent_loop` 是合理的（finish_reason 从 litellm→MockResponse→return_value 的真实流通已由 Task 4/5 的行为测试覆盖）。但 `create_client` / `get_tools_schema` / `NiuHandler` 不能 mock 成 None（会导致 AttributeError），需要 mock 成能被 call_subagent 安全调用的 fake 对象。
 
 ```python
 def test_call_subagent_detects_truncation(monkeypatch):
     """call_subagent 检测 finish_reason=='length' 时返回 'COMPACT_TRUNCATED'。"""
     from agent import subagent
-    from agent.generic import agent_loop
 
     # mock _run_agent_loop 返回 finish_reason='length' 的 return_value
     def fake_run_agent_loop(**kwargs):
         return "部分输出...", {"result": "CURRENT_TASK_DONE", "data": {}, "finish_reason": "length"}
 
     monkeypatch.setattr(subagent, "_run_agent_loop", fake_run_agent_loop)
-    # mock create_client / get_tools_schema / NiuHandler 等避免真实初始化
-    monkeypatch.setattr(subagent, "create_client", lambda cfg: None)
+
+    # mock create_client / get_tools_schema / NiuHandler 为安全 fake（非 None）
+    class FakeClient:
+        pass
+    monkeypatch.setattr(subagent, "create_client", lambda cfg: FakeClient())
     monkeypatch.setattr(subagent, "get_tools_schema", lambda: [])
-    monkeypatch.setattr(subagent, "NiuHandler", lambda mcp_client=None: None)
+    # NiuHandler 需要支持 _disable_memory_recall / _is_subagent 属性赋值
+    class FakeHandler:
+        def __init__(self, mcp_client=None):
+            self._disable_memory_recall = False
+            self._is_subagent = False
+    monkeypatch.setattr(subagent, "NiuHandler", FakeHandler)
 
     result = subagent.call_subagent(
         agent_name="context-manager",
@@ -626,9 +761,16 @@ def test_call_subagent_normal_return(monkeypatch):
         return "keep=1,2,3\nupdate=", {"result": "CURRENT_TASK_DONE", "data": {}, "finish_reason": "stop"}
 
     monkeypatch.setattr(subagent, "_run_agent_loop", fake_run_agent_loop)
-    monkeypatch.setattr(subagent, "create_client", lambda cfg: None)
+
+    class FakeClient:
+        pass
+    monkeypatch.setattr(subagent, "create_client", lambda cfg: FakeClient())
     monkeypatch.setattr(subagent, "get_tools_schema", lambda: [])
-    monkeypatch.setattr(subagent, "NiuHandler", lambda mcp_client=None: None)
+    class FakeHandler:
+        def __init__(self, mcp_client=None):
+            self._disable_memory_recall = False
+            self._is_subagent = False
+    monkeypatch.setattr(subagent, "NiuHandler", FakeHandler)
 
     result = subagent.call_subagent(
         agent_name="context-manager",
@@ -637,6 +779,8 @@ def test_call_subagent_normal_return(monkeypatch):
     )
     assert "keep=1,2,3" in result
 ```
+
+**说明**：这两个测试是单元测试，验证 call_subagent 的 if 检测逻辑。finish_reason 从 litellm chunk 到 return_value 的真实传递由 Task 4（litellm_adapter 行为测试）和 Task 5（agent_loop return_value 行为测试）覆盖。Task 6 在此基础上验证"检测到 finish_reason='length' 时返回 COMPACT_TRUNCATED 字符串"。
 
 - [ ] **Step 2: 运行测试确认失败**
 
@@ -728,12 +872,20 @@ git commit -m "feat(subagent): call_subagent 检测 finish_reason=='length' 返�
 
 读 `niu_api/compat.py:1860-1910` 确认当前 task prompt 和 `run_context_manager_mode2` 函数。
 
-- [ ] **Step 2: 重写模式二 task prompt**
+- [ ] **Step 2: 新增 _build_mode2_prompt 函数 + 重写 prompt**
 
-把当前模式二 task prompt（L1860-1882）替换为（含禁工具前言 + 输出格式 + 方法论 + 上下文状态 + analysis 草稿块）：
+把模式二 task prompt 构造抽成函数 `_build_mode2_prompt`（放在 `_strip_analysis` 函数之后，约 L495 附近）。这个函数返回完整的 prompt 字符串，接收 `display_tokens` / `_compress_target_tokens` / `usage_percent` / `compress_history` 参数。
+
+函数内容（返回 Step 2 描述的 prompt 字符串）：
 
 ```python
-            prompt = f"""CRITICAL: 你只有一轮机会完成压缩决策。禁止调用任何工具。
+def _build_mode2_prompt(display_tokens: int, compress_target_tokens: int, usage_percent: float, compress_history: list) -> str:
+    """构造模式二 task prompt（含压缩方法论 + analysis 草稿块）。
+
+    抽成函数是因为降级重压循环每次 _compress_target_tokens 变了要重新构造 prompt
+    （f-string 含 {_compress_target_tokens}，需要重新求值）。
+    """
+    return f"""CRITICAL: 你只有一轮机会完成压缩决策。禁止调用任何工具。
 - 不调用 write、delete_messages、update_message、bash 等
 - 你的回复必须包含 <analysis> 块和 keep=/update= 两行
 - 调用工具会被拒绝，浪费唯一一轮，任务失败
@@ -769,8 +921,8 @@ update=1|[摘要] 智能家居调试 → 完成 | 微波炉/空调测试;5|[摘�
 
 压缩方法论（必须在一轮内完成，禁止多轮）：
 
-1. 估算：当前 {display_tokens} tokens，目标 {_compress_target_tokens} tokens，
-   需释放 {display_tokens - _compress_target_tokens} tokens。
+1. 估算：当前 {display_tokens} tokens，目标 {compress_target_tokens} tokens，
+   需释放 {display_tokens - compress_target_tokens} tokens。
 
 2. 划分优先级（按 idx 范围，粗粒度）：
    - 第一份（最早）：idx 最小的约 1/3 范围
@@ -808,8 +960,8 @@ update=1|[摘要] 智能家居调试 → 完成 | 微波炉/空调测试;5|[摘�
 当前上下文状态：
 - 参与压缩的消息数：{len(compress_history)}（受保护消息已排除）
 - 当前 token 总数：{display_tokens}（{usage_percent:.1f}%）
-- 目标 token 总数：{_compress_target_tokens}
-- 需释放至少 {display_tokens - _compress_target_tokens} tokens
+- 目标 token 总数：{compress_target_tokens}
+- 需释放至少 {display_tokens - compress_target_tokens} tokens
 
 上方历史消息每条开头带 [idx:N] Ntokens 前缀，共 {len(compress_history)} 条。
 role=tool 的工具输出会被程序自动删除，不需要放入 keep。
@@ -818,9 +970,9 @@ REMINDER: 禁止调用任何工具，直接在回复中输出 <analysis> 块和 
 ```
 
 注意：
-- 变量名用 `compress_history`（模式二现有 history 变量名）和 `_compress_target_tokens`（新引入的降级循环变量）
-- 不用 `{target_tokens}`（旧变量）和 `{message_count}`（旧变量）
-- 保留 `{display_tokens}` / `{usage_percent}` / `len(compress_history)`（现有变量）
+- 函数参数名用 `compress_target_tokens`（不带下划线前缀，函数内局部变量）
+- 调用处（Step 3 降级循环）传 `_compress_target_tokens`（带下划线的循环变量）作为参数
+- 原模式二分支 L1860-1882 的内联 prompt 构造删除，改为调用 `_build_mode2_prompt(...)`
 
 - [ ] **Step 3: 改造 run_context_manager_mode2 加降级循环 + max_tokens 注入**
 
@@ -849,11 +1001,19 @@ REMINDER: 禁止调用任何工具，直接在回复中输出 <analysis> 块和 
                 "max_tokens": _read_max_output_tokens(),
             }
 
+            # 降级重压循环：最多 3 次尝试，每次压缩目标降 50%
             _compress_target_tokens = _read_compress_target_tokens()
+            compress_result = None
             for attempt in range(3):
                 if attempt > 0:
                     _compress_target_tokens = int(_compress_target_tokens * 0.5)
                     logger.warning(f"[Compact] Mode-2 truncated, lowering target to {_compress_target_tokens}, attempt {attempt+1}")
+
+                # 每次循环重新构造 prompt（_compress_target_tokens 变了，f-string 要重新求值）
+                # base_prompt 是不含缩短提示的原始 prompt，attempt>0 时追加缩短提示
+                prompt = _build_mode2_prompt(display_tokens, _compress_target_tokens, usage_percent, compress_history)
+                if attempt > 0:
+                    prompt = prompt + "\n\n注意：上次输出被截断，请精简 <analysis> 块，只保留关键决策依据，不要逐条分析每条消息。"
 
                 def run_context_manager_mode2():
                     return call_subagent(
@@ -865,32 +1025,48 @@ REMINDER: 禁止调用任何工具，直接在回复中输出 <analysis> 块和 
                         history=compress_history,
                     )
 
-                result = await asyncio.to_thread(run_context_manager_mode2)
+                compress_result = await asyncio.to_thread(run_context_manager_mode2)
 
-                if result == "COMPACT_TRUNCATED":
+                if is_stop_requested():
+                    logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
+                    clear_stop()
+                    return {"status": "aborted", "message": "Stopped by user"}
+
+                if compress_result == "COMPACT_TRUNCATED":
                     if attempt < 2:
-                        # 降级 prompt 加缩短 analysis 提示
-                        prompt = prompt + "\n\n注意：上次输出被截断，请精简 <analysis> 块，只保留关键决策依据，不要逐条分析每条消息。"
-                        continue
+                        continue  # 降级重试
                     else:
                         logger.error("[Compact] Mode-2 all 3 attempts truncated, giving up")
-                        return  # 放弃压缩
+                        return {"status": "skipped", "mode": "sleep", "reason": "all attempts truncated"}
 
-                # 正常返回，剥离 analysis + 解析
+                # 正常返回，跳出循环进入解析
+                logger.info(f"[Tidy] Mode-2: context-manager completed, length={len(compress_result)}")
                 break
 
-            # 后续解析逻辑（原有代码）
+            # 剥离 <analysis> 草稿块（在解析前）
+            compress_result = _strip_analysis(compress_result)
+
+            # 后续解析逻辑（原有代码 L1917+，用 compress_result 变量）
+            # 从 LLM content 解析序号格式压缩方案
+            _idx_to_id: dict[int, str] = {}
             ...
 ```
 
-注意：
-- `prompt` 变量需要在循环内可重新赋值（降级时追加缩短提示）——把 prompt 构造放在循环前，循环内按需追加
-- `_read_max_output_tokens` / `_read_compress_target_tokens` 从 `agent.subagent` 导入（compat.py 顶部已有 `from agent.subagent import ...`，加这两个）
-- `result == "COMPACT_TRUNCATED"` 时 continue 到下一次循环（attempt+1，目标降 50%）
-- 3 次都截断 `return` 放弃压缩（模式二无返回值，直接 return 跳出 `_tidy_context_impl` 的模式二分支）
-- 正常返回 `break` 跳出循环，后续接原有的解析逻辑（L1917+ 的 keep/update 解析）
+**关键修正点**：
 
-读实际代码确认 `await asyncio.to_thread(run_context_manager_mode2)` 的调用位置和后续解析逻辑的衔接，保证 break 后能接上原有解析。
+1. **变量名用 `compress_result`**（与下游 L1915/L1924 的 `compress_result.splitlines()` 一致），不用 `result`。降级循环给 `compress_result` 赋值。
+
+2. **prompt 在循环内重新构造**：因为 prompt 是 f-string 含 `{_compress_target_tokens}`，降级时值变了必须重新构造。把 prompt 构造抽成函数 `_build_mode2_prompt(display_tokens, _compress_target_tokens, usage_percent, compress_history)`，Step 2 的 prompt 内容移到这个函数里返回。这样循环内每次调用都重新求值 f-string。
+
+3. **缩短提示只追加一次**：`if attempt > 0: prompt = prompt + 提示`——因为 prompt 每次从 `_build_mode2_prompt` 重新构造（不含提示），所以追加不会累积。
+
+4. **3 次都截断返回 dict**：`return {"status": "skipped", "mode": "sleep", "reason": "all attempts truncated"}`——与函数其他 return（如 L1914 `{"status": "aborted", ...}` 和末尾 `{"status": "ok", ...}`）一致，避免返回 None 导致调用方 KeyError。
+
+5. **`is_stop_requested` 检查**：保留原有的停止检查（L1911-1914），放在每次 `compress_result` 赋值之后。
+
+6. **`_strip_analysis` 在循环外调用**：循环 break 后 `compress_result` 是正常返回值，剥离 analysis 再接原有解析。
+
+读实际代码确认 L1911-1915 的 `is_stop_requested` / `logger.info` 位置，把降级循环嵌入时保留这些检查。
 
 - [ ] **Step 4: 在 compat.py 顶部 import 新增读取函数**
 
@@ -906,29 +1082,16 @@ from agent.subagent import (
 )
 ```
 
-- [ ] **Step 5: 在解析前加 _strip_analysis 调用**
+- [ ] **Step 5: 确认 _strip_analysis 已在降级循环后调用**
 
-读 `niu_api/compat.py:1917-1925` 确认 keep/update 解析入口。
+Step 3 的降级循环代码里已经包含 `compress_result = _strip_analysis(compress_result)`（在 break 之后、解析之前）。确认这一行存在，且变量名用 `compress_result`（与下游 L1924 的 `compress_result.splitlines()` 一致）。
 
-当前代码大致（L1917 附近）：
-```python
-            result = await asyncio.to_thread(run_context_manager_mode2)
-            # 解析 keep=/update=
-            lines = result.strip().splitlines()
-            ...
-```
+读改造后的代码确认：
+- 降级循环 `break` 后 `compress_result` 是正常返回值（非 "COMPACT_TRUNCATED"）
+- `compress_result = _strip_analysis(compress_result)` 剥离 analysis 块
+- 下游 `for line in compress_result.splitlines():` 解析 keep/update（原有代码 L1924，变量名不变）
 
-改为（在解析前剥离 analysis）：
-```python
-            # 循环结束后 result 是正常返回（非 COMPACT_TRUNCATED）
-            # 剥离 <analysis> 草稿块
-            result = _strip_analysis(result)
-            # 解析 keep=/update=
-            lines = result.strip().splitlines()
-            ...
-```
-
-注意：降级循环里的 `result` 变量在 break 后保留正常返回值，这里剥离 analysis 再解析。
+**不要**用 `result` 变量名——模式二下游解析用的是 `compress_result`，改名会导致 L1915/L1924 引用断裂。
 
 - [ ] **Step 6: 语法检查**
 
@@ -987,11 +1150,11 @@ def test_mode2_prompt_contains_methodology(monkeypatch):
     monkeypatch.setattr(compat, "_read_max_output_tokens", lambda: 16384, raising=False)
 
     request = {"session_id": "test", "mode": "sleep"}
-    try:
-        asyncio.run(compat._tidy_context_impl(request))
-    except Exception:
-        pass
+    # 不用 try/except 吞异常——让真实错误透出，便于发现 prompt 构造或解析的问题
+    asyncio.run(compat._tidy_context_impl(request))
 
+    # 验证 call_subagent 被调用且捕获了参数
+    assert "task" in captured, "call_subagent 未被调用，可能 _tidy_context_impl 提前返回或抛错"
     # prompt 含方法论关键词
     assert "压缩方法论" in captured["task"]
     assert "第一份" in captured["task"]
@@ -1000,6 +1163,11 @@ def test_mode2_prompt_contains_methodology(monkeypatch):
     # llm_config 注入了 max_tokens
     assert captured["llm_config"].get("litellm_kwargs", {}).get("max_tokens") == 16384
 ```
+
+**注意**：
+- `FakeMsg` 从 `tests/test_compress_history.py` 导入（`from tests.test_compress_history import FakeMsg`）或在测试文件顶部定义（参考 test_compress_history.py L13-20 的定义）
+- 不用 `try/except: pass` 吞异常——如果 `_tidy_context_impl` 抛错，测试应失败而非静默通过
+- 不 mock `_read_target_threshold`（Task 1 已删除该配置，模式二不再用百分比阈值）
 
 - [ ] **Step 8: 运行测试确认通过**
 
@@ -1039,12 +1207,20 @@ max_tokens 通过 llm_config[litellm_kwargs] 动态注入，不改 call_subagent
 
 读 `niu_api/compat.py:2511-2563` 确认当前 task prompt 和 `run_context_manager_force` 函数。
 
-- [ ] **Step 2: 重写模式三 task prompt**
+- [ ] **Step 2: 新增 _build_force_prompt 函数 + 重写 prompt**
 
-把当前模式三 task prompt（L2511-2548）替换为（模式三比模式二多 cursor 行和 dream 安全边界）：
+把模式三 task prompt 构造抽成函数 `_build_force_prompt`（放在 `_build_mode2_prompt` 之后，约 L500 附近）。接收 `display_tokens` / `compress_target_tokens` / `usage_percent` / `_force_history` / `last_compress_id` / `_dream_idx_in_force` 参数。
+
+函数内容（返回 Step 2 描述的 prompt 字符串，模式三比模式二多 cursor 行 + dream 安全边界）：
 
 ```python
-            prompt = f"""CRITICAL: 你只有一轮机会完成压缩决策。禁止调用任何工具。
+def _build_force_prompt(display_tokens: int, compress_target_tokens: int, usage_percent: float,
+                        force_history: list, last_compress_id: str | None, dream_idx_in_force: int) -> str:
+    """构造模式三 force task prompt（含压缩方法论 + analysis 草稿块 + cursor + dream 安全边界）。
+
+    抽成函数是因为降级重压循环每次 compress_target_tokens 变了要重新构造 prompt。
+    """
+    return f"""CRITICAL: 你只有一轮机会完成压缩决策。禁止调用任何工具。
 - 不调用 write、delete_messages、update_message、bash 等
 - 你的回复必须包含 <analysis> 块和 keep=/update=/cursor= 三行
 - 调用工具会被拒绝，浪费唯一一轮，任务失败
@@ -1083,8 +1259,8 @@ cursor=200
 
 压缩方法论（必须在一轮内完成，禁止多轮）：
 
-1. 估算：当前 {display_tokens} tokens，目标 {_compress_target_tokens} tokens，
-   需释放 {display_tokens - _compress_target_tokens} tokens。
+1. 估算：当前 {display_tokens} tokens，目标 {compress_target_tokens} tokens，
+   需释放 {display_tokens - compress_target_tokens} tokens。
 
 2. 划分优先级（按 idx 范围，粗粒度）：
    - 第一份（最早）：idx 最小的约 1/3 范围
@@ -1120,16 +1296,16 @@ cursor=200
    - 摘要格式：[摘要] <用户意图> → <执行结果> | <关键细节>
 
 当前上下文状态：
-- 参与压缩的消息数：{len(_force_history)}（受保护消息已排除）
+- 参与压缩的消息数：{len(force_history)}（受保护消息已排除）
 - 当前 token 总数：{display_tokens}（{usage_percent:.1f}%）
-- 目标 token 总数：{_compress_target_tokens}
-- 需释放至少 {display_tokens - _compress_target_tokens} tokens
+- 目标 token 总数：{compress_target_tokens}
+- 需释放至少 {display_tokens - compress_target_tokens} tokens
 - 上次压缩游标：{last_compress_id or '（无，从最早消息开始）'}
 
-上方历史消息每条开头带 [idx:N] Ntokens 前缀，共 {len(_force_history)} 条。
+上方历史消息每条开头带 [idx:N] Ntokens 前缀，共 {len(force_history)} 条。
 role=tool 的工具输出会被程序自动删除，不需要放入 keep。
 
-安全边界：idx > {_dream_idx_in_force} 的消息（dream-evolver 未提取知识），
+安全边界：idx > {dream_idx_in_force} 的消息（dream-evolver 未提取知识），
 不得直接删除，必须用 update 压缩为[摘要]格式后保留（不删除）。
 注：受保护消息已从列表中排除，无需处理。
 
@@ -1138,15 +1314,15 @@ REMINDER: 禁止调用任何工具，直接在回复中输出 <analysis> 块和 
 ```
 
 注意：
-- 变量名用 `_force_history`（模式三现有 history 变量名）和 `_compress_target_tokens`（降级循环变量）
-- 保留 `{display_tokens}` / `{usage_percent}` / `{last_compress_id}` / `len(_force_history)` / `{_dream_idx_in_force}`（现有变量）
-- 模式三比模式二多 `cursor=` 行 + dream 安全边界
+- 函数参数名用 `force_history` / `dream_idx_in_force`（不带下划线前缀，函数内局部变量）
+- 调用处（Step 3 降级循环）传 `_force_history` / `_dream_idx_in_force`（带下划线的现有变量）作为参数
+- 原模式三分支 L2511-2548 的内联 prompt 构造删除，改为调用 `_build_force_prompt(...)`
 
 - [ ] **Step 3: 改造 run_context_manager_force 加降级循环 + max_tokens 注入**
 
 读 `niu_api/compat.py:2553-2563` 确认 `run_context_manager_force` 和调用现状。
 
-当前代码大致：
+当前代码（L2553-2563）：
 ```python
             def run_context_manager_force():
                 return call_subagent(
@@ -1161,7 +1337,7 @@ REMINDER: 禁止调用任何工具，直接在回复中输出 <analysis> 块和 
             result = await asyncio.to_thread(run_context_manager_force)
 ```
 
-改为（仿模式二的降级循环）：
+改为（加降级循环 + llm_config 注入 max_tokens + 截断检测）：
 
 ```python
             # llm_config 动态注入 max_tokens（通过 litellm_kwargs）
@@ -1171,12 +1347,20 @@ REMINDER: 禁止调用任何工具，直接在回复中输出 <analysis> 块和 
                 "max_tokens": _read_max_output_tokens(),
             }
 
+            # 降级重压循环：最多 3 次尝试，每次压缩目标降 50%
             _compress_target_tokens = _read_compress_target_tokens()
             result = None
             for attempt in range(3):
                 if attempt > 0:
                     _compress_target_tokens = int(_compress_target_tokens * 0.5)
                     logger.warning(f"[Compact] Force truncated, lowering target to {_compress_target_tokens}, attempt {attempt+1}")
+
+                # 每次循环重新构造 prompt（_compress_target_tokens 变了，f-string 要重新求值）
+                prompt = _build_force_prompt(
+                    display_tokens, _compress_target_tokens, usage_percent,
+                    _force_history, last_compress_id, _dream_idx_in_force
+                )
+                if attempt > 0:
                     prompt = prompt + "\n\n注意：上次输出被截断，请精简 <analysis> 块，只保留关键决策依据，不要逐条分析每条消息。"
 
                 def run_context_manager_force():
@@ -1191,44 +1375,56 @@ REMINDER: 禁止调用任何工具，直接在回复中输出 <analysis> 块和 
 
                 result = await asyncio.to_thread(run_context_manager_force)
 
+                if is_stop_requested():
+                    logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
+                    clear_stop()
+                    return {"status": "aborted", "message": "Stopped by user"}
+
                 if result == "COMPACT_TRUNCATED":
                     if attempt < 2:
-                        continue
+                        continue  # 降级重试
                     else:
                         logger.error("[Compact] Force all 3 attempts truncated, giving up")
-                        result = None
-                        break
+                        return {"status": "skipped", "mode": "force", "reason": "all attempts truncated"}
+
                 # 正常返回
+                logger.info(f"[Tidy] Force: context-manager completed, length={len(result)}")
                 break
 
-            if result is None:
-                # 3 次都截断，放弃压缩，跳过后续解析
-                return  # 或按实际 force 分支的退出方式
-
-            # 剥离 <analysis> 草稿块
+            # 剥离 <analysis> 草稿块（在解析前）
             result = _strip_analysis(result)
-            # 后续解析逻辑（原有代码 L2572+）
-            ...
+
+            # 后续解析逻辑（原有代码 L2572+，用 result 变量）
+            new_compress_id = last_compress_id
+            try:
+                keep_idxs: set[int] = set()
+                ...
 ```
 
-注意：
-- 模式三 force 分支的"放弃压缩"退出方式读实际代码确认（可能不是简单 `return`，可能需要走 force 分支的错误处理路径）
-- `result` 变量在循环外初始化为 None，3 次截断后保持 None，用 `if result is None` 判断放弃
-- 正常 break 后 `result` 是正常返回值，剥离 analysis 接原有解析
+**关键修正点**：
 
-- [ ] **Step 4: 在解析前加 _strip_analysis 调用**
+1. **变量名用 `result`**（与下游 L2577 的 `result.splitlines()` 一致），模式三现状就是 `result`，不改名。
 
-读 `niu_api/compat.py:2572-2580` 确认 force 分支解析入口。
+2. **prompt 在循环内重新构造**：调用 `_build_force_prompt(...)` 每次重新求值 f-string。`_compress_target_tokens` 降级后值变了，prompt 里的 `{compress_target_tokens}` 会反映新值。
 
-在 `result = await asyncio.to_thread(run_context_manager_force)` 之后（循环结束后）、解析 `lines = result.strip().splitlines()` 之前，加：
+3. **缩短提示只追加一次**：`if attempt > 0: prompt = prompt + 提示`——prompt 每次从 `_build_force_prompt` 重新构造（不含提示），追加不会累积。
 
-```python
-            # 剥离 <analysis> 草稿块
-            result = _strip_analysis(result)
-            # 解析 keep=/update=/cursor=
-            lines = result.strip().splitlines()
-            ...
-```
+4. **3 次都截断返回 dict**：`return {"status": "skipped", "mode": "force", "reason": "all attempts truncated"}`——与 force 分支末尾 L2827 的 `return {"status": "ok", ...}` 一致，避免返回 None。注意：这个 return 会跳过 L2810-2827 的 `tokens_after` 计算和 compress 游标写入——这是合理的（压缩没执行，不需要更新游标和 tokens_after）。
+
+5. **`is_stop_requested` 检查**：保留原有的停止检查（L2564-2567），放在每次 `result` 赋值之后。
+
+6. **`_strip_analysis` 在循环外调用**：循环 break 后 `result` 是正常返回值，剥离 analysis 再接原有解析（L2572+ 的 try 块）。
+
+7. **`new_compress_id = last_compress_id` 保留**：原有 L2571 的初始化，在剥离 analysis 之后、解析之前。
+
+- [ ] **Step 4: 确认 _strip_analysis 已在降级循环后调用**
+
+Step 3 的降级循环代码里已经包含 `result = _strip_analysis(result)`（在 break 之后、解析之前）。确认这一行存在，且变量名用 `result`（与下游 L2577 的 `result.splitlines()` 一致）。
+
+读改造后的代码确认：
+- 降级循环 `break` 后 `result` 是正常返回值（非 "COMPACT_TRUNCATED"）
+- `result = _strip_analysis(result)` 剥离 analysis 块
+- 下游 `for line in result.splitlines():` 解析 keep/update/cursor（原有代码 L2577，变量名不变）
 
 - [ ] **Step 5: 语法检查**
 
@@ -1280,18 +1476,16 @@ def test_mode3_prompt_contains_methodology(monkeypatch):
     monkeypatch.setattr(subagent_module, "call_subagent", fake_call_subagent)
     monkeypatch.setattr(compat, "_read_context_window_tokens", lambda: 200000, raising=False)
     monkeypatch.setattr(compat, "_read_warning_threshold", lambda: 0.8, raising=False)
-    monkeypatch.setattr(compat, "_read_target_threshold", lambda: 0.3, raising=False)
     monkeypatch.setattr(compat, "_read_protect_recent_count", lambda: 0, raising=False)
     monkeypatch.setattr(compat, "_write_cursor_with_lock", lambda *a, **kw: None, raising=False)
     monkeypatch.setattr(compat, "_read_compress_target_tokens", lambda: 60000, raising=False)
     monkeypatch.setattr(compat, "_read_max_output_tokens", lambda: 16384, raising=False)
 
     request = {"session_id": "test", "mode": "force"}
-    try:
-        asyncio.run(compat._tidy_context_impl(request))
-    except Exception:
-        pass
+    # 不用 try/except 吞异常——让真实错误透出
+    asyncio.run(compat._tidy_context_impl(request))
 
+    assert "task" in captured, "call_subagent 未被调用"
     assert "压缩方法论" in captured["task"]
     assert "第一份" in captured["task"]
     assert "会话单元" in captured["task"]
@@ -1300,6 +1494,11 @@ def test_mode3_prompt_contains_methodology(monkeypatch):
     assert "安全边界" in captured["task"]
     assert captured["llm_config"].get("litellm_kwargs", {}).get("max_tokens") == 16384
 ```
+
+**注意**：
+- `FakeMsg` 从 `tests/test_compress_history.py` 导入或在测试文件顶部定义
+- 不 mock `_read_target_threshold`（Task 1 已删除该配置，模式三不再用百分比阈值）
+- 不用 `try/except: pass` 吞异常
 
 - [ ] **Step 7: 运行测试确认通过**
 
@@ -1423,11 +1622,19 @@ Expected: 无输出
 
 - [ ] **Step 8: 写测试 — 校验兜底已删除**
 
-在 `tests/test_compress_quality.py` 追加：
+在 `tests/test_compress_quality.py` 追加。
+
+**测试设计说明**：删除 auto-fixup 后，LLM 回 `keep=1, update=3|摘要`（idx 3 不在 keep）时：
+- msg-3 不在 keep → 进 deletes
+- msg-3 在 update → 进 updates
+- L2034-2038 的 overlap 处理：update_ids & deletes 的重叠从 deletes 移除
+- 最终 msg-3 被 update 保留改摘要（不被删除）
+
+这是已有 overlap 逻辑的合理兜底（避免 LLM 笔误丢消息）。Task 9 删的是"auto-fixup 把 3 补进 keep"——让 keep 列表保持 LLM 原样，不偷偷加 idx。
 
 ```python
 def test_mode2_no_auto_keep_fixup(monkeypatch):
-    """模式二不再自动把 update idx 补进 keep（LLM 输出什么用什么）。"""
+    """模式二不再自动把 update idx 补进 keep（keep 列表保持 LLM 原样）。"""
     import asyncio
     import niu_api.compat as compat
     import niu_api.chat as chat_module
@@ -1439,13 +1646,18 @@ def test_mode2_no_auto_keep_fixup(monkeypatch):
         FakeMsg(id="msg-3", role="user", content="测试"),
     ]
 
+    deleted_ids = []
+    updated_ids = []
+
     class FakeStore:
         async def get_messages(self, limit=None, before_id=None):
             return messages
-        async def delete_messages(self, *a, **kw):
-            return None
-        async def update_message(self, *a, **kw):
-            return None
+        async def delete_messages(self, session_id, message_ids):
+            deleted_ids.extend(message_ids)
+            return len(message_ids)
+        async def update_message(self, message_id=None, content=None, **kw):
+            updated_ids.append(message_id)
+            return True
 
     async def fake_get_message_store():
         return FakeStore()
@@ -1458,16 +1670,14 @@ def test_mode2_no_auto_keep_fixup(monkeypatch):
         return FakeRunner()
 
     # LLM 回 keep=1（不含 update 的 idx 3），update=3|摘要（idx 3 不在 keep）
+    # 如果 auto-fixup 还在，3 会被补进 keep；删了 auto-fixup 后 keep 只有 1
+    captured = {}
     def fake_call_subagent(*args, **kwargs):
         agent_name = kwargs.get("agent_name") or (args[0] if args else "")
         if agent_name == "context-manager":
+            captured["task"] = kwargs.get("task", "")
             return "<analysis>分析</analysis>\nkeep=1\nupdate=3|摘要内容"
         return "skip"
-
-    deleted_ids = []
-    def fake_delete(session_id, message_ids):
-        deleted_ids.extend(message_ids)
-        return len(message_ids)
 
     monkeypatch.setattr(compat, "get_message_store", fake_get_message_store)
     monkeypatch.setattr(chat_module, "get_or_create_runner", fake_get_or_create_runner)
@@ -1480,22 +1690,169 @@ def test_mode2_no_auto_keep_fixup(monkeypatch):
     monkeypatch.setattr(compat, "_read_max_output_tokens", lambda: 16384, raising=False)
 
     request = {"session_id": "test", "mode": "sleep"}
-    try:
-        asyncio.run(compat._tidy_context_impl(request))
-    except Exception:
-        pass
+    # 不用 try/except 吞异常
+    asyncio.run(compat._tidy_context_impl(request))
 
-    # 验证：update idx 3 不在 keep，但没有被自动补进 keep
-    # msg-3 既不在 keep（1）也不在 update 的 keep 补齐，会被删除
-    # 关键是：没有 auto-fixup 把 3 补进 keep 导致 msg-3 被保留
-    # 这里只验证不抛错（删除逻辑能正常执行）
-    # 具体断言依赖实际 delete 调用，但核心是"不自动补 keep"
+    # 验证 auto-fixup 已删除：
+    # - msg-3 不在 keep（LLM 只回 keep=1），不被 auto-fixup 补进 keep
+    # - msg-3 进 update（LLM 回 update=3），被 update 保留改摘要
+    # - msg-3 不进 delete（overlap 从 deletes 移除）
+    assert "msg-3" in updated_ids, "msg-3 应被 update 保留改摘要"
+    assert "msg-3" not in deleted_ids, "msg-3 不应被删除（overlap 从 deletes 移除）"
+    # msg-2 既不在 keep 也不在 update，应被删除
+    assert "msg-2" in deleted_ids, "msg-2 应被删除（不在 keep 也不在 update）"
+```
+
+**关键断言**：
+- `msg-3 in updated_ids`：update idx 3 不在 keep，但 overlap 处理后从 deletes 移除，最终被 update 保留改摘要
+- `msg-3 not in deleted_ids`：overlap 兜底，不删除
+- `msg-2 in deleted_ids`：msg-2 不在 keep 也不在 update，正常删除
+
+这验证了"auto-fixup 已删除"——keep 列表保持 LLM 原样（只有 1），没有偷偷把 3 补进 keep。同时验证了 overlap 兜底逻辑仍生效（避免 LLM 笔误丢消息）。
+
+- [ ] **Step 8.5: 补降级重压循环测试 + analysis 缺失测试**
+
+在 `tests/test_compress_quality.py` 追加三个测试：
+
+```python
+def test_mode2_degradation_first_truncate_second_success(monkeypatch):
+    """模式二降级循环：第 1 次截断 → 第 2 次成功。"""
+    import asyncio
+    import niu_api.compat as compat
+    import niu_api.chat as chat_module
+    import agent.subagent as subagent_module
+
+    messages = [
+        FakeMsg(id="msg-1", role="user", content="你好"),
+        FakeMsg(id="msg-2", role="assistant", content="你好"),
+    ]
+
+    class FakeStore:
+        async def get_messages(self, limit=None, before_id=None):
+            return messages
+        async def delete_messages(self, *a, **kw):
+            return 0
+        async def update_message(self, *a, **kw):
+            return True
+
+    async def fake_get_message_store():
+        return FakeStore()
+
+    class FakeRunner:
+        handler = type("H", (), {"_last_prompt_tokens": 180000})()
+        llm_config = {}
+
+    def fake_get_or_create_runner():
+        return FakeRunner()
+
+    # 第 1 次返回 COMPACT_TRUNCATED，第 2 次返回正常结果
+    call_count = {"n": 0}
+    captured_targets = []
+    def fake_call_subagent(*args, **kwargs):
+        agent_name = kwargs.get("agent_name") or (args[0] if args else "")
+        if agent_name == "context-manager":
+            call_count["n"] += 1
+            captured_targets.append(kwargs.get("task", ""))
+            if call_count["n"] == 1:
+                return "COMPACT_TRUNCATED"  # 第 1 次截断
+            return "<analysis>分析</analysis>\nkeep=1,2\nupdate="  # 第 2 次成功
+        return "skip"
+
+    monkeypatch.setattr(compat, "get_message_store", fake_get_message_store)
+    monkeypatch.setattr(chat_module, "get_or_create_runner", fake_get_or_create_runner)
+    monkeypatch.setattr(subagent_module, "call_subagent", fake_call_subagent)
+    monkeypatch.setattr(compat, "_read_context_window_tokens", lambda: 200000, raising=False)
+    monkeypatch.setattr(compat, "_read_warning_threshold", lambda: 0.8, raising=False)
+    monkeypatch.setattr(compat, "_read_protect_recent_count", lambda: 0, raising=False)
+    monkeypatch.setattr(compat, "_write_cursor_with_lock", lambda *a, **kw: None, raising=False)
+    monkeypatch.setattr(compat, "_read_compress_target_tokens", lambda: 60000, raising=False)
+    monkeypatch.setattr(compat, "_read_max_output_tokens", lambda: 16384, raising=False)
+
+    request = {"session_id": "test", "mode": "sleep"}
+    asyncio.run(compat._tidy_context_impl(request))
+
+    # 验证调用了 2 次
+    assert call_count["n"] == 2, f"应调用 2 次（第 1 次截断 + 第 2 次成功），实际 {call_count['n']}"
+    # 第 2 次 prompt 含缩短提示
+    assert "精简" in captured_targets[1] or "缩短" in captured_targets[1], "第 2 次 prompt 应含缩短 analysis 提示"
+
+
+def test_mode2_degradation_all_three_truncate(monkeypatch):
+    """模式二降级循环：3 次都截断 → 放弃压缩，返回 skipped。"""
+    import asyncio
+    import niu_api.compat as compat
+    import niu_api.chat as chat_module
+    import agent.subagent as subagent_module
+
+    messages = [
+        FakeMsg(id="msg-1", role="user", content="你好"),
+        FakeMsg(id="msg-2", role="assistant", content="你好"),
+    ]
+
+    class FakeStore:
+        async def get_messages(self, limit=None, before_id=None):
+            return messages
+
+    async def fake_get_message_store():
+        return FakeStore()
+
+    class FakeRunner:
+        handler = type("H", (), {"_last_prompt_tokens": 180000})()
+        llm_config = {}
+
+    def fake_get_or_create_runner():
+        return FakeRunner()
+
+    # 每次都返回 COMPACT_TRUNCATED
+    call_count = {"n": 0}
+    def fake_call_subagent(*args, **kwargs):
+        agent_name = kwargs.get("agent_name") or (args[0] if args else "")
+        if agent_name == "context-manager":
+            call_count["n"] += 1
+            return "COMPACT_TRUNCATED"
+        return "skip"
+
+    monkeypatch.setattr(compat, "get_message_store", fake_get_message_store)
+    monkeypatch.setattr(chat_module, "get_or_create_runner", fake_get_or_create_runner)
+    monkeypatch.setattr(subagent_module, "call_subagent", fake_call_subagent)
+    monkeypatch.setattr(compat, "_read_context_window_tokens", lambda: 200000, raising=False)
+    monkeypatch.setattr(compat, "_read_warning_threshold", lambda: 0.8, raising=False)
+    monkeypatch.setattr(compat, "_read_protect_recent_count", lambda: 0, raising=False)
+    monkeypatch.setattr(compat, "_write_cursor_with_lock", lambda *a, **kw: None, raising=False)
+    monkeypatch.setattr(compat, "_read_compress_target_tokens", lambda: 60000, raising=False)
+    monkeypatch.setattr(compat, "_read_max_output_tokens", lambda: 16384, raising=False)
+
+    request = {"session_id": "test", "mode": "sleep"}
+    result = asyncio.run(compat._tidy_context_impl(request))
+
+    # 验证调用了 3 次
+    assert call_count["n"] == 3, f"应调用 3 次，实际 {call_count['n']}"
+    # 验证返回 skipped（不返回 None）
+    assert result is not None, "3 次截断应返回 dict，不应是 None"
+    assert isinstance(result, dict)
+    assert result.get("status") == "skipped", f"应返回 skipped，实际 {result}"
+
+
+def test_strip_analysis_missing_then_parse():
+    """LLM 没写 <analysis> 块时，_strip_analysis 原样返回，解析正常。"""
+    from niu_api.compat import _strip_analysis
+
+    # LLM 直接输出 keep/update，无 analysis 块
+    raw = "keep=1,2,3\nupdate=1|摘要"
+    result = _strip_analysis(raw)
+    # 原样返回
+    assert result == raw
+    # 解析 keep/update 仍可用
+    lines = result.strip().splitlines()
+    keep_line = [l for l in lines if l.lower().startswith("keep=")]
+    assert len(keep_line) == 1
+    assert "1,2,3" in keep_line[0]
 ```
 
 - [ ] **Step 9: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_compress_quality.py::test_mode2_no_auto_keep_fixup -v`
-Expected: PASS
+Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_compress_quality.py::test_mode2_no_auto_keep_fixup tests/test_compress_quality.py::test_mode2_degradation_first_truncate_second_success tests/test_compress_quality.py::test_mode2_degradation_all_three_truncate tests/test_compress_quality.py::test_strip_analysis_missing_then_parse -v`
+Expected: 4 个测试 PASS
 
 - [ ] **Step 10: 运行现有测试不破坏**
 
