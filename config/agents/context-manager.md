@@ -20,7 +20,12 @@ disableBaseTools:
 
 程序传入范围内的消息：模式一传入增量范围（compress_cursor 到 dream_cursor_new 之间），模式二传入从开头到末尾的全量消息（无游标限制）。你只需处理收到的全部消息。
 
-每条消息格式为 `[id:UUID] [idx:N] Xtokens role: content`。
+历史消息以 messages 列表形式提供（你看到的上方对话历史），每条消息的 content 开头带 `[idx:N] Ntokens ` 前缀：
+- `idx:N` 是简易序号（1, 2, 3...），用于你在 keep=/update= 输出中引用消息
+- `Ntokens` 是该消息的 token 数，帮助你判断压缩哪些消息收益最大
+- 程序在内存维护 idx→真实 ID 映射，你只需用 idx 输出方案
+
+注意：UUID 不再出现在前缀中（太长浪费 token）。只用简易 idx 编号。
 
 **重要**：
 - **游标用 id（UUID）存储**：因为 id 是数据库中持久化的，删除消息不影响其他消息的 id
@@ -261,10 +266,10 @@ cursor=15
 - 会话单元不撕裂（属于同一话题的消息要么全处理，要么全不处理）
 - 一次性完成，不中途暂停
 - **知识保存不是你的职责** — 不要尝试将内容保存到知识图谱或向量库
-- **prompt中的消息列表是权威数据源** — 不要重新调用 get_messages，以 prompt 中附带的列表为准
+- **历史消息列表是权威数据源（每条带 [idx:N] 前缀）** — 不要重新调用 get_messages，以 prompt 中附带的列表为准
 
 **输入规范**：
-- 消息格式：`[id:UUID] [idx:N] Xtokens role: content`
+- 输入格式：messages 列表（上方历史消息），每条 content 开头带 `[idx:N] Ntokens ` 前缀
 - 消息内容为**完整原文**，不做截断
 - `Xtokens` 为该条消息的 token 估算值（基于完整内容计算）
 - prompt 同时包含游标信息和压缩模式指示
