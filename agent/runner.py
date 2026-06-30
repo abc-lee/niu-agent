@@ -135,42 +135,15 @@ from agent.tool_registry import get_registry
 
 
 def get_system_prompt() -> str:
-    """获取系统提示词"""
-    script_dir = os.path.dirname(os.path.abspath(__file__))
+    """获取系统提示词（向后兼容：静态段 + Current Time）。
 
-    # 1. 读取 niu.md 配置（已合并原 sys_prompt.txt 内容）
-    sys_prompt = ""
-    niu_md_path = os.path.join(script_dir, "..", "config", "agents", "niu.md")
-    if os.path.exists(niu_md_path):
-        with open(niu_md_path, "r", encoding="utf-8") as f:
-            content = f.read()
-            if content.startswith("---"):
-                parts = content.split("---", 2)
-                if len(parts) >= 3:
-                    # 注入 front matter 中的 description 字段
-                    try:
-                        import yaml as _yaml
-                        config = _yaml.safe_load(parts[1])
-                        if config and config.get("description"):
-                            sys_prompt = config["description"].strip() + "\n\n"
-                    except Exception:
-                        pass
-                    sys_prompt += parts[2].strip()
-            else:
-                sys_prompt = content
-
-    if not sys_prompt:
-        sys_prompt = "# Role: Niu Agent\nYou are a helpful assistant with file and code access."
-
-    # 2. 注入 memory.json 中的身份设定和用户偏好
-    memory_section = _load_memory_for_prompt()
-    if memory_section:
-        sys_prompt += "\n\n" + memory_section
-
-    # 3. 添加当前时间
+    注意：此函数保留向后兼容。新的 cache 逻辑应直接用
+    NiuRunner._build_static_system_prompt() 获取静态段，
+    Current Time 由调用方在动态段开头拼接。
+    """
+    sys_prompt = NiuRunner._build_static_system_prompt()
     now = datetime.now()
     sys_prompt += f"\n\nCurrent Time: {now.strftime('%Y-%m-%d %H:%M:%S')}"
-
     return sys_prompt
 
 
@@ -355,6 +328,47 @@ class NiuRunner:
     集成动态注入：Skills 按语义注入提示词，MCP 工具按分数动态注入 tools_schema。
     """
 
+    @staticmethod
+    def _build_static_system_prompt() -> str:
+        """构建静态系统提示词段（cache 友好）。
+
+        只包含 niu.md 正文 + memory_section（身份/工作目录/用户长期记忆）。
+        不包含 Current Time、disk_desc、injection——这些是动态段。
+        静态段字节稳定，是 prompt cache 的前缀。
+        memory.json 变化时由 _refresh_user_memories 同步更新。
+        """
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+
+        # 1. 读取 niu.md
+        sys_prompt = ""
+        niu_md_path = os.path.join(script_dir, "..", "config", "agents", "niu.md")
+        if os.path.exists(niu_md_path):
+            with open(niu_md_path, "r", encoding="utf-8") as f:
+                content = f.read()
+                if content.startswith("---"):
+                    parts = content.split("---", 2)
+                    if len(parts) >= 3:
+                        try:
+                            import yaml as _yaml
+                            config = _yaml.safe_load(parts[1])
+                            if config and config.get("description"):
+                                sys_prompt = config["description"].strip() + "\n\n"
+                        except Exception:
+                            pass
+                        sys_prompt += parts[2].strip()
+                else:
+                    sys_prompt = content
+
+        if not sys_prompt:
+            sys_prompt = "# Role: Niu Agent\nYou are a helpful assistant with file and code access."
+
+        # 2. 注入 memory.json 中的身份设定和用户偏好
+        memory_section = _load_memory_for_prompt()
+        if memory_section:
+            sys_prompt += "\n\n" + memory_section
+
+        return sys_prompt
+
     def __init__(self, llm_config: Dict[str, Any], mcp_client=None):
         # 从 niu.md front matter 读取 temperature，覆盖到 llm_config
         from .subagent import get_subagent_config
@@ -367,7 +381,10 @@ class NiuRunner:
         self.client = create_client(llm_config)
         project_root = os.path.dirname(os.path.dirname(__file__))
         self.handler = NiuHandler(cwd=project_root, mcp_client=mcp_client)
-        self.base_system_prompt = get_system_prompt()
+        # 静态段：niu.md + memory（cache 友好，字节稳定）
+        # memory 变化时由 _refresh_user_memories 同步更新此属性
+        self.static_system_prompt = self._build_static_system_prompt()
+        # base_system_prompt 将在 disk_desc 拼接完成后组装（向后兼容）
         self.base_tools_schema = get_tools_schema()
 
         # 启动 Skills 后台同步
@@ -382,10 +399,16 @@ class NiuRunner:
         self.disk_engine = DiskEngine(disk_config_dir, registry=None)
         self.handler = NiuHandler(cwd=project_root, mcp_client=mcp_client, disk_engine=self.disk_engine)
 
-        # Inject disk description into base system prompt
+        # 动态前缀段：Current Time + disk_desc（启动时固定，不每轮更新）
+        now = datetime.now()
+        dynamic_prefix = f"\n\nCurrent Time: {now.strftime('%Y-%m-%d %H:%M:%S')}"
         disk_desc = self._build_disk_description()
         if disk_desc:
-            self.base_system_prompt += disk_desc
+            dynamic_prefix += disk_desc
+        self.dynamic_system_prefix = dynamic_prefix
+
+        # 向后兼容：base_system_prompt = 静态段 + 动态前缀段（不含 injection）
+        self.base_system_prompt = self.static_system_prompt + self.dynamic_system_prefix
 
         # 用户记忆脏标记（remember/forget 工具调用后 set）
         self._memory_dirty = threading.Event()
