@@ -1495,15 +1495,19 @@ REMINDER: 禁止调用任何工具，直接在回复中输出 keep=/update=/curs
         SECTION_END = "<!--USER_MEMORY_END-->"
         pattern = re.escape(SECTION_START) + r".*?" + re.escape(SECTION_END)
 
-        # Update base_system_prompt so _on_turn_end's overwrite uses fresh memory
-        base = self.base_system_prompt
+        # Update static_system_prompt（cache 前缀，必须同步）
+        # 然后重算 base_system_prompt = static + dynamic_system_prefix（保持不变量）
+        base = self.static_system_prompt
         if re.search(pattern, base, re.DOTALL):
             if new_section:
-                self.base_system_prompt = re.sub(pattern, new_section, base, flags=re.DOTALL)
+                self.static_system_prompt = re.sub(pattern, new_section, base, flags=re.DOTALL)
             else:
-                self.base_system_prompt = re.sub(r'\n*' + pattern + r'\n*', '', base, flags=re.DOTALL)
+                self.static_system_prompt = re.sub(r'\n*' + pattern + r'\n*', '', base, flags=re.DOTALL)
         elif new_section:
-            self.base_system_prompt = base + "\n\n" + new_section
+            self.static_system_prompt = base + "\n\n" + new_section
+
+        # 重算 base_system_prompt（保持 base = static + dynamic 不变量）
+        self.base_system_prompt = self.static_system_prompt + self.dynamic_system_prefix
 
     def _extract_context_from_history(self, history: Optional[list], user_input: str) -> str:
         """
