@@ -492,6 +492,22 @@ def _build_compress_history(
     return history, idx_to_id
 
 
+def _strip_analysis(response: str) -> str:
+    """剥离 <analysis>...</analysis> 块，只保留 keep/update/cursor 部分。
+
+    处理三种情况：
+    1. 闭合的 <analysis>...</analysis>（含跨行）
+    2. 未闭合的 <analysis>（有开始无结束，剥离到字符串末尾）
+    3. 大小写不敏感（<ANALYSIS> 也识别）
+    4. 无 analysis 块时原样返回
+    """
+    # 先匹配闭合的 <analysis>...</analysis>
+    cleaned = re.sub(r'<analysis>.*?</analysis>\s*', '', response, flags=re.DOTALL | re.IGNORECASE)
+    # 再处理未闭合的 <analysis>（LLM 写了开始标签但没写结束）
+    cleaned = re.sub(r'<analysis>.*$', '', cleaned, flags=re.DOTALL | re.IGNORECASE)
+    return cleaned.strip()
+
+
 def _estimate_text_tokens(text: str) -> int:
     """粗略估算文本 token 数（中文约1.5字/token，英文约4字/token，取中间值2字/token）"""
     return len(text) // 2
