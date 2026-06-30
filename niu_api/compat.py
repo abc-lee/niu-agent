@@ -535,7 +535,7 @@ def _build_mode2_prompt(display_tokens: int, compress_target_tokens: int, usage_
 - 决定每份的处理强度
 
 输出格式：
-keep=1,3,5-10,15
+keep=1,2,3,5-10,11,15
 update=2|[摘要] 摘要内容;11|[摘要] 摘要内容
 
 说明：
