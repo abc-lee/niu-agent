@@ -10,9 +10,22 @@
 **环境要求：**
 ```
 - Python 3.11+
-- Go 1.26+
-- Node.js 18+（含 Electron 28+）
+- Rust toolchain（见 launcher/Cargo.toml）
 - SQLite
+```
+
+> 前端已集成在 Rust 启动器的 GUI 中，无需单独安装 Node.js / Electron 环境。
+
+**主要目录结构：**
+```
+agent/              # Agent 核心（agent_loop / handler / llmcore 等）
+niu_api/            # Python API 服务（FastAPI）
+launcher/           # Rust 启动器（clap + GUI 集成）
+mcp-servers/        # MCP 服务器集群（同进程架构，ToolRegistry 加载）
+im-adapters/        # IM Gateway 适配器（飞书等）
+ui/                 # 前端界面（assistant / settings / graph）
+config/             # 配置文件（user-config / llm-presets / agents / mcp-servers.yaml）
+models/             # 本地模型（bge-base-zh-v1.5 / buffalo_l）
 ```
 
 **启动开发环境：**
@@ -29,23 +42,20 @@ cd ../mcp-servers/lightrag-server && pip install -e .
 # 2. 启动 API
 python -m niu_api
 
-# 3. 启动前端（另一个终端）
-cd ui/assistant
-npm install
-npm start
-
-# 或使用 Go 启动器（自动启动 API + 前端）
-go run main.go
+# 3. 使用 Rust 启动器（自动启动 API + GUI）
+cd launcher && cargo run
+# 或直接运行编译好的二进制
+./niu
 ```
 
-**Go 启动器启动流程：**
+**Rust 启动器启动流程：**
 1. 检测 Python 路径（Windows: `python/Scripts/python.exe` 等；Mac/Linux: `~/.niu-venv/bin/python3` 等）
 2. 从 `~/.niu/memory.json` 加载 workspace.path，设为 `WORKSPACE_PATH` 环境变量
-3. 启动 Python API（`python -m niu_api`），传入 `NIU_API_PORT`、`PYTHONUNBUFFERED`、`LITELLM_LOCAL_MODEL_COST_MAP`、`WORKSPACE_PATH`
+3. 启动 Python API（`python -m niu_api`），传入 `NIU_API_PORT`、`PYTHONUNBUFFERED`、`LITELLM_LOCAL_MODEL_COST_MAP`、`LITELLM_NO_AIOHTTP_TRANSPORT`、`WORKSPACE_PATH`
 4. 等待 `/health` 返回 200（最多 30 秒）
 5. 等待 `/api/preload-status` 返回 `ready=true`（最多 60 秒）
 6. 根据 `--settings` 或 `--graph` 标志启动对应窗口，否则启动 assistant 窗口
-7. 监控 Electron 进程退出，触发关闭流程：POST `/api/shutdown` → Kill API 进程
+7. 监控 GUI 窗口退出，触发关闭流程：POST `/api/shutdown` → Kill API 进程
 
 ### 1.2 调试技巧
 
@@ -54,7 +64,12 @@ go run main.go
 # LLM 交互日志（每日轮转）
 tail -f logs/llm_interaction_*.log
 
-# API 日志（Go 启动器通过 Pipe 捕获 stdout/stderr，无独立文件）
+# raw_http 两层日志架构（由 /llm/v1/* HTTP 端点暴露）
+# - transport 层：logs/raw_http/{YYYYMMDD}/{seq:06d}.json（记录 HTTP 请求）
+# - 应用层：{seq:06d}_request.json / {seq:06d}_response.json（记录 LLM 流式响应）
+ls logs/raw_http/
+
+# API 日志（Rust 启动器通过 Pipe 捕获 stdout/stderr，无独立文件）
 # 直接运行 python -m niu_api 可在控制台看到输出
 ```
 
@@ -96,7 +111,7 @@ ls ~/.niu/lightrag_storage/
 **代码风格：**
 ```
 Python: ruff format + ruff check
-Go: go fmt
+Rust: cargo fmt + cargo clippy
 ```
 
 **提交规范：**
@@ -124,7 +139,7 @@ test: 测试
 ### 2.1 命令行参数
 
 ```bash
-niu.exe [选项]
+niu [选项]
 
 选项：
   --port=9876       API 端口（默认 9876）
@@ -133,7 +148,7 @@ niu.exe [选项]
   --config=path     配置目录路径（默认 ./config，保留兼容）
 ```
 
-注意：Go 启动器使用 `flag` 包解析参数，不支持 `--help`。可运行 `niu.exe` 查看默认启动行为。
+注意：Rust 启动器使用 `clap` derive 宏解析参数，默认支持 `--help`。参数定义见 `launcher/src/main.rs` 中的 `Args` 结构体。
 
 ### 2.2 环境变量
 
@@ -142,9 +157,10 @@ niu.exe [选项]
 | `NIU_API_PORT` | Python API 端口 | `9876` |
 | `NIU_MODELS_PATH` | 模型文件目录（覆盖默认 `{项目根}/models`） | 项目根目录下 `models/` |
 | `WORKSPACE_PATH` | 工作空间根目录（定时任务等数据存储位置） | 从 `~/.niu/memory.json` 的 `workspace.path` 读取 |
-| `LITELLM_LOCAL_MODEL_COST_MAP` | LiteLLM 本地模型费用映射开关 | Go 启动器设为 `True` |
+| `LITELLM_LOCAL_MODEL_COST_MAP` | LiteLLM 本地模型费用映射开关 | Rust 启动器设为 `True` |
+| `LITELLM_NO_AIOHTTP_TRANSPORT` | 禁用 LiteLLM 的 aiohttp transport（避免异步兼容问题） | Rust 启动器设为 `True` |
 | `CUDA_VISIBLE_DEVICES` | GPU 设备选择 | 所有可用 GPU |
-| `PYTHONUNBUFFERED` | Python 输出无缓冲 | Go 启动器设为 `1` |
+| `PYTHONUNBUFFERED` | Python 输出无缓冲 | Rust 启动器设为 `1` |
 
 ### 2.3 API 端点
 
@@ -152,6 +168,7 @@ niu.exe [选项]
 |------|------|------|
 | `/chat` | POST | 主对话接口（SSE 流式） |
 | `/chat/sync` | POST | 同步对话（定时任务用） |
+| `/chat/session/{session_id}` | DELETE | 删除指定会话 |
 | `/api/events/stream` | GET | SSE 事件流（新消息推送） |
 | `/api/context/messages` | GET | 获取上下文消息（含分页） |
 | `/api/context/messages/delete` | POST | 按 ID 删除消息 |
@@ -161,11 +178,14 @@ niu.exe [选项]
 | `/api/chat/clear` | POST | 清空当前会话 |
 | `/api/chat/session` | POST | 同步对话（兼容旧 UI） |
 | `/api/shutdown` | POST | 关闭服务 |
-| `/api/preload-status` | GET | 预加载状态（Go 启动器用） |
+| `/api/preload-status` | GET | 预加载状态（Rust 启动器用） |
 | `/api/llm-status` | GET | LLM 配置可用状态 |
+| `/api/test-llm` | POST | 测试 LLM 配置连通性 |
 | `/api/stats` | GET | 系统统计（消息数、运行时间） |
 | `/api/pending-alerts` | GET | 获取待处理提醒 |
+| `/api/alerts` | POST | 提交提醒（写入 pending 队列） |
 | `/api/vector/stats` | GET | LightRAG 知识库统计 |
+| `/api/vector/cleanup` | POST | 清理向量库失效条目 |
 | `/api/inject/mcp-tool` | POST | 注册单个 MCP 工具 |
 | `/api/inject/mcp-tools/batch` | POST | 批量注册 MCP 工具 |
 | `/api/inject/resources` | GET | 列出注入资源 |
@@ -174,11 +194,23 @@ niu.exe [选项]
 | `/api/brain/*` | 多种 | 脑图端点（remember/recall/status） |
 | `/api/brain/regions/*` | 多种 | 脑区端点 |
 | `/api/notes/*` | 多种 | 笔记端点 |
+| `/api/llm-log/*` | GET | raw_http 日志查询（http_log_router） |
 | `/llm/v1/models` | GET | 可用模型列表 |
 | `/llm/v1/health` | GET | LLM 配置检查 |
 | `/llm/v1/status` | GET | LightRAG 和模型状态 |
 | `/scheduler/tasks` | GET/POST/PUT/DELETE | 定时任务管理 |
 | `/health` | GET | 健康检查 |
+
+**SSE 事件类型清单**（`/api/events/stream` 推送，定义于 `niu_api/chat.py` 与 `agent/generic/agent_loop.py`）：
+
+| 事件 type | 触发位置 | 说明 |
+|-----------|----------|------|
+| `new_message` | `chat.py` notify_new_message | 新消息入库通知（role/message_id/content） |
+| `tool_status` | `chat.py` notify_tool_status_sync | 工具调用开始/结束状态（tool_name/status/summary） |
+| `ingest` | `chat.py` push_ingest_result | 文件入库异常通知（role=system） |
+| `chat_busy` | `agent_loop.py` StreamEvent("system", "chat_busy") | Agent 开始处理，进入忙碌状态 |
+| `chat_idle` | `agent_loop.py` StreamEvent("system", "chat_idle") | Agent 处理完成，进入空闲状态 |
+| `persist` | `agent_loop.py` StreamEvent("persist", ...) | V4 逐轮持久化推送（assistant/tool 消息逐条 yield） |
 
 ### 2.4 许可证
 
@@ -200,6 +232,16 @@ Copyright (c) 2026
 ---
 
 ## 三、更新日志
+
+### v0.6.0 (2026-06-30)
+
+**重大变更：**
+- MCP 同进程架构（ToolRegistry）：MCP 工具由 stdio 通信改为同进程直接调用，性能提升约 40000x
+- Go → Rust 启动器迁移：launcher/ 改为 Rust + clap 实现，前端 GUI 集成在 Rust 启动器中
+- Electron → Iced 迁移（部分）：splash/启动画面迁移至 Iced GPU GUI，主交互界面仍基于 Electron + Rust 启动器
+- skill 三级降级机制：active → deprecated → `.trash/`，自动归档失效 skill
+- 睡眠触发修复：preload.js 注入 `IDLE_TIMEOUT`，spirit.html 通过 electronAPI 读取
+- requirements 清理：删除 14 个冗余依赖包
 
 ### v0.5.0 (2026-04-30)
 
@@ -262,28 +304,3 @@ Copyright (c) 2026
 **已知问题：**
 - macOS/Linux 版本未测试
 - 多用户支持未实现
-
----
-
-## 验证记录
-
-本次验证对比了 `docs/manual-developer.md` 与当前代码，以下为修正内容：
-
-| 项目 | 原文 | 修正后 | 依据 |
-|------|------|--------|------|
-| 章节编号 | 8.2/8.3 与 9.2/9.3 混用 | 统一为 9.x（开发者指南）和 10.x（附录） | 逻辑一致性 |
-| Go 版本 | Go 1.26+ | Go 1.26+（原文正确，未修改） | `go.mod` 实际要求 `go 1.26.1` |
-| Node.js | Node.js 18+ | Node.js 18+（含 Electron 28+） | `ui/assistant/package.json` 依赖 electron ^28 |
-| 日志路径 | `logs/api_stderr.log` | `logs/llm_interaction_*.log` + 控制台输出 | Go 启动器通过 Pipe 捕获，API 无独立 stderr 文件 |
-| MCP 工具测试 | `/api/mcp-tools` 和 `/api/mcp-call` HTTP 端点 | ToolRegistry 同进程调用（旧 HTTP 端点已不存在） | `niu_api/` 中无 mcp-tools/mcp-call 路由定义 |
-| 数据库路径 | `data/messages.db` 等 | `~/.niu/messages.db`、`~/.niu/lightrag_storage/`、`~/.niu/scheduled_tasks.db` | `agent/session.py` 和 LightRAG 实际路径逻辑 |
-| 命令行参数 | `--help` | `--config=path`（保留兼容），移除 `--help` | `main.go` flag 定义中无 help flag |
-| 环境变量 | 仅列出 4 个 | 补充 `WORKSPACE_PATH`、`NIU_DB_PATH`、`LITELLM_LOCAL_MODEL_COST_MAP` | `main.go` 和 `niu_api/internal/embedding.py` 实际使用的变量 |
-| API 端点 | 7 个端点 | 扩展为完整列表（含 `/api/context/*`、`/api/brain/*`、`/llm/v1/*`、`/scheduler/*` 等） | `niu_api/__main__.py` 注册的所有路由 |
-| `/session/messages` | GET | 不存在（实际为 `/api/context/messages`） | `niu_api/session.py` 路径为 `/{session_id}/messages`，UI 使用 `/api/context/messages` |
-| `/api/inject/resources` | POST | GET（列出资源）+ POST（注册工具）分离为多个端点 | `niu_api/injector.py` 路由定义 |
-| MCP 服务器列表 | 无 lightrag-server | 补充 lightrag-server、scheduler-server；embedding-service 已整合为 API 内部模块（`mcp-servers/embedding-service/` 目录仍残留但不再加载） | `mcp-servers/` 目录实际结构 |
-| UI 窗口 | 仅 `ui/assistant` | 补充 `ui/settings`、`ui/graph` | `ui/` 目录实际结构 |
-| GPU 检测 | CUDA/DirectML/CPU | CUDA/CPU（DirectML 已移除） | `niu_api/internal/embedding.py` 的 `get_device()` 仅检测 CUDA 和 CPU |
-| 许可证 | 无 LightRAG | 补充 LightRAG: MIT License | 项目实际使用 LightRAG |
-| 更新日志 | 最新 v0.4.0 | 补充 v0.5.0（KG重构、LightRAG、脑图系统） | 近期 commit 记录 |
