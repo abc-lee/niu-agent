@@ -13,7 +13,14 @@ import time
 from datetime import datetime
 
 from agent.session import get_message_store
-from agent.subagent import _read_context_window_tokens, _read_target_threshold, _read_protect_recent_count, _read_warning_threshold
+from agent.subagent import (
+    _read_compress_target_tokens,
+    _read_context_window_tokens,
+    _read_max_output_tokens,
+    _read_protect_recent_count,
+    _read_target_threshold,
+    _read_warning_threshold,
+)
 from fastapi import APIRouter, Request
 from loguru import logger
 from pydantic import BaseModel
@@ -506,6 +513,96 @@ def _strip_analysis(response: str) -> str:
     # 再处理未闭合的 <analysis>（LLM 写了开始标签但没写结束）
     cleaned = re.sub(r'<analysis>.*$', '', cleaned, flags=re.DOTALL | re.IGNORECASE)
     return cleaned.strip()
+
+
+def _build_mode2_prompt(display_tokens: int, compress_target_tokens: int, usage_percent: float, compress_history: list) -> str:
+    """构造模式二 task prompt（含压缩方法论 + analysis 草稿块）。
+
+    抽成函数是因为降级重压循环每次 _compress_target_tokens 变了要重新构造 prompt
+    （f-string 含 {compress_target_tokens}，需要重新求值）。
+    """
+    return f"""CRITICAL: 你只有一轮机会完成压缩决策。禁止调用任何工具。
+- 不调用 write、delete_messages、update_message、bash 等
+- 你的回复必须包含 <analysis> 块和 keep=/update= 两行
+- 调用工具会被拒绝，浪费唯一一轮，任务失败
+
+先在 <analysis> 块里写分析过程，然后输出 keep=/update= 两行。
+
+<analysis> 块内容：
+- 列出三份的 idx 范围
+- 估算每份删工具输出 + 合并会话单元能释放多少 token
+- 判断第一份的旧摘要与近期工作的关联性
+- 决定每份的处理强度
+
+输出格式：
+keep=1,3,5-10,15
+update=2|[摘要] 摘要内容;11|[摘要] 摘要内容
+
+说明：
+- keep= 保留的消息 idx（逗号分隔，连续用短横线如 5-10）
+- update= 需压缩为摘要的消息（idx|摘要内容，多条用分号分隔）
+- update 的 idx 必须在 keep 中（update 的消息保留但 content 改为摘要）
+- 未列在 keep 中的消息将被删除
+
+示例：
+<analysis>
+第一份 idx 1-100：含 3 个会话单元（智能家居调试/知识图谱/周报），旧摘要 5 条
+其中 2 条与近期无关可删，估算释放 8K tokens
+第二份 idx 101-200：估算释放 3K tokens
+累计 11K，已达目标 10K，第三份轻度处理
+</analysis>
+
+keep=1,5,15,30,50,75,100,105,115,150,180,200
+update=1|[摘要] 智能家居调试 → 完成 | 微波炉/空调测试;5|[摘要] ...
+
+压缩方法论（必须在一轮内完成，禁止多轮）：
+
+1. 估算：当前 {display_tokens} tokens，目标 {compress_target_tokens} tokens，
+   需释放 {display_tokens - compress_target_tokens} tokens。
+
+2. 划分优先级（按 idx 范围，粗粒度）：
+   - 第一份（最早）：idx 最小的约 1/3 范围
+   - 第二份（中间）：中间约 1/3 范围
+   - 第三份（最近）：idx 最大的约 1/3 范围
+   注：划分是优先级提示，实际处理按会话单元边界，
+   不得切断一个完整的会话单元（单元跨越划分边界时，
+   整个单元归入更早的那份）。
+
+3. 逐份处理（在 analysis 块里思考，一次输出结果）：
+   a. 第一份（最早）最激进：
+      - role=tool 的工具输出：全删（不进 keep）
+      - 原始对话：按会话单元（2-15 条一个话题）合并，
+        每个会话单元保留 1 条（锚 idx），content 改为摘要，其余删除
+      - 旧摘要（已是 [摘要] 开头）：判断与近期工作的关联性，
+        无关的直接删除，相关的保留
+   b. 估算累计释放量。若已达目标，第二份/第三份按"轻度处理"
+      （仅删工具输出、保留原文）即可。
+   c. 若未达目标，处理第二份（中间）：
+      - role=tool 工具输出：全删
+      - 对话：按会话单元合并为摘要
+      - 已有摘要：保留不动（禁止二次压缩）
+   d. 再估算。若仍未达目标，处理第三份（最近）：
+      - role=tool 工具输出：全删
+      - 对话：仅精简超长内容，优先保留原文
+   e. 若三份处理完仍未达目标，接受当前结果（受保护消息已排除）
+
+4. 硬约束：
+   - 每个会话单元至少保留 1 条（不得把多个会话单元合并成 1 条）
+   - 摘要长度 ≤ 150 字符，不得低于 50 字符
+   - 已是摘要（≤50 字符且信息密度高）不再二次压缩
+   - update 的 idx 必须在 keep 中
+   - 摘要格式：[摘要] <用户意图> → <执行结果> | <关键细节>
+
+当前上下文状态：
+- 参与压缩的消息数：{len(compress_history)}（受保护消息已排除）
+- 当前 token 总数：{display_tokens}（{usage_percent:.1f}%）
+- 目标 token 总数：{compress_target_tokens}
+- 需释放至少 {display_tokens - compress_target_tokens} tokens
+
+上方历史消息每条开头带 [idx:N] Ntokens 前缀，共 {len(compress_history)} 条。
+role=tool 的工具输出会被程序自动删除，不需要放入 keep。
+
+REMINDER: 禁止调用任何工具，直接在回复中输出 <analysis> 块和 keep=/update= 两行。"""
 
 
 def _estimate_text_tokens(text: str) -> int:
@@ -1823,13 +1920,12 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
             if usage_percent >= _skip_compress_threshold:
                 logger.info(f"[Tidy] Sleep: usage {usage_percent:.1f}% >= skip threshold {_skip_compress_threshold:.0f}% (warningThreshold-0.1), skipping compression — will be handled by force mode")
                 _skip_compress = True
-            # 模式二量化目标：基于 targetThreshold 计算动态目标（提前计算，决定是否跳过）
+            # 模式二量化目标：基于 compressTargetTokens（绝对值）计算动态目标（提前计算，决定是否跳过）
             _compress_target = ""
             if _skip_compress:
                 pass  # 接近强制阈值，跳过所有压缩
             elif _is_mode2:
-                target_threshold = _read_target_threshold()
-                target_tokens = int(context_window_tokens * target_threshold)
+                target_tokens = _read_compress_target_tokens()
                 suggest_release = max(display_tokens - target_tokens, 0)
                 if suggest_release == 0:
                     # 当前已在目标范围内，不需要压缩
@@ -1839,15 +1935,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                     # 释放量太小（<5%），不值得压缩一轮，跳过
                     logger.info(f"[Tidy] Mode-2: suggest_release {suggest_release} < 5%, skipping compression")
                     _skip_compress = True
-                elif suggest_release > 0:
-                    _compress_target = (
-                        f"\n压缩目标：\n"
-                        f"- 目标 token 总数：{target_tokens}（{target_threshold*100:.0f}%）\n"
-                        f"- 需释放至少 {suggest_release} tokens\n"
-                        f"优先压缩远端（idx 小的）消息；"
-                        f"如果远端+中端释放量不足目标，可对近端消息按中端区规则（合并为摘要）处理；"
-                        f"如果近端消息也全部处理后仍不足目标，接受当前结果（受保护消息已排除，无需考虑）。\n"
-                    )
+                # 模式二 task prompt 由 _build_mode2_prompt 构造（内联方法论），不再构造 _compress_target
                 # 模式一/二：游标均由程序自动推进，不需要报告指令
             logger.info(f"[Tidy] Sleep: usage={usage_percent:.1f}%, selecting {compress_mode}")
 
@@ -1873,29 +1961,8 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                         except OSError:
                             pass
 
-                    prompt = f"""CRITICAL: 你只有一轮机会完成压缩决策。禁止调用任何工具，直接回复压缩方案。
-
-压缩上下文：当前{display_tokens} tokens（{usage_percent:.1f}%），需释放至{target_tokens} tokens以下。
-
-上方历史消息每条开头带 [idx:N] Ntokens 前缀，共 {len(compress_history)} 条。
-role=tool 的工具输出会被程序自动删除，不需要放入 keep。
-
-直接回复两行文本，不要调用任何工具，不要输出其他任何内容：
-第1行：keep=保留的idx序号，逗号分隔，支持范围如1-5
-第2行：update=需压缩的idx序号|摘要内容，多个用分号分隔
-示例：
-keep=1,2,5-10,15
-update=3|用户讨论了XX方案;11|工具执行了YY操作
-
-压缩规则（必须遵守）：
-- 按事务合并：属于同一件事的多轮交互（用户要求→工具调用→结果），合并为一条摘要
-- 远端摘要格式："用户要求X，最终Y"（只保留意图和结果，丢弃过程）
-- 近端摘要格式："用户要求X，调用Z工具，得到Y"（保留关键工具和输出）
-- role=tool 的工具输出：不需要放入keep，会被程序自动删除
-- 纯确认回复（"好的""明白了""谢谢"）：不需要放入keep
-- 不在keep中的消息会被程序自动删除，所以有价值的对话必须放进keep或update
-- update的idx必须在keep中
-- 只输出这两行"""
+                    # 模式二 task prompt 由 _build_mode2_prompt 在降级循环内构造（含方法论 + analysis 草稿块）
+                    prompt = ""
                 else:
                     prompt = f"""系统进入睡眠状态。
 
@@ -1907,28 +1974,57 @@ update=3|用户讨论了XX方案;11|工具执行了YY操作
 
                 # 截断 task 防止子Agent超限 + 子Agent调用 + 结果处理
                 if _is_mode2:
-                    # === 模式二：一轮write JSON方案 + 程序化安全执行 ===
-                    # 模式二只做一轮交互（prompt → 回复 JSON → 结束），不会有第二轮
-                    # 所以 prompt 不可能超上下文窗口，不需要截断
-                    # 且模式二的核心任务是压缩远端消息，截断远端会导致无法完成压缩
-                    # 因此：不做截断，传全量消息给 LLM
+                    # === 模式二：一轮决策 + 降级重压循环 ===
+                    # llm_config 动态注入 max_tokens（通过 litellm_kwargs）
+                    llm_config_with_max = dict(llm_config)
+                    llm_config_with_max["litellm_kwargs"] = {
+                        **llm_config.get("litellm_kwargs", {}),
+                        "max_tokens": _read_max_output_tokens(),
+                    }
 
-                    def run_context_manager_mode2():
-                        return call_subagent(
-                            agent_name="context-manager",
-                            task=prompt,
-                            llm_config=llm_config,
-                            mcp_client=None,
-                            context_fifo_threshold=0,  # 关闭FIFO，保留完整上下文
-                            history=compress_history,  # 直接传 messages 列表，避免单条 user message 超限
-                        )
+                    # 降级重压循环：最多 3 次尝试，每次压缩目标降 50%
+                    _compress_target_tokens = _read_compress_target_tokens()
+                    compress_result = None
+                    for attempt in range(3):
+                        if attempt > 0:
+                            _compress_target_tokens = int(_compress_target_tokens * 0.5)
+                            logger.warning(f"[Compact] Mode-2 truncated, lowering target to {_compress_target_tokens}, attempt {attempt+1}")
 
-                    compress_result = await asyncio.to_thread(run_context_manager_mode2)
-                    if is_stop_requested():
-                        logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
-                        clear_stop()
-                        return {"status": "aborted", "message": "Stopped by user"}
-                    logger.info(f"[Tidy] Mode-2: context-manager completed, length={len(compress_result)}")
+                        # 每次循环重新构造 prompt（_compress_target_tokens 变了，f-string 要重新求值）
+                        prompt = _build_mode2_prompt(display_tokens, _compress_target_tokens, usage_percent, compress_history)
+                        if attempt > 0:
+                            prompt = prompt + "\n\n注意：上次输出被截断，请精简 <analysis> 块，只保留关键决策依据，不要逐条分析每条消息。"
+
+                        def run_context_manager_mode2():
+                            return call_subagent(
+                                agent_name="context-manager",
+                                task=prompt,
+                                llm_config=llm_config_with_max,
+                                mcp_client=None,
+                                context_fifo_threshold=0,  # 关闭FIFO，保留完整上下文
+                                history=compress_history,  # 直接传 messages 列表，避免单条 user message 超限
+                            )
+
+                        compress_result = await asyncio.to_thread(run_context_manager_mode2)
+
+                        if is_stop_requested():
+                            logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
+                            clear_stop()
+                            return {"status": "aborted", "message": "Stopped by user"}
+
+                        if compress_result == "COMPACT_TRUNCATED":
+                            if attempt < 2:
+                                continue  # 降级重试
+                            else:
+                                logger.error("[Compact] Mode-2 all 3 attempts truncated, giving up")
+                                return {"status": "skipped", "mode": "sleep", "reason": "all attempts truncated"}
+
+                        # 正常返回，跳出循环进入解析
+                        logger.info(f"[Tidy] Mode-2: context-manager completed, length={len(compress_result)}")
+                        break
+
+                    # 剥离 <analysis> 草稿块（在解析前）
+                    compress_result = _strip_analysis(compress_result)
 
                     # 从 LLM content 解析序号格式压缩方案
                     _idx_to_id: dict[int, str] = {}

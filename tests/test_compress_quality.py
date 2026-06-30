@@ -307,3 +307,74 @@ def test_call_subagent_normal_return(monkeypatch):
         llm_config={"model": "test"},
     )
     assert "keep=1,2,3" in result
+
+
+class FakeMsg:
+    """模拟 Message 对象（compat.py 用 getattr(msg, 'id') 等访问）。"""
+    def __init__(self, id, role, content, tool_calls=None, tool_call_id=None):
+        self.id = id
+        self.role = role
+        self.content = content
+        self.tool_calls = tool_calls or []
+        self.tool_call_id = tool_call_id
+
+
+def test_mode2_prompt_contains_methodology(monkeypatch):
+    """模式二 task prompt 应含压缩方法论（三份/会话单元/硬约束）+ llm_config 注入 max_tokens。"""
+    import asyncio
+    import niu_api.compat as compat
+    import niu_api.chat as chat_module
+    import agent.subagent as subagent_module
+
+    messages = [
+        FakeMsg(id="msg-1", role="user", content="你好"),
+        FakeMsg(id="msg-2", role="assistant", content="你好，我是 Niu"),
+    ]
+
+    class FakeStore:
+        async def get_messages(self, limit=None, before_id=None):
+            return messages
+
+    async def fake_get_message_store():
+        return FakeStore()
+
+    class FakeRunner:
+        handler = type("H", (), {"_last_prompt_tokens": 120000})()
+        llm_config = {}
+
+    def fake_get_or_create_runner():
+        return FakeRunner()
+
+    captured = {}
+    def fake_call_subagent(*args, **kwargs):
+        agent_name = kwargs.get("agent_name") or (args[0] if args else "")
+        if agent_name == "context-manager":
+            captured["task"] = kwargs.get("task", "")
+            captured["history"] = kwargs.get("history")
+            captured["llm_config"] = kwargs.get("llm_config", {})
+            return "<analysis>分析</analysis>\nkeep=1,2\nupdate="
+        return "skip"
+
+    monkeypatch.setattr(compat, "get_message_store", fake_get_message_store)
+    monkeypatch.setattr(chat_module, "get_or_create_runner", fake_get_or_create_runner)
+    monkeypatch.setattr(subagent_module, "call_subagent", fake_call_subagent)
+    monkeypatch.setattr(compat, "_read_context_window_tokens", lambda: 200000, raising=False)
+    monkeypatch.setattr(compat, "_read_warning_threshold", lambda: 0.8, raising=False)
+    monkeypatch.setattr(compat, "_read_protect_recent_count", lambda: 0, raising=False)
+    monkeypatch.setattr(compat, "_write_cursor_with_lock", lambda *a, **kw: None, raising=False)
+    monkeypatch.setattr(compat, "_read_compress_target_tokens", lambda: 60000, raising=False)
+    monkeypatch.setattr(compat, "_read_max_output_tokens", lambda: 16384, raising=False)
+
+    request = {"session_id": "test", "mode": "sleep"}
+    # 不用 try/except 吞异常
+    asyncio.run(compat._tidy_context_impl(request))
+
+    # 验证 call_subagent 被调用且捕获了参数
+    assert "task" in captured, "call_subagent 未被调用，可能 _tidy_context_impl 提前返回或抛错"
+    # prompt 含方法论关键词
+    assert "压缩方法论" in captured["task"]
+    assert "第一份" in captured["task"]
+    assert "会话单元" in captured["task"]
+    assert "<analysis>" in captured["task"]
+    # llm_config 注入了 max_tokens
+    assert captured["llm_config"].get("litellm_kwargs", {}).get("max_tokens") == 16384
