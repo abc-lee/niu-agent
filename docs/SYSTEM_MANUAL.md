@@ -146,10 +146,27 @@ ai-bot/
 ├── ui/assistant/       # Electron 前端
 ├── config/             # 配置文件
 ├── models/             # 模型文件
+├── memory/            # 初始模板目录（memory.json/preferences.json/skills，首次运行复制到 ~/.niu/）
 ├── scripts/            # 运维脚本
 ├── data/               # 运行时数据（SQLite）
 └── docs/               # 文档
 ```
+
+**初始模板目录 `memory/`：**
+
+`memory/` 是项目的初始模板目录，包含首次运行所需的必要配置文件和 Skills：
+
+| 文件/目录 | 用途 | 复制目标 |
+|----------|------|---------|
+| `memory.json` | 用户记忆模板（身份、工作目录等初始配置） | `~/.niu/memory.json` |
+| `preferences.json` | 存储配置模板（分类、路径结构、冲突阈值等） | `~/.niu/preferences.json` |
+| `skills/*.md` | 初始 Skills 模板（脑区管理、浏览器自动化等） | `~/.niu/skills/` |
+
+**自动复制机制**：
+- 首次运行或运行目录（`~/.niu/`）中缺少这些文件时，启动器自动把 `memory/` 里的文件复制到 `~/.niu/`
+- 复制逻辑在 `launcher/src/main.rs` 的 `initNiuDir()` 函数
+- **不覆盖已存在文件**：用户已修改的配置不会被模板覆盖
+- 如果 `memory/` 目录在 exeDir 和 cwd 都找不到，模板复制会跳过（开发环境容错）
 
 ### 2.5 子 Agent 架构
 
