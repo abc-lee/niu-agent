@@ -176,6 +176,26 @@ def test_agent_runner_loop_accepts_system_message_param():
     assert "system_prompt" in params, "system_prompt 保留（向后兼容）"
 
 
+def test_subagent_builds_static_and_dynamic_segments():
+    """子 Agent 应构建静态段（agent.md + user_info）+ 动态段（Current Time）。"""
+    from agent.subagent import build_subagent_system_segments
+
+    static, dynamic = build_subagent_system_segments("file-processor")
+    assert "Current Time" not in static, "静态段不应含 Current Time"
+    assert "Current Time" in dynamic, "动态段应含 Current Time"
+    assert len(static) > 100, "静态段应含 agent.md 正文"
+
+
+def test_run_agent_loop_accepts_system_message_param():
+    """_run_agent_loop 应支持可选 system_message 参数。"""
+    from agent.subagent import _run_agent_loop
+    import inspect
+
+    sig = inspect.signature(_run_agent_loop)
+    params = sig.parameters
+    assert "system_message" in params, "_run_agent_loop 应新增 system_message 可选参数"
+
+
 def test_refresh_user_memories_updates_static_and_recomputes_base():
     """memory 变化时 _refresh_user_memories 应同步更新 static_system_prompt
     并重算 base_system_prompt = static + dynamic_system_prefix。"""

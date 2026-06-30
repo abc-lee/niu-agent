@@ -106,10 +106,11 @@ def _read_protect_recent_count() -> int:
 
 def _run_agent_loop(
     client,
-    system_prompt: str,
-    user_input: str,
-    handler,
-    tools_schema: list,
+    system_prompt: str = "",  # 向后兼容（system_message 非 None 时优先）
+    system_message: Optional[dict] = None,  # 已组装好的 system message（首轮即带 cache_control）
+    user_input: str = "",
+    handler=None,
+    tools_schema: list = None,
     max_turns: int = 20,
     initial_user_content: Optional[str] = None,
     context_window_tokens: int = 0,
@@ -123,7 +124,8 @@ def _run_agent_loop(
     Args:
         agent_name: 子 Agent 名称（用于日志）
         client: LLM 客户端
-        system_prompt: 系统提示词
+        system_prompt: 系统提示词（向后兼容，system_message 非 None 时优先）
+        system_message: 已组装好的 system message（首轮即带 cache_control）
         user_input: 用户输入
         handler: NiuHandler 实例
         tools_schema: 工具 schema 列表
@@ -143,6 +145,7 @@ def _run_agent_loop(
     gen = agent_runner_loop(
         client=client,
         system_prompt=system_prompt,
+        system_message=system_message,
         user_input=user_input,
         handler=handler,
         tools_schema=tools_schema,
@@ -259,6 +262,30 @@ def get_subagent_prompt(agent_name: str) -> str:
             return content
 
     return f"You are {agent_name} sub-agent. Complete the task efficiently."
+
+
+def build_subagent_system_segments(agent_name: str) -> tuple:
+    """构建子 Agent 的静态/动态系统提示词段（cache 友好）。
+
+    Returns:
+        (static_system, dynamic_system):
+        - static_system: agent.md 正文 + user_info_section（字节稳定，cache 前缀）
+        - dynamic_system: Current Time（每分钟变化，不 cache）
+    """
+    # 1. 获取子 Agent 提示词（从配置文件）
+    static_system = get_subagent_prompt(agent_name)
+
+    # 2. 注入用户信息和偏好（静态段，子 Agent 需要了解用户背景）
+    user_info_section = _build_user_info_section()
+    if user_info_section:
+        static_system += "\n\n" + user_info_section
+
+    # 3. 动态段：Current Time
+    from datetime import datetime
+    now = datetime.now()
+    dynamic_system = f"\n\nCurrent Time: {now.strftime('%Y-%m-%d %H:%M:%S')}"
+
+    return static_system, dynamic_system
 
 
 def get_subagent_mcp_tools_schema(agent_name: str) -> List[Dict]:
@@ -382,23 +409,33 @@ def call_subagent(
     """
     from .handler import NiuHandler
 
-    # 1. 获取子 Agent 提示词（从配置文件）
-    system_prompt = get_subagent_prompt(agent_name)
-
-    # 1.5 从子 Agent 配置读取 temperature，覆盖到 llm_config
+    # 1. 获取子 Agent 提示词 + temperature
     agent_config = get_subagent_config(agent_name)
     if agent_config.get("temperature") is not None:
         llm_config = {**llm_config, "temperature": agent_config["temperature"]}
 
-    # 2. 注入当前时间（重要！）
-    from datetime import datetime
-    now = datetime.now()
-    system_prompt += f"\n\nCurrent Time: {now.strftime('%Y-%m-%d %H:%M:%S')}"
+    # 2. 构建静态/动态段（cache 友好）
+    static_system, dynamic_system = build_subagent_system_segments(agent_name)
 
-    # 2.5 注入用户信息和偏好（子Agent需要了解用户背景）
-    user_info_section = _build_user_info_section()
-    if user_info_section:
-        system_prompt += "\n\n" + user_info_section
+    # 3. 组装 system message（按 model 决定格式：Claude list / 其他 str）
+    model_lower = (llm_config.get("model", "") or "").lower()
+    if "claude" in model_lower:
+        system_message = {
+            "role": "system",
+            "content": [
+                {
+                    "type": "text",
+                    "text": static_system,
+                    "cache_control": {"type": "ephemeral"},
+                },
+                {"type": "text", "text": dynamic_system},
+            ],
+        }
+    else:
+        system_message = {
+            "role": "system",
+            "content": static_system + dynamic_system,
+        }
 
     # 3. 创建 LLM 客户端（统一使用 LiteLLM）
     from .runner import create_client
@@ -463,7 +500,8 @@ def call_subagent(
 
     result_text, return_value = _run_agent_loop(
         client=client,
-        system_prompt=system_prompt,
+        system_prompt="",  # 向后兼容（system_message 非 None 时分支选择生效）
+        system_message=system_message,
         user_input=task,
         handler=handler,
         tools_schema=tools_schema,
