@@ -491,12 +491,14 @@ def test_litellm_adapter_finish_reason_from_stream(monkeypatch):
     import litellm
     monkeypatch.setattr(litellm, "completion", lambda **kwargs: iter(fake_chunks))
 
-    session = LiteLLMSession(
-        default_model="test-model",
-        api_base="http://test",
-        api_key="test",
-        read_timeout=30,
-    )
+    # LiteLLMSession 接收 cfg dict（不是关键字参数），见 BaseSession.__init__
+    cfg = {
+        "apikey": "test",
+        "apibase": "http://test",
+        "model": "test-model",
+        "read_timeout": 30,
+    }
+    session = LiteLLMSession(cfg)
     messages = [{"role": "user", "content": "test"}]
     gen = session.chat(messages=messages, tools=None)
     # 消费生成器拿 MockResponse（通过 StopIteration.value）
@@ -518,7 +520,7 @@ def test_litellm_adapter_finish_reason_from_stream(monkeypatch):
 Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_compress_quality.py::test_litellm_adapter_finish_reason_from_stream -v`
 Expected: PASS（finish_reason='length' 被正确捕获）
 
-如果测试因 LiteLLMSession 初始化参数不对而失败，读 `agent/generic/litellm_adapter.py` 的 `LiteLLMSession.__init__` 确认必需参数，调整测试。
+如果测试因 `chat` 方法内部读了其他 cfg 字段而失败，读 `agent/generic/litellm_adapter.py:329` 的 `LiteLLMSession.__init__` 和 `chat` 方法确认需要的字段，补全 cfg dict。
 
 - [ ] **Step 7: 语法检查**
 
@@ -733,17 +735,20 @@ def test_call_subagent_detects_truncation(monkeypatch):
 
     monkeypatch.setattr(subagent, "_run_agent_loop", fake_run_agent_loop)
 
-    # mock create_client / get_tools_schema / NiuHandler 为安全 fake（非 None）
+    # call_subagent 内部用 from .handler import NiuHandler / from .runner import create_client, get_tools_schema
+    # 函数内 import 直接从源模块拿，必须 patch 源模块（不是 subagent 模块）
+    import agent.handler as handler_module
+    import agent.runner as runner_module
     class FakeClient:
         pass
-    monkeypatch.setattr(subagent, "create_client", lambda cfg: FakeClient())
-    monkeypatch.setattr(subagent, "get_tools_schema", lambda: [])
+    monkeypatch.setattr(runner_module, "create_client", lambda cfg: FakeClient())
+    monkeypatch.setattr(runner_module, "get_tools_schema", lambda: [])
     # NiuHandler 需要支持 _disable_memory_recall / _is_subagent 属性赋值
     class FakeHandler:
         def __init__(self, mcp_client=None):
             self._disable_memory_recall = False
             self._is_subagent = False
-    monkeypatch.setattr(subagent, "NiuHandler", FakeHandler)
+    monkeypatch.setattr(handler_module, "NiuHandler", FakeHandler)
 
     result = subagent.call_subagent(
         agent_name="context-manager",
@@ -762,15 +767,17 @@ def test_call_subagent_normal_return(monkeypatch):
 
     monkeypatch.setattr(subagent, "_run_agent_loop", fake_run_agent_loop)
 
+    import agent.handler as handler_module
+    import agent.runner as runner_module
     class FakeClient:
         pass
-    monkeypatch.setattr(subagent, "create_client", lambda cfg: FakeClient())
-    monkeypatch.setattr(subagent, "get_tools_schema", lambda: [])
+    monkeypatch.setattr(runner_module, "create_client", lambda cfg: FakeClient())
+    monkeypatch.setattr(runner_module, "get_tools_schema", lambda: [])
     class FakeHandler:
         def __init__(self, mcp_client=None):
             self._disable_memory_recall = False
             self._is_subagent = False
-    monkeypatch.setattr(subagent, "NiuHandler", FakeHandler)
+    monkeypatch.setattr(handler_module, "NiuHandler", FakeHandler)
 
     result = subagent.call_subagent(
         agent_name="context-manager",
@@ -973,6 +980,29 @@ REMINDER: 禁止调用任何工具，直接在回复中输出 <analysis> 块和 
 - 函数参数名用 `compress_target_tokens`（不带下划线前缀，函数内局部变量）
 - 调用处（Step 3 降级循环）传 `_compress_target_tokens`（带下划线的循环变量）作为参数
 - 原模式二分支 L1860-1882 的内联 prompt 构造删除，改为调用 `_build_mode2_prompt(...)`
+
+- [ ] **Step 2.5: 改造跳过压缩判断用 _read_compress_target_tokens**
+
+读 `niu_api/compat.py:1810-1834` 确认模式二跳过判断逻辑。
+
+当前代码（L1815-1816）用百分比算 target_tokens：
+```python
+            elif _is_mode2:
+                target_threshold = _read_target_threshold()
+                target_tokens = int(context_window_tokens * target_threshold)
+                suggest_release = max(display_tokens - target_tokens, 0)
+```
+
+改为用绝对值配置（与 prompt 一致）：
+```python
+            elif _is_mode2:
+                target_tokens = _read_compress_target_tokens()
+                suggest_release = max(display_tokens - target_tokens, 0)
+```
+
+同时删除 L1827-1834 的 `_compress_target` 构造（模式二不再用这个变量，prompt 由 `_build_mode2_prompt` 内联方法论）。保留 L1818-1825 的跳过判断（suggest_release == 0 或 < 5% 跳过）。
+
+注意：`_compress_target` 变量保留给模式一用（spec 明确），只删除模式二分支里对它的赋值。如果模式一分支（`else` L1883+）仍用 `_compress_target`，保留那里的构造。
 
 - [ ] **Step 3: 改造 run_context_manager_mode2 加降级循环 + max_tokens 注入**
 
@@ -1318,6 +1348,22 @@ REMINDER: 禁止调用任何工具，直接在回复中输出 <analysis> 块和 
 - 调用处（Step 3 降级循环）传 `_force_history` / `_dream_idx_in_force`（带下划线的现有变量）作为参数
 - 原模式三分支 L2511-2548 的内联 prompt 构造删除，改为调用 `_build_force_prompt(...)`
 
+- [ ] **Step 2.5: 改造 target_tokens 计算用 _read_compress_target_tokens**
+
+读 `niu_api/compat.py:2473` 确认模式三 target_tokens 计算。
+
+当前代码（L2473）：
+```python
+            target_tokens = int(context_window_tokens * _read_target_threshold())
+```
+
+改为用绝对值配置（与 prompt 一致）：
+```python
+            target_tokens = _read_compress_target_tokens()
+```
+
+注意：这个 `target_tokens` 后续可能用于 force 分支的跳过判断或其他逻辑（读 L2473 之后的代码确认）。改后逻辑不变，只是数据源从百分比换成绝对值。
+
 - [ ] **Step 3: 改造 run_context_manager_force 加降级循环 + max_tokens 注入**
 
 读 `niu_api/compat.py:2553-2563` 确认 `run_context_manager_force` 和调用现状。
@@ -1586,24 +1632,26 @@ git commit -m "feat(compat): 模式三 task prompt 写回完整方法论 + 降�
 
 删除这段代码。
 
-当前 cursor 降级代码（L2624-2627 概要）：
+当前 cursor 降级代码（L2624-2627，实际变量名 `new_compress_id`）：
 ```python
-            if cursor_idx and cursor_idx in _f_idx_to_id:
-                ...
-            else:
-                cursor_idx = max(keep_idxs)  # 降级取 max
+                # cursor 转换为 UUID
+                if cursor_idx and cursor_idx in _f_idx_to_id:
+                    new_compress_id = _f_idx_to_id[cursor_idx]
+                elif _f_idx_to_id:
+                    new_compress_id = _f_idx_to_id[max(_f_idx_to_id.keys())]
 ```
 
-改为（删除 else 降级，cursor 不在映射里就置 None）：
+改为（删除 elif 降级，cursor 不在映射里就保留原 `new_compress_id` 值——L2571 已初始化为 `last_compress_id`）：
 ```python
-            if cursor_idx and cursor_idx in _f_idx_to_id:
-                cursor_uuid = _f_idx_to_id[cursor_idx]
-            else:
-                logger.warning(f"[Compact] Force cursor idx {cursor_idx} not in mapping, skipping cursor update")
-                cursor_uuid = None
+                # cursor 转换为 UUID
+                if cursor_idx and cursor_idx in _f_idx_to_id:
+                    new_compress_id = _f_idx_to_id[cursor_idx]
+                else:
+                    logger.warning(f"[Compact] Force cursor idx {cursor_idx} not in mapping, keeping last_compress_id")
+                    # new_compress_id 保持 L2571 的初始值（last_compress_id）
 ```
 
-注意：读实际代码确认 cursor_uuid 后续怎么用，None 时跳过 cursor 写入。
+注意：`new_compress_id` 在 L2571 已初始化为 `last_compress_id`，所以 else 分支不需要重新赋值，保留原值即可。删除 `elif _f_idx_to_id: new_compress_id = _f_idx_to_id[max(...)]` 这个降级（不自动取 max）。
 
 - [ ] **Step 6: 模式三 update 越界 idx 加 warning**
 
