@@ -108,3 +108,21 @@ cursor=30"""
     assert "keep=1,5,15,30" in result
     assert "cursor=30" in result
     assert "会话单元" not in result
+
+
+from agent.generic.llmcore import MockResponse
+
+
+def test_mock_response_has_finish_reason_default():
+    """MockResponse 不传 finish_reason 时默认 None。"""
+    resp = MockResponse(thinking="", content="hello", tool_calls=[], raw={}, stop_reason="end_turn")
+    assert resp.finish_reason is None
+
+
+def test_mock_response_has_finish_reason_set():
+    """MockResponse 传 finish_reason 时能设置。"""
+    resp = MockResponse(
+        thinking="", content="hello", tool_calls=[], raw={}, stop_reason="end_turn",
+        finish_reason="length"
+    )
+    assert resp.finish_reason == "length"
