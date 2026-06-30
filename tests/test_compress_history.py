@@ -254,3 +254,69 @@ def test_mode2_passes_history_to_call_subagent(monkeypatch):
     assert "CRITICAL" in captured["task"] or "压缩" in captured["task"]
     # task 不应含 [id:UUID] 格式（那是旧序列化文本的特征）
     assert "[id:" not in captured["task"]
+
+
+def test_mode3_passes_history_to_call_subagent(monkeypatch):
+    """模式三（force）应构造 history 列表传给 call_subagent，而非序列化文本塞进 task。"""
+    import asyncio
+    import niu_api.compat as compat
+
+    messages = [
+        FakeMsg(id="msg-1", role="user", content="你好"),
+        FakeMsg(id="msg-2", role="assistant", content="你好，我是 Niu"),
+    ]
+
+    class FakeStore:
+        async def get_messages(self, limit=None, before_id=None):
+            return messages
+
+    async def fake_get_message_store():
+        return FakeStore()
+
+    # mock runner 控制 usage_percent（force 模式不依赖 usage，但 _tidy_context_impl 仍会读取）
+    import niu_api.chat as chat_module
+    import agent.subagent as subagent_module
+    class FakeRunner:
+        handler = type("H", (), {"_last_prompt_tokens": 180000})()  # 180K tokens，模拟溢出
+        llm_config = {}
+
+    def fake_get_or_create_runner():
+        return FakeRunner()
+
+    # mock call_subagent 捕获参数，返回 keep=/update=/cursor= 三行
+    captured = {}
+    def fake_call_subagent(*args, **kwargs):
+        agent_name = kwargs.get("agent_name") or (args[0] if args else "")
+        if agent_name == "context-manager":
+            captured["agent_name"] = agent_name
+            captured["task"] = kwargs.get("task", "")
+            captured["history"] = kwargs.get("history")
+            return "keep=1,2\ncursor=2\nupdate="
+        return "skip"
+
+    monkeypatch.setattr(compat, "get_message_store", fake_get_message_store)
+    monkeypatch.setattr(chat_module, "get_or_create_runner", fake_get_or_create_runner)
+    monkeypatch.setattr(subagent_module, "call_subagent", fake_call_subagent)
+    monkeypatch.setattr(compat, "_read_context_window_tokens", lambda: 200000, raising=False)
+    monkeypatch.setattr(compat, "_read_warning_threshold", lambda: 0.8, raising=False)
+    monkeypatch.setattr(compat, "_read_target_threshold", lambda: 0.3, raising=False)
+    monkeypatch.setattr(compat, "_read_protect_recent_count", lambda: 0, raising=False)
+
+    # 调用 _tidy_context_impl force 模式
+    request = {"session_id": "test", "mode": "force"}
+    try:
+        asyncio.run(compat._tidy_context_impl(request))
+    except Exception:
+        pass  # 后续执行可能报错（未 mock 全部），只关心 call_subagent 是否被正确调用
+
+    # 验证 call_subagent 收到 history 参数
+    assert captured.get("agent_name") == "context-manager"
+    assert captured.get("history") is not None
+    assert isinstance(captured["history"], list)
+    assert len(captured["history"]) == 2
+    # task 是压缩指令（不含序列化消息文本）
+    assert "CRITICAL" in captured["task"] or "压缩" in captured["task"]
+    # task 不应含 [id:UUID] 格式（那是旧序列化文本的特征）
+    assert "[id:" not in captured["task"]
+    # task 应含 cursor= 输出说明（模式三特有）
+    assert "cursor=" in captured["task"]
