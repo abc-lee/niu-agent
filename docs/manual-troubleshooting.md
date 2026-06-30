@@ -7,6 +7,24 @@
 
 ### 1.1 启动问题
 
+#### 当前进程结构
+
+程序启动后包含以下进程（参见 CLAUDE.md）：
+- **Rust 启动器**（`./niu` 二进制，Iced splash 启动 + 进程监控）
+- **Python API 服务**（`niu_api`，端口 9876，Agent 核心 + MCP 同进程调用）
+- **Electron 前端**（精灵窗口 + 聊天窗口，由 Rust 启动器拉起）
+
+启动顺序：Rust 启动器 → Python API → Electron 前端。任一环节失败都会导致启动卡死或窗口空白。
+
+#### 日志路径
+
+| 路径 | 用途 |
+|------|------|
+| `logs/llm_interaction_YYYYMMDD.log` | 应用层 LLM 交互日志（请求/响应/工具调用） |
+| `logs/raw_http/{YYYYMMDD}/` | 两层日志架构：传输层 `NNNNNN.json` + 应用层 `NNNNNN_request.json`/`NNNNNN_response.json` |
+| `logs/api_stderr.log` | Python API stderr 输出 |
+| `logs/im_adapter_stderr.log` | IM 适配器（飞书等）stderr 输出 |
+
 #### 问题：启动时卡在 "Preloading embedding model..."
 
 **可能原因：**
@@ -26,8 +44,9 @@ ping huggingface.co
 python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('BAAI/bge-base-zh-v1.5').save('models/bge-base-zh-v1.5')"
 
 # 4. 禁用 GPU（如果驱动有问题）
-set CUDA_VISIBLE_DEVICES=-1
-niu-assistant.exe
+export CUDA_VISIBLE_DEVICES=-1   # macOS/Linux
+set CUDA_VISIBLE_DEVICES=-1       # Windows
+./niu                             # macOS/Linux（Windows 用 niu-assistant.exe）
 ```
 
 #### 问题：启动时卡在 "Importing InsightFace..."（超过 30 秒）
@@ -59,14 +78,22 @@ pip install onnxruntime-gpu
 **解决方案：**
 ```bash
 # 1. 检查端口占用
+# macOS/Linux
+lsof -i :9876
+# Windows
 netstat -ano | findstr :9876
 
 # 2. 更改端口
+# macOS/Linux
+export NIU_API_PORT=9877
+./niu
+# Windows
 set NIU_API_PORT=9877
 niu-assistant.exe
 
 # 3. 检查防火墙
-# Windows Defender → 允许应用通过防火墙 → 添加 niu-assistant.exe
+# macOS：系统设置 → 网络 → 防火墙 → 允许 ./niu 入站
+# Windows：Windows Defender → 允许应用通过防火墙 → 添加 niu-assistant.exe
 ```
 
 ### 1.2 人脸识别问题
@@ -90,13 +117,17 @@ niu-assistant.exe
 # 1. 手动触发模型加载
 # 在对话中输入："识别这张照片的人脸"
 
-# 2. 检查模型文件
-ls models/buffalo_l/det_10g.onnx
-ls models/buffalo_l/w600k_r50.onnx
+# 2. 检查模型文件（注意是双层 models/models/ 目录）
+ls models/models/buffalo_l/det_10g.onnx
+ls models/models/buffalo_l/w600k_r50.onnx
 
 # 3. 重新下载模型
 python scripts/package_all_dependencies.py
 ```
+
+**预加载机制说明：**
+
+`preload_face_model()`（`mcp-servers/photo-server/src/niu_photo_server/__init__.py:4163`）在 MCP 启动前调用，**只导入 cv2 和 InsightFace 模块代码，不加载模型本身**。模型按需加载（首次调用 `get_face_model` 时才加载到内存，约 326MB；空闲 5 分钟自动卸载）。如果 "Importing InsightFace..." 卡住超过 30 秒，说明是模块导入阶段的问题，而非模型加载。
 
 #### 问题：人脸识别速度很慢（超过 10 秒/张）
 
@@ -155,8 +186,9 @@ pip install insightface>=0.7.3
 
 **诊断步骤：**
 ```
-1. 检查日志：应看到 "[INTERNAL SCHEDULER] Scheduled to start (delayed 10s)"
-   调度器是延迟启动的，启动后约 10 秒才开始检查任务
+1. 检查日志：应看到 "[INTERNAL SCHEDULER] Scheduled to start (waiting for system_ready signal)"
+   调度器等待 system_ready 信号后启动（最长 60 秒超时回退 + 2 秒安全延迟），
+   并非固定延迟启动。若 60 秒内未收到信号会强制启动并打印 warning。
 2. 列出任务：在对话中问 "查看所有定时任务"
 3. 检查系统通知设置
 ```
@@ -169,8 +201,9 @@ curl http://127.0.0.1:9876/scheduler/tasks
 # 2. 手动触发测试
 # 创建 1 分钟后的提醒，测试是否收到
 
-# 3. 检查数据库
-sqlite3 ~/.niu/scheduled_tasks.db "SELECT * FROM scheduled_tasks WHERE status='pending';"
+# 3. 检查数据库（路径通过 workspace 解析，默认 ~/.niu/work/scheduled_tasks.db）
+sqlite3 ~/.niu/work/scheduled_tasks.db "SELECT * FROM scheduled_tasks WHERE status='pending';"
+# 若 workspace 已自定义，请替换为 {workspace}/scheduled_tasks.db
 ```
 
 #### 问题：循环任务（每天提醒）只触发一次
@@ -302,8 +335,8 @@ sync.scan_and_sync()
 **恢复数据：**
 ```bash
 # 1. 停止程序
-# 2. 恢复备份
-cp -r backup/data/* data/
+# 2. 恢复备份到 ~/.niu/（含 workspace 子目录）
+cp -r backup/niu/* ~/.niu/
 
 # 3. 重启程序
 ```
@@ -333,20 +366,18 @@ sqlite3 ~/.niu/messages.db "VACUUM;"
 - `~/.niu/preferences.json` — 存储配置
 - `~/.niu/skills/` — Skills 技能文件目录
 
-**恢复方法：从项目安装目录的 config/user-data/ 拷贝**
+**恢复方法：从安装包重新解压模板文件**
+
+`memory.json` 和 `preferences.json` 是模板文件，Rust 启动器首次启动时会从安装包内模板拷贝到 `~/.niu/`（参见 `launcher/src/main.rs` 的 `init_niu_dir`）。若运行中文件损坏或丢失，可从原始安装包重新解压获取模板：
 
 ```bash
-# Linux/Mac
+# macOS/Linux：重新解压安装包到临时目录，取出模板文件
+# 假设安装包为 niu.tar.gz
+tar -xzf niu.tar.gz -C /tmp/niu-restore
+cp /tmp/niu-restore/config/memory.json ~/.niu/
+cp /tmp/niu-restore/config/preferences.json ~/.niu/
 mkdir -p ~/.niu/skills
-cp config/user-data/memory.json ~/.niu/
-cp config/user-data/preferences.json ~/.niu/
-cp config/user-data/skills/*.md ~/.niu/skills/
-
-# Windows (PowerShell)
-mkdir "$env:USERPROFILE\.niu\skills"
-copy config\user-data\memory.json "$env:USERPROFILE\.niu\"
-copy config\user-data\preferences.json "$env:USERPROFILE\.niu\"
-copy config\user-data\skills\*.md "$env:USERPROFILE\.niu\skills\"
+# skills 文件需从 memory/skills/ 重新同步（见 1.4 节 Skills 未同步）
 ```
 
 **注意：** 仅恢复缺失的文件，不要覆盖用户已有的配置。如果 preferences.json 已存在但 memory.json 丢失，只恢复 memory.json。
@@ -426,8 +457,8 @@ typeof NiuDomTree !== 'undefined'
 |------|------|--------|------|
 | 1 | 向量模型 466MB，手动下载 paraphrase-multilingual-MiniLM-L12-v2 | 默认模型约 400MB，当前默认 bge-base-zh-v1.5，支持多模型切换 | 默认嵌入模型已从 paraphrase-multilingual-MiniLM-L12-v2 切换为 BAAI/bge-base-zh-v1.5（见 niu_api/internal/embedding.py DEFAULT_MODEL） |
 | 2 | 人脸识别需要 ~500MB 内存 | 人脸识别需要约 326MB 内存 | CLAUDE.md 和 photo-server 代码均记录为约 326MB |
-| 3 | 检查日志：应看到 "[INTERNAL SCHEDULER] Started" | 应看到 "[INTERNAL SCHEDULER] Scheduled to start (delayed 10s)"，调度器延迟 10 秒启动 | service.py 中 start_scheduler 使用 start_delayed(delay_seconds=10) |
-| 4 | sqlite3 data/scheduled_tasks.db ... | sqlite3 ~/.niu/scheduled_tasks.db ... | 数据库路径通过 WORKSPACE_PATH 或 memory.json 解析，默认 ~/.niu/ |
+| 3 | 检查日志：应看到 "[INTERNAL SCHEDULER] Started"（旧版曾修正为 "delayed 10s"） | 应看到 "[INTERNAL SCHEDULER] Scheduled to start (waiting for system_ready signal)"，调度器等待 system_ready 信号后启动（最长 60 秒超时回退 + 2 秒安全延迟） | service.py:145 + scheduler.py:92-121，start_delayed 实际为等待 _ready_event 信号而非固定延迟 |
+| 4 | sqlite3 data/scheduled_tasks.db ...（旧版曾修正为 ~/.niu/scheduled_tasks.db） | sqlite3 {workspace}/scheduled_tasks.db ...（默认 ~/.niu/work/scheduled_tasks.db） | service.py:42-50 优先用 {workspace}/scheduled_tasks.db，~/.niu/scheduled_tasks.db 是旧残留 |
 | 5 | 所有 REDACTED_WIN_PATH/vectors.db 硬编码路径 | vectors.db 已废弃，知识检索改用 LightRAG（~/.niu/lightrag_storage/） | vector-store 架构已移除，由 lightrag-server 统一管理知识检索 |
 | 6 | ls models/paraphrase-multilingual-MiniLM-L12-v2（向量搜索报错排查） | 默认模型 bge-base-zh-v1.5，向量搜索独立排查已移除（合并到 LightRAG 故障排查） | 默认模型已变更，独立向量搜索概念已不存在 |
 | 7 | data/messages.db, data/vectors.db, data/kg.db（数据备份列表） | {workspace}/messages.db, ~/.niu/lightrag_storage/, {workspace}/scheduled_tasks.db 等，并说明路径解析 | vectors.db 和 knowledge.kz* 已废弃，知识检索改用 LightRAG 存储 |
@@ -437,3 +468,8 @@ typeof NiuDomTree !== 'undefined'
 | 11 | 浏览器故障提到 "Playwright 选择器失效"、检查 "playwright\|browser" 日志 | 改为 WSBridge + Chrome Extension 架构，NiuDomTree 通过 content.js 注入 | browser-server 从 Playwright 迁移到 WSBridge + Extension 架构 |
 | 12 | 工具数量 73 个，按旧服务器分类（kg-server:14, vector-store:7, photo-server:16） | 约 70 个，按新服务器分类（lightrag-server:15, photo-server:15, brain-region-server:3, browser-server:3） | kg-server + vector-store 合并为 lightrag-server，各服务器工具数量随版本变化 |
 | 13 | MCP 加载故障提到手动启动各 MCP 服务器进程测试 | 改为同进程架构下直接测试模块导入（python -c "from niu_xxx import get_tool_schemas"） | MCP 同进程架构无需启动独立进程 |
+| 14 | 1.1 节仅用 Windows 命令（netstat/findstr、niu-assistant.exe） | 补充 macOS 命令（lsof -i :9876、./niu），并补充进程结构（Rust 启动器 + Python API + Electron 前端）和日志路径（llm_interaction_YYYYMMDD.log + raw_http 两层架构 + api_stderr.log + im_adapter_stderr.log） | 项目实际部署在 macOS，CLAUDE.md 记录从 Electron 迁移至 Iced/Rust 启动器 |
+| 15 | 1.2 节检查 ls models/buffalo_l/det_10g.onnx | 改为 ls models/models/buffalo_l/det_10g.onnx（双层目录） | photo-server __init__.py:972 加载路径为 get_models_dir()/"models"/"buffalo_l"，实际为 models/models/buffalo_l/ |
+| 16 | 1.2 节未提预加载机制 | 补充 preload_face_model() 说明（只导入 cv2/InsightFace 模块代码，不加载模型本身） | __init__.py:4163 preload_face_model 注释明确"只导入模块，不加载模型" |
+| 17 | 1.5 节恢复命令 cp -r backup/data/* data/ | 改为 cp -r backup/niu/* ~/.niu/ | 项目无 data/ 目录，数据在 ~/.niu/ 和 ~/.niu/work/ |
+| 18 | 1.5 节末尾"从项目安装目录的 config/user-data/ 拷贝" | 改为"从安装包重新解压模板文件"（config/user-data/ 目录不存在） | 启动器 init_niu_dir 从安装包内 config/ 模板拷贝 memory.json/preferences.json，无 config/user-data/ 目录 |
