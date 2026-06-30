@@ -43,10 +43,13 @@ https://lbs.amap.com/
 ```json
 {
   "amap": {
-    "api_key": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    "api_key": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "enabled": true
   }
 }
 ```
+
+> `enabled` 字段当前未启用（代码仅读取 `api_key`），保留以备后续开关控制。
 
 写入方式：读取现有 preferences.json → 合并 amap 段 → 原子写入（临时文件 + os.replace）。
 
@@ -79,3 +82,16 @@ https://lbs.amap.com/
 
 - 高德逆地理编码主要覆盖中国境内
 - 境外照片可能返回空结果，此时照片描述中只显示 GPS 坐标（无地名）
+
+### 问题：换 Key 后旧地名未更新（缓存机制）
+
+- 系统在 workspace 目录下用 SQLite 维护本地缓存 `geocode_cache.db`
+- 缓存键为坐标四舍五入到 2 位小数（约 1km 网格），缓存版本号 `_CACHE_VERSION=2`
+- 因此同一坐标附近会复用旧地名，**用户更换 Key 后历史照片的旧地名不会自动刷新**
+- 如需强制重新查询，可删除该 `geocode_cache.db` 文件，下次入库会重建
+
+### 问题：API 失败时照片仅显示 GPS 坐标
+
+- 高德返回 `status != "1"` 时（非抛异常），系统记录 warning 日志后返回 None
+- 此时照片 description 回退显示原始 GPS 坐标，用户无感知失败
+- 排查需查看 `logs/api_stderr.log` 中带 `[Geocode]` 标记的日志行
