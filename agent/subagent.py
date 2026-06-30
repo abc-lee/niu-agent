@@ -104,6 +104,40 @@ def _read_protect_recent_count() -> int:
     return DEFAULT_PROTECT_RECENT_COUNT
 
 
+DEFAULT_COMPRESS_TARGET_TOKENS = 60000
+DEFAULT_MAX_OUTPUT_TOKENS = 16384
+
+
+def _read_compress_target_tokens() -> int:
+    """Read compressTargetTokens from config/user-config.json. Default 60000."""
+    try:
+        config_path = _get_user_config_path()
+        with open(config_path, "r", encoding="utf-8") as f:
+            config = json.load(f)
+        val = config.get("context", {}).get("compressTargetTokens", DEFAULT_COMPRESS_TARGET_TOKENS)
+        if isinstance(val, (int, float)) and val > 0:
+            return int(val)
+        logger.warning(f"Invalid compressTargetTokens {val}, using default {DEFAULT_COMPRESS_TARGET_TOKENS}")
+    except Exception:
+        pass
+    return DEFAULT_COMPRESS_TARGET_TOKENS
+
+
+def _read_max_output_tokens() -> int:
+    """Read maxOutputTokens from config/user-config.json. Default 16384."""
+    try:
+        config_path = _get_user_config_path()
+        with open(config_path, "r", encoding="utf-8") as f:
+            config = json.load(f)
+        val = config.get("context", {}).get("maxOutputTokens", DEFAULT_MAX_OUTPUT_TOKENS)
+        if isinstance(val, (int, float)) and val > 0:
+            return int(val)
+        logger.warning(f"Invalid maxOutputTokens {val}, using default {DEFAULT_MAX_OUTPUT_TOKENS}")
+    except Exception:
+        pass
+    return DEFAULT_MAX_OUTPUT_TOKENS
+
+
 def _run_agent_loop(
     client,
     system_prompt: str = "",  # 向后兼容（system_message 非 None 时优先）
