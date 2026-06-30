@@ -2371,7 +2371,7 @@ update=3|用户讨论了XX方案;11|工具执行了YY操作
                     logger.info(f"[Tidy] Force: Dream cursor auto-advanced to: {new_dream_id}")
             else:
                 logger.info("[Tidy] Force: dream-evolver no incremental messages")
-                new_dream_id = last_dream_evolve_id  # 无增量时保留旧游标（与模式二 L1676 一致，避免 UnboundLocalError）
+                new_dream_id = last_dream_evolve_id  # 无增量时保留旧游标，避免 UnboundLocalError
 
             # 校验游标
             if new_dream_id:
@@ -2487,7 +2487,6 @@ update=3|用户讨论了XX方案;11|工具执行了YY操作
                 logger.info(f"[Tidy] Force: protect_recent_count degraded to {protect_recent_count} (from request)")
 
             # 使用统一的 _build_compress_history 构建（与模式二一致）
-            # 传入 protect_recent + exclude_protected=True，排除受保护消息
             _force_msg_ids = []
             _force_history, _ = _build_compress_history(
                 messages, msg_tokens,
