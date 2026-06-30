@@ -171,3 +171,77 @@ def test_litellm_adapter_finish_reason_from_stream(monkeypatch):
     assert isinstance(result, MockResponse)
     assert result.finish_reason == "length"
     assert result.content == "hello world"
+
+
+def test_agent_loop_return_value_contains_finish_reason(monkeypatch):
+    """agent_runner_loop 正常完成（无工具调用）时 return_value 应含 response 的 finish_reason。"""
+    from agent.generic import agent_loop
+    from agent.generic.llmcore import MockResponse
+
+    # mock 停止标志，避免真实初始化 agent.runner
+    # 注意：is_stop_requested/clear_stop/drain_supplement 在 agent_runner_loop 函数内部
+    # 通过 `from agent.runner import ...` 导入，需 patch agent.runner 模块
+    from agent import runner as _runner_mod
+    monkeypatch.setattr(_runner_mod, "is_stop_requested", lambda: False)
+    monkeypatch.setattr(_runner_mod, "clear_stop", lambda: None)
+    monkeypatch.setattr(_runner_mod, "drain_supplement", lambda: None)
+
+    # mock 输出校验：永远返回 valid（避免 harness 重试逻辑干扰）
+    class _FakeValidation:
+        is_valid = True
+
+        def format_feedback(self):  # pragma: no cover - 不会被调用
+            return ""
+
+    monkeypatch.setattr(agent_loop, "validate_references", lambda content: _FakeValidation())
+
+    # mock 最小 handler：L281-284 需要 _last_prompt_tokens/_done_hooks/max_turns
+    class _FakeHandler:
+        _last_prompt_tokens = 0
+        _done_hooks = []
+        max_turns = 1
+        current_turn = 1
+
+        def next_prompt_patcher(self, next_prompt, outcome, turn):
+            return next_prompt
+
+    # mock LLM 客户端：chat 返回 generator，yield 文本 chunk，StopIteration 返回 MockResponse
+    def _fake_chat(self, messages, tools=None, response_format=None):
+        resp = MockResponse(
+            thinking="",
+            content="keep=1,2,3",
+            tool_calls=[],
+            raw="keep=1,2,3",
+            finish_reason="length",
+        )
+        yield "keep=1,2,3"
+        return resp
+
+    class _FakeClient:
+        last_tools = ""
+
+        def chat(self, messages, tools=None, response_format=None):
+            return _fake_chat(self, messages, tools, response_format)
+
+    gen = agent_loop.agent_runner_loop(
+        client=_FakeClient(),
+        system_prompt="test",
+        user_input="test",
+        handler=_FakeHandler(),
+        tools_schema=[],
+        max_turns=1,
+        initial_user_content="test",
+        enable_supplement=False,
+    )
+
+    return_value = None
+    try:
+        while True:
+            next(gen)
+    except StopIteration as e:
+        return_value = e.value
+
+    assert return_value is not None
+    assert isinstance(return_value, dict)
+    assert return_value.get("result") == "CURRENT_TASK_DONE"
+    assert return_value.get("finish_reason") == "length"
