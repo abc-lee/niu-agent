@@ -115,7 +115,7 @@ def _read_compress_target_tokens() -> int:
         with open(config_path, "r", encoding="utf-8") as f:
             config = json.load(f)
         val = config.get("context", {}).get("compressTargetTokens", DEFAULT_COMPRESS_TARGET_TOKENS)
-        if isinstance(val, (int, float)) and val > 0:
+        if isinstance(val, (int, float)) and not isinstance(val, bool) and val > 0:
             return int(val)
         logger.warning(f"Invalid compressTargetTokens {val}, using default {DEFAULT_COMPRESS_TARGET_TOKENS}")
     except Exception:
@@ -130,7 +130,7 @@ def _read_max_output_tokens() -> int:
         with open(config_path, "r", encoding="utf-8") as f:
             config = json.load(f)
         val = config.get("context", {}).get("maxOutputTokens", DEFAULT_MAX_OUTPUT_TOKENS)
-        if isinstance(val, (int, float)) and val > 0:
+        if isinstance(val, (int, float)) and not isinstance(val, bool) and val > 0:
             return int(val)
         logger.warning(f"Invalid maxOutputTokens {val}, using default {DEFAULT_MAX_OUTPUT_TOKENS}")
     except Exception:
