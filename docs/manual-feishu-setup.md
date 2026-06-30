@@ -3,6 +3,17 @@
 > 本文档从 SYSTEM_MANUAL.md 拆分而来，供主Agent通过浏览器帮用户开通飞书机器人。
 > 主Agent拥有 browser-server MCP 工具，可直接操作网页。
 
+## 架构说明
+
+飞书通道已迁移到 **IM Gateway + Adapter 分离架构**（双进程）：
+
+- **IM Gateway**（TCP Server）：`niu_api/channel/gateway.py`，运行在主 API 进程内，负责消息路由与 ChatQueue 入队。
+- **Feishu Adapter**（TCP Client）：`im-adapters/feishu/`，由 Gateway 拉起的独立子进程，负责与飞书长连接服务器通信。
+
+启动流程：`im.enabled=true` + `im.adapter="feishu"` → Gateway 启动 → Gateway 拉起 Adapter 子进程 → Adapter 连接 Gateway → 飞书通道就绪。仅设置 `feishu.enabled` **不会**拉起任何进程。
+
+> 注意：browser-server 已从 Playwright 直连改造为 **Chrome Extension + WebSocket Bridge** 架构（`mcp-servers/browser-server/src/niu_browser_server/ws_bridge.py`、`launcher.py`）。使用 browser-server 前需先在 Chrome 中安装并加载 `extensions/niu-browser-ext` 扩展，否则页面操作会失败。
+
 ## 方式一：扫码快捷开通（推荐）
 
 这是最简单的开通方式，用户只需扫一次二维码，系统自动完成机器人创建、权限开通、事件订阅。
@@ -43,17 +54,24 @@ https://open.feishu.cn/page/openclaw?user_code=DDLT-FLXv&from=hermes&tp=hermes
 
 ```json
 {
+  "im": {
+    "enabled": true,
+    "adapter": "feishu"
+  },
   "feishu": {
     "app_id": "cli_xxx",
-    "app_secret": "xxx",
-    "enabled": true
+    "app_secret": "xxx"
   }
 }
 ```
 
-写入方式：读取现有 preferences.json → 合并 feishu 段 → 原子写入（临时文件 + os.replace）。
+写入方式：读取现有 preferences.json → 合并 `im` 和 `feishu` 段 → 原子写入（临时文件 + os.replace）。
 
-写入后重启服务，日志中应出现 "Feishu channel starting (WebSocket)" 字样。
+写入后重启服务，日志中应依次出现以下字样：
+- `[IMGateway] Adapter launched: feishu`（Gateway 拉起 Adapter 子进程）
+- `[FeishuAdapter] Connected to Gateway :19877`（Adapter 连上 Gateway）
+- `[FeishuAdapter] Listener started`（飞书长连接监听已启动）
+- `[IMGateway] Adapter ready: feishu`（通道就绪）
 
 **整个流程用户只需扫一次码，其余全由主Agent完成。**
 
@@ -131,17 +149,24 @@ https://open.feishu.cn/page/openclaw?user_code=DDLT-FLXv&from=hermes&tp=hermes
 
 ```json
 {
+  "im": {
+    "enabled": true,
+    "adapter": "feishu"
+  },
   "feishu": {
     "app_id": "cli_xxx",
-    "app_secret": "xxx",
-    "enabled": true
+    "app_secret": "xxx"
   }
 }
 ```
 
-写入方式：读取现有 preferences.json → 合并 feishu 段 → 原子写入（临时文件 + os.replace）。
+写入方式：读取现有 preferences.json → 合并 `im` 和 `feishu` 段 → 原子写入（临时文件 + os.replace）。
 
-写入后重启服务，日志中应出现 "Feishu channel starting (WebSocket)" 字样。
+写入后重启服务，日志中应依次出现以下字样：
+- `[IMGateway] Adapter launched: feishu`（Gateway 拉起 Adapter 子进程）
+- `[FeishuAdapter] Connected to Gateway :19877`（Adapter 连上 Gateway）
+- `[FeishuAdapter] Listener started`（飞书长连接监听已启动）
+- `[IMGateway] Adapter ready: feishu`（通道就绪）
 
 ---
 
@@ -177,9 +202,10 @@ https://open.feishu.cn/page/openclaw?user_code=DDLT-FLXv&from=hermes&tp=hermes
 排查步骤：
 1. 检查事件订阅是否选择了「长连接」模式（非 Webhook）
 2. 检查 `im.message.receive_v1` 事件是否已添加
-3. 检查 `~/.niu/preferences.json` 中 `feishu.enabled` 是否为 `true`
-4. 检查服务日志中是否有 "Feishu channel starting" 字样
-5. 检查 `feishu.app_id` 和 `feishu.app_secret` 是否正确（app_id 格式应为 `cli_xxx`）
+3. 检查 `~/.niu/preferences.json` 中 `im.enabled` 是否为 `true`，且 `im.adapter` 是否为 `"feishu"`（仅设置 `feishu.enabled` 不会拉起进程）
+4. 检查 `feishu.app_id` 和 `feishu.app_secret` 是否正确且非空（app_id 格式应为 `cli_xxx`，缺失则 Gateway 会跳过启动并报 `{adapter} credentials missing`）
+5. 检查服务日志中是否出现 `[IMGateway] Adapter launched: feishu` 和 `[IMGateway] Adapter ready: feishu` 字样
+6. 检查 Adapter 子进程日志 `logs/im_adapter_stderr.log`，定位 Adapter 端连接飞书长连接服务器失败等问题
 
 ### 问题：飞书国际版（Lark）用户
 
