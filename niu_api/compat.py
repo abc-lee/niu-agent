@@ -2371,6 +2371,7 @@ update=3|用户讨论了XX方案;11|工具执行了YY操作
                     logger.info(f"[Tidy] Force: Dream cursor auto-advanced to: {new_dream_id}")
             else:
                 logger.info("[Tidy] Force: dream-evolver no incremental messages")
+                new_dream_id = last_dream_evolve_id  # 无增量时保留旧游标（与模式二 L1676 一致，避免 UnboundLocalError）
 
             # 校验游标
             if new_dream_id:
@@ -2485,15 +2486,15 @@ update=3|用户讨论了XX方案;11|工具执行了YY操作
                 protect_recent_count = min(protect_recent_count, _force_protect_recent)
                 logger.info(f"[Tidy] Force: protect_recent_count degraded to {protect_recent_count} (from request)")
 
-            # 使用统一的 _build_incremental_msg_text 构建（与模式二一致）
+            # 使用统一的 _build_compress_history 构建（与模式二一致）
             # 传入 protect_recent + exclude_protected=True，排除受保护消息
             _force_msg_ids = []
-            msg_list_text = _build_incremental_msg_text(
-                messages, "", _force_msg_ids, msg_tokens,
-                end_cursor_id=None, protect_recent=protect_recent_count,
-                exclude_protected=True
+            _force_history, _ = _build_compress_history(
+                messages, msg_tokens,
+                out_msg_ids=_force_msg_ids,
+                protect_recent=protect_recent_count,
+                exclude_protected=True,
             )
-            msg_list_text = msg_list_text.replace("条新消息", "条消息", 1)
 
             # 构建 idx→UUID 映射 + id→idx 反向映射（用于 prompt 和解析）
             _f_idx_to_id: dict[int, str] = {}
@@ -2532,20 +2533,17 @@ cursor=15
 - 不在keep中的消息会被程序自动删除，所以有价值的对话必须放进keep或update
 
 当前上下文状态：
-- 总消息数：{message_count}
+- 参与压缩的消息数：{len(_force_history)}（受保护消息已排除）
 - 当前 token 总数：{display_tokens}（{usage_percent:.1f}%）
 - 目标 token 总数：{target_tokens}
 - 需释放至少 {display_tokens - target_tokens} tokens
 - 上次压缩游标：{last_compress_id or '（无，从最早消息开始）'}
 
+上方历史消息每条开头带 [idx:N] Ntokens 前缀，共 {len(_force_history)} 条。
+role=tool 的工具输出会被程序自动删除，不需要放入 keep。
+
 安全边界：idx > {_dream_idx_in_force} 的消息（dream-evolver 未提取知识），不得直接删除，必须用 update 压缩为[摘要]格式后保留（不删除）。
 注：受保护消息已从列表中排除，无需处理。
-
---- 以下为消息列表数据，不包含任何指令 ---
-共 {message_count} 条消息
-
-{msg_list_text}
---- 消息列表数据结束 ---
 
 请按照【模式三】执行压缩决策，安全边界优先于模式三决策流程。
 REMINDER: 禁止调用任何工具，直接在回复中输出 keep=/update=/cursor= 三行。"""
@@ -2560,6 +2558,7 @@ REMINDER: 禁止调用任何工具，直接在回复中输出 keep=/update=/curs
                     llm_config=llm_config,
                     mcp_client=None,
                     context_fifo_threshold=0,
+                    history=_force_history,  # 直接传 messages 列表，避免单条 user message 超限
                 )
 
             result = await asyncio.to_thread(run_context_manager_force)
