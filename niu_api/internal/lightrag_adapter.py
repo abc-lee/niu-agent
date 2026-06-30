@@ -1694,6 +1694,35 @@ class LightRAGIngester:
                     covered_source_ids.add(unique_source_id)
                 # Update entity's source_id to match the unique chunk source_id
                 entity["source_id"] = unique_source_id
+            # Guard: filter out illegal Niu -> non-brainregion connections.
+            # Legal Niu -> brain-region anchor edges are created by the
+            # region_manager independently (source_id="brain"), not via this
+            # path. This guard intercepts any relationship whose src or tgt
+            # is "Niu" (case-insensitive) and whose other end is not a
+            # brain-region entity, preventing future code paths from
+            # reintroducing the 24-rule-violating edges.
+            filtered_relationships: List[Dict[str, Any]] = []
+            for rel in relationships:
+                src = (rel.get("src_id") or "").strip()
+                tgt = (rel.get("tgt_id") or "").strip()
+                src_is_niu = src.lower() == "niu"
+                tgt_is_niu = tgt.lower() == "niu"
+                if src_is_niu or tgt_is_niu:
+                    other_id = tgt if src_is_niu else src
+                    other_entity = next(
+                        (e for e in entities if (e.get("entity_name") or e.get("name")) == other_id),
+                        None,
+                    )
+                    other_type = (other_entity.get("entity_type") or "").lower() if other_entity else ""
+                    if other_type != "brainregion":
+                        logger.warning(
+                            f"[inject_custom_kg] 拦截违规 Niu 连接: {src} --[{rel.get('keywords','')}]--> {tgt} "
+                            f"(对端 entity_type={other_type or '未知'}, 非 brainregion)"
+                        )
+                        continue
+                filtered_relationships.append(rel)
+            relationships = filtered_relationships
+
             for rel in relationships:
                 rel_source_id = rel.get("source_id", source_id)
                 if rel_source_id not in covered_source_ids:
