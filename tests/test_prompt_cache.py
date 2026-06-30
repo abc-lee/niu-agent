@@ -143,3 +143,49 @@ def test_assemble_system_message_non_system_first_msg():
     runner._assemble_system_message(messages, "inj", model="ark-code-latest")
 
     assert messages[0]["content"] == "hello"
+
+
+def test_refresh_user_memories_updates_static_and_recomputes_base():
+    """memory 变化时 _refresh_user_memories 应同步更新 static_system_prompt
+    并重算 base_system_prompt = static + dynamic_system_prefix。"""
+    # niu_memory_server 不在默认 sys.path，需手动添加
+    # （参考 tests/test_user_memory.py:10 的做法）
+    import sys
+    from pathlib import Path
+    mem_src = Path(__file__).parent.parent / "mcp-servers" / "memory-server" / "src"
+    if str(mem_src) not in sys.path:
+        sys.path.insert(0, str(mem_src))
+
+    import threading
+    from agent.runner import NiuRunner
+    runner = NiuRunner.__new__(NiuRunner)
+    runner.static_system_prompt = "STATIC <!--USER_MEMORY_START-->old<!--USER_MEMORY_END-->"
+    runner.dynamic_system_prefix = "\n\nCurrent Time: 2026-06-30 10:51:00"
+    runner.base_system_prompt = runner.static_system_prompt + runner.dynamic_system_prefix
+    runner._memory_dirty = threading.Event()
+    runner._memory_dirty.set()
+
+    # 直接调用 _refresh_user_memories，mock 内部读取
+    import unittest.mock as mock
+    new_memory_json = '{"permanent": [{"type": "memory", "content": "new memory"}]}'
+
+    # runner.py 内 from niu_memory_server import _memory_file_lock 是函数内局部 import
+    # 必须patch源模块属性，import时才能拿到patched引用
+    fake_lock = type('FakeLock', (), {
+        '__enter__': lambda self: None,
+        '__exit__': lambda self, *a: None,
+    })()
+    with mock.patch('niu_memory_server._memory_file_lock', fake_lock), \
+         mock.patch('pathlib.Path.read_text', return_value=new_memory_json), \
+         mock.patch('agent.runner._render_permanent_section', return_value="<!--USER_MEMORY_START-->new memory<!--USER_MEMORY_END-->"):
+        runner._refresh_user_memories([])
+
+    # static_system_prompt 应已更新（old → new memory）
+    assert "new memory" in runner.static_system_prompt, \
+        f"static_system_prompt 应含 new memory，实际: {runner.static_system_prompt}"
+    assert "<!--USER_MEMORY_START-->old<!--USER_MEMORY_END-->" not in runner.static_system_prompt, \
+        "static_system_prompt 不应再含 old memory"
+
+    # base_system_prompt 应等于 static + dynamic（重算后）
+    assert runner.base_system_prompt == runner.static_system_prompt + runner.dynamic_system_prefix, \
+        "base_system_prompt 应重算为 static + dynamic"
