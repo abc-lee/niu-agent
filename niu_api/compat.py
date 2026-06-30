@@ -1772,11 +1772,23 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
             _compress_cursor = "" if _is_mode2 else last_compress_id
             _end_cursor = None if _is_mode2 else new_dream_id
             compress_msg_ids = []
-            compress_msg_text = _build_incremental_msg_text(
-                messages, _compress_cursor, compress_msg_ids, msg_tokens,
-                end_cursor_id=_end_cursor, protect_recent=protect_recent_count,
-                exclude_protected=True
-            )
+            compress_history: list[dict] = []  # 模式二专用（替代 compress_msg_text）
+            if _is_mode2:
+                # 模式二：构造 history 列表（每条 message 加 idx 前缀），避免单条 user message 超限
+                compress_history, _ = _build_compress_history(
+                    messages, msg_tokens,
+                    out_msg_ids=compress_msg_ids,
+                    protect_recent=protect_recent_count,
+                    exclude_protected=True,
+                )
+                compress_msg_text = ""  # 模式二不用序列化文本
+            else:
+                # 模式一：保持原序列化文本逻辑
+                compress_msg_text = _build_incremental_msg_text(
+                    messages, _compress_cursor, compress_msg_ids, msg_tokens,
+                    end_cursor_id=_end_cursor, protect_recent=protect_recent_count,
+                    exclude_protected=True
+                )
 
             if not _is_mode2:
                 # 模式一：限制增量范围的 token 总量，避免截断砍掉近端消息
@@ -1849,8 +1861,8 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
 
 压缩上下文：当前{display_tokens} tokens（{usage_percent:.1f}%），需释放至{target_tokens} tokens以下。
 
-消息列表（每条带[idx:N]序号）：
-{compress_msg_text}
+上方历史消息每条开头带 [idx:N] Ntokens 前缀，共 {len(compress_history)} 条。
+role=tool 的工具输出会被程序自动删除，不需要放入 keep。
 
 直接回复两行文本，不要调用任何工具，不要输出其他任何内容：
 第1行：keep=保留的idx序号，逗号分隔，支持范围如1-5
@@ -1892,6 +1904,7 @@ update=3|用户讨论了XX方案;11|工具执行了YY操作
                             llm_config=llm_config,
                             mcp_client=None,
                             context_fifo_threshold=0,  # 关闭FIFO，保留完整上下文
+                            history=compress_history,  # 直接传 messages 列表，避免单条 user message 超限
                         )
 
                     compress_result = await asyncio.to_thread(run_context_manager_mode2)
