@@ -516,11 +516,7 @@ def _strip_analysis(response: str) -> str:
 
 
 def _build_mode2_prompt(display_tokens: int, compress_target_tokens: int, usage_percent: float, compress_history: list) -> str:
-    """构造模式二 task prompt（含压缩方法论 + analysis 草稿块）。
-
-    抽成函数是因为降级重压循环每次 _compress_target_tokens 变了要重新构造 prompt
-    （f-string 含 {compress_target_tokens}，需要重新求值）。
-    """
+    """构造模式二 task prompt（含压缩方法论 + analysis 草稿块）。"""
     return f"""CRITICAL: 你只有一轮机会完成压缩决策。禁止调用任何工具。
 - 不调用 write、delete_messages、update_message、bash 等
 - 你的回复必须包含 <analysis> 块和 keep=/update= 两行
@@ -763,13 +759,13 @@ def _estimate_text_tokens(text: str) -> int:
 
 
 def _truncate_preserving_tail(text: str, max_tokens: int) -> str:
-    """截断文本，保留末尾近端消息（远端从开头截断）。
-    消息列表在 prompt 末尾，开头是远端(idx小的)，末尾是近端(idx大的)。
-    截断远端保留近端，确保 LLM 能看到需要保护的消息。"""
+    """截断文本，保留末尾第三份（最近）消息（第一份从开头截断）。
+    消息列表在 prompt 末尾，开头是第一份（idx小的），末尾是第三份（idx大的）。
+    截断第一份保留第三份，确保 LLM 能看到需要保护的消息。"""
     max_chars = max_tokens * 2  # 反向估算字符数
     if len(text) <= max_chars:
         return text
-    # 保留末尾近端部分，截断开头远端
+    # 保留末尾第三份部分，截断开头第一份
     kept_tail = text[-max_chars:]
     # 找到第一个完整的消息行（以 [id: 开头）
     first_line_pos = kept_tail.find("[id:")
@@ -777,11 +773,11 @@ def _truncate_preserving_tail(text: str, max_tokens: int) -> str:
         kept_tail = kept_tail[first_line_pos:]
     # 更新消息计数
     line_count = kept_tail.count("[id:")
-    return f"共约 {line_count} 条消息（远端部分已省略。当前可见消息均属于中端区和近端区，按相对位置划分区域即可）\n\n" + kept_tail
+    return f"共约 {line_count} 条消息（第一份部分已省略。当前可见消息均属于第二份和第三份，按相对位置划分区域即可）\n\n" + kept_tail
 
 
 def _truncate_preserving_both(text: str, max_tokens: int) -> str:
-    """双向截断：保留开头指令 + 末尾近端消息，截断中间远端消息。
+    """双向截断：保留开头指令 + 末尾第三份（最近）消息，截断中间第一份消息。
     用于全量范围压缩模式，确保 LLM 能同时看到指令和受保护消息。
     结构化截断：以"消息列表："为分割点，确保指令部分完整保留。"""
     max_chars = max_tokens * 2
@@ -797,7 +793,7 @@ def _truncate_preserving_both(text: str, max_tokens: int) -> str:
         # 指令部分在合理范围内，完整保留指令 + 截断消息列表
         head = text[:marker_pos + len(msg_marker)]
         msg_text = text[marker_pos + len(msg_marker):]
-        # 消息列表部分：保留末尾近端消息
+        # 消息列表部分：保留末尾第三份消息
         tail_budget = max_chars - len(head) - 200
         if tail_budget > 0 and len(msg_text) > tail_budget:
             tail = msg_text[-tail_budget:]
@@ -805,7 +801,7 @@ def _truncate_preserving_both(text: str, max_tokens: int) -> str:
             if first_msg > 0:
                 tail = tail[first_msg:]
             msg_count = tail.count("[id:")
-            return head + f"[远端消息已省略，保留近端 {msg_count} 条消息。可见消息从远端区中后段开始，按相对位置划分区域]\n\n" + tail
+            return head + f"[第一份消息已省略，保留第三份 {msg_count} 条消息。可见消息从第一份中后段开始，按相对位置划分区域]\n\n" + tail
         return text
     # fallback：纯字符截断（指令部分过大）
     # 先提取保护 ID 行，确保 fallback 路径不丢失关键信息
@@ -828,7 +824,7 @@ def _truncate_preserving_both(text: str, max_tokens: int) -> str:
     if first_msg > 0:
         tail = tail[first_msg:]
     msg_count = tail.count("[id:")
-    return head + "\n\n[中间远端消息已省略，保留近端 " + str(msg_count) + " 条消息。可见消息从远端区中后段开始，按相对位置划分区域]\n\n" + tail
+    return head + "\n\n[中间第一份消息已省略，保留第三份 " + str(msg_count) + " 条消息。可见消息从第一份中后段开始，按相对位置划分区域]\n\n" + tail
 
 
 def _build_journal_task(journal_msg_text: str, safe_tokens: int = 0) -> str:
@@ -2056,7 +2052,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                 )
 
             if not _is_mode2:
-                # 模式一：限制增量范围的 token 总量，避免截断砍掉近端消息
+                # 模式一：限制增量范围的 token 总量，避免截断砍掉第三份（近期）消息
                 _compress_window = int(_read_context_window_tokens() * 0.4)
                 if compress_msg_text and _estimate_text_tokens(compress_msg_text) > _compress_window:
                     compress_msg_text = _truncate_preserving_tail(compress_msg_text, _compress_window)
@@ -2095,7 +2091,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
             if compress_msg_ids and not _skip_compress:
                 # 构建保护消息 UUID 列表（只含 user/assistant 消息，不含 tool 输出）
                 # 直接从完整 messages 列表计算，不依赖截断后的 compress_msg_ids
-                # 这样即使截断移除了近端消息，受保护消息的 ID 仍然完整
+                # 这样即使截断移除了第三份（近期）消息，受保护消息的 ID 仍然完整
                 _pids = []
                 for i in range(len(messages) - 1, -1, -1):
                     _m = messages[i]
@@ -2113,7 +2109,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                         except OSError:
                             pass
 
-                    # 模式二 task prompt 由 _build_mode2_prompt 在降级循环内构造（含方法论 + analysis 草稿块）
+                    # 模式二 task prompt 由 _build_mode2_prompt 构造（含方法论 + analysis 草稿块）
                     prompt = ""
                 else:
                     prompt = f"""系统进入睡眠状态。
@@ -2134,9 +2130,8 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                         "max_tokens": _read_max_output_tokens(),
                     }
 
-                    # 单次调用（不重试，截断时走应急清空）
-                    _compress_target_tokens = _read_compress_target_tokens()
-                    prompt = _build_mode2_prompt(display_tokens, _compress_target_tokens, usage_percent, compress_history)
+                    # 单次调用（不重试，截断时走应急清空）；复用上方已读的 target_tokens
+                    prompt = _build_mode2_prompt(display_tokens, target_tokens, usage_percent, compress_history)
 
                     def run_context_manager_mode2():
                         return call_subagent(
@@ -2768,10 +2763,9 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                 "max_tokens": _read_max_output_tokens(),
             }
 
-            # 单次调用（不重试，截断时走应急清空）
-            _compress_target_tokens = _read_compress_target_tokens()
+            # 单次调用（不重试，截断时走应急清空）；复用上方已读的 target_tokens
             prompt = _build_force_prompt(
-                display_tokens, _compress_target_tokens, usage_percent,
+                display_tokens, target_tokens, usage_percent,
                 _force_history, last_compress_id, _dream_idx_in_force
             )
 

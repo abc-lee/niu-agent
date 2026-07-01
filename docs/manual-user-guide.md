@@ -424,9 +424,9 @@ Niu 有两种入库能力，格式支持范围不同：
 - 缺失时主Agent会主动询问用户并写入
 - 修改方式：告诉主Agent"我的职业是XXX"或"我在XXX工作"，主Agent会自动更新 memory.json
 
-**2. 语义记忆（向量库，L0/L1/L2 三层存储）**
+**2. 语义记忆（知识图谱 LightRAG）**
 - 工具：`remember`、`recall`、`update_memory`、`get_memory_stats`、`cleanup_memories`、`link_memories`
-- 特点：基于语义相似度检索，支持大量信息
+- 特点：基于语义相似度检索 + 知识图谱关联，支持大量信息
 - 用途：对话摘要、技术笔记、经验知识等
 
 **操作示例**：
