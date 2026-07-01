@@ -1067,6 +1067,13 @@ class NiuHandler(BaseHandler):
                     server = self.disk_engine.config.get_server_by_dir(dir_name)
                     if server is not None:
                         real_tool_name = f"{server.server_name}/{tool}"
+                # 保底截断（disk 路径绕过 agent_loop 的 _truncate_tool_content，需在此补）
+                # 截断在 tool_after_callback 之前：callback 看到截断后结果，不再能看到原始 tool 结果
+                from agent.generic.agent_loop import _truncate_tool_content, _truncate_dict_result
+                if isinstance(result, dict):
+                    result = _truncate_dict_result(result, real_tool_name)
+                elif isinstance(result, str):
+                    result = _truncate_tool_content(result, real_tool_name)
                 _ = yield from try_call_generator(
                     self.tool_after_callback, real_tool_name,
                     args, response, result

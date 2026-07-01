@@ -213,12 +213,23 @@ def _truncate_dict_result(result, tool_name: str = ""):
     # 超限：返回截断提示 dict
     label = f"{tool_name} " if tool_name else ""
     message = f"[截断] {label}原始输出 {len(serialized)} 字符，已截断至 {MAX_TOOL_RESULT_CHARS} 字符。如需完整内容，请调整查询参数（如缩小 depth/limit）或分页重新获取。"
-    truncated_data = serialized[:MAX_TOOL_RESULT_CHARS - len(message) - 200]
-    return {
-        "status": "truncated",
-        "message": message,
-        "data": truncated_data,
-    }
+    # 逐步缩减 data 直到整个 dict 序列化后 <= MAX_TOOL_RESULT_CHARS
+    # （data 内可能含 " 等 JSON 特殊字符，被 json.dumps 转义后体积会膨胀，
+    #   因此不能仅按 serialized 的字符数算，必须用 json.dumps 整体校验）
+    budget = MAX_TOOL_RESULT_CHARS - len(message) - 200  # 给 status/message/结构开销留余量
+    truncated_data = serialized[:budget]
+    while True:
+        candidate = {
+            "status": "truncated",
+            "message": message,
+            "data": truncated_data,
+        }
+        if len(json.dumps(candidate, ensure_ascii=False)) <= MAX_TOOL_RESULT_CHARS:
+            return candidate
+        # 超限：继续砍 100 字符直到满足（保守，避免死循环）
+        truncated_data = truncated_data[:-100] if len(truncated_data) > 100 else ""
+        if not truncated_data:
+            return candidate  # 极端情况：data 空也超限（message 过长），直接返回
 
 
 def agent_runner_loop(
