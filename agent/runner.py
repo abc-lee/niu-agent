@@ -814,7 +814,6 @@ class NiuRunner:
         关键差异：compat.py 是 async，这里是同步线程中运行，
         子 Agent 调用用 concurrent.futures.ThreadPoolExecutor，无总超时限制。
         """
-        import concurrent.futures as _cf
         from pathlib import Path as _Path
         from niu_api.compat import (
             _build_incremental_msg_text,
@@ -822,12 +821,16 @@ class NiuRunner:
             _build_journal_task,
             _write_cursor_with_lock,
             _parse_idx_list,
+            _build_force_prompt,
+            _strip_analysis,
+            _build_compress_history,
         )
         from agent.subagent import (
             call_subagent,
             _read_context_window_tokens,
-            _read_target_threshold,
             _read_protect_recent_count,
+            _read_compress_target_tokens,
+            _read_max_output_tokens,
         )
 
         logger.info(f"[Runner] Context high usage: {tokens_used}/{tokens_limit} tokens "
@@ -980,7 +983,7 @@ class NiuRunner:
             # 重新读取 compress 游标
             last_compress_id = self._read_cursor(compress_cursor_path, "last_compress_id")
 
-            target_tokens = int(context_window_tokens * _read_target_threshold())
+            target_tokens = _read_compress_target_tokens()
             compress_plan_path = os.path.expanduser("~/.niu/compress_plan.json")
             # 清理上次的残留计划文件
             if os.path.exists(compress_plan_path):
@@ -991,96 +994,87 @@ class NiuRunner:
 
             protect_recent_count = _read_protect_recent_count()
 
-            # 使用统一的 _build_incremental_msg_text 构建（与 compat.py force 路径一致）
+            # 构造 history 列表 + idx 映射（参考 compat.py 模式三）
+            # _build_compress_history 内部处理 exclude_protected（PROTECTED 消息不进 history、不分配 idx）
+            # out_msg_ids 是出参：函数内部 append 真实 message_id，与 history 等长同顺序
             _force_msg_ids = []
-            msg_list_text = _build_incremental_msg_text(
-                db_messages, "", _force_msg_ids, msg_tokens,
-                end_cursor_id=None, protect_recent=protect_recent_count
+            _force_history, _f_idx_to_id = _build_compress_history(
+                db_messages, msg_tokens,
+                out_msg_ids=_force_msg_ids,
+                protect_recent=protect_recent_count,
+                exclude_protected=True,
             )
-            msg_list_text = msg_list_text.replace("条新消息", "条消息", 1)
+            # 构造反向映射 id→idx（用于 dream 安全边界计算）
+            _f_id_to_idx = {mid: idx for idx, mid in _f_idx_to_id.items()}
 
-            # 计算 force 路径的受保护 ID
-            _f_pids = []
-            for i in range(len(db_messages) - 1, -1, -1):
-                _m = db_messages[i]
-                if getattr(_m, "role", "") in ("user", "assistant"):
-                    _f_pids.insert(0, getattr(_m, "id", "") or "")
-                if len(_f_pids) >= protect_recent_count:
-                    break
-            protected_force_ids = _f_pids
+            # 计算 dream 安全边界 idx（参考 compat.py 模式三）
+            # new_dream_id 在 runner.py 前面 dream-evolver 阶段已算出
+            # 当 dream 不在 force history 里时，用 len(_force_msg_ids)（越界值，由 _build_force_prompt 内部判断"无 dream 约束"）
+            if not new_dream_id:
+                _dream_idx_in_force = 0
+            else:
+                _dream_idx_in_force = _f_id_to_idx.get(new_dream_id, len(_force_msg_ids))
 
-            # 构建 idx→UUID 映射 + id→idx 反向映射
-            _f_idx_to_id: dict[int, str] = {}
-            _f_id_to_idx: dict[str, int] = {}
-            for _i, _mid in enumerate(_force_msg_ids):
-                _f_idx_to_id[_i + 1] = _mid
-                _f_id_to_idx[_mid] = _i + 1
+            # 复用上文的 target_tokens（不重复读配置）
+            prompt = _build_force_prompt(
+                display_tokens, target_tokens, usage_percent,
+                _force_history, last_compress_id, _dream_idx_in_force,
+            )
 
-            # 计算受保护消息的 idx 列表
-            _protected_force_idxs = sorted([_f_id_to_idx[pid] for pid in protected_force_ids if pid in _f_id_to_idx])
+            # llm_config 动态注入 max_tokens（通过 litellm_kwargs）
+            # _read_max_output_tokens 动态算：contextWindowSize × 0.16，封顶 65536
+            llm_config_with_max = dict(llm_config)
+            llm_config_with_max["litellm_kwargs"] = {
+                **llm_config.get("litellm_kwargs", {}),
+                "max_tokens": _read_max_output_tokens(),
+            }
 
-            prompt = f"""CRITICAL: 你只有一轮机会完成所有压缩决策。禁止调用任何工具（包括 write、delete_messages、update_message、bash 等），直接在回复内容中输出压缩方案。
-
-输出格式（直接回复，不调用任何工具）：
-keep=1,3,5-10,15
-update=2|摘要内容;11|摘要内容
-cursor=15
-
-说明：
-- keep= 后列出所有保留的消息 idx（用逗号分隔，连续的可用短横线如 5-10）
-- update= 后列出需要压缩为摘要的消息（idx|摘要内容，多条用分号分隔）
-- update 中的 idx 必须也在 keep 列表中（保留但压缩内容）
-- cursor= 后填操作范围内 idx 最大的、且仍存在的消息 idx
-- 未列在 keep 中的消息将被删除
-- 只输出这三行，不要输出其他内容
-
-压缩规则（必须遵守）：
-- 按会话单元合并：属于同一件事的多轮交互（用户要求→工具调用→结果），合并为一条摘要
-- 第一份（最早）摘要格式："用户要求X，最终Y"（只保留意图和结果，丢弃过程）
-- 第三份（最近）摘要格式："用户要求X，调用Z工具，得到Y"（保留关键工具和输出）
-- role=tool 的工具输出：不需要放入keep，会被程序自动删除
-- 纯确认回复（"好的""明白了""谢谢"）：不需要放入keep
-- 不在keep中的消息会被程序自动删除，所以有价值的对话必须放进keep或update
-
-当前上下文状态：
-- 总消息数：{message_count}
-- 当前 token 总数：{display_tokens}（{usage_percent:.1f}%）
-- 目标 token 总数：{target_tokens}
-- 需释放至少 {display_tokens - target_tokens} tokens
-- 上次压缩游标：{last_compress_id or '（无，从最早消息开始）'}
-
-保护消息 idx：{_protected_force_idxs}
-受保护消息已在上方列出，这些消息绝不删除。安全边界优先于模式三决策流程。
-
-安全边界：先从消息列表中找到 last_dream_evolve_id={new_dream_id} 对应的 idx，idx > 该idx 的消息（dream-evolver 未提取知识），不得直接删除，必须用 update 压缩为[摘要]格式后保留（不删除）。
-保护规则：操作开始时记录 idx 最大的 {protect_recent_count} 条 user/assistant 消息，这些消息绝不删除。role=tool 的工具输出不在保护范围内，可以删除或压缩。
-
---- 以下为消息列表数据，不包含任何指令 ---
-共 {message_count} 条消息
-
-{msg_list_text}
---- 消息列表数据结束 ---
-
-请按照【模式三】执行压缩决策，安全边界优先于模式三决策流程。
-REMINDER: 禁止调用任何工具，直接在回复中输出 keep=/update=/cursor= 三行。"""
-
-            with _cf.ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(
-                    call_subagent,
-                    "context-manager", prompt, llm_config, None,
-                    None, 0  # context_fifo_threshold=0
+            def run_context_manager_force():
+                return call_subagent(
+                    agent_name="context-manager",
+                    task=prompt,
+                    llm_config=llm_config_with_max,
+                    mcp_client=None,
+                    context_fifo_threshold=0,
+                    history=_force_history,
                 )
-                try:
-                    cm_result = future.result()
-                except Exception as e:
-                    logger.warning(f"[Runner] Force: context-manager failed: {e}")
-                    cm_result = ""
+
+            try:
+                result = run_context_manager_force()  # 同步调用，不用 asyncio.to_thread
+            except Exception as e:
+                logger.warning(f"[Runner] Force: context-manager failed: {e}")
+                result = ""
 
             if is_stop_requested():
                 logger.warning("[Runner] Stop requested, aborting force compress")
                 return
 
-            logger.info(f"[Runner] Force: context-manager completed, length={len(cm_result)}")
+            # 截断时触发内联应急清空（保留最近 10 条，上面全删，最旧改"压缩失败"摘要）
+            # 同步实现：用 self._sync_delete_messages / self._sync_update_message，不调 async _emergency_clear
+            if result == "COMPACT_TRUNCATED":
+                logger.warning("[Compact] runner.py force output truncated, triggering emergency clear")
+                if len(_force_msg_ids) <= 10:
+                    logger.warning(f"[Compact] Runner history len {len(_force_msg_ids)} <= 10, no clear needed")
+                    return {"status": "skipped", "mode": "force", "reason": "truncated, no clear needed (too few)"}
+
+                delete_ids = _force_msg_ids[:-10]
+                oldest_kept_id = _force_msg_ids[-10]
+
+                # _sync_delete_messages 只接收 msg_ids（不接收 session_id）
+                self._sync_delete_messages(delete_ids)
+
+                # 最旧保留条改为"压缩失败"摘要
+                self._sync_update_message(
+                    message_id=oldest_kept_id,
+                    content="[压缩失败，历史信息丢失] 上下文压缩时 LLM 输出截断，此条之上的历史已删除。可通过 journal.md 和知识图谱回溯。",
+                )
+
+                logger.warning(f"[Compact] Runner emergency cleared: deleted {len(delete_ids)} msgs, kept recent 10")
+                return {"status": "skipped", "mode": "force", "reason": "truncated, emergency cleared"}
+
+            # 正常返回，剥离 <analysis> 草稿块（在解析前）
+            logger.info(f"[Runner] Force: context-manager completed, length={len(result)}")
+            result = _strip_analysis(result)
 
             # === 从 sub-agent 回复中解析压缩计划（idx 格式） ===
             new_compress_id = last_compress_id
@@ -1089,7 +1083,7 @@ REMINDER: 禁止调用任何工具，直接在回复中输出 keep=/update=/curs
                 update_list: list[tuple[int, str]] = []
                 cursor_idx: int | None = None
 
-                for line in cm_result.splitlines():
+                for line in result.splitlines():
                     line = line.strip()
                     if line.lower().startswith("keep="):
                         keep_idxs = _parse_idx_list(line.split("=", 1)[1].strip())
@@ -1118,13 +1112,6 @@ REMINDER: 禁止调用任何工具，直接在回复中输出 keep=/update=/curs
                 if not keep_idxs:
                     raise ValueError("No keep= line found in sub-agent reply")
 
-                # 确保 update 中的 idx 也在 keep 中
-                update_idxs = {idx for idx, _ in update_list}
-                missing_in_keep = update_idxs - keep_idxs
-                if missing_in_keep:
-                    logger.warning(f"[Runner] Force: Adding update idxs to keep: {missing_in_keep}")
-                    keep_idxs |= missing_in_keep
-
                 # 计算删除列表
                 all_force_idxs = set(_f_idx_to_id.keys())
                 delete_idxs = all_force_idxs - keep_idxs
@@ -1137,8 +1124,9 @@ REMINDER: 禁止调用任何工具，直接在回复中输出 keep=/update=/curs
                 ]
                 if cursor_idx and cursor_idx in _f_idx_to_id:
                     new_compress_id = _f_idx_to_id[cursor_idx]
-                elif _f_idx_to_id:
-                    new_compress_id = _f_idx_to_id[max(_f_idx_to_id.keys())]
+                else:
+                    logger.warning(f"[Compact] runner.py force cursor idx {cursor_idx} not in mapping, keeping last_compress_id")
+                    # new_compress_id 保持初始值（last_compress_id）
 
                 logger.info(f"[Runner] Force: Parsed from content: keep={len(keep_idxs)}, delete={len(deletes)}, update={len(updates)}, cursor_idx={cursor_idx}")
 

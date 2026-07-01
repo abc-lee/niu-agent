@@ -712,3 +712,169 @@ def test_mode2_no_auto_keep_fixup(monkeypatch):
     assert "msg-3" not in deleted_ids, "msg-3 不应被删除（overlap 从 deletes 移除）"
     # msg-2 既不在 keep 也不在 update，应被删除
     assert "msg-2" in deleted_ids, "msg-2 应被删除（不在 keep 也不在 update）"
+
+
+# ===== Task 10.5: runner.py 模式三路径测试 =====
+# NiuRunner.__init__ 太重（需要 NiuHandler/DiskEngine/create_client），用 __new__ 绕过
+
+
+def _build_niu_runner_for_test():
+    """构造 NiuRunner 实例（绕过 __init__），仅赋值 _on_context_high_usage 需要的属性。"""
+    from agent.runner import NiuRunner
+    runner = NiuRunner.__new__(NiuRunner)
+    runner.llm_config = {}
+    # handler 只需 _last_prompt_tokens 属性
+    runner.handler = type("H", (), {"_last_prompt_tokens": 120000})()
+    runner.default_model = ""
+    return runner
+
+
+def test_runner_mode3_prompt_contains_methodology(monkeypatch):
+    """runner.py force prompt 应含压缩方法论 + cursor + dream 安全边界 + max_tokens 注入。"""
+    from agent import runner as runner_module
+    from agent import subagent as subagent_module
+
+    # mock is_stop_requested 永远返回 False（不中断）
+    monkeypatch.setattr(runner_module, "is_stop_requested", lambda: False)
+
+    captured = {"prompt": None, "llm_config": None, "history": None}
+
+    def fake_call_subagent(*args, **kwargs):
+        if kwargs.get("agent_name") == "context-manager":
+            captured["prompt"] = kwargs.get("task", "")
+            captured["llm_config"] = kwargs.get("llm_config", {})
+            captured["history"] = kwargs.get("history")
+            return "COMPACT_TRUNCATED"  # 触发应急清空分支（同时验证 prompt 已捕获）
+        return "skip"
+
+    # call_subagent 在 _on_context_high_usage 内部从 agent.subagent 局部 import，patch 源模块
+    monkeypatch.setattr(subagent_module, "call_subagent", fake_call_subagent)
+
+    # mock sync 包装器（不真删 DB）—— 截断分支会调用
+    deleted_ids = []
+    updated_msgs = []
+    monkeypatch.setattr(
+        runner_module.NiuRunner, "_sync_delete_messages",
+        lambda self, msg_ids: deleted_ids.extend(msg_ids),
+    )
+    monkeypatch.setattr(
+        runner_module.NiuRunner, "_sync_update_message",
+        lambda self, message_id, content, clear_tool_calls=False: updated_msgs.append((message_id, content)),
+    )
+
+    # mock _read_cursor 返回空（无历史游标）
+    monkeypatch.setattr(runner_module.NiuRunner, "_read_cursor", staticmethod(lambda path, field: ""))
+
+    # mock _sync_get_messages 返回 2 条消息（force 用 _build_compress_history，2 条都进 history）
+    messages = [
+        FakeMsg(id="msg-1", role="user", content="你好"),
+        FakeMsg(id="msg-2", role="assistant", content="你好，我是 Niu"),
+    ]
+
+    def fake_sync_get_messages(self, limit=None):
+        return messages
+
+    monkeypatch.setattr(runner_module.NiuRunner, "_sync_get_messages", fake_sync_get_messages)
+
+    # _read_* 也是在 _on_context_high_usage 内部从 agent.subagent 局部 import，patch 源模块
+    monkeypatch.setattr(subagent_module, "_read_max_output_tokens", lambda: 32000)
+    monkeypatch.setattr(subagent_module, "_read_compress_target_tokens", lambda: 60000)
+    monkeypatch.setattr(subagent_module, "_read_protect_recent_count", lambda: 0)
+    monkeypatch.setattr(subagent_module, "_read_context_window_tokens", lambda: 200000)
+
+    # mock _run_subagent_step（entity/dream/journal 步骤跳过，避免真实子 Agent 调用）
+    def fake_run_subagent_step(self, step_name, *args, **kwargs):
+        return ("", "")
+    monkeypatch.setattr(runner_module.NiuRunner, "_run_subagent_step", fake_run_subagent_step)
+
+    runner = _build_niu_runner_for_test()
+    # 触发 force 压缩
+    result = runner._on_context_high_usage([], 180000, 200000)
+
+    # 验证 call_subagent 被调用且捕获了参数
+    assert captured["prompt"] is not None, "call_subagent 未被调用，prompt 未捕获"
+    # prompt 含方法论关键词
+    assert "压缩方法论" in captured["prompt"]
+    assert "第一份" in captured["prompt"]
+    assert "会话单元" in captured["prompt"]
+    assert "<analysis>" in captured["prompt"]
+    assert "cursor=" in captured["prompt"]
+    assert "安全边界" in captured["prompt"]
+    # llm_config 注入了 max_tokens
+    assert captured["llm_config"].get("litellm_kwargs", {}).get("max_tokens") == 32000
+    # history 是 list[dict]（_build_compress_history 返回）
+    assert isinstance(captured["history"], list)
+    assert len(captured["history"]) == 2  # 2 条消息都进 history（无保护消息排除）
+
+    # 截断分支断言（messages 不足 10 条，应返回 no clear needed）
+    assert result is not None
+    assert result.get("status") == "skipped"
+    assert result.get("mode") == "force"
+    assert "no clear needed" in result.get("reason", "")
+
+
+def test_runner_mode3_truncate_triggers_emergency_clear(monkeypatch):
+    """runner.py force 截断时触发应急清空（同步版）：保留最近 10 条，上面全删，最旧改"压缩失败"摘要。
+
+    构造 15 条消息，截断时应删前 5 条（msg-1 到 msg-5），第 6 条（msg-6）改摘要。
+    """
+    from agent import runner as runner_module
+    from agent import subagent as subagent_module
+
+    monkeypatch.setattr(runner_module, "is_stop_requested", lambda: False)
+
+    # 用计数器验证 call_subagent 调用次数（单次调用不重试）
+    call_count = {"n": 0}
+
+    def fake_call_subagent(*args, **kwargs):
+        call_count["n"] += 1
+        return "COMPACT_TRUNCATED"
+
+    monkeypatch.setattr(subagent_module, "call_subagent", fake_call_subagent)
+
+    deleted_ids = []
+    updated_msgs = []
+    monkeypatch.setattr(
+        runner_module.NiuRunner, "_sync_delete_messages",
+        lambda self, msg_ids: deleted_ids.extend(msg_ids),
+    )
+    monkeypatch.setattr(
+        runner_module.NiuRunner, "_sync_update_message",
+        lambda self, message_id, content, clear_tool_calls=False: updated_msgs.append((message_id, content)),
+    )
+
+    monkeypatch.setattr(runner_module.NiuRunner, "_read_cursor", staticmethod(lambda path, field: ""))
+
+    # 15 条消息（全部 user 角色，_build_compress_history 全部进 history，无保护排除）
+    messages = [FakeMsg(id=f"msg-{i}", role="user", content=f"内容{i}") for i in range(1, 16)]
+
+    def fake_sync_get_messages(self, limit=None):
+        return messages
+
+    monkeypatch.setattr(runner_module.NiuRunner, "_sync_get_messages", fake_sync_get_messages)
+
+    monkeypatch.setattr(subagent_module, "_read_max_output_tokens", lambda: 32000)
+    monkeypatch.setattr(subagent_module, "_read_compress_target_tokens", lambda: 60000)
+    # protect_recent_count=0：不排除任何消息，15 条都进 _force_msg_ids
+    monkeypatch.setattr(subagent_module, "_read_protect_recent_count", lambda: 0)
+    monkeypatch.setattr(subagent_module, "_read_context_window_tokens", lambda: 200000)
+
+    def fake_run_subagent_step(self, step_name, *args, **kwargs):
+        return ("", "")
+    monkeypatch.setattr(runner_module.NiuRunner, "_run_subagent_step", fake_run_subagent_step)
+
+    runner = _build_niu_runner_for_test()
+    result = runner._on_context_high_usage([], 180000, 200000)
+
+    # 验证返回 skipped + emergency cleared
+    assert result is not None
+    assert result == {"status": "skipped", "mode": "force", "reason": "truncated, emergency cleared"}
+    # 删了前 5 条（msg-1 到 msg-5）
+    assert len(deleted_ids) == 5
+    assert deleted_ids == [f"msg-{i}" for i in range(1, 6)]
+    # 只更新最旧保留条（msg-6）
+    assert len(updated_msgs) == 1
+    assert updated_msgs[0][0] == "msg-6"
+    assert "压缩失败" in updated_msgs[0][1]
+    # 单次调用不重试
+    assert call_count["n"] == 1, f"call_subagent 应只调用 1 次，实际 {call_count['n']} 次"
