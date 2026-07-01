@@ -199,3 +199,56 @@ def test_explore_node_small_result_not_truncated(monkeypatch):
     assert result.get("status") != "truncated", "小图不应被截断"
     assert len(result.get("nodes", [])) == 5
     assert "截断" not in json.dumps(result, ensure_ascii=False)
+
+
+def test_enforce_message_budget_under_limit():
+    """单消息 tool 内容合计 < 200K 原样返回。"""
+    from agent.generic.agent_loop import _enforce_message_budget, MAX_TOOL_RESULTS_PER_MESSAGE_CHARS
+    messages = [
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "hi"},
+        {"role": "tool", "tool_call_id": "call_1", "content": "x" * 50000},
+        {"role": "tool", "tool_call_id": "call_2", "content": "y" * 50000},
+    ]
+    result = _enforce_message_budget(messages)
+    assert result == messages  # 原样返回
+
+
+def test_enforce_message_budget_over_limit():
+    """单消息 tool 内容合计 > 200K，最大的 tool 结果被截断。
+
+    策略：按 tool content 大小降序，依次截断最大的到 MAX_TOOL_RESULT_CHARS，
+    直到合计 <= 200K。本例 call_3 (100K) 最大，截断后释放 70K，合计 170K <= 200K 停止。
+    """
+    from agent.generic.agent_loop import _enforce_message_budget, MAX_TOOL_RESULTS_PER_MESSAGE_CHARS
+    # 3 个 tool 结果，合计 240K > 200K
+    messages = [
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "hi"},
+        {"role": "tool", "tool_call_id": "call_1", "content": "x" * 50000},
+        {"role": "tool", "tool_call_id": "call_2", "content": "y" * 90000},
+        {"role": "tool", "tool_call_id": "call_3", "content": "z" * 100000},  # 最大
+    ]
+    result = _enforce_message_budget(messages)
+    # 最大的 call_3 (100K) 被截断到 30K（释放 70K），合计 170K <= 200K
+    total = sum(len(m.get("content", "")) for m in result if m.get("role") == "tool")
+    assert total <= MAX_TOOL_RESULTS_PER_MESSAGE_CHARS, f"聚合后应 <= {MAX_TOOL_RESULTS_PER_MESSAGE_CHARS}，实际 {total}"
+    # 最大的 call_3 应被截断（含 [截断] 标记）
+    call_3_result = next(m for m in result if m.get("tool_call_id") == "call_3")
+    assert "[截断]" in call_3_result["content"]
+    # 较小的 call_1 (50K) 和 call_2 (90K) 不应被截断
+    call_1_result = next(m for m in result if m.get("tool_call_id") == "call_1")
+    call_2_result = next(m for m in result if m.get("tool_call_id") == "call_2")
+    assert "[截断]" not in call_1_result["content"], "call_1 (50K) 不应被截断"
+    assert "[截断]" not in call_2_result["content"], "call_2 (90K) 不应被截断"
+
+
+def test_enforce_message_budget_no_tool_messages():
+    """无 tool 消息时原样返回。"""
+    from agent.generic.agent_loop import _enforce_message_budget
+    messages = [
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "hi"},
+    ]
+    result = _enforce_message_budget(messages)
+    assert result == messages
