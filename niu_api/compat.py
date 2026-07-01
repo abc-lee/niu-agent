@@ -605,6 +605,59 @@ role=tool 的工具输出会被程序自动删除，不需要放入 keep。
 REMINDER: 禁止调用任何工具，直接在回复中输出 <analysis> 块和 keep=/update= 两行。"""
 
 
+async def _emergency_clear(
+    history: list,
+    msg_ids: list,
+    protect_recent_count: int,
+    store,
+    session_id: str,
+    mode: str,
+) -> dict:
+    """截断时的应急清空：保留最近 N 条，上面全删，最旧那条改为"压缩失败"摘要。
+
+    - history: 压缩历史消息列表（受保护消息已排除），按 idx 顺序排列（list[dict]，无 id 字段）
+    - msg_ids: 与 history 等长、同顺序的真实 message_id 列表（来自 out_msg_ids）
+    - protect_recent_count: 保留最近条数（默认 10）
+    - store: MessageStore，用于 delete_messages_by_ids / update_message
+    - session_id: 会话 ID（仅用于日志，delete_messages_by_ids 不需要）
+    - mode: "sleep" 或 "force"（用于返回值）
+
+    返回 {"status": "skipped", "mode": mode, "reason": "truncated, emergency cleared"}
+    """
+    total = len(history)
+    if total <= protect_recent_count:
+        logger.warning(
+            f"[Compact] history len {total} <= {protect_recent_count}, no clear needed"
+        )
+        return {
+            "status": "skipped",
+            "mode": mode,
+            "reason": "truncated, no clear needed (too few)",
+        }
+
+    # history 与 msg_ids 等长同顺序；保留末尾 N 条，删前面的
+    delete_ids = list(msg_ids[:-protect_recent_count])
+    oldest_kept_id = msg_ids[-protect_recent_count]
+
+    # 最旧保留条改为"压缩失败"摘要
+    await store.update_message(
+        message_id=oldest_kept_id,
+        content=(
+            "[压缩失败，历史信息丢失] 上下文压缩时 LLM 输出截断，此条之上的历史已删除。"
+            "可通过 journal.md 和知识图谱回溯。"
+        ),
+    )
+
+    # 删除上面的消息
+    await store.delete_messages_by_ids(delete_ids)
+
+    logger.warning(
+        f"[Compact] Emergency cleared: deleted {len(delete_ids)} msgs, "
+        f"kept recent {protect_recent_count}, marked oldest ({oldest_kept_id}) as lost-summary"
+    )
+    return {"status": "skipped", "mode": mode, "reason": "truncated, emergency cleared"}
+
+
 def _estimate_text_tokens(text: str) -> int:
     """粗略估算文本 token 数（中文约1.5字/token，英文约4字/token，取中间值2字/token）"""
     return len(text) // 2
@@ -1974,7 +2027,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
 
                 # 截断 task 防止子Agent超限 + 子Agent调用 + 结果处理
                 if _is_mode2:
-                    # === 模式二：一轮决策 + 降级重压循环 ===
+                    # === 模式二：单次调用 + 应急清空（不重试） ===
                     # llm_config 动态注入 max_tokens（通过 litellm_kwargs）
                     llm_config_with_max = dict(llm_config)
                     llm_config_with_max["litellm_kwargs"] = {
@@ -1982,48 +2035,41 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                         "max_tokens": _read_max_output_tokens(),
                     }
 
-                    # 降级重压循环：最多 3 次尝试，每次压缩目标降 50%
+                    # 单次调用（不重试，截断时走应急清空）
                     _compress_target_tokens = _read_compress_target_tokens()
-                    compress_result = None
-                    for attempt in range(3):
-                        if attempt > 0:
-                            _compress_target_tokens = int(_compress_target_tokens * 0.5)
-                            logger.warning(f"[Compact] Mode-2 truncated, lowering target to {_compress_target_tokens}, attempt {attempt+1}")
+                    prompt = _build_mode2_prompt(display_tokens, _compress_target_tokens, usage_percent, compress_history)
 
-                        # 每次循环重新构造 prompt（_compress_target_tokens 变了，f-string 要重新求值）
-                        prompt = _build_mode2_prompt(display_tokens, _compress_target_tokens, usage_percent, compress_history)
-                        if attempt > 0:
-                            prompt = prompt + "\n\n注意：上次输出被截断，请精简 <analysis> 块，只保留关键决策依据，不要逐条分析每条消息。"
+                    def run_context_manager_mode2():
+                        return call_subagent(
+                            agent_name="context-manager",
+                            task=prompt,
+                            llm_config=llm_config_with_max,
+                            mcp_client=None,
+                            context_fifo_threshold=0,  # 关闭FIFO，保留完整上下文
+                            history=compress_history,  # 直接传 messages 列表，避免单条 user message 超限
+                        )
 
-                        def run_context_manager_mode2():
-                            return call_subagent(
-                                agent_name="context-manager",
-                                task=prompt,
-                                llm_config=llm_config_with_max,
-                                mcp_client=None,
-                                context_fifo_threshold=0,  # 关闭FIFO，保留完整上下文
-                                history=compress_history,  # 直接传 messages 列表，避免单条 user message 超限
-                            )
+                    compress_result = await asyncio.to_thread(run_context_manager_mode2)
 
-                        compress_result = await asyncio.to_thread(run_context_manager_mode2)
+                    if is_stop_requested():
+                        logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
+                        clear_stop()
+                        return {"status": "aborted", "message": "Stopped by user"}
 
-                        if is_stop_requested():
-                            logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
-                            clear_stop()
-                            return {"status": "aborted", "message": "Stopped by user"}
+                    # 截断时触发应急清空（保留最近 10 条，上面全删，最旧改"压缩失败"摘要）
+                    if compress_result == "COMPACT_TRUNCATED":
+                        logger.warning("[Compact] Mode-2 output truncated, triggering emergency clear")
+                        return await _emergency_clear(
+                            history=compress_history,
+                            msg_ids=compress_msg_ids,
+                            protect_recent_count=10,
+                            store=store,
+                            session_id=session_id,
+                            mode="sleep",
+                        )
 
-                        if compress_result == "COMPACT_TRUNCATED":
-                            if attempt < 2:
-                                continue  # 降级重试
-                            else:
-                                logger.error("[Compact] Mode-2 all 3 attempts truncated, giving up")
-                                return {"status": "skipped", "mode": "sleep", "reason": "all attempts truncated"}
-
-                        # 正常返回，跳出循环进入解析
-                        logger.info(f"[Tidy] Mode-2: context-manager completed, length={len(compress_result)}")
-                        break
-
-                    # 剥离 <analysis> 草稿块（在解析前）
+                    # 正常返回，剥离 <analysis> 草稿块（在解析前）
+                    logger.info(f"[Tidy] Mode-2: context-manager completed, length={len(compress_result)}")
                     compress_result = _strip_analysis(compress_result)
 
                     # 从 LLM content 解析序号格式压缩方案
