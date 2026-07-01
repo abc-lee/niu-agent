@@ -2,11 +2,17 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 修复 context-manager 压缩质量缺陷——把 task prompt 丢失的压缩方法论写回（三区逐份处理 + 会话单元 + 旧摘要关联性判断 + 硬约束），引入 `<analysis>` 草稿块让 LLM 一轮做对，配置改 token 绝对值，加输出截断降级保底，删除削弱约束的校验兜底。
+**Goal:** 修复 context-manager 压缩质量缺陷——把 task prompt 丢失的压缩方法论写回（三区逐份处理 + 会话单元 + 旧摘要关联性判断 + 硬约束），引入 `<analysis>` 草稿块让 LLM 一轮做对，配置改 token 绝对值（compressTargetTokens），加输出截断应急清空（保留最近 10 条，靠 journal.md + 知识图谱回溯历史），删除削弱约束的校验兜底。
 
-**Architecture:** 分三层修复：(1) 配置层 `targetThreshold` 百分比 → `compressTargetTokens` + `maxOutputTokens` 绝对值；(2) Prompt 层模式二/三 task prompt 重写，内联完整方法论 + `<analysis>` 草稿块；(3) 程序保底层 finish_reason 传递链（MockResponse + litellm_adapter + agent_loop + call_subagent）+ 截断降级重压循环（3 次尝试，每次目标降 50%）。解析层新增 `_strip_analysis` 剥离草稿块，删除 update idx 自动补 keep 等校验兜底。
+**Architecture:** 分三层修复：(1) 配置层 `targetThreshold` 百分比 → `compressTargetTokens` 绝对值（`maxOutputTokens` 不配置，程序动态算 `contextWindowSize × 0.16` 封顶 65536）；(2) Prompt 层模式二/三 task prompt 重写，内联完整方法论 + `<analysis>` 草稿块；(3) 程序保底层 finish_reason 传递链（MockResponse + litellm_adapter + agent_loop + call_subagent）+ 截断应急清空（**单次调用，不重试**，截断时保留最近 10 条 + 上面全删 + 最旧改"压缩失败"摘要）。解析层新增 `_strip_analysis` 剥离草稿块，删除 update idx 自动补 keep 等校验兜底。
 
 **Tech Stack:** Python 3.11, litellm, 火山方舟 ark-code-latest（doubao-seed-2-0-code，context 256K，单轮输出硬限 128K，平台默认 4K）
+
+**设计变更说明（2026-07-01）：** 原设计的"降级重压循环"（3 次尝试，每次降 50% 目标）经审查发现方向反效果——目标降得越低意味着要释放更多 token，LLM 反而要写更长的 analysis，更易再次截断。改为"单次调用 + 应急清空"：截断时不重试，直接保留最近 10 条 + 上面全删 + 最旧改摘要，靠 journal.md + 知识图谱（entity-extractor / dream-evolver / journal-agent 三层前置兜底）让主 Agent 读回历史。
+
+**已实施 Task 回退改造清单：**
+- **Task 1 已实施**（commit `a019c7c5` + `dee7ba93`）：`_read_max_output_tokens` 当前读配置 `maxOutputTokens`，**需回退改造为动态算**（`contextWindowSize × 0.16` 封顶 65536），并删除 `config/user-config.json` 里的 `maxOutputTokens: 16384` 硬编码
+- **Task 7 已实施**（commit `432fc603` + `4cc5f4a0`）：模式二已实施旧版降级循环（3 次 for 循环），**需回退改造为单次调用 + 应急清空**——删 `for attempt in range(3)` 循环，截断时调用 `_emergency_clear`
 
 ---
 
@@ -14,26 +20,28 @@
 
 | 文件 | 职责 | 改动类型 |
 |------|------|----------|
-| `config/user-config.json` | context 段配置项 | Modify（删 targetThreshold，加 compressTargetTokens + maxOutputTokens）|
-| `agent/subagent.py` | 配置读取函数 + call_subagent 截断检测 | Modify |
+| `config/user-config.json` | context 段配置项 | Modify（删 targetThreshold，加 compressTargetTokens；**删除 maxOutputTokens 硬编码**，程序动态算）|
+| `agent/subagent.py` | 配置读取函数 + call_subagent 截断检测 | Modify（**Task 1 已实施旧版读配置，需回退改造 `_read_max_output_tokens` 为动态算**）|
 | `agent/generic/llmcore.py` | MockResponse 加 finish_reason 字段 | Modify |
 | `agent/generic/litellm_adapter.py` | 流式循环捕获 finish_reason + 传入 MockResponse | Modify |
 | `agent/generic/agent_loop.py` | return_value 加 finish_reason 字段 | Modify |
-| `niu_api/compat.py` | 模式二/三 task prompt 重写 + 降级循环 + 删校验兜底 + `_strip_analysis` | Modify |
+| `niu_api/compat.py` | 模式二/三 task prompt 重写 + 应急清空 + 删校验兜底 + `_strip_analysis` + `_emergency_clear` | Modify（**Task 7 已实施旧版降级循环，需回退改造为单次调用 + 应急清空**）|
 | `config/agents/context-manager.md` | 术语清理（L0/L1/L2 + 事务→会话单元） | Modify |
 | `docs/feature-context-management.md` | L0/L1/L2 术语清理 | Modify |
-| `tests/test_compress_quality.py` | 新增测试文件 | Create |
+| `tests/test_compress_quality.py` | 新增测试文件 | Create（**删降级循环测试，新增应急清空测试**）|
 
 ---
 
 ## Task 1: 配置层变更 + 读取函数
 
-**Files:**
-- Modify: `config/user-config.json`
-- Modify: `agent/subagent.py:41-104`（新增两个读取函数）
-- Test: `tests/test_compress_quality.py`（新建）
+> **⚠️ 回退改造说明**：Task 1 已实施（commit `a019c7c5` + `dee7ba93`）。当前 `_read_max_output_tokens` 读配置 `maxOutputTokens`，需要回退改造为**动态算**（`contextWindowSize × 0.16` 封顶 65536），并删除 `config/user-config.json` 里的 `maxOutputTokens: 16384` 硬编码。`_read_compress_target_tokens` 保持读配置不变。
 
-- [ ] **Step 1: 写失败测试 — 配置读取函数**
+**Files:**
+- Modify: `config/user-config.json`（**删除 maxOutputTokens 硬编码**）
+- Modify: `agent/subagent.py:41-104`（**`_read_max_output_tokens` 改为动态算**）
+- Test: `tests/test_compress_quality.py`（**更新 `_read_max_output_tokens` 测试为动态算**）
+
+- [ ] **Step 1: 写失败测试 — 配置读取函数（动态算 max_output_tokens）**
 
 创建 `tests/test_compress_quality.py`：
 
@@ -70,36 +78,38 @@ def test_read_compress_target_tokens_custom():
     tmp.unlink()
 
 
-def test_read_max_output_tokens_default():
-    """配置无 maxOutputTokens 时返回默认 16384。"""
-    with patch("agent.subagent._get_user_config_path") as mock_path:
-        tmp = Path("/tmp/test_niu_config_empty2.json")
-        tmp.write_text(json.dumps({"context": {}}))
-        mock_path.return_value = tmp
-        assert _read_max_output_tokens() == 16384
-    tmp.unlink()
+def test_read_max_output_tokens_dynamic_calc():
+    """max_output_tokens 动态算：contextWindowSize × 0.16，封顶 65536。
+    
+    不读配置 maxOutputTokens（已删除硬编码）。
+    换模型自动适配：200K → 32000；128K → 20480；400K → 65536（封顶）。
+    """
+    # mock _read_context_window_tokens 返回不同窗口大小
+    with patch("agent.subagent._read_context_window_tokens", return_value=200000):
+        assert _read_max_output_tokens() == 32000  # 200000 × 0.16
 
+    with patch("agent.subagent._read_context_window_tokens", return_value=128000):
+        assert _read_max_output_tokens() == 20480  # 128000 × 0.16
 
-def test_read_max_output_tokens_custom():
-    """配置有 maxOutputTokens 时返回自定义值。"""
-    with patch("agent.subagent._get_user_config_path") as mock_path:
-        tmp = Path("/tmp/test_niu_config_custom2.json")
-        tmp.write_text(json.dumps({"context": {"maxOutputTokens": 32768}}))
-        mock_path.return_value = tmp
-        assert _read_max_output_tokens() == 32768
-    tmp.unlink()
+    with patch("agent.subagent._read_context_window_tokens", return_value=400000):
+        assert _read_max_output_tokens() == 65536  # 400000 × 0.16 = 64000，封顶 65536
+
+    with patch("agent.subagent._read_context_window_tokens", return_value=500000):
+        assert _read_max_output_tokens() == 65536  # 500000 × 0.16 = 80000，封顶 65536
 ```
+
+**注意**：测试 mock `_read_context_window_tokens`（不是配置值），验证动态算逻辑。回退改造时需先删除旧测试 `test_read_max_output_tokens_default` / `test_read_max_output_tokens_custom`（它们测的是读配置逻辑，已废弃）。
 
 - [ ] **Step 2: 运行测试确认失败**
 
 Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_compress_quality.py -v`
-Expected: FAIL with `ImportError: cannot import name '_read_compress_target_tokens'`
+Expected: FAIL with `AssertionError`（`_read_max_output_tokens` 当前读配置返回 16384，不等于动态算的 32000）
 
-- [ ] **Step 3: 修改 config/user-config.json**
+- [ ] **Step 3: 修改 config/user-config.json（删除 maxOutputTokens）**
 
-读 `config/user-config.json` 确认 context 段当前内容（应有 `contextWindowSize / warningThreshold / targetThreshold / sleepTriggerMinutes`）。
+读 `config/user-config.json` 确认 context 段当前内容（Task 1 已实施，应有 `contextWindowSize / warningThreshold / compressTargetTokens / maxOutputTokens / sleepTriggerMinutes`）。
 
-把 context 段的 `targetThreshold` 删除，新增 `compressTargetTokens` 和 `maxOutputTokens`。保留 `contextWindowSize / warningThreshold / sleepTriggerMinutes` 不变。
+**删除** `maxOutputTokens` 字段（程序动态算，不再配置）。保留 `contextWindowSize / warningThreshold / compressTargetTokens / sleepTriggerMinutes` 不变。
 
 改后 context 段应为：
 ```json
@@ -107,20 +117,20 @@ Expected: FAIL with `ImportError: cannot import name '_read_compress_target_toke
   "contextWindowSize": 200000,
   "warningThreshold": 0.8,
   "compressTargetTokens": 60000,
-  "maxOutputTokens": 16384,
   "sleepTriggerMinutes": 30
 }
 ```
 
-- [ ] **Step 4: 在 agent/subagent.py 新增读取函数**
+- [ ] **Step 4: 在 agent/subagent.py 改造 `_read_max_output_tokens` 为动态算**
 
-读 `agent/subagent.py:41-104` 确认现有 `_read_context_threshold` / `_read_target_threshold` / `_read_context_window_tokens` 模式。
+读 `agent/subagent.py:41-104` 确认现有 `_read_context_threshold` / `_read_target_threshold` / `_read_context_window_tokens` 模式，以及 Task 1 已实施的 `_read_max_output_tokens`（当前读配置）。
 
-在 `_read_protect_recent_count` 函数之后（约 L104）新增两个函数：
+**回退改造** `_read_max_output_tokens`：删除读配置逻辑，改为读 `_read_context_window_tokens() × 0.16` 封顶 65536。
 
 ```python
 DEFAULT_COMPRESS_TARGET_TOKENS = 60000
-DEFAULT_MAX_OUTPUT_TOKENS = 16384
+MAX_OUTPUT_TOKENS_RATIO = 0.16  # contextWindowSize × 0.16
+MAX_OUTPUT_TOKENS_CAP = 65536   # 封顶 65536
 
 
 def _read_compress_target_tokens() -> int:
@@ -139,26 +149,28 @@ def _read_compress_target_tokens() -> int:
 
 
 def _read_max_output_tokens() -> int:
-    """Read maxOutputTokens from config/user-config.json. Default 16384."""
-    try:
-        config_path = _get_user_config_path()
-        with open(config_path, "r", encoding="utf-8") as f:
-            config = json.load(f)
-        val = config.get("context", {}).get("maxOutputTokens", DEFAULT_MAX_OUTPUT_TOKENS)
-        if isinstance(val, (int, float)) and val > 0:
-            return int(val)
-        logger.warning(f"Invalid maxOutputTokens {val}, using default {DEFAULT_MAX_OUTPUT_TOKENS}")
-    except Exception:
-        pass
-    return DEFAULT_MAX_OUTPUT_TOKENS
+    """动态计算 max_output_tokens：contextWindowSize × 0.16，封顶 65536。
+    
+    不读配置 maxOutputTokens（已删除硬编码）。
+    换模型自动适配：不同模型 contextWindowSize 不同，×0.16 自动算对应值。
+    200K → 32000；128K → 20480；400K → 64000（封顶前）；500K → 65536（封顶）。
+    """
+    context_window = _read_context_window_tokens()
+    val = int(context_window * MAX_OUTPUT_TOKENS_RATIO)
+    return min(val, MAX_OUTPUT_TOKENS_CAP)
 ```
 
-注意：这两个函数读绝对值（不是比例），不能用现有的 `_read_context_threshold`（它校验 0.0<val<1.0）。仿照 `_read_context_window_tokens`（L46-58）的绝对值读取模式。
+**回退改造要点**：
+- 删除 `DEFAULT_MAX_OUTPUT_TOKENS = 16384` 常量（不再用）
+- 删除读 `config.context.maxOutputTokens` 的逻辑
+- 改为读 `_read_context_window_tokens()` × 0.16，封顶 65536
+- 函数签名 `() -> int` 不变
+- `_read_compress_target_tokens` 保持读配置不变
 
 - [ ] **Step 5: 运行测试确认通过**
 
 Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_compress_quality.py -v`
-Expected: 4 个测试 PASS
+Expected: 3 个测试 PASS（`test_read_compress_target_tokens_default` / `test_read_compress_target_tokens_custom` / `test_read_max_output_tokens_dynamic_calc`）
 
 - [ ] **Step 6: 语法检查**
 
@@ -170,14 +182,16 @@ Expected: 无输出（语法 OK）
 ```bash
 cd REDACTED_USER_PATH/tools/ai-bot
 git add config/user-config.json agent/subagent.py tests/test_compress_quality.py
-git commit -m "feat(config): add compressTargetTokens + maxOutputTokens config
+git commit -m "refactor(config): maxOutputTokens 改为动态算，删除硬编码配置
 
-替换 targetThreshold 百分比为 token 绝对值：
-- compressTargetTokens: 压缩后目标 token 数（默认 60000）
-- maxOutputTokens: LLM 单轮输出上限（默认 16384，ark-code-latest 硬限 128K）
+回退改造 Task 1 旧版（读配置 maxOutputTokens）：
+- 删除 config/user-config.json 的 maxOutputTokens: 16384 硬编码
+- _read_max_output_tokens 改为读 contextWindowSize × 0.16，封顶 65536
+- 换模型自动适配，不依赖用户手设
+- _read_compress_target_tokens 保持读配置（60000）不变
 
-新增 _read_compress_target_tokens / _read_max_output_tokens 读取函数，
-仿 _read_context_window_tokens 绝对值模式（非比例）。"
+理由：原降级重压循环设计废弃（方向反效果），maxOutputTokens 不再
+需要按 LLM 输出能力保守取值，改为按上下文窗口比例动态算更合理。"
 ```
 
 ---
@@ -385,7 +399,7 @@ git commit -m "feat(llmcore): MockResponse 加 finish_reason 字段
 
 为输出截断检测做准备：litellm_adapter 流式循环捕获 chunk 的 finish_reason，
 传入 MockResponse，agent_loop 再放进 return_value，call_subagent 检测
-finish_reason=='length' 触发降级重压。
+finish_reason=='length' 返回 COMPACT_TRUNCATED 触发应急清空。
 
 默认 None，不影响现有调用。"
 ```
@@ -863,25 +877,39 @@ git commit -m "feat(subagent): call_subagent 检测 finish_reason=='length' 返�
 
 在 _run_agent_loop 返回后、CONTEXT_OVERFLOW 检测前，检测 return_value
 的 finish_reason。=='length' 表示 LLM 输出被截断，返回字符串
-'COMPACT_TRUNCATED' 让 compat.py 降级循环识别。
+'COMPACT_TRUNCATED' 让 compat.py 识别并触发应急清空。
 
 用字符串而非异常，避免改 call_subagent 返回签名。"
 ```
 
 ---
 
-## Task 7: 模式二 task prompt 重写 + 降级重压循环
+## Task 7: 模式二 task prompt 重写 + 应急清空
+
+> **⚠️ 回退改造说明**：Task 7 已实施（commit `432fc603` + `4cc5f4a0`）。当前模式二已实施**旧版降级循环**（`for attempt in range(3)` + 降目标 + 缩短提示），需要回退改造为**单次调用 + 应急清空**：
+> - 删除 `for attempt in range(3)` 循环
+> - 改为单次调用 `call_subagent`
+> - 截断时（`compress_result == "COMPACT_TRUNCATED"`）调用新增的 `_emergency_clear` 函数（保留最近 10 条，上面全删，最旧改"压缩失败"摘要）
+> - 删除"降级 prompt 追加缩短提示"逻辑
+> - 删除降级测试 `test_mode2_degradation_first_truncate_second_success` / `test_mode2_degradation_all_three_truncate`
+> - 新增应急清空测试
 
 **Files:**
-- Modify: `niu_api/compat.py:1860-1910`（task prompt 重写 + call_subagent 加降级循环 + llm_config 注入 max_tokens）
+- Modify: `niu_api/compat.py:1860-1910`（task prompt 重写 + call_subagent 单次调用 + 截断应急清空 + llm_config 注入 max_tokens）
+- Modify: `niu_api/compat.py`（**新增 `_emergency_clear` 函数**）
+- Test: `tests/test_compress_quality.py`（**删降级测试，新增应急清空测试**）
 
 - [ ] **Step 1: 读模式二 task prompt 和 run_context_manager_mode2 现状**
 
-读 `niu_api/compat.py:1860-1910` 确认当前 task prompt 和 `run_context_manager_mode2` 函数。
+读 `niu_api/compat.py:1860-1910` 确认当前 task prompt 和 `run_context_manager_mode2` 函数（Task 7 已实施旧版降级循环）。
+
+确认旧版降级循环代码位置（`for attempt in range(3)` + `_compress_target_tokens = int(_compress_target_tokens * 0.5)` + `prompt + 缩短提示`），需要整体替换。
 
 - [ ] **Step 2: 新增 _build_mode2_prompt 函数 + 重写 prompt**
 
 把模式二 task prompt 构造抽成函数 `_build_mode2_prompt`（放在 `_strip_analysis` 函数之后，约 L495 附近）。这个函数返回完整的 prompt 字符串，接收 `display_tokens` / `_compress_target_tokens` / `usage_percent` / `compress_history` 参数。
+
+**注意**：Task 7 已实施时这个函数已存在（旧版降级循环用）。回退改造时函数本身保留（单次调用也要构造 prompt），只是调用处从循环改为单次。
 
 函数内容（返回 Step 2 描述的 prompt 字符串）：
 
@@ -889,8 +917,7 @@ git commit -m "feat(subagent): call_subagent 检测 finish_reason=='length' 返�
 def _build_mode2_prompt(display_tokens: int, compress_target_tokens: int, usage_percent: float, compress_history: list) -> str:
     """构造模式二 task prompt（含压缩方法论 + analysis 草稿块）。
 
-    抽成函数是因为降级重压循环每次 _compress_target_tokens 变了要重新构造 prompt
-    （f-string 含 {_compress_target_tokens}，需要重新求值）。
+    单次调用构造一次 prompt（不再降级重压循环，截断时走应急清空）。
     """
     return f"""CRITICAL: 你只有一轮机会完成压缩决策。禁止调用任何工具。
 - 不调用 write、delete_messages、update_message、bash 等
@@ -978,7 +1005,7 @@ REMINDER: 禁止调用任何工具，直接在回复中输出 <analysis> 块和 
 
 注意：
 - 函数参数名用 `compress_target_tokens`（不带下划线前缀，函数内局部变量）
-- 调用处（Step 3 降级循环）传 `_compress_target_tokens`（带下划线的循环变量）作为参数
+- 调用处（Step 3 单次调用）传 `_compress_target_tokens`（带下划线的局部变量）作为参数
 - 原模式二分支 L1860-1882 的内联 prompt 构造删除，改为调用 `_build_mode2_prompt(...)`
 
 - [ ] **Step 2.5: 改造跳过压缩判断用 _read_compress_target_tokens**
@@ -1004,76 +1031,58 @@ REMINDER: 禁止调用任何工具，直接在回复中输出 <analysis> 块和 
 
 注意：`_compress_target` 变量保留给模式一用（spec 明确），只删除模式二分支里对它的赋值。如果模式一分支（`else` L1883+）仍用 `_compress_target`，保留那里的构造。
 
-- [ ] **Step 3: 改造 run_context_manager_mode2 加降级循环 + max_tokens 注入**
+- [ ] **Step 3: 改造 run_context_manager_mode2 为单次调用 + 应急清空 + max_tokens 注入**
 
-读 `niu_api/compat.py:1900-1910` 确认 `run_context_manager_mode2` 和 `await asyncio.to_thread(run_context_manager_mode2)` 的现状。
+> **前置依赖**：本 Step 的代码引用了 `_emergency_clear` 函数，需先完成 Step 3.5（定义 `_emergency_clear`）再改本 Step。实施时可以先做 Step 3.5 再做 Step 3。
 
-当前代码大致：
-```python
-            def run_context_manager_mode2():
-                return call_subagent(
-                    agent_name="context-manager",
-                    task=prompt,
-                    llm_config=llm_config,
-                    mcp_client=None,
-                    context_fifo_threshold=0,
-                    history=compress_history,
-                )
-```
+读 `niu_api/compat.py:1900-1910` 确认 `run_context_manager_mode2` 和 `await asyncio.to_thread(run_context_manager_mode2)` 的现状（Task 7 已实施旧版降级循环）。
 
-改为（加降级循环 + llm_config 注入 max_tokens + 截断检测）：
+**旧版代码（需回退改造）**：当前是 `for attempt in range(3)` 循环 + 降目标 + 缩短提示 + 3 次截断放弃。
+
+**改为（单次调用 + 截断应急清空）**：
 
 ```python
             # llm_config 动态注入 max_tokens（通过 litellm_kwargs）
             llm_config_with_max = dict(llm_config)
             llm_config_with_max["litellm_kwargs"] = {
                 **llm_config.get("litellm_kwargs", {}),
-                "max_tokens": _read_max_output_tokens(),
+                "max_tokens": _read_max_output_tokens(),  # 动态算：contextWindowSize × 0.16，封顶 65536
             }
 
-            # 降级重压循环：最多 3 次尝试，每次压缩目标降 50%
+            # 单次调用（不重试，截断时走应急清空）
             _compress_target_tokens = _read_compress_target_tokens()
-            compress_result = None
-            for attempt in range(3):
-                if attempt > 0:
-                    _compress_target_tokens = int(_compress_target_tokens * 0.5)
-                    logger.warning(f"[Compact] Mode-2 truncated, lowering target to {_compress_target_tokens}, attempt {attempt+1}")
+            prompt = _build_mode2_prompt(display_tokens, _compress_target_tokens, usage_percent, compress_history)
 
-                # 每次循环重新构造 prompt（_compress_target_tokens 变了，f-string 要重新求值）
-                # base_prompt 是不含缩短提示的原始 prompt，attempt>0 时追加缩短提示
-                prompt = _build_mode2_prompt(display_tokens, _compress_target_tokens, usage_percent, compress_history)
-                if attempt > 0:
-                    prompt = prompt + "\n\n注意：上次输出被截断，请精简 <analysis> 块，只保留关键决策依据，不要逐条分析每条消息。"
+            def run_context_manager_mode2():
+                return call_subagent(
+                    agent_name="context-manager",
+                    task=prompt,
+                    llm_config=llm_config_with_max,
+                    mcp_client=None,
+                    context_fifo_threshold=0,
+                    history=compress_history,
+                )
 
-                def run_context_manager_mode2():
-                    return call_subagent(
-                        agent_name="context-manager",
-                        task=prompt,
-                        llm_config=llm_config_with_max,
-                        mcp_client=None,
-                        context_fifo_threshold=0,
-                        history=compress_history,
-                    )
+            compress_result = await asyncio.to_thread(run_context_manager_mode2)
 
-                compress_result = await asyncio.to_thread(run_context_manager_mode2)
+            if is_stop_requested():
+                logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
+                clear_stop()
+                return {"status": "aborted", "message": "Stopped by user"}
 
-                if is_stop_requested():
-                    logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
-                    clear_stop()
-                    return {"status": "aborted", "message": "Stopped by user"}
+            # 截断时触发应急清空（保留最近 10 条，上面全删，最旧改"压缩失败"摘要）
+            if compress_result == "COMPACT_TRUNCATED":
+                logger.warning("[Compact] Mode-2 output truncated, triggering emergency clear")
+                return await _emergency_clear(
+                    history=compress_history,
+                    protect_recent_count=10,
+                    store=message_store,
+                    session_id=session_id,
+                    mode="sleep",
+                )
 
-                if compress_result == "COMPACT_TRUNCATED":
-                    if attempt < 2:
-                        continue  # 降级重试
-                    else:
-                        logger.error("[Compact] Mode-2 all 3 attempts truncated, giving up")
-                        return {"status": "skipped", "mode": "sleep", "reason": "all attempts truncated"}
-
-                # 正常返回，跳出循环进入解析
-                logger.info(f"[Tidy] Mode-2: context-manager completed, length={len(compress_result)}")
-                break
-
-            # 剥离 <analysis> 草稿块（在解析前）
+            # 正常返回，剥离 <analysis> 草稿块（在解析前）
+            logger.info(f"[Tidy] Mode-2: context-manager completed, length={len(compress_result)}")
             compress_result = _strip_analysis(compress_result)
 
             # 后续解析逻辑（原有代码 L1917+，用 compress_result 变量）
@@ -1082,21 +1091,75 @@ REMINDER: 禁止调用任何工具，直接在回复中输出 <analysis> 块和 
             ...
 ```
 
-**关键修正点**：
+**回退改造关键修正点**：
 
-1. **变量名用 `compress_result`**（与下游 L1915/L1924 的 `compress_result.splitlines()` 一致），不用 `result`。降级循环给 `compress_result` 赋值。
+1. **删除 `for attempt in range(3)` 循环**——单次调用 `call_subagent`，不重试。
 
-2. **prompt 在循环内重新构造**：因为 prompt 是 f-string 含 `{_compress_target_tokens}`，降级时值变了必须重新构造。把 prompt 构造抽成函数 `_build_mode2_prompt(display_tokens, _compress_target_tokens, usage_percent, compress_history)`，Step 2 的 prompt 内容移到这个函数里返回。这样循环内每次调用都重新求值 f-string。
+2. **删除降级逻辑**：
+   - 删除 `_compress_target_tokens = int(_compress_target_tokens * 0.5)`（降目标）
+   - 删除 `prompt = prompt + "\n\n注意：上次输出被截断，请精简 <analysis> 块..."`（缩短提示）
+   - 删除 3 次截断放弃的 `return {"status": "skipped", "mode": "sleep", "reason": "all attempts truncated"}`
 
-3. **缩短提示只追加一次**：`if attempt > 0: prompt = prompt + 提示`——因为 prompt 每次从 `_build_mode2_prompt` 重新构造（不含提示），所以追加不会累积。
+3. **截断时调用 `_emergency_clear`**：
+   - `compress_result == "COMPACT_TRUNCATED"` 时直接 return 应急清空结果
+   - 返回 `{"status": "skipped", "mode": "sleep", "reason": "truncated, emergency cleared"}`
+   - `_emergency_clear` 内部完成：保留最近 10 条 + 上面全删 + 最旧改"压缩失败"摘要 + 写回 DB
 
-4. **3 次都截断返回 dict**：`return {"status": "skipped", "mode": "sleep", "reason": "all attempts truncated"}`——与函数其他 return（如 L1914 `{"status": "aborted", ...}` 和末尾 `{"status": "ok", ...}`）一致，避免返回 None 导致调用方 KeyError。
+4. **`_strip_analysis` 在正常路径调用**：截断时直接 return 不走剥离；正常返回时剥离 analysis 再接原有解析。
 
-5. **`is_stop_requested` 检查**：保留原有的停止检查（L1911-1914），放在每次 `compress_result` 赋值之后。
+5. **变量名用 `compress_result`**（与下游 L1915/L1924 的 `compress_result.splitlines()` 一致），不用 `result`。
 
-6. **`_strip_analysis` 在循环外调用**：循环 break 后 `compress_result` 是正常返回值，剥离 analysis 再接原有解析。
+6. **`is_stop_requested` 检查保留**：放在 `compress_result` 赋值之后、截断检测之前。
 
-读实际代码确认 L1911-1915 的 `is_stop_requested` / `logger.info` 位置，把降级循环嵌入时保留这些检查。
+7. **`message_store` 参数**：`_emergency_clear` 需要 MessageStore 来 delete_messages / update_message。读 `_tidy_context_impl` 确认 message_store 变量名（可能是 `message_store` 或 `store` 或从 `get_message_store()` 拿到的对象），传给 `_emergency_clear`。
+
+读实际代码确认 L1911-1915 的 `is_stop_requested` / `logger.info` 位置，单次调用改造时保留这些检查。
+
+- [ ] **Step 3.5: 新增 `_emergency_clear` 函数**
+
+在 `niu_api/compat.py` 的 `_strip_analysis` 函数之后（约 L500 附近）新增应急清空函数：
+
+```python
+async def _emergency_clear(history: list, protect_recent_count: int, store, session_id: str, mode: str) -> dict:
+    """截断时的应急清空：保留最近 N 条，上面全删，最旧那条改为"压缩失败"摘要。
+
+    - history: 压缩历史消息列表（受保护消息已排除），按 idx 顺序排列
+    - protect_recent_count: 保留最近条数（默认 10）
+    - store: MessageStore，用于 delete_messages / update_message
+    - session_id: 会话 ID
+    - mode: "sleep" 或 "force"（用于返回值）
+    
+    返回 {"status": "skipped", "mode": mode, "reason": "truncated, emergency cleared"}
+    """
+    if len(history) <= protect_recent_count:
+        # 历史不足 10 条，无需清空，直接返回 skipped
+        logger.warning(f"[Compact] history len {len(history)} <= {protect_recent_count}, no clear needed")
+        return {"status": "skipped", "mode": mode, "reason": "truncated, no clear needed (too few)"}
+
+    # 保留最近 protect_recent_count 条，上面的全删
+    to_delete = history[:-protect_recent_count]
+    delete_ids = [m.id for m in to_delete]
+
+    # 最旧那条（保留区第一条，即 history[-protect_recent_count]）改为"压缩失败"摘要
+    oldest_kept = history[-protect_recent_count]
+    await store.update_message(
+        message_id=oldest_kept.id,
+        content="[压缩失败，历史信息丢失] 上下文压缩时 LLM 输出截断，此条之上的历史已删除。可通过 journal.md 和知识图谱回溯。",
+    )
+
+    # 删除上面的消息
+    await store.delete_messages(session_id, delete_ids)
+
+    logger.warning(f"[Compact] Emergency cleared: deleted {len(delete_ids)} msgs, kept recent {protect_recent_count}, marked oldest as lost-summary")
+    return {"status": "skipped", "mode": mode, "reason": "truncated, emergency cleared"}
+```
+
+**说明**：
+- `_emergency_clear` 是 async 函数（store 是 async 接口），在 `_tidy_context_impl` 里用 `await` 调用
+- 保留最近 10 条（`history[-10:]`），上面全删（`history[:-10]`）
+- 最旧那条（保留区第一条 `history[-10]`）content 改为"压缩失败"摘要
+- 返回 dict 与 `_tidy_context_impl` 其他 return 一致（避免返回 None 导致调用方 KeyError）
+- 不调用 `/new`（用户功能），压缩函数内部完成清空
 
 - [ ] **Step 4: 在 compat.py 顶部 import 新增读取函数**
 
@@ -1112,13 +1175,13 @@ from agent.subagent import (
 )
 ```
 
-- [ ] **Step 5: 确认 _strip_analysis 已在降级循环后调用**
+- [ ] **Step 5: 确认 _strip_analysis 已在正常路径调用**
 
-Step 3 的降级循环代码里已经包含 `compress_result = _strip_analysis(compress_result)`（在 break 之后、解析之前）。确认这一行存在，且变量名用 `compress_result`（与下游 L1924 的 `compress_result.splitlines()` 一致）。
+Step 3 的代码里：截断时直接 return（走 `_emergency_clear`），正常返回时才调用 `compress_result = _strip_analysis(compress_result)`（在截断检测之后、解析之前）。确认这一行存在，且变量名用 `compress_result`（与下游 L1924 的 `compress_result.splitlines()` 一致）。
 
 读改造后的代码确认：
-- 降级循环 `break` 后 `compress_result` 是正常返回值（非 "COMPACT_TRUNCATED"）
-- `compress_result = _strip_analysis(compress_result)` 剥离 analysis 块
+- 截断检测 `if compress_result == "COMPACT_TRUNCATED": return await _emergency_clear(...)`——直接 return，不走剥离
+- 正常路径 `compress_result = _strip_analysis(compress_result)` 剥离 analysis 块
 - 下游 `for line in compress_result.splitlines():` 解析 keep/update（原有代码 L1924，变量名不变）
 
 **不要**用 `result` 变量名——模式二下游解析用的是 `compress_result`，改名会导致 L1915/L1924 引用断裂。
@@ -1128,7 +1191,7 @@ Step 3 的降级循环代码里已经包含 `compress_result = _strip_analysis(c
 Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "import ast; ast.parse(open('niu_api/compat.py').read())"`
 Expected: 无输出
 
-- [ ] **Step 7: 写集成测试 — 模式二 prompt 含方法论 + 降级循环**
+- [ ] **Step 7: 写集成测试 — 模式二 prompt 含方法论 + 单次调用**
 
 在 `tests/test_compress_quality.py` 追加（参考现有 `test_mode2_passes_history_to_call_subagent` 的 monkeypatch 模式）：
 
@@ -1177,7 +1240,7 @@ def test_mode2_prompt_contains_methodology(monkeypatch):
     monkeypatch.setattr(compat, "_read_protect_recent_count", lambda: 0, raising=False)
     monkeypatch.setattr(compat, "_write_cursor_with_lock", lambda *a, **kw: None, raising=False)
     monkeypatch.setattr(compat, "_read_compress_target_tokens", lambda: 60000, raising=False)
-    monkeypatch.setattr(compat, "_read_max_output_tokens", lambda: 16384, raising=False)
+    monkeypatch.setattr(compat, "_read_max_output_tokens", lambda: 32000, raising=False)  # 动态算值（200K × 0.16）
 
     request = {"session_id": "test", "mode": "sleep"}
     # 不用 try/except 吞异常——让真实错误透出，便于发现 prompt 构造或解析的问题
@@ -1191,7 +1254,7 @@ def test_mode2_prompt_contains_methodology(monkeypatch):
     assert "会话单元" in captured["task"]
     assert "<analysis>" in captured["task"]
     # llm_config 注入了 max_tokens
-    assert captured["llm_config"].get("litellm_kwargs", {}).get("max_tokens") == 16384
+    assert captured["llm_config"].get("litellm_kwargs", {}).get("max_tokens") == 32000  # 动态算值
 ```
 
 **注意**：
@@ -1214,24 +1277,33 @@ Expected: 无新增 FAIL
 ```bash
 cd REDACTED_USER_PATH/tools/ai-bot
 git add niu_api/compat.py tests/test_compress_quality.py
-git commit -m "feat(compat): 模式二 task prompt 写回完整方法论 + 降级重压循环
+git commit -m "refactor(compat): 模式二回退降级循环改为单次调用 + 应急清空
 
-task prompt 重写：内联压缩方法论（三份逐份处理 + 会话单元 + 旧摘要关联性
-判断 + 硬约束），引入 <analysis> 草稿块让 LLM 单轮内先分析再输出。
+回退改造 Task 7 旧版（降级重压循环）：
+- 删除 for attempt in range(3) 循环（降目标 + 缩短提示 + 3 次截断放弃）
+- 改为单次调用 call_subagent
+- 截断时（compress_result == COMPACT_TRUNCATED）触发 _emergency_clear：
+  保留最近 10 条，上面全删，最旧那条改为'压缩失败，历史信息丢失'摘要
+  写回 messages DB
+  返回 {status: skipped, mode: sleep, reason: 'truncated, emergency cleared'}
+- 新增 _emergency_clear async 函数（应急清空逻辑）
 
-降级重压循环：最多 3 次尝试，每次压缩目标降 50%。截断时 prompt 追加
-'缩短 analysis' 提示。3 次都截断放弃压缩。
+task prompt 重写保留（内联压缩方法论 + <analysis> 草稿块，Task 7 旧版已做）。
+max_tokens 通过 llm_config[litellm_kwargs] 动态注入（_read_max_output_tokens 动态算）。
 
-max_tokens 通过 llm_config[litellm_kwargs] 动态注入，不改 call_subagent
-签名。解析前用 _strip_analysis 剥离草稿块。"
+理由：降级重压方向反效果（目标降得越低 LLM 要写更长 analysis 更易截断）。
+靠 journal.md + 知识图谱（entity-extractor/dream-evolver/journal-agent 三层
+前置兜底）让主 Agent 读回历史，应急清空安全。"
 ```
 
 ---
 
-## Task 8: 模式三 task prompt 重写 + 降级重压循环
+## Task 8: 模式三 task prompt 重写 + 应急清空
+
+> **说明**：Task 8 未实施。与 Task 7 对齐，模式三也用"单次调用 + 应急清空"（不重试不降级）。复用 Task 7 新增的 `_emergency_clear` 函数。
 
 **Files:**
-- Modify: `niu_api/compat.py:2511-2563`（模式三 task prompt + run_context_manager_force）
+- Modify: `niu_api/compat.py:2511-2563`（模式三 task prompt + run_context_manager_force 单次调用 + 截断应急清空）
 
 - [ ] **Step 1: 读模式三 task prompt 和 run_context_manager_force 现状**
 
@@ -1248,7 +1320,7 @@ def _build_force_prompt(display_tokens: int, compress_target_tokens: int, usage_
                         force_history: list, last_compress_id: str | None, dream_idx_in_force: int) -> str:
     """构造模式三 force task prompt（含压缩方法论 + analysis 草稿块 + cursor + dream 安全边界）。
 
-    抽成函数是因为降级重压循环每次 compress_target_tokens 变了要重新构造 prompt。
+    单次调用构造一次 prompt（不再降级重压循环，截断时走应急清空）。
     """
     return f"""CRITICAL: 你只有一轮机会完成压缩决策。禁止调用任何工具。
 - 不调用 write、delete_messages、update_message、bash 等
@@ -1345,7 +1417,7 @@ REMINDER: 禁止调用任何工具，直接在回复中输出 <analysis> 块和 
 
 注意：
 - 函数参数名用 `force_history` / `dream_idx_in_force`（不带下划线前缀，函数内局部变量）
-- 调用处（Step 3 降级循环）传 `_force_history` / `_dream_idx_in_force`（带下划线的现有变量）作为参数
+- 调用处（Step 3 单次调用）传 `_force_history` / `_dream_idx_in_force`（带下划线的现有变量）作为参数
 - 原模式三分支 L2511-2548 的内联 prompt 构造删除，改为调用 `_build_force_prompt(...)`
 
 - [ ] **Step 2.5: 改造 target_tokens 计算用 _read_compress_target_tokens**
@@ -1364,7 +1436,7 @@ REMINDER: 禁止调用任何工具，直接在回复中输出 <analysis> 块和 
 
 注意：这个 `target_tokens` 后续可能用于 force 分支的跳过判断或其他逻辑（读 L2473 之后的代码确认）。改后逻辑不变，只是数据源从百分比换成绝对值。
 
-- [ ] **Step 3: 改造 run_context_manager_force 加降级循环 + max_tokens 注入**
+- [ ] **Step 3: 改造 run_context_manager_force 为单次调用 + 应急清空 + max_tokens 注入**
 
 读 `niu_api/compat.py:2553-2563` 确认 `run_context_manager_force` 和调用现状。
 
@@ -1383,61 +1455,53 @@ REMINDER: 禁止调用任何工具，直接在回复中输出 <analysis> 块和 
             result = await asyncio.to_thread(run_context_manager_force)
 ```
 
-改为（加降级循环 + llm_config 注入 max_tokens + 截断检测）：
+改为（单次调用 + llm_config 注入 max_tokens + 截断应急清空）：
 
 ```python
             # llm_config 动态注入 max_tokens（通过 litellm_kwargs）
             llm_config_with_max = dict(llm_config)
             llm_config_with_max["litellm_kwargs"] = {
                 **llm_config.get("litellm_kwargs", {}),
-                "max_tokens": _read_max_output_tokens(),
+                "max_tokens": _read_max_output_tokens(),  # 动态算：contextWindowSize × 0.16，封顶 65536
             }
 
-            # 降级重压循环：最多 3 次尝试，每次压缩目标降 50%
+            # 单次调用（不重试，截断时走应急清空）
             _compress_target_tokens = _read_compress_target_tokens()
-            result = None
-            for attempt in range(3):
-                if attempt > 0:
-                    _compress_target_tokens = int(_compress_target_tokens * 0.5)
-                    logger.warning(f"[Compact] Force truncated, lowering target to {_compress_target_tokens}, attempt {attempt+1}")
+            prompt = _build_force_prompt(
+                display_tokens, _compress_target_tokens, usage_percent,
+                _force_history, last_compress_id, _dream_idx_in_force
+            )
 
-                # 每次循环重新构造 prompt（_compress_target_tokens 变了，f-string 要重新求值）
-                prompt = _build_force_prompt(
-                    display_tokens, _compress_target_tokens, usage_percent,
-                    _force_history, last_compress_id, _dream_idx_in_force
+            def run_context_manager_force():
+                return call_subagent(
+                    agent_name="context-manager",
+                    task=prompt,
+                    llm_config=llm_config_with_max,
+                    mcp_client=None,
+                    context_fifo_threshold=0,
+                    history=_force_history,
                 )
-                if attempt > 0:
-                    prompt = prompt + "\n\n注意：上次输出被截断，请精简 <analysis> 块，只保留关键决策依据，不要逐条分析每条消息。"
 
-                def run_context_manager_force():
-                    return call_subagent(
-                        agent_name="context-manager",
-                        task=prompt,
-                        llm_config=llm_config_with_max,
-                        mcp_client=None,
-                        context_fifo_threshold=0,
-                        history=_force_history,
-                    )
+            result = await asyncio.to_thread(run_context_manager_force)
 
-                result = await asyncio.to_thread(run_context_manager_force)
+            if is_stop_requested():
+                logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
+                clear_stop()
+                return {"status": "aborted", "message": "Stopped by user"}
 
-                if is_stop_requested():
-                    logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
-                    clear_stop()
-                    return {"status": "aborted", "message": "Stopped by user"}
+            # 截断时触发应急清空（保留最近 10 条，上面全删，最旧改"压缩失败"摘要）
+            if result == "COMPACT_TRUNCATED":
+                logger.warning("[Compact] Force output truncated, triggering emergency clear")
+                return await _emergency_clear(
+                    history=_force_history,
+                    protect_recent_count=10,
+                    store=message_store,
+                    session_id=session_id,
+                    mode="force",
+                )
 
-                if result == "COMPACT_TRUNCATED":
-                    if attempt < 2:
-                        continue  # 降级重试
-                    else:
-                        logger.error("[Compact] Force all 3 attempts truncated, giving up")
-                        return {"status": "skipped", "mode": "force", "reason": "all attempts truncated"}
-
-                # 正常返回
-                logger.info(f"[Tidy] Force: context-manager completed, length={len(result)}")
-                break
-
-            # 剥离 <analysis> 草稿块（在解析前）
+            # 正常返回，剥离 <analysis> 草稿块（在解析前）
+            logger.info(f"[Tidy] Force: context-manager completed, length={len(result)}")
             result = _strip_analysis(result)
 
             # 后续解析逻辑（原有代码 L2572+，用 result 变量）
@@ -1449,27 +1513,35 @@ REMINDER: 禁止调用任何工具，直接在回复中输出 <analysis> 块和 
 
 **关键修正点**：
 
-1. **变量名用 `result`**（与下游 L2577 的 `result.splitlines()` 一致），模式三现状就是 `result`，不改名。
+1. **删除 `for attempt in range(3)` 循环**——单次调用 `call_subagent`，不重试。
 
-2. **prompt 在循环内重新构造**：调用 `_build_force_prompt(...)` 每次重新求值 f-string。`_compress_target_tokens` 降级后值变了，prompt 里的 `{compress_target_tokens}` 会反映新值。
+2. **删除降级逻辑**：
+   - 删除 `_compress_target_tokens = int(_compress_target_tokens * 0.5)`（降目标）
+   - 删除 `prompt = prompt + "\n\n注意：上次输出被截断..."`（缩短提示）
+   - 删除 3 次截断放弃的 `return {"status": "skipped", "mode": "force", "reason": "all attempts truncated"}`
 
-3. **缩短提示只追加一次**：`if attempt > 0: prompt = prompt + 提示`——prompt 每次从 `_build_force_prompt` 重新构造（不含提示），追加不会累积。
+3. **截断时调用 `_emergency_clear`**（Task 7 新增的 async 函数，模式三复用）：
+   - `result == "COMPACT_TRUNCATED"` 时直接 return 应急清空结果
+   - 传 `mode="force"` 区分模式
+   - 返回 `{"status": "skipped", "mode": "force", "reason": "truncated, emergency cleared"}`
 
-4. **3 次都截断返回 dict**：`return {"status": "skipped", "mode": "force", "reason": "all attempts truncated"}`——与 force 分支末尾 L2827 的 `return {"status": "ok", ...}` 一致，避免返回 None。注意：这个 return 会跳过 L2810-2827 的 `tokens_after` 计算和 compress 游标写入——这是合理的（压缩没执行，不需要更新游标和 tokens_after）。
+4. **`_strip_analysis` 在正常路径调用**：截断时直接 return 不走剥离；正常返回时剥离 analysis 再接原有解析（L2572+ 的 try 块）。
 
-5. **`is_stop_requested` 检查**：保留原有的停止检查（L2564-2567），放在每次 `result` 赋值之后。
+5. **变量名用 `result`**（与下游 L2577 的 `result.splitlines()` 一致），模式三现状就是 `result`，不改名。
 
-6. **`_strip_analysis` 在循环外调用**：循环 break 后 `result` 是正常返回值，剥离 analysis 再接原有解析（L2572+ 的 try 块）。
+6. **`is_stop_requested` 检查保留**：放在 `result` 赋值之后、截断检测之前。
 
 7. **`new_compress_id = last_compress_id` 保留**：原有 L2571 的初始化，在剥离 analysis 之后、解析之前。
 
-- [ ] **Step 4: 确认 _strip_analysis 已在降级循环后调用**
+8. **`message_store` 参数**：`_emergency_clear` 需要 MessageStore。读 `_tidy_context_impl` 确认 message_store 变量名，传给 `_emergency_clear`。
 
-Step 3 的降级循环代码里已经包含 `result = _strip_analysis(result)`（在 break 之后、解析之前）。确认这一行存在，且变量名用 `result`（与下游 L2577 的 `result.splitlines()` 一致）。
+- [ ] **Step 4: 确认 _strip_analysis 已在正常路径调用**
+
+Step 3 的代码里：截断时直接 return（走 `_emergency_clear`），正常返回时才调用 `result = _strip_analysis(result)`（在截断检测之后、解析之前）。确认这一行存在，且变量名用 `result`（与下游 L2577 的 `result.splitlines()` 一致）。
 
 读改造后的代码确认：
-- 降级循环 `break` 后 `result` 是正常返回值（非 "COMPACT_TRUNCATED"）
-- `result = _strip_analysis(result)` 剥离 analysis 块
+- 截断检测 `if result == "COMPACT_TRUNCATED": return await _emergency_clear(...)`——直接 return，不走剥离
+- 正常路径 `result = _strip_analysis(result)` 剥离 analysis 块
 - 下游 `for line in result.splitlines():` 解析 keep/update/cursor（原有代码 L2577，变量名不变）
 
 - [ ] **Step 5: 语法检查**
@@ -1525,7 +1597,7 @@ def test_mode3_prompt_contains_methodology(monkeypatch):
     monkeypatch.setattr(compat, "_read_protect_recent_count", lambda: 0, raising=False)
     monkeypatch.setattr(compat, "_write_cursor_with_lock", lambda *a, **kw: None, raising=False)
     monkeypatch.setattr(compat, "_read_compress_target_tokens", lambda: 60000, raising=False)
-    monkeypatch.setattr(compat, "_read_max_output_tokens", lambda: 16384, raising=False)
+    monkeypatch.setattr(compat, "_read_max_output_tokens", lambda: 32000, raising=False)  # 动态算值（200K × 0.16）
 
     request = {"session_id": "test", "mode": "force"}
     # 不用 try/except 吞异常——让真实错误透出
@@ -1538,7 +1610,7 @@ def test_mode3_prompt_contains_methodology(monkeypatch):
     assert "<analysis>" in captured["task"]
     assert "cursor=" in captured["task"]
     assert "安全边界" in captured["task"]
-    assert captured["llm_config"].get("litellm_kwargs", {}).get("max_tokens") == 16384
+    assert captured["llm_config"].get("litellm_kwargs", {}).get("max_tokens") == 32000  # 动态算值
 ```
 
 **注意**：
@@ -1561,13 +1633,16 @@ Expected: 无新增 FAIL
 ```bash
 cd REDACTED_USER_PATH/tools/ai-bot
 git add niu_api/compat.py tests/test_compress_quality.py
-git commit -m "feat(compat): 模式三 task prompt 写回完整方法论 + 降级重压循环
+git commit -m "feat(compat): 模式三 task prompt 写回完整方法论 + 应急清空
 
 模式三 force 分支改造（与模式二对齐）：
 - task prompt 内联压缩方法论 + <analysis> 草稿块
 - 保留 cursor= 输出行 + dream 安全边界（模式三特有）
-- 降级重压循环（3 次尝试，目标降 50%）
-- max_tokens 通过 llm_config[litellm_kwargs] 注入
+- 单次调用 call_subagent（不重试不降级）
+- 截断时触发 _emergency_clear（复用 Task 7 新增函数，mode='force'）：
+  保留最近 10 条，上面全删，最旧改'压缩失败'摘要
+  返回 {status: skipped, mode: force, reason: 'truncated, emergency cleared'}
+- max_tokens 通过 llm_config[litellm_kwargs] 动态注入（_read_max_output_tokens 动态算）
 - 解析前 _strip_analysis 剥离草稿块"
 ```
 
@@ -1735,7 +1810,7 @@ def test_mode2_no_auto_keep_fixup(monkeypatch):
     monkeypatch.setattr(compat, "_read_protect_recent_count", lambda: 0, raising=False)
     monkeypatch.setattr(compat, "_write_cursor_with_lock", lambda *a, **kw: None, raising=False)
     monkeypatch.setattr(compat, "_read_compress_target_tokens", lambda: 60000, raising=False)
-    monkeypatch.setattr(compat, "_read_max_output_tokens", lambda: 16384, raising=False)
+    monkeypatch.setattr(compat, "_read_max_output_tokens", lambda: 32000, raising=False)  # 动态算值（200K × 0.16）
 
     request = {"session_id": "test", "mode": "sleep"}
     # 不用 try/except 吞异常
@@ -1758,29 +1833,33 @@ def test_mode2_no_auto_keep_fixup(monkeypatch):
 
 这验证了"auto-fixup 已删除"——keep 列表保持 LLM 原样（只有 1），没有偷偷把 3 补进 keep。同时验证了 overlap 兜底逻辑仍生效（避免 LLM 笔误丢消息）。
 
-- [ ] **Step 8.5: 补降级重压循环测试 + analysis 缺失测试**
+- [ ] **Step 8.5: 补应急清空测试 + analysis 缺失测试**
 
-在 `tests/test_compress_quality.py` 追加三个测试：
+在 `tests/test_compress_quality.py` 追加两个测试（**删除旧版降级循环测试** `test_mode2_degradation_first_truncate_second_success` / `test_mode2_degradation_all_three_truncate`，如果已实施的话）：
 
 ```python
-def test_mode2_degradation_first_truncate_second_success(monkeypatch):
-    """模式二降级循环：第 1 次截断 → 第 2 次成功。"""
+def test_mode2_truncate_triggers_emergency_clear(monkeypatch):
+    """模式二截断时触发应急清空：保留最近 10 条，上面全删，最旧改"压缩失败"摘要。"""
     import asyncio
     import niu_api.compat as compat
     import niu_api.chat as chat_module
     import agent.subagent as subagent_module
 
-    messages = [
-        FakeMsg(id="msg-1", role="user", content="你好"),
-        FakeMsg(id="msg-2", role="assistant", content="你好"),
-    ]
+    # 15 条消息，截断时应保留最近 10 条（msg-6 到 msg-15），删 msg-1 到 msg-5，
+    # 最旧保留那条（msg-6）改为"压缩失败"摘要
+    messages = [FakeMsg(id=f"msg-{i}", role="user", content=f"内容{i}") for i in range(1, 16)]
+
+    deleted_ids = []
+    updated_ids = []
 
     class FakeStore:
         async def get_messages(self, limit=None, before_id=None):
             return messages
-        async def delete_messages(self, *a, **kw):
-            return 0
-        async def update_message(self, *a, **kw):
+        async def delete_messages(self, session_id, message_ids):
+            deleted_ids.extend(message_ids)
+            return len(message_ids)
+        async def update_message(self, message_id=None, content=None, **kw):
+            updated_ids.append((message_id, content))
             return True
 
     async def fake_get_message_store():
@@ -1793,17 +1872,13 @@ def test_mode2_degradation_first_truncate_second_success(monkeypatch):
     def fake_get_or_create_runner():
         return FakeRunner()
 
-    # 第 1 次返回 COMPACT_TRUNCATED，第 2 次返回正常结果
+    # 单次调用返回 COMPACT_TRUNCATED（截断）
     call_count = {"n": 0}
-    captured_targets = []
     def fake_call_subagent(*args, **kwargs):
         agent_name = kwargs.get("agent_name") or (args[0] if args else "")
         if agent_name == "context-manager":
             call_count["n"] += 1
-            captured_targets.append(kwargs.get("task", ""))
-            if call_count["n"] == 1:
-                return "COMPACT_TRUNCATED"  # 第 1 次截断
-            return "<analysis>分析</analysis>\nkeep=1,2\nupdate="  # 第 2 次成功
+            return "COMPACT_TRUNCATED"  # 截断
         return "skip"
 
     monkeypatch.setattr(compat, "get_message_store", fake_get_message_store)
@@ -1814,32 +1889,58 @@ def test_mode2_degradation_first_truncate_second_success(monkeypatch):
     monkeypatch.setattr(compat, "_read_protect_recent_count", lambda: 0, raising=False)
     monkeypatch.setattr(compat, "_write_cursor_with_lock", lambda *a, **kw: None, raising=False)
     monkeypatch.setattr(compat, "_read_compress_target_tokens", lambda: 60000, raising=False)
-    monkeypatch.setattr(compat, "_read_max_output_tokens", lambda: 16384, raising=False)
+    monkeypatch.setattr(compat, "_read_max_output_tokens", lambda: 32000, raising=False)  # 动态算值
 
     request = {"session_id": "test", "mode": "sleep"}
-    asyncio.run(compat._tidy_context_impl(request))
+    result = asyncio.run(compat._tidy_context_impl(request))
 
-    # 验证调用了 2 次
-    assert call_count["n"] == 2, f"应调用 2 次（第 1 次截断 + 第 2 次成功），实际 {call_count['n']}"
-    # 第 2 次 prompt 含缩短提示
-    assert "精简" in captured_targets[1] or "缩短" in captured_targets[1], "第 2 次 prompt 应含缩短 analysis 提示"
+    # 验证只调用了 1 次（单次调用，不重试）
+    assert call_count["n"] == 1, f"应只调用 1 次（单次调用不重试），实际 {call_count['n']}"
+
+    # 验证返回应急清空结果
+    assert result is not None
+    assert isinstance(result, dict)
+    assert result.get("status") == "skipped", f"应返回 skipped，实际 {result}"
+    assert result.get("mode") == "sleep"
+    assert "truncated" in result.get("reason", ""), f"reason 应含 truncated，实际 {result}"
+
+    # 验证删除了上面 5 条（msg-1 到 msg-5）
+    assert set(deleted_ids) == {f"msg-{i}" for i in range(1, 6)}, f"应删 msg-1 到 msg-5，实际删了 {deleted_ids}"
+
+    # 验证最旧保留那条（msg-6）被改为"压缩失败"摘要
+    assert len(updated_ids) == 1, f"应只更新 1 条（最旧保留那条），实际更新了 {len(updated_ids)} 条"
+    updated_id, updated_content = updated_ids[0]
+    assert updated_id == "msg-6", f"应更新 msg-6，实际更新了 {updated_id}"
+    assert "压缩失败" in updated_content, f"content 应含'压缩失败'，实际 {updated_content}"
+    assert "journal.md" in updated_content or "知识图谱" in updated_content, f"content 应提示回溯途径，实际 {updated_content}"
+
+    # 验证最近 10 条（msg-6 到 msg-15）没被删（msg-6 被改摘要但没被删）
+    for i in range(6, 16):
+        assert f"msg-{i}" not in deleted_ids, f"msg-{i} 不应被删除（保留区）"
 
 
-def test_mode2_degradation_all_three_truncate(monkeypatch):
-    """模式二降级循环：3 次都截断 → 放弃压缩，返回 skipped。"""
+def test_mode2_truncate_too_few_no_clear(monkeypatch):
+    """模式二截断但历史不足 10 条时，不执行清空，直接返回 skipped。"""
     import asyncio
     import niu_api.compat as compat
     import niu_api.chat as chat_module
     import agent.subagent as subagent_module
 
-    messages = [
-        FakeMsg(id="msg-1", role="user", content="你好"),
-        FakeMsg(id="msg-2", role="assistant", content="你好"),
-    ]
+    # 只有 3 条消息，不足 10 条，不应执行删除/更新
+    messages = [FakeMsg(id=f"msg-{i}", role="user", content=f"内容{i}") for i in range(1, 4)]
+
+    deleted_ids = []
+    updated_ids = []
 
     class FakeStore:
         async def get_messages(self, limit=None, before_id=None):
             return messages
+        async def delete_messages(self, session_id, message_ids):
+            deleted_ids.extend(message_ids)
+            return len(message_ids)
+        async def update_message(self, message_id=None, content=None, **kw):
+            updated_ids.append(message_id)
+            return True
 
     async def fake_get_message_store():
         return FakeStore()
@@ -1851,12 +1952,9 @@ def test_mode2_degradation_all_three_truncate(monkeypatch):
     def fake_get_or_create_runner():
         return FakeRunner()
 
-    # 每次都返回 COMPACT_TRUNCATED
-    call_count = {"n": 0}
     def fake_call_subagent(*args, **kwargs):
         agent_name = kwargs.get("agent_name") or (args[0] if args else "")
         if agent_name == "context-manager":
-            call_count["n"] += 1
             return "COMPACT_TRUNCATED"
         return "skip"
 
@@ -1868,17 +1966,19 @@ def test_mode2_degradation_all_three_truncate(monkeypatch):
     monkeypatch.setattr(compat, "_read_protect_recent_count", lambda: 0, raising=False)
     monkeypatch.setattr(compat, "_write_cursor_with_lock", lambda *a, **kw: None, raising=False)
     monkeypatch.setattr(compat, "_read_compress_target_tokens", lambda: 60000, raising=False)
-    monkeypatch.setattr(compat, "_read_max_output_tokens", lambda: 16384, raising=False)
+    monkeypatch.setattr(compat, "_read_max_output_tokens", lambda: 32000, raising=False)
 
     request = {"session_id": "test", "mode": "sleep"}
     result = asyncio.run(compat._tidy_context_impl(request))
 
-    # 验证调用了 3 次
-    assert call_count["n"] == 3, f"应调用 3 次，实际 {call_count['n']}"
-    # 验证返回 skipped（不返回 None）
-    assert result is not None, "3 次截断应返回 dict，不应是 None"
-    assert isinstance(result, dict)
-    assert result.get("status") == "skipped", f"应返回 skipped，实际 {result}"
+    # 验证返回 skipped（too few）
+    assert result is not None
+    assert result.get("status") == "skipped"
+    assert "too few" in result.get("reason", ""), f"reason 应含 too few，实际 {result}"
+
+    # 验证没删除也没更新（历史不足 10 条）
+    assert deleted_ids == [], f"不应删除任何消息，实际删了 {deleted_ids}"
+    assert updated_ids == [], f"不应更新任何消息，实际更新了 {updated_ids}"
 
 
 def test_strip_analysis_missing_then_parse():
@@ -1897,9 +1997,16 @@ def test_strip_analysis_missing_then_parse():
     assert "1,2,3" in keep_line[0]
 ```
 
+**关键断言**（`test_mode2_truncate_triggers_emergency_clear`）：
+- `call_count["n"] == 1`：单次调用，不重试（验证降级循环已删）
+- `deleted_ids == {msg-1..msg-5}`：删上面 5 条
+- `updated_ids == [(msg-6, 含"压缩失败")]`：最旧保留那条改摘要
+- `msg-6..msg-15` 不在 deleted_ids：保留区 10 条没被删
+- 返回 `{"status": "skipped", "mode": "sleep", "reason": "truncated, ..."}`
+
 - [ ] **Step 9: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_compress_quality.py::test_mode2_no_auto_keep_fixup tests/test_compress_quality.py::test_mode2_degradation_first_truncate_second_success tests/test_compress_quality.py::test_mode2_degradation_all_three_truncate tests/test_compress_quality.py::test_strip_analysis_missing_then_parse -v`
+Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_compress_quality.py::test_mode2_no_auto_keep_fixup tests/test_compress_quality.py::test_mode2_truncate_triggers_emergency_clear tests/test_compress_quality.py::test_mode2_truncate_too_few_no_clear tests/test_compress_quality.py::test_strip_analysis_missing_then_parse -v`
 Expected: 4 个测试 PASS
 
 - [ ] **Step 10: 运行现有测试不破坏**
@@ -2080,7 +2187,7 @@ Expected: 看到 keep/update 计数合理（如 keep 20+ 条、update 10+ 条摘
 - [ ] **Step 5: 验证无单消息超限错误**
 
 Run: `cd REDACTED_USER_PATH/tools/ai-bot && grep "exceed max message tokens\|finish_reason.*length" logs/api_stderr.log 2>/dev/null | tail -5 || echo "无超限错误"`
-Expected: 不再出现 `Total tokens of image and text exceed max message tokens`。如果有 `finish_reason=length`，验证降级重压是否触发（日志应有 `lowering target`）。
+Expected: 不再出现 `Total tokens of image and text exceed max message tokens`。如果有 `finish_reason=length`，验证应急清空是否触发（日志应有 `triggering emergency clear` + `Emergency cleared`）。
 
 - [ ] **Step 6: 最终提交（清理调试代码，如有）**
 
@@ -2094,8 +2201,8 @@ git commit -m "feat(compress): context-manager 压缩质量修复完成
 修复 390 条压成 1 条的严重缺陷：
 - task prompt 写回完整压缩方法论（三份逐份处理 + 会话单元 + 旧摘要关联性判断）
 - 引入 <analysis> 草稿块让 LLM 单轮内先分析再输出
-- 配置改 token 绝对值（compressTargetTokens + maxOutputTokens）
-- finish_reason 传递链 + 截断降级重压（3 次尝试）
+- 配置改 token 绝对值（compressTargetTokens；maxOutputTokens 动态算 contextWindowSize × 0.16 封顶 65536）
+- finish_reason 传递链 + 截断应急清空（保留最近 10 条，靠 journal.md + 知识图谱回溯）
 - 删除削弱约束的校验兜底
 - 术语清理（L0/L1/L2 废弃 + 事务→会话单元 + 远端中端近端→三份）"
 ```
@@ -2106,11 +2213,12 @@ git commit -m "feat(compress): context-manager 压缩质量修复完成
 
 ### 1. Spec 覆盖
 
-- 配置层变更 → Task 1 ✅
+- 配置层变更（compressTargetTokens 配置 + maxOutputTokens 动态算）→ Task 1 ✅
 - `_strip_analysis` 辅助函数 → Task 2 ✅
 - finish_reason 传递链（MockResponse + litellm_adapter + agent_loop + call_subagent）→ Task 3-6 ✅
-- 模式二 task prompt 重写 + 降级循环 → Task 7 ✅
-- 模式三 task prompt 重写 + 降级循环 → Task 8 ✅
+- `_emergency_clear` 应急清空函数 → Task 7 Step 3.5 定义 ✅
+- 模式二 task prompt 重写 + 单次调用 + 截断应急清空 → Task 7 ✅
+- 模式三 task prompt 重写 + 单次调用 + 截断应急清空 → Task 8 ✅
 - 删除校验兜底 → Task 9 ✅
 - 术语清理 → Task 10 ✅
 - 端到端验证 → Task 11 ✅
@@ -2121,16 +2229,17 @@ git commit -m "feat(compress): context-manager 压缩质量修复完成
 
 ### 3. 类型一致性
 
-- `_read_compress_target_tokens() -> int`：Task 1 定义，Task 7/8 使用 ✅
-- `_read_max_output_tokens() -> int`：Task 1 定义，Task 7/8 使用 ✅
-- `_strip_analysis(response: str) -> str`：Task 2 定义，Task 7/8 使用 ✅
+- `_read_compress_target_tokens() -> int`：Task 1 定义（读配置 60000），Task 7/8 使用 ✅
+- `_read_max_output_tokens() -> int`：Task 1 定义（动态算 contextWindowSize × 0.16 封顶 65536），Task 7/8 使用 ✅
+- `_strip_analysis(response: str) -> str`：Task 2 定义，Task 7/8 正常路径使用 ✅
+- `_emergency_clear(history, protect_recent_count, store, session_id, mode) -> dict`：Task 7 Step 3.5 定义，Task 7/8 截断路径使用 ✅
 - `MockResponse.finish_reason`：Task 3 定义，Task 4 填充，Task 5 传递，Task 6 检测 ✅
-- `"COMPACT_TRUNCATED"` 字符串信号：Task 6 返回，Task 7/8 识别 ✅
-- `llm_config_with_max`：Task 7/8 构造，传给 call_subagent ✅
+- `"COMPACT_TRUNCATED"` 字符串信号：Task 6 返回，Task 7/8 识别并触发 `_emergency_clear` ✅
+- `llm_config_with_max`：Task 7/8 构造（max_tokens 由 `_read_max_output_tokens` 动态算），传给 call_subagent ✅
 
 ### 4. 风险点
 
 - **模式一兼容性**：`_compress_target` 保留给模式一（Task 7/8 不动模式一），spec 明确 ✅
 - **MAX_TURNS_EXCEEDED 路径**：Task 5 只改 L570/L583，L610 不带 finish_reason ✅
-- **降级循环 3 次都失败**：Task 7/8 用 `return` 或 `result=None` 放弃，记 error 日志 ✅
-- **analysis 块超长**：Task 7/8 降级时追加"缩短 analysis"提示 ✅
+- **截断应急清空**：Task 7/8 单次调用，截断时调用 `_emergency_clear`（保留最近 10 条 + 上面全删 + 最旧改"压缩失败"摘要），返回 `{"status": "skipped", ...}` ✅
+- **应急清空安全性**：靠 journal.md + 知识图谱（entity-extractor/dream-evolver/journal-agent 三层前置兜底）让主 Agent 读回历史，用户已改 niu.md 让主 Agent 读 journal.md ✅
