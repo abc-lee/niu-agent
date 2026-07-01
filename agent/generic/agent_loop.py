@@ -178,6 +178,7 @@ def _fifo_prune(messages, target_tokens):
 
 
 MAX_TOOL_RESULT_CHARS = 30000  # 单个工具结果最大字符数（约 15K-30K token）
+MAX_TOOL_RESULTS_PER_MESSAGE_CHARS = 200000  # 单消息内 tool 结果合计上限（参考 Claude Code）
 
 
 def _truncate_tool_content(content: str, tool_name: str = "") -> str:
@@ -230,6 +231,43 @@ def _truncate_dict_result(result, tool_name: str = ""):
         truncated_data = truncated_data[:-100] if len(truncated_data) > 100 else ""
         if not truncated_data:
             return candidate  # 极端情况：data 空也超限（message 过长），直接返回
+
+
+def _enforce_message_budget(messages: list) -> list:
+    """单消息内 tool 结果合计超 MAX_TOOL_RESULTS_PER_MESSAGE_CHARS 时，截断最大的几个。
+
+    参考 Claude Code enforceToolResultBudget：防止一轮内多个并行工具结果
+    合计爆掉单消息上限（火山方舟 'max message tokens'）。
+
+    策略：按 tool content 大小降序，依次截断最大的，直到合计 <= 上限。
+    """
+    tool_indices = [i for i, m in enumerate(messages) if m.get("role") == "tool" and isinstance(m.get("content"), str)]
+    if not tool_indices:
+        return messages
+
+    total = sum(len(messages[i].get("content", "")) for i in tool_indices)
+    if total <= MAX_TOOL_RESULTS_PER_MESSAGE_CHARS:
+        return messages  # 未超限
+
+    # 按大小降序排列 tool 消息索引
+    tool_indices_sorted = sorted(tool_indices, key=lambda i: len(messages[i].get("content", "")), reverse=True)
+
+    # 依次截断最大的，直到合计 <= 上限
+    current_total = total
+    for idx in tool_indices_sorted:
+        if current_total <= MAX_TOOL_RESULTS_PER_MESSAGE_CHARS:
+            break
+        content = messages[idx].get("content", "")
+        # 截断到 MAX_TOOL_RESULT_CHARS（保底值），释放 (len(content) - MAX_TOOL_RESULT_CHARS) 字符
+        if len(content) > MAX_TOOL_RESULT_CHARS:
+            messages[idx] = {
+                **messages[idx],
+                "content": _truncate_tool_content(content, "aggregated"),
+            }
+            current_total -= (len(content) - MAX_TOOL_RESULT_CHARS)
+
+    logger.warning(f"[MessageBudget] tool results total {total} > {MAX_TOOL_RESULTS_PER_MESSAGE_CHARS}, truncated largest to {current_total}")
+    return messages
 
 
 def agent_runner_loop(
@@ -370,6 +408,8 @@ def agent_runner_loop(
             yield StreamEvent("system", f"**LLM Running (Turn {turn}) ...**\n\n")
         if turn % 10 == 0:
             client.last_tools = ""  # 每10轮重置一次工具描述，避免上下文过大导致的模型性能下降
+        # 单消息聚合上限检查（防多个 tool 结果合计爆掉单消息上限）
+        messages = _enforce_message_budget(messages)
         response_gen = client.chat(messages=messages, tools=tools_schema)
         if verbose:
             response = yield from response_gen
