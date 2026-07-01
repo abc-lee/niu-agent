@@ -31,7 +31,7 @@ context-manager 压缩功能（模式二睡眠触发 / 模式三 force 强制触
 ## 设计原则
 
 1. **靠 prompt 约束 LLM 一次做对**，不靠程序硬约束+重试（重试会触发第二轮，可能上下文溢出）
-2. **程序只做技术性保底**：输出截断时降级重压（这是技术失败补救，不是内容质量重试）
+2. **程序只做技术性保底**：输出截断时应急清空（保留最近 10 条，靠 journal.md + 知识图谱回溯历史），不重试不降级
 3. **配置与模型解耦**：直接写 token 数，不写百分比
 4. **方法论写回 task prompt**：把用户的完整压缩方法论（三区逐份处理 + 会话单元 + 旧摘要关联性判断）写回 task prompt
 5. **引入 `<analysis>` 草稿块**：让 LLM 在单轮内先分析再输出，强制思考过程外化
@@ -60,7 +60,6 @@ context-manager 压缩功能（模式二睡眠触发 / 模式三 force 强制触
   "context": {
     "warningThreshold": 0.80,
     "compressTargetTokens": 60000,
-    "maxOutputTokens": 16384,
     "contextWindowSize": 200000
   }
 }
@@ -68,7 +67,7 @@ context-manager 压缩功能（模式二睡眠触发 / 模式三 force 强制触
 
 字段说明：
 - `compressTargetTokens`：压缩后上下文目标 token 数（替换 `targetThreshold`）
-- `maxOutputTokens`：LLM 单轮输出上限（ark-code-latest 硬限 128K，保守取 16K）
+- `maxOutputTokens`：**不配置**——程序读 `contextWindowSize × 0.16` 动态算，封顶 65536。换模型自动适配，不依赖用户手设（详见第 3 节"max_tokens 动态计算"）
 - `warningThreshold` 保留百分比（80% 触发压缩，与上下文窗口比例相关）
 - `contextWindowSize` 保留
 
@@ -203,7 +202,15 @@ REMINDER: 禁止调用任何工具，直接在回复中输出 <analysis> 块和 
 REMINDER: 禁止调用任何工具，直接在回复中输出 <analysis> 块和 keep=/update= 两行。
 ```
 
-### 3. 程序保底：输出截断检测 + 降级重压
+### 3. 程序保底：输出截断检测 + 应急清空
+
+#### 设计思路
+
+LLM 输出截断（`finish_reason=length`）时**不重试、不降级重压**。原设计的降级重压（每次降 50% 目标）方向反效果——目标降得越低意味着要释放更多 token，LLM 反而要写更长的 analysis 说明更多压缩决策，输出更可能再次截断。
+
+改为**单次调用 + 应急清空**：截断时直接放弃压缩，触发应急清空逻辑（保留最近 10 条，上面全删，最旧那条改为"压缩失败，历史信息丢失"摘要），写回 DB。
+
+**应急清空的安全性保证**：我们比 Claude Code 多三层前置兜底（entity-extractor / dream-evolver / journal-agent），重要内容已入知识图谱 / journal.md。即使压缩失败应急清空，主 Agent 也能通过 journal.md + 知识图谱读回历史。用户已改 `niu.md` 让主 Agent 读 journal.md 自我修复旧记忆。`/new` 是用户功能，压缩函数内部做应急清空，不调用外部机制。
 
 #### 检测输出截断
 
@@ -263,69 +270,97 @@ def call_subagent(...) -> str:
     return result_text
 ```
 
-**传递路径**：`litellm` 流式 chunk → `litellm_adapter` 捕获 finish_reason → `MockResponse.finish_reason` → `agent_runner_loop` 放进 return_value → `_run_agent_loop` 透传 → `call_subagent` 检测并返回 `"COMPACT_TRUNCATED"` 字符串 → `compat.py` 降级循环识别字符串触发降级。
+**传递路径**：`litellm` 流式 chunk → `litellm_adapter` 捕获 finish_reason → `MockResponse.finish_reason` → `agent_runner_loop` 放进 return_value → `_run_agent_loop` 透传 → `call_subagent` 检测并返回 `"COMPACT_TRUNCATED"` 字符串 → `compat.py` 识别字符串触发应急清空。
 
-用字符串 `"COMPACT_TRUNCATED"` 而非新异常类型，避免改动 `call_subagent` 的返回签名（当前返回 str）。compat.py 降级循环里检查 `result == "COMPACT_TRUNCATED"`。
+用字符串 `"COMPACT_TRUNCATED"` 而非新异常类型，避免改动 `call_subagent` 的返回签名（当前返回 str）。compat.py 里检查 `result == "COMPACT_TRUNCATED"` 触发应急清空。
 
-#### 降级重压逻辑
+#### 应急清空逻辑
 
-`niu_api/compat.py` 模式二/模式三分支新增降级循环（最多 2 次重试，共 3 次尝试）：
+`niu_api/compat.py` 模式二/模式三分支**单次调用** call_subagent，截断时触发应急清空：
 
 ```python
 _compress_target_tokens = read_compress_target_tokens()  # 配置值，如 60000
-for attempt in range(3):
-    prompt = build_prompt(_compress_target_tokens, ...)
-    result = call_subagent(
-        agent_name="context-manager",
-        task=prompt,
-        history=history,
-        max_output_tokens=read_max_output_tokens(),  # 传给 LLM
-        ...
+prompt = build_prompt(_compress_target_tokens, ...)
+result = call_subagent(
+    agent_name="context-manager",
+    task=prompt,
+    history=history,
+    llm_config=llm_config_with_max,  # 带 max_tokens
+    ...
+)
+
+if result == "COMPACT_TRUNCATED":
+    logger.warning("[Compact] Output truncated, triggering emergency clear")
+    # 应急清空：保留最近 10 条，上面全删，最旧那条改摘要
+    _emergency_clear(history, protect_recent_count=10, store=...)
+    return {"status": "skipped", "mode": mode, "reason": "truncated, emergency cleared"}
+
+# 正常返回，剥离 analysis + 解析 keep/update/cursor
+response = _strip_analysis(result)
+parse_and_execute(response)
+```
+
+#### 应急清空函数 `_emergency_clear`
+
+```python
+def _emergency_clear(history: list, protect_recent_count: int, store, mode: str) -> dict:
+    """截断时的应急清空：保留最近 N 条，上面全删，最旧那条改为"压缩失败"摘要。
+
+    - history: 压缩历史消息列表（受保护消息已排除），按 idx 顺序排列
+    - protect_recent_count: 保留最近条数（默认 10）
+    - store: MessageStore，用于 delete_messages / update_message
+    - 返回 {"status": "skipped", "mode": mode, "reason": "truncated, emergency cleared"}
+    """
+    if len(history) <= protect_recent_count:
+        # 历史不足 10 条，无需清空，直接返回 skipped
+        logger.warning(f"[Compact] history len {len(history)} <= {protect_recent_count}, no clear needed")
+        return {"status": "skipped", "mode": mode, "reason": "truncated, no clear needed (too few)"}
+
+    # 保留最近 protect_recent_count 条，上面的全删
+    to_delete = history[:-protect_recent_count]
+    delete_ids = [m.id for m in to_delete]
+
+    # 最旧那条（保留区第一条，即 history[-protect_recent_count]）改为"压缩失败"摘要
+    oldest_kept = history[-protect_recent_count]
+    store.update_message(
+        message_id=oldest_kept.id,
+        content="[压缩失败，历史信息丢失] 上下文压缩时 LLM 输出截断，此条之上的历史已删除。可通过 journal.md 和知识图谱回溯。",
     )
-    
-    if result == "COMPACT_TRUNCATED":
-        _compress_target_tokens = int(_compress_target_tokens * 0.5)
-        logger.warning(f"[Compact] Truncated, lowering target to {_compress_target_tokens}, attempt {attempt+1}")
-        continue
-    
-    # 正常返回，剥离 analysis + 解析 keep/update/cursor
-    response = _strip_analysis(result)
-    parse_and_execute(response)
-    break
-else:
-    logger.error("[Compact] All 3 attempts truncated, giving up")
+
+    # 删除上面的消息
+    store.delete_messages(session_id, delete_ids)
+
+    logger.warning(f"[Compact] Emergency cleared: deleted {len(delete_ids)} msgs, kept recent {protect_recent_count}, marked oldest as lost-summary")
+    return {"status": "skipped", "mode": mode, "reason": "truncated, emergency cleared"}
 ```
 
-#### 降级逻辑说明
+**应急清空逻辑说明**：
 
-- 第 1 次：用配置目标（如 60K）
-- 第 2 次（截断降级）：目标降到 50%（30K）——目标更低意味着要释放更多，LLM 压更激进，analysis 决策更直接（更短）
-- 第 3 次（再截断）：目标再降 50%（15K）
-- 3 次都截断：放弃压缩，记错误日志（几乎不会发生）
+- 保留最近 10 条（用 `protect_recent` 机制，与正常压缩的受保护消息区分——应急清空的 10 条是"保留区"，不是"受保护消息"）
+- 上面的全删（delete_messages 批量删）
+- 最旧那条（保留区第一条）content 改为"[压缩失败，历史信息丢失]"摘要，update_message 写回 DB
+- 返回 `{"status": "skipped", "mode": "sleep"/"force", "reason": "truncated, emergency cleared"}`
+- 不调用 `/new`（用户功能），压缩函数内部完成清空
 
-#### 3 次都截断的兜底
+#### max_tokens 动态计算
 
-3 次降级都截断时，说明 LLM 的 analysis 块写得太长（跟压缩目标无关）。兜底策略：
+`max_tokens`（LLM 单轮输出上限）**不读配置硬编码值**，由程序动态计算：
 
 ```python
-else:
-    logger.error("[Compact] All 3 attempts truncated, giving up compression")
-    # 兜底：不压缩，保留全部消息（避免"放弃=啥也没做"导致下一轮还触发）
-    # 下一轮 force 触发时会重试，可能 LLM 这次输出更短
+def _read_max_output_tokens() -> int:
+    """动态计算 max_output_tokens：contextWindowSize × 0.16，封顶 65536。"""
+    context_window = _read_context_window_tokens()  # 如 200000
+    val = int(context_window * 0.16)  # 200000 × 0.16 = 32000
+    return min(val, 65536)  # 封顶 65536
 ```
 
-不主动做"保留全部消息"的兜底动作（因为本来就没执行压缩，消息没动），只记日志。下一轮触发时 LLM 可能输出更短的 analysis。这是技术性失败的合理处理，不违反"不做内容质量重试"原则。
+**理由**：
+- 换模型自动适配——不同模型 contextWindowSize 不同（如 128K/200K/256K），×0.16 自动算出对应 max_output_tokens
+- 不依赖用户手设——用户不需要为每个模型调 `maxOutputTokens`
+- 0.16 比例是通用保守值（ark-code-latest context 256K → 40960；Claude 200K → 32000）
+- 封顶 65536 避免极端大窗口算出过大值（部分模型单轮输出硬限 64K）
 
-#### analysis 块超长的降级提示
-
-如果第 1 次截断，降级 prompt 里显式提示 LLM 缩短 analysis：
-
-```python
-if attempt > 0:
-    prompt += "\n\n注意：上次输出被截断，请精简 <analysis> 块，只保留关键决策依据，不要逐条分析每条消息。"
-```
-
-这解决 I3——降级不只是降目标，还显式提示 LLM 缩短 analysis。
+`compressTargetTokens` 仍是配置值（60000），不动——压缩目标跟模型输出能力无关，是用户对"压缩后上下文大小"的期望。
 
 #### max_tokens 传递
 
@@ -336,11 +371,11 @@ if attempt > 0:
 所以 `call_subagent` 调用前，把 `max_tokens` 塞进 `llm_config["litellm_kwargs"]["max_tokens"]` 即可：
 
 ```python
-# compat.py 模式二/三降级循环里
+# compat.py 模式二/三调用前
 llm_config_with_max = dict(llm_config)
 llm_config_with_max["litellm_kwargs"] = {
     **llm_config.get("litellm_kwargs", {}),
-    "max_tokens": read_max_output_tokens(),  # 如 16384
+    "max_tokens": _read_max_output_tokens(),  # 动态算：contextWindowSize × 0.16，封顶 65536
 }
 
 result = call_subagent(
@@ -354,7 +389,7 @@ result = call_subagent(
 
 `call_subagent` 签名**不变**（不需要新增 `max_output_tokens` 参数），`_run_agent_loop` / `agent_runner_loop` / `client.chat` / `litellm_adapter.chat` 签名都不变。`max_tokens` 通过 `llm_config` → `litellm_kwargs` → `request_params` 自然到达 litellm。
 
-**注意**：`config/user-config.json` 里的 `litellm_kwargs` 当前只有 `{"thinking":{"type":"enabled"}}`，不设 `max_tokens`（依赖平台默认 4K）。compat.py 调 context-manager 时动态注入 `max_tokens`，不影响其他子 Agent。
+**注意**：`config/user-config.json` 里的 `litellm_kwargs` 当前只有 `{"thinking":{"type":"enabled"}}`，不设 `max_tokens`（依赖平台默认 4K）。compat.py 调 context-manager 时动态注入 `max_tokens`（由 `_read_max_output_tokens` 动态算），不影响其他子 Agent。
 
 ### 4. 解析层：analysis 剥离
 
@@ -375,8 +410,8 @@ def _strip_analysis(response: str) -> str:
 ```python
 raw_response = call_subagent(...)
 if raw_response == "COMPACT_TRUNCATED":
-    # 截断降级处理（见上一节降级重压逻辑）
-    ...
+    # 截断应急清空（见上一节应急清空逻辑）
+    return await _emergency_clear(history, protect_recent_count=10, store=store, session_id=session_id, mode=mode)
 else:
     response = _strip_analysis(raw_response)
     # 原有解析逻辑：从 response 里提取 keep=/update=/cursor=
@@ -437,13 +472,21 @@ L0/L1/L2 残留清理范围（实施时 grep 全项目）：
 def _read_compress_target_tokens() -> int:
     """读 compressTargetTokens，默认 60000。"""
     # 从 config/user-config.json 的 context.compressTargetTokens 读取
-    
+
 def _read_max_output_tokens() -> int:
-    """读 maxOutputTokens，默认 16384。"""
-    # 从 config/user-config.json 的 context.maxOutputTokens 读取
+    """动态计算 max_output_tokens：contextWindowSize × 0.16，封顶 65536。
+    
+    不读配置 maxOutputTokens（已删除硬编码）。
+    换模型自动适配：不同模型 contextWindowSize 不同，×0.16 自动算对应值。
+    """
+    context_window = _read_context_window_tokens()  # 复用现有函数
+    val = int(context_window * 0.16)
+    return min(val, 65536)
 ```
 
-`niu_api/compat.py` 也需要读取这两个配置（模式二/三降级循环用），从 `agent/subagent.py` 导入或复制实现（与现有 `_read_target_threshold` 的复用模式一致）。
+**函数签名不变**（仍为 `() -> int`），但内部逻辑从"读配置 maxOutputTokens"改为"读 contextWindowSize × 0.16 封顶 65536"。
+
+`niu_api/compat.py` 也需要读取这两个配置（模式二/三调用前用），从 `agent/subagent.py` 导入或复制实现（与现有 `_read_target_threshold` 的复用模式一致）。
 
 ### 8. `_compress_target` 处理
 
@@ -472,7 +515,7 @@ def _read_max_output_tokens() -> int:
 
 ### 风险点
 
-1. **analysis 块过长触发截断**：300 条 history 场景下 analysis 可能超 4K（平台默认上限）。靠 `maxOutputTokens=16384` 配置抬升 + 截断降级保底解决。
+1. **截断时应急清空丢历史**：LLM 输出截断时不重试，直接应急清空（保留最近 10 条，上面全删，最旧那条标"压缩失败"）。靠 journal.md + 知识图谱（entity-extractor / dream-evolver / journal-agent 三层前置兜底）让主 Agent 读回历史。用户已改 niu.md 让主 Agent 读 journal.md 自我修复旧记忆。
 2. **LLM 不严格按格式输出**：analysis 标签缺失/未闭合/大小写。`_strip_analysis` 正则兜底三种情况。
 3. **模式一兼容性**：`_compress_target` 改动可能影响模式一。实施时评估，必要时保留给模式一。
 4. **删除校验兜底后 LLM 出错无补救**：靠 prompt 方法论 + analysis 草稿块让 LLM 一次做对。这是设计取舍——不要"程序补救削弱 prompt 约束"。
@@ -481,17 +524,18 @@ def _read_max_output_tokens() -> int:
 
 1. **单元测试**：`_strip_analysis` 各种格式（闭合/未闭合/大小写/缺失）
 2. **集成测试**：mock LLM 返回含 analysis 的完整回复，验证解析正确
-3. **截断降级测试**：mock LLM 返回 `finish_reason=length`，验证降级重压触发
+3. **应急清空测试**：mock LLM 返回 `finish_reason=length`（call_subagent 返回 `"COMPACT_TRUNCATED"`），验证应急清空触发——最近 10 条保留 + 上面全删 + 最旧那条改"压缩失败"摘要
 4. **端到端验证**：真实触发模式二/三压缩（如之前 316 条 history 场景），检查压缩后 keep/update 质量和 token 达标情况
 
 ## 实施顺序建议
 
-1. 配置层变更（`config/user-config.json` + 读取函数 `read_compress_target_tokens` / `read_max_output_tokens`）
+1. 配置层变更（`config/user-config.json` 删 `targetThreshold` 加 `compressTargetTokens`；不配 `maxOutputTokens`，程序动态算）+ 读取函数 `read_compress_target_tokens` / `read_max_output_tokens`（后者动态算）
 2. 新增 `_strip_analysis` 辅助函数 + 单元测试
 3. finish_reason 传递链改造（`MockResponse` 加字段 + `litellm_adapter` 流式捕获 + `agent_loop` return_value + `call_subagent` 检测）
-4. 模式二 task prompt 重写 + 降级重压循环（llm_config 动态注入 max_tokens）
-5. 模式三 task prompt 重写 + 降级重压循环
-6. 删除校验兜底逻辑
-7. 术语清理（L0/L1/L2 + 事务→会话单元 + 远端中端近端→三份）
-8. `_compress_target` 评估处理
-9. 端到端验证
+4. 新增 `_emergency_clear` 应急清空函数 + 单元测试
+5. 模式二 task prompt 重写 + 单次 call_subagent + 截断应急清空（llm_config 动态注入 max_tokens）
+6. 模式三 task prompt 重写 + 单次 call_subagent + 截断应急清空
+7. 删除校验兜底逻辑
+8. 术语清理（L0/L1/L2 + 事务→会话单元 + 远端中端近端→三份）
+9. `_compress_target` 评估处理
+10. 端到端验证
