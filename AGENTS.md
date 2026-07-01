@@ -516,8 +516,8 @@ toolMappings, err := registry.BuildToolMappings(ctx, append(agent.Tools, append(
 **向量库标签**：
 | 标签 | 用途 |
 |------|------|
-| `l1` | L1 摘要（现有） |
-| `l2` | L2 原文（现有） |
+| `l1` | 知识图谱 L1 摘要层（LightRAG 层级标签，非压缩术语） |
+| `l2` | 知识图谱 L2 原文层（LightRAG 层级标签，非压缩术语） |
 | `skill` | Skills 文件（新增） |
 | `mcp_tool` | MCP 工具描述（新增） |
 
