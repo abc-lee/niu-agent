@@ -316,6 +316,7 @@ class ChatQueue:
                 return "".join(chunks)
 
             acquired = False
+            chat_error = None
             try:
                 acquired = await asyncio.wait_for(_chat_lock.acquire(), timeout=600.0)
                 if not acquired:
@@ -323,19 +324,26 @@ class ChatQueue:
                 full_reply = await asyncio.get_running_loop().run_in_executor(None, sync_chat)
             except asyncio.TimeoutError:
                 logger.error("[ChatQueue] Timeout waiting for chat lock")
+                chat_error = "timeout"
                 full_reply = "处理消息超时，请稍后重试"
             except Exception as e:
                 logger.error(f"[ChatQueue] Chat error: {e}")
+                chat_error = str(e)
                 full_reply = f"处理消息时出错：{str(e)}"
             finally:
                 if acquired:
                     _chat_lock.release()
 
-            # 持久化回复消息（使用共享函数）
-            from niu_api.chat import persist_agent_reply
+            # 方案 A：异常时不进 DB（避免错误文本被下一轮 _inject_dynamic_resources 当 query 反复查 lightrag）
             rv = getattr(self._runner, "last_return_value", None)
-            persisted_msgs = getattr(self._runner, "_persisted_msgs", None)  # V4: 已逐条持久化的消息
-            message_id, full_reply = await persist_agent_reply(store, rv, history_len, full_reply, source=channel, persisted_msgs=persisted_msgs)
+            if chat_error is None:
+                # 持久化回复消息（使用共享函数）
+                from niu_api.chat import persist_agent_reply
+                persisted_msgs = getattr(self._runner, "_persisted_msgs", None)  # V4: 已逐条持久化的消息
+                message_id, full_reply = await persist_agent_reply(store, rv, history_len, full_reply, source=channel, persisted_msgs=persisted_msgs)
+            else:
+                message_id = None
+                logger.warning(f"[ChatQueue] Skipped persist due to chat error: {chat_error}")
 
             # 上下文溢出检测
             await self._check_overflow(session_id, store, full_reply)
