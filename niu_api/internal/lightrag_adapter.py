@@ -589,6 +589,23 @@ class LightRAGAdapter:
         original_edges = len(edges)
         stats_extra = result.get("stats", {})
 
+        # 先处理 center 超大边界：若 center 自身 description 过大（如 nodes=[] 时
+        # while 循环 keep_count=0 立即退出但仍返回 60K），提前截断 description
+        if center is not None and isinstance(center, dict):
+            try:
+                center_serialized = json.dumps(center, ensure_ascii=False)
+            except Exception:
+                center_serialized = ""
+            if len(center_serialized) > LIGHTRAG_GRAPH_MAX_CHARS // 2:
+                # center 占了一半以上预算，截断 description 到 1/4 预算
+                desc = center.get("description", "")
+                if isinstance(desc, str) and len(desc) > 0:
+                    desc_budget = LIGHTRAG_GRAPH_MAX_CHARS // 4
+                    center = {
+                        **center,
+                        "description": desc[:desc_budget] + "...[center 截断]",
+                    }
+
         # 先清空 edges（占字符最多且可重新查询），逐步缩减 nodes
         truncated_nodes = list(nodes)
         while True:
