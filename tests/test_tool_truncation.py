@@ -136,3 +136,66 @@ def test_disk_large_str_result_gets_truncated(monkeypatch):
     assert isinstance(result, str)
     assert len(result) <= MAX_TOOL_RESULT_CHARS
     assert "[截断]" in result
+
+
+def test_explore_node_large_result_truncated(monkeypatch):
+    """explore_node 返回超大图时，被截断到 LIGHTRAG_GRAPH_MAX_CHARS (20000) 字符。"""
+    import json
+    from niu_api.internal.lightrag_adapter import LightRAGAdapter, LIGHTRAG_GRAPH_MAX_CHARS
+
+    # mock _get_rag 返回 FakeRag（有 get_knowledge_graph 方法）
+    class FakeRag:
+        def get_knowledge_graph(self, entity_name, max_depth=2):
+            return None  # 返回 None，让 call_async 的 mock 忽略参数返回 FakeKG
+    class FakeNode:
+        def __init__(self, i):
+            self.id = f"node_{i}"
+            self.properties = {"entity_type": "person", "description": "x" * 500, "file_path": "", "source_id": ""}
+    class FakeEdge:
+        def __init__(self, i):
+            self.source = f"node_{i}"
+            self.target = f"node_{i+1}"
+            self.properties = {"keywords": "knows", "description": "x" * 200, "weight": 1.0}
+    class FakeKG:
+        nodes = [FakeNode(i) for i in range(500)]
+        edges = [FakeEdge(i) for i in range(500)]
+
+    adapter = LightRAGAdapter.__new__(LightRAGAdapter)
+    monkeypatch.setattr(adapter, "_get_rag", lambda: FakeRag())
+    import niu_api.internal.lightrag_adapter as la_module
+    monkeypatch.setattr(la_module, "call_async", lambda coro, timeout=120: FakeKG())
+
+    result = adapter.explore_node(entity_name="test", depth=3)
+
+    serialized = json.dumps(result, ensure_ascii=False)
+    assert len(serialized) <= LIGHTRAG_GRAPH_MAX_CHARS, f"explore_node 结果应截断到 {LIGHTRAG_GRAPH_MAX_CHARS}，实际 {len(serialized)}"
+    # 验证含截断标记
+    assert result.get("status") == "truncated" or "截断" in serialized
+
+
+def test_explore_node_small_result_not_truncated(monkeypatch):
+    """explore_node 小图原样返回（不截断）。"""
+    import json
+    from niu_api.internal.lightrag_adapter import LightRAGAdapter, LIGHTRAG_GRAPH_MAX_CHARS
+
+    class FakeRag:
+        def get_knowledge_graph(self, entity_name, max_depth=2):
+            return None
+    class FakeNode:
+        def __init__(self, i):
+            self.id = f"node_{i}"
+            self.properties = {"entity_type": "person", "description": f"desc_{i}", "file_path": "", "source_id": ""}
+    class FakeKG:
+        nodes = [FakeNode(i) for i in range(5)]
+        edges = []
+
+    adapter = LightRAGAdapter.__new__(LightRAGAdapter)
+    monkeypatch.setattr(adapter, "_get_rag", lambda: FakeRag())
+    import niu_api.internal.lightrag_adapter as la_module
+    monkeypatch.setattr(la_module, "call_async", lambda coro, timeout=120: FakeKG())
+
+    result = adapter.explore_node(entity_name="test", depth=1)
+
+    assert result.get("status") != "truncated", "小图不应被截断"
+    assert len(result.get("nodes", [])) == 5
+    assert "截断" not in json.dumps(result, ensure_ascii=False)
