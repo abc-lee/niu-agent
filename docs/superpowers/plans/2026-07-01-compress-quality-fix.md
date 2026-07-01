@@ -10,9 +10,16 @@
 
 **设计变更说明（2026-07-01）：** 原设计的"降级重压循环"（3 次尝试，每次降 50% 目标）经审查发现方向反效果——目标降得越低意味着要释放更多 token，LLM 反而要写更长的 analysis，更易再次截断。改为"单次调用 + 应急清空"：截断时不重试，直接保留最近 10 条 + 上面全删 + 最旧改摘要，靠 journal.md + 知识图谱（entity-extractor / dream-evolver / journal-agent 三层前置兜底）让主 Agent 读回历史。
 
+**设计变更说明（2026-07-01 第二次变更）：** 诚实评估发现 spec 漏了 runner.py 这条模式三主要活跃路径 + "追加当前轮结果"描述与实现不符：
+1. **补 runner.py 主要路径**：模式三的主要活跃路径是 `agent_loop.py:308` 工具调用返回后同步回调 `runner.py:_on_context_high_usage`（不是 compat.py）。compat.py/chat.py 的 force 路径服务 CONTEXT_OVERFLOW 兜底场景。runner.py 必须改造对齐 compat.py 模式三（新增 Task 10.5）。
+2. **修正"追加当前轮结果"误解**：原 spec 假设"先保存返回结果再压缩"，实际代码触发顺序是"压缩在 response persist 之前执行"——压缩读的是 DB 历史消息（不含当前轮 response），压缩后当前轮 response 才 append。所以当前轮结果天然不丢，**不需要显式追加逻辑**。Task 8 不再需要"补追加逻辑"。
+3. **Task 9 同步 runner.py**：删校验兜底必须同步 runner.py（Task 10.5 处理），不能只改 compat.py。
+
 **已实施 Task 回退改造清单：**
 - **Task 1 已实施**（commit `a019c7c5` + `dee7ba93`）：`_read_max_output_tokens` 当前读配置 `maxOutputTokens`，**需回退改造为动态算**（`contextWindowSize × 0.16` 封顶 65536），并删除 `config/user-config.json` 里的 `maxOutputTokens: 16384` 硬编码
 - **Task 7 已实施**（commit `432fc603` + `4cc5f4a0`）：模式二已实施旧版降级循环（3 次 for 循环），**需回退改造为单次调用 + 应急清空**——删 `for attempt in range(3)` 循环，截断时调用 `_emergency_clear`
+- **Task 8 不再需要"补追加逻辑"**：实际实现顺序保证当前轮 response 天然不丢（压缩在 persist 前执行），不需要显式追加
+- **Task 9 需要同步 runner.py**：删校验兜底不能只改 compat.py，runner.py 的 `_on_context_high_usage` 也有相同校验兜底，由 Task 10.5 处理
 
 ---
 
@@ -26,6 +33,7 @@
 | `agent/generic/litellm_adapter.py` | 流式循环捕获 finish_reason + 传入 MockResponse | Modify |
 | `agent/generic/agent_loop.py` | return_value 加 finish_reason 字段 | Modify |
 | `niu_api/compat.py` | 模式二/三 task prompt 重写 + 应急清空 + 删校验兜底 + `_strip_analysis` + `_emergency_clear` | Modify（**Task 7 已实施旧版降级循环，需回退改造为单次调用 + 应急清空**）|
+| `agent/runner.py` | **模式三主要活跃路径** `_on_context_high_usage` 改造对齐 compat.py 模式三 | Modify（**新增 Task 10.5**：旧 prompt + 旧解析 + 无截断处理，需改造为 `_build_force_prompt` + `_emergency_clear` 内联 + `_strip_analysis` + max_tokens 注入 + 删校验兜底）|
 | `config/agents/context-manager.md` | 术语清理（L0/L1/L2 + 事务→会话单元） | Modify |
 | `docs/feature-context-management.md` | L0/L1/L2 术语清理 | Modify |
 | `tests/test_compress_quality.py` | 新增测试文件 | Create（**删降级循环测试，新增应急清空测试**）|
@@ -1650,9 +1658,12 @@ git commit -m "feat(compat): 模式三 task prompt 写回完整方法论 + 应�
 
 ## Task 9: 删除校验兜底逻辑
 
+> **⚠️ 一致性说明**：删校验兜底必须**同步 runner.py**（不能只改 compat.py）。runner.py 的 `_on_context_high_usage` 也有相同的"update idx 自动补 keep / cursor 降级取 max"校验兜底逻辑，必须在 Task 10.5 改造 runner.py 时一并删除。本 Task 只处理 compat.py 的校验兜底，runner.py 的同步删除由 Task 10.5 Step 处理。
+
 **Files:**
 - Modify: `niu_api/compat.py:1946-1960`（模式二删校验兜底）
 - Modify: `niu_api/compat.py:2606-2629`（模式三删校验兜底）
+- **runner.py 的同步删除由 Task 10.5 处理**（不在本 Task 范围）
 
 - [ ] **Step 1: 读模式二校验兜底现状**
 
@@ -2100,6 +2111,278 @@ git commit -m "docs(cleanup): 术语清理 - L0/L1/L2 废弃 + 事务→会话�
 
 ---
 
+## Task 10.5: 改造 runner.py _on_context_high_usage 对齐 compat.py 模式三
+
+> **⚠️ 主要活跃路径**：这是模式三**主要活跃路径**的改造。模式三的触发路径是 `agent_loop.py:308` 工具调用返回后同步回调 `runner.py:_on_context_high_usage`（不是 compat.py）。compat.py/chat.py 的 force 路径服务 CONTEXT_OVERFLOW 兜底场景，不是主要路径。runner.py 当前用旧 prompt + 旧解析 + 旧文本方式 + 无截断处理，与 compat.py 完全分叉，必须改造对齐 compat.py 模式三。
+>
+> **同步适配**：`_on_context_high_usage` 是**同步方法**，`_emergency_clear` 是 async 函数。采用方案 C：runner.py 内联应急清空逻辑，复用现有 `_sync_delete_messages` / `_sync_update_message`（同步包装器），不用 `asyncio.run` 避免 loop 冲突。
+>
+> **当前轮结果天然不丢**：压缩在 response persist 之前执行（`agent_loop.py:308` 在 L432 append 之前），压缩读的是 DB 历史消息（不含当前轮 response），压缩后当前轮 response 才 append。**不需要显式追加逻辑**。
+
+**Files:**
+- Modify: `agent/runner.py:819-825`（import 追加 compat.py 的辅助函数）
+- Modify: `agent/runner.py:983`（target_tokens 改用 `_read_compress_target_tokens`）
+- Modify: `agent/runner.py:994-1010`（history 构造改用 `_build_compress_history`）
+- Modify: `agent/runner.py:1022-1065`（prompt 替换为 `_build_force_prompt` 调用）
+- Modify: `agent/runner.py:1067-1077`（call_subagent 加 max_tokens 注入 + history 参数）
+- Modify: `agent/runner.py:1083+`（新增截断检测 + 内联应急清空）
+- Modify: `agent/runner.py:1087`（解析前新增 `_strip_analysis` 调用）
+- Modify: `agent/runner.py:1121-1126`（删除 update idx 自动补 keep，与 compat.py 对齐）
+- Modify: `agent/runner.py:1138-1141`（删除 cursor 降级取 max，改为只 warn 保持 last_compress_id）
+- Test: `tests/test_compress_quality.py`（新增 runner.py 模式三路径测试）
+
+- [ ] **Step 1: 读 runner.py _on_context_high_usage 现状**
+
+读 `agent/runner.py:970-1150` 确认 `_on_context_high_usage` 函数现状。记录以下位置的实际代码：
+- L819-825 import 段（从 compat.py 导入了哪些函数）
+- L983 target_tokens 计算（当前用百分比 `_read_target_threshold`）
+- L994-1010 history 构造（当前手动构造，非 `_build_compress_history`）
+- L1022-1065 prompt 构造（当前内联旧 prompt，非 `_build_force_prompt`）
+- L1067-1077 call_subagent 调用（当前无 max_tokens 注入）
+- L1083+ 返回后的处理（当前无截断检测）
+- L1087 解析逻辑（当前无 `_strip_analysis`）
+- L1121-1126 校验兜底（update idx 自动补 keep）
+- L1138-1141 校验兜底（cursor 降级取 max）
+
+- [ ] **Step 2: 追加 import（L819-825）**
+
+读 `agent/runner.py:819-825` 确认现有 `from niu_api.compat import` 行。
+
+在现有 import 列表追加（如果尚未导入）：
+```python
+from niu_api.compat import (
+    ...,  # 现有导入
+    _build_force_prompt,
+    _emergency_clear,  # 仅参考逻辑，runner.py 内联实现不直接调
+    _strip_analysis,
+    _build_compress_history,
+    _read_compress_target_tokens,
+    _read_max_output_tokens,
+)
+```
+
+**注意**：`_emergency_clear` 是 async 函数，runner.py 是同步方法不能直接 `await`。import 仅用于参考逻辑，实际 runner.py 内联应急清空逻辑（用 `_sync_delete_messages` / `_sync_update_message`），不直接调用 `_emergency_clear`。如果 import 会触发循环依赖，则不 import `_emergency_clear`，只在内联实现里复刻其逻辑。
+
+- [ ] **Step 3: 改造 target_tokens（L983）**
+
+当前代码（L983 概要）：
+```python
+            target_tokens = int(context_window_tokens * _read_target_threshold())
+```
+
+改为用绝对值配置（与 compat.py 模式三一致）：
+```python
+            target_tokens = _read_compress_target_tokens()
+```
+
+- [ ] **Step 4: 改造 history 构造（L994-1010）**
+
+读 L994-1010 确认当前 history 构造方式（手动构造 list + idx_to_id 映射）。
+
+改为调用 `_build_compress_history`（与 compat.py 模式三一致），返回 history 列表 + idx_to_id 映射：
+```python
+            _force_history, _f_idx_to_id = _build_compress_history(
+                messages=messages,
+                last_compress_id=last_compress_id,
+                protect_recent_count=...,
+                dream_idx=...,
+            )
+```
+
+读 compat.py 模式三的 `_build_compress_history` 调用处确认参数名和返回值结构，保持一致。
+
+- [ ] **Step 5: 改造 prompt（L1022-1065）**
+
+读 L1022-1065 确认当前内联 prompt 构造。
+
+删除内联 prompt，改为调用 `_build_force_prompt`（与 compat.py 模式三一致）：
+```python
+            _compress_target_tokens = _read_compress_target_tokens()
+            prompt = _build_force_prompt(
+                display_tokens, _compress_target_tokens, usage_percent,
+                _force_history, last_compress_id, _dream_idx_in_force
+            )
+```
+
+读 compat.py 模式三的 `_build_force_prompt` 调用处确认参数顺序，保持一致。
+
+- [ ] **Step 6: 改造 call_subagent（L1067-1077）**
+
+读 L1067-1077 确认当前 call_subagent 调用。
+
+加 max_tokens 注入 + history 参数（与 compat.py 模式三一致）：
+```python
+            # llm_config 动态注入 max_tokens（通过 litellm_kwargs）
+            llm_config_with_max = dict(llm_config)
+            llm_config_with_max["litellm_kwargs"] = {
+                **llm_config.get("litellm_kwargs", {}),
+                "max_tokens": _read_max_output_tokens(),  # 动态算：contextWindowSize × 0.16，封顶 65536
+            }
+
+            def run_context_manager_force():
+                return call_subagent(
+                    agent_name="context-manager",
+                    task=prompt,
+                    llm_config=llm_config_with_max,
+                    mcp_client=None,
+                    context_fifo_threshold=0,
+                    history=_force_history,
+                )
+
+            result = run_context_manager_force()  # 同步调用，不用 asyncio.to_thread
+```
+
+**注意**：runner.py 是同步方法，直接调用 `run_context_manager_force()`，不用 `asyncio.to_thread`（与 compat.py 的 `await asyncio.to_thread(...)` 不同）。
+
+- [ ] **Step 7: 新增截断检测 + 内联应急清空（L1083+）**
+
+在 `result = run_context_manager_force()` 之后、解析之前，新增截断检测 + 内联应急清空：
+
+```python
+            # 截断时触发内联应急清空（保留最近 10 条，上面全删，最旧改"压缩失败"摘要）
+            # 同步实现：用 _sync_delete_messages / _sync_update_message，不调 async _emergency_clear
+            if result == "COMPACT_TRUNCATED":
+                logger.warning("[Compact] runner.py force output truncated, triggering emergency clear")
+                # 内联应急清空逻辑（与 _emergency_clear 一致，但用同步 store 接口）
+                if len(_force_history) <= 10:
+                    logger.warning(f"[Compact] history len {len(_force_history)} <= 10, no clear needed")
+                    return {"status": "skipped", "mode": "force", "reason": "truncated, no clear needed (too few)"}
+                to_delete = _force_history[:-10]
+                delete_ids = [m.id for m in to_delete]
+                oldest_kept = _force_history[-10]
+                _sync_update_message(
+                    message_id=oldest_kept.id,
+                    content="[压缩失败，历史信息丢失] 上下文压缩时 LLM 输出截断，此条之上的历史已删除。可通过 journal.md 和知识图谱回溯。",
+                )
+                _sync_delete_messages(session_id, delete_ids)
+                logger.warning(f"[Compact] Emergency cleared: deleted {len(delete_ids)} msgs, kept recent 10, marked oldest as lost-summary")
+                return {"status": "skipped", "mode": "force", "reason": "truncated, emergency cleared"}
+```
+
+**注意**：
+- `_sync_delete_messages` / `_sync_update_message` 是 runner.py 现有的同步包装器（读 runner.py 确认实际函数名，可能是 `_sync_delete_messages` / `_sync_update_message` 或其他名称）。如果不存在，需要新增同步包装器（调用 `asyncio.run(message_store.delete_messages(...))` 或复用现有同步 store 接口）。
+- 不直接 `await _emergency_clear(...)`（runner.py 是同步方法，不能 await）。
+- 不用 `asyncio.run(_emergency_clear(...))`（可能与现有 loop 冲突，方案 C 明确避免）。
+- 保留最近 10 条 + 上面全删 + 最旧改"压缩失败"摘要，逻辑与 `_emergency_clear` 完全一致。
+
+- [ ] **Step 8: 新增 _strip_analysis 调用（L1087 解析前）**
+
+在截断检测之后、解析之前，新增 `_strip_analysis` 调用：
+```python
+            # 正常返回，剥离 <analysis> 草稿块（在解析前）
+            logger.info(f"[Tidy] runner.py force: context-manager completed, length={len(result)}")
+            result = _strip_analysis(result)
+```
+
+- [ ] **Step 9: 删除 update idx 自动补 keep（L1121-1126）**
+
+读 L1121-1126 确认当前校验兜底代码（与 compat.py 模式三 L2606-2611 一致）：
+```python
+            # update idx 必须在 keep 中，自动补齐
+            missing_in_keep = set(update_idxs) - keep_idxs
+            if missing_in_keep:
+                logger.warning(...)
+                keep_idxs |= missing_in_keep
+```
+
+删除这段代码（与 Task 9 compat.py 对齐）。LLM 输出什么就用什么，不自动补。
+
+- [ ] **Step 10: 删除 cursor 降级取 max（L1138-1141）**
+
+读 L1138-1141 确认当前 cursor 降级代码（与 compat.py 模式三 L2624-2627 一致）：
+```python
+                if cursor_idx and cursor_idx in _f_idx_to_id:
+                    new_compress_id = _f_idx_to_id[cursor_idx]
+                elif _f_idx_to_id:
+                    new_compress_id = _f_idx_to_id[max(_f_idx_to_id.keys())]
+```
+
+改为删除 elif 降级，cursor 不在映射里就保留原 `new_compress_id` 值（已初始化为 `last_compress_id`）：
+```python
+                if cursor_idx and cursor_idx in _f_idx_to_id:
+                    new_compress_id = _f_idx_to_id[cursor_idx]
+                else:
+                    logger.warning(f"[Compact] runner.py force cursor idx {cursor_idx} not in mapping, keeping last_compress_id")
+                    # new_compress_id 保持初始值（last_compress_id）
+```
+
+- [ ] **Step 11: 语法检查**
+
+Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "import ast; ast.parse(open('agent/runner.py').read())"`
+Expected: 无输出
+
+- [ ] **Step 12: 验证 import 不报错**
+
+Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -c "from agent.runner import GenericAgentRunner; print('OK')"`
+Expected: 输出 `OK`
+
+- [ ] **Step 13: 写集成测试 — runner.py 模式三路径 prompt 含方法论 + 截断应急清空**
+
+在 `tests/test_compress_quality.py` 追加（参考 Task 8 的 `test_mode3_prompt_contains_methodology` 模式，但 mock `_on_context_high_usage` 的依赖）：
+
+```python
+def test_runner_mode3_prompt_contains_methodology(monkeypatch):
+    """runner.py 模式三路径 task prompt 应含压缩方法论 + cursor + dream 安全边界。"""
+    # mock _on_context_high_usage 的依赖：call_subagent / message_store / llm_config
+    # 验证 captured task 含"压缩方法论"/"第一份"/"会话单元"/"<analysis>"/"cursor="/"安全边界"
+    # 验证 llm_config 注入了 max_tokens（动态算值）
+    # ...（实施时参考 Task 8 test_mode3_prompt_contains_methodology 的 monkeypatch 模式）
+    pass
+
+
+def test_runner_mode3_truncate_triggers_emergency_clear(monkeypatch):
+    """runner.py 模式三截断时触发内联应急清空：保留最近 10 条，上面全删，最旧改"压缩失败"摘要。"""
+    # mock call_subagent 返回 "COMPACT_TRUNCATED"
+    # 验证 _sync_delete_messages 删了上面 5 条（msg-1 到 msg-5）
+    # 验证 _sync_update_message 更新了 msg-6（最旧保留那条），content 含"压缩失败"
+    # 验证返回 {"status": "skipped", "mode": "force", "reason": "truncated, emergency cleared"}
+    # 验证只调用 1 次（单次调用不重试）
+    # ...（实施时参考 Task 9 test_mode2_truncate_triggers_emergency_clear 的 monkeypatch 模式）
+    pass
+```
+
+**注意**：实施时参考 Task 8 / Task 9 的测试模式，把 mock 对象替换为 runner.py 的依赖（`_sync_delete_messages` / `_sync_update_message` / `call_subagent`）。关键断言：
+- prompt 含方法论关键词
+- llm_config 注入 max_tokens（动态算值 32000）
+- 截断时删上面 5 条 + 更新 msg-6 + 返回 skipped
+- 单次调用（不重试）
+
+- [ ] **Step 14: 运行测试确认通过**
+
+Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_compress_quality.py -v -k runner_mode3`
+Expected: 2 个测试 PASS
+
+- [ ] **Step 15: 运行现有测试不破坏**
+
+Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_compress_quality.py tests/test_compress_history.py -v 2>&1 | tail -30`
+Expected: 无新增 FAIL
+
+- [ ] **Step 16: 临时提交**
+
+```bash
+cd REDACTED_USER_PATH/tools/ai-bot
+git add agent/runner.py tests/test_compress_quality.py
+git commit -m "refactor(runner): _on_context_high_usage 改造对齐 compat.py 模式三
+
+模式三主要活跃路径改造（agent_loop.py:308 同步回调）：
+- import 追加 _build_force_prompt / _strip_analysis / _build_compress_history 等
+- target_tokens 改用 _read_compress_target_tokens（绝对值，不再用百分比）
+- history 构造改用 _build_compress_history（返回 history + idx_to_id 映射）
+- prompt 替换为 _build_force_prompt 调用（含方法论 + analysis + cursor + dream 边界）
+- call_subagent 加 max_tokens 注入（llm_config[litellm_kwargs]，动态算）
+- 新增截断检测 + 内联应急清空（同步实现，用 _sync_delete_messages / _sync_update_message，
+  不调 async _emergency_clear，避免 loop 冲突）
+- 解析前 _strip_analysis 剥离草稿块
+- 删除 update idx 自动补 keep（与 Task 9 compat.py 对齐）
+- 删除 cursor 降级取 max（与 Task 9 compat.py 对齐）
+
+理由：runner.py 是模式三主要活跃路径（agent_loop.py:308 同步回调），
+原用旧 prompt + 旧解析 + 无截断处理，与 compat.py 完全分叉。
+当前轮结果天然不丢（压缩在 response persist 前执行，agent_loop.py:308 在 L432 之前）。"
+```
+
+---
+
 ## Task 11: 端到端验证
 
 **Files:**
@@ -2219,8 +2502,9 @@ git commit -m "feat(compress): context-manager 压缩质量修复完成
 - `_emergency_clear` 应急清空函数 → Task 7 Step 3.5 定义 ✅
 - 模式二 task prompt 重写 + 单次调用 + 截断应急清空 → Task 7 ✅
 - 模式三 task prompt 重写 + 单次调用 + 截断应急清空 → Task 8 ✅
-- 删除校验兜底 → Task 9 ✅
+- 删除校验兜底 → Task 9（compat.py）+ Task 10.5（runner.py 同步） ✅
 - 术语清理 → Task 10 ✅
+- **runner.py 模式三主要路径改造 → Task 10.5** ✅
 - 端到端验证 → Task 11 ✅
 
 ### 2. Placeholder 扫描
@@ -2243,3 +2527,6 @@ git commit -m "feat(compress): context-manager 压缩质量修复完成
 - **MAX_TURNS_EXCEEDED 路径**：Task 5 只改 L570/L583，L610 不带 finish_reason ✅
 - **截断应急清空**：Task 7/8 单次调用，截断时调用 `_emergency_clear`（保留最近 10 条 + 上面全删 + 最旧改"压缩失败"摘要），返回 `{"status": "skipped", ...}` ✅
 - **应急清空安全性**：靠 journal.md + 知识图谱（entity-extractor/dream-evolver/journal-agent 三层前置兜底）让主 Agent 读回历史，用户已改 niu.md 让主 Agent 读 journal.md ✅
+- **runner.py 同步适配**：Task 10.5 内联应急清空逻辑（用 `_sync_delete_messages` / `_sync_update_message`），不调 async `_emergency_clear`，不用 `asyncio.run` 避免 loop 冲突 ✅
+- **runner.py 主要路径**：Task 10.5 改造模式三主要活跃路径（`agent_loop.py:308` → `runner.py:_on_context_high_usage`），与 compat.py 兜底路径保持一致 ✅
+- **当前轮结果天然不丢**：压缩在 response persist 前执行（`agent_loop.py:308` 在 L432 之前），不需要显式追加逻辑 ✅

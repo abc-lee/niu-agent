@@ -7,9 +7,51 @@
 
 context-manager 压缩功能（模式二睡眠触发 / 模式三 force 强制触发）存在严重质量缺陷。2026-06-30 模式二实际压缩把 390+ 条消息压成 4 条 keep（实际历史 3 条）+ 6 条 update 摘要，其中 update[1] 把 290 条消息塞进一句话摘要，基本等同删除，用户记忆全丢。
 
+## 模式三触发路径
+
+模式三（force，工具调用返回后立即阻塞执行）的触发路径经核实有两条，需明确区分主次：
+
+### 主要活跃路径：agent_loop.py → runner.py:_on_context_high_usage（同步回调）
+
+**完整链路**：
+1. 主 Agent 调用大模型 → 大模型返回工具调用结果
+2. `agent_loop.py:308` 工具调用返回后，检测上下文使用率 > 80% → 同步回调 `runner.py:_on_context_high_usage`
+3. `runner.py:_on_context_high_usage` 阻塞执行模式三压缩（优先级最高，工具循环中间触发）
+4. 压缩读的是 DB 历史消息（不含当前轮 response，因为 response 还没 append）
+5. 压缩完成 → DB 保留压缩结果（正常压缩或应急清空保留最近 10 条）
+6. 当前轮 response 在压缩后 append 到 messages 末尾 + persist（`agent_loop.py:432-445`）
+7. 继续下一轮工具调用或回复用户
+
+**关键点**：压缩在 response persist **之前**执行（`agent_loop.py:308` 在 L432 append 之前），所以当前轮 response 天然不丢，压缩后由 agent_loop 正常 append。这是实现顺序保证的，**不需要显式追加逻辑**。
+
+### 兜底路径：compat.py:1463 / chat.py:437,546 的 force 触发
+
+compat.py 和 chat.py 的 force 路径服务 **CONTEXT_OVERFLOW 兜底场景**（上下文溢出时的应急触发），不是主要活跃路径，但保留作为兜底。这些路径也需要改造对齐 compat.py 模式三（用 `_build_force_prompt` + `_emergency_clear` + `_strip_analysis` + max_tokens 注入 + 删校验兜底），与 runner.py 保持一致。
+
+### runner.py 必须改造对齐 compat.py 模式三
+
+runner.py 的 `_on_context_high_usage` 当前用旧 prompt + 旧解析 + 旧文本方式 + 无截断处理，与 compat.py 完全分叉。改造范围：
+- 用 `_build_force_prompt` 构造 task prompt（含压缩方法论 + analysis 草稿块 + cursor + dream 安全边界）
+- 用 `_emergency_clear` 处理截断（保留最近 10 条，上面全删，最旧改"压缩失败"摘要）
+- 用 `_strip_analysis` 剥离草稿块（解析前）
+- max_tokens 注入（`llm_config["litellm_kwargs"]["max_tokens"]`，由 `_read_max_output_tokens` 动态算）
+- 删校验兜底（update idx 自动补 keep / cursor 降级取 max）
+- 用 `_build_compress_history` 构造 history + idx_to_id 映射
+- target_tokens 改用 `_read_compress_target_tokens()`
+
+详见实施计划 Task 10.5。
+
+### 同步适配
+
+`runner.py:_on_context_high_usage` 是**同步方法**，而 `_emergency_clear` 是 **async 函数**（store 是 async 接口）。推荐方案 C：runner.py 内联应急清空逻辑，复用现有 `_sync_delete_messages` / `_sync_update_message`（同步包装器），不用 `asyncio.run` 避免 loop 冲突。
+
+具体做法：在 runner.py 内联应急清空逻辑（不直接调 `_emergency_clear`），用现有的同步 store 接口（`_sync_delete_messages` / `_sync_update_message`）完成 delete + update。逻辑与 `_emergency_clear` 一致：保留最近 10 条 + 上面全删 + 最旧改"压缩失败"摘要。
+
 ## 根因
 
 经 4 个 Agent 多方位审查确认：
+
+0. **runner.py 模式三路径与 compat.py 分叉**：模式三的主要活跃路径是 `agent_loop.py:308` 工具调用返回后同步回调 `runner.py:_on_context_high_usage`（不是 compat.py）。但 spec 早期版本只写了 compat.py 改造，把 runner.py 当成"已存在且正确"假设。实际上 runner.py 用旧 prompt + 旧解析 + 旧文本方式 + 无截断处理，与 compat.py 完全分叉。**runner.py 必须同步改造对齐 compat.py 模式三**（用 `_build_force_prompt` + `_emergency_clear` + `_strip_analysis` + max_tokens 注入 + 删校验兜底）。详见下文"模式三触发路径"小节。
 
 1. **task prompt 丢失压缩方法论**：`niu_api/compat.py` 模式二（L1860-1882）和模式三（L2511-2548）的 task prompt 把 system prompt（`config/agents/context-manager.md`）里的完整压缩规则简化成了"按事务合并"6 条极简规则，丢失了：
    - 三区划分（最早/中间/最近）
@@ -430,6 +472,8 @@ else:
 - ~~cursor idx 不在 keep 降级取 max~~ → 删
 
 LLM 输出什么就用什么，靠 prompt 让它一次做对。
+
+**Task 9 一致性说明**：删校验兜底必须**同步 runner.py**（不能只改 compat.py）。runner.py 的 `_on_context_high_usage` 也有相同的"update idx 自动补 keep / cursor 降级取 max"校验兜底逻辑，必须在 Task 10.5 改造 runner.py 时一并删除，保持两条路径一致。详见实施计划 Task 9 + Task 10.5。
 
 **删除后的健壮性保证**：
 
