@@ -39,6 +39,9 @@ def test_truncate_dict_result_large_dict():
     assert "lightrag_get_graph" in result.get("message", "")
     # data 字段被截断到合理大小
     assert len(result.get("data", "")) <= MAX_TOOL_RESULT_CHARS
+    # 验证返回 dict 序列化后总长度 <= MAX_TOOL_RESULT_CHARS（核心契约）
+    import json
+    assert len(json.dumps(result, ensure_ascii=False)) <= MAX_TOOL_RESULT_CHARS
 
 
 def test_truncate_dict_result_non_serializable():
