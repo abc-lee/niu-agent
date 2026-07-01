@@ -190,6 +190,38 @@ def _truncate_tool_content(content: str, tool_name: str = "") -> str:
     return truncated + marker
 
 
+def _truncate_dict_result(result, tool_name: str = ""):
+    """对 dict 或任意对象做保底截断。
+
+    dict 结果（如 lightrag_get_graph 返回的 {center, nodes, edges, stats}）
+    序列化后可能超 MAX_TOOL_RESULT_CHARS。本函数：
+    - 小 dict：原样返回
+    - 大 dict：返回 {"status": "truncated", "message": "...", "data": 截断后的字符串}
+    - 非 dict（不可序列化）：降级用 str() 后调 _truncate_tool_content
+
+    这样既保留 dict 语义（status 检查），又避免超大结果进 messages。
+    """
+    import json
+    try:
+        serialized = json.dumps(result, ensure_ascii=False)
+    except (TypeError, ValueError):
+        # 不可序列化，降级为 str 截断
+        return _truncate_tool_content(str(result), tool_name)
+
+    if len(serialized) <= MAX_TOOL_RESULT_CHARS:
+        return result  # 原样返回 dict
+
+    # 超限：返回截断提示 dict
+    label = f"{tool_name} " if tool_name else ""
+    message = f"[截断] {label}原始输出 {len(serialized)} 字符，已截断至 {MAX_TOOL_RESULT_CHARS} 字符。如需完整内容，请调整查询参数（如缩小 depth/limit）或分页重新获取。"
+    truncated_data = serialized[:MAX_TOOL_RESULT_CHARS - len(message) - 200]
+    return {
+        "status": "truncated",
+        "message": message,
+        "data": truncated_data,
+    }
+
+
 def agent_runner_loop(
     client,
     system_prompt: str = "",  # 向后兼容（system_message 优先）
