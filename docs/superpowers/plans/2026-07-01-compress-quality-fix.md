@@ -1083,6 +1083,7 @@ REMINDER: 禁止调用任何工具，直接在回复中输出 <analysis> 块和 
                 logger.warning("[Compact] Mode-2 output truncated, triggering emergency clear")
                 return await _emergency_clear(
                     history=compress_history,
+                    msg_ids=compress_msg_ids,  # 与 compress_history 等长同顺序的真实 ID 列表（来自 _build_compress_history 的 out_msg_ids 出参）
                     protect_recent_count=10,
                     store=message_store,
                     session_id=session_id,
@@ -1125,16 +1126,26 @@ REMINDER: 禁止调用任何工具，直接在回复中输出 <analysis> 块和 
 
 - [ ] **Step 3.5: 新增 `_emergency_clear` 函数**
 
-在 `niu_api/compat.py` 的 `_strip_analysis` 函数之后（约 L500 附近）新增应急清空函数：
+在 `niu_api/compat.py` 的 `_strip_analysis` 函数之后（约 L500 附近）新增应急清空函数。
+
+> **⚠️ I4 签名对齐说明**：本函数**已实施**（compat.py:703）。计划文档早期版本写的签名是 `_emergency_clear(history, protect_recent_count, store, session_id, mode)`（缺 `msg_ids`），但实际实施时为了处理 `history` 是 `list[dict]` 无 `.id` 字段的问题，**已加 `msg_ids` 参数**。下面签名与已实施代码（compat.py:703-710）保持一致：
 
 ```python
-async def _emergency_clear(history: list, protect_recent_count: int, store, session_id: str, mode: str) -> dict:
+async def _emergency_clear(
+    history: list,
+    msg_ids: list,
+    protect_recent_count: int,
+    store,
+    session_id: str,
+    mode: str,
+) -> dict:
     """截断时的应急清空：保留最近 N 条，上面全删，最旧那条改为"压缩失败"摘要。
 
-    - history: 压缩历史消息列表（受保护消息已排除），按 idx 顺序排列
+    - history: 压缩历史消息列表（受保护消息已排除），按 idx 顺序排列（list[dict]，无 id 字段）
+    - msg_ids: 与 history 等长、同顺序的真实 message_id 列表（来自 out_msg_ids）
     - protect_recent_count: 保留最近条数（默认 10）
-    - store: MessageStore，用于 delete_messages / update_message
-    - session_id: 会话 ID
+    - store: MessageStore，用于 delete_messages_by_ids / update_message
+    - session_id: 会话 ID（仅用于日志，delete_messages_by_ids 不需要）
     - mode: "sleep" 或 "force"（用于返回值）
     
     返回 {"status": "skipped", "mode": mode, "reason": "truncated, emergency cleared"}
@@ -1144,28 +1155,28 @@ async def _emergency_clear(history: list, protect_recent_count: int, store, sess
         logger.warning(f"[Compact] history len {len(history)} <= {protect_recent_count}, no clear needed")
         return {"status": "skipped", "mode": mode, "reason": "truncated, no clear needed (too few)"}
 
-    # 保留最近 protect_recent_count 条，上面的全删
-    to_delete = history[:-protect_recent_count]
-    delete_ids = [m.id for m in to_delete]
+    # 保留最近 protect_recent_count 条，上面的全删（用 msg_ids 取真实 ID，不用 history 的 .id）
+    to_delete_ids = msg_ids[:-protect_recent_count]
 
-    # 最旧那条（保留区第一条，即 history[-protect_recent_count]）改为"压缩失败"摘要
-    oldest_kept = history[-protect_recent_count]
+    # 最旧那条（保留区第一条，即 msg_ids[-protect_recent_count]）改为"压缩失败"摘要
+    oldest_kept_id = msg_ids[-protect_recent_count]
     await store.update_message(
-        message_id=oldest_kept.id,
+        message_id=oldest_kept_id,
         content="[压缩失败，历史信息丢失] 上下文压缩时 LLM 输出截断，此条之上的历史已删除。可通过 journal.md 和知识图谱回溯。",
     )
 
     # 删除上面的消息
-    await store.delete_messages(session_id, delete_ids)
+    await store.delete_messages_by_ids(to_delete_ids)
 
-    logger.warning(f"[Compact] Emergency cleared: deleted {len(delete_ids)} msgs, kept recent {protect_recent_count}, marked oldest as lost-summary")
+    logger.warning(f"[Compact] Emergency cleared: deleted {len(to_delete_ids)} msgs, kept recent {protect_recent_count}, marked oldest as lost-summary")
     return {"status": "skipped", "mode": mode, "reason": "truncated, emergency cleared"}
 ```
 
 **说明**：
 - `_emergency_clear` 是 async 函数（store 是 async 接口），在 `_tidy_context_impl` 里用 `await` 调用
-- 保留最近 10 条（`history[-10:]`），上面全删（`history[:-10]`）
-- 最旧那条（保留区第一条 `history[-10]`）content 改为"压缩失败"摘要
+- **`msg_ids` 参数是关键**：`history` 是 `list[dict]`（无 `.id` 字段，直接 `[m.id for m in history]` 会 AttributeError）。调用方必须传 `msg_ids`（与 history 等长同顺序的真实 ID 列表，来自 `_build_compress_history` 的 `out_msg_ids` 出参）。参考 compat.py L2791-2798 调用处：`_emergency_clear(history=_force_history, msg_ids=_force_msg_ids, ...)`
+- 保留最近 10 条（`msg_ids[-10:]`），上面全删（`msg_ids[:-10]`）
+- 最旧那条（保留区第一条 `msg_ids[-10]`）content 改为"压缩失败"摘要
 - 返回 dict 与 `_tidy_context_impl` 其他 return 一致（避免返回 None 导致调用方 KeyError）
 - 不调用 `/new`（用户功能），压缩函数内部完成清空
 
@@ -1502,6 +1513,7 @@ REMINDER: 禁止调用任何工具，直接在回复中输出 <analysis> 块和 
                 logger.warning("[Compact] Force output truncated, triggering emergency clear")
                 return await _emergency_clear(
                     history=_force_history,
+                    msg_ids=_force_msg_ids,  # 与 _force_history 等长同顺序的真实 ID 列表（来自 _build_compress_history 的 out_msg_ids 出参）
                     protect_recent_count=10,
                     store=message_store,
                     session_id=session_id,
@@ -2179,32 +2191,58 @@ from niu_api.compat import (
 
 读 L994-1010 确认当前 history 构造方式（手动构造 list + idx_to_id 映射）。
 
-改为调用 `_build_compress_history`（与 compat.py 模式三一致），返回 history 列表 + idx_to_id 映射：
+**删除旧代码**：删除 runner.py L994-1010 现有的 `_build_incremental_msg_text` 调用 + `msg_list_text` 变量 + `_f_pids`/`protected_force_ids` 手动构造（改由 `_build_compress_history` 内部处理 `exclude_protected`）+ L1000 的 `.replace('条新消息','条消息')`。新 prompt 用 `_build_force_prompt` 不需要 `msg_list_text`。
+
+改为调用 `_build_compress_history`（与 compat.py 模式三 L2737-2751 一致）。**注意实际签名**（compat.py:396）：`(messages, msg_tokens=None, out_msg_ids=None, protect_recent=0, exclude_protected=False)`，返回 `(history_list, idx_to_id_dict)`：
+
 ```python
+            # 构造 history 列表 + idx 映射（参考 compat.py L2737-2751 模式三）
+            _force_msg_ids = []
             _force_history, _f_idx_to_id = _build_compress_history(
-                messages=messages,
-                last_compress_id=last_compress_id,
-                protect_recent_count=...,
-                dream_idx=...,
+                db_messages, msg_tokens,
+                out_msg_ids=_force_msg_ids,
+                protect_recent=protect_recent_count,
+                exclude_protected=True,
             )
+            # 构造反向映射 id→idx（用于 dream 安全边界计算）
+            _f_id_to_idx = {mid: idx for idx, mid in _f_idx_to_id.items()}
 ```
 
-读 compat.py 模式三的 `_build_compress_history` 调用处确认参数名和返回值结构，保持一致。
+**关键点**：
+- 实际签名是位置参数 `(messages, msg_tokens, out_msg_ids=..., protect_recent=..., exclude_protected=...)`，**没有** `last_compress_id` / `dream_idx` / `protect_recent_count` 这三个参数（旧计划写错了）。
+- `out_msg_ids=_force_msg_ids` 是出参：函数内部 append 真实 message_id 到此 list，与 `_force_history` 等长同顺序（用于 Step 7 应急清空删真实 ID，避免 dict 取 `.id` 的 AttributeError）。
+- `_f_idx_to_id` 是 `{idx: message_id}` 映射（idx 从 1 开始，由 compat.py 内部 enumerate +1 构造）。
+- `_f_id_to_idx` 是反向映射 `{message_id: idx}`，Step 5 计算 dream 安全边界 idx 用。
 
 - [ ] **Step 5: 改造 prompt（L1022-1065）**
 
 读 L1022-1065 确认当前内联 prompt 构造。
 
-删除内联 prompt，改为调用 `_build_force_prompt`（与 compat.py 模式三一致）：
+删除内联 prompt，改为调用 `_build_force_prompt`（与 compat.py 模式三 L2759-2762 一致）。**前置补一段 `_dream_idx_in_force` 计算**（runner.py 当前没这个变量，参考 compat.py L2753-2757）：
+
 ```python
-            _compress_target_tokens = _read_compress_target_tokens()
+            # 计算 dream 安全边界 idx（参考 compat.py L2753-2757）
+            # new_dream_id 在 runner.py 前面 dream-evolver 阶段已算出
+            # _f_id_to_idx 是 Step 4 构造的反向映射 {message_id: idx}
+            if not new_dream_id:
+                _dream_idx_in_force = 0
+            else:
+                _dream_idx_in_force = _f_id_to_idx.get(new_dream_id, len(_force_msg_ids))
+
+            # 复用 Step 3 的 target_tokens（不重复读配置，避免 I3 重复读）
             prompt = _build_force_prompt(
-                display_tokens, _compress_target_tokens, usage_percent,
+                display_tokens, target_tokens, usage_percent,
                 _force_history, last_compress_id, _dream_idx_in_force
             )
 ```
 
-读 compat.py 模式三的 `_build_force_prompt` 调用处确认参数顺序，保持一致。
+**关键点**：
+- **不重复读配置**：Step 3 已 `target_tokens = _read_compress_target_tokens()`，本 Step 复用 `target_tokens`，不再写 `_compress_target_tokens = _read_compress_target_tokens()`（避免重复读配置）。
+- `_dream_idx_in_force` 必须在调用 `_build_force_prompt` 之前算出（旧计划漏了这段计算）。
+- `new_dream_id` 在 runner.py 前面 dream-evolver 阶段已算出，`_f_id_to_idx` 是 Step 4 构造的反向映射。
+- 当 dream 不在 force history 里时，`_dream_idx_in_force = len(_force_msg_ids)`（越界值，由 `_build_force_prompt` 内部判断"无 dream 约束"）。
+
+读 compat.py 模式三的 `_build_force_prompt` 调用处（L2759-2762）确认参数顺序，保持一致。
 
 - [ ] **Step 6: 改造 call_subagent（L1067-1077）**
 
@@ -2240,30 +2278,40 @@ from niu_api.compat import (
 
 ```python
             # 截断时触发内联应急清空（保留最近 10 条，上面全删，最旧改"压缩失败"摘要）
-            # 同步实现：用 _sync_delete_messages / _sync_update_message，不调 async _emergency_clear
+            # 同步实现：用 self._sync_delete_messages / self._sync_update_message，不调 async _emergency_clear
             if result == "COMPACT_TRUNCATED":
                 logger.warning("[Compact] runner.py force output truncated, triggering emergency clear")
-                # 内联应急清空逻辑（与 _emergency_clear 一致，但用同步 store 接口）
-                if len(_force_history) <= 10:
-                    logger.warning(f"[Compact] history len {len(_force_history)} <= 10, no clear needed")
+                # 内联应急清空（同步版，复用 runner.py 现有 _sync_* 方法）
+                if len(_force_msg_ids) <= 10:
+                    logger.warning(f"[Compact] Runner history len {len(_force_msg_ids)} <= 10, no clear needed")
                     return {"status": "skipped", "mode": "force", "reason": "truncated, no clear needed (too few)"}
-                to_delete = _force_history[:-10]
-                delete_ids = [m.id for m in to_delete]
-                oldest_kept = _force_history[-10]
-                _sync_update_message(
-                    message_id=oldest_kept.id,
+
+                delete_ids = _force_msg_ids[:-10]
+                oldest_kept_id = _force_msg_ids[-10]
+
+                # 删除上面的消息（_sync_delete_messages 只接收 msg_ids，不接收 session_id）
+                self._sync_delete_messages(delete_ids)
+
+                # 最旧保留条改为"压缩失败"摘要
+                self._sync_update_message(
+                    message_id=oldest_kept_id,
                     content="[压缩失败，历史信息丢失] 上下文压缩时 LLM 输出截断，此条之上的历史已删除。可通过 journal.md 和知识图谱回溯。",
                 )
-                _sync_delete_messages(session_id, delete_ids)
-                logger.warning(f"[Compact] Emergency cleared: deleted {len(delete_ids)} msgs, kept recent 10, marked oldest as lost-summary")
+
+                logger.warning(f"[Compact] Runner emergency cleared: deleted {len(delete_ids)} msgs, kept recent 10")
                 return {"status": "skipped", "mode": "force", "reason": "truncated, emergency cleared"}
 ```
 
+**关键修正**：
+- **C1 签名修正**：`_sync_delete_messages` 实际签名是 `_sync_delete_messages(self, msg_ids)`（runner.py:630），**只接收 `msg_ids`，不接收 `session_id`**。且是实例方法，必须用 `self._sync_delete_messages(delete_ids)` 调用，不能写 `_sync_delete_messages(session_id, delete_ids)`。
+- **C4 用 `_force_msg_ids` 替代 dict 的 `.id`**：`_force_history` 是 `list[dict]`（dict 没 `.id` 属性，会 AttributeError）。改用 `_force_msg_ids`（Step 4 由 `out_msg_ids` 出参填充的真实 ID 列表），与 `_force_history` 等长同顺序。`delete_ids = _force_msg_ids[:-10]`、`oldest_kept_id = _force_msg_ids[-10]`。
+- **C2 已在 Step 5 补 `_dream_idx_in_force`**：本 Step 不涉及，仅说明依赖关系。
+
 **注意**：
-- `_sync_delete_messages` / `_sync_update_message` 是 runner.py 现有的同步包装器（读 runner.py 确认实际函数名，可能是 `_sync_delete_messages` / `_sync_update_message` 或其他名称）。如果不存在，需要新增同步包装器（调用 `asyncio.run(message_store.delete_messages(...))` 或复用现有同步 store 接口）。
+- `self._sync_delete_messages` / `self._sync_update_message` 是 runner.py 现有的同步包装器（runner.py:630 / runner.py:659）。`_sync_update_message` 签名是 `(self, message_id, content, clear_tool_calls=False)`。
 - 不直接 `await _emergency_clear(...)`（runner.py 是同步方法，不能 await）。
 - 不用 `asyncio.run(_emergency_clear(...))`（可能与现有 loop 冲突，方案 C 明确避免）。
-- 保留最近 10 条 + 上面全删 + 最旧改"压缩失败"摘要，逻辑与 `_emergency_clear` 完全一致。
+- 保留最近 10 条 + 上面全删 + 最旧改"压缩失败"摘要，逻辑与 compat.py 的 `_emergency_clear` 完全一致（参考 compat.py L2791-2798 调用处，传 `msg_ids=_force_msg_ids`）。
 
 - [ ] **Step 8: 新增 _strip_analysis 调用（L1087 解析前）**
 
@@ -2318,34 +2366,89 @@ Expected: 输出 `OK`
 
 - [ ] **Step 13: 写集成测试 — runner.py 模式三路径 prompt 含方法论 + 截断应急清空**
 
-在 `tests/test_compress_quality.py` 追加（参考 Task 8 的 `test_mode3_prompt_contains_methodology` 模式，但 mock `_on_context_high_usage` 的依赖）：
+在 `tests/test_compress_quality.py` 追加（参考 Task 8 的 `test_mode3_prompt_contains_methodology` 模式，但 mock `_on_context_high_usage` 的依赖）。**测试体必须补全，不能用 `pass` placeholder**：
 
 ```python
-def test_runner_mode3_prompt_contains_methodology(monkeypatch):
-    """runner.py 模式三路径 task prompt 应含压缩方法论 + cursor + dream 安全边界。"""
-    # mock _on_context_high_usage 的依赖：call_subagent / message_store / llm_config
-    # 验证 captured task 含"压缩方法论"/"第一份"/"会话单元"/"<analysis>"/"cursor="/"安全边界"
-    # 验证 llm_config 注入了 max_tokens（动态算值）
-    # ...（实施时参考 Task 8 test_mode3_prompt_contains_methodology 的 monkeypatch 模式）
-    pass
+def test_runner_force_prompt_contains_methodology(monkeypatch):
+    """runner.py force prompt 应含压缩方法论 + cursor + dream 安全边界。"""
+    from agent import runner as runner_module
+    from niu_api.compat import _build_force_prompt
+    from unittest.mock import MagicMock
+
+    # mock 依赖：call_subagent 捕获 task / llm_config / history
+    captured = {"prompt": None, "llm_config": None, "history": None}
+
+    def fake_call_subagent(*args, **kwargs):
+        if kwargs.get("agent_name") == "context-manager":
+            captured["prompt"] = kwargs.get("task", "")
+            captured["llm_config"] = kwargs.get("llm_config", {})
+            captured["history"] = kwargs.get("history")
+            return "COMPACT_TRUNCATED"  # 触发应急清空分支（也测了应急清空）
+        return "skip"
+
+    runner_module.call_subagent = fake_call_subagent
+    # 用真实 _build_force_prompt（验证方法论关键词）
+    runner_module._build_force_prompt = _build_force_prompt
+
+    # mock sync 包装器（不真删 DB）
+    deleted_ids = []
+    updated_msgs = []
+    runner_module.GenericAgentRunner._sync_delete_messages = lambda self, msg_ids: deleted_ids.extend(msg_ids)
+    runner_module.GenericAgentRunner._sync_update_message = lambda self, message_id, content, clear_tool_calls=False: updated_msgs.append((message_id, content))
+
+    # 构造 runner 实例 + mock store / config（实施时参考 runner.py 现有测试模式补全：
+    # 需要 GenericAgentRunner 实例 + mock message_store + mock llm_config + 构造 db_messages / msg_tokens / new_dream_id）
+    # runner = _build_runner_for_test()  # 实施时补全
+    # 触发 runner._on_context_high_usage(...)
+
+    # 断言方向（实施时补全实际断言）：
+    # assert "压缩方法论" in captured["prompt"]
+    # assert "<analysis>" in captured["prompt"]
+    # assert "cursor=" in captured["prompt"]
+    # assert "安全边界" in captured["prompt"]
+    # assert captured["llm_config"]["litellm_kwargs"]["max_tokens"] > 0  # 注入了 max_tokens
+    # 截断分支断言：
+    # assert len(deleted_ids) == len(_force_msg_ids) - 10  # 删了上面 N-10 条
+    # assert updated_msgs[0][1].startswith("[压缩失败")  # 最旧改摘要
 
 
-def test_runner_mode3_truncate_triggers_emergency_clear(monkeypatch):
-    """runner.py 模式三截断时触发内联应急清空：保留最近 10 条，上面全删，最旧改"压缩失败"摘要。"""
-    # mock call_subagent 返回 "COMPACT_TRUNCATED"
-    # 验证 _sync_delete_messages 删了上面 5 条（msg-1 到 msg-5）
-    # 验证 _sync_update_message 更新了 msg-6（最旧保留那条），content 含"压缩失败"
-    # 验证返回 {"status": "skipped", "mode": "force", "reason": "truncated, emergency cleared"}
-    # 验证只调用 1 次（单次调用不重试）
-    # ...（实施时参考 Task 9 test_mode2_truncate_triggers_emergency_clear 的 monkeypatch 模式）
-    pass
+def test_runner_force_truncate_triggers_emergency_clear(monkeypatch):
+    """runner.py force 截断时触发应急清空（同步版）：保留最近 10 条，上面全删，最旧改"压缩失败"摘要。"""
+    from agent import runner as runner_module
+    from unittest.mock import MagicMock
+
+    # mock call_subagent 返回 COMPACT_TRUNCATED
+    runner_module.call_subagent = lambda *a, **kw: "COMPACT_TRUNCATED"
+
+    # mock sync 包装器捕获调用
+    deleted_ids = []
+    updated_msgs = []
+    runner_module.GenericAgentRunner._sync_delete_messages = lambda self, msg_ids: deleted_ids.extend(msg_ids)
+    runner_module.GenericAgentRunner._sync_update_message = lambda self, message_id, content, clear_tool_calls=False: updated_msgs.append((message_id, content))
+
+    # 构造 runner 实例 + 触发 _on_context_high_usage（实施时补全：
+    # 需要 GenericAgentRunner 实例 + mock message_store + 构造 _force_msg_ids 15 条等长 mock）
+    # runner = _build_runner_for_test()
+    # result = runner._on_context_high_usage(...)
+
+    # 断言方向（实施时补全实际断言）：
+    # assert result == {"status": "skipped", "mode": "force", "reason": "truncated, emergency cleared"}
+    # assert len(deleted_ids) == 5  # 删了上面 5 条（15 - 10 = 5）
+    # assert deleted_ids == _force_msg_ids[:-10]  # 删的是最旧那批
+    # assert len(updated_msgs) == 1  # 只更新最旧保留条
+    # assert updated_msgs[0][0] == _force_msg_ids[-10]  # 最旧保留条 ID
+    # assert "压缩失败" in updated_msgs[0][1]  # content 含"压缩失败"
+    # # 单次调用不重试：call_subagent 只被调用 1 次（用 MagicMock + assert_called_once 验证）
 ```
 
-**注意**：实施时参考 Task 8 / Task 9 的测试模式，把 mock 对象替换为 runner.py 的依赖（`_sync_delete_messages` / `_sync_update_message` / `call_subagent`）。关键断言：
-- prompt 含方法论关键词
-- llm_config 注入 max_tokens（动态算值 32000）
-- 截断时删上面 5 条 + 更新 msg-6 + 返回 skipped
-- 单次调用（不重试）
+**注意**：
+- runner.py 的测试比 compat.py 复杂（需要构造 `GenericAgentRunner` 实例 + mock store + mock `call_subagent`）。计划里说明"实施时参考 runner.py 现有测试模式补全构造实例的部分"，但**测试框架和断言方向必须明确**（不能只有 `pass`）。
+- 实施时把上面注释掉的断言落实为真实断言，把 `_build_runner_for_test()` 辅助函数补全（构造 runner 实例 + mock 依赖）。
+- 关键断言：
+  - prompt 含方法论关键词（"压缩方法论"/"<analysis>"/"cursor="/"安全边界"）
+  - llm_config 注入 max_tokens（`litellm_kwargs.max_tokens > 0`）
+  - 截断时删上面 N-10 条 + 更新最旧保留条 + 返回 skipped
+  - 单次调用（不重试，`call_subagent` 只调用 1 次）
 
 - [ ] **Step 14: 运行测试确认通过**
 
@@ -2516,7 +2619,7 @@ git commit -m "feat(compress): context-manager 压缩质量修复完成
 - `_read_compress_target_tokens() -> int`：Task 1 定义（读配置 60000），Task 7/8 使用 ✅
 - `_read_max_output_tokens() -> int`：Task 1 定义（动态算 contextWindowSize × 0.16 封顶 65536），Task 7/8 使用 ✅
 - `_strip_analysis(response: str) -> str`：Task 2 定义，Task 7/8 正常路径使用 ✅
-- `_emergency_clear(history, protect_recent_count, store, session_id, mode) -> dict`：Task 7 Step 3.5 定义，Task 7/8 截断路径使用 ✅
+- `_emergency_clear(history, msg_ids, protect_recent_count, store, session_id, mode) -> dict`：Task 7 Step 3.5 定义（**已实施 compat.py:703，含 `msg_ids` 参数**），Task 7/8 截断路径使用 ✅
 - `MockResponse.finish_reason`：Task 3 定义，Task 4 填充，Task 5 传递，Task 6 检测 ✅
 - `"COMPACT_TRUNCATED"` 字符串信号：Task 6 返回，Task 7/8 识别并触发 `_emergency_clear` ✅
 - `llm_config_with_max`：Task 7/8 构造（max_tokens 由 `_read_max_output_tokens` 动态算），传给 call_subagent ✅
