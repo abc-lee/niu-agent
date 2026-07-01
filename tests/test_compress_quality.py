@@ -515,3 +515,124 @@ def test_strip_analysis_missing_then_parse():
     keep_line = [l for l in lines if l.lower().startswith("keep=")]
     assert len(keep_line) == 1
     assert "1,2,3" in keep_line[0]
+
+
+def test_mode3_prompt_contains_methodology(monkeypatch):
+    """模式三 task prompt 应含压缩方法论 + cursor + dream 安全边界。"""
+    import asyncio
+    import niu_api.compat as compat
+    import niu_api.chat as chat_module
+    import agent.subagent as subagent_module
+
+    messages = [
+        FakeMsg(id="msg-1", role="user", content="你好"),
+        FakeMsg(id="msg-2", role="assistant", content="你好，我是 Niu"),
+    ]
+
+    class FakeStore:
+        async def get_messages(self, limit=None, before_id=None):
+            return messages
+
+    async def fake_get_message_store():
+        return FakeStore()
+
+    class FakeRunner:
+        handler = type("H", (), {"_last_prompt_tokens": 180000})()
+        llm_config = {}
+
+    def fake_get_or_create_runner():
+        return FakeRunner()
+
+    captured = {}
+    def fake_call_subagent(*args, **kwargs):
+        agent_name = kwargs.get("agent_name") or (args[0] if args else "")
+        if agent_name == "context-manager":
+            captured["task"] = kwargs.get("task", "")
+            captured["llm_config"] = kwargs.get("llm_config", {})
+            return "<analysis>分析</analysis>\nkeep=1,2\ncursor=2\nupdate="
+        return "skip"
+
+    monkeypatch.setattr(compat, "get_message_store", fake_get_message_store)
+    monkeypatch.setattr(chat_module, "get_or_create_runner", fake_get_or_create_runner)
+    monkeypatch.setattr(subagent_module, "call_subagent", fake_call_subagent)
+    monkeypatch.setattr(compat, "_read_context_window_tokens", lambda: 200000, raising=False)
+    monkeypatch.setattr(compat, "_read_warning_threshold", lambda: 0.8, raising=False)
+    monkeypatch.setattr(compat, "_read_protect_recent_count", lambda: 0, raising=False)
+    monkeypatch.setattr(compat, "_write_cursor_with_lock", lambda *a, **kw: None, raising=False)
+    monkeypatch.setattr(compat, "_read_compress_target_tokens", lambda: 60000, raising=False)
+    monkeypatch.setattr(compat, "_read_max_output_tokens", lambda: 32000, raising=False)
+
+    request = {"session_id": "test", "mode": "force"}
+    asyncio.run(compat._tidy_context_impl(request))
+
+    assert "task" in captured, "call_subagent 未被调用"
+    assert "压缩方法论" in captured["task"]
+    assert "第一份" in captured["task"]
+    assert "会话单元" in captured["task"]
+    assert "<analysis>" in captured["task"]
+    assert "cursor=" in captured["task"]
+    assert "安全边界" in captured["task"]
+    assert captured["llm_config"].get("litellm_kwargs", {}).get("max_tokens") == 32000
+
+
+def test_mode3_truncate_triggers_emergency_clear(monkeypatch):
+    """模式三 LLM 输出截断时触发应急清空（mode='force'）。"""
+    import asyncio
+    import niu_api.compat as compat
+    import niu_api.chat as chat_module
+    import agent.subagent as subagent_module
+
+    # 15 条消息，截断时应保留最近 10 条，删前 5 条，第 6 条改摘要
+    messages = [FakeMsg(id=f"msg-{i}", role="user", content=f"内容{i}") for i in range(1, 16)]
+
+    deleted_ids = []
+    updated_ids = []
+    class FakeStore:
+        async def get_messages(self, limit=None, before_id=None):
+            return messages
+        async def delete_messages_by_ids(self, message_ids):
+            deleted_ids.extend(message_ids)
+            return len(message_ids)
+        async def update_message(self, message_id=None, content=None, **kw):
+            updated_ids.append((message_id, content))
+            return True
+
+    async def fake_get_message_store():
+        return FakeStore()
+
+    class FakeRunner:
+        handler = type("H", (), {"_last_prompt_tokens": 180000})()
+        llm_config = {}
+
+    def fake_get_or_create_runner():
+        return FakeRunner()
+
+    def fake_call_subagent(*args, **kwargs):
+        agent_name = kwargs.get("agent_name") or (args[0] if args else "")
+        if agent_name == "context-manager":
+            return "COMPACT_TRUNCATED"
+        return "skip"
+
+    monkeypatch.setattr(compat, "get_message_store", fake_get_message_store)
+    monkeypatch.setattr(chat_module, "get_or_create_runner", fake_get_or_create_runner)
+    monkeypatch.setattr(subagent_module, "call_subagent", fake_call_subagent)
+    monkeypatch.setattr(compat, "_read_context_window_tokens", lambda: 200000, raising=False)
+    monkeypatch.setattr(compat, "_read_warning_threshold", lambda: 0.8, raising=False)
+    monkeypatch.setattr(compat, "_read_protect_recent_count", lambda: 0, raising=False)
+    monkeypatch.setattr(compat, "_write_cursor_with_lock", lambda *a, **kw: None, raising=False)
+    monkeypatch.setattr(compat, "_read_compress_target_tokens", lambda: 60000, raising=False)
+    monkeypatch.setattr(compat, "_read_max_output_tokens", lambda: 32000, raising=False)
+
+    request = {"session_id": "test", "mode": "force"}
+    result = asyncio.run(compat._tidy_context_impl(request))
+
+    # 验证返回 skipped + emergency cleared + mode=force
+    assert result is not None
+    assert result.get("status") == "skipped"
+    assert result.get("mode") == "force"
+    assert "emergency cleared" in result.get("reason", "")
+    # 验证删了前 5 条
+    assert len(deleted_ids) == 5
+    # 验证第 6 条被改为摘要
+    assert len(updated_ids) == 1
+    assert "压缩失败" in updated_ids[0][1]

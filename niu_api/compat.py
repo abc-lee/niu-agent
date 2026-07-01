@@ -605,6 +605,105 @@ role=tool 的工具输出会被程序自动删除，不需要放入 keep。
 REMINDER: 禁止调用任何工具，直接在回复中输出 <analysis> 块和 keep=/update= 两行。"""
 
 
+def _build_force_prompt(display_tokens: int, compress_target_tokens: int, usage_percent: float,
+                        force_history: list, last_compress_id: str | None, dream_idx_in_force: int) -> str:
+    """构造模式三 force task prompt（含方法论 + analysis 草稿块 + cursor + dream 安全边界）。
+
+    单次调用构造一次 prompt（截断时走应急清空）。
+    """
+    return f"""CRITICAL: 你只有一轮机会完成压缩决策。禁止调用任何工具。
+- 不调用 write、delete_messages、update_message、bash 等
+- 你的回复必须包含 <analysis> 块和 keep=/update=/cursor= 三行
+- 调用工具会被拒绝，浪费唯一一轮，任务失败
+
+先在 <analysis> 块里写分析过程，然后输出 keep=/update=/cursor= 三行。
+
+<analysis> 块内容：
+- 列出三份的 idx 范围
+- 估算每份删工具输出 + 合并会话单元能释放多少 token
+- 判断第一份的旧摘要与近期工作的关联性
+- 决定每份的处理强度
+
+输出格式：
+keep=1,5,15,30,50,75,100,105,115,150,180,200
+update=1|[摘要] 摘要内容;5|[摘要] 摘要内容
+cursor=200
+
+说明：
+- keep= 保留的消息 idx（逗号分隔，连续用短横线如 5-10）
+- update= 需压缩为摘要的消息（idx|摘要内容，多条用分号分隔）
+- update 的 idx 必须在 keep 中（update 的消息保留但 content 改为摘要）
+- cursor= 操作范围内 idx 最大且仍存在的消息 idx
+- 未列在 keep 中的消息将被删除
+
+示例：
+<analysis>
+第一份 idx 1-100：含 3 个会话单元（智能家居调试/知识图谱/周报），旧摘要 5 条
+其中 2 条与近期无关可删，估算释放 8K tokens
+第二份 idx 101-200：估算释放 3K tokens
+累计 11K，已达目标 10K，第三份轻度处理
+</analysis>
+
+keep=1,5,15,30,50,75,100,105,115,150,180,200
+update=1|[摘要] 智能家居调试 → 完成 | 微波炉/空调测试;5|[摘要] ...
+cursor=200
+
+压缩方法论（必须在一轮内完成，禁止多轮）：
+
+1. 估算：当前 {display_tokens} tokens，目标 {compress_target_tokens} tokens，
+   需释放 {display_tokens - compress_target_tokens} tokens。
+
+2. 划分优先级（按 idx 范围，粗粒度）：
+   - 第一份（最早）：idx 最小的约 1/3 范围
+   - 第二份（中间）：中间约 1/3 范围
+   - 第三份（最近）：idx 最大的约 1/3 范围
+   注：划分是优先级提示，实际处理按会话单元边界，
+   不得切断一个完整的会话单元（单元跨越划分边界时，
+   整个单元归入更早的那份）。
+
+3. 逐份处理（在 analysis 块里思考，一次输出结果）：
+   a. 第一份（最早）最激进：
+      - role=tool 的工具输出：全删（不进 keep）
+      - 原始对话：按会话单元（2-15 条一个话题）合并，
+        每个会话单元保留 1 条（锚 idx），content 改为摘要，其余删除
+      - 旧摘要（已是 [摘要] 开头）：判断与近期工作的关联性，
+        无关的直接删除，相关的保留
+   b. 估算累计释放量。若已达目标，第二份/第三份按"轻度处理"
+      （仅删工具输出、保留原文）即可。
+   c. 若未达目标，处理第二份（中间）：
+      - role=tool 工具输出：全删
+      - 对话：按会话单元合并为摘要
+      - 已有摘要：保留不动（禁止二次压缩）
+   d. 再估算。若仍未达目标，处理第三份（最近）：
+      - role=tool 工具输出：全删
+      - 对话：仅精简超长内容，优先保留原文
+   e. 若三份处理完仍未达目标，接受当前结果（受保护消息已排除）
+
+4. 硬约束：
+   - 每个会话单元至少保留 1 条（不得把多个会话单元合并成 1 条）
+   - 摘要长度 ≤ 150 字符，不得低于 50 字符
+   - 已是摘要（≤50 字符且信息密度高）不再二次压缩
+   - update 的 idx 必须在 keep 中
+   - 摘要格式：[摘要] <用户意图> → <执行结果> | <关键细节>
+
+当前上下文状态：
+- 参与压缩的消息数：{len(force_history)}（受保护消息已排除）
+- 当前 token 总数：{display_tokens}（{usage_percent:.1f}%）
+- 目标 token 总数：{compress_target_tokens}
+- 需释放至少 {display_tokens - compress_target_tokens} tokens
+- 上次压缩游标：{last_compress_id or '（无，从最早消息开始）'}
+
+上方历史消息每条开头带 [idx:N] Ntokens 前缀，共 {len(force_history)} 条。
+role=tool 的工具输出会被程序自动删除，不需要放入 keep。
+
+安全边界：idx > {dream_idx_in_force} 的消息（dream-evolver 未提取知识），
+不得直接删除，必须用 update 压缩为[摘要]格式后保留（不删除）。
+注：受保护消息已从列表中排除，无需处理。
+
+请按照【模式三】执行压缩决策，安全边界优先于模式三决策流程。
+REMINDER: 禁止调用任何工具，直接在回复中输出 <analysis> 块和 keep=/update=/cursor= 三行。"""
+
+
 async def _emergency_clear(
     history: list,
     msg_ids: list,
@@ -2628,7 +2727,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                 except Exception as e:
                     logger.warning(f"[Tidy] Failed to read compress cursor in force mode: {e}")
 
-            target_tokens = int(context_window_tokens * _read_target_threshold())
+            target_tokens = _read_compress_target_tokens()
             compress_plan_path = os.path.expanduser("~/.niu/compress_plan.json")
             # 清理上次的残留计划文件
             if os.path.exists(compress_plan_path):
@@ -2666,53 +2765,25 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
             else:
                 _dream_idx_in_force = _f_id_to_idx.get(new_dream_id, len(_force_msg_ids))
 
-            prompt = f"""CRITICAL: 你只有一轮机会完成所有压缩决策。禁止调用任何工具（包括 write、delete_messages、update_message、bash 等），直接在回复内容中输出压缩方案。
+            # llm_config 动态注入 max_tokens（通过 litellm_kwargs）
+            llm_config_with_max = dict(llm_config)
+            llm_config_with_max["litellm_kwargs"] = {
+                **llm_config.get("litellm_kwargs", {}),
+                "max_tokens": _read_max_output_tokens(),
+            }
 
-输出格式（直接回复，不调用任何工具）：
-keep=1,3,5-10,15
-update=2|摘要内容;11|摘要内容
-cursor=15
+            # 单次调用（不重试，截断时走应急清空）
+            _compress_target_tokens = _read_compress_target_tokens()
+            prompt = _build_force_prompt(
+                display_tokens, _compress_target_tokens, usage_percent,
+                _force_history, last_compress_id, _dream_idx_in_force
+            )
 
-说明：
-- keep= 后列出所有保留的消息 idx（用逗号分隔，连续的可用短横线如 5-10）
-- update= 后列出需要压缩为摘要的消息（idx|摘要内容，多条用分号分隔）
-- update 中的 idx 必须也在 keep 列表中（保留但压缩内容）
-- cursor= 后填操作范围内 idx 最大的、且仍存在的消息 idx
-- 未列在 keep 中的消息将被删除
-- 只输出这三行，不要输出其他内容
-
-压缩规则（必须遵守）：
-- 按事务合并：属于同一件事的多轮交互（用户要求→工具调用→结果），合并为一条摘要
-- 远端摘要格式："用户要求X，最终Y"（只保留意图和结果，丢弃过程）
-- 近端摘要格式："用户要求X，调用Z工具，得到Y"（保留关键工具和输出）
-- role=tool 的工具输出：不需要放入keep，会被程序自动删除
-- 纯确认回复（"好的""明白了""谢谢"）：不需要放入keep
-- 不在keep中的消息会被程序自动删除，所以有价值的对话必须放进keep或update
-
-当前上下文状态：
-- 参与压缩的消息数：{len(_force_history)}（受保护消息已排除）
-- 当前 token 总数：{display_tokens}（{usage_percent:.1f}%）
-- 目标 token 总数：{target_tokens}
-- 需释放至少 {display_tokens - target_tokens} tokens
-- 上次压缩游标：{last_compress_id or '（无，从最早消息开始）'}
-
-上方历史消息每条开头带 [idx:N] Ntokens 前缀，共 {len(_force_history)} 条。
-role=tool 的工具输出会被程序自动删除，不需要放入 keep。
-
-安全边界：idx > {_dream_idx_in_force} 的消息（dream-evolver 未提取知识），不得直接删除，必须用 update 压缩为[摘要]格式后保留（不删除）。
-注：受保护消息已从列表中排除，无需处理。
-
-请按照【模式三】执行压缩决策，安全边界优先于模式三决策流程。
-REMINDER: 禁止调用任何工具，直接在回复中输出 keep=/update=/cursor= 三行。"""
-
-            # Force 模式只做一轮交互（prompt → 回复 JSON → 结束），不会有第二轮
-            # prompt 不可能超上下文窗口，不需要截断
-            # 且需要全量消息才能按优先级排序压缩
             def run_context_manager_force():
                 return call_subagent(
                     agent_name="context-manager",
                     task=prompt,
-                    llm_config=llm_config,
+                    llm_config=llm_config_with_max,
                     mcp_client=None,
                     context_fifo_threshold=0,
                     history=_force_history,  # 直接传 messages 列表，避免单条 user message 超限
@@ -2723,7 +2794,22 @@ REMINDER: 禁止调用任何工具，直接在回复中输出 keep=/update=/curs
                 logger.warning("[Tidy] Stop requested, aborting tidy pipeline")
                 clear_stop()
                 return {"status": "aborted", "message": "Stopped by user"}
+
+            # 截断时触发应急清空（保留最近 10 条，上面全删，最旧改"压缩失败"摘要）
+            if result == "COMPACT_TRUNCATED":
+                logger.warning("[Compact] Force output truncated, triggering emergency clear")
+                return await _emergency_clear(
+                    history=_force_history,
+                    msg_ids=_force_msg_ids,
+                    protect_recent_count=10,
+                    store=store,
+                    session_id=session_id,
+                    mode="force",
+                )
+
+            # 正常返回，剥离 <analysis> 草稿块（在解析前）
             logger.info(f"[Tidy] Force: context-manager completed, length={len(result)}")
+            result = _strip_analysis(result)
 
             # 从 sub-agent 回复中解析压缩计划（idx 格式）
             new_compress_id = last_compress_id
