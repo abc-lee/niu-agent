@@ -26,20 +26,24 @@ def test_read_compress_target_tokens_custom(tmp_path):
         assert _read_compress_target_tokens() == 80000
 
 
-def test_read_max_output_tokens_default(tmp_path):
-    """配置无 maxOutputTokens 时返回默认 16384。"""
-    config_file = tmp_path / "config.json"
-    config_file.write_text(json.dumps({"context": {}}))
-    with patch("agent.subagent._get_user_config_path", return_value=config_file):
-        assert _read_max_output_tokens() == 16384
+def test_read_max_output_tokens_dynamic_calc():
+    """max_output_tokens 动态算：contextWindowSize × 0.16，封顶 65536。
 
+    不读配置 maxOutputTokens（已删除硬编码）。
+    换模型自动适配：200K → 32000；128K → 20480；400K → 64000（封顶前）；500K → 65536（封顶）。
+    """
+    # mock _read_context_window_tokens 返回不同窗口大小
+    with patch("agent.subagent._read_context_window_tokens", return_value=200000):
+        assert _read_max_output_tokens() == 32000  # 200000 × 0.16
 
-def test_read_max_output_tokens_custom(tmp_path):
-    """配置有 maxOutputTokens 时返回自定义值。"""
-    config_file = tmp_path / "config.json"
-    config_file.write_text(json.dumps({"context": {"maxOutputTokens": 32768}}))
-    with patch("agent.subagent._get_user_config_path", return_value=config_file):
-        assert _read_max_output_tokens() == 32768
+    with patch("agent.subagent._read_context_window_tokens", return_value=128000):
+        assert _read_max_output_tokens() == 20480  # 128000 × 0.16
+
+    with patch("agent.subagent._read_context_window_tokens", return_value=400000):
+        assert _read_max_output_tokens() == 64000  # 400000 × 0.16 = 64000，未达封顶
+
+    with patch("agent.subagent._read_context_window_tokens", return_value=500000):
+        assert _read_max_output_tokens() == 65536  # 500000 × 0.16 = 80000，封顶 65536
 
 
 def test_read_compress_target_tokens_invalid_returns_default(tmp_path):
@@ -49,15 +53,6 @@ def test_read_compress_target_tokens_invalid_returns_default(tmp_path):
         config_file.write_text(json.dumps({"context": {"compressTargetTokens": invalid_val}}))
         with patch("agent.subagent._get_user_config_path", return_value=config_file):
             assert _read_compress_target_tokens() == 60000, f"非法值 {invalid_val!r} 应返回默认 60000"
-
-
-def test_read_max_output_tokens_invalid_returns_default(tmp_path):
-    """配置 maxOutputTokens 为非法值时返回默认 16384。"""
-    config_file = tmp_path / "config.json"
-    for invalid_val in [0, -100, "16384", True, None]:
-        config_file.write_text(json.dumps({"context": {"maxOutputTokens": invalid_val}}))
-        with patch("agent.subagent._get_user_config_path", return_value=config_file):
-            assert _read_max_output_tokens() == 16384, f"非法值 {invalid_val!r} 应返回默认 16384"
 
 
 def test_strip_analysis_closed():
