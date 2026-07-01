@@ -636,3 +636,79 @@ def test_mode3_truncate_triggers_emergency_clear(monkeypatch):
     # 验证第 6 条被改为摘要
     assert len(updated_ids) == 1
     assert "压缩失败" in updated_ids[0][1]
+
+
+def test_mode2_no_auto_keep_fixup(monkeypatch):
+    """模式二不再自动把 update idx 补进 keep（keep 列表保持 LLM 原样）。
+
+    LLM 回 keep=1（不含 update 的 idx 3），update=3|摘要（idx 3 不在 keep）。
+    删除 auto-fixup 后：keep 只有 1，update 的 idx 3 进 overlap 处理（从 deletes
+    移除），最终 msg-3 被 update 保留改摘要（不被删除）。
+
+    注：测试用 4 条消息，让 entity/dream 游标自动推进到 msg-4（而非 msg-3），
+    避免 cursor_ids_set 保护机制把 msg-3 的 update 误丢（与 auto-fixup 无关）。
+    """
+    import asyncio
+    import niu_api.compat as compat
+    import niu_api.chat as chat_module
+    import agent.subagent as subagent_module
+
+    messages = [
+        FakeMsg(id="msg-1", role="user", content="你好"),
+        FakeMsg(id="msg-2", role="assistant", content="你好"),
+        FakeMsg(id="msg-3", role="user", content="测试"),
+        FakeMsg(id="msg-4", role="assistant", content="收到"),
+    ]
+
+    deleted_ids = []
+    updated_ids = []
+
+    class FakeStore:
+        async def get_messages(self, limit=None, before_id=None):
+            return messages
+        async def delete_messages_by_ids(self, message_ids):
+            deleted_ids.extend(message_ids)
+            return {"deleted_count": len(message_ids), "freed_tokens": 0}
+        async def update_message(self, message_id=None, content=None, **kw):
+            updated_ids.append(message_id)
+            return True
+
+    async def fake_get_message_store():
+        return FakeStore()
+
+    class FakeRunner:
+        handler = type("H", (), {"_last_prompt_tokens": 120000})()
+        llm_config = {}
+
+    def fake_get_or_create_runner():
+        return FakeRunner()
+
+    # LLM 回 keep=1（不含 update 的 idx 3），update=3|摘要
+    captured = {}
+    def fake_call_subagent(*args, **kwargs):
+        agent_name = kwargs.get("agent_name") or (args[0] if args else "")
+        if agent_name == "context-manager":
+            captured["task"] = kwargs.get("task", "")
+            return "<analysis>分析</analysis>\nkeep=1\nupdate=3|摘要内容"
+        return "skip"
+
+    monkeypatch.setattr(compat, "get_message_store", fake_get_message_store)
+    monkeypatch.setattr(chat_module, "get_or_create_runner", fake_get_or_create_runner)
+    monkeypatch.setattr(subagent_module, "call_subagent", fake_call_subagent)
+    monkeypatch.setattr(compat, "_read_context_window_tokens", lambda: 200000, raising=False)
+    monkeypatch.setattr(compat, "_read_warning_threshold", lambda: 0.8, raising=False)
+    monkeypatch.setattr(compat, "_read_protect_recent_count", lambda: 0, raising=False)
+    monkeypatch.setattr(compat, "_write_cursor_with_lock", lambda *a, **kw: None, raising=False)
+    monkeypatch.setattr(compat, "_read_compress_target_tokens", lambda: 60000, raising=False)
+    monkeypatch.setattr(compat, "_read_max_output_tokens", lambda: 32000, raising=False)
+
+    request = {"session_id": "test", "mode": "sleep"}
+    asyncio.run(compat._tidy_context_impl(request))
+
+    # 验证 auto-fixup 已删除：
+    # - msg-3 进 update（LLM 回 update=3），被 update 保留改摘要（overlap 从 deletes 移除）
+    # - msg-3 不进 delete（overlap 兜底）
+    assert "msg-3" in updated_ids, "msg-3 应被 update 保留改摘要"
+    assert "msg-3" not in deleted_ids, "msg-3 不应被删除（overlap 从 deletes 移除）"
+    # msg-2 既不在 keep 也不在 update，应被删除
+    assert "msg-2" in deleted_ids, "msg-2 应被删除（不在 keep 也不在 update）"

@@ -2200,16 +2200,12 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                     if not keep_idxs:
                         logger.error("[Tidy] Mode-2: No keep= line found in LLM response, compression skipped")
                     else:
-                        # 确保 update 中的 idx 也在 keep 中
-                        update_idxs = {idx for idx, _ in update_list}
-                        missing_in_keep = update_idxs - keep_idxs
-                        if missing_in_keep:
-                            logger.warning(f"[Tidy] Mode-2: Adding update idxs to keep: {missing_in_keep}")
-                            keep_idxs |= missing_in_keep
-
                         all_idxs = set(_idx_to_id.keys())
                         delete_idxs = all_idxs - keep_idxs
                         deletes = [_idx_to_id[i] for i in sorted(delete_idxs) if i in _idx_to_id]
+                        for idx, _ in update_list:
+                            if idx not in _idx_to_id:
+                                logger.warning(f"[Compact] Mode-2 LLM returned out-of-range update idx {idx}, silently dropped")
                         updates = [
                             {"message_id": _idx_to_id[idx], "content": content}
                             for idx, content in update_list if idx in _idx_to_id
@@ -2847,19 +2843,15 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                 if not keep_idxs:
                     raise ValueError("No keep= line found in sub-agent reply")
 
-                # 确保 update 中的 idx 也在 keep 中
-                update_idxs = {idx for idx, _ in update_list}
-                missing_in_keep = update_idxs - keep_idxs
-                if missing_in_keep:
-                    logger.warning(f"[Tidy] Force: Adding update idxs to keep: {missing_in_keep}")
-                    keep_idxs |= missing_in_keep
-
                 # 计算删除列表：所有 idx - 保留 idx
                 all_force_idxs = set(_f_idx_to_id.keys())
                 delete_idxs = all_force_idxs - keep_idxs
 
                 # 转换为 UUID
                 deletes = [_f_idx_to_id[i] for i in sorted(delete_idxs) if i in _f_idx_to_id]
+                for idx, _ in update_list:
+                    if idx not in _f_idx_to_id:
+                        logger.warning(f"[Compact] Force LLM returned out-of-range update idx {idx}, silently dropped")
                 updates = [
                     {"message_id": _f_idx_to_id[idx], "content": content}
                     for idx, content in update_list if idx in _f_idx_to_id
@@ -2867,8 +2859,9 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                 # cursor 转换为 UUID
                 if cursor_idx and cursor_idx in _f_idx_to_id:
                     new_compress_id = _f_idx_to_id[cursor_idx]
-                elif _f_idx_to_id:
-                    new_compress_id = _f_idx_to_id[max(_f_idx_to_id.keys())]
+                else:
+                    logger.warning(f"[Compact] Force cursor idx {cursor_idx} not in mapping, keeping last_compress_id")
+                    # new_compress_id 保持初始值（last_compress_id）
 
                 logger.info(f"[Tidy] Force: Parsed from content: keep={len(keep_idxs)}, delete={len(deletes)}, update={len(updates)}, cursor_idx={cursor_idx}")
 
