@@ -105,7 +105,8 @@ def _read_protect_recent_count() -> int:
 
 
 DEFAULT_COMPRESS_TARGET_TOKENS = 60000
-DEFAULT_MAX_OUTPUT_TOKENS = 16384
+MAX_OUTPUT_TOKENS_RATIO = 0.16  # contextWindowSize × 0.16
+MAX_OUTPUT_TOKENS_CAP = 65536   # 封顶 65536
 
 
 def _read_compress_target_tokens() -> int:
@@ -124,18 +125,15 @@ def _read_compress_target_tokens() -> int:
 
 
 def _read_max_output_tokens() -> int:
-    """Read maxOutputTokens from config/user-config.json. Default 16384."""
-    try:
-        config_path = _get_user_config_path()
-        with open(config_path, "r", encoding="utf-8") as f:
-            config = json.load(f)
-        val = config.get("context", {}).get("maxOutputTokens", DEFAULT_MAX_OUTPUT_TOKENS)
-        if isinstance(val, (int, float)) and not isinstance(val, bool) and val > 0:
-            return int(val)
-        logger.warning(f"Invalid maxOutputTokens {val}, using default {DEFAULT_MAX_OUTPUT_TOKENS}")
-    except Exception:
-        pass
-    return DEFAULT_MAX_OUTPUT_TOKENS
+    """动态计算 max_output_tokens：contextWindowSize × 0.16，封顶 65536。
+
+    不读配置 maxOutputTokens（已删除硬编码）。
+    换模型自动适配：不同模型 contextWindowSize 不同，×0.16 自动算对应值。
+    200K → 32000；128K → 20480；400K → 64000（封顶前）；500K → 65536（封顶）。
+    """
+    context_window = _read_context_window_tokens()
+    val = int(context_window * MAX_OUTPUT_TOKENS_RATIO)
+    return min(val, MAX_OUTPUT_TOKENS_CAP)
 
 
 def _run_agent_loop(
