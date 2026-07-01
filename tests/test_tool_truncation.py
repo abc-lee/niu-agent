@@ -252,3 +252,107 @@ def test_enforce_message_budget_no_tool_messages():
     ]
     result = _enforce_message_budget(messages)
     assert result == messages
+
+
+def test_explore_node_center_huge_description_truncated(monkeypatch):
+    """center 自身 description 超大时（nodes 少），截断 center.description，结果仍 <= 20K。
+
+    复现 Issue 1: center description 60K + nodes=[] 时 while 循环 keep_count=0
+    立即退出，返回 60K 超限 3 倍。
+    """
+    import json
+    from niu_api.internal.lightrag_adapter import LightRAGAdapter, LIGHTRAG_GRAPH_MAX_CHARS
+
+    class FakeRag:
+        def get_knowledge_graph(self, entity_name, max_depth=2):
+            return None
+    class FakeNode:
+        def __init__(self, i):
+            self.id = f"node_{i}"
+            self.properties = {"entity_type": "person", "description": "x" * 500, "file_path": "", "source_id": ""}
+    class FakeKG:
+        nodes = [FakeNode(i) for i in range(10)]  # 少量 nodes
+        edges = []
+
+    # center 是第一个 node，description 超大（60K）
+    big_center = FakeNode(0)
+    big_center.properties["description"] = "y" * 60000
+    FakeKG.nodes[0] = big_center
+
+    adapter = LightRAGAdapter.__new__(LightRAGAdapter)
+    monkeypatch.setattr(adapter, "_get_rag", lambda: FakeRag())
+    import niu_api.internal.lightrag_adapter as la_module
+    monkeypatch.setattr(la_module, "call_async", lambda coro, timeout=120: FakeKG())
+
+    result = adapter.explore_node(entity_name="test", depth=1)
+
+    serialized = json.dumps(result, ensure_ascii=False)
+    assert len(serialized) <= LIGHTRAG_GRAPH_MAX_CHARS, (
+        f"center 超大时结果应仍 <= {LIGHTRAG_GRAPH_MAX_CHARS}，实际 {len(serialized)}"
+    )
+    assert result.get("status") == "truncated" or "截断" in serialized
+
+
+def test_direct_mcp_large_dict_result_gets_truncated(monkeypatch):
+    """直接 MCP 调用（非 disk）返回超大 dict 时，进 messages 前被截断。
+
+    复现 Issue 2: handler.py 直接 MCP 路径（tool_name 含 /）绕过 dict 截断。
+    """
+    import json
+    from agent.handler import NiuHandler, _run_coroutine  # noqa: F401
+    from agent.generic.agent_loop import MAX_TOOL_RESULT_CHARS
+
+    # 构造超大 MCP 结果（dict，序列化后超 MAX_TOOL_RESULT_CHARS）
+    big_result = {
+        "status": "ok",
+        "data": [{"id": f"item_{i}", "content": "x" * 500} for i in range(500)],
+    }
+    serialized_len = len(json.dumps(big_result, ensure_ascii=False))
+    assert serialized_len > MAX_TOOL_RESULT_CHARS, f"测试数据应超限，实际 {serialized_len}"
+
+    # fake tool 函数返回 big_result（同步返回 dict，_run_coroutine 原样返回）
+    def fake_tool_fn(**kwargs):
+        return big_result
+
+    class FakeRegistry:
+        def get(self, name):
+            return fake_tool_fn
+        _server_tools = {}
+        _schemas = {}
+
+    import agent.tool_registry as tr_module
+    monkeypatch.setattr(tr_module, "get_registry", lambda: FakeRegistry())
+
+    # 用 NiuHandler.__new__ 绕过 __init__，手动设 dispatch 所需属性
+    handler = NiuHandler.__new__(NiuHandler)
+    handler.tool_before_callback = lambda *a, **kw: None
+    handler.tool_after_callback = lambda *a, **kw: None
+    handler._is_subagent = True  # 跳过 brain_region reinforce
+    handler.cwd = "/tmp"
+    handler.mcp_client = None
+    handler._done_hooks = []
+    handler.current_turn = 0
+    handler.disk_engine = None  # 直接 MCP 路径不用 disk_engine
+
+    # 调用 dispatch（tool_name 含 /，走直接 MCP 分支）
+    gen = handler.dispatch(
+        "memory-server/some_tool", {"arg": "value"}, response=None, index=0
+    )
+    outcome = None
+    try:
+        while True:
+            next(gen)
+    except StopIteration as e:
+        outcome = e.value
+
+    assert outcome is not None, "dispatch 应返回 StepOutcome"
+    result = outcome.data
+    result_str = (
+        json.dumps(result, ensure_ascii=False)
+        if isinstance(result, (dict, list))
+        else str(result)
+    )
+    assert len(result_str) <= MAX_TOOL_RESULT_CHARS, (
+        f"直接 MCP 结果应被截断到 {MAX_TOOL_RESULT_CHARS}，实际 {len(result_str)}"
+    )
+    assert "截断" in result_str or "truncated" in result_str

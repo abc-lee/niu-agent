@@ -1151,6 +1151,14 @@ class NiuHandler(BaseHandler):
 
                 yield StreamEvent("tool_marker", f"[MCP] {tool_name} executed\n")
 
+                # 保底截断（与 disk 路径对称，防止超大 MCP 结果进 messages）
+                # 截断在 tool_after_callback 之前：callback 看到截断后结果
+                from agent.generic.agent_loop import _truncate_tool_content, _truncate_dict_result
+                if isinstance(result, dict):
+                    result = _truncate_dict_result(result, tool_name)
+                elif isinstance(result, str):
+                    result = _truncate_tool_content(result, tool_name)
+
                 # 调用 tool_after_callback（工作记忆、重复检测、习惯追踪）
                 try:
                     _ = yield from try_call_generator(
@@ -1207,6 +1215,13 @@ class NiuHandler(BaseHandler):
                 result = _run_coroutine(result)
 
                 yield StreamEvent("tool_marker", f"[MCP] {tool_name} executed\n")
+
+                # 保底截断（与 disk 路径对称，防止超大 MCP 结果进 messages）
+                from agent.generic.agent_loop import _truncate_tool_content, _truncate_dict_result
+                if isinstance(result, dict):
+                    result = _truncate_dict_result(result, tool_name)
+                elif isinstance(result, str):
+                    result = _truncate_tool_content(result, tool_name)
 
                 try:
                     _ = yield from try_call_generator(
