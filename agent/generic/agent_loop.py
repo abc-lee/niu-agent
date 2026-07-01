@@ -201,7 +201,6 @@ def _truncate_dict_result(result, tool_name: str = ""):
 
     这样既保留 dict 语义（status 检查），又避免超大结果进 messages。
     """
-    import json
     try:
         serialized = json.dumps(result, ensure_ascii=False)
     except (TypeError, ValueError):
