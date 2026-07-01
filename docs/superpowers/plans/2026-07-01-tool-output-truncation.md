@@ -172,7 +172,7 @@ dict 结果（如 lightrag_get_graph 的 {center,nodes,edges,stats}）序列化�
 在 `tests/test_tool_truncation.py` 追加：
 
 ```python
-def test_disk_large_result_gets_truncated(monkeypatch):
+def test_disk_large_dict_result_gets_truncated(monkeypatch):
     """disk 工具返回超大 dict 时，进 messages 前被截断到 MAX_TOOL_RESULT_CHARS。"""
     import json
     from agent.handler import NiuHandler
@@ -187,23 +187,61 @@ def test_disk_large_result_gets_truncated(monkeypatch):
     # mock disk_engine.execute 返回 EXECUTE + big_result
     disk_result = DiskResult(action="EXECUTE", tool_path="lightrag/lightrag_get_graph", raw_result=big_result)
 
+    # 用 NiuHandler.__new__ 绕过 __init__，手动设 dispatch 所需的全部属性
+    # 读 agent/handler.py:994 dispatch 方法 + L1051 disk 分支确认依赖
     handler = NiuHandler.__new__(NiuHandler)
-    handler.disk_engine = type("FakeDiskEngine", (), {"execute": lambda self, cmd: disk_result, "config": type("FakeConfig", (), {"get_server_by_dir": lambda self, d: None})()})()
+    handler.disk_engine = type("FakeDiskEngine", (), {
+        "execute": lambda self, cmd: disk_result,
+        "config": type("FakeConfig", (), {"get_server_by_dir": lambda self, d: None})(),
+    })()
+    handler.tool_before_callback = lambda *a, **kw: None
+    handler.tool_after_callback = lambda *a, **kw: None
+    handler._is_subagent = True  # 跳过 brain_region reinforce（避免依赖）
+    handler.cwd = "/tmp"
+    handler.mcp_client = None
+    handler._done_hooks = []
+    handler.current_turn = 0
 
-    # 调用 _dispatch_tool（或 disk 处理逻辑），捕获返回的 StepOutcome.result
-    # 由于 handler 内部是 generator，需要驱动
-    captured = {}
-    def fake_before(*a, **kw):
-        yield None
-    def fake_after(*a, **kw):
-        yield None
-    handler.tool_before_callback = fake_before
-    handler.tool_after_callback = fake_after
-    handler._is_subagent = False
-
-    # 调用 _dispatch_tool_name 的 disk 分支
-    gen = handler._dispatch_tool_name("disk", {"command": "/lightrag/lightrag_get_graph explore --entity test --depth 3 --limit 100"}, response=None)
+    # 调用 dispatch（公开方法，签名 dispatch(tool_name, args, response, index=0)）
+    gen = handler.dispatch("disk", {"command": "/lightrag/lightrag_get_graph explore --entity test --depth 3 --limit 100"}, response=None, index=0)
     # 消费 generator 拿 StepOutcome
+    outcome = None
+    try:
+        while True:
+            next(gen)
+    except StopIteration as e:
+        outcome = e.value
+
+    assert outcome is not None, "dispatch 应返回 StepOutcome"
+    result = outcome.result
+    # 验证被截断（不再是原始 big_result）
+    result_str = json.dumps(result, ensure_ascii=False) if isinstance(result, (dict, list)) else str(result)
+    assert len(result_str) <= MAX_TOOL_RESULT_CHARS, f"disk 结果应被截断到 {MAX_TOOL_RESULT_CHARS}，实际 {len(result_str)}"
+    assert "截断" in result_str or "truncated" in result_str
+
+
+def test_disk_large_str_result_gets_truncated(monkeypatch):
+    """disk 工具返回超大 str 时，进 messages 前被截断。"""
+    from agent.handler import NiuHandler
+    from niu_api.internal.disk_engine import DiskResult
+
+    big_str = "x" * (MAX_TOOL_RESULT_CHARS + 5000)
+    disk_result = DiskResult(action="EXECUTE", tool_path="some/tool", raw_result=big_str)
+
+    handler = NiuHandler.__new__(NiuHandler)
+    handler.disk_engine = type("FakeDiskEngine", (), {
+        "execute": lambda self, cmd: disk_result,
+        "config": type("FakeConfig", (), {"get_server_by_dir": lambda self, d: None})(),
+    })()
+    handler.tool_before_callback = lambda *a, **kw: None
+    handler.tool_after_callback = lambda *a, **kw: None
+    handler._is_subagent = True
+    handler.cwd = "/tmp"
+    handler.mcp_client = None
+    handler._done_hooks = []
+    handler.current_turn = 0
+
+    gen = handler.dispatch("disk", {"command": "/some/tool"}, response=None, index=0)
     outcome = None
     try:
         while True:
@@ -213,10 +251,9 @@ def test_disk_large_result_gets_truncated(monkeypatch):
 
     assert outcome is not None
     result = outcome.result
-    # 验证被截断（不再是原始 big_result）
-    result_str = json.dumps(result, ensure_ascii=False) if isinstance(result, dict) else str(result)
-    assert len(result_str) <= MAX_TOOL_RESULT_CHARS, f"disk 结果应被截断到 {MAX_TOOL_RESULT_CHARS}，实际 {len(result_str)}"
-    assert "截断" in result_str or "truncated" in result_str
+    assert isinstance(result, str)
+    assert len(result) <= MAX_TOOL_RESULT_CHARS
+    assert "[截断]" in result
 ```
 
 - [ ] **Step 2: 运行测试确认失败**
@@ -276,6 +313,8 @@ Expected: FAIL（disk 结果未截断，长度超限）
 
 读实际代码确认原有的 `real_tool_name` 计算块（L1062-1069）删除（已提前到截断前），后续逻辑不变。
 
+**语义变化说明（I3）**：截断在 `tool_after_callback` 之前执行，意味着 callback（如 `_auto_generate_summary`）看到的是截断后的 dict/str，而非原始大结果。这是可接受的——摘要本就不需要完整数据，且避免 callback 处理超大结果消耗资源。但需明确此语义变化：**tool_after_callback 不再能看到原始 tool 结果**。如果未来有 callback 需要原始数据（如分析完整图结构），需在截断前另存。
+
 - [ ] **Step 4: 运行测试确认通过**
 
 Run: `cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_tool_truncation.py::test_disk_large_result_gets_truncated -v`
@@ -321,11 +360,15 @@ _truncate_tool_content。real_tool_name 计算提前到截断前。"
 在 `tests/test_tool_truncation.py` 追加：
 
 ```python
-def test_explore_node_large_result_truncated():
+def test_explore_node_large_result_truncated(monkeypatch):
     """explore_node 返回超大图时，被截断到 LIGHTRAG_GRAPH_MAX_CHARS (20000) 字符。"""
+    import json
     from niu_api.internal.lightrag_adapter import LightRAGAdapter, LIGHTRAG_GRAPH_MAX_CHARS
 
-    # mock _get_rag 返回一个含大量 nodes/edges 的 KnowledgeGraph
+    # mock _get_rag 返回 FakeRag（有 get_knowledge_graph 方法）
+    class FakeRag:
+        def get_knowledge_graph(self, entity_name, max_depth=2):
+            return None  # 返回 None，让 call_async 的 mock 忽略参数返回 FakeKG
     class FakeNode:
         def __init__(self, i):
             self.id = f"node_{i}"
@@ -340,23 +383,45 @@ def test_explore_node_large_result_truncated():
         edges = [FakeEdge(i) for i in range(500)]
 
     adapter = LightRAGAdapter.__new__(LightRAGAdapter)
-    # mock _get_rag 返回 FakeKG
-    adapter._get_rag = lambda: object()  # 非 None 即可
-    # mock call_async 返回 FakeKG
+    # 用 monkeypatch 自动清理（不用 try/finally）
+    monkeypatch.setattr(adapter, "_get_rag", lambda: FakeRag())
     import niu_api.internal.lightrag_adapter as la_module
-    original_call_async = la_module.call_async if hasattr(la_module, 'call_async') else None
-    try:
-        la_module.call_async = lambda coro, timeout=120: FakeKG()
-        result = adapter.explore_node(entity_name="test", depth=3)
-    finally:
-        if original_call_async:
-            la_module.call_async = original_call_async
+    monkeypatch.setattr(la_module, "call_async", lambda coro, timeout=120: FakeKG())
 
-    import json
+    result = adapter.explore_node(entity_name="test", depth=3)
+
     serialized = json.dumps(result, ensure_ascii=False)
     assert len(serialized) <= LIGHTRAG_GRAPH_MAX_CHARS, f"explore_node 结果应截断到 {LIGHTRAG_GRAPH_MAX_CHARS}，实际 {len(serialized)}"
     # 验证含截断标记
-    assert result.get("status") == "truncated" or "截断" in json.dumps(result, ensure_ascii=False)
+    assert result.get("status") == "truncated" or "截断" in serialized
+
+
+def test_explore_node_small_result_not_truncated(monkeypatch):
+    """explore_node 小图原样返回（不截断）。"""
+    import json
+    from niu_api.internal.lightrag_adapter import LightRAGAdapter, LIGHTRAG_GRAPH_MAX_CHARS
+
+    class FakeRag:
+        def get_knowledge_graph(self, entity_name, max_depth=2):
+            return None
+    class FakeNode:
+        def __init__(self, i):
+            self.id = f"node_{i}"
+            self.properties = {"entity_type": "person", "description": f"desc_{i}", "file_path": "", "source_id": ""}
+    class FakeKG:
+        nodes = [FakeNode(i) for i in range(5)]
+        edges = []
+
+    adapter = LightRAGAdapter.__new__(LightRAGAdapter)
+    monkeypatch.setattr(adapter, "_get_rag", lambda: FakeRag())
+    import niu_api.internal.lightrag_adapter as la_module
+    monkeypatch.setattr(la_module, "call_async", lambda coro, timeout=120: FakeKG())
+
+    result = adapter.explore_node(entity_name="test", depth=1)
+
+    assert result.get("status") != "truncated", "小图不应被截断"
+    assert len(result.get("nodes", [])) == 5
+    assert "截断" not in json.dumps(result, ensure_ascii=False)
 ```
 
 - [ ] **Step 2: 运行测试确认失败**
@@ -374,7 +439,7 @@ LIGHTRAG_GRAPH_MAX_CHARS = 20000  # 图查询结果最大字符数（参考 Clau
 
 读 `niu_api/internal/lightrag_adapter.py:563-655` 确认 `explore_node` 的 return 语句（约 L641-655）。
 
-在 `return {...}` 之前加截断逻辑：
+在 `return {...}` 之前加截断逻辑（用 while 循环逐步缩减 nodes 直到序列化 <= 20K，避免按比例截断后仍超限）：
 
 ```python
             # 保底截断（图查询结果可能超大，如 depth=3 limit=100 返回 50 万字符）
@@ -392,24 +457,125 @@ LIGHTRAG_GRAPH_MAX_CHARS = 20000  # 图查询结果最大字符数（参考 Clau
             serialized = json.dumps(result, ensure_ascii=False)
             if len(serialized) > LIGHTRAG_GRAPH_MAX_CHARS:
                 logger.warning(f"explore_node result {len(serialized)} chars > {LIGHTRAG_GRAPH_MAX_CHARS}, truncating")
-                return {
-                    "status": "truncated",
-                    "message": f"[截断] lightrag_get_graph 原始输出 {len(serialized)} 字符，已截断至 {LIGHTRAG_GRAPH_MAX_CHARS} 字符。请缩小 depth/limit 参数后重新查询。",
-                    "center": center,
-                    "nodes": nodes[:max(1, int(len(nodes) * LIGHTRAG_GRAPH_MAX_CHARS / max(len(serialized), 1)))],  # 按比例保留部分 nodes
-                    "edges": [],
-                    "stats": {
-                        "nodes": len(nodes),
-                        "edges": len(edges),
-                        "max_depth": depth,
-                        "truncated": True,
-                        "original_chars": len(serialized),
-                    },
-                }
+                # while 循环逐步缩减 nodes 直到 <= 20K（按比例截断可能因 message+stats 开销仍超限）
+                # 先清空 edges（占字符最多且可重新查询）
+                truncated_nodes = list(nodes)
+                original_nodes_count = len(nodes)
+                original_edges_count = len(edges)
+                while True:
+                    candidate = {
+                        "status": "truncated",
+                        "message": f"[截断] lightrag_get_graph 原始输出 {len(serialized)} 字符，已截断至 {LIGHTRAG_GRAPH_MAX_CHARS} 字符。请缩小 depth/limit 参数后重新查询。",
+                        "center": center,
+                        "nodes": truncated_nodes,
+                        "edges": [],
+                        "stats": {
+                            "nodes": original_nodes_count,
+                            "edges": original_edges_count,
+                            "max_depth": depth,
+                            "truncated": True,
+                            "original_chars": len(serialized),
+                            "kept_nodes": len(truncated_nodes),
+                        },
+                    }
+                    candidate_serialized = json.dumps(candidate, ensure_ascii=False)
+                    if len(candidate_serialized) <= LIGHTRAG_GRAPH_MAX_CHARS or len(truncated_nodes) == 0:
+                        return candidate
+                    # 按比例缩减 nodes（每次砍掉 30%，直到 <= 20K 或 nodes 为空）
+                    keep_count = max(0, int(len(truncated_nodes) * 0.7))
+                    truncated_nodes = truncated_nodes[:keep_count]
+                # 不会到达这里（while 循环必返回）
             return result
 ```
 
-注意：保留 `center` 和部分 `nodes` 让 LLM 知道查询方向，`edges` 清空（占字符最多且可重新查询）。`stats` 保留原始计数让 LLM 知道截断了多少。
+注意：`while True` 循环必返回——要么序列化 <= 20K 返回，要么 nodes 砍到 0 时返回（含 message + center + 空 nodes + stats）。这样保证截断后序列化一定 <= 20K。
+
+- [ ] **Step 3.5: get_graph_snapshot 同样加截断**
+
+读 `niu_api/internal/lightrag_adapter.py:834-930` 确认 `get_graph_snapshot` 方法。它返回 `{nodes, edges, stats}`，同样可能超大（`--action snapshot --limit 0` 返回全图）。
+
+抽公共截断函数 `_truncate_graph_result`（复用 Step 3 的 while 循环逻辑），在 `explore_node` 和 `get_graph_snapshot` 都调用。
+
+在 `explore_node` 之前（约 L562）新增公共函数：
+
+```python
+def _truncate_graph_result(self, result: Dict[str, Any], tool_name: str = "lightrag_get_graph") -> Dict[str, Any]:
+    """图查询结果保底截断到 LIGHTRAG_GRAPH_MAX_CHARS。
+
+    explore_node 和 get_graph_snapshot 共用。用 while 循环逐步缩减 nodes
+    直到序列化 <= 上限，避免按比例截断后仍超限。
+    """
+    import json
+    serialized = json.dumps(result, ensure_ascii=False)
+    if len(serialized) <= LIGHTRAG_GRAPH_MAX_CHARS:
+        return result
+
+    logger.warning(f"{tool_name} result {len(serialized)} chars > {LIGHTRAG_GRAPH_MAX_CHARS}, truncating")
+    center = result.get("center")
+    nodes = list(result.get("nodes", []))
+    edges = list(result.get("edges", []))
+    original_nodes = len(nodes)
+    original_edges = len(edges)
+    stats_extra = result.get("stats", {})
+
+    # 先清空 edges（占字符最多且可重新查询）
+    truncated_nodes = list(nodes)
+    while True:
+        candidate = {
+            "status": "truncated",
+            "message": f"[截断] {tool_name} 原始输出 {len(serialized)} 字符，已截断至 {LIGHTRAG_GRAPH_MAX_CHARS} 字符。请缩小 depth/limit 参数后重新查询。",
+            "center": center,
+            "nodes": truncated_nodes,
+            "edges": [],
+            "stats": {
+                **stats_extra,
+                "nodes": original_nodes,
+                "edges": original_edges,
+                "truncated": True,
+                "original_chars": len(serialized),
+                "kept_nodes": len(truncated_nodes),
+            },
+        }
+        candidate_serialized = json.dumps(candidate, ensure_ascii=False)
+        if len(candidate_serialized) <= LIGHTRAG_GRAPH_MAX_CHARS or len(truncated_nodes) == 0:
+            return candidate
+        keep_count = max(0, int(len(truncated_nodes) * 0.7))
+        truncated_nodes = truncated_nodes[:keep_count]
+```
+
+然后改 `explore_node` 的 return（Step 3 加的截断逻辑）调用公共函数：
+
+```python
+            result = {
+                "center": center,
+                "nodes": nodes,
+                "edges": edges,
+                "stats": {
+                    "nodes": len(nodes),
+                    "edges": len(edges),
+                    "max_depth": depth,
+                },
+            }
+            return self._truncate_graph_result(result, "lightrag_get_graph(explore)")
+```
+
+同样改 `get_graph_snapshot` 的 return（约 L920-928）调用公共函数：
+
+读 L920-928 确认 `get_graph_snapshot` 的 return 结构，改为：
+```python
+            result = {
+                "nodes": nodes,
+                "edges": edges,
+                "stats": {
+                    "nodes": len(nodes),
+                    "edges": len(edges),
+                    "limit": limit,
+                },
+            }
+            return self._truncate_graph_result(result, "lightrag_get_graph(snapshot)")
+```
+
+这样 explore 和 snapshot 都走 20K 截断，不会遗漏 snapshot 路径。
 
 - [ ] **Step 4: 运行测试确认通过**
 
@@ -470,22 +636,32 @@ def test_enforce_message_budget_under_limit():
 
 
 def test_enforce_message_budget_over_limit():
-    """单消息 tool 内容合计 > 200K，最大的 tool 结果被截断。"""
+    """单消息 tool 内容合计 > 200K，最大的 tool 结果被截断。
+
+    策略：按 tool content 大小降序，依次截断最大的到 MAX_TOOL_RESULT_CHARS，
+    直到合计 <= 200K。本例 call_3 (100K) 最大，截断后释放 70K，合计 170K <= 200K 停止。
+    """
     from agent.generic.agent_loop import _enforce_message_budget, MAX_TOOL_RESULTS_PER_MESSAGE_CHARS
     # 3 个 tool 结果，合计 240K > 200K
     messages = [
         {"role": "user", "content": "hello"},
         {"role": "assistant", "content": "hi"},
         {"role": "tool", "tool_call_id": "call_1", "content": "x" * 50000},
-        {"role": "tool", "tool_call_id": "call_2", "content": "y" * 90000},  # 最大
-        {"role": "tool", "tool_call_id": "call_3", "content": "z" * 100000},  # 更大
+        {"role": "tool", "tool_call_id": "call_2", "content": "y" * 90000},
+        {"role": "tool", "tool_call_id": "call_3", "content": "z" * 100000},  # 最大
     ]
     result = _enforce_message_budget(messages)
-    # 最大的两个被截断
+    # 最大的 call_3 (100K) 被截断到 30K（释放 70K），合计 170K <= 200K
     total = sum(len(m.get("content", "")) for m in result if m.get("role") == "tool")
     assert total <= MAX_TOOL_RESULTS_PER_MESSAGE_CHARS, f"聚合后应 <= {MAX_TOOL_RESULTS_PER_MESSAGE_CHARS}，实际 {total}"
-    # 应有 [截断] 标记
-    assert any("[截断]" in m.get("content", "") for m in result if m.get("role") == "tool")
+    # 最大的 call_3 应被截断（含 [截断] 标记）
+    call_3_result = next(m for m in result if m.get("tool_call_id") == "call_3")
+    assert "[截断]" in call_3_result["content"]
+    # 较小的 call_1 (50K) 和 call_2 (90K) 不应被截断
+    call_1_result = next(m for m in result if m.get("tool_call_id") == "call_1")
+    call_2_result = next(m for m in result if m.get("tool_call_id") == "call_2")
+    assert "[截断]" not in call_1_result["content"], "call_1 (50K) 不应被截断"
+    assert "[截断]" not in call_2_result["content"], "call_2 (90K) 不应被截断"
 
 
 def test_enforce_message_budget_no_tool_messages():
@@ -555,17 +731,21 @@ def _enforce_message_budget(messages: list) -> list:
 
 - [ ] **Step 4: 在 LLM 调用前调用 `_enforce_message_budget`**
 
-读 `agent/generic/agent_loop.py` 确认 LLM 调用位置（约 L331 `response = yield from response_gen` 或 L336 `response = exhaust(response_gen)`）。
+读 `agent/generic/agent_loop.py:325-340` 确认 LLM 调用位置。实际代码（L331）：
+```python
+        response_gen = client.chat(messages=messages, tools=tools_schema)
+```
 
-在 `client.chat(messages, tools=tools_schema)` 调用前（约 L330 附近）加：
+**注意**：`client.chat` 用关键字参数 `messages=messages`，无 `response_format`（response_format 在别处单独处理）。`messages` 是 `agent_runner_loop` 内局部变量，reassign 安全。
 
+在 `client.chat` 调用前（L331 之前）加一行：
 ```python
         # 单消息聚合上限检查（防多个 tool 结果合计爆掉单消息上限）
         messages = _enforce_message_budget(messages)
-        response_gen = client.chat(messages, tools=tools_schema, response_format=response_format)
+        response_gen = client.chat(messages=messages, tools=tools_schema)
 ```
 
-读实际代码确认 `client.chat` 的调用方式和位置，把 `_enforce_message_budget(messages)` 放在调用前。注意 `messages` 可能是局部变量或需要 reassign。
+读实际代码确认 L331 的确切位置和 `response_format` 是否在同行（可能分两行）。只插入 `_enforce_message_budget` 一行，不改动原有 `client.chat` 调用。
 
 - [ ] **Step 5: 运行测试确认通过**
 
