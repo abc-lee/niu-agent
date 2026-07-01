@@ -21,6 +21,11 @@ from niu_api.internal.lightrag_manager import call_async, get_lightrag
 # Valid query modes for LightRAG
 VALID_MODES = {"naive", "local", "global", "hybrid", "mix", "bypass"}
 
+# 图查询结果最大字符数（参考 Claude Code Grep 工具上限）
+# explore_node / get_graph_snapshot 在工具层截断，避免 depth=3 limit=100 返回
+# 50 万字符触发单消息超限。与 disk 保底截断（30K）形成双层防护。
+LIGHTRAG_GRAPH_MAX_CHARS = 20000
+
 # LightRAG's fail_response constant substring markers.
 # Used to detect the canned error text that LightRAG returns when queries
 # produce no results.  These are not LLM-generated responses — they are
@@ -560,6 +565,54 @@ class LightRAGAdapter:
 
     # ============== Graph Traversal Methods ==============
 
+    def _truncate_graph_result(self, result: Dict[str, Any], tool_name: str = "lightrag_get_graph") -> Dict[str, Any]:
+        """图查询结果保底截断到 LIGHTRAG_GRAPH_MAX_CHARS。
+
+        explore_node 和 get_graph_snapshot 共用。用 while 循环逐步缩减 nodes
+        直到序列化 <= 上限，避免按比例截断后仍超限。
+
+        截断策略：
+        - 清空 edges（占字符最多且可重新查询）
+        - 保留 center + 部分 nodes 让 LLM 知道查询方向
+        - stats 保留原始计数 + kept_nodes 让 LLM 知道截断比例
+        """
+        import json
+        serialized = json.dumps(result, ensure_ascii=False)
+        if len(serialized) <= LIGHTRAG_GRAPH_MAX_CHARS:
+            return result
+
+        logger.warning(f"{tool_name} result {len(serialized)} chars > {LIGHTRAG_GRAPH_MAX_CHARS}, truncating")
+        center = result.get("center")
+        nodes = list(result.get("nodes", []))
+        edges = list(result.get("edges", []))
+        original_nodes = len(nodes)
+        original_edges = len(edges)
+        stats_extra = result.get("stats", {})
+
+        # 先清空 edges（占字符最多且可重新查询），逐步缩减 nodes
+        truncated_nodes = list(nodes)
+        while True:
+            candidate = {
+                "status": "truncated",
+                "message": f"[截断] {tool_name} 原始输出 {len(serialized)} 字符，已截断至 {LIGHTRAG_GRAPH_MAX_CHARS} 字符。请缩小 depth/limit 参数后重新查询。",
+                "center": center,
+                "nodes": truncated_nodes,
+                "edges": [],
+                "stats": {
+                    **stats_extra,
+                    "nodes": original_nodes,
+                    "edges": original_edges,
+                    "truncated": True,
+                    "original_chars": len(serialized),
+                    "kept_nodes": len(truncated_nodes),
+                },
+            }
+            candidate_serialized = json.dumps(candidate, ensure_ascii=False)
+            if len(candidate_serialized) <= LIGHTRAG_GRAPH_MAX_CHARS or len(truncated_nodes) == 0:
+                return candidate
+            keep_count = max(0, int(len(truncated_nodes) * 0.7))
+            truncated_nodes = truncated_nodes[:keep_count]
+
     def explore_node(self, entity_name: str, depth: int = 2, edge_types: Optional[List[str]] = None) -> Dict[str, Any]:
         """Get neighbors of an entity in the knowledge graph.
 
@@ -638,7 +691,7 @@ class LightRAGAdapter:
                 edge_type_set = set(edge_types)
                 edges = [e for e in edges if e.get("relation") in edge_type_set]
 
-            return {
+            result = {
                 "center": center,
                 "nodes": nodes,
                 "edges": edges,
@@ -648,6 +701,7 @@ class LightRAGAdapter:
                     "max_depth": depth,
                 },
             }
+            return self._truncate_graph_result(result, "lightrag_get_graph(explore)")
 
         except Exception as e:
             logger.error(f"LightRAG explore_node failed: {e}")
@@ -923,7 +977,16 @@ class LightRAGAdapter:
             except RuntimeError:
                 logger.warning("Graph modified during snapshot edge read, returning partial edges")
 
-            return {"nodes": nodes, "edges": edges}
+            result = {
+                "nodes": nodes,
+                "edges": edges,
+                "stats": {
+                    "nodes": len(nodes),
+                    "edges": len(edges),
+                    "limit": limit,
+                },
+            }
+            return self._truncate_graph_result(result, "lightrag_get_graph(snapshot)")
 
         except Exception as e:
             logger.error(f"LightRAG get_graph_snapshot failed: {e}")
