@@ -1433,18 +1433,26 @@ async def chat_session(request: ChatRequest) -> ChatResponse:
                 chunks.append(chunk)
             return "".join(chunks)
 
+        chat_error = None
         try:
             full_reply = await asyncio.to_thread(sync_chat)
         except Exception as e:
             import traceback
             logger.error(f"Chat error: {e}\n{traceback.format_exc()}")
+            chat_error = str(e)
             full_reply = f"Error: {str(e)}"
 
-        # 双管道持久化：使用 persist_agent_reply 统一处理
-        rv = getattr(runner, "last_return_value", None)
-        from niu_api.chat import persist_agent_reply
-        persisted_msgs = getattr(runner, "_persisted_msgs", None)  # V4: 已逐条持久化的消息
-        message_id, full_reply = await persist_agent_reply(store, rv, history_len, full_reply, source="electron", persisted_msgs=persisted_msgs)
+        # 方案 A：异常时不进 DB（避免错误文本被下一轮 _inject_dynamic_resources 当 query 反复查 lightrag）
+        if chat_error is None:
+            # 双管道持久化：使用 persist_agent_reply 统一处理
+            rv = getattr(runner, "last_return_value", None)
+            from niu_api.chat import persist_agent_reply
+            persisted_msgs = getattr(runner, "_persisted_msgs", None)  # V4: 已逐条持久化的消息
+            message_id, full_reply = await persist_agent_reply(store, rv, history_len, full_reply, source="electron", persisted_msgs=persisted_msgs)
+        else:
+            rv = getattr(runner, "last_return_value", None)
+            message_id = None
+            logger.warning(f"[Chat Session] Skipped persist due to chat error: {chat_error}")
 
         # 检测主 Agent 上下文溢出 → 同步触发 force 压缩（阻塞）
         if rv and isinstance(rv, dict) and rv.get("result") == "CONTEXT_OVERFLOW":
