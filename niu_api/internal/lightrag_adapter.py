@@ -565,6 +565,7 @@ class LightRAGAdapter:
 
     # ============== Graph Traversal Methods ==============
 
+    # DEPRECATED: 截断已移至 agent_loop 统一关口，本函数保留供参考但无调用方
     def _truncate_graph_result(self, result: Dict[str, Any], tool_name: str = "lightrag_get_graph") -> Dict[str, Any]:
         """图查询结果保底截断到 LIGHTRAG_GRAPH_MAX_CHARS。
 
@@ -718,7 +719,9 @@ class LightRAGAdapter:
                     "max_depth": depth,
                 },
             }
-            return self._truncate_graph_result(result, "lightrag_get_graph(explore)")
+            # 截断由 agent_loop 统一关口处理（Agent 工具调用路径）
+            # 前端 API 和内部业务（region_detector/region_manager）直接调此方法，不被截断
+            return result
 
         except Exception as e:
             logger.error(f"LightRAG explore_node failed: {e}")
@@ -1003,7 +1006,9 @@ class LightRAGAdapter:
                     "limit": limit,
                 },
             }
-            return self._truncate_graph_result(result, "lightrag_get_graph(snapshot)")
+            # 截断由 agent_loop 统一关口处理（Agent 工具调用路径）
+            # 前端 API（kg_api.py graph_snapshot 端点）直接调此方法，不被截断
+            return result
 
         except Exception as e:
             logger.error(f"LightRAG get_graph_snapshot failed: {e}")
