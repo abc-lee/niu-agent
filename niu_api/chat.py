@@ -122,6 +122,23 @@ def notify_tool_status_sync(tool_name: str, status: str, summary: str = ""):
         pass
 
 
+def notify_compact_status_sync(status: str, mode: str = "") -> None:
+    """广播压缩状态事件到 /api/events/stream。
+
+    跨线程安全：可在 executor 工作线程或后台 asyncio task 中调用。
+    status: "started" | "done"
+    mode: "force" | "sleep" | "auto"（可选，用于日志和前端提示）
+    """
+    if _main_loop is None:
+        return
+    event = {"type": "compact_status", "status": status, "mode": mode}
+    try:
+        _main_loop.call_soon_threadsafe(_sync_broadcast, event)
+    except RuntimeError:
+        # loop 已关闭，忽略
+        pass
+
+
 def _sync_broadcast(event: dict):
     """在 FastAPI 事件循环中执行广播"""
     for q in _event_subscribers[:]:  # 复制列表，避免迭代中修改
