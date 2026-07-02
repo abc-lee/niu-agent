@@ -58,6 +58,13 @@ def _filter_base_tools(agent_config: dict, tools_schema: list) -> tuple:
     return filtered, disabled_set, custom_disabled, allowed_base
 
 
+# 子 Agent 职责边界段模板（自动注入到正文未含"直接退出"语义的子 Agent）
+_BOUNDARY_SECTION_TEMPLATE = """## 职责边界
+
+你的职责范围由上方系统提示词界定的功能描述决定。
+不要猜测含义，无法完全确认属于自己的职责范围的，就要直接退出，回复主 Agent。"""
+
+
 def count_tokens_for_text(text: str) -> int:
     """
     计算文本的 token 数量（用于子 Agent prompt 分片判断）
@@ -354,7 +361,13 @@ def build_subagent_system_segments(agent_name: str) -> tuple:
     if user_info_section:
         static_system += "\n\n" + user_info_section
 
-    # 3. 动态段：Current Time
+    # 3. 注入职责边界段（如果子 Agent 正文未含"直接退出"语义，自动追加通用模板）
+    #    按语义关键词检测而非标题，避免 dream-evolver 已有"## 职责边界"段（职责声明）
+    #    但不含退出语义时被误跳过
+    if "直接退出" not in static_system:
+        static_system += "\n\n" + _BOUNDARY_SECTION_TEMPLATE
+
+    # 4. 动态段：Current Time
     from datetime import datetime
     now = datetime.now()
     dynamic_system = f"\n\nCurrent Time: {now.strftime('%Y-%m-%d %H:%M:%S')}"
