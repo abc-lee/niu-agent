@@ -1217,6 +1217,11 @@ function startMessageEventStream() {
               if (chatWindow && !chatWindow.isDestroyed()) {
                 chatWindow.webContents.send('tool-status', event);
               }
+            } else if (event.type === 'compact_status') {
+              // 转发上下文压缩状态到聊天窗口
+              if (chatWindow && !chatWindow.isDestroyed()) {
+                chatWindow.webContents.send('compact-status', event);
+              }
             } else if (event.type === 'ingest-started' || event.type === 'ingest-completed') {
               // 转发入库进度事件到 spirit 和 chat 窗口
               if (spiritWindow && !spiritWindow.isDestroyed()) {
