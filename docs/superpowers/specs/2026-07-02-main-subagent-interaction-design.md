@@ -154,7 +154,9 @@ class AskMainAgentFuture:
         return self._answer
 ```
 
-子 Agent 调 `ask_main_agent` 时创建 `AskMainAgentFuture`，注册到"待回答问题表"（key=问题消息的 rowid，value=Future），推 db 后 `future.wait()` 阻塞。db 监测程序路由到主 Agent 的回答时，从"待回答问题表"找到对应 Future，`future.set_answer(answer)`。子 Agent 拿到 answer 后工具返回。
+子 Agent 调 `ask_main_agent` 时创建 `AskMainAgentFuture`，注册到"待回答问题表"（**key=子 Agent 唯一名**，value=Future），推 db 后 `future.wait()` 阻塞。db 监测程序解析主 Agent 回答消息的 `@目标` 拿子名 → 查"待回答问题表"找到对应 Future → `future.set_answer(answer)`。子 Agent 拿到 answer 后工具返回。
+
+**key 用子 Agent 唯一名而不是问题消息 rowid**：因为 `ask_main_agent` 工具阻塞子 Agent 循环，同一子 Agent 同时只有一个 Future 在等，按子名路由唯一且简单。回答消息是新 rowid，无法从回答反推原问题 rowid，所以 key 不能用 rowid。
 
 **所有异步调用的子 Agent 默认带这个工具**（在 `build_subagent_system_segments` 自动注入 schema）。同步调用的子 Agent 不带（避免死锁，见 §异步调用-同步兼容）。
 
@@ -392,8 +394,10 @@ class SubagentMemoryContext:
 参数：subagent_name (str)  # 子 Agent 唯一名
 行为：
   1. 从 SubagentRegistry.get(subagent_name) 拿 RunningSubagent
-  2. 读 memory_context.last_llm_request 和 last_llm_response
-  3. 返回格式化文本：
+  2. 如果子 Agent 不存在或已结束，返回"该子 Agent 不在运行中"
+  3. 如果 memory_context is None（同步子 Agent），返回"该子 Agent 是同步调用，无进度数据"
+  4. 调 memory_context.snapshot() 一次性拷贝（加锁保证一致性）
+  5. 返回格式化文本：
      子 Agent: file-processor-a1b2
      当前轮次: 5
      最近一轮 LLM 请求（摘要）:
@@ -401,12 +405,13 @@ class SubagentMemoryContext:
      最近一轮 LLM 回复:
        <last_llm_response>
      最近工具调用: read_file
-  4. 如果子 Agent 不存在或已结束，返回"该子 Agent 不在运行中"
 ```
 
 **这个工具暴露给主 Agent**：在主 Agent 的 MCP 工具列表里加（不是子 Agent 的工具）。
 
 **工具调用是同步的**：主 Agent 调 `check_subagent_progress` 时，工具直接读内存返回，不阻塞。主 Agent 拿到进度信息后继续自己的工作。
+
+**同步子 Agent 不暴露给此工具**：同步子 Agent 的 `memory_context=None`，且同步子 Agent 调用时主 Agent 阻塞无法调工具。动态注入区只列异步子 Agent（同步子 Agent 的唯一名仅供前端展示和注册表内部用，不暴露给主 Agent 写 `@` 消息或调 `check_subagent_progress`）。
 
 ### 两条通道的边界
 
@@ -520,9 +525,11 @@ async def _run_subagent_async(unique_name, agent_name, task, memory_context):
 
 - **call_subagent 改造**：现有 `call_subagent` 是同步函数，签名扩展加 `memory_context: SubagentMemoryContext | None = None` 可选参数。用 `asyncio.to_thread` 包一层，子 Agent 跑独立线程，避免 GIL 阻塞主 asyncio loop 的 LLM 调用。跨线程通信（supplement queue / ask_main_agent 阻塞）用线程安全原语（`queue.Queue`、`asyncio.run_coroutine_threadsafe` 注入主 loop）。
 
-- **memory_context 更新钩子**：`_run_agent_loop`（`subagent.py:188-267`）的循环内，在 `client.chat(messages=messages, ...)` 调用前 snapshot `messages`（拼一个摘要或取最后一条 user content）写入 `memory_context.last_llm_request`；在 `client.chat` 返回后把响应文本写入 `memory_context.last_llm_response`；在 `chunk = next(gen)` 检测 `StreamEvent.type == "tool_marker"` 时记录 `last_tool_name`；每轮结束 `current_turn += 1`。
+- **memory_context 更新钩子**：在 `agent_runner_loop`（`agent_loop.py:273` 起）内部，`client.chat(messages=messages, ...)` 调用前（`agent_loop.py:413`）snapshot `messages`（拼一个摘要或取最后一条 user content）写入 `memory_context.last_llm_request`；`client.chat` 返回后把响应文本写入 `memory_context.last_llm_response`；检测 `StreamEvent.type == "tool_marker"` 时记录 `last_tool_name`；每轮结束 `current_turn += 1`。
 
-  **注意**：现有 `StreamEvent` 类型只有 `system`/`reply`/`persist`/`tool_marker` 四种（`agent_loop.py:14`），**没有 `llm_request` 类型**——LLM 请求内容在 `messages` 列表里不通过 StreamEvent 暴露。所以 `last_llm_request` 必须在 `client.chat` 调用前直接从 `messages` 提取，不能靠检测 chunk 类型。`last_llm_response` 可从 `reply` 类型的 chunk 拿（或直接从 `client.chat` 返回值拿）。
+  **注意**：钩子位置在 `agent_runner_loop`（不是 `_run_agent_loop`），因为 `client.chat` 在 `agent_runner_loop` 内部。`_run_agent_loop` 只是驱动 `agent_runner_loop` 生成器，不直接调 `client.chat`。`agent_runner_loop` 需加可选参数 `memory_context: SubagentMemoryContext | None = None`，None 时跳过所有更新（主 Agent 路径不变）。
+
+  现有 `StreamEvent` 类型只有 `system`/`reply`/`persist`/`tool_marker` 四种（`agent_loop.py:10`），**没有 `llm_request` 类型**——LLM 请求内容在 `messages` 列表里不通过 StreamEvent 暴露。所以 `last_llm_request` 必须在 `client.chat` 调用前直接从 `messages` 提取，不能靠检测 chunk 类型。`last_llm_response` 可从 `reply` 类型的 chunk 拿（或直接从 `client.chat` 返回值拿）。
 
   `memory_context is None` 时不影响现有同步调用路径（所有更新加 `if memory_context is not None:` 守卫）。
 
