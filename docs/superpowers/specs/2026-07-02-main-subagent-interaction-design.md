@@ -61,7 +61,7 @@
 @主Agent [file-processor-a1b2] 已完成，结果：识别出 3 个人脸...
 ```
 
-**db 存储方式**：复用现有 messages 表，加 `role="subagent_msg"`，metadata 存目标/发送者名。前端能读到这些消息并渲染（带 `@` 标识区分主↔子对话与用户↔主对话）。
+**db 存储方式**：复用现有 messages 表，加 `role="subagent_msg"`。现有 messages 表 schema 无 metadata 列，目标/发送者名直接编码进 content 前缀（即 `@目标 [发送者名] 内容` 格式本身就是存储格式，靠解析 content 提取）。零 schema 改动，无需迁移。前端读 `role="subagent_msg"` 的消息按特殊样式渲染（带 `@` 标识区分主↔子对话与用户↔主对话）。
 
 ### db 监测程序（后台 asyncio task）
 
@@ -97,15 +97,17 @@
 - 主 Agent 回复后，回复推回 db（`@子名 回答`），db 监测程序路由到对应子 Agent
 - 子 Agent 的会话工具拿到回答，工具返回，子 Agent 继续
 
-### 主 Agent 空闲时才推送的约束
+### 主 Agent 空闲时才推送的约束（修正：复用现有 enqueue_supplement）
 
-子 Agent 发问题时，主 Agent 必须空闲时才能收到，否则会被当用户补充信息塞次末，主 Agent 不会回答。
+**原设计假设**：监测程序检查主 Agent 状态，空闲时才推入 supplement queue。
 
-**实现**：
-- 子 Agent 的 `ask_main_agent` 工具推 db 后，db 监测程序**不立即**把问题推入主 Agent supplement queue
-- 监测程序检查主 Agent 状态：主 Agent 在调 LLM / 调工具时，问题暂存"待推送"队列
-- 主 Agent 进入下一轮 LLM 调用前的间隙（supplement 消费点），监测程序把积压的 `@主Agent` 消息推入主 Agent supplement queue
-- 这样保证主 Agent 看到子 Agent 问题时，一定是空闲可回复的状态
+**审查发现**：现有代码无"主 Agent 空闲"钩子，`drain_supplement()` 只在 `agent_loop.py:701` 一处被调用（下一轮 LLM 调用前）。监测程序无法可靠判断主 Agent 是否空闲。
+
+**修正设计**：监测程序**不判断空闲**，直接调 `enqueue_supplement`（现有用户补充消息的机制），让 `drain_supplement` 在主 Agent 下一轮 LLM 调用前自然消费。
+
+**代价**：主 Agent 调一个长工具时，子 Agent 的 `@主Agent` 消息会延迟到该工具调用结束、下一轮 LLM 调用前才被看到。这是合理代价——与现有用户给主 Agent 发补充消息的行为一致，主 Agent 调工具时用户的补充也是等下一轮才看到。
+
+**好处**：零新增机制，复用现有 supplement queue 全套逻辑（enqueue / drain / 次末插入）。
 
 ### 子 Agent 的"会话工具"（子问主）
 
@@ -124,6 +126,51 @@
 **阻塞机制**：子 Agent 调这个工具时，工具内部用 `asyncio.Future` 或 `threading.Event` 阻塞。db 监测程序路由到回答时 `future.set_result(answer)`，工具返回。
 
 **所有异步调用的子 Agent 默认带这个工具**（在 `build_subagent_system_segments` 自动注入 schema）。同步调用的子 Agent 不带（避免死锁，见 §异步调用-同步兼容）。
+
+### 子 Agent 独立 supplement queue（关键新建）
+
+**现状**：`agent/subagent.py:241` 硬编码 `enable_supplement=False`（注释"False for sub-agents to prevent stealing main agent's supplements"）。原因是现有 supplement queue 是全局单例（`agent/runner.py:44 _supplement_queue`），主子共享会串话。所以子 Agent 当前不消费任何 supplement。
+
+**新建设计**：每个子 Agent 实例持有一个独立 `queue.Queue`（线程安全，同步/异步子 Agent 都用同一类型）。
+
+```python
+# agent/subagent_supplement.py（新建）
+
+import queue as _queue
+import threading
+
+@dataclass
+class SubagentSupplementItem:
+    content: str
+    is_terminate: bool  # /stop 标记
+    sender: str         # 发送者名（如 "主Agent"）
+
+class SubagentSupplementQueue:
+    """每个子 Agent 实例一个，线程安全。"""
+    def __init__(self, unique_name: str):
+        self.unique_name = unique_name
+        self._q = _queue.Queue()
+
+    def push(self, content: str, is_terminate: bool = False, sender: str = "主Agent"):
+        self._q.put_nowait(SubagentSupplementItem(content, is_terminate, sender))
+
+    def drain(self) -> list[SubagentSupplementItem]:
+        items = []
+        while True:
+            try:
+                items.append(self._q.get_nowait())
+            except _queue.Empty:
+                break
+        return items
+```
+
+**子 Agent 消费时机**：`_run_agent_loop` 改造 `enable_supplement=True`，`drain_supplement` 改为读自己的 `SubagentSupplementQueue`（把 queue 注入 handler 或作为参数传入 `agent_runner_loop`）。每轮 LLM 调用前 drain：
+- 普通补充（`is_terminate=False`）→ 次末位插入
+- /stop 终止（`is_terminate=True`）→ 最末位插入"总结后终止"
+
+**db 监测程序路由**：监测程序在主 loop，路由 `@子名` 消息时，按 unique_name 从 SubagentRegistry 拿到该子 Agent 的 `SubagentSupplementQueue`，调 `push()`（`queue.Queue.put_nowait` 线程安全，跨线程无障碍）。
+
+**与主 Agent supplement queue 的隔离**：主 Agent 仍用现有全局 `_supplement_queue`（`runner.py:44`），子 Agent 用自己的独立 queue。两者不串话。
 
 ### /stop 指令的处理流程
 
@@ -165,6 +212,8 @@ db 监测程序识别 "/stop" 关键字
 - **单击停止按钮** → 只设 `_stop_requested`，主 Agent 自己检查退出，子 Agent 不受影响（继续跑）
 - **主 Agent 主动停某个子 Agent** → 主写 `@子名 /stop` 到 db，db 监测程序路由
 
+**单击停止的 UX 提示**：单击后如果 SubagentRegistry 还有在跑的子 Agent，前端弹提示"已停主 Agent，N 个子 Agent 仍在运行，双击全部停止"。避免用户以为停止按钮失灵。
+
 消费端逻辑完全一样——都是 /stop 指令走最末插入。
 
 ---
@@ -178,29 +227,42 @@ db 监测程序识别 "/stop" 关键字
 ```python
 # agent/subagent_registry.py（新建）
 
+import threading
+
 @dataclass
 class RunningSubagent:
     unique_name: str          # file-processor-a1b2
     agent_type: str           # file-processor
     task: asyncio.Task        # 子 Agent 的 asyncio task
     memory_context: SubagentMemoryContext
+    supplement_queue: SubagentSupplementQueue  # 子 Agent 独立 supplement queue
     started_at: float
     status: str               # "running" | "asking_main" | "terminated"
 
 class SubagentRegistry:
-    _instances: dict[str, RunningSubagent]  # unique_name → 实例
+    _instances: dict[str, RunningSubagent] = {}
+    _lock = threading.Lock()  # 保护 register/unregister/list_running 的 read-modify-write
 
-    def register(agent_type, task, memory_context) -> str:
-        # 生成唯一名（agent_type + 4位hex 后缀）
-        # 加入 _instances
-        # 返回 unique_name
+    @classmethod
+    def register(cls, agent_type: str, task, memory_context, supplement_queue) -> str:
+        with cls._lock:
+            unique_name = cls._gen_unique_name(agent_type)  # 检查碰撞重试
+            cls._instances[unique_name] = RunningSubagent(...)
+            return unique_name
 
-    def unregister(unique_name): ...
-    def list_running() -> list[RunningSubagent]: ...
-    def get(unique_name) -> RunningSubagent | None: ...
+    @classmethod
+    def unregister(cls, unique_name): ...
+    @classmethod
+    def list_running(cls) -> list[RunningSubagent]:
+        with cls._lock:
+            return list(cls._instances.values())
+    @classmethod
+    def get(cls, unique_name) -> RunningSubagent | None: ...
 ```
 
-**唯一名生成**：`<agent_type>-<4位hex>`（如 `file-processor-a1b2`）。4 位 hex 有 65536 种组合，同一 agent_type 同时跑 65536 个不重名，实际够用。生成时检查注册表避免碰撞。
+**唯一名生成**：`<agent_type>-<4位hex>`（如 `file-processor-a1b2`）。4 位 hex 有 65536 种组合，同一 agent_type 同时跑 65536 个不重名，实际够用。生成时检查注册表避免碰撞（在 `_lock` 内做 read-modify-write）。
+
+**加锁原因**：异步子 Agent 跑在 `asyncio.to_thread` 独立线程，注册/注销发生在主 loop（派单时）和子线程（结束时 `finally`）。Python dict 单个操作 GIL 下原子，但 register 生成唯一名时"检查碰撞再写入"是 read-modify-write 非原子，用 `threading.Lock` 保护。
 
 ### 子 Agent 内存上下文（进度数据来源）
 
@@ -213,9 +275,28 @@ class SubagentMemoryContext:
     last_llm_response: str | None   # LLM 最近一轮的回复文本（不含工具调用）
     current_turn: int               # 当前第几轮
     last_tool_name: str | None      # 最近一次调的工具名（可选辅助信息）
+    _lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def snapshot(self) -> dict:
+        """一次性拷贝所有字段，保证主 Agent 读到一致状态。"""
+        with self._lock:
+            return {
+                "last_llm_request": self.last_llm_request,
+                "last_llm_response": self.last_llm_response,
+                "current_turn": self.current_turn,
+                "last_tool_name": self.last_tool_name,
+            }
+
+    def update(self, **kwargs):
+        """子 Agent 线程更新字段，加锁保证一致性。"""
+        with self._lock:
+            for k, v in kwargs.items():
+                setattr(self, k, v)
 ```
 
-**更新时机**：子 Agent 的 `agent_runner_loop` 每轮调完 LLM 后，把请求和响应写入 `memory_context`。内存对象不进 db，子 Agent 结束后随注册表移除而消失。
+**更新时机**：子 Agent 的 `agent_runner_loop` 每轮调完 LLM 后，调 `memory_context.update(last_llm_request=..., last_llm_response=..., ...)`。内存对象不进 db，子 Agent 结束后随注册表移除而消失。
+
+**snapshot 方法**：主 Agent 调 `check_subagent_progress` 时，用 `snapshot()` 一次性拷贝，避免读到 `current_turn=5` 但 `last_llm_response` 还是 turn 4 的不一致状态。
 
 **只存最近一轮**：主 Agent 想看更早的进度，那是上一轮查过的（主 Agent 自己记住），或等子 Agent 完成通知后看总结。
 
@@ -234,6 +315,8 @@ class SubagentMemoryContext:
 ```
 
 **注入时机**：复用现有 `_inject_dynamic_resources`（每轮结束刷新）或 `_on_turn_end` 回调，从 `SubagentRegistry.list_running()` 拉清单拼成文本注入。
+
+**数量上限**：软上限 5 个。超出时只显示最近 5 个 + "还有 N 个子 Agent 运行中"。避免 10 个子 Agent × 每个 3 行 = 30 行挤占主 Agent 上下文。
 
 **状态显示**：
 - `running`：正常跑
@@ -375,11 +458,16 @@ async def _run_subagent_async(unique_name, agent_name, task, memory_context):
 
 **运行时要点**：
 
-- **call_subagent 改造**：现有 `call_subagent` 是同步函数，用 `asyncio.to_thread` 包一层，子 Agent 跑独立线程，避免 GIL 阻塞主 asyncio loop 的 LLM 调用。跨线程通信（supplement queue / ask_main_agent 阻塞）用线程安全原语（`asyncio.run_coroutine_threadsafe` 注入主 loop）。
+- **call_subagent 改造**：现有 `call_subagent` 是同步函数，签名扩展加 `memory_context: SubagentMemoryContext | None = None` 可选参数。用 `asyncio.to_thread` 包一层，子 Agent 跑独立线程，避免 GIL 阻塞主 asyncio loop 的 LLM 调用。跨线程通信（supplement queue / ask_main_agent 阻塞）用线程安全原语（`queue.Queue`、`asyncio.run_coroutine_threadsafe` 注入主 loop）。
 
-- **memory_context 更新**：`call_subagent` 内部 `agent_runner_loop` 每轮调完 LLM 后，更新 `memory_context.last_llm_request/response`。跨线程写要用锁或原子赋值。
+- **memory_context 更新钩子**：`_run_agent_loop`（`subagent.py:188-267`）的循环内 `chunk = next(gen)` 之后，检测 `isinstance(chunk, StreamEvent)`，提取请求/响应写入 `memory_context`。具体：
+  - LLM 请求时（`chunk.type == "llm_request"` 或类似事件）→ 记录 `last_llm_request`
+  - LLM 响应时（`chunk.type == "reply"` 或 `"llm_response"`）→ 记录 `last_llm_response`
+  - 工具调用时（`chunk.type == "tool_marker"`）→ 记录 `last_tool_name`
+  - 每轮结束 → `current_turn += 1`
+  - 需先确认 `agent_runner_loop` 的 `StreamEvent` 类型有哪些，在 `_run_agent_loop` 内加 `if memory_context is not None: memory_context.xxx = ...`。`memory_context is None` 时不影响现有同步调用路径。
 
-- **子 Agent 不监测 `_stop_requested`**：现有 `_run_agent_loop` 每轮检查 `is_stop_requested()`，新设计改为不检查全局信号灯，只检查自己的 supplement queue（/stop 走 supplement queue）。
+- **子 Agent 不监测 `_stop_requested`**：现有 `_run_agent_loop`（`subagent.py:251`）的 `is_stop_requested()` 检查移除，改为只检查自己的 `SubagentSupplementQueue`（drain 时看是否有 `is_terminate=True` 项）。现有同步调用停止行为会改变：原同步调用时主 Agent 按停止，子 Agent 也停；新设计是子 Agent 不停（只响应自己的 /stop）。这是预期行为（与"信号灯只对主 Agent 有效"一致）。
 
 - **子 Agent 的 supplement queue**：每个子 Agent 有自己的 supplement queue（`queue.Queue` 或 `asyncio.Queue`）。db 监测程序路由来的 `@子名` 消息推入。子 Agent 下一轮 LLM 调用前消费。
 
@@ -452,6 +540,22 @@ db 监测程序是常驻 asyncio task，崩溃后所有 `@` 消息停止路由�
 
 **解决**：`ask_main_agent` 加超时（如 5 分钟），超时后返回"主 Agent 未响应，请自行决定或退出"。本次先不做超时，标记为已知限制。
 
+### db 残留 `@子名` 消息在程序重启后
+
+唯一名是内存的（注册表），程序重启后 db 里残留 `@file-processor-a1b2` 消息，监测程序找不到目标子 Agent。
+
+**处理**：监测程序发现 `@目标` 不在 SubagentRegistry 时，把消息转为 `@主Agent [system] 历史消息目标子 Agent {name} 已不存在：{内容}` 推入主 Agent supplement queue，让主 Agent 知道有残留消息，由主 Agent 决定是否处理。
+
+### 孤儿回答（子 Agent 问主 Agent 后崩溃）
+
+子 Agent 调 `ask_main_agent` 后崩溃，主 Agent 回复推回 db，监测程序路由时找不到子 Agent 的 Future。
+
+**处理**：监测程序检测到目标子 Agent 已不在注册表时，把回答转为 `@主Agent [system] 孤儿回答：{内容}` 推入主 Agent supplement queue，让主 Agent 决定是否丢弃。
+
+### 双重广播风险（已知限制第 5 条）澄清
+
+原描述"chat_queue 调 `_tidy_context_impl` 可能与子 Agent 完成通知产生序列问题"实际场景是：`_on_context_high_usage`（runner.py:807）跑 force 压缩时调 `call_subagent("context-manager")`，此时主 Agent 在压缩回调中。如果异步子 Agent 推完成通知到 db，监测程序路由到主 supplement queue，主 Agent 还在压缩循环里——`drain_supplement` 不会被调用直到压缩结束。这不是"双重广播"，是"压缩期间 supplement 排队延迟"，与"主 Agent 空闲时才推送"修正后的行为一致（主 Agent 下一轮自然消费）。不阻塞，是预期行为。
+
 ---
 
 ## 测试策略
@@ -483,16 +587,24 @@ db 监测程序是常驻 asyncio task，崩溃后所有 `@` 消息停止路由�
 ### 阶段一：通信通道（在现有同步调用基础上）
 
 范围：
+- **子 Agent 独立 supplement queue**（新建 `agent/subagent_supplement.py`，`_run_agent_loop` 改造 `enable_supplement=True` 并 drain 自己的 queue）
 - db 监测程序（后台 asyncio task，轮询 + 路由）
-- `@` 消息格式约定 + db 存储字段（`role="subagent_msg"`）
-- 主 Agent 给子 Agent 补充上下文（次末插入）
-- /stop 终止指令（最末插入 + 协作式等待）
-- 终止信号灯重新设计（`_stop_requested` 只对主 Agent，双击触发批量 /stop）
+- `@` 消息格式约定 + db 存储字段（`role="subagent_msg"`，目标/发送者名编码进 content 前缀，零 schema 改动）
+- 主 Agent 给子 Agent 补充上下文（次末插入，走子 Agent supplement queue）
+- /stop 终止指令（最末插入 + 协作式等待，走子 Agent supplement queue）
+- 终止信号灯重新设计（`_stop_requested` 只对主 Agent，子 Agent 移除 `is_stop_requested()` 检查，双击触发批量 /stop）
 - 主 Agent 提示词约束（逐条回复 + 命名规则——命名规则在阶段二用，但提示词可先写）
+- 前端 chat.html 渲染 `role="subagent_msg"` 消息（特殊样式区分 `@` 消息）
+- 双击停止按钮 UI（单击只停主，双击触发批量 /stop）
 
 **阶段一不做 `ask_main_agent`**：`ask_main_agent` 需要子 Agent 异步跑（主 Agent 不阻塞才能回答）。阶段一同步调用子 Agent 时主 Agent 阻塞在 `call_subagent`，子 Agent 调 `ask_main_agent` 会死锁。所以 `ask_main_agent` 留到阶段二异步调用时注入。
 
-**阶段一交付**：主 Agent 能给同步调用的子 Agent 补充上下文、能停子（通过 /stop）。双击停止按钮能停所有子 Agent。子 Agent 遇到歧义仍用现有"直接退出"机制（不问主）。
+**阶段一同步子 Agent /stop 的局限**：同步调用时主 Agent 阻塞在 `call_subagent`，主 Agent 无法写 `@子名 /stop` 到 db（主 Agent 不在跑 LLM 循环）。所以阶段一同步子 Agent 的 /stop **只能由双击停止按钮批量触发**，单个子 Agent 的 /stop 要等阶段二异步调用才能做（异步子 Agent 在后台跑，主 Agent 空闲可写 `@子名 /stop`）。
+
+**阶段一交付**：
+- 主 Agent 能给同步调用的子 Agent 补充上下文（次末插入）
+- 双击停止按钮能停所有子 Agent（批量 /stop）
+- 子 Agent 遇到歧义仍用现有"直接退出"机制（不问主，`ask_main_agent` 留到阶段二）
 
 ### 阶段二：异步调用 + 进度查看
 
@@ -534,20 +646,22 @@ db 监测程序是常驻 asyncio task，崩溃后所有 `@` 消息停止路由�
 ## 相关文件（预估改动）
 
 ### 阶段一
-- `agent/subagent.py` — `call_subagent` 签名扩展、`_run_agent_loop` 加 supplement queue 消费 + /stop 最末插入、移除 `is_stop_requested()` 检查
-- `agent/runner.py` — `_stop_requested` 语义调整（只主 Agent）、双击停止触发批量 /stop
-- `agent/generic/agent_loop.py` — 主 Agent supplement queue 消费 `@主Agent` 消息、逐条回复
-- `niu_api/compat.py` 或 `niu_api/chat.py` — db 监测程序（后台 asyncio task）
-- `agent/session.py` 或 `niu_api/session.py` — messages db 加 `role="subagent_msg"` 支持
+- `agent/subagent_supplement.py`（新建）— SubagentSupplementQueue + SubagentSupplementItem
+- `agent/subagent.py` — `_run_agent_loop` 改造 `enable_supplement=True`、drain 自己的 queue、移除 `is_stop_requested()` 检查、`call_subagent` 签名扩展加 `supplement_queue` 可选参数
+- `agent/runner.py` — `_stop_requested` 语义调整（只主 Agent）、双击停止触发批量 /stop、`_inject_dynamic_resources` 加 `role="subagent_msg"` 消息注入支持
+- `agent/generic/agent_loop.py` — 主 Agent supplement queue 消费 `@主Agent` 消息、逐条回复约束（复用现有 drain_supplement，加 `@主Agent` 消息路由）
+- `niu_api/compat.py` 或 `niu_api/chat.py` — db 监测程序（后台 asyncio task，轮询 `role="subagent_msg"` 消息路由）
+- `agent/session.py` 或 `niu_api/session.py` — messages db 加 `role="subagent_msg"` 值支持（content 前缀编码目标/发送者名，零 schema 改动）
 - `config/agents/niu.md` — 主 Agent 提示词加逐条回复约束 + 命名规则说明
+- `ui/assistant/chat.html` — 双击停止按钮识别 + `role="subagent_msg"` 消息特殊样式渲染 + 单击后子 Agent 仍在跑的 UX 提示
 - `ui/assistant/main.js` — 双击停止按钮识别（现有单击停止的扩展）
 
 ### 阶段二
-- `agent/subagent.py` — `build_subagent_tool_schema` 加 `async_mode`、`_dispatch_async_subagent`、`_run_subagent_async`、`ask_main_agent` 工具注入
-- `agent/handler.py` — `dispatch` 的 `chat-with-*` 分支改造
-- `agent/subagent_registry.py`（新建）— SubagentRegistry + RunningSubagent + SubagentMemoryContext
-- `agent/generic/agent_loop.py` 或 `agent/runner.py` — `_inject_dynamic_resources` 加后台子 Agent 清单注入
-- `agent/tool_registry.py` 或 `agent/handler.py` — `check_subagent_progress` 工具注册
+- `agent/subagent.py` — `build_subagent_tool_schema` 加 `async_mode`、`_dispatch_async_subagent`、`_run_subagent_async`、`ask_main_agent` 工具注入、`call_subagent` 签名加 `memory_context` 参数、`_run_agent_loop` 加 memory_context 更新钩子（在 `chunk = next(gen)` 后检测 StreamEvent 类型提取请求/响应）
+- `agent/handler.py` — `dispatch` 的 `chat-with-*` 分支改造（同步/异步分流）
+- `agent/subagent_registry.py`（新建）— SubagentRegistry + RunningSubagent + SubagentMemoryContext（含 snapshot/update 加锁）
+- `agent/generic/agent_loop.py` 或 `agent/runner.py` — `_inject_dynamic_resources` 加后台子 Agent 清单注入（含数量上限 5）
+- `agent/tool_registry.py` 或 `agent/handler.py` — `check_subagent_progress` 工具注册（调 `memory_context.snapshot()` 读一致状态）
 - `config/agents/*.md` — 6 个子 Agent frontmatter 加 `allowAsync`（默认 false，用户决定哪些设 true）
 - `config/agents/niu.md` — 主 Agent 提示词加异步调用说明
 - `tests/test_subagent_interaction.py`（新建）— 阶段一集成测试
