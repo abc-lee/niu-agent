@@ -287,6 +287,7 @@ def agent_runner_loop(
     on_context_high_usage=None,  # 主Agent超阈值回调；None=子Agent走FIFO
     enable_supplement=True,  # False for sub-agents to prevent stealing main agent's supplements
     system_message: Optional[dict] = None,  # 已组装好的 system message（首轮即带 cache_control）
+    supplement_drain=None,  # 子 Agent 传入自己的 drain 函数；None 时走全局 drain_supplement
 ):
     from agent.runner import is_stop_requested, clear_stop, drain_supplement
 
@@ -698,7 +699,11 @@ def agent_runner_loop(
             }
 
         # --- 见缝插针：读取用户在 Agent 运行期间发送的补充消息 ---
-        supplement = drain_supplement() if enable_supplement else None
+        if enable_supplement:
+            drain_fn = supplement_drain if supplement_drain is not None else drain_supplement
+            supplement = drain_fn()
+        else:
+            supplement = None
 
         # 警告注入：只在有工具调用时才有意义（LLM 还在工作，可能需要调整策略）
         # 补充消息插在 next_prompt 前面，当前任务作为最后一条，LLM 优先处理
