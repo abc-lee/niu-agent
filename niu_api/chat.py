@@ -248,9 +248,15 @@ async def persist_agent_reply(
             if role == "tool" and tool_call_id:
                 await store.add_message(role="tool", content=content or "", tool_call_id=tool_call_id)
             elif role == "assistant":
-                pid = await store.add_message(role="assistant", content=content or "", tool_calls=tool_calls)
+                # rv 路径下 assistant content 可能仍含 @ 消息原文，
+                # strip 避免与 subagent_msg 重复入库（@ 消息已在上文以
+                # role=subagent_msg 单独存）。strip 后为空则跳过。
+                content = strip_at_messages(content or "")
+                if not content.strip():
+                    continue
+                pid = await store.add_message(role="assistant", content=content, tool_calls=tool_calls)
                 last_assistant_id = pid
-                last_assistant_content = content or ""
+                last_assistant_content = content
 
         # 纯文本回复不在 rv["messages"] 中，仅在逐条推送未执行时从 full_reply 持久化
         if not persisted_msgs and full_reply.strip() and full_reply.strip() != last_assistant_content.strip():
