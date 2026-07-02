@@ -180,6 +180,11 @@ async def lifespan(app: FastAPI):
     await start_chat_queue()
     logger.info("ChatQueue started")
 
+    # 6.65. Start db_monitor (轮询 messages db 中 subagent_msg 消息按 @目标 路由)
+    from niu_api.db_monitor import run_db_monitor
+    db_monitor_task = asyncio.create_task(run_db_monitor())
+    logger.info("db_monitor task 已启动")
+
     # 6.7. Signal scheduler that system is ready (ChatQueue operational)
     from niu_api.internal.scheduler.service import signal_scheduler_ready
     signal_scheduler_ready()
@@ -375,6 +380,17 @@ async def lifespan(app: FastAPI):
         logger.warning(f"Failed to stop LightRAG event loop: {e}")
 
     # 停止 ChatQueue
+    try:
+        # 先取消 db_monitor task（避免停止后还在写入）
+        db_monitor_task.cancel()
+        try:
+            await db_monitor_task
+        except asyncio.CancelledError:
+            pass
+        logger.info("db_monitor task 已取消")
+    except Exception as e:
+        logger.warning(f"Failed to cancel db_monitor task: {e}")
+
     try:
         from niu_api.chat_queue import stop_chat_queue
         await asyncio.wait_for(stop_chat_queue(), timeout=10.0)
