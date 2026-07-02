@@ -632,6 +632,17 @@ async def chat_status():
     return {"busy": _chat_lock.locked()}
 
 
+@router.post("/api/stop_all")
+async def stop_all_subagents():
+    """停止所有在跑的子 Agent（双击停止按钮触发）。
+
+    停主 Agent 由前端单独发 /stop 处理（现有机制）。
+    """
+    from agent.runner import request_stop_all_subagents
+    request_stop_all_subagents()
+    return {"status": "ok"}
+
+
 @router.post("/chat/session")
 async def get_or_create_session(request: ChatRequest) -> dict:
     """Get or create a chat session"""
