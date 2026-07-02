@@ -686,14 +686,43 @@
     // ========== 发送消息 ==========
     sendBtn.addEventListener('click', sendMessage);
 
-    stopBtn.addEventListener('click', async () => {
-      try {
-        await window.electronAPI.sendMessage('/stop');
-      } catch (e) {
-        console.error('停止失败:', e);
-        addSystemMessage('停止失败: ' + (e.message || e));
+    // === 双击停止按钮逻辑 ===
+    // 双击：触发批量 /stop 所有子 Agent + 停主 Agent
+    // 单击：只停主 Agent + 检查子 Agent 状态（Task 13 补 checkRunningSubagents）
+    let stopClickTimer = null;
+    let stopClickFired = false;  // 哨兵：双击已触发，400ms 内后续点击忽略
+    const STOP_DOUBLE_CLICK_WINDOW = 400; // ms
+
+    stopBtn.addEventListener('click', () => {
+      if (stopClickFired) {
+        // 双击刚触发，400ms 内的后续点击忽略
+        return;
+      }
+      if (stopClickTimer) {
+        // 第二次点击（双击）
+        clearTimeout(stopClickTimer);
+        stopClickTimer = null;
+        stopClickFired = true;
+        setTimeout(() => { stopClickFired = false; }, STOP_DOUBLE_CLICK_WINDOW);
+        // 双击：触发批量 /stop 所有子 Agent + 停主 Agent
+        fetch('/api/stop_all', { method: 'POST' }).catch(e => console.error('stop_all 请求失败', e));
+        window.electronAPI.sendMessage('/stop').catch(e => console.error('停止主 Agent 失败:', e));
+      } else {
+        // 第一次点击（单击）
+        stopClickTimer = setTimeout(() => {
+          stopClickTimer = null;
+          // 单击超时：只停主 Agent
+          window.electronAPI.sendMessage('/stop').catch(e => console.error('停止主 Agent 失败:', e));
+          // 提示用户还有子 Agent 在跑（如果有）—— Task 13 实现
+          checkRunningSubagents();
+        }, STOP_DOUBLE_CLICK_WINDOW);
       }
     });
+
+    async function checkRunningSubagents() {
+      // Task 13 实现，本 Task 先空函数
+      // TODO: Task 13 加 /api/subagents/running 查询 + alert 提示
+    }
 
     // 自动调整 textarea 高度
     userInput.addEventListener('input', () => {
