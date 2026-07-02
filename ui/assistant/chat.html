@@ -157,6 +157,24 @@
       /* 铅笔笔迹效果 */
       -webkit-text-stroke: 0.2px rgba(0,0,0,0.35);
     }
+    /* subagent_msg：主↔子 Agent 对话侧边小卡片样式 */
+    .message.subagent-msg {
+      margin: 8px 16px;
+      padding: 6px 10px;
+      background: #f5f5f5;
+      border-left: 3px solid #888;
+      font-size: 0.85em;
+      color: #555;
+      border-radius: 4px;
+    }
+    .message.subagent-msg .subagent-direction {
+      font-size: 0.8em;
+      color: #888;
+      margin-bottom: 2px;
+    }
+    .message.subagent-msg .subagent-content {
+      color: #333;
+    }
     /* Markdown 渲染后的表格样式 */
     .message.assistant .message-text table {
       border-collapse: collapse;
@@ -932,6 +950,10 @@
     function addMessage(role, text, images = [], skipAppend = false) {
       // 双管道分离：tool 消息只走 DB 管道，不渲染到对话框
       if (role === 'tool') return null;
+      // === 新增：subagent_msg 特殊渲染（主↔子 Agent 对话，区别于用户↔主 Agent） ===
+      if (role === 'subagent_msg') {
+        return addSubagentMessage(text, skipAppend);
+      }
       const div = document.createElement('div');
       div.className = `message ${role}`;
       
@@ -1062,8 +1084,42 @@
       }
       return div;
     }
-    
-    // 带消息ID的消息（用于历史加载）
+
+    // ========== subagent_msg 渲染（主↔子 Agent 对话侧边卡片） ==========
+    function addSubagentMessage(text, skipAppend = false) {
+      // 解析格式：@目标 [发送者名] 内容
+      const match = text.match(/^@(\S+)(?:\s+\[([^\]]+)\])?\s*(.*)$/s);
+      if (!match) {
+        // 解析失败，按普通 assistant 消息渲染降级
+        return addMessage('assistant', text, [], skipAppend);
+      }
+      const target = match[1];
+      const sender = match[2] || '';
+      const content = match[3].trim();
+
+      // 方向：sender → target（无 sender 时只显示 → target）
+      const direction = sender ? `${sender} → ${target}` : `→ ${target}`;
+
+      const div = document.createElement('div');
+      div.className = 'message subagent-msg';
+      div.innerHTML = `
+        <div class="subagent-direction">${escapeHtml(direction)}</div>
+        <div class="subagent-content">${escapeHtml(content)}</div>
+      `;
+      if (!skipAppend) {
+        messages.appendChild(div);
+        messages.scrollTop = messages.scrollHeight;
+      }
+      return div;
+    }
+
+    // HTML 转义辅助函数
+    function escapeHtml(str) {
+      const div = document.createElement('div');
+      div.textContent = str;
+      return div.innerHTML;
+    }
+
     function addMessageWithId(role, text, id, images = []) {
       // 检查是否已存在相同ID的消息，避免重复
       const existing = document.querySelector(`.message[data-id="${id}"]`);
