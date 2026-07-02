@@ -10,6 +10,7 @@ disableBaseTools:
   - write
   - edit
   - code_run
+  - grep
 ---
 
 # 记忆压缩器（Context Manager）

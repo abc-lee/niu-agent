@@ -10,6 +10,8 @@ disableBaseTools:
   - write
   - edit
   - code_run
+  - grep
+  - read
 ---
 
 # 内容提炼（Entity Extractor）
