@@ -35,7 +35,7 @@ class Message:
     """A chat message"""
 
     id: str
-    role: str  # 'user' | 'assistant' | 'system' | 'tool'
+    role: str  # 'user' | 'assistant' | 'system' | 'tool' | 'subagent_msg'
     content: str
     tool_calls: List[Dict] = field(default_factory=list)
     tool_results: List[Dict] = field(default_factory=list)
