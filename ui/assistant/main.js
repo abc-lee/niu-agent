@@ -220,7 +220,7 @@ function createChatWindow() {
     config.chat.y = posY;
     saveConfig(config);
   });
-  
+
   // 窗口大小变化时保存
   chatWindow.on('resized', () => {
     if (!chatWindow) return;
@@ -229,7 +229,19 @@ function createChatWindow() {
     config.chat.height = h;
     saveConfig(config);
   });
-  
+
+  // 窗口显示/获得焦点时通知前端同步状态（如停止按钮的可见性）
+  chatWindow.on('show', () => {
+    if (chatWindow && !chatWindow.isDestroyed()) {
+      chatWindow.webContents.send('sync-state');
+    }
+  });
+  chatWindow.on('focus', () => {
+    if (chatWindow && !chatWindow.isDestroyed()) {
+      chatWindow.webContents.send('sync-state');
+    }
+  });
+
   chatWindow.on('closed', () => {
     chatWindow = null;
     if (spiritWindow && !spiritWindow.isDestroyed()) {
@@ -1128,6 +1140,26 @@ ipcMain.handle('get-pending-messages', async () => {
   return messages;
 });
 
+// 获取当前 Agent 是否忙碌（前端窗口恢复时同步停止按钮状态）
+ipcMain.handle('get-chat-status', async () => {
+  return new Promise((resolve) => {
+    http.get('http://127.0.0.1:' + (process.env.NIU_API_PORT || '9876') + '/api/chat/status', (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        try {
+          resolve(JSON.parse(data));
+        } catch (e) {
+          resolve({ busy: false });
+        }
+      });
+    }).on('error', (e) => {
+      console.error('获取聊天状态失败:', e.message);
+      resolve({ busy: false });
+    });
+  });
+});
+
 // 延迟启动轮询（等待后端完全启动）
 setTimeout(() => {
   startPendingAlertsPolling();
@@ -1159,7 +1191,7 @@ function startMessageEventStream() {
     console.log('[SSE] Connected to message event stream');
 
     // 重连时通知 chat 刷新（chat 的 onNewMessage 会触发 refreshFromDB）
-    if (sseConnectedBefore && chatWindow && !chatWindow.isDestroyed() && chatWindow.isVisible()) {
+    if (sseConnectedBefore && chatWindow && !chatWindow.isDestroyed()) {
       chatWindow.webContents.send('new-message');
     }
     sseConnectedBefore = true;
@@ -1177,7 +1209,7 @@ function startMessageEventStream() {
             const event = JSON.parse(jsonStr);
             if (event.type === 'new_message') {
               // 通知 chat 有新消息（传递 role 字段，用于 chat_busy/chat_idle 状态机控制）
-              if (chatWindow && !chatWindow.isDestroyed() && chatWindow.isVisible()) {
+              if (chatWindow && !chatWindow.isDestroyed()) {
                 chatWindow.webContents.send('new-message', { role: event.role });
               }
             } else if (event.type === 'tool_status') {

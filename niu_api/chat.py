@@ -610,6 +610,12 @@ async def events_stream():
     )
 
 
+@router.get("/api/chat/status")
+async def chat_status():
+    """返回当前 Agent 是否忙碌。用于前端窗口恢复时同步停止按钮状态。"""
+    return {"busy": _chat_lock.locked()}
+
+
 @router.post("/chat/session")
 async def get_or_create_session(request: ChatRequest) -> dict:
     """Get or create a chat session"""

@@ -67,4 +67,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 接收入库完成通知（SSE推送）
   onIngestCompleted: (callback) => ipcRenderer.on('ingest-completed', callback),
 
+  // 获取当前 Agent 是否忙碌（窗口恢复时同步停止按钮状态）
+  getChatStatus: () => ipcRenderer.invoke('get-chat-status'),
+
+  // 窗口显示/获得焦点时通知前端同步状态
+  onSyncState: (callback) => ipcRenderer.on('sync-state', () => callback()),
+
 });
