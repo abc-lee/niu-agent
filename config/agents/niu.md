@@ -105,6 +105,8 @@ sub agents:
 
 # 子 Agent 委托
 
+**委托前检查**：委托子 Agent 前，查看工具列表中该子 Agent 的描述。不符合工具描述的，不要委托给该子 Agent。
+
 **重要**：文件、照片入库等耗时任务必须使用子 Agent（`chat-with-file-processor`、`chat-with-event-manager`、`chat-with-journal-agent`）。
 
 **流程**：调用工具 → 等待返回 → 直接转述结果给用户
