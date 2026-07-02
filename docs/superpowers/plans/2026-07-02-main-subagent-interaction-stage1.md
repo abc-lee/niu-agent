@@ -420,8 +420,10 @@ Read `agent/generic/agent_loop.py:273-290` 拿到完整签名。
 
 Edit `agent/generic/agent_loop.py`，在 `agent_runner_loop` 签名末尾加参数：
 
+**注意**：`agent_runner_loop` 是**同步生成器**（`def`，不是 `async def`），现有代码 `agent_loop.py:273` 是 `def agent_runner_loop(...)`。保持 `def`，不要改成 `async def`（否则会破坏所有 `next(gen)` 调用方）。
+
 ```python
-async def agent_runner_loop(
+def agent_runner_loop(
     client,
     system_prompt,
     user_input,
@@ -1645,12 +1647,21 @@ def test_extract_single_at_message():
 
 
 def test_extract_multiple_at_messages():
-    """多条 @ 消息提取。"""
+    """多条 @ 消息提取（含多连字符类型）。"""
     reply = "@file-processor-a1b2 是的，用 OCR\n@context-manager-c3d4 暂时不用压缩"
     msgs = extract_at_messages(reply)
     assert len(msgs) == 2
     assert msgs[0]["target"] == "file-processor-a1b2"
-    assert msgs[1]["target"] == "context-manager-c3d4"
+    assert msgs[1]["target"] == "context-manager-c3d4"  # 多连字符类型
+
+
+def test_extract_multi_hyphen_type():
+    """多连字符类型子 Agent 名（如 context-manager、brain-region）能正确匹配。"""
+    reply = "@context-manager-c3d4 压缩吧\n@brain-region-d5e6 激活"
+    msgs = extract_at_messages(reply)
+    assert len(msgs) == 2
+    assert msgs[0]["target"] == "context-manager-c3d4"
+    assert msgs[1]["target"] == "brain-region-d5e6"
 
 
 def test_extract_no_at_message():
@@ -1701,8 +1712,9 @@ Create: `agent/at_message_parser.py`
 import re
 
 # 匹配 @<type>-<4hex> <内容>，内容到行尾或下一个 @
-# [a-z]+ 严格匹配子 Agent 类型（小写字母），[0-9a-f]{4} 严格匹配 4 位 hex（secrets.token_hex(2) 输出）
-_AT_PATTERN = re.compile(r'@([a-z]+-[0-9a-f]{4})\s+(.*?)(?=\s*@[a-z]+-[0-9a-f]{4}\s|\Z)', re.DOTALL)
+# type 支持多连字符（如 context-manager、brain-region）：[a-z]+(?:-[a-z]+)*
+# 后缀 [0-9a-f]{4} 严格匹配 4 位 hex（secrets.token_hex(2) 输出）
+_AT_PATTERN = re.compile(r'@([a-z]+(?:-[a-z]+)*-[0-9a-f]{4})\s+(.*?)(?=\s*@[a-z]+(?:-[a-z]+)*-[0-9a-f]{4}\s|\Z)', re.DOTALL)
 
 
 def extract_at_messages(reply_text: str) -> list:
