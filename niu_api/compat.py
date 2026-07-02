@@ -1722,6 +1722,13 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
     session_id = request.get("session_id", "default")
     mode = request.get("mode", "sleep")
 
+    # 广播压缩状态 started 事件（前端圆环动画启动）
+    try:
+        from niu_api.chat import notify_compact_status_sync
+        notify_compact_status_sync("started", mode=mode)
+    except Exception:
+        pass
+
     logger.info(f"[Tidy] Context tidy triggered: session={session_id}, mode={mode}")
 
     try:
@@ -3095,6 +3102,13 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
         import traceback
         logger.error(f"[Tidy] Error: {e}\n{traceback.format_exc()}")
         return {"status": "error", "message": str(e)}
+    finally:
+        # 无论成功/失败/异常都必须广播 done，避免前端圆环卡死
+        try:
+            from niu_api.chat import notify_compact_status_sync
+            notify_compact_status_sync("done", mode=mode)
+        except Exception:
+            pass
 
 
 @router.post("/api/vector/cleanup")

@@ -835,6 +835,14 @@ class NiuRunner:
 
         logger.info(f"[Runner] Context high usage: {tokens_used}/{tokens_limit} tokens "
                      f"({tokens_used/tokens_limit:.1%})")
+
+        # 广播压缩状态 started 事件（前端圆环动画启动，模式1 auto）
+        try:
+            from niu_api.chat import notify_compact_status_sync
+            notify_compact_status_sync("started", mode="auto")
+        except Exception:
+            pass
+
         try:
             # === 读取游标 ===
             niu_dir = _Path.home() / ".niu"
@@ -1387,6 +1395,13 @@ class NiuRunner:
             import traceback
             tb = traceback.format_exc()
             logger.error(f"[Runner] Proactive compress failed: {e}\n{tb}")
+        finally:
+            # 无论成功/失败/异常都必须广播 done，避免前端圆环卡死
+            try:
+                from niu_api.chat import notify_compact_status_sync
+                notify_compact_status_sync("done", mode="auto")
+            except Exception:
+                pass
 
     def _get_brain_injector(self):
         """Get or create the cached brain context injector chain.
