@@ -55,91 +55,170 @@ def test_truncate_dict_result_non_serializable():
     assert "[截断]" in result
 
 
-def test_disk_large_dict_result_gets_truncated(monkeypatch):
-    """disk 工具返回超大 dict 时，进 messages 前被截断到 MAX_TOOL_RESULT_CHARS。"""
-    import json
-    from agent.handler import NiuHandler
-    from niu_api.internal.disk_engine import DiskResult
+def test_unified_gate_truncates_large_dict_from_dispatch(monkeypatch):
+    """统一关口在 dispatch 返回后截断超大 dict 结果。
 
-    # 构造超大 MCP 结果（模拟 lightrag_get_graph depth=3 limit=100 的返回）
-    big_nodes = [{"id": f"node_{i}", "description": "x" * 500} for i in range(1000)]
-    big_result = {"status": "ok", "center": big_nodes[0], "nodes": big_nodes, "edges": [], "stats": {}}
-    serialized_len = len(json.dumps(big_result, ensure_ascii=False))
-    assert serialized_len > MAX_TOOL_RESULT_CHARS, f"测试数据应超限，实际 {serialized_len}"
+    构造一个返回 97 万字符 dict 的工具，通过 agent_runner_loop 调用，
+    验证 messages 里的 tool 结果被截断到 ≤ MAX_TOOL_RESULT_CHARS。
+    """
+    from types import SimpleNamespace
+    from agent.generic.agent_loop import agent_runner_loop, MAX_TOOL_RESULT_CHARS
+    from agent.handler import StepOutcome
 
-    # mock disk_engine.execute 返回 EXECUTE + big_result
-    disk_result = DiskResult(action="EXECUTE", tool_path="lightrag/lightrag_get_graph", raw_result=big_result)
+    # 构造超大 dict 结果
+    large_result = {"nodes": [{"id": i, "data": "x" * 1000} for i in range(1000)]}
 
-    # 用 NiuHandler.__new__ 绕过 __init__，手动设 dispatch 所需的全部属性
-    handler = NiuHandler.__new__(NiuHandler)
-    handler.disk_engine = type("FakeDiskEngine", (), {
-        "execute": lambda self, cmd: disk_result,
-        "config": type("FakeConfig", (), {"get_server_by_dir": lambda self, d: None})(),
-    })()
-    handler.tool_before_callback = lambda *a, **kw: None
-    handler.tool_after_callback = lambda *a, **kw: None
-    handler._is_subagent = True  # 跳过 brain_region reinforce（避免依赖）
-    handler.cwd = "/tmp"
-    handler.mcp_client = None
-    handler._done_hooks = []
-    handler.current_turn = 0
+    # mock handler.dispatch 直接返回含超大 dict 的 StepOutcome
+    class FakeHandler:
+        current_turn = 0
+        max_turns = 1
+        def dispatch(self, tool_name, args, response, index=0):
+            yield  # 让方法成为生成器（agent_loop 用 exhaust/yield from 消费）
+            return StepOutcome(large_result, next_prompt="")
+        def tool_before_callback(self, *a, **kw):
+            return
+            yield  # 让方法成为生成器（try_call_generator 兼容）
+        def tool_after_callback(self, *a, **kw):
+            return
+            yield
+        def next_prompt_patcher(self, next_prompt, outcome, turn):
+            return next_prompt
 
-    # 调用 dispatch（公开方法，签名 dispatch(tool_name, args, response, index=0)）
-    gen = handler.dispatch("disk", {"command": "/lightrag/lightrag_get_graph explore --entity test --depth 3 --limit 100"}, response=None, index=0)
-    # 消费 generator 拿 StepOutcome
-    outcome = None
+    # mock client：chat 必须是生成器，FakeResponse.tool_calls 必须是对象列表
+    class FakeClient:
+        def __init__(self):
+            self._call_count = 0
+        def chat(self, **kw):
+            self._call_count += 1
+            yield  # 生成器：yield 后 return（agent_loop 用 exhaust/yield from 消费）
+            if self._call_count == 1:
+                # 第一轮：返回工具调用
+                return SimpleNamespace(
+                    content="",
+                    tool_calls=[SimpleNamespace(
+                        id="tc1",
+                        function=SimpleNamespace(name="test_tool", arguments="{}"),
+                    )],
+                    usage={"prompt_tokens": 100, "completion_tokens": 10, "total_tokens": 110},
+                    finish_reason="tool_calls",
+                )
+            # 第二轮：返回空 tool_calls + content，触发 L489 `if not response.tool_calls:` 退出
+            return SimpleNamespace(
+                content="done",
+                tool_calls=[],
+                usage={"prompt_tokens": 100, "completion_tokens": 10, "total_tokens": 110},
+                finish_reason="stop",
+            )
+
+    # 跑一轮 agent_runner_loop
+    handler = FakeHandler()
+    gen = agent_runner_loop(
+        client=FakeClient(),
+        system_prompt="test",
+        user_input="test",
+        handler=handler,
+        tools_schema=[{"type": "function", "function": {"name": "test_tool", "parameters": {"type": "object", "properties": {}}}}],
+        verbose=False,
+    )
+    # 用 StopIteration.value 拿 agent_runner_loop 的 return 值
+    # （list(gen) 会消费所有 yield 但丢弃 StopIteration.value）
+    result_events = []
+    final_return = None
     try:
         while True:
-            next(gen)
+            result_events.append(next(gen))
     except StopIteration as e:
-        outcome = e.value
-
-    assert outcome is not None, "dispatch 应返回 StepOutcome"
-    result = outcome.data
-    # 验证被截断（不再是原始 big_result）
-    result_str = json.dumps(result, ensure_ascii=False) if isinstance(result, (dict, list)) else str(result)
-    assert len(result_str) <= MAX_TOOL_RESULT_CHARS, f"disk 结果应被截断到 {MAX_TOOL_RESULT_CHARS}，实际 {len(result_str)}"
-    assert "截断" in result_str or "truncated" in result_str
+        final_return = e.value
+    messages = final_return.get("messages", []) if final_return else []
+    tool_msgs = [m for m in messages if m.get("role") == "tool"]
+    assert tool_msgs, "should have tool message"
+    content = tool_msgs[0].get("content", "")
+    assert len(content) <= MAX_TOOL_RESULT_CHARS, (
+        f"unified gate should truncate to {MAX_TOOL_RESULT_CHARS}, got {len(content)}"
+    )
 
 
 def test_disk_large_str_result_gets_truncated(monkeypatch):
-    """disk 工具返回超大 str 时，进 messages 前被截断。"""
-    from agent.handler import NiuHandler
-    from niu_api.internal.disk_engine import DiskResult
+    """disk 工具返回超大 str 时，由 agent_loop 统一关口截断到 MAX_TOOL_RESULT_CHARS。
+
+    Task 2 移除了 handler 内部 str 截断，str 路径也走 agent_loop 统一关口。
+    """
+    from types import SimpleNamespace
+    from agent.generic.agent_loop import agent_runner_loop, MAX_TOOL_RESULT_CHARS
+    from agent.handler import StepOutcome
 
     big_str = "x" * (MAX_TOOL_RESULT_CHARS + 5000)
-    disk_result = DiskResult(action="EXECUTE", tool_path="some/tool", raw_result=big_str)
 
-    handler = NiuHandler.__new__(NiuHandler)
-    handler.disk_engine = type("FakeDiskEngine", (), {
-        "execute": lambda self, cmd: disk_result,
-        "config": type("FakeConfig", (), {"get_server_by_dir": lambda self, d: None})(),
-    })()
-    handler.tool_before_callback = lambda *a, **kw: None
-    handler.tool_after_callback = lambda *a, **kw: None
-    handler._is_subagent = True
-    handler.cwd = "/tmp"
-    handler.mcp_client = None
-    handler._done_hooks = []
-    handler.current_turn = 0
+    class FakeHandler:
+        current_turn = 0
+        max_turns = 1
+        def dispatch(self, tool_name, args, response, index=0):
+            yield
+            return StepOutcome(big_str, next_prompt="")
+        def tool_before_callback(self, *a, **kw):
+            return
+            yield
+        def tool_after_callback(self, *a, **kw):
+            return
+            yield
+        def next_prompt_patcher(self, next_prompt, outcome, turn):
+            return next_prompt
 
-    gen = handler.dispatch("disk", {"command": "/some/tool"}, response=None, index=0)
-    outcome = None
+    class FakeClient:
+        def __init__(self):
+            self._call_count = 0
+        def chat(self, **kw):
+            self._call_count += 1
+            yield
+            if self._call_count == 1:
+                return SimpleNamespace(
+                    content="",
+                    tool_calls=[SimpleNamespace(
+                        id="tc1",
+                        function=SimpleNamespace(name="disk", arguments="{}"),
+                    )],
+                    usage={"prompt_tokens": 100, "completion_tokens": 10, "total_tokens": 110},
+                    finish_reason="tool_calls",
+                )
+            return SimpleNamespace(
+                content="done",
+                tool_calls=[],
+                usage={"prompt_tokens": 100, "completion_tokens": 10, "total_tokens": 110},
+                finish_reason="stop",
+            )
+
+    handler = FakeHandler()
+    gen = agent_runner_loop(
+        client=FakeClient(),
+        system_prompt="test",
+        user_input="test",
+        handler=handler,
+        tools_schema=[{"type": "function", "function": {"name": "disk", "parameters": {"type": "object", "properties": {}}}}],
+        verbose=False,
+    )
+    result_events = []
+    final_return = None
     try:
         while True:
-            next(gen)
+            result_events.append(next(gen))
     except StopIteration as e:
-        outcome = e.value
+        final_return = e.value
+    messages = final_return.get("messages", []) if final_return else []
+    tool_msgs = [m for m in messages if m.get("role") == "tool"]
+    assert tool_msgs
+    content = tool_msgs[0].get("content", "")
+    assert len(content) <= MAX_TOOL_RESULT_CHARS, (
+        f"unified gate should truncate str to {MAX_TOOL_RESULT_CHARS}, got {len(content)}"
+    )
+    assert "[截断]" in content
 
-    assert outcome is not None
-    result = outcome.data
-    assert isinstance(result, str)
-    assert len(result) <= MAX_TOOL_RESULT_CHARS
-    assert "[截断]" in result
 
+def test_explore_node_returns_full_result_no_internal_truncation(monkeypatch):
+    """explore_node 不再在 adapter 内部截断，返回完整结果。
 
-def test_explore_node_large_result_truncated(monkeypatch):
-    """explore_node 返回超大图时，被截断到 LIGHTRAG_GRAPH_MAX_CHARS (20000) 字符。"""
+    截断由 agent_loop 统一关口处理（见 test_unified_gate_truncates_large_dict_from_dispatch）。
+    前端 API 和内部业务调 explore_node 拿完整结果。
+    """
     import json
     from niu_api.internal.lightrag_adapter import LightRAGAdapter, LIGHTRAG_GRAPH_MAX_CHARS
 
@@ -168,9 +247,11 @@ def test_explore_node_large_result_truncated(monkeypatch):
     result = adapter.explore_node(entity_name="test", depth=3)
 
     serialized = json.dumps(result, ensure_ascii=False)
-    assert len(serialized) <= LIGHTRAG_GRAPH_MAX_CHARS, f"explore_node 结果应截断到 {LIGHTRAG_GRAPH_MAX_CHARS}，实际 {len(serialized)}"
-    # 验证含截断标记
-    assert result.get("status") == "truncated" or "截断" in serialized
+    # 现在不截断，返回完整结果（可能 > 20K）
+    assert len(serialized) > LIGHTRAG_GRAPH_MAX_CHARS, (
+        f"explore_node should return full result (>{LIGHTRAG_GRAPH_MAX_CHARS} chars), got {len(serialized)}"
+    )
+    assert result.get("status") != "truncated", "explore_node should not truncate internally"
 
 
 def test_explore_node_small_result_not_truncated(monkeypatch):
@@ -254,11 +335,10 @@ def test_enforce_message_budget_no_tool_messages():
     assert result == messages
 
 
-def test_explore_node_center_huge_description_truncated(monkeypatch):
-    """center 自身 description 超大时（nodes 少），截断 center.description，结果仍 <= 20K。
+def test_explore_node_center_huge_description_not_truncated_internally(monkeypatch):
+    """center.description 超大时，adapter 不再内部截断，返回完整 description。
 
-    复现 Issue 1: center description 60K + nodes=[] 时 while 循环 keep_count=0
-    立即退出，返回 60K 超限 3 倍。
+    截断由 agent_loop 统一关口处理。
     """
     import json
     from niu_api.internal.lightrag_adapter import LightRAGAdapter, LIGHTRAG_GRAPH_MAX_CHARS
@@ -286,73 +366,314 @@ def test_explore_node_center_huge_description_truncated(monkeypatch):
 
     result = adapter.explore_node(entity_name="test", depth=1)
 
-    serialized = json.dumps(result, ensure_ascii=False)
-    assert len(serialized) <= LIGHTRAG_GRAPH_MAX_CHARS, (
-        f"center 超大时结果应仍 <= {LIGHTRAG_GRAPH_MAX_CHARS}，实际 {len(serialized)}"
-    )
-    assert result.get("status") == "truncated" or "截断" in serialized
+    center = result.get("center", {})
+    desc = center.get("description", "")
+    # 现在不截断，description 完整保留
+    assert len(desc) > 5000, f"center.description should be full (>{5000} chars), got {len(desc)}"
 
 
-def test_direct_mcp_large_dict_result_gets_truncated(monkeypatch):
-    """直接 MCP 调用（非 disk）返回超大 dict 时，进 messages 前被截断。
+def test_unified_gate_truncates_large_dict_from_mcp_path(monkeypatch):
+    """统一关口截断 MCP 工具路径的超大 dict 结果。
 
-    复现 Issue 2: handler.py 直接 MCP 路径（tool_name 含 /）绕过 dict 截断。
+    与 test_unified_gate_truncates_large_dict_from_dispatch 同构，
+    但 tool_name 含 '/'（MCP 路径），覆盖 MCP / 分支的统一关口。
     """
-    import json
-    from agent.handler import NiuHandler, _run_coroutine  # noqa: F401
-    from agent.generic.agent_loop import MAX_TOOL_RESULT_CHARS
+    from types import SimpleNamespace
+    from agent.generic.agent_loop import agent_runner_loop, MAX_TOOL_RESULT_CHARS
+    from agent.handler import StepOutcome
 
-    # 构造超大 MCP 结果（dict，序列化后超 MAX_TOOL_RESULT_CHARS）
-    big_result = {
-        "status": "ok",
-        "data": [{"id": f"item_{i}", "content": "x" * 500} for i in range(500)],
-    }
-    serialized_len = len(json.dumps(big_result, ensure_ascii=False))
-    assert serialized_len > MAX_TOOL_RESULT_CHARS, f"测试数据应超限，实际 {serialized_len}"
+    large_result = {"nodes": [{"id": i, "data": "x" * 1000} for i in range(1000)]}
+    mcp_tool = "lightrag-server/lightrag_get_graph"
 
-    # fake tool 函数返回 big_result（同步返回 dict，_run_coroutine 原样返回）
-    def fake_tool_fn(**kwargs):
-        return big_result
+    class FakeHandler:
+        current_turn = 0
+        max_turns = 1
+        def dispatch(self, tool_name, args, response, index=0):
+            yield  # 让方法成为生成器（agent_loop 用 exhaust/yield from 消费）
+            return StepOutcome(large_result, next_prompt="")
+        def tool_before_callback(self, *a, **kw):
+            return
+            yield
+        def tool_after_callback(self, *a, **kw):
+            return
+            yield
+        def next_prompt_patcher(self, next_prompt, outcome, turn):
+            return next_prompt
 
-    class FakeRegistry:
-        def get(self, name):
-            return fake_tool_fn
-        _server_tools = {}
-        _schemas = {}
+    class FakeClient:
+        def __init__(self):
+            self._call_count = 0
+        def chat(self, **kw):
+            self._call_count += 1
+            yield
+            if self._call_count == 1:
+                return SimpleNamespace(
+                    content="",
+                    tool_calls=[SimpleNamespace(
+                        id="tc1",
+                        function=SimpleNamespace(name=mcp_tool, arguments="{}"),
+                    )],
+                    usage={"prompt_tokens": 100, "completion_tokens": 10, "total_tokens": 110},
+                    finish_reason="tool_calls",
+                )
+            return SimpleNamespace(
+                content="done",
+                tool_calls=[],
+                usage={"prompt_tokens": 100, "completion_tokens": 10, "total_tokens": 110},
+                finish_reason="stop",
+            )
 
-    import agent.tool_registry as tr_module
-    monkeypatch.setattr(tr_module, "get_registry", lambda: FakeRegistry())
-
-    # 用 NiuHandler.__new__ 绕过 __init__，手动设 dispatch 所需属性
-    handler = NiuHandler.__new__(NiuHandler)
-    handler.tool_before_callback = lambda *a, **kw: None
-    handler.tool_after_callback = lambda *a, **kw: None
-    handler._is_subagent = True  # 跳过 brain_region reinforce
-    handler.cwd = "/tmp"
-    handler.mcp_client = None
-    handler._done_hooks = []
-    handler.current_turn = 0
-    handler.disk_engine = None  # 直接 MCP 路径不用 disk_engine
-
-    # 调用 dispatch（tool_name 含 /，走直接 MCP 分支）
-    gen = handler.dispatch(
-        "memory-server/some_tool", {"arg": "value"}, response=None, index=0
+    handler = FakeHandler()
+    gen = agent_runner_loop(
+        client=FakeClient(),
+        system_prompt="test",
+        user_input="test",
+        handler=handler,
+        tools_schema=[{"type": "function", "function": {"name": mcp_tool, "parameters": {"type": "object", "properties": {}}}}],
+        verbose=False,
     )
-    outcome = None
+    # 用 StopIteration.value 拿 agent_runner_loop 的 return 值
+    result_events = []
+    final_return = None
     try:
         while True:
-            next(gen)
+            result_events.append(next(gen))
     except StopIteration as e:
-        outcome = e.value
+        final_return = e.value
+    messages = final_return.get("messages", []) if final_return else []
+    tool_msgs = [m for m in messages if m.get("role") == "tool"]
+    assert tool_msgs
+    content = tool_msgs[0].get("content", "")
+    assert len(content) <= MAX_TOOL_RESULT_CHARS, (
+        f"unified gate should truncate MCP path to {MAX_TOOL_RESULT_CHARS}, got {len(content)}"
+    )
 
-    assert outcome is not None, "dispatch 应返回 StepOutcome"
-    result = outcome.data
-    result_str = (
-        json.dumps(result, ensure_ascii=False)
-        if isinstance(result, (dict, list))
-        else str(result)
+
+def test_unified_gate_truncates_large_list_result(monkeypatch):
+    """统一关口截断超大 list 结果（list 类型在 Task 1 Step 1 新增）。
+
+    list 截断后返回 {"status": "truncated", "message": ..., "data": 截断字符串}
+    dict（与 _truncate_dict_result 一致），LLM 看到的是结构化 dict 而非裸 str。
+    """
+    import json
+    from types import SimpleNamespace
+    from agent.generic.agent_loop import agent_runner_loop, MAX_TOOL_RESULT_CHARS
+    from agent.handler import StepOutcome
+
+    large_list = [{"id": i, "data": "x" * 1000} for i in range(1000)]
+    list_str = json.dumps(large_list, ensure_ascii=False)
+    assert len(list_str) > MAX_TOOL_RESULT_CHARS, "test setup: list should be large"
+
+    class FakeHandler:
+        current_turn = 0
+        max_turns = 1
+        def dispatch(self, tool_name, args, response, index=0):
+            yield  # 让方法成为生成器（agent_loop 用 exhaust/yield from 消费）
+            return StepOutcome(large_list, next_prompt="")
+        def tool_before_callback(self, *a, **kw):
+            return
+            yield
+        def tool_after_callback(self, *a, **kw):
+            return
+            yield
+        def next_prompt_patcher(self, next_prompt, outcome, turn):
+            return next_prompt
+
+    class FakeClient:
+        def __init__(self):
+            self._call_count = 0
+        def chat(self, **kw):
+            self._call_count += 1
+            yield
+            if self._call_count == 1:
+                return SimpleNamespace(
+                    content="",
+                    tool_calls=[SimpleNamespace(
+                        id="tc1",
+                        function=SimpleNamespace(name="list_tool", arguments="{}"),
+                    )],
+                    usage={"prompt_tokens": 100, "completion_tokens": 10, "total_tokens": 110},
+                    finish_reason="tool_calls",
+                )
+            return SimpleNamespace(
+                content="done",
+                tool_calls=[],
+                usage={"prompt_tokens": 100, "completion_tokens": 10, "total_tokens": 110},
+                finish_reason="stop",
+            )
+
+    handler = FakeHandler()
+    gen = agent_runner_loop(
+        client=FakeClient(),
+        system_prompt="test",
+        user_input="test",
+        handler=handler,
+        tools_schema=[{"type": "function", "function": {"name": "list_tool", "parameters": {"type": "object", "properties": {}}}}],
+        verbose=False,
     )
-    assert len(result_str) <= MAX_TOOL_RESULT_CHARS, (
-        f"直接 MCP 结果应被截断到 {MAX_TOOL_RESULT_CHARS}，实际 {len(result_str)}"
+    # 用 StopIteration.value 拿 agent_runner_loop 的 return 值
+    result_events = []
+    final_return = None
+    try:
+        while True:
+            result_events.append(next(gen))
+    except StopIteration as e:
+        final_return = e.value
+    messages = final_return.get("messages", []) if final_return else []
+    tool_msgs = [m for m in messages if m.get("role") == "tool"]
+    assert tool_msgs
+    content = tool_msgs[0].get("content", "")
+    assert len(content) <= MAX_TOOL_RESULT_CHARS, (
+        f"unified gate should truncate list to {MAX_TOOL_RESULT_CHARS}, got {len(content)}"
     )
-    assert "截断" in result_str or "truncated" in result_str
+    # list 截断后是 truncated dict（含 status/message/data 字段），不是裸 str
+    assert "truncated" in content, "truncated list should have 'truncated' marker"
+    assert "[截断]" in content, "truncated list should have [截断] marker"
+
+
+def test_unified_gate_preserves_small_dict(monkeypatch):
+    """小 dict 不被截断，原样返回。"""
+    from types import SimpleNamespace
+    from agent.generic.agent_loop import agent_runner_loop, MAX_TOOL_RESULT_CHARS
+    from agent.handler import StepOutcome
+
+    small_result = {"status": "success", "data": "small"}  # 远小于 30K
+
+    class FakeHandler:
+        current_turn = 0
+        max_turns = 1
+        def dispatch(self, tool_name, args, response, index=0):
+            yield  # 让方法成为生成器（agent_loop 用 exhaust/yield from 消费）
+            return StepOutcome(small_result, next_prompt="")
+        def tool_before_callback(self, *a, **kw):
+            return
+            yield
+        def tool_after_callback(self, *a, **kw):
+            return
+            yield
+        def next_prompt_patcher(self, next_prompt, outcome, turn):
+            return next_prompt
+
+    class FakeClient:
+        def __init__(self):
+            self._call_count = 0
+        def chat(self, **kw):
+            self._call_count += 1
+            yield
+            if self._call_count == 1:
+                return SimpleNamespace(
+                    content="",
+                    tool_calls=[SimpleNamespace(
+                        id="tc1",
+                        function=SimpleNamespace(name="test_tool", arguments="{}"),
+                    )],
+                    usage={"prompt_tokens": 100, "completion_tokens": 10, "total_tokens": 110},
+                    finish_reason="tool_calls",
+                )
+            return SimpleNamespace(
+                content="done",
+                tool_calls=[],
+                usage={"prompt_tokens": 100, "completion_tokens": 10, "total_tokens": 110},
+                finish_reason="stop",
+            )
+
+    handler = FakeHandler()
+    gen = agent_runner_loop(
+        client=FakeClient(),
+        system_prompt="test",
+        user_input="test",
+        handler=handler,
+        tools_schema=[{"type": "function", "function": {"name": "test_tool", "parameters": {"type": "object", "properties": {}}}}],
+        verbose=False,
+    )
+    # 用 StopIteration.value 拿 agent_runner_loop 的 return 值
+    result_events = []
+    final_return = None
+    try:
+        while True:
+            result_events.append(next(gen))
+    except StopIteration as e:
+        final_return = e.value
+    messages = final_return.get("messages", []) if final_return else []
+    tool_msgs = [m for m in messages if m.get("role") == "tool"]
+    assert tool_msgs
+    content = tool_msgs[0].get("content", "")
+    # 小 dict 不截断，content 是完整 json.dumps(small_result)，无 truncated 标记
+    assert "truncated" not in content, f"small dict should not be truncated, got: {content}"
+    assert "small" in content
+
+
+def test_unified_gate_truncates_should_exit_path(monkeypatch):
+    """should_exit 路径的 data 也被统一关口截断。"""
+    from types import SimpleNamespace
+    from agent.generic.agent_loop import agent_runner_loop, MAX_TOOL_RESULT_CHARS
+    from agent.handler import StepOutcome
+
+    large_result = {"nodes": [{"id": i, "data": "x" * 1000} for i in range(1000)]}
+
+    class FakeHandler:
+        current_turn = 0
+        max_turns = 1
+        def dispatch(self, tool_name, args, response, index=0):
+            # should_exit=True：触发 L557 分支，return {"result": "EXITED", "data": outcome.data, ...}
+            yield  # 让方法成为生成器（agent_loop 用 exhaust/yield from 消费）
+            return StepOutcome(large_result, next_prompt="", should_exit=True)
+        def tool_before_callback(self, *a, **kw):
+            return
+            yield
+        def tool_after_callback(self, *a, **kw):
+            return
+            yield
+        def next_prompt_patcher(self, next_prompt, outcome, turn):
+            return next_prompt
+
+    class FakeClient:
+        def __init__(self):
+            self._call_count = 0
+        def chat(self, **kw):
+            self._call_count += 1
+            yield
+            if self._call_count == 1:
+                return SimpleNamespace(
+                    content="",
+                    tool_calls=[SimpleNamespace(
+                        id="tc1",
+                        function=SimpleNamespace(name="test_tool", arguments="{}"),
+                    )],
+                    usage={"prompt_tokens": 100, "completion_tokens": 10, "total_tokens": 110},
+                    finish_reason="tool_calls",
+                )
+            return SimpleNamespace(
+                content="done",
+                tool_calls=[],
+                usage={"prompt_tokens": 100, "completion_tokens": 10, "total_tokens": 110},
+                finish_reason="stop",
+            )
+
+    handler = FakeHandler()
+    gen = agent_runner_loop(
+        client=FakeClient(),
+        system_prompt="test",
+        user_input="test",
+        handler=handler,
+        tools_schema=[{"type": "function", "function": {"name": "test_tool", "parameters": {"type": "object", "properties": {}}}}],
+        verbose=False,
+    )
+    # 用 StopIteration.value 拿 agent_runner_loop 的 return 值
+    result_events = []
+    final_return = None
+    try:
+        while True:
+            result_events.append(next(gen))
+    except StopIteration as e:
+        final_return = e.value
+    assert final_return is not None, "agent_runner_loop should return final dict"
+    # should_exit 路径返回 {"result": "EXITED", "data": outcome.data, "messages": ...}
+    assert final_return.get("result") == "EXITED"
+    messages = final_return.get("messages", [])
+    tool_msgs = [m for m in messages if m.get("role") == "tool"]
+    assert tool_msgs
+    content = tool_msgs[0].get("content", "")
+    assert len(content) <= MAX_TOOL_RESULT_CHARS, (
+        f"should_exit path should also be truncated, got {len(content)}"
+    )
