@@ -662,6 +662,24 @@ async def stop_all_subagents():
     return {"status": "ok"}
 
 
+@router.get("/api/subagents/running")
+async def list_running_subagents():
+    """返回当前在跑的子 Agent 列表（供前端双击停止 UX 提示）。"""
+    from agent.subagent_registry import SubagentRegistry
+    running = SubagentRegistry.list_running()
+    return {
+        "count": len(running),
+        "subagents": [
+            {
+                "unique_name": inst.unique_name,
+                "agent_type": inst.agent_type,
+                "is_sync": inst.is_sync,
+            }
+            for inst in running
+        ],
+    }
+
+
 @router.post("/chat/session")
 async def get_or_create_session(request: ChatRequest) -> dict:
     """Get or create a chat session"""
