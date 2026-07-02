@@ -192,6 +192,19 @@ async def persist_agent_reply(
         (message_id, full_reply) — message_id 为最后一条 assistant 消息的 ID，
         full_reply 为原始回复文本（不过滤，保持原样）
     """
+    # 通道一：解析 full_reply 里的 @ 消息，strip 后存纯净回复为 assistant，
+    # @ 消息以 role=subagent_msg 存 db（db_monitor 会路由到子 Agent queue）
+    from agent.at_message_parser import extract_at_messages, strip_at_messages, format_for_db
+
+    at_msgs = extract_at_messages(full_reply)
+    if at_msgs:
+        full_reply = strip_at_messages(full_reply)
+        for msg in at_msgs:
+            await store.add_message(
+                role="subagent_msg",
+                content=format_for_db(msg)
+            )
+
     message_id = None
 
     # DEBUG: Log rv structure for diagnosing tool_calls persistence
