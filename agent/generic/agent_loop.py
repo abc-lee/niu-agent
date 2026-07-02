@@ -592,6 +592,7 @@ def agent_runner_loop(
                     tool_msg = {
                         "role": "tool",
                         "tool_call_id": tool_result["tool_use_id"],
+                        # 冗余截断（统一关口已在 dispatch 后截断 outcome.data），保留作防御性编程
                         "content": _truncate_tool_content(tool_result["content"], tool_result.get("tool_name", "")),
                     }
                     _tn = tool_result.get("tool_name", "")
@@ -639,6 +640,7 @@ def agent_runner_loop(
             tool_msg = {
                 "role": "tool",
                 "tool_call_id": tool_result["tool_use_id"],
+                # 冗余截断（统一关口已在 dispatch 后截断 outcome.data），保留作防御性编程
                 "content": _truncate_tool_content(tool_result["content"], tool_result.get("tool_name", "")),
             }
             _tn = tool_result.get("tool_name", "")
