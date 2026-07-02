@@ -65,3 +65,19 @@ def test_extract_non_hex_suffix_rejected():
     reply = "@file-processor-c3g4 测试"
     msgs = extract_at_messages(reply)
     assert msgs == []
+
+
+def test_persist_agent_reply_strips_assistant_content_in_rv_path():
+    """rv 路径下 assistant content 也 strip @ 消息，避免重复入库。"""
+    import inspect
+    from niu_api import chat
+    source = inspect.getsource(chat.persist_agent_reply)
+    # persist_agent_reply 应在 rv 路径遍历也调 strip_at_messages（≥2 次：
+    # 一次 strip full_reply，一次 rv 遍历 strip assistant content）
+    assert source.count("strip_at_messages") >= 2, (
+        "persist_agent_reply 应在 rv 路径也调 strip_at_messages"
+    )
+    # rv 路径遍历应含 strip 后为空跳过的保护
+    assert "not content.strip()" in source, (
+        "rv 路径 strip 后为空应跳过（@ 消息已单独存 subagent_msg）"
+    )
