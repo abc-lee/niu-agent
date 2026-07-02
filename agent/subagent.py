@@ -198,6 +198,7 @@ def _run_agent_loop(
     context_fifo_threshold: int = 0,
     context_target_threshold: int = 0,
     history: Optional[list] = None,
+    supplement_queue: Optional[Any] = None,  # 子 Agent 独立 supplement queue
 ) -> Tuple[str, Any]:
     """
     执行 agent_runner_loop 并收集结果（提取自 call_subagent）
@@ -218,7 +219,6 @@ def _run_agent_loop(
         (result_text, return_value) 元组
     """
     from .generic.agent_loop import agent_runner_loop, StreamEvent
-    from .runner import is_stop_requested
 
     if initial_user_content is None:
         initial_user_content = user_input
@@ -238,18 +238,15 @@ def _run_agent_loop(
         context_target_threshold=context_target_threshold,
         on_context_high_usage=None,
         history=history,
-        enable_supplement=False,
+        enable_supplement=True,  # 子 Agent 用独立 supplement queue
+        supplement_drain=supplement_queue.drain if supplement_queue is not None else None,
     )
 
     result = ""
     return_value = None
 
     while True:
-        # 协作式停止：每次迭代检查，发现停止立即退出
-        if is_stop_requested():
-            logger.info("[SubAgent] Stop requested, exiting loop")
-            # 不调用 clear_stop()，让主Agent也能检测到停止标志
-            break
+        # 子 Agent 不再检查全局 stop 信号灯，只响应自己 queue 的 /stop
         try:
             chunk = next(gen)
             if isinstance(chunk, str):
@@ -475,6 +472,7 @@ def call_subagent(
     history: Optional[list] = None,
     context_fifo_threshold: int = -1,
     no_tools: bool = False,
+    supplement_queue: Optional[Any] = None,
 ) -> str:
     """
     调用子 Agent
@@ -590,20 +588,33 @@ def call_subagent(
     target_threshold = _read_target_threshold()
     context_target_threshold_val = int(context_window_tokens * target_threshold) if context_window_tokens > 0 else 0
 
-    result_text, return_value = _run_agent_loop(
-        client=client,
-        system_prompt="",  # 向后兼容（system_message 非 None 时分支选择生效）
-        system_message=system_message,
-        user_input=task,
-        handler=handler,
-        tools_schema=tools_schema,
-        max_turns=20,
-        initial_user_content=task,
-        context_window_tokens=context_window_tokens,
-        context_fifo_threshold=fifo_threshold,
-        context_target_threshold=context_target_threshold_val,
-        history=history,
-    )
+    # === 新增：创建 supplement queue + 注册到 SubagentRegistry ===
+    from .subagent_supplement import SubagentSupplementQueue
+    from .subagent_registry import SubagentRegistry
+
+    if supplement_queue is None:
+        supplement_queue = SubagentSupplementQueue(unique_name="")  # unique_name 注册后回填
+    unique_name = SubagentRegistry.register(agent_name, supplement_queue)
+    supplement_queue.unique_name = unique_name  # 回填唯一名，db 监测程序路由时用
+
+    try:
+        result_text, return_value = _run_agent_loop(
+            client=client,
+            system_prompt="",  # 向后兼容（system_message 非 None 时分支选择生效）
+            system_message=system_message,
+            user_input=task,
+            handler=handler,
+            tools_schema=tools_schema,
+            max_turns=20,
+            initial_user_content=task,
+            context_window_tokens=context_window_tokens,
+            context_fifo_threshold=fifo_threshold,
+            context_target_threshold=context_target_threshold_val,
+            history=history,
+            supplement_queue=supplement_queue,  # 新增：传给 _run_agent_loop
+        )
+    finally:
+        SubagentRegistry.unregister(unique_name)
 
     # 检测输出截断（finish_reason == "length"）
     # LLM 输出被截断时无法产出合法 keep/update 结构，返回字符串信号让降级循环识别
