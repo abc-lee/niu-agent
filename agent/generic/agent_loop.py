@@ -324,6 +324,9 @@ def agent_runner_loop(
 
         for msg in history:
             role = msg.get("role", "user")
+            # === 过滤 subagent_msg 消息，不塞进 LLM 上下文（@ 消息仅供前端展示） ===
+            if role == "subagent_msg":
+                continue
             content = msg.get("content", "")
             if role in ("user", "assistant") and (content or msg.get("tool_calls")):
                 entry = {"role": role, "content": content}
