@@ -720,8 +720,16 @@
     });
 
     async function checkRunningSubagents() {
-      // Task 13 实现，本 Task 先空函数
-      // TODO: Task 13 加 /api/subagents/running 查询 + alert 提示
+      try {
+        const resp = await fetch('/api/subagents/running');
+        const data = await resp.json();
+        if (data.count > 0) {
+          const names = data.subagents.map(s => s.unique_name).join(', ');
+          alert(`已停主 Agent。${data.count} 个子 Agent 仍在运行：${names}\n双击停止按钮可全部终止。`);
+        }
+      } catch (e) {
+        console.error('查询子 Agent 状态失败', e);
+      }
     }
 
     // 自动调整 textarea 高度
