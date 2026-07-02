@@ -19,6 +19,8 @@ from typing import Any, Dict, Generator, Optional
 
 from loguru import logger
 
+from agent.subagent_registry import SubagentRegistry
+
 
 
 # --- Stop flag mechanism ---
@@ -38,6 +40,19 @@ def clear_stop():
 def is_stop_requested() -> bool:
     """Check if stop has been requested."""
     return _stop_requested.is_set()
+
+
+def request_stop_all_subagents() -> None:
+    """给所有在跑的子 Agent 推 /stop（双击停止按钮触发）。
+
+    遍历 SubagentRegistry，给每个子 Agent 的 supplement_queue 推 is_terminate=True 的 /stop。
+    主 Agent 不受影响（主 Agent 用 _stop_requested 信号灯单独控制）。
+    """
+    for instance in SubagentRegistry.list_running():
+        try:
+            instance.supplement_queue.push("/stop", is_terminate=True, sender="主Agent")
+        except Exception as e:
+            logger.error(f"给子 Agent {instance.unique_name} 推 /stop 失败：{e}")
 
 
 # --- Supplement queue (见缝插针) ---
