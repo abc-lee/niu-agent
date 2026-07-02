@@ -1328,6 +1328,32 @@
       }
     });
 
+    // 窗口恢复/获得焦点时主动查询 Agent 忙碌状态，同步停止按钮（兜底 isVisible 守卫移除后的场景）
+    window.electronAPI.onSyncState(async () => {
+      try {
+        const status = await window.electronAPI.getChatStatus();
+        if (status && status.busy) {
+          stopBtn.style.display = 'flex';
+          isProcessing = true;
+          sendBtn.disabled = true;
+        } else {
+          stopBtn.style.display = 'none';
+          isProcessing = false;
+          sendBtn.disabled = false;
+        }
+      } catch (e) {
+        console.error('Failed to sync chat status:', e);
+      }
+    });
+
+    // Escape 键停止当前 Agent 工作（只在正在处理且停止按钮可见时响应）
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && isProcessing && stopBtn.style.display === 'flex') {
+        e.preventDefault();
+        window.electronAPI.sendMessage('/stop');
+      }
+    });
+
     // ========== 初始化 ==========
     let oldestMessageId = null;  // 用于加载更早的消息
     let isLoadingMore = false;   // 防止重复加载
