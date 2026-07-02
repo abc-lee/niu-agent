@@ -547,7 +547,12 @@
             <circle cx="10" cy="10" r="8" fill="none" stroke="#333" stroke-width="2.5"/>
             <circle cx="10" cy="10" r="8" fill="none" stroke="#4CAF50" stroke-width="2.5"
               stroke-dasharray="50.27" stroke-dashoffset="50.27" stroke-linecap="round"
-              transform="rotate(-90 10 10)" id="context-usage-arc"/>
+              transform="rotate(-90 10 10)" id="context-usage-arc">
+              <animateTransform attributeName="transform" type="rotate"
+                    from="-90 10 10" to="270 10 10"
+                    dur="2s" repeatCount="indefinite"
+                    begin="indefinite"/>
+            </circle>
           </svg>
           <span id="context-usage-text">0%</span>
         </span>
@@ -567,6 +572,7 @@
     const stopBtn = document.getElementById('stop-btn');
     let _pendingClear = false;
     let _pendingClearTimeout = null;
+    window._compacting = false;  // 压缩中标志，由 compact_status 事件切换
     const closeBtn = document.getElementById('close-btn');
     const header = document.getElementById('header');
     const statusBar = document.getElementById('status-bar');
@@ -1109,9 +1115,15 @@
             if (pct < 70) color = '#4CAF50';
             else if (pct < 80) color = '#FF9800';
             else color = '#F44336';
-            arc.setAttribute('stroke', color);
-            text.textContent = pct + '%';
-            text.style.color = color;
+            // 压缩中不改 arc stroke 和 text color（由 compact_status 事件控制为红色）
+            if (!window._compacting) {
+              arc.setAttribute('stroke', color);
+              text.textContent = pct + '%';
+              text.style.color = color;
+            } else {
+              // 压缩中：百分比照常更新，但颜色保持红色
+              text.textContent = pct + '%';
+            }
           }
         }
       } catch (e) {
@@ -1152,6 +1164,26 @@
       // 子 Agent 工具调用不触发 onToolStatus（_is_subagent 守卫），不会污染主窗口
       loadStats();
     });
+
+    // === 压缩状态：圆环旋转 + tooltip + 文本红色 ===
+    if (window.electronAPI && window.electronAPI.onCompactStatus) {
+      window.electronAPI.onCompactStatus((data) => {
+        const arc = document.getElementById('context-usage-arc');
+        const animate = arc ? arc.querySelector('animateTransform') : null;
+        const text = document.getElementById('context-usage-text');
+        const wrapper = document.getElementById('context-usage');
+        if (data.status === 'started') {
+          window._compacting = true;  // 先设标志，防止 loadStats 覆盖
+          if (animate) animate.beginElement();
+          if (text) text.style.color = '#F44336';
+          if (wrapper) wrapper.title = '正在压缩对话…';
+        } else if (data.status === 'done') {
+          if (animate) animate.endElement();
+          if (wrapper) wrapper.title = '上下文使用率';
+          window._compacting = false;  // 最后清标志，让 loadStats 恢复颜色
+        }
+      });
+    }
 
     // 监听入库进度SSE事件（由后端pipeline watcher推送）
     // ingest-started：显示进度条并开始轮询
