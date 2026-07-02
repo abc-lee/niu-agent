@@ -15,6 +15,48 @@ DEFAULT_CONTEXT_WINDOW_SIZE = 200000
 MIN_CONTEXT_WINDOW_SIZE = 32000    # 32K 最小合理值
 MAX_CONTEXT_WINDOW_SIZE = 2000000  # 2M 上限
 
+# 默认禁用的基础工具（子 Agent 默认不能调用，需要显式 allowBaseTools 解禁）
+# bash 和 grep 是"文件系统乱翻"的元凶，默认禁用
+DEFAULT_DISABLED_BASE_TOOLS = {"bash", "grep"}
+
+
+def _filter_base_tools(agent_config: dict, tools_schema: list) -> tuple:
+    """根据 agent_config 的 disableBaseTools/allowBaseTools 过滤基础工具。
+
+    三层过滤逻辑：
+    1. 默认黑名单（DEFAULT_DISABLED_BASE_TOOLS，bash/grep 默认禁用）
+    2. disableBaseTools 追加禁用
+    3. allowBaseTools 从黑名单中解禁（优先级最高）
+
+    Args:
+        agent_config: 子 Agent 配置字典（frontmatter 解析结果）
+        tools_schema: 待过滤的工具 schema 列表
+
+    Returns:
+        (filtered_tools, disabled_set, custom_disabled, allowed_base) 元组：
+        - filtered_tools: 过滤后的工具 schema 列表
+        - disabled_set: 最终禁用的工具名集合
+        - custom_disabled: 子 Agent 自定义 disableBaseTools 列表
+        - allowed_base: 子 Agent 自定义 allowBaseTools 列表
+    """
+    disabled_set = set(DEFAULT_DISABLED_BASE_TOOLS)
+    custom_disabled = agent_config.get("disableBaseTools", [])
+    if custom_disabled:
+        disabled_set |= set(custom_disabled)
+    allowed_base = agent_config.get("allowBaseTools", [])
+    if allowed_base:
+        disabled_set -= set(allowed_base)
+
+    if disabled_set:
+        filtered = [
+            t for t in tools_schema
+            if t.get("function", {}).get("name", "") not in disabled_set
+        ]
+    else:
+        filtered = list(tools_schema)
+
+    return filtered, disabled_set, custom_disabled, allowed_base
+
 
 def count_tokens_for_text(text: str) -> int:
     """
@@ -490,14 +532,19 @@ def call_subagent(
         t for t in tools_schema
         if not t.get("function", {}).get("name", "").startswith("chat-with-")
     ]
-    # 根据 disableBaseTools 配置移除基础工具
-    disabled_base = agent_config.get("disableBaseTools", [])
-    if disabled_base:
-        tools_schema = [
-            t for t in tools_schema
-            if t.get("function", {}).get("name", "") not in disabled_base
-        ]
-        logger.info(f"[SubAgent] {agent_name}: Disabled base tools: {disabled_base}")
+    # 根据配置移除基础工具（三层过滤：默认黑名单 + disableBaseTools + allowBaseTools 解禁）
+    # 过滤逻辑抽取到 _filter_base_tools 函数，Task 2 测试直接调用真实函数避免逻辑失同步
+    tools_schema, disabled_set, custom_disabled, allowed_base = _filter_base_tools(agent_config, tools_schema)
+    if disabled_set:
+        logger.info(f"[SubAgent] {agent_name}: Disabled base tools: {sorted(disabled_set)}")
+
+    # 配置完整性检查：未显式配置 disableBaseTools 且未配 allowBaseTools 的子 Agent
+    if not custom_disabled and not allowed_base:
+        logger.warning(
+            f"[SubAgent] {agent_name}: No disableBaseTools/allowBaseTools configured, "
+            f"using default blacklist only: {sorted(DEFAULT_DISABLED_BASE_TOOLS)}. "
+            f"Recommend explicit config in config/agents/{agent_name}.md frontmatter."
+        )
 
     # 6. 获取子 Agent 的 MCP 工具 schema
     mcp_tools_schema = get_subagent_mcp_tools_schema(agent_name)
