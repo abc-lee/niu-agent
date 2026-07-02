@@ -23,6 +23,13 @@ mcpToolFilter:
     - lightrag_merge_entities
   session-manager:
     - get_messages
+allowBaseTools:
+  - read
+  - write
+  - edit
+  - bash
+disableBaseTools:
+  - code_run
 ---
 
 # 梦境进化（Dream Evolver）

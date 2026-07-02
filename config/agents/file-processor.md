@@ -1,6 +1,6 @@
 ---
 name: file-processor
-description: "【必须调用】处理文件和照片：入库、人脸识别、文档解析。用户拖入文件/照片时必须调用此工具，不要自己处理文件。"
+description: "子 Agent — 处理文件和照片：入库、人脸识别、文档解析。用户拖入文件/照片时必须调用此工具，不要自己处理文件。"
 temperature: 0.2
 mode: subagent
 taskDescription: 任务描述，如：处理照片：E:/path/photo.jpg，或：入库文档：E:/path/doc.pdf
@@ -20,6 +20,13 @@ mcpToolFilter:
     - lightrag_get_document
     - lightrag_search_entities
     - lightrag_list_entities
+disableBaseTools:
+  - bash
+  - code_run
+  - read
+  - write
+  - edit
+  - grep
 ---
 
 # 角色
