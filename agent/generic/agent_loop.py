@@ -554,6 +554,27 @@ def agent_runner_loop(
             else:
                 outcome = exhaust(gen)
 
+            # === 统一截断关口 ===
+            # 距离 Agent 调用最近，覆盖所有工具路径（MCP/disk/内置/chat-with-*）
+            # 前端 API 和内部业务（region_detector/region_manager）不经过 dispatch，不被截断
+            if outcome.data is not None:
+                if isinstance(outcome.data, dict):
+                    outcome.data = _truncate_dict_result(outcome.data, tool_name)
+                elif isinstance(outcome.data, list):
+                    # list 类型：序列化后截断，返回 truncated dict（与 _truncate_dict_result 一致）
+                    _list_str = json.dumps(outcome.data, ensure_ascii=False, default=json_default)
+                    if len(_list_str) > MAX_TOOL_RESULT_CHARS:
+                        _label = f"工具 {tool_name}" if tool_name else "工具"
+                        _message = f"[截断] {_label}原始输出 {len(_list_str)} 字符，已截断至 {MAX_TOOL_RESULT_CHARS} 字符。"
+                        _budget = MAX_TOOL_RESULT_CHARS - len(_message) - 200
+                        outcome.data = {
+                            "status": "truncated",
+                            "message": _message,
+                            "data": _list_str[:_budget],
+                        }
+                elif isinstance(outcome.data, str):
+                    outcome.data = _truncate_tool_content(outcome.data, tool_name)
+
             if outcome.should_exit:
                 # should_exit路径：补齐当前tool_result到tool_results列表
                 if tid:
