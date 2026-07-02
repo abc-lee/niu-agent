@@ -713,15 +713,19 @@ class Message:
 
 Read `agent/generic/agent_loop.py:307-348`。
 
+**关键**：history 里的消息是 **dict**（`msg.get("role")` 访问），不是 Message dataclass（`msg.role` 属性访问）。Read `:308` 确认 `role = msg.get("role", "user")` 的访问方式。
+
 在 history 重建循环开头加过滤。找到 `for msg in history:` 或类似循环（约 307-310 行），在循环内开头加：
 
 ```python
 for msg in history:
     # === 新增：过滤 subagent_msg 消息，不塞进 LLM 上下文 ===
-    if msg.role == "subagent_msg":
+    if msg.get("role") == "subagent_msg":
         continue
     # ... 原有 role 分支逻辑 ...
 ```
+
+**注意**：用 `msg.get("role")` 而不是 `msg.role`（dict 访问）。如果 history 在进入 `agent_runner_loop` 前已由 `load_history` / `_build_compress_history` 过滤，需在那一层也加过滤（确认过滤点）。建议两层都加，双保险。
 
 - [ ] **Step 6: 写 history 重建过滤测试**
 
@@ -1257,7 +1261,7 @@ stopBtn.addEventListener('click', () => {
     stopClickFired = true;
     setTimeout(() => { stopClickFired = false; }, STOP_DOUBLE_CLICK_WINDOW);
     // 双击：触发批量 /stop 所有子 Agent + 停主 Agent
-    fetch('/api/stop_all', { method: 'POST' });
+    fetch('/api/stop_all', { method: 'POST' }).catch(e => console.error('stop_all 请求失败', e));
     window.electronAPI.sendMessage('/stop');
   } else {
     // 第一次点击（单击）
@@ -1282,12 +1286,12 @@ stopBtn.addEventListener('click', () => {
 
 **注意**：此 Step 依赖 Task 10 的 `request_stop_all_subagents` 函数。**实施顺序：Task 10 先于 Task 9 Step 3**。如果 Task 10 未实施，本 Step 先写端点骨架调用 `request_stop_all_subagents`（会 ImportError），Task 10 完成后自然可用。
 
-Read `niu_api/chat.py` 找现有端点定义区域。
+Read `niu_api/chat.py:19` 确认 `router = APIRouter(...)`（chat.py 用 router，不是 app）。
 
-Edit `niu_api/chat.py` 加：
+Edit `niu_api/chat.py` 加（用 `@router.post` 不是 `@app.post`）：
 
 ```python
-@app.post("/api/stop_all")
+@router.post("/api/stop_all")
 async def stop_all_subagents():
     """停止所有在跑的子 Agent（双击停止按钮触发）。
 
@@ -1538,24 +1542,53 @@ else:
     supplement_terminate = False
 ```
 
-**注意：** `supplement_terminate` 标记用于控制循环退出。现有 `agent_runner_loop` 的循环退出条件是 `if not response.tool_calls: return`（约 `agent_loop.py:685`，LLM 无工具调用就退出）。/stop 推入最末位后，LLM 输出总结应不带 tool_calls，自然退出。但**为防止 LLM 仍调工具导致不退出**，在终止模式下加强制退出：
+**注意：** `supplement_terminate` 标记用于控制循环退出。现有 `agent_runner_loop` 的循环退出条件是 `if not response.tool_calls: return`（约 `agent_loop.py:685`，LLM 无工具调用就退出）。
 
-Read `agent/generic/agent_loop.py:680-695` 找到 `response.tool_calls` 检查处。
+**关键作用域问题**：`response.tool_calls` 检查在 `agent_loop.py:685`，而 supplement drain 在 `:701`——即 `supplement_terminate` 在检查点之后才计算。必须把 `supplement_terminate` 的计算**提前到循环开头**，或移到 `response.tool_calls` 检查之前。
 
-在现有 `if not response.tool_calls: return` 之前加：
+**改造方式**：
+
+Read `agent/generic/agent_loop.py:680-710` 确认 `response.tool_calls` 检查点和 supplement drain 的相对位置。
+
+在循环开头（`response = ...` 拿到 LLM 响应之后、`response.tool_calls` 检查之前）加 supplement drain + `supplement_terminate` 计算：
 
 ```python
+# === 新增：在 response.tool_calls 检查前 drain supplement + 计算 terminate 标记 ===
+supplement_terminate = False
+if enable_supplement:
+    drain_fn = supplement_drain if supplement_drain is not None else drain_supplement
+    drained = drain_fn()
+    # 主 Agent 路径：返回 str | None
+    if isinstance(drained, str) or drained is None:
+        supplement = drained
+    # 子 Agent 路径：返回 list[SubagentSupplementItem]
+    elif isinstance(drained, list):
+        has_terminate = any(item.is_terminate for item in drained)
+        if has_terminate:
+            supplement = format_subagent_supplement(drained, is_final_position=True)
+            supplement_terminate = True
+        else:
+            supplement = format_subagent_supplement(drained, is_final_position=False)
+    else:
+        supplement = None
+else:
+    supplement = None
+# === 原有 response.tool_calls 检查（685 行）===
+if not response.tool_calls:
+    return  # 现有退出逻辑
 # === 新增：终止模式下强制退出 ===
-if supplement_terminate and not response.tool_calls:
-    # 终止指令已发，LLM 输出总结且无工具调用，正常退出
-    return
-if supplement_terminate and response.tool_calls:
-    # 终止指令已发但 LLM 仍调工具——强制退出（不执行工具调用）
-    logger.warning("终止模式下 LLM 仍调工具，强制退出循环")
+if supplement_terminate:
+    # 终止指令已发，无论 LLM 是否调工具都退出，不执行工具调用
+    logger.warning("终止模式下强制退出循环（LLM 可能仍调工具但不执行）")
     return
 ```
 
-**关键**：终止模式下无论 LLM 是否调工具都退出，不执行工具调用。这保证 /stop 一定能让子 Agent 终止。
+**关键**：
+- `supplement_terminate` 在循环开头初始化为 False，drain 后更新
+- 终止模式下无论 LLM 是否调工具都退出，不执行工具调用
+- 这保证 /stop 一定能让子 Agent 终止
+
+**注意**：原有 `:701` 的 `supplement = drain_supplement() if enable_supplement else None` 要删除（已移到循环开头）。但需确认 supplement 在 `:701` 之后还有没有别的用途——如果有，保留变量赋值但值已在循环开头算好。Read 确认。
 
 - [ ] **Step 6: 运行测试确认通过**
 
@@ -1668,7 +1701,8 @@ Create: `agent/at_message_parser.py`
 import re
 
 # 匹配 @<type>-<4hex> <内容>，内容到行尾或下一个 @
-_AT_PATTERN = re.compile(r'@([\w]+-[\w]{4})\s+(.*?)(?=\s*@[\w]+-[\w]{4}\s|\Z)', re.DOTALL)
+# [a-z]+ 严格匹配子 Agent 类型（小写字母），[0-9a-f]{4} 严格匹配 4 位 hex（secrets.token_hex(2) 输出）
+_AT_PATTERN = re.compile(r'@([a-z]+-[0-9a-f]{4})\s+(.*?)(?=\s*@[a-z]+-[0-9a-f]{4}\s|\Z)', re.DOTALL)
 
 
 def extract_at_messages(reply_text: str) -> list:
@@ -1701,33 +1735,45 @@ def format_for_db(msg: dict) -> str:
 Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_at_message_parser.py -v`
 Expected: 6 个测试全 PASS
 
-- [ ] **Step 5: 在主 Agent 回复 persist 前调解析器**
+- [ ] **Step 5: 在 persist_agent_reply 内调解析器（async 函数，可 await）**
 
-Read `agent/generic/agent_loop.py` 找到主 Agent 回复 persist 的位置（`persist_agent_reply` 或类似，约 `agent_loop.py:600-700` 区域）。
+**关键修正**：`agent_runner_loop` 是同步生成器，不能 `await`。解析逻辑必须迁移到 async 函数 `persist_agent_reply`（`niu_api/chat.py:176`）。这样 3 个调用点（chat.py:435 流式、chat.py:555 非流式、chat_queue.py:343 重试）都自动覆盖。
 
-在 persist **之前** 加解析逻辑（这样 db 里的 assistant 回复是 strip 后的纯净文本，@ 消息单独以 subagent_msg role 存）：
+Read `niu_api/chat.py:176-220` 看 `persist_agent_reply` 的签名和内部逻辑（它接收 `store, rv, history_len, full_reply, source, persisted_msgs`，返回 `message_id, full_reply`）。
+
+在 `persist_agent_reply` 内部，**在把 `full_reply` 存为 `role="assistant"` 之前**加解析：
 
 ```python
-# === 新增：解析主 Agent 回复里的 @ 消息 ===
-from agent.at_message_parser import extract_at_messages, strip_at_messages, format_for_db
-from agent.session import get_message_store
+async def persist_agent_reply(store, rv, history_len, full_reply, source="electron", persisted_msgs=None):
+    # ... 现有逻辑 ...
 
-at_msgs = extract_at_messages(reply_text)
-if at_msgs:
-    # 先 persist strip 后的纯净回复（role=assistant）
-    reply_text_clean = strip_at_messages(reply_text)
-    # 用 reply_text_clean 替代 reply_text 走现有 persist 流程
-    reply_text = reply_text_clean  # 后续 persist 用这个
-    # @ 消息以 subagent_msg role 存 db（db_monitor 会路由）
-    message_store = await get_message_store()
-    for msg in at_msgs:
-        await message_store.add_message(
-            role="subagent_msg",
-            content=format_for_db(msg)
-        )
+    # === 新增：解析 full_reply 里的 @ 消息 ===
+    from agent.at_message_parser import extract_at_messages, strip_at_messages, format_for_db
+
+    at_msgs = extract_at_messages(full_reply)
+    if at_msgs:
+        # 先 strip @ 消息，存纯净回复为 role=assistant
+        full_reply_clean = strip_at_messages(full_reply)
+        # 用 full_reply_clean 替代 full_reply 走现有 persist 流程
+        full_reply = full_reply_clean
+        # @ 消息以 subagent_msg role 存 db
+        for msg in at_msgs:
+            await store.add_message(
+                role="subagent_msg",
+                content=format_for_db(msg)
+            )
+
+    # ... 原有 persist role=assistant 逻辑（用 full_reply，此时已 strip）...
+    # ... 返回 message_id, full_reply ...
 ```
 
-**实现者注意**：persist 在多处（流式 + 非流式 + chat_queue 重试），每处都要加。建议抽一个 helper `_persist_reply_with_at_parsing(reply_text)` 统一调用。
+**关键点**：
+- `persist_agent_reply` 是 async，可以 `await store.add_message(...)`
+- 3 个调用点（流式/非流式/重试）都走这个函数，自动覆盖
+- `full_reply` strip 后返回，前端拿到的也是 strip 后的纯净文本（@ 消息不显示在 assistant 气泡里）
+- @ 消息以 `role="subagent_msg"` 单独存，前端用 Task 8 的特殊样式渲染
+
+**注意**：`persist_agent_reply` 内现有逻辑可能先存 role=assistant 再做别的。Read 确认 persist 顺序，确保 strip 在存 assistant **之前**。如果现有逻辑是先 yield 流式 chunk 再最终 persist，要确认流式 chunk 不含 @ 消息（流式过程中 @ 消息可能跨 chunk，但最终 `full_reply` 是完整拼接，strip 在最终 persist 时应用即可）。
 
 - [ ] **Step 6: py_compile 验证**
 
@@ -1765,7 +1811,8 @@ from unittest.mock import patch, MagicMock
 def test_running_endpoint_empty():
     """无子 Agent 时返回 count=0。"""
     with patch("agent.subagent_registry.SubagentRegistry.list_running", return_value=[]):
-        from niu_api.chat import app
+        # app 定义在 niu_api.__main__，chat.py 只有 router
+        from niu_api.__main__ import app
         from fastapi.testclient import TestClient
         client = TestClient(app)
         resp = client.get("/api/subagents/running")
@@ -1780,7 +1827,7 @@ def test_running_endpoint_with_subagents():
     mock_inst1 = MagicMock(unique_name="file-processor-a1b2", agent_type="file-processor", is_sync=True)
     mock_inst2 = MagicMock(unique_name="context-manager-c3d4", agent_type="context-manager", is_sync=True)
     with patch("agent.subagent_registry.SubagentRegistry.list_running", return_value=[mock_inst1, mock_inst2]):
-        from niu_api.chat import app
+        from niu_api.__main__ import app
         from fastapi.testclient import TestClient
         client = TestClient(app)
         resp = client.get("/api/subagents/running")
@@ -1797,12 +1844,12 @@ Expected: FAIL（端点不存在）
 
 - [ ] **Step 3: 加 /api/subagents/running 端点**
 
-Read `niu_api/chat.py` 找现有端点定义区域。
+Read `niu_api/chat.py:19` 确认 `router = APIRouter(...)`（chat.py 用 router）。
 
-Edit `niu_api/chat.py` 加：
+Edit `niu_api/chat.py` 加（用 `@router.get`）：
 
 ```python
-@app.get("/api/subagents/running")
+@router.get("/api/subagents/running")
 async def list_running_subagents():
     """返回当前在跑的子 Agent 列表（供前端双击停止 UX 提示）。"""
     from agent.subagent_registry import SubagentRegistry
