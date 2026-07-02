@@ -97,3 +97,59 @@ def test_default_blacklist_constant_exists():
     from agent.subagent import DEFAULT_DISABLED_BASE_TOOLS
     assert "bash" in DEFAULT_DISABLED_BASE_TOOLS
     assert "grep" in DEFAULT_DISABLED_BASE_TOOLS
+
+
+def test_boundary_section_template_exists():
+    """确认 _BOUNDARY_SECTION_TEMPLATE 常量已定义。"""
+    from agent.subagent import _BOUNDARY_SECTION_TEMPLATE
+    assert "## 职责边界" in _BOUNDARY_SECTION_TEMPLATE
+    assert "不要猜测含义" in _BOUNDARY_SECTION_TEMPLATE
+    assert "直接退出" in _BOUNDARY_SECTION_TEMPLATE
+
+
+def test_build_subagent_system_segments_injects_boundary_when_missing(monkeypatch):
+    """子 Agent 正文没有"直接退出"语义时，自动注入通用模板。"""
+    from agent.subagent import build_subagent_system_segments
+    # mock get_subagent_prompt 返回不含"直接退出"的正文
+    monkeypatch.setattr(subagent, "get_subagent_prompt", lambda name: "你是测试子 Agent。")
+    # mock _build_user_info_section 返回空
+    monkeypatch.setattr(subagent, "_build_user_info_section", lambda: "")
+
+    static_system, _ = build_subagent_system_segments("test-agent")
+    assert "## 职责边界" in static_system
+    assert "不要猜测含义" in static_system
+
+
+def test_build_subagent_system_segments_skips_injection_when_present(monkeypatch):
+    """子 Agent 正文已含"直接退出"语义时，不重复注入。"""
+    from agent.subagent import build_subagent_system_segments
+    # 模拟 dream-evolver 场景：正文已有"## 职责边界"段且含"直接退出"语义
+    custom_boundary = "## 职责边界\n\n这是子 Agent 自定义的边界规则，无法确认职责范围就要直接退出，回复主 Agent。"
+    monkeypatch.setattr(subagent, "get_subagent_prompt", lambda name: f"你是测试子 Agent。\n\n{custom_boundary}")
+    monkeypatch.setattr(subagent, "_build_user_info_section", lambda: "")
+
+    static_system, _ = build_subagent_system_segments("test-agent")
+    # 自定义边界保留
+    assert custom_boundary in static_system
+    # 通用模板的"不要猜测含义"不应出现（因为已跳过自动注入）
+    assert "不要猜测含义" not in static_system
+    # "## 职责边界"标题只出现 1 次（不重复注入）
+    assert static_system.count("## 职责边界") == 1, "should not inject twice"
+
+
+def test_build_subagent_system_segments_injects_for_dream_evolver_existing_section(monkeypatch):
+    """dream-evolver 场景：正文已有"## 职责边界"段但不含"直接退出"语义，应触发注入追加退出语义。"""
+    from agent.subagent import build_subagent_system_segments
+    # 模拟 dream-evolver.md:32 现状：有"## 职责边界"标题但内容是职责声明，无"直接退出"
+    existing_section = "## 职责边界\n\n- 你负责精加工实体\n- 你不负责从零提取新实体"
+    monkeypatch.setattr(subagent, "get_subagent_prompt", lambda name: f"你是 dream-evolver。\n\n{existing_section}")
+    monkeypatch.setattr(subagent, "_build_user_info_section", lambda: "")
+
+    static_system, _ = build_subagent_system_segments("dream-evolver")
+    # 通用模板被追加（因为原文不含"直接退出"）
+    assert "不要猜测含义" in static_system
+    assert "直接退出" in static_system
+    # 原"## 职责边界"段保留
+    assert "你负责精加工实体" in static_system
+    # 标题出现 2 次：原文 1 次 + 模板 1 次（这是预期行为，dream-evolver 的旧段不含退出语义需追加）
+    assert static_system.count("## 职责边界") == 2
