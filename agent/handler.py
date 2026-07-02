@@ -1067,13 +1067,7 @@ class NiuHandler(BaseHandler):
                     server = self.disk_engine.config.get_server_by_dir(dir_name)
                     if server is not None:
                         real_tool_name = f"{server.server_name}/{tool}"
-                # 保底截断（disk 路径绕过 agent_loop 的 _truncate_tool_content，需在此补）
-                # 截断在 tool_after_callback 之前：callback 看到截断后结果，不再能看到原始 tool 结果
-                from agent.generic.agent_loop import _truncate_tool_content, _truncate_dict_result
-                if isinstance(result, dict):
-                    result = _truncate_dict_result(result, real_tool_name)
-                elif isinstance(result, str):
-                    result = _truncate_tool_content(result, real_tool_name)
+                # 截断由 agent_loop 统一关口处理（dispatch 返回后）
                 _ = yield from try_call_generator(
                     self.tool_after_callback, real_tool_name,
                     args, response, result
@@ -1151,13 +1145,7 @@ class NiuHandler(BaseHandler):
 
                 yield StreamEvent("tool_marker", f"[MCP] {tool_name} executed\n")
 
-                # 保底截断（与 disk 路径对称，防止超大 MCP 结果进 messages）
-                # 截断在 tool_after_callback 之前：callback 看到截断后结果
-                from agent.generic.agent_loop import _truncate_tool_content, _truncate_dict_result
-                if isinstance(result, dict):
-                    result = _truncate_dict_result(result, tool_name)
-                elif isinstance(result, str):
-                    result = _truncate_tool_content(result, tool_name)
+                # 截断由 agent_loop 统一关口处理（dispatch 返回后）
 
                 # 调用 tool_after_callback（工作记忆、重复检测、习惯追踪）
                 try:
@@ -1183,7 +1171,6 @@ class NiuHandler(BaseHandler):
                             logger.debug(f"Memory dirty flag set failed: {e}")
                     # status 为 ok/success 表示任务完成，提示汇报；其他非 error 状态（need_category 等）让 LLM 自行判断
                     if isinstance(result, dict) and result.get("status") in ("ok", "success"):
-                        result_summary = json.dumps(result, ensure_ascii=False)[:500]
                         return StepOutcome(result, next_prompt="")
                     else:
                         return StepOutcome(result, next_prompt="")
@@ -1216,12 +1203,7 @@ class NiuHandler(BaseHandler):
 
                 yield StreamEvent("tool_marker", f"[MCP] {tool_name} executed\n")
 
-                # 保底截断（与 disk 路径对称，防止超大 MCP 结果进 messages）
-                from agent.generic.agent_loop import _truncate_tool_content, _truncate_dict_result
-                if isinstance(result, dict):
-                    result = _truncate_dict_result(result, tool_name)
-                elif isinstance(result, str):
-                    result = _truncate_tool_content(result, tool_name)
+                # 截断由 agent_loop 统一关口处理（dispatch 返回后）
 
                 try:
                     _ = yield from try_call_generator(
@@ -1237,7 +1219,6 @@ class NiuHandler(BaseHandler):
                 if is_success:
                     # status 为 ok/success 表示任务完成，提示汇报；其他非 error 状态（need_category 等）让 LLM 自行判断
                     if isinstance(result, dict) and result.get("status") in ("ok", "success"):
-                        result_summary = json.dumps(result, ensure_ascii=False)[:500]
                         return StepOutcome(result, next_prompt="")
                     else:
                         return StepOutcome(result, next_prompt="")
