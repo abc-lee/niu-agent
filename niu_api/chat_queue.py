@@ -397,6 +397,13 @@ class ChatQueue:
                     request["force_protect_recent"] = degrade_schedule[attempt]
                     logger.info(f"[ChatQueue] Force compression retry {attempt+1} with degraded protect_recent={degrade_schedule[attempt]}")
 
+                # 广播压缩状态 started（前端圆环动画启动）
+                try:
+                    from niu_api.chat import notify_compact_status_sync
+                    notify_compact_status_sync("started", mode="force")
+                except Exception:
+                    pass
+
                 result = await _tidy_context_impl(request=request)
 
                 # 检查压缩后 token 是否降到安全水平
@@ -419,6 +426,12 @@ class ChatQueue:
                 logger.error(f"[ChatQueue] Force compression retry {attempt+1} failed: {e}")
                 # 继续降级重试，不 return——降级策略需要多轮才能生效
             finally:
+                # 广播压缩状态 done（前端圆环动画结束），必须在 release 之前
+                try:
+                    from niu_api.chat import notify_compact_status_sync
+                    notify_compact_status_sync("done", mode="force")
+                except Exception:
+                    pass
                 _tidy_lock.release()
 
         logger.error(f"[ChatQueue] All {max_retries} force compression retries exhausted")

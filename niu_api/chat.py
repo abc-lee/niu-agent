@@ -463,7 +463,6 @@ async def chat(request: ChatRequest) -> StreamingResponse:
                     finally:
                         _tidy_lock.release()
                     logger.info(f"[Chat SSE] Force compression result: {tidy_result.get('status')}")
-                    yield f"data: {json.dumps({'force_compression_done': True, 'status': tidy_result.get('status')})}\n\n"
             # Send final message
             yield f"data: {json.dumps({'done': True, 'session_id': session_id, 'message_id': message_id})}\n\n"
         finally:
