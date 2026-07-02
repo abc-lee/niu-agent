@@ -35,6 +35,29 @@ class StreamEvent:
         return NotImplemented
 
 
+def format_subagent_supplement(items: list, is_final_position: bool = False) -> str:
+    """格式化子 Agent supplement 为插入 LLM 上下文的文本。
+
+    is_final_position=False（次末位）：普通补充，格式为"[发送者 补充] 内容"，跳过 terminate 项
+    is_final_position=True（最末位）：/stop 终止，格式为终止指令文本
+    """
+    if not items:
+        return ""
+
+    if is_final_position:
+        return "收到终止指令，请总结本轮工作后终止，不要再调用工具。"
+
+    # 普通补充（跳过 terminate 项）
+    parts = []
+    for item in items:
+        if getattr(item, "is_terminate", False):
+            continue  # 终止指令不在次末位处理
+        sender = getattr(item, "sender", "主Agent")
+        content = getattr(item, "content", "")
+        parts.append(f"[{sender} 补充] {content}")
+    return "\n".join(parts) if parts else ""
+
+
 
 
 def count_messages_tokens(messages: list) -> int:
@@ -685,6 +708,44 @@ def agent_runner_loop(
             next_prompts.add(handler._done_hooks.pop(0))
         next_prompt = handler.next_prompt_patcher("\n".join(next_prompts), None, turn)
 
+        # --- 见缝插针：读取用户在 Agent 运行期间发送的补充消息 ---
+        # drain 必须在 response.tool_calls 退出检查之前完成，以便：
+        # 1. 终止指令能强制退出循环（无论 LLM 是否调工具）
+        # 2. 补充消息能在 LLM 决定退出时仍被注入
+        supplement_terminate = False
+        supplement = None
+        if enable_supplement:
+            drain_fn = supplement_drain if supplement_drain is not None else drain_supplement
+            drained = drain_fn()
+            # 主 Agent 路径：返回 str | None
+            if isinstance(drained, str) or drained is None:
+                supplement = drained
+            # 子 Agent 路径：返回 list[SubagentSupplementItem]
+            elif isinstance(drained, list):
+                has_terminate = any(getattr(item, "is_terminate", False) for item in drained)
+                if has_terminate:
+                    supplement = format_subagent_supplement(drained, is_final_position=True)
+                    supplement_terminate = True
+                else:
+                    supplement = format_subagent_supplement(drained, is_final_position=False)
+
+        # 终止模式下强制退出循环：不执行工具调用，无论 LLM 是否调工具都退出
+        if supplement_terminate:
+            logger.warning("[AgentLoop] 终止模式下强制退出循环（LLM 可能仍调工具但不执行）")
+            if on_turn_end is not None:
+                on_turn_end(messages, tools_schema, turn)
+            clear_stop()
+            yield StreamEvent("system", "chat_idle")
+            if isinstance(should_exit, dict):
+                should_exit["messages"] = messages
+                return should_exit
+            return {
+                "result": "TERMINATED_BY_SUPPLEMENT",
+                "data": None,
+                "messages": messages,
+                "finish_reason": response.finish_reason if response else None,
+            }
+
         # 退出逻辑：LLM 无工具调用时退出（纯文本回复 = 任务完成或等待用户输入）
         if not response.tool_calls:
             if on_turn_end is not None:
@@ -700,13 +761,6 @@ def agent_runner_loop(
                 "messages": messages,
                 "finish_reason": response.finish_reason,
             }
-
-        # --- 见缝插针：读取用户在 Agent 运行期间发送的补充消息 ---
-        if enable_supplement:
-            drain_fn = supplement_drain if supplement_drain is not None else drain_supplement
-            supplement = drain_fn()
-        else:
-            supplement = None
 
         # 警告注入：只在有工具调用时才有意义（LLM 还在工作，可能需要调整策略）
         # 补充消息插在 next_prompt 前面，当前任务作为最后一条，LLM 优先处理
