@@ -46,3 +46,20 @@ def test_terminate_force_exit_logic_exists():
     assert "supplement_terminate" in source, "agent_loop.py 未实现 supplement_terminate"
     # 验证有强制退出逻辑
     assert "if supplement_terminate" in source, "未实现终止强制退出"
+
+
+def test_terminated_by_supplement_in_control_flow_whitelist():
+    """TERMINATED_BY_SUPPLEMENT 应在 control_flow_results 白名单，避免 messages 被序列化污染主 Agent。"""
+    from agent.subagent import _extract_result_from_return_value
+    # 模拟 agent_runner_loop 终止时的返回值（key 为 "result"，参考 agent_loop.py:742-747）
+    return_value = {
+        "result": "TERMINATED_BY_SUPPLEMENT",
+        "data": None,
+        "messages": [{"role": "user", "content": "x" * 1000}],
+        "finish_reason": "stop",
+    }
+    result_text = _extract_result_from_return_value(return_value)
+    # 应返回 None（白名单命中），不是 json 序列化的整个 dict
+    assert result_text is None, (
+        f"TERMINATED_BY_SUPPLEMENT 未在白名单，return dict 被序列化污染主 Agent：{result_text}"
+    )
