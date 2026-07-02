@@ -63,6 +63,14 @@
 
 **db 存储方式**：复用现有 messages 表，加 `role="subagent_msg"`。现有 messages 表 schema 无 metadata 列，目标/发送者名直接编码进 content 前缀（即 `@目标 [发送者名] 内容` 格式本身就是存储格式，靠解析 content 提取）。零 schema 改动，无需迁移。前端读 `role="subagent_msg"` 的消息按特殊样式渲染（带 `@` 标识区分主↔子对话与用户↔主对话）。
 
+**前端渲染样式**：`chat.html` 的 `addMessage` 加 `role === "subagent_msg"` 分支：
+- 解析 content `@目标 [发送者名] 实际内容`，拆成"发送者→目标"的标签 + 实际内容
+- 渲染为侧边小卡片样式（小字号、浅灰背景、左边带"子→主"或"主→子"方向箭头图标），区别于用户消息和主 Agent 回复
+- 不带头像（避免与主 Agent 回复混淆）
+- 卡片内显示"发送者 → 目标"标签 + 实际内容
+
+**history 重建时的过滤**：`agent_loop.py:309` 的 history 合并逻辑按 `role` 分支处理，`role="subagent_msg"` 的历史消息**必须过滤掉**，不能塞进 LLM 上下文——否则会被当 user 输入污染主 Agent 的 LLM 请求。具体：在 history 重建时跳过 `role == "subagent_msg"` 的消息（这些消息的语义是"主↔子对话"，主 Agent 通过 supplement queue 消费，不进 history）。子 Agent 的 history 由 `call_subagent` 自己构造（不读主 Agent 的 messages db），所以子 Agent 也不会看到 `subagent_msg`。
+
 ### db 监测程序（后台 asyncio task）
 
 常驻 asyncio task，职责：**轮询 messages db 中未处理的 `@` 消息，按目标路由**。
@@ -84,6 +92,12 @@
 ```
 
 **监测程序是唯一的 db 路由中枢**——主和子都不直接读对方的 `@` 消息，都通过监测程序路由。
+
+**db 监测程序生命周期**：
+- **启动**：在 niu_api 启动时（uvicorn lifespan startup）`asyncio.create_task` 启动监测程序
+- **退出**：应用 shutdown 时 `task.cancel()`，监测程序捕获 `CancelledError` 优雅退出
+- **崩溃重启**：监测程序自身 `try/except Exception` 捕获异常，崩溃后 `await asyncio.sleep(1)` 后重启循环（外层 `while True:` 包裹）
+- **心跳日志**：每 60 秒记一条"监测程序存活，路由了 N 条消息"日志，便于发现停滞
 
 ### 主 Agent supplement queue 与"逐条回复"约束
 
@@ -123,7 +137,24 @@
   4. 拿到回答后工具返回，子 Agent 继续下一轮
 ```
 
-**阻塞机制**：子 Agent 调这个工具时，工具内部用 `asyncio.Future` 或 `threading.Event` 阻塞。db 监测程序路由到回答时 `future.set_result(answer)`，工具返回。
+**阻塞机制**：子 Agent 调这个工具时，工具内部用 `threading.Event` + 共享 dict 存 answer 实现阻塞。子 Agent 跑在 `asyncio.to_thread` 独立线程，`Event.wait()` 阻塞安全；主 loop 的 db 监测程序路由到回答时 `event.set()` + 写 answer 到共享 dict，跨线程安全。具体：
+
+```python
+class AskMainAgentFuture:
+    def __init__(self):
+        self._event = threading.Event()
+        self._answer: str | None = None
+
+    def set_answer(self, answer: str):
+        self._answer = answer
+        self._event.set()
+
+    def wait(self, timeout=None) -> str | None:
+        self._event.wait(timeout=timeout)
+        return self._answer
+```
+
+子 Agent 调 `ask_main_agent` 时创建 `AskMainAgentFuture`，注册到"待回答问题表"（key=问题消息的 rowid，value=Future），推 db 后 `future.wait()` 阻塞。db 监测程序路由到主 Agent 的回答时，从"待回答问题表"找到对应 Future，`future.set_answer(answer)`。子 Agent 拿到 answer 后工具返回。
 
 **所有异步调用的子 Agent 默认带这个工具**（在 `build_subagent_system_segments` 自动注入 schema）。同步调用的子 Agent 不带（避免死锁，见 §异步调用-同步兼容）。
 
@@ -164,13 +195,37 @@ class SubagentSupplementQueue:
         return items
 ```
 
-**子 Agent 消费时机**：`_run_agent_loop` 改造 `enable_supplement=True`，`drain_supplement` 改为读自己的 `SubagentSupplementQueue`（把 queue 注入 handler 或作为参数传入 `agent_runner_loop`）。每轮 LLM 调用前 drain：
+**子 Agent 消费时机**：`_run_agent_loop` 改造 `enable_supplement=True`，`drain_supplement` 改为读自己的 `SubagentSupplementQueue`。**关键改造点**：`agent_runner_loop`（`agent_loop.py:273-290`）现有 `drain_supplement()` 在 `agent_loop.py:701` 是直接 `from agent.runner import drain_supplement` 硬编码全局函数。改造方式：给 `agent_runner_loop` 加可选参数 `supplement_drain: Callable[[], list] | None = None`，None 时走现有全局 drain（主 Agent 路径不变），非 None 时调子 Agent 自己的 drain（`SubagentSupplementQueue.drain()`）。`_run_agent_loop` 调 `agent_runner_loop` 时把 `supplement_queue.drain` 作为 `supplement_drain` 传入。每轮 LLM 调用前 drain：
 - 普通补充（`is_terminate=False`）→ 次末位插入
 - /stop 终止（`is_terminate=True`）→ 最末位插入"总结后终止"
 
 **db 监测程序路由**：监测程序在主 loop，路由 `@子名` 消息时，按 unique_name 从 SubagentRegistry 拿到该子 Agent 的 `SubagentSupplementQueue`，调 `push()`（`queue.Queue.put_nowait` 线程安全，跨线程无障碍）。
 
 **与主 Agent supplement queue 的隔离**：主 Agent 仍用现有全局 `_supplement_queue`（`runner.py:44`），子 Agent 用自己的独立 queue。两者不串话。
+
+### 同步子 Agent 的 supplement_queue 来源（阶段一关键）
+
+**问题**：阶段一同步子 Agent 也要响应主补充子 + 双击停止批量 /stop，但同步子 Agent 不注册到 SubagentRegistry（同步调用不需要唯一名）。db 监测程序路由 `@子名` 时从注册表拿 queue——同步子 Agent 不在注册表，路由失败。
+
+**解决方案**：同步子 Agent 也有一个临时 `SubagentSupplementQueue`，由 `call_subagent` 创建并参数注入 `_run_agent_loop`（不进注册表）。
+
+**同步子 Agent 的命名**：同步子 Agent 也需要一个唯一名（db 监测程序路由 `@子名` 要用）。`call_subagent` 启动时生成 `<agent_type>-<4位hex>` 唯一名，存入一个"同步子 Agent 注册表"（独立于 SubagentRegistry，或合并到 SubagentRegistry 但标记 `is_sync=True`）。
+
+**同步子 Agent 注册表的生命周期**：
+- `call_subagent` 启动时：生成唯一名 + 创建 supplement_queue + 注册到"同步子 Agent 注册表"
+- `call_subagent` 结束时（无论正常/异常）：从注册表移除
+- 注册表项含：unique_name、supplement_queue、thread_id（可选，便于调试）
+
+**双击停止的统一路由**：双击停止按钮触发批量 /stop 时，db 监测程序遍历：
+- SubagentRegistry 中所有异步子 Agent 的 supplement_queue
+- 同步子 Agent 注册表中所有同步子 Agent 的 supplement_queue
+- 给每个 queue 推 `is_terminate=True` 的 /stop 项
+
+**主 Agent 写 `@同步子名 /stop` 的路由**：db 监测程序先查 SubagentRegistry（异步），再查同步子 Agent 注册表（同步），找到对应 queue 推 /stop。
+
+**合并注册表设计（推荐）**：为避免两个注册表，可把同步子 Agent 也注册到 SubagentRegistry，加字段 `is_sync: bool` + `task: None`（同步子 Agent 没有 asyncio task）。`list_running()` 返回所有（含同步异步），双击停止统一遍历。同步子 Agent 的 `memory_context` 可选（阶段一不需要进度查看，同步子 Agent 的 memory_context 可设 None）。
+
+**阶段一同步子 Agent 不暴露 `check_subagent_progress`**：同步子 Agent 在主 Agent 阻塞中，主 Agent 无法调工具查进度。所以同步子 Agent 不需要 memory_context，注册表项的 `memory_context` 字段对同步子 Agent 设 None。
 
 ### /stop 指令的处理流程
 
@@ -213,6 +268,11 @@ db 监测程序识别 "/stop" 关键字
 - **主 Agent 主动停某个子 Agent** → 主写 `@子名 /stop` 到 db，db 监测程序路由
 
 **单击停止的 UX 提示**：单击后如果 SubagentRegistry 还有在跑的子 Agent，前端弹提示"已停主 Agent，N 个子 Agent 仍在运行，双击全部停止"。避免用户以为停止按钮失灵。
+
+**双击窗口与 Escape 协调**：
+- **双击窗口**：400ms 内第二次单击 = 双击，触发批量 /stop
+- **Escape 键**：仍走单击路径（只停主 Agent），与现有 Escape 绑定一致
+- **实现**：单击后启动 400ms 定时器，定时器内第二次单击 = 双击（取消定时器，触发批量 /stop）；定时器超时 = 单击生效（只停主）
 
 消费端逻辑完全一样——都是 /stop 指令走最末插入。
 
@@ -460,12 +520,11 @@ async def _run_subagent_async(unique_name, agent_name, task, memory_context):
 
 - **call_subagent 改造**：现有 `call_subagent` 是同步函数，签名扩展加 `memory_context: SubagentMemoryContext | None = None` 可选参数。用 `asyncio.to_thread` 包一层，子 Agent 跑独立线程，避免 GIL 阻塞主 asyncio loop 的 LLM 调用。跨线程通信（supplement queue / ask_main_agent 阻塞）用线程安全原语（`queue.Queue`、`asyncio.run_coroutine_threadsafe` 注入主 loop）。
 
-- **memory_context 更新钩子**：`_run_agent_loop`（`subagent.py:188-267`）的循环内 `chunk = next(gen)` 之后，检测 `isinstance(chunk, StreamEvent)`，提取请求/响应写入 `memory_context`。具体：
-  - LLM 请求时（`chunk.type == "llm_request"` 或类似事件）→ 记录 `last_llm_request`
-  - LLM 响应时（`chunk.type == "reply"` 或 `"llm_response"`）→ 记录 `last_llm_response`
-  - 工具调用时（`chunk.type == "tool_marker"`）→ 记录 `last_tool_name`
-  - 每轮结束 → `current_turn += 1`
-  - 需先确认 `agent_runner_loop` 的 `StreamEvent` 类型有哪些，在 `_run_agent_loop` 内加 `if memory_context is not None: memory_context.xxx = ...`。`memory_context is None` 时不影响现有同步调用路径。
+- **memory_context 更新钩子**：`_run_agent_loop`（`subagent.py:188-267`）的循环内，在 `client.chat(messages=messages, ...)` 调用前 snapshot `messages`（拼一个摘要或取最后一条 user content）写入 `memory_context.last_llm_request`；在 `client.chat` 返回后把响应文本写入 `memory_context.last_llm_response`；在 `chunk = next(gen)` 检测 `StreamEvent.type == "tool_marker"` 时记录 `last_tool_name`；每轮结束 `current_turn += 1`。
+
+  **注意**：现有 `StreamEvent` 类型只有 `system`/`reply`/`persist`/`tool_marker` 四种（`agent_loop.py:14`），**没有 `llm_request` 类型**——LLM 请求内容在 `messages` 列表里不通过 StreamEvent 暴露。所以 `last_llm_request` 必须在 `client.chat` 调用前直接从 `messages` 提取，不能靠检测 chunk 类型。`last_llm_response` 可从 `reply` 类型的 chunk 拿（或直接从 `client.chat` 返回值拿）。
+
+  `memory_context is None` 时不影响现有同步调用路径（所有更新加 `if memory_context is not None:` 守卫）。
 
 - **子 Agent 不监测 `_stop_requested`**：现有 `_run_agent_loop`（`subagent.py:251`）的 `is_stop_requested()` 检查移除，改为只检查自己的 `SubagentSupplementQueue`（drain 时看是否有 `is_terminate=True` 项）。现有同步调用停止行为会改变：原同步调用时主 Agent 按停止，子 Agent 也停；新设计是子 Agent 不停（只响应自己的 /stop）。这是预期行为（与"信号灯只对主 Agent 有效"一致）。
 
