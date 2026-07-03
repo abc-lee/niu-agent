@@ -1,14 +1,21 @@
-"""子 Agent 注册表（阶段一简化版）。
+"""子 Agent 注册表。
 
-维护当前在跑的子 Agent（含同步和异步）。阶段一只用同步子 Agent（memory_context=None）。
+维护当前在跑的子 Agent（含同步和异步）。
+- 同步子 Agent：is_sync=True，task=None，memory_context=None（阶段一已有）
+- 异步子 Agent：is_sync=False，task=asyncio.Task 或 concurrent.futures.Future，memory_context=SubagentMemoryContext（阶段二新增）
+
 双击停止按钮遍历此注册表批量推 /stop。
+db_monitor 路由 @子名 消息时从此注册表拿 supplement_queue。
 
 线程安全：register/unregister 用 threading.Lock 保护（read-modify-write 非原子）。
 """
 import threading
 import secrets
-from dataclasses import dataclass
-from typing import Optional, Any
+import asyncio
+import time
+from concurrent.futures import Future as ConcurrentFuture
+from dataclasses import dataclass, field
+from typing import Optional, Any, Union
 
 
 @dataclass
@@ -16,8 +23,13 @@ class RunningSubagent:
     unique_name: str
     agent_type: str
     supplement_queue: Any  # SubagentSupplementQueue
-    memory_context: Optional[Any] = None  # 阶段一同步子 Agent 为 None
-    is_sync: bool = True  # 阶段一都是同步
+    memory_context: Optional[Any] = None  # 异步子 Agent 才有，同步为 None
+    is_sync: bool = True
+    # task 字段：异步子 Agent 的可取消句柄
+    # 用 run_coroutine_threadsafe 跨线程调度时返回 concurrent.futures.Future（不是 asyncio.Task）
+    # 两者都有 cancel() 方法，类型用 Union 兼容
+    task: Optional[Union[asyncio.Task, ConcurrentFuture]] = None  # 异步子 Agent 才有，同步为 None
+    started_at: float = field(default_factory=time.time)  # 启动时间，用于动态注入区排序
 
 
 class SubagentRegistry:
@@ -34,9 +46,19 @@ class SubagentRegistry:
                 return name
 
     @classmethod
-    def register(cls, agent_type: str, supplement_queue: Any,
-                 memory_context: Optional[Any] = None,
-                 is_sync: bool = True) -> str:
+    def register(
+        cls,
+        agent_type: str,
+        supplement_queue: Any,
+        memory_context: Optional[Any] = None,
+        is_sync: bool = True,
+        task: Optional[Union[asyncio.Task, ConcurrentFuture]] = None,
+    ) -> str:
+        """注册一个子 Agent，返回唯一名。
+
+        同步子 Agent：is_sync=True，task=None，memory_context=None
+        异步子 Agent：is_sync=False，task=asyncio.Task 或 concurrent.futures.Future，memory_context=SubagentMemoryContext
+        """
         with cls._lock:
             name = cls._gen_unique_name(agent_type)
             cls._instances[name] = RunningSubagent(
@@ -45,6 +67,7 @@ class SubagentRegistry:
                 supplement_queue=supplement_queue,
                 memory_context=memory_context,
                 is_sync=is_sync,
+                task=task,
             )
             return name
 
