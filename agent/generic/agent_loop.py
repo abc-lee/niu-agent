@@ -729,21 +729,39 @@ def agent_runner_loop(
                 else:
                     supplement = format_subagent_supplement(drained, is_final_position=False)
 
-        # 终止模式下强制退出循环：不执行工具调用，无论 LLM 是否调工具都退出
+        # 终止模式下：调 LLM 生成总结后退出（方案 B'）
         if supplement_terminate:
-            logger.warning("[AgentLoop] 终止模式下强制退出循环（LLM 可能仍调工具但不执行）")
-            if on_turn_end is not None:
-                on_turn_end(messages, tools_schema, turn)
+            logger.warning("[AgentLoop] 终止模式下调用 LLM 生成总结后退出")
+            # 注意：on_turn_end 已在上方工具调用后调用过，此处不再重复调用（避免重复衰减——风险2）
+            # 不 yield chat_idle（保持 busy 状态——风险1）
+            # 1. 把 supplement 文本作为 user 消息 append 到 messages
+            messages.append({"role": "user", "content": supplement})
+            # 2. 调 LLM 生成总结（tools=[] 强制无工具调用）
+            summary_text = ""
+            try:
+                summary_gen = client.chat(messages=messages, tools=[])
+                summary_response = exhaust(summary_gen)
+                if summary_response and hasattr(summary_response, "content") and summary_response.content:
+                    summary_text = summary_response.content
+                # 3. persist 总结（复用现有纯文本 persist 模式）
+                if summary_text:
+                    result_text = summary_text
+                    yield StreamEvent("reply", summary_text)
+                    yield StreamEvent("persist", json.dumps({
+                        "role": "assistant",
+                        "content": summary_text
+                    }, ensure_ascii=False))
+            except Exception as e:
+                # 风险3：LLM 调用失败兜底，仍返回 TERMINATED_BY_SUPPLEMENT
+                logger.error(f"[AgentLoop] 终止模式下生成总结失败：{e}")
+            # 4. return TERMINATED_BY_SUPPLEMENT
             clear_stop()
             yield StreamEvent("system", "chat_idle")
-            if isinstance(should_exit, dict):
-                should_exit["messages"] = messages
-                return should_exit
             return {
                 "result": "TERMINATED_BY_SUPPLEMENT",
                 "data": None,
                 "messages": messages,
-                "finish_reason": response.finish_reason if response else None,
+                "finish_reason": summary_response.finish_reason if summary_response else None,
             }
 
         # 退出逻辑：LLM 无工具调用时退出（纯文本回复 = 任务完成或等待用户输入）
