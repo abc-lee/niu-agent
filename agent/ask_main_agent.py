@@ -96,12 +96,24 @@ class PendingAskRegistry:
         """主 Agent 发 /stop 时调，解除 ask_main_agent 阻塞避免死锁。
 
         找到 future → set_answer(TERMINATED_SIGNAL)，ask_main_agent 工具识别后返回终止状态。
-        找不到（子 Agent 没在问主）→ 静默无操作。
+        找不到（子 Agent 没在问主，或 /stop 在检查与 register 之间到达）→ 设置 instance._ask_terminated
+        标记（如果 instance 存在），让后续任何 ask_main_agent 调用立即短路返回 terminated，
+        避免 /stop 在 _ask_main_agent_impl 检查标记与 register 之间到达导致子 Agent 阻塞满 300s 超时。
         """
         with self._lock:
             future = self._futures.pop(unique_name, None)
         if future is not None:
             future.set_answer(TERMINATED_SIGNAL)
+        else:
+            # future 不存在（子 Agent 没在问主，或 /stop 在检查与 register 之间到达）
+            # 设置 instance._ask_terminated 标记，让后续 ask_main_agent 立即短路
+            try:
+                from .subagent_registry import SubagentRegistry
+                instance = SubagentRegistry.get(unique_name)
+                if instance is not None:
+                    instance._ask_terminated = True
+            except Exception:
+                pass  # 标记设置失败不影响主流程
 
     def unregister(self, unique_name: str) -> None:
         """子 Agent 结束时调（正常/异常/终止），清理未解除的 future。"""
