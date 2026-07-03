@@ -199,6 +199,7 @@ def _run_agent_loop(
     context_target_threshold: int = 0,
     history: Optional[list] = None,
     supplement_queue: Optional[Any] = None,  # 子 Agent 独立 supplement queue
+    memory_context: Optional[Any] = None,  # 阶段二新增：异步子 Agent 进度数据
 ) -> Tuple[str, Any]:
     """
     执行 agent_runner_loop 并收集结果（提取自 call_subagent）
@@ -240,6 +241,7 @@ def _run_agent_loop(
         history=history,
         enable_supplement=True,  # 子 Agent 用独立 supplement queue
         supplement_drain=supplement_queue.drain if supplement_queue is not None else None,
+        memory_context=memory_context,  # 阶段二新增：透传给 agent_runner_loop
     )
 
     result = ""
@@ -473,6 +475,7 @@ def call_subagent(
     context_fifo_threshold: int = -1,
     no_tools: bool = False,
     supplement_queue: Optional[Any] = None,
+    memory_context: Optional[Any] = None,  # 阶段二新增：异步子 Agent 进度数据
 ) -> str:
     """
     调用子 Agent
@@ -612,6 +615,7 @@ def call_subagent(
             context_target_threshold=context_target_threshold_val,
             history=history,
             supplement_queue=supplement_queue,  # 新增：传给 _run_agent_loop
+            memory_context=memory_context,  # 阶段二新增：透传给 _run_agent_loop
         )
     finally:
         SubagentRegistry.unregister(unique_name)

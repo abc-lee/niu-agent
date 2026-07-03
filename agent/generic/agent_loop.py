@@ -311,6 +311,7 @@ def agent_runner_loop(
     enable_supplement=True,  # False for sub-agents to prevent stealing main agent's supplements
     system_message: Optional[dict] = None,  # 已组装好的 system message（首轮即带 cache_control）
     supplement_drain=None,  # 子 Agent 传入自己的 drain 函数；None 时走全局 drain_supplement
+    memory_context: Optional[Any] = None,  # 阶段二新增：异步子 Agent 进度数据，None=主 Agent 路径不更新
 ):
     from agent.runner import is_stop_requested, clear_stop, drain_supplement
 
@@ -437,6 +438,27 @@ def agent_runner_loop(
             client.last_tools = ""  # 每10轮重置一次工具描述，避免上下文过大导致的模型性能下降
         # 单消息聚合上限检查（防多个 tool 结果合计爆掉单消息上限）
         messages = _enforce_message_budget(messages)
+        # 阶段二：异步子 Agent 进度数据 — LLM 请求前更新 last_llm_request + current_turn
+        # 取 messages 里最后一条 role==user 的 content 摘要（无 supplement 时本轮 user 是上一轮遗留的，倒序找正确）
+        if memory_context is not None:
+            try:
+                last_user_content = ""
+                for m in reversed(messages):
+                    if m.get("role") == "user":
+                        content = m.get("content", "")
+                        if isinstance(content, list):
+                            content = " ".join(
+                                block.get("text", "") if isinstance(block, dict) else str(block)
+                                for block in content
+                            )
+                        last_user_content = str(content)[:500]  # 摘要前 500 字符
+                        break
+                memory_context.update(
+                    last_llm_request=last_user_content,
+                    current_turn=turn,
+                )
+            except Exception:
+                pass  # 进度更新失败不影响主流程
         response_gen = client.chat(messages=messages, tools=tools_schema)
         if verbose:
             response = yield from response_gen
@@ -459,6 +481,14 @@ def agent_runner_loop(
                 _harness_fail_count = 0
 
             yield StreamEvent("reply", content)
+
+            # 阶段二：异步子 Agent 进度数据 — LLM 响应组装完后更新 last_llm_response
+            # 位置：yield StreamEvent("reply", content) 之后（else/非 verbose 分支内，content 已在 L447 定义）
+            if memory_context is not None:
+                try:
+                    memory_context.update(last_llm_response=(content or "")[:2000])
+                except Exception:
+                    pass
 
         # 统一提取 prompt_tokens（verbose/else 分支共用）
         if hasattr(response, 'usage') and response.usage:
@@ -560,6 +590,16 @@ def agent_runner_loop(
         # 注意：此时 messages 包含本轮的 assistant(tool_calls) 但不含 tool 结果
         handler._current_messages = messages
         for ii, tc in enumerate(tool_calls):
+            # 阶段二：异步子 Agent 进度数据 — 工具调度时更新 last_tool_name
+            # 位置：for 循环体开头，dispatch 调用前
+            # tc 是 handler 预处理后的对象，用 tc["tool_name"] 取（与现有 L563 一致）
+            if memory_context is not None:
+                try:
+                    tc_tool_name = tc.get("tool_name", "") if isinstance(tc, dict) else ""
+                    if tc_tool_name:
+                        memory_context.update(last_tool_name=tc_tool_name)
+                except Exception:
+                    pass
             tool_name, args, tid = tc["tool_name"], tc["args"], tc.get("id", "")
             if tool_name == "no_tool":
                 continue
