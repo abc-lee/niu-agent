@@ -288,6 +288,28 @@ def get_tools_schema() -> list:
             }
         )
 
+    # 阶段二：主 Agent 的 check_subagent_progress 工具
+    tools.append({
+        "type": "function",
+        "function": {
+            "name": "check_subagent_progress",
+            "description": (
+                "查看异步子 Agent 的进度。返回子 Agent 最近一轮 LLM 对话（请求摘要、回复、当前轮次、最近工具）。"
+                "用于监控后台运行的子 Agent。同步子 Agent 无进度数据。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "subagent_name": {
+                        "type": "string",
+                        "description": "子 Agent 唯一名（如 file-processor-a1b2，来自派单确认或动态注入区）",
+                    },
+                },
+                "required": ["subagent_name"],
+            },
+        },
+    })
+
     return tools
 
 

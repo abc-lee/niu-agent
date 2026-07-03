@@ -766,6 +766,53 @@ class NiuHandler(BaseHandler):
         # 正常情况：返回给用户，使用空字符串作为 next_prompt 而不是 None
         return StepOutcome(response, next_prompt="")
 
+    def do_check_subagent_progress(self, args: dict, response) -> StepOutcome:
+        """查看异步子 Agent 的进度（最近一轮 LLM 对话）。
+
+        Args:
+            args: {"subagent_name": "file-processor-a1b2"}
+
+        Returns:
+            StepOutcome(data=进度文本, next_prompt="")
+        """
+        from .subagent_registry import SubagentRegistry
+
+        subagent_name = args.get("subagent_name", "")
+        if not subagent_name:
+            return StepOutcome(
+                {"status": "error", "msg": "subagent_name is required"},
+                next_prompt="",
+            )
+
+        instance = SubagentRegistry.get(subagent_name)
+        if instance is None:
+            return StepOutcome(
+                f"子 Agent {subagent_name} 不在运行中（可能已完成或不存在）。",
+                next_prompt="",
+            )
+
+        if instance.memory_context is None:
+            return StepOutcome(
+                f"子 Agent {subagent_name} 是同步调用，无进度数据。",
+                next_prompt="",
+            )
+
+        snap = instance.memory_context.snapshot()
+
+        # 格式化输出
+        lines = [
+            f"子 Agent: {subagent_name}",
+            f"类型: {instance.agent_type}",
+            f"当前轮次: {snap['current_turn']}",
+            f"最近工具调用: {snap['last_tool_name'] or '（无）'}",
+            f"最近一轮 LLM 请求（摘要）:",
+            f"  {snap['last_llm_request'] or '（无）'}",
+            f"最近一轮 LLM 回复:",
+            f"  {snap['last_llm_response'] or '（无）'}",
+        ]
+
+        return StepOutcome("\n".join(lines), next_prompt="")
+
     def _sync_get_messages(self):
         """同步获取消息列表 — 复用 runner 的桥接方法"""
         from .runner import get_runner
