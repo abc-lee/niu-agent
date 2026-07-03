@@ -34,15 +34,26 @@ def test_parse_at_message_stop():
 
 
 def test_route_to_main_agent():
-    """@主Agent 消息推入主 Agent supplement queue。"""
+    """@主Agent 消息推入 MainAgentRequestQueue（阶段二改造后）。
+
+    旧机制走 enqueue_supplement；新机制 ask_main_agent 和完成通知改走内存队列，
+    target==主Agent 的 db 消息（兼容残留）也推入 MainAgentRequestQueue 由链路 A 消费。
+    """
     from niu_api.db_monitor import route_message
+    from agent.main_agent_request_queue import get_main_agent_request_queue
+
+    q = get_main_agent_request_queue()
+    while q.pop() is not None:
+        pass
+
     with patch("niu_api.db_monitor.enqueue_supplement") as mock_enqueue:
         route_message("主Agent", "file-processor-a1b2", "测试问题")
-        mock_enqueue.assert_called_once()
-        call_args = mock_enqueue.call_args[0][0]
-        assert "@主Agent" in call_args
-        assert "file-processor-a1b2" in call_args
-        assert "测试问题" in call_args
+        mock_enqueue.assert_not_called()
+
+    item = q.pop()
+    assert item is not None
+    assert "file-processor-a1b2" in item
+    assert "测试问题" in item
 
 
 def test_route_to_subagent_normal():
@@ -66,12 +77,25 @@ def test_route_to_subagent_stop():
 
 
 def test_route_target_not_found():
-    """目标子 Agent 不在注册表，推回主 Agent。"""
+    """目标子 Agent 不在注册表时按 sender 分流（阶段二改造后）。
+
+    - sender==主Agent：孤儿回答丢弃，不推回主 Agent 避免死循环
+    - 其他 sender：推回主 Agent supplement queue
+    """
     from niu_api.db_monitor import route_message
+
+    # sender==主Agent：丢弃
     with patch("niu_api.db_monitor.SubagentRegistry") as mock_registry:
         mock_registry.get.return_value = None
         with patch("niu_api.db_monitor.enqueue_supplement") as mock_enqueue:
             route_message("unknown-subagent", "主Agent", "测试")
+            mock_enqueue.assert_not_called()
+
+    # 其他 sender：推回主 Agent
+    with patch("niu_api.db_monitor.SubagentRegistry") as mock_registry:
+        mock_registry.get.return_value = None
+        with patch("niu_api.db_monitor.enqueue_supplement") as mock_enqueue:
+            route_message("unknown-subagent", "other-agent", "测试")
             mock_enqueue.assert_called_once()
             call_args = mock_enqueue.call_args[0][0]
             assert "unknown-subagent" in call_args
@@ -163,7 +187,10 @@ def test_init_baseline_no_subagent_msgs():
 
 
 def test_poll_messages_routes_new_only():
-    """_poll_messages 只路由 rowid > last_seen 的新 subagent_msg。"""
+    """_poll_messages 只路由 rowid > last_seen 的新 subagent_msg。
+
+    阶段二改造后：@主Agent 消息推入 MainAgentRequestQueue（不走 enqueue_supplement）。
+    """
     path = _make_temp_db()
     try:
         # 基线：插入 2 条 subagent_msg，记 max rowid
@@ -174,6 +201,12 @@ def test_poll_messages_routes_new_only():
             asyncio.run(db_monitor_mod._init_routed_baseline())
             baseline = db_monitor_mod._last_seen_rowid
 
+            # 清空 MainAgentRequestQueue
+            from agent.main_agent_request_queue import get_main_agent_request_queue
+            q = get_main_agent_request_queue()
+            while q.pop() is not None:
+                pass
+
             # 再插入 2 条新 subagent_msg + 1 条 user（应被 role 过滤）
             _insert_msg(path, "user", "noise")
             _insert_msg(path, "subagent_msg", "@主Agent [sub1] 新1")
@@ -181,8 +214,13 @@ def test_poll_messages_routes_new_only():
 
             with patch("niu_api.db_monitor.enqueue_supplement") as mock_enqueue:
                 asyncio.run(db_monitor_mod._poll_messages())
-                # 主 Agent 目标走 enqueue_supplement
-                assert mock_enqueue.call_count == 2
+                # 主 Agent 目标走 MainAgentRequestQueue，不走 enqueue_supplement
+                mock_enqueue.assert_not_called()
+
+            # MainAgentRequestQueue 应有 2 条
+            assert q.pop() is not None
+            assert q.pop() is not None
+            assert q.pop() is None
 
             # last_seen_rowid 应推进到最后一条 subagent_msg 的 rowid
             conn = sqlite3.connect(path)

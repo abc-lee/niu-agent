@@ -45,11 +45,18 @@ def is_stop_requested() -> bool:
 def request_stop_all_subagents() -> None:
     """给所有在跑的子 Agent 推 /stop（双击停止按钮触发）。
 
-    遍历 SubagentRegistry，给每个子 Agent 的 supplement_queue 推 is_terminate=True 的 /stop。
+    遍历 SubagentRegistry，给每个子 Agent：
+    1. 调 cancel_pending_ask 解除 ask_main_agent 阻塞（避免死锁）
+    2. 推 /stop 到 supplement queue（让子 Agent 下一轮 drain 走终止总结流程）
+
     主 Agent 不受影响（主 Agent 用 _stop_requested 信号灯单独控制）。
     """
+    from agent.ask_main_agent import get_pending_ask_registry
+    pending_ask = get_pending_ask_registry()
+
     for instance in SubagentRegistry.list_running():
         try:
+            pending_ask.cancel_pending_ask(instance.unique_name)
             instance.supplement_queue.push("/stop", is_terminate=True, sender="主Agent")
         except Exception as e:
             logger.error(f"给子 Agent {instance.unique_name} 推 /stop 失败：{e}")
