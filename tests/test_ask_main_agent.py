@@ -54,17 +54,36 @@ def test_registry_cancel_pending_ask():
 
 
 def test_registry_unregister_removes_future():
-    """注销后 future 不再可路由。"""
+    """注销后 future 不再可路由，set_answer 返回 False（孤儿回答路径）。"""
     reg = PendingAskRegistry()
     f = reg.register("file-processor-a1b2")
     reg.unregister("file-processor-a1b2")
 
-    # 注销后 set_answer 不抛异常，但 future 永远拿不到（已不在 dict）
-    reg.set_answer("file-processor-a1b2", "回答")
-    assert f.wait(timeout=0.1) is None  # 超时，没拿到
+    # 注销后 set_answer 返回 False（找不到 future）
+    found = reg.set_answer("file-processor-a1b2", "回答")
+    assert found is False
+    # future 永远拿不到（已不在 dict）
+    assert f.wait(timeout=0.1) is None
 
 
 def test_registry_cancel_missing_unique_name_no_error():
     """cancel 不存在的 unique_name 不抛异常（异步子 Agent 可能没问主就崩溃）。"""
     reg = PendingAskRegistry()
     reg.cancel_pending_ask("nonexistent-name")  # 不抛异常
+
+
+def test_registry_register_duplicate_unique_name_terminates_old_future():
+    """register 同一 unique_name 两次，旧 future 收到 TERMINATED_SIGNAL 解除阻塞，避免泄漏。"""
+    reg = PendingAskRegistry()
+    f1 = reg.register("file-processor-a1b2")
+    f2 = reg.register("file-processor-a1b2")  # 重复注册
+
+    # 旧 future 应被设 TERMINATED_SIGNAL
+    assert f1.wait(timeout=1.0) == TERMINATED_SIGNAL
+
+    # 新 future 还在等（没被解除）
+    assert f2.wait(timeout=0.1) is None
+
+    # set_answer 路由到新 future
+    reg.set_answer("file-processor-a1b2", "回答")
+    assert f2.wait(timeout=1.0) == "回答"

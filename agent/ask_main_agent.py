@@ -45,7 +45,7 @@ class AskMainAgentFuture:
         self._answer = answer
         self._event.set()
 
-    def wait(self, timeout: float = None) -> Optional[str]:
+    def wait(self, timeout: Optional[float] = None) -> Optional[str]:
         """阻塞等待回答。超时返回 None；被 cancel 返回 TERMINATED_SIGNAL。"""
         self._event.wait(timeout=timeout)
         return self._answer
@@ -59,7 +59,7 @@ class PendingAskRegistry:
     """
 
     def __init__(self):
-        self._futures: dict = {}
+        self._futures: dict[str, AskMainAgentFuture] = {}
         self._lock = threading.Lock()
 
     def register(self, unique_name: str) -> AskMainAgentFuture:
