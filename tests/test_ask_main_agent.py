@@ -216,3 +216,30 @@ def test_ask_main_agent_after_cancel_does_not_deadlock():
         assert "终止" in result2
     finally:
         SubagentRegistry.unregister(name)
+
+
+def test_cancel_pending_ask_sets_terminated_flag_when_no_future():
+    """cancel_pending_ask 在 future 不存在时也设置 _ask_terminated 标记。
+
+    场景：/stop 在 _ask_main_agent_impl 检查标记与 register 之间到达，
+    cancel_pending_ask 找不到 future，但应设置 instance._ask_terminated 标记，
+    让后续 ask_main_agent 调用立即短路，避免阻塞满 300s。
+    """
+    from agent.ask_main_agent import get_pending_ask_registry
+    from agent.subagent_registry import SubagentRegistry
+    from agent.subagent_supplement import SubagentSupplementQueue
+
+    sq = SubagentSupplementQueue("test-cancel-flag-0001")
+    name = SubagentRegistry.register("test-cancel-flag", supplement_queue=sq, is_sync=False)
+
+    try:
+        reg = get_pending_ask_registry()
+        # 不注册 future（子 Agent 没在问主），直接 cancel
+        reg.cancel_pending_ask(name)
+
+        # instance._ask_terminated 应被设置
+        instance = SubagentRegistry.get(name)
+        assert instance is not None
+        assert getattr(instance, "_ask_terminated", False) is True
+    finally:
+        SubagentRegistry.unregister(name)
