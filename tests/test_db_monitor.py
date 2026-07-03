@@ -1,5 +1,10 @@
 """db 监测程序路由逻辑单元测试。"""
+import os
+import sqlite3
+import tempfile
 from unittest.mock import patch, MagicMock
+
+import niu_api.db_monitor as db_monitor_mod
 
 
 def test_parse_at_message():
@@ -81,3 +86,166 @@ def test_route_to_subagent_multi_hyphen_type():
         mock_registry.get.return_value = MagicMock(supplement_queue=mock_queue)
         route_message("context-manager-c3d4", "主Agent", "压缩吧")
         mock_queue.push.assert_called_once_with("压缩吧", is_terminate=False, sender="主Agent")
+
+
+# ---- _init_routed_baseline / _poll_messages：用真实临时 sqlite3 db 验证 ----
+
+
+def _make_temp_db():
+    """创建临时 messages.db 并返回路径。"""
+    fd, path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    conn = sqlite3.connect(path)
+    conn.execute("""
+        CREATE TABLE messages (
+            id TEXT PRIMARY KEY,
+            role TEXT NOT NULL,
+            content TEXT,
+            tool_calls TEXT,
+            tool_results TEXT,
+            tool_call_id TEXT DEFAULT '',
+            created_at TEXT NOT NULL
+        )
+    """)
+    conn.commit()
+    conn.close()
+    return path
+
+
+def _insert_msg(path, role, content):
+    """插入一条消息，返回 rowid。"""
+    conn = sqlite3.connect(path)
+    cur = conn.execute(
+        "INSERT INTO messages (id, role, content, created_at) VALUES (?, ?, ?, ?)",
+        (f"msg-{role}-{sqlite3.connect(path).execute('SELECT COUNT(*) FROM messages').fetchone()[0]}",
+         role, content, "2026-07-03T00:00:00"),
+    )
+    conn.commit()
+    rowid = cur.lastrowid
+    conn.close()
+    return rowid
+
+
+def test_init_baseline_records_max_rowid():
+    """_init_routed_baseline 应记当前 max(rowid) 作为游标。"""
+    path = _make_temp_db()
+    try:
+        _insert_msg(path, "user", "hi")
+        _insert_msg(path, "subagent_msg", "@主Agent [sub1] 第一条")
+        _insert_msg(path, "subagent_msg", "@主Agent [sub1] 第二条")
+        _insert_msg(path, "assistant", "reply")
+        with patch.object(db_monitor_mod, "_db_path", path):
+            import asyncio
+            asyncio.run(db_monitor_mod._init_routed_baseline())
+            # last_seen_rowid 应为最后一条 subagent_msg 的 rowid
+            conn = sqlite3.connect(path)
+            expected = conn.execute(
+                "SELECT MAX(rowid) FROM messages WHERE role='subagent_msg'"
+            ).fetchone()[0]
+            conn.close()
+            assert db_monitor_mod._last_seen_rowid == expected
+    finally:
+        os.unlink(path)
+
+
+def test_init_baseline_no_subagent_msgs():
+    """db 无 subagent_msg 时 baseline=0。"""
+    path = _make_temp_db()
+    try:
+        _insert_msg(path, "user", "hi")
+        _insert_msg(path, "assistant", "reply")
+        with patch.object(db_monitor_mod, "_db_path", path):
+            import asyncio
+            asyncio.run(db_monitor_mod._init_routed_baseline())
+            assert db_monitor_mod._last_seen_rowid == 0
+    finally:
+        os.unlink(path)
+
+
+def test_poll_messages_routes_new_only():
+    """_poll_messages 只路由 rowid > last_seen 的新 subagent_msg。"""
+    path = _make_temp_db()
+    try:
+        # 基线：插入 2 条 subagent_msg，记 max rowid
+        _insert_msg(path, "subagent_msg", "@主Agent [sub1] 旧1")
+        _insert_msg(path, "subagent_msg", "@主Agent [sub1] 旧2")
+        with patch.object(db_monitor_mod, "_db_path", path):
+            import asyncio
+            asyncio.run(db_monitor_mod._init_routed_baseline())
+            baseline = db_monitor_mod._last_seen_rowid
+
+            # 再插入 2 条新 subagent_msg + 1 条 user（应被 role 过滤）
+            _insert_msg(path, "user", "noise")
+            _insert_msg(path, "subagent_msg", "@主Agent [sub1] 新1")
+            _insert_msg(path, "subagent_msg", "@主Agent [sub1] 新2")
+
+            with patch("niu_api.db_monitor.enqueue_supplement") as mock_enqueue:
+                asyncio.run(db_monitor_mod._poll_messages())
+                # 主 Agent 目标走 enqueue_supplement
+                assert mock_enqueue.call_count == 2
+
+            # last_seen_rowid 应推进到最后一条 subagent_msg 的 rowid
+            conn = sqlite3.connect(path)
+            expected = conn.execute(
+                "SELECT MAX(rowid) FROM messages WHERE role='subagent_msg'"
+            ).fetchone()[0]
+            conn.close()
+            assert db_monitor_mod._last_seen_rowid == expected
+            assert expected > baseline
+    finally:
+        os.unlink(path)
+
+
+def test_poll_messages_no_new_does_nothing():
+    """无新消息时 _poll_messages 不路由、游标不变。"""
+    path = _make_temp_db()
+    try:
+        _insert_msg(path, "subagent_msg", "@主Agent [sub1] 旧")
+        with patch.object(db_monitor_mod, "_db_path", path):
+            import asyncio
+            asyncio.run(db_monitor_mod._init_routed_baseline())
+            baseline = db_monitor_mod._last_seen_rowid
+            with patch("niu_api.db_monitor.enqueue_supplement") as mock_enqueue:
+                asyncio.run(db_monitor_mod._poll_messages())
+                mock_enqueue.assert_not_called()
+            assert db_monitor_mod._last_seen_rowid == baseline
+    finally:
+        os.unlink(path)
+
+
+def test_poll_messages_routes_to_subagent_queue():
+    """_poll_messages 对 @子Agent 消息推入子 Agent supplement_queue。"""
+    path = _make_temp_db()
+    try:
+        with patch.object(db_monitor_mod, "_db_path", path):
+            import asyncio
+            asyncio.run(db_monitor_mod._init_routed_baseline())
+            _insert_msg(path, "subagent_msg", "@file-processor-a1b2 测试任务")
+
+            mock_queue = MagicMock()
+            with patch("niu_api.db_monitor.SubagentRegistry") as mock_registry:
+                mock_registry.get.return_value = MagicMock(supplement_queue=mock_queue)
+                asyncio.run(db_monitor_mod._poll_messages())
+                mock_queue.push.assert_called_once()
+                args, kwargs = mock_queue.push.call_args
+                assert "测试任务" in args[0]
+                assert kwargs.get("is_terminate") is False
+    finally:
+        os.unlink(path)
+
+
+def test_poll_messages_unparsable_advances_cursor():
+    """无法解析的 @消息仍推进游标（避免反复尝试）。"""
+    path = _make_temp_db()
+    try:
+        with patch.object(db_monitor_mod, "_db_path", path):
+            import asyncio
+            asyncio.run(db_monitor_mod._init_routed_baseline())
+            _insert_msg(path, "subagent_msg", "no_at_prefix_here")
+            with patch("niu_api.db_monitor.enqueue_supplement") as mock_enqueue:
+                asyncio.run(db_monitor_mod._poll_messages())
+                mock_enqueue.assert_not_called()
+            # 游标应推进（即使没路由）
+            assert db_monitor_mod._last_seen_rowid > 0
+    finally:
+        os.unlink(path)
