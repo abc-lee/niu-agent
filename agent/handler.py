@@ -1034,6 +1034,25 @@ class NiuHandler(BaseHandler):
             )
             return ret
 
+        # 阶段二：ask_main_agent 工具（异步子 Agent 专用）
+        if tool_name == "ask_main_agent":
+            from agent.subagent import _ask_main_agent_impl
+            # unique_name 由 call_subagent 在创建 handler 后设置（handler._subagent_unique_name）
+            unique_name = getattr(self, "_subagent_unique_name", "")
+            if not unique_name:
+                yield StreamEvent("system", "[ask_main_agent 错误] 子 Agent 唯一名未设置（仅异步子 Agent 可用）\n")
+                return StepOutcome(
+                    {"status": "error", "msg": "subagent unique_name not set (ask_main_agent only for async subagent)"},
+                    next_prompt="",
+                )
+            question = args.get("question", "")
+            try:
+                answer = _ask_main_agent_impl(question, unique_name=unique_name)
+                return StepOutcome({"status": "success", "answer": answer}, next_prompt="")
+            except Exception as e:
+                yield StreamEvent("system", f"[ask_main_agent 错误] {e}\n")
+                return StepOutcome({"status": "error", "msg": str(e)}, next_prompt="")
+
         # 再检查内置工具（工具名中的 - 转换为 _）
         method_name = f"do_{tool_name.replace('-', '_')}"
         if hasattr(self, method_name):

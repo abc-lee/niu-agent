@@ -466,6 +466,75 @@ def _build_user_info_section() -> str:
     return "\n\n".join(sections)
 
 
+def _build_subagent_tools_schema(
+    agent_name: str,
+    agent_config: Optional[dict] = None,
+    memory_context: Optional[Any] = None,
+    no_tools: bool = False,
+) -> list:
+    """构建子 Agent 的 tools_schema。
+
+    阶段二新增：异步子 Agent（memory_context 非 None）注入 ask_main_agent 工具。
+    同步子 Agent（memory_context None）不注入（避免死锁）。
+
+    Args:
+        agent_name: 子 Agent 名（如 file-processor）
+        agent_config: 子 Agent 配置字典（frontmatter 解析结果）。None 时内部调 get_subagent_config 获取
+        memory_context: 非 None 表示异步子 Agent，注入 ask_main_agent；None 表示同步
+        no_tools: True 时返回空列表（强制无工具模式）
+
+    Returns:
+        tools_schema 列表
+    """
+    if no_tools:
+        # 注意：现有 call_subagent 在最后清空 tools_schema，日志走完过滤流程才清空
+        # helper 提前返回跳过日志，但功能结果一致（都返回空）。可接受——no_tools 模式不需要日志
+        return []
+
+    # agent_config None 时内部获取（方便测试只传 agent_name + memory_context）
+    if agent_config is None:
+        agent_config = get_subagent_config(agent_name)
+
+    from .runner import get_tools_schema
+
+    tools_schema = get_tools_schema()
+    # 移除 chat-with-* 工具，子 Agent 不能再调用子 Agent
+    tools_schema = [
+        t for t in tools_schema
+        if not t.get("function", {}).get("name", "").startswith("chat-with-")
+    ]
+    # 三层过滤：默认黑名单 + disableBaseTools + allowBaseTools 解禁
+    tools_schema, disabled_set, custom_disabled, allowed_base = _filter_base_tools(agent_config, tools_schema)
+    if disabled_set:
+        logger.info(f"[SubAgent] {agent_name}: Disabled base tools: {sorted(disabled_set)}")
+
+    # 配置完整性检查
+    if not custom_disabled and not allowed_base:
+        logger.warning(
+            f"[SubAgent] {agent_name}: No disableBaseTools/allowBaseTools configured, "
+            f"using default blacklist only: {sorted(DEFAULT_DISABLED_BASE_TOOLS)}."
+        )
+
+    # MCP 工具
+    mcp_tools_schema = get_subagent_mcp_tools_schema(agent_name)
+    if mcp_tools_schema:
+        tools_schema = tools_schema + mcp_tools_schema
+        logger.info(f"[SubAgent] {agent_name}: {len(tools_schema)} tools ({len(mcp_tools_schema)} MCP)")
+    else:
+        logger.warning(f"[SubAgent] {agent_name}: {len(tools_schema)} tools (0 MCP - WARNING: No MCP tools loaded!)")
+
+    # 阶段二：异步子 Agent 注入 ask_main_agent
+    if memory_context is not None:
+        tools_schema.append(ASK_MAIN_AGENT_TOOL_SCHEMA)
+        logger.info(f"[SubAgent] {agent_name}: ask_main_agent 注入（异步子 Agent）")
+
+    # 列出关键工具（调试）
+    tool_names = [t.get("function", {}).get("name", "") for t in tools_schema]
+    logger.debug(f"[SubAgent] {agent_name}: Tools = {tool_names}")
+
+    return tools_schema
+
+
 def call_subagent(
     agent_name: str,
     task: str,
@@ -476,6 +545,7 @@ def call_subagent(
     no_tools: bool = False,
     supplement_queue: Optional[Any] = None,
     memory_context: Optional[Any] = None,  # 阶段二新增：异步子 Agent 进度数据
+    unique_name: Optional[str] = None,  # 阶段二新增：异步路径透传，跳过内部 register
 ) -> str:
     """
     调用子 Agent
@@ -537,45 +607,13 @@ def call_subagent(
     # 新增子 Agent 时必须遵守此约定
     handler._is_subagent = True
 
-    # 5. 获取基础工具 schema（排除子Agent调用工具，避免递归）
-    from .runner import get_tools_schema
-
-    tools_schema = get_tools_schema()
-    # 移除 chat-with-* 工具，子Agent不能再调用子Agent
-    tools_schema = [
-        t for t in tools_schema
-        if not t.get("function", {}).get("name", "").startswith("chat-with-")
-    ]
-    # 根据配置移除基础工具（三层过滤：默认黑名单 + disableBaseTools + allowBaseTools 解禁）
-    # 过滤逻辑抽取到 _filter_base_tools 函数，Task 2 测试直接调用真实函数避免逻辑失同步
-    tools_schema, disabled_set, custom_disabled, allowed_base = _filter_base_tools(agent_config, tools_schema)
-    if disabled_set:
-        logger.info(f"[SubAgent] {agent_name}: Disabled base tools: {sorted(disabled_set)}")
-
-    # 配置完整性检查：未显式配置 disableBaseTools 且未配 allowBaseTools 的子 Agent
-    if not custom_disabled and not allowed_base:
-        logger.warning(
-            f"[SubAgent] {agent_name}: No disableBaseTools/allowBaseTools configured, "
-            f"using default blacklist only: {sorted(DEFAULT_DISABLED_BASE_TOOLS)}. "
-            f"Recommend explicit config in config/agents/{agent_name}.md frontmatter."
-        )
-
-    # 6. 获取子 Agent 的 MCP 工具 schema
-    mcp_tools_schema = get_subagent_mcp_tools_schema(agent_name)
-    if mcp_tools_schema:
-        tools_schema = tools_schema + mcp_tools_schema
-        logger.info(f"[SubAgent] {agent_name}: {len(tools_schema)} tools ({len(mcp_tools_schema)} MCP)")
-    else:
-        logger.warning(f"[SubAgent] {agent_name}: {len(tools_schema)} tools (0 MCP - WARNING: No MCP tools loaded!)")
-
-    # 列出关键工具（调试）
-    tool_names = [t.get("function", {}).get("name", "") for t in tools_schema]
-    logger.debug(f"[SubAgent] {agent_name}: Tools = {tool_names}")
-
-    # no_tools 模式：清空所有工具，LLM 只能直接回复文本
-    if no_tools:
-        tools_schema = []
-        logger.info(f"[SubAgent] {agent_name}: no_tools=True, all tools disabled")
+    # 5. 阶段二：tools_schema 构建提取到 helper（含 ask_main_agent 注入逻辑）
+    tools_schema = _build_subagent_tools_schema(
+        agent_name=agent_name,
+        agent_config=agent_config,
+        memory_context=memory_context,
+        no_tools=no_tools,
+    )
 
     # 7. 执行（单次，不分片）
     context_window_tokens = _read_context_window_tokens()
@@ -591,34 +629,63 @@ def call_subagent(
     target_threshold = _read_target_threshold()
     context_target_threshold_val = int(context_window_tokens * target_threshold) if context_window_tokens > 0 else 0
 
-    # === 新增：创建 supplement queue + 注册到 SubagentRegistry ===
+    # === 创建 supplement queue + 注册到 SubagentRegistry ===
     from .subagent_supplement import SubagentSupplementQueue
     from .subagent_registry import SubagentRegistry
 
-    if supplement_queue is None:
-        supplement_queue = SubagentSupplementQueue(unique_name="")  # unique_name 注册后回填
-    unique_name = SubagentRegistry.register(agent_name, supplement_queue)
-    supplement_queue.unique_name = unique_name  # 回填唯一名，db 监测程序路由时用
-
-    try:
-        result_text, return_value = _run_agent_loop(
-            client=client,
-            system_prompt="",  # 向后兼容（system_message 非 None 时分支选择生效）
-            system_message=system_message,
-            user_input=task,
-            handler=handler,
-            tools_schema=tools_schema,
-            max_turns=20,
-            initial_user_content=task,
-            context_window_tokens=context_window_tokens,
-            context_fifo_threshold=fifo_threshold,
-            context_target_threshold=context_target_threshold_val,
-            history=history,
-            supplement_queue=supplement_queue,  # 新增：传给 _run_agent_loop
-            memory_context=memory_context,  # 阶段二新增：透传给 _run_agent_loop
-        )
-    finally:
-        SubagentRegistry.unregister(unique_name)
+    if unique_name is not None:
+        # 异步路径：调用方已注册（_dispatch_async_subagent），跳过内部 register
+        # 只设置 handler._subagent_unique_name（handler.dispatch 的 ask_main_agent 分支用）
+        handler._subagent_unique_name = unique_name
+        # supplement_queue 也由调用方传入，不重新创建
+        try:
+            result_text, return_value = _run_agent_loop(
+                client=client,
+                system_prompt="",  # 向后兼容（system_message 非 None 时分支选择生效）
+                system_message=system_message,
+                user_input=task,
+                handler=handler,
+                tools_schema=tools_schema,
+                max_turns=20,
+                initial_user_content=task,
+                context_window_tokens=context_window_tokens,
+                context_fifo_threshold=fifo_threshold,
+                context_target_threshold=context_target_threshold_val,
+                history=history,
+                supplement_queue=supplement_queue,  # 调用方传入
+                memory_context=memory_context,  # 阶段二新增：透传给 _run_agent_loop
+            )
+        finally:
+            # 异步路径不在这里 unregister（_run_subagent_async 的 finally 负责）
+            pass
+    else:
+        # 同步路径：现有逻辑
+        if supplement_queue is None:
+            supplement_queue = SubagentSupplementQueue(unique_name="")  # unique_name 注册后回填
+        unique_name = SubagentRegistry.register(agent_name, supplement_queue)
+        supplement_queue.unique_name = unique_name  # 回填唯一名，db 监测程序路由时用
+        # 同步路径也设 handler._subagent_unique_name（虽然同步子 Agent 不注入 ask_main_agent，
+        # 但设上无副作用，且未来若误注入也能优雅报错而非 AttributeError）
+        handler._subagent_unique_name = unique_name
+        try:
+            result_text, return_value = _run_agent_loop(
+                client=client,
+                system_prompt="",  # 向后兼容（system_message 非 None 时分支选择生效）
+                system_message=system_message,
+                user_input=task,
+                handler=handler,
+                tools_schema=tools_schema,
+                max_turns=20,
+                initial_user_content=task,
+                context_window_tokens=context_window_tokens,
+                context_fifo_threshold=fifo_threshold,
+                context_target_threshold=context_target_threshold_val,
+                history=history,
+                supplement_queue=supplement_queue,  # 新增：传给 _run_agent_loop
+                memory_context=memory_context,  # 阶段二新增：透传给 _run_agent_loop
+            )
+        finally:
+            SubagentRegistry.unregister(unique_name)
 
     # 检测输出截断（finish_reason == "length"）
     # LLM 输出被截断时无法产出合法 keep/update 结构，返回字符串信号让降级循环识别
