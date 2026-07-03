@@ -734,10 +734,11 @@ def agent_runner_loop(
             logger.warning("[AgentLoop] 终止模式下调用 LLM 生成总结后退出")
             # 注意：on_turn_end 已在上方工具调用后调用过，此处不再重复调用（避免重复衰减——风险2）
             # 不 yield chat_idle（保持 busy 状态——风险1）
-            # 1. 把 supplement 文本作为 user 消息 append 到 messages
-            messages.append({"role": "user", "content": supplement})
+            # 1. 把 supplement 文本作为 user 消息追加到 messages（创建新列表，不污染调用方传入的列表）
+            messages = messages + [{"role": "user", "content": supplement}]
             # 2. 调 LLM 生成总结（tools=[] 强制无工具调用）
             summary_text = ""
+            summary_response = None
             try:
                 summary_gen = client.chat(messages=messages, tools=[])
                 summary_response = exhaust(summary_gen)
