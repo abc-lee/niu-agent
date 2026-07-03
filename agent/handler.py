@@ -890,10 +890,11 @@ class NiuHandler(BaseHandler):
                 fcntl.flock(lock_f, fcntl.LOCK_UN)
 
     def _call_subagent_gen(self, agent_name: str, args: dict):
-        """调用子 Agent（生成器版本）"""
-        from .subagent import call_subagent
+        """调用子 Agent（生成器版本）— 同步/异步分流"""
+        from .subagent import call_subagent, _dispatch_async_subagent, get_subagent_config
 
         task = args.get("task", "")
+        async_mode = args.get("async_mode", False)
 
         # journal-agent 特殊处理：构建增量消息 task，与 tidy 管道一致
         journal_msg_ids_for_cursor = []  # 默认空列表，仅 journal-agent 时填充
@@ -914,6 +915,34 @@ class NiuHandler(BaseHandler):
         # 直接传递完整配置（而不是挑选字段）
         llm_config = runner.llm_config.copy()  # 复制一份，避免修改原始配置
 
+        # 阶段二：异步分流
+        if async_mode:
+            # 检查该子 Agent 是否支持异步
+            agent_config = get_subagent_config(agent_name)
+            if not agent_config.get("allowAsync", False):
+                return StepOutcome(
+                    {"status": "error", "msg": f"子 Agent {agent_name} 不支持异步调用（allowAsync 未启用）"},
+                    next_prompt="",
+                )
+
+            # 硬阻止：event-manager 不允许异步调用（异步路径跳过定时任务入库验证，
+            # 会导致定时任务可能未真正入库主 Agent 不知情）
+            if agent_name == "event-manager":
+                return StepOutcome(
+                    {"status": "error", "msg": "event-manager 不支持异步调用（定时任务入库验证需要在同步路径执行）"},
+                    next_prompt="",
+                )
+
+            confirmation = _dispatch_async_subagent(
+                agent_name=agent_name,
+                task=task,
+                llm_config=llm_config,
+                mcp_client=self.mcp_client,
+            )
+            yield StreamEvent("tool_marker", f"[SubAgent] 异步派出：{confirmation[:100]}\n")
+            return StepOutcome({"status": "success", "result": confirmation}, next_prompt="")
+
+        # 同步路径（现有逻辑不变）
         try:
             yield StreamEvent("tool_marker", f"[SubAgent] Calling {agent_name}...\n")
             # 子Agent保持独立上下文，不传递主Agent历史
