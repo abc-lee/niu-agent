@@ -36,3 +36,28 @@ def test_format_subagent_supplement_terminate_text():
     text = format_subagent_supplement(items, is_final_position=True)
     assert "终止" in text
     assert "总结" in text
+
+
+def test_terminate_branch_does_not_clear_stop():
+    """子 Agent 终止分支不应调 clear_stop（避免清除主 Agent 信号灯）。
+
+    主 Agent 会在自己的退出逻辑（not response.tool_calls 分支）调 clear_stop，
+    子 Agent 提前调会误清主 Agent 的停止信号。
+    """
+    import inspect
+    from agent.generic import agent_loop
+    source = inspect.getsource(agent_loop)
+    # 找终止分支起点
+    assert "if supplement_terminate:" in source, "找不到 supplement_terminate 分支"
+    branch_start = source.find("if supplement_terminate:")
+    # 截取到 TERMINATED_BY_SUPPLEMENT return 之后的第一处 return 结束
+    # 终止分支内有 return dict（含 "result": "TERMINATED_BY_SUPPLEMENT"）
+    ret_marker = '"result": "TERMINATED_BY_SUPPLEMENT"'
+    ret_idx = source.find(ret_marker, branch_start)
+    assert ret_idx > 0, "找不到 TERMINATED_BY_SUPPLEMENT return"
+    # 找 return 块结束（右大括号 }）
+    block_end = source.find("\n            }", ret_idx)
+    terminate_section = source[branch_start:block_end]
+    assert "clear_stop" not in terminate_section, (
+        "子 Agent 终止分支不应调 clear_stop（会误清主 Agent 信号灯）"
+    )

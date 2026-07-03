@@ -756,7 +756,8 @@ def agent_runner_loop(
                 # 风险3：LLM 调用失败兜底，仍返回 TERMINATED_BY_SUPPLEMENT
                 logger.error(f"[AgentLoop] 终止模式下生成总结失败：{e}")
             # 4. return TERMINATED_BY_SUPPLEMENT
-            clear_stop()
+            # 注意：子 Agent 路径不在此清除停止信号灯——避免误清主 Agent 信号灯。
+            # 主 Agent 会在自己的退出逻辑里清信号灯（见下方 not response.tool_calls 分支）。
             yield StreamEvent("system", "chat_idle")
             return {
                 "result": "TERMINATED_BY_SUPPLEMENT",
