@@ -1424,6 +1424,27 @@
     // SSE通知：有新消息 → 从数据库刷新
     // V4: chat_busy/chat_idle 事件控制状态机，普通消息触发 refreshFromDB
     window.electronAPI.onNewMessage(async (data) => {
+      // 阶段二：子 Agent 触发的消息（ask_main_agent 或完成通知），主 Agent 闲置时自动触发新一轮对话
+      // db_monitor 链路 A 只在主 Agent 闲置（_chat_lock.locked()==false）时推 SSE
+      // 所以前端收到时 isProcessing 必为 false（状态机持久化已确认）
+      // 加兜底判断避免状态机延迟导致忙时触发
+      if (data && data.role === 'subagent_msg' && data.source === 'subagent') {
+        if (!isProcessing) {
+          // content 格式 "[子名] 内容"——作为 message 参数传给 /api/chat/session
+          // 后端 compat.py 写 user 消息到 db（作为最后一条 user 消息）+ 调 LLM
+          // 不调 addMessage 本地渲染（避免重复——后端写 db 后会推 role=user SSE 让前端 refreshFromDB）
+          // 直接调 sendMessageWithRetry 走 HTTP 路径（复用用户发消息的现有逻辑）
+          const msgContent = data.content;
+          sendMessageWithRetry(msgContent).catch(err => {
+            console.error('[Stage2] 自动触发主 Agent 对话失败：', err);
+          });
+        } else {
+          // 兜底：主 Agent 忙时（理论上不应发生，db_monitor 只在闲置时推 SSE）
+          // 不触发，记录日志便于排查
+          console.warn('[Stage2] 收到 subagent_msg SSE 但主 Agent 忙，消息可能已从队列 pop（边界场景）');
+        }
+        return;
+      }
       if (data && data.role === 'chat_idle') {
         // Agent循环结束：重置状态机
         hideTyping();
