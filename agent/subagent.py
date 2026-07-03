@@ -647,3 +647,106 @@ def call_subagent(
         return extracted
 
     return result_text
+
+
+# ==================== 阶段二：ask_main_agent 工具 ====================
+
+# ask_main_agent 工具 schema（注入给异步子 Agent）
+ASK_MAIN_AGENT_TOOL_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "ask_main_agent",
+        "description": (
+            "向主 Agent 提问并阻塞等待回答。当遇到歧义、需要澄清或需要主 Agent 决策时使用。"
+            "调用后会阻塞直到主 Agent 回答（通过 db_monitor 路由）。"
+            "不要在主 Agent 没回答前连续调用多次——一次只问一个问题。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "question": {
+                    "type": "string",
+                    "description": "要问主 Agent 的问题，描述清楚歧义点。",
+                },
+            },
+            "required": ["question"],
+        },
+    },
+}
+
+
+def _ask_main_agent_impl(question: str, unique_name: str) -> str:
+    """ask_main_agent 工具实现。
+
+    子 Agent 调用流程（阶段二内存队列机制）：
+      1. 检查是否已被 cancel 过（_ask_terminated 标记）——避免 cancel 后 LLM 又调 ask_main_agent 死锁
+      2. 注册 future 到 PendingAskRegistry（key=unique_name）
+      3. 推 "[unique_name] question" 到 MainAgentRequestQueue 内存队列（**不写 db**）
+      4. future.wait() 阻塞（不写 db，由 db_monitor 检测主 Agent 闲置时推 SSE 触发前端）
+      5. 前端调 /api/chat/session → 后端写 user 消息到 db + 调 LLM → 主 Agent 回复 @子名 回答
+      6. db_monitor 链路 B 轮询到主 Agent 回复的 subagent_msg → set_answer 解除 future
+      7. 返回回答文本；如果被 cancel（主 Agent 发 /stop）返回 terminated 状态 + 设置 _ask_terminated 标记
+
+    关键：消息不写 db，进内存队列。db_monitor 检测主 Agent 闲置时推 SSE 触发前端，
+    前端调 /api/chat/session 后由后端 compat.py 写 user 消息到 db（作为最后一条 user 消息，
+    LLM 才会作为当前输入处理）。
+
+    Args:
+        question: 子 Agent 要问的问题
+        unique_name: 子 Agent 唯一名（注册 future 用）
+
+    Returns:
+        主 Agent 的回答文本，或 terminated 状态提示
+    """
+    from .ask_main_agent import get_pending_ask_registry, TERMINATED_SIGNAL
+    from .main_agent_request_queue import get_main_agent_request_queue
+    from .subagent_registry import SubagentRegistry
+
+    registry = get_pending_ask_registry()
+
+    # 阶段二防死锁检查：如果该子 Agent 之前已被 cancel（_ask_terminated 标记），
+    # 直接返回 terminated 状态，不再注册 future 阻塞
+    instance = SubagentRegistry.get(unique_name)
+    if instance is not None and getattr(instance, "_ask_terminated", False):
+        return "[ask_main_agent 已终止] 主 Agent 已发出停止指令，请总结本轮工作后终止。"
+
+    future = registry.register(unique_name)
+
+    # 推入 MainAgentRequestQueue 内存队列（不写 db）
+    # content 格式 "[子名] 问题"——db_monitor 推 SSE 时 role=subagent_msg，
+    # 前端收到后调 /api/chat/session，content 作为 message 参数传给后端，
+    # 后端 compat.py 写 user 消息（role=user, content="[子名] 问题"）
+    msg_content = f"[{unique_name}] {question}"
+    try:
+        get_main_agent_request_queue().push(msg_content)
+    except Exception as e:
+        # 推队列失败 → 注销 future，返回错误
+        registry.unregister(unique_name)
+        return f"[ask_main_agent 错误] 推入 MainAgentRequestQueue 失败：{e}"
+
+    # 阻塞等待（加超时避免 db_monitor 崩溃时子 Agent 永久阻塞）
+    # 超时 300 秒（5 分钟）——主 Agent 可能忙很久，5 分钟够用
+    # 超时返回提示让子 Agent 自行决策；被 cancel 返回 terminated 状态
+    answer = future.wait(timeout=300)
+
+    if answer == TERMINATED_SIGNAL:
+        # 主 Agent 发 /stop，工具识别后返回终止状态
+        # 设置 _ask_terminated 标记到 SubagentRegistry 实例，防止 LLM 再次调 ask_main_agent 死锁
+        if instance is not None:
+            instance._ask_terminated = True
+        return "[ask_main_agent 已终止] 主 Agent 已发出停止指令，请总结本轮工作后终止。"
+
+    if answer is None:
+        # 超时（5 分钟主 Agent 未回答）——返回决策提示让子 Agent 自己决定
+        # 不强制退出，让子 Agent 根据任务情况选择重新问 or 跳过继续
+        # 注销 future 避免泄漏
+        registry.unregister(unique_name)
+        logger.warning(f"ask_main_agent 超时（5 分钟无回答），unique_name={unique_name}")
+        return (
+            "[ask_main_agent 超时] 主 Agent 5 分钟内未响应。你可以：\n"
+            "1. 重新调用 ask_main_agent 再问一次（主 Agent 可能刚才在忙）\n"
+            "2. 跳过这个问题，基于现有信息继续工作（如果这个回答不是必须的）\n"
+            "请根据当前任务情况决定。"
+        )
+
+    return answer
