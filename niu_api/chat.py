@@ -33,12 +33,15 @@ def set_main_event_loop(loop: asyncio.AbstractEventLoop):
 
 
 async def notify_new_message(message_id: str, role: str, content: str, source: str = "electron"):
-    """新消息写入数据库后调用，广播给所有 SSE 订阅者"""
+    """新消息写入数据库后调用，广播给所有 SSE 订阅者。
+
+    source 白名单：electron（前端用户操作）、subagent（子 Agent 触发，阶段二新增）
+    """
     # 双管道分离：tool 消息只走 DB 管道，不推送给前端
     if role == "tool":
         return
-    if source != "electron":
-        return  # 非electron通道不走SSE，前端零感知
+    if source not in ("electron", "subagent"):
+        return  # 非白名单通道不走SSE，前端零感知
     event = {
         "type": "new_message",
         "id": message_id,
@@ -53,11 +56,14 @@ async def notify_new_message(message_id: str, role: str, content: str, source: s
 
 
 def notify_new_message_sync(message_id: str, role: str, content: str, source: str = "electron"):
-    """同步版本 — 从非 async 上下文（如 scheduler 线程）调用"""
+    """同步版本 — 从非 async 上下文（如 scheduler 线程）调用。
+
+    source 白名单：electron（前端用户操作）、subagent（子 Agent 触发，阶段二新增）
+    """
     # 双管道分离：tool 消息只走 DB 管道，不推送给前端
     if role == "tool":
         return
-    if source != "electron":
+    if source not in ("electron", "subagent"):
         return
     event = {
         "type": "new_message",
