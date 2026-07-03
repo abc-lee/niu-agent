@@ -268,6 +268,28 @@ def get_tools_schema() -> list:
         except Exception as e:
             logger.warning(f"Failed to load sub-agent '{agent_name}' config: {e}")
             desc = f"子 Agent: {agent_name}"
+            agent_config = {}
+
+        # 阶段二：根据 allowAsync 决定是否暴露 async_mode
+        allow_async = bool(agent_config.get("allowAsync", False)) if agent_config else False
+
+        properties = {
+            "task": {
+                "type": "string",
+                "description": task_desc,
+            },
+        }
+        if allow_async:
+            properties["async_mode"] = {
+                "type": "boolean",
+                "description": (
+                    "是否异步调用。true=后台运行，立即返回派单确认（含子 Agent 唯一名）；"
+                    "false（默认）=同步阻塞等结果。"
+                    "异步调用后可用 check_subagent_progress 查进度、@子名 消息补充上下文、@子名 /stop 停止。"
+                ),
+                "default": False,
+            }
+
         tools.append(
             {
                 "type": "function",
@@ -276,12 +298,7 @@ def get_tools_schema() -> list:
                     "description": desc,
                     "parameters": {
                         "type": "object",
-                        "properties": {
-                            "task": {
-                                "type": "string",
-                                "description": task_desc,
-                            },
-                        },
+                        "properties": properties,
                         "required": ["task"],
                     },
                 },

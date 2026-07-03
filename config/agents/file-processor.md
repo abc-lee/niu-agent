@@ -27,6 +27,7 @@ disableBaseTools:
   - write
   - edit
   - grep
+allowAsync: true
 ---
 
 # 角色
