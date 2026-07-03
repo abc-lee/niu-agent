@@ -29,22 +29,35 @@ def test_is_empty():
     assert q.is_empty()
 
 
-def test_thread_safe_push_pop():
-    """多线程并发 push/pop 不抛异常。"""
+def test_thread_safe_push_pop_data_integrity():
+    """多线程并发 push/pop 验证数据完整性：无丢失、无重复、总数==100。
+
+    只断言不抛异常是弱测试——queue.Queue 本就线程安全不抛异常。
+    真正验证是数据完整性：producer push 100 条唯一 content，consumer 收集 pop 结果，
+    最终断言无丢失（总数==100）、无重复（set 大小==100）。
+    """
     q = MainAgentRequestQueue()
     errors = []
+    NUM_ITEMS = 100
+    expected = {f"[子名-{i:04d}] 内容 {i}" for i in range(NUM_ITEMS)}
+
+    collected = []
+    collected_lock = threading.Lock()
 
     def producer():
         try:
-            for i in range(100):
+            for i in range(NUM_ITEMS):
                 q.push(f"[子名-{i:04d}] 内容 {i}")
         except Exception as e:
             errors.append(e)
 
     def consumer():
         try:
-            for _ in range(100):
-                q.pop()
+            for _ in range(NUM_ITEMS):
+                item = q.pop()
+                if item is not None:
+                    with collected_lock:
+                        collected.append(item)
         except Exception as e:
             errors.append(e)
 
@@ -52,7 +65,16 @@ def test_thread_safe_push_pop():
     t2 = threading.Thread(target=consumer)
     t1.start(); t2.start()
     t1.join(); t2.join()
-    assert errors == []
+
+    # consumer 可能比 producer 快，collected 不足 NUM_ITEMS 时补 pop 剩余
+    while not q.is_empty():
+        item = q.pop()
+        if item is not None:
+            collected.append(item)
+
+    assert errors == [], f"并发测试发现错误：{errors}"
+    assert len(collected) == NUM_ITEMS, f"丢失消息：collected {len(collected)}/{NUM_ITEMS}"
+    assert set(collected) == expected, f"消息内容不一致（可能有重复或错乱）：{set(collected) ^ expected}"
 
 
 def test_peek_does_not_remove():
