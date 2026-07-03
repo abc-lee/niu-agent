@@ -817,3 +817,147 @@ def _ask_main_agent_impl(question: str, unique_name: str) -> str:
         )
 
     return answer
+
+
+# ==================== 阶段二：异步子 Agent 派发与运行 ====================
+
+
+def _dispatch_async_subagent(
+    agent_name: str,
+    task: str,
+    llm_config: Dict[str, Any],
+    mcp_client=None,
+) -> str:
+    """异步派子 Agent：立即返回派单确认，子 Agent 在后台 asyncio 协程跑（跨线程用 run_coroutine_threadsafe 提交到主 loop）。
+
+    流程：
+      1. 创建 supplement_queue + memory_context
+      2. 注册到 SubagentRegistry（is_sync=False）
+      3. run_coroutine_threadsafe(_run_subagent_async(...), loop) 跨线程提交到主 loop
+      4. 立即返回派单确认（含唯一名 + 使用说明）
+
+    Returns:
+        派单确认文本（含唯一名 + 使用说明）
+    """
+    import asyncio
+    from .subagent_supplement import SubagentSupplementQueue
+    from .subagent_memory import SubagentMemoryContext
+    from .subagent_registry import SubagentRegistry
+
+    # 创建 supplement_queue + memory_context
+    sq = SubagentSupplementQueue(unique_name="")  # unique_name 注册后回填
+    mc = SubagentMemoryContext()
+
+    # 注册（is_sync=False，task 稍后回填——run_coroutine_threadsafe 需要主 loop 在跑）
+    unique_name = SubagentRegistry.register(
+        agent_type=agent_name,
+        supplement_queue=sq,
+        memory_context=mc,
+        is_sync=False,
+        task=None,  # 占位，run_coroutine_threadsafe 后回填
+    )
+    sq.unique_name = unique_name  # 回填唯一名
+
+    # 启动 asyncio task（主 Agent 在 executor 线程跑，必须用 run_coroutine_threadsafe 跨线程调度到主 loop）
+    from niu_api.chat import _main_loop
+    loop = _main_loop
+    if loop is None or loop.is_closed():
+        SubagentRegistry.unregister(unique_name)
+        return "[错误] 主 asyncio loop 不可用，无法派发异步子 Agent"
+
+    # 用 run_coroutine_threadsafe 跨线程调度（handler.dispatch 在 executor 线程，不在主 loop）
+    try:
+        future = asyncio.run_coroutine_threadsafe(
+            _run_subagent_async(
+                unique_name=unique_name,
+                agent_name=agent_name,
+                task=task,
+                llm_config=llm_config,
+                mcp_client=mcp_client,
+                memory_context=mc,
+                supplement_queue=sq,
+            ),
+            loop,
+        )
+    except Exception as e:
+        # run_coroutine_threadsafe 失败 → 注销子 Agent，避免残留 task=None 的泄漏
+        SubagentRegistry.unregister(unique_name)
+        logger.error(f"[AsyncSubagent] 派发失败：{e}")
+        return f"[错误] 派发异步子 Agent 失败：{e}"
+
+    # 回填 future 到注册表（用 future 而非 asyncio.Task，因为跨线程调度返回的是 concurrent.futures.Future）
+    instance = SubagentRegistry.get(unique_name)
+    if instance is not None:
+        instance.task = future
+
+    logger.info(f"[AsyncSubagent] 已派出异步子 Agent：{unique_name}")
+
+    return (
+        f"已派出子 Agent {unique_name}（类型：{agent_name}），后台运行中。\n"
+        f"你可以用 check_subagent_progress('{unique_name}') 查看进度，\n"
+        f"写 @ {unique_name} 消息给它补充上下文，\n"
+        f"写 @ {unique_name} /stop 停止它。"
+    )
+
+
+async def _run_subagent_async(
+    unique_name: str,
+    agent_name: str,
+    task: str,
+    llm_config: Dict[str, Any],
+    memory_context,
+    supplement_queue,
+    mcp_client=None,
+) -> None:
+    """异步子 Agent 的 asyncio task 主体。
+
+    跑在 asyncio.to_thread 独立线程（call_subagent 是同步函数），主 loop 不阻塞。
+    完成后推 [子名] 已完成 到 MainAgentRequestQueue（不写 db）。
+    异常或终止时推对应通知。
+    最后从 SubagentRegistry 注销 + 清理 PendingAskRegistry。
+    """
+    import asyncio
+    from .ask_main_agent import get_pending_ask_registry
+    from .main_agent_request_queue import get_main_agent_request_queue
+    from .subagent_registry import SubagentRegistry
+
+    try:
+        # call_subagent 是同步函数，用 asyncio.to_thread 包一层避免阻塞主 loop
+        # 阶段二关键：传 unique_name=unique_name，跳过 call_subagent 内部 register
+        # （_dispatch_async_subagent 已注册过，避免双重注册 + handler._subagent_unique_name 不匹配）
+        result = await asyncio.to_thread(
+            call_subagent,
+            agent_name=agent_name,
+            task=task,
+            llm_config=llm_config,
+            mcp_client=mcp_client,
+            history=None,
+            supplement_queue=supplement_queue,
+            memory_context=memory_context,
+            unique_name=unique_name,  # 透传 unique_name，跳过 call_subagent 内部 register
+        )
+
+        # 推完成通知到 MainAgentRequestQueue 内存队列（不写 db）
+        # content 格式 "[子名] 已完成，结果：..."——db_monitor 检测主 Agent 闲置时推 SSE 触发前端
+        completion_msg = f"[{unique_name}] 已完成，结果：{result[:2000]}"
+        try:
+            get_main_agent_request_queue().push(completion_msg)
+        except Exception as e:
+            logger.error(f"[AsyncSubagent] {unique_name} 推完成通知失败：{e}")
+
+        logger.info(f"[AsyncSubagent] {unique_name} 完成")
+
+    except Exception as e:
+        # 异常通知也推入 MainAgentRequestQueue
+        err_msg = f"[{unique_name}] 异常结束：{str(e)[:1000]}"
+        try:
+            get_main_agent_request_queue().push(err_msg)
+        except Exception:
+            pass
+        logger.error(f"[AsyncSubagent] {unique_name} 异常：{e}")
+
+    finally:
+        # 清理 ask_main_agent pending future（避免泄漏）
+        get_pending_ask_registry().unregister(unique_name)
+        # 从注册表注销
+        SubagentRegistry.unregister(unique_name)
