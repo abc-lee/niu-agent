@@ -87,3 +87,132 @@ def test_registry_register_duplicate_unique_name_terminates_old_future():
     # set_answer 路由到新 future
     reg.set_answer("file-processor-a1b2", "回答")
     assert f2.wait(timeout=1.0) == "回答"
+
+
+def test_ask_main_agent_tool_returns_answer():
+    """ask_main_agent 工具：注册 future → 推 MainAgentRequestQueue → 阻塞 → set_answer 后返回回答。"""
+    from agent.subagent import _ask_main_agent_impl
+    from agent.ask_main_agent import get_pending_ask_registry
+    from agent.subagent_registry import SubagentRegistry
+    from agent.subagent_supplement import SubagentSupplementQueue
+    from agent.main_agent_request_queue import get_main_agent_request_queue
+    import threading
+    import time
+
+    # 清空队列
+    q = get_main_agent_request_queue()
+    while q.pop() is not None:
+        pass
+
+    sq = SubagentSupplementQueue("test-ask-0001")
+    name = SubagentRegistry.register("test-ask", supplement_queue=sq, is_sync=False)
+
+    try:
+        # 在另一个线程模拟主 Agent 回答（0.5 秒后）
+        def answer_later():
+            time.sleep(0.5)
+            get_pending_ask_registry().set_answer(name, "这是主 Agent 的回答")
+
+        t = threading.Thread(target=answer_later)
+        t.start()
+
+        # 调工具（阻塞 0.5 秒后拿到回答）
+        result = _ask_main_agent_impl("这是问题", unique_name=name)
+
+        t.join()
+
+        assert "这是主 Agent 的回答" in result
+
+        # 验证消息推入了 MainAgentRequestQueue（content 格式 "[子名] 问题"）
+        queued = q.pop()
+        assert queued is not None
+        assert name in queued
+        assert "这是问题" in queued
+    finally:
+        SubagentRegistry.unregister(name)
+
+
+def test_ask_main_agent_tool_terminated_returns_terminated_status():
+    """ask_main_agent 工具被 cancel 时返回 terminated 状态 + 设置 _ask_terminated 标记。"""
+    from agent.subagent import _ask_main_agent_impl
+    from agent.ask_main_agent import get_pending_ask_registry, TERMINATED_SIGNAL
+    from agent.subagent_registry import SubagentRegistry
+    from agent.subagent_supplement import SubagentSupplementQueue
+    from agent.main_agent_request_queue import get_main_agent_request_queue
+    import threading
+    import time
+
+    q = get_main_agent_request_queue()
+    while q.pop() is not None:
+        pass
+
+    sq = SubagentSupplementQueue("test-cancel-0001")
+    name = SubagentRegistry.register("test-cancel", supplement_queue=sq, is_sync=False)
+
+    try:
+        # 在另一个线程模拟 /stop（cancel_pending_ask）
+        def cancel_later():
+            time.sleep(0.5)
+            get_pending_ask_registry().cancel_pending_ask(name)
+
+        t = threading.Thread(target=cancel_later)
+        t.start()
+
+        result = _ask_main_agent_impl("这是问题", unique_name=name)
+
+        t.join()
+
+        assert "terminated" in result.lower() or "终止" in result
+
+        # 验证 _ask_terminated 标记已设置
+        instance = SubagentRegistry.get(name)
+        assert instance is not None
+        assert getattr(instance, "_ask_terminated", False) is True
+    finally:
+        SubagentRegistry.unregister(name)
+
+
+def test_ask_main_agent_after_cancel_does_not_deadlock():
+    """cancel 后 LLM 又调 ask_main_agent 不死锁——直接返回 terminated 状态（_ask_terminated 标记）。
+
+    场景：子 Agent ask_main_agent 被 cancel → 工具返回 terminated → LLM 没走终止总结
+    反而又调 ask_main_agent → 应直接返回 terminated 不阻塞（否则 /stop 在 queue 但子 Agent
+    阻塞在 ask_main_agent 不会 drain → 死锁）
+    """
+    from agent.subagent import _ask_main_agent_impl
+    from agent.ask_main_agent import get_pending_ask_registry
+    from agent.subagent_registry import SubagentRegistry
+    from agent.subagent_supplement import SubagentSupplementQueue
+    from agent.main_agent_request_queue import get_main_agent_request_queue
+    import threading
+    import time
+
+    q = get_main_agent_request_queue()
+    while q.pop() is not None:
+        pass
+
+    sq = SubagentSupplementQueue("test-reask-0001")
+    name = SubagentRegistry.register("test-reask", supplement_queue=sq, is_sync=False)
+
+    try:
+        # 第一次 ask_main_agent，0.5 秒后 cancel
+        def cancel_later():
+            time.sleep(0.5)
+            get_pending_ask_registry().cancel_pending_ask(name)
+
+        t1 = threading.Thread(target=cancel_later)
+        t1.start()
+        result1 = _ask_main_agent_impl("第一次问题", unique_name=name)
+        t1.join()
+        assert "终止" in result1
+
+        # 第二次 ask_main_agent——应立即返回 terminated 不阻塞（_ask_terminated 标记）
+        start = time.time()
+        result2 = _ask_main_agent_impl("第二次问题", unique_name=name)
+        elapsed = time.time() - start
+
+        # 应在 1 秒内返回（不阻塞 300 秒）
+        assert elapsed < 1.0, f"第二次 ask_main_agent 应立即返回，实际耗时 {elapsed}"
+        assert "终止" in result2
+    finally:
+        SubagentRegistry.unregister(name)
