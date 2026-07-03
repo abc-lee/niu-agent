@@ -1855,7 +1855,59 @@ class NiuRunner:
         else:
             logger.debug("Dynamic injection - Skipped (no relevant results)")
 
+        # 阶段二：注入后台子 Agent 清单
+        subagent_section = self._format_running_subagents_section()
+        if subagent_section:
+            injection = (injection + "\n\n" + subagent_section) if injection else subagent_section
+
         return injection, {}
+
+    def _format_running_subagents_section(self) -> str:
+        """格式化后台子 Agent 清单段（动态注入用）。
+
+        软上限 5 个，超出只显示前 5 + "还有 N 个"。
+        只列异步子 Agent（同步子 Agent 主 Agent 阻塞中，无法 @）。
+        """
+        from agent.subagent_registry import SubagentRegistry
+
+        try:
+            async_subagents = [r for r in SubagentRegistry.list_running() if not r.is_sync]
+        except Exception as e:
+            logger.warning(f"List running subagents failed: {e}")
+            return ""
+
+        if not async_subagents:
+            return ""
+
+        # 按启动时间排序（started_at 字段，Task 3 已加）
+        async_subagents.sort(key=lambda r: r.started_at)
+
+        # 软上限 5 个
+        shown = async_subagents[:5]
+        remaining = len(async_subagents) - len(shown)
+
+        lines = ["[当前后台运行的子 Agent]"]
+        for r in shown:
+            status = "running"
+            try:
+                if r.memory_context is not None:
+                    snap = r.memory_context.snapshot()
+                    turn = snap.get("current_turn", 0)
+                    if turn > 0:
+                        status = f"running（第 {turn} 轮）"
+            except Exception:
+                pass
+            lines.append(f"- {r.unique_name}（类型：{r.agent_type}，状态：{status}）")
+
+        if remaining > 0:
+            lines.append(f"- 还有 {remaining} 个子 Agent 运行中")
+
+        lines.append("")
+        lines.append("如需查看某子 Agent 进度，调用 check_subagent_progress 工具。")
+        lines.append("如需给某子 Agent 补充上下文，写消息到对话（@子名 补充内容）。")
+        lines.append("如需停止某子 Agent，写消息到对话（@子名 /stop）。")
+
+        return "\n".join(lines)
 
     def chat(
         self, session_id: str, user_input: str, stream: bool = True, max_turns: int = 40, history: list = None, resources: list | None = None, channel_id: str = ""
