@@ -563,6 +563,28 @@ def agent_runner_loop(
             # 过滤掉 <tool_use> 标签，只返回纯文本
             content = response.content or ""
             content = re.sub(r"<tool_use>.*?</tool_use>", "", content, flags=re.DOTALL)
+
+            # 阶段三：@前缀子Agent意图识别拦截（仅异步子 Agent）
+            if not response.tool_calls:
+                interception = _intercept_at_prefix_content(
+                    content=content,
+                    tool_calls=response.tool_calls,
+                    messages=messages,
+                    handler=handler,
+                    memory_context=memory_context,
+                )
+                if interception == INTERCEPTED:
+                    continue  # @niu 已处理，回到 while 循环让 LLM 继续
+                if interception == EXIT:
+                    # @end 允许退出，剥除 "@end" 前缀 + 可选空格后推前端
+                    exit_content = content.lstrip()[4:].lstrip() if content.lstrip().startswith("@end") else content
+                    yield StreamEvent("reply", exit_content)
+                    break
+                if interception == FORMAT_ERROR:
+                    _harness_fail_count = 0  # 重置，避免格式错误累计影响 validate_references
+                    continue  # 格式错误，回到 while 循环让 LLM 重新输出
+                # NO_INTERCEPTION：继续走原有逻辑
+
             # Harness 验证：仅在 LLM 不调工具直接回复用户时验证
             # 条件 not response.tool_calls 精确区分最终回复 vs 中间工具调用
             if not response.tool_calls:
