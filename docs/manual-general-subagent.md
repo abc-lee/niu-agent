@@ -14,7 +14,7 @@
 
 模板包含：
 - frontmatter 字段（name / description / mode / temperature / taskDescription / permissions / mcpServers / mcpToolFilter / disableBaseTools / allowBaseTools / allowAsync）
-- 提示词正文编写规则（角色职责 / 工作流程 / 输出格式 / ask_main_agent 使用时机 / 何时终止）
+- 提示词正文编写规则（角色职责 / 工作流程 / 输出格式 / @niu content 拦截层使用时机 / 何时终止）
 - 可用 MCP 服务器清单（必需 + 可选）
 - 字段格式示例
 
@@ -83,7 +83,7 @@ mcpToolFilter:
    - name 用 kebab-case（如 `photo-organizer`、`doc-summarizer`）
    - frontmatter 填 description / mcpServers / allowAsync 等（description 必填）
    - 正文写系统提示词
-   - **重要**：如果 `allowAsync: true`，正文必须写明 ask_main_agent 的使用时机（如"遇到用户意图不明确时调 ask_main_agent 询问，不要自行假设"），否则子 Agent 不会主动询问
+   - **重要**：如果 `allowAsync: true`，正文必须写明 @niu content 拦截层的使用时机（如"遇到用户意图不明确时用 @niu content 询问，不要自行假设"），否则子 Agent 不会主动询问
 3. 主 Agent 当前任务结束
 4. 下一轮 `chat()` 入口扫描发现新 MD → 重算 schema → `chat-with-{name}` 工具出现
 5. 主 Agent 调用 `chat-with-{name}`（同步或异步）执行任务
@@ -114,7 +114,7 @@ mcpToolFilter:
 - 双击停止按钮触发批量 /stop
 
 ### 阶段二能力（异步交互 + ask）
-- 子 Agent 主动询问主 Agent（`ask_main_agent` MCP 工具，仅异步子 Agent 注入）
+- 子 Agent 主动询问主 Agent（@niu content 拦截层，仅异步子 Agent 自动启用）
 - 主 Agent 查询子 Agent 进度（`check_subagent_progress` 工具）
 - 异步子 Agent 完成汇报（push 到 MainAgentRequestQueue）
 - 5 个死锁约束（cancel_pending_ask / _ask_terminated 标记 / request_stop_all_subagents / route_message / 超时决策）
