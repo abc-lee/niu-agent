@@ -344,7 +344,7 @@ dream-evolver 修改 skill 时遵循 Skill-Aware Reflection 方法论：
 ### 与阶段一+二的衔接
 
 - 阶段一：主子 Agent 通信通道（@消息路由、/stop 终止、双击停止）
-- 阶段二：异步调用 + ask_main_agent + check_subagent_progress + 内存队列 + 5 死锁约束
+- 阶段二：异步调用 + @niu content 拦截 + check_subagent_progress + 内存队列 + 5 死锁约束
 - 阶段三：通用子 Agent 动态创建 + 加载
 
 通用子 Agent 完整复用阶段一+二的全部交互能力。
