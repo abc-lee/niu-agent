@@ -294,6 +294,38 @@ def _extract_result_from_return_value(return_value: Any) -> Optional[str]:
     return None
 
 
+# 模块级常量（测试时可 patch，避免依赖 __file__ 计算路径）
+_PROJECT_AGENTS_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(__file__)), "config", "agents"
+)
+_USER_AGENTS_DIR = os.path.join(os.path.expanduser("~/.niu/agents"))
+
+
+def _resolve_agent_md_path(agent_name: str) -> Optional[str]:
+    """查找子 Agent MD 文件路径。
+
+    先查项目目录 config/agents/{name}.md（专用子 Agent 优先），
+    再查用户目录 ~/.niu/agents/{name}.md（通用子 Agent）。
+
+    Args:
+        agent_name: 子 Agent 名称（如 file-processor、photo-organizer）
+
+    Returns:
+        找到则返回绝对路径，找不到返回 None
+    """
+    # 项目目录（专用子 Agent）
+    project_path = os.path.join(_PROJECT_AGENTS_DIR, f"{agent_name}.md")
+    if os.path.exists(project_path):
+        return project_path
+
+    # 用户目录（通用子 Agent，主 Agent 运行时创建）
+    user_path = os.path.join(_USER_AGENTS_DIR, f"{agent_name}.md")
+    if os.path.exists(user_path):
+        return user_path
+
+    return None
+
+
 def get_subagent_config(agent_name: str) -> Dict[str, Any]:
     """
     获取子 Agent 配置
