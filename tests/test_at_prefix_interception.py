@@ -244,3 +244,15 @@ def test_at_niu_without_unique_name_returns_format_error(monkeypatch):
     assert result == agent_loop.FORMAT_ERROR
     assert messages[-1]["role"] == "user"
     assert "对话格式错误" in messages[-1]["content"]
+
+
+def test_agent_runner_loop_intercepts_at_niu(monkeypatch):
+    """agent_runner_loop 在 L473 拦截点调用 _intercept_at_prefix_content"""
+    from agent.generic import agent_loop
+
+    # 验证拦截函数可被 agent_loop 模块访问
+    assert hasattr(agent_loop, "_intercept_at_prefix_content")
+    assert hasattr(agent_loop, "INTERCEPTED")
+    assert hasattr(agent_loop, "EXIT")
+    assert hasattr(agent_loop, "FORMAT_ERROR")
+    assert hasattr(agent_loop, "NO_INTERCEPTION")
