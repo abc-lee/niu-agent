@@ -70,19 +70,37 @@ def test_drain_consumes_when_main_agent_idle(monkeypatch):
         SubagentRegistry.unregister(unique_name)
 
 
-def test_drain_drops_message_when_subagent_unregistered(monkeypatch):
-    """阶段二 D1：子 Agent 已注销时丢弃队列中的 ask 请求，不推 SSE。"""
+def test_drain_keeps_ask_request_when_subagent_unregistered(monkeypatch):
+    """阶段二 D1 重新理解：子 Agent 已注销时 ask 请求仍推 SSE，一视同仁。
+
+    用户设计：db_monitor 不做类型区分、不检查注册表。已注销子 Agent 的
+    ask 请求被推给主 Agent 是可接受代价（浪费一轮 LLM 不会死锁）。
+
+    场景：子 Agent push ask 请求到队列后，被 cancel/退出注销。db_monitor
+    200ms 后 _drain 时注册表查不到，但消息仍推 SSE——主 Agent 处理一条
+    已失效的 question 比丢消息更安全（避免主 Agent 永远收不到）。
+    """
     q = get_main_agent_request_queue()
     while q.pop() is not None:
         pass
-    # 用一个未注册的 unique_name 推队列（ask 请求格式，非完成通知）
+    # 用一个未注册的 unique_name 推队列（ask 请求格式）
     q.push("[unregistered_sub] 这是一条 ask 请求")
 
-    with mock.patch("niu_api.chat.notify_new_message_sync") as fake_notify:
-        asyncio.new_event_loop().run_until_complete(db_monitor._drain_main_agent_request_queue())
-        fake_notify.assert_not_called()
+    pushed = []
 
-    # 消息应已被 pop 丢弃
+    def fake_notify(msg_id, role, content, source="electron"):
+        pushed.append((role, content, source))
+        return True
+
+    monkeypatch.setattr("niu_api.chat.notify_new_message_sync", fake_notify)
+
+    asyncio.new_event_loop().run_until_complete(db_monitor._drain_main_agent_request_queue())
+
+    # 不丢弃，仍推 SSE
+    assert len(pushed) == 1
+    assert pushed[0][0] == "subagent_msg"
+    assert pushed[0][1] == "[unregistered_sub] 这是一条 ask 请求"
+    assert pushed[0][2] == "subagent"
     assert q.is_empty()
 
 
