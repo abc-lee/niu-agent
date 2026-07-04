@@ -5,6 +5,7 @@ SubAgent Module
 """
 
 import os
+import re
 import json
 import yaml
 from pathlib import Path
@@ -294,6 +295,9 @@ def _extract_result_from_return_value(return_value: Any) -> Optional[str]:
     return None
 
 
+# kebab-case 校验正则（小写字母/数字/连字符，且不以连字符开头/结尾）
+_KEBAB_CASE_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+
 # 模块级常量（测试时可 patch，避免依赖 __file__ 计算路径）
 _PROJECT_AGENTS_DIR = os.path.join(
     os.path.dirname(os.path.dirname(__file__)), "config", "agents"
@@ -311,8 +315,13 @@ def _resolve_agent_md_path(agent_name: str) -> Optional[str]:
         agent_name: 子 Agent 名称（如 file-processor、photo-organizer）
 
     Returns:
-        找到则返回绝对路径，找不到返回 None
+        找到则返回绝对路径，找不到返回 None。
+        agent_name 非 kebab-case 时返回 None（防御路径穿越）。
     """
+    # 防御深度：agent_name 非 kebab-case 时拒绝（防 ../ 路径穿越）
+    if not _KEBAB_CASE_RE.match(agent_name):
+        return None
+
     # 项目目录（专用子 Agent）
     project_path = os.path.join(_PROJECT_AGENTS_DIR, f"{agent_name}.md")
     if os.path.exists(project_path):

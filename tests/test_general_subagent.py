@@ -384,3 +384,23 @@ def test_refresh_base_tools_schema_if_dirty_no_dir(tmp_path, monkeypatch):
     original_schema = r.base_tools_schema
     r._refresh_base_tools_schema_if_dirty()  # 不应抛异常
     assert r.base_tools_schema is original_schema  # 未重算
+
+
+def test_resolve_agent_md_path_rejects_path_traversal(tmp_path, monkeypatch):
+    """agent_name 含路径穿越字符（如 ../）时返回 None"""
+    from agent import subagent
+
+    project_dir = tmp_path / "project" / "config" / "agents"
+    user_dir = tmp_path / "user" / "agents"
+    project_dir.mkdir(parents=True)
+    user_dir.mkdir(parents=True)
+
+    monkeypatch.setattr(subagent, "_PROJECT_AGENTS_DIR", str(project_dir))
+    monkeypatch.setattr(subagent, "_USER_AGENTS_DIR", str(user_dir))
+
+    # 各种路径穿越尝试
+    assert subagent._resolve_agent_md_path("../etc/passwd") is None
+    assert subagent._resolve_agent_md_path("../../etc/passwd") is None
+    assert subagent._resolve_agent_md_path("foo/../bar") is None
+    # 空字符串也拒绝
+    assert subagent._resolve_agent_md_path("") is None
