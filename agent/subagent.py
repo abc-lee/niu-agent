@@ -331,16 +331,14 @@ def get_subagent_config(agent_name: str) -> Dict[str, Any]:
     获取子 Agent 配置
 
     Args:
-        agent_name: 子 Agent 名称（如 file-processor）
+        agent_name: 子 Agent 名称（如 file-processor、photo-organizer）
 
     Returns:
-        配置字典，包含 mcpServers 等字段
+        配置字典，包含 mcpServers 等字段。MD 文件不存在时返回空 dict。
     """
-    prompt_path = os.path.join(
-        os.path.dirname(os.path.dirname(__file__)), "config", "agents", f"{agent_name}.md"
-    )
+    prompt_path = _resolve_agent_md_path(agent_name)
 
-    if os.path.exists(prompt_path):
+    if prompt_path and os.path.exists(prompt_path):
         with open(prompt_path, "r", encoding="utf-8") as f:
             content = f.read()
             # 解析 YAML front matter
@@ -359,11 +357,9 @@ def get_subagent_config(agent_name: str) -> Dict[str, Any]:
 
 def get_subagent_prompt(agent_name: str) -> str:
     """获取子 Agent 提示词"""
-    prompt_path = os.path.join(
-        os.path.dirname(os.path.dirname(__file__)), "config", "agents", f"{agent_name}.md"
-    )
+    prompt_path = _resolve_agent_md_path(agent_name)
 
-    if os.path.exists(prompt_path):
+    if prompt_path and os.path.exists(prompt_path):
         with open(prompt_path, "r", encoding="utf-8") as f:
             content = f.read()
             # 提取 body（--- 后面的内容）
