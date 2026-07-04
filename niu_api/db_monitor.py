@@ -203,16 +203,26 @@ async def _drain_main_agent_request_queue() -> None:
     # /api/chat/session。如果在此期间用户双击停止，cancel_pending_ask 设 future TERMINATED
     # 子 Agent 退出 → SubagentRegistry 注销。此时主 Agent 仍会处理那条已失效的 question，
     # 浪费一轮 LLM + 用户看到回答已取消的问题。这里检查并丢弃。
+    #
+    # Critical-1 修复：区分 ask 请求和完成通知
+    # - 完成通知（"[子名] 已完成/异常结束/被取消"）跳过注册表检查——子 Agent 必然已注销
+    #   （_run_subagent_async push 后 finally 立即 unregister，db_monitor 200ms 后才 peek）
+    # - ask 请求才检查注册表——防 cancel 后失效 question 浪费主 Agent LLM 调用
     try:
         match = re.match(r"^\[([^\]]+)\]", content)
         if match:
             unique_name = match.group(1)
-            instance = SubagentRegistry.get(unique_name)
-            if instance is None:
-                # 子 Agent 已注销（被 cancel/退出），丢弃这条消息不推 SSE
-                q.pop()
-                logger.info(f"db_monitor 链路 A 丢弃已注销子 Agent 的请求：{unique_name}")
-                return
+            is_completion_notification = any(
+                keyword in content
+                for keyword in ["已完成", "异常结束", "被取消"]
+            )
+            if not is_completion_notification:
+                instance = SubagentRegistry.get(unique_name)
+                if instance is None:
+                    # 子 Agent 已注销（被 cancel/退出），丢弃这条 ask 请求不推 SSE
+                    q.pop()
+                    logger.info(f"db_monitor 链路 A 丢弃已注销子 Agent 的 ask 请求：{unique_name}")
+                    return
     except Exception as e:
         logger.warning(f"db_monitor 链路 A 子 Agent 注销检查失败，继续推送：{e}")
 

@@ -774,7 +774,12 @@ def _ask_main_agent_impl(question: str, unique_name: str) -> str:
     # 阶段二防死锁检查：如果该子 Agent 之前已被 cancel（_ask_terminated 标记），
     # 直接返回 terminated 状态，不再注册 future 阻塞
     instance = SubagentRegistry.get(unique_name)
-    if instance is not None and getattr(instance, "_ask_terminated", False):
+    if instance is None:
+        # Important-1 修复：子 Agent 已注销（异常路径），不再 register future
+        # cancel 信号无法设置 _ask_terminated 标记，future 会永远等不到 answer
+        return "[ask_main_agent 错误] 子 Agent 已不在注册表（可能已被停止或退出），无法询问主 Agent。"
+
+    if getattr(instance, "_ask_terminated", False):
         return "[ask_main_agent 已终止] 主 Agent 已发出停止指令，请总结本轮工作后终止。"
 
     future = registry.register(unique_name)
