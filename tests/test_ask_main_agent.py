@@ -90,7 +90,11 @@ def test_registry_register_duplicate_unique_name_terminates_old_future():
 
 
 def test_ask_main_agent_tool_returns_answer():
-    """ask_main_agent 工具：注册 future → 推 MainAgentRequestQueue → 阻塞 → set_answer 后返回回答。"""
+    """_ask_main_agent_impl：注册 future → 推 MainAgentRequestQueue → 阻塞 → set_answer 后返回回答。
+
+    @niu content 拦截路径下，agent_loop._intercept_at_prefix_content 检测到 @niu 前缀后
+    直接调本函数（同步，无 MCP 工具派发）。
+    """
     from agent.subagent import _ask_main_agent_impl
     from agent.ask_main_agent import get_pending_ask_registry
     from agent.subagent_registry import SubagentRegistry
@@ -116,7 +120,7 @@ def test_ask_main_agent_tool_returns_answer():
         t = threading.Thread(target=answer_later)
         t.start()
 
-        # 调工具（阻塞 0.5 秒后拿到回答）
+        # 调 _ask_main_agent_impl（阻塞 0.5 秒后拿到回答）
         result = _ask_main_agent_impl("这是问题", unique_name=name)
 
         t.join()
@@ -133,7 +137,7 @@ def test_ask_main_agent_tool_returns_answer():
 
 
 def test_ask_main_agent_tool_terminated_returns_terminated_status():
-    """ask_main_agent 工具被 cancel 时返回 terminated 状态 + 设置 _ask_terminated 标记。"""
+    """_ask_main_agent_impl 被 cancel 时返回 terminated 状态 + 设置 _ask_terminated 标记。"""
     from agent.subagent import _ask_main_agent_impl
     from agent.ask_main_agent import get_pending_ask_registry, TERMINATED_SIGNAL
     from agent.subagent_registry import SubagentRegistry
@@ -173,11 +177,12 @@ def test_ask_main_agent_tool_terminated_returns_terminated_status():
 
 
 def test_ask_main_agent_after_cancel_does_not_deadlock():
-    """cancel 后 LLM 又调 ask_main_agent 不死锁——直接返回 terminated 状态（_ask_terminated 标记）。
+    """cancel 后 LLM 又触发 @niu 拦截不死锁——直接返回 terminated 状态（_ask_terminated 标记）。
 
-    场景：子 Agent ask_main_agent 被 cancel → 工具返回 terminated → LLM 没走终止总结
-    反而又调 ask_main_agent → 应直接返回 terminated 不阻塞（否则 /stop 在 queue 但子 Agent
-    阻塞在 ask_main_agent 不会 drain → 死锁）
+    场景：子 Agent @niu 拦截被 cancel → _ask_main_agent_impl 返回 terminated → LLM 没走终止总结
+    反而又输出 @niu content → _intercept_at_prefix_content 再次调 _ask_main_agent_impl
+    → 应直接返回 terminated 不阻塞（否则 /stop 在 queue 但子 Agent 阻塞在
+    _ask_main_agent_impl 不会 drain → 死锁）
     """
     from agent.subagent import _ask_main_agent_impl
     from agent.ask_main_agent import get_pending_ask_registry
@@ -223,7 +228,7 @@ def test_cancel_pending_ask_sets_terminated_flag_when_no_future():
 
     场景：/stop 在 _ask_main_agent_impl 检查标记与 register 之间到达，
     cancel_pending_ask 找不到 future，但应设置 instance._ask_terminated 标记，
-    让后续 ask_main_agent 调用立即短路，避免阻塞满 300s。
+    让后续 _ask_main_agent_impl 调用立即短路，避免阻塞满 300s。
     """
     from agent.ask_main_agent import get_pending_ask_registry
     from agent.subagent_registry import SubagentRegistry
