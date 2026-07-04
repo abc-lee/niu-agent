@@ -179,13 +179,14 @@ async def _drain_main_agent_request_queue() -> None:
     逻辑：
     1. 检查 _chat_lock.locked()——主 Agent 忙则跳过（消息留队列）
     2. 检查 MainAgentRequestQueue.peek()——空则跳过
-    3. 阶段二 D1：解析 content 拿 unique_name（[子名] 前缀），如果子 Agent 已注销，
-       丢弃这条消息不推 SSE（避免主 Agent 处理已失效的 question 浪费一轮 LLM）
-    4. 主 Agent 闲 + 队列有消息 → 推 SSE（notify_new_message_sync，source="subagent"）
-    5. 阶段二 C1：notify 返回 False 表示推送失败（主 loop 不可用/已关闭/无订阅者），
+    3. 主 Agent 闲 + 队列有消息 → 推 SSE（notify_new_message_sync，source="subagent"）
+    4. 阶段二 C1：notify 返回 False 表示推送失败（主 loop 不可用/已关闭/无订阅者），
        不 pop 消息留队列下次重试；返回 True 才 pop 移除
 
     不写 db——写 db 由前端触发 /api/chat/session 后由 compat.py 完成
+
+    阶段二说明：队列里 ask 请求和完成通知两类消息都由程序源头 push，
+    db_monitor 不做类型区分，一视同仁推 SSE 给主 Agent。
     """
     from agent.main_agent_request_queue import get_main_agent_request_queue
     from niu_api.compat import _chat_lock
@@ -197,34 +198,6 @@ async def _drain_main_agent_request_queue() -> None:
     content = q.peek()
     if content is None:
         return
-
-    # 阶段二 D1：解析 content 的 [子名] 前缀，检查子 Agent 是否仍在注册表
-    # 子 Agent ask_main_agent 推队列后，主 Agent 闲时 db_monitor 推 SSE 触发前端调
-    # /api/chat/session。如果在此期间用户双击停止，cancel_pending_ask 设 future TERMINATED
-    # 子 Agent 退出 → SubagentRegistry 注销。此时主 Agent 仍会处理那条已失效的 question，
-    # 浪费一轮 LLM + 用户看到回答已取消的问题。这里检查并丢弃。
-    #
-    # Critical-1 修复：区分 ask 请求和完成通知
-    # - 完成通知（"[子名] 已完成/异常结束/被取消"）跳过注册表检查——子 Agent 必然已注销
-    #   （_run_subagent_async push 后 finally 立即 unregister，db_monitor 200ms 后才 peek）
-    # - ask 请求才检查注册表——防 cancel 后失效 question 浪费主 Agent LLM 调用
-    try:
-        match = re.match(r"^\[([^\]]+)\]", content)
-        if match:
-            unique_name = match.group(1)
-            is_completion_notification = any(
-                keyword in content
-                for keyword in ["已完成", "异常结束", "被取消"]
-            )
-            if not is_completion_notification:
-                instance = SubagentRegistry.get(unique_name)
-                if instance is None:
-                    # 子 Agent 已注销（被 cancel/退出），丢弃这条 ask 请求不推 SSE
-                    q.pop()
-                    logger.info(f"db_monitor 链路 A 丢弃已注销子 Agent 的 ask 请求：{unique_name}")
-                    return
-    except Exception as e:
-        logger.warning(f"db_monitor 链路 A 子 Agent 注销检查失败，继续推送：{e}")
 
     # 阶段二 C1：检查 notify 返回值，False 时不 pop 留队列下次重试
     try:
