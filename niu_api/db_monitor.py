@@ -103,6 +103,15 @@ def route_message(target: str, sender: str, content: str) -> None:
     # 目标是子 Agent
     instance = SubagentRegistry.get(target)
     if instance is None:
+        # 阶段二 A2：strip 非字母数字尾部（处理 LLM 误加标点的情况）
+        # _AT_MSG_PATTERN 用 \S+ 匹配 target，会吞掉 trailing 标点（如中文句号/逗号）。
+        # LLM 生成的 @消息可能带标点，导致 target 不匹配注册表。这里二次 strip 再查一次。
+        stripped = target.rstrip("。，！？；：、.,!?;:")
+        if stripped != target:
+            instance = SubagentRegistry.get(stripped)
+            if instance is not None:
+                target = stripped
+    if instance is None:
         # 目标不在注册表（子 Agent 已退出/重启后残留消息）
         # sender==主Agent 时丢弃（孤儿回答，不推回主 Agent 避免死循环）
         # 其他 sender 推回主 Agent 让主 Agent 知道
@@ -134,7 +143,8 @@ def route_message(target: str, sender: str, content: str) -> None:
 
     if sender == "主Agent":
         # 主 Agent 回答消息（非 /stop）→ 路由到 PendingAskRegistry.set_answer
-        # 用有无 future 作为判据，不用 sender=="主Agent" 区分（主 Agent 也会补充上下文）
+        # 用 sender=='主Agent' 区分回答/补充上下文，set_answer 找不到 future 时降级推 supplement queue
+        # （主 Agent 在补充上下文，不是回答 ask_main_agent）
         try:
             from agent.ask_main_agent import get_pending_ask_registry
             found = get_pending_ask_registry().set_answer(target, content)
@@ -169,8 +179,11 @@ async def _drain_main_agent_request_queue() -> None:
     逻辑：
     1. 检查 _chat_lock.locked()——主 Agent 忙则跳过（消息留队列）
     2. 检查 MainAgentRequestQueue.peek()——空则跳过
-    3. 主 Agent 闲 + 队列有消息 → 推 SSE（notify_new_message_sync，source="subagent"）
-    4. 推 SSE 成功后 pop 移除（避免推送失败丢消息）
+    3. 阶段二 D1：解析 content 拿 unique_name（[子名] 前缀），如果子 Agent 已注销，
+       丢弃这条消息不推 SSE（避免主 Agent 处理已失效的 question 浪费一轮 LLM）
+    4. 主 Agent 闲 + 队列有消息 → 推 SSE（notify_new_message_sync，source="subagent"）
+    5. 阶段二 C1：notify 返回 False 表示推送失败（主 loop 不可用/已关闭/无订阅者），
+       不 pop 消息留队列下次重试；返回 True 才 pop 移除
 
     不写 db——写 db 由前端触发 /api/chat/session 后由 compat.py 完成
     """
@@ -185,13 +198,36 @@ async def _drain_main_agent_request_queue() -> None:
     if content is None:
         return
 
+    # 阶段二 D1：解析 content 的 [子名] 前缀，检查子 Agent 是否仍在注册表
+    # 子 Agent ask_main_agent 推队列后，主 Agent 闲时 db_monitor 推 SSE 触发前端调
+    # /api/chat/session。如果在此期间用户双击停止，cancel_pending_ask 设 future TERMINATED
+    # 子 Agent 退出 → SubagentRegistry 注销。此时主 Agent 仍会处理那条已失效的 question，
+    # 浪费一轮 LLM + 用户看到回答已取消的问题。这里检查并丢弃。
+    try:
+        match = re.match(r"^\[([^\]]+)\]", content)
+        if match:
+            unique_name = match.group(1)
+            instance = SubagentRegistry.get(unique_name)
+            if instance is None:
+                # 子 Agent 已注销（被 cancel/退出），丢弃这条消息不推 SSE
+                q.pop()
+                logger.info(f"db_monitor 链路 A 丢弃已注销子 Agent 的请求：{unique_name}")
+                return
+    except Exception as e:
+        logger.warning(f"db_monitor 链路 A 子 Agent 注销检查失败，继续推送：{e}")
+
+    # 阶段二 C1：检查 notify 返回值，False 时不 pop 留队列下次重试
     try:
         from niu_api.chat import notify_new_message_sync
-        notify_new_message_sync("", "subagent_msg", content, source="subagent")
-        q.pop()
-        logger.info(f"db_monitor 链路 A 推 SSE 触发主 Agent：{content[:50]}")
+        ok = notify_new_message_sync("", "subagent_msg", content, source="subagent")
+        if ok:
+            q.pop()
+            logger.info(f"db_monitor 链路 A 推 SSE 触发主 Agent：{content[:50]}")
+        else:
+            # 推送失败（主 loop 不可用/已关闭/无订阅者），消息留队列下次重试
+            logger.warning("db_monitor 链路 A 推 SSE 失败（loop 不可用或无订阅者），消息留队列重试")
     except Exception as e:
-        logger.error(f"db_monitor 链路 A 推 SSE 失败，消息留队列：{e}")
+        logger.error(f"db_monitor 链路 A 推 SSE 异常，消息留队列：{e}")
 
 
 async def _poll_messages() -> None:

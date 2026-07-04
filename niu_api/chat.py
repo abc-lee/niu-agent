@@ -32,39 +32,53 @@ def set_main_event_loop(loop: asyncio.AbstractEventLoop):
     _main_loop = loop
 
 
-async def notify_new_message(message_id: str, role: str, content: str, source: str = "electron"):
+async def notify_new_message(message_id: str, role: str, content: str, source: str = "electron") -> bool:
     """新消息写入数据库后调用，广播给所有 SSE 订阅者。
 
     source 白名单：electron（前端用户操作）、subagent（子 Agent 触发，阶段二新增）
+
+    Returns:
+        True 表示事件已入队广播（或被 role/source 过滤跳过视为成功）；
+        False 表示无订阅者或所有订阅者队列满，调用方应保留消息重试。
     """
     # 双管道分离：tool 消息只走 DB 管道，不推送给前端
     if role == "tool":
-        return
+        return True
     if source not in ("electron", "subagent"):
-        return  # 非白名单通道不走SSE，前端零感知
+        return True  # 非白名单通道不走SSE，前端零感知，视为成功
+    if not _event_subscribers:
+        return False  # 无订阅者，调用方（如 db_monitor）应保留消息重试
     event = {
         "type": "new_message",
         "id": message_id,
         "role": role,
         "content": content,
     }
+    delivered = 0
     for q in _event_subscribers[:]:  # 复制列表，避免迭代中修改
         try:
             q.put_nowait(event)
+            delivered += 1
         except asyncio.QueueFull:
             logger.warning("[SSE] Subscriber queue full, skipping event")
+    return delivered > 0
 
 
-def notify_new_message_sync(message_id: str, role: str, content: str, source: str = "electron"):
+def notify_new_message_sync(message_id: str, role: str, content: str, source: str = "electron") -> bool:
     """同步版本 — 从非 async 上下文（如 scheduler 线程）调用。
 
     source 白名单：electron（前端用户操作）、subagent（子 Agent 触发，阶段二新增）
+
+    Returns:
+        True 表示事件已成功注入主 loop（或被 role/source 过滤跳过视为成功）；
+        False 表示主 loop 不可用 / 已关闭 / call_soon_threadsafe 失败，
+        调用方（如 db_monitor._drain_main_agent_request_queue）应保留消息不 pop 重试。
     """
     # 双管道分离：tool 消息只走 DB 管道，不推送给前端
     if role == "tool":
-        return
+        return True
     if source not in ("electron", "subagent"):
-        return
+        return True
     event = {
         "type": "new_message",
         "id": message_id,
@@ -73,12 +87,14 @@ def notify_new_message_sync(message_id: str, role: str, content: str, source: st
     }
     loop = _main_loop
     if loop is None or loop.is_closed():
-        return
+        return False
     # 用 call_soon_threadsafe 安全注入到 FastAPI 的事件循环
     try:
         loop.call_soon_threadsafe(_sync_broadcast, event)
+        return True
     except RuntimeError:
-        pass  # 循环已关闭
+        # 循环已关闭——返回 False 让调用方保留消息重试
+        return False
 
 
 async def push_ingest_result(file_path: str, error: str = ""):
