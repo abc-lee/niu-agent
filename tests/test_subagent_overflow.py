@@ -49,7 +49,7 @@ class TestNoPromptChunking:
 
         def mock_run(client, system_prompt, user_input, handler, tools_schema,
                       max_turns=20, initial_user_content=None, context_window_tokens=0,
-                      context_fifo_threshold=0, history=None):
+                      context_fifo_threshold=0, history=None, **kwargs):
             nonlocal call_count
             call_count += 1
             return ("done", {"result": "CURRENT_TASK_DONE", "data": "ok"})
@@ -362,7 +362,7 @@ class TestOverflowResultPropagation:
     def test_overflow_result_includes_progress(self, monkeypatch):
         from agent import subagent
 
-        def mock_run_agent_loop(client, system_prompt, user_input, handler, tools_schema, max_turns=20, initial_user_content=None, context_window_tokens=0, context_fifo_threshold=0, history=None):
+        def mock_run_agent_loop(client, system_prompt, user_input, handler, tools_schema, max_turns=20, initial_user_content=None, context_window_tokens=0, context_fifo_threshold=0, history=None, **kwargs):
             return (
                 "partial work done",
                 {
@@ -404,7 +404,7 @@ class TestSubagentContextWindowConfig:
 
         captured_kwargs = {}
 
-        def mock_run(client, system_prompt, user_input, handler, tools_schema, max_turns=20, initial_user_content=None, context_window_tokens=0, context_fifo_threshold=0, history=None):
+        def mock_run(client, system_prompt, user_input, handler, tools_schema, max_turns=20, initial_user_content=None, context_window_tokens=0, context_fifo_threshold=0, history=None, **kwargs):
             captured_kwargs["context_window_tokens"] = context_window_tokens
             return ("done", {"result": "CURRENT_TASK_DONE", "data": "ok"})
 
