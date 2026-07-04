@@ -563,11 +563,6 @@ def _build_subagent_tools_schema(
     else:
         logger.warning(f"[SubAgent] {agent_name}: {len(tools_schema)} tools (0 MCP - WARNING: No MCP tools loaded!)")
 
-    # 阶段二：异步子 Agent 注入 ask_main_agent
-    if memory_context is not None:
-        tools_schema.append(ASK_MAIN_AGENT_TOOL_SCHEMA)
-        logger.info(f"[SubAgent] {agent_name}: ask_main_agent 注入（异步子 Agent）")
-
     # 列出关键工具（调试）
     tool_names = [t.get("function", {}).get("name", "") for t in tools_schema]
     logger.debug(f"[SubAgent] {agent_name}: Tools = {tool_names}")
@@ -757,29 +752,6 @@ def call_subagent(
 
 
 # ==================== 阶段二：ask_main_agent 工具 ====================
-
-# ask_main_agent 工具 schema（注入给异步子 Agent）
-ASK_MAIN_AGENT_TOOL_SCHEMA = {
-    "type": "function",
-    "function": {
-        "name": "ask_main_agent",
-        "description": (
-            "向主 Agent 提问并阻塞等待回答。当遇到歧义、需要澄清或需要主 Agent 决策时使用。"
-            "调用后会阻塞直到主 Agent 回答（通过 db_monitor 路由）。"
-            "不要在主 Agent 没回答前连续调用多次——一次只问一个问题。"
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "question": {
-                    "type": "string",
-                    "description": "要问主 Agent 的问题，描述清楚歧义点。",
-                },
-            },
-            "required": ["question"],
-        },
-    },
-}
 
 
 def _ask_main_agent_impl(question: str, unique_name: str) -> str:
