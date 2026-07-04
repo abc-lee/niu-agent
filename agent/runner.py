@@ -584,6 +584,29 @@ class NiuRunner:
         # 注意：_connect_external_servers 是 async，需要在 async 上下文中调用
         # 这里暂时不调用，由 lifespan 的 startup 事件触发
 
+    def _refresh_base_tools_schema_if_dirty(self):
+        """每次对话开始时扫 ~/.niu/agents/，发现新 MD 就重算 base_tools_schema。
+
+        重算返回完整 base 集（基础工具 + MCP 工具 + 所有 chat-with-* + check_subagent_progress），
+        不是差量重算。无变化时不重算（保持对象引用稳定，避免无谓拷贝）。
+        """
+        from .subagent import _USER_AGENTS_DIR
+        if not os.path.isdir(_USER_AGENTS_DIR):
+            return
+
+        current_files = {
+            f for f in os.listdir(_USER_AGENTS_DIR)
+            if f.endswith(".md") and not f.startswith("_")
+        }
+
+        if current_files != self._known_user_subagents:
+            self._known_user_subagents = current_files
+            self.base_tools_schema = get_tools_schema()
+            logger.info(
+                f"Refreshed base_tools_schema: {len(self.base_tools_schema)} tools "
+                f"(~/.niu/agents/ changed)"
+            )
+
     def _make_ask_agent_callback(self):
         """创建 ask_agent 回调，调用当前 Agent 的 LLM"""
         def ask_agent(prompt: str, system_prompt: str = "", max_tokens: int = 500) -> str | None:
@@ -2039,6 +2062,9 @@ class NiuRunner:
         # 组装 system message（首轮就按 model 决定格式，Claude 走 cache_control）
         system_message = {"role": "system", "content": ""}
         self._assemble_system_message([system_message], injection, self.default_model)
+
+        # 阶段三：每次对话开始时检查 ~/.niu/agents/ 是否有新 MD
+        self._refresh_base_tools_schema_if_dirty()
 
         # 组装 tools_schema = base tools + static MCP tools + disk
         tools_schema = self.base_tools_schema.copy()
