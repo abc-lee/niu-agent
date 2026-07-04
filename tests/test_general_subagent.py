@@ -404,3 +404,19 @@ def test_resolve_agent_md_path_rejects_path_traversal(tmp_path, monkeypatch):
     assert subagent._resolve_agent_md_path("foo/../bar") is None
     # 空字符串也拒绝
     assert subagent._resolve_agent_md_path("") is None
+
+
+def test_get_tools_schema_excludes_main_only_for_subagent():
+    """get_tools_schema(include_main_only=False) 不含 check_subagent_progress"""
+    from agent import runner
+    tools = runner.get_tools_schema(include_main_only=False)
+    tool_names = [t["function"]["name"] for t in tools]
+    assert "check_subagent_progress" not in tool_names
+
+
+def test_get_tools_schema_includes_main_only_by_default():
+    """get_tools_schema() 默认含 check_subagent_progress"""
+    from agent import runner
+    tools = runner.get_tools_schema()
+    tool_names = [t["function"]["name"] for t in tools]
+    assert "check_subagent_progress" in tool_names

@@ -278,6 +278,7 @@ sub agents:
 2. 用基础工具（读写文档）写新 MD 到 `~/.niu/agents/{name}.md`：
    - name 用 kebab-case（如 `photo-organizer`、`doc-summarizer`，仅小写字母/数字/连字符）
    - frontmatter 填 description / mcpServers / allowAsync 等（description 必填，否则会被跳过）
+   - `mcpServers` 填 **MCP 服务器名**（如 `browser-server`、`photo-server`），不是虚拟磁盘工具前缀（如 `browser`、`photo`）——两者不同，混淆会导致子 Agent 工具缺失
    - 正文写系统提示词
    - **重要**：如果 allowAsync: true，正文必须写明 ask_main_agent 的使用时机（如"遇到用户意图不明确时调 ask_main_agent 询问，不要自行假设"），否则子 Agent 不会主动询问
 3. 当前任务结束。下一轮对话开始时，`chat-with-{name}` 工具自动出现

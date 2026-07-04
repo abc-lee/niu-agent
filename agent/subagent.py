@@ -534,7 +534,7 @@ def _build_subagent_tools_schema(
 
     from .runner import get_tools_schema
 
-    tools_schema = get_tools_schema()
+    tools_schema = get_tools_schema(include_main_only=False)
     # 移除 chat-with-* 工具，子 Agent 不能再调用子 Agent
     tools_schema = [
         t for t in tools_schema

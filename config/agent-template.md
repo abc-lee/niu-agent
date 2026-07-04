@@ -29,6 +29,8 @@ allowAsync: false        # 是否允许异步调用（长时任务设为 true）
 
 ## 可用 MCP 服务器
 
+**重要**：`mcpServers` 字段填的是 **MCP 服务器名**（如下所列，如 `browser-server`、`photo-server`），**不是虚拟磁盘工具前缀**（如 `browser`、`photo`）。主 Agent 日常用 disk 命令看到的是工具前缀，与服务器名不同，不要混淆。
+
 主 Agent 创建子 Agent 时，从以下服务器中选择 `mcpServers` 字段（必需服务器，启动时加载）：
 
 - `file-parser` — 文档解析（PDF/Word/PPT/Excel/MD/HTML）

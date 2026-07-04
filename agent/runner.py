@@ -27,6 +27,10 @@ from agent.subagent_registry import SubagentRegistry
 # runner.py 顶部已有 `import re`，直接复用
 _KEBAB_CASE_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 
+# 主 Agent 专用工具集合（子 Agent 不可见）
+# check_subagent_progress 是主 Agent 查子 Agent 进度的工具，子 Agent 不该有
+MAIN_AGENT_ONLY_TOOLS = {"check_subagent_progress"}
+
 
 # --- Stop flag mechanism ---
 _stop_requested = threading.Event()
@@ -245,7 +249,7 @@ def _load_memory_for_prompt() -> str:
     return "\n\n".join(parts)
 
 
-def get_tools_schema() -> list:
+def get_tools_schema(include_main_only: bool = True) -> list:
     """获取工具 Schema（从 JSON 文件加载 + 注册子 Agent 工具）
 
     子 Agent 名单来源：
@@ -259,6 +263,10 @@ def get_tools_schema() -> list:
     - description 字段缺失（视为无效子 Agent）
 
     重算返回完整 base 集（基础工具 + MCP 工具 + 所有 chat-with-* + check_subagent_progress）。
+
+    Args:
+        include_main_only: 是否包含主 Agent 专用工具（如 check_subagent_progress）。
+            主 Agent 路径传 True（默认），子 Agent 路径传 False。
     """
     from .subagent import get_subagent_config, _resolve_agent_md_path, _USER_AGENTS_DIR
     from .tool_registry import get_registry
@@ -384,27 +392,28 @@ def get_tools_schema() -> list:
             }
         )
 
-    # 阶段二：主 Agent 的 check_subagent_progress 工具
-    tools.append({
-        "type": "function",
-        "function": {
-            "name": "check_subagent_progress",
-            "description": (
-                "查看异步子 Agent 的进度。返回子 Agent 最近一轮 LLM 对话（请求摘要、回复、当前轮次、最近工具）。"
-                "用于监控后台运行的子 Agent。同步子 Agent 无进度数据。"
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "subagent_name": {
-                        "type": "string",
-                        "description": "子 Agent 唯一名（如 file-processor-a1b2，来自派单确认或动态注入区）",
+    # 阶段二：主 Agent 的 check_subagent_progress 工具（主 Agent 专用，子 Agent 不可见）
+    if include_main_only:
+        tools.append({
+            "type": "function",
+            "function": {
+                "name": "check_subagent_progress",
+                "description": (
+                    "查看异步子 Agent 的进度。返回子 Agent 最近一轮 LLM 对话（请求摘要、回复、当前轮次、最近工具）。"
+                    "用于监控后台运行的子 Agent。同步子 Agent 无进度数据。"
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "subagent_name": {
+                            "type": "string",
+                            "description": "子 Agent 唯一名（如 file-processor-a1b2，来自派单确认或动态注入区）",
+                        },
                     },
+                    "required": ["subagent_name"],
                 },
-                "required": ["subagent_name"],
             },
-        },
-    })
+        })
 
     return tools
 
