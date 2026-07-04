@@ -783,7 +783,14 @@ def _ask_main_agent_impl(question: str, unique_name: str) -> str:
     # content 格式 "[子名] 问题"——db_monitor 推 SSE 时 role=subagent_msg，
     # 前端收到后调 /api/chat/session，content 作为 message 参数传给后端，
     # 后端 compat.py 写 user 消息（role=user, content="[子名] 问题"）
-    msg_content = f"[{unique_name}] {question}"
+    #
+    # 阶段二 E1：question sanitization
+    # - 长度限制 2000 字符（避免恶意子 Agent 把超大内容塞进队列）
+    # - strip 行首 @ 字符（避免被 at_message_parser 误解析为 @消息注入指令）
+    sanitized_question = question[:2000] if question else ""
+    if sanitized_question.lstrip().startswith("@"):
+        sanitized_question = sanitized_question.lstrip()[1:]
+    msg_content = f"[{unique_name}] {sanitized_question}"
     try:
         get_main_agent_request_queue().push(msg_content)
     except Exception as e:
@@ -955,6 +962,19 @@ async def _run_subagent_async(
         except Exception:
             pass
         logger.error(f"[AsyncSubagent] {unique_name} 异常：{e}")
+
+    except asyncio.CancelledError:
+        # 阶段二 B2：应用关闭 / task 被 cancel 时，asyncio.CancelledError 是 BaseException
+        # 子类（Python 3.8+），不会被 except Exception 捕获。如果不处理，主 Agent 不知道
+        # 子 Agent 被取消。这里推一条取消通知到 MainAgentRequestQueue 让主 Agent 知晓，
+        # 再 raise 让上层（run_coroutine_threadsafe 的 future）感知到取消。
+        cancel_msg = f"[{unique_name}] 被取消（应用关闭或主 Agent 停止）"
+        try:
+            get_main_agent_request_queue().push(cancel_msg)
+        except Exception:
+            pass
+        logger.info(f"[AsyncSubagent] {unique_name} 被 cancel")
+        raise  # 重新抛出 CancelledError
 
     finally:
         # 清理 ask_main_agent pending future（避免泄漏）
