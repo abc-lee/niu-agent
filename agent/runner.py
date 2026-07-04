@@ -527,6 +527,16 @@ class NiuRunner:
         # memory 变化时由 _refresh_user_memories 同步更新此属性
         self.static_system_prompt = self._build_static_system_prompt()
         # base_system_prompt 将在 disk_desc 拼接完成后组装（向后兼容）
+        # 阶段三：跟踪 ~/.niu/agents/ 已知子 Agent 文件集合
+        # chat() 入口用此集合判断是否需要重算 base_tools_schema
+        from .subagent import _USER_AGENTS_DIR
+        if os.path.isdir(_USER_AGENTS_DIR):
+            self._known_user_subagents = {
+                f for f in os.listdir(_USER_AGENTS_DIR)
+                if f.endswith(".md") and not f.startswith("_")
+            }
+        else:
+            self._known_user_subagents = set()
         self.base_tools_schema = get_tools_schema()
 
         # 启动 Skills 后台同步

@@ -239,3 +239,57 @@ def test_get_tools_schema_dedup(tmp_path, monkeypatch):
     shared_tools = [t for t in tools if t["function"]["name"] == "chat-with-shared"]
     assert len(shared_tools) == 1
     assert shared_tools[0]["function"]["description"] == "project shared"
+
+
+def test_niu_runner_init_known_user_subagents(tmp_path, monkeypatch):
+    """NiuRunner.__init__ 初始化 _known_user_subagents 集合"""
+    from agent import runner, subagent
+    from unittest import mock
+
+    user_dir = tmp_path / "user" / "agents"
+    user_dir.mkdir(parents=True)
+    (user_dir / "foo.md").write_text("---\ndescription: foo\n---\nbody")
+    (user_dir / "bar.md").write_text("---\ndescription: bar\n---\nbody")
+    # 非法名文件不应计入（但此处只验证集合内容，跳过校验是 get_tools_schema 的事）
+    (user_dir / "_skip.md").write_text("---\ndescription: skip\n---\nbody")
+
+    project_agents = tmp_path / "project" / "config" / "agents"
+    project_agents.mkdir(parents=True)
+    (project_agents / "niu.md").write_text("---\n---\nniu prompt")
+
+    monkeypatch.setattr(subagent, "_PROJECT_AGENTS_DIR", str(project_agents))
+    monkeypatch.setattr(subagent, "_USER_AGENTS_DIR", str(user_dir))
+
+    # mock LLM config 避免实际初始化 client
+    llm_config = {"model": "test", "api_key": "test", "base_url": "http://localhost"}
+    with mock.patch.object(runner.NiuRunner, "_build_static_system_prompt", return_value=""), \
+         mock.patch.object(runner.NiuRunner, "_build_disk_description", return_value=""), \
+         mock.patch.object(runner, "create_client", return_value=None), \
+         mock.patch.object(runner, "get_skill_sync"), \
+         mock.patch.object(runner, "get_registry"):
+        r = runner.NiuRunner(llm_config)
+    # 显式断言集合内容（不只是长度）
+    assert r._known_user_subagents == {"foo.md", "bar.md"}
+
+
+def test_niu_runner_init_known_user_subagents_no_dir(tmp_path, monkeypatch):
+    """~/.niu/agents/ 不存在时初始化为空集合"""
+    from agent import runner, subagent
+    from unittest import mock
+
+    project_agents = tmp_path / "project" / "config" / "agents"
+    project_agents.mkdir(parents=True)
+    (project_agents / "niu.md").write_text("---\n---\nniu prompt")
+
+    # 用户目录指向不存在的路径
+    monkeypatch.setattr(subagent, "_PROJECT_AGENTS_DIR", str(project_agents))
+    monkeypatch.setattr(subagent, "_USER_AGENTS_DIR", str(tmp_path / "nonexistent"))
+
+    llm_config = {"model": "test", "api_key": "test", "base_url": "http://localhost"}
+    with mock.patch.object(runner.NiuRunner, "_build_static_system_prompt", return_value=""), \
+         mock.patch.object(runner.NiuRunner, "_build_disk_description", return_value=""), \
+         mock.patch.object(runner, "create_client", return_value=None), \
+         mock.patch.object(runner, "get_skill_sync"), \
+         mock.patch.object(runner, "get_registry"):
+        r = runner.NiuRunner(llm_config)
+    assert r._known_user_subagents == set()
