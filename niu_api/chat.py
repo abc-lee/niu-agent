@@ -53,6 +53,7 @@ async def notify_new_message(message_id: str, role: str, content: str, source: s
         "id": message_id,
         "role": role,
         "content": content,
+        "source": source,
     }
     delivered = 0
     for q in _event_subscribers[:]:  # 复制列表，避免迭代中修改
@@ -79,11 +80,14 @@ def notify_new_message_sync(message_id: str, role: str, content: str, source: st
         return True
     if source not in ("electron", "subagent"):
         return True
+    if not _event_subscribers:
+        return False
     event = {
         "type": "new_message",
         "id": message_id,
         "role": role,
         "content": content,
+        "source": source,
     }
     loop = _main_loop
     if loop is None or loop.is_closed():
