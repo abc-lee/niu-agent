@@ -36,7 +36,7 @@ def test_parse_at_message_stop():
 def test_route_to_main_agent():
     """@主Agent 消息推入 MainAgentRequestQueue（阶段二改造后）。
 
-    旧机制走 enqueue_supplement；新机制 ask_main_agent 和完成通知改走内存队列，
+    旧机制走 enqueue_supplement；新机制 @niu 拦截和完成通知改走内存队列，
     target==主Agent 的 db 消息（兼容残留）也推入 MainAgentRequestQueue 由链路 A 消费。
     """
     from niu_api.db_monitor import route_message

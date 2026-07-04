@@ -1,4 +1,4 @@
-"""验证 request_stop_all_subagents 同时 cancel ask_main_agent 阻塞，避免双击停止死锁。"""
+"""验证 request_stop_all_subagents 同时 cancel @niu 拦截阻塞，避免双击停止死锁。"""
 from agent.runner import request_stop_all_subagents
 from agent.ask_main_agent import get_pending_ask_registry, TERMINATED_SIGNAL
 from agent.subagent_registry import SubagentRegistry
@@ -7,7 +7,7 @@ from agent.subagent_memory import SubagentMemoryContext
 
 
 def test_request_stop_all_subagents_cancels_pending_ask():
-    """双击停止时 request_stop_all_subagents 同时 cancel ask_main_agent 阻塞，避免死锁。"""
+    """双击停止时 request_stop_all_subagents 同时 cancel @niu 拦截阻塞，避免死锁。"""
     sq = SubagentSupplementQueue("test-stop-all-0001")
     mc = SubagentMemoryContext()
     name = SubagentRegistry.register(
