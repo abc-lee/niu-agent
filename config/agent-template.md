@@ -24,7 +24,7 @@ allowAsync: false        # 是否允许异步调用（长时任务设为 true）
 - 子 Agent 的角色和职责边界
 - 工作流程（先做什么、再做什么）
 - 输出格式要求
-- **何时主动询问主 Agent**（仅异步模式 allowAsync: true 时才会注入 ask_main_agent 工具；同步子 Agent 不注入。异步子 Agent 必须在正文写明 ask_main_agent 的使用时机，如"遇到用户意图不明确时调 ask_main_agent 询问，不要自行假设"——否则子 Agent 不会主动询问）
+- **何时主动询问主 Agent**（仅异步模式 allowAsync: true 时才会注入 ask_main_agent 工具；同步子 Agent 不注入。异步子 Agent 系统提示词会自动注入 ask_main_agent 使用守则，主 Agent 无需在正文重复写）
 - 何时该终止自己
 
 ## 可用 MCP 服务器
@@ -67,4 +67,4 @@ allowAsync: false        # 是否允许异步调用（长时任务设为 true）
   ```
 - `disableBaseTools`：可选，禁用基础工具列表（如 `[bash, code_run, read, write, edit, grep]`）
 - `allowBaseTools`：可选，从 disableBaseTools 解禁的工具列表（黑名单中的例外）
-- `allowAsync`：true 时支持异步调用（主 Agent 调用后立即返回，子 Agent 后台跑；异步子 Agent 才会注入 ask_main_agent 工具）
+- `allowAsync`：true 时支持异步调用（主 Agent 调用后立即返回，子 Agent 后台跑；异步子 Agent 自动注入 ask_main_agent 工具及使用守则）
