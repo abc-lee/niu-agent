@@ -545,10 +545,9 @@ Expected: 5 个新测试 FAIL（现有 `get_tools_schema` 不扫 `~/.niu/agents/
 把 `agent/runner.py:243-330` 的 `get_tools_schema` 整体替换为：
 
 ```python
-import re as _re
-
 # kebab-case 校验正则（小写字母/数字/连字符，且不以连字符开头/结尾）
-_KEBAB_CASE_RE = _re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+# runner.py 顶部已有 `import re`，直接复用
+_KEBAB_CASE_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 
 
 def get_tools_schema() -> list:
@@ -600,10 +599,10 @@ def get_tools_schema() -> list:
     # 3. 合并去重（保序：专用在前，通用在后）
     all_subagents = list(dict.fromkeys(sub_agents + user_agent_names))
 
-    # 4. 收集已加载的 MCP 服务器名（用于 warning 提示）
+    # 4. 收集已加载的 MCP 服务器名（用于 warning 提示未加载的服务器）
     try:
         registry = get_registry()
-        loaded_servers = set(registry.get_servers())  # 假设有此方法；若无则跳过 warning
+        loaded_servers = set(registry._server_tools.keys())
     except Exception:
         loaded_servers = None  # 不做 warning
 
@@ -715,32 +714,7 @@ def get_tools_schema() -> list:
     return tools
 ```
 
-**注意**：实现前需确认 `tool_registry.py` 是否有 `get_servers()` 方法。如果没有，把第 4 步的 `loaded_servers` 收集逻辑改为：扫 `mcp_loader.REQUIRED_SERVERS` + `OPTIONAL_SERVERS` 常量，或直接跳过 MCP warning（`loaded_servers = None`）。如果改为跳过 warning，删掉第 5e 步。
-
-    # 阶段二：主 Agent 的 check_subagent_progress 工具
-    tools.append({
-        "type": "function",
-        "function": {
-            "name": "check_subagent_progress",
-            "description": (
-                "查看异步子 Agent 的进度。返回子 Agent 最近一轮 LLM 对话（请求摘要、回复、当前轮次、最近工具）。"
-                "用于监控后台运行的子 Agent。同步子 Agent 无进度数据。"
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "subagent_name": {
-                        "type": "string",
-                        "description": "子 Agent 唯一名（如 file-processor-a1b2，来自派单确认或动态注入区）",
-                    },
-                },
-                "required": ["subagent_name"],
-            },
-        },
-    })
-
-    return tools
-```
+**MCP warning 实现说明**：`agent/tool_registry.py` 无 `get_servers()` 方法，但有 `_server_tools: Dict[str, List[str]]` 字典（key 是 server name）。上面代码用 `set(registry._server_tools.keys())` 拿已加载服务器名。这是确定的实现方案，不是二选一。
 
 - [ ] **Step 4: 运行测试确认通过**
 
@@ -1266,6 +1240,8 @@ Expected:
 - 主 Agent LLM 回应
 - 子 Agent 收到回答继续工作
 
+**降级路径**：如果子 Agent 未主动询问（取决于主 Agent 写 MD 时是否在正文引导了 ask_main_agent 使用时机），主 Agent 应主动询问子 Agent 是否需要澄清（通过 @子名 发消息），触发交互验证。这是提示词层约束非代码约束，主 Agent 可能不遵守。
+
 - [ ] **Step 6: 验证阶段二能力——check_subagent_progress**
 
 继续发送消息：
@@ -1312,13 +1288,18 @@ Expected:
 - `chat-with-bad` 工具不出现在主 Agent 工具列表
 - 其他正常子 Agent 不受影响
 
-验证命令：
+验证命令（双验证——日志 + 行为）：
 
 ```bash
-grep "Sub-agent 'bad' has empty/invalid frontmatter" logs/api_stderr.log | tail -1
+# 验证1：日志宽松匹配（loguru warning 可能写到 stderr 或 logs/ 目录，grep 不到也不算失败）
+grep -r "Sub-agent 'bad'" logs/ 2>/dev/null | tail -1 || echo "日志未找到（依赖日志配置，不一定失败）"
+
+# 验证2（关键）：前端工具列表确认——主 Agent LLM 调用工具时不会出现 chat-with-bad
+# 通过观察主 Agent 行为：让它"列出所有可用子 Agent"或"调用 chat-with-bad"——
+# 如果主 Agent 回复"没有 chat-with-bad 这个工具"或类似，证明坏 MD 被跳过
 ```
 
-Expected: 输出一行日志，证明坏 MD 被识别并跳过。
+如果验证1 grep 不到日志，但验证2 主 Agent 行为确认 `chat-with-bad` 不存在，仍算通过。
 
 - [ ] **Step 10: 清理验证环境**
 
