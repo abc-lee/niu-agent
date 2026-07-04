@@ -1,8 +1,4 @@
 """通用子 Agent（阶段三）单元测试"""
-import os
-import tempfile
-from unittest import mock
-from pathlib import Path
 
 
 def test_resolve_agent_md_path_project_priority(tmp_path, monkeypatch):
