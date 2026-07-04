@@ -9,6 +9,12 @@ from agent.subagent import _read_warning_threshold
 
 _VALID_STREAM_TYPES = ("reply", "tool_marker", "system", "persist")
 
+# @前缀子Agent意图识别返回值
+INTERCEPTED = "intercepted"      # @niu 拦截成功，调用了 _ask_main_agent_impl，messages 已追加
+EXIT = "exit"                    # @end 允许退出
+FORMAT_ERROR = "format_error"    # 无 @ 前缀无 tool_calls，已追加格式错误提示
+NO_INTERCEPTION = "no_intercept" # 不拦截（同步子 Agent 或有 tool_calls）
+
 
 @dataclass
 class StreamEvent:
@@ -33,6 +39,95 @@ class StreamEvent:
         if isinstance(other, str):
             return other + self.content
         return NotImplemented
+
+
+def _intercept_at_prefix_content(
+    content: str,
+    tool_calls: list,
+    messages: list,
+    handler,
+    memory_context,
+) -> str:
+    """@前缀子Agent意图识别拦截层。
+
+    仅异步子 Agent（memory_context is not None）+ 无 tool_calls 时拦截。
+    content 以 @niu 开头 → 调 _ask_main_agent_impl，把回答作为 user 消息注入 messages，返回 INTERCEPTED
+    content 以 @end 开头 → 允许退出，返回 EXIT
+    其他 → 追加格式错误提示，返回 FORMAT_ERROR
+
+    Args:
+        content: LLM 返回的 content
+        tool_calls: LLM 返回的 tool_calls
+        messages: 当前对话 messages 列表（会被追加）
+        handler: NiuHandler 实例（含 _subagent_unique_name）
+        memory_context: 异步子 Agent 的 memory_context（同步子 Agent 为 None）
+
+    Returns:
+        INTERCEPTED / EXIT / FORMAT_ERROR / NO_INTERCEPTION
+    """
+    # 同步子 Agent 或有 tool_calls 时不拦截
+    if memory_context is None or tool_calls:
+        return NO_INTERCEPTION
+
+    stripped = (content or "").lstrip()
+
+    # @niu 拦截（用 startswith("@niu") 兼容 @niu无空格）
+    if stripped.startswith("@niu"):
+        # 剥除 "@niu" 前缀 + 可选空格
+        question = stripped[4:].lstrip()
+        if not question:
+            logger.error("[AtPrefix] @niu 后无问题内容")
+            messages.append({"role": "assistant", "content": content})
+            messages.append({"role": "user", "content":
+                "[对话格式错误] 你的输出必须遵循以下格式之一：\n"
+                "1. 调用工具继续工作（正常 tool_calls）\n"
+                "2. 询问主 Agent：content 以 `@niu ` 开头，如 `@niu 我应该选择哪个选项？`\n"
+                "3. 结束会话：content 以 `@end ` 开头，如 `@end 任务已完成，结果：...`\n"
+                "禁止输出不带 @ 前缀的纯 content。请重新输出。"
+            })
+            return FORMAT_ERROR
+
+        unique_name = getattr(handler, "_subagent_unique_name", "")
+        if not unique_name:
+            logger.error("[AtPrefix] 异步子 Agent 无 _subagent_unique_name，无法调 ask_main_agent")
+            messages.append({"role": "assistant", "content": content})
+            messages.append({"role": "user", "content":
+                "[对话格式错误] 你的输出必须遵循以下格式之一：\n"
+                "1. 调用工具继续工作（正常 tool_calls）\n"
+                "2. 询问主 Agent：content 以 `@niu ` 开头，如 `@niu 我应该选择哪个选项？`\n"
+                "3. 结束会话：content 以 `@end ` 开头，如 `@end 任务已完成，结果：...`\n"
+                "禁止输出不带 @ 前缀的纯 content。请重新输出。"
+            })
+            return FORMAT_ERROR
+
+        # 调 _ask_main_agent_impl（阻塞等主 Agent 回答）
+        # 现有签名 (question, unique_name) -> str，无需 agent_name
+        from agent.subagent import _ask_main_agent_impl
+        answer = _ask_main_agent_impl(
+            question=question,
+            unique_name=unique_name,
+        )
+
+        # 把 assistant content + 主 Agent 回答作为 user 消息注入 messages
+        # 用 user 消息而非 tool 消息，避免 LLM API 对 tool_call_id 的严格校验
+        messages.append({"role": "assistant", "content": content})
+        messages.append({"role": "user", "content": f"[主 Agent 回答] {answer}"})
+        return INTERCEPTED
+
+    # @end 允许退出（用 startswith("@end") 兼容 @end无空格）
+    if stripped.startswith("@end"):
+        return EXIT
+
+    # 格式错误
+    messages.append({"role": "assistant", "content": content})
+    messages.append({"role": "user", "content":
+        "[对话格式错误] 你的输出必须遵循以下格式之一：\n"
+        "1. 调用工具继续工作（正常 tool_calls）\n"
+        "2. 询问主 Agent：content 以 `@niu ` 开头，如 `@niu 我应该选择哪个选项？`\n"
+        "3. 结束会话：content 以 `@end ` 开头，如 `@end 任务已完成，结果：...`\n"
+        "禁止输出不带 @ 前缀的纯 content。请重新输出。"
+    })
+    return FORMAT_ERROR
 
 
 def format_subagent_supplement(items: list, is_final_position: bool = False) -> str:
