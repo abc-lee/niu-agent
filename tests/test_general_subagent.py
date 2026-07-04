@@ -293,3 +293,94 @@ def test_niu_runner_init_known_user_subagents_no_dir(tmp_path, monkeypatch):
          mock.patch.object(runner, "get_registry"):
         r = runner.NiuRunner(llm_config)
     assert r._known_user_subagents == set()
+
+
+def test_refresh_base_tools_schema_if_dirty_no_change(tmp_path, monkeypatch):
+    """无新文件时不重算 base_tools_schema"""
+    from agent import runner, subagent
+    from unittest import mock
+
+    user_dir = tmp_path / "user" / "agents"
+    user_dir.mkdir(parents=True)
+    (user_dir / "foo.md").write_text("---\ndescription: foo\n---\nbody")
+
+    project_agents = tmp_path / "project" / "config" / "agents"
+    project_agents.mkdir(parents=True)
+    (project_agents / "niu.md").write_text("---\n---\nniu prompt")
+
+    monkeypatch.setattr(subagent, "_PROJECT_AGENTS_DIR", str(project_agents))
+    monkeypatch.setattr(subagent, "_USER_AGENTS_DIR", str(user_dir))
+
+    llm_config = {"model": "test", "api_key": "test", "base_url": "http://localhost"}
+    with mock.patch.object(runner.NiuRunner, "_build_static_system_prompt", return_value=""), \
+         mock.patch.object(runner.NiuRunner, "_build_disk_description", return_value=""), \
+         mock.patch.object(runner, "create_client", return_value=None), \
+         mock.patch.object(runner, "get_skill_sync"), \
+         mock.patch.object(runner, "get_registry"):
+        r = runner.NiuRunner(llm_config)
+
+    original_schema = r.base_tools_schema
+    r._refresh_base_tools_schema_if_dirty()
+    assert r.base_tools_schema is original_schema  # 同一对象，未重算
+
+
+def test_refresh_base_tools_schema_if_dirty_new_file(tmp_path, monkeypatch):
+    """有新 MD 文件时重算 base_tools_schema，且返回完整 base 集（含 check_subagent_progress）"""
+    from agent import runner, subagent
+    from unittest import mock
+
+    user_dir = tmp_path / "user" / "agents"
+    user_dir.mkdir(parents=True)
+    (user_dir / "foo.md").write_text("---\ndescription: foo\n---\nbody")
+
+    project_agents = tmp_path / "project" / "config" / "agents"
+    project_agents.mkdir(parents=True)
+    (project_agents / "niu.md").write_text("---\n---\nniu prompt")
+
+    monkeypatch.setattr(subagent, "_PROJECT_AGENTS_DIR", str(project_agents))
+    monkeypatch.setattr(subagent, "_USER_AGENTS_DIR", str(user_dir))
+
+    llm_config = {"model": "test", "api_key": "test", "base_url": "http://localhost"}
+    with mock.patch.object(runner.NiuRunner, "_build_static_system_prompt", return_value=""), \
+         mock.patch.object(runner.NiuRunner, "_build_disk_description", return_value=""), \
+         mock.patch.object(runner, "create_client", return_value=None), \
+         mock.patch.object(runner, "get_skill_sync"), \
+         mock.patch.object(runner, "get_registry"):
+        r = runner.NiuRunner(llm_config)
+
+    original_len = len(r.base_tools_schema)
+    # 新建一个 MD 文件
+    (user_dir / "bar.md").write_text("---\ndescription: bar\n---\nbody")
+
+    r._refresh_base_tools_schema_if_dirty()
+    tool_names = [t["function"]["name"] for t in r.base_tools_schema]
+    assert "chat-with-bar" in tool_names  # 新子 Agent 已加入
+    assert "chat-with-foo" in tool_names  # 原有子 Agent 仍在
+    assert "check_subagent_progress" in tool_names  # 阶段二工具仍在（完整 base 集）
+    assert len(r.base_tools_schema) == original_len + 1  # 仅 +1（新增 bar）
+
+
+def test_refresh_base_tools_schema_if_dirty_no_dir(tmp_path, monkeypatch):
+    """~/.niu/agents/ 不存在时跳过"""
+    from agent import runner, subagent
+    from unittest import mock
+
+    project_agents = tmp_path / "project" / "config" / "agents"
+    project_agents.mkdir(parents=True)
+    (project_agents / "niu.md").write_text("---\n---\nniu prompt")
+
+    # 用户目录指向不存在的路径
+    monkeypatch.setattr(subagent, "_PROJECT_AGENTS_DIR", str(project_agents))
+    monkeypatch.setattr(subagent, "_USER_AGENTS_DIR", str(tmp_path / "nonexistent"))
+
+    llm_config = {"model": "test", "api_key": "test", "base_url": "http://localhost"}
+    with mock.patch.object(runner.NiuRunner, "_build_static_system_prompt", return_value=""), \
+         mock.patch.object(runner.NiuRunner, "_build_disk_description", return_value=""), \
+         mock.patch.object(runner, "create_client", return_value=None), \
+         mock.patch.object(runner, "get_skill_sync"), \
+         mock.patch.object(runner, "get_registry"):
+        r = runner.NiuRunner(llm_config)
+
+    original_schema = r.base_tools_schema
+    r._refresh_base_tools_schema_if_dirty()  # 不应抛异常
+    assert r.base_tools_schema is original_schema  # 未重算
