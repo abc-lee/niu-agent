@@ -420,3 +420,64 @@ def test_get_tools_schema_includes_main_only_by_default():
     tools = runner.get_tools_schema()
     tool_names = [t["function"]["name"] for t in tools]
     assert "check_subagent_progress" in tool_names
+
+
+def test_build_subagent_system_segments_injects_async_guide(tmp_path, monkeypatch):
+    """异步子 Agent 系统提示词自动注入 ask_main_agent 使用守则"""
+    from agent import subagent
+
+    user_dir = tmp_path / "user" / "agents"
+    user_dir.mkdir(parents=True)
+    # MD 正文不含 ask_main_agent 引导
+    (user_dir / "my-async-agent.md").write_text(
+        "---\ndescription: test\nallowAsync: true\n---\nYou are a test agent."
+    )
+
+    project_agents = tmp_path / "project" / "config" / "agents"
+    project_agents.mkdir(parents=True)
+    monkeypatch.setattr(subagent, "_PROJECT_AGENTS_DIR", str(project_agents))
+    monkeypatch.setattr(subagent, "_USER_AGENTS_DIR", str(user_dir))
+
+    static_system, _ = subagent.build_subagent_system_segments("my-async-agent", allow_async=True)
+    assert "ask_main_agent" in static_system
+    assert "禁止把问题写在 content 里直接返回" in static_system
+
+
+def test_build_subagent_system_segments_no_inject_for_sync(tmp_path, monkeypatch):
+    """同步子 Agent 不注入 ask_main_agent 守则（没有 ask_main_agent 工具）"""
+    from agent import subagent
+
+    user_dir = tmp_path / "user" / "agents"
+    user_dir.mkdir(parents=True)
+    (user_dir / "my-sync-agent.md").write_text(
+        "---\ndescription: test\n---\nYou are a test agent."
+    )
+
+    project_agents = tmp_path / "project" / "config" / "agents"
+    project_agents.mkdir(parents=True)
+    monkeypatch.setattr(subagent, "_PROJECT_AGENTS_DIR", str(project_agents))
+    monkeypatch.setattr(subagent, "_USER_AGENTS_DIR", str(user_dir))
+
+    static_system, _ = subagent.build_subagent_system_segments("my-sync-agent", allow_async=False)
+    assert "禁止把问题写在 content 里直接返回" not in static_system
+
+
+def test_build_subagent_system_segments_no_inject_if_md_has_guide(tmp_path, monkeypatch):
+    """MD 正文已含 ask_main_agent 引导时不重复注入"""
+    from agent import subagent
+
+    user_dir = tmp_path / "user" / "agents"
+    user_dir.mkdir(parents=True)
+    # MD 正文已含 ask_main_agent 引导
+    (user_dir / "my-agent.md").write_text(
+        "---\ndescription: test\nallowAsync: true\n---\nYou are a test agent.\n\n遇到问题调 ask_main_agent 询问。"
+    )
+
+    project_agents = tmp_path / "project" / "config" / "agents"
+    project_agents.mkdir(parents=True)
+    monkeypatch.setattr(subagent, "_PROJECT_AGENTS_DIR", str(project_agents))
+    monkeypatch.setattr(subagent, "_USER_AGENTS_DIR", str(user_dir))
+
+    static_system, _ = subagent.build_subagent_system_segments("my-agent", allow_async=True)
+    # 不重复注入（关键词去重）
+    assert static_system.count("ask_main_agent") == 1  # MD 原文里的那次
