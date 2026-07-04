@@ -2,15 +2,20 @@
 # 子 Agent 配置模板
 # 复制此文件到 ~/.niu/agents/{name}.md 并填写以下字段
 # name 用 kebab-case（如 photo-organizer、doc-summarizer）
+# 字段格式参照 config/agents/file-processor.md
 
-description: ""        # 一句话描述子 Agent 的职责（必填，主 Agent 据此判断何时调用）
-mcpServers: []         # 该子 Agent 可用的 MCP 服务器列表（见下方"可用 MCP 服务器"）
-mcpToolFilter: null    # 可选：白名单过滤特定工具（如只用 photo-server 的 search_photos）
-allowAsync: false      # 是否允许异步调用（长时任务设为 true）
-permissions: []        # 权限声明（保留字段）
-taskDescription: ""    # 任务描述模板（主 Agent 调用时填的入参说明）
-disableBaseTools: false # 是否禁用基础工具
-temperature: null      # 可选：覆盖 LLM 温度
+name: ""                 # 子 Agent 名字（与文件名一致，kebab-case）
+description: ""          # 一句话描述子 Agent 的职责（必填，主 Agent 据此判断何时调用）
+mode: subagent           # 标识为子 Agent（固定值）
+temperature: 0.7         # 可选：覆盖 LLM 温度（0.0 严谨 / 0.7 创意）
+taskDescription: ""      # 任务描述模板（主 Agent 调用时填的入参说明）
+permissions:
+  '*': allow             # 权限声明，默认全部允许
+mcpServers: []           # 该子 Agent 可用的 MCP 服务器列表（见下方"可用 MCP 服务器"）
+mcpToolFilter: null      # 可选：按 server 分组的白名单 map（见下方说明）
+disableBaseTools: []     # 可选：禁用基础工具列表（如 [bash, code_run]）
+allowBaseTools: []       # 可选：从 disableBaseTools 解禁的工具列表
+allowAsync: false        # 是否允许异步调用（长时任务设为 true）
 ---
 
 # 提示词正文
@@ -19,12 +24,12 @@ temperature: null      # 可选：覆盖 LLM 温度
 - 子 Agent 的角色和职责边界
 - 工作流程（先做什么、再做什么）
 - 输出格式要求
-- **何时主动询问主 Agent**（异步模式下必须在正文写明 ask_main_agent 的使用时机，如"遇到用户意图不明确时调 ask_main_agent 询问，不要自行假设"——否则子 Agent 不会主动询问）
+- **何时主动询问主 Agent**（仅异步模式 allowAsync: true 时才会注入 ask_main_agent 工具；同步子 Agent 不注入。异步子 Agent 必须在正文写明 ask_main_agent 的使用时机，如"遇到用户意图不明确时调 ask_main_agent 询问，不要自行假设"——否则子 Agent 不会主动询问）
 - 何时该终止自己
 
 ## 可用 MCP 服务器
 
-主 Agent 创建子 Agent 时，从以下服务器中选择 `mcpServers` 字段：
+主 Agent 创建子 Agent 时，从以下服务器中选择 `mcpServers` 字段（必需服务器，启动时加载）：
 
 - `file-parser` — 文档解析（PDF/Word/PPT/Excel/MD/HTML）
 - `lightrag-server` — 知识图谱 + 向量检索
@@ -36,12 +41,28 @@ temperature: null      # 可选：覆盖 LLM 温度
 - `brain-region-server` — 脑区状态管理
 - `scheduler-server` — 定时任务调度
 
+可选服务器（见 `agent/mcp_loader.py` 的 `OPTIONAL_SERVERS`，按需启用）：
+
+- `ha-server` — Home Assistant 智能家居
+
+**维护提示**：MCP 服务器清单随项目演进更新，以 `agent/mcp_loader.py` 的 `REQUIRED_SERVERS` + `OPTIONAL_SERVERS` 为准。
+
 ## frontmatter 字段说明
 
+- `name`：子 Agent 名字（与文件名一致，kebab-case）
 - `description`（必填）：主 Agent 据此判断何时调用此子 Agent
-- `mcpServers`：MCP 服务器名字列表，子 Agent 只能用这些服务器的工具
-- `mcpToolFilter`：可选，进一步限制具体工具（如 `["photo-server/search_photos"]`）
-- `allowAsync`：true 时支持异步调用（主 Agent 调用后立即返回，子 Agent 后台跑）
-- `taskDescription`：主 Agent 调 `chat-with-{name}` 时 task 参数的描述
-- `disableBaseTools`：true 时禁用基础工具（如 disk 命令）
+- `mode`：固定 `subagent`，标识为子 Agent
 - `temperature`：覆盖 LLM 温度（0.0 严谨 / 0.7 创意）
+- `taskDescription`：主 Agent 调 `chat-with-{name}` 时 task 参数的描述
+- `permissions`：权限 map，格式 `{ '*': allow }` 默认全部允许
+- `mcpServers`：MCP 服务器名字列表，子 Agent 只能用这些服务器的工具
+- `mcpToolFilter`：可选，按 server 分组的白名单 map。格式示例：
+  ```yaml
+  mcpToolFilter:
+    lightrag-server:
+      - lightrag_insert
+      - lightrag_search_entities
+  ```
+- `disableBaseTools`：可选，禁用基础工具列表（如 `[bash, code_run, read, write, edit, grep]`）
+- `allowBaseTools`：可选，从 disableBaseTools 解禁的工具列表（黑名单中的例外）
+- `allowAsync`：true 时支持异步调用（主 Agent 调用后立即返回，子 Agent 后台跑；异步子 Agent 才会注入 ask_main_agent 工具）
