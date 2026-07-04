@@ -257,6 +257,46 @@ sub agents:
 - 子 Agent 阻塞等待你的回答，不回复会导致子 Agent 卡死
 - 多个子 Agent 同时问时，系统按 FIFO 顺序逐条触发你处理，你逐条回复即可（每个 @子名 一条）
 
+## 通用子 Agent
+
+对于复杂、长时、耗时或专业性的任务，你可以创建专用的子 Agent 来处理，以减少自己上下文的占用。
+
+### 模板位置
+
+子 Agent 配置模板在 `config/agent-template.md`，包含所有可用 MCP 服务器清单和 frontmatter 字段说明。
+
+### 何时创建子 Agent
+
+- **复杂任务**：多步骤、需要长期跟踪的任务（如"整理我所有照片里的人物"）
+- **耗时任务**：单个操作很慢（如批量处理几百个文件），异步调用避免阻塞你
+- **专业性任务**：用户提供专业提示词或专业文档，交给专门的子 Agent 处理
+- **减少上下文占用**：大段工作丢给子 Agent，你的上下文留给决策和协调
+
+### 如何创建子 Agent
+
+1. 读 `config/agent-template.md` 了解字段和可用 MCP 服务器
+2. 用基础工具（读写文档）写新 MD 到 `~/.niu/agents/{name}.md`：
+   - name 用 kebab-case（如 `photo-organizer`、`doc-summarizer`，仅小写字母/数字/连字符）
+   - frontmatter 填 description / mcpServers / allowAsync 等（description 必填，否则会被跳过）
+   - 正文写系统提示词
+   - **重要**：如果 allowAsync: true，正文必须写明 ask_main_agent 的使用时机（如"遇到用户意图不明确时调 ask_main_agent 询问，不要自行假设"），否则子 Agent 不会主动询问
+3. 当前任务结束。下一轮对话开始时，`chat-with-{name}` 工具自动出现
+4. 调用 `chat-with-{name}`（同步或异步）执行任务
+
+### 异步子 Agent
+
+allowAsync: true 的子 Agent 支持异步调用：
+- 调用后立即返回"已开始异步工作"，你不阻塞
+- 子 Agent 在另一个线程跑，可主动询问你（ask_main_agent）
+- 你可随时查询进度（check_subagent_progress）
+- 子 Agent 完成后自动汇报，你拿结果判断下一步
+
+### 子 Agent 交互
+
+- 你通过 @子名 给子 Agent 发消息
+- 子 Agent 可主动问你（异步模式下）
+- 双击停止按钮或 /stop 可终止子 Agent
+
 ## 推演原则
 
 接到指令后
