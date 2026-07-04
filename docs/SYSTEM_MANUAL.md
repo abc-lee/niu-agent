@@ -296,6 +296,67 @@ dream-evolver 修改 skill 时遵循 Skill-Aware Reflection 方法论：
 
 ---
 
+## 通用子 Agent 体系（阶段三）
+
+### 设计目标
+
+- 减少主 Agent 上下文占用（大段工作丢给子 Agent）
+- 支持长时任务（异步调用不阻塞主 Agent）
+- 支持专业性任务（用户提供专业提示词或文档）
+
+### 模板位置
+
+`config/agent-template.md`——子 Agent 配置模板，含所有可用 MCP 服务器清单和 frontmatter 字段说明。模板本身不被加载，仅供主 Agent 参考编写。
+
+### 配置目录
+
+- `config/agents/`——专用子 Agent（项目内置，启动加载），如 `file-processor.md`、`niu.md`
+- `~/.niu/agents/`——通用子 Agent（主 Agent 运行时创建，动态加载）
+
+同名时专用子 Agent 优先（`config/agents/` 先查）。
+
+### 动态加载机制
+
+程序在 `chat()` 入口（每次对话开始时）扫描 `~/.niu/agents/`，与 `NiuRunner._known_user_subagents` 集合对比，发现新 MD 文件就重算 `base_tools_schema`，新子 Agent 的 `chat-with-{name}` 工具自动出现。
+
+- 不用 watchdog / 定时器，复用现有动态组装机制
+- 主 Agent 写完 MD 后下一轮对话开始时工具才出现（自然时序）
+- YAML 解析失败的 MD 被跳过（不允许坏工具让主 Agent 看到）
+- 文件名必须 kebab-case（小写字母/数字/连字符），否则跳过
+
+### MCP 工具映射
+
+子 Agent 的 MCP 工具由 frontmatter `mcpServers` 字段指定（如 `mcpServers: [photo-server, lightrag-server]`）。加载时从已加载的全局 ToolRegistry 过滤，无需额外加载逻辑。如果 `mcpServers` 含未加载的服务器，对应工具缺失但不阻塞（log warning）。
+
+### 主 Agent 创建子 Agent 流程
+
+1. 主 Agent 读 `config/agent-template.md`
+2. 主 Agent 用基础工具（读写文档）写新 MD 到 `~/.niu/agents/{name}.md`
+3. 主 Agent 当前任务结束
+4. 下一轮 `chat()` 入口扫描发现新 MD → 重算 schema → `chat-with-{name}` 工具出现
+5. 主 Agent 调用 `chat-with-{name}`（同步或异步）
+
+### 同步 vs 异步调用
+
+- **同步**：主 Agent 阻塞等子 Agent 跑完拿结果。适合短时任务。
+- **异步**（`allowAsync: true` + `async_mode: true`）：立即返回"已开始异步工作"，子 Agent 后台跑。适合长时任务。异步子 Agent 完成后自动 push 完成汇报，触发主 Agent 新一轮 LLM 处理（拿结果判断下一步）。
+
+### 与阶段一+二的衔接
+
+- 阶段一：主子 Agent 通信通道（@消息路由、/stop 终止、双击停止）
+- 阶段二：异步调用 + ask_main_agent + check_subagent_progress + 内存队列 + 5 死锁约束
+- 阶段三：通用子 Agent 动态创建 + 加载
+
+通用子 Agent 完整复用阶段一+二的全部交互能力。
+
+### 维护注意事项
+
+- MCP 服务器清单变化时（新增/移除 MCP 服务器），同步更新 `config/agent-template.md` 的"可用 MCP 服务器"段
+- `mcp_loader.REQUIRED_SERVERS` 改动会影响子 Agent 可用工具，需检查现有通用子 Agent 的 `mcpServers` 字段是否仍有效
+- 用户清理 `~/.niu/agents/` 时，下一轮 `chat()` 入口扫描会自动移除对应工具
+
+详细分册见 [manual-general-subagent.md](manual-general-subagent.md)。
+
 ## 分册索引
 
 | 分册 | 文件 | 内容 |
@@ -312,3 +373,4 @@ dream-evolver 修改 skill 时遵循 Skill-Aware Reflection 方法论：
 | 智能家居开通 | [manual-ha-setup.md](manual-ha-setup.md) | Home Assistant 安装部署、长期访问令牌、设备集成、智能触发配置、故障排查 |
 | MCP与虚拟磁盘 | [manual-mcp-disk.md](manual-mcp-disk.md) | MCP 服务器同进程架构、新增服务器步骤、虚拟磁盘 YAML 配置格式、校验规则 |
 | IM Gateway 接入 | [manual-im-gateway.md](manual-im-gateway.md) | Gateway+Adapter 分离架构、TCP 协议、配置格式、目录规范、开发新 Adapter 步骤 |
+| 通用子 Agent | [manual-general-subagent.md](manual-general-subagent.md) | 阶段三通用子 Agent 体系：模板、动态加载、MCP 映射、创建流程、同步异步、与阶段一+二衔接 |
