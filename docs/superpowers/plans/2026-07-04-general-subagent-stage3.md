@@ -17,7 +17,7 @@
 | 文件 | 责任 | 操作 |
 |------|------|------|
 | `config/agent-template.md` | 子 Agent 配置模板 + 编写规则 + 可用 MCP 服务器清单 | Create |
-| `agent/subagent.py` | `_resolve_agent_md_path` 多目录查找 + `get_subagent_config` / `get_subagent_prompt` 改造 + `get_subagent_mcp_tools_schema` 失败时返回 `None` 标记坏工具 | Modify |
+| `agent/subagent.py` | `_resolve_agent_md_path` 多目录查找 + `get_subagent_config` / `get_subagent_prompt` 改造（坏 MD 在 `get_tools_schema` 层跳过，不改 `get_subagent_mcp_tools_schema` 返回值） | Modify |
 | `agent/runner.py` | `get_tools_schema` 扫描 `~/.niu/agents/` + 跳过坏 MD + `NiuRunner.__init__` 初始化 `_known_user_subagents` + `chat()` 入口加 `_refresh_base_tools_schema_if_dirty` | Modify |
 | `config/agents/niu.md` | 主 Agent 提示词加通用子 Agent 说明段 | Modify |
 | `AGENTS.md` | 系统管理手册加通用子 Agent 体系章节 | Modify |
@@ -56,7 +56,7 @@ temperature: null      # 可选：覆盖 LLM 温度
 - 子 Agent 的角色和职责边界
 - 工作流程（先做什么、再做什么）
 - 输出格式要求
-- 何时主动询问主 Agent（异步模式下用 ask_main_agent）
+- **何时主动询问主 Agent**（异步模式下必须在正文写明 ask_main_agent 的使用时机，如"遇到用户意图不明确时调 ask_main_agent 询问，不要自行假设"——否则子 Agent 不会主动询问）
 - 何时该终止自己
 
 ## 可用 MCP 服务器
@@ -132,11 +132,9 @@ def test_resolve_agent_md_path_project_priority(tmp_path, monkeypatch):
     (project_dir / "foo.md").write_text("---\ndescription: project\n---\nproject body")
     (user_dir / "foo.md").write_text("---\ndescription: user\n---\nuser body")
 
-    monkeypatch.setattr(
-        subagent, "__file__",
-        str(tmp_path / "project" / "agent" / "subagent.py")
-    )
-    monkeypatch.setattr("os.path.expanduser", lambda p: str(tmp_path / "user") if p == "~/.niu/agents" else p)
+    # patch 模块级常量（不依赖 __file__，更稳健）
+    monkeypatch.setattr(subagent, "_PROJECT_AGENTS_DIR", str(project_dir))
+    monkeypatch.setattr(subagent, "_USER_AGENTS_DIR", str(user_dir))
 
     path = subagent._resolve_agent_md_path("foo")
     assert path == str(project_dir / "foo.md")
@@ -153,11 +151,8 @@ def test_resolve_agent_md_path_user_fallback(tmp_path, monkeypatch):
 
     (user_dir / "bar.md").write_text("---\ndescription: user\n---\nuser body")
 
-    monkeypatch.setattr(
-        subagent, "__file__",
-        str(tmp_path / "project" / "agent" / "subagent.py")
-    )
-    monkeypatch.setattr("os.path.expanduser", lambda p: str(tmp_path / "user") if p == "~/.niu/agents" else p)
+    monkeypatch.setattr(subagent, "_PROJECT_AGENTS_DIR", str(project_dir))
+    monkeypatch.setattr(subagent, "_USER_AGENTS_DIR", str(user_dir))
 
     path = subagent._resolve_agent_md_path("bar")
     assert path == str(user_dir / "bar.md")
@@ -172,11 +167,8 @@ def test_resolve_agent_md_path_not_found(tmp_path, monkeypatch):
     project_dir.mkdir(parents=True)
     user_dir.mkdir(parents=True)
 
-    monkeypatch.setattr(
-        subagent, "__file__",
-        str(tmp_path / "project" / "agent" / "subagent.py")
-    )
-    monkeypatch.setattr("os.path.expanduser", lambda p: str(tmp_path / "user") if p == "~/.niu/agents" else p)
+    monkeypatch.setattr(subagent, "_PROJECT_AGENTS_DIR", str(project_dir))
+    monkeypatch.setattr(subagent, "_USER_AGENTS_DIR", str(user_dir))
 
     path = subagent._resolve_agent_md_path("missing")
     assert path is None
@@ -192,6 +184,13 @@ Expected: FAIL with `_resolve_agent_md_path not found` 或 `AttributeError`
 在 `agent/subagent.py` 的 `get_subagent_config` 函数之前（约 L295）加：
 
 ```python
+# 模块级常量（测试时可 patch，避免依赖 __file__ 计算路径）
+_PROJECT_AGENTS_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(__file__)), "config", "agents"
+)
+_USER_AGENTS_DIR = os.path.join(os.path.expanduser("~/.niu/agents"))
+
+
 def _resolve_agent_md_path(agent_name: str) -> Optional[str]:
     """查找子 Agent MD 文件路径。
 
@@ -205,14 +204,12 @@ def _resolve_agent_md_path(agent_name: str) -> Optional[str]:
         找到则返回绝对路径，找不到返回 None
     """
     # 项目目录（专用子 Agent）
-    project_path = os.path.join(
-        os.path.dirname(os.path.dirname(__file__)), "config", "agents", f"{agent_name}.md"
-    )
+    project_path = os.path.join(_PROJECT_AGENTS_DIR, f"{agent_name}.md")
     if os.path.exists(project_path):
         return project_path
 
     # 用户目录（通用子 Agent，主 Agent 运行时创建）
-    user_path = os.path.join(os.path.expanduser("~/.niu/agents"), f"{agent_name}.md")
+    user_path = os.path.join(_USER_AGENTS_DIR, f"{agent_name}.md")
     if os.path.exists(user_path):
         return user_path
 
@@ -257,12 +254,11 @@ def test_get_subagent_config_from_user_dir(tmp_path, monkeypatch):
         "---\ndescription: my agent\nmcpServers: [photo-server]\n---\nbody"
     )
 
-    monkeypatch.setattr(
-        subagent, "__file__",
-        str(tmp_path / "project" / "agent" / "subagent.py")
-    )
-    # 让项目目录不存在
-    monkeypatch.setattr("os.path.expanduser", lambda p: str(tmp_path / "user") if p == "~/.niu/agents" else p)
+    # 项目目录指向空目录（让 _resolve_agent_md_path 回退到用户目录）
+    project_dir = tmp_path / "project" / "config" / "agents"
+    project_dir.mkdir(parents=True)
+    monkeypatch.setattr(subagent, "_PROJECT_AGENTS_DIR", str(project_dir))
+    monkeypatch.setattr(subagent, "_USER_AGENTS_DIR", str(user_dir))
 
     config = subagent.get_subagent_config("my-agent")
     assert config["description"] == "my agent"
@@ -279,11 +275,10 @@ def test_get_subagent_prompt_from_user_dir(tmp_path, monkeypatch):
         "---\ndescription: my agent\n---\nYou are my agent."
     )
 
-    monkeypatch.setattr(
-        subagent, "__file__",
-        str(tmp_path / "project" / "agent" / "subagent.py")
-    )
-    monkeypatch.setattr("os.path.expanduser", lambda p: str(tmp_path / "user") if p == "~/.niu/agents" else p)
+    project_dir = tmp_path / "project" / "config" / "agents"
+    project_dir.mkdir(parents=True)
+    monkeypatch.setattr(subagent, "_PROJECT_AGENTS_DIR", str(project_dir))
+    monkeypatch.setattr(subagent, "_USER_AGENTS_DIR", str(user_dir))
 
     prompt = subagent.get_subagent_prompt("my-agent")
     assert prompt == "You are my agent."
@@ -293,11 +288,12 @@ def test_get_subagent_config_missing_returns_empty(tmp_path, monkeypatch):
     """MD 文件不存在时返回空 dict（保持现有行为）"""
     from agent import subagent
 
-    monkeypatch.setattr(
-        subagent, "__file__",
-        str(tmp_path / "project" / "agent" / "subagent.py")
-    )
-    monkeypatch.setattr("os.path.expanduser", lambda p: str(tmp_path / "user") if p == "~/.niu/agents" else p)
+    project_dir = tmp_path / "project" / "config" / "agents"
+    user_dir = tmp_path / "user" / "agents"
+    project_dir.mkdir(parents=True)
+    user_dir.mkdir(parents=True)
+    monkeypatch.setattr(subagent, "_PROJECT_AGENTS_DIR", str(project_dir))
+    monkeypatch.setattr(subagent, "_USER_AGENTS_DIR", str(user_dir))
 
     config = subagent.get_subagent_config("nonexistent")
     assert config == {}
@@ -410,16 +406,15 @@ def test_get_tools_schema_includes_user_agents(tmp_path, monkeypatch):
         "---\ndescription: 总结文档\nmcpServers: [file-parser]\n---\nbody"
     )
 
-    # 让 niu.md 加载走项目目录（避免找不到 niu.md）
+    # 项目目录指向 tmp（让 niu.md / file-processor.md 等基础工具加载走 tmp）
     project_dir = tmp_path / "project"
-    (project_dir / "config" / "agents").mkdir(parents=True)
-    (project_dir / "config" / "agents" / "niu.md").write_text(
-        "---\nsub agents: []\n---\nniu prompt"
-    )
+    project_agents = project_dir / "config" / "agents"
+    project_agents.mkdir(parents=True)
+    (project_agents / "niu.md").write_text("---\nsub agents: []\n---\nniu prompt")
 
-    monkeypatch.setattr(runner, "__file__", str(project_dir / "agent" / "runner.py"))
-    monkeypatch.setattr(subagent, "__file__", str(project_dir / "agent" / "subagent.py"))
-    monkeypatch.setattr("os.path.expanduser", lambda p: str(tmp_path / "user") if p == "~/.niu/agents" else p)
+    # patch 模块级常量（runner 和 subagent 都要 patch）
+    monkeypatch.setattr(subagent, "_PROJECT_AGENTS_DIR", str(project_agents))
+    monkeypatch.setattr(subagent, "_USER_AGENTS_DIR", str(user_dir))
 
     tools = runner.get_tools_schema()
     tool_names = [t["function"]["name"] for t in tools]
@@ -437,25 +432,76 @@ def test_get_tools_schema_skips_bad_md(tmp_path, monkeypatch):
     (user_dir / "good.md").write_text(
         "---\ndescription: good\nmcpServers: []\n---\nbody"
     )
-    # 坏 MD（YAML 格式错误，safe_load 返回 None 或抛异常）
+    # 坏 MD（YAML 解析抛 ScannerError——已实测 description: : invalid yaml 会触发）
     (user_dir / "bad.md").write_text(
         "---\ndescription: : invalid yaml\n---\nbody"
     )
 
     project_dir = tmp_path / "project"
-    (project_dir / "config" / "agents").mkdir(parents=True)
-    (project_dir / "config" / "agents" / "niu.md").write_text(
-        "---\nsub agents: []\n---\nniu prompt"
-    )
+    project_agents = project_dir / "config" / "agents"
+    project_agents.mkdir(parents=True)
+    (project_agents / "niu.md").write_text("---\nsub agents: []\n---\nniu prompt")
 
-    monkeypatch.setattr(runner, "__file__", str(project_dir / "agent" / "runner.py"))
-    monkeypatch.setattr(subagent, "__file__", str(project_dir / "agent" / "subagent.py"))
-    monkeypatch.setattr("os.path.expanduser", lambda p: str(tmp_path / "user") if p == "~/.niu/agents" else p)
+    monkeypatch.setattr(subagent, "_PROJECT_AGENTS_DIR", str(project_agents))
+    monkeypatch.setattr(subagent, "_USER_AGENTS_DIR", str(user_dir))
 
     tools = runner.get_tools_schema()
     tool_names = [t["function"]["name"] for t in tools]
     assert "chat-with-good" in tool_names
     assert "chat-with-bad" not in tool_names  # 坏 MD 被跳过
+
+
+def test_get_tools_schema_skips_non_kebab_name(tmp_path, monkeypatch):
+    """文件名含空格/大写/非 kebab-case 的 MD 被跳过（避免工具名不合法）"""
+    from agent import runner, subagent
+
+    user_dir = tmp_path / "user" / "agents"
+    user_dir.mkdir(parents=True)
+    # 合法 kebab-case
+    (user_dir / "good-agent.md").write_text("---\ndescription: good\n---\nbody")
+    # 非法：含空格
+    (user_dir / "bad agent.md").write_text("---\ndescription: bad space\n---\nbody")
+    # 非法：含大写
+    (user_dir / "BadCase.md").write_text("---\ndescription: bad case\n---\nbody")
+
+    project_dir = tmp_path / "project"
+    project_agents = project_dir / "config" / "agents"
+    project_agents.mkdir(parents=True)
+    (project_agents / "niu.md").write_text("---\nsub agents: []\n---\nniu prompt")
+
+    monkeypatch.setattr(subagent, "_PROJECT_AGENTS_DIR", str(project_agents))
+    monkeypatch.setattr(subagent, "_USER_AGENTS_DIR", str(user_dir))
+
+    tools = runner.get_tools_schema()
+    tool_names = [t["function"]["name"] for t in tools]
+    assert "chat-with-good-agent" in tool_names
+    assert "chat-with-bad agent" not in tool_names  # 空格非法
+    assert "chat-with-BadCase" not in tool_names  # 大写非法
+
+
+def test_get_tools_schema_skips_empty_frontmatter(tmp_path, monkeypatch):
+    """空 frontmatter（无 description）的 MD 被跳过（视为无效子 Agent）"""
+    from agent import runner, subagent
+
+    user_dir = tmp_path / "user" / "agents"
+    user_dir.mkdir(parents=True)
+    # 合法带 description
+    (user_dir / "good.md").write_text("---\ndescription: good\n---\nbody")
+    # 空 frontmatter（yaml.safe_load 返回 None → get_subagent_config 返回 {}）
+    (user_dir / "empty.md").write_text("---\n---\nbody")
+
+    project_dir = tmp_path / "project"
+    project_agents = project_dir / "config" / "agents"
+    project_agents.mkdir(parents=True)
+    (project_agents / "niu.md").write_text("---\nsub agents: []\n---\nniu prompt")
+
+    monkeypatch.setattr(subagent, "_PROJECT_AGENTS_DIR", str(project_agents))
+    monkeypatch.setattr(subagent, "_USER_AGENTS_DIR", str(user_dir))
+
+    tools = runner.get_tools_schema()
+    tool_names = [t["function"]["name"] for t in tools]
+    assert "chat-with-good" in tool_names
+    assert "chat-with-empty" not in tool_names  # 空 frontmatter 被跳过
 
 
 def test_get_tools_schema_dedup(tmp_path, monkeypatch):
@@ -479,9 +525,8 @@ def test_get_tools_schema_dedup(tmp_path, monkeypatch):
         "---\ndescription: user shared\n---\nuser body"
     )
 
-    monkeypatch.setattr(runner, "__file__", str(project_dir / "agent" / "runner.py"))
-    monkeypatch.setattr(subagent, "__file__", str(project_dir / "agent" / "subagent.py"))
-    monkeypatch.setattr("os.path.expanduser", lambda p: str(tmp_path / "user") if p == "~/.niu/agents" else p)
+    monkeypatch.setattr(subagent, "_PROJECT_AGENTS_DIR", str(project_agents))
+    monkeypatch.setattr(subagent, "_USER_AGENTS_DIR", str(user_dir))
 
     tools = runner.get_tools_schema()
     shared_tools = [t for t in tools if t["function"]["name"] == "chat-with-shared"]
@@ -493,13 +538,19 @@ def test_get_tools_schema_dedup(tmp_path, monkeypatch):
 - [ ] **Step 2: 运行测试确认失败**
 
 Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_general_subagent.py -v`
-Expected: 3 个新测试 FAIL（现有 `get_tools_schema` 不扫 `~/.niu/agents/`）
+Expected: 5 个新测试 FAIL（现有 `get_tools_schema` 不扫 `~/.niu/agents/`）
 
 - [ ] **Step 3: 改造 `get_tools_schema`**
 
 把 `agent/runner.py:243-330` 的 `get_tools_schema` 整体替换为：
 
 ```python
+import re as _re
+
+# kebab-case 校验正则（小写字母/数字/连字符，且不以连字符开头/结尾）
+_KEBAB_CASE_RE = _re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+
+
 def get_tools_schema() -> list:
     """获取工具 Schema（从 JSON 文件加载 + 注册子 Agent 工具）
 
@@ -507,9 +558,17 @@ def get_tools_schema() -> list:
     1. config/agents/niu.md 的 sub agents 字段（专用子 Agent）
     2. ~/.niu/agents/*.md 扫描（通用子 Agent，主 Agent 运行时创建）
 
-    YAML 解析失败的 MD 被跳过（方式 B：不允许坏工具让主 Agent 看到）。
-    重算返回完整 base 集（含基础工具 + MCP 工具 + 所有 chat-with-* + check_subagent_progress）。
+    跳过条件（方式 B：不允许坏工具让主 Agent 看到）：
+    - 文件名非 kebab-case（避免工具名含空格/大写）
+    - MD 文件不存在
+    - frontmatter 为空或解析失败（YAML 错误）
+    - description 字段缺失（视为无效子 Agent）
+
+    重算返回完整 base 集（基础工具 + MCP 工具 + 所有 chat-with-* + check_subagent_progress）。
     """
+    from .subagent import get_subagent_config, _resolve_agent_md_path, _USER_AGENTS_DIR
+    from .tool_registry import get_registry
+
     script_dir = os.path.dirname(os.path.abspath(__file__))
     schema_path = os.path.join(script_dir, "generic", "assets", "tools_schema.json")
 
@@ -519,7 +578,6 @@ def get_tools_schema() -> list:
             tools = json.load(f)
 
     # 1. 从 niu.md 读专用子 Agent 名单
-    from .subagent import get_subagent_config
     try:
         niu_config = get_subagent_config("niu")
         sub_agents = list(niu_config.get("sub agents", []))
@@ -528,38 +586,73 @@ def get_tools_schema() -> list:
         sub_agents = []
 
     # 2. 扫描 ~/.niu/agents/*.md 加通用子 Agent 名单
-    user_agents_dir = os.path.expanduser("~/.niu/agents")
     user_agent_names = []
-    if os.path.isdir(user_agents_dir):
-        for fname in os.listdir(user_agents_dir):
-            if fname.endswith(".md") and not fname.startswith("_"):
-                user_agent_names.append(os.path.splitext(fname)[0])
+    if os.path.isdir(_USER_AGENTS_DIR):
+        for fname in os.listdir(_USER_AGENTS_DIR):
+            if not fname.endswith(".md") or fname.startswith("_"):
+                continue
+            # 跳过子目录（仅处理文件）
+            fpath = os.path.join(_USER_AGENTS_DIR, fname)
+            if not os.path.isfile(fpath):
+                continue
+            user_agent_names.append(os.path.splitext(fname)[0])
 
     # 3. 合并去重（保序：专用在前，通用在后）
     all_subagents = list(dict.fromkeys(sub_agents + user_agent_names))
 
-    # 4. 为每个名字生成 chat-with-{name} schema
-    for agent_name in all_subagents:
-        try:
-            agent_config = get_subagent_config(agent_name)
-        except Exception as e:
-            logger.warning(f"Failed to load sub-agent '{agent_name}' config: {e}")
-            agent_config = {}
+    # 4. 收集已加载的 MCP 服务器名（用于 warning 提示）
+    try:
+        registry = get_registry()
+        loaded_servers = set(registry.get_servers())  # 假设有此方法；若无则跳过 warning
+    except Exception:
+        loaded_servers = None  # 不做 warning
 
-        # 方式 B：YAML 解析失败时 get_subagent_config 返回 {}，
-        # 但我们要更严格——检查 MD 文件是否存在且 frontmatter 有效
-        from .subagent import _resolve_agent_md_path
+    # 5. 为每个名字生成 chat-with-{name} schema
+    for agent_name in all_subagents:
+        # 5a. 文件名 kebab-case 校验
+        if not _KEBAB_CASE_RE.match(agent_name):
+            logger.warning(
+                f"Sub-agent '{agent_name}' name not kebab-case, skipping "
+                f"(use lowercase + hyphens like 'photo-organizer')"
+            )
+            continue
+
+        # 5b. MD 文件存在性
         md_path = _resolve_agent_md_path(agent_name)
         if md_path is None:
             logger.warning(f"Sub-agent '{agent_name}' MD file not found, skipping")
             continue
 
-        # 验证 frontmatter 有效（非空 dict）
-        if not agent_config:
-            logger.warning(f"Sub-agent '{agent_name}' has empty/invalid frontmatter, skipping (bad MD)")
+        # 5c. frontmatter 解析
+        try:
+            agent_config = get_subagent_config(agent_name)
+        except Exception as e:
+            logger.warning(f"Sub-agent '{agent_name}' config parse error: {e}, skipping")
             continue
 
-        desc = agent_config.get("description", f"子 Agent: {agent_name}")
+        # 5d. frontmatter 非空 + description 存在
+        if not agent_config:
+            logger.warning(
+                f"Sub-agent '{agent_name}' has empty/invalid frontmatter, skipping (bad MD)"
+            )
+            continue
+        if "description" not in agent_config or not agent_config["description"]:
+            logger.warning(
+                f"Sub-agent '{agent_name}' missing description field, skipping"
+            )
+            continue
+
+        # 5e. MCP 服务器未加载 warning（不阻塞）
+        mcp_servers = agent_config.get("mcpServers", []) or []
+        if loaded_servers is not None:
+            for s in mcp_servers:
+                if s not in loaded_servers:
+                    logger.warning(
+                        f"Sub-agent '{agent_name}' references unloaded MCP server '{s}', "
+                        f"its tools will be unavailable"
+                    )
+
+        desc = agent_config.get("description")
         task_desc = agent_config.get("taskDescription", "描述要委托给子Agent执行的任务")
 
         # 阶段二：根据 allowAsync 决定是否暴露 async_mode
@@ -596,6 +689,33 @@ def get_tools_schema() -> list:
                 },
             }
         )
+
+    # 阶段二：主 Agent 的 check_subagent_progress 工具
+    tools.append({
+        "type": "function",
+        "function": {
+            "name": "check_subagent_progress",
+            "description": (
+                "查看异步子 Agent 的进度。返回子 Agent 最近一轮 LLM 对话（请求摘要、回复、当前轮次、最近工具）。"
+                "用于监控后台运行的子 Agent。同步子 Agent 无进度数据。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "subagent_name": {
+                        "type": "string",
+                        "description": "子 Agent 唯一名（如 file-processor-a1b2，来自派单确认或动态注入区）",
+                    },
+                },
+                "required": ["subagent_name"],
+            },
+        },
+    })
+
+    return tools
+```
+
+**注意**：实现前需确认 `tool_registry.py` 是否有 `get_servers()` 方法。如果没有，把第 4 步的 `loaded_servers` 收集逻辑改为：扫 `mcp_loader.REQUIRED_SERVERS` + `OPTIONAL_SERVERS` 常量，或直接跳过 MCP warning（`loaded_servers = None`）。如果改为跳过 warning，删掉第 5e 步。
 
     # 阶段二：主 Agent 的 check_subagent_progress 工具
     tools.append({
@@ -663,14 +783,15 @@ def test_niu_runner_init_known_user_subagents(tmp_path, monkeypatch):
     user_dir.mkdir(parents=True)
     (user_dir / "foo.md").write_text("---\ndescription: foo\n---\nbody")
     (user_dir / "bar.md").write_text("---\ndescription: bar\n---\nbody")
+    # 非法名文件不应计入（但此处只验证集合内容，跳过校验是 get_tools_schema 的事）
+    (user_dir / "_skip.md").write_text("---\ndescription: skip\n---\nbody")
 
-    project_dir = tmp_path / "project"
-    (project_dir / "config" / "agents").mkdir(parents=True)
-    (project_dir / "config" / "agents" / "niu.md").write_text("---\n---\nniu prompt")
+    project_agents = tmp_path / "project" / "config" / "agents"
+    project_agents.mkdir(parents=True)
+    (project_agents / "niu.md").write_text("---\n---\nniu prompt")
 
-    monkeypatch.setattr(runner, "__file__", str(project_dir / "agent" / "runner.py"))
-    monkeypatch.setattr(subagent, "__file__", str(project_dir / "agent" / "subagent.py"))
-    monkeypatch.setattr("os.path.expanduser", lambda p: str(tmp_path / "user") if p == "~/.niu/agents" else p)
+    monkeypatch.setattr(subagent, "_PROJECT_AGENTS_DIR", str(project_agents))
+    monkeypatch.setattr(subagent, "_USER_AGENTS_DIR", str(user_dir))
 
     # mock LLM config 避免实际初始化 client
     llm_config = {"model": "test", "api_key": "test", "base_url": "http://localhost"}
@@ -680,13 +801,36 @@ def test_niu_runner_init_known_user_subagents(tmp_path, monkeypatch):
          mock.patch.object(runner, "get_skill_sync"), \
          mock.patch.object(runner, "get_registry"):
         r = runner.NiuRunner(llm_config)
+    # 显式断言集合内容（不只是长度）
     assert r._known_user_subagents == {"foo.md", "bar.md"}
+
+
+def test_niu_runner_init_known_user_subagents_no_dir(tmp_path, monkeypatch):
+    """~/.niu/agents/ 不存在时初始化为空集合"""
+    from agent import runner, subagent
+
+    project_agents = tmp_path / "project" / "config" / "agents"
+    project_agents.mkdir(parents=True)
+    (project_agents / "niu.md").write_text("---\n---\nniu prompt")
+
+    # 用户目录指向不存在的路径
+    monkeypatch.setattr(subagent, "_PROJECT_AGENTS_DIR", str(project_agents))
+    monkeypatch.setattr(subagent, "_USER_AGENTS_DIR", str(tmp_path / "nonexistent"))
+
+    llm_config = {"model": "test", "api_key": "test", "base_url": "http://localhost"}
+    with mock.patch.object(runner.NiuRunner, "_build_static_system_prompt", return_value=""), \
+         mock.patch.object(runner.NiuRunner, "_build_disk_description", return_value=""), \
+         mock.patch.object(runner, "create_client", return_value=None), \
+         mock.patch.object(runner, "get_skill_sync"), \
+         mock.patch.object(runner, "get_registry"):
+        r = runner.NiuRunner(llm_config)
+    assert r._known_user_subagents == set()
 ```
 
 - [ ] **Step 2: 运行测试确认失败**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_general_subagent.py::test_niu_runner_init_known_user_subagents -v`
-Expected: FAIL with `AttributeError: _known_user_subagents`
+Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_general_subagent.py -v -k "niu_runner_init"`
+Expected: 2 个测试 FAIL with `AttributeError: _known_user_subagents`
 
 - [ ] **Step 3: 在 `NiuRunner.__init__` 加初始化**
 
@@ -695,10 +839,10 @@ Expected: FAIL with `AttributeError: _known_user_subagents`
 ```python
         # 阶段三：跟踪 ~/.niu/agents/ 已知子 Agent 文件集合
         # chat() 入口用此集合判断是否需要重算 base_tools_schema
-        user_agents_dir = os.path.expanduser("~/.niu/agents")
-        if os.path.isdir(user_agents_dir):
+        from .subagent import _USER_AGENTS_DIR
+        if os.path.isdir(_USER_AGENTS_DIR):
             self._known_user_subagents = {
-                f for f in os.listdir(user_agents_dir)
+                f for f in os.listdir(_USER_AGENTS_DIR)
                 if f.endswith(".md") and not f.startswith("_")
             }
         else:
@@ -707,8 +851,8 @@ Expected: FAIL with `AttributeError: _known_user_subagents`
 
 - [ ] **Step 4: 运行测试确认通过**
 
-Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_general_subagent.py::test_niu_runner_init_known_user_subagents -v`
-Expected: PASS
+Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_general_subagent.py -v -k "niu_runner_init"`
+Expected: PASS（2 个测试全过）
 
 - [ ] **Step 5: Commit**
 
@@ -741,13 +885,12 @@ def test_refresh_base_tools_schema_if_dirty_no_change(tmp_path, monkeypatch):
     user_dir.mkdir(parents=True)
     (user_dir / "foo.md").write_text("---\ndescription: foo\n---\nbody")
 
-    project_dir = tmp_path / "project"
-    (project_dir / "config" / "agents").mkdir(parents=True)
-    (project_dir / "config" / "agents" / "niu.md").write_text("---\n---\nniu prompt")
+    project_agents = tmp_path / "project" / "config" / "agents"
+    project_agents.mkdir(parents=True)
+    (project_agents / "niu.md").write_text("---\n---\nniu prompt")
 
-    monkeypatch.setattr(runner, "__file__", str(project_dir / "agent" / "runner.py"))
-    monkeypatch.setattr(subagent, "__file__", str(project_dir / "agent" / "subagent.py"))
-    monkeypatch.setattr("os.path.expanduser", lambda p: str(tmp_path / "user") if p == "~/.niu/agents" else p)
+    monkeypatch.setattr(subagent, "_PROJECT_AGENTS_DIR", str(project_agents))
+    monkeypatch.setattr(subagent, "_USER_AGENTS_DIR", str(user_dir))
 
     llm_config = {"model": "test", "api_key": "test", "base_url": "http://localhost"}
     with mock.patch.object(runner.NiuRunner, "_build_static_system_prompt", return_value=""), \
@@ -763,20 +906,19 @@ def test_refresh_base_tools_schema_if_dirty_no_change(tmp_path, monkeypatch):
 
 
 def test_refresh_base_tools_schema_if_dirty_new_file(tmp_path, monkeypatch):
-    """有新 MD 文件时重算 base_tools_schema"""
+    """有新 MD 文件时重算 base_tools_schema，且返回完整 base 集（含 check_subagent_progress）"""
     from agent import runner, subagent
 
     user_dir = tmp_path / "user" / "agents"
     user_dir.mkdir(parents=True)
     (user_dir / "foo.md").write_text("---\ndescription: foo\n---\nbody")
 
-    project_dir = tmp_path / "project"
-    (project_dir / "config" / "agents").mkdir(parents=True)
-    (project_dir / "config" / "agents" / "niu.md").write_text("---\n---\nniu prompt")
+    project_agents = tmp_path / "project" / "config" / "agents"
+    project_agents.mkdir(parents=True)
+    (project_agents / "niu.md").write_text("---\n---\nniu prompt")
 
-    monkeypatch.setattr(runner, "__file__", str(project_dir / "agent" / "runner.py"))
-    monkeypatch.setattr(subagent, "__file__", str(project_dir / "agent" / "subagent.py"))
-    monkeypatch.setattr("os.path.expanduser", lambda p: str(tmp_path / "user") if p == "~/.niu/agents" else p)
+    monkeypatch.setattr(subagent, "_PROJECT_AGENTS_DIR", str(project_agents))
+    monkeypatch.setattr(subagent, "_USER_AGENTS_DIR", str(user_dir))
 
     llm_config = {"model": "test", "api_key": "test", "base_url": "http://localhost"}
     with mock.patch.object(runner.NiuRunner, "_build_static_system_prompt", return_value=""), \
@@ -786,26 +928,29 @@ def test_refresh_base_tools_schema_if_dirty_new_file(tmp_path, monkeypatch):
          mock.patch.object(runner, "get_registry"):
         r = runner.NiuRunner(llm_config)
 
+    original_len = len(r.base_tools_schema)
     # 新建一个 MD 文件
     (user_dir / "bar.md").write_text("---\ndescription: bar\n---\nbody")
 
     r._refresh_base_tools_schema_if_dirty()
     tool_names = [t["function"]["name"] for t in r.base_tools_schema]
     assert "chat-with-bar" in tool_names  # 新子 Agent 已加入
+    assert "chat-with-foo" in tool_names  # 原有子 Agent 仍在
+    assert "check_subagent_progress" in tool_names  # 阶段二工具仍在（完整 base 集）
+    assert len(r.base_tools_schema) == original_len + 1  # 仅 +1（新增 bar）
 
 
 def test_refresh_base_tools_schema_if_dirty_no_dir(tmp_path, monkeypatch):
     """~/.niu/agents/ 不存在时跳过"""
     from agent import runner, subagent
 
-    project_dir = tmp_path / "project"
-    (project_dir / "config" / "agents").mkdir(parents=True)
-    (project_dir / "config" / "agents" / "niu.md").write_text("---\n---\nniu prompt")
+    project_agents = tmp_path / "project" / "config" / "agents"
+    project_agents.mkdir(parents=True)
+    (project_agents / "niu.md").write_text("---\n---\nniu prompt")
 
-    monkeypatch.setattr(runner, "__file__", str(project_dir / "agent" / "runner.py"))
-    monkeypatch.setattr(subagent, "__file__", str(project_dir / "agent" / "subagent.py"))
     # 用户目录指向不存在的路径
-    monkeypatch.setattr("os.path.expanduser", lambda p: str(tmp_path / "nonexistent") if p == "~/.niu/agents" else p)
+    monkeypatch.setattr(subagent, "_PROJECT_AGENTS_DIR", str(project_agents))
+    monkeypatch.setattr(subagent, "_USER_AGENTS_DIR", str(tmp_path / "nonexistent"))
 
     llm_config = {"model": "test", "api_key": "test", "base_url": "http://localhost"}
     with mock.patch.object(runner.NiuRunner, "_build_static_system_prompt", return_value=""), \
@@ -827,7 +972,7 @@ Expected: 3 个测试 FAIL（`_refresh_base_tools_schema_if_dirty` 方法不存�
 
 - [ ] **Step 3: 实现 `_refresh_base_tools_schema_if_dirty` 方法**
 
-在 `NiuRunner` 类内（`__init__` 之后，约 L490 附近）加：
+在 `NiuRunner` 类内（`__init__` 方法之后，作为独立方法）加：
 
 ```python
     def _refresh_base_tools_schema_if_dirty(self):
@@ -836,12 +981,12 @@ Expected: 3 个测试 FAIL（`_refresh_base_tools_schema_if_dirty` 方法不存�
         重算返回完整 base 集（基础工具 + MCP 工具 + 所有 chat-with-* + check_subagent_progress），
         不是差量重算。无变化时不重算（保持对象引用稳定，避免无谓拷贝）。
         """
-        user_agents_dir = os.path.expanduser("~/.niu/agents")
-        if not os.path.isdir(user_agents_dir):
+        from .subagent import _USER_AGENTS_DIR
+        if not os.path.isdir(_USER_AGENTS_DIR):
             return
 
         current_files = {
-            f for f in os.listdir(user_agents_dir)
+            f for f in os.listdir(_USER_AGENTS_DIR)
             if f.endswith(".md") and not f.startswith("_")
         }
 
@@ -932,9 +1077,10 @@ Expected: 列出现有所有 `##` 标题，找到合适插入位置（如"子 Ag
 
 1. 读 `config/agent-template.md` 了解字段和可用 MCP 服务器
 2. 用基础工具（读写文档）写新 MD 到 `~/.niu/agents/{name}.md`：
-   - name 用 kebab-case（如 `photo-organizer`、`doc-summarizer`）
-   - frontmatter 填 description / mcpServers / allowAsync 等
+   - name 用 kebab-case（如 `photo-organizer`、`doc-summarizer`，仅小写字母/数字/连字符）
+   - frontmatter 填 description / mcpServers / allowAsync 等（description 必填，否则会被跳过）
    - 正文写系统提示词
+   - **重要**：如果 allowAsync: true，正文必须写明 ask_main_agent 的使用时机（如"遇到用户意图不明确时调 ask_main_agent 询问，不要自行假设"），否则子 Agent 不会主动询问
 3. 当前任务结束。下一轮对话开始时，`chat-with-{name}` 工具自动出现
 4. 调用 `chat-with-{name}`（同步或异步）执行任务
 
@@ -1166,6 +1312,14 @@ Expected:
 - `chat-with-bad` 工具不出现在主 Agent 工具列表
 - 其他正常子 Agent 不受影响
 
+验证命令：
+
+```bash
+grep "Sub-agent 'bad' has empty/invalid frontmatter" logs/api_stderr.log | tail -1
+```
+
+Expected: 输出一行日志，证明坏 MD 被识别并跳过。
+
 - [ ] **Step 10: 清理验证环境**
 
 ```bash
@@ -1176,14 +1330,48 @@ if [ -d ~/.niu/agents.backup.* ]; then
 fi
 ```
 
-- [ ] **Step 11: 记录验证结果**
+- [ ] **Step 11: 记录验证结果到独立文件**
 
-在 `docs/superpowers/plans/2026-07-04-general-subagent-stage3.md` 末尾追加"端到端验证结果"段，记录每步实际表现 + 截图/日志关键片段。
-
-- [ ] **Step 12: Commit 验证记录**
+新建 `docs/superpowers/verification-reports/2026-07-04-stage3-e2e.md`（不修改 plan 文件本身，避免违反 CLAUDE.md 铁律 3）：
 
 ```bash
-git add docs/superpowers/plans/2026-07-04-general-subagent-stage3.md
+mkdir -p docs/superpowers/verification-reports
+```
+
+文件内容模板：
+
+```markdown
+# 阶段三端到端验证报告
+
+**日期**：2026-07-04
+**验证人**：（填写）
+**程序版本**：commit（填写）
+
+## 验证步骤与结果
+
+| Step | 验证内容 | 实际表现 | 通过 |
+|------|----------|----------|------|
+| 3 | 主 Agent 创建子 Agent | （填实际日志/截图） | ✅/❌ |
+| 4 | 新子 Agent 工具出现 | | ✅/❌ |
+| 5 | ask_main_agent 询问 | | ✅/❌ |
+| 6 | check_subagent_progress | | ✅/❌ |
+| 7 | /stop 终止不死锁 | | ✅/❌ |
+| 8 | 完成汇报触发新一轮 | | ✅/❌ |
+| 9 | 坏 MD 被跳过 | | ✅/❌ |
+
+## 关键日志/截图
+
+（粘贴关键日志片段或截图路径）
+
+## 发现的问题
+
+（如有，列出现象 + 复现步骤 + 影响）
+```
+
+- [ ] **Step 12: Commit 验证报告**
+
+```bash
+git add docs/superpowers/verification-reports/2026-07-04-stage3-e2e.md
 git commit -m "test(e2e): 阶段三端到端验证通过
 
 串联阶段一+二+三全部能力：创建子 Agent、动态加载、ask_main_agent、
