@@ -532,13 +532,56 @@ def test_no_interception_when_tool_calls_present(monkeypatch):
     )
 
     assert result == agent_loop.NO_INTERCEPTION
+
+
+def test_at_niu_without_question_returns_format_error(monkeypatch):
+    """@niu 后无问题内容时返回 FORMAT_ERROR"""
+    from agent.generic import agent_loop
+
+    fake_handler = mock.MagicMock()
+    fake_handler._subagent_unique_name = "test-agent-abc1"
+    messages = [{"role": "user", "content": "开始"}]
+
+    result = agent_loop._intercept_at_prefix_content(
+        content="@niu",  # @niu 后无内容
+        tool_calls=[],
+        messages=messages,
+        handler=fake_handler,
+        memory_context=mock.MagicMock(),
+    )
+
+    assert result == agent_loop.FORMAT_ERROR
+    # messages 被追加格式错误提示
+    assert messages[-1]["role"] == "user"
+    assert "对话格式错误" in messages[-1]["content"]
+
+
+def test_at_niu_without_unique_name_returns_format_error(monkeypatch):
+    """handler 无 _subagent_unique_name 时返回 FORMAT_ERROR"""
+    from agent.generic import agent_loop
+
+    fake_handler = mock.MagicMock()
+    fake_handler._subagent_unique_name = ""  # 空 unique_name
+    messages = [{"role": "user", "content": "开始"}]
+
+    result = agent_loop._intercept_at_prefix_content(
+        content="@niu 问题",
+        tool_calls=[],
+        messages=messages,
+        handler=fake_handler,
+        memory_context=mock.MagicMock(),
+    )
+
+    assert result == agent_loop.FORMAT_ERROR
+    assert messages[-1]["role"] == "user"
+    assert "对话格式错误" in messages[-1]["content"]
 ```
 
 - [ ] **Step 2: 运行测试确认失败**
 
 Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_at_prefix_interception.py -v`
 
-Expected: 6 个测试 FAIL（`_intercept_at_prefix_content` 函数不存在）。
+Expected: 8 个测试 FAIL（`_intercept_at_prefix_content` 函数不存在）。
 
 - [ ] **Step 3: 在 agent_loop.py 模块级加常量 + 函数**
 
@@ -638,7 +681,7 @@ def _intercept_at_prefix_content(
 
 Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python -m pytest tests/test_at_prefix_interception.py -v`
 
-Expected: 6 个测试全过（含 Task 4 的 2 个 + Task 5 的 6 个 = 8 个）。
+Expected: 8 个测试全过（含 Task 4 的 2 个 + Task 5 的 8 个 = 10 个）。
 
 - [ ] **Step 5: Commit**
 
@@ -784,6 +827,14 @@ Read `REDACTED_USER_PATH/tools/ai-bot/agent/generic/agent_loop.py` L470-490 附�
 - 拦截函数**无 `agent_name` 参数**（`_ask_main_agent_impl` 签名只需 question + unique_name）
 - `@end` 剥前缀用 `content.lstrip()[4:].lstrip()`，兼容 `@end任务` 和 `@end 任务` 两种形式
 - FORMAT_ERROR 分支重置 `_harness_fail_count = 0`，避免格式错误累计影响后续 validate_references
+- `@niu` 时 `continue` 不推前端（问题已转给主 Agent，前端不该看到子 Agent 的提问）
+- `@end` 时剥前缀后推前端，避免用户看到 `@end` 标记
+
+**verbose 分支风险说明**：
+- 拦截层只加在 `else:`（非 verbose）分支的 `if not response.tool_calls:` 处
+- verbose 分支（L463-465 `yield from response_gen`）不拦截
+- **风险可控**：`agent/subagent.py:255` 子 Agent 调 `_run_agent_loop` 时显式传 `verbose=False`，所以子 Agent 走非 verbose 分支，拦截层生效
+- **未来维护**：若有人改子 Agent 默认 verbose=True，需同步在 verbose 分支加拦截逻辑
 - `@niu` 时 `continue` 不推前端（问题已转给主 Agent，前端不该看到子 Agent 的提问）
 - `@end` 时剥前缀后推前端，避免用户看到 `@end` 标记
 
