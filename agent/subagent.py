@@ -80,6 +80,10 @@ _ASYNC_ASK_GUIDE_TEMPLATE = """
 其他任何"需要更多信息才能继续"的情况，一律调 ask_main_agent。
 """
 
+# 守则段标题，用作去重 marker（替代裸子串 "ask_main_agent"）
+# 避免误判 MD 软引导（如"使用 ask_main_agent 功能询问"）为已含守则
+_ASYNC_ASK_GUIDE_MARKER = "## 异步询问主 Agent 规则"
+
 
 def count_tokens_for_text(text: str) -> int:
     """
@@ -426,7 +430,7 @@ def build_subagent_system_segments(agent_name: str, allow_async: bool = False) -
     # 4. 异步子 Agent 强制注入 ask_main_agent 使用守则
     #    大模型训练时默认"向用户提问写 content"，但我们的子 Agent 直接返回 = 退出
     #    必须靠程序结构注入，不依赖主 Agent 自觉写 MD 引导
-    if allow_async and "ask_main_agent" not in static_system:
+    if allow_async and _ASYNC_ASK_GUIDE_MARKER not in static_system:
         static_system += "\n\n" + _ASYNC_ASK_GUIDE_TEMPLATE
 
     # 5. 动态段：Current Time

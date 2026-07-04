@@ -463,14 +463,14 @@ def test_build_subagent_system_segments_no_inject_for_sync(tmp_path, monkeypatch
 
 
 def test_build_subagent_system_segments_no_inject_if_md_has_guide(tmp_path, monkeypatch):
-    """MD 正文已含 ask_main_agent 引导时不重复注入"""
+    """MD 正文已含守则标题（## 异步询问主 Agent 规则）时不重复注入"""
     from agent import subagent
 
     user_dir = tmp_path / "user" / "agents"
     user_dir.mkdir(parents=True)
-    # MD 正文已含 ask_main_agent 引导
+    # MD 正文已含守则标题（自定义守则）
     (user_dir / "my-agent.md").write_text(
-        "---\ndescription: test\nallowAsync: true\n---\nYou are a test agent.\n\n遇到问题调 ask_main_agent 询问。"
+        "---\ndescription: test\nallowAsync: true\n---\nYou are a test agent.\n\n## 异步询问主 Agent 规则\n\n自定义守则内容。"
     )
 
     project_agents = tmp_path / "project" / "config" / "agents"
@@ -479,5 +479,35 @@ def test_build_subagent_system_segments_no_inject_if_md_has_guide(tmp_path, monk
     monkeypatch.setattr(subagent, "_USER_AGENTS_DIR", str(user_dir))
 
     static_system, _ = subagent.build_subagent_system_segments("my-agent", allow_async=True)
-    # 不重复注入（关键词去重）
-    assert static_system.count("ask_main_agent") == 1  # MD 原文里的那次
+    # 不重复注入（含 marker 标题，去重命中）
+    assert static_system.count("## 异步询问主 Agent 规则") == 1  # MD 原文里的那份
+
+
+def test_build_subagent_system_segments_injects_when_md_has_soft_guide(tmp_path, monkeypatch):
+    """MD 含 ask_main_agent 软引导但不含守则标题时，仍应注入守则（修复去重条件 bug）"""
+    from agent import subagent
+
+    user_dir = tmp_path / "user" / "agents"
+    user_dir.mkdir(parents=True)
+    # MD 含 "ask_main_agent" 字符串但不含守则标题
+    (user_dir / "my-agent.md").write_text(
+        "---\ndescription: test\nallowAsync: true\n---\nYou are a test agent.\n\n如果需要用户补充信息，使用 ask_main_agent 功能询问"
+    )
+
+    project_agents = tmp_path / "project" / "config" / "agents"
+    project_agents.mkdir(parents=True)
+    monkeypatch.setattr(subagent, "_PROJECT_AGENTS_DIR", str(project_agents))
+    monkeypatch.setattr(subagent, "_USER_AGENTS_DIR", str(user_dir))
+
+    static_system, _ = subagent.build_subagent_system_segments("my-agent", allow_async=True)
+    # 守则应注入（去重条件用标题 marker，不命中软引导）
+    assert "## 异步询问主 Agent 规则" in static_system
+    assert "禁止把问题写在 content 里直接返回" in static_system
+
+
+def test_build_subagent_system_segments_marker_constant_matches_template():
+    """_ASYNC_ASK_GUIDE_MARKER 与 _ASYNC_ASK_GUIDE_TEMPLATE 首行一致"""
+    from agent import subagent
+    # marker 是 template 的首行（去掉前缀空行）
+    template_first_line = subagent._ASYNC_ASK_GUIDE_TEMPLATE.strip().split("\n")[0]
+    assert subagent._ASYNC_ASK_GUIDE_MARKER == template_first_line
