@@ -23,6 +23,11 @@ from agent.subagent_registry import SubagentRegistry
 
 
 
+# kebab-case 校验正则（小写字母/数字/连字符，且不以连字符开头/结尾）
+# runner.py 顶部已有 `import re`，直接复用
+_KEBAB_CASE_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+
+
 # --- Stop flag mechanism ---
 _stop_requested = threading.Event()
 
@@ -241,7 +246,23 @@ def _load_memory_for_prompt() -> str:
 
 
 def get_tools_schema() -> list:
-    """获取工具 Schema（从 JSON 文件加载 + 注册子 Agent 工具）"""
+    """获取工具 Schema（从 JSON 文件加载 + 注册子 Agent 工具）
+
+    子 Agent 名单来源：
+    1. config/agents/niu.md 的 sub agents 字段（专用子 Agent）
+    2. ~/.niu/agents/*.md 扫描（通用子 Agent，主 Agent 运行时创建）
+
+    跳过条件（方式 B：不允许坏工具让主 Agent 看到）：
+    - 文件名非 kebab-case（避免工具名含空格/大写）
+    - MD 文件不存在
+    - frontmatter 为空或解析失败（YAML 错误）
+    - description 字段缺失（视为无效子 Agent）
+
+    重算返回完整 base 集（基础工具 + MCP 工具 + 所有 chat-with-* + check_subagent_progress）。
+    """
+    from .subagent import get_subagent_config, _resolve_agent_md_path, _USER_AGENTS_DIR
+    from .tool_registry import get_registry
+
     script_dir = os.path.dirname(os.path.abspath(__file__))
     schema_path = os.path.join(script_dir, "generic", "assets", "tools_schema.json")
 
@@ -250,28 +271,86 @@ def get_tools_schema() -> list:
         with open(schema_path, "r", encoding="utf-8") as f:
             tools = json.load(f)
 
-    # 注册子 Agent 工具（从 niu.md 的 sub agents 字段动态生成）
-    from .subagent import get_subagent_config
+    # 1. 从 niu.md 读专用子 Agent 名单
     try:
         niu_config = get_subagent_config("niu")
-        sub_agents = niu_config.get("sub agents", [])
+        sub_agents = list(niu_config.get("sub agents", []))
     except Exception as e:
         logger.warning(f"Failed to load niu.md sub agents config: {e}")
         sub_agents = []
 
-    for agent_name in sub_agents:
-        task_desc = "描述要委托给子Agent执行的任务"  # 默认值
+    # 2. 扫描 ~/.niu/agents/*.md 加通用子 Agent 名单
+    user_agent_names = []
+    if os.path.isdir(_USER_AGENTS_DIR):
+        for fname in os.listdir(_USER_AGENTS_DIR):
+            if not fname.endswith(".md") or fname.startswith("_"):
+                continue
+            # 跳过子目录（仅处理文件）
+            fpath = os.path.join(_USER_AGENTS_DIR, fname)
+            if not os.path.isfile(fpath):
+                continue
+            user_agent_names.append(os.path.splitext(fname)[0])
+
+    # 3. 合并去重（保序：专用在前，通用在后）
+    all_subagents = list(dict.fromkeys(sub_agents + user_agent_names))
+
+    # 4. 收集已加载的 MCP 服务器名（用于 warning 提示未加载的服务器）
+    try:
+        registry = get_registry()
+        loaded_servers = set(registry._server_tools.keys())
+    except Exception:
+        loaded_servers = None  # 不做 warning
+
+    # 5. 为每个名字生成 chat-with-{name} schema
+    for agent_name in all_subagents:
+        # 5a. 文件名 kebab-case 校验
+        if not _KEBAB_CASE_RE.match(agent_name):
+            logger.warning(
+                f"Sub-agent '{agent_name}' name not kebab-case, skipping "
+                f"(use lowercase + hyphens like 'photo-organizer')"
+            )
+            continue
+
+        # 5b. MD 文件存在性
+        md_path = _resolve_agent_md_path(agent_name)
+        if md_path is None:
+            logger.warning(f"Sub-agent '{agent_name}' MD file not found, skipping")
+            continue
+
+        # 5c. frontmatter 解析
         try:
             agent_config = get_subagent_config(agent_name)
-            desc = agent_config.get("description", f"子 Agent: {agent_name}")
-            task_desc = agent_config.get("taskDescription", task_desc)
         except Exception as e:
-            logger.warning(f"Failed to load sub-agent '{agent_name}' config: {e}")
-            desc = f"子 Agent: {agent_name}"
-            agent_config = {}
+            logger.warning(f"Sub-agent '{agent_name}' config parse error: {e}, skipping")
+            continue
+
+        # 5d. frontmatter 非空 + description 存在
+        if not agent_config:
+            logger.warning(
+                f"Sub-agent '{agent_name}' has empty/invalid frontmatter, skipping (bad MD)"
+            )
+            continue
+        if "description" not in agent_config or not agent_config["description"]:
+            logger.warning(
+                f"Sub-agent '{agent_name}' missing description field, skipping"
+            )
+            continue
+
+        # 5e. MCP 服务器未加载 warning（不阻塞）
+        mcp_servers = agent_config.get("mcpServers", []) or []
+        if loaded_servers is not None:
+            for s in mcp_servers:
+                if s not in loaded_servers:
+                    logger.warning(
+                        f"Sub-agent '{agent_name}' references unloaded MCP server '{s}', "
+                        f"its tools will be unavailable"
+                    )
+
+        desc = agent_config.get("description")
+        task_desc = agent_config.get("taskDescription", "描述要委托给子Agent执行的任务")
 
         # 阶段二：根据 allowAsync 决定是否暴露 async_mode
-        allow_async = bool(agent_config.get("allowAsync", False)) if agent_config else False
+        allow_async = bool(agent_config.get("allowAsync", False))
 
         properties = {
             "task": {
