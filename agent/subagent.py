@@ -66,25 +66,6 @@ _BOUNDARY_SECTION_TEMPLATE = """## 职责边界
 不要猜测含义，无法完全确认属于自己的职责范围的，就要直接退出，回复主 Agent。"""
 
 
-# 异步子 Agent 强制注入的 ask_main_agent 使用守则
-# 大模型训练时默认"向用户提问写 content"，但我们的子 Agent 直接返回 = 退出
-# 主 Agent 写 MD 引导不可靠（端到端验证暴露），改为程序结构注入
-_ASYNC_ASK_GUIDE_TEMPLATE = """
-## 异步询问主 Agent 规则
-
-你是异步子 Agent，工作未完成时遇到必须澄清的问题，必须调用 ask_main_agent 工具询问主 Agent，禁止把问题写在 content 里直接返回——直接返回等于退出，主 Agent 无法 @ 你，会开新实例丢失上下文。
-
-只有以下情况才能直接返回：
-1. 任务已完成，返回最终结果。
-2. 任务确实无法继续（如缺权限、缺资源），需要主 Agent 决策是否终止。
-其他任何"需要更多信息才能继续"的情况，一律调 ask_main_agent。
-"""
-
-# 守则段标题，用作去重 marker（替代裸子串 "ask_main_agent"）
-# 避免误判 MD 软引导（如"使用 ask_main_agent 功能询问"）为已含守则
-_ASYNC_ASK_GUIDE_MARKER = "## 异步询问主 Agent 规则"
-
-
 def count_tokens_for_text(text: str) -> int:
     """
     计算文本的 token 数量（用于子 Agent prompt 分片判断）
@@ -400,13 +381,11 @@ def get_subagent_prompt(agent_name: str) -> str:
     return f"You are {agent_name} sub-agent. Complete the task efficiently."
 
 
-def build_subagent_system_segments(agent_name: str, allow_async: bool = False) -> tuple:
+def build_subagent_system_segments(agent_name: str) -> tuple:
     """构建子 Agent 的静态/动态系统提示词段（cache 友好）。
 
     Args:
         agent_name: 子 Agent 名
-        allow_async: 是否为异步子 Agent。True 时强制注入 ask_main_agent 使用守则
-            （主 Agent 写 MD 引导不可靠，靠程序结构注入保证）
 
     Returns:
         (static_system, dynamic_system):
@@ -427,13 +406,7 @@ def build_subagent_system_segments(agent_name: str, allow_async: bool = False) -
     if "直接退出" not in static_system:
         static_system += "\n\n" + _BOUNDARY_SECTION_TEMPLATE
 
-    # 4. 异步子 Agent 强制注入 ask_main_agent 使用守则
-    #    大模型训练时默认"向用户提问写 content"，但我们的子 Agent 直接返回 = 退出
-    #    必须靠程序结构注入，不依赖主 Agent 自觉写 MD 引导
-    if allow_async and _ASYNC_ASK_GUIDE_MARKER not in static_system:
-        static_system += "\n\n" + _ASYNC_ASK_GUIDE_TEMPLATE
-
-    # 5. 动态段：Current Time
+    # 4. 动态段：Current Time
     from datetime import datetime
     now = datetime.now()
     dynamic_system = f"\n\nCurrent Time: {now.strftime('%Y-%m-%d %H:%M:%S')}"
@@ -640,8 +613,7 @@ def call_subagent(
         llm_config = {**llm_config, "temperature": agent_config["temperature"]}
 
     # 2. 构建静态/动态段（cache 友好）
-    allow_async = bool(agent_config.get("allowAsync", False))
-    static_system, dynamic_system = build_subagent_system_segments(agent_name, allow_async=allow_async)
+    static_system, dynamic_system = build_subagent_system_segments(agent_name)
 
     # 3. 组装 system message（按 model 决定格式：Claude list / 其他 str）
     model_lower = (llm_config.get("model", "") or "").lower()
