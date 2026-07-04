@@ -71,18 +71,82 @@ def test_drain_consumes_when_main_agent_idle(monkeypatch):
 
 
 def test_drain_drops_message_when_subagent_unregistered(monkeypatch):
-    """阶段二 D1：子 Agent 已注销时丢弃队列中的请求，不推 SSE。"""
+    """阶段二 D1：子 Agent 已注销时丢弃队列中的 ask 请求，不推 SSE。"""
     q = get_main_agent_request_queue()
     while q.pop() is not None:
         pass
-    # 用一个未注册的 unique_name 推队列
-    q.push("[unregistered_sub] 测试消息")
+    # 用一个未注册的 unique_name 推队列（ask 请求格式，非完成通知）
+    q.push("[unregistered_sub] 这是一条 ask 请求")
 
     with mock.patch("niu_api.chat.notify_new_message_sync") as fake_notify:
         asyncio.new_event_loop().run_until_complete(db_monitor._drain_main_agent_request_queue())
         fake_notify.assert_not_called()
 
     # 消息应已被 pop 丢弃
+    assert q.is_empty()
+
+
+def test_drain_keeps_completion_notification_when_subagent_unregistered(monkeypatch):
+    """Critical-1：完成通知（已完成/异常结束/被取消）即使子 Agent 已注销也不丢弃。
+
+    场景：_run_subagent_async 完成 → push "[子名] 已完成" 到队列 →
+    finally 立即 SubagentRegistry.unregister → db_monitor 200ms 后才 _drain。
+    此时注册表查不到子 Agent，但完成通知必须推给主 Agent，否则主 Agent 永远收不到。
+    """
+    q = get_main_agent_request_queue()
+    while q.pop() is not None:
+        pass
+    # 子 Agent 不在注册表（模拟 finally unregister 后的场景）
+    q.push("[completed_sub] 已完成：文件处理结束")
+
+    pushed = []
+
+    def fake_notify(msg_id, role, content, source="electron"):
+        pushed.append((role, content, source))
+        return True
+
+    monkeypatch.setattr("niu_api.chat.notify_new_message_sync", fake_notify)
+
+    asyncio.new_event_loop().run_until_complete(db_monitor._drain_main_agent_request_queue())
+
+    # 完成通知应被推 SSE，不丢弃
+    assert len(pushed) == 1
+    assert pushed[0][0] == "subagent_msg"
+    assert pushed[0][1] == "[completed_sub] 已完成：文件处理结束"
+    assert pushed[0][2] == "subagent"
+    assert q.is_empty()
+
+
+def test_drain_keeps_terminated_notification_when_subagent_unregistered(monkeypatch):
+    """Critical-1：异常结束/被取消通知即使子 Agent 已注销也不丢弃。
+
+    _drain 每次只消费队列头部一条消息，所以这里分两次 drain 验证两种通知。
+    """
+    q = get_main_agent_request_queue()
+    while q.pop() is not None:
+        pass
+    q.push("[cancelled_sub] 异常结束：LLM 调用失败")
+
+    pushed = []
+
+    def fake_notify(msg_id, role, content, source="electron"):
+        pushed.append(content)
+        return True
+
+    monkeypatch.setattr("niu_api.chat.notify_new_message_sync", fake_notify)
+
+    asyncio.new_event_loop().run_until_complete(db_monitor._drain_main_agent_request_queue())
+
+    assert len(pushed) == 1
+    assert pushed[0] == "[cancelled_sub] 异常结束：LLM 调用失败"
+    assert q.is_empty()
+
+    # 第二条：被取消
+    q.push("[cancelled_sub2] 被取消：用户主动停止")
+    asyncio.new_event_loop().run_until_complete(db_monitor._drain_main_agent_request_queue())
+
+    assert len(pushed) == 2
+    assert pushed[1] == "[cancelled_sub2] 被取消：用户主动停止"
     assert q.is_empty()
 
 
