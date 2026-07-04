@@ -542,14 +542,27 @@ Expected: 5 个新测试 FAIL（现有 `get_tools_schema` 不扫 `~/.niu/agents/
 
 - [ ] **Step 3: 改造 `get_tools_schema`**
 
-把 `agent/runner.py:243-330` 的 `get_tools_schema` 整体替换为：
+**前置检查**：grep 确认 runner.py 模块级无同名 `_KEBAB_CASE_RE`：
+
+```bash
+grep -n "_KEBAB_CASE_RE" REDACTED_USER_PATH/tools/ai-bot/agent/runner.py
+```
+
+Expected: 无输出（无同名常量）。如有冲突，重命名常量。
+
+**改造步骤**：
+
+1. 先在 `agent/runner.py` 模块级区域（`get_tools_schema` 函数定义之前，建议放在 `import` 之后、第一个函数定义之前）加常量定义：
 
 ```python
 # kebab-case 校验正则（小写字母/数字/连字符，且不以连字符开头/结尾）
 # runner.py 顶部已有 `import re`，直接复用
 _KEBAB_CASE_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+```
 
+2. 然后把 `agent/runner.py:243-330` 的 `get_tools_schema` 函数整体替换为：
 
+```python
 def get_tools_schema() -> list:
     """获取工具 Schema（从 JSON 文件加载 + 注册子 Agent 工具）
 
@@ -1293,11 +1306,15 @@ Expected:
 ```bash
 # 验证1：日志宽松匹配（loguru warning 可能写到 stderr 或 logs/ 目录，grep 不到也不算失败）
 grep -r "Sub-agent 'bad'" logs/ 2>/dev/null | tail -1 || echo "日志未找到（依赖日志配置，不一定失败）"
-
-# 验证2（关键）：前端工具列表确认——主 Agent LLM 调用工具时不会出现 chat-with-bad
-# 通过观察主 Agent 行为：让它"列出所有可用子 Agent"或"调用 chat-with-bad"——
-# 如果主 Agent 回复"没有 chat-with-bad 这个工具"或类似，证明坏 MD 被跳过
 ```
+
+验证2（关键）：在前端发送明确指令触发主 Agent 列出工具：
+
+```
+请列出你当前能调用的所有子 Agent 工具名
+```
+
+Expected: 主 Agent 回复的工具列表中**不含** `chat-with-bad`。如果主 Agent 回复"没有 chat-with-bad 这个工具"或类似，证明坏 MD 被跳过。
 
 如果验证1 grep 不到日志，但验证2 主 Agent 行为确认 `chat-with-bad` 不存在，仍算通过。
 
