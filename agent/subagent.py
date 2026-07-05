@@ -914,6 +914,47 @@ def call_subagent(
     return result_text
 
 
+def call_subagent_with_auto_answer(agent_name, task, **kwargs):
+    """程序触发子 Agent 专用：自动回复 @niu-agent，遇到 @end 或正常文本才返回。
+
+    与主 Agent 调用 call_subagent 不同：程序触发（auto_tidy / force 压缩 / 手动 tidy API）
+    时没有主 Agent 在工具循环里等子 Agent 回答。子 Agent 输出 [unique_name] question
+    格式时，由本 helper 自动回复固定文案，让子 Agent 自行决策继续或 @end 结束。
+
+    Args:
+        agent_name: 子 Agent 名（如 file-processor）
+        task: 任务描述
+        **kwargs: 透传给 call_subagent（如 llm_config、mcp_client、no_tools 等）
+
+    Returns:
+        子 Agent 最终非 @niu-agent 输出（正常结果 / @end 汇报）
+    """
+    AUTO_ANSWER = "无法解答你的问题，请选择 @end 结束并汇报你的工作，或自我抉择选择继续工作"
+
+    result = call_subagent(agent_name=agent_name, task=task, **kwargs)
+    while True:
+        unique_name = _extract_unique_name(result, agent_name)
+        if unique_name is None:
+            return result  # 非 @niu-agent 问题，正常返回
+        result = call_subagent(
+            agent_name=agent_name,
+            task="",
+            answer=AUTO_ANSWER,
+            answer_unique_name=unique_name,
+            **kwargs,
+        )
+
+
+def _extract_unique_name(result, agent_name):
+    """从 '[unique_name] ...' 提取 unique_name，不匹配返回 None。
+
+    严格正则匹配 `^{agent_name}-[4位十六进制]` 格式，避免误判 `[已完成]` 等正常文本。
+    """
+    pattern = rf"^\[({re.escape(agent_name)}-[0-9a-f]{{4}})\] "
+    m = re.match(pattern, result)
+    return m.group(1) if m else None
+
+
 # ==================== 阶段二：ask_main_agent 工具 ====================
 
 
