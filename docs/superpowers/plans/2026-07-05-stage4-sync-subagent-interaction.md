@@ -408,13 +408,125 @@ git commit -m "feat(subagent): 恢复守则注入，所有子 Agent 统一注入
 
 ---
 
-## Task 4: 拦截层改造（条件 + tuple 返回 + INTERCEPTED_SYNC 常量）
+## Task 4: 拦截层改造（含 `_ask_main_agent_impl_sync` 实现）
 
 **Files:**
 - Modify: `agent/generic/agent_loop.py` L12-16（常量）+ L44-130（拦截层）+ L568-593（agent_runner_loop 调用点）
-- Test: `tests/test_at_prefix_interception.py`
+- Modify: `agent/subagent.py`（在 `_ask_main_agent_impl` 旁加 `_ask_main_agent_impl_sync`）
+- Test: `tests/test_at_prefix_interception.py` + `tests/test_sync_subagent_interaction.py`（新建）
 
-- [ ] **Step 1: 加 INTERCEPTED_SYNC 常量**
+**注**：本 task 合并了原 Task 4（拦截层改造）+ 原 Task 5（`_ask_main_agent_impl_sync` 实现），解决 v1 审查 B1/B4——先实现 `_ask_main_agent_impl_sync`，再改拦截层，避免 import 错误。
+
+- [ ] **Step 1: 写失败测试——`_ask_main_agent_impl_sync`**
+
+新建 `tests/test_sync_subagent_interaction.py`：
+
+```python
+"""同步子 Agent 交互单元测试"""
+
+
+def test_ask_main_agent_impl_sync_appends_assistant_and_returns_wrapped():
+    """_ask_main_agent_impl_sync 调用后 messages append assistant content + 返回 [unique_name] question"""
+    from agent import subagent
+
+    messages = [{"role": "user", "content": "开始"}]
+    fake_handler = object()  # 不需要 handler 属性
+
+    wrapped = subagent._ask_main_agent_impl_sync(
+        question="我应该选择哪个选项？",
+        unique_name="test-ab12",
+        handler=fake_handler,
+        messages=messages,
+        content="@niu-agent 我应该选择哪个选项？",
+    )
+
+    # 断言：messages append assistant content
+    assert messages[-1] == {"role": "assistant", "content": "@niu-agent 我应该选择哪个选项？"}
+    # 断言：返回 wrapped 文本
+    assert wrapped == "[test-ab12] 我应该选择哪个选项？"
+    # 断言：messages 末尾是 assistant（不是 user）
+    assert len(messages) == 2
+    assert messages[-1]["role"] == "assistant"
+
+
+def test_ask_main_agent_impl_sync_sanitizes_question():
+    """_ask_main_agent_impl_sync 对 question 做 sanitization（限 2000 字符 + strip 行首 @）"""
+    from agent import subagent
+
+    messages = []
+    fake_handler = object()
+
+    # 超长 question 截断
+    long_question = "x" * 3000
+    wrapped = subagent._ask_main_agent_impl_sync(
+        question=long_question,
+        unique_name="test-ab12",
+        handler=fake_handler,
+        messages=messages,
+        content="@niu-agent ...",
+    )
+    assert len(wrapped) < 3000  # 已截断
+
+    # question 行首 @ 被 strip
+    wrapped2 = subagent._ask_main_agent_impl_sync(
+        question="@嵌套@问题",
+        unique_name="test-ab12",
+        handler=fake_handler,
+        messages=messages,
+        content="@niu-agent @嵌套@问题",
+    )
+    assert wrapped2 == "[test-ab12] 嵌套@问题"  # 行首 @ 被 strip
+```
+
+- [ ] **Step 2: 跑测试确认 FAIL**
+
+```bash
+cd REDACTED_USER_PATH/tools/ai-bot/agent && python -m pytest tests/test_sync_subagent_interaction.py -v 2>&1 | tail -10
+```
+
+Expected: FAIL with `AttributeError: module 'agent.subagent' has no attribute '_ask_main_agent_impl_sync'`。
+
+- [ ] **Step 3: 实现 `_ask_main_agent_impl_sync`**
+
+在 `agent/subagent.py` 的 `_ask_main_agent_impl` 函数（L757-843）之后加：
+
+```python
+def _ask_main_agent_impl_sync(question: str, unique_name: str, handler, messages: list, content: str) -> str:
+    """同步路径：包装 question 为 [unique_name] question，append assistant content 到 messages。
+
+    与异步 _ask_main_agent_impl（subagent.py:810）的包装逻辑一致，但：
+    - 不阻塞等主 Agent 回答（同步路径靠工具返回值通道）
+    - 不推 MainAgentRequestQueue（同步路径不走 db_monitor）
+    - append assistant content 保留对话历史，不 append user（user 由第二次 call_subagent 注入）
+    """
+    messages.append({"role": "assistant", "content": content})
+    # sanitization（与异步路径 subagent.py:807-809 一致）
+    sanitized = question[:2000] if question else ""
+    if sanitized.lstrip().startswith("@"):
+        sanitized = sanitized.lstrip()[1:]
+    wrapped = f"[{unique_name}] {sanitized}"
+    return wrapped
+```
+
+- [ ] **Step 4: 跑测试确认 PASS**
+
+```bash
+python -m pytest tests/test_sync_subagent_interaction.py -v 2>&1 | tail -10
+```
+
+Expected: PASS。
+
+- [ ] **Step 5: Commit `_ask_main_agent_impl_sync`**
+
+```bash
+git add agent/subagent.py tests/test_sync_subagent_interaction.py
+git commit -m "feat(subagent): _ask_main_agent_impl_sync 同步路径包装函数
+
+复用异步 _ask_main_agent_impl 的 [unique_name] question 包装逻辑，
+但不阻塞、不推 queue。append assistant content 保留对话历史。"
+```
+
+- [ ] **Step 6: 加 INTERCEPTED_SYNC 常量**
 
 `agent/generic/agent_loop.py` L12-16 改为：
 
@@ -593,7 +705,7 @@ if not response.tool_calls:
     # NO_INTERCEPTION：继续走原有逻辑
 ```
 
-- [ ] **Step 6: 改现有测试断言为 tuple**
+- [ ] **Step 6: 改现有测试断言为 tuple + 显式设 _is_sync_subagent=False**
 
 `tests/test_at_prefix_interception.py` 所有 `assert result == agent_loop.INTERCEPTED` / `EXIT` / `FORMAT_ERROR` / `NO_INTERCEPTION` 改为 `assert result == (agent_loop.XXX, None)` 或 `assert result[0] == agent_loop.XXX`。具体：
 - L103: `assert result == agent_loop.INTERCEPTED` → `assert result == (agent_loop.INTERCEPTED, None)`
@@ -605,6 +717,32 @@ if not response.tool_calls:
 - L222: `assert result == agent_loop.FORMAT_ERROR` → `assert result == (agent_loop.FORMAT_ERROR, None)`
 - L244: `assert result == agent_loop.FORMAT_ERROR` → `assert result == (agent_loop.FORMAT_ERROR, None)`
 - L283: `assert result == agent_loop.NO_INTERCEPTION` → `assert result == (agent_loop.NO_INTERCEPTION, None)`
+
+**关键修复（v1 审查 B2）**：现有测试用 `fake_handler = mock.MagicMock()`——`mock.MagicMock()` 对任何属性访问返回 truthy Mock 对象，`getattr(handler, "_is_sync_subagent", False)` 返回 truthy Mock（等同 True）。改造后拦截条件 `(memory_context is None and not is_sync_subagent)`——对 truthy Mock `not truthy_Mock` = False，条件不满足，**会进入拦截层**导致期望 NO_INTERCEPTION 的测试 fail。
+
+所有用 `mock.MagicMock()` 作 handler 且期望 NO_INTERCEPTION 的测试（L169-185 `test_no_interception_for_sync_subagent` + L261-283 `test_main_agent_not_intercepted`），必须显式设：
+
+```python
+fake_handler = mock.MagicMock()
+fake_handler._is_sync_subagent = False  # 显式设为 False，模拟主 Agent 路径
+```
+
+L169 测试名 `test_no_interception_for_sync_subagent` 语义已过时（同步子 Agent 现在要拦截），改名为 `test_main_agent_path_not_intercepted` 并设 `_is_sync_subagent=False`。
+
+其他期望 INTERCEPTED/EXIT/FORMAT_ERROR 的测试（如 L75/L118/L137/L156/L219/L241 用 `memory_context=mock.MagicMock()` 非 None，或 L88/L165 用 `fake_handler._subagent_unique_name = "test-agent-abc1"` 但 `_is_sync_subagent` 未设）：
+- `memory_context` 非 None 的测试（异步路径）——`_is_sync_subagent` 不影响（拦截条件第一部分 `memory_context is None` False，整体 False，进入拦截层）——OK，不用改。
+- 但若同步路径测试（`memory_context=None`）期望 INTERCEPTED/EXIT/FORMAT_ERROR——必须显式设 `fake_handler._is_sync_subagent = True`。
+
+具体逐个测试检查：
+- L75 `test_at_niu_prefix_triggers_ask_main_agent`：`memory_context=mock.MagicMock()`（异步）——不用改 `_is_sync_subagent`。
+- L88 `test_at_end_prefix_allows_exit_with_space`：`memory_context=mock.MagicMock()`（异步）——不用改。
+- L118 `test_at_end_prefix_allows_exit_without_space`：同上——不用改。
+- L137 `test_no_at_prefix_no_tool_calls_returns_format_error`：同上——不用改。
+- L156 `test_no_interception_for_sync_subagent`：`memory_context=None` + 期望 NO_INTERCEPTION——**改为 `fake_handler._is_sync_subagent = False` + 改名 `test_main_agent_path_not_intercepted`**。
+- L219 `test_at_niu_without_question_returns_format_error`：`memory_context=mock.MagicMock()`（异步）——不用改。
+- L241 `test_at_niu_without_unique_name_returns_format_error`：同上——不用改。
+- L261 `test_agent_runner_loop_intercepts_at_niu`：只验证 hasattr，不调拦截层——不用改。
+- L275 `test_main_agent_not_intercepted`：`memory_context=None` + 期望 NO_INTERCEPTION——**改为 `fake_handler._is_sync_subagent = False`**。
 
 - [ ] **Step 7: 跑测试确认 PASS**
 
@@ -660,120 +798,9 @@ git commit -m "feat(agent_loop): 拦截层返回 tuple + INTERCEPTED_SYNC 同步
 
 ---
 
-## Task 5: `_ask_main_agent_impl_sync` 实现
+## Task 5: （已合并到 Task 4）
 
-**Files:**
-- Modify: `agent/subagent.py`（在 `_ask_main_agent_impl` 旁加新函数）
-- Test: `tests/test_sync_subagent_interaction.py`（新建）
-
-- [ ] **Step 1: 写失败测试**
-
-新建 `tests/test_sync_subagent_interaction.py`：
-
-```python
-"""同步子 Agent 交互单元测试"""
-
-
-def test_ask_main_agent_impl_sync_appends_assistant_and_returns_wrapped():
-    """_ask_main_agent_impl_sync 调用后 messages append assistant content + 返回 [unique_name] question"""
-    from agent import subagent
-
-    messages = [{"role": "user", "content": "开始"}]
-    fake_handler = object()  # 不需要 handler 属性
-
-    wrapped = subagent._ask_main_agent_impl_sync(
-        question="我应该选择哪个选项？",
-        unique_name="test-ab12",
-        handler=fake_handler,
-        messages=messages,
-        content="@niu-agent 我应该选择哪个选项？",
-    )
-
-    # 断言：messages append assistant content
-    assert messages[-1] == {"role": "assistant", "content": "@niu-agent 我应该选择哪个选项？"}
-    # 断言：返回 wrapped 文本
-    assert wrapped == "[test-ab12] 我应该选择哪个选项？"
-    # 断言：messages 末尾是 assistant（不是 user）
-    assert len(messages) == 2
-    assert messages[-1]["role"] == "assistant"
-
-
-def test_ask_main_agent_impl_sync_sanitizes_question():
-    """_ask_main_agent_impl_sync 对 question 做 sanitization（限 2000 字符 + strip 行首 @）"""
-    from agent import subagent
-
-    messages = []
-    fake_handler = object()
-
-    # 超长 question 截断
-    long_question = "x" * 3000
-    wrapped = subagent._ask_main_agent_impl_sync(
-        question=long_question,
-        unique_name="test-ab12",
-        handler=fake_handler,
-        messages=messages,
-        content="@niu-agent ...",
-    )
-    assert len(wrapped) < 3000  # 已截断
-
-    # question 行首 @ 被 strip
-    wrapped2 = subagent._ask_main_agent_impl_sync(
-        question="@嵌套@问题",
-        unique_name="test-ab12",
-        handler=fake_handler,
-        messages=messages,
-        content="@niu-agent @嵌套@问题",
-    )
-    assert wrapped2 == "[test-ab12] 嵌套@问题"  # 行首 @ 被 strip
-```
-
-- [ ] **Step 2: 跑测试确认 FAIL**
-
-```bash
-cd REDACTED_USER_PATH/tools/ai-bot/agent && python -m pytest tests/test_sync_subagent_interaction.py -v 2>&1 | tail -10
-```
-
-Expected: FAIL with `AttributeError: module 'agent.subagent' has no attribute '_ask_main_agent_impl_sync'`。
-
-- [ ] **Step 3: 实现 `_ask_main_agent_impl_sync`**
-
-在 `agent/subagent.py` 的 `_ask_main_agent_impl` 函数（L757-843）之后加：
-
-```python
-def _ask_main_agent_impl_sync(question: str, unique_name: str, handler, messages: list, content: str) -> str:
-    """同步路径：包装 question 为 [unique_name] question，append assistant content 到 messages。
-
-    与异步 _ask_main_agent_impl（subagent.py:810）的包装逻辑一致，但：
-    - 不阻塞等主 Agent 回答（同步路径靠工具返回值通道）
-    - 不推 MainAgentRequestQueue（同步路径不走 db_monitor）
-    - append assistant content 保留对话历史，不 append user（user 由第二次 call_subagent 注入）
-    """
-    messages.append({"role": "assistant", "content": content})
-    # sanitization（与异步路径 subagent.py:807-809 一致）
-    sanitized = question[:2000] if question else ""
-    if sanitized.lstrip().startswith("@"):
-        sanitized = sanitized.lstrip()[1:]
-    wrapped = f"[{unique_name}] {sanitized}"
-    return wrapped
-```
-
-- [ ] **Step 4: 跑测试确认 PASS**
-
-```bash
-python -m pytest tests/test_sync_subagent_interaction.py -v 2>&1 | tail -10
-```
-
-Expected: PASS。
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add agent/subagent.py tests/test_sync_subagent_interaction.py
-git commit -m "feat(subagent): _ask_main_agent_impl_sync 同步路径包装函数
-
-复用异步 _ask_main_agent_impl 的 [unique_name] question 包装逻辑，
-但不阻塞、不推 queue。append assistant content 保留对话历史。"
-```
+原 Task 5 内容（`_ask_main_agent_impl_sync` 实现）已合并到 Task 4，解决 v1 审查 B1/B4（Task 4 引用 Task 5 的函数导致 import 错误）。Task 4 Step 1-5 实现该函数，Step 6+ 做拦截层改造。
 
 ---
 
@@ -793,17 +820,24 @@ def test_agent_runner_loop_resumed_messages_skips_construction(monkeypatch):
     from agent.generic import agent_loop
     from agent.generic.agent_loop import StreamEvent
 
-    # mock LLM client
-    fake_client = mock.MagicMock()
+    # mock LLM client——必须返回生成器（agent_loop.py:557 用 exhaust(response_gen) 调 next()）
+    # v1 审查 B3 修正：MagicMock 不是迭代器，next() 会抛 TypeError
     fake_response = mock.MagicMock()
     fake_response.content = "@end 任务完成"
     fake_response.tool_calls = None
     fake_response.usage = None
-    fake_client.chat.return_value = fake_response
+
+    def fake_chat_gen():
+        """模拟流式生成器：yield 一个 chunk 后 StopIteration.value = fake_response"""
+        yield
+        return fake_response
+
+    fake_client = mock.MagicMock()
+    fake_client.chat.return_value = fake_chat_gen()
 
     fake_handler = mock.MagicMock()
     fake_handler._is_subagent = True
-    fake_handler._is_sync_subagent = True
+    fake_handler._is_sync_subagent = True  # 显式设，避免 truthy Mock 语义问题
     fake_handler._subagent_unique_name = "test-ab12"
 
     # resumed_messages：已是 LLM-ready 格式（含 system + 历史 + user）
