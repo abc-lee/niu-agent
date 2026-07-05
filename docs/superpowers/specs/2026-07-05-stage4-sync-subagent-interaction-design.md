@@ -540,8 +540,14 @@ def _maybe_suspend_session(unique_name, return_value, handler, client, tools_sch
         instance = SubagentRegistry.get(unique_name)
         if not instance:
             return
+        # 校验 return_value["messages"] 非空且首条是 system（修复 v8 BLOCKER B1）
+        # 若 messages 为空 list 或首条不是 system，第二次 call_subagent 会跑出无 system 的 LLM 调用
+        msgs = return_value.get("messages", [])
+        if not msgs or not isinstance(msgs[0], dict) or msgs[0].get("role") != "system":
+            logger.error(f"[MaybeSuspend] return_value messages 异常（空或首条非 system），不挂起")
+            return  # 不挂起，让 finally 正常 unregister（session 丢失但避免跑出无 system 的 LLM）
         instance.state = "waiting_for_answer"
-        instance.suspended_messages = return_value.get("messages", [])
+        instance.suspended_messages = msgs
         instance.suspended_handler = handler
         instance.suspended_client = client
         instance.suspended_tools_schema = tools_schema
@@ -555,8 +561,14 @@ def _maybe_suspend_session(unique_name, return_value, handler, client, tools_sch
             if instance:
                 instance.state = "waiting_for_answer"
                 # 其他字段尽力设置（失败则保留 None，第二次 call_subagent 取出时若字段为 None 报错）
-                if instance.suspended_messages is None:
-                    instance.suspended_messages = return_value.get("messages", [])
+                # 校验 messages 非空且首条是 system（与首次 try 块一致）
+                msgs = return_value.get("messages", [])
+                if not msgs or not isinstance(msgs[0], dict) or msgs[0].get("role") != "system":
+                    logger.error(f"[MaybeSuspend] fallback messages 异常，session 可能损坏")
+                    # 不设 suspended_messages，让第二次 call_subagent 取出时报错
+                else:
+                    if instance.suspended_messages is None:
+                        instance.suspended_messages = msgs
                 if instance.suspended_handler is None:
                     instance.suspended_handler = handler
                 if instance.suspended_client is None:
@@ -567,6 +579,9 @@ def _maybe_suspend_session(unique_name, return_value, handler, client, tools_sch
                     instance.suspended_system_message = system_message
         except Exception as fallback_err:
             logger.error(f"[MaybeSuspend] fallback 也失败，session 可能损坏: {fallback_err}")
+            # 不吞异常——重抛让上层感知，避免 session 状态不一致
+            # 上层 call_subagent 会捕获并返回错误文本给主 Agent
+            raise RuntimeError(f"_maybe_suspend_session fallback 失败，session 可能损坏: {fallback_err}") from fallback_err
     # finally 块会因 state="waiting_for_answer" 跳过 unregister
 ```
 
@@ -600,6 +615,13 @@ def _maybe_suspend_session(unique_name, return_value, handler, client, tools_sch
 ```
 
 **主 Agent 提示词约束**：niu.md 已有"看到 `[子名] 问题` 回 `@子名 回答`"守则，主 Agent 看到 chat-with-xxx 工具结果含 `[子名] 问题` 时会自然调 chat-with-xxx 带 answer + unique_name。
+
+**边界校验（v8 审查 I3 补充）**：schema 改 task 为 optional 后，主 Agent 可能调 `chat-with-xxx()` 完全不带参数（task="" + answer=None + unique_name=None）→ 走同步新任务分支，task="" 让 LLM 收到空 user 消息。**call_subagent 顶部加校验**：
+```python
+if not task and not answer:
+    return "[错误] chat-with-xxx 必须传 task（新任务）或 answer + unique_name（回复子 Agent 问题）"
+```
+此校验在三分支判断之前执行，避免空调用走错分支。
 
 ### 5.7 _call_subagent_gen 透传
 
@@ -719,7 +741,8 @@ else:
 **关键设计点**：
 - `if resumed_messages is not None` 分支**只替换 messages 赋值**，L482+ 的 turn/harness/chat_busy 初始化保留在 if/else 之外，对所有路径都执行
 - resumed_messages 路径跳过 system_message + history + user_input 构造（这些已包含在 suspended_messages 里）
-- **FIFO 裁剪保护（v7 审查 I9 补充）**：resumed_messages 路径下，messages[0] 是 system_message（第一次跑 L416 加进去的）。若第二次跑期间触发 `_fifo_prune`（L519 附近），必须保护 messages[0] 不被裁剪——否则第三次跑 resumed_messages[0] 不是 system_message → LLM 无 system prompt 行为漂移。实施时检查 `_fifo_prune` 是否有"保护 messages[0]"逻辑，若无则补上
+- **FIFO 裁剪保护（v7 审查 I9 补充）**：resumed_messages 路径下，messages[0] 是 system_message（第一次跑 L416 加进去的）。若第二次跑期间触发 `_fifo_prune`（L519 附近），必须保护 messages[0] 不被裁剪——否则第三次跑 resumed_messages[0] 不是 system_message → LLM 无 system prompt 行为漂移。
+- **`_fifo_prune` 现有保护逻辑**（`agent_loop.py:246-292`）：当前保护 messages[0]（system）和 messages[1]（初始 user），从 i=2 开始删除。**问题**：resumed_messages 路径下 messages[1] 不是"初始 user"，可能是上轮 assistant 或工具结果。**改动要求**：resumed_messages 路径下 `_fifo_prune` 保护边界调整为"保护 messages[0]（system）+ 最近 `protect_recent_count` 条消息"，而不是固定保护 messages[0]+messages[1]。实施时检查 `_fifo_prune` 的 `protect_recent_count` 参数（`subagent.py:140` `DEFAULT_PROTECT_RECENT_COUNT=10`），确认 resumed_messages 路径下用 `protect_recent_count` 而非硬编码 messages[1]
 
 ---
 
@@ -900,6 +923,68 @@ if _SUBAGENT_ASK_GUIDE_MARKER not in static_system:
 - 知识图谱验证：entity-extractor 处理含 `@niu-agent` 的对话时不创建到根节点 `niu` 的连接（测试方法见 §14）
 
 ---
+
+---
+
+---
+
+## 9B. niu.md 提示词增量（同步子 Agent 交互关键依赖）
+
+### 9B.1 动机
+
+整个同步路径依赖主 Agent LLM 看到 `[子名] 问题` 工具结果后，正确调 `chat-with-xxx(task="", answer="@子名 回答", unique_name="子名")`。但 §5.6 schema 改 `task` 为 optional + 新增 `answer` / `unique_name` 可选参数后，LLM 有多条岔路：
+
+- ❌ 调 `chat-with-xxx(task="@xxx-ab12 选 A")`（把回答塞进 task，不传 answer/unique_name）→ 走同步新任务分支，task="@xxx-ab12 选 A" 作为新任务，主 Agent 工具循环卡死
+- ❌ 调 `chat-with-xxx(answer="选 A")` 不传 unique_name → 第三分支条件不成立 → 走同步新任务分支，task 默认空 → LLM 收到空 user 消息
+- ❌ 调 `chat-with-xxx(task="继续做", answer="选 A", unique_name="xxx-ab12")`（同时传 task 和 answer）→ 第三分支优先（answer is not None），task 被忽略
+- ✅ 调 `chat-with-xxx(task="", answer="@xxx-ab12 选 A", unique_name="xxx-ab12")` → 正确走回复路径
+
+必须靠 niu.md 提示词约束 LLM 选对路径。**这是 P0 阻塞依赖**——LLM 不听话整个流程断。
+
+### 9B.2 niu.md 增量提示词片段
+
+在 `config/agents/niu.md` 的"### 收到 [子名] 问题消息时"段（L255 附近）追加：
+
+```markdown
+### 收到同步子 Agent @niu-agent 问题（工具结果含 [子名] 问题）
+
+当你调 chat-with-xxx 工具收到的结果文本形如 `[xxx-ab12] 我该选哪个？`（方括号含子 Agent 唯一名 + 问题内容）时，说明同步子 Agent 在向你提问。你必须：
+
+1. 用同一工具名 chat-with-xxx 回复（不要换其他工具）
+2. 参数严格按以下格式：
+   - `task`：传空字符串 `""`（不要把回答塞进 task）
+   - `answer`：传 `@<子名> 你的回答`（含 @子名 前缀，如 `@xxx-ab12 选 A`）
+   - `unique_name`：传方括号里的子名（如 `xxx-ab12`）
+3. 不要同时传 task 和 answer——task 是新任务，answer 是回复子 Agent 问题，二者互斥
+
+**反例**（禁止）：
+- `chat-with-xxx(task="@xxx-ab12 选 A")` — 回答塞进 task，会被当新任务
+- `chat-with-xxx(answer="选 A")` — 不传 unique_name，找不到挂起 session
+- `chat-with-xxx(task="继续", answer="@xxx-ab12 选 A", unique_name="xxx-ab12")` — task 和 answer 同时传，task 被忽略但语义混乱
+
+**正例**：
+- `chat-with-xxx(task="", answer="@xxx-ab12 选 A", unique_name="xxx-ab12")`
+
+同步子 Agent 收到你的回答后会继续工作，可能再次 @niu-agent 提问（你会再收到 `[xxx-ab12] 新问题`），或 @end 结束返回最终结果。
+```
+
+### 9B.3 agent-template.md 增量
+
+在 `config/agent-template.md` 的"## 提示词正文"段（L27 附近）追加：
+
+```markdown
+- **何时主动询问主 Agent**：所有子 Agent（同步 + 异步）都被程序注入 @niu-agent/@end 守则。子 Agent 用 `@niu-agent ` 前缀询问主 Agent（content 以 `@niu-agent` 开头），用 `@end ` 前缀结束会话。同步子 Agent 询问时主 Agent 在工具循环内阻塞等待，会立即收到问题并回复；异步子 Agent 询问时主 Agent 闲置时触发新一轮回复。
+```
+
+### 9B.4 LLM 行为验证
+
+实施完成后，用 `tests/verify_llm_at_prefix.py` 改名后的脚本验证：
+- 子 Agent LLM 能正确输出 `@niu-agent 问题`（不是 `@niu`）
+- 主 Agent LLM 看到 `[子名] 问题` 工具结果后能正确调 `chat-with-xxx(task="", answer="@子名 回答", unique_name="子名")`（不带 task 内容、含 answer + unique_name）
+
+### 9B.5 文件清单 + 优先级更新
+
+§12 文件清单里 `config/agents/niu.md` 和 `config/agent-template.md` 改动**从 P2 升为 P0**（关键阻塞依赖）。
 
 ---
 
