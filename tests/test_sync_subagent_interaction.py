@@ -111,3 +111,42 @@ def test_agent_runner_loop_resumed_messages_skips_construction(monkeypatch):
     messages_passed = call_kwargs.kwargs.get("messages", call_kwargs.args[0] if call_kwargs.args else None)
     # resumed 的最后一条是 user "[主 Agent 回答] 选 A"，不是"不应被用"
     assert messages_passed[-1]["content"] == "[主 Agent 回答] 选 A"
+
+
+def test_call_subagent_top_validation_no_task_no_answer():
+    """call_subagent 顶部校验：无 task + 无 answer → 返回错误文本"""
+    from agent import subagent
+    result = subagent.call_subagent(
+        agent_name="file-processor",
+        task="",
+        llm_config={"model": "test", "api_key": "test", "base_url": "http://localhost"},
+    )
+    assert "[错误]" in result
+    assert "必须传 task" in result or "answer" in result
+
+
+def test_call_subagent_third_branch_agent_type_mismatch(monkeypatch):
+    """第三分支 agent_type 不匹配 → 返回错误文本"""
+    from agent import subagent
+    from agent.subagent_registry import SubagentRegistry, RunningSubagent
+    from agent.subagent_supplement import SubagentSupplementQueue
+
+    # 注册一个 agent_type="A" 的 session
+    sq = SubagentSupplementQueue(unique_name="")
+    unique_name = SubagentRegistry.register("A", sq)
+    sq.unique_name = unique_name
+    instance = SubagentRegistry.get(unique_name)
+    instance.state = "waiting_for_answer"
+
+    # 用 agent_name="B" 调第三分支
+    result = subagent.call_subagent(
+        agent_name="B",
+        task="",
+        llm_config={"model": "test", "api_key": "test", "base_url": "http://localhost"},
+        answer="@xxx 回答",
+        answer_unique_name=unique_name,
+    )
+
+    SubagentRegistry.unregister(unique_name)  # 清理
+    assert "[错误]" in result
+    assert "不属于" in result

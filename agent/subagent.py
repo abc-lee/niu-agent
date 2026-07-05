@@ -290,6 +290,71 @@ def _run_agent_loop(
     return result, return_value
 
 
+def _strip_at_prefix(answer: str, unique_name: str) -> str:
+    """剥除 answer 的 '@unique_name ' 前缀。找不到前缀原样使用，记 warning。
+
+    阶段四：第三分支（回复路径）用，剥除 @子名 前缀把纯回答内容传给子 Agent。
+    """
+    pattern = rf"^@{re.escape(unique_name)}\s+"
+    match = re.match(pattern, answer)
+    if match:
+        return answer[match.end():]
+    logger.warning(f"[StripAtPrefix] answer 不含 @{unique_name} 前缀，原样使用: {answer[:100]}")
+    return answer
+
+
+def _maybe_suspend_session(unique_name, return_value, handler, client, tools_schema, system_message):
+    """检测同步 @niu-agent 挂起信号，存挂起状态到 registry。
+
+    必须在 try 块内、finally 之前调用（异常安全）。
+    阶段四：同步子 Agent 跑出 INTERCEPTED_SYNC 时，把 session 状态存到 registry，
+    让主 Agent 第二次 call_subagent(answer=...) 时能从 registry 拿回继续跑。
+    """
+    from .subagent_registry import SubagentRegistry
+    if not (return_value and isinstance(return_value, dict)):
+        return
+    result_flag = return_value.get("result", "")
+    if result_flag != "INTERCEPTED_SYNC":
+        return
+    if not getattr(handler, "_is_sync_subagent", False):
+        return
+    try:
+        instance = SubagentRegistry.get(unique_name)
+        if not instance:
+            return
+        msgs = return_value.get("messages", [])
+        if not msgs or not isinstance(msgs[0], dict) or msgs[0].get("role") != "system":
+            logger.error(f"[MaybeSuspend] return_value messages 异常（空或首条非 system），不挂起")
+            return
+        instance.state = "waiting_for_answer"
+        instance.suspended_messages = msgs
+        instance.suspended_handler = handler
+        instance.suspended_client = client
+        instance.suspended_tools_schema = tools_schema
+        instance.suspended_system_message = system_message
+    except Exception as e:
+        logger.error(f"[MaybeSuspend] helper 异常，强制设 state=waiting_for_answer: {e}")
+        try:
+            instance = SubagentRegistry.get(unique_name)
+            if instance:
+                instance.state = "waiting_for_answer"
+                if instance.suspended_messages is None:
+                    msgs = return_value.get("messages", [])
+                    if msgs and isinstance(msgs[0], dict) and msgs[0].get("role") == "system":
+                        instance.suspended_messages = msgs
+                if instance.suspended_handler is None:
+                    instance.suspended_handler = handler
+                if instance.suspended_client is None:
+                    instance.suspended_client = client
+                if instance.suspended_tools_schema is None:
+                    instance.suspended_tools_schema = tools_schema
+                if instance.suspended_system_message is None:
+                    instance.suspended_system_message = system_message
+        except Exception as fallback_err:
+            logger.error(f"[MaybeSuspend] fallback 也失败: {fallback_err}")
+            raise RuntimeError(f"_maybe_suspend_session fallback 失败: {fallback_err}") from fallback_err
+
+
 def _extract_result_from_return_value(return_value: Any) -> Optional[str]:
     """
     从 agent_runner_loop 的 return 值中提取结构化结果文本
@@ -305,7 +370,11 @@ def _extract_result_from_return_value(return_value: Any) -> Optional[str]:
     """
     if return_value and isinstance(return_value, dict):
         # 控制流 dict 不应被序列化为结果 — 返回 None
-        control_flow_results = {"CONTEXT_OVERFLOW", "EXITED", "MAX_TURNS_EXCEEDED", "CURRENT_TASK_DONE", "TERMINATED_BY_SUPPLEMENT"}
+        control_flow_results = {
+            "CONTEXT_OVERFLOW", "EXITED", "MAX_TURNS_EXCEEDED", "CURRENT_TASK_DONE", "TERMINATED_BY_SUPPLEMENT",
+            "STOPPED",           # 阶段四补：子 Agent 收到 /stop 终止
+            "INTERCEPTED_SYNC",  # 阶段四新增：同步 @niu-agent 挂起
+        }
         if return_value.get("result") in control_flow_results:
             return None
 
@@ -608,6 +677,8 @@ def call_subagent(
     supplement_queue: Optional[Any] = None,
     memory_context: Optional[Any] = None,  # 阶段二新增：异步子 Agent 进度数据
     unique_name: Optional[str] = None,  # 阶段二新增：异步路径透传，跳过内部 register
+    answer: Optional[str] = None,  # 阶段四新增：回复路径（第三分支）用
+    answer_unique_name: Optional[str] = None,  # 阶段四新增：回复路径锁定挂起 session
 ) -> str:
     """
     调用子 Agent
@@ -628,6 +699,10 @@ def call_subagent(
         子 Agent 执行结果
     """
     from .handler import NiuHandler
+
+    # 顶部校验：在 get_subagent_config 之前
+    if not task and not answer:
+        return "[错误] chat-with-xxx 必须传 task（新任务）或 answer + unique_name（回复子 Agent 问题）"
 
     # 1. 获取子 Agent 提示词 + temperature
     agent_config = get_subagent_config(agent_name)
@@ -695,10 +770,56 @@ def call_subagent(
     from .subagent_supplement import SubagentSupplementQueue
     from .subagent_registry import SubagentRegistry
 
-    if unique_name is not None:
+    if answer is not None and answer_unique_name is not None:
+        # 阶段四第三分支：回复路径——从 registry 拿回挂起 session 继续跑
+        instance = SubagentRegistry.get(answer_unique_name)
+        if instance is None or getattr(instance, "state", None) != "waiting_for_answer":
+            return f"[错误] 找不到挂起的子 Agent session（unique_name={answer_unique_name}），可能已被终止"
+        if instance.agent_type != agent_name:
+            return f"[错误] unique_name={answer_unique_name} 不属于子 Agent {agent_name}（实际属于 {instance.agent_type}），请检查 unique_name 是否传错"
+
+        reply_text = _strip_at_prefix(answer, answer_unique_name)
+
+        suspended_messages = instance.suspended_messages
+        suspended_messages.append({"role": "user", "content": f"[主 Agent 回答] {reply_text}"})
+
+        instance.state = "running"
+        # 注释：不预检查 supplement_queue 是否已有 /stop，依赖 agent_runner_loop 内部 drain 检测
+
+        try:
+            result_text, return_value = _run_agent_loop(
+                client=instance.suspended_client,
+                system_prompt="",  # 向后兼容（system_message 非 None 时分支选择生效）
+                system_message=instance.suspended_system_message,
+                user_input="",
+                initial_user_content=None,
+                handler=instance.suspended_handler,
+                tools_schema=instance.suspended_tools_schema,
+                memory_context=None,
+                resumed_messages=suspended_messages,
+                supplement_queue=instance.supplement_queue,
+            )
+            _maybe_suspend_session(
+                unique_name=answer_unique_name,
+                return_value=return_value,
+                handler=instance.suspended_handler,
+                client=instance.suspended_client,
+                tools_schema=instance.suspended_tools_schema,
+                system_message=instance.suspended_system_message,
+            )
+        finally:
+            final_instance = SubagentRegistry.get(answer_unique_name)
+            final_state = getattr(final_instance, "state", None) if final_instance else None
+            if final_state != "waiting_for_answer":
+                SubagentRegistry.unregister(answer_unique_name)
+        # 注意：正常路径跑完后控制流落到 L825+ 后处理（截断/overflow/extract）
+        # 错误路径（[错误] ...）直接 return，不落后处理
+    elif unique_name is not None:
         # 异步路径：调用方已注册（_dispatch_async_subagent），跳过内部 register
         # 只设置 handler._subagent_unique_name（handler.dispatch 的 ask_main_agent 分支用）
         handler._subagent_unique_name = unique_name
+        # 阶段四：异步路径不是同步子 Agent
+        handler._is_sync_subagent = False
         # supplement_queue 也由调用方传入，不重新创建
         try:
             result_text, return_value = _run_agent_loop(
@@ -729,6 +850,8 @@ def call_subagent(
         # 同步路径也设 handler._subagent_unique_name（虽然同步子 Agent 不注入 ask_main_agent，
         # 但设上无副作用，且未来若误注入也能优雅报错而非 AttributeError）
         handler._subagent_unique_name = unique_name
+        # 阶段四：同步路径标记 _is_sync_subagent=True，让 _maybe_suspend_session 识别
+        handler._is_sync_subagent = True
         try:
             result_text, return_value = _run_agent_loop(
                 client=client,
@@ -746,8 +869,21 @@ def call_subagent(
                 supplement_queue=supplement_queue,  # 新增：传给 _run_agent_loop
                 memory_context=memory_context,  # 阶段二新增：透传给 _run_agent_loop
             )
+            # §5.5 后处理：必须在 try 块内、finally 之前执行（异常时跳过，直接进 finally）
+            _maybe_suspend_session(
+                unique_name=unique_name,
+                return_value=return_value,
+                handler=handler,
+                client=client,
+                tools_schema=tools_schema,
+                system_message=system_message,
+            )
         finally:
-            SubagentRegistry.unregister(unique_name)
+            # 条件化 unregister：state="waiting_for_answer" 时跳过（挂起 session 留待第二次 call_subagent 接续）
+            instance = SubagentRegistry.get(unique_name)
+            state = getattr(instance, "state", None) if instance else None
+            if state != "waiting_for_answer":
+                SubagentRegistry.unregister(unique_name)
 
     # 检测输出截断（finish_reason == "length"）
     # LLM 输出被截断时无法产出合法 keep/update 结构，返回字符串信号让降级循环识别
