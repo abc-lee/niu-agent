@@ -886,7 +886,7 @@ if _SUBAGENT_ASK_GUIDE_MARKER not in static_system:
 ```markdown
 ### 收到同步子 Agent @niu-agent 问题（工具结果是 JSON 含 [子名] 问题）
 
-当你调 chat-with-xxx 工具收到的结果文本是 JSON 格式 `{"status":"success","result":"[xxx-ab12] 我该选哪个？"}`（result 字段含方括号子 Agent 唯一名 + 问题内容）时，说明同步子 Agent 在向你提问。你必须：
+当你调 chat-with-xxx 工具收到的结果文本是 JSON 字符串（如 `{"status":"success","result":"[xxx-ab12] 我该选哪个？"}`），需先在脑内 JSON 解析再取 `result` 字段。`result` 字段含方括号子 Agent 唯一名 + 问题内容时，说明同步子 Agent 在向你提问。你必须：
 
 1. 从 JSON 的 `result` 字段提取问题文本（如 `[xxx-ab12] 我该选哪个？`）
 2. 用同一工具名 chat-with-xxx 回复（不要换其他工具）
@@ -1054,10 +1054,10 @@ if _SUBAGENT_ASK_GUIDE_MARKER not in static_system:
     - 第二次 call_subagent 跑过程中子 Agent 跑满 max_turns → agent_runner_loop return `{"result": "MAX_TURNS_EXCEEDED", ...}` → §5.5 helper 检测 result_flag != INTERCEPTED_SYNC → 不挂起 → finally state="running" → unregister → 主 Agent 第三次调 chat-with-xxx 拿不回 → 返回错误文本
 
 17. **主 Agent LLM 误用反例验证（v12 审查 B-3：从 §11.2 移到 §11.1 单元测试，允许 mock LLM）**
-    - mock 主 Agent LLM 把回答塞进 task（调 chat-with-xxx(task="@xxx-ab12 选 A")）→ call_subagent 顶部校验拦截 → 返回错误文本 → 主 Agent 收到错误后纠正为正确格式
-    - mock 主 Agent LLM 不传 unique_name（调 chat-with-xxx(answer="选 A")）→ 第三分支条件不成立走同步新任务分支 → task="" → LLM 收到空 user → call_subagent 顶部校验拦截
+    - mock 主 Agent LLM 把回答塞进 task（调 chat-with-xxx(task="@xxx-ab12 选 A")）→ call_subagent 顶部校验拦截 → 返回错误文本
+    - mock 主 Agent LLM 不传 unique_name（调 chat-with-xxx(answer="选 A")）→ 第三分支条件不成立走同步新任务分支 → task="" → call_subagent 顶部校验拦截
     - mock 主 Agent LLM 把 A 子 Agent unique_name 传给 B 子 Agent chat-with-xxx → 第三分支 agent_type 校验拦截 → 返回错误文本（v12 审查 I-1）
-    - 验证：call_subagent 顶部校验 + agent_type 校验 + niu.md 提示词约束三保险
+    - 验证：call_subagent 顶部校验 + agent_type 校验函数返回错误文本（不验证主 Agent LLM 纠错行为，那部分移到 §11.2 端到端测试 8）
 
 ### 11.2 端到端测试（真实 LLM + 真实程序，禁 mock）
 
@@ -1085,6 +1085,10 @@ if _SUBAGENT_ASK_GUIDE_MARKER not in static_system:
 7. **回归测试**
    - 异步子 Agent 所有行为不变（5 次 @niu-agent + @end + 格式错误 + /stop）
    - 主 Agent 正常对话不被拦截层误伤
+
+8. **主 Agent LLM 真实纠错行为（v13 审查 I-1：从 §11.1 移到端到端测试）**
+   - 构造一个会让主 Agent LLM 误用 task 字段塞回答的场景（如 niu.md 提示词故意不约束 answer 参数）→ 真实 LLM 调 chat-with-xxx(task="@子名 回答") → call_subagent 顶部校验返回错误文本 → 真实 LLM 看到错误文本后改用正确格式 chat-with-xxx(task="", answer=..., unique_name=...) → 子 Agent 收到回答继续工作
+   - 验证：真实 LLM 能从错误文本中纠正为正确格式（不是 mock 编程的纠错）
 
 ---
 
