@@ -306,9 +306,17 @@ if interception_status == EXIT:
     yield StreamEvent("reply", exit_content)
     yield StreamEvent("system", "chat_idle")
     return {"result": "EXITED", "messages": messages, "finish_reason": "exited"}
-    # 注意：现有 EXIT 分支（agent_loop.py:578-589）是 break 后落到 L684 finally 调 clear_stop()
-    # v11 改为显式 return——这是有意改动，跳过 L684 的 clear_stop 调用
-    # 原因：子 Agent 路径不应清主 Agent 全局 stop 标志（v9 审查 B5）
+    # 事实陈述（v12 审查 B-1 修正）：
+    # 现有 EXIT 分支（agent_loop.py:578-589）是 yield reply + break，break 后落到 L934-947 退出逻辑：
+    #   - L935 on_turn_end 回调（子 Agent 路径未传该回调，无副作用）
+    #   - L937 clear_stop()（清主 Agent 全局 stop 标志——子 Agent 路径不应清，已存在瑕疵）
+    #   - L938 yield chat_idle
+    #   - L942 return {"result": "CURRENT_TASK_DONE", ...}
+    # v12 改为显式 return {"result": "EXITED", ...}：
+    #   - 跳过 clear_stop()（有意，避免清主 Agent stop 标志）
+    #   - 跳过 on_turn_end（子 Agent 路径未传该回调，无副作用）
+    #   - 手动补 yield chat_idle（保证状态清理）
+    #   - return EXITED 而非 CURRENT_TASK_DONE（让 §5.5 精确判别 @end 退出 vs 同步 @niu-agent 挂起）
     # 现有 STOPPED 分支（L500/668/739）仍调 clear_stop() 是已存在瑕疵，本阶段不修
 if interception_status == FORMAT_ERROR:
     _harness_fail_count = 0
@@ -381,7 +389,13 @@ if answer is not None and answer_unique_name is not None:
     
     # 复位 state 为 running（即将重新跑）
     instance.state = "running"
-    
+    # 注释（v12 审查 I-2）：不预检查 supplement_queue 是否已有 /stop
+    # 时序窗口：state 复位后、_run_agent_loop 启动前，用户可能已 /stop
+    # request_stop_all_subagents 看到 state="running" 推 /stop 到 supplement_queue
+    # 此时 _run_agent_loop 启动后 agent_runner_loop 内部 L879-894 drain 时检测到 terminate
+    # → 走终止总结路径。第三分支不预检查，依赖 agent_runner_loop 内部 drain 检测
+    # （若预检查会丢失 /stop 信号，因为 supplement_queue 已 push 但无人 drain）
+
     # 用 suspended 的全套状态重新调 _run_agent_loop
     try:
         result_text, return_value = _run_agent_loop(
@@ -603,7 +617,7 @@ control_flow_results = {
 
 - `STOPPED`：当前集合不含，本阶段顺便补（修已存在 bug）
 - `INTERCEPTED_SYNC`：当前集合不含，本阶段新增
-- `EXITED`：当前集合已含，确认保留
+- `EXITED`：当前集合已含（`subagent.py:285` 验证），但 `agent_loop.py:805-809` 的 EXITED 返回路径是死代码（`should_exit` 从未被赋值为 dict）——现有 @end 路径实际 return `CURRENT_TASK_DONE`（break 后落到 L942）。v11/v12 §4.4 让 @end 路径首次实际 return `EXITED`，激活该占位。**不是"已存在保留"，是"死代码复活"**
 
 ---
 
@@ -1039,11 +1053,17 @@ if _SUBAGENT_ASK_GUIDE_MARKER not in static_system:
 16. **第二次跑过程中 MAX_TURNS_EXCEEDED**
     - 第二次 call_subagent 跑过程中子 Agent 跑满 max_turns → agent_runner_loop return `{"result": "MAX_TURNS_EXCEEDED", ...}` → §5.5 helper 检测 result_flag != INTERCEPTED_SYNC → 不挂起 → finally state="running" → unregister → 主 Agent 第三次调 chat-with-xxx 拿不回 → 返回错误文本
 
+17. **主 Agent LLM 误用反例验证（v12 审查 B-3：从 §11.2 移到 §11.1 单元测试，允许 mock LLM）**
+    - mock 主 Agent LLM 把回答塞进 task（调 chat-with-xxx(task="@xxx-ab12 选 A")）→ call_subagent 顶部校验拦截 → 返回错误文本 → 主 Agent 收到错误后纠正为正确格式
+    - mock 主 Agent LLM 不传 unique_name（调 chat-with-xxx(answer="选 A")）→ 第三分支条件不成立走同步新任务分支 → task="" → LLM 收到空 user → call_subagent 顶部校验拦截
+    - mock 主 Agent LLM 把 A 子 Agent unique_name 传给 B 子 Agent chat-with-xxx → 第三分支 agent_type 校验拦截 → 返回错误文本（v12 审查 I-1）
+    - 验证：call_subagent 顶部校验 + agent_type 校验 + niu.md 提示词约束三保险
+
 ### 11.2 端到端测试（真实 LLM + 真实程序，禁 mock）
 
 1. **同步子 Agent @niu-agent 询问 + 主 Agent 回复 + 子 Agent 继续**
    - 主 Agent 调 chat-with-xxx → 子 Agent @niu-agent 问澄清问题 → 主 Agent 看到 JSON 工具结果含 `[子名] 问题` → 回 `@子名 回答` → 子 Agent 收到回答继续工作 → @end 返回结果
-   - 验证方法：检查主 Agent agent_runner_loop 的 tool_calls 列表里第二次 chat-with-xxx 调用（带 answer + unique_name 参数）；检查最终回复不含纯文本 fallback（即主 Agent 没有绕过工具循环直接回用户）；检查 SubagentRegistry 在 @end 后无残留 session
+   - 验证方法：检查日志 `[AgentLoop]` + `chat-with-xxx` 出现两次（第一次 task 调用 + 第二次 answer 调用）；检查最终回复不含纯文本 fallback（即主 Agent 没有绕过工具循环直接回用户）；检查 SubagentRegistry 在 @end 后无残留 session（v12 审查 I-3 修正观察方法）
 
 2. **同步子 Agent 多轮 @niu-agent**
    - 子 Agent 连续问 3 次 @niu-agent → 主 Agent 回复 3 次 → 子 Agent @end
@@ -1065,11 +1085,6 @@ if _SUBAGENT_ASK_GUIDE_MARKER not in static_system:
 7. **回归测试**
    - 异步子 Agent 所有行为不变（5 次 @niu-agent + @end + 格式错误 + /stop）
    - 主 Agent 正常对话不被拦截层误伤
-
-8. **主 Agent LLM 误用反例验证**
-   - mock 主 Agent LLM 把回答塞进 task → call_subagent 顶部校验拦截 → 返回错误文本 → 主 Agent 收到错误后纠正
-   - mock 主 Agent LLM 不传 unique_name → 第三分支条件不成立走同步新任务分支 → 顶部校验拦截
-   - 验证：call_subagent 顶部校验 + niu.md 提示词约束双保险
 
 ---
 
