@@ -1,4 +1,4 @@
-"""验证 LLM 在给定 @前缀守则的系统提示词下，是否会输出 @niu/@end 前缀。
+"""验证 LLM 在给定 @前缀守则的系统提示词下，是否会输出 @niu-agent/@end 前缀。
 
 用法：python/bin/python tests/verify_llm_at_prefix.py
 
@@ -19,15 +19,15 @@ from agent.generic.agent_loop import exhaust
 SYSTEM_PROMPT = """你是一个异步子 Agent。每轮输出必须遵循以下格式：
 
 1. 调用工具继续工作：正常 tool_calls
-2. 询问主 Agent（不退出，等主 Agent 回答后继续）：content 必须以 `@niu ` 开头，如 `@niu 我应该选择哪个选项？`
+2. 询问主 Agent（不退出，等主 Agent 回答后继续）：content 必须以 `@niu-agent ` 开头，如 `@niu-agent 我应该选择哪个选项？`
 3. 结束会话（任务完成或无法继续）：content 必须以 `@end ` 开头，如 `@end 任务已完成，结果：...`
 
 **重要**：禁止输出不带 @ 前缀的纯 content（会被程序拒绝并要求重新输出）。
-遇到需要用户决策的问题时，必须用 `@niu` 询问，禁止直接把问题写在 content 里。
+遇到需要用户决策的问题时，必须用 `@niu-agent` 询问，禁止直接把问题写在 content 里。
 """
 
 USER_TASK = """请打开 16personalities.com 网站开始 MBTI 测试。
-遇到第一个问题时不要自己选，必须询问我（用 @niu 前缀）。"""
+遇到第一个问题时不要自己选，必须询问我（用 @niu-agent 前缀）。"""
 
 
 def _load_llm_config():
@@ -102,15 +102,15 @@ def main():
             "content": "已打开 16personalities.com，进入测试页，第 1 题：你经常结交新朋友。请选择 A/B/C/D。",
         })
 
-        print("\n=== 第二轮（遇到选择题，应输出 @niu）===")
+        print("\n=== 第二轮（遇到选择题，应输出 @niu-agent）===")
         gen = client.chat(messages=messages, tools=tools)
         response = exhaust(gen)
         print(f"tool_calls: {response.tool_calls}")
         print(f"content: {response.content!r}")
 
         content = (response.content or "").strip()
-        if content.startswith("@niu"):
-            print("\n[PASS] 验证通过：LLM 输出了 @niu 前缀")
+        if content.startswith("@niu-agent"):
+            print("\n[PASS] 验证通过：LLM 输出了 @niu-agent 前缀")
         elif content.startswith("@end"):
             print("\n[WARN] LLM 输出了 @end（误判任务完成）")
         else:

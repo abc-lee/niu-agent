@@ -57,7 +57,7 @@ def test_ask_main_agent_impl_returns_terminated_when_cancelled(monkeypatch):
 
 
 def test_at_niu_prefix_triggers_ask_main_agent(monkeypatch):
-    """子 Agent content 以 @niu 开头时，拦截层调 _ask_main_agent_impl 并把回答注入 messages"""
+    """子 Agent content 以 @niu-agent 开头时，拦截层调 _ask_main_agent_impl 并把回答注入 messages"""
     from agent.generic import agent_loop
     from agent import subagent
 
@@ -80,7 +80,7 @@ def test_at_niu_prefix_triggers_ask_main_agent(monkeypatch):
 
     # 调拦截函数（注意：无 agent_name 参数）
     result = agent_loop._intercept_at_prefix_content(
-        content="@niu 我应该选择哪个选项？",
+        content="@niu-agent 我应该选择哪个选项？",
         tool_calls=[],
         messages=messages,
         handler=fake_handler,
@@ -95,7 +95,7 @@ def test_at_niu_prefix_triggers_ask_main_agent(monkeypatch):
 
     # 断言：messages 被追加了 assistant content + user 回答（不是 tool 消息）
     assert messages[-2]["role"] == "assistant"
-    assert messages[-2]["content"] == "@niu 我应该选择哪个选项？"
+    assert messages[-2]["content"] == "@niu-agent 我应该选择哪个选项？"
     assert messages[-1]["role"] == "user"
     assert "主 Agent 的回答" in messages[-1]["content"]
 
@@ -162,7 +162,7 @@ def test_no_at_prefix_no_tool_calls_returns_format_error(monkeypatch):
     assert messages[-2]["content"] == "我应该选择哪个选项？"
     assert messages[-1]["role"] == "user"
     assert "对话格式错误" in messages[-1]["content"]
-    assert "@niu" in messages[-1]["content"]
+    assert "@niu-agent" in messages[-1]["content"]
     assert "@end" in messages[-1]["content"]
 
 
@@ -204,7 +204,7 @@ def test_no_interception_when_tool_calls_present(monkeypatch):
 
 
 def test_at_niu_without_question_returns_format_error(monkeypatch):
-    """@niu 后无问题内容时返回 FORMAT_ERROR"""
+    """@niu-agent 后无问题内容时返回 FORMAT_ERROR"""
     from agent.generic import agent_loop
 
     fake_handler = mock.MagicMock()
@@ -212,7 +212,7 @@ def test_at_niu_without_question_returns_format_error(monkeypatch):
     messages = [{"role": "user", "content": "开始"}]
 
     result = agent_loop._intercept_at_prefix_content(
-        content="@niu",  # @niu 后无内容
+        content="@niu-agent",  # @niu-agent 后无内容
         tool_calls=[],
         messages=messages,
         handler=fake_handler,
@@ -234,7 +234,7 @@ def test_at_niu_without_unique_name_returns_format_error(monkeypatch):
     messages = [{"role": "user", "content": "开始"}]
 
     result = agent_loop._intercept_at_prefix_content(
-        content="@niu 问题",
+        content="@niu-agent 问题",
         tool_calls=[],
         messages=messages,
         handler=fake_handler,

@@ -92,7 +92,7 @@ def test_registry_register_duplicate_unique_name_terminates_old_future():
 def test_ask_main_agent_tool_returns_answer():
     """_ask_main_agent_impl：注册 future → 推 MainAgentRequestQueue → 阻塞 → set_answer 后返回回答。
 
-    @niu content 拦截路径下，agent_loop._intercept_at_prefix_content 检测到 @niu 前缀后
+    @niu-agent content 拦截路径下，agent_loop._intercept_at_prefix_content 检测到 @niu-agent 前缀后
     直接调本函数（同步，无 MCP 工具派发）。
     """
     from agent.subagent import _ask_main_agent_impl
@@ -177,10 +177,10 @@ def test_ask_main_agent_tool_terminated_returns_terminated_status():
 
 
 def test_ask_main_agent_after_cancel_does_not_deadlock():
-    """cancel 后 LLM 又触发 @niu 拦截不死锁——直接返回 terminated 状态（_ask_terminated 标记）。
+    """cancel 后 LLM 又触发 @niu-agent 拦截不死锁——直接返回 terminated 状态（_ask_terminated 标记）。
 
-    场景：子 Agent @niu 拦截被 cancel → _ask_main_agent_impl 返回 terminated → LLM 没走终止总结
-    反而又输出 @niu content → _intercept_at_prefix_content 再次调 _ask_main_agent_impl
+    场景：子 Agent @niu-agent 拦截被 cancel → _ask_main_agent_impl 返回 terminated → LLM 没走终止总结
+    反而又输出 @niu-agent content → _intercept_at_prefix_content 再次调 _ask_main_agent_impl
     → 应直接返回 terminated 不阻塞（否则 /stop 在 queue 但子 Agent 阻塞在
     _ask_main_agent_impl 不会 drain → 死锁）
     """
