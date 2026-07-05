@@ -331,7 +331,12 @@ if interception_status == INTERCEPTED_SYNC:
     # 同步路径：yield wrapped_text + 显式 return INTERCEPTED_SYNC
     yield StreamEvent("reply", interception_payload)
     # 显式 return，不走末尾 MAX_TURNS_EXCEEDED 路径
-    clear_stop()
+    # 注意：子 Agent 路径不调全局 clear_stop()（v9 审查 B5）
+    # clear_stop() 是全局函数（agent/runner.py import），会清主 Agent 的 stop 标志
+    # 当前同步子 Agent 跑时主 Agent 在 dispatch 阻塞无法按停止，clear_stop 无害但语义错误
+    # 子 Agent 自己的 stop 清理由 supplement_drain / _is_stop_requested 处理
+    # 现有 agent_loop.py:500/668/739 同步子 Agent 路径也调 clear_stop 是已知瑕疵，本阶段不动
+    # 但 INTERCEPTED_SYNC 分支是新增的，不沿袭此瑕疵——不调 clear_stop()
     yield StreamEvent("system", "chat_idle")
     return {"result": "INTERCEPTED_SYNC", "messages": messages, "finish_reason": "intercepted_sync"}
 if interception_status == EXIT:
@@ -344,7 +349,7 @@ if interception_status == EXIT:
     else:
         exit_content = content
     yield StreamEvent("reply", exit_content)
-    clear_stop()
+    # 同上：子 Agent 路径不调全局 clear_stop()（v9 审查 B5）
     yield StreamEvent("system", "chat_idle")
     return {"result": "EXITED", "messages": messages, "finish_reason": "exited"}
 if interception_status == FORMAT_ERROR:
@@ -421,6 +426,15 @@ if answer is not None and answer_unique_name is not None:
     # 复位 state 为 running（即将重新跑）
     instance.state = "running"
     
+    # 检查 supplement_queue 是否已有 /stop（v9 审查 B6 时序竞态）
+    # 时序窗口：state 复位后、_run_agent_loop 启动前，用户可能已 /stop
+    # request_stop_all_subagents 看到 state="running" 推 /stop 到 supplement_queue
+    # 若不检查，_run_agent_loop 启动后立即 drain 到 /stop → 子 Agent 还没跑就终止
+    # 此处主动检查：若 supplement_queue 已有 terminate 项，直接 unregister 返回终止文本
+    if instance.supplement_queue and instance.supplement_queue.has_terminate():
+        SubagentRegistry.unregister(answer_unique_name)
+        return "[子 Agent 已被 /stop 终止]"
+    
     # 用 suspended 的全套状态重新调 _run_agent_loop
     try:
         result_text, return_value = _run_agent_loop(
@@ -460,6 +474,7 @@ else:
 **关键设计点**：
 - 第三分支复位 `instance.state = "running"` 后再跑 _run_agent_loop，让子 Agent 内部若再次 @niu-agent 能重新设 state="waiting_for_answer"
 - 第三分支 finally 也条件化 unregister——多轮 @niu-agent 时第二次 call_subagent 不注销，第三次才能正常注销（修复 v1 BLOCKER B-NEW-4）
+- **client 复用风险（v9 审查 I3）**：`instance.suspended_client` 是第一次 call_subagent 创建的 LiteLLM client。LiteLLM client 内部可能有 retry 状态/HTTP 连接池。第一次跑若 LLM 调用失败触发 retry，client 内部状态可能干扰第二次。**实施时实测验证**：若发现 retry 状态干扰，第二次 call_subagent 重新 `create_client(llm_config)` 替代复用 `instance.suspended_client`。v1 默认复用，v2 视实测再加
 
 ### 5.3 同步新任务分支改动
 
@@ -616,11 +631,19 @@ def _maybe_suspend_session(unique_name, return_value, handler, client, tools_sch
 
 **主 Agent 提示词约束**：niu.md 已有"看到 `[子名] 问题` 回 `@子名 回答`"守则，主 Agent 看到 chat-with-xxx 工具结果含 `[子名] 问题` 时会自然调 chat-with-xxx 带 answer + unique_name。
 
-**边界校验（v8 审查 I3 补充）**：schema 改 task 为 optional 后，主 Agent 可能调 `chat-with-xxx()` 完全不带参数（task="" + answer=None + unique_name=None）→ 走同步新任务分支，task="" 让 LLM 收到空 user 消息。**call_subagent 顶部加校验**：
+**边界校验（v8 审查 I3 补充，v9 审查 I2 明确位置）**：schema 改 task 为 optional 后，主 Agent 可能调 `chat-with-xxx()` 完全不带参数（task="" + answer=None + unique_name=None）→ 走同步新任务分支，task="" 让 LLM 收到空 user 消息。**call_subagent 顶部加校验，位置在 L606 `get_subagent_config` 之前**（避免无意义初始化 client/handler）：
+
 ```python
-if not task and not answer:
-    return "[错误] chat-with-xxx 必须传 task（新任务）或 answer + unique_name（回复子 Agent 问题）"
+def call_subagent(agent_name, task, llm_config, ...):
+    # 顶部校验（v9 审查 I2）：在 get_subagent_config 之前
+    if not task and not answer:
+        return "[错误] chat-with-xxx 必须传 task（新任务）或 answer + unique_name（回复子 Agent 问题）"
+    
+    # 1. 获取子 Agent 提示词 + temperature
+    agent_config = get_subagent_config(agent_name)
+    ...
 ```
+
 此校验在三分支判断之前执行，避免空调用走错分支。
 
 ### 5.7 _call_subagent_gen 透传
@@ -634,7 +657,7 @@ answer = args.get("answer")  # 新增
 unique_name_arg = args.get("unique_name")  # 新增，避免与 call_subagent 的 unique_name 参数混淆
 ```
 
-L998 调 call_subagent 时**在现有参数基础上追加** answer + answer_unique_name（其他参数如 `history` / `context_fifo_threshold` / `no_tools` / `memory_context` / `supplement_queue` / `unique_name` 保持现有透传不变）：
+L998 调 call_subagent 的**完整参数清单**（当前 `handler.py:998-1004` 只传 `agent_name/task/llm_config/mcp_client/history` 5 个参数，spec 改造后完整清单如下）：
 
 ```python
 result = call_subagent(
@@ -642,12 +665,13 @@ result = call_subagent(
     task=task,
     llm_config=llm_config,
     mcp_client=mcp_client,
-    history=_history,  # 现有
-    # ... 其他现有参数保持不变 ...
+    history=_history,
     answer=answer,  # 新增
     answer_unique_name=unique_name_arg if answer else None,  # 新增
 )
 ```
+
+**注意**：当前 `handler.py:998-1004` **没有传** `supplement_queue` / `memory_context` / `unique_name` / `context_fifo_threshold` / `no_tools`——这些参数在 call_subagent 内部分别由同步新任务分支（L698-700 创建 supplement_queue）、异步分支（unique_name 由调用方传，但 handler 不传所以走同步分支）处理。本阶段不改这个现状，只追加 answer + answer_unique_name 两个新参数。第三分支（回复路径）的 `supplement_queue=instance.supplement_queue` 在 call_subagent 内部从 registry 取，不经 handler 透传。
 
 ### 5.8 control_flow_results 集合更新
 
@@ -741,8 +765,38 @@ else:
 **关键设计点**：
 - `if resumed_messages is not None` 分支**只替换 messages 赋值**，L482+ 的 turn/harness/chat_busy 初始化保留在 if/else 之外，对所有路径都执行
 - resumed_messages 路径跳过 system_message + history + user_input 构造（这些已包含在 suspended_messages 里）
-- **FIFO 裁剪保护（v7 审查 I9 补充）**：resumed_messages 路径下，messages[0] 是 system_message（第一次跑 L416 加进去的）。若第二次跑期间触发 `_fifo_prune`（L519 附近），必须保护 messages[0] 不被裁剪——否则第三次跑 resumed_messages[0] 不是 system_message → LLM 无 system prompt 行为漂移。
-- **`_fifo_prune` 现有保护逻辑**（`agent_loop.py:246-292`）：当前保护 messages[0]（system）和 messages[1]（初始 user），从 i=2 开始删除。**问题**：resumed_messages 路径下 messages[1] 不是"初始 user"，可能是上轮 assistant 或工具结果。**改动要求**：resumed_messages 路径下 `_fifo_prune` 保护边界调整为"保护 messages[0]（system）+ 最近 `protect_recent_count` 条消息"，而不是固定保护 messages[0]+messages[1]。实施时检查 `_fifo_prune` 的 `protect_recent_count` 参数（`subagent.py:140` `DEFAULT_PROTECT_RECENT_COUNT=10`），确认 resumed_messages 路径下用 `protect_recent_count` 而非硬编码 messages[1]
+- **FIFO 裁剪保护（v7 审查 I9 补充，v9 审查 B4 给完整代码）**：resumed_messages 路径下，messages[0] 是 system_message（第一次跑 L416 加进去的）。若第二次跑期间触发 `_fifo_prune`（`agent_loop.py:246-292`），必须保护 messages[0] 不被裁剪——否则第三次跑 resumed_messages[0] 不是 system_message → LLM 无 system prompt 行为漂移。
+
+**`_fifo_prune` 改动**：当前 `_fifo_prune(messages, target_tokens)` 硬编码保护 `messages[0]`（system）+ `messages[1]`（初始 user），从 `i=2` 开始删。resumed_messages 路径下 messages[1] 不是"初始 user"——可能是上轮 assistant 或工具结果。改动方案：
+
+```python
+def _fifo_prune(messages, target_tokens, protect_recent_count=DEFAULT_PROTECT_RECENT_COUNT, is_resumed=False):
+    """
+    FIFO 裁剪 messages 到 target_tokens。
+    
+    Args:
+        messages: messages list（会被原地修改）
+        target_tokens: 目标 token 数
+        protect_recent_count: 保护最近 N 条消息不被裁剪（默认 10）
+        is_resumed: 是否 resumed_messages 路径。True 时保护边界为
+            messages[0]（system）+ 最近 protect_recent_count 条；
+            False 时保持现有行为（保护 messages[0]+messages[1]）
+    """
+    if len(messages) <= 2:
+        return 0
+    # 计算保护边界
+    if is_resumed:
+        # resumed 路径：保护 messages[0]（system）+ 最近 protect_recent_count 条
+        protect_end = len(messages) - protect_recent_count
+        protect_end = max(2, protect_end)  # 至少从 i=2 开始删
+    else:
+        # 现有行为：保护 messages[0]+messages[1]，从 i=2 开始
+        protect_end = 2
+    # 从 protect_end 之前删除（FIFO）
+    ...
+```
+
+**agent_runner_loop 调用 `_fifo_prune` 时传 `is_resumed=(resumed_messages is not None)`**，让 resumed_messages 路径下用 `protect_recent_count` 而非硬编码 messages[1]。
 
 ---
 
@@ -804,8 +858,9 @@ def request_stop_all_subagents():
 
 主 Agent 工具循环可能因 LLM 不调第二次 chat-with-xxx 而退出（如 LLM 直接回用户）——此时挂起的同步 session 残留。处理：
 
-- 主 Agent 工具循环退出（agent_runner_loop 主路径结束）时，扫描 SubagentRegistry，清理所有 `state="waiting_for_answer"` 且 `is_sync=True` 的 session
-- **实现位置**：`agent/runner.py` 主 Agent 工具循环生成器的 `finally` 块（L2184-2201 附近）。`finally` 块在所有退出路径（正常 StopIteration、is_stop_requested break、异常）都会执行，是清理挂起 session 的合适位置
+- **清理时机**：主 Agent `agent_runner_loop` 生成器结束（无论正常 StopIteration、is_stop_requested break、还是异常）时，扫描 SubagentRegistry，清理所有 `state="waiting_for_answer"` 且 `is_sync=True` 的 session
+- **实现位置**：`agent/runner.py` 的 `NiuRunner` 主 Agent 工具循环生成器（`_run_main_agent_gen` 或类似函数，位于 L2184-2201 附近的 finally 块）。实施时 grep `finally` 在 runner.py 主 Agent 路径定位
+- **同步子 Agent 挂起时主 Agent 工具循环状态**：call_subagent 第一次返回 @niu-agent 问题后，主 Agent dispatch 返回，主 Agent agent_runner_loop 继续跑——此时主 Agent **不在 dispatch 阻塞**，可能不调第二次 chat-with-xxx 直接回用户 → agent_runner_loop 正常结束 → finally 块清理挂起 session
 - 条件 `state="waiting_for_answer" and is_sync=True` 不会误清理异步子 Agent（异步 state 不会是 waiting_for_answer）
 - 加 `cleanup_suspended_sync_subagents()` helper 函数，遍历 `SubagentRegistry.list_running()` 注销符合条件的 session
 
@@ -943,19 +998,22 @@ if _SUBAGENT_ASK_GUIDE_MARKER not in static_system:
 
 ### 9B.2 niu.md 增量提示词片段
 
+**重要**：主 Agent LLM 看到的工具结果不是纯文本，而是 JSON 包装。`_call_subagent_gen`（`handler.py:1051`）返回 `StepOutcome({"status":"success","result":"..."})`，`agent_loop.py:816-825` 把它 `json.dumps` 序列化为 tool 消息 content。主 Agent LLM 看到的格式是 `{"status":"success","result":"[xxx-ab12] 我该选哪个？"}` JSON 字符串。
+
 在 `config/agents/niu.md` 的"### 收到 [子名] 问题消息时"段（L255 附近）追加：
 
 ```markdown
-### 收到同步子 Agent @niu-agent 问题（工具结果含 [子名] 问题）
+### 收到同步子 Agent @niu-agent 问题（工具结果是 JSON 含 [子名] 问题）
 
-当你调 chat-with-xxx 工具收到的结果文本形如 `[xxx-ab12] 我该选哪个？`（方括号含子 Agent 唯一名 + 问题内容）时，说明同步子 Agent 在向你提问。你必须：
+当你调 chat-with-xxx 工具收到的结果文本是 JSON 格式 `{"status":"success","result":"[xxx-ab12] 我该选哪个？"}`（result 字段含方括号子 Agent 唯一名 + 问题内容）时，说明同步子 Agent 在向你提问。你必须：
 
-1. 用同一工具名 chat-with-xxx 回复（不要换其他工具）
-2. 参数严格按以下格式：
+1. 从 JSON 的 `result` 字段提取问题文本（如 `[xxx-ab12] 我该选哪个？`）
+2. 用同一工具名 chat-with-xxx 回复（不要换其他工具）
+3. 参数严格按以下格式：
    - `task`：传空字符串 `""`（不要把回答塞进 task）
    - `answer`：传 `@<子名> 你的回答`（含 @子名 前缀，如 `@xxx-ab12 选 A`）
    - `unique_name`：传方括号里的子名（如 `xxx-ab12`）
-3. 不要同时传 task 和 answer——task 是新任务，answer 是回复子 Agent 问题，二者互斥
+4. 不要同时传 task 和 answer——task 是新任务，answer 是回复子 Agent 问题，二者互斥
 
 **反例**（禁止）：
 - `chat-with-xxx(task="@xxx-ab12 选 A")` — 回答塞进 task，会被当新任务
@@ -965,7 +1023,7 @@ if _SUBAGENT_ASK_GUIDE_MARKER not in static_system:
 **正例**：
 - `chat-with-xxx(task="", answer="@xxx-ab12 选 A", unique_name="xxx-ab12")`
 
-同步子 Agent 收到你的回答后会继续工作，可能再次 @niu-agent 提问（你会再收到 `[xxx-ab12] 新问题`），或 @end 结束返回最终结果。
+同步子 Agent 收到你的回答后会继续工作，可能再次 @niu-agent 提问（你会再收到 JSON result 字段含 `[xxx-ab12] 新问题`），或 @end 结束返回最终结果（result 字段是最终文本，不含方括号）。
 ```
 
 ### 9B.3 agent-template.md 增量
@@ -1144,6 +1202,11 @@ if _SUBAGENT_ASK_GUIDE_MARKER not in static_system:
 7. **回归测试**
    - 异步子 Agent 所有行为不变（5 次 @niu-agent + @end + 格式错误 + /stop）
    - 主 Agent 正常对话不被拦截层误伤
+
+8. **主 Agent LLM 误用反例验证（v9 审查 I6 补充）**
+   - mock 主 Agent LLM 把回答塞进 task（调 chat-with-xxx(task="@xxx-ab12 选 A")）→ call_subagent 顶部校验拦截 → 返回错误文本 → 主 Agent 收到错误后纠正为正确格式
+   - mock 主 Agent LLM 不传 unique_name（调 chat-with-xxx(answer="选 A")）→ 第三分支条件不成立走同步新任务分支 → task="" → LLM 收到空 user → call_subagent 顶部校验拦截
+   - 验证：call_subagent 顶部校验 + niu.md 提示词约束双保险，LLM 不听话时不会卡死
 
 ---
 
