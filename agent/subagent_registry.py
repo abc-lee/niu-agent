@@ -30,6 +30,13 @@ class RunningSubagent:
     # 两者都有 cancel() 方法，类型用 Union 兼容
     task: Optional[Union[asyncio.Task, ConcurrentFuture]] = None  # 异步子 Agent 才有，同步为 None
     started_at: float = field(default_factory=time.time)  # 启动时间，用于动态注入区排序
+    # 新增字段（同步 @niu-agent 挂起状态）
+    state: str = "running"  # "running" / "waiting_for_answer"
+    suspended_messages: Optional[list] = None
+    suspended_handler: Optional[Any] = None
+    suspended_client: Optional[Any] = None
+    suspended_tools_schema: Optional[list] = None
+    suspended_system_message: Optional[dict] = None
 
 
 class SubagentRegistry:

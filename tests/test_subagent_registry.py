@@ -82,3 +82,27 @@ def test_concurrent_register():
     for t in threads:
         t.join()
     assert len(names) == 100
+
+
+def test_running_subagent_default_fields():
+    """RunningSubagent 新增 6 字段默认值正确"""
+    from agent.subagent_supplement import SubagentSupplementQueue
+    sq = SubagentSupplementQueue(unique_name="")
+    r = RunningSubagent(unique_name="test-ab12", agent_type="test", supplement_queue=sq)
+    assert r.state == "running"
+    assert r.suspended_messages is None
+    assert r.suspended_handler is None
+    assert r.suspended_client is None
+    assert r.suspended_tools_schema is None
+    assert r.suspended_system_message is None
+
+
+def test_running_subagent_state_transition():
+    """state 字段可被外部修改"""
+    from agent.subagent_supplement import SubagentSupplementQueue
+    sq = SubagentSupplementQueue(unique_name="")
+    r = RunningSubagent(unique_name="test-ab12", agent_type="test", supplement_queue=sq)
+    r.state = "waiting_for_answer"
+    assert r.state == "waiting_for_answer"
+    r.state = "running"
+    assert r.state == "running"
