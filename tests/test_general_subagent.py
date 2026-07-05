@@ -420,3 +420,42 @@ def test_get_tools_schema_includes_main_only_by_default():
     tools = runner.get_tools_schema()
     tool_names = [t["function"]["name"] for t in tools]
     assert "check_subagent_progress" in tool_names
+
+
+def test_build_subagent_system_segments_injects_guide_for_all_subagents(tmp_path, monkeypatch):
+    """所有子 Agent（同步+异步）build_subagent_system_segments 都注入 @niu-agent/@end 守则"""
+    from agent import subagent
+
+    user_dir = tmp_path / "user" / "agents"
+    user_dir.mkdir(parents=True)
+    (user_dir / "my-agent.md").write_text("---\ndescription: my agent\n---\nYou are my agent.")
+
+    project_dir = tmp_path / "project" / "config" / "agents"
+    project_dir.mkdir(parents=True)
+    monkeypatch.setattr(subagent, "_PROJECT_AGENTS_DIR", str(project_dir))
+    monkeypatch.setattr(subagent, "_USER_AGENTS_DIR", str(user_dir))
+
+    static_system, dynamic_system = subagent.build_subagent_system_segments("my-agent")
+    assert "<!-- NIU_SUBAGENT_GUIDE_v1 -->" in static_system
+    assert "@niu-agent" in static_system
+    assert "@end" in static_system
+
+
+def test_build_subagent_system_segments_no_duplicate_injection(tmp_path, monkeypatch):
+    """子 Agent 正文已含 marker 时不重复注入"""
+    from agent import subagent
+
+    user_dir = tmp_path / "user" / "agents"
+    user_dir.mkdir(parents=True)
+    (user_dir / "my-agent.md").write_text(
+        "---\ndescription: my agent\n---\nYou are my agent.\n\n<!-- NIU_SUBAGENT_GUIDE_v1 -->\n已有守则"
+    )
+
+    project_dir = tmp_path / "project" / "config" / "agents"
+    project_dir.mkdir(parents=True)
+    monkeypatch.setattr(subagent, "_PROJECT_AGENTS_DIR", str(project_dir))
+    monkeypatch.setattr(subagent, "_USER_AGENTS_DIR", str(user_dir))
+
+    static_system, _ = subagent.build_subagent_system_segments("my-agent")
+    # 守则只出现一次（marker 计数 == 1）
+    assert static_system.count("<!-- NIU_SUBAGENT_GUIDE_v1 -->") == 1

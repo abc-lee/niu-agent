@@ -66,6 +66,27 @@ _BOUNDARY_SECTION_TEMPLATE = """## 职责边界
 不要猜测含义，无法完全确认属于自己的职责范围的，就要直接退出，回复主 Agent。"""
 
 
+_SUBAGENT_ASK_GUIDE_TEMPLATE = """<!-- NIU_SUBAGENT_GUIDE_v1 -->
+## 子 Agent 与主 Agent 对话规则
+
+你是子 Agent，工作未完成时遇到必须澄清的问题，必须用 `@niu-agent ` 前缀的 content 询问主 Agent，禁止把问题写在 content 里直接返回——直接返回会被程序拒绝并要求重新输出。
+
+只有以下情况才能直接返回：
+1. 任务已完成，用 `@end ` 前缀返回最终结果。
+2. 任务确实无法继续（如缺权限、缺资源），用 `@end ` 前缀汇报情况让主 Agent 决策。
+
+其他任何"需要更多信息才能继续"的情况，一律用 `@niu-agent ` 前缀询问。
+
+格式示例：
+- 询问：`@niu-agent 我应该选择哪个选项？`
+- 结束：`@end 任务已完成，结果：...`
+
+注：你不需要在输出里包含自己的标识符，程序会自动在你的问题前加上唯一标识，主 Agent 据此回复你。
+"""
+
+_SUBAGENT_ASK_GUIDE_MARKER = "<!-- NIU_SUBAGENT_GUIDE_v1 -->"
+
+
 def count_tokens_for_text(text: str) -> int:
     """
     计算文本的 token 数量（用于子 Agent prompt 分片判断）
@@ -406,7 +427,11 @@ def build_subagent_system_segments(agent_name: str) -> tuple:
     if "直接退出" not in static_system:
         static_system += "\n\n" + _BOUNDARY_SECTION_TEMPLATE
 
-    # 4. 动态段：Current Time
+    # 4. 强制注入 @niu-agent/@end 守则（所有子 Agent）
+    if _SUBAGENT_ASK_GUIDE_MARKER not in static_system:
+        static_system += "\n\n" + _SUBAGENT_ASK_GUIDE_TEMPLATE
+
+    # 5. 动态段：Current Time
     from datetime import datetime
     now = datetime.now()
     dynamic_system = f"\n\nCurrent Time: {now.strftime('%Y-%m-%d %H:%M:%S')}"
