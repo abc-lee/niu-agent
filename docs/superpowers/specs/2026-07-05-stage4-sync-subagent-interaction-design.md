@@ -79,7 +79,7 @@
    ↓
 9. call_subagent L727-751 后处理：
    - return_value["result"] == "INTERCEPTED_SYNC" → §5.5 存挂起状态逻辑触发
-   - _extract_result_from_return_value：INTERCEPTED_SYNC 不在 control_flow_results 集合中？→ 需要把它加入集合，让 extract 返回 None，call_subagent 用 result_text
+   - INTERCEPTED_SYNC 已加入 control_flow_results 集合（见 §5.8），_extract_result_from_return_value 返回 None，call_subagent 用 result_text
    - call_subagent 返回 result_text = "[xxx-ab12] 我该选哪个？"
    - **关键改动**（§5.5）：在返回前，把挂起状态存到 registry：
      • instance.state = "waiting_for_answer"
@@ -742,8 +742,9 @@ if _SUBAGENT_ASK_GUIDE_MARKER not in static_system:
 
 ### 10.6 同步子 Agent 走 @end 时的退出语义
 
-- 拦截层返回 EXIT → agent_runner_loop yield reply + break + return MAX_TURNS_EXCEEDED
-- call_subagent 收到 StopIteration → extract 返回 None → 返回 result_text
+- 拦截层返回 (EXIT, None) → agent_runner_loop yield reply + 显式 return {"result": "EXITED", "messages": messages, ...}（见 §4.4）
+- call_subagent 收到 StopIteration → §5.5 检测 result_flag == "INTERCEPTED_SYNC" 不成立（是 EXITED）→ 不存挂起
+- _extract_result_from_return_value 对 EXITED 返回 None（§5.8 集合含 EXITED）→ call_subagent 返回 result_text（剥前缀的 exit_content）
 - finally 块 state != "waiting_for_answer"（@end 不挂起）→ unregister 清理 session
 - 主 Agent 看到工具结果 = "@end 后的内容"，作为最终结果注入 LLM
 
@@ -859,7 +860,7 @@ if _SUBAGENT_ASK_GUIDE_MARKER not in static_system:
 | `config/agents/niu.md` | L255/L283/L291 同步——同步子 Agent 也会 @niu | P2 |
 | `docs/SYSTEM_MANUAL.md` | 同步子 Agent 交互描述更新 | P2 |
 | `docs/manual-general-subagent.md` | 通用子 Agent 手册更新 | P2 |
-| `tests/test_at_prefix_interception.py` | 加同步路径拦截测试 + INTERCEPTED_SYNC | P0 |
+| `tests/test_at_prefix_interception.py` | **现有测试断言改 tuple**：所有 `result == X` 改为 `result == (X, None)` 或 `result[0] == X`；加同步路径拦截测试 + INTERCEPTED_SYNC | P0 |
 | `tests/test_sync_subagent_interaction.py` | 新建——同步子 Agent 交互单元测试 | P0 |
 | `tests/test_call_subagent_with_auto_answer.py` | 新建——helper 单元测试 | P1 |
 | `tests/test_subagent_registry.py` | 新增字段测试 + state 转换测试 | P0 |
