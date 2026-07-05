@@ -65,10 +65,36 @@ def request_stop_all_subagents() -> None:
 
     for instance in SubagentRegistry.list_running():
         try:
-            pending_ask.cancel_pending_ask(instance.unique_name)
-            instance.supplement_queue.push("/stop", is_terminate=True, sender="主Agent")
+            state = getattr(instance, "state", "running")
+            if state == "waiting_for_answer":
+                # 同步挂起 session：agent_runner_loop 已退出，supplement 推了无人消费
+                # 直接 unregister 释放资源
+                SubagentRegistry.unregister(instance.unique_name)
+            else:
+                # 活跃 session（同步 running 或异步）：推 /stop 终止
+                # cancel_pending_ask 对 sync 是 no-op，安全
+                pending_ask.cancel_pending_ask(instance.unique_name)
+                instance.supplement_queue.push("/stop", is_terminate=True, sender="主Agent")
         except Exception as e:
             logger.error(f"给子 Agent {instance.unique_name} 推 /stop 失败：{e}")
+
+
+def cleanup_suspended_sync_subagents():
+    """主 Agent 工具循环退出时清理所有挂起的同步子 Agent session。
+
+    场景：主 Agent 调用 chat-with-xxx 后，LLM 不再调用第二次 chat-with-xxx
+    而是直接回应用户，导致同步子 Agent session 残留在 waiting_for_answer 状态。
+    主 Agent 工具循环 finally 块调用此函数清理。
+    """
+    for instance in SubagentRegistry.list_running():
+        state = getattr(instance, "state", "running")
+        is_sync = getattr(instance, "is_sync", False)
+        if state == "waiting_for_answer" and is_sync:
+            try:
+                SubagentRegistry.unregister(instance.unique_name)
+                logger.info(f"[CleanupSuspendedSync] 已清理挂起同步子 Agent: {instance.unique_name}")
+            except Exception as e:
+                logger.error(f"[CleanupSuspendedSync] 清理 {instance.unique_name} 失败：{e}")
 
 
 # --- Supplement queue (见缝插针) ---
@@ -2190,6 +2216,8 @@ class NiuRunner:
                     return_value = e.value
                     break
         finally:
+            # 清理残留挂起的同步子 Agent session（主 Agent 不再调 chat-with-xxx 时）
+            cleanup_suspended_sync_subagents()
             # 确保停止标志被清除（无论正常退出、停止退出还是异常退出）
             if is_stop_requested():
                 clear_stop()
