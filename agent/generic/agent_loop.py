@@ -11,6 +11,15 @@ _VALID_STREAM_TYPES = ("reply", "tool_marker", "system", "persist")
 
 _AT_NIU_PREFIX = "@niu-agent"  # 子 Agent 询问主 Agent 的 content 前缀（10 字符）
 
+# 格式错误提示文本（用 f-string 插值 _AT_NIU_PREFIX，未来改名只改常量）
+_FORMAT_ERROR_PROMPT = (
+    "[对话格式错误] 你的输出必须遵循以下格式之一：\n"
+    "1. 调用工具继续工作（正常 tool_calls）\n"
+    f"2. 询问主 Agent：content 以 `{_AT_NIU_PREFIX} ` 开头，如 `{_AT_NIU_PREFIX} 我应该选择哪个选项？`\n"
+    "3. 结束会话：content 以 `@end ` 开头，如 `@end 任务已完成，结果：...`\n"
+    "禁止输出不带 @ 前缀的纯 content。请重新输出。"
+)
+
 # @前缀子Agent意图识别返回值
 INTERCEPTED = "intercepted"      # @niu-agent 拦截成功，调用了 _ask_main_agent_impl，messages 已追加
 EXIT = "exit"                    # @end 允许退出
@@ -78,28 +87,16 @@ def _intercept_at_prefix_content(
         # 剥除 "@niu-agent" 前缀 + 可选空格
         question = stripped[len(_AT_NIU_PREFIX):].lstrip()
         if not question:
-            logger.error("[AtPrefix] @niu-agent 后无问题内容")
+            logger.error(f"[AtPrefix] {_AT_NIU_PREFIX} 后无问题内容")
             messages.append({"role": "assistant", "content": content})
-            messages.append({"role": "user", "content":
-                "[对话格式错误] 你的输出必须遵循以下格式之一：\n"
-                "1. 调用工具继续工作（正常 tool_calls）\n"
-                "2. 询问主 Agent：content 以 `@niu-agent ` 开头，如 `@niu-agent 我应该选择哪个选项？`\n"
-                "3. 结束会话：content 以 `@end ` 开头，如 `@end 任务已完成，结果：...`\n"
-                "禁止输出不带 @ 前缀的纯 content。请重新输出。"
-            })
+            messages.append({"role": "user", "content": _FORMAT_ERROR_PROMPT})
             return FORMAT_ERROR
 
         unique_name = getattr(handler, "_subagent_unique_name", "")
         if not unique_name:
             logger.error("[AtPrefix] 异步子 Agent 无 _subagent_unique_name，无法调 ask_main_agent")
             messages.append({"role": "assistant", "content": content})
-            messages.append({"role": "user", "content":
-                "[对话格式错误] 你的输出必须遵循以下格式之一：\n"
-                "1. 调用工具继续工作（正常 tool_calls）\n"
-                "2. 询问主 Agent：content 以 `@niu-agent ` 开头，如 `@niu-agent 我应该选择哪个选项？`\n"
-                "3. 结束会话：content 以 `@end ` 开头，如 `@end 任务已完成，结果：...`\n"
-                "禁止输出不带 @ 前缀的纯 content。请重新输出。"
-            })
+            messages.append({"role": "user", "content": _FORMAT_ERROR_PROMPT})
             return FORMAT_ERROR
 
         # 调 _ask_main_agent_impl（阻塞等主 Agent 回答）
@@ -122,13 +119,7 @@ def _intercept_at_prefix_content(
 
     # 格式错误
     messages.append({"role": "assistant", "content": content})
-    messages.append({"role": "user", "content":
-        "[对话格式错误] 你的输出必须遵循以下格式之一：\n"
-        "1. 调用工具继续工作（正常 tool_calls）\n"
-        "2. 询问主 Agent：content 以 `@niu-agent ` 开头，如 `@niu-agent 我应该选择哪个选项？`\n"
-        "3. 结束会话：content 以 `@end ` 开头，如 `@end 任务已完成，结果：...`\n"
-        "禁止输出不带 @ 前缀的纯 content。请重新输出。"
-    })
+    messages.append({"role": "user", "content": _FORMAT_ERROR_PROMPT})
     return FORMAT_ERROR
 
 
