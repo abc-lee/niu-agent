@@ -222,6 +222,7 @@ def _run_agent_loop(
     history: Optional[list] = None,
     supplement_queue: Optional[Any] = None,  # 子 Agent 独立 supplement queue
     memory_context: Optional[Any] = None,  # 阶段二新增：异步子 Agent 进度数据
+    resumed_messages: Optional[list] = None,  # 阶段四新增：断点续传消息列表
 ) -> Tuple[str, Any]:
     """
     执行 agent_runner_loop 并收集结果（提取自 call_subagent）
@@ -264,6 +265,7 @@ def _run_agent_loop(
         enable_supplement=True,  # 子 Agent 用独立 supplement queue
         supplement_drain=supplement_queue.drain if supplement_queue is not None else None,
         memory_context=memory_context,  # 阶段二新增：透传给 agent_runner_loop
+        resumed_messages=resumed_messages,  # 阶段四新增：透传给 agent_runner_loop
     )
 
     result = ""
