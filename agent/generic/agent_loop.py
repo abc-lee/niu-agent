@@ -249,19 +249,32 @@ def get_pretty_json(data):
     return json.dumps(data, indent=2, ensure_ascii=False).replace("\\n", "\n")
 
 
-def _fifo_prune(messages, target_tokens):
-    """FIFO 裁剪：按轮次组从 messages[2] 开始删除，直到 token 数低于 target。
+def _fifo_prune(messages, target_tokens, protect_recent_count=10, is_resumed=False):
+    """FIFO 裁剪：按轮次组从 messages 头部开始删除，直到 token 数低于 target。
     一个轮次组 = assistant(+tool_calls?) -> tool* -> user(next_prompt)
-    保护 messages[0](system) 和 messages[1](初始user)。
+
+    Args:
+        messages: messages list（会被原地修改）
+        target_tokens: 目标 token 数
+        protect_recent_count: 保护最近 N 条消息不被裁剪（默认 10）
+        is_resumed: 是否 resumed_messages 路径。True 时保护边界为
+            messages[0]（system）+ 最近 protect_recent_count 条；
+            False 时保持现有行为（保护 messages[0]+messages[1]，即
+            system + 初始 user）。
     返回删除的消息数。
     """
     if len(messages) <= 2:
         return 0
+    # 计算保护边界 protect_end：[0, protect_end) 是受保护区，从 protect_end 开始 FIFO 删除
+    if is_resumed:
+        protect_end = max(2, len(messages) - protect_recent_count)
+    else:
+        protect_end = 2
     removed = 0
     current_tokens = count_messages_tokens(messages)
-    while len(messages) > 2 and current_tokens > target_tokens:
+    while len(messages) > protect_end and current_tokens > target_tokens:
         batch_removed = 0
-        i = 2  # 始终从 messages[2] 删除
+        i = protect_end  # 始终从 protect_end 删除
 
         # 1. 删除 assistant（纯文本或 tool_calls）
         if i < len(messages) and messages[i].get("role") == "assistant":
@@ -286,14 +299,14 @@ def _fifo_prune(messages, target_tokens):
                         messages.pop(i)
                         batch_removed += 1
 
-        # 3. 保底：如果本轮没删任何消息（意外角色如孤立 tool），强制删 messages[2]
-        if batch_removed == 0 and len(messages) > 2:
-            orphan = messages.pop(2)
+        # 3. 保底：如果本轮没删任何消息（意外角色如孤立 tool），强制删 messages[protect_end]
+        if batch_removed == 0 and len(messages) > protect_end:
+            orphan = messages.pop(protect_end)
             batch_removed = 1
             # 孤立 tool 消息：连带删后续连续 tool
             if orphan.get("role") == "tool":
-                while len(messages) > 2 and messages[2].get("role") == "tool":
-                    messages.pop(2)
+                while len(messages) > protect_end and messages[protect_end].get("role") == "tool":
+                    messages.pop(protect_end)
                     batch_removed += 1
 
         removed += batch_removed
@@ -413,74 +426,79 @@ def agent_runner_loop(
     system_message: Optional[dict] = None,  # 已组装好的 system message（首轮即带 cache_control）
     supplement_drain=None,  # 子 Agent 传入自己的 drain 函数；None 时走全局 drain_supplement
     memory_context: Optional[Any] = None,  # 阶段二新增：异步子 Agent 进度数据，None=主 Agent 路径不更新
+    resumed_messages=None,  # 阶段四新增：挂起恢复路径，传入则跳过 messages 构造直接用
 ):
     from agent.runner import is_stop_requested, clear_stop, drain_supplement
 
-    # Build messages: system + history + current user
-    # system_message 优先（首轮即带 cache_control）；否则回退到 system_prompt 字符串
-    if system_message is not None:
-        messages = [system_message]
+    if resumed_messages is not None:
+        # 回复路径：直接用挂起的 messages，跳过 system_message + history + user_input 构造
+        messages = resumed_messages
     else:
-        messages = [{"role": "system", "content": system_prompt}]
+        # Build messages: system + history + current user
+        # system_message 优先（首轮即带 cache_control）；否则回退到 system_prompt 字符串
+        if system_message is not None:
+            messages = [system_message]
+        else:
+            messages = [{"role": "system", "content": system_prompt}]
 
-    # Add conversation history if provided
-    if history:
-        # 从 assistant 消息的 tool_calls 构建 tool_call_id → tool_name 映射
-        # 用于截断标记中显示工具名（DB 不存 tool_name，需从关联的 assistant 消息提取）
-        _tc_id_to_name: dict[str, str] = {}
-        # 收集所有有效的 tool_call_id（压缩可能留下孤立的 tool 消息）
-        _valid_tc_ids: set[str] = set()
-        for msg in history:
-            role = msg.get("role", "user")
-            if role == "assistant" and msg.get("tool_calls"):
-                for tc in msg["tool_calls"]:
-                    tc_id = tc.get("id", "")
-                    tc_name = tc.get("function", {}).get("name", "")
-                    if tc_id and tc_name:
-                        _tc_id_to_name[tc_id] = tc_name
-                    if tc_id:
-                        _valid_tc_ids.add(tc_id)
+        # Add conversation history if provided
+        if history:
+            # 从 assistant 消息的 tool_calls 构建 tool_call_id → tool_name 映射
+            # 用于截断标记中显示工具名（DB 不存 tool_name，需从关联的 assistant 消息提取）
+            _tc_id_to_name: dict[str, str] = {}
+            # 收集所有有效的 tool_call_id（压缩可能留下孤立的 tool 消息）
+            _valid_tc_ids: set[str] = set()
+            for msg in history:
+                role = msg.get("role", "user")
+                if role == "assistant" and msg.get("tool_calls"):
+                    for tc in msg["tool_calls"]:
+                        tc_id = tc.get("id", "")
+                        tc_name = tc.get("function", {}).get("name", "")
+                        if tc_id and tc_name:
+                            _tc_id_to_name[tc_id] = tc_name
+                        if tc_id:
+                            _valid_tc_ids.add(tc_id)
 
-        # 收集所有 tool 消息的 tool_call_id，用于验证 assistant tool_calls 完整性
-        _tool_response_ids: set[str] = set()
-        for msg in history:
-            if msg.get("role") == "tool" and msg.get("tool_call_id"):
-                _tool_response_ids.add(msg["tool_call_id"])
+            # 收集所有 tool 消息的 tool_call_id，用于验证 assistant tool_calls 完整性
+            _tool_response_ids: set[str] = set()
+            for msg in history:
+                if msg.get("role") == "tool" and msg.get("tool_call_id"):
+                    _tool_response_ids.add(msg["tool_call_id"])
 
-        for msg in history:
-            role = msg.get("role", "user")
-            # === 过滤 subagent_msg 消息，不塞进 LLM 上下文（@ 消息仅供前端展示） ===
-            if role == "subagent_msg":
-                continue
-            content = msg.get("content", "")
-            if role in ("user", "assistant") and (content or msg.get("tool_calls")):
-                entry = {"role": role, "content": content}
-                # 还原 tool_calls（assistant 消息可能携带工具调用）
-                if msg.get("tool_calls"):
-                    # 过滤掉没有对应 tool 响应的 tool_calls（压缩可能删除了 tool 输出）
-                    valid_tcs = [tc for tc in msg["tool_calls"] if tc.get("id") in _tool_response_ids]
-                    if valid_tcs:
-                        entry["tool_calls"] = valid_tcs
-                    # 如果所有 tool_calls 都没有响应，不设置 tool_calls（变成纯文本消息）
-                messages.append(entry)
-            elif role == "tool" and msg.get("tool_call_id") and content is not None:
-                # 跳过孤立的 tool 消息（没有对应的 assistant tool_calls）
-                if msg["tool_call_id"] not in _valid_tc_ids:
-                    logger.warning(f"[AgentLoop] Skipping orphan tool message: tool_call_id={msg['tool_call_id']}")
+            for msg in history:
+                role = msg.get("role", "user")
+                # === 过滤 subagent_msg 消息，不塞进 LLM 上下文（@ 消息仅供前端展示） ===
+                if role == "subagent_msg":
                     continue
-                # tool 消息必须有 tool_call_id 和 content，否则 OpenAI API 返回 400
-                # 截断超长的 tool 内容（DB 中保存了完整内容，但 LLM 上下文需要保护）
-                tool_name = _tc_id_to_name.get(msg["tool_call_id"], "")
-                entry = {"role": role, "content": _truncate_tool_content(content, tool_name), "tool_call_id": msg["tool_call_id"]}
-                if tool_name:
-                    entry["name"] = tool_name
-                messages.append(entry)
+                content = msg.get("content", "")
+                if role in ("user", "assistant") and (content or msg.get("tool_calls")):
+                    entry = {"role": role, "content": content}
+                    # 还原 tool_calls（assistant 消息可能携带工具调用）
+                    if msg.get("tool_calls"):
+                        # 过滤掉没有对应 tool 响应的 tool_calls（压缩可能删除了 tool 输出）
+                        valid_tcs = [tc for tc in msg["tool_calls"] if tc.get("id") in _tool_response_ids]
+                        if valid_tcs:
+                            entry["tool_calls"] = valid_tcs
+                        # 如果所有 tool_calls 都没有响应，不设置 tool_calls（变成纯文本消息）
+                    messages.append(entry)
+                elif role == "tool" and msg.get("tool_call_id") and content is not None:
+                    # 跳过孤立的 tool 消息（没有对应的 assistant tool_calls）
+                    if msg["tool_call_id"] not in _valid_tc_ids:
+                        logger.warning(f"[AgentLoop] Skipping orphan tool message: tool_call_id={msg['tool_call_id']}")
+                        continue
+                    # tool 消息必须有 tool_call_id 和 content，否则 OpenAI API 返回 400
+                    # 截断超长的 tool 内容（DB 中保存了完整内容，但 LLM 上下文需要保护）
+                    tool_name = _tc_id_to_name.get(msg["tool_call_id"], "")
+                    entry = {"role": role, "content": _truncate_tool_content(content, tool_name), "tool_call_id": msg["tool_call_id"]}
+                    if tool_name:
+                        entry["name"] = tool_name
+                    messages.append(entry)
 
-    # Add current user message
-    messages.append({
-        "role": "user",
-        "content": initial_user_content if initial_user_content is not None else user_input,
-    })
+        # Add current user message
+        messages.append({
+            "role": "user",
+            "content": initial_user_content if initial_user_content is not None else user_input,
+        })
 
     # Debug info only - logging is done in ToolClient.chat where the real prompt is built
     logger.info(f"[Debug] agent_runner_loop: {len(messages)} messages (history: {len(history) if history else 0})")
@@ -522,14 +540,14 @@ def agent_runner_loop(
                 else:
                     # 子 Agent：FIFO 裁剪到 target 阈值
                     target_tokens = context_target_threshold if context_target_threshold > 0 else int(context_window_tokens * 0.30)
-                    removed = _fifo_prune(messages, target_tokens)
+                    removed = _fifo_prune(messages, target_tokens, is_resumed=(resumed_messages is not None))
                     if removed > 0:
                         logger.info(f"[FIFO] Proactive pruning: {last_prompt_tokens}/{context_window_tokens} tokens "
                                     f"({usage_ratio:.1%} > {warning_threshold:.0%}), removed {removed} messages, "
                                     f"now ~{count_messages_tokens(messages)} tokens (target {target_tokens})")
             # 旧 FIFO 回退：只在首轮（last_prompt_tokens==0）时执行
         if context_fifo_threshold > 0 and len(messages) > 2 and last_prompt_tokens == 0 and not _compress_cooldown:
-            removed = _fifo_prune(messages, context_fifo_threshold)
+            removed = _fifo_prune(messages, context_fifo_threshold, is_resumed=(resumed_messages is not None))
             if removed > 0:
                 logger.info(f"[FIFO] Fallback truncation: removed {removed} oldest messages, "
                             f"tokens {count_messages_tokens(messages)}/{context_fifo_threshold}")
@@ -649,7 +667,7 @@ def agent_runner_loop(
                             _compress_cooldown = True
                         else:
                             target_tokens = context_target_threshold if context_target_threshold > 0 else int(context_window_tokens * 0.30)
-                            removed = _fifo_prune(messages, target_tokens)
+                            removed = _fifo_prune(messages, target_tokens, is_resumed=(resumed_messages is not None))
                             if removed > 0:
                                 logger.info(f"[FIFO] Proactive pruning: removed {removed} messages")
         else:
