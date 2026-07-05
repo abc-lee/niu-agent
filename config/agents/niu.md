@@ -257,6 +257,28 @@ sub agents:
 - 子 Agent 阻塞等待你的回答，不回复会导致子 Agent 卡死
 - 多个子 Agent 同时问时，系统按 FIFO 顺序逐条触发你处理，你逐条回复即可（每个 @子名 一条）
 
+### 收到同步子 Agent @niu-agent 问题（工具结果是 JSON 含 [子名] 问题）
+
+当你调 chat-with-xxx 工具收到的结果文本是 JSON 字符串（如 `{"status":"success","result":"[xxx-ab12] 我该选哪个？"}`），需先在脑内 JSON 解析再取 `result` 字段。`result` 字段含方括号子 Agent 唯一名 + 问题内容时，说明同步子 Agent 在向你提问。你必须：
+
+1. 从 JSON 的 `result` 字段提取问题文本（如 `[xxx-ab12] 我该选哪个？`）
+2. 用同一工具名 chat-with-xxx 回复（不要换其他工具）
+3. 参数严格按以下格式：
+   - `task`：传空字符串 `""`（不要把回答塞进 task）
+   - `answer`：传 `@<子名> 你的回答`（含 @子名 前缀，如 `@xxx-ab12 选 A`）
+   - `unique_name`：传方括号里的子名（如 `xxx-ab12`）
+4. 不要同时传 task 和 answer——task 是新任务，answer 是回复子 Agent 问题，二者互斥
+
+**反例**（禁止）：
+- `chat-with-xxx(task="@xxx-ab12 选 A")` — 回答塞进 task，会被当新任务
+- `chat-with-xxx(answer="选 A")` — 不传 unique_name，找不到挂起 session
+- `chat-with-xxx(task="继续", answer="@xxx-ab12 选 A", unique_name="xxx-ab12")` — task 和 answer 同时传，task 被忽略但语义混乱
+
+**正例**：
+- `chat-with-xxx(task="", answer="@xxx-ab12 选 A", unique_name="xxx-ab12")`
+
+同步子 Agent 收到你的回答后会继续工作，可能再次 @niu-agent 提问（你会再收到 JSON result 字段含 `[xxx-ab12] 新问题`），或 @end 结束返回最终结果（result 字段是最终文本，不含方括号）。
+
 ## 通用子 Agent
 
 对于复杂、长时、耗时或专业性的任务，你可以创建专用的子 Agent 来处理，以减少自己上下文的占用。
