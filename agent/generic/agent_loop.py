@@ -21,10 +21,11 @@ _FORMAT_ERROR_PROMPT = (
 )
 
 # @前缀子Agent意图识别返回值
-INTERCEPTED = "intercepted"      # @niu-agent 拦截成功，调用了 _ask_main_agent_impl，messages 已追加
-EXIT = "exit"                    # @end 允许退出
-FORMAT_ERROR = "format_error"    # 无 @ 前缀无 tool_calls，已追加格式错误提示
-NO_INTERCEPTION = "no_intercept" # 不拦截（同步子 Agent 或有 tool_calls）
+INTERCEPTED = "intercepted"          # 异步 @niu-agent 拦截成功
+INTERCEPTED_SYNC = "intercepted_sync"  # 同步 @niu-agent 拦截成功
+EXIT = "exit"                        # @end 允许退出
+FORMAT_ERROR = "format_error"        # 无 @ 前缀无 tool_calls，已追加格式错误提示
+NO_INTERCEPTION = "no_intercept"     # 不拦截（主 Agent 或有 tool_calls）
 
 
 @dataclass
@@ -58,27 +59,29 @@ def _intercept_at_prefix_content(
     messages: list,
     handler,
     memory_context,
-) -> str:
-    """@前缀子Agent意图识别拦截层。
+) -> tuple:
+    """@前缀子Agent意图识别拦截层。返回 (status, payload)。
 
-    仅异步子 Agent（memory_context is not None）+ 无 tool_calls 时拦截。
-    content 以 @niu-agent 开头 → 调 _ask_main_agent_impl，把回答作为 user 消息注入 messages，返回 INTERCEPTED
-    content 以 @end 开头 → 允许退出，返回 EXIT
-    其他 → 追加格式错误提示，返回 FORMAT_ERROR
+    - (NO_INTERCEPTION, None)：主 Agent 或有 tool_calls，不拦截
+    - (INTERCEPTED, None)：异步 @niu-agent 已处理（messages 已 append assistant + user）
+    - (INTERCEPTED_SYNC, wrapped_text)：同步 @niu-agent，agent_runner_loop yield reply + return
+    - (EXIT, None)：@end，agent_runner_loop 剥前缀 yield reply + return
+    - (FORMAT_ERROR, None)：格式错误，agent_runner_loop continue
 
     Args:
         content: LLM 返回的 content
         tool_calls: LLM 返回的 tool_calls
         messages: 当前对话 messages 列表（会被追加）
-        handler: NiuHandler 实例（含 _subagent_unique_name）
+        handler: NiuHandler 实例（含 _subagent_unique_name, _is_sync_subagent）
         memory_context: 异步子 Agent 的 memory_context（同步子 Agent 为 None）
 
     Returns:
-        INTERCEPTED / EXIT / FORMAT_ERROR / NO_INTERCEPTION
+        (status, payload) tuple
     """
-    # 同步子 Agent 或有 tool_calls 时不拦截
-    if memory_context is None or tool_calls:
-        return NO_INTERCEPTION
+    is_sync_subagent = getattr(handler, "_is_sync_subagent", False)
+    # 同步子 Agent 或异步子 Agent 进入拦截层；主 Agent 不拦截
+    if (memory_context is None and not is_sync_subagent) or tool_calls:
+        return (NO_INTERCEPTION, None)
 
     stripped = (content or "").lstrip()
 
@@ -90,37 +93,47 @@ def _intercept_at_prefix_content(
             logger.error(f"[AtPrefix] {_AT_NIU_PREFIX} 后无问题内容")
             messages.append({"role": "assistant", "content": content})
             messages.append({"role": "user", "content": _FORMAT_ERROR_PROMPT})
-            return FORMAT_ERROR
+            return (FORMAT_ERROR, None)
 
         unique_name = getattr(handler, "_subagent_unique_name", "")
         if not unique_name:
-            logger.error("[AtPrefix] 异步子 Agent 无 _subagent_unique_name，无法调 ask_main_agent")
+            logger.error("[AtPrefix] 子 Agent 无 _subagent_unique_name，无法调 ask_main_agent")
             messages.append({"role": "assistant", "content": content})
             messages.append({"role": "user", "content": _FORMAT_ERROR_PROMPT})
-            return FORMAT_ERROR
+            return (FORMAT_ERROR, None)
 
-        # 调 _ask_main_agent_impl（阻塞等主 Agent 回答）
-        # 现有签名 (question, unique_name) -> str，无需 agent_name
-        from agent.subagent import _ask_main_agent_impl
-        answer = _ask_main_agent_impl(
-            question=question,
-            unique_name=unique_name,
-        )
-
-        # 把 assistant content + 主 Agent 回答作为 user 消息注入 messages
-        # 用 user 消息而非 tool 消息，避免 LLM API 对 tool_call_id 的严格校验
-        messages.append({"role": "assistant", "content": content})
-        messages.append({"role": "user", "content": f"[主 Agent 回答] {answer}"})
-        return INTERCEPTED
+        if is_sync_subagent:
+            # 同步路径：不阻塞，程序包装 [unique_name] question 返回
+            from agent.subagent import _ask_main_agent_impl_sync
+            wrapped = _ask_main_agent_impl_sync(
+                question=question,
+                unique_name=unique_name,
+                handler=handler,
+                messages=messages,
+                content=content,
+            )
+            return (INTERCEPTED_SYNC, wrapped)
+        else:
+            # 异步路径：阻塞等主 Agent 回答（现有逻辑）
+            from agent.subagent import _ask_main_agent_impl
+            answer = _ask_main_agent_impl(
+                question=question,
+                unique_name=unique_name,
+            )
+            # 把 assistant content + 主 Agent 回答作为 user 消息注入 messages
+            # 用 user 消息而非 tool 消息，避免 LLM API 对 tool_call_id 的严格校验
+            messages.append({"role": "assistant", "content": content})
+            messages.append({"role": "user", "content": f"[主 Agent 回答] {answer}"})
+            return (INTERCEPTED, None)
 
     # @end 允许退出（用 startswith("@end") 兼容 @end无空格）
     if stripped.startswith("@end"):
-        return EXIT
+        return (EXIT, None)
 
     # 格式错误
     messages.append({"role": "assistant", "content": content})
     messages.append({"role": "user", "content": _FORMAT_ERROR_PROMPT})
-    return FORMAT_ERROR
+    return (FORMAT_ERROR, None)
 
 
 def format_subagent_supplement(items: list, is_final_position: bool = False) -> str:
@@ -557,18 +570,24 @@ def agent_runner_loop(
             content = response.content or ""
             content = re.sub(r"<tool_use>.*?</tool_use>", "", content, flags=re.DOTALL)
 
-            # 阶段三：@前缀子Agent意图识别拦截（仅异步子 Agent）
+            # 阶段三/四：@前缀子Agent意图识别拦截（异步+同步子 Agent）
             if not response.tool_calls:
-                interception = _intercept_at_prefix_content(
+                interception_status, interception_payload = _intercept_at_prefix_content(
                     content=content,
                     tool_calls=response.tool_calls,
                     messages=messages,
                     handler=handler,
                     memory_context=memory_context,
                 )
-                if interception == INTERCEPTED:
-                    continue  # @niu-agent 已处理，回到 while 循环让 LLM 继续
-                if interception == EXIT:
+                if interception_status == INTERCEPTED:
+                    continue  # 异步路径：LLM 重跑（messages 已 append assistant + user）
+                if interception_status == INTERCEPTED_SYNC:
+                    # 同步路径：yield wrapped_text + 显式 return
+                    # 子 Agent 路径不调全局 clear_stop()（避免清主 Agent stop 标志）
+                    yield StreamEvent("reply", interception_payload)
+                    yield StreamEvent("system", "chat_idle")
+                    return {"result": "INTERCEPTED_SYNC", "messages": messages, "finish_reason": "intercepted_sync"}
+                if interception_status == EXIT:
                     # @end 允许退出，剥除 "@end" 前缀 + 可选空格后推前端
                     stripped_content = content.lstrip()
                     if stripped_content.startswith("@end"):
@@ -579,8 +598,9 @@ def agent_runner_loop(
                     else:
                         exit_content = content
                     yield StreamEvent("reply", exit_content)
-                    break
-                if interception == FORMAT_ERROR:
+                    yield StreamEvent("system", "chat_idle")
+                    return {"result": "EXITED", "messages": messages, "finish_reason": "exited"}
+                if interception_status == FORMAT_ERROR:
                     _harness_fail_count = 0  # 重置，避免格式错误累计影响 validate_references
                     continue  # 格式错误，回到 while 循环让 LLM 重新输出
                 # NO_INTERCEPTION：继续走原有逻辑

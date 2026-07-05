@@ -77,6 +77,7 @@ def test_at_niu_prefix_triggers_ask_main_agent(monkeypatch):
     # 构造 handler 带 _subagent_unique_name
     fake_handler = mock.MagicMock()
     fake_handler._subagent_unique_name = "test-agent-abc1"
+    fake_handler._is_sync_subagent = False  # 显式设为 False，模拟异步子 Agent
 
     # 调拦截函数（注意：无 agent_name 参数）
     result = agent_loop._intercept_at_prefix_content(
@@ -99,8 +100,8 @@ def test_at_niu_prefix_triggers_ask_main_agent(monkeypatch):
     assert messages[-1]["role"] == "user"
     assert "主 Agent 的回答" in messages[-1]["content"]
 
-    # 断言：返回 INTERCEPTED（让 agent_loop continue）
-    assert result == agent_loop.INTERCEPTED
+    # 断言：返回 (INTERCEPTED, None)（让 agent_loop continue）
+    assert result == (agent_loop.INTERCEPTED, None)
 
 
 def test_at_end_prefix_allows_exit_with_space(monkeypatch):
@@ -118,7 +119,7 @@ def test_at_end_prefix_allows_exit_with_space(monkeypatch):
         memory_context=mock.MagicMock(),
     )
 
-    assert result == agent_loop.EXIT
+    assert result == (agent_loop.EXIT, None)
     assert len(messages) == 1  # messages 不被追加
 
 
@@ -137,7 +138,7 @@ def test_at_end_prefix_allows_exit_without_space(monkeypatch):
         memory_context=mock.MagicMock(),
     )
 
-    assert result == agent_loop.EXIT
+    assert result == (agent_loop.EXIT, None)
     assert len(messages) == 1
 
 
@@ -156,7 +157,7 @@ def test_no_at_prefix_no_tool_calls_returns_format_error(monkeypatch):
         memory_context=mock.MagicMock(),
     )
 
-    assert result == agent_loop.FORMAT_ERROR
+    assert result == (agent_loop.FORMAT_ERROR, None)
     # messages 被追加 assistant content + user 格式错误提示
     assert messages[-2]["role"] == "assistant"
     assert messages[-2]["content"] == "我应该选择哪个选项？"
@@ -166,11 +167,12 @@ def test_no_at_prefix_no_tool_calls_returns_format_error(monkeypatch):
     assert "@end" in messages[-1]["content"]
 
 
-def test_no_interception_for_sync_subagent(monkeypatch):
-    """同步子 Agent（memory_context=None）不拦截，允许 content 直接返回"""
+def test_main_agent_path_not_intercepted(monkeypatch):
+    """主 Agent 路径（_is_sync_subagent=False, memory_context=None）不拦截，允许 content 直接返回"""
     from agent.generic import agent_loop
 
     fake_handler = mock.MagicMock()
+    fake_handler._is_sync_subagent = False  # 显式设为 False，模拟主 Agent 路径
     messages = [{"role": "user", "content": "开始"}]
 
     result = agent_loop._intercept_at_prefix_content(
@@ -178,10 +180,10 @@ def test_no_interception_for_sync_subagent(monkeypatch):
         tool_calls=[],
         messages=messages,
         handler=fake_handler,
-        memory_context=None,  # 同步子 Agent
+        memory_context=None,  # 主 Agent
     )
 
-    assert result == agent_loop.NO_INTERCEPTION
+    assert result == (agent_loop.NO_INTERCEPTION, None)
     assert len(messages) == 1  # messages 不被追加
 
 
@@ -190,6 +192,7 @@ def test_no_interception_when_tool_calls_present(monkeypatch):
     from agent.generic import agent_loop
 
     fake_handler = mock.MagicMock()
+    fake_handler._is_sync_subagent = False  # 显式设为 False，避免 MagicMock truthy 干扰
     messages = [{"role": "user", "content": "开始"}]
 
     result = agent_loop._intercept_at_prefix_content(
@@ -200,7 +203,7 @@ def test_no_interception_when_tool_calls_present(monkeypatch):
         memory_context=mock.MagicMock(),
     )
 
-    assert result == agent_loop.NO_INTERCEPTION
+    assert result == (agent_loop.NO_INTERCEPTION, None)
 
 
 def test_at_niu_without_question_returns_format_error(monkeypatch):
@@ -219,7 +222,7 @@ def test_at_niu_without_question_returns_format_error(monkeypatch):
         memory_context=mock.MagicMock(),
     )
 
-    assert result == agent_loop.FORMAT_ERROR
+    assert result == (agent_loop.FORMAT_ERROR, None)
     # messages 被追加格式错误提示
     assert messages[-1]["role"] == "user"
     assert "对话格式错误" in messages[-1]["content"]
@@ -241,7 +244,7 @@ def test_at_niu_without_unique_name_returns_format_error(monkeypatch):
         memory_context=mock.MagicMock(),
     )
 
-    assert result == agent_loop.FORMAT_ERROR
+    assert result == (agent_loop.FORMAT_ERROR, None)
     assert messages[-1]["role"] == "user"
     assert "对话格式错误" in messages[-1]["content"]
 
@@ -268,6 +271,7 @@ def test_main_agent_not_intercepted(monkeypatch):
     monkeypatch.setattr(subagent, "_ask_main_agent_impl", mock_ask)
 
     fake_handler = mock.MagicMock()
+    fake_handler._is_sync_subagent = False  # 显式设为 False，模拟主 Agent 路径
     messages = [{"role": "user", "content": "开始"}]
 
     # 主 Agent 路径：memory_context=None + LLM 返回纯文本（无 @ 前缀）
@@ -279,6 +283,52 @@ def test_main_agent_not_intercepted(monkeypatch):
         memory_context=None,  # 主 Agent
     )
 
-    assert result == agent_loop.NO_INTERCEPTION
+    assert result == (agent_loop.NO_INTERCEPTION, None)
     assert len(messages) == 1  # messages 不被追加
     mock_ask.assert_not_called()  # _ask_main_agent_impl 不被调用
+
+
+def test_sync_subagent_at_niu_returns_intercepted_sync(monkeypatch):
+    """同步子 Agent（_is_sync_subagent=True, memory_context=None）输出 @niu-agent → 返回 (INTERCEPTED_SYNC, wrapped)"""
+    from agent.generic import agent_loop
+    from agent import subagent
+    from unittest import mock
+
+    monkeypatch.setattr(subagent, "_ask_main_agent_impl_sync", mock.Mock(return_value="[test-ab12] 问题"))
+
+    fake_handler = mock.MagicMock()
+    fake_handler._subagent_unique_name = "test-ab12"
+    fake_handler._is_sync_subagent = True  # 同步子 Agent
+    messages = [{"role": "user", "content": "开始"}]
+
+    result = agent_loop._intercept_at_prefix_content(
+        content="@niu-agent 我应该选哪个？",
+        tool_calls=[],
+        messages=messages,
+        handler=fake_handler,
+        memory_context=None,  # 同步子 Agent
+    )
+
+    status, payload = result
+    assert status == agent_loop.INTERCEPTED_SYNC
+    assert payload == "[test-ab12] 问题"
+
+
+def test_main_agent_not_intercepted_after_change(monkeypatch):
+    """主 Agent 路径（_is_sync_subagent=False, memory_context=None）仍返回 (NO_INTERCEPTION, None)"""
+    from agent.generic import agent_loop
+    from unittest import mock
+    fake_handler = mock.MagicMock()
+    fake_handler._is_sync_subagent = False  # 主 Agent
+    messages = [{"role": "user", "content": "开始"}]
+
+    result = agent_loop._intercept_at_prefix_content(
+        content="这是主 Agent 的正常回复",
+        tool_calls=[],
+        messages=messages,
+        handler=fake_handler,
+        memory_context=None,
+    )
+
+    assert result == (agent_loop.NO_INTERCEPTION, None)
+    assert len(messages) == 1  # messages 不被追加
