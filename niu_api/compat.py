@@ -20,6 +20,7 @@ from agent.subagent import (
     _read_protect_recent_count,
     _read_target_threshold,
     _read_warning_threshold,
+    call_subagent_with_auto_answer,
 )
 from fastapi import APIRouter, Request
 from loguru import logger
@@ -1776,7 +1777,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
             display_tokens = estimated_tokens
             logger.info(f"[Tidy] Current context: {message_count} messages, {estimated_tokens} tokens, {usage_percent:.1f}%")
 
-        from agent.subagent import call_subagent
+        from agent.subagent import call_subagent_with_auto_answer
         from agent.runner import is_stop_requested, clear_stop
 
         from niu_api.chat import get_or_create_runner
@@ -1858,7 +1859,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                 truncated_entity_prompt = _truncate_task_for_subagent(entity_full_prompt, safe_tokens)
 
                 def run_entity_extractor():
-                    return call_subagent(
+                    return call_subagent_with_auto_answer(
                         agent_name="entity-extractor",
                         task=truncated_entity_prompt,
                         llm_config=llm_config,
@@ -1932,7 +1933,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                 truncated_dream_prompt = _truncate_task_for_subagent(dream_prompt, safe_tokens)
 
                 def run_dream_evolver():
-                    return call_subagent(
+                    return call_subagent_with_auto_answer(
                         agent_name="dream-evolver",
                         task=truncated_dream_prompt,
                         llm_config=llm_config,
@@ -2003,7 +2004,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                     truncated_journal_prompt = _build_journal_task(journal_msg_text, safe_tokens)
 
                     def run_journal_agent():
-                        return call_subagent(
+                        return call_subagent_with_auto_answer(
                             agent_name="journal-agent",
                             task=truncated_journal_prompt,
                             llm_config=llm_config,
@@ -2171,7 +2172,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                     prompt = _build_mode2_prompt(display_tokens, target_tokens, usage_percent, compress_history)
 
                     def run_context_manager_mode2():
-                        return call_subagent(
+                        return call_subagent_with_auto_answer(
                             agent_name="context-manager",
                             task=prompt,
                             llm_config=llm_config_with_max,
@@ -2394,7 +2395,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                     truncated_prompt = _truncate_task_for_subagent(prompt, safe_tokens)
 
                     def run_context_manager():
-                        return call_subagent(
+                        return call_subagent_with_auto_answer(
                             agent_name="context-manager",
                             task=truncated_prompt,
                             llm_config=llm_config,
@@ -2559,7 +2560,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
             truncated_entity_force_prompt = _truncate_task_for_subagent(entity_force_prompt, safe_tokens)
 
             def run_entity_extractor_force():
-                return call_subagent(
+                return call_subagent_with_auto_answer(
                     agent_name="entity-extractor",
                     task=truncated_entity_force_prompt,
                     llm_config=llm_config,
@@ -2632,7 +2633,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                 truncated_dream_force_prompt = _truncate_task_for_subagent(dream_force_prompt, safe_tokens)
 
                 def run_dream_evolver_force():
-                    return call_subagent(
+                    return call_subagent_with_auto_answer(
                         agent_name="dream-evolver",
                         task=truncated_dream_force_prompt,
                         llm_config=llm_config,
@@ -2703,7 +2704,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                 truncated_journal_force_prompt = _build_journal_task(journal_force_msg_text, safe_tokens)
 
                 def run_journal_agent_force():
-                    return call_subagent(
+                    return call_subagent_with_auto_answer(
                         agent_name="journal-agent",
                         task=truncated_journal_force_prompt,
                         llm_config=llm_config,
@@ -2807,7 +2808,7 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
             )
 
             def run_context_manager_force():
-                return call_subagent(
+                return call_subagent_with_auto_answer(
                     agent_name="context-manager",
                     task=prompt,
                     llm_config=llm_config_with_max,
