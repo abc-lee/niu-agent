@@ -134,7 +134,7 @@
 | 主 Agent 是否阻塞 | 不阻塞（异步） | 阻塞在 dispatch 工具调用上（同步） |
 | 主 Agent 工具循环是否退出 | 退出（异步路径主 Agent 跨多轮） | 不退出（同一轮工具调用内） |
 | 拦截层 @niu-agent 分支 | 异步分支：调 _ask_main_agent_impl 阻塞等回答 → append assistant + user → INTERCEPTED | 同步分支：调 _ask_main_agent_impl_sync 不阻塞 → append assistant 不 append user → INTERCEPTED_SYNC |
-| agent_runner_loop 收到拦截返回值后 | INTERCEPTED → continue（LLM 重跑） | INTERCEPTED_SYNC → yield reply + break + return MAX_TURNS_EXCEEDED（call_subagent 返回） |
+| agent_runner_loop 收到拦截返回值后 | INTERCEPTED → continue（LLM 重跑） | INTERCEPTED_SYNC → yield reply + 显式 return {"result": "INTERCEPTED_SYNC", ...}（call_subagent 返回，见 §4.4） |
 
 ### 3.3 程序触发子 Agent 的特殊处理
 
@@ -229,7 +229,11 @@ if (memory_context is None and not is_sync_subagent) or tool_calls:
 
 ```python
 if stripped.startswith("@niu-agent"):
-    question = stripped[4:].lstrip()
+    # 剥除 "@niu-agent" 前缀（10 字符）+ 可选空格
+    # 用 len("@niu-agent") 避免硬编码（与 §9A.3 风险点 1 一致）
+    # startswith 不要求 @niu-agent 后必须有空格（兼容 LLM 输出 @niu-agent问题 无空格场景）
+    # 守则模板（§9.1）建议 LLM 输出带空格，但不强制
+    question = stripped[len("@niu-agent"):].lstrip()
     if not question: 
         messages.append({"role": "assistant", "content": content})
         messages.append({"role": "user", "content": FORMAT_ERROR_PROMPT})
@@ -749,7 +753,7 @@ if _SUBAGENT_ASK_GUIDE_MARKER not in static_system:
 3. **FORMAT_ERROR 注入文本**（L84/97/126）：这些字符串注入到子 Agent messages 让 LLM 学习规则，必须与提示词（niu.md / agent-template.md）措辞一致，否则守则冲突。
 4. **测试输入字符串**：`tests/test_at_prefix_interception.py` L83/98/215/237、`tests/test_ask_main_agent_stop_deadlock.py` L71 含旧前缀 `@niu` 测试输入——改名后必须同步更新为 `@niu-agent`，否则拦截层不识别会 fail。
 5. **常量定义**：建议在 `agent_loop.py` 顶部加 `_AT_NIU_PREFIX = "@niu-agent"` 常量，所有 `startswith` / 切片 / FORMAT_ERROR 文本统一引用，避免硬编码。
-6. **db_monitor 链路 B**：`agent/db_monitor.py` 的 `_route_at_message` 正则解析 `@子名` 路由——新前缀 `@niu-agent` 会被解析为目标 `niu-agent` 子 Agent（不存在），需确认路由逻辑不会把 `@niu-agent` 误路由。检查 `at_message_parser` 的正则。
+6. **db_monitor 链路 B**：`agent/db_monitor.py` 的 `_route_at_message` 正则解析 `@子名` 路由——新前缀 `@niu-agent` 会被解析为目标 `niu-agent` 子 Agent（不存在）。**已确认安全**：`at_message_parser.py:12` 正则 `_AT_PATTERN = re.compile(r'@([a-z]+(?:-[a-z]+)*-[0-9a-f]{4})\s+...')` 要求 4 位 hex 后缀，`@niu-agent` 不匹配，db_monitor 不会误路由。主 Agent 回复格式是 `@<子名-4hex>`（如 `@xxx-ab12`），不会出现 `@niu-agent` 作为回复目标。
 
 ### 9A.4 实施顺序
 
@@ -764,10 +768,14 @@ if _SUBAGENT_ASK_GUIDE_MARKER not in static_system:
 
 ### 9A.5 验收标准
 
-- 全仓 grep 旧前缀 `@niu`（无 -agent 后缀）仅在 `logs/raw_http/` 历史产物中残留（运行时新日志应为 `@niu-agent`）
+- 全仓 grep 旧前缀 `@niu`（无 -agent 后缀）仅在以下位置残留：
+  - `logs/raw_http/` 历史产物（运行时新日志应为 `@niu-agent`）
+  - 本 spec §9A 章节的描述性文本（说明"改名前"的旧字符串，合理保留）
+  - 历史 spec `docs/superpowers/specs/2026-07-04-at-prefix-subagent-intent.md` 改名后无残留（按 §9A.2 表格已改）
+- 代码（agent/ + niu_api/ + mcp-servers/）+ 测试（tests/）+ 提示词（config/agents/*.md + agent-template.md）+ 文档（docs/SYSTEM_MANUAL.md + docs/manual-general-subagent.md）中无旧前缀 `@niu`
 - 所有单元测试通过（含改名后的拦截测试，测试输入用 `@niu-agent`）
 - 端到端测试通过（异步 + 同步路径用 `@niu-agent` 前缀）
-- 知识图谱验证：entity-extractor 处理含 `@niu-agent` 的对话时不创建到根节点 `niu` 的连接
+- 知识图谱验证：entity-extractor 处理含 `@niu-agent` 的对话时不创建到根节点 `niu` 的连接（测试方法见 §14）
 
 ---
 
@@ -980,6 +988,8 @@ if _SUBAGENT_ASK_GUIDE_MARKER not in static_system:
 - 程序触发子 Agent（auto_tidy / force 压缩 / 手动 tidy）@niu-agent 自动回复不阻塞
 - 子 Agent 第一次输出就知道用 @niu-agent 前缀（不再触发 FORMAT_ERROR）
 - 知识图谱回归：entity-extractor 处理含 `@niu-agent` 的对话时不创建到根节点 `niu` 的连接
+  - 测试方法：构造一段含 `@niu-agent 问题` 的对话 → 调 entity-extractor 处理 → 查 LightRAG 数据库（`~/.niu/lightrag/`）确认无新边连到根节点 `niu`
+  - 验证脚本：参考 `tests/verify_llm_at_prefix.py` 写类似端到端脚本
 - 代码审查通过（spec 合规 + 代码质量两轮，无 BLOCKER）
 
 ---
