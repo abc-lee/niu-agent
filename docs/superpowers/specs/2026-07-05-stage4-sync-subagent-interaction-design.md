@@ -63,33 +63,32 @@
    ↓
 5. 子 Agent LLM 输出 "@niu 我该选哪个？"
    ↓
-6. _intercept_at_prefix_content 拦截（拦截条件改动后见 §4.1）：
+6. _intercept_at_prefix_content 拦截（拦截条件改动后见 §4.1，返回值改为 tuple 见 §4.2）：
    - 检测到 @niu + is_sync_subagent=True → 走同步分支
-   - 调 _ask_main_agent_impl_sync(question, unique_name, handler, messages)
-     • 不阻塞，立即返回
-     • 包装问题为 "[xxx-ab12] 我该选哪个？"
+   - 调 _ask_main_agent_impl_sync(question, unique_name, handler, messages, content)
+     • 不阻塞，立即返回 wrapped 文本 "[xxx-ab12] 我该选哪个？"
      • messages 末尾 append assistant content（"@niu 我该选哪个？"）  ← 关键：保留对话历史
      • 不 append user（user 由第二次 call_subagent 注入）
-   - 返回 INTERCEPTED_SYNC
+   - 返回 (INTERCEPTED_SYNC, "[xxx-ab12] 我该选哪个？")
    ↓
-7. agent_runner_loop 收到 INTERCEPTED_SYNC → yield StreamEvent("reply", "[xxx-ab12] 我该选哪个？") + break
-   → break 后落到函数末尾 return {"result": "MAX_TURNS_EXCEEDED", "messages": messages, ...}
-   （复用现有 EXIT 分支机制，但 messages 末尾是 assistant 而非空）
+7. agent_runner_loop 收到 (INTERCEPTED_SYNC, wrapped) → yield StreamEvent("reply", wrapped) + 显式 return {"result": "INTERCEPTED_SYNC", "messages": messages, ...}
+   （不走 MAX_TURNS_EXCEEDED 末尾路径，避免和 @end / 真超轮次混淆）
    ↓
-8. _run_agent_loop 收到 StopIteration.value = {"result": "MAX_TURNS_EXCEEDED", "messages": messages}
+8. _run_agent_loop 收到 StopIteration.value = {"result": "INTERCEPTED_SYNC", "messages": messages}
    返回 (result_text="[xxx-ab12] 我该选哪个？", return_value=dict)
    ↓
 9. call_subagent L727-751 后处理：
-   - return_value["result"] == "MAX_TURNS_EXCEEDED" 在 control_flow_results 集合中 → _extract_result_from_return_value 返回 None
+   - return_value["result"] == "INTERCEPTED_SYNC" → §5.5 存挂起状态逻辑触发
+   - _extract_result_from_return_value：INTERCEPTED_SYNC 不在 control_flow_results 集合中？→ 需要把它加入集合，让 extract 返回 None，call_subagent 用 result_text
    - call_subagent 返回 result_text = "[xxx-ab12] 我该选哪个？"
-   - **关键改动**：在返回前，把挂起状态存到 registry：
+   - **关键改动**（§5.5）：在返回前，把挂起状态存到 registry：
      • instance.state = "waiting_for_answer"
      • instance.suspended_messages = return_value["messages"]
      • instance.suspended_handler = handler
      • instance.suspended_client = client
      • instance.suspended_tools_schema = tools_schema
      • instance.suspended_system_message = system_message
-   - **关键改动**：finally 块条件化 unregister——state="waiting_for_answer" 时跳过 unregister
+   - **关键改动**（§5.4）：finally 块条件化 unregister——state="waiting_for_answer" 时跳过 unregister
    ↓
 10. call_subagent 返回 "[xxx-ab12] 我该选哪个？" → _call_subagent_gen 包成 StepOutcome({"status":"success","result":"[xxx-ab12] 我该选哪个？""})
     → 作为 tool 消息 append 到主 Agent messages
@@ -113,10 +112,11 @@
    ↓
 14. 子 Agent 继续跑 → 输出 "@end 任务完成" 或再次 "@niu"
    ↓
-15. @end 路径：拦截层返回 EXIT → agent_runner_loop yield reply "任务完成" + break + return MAX_TURNS_EXCEEDED
-    → _run_agent_loop 返回 (result_text="任务完成", return_value={"result":"MAX_TURNS_EXCEEDED","messages":messages})
-    → call_subagent 后处理：extract 返回 None → 返回 result_text="任务完成"
-    → **关键**：finally 块 state != "waiting_for_answer"（@end 已正常退出）→ 调 unregister 清理 session
+15. @end 路径：拦截层返回 (EXIT, None) → agent_runner_loop yield reply "任务完成" + 显式 return {"result": "EXITED", "messages": messages, ...}
+    → _run_agent_loop 返回 (result_text="任务完成", return_value={"result":"EXITED","messages":messages})
+    → call_subagent 后处理：§5.5 检测 result_flag == "INTERCEPTED_SYNC" 不成立（是 EXITED）→ 不存挂起
+    → _extract_result_from_return_value：EXITED 在 control_flow_results 集合中 → 返回 None → call_subagent 返回 result_text="任务完成"
+    → **关键**：finally 块 state != "waiting_for_answer"（@end 不挂起）→ 调 unregister 清理 session
    ↓
 16. call_subagent 返回 "任务完成" → 主 Agent 工具循环结束
 ```
@@ -160,7 +160,25 @@ def call_subagent_with_auto_answer(agent_name, task, ...):
     return result
 ```
 
-**`_is_at_niu_question` 严格匹配**——用正则 `^\[<agent_name>-[0-9a-f]{4}\] ` 精确匹配 unique_name 格式（agent_name + 4 位 hex），避免误判子 Agent 正常结果中的 `[已完成]` / `[注]` / JSON 数组等文本。
+**`_is_at_niu_question` 严格匹配**——用 f-string 正则精确匹配 unique_name 格式（`<agent_name>-<4位hex>`，`SubagentRegistry._gen_unique_name` 用 `secrets.token_hex(2)` 生成 4 位 hex），避免误判子 Agent 正常结果中的 `[已完成]` / `[注]` / JSON 数组等文本：
+
+```python
+import re
+def _is_at_niu_question(result: str, agent_name: str) -> bool:
+    """检测 result 是否是 @niu 问题包装文本（格式 [agent_name-xxxx] question）"""
+    pattern = rf"^\[{re.escape(agent_name)}-[0-9a-f]{{4}}\] "
+    return bool(re.match(pattern, result))
+```
+
+**`_extract_unique_name`** 从包装文本提取 unique_name：
+
+```python
+def _extract_unique_name(result: str) -> str:
+    """从 '[unique_name] question' 提取 unique_name"""
+    if "]" in result and result.startswith("["):
+        return result[1:result.index("]")]
+    return ""
+```
 
 **不防御死循环**——工具循环本身有"3 次同工具同参数提醒"机制，自动回复次数不加上限，不强制终止。
 
@@ -193,16 +211,34 @@ if (memory_context is None and not is_sync_subagent) or tool_calls:
 
 主 Agent 路径（`memory_context=None` + `_is_sync_subagent=False`）仍返回 NO_INTERCEPTION。异步路径（`memory_context is not None`）行为不变。同步子 Agent（`memory_context=None` + `_is_sync_subagent=True`）进入拦截层。
 
-### 4.2 @niu 路径分同步/异步
+### 4.2 拦截层返回值改造（重要）
+
+**当前拦截层返回 str**（`INTERCEPTED` / `EXIT` / `FORMAT_ERROR` / `NO_INTERCEPTION`）。**v2 改为返回 tuple**：`(status, payload)`。
+
+- `(NO_INTERCEPTION, None)` — 不拦截
+- `(INTERCEPTED, None)` — 异步 @niu 已处理（messages 已 append assistant + user），agent_runner_loop `continue` 让 LLM 重跑
+- `(INTERCEPTED_SYNC, wrapped_text)` — 同步 @niu，wrapped_text 是 `[unique_name] question` 包装文本，agent_runner_loop yield reply + return
+- `(EXIT, None)` — @end，agent_runner_loop 剥前缀 yield reply + return
+- `(FORMAT_ERROR, None)` — 格式错误，agent_runner_loop continue
+
+**改造原因**：避免同步 @niu 和 @end 都走 MAX_TURNS_EXCEEDED 末尾 return 导致无法区分（v1 BLOCKER B-NEW-1/2/3）。拦截层直接返回 wrapped_text，不再用 `handler._pending_sync_yield_text` 临时属性（v1 IMPORTANT I-1）。
+
+### 4.3 @niu 路径分同步/异步
 
 拦截层检测到 `@niu` 时，根据是否同步走不同函数：
 
 ```python
 if stripped.startswith("@niu"):
     question = stripped[4:].lstrip()
-    if not question: return FORMAT_ERROR
+    if not question: 
+        messages.append({"role": "assistant", "content": content})
+        messages.append({"role": "user", "content": FORMAT_ERROR_PROMPT})
+        return (FORMAT_ERROR, None)
     unique_name = getattr(handler, "_subagent_unique_name", "")
-    if not unique_name: return FORMAT_ERROR
+    if not unique_name: 
+        messages.append({"role": "assistant", "content": content})
+        messages.append({"role": "user", "content": FORMAT_ERROR_PROMPT})
+        return (FORMAT_ERROR, None)
     
     is_sync_subagent = getattr(handler, "_is_sync_subagent", False)
     if is_sync_subagent:
@@ -217,59 +253,70 @@ if stripped.startswith("@niu"):
         )
         # _ask_main_agent_impl_sync 内部：
         #   1. messages.append({"role": "assistant", "content": content})
-        #   2. 返回 "[unique_name] question" 包装文本
-        # 拦截层返回 INTERCEPTED_SYNC
-        return INTERCEPTED
+        #   2. 返回 "[unique_name] question" 包装文本（不 append user）
+        return (INTERCEPTED_SYNC, wrapped)
     else:
         # 异步路径：阻塞等主 Agent 回答（现有逻辑）
         from agent.subagent import _ask_main_agent_impl
         answer = _ask_main_agent_impl(question=question, unique_name=unique_name)
         messages.append({"role": "assistant", "content": content})
         messages.append({"role": "user", "content": f"[主 Agent 回答] {answer}"})
-        return INTERCEPTED
+        return (INTERCEPTED, None)
 ```
 
 **关键设计点**：
-- 同步路径返回值用 `INTERCEPTED_SYNC`（新常量），区别于异步的 `INTERCEPTED`
+- 同步路径返回 `(INTERCEPTED_SYNC, wrapped)`，wrapped 由 agent_runner_loop 取出 yield
 - 同步路径在 `_ask_main_agent_impl_sync` 内部 append assistant content（保留对话历史），**不 append user**（user 由第二次 call_subagent 注入）
-- 同步路径返回的 wrapped 文本（`[unique_name] question`）由调用方（agent_runner_loop）yield 出去
+- 异步路径行为不变（messages append assistant + user，返回 `(INTERCEPTED, None)` 让 agent_runner_loop continue）
 
-### 4.3 agent_runner_loop 处理 INTERCEPTED_SYNC
+### 4.4 agent_runner_loop 处理拦截层返回值
 
-`agent/generic/agent_loop.py:568-593` 当前分支：
+`agent/generic/agent_loop.py:568-593` 当前分支改造：
 
 ```python
-if interception == INTERCEPTED:
-    continue  # 异步路径：LLM 重跑
-if interception == EXIT:
+# 拦截层返回 tuple
+interception_status, interception_payload = _intercept_at_prefix_content(...)
+
+if interception_status == INTERCEPTED:
+    continue  # 异步路径：LLM 重跑（messages 已 append assistant + user）
+if interception_status == INTERCEPTED_SYNC:
+    # 同步路径：yield wrapped_text + 显式 return INTERCEPTED_SYNC
+    yield StreamEvent("reply", interception_payload)
+    # 显式 return，不走末尾 MAX_TURNS_EXCEEDED 路径
+    clear_stop()
+    yield StreamEvent("system", "chat_idle")
+    return {"result": "INTERCEPTED_SYNC", "messages": messages, "finish_reason": "intercepted_sync"}
+if interception_status == EXIT:
     # @end 允许退出
-    ...yield reply + break
-if interception == FORMAT_ERROR:
+    stripped_content = content.lstrip()
+    if stripped_content.startswith("@end"):
+        exit_content = stripped_content[4:].lstrip()
+        if not exit_content:
+            exit_content = content
+    else:
+        exit_content = content
+    yield StreamEvent("reply", exit_content)
+    clear_stop()
+    yield StreamEvent("system", "chat_idle")
+    return {"result": "EXITED", "messages": messages, "finish_reason": "exited"}
+if interception_status == FORMAT_ERROR:
     _harness_fail_count = 0
     continue
 # NO_INTERCEPTION：继续走原有逻辑
 ```
 
-新增 INTERCEPTED_SYNC 分支（在 INTERCEPTED 之后、EXIT 之前）：
+**关键设计点**：
+- INTERCEPTED_SYNC 和 EXIT 都**显式 return**，不再 break 后落到末尾 MAX_TURNS_EXCEEDED 路径
+- return 值的 `result` 字段用专门的 `"INTERCEPTED_SYNC"` / `"EXITED"`，给 §5.5 精确判别
+- `clear_stop()` + `yield chat_idle` 在 return 前显式调用（与原末尾路径一致，保证状态清理）
 
-```python
-if interception == INTERCEPTED_SYNC:
-    # 同步路径：yield wrapped_text + break + return MAX_TURNS_EXCEEDED
-    # wrapped_text 已在 _ask_main_agent_impl_sync 内构造，挂在某处供 agent_runner_loop 取
-    wrapped = getattr(handler, "_pending_sync_yield_text", "")
-    yield StreamEvent("reply", wrapped)
-    break
-```
+### 4.5 @end 路径
 
-**实现细节**：`_ask_main_agent_impl_sync` 把 wrapped 文本挂到 `handler._pending_sync_yield_text`，agent_runner_loop INTERCEPTED_SYNC 分支取出来 yield + break，break 后落到函数末尾 `return {"result": "MAX_TURNS_EXCEEDED", "messages": messages, ...}`。
+同步和异步的 @end 路径行为一致：见 §4.4 EXIT 分支，剥前缀 → yield reply → 显式 return `{"result": "EXITED", ...}`。
 
-### 4.4 @end 路径
+### 4.6 FORMAT_ERROR 路径
 
-同步和异步的 @end 路径行为一致：剥前缀 → yield reply → break → return MAX_TURNS_EXCEEDED。当前 `agent_loop.py:578-589` 的 EXIT 分支已支持，**无需改动**。
-
-### 4.5 FORMAT_ERROR 路径
-
-同步和异步的格式错误处理一致：追加错误提示 + continue。当前 `agent_loop.py:590-592` 已支持，**无需改动**。
+同步和异步的格式错误处理一致：追加错误提示 + continue。当前 `agent_loop.py:590-592` 已支持，**无需改动**（除返回值改为 tuple）。
 
 ---
 
@@ -323,6 +370,9 @@ if answer is not None and answer_unique_name is not None:
     suspended_messages = instance.suspended_messages
     suspended_messages.append({"role": "user", "content": f"[主 Agent 回答] {reply_text}"})
     
+    # 复位 state 为 running（即将重新跑）
+    instance.state = "running"
+    
     # 用 suspended 的全套状态重新调 _run_agent_loop
     try:
         result_text, return_value = _run_agent_loop(
@@ -338,7 +388,13 @@ if answer is not None and answer_unique_name is not None:
             ...
         )
     finally:
-        SubagentRegistry.unregister(answer_unique_name)  # 回复路径跑完即注销
+        # 条件化 unregister（与同步新任务分支一致）：
+        # - 若再次 @niu 挂起（state="waiting_for_answer"），跳过 unregister
+        # - 若 @end 正常退出或跑完，state="running" 或 None，正常 unregister
+        final_instance = SubagentRegistry.get(answer_unique_name)
+        final_state = getattr(final_instance, "state", None) if final_instance else None
+        if final_state != "waiting_for_answer":
+            SubagentRegistry.unregister(answer_unique_name)
     
     # 后处理（同 L727-751）
     ...
@@ -350,6 +406,10 @@ else:
     # 同步新任务分支（改动：handler._is_sync_subagent = True）
     ...
 ```
+
+**关键设计点**：
+- 第三分支复位 `instance.state = "running"` 后再跑 _run_agent_loop，让子 Agent 内部若再次 @niu 能重新设 state="waiting_for_answer"
+- 第三分支 finally 也条件化 unregister——多轮 @niu 时第二次 call_subagent 不注销，第三次才能正常注销（修复 v1 BLOCKER B-NEW-4）
 
 ### 5.3 同步新任务分支改动
 
@@ -384,26 +444,26 @@ finally:
 `subagent.py:727-751` 后处理之前，加：
 
 ```python
-# 同步 @niu 路径：return_value["result"] == "MAX_TURNS_EXCEEDED" 且 messages 末尾是 assistant
-# 把挂起状态存到 registry
+# 同步 @niu 路径：return_value["result"] == "INTERCEPTED_SYNC" 表示拦截层挂起
+# 用精确的 result 字段判别，不靠 messages 末尾正则（修复 v1 BLOCKER B-NEW-2）
 if return_value and isinstance(return_value, dict):
     result_flag = return_value.get("result", "")
-    if result_flag == "MAX_TURNS_EXCEEDED" and getattr(handler, "_is_sync_subagent", False):
-        # 检查 messages 末尾是否是 @niu 触发的 assistant（不是 @end）
-        msgs = return_value.get("messages", [])
-        if msgs and msgs[-1].get("role") == "assistant":
-            content = msgs[-1].get("content", "")
-            if content.lstrip().startswith("@niu"):
-                instance = SubagentRegistry.get(unique_name)
-                if instance:
-                    instance.state = "waiting_for_answer"
-                    instance.suspended_messages = msgs
-                    instance.suspended_handler = handler
-                    instance.suspended_client = client
-                    instance.suspended_tools_schema = tools_schema
-                    instance.suspended_system_message = system_message
-                # finally 块会因 state="waiting_for_answer" 跳过 unregister
+    if result_flag == "INTERCEPTED_SYNC" and getattr(handler, "_is_sync_subagent", False):
+        instance = SubagentRegistry.get(unique_name)
+        if instance:
+            instance.state = "waiting_for_answer"
+            instance.suspended_messages = return_value.get("messages", [])
+            instance.suspended_handler = handler
+            instance.suspended_client = client
+            instance.suspended_tools_schema = tools_schema
+            instance.suspended_system_message = system_message
+        # finally 块会因 state="waiting_for_answer" 跳过 unregister
 ```
+
+**关键设计点**：
+- 用 `result_flag == "INTERCEPTED_SYNC"` 精确判别，不靠 messages 末尾正则（修复 v1 BLOCKER B-NEW-1/B-NEW-2/B-NEW-3）
+- @end 路径 return `result="EXITED"`，不会被误判为挂起
+- MAX_TURNS_EXCEEDED（真正超轮次）return `result="MAX_TURNS_EXCEEDED"`，也不会被误判
 
 ### 5.6 chat-with-xxx schema 改动
 
@@ -415,15 +475,19 @@ if return_value and isinstance(return_value, dict):
     "parameters": {
         "type": "object",
         "properties": {
-            "task": {"type": "string", "description": "任务描述"},
+            "task": {"type": "string", "description": "任务描述（回复路径可传空字符串）"},
             "answer": {"type": "string", "description": "回复子 Agent 的 @niu 问题（含 @子名 前缀）"},
             "unique_name": {"type": "string", "description": "子 Agent 唯一名（回复时必填）"},
             "async_mode": {"type": "boolean", ...}  # 已有，allowAsync 时才有
         },
-        "required": ["task"]  # task 仍必填，回复路径可传空字符串
+        # task 改为 optional（修复 v1 IMPORTANT I-4）
+        # 回复路径 task="" 满足 required 但语义不对，改为 optional 更合理
+        "required": []
     }
 }
 ```
+
+**主 Agent 提示词约束**：niu.md 已有"看到 `[子名] 问题` 回 `@子名 回答`"守则，主 Agent 看到 chat-with-xxx 工具结果含 `[子名] 问题` 时会自然调 chat-with-xxx 带 answer + unique_name。
 
 ### 5.7 _call_subagent_gen 透传
 
@@ -448,6 +512,25 @@ result = call_subagent(
     answer_unique_name=unique_name_arg if answer else None,
 )
 ```
+
+### 5.8 control_flow_results 集合更新
+
+`agent/subagent.py:270-295` 的 `_extract_result_from_return_value` 函数用 `control_flow_results` 集合判断哪些 result 字段属于"控制流信号"（extract 返回 None，让 call_subagent 用 result_text）。
+
+当前集合（`subagent.py:275` 附近）含：`CURRENT_TASK_DONE` / `MAX_TURNS_EXCEEDED` / `CONTEXT_OVERFLOW` / `TERMINATED_BY_SUPPLEMENT` 等。
+
+**新增两个值**：
+
+```python
+control_flow_results = {
+    "CURRENT_TASK_DONE", "MAX_TURNS_EXCEEDED", "CONTEXT_OVERFLOW",
+    "TERMINATED_BY_SUPPLEMENT", "STOP_REQUESTED",
+    "INTERCEPTED_SYNC",  # 新增：同步 @niu 挂起，extract 返回 None，用 result_text（即 wrapped 问题文本）
+    "EXITED",            # 新增：@end 退出，extract 返回 None，用 result_text（即剥前缀后的 exit_content）
+}
+```
+
+这样 §5.5 用 `result_flag == "INTERCEPTED_SYNC"` 精确判别挂起，同时 call_subagent 能正确返回 result_text 给主 Agent。
 
 ---
 
@@ -487,13 +570,30 @@ def agent_runner_loop(
 L416-477 的 messages 构造逻辑加分支：
 
 ```python
+# === messages 构造（仅 resumed_messages is None 时走完整构造） ===
 if resumed_messages is not None:
     # 回复路径：直接用挂起的 messages，跳过 system_message + history + user_input 构造
     messages = resumed_messages
 else:
     messages = [system_message]
-    # ... 现有 history 处理 + user_input append ...
+    # ... 现有 L416-477 history 处理 + user_input append ...
+
+# === L482+ 的初始化保留在 if/else 之外（修复 v1 BLOCKER B-NEW-5） ===
+# turn = 0
+# last_prompt_tokens = 0
+# handler._last_prompt_tokens = 0
+# _compress_cooldown = False
+# handler._done_hooks = []
+# handler.max_turns = max_turns
+# _harness_fail_count = 0
+# warning_threshold = _read_warning_threshold()
+# yield StreamEvent("system", "chat_busy")
+# 这些初始化对 resumed_messages 路径也必须执行
 ```
+
+**关键设计点**：
+- `if resumed_messages is not None` 分支**只替换 messages 赋值**，L482+ 的 turn/harness/chat_busy 初始化保留在 if/else 之外，对所有路径都执行
+- resumed_messages 路径跳过 system_message + history + user_input 构造（这些已包含在 suspended_messages 里）
 
 ---
 
@@ -556,7 +656,9 @@ def request_stop_all_subagents():
 主 Agent 工具循环可能因 LLM 不调第二次 chat-with-xxx 而退出（如 LLM 直接回用户）——此时挂起的同步 session 残留。处理：
 
 - 主 Agent 工具循环退出（agent_runner_loop 主路径结束）时，扫描 SubagentRegistry，清理所有 `state="waiting_for_answer"` 且 `is_sync=True` 的 session
-- 实现位置：`agent/runner.py` 主 Agent 工具循环结束处加 `cleanup_suspended_sync_subagents()` 调用
+- **实现位置**：`agent/runner.py` 主 Agent 工具循环生成器的 `finally` 块（L2184-2201 附近）。`finally` 块在所有退出路径（正常 StopIteration、is_stop_requested break、异常）都会执行，是清理挂起 session 的合适位置
+- 条件 `state="waiting_for_answer" and is_sync=True` 不会误清理异步子 Agent（异步 state 不会是 waiting_for_answer）
+- 加 `cleanup_suspended_sync_subagents()` helper 函数，遍历 `SubagentRegistry.list_running()` 注销符合条件的 session
 
 ---
 
@@ -652,16 +754,15 @@ if _SUBAGENT_ASK_GUIDE_MARKER not in static_system:
 ### 11.1 单元测试（mock LLM，验证拦截层和路由逻辑）
 
 1. **拦截层条件改动回归**
-   - 同步子 Agent（`_is_sync_subagent=True`, `memory_context=None`）输出 `@niu 问题` → 返回 INTERCEPTED_SYNC，messages 末尾是 assistant
-   - 同步子 Agent 输出 `@end 结果` → 返回 EXIT
-   - 同步子 Agent 输出无 `@` 前缀 → 返回 FORMAT_ERROR
-   - 主 Agent 路径输出任何 content → 返回 NO_INTERCEPTION（回归）
-   - 异步子 Agent 所有行为不变（回归）
+   - 同步子 Agent（`_is_sync_subagent=True`, `memory_context=None`）输出 `@niu 问题` → 返回 `(INTERCEPTED_SYNC, wrapped_text)`，messages 末尾是 assistant
+   - 同步子 Agent 输出 `@end 结果` → 返回 `(EXIT, None)`
+   - 同步子 Agent 输出无 `@` 前缀 → 返回 `(FORMAT_ERROR, None)`
+   - 主 Agent 路径输出任何 content → 返回 `(NO_INTERCEPTION, None)`（回归）
+   - 异步子 Agent 输出 `@niu 问题` → 返回 `(INTERCEPTED, None)`，messages append assistant + user（回归）
 
 2. **`_ask_main_agent_impl_sync` 函数**
    - 调用后：messages 末尾 append assistant content
    - 返回文本格式 `[unique_name] question`
-   - handler._pending_sync_yield_text 设为 wrapped 文本
    - 不推 MainAgentRequestQueue
 
 3. **call_subagent 三路入口**
@@ -670,14 +771,17 @@ if _SUBAGENT_ASK_GUIDE_MARKER not in static_system:
    - 有 answer + 有 answer_unique_name → 回复路径
    - 回复路径 instance 不存在 → 返回错误文本，不抛异常
    - 回复路径 state != "waiting_for_answer" → 返回错误文本
+   - **多轮 @niu**：回复路径跑完后再次 @niu → state 重新设为 "waiting_for_answer" → finally 跳过 unregister → 第三次 call_subagent 仍能拿回 session
 
 4. **finally unregister 条件化**
    - state="waiting_for_answer" → 跳过 unregister
    - state="running" → 正常 unregister
+   - 第三分支 finally 也条件化（多轮 @niu 场景）
 
 5. **chat-with-xxx schema 改动**
    - schema 含可选 answer + unique_name 参数
-   - 不带这俩参数 = 新任务调用
+   - task 改为 optional
+   - 不带 answer/unique_name = 新任务调用
    - 带这俩参数 = 回复调用
 
 6. **`call_subagent_with_auto_answer` helper**
@@ -685,9 +789,11 @@ if _SUBAGENT_ASK_GUIDE_MARKER not in static_system:
    - 第一次返回 @niu 问题 → 自动回复 → 第二次返回 @end → 返回最终结果
    - 多轮 @niu → 多轮自动回复
    - 子 Agent 正常结果含 `[已完成] 文件 X` → 不误判为 @niu（精确正则匹配）
+   - `_is_at_niu_question` 用 f-string 正则 `rf"^\[{re.escape(agent_name)}-[0-9a-f]{{4}}\] "`
 
 7. **resumed_messages 参数**
    - agent_runner_loop 收到 resumed_messages → 跳过 system_message + history + user_input 构造
+   - L482+ 的 turn/harness/chat_busy 初始化仍执行（在 if/else 之外）
    - 直接用 resumed_messages 跑
 
 8. **提示词注入**
@@ -699,6 +805,16 @@ if _SUBAGENT_ASK_GUIDE_MARKER not in static_system:
 9. **request_stop_all_subagents 改造**
    - state="waiting_for_answer" → 直接 unregister
    - state="running" → 推 /stop 终止
+
+10. **control_flow_results 集合**
+    - 含 INTERCEPTED_SYNC 和 EXITED
+    - _extract_result_from_return_value 对这俩返回 None
+    - call_subagent 用 result_text
+
+11. **agent_runner_loop 显式 return**
+    - INTERCEPTED_SYNC 分支 yield reply + return {"result": "INTERCEPTED_SYNC", ...}
+    - EXIT 分支 yield reply + return {"result": "EXITED", ...}
+    - 不再走末尾 MAX_TURNS_EXCEEDED 路径
 
 ### 11.2 端到端测试（真实 LLM + 真实程序，禁 mock）
 
