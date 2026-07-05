@@ -630,8 +630,8 @@ def _intercept_at_prefix_content(
 
     # @niu-agent 拦截（用 startswith("@niu-agent") 兼容 @niu-agent无空格）
     if stripped.startswith("@niu-agent"):
-        # 剥除 "@niu-agent" 前缀 + 可选空格
-        question = stripped[4:].lstrip()
+        # 剥除 "@niu-agent" 前缀（10 字符）+ 可选空格
+        question = stripped[len("@niu-agent"):].lstrip()
         if not question:
             logger.error("[AtPrefix] @niu-agent 后无问题内容")
             return FORMAT_ERROR
@@ -674,7 +674,7 @@ def _intercept_at_prefix_content(
 **关键设计**：
 - 拦截函数**无 `agent_name` 参数**（`_ask_main_agent_impl` 签名只需 question + unique_name）
 - `@niu-agent` / `@end` 用 `startswith("@xxx")` 不带空格，兼容 LLM 输出 `@niu-agent无空格` 的情况
-- 前缀剥除用 `stripped[4:].lstrip()`（4 是 `@niu-agent`/`@end` 字符数），更稳健
+- 前缀剥除用 `stripped[len("@niu-agent"):].lstrip()`（10 是 `@niu-agent` 字符数；`@end` 是 4 字符单独处理），更稳健
 - 主 Agent 回答用 `user` 消息注入而非 `tool` 消息，避免 LLM API 对 tool_call_id 的严格校验
 
 - [ ] **Step 4: 运行测试确认通过**
