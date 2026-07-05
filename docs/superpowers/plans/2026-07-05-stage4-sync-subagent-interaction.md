@@ -539,7 +539,7 @@ FORMAT_ERROR = "format_error"        # 无 @ 前缀无 tool_calls，已追加格
 NO_INTERCEPTION = "no_intercept"     # 不拦截（主 Agent 或有 tool_calls）
 ```
 
-- [ ] **Step 2: 写失败测试——同步子 Agent @niu-agent 拦截**
+- [ ] **Step 7: 写失败测试——同步子 Agent @niu-agent 拦截**
 
 在 `tests/test_at_prefix_interception.py` 加测试：
 
@@ -569,7 +569,7 @@ def test_sync_subagent_at_niu_returns_intercepted_sync(monkeypatch):
     assert payload == "[test-ab12] 问题"
 ```
 
-- [ ] **Step 3: 跑测试确认 FAIL**
+- [ ] **Step 8: 跑测试确认 FAIL**
 
 ```bash
 cd REDACTED_USER_PATH/tools/ai-bot/agent && python -m pytest tests/test_at_prefix_interception.py::test_sync_subagent_at_niu_returns_intercepted_sync -v 2>&1 | tail -10
@@ -577,7 +577,7 @@ cd REDACTED_USER_PATH/tools/ai-bot/agent && python -m pytest tests/test_at_prefi
 
 Expected: FAIL（拦截层当前 `memory_context is None` 直接返回 NO_INTERCEPTION）。
 
-- [ ] **Step 4: 修改拦截条件 + 拦截层返回 tuple**
+- [ ] **Step 9: 修改拦截条件 + 拦截层返回 tuple**
 
 `agent/generic/agent_loop.py:44-130` 改造 `_intercept_at_prefix_content`：
 
@@ -667,7 +667,7 @@ def _intercept_at_prefix_content(
     return (FORMAT_ERROR, None)
 ```
 
-- [ ] **Step 5: 修改 agent_runner_loop 调用点改 tuple 解构**
+- [ ] **Step 10: 修改 agent_runner_loop 调用点改 tuple 解构**
 
 `agent/generic/agent_loop.py:568-593` 改为：
 
@@ -705,7 +705,7 @@ if not response.tool_calls:
     # NO_INTERCEPTION：继续走原有逻辑
 ```
 
-- [ ] **Step 6: 改现有测试断言为 tuple + 显式设 _is_sync_subagent=False**
+- [ ] **Step 11: 改现有测试断言为 tuple + 显式设 _is_sync_subagent=False**
 
 `tests/test_at_prefix_interception.py` 所有 `assert result == agent_loop.INTERCEPTED` / `EXIT` / `FORMAT_ERROR` / `NO_INTERCEPTION` 改为 `assert result == (agent_loop.XXX, None)` 或 `assert result[0] == agent_loop.XXX`。具体：
 - L103: `assert result == agent_loop.INTERCEPTED` → `assert result == (agent_loop.INTERCEPTED, None)`
@@ -744,7 +744,7 @@ L169 测试名 `test_no_interception_for_sync_subagent` 语义已过时（同步
 - L261 `test_agent_runner_loop_intercepts_at_niu`：只验证 hasattr，不调拦截层——不用改。
 - L275 `test_main_agent_not_intercepted`：`memory_context=None` + 期望 NO_INTERCEPTION——**改为 `fake_handler._is_sync_subagent = False`**。
 
-- [ ] **Step 7: 跑测试确认 PASS**
+- [ ] **Step 12: 跑测试确认 PASS**
 
 ```bash
 python -m pytest tests/test_at_prefix_interception.py -v 2>&1 | tail -20
@@ -752,7 +752,7 @@ python -m pytest tests/test_at_prefix_interception.py -v 2>&1 | tail -20
 
 Expected: PASS（含新测试 + 现有测试改 tuple 后）。
 
-- [ ] **Step 8: 写回归测试——主 Agent 路径不被拦截**
+- [ ] **Step 13: 写回归测试——主 Agent 路径不被拦截**
 
 ```python
 def test_main_agent_not_intercepted_after_change(monkeypatch):
@@ -774,7 +774,7 @@ def test_main_agent_not_intercepted_after_change(monkeypatch):
     assert len(messages) == 1  # messages 不被追加
 ```
 
-- [ ] **Step 9: 跑测试确认 PASS**
+- [ ] **Step 14: 跑测试确认 PASS**
 
 ```bash
 python -m pytest tests/test_at_prefix_interception.py::test_main_agent_not_intercepted_after_change -v 2>&1 | tail -10
@@ -782,7 +782,7 @@ python -m pytest tests/test_at_prefix_interception.py::test_main_agent_not_inter
 
 Expected: PASS。
 
-- [ ] **Step 10: Commit**
+- [ ] **Step 15: Commit**
 
 ```bash
 git add agent/generic/agent_loop.py tests/test_at_prefix_interception.py
