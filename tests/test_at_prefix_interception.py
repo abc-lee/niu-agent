@@ -256,3 +256,29 @@ def test_agent_runner_loop_intercepts_at_niu(monkeypatch):
     assert hasattr(agent_loop, "EXIT")
     assert hasattr(agent_loop, "FORMAT_ERROR")
     assert hasattr(agent_loop, "NO_INTERCEPTION")
+
+
+def test_main_agent_not_intercepted(monkeypatch):
+    """主 Agent 路径（memory_context=None）不被拦截，返回 NO_INTERCEPTION"""
+    from agent.generic import agent_loop
+    from agent import subagent
+
+    # mock _ask_main_agent_impl 确保不被调用
+    mock_ask = mock.Mock()
+    monkeypatch.setattr(subagent, "_ask_main_agent_impl", mock_ask)
+
+    fake_handler = mock.MagicMock()
+    messages = [{"role": "user", "content": "开始"}]
+
+    # 主 Agent 路径：memory_context=None + LLM 返回纯文本（无 @ 前缀）
+    result = agent_loop._intercept_at_prefix_content(
+        content="这是主 Agent 的正常回复",
+        tool_calls=[],
+        messages=messages,
+        handler=fake_handler,
+        memory_context=None,  # 主 Agent
+    )
+
+    assert result == agent_loop.NO_INTERCEPTION
+    assert len(messages) == 1  # messages 不被追加
+    mock_ask.assert_not_called()  # _ask_main_agent_impl 不被调用

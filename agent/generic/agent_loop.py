@@ -577,7 +577,14 @@ def agent_runner_loop(
                     continue  # @niu 已处理，回到 while 循环让 LLM 继续
                 if interception == EXIT:
                     # @end 允许退出，剥除 "@end" 前缀 + 可选空格后推前端
-                    exit_content = content.lstrip()[4:].lstrip() if content.lstrip().startswith("@end") else content
+                    stripped_content = content.lstrip()
+                    if stripped_content.startswith("@end"):
+                        exit_content = stripped_content[4:].lstrip()
+                        # 边界：@end 恰好 4 字符时剥前缀后为空，用原始 content 避免前端收到空回复
+                        if not exit_content:
+                            exit_content = content
+                    else:
+                        exit_content = content
                     yield StreamEvent("reply", exit_content)
                     break
                 if interception == FORMAT_ERROR:
