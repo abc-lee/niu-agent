@@ -73,10 +73,10 @@
 6. _intercept_at_prefix_content 拦截（拦截条件改动见 §4.1）：
    - 检测到 @niu-agent + is_sync_subagent=True → 走同步分支
    - 调 _ask_main_agent_impl_sync(question, unique_name, handler, messages, content)
-     • messages.append({"role": "assistant", "content": content})  ← 保留对话历史
-     • 返回 wrapped = "[xxx-ab12] 我该选哪个？"  ← 程序包装 unique_name
+     • 函数内部：messages.append assistant content（保留对话历史）+ 返回 wrapped = "[xxx-ab12] 我该选哪个？"
      • 不推 queue，不阻塞
    - 返回 (INTERCEPTED_SYNC, wrapped)
+   - **注意**：messages 里 append 的是原始 content（`@niu-agent 我该选哪个？`），但 agent_runner_loop yield 的 result_text 是 wrapped 文本（`[xxx-ab12] 我该选哪个？`）。两者故意不一致——messages 给子 Agent LLM 看（保留 @niu-agent 前缀上下文），result_text 给主 Agent LLM 看（包装成工具结果格式）。实施时不要把 wrapped 文本 append 到 messages。
    ↓
 7. agent_runner_loop 收到 (INTERCEPTED_SYNC, wrapped) → yield StreamEvent("reply", wrapped) + return {"result": "INTERCEPTED_SYNC", "messages": messages, ...}
    ↓
@@ -264,7 +264,11 @@ def _ask_main_agent_impl_sync(question: str, unique_name: str, handler, messages
     - append assistant content 保留对话历史，不 append user（user 由第二次 call_subagent 注入）
     """
     messages.append({"role": "assistant", "content": content})
-    wrapped = f"[{unique_name}] {question}"
+    # sanitization（与异步路径 subagent.py:807-809 一致，v11 审查 I1）
+    sanitized = question[:2000] if question else ""
+    if sanitized.lstrip().startswith("@"):
+        sanitized = sanitized.lstrip()[1:]
+    wrapped = f"[{unique_name}] {sanitized}"
     return wrapped
 ```
 
@@ -302,6 +306,10 @@ if interception_status == EXIT:
     yield StreamEvent("reply", exit_content)
     yield StreamEvent("system", "chat_idle")
     return {"result": "EXITED", "messages": messages, "finish_reason": "exited"}
+    # 注意：现有 EXIT 分支（agent_loop.py:578-589）是 break 后落到 L684 finally 调 clear_stop()
+    # v11 改为显式 return——这是有意改动，跳过 L684 的 clear_stop 调用
+    # 原因：子 Agent 路径不应清主 Agent 全局 stop 标志（v9 审查 B5）
+    # 现有 STOPPED 分支（L500/668/739）仍调 clear_stop() 是已存在瑕疵，本阶段不修
 if interception_status == FORMAT_ERROR:
     _harness_fail_count = 0
     continue
@@ -360,6 +368,9 @@ if answer is not None and answer_unique_name is not None:
     instance = SubagentRegistry.get(answer_unique_name)
     if instance is None or getattr(instance, "state", None) != "waiting_for_answer":
         return f"[错误] 找不到挂起的子 Agent session（unique_name={answer_unique_name}），可能已被终止"
+    # 校验 agent_type 匹配（v11 审查 B2）：防止主 Agent LLM 把 A 子 Agent 的 unique_name 传给 B 子 Agent 的 chat-with-xxx
+    if instance.agent_type != agent_name:
+        return f"[错误] unique_name={answer_unique_name} 不属于子 Agent {agent_name}（实际属于 {instance.agent_type}），请检查 unique_name 是否传错"
     
     # 剥除 "@子名 " 前缀（容错：找不到前缀原样使用，记 warning）
     reply_text = _strip_at_prefix(answer, answer_unique_name)
@@ -651,6 +662,9 @@ else:
 **FIFO 裁剪保护**：resumed_messages 路径下，messages[0] 是 system_message（第一次跑 L416 加进去的）。`_fifo_prune`（`agent_loop.py:246-292`）当前保护 messages[0]+messages[1]，从 i=2 开始删。resumed_messages 路径下 messages[1] 不是"初始 user"。**改动**：
 
 ```python
+# DEFAULT_PROTECT_RECENT_COUNT 值（与 subagent.py:140 现有常量一致，v11 审查 I2）
+DEFAULT_PROTECT_RECENT_COUNT = 10
+
 def _fifo_prune(messages, target_tokens, protect_recent_count=DEFAULT_PROTECT_RECENT_COUNT, is_resumed=False):
     if len(messages) <= 2:
         return 0
@@ -752,7 +766,7 @@ _SUBAGENT_ASK_GUIDE_TEMPLATE = """
 - 询问：`@niu-agent 我应该选择哪个选项？`
 - 结束：`@end 任务已完成，结果：...`
 
-注：你不需要知道自己的 unique_name，程序会自动包装。
+注：你不需要在输出里包含自己的标识符，程序会自动在你的问题前加上唯一标识，主 Agent 据此回复你。
 """
 
 _SUBAGENT_ASK_GUIDE_MARKER = "<!-- NIU_SUBAGENT_GUIDE_v1 -->"
@@ -820,8 +834,9 @@ if _SUBAGENT_ASK_GUIDE_MARKER not in static_system:
 4. `tests/`：6 个测试文件改 `@niu-agent`
 5. `docs/`：4 个文档改 `@niu-agent`
 6. `agent/db_monitor.py` / `at_message_parser`：验证 `@niu-agent` 路由不误伤（已确认安全）
-7. 端到端验证：异步路径 + 同步路径 @niu-agent 询问全流程
-8. 知识图谱回归：确认 entity-extractor 不再把 `@niu-agent` 上下文误连到根节点
+7. `niu_api/`：grep 确认无旧 `@niu` 前缀（v11 审查 I4）
+8. 端到端验证：异步路径 + 同步路径 @niu-agent 询问全流程
+9. 知识图谱回归：确认 entity-extractor 不再把 `@niu-agent` 上下文误连到根节点
 
 ### 9A.5 验收标准
 
@@ -1028,7 +1043,7 @@ if _SUBAGENT_ASK_GUIDE_MARKER not in static_system:
 
 1. **同步子 Agent @niu-agent 询问 + 主 Agent 回复 + 子 Agent 继续**
    - 主 Agent 调 chat-with-xxx → 子 Agent @niu-agent 问澄清问题 → 主 Agent 看到 JSON 工具结果含 `[子名] 问题` → 回 `@子名 回答` → 子 Agent 收到回答继续工作 → @end 返回结果
-   - 验证：主 Agent 工具循环未退出；session 在 registry 里正确注册和清理
+   - 验证方法：检查主 Agent agent_runner_loop 的 tool_calls 列表里第二次 chat-with-xxx 调用（带 answer + unique_name 参数）；检查最终回复不含纯文本 fallback（即主 Agent 没有绕过工具循环直接回用户）；检查 SubagentRegistry 在 @end 后无残留 session
 
 2. **同步子 Agent 多轮 @niu-agent**
    - 子 Agent 连续问 3 次 @niu-agent → 主 Agent 回复 3 次 → 子 Agent @end
