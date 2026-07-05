@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 让同步调用的子 Agent 也能用 `@niu` / `@end` 前缀表达意图，与主 Agent 对话时底层走 MCP 工具返回值通道（不退出主 Agent 工具循环），消息格式与异步路径完全一致。
+**Goal:** 让同步调用的子 Agent 也能用 `@niu-agent` / `@end` 前缀表达意图，与主 Agent 对话时底层走 MCP 工具返回值通道（不退出主 Agent 工具循环），消息格式与异步路径完全一致。
 
-**Architecture:** 同步子 Agent 输出 `@niu 问题` 时，agent_runner_loop 拦截层识别后挂起 session（messages 末尾保留 assistant，state="waiting_for_answer"），把 messages/handler/client/tools_schema/system_message 全套状态存到 SubagentRegistry；问题包装成 `[子名] 问题` 作为 yield reply + return MAX_TURNS_EXCEEDED（复用现有 EXIT 机制），call_subagent 拿到 result_text 返给主 Agent。主 Agent LLM 看到工具结果后按 niu.md 提示词生成 `@子名 回答`，重调 `chat-with-xxx(answer, unique_name)`；call_subagent 检测到 answer 参数走第三分支，从 registry 拿回 suspended session，append user 消息（主 Agent 回答）后作为 `resumed_messages` 重新调 `_run_agent_loop`，agent_runner_loop 跳过 history+user 构造直接跑。程序触发子 Agent（无主 Agent 在线）由 `call_subagent_with_auto_answer` helper 自动回复固定文案。所有子 Agent（同步+异步）强制注入 @niu/@end 守则段。
+**Architecture:** 同步子 Agent 输出 `@niu-agent 问题` 时，agent_runner_loop 拦截层识别后挂起 session（messages 末尾保留 assistant，state="waiting_for_answer"），把 messages/handler/client/tools_schema/system_message 全套状态存到 SubagentRegistry；问题包装成 `[子名] 问题` 作为 yield reply + return MAX_TURNS_EXCEEDED（复用现有 EXIT 机制），call_subagent 拿到 result_text 返给主 Agent。主 Agent LLM 看到工具结果后按 niu.md 提示词生成 `@子名 回答`，重调 `chat-with-xxx(answer, unique_name)`；call_subagent 检测到 answer 参数走第三分支，从 registry 拿回 suspended session，append user 消息（主 Agent 回答）后作为 `resumed_messages` 重新调 `_run_agent_loop`，agent_runner_loop 跳过 history+user 构造直接跑。程序触发子 Agent（无主 Agent 在线）由 `call_subagent_with_auto_answer` helper 自动回复固定文案。所有子 Agent（同步+异步）强制注入 @niu-agent/@end 守则段。
 
 **Tech Stack:** Python（agent_loop.py / subagent.py / subagent_registry.py / handler.py / runner.py / compat.py），纯内存 SubagentRegistry，OpenAI tool schema（chat-with-xxx 加可选参数）。
 
@@ -20,26 +20,26 @@
 
 ### 1.2 阶段三实施过程中暴露的次要问题
 
-- 阶段三回退了"结构注入 ask_main_agent 守则"代码（commit `0ee5660f`），导致子 Agent 第一次输出不知道用 @niu 前缀，会先触发 FORMAT_ERROR 后第二轮才学会
+- 阶段三回退了"结构注入 ask_main_agent 守则"代码（commit `0ee5660f`），导致子 Agent 第一次输出不知道用 @niu-agent 前缀，会先触发 FORMAT_ERROR 后第二轮才学会
 - 守则注入应同时覆盖同步和异步子 Agent，不能只针对异步
 
 ### 1.3 阶段四目标
 
 - 同步子 Agent 也走 @前缀拦截层，与异步路径行为一致
-- 消息格式统一：同步和异步的 @niu 问题都包装成 `[子名] 问题`，主 Agent 回复都包装成 `@子名 回答`
+- 消息格式统一：同步和异步的 @niu-agent 问题都包装成 `[子名] 问题`，主 Agent 回复都包装成 `@子名 回答`
 - 传输通道分离：异步走 db_monitor 链路 A→B（主 Agent 闲置触发新一轮），同步走"工具返回值 → 主 Agent 工具循环内回答 → 工具再次调用回送"
 - 程序触发子 Agent 由 `call_subagent_with_auto_answer` helper 自动回复固定文案
-- 所有子 Agent 强制注入 @niu/@end 守则段
+- 所有子 Agent 强制注入 @niu-agent/@end 守则段
 
 ---
 
 ## 2. 核心设计原则
 
-1. **消息格式统一**——同步和异步的 @niu 问题都包装成 `[子名] 问题`，主 Agent 回复都包装成 `@子名 回答`。主 Agent LLM 不感知对方是同步还是异步。
+1. **消息格式统一**——同步和异步的 @niu-agent 问题都包装成 `[子名] 问题`，主 Agent 回复都包装成 `@子名 回答`。主 Agent LLM 不感知对方是同步还是异步。
 2. **传输通道分离**——异步走 db_monitor 链路 A→B；同步走 MCP 工具返回值通道，主 Agent 在同一轮工具调用内回答。
-3. **session 状态全量存 SubagentRegistry**——同步子 Agent 遇 @niu 时把 messages / handler / client / tools_schema / system_message 全套状态存到 registry（新增字段）。第二次 call_subagent 重新调 `_run_agent_loop`，**不是 continue 生成器**（生成器已 StopIteration 销毁，不可能 continue）。
-4. **所有子 Agent 注入 @niu/@end 守则**——同步和异步统一注入。
-5. **程序触发点包 while 循环**——auto_tidy / force 压缩 / 手动 tidy API 等场景，收到 @niu 自动回复固定文案。
+3. **session 状态全量存 SubagentRegistry**——同步子 Agent 遇 @niu-agent 时把 messages / handler / client / tools_schema / system_message 全套状态存到 registry（新增字段）。第二次 call_subagent 重新调 `_run_agent_loop`，**不是 continue 生成器**（生成器已 StopIteration 销毁，不可能 continue）。
+4. **所有子 Agent 注入 @niu-agent/@end 守则**——同步和异步统一注入。
+5. **程序触发点包 while 循环**——auto_tidy / force 压缩 / 手动 tidy API 等场景，收到 @niu-agent 自动回复固定文案。
 
 ---
 
@@ -61,13 +61,13 @@
    ↓
 4. _run_agent_loop(...) → agent_runner_loop(memory_context=None, ...)
    ↓
-5. 子 Agent LLM 输出 "@niu 我该选哪个？"
+5. 子 Agent LLM 输出 "@niu-agent 我该选哪个？"
    ↓
 6. _intercept_at_prefix_content 拦截（拦截条件改动后见 §4.1，返回值改为 tuple 见 §4.2）：
-   - 检测到 @niu + is_sync_subagent=True → 走同步分支
+   - 检测到 @niu-agent + is_sync_subagent=True → 走同步分支
    - 调 _ask_main_agent_impl_sync(question, unique_name, handler, messages, content)
      • 不阻塞，立即返回 wrapped 文本 "[xxx-ab12] 我该选哪个？"
-     • messages 末尾 append assistant content（"@niu 我该选哪个？"）  ← 关键：保留对话历史
+     • messages 末尾 append assistant content（"@niu-agent 我该选哪个？"）  ← 关键：保留对话历史
      • 不 append user（user 由第二次 call_subagent 注入）
    - 返回 (INTERCEPTED_SYNC, "[xxx-ab12] 我该选哪个？")
    ↓
@@ -110,7 +110,7 @@
     → messages 末尾是 user，LLM 正常处理
     → 继续跑工具循环
    ↓
-14. 子 Agent 继续跑 → 输出 "@end 任务完成" 或再次 "@niu"
+14. 子 Agent 继续跑 → 输出 "@end 任务完成" 或再次 "@niu-agent"
    ↓
 15. @end 路径：拦截层返回 (EXIT, None) → agent_runner_loop yield reply "任务完成" + 显式 return {"result": "EXITED", "messages": messages, ...}
     → _run_agent_loop 返回 (result_text="任务完成", return_value={"result":"EXITED","messages":messages})
@@ -127,24 +127,24 @@
 |------|---------|---------|
 | memory_context | 非 None | None |
 | handler._is_sync_subagent | False | True |
-| @niu 问题送出通道 | push MainAgentRequestQueue → db_monitor 链路 A 检测主 Agent 闲置 → 触发新一轮 LLM | yield reply → 作为 tool 消息送主 Agent → 主 Agent 在当前工具循环内回答 |
+| @niu-agent 问题送出通道 | push MainAgentRequestQueue → db_monitor 链路 A 检测主 Agent 闲置 → 触发新一轮 LLM | yield reply → 作为 tool 消息送主 Agent → 主 Agent 在当前工具循环内回答 |
 | 主 Agent 回复送回通道 | db_monitor 链路 B 路由到 SubagentSupplementQueue | 主 Agent 重调 chat-with-xxx(answer, unique_name) → call_subagent 第三分支注入 |
 | session 状态存储 | SubagentRegistry（memory_context 字段） | SubagentRegistry（suspended_messages/handler/client/tools_schema/system_message 字段） |
 | 消息格式 | `[子名] 问题` / `@子名 回答` | `[子名] 问题` / `@子名 回答`（完全一致） |
 | 主 Agent 是否阻塞 | 不阻塞（异步） | 阻塞在 dispatch 工具调用上（同步） |
 | 主 Agent 工具循环是否退出 | 退出（异步路径主 Agent 跨多轮） | 不退出（同一轮工具调用内） |
-| 拦截层 @niu 分支 | 异步分支：调 _ask_main_agent_impl 阻塞等回答 → append assistant + user → INTERCEPTED | 同步分支：调 _ask_main_agent_impl_sync 不阻塞 → append assistant 不 append user → INTERCEPTED_SYNC |
+| 拦截层 @niu-agent 分支 | 异步分支：调 _ask_main_agent_impl 阻塞等回答 → append assistant + user → INTERCEPTED | 同步分支：调 _ask_main_agent_impl_sync 不阻塞 → append assistant 不 append user → INTERCEPTED_SYNC |
 | agent_runner_loop 收到拦截返回值后 | INTERCEPTED → continue（LLM 重跑） | INTERCEPTED_SYNC → yield reply + break + return MAX_TURNS_EXCEEDED（call_subagent 返回） |
 
 ### 3.3 程序触发子 Agent 的特殊处理
 
-程序触发子 Agent（auto_tidy / force 压缩 / 手动 tidy API）时，没有主 Agent 在工具循环里等着。子 Agent 输出 `@niu 问题` 时由 helper 函数自动回复固定文案。
+程序触发子 Agent（auto_tidy / force 压缩 / 手动 tidy API）时，没有主 Agent 在工具循环里等着。子 Agent 输出 `@niu-agent 问题` 时由 helper 函数自动回复固定文案。
 
 新封装 `call_subagent_with_auto_answer(agent_name, task, ...)`：
 
 ```python
 def call_subagent_with_auto_answer(agent_name, task, ...):
-    """程序触发子 Agent 专用：自动回复 @niu，遇到 @end 或正常文本才返回。"""
+    """程序触发子 Agent 专用：自动回复 @niu-agent，遇到 @end 或正常文本才返回。"""
     AUTO_ANSWER = "无法解答你的问题，请选择 @end 结束并汇报你的工作，或自我抉择选择继续工作"
     
     result = call_subagent(agent_name, task, ...)
@@ -165,7 +165,7 @@ def call_subagent_with_auto_answer(agent_name, task, ...):
 ```python
 import re
 def _is_at_niu_question(result: str, agent_name: str) -> bool:
-    """检测 result 是否是 @niu 问题包装文本（格式 [agent_name-xxxx] question）"""
+    """检测 result 是否是 @niu-agent 问题包装文本（格式 [agent_name-xxxx] question）"""
     pattern = rf"^\[{re.escape(agent_name)}-[0-9a-f]{{4}}\] "
     return bool(re.match(pattern, result))
 ```
@@ -216,19 +216,19 @@ if (memory_context is None and not is_sync_subagent) or tool_calls:
 **当前拦截层返回 str**（`INTERCEPTED` / `EXIT` / `FORMAT_ERROR` / `NO_INTERCEPTION`）。**v2 改为返回 tuple**：`(status, payload)`。
 
 - `(NO_INTERCEPTION, None)` — 不拦截
-- `(INTERCEPTED, None)` — 异步 @niu 已处理（messages 已 append assistant + user），agent_runner_loop `continue` 让 LLM 重跑
-- `(INTERCEPTED_SYNC, wrapped_text)` — 同步 @niu，wrapped_text 是 `[unique_name] question` 包装文本，agent_runner_loop yield reply + return
+- `(INTERCEPTED, None)` — 异步 @niu-agent 已处理（messages 已 append assistant + user），agent_runner_loop `continue` 让 LLM 重跑
+- `(INTERCEPTED_SYNC, wrapped_text)` — 同步 @niu-agent，wrapped_text 是 `[unique_name] question` 包装文本，agent_runner_loop yield reply + return
 - `(EXIT, None)` — @end，agent_runner_loop 剥前缀 yield reply + return
 - `(FORMAT_ERROR, None)` — 格式错误，agent_runner_loop continue
 
-**改造原因**：避免同步 @niu 和 @end 都走 MAX_TURNS_EXCEEDED 末尾 return 导致无法区分（v1 BLOCKER B-NEW-1/2/3）。拦截层直接返回 wrapped_text，不再用 `handler._pending_sync_yield_text` 临时属性（v1 IMPORTANT I-1）。
+**改造原因**：避免同步 @niu-agent 和 @end 都走 MAX_TURNS_EXCEEDED 末尾 return 导致无法区分（v1 BLOCKER B-NEW-1/2/3）。拦截层直接返回 wrapped_text，不再用 `handler._pending_sync_yield_text` 临时属性（v1 IMPORTANT I-1）。
 
-### 4.3 @niu 路径分同步/异步
+### 4.3 @niu-agent 路径分同步/异步
 
-拦截层检测到 `@niu` 时，根据是否同步走不同函数：
+拦截层检测到 `@niu-agent` 时，根据是否同步走不同函数：
 
 ```python
-if stripped.startswith("@niu"):
+if stripped.startswith("@niu-agent"):
     question = stripped[4:].lstrip()
     if not question: 
         messages.append({"role": "assistant", "content": content})
@@ -389,7 +389,7 @@ if answer is not None and answer_unique_name is not None:
         )
     finally:
         # 条件化 unregister（与同步新任务分支一致）：
-        # - 若再次 @niu 挂起（state="waiting_for_answer"），跳过 unregister
+        # - 若再次 @niu-agent 挂起（state="waiting_for_answer"），跳过 unregister
         # - 若 @end 正常退出或跑完，state="running" 或 None，正常 unregister
         final_instance = SubagentRegistry.get(answer_unique_name)
         final_state = getattr(final_instance, "state", None) if final_instance else None
@@ -408,8 +408,8 @@ else:
 ```
 
 **关键设计点**：
-- 第三分支复位 `instance.state = "running"` 后再跑 _run_agent_loop，让子 Agent 内部若再次 @niu 能重新设 state="waiting_for_answer"
-- 第三分支 finally 也条件化 unregister——多轮 @niu 时第二次 call_subagent 不注销，第三次才能正常注销（修复 v1 BLOCKER B-NEW-4）
+- 第三分支复位 `instance.state = "running"` 后再跑 _run_agent_loop，让子 Agent 内部若再次 @niu-agent 能重新设 state="waiting_for_answer"
+- 第三分支 finally 也条件化 unregister——多轮 @niu-agent 时第二次 call_subagent 不注销，第三次才能正常注销（修复 v1 BLOCKER B-NEW-4）
 
 ### 5.3 同步新任务分支改动
 
@@ -439,12 +439,12 @@ finally:
         SubagentRegistry.unregister(unique_name)
 ```
 
-### 5.5 call_subagent 第一次因 @niu 返回时存挂起状态
+### 5.5 call_subagent 第一次因 @niu-agent 返回时存挂起状态
 
 `subagent.py:727-751` 后处理之前，加：
 
 ```python
-# 同步 @niu 路径：return_value["result"] == "INTERCEPTED_SYNC" 表示拦截层挂起
+# 同步 @niu-agent 路径：return_value["result"] == "INTERCEPTED_SYNC" 表示拦截层挂起
 # 用精确的 result 字段判别，不靠 messages 末尾正则（修复 v1 BLOCKER B-NEW-2）
 if return_value and isinstance(return_value, dict):
     result_flag = return_value.get("result", "")
@@ -476,7 +476,7 @@ if return_value and isinstance(return_value, dict):
         "type": "object",
         "properties": {
             "task": {"type": "string", "description": "任务描述（回复路径可传空字符串）"},
-            "answer": {"type": "string", "description": "回复子 Agent 的 @niu 问题（含 @子名 前缀）"},
+            "answer": {"type": "string", "description": "回复子 Agent 的 @niu-agent 问题（含 @子名 前缀）"},
             "unique_name": {"type": "string", "description": "子 Agent 唯一名（回复时必填）"},
             "async_mode": {"type": "boolean", ...}  # 已有，allowAsync 时才有
         },
@@ -525,7 +525,7 @@ result = call_subagent(
 control_flow_results = {
     "CURRENT_TASK_DONE", "MAX_TURNS_EXCEEDED", "CONTEXT_OVERFLOW",
     "TERMINATED_BY_SUPPLEMENT", "STOP_REQUESTED",
-    "INTERCEPTED_SYNC",  # 新增：同步 @niu 挂起，extract 返回 None，用 result_text（即 wrapped 问题文本）
+    "INTERCEPTED_SYNC",  # 新增：同步 @niu-agent 挂起，extract 返回 None，用 result_text（即 wrapped 问题文本）
     "EXITED",            # 新增：@end 退出，extract 返回 None，用 result_text（即剥前缀后的 exit_content）
 }
 ```
@@ -613,7 +613,7 @@ class RunningSubagent:
     is_sync: bool = True
     task: Optional[Union[asyncio.Task, ConcurrentFuture]] = None
     started_at: float = field(default_factory=time.time)
-    # 新增字段（同步 @niu 挂起状态）
+    # 新增字段（同步 @niu-agent 挂起状态）
     state: str = "running"  # "running" / "waiting_for_answer"
     suspended_messages: Optional[list] = None
     suspended_handler: Optional[Any] = None
@@ -666,22 +666,22 @@ def request_stop_all_subagents():
 
 ### 9.1 守则模板
 
-`agent/subagent.py` 重新引入守则常量（之前 commit `0ee5660f` 删除的，文案改为 @niu/@end 描述）：
+`agent/subagent.py` 重新引入守则常量（之前 commit `0ee5660f` 删除的，文案改为 @niu-agent/@end 描述）：
 
 ```python
 _SUBAGENT_ASK_GUIDE_TEMPLATE = """
 ## 子 Agent 与主 Agent 对话规则
 
-你是子 Agent，工作未完成时遇到必须澄清的问题，必须用 `@niu ` 前缀的 content 询问主 Agent，禁止把问题写在 content 里直接返回——直接返回会被程序拒绝并要求重新输出。
+你是子 Agent，工作未完成时遇到必须澄清的问题，必须用 `@niu-agent ` 前缀的 content 询问主 Agent，禁止把问题写在 content 里直接返回——直接返回会被程序拒绝并要求重新输出。
 
 只有以下情况才能直接返回：
 1. 任务已完成，用 `@end ` 前缀返回最终结果。
 2. 任务确实无法继续（如缺权限、缺资源），用 `@end ` 前缀汇报情况让主 Agent 决策。
 
-其他任何"需要更多信息才能继续"的情况，一律用 `@niu ` 前缀询问。
+其他任何"需要更多信息才能继续"的情况，一律用 `@niu-agent ` 前缀询问。
 
 格式示例：
-- 询问：`@niu 我应该选择哪个选项？`
+- 询问：`@niu-agent 我应该选择哪个选项？`
 - 结束：`@end 任务已完成，结果：...`
 """
 
@@ -695,16 +695,81 @@ _SUBAGENT_ASK_GUIDE_MARKER = "<!-- NIU_SUBAGENT_GUIDE_v1 -->"
 `build_subagent_system_segments(agent_name)` 不再加 `allow_async` 参数，统一注入：
 
 ```python
-# 4. 强制注入 @niu/@end 守则（所有子 Agent）
+# 4. 强制注入 @niu-agent/@end 守则（所有子 Agent）
 if _SUBAGENT_ASK_GUIDE_MARKER not in static_system:
     static_system += "\n\n" + _SUBAGENT_ASK_GUIDE_TEMPLATE
 ```
 
 ### 9.3 模板和文档同步
 
-- `config/agent-template.md` L27 简化——程序统一注入，主 Agent 写 MD 时不必再强调 allowAsync 与守则的关系
-- `config/agents/niu.md` L255/L283/L291 同步——同步子 Agent 也会 @niu，主 Agent 处理逻辑一致
-- `docs/SYSTEM_MANUAL.md` + `docs/manual-general-subagent.md` 同步更新
+- `config/agent-template.md` L27/L70 简化——程序统一注入，主 Agent 写 MD 时不必再强调 allowAsync 与守则的关系；守则文案改为 `@niu-agent` / `@end`
+- `config/agents/niu.md` L255/L283/L291 同步——同步子 Agent 也会 @niu-agent，主 Agent 处理逻辑一致
+- `docs/SYSTEM_MANUAL.md` + `docs/manual-general-subagent.md` 同步更新为 `@niu-agent`
+
+---
+
+## 9A. 全仓 @niu 改名为 @niu-agent
+
+### 9A.1 改名动机
+
+`niu` 是知识图谱的根节点，根节点不允许建立连接。但内容提取 Agent（entity-extractor）看到上下文中有 `@niu`（旧前缀）出现时，可能误把对话消息直接连接到知识图谱根节点上。为避免误连，把旧前缀 `@niu` 改名为 `@niu-agent`，让根节点命名空间（`niu`）与子 Agent 询问前缀（`@niu-agent`）显式分离。下文凡涉及"改名前"的旧字符串用 `@niu`（无 -agent 后缀），"改名后"的新字符串用 `@niu-agent`。
+
+### 9A.2 改名范围
+
+全仓所有旧前缀 `@niu`（无 -agent 后缀）字符串改为新前缀 `@niu-agent`，包括前几个阶段已完成的功能（阶段二异步路径 + 阶段三@前缀方案）。已知 13 个文件 ~179 处需改（不含 logs/raw_http/ 运行时产物）：
+
+| 类别 | 文件 | 改动 |
+|------|------|------|
+| 拦截层代码 | `agent/generic/agent_loop.py` | 11 处：L13/54/74/75/76/77/79/84/97/126/577。**关键**：L77 `stripped[4:]` 改为 `stripped[10:]` 或 `stripped[len("@niu-agent"):]`；L75 `startswith("@niu")` 改为 `startswith("@niu-agent")` 严格匹配；L84/97/126 FORMAT_ERROR 注入文本改 `@niu-agent` |
+| 守则注入 | `agent/subagent.py` | §9.1 守则模板用 `@niu-agent` |
+| 提示词 | `config/agents/niu.md` | L255/L283/L291 旧 `@niu` 改 `@niu-agent` |
+| 提示词 | `config/agent-template.md` | L27/L70 旧 `@niu` 改 `@niu-agent` |
+| 测试 | `tests/test_at_prefix_interception.py` | L60/83/98/165/207/215/237 旧 `@niu` 改 `@niu-agent`（测试输入字符串 + 断言） |
+| 测试 | `tests/test_ask_main_agent_stop_deadlock.py` | L1/4/36/65/71/85/97/115/128/138 旧 `@niu` 改 `@niu-agent`（含 L71 测试输入，改名后为 `"@niu-agent 这个 PDF 是扫描件吗？"`） |
+| 测试 | `tests/verify_llm_at_prefix.py` | L1/22/26/30/105/112/113 旧 `@niu` 改 `@niu-agent` |
+| 测试 | `tests/test_ask_main_agent.py` | L95/180/182/183 旧 `@niu` 改 `@niu-agent` |
+| 测试 | `tests/test_request_stop_all_subagents.py` | L1/10 旧 `@niu` 改 `@niu-agent` |
+| 测试 | `tests/test_db_monitor.py` | L39 旧 `@niu` 改 `@niu-agent` |
+| 文档 | `docs/SYSTEM_MANUAL.md` | L348 旧 `@niu` 改 `@niu-agent` |
+| 文档 | `docs/manual-general-subagent.md` | L17/86/117 旧 `@niu` 改 `@niu-agent` |
+| 设计文档 | `docs/superpowers/specs/2026-07-04-at-prefix-subagent-intent.md` | 61 处旧 `@niu` 改 `@niu-agent`（历史 spec，保持准确） |
+| 设计文档 | 本 spec | 65 处旧 `@niu` 改 `@niu-agent`（本文件 §3-§11 已用 `@niu-agent`，§9A 章节保留"改名前"的旧前缀 `@niu` 字面量用于描述） |
+
+**不需改动**：
+- `ui/assistant/`（前端无旧 `@niu`）
+- `mcp-servers/`（13 个子服务无旧 `@niu`）
+- `niu_api/*.py`（API 层无旧 `@niu`）
+- `logs/raw_http/`（运行时抓包，历史产物不改）
+- `config/agents/niu.md` 文件名（`niu` 是 agent 名，不是 `@niu` 前缀）
+
+### 9A.3 关键风险点
+
+1. **L77 `stripped[4:]` 硬编码长度**：旧 `@niu` 是 4 字符，新 `@niu-agent` 是 10 字符，必须改为 `stripped[10:]` 或 `stripped[len("@niu-agent"):]`。**最易遗漏的拦截层 bug**——剥前缀错会留下 `agent问题xxx` 残片导致 LLM 反复触发 FORMAT_ERROR 死循环。
+2. **L75 `startswith("@niu")`**：改为 `startswith("@niu-agent")` 严格匹配。若保留宽松匹配 `startswith("@niu")`，则用户/LLM 误输出旧前缀 `@niu`（无 -agent 后缀）会被部分识别，但剥前缀时按 10 字符切会留下 `问题xxx` 之前的多余字符，仍是 bug。建议**严格匹配** `startswith("@niu-agent")`，旧前缀 `@niu` 走 FORMAT_ERROR 让 LLM 学新前缀。
+3. **FORMAT_ERROR 注入文本**（L84/97/126）：这些字符串注入到子 Agent messages 让 LLM 学习规则，必须与提示词（niu.md / agent-template.md）措辞一致，否则守则冲突。
+4. **测试输入字符串**：`tests/test_at_prefix_interception.py` L83/98/215/237、`tests/test_ask_main_agent_stop_deadlock.py` L71 含旧前缀 `@niu` 测试输入——改名后必须同步更新为 `@niu-agent`，否则拦截层不识别会 fail。
+5. **常量定义**：建议在 `agent_loop.py` 顶部加 `_AT_NIU_PREFIX = "@niu-agent"` 常量，所有 `startswith` / 切片 / FORMAT_ERROR 文本统一引用，避免硬编码。
+6. **db_monitor 链路 B**：`agent/db_monitor.py` 的 `_route_at_message` 正则解析 `@子名` 路由——新前缀 `@niu-agent` 会被解析为目标 `niu-agent` 子 Agent（不存在），需确认路由逻辑不会把 `@niu-agent` 误路由。检查 `at_message_parser` 的正则。
+
+### 9A.4 实施顺序
+
+1. `agent/generic/agent_loop.py`：加 `_AT_NIU_PREFIX` 常量 + 改 L75/77/84/97/126 + 注释
+2. `agent/subagent.py`：守则模板用 `@niu-agent`（§9.1）
+3. `config/agents/niu.md` + `config/agent-template.md`：提示词改 `@niu-agent`
+4. `tests/`：6 个测试文件改 `@niu-agent`
+5. `docs/`：4 个文档改 `@niu-agent`
+6. `agent/db_monitor.py` / `at_message_parser`：验证 `@niu-agent` 路由不误伤（如有问题修）
+7. 端到端验证：异步路径 + 同步路径 @niu-agent 询问全流程
+8. 知识图谱回归：确认 entity-extractor 不再把 `@niu-agent` 上下文误连到根节点
+
+### 9A.5 验收标准
+
+- 全仓 grep 旧前缀 `@niu`（无 -agent 后缀）仅在 `logs/raw_http/` 历史产物中残留（运行时新日志应为 `@niu-agent`）
+- 所有单元测试通过（含改名后的拦截测试，测试输入用 `@niu-agent`）
+- 端到端测试通过（异步 + 同步路径用 `@niu-agent` 前缀）
+- 知识图谱验证：entity-extractor 处理含 `@niu-agent` 的对话时不创建到根节点 `niu` 的连接
+
+---
 
 ---
 
@@ -729,7 +794,7 @@ if _SUBAGENT_ASK_GUIDE_MARKER not in static_system:
 - `_strip_at_prefix(answer, answer_unique_name)` 找不到前缀时记 warning，原样使用 answer 文本
 - 不阻塞流程（LLM 不听话时不应让子 Agent 卡死）
 
-### 10.4 嵌套子 Agent（A 调 B，B @niu）
+### 10.4 嵌套子 Agent（A 调 B，B @niu-agent）
 
 - 当前阶段不处理嵌套场景——子 Agent 调子 Agent 的路径在 chat-with-* 工具过滤时已被移除（`subagent.py:544` 过滤 `chat-with-`）
 - 子 Agent 不能再调子 Agent，无嵌套场景
@@ -738,7 +803,7 @@ if _SUBAGENT_ASK_GUIDE_MARKER not in static_system:
 
 - 主 Agent 路径（`_is_sync_subagent=False` + `memory_context=None`）→ NO_INTERCEPTION（回归测试覆盖）
 - 异步路径（`memory_context is not None`）→ 异步分支不变（回归测试覆盖）
-- 同步子 Agent（`memory_context=None` + `_is_sync_subagent=True`）→ 进入拦截层 @niu/@end/FORMAT_ERROR 分支
+- 同步子 Agent（`memory_context=None` + `_is_sync_subagent=True`）→ 进入拦截层 @niu-agent/@end/FORMAT_ERROR 分支
 
 ### 10.6 同步子 Agent 走 @end 时的退出语义
 
@@ -755,11 +820,11 @@ if _SUBAGENT_ASK_GUIDE_MARKER not in static_system:
 ### 11.1 单元测试（mock LLM，验证拦截层和路由逻辑）
 
 1. **拦截层条件改动回归**
-   - 同步子 Agent（`_is_sync_subagent=True`, `memory_context=None`）输出 `@niu 问题` → 返回 `(INTERCEPTED_SYNC, wrapped_text)`，messages 末尾是 assistant
+   - 同步子 Agent（`_is_sync_subagent=True`, `memory_context=None`）输出 `@niu-agent 问题` → 返回 `(INTERCEPTED_SYNC, wrapped_text)`，messages 末尾是 assistant
    - 同步子 Agent 输出 `@end 结果` → 返回 `(EXIT, None)`
    - 同步子 Agent 输出无 `@` 前缀 → 返回 `(FORMAT_ERROR, None)`
    - 主 Agent 路径输出任何 content → 返回 `(NO_INTERCEPTION, None)`（回归）
-   - 异步子 Agent 输出 `@niu 问题` → 返回 `(INTERCEPTED, None)`，messages append assistant + user（回归）
+   - 异步子 Agent 输出 `@niu-agent 问题` → 返回 `(INTERCEPTED, None)`，messages append assistant + user（回归）
 
 2. **`_ask_main_agent_impl_sync` 函数**
    - 调用后：messages 末尾 append assistant content
@@ -772,12 +837,12 @@ if _SUBAGENT_ASK_GUIDE_MARKER not in static_system:
    - 有 answer + 有 answer_unique_name → 回复路径
    - 回复路径 instance 不存在 → 返回错误文本，不抛异常
    - 回复路径 state != "waiting_for_answer" → 返回错误文本
-   - **多轮 @niu**：回复路径跑完后再次 @niu → state 重新设为 "waiting_for_answer" → finally 跳过 unregister → 第三次 call_subagent 仍能拿回 session
+   - **多轮 @niu-agent**：回复路径跑完后再次 @niu-agent → state 重新设为 "waiting_for_answer" → finally 跳过 unregister → 第三次 call_subagent 仍能拿回 session
 
 4. **finally unregister 条件化**
    - state="waiting_for_answer" → 跳过 unregister
    - state="running" → 正常 unregister
-   - 第三分支 finally 也条件化（多轮 @niu 场景）
+   - 第三分支 finally 也条件化（多轮 @niu-agent 场景）
 
 5. **chat-with-xxx schema 改动**
    - schema 含可选 answer + unique_name 参数
@@ -786,10 +851,10 @@ if _SUBAGENT_ASK_GUIDE_MARKER not in static_system:
    - 带这俩参数 = 回复调用
 
 6. **`call_subagent_with_auto_answer` helper**
-   - 第一次 call_subagent 返回正常文本（非 @niu）→ 直接返回
-   - 第一次返回 @niu 问题 → 自动回复 → 第二次返回 @end → 返回最终结果
-   - 多轮 @niu → 多轮自动回复
-   - 子 Agent 正常结果含 `[已完成] 文件 X` → 不误判为 @niu（精确正则匹配）
+   - 第一次 call_subagent 返回正常文本（非 @niu-agent）→ 直接返回
+   - 第一次返回 @niu-agent 问题 → 自动回复 → 第二次返回 @end → 返回最终结果
+   - 多轮 @niu-agent → 多轮自动回复
+   - 子 Agent 正常结果含 `[已完成] 文件 X` → 不误判为 @niu-agent（精确正则匹配）
    - `_is_at_niu_question` 用 f-string 正则 `rf"^\[{re.escape(agent_name)}-[0-9a-f]{{4}}\] "`
 
 7. **resumed_messages 参数**
@@ -799,7 +864,7 @@ if _SUBAGENT_ASK_GUIDE_MARKER not in static_system:
 
 8. **提示词注入**
    - 所有子 Agent（同步 + 异步）build_subagent_system_segments 都注入守则段
-   - 守则段含 @niu / @end 描述
+   - 守则段含 @niu-agent / @end 描述
    - 去重 marker 是 `<!-- NIU_SUBAGENT_GUIDE_v1 -->`
    - 子 Agent 正文已含 marker 时不重复注入
 
@@ -819,29 +884,29 @@ if _SUBAGENT_ASK_GUIDE_MARKER not in static_system:
 
 ### 11.2 端到端测试（真实 LLM + 真实程序，禁 mock）
 
-1. **同步子 Agent @niu 询问 + 主 Agent 回复 + 子 Agent 继续**
-   - 主 Agent 调 chat-with-xxx → 子 Agent @niu 问澄清问题 → 主 Agent 看到 `[子名] 问题` → 回 `@子名 回答` → 子 Agent 收到回答继续工作 → @end 返回结果
+1. **同步子 Agent @niu-agent 询问 + 主 Agent 回复 + 子 Agent 继续**
+   - 主 Agent 调 chat-with-xxx → 子 Agent @niu-agent 问澄清问题 → 主 Agent 看到 `[子名] 问题` → 回 `@子名 回答` → 子 Agent 收到回答继续工作 → @end 返回结果
    - 验证：主 Agent 工具循环未退出；session 在 registry 里正确注册和清理
 
-2. **同步子 Agent 多轮 @niu**
-   - 子 Agent 连续问 3 次 @niu → 主 Agent 回复 3 次 → 子 Agent @end
+2. **同步子 Agent 多轮 @niu-agent**
+   - 子 Agent 连续问 3 次 @niu-agent → 主 Agent 回复 3 次 → 子 Agent @end
 
 3. **同步子 Agent @end 直接结束**
    - 子 Agent 不问问题直接 @end → 主 Agent 收到结果 → 工具循环结束
 
 4. **同步子 Agent 格式错误回退**
-   - 子 Agent 第一次输出无 @ 前缀 → 触发 FORMAT_ERROR → 第二次输出 @niu
+   - 子 Agent 第一次输出无 @ 前缀 → 触发 FORMAT_ERROR → 第二次输出 @niu-agent
 
-5. **程序触发子 Agent @niu 自动回复**
-   - 触发 auto_tidy → 子 Agent @niu → 自动回复固定文案 → 子 Agent @end
+5. **程序触发子 Agent @niu-agent 自动回复**
+   - 触发 auto_tidy → 子 Agent @niu-agent → 自动回复固定文案 → 子 Agent @end
    - 验证：固定文案正确送回；不阻塞主 Agent
 
 6. **/stop 终止挂起的同步子 Agent**
-   - 同步子 Agent @niu 挂起 → 用户 /stop → registry 清理挂起 session
+   - 同步子 Agent @niu-agent 挂起 → 用户 /stop → registry 清理挂起 session
    - 验证：session 不残留；主 Agent 工具循环正确退出
 
 7. **回归测试**
-   - 异步子 Agent 所有行为不变（5 次 @niu + @end + 格式错误 + /stop）
+   - 异步子 Agent 所有行为不变（5 次 @niu-agent + @end + 格式错误 + /stop）
    - 主 Agent 正常对话不被拦截层误伤
 
 ---
@@ -851,48 +916,70 @@ if _SUBAGENT_ASK_GUIDE_MARKER not in static_system:
 | 文件 | 改动 | 优先级 |
 |------|------|--------|
 | `agent/subagent_registry.py` | RunningSubagent 新增 6 字段（state / suspended_*） | P0 |
-| `agent/generic/agent_loop.py` | 拦截条件加 `is_sync_subagent`；@niu 同步分支调 `_ask_main_agent_impl_sync`；新增 INTERCEPTED_SYNC 常量 + agent_runner_loop 处理分支；新增 `resumed_messages` 参数 + 跳过 messages 构造逻辑 | P0 |
+| `agent/generic/agent_loop.py` | 拦截条件加 `is_sync_subagent`；@niu-agent 同步分支调 `_ask_main_agent_impl_sync`；新增 INTERCEPTED_SYNC 常量 + agent_runner_loop 处理分支；新增 `resumed_messages` 参数 + 跳过 messages 构造逻辑 | P0 |
 | `agent/subagent.py` | 重新引入 `_SUBAGENT_ASK_GUIDE_TEMPLATE` / `_SUBAGENT_ASK_GUIDE_MARKER`；`build_subagent_system_segments` 统一注入守则；新增 `_ask_main_agent_impl_sync`；`call_subagent` 加 `answer` + `answer_unique_name` 参数 + 第三分支；同步新任务分支设 `handler._is_sync_subagent=True`；异步分支设 `handler._is_sync_subagent=False`；`_run_agent_loop` 加 `resumed_messages` 参数；call_subagent 后处理存挂起状态；finally unregister 条件化 | P0 |
 | `agent/handler.py` | `_call_subagent_gen` 解析 answer + unique_name 参数 + 透传给 call_subagent | P0 |
 | `agent/runner.py` | chat-with-xxx schema 加 answer + unique_name 可选参数；`request_stop_all_subagents` 加挂起 session 扫描清理；主 Agent 工具循环退出时调 `cleanup_suspended_sync_subagents`；程序触发点（`runner.py:1223`）替换为 `call_subagent_with_auto_answer` | P0-P1 |
 | `niu_api/compat.py` | 9 个程序触发点替换为 `call_subagent_with_auto_answer` | P1 |
 | `config/agent-template.md` | L27 简化守则描述 | P2 |
-| `config/agents/niu.md` | L255/L283/L291 同步——同步子 Agent 也会 @niu | P2 |
+| `config/agents/niu.md` | L255/L283/L291 同步——同步子 Agent 也会 @niu-agent | P2 |
 | `docs/SYSTEM_MANUAL.md` | 同步子 Agent 交互描述更新 | P2 |
 | `docs/manual-general-subagent.md` | 通用子 Agent 手册更新 | P2 |
 | `tests/test_at_prefix_interception.py` | **现有测试断言改 tuple**：所有 `result == X` 改为 `result == (X, None)` 或 `result[0] == X`；加同步路径拦截测试 + INTERCEPTED_SYNC | P0 |
 | `tests/test_sync_subagent_interaction.py` | 新建——同步子 Agent 交互单元测试 | P0 |
 | `tests/test_call_subagent_with_auto_answer.py` | 新建——helper 单元测试 | P1 |
 | `tests/test_subagent_registry.py` | 新增字段测试 + state 转换测试 | P0 |
+| `agent/generic/agent_loop.py`（改名） | §9A 改名：加 `_AT_NIU_PREFIX` 常量 + L75/77/84/97/126 改 `@niu-agent` + `stripped[4:]` 改 `stripped[10:]` | P0 |
+| `agent/db_monitor.py` / `at_message_parser` | §9A 改名：验证 `@niu-agent` 路由不误伤（`@niu-agent` 被解析为目标 `niu-agent` 子 Agent，不存在则不路由） | P0 |
+| `config/agents/niu.md`（改名） | §9A 改名：L255/L283/L291 旧 `@niu` 改 `@niu-agent` | P0 |
+| `config/agent-template.md`（改名） | §9A 改名：L27/L70 旧 `@niu` 改 `@niu-agent` | P0 |
+| `tests/test_ask_main_agent_stop_deadlock.py` | §9A 改名：10 处旧 `@niu` 改 `@niu-agent` | P0 |
+| `tests/verify_llm_at_prefix.py` | §9A 改名：7 处旧 `@niu` 改 `@niu-agent` | P0 |
+| `tests/test_ask_main_agent.py` | §9A 改名：4 处旧 `@niu` 改 `@niu-agent` | P0 |
+| `tests/test_request_stop_all_subagents.py` | §9A 改名：2 处旧 `@niu` 改 `@niu-agent` | P0 |
+| `tests/test_db_monitor.py` | §9A 改名：1 处旧 `@niu` 改 `@niu-agent` | P0 |
+| `docs/SYSTEM_MANUAL.md`（改名） | §9A 改名：L348 旧 `@niu` 改 `@niu-agent` | P1 |
+| `docs/manual-general-subagent.md`（改名） | §9A 改名：L17/86/117 旧 `@niu` 改 `@niu-agent` | P1 |
+| `docs/superpowers/specs/2026-07-04-at-prefix-subagent-intent.md` | §9A 改名：61 处旧 `@niu` 改 `@niu-agent`（历史 spec 保持准确） | P1 |
 
 ---
 
 ## 13. 实施顺序（粗略，详细 plan 由 writing-plans skill 生成）
 
-1. SubagentRegistry 字段扩展（state + suspended_*）
-2. 守则注入恢复（所有子 Agent 统一注入 @niu/@end 守则）—— 立即解决"第一轮 FORMAT_ERROR"问题
-3. 拦截层改造（条件加 is_sync_subagent + 新增 INTERCEPTED_SYNC 常量 + 同步 @niu 分支）
-4. `_ask_main_agent_impl_sync` 实现
-5. agent_runner_loop INTERCEPTED_SYNC 分支 + resumed_messages 参数
-6. _run_agent_loop resumed_messages 参数
-7. call_subagent 第三分支 + 同步新任务分支设 _is_sync_subagent + finally 条件化 unregister + 后处理存挂起状态
-8. chat-with-xxx schema 改动 + _call_subagent_gen 透传
-9. `call_subagent_with_auto_answer` helper 实现
-10. 派 Agent 全面排查程序触发点 + 替换为 helper
-11. request_stop_all_subagents 改造 + 主 Agent 工具循环退出清理
-12. 单元测试 + 端到端测试
-13. 文档同步
+1. **§9A 全仓改名**（先做，避免后续实施时新旧前缀混淆）：
+   - `agent/generic/agent_loop.py` 加 `_AT_NIU_PREFIX` 常量 + L75/77/84/97/126 改 `@niu-agent` + `stripped[4:]` 改 `stripped[10:]`
+   - `config/agents/niu.md` + `config/agent-template.md` 旧 `@niu` 改 `@niu-agent`
+   - 6 个测试文件旧 `@niu` 改 `@niu-agent`
+   - `agent/db_monitor.py` / `at_message_parser` 验证 `@niu-agent` 路由不误伤
+   - 4 个文档旧 `@niu` 改 `@niu-agent`
+   - 跑全量测试确认改名无回归
+2. SubagentRegistry 字段扩展（state + suspended_*）
+3. 守则注入恢复（所有子 Agent 统一注入 @niu-agent/@end 守则）—— 立即解决"第一轮 FORMAT_ERROR"问题
+4. 拦截层改造（条件加 is_sync_subagent + 新增 INTERCEPTED_SYNC 常量 + 同步 @niu-agent 分支）
+5. `_ask_main_agent_impl_sync` 实现
+6. agent_runner_loop INTERCEPTED_SYNC 分支 + resumed_messages 参数
+7. _run_agent_loop resumed_messages 参数
+8. call_subagent 第三分支 + 同步新任务分支设 _is_sync_subagent + finally 条件化 unregister + 后处理存挂起状态
+9. chat-with-xxx schema 改动 + _call_subagent_gen 透传
+10. `call_subagent_with_auto_answer` helper 实现
+11. 派 Agent 全面排查程序触发点 + 替换为 helper
+12. request_stop_all_subagents 改造 + 主 Agent 工具循环退出清理
+13. 单元测试 + 端到端测试
+14. 文档同步
+15. 知识图谱回归验证（entity-extractor 不再把 `@niu-agent` 上下文误连到根节点 `niu`）
 
 ---
 
 ## 14. 验收标准
 
-- 所有单元测试通过（含同步路径拦截测试 + helper 测试 + schema 测试 + registry 字段测试）
-- 端到端测试 7 个场景全部通过（真实 LLM）
-- 异步路径回归无 bug（5 次 @niu + @end + 格式错误 + /stop）
+- 全仓 grep 旧前缀 `@niu`（无 -agent 后缀）仅在 `logs/raw_http/` 历史产物中残留
+- 所有单元测试通过（含同步路径拦截测试 + helper 测试 + schema 测试 + registry 字段测试 + 改名后测试输入用 `@niu-agent`）
+- 端到端测试 7 个场景全部通过（真实 LLM，用 `@niu-agent` 前缀）
+- 异步路径回归无 bug（5 次 @niu-agent + @end + 格式错误 + /stop）
 - 主 Agent 正常对话不被拦截层误伤
-- 程序触发子 Agent（auto_tidy / force 压缩 / 手动 tidy）@niu 自动回复不阻塞
-- 子 Agent 第一次输出就知道用 @niu 前缀（不再触发 FORMAT_ERROR）
+- 程序触发子 Agent（auto_tidy / force 压缩 / 手动 tidy）@niu-agent 自动回复不阻塞
+- 子 Agent 第一次输出就知道用 @niu-agent 前缀（不再触发 FORMAT_ERROR）
+- 知识图谱回归：entity-extractor 处理含 `@niu-agent` 的对话时不创建到根节点 `niu` 的连接
 - 代码审查通过（spec 合规 + 代码质量两轮，无 BLOCKER）
 
 ---
