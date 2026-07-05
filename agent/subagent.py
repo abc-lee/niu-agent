@@ -868,6 +868,42 @@ def _ask_main_agent_impl(question: str, unique_name: str) -> str:
     return answer
 
 
+def _ask_main_agent_impl_sync(
+    question: str,
+    unique_name: str,
+    handler,
+    messages: list,
+    content: str,
+) -> str:
+    """同步路径：包装 question 为 [unique_name] question，append assistant content 到 messages。
+
+    与异步 _ask_main_agent_impl（subagent.py:782）的包装逻辑一致，但：
+    - 不阻塞等主 Agent 回答（同步路径靠工具返回值通道）
+    - 不推 MainAgentRequestQueue（同步路径不走 db_monitor）
+    - append assistant content 保留对话历史，不 append user（user 由第二次 call_subagent 注入）
+
+    Args:
+        question: 子 Agent 要问的问题
+        unique_name: 子 Agent 唯一名
+        handler: 子 Agent handler（保留参数，与异步签名风格一致；当前实现未使用）
+        messages: 子 Agent messages 列表（in-place 修改，append assistant content）
+        content: 原始 LLM 输出文本（含 @niu-agent 前缀）
+
+    Returns:
+        包装后的文本 "[unique_name] sanitized_question"
+    """
+    messages.append({"role": "assistant", "content": content})
+
+    # sanitization（与异步路径 subagent.py:832-834 一致）
+    # - 长度限制 2000 字符
+    # - strip 行首 @ 字符（避免被 at_message_parser 误解析为 @消息注入指令）
+    sanitized = question[:2000] if question else ""
+    if sanitized.lstrip().startswith("@"):
+        sanitized = sanitized.lstrip()[1:]
+    wrapped = f"[{unique_name}] {sanitized}"
+    return wrapped
+
+
 # ==================== 阶段二：异步子 Agent 派发与运行 ====================
 
 
