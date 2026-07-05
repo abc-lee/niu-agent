@@ -276,6 +276,47 @@ if stripped.startswith("@niu-agent"):
 - 同步路径在 `_ask_main_agent_impl_sync` 内部 append assistant content（保留对话历史），**不 append user**（user 由第二次 call_subagent 注入）
 - 异步路径行为不变（messages append assistant + user，返回 `(INTERCEPTED, None)` 让 agent_runner_loop continue）
 
+#### 4.3.1 `_ask_main_agent_impl_sync` 完整实现
+
+```python
+def _ask_main_agent_impl_sync(
+    question: str,
+    unique_name: str,
+    handler,
+    messages: list,
+    content: str,
+) -> str:
+    """同步路径：包装 question 为 [unique_name] question，append assistant content 到 messages。
+
+    与异步 _ask_main_agent_impl 区别：
+    - 不阻塞等主 Agent 回答（同步路径靠工具返回值通道，主 Agent 在工具循环内回复）
+    - 不推 MainAgentRequestQueue（同步路径不走 db_monitor）
+    - append assistant content 保留对话历史，不 append user（user 由第二次 call_subagent 注入）
+
+    Args:
+        question: 剥除 @niu-agent 前缀后的问题文本
+        unique_name: 子 Agent 唯一名（如 xxx-ab12）
+        handler: NiuHandler 实例
+        messages: agent_runner_loop 内部的 messages list 引用（会被 append）
+        content: LLM 原始输出（含 @niu-agent 前缀）
+
+    Returns:
+        wrapped 文本 "[unique_name] question"（作为 yield reply 内容送给 call_subagent → 主 Agent）
+    """
+    # 1. append assistant content 到 messages（保留对话历史，让第二次 call_subagent 跑时 LLM 看到自己上次问的问题）
+    messages.append({"role": "assistant", "content": content})
+    # 2. 包装问题为 [unique_name] question 格式（与异步路径消息格式一致）
+    wrapped = f"[{unique_name}] {question}"
+    # 3. 不 append user（user 由第二次 call_subagent 的 answer 参数注入）
+    # 4. 不推 MainAgentRequestQueue（同步路径不走 db_monitor 链路 A→B）
+    return wrapped
+```
+
+**关键设计点**：
+- messages append 的是原始 content（`@niu-agent 问题`），不是 wrapped 文本——保留 @niu-agent 前缀上下文给子 Agent LLM 看
+- 返回的 wrapped 文本（`[unique_name] 问题`）由 agent_runner_loop yield 给 call_subagent，作为 result_text 返给主 Agent LLM
+- 两者故意不一致（messages 给子 Agent 看，result_text 给主 Agent 看）
+
 ### 4.4 agent_runner_loop 处理拦截层返回值
 
 `agent/generic/agent_loop.py:568-593` 当前分支改造：
@@ -483,6 +524,10 @@ def _maybe_suspend_session(unique_name, return_value, handler, client, tools_sch
     同步 @niu-agent 路径：return_value["result"] == "INTERCEPTED_SYNC" 表示拦截层挂起。
     用精确的 result 字段判别，不靠 messages 末尾正则（修复 v1 BLOCKER B-NEW-2）。
     必须在 try 块内、finally 之前调用（修复 v6 BLOCKER B3/B4 时序歧义）。
+
+    异常安全（修复 v7 BLOCKER B1）：helper 全程 try/except 包裹，确保即使中途抛异常，
+    只要 _run_agent_loop 已返回 INTERCEPTED_SYNC，state 必须被强制设为 "waiting_for_answer"。
+    否则 finally 会 unregister → session 被清理 → 第二次 call_subagent 拿不回 → 挂起语义失效。
     """
     if not (return_value and isinstance(return_value, dict)):
         return
@@ -491,15 +536,37 @@ def _maybe_suspend_session(unique_name, return_value, handler, client, tools_sch
         return
     if not getattr(handler, "_is_sync_subagent", False):
         return
-    instance = SubagentRegistry.get(unique_name)
-    if not instance:
-        return
-    instance.state = "waiting_for_answer"
-    instance.suspended_messages = return_value.get("messages", [])
-    instance.suspended_handler = handler
-    instance.suspended_client = client
-    instance.suspended_tools_schema = tools_schema
-    instance.suspended_system_message = system_message
+    try:
+        instance = SubagentRegistry.get(unique_name)
+        if not instance:
+            return
+        instance.state = "waiting_for_answer"
+        instance.suspended_messages = return_value.get("messages", [])
+        instance.suspended_handler = handler
+        instance.suspended_client = client
+        instance.suspended_tools_schema = tools_schema
+        instance.suspended_system_message = system_message
+    except Exception as e:
+        # helper 异常时强制设 state（_run_agent_loop 已返回 INTERCEPTED_SYNC，挂起语义已成立）
+        # 避免 finally 检查到 state="running" 误 unregister 导致 session 丢失
+        logger.error(f"[MaybeSuspend] helper 异常，强制设 state=waiting_for_answer: {e}")
+        try:
+            instance = SubagentRegistry.get(unique_name)
+            if instance:
+                instance.state = "waiting_for_answer"
+                # 其他字段尽力设置（失败则保留 None，第二次 call_subagent 取出时若字段为 None 报错）
+                if instance.suspended_messages is None:
+                    instance.suspended_messages = return_value.get("messages", [])
+                if instance.suspended_handler is None:
+                    instance.suspended_handler = handler
+                if instance.suspended_client is None:
+                    instance.suspended_client = client
+                if instance.suspended_tools_schema is None:
+                    instance.suspended_tools_schema = tools_schema
+                if instance.suspended_system_message is None:
+                    instance.suspended_system_message = system_message
+        except Exception as fallback_err:
+            logger.error(f"[MaybeSuspend] fallback 也失败，session 可能损坏: {fallback_err}")
     # finally 块会因 state="waiting_for_answer" 跳过 unregister
 ```
 
@@ -571,17 +638,22 @@ control_flow_results = {"CONTEXT_OVERFLOW", "EXITED", "MAX_TURNS_EXCEEDED", "CUR
 
 **注意**：当前集合**不含 `STOPPED`**——这是已存在的潜在 bug。子 Agent 收到 /stop 后 `agent_loop.py:502/668/739` return `{"result": "STOPPED", ...}`，但 STOPPED 不在集合中，`_extract_result_from_return_value` 会走到 `"data" in return_value` 分支，把 `{"result":"STOPPED","messages":[...]}` 序列化为 JSON 字符串当结果返回主 Agent。本阶段顺便修这个 bug。
 
-**新增两个值 + 顺便补 STOPPED**：
+**新增 + 顺便补全**（共 3 项变更）：
 
 ```python
 control_flow_results = {
     "CURRENT_TASK_DONE", "MAX_TURNS_EXCEEDED", "CONTEXT_OVERFLOW",
     "TERMINATED_BY_SUPPLEMENT",
-    "STOPPED",           # 顺便补：子 Agent 收到 /stop 终止（agent_loop.py:502/668/739 用此值，之前漏在集合外）
+    "STOPPED",           # 顺便补：子 Agent 收到 /stop 终止（agent_loop.py:502/668/739 用此值，之前漏在集合外，已存在 bug 顺便修）
     "INTERCEPTED_SYNC",  # 新增：同步 @niu-agent 挂起，extract 返回 None，用 result_text（即 wrapped 问题文本）
-    "EXITED",            # 已存在：@end 退出（确认仍在集合中）
+    "EXITED",            # 已存在：@end 退出（当前集合已含，本阶段确认保留，无需重复添加）
 }
 ```
+
+**变更类型说明**：
+- `STOPPED`：当前集合**不含**，本阶段**顺便补**（修已存在 bug）
+- `INTERCEPTED_SYNC`：当前集合**不含**，本阶段**新增**
+- `EXITED`：当前集合**已含**（`subagent.py:285` 验证），本阶段**确认保留**，不重复添加
 
 这样 §5.5 用 `result_flag == "INTERCEPTED_SYNC"` 精确判别挂起，同时 call_subagent 能正确返回 result_text 给主 Agent。STOPPED 修复让 /stop 终止时 call_subagent 返回 result_text（剥前缀的终止总结文本）而非 JSON dump。
 
@@ -647,6 +719,7 @@ else:
 **关键设计点**：
 - `if resumed_messages is not None` 分支**只替换 messages 赋值**，L482+ 的 turn/harness/chat_busy 初始化保留在 if/else 之外，对所有路径都执行
 - resumed_messages 路径跳过 system_message + history + user_input 构造（这些已包含在 suspended_messages 里）
+- **FIFO 裁剪保护（v7 审查 I9 补充）**：resumed_messages 路径下，messages[0] 是 system_message（第一次跑 L416 加进去的）。若第二次跑期间触发 `_fifo_prune`（L519 附近），必须保护 messages[0] 不被裁剪——否则第三次跑 resumed_messages[0] 不是 system_message → LLM 无 system prompt 行为漂移。实施时检查 `_fifo_prune` 是否有"保护 messages[0]"逻辑，若无则补上
 
 ---
 
@@ -952,6 +1025,14 @@ if _SUBAGENT_ASK_GUIDE_MARKER not in static_system:
     - 子 Agent 收到 /stop 终止 → return {"result": "STOPPED", ...} → _extract_result_from_return_value 因 STOPPED 在 control_flow_results 集合中返回 None → call_subagent 返回 result_text（终止总结文本）而非 JSON dump
     - 验证：当前集合不含 STOPPED（已存在 bug），本阶段顺便修
 
+15. **主 Agent 不调第二次 chat-with-xxx（v7 审查 I7 补充）**
+    - mock 主 Agent LLM 收到 `[子名] 问题` 工具结果后直接回用户文本（不调 chat-with-xxx）→ 主 Agent 工具循环退出 → runner finally 块调 cleanup_suspended_sync_subagents → registry 无残留
+    - 验证：挂起 session 被正确清理，无内存泄漏
+
+16. **第二次跑过程中 MAX_TURNS_EXCEEDED（v7 审查 I8 补充）**
+    - 第二次 call_subagent 跑过程中子 Agent 跑满 max_turns 没退出 → agent_runner_loop return {"result": "MAX_TURNS_EXCEEDED", ...} → §5.5 helper 检测 result_flag != INTERCEPTED_SYNC → 不挂起 → finally state="running" → unregister → 主 Agent 第三次调 chat-with-xxx 拿不回 → 返回错误文本
+    - 验证：state 转换正确，session 被清理，主 Agent 收到明确错误文本
+
 ### 11.2 端到端测试（真实 LLM + 真实程序，禁 mock）
 
 1. **同步子 Agent @niu-agent 询问 + 主 Agent 回复 + 子 Agent 继续**
@@ -986,7 +1067,7 @@ if _SUBAGENT_ASK_GUIDE_MARKER not in static_system:
 | 文件 | 改动 | 优先级 |
 |------|------|--------|
 | `agent/subagent_registry.py` | RunningSubagent 新增 6 字段（state / suspended_*） | P0 |
-| `agent/generic/agent_loop.py` | 拦截条件加 `is_sync_subagent`；@niu-agent 同步分支调 `_ask_main_agent_impl_sync`；新增 INTERCEPTED_SYNC 常量 + agent_runner_loop 处理分支；新增 `resumed_messages` 参数 + 跳过 messages 构造逻辑 | P0 |
+| `agent/generic/agent_loop.py` | 拦截条件加 `is_sync_subagent`；@niu-agent 同步分支调 `_ask_main_agent_impl_sync`；新增 INTERCEPTED_SYNC 常量 + agent_runner_loop 处理分支；新增 `resumed_messages` 参数 + 跳过 messages 构造逻辑；**拦截层返回值改 tuple `(status, payload)`，现有 L576/L578/L590 的 `==` str 比较必须改为 `interception_status ==` 元组首元素**（如 `if interception_status == INTERCEPTED:`），否则异步路径回归 bug | P0 |
 | `agent/subagent.py` | 重新引入 `_SUBAGENT_ASK_GUIDE_TEMPLATE` / `_SUBAGENT_ASK_GUIDE_MARKER`；`build_subagent_system_segments` 统一注入守则；新增 `_ask_main_agent_impl_sync`；`call_subagent` 加 `answer` + `answer_unique_name` 参数 + 第三分支；同步新任务分支设 `handler._is_sync_subagent=True`；异步分支设 `handler._is_sync_subagent=False`；`_run_agent_loop` 加 `resumed_messages` 参数；call_subagent 后处理存挂起状态；finally unregister 条件化 | P0 |
 | `agent/handler.py` | `_call_subagent_gen` 解析 answer + unique_name 参数 + 透传给 call_subagent | P0 |
 | `agent/runner.py` | chat-with-xxx schema 加 answer + unique_name 可选参数；`request_stop_all_subagents` 加挂起 session 扫描清理；主 Agent 工具循环退出时调 `cleanup_suspended_sync_subagents`；程序触发点（`runner.py:1223`）替换为 `call_subagent_with_auto_answer` | P0-P1 |
