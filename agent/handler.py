@@ -942,6 +942,8 @@ class NiuHandler(BaseHandler):
 
         task = args.get("task", "")
         async_mode = args.get("async_mode", False)
+        answer = args.get("answer")
+        unique_name_arg = args.get("unique_name")
 
         # journal-agent 特殊处理：构建增量消息 task，与 tidy 管道一致
         journal_msg_ids_for_cursor = []  # 默认空列表，仅 journal-agent 时填充
@@ -1001,6 +1003,8 @@ class NiuHandler(BaseHandler):
                 llm_config=llm_config,
                 mcp_client=self.mcp_client,
                 history=_history,
+                answer=answer,
+                answer_unique_name=unique_name_arg if answer else None,
             )
 
             # journal-agent 特殊处理：更新游标（仅当有增量消息时才更新）

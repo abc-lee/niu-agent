@@ -355,7 +355,6 @@ def get_tools_schema(include_main_only: bool = True) -> list:
                     )
 
         desc = agent_config.get("description")
-        task_desc = agent_config.get("taskDescription", "描述要委托给子Agent执行的任务")
 
         # 阶段二：根据 allowAsync 决定是否暴露 async_mode
         allow_async = bool(agent_config.get("allowAsync", False))
@@ -363,7 +362,15 @@ def get_tools_schema(include_main_only: bool = True) -> list:
         properties = {
             "task": {
                 "type": "string",
-                "description": task_desc,
+                "description": "任务描述（回复路径可传空字符串）",
+            },
+            "answer": {
+                "type": "string",
+                "description": "回复子 Agent 的 @niu-agent 问题（含 @子名 前缀）",
+            },
+            "unique_name": {
+                "type": "string",
+                "description": "子 Agent 唯一名（回复时必填）",
             },
         }
         if allow_async:
@@ -386,7 +393,7 @@ def get_tools_schema(include_main_only: bool = True) -> list:
                     "parameters": {
                         "type": "object",
                         "properties": properties,
-                        "required": ["task"],
+                        "required": [],
                     },
                 },
             }
