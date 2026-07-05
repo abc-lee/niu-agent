@@ -1,7 +1,7 @@
-"""端到端验证：@niu 拦截阻塞期间收 /stop 不死锁。
+"""端到端验证：@niu-agent 拦截阻塞期间收 /stop 不死锁。
 
 场景：
-  1. 异步子 Agent 输出 @niu content 询问"我应该用 OCR 吗" → _intercept_at_prefix_content
+  1. 异步子 Agent 输出 @niu-agent content 询问"我应该用 OCR 吗" → _intercept_at_prefix_content
      调 _ask_main_agent_impl → future.wait() 阻塞
   2. 主 Agent 发 @子名 /stop（用 route_message 同步路由）
   3. db_monitor route_message /stop：cancel_pending_ask + 推 supplement queue (is_terminate=True)
@@ -33,7 +33,7 @@ def llm_config():
 
 
 def test_ask_main_agent_during_stop_no_deadlock(llm_config, tmp_path):
-    """@niu 拦截阻塞期间收 /stop 不死锁。"""
+    """@niu-agent 拦截阻塞期间收 /stop 不死锁。"""
     if not llm_config["apikey"]:
         pytest.skip("LLM API key not configured")
 
@@ -62,13 +62,13 @@ def test_ask_main_agent_during_stop_no_deadlock(llm_config, tmp_path):
         # 派异步子 Agent，任务设计成"必须问主 Agent"才能完成
         # _dispatch_async_subagent 是同步函数，内部用 run_coroutine_threadsafe 提交到 _main_loop（即 test_loop）
         # 所以 test_loop 必须 run_forever 中，否则提交会失败
-        # 子 Agent LLM 输出 "@niu ..." content → agent_loop._intercept_at_prefix_content 拦截
+        # 子 Agent LLM 输出 "@niu-agent ..." content → agent_loop._intercept_at_prefix_content 拦截
         # → 调 _ask_main_agent_impl 阻塞等主 Agent 回答
         confirmation = _dispatch_async_subagent(
             agent_name="file-processor",
             task=(
                 "你需要处理一个文件，但不确定是否需要 OCR。"
-                "请输出 '@niu 这个 PDF 是扫描件吗？需要 OCR 吗？' 询问主 Agent。"
+                "请输出 '@niu-agent 这个 PDF 是扫描件吗？需要 OCR 吗？' 询问主 Agent。"
                 "然后根据主 Agent 的回答决定下一步。"
             ),
             llm_config=llm_config,
@@ -82,7 +82,7 @@ def test_ask_main_agent_during_stop_no_deadlock(llm_config, tmp_path):
                 break
         assert unique_name is not None
 
-        # 等子 Agent 进入 @niu 拦截阻塞（最多 30 秒）
+        # 等子 Agent 进入 @niu-agent 拦截阻塞（最多 30 秒）
         reg = get_pending_ask_registry()
 
         entered_ask = False
@@ -94,7 +94,7 @@ def test_ask_main_agent_during_stop_no_deadlock(llm_config, tmp_path):
                     break
 
         if not entered_ask:
-            # 子 Agent 没触发 @niu 拦截（LLM 行为不确定），跳过
+            # 子 Agent 没触发 @niu-agent 拦截（LLM 行为不确定），跳过
             # 但必须先清理：取消异步子 Agent 的 task future，避免残留线程污染后续测试
             instance = SubagentRegistry.get(unique_name)
             if instance is not None and instance.task is not None:
@@ -112,7 +112,7 @@ def test_ask_main_agent_during_stop_no_deadlock(llm_config, tmp_path):
                 time.sleep(0.5)
                 if not any(r.unique_name == unique_name for r in SubagentRegistry.list_running()):
                     break
-            pytest.skip("子 Agent 没触发 @niu 拦截，无法测试死锁场景")
+            pytest.skip("子 Agent 没触发 @niu-agent 拦截，无法测试死锁场景")
 
         # 直接调 route_message 路由 /stop（模拟主 Agent 发 /stop，绕过 db 写入）
         db_monitor.route_message(target=unique_name, sender="主Agent", content="/stop")
@@ -125,7 +125,7 @@ def test_ask_main_agent_during_stop_no_deadlock(llm_config, tmp_path):
             if not any(r.unique_name == unique_name for r in SubagentRegistry.list_running()):
                 break
         else:
-            pytest.fail("子 Agent 死锁——@niu 拦截阻塞期间收 /stop 后未退出")
+            pytest.fail("子 Agent 死锁——@niu-agent 拦截阻塞期间收 /stop 后未退出")
 
         # 验证子 Agent 已注销
         assert SubagentRegistry.get(unique_name) is None
@@ -135,7 +135,7 @@ def test_ask_main_agent_during_stop_no_deadlock(llm_config, tmp_path):
         while not q.is_empty():
             queued.append(q.pop())
 
-        # 子 Agent @niu 拦截被 cancel 后走终止总结退出，_run_subagent_async 推完成或异常通知
+        # 子 Agent @niu-agent 拦截被 cancel 后走终止总结退出，_run_subagent_async 推完成或异常通知
         assert any(unique_name in m for m in queued), f"MainAgentRequestQueue 应含子 Agent 通知：{queued}"
     finally:
         # 清空 MainAgentRequestQueue 避免污染后续测试

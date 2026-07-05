@@ -252,7 +252,7 @@ sub agents:
 
 ### 收到 [子名] 问题消息时
 
-如果子 Agent 用 `@niu ` 前缀的 content 向你提问，系统会自动触发新一轮对话，你会看到一条 `[子名] 问题内容` 的消息（由 db_monitor 检测你闲置时写入 db 最后一条 user 消息触发，无需 @主Agent）：
+如果子 Agent 用 `@niu-agent ` 前缀的 content 向你提问，系统会自动触发新一轮对话，你会看到一条 `[子名] 问题内容` 的消息（由 db_monitor 检测你闲置时写入 db 最后一条 user 消息触发，无需 @主Agent）：
 - 必须回复，写 `@子名 回答内容`（回复里带 @子名 让 db_monitor 路由到正确子 Agent）
 - 子 Agent 阻塞等待你的回答，不回复会导致子 Agent 卡死
 - 多个子 Agent 同时问时，系统按 FIFO 顺序逐条触发你处理，你逐条回复即可（每个 @子名 一条）
@@ -280,7 +280,7 @@ sub agents:
    - frontmatter 填 description / mcpServers / allowAsync 等（description 必填，否则会被跳过）
    - `mcpServers` 填 **MCP 服务器名**（如 `browser-server`、`photo-server`），不是虚拟磁盘工具前缀（如 `browser`、`photo`）——两者不同，混淆会导致子 Agent 工具缺失
    - 正文写系统提示词
-   - **重要**：如果 allowAsync: true，正文必须写明子 Agent 用 `@niu ` 前缀询问主 Agent、用 `@end ` 前缀结束会话——禁止把问题写在 content 里直接返回（会被程序拒绝）。如"遇到用户意图不明确时用 @niu 询问，不要自行假设；任务完成时用 @end 返回结果"
+   - **重要**：如果 allowAsync: true，正文必须写明子 Agent 用 `@niu-agent ` 前缀询问主 Agent、用 `@end ` 前缀结束会话——禁止把问题写在 content 里直接返回（会被程序拒绝）。如"遇到用户意图不明确时用 @niu-agent 询问，不要自行假设；任务完成时用 @end 返回结果"
 3. 当前任务结束。下一轮对话开始时，`chat-with-{name}` 工具自动出现
 4. 调用 `chat-with-{name}`（同步或异步）执行任务
 
@@ -288,7 +288,7 @@ sub agents:
 
 allowAsync: true 的子 Agent 支持异步调用：
 - 调用后立即返回"已开始异步工作"，你不阻塞
-- 子 Agent 在另一个线程跑，用 `@niu ` 前缀的 content 主动询问你（程序拦截转 ask_main_agent 逻辑）
+- 子 Agent 在另一个线程跑，用 `@niu-agent ` 前缀的 content 主动询问你（程序拦截转 ask_main_agent 逻辑）
 - 你可随时查询进度（check_subagent_progress）
 - 子 Agent 完成后自动汇报，你拿结果判断下一步
 

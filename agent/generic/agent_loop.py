@@ -9,8 +9,10 @@ from agent.subagent import _read_warning_threshold
 
 _VALID_STREAM_TYPES = ("reply", "tool_marker", "system", "persist")
 
+_AT_NIU_PREFIX = "@niu-agent"  # 子 Agent 询问主 Agent 的 content 前缀（10 字符）
+
 # @前缀子Agent意图识别返回值
-INTERCEPTED = "intercepted"      # @niu 拦截成功，调用了 _ask_main_agent_impl，messages 已追加
+INTERCEPTED = "intercepted"      # @niu-agent 拦截成功，调用了 _ask_main_agent_impl，messages 已追加
 EXIT = "exit"                    # @end 允许退出
 FORMAT_ERROR = "format_error"    # 无 @ 前缀无 tool_calls，已追加格式错误提示
 NO_INTERCEPTION = "no_intercept" # 不拦截（同步子 Agent 或有 tool_calls）
@@ -51,7 +53,7 @@ def _intercept_at_prefix_content(
     """@前缀子Agent意图识别拦截层。
 
     仅异步子 Agent（memory_context is not None）+ 无 tool_calls 时拦截。
-    content 以 @niu 开头 → 调 _ask_main_agent_impl，把回答作为 user 消息注入 messages，返回 INTERCEPTED
+    content 以 @niu-agent 开头 → 调 _ask_main_agent_impl，把回答作为 user 消息注入 messages，返回 INTERCEPTED
     content 以 @end 开头 → 允许退出，返回 EXIT
     其他 → 追加格式错误提示，返回 FORMAT_ERROR
 
@@ -71,17 +73,17 @@ def _intercept_at_prefix_content(
 
     stripped = (content or "").lstrip()
 
-    # @niu 拦截（用 startswith("@niu") 兼容 @niu无空格）
-    if stripped.startswith("@niu"):
-        # 剥除 "@niu" 前缀 + 可选空格
-        question = stripped[4:].lstrip()
+    # @niu-agent 拦截（用 startswith(_AT_NIU_PREFIX) 兼容 @niu-agent无空格）
+    if stripped.startswith(_AT_NIU_PREFIX):
+        # 剥除 "@niu-agent" 前缀 + 可选空格
+        question = stripped[len(_AT_NIU_PREFIX):].lstrip()
         if not question:
-            logger.error("[AtPrefix] @niu 后无问题内容")
+            logger.error("[AtPrefix] @niu-agent 后无问题内容")
             messages.append({"role": "assistant", "content": content})
             messages.append({"role": "user", "content":
                 "[对话格式错误] 你的输出必须遵循以下格式之一：\n"
                 "1. 调用工具继续工作（正常 tool_calls）\n"
-                "2. 询问主 Agent：content 以 `@niu ` 开头，如 `@niu 我应该选择哪个选项？`\n"
+                "2. 询问主 Agent：content 以 `@niu-agent ` 开头，如 `@niu-agent 我应该选择哪个选项？`\n"
                 "3. 结束会话：content 以 `@end ` 开头，如 `@end 任务已完成，结果：...`\n"
                 "禁止输出不带 @ 前缀的纯 content。请重新输出。"
             })
@@ -94,7 +96,7 @@ def _intercept_at_prefix_content(
             messages.append({"role": "user", "content":
                 "[对话格式错误] 你的输出必须遵循以下格式之一：\n"
                 "1. 调用工具继续工作（正常 tool_calls）\n"
-                "2. 询问主 Agent：content 以 `@niu ` 开头，如 `@niu 我应该选择哪个选项？`\n"
+                "2. 询问主 Agent：content 以 `@niu-agent ` 开头，如 `@niu-agent 我应该选择哪个选项？`\n"
                 "3. 结束会话：content 以 `@end ` 开头，如 `@end 任务已完成，结果：...`\n"
                 "禁止输出不带 @ 前缀的纯 content。请重新输出。"
             })
@@ -123,7 +125,7 @@ def _intercept_at_prefix_content(
     messages.append({"role": "user", "content":
         "[对话格式错误] 你的输出必须遵循以下格式之一：\n"
         "1. 调用工具继续工作（正常 tool_calls）\n"
-        "2. 询问主 Agent：content 以 `@niu ` 开头，如 `@niu 我应该选择哪个选项？`\n"
+        "2. 询问主 Agent：content 以 `@niu-agent ` 开头，如 `@niu-agent 我应该选择哪个选项？`\n"
         "3. 结束会话：content 以 `@end ` 开头，如 `@end 任务已完成，结果：...`\n"
         "禁止输出不带 @ 前缀的纯 content。请重新输出。"
     })
@@ -574,7 +576,7 @@ def agent_runner_loop(
                     memory_context=memory_context,
                 )
                 if interception == INTERCEPTED:
-                    continue  # @niu 已处理，回到 while 循环让 LLM 继续
+                    continue  # @niu-agent 已处理，回到 while 循环让 LLM 继续
                 if interception == EXIT:
                     # @end 允许退出，剥除 "@end" 前缀 + 可选空格后推前端
                     stripped_content = content.lstrip()

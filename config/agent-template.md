@@ -24,7 +24,7 @@ allowAsync: false        # 是否允许异步调用（长时任务设为 true）
 - 子 Agent 的角色和职责边界
 - 工作流程（先做什么、再做什么）
 - 输出格式要求
-- **何时主动询问主 Agent**（仅异步模式 allowAsync: true 时才会注入 @前缀拦截层；同步子 Agent 不拦截。异步子 Agent **必须**用 `@niu ` 前缀询问主 Agent，禁止把问题写在 content 里直接返回——直接返回会被程序拒绝并要求重新输出。结束会话必须用 `@end ` 前缀）
+- **何时主动询问主 Agent**（仅异步模式 allowAsync: true 时才会注入 @前缀拦截层；同步子 Agent 不拦截。异步子 Agent **必须**用 `@niu-agent ` 前缀询问主 Agent，禁止把问题写在 content 里直接返回——直接返回会被程序拒绝并要求重新输出。结束会话必须用 `@end ` 前缀）
 - 何时该终止自己
 
 ## 可用 MCP 服务器
@@ -67,4 +67,4 @@ allowAsync: false        # 是否允许异步调用（长时任务设为 true）
   ```
 - `disableBaseTools`：可选，禁用基础工具列表（如 `[bash, code_run, read, write, edit, grep]`）
 - `allowBaseTools`：可选，从 disableBaseTools 解禁的工具列表（黑名单中的例外）
-- `allowAsync`：true 时支持异步调用（主 Agent 调用后立即返回，子 Agent 后台跑；异步子 Agent 自动启用 @前缀拦截层，必须用 @niu/@end 表达意图）
+- `allowAsync`：true 时支持异步调用（主 Agent 调用后立即返回，子 Agent 后台跑；异步子 Agent 自动启用 @前缀拦截层，必须用 @niu-agent/@end 表达意图）

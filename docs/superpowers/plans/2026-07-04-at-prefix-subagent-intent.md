@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 异步子 Agent 的每轮 content 输出必须以 `@` 前缀表达意图——`@niu 问题` 询问主 Agent、`@end 总结` 结束会话；既无 `@` 前缀也无 tool_calls 时程序拒绝并要求重新输出。
+**Goal:** 异步子 Agent 的每轮 content 输出必须以 `@` 前缀表达意图——`@niu-agent 问题` 询问主 Agent、`@end 总结` 结束会话；既无 `@` 前缀也无 tool_calls 时程序拒绝并要求重新输出。
 
-**Architecture:** 在 `agent_loop.py:473` 的 `if not response.tool_calls:` 拦截点加三层校验（`@niu` 转问主 Agent / `@end` 允许结束 / 格式错误回退）。移除 ask_main_agent MCP 工具 + 结构注入守则（回退 commit da5c75a2 + fedb25ef 的提示词路线）。`_ask_main_agent_impl` 函数体 + MainAgentRequestQueue + db_monitor 链路 B + chat.py source 字段修复全部保留，content 拦截复用现有 future/push queue 逻辑。
+**Architecture:** 在 `agent_loop.py:473` 的 `if not response.tool_calls:` 拦截点加三层校验（`@niu-agent` 转问主 Agent / `@end` 允许结束 / 格式错误回退）。移除 ask_main_agent MCP 工具 + 结构注入守则（回退 commit da5c75a2 + fedb25ef 的提示词路线）。`_ask_main_agent_impl` 函数体 + MainAgentRequestQueue + db_monitor 链路 B + chat.py source 字段修复全部保留，content 拦截复用现有 future/push queue 逻辑。
 
 **Tech Stack:** Python 3.11+ / asyncio / 现有 agent 框架
 
@@ -16,10 +16,10 @@
 
 | 文件 | 责任 | 操作 |
 |------|------|------|
-| `agent/generic/agent_loop.py` | L473 加 `@niu`/`@end`/格式错误三层拦截 | Modify |
+| `agent/generic/agent_loop.py` | L473 加 `@niu-agent`/`@end`/格式错误三层拦截 | Modify |
 | `agent/subagent.py` | 移除 `ASK_MAIN_AGENT_TOOL_SCHEMA` + `_ASYNC_ASK_GUIDE_*` 常量 + `build_subagent_system_segments` 的 `allow_async` 参数 + 注入分支；保留 `_ask_main_agent_impl` | Modify |
 | `agent/handler.py` | 移除 ask_main_agent 工具派发分支 | Modify |
-| `config/agent-template.md` | ask_main_agent 引导段改为 `@niu`/`@end` 守则 | Modify |
+| `config/agent-template.md` | ask_main_agent 引导段改为 `@niu-agent`/`@end` 守则 | Modify |
 | `config/agents/niu.md` | 同上 | Modify |
 | `tests/test_at_prefix_interception.py` | 拦截逻辑单元测试 | Create |
 | `tests/test_general_subagent.py` | 移除 4 个守则注入测试 + 改 `build_subagent_system_segments` 签名相关测试 | Modify |
@@ -39,7 +39,7 @@
 创建 `REDACTED_USER_PATH/tools/ai-bot/tests/verify_llm_at_prefix.py`：
 
 ```python
-"""验证 LLM 在给定 @前缀守则的系统提示词下，是否会输出 @niu/@end 前缀。
+"""验证 LLM 在给定 @前缀守则的系统提示词下，是否会输出 @niu-agent/@end 前缀。
 
 用法：python/bin/python tests/verify_llm_at_prefix.py
 
@@ -57,15 +57,15 @@ from agent.llmcore import create_client
 SYSTEM_PROMPT = """你是一个异步子 Agent。每轮输出必须遵循以下格式：
 
 1. 调用工具继续工作：正常 tool_calls
-2. 询问主 Agent（不退出，等主 Agent 回答后继续）：content 必须以 `@niu ` 开头，如 `@niu 我应该选择哪个选项？`
+2. 询问主 Agent（不退出，等主 Agent 回答后继续）：content 必须以 `@niu-agent ` 开头，如 `@niu-agent 我应该选择哪个选项？`
 3. 结束会话（任务完成或无法继续）：content 必须以 `@end ` 开头，如 `@end 任务已完成，结果：...`
 
 **重要**：禁止输出不带 @ 前缀的纯 content（会被程序拒绝并要求重新输出）。
-遇到需要用户决策的问题时，必须用 `@niu` 询问，禁止直接把问题写在 content 里。
+遇到需要用户决策的问题时，必须用 `@niu-agent` 询问，禁止直接把问题写在 content 里。
 """
 
 USER_TASK = """请打开 16personalities.com 网站开始 MBTI 测试。
-遇到第一个问题时不要自己选，必须询问我（用 @niu 前缀）。"""
+遇到第一个问题时不要自己选，必须询问我（用 @niu-agent 前缀）。"""
 
 
 def main():
@@ -111,14 +111,14 @@ def main():
         messages.append({"role": "assistant", "content": response.content, "tool_calls": response.tool_calls})
         messages.append({"role": "tool", "tool_call_id": response.tool_calls[0].id, "content": "已打开 16personalities.com，进入测试页，第 1 题：你经常结交新朋友。请选择 A/B/C/D。"})
 
-        print("\n=== 第二轮（遇到选择题，应输出 @niu）===")
+        print("\n=== 第二轮（遇到选择题，应输出 @niu-agent）===")
         response = client.chat(messages=messages, tools=tools)
         print(f"tool_calls: {response.tool_calls}")
         print(f"content: {response.content!r}")
 
         content = (response.content or "").strip()
-        if content.startswith("@niu"):
-            print("\n✅ 验证通过：LLM 输出了 @niu 前缀")
+        if content.startswith("@niu-agent"):
+            print("\n✅ 验证通过：LLM 输出了 @niu-agent 前缀")
         elif content.startswith("@end"):
             print("\n⚠️ LLM 输出了 @end（误判任务完成）")
         else:
@@ -141,11 +141,11 @@ if __name__ == "__main__":
 
 Run: `cd REDACTED_USER_PATH/tools/ai-bot && python/bin/python tests/verify_llm_at_prefix.py`
 
-Expected: 输出 `✅ 验证通过：LLM 输出了 @niu 前缀`。如果输出 ❌，需要调整系统提示词措辞或重新评估方案。
+Expected: 输出 `✅ 验证通过：LLM 输出了 @niu-agent 前缀`。如果输出 ❌，需要调整系统提示词措辞或重新评估方案。
 
 - [ ] **Step 3: 根据验证结果调整守则措辞（如果需要）**
 
-如果 LLM 不输出 `@niu`，尝试在 SYSTEM_PROMPT 里加强约束（如加示例 few-shot）。如果加强后仍不输出，**停下报告用户**，方案可能不可行。
+如果 LLM 不输出 `@niu-agent`，尝试在 SYSTEM_PROMPT 里加强约束（如加示例 few-shot）。如果加强后仍不输出，**停下报告用户**，方案可能不可行。
 
 - [ ] **Step 4: Commit**
 
@@ -153,7 +153,7 @@ Expected: 输出 `✅ 验证通过：LLM 输出了 @niu 前缀`。如果输出 �
 git add tests/verify_llm_at_prefix.py
 git commit -m "test(llm-verify): 验证 LLM 是否输出 @ 前缀 content
 
-新方案根本假设验证：LLM 能否遵守 @niu/@end 前缀守则。
+新方案根本假设验证：LLM 能否遵守 @niu-agent/@end 前缀守则。
 通过则继续实施，不通过则需重新设计。
 
 Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
@@ -279,7 +279,7 @@ Expected: 除 stop_deadlock 测试外全过（stop_deadlock 下个 Task 改造�
 git add agent/subagent.py agent/handler.py tests/test_ask_main_agent_injection.py
 git commit -m "refactor(subagent): 移除 ask_main_agent MCP 工具
 
-新方案用 @niu content 拦截替代 MCP 工具调用（更贴合 LLM 训练习惯）。
+新方案用 @niu-agent content 拦截替代 MCP 工具调用（更贴合 LLM 训练习惯）。
 - 删除 ASK_MAIN_AGENT_TOOL_SCHEMA 定义
 - 删除 _build_subagent_tools_schema 注入分支
 - 删除 handler.py ask_main_agent 派发分支
@@ -388,7 +388,7 @@ Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 
 ```python
 def test_at_niu_prefix_triggers_ask_main_agent(monkeypatch):
-    """子 Agent content 以 @niu 开头时，拦截层调 _ask_main_agent_impl 并把回答注入 messages"""
+    """子 Agent content 以 @niu-agent 开头时，拦截层调 _ask_main_agent_impl 并把回答注入 messages"""
     from agent.generic import agent_loop
     from agent import subagent
 
@@ -411,7 +411,7 @@ def test_at_niu_prefix_triggers_ask_main_agent(monkeypatch):
 
     # 调拦截函数（注意：无 agent_name 参数）
     result = agent_loop._intercept_at_prefix_content(
-        content="@niu 我应该选择哪个选项？",
+        content="@niu-agent 我应该选择哪个选项？",
         tool_calls=[],
         messages=messages,
         handler=fake_handler,
@@ -426,7 +426,7 @@ def test_at_niu_prefix_triggers_ask_main_agent(monkeypatch):
 
     # 断言：messages 被追加了 assistant content + user 回答（不是 tool 消息）
     assert messages[-2]["role"] == "assistant"
-    assert messages[-2]["content"] == "@niu 我应该选择哪个选项？"
+    assert messages[-2]["content"] == "@niu-agent 我应该选择哪个选项？"
     assert messages[-1]["role"] == "user"
     assert "主 Agent 的回答" in messages[-1]["content"]
 
@@ -493,7 +493,7 @@ def test_no_at_prefix_no_tool_calls_returns_format_error(monkeypatch):
     assert messages[-2]["content"] == "我应该选择哪个选项？"
     assert messages[-1]["role"] == "user"
     assert "对话格式错误" in messages[-1]["content"]
-    assert "@niu" in messages[-1]["content"]
+    assert "@niu-agent" in messages[-1]["content"]
     assert "@end" in messages[-1]["content"]
 
 
@@ -535,7 +535,7 @@ def test_no_interception_when_tool_calls_present(monkeypatch):
 
 
 def test_at_niu_without_question_returns_format_error(monkeypatch):
-    """@niu 后无问题内容时返回 FORMAT_ERROR"""
+    """@niu-agent 后无问题内容时返回 FORMAT_ERROR"""
     from agent.generic import agent_loop
 
     fake_handler = mock.MagicMock()
@@ -543,7 +543,7 @@ def test_at_niu_without_question_returns_format_error(monkeypatch):
     messages = [{"role": "user", "content": "开始"}]
 
     result = agent_loop._intercept_at_prefix_content(
-        content="@niu",  # @niu 后无内容
+        content="@niu-agent",  # @niu-agent 后无内容
         tool_calls=[],
         messages=messages,
         handler=fake_handler,
@@ -565,7 +565,7 @@ def test_at_niu_without_unique_name_returns_format_error(monkeypatch):
     messages = [{"role": "user", "content": "开始"}]
 
     result = agent_loop._intercept_at_prefix_content(
-        content="@niu 问题",
+        content="@niu-agent 问题",
         tool_calls=[],
         messages=messages,
         handler=fake_handler,
@@ -589,7 +589,7 @@ Read `REDACTED_USER_PATH/tools/ai-bot/agent/generic/agent_loop.py` L1-30 附近�
 
 ```python
 # @前缀子Agent意图识别返回值
-INTERCEPTED = "intercepted"      # @niu 拦截成功，调用了 _ask_main_agent_impl，messages 已追加
+INTERCEPTED = "intercepted"      # @niu-agent 拦截成功，调用了 _ask_main_agent_impl，messages 已追加
 EXIT = "exit"                    # @end 允许退出
 FORMAT_ERROR = "format_error"    # 无 @ 前缀无 tool_calls，已追加格式错误提示
 NO_INTERCEPTION = "no_intercept" # 不拦截（同步子 Agent 或有 tool_calls）
@@ -608,7 +608,7 @@ def _intercept_at_prefix_content(
     """@前缀子Agent意图识别拦截层。
 
     仅异步子 Agent（memory_context is not None）+ 无 tool_calls 时拦截。
-    content 以 @niu 开头 → 调 _ask_main_agent_impl，把回答作为 user 消息注入 messages，返回 INTERCEPTED
+    content 以 @niu-agent 开头 → 调 _ask_main_agent_impl，把回答作为 user 消息注入 messages，返回 INTERCEPTED
     content 以 @end 开头 → 允许退出，返回 EXIT
     其他 → 追加格式错误提示，返回 FORMAT_ERROR
 
@@ -628,12 +628,12 @@ def _intercept_at_prefix_content(
 
     stripped = (content or "").lstrip()
 
-    # @niu 拦截（用 startswith("@niu") 兼容 @niu无空格）
-    if stripped.startswith("@niu"):
-        # 剥除 "@niu" 前缀 + 可选空格
+    # @niu-agent 拦截（用 startswith("@niu-agent") 兼容 @niu-agent无空格）
+    if stripped.startswith("@niu-agent"):
+        # 剥除 "@niu-agent" 前缀 + 可选空格
         question = stripped[4:].lstrip()
         if not question:
-            logger.error("[AtPrefix] @niu 后无问题内容")
+            logger.error("[AtPrefix] @niu-agent 后无问题内容")
             return FORMAT_ERROR
 
         unique_name = getattr(handler, "_subagent_unique_name", "")
@@ -664,7 +664,7 @@ def _intercept_at_prefix_content(
     messages.append({"role": "user", "content":
         "[对话格式错误] 你的输出必须遵循以下格式之一：\n"
         "1. 调用工具继续工作（正常 tool_calls）\n"
-        "2. 询问主 Agent：content 以 `@niu ` 开头，如 `@niu 我应该选择哪个选项？`\n"
+        "2. 询问主 Agent：content 以 `@niu-agent ` 开头，如 `@niu-agent 我应该选择哪个选项？`\n"
         "3. 结束会话：content 以 `@end ` 开头，如 `@end 任务已完成，结果：...`\n"
         "禁止输出不带 @ 前缀的纯 content。请重新输出。"
     })
@@ -673,8 +673,8 @@ def _intercept_at_prefix_content(
 
 **关键设计**：
 - 拦截函数**无 `agent_name` 参数**（`_ask_main_agent_impl` 签名只需 question + unique_name）
-- `@niu` / `@end` 用 `startswith("@xxx")` 不带空格，兼容 LLM 输出 `@niu无空格` 的情况
-- 前缀剥除用 `stripped[4:].lstrip()`（4 是 `@niu`/`@end` 字符数），更稳健
+- `@niu-agent` / `@end` 用 `startswith("@xxx")` 不带空格，兼容 LLM 输出 `@niu-agent无空格` 的情况
+- 前缀剥除用 `stripped[4:].lstrip()`（4 是 `@niu-agent`/`@end` 字符数），更稳健
 - 主 Agent 回答用 `user` 消息注入而非 `tool` 消息，避免 LLM API 对 tool_call_id 的严格校验
 
 - [ ] **Step 4: 运行测试确认通过**
@@ -690,7 +690,7 @@ git add agent/generic/agent_loop.py tests/test_at_prefix_interception.py
 git commit -m "feat(agent_loop): @前缀子Agent意图识别拦截层
 
 新增 _intercept_at_prefix_content 函数：
-- @niu → 调 _ask_main_agent_impl，回答作为 user 消息注入 messages
+- @niu-agent → 调 _ask_main_agent_impl，回答作为 user 消息注入 messages
 - @end → 允许退出
 - 无 @ 前缀无 tool_calls → 追加格式错误提示
 - 同步子 Agent（memory_context=None）不拦截
@@ -723,10 +723,10 @@ def test_agent_runner_loop_intercepts_at_niu(monkeypatch):
         mock.Mock(return_value=agent_loop.INTERCEPTED)
     )
 
-    # mock client.chat 返回无 tool_calls 的 @niu content
+    # mock client.chat 返回无 tool_calls 的 @niu-agent content
     fake_response = mock.MagicMock()
     fake_response.tool_calls = []
-    fake_response.content = "@niu 问题"
+    fake_response.content = "@niu-agent 问题"
 
     fake_client = mock.MagicMock()
     fake_client.chat = mock.Mock(return_value=fake_response)
@@ -797,7 +797,7 @@ Read `REDACTED_USER_PATH/tools/ai-bot/agent/generic/agent_loop.py` L470-490 附�
                     memory_context=memory_context,
                 )
                 if interception == INTERCEPTED:
-                    continue  # @niu 已处理，回到 while 循环让 LLM 继续
+                    continue  # @niu-agent 已处理，回到 while 循环让 LLM 继续
                 if interception == EXIT:
                     # @end 允许退出，剥除 "@end" 前缀 + 可选空格后推前端
                     exit_content = content.lstrip()[4:].lstrip() if content.lstrip().startswith("@end") else content
@@ -827,7 +827,7 @@ Read `REDACTED_USER_PATH/tools/ai-bot/agent/generic/agent_loop.py` L470-490 附�
 - 拦截函数**无 `agent_name` 参数**（`_ask_main_agent_impl` 签名只需 question + unique_name）
 - `@end` 剥前缀用 `content.lstrip()[4:].lstrip()`，兼容 `@end任务` 和 `@end 任务` 两种形式
 - FORMAT_ERROR 分支重置 `_harness_fail_count = 0`，避免格式错误累计影响后续 validate_references
-- `@niu` 时 `continue` 不推前端（问题已转给主 Agent，前端不该看到子 Agent 的提问）
+- `@niu-agent` 时 `continue` 不推前端（问题已转给主 Agent，前端不该看到子 Agent 的提问）
 - `@end` 时剥前缀后推前端，避免用户看到 `@end` 标记
 
 **verbose 分支风险说明**：
@@ -835,7 +835,7 @@ Read `REDACTED_USER_PATH/tools/ai-bot/agent/generic/agent_loop.py` L470-490 附�
 - verbose 分支（L463-465 `yield from response_gen`）不拦截
 - **风险可控**：`agent/subagent.py:255` 子 Agent 调 `_run_agent_loop` 时显式传 `verbose=False`，所以子 Agent 走非 verbose 分支，拦截层生效
 - **未来维护**：若有人改子 Agent 默认 verbose=True，需同步在 verbose 分支加拦截逻辑
-- `@niu` 时 `continue` 不推前端（问题已转给主 Agent，前端不该看到子 Agent 的提问）
+- `@niu-agent` 时 `continue` 不推前端（问题已转给主 Agent，前端不该看到子 Agent 的提问）
 - `@end` 时剥前缀后推前端，避免用户看到 `@end` 标记
 
 - [ ] **Step 4: 运行测试确认通过**
@@ -857,7 +857,7 @@ git add agent/generic/agent_loop.py tests/test_at_prefix_interception.py
 git commit -m "feat(agent_loop): agent_runner_loop 集成 @前缀拦截
 
 在 L473 not response.tool_calls 分支加拦截：
-- INTERCEPTED → continue（@niu 已处理）
+- INTERCEPTED → continue（@niu-agent 已处理）
 - EXIT → 剥前缀推前端 + break
 - FORMAT_ERROR → continue（让 LLM 重新输出）
 - NO_INTERCEPTION → 走原有 validate_references 逻辑
@@ -888,11 +888,11 @@ Read `REDACTED_USER_PATH/tools/ai-bot/tests/test_ask_main_agent.py`。原有测�
 
 - [ ] **Step 2: 改造 test_ask_main_agent_stop_deadlock.py**
 
-Read `REDACTED_USER_PATH/tools/ai-bot/tests/test_ask_main_agent_stop_deadlock.py`。原有测试通过 MCP 工具触发 ask_main_agent，现在改为通过 `@niu` content 拦截触发。
+Read `REDACTED_USER_PATH/tools/ai-bot/tests/test_ask_main_agent_stop_deadlock.py`。原有测试通过 MCP 工具触发 ask_main_agent，现在改为通过 `@niu-agent` content 拦截触发。
 
 每个测试改为：
 - 不再构造 MCP 工具调用
-- 直接调 `_ask_main_agent_impl(question=..., unique_name=...)` 或 `_intercept_at_prefix_content` 模拟 `@niu` 拦截
+- 直接调 `_ask_main_agent_impl(question=..., unique_name=...)` 或 `_intercept_at_prefix_content` 模拟 `@niu-agent` 拦截
 - 断言 5 个死锁约束仍然生效
 
 - [ ] **Step 3: 检查并改造 test_request_stop_all_subagents.py**
@@ -900,7 +900,7 @@ Read `REDACTED_USER_PATH/tools/ai-bot/tests/test_ask_main_agent_stop_deadlock.py
 Read `REDACTED_USER_PATH/tools/ai-bot/tests/test_request_stop_all_subagents.py`。grep 该文件是否含 `ask_main_agent` 引用。
 
 如果有引用：
-- 改为通过 `@niu` content 拦截路径触发
+- 改为通过 `@niu-agent` content 拦截路径触发
 - 或直接调 `_ask_main_agent_impl` 模拟
 
 如果只是间接引用（如 mock SubagentRegistry），可能无需改——确认即可。
@@ -910,7 +910,7 @@ Read `REDACTED_USER_PATH/tools/ai-bot/tests/test_request_stop_all_subagents.py`�
 Read `REDACTED_USER_PATH/tools/ai-bot/tests/test_db_monitor.py`。grep 该文件是否含 `ask_main_agent` 引用（如 L39 附近）。
 
 如果有引用：
-- 改为通过 `@niu` content 拦截路径触发
+- 改为通过 `@niu-agent` content 拦截路径触发
 - 或直接调 `_ask_main_agent_impl` 模拟
 
 如果只是间接引用，可能无需改——确认即可。
@@ -925,10 +925,10 @@ Expected: 全过。
 
 ```bash
 git add tests/test_ask_main_agent.py tests/test_ask_main_agent_stop_deadlock.py tests/test_request_stop_all_subagents.py tests/test_db_monitor.py
-git commit -m "test(ask_main_agent): 改造为 @niu content 拦截路径
+git commit -m "test(ask_main_agent): 改造为 @niu-agent content 拦截路径
 
 MCP 工具已移除，测试改为直接调 _ask_main_agent_impl(question, unique_name)
-或 _intercept_at_prefix_content 模拟 @niu 拦截。
+或 _intercept_at_prefix_content 模拟 @niu-agent 拦截。
 5 个死锁约束测试覆盖不变。
 检查 test_request_stop_all_subagents + test_db_monitor 的 ask_main_agent 引用。
 
@@ -950,13 +950,13 @@ Read `REDACTED_USER_PATH/tools/ai-bot/config/agent-template.md`。
 把"提示词正文"段的"何时主动询问主 Agent"那条改为：
 
 ```markdown
-- **何时主动询问主 Agent**（仅异步模式 allowAsync: true 时才会注入 @前缀拦截层；同步子 Agent 不拦截。异步子 Agent **必须**用 `@niu ` 前缀询问主 Agent，禁止把问题写在 content 里直接返回——直接返回会被程序拒绝并要求重新输出。结束会话必须用 `@end ` 前缀）
+- **何时主动询问主 Agent**（仅异步模式 allowAsync: true 时才会注入 @前缀拦截层；同步子 Agent 不拦截。异步子 Agent **必须**用 `@niu-agent ` 前缀询问主 Agent，禁止把问题写在 content 里直接返回——直接返回会被程序拒绝并要求重新输出。结束会话必须用 `@end ` 前缀）
 ```
 
 把"frontmatter 字段说明"的 `allowAsync` 说明改为：
 
 ```markdown
-- `allowAsync`：true 时支持异步调用（主 Agent 调用后立即返回，子 Agent 后台跑；异步子 Agent 自动启用 @前缀拦截层，必须用 @niu/@end 表达意图）
+- `allowAsync`：true 时支持异步调用（主 Agent 调用后立即返回，子 Agent 后台跑；异步子 Agent 自动启用 @前缀拦截层，必须用 @niu-agent/@end 表达意图）
 ```
 
 - [ ] **Step 2: 改 config/agents/niu.md**
@@ -976,18 +976,18 @@ Expected: 列出所有引用行（如 L255/L283/L291 等）。
 1. "如何创建子 Agent" 段的"如果 allowAsync: true，正文必须写明 ask_main_agent 的使用时机"改为：
 
 ```markdown
-   - **重要**：如果 allowAsync: true，正文必须写明子 Agent 用 `@niu ` 前缀询问主 Agent、用 `@end ` 前缀结束会话——禁止把问题写在 content 里直接返回（会被程序拒绝）。如"遇到用户意图不明确时用 @niu 询问，不要自行假设；任务完成时用 @end 返回结果"
+   - **重要**：如果 allowAsync: true，正文必须写明子 Agent 用 `@niu-agent ` 前缀询问主 Agent、用 `@end ` 前缀结束会话——禁止把问题写在 content 里直接返回（会被程序拒绝）。如"遇到用户意图不明确时用 @niu-agent 询问，不要自行假设；任务完成时用 @end 返回结果"
 ```
 
 2. "异步子 Agent" 段（如 L255/L291 附近）的"可主动询问你（ask_main_agent）"改为：
 
 ```markdown
-- 子 Agent 在另一个线程跑，用 `@niu ` 前缀的 content 主动询问你（程序拦截转 ask_main_agent 逻辑）
+- 子 Agent 在另一个线程跑，用 `@niu-agent ` 前缀的 content 主动询问你（程序拦截转 ask_main_agent 逻辑）
 ```
 
-3. 其他 ask_main_agent 引用，根据上下文改为 `@niu` content 描述。
+3. 其他 ask_main_agent 引用，根据上下文改为 `@niu-agent` content 描述。
 
-**确认**：grep 后所有 ask_main_agent 引用都更新为 `@niu`/`@end` 守则，无遗漏。
+**确认**：grep 后所有 ask_main_agent 引用都更新为 `@niu-agent`/`@end` 守则，无遗漏。
 
 - [ ] **Step 3: 验证 niu.md 解析正常**
 
@@ -999,10 +999,10 @@ Expected: 打印 `True`。
 
 ```bash
 git add config/agent-template.md config/agents/niu.md
-git commit -m "docs(prompt): 提示词改为 @niu/@end 前缀守则
+git commit -m "docs(prompt): 提示词改为 @niu-agent/@end 前缀守则
 
 替代 ask_main_agent MCP 工具引导，更贴合 LLM @提及训练习惯。
-异步子 Agent 必须用 @niu 询问、@end 结束，纯 content 返回被程序拒绝。
+异步子 Agent 必须用 @niu-agent 询问、@end 结束，纯 content 返回被程序拒绝。
 
 Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 ```
@@ -1026,8 +1026,8 @@ grep -n "ask_main_agent" REDACTED_USER_PATH/tools/ai-bot/docs/SYSTEM_MANUAL.md
 Expected: 列出引用行（如 L347 附近）。
 
 逐处更新：
-- "ask_main_agent MCP 工具"描述改为"@niu content 拦截"描述
-- "子 Agent 调 ask_main_agent 询问"改为"子 Agent 用 @niu content 询问"
+- "ask_main_agent MCP 工具"描述改为"@niu-agent content 拦截"描述
+- "子 Agent 调 ask_main_agent 询问"改为"子 Agent 用 @niu-agent content 询问"
 - 保留 `check_subagent_progress` 工具描述（这个工具没移除）
 
 - [ ] **Step 2: 改 docs/manual-general-subagent.md**
@@ -1041,16 +1041,16 @@ grep -n "ask_main_agent" REDACTED_USER_PATH/tools/ai-bot/docs/manual-general-sub
 Expected: 列出引用行（如 L17/L86/L117 附近）。
 
 逐处更新：
-- "ask_main_agent MCP 工具"描述改为"@niu content 拦截"描述
+- "ask_main_agent MCP 工具"描述改为"@niu-agent content 拦截"描述
 - "异步子 Agent 才会注入 ask_main_agent 工具"改为"异步子 Agent 自动启用 @前缀拦截层"
-- "子 Agent 调 ask_main_agent 询问"改为"子 Agent 用 @niu content 询问"
+- "子 Agent 调 ask_main_agent 询问"改为"子 Agent 用 @niu-agent content 询问"
 - 维护注意事项里如有 ask_main_agent 相关，一并更新
 
 - [ ] **Step 3: Commit**
 
 ```bash
 git add docs/SYSTEM_MANUAL.md docs/manual-general-subagent.md
-git commit -m "docs(manual): 系统手册更新为 @niu/@end 前缀守则
+git commit -m "docs(manual): 系统手册更新为 @niu-agent/@end 前缀守则
 
 替代 ask_main_agent MCP 工具描述，与代码实现一致。
 
@@ -1079,13 +1079,13 @@ Run: `cd REDACTED_USER_PATH/tools/ai-bot && ./niu`
 
 Expected: 程序正常启动。
 
-- [ ] **Step 3: 验证 @niu 拦截生效**
+- [ ] **Step 3: 验证 @niu-agent 拦截生效**
 
 在前端发送消息让主 Agent 创建异步子 Agent（如 browser-operator），派任务遇到选择时：
 
 Expected:
-- 子 Agent 系统提示词含 `@niu`/`@end` 守则（从 niu.md 提示词要求主 Agent 写 MD 时写入）
-- 子 Agent 遇到选择时输出 `@niu 我应该选择哪个选项？`
+- 子 Agent 系统提示词含 `@niu-agent`/`@end` 守则（从 niu.md 提示词要求主 Agent 写 MD 时写入）
+- 子 Agent 遇到选择时输出 `@niu-agent 我应该选择哪个选项？`
 - 程序拦截，调 `_ask_main_agent_impl`
 - 主 Agent 收到询问（[子名] 问题 推到 MainAgentRequestQueue → db_monitor 链路 A → SSE → 前端 → /api/chat/session → 主 Agent 新一轮 LLM）
 - 主 Agent 回复 `@子名 回答`
@@ -1146,7 +1146,7 @@ mkdir -p docs/superpowers/verification-reports
 git add docs/superpowers/verification-reports/2026-07-04-at-prefix-e2e.md
 git commit -m "test(e2e): @前缀子Agent意图识别端到端验证通过
 
-@niu 询问主 Agent、@end 结束会话、格式错误回退、/stop 终止 全部验证通过。
+@niu-agent 询问主 Agent、@end 结束会话、格式错误回退、/stop 终止 全部验证通过。
 
 Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 ```
