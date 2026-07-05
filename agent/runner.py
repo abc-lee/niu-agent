@@ -1016,6 +1016,7 @@ class NiuRunner:
         )
         from agent.subagent import (
             call_subagent,
+            call_subagent_with_auto_answer,
             _read_context_window_tokens,
             _read_protect_recent_count,
             _read_compress_target_tokens,
@@ -1227,7 +1228,7 @@ class NiuRunner:
             }
 
             def run_context_manager_force():
-                return call_subagent(
+                return call_subagent_with_auto_answer(
                     agent_name="context-manager",
                     task=prompt,
                     llm_config=llm_config_with_max,
