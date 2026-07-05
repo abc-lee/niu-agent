@@ -119,6 +119,16 @@ mcpToolFilter:
 - 异步子 Agent 完成汇报（push 到 MainAgentRequestQueue）
 - 5 个死锁约束（cancel_pending_ask / _ask_terminated 标记 / request_stop_all_subagents / route_message / 超时决策）
 
+## 九点五、同步子 Agent @niu-agent/@end 交互
+
+所有子 Agent（同步 + 异步）都被程序注入 @niu-agent/@end 守则：
+- 询问主 Agent：content 以 `@niu-agent ` 开头
+- 结束会话：content 以 `@end ` 开头
+
+同步子 Agent 调用时主 Agent 在工具循环阻塞等待，子 Agent @niu-agent 问题会被包装成 `[子名] 问题` 作为工具返回值送给主 Agent。主 Agent 看到 JSON 工具结果后调 chat-with-xxx(task="", answer="@子名 回答", unique_name="子名") 回复。
+
+程序触发子 Agent（无主 Agent 在线）由 helper 自动回复固定文案。
+
 ## 十、维护注意事项
 
 - **MCP 服务器清单变化**：新增/移除 MCP 服务器时，同步更新 `config/agent-template.md` 的"可用 MCP 服务器"段

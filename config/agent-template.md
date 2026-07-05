@@ -24,7 +24,6 @@ allowAsync: false        # 是否允许异步调用（长时任务设为 true）
 - 子 Agent 的角色和职责边界
 - 工作流程（先做什么、再做什么）
 - 输出格式要求
-- **何时主动询问主 Agent**（仅异步模式 allowAsync: true 时才会注入 @前缀拦截层；同步子 Agent 不拦截。异步子 Agent **必须**用 `@niu-agent ` 前缀询问主 Agent，禁止把问题写在 content 里直接返回——直接返回会被程序拒绝并要求重新输出。结束会话必须用 `@end ` 前缀）
 - **何时主动询问主 Agent**：所有子 Agent（同步 + 异步）都被程序注入 @niu-agent/@end 守则。子 Agent 用 `@niu-agent ` 前缀询问主 Agent，用 `@end ` 前缀结束会话。子 Agent 不需要在输出里包含自己的标识符，程序会自动在你的问题前加上唯一标识，主 Agent 据此回复你。
 - 何时该终止自己
 

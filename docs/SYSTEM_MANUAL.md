@@ -349,6 +349,12 @@ dream-evolver 修改 skill 时遵循 Skill-Aware Reflection 方法论：
 
 通用子 Agent 完整复用阶段一+二的全部交互能力。
 
+### 同步子 Agent @niu-agent 交互通道
+
+同步子 Agent 调用时，主 Agent 在工具循环里阻塞等待。子 Agent 输出 `@niu-agent 问题` 时，程序拦截层识别后挂起 session，把问题包装成 `[子名] 问题` 作为工具返回值送给主 Agent。主 Agent LLM 看到 JSON 工具结果 `{"status":"success","result":"[子名] 问题"}` 后，调同一 chat-with-xxx 工具回复（task="" + answer="@子名 回答" + unique_name="子名"）。程序从 registry 拿回挂起 session，注入回答后继续跑。
+
+程序触发子 Agent（auto_tidy / force 压缩 / 手动 tidy API）时，由 `call_subagent_with_auto_answer` helper 自动回复固定文案"无法解答你的问题，请选择 @end 结束并汇报你的工作，或自我抉择选择继续工作"。
+
 ### 维护注意事项
 
 - MCP 服务器清单变化时（新增/移除 MCP 服务器），同步更新 `config/agent-template.md` 的"可用 MCP 服务器"段
