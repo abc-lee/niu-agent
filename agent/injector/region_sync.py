@@ -654,6 +654,37 @@ class RegionSync:
         if not self._brain_ready.wait(timeout=60):
             logger.warning("[RegionSync] Brain region init not signaled after 60s, proceeding anyway")
 
+        # 跨进程 24h 间隔持久化：读 status file，若距上次同步不足 sync_interval*0.9 则等待
+        # 避免"每次重启都触发首次同步"——24h 间隔不仅在进程内生效，跨重启也生效
+        try:
+            status = self._load_status()
+            last_sync_str = status.get("last_sync") if status else None
+            if last_sync_str:
+                try:
+                    last_sync = datetime.fromisoformat(last_sync_str)
+                    elapsed = (datetime.now() - last_sync).total_seconds()
+                    # 系统时间回拨保护：elapsed < 0 视为 0，立即跑首次同步
+                    if elapsed < 0:
+                        logger.warning(
+                            "[RegionSync] last_sync 是未来时间（系统时间回拨？），立即首次同步"
+                        )
+                        elapsed = 0
+                    min_interval = self.sync_interval * 0.9  # 10% 容差
+                    # elapsed=0 时不进等待分支（立即跑首次同步）
+                    # 仅当 0 < elapsed < min_interval 时才等待剩余时间
+                    if 0 < elapsed < min_interval:
+                        wait_seconds = min_interval - elapsed
+                        logger.info(
+                            "[RegionSync] 距上次同步 %.0f 秒，不足 %.0f 秒，等待 %.0f 秒后再首次同步",
+                            elapsed, min_interval, wait_seconds,
+                        )
+                        if self._stop_event.wait(timeout=wait_seconds):
+                            return  # 收到 stop 信号，退出
+                except (ValueError, TypeError) as e:
+                    logger.warning("[RegionSync] 解析 last_sync 失败，立即首次同步: %s", e)
+        except Exception as e:
+            logger.warning("[RegionSync] 读 status file 失败，立即首次同步: %s", e)
+
         while True:
             try:
                 self.run_sync()
