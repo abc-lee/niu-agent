@@ -48,3 +48,59 @@ def test_helper_does_not_misidentify_normal_result():
             llm_config={"model": "test", "api_key": "test", "base_url": "http://localhost"},
         )
     assert result == "[已完成] 文件 X 处理完毕"
+
+
+def test_extract_unique_name_sync_path_plain_agent_name():
+    """同步路径 [browser-operator] 问题 格式能被提取"""
+    from agent.subagent import _extract_unique_name
+    assert _extract_unique_name("[browser-operator] 第一个问题", "browser-operator") == "browser-operator"
+    assert _extract_unique_name("[file-processor] 我该选哪个？", "file-processor") == "file-processor"
+
+
+def test_extract_unique_name_async_path_hex_suffix_still_works():
+    """异步路径 [file-processor-a1b2] 问题 格式仍能被提取（保持向后兼容）"""
+    from agent.subagent import _extract_unique_name
+    assert _extract_unique_name("[file-processor-a1b2] 第一个问题", "file-processor") == "file-processor-a1b2"
+    assert _extract_unique_name("[browser-operator-708b] 问题", "browser-operator") == "browser-operator-708b"
+
+
+def test_extract_unique_name_no_match_returns_none():
+    """非 [子名] 格式返回 None"""
+    from agent.subagent import _extract_unique_name
+    assert _extract_unique_name("正常结果文本", "browser-operator") is None
+    assert _extract_unique_name("[已完成] 任务结束", "browser-operator") is None
+    assert _extract_unique_name("[browser-operator-x1yz] 问题", "browser-operator") is None  # x/y/z 非 hex
+
+
+def test_call_subagent_with_auto_answer_sync_path_auto_replies(monkeypatch):
+    """同步路径 [browser-operator] 问题 → call_subagent_with_auto_answer 自动回复"""
+    from agent import subagent
+    from agent.subagent_registry import SubagentRegistry
+
+    call_count = {"value": 0}
+    call_args_log = []
+
+    def fake_call_subagent(**kwargs):
+        call_count["value"] += 1
+        call_args_log.append(kwargs.copy())
+        # 第一次返回 [browser-operator] 问题（同步路径格式）
+        # 第二次返回正常结果
+        if call_count["value"] == 1:
+            return "[browser-operator] 第一个问题"
+        return "子 Agent 完成"
+
+    monkeypatch.setattr(subagent, "call_subagent", fake_call_subagent)
+
+    result = subagent.call_subagent_with_auto_answer(
+        agent_name="browser-operator",
+        task="测试",
+        llm_config={"model": "test", "api_key": "test", "base_url": "http://localhost"},
+    )
+
+    # 应自动回复一次，然后第二次返回正常结果
+    assert call_count["value"] == 2, f"应调用 2 次，实际：{call_count['value']}"
+    assert result == "子 Agent 完成"
+    # 第二次调用应传 answer + answer_unique_name
+    second_call = call_args_log[1]
+    assert second_call.get("answer") is not None
+    assert second_call.get("answer_unique_name") == "browser-operator"

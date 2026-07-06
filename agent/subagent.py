@@ -950,10 +950,20 @@ def call_subagent_with_auto_answer(agent_name, task, **kwargs):
 def _extract_unique_name(result, agent_name):
     """从 '[unique_name] ...' 提取 unique_name，不匹配返回 None。
 
-    严格正则匹配 `^{agent_name}-[4位十六进制]` 格式，避免误判 `[已完成]` 等正常文本。
+    支持两种格式（向后兼容）：
+    - 同步路径：[agent_name] 问题（如 [browser-operator] 第一个问题）
+    - 异步路径：[agent_name-4位hex] 问题（如 [file-processor-a1b2] 第一个问题）
+
+    严格匹配避免误判 `[已完成]` 等正常文本。
     """
-    pattern = rf"^\[({re.escape(agent_name)}-[0-9a-f]{{4}})\] "
-    m = re.match(pattern, result)
+    # 优先匹配带 hex 后缀（异步路径）
+    pattern_with_hex = rf"^\[({re.escape(agent_name)}-[0-9a-f]{{4}})\] "
+    m = re.match(pattern_with_hex, result)
+    if m:
+        return m.group(1)
+    # 再匹配纯 agent_name（同步路径）
+    pattern_plain = rf"^\[({re.escape(agent_name)})\] "
+    m = re.match(pattern_plain, result)
     return m.group(1) if m else None
 
 
