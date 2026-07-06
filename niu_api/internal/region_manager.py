@@ -1023,12 +1023,19 @@ class RegionManager:
                 if name:
                     region_raw_desc_map[name] = entity.get("description", "")
 
+        # 批量读取所有脑区成员（避免循环内调单数 get_region_members 触发读取失败返回空）
+        # 单数版本与复数版本读取逻辑一致，都有 try/except 返回空——
+        # 循环内调单数会因锁竞争/读取失败返回空，导致 current_size=0 误判萎缩，
+        # 累积 shrink_count 后误删有成员的脑区。批量读一次拿全图快照更可靠。
+        from niu_api.internal.lightrag_manager import get_all_region_members
+        region_member_map: dict[str, list[str]] = get_all_region_members()
+
         for region in existing_regions:
             # Protect default regions (defined in preferences.json)
             if is_default_region(region.name):
                 continue
 
-            members = self.get_region_members(region.name)
+            members = region_member_map.get(region.name, [])
             current_size = len(members)
 
             # Parse shrink count from RAW KG description (not stripped summary)
