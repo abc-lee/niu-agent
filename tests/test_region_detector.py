@@ -15,6 +15,22 @@ from niu_api.internal.region_detector import (
 )
 
 
+# ============== autouse fixture ==============
+
+
+@pytest.fixture(autouse=True)
+def _mock_get_all_region_members(request):
+    """所有 region_detector 测试默认 mock get_all_region_members 返回空 dict
+    （排除步骤 early skip），避免触发真实 LightRAG 初始化。
+    需要测试排除逻辑的用例可以覆盖此 fixture。
+    """
+    with patch(
+        "niu_api.internal.lightrag_manager.get_all_region_members",
+        return_value={},
+    ):
+        yield
+
+
 # ============== 辅助函数 ==============
 
 
@@ -448,3 +464,59 @@ class TestBrainRegionFiltering:
 
         for p in result.partitions:
             assert "自定义脑区" not in p.entity_names
+
+
+def test_detect_communities_excludes_entities_connected_to_regions():
+    """直连脑区的实体（一级成员）应被排除出 Leiden 算法输入"""
+    from unittest import mock
+    from niu_api.internal.region_detector import CommunityDetector
+
+    # 构造图快照：3 个脑区主节点 + 5 个已归属实体 + 5 个游离实体
+    nodes = [
+        {"name": "智家脑区", "type": "brainregion"},
+        {"name": "工作脑区", "type": "brainregion"},
+        {"name": "聊天脑区", "type": "brainregion"},
+        # 已归属实体（直连脑区，应被排除）
+        {"name": "已归属实体1", "type": "technology"},
+        {"name": "已归属实体2", "type": "technology"},
+        {"name": "已归属实体3", "type": "technology"},
+        # 游离实体（未直连脑区，应保留参与算法）
+        {"name": "游离实体A", "type": "concept"},
+        {"name": "游离实体B", "type": "concept"},
+        {"name": "游离实体C", "type": "concept"},
+    ]
+    edges = [
+        # 已归属实体 → 脑区（包含边）
+        {"source": "智家脑区", "target": "已归属实体1", "keywords": "包含"},
+        {"source": "智家脑区", "target": "已归属实体2", "keywords": "包含"},
+        {"source": "工作脑区", "target": "已归属实体3", "keywords": "包含"},
+        # 游离实体之间相互连接（应被聚成社区）
+        {"source": "游离实体A", "target": "游离实体B", "keywords": "相关"},
+        {"source": "游离实体B", "target": "游离实体C", "keywords": "相关"},
+        {"source": "游离实体A", "target": "游离实体C", "keywords": "相关"},
+    ]
+
+    fake_adapter = mock.MagicMock()
+    fake_adapter.get_graph_snapshot = mock.Mock(return_value={"nodes": nodes, "edges": edges})
+
+    # mock 源模块的 get_all_region_members（函数级 import 会从源模块拿）
+    with mock.patch(
+        "niu_api.internal.lightrag_manager.get_all_region_members",
+        return_value={
+            "智家脑区": ["已归属实体1", "已归属实体2"],
+            "工作脑区": ["已归属实体3"],
+            "聊天脑区": [],
+        },
+    ):
+        detector = CommunityDetector(fake_adapter)
+        result = detector.detect_communities(min_graph_size=1, min_community_size=1)
+
+    all_partition_members = []
+    for p in result.partitions:
+        all_partition_members.extend(p.entity_names)
+    assert "已归属实体1" not in all_partition_members
+    assert "已归属实体2" not in all_partition_members
+    assert "已归属实体3" not in all_partition_members
+    assert "游离实体A" in all_partition_members
+    assert "游离实体B" in all_partition_members
+    assert "游离实体C" in all_partition_members

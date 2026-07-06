@@ -149,6 +149,35 @@ class CommunityDetector:
                 len(brain_region_names),
             )
 
+        # 排除已直连脑区的实体（脑区一级成员）
+        # 这些实体已经归属到某个脑区，不应再参与社区检测
+        # 否则每次跑 Leiden 都会把同一批已归属实体重新聚成社区
+        try:
+            from niu_api.internal.lightrag_manager import get_all_region_members
+            region_members_map = get_all_region_members()
+            assigned_entities: set[str] = set()
+            for members in region_members_map.values():
+                for m in members:
+                    if isinstance(m, str):
+                        assigned_entities.add(m.lower())
+        except Exception as e:
+            logger.warning("获取已归属实体集合失败，跳过排除步骤: %s", e)
+            assigned_entities = set()
+
+        if assigned_entities:
+            before_count = len(nodes)
+            def _is_assigned(name) -> bool:
+                return isinstance(name, str) and name.lower() in assigned_entities
+            nodes = [n for n in nodes if not _is_assigned(n.get("name", n.get("id", "")))]
+            edges = [
+                e for e in edges
+                if not _is_assigned(e.get("source", "")) and not _is_assigned(e.get("target", ""))
+            ]
+            logger.info(
+                "排除 %d 个已归属实体（直连脑区的一级成员），剩余 %d 个游离实体参与算法",
+                before_count - len(nodes), len(nodes),
+            )
+
         # 2. 检查图谱大小
         if len(nodes) < min_graph_size:
             logger.info(
