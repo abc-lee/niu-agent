@@ -453,3 +453,48 @@ def test_merge_and_dissolve_logs_warning_on_dissolve_exception(monkeypatch):
     # 断言：warning 调用里包含 "Dissolve" 或 "dissolve"
     assert any("Dissolve" in str(msg) or "dissolve" in str(msg) for msg in warning_calls), \
         f"dissolve 异常应被 warning 记录，实际 warning 调用: {warning_calls}"
+
+
+def test_merge_and_dissolve_logs_warning_on_merge_exception(monkeypatch):
+    """merge 异常应被 logger.warning 记录，不是 logger.debug
+
+    与 dissolve 异常升级到 warning 对称——merge 路径的 except 也应记 warning。
+    mock activation_mgr.get_merge_candidates 抛异常，断言 warning 里包含 "Merge"。
+    """
+    from agent.injector import region_sync
+    from unittest import mock
+
+    # 拦截 loguru logger 的 warning/debug 调用
+    warning_calls = []
+    debug_calls = []
+    monkeypatch.setattr(
+        region_sync.logger,
+        "warning",
+        lambda *args, **kwargs: warning_calls.append(args[0] if args else None),
+    )
+    monkeypatch.setattr(
+        region_sync.logger,
+        "debug",
+        lambda *args, **kwargs: debug_calls.append(args[0] if args else None),
+    )
+
+    sync = region_sync.RegionSync(sync_interval=86400)
+
+    # mock activation_mgr 让 get_merge_candidates 抛异常——merge 路径 L514 catch 后记 warning
+    mock_activation_mgr = mock.MagicMock()
+    mock_activation_mgr.get_merge_candidates.side_effect = RuntimeError(
+        "test merge failure"
+    )
+
+    with mock.patch(
+        "agent.brain_tools.get_activation_mgr", return_value=mock_activation_mgr
+    ), mock.patch(
+        "niu_api.internal.lightrag_adapter.LightRAGAdapter"
+    ), mock.patch(
+        "niu_api.internal.lightrag_adapter.LightRAGIngester"
+    ):
+        sync._merge_and_dissolve({})
+
+    # 断言：warning 调用里包含 "Merge" 或 "merge"
+    assert any("Merge" in str(msg) or "merge" in str(msg) for msg in warning_calls), \
+        f"merge 异常应被 warning 记录，实际 warning 调用: {warning_calls}"
