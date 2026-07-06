@@ -60,14 +60,28 @@ class SubagentRegistry:
         memory_context: Optional[Any] = None,
         is_sync: bool = True,
         task: Optional[Union[asyncio.Task, ConcurrentFuture]] = None,
+        force_unique_name: Optional[str] = None,
     ) -> str:
         """注册一个子 Agent，返回唯一名。
 
         同步子 Agent：is_sync=True，task=None，memory_context=None
         异步子 Agent：is_sync=False，task=asyncio.Task 或 concurrent.futures.Future，memory_context=SubagentMemoryContext
+
+        Args:
+            force_unique_name: 指定 unique_name（同步路径用 agent_name，避免 LLM 记随机 hex 后缀）。
+                              None 时用 _gen_unique_name 生成随机 hex 后缀（异步路径保持原逻辑）。
+                              同名已存在时抛 ValueError（同步路径同类型只能跑一个）。
         """
         with cls._lock:
-            name = cls._gen_unique_name(agent_type)
+            if force_unique_name is not None:
+                if force_unique_name in cls._instances:
+                    raise ValueError(
+                        f"子 Agent {force_unique_name} 已在运行（同步路径同类型只能跑一个），"
+                        f"请先用 chat-with-{force_unique_name} 回复当前挂起的 session 或停止它"
+                    )
+                name = force_unique_name
+            else:
+                name = cls._gen_unique_name(agent_type)
             cls._instances[name] = RunningSubagent(
                 unique_name=name,
                 agent_type=agent_type,
