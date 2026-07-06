@@ -324,9 +324,9 @@ class RegionSync:
                 disconnected = manager.decay_structural_edges()
                 if disconnected.get("deleted", 0) > 0 or disconnected.get("decayed", 0) > 0:
                     stats["edges_disconnected"] = disconnected.get("deleted", 0)
-                    logger.info("[RegionSync] 衰减结果: %s", disconnected)
+                    logger.info(f"[RegionSync] 衰减结果: {disconnected}")
             except Exception as e:
-                logger.debug("[RegionSync] Edge decay skipped: %s", e)
+                logger.debug(f"[RegionSync] Edge decay skipped: {e}")
 
         except Exception as e:
             logger.warning(f"[RegionSync] Region management failed: {e}")
@@ -416,8 +416,7 @@ class RegionSync:
             ])
             activation_mgr.set_region_neighbors(neighbor_map)
             logger.debug(
-                "[RegionSync] Neighbor map set: %d regions have neighbors",
-                len(neighbor_map)
+                f"[RegionSync] Neighbor map set: {len(neighbor_map)} regions have neighbors"
             )
 
             set_activation_mgr(activation_mgr)
@@ -451,7 +450,7 @@ class RegionSync:
             else:
                 logger.debug("[RegionSync] No activation manager, skipping entity mapping refresh")
         except Exception as e:
-            logger.warning("[RegionSync] Entity mapping refresh failed: %s", e)
+            logger.warning(f"[RegionSync] Entity mapping refresh failed: {e}")
 
     # ------------------------------------------------------------------
     # Merge + dissolve
@@ -486,10 +485,10 @@ class RegionSync:
 
                         # Protect default brain regions (defined in preferences.json)
                         if is_default_region(source_state.region_id):
-                            logger.debug("[RegionSync] 跳过预置脑区合并: %s", source_state.label)
+                            logger.debug(f"[RegionSync] 跳过预置脑区合并: {source_state.label}")
                             continue
                         if is_default_region(target_state.region_id):
-                            logger.debug("[RegionSync] 跳过预置脑区作为合并目标: %s", target_state.label)
+                            logger.debug(f"[RegionSync] 跳过预置脑区作为合并目标: {target_state.label}")
                             continue
 
                         # Merge KG nodes via adapter — use full region names, not labels
@@ -680,9 +679,9 @@ class RegionSync:
                         if self._stop_event.wait(timeout=wait_seconds):
                             return  # 收到 stop 信号，退出
                 except (ValueError, TypeError) as e:
-                    logger.warning("[RegionSync] 解析 last_sync 失败，立即首次同步: %s", e)
+                    logger.warning(f"[RegionSync] 解析 last_sync 失败，立即首次同步: {e}")
         except Exception as e:
-            logger.warning("[RegionSync] 读 status file 失败，立即首次同步: %s", e)
+            logger.warning(f"[RegionSync] 读 status file 失败，立即首次同步: {e}")
 
         while True:
             try:
