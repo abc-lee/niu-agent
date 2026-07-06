@@ -338,3 +338,60 @@ def test_call_subagent_gen_explicit_unique_name_overrides_fallback(monkeypatch):
     list(gen)
 
     assert call_subagent_calls[0].get("answer_unique_name") == "browser-operator"
+
+
+def test_e2e_main_agent_content_reply_intercepted_before_yield(monkeypatch):
+    """端到端：主 Agent content 误回复同步挂起子 Agent 时，拦截层在 yield 前捕获，LLM 重做。
+
+    模拟主 Agent 下一轮输出 content @browser-operator 回答 但无 tool_calls：
+    - 拦截层应返回 FORMAT_ERROR（v3 复用现有常量）
+    - agent_runner_loop 应 continue（不 yield content 给前端）
+    - messages 应含 assistant content + user 错误提示
+    - LLM 下一轮应看到错误提示并改用工具回复
+    """
+    from agent.generic.agent_loop import _intercept_at_prefix_content, FORMAT_ERROR, NO_INTERCEPTION
+    from agent.subagent_registry import SubagentRegistry
+    from agent.subagent_supplement import SubagentSupplementQueue
+
+    # 注册同步挂起 session
+    sq = SubagentSupplementQueue(unique_name="")
+    SubagentRegistry.register(
+        agent_type="browser-operator",
+        supplement_queue=sq,
+        force_unique_name="browser-operator",
+    )
+    SubagentRegistry.get("browser-operator").state = "waiting_for_answer"
+
+    class FakeHandler:
+        _is_sync_subagent = False
+        _subagent_unique_name = ""
+    handler = FakeHandler()
+
+    messages = []
+    try:
+        # 第一轮：主 Agent 误用 content 回复
+        status, _ = _intercept_at_prefix_content(
+            content="@browser-operator 我选择 2",
+            tool_calls=[],
+            messages=messages,
+            handler=handler,
+            memory_context=None,
+        )
+        assert status == FORMAT_ERROR
+        assert len(messages) == 2
+        assert "chat-with-browser-operator" in messages[1]["content"]
+
+        # 模拟 LLM 下一轮看到错误提示后改用工具
+        # tool_calls 非空时拦截层应返回 NO_INTERCEPTION（正常工具调用）
+        messages.clear()
+        status, _ = _intercept_at_prefix_content(
+            content="",  # 调工具时 content 通常为空
+            tool_calls=[{"type": "function", "function": {"name": "chat-with-browser-operator"}}],
+            messages=messages,
+            handler=handler,
+            memory_context=None,
+        )
+        assert status == NO_INTERCEPTION
+        assert len(messages) == 0  # 工具调用不拦截
+    finally:
+        SubagentRegistry.unregister("browser-operator")
