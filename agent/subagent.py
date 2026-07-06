@@ -842,15 +842,17 @@ def call_subagent(
             # 异步路径不在这里 unregister（_run_subagent_async 的 finally 负责）
             pass
     else:
-        # 同步路径：现有逻辑
+        # 同步路径：用 agent_name 作 unique_name（避免 LLM 记随机 hex 后缀）
         if supplement_queue is None:
-            supplement_queue = SubagentSupplementQueue(unique_name="")  # unique_name 注册后回填
-        unique_name = SubagentRegistry.register(agent_name, supplement_queue)
-        supplement_queue.unique_name = unique_name  # 回填唯一名，db 监测程序路由时用
-        # 同步路径也设 handler._subagent_unique_name（虽然同步子 Agent 不注入 ask_main_agent，
-        # 但设上无副作用，且未来若误注入也能优雅报错而非 AttributeError）
+            supplement_queue = SubagentSupplementQueue(unique_name="")
+        try:
+            unique_name = SubagentRegistry.register(
+                agent_name, supplement_queue, force_unique_name=agent_name,
+            )
+        except ValueError as e:
+            return f"[错误] {e}。请先用 chat-with-{agent_name}(answer=...) 回复当前挂起的子 Agent，或等它结束。"
+        supplement_queue.unique_name = unique_name  # 回填唯一名（= agent_name）
         handler._subagent_unique_name = unique_name
-        # 阶段四：同步路径标记 _is_sync_subagent=True，让 _maybe_suspend_session 识别
         handler._is_sync_subagent = True
         try:
             result_text, return_value = _run_agent_loop(
