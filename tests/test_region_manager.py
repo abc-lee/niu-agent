@@ -19,6 +19,7 @@ from niu_api.internal.region_manager import (
     _parse_description,
     ANCHOR_RELATION,
     BELONGS_TO_RELATION,
+    INITIAL_WEIGHT,
     REGION_ENTITY_TYPE,
     REGION_SUFFIX,
 )
@@ -189,13 +190,13 @@ class TestCreateRegionNodes:
         assert len(anchor_rels) == 2
         for rel in anchor_rels:
             assert rel["src_id"] == "Niu"
-            assert rel["weight"] == 0.5
+            assert rel["weight"] == INITIAL_WEIGHT
 
         # Verify belongs_to relations (region -> member)
         belongs_rels = [r for r in relationships if r["keywords"] == BELONGS_TO_RELATION]
         assert len(belongs_rels) == 200  # 100 members per region * 2 regions
         for rel in belongs_rels:
-            assert rel["weight"] == 0.5
+            assert rel["weight"] == INITIAL_WEIGHT
 
     @pytest.mark.asyncio
     async def test_skips_brain_region_nodes(self):
