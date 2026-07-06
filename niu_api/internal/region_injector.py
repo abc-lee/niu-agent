@@ -199,7 +199,53 @@ class BrainContextInjector:
         regions = self._activation_mgr.get_region_map()
         if not regions:
             return ""
+
+        # Bug 1: 差集过滤 — 缓存有但图中没有的脑区 = 已删除但缓存未刷新
+        # 主动 remove_region 清理缓存，避免下次查询还差集
+        # 守卫：图查询失败（空集）或缓存与图无交集（数据不一致）时跳过过滤，
+        # 避免误删测试/异常场景下的有效脑区
+        graph_region_names = self._get_graph_region_names()
+        if graph_region_names:
+            cached_ids = {r.region_id for r in regions}
+            # 缓存与图有交集才过滤（说明图查到了真实脑区，缓存中有部分匹配）
+            if cached_ids & graph_region_names:
+                stale_ids = cached_ids - graph_region_names
+                for stale_id in stale_ids:
+                    try:
+                        self._activation_mgr.remove_region(stale_id)
+                        logger.info("format_region_map_only 清理幽灵脑区缓存: %s", stale_id)
+                    except Exception as e:
+                        logger.warning("清理幽灵脑区缓存失败 %s: %s", stale_id, e)
+                regions = [r for r in regions if r.region_id not in stale_ids]
+
+        if not regions:
+            return ""
         return self.format_region_map(regions)
+
+    def _get_graph_region_names(self) -> set[str]:
+        """Bug 1: 查图拿到所有真实存在的 brainregion 实体名
+
+        用于读路径差集过滤。用 self._adapter 直接查 entity_type="brainregion"。
+        Returns empty set on error.
+        """
+        try:
+            result = self._adapter.list_entities(
+                list_type="entities",
+                entity_type="brainregion",
+                limit=1000,
+            )
+            if not isinstance(result, dict) or result.get("status") != "ok":
+                return set()
+
+            names: set[str] = set()
+            for entity in result.get("data", []):
+                name = entity.get("id", entity.get("entity_name", ""))
+                if name:
+                    names.add(name)
+            return names
+        except Exception as e:
+            logger.warning("查图拿脑区名失败 (injector): %s", e)
+            return set()
 
     def get_active_regions(self) -> list[BrainRegionState]:
         """Get regions with activation > threshold."""

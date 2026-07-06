@@ -312,4 +312,47 @@ class TestReinforceOnToolUse:
 
         result = reinforce_on_tool_use("kg-server/query")
 
-        assert result is None
+
+# ============== Bug 1: brain_region_status 差集过滤已删脑区 ==============
+
+
+class TestHandleBrainRegionStatusFiltersStaleCache:
+    """Bug 1: brain_region_status 应过滤缓存中已删脑区并主动清理缓存
+
+    场景：activation_mgr 缓存有 A脑区 + B脑区，但图中 B 已被删（get_all_regions
+    只返回 A）。handle_brain_region_status 应：
+    1) 返回结果不含 B脑区
+    2) 主动调 mgr.remove_region("B脑区") 清理缓存，避免下次查询还差集
+    """
+
+    def test_brain_region_status_filters_stale_cache(self):
+        """缓存有 B 但图没有 B 时，返回结果不含 B 且主动 remove_region(B)"""
+        from unittest.mock import patch
+
+        mgr = _make_activation_mgr()
+        # 添加一个"幽灵脑区"（缓存有，图已删）
+        from niu_api.internal.region_activation import BrainRegionState
+        mgr._regions["Ghost脑区"] = BrainRegionState(
+            region_id="Ghost脑区",
+            community_id="community_ghost",
+            label="Ghost",
+            activation=1.0,
+            last_activated_at=0,
+            activation_count=1,
+            manually_dimmed=False,
+        )
+        set_activation_mgr(mgr)
+
+        # mock _get_graph_region_names 返回的图只含 Python脑区（Ghost 已删）
+        with patch(
+            "agent.brain_tools._get_graph_region_names",
+            return_value={"Python脑区"},
+        ):
+            result = handle_brain_region_status(include_dark=True)
+
+        # 断言1：返回结果不含 Ghost
+        assert "Ghost" not in result
+        # 断言2：缓存中 Ghost 已被主动清理
+        assert "Ghost脑区" not in mgr._regions, (
+            "Ghost脑区应被 mgr.remove_region 主动清理，但仍残留在缓存中"
+        )
