@@ -713,6 +713,29 @@ class RegionManager:
 
         return regions
 
+    def _refresh_activation_cache_after_delete(self, region_name: str) -> None:
+        """Bug 1: 删除脑区后同步刷新 RegionActivationManager 缓存
+
+        删除路径（cleanup_stale_regions / dissolve_shrunk_regions）只删图节点，
+        不刷新 activation_mgr._regions 内存字典（24h 才全量刷新）。
+        导致 LLM 立即查 brain_region_status 仍看到已删脑区，误以为没删成功，
+        再删返回 not_found treated as ok，仍以为成功——死循环。
+
+        通过懒 import agent.brain_tools.get_activation_mgr 拿到全局 mgr，
+        调用 remove_region(region_name) 同步清理缓存。None 时跳过（守卫）。
+        """
+        try:
+            from agent.brain_tools import get_activation_mgr
+            mgr = get_activation_mgr()
+            if mgr is None:
+                return
+            mgr.remove_region(region_name)
+        except Exception as e:
+            logger.warning(
+                "刷新 activation_mgr 缓存失败 (region=%s): %s",
+                region_name, e,
+            )
+
     def get_region_members(self, region_name: str) -> list[str]:
         """Get members by reading 包含 edges from NetworkX graph.
 
@@ -839,6 +862,9 @@ class RegionManager:
                                 "删除空成员脑区: %s (无成员，Jaccard=0)",
                                 region.name,
                             )
+                            # Bug 1: 同步刷新 activation_mgr 缓存，避免 LLM 立即查
+                            # brain_region_status 仍看到已删脑区（死循环）
+                            self._refresh_activation_cache_after_delete(region.name)
                         else:
                             logger.warning(
                                 "删除空成员脑区失败: %s — %s",
@@ -1092,6 +1118,9 @@ class RegionManager:
                         region.name, current_size, shrink_count,
                         target_region.name if target_region else "无",
                     )
+                    # Bug 1: 同步刷新 activation_mgr 缓存，避免 LLM 立即查
+                    # brain_region_status 仍看到已删脑区（死循环）
+                    self._refresh_activation_cache_after_delete(region.name)
 
                     # Now inject new belongs_to relations for target region
                     if target_region and reassign_rels:

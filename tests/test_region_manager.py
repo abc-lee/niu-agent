@@ -1771,3 +1771,137 @@ class TestDissolveShrunkRegionsBatchRead:
             f"reassign relationships 应有 5 条（批量读真实成员），"
             f"实际 {len(relationships)} 条——可能 dissolve 仍用单数读返回空"
         )
+
+
+# ============== Bug 1: 删除脑区后刷新 activation_mgr 缓存 ==============
+
+
+class TestCleanupStaleRegionsRefreshesActivationCache:
+    """Bug 1: cleanup_stale_regions 删除脑区后应同步刷新 activation_mgr 缓存
+
+    场景：脑区无成员（empty members）+ Jaccard=0 → 触发 stale 删除。
+    删除成功后应调用 activation_mgr.remove_region(region.name) 同步清缓存，
+    避免 LLM 立即查 brain_region_status 仍看到已删脑区（死循环）。
+    """
+
+    @pytest.mark.asyncio
+    async def test_cleanup_stale_regions_calls_remove_region_after_delete(self):
+        """删除空成员脑区成功后，应调 activation_mgr.remove_region(region_name)"""
+        from unittest.mock import patch, MagicMock
+
+        adapter, ingester = _make_mock_adapter_and_ingester()
+        manager = RegionManager(adapter, ingester)
+
+        # 图里有一个空成员脑区
+        adapter.list_entities.return_value = {
+            "status": "ok",
+            "data": [
+                {
+                    "id": "OldRegion脑区",
+                    "entity_type": "BrainRegion",
+                    "description": (
+                        "summary | brain_meta_region_id:community_99 | "
+                        "brain_meta_size:0 | brain_meta_representative:Old | "
+                        "brain_meta_updated_at:1745366400"
+                    ),
+                },
+            ],
+        }
+        # delete_entity 返回 ok
+        adapter.delete_entity.return_value = {"status": "ok"}
+
+        current_partition = _make_partition_result([])  # 无社区，Jaccard=0
+
+        # mock activation_mgr
+        mock_activation_mgr = MagicMock()
+
+        with patch(
+            "niu_api.internal.lightrag_manager.get_all_region_members",
+            lambda: {"OldRegion脑区": []},  # 空成员 → 触发删除
+        ), patch(
+            "agent.brain_tools.get_activation_mgr",
+            return_value=mock_activation_mgr,
+        ):
+            removed, drifted, drifted_cids = manager.cleanup_stale_regions(
+                current_partition, dry_run=False
+            )
+
+        # 断言：脑区被删除
+        assert removed == ["OldRegion脑区"]
+        # 关键断言：activation_mgr.remove_region 被调用，参数是 region.name
+        mock_activation_mgr.remove_region.assert_called_once_with("OldRegion脑区")
+
+
+class TestDissolveShrunkRegionsRefreshesActivationCache:
+    """Bug 1: dissolve_shrunk_regions 删除脑区后应同步刷新 activation_mgr 缓存
+
+    场景：脑区 shrink_count 累积到阈值 → 触发 dissolve 删除。
+    删除成功后应调用 activation_mgr.remove_region(region.name) 同步清缓存。
+    """
+
+    @pytest.mark.asyncio
+    async def test_dissolve_shrunk_regions_calls_remove_region_after_delete(self):
+        """解散萎缩脑区成功后，应调 activation_mgr.remove_region(region_name)"""
+        from unittest.mock import patch, MagicMock
+
+        adapter, ingester = _make_mock_adapter_and_ingester()
+        manager = RegionManager(adapter, ingester)
+
+        # 图里有一个 shrink_count 已达阈值的脑区
+        adapter.list_entities.return_value = {
+            "status": "ok",
+            "data": [
+                {
+                    "id": "Python脑区",
+                    "entity_type": "BrainRegion",
+                    "description": (
+                        "Python 摘要 | brain_meta_region_id:community_0 | "
+                        "brain_meta_size:5 | brain_meta_representative:Python | "
+                        "brain_meta_updated_at:1745366400"
+                        "<SEP>brain_meta_shrink_count:2"
+                    ),
+                },
+            ],
+        }
+        # delete_entity 返回 ok
+        adapter.delete_entity.return_value = {"status": "ok"}
+
+        manager.get_all_regions = lambda: [
+            BrainRegionInfo(
+                name="Python脑区",
+                label="Python",
+                community_id="0",
+                description="Python 摘要",
+                size=5,
+                representative="Python",
+                members=[],
+                updated_at=1745366400,
+            )
+        ]
+
+        # mock activation_mgr
+        mock_activation_mgr = MagicMock()
+
+        with patch(
+            "niu_api.internal.lightrag_manager.get_region_members",
+            return_value=[],
+        ), patch(
+            "niu_api.internal.lightrag_manager.get_all_region_members",
+            return_value={"Python脑区": ["Python", "Django", "NumPy", "Pandas", "Flask"]},
+        ), patch(
+            "niu_api.internal.region_manager.is_default_region",
+            return_value=False,
+        ), patch.object(
+            manager, "_find_most_similar_neighbor", return_value=None,
+        ), patch(
+            "agent.brain_tools.get_activation_mgr",
+            return_value=mock_activation_mgr,
+        ):
+            dissolved = manager.dissolve_shrunk_regions(
+                shrink_threshold=100, shrink_rounds=3
+            )
+
+        # 断言：脑区被解散
+        assert "Python脑区" in dissolved
+        # 关键断言：activation_mgr.remove_region 被调用，参数是 region.name
+        mock_activation_mgr.remove_region.assert_called_once_with("Python脑区")
