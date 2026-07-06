@@ -384,9 +384,9 @@ class RegionSync:
             total_regions = len(all_regions)
             covered_regions = sum(1 for r in all_regions if r.name in region_members_map)
             if total_regions > 0 and covered_regions / total_regions < 0.5:
+                pct = covered_regions / total_regions * 100
                 logger.warning(
-                    "[RegionSync] get_all_region_members 覆盖率 %.0f%% (%d/%d) < 50%%，跳过激活管理器刷新避免部分失败污染",
-                    covered_regions / total_regions * 100, covered_regions, total_regions,
+                    f"[RegionSync] get_all_region_members 覆盖率 {pct:.0f}% ({covered_regions}/{total_regions}) < 50%，跳过激活管理器刷新避免部分失败污染"
                 )
                 return
 
@@ -675,8 +675,7 @@ class RegionSync:
                     if 0 < elapsed < min_interval:
                         wait_seconds = min_interval - elapsed
                         logger.info(
-                            "[RegionSync] 距上次同步 %.0f 秒，不足 %.0f 秒，等待 %.0f 秒后再首次同步",
-                            elapsed, min_interval, wait_seconds,
+                            f"[RegionSync] 距上次同步 {elapsed:.0f} 秒，不足 {min_interval:.0f} 秒，等待 {wait_seconds:.0f} 秒后再首次同步"
                         )
                         if self._stop_event.wait(timeout=wait_seconds):
                             return  # 收到 stop 信号，退出
