@@ -294,10 +294,10 @@ def test_sync_subagent_at_niu_returns_intercepted_sync(monkeypatch):
     from agent import subagent
     from unittest import mock
 
-    monkeypatch.setattr(subagent, "_ask_main_agent_impl_sync", mock.Mock(return_value="[test-ab12] 问题"))
+    monkeypatch.setattr(subagent, "_ask_main_agent_impl_sync", mock.Mock(return_value="[test] 问题"))
 
     fake_handler = mock.MagicMock()
-    fake_handler._subagent_unique_name = "test-ab12"
+    fake_handler._subagent_unique_name = "test"
     fake_handler._is_sync_subagent = True  # 同步子 Agent
     messages = [{"role": "user", "content": "开始"}]
 
@@ -311,7 +311,7 @@ def test_sync_subagent_at_niu_returns_intercepted_sync(monkeypatch):
 
     status, payload = result
     assert status == agent_loop.INTERCEPTED_SYNC
-    assert payload == "[test-ab12] 问题"
+    assert payload == "[test] 问题"
 
 
 def test_main_agent_not_intercepted_after_change(monkeypatch):
