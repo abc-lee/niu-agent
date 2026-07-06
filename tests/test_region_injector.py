@@ -323,3 +323,58 @@ class TestInjectBrainContextReturnsText:
 
         # Should still have region map (all off/dimming)
         assert "## 脑区状态" in result
+
+
+# ============== Bug 1: format_region_map_only 差集过滤已删脑区 ==============
+
+
+class TestFormatRegionMapOnlyFiltersStaleCache:
+    """Bug 1: format_region_map_only 应过滤缓存中已删脑区并主动清理缓存
+
+    场景：activation_mgr 缓存有 A脑区 + B脑区，但图中 B 已被删（list_entities
+    只返回 A）。format_region_map_only 应：
+    1) 返回结果不含 B脑区
+    2) 主动调 activation_mgr.remove_region("B脑区") 清理缓存
+    """
+
+    def test_format_region_map_only_filters_stale_cache(self):
+        """缓存有 Ghost 但图没有 Ghost 时，返回结果不含 Ghost 且主动 remove_region"""
+        activation_mgr = _make_activation_manager()
+        # 添加一个"幽灵脑区"（缓存有，图已删）
+        activation_mgr._regions["Ghost脑区"] = BrainRegionState(
+            region_id="Ghost脑区",
+            community_id="community_ghost",
+            label="Ghost",
+            activation=1.0,
+            last_activated_at=0,
+            activation_count=1,
+            manually_dimmed=False,
+        )
+
+        # mock adapter.list_entities 返回的图只含 4 个预置脑区（Ghost 已删）
+        adapter = MagicMock()
+        adapter.list_entities.return_value = {
+            "status": "ok",
+            "data": [
+                {"id": "编程开发脑区", "entity_type": "BrainRegion", "description": ""},
+                {"id": "项目管理脑区", "entity_type": "BrainRegion", "description": ""},
+                {"id": "日常偏好脑区", "entity_type": "BrainRegion", "description": ""},
+                {"id": "财务知识脑区", "entity_type": "BrainRegion", "description": ""},
+                # 注意：没有 Ghost脑区（已被删除）
+            ],
+        }
+        region_mgr = MagicMock(spec=RegionManager)
+        injector = BrainContextInjector(
+            adapter=adapter,
+            activation_mgr=activation_mgr,
+            region_mgr=region_mgr,
+        )
+
+        result = injector.format_region_map_only()
+
+        # 断言1：返回结果不含 Ghost
+        assert "Ghost" not in result
+        # 断言2：缓存中 Ghost 已被主动清理
+        assert "Ghost脑区" not in activation_mgr._regions, (
+            "Ghost脑区应被 activation_mgr.remove_region 主动清理，但仍残留在缓存中"
+        )

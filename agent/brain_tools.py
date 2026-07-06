@@ -305,6 +305,40 @@ def handle_brain_region_dim(regions: list[str], reason: str = "") -> str:
     return "\n".join(lines)
 
 
+def _get_graph_region_names() -> set[str]:
+    """Bug 1: 查图拿到所有真实存在的 brainregion 实体名
+
+    用于读路径差集过滤：缓存中有但图中没有的脑区 = 已删除但缓存未刷新。
+    用 LightRAGAdapter 直接查 entity_type="brainregion"，避免顶层 import
+    RegionManager 导致循环依赖。
+
+    Returns:
+        Set of region entity names (e.g. {"编程开发脑区", "项目管理脑区"}).
+        Returns empty set on error or if adapter unavailable.
+    """
+    try:
+        from niu_api.internal.lightrag_adapter import LightRAGAdapter
+
+        adapter = LightRAGAdapter()
+        result = adapter.list_entities(
+            list_type="entities",
+            entity_type="brainregion",
+            limit=1000,
+        )
+        if not isinstance(result, dict) or result.get("status") != "ok":
+            return set()
+
+        names: set[str] = set()
+        for entity in result.get("data", []):
+            name = entity.get("id", entity.get("entity_name", ""))
+            if name:
+                names.add(name)
+        return names
+    except Exception as e:
+        logger.warning("查图拿脑区名失败: %s", e)
+        return set()
+
+
 def handle_brain_region_status(include_dark: bool = False) -> str:
     """Handle brain_region_status tool call.
 
@@ -319,6 +353,28 @@ def handle_brain_region_status(include_dark: bool = False) -> str:
         return "[Brain] Activation manager not initialized. Brain regions are not available."
 
     all_states = mgr.get_region_map()
+
+    if not all_states:
+        return "[Brain] No brain regions initialized."
+
+    # Bug 1: 差集过滤 — 缓存有但图中没有的脑区 = 已删除但缓存未刷新
+    # 主动 remove_region 清理缓存，避免下次查询还差集
+    # 守卫：图查询失败（空集）或缓存与图无交集（数据不一致）时跳过过滤，
+    # 避免误删测试/异常场景下的有效脑区
+    graph_region_names = _get_graph_region_names()
+    if graph_region_names:
+        cached_ids = {s.region_id for s in all_states}
+        # 缓存与图有交集才过滤（说明图查到了真实脑区，缓存中有部分匹配）
+        if cached_ids & graph_region_names:
+            stale_ids = cached_ids - graph_region_names
+            for stale_id in stale_ids:
+                try:
+                    mgr.remove_region(stale_id)
+                    logger.info("brain_region_status 清理幽灵脑区缓存: %s", stale_id)
+                except Exception as e:
+                    logger.warning("清理幽灵脑区缓存失败 %s: %s", stale_id, e)
+            # 过滤掉已清理的脑区
+            all_states = [s for s in all_states if s.region_id not in stale_ids]
 
     if not all_states:
         return "[Brain] No brain regions initialized."
