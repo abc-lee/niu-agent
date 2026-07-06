@@ -437,7 +437,7 @@ class TestCleanupStaleRegions:
     """test_cleanup_stale_regions — 清理不再存在的脑区主节点"""
 
     @pytest.mark.asyncio
-    async def test_removes_stale_region_nodes(self):
+    async def test_skips_stale_region_with_members(self):
         """v2: 脑区有成员但跟社区无交集（Task 1 排除导致）时跳过，不删除
 
         过时脑区清理职责转移到 dissolve_shrunk_regions（基于成员数持续 < 100）。
