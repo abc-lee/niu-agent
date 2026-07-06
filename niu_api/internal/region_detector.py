@@ -174,8 +174,7 @@ class CommunityDetector:
                 if not _is_assigned(e.get("source", "")) and not _is_assigned(e.get("target", ""))
             ]
             logger.info(
-                "排除 %d 个已归属实体（直连脑区的一级成员），剩余 %d 个游离实体参与算法",
-                before_count - len(nodes), len(nodes),
+                f"排除 {before_count - len(nodes)} 个已归属实体（直连脑区的一级成员），剩余 {len(nodes)} 个游离实体参与算法"
             )
 
         # 2. 检查图谱大小
