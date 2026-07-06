@@ -80,3 +80,65 @@ def test_list_running_filters_by_is_sync():
     finally:
         SubagentRegistry.unregister(n1)
         SubagentRegistry.unregister(n2)
+
+
+def test_register_with_force_unique_name():
+    """force_unique_name 透传：register 用指定名字而非随机 hex"""
+    from agent.subagent_registry import SubagentRegistry
+    from agent.subagent_supplement import SubagentSupplementQueue
+
+    sq = SubagentSupplementQueue(unique_name="")
+    name = SubagentRegistry.register(
+        agent_type="browser-operator",
+        supplement_queue=sq,
+        force_unique_name="browser-operator",
+    )
+    assert name == "browser-operator"
+    instance = SubagentRegistry.get(name)
+    assert instance is not None
+    assert instance.agent_type == "browser-operator"
+    SubagentRegistry.unregister(name)
+
+
+def test_register_force_unique_name_conflict():
+    """force_unique_name 同名冲突 → 抛 ValueError（同步路径同类型只能跑一个）"""
+    from agent.subagent_registry import SubagentRegistry
+    from agent.subagent_supplement import SubagentSupplementQueue
+
+    sq1 = SubagentSupplementQueue(unique_name="")
+    name1 = SubagentRegistry.register(
+        agent_type="browser-operator",
+        supplement_queue=sq1,
+        force_unique_name="browser-operator",
+    )
+    assert name1 == "browser-operator"
+
+    sq2 = SubagentSupplementQueue(unique_name="")
+    try:
+        SubagentRegistry.register(
+            agent_type="browser-operator",
+            supplement_queue=sq2,
+            force_unique_name="browser-operator",
+        )
+        assert False, "应抛 ValueError（同名冲突）"
+    except ValueError as e:
+        assert "browser-operator" in str(e)
+        assert "已在运行" in str(e) or "已存在" in str(e)
+    finally:
+        SubagentRegistry.unregister(name1)
+
+
+def test_register_without_force_unique_name_uses_random_hex():
+    """不传 force_unique_name → 仍用随机 hex 后缀（异步路径保持原逻辑）"""
+    from agent.subagent_registry import SubagentRegistry
+    from agent.subagent_supplement import SubagentSupplementQueue
+
+    sq = SubagentSupplementQueue(unique_name="")
+    name = SubagentRegistry.register(
+        agent_type="file-processor",
+        supplement_queue=sq,
+        is_sync=False,
+    )
+    assert name.startswith("file-processor-")
+    assert len(name) == len("file-processor-") + 4  # 4 位 hex 后缀
+    SubagentRegistry.unregister(name)
