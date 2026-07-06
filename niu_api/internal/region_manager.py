@@ -815,25 +815,46 @@ class RegionManager:
                 )
                 drift_info[region.name] = (best_cid, best_members)
             else:
-                # Region is stale — no overlap at all
-                if not dry_run:
-                    delete_result = self._adapter.delete_entity(region.name)
-                    if isinstance(delete_result, dict) and delete_result.get("status") == "ok":
-                        removed.append(region.name)
-                        logger.info(
-                            "删除过时脑区: %s (Jaccard=0, 无成员重叠)",
-                            region.name,
-                        )
+                # best_jaccard == 0：脑区成员跟所有社区都无交集
+                # 三种情况：
+                # 1. region.name 不在 region_member_map 里 → get_all_region_members 读取失败漏掉
+                #    该脑区，跳过避免误删（保守）
+                # 2. region.name 在 map 里且 current_members 为空 → 脑区真的没成员了，判 stale 删除
+                # 3. region.name 在 map 里且 current_members 非空 → Task 1 排除已归属实体导致的
+                #    天然无交集（脑区成员是已归属，社区里是游离），不删除不漂移
+                #    过时脑区清理交给 dissolve_shrunk_regions（基于成员数持续 < 100）
+                if region.name not in region_member_map:
+                    # 读取失败漏掉该脑区，不判 stale 避免误删
+                    logger.warning(
+                        "脑区 %s 不在 get_all_region_members 返回结果中（读取失败？），跳过 stale 判定避免误删",
+                        region.name,
+                    )
+                elif not current_members:
+                    # 脑区在 map 里且成员确实为空，判 stale 删除
+                    if not dry_run:
+                        delete_result = self._adapter.delete_entity(region.name)
+                        if isinstance(delete_result, dict) and delete_result.get("status") == "ok":
+                            removed.append(region.name)
+                            logger.info(
+                                "删除空成员脑区: %s (无成员，Jaccard=0)",
+                                region.name,
+                            )
+                        else:
+                            logger.warning(
+                                "删除空成员脑区失败: %s — %s",
+                                region.name,
+                                delete_result.get("message", "unknown") if isinstance(delete_result, dict) else "error",
+                            )
                     else:
-                        logger.warning(
-                            "删除过时脑区失败: %s — %s",
+                        logger.info(
+                            "[dry_run] 将删除空成员脑区: %s (无成员，Jaccard=0)",
                             region.name,
-                            delete_result.get("message", "unknown") if isinstance(delete_result, dict) else "error",
                         )
                 else:
-                    logger.info(
-                        "[dry_run] 将删除过时脑区: %s (Jaccard=0)",
-                        region.name,
+                    # 脑区有成员但跟社区无交集（Task 1 排除导致），跳过
+                    logger.debug(
+                        "脑区 %s 有 %d 成员但跟当前社区无交集（Task 1 排除已归属实体），跳过 stale 判定",
+                        region.name, len(current_members),
                     )
 
         # Step 5: Generate drifted lists from drift_info (always, regardless of update outcome)
