@@ -438,11 +438,13 @@ class TestCleanupStaleRegions:
 
     @pytest.mark.asyncio
     async def test_removes_stale_region_nodes(self):
-        """删除不在当前分区中的脑区节点（Jaccard=0，无成员重叠）"""
+        """v2: 脑区有成员但跟社区无交集（Task 1 排除导致）时跳过，不删除
+
+        过时脑区清理职责转移到 dissolve_shrunk_regions（基于成员数持续 < 100）。
+        """
         adapter, ingester = _make_mock_adapter_and_ingester()
         manager = RegionManager(adapter, ingester)
 
-        # Mock get_all_regions 返回 2 个已有脑区
         adapter.list_entities.return_value = {
             "status": "ok",
             "data": [
@@ -459,7 +461,6 @@ class TestCleanupStaleRegions:
             ],
         }
 
-        # 当前分区只有 community_0，community_99 已不存在
         current_partition = _make_partition_result([
             RegionPartition(
                 region_id=0,
@@ -471,8 +472,6 @@ class TestCleanupStaleRegions:
             ),
         ])
 
-        # Mock get_all_region_members: Python脑区 shares members with community_0,
-        # OldRegion脑区 has no overlap (will be removed)
         with pytest.MonkeyPatch.context() as m:
             m.setattr(
                 "niu_api.internal.lightrag_manager.get_all_region_members",
@@ -483,10 +482,10 @@ class TestCleanupStaleRegions:
             )
             removed, drifted, drifted_cids = manager.cleanup_stale_regions(current_partition)
 
-        # 只有 OldRegion 应被删除
-        assert len(removed) == 1
-        assert "OldRegion脑区" in removed
-        adapter.delete_entity.assert_called_once_with("OldRegion脑区")
+        # v2: OldRegion 有成员但无交集（Task 1 排除导致），跳过不删
+        assert removed == []
+        assert drifted == []
+        adapter.delete_entity.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_no_stale_regions_returns_empty(self):
@@ -531,7 +530,7 @@ class TestCleanupStaleRegions:
 
     @pytest.mark.asyncio
     async def test_cleanup_all_when_no_current_partitions(self):
-        """当前分区为空时，所有脑区都被清理（Jaccard=0，无分区可匹配）"""
+        """v2: 脑区有成员时跳过（Task 1 排除导致），成员为空时才删"""
         adapter, ingester = _make_mock_adapter_and_ingester()
         manager = RegionManager(adapter, ingester)
 
@@ -544,9 +543,9 @@ class TestCleanupStaleRegions:
                     "description": "summary | brain_meta_region_id:community_0 | brain_meta_size:3 | brain_meta_representative:Python | brain_meta_updated_at:1745366400",
                 },
                 {
-                    "id": "React脑区",
+                    "id": "EmptyRegion脑区",
                     "entity_type": "BrainRegion",
-                    "description": "summary | brain_meta_region_id:community_1 | brain_meta_size:3 | brain_meta_representative:React | brain_meta_updated_at:1745366400",
+                    "description": "summary | brain_meta_region_id:community_1 | brain_meta_size:0 | brain_meta_representative: | brain_meta_updated_at:1745366400",
                 },
             ],
         }
@@ -560,19 +559,21 @@ class TestCleanupStaleRegions:
             timestamp="2026-04-24T12:00:00+00:00",
         )
 
-        # Mock: both regions have members but no communities to match
+        # Mock: Python脑区有成员（跳过），EmptyRegion脑区成员为空（删除）
         with pytest.MonkeyPatch.context() as m:
             m.setattr(
                 "niu_api.internal.lightrag_manager.get_all_region_members",
                 lambda: {
                     "Python脑区": ["Python", "Django"],
-                    "React脑区": ["React", "Vue"],
+                    "EmptyRegion脑区": [],
                 },
             )
             removed, drifted, drifted_cids = manager.cleanup_stale_regions(empty_partition)
 
-        assert len(removed) == 2
-        assert adapter.delete_entity.call_count == 2
+        # v2: 只有空成员脑区被删，有成员的跳过
+        assert len(removed) == 1
+        assert "EmptyRegion脑区" in removed
+        adapter.delete_entity.assert_called_once_with("EmptyRegion脑区")
 
     @pytest.mark.asyncio
     async def test_detects_membership_drift(self):
@@ -703,6 +704,52 @@ class TestCleanupStaleRegions:
         # Default region should not be removed or marked as drifted
         assert "聊天历史脑区" not in removed
         assert "聊天历史脑区" not in drifted
+
+    @pytest.mark.asyncio
+    async def test_cleanup_stale_regions_skips_delete_when_region_has_members_but_no_overlap(self):
+        """v2: 脑区有成员但跟 community 无交集（Task 1 排除导致）时，不应删除"""
+        from unittest import mock
+
+        # 构造：脑区"智家脑区"有 100 个已归属成员，但 community 里全是游离实体（无交集）
+        fake_region = mock.MagicMock()
+        fake_region.name = "智家脑区"
+        fake_region.label = "智家"
+
+        manager = RegionManager.__new__(RegionManager)  # 跳过 __init__
+        manager._adapter = mock.MagicMock()
+
+        with mock.patch(
+            "niu_api.internal.region_manager.RegionManager.get_all_regions",
+            return_value=[fake_region],
+        ), mock.patch(
+            "niu_api.internal.region_manager.is_default_region",
+            return_value=False,
+        ), mock.patch(
+            "niu_api.internal.lightrag_manager.get_all_region_members",
+            return_value={"智家脑区": [f"已归属实体{i}" for i in range(100)]},
+        ):
+            # partition 里只有游离实体（跟脑区成员无交集）
+            partition = RegionPartition(
+                region_id=0, region_name="region_0",
+                entity_names=["游离实体A", "游离实体B"],
+                entity_types={}, edge_count=1, modularity_score=0.5,
+                entity_name_to_type={},
+            )
+            detection_result = CommunityDetectionResult(
+                partitions=[partition], total_nodes=2, total_edges=1,
+                total_regions=1, modularity=0.5, timestamp="2026-07-06T00:00:00Z",
+            )
+
+            # dry_run=False 验证不会真的删除
+            removed, drifted, drifted_cids = manager.cleanup_stale_regions(
+                detection_result, dry_run=False,
+            )
+
+        # 断言：脑区没被删除（current_members 非空，best_jaccard==0 但不删）
+        assert removed == [], "脑区有成员时不应因 Jaccard=0 被删除"
+        assert drifted == [], "也不应判漂移"
+        # delete_entity 不应被调用
+        manager._adapter.delete_entity.assert_not_called()
 
 
 class TestDescriptionEncoding:
