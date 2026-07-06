@@ -270,3 +270,71 @@ def test_call_subagent_sync_second_call_same_agent_name_conflict(monkeypatch):
         assert "chat-with-browser-operator" in result or "已在运行" in result
     finally:
         SubagentRegistry.unregister("browser-operator")
+
+
+def test_call_subagent_gen_fallback_unique_name_to_agent_name(monkeypatch):
+    """LLM 调 chat-with-browser-operator 传 answer 不传 unique_name → fallback 到 agent_name"""
+    from agent import handler, subagent, runner as runner_mod
+    from agent.handler import NiuHandler
+
+    call_subagent_calls = []
+
+    def fake_call_subagent(**kwargs):
+        call_subagent_calls.append(kwargs.copy())
+        return "子 Agent 完成"
+
+    # mock handler 必需依赖
+    h = NiuHandler.__new__(NiuHandler)
+    h.mcp_client = None
+
+    # _call_subagent_gen 内部 from .subagent import call_subagent → patch subagent.call_subagent
+    monkeypatch.setattr(subagent, "call_subagent", fake_call_subagent)
+    monkeypatch.setattr(subagent, "get_subagent_config", lambda name: {
+        "prompt": "test", "temperature": 0.5, "mcpServers": [], "permissions": []
+    })
+    # _call_subagent_gen 内部 from .runner import get_runner → patch runner.get_runner
+    monkeypatch.setattr(runner_mod, "get_runner", lambda: type("R", (), {"llm_config": {"model": "t", "api_key": "t", "base_url": "h"}})())
+
+    # LLM 调 chat-with-browser-operator 传 answer 不传 unique_name
+    gen = h._call_subagent_gen("browser-operator", {
+        "task": "",
+        "answer": "@browser-operator 我选择 2",
+        # 不传 unique_name
+    })
+    list(gen)  # 消费生成器
+
+    assert len(call_subagent_calls) == 1
+    call_kwargs = call_subagent_calls[0]
+    # answer_unique_name 应 fallback 到 agent_name
+    assert call_kwargs.get("answer_unique_name") == "browser-operator", \
+        f"answer_unique_name 应 fallback 到 browser-operator，实际：{call_kwargs.get('answer_unique_name')}"
+    assert call_kwargs.get("answer") == "@browser-operator 我选择 2"
+
+
+def test_call_subagent_gen_explicit_unique_name_overrides_fallback(monkeypatch):
+    """LLM 显式传 unique_name 时不用 fallback"""
+    from agent import handler, subagent, runner as runner_mod
+    from agent.handler import NiuHandler
+
+    call_subagent_calls = []
+    def fake_call_subagent(**kwargs):
+        call_subagent_calls.append(kwargs.copy())
+        return "子 Agent 完成"
+
+    h = NiuHandler.__new__(NiuHandler)
+    h.mcp_client = None
+
+    monkeypatch.setattr(subagent, "call_subagent", fake_call_subagent)
+    monkeypatch.setattr(subagent, "get_subagent_config", lambda name: {
+        "prompt": "test", "temperature": 0.5, "mcpServers": [], "permissions": []
+    })
+    monkeypatch.setattr(runner_mod, "get_runner", lambda: type("R", (), {"llm_config": {"model": "t", "api_key": "t", "base_url": "h"}})())
+
+    gen = h._call_subagent_gen("browser-operator", {
+        "task": "",
+        "answer": "@browser-operator 回答",
+        "unique_name": "browser-operator",  # 显式传
+    })
+    list(gen)
+
+    assert call_subagent_calls[0].get("answer_unique_name") == "browser-operator"

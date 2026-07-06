@@ -1004,7 +1004,9 @@ class NiuHandler(BaseHandler):
                 mcp_client=self.mcp_client,
                 history=_history,
                 answer=answer,
-                answer_unique_name=unique_name_arg if answer else None,
+                # 阶段四修复 B2：LLM 不传 unique_name 时 fallback 到 agent_name
+                # 同步路径 unique_name=agent_name（方案 B），主 Agent 不需要记随机后缀
+                answer_unique_name=(unique_name_arg or agent_name) if answer else None,
             )
 
             # journal-agent 特殊处理：更新游标（仅当有增量消息时才更新）

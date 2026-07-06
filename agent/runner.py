@@ -396,7 +396,7 @@ def get_tools_schema(include_main_only: bool = True) -> list:
             },
             "unique_name": {
                 "type": "string",
-                "description": "子 Agent 唯一名（回复时必填）",
+                "description": "子 Agent 唯一名。同步调用（chat-with-xxx）时可省略，默认用 agent 名（如 browser-operator）；异步调用时为 agent 名+4位 hex 后缀（如 file-processor-a1b2，来自派单确认）",
             },
         }
         if allow_async:
@@ -440,7 +440,7 @@ def get_tools_schema(include_main_only: bool = True) -> list:
                     "properties": {
                         "subagent_name": {
                             "type": "string",
-                            "description": "子 Agent 唯一名（如 file-processor-a1b2，来自派单确认或动态注入区）",
+                            "description": "子 Agent 唯一名（同步：browser-operator；异步：file-processor-a1b2，来自派单确认或动态注入区）",
                         },
                     },
                     "required": ["subagent_name"],

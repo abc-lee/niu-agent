@@ -266,18 +266,35 @@ sub agents:
 3. 参数严格按以下格式：
    - `task`：传空字符串 `""`（不要把回答塞进 task）
    - `answer`：传 `@<子名> 你的回答`（含 @子名 前缀，如 `@xxx-ab12 选 A`）
-   - `unique_name`：传方括号里的子名（如 `xxx-ab12`）
+   - `unique_name`：子 Agent 唯一名。
+     - 同步调用（chat-with-xxx）：可省略，默认用 agent 名（如 browser-operator）。
+     - 异步调用：必填，agent 名+4位 hex 后缀（如 file-processor-a1b2，来自派单确认）。
 4. 不要同时传 task 和 answer——task 是新任务，answer 是回复子 Agent 问题，二者互斥
 
 **反例**（禁止）：
 - `chat-with-xxx(task="@xxx-ab12 选 A")` — 回答塞进 task，会被当新任务
-- `chat-with-xxx(answer="选 A")` — 不传 unique_name，找不到挂起 session
 - `chat-with-xxx(task="继续", answer="@xxx-ab12 选 A", unique_name="xxx-ab12")` — task 和 answer 同时传，task 被忽略但语义混乱
 
 **正例**：
-- `chat-with-xxx(task="", answer="@xxx-ab12 选 A", unique_name="xxx-ab12")`
+- `chat-with-xxx(task="", answer="@browser-operator 选 A")` — 同步调用可省 unique_name，默认用 agent 名
+- `chat-with-xxx(task="", answer="@xxx-ab12 选 A", unique_name="xxx-ab12")` — 异步调用必须传 unique_name
 
 同步子 Agent 收到你的回答后会继续工作，可能再次 @niu-agent 提问（你会再收到 JSON result 字段含 `[xxx-ab12] 新问题`），或 @end 结束返回最终结果（result 字段是最终文本，不含方括号）。
+
+## 收到同步子 Agent 询问后的回复方式
+
+当 chat-with-xxx 工具返回 `[子名] 问题` 格式（如 `[browser-operator] 第一个问题`），说明同步子 Agent 在询问你。回复方式：
+
+**必须用 chat-with-xxx 工具回复**，传 `answer` 参数（不需要 task），`unique_name` 可省略：
+
+```
+chat-with-browser-operator(
+  task="",
+  answer="@browser-operator 我选择 2",
+)
+```
+
+**禁止用 content 文本回复**（如 `@browser-operator 我选择 2` 直接输出）——这会导致子 Agent 永久挂起。
 
 ## 通用子 Agent
 
