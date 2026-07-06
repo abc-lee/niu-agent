@@ -973,11 +973,11 @@ class NiuRunner:
         """
         import concurrent.futures as _cf
         from niu_api.compat import _is_subagent_overflow, _extract_overflow_info, _write_cursor_with_lock
-        from agent.subagent import call_subagent
+        from agent.subagent import call_subagent_with_auto_answer
 
         # --- call sub-agent ---
         with _cf.ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(call_subagent, step_name, prompt, llm_config, None)
+            future = executor.submit(call_subagent_with_auto_answer, step_name, prompt, llm_config=llm_config, mcp_client=None)
             try:
                 result = future.result()
             except Exception as e:
