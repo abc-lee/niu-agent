@@ -332,3 +332,202 @@ def test_main_agent_not_intercepted_after_change(monkeypatch):
 
     assert result == (agent_loop.NO_INTERCEPTION, None)
     assert len(messages) == 1  # messages 不被追加
+
+
+def test_intercept_main_agent_content_reply_to_sync_suspended_session():
+    """主 Agent content @<同步挂起子名> 但无 tool_calls → 返回 FORMAT_ERROR（复用现有常量）"""
+    from agent.generic.agent_loop import _intercept_at_prefix_content, FORMAT_ERROR
+    from agent.subagent_registry import SubagentRegistry
+    from agent.subagent_supplement import SubagentSupplementQueue
+
+    sq = SubagentSupplementQueue(unique_name="")
+    SubagentRegistry.register(
+        agent_type="browser-operator",
+        supplement_queue=sq,
+        force_unique_name="browser-operator",
+    )
+    instance = SubagentRegistry.get("browser-operator")
+    instance.state = "waiting_for_answer"
+
+    class FakeHandler:
+        _is_sync_subagent = False
+        _subagent_unique_name = ""
+    handler = FakeHandler()
+
+    messages = []
+    try:
+        status, payload = _intercept_at_prefix_content(
+            content="@browser-operator 我选择 2",
+            tool_calls=[],
+            messages=messages,
+            handler=handler,
+            memory_context=None,
+        )
+        assert status == FORMAT_ERROR
+        assert payload is None
+        assert len(messages) == 2
+        assert messages[0]["role"] == "assistant"
+        assert messages[0]["content"] == "@browser-operator 我选择 2"
+        assert messages[1]["role"] == "user"
+        assert "chat-with-browser-operator" in messages[1]["content"]
+        assert "answer" in messages[1]["content"]
+    finally:
+        SubagentRegistry.unregister("browser-operator")
+
+
+def test_intercept_main_agent_no_suspended_session_no_interception():
+    """主 Agent content @子名 但子名不在注册表 → NO_INTERCEPTION（不拦截）"""
+    from agent.generic.agent_loop import _intercept_at_prefix_content, NO_INTERCEPTION
+
+    class FakeHandler:
+        _is_sync_subagent = False
+        _subagent_unique_name = ""
+    handler = FakeHandler()
+
+    messages = []
+    status, payload = _intercept_at_prefix_content(
+        content="@browser-operator 我选择 2",
+        tool_calls=[],
+        messages=messages,
+        handler=handler,
+        memory_context=None,
+    )
+    assert status == NO_INTERCEPTION
+    assert payload is None
+    assert len(messages) == 0
+
+
+def test_intercept_main_agent_with_tool_calls_no_interception():
+    """主 Agent 调 chat-with-browser-operator 工具 → NO_INTERCEPTION（不拦截，正常工具调用）"""
+    from agent.generic.agent_loop import _intercept_at_prefix_content, NO_INTERCEPTION
+    from agent.subagent_registry import SubagentRegistry
+    from agent.subagent_supplement import SubagentSupplementQueue
+
+    sq = SubagentSupplementQueue(unique_name="")
+    SubagentRegistry.register(
+        agent_type="browser-operator",
+        supplement_queue=sq,
+        force_unique_name="browser-operator",
+    )
+    SubagentRegistry.get("browser-operator").state = "waiting_for_answer"
+
+    class FakeHandler:
+        _is_sync_subagent = False
+        _subagent_unique_name = ""
+    handler = FakeHandler()
+
+    try:
+        messages = []
+        status, payload = _intercept_at_prefix_content(
+            content="@browser-operator 我选择 2",
+            tool_calls=[{"type": "function", "function": {"name": "chat-with-browser-operator"}}],
+            messages=messages,
+            handler=handler,
+            memory_context=None,
+        )
+        assert status == NO_INTERCEPTION
+        assert len(messages) == 0
+    finally:
+        SubagentRegistry.unregister("browser-operator")
+
+
+def test_intercept_main_agent_async_running_session_no_interception():
+    """主 Agent content @<异步 running 子名> → NO_INTERCEPTION（异步路径不拦截，保持 db_monitor 原逻辑）"""
+    from agent.generic.agent_loop import _intercept_at_prefix_content, NO_INTERCEPTION
+    from agent.subagent_registry import SubagentRegistry
+    from agent.subagent_supplement import SubagentSupplementQueue
+
+    sq = SubagentSupplementQueue(unique_name="")
+    name = SubagentRegistry.register(
+        agent_type="browser-operator",
+        supplement_queue=sq,
+        is_sync=False,
+    )
+
+    class FakeHandler:
+        _is_sync_subagent = False
+        _subagent_unique_name = ""
+    handler = FakeHandler()
+
+    try:
+        messages = []
+        status, payload = _intercept_at_prefix_content(
+            content=f"@{name} 补充上下文",
+            tool_calls=[],
+            messages=messages,
+            handler=handler,
+            memory_context=None,
+        )
+        assert status == NO_INTERCEPTION
+        assert len(messages) == 0
+    finally:
+        SubagentRegistry.unregister(name)
+
+
+def test_intercept_main_agent_content_with_hex_suffix_old_format():
+    """主 Agent content @browser-operator-708b（hex 后缀旧格式）→ 仍能拦截（兼容 LLM 复读历史日志）"""
+    from agent.generic.agent_loop import _intercept_at_prefix_content, FORMAT_ERROR
+    from agent.subagent_registry import SubagentRegistry
+    from agent.subagent_supplement import SubagentSupplementQueue
+
+    sq = SubagentSupplementQueue(unique_name="")
+    SubagentRegistry.register(
+        agent_type="browser-operator",
+        supplement_queue=sq,
+        force_unique_name="browser-operator",
+    )
+    SubagentRegistry.get("browser-operator").state = "waiting_for_answer"
+
+    class FakeHandler:
+        _is_sync_subagent = False
+        _subagent_unique_name = ""
+    handler = FakeHandler()
+
+    messages = []
+    try:
+        status, _ = _intercept_at_prefix_content(
+            content="@browser-operator-708b 我选择 2",
+            tool_calls=[],
+            messages=messages,
+            handler=handler,
+            memory_context=None,
+        )
+        assert status == FORMAT_ERROR
+        assert len(messages) == 2
+        assert "chat-with-browser-operator" in messages[1]["content"]
+    finally:
+        SubagentRegistry.unregister("browser-operator")
+
+
+def test_intercept_main_agent_content_with_chinese_punctuation():
+    """主 Agent content @browser-operator。我选择 2（无空格中文句号）→ 仍能提取子名并拦截"""
+    from agent.generic.agent_loop import _intercept_at_prefix_content, FORMAT_ERROR
+    from agent.subagent_registry import SubagentRegistry
+    from agent.subagent_supplement import SubagentSupplementQueue
+
+    sq = SubagentSupplementQueue(unique_name="")
+    SubagentRegistry.register(
+        agent_type="browser-operator",
+        supplement_queue=sq,
+        force_unique_name="browser-operator",
+    )
+    SubagentRegistry.get("browser-operator").state = "waiting_for_answer"
+
+    class FakeHandler:
+        _is_sync_subagent = False
+        _subagent_unique_name = ""
+    handler = FakeHandler()
+
+    messages = []
+    try:
+        status, _ = _intercept_at_prefix_content(
+            content="@browser-operator。我选择 2",
+            tool_calls=[],
+            messages=messages,
+            handler=handler,
+            memory_context=None,
+        )
+        assert status == FORMAT_ERROR
+        assert len(messages) == 2
+    finally:
+        SubagentRegistry.unregister("browser-operator")

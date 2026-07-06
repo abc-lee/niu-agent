@@ -79,13 +79,21 @@ def _intercept_at_prefix_content(
         (status, payload) tuple
     """
     is_sync_subagent = getattr(handler, "_is_sync_subagent", False)
-    # 同步子 Agent 或异步子 Agent 进入拦截层；主 Agent 不拦截
-    if (memory_context is None and not is_sync_subagent) or tool_calls:
+    # tool_calls 时不拦截（正常工具调用）
+    if tool_calls:
         return (NO_INTERCEPTION, None)
 
     stripped = (content or "").lstrip()
 
-    # @niu-agent 拦截（用 startswith(_AT_NIU_PREFIX) 兼容 @niu-agent无空格）
+    # 主 Agent 分支：检测 content 误回复同步挂起子 Agent
+    # 主 Agent 特征：memory_context is None and not is_sync_subagent
+    # 误回复模式：content 以 @<同步挂起子名> 开头但本轮没调 chat-with 工具
+    if memory_context is None and not is_sync_subagent:
+        if _check_main_agent_content_reply_to_suspended(stripped, messages):
+            return (FORMAT_ERROR, None)
+        return (NO_INTERCEPTION, None)
+
+    # 子 Agent 拦截（原逻辑）：@niu-agent / @end / 格式错误
     if stripped.startswith(_AT_NIU_PREFIX):
         # 剥除 "@niu-agent" 前缀 + 可选空格
         question = stripped[len(_AT_NIU_PREFIX):].lstrip()
@@ -134,6 +142,71 @@ def _intercept_at_prefix_content(
     messages.append({"role": "assistant", "content": content})
     messages.append({"role": "user", "content": _FORMAT_ERROR_PROMPT})
     return (FORMAT_ERROR, None)
+
+
+def _check_main_agent_content_reply_to_suspended(stripped_content: str, messages: list) -> bool:
+    """检测主 Agent content 是否在误回复同步挂起子 Agent。
+
+    误回复模式：content 以 `@<子名> ` 开头，且 <子名> 在 SubagentRegistry 中
+    且 state=waiting_for_answer 且 is_sync=True。
+
+    支持两种子名格式（兼容 LLM 复读历史 hex 后缀格式）：
+    - 同步路径：browser-operator（方案 B 后默认格式）
+    - 异步路径旧格式：browser-operator-708b（LLM 复读 000045 等历史日志格式时出现）
+
+    命中时：append assistant content + user 错误提示，返回 True。
+    未命中：返回 False（不拦截）。
+    """
+    if not stripped_content or not stripped_content.startswith("@"):
+        return False
+
+    # 提取 @后的子名（只匹配字母数字下划线连字符，遇到中文标点等非 ASCII 立即停止）
+    # 避免 @browser-operator。我选择 提取到 browser-operator。我选择 的错误
+    m = re.match(r"@([A-Za-z0-9_\-]+)", stripped_content)
+    if not m:
+        return False
+    target = m.group(1)
+
+    # strip 非字母数字尾部（处理 LLM 误加英文标点）
+    target_clean = target.rstrip(".,!?;:")
+
+    from agent.subagent_registry import SubagentRegistry
+    instance = SubagentRegistry.get(target_clean)
+
+    # 兜底：target 含 hex 后缀旧格式（如 browser-operator-708b）时，提取 agent_type 再查
+    # 兼容 LLM 复读历史日志格式的场景（000045 真实日志主 Agent 误回复就是 hex 后缀格式）
+    if instance is None:
+        hex_match = re.match(r"^(.+)-[0-9a-f]{4}$", target_clean)
+        if hex_match:
+            agent_type_candidate = hex_match.group(1)
+            instance = SubagentRegistry.get(agent_type_candidate)
+            if instance is not None:
+                target_clean = agent_type_candidate  # 用真实 unique_name 更新
+
+    if instance is None:
+        return False  # 不在注册表，不拦截
+
+    # 只拦截同步挂起 session（异步 running 走 db_monitor 原逻辑）
+    if getattr(instance, "state", "running") != "waiting_for_answer":
+        return False
+    if not getattr(instance, "is_sync", True):
+        return False
+
+    # 命中误回复模式：append 错误提示，返回 FORMAT_ERROR
+    agent_type = instance.agent_type
+    error_prompt = (
+        f"[对话格式错误] 你刚才用 content 文本回复了同步子 Agent {target_clean}，"
+        f"这会导致它永久挂起。同步子 Agent 询问必须用工具回复。\n\n"
+        f"请立即调用 chat-with-{agent_type} 工具，参数：\n"
+        f"- task: \"\"（空字符串）\n"
+        f"- answer: 你刚才想回复的内容（如 \"@{agent_type} 我选择 2\"）\n"
+        f"- unique_name: 可省略（默认用 {agent_type}）\n\n"
+        f"禁止再用 content 文本回复。"
+    )
+    messages.append({"role": "assistant", "content": stripped_content})
+    messages.append({"role": "user", "content": error_prompt})
+    logger.info(f"[AtPrefix] 主 Agent content 误回复同步挂起子 Agent {target_clean}，注入 FORMAT_ERROR 提示")
+    return True
 
 
 def format_subagent_supplement(items: list, is_final_position: bool = False) -> str:
