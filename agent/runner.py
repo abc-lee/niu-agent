@@ -1779,7 +1779,7 @@ class NiuRunner:
     # ============== LightRAG Helper Methods ==============
 
     # 黑名单：这些实体类型/名称不应注入到主Agent system prompt
-    _INJECT_ENTITY_TYPE_BLACKLIST = {"mcp_tool", "tool"}
+    _INJECT_ENTITY_TYPE_BLACKLIST = {"mcp_tool", "tool", "brainregion"}
     _INJECT_ENTITY_NAME_BLACKLIST = {
         # 源码文件名 — 内部实现细节，对Agent对话无帮助
         "agent_loop.py", "handler.py", "tool_registry.py",
