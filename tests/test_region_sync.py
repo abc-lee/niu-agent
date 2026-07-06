@@ -349,3 +349,69 @@ def test_refresh_activation_manager_skips_when_coverage_too_low(monkeypatch):
         sync._refresh_activation_manager({})
 
     fake_existing_mgr.initialize_from_regions.assert_not_called()
+
+
+def test_sync_loop_skips_first_sync_when_recently_synced(tmp_path):
+    """距上次同步不足 sync_interval*0.9 时，_sync_loop 跳过首次同步"""
+    from agent.injector.region_sync import RegionSync
+    from unittest import mock
+    from datetime import datetime, timedelta
+    import json
+
+    sync = RegionSync(sync_interval=86400)
+    sync._status_file = tmp_path / "last_region_sync.json"
+
+    recent_time = (datetime.now() - timedelta(minutes=5)).isoformat()
+    sync._status_file.write_text(json.dumps({
+        "last_sync": recent_time,
+        "stats": {"regions_created": 0},
+    }))
+
+    run_sync_called = []
+    sync.run_sync = mock.Mock(side_effect=lambda: run_sync_called.append(True))
+
+    # 用真实 threading.Event，通过 set 控制退出
+    sync._brain_ready.set()
+    sync._stop_event.set()  # 让所有 wait 立即返回 True，循环跑一次就退出
+
+    with mock.patch(
+        "agent.injector.region_sync.wait_lightrag_ready", return_value=True
+    ):
+        sync._sync_loop()
+
+    # 断言：run_sync 没被调用（距上次同步 5 分钟 < 24h*0.9）
+    # _stop_event 已 set，所以 _stop_event.wait(wait_seconds) 立即返回 True，
+    # 然后 while True 里 _stop_event.wait(sync_interval) 也立即返回 True 退出
+    assert len(run_sync_called) == 0, "距上次同步不足 24h，不应触发 run_sync"
+
+
+def test_sync_loop_handles_future_last_sync(tmp_path):
+    """last_sync 是未来时间（系统回拨）时，不卡住等待"""
+    from agent.injector.region_sync import RegionSync
+    from unittest import mock
+    from datetime import datetime, timedelta
+    import json
+
+    sync = RegionSync(sync_interval=86400)
+    sync._status_file = tmp_path / "last_region_sync.json"
+
+    # last_sync 是 1 天后的未来时间
+    future_time = (datetime.now() + timedelta(days=1)).isoformat()
+    sync._status_file.write_text(json.dumps({
+        "last_sync": future_time,
+        "stats": {},
+    }))
+
+    run_sync_called = []
+    sync.run_sync = mock.Mock(side_effect=lambda: run_sync_called.append(True))
+
+    sync._brain_ready.set()
+    sync._stop_event.set()  # 立即退出
+
+    with mock.patch(
+        "agent.injector.region_sync.wait_lightrag_ready", return_value=True
+    ):
+        sync._sync_loop()
+
+    # 断言：run_sync 应该被调用（未来时间应被视为 elapsed=0，立即跑首次同步）
+    assert len(run_sync_called) >= 1, "未来时间应被视为 elapsed<=0，立即跑首次同步"
