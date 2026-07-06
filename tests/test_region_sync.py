@@ -415,3 +415,41 @@ def test_sync_loop_handles_future_last_sync(tmp_path):
 
     # 断言：run_sync 应该被调用（未来时间应被视为 elapsed=0，立即跑首次同步）
     assert len(run_sync_called) >= 1, "未来时间应被视为 elapsed<=0，立即跑首次同步"
+
+
+def test_merge_and_dissolve_logs_warning_on_dissolve_exception(monkeypatch):
+    """dissolve 异常应被 logger.warning 记录，不是 logger.debug"""
+    from agent.injector import region_sync
+    from unittest import mock
+
+    # 拦截 loguru logger 的 warning/debug 调用
+    warning_calls = []
+    debug_calls = []
+    monkeypatch.setattr(
+        region_sync.logger,
+        "warning",
+        lambda *args, **kwargs: warning_calls.append(args[0] if args else None),
+    )
+    monkeypatch.setattr(
+        region_sync.logger,
+        "debug",
+        lambda *args, **kwargs: debug_calls.append(args[0] if args else None),
+    )
+
+    sync = region_sync.RegionSync(sync_interval=86400)
+
+    with mock.patch(
+        "niu_api.internal.region_manager.RegionManager.dissolve_shrunk_regions",
+        side_effect=RuntimeError("test dissolve failure"),
+    ), mock.patch(
+        "niu_api.internal.lightrag_adapter.LightRAGAdapter"
+    ), mock.patch(
+        "niu_api.internal.lightrag_adapter.LightRAGIngester"
+    ), mock.patch(
+        "agent.brain_tools.get_activation_mgr", return_value=None
+    ):
+        sync._merge_and_dissolve({})
+
+    # 断言：warning 调用里包含 "Dissolve" 或 "dissolve"
+    assert any("Dissolve" in str(msg) or "dissolve" in str(msg) for msg in warning_calls), \
+        f"dissolve 异常应被 warning 记录，实际 warning 调用: {warning_calls}"

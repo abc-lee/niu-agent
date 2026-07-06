@@ -513,7 +513,7 @@ class RegionSync:
 
                     stats["regions_merged"] = merged_count
         except Exception as e:
-            logger.debug(f"[RegionSync] Merge check skipped: {e}")
+            logger.warning(f"[RegionSync] Merge check failed: {e}")
 
         # Step 7b: Dissolve shrunk regions
         try:
@@ -545,7 +545,7 @@ class RegionSync:
                 except Exception as e:
                     logger.debug(f"[RegionSync] Activation cleanup after dissolve: {e}")
         except Exception as e:
-            logger.debug(f"[RegionSync] Dissolve check skipped: {e}")
+            logger.warning(f"[RegionSync] Dissolve check failed: {e}")
 
     @staticmethod
     def _label_to_region_id(activation_mgr: Any, label: str) -> str | None:
