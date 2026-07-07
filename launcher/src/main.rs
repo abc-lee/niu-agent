@@ -10,7 +10,7 @@ use std::thread;
 use std::time::Duration;
 
 use clap::Parser;
-use iced::widget::{container, row, text};
+use iced::widget::container;
 use iced::window;
 use iced::{Element, Font, Length, Subscription, Task, Theme};
 use serde::Deserialize;
@@ -86,6 +86,23 @@ struct Splash {
     /// cache the consumed ready signal here and gate close on
     /// `ready_signal_seen && status_check_completed`.
     ready_signal_seen: bool,
+    /// Python API port, used to send /api/shutdown when exiting due to
+    /// LightRAG data corruption. Set at construction time from Args::port.
+    api_port: u16,
+    /// Shared cancellation flag. When ExitApp fires we flip this so the
+    /// background thread breaks out of its monitor loop and tears down the
+    /// Python API child process (HTTP shutdown -> SIGTERM -> SIGKILL).
+    cancelled: Arc<AtomicBool>,
+    /// Shared "integrity failed" flag. Set true the moment the status check
+    /// reports corruption so the background thread does NOT proceed to
+    /// launch the assistant window. Without this the bg thread would
+    /// unconditionally launch the main UI even while the rfd dialog is
+    /// still on screen.
+    integrity_failed: Arc<AtomicBool>,
+    /// Whether a repair is in progress (UserDialogChoice(true) fired).
+    /// Drives the splash view to show "正在修复..." text instead of the
+    /// default "正在启动..." animation.
+    repairing: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -107,7 +124,12 @@ enum SplashMessage {
 }
 
 impl Splash {
-    fn new(ready_rx: Receiver<()>) -> Self {
+    fn new(
+        ready_rx: Receiver<()>,
+        api_port: u16,
+        cancelled: Arc<AtomicBool>,
+        integrity_failed: Arc<AtomicBool>,
+    ) -> Self {
         Self {
             ready_rx: Mutex::new(ready_rx),
             window_id: None,
@@ -117,6 +139,10 @@ impl Splash {
             niu_api_ready: false,
             status_check_completed: false,
             ready_signal_seen: false,
+            api_port,
+            cancelled,
+            integrity_failed,
+            repairing: false,
         }
     }
 
@@ -241,6 +267,12 @@ impl Splash {
                         if status.init_failed
                             || status.integrity.as_ref().map_or(false, |i| !i.ok)
                         {
+                            // 检测到损坏：立即设 integrity_failed=true，阻止后台线程
+                            // 继续启动主 UI 窗口（assistant）。后台线程在
+                            // `splash_tx.send(())` 之前会检查此标志，若为 true
+                            // 则不发 ready 信号、不启动 assistant 窗口，直接
+                            // 进入 cancelled cleanup loop。
+                            self.integrity_failed.store(true, Ordering::SeqCst);
                             let total_errors = status
                                 .integrity
                                 .as_ref()
@@ -289,6 +321,8 @@ impl Splash {
             SplashMessage::UserDialogChoice(try_repair) => {
                 if try_repair {
                     // 用户选"是"=尝试修复，调 /api/kg/lightrag/repair?target=all
+                    // 修完后无论成功失败都退出（用户重启做下一轮检测）
+                    self.repairing = true;
                     let (tx, rx) =
                         iced::futures::channel::oneshot::channel::<Result<String, String>>();
                     std::thread::spawn(move || {
@@ -305,56 +339,53 @@ impl Splash {
                         SplashMessage::RepairResult,
                     );
                 } else {
-                    // 用户选"否"=退出
+                    // 用户选"否"=立即退出
                     return Task::done(SplashMessage::ExitApp);
                 }
             }
             SplashMessage::RepairResult(result) => {
-                match result {
-                    Ok(_) => {
-                        // 修复完成后重查 status，如果健康则关闭告警继续启动；
-                        // 如果仍损坏则 StatusCheckResult 会再次弹对话框
-                        let (tx, rx) = iced::futures::channel::oneshot::channel::<Result<LightragStatus, String>>();
-                        std::thread::spawn(move || {
-                            let result = reqwest::blocking::Client::new()
-                                .get("http://127.0.0.1:9876/api/kg/stats")
-                                .send()
-                                .map_err(|e| e.to_string())
-                                .and_then(|resp| {
-                                    resp.json::<LightragStatus>().map_err(|e| e.to_string())
-                                });
-                            let _ = tx.send(result);
-                        });
-                        return Task::perform(
-                            async move { rx.await.unwrap_or(Err("channel closed".into())) },
-                            SplashMessage::StatusCheckResult,
-                        );
-                    }
-                    Err(e) => {
-                        // 修复失败，弹原生 Error 对话框让用户选重试或退出
-                        let (tx, rx) =
-                            iced::futures::channel::oneshot::channel::<bool>();
-                        std::thread::spawn(move || {
-                            let choice = rfd::MessageDialog::new()
-                                .set_title("修复失败")
-                                .set_description(&format!(
-                                    "修复失败：{}\n\n请选择：\n\n是 - 重试\n否 - 退出",
-                                    e
-                                ))
-                                .set_buttons(rfd::MessageButtons::YesNo)
-                                .set_level(rfd::MessageLevel::Error)
-                                .show();
-                            let _ = tx.send(choice == rfd::MessageDialogResult::Yes);
-                        });
-                        return Task::perform(
-                            async move { rx.await.unwrap_or(false) },
-                            SplashMessage::UserDialogChoice,
-                        );
-                    }
+                // 无论修复成功或失败都退出（用户重启做下一轮检测）
+                if let Err(e) = result {
+                    // 修复失败：弹一个简短的提示对话框（仅"确定"按钮）告知用户，
+                    // 关闭后立即退出。不再给"重试"选项 —— 用户重启后再次检测，
+                    // 如仍损坏会再次弹"是/否"对话框。
+                    let (tx, rx) =
+                        iced::futures::channel::oneshot::channel::<()>();
+                    std::thread::spawn(move || {
+                        rfd::MessageDialog::new()
+                            .set_title("修复失败")
+                            .set_description(&format!(
+                                "修复失败：{}\n\n请从备份恢复后重启程序。",
+                                e
+                            ))
+                            .set_buttons(rfd::MessageButtons::Ok)
+                            .set_level(rfd::MessageLevel::Error)
+                            .show();
+                        let _ = tx.send(());
+                    });
+                    return Task::perform(
+                        async move { rx.await.unwrap_or(()) },
+                        |_| SplashMessage::ExitApp,
+                    );
                 }
+                // 修复成功 → 退出
+                Task::done(SplashMessage::ExitApp)
             }
             SplashMessage::ExitApp => {
-                std::process::exit(0);
+                // 用户已决策退出（"否" / 修复完成）：
+                // 1) 立即设 cancelled=true，让后台线程跳出 monitor loop
+                //    并清理 Python API 子进程（HTTP /api/shutdown ->
+                //    SIGTERM -> SIGKILL）。
+                // 2) 调 /api/shutdown 通知 Python API 优雅关闭（后台线程
+                //    也会调一次，但提前调可让 Python API 尽早开始清理）。
+                // 3) 返回 iced::exit() 关闭 splash 窗口，主线程随后
+                //    while !cancelled 会立即返回（cancelled=true），
+                //    join 后台线程完成清理后退出整个程序。
+                self.cancelled.store(true, Ordering::SeqCst);
+                let port = self.api_port;
+                // 优雅通知（非阻塞，失败也无所谓，后台线程会兜底）
+                let _ = notify_shutdown(port);
+                iced::exit()
             }
         }
     }
@@ -368,7 +399,8 @@ impl Splash {
         // Two separate text elements: CJK label + fixed-width container for dots
         // The dots container has a fixed width so the row's total width never changes,
         // preventing layout shift when the number of dots changes.
-        let label = iced::widget::text("正在启动")
+        let label_text = if self.repairing { "正在修复" } else { "正在启动" };
+        let label = iced::widget::text(label_text)
             .size(18)
             .font(CJK_FONT)
             .color([1.0, 1.0, 1.0, 1.0]);
@@ -1005,6 +1037,15 @@ fn main() {
     let cancelled_bg = cancelled.clone();
     let port = args.port;
 
+    // Shared "integrity failed" flag — Splash sets this true the moment the
+    // LightRAG status check reports corruption. The background thread reads
+    // it before sending the ready signal / launching the assistant window,
+    // and aborts startup if true (skips splash_tx.send, skips
+    // launch_window("assistant"), falls through to the cancelled cleanup
+    // loop which tears down the Python API child).
+    let integrity_failed = Arc::new(AtomicBool::new(false));
+    let integrity_failed_bg = integrity_failed.clone();
+
     // Build environment vars for Python API (computed on main thread for simplicity)
     let mut env_vars: Vec<(String, String)> = Vec::new();
     env_vars.push((
@@ -1181,154 +1222,166 @@ fn main() {
             warn!("Preload may not be complete, proceeding anyway");
         }
 
-        // --- LLM 配置验证 ---
-        info!("Checking LLM configuration...");
-
-        #[derive(Debug, Deserialize)]
-        struct LlmStatus { ready: bool, #[allow(dead_code)] error: Option<String> }
-        #[derive(Debug, Deserialize)]
-        struct TestLlmResult { success: bool, message: Option<String>, error: Option<String> }
-
-        let llm_status_url = format!("http://127.0.0.1:{}/api/llm-status", port);
-        let llm_configured = match check_client.get(&llm_status_url).send() {
-            Ok(resp) if resp.status().is_success() => {
-                match resp.json::<LlmStatus>() {
-                    Ok(s) => s.ready,
-                    Err(e) => { warn!("Failed to deserialize llm-status response: {}", e); false }
-                }
-            }
-            _ => false,
-        };
-
-        if !llm_configured {
-            info!("LLM not configured, opening settings...");
-            let _ = splash_tx.send(());  // 关闭 splash
-            let mut settings_child = launch_window("settings")
-                .expect("Failed to launch settings window");
-            let test_url = format!("http://127.0.0.1:{}/api/test-llm", port);
-            // 轮询客户端需要足够长的超时（端点本身最多 20 秒）
-            let poll_client = reqwest::blocking::Client::builder()
-                .timeout(Duration::from_secs(25))
-                .build().unwrap_or_else(|_| check_client.clone());
-            let mut reopen_count = 0;
-            for _ in 0..60 {
-                if cancelled_bg.load(Ordering::SeqCst) { break; }
-                if let Ok(Some(_exit_status)) = settings_child.try_wait() {
-                    reopen_count += 1;
-                    if reopen_count > 3 {
-                        warn!("Settings window closed {} times without test, giving up", reopen_count);
-                        break;
-                    }
-                    warn!("Settings window closed without completing test, re-opening... (attempt {}/3)", reopen_count);
-                    settings_child = launch_window("settings")
-                        .expect("Failed to re-launch settings window");
-                }
-                thread::sleep(Duration::from_secs(3));
-                if let Ok(resp) = poll_client.post(&test_url)
-                    .header("Content-Type", "application/json").body("{}").send() {
-                    if let Ok(v) = resp.json::<TestLlmResult>() {
-                        if v.success { info!("LLM test passed after reconfiguration"); break; }
-                    }
-                }
-            }
+        // 损坏检测守卫：若 LightRAG 数据已损坏，主 UI 窗口绝不能启动。
+        // integrity_failed 由 Splash 的 StatusCheckResult 处理分支在检测到
+        // 损坏时设为 true。这里检查后：
+        //   - 不发 splash_tx.send(())（splash 由 ExitApp 路径关闭）
+        //   - 不调 launch_window("assistant")（主 UI 不启动）
+        //   - 不进入 Electron 监控
+        // 直接 fall through 到 cancelled cleanup loop，由 ExitApp 设置的
+        // cancelled=true 触发 Python API 子进程的优雅+强制清理。
+        if integrity_failed_bg.load(Ordering::SeqCst) {
+            info!("LightRAG integrity failed — skipping LLM verification and assistant window launch");
         } else {
-            info!("LLM configured, running real test...");
-            let test_client = reqwest::blocking::Client::builder()
-                .timeout(Duration::from_secs(25)).build().unwrap_or_else(|_| check_client.clone());
-            let test_url = format!("http://127.0.0.1:{}/api/test-llm", port);
+            // --- LLM 配置验证 ---
+            info!("Checking LLM configuration...");
 
-            match test_client.post(&test_url)
-                .header("Content-Type", "application/json").body("{}").send() {
+            #[derive(Debug, Deserialize)]
+            struct LlmStatus { ready: bool, #[allow(dead_code)] error: Option<String> }
+            #[derive(Debug, Deserialize)]
+            struct TestLlmResult { success: bool, message: Option<String>, error: Option<String> }
+
+            let llm_status_url = format!("http://127.0.0.1:{}/api/llm-status", port);
+            let llm_configured = match check_client.get(&llm_status_url).send() {
                 Ok(resp) if resp.status().is_success() => {
-                    if let Ok(v) = resp.json::<TestLlmResult>() {
-                        if !v.success {
-                            warn!("LLM test failed: {}", v.error.unwrap_or_default());
-                            // 重试一次（5 秒后），避免瞬时网络错误误判
-                            thread::sleep(Duration::from_secs(5));
-                            let retry = test_client.post(&test_url)
-                                .header("Content-Type", "application/json").body("{}").send();
-                            let retry_passed = match retry {
-                                Ok(resp) if resp.status().is_success() => {
-                                    resp.json::<TestLlmResult>().ok().map_or(false, |v| v.success)
+                    match resp.json::<LlmStatus>() {
+                        Ok(s) => s.ready,
+                        Err(e) => { warn!("Failed to deserialize llm-status response: {}", e); false }
+                    }
+                }
+                _ => false,
+            };
+
+            if !llm_configured {
+                info!("LLM not configured, opening settings...");
+                let _ = splash_tx.send(());  // 关闭 splash
+                let mut settings_child = launch_window("settings")
+                    .expect("Failed to launch settings window");
+                let test_url = format!("http://127.0.0.1:{}/api/test-llm", port);
+                // 轮询客户端需要足够长的超时（端点本身最多 20 秒）
+                let poll_client = reqwest::blocking::Client::builder()
+                    .timeout(Duration::from_secs(25))
+                    .build().unwrap_or_else(|_| check_client.clone());
+                let mut reopen_count = 0;
+                for _ in 0..60 {
+                    if cancelled_bg.load(Ordering::SeqCst) { break; }
+                    if let Ok(Some(_exit_status)) = settings_child.try_wait() {
+                        reopen_count += 1;
+                        if reopen_count > 3 {
+                            warn!("Settings window closed {} times without test, giving up", reopen_count);
+                            break;
+                        }
+                        warn!("Settings window closed without completing test, re-opening... (attempt {}/3)", reopen_count);
+                        settings_child = launch_window("settings")
+                            .expect("Failed to re-launch settings window");
+                    }
+                    thread::sleep(Duration::from_secs(3));
+                    if let Ok(resp) = poll_client.post(&test_url)
+                        .header("Content-Type", "application/json").body("{}").send() {
+                        if let Ok(v) = resp.json::<TestLlmResult>() {
+                            if v.success { info!("LLM test passed after reconfiguration"); break; }
+                        }
+                    }
+                }
+            } else {
+                info!("LLM configured, running real test...");
+                let test_client = reqwest::blocking::Client::builder()
+                    .timeout(Duration::from_secs(25)).build().unwrap_or_else(|_| check_client.clone());
+                let test_url = format!("http://127.0.0.1:{}/api/test-llm", port);
+
+                match test_client.post(&test_url)
+                    .header("Content-Type", "application/json").body("{}").send() {
+                    Ok(resp) if resp.status().is_success() => {
+                        if let Ok(v) = resp.json::<TestLlmResult>() {
+                            if !v.success {
+                                warn!("LLM test failed: {}", v.error.unwrap_or_default());
+                                // 重试一次（5 秒后），避免瞬时网络错误误判
+                                thread::sleep(Duration::from_secs(5));
+                                let retry = test_client.post(&test_url)
+                                    .header("Content-Type", "application/json").body("{}").send();
+                                let retry_passed = match retry {
+                                    Ok(resp) if resp.status().is_success() => {
+                                        resp.json::<TestLlmResult>().ok().map_or(false, |v| v.success)
+                                    }
+                                    _ => false
+                                };
+                                if retry_passed {
+                                    info!("LLM test passed on retry (transient error)");
+                                } else {
+                                    // 连续两次失败 → 打开配置页面
+                                    let _ = splash_tx.send(());  // 关闭 splash
+                                    let mut settings_child = launch_window("settings")
+                                        .expect("Failed to launch settings window");
+                                    let test_url = format!("http://127.0.0.1:{}/api/test-llm", port);
+                                    let poll_client2 = reqwest::blocking::Client::builder()
+                                        .timeout(Duration::from_secs(25))
+                                        .build().unwrap_or_else(|_| check_client.clone());
+                                    let mut reopen_count2 = 0;
+                                    for _ in 0..60 {
+                                        if cancelled_bg.load(Ordering::SeqCst) { break; }
+                                        if let Ok(Some(_)) = settings_child.try_wait() {
+                                            reopen_count2 += 1;
+                                            if reopen_count2 > 3 {
+                                                warn!("Settings window closed {} times without test, giving up", reopen_count2);
+                                                break;
+                                            }
+                                            warn!("Settings window closed, re-opening... (attempt {}/3)", reopen_count2);
+                                            settings_child = launch_window("settings")
+                                                .expect("Failed to re-launch settings window");
+                                        }
+                                        thread::sleep(Duration::from_secs(3));
+                                        if let Ok(resp2) = poll_client2.post(&test_url)
+                                            .header("Content-Type", "application/json").body("{}").send() {
+                                            if let Ok(v2) = resp2.json::<TestLlmResult>() {
+                                                if v2.success { info!("LLM test passed after reconfiguration"); break; }
+                                            }
+                                        }
+                                    }
                                 }
-                                _ => false
-                            };
-                            if retry_passed {
-                                info!("LLM test passed on retry (transient error)");
                             } else {
-                                // 连续两次失败 → 打开配置页面
-                                let _ = splash_tx.send(());  // 关闭 splash
-                                let mut settings_child = launch_window("settings")
-                                    .expect("Failed to launch settings window");
-                                let test_url = format!("http://127.0.0.1:{}/api/test-llm", port);
-                                let poll_client2 = reqwest::blocking::Client::builder()
-                                    .timeout(Duration::from_secs(25))
-                                    .build().unwrap_or_else(|_| check_client.clone());
-                                let mut reopen_count2 = 0;
-                                for _ in 0..60 {
-                                    if cancelled_bg.load(Ordering::SeqCst) { break; }
-                                    if let Ok(Some(_)) = settings_child.try_wait() {
-                                        reopen_count2 += 1;
-                                        if reopen_count2 > 3 {
-                                            warn!("Settings window closed {} times without test, giving up", reopen_count2);
-                                            break;
-                                        }
-                                        warn!("Settings window closed, re-opening... (attempt {}/3)", reopen_count2);
-                                        settings_child = launch_window("settings")
-                                            .expect("Failed to re-launch settings window");
-                                    }
-                                    thread::sleep(Duration::from_secs(3));
-                                    if let Ok(resp2) = poll_client2.post(&test_url)
-                                        .header("Content-Type", "application/json").body("{}").send() {
-                                        if let Ok(v2) = resp2.json::<TestLlmResult>() {
-                                            if v2.success { info!("LLM test passed after reconfiguration"); break; }
-                                        }
-                                    }
-                                }
+                                info!("LLM test passed: {}", v.message.unwrap_or_default());
                             }
-                        } else {
-                            info!("LLM test passed: {}", v.message.unwrap_or_default());
                         }
                     }
-                }
-                _ => {
-                    // 端点出错 → 降级继续启动
-                    warn!("LLM test endpoint failed, proceeding anyway");
-                }
-            }
-        }
-
-        let _ = splash_tx.send(());  // 关闭 splash
-
-        // Launch assistant window
-        let mut electron_child = match launch_window("assistant") {
-            Ok(child) => Some(child),
-            Err(e) => {
-                error!("Failed to launch assistant window: {}", e);
-                println!("\nPlease run manually: cd ui/assistant && npm start");
-                None
-            }
-        };
-
-        // Monitor Electron process - when it exits, trigger shutdown
-        if let Some(mut child) = electron_child.take() {
-            let cancelled_ref = cancelled_bg.clone();
-            thread::spawn(move || {
-                let result = child.wait();
-                match result {
-                    Err(e) => {
-                        info!("Electron window exited: error={}", e);
+                    _ => {
+                        // 端点出错 → 降级继续启动
+                        warn!("LLM test endpoint failed, proceeding anyway");
                     }
-                    Ok(status) => {
-                        if status.success() {
-                            info!("Electron window closed normally");
-                        } else {
-                            info!("Electron window exited with status: {}", status);
+                }
+            }
+
+            let _ = splash_tx.send(());  // 关闭 splash
+
+            // Launch assistant window
+            let mut electron_child = match launch_window("assistant") {
+                Ok(child) => Some(child),
+                Err(e) => {
+                    error!("Failed to launch assistant window: {}", e);
+                    println!("\nPlease run manually: cd ui/assistant && npm start");
+                    None
+                }
+            };
+
+            // Monitor Electron process - when it exits, trigger shutdown
+            if let Some(mut child) = electron_child.take() {
+                let cancelled_ref = cancelled_bg.clone();
+                thread::spawn(move || {
+                    let result = child.wait();
+                    match result {
+                        Err(e) => {
+                            info!("Electron window exited: error={}", e);
+                        }
+                        Ok(status) => {
+                            if status.success() {
+                                info!("Electron window closed normally");
+                            } else {
+                                info!("Electron window exited with status: {}", status);
+                            }
                         }
                     }
-                }
-                cancelled_ref.store(true, Ordering::SeqCst); // Trigger shutdown
-            });
+                    cancelled_ref.store(true, Ordering::SeqCst); // Trigger shutdown
+                });
+            }
         }
 
         // Keep the api_server_child alive until the process exits or we get cancelled
@@ -1430,7 +1483,7 @@ fn main() {
     });
 
     // --- Run iced splash window on the main thread (required by macOS) ---
-    let splash = Splash::new(splash_rx);
+    let splash = Splash::new(splash_rx, port, cancelled.clone(), integrity_failed.clone());
     let window_settings = window::Settings {
         size: iced::Size::new(280.0, 80.0),
         position: window::Position::Centered,
