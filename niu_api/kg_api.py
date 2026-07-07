@@ -1081,6 +1081,37 @@ def cleanup_failed_docs():
     return {"status": "ok", **result}
 
 
+@router.post("/lightrag/repair")
+def repair_lightrag_storage(target: str = "all") -> dict:
+    """修复 LightRAG 存储。
+
+    实际路径：/api/kg/lightrag/repair（router prefix=/api/kg + 端点 /lightrag/repair）
+
+    Args:
+        target: "all" | "vdb_entities.json" | "vdb_relationships.json" | "vdb_chunks.json"
+                | "kv_store_xxx.json"（从 .bak 恢复）
+    """
+    from fastapi import HTTPException
+    from niu_api.internal.lightrag_repair import repair_vdb, repair_kv_store, repair_all
+    from niu_api.internal.lightrag_manager import reset_init_state
+    import niu_api.internal.lightrag_manager as lm
+
+    if target == "all":
+        result = repair_all()
+    elif target.startswith("vdb_"):
+        result = {target: repair_vdb(target)}
+    elif target.startswith("kv_store_"):
+        result = {target: repair_kv_store(target)}
+    else:
+        raise HTTPException(status_code=400, detail=f"未知 target: {target}")
+
+    reset_init_state()
+    # 修复后重跑 check_all 更新 _integrity_result，让前端立即看到健康状态
+    from niu_api.internal.lightrag_integrity import check_all
+    lm._integrity_result = check_all()
+    return {"status": "ok", "result": result, "integrity": lm._integrity_result}
+
+
 @router.get("/search_entities")
 def search_entities(query: str = Query(default=""), top_k: int = Query(default=20, ge=1, le=100)):
     """按关键词语义搜索实体，返回匹配的实体列表（供前端搜索栏使用）。"""
