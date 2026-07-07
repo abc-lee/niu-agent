@@ -10,7 +10,7 @@ use std::thread;
 use std::time::Duration;
 
 use clap::Parser;
-use iced::widget::{button, column, container, row, text};
+use iced::widget::{container, row, text};
 use iced::window;
 use iced::{Element, Font, Length, Subscription, Task, Theme};
 use serde::Deserialize;
@@ -38,6 +38,7 @@ const CJK_FONT: Font = Font::with_name("Noto Sans CJK SC");
 #[serde(rename_all = "camelCase")]
 struct LightragStatus {
     init_failed: bool,
+    #[allow(dead_code)]
     init_retry_in_seconds: Option<f64>,
     integrity: Option<IntegrityStatus>,
 }
@@ -47,15 +48,6 @@ struct LightragStatus {
 #[serde(rename_all = "camelCase")]
 struct IntegrityStatus {
     ok: bool,
-    total_errors: i32,
-}
-
-/// Alert payload rendered by the splash window when LightRAG startup
-/// detection finds init failures or integrity errors.
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-struct LightragAlert {
-    message: String,
     total_errors: i32,
 }
 
@@ -77,9 +69,6 @@ struct Splash {
     /// Status check only fires after the API is reachable so that
     /// `/api/kg/stats` does not 404 during early boot.
     niu_api_ready: bool,
-    /// Active alert; when set, splash renders the alert view instead of
-    /// the "正在启动" splash.
-    alert: Option<LightragAlert>,
 }
 
 #[derive(Debug, Clone)]
@@ -92,12 +81,12 @@ enum SplashMessage {
     HideDockIcon,
     /// Result of the one-shot `/api/kg/stats` query dispatched at startup.
     StatusCheckResult(Result<LightragStatus, String>),
-    /// User clicked the "修复" button — trigger `/api/kg/lightrag/repair?target=all`.
-    RepairLightrag,
+    /// User's choice from the rfd native dialog (true=try repair, false=exit).
+    UserDialogChoice(bool),
     /// Result of the repair API call.
     RepairResult(Result<String, String>),
-    /// User clicked the "继续" button — dismiss the alert and continue booting.
-    DismissAlert,
+    /// Exit the application (user chose "No" in the native dialog).
+    ExitApp,
 }
 
 impl Splash {
@@ -109,7 +98,6 @@ impl Splash {
             dot_frame: 0,
             status_checked: false,
             niu_api_ready: false,
-            alert: None,
         }
     }
 
@@ -172,8 +160,7 @@ impl Splash {
                 }
 
                 // Non-blocking check: if the launcher thread sent the ready signal, close the window.
-                // Hold the window open while an alert is displayed so the user can act on it.
-                if self.alert.is_none() && self.ready_rx.lock().unwrap().try_recv().is_ok() {
+                if self.ready_rx.lock().unwrap().try_recv().is_ok() {
                     // Use window::close() to close the splash window
                     // This exits the iced event loop, allowing main.rs to continue
                     if let Some(id) = self.window_id {
@@ -230,24 +217,32 @@ impl Splash {
                                 .map_or(0, |i| i.total_errors);
                             let message = if status.init_failed {
                                 format!(
-                                    "LightRAG 初始化失败，重试倒计时 {:?} 秒",
-                                    status.init_retry_in_seconds
+                                    "LightRAG 初始化失败\n\n检测到数据损坏，请选择：\n\n是 - 尝试修复（修复未必成功，可能会丢失数据）\n否 - 直接退出（请自行从备份恢复）"
                                 )
                             } else {
-                                format!("检测到 {} 个数据一致性问题", total_errors)
+                                format!(
+                                    "检测到 {} 个数据一致性问题\n\n请选择：\n\n是 - 尝试修复（修复未必成功，可能会丢失数据）\n否 - 直接退出（请自行从备份恢复）",
+                                    total_errors
+                                )
                             };
-                            self.alert = Some(LightragAlert {
-                                message,
-                                total_errors,
+                            // 弹 rfd 原生对话框（独立线程，避免阻塞 iced executor）
+                            let (tx, rx) =
+                                iced::futures::channel::oneshot::channel::<bool>();
+                            std::thread::spawn(move || {
+                                let choice = rfd::MessageDialog::new()
+                                    .set_title("LightRAG 数据异常")
+                                    .set_description(&message)
+                                    .set_buttons(rfd::MessageButtons::YesNo)
+                                    .set_level(rfd::MessageLevel::Warning)
+                                    .show();
+                                let _ = tx.send(choice == rfd::MessageDialogResult::Yes);
                             });
-                            // Enlarge the splash window to fit the alert + buttons.
-                            if let Some(id) = self.window_id {
-                                return window::resize(
-                                    id,
-                                    iced::Size::new(400.0, 160.0),
-                                );
-                            }
+                            return Task::perform(
+                                async move { rx.await.unwrap_or(false) },
+                                SplashMessage::UserDialogChoice,
+                            );
                         }
+                        // 健康：splash 正常继续启动（v6 无 alert 字段）
                         Task::none()
                     }
                     Err(_) => {
@@ -257,97 +252,80 @@ impl Splash {
                     }
                 }
             }
-            SplashMessage::RepairLightrag => {
-                let (tx, rx) = iced::futures::channel::oneshot::channel::<Result<String, String>>();
-                std::thread::spawn(move || {
-                    let result = reqwest::blocking::Client::builder()
-                        .timeout(Duration::from_secs(120))
-                        .build()
-                        .map_err(|e| e.to_string())
-                        .and_then(|client| {
-                            client
-                                .post("http://127.0.0.1:9876/api/kg/lightrag/repair?target=all")
-                                .send()
-                                .map_err(|e| e.to_string())
-                                .and_then(|resp| resp.text().map_err(|e| e.to_string()))
-                        });
-                    let _ = tx.send(result);
-                });
-                Task::perform(
-                    async move { rx.await.unwrap_or(Err("channel closed".into())) },
-                    SplashMessage::RepairResult,
-                )
+            SplashMessage::UserDialogChoice(try_repair) => {
+                if try_repair {
+                    // 用户选"是"=尝试修复，调 /api/kg/lightrag/repair?target=all
+                    let (tx, rx) =
+                        iced::futures::channel::oneshot::channel::<Result<String, String>>();
+                    std::thread::spawn(move || {
+                        let result = reqwest::blocking::Client::new()
+                            .post("http://127.0.0.1:9876/api/kg/lightrag/repair?target=all")
+                            .timeout(std::time::Duration::from_secs(300))
+                            .send()
+                            .map_err(|e| e.to_string())
+                            .and_then(|resp| resp.text().map_err(|e| e.to_string()));
+                        let _ = tx.send(result);
+                    });
+                    return Task::perform(
+                        async move { rx.await.unwrap_or(Err("channel closed".into())) },
+                        SplashMessage::RepairResult,
+                    );
+                } else {
+                    // 用户选"否"=退出
+                    return Task::done(SplashMessage::ExitApp);
+                }
             }
             SplashMessage::RepairResult(result) => {
                 match result {
                     Ok(_) => {
-                        // Repair completed — clear the alert and shrink the splash
-                        // back to 280x80 so the normal boot animation can resume.
-                        self.alert = None;
-                        if let Some(id) = self.window_id {
-                            window::resize(id, iced::Size::new(280.0, 80.0))
-                        } else {
-                            Task::none()
-                        }
+                        // 修复完成后重查 status，如果健康则关闭告警继续启动；
+                        // 如果仍损坏则 StatusCheckResult 会再次弹对话框
+                        let (tx, rx) = iced::futures::channel::oneshot::channel::<Result<LightragStatus, String>>();
+                        std::thread::spawn(move || {
+                            let result = reqwest::blocking::Client::new()
+                                .get("http://127.0.0.1:9876/api/kg/stats")
+                                .send()
+                                .map_err(|e| e.to_string())
+                                .and_then(|resp| {
+                                    resp.json::<LightragStatus>().map_err(|e| e.to_string())
+                                });
+                            let _ = tx.send(result);
+                        });
+                        return Task::perform(
+                            async move { rx.await.unwrap_or(Err("channel closed".into())) },
+                            SplashMessage::StatusCheckResult,
+                        );
                     }
                     Err(e) => {
-                        // Repair failed — surface the error in the alert so the
-                        // user can retry or dismiss.
-                        if let Some(alert) = &mut self.alert {
-                            alert.message = format!("修复失败: {}", e);
-                        }
-                        Task::none()
+                        // 修复失败，弹原生 Error 对话框让用户选重试或退出
+                        let (tx, rx) =
+                            iced::futures::channel::oneshot::channel::<bool>();
+                        std::thread::spawn(move || {
+                            let choice = rfd::MessageDialog::new()
+                                .set_title("修复失败")
+                                .set_description(&format!(
+                                    "修复失败：{}\n\n请选择：\n\n是 - 重试\n否 - 退出",
+                                    e
+                                ))
+                                .set_buttons(rfd::MessageButtons::YesNo)
+                                .set_level(rfd::MessageLevel::Error)
+                                .show();
+                            let _ = tx.send(choice == rfd::MessageDialogResult::Yes);
+                        });
+                        return Task::perform(
+                            async move { rx.await.unwrap_or(false) },
+                            SplashMessage::UserDialogChoice,
+                        );
                     }
                 }
             }
-            SplashMessage::DismissAlert => {
-                // User chose to ignore the alert — clear it and shrink the
-                // splash back to normal size so boot can proceed.
-                self.alert = None;
-                if let Some(id) = self.window_id {
-                    window::resize(id, iced::Size::new(280.0, 80.0))
-                } else {
-                    Task::none()
-                }
+            SplashMessage::ExitApp => {
+                std::process::exit(0);
             }
         }
     }
 
     fn view(&self) -> Element<'_, SplashMessage> {
-        // Alert view takes precedence over the normal splash animation.
-        // The window is resized to 400x160 by StatusCheckResult when an
-        // alert is first set; this view fills that area with the alert
-        // message + action buttons.
-        if let Some(alert) = &self.alert {
-            let message = text(alert.message.clone())
-                .size(14)
-                .font(CJK_FONT)
-                .color([1.0, 0.92, 0.6, 1.0]);
-            let repair_btn = button(
-                text("修复")
-                    .size(14)
-                    .font(CJK_FONT),
-            )
-            .on_press(SplashMessage::RepairLightrag);
-            let dismiss_btn = button(
-                text("继续")
-                    .size(14)
-                    .font(CJK_FONT),
-            )
-            .on_press(SplashMessage::DismissAlert);
-            let buttons = row![repair_btn, dismiss_btn].spacing(8);
-            let content = column![message, buttons]
-                .spacing(8)
-                .padding(12)
-                .align_x(iced::alignment::Horizontal::Center);
-            return container(content)
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .align_x(iced::alignment::Horizontal::Center)
-                .align_y(iced::alignment::Vertical::Center)
-                .into();
-        }
-
         let dots = match (self.dot_frame / 10) % 3 {
             0 => ".",
             1 => "..",
