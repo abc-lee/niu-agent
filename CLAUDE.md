@@ -28,6 +28,7 @@ MCP 服务器集群 (mcp-servers/)
 5. **测试必须用真实数据+真实LLM** — 绕过LLM的测试是假测试
 6. **python/ 目录必须是完整的自包含 Python 安装** — 所有二进制文件、库、依赖必须真实存在于 python/ 目录内，禁止使用符号链接指向外部路径（如 /Library/Frameworks/Python.framework/）。这个目录最终要打包分发，客户不需要自己安装 Python 环境，也不需要自己安装依赖。
 7. **git 操作后必须修复文件权限** — git checkout/reset 会丢失可执行权限，执行后必须运行：`find python/bin/ -type f -exec grep -l '^#!' {} \; | xargs chmod +x` 和 `find ui/assistant/node_modules/.bin/ -type f ! -perm -u+x -exec chmod +x {} \;`
+8. **Rust 启动器编译必须用 `launcher/build.sh`，禁止直接 `cargo build`** — `cargo build` 只输出到 `launcher/target/debug/`，不会复制到项目根目录的 `niu`，导致测试用的是旧二进制。`launcher/build.sh` 编译后自动 `cp target/release/niu-launcher ../niu`。每次改 Rust 代码（`launcher/src/`）后必须跑 `./launcher/build.sh`，不能用 `cargo build` 替代。这条铁律必须传达给派出去的子 Agent。
 
 **违反任何一条就停下来，不要继续。**
 
