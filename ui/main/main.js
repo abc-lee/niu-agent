@@ -376,6 +376,26 @@ function createSettingsWindow() {
 
   settingsWindow.loadFile(path.join(__dirname, 'windows', 'settings', 'index.html'));
 
+  // F12 打开开发者工具（调试用）+ macOS 编辑快捷键
+  // 与 chat 窗口保持一致（参考 L181-198）
+  settingsWindow.webContents.on('before-input-event', (event, input) => {
+    if (input.key === 'F12') {
+      settingsWindow.webContents.toggleDevTools();
+    }
+    // macOS: 确保编辑快捷键正常工作
+    if (input.meta) {  // Cmd 键
+      if (input.key === 'v') {
+        settingsWindow.webContents.paste();
+      } else if (input.key === 'c') {
+        settingsWindow.webContents.copy();
+      } else if (input.key === 'x') {
+        settingsWindow.webContents.cut();
+      } else if (input.key === 'a') {
+        settingsWindow.webContents.selectAll();
+      }
+    }
+  });
+
   settingsWindow.on('closed', () => {
     settingsWindow = null;
   });
