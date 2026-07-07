@@ -1083,33 +1083,24 @@ def cleanup_failed_docs():
 
 @router.post("/lightrag/repair")
 def repair_lightrag_storage(target: str = "all") -> dict:
-    """修复 LightRAG 存储。
+    """修复 LightRAG 存储（用户在 splash 点'尝试修复'触发）。
 
     实际路径：/api/kg/lightrag/repair（router prefix=/api/kg + 端点 /lightrag/repair）
 
+    v5: 调 run_repair_on_user_request（封装 repair_all + reset_init_state + 重跑 check_all）。
+    v5 只支持 target=all（用户决策驱动，不分单文件修复）。
+
     Args:
-        target: "all" | "vdb_entities.json" | "vdb_relationships.json" | "vdb_chunks.json"
-                | "kv_store_xxx.json"（从 .bak 恢复）
+        target: 只支持 "all"（其他值返回 400）
     """
     from fastapi import HTTPException
-    from niu_api.internal.lightrag_repair import repair_vdb, repair_kv_store, repair_all
-    from niu_api.internal.lightrag_manager import reset_init_state
-    import niu_api.internal.lightrag_manager as lm
+    from niu_api.internal.lightrag_manager import run_repair_on_user_request
 
-    if target == "all":
-        result = repair_all()
-    elif target.startswith("vdb_"):
-        result = {target: repair_vdb(target)}
-    elif target.startswith("kv_store_"):
-        result = {target: repair_kv_store(target)}
-    else:
-        raise HTTPException(status_code=400, detail=f"未知 target: {target}")
+    if target != "all":
+        raise HTTPException(status_code=400, detail=f"v5 只支持 target=all，收到: {target}")
 
-    reset_init_state()
-    # 修复后重跑 check_all 更新 _integrity_result，让前端立即看到健康状态
-    from niu_api.internal.lightrag_integrity import check_all
-    lm._integrity_result = check_all()
-    return {"status": "ok", "result": result, "integrity": lm._integrity_result}
+    result = run_repair_on_user_request()
+    return {"status": "ok", "result": result}
 
 
 @router.get("/search_entities")
