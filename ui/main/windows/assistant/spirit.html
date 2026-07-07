@@ -1,0 +1,714 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>妞妞</title>
+  <!-- 英文手写字体 fallback -->
+  <link href="https://fonts.googleapis.com/css2?family=Caveat:wght@400;600&display=swap" rel="stylesheet">
+  <style>
+    /* 本地中文字体 - 阿朱泡泡体 */
+    @font-face {
+      font-family: 'AZhuPaoPaoTi';
+      src: url('fonts/AZhuPaoPaoTi.ttf') format('truetype');
+      font-weight: normal;
+      font-style: normal;
+      font-display: swap;
+    }
+    
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { 
+      background: transparent; 
+      overflow: hidden;
+      width: 100%;
+      height: 100%;
+    }
+    
+    /* 小女孩容器 */
+    #spirit {
+      width: 96px;
+      height: 144px;
+      cursor: grab;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: width 0.2s ease, height 0.2s ease;
+    }
+    #spirit:active { cursor: grabbing; }
+    #spirit img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      pointer-events: none;
+    }
+    #spirit.hover {
+      width: 120px;
+      height: 180px;
+    }
+    
+    /* 待处理红点 */
+    #pending-badge {
+      position: absolute;
+      top: -5px;
+      right: -5px;
+      background: #e74c3c;
+      color: white;
+      font-size: 11px;
+      min-width: 18px;
+      height: 18px;
+      border-radius: 9px;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 30;
+      font-family: system-ui, sans-serif;
+      font-weight: bold;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+    }
+    #pending-badge.show { display: flex; }
+    
+    /* 入库进度指示器 */
+    #progress-ring {
+      display: none;
+      transition: opacity 0.3s ease;
+    }
+    #progress-ring.visible {
+      display: block;
+      animation: progress-fade-in 0.3s ease;
+    }
+    @keyframes progress-fade-in {
+      from { opacity: 0; transform: translateX(-50%) scale(0.8); }
+      to   { opacity: 1; transform: translateX(-50%) scale(1); }
+    }
+    #progress-arc {
+      transition: stroke-dashoffset 0.5s ease;
+    }
+    
+    /* 拖拽状态 */
+    #spirit.drag-over {
+      filter: drop-shadow(0 0 20px rgba(52, 152, 219, 0.8));
+    }
+    #spirit.drag-over.shift-mode {
+      filter: drop-shadow(0 0 20px rgba(46, 204, 113, 0.8));
+    }
+    #spirit.drag-over.ctrl-mode {
+      filter: drop-shadow(0 0 20px rgba(155, 89, 182, 0.8));
+    }
+    
+    /* 拖拽提示 */
+    #drop-hint {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background: rgba(0, 0, 0, 0.7);
+      color: white;
+      padding: 8px 12px;
+      border-radius: 8px;
+      font-size: 12px;
+      font-family: 'AZhuPaoPaoTi', cursive;
+      display: none;
+      pointer-events: none;
+      z-index: 100;
+      white-space: nowrap;
+    }
+    #drop-hint.show { display: block; }
+    
+    /* 提醒气泡 */
+    #alert-bubble {
+      position: absolute;
+      top: -40px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(255, 87, 87, 0.95);
+      color: white;
+      padding: 8px 16px;
+      border-radius: 12px;
+      font-size: 12px;
+      font-family: 'AZhuPaoPaoTi', cursive;
+      display: none;
+      pointer-events: none;
+      z-index: 100;
+      white-space: nowrap;
+      animation: bounce 0.5s ease infinite alternate;
+    }
+    #alert-bubble.show { display: block; }
+    
+    @keyframes bounce {
+      from { transform: translateX(-50%) translateY(0); }
+      to { transform: translateX(-50%) translateY(-5px); }
+    }
+  </style>
+</head>
+<body>
+  <div id="spirit">
+    <img id="gif" src="idle1.gif" />
+  </div>
+  <div id="pending-badge">0</div>
+  <!-- 入库进度指示器 -->
+  <svg id="progress-ring" width="36" height="36" viewBox="0 0 36 36"
+       style="position:absolute; bottom:4px; left:50%; transform:translateX(-50%);
+              pointer-events:none; z-index:100;">
+    <circle cx="18" cy="18" r="15" fill="none" stroke="rgba(102,126,234,0.2)" stroke-width="3"/>
+    <circle id="progress-arc" cx="18" cy="18" r="15" fill="none"
+            stroke="rgba(102,126,234,0.9)" stroke-width="3" stroke-linecap="round"
+            stroke-dasharray="94.25" stroke-dashoffset="94.25"
+            transform="rotate(-90 18 18)"/>
+    <text id="progress-text" x="18" y="19" text-anchor="middle" dominant-baseline="central"
+          fill="white" font-size="9" font-family="system-ui, sans-serif" font-weight="bold">0%</text>
+  </svg>
+  <div id="drop-hint">释放以复制文件</div>
+  <div id="alert-bubble">有事找你 🔔</div>
+
+  <script>
+    // ========== 配置 ==========
+    const IDLE_TIMEOUT = (window.electronAPI && window.electronAPI.IDLE_TIMEOUT) || (5 * 60 * 1000);
+    const IDLE_SWITCH_INTERVAL = 10 * 1000;
+    const TRANSITION_DURATION = 5000;
+    
+    // 尺寸配置
+    const SIZE = {
+      normal: { width: 96, height: 144 },
+      hover: { width: 120, height: 180 }
+    };
+    
+    // ========== GIF 资源 ==========
+    const GIFS = {
+      idle: ['idle1.gif', 'idle2.gif'],
+      wake: 'wake.gif',
+      sleep: 'sleep.gif',
+      busy: 'busy.gif',
+      toSleep: 'to-sleep.gif',
+      toBusy: 'to-busy.gif',
+      alert: 'alert.gif'  // 蹦高动画 - 有事叫用户
+    };
+    
+    // ========== 状态机（引用计数 + ALERT 优先级） ==========
+    const State = { IDLE: 'idle', WAKE: 'wake', SLEEP: 'sleep', BUSY: 'busy', ALERT: 'alert' };
+    
+    let currentState = State.IDLE;
+    let busyCount = 0;  // 引用计数：0=IDLE, >0=BUSY
+    let previousStateBeforeAlert = null;  // ALERT 之前的状态
+    let idleTimer = null;
+    let idleSwitchTimer = null;
+    let currentIdleGif = 0;
+    let isDragging = false;
+    let hasDragged = false;
+    let dragStartPos = { x: 0, y: 0 };
+    let dragOffset = { x: 0, y: 0 };
+    let hoverTimer = null;
+    
+    const spirit = document.getElementById('spirit');
+    const gif = document.getElementById('gif');
+    const pendingBadge = document.getElementById('pending-badge');
+    
+    // ========== 忙碌计数管理 ==========
+    function incrementBusy(reason) {
+      busyCount++;
+      console.log(`[BusyCount] +1 (${reason}) → ${busyCount}`);
+      if (busyCount === 1) {
+        // 从 IDLE 变为 BUSY
+        setState(State.BUSY);
+      }
+    }
+    
+    function decrementBusy(reason) {
+      if (busyCount > 0) {
+        busyCount--;
+        console.log(`[BusyCount] -1 (${reason}) → ${busyCount}`);
+        if (busyCount === 0) {
+          // 从 BUSY 变为 IDLE
+          setState(State.IDLE);
+        }
+      }
+    }
+    
+    // ========== 待处理事务 ==========
+    function updatePendingCount() {
+      // TODO: 从后端获取真实数据
+      const count = 0;
+      if (count > 0) {
+        pendingBadge.textContent = count > 99 ? '99+' : count;
+        pendingBadge.classList.add('show');
+      } else {
+        pendingBadge.classList.remove('show');
+      }
+    }
+    
+    // ========== 状态转换 ==========
+    function setState(newState) {
+      const previousState = currentState;
+      
+      // ALERT 状态：保存之前状态
+      if (newState === State.ALERT && currentState !== State.ALERT) {
+        previousStateBeforeAlert = currentState;
+        console.log('[State] 进入 ALERT，保存之前状态:', previousStateBeforeAlert);
+      }
+      
+      currentState = newState;
+      
+      clearTimeout(idleTimer);
+      clearInterval(idleSwitchTimer);
+      
+      window.electronAPI.sendState(newState);
+      
+      switch (newState) {
+        case State.IDLE:
+          startIdleAnimation();
+          startIdleTimer();
+          break;
+          
+        case State.WAKE:
+          gif.src = GIFS.wake;
+          idleTimer = setTimeout(() => setState(State.IDLE), 3000);
+          break;
+          
+        case State.SLEEP:
+          if (previousState === State.IDLE) {
+            gif.src = GIFS.toSleep;
+            setTimeout(() => {
+              if (currentState === State.SLEEP) gif.src = GIFS.sleep;
+            }, TRANSITION_DURATION);
+          } else {
+            gif.src = GIFS.sleep;
+          }
+
+          // 闲置整理：进入 SLEEP 状态后触发上下文整理
+          triggerTidy();
+          break;
+          
+        case State.BUSY:
+          // 只有从非BUSY状态进入时才播放过渡动画
+          if (previousState !== State.BUSY) {
+            // 先播放过渡动画
+            gif.src = '';
+            setTimeout(() => {
+              gif.src = GIFS.toBusy;
+            }, 10);
+
+            // 5秒后切换到忙碌状态
+            setTimeout(() => {
+              if (currentState === State.BUSY) {
+                gif.src = GIFS.busy;
+              }
+            }, TRANSITION_DURATION);
+          } else {
+            gif.src = GIFS.busy;
+          }
+          break;
+          
+        case State.ALERT:
+          // 有事叫用户 - 播放蹦高动画
+          gif.src = GIFS.alert;
+          // 显示消息气泡
+          showAlertBubble();
+          break;
+      }
+    }
+    
+    // 结束 ALERT 状态，恢复之前状态
+    function endAlert() {
+      if (currentState !== State.ALERT) return;
+      
+      console.log('[State] 结束 ALERT，恢复到:', previousStateBeforeAlert);
+      
+      if (previousStateBeforeAlert) {
+        setState(previousStateBeforeAlert);
+      } else {
+        // 默认恢复到 IDLE
+        setState(State.IDLE);
+      }
+      previousStateBeforeAlert = null;
+    }
+    
+    function startIdleAnimation() {
+      currentIdleGif = Math.floor(Math.random() * GIFS.idle.length);
+      gif.src = GIFS.idle[currentIdleGif];
+      idleSwitchTimer = setInterval(() => {
+        if (currentState !== State.IDLE) return;
+        currentIdleGif = (currentIdleGif + 1) % GIFS.idle.length;
+        gif.src = GIFS.idle[currentIdleGif];
+      }, IDLE_SWITCH_INTERVAL);
+    }
+    
+    function startIdleTimer() {
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => {
+        if (currentState === State.IDLE) setState(State.SLEEP);
+      }, IDLE_TIMEOUT);
+    }
+    
+    // ========== 提醒气泡 ==========
+    let alertMessage = '';
+    
+    function showAlertBubble() {
+      const bubble = document.getElementById('alert-bubble');
+      if (bubble && alertMessage) {
+        bubble.textContent = alertMessage;
+        bubble.classList.add('show');
+        // 5秒后隐藏
+        setTimeout(() => {
+          bubble.classList.remove('show');
+        }, 5000);
+      }
+    }
+    
+    // 收到提醒时调用
+    function handleReminder(message) {
+      alertMessage = message;
+      setState(State.ALERT);
+    }
+    
+    // 闲置整理：调用后端整理上下文
+    async function triggerTidy() {
+      try {
+        // 从 Electron 主进程获取当前 session ID
+        // window-config.json 由主进程维护，渲染进程无法直接读取
+        const sessionId = await window.electronAPI.getChatSessionId();
+        
+        if (!sessionId) {
+          console.log('[Tidy] No session ID, skip tidy');
+          return;
+        }
+        
+        console.log('[Tidy] Triggering context tidy for session:', sessionId);
+        const response = await fetch('http://127.0.0.1:9876/api/context/tidy', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ session_id: sessionId, mode: 'sleep' })
+        });
+        
+        const result = await response.json();
+        console.log('[Tidy] Result:', result);
+      } catch (error) {
+        console.error('[Tidy] Error:', error);
+      }
+    }
+    
+    // ========== 拖拽窗口 ==========
+    spirit.addEventListener('mousedown', (e) => {
+      if (e.button !== 0) return;
+      isDragging = true;
+      hasDragged = false;
+      dragStartPos.x = e.screenX;
+      dragStartPos.y = e.screenY;
+      dragOffset.x = e.screenX - window.screenX;
+      dragOffset.y = e.screenY - window.screenY;
+      e.preventDefault();
+    });
+    
+    document.addEventListener('mousemove', (e) => {
+      if (!isDragging) return;
+      const dx = Math.abs(e.screenX - dragStartPos.x);
+      const dy = Math.abs(e.screenY - dragStartPos.y);
+      if (dx > 5 || dy > 5) hasDragged = true;
+      window.electronAPI.setPosition(e.screenX - dragOffset.x, e.screenY - dragOffset.y);
+    });
+    
+    document.addEventListener('mouseup', () => {
+      if (isDragging && hasDragged) {
+        window.electronAPI.savePosition();
+      }
+      isDragging = false;
+    });
+    
+    // ========== 鼠标悬停 ==========
+    spirit.addEventListener('mouseenter', () => {
+      spirit.classList.add('hover');
+      window.electronAPI.resizeWindow(SIZE.hover.width, SIZE.hover.height);
+      window.electronAPI.spiritMouseEnter();
+
+      // 1秒后显示便签窗口
+      clearTimeout(hoverTimer);
+      hoverTimer = setTimeout(() => {
+        window.electronAPI.showSticky();
+      }, 1000);
+
+      // 鼠标移到小女孩身上：清除alert，唤醒
+      if (currentState === State.ALERT) {
+        endAlert();
+      } else if (currentState === State.IDLE || currentState === State.SLEEP) {
+        setState(State.WAKE);
+      }
+    });
+    
+    spirit.addEventListener('mouseleave', () => {
+      spirit.classList.remove('hover');
+      window.electronAPI.resizeWindow(SIZE.normal.width, SIZE.normal.height);
+      clearTimeout(hoverTimer);
+      window.electronAPI.spiritMouseLeave();
+      window.electronAPI.hideSticky();
+      if (currentState === State.WAKE) setState(State.IDLE);
+    });
+    
+    // ========== 点击打开聊天 ==========
+    spirit.addEventListener('click', (e) => {
+      if (hasDragged) {
+        hasDragged = false;
+        return;
+      }
+      
+      // 如果是 ALERT 状态，先结束蹦高
+      if (currentState === State.ALERT) {
+        endAlert();
+      }
+      
+      window.electronAPI.openChat();
+    });
+    
+    // ========== 接收聊天关闭通知 ==========
+    window.electronAPI.onChatClosed(() => {});
+    
+    // ========== 文件拖拽处理 ==========
+    const dropHint = document.getElementById('drop-hint');
+    
+    // 阻止默认拖拽行为
+    document.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+    });
+    
+    document.addEventListener('drop', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+    });
+    
+    // 拖拽进入 spirit 区域
+    spirit.addEventListener('dragenter', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      spirit.classList.add('drag-over');
+      updateDropHint(e);
+      dropHint.classList.add('show');
+      // 拖入时保持默认状态，不触发忙碌
+    });
+    
+    // 拖拽在 spirit 上移动
+    spirit.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      updateDropHint(e);
+    });
+    
+    // 拖拽离开 spirit 区域
+    spirit.addEventListener('dragleave', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      spirit.classList.remove('drag-over', 'shift-mode', 'ctrl-mode');
+      dropHint.classList.remove('show');
+      // 离开时恢复默认状态
+    });
+    
+    // 文件放下
+    spirit.addEventListener('drop', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      spirit.classList.remove('drag-over', 'shift-mode', 'ctrl-mode');
+      dropHint.classList.remove('show');
+      
+      const files = e.dataTransfer.files;
+      if (files.length === 0) {
+        return;
+      }
+      
+      // 判断拖入方式（匹配 Windows 习惯）
+      let mode = 'copy';
+      if (e.shiftKey) {
+        mode = 'move';
+      } else if (e.ctrlKey) {
+        mode = 'reference';
+      }
+      
+      // 使用引用计数进入忙碌状态
+      incrementBusy('file-drop');
+      
+      // 发送文件到后端处理
+      handleDroppedFiles(files, mode);
+    });
+    
+    // ========== 接收后端忙碌状态通知 ==========
+    // 后端可以通知前端进入/退出忙碌状态
+    window.electronAPI.onBusyState((isBusy, reason) => {
+      if (isBusy) {
+        incrementBusy(reason || 'backend');
+      } else {
+        decrementBusy(reason || 'backend');
+      }
+    });
+    
+    function updateDropHint(e) {
+      spirit.classList.remove('shift-mode', 'ctrl-mode');
+      
+      if (e.shiftKey) {
+        dropHint.textContent = '释放以移动文件';
+        spirit.classList.add('shift-mode');
+      } else if (e.ctrlKey) {
+        dropHint.textContent = '释放以引用文件';
+        spirit.classList.add('ctrl-mode');
+      } else {
+        dropHint.textContent = '释放以复制文件';
+      }
+    }
+    
+    // 处理拖入的文件
+    async function handleDroppedFiles(files, mode) {
+      const fileList = [];
+      for (const file of files) {
+        fileList.push({
+          name: file.name,
+          size: file.size,
+          type: file.type,
+          path: file.path
+        });
+      }
+
+      // 构建入库指令（简洁，避免 Agent 当对话回复而不调用工具）
+      let modeHint = '';
+      if (mode === 'reference') {
+        modeHint = '（引用模式，使用原路径引用文件，不要拷贝）';
+      } else if (mode === 'move') {
+        modeHint = '（移动模式，将文件移动到存储目录）';
+      }
+      const message = `入库文件${modeHint}：${fileList.map(f => f.path.replace(/\\/g, '/')).join('、')}`;
+      
+      // 发送消息给 Agent
+      const result = await window.electronAPI.sendToAgent(message, { files: fileList, mode });
+      
+      // 收到响应后减少忙碌计数
+      decrementBusy('file-drop-response');
+      
+      // 不再显示"完成"气泡 — 入库进度由轮询自动展示
+      // 但保留错误反馈：失败时在进度环上显示红色感叹号
+      if (result && result.error) {
+        showProgressError();
+      }
+    }
+
+    // ========== 入库进度轮询 ==========
+    const PROGRESS_API = 'http://127.0.0.1:9876/api/kg/pipeline_status';
+    const PROGRESS_POLL_INTERVAL = 3000;  // 3秒轮询
+    let progressPollTimer = null;
+    let lastProgressBusy = false;
+
+    const progressRing = document.getElementById('progress-ring');
+    const progressArc = document.getElementById('progress-arc');
+    const progressText = document.getElementById('progress-text');
+    const CIRCUMFERENCE = 2 * Math.PI * 15;  // r=15, ≈94.25
+
+    function showProgressRing(percent) {
+      if (!progressRing) return;
+      const clamped = Math.max(0, Math.min(100, percent));
+      const offset = CIRCUMFERENCE * (1 - clamped / 100);
+      progressArc.setAttribute('stroke-dashoffset', offset);
+      progressText.textContent = clamped + '%';
+      progressRing.style.display = '';  // Clear inline style set by hideProgressRing
+      progressRing.classList.add('visible');
+    }
+
+    function hideProgressRing() {
+      if (!progressRing) return;
+      progressRing.classList.remove('visible');
+      setTimeout(() => {
+        if (!progressRing.classList.contains('visible')) {
+          progressRing.style.display = 'none';
+        }
+      }, 300);
+    }
+
+    function showProgressError() {
+      if (!progressText || !progressArc) return;
+      progressText.textContent = '!';
+      progressArc.setAttribute('stroke', 'rgba(231, 76, 60, 0.9)');  // 红色
+      setTimeout(() => {
+        progressArc.setAttribute('stroke', 'rgba(102,126,234,0.9)');  // 恢复原色
+        progressText.textContent = '0%';
+        showProgressRing(0);
+      }, 5000);
+    }
+
+    async function pollPipelineStatus() {
+      try {
+        const resp = await fetch(PROGRESS_API);
+        const data = await resp.json();
+
+        if (data.busy) {
+          showProgressRing(data.progress);
+          lastProgressBusy = true;
+        } else if (lastProgressBusy) {
+          hideProgressRing();
+          lastProgressBusy = false;
+        }
+      } catch (e) {
+        console.debug('[Progress] poll failed:', e.message);
+      }
+    }
+
+    function startProgressPolling() {
+      if (progressPollTimer) return;
+      pollPipelineStatus();
+      progressPollTimer = setInterval(pollPipelineStatus, PROGRESS_POLL_INTERVAL);
+    }
+
+    function stopProgressPolling() {
+      if (progressPollTimer) {
+        clearInterval(progressPollTimer);
+        progressPollTimer = null;
+      }
+    }
+
+    // 格式化文件大小
+    function formatSize(bytes) {
+      if (bytes < 1024) return bytes + ' B';
+      if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+      return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+    }
+
+    // ========== 初始化 ==========
+    window.electronAPI.resizeWindow(SIZE.normal.width, SIZE.normal.height);
+    setState(State.IDLE);
+    updatePendingCount();
+    
+    // 监听蹦高通知（有新消息但窗口不在焦点）
+    window.electronAPI.onAlert((message) => {
+      console.log('[Spirit] 收到蹦高通知:', message);
+      alertMessage = message;
+      setState(State.ALERT);
+    });
+    
+    // 监听提醒消息（旧接口，保留兼容）
+    window.electronAPI.onReminder((message) => {
+      console.log('[Spirit] 收到提醒:', message);
+      handleReminder(message);
+    });
+    
+    // 监听用户活动通知（聊天窗口有活动时重置空闲计时器）
+    window.electronAPI.onUserActivity(() => {
+      if (currentState === State.SLEEP) {
+        console.log('[Spirit] 用户活动，从睡眠中唤醒');
+        transitionTo(State.IDLE);
+      } else if (currentState === State.IDLE) {
+        console.log('[Spirit] 用户活动，重置空闲计时器');
+        startIdleTimer();
+      }
+    });
+
+    // 启动入库进度轮询
+    startProgressPolling();
+
+    // 监听入库进度SSE事件（由后端pipeline watcher推送）
+    // ingest-started：立即轮询一次以快速显示进度，无需等3秒间隔
+    // ingest-completed：触发最终轮询以清除进度环
+    window.electronAPI.onIngestStarted && window.electronAPI.onIngestStarted(() => {
+      console.log('[Spirit] ingest-started SSE event received');
+      pollPipelineStatus();
+    });
+    window.electronAPI.onIngestCompleted && window.electronAPI.onIngestCompleted(() => {
+      console.log('[Spirit] ingest-completed SSE event received');
+      pollPipelineStatus();
+    });
+
+    // 窗口关闭时停止轮询，避免后台空转
+    window.addEventListener('beforeunload', stopProgressPolling);
+  </script>
+</body>
+</html>

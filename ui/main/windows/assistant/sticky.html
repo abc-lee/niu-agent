@@ -1,0 +1,587 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>便签</title>
+  <!-- 英文手写字体 fallback -->
+  <link href="https://fonts.googleapis.com/css2?family=Caveat:wght@400;600&display=swap" rel="stylesheet">
+  <style>
+    /* 本地中文字体 - 阿朱泡泡体 */
+    @font-face {
+      font-family: 'AZhuPaoPaoTi';
+      src: url('fonts/AZhuPaoPaoTi.ttf') format('truetype');
+      font-weight: normal;
+      font-style: normal;
+      font-display: swap;
+    }
+    
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body {
+      background: transparent;
+      overflow: hidden;
+      width: 100%;
+      height: 100%;
+      font-family: 'AZhuPaoPaoTi', 'Caveat', system-ui, sans-serif;
+      /* 铅笔笔迹效果 */
+      color: #000;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* 主容器 */
+    .container {
+      width: 100%;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding: 8px;
+    }
+
+    /* 便利贴通用样式 */
+    .sticky {
+      position: relative;
+      border-radius: 4px;
+      box-shadow: 2px 2px 5px rgba(0,0,0,0.1);
+    }
+    .sticky::before {
+      content: '';
+      position: absolute;
+      left: 0;
+      top: 0;
+      right: 0;
+      bottom: 0;
+      background: linear-gradient(135deg, rgba(255,255,255,0.15) 0%, transparent 50%);
+      pointer-events: none;
+      border-radius: 4px;
+      z-index: 1;
+    }
+    /* 棉纸纹理 */
+    .sticky { background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.08'/%3E%3C/svg%3E"); }
+
+    /* 上便利贴（输入区域） */
+    #sticky-input {
+      flex-shrink: 0;
+      width: 80px;
+      height: 80px;
+      display: flex;
+      align-items: stretch;
+    }
+    #sticky-input .input-area {
+      width: 100%;
+      height: 100%;
+      background: transparent;
+      border: none;
+      font-family: 'AZhuPaoPaoTi', cursive;
+      color: #000;
+      outline: none;
+      text-align: center;
+      padding: 0;
+      margin: 0;
+      resize: none;
+      overflow: hidden;
+      word-break: break-all;
+      line-height: 1.3;
+      box-sizing: border-box;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      white-space: pre-wrap;
+      word-break: break-all;
+      /* 铅笔笔迹效果 */
+      -webkit-text-stroke: 0.2px rgba(0,0,0,0.35);
+    }
+    #sticky-input .input-area:empty::before {
+      content: attr(data-placeholder);
+      color: rgba(0,0,0,0.3);
+    }
+
+    /* 下便利贴（一条旧便签） */
+    #old-sticky {
+      flex-shrink: 0;
+      width: 80px;
+      height: 80px;
+      cursor: pointer;
+      position: relative;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    #old-sticky .content {
+      width: 100%;
+      height: 100%;
+      padding: 6px;
+      text-align: center;
+      word-break: break-all;
+      overflow: hidden;
+      color: #000;
+      box-sizing: border-box;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      /* 铅笔笔迹效果 */
+      -webkit-text-stroke: 0.2px rgba(0,0,0,0.35);
+    }
+    #old-sticky .content:focus {
+      outline: none;
+      background: rgba(255,255,255,0.2);
+    }
+
+    /* 删除按钮 */
+    #old-sticky .delete-btn {
+      position: absolute;
+      top: 4px;
+      right: 4px;
+      opacity: 0;
+      background: rgba(0,0,0,0.15);
+      border: none;
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      cursor: pointer;
+      font-size: 11px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: opacity 0.2s;
+      z-index: 10;
+    }
+    #old-sticky:hover .delete-btn {
+      opacity: 1;
+    }
+
+    /* 翻页提示 */
+    .page-hint {
+      position: absolute;
+      bottom: -18px;
+      left: 50%;
+      transform: translateX(-50%);
+      font-size: 9px;
+      color: rgba(0,0,0,0.4);
+      white-space: nowrap;
+      z-index: 20;
+      pointer-events: none;
+    }
+
+    /* 便签颜色 */
+    .粉色 { background-color: #f8a7c8; }
+    .嫩绿 { background-color: #9bc295; }
+    .天蓝 { background-color: #78b2be; }
+    .薄荷 { background-color: #a3f0c2; }
+    .灰绿 { background-color: #c4ddc8; }
+    .黄色 { background-color: #e7ca4a; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <!-- 上便利贴（新便签 - 输入） -->
+    <div id="sticky-input" class="sticky 黄色">
+      <div class="input-area" contenteditable="true" data-placeholder="输入，回车保存..."></div>
+    </div>
+
+    <!-- 下便利贴（旧便签 - 可编辑） -->
+    <div id="old-sticky" class="sticky 黄色">
+      <div class="content" contenteditable="true" spellcheck="false"></div>
+      <button class="delete-btn" title="删除">×</button>
+    </div>
+    <div class="page-hint">滚轮翻页 | Ctrl+滚轮缩放</div>
+  </div>
+
+  <script>
+    // ========== 配置 ==========
+    const STICKY_SIZE_KEY = 'nn_sticky_size';
+    const DEFAULT_SIZE = 80; // 默认边长
+    const MIN_SIZE = 60;
+    const MAX_SIZE = 250;
+
+    // ========== 颜色规则 ==========
+    // 所有可用颜色（新便签用黄色，旧便签用其他颜色循环）
+    const ALL_COLORS = ['粉色', '嫩绿', '天蓝', '薄荷', '灰绿'];
+    const NEW_NOTE_COLOR = '黄色';
+
+    // 根据便签索引获取颜色（循环）
+    function getColorByIndex(index) {
+      return ALL_COLORS[index % ALL_COLORS.length];
+    }
+
+    // 关键词颜色规则（可选）
+    const COLOR_RULES = [
+      { pattern: /明天|后天|下.*天|\d+[时分]|早上|下午|晚上|周|星期/, color: '粉色' },
+      { pattern: /电话|手机|邮箱|@|email|手机号/, color: '天蓝' },
+      { pattern: /完成|已|结束|搞定/, color: '嫩绿' },
+      { pattern: /想法|灵感|idea|思考/, color: '薄荷' }
+    ];
+
+    // ========== DOM 元素 ==========
+    const stickyInput = document.getElementById('sticky-input');
+    const stickyInputField = stickyInput.querySelector('.input-area');
+    const oldSticky = document.getElementById('old-sticky');
+    const oldContent = oldSticky.querySelector('.content');
+    const deleteBtn = oldSticky.querySelector('.delete-btn');
+
+    // ========== 状态 ==========
+    let currentPage = 0; // 当前显示的旧便签索引（0 = 最新）
+    let stickySize = DEFAULT_SIZE;
+    let currentNoteId = null; // 当前显示的旧便签 ID
+    let notesCache = []; // 内存缓存，后端为唯一数据源
+
+    // ========== 便签数据管理 ==========
+    function getNotes() {
+      return notesCache;
+    }
+
+    function saveNotes(notes) {
+      notesCache = notes;
+    }
+
+    // 创建便签（调用后端）
+    async function createNoteBackend(note) {
+      try {
+        if (window.electronAPI && window.electronAPI.createNote) {
+          const result = await window.electronAPI.createNote(note);
+          console.log('便签已同步到后端:', result);
+          return result;
+        }
+      } catch (e) {
+        console.error('同步便签到后端失败:', e);
+      }
+      return null;
+    }
+
+    // 删除便签（调用后端）
+    async function deleteNoteBackend(id) {
+      try {
+        if (window.electronAPI && window.electronAPI.deleteNote) {
+          await window.electronAPI.deleteNote(id);
+        }
+      } catch (e) {
+        console.error('从后端删除便签失败:', e);
+      }
+    }
+
+    function detectColor(content, index) {
+      // 先检查关键词规则
+      for (const rule of COLOR_RULES) {
+        if (rule.pattern.test(content)) {
+          // 如果匹配的颜色不是黄色，就用它
+          if (rule.color !== NEW_NOTE_COLOR) {
+            return rule.color;
+          }
+        }
+      }
+      // 否则按索引循环
+      return getColorByIndex(index);
+    }
+
+    // ========== 添加便签 ==========
+    async function addNote(content) {
+      if (!content.trim()) return;
+      const newNote = {
+        id: Date.now().toString(),
+        content: content.trim(),
+        createdAt: Date.now()
+      };
+
+      // 先调后端 API 创建
+      const result = await createNoteBackend(newNote);
+      if (!result) {
+        console.error('创建便签失败，后端未返回结果');
+        return;
+      }
+
+      // 后端创建成功后，更新内存变量
+      const notes = getNotes();
+      notes.unshift(newNote);
+      saveNotes(notes);
+
+      // 清空输入
+      stickyInputField.textContent = '';
+
+      // 刷新显示（重置到第一页）
+      currentPage = 0;
+      renderOldSticky();
+    }
+
+    // ========== 删除便签 ==========
+    async function deleteCurrentNote() {
+      if (!currentNoteId) return;
+      const noteIdToDelete = currentNoteId;
+
+      // 先调后端 API 删除
+      await deleteNoteBackend(noteIdToDelete);
+
+      // 后端删除成功后，更新内存变量
+      const notes = getNotes().filter(n => n.id !== noteIdToDelete);
+      saveNotes(notes);
+
+      // 重新显示
+      currentPage = 0;
+      renderOldSticky();
+    }
+
+    // ========== 更新便签内容 ==========
+    let updateTimer = null;
+    function onContentChange() {
+      if (!currentNoteId) return;
+
+      // 防抖：500ms 后才更新
+      clearTimeout(updateTimer);
+      updateTimer = setTimeout(() => {
+        const content = oldContent.textContent.trim();
+        const notes = getNotes();
+        const noteIndex = notes.findIndex(n => n.id === currentNoteId);
+
+        if (noteIndex >= 0 && content !== notes[noteIndex].content) {
+          notes[noteIndex].content = content;
+          notes[noteIndex].updatedAt = Date.now();
+          saveNotes(notes);
+
+          // 同步更新到后端
+          if (window.electronAPI && window.electronAPI.updateNote) {
+            window.electronAPI.updateNote(notes[noteIndex]).catch(e =>
+              console.error('更新便签到后端失败:', e)
+            );
+          }
+        }
+      }, 500);
+    }
+
+    // ========== 渲染旧便签 ==========
+    function renderOldSticky() {
+      const notes = getNotes();
+      const note = notes[currentPage];
+
+      if (!note) {
+        oldSticky.style.visibility = 'hidden';
+        currentNoteId = null;
+        return;
+      }
+
+      oldSticky.style.visibility = 'visible';
+      currentNoteId = note.id;
+      oldContent.textContent = note.content;
+
+      // 设置颜色：按当前页索引循环分配
+      const displayColor = getColorByIndex(currentPage);
+      oldSticky.className = 'sticky ' + displayColor;
+
+      // 自动缩放文字
+      autoFitText(oldContent);
+
+      // 更新翻页提示
+      updatePageHint();
+    }
+
+    // ========== 文字自动缩放算法 ==========
+    function autoFitText(element) {
+      const text = element.textContent;
+
+      // 空文字
+      if (!text.trim()) {
+        element.style.fontSize = '16px';
+        element.style.lineHeight = '1.3';
+        return;
+      }
+
+      // 设置换行
+      element.style.whiteSpace = 'pre-wrap';
+      element.style.wordBreak = 'break-all';
+      element.style.lineHeight = '1.3';
+
+      // 可用尺寸
+      const availableW = (stickySize || 80) - 12;
+      const availableH = (stickySize || 80) - 12;
+
+      // 创建隐藏的测量元素
+      let measureEl = document.getElementById('_measure_');
+      if (!measureEl) {
+        measureEl = document.createElement('div');
+        measureEl.id = '_measure_';
+        measureEl.style.cssText = 'position:absolute;visibility:hidden;left:-9999px;white-space:pre-wrap;word-break:break-all;line-height:1.3;';
+        document.body.appendChild(measureEl);
+      }
+
+      // 设置测量元素的宽度
+      measureEl.style.width = availableW + 'px';
+      measureEl.textContent = text;
+
+      // 二分查找合适的字体大小
+      let low = 8, high = 28, bestSize = 14;
+
+      while (low <= high) {
+        const mid = Math.floor((low + high) / 2);
+        measureEl.style.fontSize = mid + 'px';
+        const h = measureEl.scrollHeight;
+
+        if (h <= availableH) {
+          bestSize = mid;
+          low = mid + 1; // 尝试更大的字体
+        } else {
+          high = mid - 1; // 太大了，减小
+        }
+      }
+
+      element.style.fontSize = bestSize + 'px';
+    }
+
+    // ========== 翻页提示 ==========
+    function updatePageHint() {
+      const notes = getNotes();
+      const total = notes.length;
+      if (total === 0) {
+        document.querySelector('.page-hint').textContent = '暂无旧便签';
+        return;
+      }
+      document.querySelector('.page-hint').textContent =
+        `第 ${currentPage + 1}/${Math.min(total, 99)} 条 | 滚轮翻页 | Ctrl+滚轮缩放`;
+    }
+
+    // ========== 滚轮翻页 ==========
+    document.addEventListener('wheel', (e) => {
+      // Ctrl + 滚轮 = 缩放
+      if (e.ctrlKey) {
+        e.preventDefault();
+        const delta = e.deltaY > 0 ? -5 : 5;
+        stickySize = Math.max(MIN_SIZE, Math.min(MAX_SIZE, stickySize + delta));
+        applySize();
+        window.electronAPI.saveStickySize(stickySize);
+        return;
+      }
+
+      // 普通滚轮 = 翻页
+      const notes = getNotes();
+      if (notes.length === 0) return;
+
+      if (e.deltaY > 0) {
+        // 向下滚 = 更旧的
+        currentPage = Math.min(currentPage + 1, notes.length - 1);
+      } else {
+        // 向上滚 = 更新
+        currentPage = Math.max(currentPage - 1, 0);
+      }
+      renderOldSticky();
+    }, { passive: false });
+
+    // ========== 应用尺寸 ==========
+    function applySize() {
+      // 更新输入框（正方形）
+      stickyInput.style.width = stickySize + 'px';
+      stickyInput.style.height = stickySize + 'px';
+      // 更新旧便签（正方形）
+      oldSticky.style.width = stickySize + 'px';
+      oldSticky.style.height = stickySize + 'px';
+      // 重新渲染文字
+      autoFitText(stickyInputField);
+      if (currentNoteId) {
+        autoFitText(oldContent);
+      }
+      updatePageHint();
+    }
+
+    // ========== 输入处理 ==========
+    stickyInputField.addEventListener('input', () => {
+      // 文字变化时重新缩放
+      autoFitText(stickyInputField);
+    });
+
+    stickyInputField.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        addNote(stickyInputField.textContent);
+      }
+    });
+
+    // 输入框点击不阻止，让输入框获得焦点
+    stickyInput.addEventListener('click', (e) => {
+      stickyInputField.focus();
+    });
+
+    // ========== 旧便签编辑 ==========
+    oldContent.addEventListener('input', onContentChange);
+    oldContent.addEventListener('blur', () => {
+      // 失去焦点时立即保存
+      clearTimeout(updateTimer);
+      onContentChange();
+    });
+
+    // 删除按钮
+    deleteBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      deleteCurrentNote();
+    });
+
+    // ========== 鼠标进入/离开便签窗口 ==========
+    // 防止输入时误触发隐藏
+    let isInputFocused = false;
+
+    stickyInputField.addEventListener('focus', () => {
+      isInputFocused = true;
+      window.electronAPI.stickyMouseEnter();
+    });
+    stickyInputField.addEventListener('blur', () => {
+      isInputFocused = false;
+      // 失焦时延迟触发 mouseleave，让鼠标有时间移动
+      setTimeout(() => {
+        if (!isInputFocused) {
+          window.electronAPI.stickyMouseLeave();
+        }
+      }, 100);
+    });
+
+    document.querySelector('.container').addEventListener('mouseenter', () => {
+      window.electronAPI.stickyMouseEnter();
+    });
+    document.querySelector('.container').addEventListener('mouseleave', () => {
+      if (!isInputFocused) {
+        window.electronAPI.stickyMouseLeave();
+      }
+    });
+
+    // ========== 初始化 ==========
+    async function loadNotesFromBackend() {
+      // 以后端为唯一数据源
+      try {
+        const resp = await fetch('http://127.0.0.1:9876/api/notes');
+        const data = await resp.json();
+        if (data.status === 'ok' && data.notes) {
+          // 后端有数据，转换为前端格式写入内存缓存
+          const backendNotes = data.notes.map(n => ({
+            id: n.id,
+            content: n.content,
+            createdAt: new Date(n.createdAt).getTime(),
+            updatedAt: n.updatedAt ? new Date(n.updatedAt).getTime() : undefined
+          }));
+          notesCache = backendNotes;
+          console.log(`从后端加载了 ${backendNotes.length} 条便签`);
+          return;
+        }
+      } catch (e) {
+        console.log('后端便签加载失败:', e.message);
+      }
+
+      // 后端无数据或加载失败，内存缓存为空
+      notesCache = [];
+    }
+
+    function init() {
+      // 先从后端加载便签数据
+      loadNotesFromBackend().then(() => {
+        // 加载保存的尺寸
+        window.electronAPI.getStickySize().then(size => {
+          if (size && size >= MIN_SIZE && size <= MAX_SIZE) {
+            stickySize = size;
+          }
+          applySize();
+          renderOldSticky();
+        }).catch(() => {
+          applySize();
+          renderOldSticky();
+        });
+      });
+    }
+
+    init();
+  </script>
+</body>
+</html>

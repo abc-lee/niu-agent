@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>知识图谱 - Niu</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <!-- Loading Overlay -->
+  <div id="loading-overlay" style="position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(250,248,240,0.9);display:none;align-items:center;justify-content:center;z-index:1000;">
+    <div style="text-align:center;font-size:16px;color:#888;">加载中...</div>
+  </div>
+
+  <!-- Empty State -->
+  <div id="empty-state" style="position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(250,248,240,0.95);display:none;align-items:center;justify-content:center;z-index:999;">
+    <div style="text-align:center;color:#aaa;">
+      <div style="font-size:40px;margin-bottom:12px;">🕸️</div>
+      <div style="font-size:16px;">知识图谱暂无数据</div>
+      <div style="font-size:12px;margin-top:6px;">开始对话以构建你的知识网络</div>
+    </div>
+  </div>
+
+  <!-- Toolbar -->
+  <div class="toolbar">
+    <div class="search-wrapper">
+      <div class="search-box">
+        <span class="search-icon">🔍</span>
+        <input type="text" id="searchInput" placeholder="输入关键词，回车搜索...">
+      </div>
+    </div>
+    <div class="perspective-btns">
+      <button class="persp-btn" data-core="person">人物</button>
+      <button class="persp-btn" data-core="organization">组织</button>
+      <button class="persp-btn" data-core="technology">技术</button>
+      <button class="persp-btn" data-core="concept">概念</button>
+      <button class="persp-btn" data-core="location">地点</button>
+      <button class="persp-btn" data-core="event">事件</button>
+      <button class="persp-btn" data-core="document">文档</button>
+      <button class="persp-btn" data-core="photo">图片</button>
+      <button class="persp-btn" data-core="video">视频</button>
+      <button class="persp-btn" data-core="note">便利贴</button>
+      <button class="persp-btn" data-core="chat">对话</button>
+      <button class="persp-btn" data-core="skill">技能</button>
+      <button class="persp-btn" data-core="tool">工具</button>
+      <button class="persp-btn" data-core="knowledge">知识</button>
+      <button class="persp-btn" data-core="interactionhabit">习惯</button>
+      <button class="persp-btn" data-core="episodicevent">情景记忆</button>
+      <button class="persp-btn" data-core="brainregion">脑区</button>
+    </div>
+  </div>
+
+  <!-- Graph Container -->
+  <div id="graph-container"></div>
+
+  <!-- Subgraph Controls (visible only in subgraph mode) -->
+  <div id="subgraph-controls" class="subgraph-controls hidden">
+    <div class="subgraph-depth">
+      <button id="depth-down" class="depth-btn">−</button>
+      <span id="depth-display">1</span>
+      <button id="depth-up" class="depth-btn">+</button>
+    </div>
+    <button id="exit-subgraph" class="exit-btn">返回总览</button>
+  </div>
+
+  <!-- Search Dropdown (body-level for proper z-index stacking) -->
+  <div id="search-dropdown" class="search-dropdown hidden"></div>
+
+  <!-- Node Tooltip -->
+  <div id="node-tooltip" class="tooltip hidden"></div>
+
+  <!-- Detail Panel -->
+  <div id="detail-panel" class="detail-panel hidden">
+    <div class="detail-header">
+      <h2 id="detail-title"></h2>
+      <button id="close-detail" class="close-btn">×</button>
+    </div>
+    <div class="detail-content" id="detail-content"></div>
+    <div class="detail-actions">
+      <button id="focus-node" class="action-btn">在图谱中聚焦</button>
+      <button id="open-file" class="action-btn" disabled>打开文件</button>
+      <button id="open-folder" class="action-btn" disabled>打开文件夹</button>
+    </div>
+  </div>
+
+  <!-- Status Bar -->
+  <div class="status-bar">
+    <span id="stats"></span>
+  </div>
+
+  <script src="./node_modules/force-graph/dist/force-graph.min.js"></script>
+  <script src="renderer.js"></script>
+</body>
+</html>
