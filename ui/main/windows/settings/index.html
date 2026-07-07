@@ -46,6 +46,7 @@
       font-family: 'Ma Shan Zheng', cursive;
       box-shadow: 2px 2px 4px rgba(0,0,0,0.1);
       transition: transform 0.2s;
+      -webkit-app-region: no-drag;
     }
     .close-btn:hover { 
       transform: scale(1.1);
@@ -303,6 +304,14 @@
     </div>
   </div>
 
+  <div id="confirmModal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:9999; align-items:center; justify-content:center;">
+    <div style="background:#fff; padding:20px; border-radius:8px; max-width:400px; text-align:center;">
+      <p style="margin:0 0 15px 0; font-size:14px; color:#333;">模型配置尚未验证通过，确定要退出吗？退出后应用可能无法正常工作。</p>
+      <button id="confirmYes" style="margin:0 5px; padding:6px 16px; background:#ff6b6b; color:#fff; border:none; border-radius:4px; cursor:pointer;">确定退出</button>
+      <button id="confirmNo" style="margin:0 5px; padding:6px 16px; background:#999; color:#fff; border:none; border-radius:4px; cursor:pointer;">取消</button>
+    </div>
+  </div>
+
   <script>
     let presets = [];
     let testPassedInSession = false;
@@ -430,11 +439,19 @@
     // Close button handler
     document.querySelector('.close-btn').addEventListener('click', () => {
       if (!testPassedInSession) {
-        if (!confirm('模型配置尚未验证通过，确定要退出吗？退出后应用可能无法正常工作。')) {
-          return;
-        }
+        const modal = document.getElementById('confirmModal');
+        modal.style.display = 'flex';
+        return;  // 等用户点模态层的按钮
       }
       window.electronAPI.closeWindow();
+    });
+
+    // 模态层按钮
+    document.getElementById('confirmYes').addEventListener('click', () => {
+      window.electronAPI.closeWindow();
+    });
+    document.getElementById('confirmNo').addEventListener('click', () => {
+      document.getElementById('confirmModal').style.display = 'none';
     });
     
     init();
