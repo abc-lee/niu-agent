@@ -10,7 +10,7 @@ use std::thread;
 use std::time::Duration;
 
 use clap::Parser;
-use iced::widget::container;
+use iced::widget::{button, column, container, row, text};
 use iced::window;
 use iced::{Element, Font, Length, Subscription, Task, Theme};
 use serde::Deserialize;
@@ -32,6 +32,33 @@ const CJK_FONT: Font = Font::with_name("Microsoft YaHei");
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 const CJK_FONT: Font = Font::with_name("Noto Sans CJK SC");
 
+/// LightRAG status reported by `/api/kg/stats`.
+/// Only the fields the launcher needs for alerting are decoded.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LightragStatus {
+    init_failed: bool,
+    init_retry_in_seconds: Option<f64>,
+    integrity: Option<IntegrityStatus>,
+}
+
+/// LightRAG data integrity summary reported by `/api/kg/stats`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct IntegrityStatus {
+    ok: bool,
+    total_errors: i32,
+}
+
+/// Alert payload rendered by the splash window when LightRAG startup
+/// detection finds init failures or integrity errors.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+struct LightragAlert {
+    message: String,
+    total_errors: i32,
+}
+
 /// Splash window state
 struct Splash {
     /// Receiver for the "ready" signal from the launcher background thread.
@@ -43,6 +70,16 @@ struct Splash {
     dock_hidden: bool,
     /// Animation frame counter for the "..." dots (0..3 cycles)
     dot_frame: u8,
+    /// Whether the one-shot LightRAG status check has been dispatched.
+    /// Prevents repeated queries while the splash is polling the ready channel.
+    status_checked: bool,
+    /// Whether the Python API has reported ready at least once.
+    /// Status check only fires after the API is reachable so that
+    /// `/api/kg/stats` does not 404 during early boot.
+    niu_api_ready: bool,
+    /// Active alert; when set, splash renders the alert view instead of
+    /// the "正在启动" splash.
+    alert: Option<LightragAlert>,
 }
 
 #[derive(Debug, Clone)]
@@ -53,6 +90,14 @@ enum SplashMessage {
     WindowOpened(window::Id),
     /// First tick after window opened — hide Dock icon
     HideDockIcon,
+    /// Result of the one-shot `/api/kg/stats` query dispatched at startup.
+    StatusCheckResult(Result<LightragStatus, String>),
+    /// User clicked the "修复" button — trigger `/api/kg/lightrag/repair?target=all`.
+    RepairLightrag,
+    /// Result of the repair API call.
+    RepairResult(Result<String, String>),
+    /// User clicked the "继续" button — dismiss the alert and continue booting.
+    DismissAlert,
 }
 
 impl Splash {
@@ -62,6 +107,9 @@ impl Splash {
             window_id: None,
             dock_hidden: false,
             dot_frame: 0,
+            status_checked: false,
+            niu_api_ready: false,
+            alert: None,
         }
     }
 
@@ -75,8 +123,57 @@ impl Splash {
                     self.dock_hidden = true;
                     return Task::done(SplashMessage::HideDockIcon);
                 }
-                // Non-blocking check: if the launcher thread sent the ready signal, close the window
-                if self.ready_rx.lock().unwrap().try_recv().is_ok() {
+
+                // Probe Python API readiness with a short-timeout /health check.
+                // This flips niu_api_ready as soon as the API responds, even before
+                // the background thread sends the ready signal, so the one-shot
+                // LightRAG status check fires at the earliest possible moment.
+                if !self.niu_api_ready {
+                    if let Ok(client) = reqwest::blocking::Client::builder()
+                        .timeout(Duration::from_millis(500))
+                        .build()
+                    {
+                        let url = format!("http://127.0.0.1:{}/health", 9876);
+                        if let Ok(resp) = client.get(&url).send() {
+                            if resp.status().is_success() {
+                                self.niu_api_ready = true;
+                            }
+                        }
+                    }
+                }
+
+                // One-shot LightRAG status check: dispatch as soon as the API
+                // is reachable. Run the blocking request on a std thread and
+                // bridge back to the iced runtime via iced::futures::oneshot
+                // so we do not stall the UI thread.
+                if !self.status_checked && self.niu_api_ready {
+                    self.status_checked = true;
+                    let (tx, rx) = iced::futures::channel::oneshot::channel::<Result<LightragStatus, String>>();
+                    std::thread::spawn(move || {
+                        let result = reqwest::blocking::Client::builder()
+                            .timeout(Duration::from_secs(2))
+                            .build()
+                            .map_err(|e| e.to_string())
+                            .and_then(|client| {
+                                client
+                                    .get("http://127.0.0.1:9876/api/kg/stats")
+                                    .send()
+                                    .map_err(|e| e.to_string())
+                                    .and_then(|resp| {
+                                        resp.json::<LightragStatus>().map_err(|e| e.to_string())
+                                    })
+                            });
+                        let _ = tx.send(result);
+                    });
+                    return Task::perform(
+                        async move { rx.await.unwrap_or(Err("channel closed".into())) },
+                        SplashMessage::StatusCheckResult,
+                    );
+                }
+
+                // Non-blocking check: if the launcher thread sent the ready signal, close the window.
+                // Hold the window open while an alert is displayed so the user can act on it.
+                if self.alert.is_none() && self.ready_rx.lock().unwrap().try_recv().is_ok() {
                     // Use window::close() to close the splash window
                     // This exits the iced event loop, allowing main.rs to continue
                     if let Some(id) = self.window_id {
@@ -121,10 +218,136 @@ impl Splash {
                 }
                 Task::none()
             }
+            SplashMessage::StatusCheckResult(result) => {
+                match result {
+                    Ok(status) => {
+                        if status.init_failed
+                            || status.integrity.as_ref().map_or(false, |i| !i.ok)
+                        {
+                            let total_errors = status
+                                .integrity
+                                .as_ref()
+                                .map_or(0, |i| i.total_errors);
+                            let message = if status.init_failed {
+                                format!(
+                                    "LightRAG 初始化失败，重试倒计时 {:?} 秒",
+                                    status.init_retry_in_seconds
+                                )
+                            } else {
+                                format!("检测到 {} 个数据一致性问题", total_errors)
+                            };
+                            self.alert = Some(LightragAlert {
+                                message,
+                                total_errors,
+                            });
+                            // Enlarge the splash window to fit the alert + buttons.
+                            if let Some(id) = self.window_id {
+                                return window::resize(
+                                    id,
+                                    iced::Size::new(400.0, 160.0),
+                                );
+                            }
+                        }
+                        Task::none()
+                    }
+                    Err(_) => {
+                        // Status query failed (e.g. endpoint not yet mounted).
+                        // Stay silent so boot continues uninterrupted.
+                        Task::none()
+                    }
+                }
+            }
+            SplashMessage::RepairLightrag => {
+                let (tx, rx) = iced::futures::channel::oneshot::channel::<Result<String, String>>();
+                std::thread::spawn(move || {
+                    let result = reqwest::blocking::Client::builder()
+                        .timeout(Duration::from_secs(120))
+                        .build()
+                        .map_err(|e| e.to_string())
+                        .and_then(|client| {
+                            client
+                                .post("http://127.0.0.1:9876/api/kg/lightrag/repair?target=all")
+                                .send()
+                                .map_err(|e| e.to_string())
+                                .and_then(|resp| resp.text().map_err(|e| e.to_string()))
+                        });
+                    let _ = tx.send(result);
+                });
+                Task::perform(
+                    async move { rx.await.unwrap_or(Err("channel closed".into())) },
+                    SplashMessage::RepairResult,
+                )
+            }
+            SplashMessage::RepairResult(result) => {
+                match result {
+                    Ok(_) => {
+                        // Repair completed — clear the alert and shrink the splash
+                        // back to 280x80 so the normal boot animation can resume.
+                        self.alert = None;
+                        if let Some(id) = self.window_id {
+                            window::resize(id, iced::Size::new(280.0, 80.0))
+                        } else {
+                            Task::none()
+                        }
+                    }
+                    Err(e) => {
+                        // Repair failed — surface the error in the alert so the
+                        // user can retry or dismiss.
+                        if let Some(alert) = &mut self.alert {
+                            alert.message = format!("修复失败: {}", e);
+                        }
+                        Task::none()
+                    }
+                }
+            }
+            SplashMessage::DismissAlert => {
+                // User chose to ignore the alert — clear it and shrink the
+                // splash back to normal size so boot can proceed.
+                self.alert = None;
+                if let Some(id) = self.window_id {
+                    window::resize(id, iced::Size::new(280.0, 80.0))
+                } else {
+                    Task::none()
+                }
+            }
         }
     }
 
     fn view(&self) -> Element<'_, SplashMessage> {
+        // Alert view takes precedence over the normal splash animation.
+        // The window is resized to 400x160 by StatusCheckResult when an
+        // alert is first set; this view fills that area with the alert
+        // message + action buttons.
+        if let Some(alert) = &self.alert {
+            let message = text(alert.message.clone())
+                .size(14)
+                .font(CJK_FONT)
+                .color([1.0, 0.92, 0.6, 1.0]);
+            let repair_btn = button(
+                text("修复")
+                    .size(14)
+                    .font(CJK_FONT),
+            )
+            .on_press(SplashMessage::RepairLightrag);
+            let dismiss_btn = button(
+                text("继续")
+                    .size(14)
+                    .font(CJK_FONT),
+            )
+            .on_press(SplashMessage::DismissAlert);
+            let buttons = row![repair_btn, dismiss_btn].spacing(8);
+            let content = column![message, buttons]
+                .spacing(8)
+                .padding(12)
+                .align_x(iced::alignment::Horizontal::Center);
+            return container(content)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .align_x(iced::alignment::Horizontal::Center)
+                .align_y(iced::alignment::Vertical::Center)
+                .into();
+        }
+
         let dots = match (self.dot_frame / 10) % 3 {
             0 => ".",
             1 => "..",
