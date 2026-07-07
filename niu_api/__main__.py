@@ -193,15 +193,16 @@ async def lifespan(app: FastAPI):
     # 7. (Removed) Weekly vector cleanup — vectors.db is deprecated,
     #    LightRAG manages its own storage. Cleanup is no longer needed.
 
-    # Phase 1: LightRAG eager init 之前——纯文件操作（cleanup + full_backup + check_all）
+    # Phase 1: LightRAG eager init 之前——只做一致性检测（check_all）
+    # v6: 不做 cleanup / full_backup（备份是用户自己的事）
     # 不依赖 LightRAG 实例或 embedding 模型，所以放在 eager init 之前
     try:
         from niu_api.internal.lightrag_manager import run_resilience_phase1
         phase1_result = run_resilience_phase1()
-        logger.info(f"LightRAG Phase 1 韧性流程: {phase1_result}")
+        logger.info(f"LightRAG Phase 1 检测: {phase1_result}")
     except Exception as e:
-        logger.warning(f"LightRAG Phase 1 韧性流程失败（不影响启动）: {e}")
-        phase1_result = {"need_repair": False}
+        logger.warning(f"LightRAG Phase 1 检测失败（不影响启动）: {e}")
+        phase1_result = {"need_repair": False, "check_ok": True}
 
     # 7.5. Eagerly initialize LightRAG (triggers lazy init before background threads start)
     # This ensures _lightrag_ready Event is set quickly, so SkillSync/LightRAGSync/RegionSync
@@ -216,17 +217,11 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"LightRAG eager init failed: {e}")
 
-    # Phase 2: LightRAG eager init 之后——embedding 模型已加载，可调 repair
-    try:
-        from niu_api.internal.lightrag_manager import run_resilience_phase2
-        phase2_result = run_resilience_phase2(need_repair=phase1_result.get("need_repair", False))
-        if phase2_result.get("repaired"):
-            logger.info("LightRAG Phase 2 修复完成，重新初始化 LightRAG")
-            # 修复后强制重新初始化
-            from niu_api.internal.lightrag_manager import get_lightrag
-            get_lightrag()  # 触发重试
-    except Exception as e:
-        logger.warning(f"LightRAG Phase 2 韧性流程失败: {e}")
+    # v6: Phase 2 不自动修复，等用户在 rfd 弹窗点'尝试修复'
+    # phase1_result["need_repair"] 状态通过 get_lightrag_status() 的 integrity 字段暴露给 splash
+    # 用户点'尝试修复'后，splash 调 /api/kg/lightrag/repair 触发 run_repair_on_user_request
+    if phase1_result.get("need_repair"):
+        logger.warning("[LightRAG] 检测到损坏，等待用户在 rfd 弹窗选择'退出'或'尝试修复'")
 
     # 7.6. Start pipeline watcher (pushes ingest-started/completed SSE events
     #      when LightRAG pipeline becomes busy/idle, so frontend progress ring
