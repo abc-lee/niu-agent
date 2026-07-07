@@ -195,8 +195,8 @@ photo-server (MCP Python)
 
 | 文件 | 说明 |
 |------|------|
-| `ui/assistant/spirit.html` | 悬浮窗小女孩 |
-| `ui/assistant/chat.html` | 聊天对话框 |
+| `ui/main/windows/assistant/spirit.html` | 悬浮窗小女孩 |
+| `ui/main/windows/assistant/chat.html` | 聊天对话框 |
 | `main.go` | 主进程入口 |
 | `config/agents/niu.md` | 主 Agent 提示词 |
 | `mcp-servers/photo-server/` | 照片处理服务 |

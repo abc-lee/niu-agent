@@ -473,7 +473,7 @@ mux.HandleFunc("/api/pending-alerts", func(w http.ResponseWriter, r *http.Reques
 ### 7.3 Electron 轮询逻辑
 
 ```javascript
-// ui/assistant/main.js
+// ui/main/main.js
 let pendingAlertMessages = [];
 let alertsPollingTimer = null;
 
@@ -517,7 +517,7 @@ ipcMain.handle('get-pending-messages', async () => {
 
 ### 7.4 悬浮窗状态机扩展
 
-在 `ui/assistant/spirit.html` 中新增 `ALERT` 状态：
+在 `ui/main/windows/assistant/spirit.html` 中新增 `ALERT` 状态：
 
 ```javascript
 const State = { 
@@ -647,12 +647,12 @@ window.addEventListener('focus', () => {
 | `pkg/scheduler/scheduler.go` | 新增 | 调度器核心 |
 | `pkg/servers/system/scheduler.go` | 新增 | MCP 工具实现 |
 | `main.go` | 修改 | 集成调度器 |
-| `ui/assistant/spirit.html` | 修改 | 新增 ALERT 状态 |
-| `ui/assistant/main.js` | 修改 | SSE 订阅 |
-| `ui/assistant/chat.html` | 修改 | 加载历史消息 |
+| `ui/main/windows/assistant/spirit.html` | 修改 | 新增 ALERT 状态 |
+| `ui/main/main.js` | 修改 | SSE 订阅 |
+| `ui/main/windows/assistant/chat.html` | 修改 | 加载历史消息 |
 | `config/agents/event-manager.md` | 修改 | 添加定时任务说明 |
 | `config/agents/niu.md` | 修改 | 更新事件管理部分 |
-| `ui/assistant/alert.gif` | 新增 | 蹦高动画（用户提供） |
+| `ui/main/windows/assistant/alert.gif` | 新增 | 蹦高动画（用户提供） |
 
 ## 12. 注意事项
 

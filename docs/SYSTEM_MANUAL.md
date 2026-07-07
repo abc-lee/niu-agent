@@ -143,7 +143,7 @@ ai-bot/
 ├── niu_api/            # FastAPI 服务
 ├── mcp-servers/        # MCP 服务器（10个）
 ├── im-adapters/       # IM Gateway 适配器（飞书等）
-├── ui/assistant/       # Electron 前端
+├── ui/main/           # Electron 前端（合并 assistant/settings/graph 三套）
 ├── config/             # 配置文件
 ├── models/             # 模型文件
 ├── memory/            # 初始模板目录（memory.json/preferences.json/skills，首次运行复制到 ~/.niu/）

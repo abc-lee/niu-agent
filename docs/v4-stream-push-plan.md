@@ -546,7 +546,7 @@ message_id, full_reply = await persist_agent_reply(
 
 ---
 
-### 修改7：`ui/assistant/chat.html` — 前端 `refreshFromDB` 并发保护优化
+### 修改7：`ui/main/windows/assistant/chat.html` — 前端 `refreshFromDB` 并发保护优化
 
 #### 7a. 将并发丢弃改为排队等待
 
@@ -690,7 +690,7 @@ await db.execute("PRAGMA busy_timeout=5000")
 | `niu_api/chat.py` | 修复重复拼接 + 兜底去重 + SSE 去重 | **中** |
 | `niu_api/compat.py` | 传递 `persisted_msgs` 参数 | **低** |
 | `niu_api/chat_queue.py` | 传递 `persisted_msgs` 参数 | **低** |
-| `ui/assistant/chat.html` | 并发保护优化 | **低** |
+| `ui/main/windows/assistant/chat.html` | 并发保护优化 | **低** |
 | `agent/session.py` | WAL 模式 + busy_timeout | **低** |
 
 ---

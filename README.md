@@ -9,7 +9,7 @@ Electron 前端 + Rust 启动器 + Python Agent 核心 + MCP 服务器集群的�
 ├── niu_api/             # Python API 服务（HTTP/SSE）
 ├── agent/               # Agent 核心（主循环、LLM抽象、工具注册）
 ├── mcp-servers/         # MCP 服务器集群（记忆/文件/照片/知识图谱等）
-├── ui/assistant/        # Electron 前端
+├── ui/main/            # Electron 前端（合并 assistant/settings/graph 三套）
 ├── config/              # 配置文件（Agent定义、MCP服务器、LLM预设）
 ├── models/              # 本地模型（向量模型、人脸识别）
 ├── python/              # 自包含 Python 运行时（打包分发用）
@@ -83,7 +83,7 @@ cp target/release/niu-launcher ../
 
 ## 图标资源
 
-应用图标位于 `ui/assistant/icons/`，供 Electron 窗口和系统托盘使用：
+应用图标位于 `ui/main/icons/`，供 Electron 窗口和系统托盘使用：
 
 | 文件 | 用途 |
 |------|------|
