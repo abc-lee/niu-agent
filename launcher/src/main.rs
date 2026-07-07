@@ -34,8 +34,12 @@ const CJK_FONT: Font = Font::with_name("Noto Sans CJK SC");
 
 /// LightRAG status reported by `/api/kg/stats`.
 /// Only the fields the launcher needs for alerting are decoded.
+/// NOTE: API returns snake_case field names (Python convention), so we do NOT
+/// use serde(rename_all = "camelCase") here. Using camelCase would make serde
+/// expect `initFailed` / `totalErrors` while the API sends `init_failed` /
+/// `total_errors`, causing "missing field" decode errors that silently break
+/// the corruption-detection dialog flow.
 #[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
 struct LightragStatus {
     init_failed: bool,
     #[allow(dead_code)]
@@ -45,7 +49,6 @@ struct LightragStatus {
 
 /// LightRAG data integrity summary reported by `/api/kg/stats`.
 #[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
 struct IntegrityStatus {
     ok: bool,
     total_errors: i32,
@@ -69,6 +72,20 @@ struct Splash {
     /// Status check only fires after the API is reachable so that
     /// `/api/kg/stats` does not 404 during early boot.
     niu_api_ready: bool,
+    /// Whether the LightRAG status check has completed AND the data is healthy.
+    /// Splash close is gated on this flag to avoid a timing race where the
+    /// ready signal arrives while the status check (or rfd dialog) is still
+    /// in flight — closing the splash would drop the StatusCheckResult future
+    /// and the user would never see the corruption dialog.
+    /// Flipped to true only when status returns healthy; stays false while
+    /// the rfd dialog is open or repair is in progress.
+    status_check_completed: bool,
+    /// Cached "ready signal received" flag.
+    /// try_recv() consumes the ready signal from the channel, but we cannot
+    /// close the splash until status_check_completed is also true. So we
+    /// cache the consumed ready signal here and gate close on
+    /// `ready_signal_seen && status_check_completed`.
+    ready_signal_seen: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -98,6 +115,8 @@ impl Splash {
             dot_frame: 0,
             status_checked: false,
             niu_api_ready: false,
+            status_check_completed: false,
+            ready_signal_seen: false,
         }
     }
 
@@ -159,10 +178,21 @@ impl Splash {
                     );
                 }
 
-                // Non-blocking check: if the launcher thread sent the ready signal, close the window.
-                if self.ready_rx.lock().unwrap().try_recv().is_ok() {
-                    // Use window::close() to close the splash window
-                    // This exits the iced event loop, allowing main.rs to continue
+                // Non-blocking check: if the launcher thread sent the ready signal,
+                // AND the LightRAG status check has completed (healthy), close the window.
+                // Gating on status_check_completed avoids a timing race where the ready
+                // signal arrives while the status check / rfd dialog is still in flight:
+                // closing the splash would cancel the StatusCheckResult future and the
+                // user would never see the corruption dialog.
+                // try_recv() consumes the signal; cache it in ready_signal_seen so we
+                // can still decide to close once status_check_completed flips later.
+                if !self.ready_signal_seen {
+                    if self.ready_rx.lock().unwrap().try_recv().is_ok() {
+                        self.ready_signal_seen = true;
+                    }
+                }
+                if self.ready_signal_seen && self.status_check_completed {
+                    // 检测完成且健康，可以关 splash
                     if let Some(id) = self.window_id {
                         window::close(id)
                     } else {
@@ -226,6 +256,8 @@ impl Splash {
                                 )
                             };
                             // 弹 rfd 原生对话框（独立线程，避免阻塞 iced executor）
+                            // 不设 status_check_completed=true：splash 关闭需等用户决策
+                            // (UserDialogChoice / RepairResult 会推进状态机)
                             let (tx, rx) =
                                 iced::futures::channel::oneshot::channel::<bool>();
                             std::thread::spawn(move || {
@@ -242,12 +274,14 @@ impl Splash {
                                 SplashMessage::UserDialogChoice,
                             );
                         }
-                        // 健康：splash 正常继续启动（v6 无 alert 字段）
+                        // 健康：标记检测完成，可以关 splash（如果 ready 信号也已到）
+                        self.status_check_completed = true;
                         Task::none()
                     }
                     Err(_) => {
                         // Status query failed (e.g. endpoint not yet mounted).
-                        // Stay silent so boot continues uninterrupted.
+                        // 视为检测完成（失败不阻塞启动），允许 splash 关闭
+                        self.status_check_completed = true;
                         Task::none()
                     }
                 }
