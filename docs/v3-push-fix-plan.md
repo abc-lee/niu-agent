@@ -243,7 +243,7 @@ if source != "electron":
 
 **原因**: 所有通道的 assistant 消息都应推送到 SSE（Electron前端需要看到飞书/Scheduler的回复）。tool 消息由 `role == "tool"` 过滤，不受影响。
 
-### 5. ui/assistant/chat.html — refreshFromDB 改为排队机制
+### 5. ui/main/windows/assistant/chat.html — refreshFromDB 改为排队机制
 
 **改动1**: 新增变量（约第1016行）
 ```javascript
@@ -333,7 +333,7 @@ chat()完成 → persist_agent_reply
 | agent/generic/agent_loop.py | on_turn_result回调机制不变 |
 | niu_api/chat_queue.py | _process_single已通过channel参数调用runner.chat() |
 | niu_api/compat.py | persist_agent_reply兜底逻辑不变 |
-| ui/assistant/main.js | SSE监听器触发new-message IPC不变 |
+| ui/main/main.js | SSE监听器触发new-message IPC不变 |
 
 ## 验证方法
 

@@ -143,8 +143,8 @@ niu [选项]
 
 选项：
   --port=9876       API 端口（默认 9876）
-  --settings        打开设置窗口（ui/settings）
-  --graph           打开知识图谱窗口（ui/graph）
+  --settings        打开设置窗口（ui/main/windows/settings）
+  --graph           打开知识图谱窗口（ui/main/windows/graph）
   --config=path     配置目录路径（默认 ./config，保留兼容）
 ```
 

@@ -414,7 +414,7 @@ def unload_face_model():
 - Enter 发送，Shift+Enter 换行
 - 自动调整高度（最大 120px）
 
-**修改文件**：`ui/assistant/chat.html`
+**修改文件**：`ui/main/windows/assistant/chat.html`
 
 #### 修复：主 Agent 工具丢失
 
@@ -627,11 +627,11 @@ toolMappings, err := registry.BuildToolMappings(ctx, append(agent.Tools, append(
 
 **解决方案**：
 - `main.go` 添加 `/api/shutdown` 端点，调用 `cancel()` 取消 context
-- `ui/assistant/main.js` 在 `close-all`、托盘关闭、`before-quit` 中调用该端点
+- `ui/main/main.js` 在 `close-all`、托盘关闭、`before-quit` 中调用该端点
 
 **修改文件**：
 - `main.go` — 添加 shutdown 端点
-- `ui/assistant/main.js` — 3 处关闭入口调用 `/api/shutdown`
+- `ui/main/main.js` — 3 处关闭入口调用 `/api/shutdown`
 
 #### 新增：聊天历史加载功能
 
@@ -654,9 +654,9 @@ toolMappings, err := registry.BuildToolMappings(ctx, append(agent.Tools, append(
 **修改文件**：
 - `pkg/session/store.go`
 - `main.go`
-- `ui/assistant/preload-chat.js`
-- `ui/assistant/main.js`
-- `ui/assistant/chat.html`
+- `ui/main/preload-chat.js`
+- `ui/main/main.js`
+- `ui/main/windows/assistant/chat.html`
 
 ---
 

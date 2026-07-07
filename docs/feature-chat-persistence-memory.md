@@ -79,12 +79,12 @@
 
 | 组件 | 文件路径 | 说明 |
 |------|----------|------|
-| 聊天 UI | `ui/assistant/chat.html:411-512` | 消息发送、重试逻辑 |
+| 聊天 UI | `ui/main/windows/assistant/chat.html:411-512` | 消息发送、重试逻辑 |
 | 聊天 API | `main.go:574-710` | `/api/chat/session` 端点 ✅ 新增 |
 | Session 存储 | `pkg/session/store.go` | GORM CRUD |
 | 消息类型 | `pkg/session/types.go:80-110` | Message 结构体 ✅ 新增 |
 | 消息 CRUD | `pkg/session/store.go:237-291` | 消息操作方法 ✅ 新增 |
-| 前端配置 | `ui/assistant/main.js:470-505` | sessionId 存储 ✅ 修改 |
+| 前端配置 | `ui/main/main.js:470-505` | sessionId 存储 ✅ 修改 |
 | 对话压缩 | `pkg/agents/compact.go:79-181` | 自动压缩历史 |
 | 记忆加载 | `main.go:66-171` | 从 memory.json 加载 |
 | 记忆注入 | `main.go:303-325` | 注入到 Agent |
@@ -204,7 +204,7 @@ mux.HandleFunc("/api/chat/session", func(w http.ResponseWriter, r *http.Request)
 
 ### 3.5 前端集成
 
-**文件**: `ui/assistant/main.js:470-505`
+**文件**: `ui/main/main.js:470-505`
 
 修改 `send-message` 处理：
 
@@ -240,7 +240,7 @@ ipcMain.handle('send-message', async (event, message) => {
 });
 ```
 
-**配置存储**: `ui/assistant/window-config.json`
+**配置存储**: `ui/main/window-config.json`
 
 ```json
 {
@@ -288,8 +288,8 @@ if err := tx.AutoMigrate(&Session{}, &Token{}, &WorkflowRun{}, &Message{}); err 
 | 数据库迁移 | ✅ 完成 | `pkg/session/store.go` |
 | 消息 CRUD 方法 | ✅ 完成 | `pkg/session/store.go` |
 | API 端点 | ✅ 完成 | `main.go` |
-| 前端集成 | ✅ 完成 | `ui/assistant/main.js` |
-| 配置存储 | ✅ 完成 | `ui/assistant/window-config.json` |
+| 前端集成 | ✅ 完成 | `ui/main/main.js` |
+| 配置存储 | ✅ 完成 | `ui/main/window-config.json` |
 
 ### 5.2 关键改动
 

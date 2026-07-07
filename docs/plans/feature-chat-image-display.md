@@ -134,7 +134,7 @@ messagesDiv.addEventListener('drop', async (e) => {
 | 文件 | 改动 |
 |------|------|
 | `mcp-servers/photo-server/__init__.py` | `get_unnamed_persons` 返回 `representative_photo`（已完成 ✅） |
-| `ui/assistant/chat.html` | 解析 Agent 消息中的图片+人脸框，渲染显示 |
+| `ui/main/windows/assistant/chat.html` | 解析 Agent 消息中的图片+人脸框，渲染显示 |
 | `config/agents/niu.md` | 添加消息格式规范 |
 
 **数据格式**（Agent 调用 `get_unnamed_persons` 返回）：

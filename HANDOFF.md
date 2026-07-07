@@ -79,7 +79,7 @@ done
 ### 步骤 7：重建 npm 依赖
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot/ui/assistant
+cd REDACTED_USER_PATH/tools/ai-bot/ui/main
 rm -rf node_modules
 npm install
 ```

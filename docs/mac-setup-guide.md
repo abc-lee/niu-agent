@@ -92,7 +92,7 @@ pip install -e mcp-servers/session-manager
 pip install -e mcp-servers/scheduler-server
 
 # Node.js 依赖（前端）
-cd ui/assistant
+cd ui/main
 npm install
 cd ../..
 ```
@@ -122,7 +122,7 @@ print(f'Exists: {test_path.exists()}')
 python -m niu_api
 
 # 在另一个终端启动前端
-cd ui/assistant
+cd ui/main
 npm start
 ```
 
