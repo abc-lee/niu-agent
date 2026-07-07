@@ -224,8 +224,9 @@
       <div class="form-group">
         <label class="pencil-text">选择预设</label>
         <select id="preset">
-          <option value="">-- 选择预设 --</option>
+          <option value="">自定义配置</option>
         </select>
+        <div style="font-size: 12px; color: #666; margin-top: 4px;">选择预设可自动填充参考值；手动修改任何字段后自动变为"自定义配置"</div>
       </div>
       
       <div class="form-group" style="margin-top: 12px;">
@@ -278,9 +279,9 @@
         </div>
 
         <div class="form-group" style="margin-top: 12px;">
-          <label class="pencil-text">压缩目标阈值</label>
-          <input type="number" id="targetThreshold" placeholder="0.3" min="0.1" max="0.99" step="0.05">
-          <div style="font-size: 12px; color: #666; margin-top: 4px;">压缩目标使用率（默认 0.3 = 30%，压到窗口30%减少强制压缩频率）</div>
+          <label class="pencil-text">压缩目标 token 数</label>
+          <input type="number" id="compressTargetTokens" placeholder="60000" min="10000" max="500000" step="5000">
+          <div style="font-size: 12px; color: #666; margin-top: 4px;">压缩后保留的目标 token 数（默认 60000，即压到约 30%）</div>
         </div>
 
         <div class="form-group" style="margin-top: 12px;">
@@ -319,7 +320,11 @@
       });
       
       if (config.llm) {
-        document.getElementById('preset').value = config.llm.presetId || '';
+        // 如果配置文件的 presetId 不在预设列表中（或为空），下拉选""（自定义配置）
+        // 否则选对应预设
+        const presetId = config.llm.presetId || '';
+        const presetExists = presetId && presets.some(p => p.id === presetId);
+        document.getElementById('preset').value = presetExists ? presetId : '';
         document.getElementById('apiKey').value = config.llm.apiKey || '';
         document.getElementById('apiBase').value = config.llm.apiBase || '';
         document.getElementById('model').value = config.llm.model || '';
@@ -330,7 +335,7 @@
       if (config.context) {
         document.getElementById('contextWindowSize').value = config.context.contextWindowSize || '';
         document.getElementById('warningThreshold').value = config.context.warningThreshold || '';
-        document.getElementById('targetThreshold').value = config.context.targetThreshold || '';
+        document.getElementById('compressTargetTokens').value = config.context.compressTargetTokens || '';
         document.getElementById('sleepTriggerMinutes').value = config.context.sleepTriggerMinutes || '';
       }
     }
@@ -355,7 +360,12 @@
 
     ['apiKey', 'apiBase', 'model', 'apiType', 'provider'].forEach(id => {
       const el = document.getElementById(id);
-      if (el) el.addEventListener('change', () => { testPassedInSession = false; });
+      if (el) el.addEventListener('change', () => {
+        testPassedInSession = false;
+        // 用户手动修改任何字段 → 自动变为"自定义配置"（清空 presetId）
+        // 因为表单值已不再匹配任何预设
+        document.getElementById('preset').value = '';
+      });
     });
 
     async function testAndSave() {
@@ -391,7 +401,7 @@
           context: {
             contextWindowSize: parseInt(document.getElementById('contextWindowSize').value) || 200000,
             warningThreshold: parseFloat(document.getElementById('warningThreshold').value) || 0.8,
-            targetThreshold: parseFloat(document.getElementById('targetThreshold').value) || 0.3,
+            compressTargetTokens: parseInt(document.getElementById('compressTargetTokens').value) || 60000,
             sleepTriggerMinutes: parseInt(document.getElementById('sleepTriggerMinutes').value) || 5
           },
           storage: existingConfig.storage || {},
