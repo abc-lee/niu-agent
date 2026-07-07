@@ -1,0 +1,49 @@
+{
+  "name": "niu-ui-main",
+  "version": "1.0.0",
+  "description": "Niu unified Electron UI (assistant + settings + graph)",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "start:assistant": "cross-env NIU_WINDOW=assistant electron .",
+    "start:settings": "cross-env NIU_WINDOW=settings electron .",
+    "start:graph": "cross-env NIU_WINDOW=graph electron .",
+    "build": "electron-builder",
+    "build:mac": "electron-builder --mac",
+    "build:win": "electron-builder --win"
+  },
+  "keywords": ["electron", "niu", "assistant", "settings", "graph"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "dompurify": "^3.4.2",
+    "eventsource": "^4.1.0",
+    "marked": "^18.0.0",
+    "@antv/g6": "^5.1.0",
+    "force-graph": "^1.51.3"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.0.0",
+    "cross-env": "^7.0.3"
+  },
+  "build": {
+    "appId": "com.niu.ui",
+    "directories": {
+      "output": "dist"
+    },
+    "mac": {
+      "target": ["dmg", "zip"],
+      "category": "public.app-category.productivity"
+    },
+    "win": {
+      "target": ["nsis"],
+      "icon": "windows/assistant/icons/icon.ico"
+    },
+    "files": [
+      "main.js",
+      "preload-*.js",
+      "windows/**/*"
+    ]
+  }
+}
