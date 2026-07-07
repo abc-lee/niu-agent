@@ -70,6 +70,8 @@ logs/*.txt
 # Node modules
 node_modules/
 ui/*/node_modules/
+# Temporary fallback backup of assistant/node_modules (Task 7 → Task 8)
+ui/assistant_node_modules_backup/
 
 # Config with sensitive data
 config/user-config.json
