@@ -840,13 +840,14 @@ fn launch_window(name: &str) -> Result<std::process::Child, Box<dyn std::error::
         error!("Executable path has no parent");
         std::process::exit(1);
     });
-    let window_dir = exe_dir.join("ui").join(name);
+    let window_dir = exe_dir.join("ui").join("main");
 
     #[cfg(windows)]
     {
         let mut cmd = Command::new("cmd");
-        cmd.args(["/C", "npm", "start"]);
-        cmd.current_dir(&window_dir);
+        cmd.args(["/C", "npm", "start"])
+            .env("NIU_WINDOW", name)
+            .current_dir(&window_dir);
         cmd.stdout(std::process::Stdio::inherit());
         cmd.stderr(std::process::Stdio::inherit());
         cmd.stdin(std::process::Stdio::inherit());
@@ -857,8 +858,9 @@ fn launch_window(name: &str) -> Result<std::process::Child, Box<dyn std::error::
     #[cfg(not(windows))]
     {
         let mut cmd = Command::new("npm");
-        cmd.arg("start");
-        cmd.current_dir(&window_dir);
+        cmd.arg("start")
+            .env("NIU_WINDOW", name)
+            .current_dir(&window_dir);
         cmd.stdout(std::process::Stdio::inherit());
         cmd.stderr(std::process::Stdio::inherit());
         cmd.stdin(std::process::Stdio::inherit());
@@ -1314,7 +1316,7 @@ fn main() {
                 llm_config_failed_bg.store(true, Ordering::SeqCst);
                 // 关 splash（settings 窗口起来遮罩即可）
                 let _ = splash_tx.send(());
-                // 启动 settings 窗口（npm start in ui/settings/）
+                // 启动 settings 窗口（npm start in ui/main/ with NIU_WINDOW=settings）
                 let settings_result = launch_window("settings");
                 if let Ok(mut settings_child) = settings_result {
                     let test_url = format!("http://127.0.0.1:{}/api/test-llm", port);
@@ -1357,7 +1359,7 @@ fn main() {
                     Ok(child) => Some(child),
                     Err(e) => {
                         error!("Failed to launch assistant window: {}", e);
-                        println!("\nPlease run manually: cd ui/assistant && npm start");
+                        println!("\nPlease run manually: cd ui/main && NIU_WINDOW=assistant npm start");
                         None
                     }
                 };
