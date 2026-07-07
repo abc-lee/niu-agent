@@ -1,25 +1,39 @@
-# LightRAG 数据韧性外挂程序实施计划 (v2)
+# LightRAG 数据韧性外挂程序实施计划 (v6 用户决策驱动 + rfd 原生弹窗)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 给 LightRAG 数据层（vdb / kv_store / graphml）加一个**外挂检测+修复程序**，启动时快速检测图谱一致性，发现问题修复，全程不改 LightRAG fork 源码、不改 nano-vectordb 安装包。
+**Goal:** 给 LightRAG 数据层加外挂检测+修复，启动时检测损坏，弹窗让用户选"直接退出"或"尝试修复"，全程不改 LightRAG fork 源码、不改 nano-vectordb 安装包、不做自动备份。
 
 **Architecture:**
 - **外挂检测**：自己解析 vdb/kv_store/graphml 文件。vdb 文件格式实测验证：
   - `matrix` 字段：`base64(float32 bytes)` 一层编码
   - `data[i].vector` 字段：`base64(zlib(float16 bytes))` 三层编码（zlib magic header `789c`）
-  - 检测项：JSON 完整性、字段齐全、`len(matrix_bytes) == 4 * embedding_dim * len(data)`（精确等于，非 modulo）、matrix reshape、vector 三层解码
-- **外挂修复**：优先从**损坏 vdb 自身的 data 字段**读文本重建（matrix 损坏 data 完好是常见场景）。data 也损坏时 fallback：
-  - chunks → `kv_store_text_chunks.json`（有 `content` 字段）
-  - entities/relations → GraphML 图节点 attributes
-  - 重建 vector 用 `base64(zlib(float16 bytes))` 三层编码
-- **鸡生蛋解决**：`_embed_text` 不依赖 LightRAG 实例，直接用 `niu_api.internal.embedding.get_model()`（embedding 模型在 LightRAG eager init 之前预加载）
-- **启动流程拆分**：
-  - Phase 1（LightRAG eager init 之前）：`cleanup_corrupt_bak` + `full_backup` + `check_all`（纯文件操作）
-  - Phase 2（LightRAG eager init 之后）：如果 check 发现损坏，调 `repair_all`（embedding 模型已加载）
-- **告警机制**：复用现有 `/api/kg/stats` 端点（已含 `init_failed` + 计划新增 `integrity` 字段），launcher 用 `window::frames()` 计数 + `reqwest::blocking` 轮询
+  - 检测项：JSON 完整性、字段齐全、`len(matrix_bytes) == 4 * embedding_dim * len(data)`（精确等于）、matrix reshape、vector 三层解码
+- **外挂修复**：从损坏 vdb 自身的 `data` 字段读文本重建（matrix 损坏 data 完好是常见场景）。data 也损坏时 fallback 到 `kv_store_text_chunks.json`（只对 chunks 有效）。重建保留原 data 所有非 vector 字段，只重算 vector。vector 用 `base64(zlib(float16 bytes))` 三层编码。修复前把损坏 vdb 备份到 `.corrupt.bak`（保留现场，让用户事后查看）。
+- **用户决策驱动**：启动时检测到损坏**不自动修复**，弹窗显示两个选项：
+  - 选项 1「直接退出」：用户自己从备份恢复（备份是用户的事，程序不管）
+  - 选项 2「尝试修复」：警告"修复未必成功，可能会丢失数据"，用户确认后才调 `repair_all`
+- **不做备份**：删除 `full_backup` / `backup_all_vdbs` / `cleanup_corrupt_bak` / `backups/` 目录。正常运行不备份，备份是用户自己的事。
+- **鸡生蛋解决**：`_embed_text` 不依赖 LightRAG 实例，直接用 `niu_api.internal.embedding.get_model()`（embedding 模型在 LightRAG eager init 之前预加载）。
+- **弹窗 UI**：用 `rfd`（Rust File Dialog）的 `MessageDialog` 弹原生对话框——跨平台原生 GUI（macOS/Windows/Linux），比 iced 自绘弹窗简单。检测到损坏时在独立线程弹对话框，显示"是-尝试修复 / 否-退出"两个按钮 + 警告文字。**不**用 `launch_window("settings")` 那套 Electron 窗口（用户反馈弹不了窗），**不**用 iced splash 扩大窗口自绘告警（v5 方案太复杂）。
 
-**Tech Stack:** Python 3.11+，numpy，zlib，base64，`niu_api.internal.embedding`（embedding 模型，预加载），pytest。
+**Tech Stack:** Python 3.11+，numpy，zlib，base64，`niu_api.internal.embedding`（embedding 模型，预加载），Iced 0.13（launcher），pytest。
+
+---
+
+## v4 → v6 变更说明
+
+v4 计划已实施 Task 1-6（commit `d4ec74cf` 到 `e5e7b46f`），但用户反馈三个问题：
+1. **备份策略错**：每次启动先备份再检测，损坏数据会覆盖健康备份；保留 7 份全量备份磁盘占用过大（storage ~45MB，7 份 = 315MB，未来会到 GB 级）
+2. **修复策略错**：检测到损坏应弹窗让用户选"退出"或"尝试修复"，不是自动修复
+3. **弹窗实现错**：v5 用 iced splash 扩大窗口自绘告警太复杂，应该用 Rust 原生 GUI 弹窗（rfd）
+
+v6 修正：
+- **删除 Task 3（备份模块）**：`lightrag_backup.py` 整个模块删除，相关测试删除
+- **改 Task 4（启动集成）**：Phase 1 只做检测（不备份不清理），Phase 2 不自动修复（等用户在弹窗选了"尝试修复"才调 repair_all）
+- **改 Task 5（API）**：端点调 `run_repair_on_user_request`，只支持 `target=all`
+- **改 Task 6（前端告警）**：用 `rfd::MessageDialog` 弹原生对话框，显示"是-尝试修复 / 否-退出"两按钮 + 警告文字，不用 iced 自绘告警
+- **Task 1（检测）+ Task 2（修复）保持不变**
 
 ---
 
@@ -27,1514 +41,91 @@
 
 | 文件 | 改动 | 责任 |
 |------|------|------|
-| `niu_api/internal/lightrag_integrity.py`（新建） | 外挂检测：vdb/kv_store/graphml 一致性检查 | 维度 1 检测 |
-| `niu_api/internal/lightrag_repair.py`（新建） | 外挂修复：从 vdb data 字段重建 + 从 kv_store 重建 chunks | 维度 2 修复 |
-| `niu_api/internal/lightrag_backup.py`（新建） | 外挂备份：滚动备份 + 全量备份 + 清理 corrupt.bak | 维度 5 备份 |
-| `niu_api/internal/lightrag_manager.py` | 拆分启动流程两阶段；`get_lightrag_status` 加检测/修复结果 | 维度 1/2 集成 |
-| `niu_api/__main__.py` | Phase 1 在 LightRAG eager init 之前；Phase 2 在之后 | 启动集成 |
-| `niu_api/kg_api.py` | 新增 `/api/lightrag/repair` POST 端点 | 维度 2 修复 API |
-| `launcher/src/main.rs` | 用 `window::frames()` 计数轮询 `/api/kg/stats` + Iced 通知 | 维度 4 告警 |
-| `tests/test_lightrag_integrity.py`（新建） | 检测逻辑测试 | 验证 |
-| `tests/test_lightrag_repair.py`（新建） | 修复逻辑测试 | 验证 |
-| `tests/test_lightrag_backup.py`（新建） | 备份逻辑测试 | 验证 |
+| `niu_api/internal/lightrag_backup.py` | **删除整个文件** | v5 不做备份 |
+| `tests/test_lightrag_backup.py` | **删除整个文件** | v5 不做备份 |
+| `niu_api/internal/lightrag_manager.py` | Phase 1 删 cleanup+backup，只留 check_all；Phase 2 不自动修复，加 `run_repair_on_user_request` | 启动检测 + 用户触发修复 |
+| `niu_api/__main__.py` | Phase 1 调用点更新（删 cleanup+backup）；Phase 2 改为不自动跑（等 API 触发） | 启动集成 |
+| `launcher/src/main.rs` | splash 弹窗改"退出"+"尝试修复"两按钮；修复按钮带警告文字 | 前端告警 |
+| `tests/test_lightrag_resilience_integration.py` | 改测试：Phase 1 只检测不备份；Phase 2 不自动修复 | 验证 |
 
 ---
 
-## Task 1: 外挂检测——vdb 文件一致性检查（v2 修正格式）
+## Task 1: 外挂检测——vdb 文件一致性检查（已完成，保持不变）
 
-**Files:**
-- Create: `niu_api/internal/lightrag_integrity.py`
-- Test: `tests/test_lightrag_integrity.py`
+**状态**：已完成，commit `d4ec74cf`。v5 不动。
 
-**背景**：vdb 文件格式实测验证：
-- `matrix` 字段：`base64(float32 bytes)` 一层编码
-- `data[i].vector` 字段：`base64(zlib(float16 bytes))` 三层编码
+**文件**：
+- `niu_api/internal/lightrag_integrity.py`（已存在）
+- `tests/test_lightrag_integrity.py`（已存在，9 测试全过）
 
-v1 计划假设 vector 是 `base64(float32 bytes)` 是错的。v2 修正：检测 vector 时用三层解码。
-
-- [ ] **Step 1: 写失败测试——检测健康 vdb（用真实格式）**
-
-新建 `tests/test_lightrag_integrity.py`：
-
-```python
-"""LightRAG 数据韧性外挂检测测试（v2 真实格式）"""
-import base64
-import json
-import os
-import zlib
-
-import numpy as np
-import pytest
-
-
-def _encode_vector(vec_f16: np.ndarray) -> str:
-    """LightRAG vector 字段编码：base64(zlib(float16 bytes))"""
-    compressed = zlib.compress(vec_f16.tobytes())
-    return base64.b64encode(compressed).decode()
-
-
-def _encode_matrix(matrix_f32: np.ndarray) -> str:
-    """LightRAG matrix 字段编码：base64(float32 bytes)"""
-    return base64.b64encode(matrix_f32.tobytes()).decode()
-
-
-def _write_healthy_vdb(path: str, count: int = 3, dim: int = 4):
-    """构造健康 vdb 文件（真实格式）"""
-    matrix_f32 = np.random.rand(count, dim).astype(np.float32)
-    data_list = []
-    for i in range(count):
-        vec_f16 = matrix_f32[i].astype(np.float16)  # vector 用 float16
-        data_list.append({
-            "__id__": f"e{i}",
-            "content": f"content {i}",
-            "vector": _encode_vector(vec_f16),
-        })
-    vdb = {
-        "embedding_dim": dim,
-        "data": data_list,
-        "matrix": _encode_matrix(matrix_f32),  # matrix 用 float32
-    }
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(vdb, f)
-
-
-def test_check_vdb_healthy_returns_ok(tmp_path):
-    """健康 vdb 文件检测通过（真实格式）"""
-    from niu_api.internal.lightrag_integrity import check_vdb
-
-    vdb_path = str(tmp_path / "vdb_test.json")
-    _write_healthy_vdb(vdb_path, count=3, dim=4)
-
-    report = check_vdb(vdb_path)
-    assert report["ok"] is True, f"健康文件应通过: {report['errors']}"
-    assert report["stats"]["data_count"] == 3
-    assert report["stats"]["matrix_shape"] == [3, 4]
-    assert report["stats"]["embedding_dim"] == 4
-
-
-def test_check_vdb_missing_file(tmp_path):
-    """文件不存在时报告"""
-    from niu_api.internal.lightrag_integrity import check_vdb
-
-    report = check_vdb(str(tmp_path / "nonexistent.json"))
-    assert report["ok"] is False
-    assert any(e["check"] == "file_exists" for e in report["errors"])
-
-
-def test_check_vdb_empty_file(tmp_path):
-    """空文件报告"""
-    from niu_api.internal.lightrag_integrity import check_vdb
-
-    vdb_path = str(tmp_path / "empty.json")
-    open(vdb_path, "w").close()
-
-    report = check_vdb(vdb_path)
-    assert report["ok"] is False
-    assert any(e["check"] == "file_empty" for e in report["errors"])
-
-
-def test_check_vdb_truncated_json(tmp_path):
-    """JSON 截断报告具体行号"""
-    from niu_api.internal.lightrag_integrity import check_vdb
-
-    vdb_path = str(tmp_path / "truncated.json")
-    _write_healthy_vdb(vdb_path, count=2, dim=4)
-    with open(vdb_path, "rb+") as f:
-        f.seek(-100, 2)
-        f.truncate()
-
-    report = check_vdb(vdb_path)
-    assert report["ok"] is False
-    assert any(e["check"] == "json_parse" for e in report["errors"])
-
-
-def test_check_vdb_data_matrix_length_mismatch(tmp_path):
-    """matrix 行数 != data 长度（字节数匹配但行数不匹配）报告具体数值"""
-    from niu_api.internal.lightrag_integrity import check_vdb
-
-    vdb_path = str(tmp_path / "mismatch.json")
-    # 构造 matrix (3,4) float32 = 48 bytes，data 2 条，embedding_dim=4
-    # 期望字节数 = 4 * 4 * 2 = 32，但实际给 48（3 行）
-    # 48 != 32 会触发 matrix_size_mismatch，不是 row_count_mismatch
-    # 为了测 row_count_mismatch：构造字节数 == 4*dim*data_len 但行数不匹配的场景
-    # 让 matrix (2,4) float32 = 32 bytes == 4*4*2，但 data 只有 1 条
-    # 32 == 4*4*1=16? 不对。让 matrix (2,4) = 32 bytes, data 1 条, dim=4 → 期望 16, 实际 32 → size_mismatch
-    # 真正能触发 row_count_mismatch 的场景：字节数对得上但 reshape 后行数 != data_len
-    # 这不可能——如果字节数 == 4*dim*data_len，reshape(-1, dim) 行数必然 == data_len
-    # 所以 row_count_mismatch 只在 size_mismatch 之后触发——先 size_mismatch，然后 reshape 仍尝试，行数 != data_len
-    # 改测试：构造 data 2 条 + matrix (3,4) = 48 bytes，期望 32，size_mismatch + row_count_mismatch 都触发
-    matrix_f32 = np.random.rand(3, 4).astype(np.float32)
-    vdb = {
-        "embedding_dim": 4,
-        "data": [{"__id__": "e1"}, {"__id__": "e2"}],  # 2 条
-        "matrix": _encode_matrix(matrix_f32),  # 3 行 = 48 bytes
-    }
-    with open(vdb_path, "w", encoding="utf-8") as f:
-        json.dump(vdb, f)
-
-    report = check_vdb(vdb_path)
-    assert report["ok"] is False
-    # matrix 字节数 48 != 期望 32，应触发 matrix_size_mismatch
-    errs = [e["check"] for e in report["errors"]]
-    assert "matrix_size_mismatch" in errs, f"应触发 matrix_size_mismatch, 实际: {errs}"
-
-
-def test_check_vdb_matrix_size_not_multiple(tmp_path):
-    """matrix 字节数 != 4 * embedding_dim * data_len 时报告（精确等于，非 modulo）"""
-    from niu_api.internal.lightrag_integrity import check_vdb
-
-    vdb_path = str(tmp_path / "size_mismatch.json")
-    # 构造 matrix 字节数 = 8（2 个 float32），但 data 有 3 条，embedding_dim=4
-    # 期望字节数 = 4 * 4 * 3 = 48，实际 8，触发 mismatch
-    matrix_f32 = np.random.rand(2, 1).astype(np.float32)  # 2 个 float32 = 8 bytes
-    vdb = {
-        "embedding_dim": 4,
-        "data": [{"__id__": "e1"}, {"__id__": "e2"}, {"__id__": "e3"}],  # 3 条
-        "matrix": _encode_matrix(matrix_f32),
-    }
-    with open(vdb_path, "w", encoding="utf-8") as f:
-        json.dump(vdb, f)
-
-    report = check_vdb(vdb_path)
-    assert report["ok"] is False
-    # 应触发 matrix_size_mismatch（字节数不对）
-    assert any(e["check"] == "matrix_size_mismatch" for e in report["errors"])
-
-
-def test_check_vdb_vector_zlib_decode_error(tmp_path):
-    """vector 字段不是 zlib 格式时报错（v1 错误格式会被检测到）"""
-    from niu_api.internal.lightrag_integrity import check_vdb
-
-    vdb_path = str(tmp_path / "bad_vector.json")
-    # 故意用 v1 错误格式：base64(float32 bytes) 而非 base64(zlib(float16 bytes))
-    matrix_f32 = np.random.rand(2, 4).astype(np.float32)
-    bad_vector = base64.b64encode(matrix_f32[0].tobytes()).decode()  # 错误：无 zlib
-    vdb = {
-        "embedding_dim": 4,
-        "data": [
-            {"__id__": "e1", "vector": bad_vector},
-            {"__id__": "e2", "vector": bad_vector},
-        ],
-        "matrix": _encode_matrix(matrix_f32),
-    }
-    with open(vdb_path, "w", encoding="utf-8") as f:
-        json.dump(vdb, f)
-
-    report = check_vdb(vdb_path)
-    assert report["ok"] is False
-    # vector 字段 zlib 解码失败应报错
-    assert any(e["check"] == "item_vector_decode" for e in report["errors"])
-
-
-def test_check_vdb_missing_field(tmp_path):
-    """缺少 embedding_dim 字段报告"""
-    from niu_api.internal.lightrag_integrity import check_vdb
-
-    vdb_path = str(tmp_path / "no_dim.json")
-    vdb = {"data": [{"__id__": "e1"}], "matrix": ""}
-    with open(vdb_path, "w", encoding="utf-8") as f:
-        json.dump(vdb, f)
-
-    report = check_vdb(vdb_path)
-    assert report["ok"] is False
-    assert any(e["check"] == "missing_field" and e["field"] == "embedding_dim" for e in report["errors"])
-
-
-def test_check_all_vdbs_aggregates_results(tmp_path, monkeypatch):
-    """check_all_vdbs 聚合 3 个 vdb 文件检测结果"""
-    from niu_api.internal import lightrag_integrity
-
-    storage_dir = tmp_path / "lightrag_storage"
-    storage_dir.mkdir()
-    for fname in ["vdb_entities.json", "vdb_relationships.json", "vdb_chunks.json"]:
-        _write_healthy_vdb(str(storage_dir / fname), count=2, dim=4)
-
-    monkeypatch.setattr(lightrag_integrity, "_STORAGE_DIR", str(storage_dir))
-
-    report = lightrag_integrity.check_all_vdbs()
-    assert report["ok"] is True
-    assert len(report["files"]) == 3
-    assert all(f["ok"] for f in report["files"].values())
-```
-
-- [ ] **Step 2: 跑测试验证失败**
-
-```bash
-cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_lightrag_integrity.py -v
-```
-
-Expected: FAIL（`lightrag_integrity` 模块不存在）
-
-- [ ] **Step 3: 创建 `niu_api/internal/lightrag_integrity.py`**
-
-```python
-"""LightRAG 数据一致性外挂检测（v2 真实格式）
-
-vdb 文件格式实测验证：
-- matrix 字段：base64(float32 bytes) 一层编码
-- data[i].vector 字段：base64(zlib(float16 bytes)) 三层编码（zlib magic 789c）
-
-检测项：
-- vdb: JSON 完整、字段齐全、matrix 字节数精确等于 4*dim*data_len、
-       matrix reshape、vector 三层解码
-- kv_store: JSON 完整
-- graphml: XML 可解析 + 节点/边计数 + 边引用节点存在
-"""
-from __future__ import annotations
-
-import base64
-import json
-import os
-import xml.etree.ElementTree as ET
-import zlib
-from pathlib import Path
-from typing import Any
-
-from loguru import logger
-
-_STORAGE_DIR = Path.home() / ".niu" / "lightrag_storage"
-
-_VDB_FILES = [
-    "vdb_entities.json",
-    "vdb_relationships.json",
-    "vdb_chunks.json",
-]
-
-_KV_STORE_FILES = [
-    "kv_store_doc_status.json",
-    "kv_store_entity_chunks.json",
-    "kv_store_full_docs.json",
-    "kv_store_full_entities.json",
-    "kv_store_full_relations.json",
-    "kv_store_relation_chunks.json",
-    "kv_store_text_chunks.json",
-    "kv_store_llm_response_cache.json",
-]
-
-_GRAPHML_FILE = "graph_chunk_entity_relation.graphml"
-
-
-def _decode_vector(vec_b64: str, embedding_dim: int) -> np.ndarray:
-    """三层解码 vector：base64 → zlib → float16 → float32。
-
-    Raises:
-        ValueError: 解码失败。
-    """
-    import numpy as np
-    raw_bytes = base64.b64decode(vec_b64)
-    # 检查 zlib magic header
-    if len(raw_bytes) < 2 or raw_bytes[:2] not in (b'\x78\x9c', b'\x78\x01', b'\x78\xda'):
-        raise ValueError(f"not zlib format (header: {raw_bytes[:2].hex() if len(raw_bytes) >= 2 else 'empty'})")
-    decompressed = zlib.decompress(raw_bytes)
-    vec_f16 = np.frombuffer(decompressed, dtype=np.float16)
-    if vec_f16.shape != (embedding_dim,):
-        raise ValueError(f"vector dim {vec_f16.shape[0]} != embedding_dim {embedding_dim}")
-    return vec_f16.astype(np.float32)
-
-
-def check_vdb(path: str) -> dict[str, Any]:
-    """检测单个 vdb 文件一致性。
-
-    Returns:
-        {"file": str, "ok": bool, "errors": [...], "stats": {...}}
-    """
-    import numpy as np
-    report: dict[str, Any] = {"file": path, "ok": False, "errors": [], "stats": {}}
-
-    # 1. 文件存在
-    if not os.path.exists(path):
-        report["errors"].append({"check": "file_exists", "msg": "file not found"})
-        return report
-    if os.path.getsize(path) == 0:
-        report["errors"].append({"check": "file_empty", "msg": "size=0"})
-        return report
-
-    report["stats"]["file_size_bytes"] = os.path.getsize(path)
-
-    # 2. JSON 可解析
-    try:
-        with open(path, encoding="utf-8") as f:
-            raw = json.load(f)
-    except json.JSONDecodeError as e:
-        report["errors"].append({
-            "check": "json_parse", "msg": str(e), "line": e.lineno, "col": e.colno,
-        })
-        return report
-    except Exception as e:
-        report["errors"].append({"check": "json_parse", "msg": f"{type(e).__name__}: {e}"})
-        return report
-
-    # 3. 顶层字段齐全
-    for key in ("embedding_dim", "data", "matrix"):
-        if key not in raw:
-            report["errors"].append({"check": "missing_field", "field": key})
-
-    embedding_dim = raw.get("embedding_dim")
-    data_list = raw.get("data", [])
-    matrix_b64 = raw.get("matrix", "")
-
-    # 4. embedding_dim 类型 + 合理范围
-    if not isinstance(embedding_dim, int) or embedding_dim <= 0 or embedding_dim > 4096:
-        report["errors"].append({"check": "embedding_dim_invalid", "value": embedding_dim})
-        embedding_dim = None
-
-    # 5. data 是 list
-    if not isinstance(data_list, list):
-        report["errors"].append({"check": "data_not_list", "type": type(data_list).__name__})
-        return report
-
-    # 6. matrix base64 可解码
-    try:
-        matrix_bytes = base64.b64decode(matrix_b64)
-    except Exception as e:
-        report["errors"].append({"check": "matrix_b64_decode", "msg": str(e)})
-        return report
-
-    # 7. matrix 字节数精确等于 4 * embedding_dim * data_len（float32 = 4 bytes）
-    if embedding_dim and isinstance(data_list, list):
-        expected_bytes = 4 * embedding_dim * len(data_list)
-        if len(matrix_bytes) != expected_bytes:
-            report["errors"].append({
-                "check": "matrix_size_mismatch",
-                "bytes": len(matrix_bytes),
-                "expected": expected_bytes,
-                "hint": "可能是 dtype 错误（float16 vs float32）或 matrix 截断",
-            })
-
-    # 8. matrix 反序列化为 float32 + reshape
-    matrix = None
-    try:
-        if embedding_dim:
-            matrix = np.frombuffer(matrix_bytes, dtype=np.float32).reshape(-1, embedding_dim)
-    except ValueError as e:
-        report["errors"].append({"check": "matrix_reshape", "msg": str(e)})
-        return report
-
-    # 9. matrix 行数 == data 长度
-    if matrix is not None and matrix.ndim == 2 and embedding_dim:
-        if matrix.shape[0] != len(data_list):
-            report["errors"].append({
-                "check": "row_count_mismatch",
-                "matrix_rows": matrix.shape[0],
-                "data_len": len(data_list),
-            })
-
-    # 10. 抽查 data 里每条 vector 三层解码
-    if embedding_dim:
-        for i, item in enumerate(data_list):
-            vec_b64 = item.get("vector", "")
-            if not vec_b64:
-                continue
-            try:
-                _decode_vector(vec_b64, embedding_dim)
-            except ValueError as e:
-                report["errors"].append({
-                    "check": "item_vector_decode",
-                    "index": i,
-                    "id": item.get("__id__"),
-                    "msg": str(e),
-                })
-
-    report["stats"]["embedding_dim"] = embedding_dim
-    report["stats"]["data_count"] = len(data_list)
-    report["stats"]["matrix_shape"] = list(matrix.shape) if matrix is not None and matrix.ndim >= 1 else []
-    report["ok"] = len(report["errors"]) == 0
-    return report
-
-
-def check_kv_store(path: str) -> dict[str, Any]:
-    """检测单个 kv_store JSON 文件。"""
-    report: dict[str, Any] = {"file": path, "ok": False, "errors": [], "stats": {}}
-
-    if not os.path.exists(path):
-        report["errors"].append({"check": "file_exists", "msg": "file not found"})
-        return report
-    if os.path.getsize(path) == 0:
-        report["errors"].append({"check": "file_empty", "msg": "size=0"})
-        return report
-
-    try:
-        with open(path, encoding="utf-8") as f:
-            raw = json.load(f)
-    except json.JSONDecodeError as e:
-        report["errors"].append({
-            "check": "json_parse", "msg": str(e), "line": e.lineno, "col": e.colno,
-        })
-        return report
-    except Exception as e:
-        report["errors"].append({"check": "json_parse", "msg": f"{type(e).__name__}: {e}"})
-        return report
-
-    if not isinstance(raw, dict):
-        report["errors"].append({"check": "not_dict", "type": type(raw).__name__})
-        return report
-
-    report["stats"]["entry_count"] = len(raw)
-    report["ok"] = True
-    return report
-
-
-def check_graphml(path: str) -> dict[str, Any]:
-    """检测 GraphML 文件可解析 + 边引用节点存在。"""
-    report: dict[str, Any] = {"file": path, "ok": False, "errors": [], "stats": {}}
-
-    if not os.path.exists(path):
-        report["errors"].append({"check": "file_exists", "msg": "file not found"})
-        return report
-    if os.path.getsize(path) == 0:
-        report["errors"].append({"check": "file_empty", "msg": "size=0"})
-        return report
-
-    try:
-        tree = ET.parse(path)
-        root = tree.getroot()
-    except ET.ParseError as e:
-        report["errors"].append({"check": "xml_parse", "msg": str(e)})
-        return report
-    except Exception as e:
-        report["errors"].append({"check": "xml_parse", "msg": f"{type(e).__name__}: {e}"})
-        return report
-
-    graph = root.find("graph")
-    if graph is None:
-        for child in root:
-            tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
-            if tag == "graph":
-                graph = child
-                break
-    if graph is None:
-        report["errors"].append({"check": "no_graph_element"})
-        return report
-
-    node_ids: set[str] = set()
-    node_count = 0
-    edge_count = 0
-    for child in graph:
-        tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
-        if tag == "node":
-            node_count += 1
-            node_ids.add(child.get("id", ""))
-        elif tag == "edge":
-            edge_count += 1
-
-    # 检查边引用节点存在
-    for child in graph:
-        tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
-        if tag == "edge":
-            src = child.get("source", "")
-            tgt = child.get("target", "")
-            if src and src not in node_ids:
-                report["errors"].append({
-                    "check": "edge_dangling_source", "source": src,
-                })
-            if tgt and tgt not in node_ids:
-                report["errors"].append({
-                    "check": "edge_dangling_target", "target": tgt,
-                })
-
-    report["stats"]["node_count"] = node_count
-    report["stats"]["edge_count"] = edge_count
-    report["ok"] = len(report["errors"]) == 0
-    return report
-
-
-def check_all() -> dict[str, Any]:
-    """检测整个 lightrag_storage 目录。"""
-    all_errors: list[dict] = []
-
-    vdb_reports: dict[str, Any] = {}
-    for fname in _VDB_FILES:
-        r = check_vdb(str(_STORAGE_DIR / fname))
-        vdb_reports[fname] = r
-        if not r["ok"]:
-            all_errors.extend(r["errors"])
-
-    kv_reports: dict[str, Any] = {}
-    for fname in _KV_STORE_FILES:
-        r = check_kv_store(str(_STORAGE_DIR / fname))
-        kv_reports[fname] = r
-        if not r["ok"]:
-            all_errors.extend(r["errors"])
-
-    graphml_report = check_graphml(str(_STORAGE_DIR / _GRAPHML_FILE))
-    if not graphml_report["ok"]:
-        all_errors.extend(graphml_report["errors"])
-
-    return {
-        "ok": len(all_errors) == 0,
-        "storage_dir": str(_STORAGE_DIR),
-        "vdb": vdb_reports,
-        "kv_store": kv_reports,
-        "graphml": graphml_report,
-        "total_errors": len(all_errors),
-    }
-
-
-def check_all_vdbs() -> dict[str, Any]:
-    """检测所有 vdb 文件（不含 kv_store/graphml）。"""
-    reports: dict[str, Any] = {}
-    all_ok = True
-    for fname in _VDB_FILES:
-        r = check_vdb(str(_STORAGE_DIR / fname))
-        reports[fname] = r
-        if not r["ok"]:
-            all_ok = False
-    return {"ok": all_ok, "files": reports}
-```
-
-- [ ] **Step 4: 跑测试验证通过**
-
-```bash
-cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_lightrag_integrity.py -v
-```
-
-Expected: 9 PASS
-
-- [ ] **Step 5: Commit**
-
-```bash
-cd REDACTED_USER_PATH/tools/ai-bot && git add niu_api/internal/lightrag_integrity.py tests/test_lightrag_integrity.py
-git commit -m "feat(lightrag_integrity): 外挂检测 vdb/kv_store/graphml 一致性（v2 真实格式）
-
-vdb 文件格式实测验证：
-- matrix 字段：base64(float32 bytes) 一层编码
-- data[i].vector 字段：base64(zlib(float16 bytes)) 三层编码（zlib magic 789c）
-
-检测项：
-- vdb: JSON 完整、字段齐全、matrix 字节数精确等于 4*dim*data_len、reshape、vector 三层解码
-- kv_store: JSON 完整
-- graphml: XML 可解析 + 边引用节点存在
-
-返回结构化 report，含 ok 状态、errors 列表（带定位信息）、stats 统计。"
-```
+**v5 无改动**。检测逻辑（matrix float32 + vector zlib+float16 三层解码 + graphml 边引用校验）保持不变。
 
 ---
 
-## Task 2: 外挂修复——从 vdb data 字段重建（v2 修正数据源+格式）
+## Task 2: 外挂修复——从 vdb data 重建（已完成，保持不变）
 
-**Files:**
-- Create: `niu_api/internal/lightrag_repair.py`
-- Test: `tests/test_lightrag_repair.py`
+**状态**：已完成，commit `ac120722`。v5 不动。
 
-**背景**：v1 计划假设 kv_store 有 `description` 字段是错的——实测 `kv_store_full_entities.json` 只有 `entity_names` 列表，没有 `description`。
+**文件**：
+- `niu_api/internal/lightrag_repair.py`（已存在）
+- `tests/test_lightrag_repair.py`（已存在，5 测试全过）
 
-v2 修正数据源：
-- **优先**从损坏 vdb 自身的 `data` 字段读文本（matrix 损坏 data 完好是常见场景）
-- data 也损坏时 fallback：
-  - chunks → `kv_store_text_chunks.json`（有 `content` 字段）
-  - entities/relations → GraphML 图节点 attributes
+**v5 无改动**。修复逻辑（从 vdb data 字段重建保留元数据 + fallback kv_store_text_chunks + vector 三层编码 + 损坏 vdb 备份到 .corrupt.bak）保持不变。
 
-v2 修正 vector 编码：用 `base64(zlib(float16 bytes))` 三层编码（跟 LightRAG 一致）。
-
-- [ ] **Step 1: 写失败测试——修复路径（v2 真实格式）**
-
-新建 `tests/test_lightrag_repair.py`：
-
-```python
-"""LightRAG 外挂修复测试（v2 真实格式+数据源）"""
-import base64
-import json
-import zlib
-
-import numpy as np
-import pytest
-
-
-def _encode_vector(vec_f16: np.ndarray) -> str:
-    return base64.b64encode(zlib.compress(vec_f16.tobytes())).decode()
-
-
-def _encode_matrix(matrix_f32: np.ndarray) -> str:
-    return base64.b64encode(matrix_f32.tobytes()).decode()
-
-
-def test_repair_vdb_from_corrupt_data_field(tmp_path, monkeypatch):
-    """matrix 损坏但 data 完好时，从 data 重新 embedding 重建"""
-    from niu_api.internal import lightrag_repair
-
-    storage_dir = tmp_path / "lightrag_storage"
-    storage_dir.mkdir()
-
-    # 构造损坏 vdb：data 完好，matrix 截断
-    vdb_path = storage_dir / "vdb_entities.json"
-    matrix_f32 = np.random.rand(2, 4).astype(np.float32)
-    data_list = [
-        {"__id__": "e1", "content": "实体1描述", "vector": _encode_vector(matrix_f32[0].astype(np.float16))},
-        {"__id__": "e2", "content": "实体2描述", "vector": _encode_vector(matrix_f32[1].astype(np.float16))},
-    ]
-    vdb = {
-        "embedding_dim": 4,
-        "data": data_list,
-        "matrix": _encode_matrix(matrix_f32)[:50],  # 截断 matrix
-    }
-    vdb_path.write_text(json.dumps(vdb, ensure_ascii=False))
-
-    # mock embedding 返回固定向量
-    def fake_embed(text: str) -> list[float]:
-        return [0.1, 0.2, 0.3, 0.4]
-
-    monkeypatch.setattr(lightrag_repair, "_STORAGE_DIR", str(storage_dir))
-    monkeypatch.setattr(lightrag_repair, "_embed_text", fake_embed)
-
-    result = lightrag_repair.repair_vdb("vdb_entities.json")
-
-    assert result["status"] == "ok"
-    assert result["rebuilt_count"] == 2
-    assert result["source"] == "vdb_data_field"
-
-    # 验证重建的 vdb 能通过 check_vdb 检测
-    from niu_api.internal.lightrag_integrity import check_vdb
-    report = check_vdb(str(vdb_path))
-    assert report["ok"], f"重建的 vdb 应通过检测: {report['errors']}"
-    assert report["stats"]["data_count"] == 2
-    assert report["stats"]["matrix_shape"] == [2, 4]
-
-
-def test_repair_vdb_from_kv_store_when_data_corrupt(tmp_path, monkeypatch):
-    """data 也损坏时，chunks 从 kv_store_text_chunks 重建"""
-    from niu_api.internal import lightrag_repair
-
-    storage_dir = tmp_path / "lightrag_storage"
-    storage_dir.mkdir()
-
-    # 构造损坏 vdb_chunks：data 和 matrix 都损坏
-    vdb_path = storage_dir / "vdb_chunks.json"
-    vdb_path.write_text('{"truncated":')  # 完全损坏
-
-    # 构造 kv_store_text_chunks.json（有 content 字段）
-    kv_path = storage_dir / "kv_store_text_chunks.json"
-    kv_data = {
-        "chunk-1": {"content": "chunk1 content"},
-        "chunk-2": {"content": "chunk2 content"},
-    }
-    kv_path.write_text(json.dumps(kv_data, ensure_ascii=False))
-
-    monkeypatch.setattr(lightrag_repair, "_STORAGE_DIR", str(storage_dir))
-    monkeypatch.setattr(lightrag_repair, "_embed_text", lambda x: [0.1, 0.2, 0.3, 0.4])
-
-    result = lightrag_repair.repair_vdb("vdb_chunks.json")
-
-    assert result["status"] == "ok"
-    assert result["rebuilt_count"] == 2
-    assert result["source"] == "kv_store_text_chunks"
-
-    # 验证重建的 vdb 通过检测
-    from niu_api.internal.lightrag_integrity import check_vdb
-    report = check_vdb(str(vdb_path))
-    assert report["ok"], f"重建的 vdb 应通过检测: {report['errors']}"
-
-
-def test_repair_vdb_backs_up_corrupt_file(tmp_path, monkeypatch):
-    """修复前把损坏的 vdb 备份到 .corrupt.bak"""
-    from niu_api.internal import lightrag_repair
-
-    storage_dir = tmp_path / "lightrag_storage"
-    storage_dir.mkdir()
-
-    vdb_path = storage_dir / "vdb_entities.json"
-    # data 完好，matrix 损坏
-    matrix_f32 = np.random.rand(1, 4).astype(np.float32)
-    vdb = {
-        "embedding_dim": 4,
-        "data": [{"__id__": "e1", "content": "desc", "vector": _encode_vector(matrix_f32[0].astype(np.float16))}],
-        "matrix": "truncated",
-    }
-    vdb_path.write_text(json.dumps(vdb, ensure_ascii=False))
-
-    monkeypatch.setattr(lightrag_repair, "_STORAGE_DIR", str(storage_dir))
-    monkeypatch.setattr(lightrag_repair, "_embed_text", lambda x: [0.1, 0.2, 0.3, 0.4])
-
-    result = lightrag_repair.repair_vdb("vdb_entities.json")
-    assert result["status"] == "ok"
-
-    corrupt_bak = storage_dir / "vdb_entities.json.corrupt.bak"
-    assert corrupt_bak.exists()
-
-
-def test_repair_vdb_missing_data_and_kv_returns_error(tmp_path, monkeypatch):
-    """data 和 kv_store 都损坏时返回错误"""
-    from niu_api.internal import lightrag_repair
-
-    storage_dir = tmp_path / "lightrag_storage"
-    storage_dir.mkdir()
-    (storage_dir / "vdb_entities.json").write_text('{"truncated":')  # 完全损坏
-    # 没有 kv_store，也没有 GraphML
-
-    monkeypatch.setattr(lightrag_repair, "_STORAGE_DIR", str(storage_dir))
-    monkeypatch.setattr(lightrag_repair, "_embed_text", lambda x: [0.1, 0.2, 0.3, 0.4])
-
-    result = lightrag_repair.repair_vdb("vdb_entities.json")
-    assert result["status"] == "error"
-    assert "无可用数据源" in result["message"] or "no data source" in result["message"].lower()
-
-
-def test_repair_all_repairs_all_vdbs(tmp_path, monkeypatch):
-    """repair_all 修复 3 个 vdb 文件"""
-    from niu_api.internal import lightrag_repair
-
-    storage_dir = tmp_path / "lightrag_storage"
-    storage_dir.mkdir()
-
-    # 3 个 vdb 都 matrix 损坏但 data 完好
-    for fname in ["vdb_entities.json", "vdb_relationships.json", "vdb_chunks.json"]:
-        matrix_f32 = np.random.rand(2, 4).astype(np.float32)
-        vdb = {
-            "embedding_dim": 4,
-            "data": [
-                {"__id__": "e1", "content": f"{fname} desc1", "vector": _encode_vector(matrix_f32[0].astype(np.float16))},
-                {"__id__": "e2", "content": f"{fname} desc2", "vector": _encode_vector(matrix_f32[1].astype(np.float16))},
-            ],
-            "matrix": "truncated",
-        }
-        (storage_dir / fname).write_text(json.dumps(vdb, ensure_ascii=False))
-
-    monkeypatch.setattr(lightrag_repair, "_STORAGE_DIR", str(storage_dir))
-    monkeypatch.setattr(lightrag_repair, "_embed_text", lambda x: [0.1, 0.2, 0.3, 0.4])
-
-    result = lightrag_repair.repair_all()
-    assert all(r["status"] == "ok" for r in result.values())
-```
-
-- [ ] **Step 2: 跑测试验证失败**
-
-```bash
-cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_lightrag_repair.py -v
-```
-
-Expected: FAIL（`lightrag_repair` 模块不存在）
-
-- [ ] **Step 3: 创建 `niu_api/internal/lightrag_repair.py`**
-
-```python
-"""LightRAG 外挂修复（v2 真实格式+数据源）
-
-修复策略（按优先级）：
-1. 从损坏 vdb 自身的 data 字段读文本（matrix 损坏 data 完好是常见场景）
-2. data 也损坏时 fallback：
-   - chunks → kv_store_text_chunks.json（有 content 字段）
-   - entities/relations → GraphML 图节点 attributes（TODO，暂不支持）
-
-vector 字段编码：base64(zlib(float16 bytes)) 三层（跟 LightRAG 一致）
-matrix 字段编码：base64(float32 bytes) 一层
-
-_embed_text 不依赖 LightRAG 实例，直接用 niu_api.internal.embedding 预加载的模型。
-"""
-from __future__ import annotations
-
-import base64
-import json
-import os
-import shutil
-import zlib
-from pathlib import Path
-from typing import Any
-
-from loguru import logger
-
-_STORAGE_DIR = Path.home() / ".niu" / "lightrag_storage"
-
-# vdb 文件名 → 文本字段名（vdb data 内部）
-_VDB_TEXT_FIELD = {
-    "vdb_entities.json": "content",
-    "vdb_relationships.json": "content",
-    "vdb_chunks.json": "content",
-}
-
-# data 损坏时的 fallback 数据源
-_VDB_FALLBACK_KV = {
-    "vdb_chunks.json": ("kv_store_text_chunks.json", "content"),
-    # entities/relations 的 fallback 是 GraphML，暂不支持（返回 error）
-}
-
-
-def _embed_text(text: str) -> list[float]:
-    """用预加载的 embedding 模型生成向量，不依赖 LightRAG 实例。
-
-    embedding 模型在 __main__.py 启动时预加载（LightRAG eager init 之前）。
-    """
-    try:
-        from niu_api.internal.embedding import get_model
-        model = get_model()
-        if model is None:
-            raise RuntimeError("embedding 模型未加载")
-        vec = model.encode([text])
-        return vec[0].tolist()
-    except ImportError:
-        # fallback：用 LightRAG 实例（如果已初始化）
-        from niu_api.internal.lightrag_manager import get_lightrag
-        rag = get_lightrag()
-        if rag is None:
-            raise RuntimeError("embedding 模型未加载且 LightRAG 未初始化")
-        import asyncio
-        loop = asyncio.new_event_loop()
-        try:
-            result = loop.run_until_complete(rag.embedding_func([text]))
-            return result[0].tolist()
-        finally:
-            loop.close()
-
-
-def _encode_vector(vec_f16) -> str:
-    """vector 字段三层编码：base64(zlib(float16 bytes))"""
-    import numpy as np
-    arr = np.array(vec_f16, dtype=np.float16) if not hasattr(vec_f16, 'astype') else vec_f16.astype(np.float16)
-    return base64.b64encode(zlib.compress(arr.tobytes())).decode()
-
-
-def _encode_matrix(matrix_f32) -> str:
-    """matrix 字段一层编码：base64(float32 bytes)"""
-    import numpy as np
-    arr = np.array(matrix_f32, dtype=np.float32) if not hasattr(matrix_f32, 'astype') else matrix_f32.astype(np.float32)
-    return base64.b64encode(arr.tobytes()).decode()
-
-
-def _read_data_from_vdb(vdb_filename: str) -> list[dict] | None:
-    """尝试从损坏 vdb 的 data 字段读文本（matrix 损坏 data 完好场景）。
-
-    Returns:
-        data 列表（含 __id__ + content），如果 data 也损坏返回 None。
-    """
-    vdb_path = _STORAGE_DIR / vdb_filename
-    if not vdb_path.exists():
-        return None
-    try:
-        with open(vdb_path, encoding="utf-8") as f:
-            raw = json.load(f)
-    except (json.JSONDecodeError, Exception):
-        return None  # data 也损坏
-    data_list = raw.get("data")
-    if not isinstance(data_list, list) or not data_list:
-        return None
-    text_field = _VDB_TEXT_FIELD.get(vdb_filename, "content")
-    # 验证 data 里的文本字段可用
-    valid = [item for item in data_list if isinstance(item, dict) and item.get(text_field)]
-    return valid if valid else None
-
-
-def _read_data_from_kv_store(vdb_filename: str) -> list[dict] | None:
-    """data 损坏时从 fallback kv_store 读文本。"""
-    fallback = _VDB_FALLBACK_KV.get(vdb_filename)
-    if not fallback:
-        return None  # entities/relations 暂不支持 fallback
-    kv_filename, text_field = fallback
-    kv_path = _STORAGE_DIR / kv_filename
-    if not kv_path.exists():
-        return None
-    try:
-        with open(kv_path, encoding="utf-8") as f:
-            kv_data = json.load(f)
-    except (json.JSONDecodeError, Exception):
-        return None
-    data_list = []
-    for key, value in kv_data.items():
-        if isinstance(value, dict):
-            text = value.get(text_field)
-            if text:
-                data_list.append({"__id__": key, "content": text})
-    return data_list if data_list else None
-
-
-def repair_vdb(vdb_filename: str) -> dict[str, Any]:
-    """修复单个 vdb 文件。
-
-    优先从 vdb 自身 data 字段重建，fallback 到 kv_store。
-
-    Returns:
-        {"status": "ok"|"error", "rebuilt_count": int, "source": str, "message": str}
-    """
-    if vdb_filename not in _VDB_TEXT_FIELD:
-        return {"status": "error", "message": f"未知的 vdb 文件: {vdb_filename}"}
-
-    # 1. 优先从 vdb data 字段读
-    data_list = _read_data_from_vdb(vdb_filename)
-    source = "vdb_data_field" if data_list else None
-
-    # 2. fallback 到 kv_store
-    if not data_list:
-        data_list = _read_data_from_kv_store(vdb_filename)
-        if data_list:
-            source = "kv_store"
-
-    if not data_list:
-        return {
-            "status": "error",
-            "message": f"无可用数据源重建 {vdb_filename}（vdb data 和 fallback kv_store 都损坏）",
-        }
-
-    # 3. 重新 embedding（保留原 data 所有非 vector 字段，只重算 vector）
-    import numpy as np
-    text_field = _VDB_TEXT_FIELD.get(vdb_filename, "content")
-    new_data = []
-    vectors = []
-    for item in data_list:
-        text = item.get(text_field, "")
-        try:
-            vec = _embed_text(text)
-        except Exception as e:
-            logger.warning(f"[LightRAGRepair] embedding 失败 {item.get('__id__')}: {e}，跳过")
-            continue
-        # 保留原 data 所有非 vector 字段（__created_at__ / entity_name / src_id / tgt_id / source_id / full_doc_id / file_path 等）
-        # 只重算 vector 字段
-        new_item = {k: v for k, v in item.items() if k != "vector"}
-        new_item["vector"] = _encode_vector(np.array(vec, dtype=np.float16))
-        new_data.append(new_item)
-        vectors.append(vec)
-
-    if not new_data:
-        return {"status": "error", "message": "embedding 全部失败，无数据可重建"}
-
-    embedding_dim = len(vectors[0])
-    matrix_f32 = np.array(vectors, dtype=np.float32)
-
-    # 4. 备份损坏 vdb 到 .corrupt.bak
-    vdb_path = _STORAGE_DIR / vdb_filename
-    if vdb_path.exists():
-        corrupt_bak = _STORAGE_DIR / f"{vdb_filename}.corrupt.bak"
-        try:
-            if corrupt_bak.exists():
-                corrupt_bak.unlink()
-            vdb_path.rename(corrupt_bak)
-            logger.info(f"[LightRAGRepair] 损坏 vdb 备份到: {corrupt_bak}")
-        except Exception as e:
-            logger.warning(f"[LightRAGRepair] 备份损坏 vdb 失败: {e}")
-
-    # 5. 原子写新 vdb
-    storage = {
-        "embedding_dim": embedding_dim,
-        "data": new_data,
-        "matrix": _encode_matrix(matrix_f32),
-    }
-    tmp_file = vdb_path.with_suffix(".json.tmp")
-    with open(tmp_file, "w", encoding="utf-8") as f:
-        json.dump(storage, f, ensure_ascii=False)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp_file, vdb_path)
-
-    logger.info(f"[LightRAGRepair] 重建 {vdb_filename}: {len(new_data)} 条 (source={source})")
-    return {
-        "status": "ok",
-        "rebuilt_count": len(new_data),
-        "source": source,
-        "message": f"从 {source} 重建 {len(new_data)} 条",
-    }
-
-
-def repair_kv_store(kv_filename: str) -> dict[str, Any]:
-    """kv_store 损坏时从 .bak 恢复。"""
-    kv_path = _STORAGE_DIR / kv_filename
-    bak_path = _STORAGE_DIR / f"{kv_filename}.bak"
-    if not bak_path.exists():
-        return {"status": "error", "message": f"备份文件不存在: {bak_path}"}
-    try:
-        shutil.copy2(bak_path, kv_path)
-        logger.info(f"[LightRAGRepair] 从 .bak 恢复 {kv_filename}")
-        return {"status": "ok", "message": f"从 .bak 恢复"}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
-
-
-def repair_all() -> dict[str, Any]:
-    """一键修复所有 vdb。"""
-    results: dict[str, Any] = {}
-    for vdb_file in _VDB_TEXT_FIELD:
-        results[vdb_file] = repair_vdb(vdb_file)
-    return results
-```
-
-- [ ] **Step 4: 跑测试验证通过**
-
-```bash
-cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_lightrag_repair.py -v
-```
-
-Expected: 5 PASS
-
-- [ ] **Step 5: Commit**
-
-```bash
-cd REDACTED_USER_PATH/tools/ai-bot && git add niu_api/internal/lightrag_repair.py tests/test_lightrag_repair.py
-git commit -m "feat(lightrag_repair): 外挂修复 vdb（v2 真实格式+数据源）
-
-修复策略：
-1. 优先从损坏 vdb 自身的 data 字段读文本（matrix 损坏 data 完好是常见场景）
-2. data 也损坏时 fallback 到 kv_store_text_chunks（chunks）或报错（entities/relations）
-
-vector 字段三层编码：base64(zlib(float16 bytes))，跟 LightRAG 一致
-matrix 字段一层编码：base64(float32 bytes)
-
-_embed_text 不依赖 LightRAG 实例，直接用预加载的 embedding 模型
-（在 LightRAG eager init 之前可用），解决鸡生蛋矛盾。"
-```
+**注意**：`repair_vdb` 里"备份到 .corrupt.bak"的逻辑保留——这是"修复前现场保留"，让用户事后能查看损坏数据，不是自动备份机制。
 
 ---
 
-## Task 3: 外挂备份——滚动备份 + 全量备份
+## Task 3: 删除备份模块（v5 新增）
 
 **Files:**
-- Create: `niu_api/internal/lightrag_backup.py`
-- Test: `tests/test_lightrag_backup.py`
+- Delete: `niu_api/internal/lightrag_backup.py`
+- Delete: `tests/test_lightrag_backup.py`
 
-**背景**：当前无任何备份机制。外挂层做定时快照，不改 nano-vectordb save()。
+**背景**：v4 Task 3 实现了 `full_backup` / `backup_all_vdbs` / `cleanup_corrupt_bak`。v5 用户决策驱动设计不做自动备份——备份是用户自己的事。删除整个模块。
 
-- [ ] **Step 1: 写失败测试——备份机制**
-
-新建 `tests/test_lightrag_backup.py`：
-
-```python
-"""LightRAG 外挂备份测试"""
-import os
-import time
-
-import pytest
-
-
-def test_rolling_backup_copies_to_bak(tmp_path, monkeypatch):
-    """rolling_backup 把文件复制到 .bak"""
-    from niu_api.internal import lightrag_backup
-
-    storage_dir = tmp_path / "lightrag_storage"
-    storage_dir.mkdir()
-    vdb_path = storage_dir / "vdb_entities.json"
-    vdb_path.write_text('{"version": "v1"}')
-
-    monkeypatch.setattr(lightrag_backup, "_STORAGE_DIR", str(storage_dir))
-
-    ok = lightrag_backup.rolling_backup("vdb_entities.json")
-    assert ok is True
-    bak_path = storage_dir / "vdb_entities.json.bak"
-    assert bak_path.exists()
-    assert bak_path.read_text() == '{"version": "v1"}'
-
-
-def test_rolling_backup_overwrites_existing_bak(tmp_path, monkeypatch):
-    """rolling_backup 滚动覆盖已有 .bak（保留 1 份）"""
-    from niu_api.internal import lightrag_backup
-
-    storage_dir = tmp_path / "lightrag_storage"
-    storage_dir.mkdir()
-    vdb_path = storage_dir / "vdb_entities.json"
-    vdb_path.write_text('{"version": "v2"}')
-    (storage_dir / "vdb_entities.json.bak").write_text('{"version": "v1"}')
-
-    monkeypatch.setattr(lightrag_backup, "_STORAGE_DIR", str(storage_dir))
-
-    lightrag_backup.rolling_backup("vdb_entities.json")
-    bak_path = storage_dir / "vdb_entities.json.bak"
-    assert bak_path.read_text() == '{"version": "v2"}'
-    assert not (storage_dir / "vdb_entities.json.bak.1").exists()
-
-
-def test_rolling_backup_returns_false_for_missing_file(tmp_path, monkeypatch):
-    from niu_api.internal import lightrag_backup
-
-    monkeypatch.setattr(lightrag_backup, "_STORAGE_DIR", str(tmp_path))
-    assert lightrag_backup.rolling_backup("nonexistent.json") is False
-
-
-def test_full_backup_creates_timestamped_snapshot(tmp_path, monkeypatch):
-    """全量备份把整个 storage 复制到 backups/<timestamp>/（排除 .bak/.corrupt.bak）"""
-    from niu_api.internal import lightrag_backup
-
-    storage_dir = tmp_path / "lightrag_storage"
-    storage_dir.mkdir()
-    (storage_dir / "vdb_entities.json").write_text("{}")
-    (storage_dir / "kv_store_full_docs.json").write_text("{}")
-    (storage_dir / "vdb_entities.json.bak").write_text("bak")  # 应排除
-    (storage_dir / "vdb_relationships.json.corrupt.bak").write_text("corrupt")  # 应排除
-
-    backups_dir = tmp_path / "backups"
-    monkeypatch.setattr(lightrag_backup, "_STORAGE_DIR", str(storage_dir))
-    monkeypatch.setattr(lightrag_backup, "_BACKUPS_DIR", str(backups_dir))
-
-    backup_dir = lightrag_backup.full_backup()
-    assert backup_dir is not None
-    assert backup_dir.exists()
-    assert (backup_dir / "vdb_entities.json").exists()
-    assert (backup_dir / "kv_store_full_docs.json").exists()
-    # .bak 和 .corrupt.bak 应被排除
-    assert not (backup_dir / "vdb_entities.json.bak").exists()
-    assert not (backup_dir / "vdb_relationships.json.corrupt.bak").exists()
-
-
-def test_full_backup_retains_only_last_7(tmp_path, monkeypatch):
-    from niu_api.internal import lightrag_backup
-
-    storage_dir = tmp_path / "lightrag_storage"
-    storage_dir.mkdir()
-    (storage_dir / "vdb_entities.json").write_text("{}")
-    backups_dir = tmp_path / "backups"
-
-    monkeypatch.setattr(lightrag_backup, "_STORAGE_DIR", str(storage_dir))
-    monkeypatch.setattr(lightrag_backup, "_BACKUPS_DIR", str(backups_dir))
-
-    for i in range(10):
-        lightrag_backup.full_backup()
-        subdirs = sorted(backups_dir.iterdir(), key=lambda p: p.stat().st_mtime)
-        if subdirs:
-            os.utime(subdirs[-1], (time.time() + i * 100, time.time() + i * 100))
-
-    subdirs = [p for p in backups_dir.iterdir() if p.is_dir()]
-    assert len(subdirs) <= 7
-
-
-def test_cleanup_corrupt_bak_removes_residue(tmp_path, monkeypatch):
-    from niu_api.internal import lightrag_backup
-
-    storage_dir = tmp_path / "lightrag_storage"
-    storage_dir.mkdir()
-    corrupt_bak = storage_dir / "vdb_relationships.json.corrupt.bak"
-    corrupt_bak.write_text("corrupt")
-
-    monkeypatch.setattr(lightrag_backup, "_STORAGE_DIR", str(storage_dir))
-
-    removed = lightrag_backup.cleanup_corrupt_bak()
-    assert removed == 1
-    assert not corrupt_bak.exists()
-
-
-def test_backup_all_vdbs_rolls_all(tmp_path, monkeypatch):
-    from niu_api.internal import lightrag_backup
-
-    storage_dir = tmp_path / "lightrag_storage"
-    storage_dir.mkdir()
-    for fname in ["vdb_entities.json", "vdb_relationships.json", "vdb_chunks.json"]:
-        (storage_dir / fname).write_text("{}")
-
-    monkeypatch.setattr(lightrag_backup, "_STORAGE_DIR", str(storage_dir))
-
-    results = lightrag_backup.backup_all_vdbs()
-    assert len(results) == 3
-    assert all(results.values())
-```
-
-- [ ] **Step 2: 跑测试验证失败**
+- [ ] **Step 1: 确认 lightrag_backup.py 当前内容**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_lightrag_backup.py -v
+cd REDACTED_USER_PATH/tools/ai-bot && wc -l niu_api/internal/lightrag_backup.py tests/test_lightrag_backup.py
 ```
 
-Expected: FAIL（`lightrag_backup` 模块不存在）
+Expected: 两个文件都存在，行数 > 0
 
-- [ ] **Step 3: 创建 `niu_api/internal/lightrag_backup.py`**
-
-```python
-"""LightRAG 外挂备份机制
-
-- rolling_backup: 复制到 .bak（保留 1 份，滚动覆盖）
-- backup_all_vdbs: 3 个 vdb 文件批量滚动备份
-- full_backup: 整个 storage 目录复制到 backups/<timestamp>/（排除 .bak/.corrupt.bak，保留最近 7 份）
-- cleanup_corrupt_bak: 清理 .corrupt.bak 残留
-
-不改 nano-vectordb save()，外挂层定时快照。
-"""
-from __future__ import annotations
-
-import shutil
-from datetime import datetime
-from pathlib import Path
-from typing import Optional
-
-from loguru import logger
-
-_STORAGE_DIR = Path.home() / ".niu" / "lightrag_storage"
-_BACKUPS_DIR = Path.home() / ".niu" / "lightrag_storage_backups"
-_MAX_FULL_BACKUPS = 7
-
-_VDB_FILES = [
-    "vdb_entities.json",
-    "vdb_relationships.json",
-    "vdb_chunks.json",
-]
-
-# 备份时排除的文件模式（滚动备份和损坏备份不进 full_backup）
-_EXCLUDE_SUFFIXES = (".bak", ".corrupt.bak", ".tmp")
-
-
-def _is_excluded(filename: str) -> bool:
-    return any(filename.endswith(suffix) for suffix in _EXCLUDE_SUFFIXES)
-
-
-def rolling_backup(filename: str) -> bool:
-    """把 _STORAGE_DIR/filename 复制到 filename.bak（覆盖已有 .bak）。
-
-    Returns:
-        True 如果备份成功，False 如果原文件不存在或复制失败。
-    """
-    src = _STORAGE_DIR / filename
-    if not src.exists():
-        return False
-    dst = _STORAGE_DIR / f"{filename}.bak"
-    try:
-        shutil.copy2(src, dst)
-        return True
-    except Exception as e:
-        logger.warning(f"[LightRAGBackup] 滚动备份失败 {filename}: {e}")
-        return False
-
-
-def backup_all_vdbs() -> dict[str, bool]:
-    """对 3 个 vdb 文件都做滚动备份。"""
-    results: dict[str, bool] = {}
-    for fname in _VDB_FILES:
-        results[fname] = rolling_backup(fname)
-    return results
-
-
-def full_backup() -> Optional[Path]:
-    """把整个 _STORAGE_DIR 复制到 _BACKUPS_DIR/<timestamp>/（排除 .bak/.corrupt.bak/.tmp）。
-
-    保留最近 _MAX_FULL_BACKUPS 份，老的自动清理。
-
-    Returns:
-        备份目录路径，失败返回 None。
-    """
-    if not _STORAGE_DIR.exists():
-        return None
-    _BACKUPS_DIR.mkdir(parents=True, exist_ok=True)
-
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    backup_dir = _BACKUPS_DIR / timestamp
-    try:
-        backup_dir.mkdir()
-        # 手动复制，排除 .bak/.corrupt.bak/.tmp
-        for item in _STORAGE_DIR.iterdir():
-            if _is_excluded(item.name):
-                continue
-            if item.is_file():
-                shutil.copy2(item, backup_dir / item.name)
-            elif item.is_dir():
-                shutil.copytree(item, backup_dir / item.name)
-        logger.info(f"[LightRAGBackup] 全量备份完成: {backup_dir}")
-    except Exception as e:
-        logger.warning(f"[LightRAGBackup] 全量备份失败: {e}")
-        # 清理半成品
-        if backup_dir.exists():
-            shutil.rmtree(backup_dir, ignore_errors=True)
-        return None
-
-    _cleanup_old_full_backups()
-    return backup_dir
-
-
-def _cleanup_old_full_backups() -> int:
-    """清理超过 _MAX_FULL_BACKUPS 份的旧备份。"""
-    if not _BACKUPS_DIR.exists():
-        return 0
-    subdirs = sorted(
-        [p for p in _BACKUPS_DIR.iterdir() if p.is_dir()],
-        key=lambda p: p.stat().st_mtime,
-    )
-    removed = 0
-    while len(subdirs) > _MAX_FULL_BACKUPS:
-        old = subdirs.pop(0)
-        try:
-            shutil.rmtree(old)
-            removed += 1
-            logger.info(f"[LightRAGBackup] 清理旧备份: {old}")
-        except Exception as e:
-            logger.warning(f"[LightRAGBackup] 清理失败 {old}: {e}")
-    return removed
-
-
-def cleanup_corrupt_bak() -> int:
-    """清理 .corrupt.bak 残留文件。"""
-    if not _STORAGE_DIR.exists():
-        return 0
-    removed = 0
-    for p in _STORAGE_DIR.glob("*.corrupt.bak"):
-        try:
-            p.unlink()
-            removed += 1
-            logger.info(f"[LightRAGBackup] 清理残留: {p}")
-        except Exception as e:
-            logger.warning(f"[LightRAGBackup] 清理失败 {p}: {e}")
-    return removed
-```
-
-- [ ] **Step 4: 跑测试验证通过**
+- [ ] **Step 2: grep 确认 lightrag_backup 的调用点**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_lightrag_backup.py -v
+cd REDACTED_USER_PATH/tools/ai-bot && grep -rn "lightrag_backup\|full_backup\|backup_all_vdbs\|cleanup_corrupt_bak" --include="*.py" niu_api/ agent/ tests/
 ```
 
-Expected: 7 PASS
+Expected: 只在 `lightrag_manager.py`（Task 4 集成点）和 `lightrag_backup.py` 自身有匹配。Task 4 会改 `lightrag_manager.py` 删掉这些调用，所以这里先确认调用点。
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 3: 删除两个文件**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && git add niu_api/internal/lightrag_backup.py tests/test_lightrag_backup.py
-git commit -m "feat(lightrag_backup): 外挂备份——滚动备份 + 全量备份（排除 .bak/.corrupt.bak）
-
-- rolling_backup: 复制到 .bak（保留 1 份，滚动覆盖）
-- backup_all_vdbs: 3 个 vdb 文件批量滚动备份
-- full_backup: 整个 storage 复制到 backups/<timestamp>/（排除 .bak/.corrupt.bak/.tmp，保留最近 7 份）
-- cleanup_corrupt_bak: 清理 .corrupt.bak 残留
-
-不改 nano-vectordb save()，外挂层定时快照。"
+cd REDACTED_USER_PATH/tools/ai-bot && rm niu_api/internal/lightrag_backup.py tests/test_lightrag_backup.py
 ```
 
----
+- [ ] **Step 4: 同时改 `lightrag_manager.py` 删掉 cleanup/full_backup 调用（避免 NameError 中间状态）**
 
-## Task 4: 启动时集成检测+修复+备份（v2 拆分两阶段）
+**关键**：Task 3 删 `lightrag_backup.py` 后，`lightrag_manager.py:991` 的 `from niu_api.internal.lightrag_backup import full_backup, cleanup_corrupt_bak` 会 ImportError，L996 的 `cleanup_corrupt_bak()` 和 L1002 的 `full_backup()` 会 NameError——程序启动崩。所以 Step 4 必须同时改 `run_resilience_phase1` 删掉这些调用，不能只注释 import。
 
-**Files:**
-- Modify: `niu_api/internal/lightrag_manager.py`
-- Modify: `niu_api/__main__.py`
-- Test: `tests/test_lightrag_resilience_integration.py`（新建）
-
-**背景**：v1 计划把所有逻辑放在 LightRAG eager init 之前——但 `_embed_text` 需要 embedding 模型已加载。v2 拆分两阶段：
-- Phase 1（LightRAG eager init 之前）：`cleanup_corrupt_bak` + `full_backup` + `check_all`（纯文件操作）
-- Phase 2（LightRAG eager init 之后）：如果 check 发现损坏，调 `repair_all`（embedding 模型已加载）
-
-- [ ] **Step 1: 写失败测试——两阶段集成流程**
-
-新建 `tests/test_lightrag_resilience_integration.py`：
-
-```python
-"""LightRAG 韧性集成测试——两阶段启动流程"""
-from unittest import mock
-
-import pytest
-
-
-def test_phase1_runs_cleanup_backup_check(monkeypatch):
-    """Phase 1（LightRAG init 之前）：cleanup + full_backup + check_all，不调 repair"""
-    from niu_api.internal import lightrag_manager
-
-    backup_calls = []
-    cleanup_calls = []
-    check_calls = []
-
-    monkeypatch.setattr("niu_api.internal.lightrag_backup.full_backup",
-                        lambda: backup_calls.append("full") or mock.MagicMock())
-    monkeypatch.setattr("niu_api.internal.lightrag_backup.cleanup_corrupt_bak",
-                        lambda: cleanup_calls.append("cleanup") or 0)
-    monkeypatch.setattr("niu_api.internal.lightrag_integrity.check_all",
-                        lambda: check_calls.append("check") or {"ok": True, "total_errors": 0})
-
-    result = lightrag_manager.run_resilience_phase1()
-
-    assert cleanup_calls == ["cleanup"]
-    assert backup_calls == ["full"]
-    assert check_calls == ["check"]
-    assert result["check_ok"] is True
-    assert result["need_repair"] is False  # 健康时不需修复
-
-
-def test_phase1_corrupt_sets_need_repair(monkeypatch):
-    """Phase 1 检测到损坏时设 need_repair=True，但不立即修复"""
-    from niu_api.internal import lightrag_manager
-
-    monkeypatch.setattr("niu_api.internal.lightrag_backup.full_backup", lambda: mock.MagicMock())
-    monkeypatch.setattr("niu_api.internal.lightrag_backup.cleanup_corrupt_bak", lambda: 0)
-    monkeypatch.setattr("niu_api.internal.lightrag_integrity.check_all",
-                        lambda: {"ok": False, "total_errors": 2, "vdb": {"vdb_entities.json": {"ok": False}}})
-
-    result = lightrag_manager.run_resilience_phase1()
-
-    assert result["check_ok"] is False
-    assert result["need_repair"] is True
-
-
-def test_phase2_repairs_when_needed(monkeypatch):
-    """Phase 2（LightRAG init 之后）：need_repair=True 时调 repair_all + reset_init_state"""
-    from niu_api.internal import lightrag_manager
-
-    repair_calls = []
-    reset_calls = []
-    monkeypatch.setattr("niu_api.internal.lightrag_repair.repair_all",
-                        lambda: repair_calls.append("repair") or {"vdb_entities.json": {"status": "ok"}})
-    monkeypatch.setattr("niu_api.internal.lightrag_manager.reset_init_state",
-                        lambda: reset_calls.append("reset"))
-
-    result = lightrag_manager.run_resilience_phase2(need_repair=True)
-
-    assert repair_calls == ["repair"]
-    assert reset_calls == ["reset"]
-    assert result["repaired"] is True
-
-
-def test_phase2_skips_when_healthy(monkeypatch):
-    """Phase 2 健康时不调 repair"""
-    from niu_api.internal import lightrag_manager
-
-    repair_calls = []
-    monkeypatch.setattr("niu_api.internal.lightrag_repair.repair_all",
-                        lambda: repair_calls.append("repair") or {})
-    monkeypatch.setattr("niu_api.internal.lightrag_manager.reset_init_state", lambda: None)
-
-    result = lightrag_manager.run_resilience_phase2(need_repair=False)
-
-    assert repair_calls == []
-    assert result["repaired"] is False
-
-
-def test_get_lightrag_status_includes_integrity(monkeypatch):
-    from niu_api.internal import lightrag_manager
-
-    # _init_failed_at: Optional[float] = None，设 None 让 init_failed=False
-    monkeypatch.setattr(lightrag_manager, "_init_failed_at", None)
-    monkeypatch.setattr(lightrag_manager, "_integrity_result", {
-        "ok": False, "total_errors": 2,
-        "vdb": {"vdb_entities.json": {"ok": False}},
-    })
-
-    status = lightrag_manager.get_lightrag_status()
-    assert status["init_failed"] is False
-    assert "integrity" in status
-    assert status["integrity"]["ok"] is False
-    assert status["integrity"]["total_errors"] == 2
-```
-
-- [ ] **Step 2: 跑测试验证失败**
-
-```bash
-cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_lightrag_resilience_integration.py -v
-```
-
-Expected: FAIL（`run_resilience_phase1` / `run_resilience_phase2` / `_integrity_result` 不存在）
-
-- [ ] **Step 3: 在 `lightrag_manager.py` 加两阶段逻辑**
-
-在 `niu_api/internal/lightrag_manager.py`：
-
-**3a. 模块级加 `_integrity_result` 变量**：
-
-```python
-_init_failed_at: float = 0.0
-_init_error: dict | None = None
-_integrity_result: dict | None = None  # 新增
-```
-
-**3b. 加 `run_resilience_phase1` + `run_resilience_phase2` + `reset_init_state` 函数**：
+读 `niu_api/internal/lightrag_manager.py` 找 `run_resilience_phase1`（约 L980-1020），把整个函数改为（直接做 Task 4 Step 4 的工作，避免中间 broken commit）：
 
 ```python
 def run_resilience_phase1() -> dict:
-    """Phase 1（LightRAG eager init 之前）：cleanup + full_backup + check_all。
+    """Phase 1（LightRAG eager init 之前）：只做一致性检测。
 
-    纯文件操作，不依赖 LightRAG 实例或 embedding 模型。
+    v6 修正：不做 cleanup / full_backup（备份是用户自己的事）。
+    检测到损坏不自动修复，由 rfd 原生弹窗让用户选'退出'或'尝试修复'。
 
     Returns:
         {"check_ok": bool, "need_repair": bool, "check_result": dict}
     """
     global _integrity_result
-    from niu_api.internal.lightrag_backup import full_backup, cleanup_corrupt_bak
     from niu_api.internal.lightrag_integrity import check_all
 
-    # 1. 清理 corrupt.bak 残留
-    try:
-        cleanup_corrupt_bak()
-    except Exception as e:
-        logger.warning(f"[LightRAG] 清理 corrupt.bak 失败（不影响启动）: {e}")
-
-    # 2. 全量备份（排除 .bak/.corrupt.bak）
-    try:
-        full_backup()
-    except Exception as e:
-        logger.warning(f"[LightRAG] 全量备份失败（不影响启动）: {e}")
-
-    # 3. 一致性检测
+    # 只做检测，不动任何文件
     try:
         check_result = check_all()
     except Exception as e:
@@ -1552,87 +143,210 @@ def run_resilience_phase1() -> dict:
         "need_repair": not check_result.get("ok", True),
         "check_result": check_result,
     }
+```
 
+同时删掉 `run_resilience_phase2` 函数（如果存在），加 `run_repair_on_user_request`（Task 4 Step 5 的工作，提前到 Task 3 避免 Task 4 重复改）：
 
-def run_resilience_phase2(need_repair: bool) -> dict:
-    """Phase 2（LightRAG eager init 之后）：如果 need_repair，调 repair_all + reset_init_state。
+```python
+def run_repair_on_user_request() -> dict:
+    """用户在弹窗点'尝试修复'后调用（通过 /api/kg/lightrag/repair 触发）。
 
-    embedding 模型已在 LightRAG eager init 时加载，repair_vdb 可用。
+    v6: 不自动修复，等用户决策。用户确认后才调 repair_all。
+    修复后主动调 get_lightrag() 触发重试初始化（不依赖后台线程兜底）。
 
     Returns:
-        {"repaired": bool, "repair_result": dict | None}
+        {"repaired": bool, "check_ok": bool, "repair_result": dict | None, "check_result": dict | None}
     """
-    if not need_repair:
-        logger.info("[LightRAG] Phase 2 跳过：无损坏需修复")
-        return {"repaired": False, "repair_result": None}
-
+    global _integrity_result
     from niu_api.internal.lightrag_repair import repair_all
+    from niu_api.internal.lightrag_integrity import check_all
 
-    logger.warning("[LightRAG] Phase 2: 检测到损坏，启动修复")
+    logger.warning("[LightRAG] 用户选择'尝试修复'，启动 repair_all")
     try:
         repair_result = repair_all()
-        # 修复后重置初始化状态，让下次 get_lightrag 重试
         reset_init_state()
-        logger.info(f"[LightRAG] Phase 2 修复完成: {repair_result}")
-        return {"repaired": True, "repair_result": repair_result}
-    except Exception as e:
-        logger.error(f"[LightRAG] Phase 2 修复失败: {e}")
-        return {"repaired": False, "repair_result": {"error": str(e)}}
-
-
-def reset_init_state() -> None:
-    """重置初始化失败状态，让下次 get_lightrag 重试。"""
-    global _init_failed_at, _init_error
-    _init_failed_at = 0.0
-    _init_error = None
-```
-
-**3c. 扩展 `get_lightrag_status`**（在现有函数末尾加 integrity 字段，不重写整个函数）：
-
-读 `niu_api/internal/lightrag_manager.py` 现有 `get_lightrag_status` 实现（约 L980-1010），在函数返回 dict 之前加：
-
-```python
-    # 在现有 get_lightrag_status 的 return dict 之前加：
-    if _integrity_result:
-        result["integrity"] = {
-            "ok": _integrity_result.get("ok", True),
-            "total_errors": _integrity_result.get("total_errors", 0),
+        # 修复后重跑 check_all 更新 _integrity_result
+        check_result = check_all()
+        _integrity_result = check_result
+        # v6 改进 5：主动调 get_lightrag() 触发重试初始化（不依赖后台线程 60 秒兜底）
+        try:
+            get_lightrag()
+        except Exception as e:
+            logger.warning(f"[LightRAG] 修复后 get_lightrag 重试失败（不影响返回）: {e}")
+        logger.info(f"[LightRAG] 修复完成: {repair_result}, 重检: ok={check_result.get('ok')}")
+        return {
+            "repaired": True,
+            "check_ok": check_result.get("ok", True),
+            "repair_result": repair_result,
+            "check_result": check_result,
         }
-    return result
+    except Exception as e:
+        logger.error(f"[LightRAG] 修复失败: {e}")
+        return {
+            "repaired": False,
+            "check_ok": False,
+            "repair_result": {"error": str(e)},
+            "check_result": None,
+        }
 ```
 
-**注意**：不要重写整个 `get_lightrag_status`——现有实现用 `_INIT_RETRY_SECONDS`（不是 `INIT_RETRY_INTERVAL`）+ `with _rag_lock` 锁保护 + `round(..., 1)` 精度。只追加 `integrity` 字段，避免破坏现有逻辑。
+**注意**：`get_lightrag` 在同模块内已定义，直接调即可。`reset_init_state` 也在同模块内。
 
-**3d. 在 `__main__.py` 调用两阶段**：
+这样 Task 3 commit 后程序不会崩（`run_resilience_phase1` 已改为只 check_all，`run_resilience_phase2` 已删，`run_repair_on_user_request` 已加），Task 4 只需改 `__main__.py` 删 Phase 2 自动调用 + 改测试。
+
+- [ ] **Step 5: 跑剩余韧性测试确认无回归**
+
+```bash
+cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_lightrag_integrity.py tests/test_lightrag_repair.py tests/test_lightrag_resilience_integration.py tests/test_lightrag_repair_api.py -v 2>&1 | tail -20
+```
+
+Expected: 备份测试已删除不跑；集成测试 `test_phase1_runs_cleanup_backup_check` 会 FAIL（因为 Phase 1 已不调 cleanup/full_backup，测试期望已过时）；其他测试 PASS。Task 4 会更新集成测试。
+
+- [ ] **Step 6: 确认程序启动不崩（验证无 NameError 中间状态）**
+
+```bash
+cd REDACTED_USER_PATH/tools/ai-bot && python -c "from niu_api.internal.lightrag_manager import run_resilience_phase1, run_repair_on_user_request; print('import ok')"
+```
+
+Expected: `import ok`（无 NameError，程序启动不会崩）
+
+- [ ] **Step 7: Commit**
+
+```bash
+cd REDACTED_USER_PATH/tools/ai-bot && git add -A
+git commit -m "refactor(lightrag): 删除备份模块 + Phase 1 只检测 + 加 run_repair_on_user_request
+
+v4 的 full_backup/backup_all_vdbs/cleanup_corrupt_bak 有两个问题：
+1. 每次启动先备份再检测，损坏数据会覆盖健康备份
+2. 保留 7 份全量备份磁盘占用过大（storage 45MB × 7 = 315MB，未来 GB 级）
+
+v6 改为用户决策驱动：检测到损坏弹原生对话框让用户选'退出'或'尝试修复'。
+备份是用户自己的事，程序不做自动备份。
+repair_vdb 的'备份到 .corrupt.bak'逻辑保留（修复前现场保留）。
+
+同步改 run_resilience_phase1 只做 check_all（删 cleanup+backup 调用，避免 NameError）。
+删 run_resilience_phase2（不自动修复），加 run_repair_on_user_request（用户触发修复，
+修复后主动调 get_lightrag 触发重试初始化）。"
+```
+
+---
+
+## Task 4: 改 `__main__.py` 删 Phase 2 自动调用 + 更新集成测试（v6 简化）
+
+**Files:**
+- Modify: `niu_api/__main__.py`（Phase 2 自动调用删除）
+- Test: `tests/test_lightrag_resilience_integration.py`
+
+**背景**：Task 3 已改 `lightrag_manager.py`（删 `run_resilience_phase2`，加 `run_repair_on_user_request`，`run_resilience_phase1` 只检测）。Task 4 只需改 `__main__.py` 删 Phase 2 自动调用 + 更新集成测试。
+
+- [ ] **Step 1: 改集成测试——Phase 1 只检测不备份**
+
+读 `tests/test_lightrag_resilience_integration.py`，改 `test_phase1_runs_cleanup_backup_check` 为 `test_phase1_only_checks_no_backup_or_cleanup`：
 
 ```python
-    # Phase 1: LightRAG eager init 之前——纯文件操作
+def test_phase1_only_checks_no_backup_or_cleanup(monkeypatch):
+    """v6 Phase 1：只调 check_all，不调 cleanup/backup/repair（备份是用户的事）"""
+    from niu_api.internal import lightrag_manager
+
+    check_calls = []
+    monkeypatch.setattr("niu_api.internal.lightrag_integrity.check_all",
+                        lambda: check_calls.append("check") or {"ok": True, "total_errors": 0})
+
+    # 验证 lightrag_backup 模块不存在（已删除）
+    try:
+        import niu_api.internal.lightrag_backup  # noqa: F401
+        assert False, "lightrag_backup 模块应已删除"
+    except ImportError:
+        pass  # 预期：模块已删除
+
+    result = lightrag_manager.run_resilience_phase1()
+
+    assert check_calls == ["check"]
+    assert result["check_ok"] is True
+    assert result["need_repair"] is False
+```
+
+- [ ] **Step 2: 改集成测试——Phase 2 不自动修复 + run_repair_on_user_request**
+
+改 `test_phase2_repairs_when_needed` 和 `test_phase2_skips_when_healthy` 为：
+
+```python
+def test_phase2_does_not_auto_repair(monkeypatch):
+    """v6 Phase 2：不自动修复，只记录 need_repair 状态等用户决策"""
+    from niu_api.internal import lightrag_manager
+
+    repair_calls = []
+    monkeypatch.setattr("niu_api.internal.lightrag_repair.repair_all",
+                        lambda: repair_calls.append("repair") or {})
+
+    # v6 删除了 run_resilience_phase2（不自动修复）
+    assert not hasattr(lightrag_manager, "run_resilience_phase2"), \
+        "v6 应删除 run_resilience_phase2（不自动修复）"
+    assert repair_calls == []
+
+
+def test_run_repair_on_user_request_repairs_and_resets(monkeypatch):
+    """v6: run_repair_on_user_request 用户点'尝试修复'后调 repair_all + reset_init_state + 重跑 check_all + get_lightrag"""
+    from niu_api.internal import lightrag_manager
+
+    repair_calls = []
+    reset_calls = []
+    check_calls = []
+    get_lightrag_calls = []
+    monkeypatch.setattr("niu_api.internal.lightrag_repair.repair_all",
+                        lambda: repair_calls.append("repair") or {"vdb_entities.json": {"status": "ok"}})
+    monkeypatch.setattr("niu_api.internal.lightrag_manager.reset_init_state",
+                        lambda: reset_calls.append("reset"))
+    monkeypatch.setattr("niu_api.internal.lightrag_integrity.check_all",
+                        lambda: check_calls.append("check") or {"ok": True, "total_errors": 0})
+    # mock get_lightrag 避免真实初始化
+    monkeypatch.setattr("niu_api.internal.lightrag_manager.get_lightrag",
+                        lambda: get_lightrag_calls.append("get_lightrag") or None)
+
+    result = lightrag_manager.run_repair_on_user_request()
+
+    assert repair_calls == ["repair"]
+    assert reset_calls == ["reset"]
+    assert check_calls == ["check"]
+    assert get_lightrag_calls == ["get_lightrag"]  # v6 改进 5：主动触发重试
+    assert result["repaired"] is True
+    assert result["check_ok"] is True
+```
+
+- [ ] **Step 3: 跑测试验证失败**
+
+```bash
+cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_lightrag_resilience_integration.py -v
+```
+
+Expected: 部分 FAIL（`__main__.py` 还没改 Phase 2 调用——但 `__main__.py` 改动不影响测试，测试直接调 `lightrag_manager` 函数。实际上 Task 3 已让这些测试能过，Step 3 可能直接 PASS）
+
+- [ ] **Step 4: 改 `__main__.py` 删 Phase 2 自动调用**
+
+读 `niu_api/__main__.py` 找 Phase 1 + Phase 2 调用点（约 L185-230），改为：
+
+**Phase 1**（LightRAG eager init 之前）保留（Task 3 已让 `run_resilience_phase1` 只检测）：
+```python
+    # Phase 1: LightRAG eager init 之前——只做检测
     try:
         from niu_api.internal.lightrag_manager import run_resilience_phase1
         phase1_result = run_resilience_phase1()
-        logger.info(f"LightRAG Phase 1 韧性流程: {phase1_result}")
+        logger.info(f"LightRAG Phase 1 检测: {phase1_result}")
     except Exception as e:
-        logger.warning(f"LightRAG Phase 1 韧性流程失败（不影响启动）: {e}")
-        phase1_result = {"need_repair": False}
+        logger.warning(f"LightRAG Phase 1 检测失败（不影响启动）: {e}")
+        phase1_result = {"need_repair": False, "check_ok": True}
 ```
 
-在 LightRAG eager init（`__main__.py:200` 附近）**之后**加：
-
+**Phase 2**（LightRAG eager init 之后）**删除自动调用**——改为只记录状态，等用户在弹窗触发 API：
 ```python
-    # Phase 2: LightRAG eager init 之后——embedding 模型已加载，可调 repair
-    try:
-        from niu_api.internal.lightrag_manager import run_resilience_phase2
-        phase2_result = run_resilience_phase2(need_repair=phase1_result.get("need_repair", False))
-        if phase2_result.get("repaired"):
-            logger.info("LightRAG Phase 2 修复完成，重新初始化 LightRAG")
-            # 修复后强制重新初始化
-            from niu_api.internal.lightrag_manager import get_lightrag
-            get_lightrag()  # 触发重试
-    except Exception as e:
-        logger.warning(f"LightRAG Phase 2 韧性流程失败: {e}")
+    # v6: Phase 2 不自动修复，等用户在 rfd 弹窗点'尝试修复'
+    # phase1_result["need_repair"] 状态通过 get_lightrag_status() 的 integrity 字段暴露给 splash
+    # 用户点'尝试修复'后，splash 调 /api/kg/lightrag/repair 触发 run_repair_on_user_request
+    if phase1_result.get("need_repair"):
+        logger.warning("[LightRAG] 检测到损坏，等待用户在 rfd 弹窗选择'退出'或'尝试修复'")
 ```
 
-- [ ] **Step 4: 跑测试验证通过**
+- [ ] **Step 5: 跑测试验证通过**
 
 ```bash
 cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_lightrag_resilience_integration.py -v
@@ -1640,86 +354,79 @@ cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_lightrag_resil
 
 Expected: 5 PASS
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: 跑全部韧性测试无回归**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && git add niu_api/internal/lightrag_manager.py niu_api/__main__.py tests/test_lightrag_resilience_integration.py
-git commit -m "feat(lightrag_manager): 启动两阶段韧性流程（v2 解决鸡生蛋）
+cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_lightrag_integrity.py tests/test_lightrag_repair.py tests/test_lightrag_resilience_integration.py tests/test_lightrag_repair_api.py -v 2>&1 | tail -20
+```
 
-Phase 1（LightRAG eager init 之前）：cleanup + full_backup + check_all
-- 纯文件操作，不依赖 LightRAG 实例或 embedding 模型
-- 检测到损坏设 need_repair=True，但不立即修复
+Expected: 全部 PASS（注意：test_lightrag_repair_api.py 的测试在 Task 5 会改，这里可能 FAIL，Task 5 会修）
 
-Phase 2（LightRAG eager init 之后）：repair_all + reset_init_state
-- embedding 模型已加载，repair_vdb 可用
-- 修复后调 get_lightrag() 强制重试初始化
+- [ ] **Step 7: Commit**
 
-get_lightrag_status 加 integrity 字段暴露检测结果。"
+```bash
+cd REDACTED_USER_PATH/tools/ai-bot && git add niu_api/__main__.py tests/test_lightrag_resilience_integration.py
+git commit -m "refactor(__main__): v6 删 Phase 2 自动修复调用
+
+Task 3 已改 lightrag_manager（run_resilience_phase1 只检测，删 run_resilience_phase2，
+加 run_repair_on_user_request）。Task 4 改 __main__.py 删 Phase 2 自动调用，
+改为只记录 need_repair 状态等用户在 rfd 弹窗决策。
+
+更新集成测试：Phase 1 只检测不备份；run_repair_on_user_request 主动调 get_lightrag 触发重试。"
 ```
 
 ---
 
-## Task 5: 修复 API 端点
+## Task 5: 修复 API 端点（已完成 + v5 小改）
+
+**状态**：v4 已完成，commit `0ceb9a3f`。v5 小改：端点改调 `run_repair_on_user_request`（而不是直接调 `repair_all`）。
 
 **Files:**
-- Modify: `niu_api/kg_api.py`（router prefix 是 `/api/kg`，端点路径要对齐）
-- Test: `tests/test_lightrag_repair_api.py`（新建）
+- Modify: `niu_api/kg_api.py`（`repair_lightrag_storage` 端点）
+- Test: `tests/test_lightrag_repair_api.py`
 
-**背景**：`kg_api.py` L19 `router = APIRouter(prefix="/api/kg")`，所以 `@router.post("/lightrag/repair")` 实际路径是 `/api/kg/lightrag/repair`，不是 `/api/lightrag/repair`。测试、curl、Rust 代码都要对齐这个路径。
+**背景**：v4 端点直接调 `repair_all` + 手动重跑 `check_all`。v5 改为调 `run_repair_on_user_request`（封装了 repair_all + reset_init_state + 重跑 check_all）。
 
-- [ ] **Step 1: 写失败测试——修复 API（路径用 `/api/kg/lightrag/repair`）**
+- [ ] **Step 1: 改测试——端点调 run_repair_on_user_request**
 
-新建 `tests/test_lightrag_repair_api.py`：
+读 `tests/test_lightrag_repair_api.py`，改 3 个测试的 mock：
 
+**当前测试**（v4，mock `repair_all` + `reset_init_state` + `check_all`）：
 ```python
-"""LightRAG 修复 API 测试"""
-from unittest import mock
-
-import pytest
-from fastapi.testclient import TestClient
-
-
 def test_repair_endpoint_all_targets(monkeypatch):
+    # ... mock repair_all + reset_init_state + check_all ...
+    monkeypatch.setattr("niu_api.internal.lightrag_repair.repair_all", ...)
+    monkeypatch.setattr("niu_api.internal.lightrag_manager.reset_init_state", lambda: None)
+```
+
+**改为**（v5，mock `run_repair_on_user_request`）：
+```python
+def test_repair_endpoint_all_targets(monkeypatch):
+    """v5: /api/kg/lightrag/repair 调 run_repair_on_user_request"""
     from niu_api import kg_api
 
     repair_calls = []
-    monkeypatch.setattr("niu_api.internal.lightrag_repair.repair_all",
-                        lambda: repair_calls.append("all") or {"vdb_entities.json": {"status": "ok"}})
-    monkeypatch.setattr("niu_api.internal.lightrag_manager.reset_init_state", lambda: None)
+    monkeypatch.setattr("niu_api.internal.lightrag_manager.run_repair_on_user_request",
+                        lambda: repair_calls.append("repair") or {
+                            "repaired": True,
+                            "check_ok": True,
+                            "repair_result": {"vdb_entities.json": {"status": "ok"}},
+                            "check_result": {"ok": True, "total_errors": 0},
+                        })
 
     client = TestClient(kg_api.app)
-    # router prefix 是 /api/kg，端点是 /lightrag/repair，拼起来是 /api/kg/lightrag/repair
     response = client.post("/api/kg/lightrag/repair", params={"target": "all"})
 
     assert response.status_code == 200
     data = response.json()
     assert data["status"] == "ok"
-    assert repair_calls == ["all"]
-
-
-def test_repair_endpoint_specific_vdb(monkeypatch):
-    from niu_api import kg_api
-
-    repair_calls = []
-    monkeypatch.setattr("niu_api.internal.lightrag_repair.repair_vdb",
-                        lambda name: repair_calls.append(name) or {"status": "ok", "rebuilt_count": 5})
-    monkeypatch.setattr("niu_api.internal.lightrag_manager.reset_init_state", lambda: None)
-
-    client = TestClient(kg_api.app)
-    response = client.post("/api/kg/lightrag/repair", params={"target": "vdb_entities.json"})
-
-    assert response.status_code == 200
-    assert repair_calls == ["vdb_entities.json"]
-
-
-def test_repair_endpoint_unknown_target(monkeypatch):
-    from niu_api import kg_api
-
-    client = TestClient(kg_api.app)
-    response = client.post("/api/kg/lightrag/repair", params={"target": "unknown.txt"})
-
-    assert response.status_code == 400
+    assert repair_calls == ["repair"]
+    assert data["result"]["repaired"] is True
 ```
+
+类似改 `test_repair_endpoint_specific_vdb` 和 `test_repair_endpoint_unknown_target`。
+
+**注意**：v6 端点不再支持 `target=vdb_xxx.json` 单文件修复（简化为只有 `target=all`），因为 `run_repair_on_user_request` 内部调 `repair_all`。**删除** `test_repair_endpoint_specific_vdb` 测试（v6 只支持 all，单文件测试无意义），保留 `test_repair_endpoint_all_targets` 和 `test_repair_endpoint_unknown_target`，并加一个新测试 `test_repair_endpoint_rejects_vdb_target` 验证 `target=vdb_entities.json` 返回 400。
 
 - [ ] **Step 2: 跑测试验证失败**
 
@@ -1727,40 +434,33 @@ def test_repair_endpoint_unknown_target(monkeypatch):
 cd REDACTED_USER_PATH/tools/ai-bot && python -m pytest tests/test_lightrag_repair_api.py -v
 ```
 
-Expected: FAIL（端点不存在）
+Expected: FAIL（端点还调 `repair_all`，没调 `run_repair_on_user_request`）
 
-- [ ] **Step 3: 在 `kg_api.py` 加修复端点**
+- [ ] **Step 3: 改 `kg_api.py` 端点调 `run_repair_on_user_request`**
+
+读 `niu_api/kg_api.py` 找 `repair_lightrag_storage` 端点（约 L1084-1115），改为：
 
 ```python
 @router.post("/lightrag/repair")
 def repair_lightrag_storage(target: str = "all") -> dict:
-    """修复 LightRAG 存储。
+    """修复 LightRAG 存储（用户在 splash 点'尝试修复'触发）。
 
     实际路径：/api/kg/lightrag/repair（router prefix=/api/kg + 端点 /lightrag/repair）
 
+    v5: 调 run_repair_on_user_request（封装 repair_all + reset_init_state + 重跑 check_all）。
+    v5 只支持 target=all（用户决策驱动，不分单文件修复）。
+
     Args:
-        target: "all" | "vdb_entities.json" | "vdb_relationships.json" | "vdb_chunks.json"
-                | "kv_store_xxx.json"（从 .bak 恢复）
+        target: 只支持 "all"（其他值返回 400）
     """
     from fastapi import HTTPException
-    from niu_api.internal.lightrag_repair import repair_vdb, repair_kv_store, repair_all
-    from niu_api.internal.lightrag_manager import reset_init_state
-    import niu_api.internal.lightrag_manager as lm
+    from niu_api.internal.lightrag_manager import run_repair_on_user_request
 
-    if target == "all":
-        result = repair_all()
-    elif target.startswith("vdb_"):
-        result = {target: repair_vdb(target)}
-    elif target.startswith("kv_store_"):
-        result = {target: repair_kv_store(target)}
-    else:
-        raise HTTPException(status_code=400, detail=f"未知 target: {target}")
+    if target != "all":
+        raise HTTPException(status_code=400, detail=f"v5 只支持 target=all，收到: {target}")
 
-    reset_init_state()
-    # 修复后重跑 check_all 更新 _integrity_result，让前端立即看到健康状态
-    from niu_api.internal.lightrag_integrity import check_all
-    lm._integrity_result = check_all()
-    return {"status": "ok", "result": result, "integrity": lm._integrity_result}
+    result = run_repair_on_user_request()
+    return {"status": "ok", "result": result}
 ```
 
 - [ ] **Step 4: 跑测试验证通过**
@@ -1775,272 +475,290 @@ Expected: 3 PASS
 
 ```bash
 cd REDACTED_USER_PATH/tools/ai-bot && git add niu_api/kg_api.py tests/test_lightrag_repair_api.py
-git commit -m "feat(kg_api): /api/kg/lightrag/repair POST 端点暴露外挂修复
+git commit -m "refactor(kg_api): /api/kg/lightrag/repair 改调 run_repair_on_user_request
 
-端点路径 /api/kg/lightrag/repair（router prefix=/api/kg）。
-支持 target=all / vdb_xxx.json / kv_store_xxx.json
-修复后调 reset_init_state 让 LightRAG 重试初始化。"
+v4 端点直接调 repair_all + 手动重跑 check_all
+v5 端点调 run_repair_on_user_request（封装 repair_all + reset_init_state + 重跑 check_all）
+v5 只支持 target=all（用户决策驱动，不分单文件修复）"
 ```
 
 ---
 
-## Task 6: 前端告警——splash 启动时显示告警 + 写入告警文件（v4 适配 splash 架构）
+## Task 6: 前端告警——rfd 原生弹窗"退出"+"尝试修复"两按钮（v6 简化）
 
 **Files:**
+- Modify: `launcher/Cargo.toml`（加 `rfd` 依赖）
 - Modify: `launcher/src/main.rs`
 - Test: 手动验证（Rust 测试不在 TDD 范围内）
 
-**背景**：launcher 实际架构是 `SplashMessage` enum + 280x80 splash 窗口，splash 关闭后进入 `while !cancelled { sleep(100ms) }` 等待循环，**无常驻 iced UI**。v2/v3 假设有常驻 UI 是错的。
+**背景**：v5 用 iced splash 扩大窗口显示弹窗太复杂。v6 改用 Rust 原生弹窗 `rfd`（Rust File Dialog）的 `MessageDialog`——跨平台原生对话框，macOS/Windows/Linux 都支持，比 iced 自绘 UI 简单得多。
 
-v4 方案：**启动时检测 + splash 显示告警**：
-- splash 启动时（`SplashMessage::Tick` 分支）调 `reqwest::blocking` 查 `/api/kg/stats`
-- 如果 `init_failed=true` 或 `integrity.ok=false`，把告警写入 `~/.niu/lightrag_alert.json`
-- splash 窗口扩大到 400x160，显示告警信息 + "修复"按钮 + "继续"按钮
-- 用户点"修复"：调 `/api/kg/lightrag/repair?target=all`，等修复完成，splash 缩回 280x80 继续 boot
-- 用户点"继续"：忽略告警，splash 正常关闭进入等待循环
-- 如果无告警：splash 正常 280x80 显示启动画面
+**关键**：检测到损坏时，在独立线程调 `rfd::MessageDialog::new().set_title(...).set_description(...).set_buttons(YesNo).show()` 弹原生对话框，根据用户选择（Yes=尝试修复 / No=退出）触发对应逻辑。
 
-**关键**：用 `iced::futures::channel::oneshot`（iced re-export 的 futures，不需要 Cargo.toml 加依赖），不用裸 `futures::channel::oneshot`。
+- [ ] **Step 1: 加 rfd 依赖到 Cargo.toml**
 
-- [ ] **Step 1: 确认 launcher 现有 SplashMessage + splash 架构**
+读 `launcher/Cargo.toml`，在 `[dependencies]` 末尾加：
 
-```bash
-cd REDACTED_USER_PATH/tools/ai-bot && grep -n "SplashMessage\|window::frames\|280\|80\|decorations\|transparent" launcher/src/main.rs | head -15
+```toml
+rfd = "0.14"
 ```
 
-读 `launcher/src/main.rs` L40-170（SplashApp + SplashMessage enum + view + subscription + update），理解现有架构。
+- [ ] **Step 2: 读现有 splash 告警逻辑**
 
-- [ ] **Step 2: 改 SplashMessage enum 加告警相关 message**
+读 `launcher/src/main.rs` 的 `SplashMessage` enum + `Splash` struct + `update` 函数（L40-340 附近），理解 v4 已实现的 `alert: Option<LightragAlert>` + `StatusCheckResult` / `RepairLightrag` / `RepairResult` / `DismissAlert` message。
 
-在 `launcher/src/main.rs` 的 `SplashMessage` enum 加：
+- [ ] **Step 3: 改 SplashMessage enum——删 DismissAlert，加 UserDialogChoice**
+
+把 v4 的 `DismissAlert` 删掉（不再用 iced 自绘按钮），改为接收用户在原生弹窗的选择：
 
 ```rust
 enum SplashMessage {
     Tick,
     WindowOpened(window::Id),
     HideDockIcon,
-    // 新增：LightRAG 韧性告警
-    StatusCheckResult(Result<LightragStatus, String>),  // 启动时查 /api/kg/stats 的结果
-    RepairLightrag,      // 用户点"修复"按钮
-    RepairResult(Result<String, String>),  // 修复 API 调用结果
-    DismissAlert,        // 用户点"继续"按钮（忽略告警）
-}
-
-#[derive(Debug, Clone, serde::Deserialize)]
-struct LightragStatus {
-    init_failed: bool,
-    init_retry_in_seconds: Option<f64>,
-    integrity: Option<IntegrityStatus>,
-}
-
-#[derive(Debug, Clone, serde::Deserialize)]
-struct IntegrityStatus {
-    ok: bool,
-    total_errors: i32,
-}
-
-#[derive(Debug, Clone)]
-struct LightragAlert {
-    message: String,
-    total_errors: i32,
+    StatusCheckResult(Result<LightragStatus, String>),
+    UserDialogChoice(bool),  // true=尝试修复，false=退出（来自 rfd 原生弹窗）
+    RepairResult(Result<String, String>),
+    ExitApp,  // 实际退出程序
 }
 ```
 
-在 `SplashApp` state 加 `alert: Option<LightragAlert>` 字段。
+删除 `RepairLightrag`（不再用 iced 按钮触发）和 `DismissAlert`（不再用 iced "继续"按钮）。
 
-- [ ] **Step 3: 启动时查 status，写入 alert 字段**
+- [ ] **Step 4: 改 StatusCheckResult 分支——弹 rfd 原生对话框**
 
-在 `SplashMessage::Tick` 分支（启动早期，splash 窗口已显示但 LightRAG 还在 init），加一次 status 查询：
+在 `update` 函数的 `StatusCheckResult` 分支，检测到损坏时弹原生对话框（在独立线程跑，避免阻塞 iced executor）：
 
 ```rust
-SplashMessage::Tick => {
-    // 现有 tick 逻辑（检查 niu_api 是否就绪）...
-
-    // 启动早期查一次 LightRAG status（只查一次，用 flag 避免重复）
-    if !self.status_checked && self.niu_api_ready {
-        self.status_checked = true;
-        let (tx, rx) = iced::futures::channel::oneshot::channel::<Result<LightragStatus, String>>();
-        std::thread::spawn(move || {
-            let result = reqwest::blocking::Client::new()
-                .get("http://localhost:9876/api/kg/stats")
-                .send()
-                .map_err(|e| e.to_string())
-                .and_then(|resp| resp.json::<LightragStatus>().map_err(|e| e.to_string()));
-            let _ = tx.send(result);
-        });
-        return Task::perform(
-            async move { rx.await.unwrap_or(Err("channel closed".into())) },
-            SplashMessage::StatusCheckResult,
-        );
-    }
-    // 现有 tick 逻辑继续...
-}
-
 SplashMessage::StatusCheckResult(Ok(status)) => {
     if status.init_failed || status.integrity.as_ref().map_or(false, |i| !i.ok) {
         let total_errors = status.integrity.as_ref().map_or(0, |i| i.total_errors);
         let message = if status.init_failed {
-            format!("LightRAG 初始化失败，重试倒计时 {:?} 秒", status.init_retry_in_seconds)
+            format!("LightRAG 初始化失败\n\n检测到数据损坏，请选择：\n\n是 - 尝试修复（修复未必成功，可能会丢失数据）\n否 - 直接退出（请自行从备份恢复）")
         } else {
-            format!("检测到 {} 个数据一致性问题", total_errors)
+            format!("检测到 {} 个数据一致性问题\n\n请选择：\n\n是 - 尝试修复（修复未必成功，可能会丢失数据）\n否 - 直接退出（请自行从备份恢复）", total_errors)
         };
-        self.alert = Some(LightragAlert { message, total_errors });
-        // 扩大 splash 窗口显示告警
-        // （需要改 window 尺寸到 400x160，具体 API 看 iced 0.13 window 操作）
+        // 在独立线程弹 rfd 原生对话框，避免阻塞 iced
+        let (tx, rx) = iced::futures::channel::oneshot::channel::<bool>();
+        std::thread::spawn(move || {
+            let choice = rfd::MessageDialog::new()
+                .set_title("LightRAG 数据异常")
+                .set_description(&message)
+                .set_buttons(rfd::MessageButtons::YesNo)
+                .set_level(rfd::MessageLevel::Warning)
+                .show();
+            let _ = tx.send(choice == rfd::MessageDialogResult::Yes);
+        });
+        return Task::perform(
+            async move { rx.await.unwrap_or(false) },
+            SplashMessage::UserDialogChoice,
+        );
     }
-    Task::none()
-}
-
-SplashMessage::StatusCheckResult(Err(_)) => {
-    // 查询失败，静默（启动继续）
-    Task::none()
-}
-
-SplashMessage::RepairLightrag => {
-    let (tx, rx) = iced::futures::channel::oneshot::channel::<Result<String, String>>();
-    std::thread::spawn(move || {
-        let result = reqwest::blocking::Client::new()
-            .post("http://localhost:9876/api/kg/lightrag/repair?target=all")
-            .send()
-            .map_err(|e| e.to_string())
-            .and_then(|resp| resp.text().map_err(|e| e.to_string()));
-        let _ = tx.send(result);
-    });
-    Task::perform(
-        async move { rx.await.unwrap_or(Err("channel closed".into())) },
-        SplashMessage::RepairResult,
-    )
-}
-
-SplashMessage::RepairResult(Ok(_)) => {
-    // 修复完成，清告警，splash 缩回正常尺寸继续 boot
-    self.alert = None;
-    Task::none()
-}
-
-SplashMessage::RepairResult(Err(e)) => {
-    // 修复失败，告警条显示错误，用户可继续或重试
-    if let Some(alert) = &mut self.alert {
-        alert.message = format!("修复失败: {}", e);
-    }
-    Task::none()
-}
-
-SplashMessage::DismissAlert => {
-    // 用户忽略告警，继续启动
-    self.alert = None;
+    // v6: 健康则不弹窗，splash 正常继续启动（不设 alert 字段——v6 已删 alert 字段）
     Task::none()
 }
 ```
 
-- [ ] **Step 4: 改 view 函数显示告警**
+**关键（v6 改进 3）**：同时删掉 v4 在 `StatusCheckResult` 分支里的 `window::resize(id, iced::Size::new(400.0, 160.0))` 调用（如果存在）。v6 用 rfd 原生弹窗（独立窗口），不需要扩大 iced splash 窗口。grep 确认：
 
-当 `self.alert` 非空时，splash 窗口扩大到 400x160，显示告警 + 按钮：
+```bash
+cd REDACTED_USER_PATH/tools/ai-bot && grep -n "window::resize" launcher/src/main.rs
+```
+
+把所有 `window::resize(id, iced::Size::new(400.0, 160.0))` 和对应的缩回 `window::resize(id, iced::Size::new(280.0, 80.0))` 调用删掉（v6 不再用 iced 窗口尺寸变化显示告警）。
+
+- [ ] **Step 5: 加 UserDialogChoice 分支——根据用户选择触发退出或修复**
+
+```rust
+SplashMessage::UserDialogChoice(try_repair) => {
+    if try_repair {
+        // 用户选"是"=尝试修复，调 /api/kg/lightrag/repair?target=all
+        let (tx, rx) = iced::futures::channel::oneshot::channel::<Result<String, String>>();
+        std::thread::spawn(move || {
+            let result = reqwest::blocking::Client::new()
+                .post("http://127.0.0.1:9876/api/kg/lightrag/repair?target=all")
+                .timeout(std::time::Duration::from_secs(300))  // 修复可能要几分钟
+                .send()
+                .map_err(|e| e.to_string())
+                .and_then(|resp| resp.text().map_err(|e| e.to_string()));
+            let _ = tx.send(result);
+        });
+        return Task::perform(
+            async move { rx.await.unwrap_or(Err("channel closed".into())) },
+            SplashMessage::RepairResult,
+        );
+    } else {
+        // 用户选"否"=退出
+        return Task::done(SplashMessage::ExitApp);
+    }
+}
+
+SplashMessage::ExitApp => {
+    std::process::exit(0);
+}
+```
+
+- [ ] **Step 6: 改 RepairResult 分支——修复后重查 status**
+
+```rust
+SplashMessage::RepairResult(Ok(_)) => {
+    // 修复完成后重查 status，如果健康则关闭告警继续启动；如果仍损坏则再弹对话框
+    let (tx, rx) = iced::futures::channel::oneshot::channel::<Result<LightragStatus, String>>();
+    std::thread::spawn(move || {
+        let result = reqwest::blocking::Client::new()
+            .get("http://127.0.0.1:9876/api/kg/stats")
+            .send()
+            .map_err(|e| e.to_string())
+            .and_then(|resp| resp.json::<LightragStatus>().map_err(|e| e.to_string()));
+        let _ = tx.send(result);
+    });
+    return Task::perform(
+        async move { rx.await.unwrap_or(Err("channel closed".into())) },
+        SplashMessage::StatusCheckResult,
+    );
+}
+
+SplashMessage::RepairResult(Err(e)) => {
+    // 修复失败，弹原生对话框告诉用户
+    let (tx, rx) = iced::futures::channel::oneshot::channel::<bool>();
+    std::thread::spawn(move || {
+        let choice = rfd::MessageDialog::new()
+            .set_title("修复失败")
+            .set_description(&format!("修复失败：{}\n\n请选择：\n\n是 - 重试\n否 - 退出", e))
+            .set_buttons(rfd::MessageButtons::YesNo)
+            .set_level(rfd::MessageLevel::Error)
+            .show();
+        let _ = tx.send(choice == rfd::MessageDialogResult::Yes);
+    });
+    return Task::perform(
+        async move { rx.await.unwrap_or(false) },
+        SplashMessage::UserDialogChoice,
+    );
+}
+```
+
+- [ ] **Step 7: 删 view 函数的告警分支**
+
+v4 在 `view` 函数里有 `if let Some(alert) = &self.alert` 告警视图。v6 删掉这个分支（不再用 iced 自绘告警 UI，改用 rfd 原生弹窗）：
 
 ```rust
 fn view(&self) -> Element<'_, SplashMessage> {
-    if let Some(alert) = &self.alert {
-        // 告警视图
-        let content = column![
-            text(alert.message.clone()).size(14),
-            row![
-                button("修复").on_press(SplashMessage::RepairLightrag),
-                button("继续").on_press(SplashMessage::DismissAlert),
-            ].spacing(8),
-        ].spacing(8).padding(12);
-
-        return container(content)
-            .width(Length::Fixed(400.0))
-            .height(Length::Fixed(160.0))
-            .into();
-    }
-
-    // 现有 splash 视图（280x80 启动画面）
+    // 只保留现有 splash 启动画面（280x80）
+    // 删除 alert 告警分支
     // ...
 }
 ```
 
-**注意**：窗口尺寸动态调整需要 iced 0.13 的 `window::resize` 命令。如果动态调整复杂，可以保持 splash 280x80，告警信息用 `text` 叠加在 splash 上（小字号显示）。具体实现根据 iced 0.13 window API 调整。
+同时可以删掉 `Splash` struct 的 `alert: Option<LightragAlert>` 字段和 `LightragAlert` struct（不再需要）。
 
-- [ ] **Step 5: 编译验证**
+- [ ] **Step 8: 编译验证**
 
 ```bash
 cd REDACTED_USER_PATH/tools/ai-bot/launcher && cargo build 2>&1 | tail -10
 ```
 
-Expected: 编译成功（用 `iced::futures::channel::oneshot` + `reqwest::blocking` + `std::thread::spawn`，零新依赖）
+Expected: 编译成功（rfd 0.14 + iced 0.13 兼容）
 
-- [ ] **Step 6: 手动验证**
+- [ ] **Step 9: 手动验证**
 
-启动程序，模拟 LightRAG 初始化失败（临时把 vdb 文件改名），看 splash 是否显示告警 + 修复按钮。
+启动程序，模拟 LightRAG 初始化失败（临时把 vdb 文件改名），看是否弹出原生对话框（macOS 上是系统原生警告框），显示"是 - 尝试修复"/"否 - 退出"两个按钮。
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 10: Commit**
 
 ```bash
-cd REDACTED_USER_PATH/tools/ai-bot && git add launcher/src/main.rs
-git commit -m "feat(launcher): splash 启动时检测 LightRAG 告警 + 修复按钮
+cd REDACTED_USER_PATH/tools/ai-bot && git add launcher/Cargo.toml launcher/src/main.rs
+git commit -m "feat(launcher): v6 用 rfd 原生弹窗显示'退出'+'尝试修复'两按钮
 
-启动时查 /api/kg/stats，如果 init_failed 或 integrity.ok=false：
-- splash 窗口扩大显示告警信息
-- 提供'修复'按钮调 /api/kg/lightrag/repair?target=all
-- 提供'继续'按钮忽略告警
+v5 用 iced splash 扩大窗口自绘告警 UI 太复杂
+v6 改用 rfd (Rust File Dialog) 的 MessageDialog——跨平台原生对话框
 
-用 iced::futures::channel::oneshot + std::thread::spawn + reqwest::blocking
-在独立线程跑 HTTP 请求，零新依赖。"
+检测到损坏时在独立线程弹原生对话框：
+- 标题'LightRAG 数据异常'
+- 描述含损坏信息 + '是-尝试修复（修复未必成功，可能会丢失数据）/否-直接退出（请自行从备份恢复）'
+- Warning 级别
+- YesNo 按钮
+
+用户选'是'调 /api/kg/lightrag/repair?target=all
+用户选'否' std::process::exit(0) 直接退出
+修复失败再弹原生对话框（Error 级别）让用户选重试或退出
+
+删除 v4 的 alert 字段 + LightragAlert struct + view 告警分支（不再用 iced 自绘）。"
 ```
 
 ---
 
-## Task 7: 端到端验证
+## Task 7: 端到端验证（v5 修正）
 
 **Files:** 临时验证脚本
 
-- [ ] **Step 1: 模拟 vdb 损坏，验证检测 + 报告 + 修复**
+**目的**：验证 v5 用户决策驱动流程：检测到损坏 → 弹窗 → 用户选"尝试修复" → 修复成功。
+
+- [ ] **Step 1: 模拟 vdb 损坏**
 
 ```bash
 cd REDACTED_USER_PATH/tools/ai-bot
 cp ~/.niu/lightrag_storage/vdb_entities.json /tmp/vdb_entities.json.backup
 
-# 构造损坏（截断 matrix 字段尾部）
 python3 -c "
 import json
 with open('REDACTED_USER_PATH/.niu/lightrag_storage/vdb_entities.json') as f:
     raw = json.load(f)
-# 截断 matrix
-raw['matrix'] = raw['matrix'][:1000]
+raw['matrix'] = raw['matrix'][:1000]  # 截断 matrix
 with open('REDACTED_USER_PATH/.niu/lightrag_storage/vdb_entities.json', 'w') as f:
     json.dump(raw, f)
 "
-
-./niu &
-sleep 60
-curl -s http://localhost:9876/api/kg/stats | python3 -m json.tool
-# 期望：integrity.ok=false, total_errors>0
-
-# 调修复 API
-curl -X POST "http://localhost:9876/api/kg/lightrag/repair?target=vdb_entities.json"
-# 期望：从 vdb data 字段重建
-
-sleep 30
-curl -s http://localhost:9876/api/kg/stats | python3 -m json.tool
-# 期望：integrity.ok=true
-
-# 恢复原始 vdb
-cp /tmp/vdb_entities.json.backup ~/.niu/lightrag_storage/vdb_entities.json
-pgrep -f "niu_api" | xargs kill -TERM
+# 注意：不要删 ~/.niu/last_region_sync.json——那是 region_sync 的状态文件，删了会触发全量重同步
 ```
 
-- [ ] **Step 2: 验证备份机制**
+- [ ] **Step 2: 启动程序，验证 rfd 原生弹窗**
 
 ```bash
-ls ~/.niu/lightrag_storage_backups/
-ls ~/.niu/lightrag_storage/*.bak
-ls ~/.niu/lightrag_storage/*.corrupt.bak 2>&1
+./niu &
+sleep 30
+# 观察是否弹出系统原生警告框（macOS 是 NSAlert 风格，Windows 是 MessageBox，Linux 是 GTK Dialog）
+# 对话框标题"LightRAG 数据异常"
+# 描述含损坏信息 + "是-尝试修复（修复未必成功，可能会丢失数据）/否-直接退出（请自行从备份恢复）"
+# 两个按钮：是 / 否
+# 手动点"是"按钮
 ```
 
-- [ ] **Step 3: 验证前端告警**
+Expected: 弹出系统原生警告框，显示"是"/"否"两按钮 + 警告文字
 
-启动程序，模拟损坏，看 launcher 是否弹通知。
+- [ ] **Step 3: 点"尝试修复"后验证修复**
+
+```bash
+# 点"尝试修复"后，splash 调 /api/kg/lightrag/repair
+# 等修复完成（~2 分钟，2333 条实体重新 embedding）
+sleep 150
+curl -s "http://localhost:9876/api/kg/stats" | python3 -m json.tool | grep -E "init_failed|integrity"
+```
+
+Expected: `init_failed: false`, `integrity.ok: true`
+
+- [ ] **Step 4: 验证修复后程序正常启动**
+
+修复完成后，rfd 弹窗关闭，`run_repair_on_user_request` 主动调 `get_lightrag()` 触发重试初始化，LightRAG 重新加载（用修复后的 vdb），程序正常启动。splash 窗口保持 280x80 显示启动画面，最终 splash 关闭进入主循环。
+
+- [ ] **Step 5: 验证 .corrupt.bak 保留损坏现场**
+
+```bash
+ls ~/.niu/lightrag_storage/*.corrupt.bak
+```
+
+Expected: `vdb_entities.json.corrupt.bak` 存在（修复前保留的损坏现场）
+
+- [ ] **Step 6: 恢复原始 vdb + 清理**
+
+```bash
+pgrep -f "niu_api" | xargs kill -TERM 2>/dev/null
+sleep 5
+cp /tmp/vdb_entities.json.backup ~/.niu/lightrag_storage/vdb_entities.json
+rm -f ~/.niu/lightrag_storage/*.corrupt.bak
+```
+
+- [ ] **Step 7: 验证"退出"按钮**
+
+再次模拟损坏启动，这次在 rfd 弹窗点"否"按钮，验证程序直接退出（`std::process::exit(0)`，不修复）。
 
 ---
 
@@ -2048,51 +766,46 @@ ls ~/.niu/lightrag_storage/*.corrupt.bak 2>&1
 
 ### 1. Spec coverage
 
-用户需求："启动时候有没有快速检测图谱一致性？如果有，就快速检测，发现问题修复。如果没有快速检测的工具，就做外挂程序。"
+用户需求："启动的时候自动检测，检测出现问题弹窗，显示两个选项。第一个选项是直接退出，要求用户自己从备份中恢复数据。第二个选项是尝试修复，但要告诉用户修复未必成功，也可能会丢失数据。备份和不备份是用户自己的事。"
 
 5 个维度覆盖：
-- ✅ 维度 1（故障检测）→ Task 1（v2 真实格式：matrix + vector 三层解码 + graphml 边引用校验）
-- ✅ 维度 2（数据修复）→ Task 2（v2 从 vdb data 字段重建 + kv_store fallback）+ Task 5
-- ✅ 维度 3（写入原子性）→ 不改 nano-vectordb，用 Task 3 滚动备份兜底
-- ✅ 维度 4（告警机制）→ Task 6（v2 用 frames() 计数 + 复用 /api/kg/stats）
-- ✅ 维度 5（备份机制）→ Task 3（v2 full_backup 排除 .bak/.corrupt.bak）
+- ✅ 维度 1（故障检测）→ Task 1（已完成，保持不变）
+- ✅ 维度 2（数据修复）→ Task 2（已完成，保持不变）+ Task 5（v5 改调 run_repair_on_user_request）
+- ✅ 维度 3（写入原子性）→ 不改 nano-vectordb，外挂检测+用户触发修复兜底
+- ✅ 维度 4（告警机制）→ Task 6（v5 弹窗"退出"+"尝试修复"两按钮）
+- ✅ 维度 5（备份机制）→ **v5 删除备份模块**（备份是用户自己的事）
 
-### 2. v1 阻断修复
+### 2. v4 → v6 变更
 
-- ✅ **v1 阻断 1（vector 字段格式）** → v2 Task 1+2 用 `base64(zlib(float16 bytes))` 三层编码，实测验证
-- ✅ **v1 阻断 2（kv_store 映射错误）** → v2 Task 2 改为优先从 vdb data 字段读，fallback 到 kv_store_text_chunks
-- ✅ **v1 阻断 3（鸡生蛋矛盾）** → v2 Task 4 拆分两阶段 + `_embed_text` 用预加载 embedding 模型
-- ✅ **v1 阻断 4（测试论断错误）** → v2 Task 1 删掉 float16 modulo 测试，改用精确字节数校验
+- ✅ **删除 Task 3（备份模块）**：`lightrag_backup.py` 整个删除
+- ✅ **改 Task 4**：Phase 1 只检测（删 cleanup+backup）；Phase 2 不自动修复（删 `run_resilience_phase2`，加 `run_repair_on_user_request`）
+- ✅ **改 Task 5**：端点调 `run_repair_on_user_request`，只支持 `target=all`
+- ✅ **改 Task 6**：用 `rfd::MessageDialog` 弹原生对话框，显示"是-尝试修复 / 否-退出"两按钮 + 警告文字
 
-### 3. v2 阻断修复
+### 2.1 v6 审查阻断+改进修复
 
-- ✅ **v2 阻断 1（测试检测顺序错位）** → v3 Task 1 `test_check_vdb_data_matrix_length_mismatch` 改为期望 `matrix_size_mismatch`（字节数 48 != 期望 32）
-- ✅ **v2 阻断 2（元数据丢失）** → v3 Task 2 `repair_vdb` 改为 `{k: v for k, v in item.items() if k != "vector"}` 保留所有非 vector 字段，只重算 vector
-- ✅ **v2 阻断 3（Rust 编译失败）** → v4 Task 6 改用 `iced::futures::channel::oneshot`（iced re-export，不需要 Cargo.toml 加依赖）+ `std::thread::spawn` + `reqwest::blocking`
-- ✅ **v2 阻断 4（常量名错误）** → v3 Task 4 Step 3c 改为在现有 `get_lightrag_status` 末尾追加 `integrity` 字段，不重写整个函数（保留 `_INIT_RETRY_SECONDS` + `with _rag_lock` + `round(..., 1)`）
+- ✅ **阻断 1（Task 3+4 中间 commit NameError）** → Task 3 Step 4 改为同时改 `run_resilience_phase1` 删掉 cleanup/full_backup 调用 + 加 `run_repair_on_user_request`（不只注释 import），避免 broken commit
+- ✅ **改进 1（测试名误导）** → Task 5 删除 `test_repair_endpoint_specific_vdb`，加 `test_repair_endpoint_rejects_vdb_target`
+- ✅ **改进 2（self.alert=None 残留）** → Task 6 Step 4 删掉 `self.alert = None;`
+- ✅ **改进 3（window::resize 残留）** → Task 6 Step 4 明确删 v4 的 `window::resize(400, 160)` 调用
+- ✅ **改进 4（Task 7 描述过时）** → Task 7 Step 2/4/7 改为描述 rfd 原生弹窗行为
+- ✅ **改进 5（修复后 LightRAG 重初始化触发）** → `run_repair_on_user_request` 末尾主动调 `get_lightrag()` 触发重试
 
-### 4. v3 阻断修复
+### 3. Type consistency
 
-- ✅ **v3 阻断 1（futures crate 未声明）** → v4 Task 6 改用 `iced::futures::channel::oneshot`（iced 在 lib.rs re-export 了 `iced_futures::futures`，不需要 Cargo.toml 加 `futures` 依赖）
-- ✅ **v3 阻断 2（端点路径不匹配）** → v4 Task 5 端点路径对齐 `/api/kg/lightrag/repair`（router prefix=/api/kg），测试/curl/Rust 代码全部同步更新
-- ✅ **v3 阻断 3（launcher 架构不匹配）** → v4 Task 6 改为 splash 启动时检测告警 + 扩大窗口显示告警 + 修复/继续按钮（不假设有常驻 iced UI，适配现有 SplashMessage + 280x80 splash 架构）
-- ✅ **v3 阻断 4（测试 _init_failed_at=0.0 论断错误）** → v4 Task 4 测试改为 `_init_failed_at=None`（`None is not None` 为 False，init_failed=False）
+- `run_resilience_phase1() -> dict` → Task 4 改（只检测）
+- `run_repair_on_user_request() -> dict` → Task 4 新增（替代 `run_resilience_phase2`）
+- `repair_lightrag_storage(target: str = "all") -> dict` → Task 5 改（调 `run_repair_on_user_request`）
+- `SplashMessage::ExitAlert` / `ExitApp` → Task 6 新增（替代 `DismissAlert`）
+- `_integrity_result: dict | None` → Task 4 保持（run_repair_on_user_request 重跑 check_all 更新它）
 
-### 3. 改进建议处理
+### 4. 关键设计决策
 
-- ✅ 改进 1（graphml 边引用校验）→ Task 1 `check_graphml` 加边引用节点存在校验
-- ✅ 改进 4（cleanup 时序）→ Task 4 Phase 1 跑 cleanup（修复在 Phase 2，时序错开）
-- ✅ 改进 5（iced 0.13 + frames()）→ Task 6 用 frames() 计数，零新依赖
-- ✅ 改进 6（复用 /api/kg/stats）→ Task 6 复用现有端点，不新增
-- 改进 2/3（rolling_backup/full_backup 并发写问题）→ 暂不处理（外挂层无法加锁跟 nano-vectordb save 互斥，best-effort 可接受）
-
-### 4. Type consistency
-
-- `check_vdb(path: str) -> dict` → Task 1 定义，Task 7 引用
-- `repair_vdb(vdb_filename: str) -> dict` → Task 2 定义，Task 5 引用
-- `_encode_vector` / `_encode_matrix` → Task 2 定义，Task 1 检测时用 `_decode_vector`
-- `run_resilience_phase1() -> dict` / `run_resilience_phase2(need_repair: bool) -> dict` → Task 4 定义
-- `_integrity_result: dict | None` → Task 4 定义，`get_lightrag_status` 引用
+- **不做备份**：删除 `lightrag_backup.py`，备份是用户自己的事
+- **不自动修复**：Phase 2 删除，等用户在 splash 选"尝试修复"才调 `run_repair_on_user_request`
+- **弹窗在 splash iced 窗口里**：不用 `launch_window("settings")` 那套 Electron 窗口
+- **修复前保留损坏现场**：`repair_vdb` 的 `.corrupt.bak` 逻辑保留（让用户事后查看损坏数据）
+- **鸡生蛋解决**：`_embed_text` 用预加载 embedding 模型（Task 2 已实现）
 
 ---
 
