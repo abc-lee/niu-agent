@@ -727,6 +727,8 @@ _rag_lock = threading.Lock()
 # After init fails, _init_failed_at records the time. get_lightrag() will
 # return None until _INIT_RETRY_SECONDS have elapsed, then retry.
 _init_failed_at: Optional[float] = None
+_init_error: dict | None = None
+_integrity_result: dict | None = None  # Phase 1 一致性检测结果，供 get_lightrag_status 暴露
 _INIT_RETRY_SECONDS: float = 60.0
 
 # Signaling event: set when LightRAG initializes successfully.
@@ -977,6 +979,83 @@ def is_lightrag_available() -> bool:
         return False
 
 
+def run_resilience_phase1() -> dict:
+    """Phase 1（LightRAG eager init 之前）：cleanup + full_backup + check_all。
+
+    纯文件操作，不依赖 LightRAG 实例或 embedding 模型。
+
+    Returns:
+        {"check_ok": bool, "need_repair": bool, "check_result": dict}
+    """
+    global _integrity_result
+    from niu_api.internal.lightrag_backup import full_backup, cleanup_corrupt_bak
+    from niu_api.internal.lightrag_integrity import check_all
+
+    # 1. 清理 corrupt.bak 残留
+    try:
+        cleanup_corrupt_bak()
+    except Exception as e:
+        logger.warning(f"[LightRAG] 清理 corrupt.bak 失败（不影响启动）: {e}")
+
+    # 2. 全量备份（排除 .bak/.corrupt.bak）
+    try:
+        full_backup()
+    except Exception as e:
+        logger.warning(f"[LightRAG] 全量备份失败（不影响启动）: {e}")
+
+    # 3. 一致性检测
+    try:
+        check_result = check_all()
+    except Exception as e:
+        logger.warning(f"[LightRAG] 一致性检测失败（不影响启动）: {e}")
+        check_result = {"ok": True, "total_errors": 0, "error": str(e)}
+
+    _integrity_result = check_result
+
+    logger.info(
+        f"[LightRAG] Phase 1 完成: check_ok={check_result.get('ok')}, "
+        f"total_errors={check_result.get('total_errors', 0)}"
+    )
+    return {
+        "check_ok": check_result.get("ok", True),
+        "need_repair": not check_result.get("ok", True),
+        "check_result": check_result,
+    }
+
+
+def run_resilience_phase2(need_repair: bool) -> dict:
+    """Phase 2（LightRAG eager init 之后）：如果 need_repair，调 repair_all + reset_init_state。
+
+    embedding 模型已在 LightRAG eager init 时加载，repair_vdb 可用。
+
+    Returns:
+        {"repaired": bool, "repair_result": dict | None}
+    """
+    if not need_repair:
+        logger.info("[LightRAG] Phase 2 跳过：无损坏需修复")
+        return {"repaired": False, "repair_result": None}
+
+    from niu_api.internal.lightrag_repair import repair_all
+
+    logger.warning("[LightRAG] Phase 2: 检测到损坏，启动修复")
+    try:
+        repair_result = repair_all()
+        # 修复后重置初始化状态，让下次 get_lightrag 重试
+        reset_init_state()
+        logger.info(f"[LightRAG] Phase 2 修复完成: {repair_result}")
+        return {"repaired": True, "repair_result": repair_result}
+    except Exception as e:
+        logger.error(f"[LightRAG] Phase 2 修复失败: {e}")
+        return {"repaired": False, "repair_result": {"error": str(e)}}
+
+
+def reset_init_state() -> None:
+    """重置初始化失败状态，让下次 get_lightrag 重试。"""
+    global _init_failed_at, _init_error
+    _init_failed_at = None
+    _init_error = None
+
+
 def get_lightrag_status() -> Dict[str, Any]:
     """Get LightRAG status info for diagnostics."""
     from niu_api.internal.embedding import get_current_model_info
@@ -992,7 +1071,7 @@ def get_lightrag_status() -> Dict[str, Any]:
     with _loop_lock:
         loop_running = _loop is not None and _loop.is_running()
 
-    return {
+    result = {
         "installed": is_lightrag_available(),
         "initialized": initialized,
         "init_failed": init_failed,
@@ -1003,6 +1082,12 @@ def get_lightrag_status() -> Dict[str, Any]:
         "reranker": get_current_reranker_info(),
         "loop_running": loop_running,
     }
+    if _integrity_result:
+        result["integrity"] = {
+            "ok": _integrity_result.get("ok", True),
+            "total_errors": _integrity_result.get("total_errors", 0),
+        }
+    return result
 
 
 # ============== Graph Change Log ==============

@@ -193,6 +193,16 @@ async def lifespan(app: FastAPI):
     # 7. (Removed) Weekly vector cleanup — vectors.db is deprecated,
     #    LightRAG manages its own storage. Cleanup is no longer needed.
 
+    # Phase 1: LightRAG eager init 之前——纯文件操作（cleanup + full_backup + check_all）
+    # 不依赖 LightRAG 实例或 embedding 模型，所以放在 eager init 之前
+    try:
+        from niu_api.internal.lightrag_manager import run_resilience_phase1
+        phase1_result = run_resilience_phase1()
+        logger.info(f"LightRAG Phase 1 韧性流程: {phase1_result}")
+    except Exception as e:
+        logger.warning(f"LightRAG Phase 1 韧性流程失败（不影响启动）: {e}")
+        phase1_result = {"need_repair": False}
+
     # 7.5. Eagerly initialize LightRAG (triggers lazy init before background threads start)
     # This ensures _lightrag_ready Event is set quickly, so SkillSync/LightRAGSync/RegionSync
     # don't have to wait for their timeout. If init fails, threads will handle it gracefully.
@@ -205,6 +215,18 @@ async def lifespan(app: FastAPI):
             logger.warning("LightRAG instance not available (init failed or not installed)")
     except Exception as e:
         logger.warning(f"LightRAG eager init failed: {e}")
+
+    # Phase 2: LightRAG eager init 之后——embedding 模型已加载，可调 repair
+    try:
+        from niu_api.internal.lightrag_manager import run_resilience_phase2
+        phase2_result = run_resilience_phase2(need_repair=phase1_result.get("need_repair", False))
+        if phase2_result.get("repaired"):
+            logger.info("LightRAG Phase 2 修复完成，重新初始化 LightRAG")
+            # 修复后强制重新初始化
+            from niu_api.internal.lightrag_manager import get_lightrag
+            get_lightrag()  # 触发重试
+    except Exception as e:
+        logger.warning(f"LightRAG Phase 2 韧性流程失败: {e}")
 
     # 7.6. Start pipeline watcher (pushes ingest-started/completed SSE events
     #      when LightRAG pipeline becomes busy/idle, so frontend progress ring
