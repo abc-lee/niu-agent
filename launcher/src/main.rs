@@ -1046,6 +1046,15 @@ fn main() {
     let integrity_failed = Arc::new(AtomicBool::new(false));
     let integrity_failed_bg = integrity_failed.clone();
 
+    // Shared "LLM config failed" flag — set true by the background thread
+    // itself when /api/llm-status reports not-ready OR the real /api/test-llm
+    // fails twice. Once true, the bg thread launches the settings window
+    // (instead of the assistant), waits for either the test to pass or the
+    // settings window to be closed without passing, then sets cancelled=true
+    // to tear down the Python API and exit the process (so user can restart).
+    let llm_config_failed = Arc::new(AtomicBool::new(false));
+    let llm_config_failed_bg = llm_config_failed.clone();
+
     // Build environment vars for Python API (computed on main thread for simplicity)
     let mut env_vars: Vec<(String, String)> = Vec::new();
     env_vars.push((
@@ -1252,37 +1261,13 @@ fn main() {
                 _ => false,
             };
 
+            // 判断是否需要打开 settings 窗口让用户重配 LLM
+            // - llm_configured=false：直接打开
+            // - llm_configured=true 但真实 test 失败（且重试也失败）：打开
+            let mut need_settings = false;
             if !llm_configured {
-                info!("LLM not configured, opening settings...");
-                let _ = splash_tx.send(());  // 关闭 splash
-                let mut settings_child = launch_window("settings")
-                    .expect("Failed to launch settings window");
-                let test_url = format!("http://127.0.0.1:{}/api/test-llm", port);
-                // 轮询客户端需要足够长的超时（端点本身最多 20 秒）
-                let poll_client = reqwest::blocking::Client::builder()
-                    .timeout(Duration::from_secs(25))
-                    .build().unwrap_or_else(|_| check_client.clone());
-                let mut reopen_count = 0;
-                for _ in 0..60 {
-                    if cancelled_bg.load(Ordering::SeqCst) { break; }
-                    if let Ok(Some(_exit_status)) = settings_child.try_wait() {
-                        reopen_count += 1;
-                        if reopen_count > 3 {
-                            warn!("Settings window closed {} times without test, giving up", reopen_count);
-                            break;
-                        }
-                        warn!("Settings window closed without completing test, re-opening... (attempt {}/3)", reopen_count);
-                        settings_child = launch_window("settings")
-                            .expect("Failed to re-launch settings window");
-                    }
-                    thread::sleep(Duration::from_secs(3));
-                    if let Ok(resp) = poll_client.post(&test_url)
-                        .header("Content-Type", "application/json").body("{}").send() {
-                        if let Ok(v) = resp.json::<TestLlmResult>() {
-                            if v.success { info!("LLM test passed after reconfiguration"); break; }
-                        }
-                    }
-                }
+                info!("LLM not configured (llm-status.ready=false), opening settings...");
+                need_settings = true;
             } else {
                 info!("LLM configured, running real test...");
                 let test_client = reqwest::blocking::Client::builder()
@@ -1309,34 +1294,8 @@ fn main() {
                                     info!("LLM test passed on retry (transient error)");
                                 } else {
                                     // 连续两次失败 → 打开配置页面
-                                    let _ = splash_tx.send(());  // 关闭 splash
-                                    let mut settings_child = launch_window("settings")
-                                        .expect("Failed to launch settings window");
-                                    let test_url = format!("http://127.0.0.1:{}/api/test-llm", port);
-                                    let poll_client2 = reqwest::blocking::Client::builder()
-                                        .timeout(Duration::from_secs(25))
-                                        .build().unwrap_or_else(|_| check_client.clone());
-                                    let mut reopen_count2 = 0;
-                                    for _ in 0..60 {
-                                        if cancelled_bg.load(Ordering::SeqCst) { break; }
-                                        if let Ok(Some(_)) = settings_child.try_wait() {
-                                            reopen_count2 += 1;
-                                            if reopen_count2 > 3 {
-                                                warn!("Settings window closed {} times without test, giving up", reopen_count2);
-                                                break;
-                                            }
-                                            warn!("Settings window closed, re-opening... (attempt {}/3)", reopen_count2);
-                                            settings_child = launch_window("settings")
-                                                .expect("Failed to re-launch settings window");
-                                        }
-                                        thread::sleep(Duration::from_secs(3));
-                                        if let Ok(resp2) = poll_client2.post(&test_url)
-                                            .header("Content-Type", "application/json").body("{}").send() {
-                                            if let Ok(v2) = resp2.json::<TestLlmResult>() {
-                                                if v2.success { info!("LLM test passed after reconfiguration"); break; }
-                                            }
-                                        }
-                                    }
+                                    info!("LLM test failed twice, opening settings...");
+                                    need_settings = true;
                                 }
                             } else {
                                 info!("LLM test passed: {}", v.message.unwrap_or_default());
@@ -1350,37 +1309,79 @@ fn main() {
                 }
             }
 
-            let _ = splash_tx.send(());  // 关闭 splash
-
-            // Launch assistant window
-            let mut electron_child = match launch_window("assistant") {
-                Ok(child) => Some(child),
-                Err(e) => {
-                    error!("Failed to launch assistant window: {}", e);
-                    println!("\nPlease run manually: cd ui/assistant && npm start");
-                    None
-                }
-            };
-
-            // Monitor Electron process - when it exits, trigger shutdown
-            if let Some(mut child) = electron_child.take() {
-                let cancelled_ref = cancelled_bg.clone();
-                thread::spawn(move || {
-                    let result = child.wait();
-                    match result {
-                        Err(e) => {
-                            info!("Electron window exited: error={}", e);
+            if need_settings {
+                // 设共享标志，让后续 launch_window("assistant") 守卫跳过
+                llm_config_failed_bg.store(true, Ordering::SeqCst);
+                // 关 splash（settings 窗口起来遮罩即可）
+                let _ = splash_tx.send(());
+                // 启动 settings 窗口（npm start in ui/settings/）
+                let settings_result = launch_window("settings");
+                if let Ok(mut settings_child) = settings_result {
+                    let test_url = format!("http://127.0.0.1:{}/api/test-llm", port);
+                    let poll_client = reqwest::blocking::Client::builder()
+                        .timeout(Duration::from_secs(25))
+                        .build().unwrap_or_else(|_| check_client.clone());
+                    // 轮询：直到 settings 测试通过 OR settings 窗口被关闭
+                    // 删除 reopen_count>3 重开死循环——settings 一关就 break
+                    loop {
+                        if cancelled_bg.load(Ordering::SeqCst) { break; }
+                        // settings 窗口退出？
+                        if let Ok(Some(exit_status)) = settings_child.try_wait() {
+                            info!("Settings window closed (exit_status={})", exit_status);
+                            break;
                         }
-                        Ok(status) => {
-                            if status.success() {
-                                info!("Electron window closed normally");
-                            } else {
-                                info!("Electron window exited with status: {}", status);
+                        thread::sleep(Duration::from_secs(3));
+                        if let Ok(resp) = poll_client.post(&test_url)
+                            .header("Content-Type", "application/json").body("{}").send() {
+                            if let Ok(v) = resp.json::<TestLlmResult>() {
+                                if v.success {
+                                    info!("LLM test passed after reconfiguration, exiting for restart");
+                                    break;
+                                }
                             }
                         }
                     }
-                    cancelled_ref.store(true, Ordering::SeqCst); // Trigger shutdown
-                });
+                } else {
+                    error!("Failed to launch settings window: {:?}", settings_result.err());
+                }
+                // 不论测试通过还是窗口被关，都退出整个进程（让用户重启）
+                cancelled_bg.store(true, Ordering::SeqCst);
+                let _ = notify_shutdown(port);
+                info!("LLM settings flow complete, exiting process for user restart");
+            } else {
+                // LLM 配置正常 → 关 splash + 启 assistant
+                let _ = splash_tx.send(());
+
+                // Launch assistant window
+                let mut electron_child = match launch_window("assistant") {
+                    Ok(child) => Some(child),
+                    Err(e) => {
+                        error!("Failed to launch assistant window: {}", e);
+                        println!("\nPlease run manually: cd ui/assistant && npm start");
+                        None
+                    }
+                };
+
+                // Monitor Electron process - when it exits, trigger shutdown
+                if let Some(mut child) = electron_child.take() {
+                    let cancelled_ref = cancelled_bg.clone();
+                    thread::spawn(move || {
+                        let result = child.wait();
+                        match result {
+                            Err(e) => {
+                                info!("Electron window exited: error={}", e);
+                            }
+                            Ok(status) => {
+                                if status.success() {
+                                    info!("Electron window closed normally");
+                                } else {
+                                    info!("Electron window exited with status: {}", status);
+                                }
+                            }
+                        }
+                        cancelled_ref.store(true, Ordering::SeqCst); // Trigger shutdown
+                    });
+                }
             }
         }
 
