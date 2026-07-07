@@ -980,30 +980,18 @@ def is_lightrag_available() -> bool:
 
 
 def run_resilience_phase1() -> dict:
-    """Phase 1（LightRAG eager init 之前）：cleanup + full_backup + check_all。
+    """Phase 1（LightRAG eager init 之前）：只做一致性检测。
 
-    纯文件操作，不依赖 LightRAG 实例或 embedding 模型。
+    v6 修正：不做 cleanup / full_backup（备份是用户自己的事）。
+    检测到损坏不自动修复，由 rfd 原生弹窗让用户选'退出'或'尝试修复'。
 
     Returns:
         {"check_ok": bool, "need_repair": bool, "check_result": dict}
     """
     global _integrity_result
-    from niu_api.internal.lightrag_backup import full_backup, cleanup_corrupt_bak
     from niu_api.internal.lightrag_integrity import check_all
 
-    # 1. 清理 corrupt.bak 残留
-    try:
-        cleanup_corrupt_bak()
-    except Exception as e:
-        logger.warning(f"[LightRAG] 清理 corrupt.bak 失败（不影响启动）: {e}")
-
-    # 2. 全量备份（排除 .bak/.corrupt.bak）
-    try:
-        full_backup()
-    except Exception as e:
-        logger.warning(f"[LightRAG] 全量备份失败（不影响启动）: {e}")
-
-    # 3. 一致性检测
+    # 只做检测，不动任何文件
     try:
         check_result = check_all()
     except Exception as e:
@@ -1023,30 +1011,46 @@ def run_resilience_phase1() -> dict:
     }
 
 
-def run_resilience_phase2(need_repair: bool) -> dict:
-    """Phase 2（LightRAG eager init 之后）：如果 need_repair，调 repair_all + reset_init_state。
+def run_repair_on_user_request() -> dict:
+    """用户在弹窗点'尝试修复'后调用（通过 /api/kg/lightrag/repair 触发）。
 
-    embedding 模型已在 LightRAG eager init 时加载，repair_vdb 可用。
+    v6: 不自动修复，等用户决策。用户确认后才调 repair_all。
+    修复后主动调 get_lightrag() 触发重试初始化（不依赖后台线程兜底）。
 
     Returns:
-        {"repaired": bool, "repair_result": dict | None}
+        {"repaired": bool, "check_ok": bool, "repair_result": dict | None, "check_result": dict | None}
     """
-    if not need_repair:
-        logger.info("[LightRAG] Phase 2 跳过：无损坏需修复")
-        return {"repaired": False, "repair_result": None}
-
+    global _integrity_result
     from niu_api.internal.lightrag_repair import repair_all
+    from niu_api.internal.lightrag_integrity import check_all
 
-    logger.warning("[LightRAG] Phase 2: 检测到损坏，启动修复")
+    logger.warning("[LightRAG] 用户选择'尝试修复'，启动 repair_all")
     try:
         repair_result = repair_all()
-        # 修复后重置初始化状态，让下次 get_lightrag 重试
         reset_init_state()
-        logger.info(f"[LightRAG] Phase 2 修复完成: {repair_result}")
-        return {"repaired": True, "repair_result": repair_result}
+        # 修复后重跑 check_all 更新 _integrity_result
+        check_result = check_all()
+        _integrity_result = check_result
+        # v6 改进 5：主动调 get_lightrag() 触发重试初始化（不依赖后台线程 60 秒兜底）
+        try:
+            get_lightrag()
+        except Exception as e:
+            logger.warning(f"[LightRAG] 修复后 get_lightrag 重试失败（不影响返回）: {e}")
+        logger.info(f"[LightRAG] 修复完成: {repair_result}, 重检: ok={check_result.get('ok')}")
+        return {
+            "repaired": True,
+            "check_ok": check_result.get("ok", True),
+            "repair_result": repair_result,
+            "check_result": check_result,
+        }
     except Exception as e:
-        logger.error(f"[LightRAG] Phase 2 修复失败: {e}")
-        return {"repaired": False, "repair_result": {"error": str(e)}}
+        logger.error(f"[LightRAG] 修复失败: {e}")
+        return {
+            "repaired": False,
+            "check_ok": False,
+            "repair_result": {"error": str(e)},
+            "check_result": None,
+        }
 
 
 def reset_init_state() -> None:
