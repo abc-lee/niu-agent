@@ -566,8 +566,8 @@ def get_subagent_mcp_tools_schema(agent_name: str) -> List[Dict]:
 def _build_user_info_section() -> str:
     """从 memory.json 构建 ## 用户信息 + ## 用户偏好 段落，供子Agent注入。
 
-    过滤规则：
-    - user 字段：值以"请询问"开头则跳过
+    注入内容：
+    - user 字段：全部内容（姓名/称呼/职业/工作单位/技能等），值以"请询问"开头则跳过
     - permanent 字段：只注入 type="memory"，过滤 type="task"
     """
     from pathlib import Path
@@ -590,7 +590,35 @@ def _build_user_info_section() -> str:
     if ws_path and not str(ws_path).startswith("请询问"):
         sections.append(f"## 工作目录\n\n{ws_path}")
 
-    # 用户信息：子Agent不需要用户身份（姓名/称呼/职业/工作单位），只需工作目录和偏好
+    # 用户信息：user 区全部内容（姓名/称呼/职业/工作单位/技能等）
+    user = memory.get("user", {})
+    if isinstance(user, dict) and user:
+        user_lines = []
+        field_labels = {
+            "name": "姓名",
+            "nickname": "称呼",
+            "occupation": "职业",
+            "organization": "工作单位",
+            "skills": "技能",
+        }
+        for key, label in field_labels.items():
+            value = user.get(key)
+            if not value or (isinstance(value, str) and value.startswith("请询问")):
+                continue
+            if isinstance(value, list):
+                value = "、".join(str(v) for v in value)
+            user_lines.append(f"- {label}：{value}")
+        # 兜底：user 区有其他未列字段也注入
+        for key, value in user.items():
+            if key in field_labels:
+                continue
+            if not value or (isinstance(value, str) and value.startswith("请询问")):
+                continue
+            if isinstance(value, list):
+                value = "、".join(str(v) for v in value)
+            user_lines.append(f"- {key}：{value}")
+        if user_lines:
+            sections.append("## 用户信息\n\n" + "\n".join(user_lines))
 
     # 用户偏好（仅 type="memory"）
     permanent = memory.get("permanent", [])
