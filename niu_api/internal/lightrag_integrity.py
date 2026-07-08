@@ -273,6 +273,109 @@ def check_graphml(path: str) -> dict[str, Any]:
     return report
 
 
+def check_entity_sync() -> dict[str, Any]:
+    """检测 vdb_entities 的 entity_name 集合与 GraphML 节点 id 集合的同步性。
+
+    LightRAG 设计上 GraphML node id 全部 lower 化（networkx_impl.py _normalize_node_id）。
+    vdb 的 entity_name 应该也 lower 化对齐（用户铁律：所有写入必须转小写）。
+
+    检测逻辑（统一 lower 化后对比）：
+    - vdb 大写 entity_name（orig != lower）→ case_mismatch（算 error，触发弹窗修复）
+    - vdb 有重复 lower_name（如 'Niu'+'niu'）→ duplicate_in_vdb（算 error）
+    - lower 后 vdb 有但 GraphML 没有 → orphan_in_vdb（真孤儿，算 error）
+    - lower 后 GraphML 有但 vdb 没有 → missing_in_vdb（缺失向量，算 error）
+    """
+    report: dict[str, Any] = {"ok": False, "errors": [], "stats": {}}
+
+    storage_dir = _resolve_storage_dir()
+    vdb_path = storage_dir / "vdb_entities.json"
+    graphml_path = storage_dir / _GRAPHML_FILE
+
+    # 读 vdb_entities：lower_name -> list[原始名]（检测重复）
+    vdb_lower_to_orig: dict[str, list[str]] = {}
+    if vdb_path.exists():
+        try:
+            raw = json.loads(vdb_path.read_text(encoding="utf-8"))
+            for item in raw.get("data", []):
+                name = item.get("entity_name") or item.get("__id__")
+                if name:
+                    lower = name.lower()
+                    vdb_lower_to_orig.setdefault(lower, []).append(name)
+        except Exception as e:
+            report["errors"].append({"check": "vdb_read", "msg": str(e)})
+            return report
+    else:
+        report["errors"].append({"check": "vdb_missing", "path": str(vdb_path)})
+        return report
+
+    # 读 GraphML 节点 id（防御性 lower 化，防外部工具写入大写）
+    graphml_names: set[str] = set()
+    if graphml_path.exists():
+        try:
+            tree = ET.parse(graphml_path)
+            root = tree.getroot()
+            ns = "{http://graphml.graphdrawing.org/xmlns}"
+            for node in root.findall(f".//{ns}node"):
+                nid = node.get("id")
+                if nid:
+                    graphml_names.add(nid.lower())
+        except Exception as e:
+            report["errors"].append({"check": "graphml_read", "msg": str(e)})
+            return report
+    else:
+        report["errors"].append({"check": "graphml_missing", "path": str(graphml_path)})
+        return report
+
+    # 统计 case_mismatch + duplicate
+    case_mismatch = 0
+    duplicates = 0
+    for lower_name, orig_list in vdb_lower_to_orig.items():
+        for orig in orig_list:
+            if orig != lower_name:
+                case_mismatch += 1
+                report["errors"].append({
+                    "check": "case_mismatch",
+                    "entity_name": orig,
+                    "should_be": lower_name,
+                    "hint": "vdb entity_name 未转小写（违反 KG 规范），修复时改小写",
+                })
+        if len(orig_list) > 1:
+            duplicates += 1
+            report["errors"].append({
+                "check": "duplicate_in_vdb",
+                "entity_name": lower_name,
+                "origins": orig_list,
+                "hint": "vdb 有重复 lower_name（大小写变体），修复时保留已小写条目，丢弃大写重复",
+            })
+
+    # lower 后对比
+    vdb_lower_names = set(vdb_lower_to_orig.keys())
+    orphan_in_vdb = vdb_lower_names - graphml_names
+    missing_in_vdb = graphml_names - vdb_lower_names
+
+    for name in sorted(orphan_in_vdb):
+        report["errors"].append({
+            "check": "orphan_in_vdb",
+            "entity_name": name,
+            "hint": "vdb 有向量但 GraphML 无对应节点（lower 化后仍无），应从 vdb 删除",
+        })
+    for name in sorted(missing_in_vdb):
+        report["errors"].append({
+            "check": "missing_in_vdb",
+            "entity_name": name,
+            "hint": "GraphML 有节点但 vdb 无向量，应从 GraphML d2(description) 重建向量",
+        })
+
+    report["stats"]["vdb_count"] = sum(len(v) for v in vdb_lower_to_orig.values())
+    report["stats"]["graphml_count"] = len(graphml_names)
+    report["stats"]["case_mismatch"] = case_mismatch
+    report["stats"]["duplicate_in_vdb"] = duplicates
+    report["stats"]["orphan_in_vdb"] = len(orphan_in_vdb)
+    report["stats"]["missing_in_vdb"] = len(missing_in_vdb)
+    report["ok"] = len(report["errors"]) == 0
+    return report
+
+
 def check_all() -> dict[str, Any]:
     """检测整个 lightrag_storage 目录。"""
     all_errors: list[dict] = []
@@ -295,12 +398,18 @@ def check_all() -> dict[str, Any]:
     if not graphml_report["ok"]:
         all_errors.extend(graphml_report["errors"])
 
+    # 新增：vdb_entities 跟 GraphML 实体同步性检测
+    entity_sync_report = check_entity_sync()
+    if not entity_sync_report["ok"]:
+        all_errors.extend(entity_sync_report["errors"])
+
     return {
         "ok": len(all_errors) == 0,
         "storage_dir": str(_STORAGE_DIR),
         "vdb": vdb_reports,
         "kv_store": kv_reports,
         "graphml": graphml_report,
+        "entity_sync": entity_sync_report,
         "total_errors": len(all_errors),
     }
 
