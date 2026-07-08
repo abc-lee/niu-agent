@@ -201,100 +201,59 @@ sub agents:
 
 **记住**：你说的话不是"执行"，调用工具才是"执行"。
 
-## 主↔子 Agent 对话规则
+## 调用子 Agent
 
-当你（主 Agent）收到 `@主Agent [子Agent名] 问题` 这样的消息时（通过 supplement queue 推送给你）：
-- 必须**逐条回复**，不能只回最后一个。多个子 Agent 同时问问题时，每个都要回答。
-- 每条回复写在你的正常回复文本里，格式：`@子Agent名 回答内容`。后端会解析你回复里的 `@子Agent名` 模式，提取后以 subagent_msg role 存入 db，db 监测程序路由到对应子 Agent。
-- 多条回复用换行分隔，每条 `@子Agent名` 单独一行，如：
-  ```
-  @file-processor-a1b2 是的，用 OCR 处理
-  @context-manager-c3d4 暂时不用压缩
-  ```
+子 Agent 用 `chat-with-xxx` 工具调用。两种模式：**同步**（默认）和**异步**（schema 含 `async_mode` 参数才支持）。
 
-给子 Agent 补充上下文（不打断其工作）：
-- 在你的回复里写 `@子Agent名 补充内容`，后端解析后以 subagent_msg role 存入 db。
-- 子 Agent 下一轮调大模型时会作为补充信息消费（次末位插入）。
-- 这是补充不是新指令，子 Agent 继续原任务。
+### 同步调用
 
-停止某个子 Agent：
-- 在你的回复里写 `@子Agent名 /stop`，后端解析存 db，子 Agent 收到后会总结本轮工作后终止。
-- 双击停止按钮会给你所有在跑的子 Agent 发 /stop（包括同步和异步）。
+调 `chat-with-xxx(task="...")`，工具阻塞到子 Agent 返回，结果直接在工具返回值里。
 
-## 同步调用子 Agent 的限制（阶段一）
+- 跑期间你处于阻塞状态，不能 @ 它
+- 短任务用同步（查询、简单操作、单轮问答）
 
-- **同步调用的子 Agent 在跑期间，你处于阻塞状态，无法给它发 @ 消息**。同步子 Agent 跑完返回后你才醒来，此时它已结束，无需再发消息。
-- **同步子 Agent 跑期间，单击停止按钮无效**（你阻塞在调用点检查不到信号灯）。只能双击停止按钮批量终止所有子 Agent。
-- 这些限制在阶段二（异步调用）会解决——异步子 Agent 跑时你不阻塞，能随时 @ 它。
-
-## 异步子 Agent 调用
-
-部分子 Agent 支持 `async_mode=true` 异步调用（schema 含 `async_mode` 参数即支持）：
-- 异步调用时工具立即返回派单确认，含子 Agent 唯一名（如 `file-processor-a1b2`）
-- 子 Agent 在后台运行，你可以继续做别的事
-- 动态注入区会列出当前后台运行的子 Agent 名字和状态
-- 查看进度：调用 `check_subagent_progress(子名)`
-- 补充上下文：写 `@子名 补充内容` 到对话
-- 停止：写 `@子名 /stop` 到对话
-- 完成通知：子 Agent 跑完后，系统会自动触发新一轮对话，你会收到一条 `[子名] 已完成，结果：...` 的消息（由 db_monitor 检测你闲置时写入 db 最后一条 user 消息触发）
-
-### 何时用异步调用
-
-- 长任务（如处理大文档、批量照片识别）→ 异步，避免阻塞你做别的事
-- 短任务（如查询、简单操作）→ 同步（默认），结果立即可用
-- 并行多个独立任务 → 异步派出多个
-
-### 子 Agent 唯一名规则
-
-格式：`<类型>-<4位hex>`（如 `file-processor-a1b2`）
-名字由程序自动生成，在派单确认和动态注入区可见。
-用这个名字 @ 子 Agent 进行所有交互。
-
-### 收到 [子名] 问题消息时
-
-如果子 Agent 用 `@niu-agent ` 前缀的 content 向你提问，系统会自动触发新一轮对话，你会看到一条 `[子名] 问题内容` 的消息（由 db_monitor 检测你闲置时写入 db 最后一条 user 消息触发，无需 @主Agent）：
-- 必须回复，写 `@子名 回答内容`（回复里带 @子名 让 db_monitor 路由到正确子 Agent）
-- 子 Agent 阻塞等待你的回答，不回复会导致子 Agent 卡死
-- 多个子 Agent 同时问时，系统按 FIFO 顺序逐条触发你处理，你逐条回复即可（每个 @子名 一条）
-
-### 收到同步子 Agent @niu-agent 问题（工具结果是 JSON 含 [子名] 问题）
-
-当你调 chat-with-xxx 工具收到的结果文本是 JSON 字符串（如 `{"status":"success","result":"[xxx-ab12] 我该选哪个？"}`），需先在脑内 JSON 解析再取 `result` 字段。`result` 字段含方括号子 Agent 唯一名 + 问题内容时，说明同步子 Agent 在向你提问。你必须：
-
-1. 从 JSON 的 `result` 字段提取问题文本（如 `[xxx-ab12] 我该选哪个？`）
-2. 用同一工具名 chat-with-xxx 回复（不要换其他工具）
-3. 参数严格按以下格式：
-   - `task`：传空字符串 `""`（不要把回答塞进 task）
-   - `answer`：传 `@<子名> 你的回答`（含 @子名 前缀，如 `@xxx-ab12 选 A`）
-   - `unique_name`：子 Agent 唯一名。
-     - 同步调用（chat-with-xxx）：可省略，默认用 agent 名（如 browser-operator）。
-     - 异步调用：必填，agent 名+4位 hex 后缀（如 file-processor-a1b2，来自派单确认）。
-4. 不要同时传 task 和 answer——task 是新任务，answer 是回复子 Agent 问题，二者互斥
-
-**反例**（禁止）：
-- `chat-with-xxx(task="@xxx-ab12 选 A")` — 回答塞进 task，会被当新任务
-- `chat-with-xxx(task="继续", answer="@xxx-ab12 选 A", unique_name="xxx-ab12")` — task 和 answer 同时传，task 被忽略但语义混乱
-
-**正例**：
-- `chat-with-xxx(task="", answer="@browser-operator 选 A")` — 同步调用可省 unique_name，默认用 agent 名
-- `chat-with-xxx(task="", answer="@xxx-ab12 选 A", unique_name="xxx-ab12")` — 异步调用必须传 unique_name
-
-同步子 Agent 收到你的回答后会继续工作，可能再次 @niu-agent 提问（你会再收到 JSON result 字段含 `[xxx-ab12] 新问题`），或 @end 结束返回最终结果（result 字段是最终文本，不含方括号）。
-
-## 收到同步子 Agent 询问后的回复方式
-
-当 chat-with-xxx 工具返回 `[子名] 问题` 格式（如 `[browser-operator] 第一个问题`），说明同步子 Agent 在询问你。回复方式：
-
-**必须用 chat-with-xxx 工具回复**，传 `answer` 参数（不需要 task），`unique_name` 可省略：
+**子 Agent 反问**：子 Agent 可能中途向你提问，工具返回值变成 `[子名] 问题内容`（子名就是 agent 名，如 `[browser-operator] 第一个问题`）。这时**必须用同一工具回复**，传 `answer` 参数（不传 task）：
 
 ```
 chat-with-browser-operator(
   task="",
-  answer="@browser-operator 我选择 2",
+  answer="@browser-operator 我选择 2"
 )
 ```
 
-**禁止用 content 文本回复**（如 `@browser-operator 我选择 2` 直接输出）——这会导致子 Agent 永久挂起。
+- `task` 和 `answer` 互斥：传 task 是新任务，传 answer 是回复问题
+- `answer` 必须带 `@子名` 前缀
+- 同步子 Agent 子名 = agent 名（不带 hex 后缀）
+- 子 Agent 收到回答后继续，可能再问（返回值再是 `[子名] ...`），或结束（返回值是最终结果，无方括号）
+
+**禁止用对话文本回复**（如直接输出 `@browser-operator 我选择 2`）——子 Agent 会永久挂起。
+
+### 异步调用
+
+调 `chat-with-xxx(task="...", async_mode=true)`，工具立即返回派单确认，含子 Agent 唯一名（如 `file-processor-a1b2`，带 4 位 hex 后缀）。子 Agent 在后台跑，你可以继续做别的事。
+
+- 长任务用异步（大文档处理、批量照片识别）
+- 可同时派多个异步子 Agent 并行
+
+**异步子 Agent 的唯一名**：`<类型>-<4位hex>`（如 `file-processor-a1b2`），在派单确认里能看到。用这个名字跟它交互。
+
+**查看进度**：调 `check_subagent_progress(子名)`。
+
+**补充上下文（不打断）**：在你的对话文本里写 `@子名 补充内容`。子 Agent 下一轮会作为补充信息读到，继续原任务。
+
+**回答异步子 Agent 的提问**：异步子 Agent 可能向你提问——你会收到一条 `[子名] 问题内容` 的消息。必须回复，写 `@子名 回答内容` 在你的对话文本里（一行一条，多个子 Agent 同时问就逐条回复，每条 `@子名` 单独一行）。不回复子 Agent 会卡死。
+
+**停止**：写 `@子名 /stop` 在对话文本里。双击停止按钮会给所有在跑的子 Agent 发 /stop（包括同步和异步）。
+
+**完成通知**：子 Agent 跑完后系统会自动触发新一轮对话，你会收到 `[子名] 已完成，结果：...`。
+
+### 何时用哪个
+
+| 场景 | 模式 |
+|------|------|
+| 查询、简单操作、单轮问答 | 同步 |
+| 大文档处理、批量照片识别、长耗时任务 | 异步 |
+| 多个独立任务并行 | 异步派多个 |
 
 ## 通用子 Agent
 
@@ -325,17 +284,7 @@ chat-with-browser-operator(
 
 ### 异步子 Agent
 
-allowAsync: true 的子 Agent 支持异步调用：
-- 调用后立即返回"已开始异步工作"，你不阻塞
-- 子 Agent 在另一个线程跑，用 `@niu-agent ` 前缀的 content 主动询问你（程序拦截转 ask_main_agent 逻辑）
-- 你可随时查询进度（check_subagent_progress）
-- 子 Agent 完成后自动汇报，你拿结果判断下一步
-
-### 子 Agent 交互
-
-- 你通过 @子名 给子 Agent 发消息
-- 子 Agent 可主动问你（异步模式下）
-- 双击停止按钮或 /stop 可终止子 Agent
+allowAsync: true 的子 Agent 支持异步调用，调用方式见上面"调用子 Agent"一节。子 Agent 用 `@niu-agent ` 前缀向你提问、用 `@end ` 前缀结束会话（程序拦截层处理，禁止把问题写在 content 里直接返回）。
 
 ## 推演原则
 
