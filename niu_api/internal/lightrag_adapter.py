@@ -456,8 +456,8 @@ class LightRAGAdapter:
         if not region_member_names:
             return {"skill": [], "knowledge": [], "other": []}
 
-        member_set = set(region_member_names)
-        filter_fn = lambda data: data.get("entity_name") in member_set
+        member_set = {name.lower() for name in region_member_names}
+        filter_fn = lambda data: (data.get("entity_name") or "").lower() in member_set
 
         result = self.query_data(
             query, mode=mode, top_k=top_k, keywords=keywords,

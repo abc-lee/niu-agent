@@ -69,7 +69,7 @@ class BrainContextInjector:
         entity_to_region: dict[str, str] = {}
         for region_name, members in region_members.items():
             for member in members:
-                entity_to_region[member] = region_name
+                entity_to_region[member.lower()] = region_name
 
         hit_entities: list[str] = []
         region_knowledge: dict[str, str] = {}
@@ -92,11 +92,11 @@ class BrainContextInjector:
                     entity_type = entity.get("entity_type", "")
                     if entity_name:
                         hit_entities.append(entity_name)
-                        region_name = entity_to_region.get(entity_name)
+                        region_name = entity_to_region.get(entity_name.lower())
                         if not region_name:
                             region_name = self._classify_entity_to_region(entity_name, entity_type)
                             if region_name:
-                                entity_to_region[entity_name] = region_name
+                                entity_to_region[entity_name.lower()] = region_name
                         if region_name and region_name not in region_knowledge:
                             desc = entity.get("description", "")
                             if desc:

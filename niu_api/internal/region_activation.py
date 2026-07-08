@@ -172,7 +172,7 @@ class RegionActivationManager:
             new_descriptions[region.name] = region.description or ""
 
             for entity_name in region.members:
-                new_entity_to_region[entity_name] = region.name
+                new_entity_to_region[entity_name.lower()] = region.name
 
             new_member_counts[region.name] = len(region.members)
 
@@ -269,7 +269,7 @@ class RegionActivationManager:
             new_member_counts: dict[str, int] = {}
             for region_name, members in all_members.items():
                 for member_name in members:
-                    new_entity_to_region[member_name] = region_name
+                    new_entity_to_region[member_name.lower()] = region_name
                 new_member_counts[region_name] = len(members)
 
             # 2. Build new _entity_type_counts from node attributes (outside lock)
@@ -334,11 +334,15 @@ class RegionActivationManager:
             for entity in hit_entities:
                 # Prefer the provided mapping, fall back to internal map
                 # Use explicit None check (not `or`) to avoid falsy-value bugs
-                region_id = entity_to_region.get(entity)
+                # Case-insensitive: lower the entity before lookup (double-insurance
+                # with the lower-keyed dicts built in initialize_from_regions /
+                # activate_for_query)
+                entity_key = entity.lower() if isinstance(entity, str) else entity
+                region_id = entity_to_region.get(entity_key)
                 if region_id is not None and region_id not in self._regions:
                     region_id = None  # Stale external mapping, try internal
                 if region_id is None:
-                    region_id = self._entity_to_region.get(entity)
+                    region_id = self._entity_to_region.get(entity_key)
                 if region_id is None:
                     continue
 
