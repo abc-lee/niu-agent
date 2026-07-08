@@ -103,6 +103,28 @@ struct Splash {
     /// Drives the splash view to show "正在修复..." text instead of the
     /// default "正在启动..." animation.
     repairing: bool,
+    /// Whether the launcher has entered the "closing" phase.
+    /// Flipped to true after the settings test passes (or settings window
+    /// is closed) so the splash stays on screen showing
+    /// "正在关闭所有进程，关闭后请重新启动程序" while the background
+    /// thread tears down the Python API child (HTTP shutdown ->
+    /// SIGTERM -> SIGKILL). Stays visible until `cleanup_done` arrives.
+    closing: bool,
+    /// Receiver for lifecycle signals from the background thread:
+    /// - `SplashPhase::Closing` -> enter closing state
+    /// - `SplashPhase::CleanupDone` -> all processes reaped, call iced::exit()
+    /// Wrapped in Mutex for Sync compatibility with iced's runtime.
+    phase_rx: Mutex<Receiver<SplashPhase>>,
+}
+
+/// Lifecycle signals sent from the launcher background thread to the splash
+/// window after the settings flow completes.
+#[derive(Debug, Clone, Copy)]
+enum SplashPhase {
+    /// Enter the "closing" phase — show the shutdown message.
+    Closing,
+    /// All child processes have been reaped — exit the application.
+    CleanupDone,
 }
 
 #[derive(Debug, Clone)]
@@ -129,6 +151,7 @@ impl Splash {
         api_port: u16,
         cancelled: Arc<AtomicBool>,
         integrity_failed: Arc<AtomicBool>,
+        phase_rx: Receiver<SplashPhase>,
     ) -> Self {
         Self {
             ready_rx: Mutex::new(ready_rx),
@@ -143,6 +166,8 @@ impl Splash {
             cancelled,
             integrity_failed,
             repairing: false,
+            closing: false,
+            phase_rx: Mutex::new(phase_rx),
         }
     }
 
@@ -204,6 +229,33 @@ impl Splash {
                     );
                 }
 
+                // Poll the phase channel for lifecycle signals from the background
+                // thread. SplashPhase::Closing flips `closing=true` (entered after
+                // the settings test passes); SplashPhase::CleanupDone triggers
+                // iced::exit() once cleanup finishes. Drained greedily so we never
+                // miss a signal due to Tick scheduling.
+                loop {
+                    match self.phase_rx.lock().unwrap().try_recv() {
+                        Ok(SplashPhase::Closing) => {
+                            self.closing = true;
+                        }
+                        Ok(SplashPhase::CleanupDone) => {
+                            // Cleanup finished — exit immediately regardless of
+                            // whether we saw Closing first (defensive).
+                            return iced::exit();
+                        }
+                        Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                            // Background thread dropped the sender. If we are in the
+                            // closing phase, exit to avoid hanging; otherwise ignore.
+                            if self.closing {
+                                return iced::exit();
+                            }
+                            break;
+                        }
+                    }
+                }
+
                 // Non-blocking check: if the launcher thread sent the ready signal,
                 // AND the LightRAG status check has completed (healthy), close the window.
                 // Gating on status_check_completed avoids a timing race where the ready
@@ -212,28 +264,33 @@ impl Splash {
                 // user would never see the corruption dialog.
                 // try_recv() consumes the signal; cache it in ready_signal_seen so we
                 // can still decide to close once status_check_completed flips later.
-                if !self.ready_signal_seen {
-                    if self.ready_rx.lock().unwrap().try_recv().is_ok() {
-                        self.ready_signal_seen = true;
+                // NOTE: when `closing` is true (settings flow has completed and we are
+                // waiting for child process cleanup), the splash MUST stay open to show
+                // the "正在关闭所有进程" message — skip the ready-signal close path.
+                if !self.closing {
+                    if !self.ready_signal_seen {
+                        if self.ready_rx.lock().unwrap().try_recv().is_ok() {
+                            self.ready_signal_seen = true;
+                        }
+                    }
+                    if self.ready_signal_seen && self.status_check_completed {
+                        // 检测完成且健康，可以关 splash
+                        if let Some(id) = self.window_id {
+                            return window::close(id);
+                        } else {
+                            // Fallback: get the oldest window ID and close it
+                            return window::get_oldest().then(|oldest_id| {
+                                if let Some(id) = oldest_id {
+                                    window::close::<SplashMessage>(id)
+                                } else {
+                                    Task::none()
+                                }
+                            });
+                        }
                     }
                 }
-                if self.ready_signal_seen && self.status_check_completed {
-                    // 检测完成且健康，可以关 splash
-                    if let Some(id) = self.window_id {
-                        window::close(id)
-                    } else {
-                        // Fallback: get the oldest window ID and close it
-                        window::get_oldest().then(|oldest_id| {
-                            if let Some(id) = oldest_id {
-                                window::close::<SplashMessage>(id)
-                            } else {
-                                Task::none()
-                            }
-                        })
-                    }
-                } else {
-                    Task::none()
-                }
+
+                Task::none()
             }
             SplashMessage::WindowOpened(id) => {
                 // Capture the window ID when the window opens
@@ -399,9 +456,18 @@ impl Splash {
         // Two separate text elements: CJK label + fixed-width container for dots
         // The dots container has a fixed width so the row's total width never changes,
         // preventing layout shift when the number of dots changes.
-        let label_text = if self.repairing { "正在修复" } else { "正在启动" };
+        let label_text = if self.closing {
+            "正在关闭所有进程，关闭后请重新启动程序"
+        } else if self.repairing {
+            "正在修复"
+        } else {
+            "正在启动"
+        };
+        // Closing message is long (~18 CJK glyphs); shrink font so it fits in
+        // the 280px-wide splash without being truncated.
+        let label_size = if self.closing { 13 } else { 18 };
         let label = iced::widget::text(label_text)
-            .size(18)
+            .size(label_size)
             .font(CJK_FONT)
             .color([1.0, 1.0, 1.0, 1.0]);
         let dots_text = iced::widget::text(dots)
@@ -1036,6 +1102,11 @@ fn main() {
     // 4. After splash closes, main thread continues with process monitoring
 
     let (splash_tx, splash_rx) = std::sync::mpsc::channel::<()>();
+    // Lifecycle channel: background thread -> splash window. Used after the
+    // settings test passes to (1) flip the splash into the "closing" state
+    // showing the shutdown message, and (2) trigger iced::exit() once all
+    // child processes have been reaped. See SplashPhase enum for details.
+    let (phase_tx, phase_rx) = std::sync::mpsc::channel::<SplashPhase>();
     let cancelled_bg = cancelled.clone();
     let port = args.port;
 
@@ -1314,9 +1385,10 @@ fn main() {
             if need_settings {
                 // 设共享标志，让后续 launch_window("assistant") 守卫跳过
                 llm_config_failed_bg.store(true, Ordering::SeqCst);
-                // 关 splash（settings 窗口起来遮罩即可）
-                let _ = splash_tx.send(());
-                // 启动 settings 窗口（npm start in ui/main/ with NIU_WINDOW=settings）
+                // settings 模式下不关 splash（splash_tx.send(())）—— 测试通过后
+                // splash 需要继续显示 "正在关闭所有进程..." 提示，直到 cleanup
+                // 完成由 phase_tx 通知 splash 退出。这里启动 settings 窗口，
+                // splash 仍留在屏幕底层作为遮罩。
                 let settings_result = launch_window("settings");
                 if let Ok(mut settings_child) = settings_result {
                     let test_url = format!("http://127.0.0.1:{}/api/test-llm", port);
@@ -1347,6 +1419,10 @@ fn main() {
                     error!("Failed to launch settings window: {:?}", settings_result.err());
                 }
                 // 不论测试通过还是窗口被关，都退出整个进程（让用户重启）
+                // 先通知 splash 切到 closing 状态，显示 "正在关闭所有进程..."
+                // 提示。splash 会保持显示直到 cleanup 完成由 phase_tx 的
+                // CleanupDone 信号触发 iced::exit()。
+                let _ = phase_tx.send(SplashPhase::Closing);
                 cancelled_bg.store(true, Ordering::SeqCst);
                 let _ = notify_shutdown(port);
                 info!("LLM settings flow complete, exiting process for user restart");
@@ -1483,10 +1559,24 @@ fn main() {
                 }
             }
         }
+
+        // All child processes have been reaped. Notify the splash window so it
+        // can call iced::exit() and let the main thread return. In the normal
+        // (non-settings) flow the splash has already been closed via
+        // splash_tx — phase_tx.send will return Err (receiver dropped), which
+        // we ignore. In the settings flow the splash is still open showing
+        // "正在关闭所有进程..." and needs this signal to exit.
+        let _ = phase_tx.send(SplashPhase::CleanupDone);
     });
 
     // --- Run iced splash window on the main thread (required by macOS) ---
-    let splash = Splash::new(splash_rx, port, cancelled.clone(), integrity_failed.clone());
+    let splash = Splash::new(
+        splash_rx,
+        port,
+        cancelled.clone(),
+        integrity_failed.clone(),
+        phase_rx,
+    );
     let window_settings = window::Settings {
         size: iced::Size::new(280.0, 80.0),
         position: window::Position::Centered,
