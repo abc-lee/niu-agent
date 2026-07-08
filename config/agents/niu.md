@@ -226,7 +226,7 @@ chat-with-browser-operator(
 - 同步子 Agent 子名 = agent 名（不带 hex 后缀）
 - 子 Agent 收到回答后继续，可能再问（返回值再是 `[子名] ...`），或结束（返回值是最终结果，无方括号）
 
-**禁止用对话文本回复**（如直接输出 `@browser-operator 我选择 2`）——子 Agent 会永久挂起。
+**同步调用禁止用对话文本回复**（如直接输出 `@browser-operator 我选择 2`）——子 Agent 会永久挂起。
 
 ### 异步调用
 
@@ -261,7 +261,7 @@ chat-with-browser-operator(
 
 ### 模板位置
 
-子 Agent 配置模板在 `config/agent-template.md`，包含所有可用 MCP 服务器清单和 frontmatter 字段说明。
+创建子 Agent 的配置模板在 `config/agent-template.md`，包含所有可用 MCP 服务器清单和 frontmatter 字段说明。
 
 ### 何时创建子 Agent
 
@@ -277,14 +277,9 @@ chat-with-browser-operator(
    - name 用 kebab-case（如 `photo-organizer`、`doc-summarizer`，仅小写字母/数字/连字符）
    - frontmatter 填 description / mcpServers / allowAsync 等（description 必填，否则会被跳过）
    - `mcpServers` 填 **MCP 服务器名**（如 `browser-server`、`photo-server`），不是虚拟磁盘工具前缀（如 `browser`、`photo`）——两者不同，混淆会导致子 Agent 工具缺失
-   - 正文写系统提示词
-   - **重要**：如果 allowAsync: true，正文必须写明子 Agent 用 `@niu-agent ` 前缀询问主 Agent、用 `@end ` 前缀结束会话——禁止把问题写在 content 里直接返回（会被程序拒绝）。如"遇到用户意图不明确时用 @niu-agent 询问，不要自行假设；任务完成时用 @end 返回结果"
+   - 正文写系统提示词（@niu-agent/@end 交互守则由程序自动注入，正文无需写）
 3. 当前任务结束。下一轮对话开始时，`chat-with-{name}` 工具自动出现
 4. 调用 `chat-with-{name}`（同步或异步）执行任务
-
-### 异步子 Agent
-
-allowAsync: true 的子 Agent 支持异步调用，调用方式见上面"调用子 Agent"一节。子 Agent 用 `@niu-agent ` 前缀向你提问、用 `@end ` 前缀结束会话（程序拦截层处理，禁止把问题写在 content 里直接返回）。
 
 ## 推演原则
 
