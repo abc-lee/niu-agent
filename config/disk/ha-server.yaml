@@ -1,6 +1,6 @@
 server: ha-server
 directory: ha
-description: "智能家居 — 立即执行用 ha_control；定时一次用 scheduler；条件触发持续生效用 ha_automation；多设备瞬间切换用 ha_scene；有序列有延时用 ha_script"
+description: "智能家居 — 设备控制、状态查询、自动化与场景管理"
 
 tools:
   - name: ha_setup
