@@ -306,3 +306,34 @@ def test_repair_entity_sync_case_rename(monkeypatch):
         new_matrix = np.frombuffer(base64.b64decode(vdb["matrix"]), dtype=np.float32).reshape(-1, vdb["embedding_dim"])
         assert new_matrix.shape == orig_matrix.shape
         assert np.allclose(new_matrix, orig_matrix, rtol=1e-3)
+
+
+def test_repair_entity_sync_id_is_hash_not_bare_name(monkeypatch):
+    """修复后 vdb 的 __id__ 应该是 compute_mdhash_id(lower_name, prefix='ent-')，不是裸 lower_name。
+
+    LightRAG 写入 vdb_entities 时 __id__ 是 compute_mdhash_id(name, prefix='ent-') 算的 hash id
+    （如 'ent-xxxxx'）。repair 必须对齐这个逻辑，否则修复后的 id 跟新写入 id 不匹配。
+    """
+    from lightrag.utils import compute_mdhash_id
+    from niu_api.internal import lightrag_integrity, lightrag_repair
+    with tempfile.TemporaryDirectory() as tmp:
+        storage = Path(tmp)
+        # vdb 用大写 entity_name，但 __id__ 已是 hash 格式（模拟正常写入）
+        _write_vdb(storage / "vdb_entities.json", [
+            {"__id__": compute_mdhash_id("Niu", prefix="ent-"), "entity_name": "Niu", "content": "desc Niu", "source_id": "chunk-1"},
+        ])
+        _write_graphml(storage / "graph_chunk_entity_relation.graphml", [
+            ("niu", "desc Niu", "chunk-1"),
+        ])
+        monkeypatch.setattr(lightrag_integrity, "_STORAGE_DIR", storage)
+        monkeypatch.setattr(lightrag_repair, "_STORAGE_DIR", str(storage))
+
+        result = lightrag_repair.repair_entity_sync()
+
+        assert result["status"] == "ok"
+        vdb = json.loads((storage / "vdb_entities.json").read_text())
+        # __id__ 应该是 hash id 格式 "ent-xxxxx"，不是裸 "niu"
+        assert vdb["data"][0]["__id__"].startswith("ent-"), f"__id__ 应是 ent- 前缀，实际: {vdb['data'][0]['__id__']}"
+        # __id__ 应该等于 compute_mdhash_id("niu", prefix="ent-")
+        expected_id = compute_mdhash_id("niu", prefix="ent-")
+        assert vdb["data"][0]["__id__"] == expected_id, f"__id__ 应是 {expected_id}，实际: {vdb['data'][0]['__id__']}"

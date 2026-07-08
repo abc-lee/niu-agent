@@ -143,14 +143,24 @@ def test_repair_all_repairs_all_vdbs(tmp_path, monkeypatch):
     storage_dir.mkdir()
 
     # 3 个 vdb 都 matrix 损坏但 data 完好
+    # 注意：vdb_relationships 的 data 需要有 src_id/tgt_id 才能通过 repair_relationship_sync
     for fname in ["vdb_entities.json", "vdb_relationships.json", "vdb_chunks.json"]:
         matrix_f32 = np.random.rand(2, 4).astype(np.float32)
-        vdb = {
-            "embedding_dim": 4,
-            "data": [
+        if fname == "vdb_relationships.json":
+            data_list = [
+                {"__id__": "e1", "content": f"{fname} desc1", "vector": _encode_vector(matrix_f32[0].astype(np.float16)),
+                 "src_id": "e1", "tgt_id": "e2"},
+                {"__id__": "e2", "content": f"{fname} desc2", "vector": _encode_vector(matrix_f32[1].astype(np.float16)),
+                 "src_id": "e1", "tgt_id": "e2"},
+            ]
+        else:
+            data_list = [
                 {"__id__": "e1", "content": f"{fname} desc1", "vector": _encode_vector(matrix_f32[0].astype(np.float16))},
                 {"__id__": "e2", "content": f"{fname} desc2", "vector": _encode_vector(matrix_f32[1].astype(np.float16))},
-            ],
+            ]
+        vdb = {
+            "embedding_dim": 4,
+            "data": data_list,
             "matrix": "truncated",
         }
         (storage_dir / fname).write_text(json.dumps(vdb, ensure_ascii=False))
@@ -158,14 +168,26 @@ def test_repair_all_repairs_all_vdbs(tmp_path, monkeypatch):
     monkeypatch.setattr(lightrag_repair, "_STORAGE_DIR", str(storage_dir))
     monkeypatch.setattr(lightrag_repair, "_embed_text", lambda x: [0.1, 0.2, 0.3, 0.4])
 
-    # repair_all 现在会调用 repair_entity_sync（实体同步修复），需要 GraphML 文件存在。
-    # 写一个含 e1/e2 节点的 GraphML，匹配 vdb_entities 的 e1/e2，避免被当孤儿删除导致 status=error。
-    # 注意：repair_entity_sync 只修 vdb_entities.json，不影响 vdb_relationships/vdb_chunks。
+    # repair_all 现在会调用 repair_entity_sync + repair_relationship_sync，需要 GraphML 文件存在。
+    # 写一个含 e1/e2 节点 + e1->e2 边的 GraphML：
+    # - repair_entity_sync 匹配 vdb_entities 的 e1/e2 节点，避免被当孤儿删除
+    # - repair_relationship_sync 匹配 vdb_relationships 的 e1->e2 边，避免被当孤儿删除
     from tests.test_lightrag_entity_sync import _write_graphml
     _write_graphml(storage_dir / "graph_chunk_entity_relation.graphml", [
         ("e1", "desc e1", "chunk-1"),
         ("e2", "desc e2", "chunk-2"),
     ])
+    # 补一条 e1->e2 边（_write_graphml 不写边，用 ET 追加）
+    import xml.etree.ElementTree as ET
+    graphml_path = storage_dir / "graph_chunk_entity_relation.graphml"
+    tree = ET.parse(graphml_path)
+    root = tree.getroot()
+    ns = "{http://graphml.graphdrawing.org/xmlns}"
+    graph = root.find(f"{ns}graph")
+    edge = ET.SubElement(graph, f"{ns}edge")
+    edge.set("source", "e1")
+    edge.set("target", "e2")
+    tree.write(graphml_path)
 
     result = lightrag_repair.repair_all()
     assert all(r["status"] == "ok" for r in result.values())

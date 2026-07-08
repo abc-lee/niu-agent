@@ -23,6 +23,8 @@ from typing import Any
 
 from loguru import logger
 
+from lightrag.utils import compute_mdhash_id
+
 from niu_api.internal.lightrag_integrity import _decode_vector
 
 _STORAGE_DIR = Path.home() / ".niu" / "lightrag_storage"
@@ -336,7 +338,9 @@ def repair_entity_sync() -> dict[str, Any]:
         # 大写改小写
         new_item = {k: v for k, v in chosen.items() if k != "vector"}
         orig_name = chosen.get("entity_name") or chosen.get("__id__")
-        new_item["__id__"] = lower_name
+        # __id__ 必须用 compute_mdhash_id 重算（跟 LightRAG 写入 vdb 时的 id 一致）
+        # 不能用裸 lower_name，否则修复后 id 跟新写入 id 不匹配
+        new_item["__id__"] = compute_mdhash_id(lower_name, prefix="ent-")
         new_item["entity_name"] = lower_name
         if orig_name != lower_name:
             renamed += 1
@@ -369,7 +373,7 @@ def repair_entity_sync() -> dict[str, Any]:
             logger.warning(f"[LightRAGRepair] 重建 {lower_name} embedding 失败: {e}，跳过")
             continue
         new_data.append({
-            "__id__": lower_name,
+            "__id__": compute_mdhash_id(lower_name, prefix="ent-"),
             "entity_name": lower_name,
             "content": desc,
             "source_id": src or f"repair-from-graphml-{lower_name}",
@@ -420,6 +424,143 @@ def repair_entity_sync() -> dict[str, Any]:
     }
 
 
+def repair_relationship_sync() -> dict[str, Any]:
+    """修复 vdb_relationships 跟 GraphML 的边同步性。
+
+    LightRAG 设计上 GraphML edge src/tgt 全部 lower 化，且写入 vdb 时
+    先 sorted((src, tgt)) 再 compute_mdhash_id(sorted_src + sorted_tgt, prefix='rel-')。
+    用户铁律：所有写入必须转小写。修复策略（以 GraphML 为真相源，统一小写 + sorted）：
+    1. vdb 关系 src/tgt 大写 → 改小写 + sorted + 重算 __id__ = compute_mdhash_id(sorted_lower_src + sorted_lower_tgt, prefix='rel-')
+       同时 src_id/tgt_id 也存排序后的值（跟 operate.py L1586-1589 / lightrag.py L2516 一致）
+    2. vdb 关系 src/tgt 在 GraphML 没有对应边 → 删除（真孤儿关系，含自环——LightRAG 不写自环边）
+
+    content/description/keywords 字段保留原样不 lower（自然语言）。
+
+    Returns:
+        {"status": "ok"|"error", "renamed": int, "removed": int, "message": str}
+    """
+    import time
+    import xml.etree.ElementTree as ET
+    import numpy as np
+
+    storage_dir = _storage_dir()
+    vdb_path = storage_dir / "vdb_relationships.json"
+    graphml_path = storage_dir / "graph_chunk_entity_relation.graphml"
+
+    if not vdb_path.exists() or not graphml_path.exists():
+        return {"status": "error", "message": "vdb_relationships 或 GraphML 不存在", "renamed": 0, "removed": 0}
+
+    # 1. 读 vdb
+    try:
+        raw = json.loads(vdb_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        return {"status": "error", "message": f"vdb 读取失败: {e}", "renamed": 0, "removed": 0}
+
+    embedding_dim = raw.get("embedding_dim")
+    data_list = raw.get("data", [])
+    if not isinstance(embedding_dim, int) or not isinstance(data_list, list):
+        return {"status": "error", "message": "vdb 格式异常", "renamed": 0, "removed": 0}
+
+    # 2. 读 GraphML 边集合（src+tgt 都 lower，且已 sorted）
+    ns = "{http://graphml.graphdrawing.org/xmlns}"
+    graphml_edges: set[tuple[str, str]] = set()
+    try:
+        tree = ET.parse(graphml_path)
+        root = tree.getroot()
+        for edge in root.findall(f".//{ns}edge"):
+            src = (edge.get("source") or "").lower()
+            tgt = (edge.get("target") or "").lower()
+            if src and tgt:
+                # normalized：sorted 后存，跟 LightRAG 写入一致
+                s, t = sorted((src, tgt))
+                graphml_edges.add((s, t))
+    except Exception as e:
+        return {"status": "error", "message": f"GraphML 读取失败: {e}", "renamed": 0, "removed": 0}
+
+    # 3. 分类 vdb 关系
+    renamed = 0
+    removed = 0
+    new_data: list[dict] = []
+    new_vectors: list[np.ndarray] = []
+
+    for item in data_list:
+        orig_src = item.get("src_id", "")
+        orig_tgt = item.get("tgt_id", "")
+        if not orig_src or not orig_tgt:
+            continue
+        lower_src = orig_src.lower()
+        lower_tgt = orig_tgt.lower()
+        # sorted 后存，跟 LightRAG 写入一致（operate.py L1586-1589 / lightrag.py L2516）
+        sorted_src, sorted_tgt = sorted((lower_src, lower_tgt))
+
+        # 真孤儿关系（lower+sorted 后 GraphML 没有对应边，含自环——LightRAG 不写自环边）→ 删除
+        if (sorted_src, sorted_tgt) not in graphml_edges:
+            removed += 1
+            continue
+
+        # 大写改小写 + sorted + 重算 __id__
+        # 保留所有字段（content/description/keywords 等原样），只更新 src_id/tgt_id/__id__
+        new_item = {k: v for k, v in item.items() if k not in ("vector", "__id__")}
+        new_item["src_id"] = sorted_src
+        new_item["tgt_id"] = sorted_tgt
+        new_item["__id__"] = compute_mdhash_id(sorted_src + sorted_tgt, prefix="rel-")
+        if orig_src != sorted_src or orig_tgt != sorted_tgt:
+            renamed += 1
+
+        # 解码原向量保留
+        try:
+            vec = _decode_vector(item.get("vector", ""), embedding_dim)
+            new_vectors.append(np.array(vec, dtype=np.float16))
+        except Exception:
+            try:
+                vec = _embed_text(item.get("content", ""))
+                new_vectors.append(np.array(vec, dtype=np.float16))
+            except Exception as e:
+                logger.warning(f"[LightRAGRepair] 重建关系 {sorted_src}→{sorted_tgt} 向量失败: {e}，跳过")
+                continue
+        new_data.append(new_item)
+
+    if not new_data:
+        return {"status": "error", "message": "修复后无数据", "renamed": renamed, "removed": removed}
+
+    # 4. 备份（shutil.copy2 + 毫秒时间戳）
+    timestamp = int(time.time() * 1000)
+    corrupt_bak = storage_dir / f"vdb_relationships.json.corrupt.{timestamp}.bak"
+    try:
+        shutil.copy2(vdb_path, corrupt_bak)
+        logger.info(f"[LightRAGRepair] 损坏 vdb_relationships 备份到: {corrupt_bak}")
+    except Exception as e:
+        logger.error(f"[LightRAGRepair] 备份失败: {e}，abort")
+        return {"status": "error", "message": f"备份失败: {e}", "renamed": renamed, "removed": removed}
+
+    # 5. 原子写新 vdb
+    matrix_f32 = np.array(new_vectors, dtype=np.float32)
+    for i, item in enumerate(new_data):
+        item["vector"] = _encode_vector(new_vectors[i])
+
+    storage = {
+        "embedding_dim": embedding_dim,
+        "data": new_data,
+        "matrix": _encode_matrix(matrix_f32),
+    }
+    tmp_file = vdb_path.with_name(vdb_path.name + ".tmp")
+    with open(tmp_file, "w", encoding="utf-8") as f:
+        json.dump(storage, f, ensure_ascii=False)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp_file, vdb_path)
+
+    logger.info(
+        f"[LightRAGRepair] 关系同步修复完成: 改名 {renamed}, 删除孤儿 {removed}, 总计 {len(new_data)}"
+    )
+    return {
+        "status": "ok",
+        "renamed": renamed,
+        "removed": removed,
+        "message": f"改大小写/排序 {renamed} 条，删除孤儿 {removed} 条",
+    }
+
+
 def repair_all() -> dict[str, Any]:
     """一键修复所有 vdb。"""
     results: dict[str, Any] = {}
@@ -427,4 +568,6 @@ def repair_all() -> dict[str, Any]:
         results[vdb_file] = repair_vdb(vdb_file)
     # 新增：实体同步性修复
     results["entity_sync"] = repair_entity_sync()
+    # 新增：关系同步性修复
+    results["relationship_sync"] = repair_relationship_sync()
     return results
