@@ -158,5 +158,14 @@ def test_repair_all_repairs_all_vdbs(tmp_path, monkeypatch):
     monkeypatch.setattr(lightrag_repair, "_STORAGE_DIR", str(storage_dir))
     monkeypatch.setattr(lightrag_repair, "_embed_text", lambda x: [0.1, 0.2, 0.3, 0.4])
 
+    # repair_all 现在会调用 repair_entity_sync（实体同步修复），需要 GraphML 文件存在。
+    # 写一个含 e1/e2 节点的 GraphML，匹配 vdb_entities 的 e1/e2，避免被当孤儿删除导致 status=error。
+    # 注意：repair_entity_sync 只修 vdb_entities.json，不影响 vdb_relationships/vdb_chunks。
+    from tests.test_lightrag_entity_sync import _write_graphml
+    _write_graphml(storage_dir / "graph_chunk_entity_relation.graphml", [
+        ("e1", "desc e1", "chunk-1"),
+        ("e2", "desc e2", "chunk-2"),
+    ])
+
     result = lightrag_repair.repair_all()
     assert all(r["status"] == "ok" for r in result.values())

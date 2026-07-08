@@ -23,6 +23,8 @@ from typing import Any
 
 from loguru import logger
 
+from niu_api.internal.lightrag_integrity import _decode_vector
+
 _STORAGE_DIR = Path.home() / ".niu" / "lightrag_storage"
 
 # vdb 文件名 → 文本字段名（vdb data 内部）
@@ -238,9 +240,191 @@ def repair_kv_store(kv_filename: str) -> dict[str, Any]:
         return {"status": "error", "message": str(e)}
 
 
+def repair_entity_sync() -> dict[str, Any]:
+    """修复 vdb_entities 跟 GraphML 的实体同步性。
+
+    LightRAG 设计上 GraphML node id 全部 lower 化。用户铁律：所有写入必须转小写。
+    修复策略（以 GraphML 为真相源，统一小写）：
+    1. vdb 大写但 GraphML 有小写 → 改 vdb __id__/entity_name 为小写（matrix 不动，向量不变）
+    2. vdb 有重复 lower_name（如 'Niu'+'niu'）→ 优先保留已小写条目（orig==lower），丢弃大写重复
+    3. lower 后 vdb 有但 GraphML 没有（真孤儿）→ 删除条目 + matrix 对应行
+    4. lower 后 GraphML 有但 vdb 没有（缺失向量）→ 从 GraphML d2(description) 重新 embedding，
+       source_id 用 d3 真实 chunk-id
+
+    Returns:
+        {"status": "ok"|"error", "renamed": int, "removed": int, "rebuilt": int, "message": str}
+    """
+    import time
+    import xml.etree.ElementTree as ET
+    import numpy as np
+
+    storage_dir = _storage_dir()
+    vdb_path = storage_dir / "vdb_entities.json"
+    graphml_path = storage_dir / "graph_chunk_entity_relation.graphml"
+
+    if not vdb_path.exists() or not graphml_path.exists():
+        return {"status": "error", "message": "vdb_entities 或 GraphML 不存在", "renamed": 0, "removed": 0, "rebuilt": 0}
+
+    # 1. 读 vdb
+    try:
+        raw = json.loads(vdb_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        return {"status": "error", "message": f"vdb 读取失败: {e}", "renamed": 0, "removed": 0, "rebuilt": 0}
+
+    embedding_dim = raw.get("embedding_dim")
+    data_list = raw.get("data", [])
+    if not isinstance(embedding_dim, int) or not isinstance(data_list, list):
+        return {"status": "error", "message": "vdb 格式异常", "renamed": 0, "removed": 0, "rebuilt": 0}
+
+    # 2. 读 GraphML：node id + d2(description) + d3(source_id)
+    ns = "{http://graphml.graphdrawing.org/xmlns}"
+    graphml_nodes: dict[str, tuple[str, str]] = {}  # lower_name -> (description, source_id)
+    try:
+        tree = ET.parse(graphml_path)
+        root = tree.getroot()
+        for node in root.findall(f".//{ns}node"):
+            nid = node.get("id")
+            if not nid:
+                continue
+            desc = ""
+            src = ""
+            for data in node.findall(f"{ns}data"):
+                key = data.get("key")
+                if key == "d2":
+                    desc = data.text or ""
+                elif key == "d3":
+                    src = data.text or ""
+            graphml_nodes[nid.lower()] = (desc, src)
+    except Exception as e:
+        return {"status": "error", "message": f"GraphML 读取失败: {e}", "renamed": 0, "removed": 0, "rebuilt": 0}
+
+    graphml_lower_names = set(graphml_nodes.keys())
+
+    # 3. 分类 vdb 条目（按 lower_name 分组，检测重复）
+    grouped: dict[str, list[dict]] = {}
+    for item in data_list:
+        orig_name = item.get("entity_name") or item.get("__id__")
+        if not orig_name:
+            continue
+        lower_name = orig_name.lower()
+        grouped.setdefault(lower_name, []).append(item)
+
+    renamed = 0
+    removed = 0
+    rebuilt = 0
+    new_data: list[dict] = []
+    new_vectors: list[np.ndarray] = []
+
+    for lower_name, items in grouped.items():
+        # 真孤儿（lower 后 GraphML 没有）→ 跳过（删除）
+        if lower_name not in graphml_lower_names:
+            removed += len(items)
+            continue
+
+        # 重复时优先保留已小写条目（orig==lower），没有则用第一个
+        chosen = None
+        for it in items:
+            orig = it.get("entity_name") or it.get("__id__")
+            if orig == lower_name:
+                chosen = it
+                break
+        if chosen is None:
+            chosen = items[0]
+        # 丢弃的重复条目计入 removed（大写重复是 bug，丢弃是修正）
+        removed += len(items) - 1
+
+        # 大写改小写
+        new_item = {k: v for k, v in chosen.items() if k != "vector"}
+        orig_name = chosen.get("entity_name") or chosen.get("__id__")
+        new_item["__id__"] = lower_name
+        new_item["entity_name"] = lower_name
+        if orig_name != lower_name:
+            renamed += 1
+
+        # 解码原向量保留
+        try:
+            vec = _decode_vector(chosen.get("vector", ""), embedding_dim)
+            new_vectors.append(np.array(vec, dtype=np.float16))
+        except Exception:
+            # 向量损坏，用 content 重新 embedding
+            try:
+                vec = _embed_text(chosen.get("content", ""))
+                new_vectors.append(np.array(vec, dtype=np.float16))
+                rebuilt += 1
+            except Exception as e:
+                logger.warning(f"[LightRAGRepair] 重建 {lower_name} 向量失败: {e}，跳过")
+                continue
+        new_data.append(new_item)
+
+    # 4. 缺失向量：GraphML 有但 vdb 没有
+    for lower_name, (desc, src) in graphml_nodes.items():
+        if lower_name in grouped:
+            continue
+        if not desc:
+            logger.warning(f"[LightRAGRepair] GraphML 节点 {lower_name} 无 d2(description)，跳过")
+            continue
+        try:
+            vec = _embed_text(desc)
+        except Exception as e:
+            logger.warning(f"[LightRAGRepair] 重建 {lower_name} embedding 失败: {e}，跳过")
+            continue
+        new_data.append({
+            "__id__": lower_name,
+            "entity_name": lower_name,
+            "content": desc,
+            "source_id": src or f"repair-from-graphml-{lower_name}",
+        })
+        new_vectors.append(np.array(vec, dtype=np.float16))
+        rebuilt += 1
+
+    if not new_data:
+        return {"status": "error", "message": "修复后无数据", "renamed": renamed, "removed": removed, "rebuilt": rebuilt}
+
+    # 5. 备份损坏 vdb（用 shutil.copy2，不先 unlink；加时间戳防覆盖）
+    timestamp = int(time.time() * 1000)  # 毫秒级，防 1 秒内连续 repair 覆盖
+    corrupt_bak = storage_dir / f"vdb_entities.json.corrupt.{timestamp}.bak"
+    try:
+        shutil.copy2(vdb_path, corrupt_bak)  # copy2 自动覆盖已存在目标
+        logger.info(f"[LightRAGRepair] 损坏 vdb 备份到: {corrupt_bak}")
+    except Exception as e:
+        # 备份失败立即 abort，不继续写新 vdb（避免数据丢失）
+        logger.error(f"[LightRAGRepair] 备份损坏 vdb 失败: {e}，abort 修复")
+        return {"status": "error", "message": f"备份失败: {e}", "renamed": renamed, "removed": removed, "rebuilt": rebuilt}
+
+    # 6. 原子写新 vdb
+    matrix_f32 = np.array(new_vectors, dtype=np.float32)
+    for i, item in enumerate(new_data):
+        item["vector"] = _encode_vector(new_vectors[i])
+
+    storage = {
+        "embedding_dim": embedding_dim,
+        "data": new_data,
+        "matrix": _encode_matrix(matrix_f32),
+    }
+    tmp_file = vdb_path.with_name(vdb_path.name + ".tmp")
+    with open(tmp_file, "w", encoding="utf-8") as f:
+        json.dump(storage, f, ensure_ascii=False)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp_file, vdb_path)
+
+    logger.info(
+        f"[LightRAGRepair] 实体同步修复完成: 改名 {renamed}, 删除 {removed}（含重复丢弃）, 重建 {rebuilt}, 总计 {len(new_data)}"
+    )
+    return {
+        "status": "ok",
+        "renamed": renamed,
+        "removed": removed,
+        "rebuilt": rebuilt,
+        "message": f"改大小写 {renamed} 条，删除孤儿/重复 {removed} 条，重建 {rebuilt} 条",
+    }
+
+
 def repair_all() -> dict[str, Any]:
     """一键修复所有 vdb。"""
     results: dict[str, Any] = {}
     for vdb_file in _VDB_TEXT_FIELD:
         results[vdb_file] = repair_vdb(vdb_file)
+    # 新增：实体同步性修复
+    results["entity_sync"] = repair_entity_sync()
     return results
