@@ -80,8 +80,6 @@ _SUBAGENT_ASK_GUIDE_TEMPLATE = """<!-- NIU_SUBAGENT_GUIDE_v1 -->
 格式示例：
 - 询问：`@niu-agent 我应该选择哪个选项？`
 - 结束：`@end 任务已完成，结果：...`
-
-注：你不需要在输出里包含自己的标识符，程序会自动在你的问题前加上唯一标识，主 Agent 据此回复你。
 """
 
 _SUBAGENT_ASK_GUIDE_MARKER = "<!-- NIU_SUBAGENT_GUIDE_v1 -->"
