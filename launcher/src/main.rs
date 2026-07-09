@@ -135,6 +135,9 @@ enum SplashMessage {
     WindowOpened(window::Id),
     /// First tick after window opened — hide Dock icon
     HideDockIcon,
+    /// /health probe succeeded — API is reachable, fire status check.
+    /// Dispatched from a background thread to avoid blocking the UI thread.
+    ApiReady,
     /// Result of the one-shot `/api/kg/stats` query dispatched at startup.
     StatusCheckResult(Result<LightragStatus, String>),
     /// User's choice from the rfd native dialog (true=try repair, false=exit).
@@ -156,7 +159,13 @@ enum SplashMessage {
 /// vdb_relationships.json 走截断修复（source=vdb_truncate_repair）时，
 /// 追加数据丢失风险提示（断点后的 relationship 永久丢失，GraphML 有但 vdb 无，
 /// 当前无 check_relationship_sync 检测、无 GraphML 反向补齐）。
-fn format_repair_summary(resp_text: &str) -> String {
+fn format_repair_summary(resp_text: &str) -> (String, rfd::MessageLevel, String) {
+    // 返回 (title, level, body)：
+    // - repaired && check_ok → "修复成功" / Info
+    // - repaired但check_ok=false → "修复完成（有警告）" / Warning
+    // - repaired=false → "修复失败" / Error（HTTP 200 但后端报告失败，
+    //   比如截断修复都救不回来、或重建过程中出错）
+    // 区分标题和图标，避免后端部分失败时还显示绿色 Info 误导用户。
     match serde_json::from_str::<serde_json::Value>(resp_text) {
         Ok(v) => {
             let result = v.get("result");
@@ -169,15 +178,27 @@ fn format_repair_summary(resp_text: &str) -> String {
                 .and_then(|b| b.as_bool())
                 .unwrap_or(false);
 
-            let overall = if repaired && check_ok {
-                "修复成功，所有数据一致性检查通过。"
+            let (title, level, overall) = if repaired && check_ok {
+                (
+                    "修复成功".to_string(),
+                    rfd::MessageLevel::Info,
+                    "修复成功，所有数据一致性检查通过。".to_string(),
+                )
             } else if repaired {
-                "修复完成，但仍有数据一致性警告（详见下方清单）。"
+                (
+                    "修复完成（有警告）".to_string(),
+                    rfd::MessageLevel::Warning,
+                    "修复完成，但仍有数据一致性警告（详见下方清单）。".to_string(),
+                )
             } else {
-                "修复未全部成功，部分项目失败（详见下方清单）。"
+                (
+                    "修复失败".to_string(),
+                    rfd::MessageLevel::Error,
+                    "修复未全部成功，部分项目失败（详见下方清单）。".to_string(),
+                )
             };
 
-            let mut lines: Vec<String> = vec![overall.to_string(), String::new()];
+            let mut lines: Vec<String> = vec![overall, String::new()];
 
             if let Some(repair_result) = result
                 .and_then(|r| r.get("repair_result"))
@@ -225,7 +246,7 @@ fn format_repair_summary(resp_text: &str) -> String {
             lines.push(String::new());
             lines.push("确定后程序将完全退出，请重新启动程序。".to_string());
 
-            lines.join("\n")
+            (title, level, lines.join("\n"))
         }
         Err(_) => {
             // JSON 解析失败：退回原始文本（截断到 500 字符避免超长）
@@ -236,10 +257,11 @@ fn format_repair_summary(resp_text: &str) -> String {
             } else {
                 truncated
             };
-            format!(
+            let body = format!(
                 "修复已完成（无法解析详细结果）。\n\n原始响应：\n{}\n\n确定后程序将完全退出，请重新启动程序。",
                 truncated
-            )
+            );
+            ("修复结果（无法解析）".to_string(), rfd::MessageLevel::Warning, body)
         }
     }
 }
@@ -281,22 +303,39 @@ impl Splash {
                     return Task::done(SplashMessage::HideDockIcon);
                 }
 
-                // Probe Python API readiness with a short-timeout /health check.
-                // This flips niu_api_ready as soon as the API responds, even before
-                // the background thread sends the ready signal, so the one-shot
-                // LightRAG status check fires at the earliest possible moment.
-                if !self.niu_api_ready {
-                    if let Ok(client) = reqwest::blocking::Client::builder()
-                        .timeout(Duration::from_millis(500))
-                        .build()
-                    {
-                        let url = format!("http://127.0.0.1:{}/health", 9876);
-                        if let Ok(resp) = client.get(&url).send() {
-                            if resp.status().is_success() {
-                                self.niu_api_ready = true;
+                // Probe Python API readiness on a background thread (non-blocking).
+                // 目的：API /health 能响应就立即触发 status check，不等 preload
+                // 全完成（preload 加载 embedding ~9s + MCP ~5s，用户不用等）。
+                // 不能在主线程做同步 HTTP——60fps 每帧发请求会卡死 UI 动画。
+                // 节流：每 15 帧（约 250ms）才 spawn 一次 probe，避免线程爆炸。
+                if !self.niu_api_ready && self.dot_frame % 15 == 0 {
+                    let (tx, rx) = iced::futures::channel::oneshot::channel::<bool>();
+                    std::thread::spawn(move || {
+                        let ok = reqwest::blocking::Client::builder()
+                            .timeout(Duration::from_millis(500))
+                            .build()
+                            .map(|client| {
+                                let url = format!("http://127.0.0.1:{}/health", 9876);
+                                client
+                                    .get(&url)
+                                    .send()
+                                    .map(|resp| resp.status().is_success())
+                                    .unwrap_or(false)
+                            })
+                            .unwrap_or(false);
+                        let _ = tx.send(ok);
+                    });
+                    return Task::perform(
+                        async move { rx.await.unwrap_or(false) },
+                        |ok| {
+                            if ok {
+                                SplashMessage::ApiReady
+                            } else {
+                                // 用 Tick 占位——不影响逻辑，只是让 Task::perform 有消息可发
+                                SplashMessage::Tick
                             }
-                        }
-                    }
+                        },
+                    );
                 }
 
                 // One-shot LightRAG status check: dispatch as soon as the API
@@ -396,6 +435,16 @@ impl Splash {
                 self.window_id = Some(id);
                 Task::none()
             }
+            SplashMessage::ApiReady => {
+                // /health probe 成功 —— API 可达，立即触发 status check。
+                // 这个消息由 Tick 节流 spawn 的后台线程通过 oneshot 推回，
+                // 避免在主线程做同步 HTTP 阻塞 UI 动画。
+                self.niu_api_ready = true;
+                // 不直接调 status check —— 让下一个 Tick 走
+                // `if !self.status_checked && self.niu_api_ready` 分支触发。
+                // 这样保持单一触发路径，避免重复 dispatch。
+                Task::none()
+            }
             SplashMessage::HideDockIcon => {
                 // winit overrides activation policy during EventLoop init.
                 // Re-set to Accessory after the window is created to hide the Dock icon.
@@ -485,17 +534,37 @@ impl Splash {
                         // 不设超时 —— embedding 重算几千个向量需要数分钟，
                         // 数据量大了更久。靠"正在修复..."动画让用户知道在干活，
                         // 不由程序自动断开。如真卡死，用户可强杀进程。
-                        let result = reqwest::blocking::Client::builder()
-                            .timeout(std::time::Duration::MAX)
-                            .build()
-                            .map_err(|e| e.to_string())
-                            .and_then(|client| {
-                                client
-                                    .post("http://127.0.0.1:9876/api/kg/lightrag/repair?target=all")
-                                    .send()
-                                    .map_err(|e| e.to_string())
-                                    .and_then(|resp| resp.text().map_err(|e| e.to_string()))
-                            });
+                        // 注意：不能用 Duration::MAX，reqwest 内部 Instant::now()+MAX
+                        // 会溢出 panic。正确做法是不调 .timeout()（默认 None=无超时）。
+                        //
+                        // 用 catch_unwind 兜底：任何 panic（reqwest/hyper 底层、
+                        // OOM 等）都转为 Err 返回，避免 oneshot channel 静默 drop
+                        // 导致前端误报"修复失败：channel closed"。
+                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            reqwest::blocking::Client::builder()
+                                .build()
+                                .map_err(|e| e.to_string())
+                                .and_then(|client| {
+                                    client
+                                        .post("http://127.0.0.1:9876/api/kg/lightrag/repair?target=all")
+                                        .send()
+                                        .map_err(|e| e.to_string())
+                                        .and_then(|resp| resp.text().map_err(|e| e.to_string()))
+                                })
+                        }));
+                        let result = match result {
+                            Ok(r) => r,
+                            Err(panic_payload) => {
+                                let msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
+                                    format!("修复线程 panic: {}", s)
+                                } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+                                    format!("修复线程 panic: {}", s)
+                                } else {
+                                    "修复线程发生未知 panic（无法提取消息）".to_string()
+                                };
+                                Err(msg)
+                            }
+                        };
                         let _ = tx.send(result);
                     });
                     return Task::perform(
@@ -534,19 +603,24 @@ impl Splash {
                         );
                     }
                     Ok(resp_text) => {
-                        // 修复成功：解析 JSON 列清单，弹"修复结果"对话框 + ExitApp
+                        // 修复请求 HTTP 200 返回。解析 JSON 列清单，
+                        // 根据 repaired + check_ok 决定对话框标题和图标：
+                        // - 都为 true → "修复成功" / Info（绿色）
+                        // - repaired=true 但 check_ok=false → "修复完成（有警告）" / Warning（黄色）
+                        // - repaired=false → "修复失败" / Error（红色）
+                        // HTTP 200 不等于修复成功——后端可能 200 但 repaired=false。
                         // API 返回格式：{"status":"ok","result":{"repaired":bool,
                         //   "check_ok":bool,"repair_result":{"vdb_entities.json":
                         //   {"status":"ok","rebuilt_count":5,...},...}}}
-                        let summary = format_repair_summary(&resp_text);
+                        let (title, level, summary) = format_repair_summary(&resp_text);
                         let (tx, rx) =
                             iced::futures::channel::oneshot::channel::<()>();
                         std::thread::spawn(move || {
                             rfd::MessageDialog::new()
-                                .set_title("修复结果")
+                                .set_title(&title)
                                 .set_description(&summary)
                                 .set_buttons(rfd::MessageButtons::Ok)
-                                .set_level(rfd::MessageLevel::Info)
+                                .set_level(level)
                                 .show();
                             let _ = tx.send(());
                         });
@@ -569,8 +643,11 @@ impl Splash {
                 //    join 后台线程完成清理后退出整个程序。
                 self.cancelled.store(true, Ordering::SeqCst);
                 let port = self.api_port;
-                // 优雅通知（非阻塞，失败也无所谓，后台线程会兜底）
-                let _ = notify_shutdown(port);
+                // 优雅通知——搬到后台线程，避免 2 秒同步超时阻塞 UI。
+                // 后台 cleanup loop（L1716）也会调一次，这里 fire-and-forget。
+                std::thread::spawn(move || {
+                    let _ = notify_shutdown(port);
+                });
                 iced::exit()
             }
         }
