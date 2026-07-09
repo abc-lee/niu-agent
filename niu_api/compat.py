@@ -500,6 +500,89 @@ def _build_compress_history(
     return history, idx_to_id
 
 
+def _build_plain_history(messages, out_msg_ids: list | None = None) -> tuple[list[dict], dict[int, str]]:
+    """构造带 [N] 极简前缀的 history 列表 + 简易ID↔UUID 映射（仿 context-manager 的 _build_compress_history）。
+
+    用于非压缩子 Agent（entity-extractor / dream-evolver / journal-agent）的 force/sleep 调用：
+    - history 每条 content 前缀 "[N] "（N 是 1-based 简易编号）
+    - 同步构建 idx_to_id 映射 {N: 真实UUID}，供程序解析子 Agent 输出的 processed_up_to=N 后查 UUID 更新游标
+    - 不排除 PROTECTED 消息（所有消息都该看到）
+    - 不排除孤立 tool（保持原顺序，子 Agent 自己判断）
+
+    与 _build_compress_history 的区别：
+    - 前缀极简 "[N] "（不是 "[idx:N] Ntokens "）
+    - 不排除 PROTECTED / 不排除孤立 tool（调用方按需在调用前过滤 PROTECTED，如 entity force 全量路径，详见 Architecture §6）
+    - 不含 token 标注（非压缩子 Agent 不需要做压缩决策）
+
+    Args:
+        messages: 全量消息列表（Message 对象，含 id/role/content/tool_calls/tool_call_id）
+        out_msg_ids: 输出参数，收集消息的真实 ID 列表（与 history 等长同顺序，用于游标推进兜底）
+
+    Returns:
+        (history, idx_to_id):
+        - history: [{"role":..., "content": "[N] 原content", "tool_calls"?:..., "tool_call_id"?:...}, ...]
+        - idx_to_id: {N: 真实 message_id}，用于解析子 Agent 输出的 processed_up_to=N
+    """
+    if out_msg_ids is None:
+        out_msg_ids = []
+
+    history: list[dict] = []
+    idx_to_id: dict[int, str] = {}
+    display_idx = 0
+
+    for msg in messages:
+        msg_id = getattr(msg, "id", "") or ""
+        role = getattr(msg, "role", "user")
+        content = getattr(msg, "content", "") or ""
+        tool_calls = getattr(msg, "tool_calls", None)
+        tool_call_id = getattr(msg, "tool_call_id", None)
+
+        display_idx += 1
+        out_msg_ids.append(msg_id)
+        idx_to_id[display_idx] = msg_id
+
+        # 极简前缀 [N]（不带 UUID / tokens / role）
+        prefix = f"[{display_idx}] "
+        entry: dict = {"role": role, "content": prefix + content}
+        if tool_calls:
+            entry["tool_calls"] = tool_calls
+        if tool_call_id:
+            entry["tool_call_id"] = tool_call_id
+
+        history.append(entry)
+
+    return history, idx_to_id
+
+
+def _parse_processed_up_to(response: str) -> int | None:
+    """从子 Agent 输出中提取 processed_up_to=N 的 N 值。
+
+    支持格式（大小写不敏感）：
+    - "processed_up_to=15"
+    - "processed_up_to: 15"
+    - "processed_up_to 15"
+    - 匹配第一个有效整数
+
+    Args:
+        response: 子 Agent 的完整输出文本
+
+    Returns:
+        N (int) 或 None（未找到或格式无效）
+    """
+    import re
+    if not response:
+        return None
+    # 大小写不敏感，支持 = / : / 空格 三种分隔
+    # 字符类 [=:\s] 同时匹配 =、: 和纯空格分隔（如 "processed_up_to 15"）
+    match = re.search(r'processed_up_to\s*[=:\s]\s*(\d+)', response, re.IGNORECASE)
+    if match:
+        try:
+            return int(match.group(1))
+        except ValueError:
+            return None
+    return None
+
+
 def _strip_analysis(response: str) -> str:
     """剥离 <analysis>...</analysis> 块，只保留 keep/update/cursor 部分。
 
