@@ -145,6 +145,105 @@ enum SplashMessage {
     ExitApp,
 }
 
+/// 把 /api/kg/lightrag/repair 的响应文本格式化成弹窗摘要。
+///
+/// 响应格式：{"status":"ok","result":{"repaired":bool,"check_ok":bool,
+///   "repair_result":{"vdb_entities.json":{"status":"ok","rebuilt_count":5,...},...}}}
+///
+/// 列出每个 vdb 的 status/message/rebuilt_count，并提示用户程序将退出。
+/// 解析失败时退回原始文本（截断到 500 字符避免超长）。
+///
+/// vdb_relationships.json 走截断修复（source=vdb_truncate_repair）时，
+/// 追加数据丢失风险提示（断点后的 relationship 永久丢失，GraphML 有但 vdb 无，
+/// 当前无 check_relationship_sync 检测、无 GraphML 反向补齐）。
+fn format_repair_summary(resp_text: &str) -> String {
+    match serde_json::from_str::<serde_json::Value>(resp_text) {
+        Ok(v) => {
+            let result = v.get("result");
+            let repaired = result
+                .and_then(|r| r.get("repaired"))
+                .and_then(|b| b.as_bool())
+                .unwrap_or(false);
+            let check_ok = result
+                .and_then(|r| r.get("check_ok"))
+                .and_then(|b| b.as_bool())
+                .unwrap_or(false);
+
+            let overall = if repaired && check_ok {
+                "修复成功，所有数据一致性检查通过。"
+            } else if repaired {
+                "修复完成，但仍有数据一致性警告（详见下方清单）。"
+            } else {
+                "修复未全部成功，部分项目失败（详见下方清单）。"
+            };
+
+            let mut lines: Vec<String> = vec![overall.to_string(), String::new()];
+
+            if let Some(repair_result) = result
+                .and_then(|r| r.get("repair_result"))
+                .and_then(|r| r.as_object())
+            {
+                lines.push("修复清单：".to_string());
+                for (name, detail) in repair_result {
+                    let status = detail
+                        .get("status")
+                        .and_then(|s| s.as_str())
+                        .unwrap_or("unknown");
+                    let message = detail
+                        .get("message")
+                        .and_then(|m| m.as_str())
+                        .unwrap_or("");
+                    let rebuilt_count = detail
+                        .get("rebuilt_count")
+                        .and_then(|c| c.as_u64());
+                    let source = detail
+                        .get("source")
+                        .and_then(|s| s.as_str())
+                        .unwrap_or("");
+                    let status_marker = if status == "ok" { "成功" } else { "失败" };
+                    let detail_text = if message.is_empty() { status } else { message };
+                    let mut line = format!("  {} [{}]: {}", name, status_marker, detail_text);
+                    if let Some(cnt) = rebuilt_count {
+                        line.push_str(&format!("（重建 {} 条）", cnt));
+                    }
+                    lines.push(line);
+
+                    // vdb_relationships.json 走截断修复时，追加数据丢失风险提示
+                    // （断点后的 relationship 永久丢失，GraphML 有但 vdb 重建后缺失，
+                    //  当前无 check_relationship_sync 检测、无 GraphML 反向补齐）
+                    if name == "vdb_relationships.json"
+                        && status == "ok"
+                        && source == "vdb_truncate_repair"
+                    {
+                        lines.push(
+                            "    注意：截断修复可能丢失部分关系数据（GraphML 有但 vdb 重建后缺失），详情见日志".to_string()
+                        );
+                    }
+                }
+            }
+
+            lines.push(String::new());
+            lines.push("确定后程序将完全退出，请重新启动程序。".to_string());
+
+            lines.join("\n")
+        }
+        Err(_) => {
+            // JSON 解析失败：退回原始文本（截断到 500 字符避免超长）
+            // 用 chars().take() 而非字节切片，避免 UTF-8 多字节字符边界 panic
+            let truncated: String = resp_text.chars().take(500).collect();
+            let truncated = if resp_text.chars().count() > 500 {
+                format!("{}...(已截断)", truncated)
+            } else {
+                truncated
+            };
+            format!(
+                "修复已完成（无法解析详细结果）。\n\n原始响应：\n{}\n\n确定后程序将完全退出，请重新启动程序。",
+                truncated
+            )
+        }
+    }
+}
+
 impl Splash {
     fn new(
         ready_rx: Receiver<()>,
@@ -402,31 +501,53 @@ impl Splash {
             }
             SplashMessage::RepairResult(result) => {
                 // 无论修复成功或失败都退出（用户重启做下一轮检测）
-                if let Err(e) = result {
-                    // 修复失败：弹一个简短的提示对话框（仅"确定"按钮）告知用户，
-                    // 关闭后立即退出。不再给"重试"选项 —— 用户重启后再次检测，
-                    // 如仍损坏会再次弹"是/否"对话框。
-                    let (tx, rx) =
-                        iced::futures::channel::oneshot::channel::<()>();
-                    std::thread::spawn(move || {
-                        rfd::MessageDialog::new()
-                            .set_title("修复失败")
-                            .set_description(&format!(
-                                "修复失败：{}\n\n请从备份恢复后重启程序。",
-                                e
-                            ))
-                            .set_buttons(rfd::MessageButtons::Ok)
-                            .set_level(rfd::MessageLevel::Error)
-                            .show();
-                        let _ = tx.send(());
-                    });
-                    return Task::perform(
-                        async move { rx.await.unwrap_or(()) },
-                        |_| SplashMessage::ExitApp,
-                    );
+                match result {
+                    Err(e) => {
+                        // 修复失败：弹"修复失败"对话框（仅"确定"按钮）告知用户，
+                        // 关闭后立即退出。不再给"重试"选项 —— 用户重启后再次检测，
+                        // 如仍损坏会再次弹"是/否"对话框。
+                        let (tx, rx) =
+                            iced::futures::channel::oneshot::channel::<()>();
+                        std::thread::spawn(move || {
+                            rfd::MessageDialog::new()
+                                .set_title("修复失败")
+                                .set_description(&format!(
+                                    "修复失败：{}\n\n请从备份恢复后重启程序。",
+                                    e
+                                ))
+                                .set_buttons(rfd::MessageButtons::Ok)
+                                .set_level(rfd::MessageLevel::Error)
+                                .show();
+                            let _ = tx.send(());
+                        });
+                        return Task::perform(
+                            async move { rx.await.unwrap_or(()) },
+                            |_| SplashMessage::ExitApp,
+                        );
+                    }
+                    Ok(resp_text) => {
+                        // 修复成功：解析 JSON 列清单，弹"修复结果"对话框 + ExitApp
+                        // API 返回格式：{"status":"ok","result":{"repaired":bool,
+                        //   "check_ok":bool,"repair_result":{"vdb_entities.json":
+                        //   {"status":"ok","rebuilt_count":5,...},...}}}
+                        let summary = format_repair_summary(&resp_text);
+                        let (tx, rx) =
+                            iced::futures::channel::oneshot::channel::<()>();
+                        std::thread::spawn(move || {
+                            rfd::MessageDialog::new()
+                                .set_title("修复结果")
+                                .set_description(&summary)
+                                .set_buttons(rfd::MessageButtons::Ok)
+                                .set_level(rfd::MessageLevel::Info)
+                                .show();
+                            let _ = tx.send(());
+                        });
+                        return Task::perform(
+                            async move { rx.await.unwrap_or(()) },
+                            |_| SplashMessage::ExitApp,
+                        );
+                    }
                 }
-                // 修复成功 → 退出
-                Task::done(SplashMessage::ExitApp)
             }
             SplashMessage::ExitApp => {
                 // 用户已决策退出（"否" / 修复完成）：
