@@ -309,13 +309,14 @@ impl Splash {
                 // 不能在主线程做同步 HTTP——60fps 每帧发请求会卡死 UI 动画。
                 // 节流：每 15 帧（约 250ms）才 spawn 一次 probe，避免线程爆炸。
                 if !self.niu_api_ready && self.dot_frame % 15 == 0 {
+                    let port = self.api_port;
                     let (tx, rx) = iced::futures::channel::oneshot::channel::<bool>();
                     std::thread::spawn(move || {
                         let ok = reqwest::blocking::Client::builder()
                             .timeout(Duration::from_millis(500))
                             .build()
                             .map(|client| {
-                                let url = format!("http://127.0.0.1:{}/health", 9876);
+                                let url = format!("http://127.0.0.1:{}/health", port);
                                 client
                                     .get(&url)
                                     .send()
@@ -344,6 +345,7 @@ impl Splash {
                 // so we do not stall the UI thread.
                 if !self.status_checked && self.niu_api_ready {
                     self.status_checked = true;
+                    let port = self.api_port;
                     let (tx, rx) = iced::futures::channel::oneshot::channel::<Result<LightragStatus, String>>();
                     std::thread::spawn(move || {
                         let result = reqwest::blocking::Client::builder()
@@ -351,8 +353,9 @@ impl Splash {
                             .build()
                             .map_err(|e| e.to_string())
                             .and_then(|client| {
+                                let url = format!("http://127.0.0.1:{}/api/kg/stats", port);
                                 client
-                                    .get("http://127.0.0.1:9876/api/kg/stats")
+                                    .get(&url)
                                     .send()
                                     .map_err(|e| e.to_string())
                                     .and_then(|resp| {
@@ -528,6 +531,7 @@ impl Splash {
                     // 用户选"是"=尝试修复，调 /api/kg/lightrag/repair?target=all
                     // 修完后无论成功失败都退出（用户重启做下一轮检测）
                     self.repairing = true;
+                    let port = self.api_port;
                     let (tx, rx) =
                         iced::futures::channel::oneshot::channel::<Result<String, String>>();
                     std::thread::spawn(move || {
@@ -540,13 +544,17 @@ impl Splash {
                         // 用 catch_unwind 兜底：任何 panic（reqwest/hyper 底层、
                         // OOM 等）都转为 Err 返回，避免 oneshot channel 静默 drop
                         // 导致前端误报"修复失败：channel closed"。
-                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
                             reqwest::blocking::Client::builder()
                                 .build()
                                 .map_err(|e| e.to_string())
                                 .and_then(|client| {
+                                    let url = format!(
+                                        "http://127.0.0.1:{}/api/kg/lightrag/repair?target=all",
+                                        port
+                                    );
                                     client
-                                        .post("http://127.0.0.1:9876/api/kg/lightrag/repair?target=all")
+                                        .post(&url)
                                         .send()
                                         .map_err(|e| e.to_string())
                                         .and_then(|resp| resp.text().map_err(|e| e.to_string()))
