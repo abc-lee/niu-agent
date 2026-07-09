@@ -482,12 +482,20 @@ impl Splash {
                     let (tx, rx) =
                         iced::futures::channel::oneshot::channel::<Result<String, String>>();
                     std::thread::spawn(move || {
-                        let result = reqwest::blocking::Client::new()
-                            .post("http://127.0.0.1:9876/api/kg/lightrag/repair?target=all")
-                            .timeout(std::time::Duration::from_secs(300))
-                            .send()
+                        // 不设超时 —— embedding 重算几千个向量需要数分钟，
+                        // 数据量大了更久。靠"正在修复..."动画让用户知道在干活，
+                        // 不由程序自动断开。如真卡死，用户可强杀进程。
+                        let result = reqwest::blocking::Client::builder()
+                            .timeout(std::time::Duration::MAX)
+                            .build()
                             .map_err(|e| e.to_string())
-                            .and_then(|resp| resp.text().map_err(|e| e.to_string()));
+                            .and_then(|client| {
+                                client
+                                    .post("http://127.0.0.1:9876/api/kg/lightrag/repair?target=all")
+                                    .send()
+                                    .map_err(|e| e.to_string())
+                                    .and_then(|resp| resp.text().map_err(|e| e.to_string()))
+                            });
                         let _ = tx.send(result);
                     });
                     return Task::perform(
