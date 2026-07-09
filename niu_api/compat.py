@@ -2656,31 +2656,41 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
         elif mode == "force":
             # Force mode: entity-extractor 全量 → dream-evolver 全量 → context-manager 强制压缩
             logger.info("[Tidy] Force mode: starting entity-extractor (full processing)")
+            # 计算 PROTECTED 消息 ID 集合（最近 N 条 user/assistant，与 context-manager 对齐）
+            # 用于 entity force 方案 A：排除最近 PROTECTED 条防止 overflow 死循环（详见 Architecture §6）
+            _force_protect_recent_count = _read_protect_recent_count()
+            _force_protected_ids: set[str] = set()
+            if _force_protect_recent_count > 0 and messages:
+                _ua_msgs = [m for m in messages if getattr(m, "role", "") in ("user", "assistant")]
+                _force_protected_ids = {getattr(m, "id", "") or "" for m in _ua_msgs[-_force_protect_recent_count:]}
 
-            # 1/3. entity-extractor（全量 task 方式，cursor 传空 = 全量）
+            # 1/3. entity-extractor（全量 history 逐条 + task 独立指令，cursor 传空 = 全量）
             new_entity_id = last_entity_extract_id  # 默认保留旧游标
             entity_force_msg_ids = []
-            entity_force_msg_text = _build_incremental_msg_text(
+            _ = _build_incremental_msg_text(
                 messages, "", entity_force_msg_ids, msg_tokens
             )
-            entity_force_prompt = f"""以下是最近的对话消息（每条带 [id:UUID] [idx:N] 序号标注）。请从中提取有价值的内容，形成精炼文档提交给 LightRAG 入库。
+            entity_force_prompt = """以下是最近的对话消息（以 history 形式逐条传入，每条 content 前缀 [N] 极简编号，1-based）。请从中提取有价值的内容，形成精炼文档提交给 LightRAG 入库。
 
 注意：对话历史中包含工具调用结果（role=tool），这些是程序化操作的结果。照片入库、人物命名等操作已经自动完成了知识图谱写入，不要重复创建这些实体。如果需要关联已有实体，请使用入库后的实体名称。
 
-{entity_force_msg_text}"""
-
-            # 截断 task 防止子Agent超限
-            context_window_for_truncate = _read_context_window_tokens()
-            safe_tokens = int(context_window_for_truncate * 0.6)
-            truncated_entity_force_prompt = _truncate_task_for_subagent(entity_force_prompt, safe_tokens)
+处理完成后，在最终回复的最后一行输出 `processed_up_to=N`（N 是你实际处理到的最后一条消息的编号），程序据此推进游标。如果未输出该行，程序会回退到区间末尾作为游标（兜底）。"""
+            # 构造全量 history + idx_to_id 映射（force 模式 cursor 为空 = 全量）
+            # 方案 A：排除 PROTECTED 消息（最近 N 条 user/assistant）防止 overflow 死循环（详见 Architecture §6）
+            # _force_protected_ids 已在 Step 6.0 force 块顶部计算（与 context-manager protect_recent_count 对齐）
+            entity_force_msgs_filtered = [m for m in messages if (getattr(m, "id", "") or "") not in _force_protected_ids]
+            entity_force_history, entity_force_idx_to_id = _build_plain_history(entity_force_msgs_filtered)
+            # 同步过滤 entity_force_msg_ids（游标推进兜底用，与 history 保持一致）
+            entity_force_msg_ids = [getattr(m, "id", "") or "" for m in entity_force_msgs_filtered]
 
             def run_entity_extractor_force():
                 return call_subagent_with_auto_answer(
                     agent_name="entity-extractor",
-                    task=truncated_entity_force_prompt,
+                    task=entity_force_prompt,
                     llm_config=llm_config,
                     mcp_client=None,
-                    history=None,
+                    history=entity_force_history,
+                    context_fifo_threshold=0,
                 )
 
             if entity_force_msg_ids:
@@ -2691,14 +2701,20 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                     return {"status": "aborted", "message": "Stopped by user"}
                 logger.info(f"[Tidy] Force: entity-extractor completed, length={len(entity_result)}")
 
-                # 游标自动推进：成功→推进到增量范围末尾，overflow→不动
                 if _is_subagent_overflow(entity_result):
                     overflow_info = _extract_overflow_info(entity_result)
                     logger.warning(f"[Tidy] Force: entity-extractor overflow: {overflow_info.get('turns_completed', 0)} turns, {overflow_info.get('tokens_used', 0)} tokens")
                     # overflow 时游标不动
                 else:
-                    new_entity_id = entity_force_msg_ids[-1] if entity_force_msg_ids else last_entity_extract_id
-                    logger.info(f"[Tidy] Force: Entity cursor auto-advanced to: {new_entity_id}")
+                    _processed_idx = _parse_processed_up_to(entity_result)
+                    if _processed_idx is not None and _processed_idx in entity_force_idx_to_id:
+                        new_entity_id = entity_force_idx_to_id[_processed_idx]
+                        logger.info(f"[Tidy] Force: Entity cursor advanced per processed_up_to={_processed_idx} -> {new_entity_id}")
+                    elif entity_force_msg_ids:
+                        new_entity_id = entity_force_msg_ids[-1]  # 兜底
+                        logger.info(f"[Tidy] Force: Entity cursor fallback to range end: {new_entity_id}")
+                    else:
+                        new_entity_id = last_entity_extract_id
                 # 校验游标
                 if new_entity_id:
                     fresh_msgs = await store.get_messages()
