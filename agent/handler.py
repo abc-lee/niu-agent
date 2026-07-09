@@ -1024,7 +1024,8 @@ class NiuHandler(BaseHandler):
                 mcp_client=self.mcp_client,
                 history=_history,
                 # journal-agent 改 history 逐条传消息后，禁用子 Agent 内部 FIFO 截断（防止砍末尾最新内容）
-                context_fifo_threshold=0 if (agent_name == "journal-agent" and _journal_history) else None,
+                # 非 journal-agent 走默认 -1（75%）
+                **({"context_fifo_threshold": 0} if (agent_name == "journal-agent" and _journal_history) else {}),
                 answer=answer,
                 # 阶段四修复 B2：LLM 不传 unique_name 时 fallback 到 agent_name
                 # 同步路径 unique_name=agent_name（方案 B），主 Agent 不需要记随机后缀
