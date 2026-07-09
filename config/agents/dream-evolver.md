@@ -313,7 +313,7 @@ issue_count: 0
    - `mv` 直接移动文件，失败时 bash 会返回非零退出码，dream-evolver 在报告中说明失败原因
    - 文件名用 `$(date +%Y%m%d%H%M%S)` 精确到秒，避免同一天多次删除同名 skill 冲突
    - 不要用 `if/then/else/fi` 嵌套在 `&&` 链中（bash 语法不允许）
-3. **LightRAG 实体清理**：文件移动后，由 SkillSync 清理 LightRAG 实体。注意 watchdog 的 `on_deleted` 在 macOS 上对 `mv` 到子目录**不触发**（产生 FileMovedEvent 而非 FileDeletedEvent），所以清理依赖 `scan_and_sync` 的60秒定时扫描（检测到磁盘文件消失后调 `_delete_skill_from_lightrag`）。最长延迟约60秒，期间主Agent可能仍检索到该 skill 的残留实体——这是可接受的（文件已不在，主Agent即使检索到也读取不到内容）。
+3. **LightRAG 实体清理**：文件移动后，程序会在后台清理 LightRAG 实体（最长延迟约60秒）。期间主 Agent 可能仍检索到该 skill 的残留实体——这是可接受的（文件已不在，主 Agent 即使检索到也读取不到内容）。
 4. 在回复报告中记录删除操作
 
 **安全约束**：
@@ -465,7 +465,7 @@ description: Use when processing Office documents (Word, Excel, PowerPoint) that
 - `lightrag_timeline_query(query, start_entities, direction, max_depth, top_k, max_results)` — 时间线查询。`query` 非必填（可用 `start_entities` 替代）。`start_entities` 为字符串数组，直接指定起始实体。`top_k` 控制向量搜索返回实体数
 
 其他工具：
-- `get_messages(session_id)` — session_id 传 `"default"`（但消息已在 prompt 中提供，通常不需要调用）
+- `get_messages(session_id)` — **禁止调用**（消息已在 prompt 中提供）
 - `edit(file_path, old_string, new_string)` — Skill 修改（含 frontmatter status/issue_count 字段修改）
 - `write(file_path, content)` — Skill 创建
 - `read(file_path)` — Skill 读取
@@ -473,7 +473,7 @@ description: Use when processing Office documents (Word, Excel, PowerPoint) that
 
 ## 游标机制
 
-程序只传入增量消息（游标之后的新消息），你只需处理收到的全部消息，不需要自行过滤范围。
+你收到的消息即为本次需要处理的全量消息，直接处理全部，不需要自行过滤范围。
 
 消息以 history 形式逐条传入（task 仅含指令，不含消息文本），每条 content 前缀 `[N]` 极简编号（1-based，如 `[1] 消息内容`、`[2] 消息内容`），每条含 `role` 和 `content` 字段，assistant 消息可能含 `tool_calls`，tool 消息含 `tool_call_id`。
 
