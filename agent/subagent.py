@@ -498,8 +498,11 @@ def build_subagent_system_segments(agent_name: str) -> tuple:
     if "直接退出" not in static_system:
         static_system += "\n\n" + _BOUNDARY_SECTION_TEMPLATE
 
-    # 4. 强制注入 @niu-agent/@end 守则（所有子 Agent）
-    if _SUBAGENT_ASK_GUIDE_MARKER not in static_system:
+    # 4. 强制注入 @niu-agent/@end 守则
+    # context-manager 例外：它原设计是直接输出 keep=/update=/cursor= 让程序写数据库，
+    # 不走 @niu-agent/@end 交互通道。注入守则会污染它的输出格式，导致压缩失败。
+    # 详见 docs/superpowers/plans/2026-07-08-context-manager-bypass-at-prefix.md
+    if agent_name != "context-manager" and _SUBAGENT_ASK_GUIDE_MARKER not in static_system:
         static_system += "\n\n" + _SUBAGENT_ASK_GUIDE_TEMPLATE
 
     # 5. 动态段：Current Time
