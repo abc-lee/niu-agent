@@ -475,20 +475,14 @@ description: Use when processing Office documents (Word, Excel, PowerPoint) that
 
 程序只传入增量消息（游标之后的新消息），你只需处理收到的全部消息，不需要自行过滤范围。
 
-每条消息格式为 `[id:UUID] [idx:N] Xtokens role: content`。
-
-**重要**：
-- **游标用 id（UUID）存储**：因为 id 是数据库中持久化的，删除消息不影响其他消息的 id
-- **idx 是全量列表序号**：代表消息在完整对话中的位置（1-based，动态值，删除消息后会变）
-- **UUID v4 字典序不代表时间先后**：不要用 id 比较大小来判断先后
+消息以 history 形式逐条传入（task 仅含指令，不含消息文本），每条 content 前缀 `[N]` 极简编号（1-based，如 `[1] 消息内容`、`[2] 消息内容`），每条含 `role` 和 `content` 字段，assistant 消息可能含 `tool_calls`，tool 消息含 `tool_call_id`。
 
 **操作步骤**：
 1. 直接处理收到的全部消息（程序已保证只传入增量范围内的消息）
-2. 游标由程序自动推进，你无需报告游标位置
+2. 处理完成后，在最终回复的最后一行输出 `processed_up_to=N`（N 是你实际处理到的最后一条消息的编号），程序据此推进游标；如果未输出，程序会回退到区间末尾作为游标（兜底）
 
 **输入规范**：
 - 消息内容为**完整原文**，不做截断
-- `Xtokens` 为该条消息的 token 估算值（基于完整内容计算）
 - `role` 为消息角色（user / assistant / tool）
 
 ## 回复格式（直接在回复中输出，不要写文件）
@@ -499,7 +493,7 @@ description: Use when processing Office documents (Word, Excel, PowerPoint) that
 
 ```
 [梦境进化报告]
-处理范围：消息 idx {start_idx} ~ {end_idx}（共 {count} 条）
+处理范围：共 {count} 条消息
 实体精加工：{n} 个实体
   - 描述优化：{n1} 个
   - 时间链创建：{n2} 条关系

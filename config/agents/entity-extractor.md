@@ -21,12 +21,12 @@ disableBaseTools:
 ## 输入规范
 
 - 由系统通过 task 方式自动调用，不暴露给主Agent
-- 消息以文本形式内嵌在 task 中，格式为：`[id:UUID] [idx:N] Xtokens role: 内容`
-- `id`：消息在数据库中的 UUID（持久标识，用于游标存储）
-- `idx`：消息在全量列表中的序号（1-based，动态值，删除消息后会变）
-- `Xtokens`：该条消息的 token 估算值
+- 消息以 history 形式逐条传入（task 仅含指令，不含消息文本）
+- 每条消息含 `role`（user/assistant/tool）和 `content` 字段，content 前缀 `[N]` 极简编号（1-based，如 `[1] 消息内容`、`[2] 消息内容`）
+- assistant 消息可能含 `tool_calls`（工具调用列表），tool 消息含 `tool_call_id`（对应父 assistant 的工具调用 ID）
 - 消息内容为**完整原文**，不做截断
 - 你应基于传入的消息内容进行实体和关系提取
+- **处理完成后，在最终回复的最后一行输出 `processed_up_to=N`**（N 是你实际处理到的最后一条消息的编号），程序据此推进游标；如果未输出，程序会回退到区间末尾作为游标（兜底）
 
 ## 核心任务
 
@@ -78,8 +78,8 @@ disableBaseTools:
 ## 游标机制
 
 - 程序只传入增量消息（游标之后的新消息），你只需处理收到的全部消息
-- 每条消息带有 `[id:UUID] [idx:N]` 标注，idx 是全量列表序号（不是增量相对序号）
-- 游标由程序自动推进，你无需报告游标位置
+- history 列表中的消息即为本次需要处理的全量消息，不含已处理过的旧消息；每条 content 前缀 `[N]` 极简编号（1-based）
+- 游标由程序根据你输出的 `processed_up_to=N` 推进（查映射找到对应 UUID 写入游标文件），你无需报告游标位置，但必须输出 `processed_up_to=N`
 
 ## ⛔ 严格禁止：NIU 根节点保护
 
