@@ -1011,6 +1011,82 @@ def run_resilience_phase1() -> dict:
     }
 
 
+def should_signal_scheduler_ready(phase1_result: dict) -> bool:
+    """Phase 1 后是否通知 scheduler 系统就绪。
+
+    损坏时不通知，让 scheduler 60s 超时强行扫描的漏洞被堵住
+    （配合 scheduler.cancel_delayed_start 让超时后 _delayed_start 线程
+    直接 return，不强行 start）。
+
+    用户决策退出或修复后，scheduler 跟随程序整体退出，不需要 ready signal。
+
+    Returns:
+        True 表示应该调 signal_scheduler_ready()（正常启动）
+        False 表示跳过（LightRAG 损坏）
+    """
+    return not phase1_result.get("need_repair", False)
+
+
+def should_start_db_monitor(phase1_result: dict) -> bool:
+    """Phase 1 后是否启动 db_monitor task。
+
+    损坏时不启动，避免 db_monitor 路由消息到 ChatQueue → runner.chat 报错
+    （ChatQueue worker 已 pause，但 db_monitor 入队后只堆积在队列里，
+    程序退出时丢失——可接受，损坏期间不应处理 IM 消息）。
+
+    Returns:
+        True 表示应该启动 db_monitor（正常启动）
+        False 表示跳过（LightRAG 损坏）
+    """
+    return not phase1_result.get("need_repair", False)
+
+
+def pause_chatqueue_if_corrupt(phase1_result: dict) -> None:
+    """Phase 1 检测到损坏时 pause ChatQueue，让 worker 不消费消息。
+
+    用户决策期间 IM/scheduler 入队的消息只堆积在队列里，不触发 runner.chat。
+    程序退出时 ChatQueue 跟随整体 shutdown（stop_chat_queue cancel worker task），
+    不需要 resume。
+
+    异常处理：pause 失败只 log warning，不抛异常（不阻塞 lifespan 继续走
+    Phase 1 后的 gate 流程，最坏情况是 ChatQueue 仍消费，但 scheduler
+    被 cancel + db_monitor 未启动 + signal 未发，已堵住 90% 的触发路径）。
+    """
+    if phase1_result.get("need_repair", False):
+        try:
+            from niu_api.chat_queue import get_chat_queue
+            q = get_chat_queue()
+            q.pause()
+            logger.info("[LightRAG] ChatQueue paused due to LightRAG corruption")
+        except Exception as e:
+            logger.warning(f"[LightRAG] Failed to pause ChatQueue: {e}")
+
+
+def cancel_scheduler_delayed_start_if_corrupt(phase1_result: dict) -> None:
+    """Phase 1 检测到损坏时取消 scheduler 的 delayed start。
+
+    补 P1 漏洞：scheduler.start_delayed 的 _ready_event.wait(60) 60s 超时后
+    会强行 start（scheduler.py L103-106），即使不调 signal_scheduler_ready，
+    scheduler 线程也会在 60s 后启动 + 阻塞 120 秒（_CALLBACK_TIMEOUT）。
+    虽然此期间 ChatQueue 被 pause 阻塞不会触发 runner.chat，但 scheduler
+    线程跑起来后 60s+120s 才结束，期间用户决策/退出流程会被拖延。
+
+    调 scheduler.cancel_delayed_start() 设 _delayed_start_cancelled=True，
+    _delayed_start 线程 60s 超时后检查到 flag 直接 return。
+
+    异常处理：cancel 失败只 log warning，不阻塞 lifespan。
+    """
+    if phase1_result.get("need_repair", False):
+        try:
+            from niu_api.internal.scheduler.service import get_scheduler
+            sched = get_scheduler()
+            if sched is not None:
+                sched.cancel_delayed_start()
+                logger.info("[LightRAG] Scheduler delayed start cancelled due to LightRAG corruption")
+        except Exception as e:
+            logger.warning(f"[LightRAG] Failed to cancel scheduler delayed start: {e}")
+
+
 def run_repair_on_user_request() -> dict:
     """用户在弹窗点'尝试修复'后调用（通过 /api/kg/lightrag/repair 触发）。
 
