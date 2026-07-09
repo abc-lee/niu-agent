@@ -918,15 +918,22 @@ class NiuHandler(BaseHandler):
 
                 new_journal_id = last_journal_id
 
-                # 游标自动推进：成功→推进到增量范围末尾，overflow→不动
+                # 游标推进：overflow→不动；否则解析 processed_up_to=N 查映射，兜底 msg_ids[-1]
                 if _is_subagent_overflow(journal_result):
                     overflow_info = _extract_overflow_info(journal_result)
                     logger.warning(f"[Journal] overflow: {overflow_info.get('turns_completed', 0)} turns")
                     # overflow 时游标不动
                     new_journal_id = last_journal_id
                 else:
-                    new_journal_id = journal_msg_ids[-1] if journal_msg_ids else last_journal_id
-                    logger.info(f"[Journal] Cursor auto-advanced to: {new_journal_id}")
+                    _processed_idx = _parse_processed_up_to(journal_result)
+                    if _processed_idx is not None and journal_idx_to_id and _processed_idx in journal_idx_to_id:
+                        new_journal_id = journal_idx_to_id[_processed_idx]
+                        logger.info(f"[Journal] Cursor advanced per processed_up_to={_processed_idx} -> {new_journal_id}")
+                    elif journal_msg_ids:
+                        new_journal_id = journal_msg_ids[-1]  # 兜底
+                        logger.info(f"[Journal] Cursor fallback to range end: {new_journal_id}")
+                    else:
+                        new_journal_id = last_journal_id
 
                 # 校验游标（二次校验，与 compat.py 一致）
                 if new_journal_id and new_journal_id not in msg_id_set:
@@ -953,10 +960,12 @@ class NiuHandler(BaseHandler):
         answer = args.get("answer")
         unique_name_arg = args.get("unique_name")
 
-        # journal-agent 特殊处理：构建增量消息 task，与 tidy 管道一致
+        # journal-agent 特殊处理：构建增量消息 task + history + idx_to_id，与 tidy 管道一致
         journal_msg_ids_for_cursor = []  # 默认空列表，仅 journal-agent 时填充
+        _journal_history = []  # 默认空 history，仅 journal-agent 时填充
+        _journal_idx_to_id = {}  # 默认空映射，仅 journal-agent 时填充
         if agent_name == "journal-agent":
-            task, journal_msg_ids_for_cursor = self._build_journal_task_for_handler(task)
+            task, _journal_history, _journal_idx_to_id, journal_msg_ids_for_cursor = self._build_journal_task_for_handler(task)
 
         # 获取完整的 LLM 配置（从全局 runner）
         from .runner import get_runner
@@ -1004,6 +1013,9 @@ class NiuHandler(BaseHandler):
             yield StreamEvent("tool_marker", f"[SubAgent] Calling {agent_name}...\n")
             # 子Agent保持独立上下文，不传递主Agent历史
             _history = None
+            # journal-agent 的 history 来自 _build_journal_task_for_handler，覆盖默认 _history
+            if agent_name == "journal-agent" and _journal_history:
+                _history = _journal_history
 
             result = call_subagent(
                 agent_name=agent_name,
@@ -1011,15 +1023,17 @@ class NiuHandler(BaseHandler):
                 llm_config=llm_config,
                 mcp_client=self.mcp_client,
                 history=_history,
+                # journal-agent 改 history 逐条传消息后，禁用子 Agent 内部 FIFO 截断（防止砍末尾最新内容）
+                context_fifo_threshold=0 if (agent_name == "journal-agent" and _journal_history) else None,
                 answer=answer,
                 # 阶段四修复 B2：LLM 不传 unique_name 时 fallback 到 agent_name
                 # 同步路径 unique_name=agent_name（方案 B），主 Agent 不需要记随机后缀
                 answer_unique_name=(unique_name_arg or agent_name) if answer else None,
             )
 
-            # journal-agent 特殊处理：更新游标（仅当有增量消息时才更新）
+            # journal-agent 特殊处理：更新游标（仅当有增量消息时才更新，透传 idx_to_id 映射）
             if agent_name == "journal-agent" and journal_msg_ids_for_cursor:
-                self._update_journal_cursor(result, journal_msg_ids_for_cursor)
+                self._update_journal_cursor(result, journal_msg_ids_for_cursor, _journal_idx_to_id)
 
             # 验证结果：检查 event-manager 是否真正创建了任务
             if agent_name == "event-manager" and ("提醒" in task or "定时" in task or "提醒我" in task):

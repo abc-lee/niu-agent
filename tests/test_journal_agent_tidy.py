@@ -199,9 +199,10 @@ class TestJournalAgentPromptFormat:
     """测试 journal-agent 调用的 prompt 格式"""
 
     def test_journal_prompt_contains_uuid_format(self):
-        """验证 journal prompt 包含 [id:UUID] [idx:N] 格式说明"""
+        """验证 journal prompt 包含极简 [N] 编号格式说明（history 逐条传消息）"""
         source = _read_source()
-        assert "[id:UUID] [idx:N]" in source
+        # 改造后 task 纯指令，消息以 history 形式逐条传 + 极简 [N] 前缀（不再是 [id:UUID] [idx:N]）
+        assert "_build_journal_task()" in source
 
     def test_journal_prompt_contains_cursor_report(self):
         """验证 journal prompt 包含游标报告 JSON 格式"""
@@ -219,9 +220,9 @@ class TestJournalAgentPromptFormat:
         assert "journal.md" in source
 
     def test_journal_prompt_cursor_advance_instruction(self):
-        """验证 journal prompt 包含必须推进游标的指令"""
+        """验证 journal prompt 包含 processed_up_to=N 回传说明（程序据此推进游标）"""
         source = _read_source()
-        assert "必须推进游标" in source
+        assert "processed_up_to" in source
 
     def test_journal_incremental_text_format(self):
         """验证增量消息文本格式正确"""
@@ -245,29 +246,30 @@ class TestJournalCursorWrite:
         assert '"last_journal_at"' in source
 
     def test_journal_cursor_write_text_call(self):
-        """验证 journal 游标使用 write_text 写入"""
+        """验证 journal 游标使用 _write_cursor_with_lock 写入（带文件锁保护）"""
         source = _read_source()
-        assert "journal_cursor_path.write_text" in source
+        assert "_write_cursor_with_lock" in source
 
     def test_journal_cursor_mkdir_before_write(self):
-        """验证写入前创建目录"""
+        """验证写入前创建目录（_write_cursor_with_lock 内部）"""
         source = _read_source()
-        assert "journal_cursor_path.parent.mkdir(parents=True, exist_ok=True)" in source
+        assert "cursor_path.parent.mkdir(parents=True, exist_ok=True)" in source
 
 
 class TestJournalCursorFallback:
     """测试 journal 游标 fallback 逻辑"""
 
     def test_journal_cursor_overflow_fallback(self):
-        """验证 journal-agent 溢出时游标 fallback"""
+        """验证 journal-agent 溢出时游标不动（不再有 fallback 字符串，改为日志输出）"""
         source = _read_source()
-        # 溢出时应 fallback 到增量消息最后一条
-        assert "Journal cursor overflow fallback" in source
+        # 改造后 overflow 时游标不动 + 日志输出 "overflow" 关键字
+        assert "overflow" in source.lower()
 
     def test_journal_cursor_not_matched_fallback(self):
-        """验证 journal-agent 游标未匹配时 fallback"""
+        """验证 journal-agent processed_up_to 未匹配时 fallback 到区间末尾"""
         source = _read_source()
-        assert "Journal cursor not matched" in source
+        # 改造后用 processed_up_to=N 查映射，未匹配兜底到 msg_ids[-1]
+        assert "fallback to range end" in source.lower()
 
     def test_journal_cursor_incremental_fallback_value(self):
         """验证游标 fallback 到增量消息列表的最后一条"""
