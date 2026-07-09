@@ -83,6 +83,13 @@ def _intercept_at_prefix_content(
     if tool_calls:
         return (NO_INTERCEPTION, None)
 
+    # context-manager 绕过：它原设计是直接输出 keep=/update=/cursor= 让程序写数据库，
+    # 不走 @niu-agent/@end 交互通道。拦截会导致正确输出被 FORMAT_ERROR，压缩失败。
+    # 详见 docs/superpowers/plans/2026-07-08-context-manager-bypass-at-prefix.md
+    unique_name = getattr(handler, "_subagent_unique_name", "") or ""
+    if unique_name == "context-manager":
+        return (NO_INTERCEPTION, None)
+
     stripped = (content or "").lstrip()
 
     # 主 Agent 分支：检测 content 误回复同步挂起子 Agent
