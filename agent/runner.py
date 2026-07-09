@@ -941,7 +941,9 @@ class NiuRunner:
 
     def _run_subagent_step(self, step_name, cursor_path, cursor_field,
                            prompt, llm_config, last_cursor_id,
-                           fallback_ids, timestamp_field):
+                           fallback_ids, timestamp_field,
+                           history=None, context_fifo_threshold=None,
+                           idx_to_id=None):
         """Run a sub-agent step with timeout, cursor extraction, validation and write-back.
 
         Parameters
@@ -977,7 +979,12 @@ class NiuRunner:
 
         # --- call sub-agent ---
         with _cf.ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(call_subagent_with_auto_answer, step_name, prompt, llm_config=llm_config, mcp_client=None)
+            _kwargs = dict(llm_config=llm_config, mcp_client=None)
+            if history is not None:
+                _kwargs["history"] = history
+            if context_fifo_threshold is not None:
+                _kwargs["context_fifo_threshold"] = context_fifo_threshold
+            future = executor.submit(call_subagent_with_auto_answer, step_name, prompt, **_kwargs)
             try:
                 result = future.result()
             except Exception as e:
@@ -986,7 +993,7 @@ class NiuRunner:
 
         logger.info(f"[Runner] Force: {step_name} completed, length={len(result)}")
 
-        # --- cursor auto-advance: success→advance to end of incremental range, overflow→don't move ---
+        # --- cursor advance: overflow→don't move; else parse processed_up_to=N + lookup idx_to_id, fallback fallback_ids[-1] ---
         new_cursor_id = last_cursor_id
         if _is_subagent_overflow(result):
             overflow_info = _extract_overflow_info(result)
@@ -994,8 +1001,16 @@ class NiuRunner:
             # overflow 时游标不动
             new_cursor_id = last_cursor_id
         else:
-            new_cursor_id = fallback_ids[-1] if fallback_ids else last_cursor_id
-            logger.info(f"[{step_name}] Cursor auto-advanced to: {new_cursor_id}")
+            from niu_api.compat import _parse_processed_up_to
+            _processed_idx = _parse_processed_up_to(result)
+            if _processed_idx is not None and idx_to_id and _processed_idx in idx_to_id:
+                new_cursor_id = idx_to_id[_processed_idx]
+                logger.info(f"[{step_name}] Cursor advanced per processed_up_to={_processed_idx} -> {new_cursor_id}")
+            elif fallback_ids:
+                new_cursor_id = fallback_ids[-1]  # 兜底
+                logger.info(f"[{step_name}] Cursor fallback to range end: {new_cursor_id}")
+            else:
+                new_cursor_id = last_cursor_id
 
         # --- cursor validation ---
         if new_cursor_id:
@@ -1034,6 +1049,7 @@ class NiuRunner:
             _build_incremental_msg_text,
             _truncate_task_for_subagent,
             _build_journal_task,
+            _build_plain_history,
             _write_cursor_with_lock,
             _parse_idx_list,
             _build_force_prompt,
@@ -1100,29 +1116,41 @@ class NiuRunner:
             # === 步骤 1/4: entity-extractor（全量，cursor 传空 = 全量）===
             logger.info("[Runner] Force: starting entity-extractor (full processing)")
             new_entity_id = last_entity_extract_id
+            # 计算 PROTECTED 消息 ID 集合（最近 N 条 user/assistant，与 context-manager 对齐）
+            # 用于 entity force 方案 A：排除最近 PROTECTED 条防止 overflow 死循环（详见 Architecture §6）
+            _force_protect_recent_count = _read_protect_recent_count()
+            _force_protected_ids: set[str] = set()
+            if _force_protect_recent_count > 0 and db_messages:
+                _ua_msgs = [m for m in db_messages if getattr(m, "role", "") in ("user", "assistant")]
+                _force_protected_ids = {getattr(m, "id", "") or "" for m in _ua_msgs[-_force_protect_recent_count:]}
 
             if is_stop_requested():
                 logger.warning("[Runner] Stop requested, aborting force compress")
                 return
 
             entity_force_msg_ids = []
-            entity_force_msg_text = _build_incremental_msg_text(
+            _ = _build_incremental_msg_text(
                 db_messages, "", entity_force_msg_ids, msg_tokens
             )
             if entity_force_msg_ids:
-                entity_force_prompt = f"""以下是最近的对话消息（每条带 [id:UUID] [idx:N] 序号标注）。请从中提取有价值的内容，形成精炼文档提交给 LightRAG 入库。
+                entity_force_prompt = """以下是最近的对话消息（以 history 形式逐条传入，每条 content 前缀 [N] 极简编号，1-based）。请从中提取有价值的内容，形成精炼文档提交给 LightRAG 入库。
 
 注意：对话历史中包含工具调用结果（role=tool），这些是程序化操作的结果。照片入库、人物命名等操作已经自动完成了知识图谱写入，不要重复创建这些实体。如果需要关联已有实体，请使用入库后的实体名称。
 
-{entity_force_msg_text}"""
-
-                safe_tokens = int(_read_context_window_tokens() * 0.6)
-                truncated_entity_prompt = _truncate_task_for_subagent(entity_force_prompt, safe_tokens)
+处理完成后，在最终回复的最后一行输出 `processed_up_to=N`（N 是你实际处理到的最后一条消息的编号），程序据此推进游标。如果未输出该行，程序会回退到区间末尾作为游标（兜底）。"""
+                # 构造全量 history + idx_to_id 映射（force 模式 cursor 为空 = 全量）
+                # 方案 A：排除 PROTECTED 消息（最近 N 条 user/assistant）防止 overflow 死循环（详见 Architecture §6）
+                entity_force_msgs_filtered = [m for m in db_messages if (getattr(m, "id", "") or "") not in _force_protected_ids]
+                entity_force_history, entity_force_idx_to_id = _build_plain_history(entity_force_msgs_filtered)
+                # 同步过滤 entity_force_msg_ids（游标推进兜底用，与 history 保持一致）
+                entity_force_msg_ids = [getattr(m, "id", "") or "" for m in entity_force_msgs_filtered]
 
                 _, new_entity_id = self._run_subagent_step(
                     "entity-extractor", entity_cursor_path, "last_entity_extract_id",
-                    truncated_entity_prompt, llm_config, last_entity_extract_id,
+                    entity_force_prompt, llm_config, last_entity_extract_id,
                     entity_force_msg_ids, "last_entity_extract_at",
+                    history=entity_force_history, context_fifo_threshold=0,
+                    idx_to_id=entity_force_idx_to_id,
                 )
 
                 if is_stop_requested():
@@ -1142,23 +1170,26 @@ class NiuRunner:
 
             new_dream_id = last_dream_evolve_id
             dream_force_msg_ids = []
-            dream_force_msg_text = _build_incremental_msg_text(
+            _ = _build_incremental_msg_text(
                 db_messages, last_dream_evolve_id, dream_force_msg_ids, msg_tokens
             )
             logger.info(f"[Runner] Force: starting dream-evolver ({len(dream_force_msg_ids)} incremental messages)")
 
             if dream_force_msg_ids:
-                dream_force_prompt = f"""对以下消息中涉及的实体进行精加工（打标签、建关系、关联脑区、更新画像），并维护 skill 文件。
+                dream_force_prompt = """对以下消息中涉及的实体进行精加工（打标签、建关系、关联脑区、更新画像），并维护 skill 文件。
 
-{dream_force_msg_text}"""
-
-                safe_tokens = int(_read_context_window_tokens() * 0.6)
-                truncated_dream_prompt = _truncate_task_for_subagent(dream_force_prompt, safe_tokens)
+消息以 history 形式逐条传入，每条 content 前缀 [N] 极简编号（1-based）。处理完成后，在最终回复的最后一行输出 `processed_up_to=N`（N 是你实际处理到的最后一条消息的编号），程序据此推进游标。如果未输出该行，程序会回退到区间末尾作为游标（兜底）。"""
+                # 构造增量 history + idx_to_id 映射
+                _id_set = set(dream_force_msg_ids)
+                dream_force_incremental_msgs = [m for m in db_messages if (getattr(m, "id", "") or "") in _id_set]
+                dream_force_history, dream_force_idx_to_id = _build_plain_history(dream_force_incremental_msgs)
 
                 _, new_dream_id = self._run_subagent_step(
                     "dream-evolver", dream_cursor_path, "last_dream_evolve_id",
-                    truncated_dream_prompt, llm_config, last_dream_evolve_id,
+                    dream_force_prompt, llm_config, last_dream_evolve_id,
                     dream_force_msg_ids, "last_evolve_at",
+                    history=dream_force_history, context_fifo_threshold=0,
+                    idx_to_id=dream_force_idx_to_id,
                 )
 
                 if is_stop_requested():
@@ -1177,19 +1208,24 @@ class NiuRunner:
 
             new_journal_id = last_journal_id
             journal_force_msg_ids = []
-            journal_force_msg_text = _build_incremental_msg_text(
+            _ = _build_incremental_msg_text(
                 db_messages, last_journal_id, journal_force_msg_ids, msg_tokens
             )
             logger.info(f"[Runner] Force: starting journal-agent ({len(journal_force_msg_ids)} incremental messages)")
 
             if journal_force_msg_ids:
-                safe_tokens = int(_read_context_window_tokens() * 0.6)
-                truncated_journal_prompt = _build_journal_task(journal_force_msg_text, safe_tokens)
+                journal_force_prompt = _build_journal_task()  # 纯指令，无参（含 processed_up_to 说明）
+                # 构造增量 history + idx_to_id 映射
+                _id_set = set(journal_force_msg_ids)
+                journal_force_incremental_msgs = [m for m in db_messages if (getattr(m, "id", "") or "") in _id_set]
+                journal_force_history, journal_force_idx_to_id = _build_plain_history(journal_force_incremental_msgs)
 
                 _, new_journal_id = self._run_subagent_step(
                     "journal-agent", journal_cursor_path, "last_journal_id",
-                    truncated_journal_prompt, llm_config, last_journal_id,
+                    journal_force_prompt, llm_config, last_journal_id,
                     journal_force_msg_ids, "last_journal_at",
+                    history=journal_force_history, context_fifo_threshold=0,
+                    idx_to_id=journal_force_idx_to_id,
                 )
                 logger.info(f"[Runner] Force: Journal cursor updated: {new_journal_id}")
 
