@@ -1112,9 +1112,26 @@ def run_repair_on_user_request() -> dict:
             get_lightrag()
         except Exception as e:
             logger.warning(f"[LightRAG] 修复后 get_lightrag 重试失败（不影响返回）: {e}")
-        logger.info(f"[LightRAG] 修复完成: {repair_result}, 重检: ok={check_result.get('ok')}")
+        # v7: 遍历 repair_result 判定 repaired，任一 status=error 则 False
+        # repair_all 永不抛异常（收集每个 vdb 的 status 到 dict），
+        # 所以不能只看是否抛异常，要看 results dict 里每个条目的 status。
+        # 条目包括 vdb_entities.json / vdb_relationships.json / vdb_chunks.json
+        # / entity_sync / relationship_sync，任一 status=error 都算修复失败。
+        repaired = True
+        for vdb_name, vdb_result in repair_result.items():
+            if not isinstance(vdb_result, dict):
+                continue
+            if vdb_result.get("status") == "error":
+                repaired = False
+                logger.warning(
+                    f"[LightRAG] 修复失败项: {vdb_name} - {vdb_result.get('message', '')}"
+                )
+
+        logger.info(
+            f"[LightRAG] 修复完成: repaired={repaired}, 重检: ok={check_result.get('ok')}"
+        )
         return {
-            "repaired": True,
+            "repaired": repaired,
             "check_ok": check_result.get("ok", True),
             "repair_result": repair_result,
             "check_result": check_result,
