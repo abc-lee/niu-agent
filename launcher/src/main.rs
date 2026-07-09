@@ -14,7 +14,7 @@ use iced::widget::container;
 use iced::window;
 use iced::{Element, Font, Length, Subscription, Task, Theme};
 use serde::Deserialize;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 // ---------------------------------------------------------------------------
 // Splash — iced splash window shown during startup
@@ -698,6 +698,111 @@ fn init_niu_dir(project_root: &str) {
         }
         info!("Copied template file: {} -> {}", filename, dst_path.display());
     }
+
+    // Copy skills/ directory (individual .md files, don't overwrite existing)
+    // Triggered when: dir missing / dir exists but empty / specific .md missing
+    // Protects user modifications by skipping existing files
+    let src_skills_dir = template_dir.join("skills");
+    let dst_skills_dir = niu_dir.join("skills");
+
+    if !src_skills_dir.exists() {
+        warn!(
+            "Template skills directory not found, skipping: {}",
+            src_skills_dir.display()
+        );
+        return;
+    }
+
+    if let Err(e) = fs::create_dir_all(&dst_skills_dir) {
+        error!(
+            "Failed to create skills directory: {}, error={}",
+            dst_skills_dir.display(),
+            e
+        );
+        return;
+    }
+
+    let entries = match fs::read_dir(&src_skills_dir) {
+        Ok(e) => e,
+        Err(e) => {
+            warn!(
+                "Failed to read template skills directory: {}, error={}",
+                src_skills_dir.display(),
+                e
+            );
+            return;
+        }
+    };
+
+    let mut copied_count = 0u32;
+    let mut skipped_count = 0u32;
+    for entry in entries {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(e) => {
+                warn!("Failed to read directory entry: {}", e);
+                continue;
+            }
+        };
+
+        let file_name = entry.file_name();
+        let file_name_str = match file_name.to_str() {
+            Some(s) => s,
+            None => continue,
+        };
+
+        // Only copy .md files, skip .DS_Store / hidden files
+        if !file_name_str.ends_with(".md") {
+            continue;
+        }
+
+        let dst_path = dst_skills_dir.join(file_name_str);
+        if dst_path.exists() {
+            debug!(
+                "Skill file already exists, skipping: {}",
+                dst_path.display()
+            );
+            skipped_count += 1;
+            continue;
+        }
+
+        let src_path = entry.path();
+        let src_data = match fs::read(&src_path) {
+            Ok(d) => d,
+            Err(e) => {
+                warn!(
+                    "Failed to read template skill file: {}, error={}",
+                    src_path.display(),
+                    e
+                );
+                continue;
+            }
+        };
+
+        if let Err(e) = fs::write(&dst_path, &src_data) {
+            error!(
+                "Failed to copy skill file: src={}, dst={}, error={}",
+                src_path.display(),
+                dst_path.display(),
+                e
+            );
+            continue;
+        }
+
+        info!(
+            "Copied skill file: {} -> {}",
+            file_name_str,
+            dst_path.display()
+        );
+        copied_count += 1;
+    }
+
+    info!(
+        "Skills directory sync: copied={}, skipped(existing)={}, dst={}",
+        copied_count,
+        skipped_count,
+        dst_skills_dir.display()
+    );
 }
 
 // ---------------------------------------------------------------------------
