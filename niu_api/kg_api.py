@@ -1082,24 +1082,31 @@ def cleanup_failed_docs():
 
 
 @router.post("/lightrag/repair")
-def repair_lightrag_storage(target: str = "all") -> dict:
+async def repair_lightrag_storage(target: str = "all") -> dict:
     """修复 LightRAG 存储（用户在 splash 点'尝试修复'触发）。
 
     实际路径：/api/kg/lightrag/repair（router prefix=/api/kg + 端点 /lightrag/repair）
 
+    v6: 改 async def + asyncio.to_thread，避免 repair_all 跑几千个 entity
+        本地 embedding 阻塞 FastAPI event loop 数十秒（期间 splash 轮询
+        status 会超时，整个 API 卡死）。
     v5: 调 run_repair_on_user_request（封装 repair_all + reset_init_state + 重跑 check_all）。
     v5 只支持 target=all（用户决策驱动，不分单文件修复）。
 
     Args:
         target: 只支持 "all"（其他值返回 400）
+
+    Returns:
+        {"status": "ok", "result": {"repaired": bool, "check_ok": bool, ...}}
     """
+    import asyncio
     from fastapi import HTTPException
     from niu_api.internal.lightrag_manager import run_repair_on_user_request
 
     if target != "all":
         raise HTTPException(status_code=400, detail=f"v5 只支持 target=all，收到: {target}")
 
-    result = run_repair_on_user_request()
+    result = await asyncio.to_thread(run_repair_on_user_request)
     return {"status": "ok", "result": result}
 
 
