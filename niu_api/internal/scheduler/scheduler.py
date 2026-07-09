@@ -120,6 +120,29 @@ class Scheduler:
         threading.Thread(target=_delayed_start, daemon=True).start()
         logger.info("[SCHEDULER] Delayed start: waiting for system_ready signal (60s timeout)")
 
+    def cancel_delayed_start(self):
+        """取消 delayed start（不 shutdown 整体 scheduler）。
+
+        场景：启动期检测到 LightRAG 损坏（need_repair=True），
+        lifespan 不调 signal_scheduler_ready，但 scheduler.start_delayed
+        里的 _ready_event.wait(60) 60s 超时后会强行 start（L103-106）。
+        此方法设 _delayed_start_cancelled=True，让 _delayed_start 线程
+        在 60s 超时后检查到这个 flag 直接 return，不强行 start。
+
+        与 stop() 的区别：
+        - stop() 会 join 线程 + shutdown executor（重操作，整体关闭）
+        - cancel_delayed_start 只设 flag，不 join 不 shutdown（轻量）
+
+        时序约束：
+        - 必须在 start_delayed() 之后调用（_delayed_start_cancelled 在
+          start_delayed 开头被重置为 False，cancel 之前调会被重置覆盖）。
+        - lifespan 顺序：L67 start_scheduler()（内部调 start_delayed）
+          → Phase 1 检测 → 调 cancel_delayed_start，时序正确。
+        """
+        with self._lock:
+            self._delayed_start_cancelled = True
+        logger.info("[SCHEDULER] Delayed start cancelled (start_delayed will no-op on timeout)")
+
     def stop(self):
         """Stop the scheduler"""
         with self._lock:
