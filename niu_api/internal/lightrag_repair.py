@@ -142,6 +142,102 @@ def _read_data_from_kv_store(vdb_filename: str) -> tuple[list[dict] | None, str 
     return (data_list if data_list else None), source_name
 
 
+def _try_truncate_repair(vdb_filename: str) -> list[dict] | None:
+    """vdb JSON 截断修复：括号配平找最后完整对象边界，补 ]} 闭合。
+
+    场景：vdb_entities.json 写入过程中崩溃，文件断在 data 数组某个对象的
+    vector 字段中间的 base64 字符串里，json.load 抛 JSONDecodeError。
+
+    策略（括号配平计数法，避免 content 字段里 } 干扰）：
+    1. 读原始字节
+    2. 找 "data":[ 的位置，从这之后开始扫描
+    3. 从 data_start 起逐字符扫描，维护 depth 计数器：
+       - 遇 { depth+1，遇 } depth-1
+       - depth 从 1 回到 0 时，记录一个"完整对象结束位置"
+         （此 } 的下一位即对象边界，后续应是 , 或 ]）
+    4. 取最后一个完整对象结束位置，截断到该 } 之后，补 ]} 闭合
+    5. json.loads 验证，提取 data 列表
+    6. data 数组为空（首个对象就截断，没有任何完整对象）→ 返回 None
+
+    为什么不用"找任意 }"：
+      content 字段（用户文档原文/实体描述）经常含 }（代码片段、JSON 示例、
+      模板字符串）。简单找 } 会在 base64 vector 之前命中 content 里的 }，
+      导致截断位置落在对象内部，补 ]} 后 json.loads 抛错，截断修复静默失败。
+      括号配平能区分"对象闭合的 }"和"字符串里的 }"，因为字符串里的 } 不会
+      让 depth 回到 0。
+
+    字符串处理简化（已知局限）：本扫描器不处理转义字符串内的 {/}（如 JSON
+    字符串里嵌套 JSON 字面量）。这种场景下配平法会把字符串内的 { 也计入
+    depth，导致最后一个完整对象结束位置偏后。最坏情况是截断后 json.loads
+    失败，返回 None，repair_vdb 继续 fallback kv_store，不引入新 bug。
+    比简单找 } 可靠性显著提升（失败安全）。
+
+    Args:
+        vdb_filename: vdb 文件名（vdb_entities.json / vdb_relationships.json / vdb_chunks.json）
+
+    Returns:
+        data 列表（含 __id__ + content），如果恢复后 data 为空或无法解析返回 None。
+    """
+    vdb_path = _storage_dir() / vdb_filename
+    if not vdb_path.exists():
+        return None
+
+    try:
+        raw_bytes = vdb_path.read_bytes()
+    except Exception:
+        return None
+
+    raw_text = raw_bytes.decode("utf-8", errors="replace")
+
+    # 1. 找 "data" 字段起始位置
+    # JSON 格式：{"embedding_dim":N,"data":[{...},{...},...,"matrix":"...（截断）
+    # 找 "data":[ 的位置（容忍空格）
+    import re
+    data_match = re.search(r'"data"\s*:\s*\[', raw_text)
+    if not data_match:
+        return None  # 没有 data 字段，无法修复
+
+    data_start = data_match.end()  # data 数组开始位置（[ 之后）
+
+    # 2. 括号配平计数：扫描所有完整对象的结束位置
+    # depth 计数：遇 { +1，遇 } -1。depth 从 1 回到 0 时，此 } 是一个完整对象的结束
+    complete_positions = []  # 每个完整对象结束 } 的位置（指向 } 字符）
+    depth = 0
+    i = data_start
+    n = len(raw_text)
+    while i < n:
+        ch = raw_text[i]
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                # 此 } 是 data 数组里一个完整对象的结束
+                complete_positions.append(i)
+        i += 1
+
+    if not complete_positions:
+        return None  # 没有任何完整对象（首个对象就截断在 { 之后某处）
+
+    # 3. 截到最后一个完整对象的 }（含），补 ]} 闭合
+    last_obj_end = complete_positions[-1]  # 最后一个完整对象结束 } 的位置
+    truncated_text = raw_text[:last_obj_end + 1] + "]}"  # 闭合 data 数组和外层 dict
+
+    # 4. 解析截断后的 JSON
+    try:
+        parsed = json.loads(truncated_text)
+    except (json.JSONDecodeError, Exception):
+        return None
+
+    data_list = parsed.get("data")
+    if not isinstance(data_list, list) or not data_list:
+        return None
+
+    text_field = _VDB_TEXT_FIELD.get(vdb_filename, "content")
+    valid = [item for item in data_list if isinstance(item, dict) and item.get(text_field)]
+    return valid if valid else None
+
+
 def repair_vdb(vdb_filename: str) -> dict[str, Any]:
     """修复单个 vdb 文件。
 
@@ -157,6 +253,14 @@ def repair_vdb(vdb_filename: str) -> dict[str, Any]:
     data_list = _read_data_from_vdb(vdb_filename)
     source = "vdb_data_field" if data_list else None
 
+    # 1.5. vdb JSON 截断时，尝试字节级括号配平截断修复
+    #      （断在 vector base64 中间，json.load 失败，但断点前的完整 entity 可恢复）
+    if not data_list:
+        data_list = _try_truncate_repair(vdb_filename)
+        if data_list:
+            source = "vdb_truncate_repair"
+            logger.info(f"[LightRAGRepair] 截断修复恢复 {vdb_filename}: {len(data_list)} 条")
+
     # 2. fallback 到 kv_store
     if not data_list:
         data_list, fallback_source = _read_data_from_kv_store(vdb_filename)
@@ -166,7 +270,7 @@ def repair_vdb(vdb_filename: str) -> dict[str, Any]:
     if not data_list:
         return {
             "status": "error",
-            "message": f"无可用数据源重建 {vdb_filename}（vdb data 和 fallback kv_store 都损坏）",
+            "message": f"无可用数据源重建 {vdb_filename}（vdb data、截断修复、fallback kv_store 都失败）",
         }
 
     # 3. 重新 embedding（保留原 data 所有非 vector 字段，只重算 vector）
