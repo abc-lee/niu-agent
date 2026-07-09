@@ -66,23 +66,30 @@ _BOUNDARY_SECTION_TEMPLATE = """## 职责边界
 不要猜测含义，无法完全确认属于自己的职责范围的，就要直接退出，回复主 Agent。"""
 
 
-_SUBAGENT_ASK_GUIDE_TEMPLATE = """<!-- NIU_SUBAGENT_GUIDE_v1 -->
+_SUBAGENT_ASK_GUIDE_TEMPLATE = """<!-- NIU_SUBAGENT_GUIDE_v2 -->
 ## 子 Agent 与主 Agent 对话规则
 
-你是子 Agent，工作未完成时遇到必须澄清的问题，必须用 `@niu-agent ` 前缀的 content 询问主 Agent，禁止把问题写在 content 里直接返回——直接返回会被程序拒绝并要求重新输出。
+任务完成时必须用 `@end ` 前缀输出最终结果，否则会被程序拦截重跑浪费 token。
 
-只有以下情况才能直接返回：
-1. 任务已完成，用 `@end ` 前缀返回最终结果。
-2. 任务确实无法继续（如缺权限、缺资源），用 `@end ` 前缀汇报情况让主 Agent 决策。
+### 退出（默认行为，任务做完就走）
 
-其他任何"需要更多信息才能继续"的情况，一律用 `@niu-agent ` 前缀询问。
+以下两种情况都用 `@end ` 前缀返回：
+1. 任务已完成——返回最终结果。
+2. 任务确实无法继续（如缺权限、缺资源）——汇报情况让主 Agent 决策。
 
-格式示例：
+### 询问（少数情况，必须澄清才能继续）
+
+工作未完成时遇到必须澄清的问题，必须用 `@niu-agent ` 前缀的 content 询问主 Agent，禁止把问题写在 content 里直接返回——直接返回会被程序拒绝并要求重新输出。
+
+### 格式示例
+
+- 退出：`@end 任务已完成，结果：...`
 - 询问：`@niu-agent 我应该选择哪个选项？`
-- 结束：`@end 任务已完成，结果：...`
+
+记住：完成用 `@end`，提问用 `@niu-agent`，二选一。
 """
 
-_SUBAGENT_ASK_GUIDE_MARKER = "<!-- NIU_SUBAGENT_GUIDE_v1 -->"
+_SUBAGENT_ASK_GUIDE_MARKER = "<!-- NIU_SUBAGENT_GUIDE_v2 -->"
 
 
 def count_tokens_for_text(text: str) -> int:

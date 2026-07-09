@@ -436,7 +436,7 @@ def test_build_subagent_system_segments_injects_guide_for_all_subagents(tmp_path
     monkeypatch.setattr(subagent, "_USER_AGENTS_DIR", str(user_dir))
 
     static_system, dynamic_system = subagent.build_subagent_system_segments("my-agent")
-    assert "<!-- NIU_SUBAGENT_GUIDE_v1 -->" in static_system
+    assert subagent._SUBAGENT_ASK_GUIDE_MARKER in static_system
     assert "@niu-agent" in static_system
     assert "@end" in static_system
 
@@ -448,7 +448,8 @@ def test_build_subagent_system_segments_no_duplicate_injection(tmp_path, monkeyp
     user_dir = tmp_path / "user" / "agents"
     user_dir.mkdir(parents=True)
     (user_dir / "my-agent.md").write_text(
-        "---\ndescription: my agent\n---\nYou are my agent.\n\n<!-- NIU_SUBAGENT_GUIDE_v1 -->\n已有守则"
+        "---\ndescription: my agent\n---\nYou are my agent.\n\n"
+        + subagent._SUBAGENT_ASK_GUIDE_MARKER + "\n已有守则"
     )
 
     project_dir = tmp_path / "project" / "config" / "agents"
@@ -458,4 +459,4 @@ def test_build_subagent_system_segments_no_duplicate_injection(tmp_path, monkeyp
 
     static_system, _ = subagent.build_subagent_system_segments("my-agent")
     # 守则只出现一次（marker 计数 == 1）
-    assert static_system.count("<!-- NIU_SUBAGENT_GUIDE_v1 -->") == 1
+    assert static_system.count(subagent._SUBAGENT_ASK_GUIDE_MARKER) == 1
