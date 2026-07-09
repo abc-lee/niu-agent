@@ -933,27 +933,12 @@ def _truncate_preserving_both(text: str, max_tokens: int) -> str:
     return head + "\n\n[中间第一份消息已省略，保留第三份 " + str(msg_count) + " 条消息。可见消息从第一份中后段开始，按相对位置划分区域]\n\n" + tail
 
 
-def _build_journal_task(*args, **kwargs) -> str:
-    """构建 journal-agent 的 task prompt。
-
-    新签名（无参数）：返回纯指令 prompt，消息以 history 形式逐条传入。
-    旧签名兼容（_build_journal_task(journal_msg_text, safe_tokens=0)）：仍被 force 模式调用点使用，
-    Task 7 改造 force 模式后将彻底废弃。
+def _build_journal_task() -> str:
+    """构建 journal-agent 的 task prompt（纯指令，消息以 history 形式逐条传入）。
 
     Returns:
-        纯指令 task prompt 字符串（新签名）或嵌入消息的完整 prompt（旧签名兼容）
+        纯指令 task prompt 字符串（含 processed_up_to=N 说明，程序据此推进游标）
     """
-    if args or kwargs:
-        # 旧签名兼容路径（force 模式仍用此方式，Task 7 将改造）
-        journal_msg_text = args[0] if args else kwargs.get("journal_msg_text", "")
-        safe_tokens = args[1] if len(args) > 1 else kwargs.get("safe_tokens", 0)
-        prompt = f"""以下是对话消息（每条带 [id:UUID] [idx:N] 序号标注）。请从中识别工作内容，提取为日志条目追加写入 journal.md。
-
-{journal_msg_text}"""
-        if safe_tokens > 0:
-            prompt = _truncate_task_for_subagent(prompt, safe_tokens)
-        return prompt
-    # 新签名路径（sleep 模式，Task 5 改造后）
     return """以下是对话消息（以 history 形式逐条传入，每条 content 前缀 [N] 极简编号，1-based）。请从中识别工作内容，提取为日志条目追加写入 journal.md。
 
 处理完成后，在最终回复的最后一行输出 `processed_up_to=N`（N 是你实际处理到的最后一条消息的编号），程序据此推进游标。如果未输出该行，程序会回退到区间末尾作为游标（兜底）。"""
@@ -2832,22 +2817,26 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
 
             new_journal_id = last_journal_id
             journal_force_msg_ids = []
-            journal_force_msg_text = _build_incremental_msg_text(
+            _ = _build_incremental_msg_text(
                 messages, last_journal_id, journal_force_msg_ids, msg_tokens
             )
             logger.info(f"[Tidy] Force: starting journal-agent ({len(journal_force_msg_ids)} incremental messages)")
 
             if journal_force_msg_ids:
-                context_window_for_truncate = _read_context_window_tokens()
-                safe_tokens = int(context_window_for_truncate * 0.6)
-                truncated_journal_force_prompt = _build_journal_task(journal_force_msg_text, safe_tokens)
+                journal_force_prompt = _build_journal_task()  # 纯指令，无参（含 processed_up_to 说明）
+                # 构造增量 history
+                _id_set = set(journal_force_msg_ids)
+                journal_force_incremental_msgs = [m for m in messages if (getattr(m, "id", "") or "") in _id_set]
+                journal_force_history, journal_force_idx_to_id = _build_plain_history(journal_force_incremental_msgs)
 
                 def run_journal_agent_force():
                     return call_subagent_with_auto_answer(
                         agent_name="journal-agent",
-                        task=truncated_journal_force_prompt,
+                        task=journal_force_prompt,
                         llm_config=llm_config,
                         mcp_client=None,
+                        history=journal_force_history,
+                        context_fifo_threshold=0,
                     )
 
                 journal_result = await asyncio.to_thread(run_journal_agent_force)
@@ -2857,14 +2846,21 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                     return {"status": "aborted", "message": "Stopped by user"}
                 logger.info(f"[Tidy] Force: journal-agent completed, length={len(journal_result)}")
 
-                # 游标自动推进：成功→推进到增量范围末尾，overflow→不动
+                # 游标推进：overflow→不动；否则解析 processed_up_to=N 查映射，兜底 msg_ids[-1]
                 if _is_subagent_overflow(journal_result):
                     overflow_info = _extract_overflow_info(journal_result)
                     logger.warning(f"[Tidy] Force: journal-agent overflow: {overflow_info.get('turns_completed', 0)} turns")
                     # overflow 时游标不动，下次重跑相同范围
                 else:
-                    new_journal_id = journal_force_msg_ids[-1] if journal_force_msg_ids else last_journal_id
-                    logger.info(f"[Tidy] Force: Journal cursor auto-advanced to: {new_journal_id}")
+                    _processed_idx = _parse_processed_up_to(journal_result)
+                    if _processed_idx is not None and _processed_idx in journal_force_idx_to_id:
+                        new_journal_id = journal_force_idx_to_id[_processed_idx]
+                        logger.info(f"[Tidy] Force: Journal cursor advanced per processed_up_to={_processed_idx} -> {new_journal_id}")
+                    elif journal_force_msg_ids:
+                        new_journal_id = journal_force_msg_ids[-1]  # 兜底
+                        logger.info(f"[Tidy] Force: Journal cursor fallback to range end: {new_journal_id}")
+                    else:
+                        new_journal_id = last_journal_id
 
                 # 校验游标
                 if new_journal_id:
