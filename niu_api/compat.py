@@ -1920,34 +1920,33 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
         if mode == "sleep":
             # Sleep mode: entity-extractor (增量) → dream-evolver (增量) → context-manager (增量)
 
-            # 1/3. entity-extractor（增量，task 方式）
+            # 1/3. entity-extractor（增量，history 逐条 + task 独立指令）
             entity_msg_ids = []
-            entity_msg_text = _build_incremental_msg_text(
+            # _build_incremental_msg_text 仅用于收集增量范围内的 msg_ids（游标推进用）
+            _ = _build_incremental_msg_text(
                 messages, last_entity_extract_id, entity_msg_ids, msg_tokens
             )
             new_entity_id = last_entity_extract_id  # 默认保留旧游标
-            entity_prompt_prefix = """以下是最近的对话消息（每条带 [id:UUID] [idx:N] 序号标注）。请从中提取有价值的内容，形成精炼文档提交给 LightRAG 入库。
+            entity_task_prompt = """以下是最近的对话消息（以 history 形式逐条传入，每条 content 前缀 [N] 极简编号，N 是 1-based 序号）。请从中提取有价值的内容，形成精炼文档提交给 LightRAG 入库。
 
 注意：对话历史中包含工具调用结果（role=tool），这些是程序化操作的结果。照片入库、人物命名等操作已经自动完成了知识图谱写入，不要重复创建这些实体。如果需要关联已有实体，请使用入库后的实体名称。
 
-"""
-            entity_prompt_suffix = ""
+处理完成后，在最终回复的最后一行输出 `processed_up_to=N`（N 是你实际处理到的最后一条消息的编号），程序据此推进游标。如果未输出该行，程序会回退到区间末尾作为游标（兜底）。"""
             if entity_msg_ids:
                 logger.info(f"[Tidy] entity-extractor: {len(entity_msg_ids)} new messages since cursor")
-                entity_full_prompt = entity_prompt_prefix + entity_msg_text + entity_prompt_suffix
-
-                # 截断 task 防止子Agent超限
-                context_window_for_truncate = _read_context_window_tokens()
-                safe_tokens = int(context_window_for_truncate * 0.6)
-                truncated_entity_prompt = _truncate_task_for_subagent(entity_full_prompt, safe_tokens)
+                # 构造增量 history：只含游标之后的消息（按 entity_msg_ids 过滤）
+                _id_set = set(entity_msg_ids)
+                entity_incremental_msgs = [m for m in messages if (getattr(m, "id", "") or "") in _id_set]
+                entity_history, entity_idx_to_id = _build_plain_history(entity_incremental_msgs)
 
                 def run_entity_extractor():
                     return call_subagent_with_auto_answer(
                         agent_name="entity-extractor",
-                        task=truncated_entity_prompt,
+                        task=entity_task_prompt,
                         llm_config=llm_config,
                         mcp_client=None,
-                        history=None,
+                        history=entity_history,
+                        context_fifo_threshold=0,  # 关闭 FIFO，保留完整上下文
                     )
 
                 entity_result = await asyncio.to_thread(run_entity_extractor)
@@ -1957,14 +1956,21 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                     return {"status": "aborted", "message": "Stopped by user"}
                 logger.info(f"[Tidy] entity-extractor result: {entity_result[:200]}")
 
-                # 游标自动推进：成功→推进到增量范围末尾，overflow→不动
+                # 游标推进：overflow→不动；否则解析 processed_up_to=N 查映射，兜底 msg_ids[-1]
                 if _is_subagent_overflow(entity_result):
                     overflow_info = _extract_overflow_info(entity_result)
                     logger.warning(f"[Tidy] entity-extractor overflow: {overflow_info.get('turns_completed', 0)} turns, {overflow_info.get('tokens_used', 0)} tokens")
                     # overflow 时游标不动，下次重跑相同范围
                 else:
-                    new_entity_id = entity_msg_ids[-1] if entity_msg_ids else last_entity_extract_id
-                    logger.info(f"[Tidy] Entity cursor auto-advanced to: {new_entity_id}")
+                    _processed_idx = _parse_processed_up_to(entity_result)
+                    if _processed_idx is not None and _processed_idx in entity_idx_to_id:
+                        new_entity_id = entity_idx_to_id[_processed_idx]
+                        logger.info(f"[Tidy] Entity cursor advanced per processed_up_to={_processed_idx} -> {new_entity_id}")
+                    elif entity_msg_ids:
+                        new_entity_id = entity_msg_ids[-1]  # 兜底
+                        logger.info(f"[Tidy] Entity cursor fallback to range end: {new_entity_id}")
+                    else:
+                        new_entity_id = last_entity_extract_id
                 # 校验游标
                 if new_entity_id:
                     fresh_msgs = await store.get_messages()
