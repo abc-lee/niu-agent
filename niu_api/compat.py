@@ -2006,27 +2006,28 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
             except ImportError:
                 msg_tokens = [max(1, len(msg.content or "") // 2) + 4 for msg in messages]
             dream_msg_ids = []
-            dream_msg_text = _build_incremental_msg_text(
+            _ = _build_incremental_msg_text(
                 messages, last_dream_evolve_id, dream_msg_ids, msg_tokens
             )
             new_dream_id = last_dream_evolve_id  # 默认保留旧游标
             if dream_msg_ids:
                 logger.info(f"[Tidy] dream-evolver: {len(dream_msg_ids)} new messages since cursor")
-                dream_prompt = f"""对以下消息中涉及的实体进行精加工（打标签、建关系、关联脑区、更新画像），并维护 skill 文件。
+                dream_task_prompt = """对以下消息中涉及的实体进行精加工（打标签、建关系、关联脑区、更新画像），并维护 skill 文件。
 
-{dream_msg_text}"""
-
-                # 截断 task 防止子Agent超限
-                context_window_for_truncate = _read_context_window_tokens()
-                safe_tokens = int(context_window_for_truncate * 0.6)
-                truncated_dream_prompt = _truncate_task_for_subagent(dream_prompt, safe_tokens)
+消息以 history 形式逐条传入，每条 content 前缀 [N] 极简编号（1-based）。处理完成后，在最终回复的最后一行输出 `processed_up_to=N`（N 是你实际处理到的最后一条消息的编号），程序据此推进游标。如果未输出该行，程序会回退到区间末尾作为游标（兜底）。"""
+                # 构造增量 history
+                _id_set = set(dream_msg_ids)
+                dream_incremental_msgs = [m for m in messages if (getattr(m, "id", "") or "") in _id_set]
+                dream_history, dream_idx_to_id = _build_plain_history(dream_incremental_msgs)
 
                 def run_dream_evolver():
                     return call_subagent_with_auto_answer(
                         agent_name="dream-evolver",
-                        task=truncated_dream_prompt,
+                        task=dream_task_prompt,
                         llm_config=llm_config,
                         mcp_client=None,
+                        history=dream_history,
+                        context_fifo_threshold=0,
                     )
 
                 dream_result = await asyncio.to_thread(run_dream_evolver)
@@ -2036,14 +2037,21 @@ async def _tidy_context_impl(request: dict, chat_lock_already_held: bool = False
                     return {"status": "aborted", "message": "Stopped by user"}
                 logger.info(f"[Tidy] Dream-evolver result: {dream_result[:200]}")
 
-                # 游标自动推进：成功→推进到增量范围末尾，overflow→不动
+                # 游标推进：overflow→不动；否则解析 processed_up_to=N 查映射，兜底 msg_ids[-1]
                 if _is_subagent_overflow(dream_result):
                     overflow_info = _extract_overflow_info(dream_result)
                     logger.warning(f"[Tidy] dream-evolver overflow: {overflow_info.get('turns_completed', 0)} turns, {overflow_info.get('tokens_used', 0)} tokens")
                     # overflow 时游标不动，下次重跑相同范围
                 else:
-                    new_dream_id = dream_msg_ids[-1] if dream_msg_ids else last_dream_evolve_id
-                    logger.info(f"[Tidy] Dream cursor auto-advanced to: {new_dream_id}")
+                    _processed_idx = _parse_processed_up_to(dream_result)
+                    if _processed_idx is not None and _processed_idx in dream_idx_to_id:
+                        new_dream_id = dream_idx_to_id[_processed_idx]
+                        logger.info(f"[Tidy] Dream cursor advanced per processed_up_to={_processed_idx} -> {new_dream_id}")
+                    elif dream_msg_ids:
+                        new_dream_id = dream_msg_ids[-1]  # 兜底
+                        logger.info(f"[Tidy] Dream cursor fallback to range end: {new_dream_id}")
+                    else:
+                        new_dream_id = last_dream_evolve_id
                 # 校验游标
                 if new_dream_id:
                     fresh_msgs = await store.get_messages()
