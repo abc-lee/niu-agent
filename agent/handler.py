@@ -824,13 +824,13 @@ class NiuHandler(BaseHandler):
     def _build_journal_task_for_handler(self, original_task: str) -> tuple:
         """为主Agent调用 journal-agent 构建增量消息 task。"""
         import json
-        from niu_api.compat import _build_journal_task, _build_incremental_msg_text
-        from agent.subagent import _read_context_window_tokens
+        from niu_api.compat import _build_journal_task, _build_incremental_msg_text, _build_plain_history
 
         # 报告生成指令不替换为增量消息 task — journal-agent 自己读 journal.md 聚合
+        # 返回四元组 (task, history=[], idx_to_id={}, msg_ids=[])，与主返回路径结构一致
         report_keywords = ("周报", "月报", "季报", "年报")
         if any(kw in original_task for kw in report_keywords):
-            return original_task, []
+            return original_task, [], {}, []
 
         # 1. 读取游标
         journal_cursor_path = Path.home() / ".niu" / "last_journal.json"
@@ -845,7 +845,7 @@ class NiuHandler(BaseHandler):
         # 2. 获取消息列表
         messages = self._sync_get_messages()
         if not messages:
-            return original_task, []
+            return original_task, [], {}, []
 
         # 3. 游标为空且消息过多时，限制为最近200条（防止全量嵌入超限）
         if not last_journal_id and len(messages) > 200:
@@ -867,26 +867,34 @@ class NiuHandler(BaseHandler):
         except ImportError:
             msg_tokens = [max(1, len(msg.content or "") // 2) + 4 for msg in messages]
 
-        # 5. 构建增量消息文本
+        # 5. 收集增量消息 ID（不再用 journal_msg_text 构造 task）
         journal_msg_ids = []
-        journal_msg_text = _build_incremental_msg_text(
+        _ = _build_incremental_msg_text(
             messages, last_journal_id, journal_msg_ids, msg_tokens
         )
 
+        # 无增量消息早返回：四元组（history 空 + idx_to_id 空字典 + msg_ids 空列表）
         if not journal_msg_ids:
-            return original_task, []
+            return original_task, [], {}, []
 
-        # 6. 构建完整 task
-        context_window_for_truncate = _read_context_window_tokens()
-        safe_tokens = int(context_window_for_truncate * 0.6)
-        return _build_journal_task(journal_msg_text, safe_tokens), journal_msg_ids
+        # 6. 构造增量 history + idx_to_id 映射（按 journal_msg_ids 过滤，保留双游标区间内的消息）
+        _id_set = set(journal_msg_ids)
+        journal_incremental_msgs = [m for m in messages if (getattr(m, "id", "") or "") in _id_set]
+        journal_history, journal_idx_to_id = _build_plain_history(journal_incremental_msgs)
 
-    def _update_journal_cursor(self, journal_result: str, journal_msg_ids: list):
-        """从 journal-agent 结果中提取游标并更新 last_journal.json"""
+        # 7. 返回 (task 纯指令, history 逐条, idx_to_id 映射, journal_msg_ids)
+        return _build_journal_task(), journal_history, journal_idx_to_id, journal_msg_ids
+
+    def _update_journal_cursor(self, journal_result: str, journal_msg_ids: list, journal_idx_to_id: dict | None = None):
+        """从 journal-agent 结果中提取游标并更新 last_journal.json
+
+        仿 context-manager 简易 ID 映射：解析子 Agent 输出的 processed_up_to=N，
+        查 journal_idx_to_id[N] 得到真实 UUID 更新游标；未找到则回退到 msg_ids[-1]（兜底）。
+        """
         import json
         import fcntl
         from datetime import datetime
-        from niu_api.compat import _is_subagent_overflow, _extract_overflow_info
+        from niu_api.compat import _is_subagent_overflow, _extract_overflow_info, _parse_processed_up_to
 
         # 在获取文件锁之前读取消息列表 — 避免在锁内调用 _sync_get_messages() 导致死锁
         messages = self._sync_get_messages()
