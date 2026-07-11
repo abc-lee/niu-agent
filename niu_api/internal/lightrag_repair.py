@@ -813,6 +813,167 @@ def repair_graphml() -> dict[str, Any]:
     }
 
 
+def repair_graphml_orphan_edges() -> dict[str, Any]:
+    """3b. 清理 GraphML 里引用不存在 node 的孤儿 edge。
+
+    场景：GraphML 里删了某个 node 但 edge 仍引用该 node → check #9（graphml_edge_dangling）报 major。
+    本函数遍历所有 edge，删除 source/target 不在 node 集合中的孤儿 edge，原子写回 GraphML。
+
+    真相源：GraphML 自身（node 集合是权威，edge 引用必须对齐）
+    派生：GraphML 自身（只删 edge，不删 node，不重建）
+
+    实现细节：
+    1. 用 ElementTree 解析 GraphML（跟 check_graphml_edge_dangling 一致）
+       注意：不能用 networkx.read_graphml，因为 networkx 看到 edge 引用未声明 node
+       会自动创建该 node，无法检测到孤儿 edge。
+    2. 收集 node id 集合
+    3. 遍历 edge，找 source/target 不在 node 集合的 edge → 直接从 XML 树删除
+    4. 原子写回（写 tmp + fsync + os.replace）
+
+    原子写策略：
+    - ElementTree.write 不支持 tmp+rename，需要包装
+    - 写 tmp 文件 → fsync → os.replace 替换原文件
+    """
+    import xml.etree.ElementTree as ET
+
+    storage_dir = _storage_dir()
+    graphml_path = storage_dir / _GRAPHML_FILE
+
+    # 1. 检查 GraphML 文件
+    if not graphml_path.exists():
+        return {
+            "status": "error",
+            "expected": 0,
+            "actual": 0,
+            "lost": 0,
+            "source": "GraphML",
+            "message": "GraphML 文件不存在",
+            "unrecoverable": True,
+        }
+
+    # 2. 用 ElementTree 解析（不能用 networkx，原因见 docstring）
+    try:
+        tree = ET.parse(graphml_path)
+        root = tree.getroot()
+    except ET.ParseError as e:
+        return {
+            "status": "error",
+            "expected": 0,
+            "actual": 0,
+            "lost": 0,
+            "source": "GraphML",
+            "message": f"GraphML XML 解析失败: {e}",
+            "unrecoverable": True,
+        }
+    except Exception as e:  # noqa: BLE001
+        return {
+            "status": "error",
+            "expected": 0,
+            "actual": 0,
+            "lost": 0,
+            "source": "GraphML",
+            "message": f"GraphML 解析失败: {type(e).__name__}: {e}",
+            "unrecoverable": True,
+        }
+
+    ns = "{http://graphml.graphdrawing.org/xmlns}"
+    graph = root.find(f"{ns}graph")
+    if graph is None:
+        for child in root:
+            tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+            if tag == "graph":
+                graph = child
+                break
+    if graph is None:
+        return {
+            "status": "error",
+            "expected": 0,
+            "actual": 0,
+            "lost": 0,
+            "source": "GraphML",
+            "message": "GraphML 无 <graph> 元素",
+            "unrecoverable": True,
+        }
+
+    # 3. 收集 node id 集合
+    node_ids: set[str] = set()
+    total_edges = 0
+    for child in graph:
+        tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+        if tag == "node":
+            nid = child.get("id", "")
+            if nid:
+                node_ids.add(nid)
+        elif tag == "edge":
+            total_edges += 1
+
+    # 4. 找孤儿 edge（source 或 target 不在 node_ids 中）
+    orphan_edge_elements: list[ET.Element] = []
+    for child in list(graph):  # list() 拷贝避免迭代中修改
+        tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+        if tag != "edge":
+            continue
+        src = child.get("source", "")
+        tgt = child.get("target", "")
+        if (src and src not in node_ids) or (tgt and tgt not in node_ids):
+            orphan_edge_elements.append(child)
+
+    expected = total_edges
+    if not orphan_edge_elements:
+        logger.info(f"[LightRAGRepair] GraphML 无孤儿 edge（{expected} edges 全部健康）")
+        return {
+            "status": "ok",
+            "expected": expected,
+            "actual": expected,
+            "lost": 0,
+            "source": "GraphML",
+            "message": f"GraphML 无孤儿 edge（{expected} edges 全部健康）",
+        }
+
+    # 5. 从 XML 树删除孤儿 edge
+    for edge_elem in orphan_edge_elements:
+        graph.remove(edge_elem)
+
+    # 6. 备份旧文件 + 原子写回
+    _backup_corrupt(graphml_path)
+    tmp_path = graphml_path.with_name(graphml_path.name + ".tmp")
+    try:
+        # ET.write 默认 UTF-8 + xml_declaration
+        tree.write(str(tmp_path), encoding="utf-8", xml_declaration=True)
+        # fsync + os.replace 保证原子性
+        with open(tmp_path, "rb") as f:
+            os.fsync(f.fileno())
+        os.replace(tmp_path, graphml_path)
+    except Exception as e:  # noqa: BLE001
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        except Exception:  # noqa: BLE001
+            pass
+        return {
+            "status": "error",
+            "expected": expected,
+            "actual": 0,
+            "lost": len(orphan_edge_elements),
+            "source": "GraphML",
+            "message": f"写回 GraphML 失败: {type(e).__name__}: {e}",
+        }
+
+    remaining_edges = expected - len(orphan_edge_elements)
+    logger.info(
+        f"[LightRAGRepair] 清理 GraphML 孤儿 edge: 删除 {len(orphan_edge_elements)} 条，"
+        f"剩余 {remaining_edges} edges（nodes={len(node_ids)}）"
+    )
+    return {
+        "status": "ok",
+        "expected": expected,
+        "actual": remaining_edges,
+        "lost": len(orphan_edge_elements),
+        "source": "GraphML",
+        "message": f"清理 {len(orphan_edge_elements)} 条孤儿 edge，剩余 {remaining_edges} edges",
+    }
+
+
 def repair_vdb_chunks() -> dict[str, Any]:
     """4. 遍历 text_chunks 重新 embedding 重建 vdb_chunks。
 
@@ -1573,6 +1734,7 @@ _REPAIR_ORDER = [
     ("text_chunks", repair_text_chunks),
     ("doc_status", repair_doc_status),
     ("graphml", repair_graphml),
+    ("graphml_orphan_edges", repair_graphml_orphan_edges),
     ("vdb_chunks", repair_vdb_chunks),
     ("vdb_entities", repair_vdb_entities),
     ("vdb_relationships", repair_vdb_relationships),
@@ -1585,11 +1747,16 @@ _REPAIR_ORDER = [
 
 
 # check name → repair 函数名（用于按需 repair 映射）
+# 注意：部分 check 会发出带后缀的具体 error.check 值
+# （如 graphml_edge_dangling 发出 graphml_edge_dangling_source / _target），
+# 这些后缀变体也需要映射到同一个 repair 函数。
 _CHECK_TO_REPAIR: dict[str, str] = {
     "text_chunks_doc_dangling": "text_chunks",
     "text_chunks_cache_dangling": "llm_response_cache",
     "doc_status_chunks_dangling": "doc_status",
-    "graphml_edge_dangling": "graphml",
+    "graphml_edge_dangling": "graphml_orphan_edges",
+    "graphml_edge_dangling_source": "graphml_orphan_edges",
+    "graphml_edge_dangling_target": "graphml_orphan_edges",
     "vdb_chunks_missing": "vdb_chunks",
     "vdb_entities_missing": "vdb_entities",
     "vdb_relationships_missing": "vdb_relationships",

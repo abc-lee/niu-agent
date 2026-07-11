@@ -520,6 +520,97 @@ def test_07_entity_chunks_dangling_rebuilds_from_graphml(restore_baseline):
     assert valid_count > 0, "repair 后应该保留 GraphML 中存在的 entity"
 
 
+def test_07b_graphml_orphan_edges_cleanup_after_node_deletion(restore_baseline):
+    """GraphML 删 node 但留 edge（孤儿 edge）→ repair_graphml_orphan_edges 清理。
+
+    场景：GraphML 里删了某个 node（模拟损坏），但 edge 仍引用该 node。
+    check_graphml_edge_dangling 报 major（source/target 不在 node 集合）。
+    repair_graphml_orphan_edges 应清理这些孤儿 edge，让 check 通过。
+
+    本测试覆盖 d583fdc3 之后的 bug：
+        - 之前 graphml_edge_dangling_source/_target 错误 check name
+          没有映射到 repair 函数，导致 repair_all 跳过孤儿 edge 清理。
+    """
+    import xml.etree.ElementTree as ET
+    from niu_api.internal import lightrag_integrity, lightrag_repair
+
+    # 1. 选 2 个有 edge 的 node 作为删除目标（小节点，不破坏整个 graph）
+    graphml_path = STORAGE_DIR / lightrag_integrity._GRAPHML_FILE
+    tree = ET.parse(graphml_path)
+    root = tree.getroot()
+    ns = "{http://graphml.graphdrawing.org/xmlns}"
+    graph = root.find(f"{ns}graph")
+    assert graph is not None, "GraphML 应有 <graph> 元素"
+
+    # 找 2 个有 edge 的 node（优先选 edge 数 1-5 的小节点，避免破坏大节点）
+    node_edge_count: dict[str, int] = {}
+    for edge in graph.findall(f"{ns}edge"):
+        s = edge.get("source", "")
+        t = edge.get("target", "")
+        node_edge_count[s] = node_edge_count.get(s, 0) + 1
+        node_edge_count[t] = node_edge_count.get(t, 0) + 1
+
+    # 找出 edge count 1-5 的 node（小节点）
+    candidates = sorted(
+        [(n, c) for n, c in node_edge_count.items() if 1 <= c <= 5],
+        key=lambda x: x[1],
+    )
+    assert len(candidates) >= 2, "需要至少 2 个有 edge 的小节点做测试"
+    target1 = candidates[0][0]
+    target2 = candidates[1][0]
+    expected_orphan_edges = candidates[0][1] + candidates[1][1]
+    print(f"[e2e-7b] 删除 node: {target1}({candidates[0][1]} edges), {target2}({candidates[1][1]} edges)")
+
+    # 2. 从 GraphML 删这 2 个 node（保留 edge，模拟孤儿 edge）
+    removed = 0
+    for node in list(graph.findall(f"{ns}node")):
+        if node.get("id") in (target1, target2):
+            graph.remove(node)
+            removed += 1
+    assert removed == 2, f"应该删除 2 个 node，实际 {removed}"
+    tree.write(str(graphml_path), encoding="utf-8", xml_declaration=True)
+
+    # 3. check_all 应检测到 graphml_edge_dangling major（source/target 不在 node 集合）
+    check_result = lightrag_integrity.check_all()
+    edge_errors = check_result["checks"].get("graphml_edge_dangling", {}).get("errors", [])
+    assert len(edge_errors) > 0, (
+        f"应该检测到 graphml_edge_dangling major，实际 errors={edge_errors}"
+    )
+    # 验证错误 check name 包含 _source / _target 后缀（这是 bug 根因）
+    error_check_names = {e.get("check", "") for e in edge_errors}
+    assert "graphml_edge_dangling_source" in error_check_names or \
+           "graphml_edge_dangling_target" in error_check_names, (
+        f"应该有 _source/_target 后缀的 error check name，实际 {error_check_names}"
+    )
+
+    # 4. repair_graphml_orphan_edges 应清理孤儿 edge
+    result = lightrag_repair.repair_graphml_orphan_edges()
+    print(f"[e2e-7b] repair_graphml_orphan_edges: status={result['status']}, "
+          f"lost={result.get('lost')}, actual={result.get('actual')}")
+    assert result["status"] == "ok", f"repair_graphml_orphan_edges 应该成功: {result}"
+    assert result["lost"] > 0, f"应该清理至少 1 条孤儿 edge，实际 lost={result['lost']}"
+
+    # 5. 重检 check_graphml_edge_dangling 应该 0 errors
+    recheck = lightrag_integrity.check_graphml_edge_dangling()
+    assert len(recheck["errors"]) == 0, (
+        f"repair 后 graphml_edge_dangling 应该 0 errors，实际 {recheck['errors']}"
+    )
+
+    # 6. 验证 GraphML 中不再有 target1/target2 的 edge 引用
+    tree2 = ET.parse(graphml_path)
+    root2 = tree2.getroot()
+    graph2 = root2.find(f"{ns}graph")
+    for edge in graph2.findall(f"{ns}edge"):
+        s = edge.get("source", "")
+        t = edge.get("target", "")
+        assert s not in (target1, target2), (
+            f"孤儿 edge source={s} 不应存在（已应被清理）"
+        )
+        assert t not in (target1, target2), (
+            f"孤儿 edge target={t} 不应存在（已应被清理）"
+        )
+
+
 # =============================================================================
 # 场景 8: kv_store_llm_response_cache.json 损坏 → 清空（minor）
 # =============================================================================
