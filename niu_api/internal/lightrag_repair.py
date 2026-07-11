@@ -217,7 +217,7 @@ def _load_graphml_nodes_edges() -> tuple[set[str], list[tuple[str, str, str, str
     edges: list of (src, tgt, edge_source_id, edge_description, edge_keywords)
            - edge_source_id: edge 的 d10 字段（<SEP> 分隔的 chunk_id 列表）
            - edge_description: edge 的 d8 字段（描述文本）
-           - edge_keywords: edge 的 d9 字段（关系关键词，<SEP> 分隔）
+           - edge_keywords: edge 的 d9 字段（关系关键词，逗号分隔，跟 LightRAG operate.py L2173 ",".join 一致）
     error: None 或 {"check": ..., "severity": "critical", ...}
 
     GraphML edge key 定义（参考真实 GraphML 头部）：
@@ -547,7 +547,7 @@ def repair_doc_status() -> dict[str, Any]:
     派生：kv_store_doc_status.json
 
     chunks_list: 按 full_doc_id 分组 text_chunks 的 key
-    status: PROCESSED 如果 GraphML 有数据，否则 PENDING
+    status: processed 如果 GraphML 有数据，否则 pending（DocStatus.value 小写）
     """
     storage_dir = _storage_dir()
     text_chunks_path = storage_dir / "kv_store_text_chunks.json"
@@ -590,7 +590,7 @@ def repair_doc_status() -> dict[str, Any]:
             "unrecoverable": True,
         }
 
-    # 3. 判断 GraphML 是否有数据（决定 status 是 PROCESSED 还是 PENDING）
+    # 3. 判断 GraphML 是否有数据（决定 status 是 processed 还是 pending，小写匹配 DocStatus.value）
     graphml_has_data = graphml_path.exists() and graphml_path.stat().st_size > 200
 
     # 4. 按 full_doc_id 分组 chunks_list
@@ -612,7 +612,10 @@ def repair_doc_status() -> dict[str, Any]:
         old_ds = _load_json_dict(doc_status_path) or {}
         old_value = old_ds.get(doc_id, {}) if isinstance(old_ds, dict) else {}
         new_doc_status[doc_id] = {
-            "status": "PROCESSED" if graphml_has_data else "PENDING",
+            # DocStatus.value 是小写（"processed"/"pending"/"failed"），
+            # LightRAG get_docs_by_statuses/get_status_counts 用小写字符串匹配，
+            # 必须写小写值否则枚举查询找不到文档
+            "status": "processed" if graphml_has_data else "pending",
             "chunks_count": len(chunks_list),
             "content_summary": old_value.get("content_summary", "") if isinstance(old_value, dict) else "",
             "content_length": old_value.get("content_length", 0) if isinstance(old_value, dict) else 0,
@@ -643,7 +646,7 @@ def repair_graphml() -> dict[str, Any]:
 
     策略：
     1. 先 drop 旧 GraphML（直接删文件）
-    2. 改所有 doc_status 为 PENDING（触发重处理）
+    2. 改所有 doc_status 为 pending（触发重处理，小写匹配 DocStatus.value）
     3. monkeypatch force_llm_summary_on_merge = 999999（尽量不调 LLM summary）
     4. 调 LightRAG.apipeline_process_enqueue_documents 重处理
        - extract 阶段：llm_response_cache 命中不调 LLM
@@ -729,7 +732,8 @@ def repair_graphml() -> dict[str, Any]:
             "message": f"drop 旧 GraphML 失败: {e}",
         }
 
-    # 4. 改所有 doc_status 为 PENDING（触发重处理）
+    # 4. 改所有 doc_status 为 pending（触发重处理）
+    # DocStatus.value 小写，必须写 "pending" 而非 "PENDING"
     doc_status = _load_json_dict(doc_status_path)
     if doc_status is None:
         return {
@@ -738,13 +742,13 @@ def repair_graphml() -> dict[str, Any]:
             "actual": 0,
             "lost": 1,
             "source": "doc_status",
-            "message": "doc_status 损坏，无法改为 PENDING",
+            "message": "doc_status 损坏，无法改为 pending",
             "unrecoverable": True,
         }
     if doc_status:
         for doc_id, ds_value in doc_status.items():
             if isinstance(ds_value, dict):
-                ds_value["status"] = "PENDING"
+                ds_value["status"] = "pending"
         _atomic_write_json(doc_status_path, doc_status)
 
     expected_docs = len(doc_status) if doc_status else 0
@@ -1275,9 +1279,10 @@ def repair_vdb_relationships() -> dict[str, Any]:
         }
 
     # 2. 收集要 embedding 的 texts
-    # LightRAG operate.py L1601: rel_content = f"{combined_keywords}\t{src}\n{tgt}\n{final_description}"
-    # combined_keywords 是 <SEP> 分隔的多个关键词合并后的字符串
-    # 这里用 GraphML d9 keywords（已经是 <SEP> 分隔的字符串），desc 为空用空字符串保持格式
+    # LightRAG operate.py L1601/L2527: rel_content = f"{combined_keywords}\t{src}\n{tgt}\n{final_description}"
+    # combined_keywords 是逗号分隔的多个关键词合并后的字符串（LightRAG operate.py L2173: ",".join(sorted(all_keywords))）
+    # GraphML d9 字段直接存储 combined_keywords，已经是逗号分隔的字符串
+    # 这里做防御性 normalize：若 d9 错误用 <SEP> 分隔则转成逗号分隔，保持跟 LightRAG 写入格式一致
     items: list[tuple[str, str, str, str, str]] = []
     # (sorted_src, sorted_tgt, content, source_id, edge_id_for_vdb)
     for src, tgt, edge_src_id, edge_desc, edge_keywords in edges:
@@ -1290,7 +1295,14 @@ def repair_vdb_relationships() -> dict[str, Any]:
         vdb_id = candidate_ids[0]
         # content 格式: f"{keywords}\t{src}\n{tgt}\n{desc}"
         # keywords/desc 为空用空字符串（保持 LightRAG 格式一致，不破坏向量比对）
-        content = f"{edge_keywords}\t{sorted_src}\n{sorted_tgt}\n{edge_desc}"
+        # normalize keywords：把 <SEP> 分隔（如有）拆成 list 再用 ", " join
+        # （跟 LightRAG operate.py L1483 ", ".join(set(keywords)) 一致——多关键词用逗号+空格分隔）
+        if edge_keywords and GRAPH_FIELD_SEP in edge_keywords:
+            kw_list = [k.strip() for k in edge_keywords.split(GRAPH_FIELD_SEP) if k.strip()]
+            normalized_keywords = ", ".join(kw_list)
+        else:
+            normalized_keywords = edge_keywords or ""
+        content = f"{normalized_keywords}\t{sorted_src}\n{sorted_tgt}\n{edge_desc}"
         items.append((sorted_src, sorted_tgt, content, edge_src_id, vdb_id))
 
     expected = len(items)
