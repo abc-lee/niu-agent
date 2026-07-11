@@ -1584,20 +1584,120 @@ _REPAIR_ORDER = [
 ]
 
 
-def repair_all() -> dict[str, Any]:
-    """一键修复所有 LightRAG 数据文件（按依赖链顺序）。
+# check name → repair 函数名（用于按需 repair 映射）
+_CHECK_TO_REPAIR: dict[str, str] = {
+    "text_chunks_doc_dangling": "text_chunks",
+    "text_chunks_cache_dangling": "llm_response_cache",
+    "doc_status_chunks_dangling": "doc_status",
+    "graphml_edge_dangling": "graphml",
+    "vdb_chunks_missing": "vdb_chunks",
+    "vdb_entities_missing": "vdb_entities",
+    "vdb_relationships_missing": "vdb_relationships",
+    "vdb_relationships_endpoint_dangling": "vdb_relationships",
+    "entity_chunks_dangling": "entity_chunks",
+    "relation_chunks_dangling": "relation_chunks",
+}
 
-    顺序：
+
+# file_level_critical 的 error.file → repair 函数名
+# 用于文件级 critical（JSON 解析失败 / 维度不匹配）的按文件分发
+_FILE_TO_REPAIR: dict[str, str] = {
+    "kv_store_doc_status.json": "doc_status",
+    "kv_store_entity_chunks.json": "entity_chunks",
+    "kv_store_full_docs.json": "full_docs_unrecoverable",  # 真相源不可重建
+    "kv_store_full_entities.json": "full_entities",
+    "kv_store_full_relations.json": "full_relations",
+    "kv_store_relation_chunks.json": "relation_chunks",
+    "kv_store_text_chunks.json": "text_chunks",
+    "kv_store_llm_response_cache.json": "llm_response_cache",
+    "vdb_entities.json": "vdb_entities",
+    "vdb_relationships.json": "vdb_relationships",
+    "vdb_chunks.json": "vdb_chunks",
+    "graph_chunk_entity_relation.graphml": "graphml",
+}
+
+# 真相源不可重建的文件（file_level_critical 时直接标记 unrecoverable）
+_UNRECOVERABLE_FILES = {"kv_store_full_docs.json"}
+
+
+def repair_all() -> dict[str, Any]:
+    """一键修复所有 LightRAG 数据文件（按 check 结果选择性调用）。
+
+    v2 改造：先 check_all 拿 errors，按 check name 分组映射到 repair 函数，
+    只对 check 报错的文件调 repair，没报错的跳过。
+    避免对没坏的文件调 repair（导致不必要的 unrecoverable）。
+
+    顺序（按依赖链）：
         text_chunks → doc_status → graphml → vdb_chunks → vdb_entities →
         vdb_relationships → entity_chunks → relation_chunks →
         full_entities → full_relations → llm_response_cache
 
     Returns:
-        {name: {status, expected, actual, lost, source, message, ...}, ...}
+        {
+            "name": {status, expected, actual, lost, source, message, ...},
+            ...,
+            "_unrecoverable": True,  # 任意 repair 报 unrecoverable 时
+            "_skipped": [...],       # 跳过的 repair 名（check 没报错）
+            "_check_summary": {...},  # check_all 关键字段
+        }
     """
+    from niu_api.internal.lightrag_integrity import check_all
+    from niu_api.internal import lightrag_integrity
+
+    # 1. 同步 integrity 模块的 _STORAGE_DIR（兼容测试 monkeypatch repair._STORAGE_DIR 的场景）
+    #    生产环境两边默认值一致（都是 ~/.niu/lightrag_storage），无需显式同步。
+    #    测试场景只 monkeypatch repair._STORAGE_DIR，这里同步过去保证 check_all 用同一个目录。
+    try:
+        if lightrag_integrity._STORAGE_DIR != _STORAGE_DIR:
+            lightrag_integrity._STORAGE_DIR = _STORAGE_DIR
+    except Exception:  # noqa: BLE001
+        pass
+
+    # 2. 先 check_all 拿到 errors + checks
+    check_result = check_all()
+    checks = check_result.get("checks", {})
+    all_errors = check_result.get("errors", [])
+
+    # 3. 按 check name 分组收集报错的 check（含 file_level_critical 的 file 子项）
+    #    注意：file_level_critical 的 errors 里 check 字段是具体类型（json_parse 等），
+    #    不是 "file_level_critical"。所以用 checks["file_level_critical"]["errors"]
+    #    来识别 file_level_critical 来源。
+    needed_repairs: set[str] = set()
+    file_level_errors: list[dict[str, Any]] = checks.get("file_level_critical", {}).get("errors", [])
+    file_level_error_files: set[str] = {err.get("file", "") for err in file_level_errors}
+
+    # 非 file_level_critical 的 check（按 check name 映射）
+    for err in all_errors:
+        check_name = err.get("check") or err.get("name", "")
+        if not check_name:
+            continue
+        # file_level_critical 的 error 跳过（用 file 字段分发，下面单独处理）
+        if err in file_level_errors:
+            continue
+        repair_name = _CHECK_TO_REPAIR.get(check_name)
+        if repair_name:
+            needed_repairs.add(repair_name)
+
+    # 处理 file_level_critical 的 file 字段
+    for err in file_level_errors:
+        file_name = err.get("file", "")
+        if file_name in _UNRECOVERABLE_FILES:
+            # 真相源损坏 → 直接标记 unrecoverable，不需要 repair
+            continue
+        repair_name = _FILE_TO_REPAIR.get(file_name)
+        if repair_name:
+            needed_repairs.add(repair_name)
+
+    # 4. 按依赖链顺序执行 needed_repairs 里的 repair
     results: dict[str, Any] = {}
     unrecoverable_detected = False
+    skipped: list[str] = []
+
     for name, fn in _REPAIR_ORDER:
+        if name not in needed_repairs:
+            skipped.append(name)
+            logger.info(f"[LightRAGRepair] 跳过 {name}（check 未报错）")
+            continue
         try:
             result = fn()
             results[name] = result
@@ -1620,8 +1720,35 @@ def repair_all() -> dict[str, Any]:
                 "message": f"repair 函数抛异常: {type(e).__name__}: {e}",
             }
 
+    # 5. 真相源（kv_store_full_docs.json）文件级 critical → 直接标记 unrecoverable
+    #    check_all 检测到 full_docs 损坏但无对应 repair，加一条 unrecoverable 占位
+    for err in file_level_errors:
+        file_name = err.get("file", "")
+        if file_name in _UNRECOVERABLE_FILES:
+            unrecoverable_detected = True
+            results["full_docs"] = {
+                "status": "error",
+                "expected": 1,
+                "actual": 0,
+                "lost": 1,
+                "source": "kv_store_full_docs",
+                "message": f"真相源 {file_name} 损坏：{err.get('msg', '未知错误')}，不可重建",
+                "unrecoverable": True,
+            }
+            logger.error(
+                f"[LightRAGRepair] 真相源 {file_name} 损坏（critical），不可重建"
+            )
+
     if unrecoverable_detected:
         results["_unrecoverable"] = True
+    if skipped:
+        results["_skipped"] = skipped
+    results["_check_summary"] = {
+        "critical_errors": check_result.get("critical_errors", 0),
+        "major_errors": check_result.get("major_errors", 0),
+        "minor_errors": check_result.get("minor_errors", 0),
+        "ok": check_result.get("ok", False),
+    }
     return results
 
 
