@@ -760,64 +760,73 @@ def test_repair_llm_response_cache_pass_empty(storage_dir, patched_embed):
 
 
 def test_repair_all_empty_storage_ok(storage_dir, patched_embed, monkeypatch):
-    """空 storage（所有文件不存在）→ repair_all 全部 ok"""
+    """空 storage（所有文件不存在）→ check_all 全过 → repair_all 全部跳过。
+
+    v2: repair_all 改为按 check 结果选择性调用。空 storage 没报错 → 全跳过。
+    """
     from niu_api.internal import lightrag_repair
 
-    # mock get_lightrag 返回 None（repair_graphml 会报 unrecoverable，但其他都 ok）
+    # mock get_lightrag 返回 None（不会被调到，因为 check_all 全过）
     monkeypatch.setattr(
         "niu_api.internal.lightrag_manager.get_lightrag", lambda: None
     )
 
     result = lightrag_repair.repair_all()
 
-    # 所有 11 个 repair 函数都应执行
-    expected_keys = {
+    # 没有 repair 被调用（check_all 全过）
+    actual_repair_keys = {k for k in result.keys() if not k.startswith("_")}
+    assert actual_repair_keys == set(), f"空 storage 不应调用任何 repair，实际调了: {actual_repair_keys}"
+    # _skipped 应包含全部 11 个
+    assert set(result.get("_skipped", [])) == {
         "text_chunks", "doc_status", "graphml", "vdb_chunks", "vdb_entities",
         "vdb_relationships", "entity_chunks", "relation_chunks", "full_entities",
         "full_relations", "llm_response_cache",
     }
-    # _unrecoverable 标记可能存在（如果任何 repair 报 unrecoverable）
-    actual_repair_keys = {k for k in result.keys() if not k.startswith("_")}
-    assert actual_repair_keys == expected_keys
-
-    # text_chunks 应 ok（空 full_docs → 空 text_chunks）
-    assert result["text_chunks"]["status"] == "ok"
-    assert result["text_chunks"]["actual"] == 0
-    # llm_response_cache 应 ok
-    assert result["llm_response_cache"]["status"] == "ok"
-    # graphml 应 unrecoverable（LightRAG 未初始化 + cache 空）
-    # 注意：空 cache 不算损坏，但 get_lightrag 返回 None 会触发 unrecoverable
-    assert result["graphml"]["status"] == "error"
-    assert result["graphml"].get("unrecoverable") is True
-    # _unrecoverable 应被设置（因为 graphml 报了 unrecoverable）
-    assert result.get("_unrecoverable") is True
+    # _check_summary 应存在且 ok=True
+    assert result["_check_summary"]["ok"] is True
+    assert result["_check_summary"]["critical_errors"] == 0
+    assert result["_check_summary"]["major_errors"] == 0
+    # 没有 _unrecoverable
+    assert result.get("_unrecoverable") is None
 
 
 def test_repair_all_unrecoverable_propagates(storage_dir, patched_embed, monkeypatch):
-    """full_docs 损坏 → repair_text_chunks unrecoverable，后续 repair 仍执行"""
+    """full_docs 损坏 → file_level_critical 报 full_docs 损坏 → unrecoverable。
+
+    v2: full_docs 在 _UNRECOVERABLE_FILES，不会调 repair_text_chunks，
+    直接标记 results["full_docs"]["unrecoverable"]=True。
+    """
     from niu_api.internal import lightrag_repair
 
     _write_text(storage_dir / "kv_store_full_docs.json", '{"truncated":')
 
     result = lightrag_repair.repair_all()
 
-    # text_chunks 应报 unrecoverable
-    assert result["text_chunks"]["status"] == "error"
-    assert result["text_chunks"].get("unrecoverable") is True
+    # full_docs 应在 result 里，标记 unrecoverable（不调 repair_text_chunks）
+    assert "full_docs" in result
+    assert result["full_docs"]["status"] == "error"
+    assert result["full_docs"].get("unrecoverable") is True
+    # text_chunks 不应在 result 里（check 没报 text_chunks_doc_dangling，因为 text_chunks 不存在→check 返回空 errors）
+    assert "text_chunks" not in result
     # _unrecoverable 标记应被设置
     assert result.get("_unrecoverable") is True
 
 
 def test_repair_all_returns_expected_actual_lost_fields(storage_dir, patched_embed, monkeypatch):
-    """repair_all 每个返回值都有 expected/actual/lost 字段"""
+    """repair_all 每个返回值都有 expected/actual/lost 字段。
+
+    v2: 准备数据让 check 报 vdb_entities_missing（GraphML 有 node 但 vdb 缺）→
+    调 repair_vdb_entities，返回值应有 status/expected/actual/lost/source/message。
+    """
     from niu_api.internal import lightrag_repair
 
-    # 准备完整数据
+    # 准备数据：GraphML 有 1 个 node，vdb_entities 不存在 → check vdb_entities_missing 报错
     graphml_content = _make_graphml(
         nodes=[("ent1", "desc1", "chunk-a")],
         edges=[],
     )
     _write_text(storage_dir / "graph_chunk_entity_relation.graphml", graphml_content)
+    # text_chunks 完整（避免 text_chunks 相关 check 误报）
     _write_json(
         storage_dir / "kv_store_text_chunks.json",
         {"chunk-a": {"content": "a", "full_doc_id": "doc-1"}},
@@ -830,21 +839,27 @@ def test_repair_all_returns_expected_actual_lost_fields(storage_dir, patched_emb
         storage_dir / "kv_store_doc_status.json",
         {"doc-1": {"status": "PROCESSED", "chunks_list": ["chunk-a"]}},
     )
+    _write_json(
+        storage_dir / "kv_store_entity_chunks.json",
+        {"ent1": {"chunk_ids": ["chunk-a"], "count": 1}},
+    )
 
-    # mock get_lightrag 返回 fake rag（graphml repair 会报 unrecoverable，但不影响其他）
+    # mock get_lightrag 返回 None（不应该被调到，因为 check 报的 vdb_entities_missing 走 repair_vdb_entities，不依赖 LightRAG）
     monkeypatch.setattr(
         "niu_api.internal.lightrag_manager.get_lightrag", lambda: None
     )
 
     result = lightrag_repair.repair_all()
 
-    # 每个 repair 返回值应包含 expected/actual/lost（除了 _unrecoverable 标记）
-    for name, r in result.items():
-        if name == "_unrecoverable":
-            continue
-        assert "status" in r, f"{name} 缺 status"
-        assert "expected" in r, f"{name} 缺 expected"
-        assert "actual" in r, f"{name} 缺 actual"
-        assert "lost" in r, f"{name} 缺 lost"
-        assert "source" in r, f"{name} 缺 source"
-        assert "message" in r, f"{name} 缺 message"
+    # vdb_entities 应被调用并返回完整字段
+    assert "vdb_entities" in result, f"vdb_entities 应被调用，实际 keys: {list(result.keys())}"
+    r = result["vdb_entities"]
+    assert r["status"] == "ok"
+    assert "expected" in r
+    assert "actual" in r
+    assert "lost" in r
+    assert "source" in r
+    assert "message" in r
+    # text_chunks/graphml 不应被调用（check 没报错）
+    assert "text_chunks" not in result
+    assert "graphml" not in result
