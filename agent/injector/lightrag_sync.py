@@ -99,6 +99,10 @@ class LightRAGSync:
             from agent.injector.sync import get_skill_sync
             skill_sync = get_skill_sync(auto_start=False)
             added, updated, deleted = skill_sync.scan_and_sync()
+            # scan_and_sync 可能返回 (-1, -1, -1) 表示 LightRAG 不可用提前返回
+            if added == -1:
+                logger.info("[LightRAGSync] SkillSync skipped (LightRAG not ready)")
+                return 0, 0, set(), set()
             skills_count = added + updated
             logger.info(f"[LightRAGSync] SkillSync: added={added}, updated={updated}, deleted={deleted}")
             return skills_count, 0, set(), set()
