@@ -731,6 +731,11 @@ _init_error: dict | None = None
 _integrity_result: dict | None = None  # Phase 1 一致性检测结果，供 get_lightrag_status 暴露
 _INIT_RETRY_SECONDS: float = 60.0
 
+# repair 期间标志：避免 get_lightrag 报 critical 日志，避免 SkillSync 后台轮询误报。
+# run_repair_on_user_request 设/清（try/finally 保证异常路径清除）。
+# 期间 get_lightrag 静默返回 None，不报 critical 日志。
+_repairing: bool = False
+
 # Signaling event: set when LightRAG initializes successfully.
 # Other threads call wait_lightrag_ready() instead of polling get_lightrag().
 _lightrag_ready = threading.Event()
@@ -900,15 +905,53 @@ except ImportError:
 def get_lightrag():
     """Get the LightRAG instance (lazy-init on first call).
 
-    Returns None if LightRAG is not installed or init failed recently.
+    三级启动门控（基于 _integrity_result 的 critical/major/minor 计数）：
+    - A 级（critical > 0 或 unrecoverable）：拒绝初始化，返回 None
+    - B 级（major > 0）：拒绝初始化，返回 None（需用户修复）
+    - C 级（仅 minor > 0）：允许初始化，日志警告降级
+    - 无 error：正常初始化
+
+    repair 期间（_repairing=True）静默返回 None，不报 critical 日志，
+    避免 SkillSync 后台轮询误报。
+
+    Returns None if LightRAG is not installed, init failed recently
+    (_INIT_RETRY_SECONDS cooldown), or repair in progress.
     After init failure, waits _INIT_RETRY_SECONDS before retrying so
     the system does not permanently lock up.
     """
     global _rag_instance, _init_failed_at
 
+    # repair 期间静默返回 None（不报 critical 日志，避免 SkillSync 误报）
+    if _repairing:
+        return None
+
     # Fast path: already initialized
     if _rag_instance is not None:
         return _rag_instance
+
+    # 三级门控：基于 _integrity_result 的 severity 计数判定
+    if _integrity_result is not None:
+        critical = _integrity_result.get("critical_errors", 0)
+        major = _integrity_result.get("major_errors", 0)
+        minor = _integrity_result.get("minor_errors", 0)
+
+        if critical > 0:
+            logger.warning(
+                f"[LightRAG] 核心数据损坏（{critical} critical errors），拒绝初始化"
+            )
+            _init_failed_at = time.monotonic()
+            return None
+        if major > 0:
+            logger.warning(
+                f"[LightRAG] 数据不一致（{major} major errors），拒绝初始化。请通过修复功能恢复数据。"
+            )
+            _init_failed_at = time.monotonic()
+            return None
+        if minor > 0:
+            logger.warning(
+                f"[LightRAG] 数据有轻微问题（{minor} minor errors），降级启动"
+            )
+            # 不返回 None，继续初始化（C 级降级）
 
     # Retry gate: if init failed recently, return None until cooldown expires
     if _init_failed_at is not None:
@@ -925,6 +968,19 @@ def get_lightrag():
         # Double-check after acquiring lock
         if _rag_instance is not None:
             return _rag_instance
+
+        # repair 期间再次检查（lock 内 double-check）
+        if _repairing:
+            return None
+
+        # 三级门控 lock 内再次检查（防并发窗口期）
+        if _integrity_result is not None:
+            critical = _integrity_result.get("critical_errors", 0)
+            major = _integrity_result.get("major_errors", 0)
+            if critical > 0 or major > 0:
+                if _init_failed_at is None:
+                    _init_failed_at = time.monotonic()
+                return None
 
         if _init_failed_at is not None:
             elapsed = time.monotonic() - _init_failed_at
@@ -1091,32 +1147,103 @@ def run_repair_on_user_request() -> dict:
     """用户在弹窗点'尝试修复'后调用（通过 /api/kg/lightrag/repair 触发）。
 
     v6: 不自动修复，等用户决策。用户确认后才调 repair_all。
-    修复后主动调 get_lightrag() 触发重试初始化（不依赖后台线程兜底）。
+    v8 (redo): _repairing try/finally 保护 + pipeline busy 等待 +
+              unrecoverable 判定 + severity 判定 repaired。
+
+    修复流程：
+        1. 设 _repairing=True（try/finally 保护）
+        2. 等 pipeline 空闲（最多 300s，避免中断已提交的 ingest）
+        3. 置 _rag_instance = None（避免新 ingest 请求并发写文件竞争）
+        4. 调 repair_all
+        5. reset_init_state + 重跑 check_all 更新 _integrity_result
+        6. 主动调 get_lightrag() 触发重试初始化
+        7. 判定 repaired（任一 status=error 或 unrecoverable 或 重检 critical/major>0 都算失败）
 
     Returns:
-        {"repaired": bool, "check_ok": bool, "repair_result": dict | None, "check_result": dict | None}
+        {
+            "repaired": bool,
+            "check_ok": bool,
+            "critical_errors": int,
+            "major_errors": int,
+            "minor_errors": int,
+            "repair_result": dict,
+            "check_result": dict,
+        }
     """
-    global _integrity_result
+    global _integrity_result, _rag_instance, _repairing
     from niu_api.internal.lightrag_repair import repair_all
     from niu_api.internal.lightrag_integrity import check_all
 
     logger.warning("[LightRAG] 用户选择'尝试修复'，启动 repair_all")
+    _repairing = True
     try:
+        # 1. 检查 pipeline busy，等空闲再 repair（避免中断已提交的 ingest）
+        # 单进程模式直接读 _shared_dicts 不加锁（GIL 保护字典读，零竞争零超时）
+        from niu_api.kg_api import _read_pipeline_busy
+
+        deadline = time.monotonic() + 300  # 超时 300s
+        waited = False
+        while time.monotonic() < deadline:
+            busy = _read_pipeline_busy()
+            if not busy:
+                break
+            waited = True
+            time.sleep(5)
+        else:
+            return {
+                "repaired": False,
+                "check_ok": False,
+                "message": "pipeline busy 超过 300s，请稍后重试",
+                "critical_errors": 0,
+                "major_errors": 0,
+                "minor_errors": 0,
+                "repair_result": {},
+                "check_result": _integrity_result,
+            }
+
+        if waited:
+            logger.info("[LightRAG] pipeline 空闲，开始 repair")
+
+        # 2. repair 期间置 _rag_instance = None（避免新 ingest 请求并发写文件竞争）
+        # 注意：_repairing=True 已经让 get_lightrag 静默返回 None，
+        #       但已持有的 _rag_instance 仍可能被其他模块通过 call_async 直接调用，
+        #       这里显式置 None 强制下一次重新初始化。
+        _rag_instance = None
+
+        # 3. 调 repair_all（按依赖链顺序修复所有文件）
         repair_result = repair_all()
+
+        # 4. 检查 unrecoverable（顶层标记或单个 result 字段）
+        has_unrecoverable = bool(repair_result.get("_unrecoverable", False)) or any(
+            isinstance(v, dict) and v.get("unrecoverable")
+            for v in repair_result.values()
+            if isinstance(v, dict)
+        )
+
+        # 5. reset + 重跑 check_all
         reset_init_state()
-        # 修复后重跑 check_all 更新 _integrity_result
         check_result = check_all()
         _integrity_result = check_result
-        # v6 改进 5：主动调 get_lightrag() 触发重试初始化（不依赖后台线程 60 秒兜底）
+
+        # 6. 主动调 get_lightrag 触发重试初始化（_repairing 仍 True，
+        #    但下面 finally 会清掉；此处先不清，让 get_lightrag 看到 _repairing
+        #    返回 None 不报错——但我们要的是触发初始化，所以先临时关掉）
+        # 实际上：get_lightrag 看到 _repairing=True 会返回 None，不触发初始化。
+        # 这里改为先清 _repairing，让 get_lightrag 走三级门控重新初始化。
+        _repairing = False
         try:
             get_lightrag()
         except Exception as e:
             logger.warning(f"[LightRAG] 修复后 get_lightrag 重试失败（不影响返回）: {e}")
-        # v7: 遍历 repair_result 判定 repaired，任一 status=error 则 False
-        # repair_all 永不抛异常（收集每个 vdb 的 status 到 dict），
-        # 所以不能只看是否抛异常，要看 results dict 里每个条目的 status。
-        # 条目包括 vdb_entities.json / vdb_relationships.json / vdb_chunks.json
-        # / entity_sync / relationship_sync，任一 status=error 都算修复失败。
+
+        # 7. 判定 repaired
+        # - 任一 repair result status=error → False
+        # - unrecoverable 标记 → False
+        # - 重检 critical > 0 或 major > 0 → False
+        critical = check_result.get("critical_errors", 0)
+        major = check_result.get("major_errors", 0)
+        minor = check_result.get("minor_errors", 0)
+
         repaired = True
         for vdb_name, vdb_result in repair_result.items():
             if not isinstance(vdb_result, dict):
@@ -1127,12 +1254,24 @@ def run_repair_on_user_request() -> dict:
                     f"[LightRAG] 修复失败项: {vdb_name} - {vdb_result.get('message', '')}"
                 )
 
+        if critical > 0 or major > 0 or has_unrecoverable:
+            repaired = False
+            logger.warning(
+                f"[LightRAG] 修复后重检仍有 critical({critical})/major({major})"
+                f"/unrecoverable({has_unrecoverable})"
+            )
+
         logger.info(
-            f"[LightRAG] 修复完成: repaired={repaired}, 重检: ok={check_result.get('ok')}"
+            f"[LightRAG] 修复完成: repaired={repaired}, "
+            f"重检: critical={critical}, major={major}, minor={minor}"
         )
+
         return {
             "repaired": repaired,
             "check_ok": check_result.get("ok", True),
+            "critical_errors": critical,
+            "major_errors": major,
+            "minor_errors": minor,
             "repair_result": repair_result,
             "check_result": check_result,
         }
@@ -1141,9 +1280,14 @@ def run_repair_on_user_request() -> dict:
         return {
             "repaired": False,
             "check_ok": False,
+            "critical_errors": 0,
+            "major_errors": 0,
+            "minor_errors": 0,
             "repair_result": {"error": str(e)},
-            "check_result": None,
+            "check_result": _integrity_result,
         }
+    finally:
+        _repairing = False
 
 
 def reset_init_state() -> None:
