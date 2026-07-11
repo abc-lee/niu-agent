@@ -325,6 +325,10 @@ def check_text_chunks_doc_dangling() -> dict[str, Any]:
     引用方：kv_store_text_chunks 的 full_doc_id 字段
     被引用方：kv_store_full_docs 的 key
     severity: critical（真相源断裂）
+
+    只检查普通文档 chunk（full_doc_id 以 'doc-' 或 'refined:' 开头）。
+    自定义 KG chunk（brain_*/custom_kg_*/skill://*/文件路径等）通过 ainsert_custom_kg
+    写入，不写 full_docs，跳过检查以避免误报。
     """
     storage_dir = _resolve_storage_dir()
     errors: list[dict[str, Any]] = []
@@ -347,6 +351,9 @@ def check_text_chunks_doc_dangling() -> dict[str, Any]:
             continue
         full_doc_id = chunk_value.get("full_doc_id", "")
         if not full_doc_id:
+            continue
+        # 自定义 KG chunk 跳过（只有普通文档 chunk 才在 full_docs 里）
+        if not full_doc_id.startswith("doc-") and not full_doc_id.startswith("refined:"):
             continue
         if full_doc_id not in fd_data:
             errors.append({
