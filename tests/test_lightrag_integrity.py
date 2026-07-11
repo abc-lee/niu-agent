@@ -232,6 +232,34 @@ def test_text_chunks_doc_dangling_fail(storage_dir):
     assert report["errors"][0]["full_doc_id"] == "doc-missing"
 
 
+def test_text_chunks_doc_dangling_skip_custom_kg(storage_dir):
+    """#3 PASS: 自定义 KG chunk（brain_*/custom_kg_*/skill:// 等 full_doc_id）跳过检查。
+
+    LightRAG ainsert_custom_kg 写入的 chunk 的 full_doc_id 是自定义字符串
+    （brain_*/custom_kg_*/skill://*/文件路径等），不写入 full_docs，跳过检查以避免误报。
+    """
+    from niu_api.internal.lightrag_integrity import check_text_chunks_doc_dangling
+
+    _write_json(storage_dir / "kv_store_text_chunks.json", {
+        # 普通文档 chunk，在 full_docs 里 → 不报错
+        "chunk-doc-001": {"full_doc_id": "doc-aaa", "content": "..."},
+        # refined chunk，在 full_docs 里 → 不报错
+        "chunk-refined-001": {"full_doc_id": "refined:bbb", "content": "..."},
+        # 自定义 KG chunk，不在 full_docs 里 → 跳过（不报错）
+        "chunk-brain-001": {"full_doc_id": "brain_memory_001", "content": "..."},
+        "chunk-custom-001": {"full_doc_id": "custom_kg_xxx", "content": "..."},
+        "chunk-skill-001": {"full_doc_id": "skill://some-skill", "content": "..."},
+        "chunk-path-001": {"full_doc_id": "/some/file/path", "content": "..."},
+    })
+    _write_json(storage_dir / "kv_store_full_docs.json", {
+        "doc-aaa": {"content": "..."},
+        "refined:bbb": {"content": "..."},
+    })
+
+    report = check_text_chunks_doc_dangling()
+    assert report["errors"] == []
+
+
 # =============================================================================
 # 检查 #4: text_chunks 缓存悬空（minor）
 # =============================================================================
