@@ -1151,8 +1151,9 @@ def run_repair_on_user_request() -> dict:
               unrecoverable 判定 + severity 判定 repaired。
 
     修复流程：
-        1. 设 _repairing=True（try/finally 保护）
-        2. 等 pipeline 空闲（最多 300s，避免中断已提交的 ingest）
+        1. 先读 pipeline busy 等空闲（必须在 _repairing=True 之前，否则
+           get_lightrag 返回 None → _read_pipeline_busy 返回 None → busy 检查被绕过）
+        2. 设 _repairing=True（try/finally 保护）
         3. 置 _rag_instance = None（避免新 ingest 请求并发写文件竞争）
         4. 调 repair_all
         5. reset_init_state + 重跑 check_all 更新 _integrity_result
@@ -1175,35 +1176,39 @@ def run_repair_on_user_request() -> dict:
     from niu_api.internal.lightrag_integrity import check_all
 
     logger.warning("[LightRAG] 用户选择'尝试修复'，启动 repair_all")
+
+    # 1. 先检查 pipeline busy，等空闲再设 _repairing=True
+    #    原因：_repairing=True 时 get_lightrag() 返回 None →
+    #    _read_pipeline_busy() 调 get_lightrag() 拿到 None → 返回 None →
+    #    `not None` = True → 直接 break，pipeline busy 检查被绕过。
+    #    所以必须先读 busy，等空闲后再设 _repairing=True。
+    from niu_api.kg_api import _read_pipeline_busy
+
+    deadline = time.monotonic() + 300  # 超时 300s
+    waited = False
+    while time.monotonic() < deadline:
+        busy = _read_pipeline_busy()
+        if not busy:
+            break
+        waited = True
+        time.sleep(5)
+    else:
+        return {
+            "repaired": False,
+            "check_ok": False,
+            "message": "pipeline busy 超过 300s，请稍后重试",
+            "critical_errors": 0,
+            "major_errors": 0,
+            "minor_errors": 0,
+            "repair_result": {},
+            "check_result": _integrity_result,
+        }
+
+    if waited:
+        logger.info("[LightRAG] pipeline 空闲，开始 repair")
+
     _repairing = True
     try:
-        # 1. 检查 pipeline busy，等空闲再 repair（避免中断已提交的 ingest）
-        # 单进程模式直接读 _shared_dicts 不加锁（GIL 保护字典读，零竞争零超时）
-        from niu_api.kg_api import _read_pipeline_busy
-
-        deadline = time.monotonic() + 300  # 超时 300s
-        waited = False
-        while time.monotonic() < deadline:
-            busy = _read_pipeline_busy()
-            if not busy:
-                break
-            waited = True
-            time.sleep(5)
-        else:
-            return {
-                "repaired": False,
-                "check_ok": False,
-                "message": "pipeline busy 超过 300s，请稍后重试",
-                "critical_errors": 0,
-                "major_errors": 0,
-                "minor_errors": 0,
-                "repair_result": {},
-                "check_result": _integrity_result,
-            }
-
-        if waited:
-            logger.info("[LightRAG] pipeline 空闲，开始 repair")
-
         # 2. repair 期间置 _rag_instance = None（避免新 ingest 请求并发写文件竞争）
         # 注意：_repairing=True 已经让 get_lightrag 静默返回 None，
         #       但已持有的 _rag_instance 仍可能被其他模块通过 call_async 直接调用，

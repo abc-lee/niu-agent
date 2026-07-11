@@ -38,16 +38,18 @@ def _write_text(path: Path, text: str) -> None:
 
 def _make_graphml(
     nodes: list[tuple[str, str, str]] | None = None,
-    edges: list[tuple[str, str, str, str]] | None = None,
+    edges: list[tuple[str, str, str, str, str]] | None = None,
 ) -> str:
     """构造 GraphML 字符串。
 
     Args:
         nodes: list of (id, description, source_id)
-        edges: list of (src, tgt, description, source_id)
+        edges: list of (src, tgt, description, source_id, keywords)
+               keywords 可为空字符串（模拟无 keywords 的 edge）
 
-    注意：description 和 source_id 会被 XML 转义（<SEP> → &lt;SEP&gt;），
-    跟真实 LightRAG 写入格式一致。解析时 ElementTree 自动反转义。
+    注意：GraphML 边数据 key 定义跟真实 LightRAG 一致：
+        d8=description, d9=keywords, d10=source_id（真实文件头）
+        节点 key：d2=description, d3=source_id
     """
     lines = [
         '<?xml version="1.0" encoding="UTF-8"?>',
@@ -61,12 +63,20 @@ def _make_graphml(
         if src:
             lines.append(f'<data key="d3">{xml_escape(src)}</data>')
         lines.append('</node>')
-    for src, tgt, desc, sid in edges or []:
+    for edge in edges or []:
+        if len(edge) == 5:
+            src, tgt, desc, sid, keywords = edge
+        else:
+            # 兼容旧 4-tuple（无 keywords）
+            src, tgt, desc, sid = edge
+            keywords = ""
         lines.append(f'<edge source="{xml_escape(src)}" target="{xml_escape(tgt)}">')
         if desc:
-            lines.append(f'<data key="d2">{xml_escape(desc)}</data>')
+            lines.append(f'<data key="d8">{xml_escape(desc)}</data>')
+        if keywords:
+            lines.append(f'<data key="d9">{xml_escape(keywords)}</data>')
         if sid:
-            lines.append(f'<data key="d3">{xml_escape(sid)}</data>')
+            lines.append(f'<data key="d10">{xml_escape(sid)}</data>')
         lines.append('</edge>')
     lines.append('</graph>')
     lines.append('</graphml>')
@@ -267,7 +277,7 @@ def test_repair_graphml_pass(storage_dir, patched_embed, monkeypatch):
             # 模拟 apipeline 写一个新 GraphML
             graphml_content = _make_graphml(
                 nodes=[("ent1", "desc1", "chunk-a"), ("ent2", "desc2", "chunk-b")],
-                edges=[("ent1", "ent2", "edge desc", "chunk-a<SEP>chunk-b")],
+                edges=[("ent1", "ent2", "edge desc", "chunk-a<SEP>chunk-b", "edge_kw")],
             )
             _write_text(storage_dir / "graph_chunk_entity_relation.graphml", graphml_content)
 
@@ -417,6 +427,10 @@ def test_repair_vdb_entities_pass(storage_dir, patched_embed):
     expected_ids = {compute_mdhash_id("ent1", prefix="ent-"), compute_mdhash_id("ent2", prefix="ent-")}
     actual_ids = {item["__id__"] for item in vdb_data["data"]}
     assert actual_ids == expected_ids
+    # content 格式：f"{node_id}\n{desc}"（跟 LightRAG operate.py L1160 一致）
+    contents = {item["entity_name"]: item["content"] for item in vdb_data["data"]}
+    assert contents["ent1"] == "ent1\ndescription 1"
+    assert contents["ent2"] == "ent2\ndescription 2"
 
 
 def test_repair_vdb_entities_fail_graphml_corrupt(storage_dir, patched_embed):
@@ -438,13 +452,17 @@ def test_repair_vdb_entities_fail_graphml_corrupt(storage_dir, patched_embed):
 
 
 def test_repair_vdb_relationships_pass(storage_dir, patched_embed):
-    """GraphML edges 完好 → 重新 embedding 重建 vdb_relationships"""
+    """GraphML edges 完好 → 重新 embedding 重建 vdb_relationships
+
+    content 格式跟 LightRAG operate.py L1601 一致：
+        f"{keywords}\t{src}\n{tgt}\n{desc}"
+    """
     from niu_api.internal import lightrag_repair
 
     graphml_content = _make_graphml(
         nodes=[("ent1", "desc1", ""), ("ent2", "desc2", "")],
         edges=[
-            ("ent1", "ent2", "edge desc", "chunk-a<SEP>chunk-b"),
+            ("ent1", "ent2", "edge desc", "chunk-a<SEP>chunk-b", "edge_keywords"),
         ],
     )
     _write_text(storage_dir / "graph_chunk_entity_relation.graphml", graphml_content)
@@ -466,6 +484,9 @@ def test_repair_vdb_relationships_pass(storage_dir, patched_embed):
     src, tgt = sorted(("ent1", "ent2"))
     assert vdb_data["data"][0]["src_id"] == src
     assert vdb_data["data"][0]["tgt_id"] == tgt
+    # content 格式：f"{keywords}\t{sorted_src}\n{sorted_tgt}\n{desc}"
+    expected_content = f"edge_keywords\t{src}\n{tgt}\nedge desc"
+    assert vdb_data["data"][0]["content"] == expected_content
 
 
 def test_repair_vdb_relationships_fail_graphml_corrupt(storage_dir, patched_embed):
@@ -506,8 +527,10 @@ def test_repair_entity_chunks_pass(storage_dir, patched_embed):
     assert result["source"] == "GraphML node source_id"
 
     ec_data = json.loads((storage_dir / "kv_store_entity_chunks.json").read_text())
-    assert ec_data["ent1"]["chunks_list"] == ["chunk-a", "chunk-b"]
-    assert ec_data["ent2"]["chunks_list"] == ["chunk-c"]
+    assert ec_data["ent1"]["chunk_ids"] == ["chunk-a", "chunk-b"]
+    assert ec_data["ent1"]["count"] == 2
+    assert ec_data["ent2"]["chunk_ids"] == ["chunk-c"]
+    assert ec_data["ent2"]["count"] == 1
 
 
 def test_repair_entity_chunks_fail_graphml_corrupt(storage_dir, patched_embed):
@@ -535,8 +558,8 @@ def test_repair_relation_chunks_pass(storage_dir, patched_embed):
     graphml_content = _make_graphml(
         nodes=[("ent1", "", ""), ("ent2", "", ""), ("ent3", "", "")],
         edges=[
-            ("ent1", "ent2", "edge desc", "chunk-a<SEP>chunk-b"),
-            ("ent2", "ent3", "edge desc 2", "chunk-c"),
+            ("ent1", "ent2", "edge desc", "chunk-a<SEP>chunk-b", "keyword1"),
+            ("ent2", "ent3", "edge desc 2", "chunk-c", "keyword2"),
         ],
     )
     _write_text(storage_dir / "graph_chunk_entity_relation.graphml", graphml_content)
@@ -555,8 +578,10 @@ def test_repair_relation_chunks_pass(storage_dir, patched_embed):
     expected_key2 = make_relation_chunk_key("ent2", "ent3")
     assert expected_key1 in rc_data
     assert expected_key2 in rc_data
-    assert rc_data[expected_key1]["chunks_list"] == ["chunk-a", "chunk-b"]
-    assert rc_data[expected_key2]["chunks_list"] == ["chunk-c"]
+    assert rc_data[expected_key1]["chunk_ids"] == ["chunk-a", "chunk-b"]
+    assert rc_data[expected_key1]["count"] == 2
+    assert rc_data[expected_key2]["chunk_ids"] == ["chunk-c"]
+    assert rc_data[expected_key2]["count"] == 1
 
 
 def test_repair_relation_chunks_fail_graphml_corrupt(storage_dir, patched_embed):
@@ -641,7 +666,7 @@ def test_repair_full_relations_pass(storage_dir, patched_embed):
     graphml_content = _make_graphml(
         nodes=[("ent1", "", ""), ("ent2", "", "")],
         edges=[
-            ("ent1", "ent2", "edge desc", "chunk-a<SEP>chunk-b"),
+            ("ent1", "ent2", "edge desc", "chunk-a<SEP>chunk-b", "kw"),
         ],
     )
     _write_text(storage_dir / "graph_chunk_entity_relation.graphml", graphml_content)
@@ -672,7 +697,7 @@ def test_repair_full_relations_fail_doc_status_corrupt(storage_dir, patched_embe
 
     graphml_content = _make_graphml(
         nodes=[("ent1", "", ""), ("ent2", "", "")],
-        edges=[("ent1", "ent2", "desc", "chunk-a")],
+        edges=[("ent1", "ent2", "desc", "chunk-a", "kw")],
     )
     _write_text(storage_dir / "graph_chunk_entity_relation.graphml", graphml_content)
     _write_text(storage_dir / "kv_store_doc_status.json", '{"truncated":')

@@ -210,17 +210,19 @@ def _load_json_dict(path: Path) -> dict[str, Any] | None:
     return raw
 
 
-def _load_graphml_nodes_edges() -> tuple[set[str], list[tuple[str, str, str, str]], dict[str, Any] | None]:
+def _load_graphml_nodes_edges() -> tuple[set[str], list[tuple[str, str, str, str, str]], dict[str, Any] | None]:
     """解析 GraphML，返回 (node_ids, edges, error)。
 
     node_ids: set of node id
-    edges: list of (src, tgt, source_id_src, source_id_tgt)
-           - source_id_src: edge 的 source_id data 字段（d3）
-           - 这里简化：edges 只存 (src, tgt, edge_source_id, edge_description)
+    edges: list of (src, tgt, edge_source_id, edge_description, edge_keywords)
+           - edge_source_id: edge 的 d10 字段（<SEP> 分隔的 chunk_id 列表）
+           - edge_description: edge 的 d8 字段（描述文本）
+           - edge_keywords: edge 的 d9 字段（关系关键词，<SEP> 分隔）
     error: None 或 {"check": ..., "severity": "critical", ...}
 
-    返回的 edge_source_id 是 GraphML edge 的 d3 字段（<SEP> 分隔的 chunk_id 列表）。
-    返回的 edge_description 是 edge 的 d2 字段（描述文本）。
+    GraphML edge key 定义（参考真实 GraphML 头部）：
+        d7=weight, d8=description, d9=keywords, d10=source_id,
+        d11=file_path, d12=created_at, d13=truncate
     """
     import xml.etree.ElementTree as ET
 
@@ -247,7 +249,7 @@ def _load_graphml_nodes_edges() -> tuple[set[str], list[tuple[str, str, str, str
 
     ns = "{http://graphml.graphdrawing.org/xmlns}"
     node_ids: set[str] = set()
-    edges: list[tuple[str, str, str, str]] = []  # (src, tgt, edge_source_id, edge_description)
+    edges: list[tuple[str, str, str, str, str]] = []  # (src, tgt, edge_source_id, edge_description, edge_keywords)
 
     # 找 graph 元素
     graph = root.find(f"{ns}graph")
@@ -275,13 +277,16 @@ def _load_graphml_nodes_edges() -> tuple[set[str], list[tuple[str, str, str, str
             tgt = child.get("target", "")
             edge_src_id = ""
             edge_desc = ""
+            edge_keywords = ""
             for data in child.findall(f"{ns}data"):
                 key = data.get("key")
-                if key == "d2":
+                if key == "d8":
                     edge_desc = data.text or ""
-                elif key == "d3":
+                elif key == "d10":
                     edge_src_id = data.text or ""
-            edges.append((src, tgt, edge_src_id, edge_desc))
+                elif key == "d9":
+                    edge_keywords = data.text or ""
+            edges.append((src, tgt, edge_src_id, edge_desc, edge_keywords))
     return node_ids, edges, None
 
 
@@ -984,12 +989,15 @@ def repair_vdb_entities() -> dict[str, Any]:
             "message": "GraphML 无 node，写空 vdb_entities",
         }
 
-    # 2. 收集要 embedding 的 texts（用 d2 description 作为 embedding 内容）
-    items: list[tuple[str, str, str]] = []  # (node_id, description, source_id)
+    # 2. 收集要 embedding 的 texts
+    # LightRAG operate.py L1160: entity_content = f"{entity_name}\n{final_description}"
+    # embedding 输入用同样的 content（保证向量跟 LightRAG 原生写入一致）
+    items: list[tuple[str, str, str]] = []  # (node_id, content, source_id)
     for node_id, (desc, src) in nodes.items():
-        # description 为空时用 node_id 作为 fallback（保证有内容可 embed）
-        embed_content = desc if desc else node_id
-        items.append((node_id, embed_content, src))
+        # desc 为空时用 node_id 作为 fallback（保证有内容可 embed）
+        # 格式: f"{node_id}\n{desc}"，跟 LightRAG 一致
+        content = f"{node_id}\n{desc}" if desc else f"{node_id}\n{node_id}"
+        items.append((node_id, content, src))
 
     expected = len(items)
     texts = [t for _, t, _ in items]
@@ -1010,21 +1018,18 @@ def repair_vdb_entities() -> dict[str, Any]:
             vectors.append(None)  # type: ignore[arg-type]
 
     # 4. 构造 data_list
+    # content 字段直接用 items[1]（已经按 LightRAG 格式构造好的 f"{node_id}\n{desc}"）
     embedding_dim = len(vectors[0]) if vectors and vectors[0] is not None else _get_embedding_dim()
     data_list: list[dict[str, Any]] = []
     final_vectors: list[list[float]] = []
     failed_count = 0
-    for (node_id, embed_content, src), vec in zip(items, vectors):
+    for (node_id, content, src), vec in zip(items, vectors):
         if vec is None:
             failed_count += 1
             continue
         # __id__ = compute_mdhash_id(node_id, prefix="ent-")
         # node_id 已 lower（LightRAG 设计），但 compute_mdhash_id 对原始字符串算 hash
         expected_id = compute_mdhash_id(node_id, prefix="ent-")
-        # content 字段用 description（跟 LightRAG 写入一致）
-        # 如果 description 为空，用 node_id 作为 content（避免空 content）
-        original_desc = nodes[node_id][0]  # 原始 d2 description
-        content = original_desc if original_desc else node_id
         data_list.append({
             "__id__": expected_id,
             "entity_name": node_id,
@@ -1108,9 +1113,13 @@ def repair_vdb_relationships() -> dict[str, Any]:
             "message": "GraphML 无 edge，写空 vdb_relationships",
         }
 
-    # 2. 收集要 embedding 的 texts（用 d2 description 作为 embedding 内容）
-    items: list[tuple[str, str, str, str, str]] = []  # (sorted_src, sorted_tgt, description, source_id, edge_id_for_vdb)
-    for src, tgt, edge_src_id, edge_desc in edges:
+    # 2. 收集要 embedding 的 texts
+    # LightRAG operate.py L1601: rel_content = f"{combined_keywords}\t{src}\n{tgt}\n{final_description}"
+    # combined_keywords 是 <SEP> 分隔的多个关键词合并后的字符串
+    # 这里用 GraphML d9 keywords（已经是 <SEP> 分隔的字符串），desc 为空用空字符串保持格式
+    items: list[tuple[str, str, str, str, str]] = []
+    # (sorted_src, sorted_tgt, content, source_id, edge_id_for_vdb)
+    for src, tgt, edge_src_id, edge_desc, edge_keywords in edges:
         if not src or not tgt:
             continue
         # sorted 后存，跟 LightRAG 写入一致
@@ -1118,9 +1127,10 @@ def repair_vdb_relationships() -> dict[str, Any]:
         # __id__ 用 make_relation_vdb_ids 的第一个（正序）
         candidate_ids = make_relation_vdb_ids(sorted_src, sorted_tgt)
         vdb_id = candidate_ids[0]
-        # description 为空时用 src+tgt 作为 fallback
-        embed_content = edge_desc if edge_desc else f"{sorted_src} - {sorted_tgt}"
-        items.append((sorted_src, sorted_tgt, embed_content, edge_src_id, vdb_id))
+        # content 格式: f"{keywords}\t{src}\n{tgt}\n{desc}"
+        # keywords/desc 为空用空字符串（保持 LightRAG 格式一致，不破坏向量比对）
+        content = f"{edge_keywords}\t{sorted_src}\n{sorted_tgt}\n{edge_desc}"
+        items.append((sorted_src, sorted_tgt, content, edge_src_id, vdb_id))
 
     expected = len(items)
     if expected == 0:
@@ -1158,19 +1168,10 @@ def repair_vdb_relationships() -> dict[str, Any]:
     data_list: list[dict[str, Any]] = []
     final_vectors: list[list[float]] = []
     failed_count = 0
-    for (sorted_src, sorted_tgt, embed_content, edge_src_id, vdb_id), vec in zip(items, vectors):
+    for (sorted_src, sorted_tgt, content, edge_src_id, vdb_id), vec in zip(items, vectors):
         if vec is None:
             failed_count += 1
             continue
-        # 找原始 description（用于 content 字段）
-        # edges 列表里每条是 (src, tgt, edge_src_id, edge_desc)
-        # 我们已经在 items 里丢了原始 desc，重新从 edges 找
-        original_desc = ""
-        for e_src, e_tgt, e_sid, e_desc in edges:
-            if (e_src, e_tgt) == (sorted_src, sorted_tgt) or (e_src, e_tgt) == (sorted_tgt, sorted_src):
-                original_desc = e_desc
-                break
-        content = original_desc if original_desc else f"{sorted_src} - {sorted_tgt}"
         data_list.append({
             "__id__": vdb_id,
             "src_id": sorted_src,
@@ -1224,7 +1225,8 @@ def repair_entity_chunks() -> dict[str, Any]:
     派生：kv_store_entity_chunks.json
 
     key = entity_name (node id)
-    value = {"chunks_list": [chunk_id, ...], ...}
+    value = {"chunk_ids": [chunk_id, ...], "count": int}
+    (跟 LightRAG operate.py L1194 一致)
     """
     storage_dir = _storage_dir()
     ec_path = storage_dir / "kv_store_entity_chunks.json"
@@ -1253,17 +1255,17 @@ def repair_entity_chunks() -> dict[str, Any]:
             "message": "GraphML 无 node，写空 entity_chunks",
         }
 
-    # 2. 从 source_id 提取 chunks_list
+    # 2. 从 source_id 提取 chunk_ids（LightRAG operate.py L1194 用 chunk_ids + count 字段）
     new_entity_chunks: dict[str, dict[str, Any]] = {}
     expected = len(nodes)
     for node_id, (desc, src) in nodes.items():
         if not src:
-            # source_id 为空 → 空 chunks_list（合法）
-            new_entity_chunks[node_id] = {"chunks_list": []}
+            # source_id 为空 → 空 chunk_ids（合法）
+            new_entity_chunks[node_id] = {"chunk_ids": [], "count": 0}
             continue
         # source_id 是 <SEP> 分隔的 chunk_id 列表
         chunk_ids = [c for c in src.split(GRAPH_FIELD_SEP) if c]
-        new_entity_chunks[node_id] = {"chunks_list": chunk_ids}
+        new_entity_chunks[node_id] = {"chunk_ids": chunk_ids, "count": len(chunk_ids)}
 
     # 3. 备份 + 写
     _backup_corrupt(ec_path)
@@ -1284,11 +1286,12 @@ def repair_entity_chunks() -> dict[str, Any]:
 def repair_relation_chunks() -> dict[str, Any]:
     """8. 从 GraphML edge source_id 提取重建 relation_chunks。
 
-    真相源：GraphML edge 的 d3 source_id 字段（<SEP> 分隔的 chunk_id 列表）
+    真相源：GraphML edge 的 d10 source_id 字段（<SEP> 分隔的 chunk_id 列表）
     派生：kv_store_relation_chunks.json
 
     key = make_relation_chunk_key(src, tgt) = GRAPH_FIELD_SEP.join(sorted((src, tgt)))
-    value = {"chunks_list": [chunk_id, ...], ...}
+    value = {"chunk_ids": [chunk_id, ...], "count": int}
+    (跟 LightRAG operate.py L1404 一致)
     """
     storage_dir = _storage_dir()
     rc_path = storage_dir / "kv_store_relation_chunks.json"
@@ -1317,10 +1320,10 @@ def repair_relation_chunks() -> dict[str, Any]:
             "message": "GraphML 无 edge，写空 relation_chunks",
         }
 
-    # 2. 从 source_id 提取 chunks_list
+    # 2. 从 source_id 提取 chunk_ids（LightRAG operate.py L1404 用 chunk_ids + count 字段）
     new_relation_chunks: dict[str, dict[str, Any]] = {}
     expected = 0
-    for src, tgt, edge_src_id, edge_desc in edges:
+    for src, tgt, edge_src_id, edge_desc, edge_keywords in edges:
         if not src or not tgt:
             continue
         # sorted 后用 make_relation_chunk_key 生成 key
@@ -1328,13 +1331,15 @@ def repair_relation_chunks() -> dict[str, Any]:
         chunk_ids = []
         if edge_src_id:
             chunk_ids = [c for c in edge_src_id.split(GRAPH_FIELD_SEP) if c]
-        # 同一个 key 可能被多个 edge 重复（不应该，但容错），合并 chunks_list
+        # 同一个 key 可能被多个 edge 重复（不应该，但容错），合并 chunk_ids
         if key in new_relation_chunks:
-            existing = set(new_relation_chunks[key]["chunks_list"])
+            existing = set(new_relation_chunks[key]["chunk_ids"])
             existing.update(chunk_ids)
-            new_relation_chunks[key]["chunks_list"] = sorted(existing)
+            merged = sorted(existing)
+            new_relation_chunks[key]["chunk_ids"] = merged
+            new_relation_chunks[key]["count"] = len(merged)
         else:
-            new_relation_chunks[key] = {"chunks_list": chunk_ids}
+            new_relation_chunks[key] = {"chunk_ids": chunk_ids, "count": len(chunk_ids)}
             expected += 1
 
     # 3. 备份 + 写
@@ -1485,7 +1490,7 @@ def repair_full_relations() -> dict[str, Any]:
 
     # 4. 从 GraphML edge source_id 提取 relation→docs 映射
     relation_to_docs: dict[str, set[str]] = {}
-    for src, tgt, edge_src_id, edge_desc in edges:
+    for src, tgt, edge_src_id, edge_desc, edge_keywords in edges:
         if not src or not tgt:
             continue
         if not edge_src_id:
