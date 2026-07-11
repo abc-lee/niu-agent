@@ -160,6 +160,11 @@ class SkillSync:
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
 
+        # 首次扫描完成事件（供 run_repair_on_user_request 等待）
+        # 在 scan_and_sync 首次执行完毕后 set()，让 repair 流程知道
+        # SkillSync 的 ghost 清理已跑完，可以重检 + 二次 repair。
+        self._first_scan_complete = threading.Event()
+
         # watchdog 相关
         if WATCHDOG_AVAILABLE:
             from watchdog.observers import Observer as _ObserverType
@@ -267,11 +272,25 @@ class SkillSync:
         下次扫描时会重试。
 
         Returns:
-            (added, updated, deleted) 计数
+            (added, updated, deleted) 计数；若 LightRAG 不可用返回 (-1, -1, -1)
+            表示"未真正扫描"，调用方据此不触发 _first_scan_complete。
         """
         if not self.skills_dir.exists():
             logger.warning(f"[SkillSync] Skills directory not found: {self.skills_dir}")
             return 0, 0, 0
+
+        # 0. 检查 LightRAG 是否可用——不可用则跳过本次扫描（不算"首次扫描完成"）
+        # 原因：run_repair_on_user_request 等待 _first_scan_complete 触发后重检，
+        # 若 LightRAG 不可用时 set() 会让 repair 流程过早重检，而真正的清理
+        # 要等 LightRAG 可用后的下一轮 scan_and_sync 才发生。
+        try:
+            from niu_api.internal.lightrag_manager import get_lightrag
+            if get_lightrag() is None:
+                logger.debug("[SkillSync] LightRAG not available, skipping scan_and_sync")
+                return -1, -1, -1
+        except Exception as e:
+            logger.warning(f"[SkillSync] LightRAG availability check failed: {e}")
+            return -1, -1, -1
 
         # 1. 从状态文件加载 known_skills = {name: hash}
         with self._lock:
@@ -828,9 +847,22 @@ class SkillSync:
                 logger.info("[SkillSync] LightRAG initialized on retry")
         while not self._stop_event.is_set():
             try:
-                self.scan_and_sync()
+                scan_result = self.scan_and_sync()
             except Exception as e:
                 logger.error(f"[SkillSync] scan_and_sync failed: {e}", exc_info=True)
+                scan_result = None
+            # 首次 scan_and_sync 真正跑完（非 LightRAG 不可用的提前返回）才 set。
+            # 若 scan_and_sync 返回 (-1, -1, -1) 表示 LightRAG 还不可用，
+            # 不算"首次扫描完成"，下一轮再尝试。
+            if not self._first_scan_complete.is_set():
+                if scan_result is not None and scan_result[0] != -1:
+                    self._first_scan_complete.set()
+                    logger.info(
+                        f"[SkillSync] First scan complete (added={scan_result[0]}, "
+                        f"updated={scan_result[1]}, deleted={scan_result[2]}) — signal sent to waiters"
+                    )
+                else:
+                    logger.debug("[SkillSync] First scan skipped (LightRAG not ready), will retry")
             self._stop_event.wait(self.scan_interval)
 
 
@@ -850,6 +882,25 @@ def get_skill_sync(skills_dir: Optional[str] = None, auto_start: bool = True) ->
                     instance.start_background_sync()
                 _skill_sync = instance
     return _skill_sync
+
+
+def wait_first_scan_complete(timeout: float = 90.0) -> bool:
+    """等待 SkillSync 首次 scan_and_sync 完成（或超时）。
+
+    供 run_repair_on_user_request 在 get_lightrag 后调用，
+    确保 SkillSync 的 ghost skill 清理已跑完，再重检 + 二次 repair。
+
+    Args:
+        timeout: 最大等待秒数（默认 90s = 30s wait_lightrag_ready + 60s scan_interval）
+
+    Returns:
+        True 如果首次扫描完成；False 如果超时。
+    """
+    global _skill_sync
+    if _skill_sync is None:
+        # SkillSync 未启动（如测试环境）→ 视为已完成
+        return True
+    return _skill_sync._first_scan_complete.wait(timeout=timeout)
 
 def parse_yaml_frontmatter(content: str) -> dict:
     """解析 YAML frontmatter（--- 包裹的头部区域）

@@ -1241,6 +1241,60 @@ def run_repair_on_user_request() -> dict:
         except Exception as e:
             logger.warning(f"[LightRAG] 修复后 get_lightrag 重试失败（不影响返回）: {e}")
 
+        # 6.5 等 SkillSync 首次扫描完成 + 二次 repair
+        # 原因：SkillSync 在 LightRAG ready 后会异步跑 scan_and_sync，
+        # 其中"ghost skill 清理"会调 adelete_by_entity 删除不在磁盘上的 skill 实体。
+        # 但 adelete_by_entity 在我们环境下存在部分失败：
+        # GraphML/vdb_entities/vdb_relationships 删除成功，但 entity_chunks/relation_chunks
+        # 未持久化（storage_updated flag 在 _persist_graph_updates 并发场景下漏置位）。
+        # 这会导致 check_all 报 entity_chunks_dangling / relation_chunks_dangling major 错误。
+        #
+        # 修复策略：等 SkillSync 首次扫描跑完（仅当 LightRAG 可用时 scan_and_sync 才真跑）→
+        # 重检 → 若仍有 major → 再跑一次 repair_all
+        # （repair_entity_chunks 从 GraphML 重建，会清掉残留的 entity_chunks 条目）。
+        #
+        # 超时 120s = LightRAG ready 后 SkillSync 最多 60s 触发下一轮 scan + 容错 60s。
+        try:
+            from agent.injector.sync import wait_first_scan_complete
+            scan_done = wait_first_scan_complete(timeout=120)
+            if scan_done:
+                logger.info("[LightRAG] SkillSync 首次扫描完成，重检一致性")
+            else:
+                logger.warning("[LightRAG] SkillSync 首次扫描超时（120s），继续重检")
+        except Exception as e:
+            logger.warning(f"[LightRAG] 等待 SkillSync 首次扫描失败（继续重检）: {e}")
+
+        # 重检 + 二次 repair（仅当重检发现新 major/critical 时）
+        try:
+            post_skill_check = check_all()
+            post_critical = post_skill_check.get("critical_errors", 0)
+            post_major = post_skill_check.get("major_errors", 0)
+        except Exception as e:
+            logger.warning(f"[LightRAG] SkillSync 后重检失败: {e}")
+            post_critical, post_major = 0, 0
+            post_skill_check = check_result
+
+        if post_critical > 0 or post_major > 0:
+            logger.warning(
+                f"[LightRAG] SkillSync 后重检发现新问题（critical={post_critical}, "
+                f"major={post_major}），启动二次 repair_all"
+            )
+            try:
+                second_repair = repair_all()
+                # 合并二次 repair 结果到 repair_result
+                for k, v in second_repair.items():
+                    if k.startswith("_"):
+                        continue
+                    repair_result[f"post_skill_sync_{k}"] = v
+            except Exception as e:
+                logger.error(f"[LightRAG] 二次 repair_all 失败: {e}")
+            # 二次 repair 后重检
+            try:
+                check_result = check_all()
+                _integrity_result = check_result
+            except Exception as e:
+                logger.warning(f"[LightRAG] 二次 repair 后重检失败: {e}")
+
         # 7. 判定 repaired
         # - 任一 repair result status=error → False
         # - unrecoverable 标记 → False
