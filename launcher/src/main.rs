@@ -161,10 +161,10 @@ enum SplashMessage {
 /// 当前无 check_relationship_sync 检测、无 GraphML 反向补齐）。
 fn format_repair_summary(resp_text: &str) -> (String, rfd::MessageLevel, String) {
     // 返回 (title, level, body)：
-    // - repaired && check_ok → "修复成功" / Info
-    // - repaired但check_ok=false → "修复完成（有警告）" / Warning
-    // - repaired=false → "修复失败" / Error（HTTP 200 但后端报告失败，
-    //   比如截断修复都救不回来、或重建过程中出错）
+    // - has_unrecoverable → "修复失败（不可恢复）" / Error
+    // - repaired && minor_errors == 0 → "修复成功" / Info
+    // - repaired && minor_errors > 0 → "修复完成（有警告）" / Warning
+    // - !repaired → "修复失败" / Error（区分 critical/major 残留）
     // 区分标题和图标，避免后端部分失败时还显示绿色 Info 误导用户。
     match serde_json::from_str::<serde_json::Value>(resp_text) {
         Ok(v) => {
@@ -173,28 +173,63 @@ fn format_repair_summary(resp_text: &str) -> (String, rfd::MessageLevel, String)
                 .and_then(|r| r.get("repaired"))
                 .and_then(|b| b.as_bool())
                 .unwrap_or(false);
-            let check_ok = result
-                .and_then(|r| r.get("check_ok"))
-                .and_then(|b| b.as_bool())
+            let critical_errors = result
+                .and_then(|r| r.get("critical_errors"))
+                .and_then(|c| c.as_u64())
+                .unwrap_or(0);
+            let major_errors = result
+                .and_then(|r| r.get("major_errors"))
+                .and_then(|m| m.as_u64())
+                .unwrap_or(0);
+            let minor_errors = result
+                .and_then(|r| r.get("minor_errors"))
+                .and_then(|m| m.as_u64())
+                .unwrap_or(0);
+
+            // 检测是否存在不可恢复项（任意 repair_result 子项有 unrecoverable: true）
+            let has_unrecoverable = result
+                .and_then(|r| r.get("repair_result"))
+                .and_then(|r| r.as_object())
+                .map(|obj| {
+                    obj.values()
+                        .any(|d| d.get("unrecoverable").and_then(|b| b.as_bool()).unwrap_or(false))
+                })
                 .unwrap_or(false);
 
-            let (title, level, overall) = if repaired && check_ok {
+            let (title, level, overall) = if has_unrecoverable {
+                (
+                    "修复失败（不可恢复）".to_string(),
+                    rfd::MessageLevel::Error,
+                    "部分数据不可恢复，无法从其他文件重建。详见下方清单。".to_string(),
+                )
+            } else if repaired && minor_errors == 0 {
                 (
                     "修复成功".to_string(),
                     rfd::MessageLevel::Info,
                     "修复成功，所有数据一致性检查通过。".to_string(),
                 )
-            } else if repaired {
+            } else if repaired && minor_errors > 0 {
                 (
                     "修复完成（有警告）".to_string(),
                     rfd::MessageLevel::Warning,
-                    "修复完成，但仍有数据一致性警告（详见下方清单）。".to_string(),
+                    format!(
+                        "修复完成，但仍有 {} 个次要警告，不影响使用，详见下方清单。",
+                        minor_errors
+                    ),
                 )
             } else {
+                // 修复失败：区分 critical/major 残留
+                let residual = if critical_errors > 0 {
+                    format!("残留 {} 个严重、{} 个主要错误", critical_errors, major_errors)
+                } else if major_errors > 0 {
+                    format!("残留 {} 个主要错误", major_errors)
+                } else {
+                    "部分项目失败".to_string()
+                };
                 (
                     "修复失败".to_string(),
                     rfd::MessageLevel::Error,
-                    "修复未全部成功，部分项目失败（详见下方清单）。".to_string(),
+                    format!("修复未全部成功，{}（详见下方清单）。", residual),
                 )
             };
 
@@ -221,8 +256,29 @@ fn format_repair_summary(resp_text: &str) -> (String, rfd::MessageLevel, String)
                         .get("source")
                         .and_then(|s| s.as_str())
                         .unwrap_or("");
+                    let expected = detail.get("expected").and_then(|e| e.as_u64());
+                    let actual = detail.get("actual").and_then(|a| a.as_u64());
+                    let lost = detail.get("lost").and_then(|l| l.as_u64()).unwrap_or(0);
+                    let unrecoverable = detail
+                        .get("unrecoverable")
+                        .and_then(|b| b.as_bool())
+                        .unwrap_or(false);
+
                     let status_marker = if status == "ok" { "成功" } else { "失败" };
-                    let detail_text = if message.is_empty() { status } else { message };
+
+                    // 优先用 expected/actual/lost 展示数量差额，其次用 message
+                    let detail_text = if let (Some(exp), Some(act)) = (expected, actual) {
+                        let lost_marker = if lost > 0 { " ⚠️" } else { "" };
+                        format!(
+                            "应 {} / 实 {} / 丢失 {}{}",
+                            exp, act, lost, lost_marker
+                        )
+                    } else if !message.is_empty() {
+                        message.to_string()
+                    } else {
+                        status.to_string()
+                    };
+
                     let mut line = format!("  {} [{}]: {}", name, status_marker, detail_text);
                     if let Some(cnt) = rebuilt_count {
                         line.push_str(&format!("（重建 {} 条）", cnt));
@@ -238,6 +294,13 @@ fn format_repair_summary(resp_text: &str) -> (String, rfd::MessageLevel, String)
                     {
                         lines.push(
                             "    注意：截断修复可能丢失部分关系数据（GraphML 有但 vdb 重建后缺失），详情见日志".to_string()
+                        );
+                    }
+
+                    // 不可恢复项加显著提示
+                    if unrecoverable {
+                        lines.push(
+                            "    ⛔ 不可恢复：建议从原始文档重新 ingest".to_string()
                         );
                     }
                 }

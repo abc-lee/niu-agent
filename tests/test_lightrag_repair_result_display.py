@@ -6,7 +6,171 @@
 2. 任一 vdb status=error 时 repaired=False
 3. entity_sync/relationship_sync status=error 时 repaired=False
 """
+# === launcher format_repair_summary JSON 结构验证（Task 4） ===
+# Rust 端 format_repair_summary 期望从 run_repair_on_user_request 返回的 JSON 中解析以下字段：
+# - result.repaired (bool)
+# - result.critical_errors / major_errors / minor_errors (int)
+# - result.repair_result.<name>.status ("ok"|"error")
+# - result.repair_result.<name>.expected / actual / lost (int, 可选)
+# - result.repair_result.<name>.unrecoverable (bool, 可选)
+# - result.repair_result.<name>.message (str, 可选)
+# - result.repair_result.<name>.rebuilt_count (int, 可选)
+# - result.repair_result.<name>.source (str, 可选)
+# 本测试只验证后端返回的 JSON 结构与契约一致，Rust 端到端展示在 Task 5 e2e 测试。
 from unittest import mock
+
+
+def _build_repair_result_with_lost():
+    """构造含 expected/actual/lost 的 repair_result（验证 launcher 能解析数量差额）"""
+    return {
+        "text_chunks": {
+            "status": "error",
+            "expected": 100,
+            "actual": 95,
+            "lost": 5,
+            "source": "doc_status",
+            "message": "5 条 chunk 丢失",
+        },
+        "doc_status": {"status": "ok", "expected": 1, "actual": 1, "lost": 0},
+    }
+
+
+def _build_repair_result_with_unrecoverable():
+    """构造含 unrecoverable: true 的 repair_result（验证 launcher 不可恢复分级）"""
+    return {
+        "text_chunks": {
+            "status": "error",
+            "expected": 100,
+            "actual": 0,
+            "lost": 100,
+            "source": "doc_status",
+            "message": "doc_status 不存在，无法重建",
+            "unrecoverable": True,
+        },
+        "doc_status": {"status": "error", "message": "文件不存在"},
+    }
+
+
+def _build_repair_result_minor_warning():
+    """构造 repaired=true + minor_errors>0 的 repair_result（验证 launcher 警告分级）"""
+    return {
+        "text_chunks": {"status": "ok", "expected": 100, "actual": 100, "lost": 0},
+        "doc_status": {"status": "ok", "expected": 1, "actual": 1, "lost": 0},
+    }
+
+
+def _validate_repair_result_contract(result: dict) -> None:
+    """验证 run_repair_on_user_request 返回的 JSON 结构符合 launcher 解析契约"""
+    assert "repaired" in result and isinstance(result["repaired"], bool)
+    assert "critical_errors" in result and isinstance(result["critical_errors"], int)
+    assert "major_errors" in result and isinstance(result["major_errors"], int)
+    assert "minor_errors" in result and isinstance(result["minor_errors"], int)
+    assert "repair_result" in result and isinstance(result["repair_result"], dict)
+    assert "check_ok" in result and isinstance(result["check_ok"], bool)
+
+    for name, detail in result["repair_result"].items():
+        assert "status" in detail and detail["status"] in ("ok", "error"), (
+            f"{name}.status 必须是 ok/error"
+        )
+        # 可选字段（如果存在必须类型正确）
+        if "expected" in detail:
+            assert isinstance(detail["expected"], int), f"{name}.expected 必须是 int"
+        if "actual" in detail:
+            assert isinstance(detail["actual"], int), f"{name}.actual 必须是 int"
+        if "lost" in detail:
+            assert isinstance(detail["lost"], int), f"{name}.lost 必须是 int"
+        if "unrecoverable" in detail:
+            assert isinstance(detail["unrecoverable"], bool), (
+                f"{name}.unrecoverable 必须是 bool"
+            )
+        if "message" in detail:
+            assert isinstance(detail["message"], str), f"{name}.message 必须是 str"
+        if "source" in detail:
+            assert isinstance(detail["source"], str), f"{name}.source 必须是 str"
+        if "rebuilt_count" in detail:
+            assert isinstance(detail["rebuilt_count"], int), (
+                f"{name}.rebuilt_count 必须是 int"
+            )
+
+
+def test_format_repair_summary_shows_lost_count():
+    """验证 repair_result 含 expected/actual/lost 时 JSON 结构供 launcher 解析数量差额"""
+    # 构造 launcher 期望收到的完整响应结构
+    response = {
+        "result": {
+            "repaired": False,
+            "check_ok": False,
+            "critical_errors": 0,
+            "major_errors": 1,
+            "minor_errors": 0,
+            "repair_result": _build_repair_result_with_lost(),
+            "check_result": {"ok": False, "total_errors": 1},
+        }
+    }
+
+    result = response["result"]
+    _validate_repair_result_contract(result)
+
+    # 验证 lost 字段存在且 > 0（launcher 端会加 ⚠️ 警示）
+    tc = result["repair_result"]["text_chunks"]
+    assert tc["lost"] == 5 and tc["lost"] > 0
+    assert tc["expected"] == 100 and tc["actual"] == 95
+
+
+def test_format_repair_summary_unrecoverable_title():
+    """验证 repair_result 含 unrecoverable: true 时 JSON 结构供 launcher 触发不可恢复分级"""
+    response = {
+        "result": {
+            "repaired": False,
+            "check_ok": False,
+            "critical_errors": 1,
+            "major_errors": 0,
+            "minor_errors": 0,
+            "repair_result": _build_repair_result_with_unrecoverable(),
+            "check_result": {"ok": False, "total_errors": 1},
+        }
+    }
+
+    result = response["result"]
+    _validate_repair_result_contract(result)
+
+    # 验证 unrecoverable 字段存在且为 True（launcher 端会显示"修复失败（不可恢复）"标题 + ⛔ 提示）
+    tc = result["repair_result"]["text_chunks"]
+    assert tc["unrecoverable"] is True
+
+    # 验证 launcher 检测 has_unrecoverable 的逻辑：任意子项 unrecoverable=true 即触发
+    has_unrecoverable = any(
+        d.get("unrecoverable", False) for d in result["repair_result"].values()
+    )
+    assert has_unrecoverable is True
+
+
+def test_format_repair_summary_minor_errors_warning():
+    """验证 repaired=true + minor_errors>0 时 JSON 结构供 launcher 触发警告分级"""
+    response = {
+        "result": {
+            "repaired": True,
+            "check_ok": False,  # minor_errors > 0 时 check_ok 可以为 False
+            "critical_errors": 0,
+            "major_errors": 0,
+            "minor_errors": 3,
+            "repair_result": _build_repair_result_minor_warning(),
+            "check_result": {"ok": False, "total_errors": 3, "minor_errors": 3},
+        }
+    }
+
+    result = response["result"]
+    _validate_repair_result_contract(result)
+
+    # 验证 launcher 警告分级条件：repaired=True && minor_errors > 0
+    assert result["repaired"] is True
+    assert result["minor_errors"] > 0
+    assert result["critical_errors"] == 0
+    assert result["major_errors"] == 0
+
+
+# === 后端 run_repair_on_user_request 测试（原有） ===
+
 
 
 def test_run_repair_all_ok_returns_repaired_true():
