@@ -204,6 +204,7 @@ class TestRunRepairOnUserRequest:
         # _read_pipeline_busy 永远返回 True（busy）
         # time.sleep mock 避免真实等待
         sleep_calls = []
+        fake_time = {"value": 0.0}
 
         def fake_sleep(seconds):
             sleep_calls.append(seconds)
@@ -211,13 +212,10 @@ class TestRunRepairOnUserRequest:
             # 但我们不希望真跑 60 次，用 counter 截断
             if len(sleep_calls) >= 3:
                 # 强制让 time.monotonic 越过 deadline
-                _fake_time.value = 999999.0
-
-        _fake_time = type("FakeTime", (), {"value": 0.0})()
-        original_monotonic = time.monotonic
+                fake_time["value"] = 999999.0
 
         def fake_monotonic():
-            return _fake_time.value
+            return fake_time["value"]
 
         with patch("niu_api.kg_api._read_pipeline_busy", return_value=True), \
              patch("niu_api.internal.lightrag_manager.time.sleep", side_effect=fake_sleep), \
