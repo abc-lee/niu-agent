@@ -348,37 +348,6 @@ def _load_graphml_nodes() -> tuple[dict[str, tuple[str, str]], dict[str, Any] | 
     return nodes, None
 
 
-def _write_graphml_from_scratch(node_data: list[dict], edge_data: list[dict]) -> None:
-    """从零写 GraphML 文件（drop 后重建用，简化版只写 node id + edge src/tgt）。
-
-    实际 repair_graphml 不调这个（它用 LightRAG apipeline 重建）。
-    保留这个工具函数为未来可能的"从 GraphML snapshot 恢复"用。
-    """
-    import xml.etree.ElementTree as ET
-
-    path = _storage_dir() / _GRAPHML_FILE
-    ns = "http://graphml.graphdrawing.org/xmlns"
-    ET.register_namespace("", ns)
-    root = ET.Element(f"{{{ns}}}graphml")
-    graph = ET.SubElement(root, f"{{{ns}}}graph", edgedefault="undirected")
-    for n in node_data:
-        node = ET.SubElement(graph, f"{{{ns}}}node", id=n["id"])
-        if n.get("description"):
-            ET.SubElement(node, f"{{{ns}}}data", key="d2").text = n["description"]
-        if n.get("source_id"):
-            ET.SubElement(node, f"{{{ns}}}data", key="d3").text = n["source_id"]
-    for e in edge_data:
-        edge = ET.SubElement(graph, f"{{{ns}}}edge", source=e["src"], target=e["tgt"])
-        if e.get("description"):
-            ET.SubElement(edge, f"{{{ns}}}data", key="d2").text = e["description"]
-        if e.get("source_id"):
-            ET.SubElement(edge, f"{{{ns}}}data", key="d3").text = e["source_id"]
-    tree = ET.ElementTree(root)
-    tmp = path.with_name(path.name + ".tmp")
-    tree.write(tmp, encoding="utf-8", xml_declaration=True)
-    os.replace(tmp, path)
-
-
 def _build_vdb_file(
     vdb_path: Path, data_list: list[dict[str, Any]], vectors: list[list[float]],
     embedding_dim: int,
