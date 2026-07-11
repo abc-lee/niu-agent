@@ -601,27 +601,35 @@ impl Splash {
                         // 不设超时 —— embedding 重算几千个向量需要数分钟，
                         // 数据量大了更久。靠"正在修复..."动画让用户知道在干活，
                         // 不由程序自动断开。如真卡死，用户可强杀进程。
-                        // 注意：不能用 Duration::MAX，reqwest 内部 Instant::now()+MAX
-                        // 会溢出 panic。正确做法是不调 .timeout()（默认 None=无超时）。
                         //
-                        // 用 catch_unwind 兜底：任何 panic（reqwest/hyper 底层、
-                        // OOM 等）都转为 Err 返回，避免 oneshot channel 静默 drop
-                        // 导致前端误报"修复失败：channel closed"。
+                        // 用 curl 子进程替代 reqwest::blocking：
+                        // reqwest::blocking 内部 tokio 运行时在长连接 HTTP
+                        // 响应（3+ 分钟）下会卡在 kevent 不返回（macOS hyper
+                        // 已知问题）。改用 std::process::Command 调 curl 子进程，
+                        // 完全绕开 tokio 运行时，curl 原生处理长连接稳定。
                         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
-                            reqwest::blocking::Client::builder()
-                                .build()
-                                .map_err(|e| e.to_string())
-                                .and_then(|client| {
-                                    let url = format!(
-                                        "http://127.0.0.1:{}/api/kg/lightrag/repair?target=all",
-                                        port
-                                    );
-                                    client
-                                        .post(&url)
-                                        .send()
-                                        .map_err(|e| e.to_string())
-                                        .and_then(|resp| resp.text().map_err(|e| e.to_string()))
-                                })
+                            let url = format!(
+                                "http://127.0.0.1:{}/api/kg/lightrag/repair?target=all",
+                                port
+                            );
+                            let output = std::process::Command::new("curl")
+                                .arg("-s")
+                                .arg("--max-time")
+                                .arg("600")
+                                .arg("-X")
+                                .arg("POST")
+                                .arg(&url)
+                                .output()
+                                .map_err(|e| format!("curl 启动失败: {}", e))?;
+                            if !output.status.success() {
+                                return Err(format!(
+                                    "curl 退出码 {:?}: {}",
+                                    output.status.code(),
+                                    String::from_utf8_lossy(&output.stderr)
+                                ));
+                            }
+                            let body = String::from_utf8_lossy(&output.stdout).to_string();
+                            Ok(body)
                         }));
                         let result = match result {
                             Ok(r) => r,
