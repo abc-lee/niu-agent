@@ -1,15 +1,39 @@
-"""LightRAG 外挂修复（v2 真实格式+数据源）
+"""LightRAG 外挂修复（按依赖链从真相源重建版）
 
-修复策略（按优先级）：
-1. 从损坏 vdb 自身的 data 字段读文本（matrix 损坏 data 完好是常见场景）
-2. data 也损坏时 fallback：
-   - chunks → kv_store_text_chunks.json（有 content 字段）
-   - entities/relations → GraphML 图节点 attributes（TODO，暂不支持）
+设计原则：
+1. **空文件不是错** — repair 期间无数据 → 返回 ok（expected=0, actual=0）
+2. **不做假数据** — 修不好 status=error 不写文件，让 check 仍检测到损坏
+3. **真相源不可重建** — full_docs/text_chunks 损坏 → unrecoverable=True
+4. **按依赖链重建** — 先修上游再修下游
 
-vector 字段编码：base64(zlib(float16 bytes)) 三层（跟 LightRAG 一致）
-matrix 字段编码：base64(float32 bytes) 一层
+依赖链：
+  full_docs (真相源，不可重建)
+    ↓ chunking
+  text_chunks (真相源，不可重建)
+    ↓ 从 text_chunks.full_doc_id 反向构建 chunk→doc 映射
+  doc_status (chunks_list 从 text_chunks 的 key 派生)
+    ↓ 重跑 LLM extract（用 llm_response_cache 重放）
+  GraphML (图谱结构)
+    ↓ embedding
+  vdb_entities + vdb_relationships (实体/关系向量)
+    ↓ embedding text_chunks
+  vdb_chunks (chunk 向量)
+    ↓ 从 GraphML source_id 提取
+  entity_chunks + relation_chunks (chunk 引用)
+    ↓ 从 GraphML source_id → chunk→doc 映射
+  full_entities + full_relations (文档级索引)
+  llm_response_cache (不可重建，清空)
 
-_embed_text 不依赖 LightRAG 实例，直接用 niu_api.internal.embedding 预加载的模型。
+每个 repair 函数返回：
+  {
+    "status": "ok"|"error",
+    "expected": int,   # 应重建数量
+    "actual": int,     # 实际重建数量
+    "lost": int,       # 丢失数量 = expected - actual
+    "source": str,     # 数据源说明
+    "message": str,
+    "unrecoverable": bool,  # 可选，True 表示无法修复
+  }
 """
 from __future__ import annotations
 
@@ -17,661 +41,1668 @@ import base64
 import json
 import os
 import shutil
+import time
 import zlib
 from pathlib import Path
 from typing import Any
 
 from loguru import logger
 
-from lightrag.utils import compute_mdhash_id
-
-from niu_api.internal.lightrag_integrity import _decode_vector
+from lightrag.constants import GRAPH_FIELD_SEP
+from lightrag.utils import (
+    compute_mdhash_id,
+    make_relation_chunk_key,
+    make_relation_vdb_ids,
+)
 
 _STORAGE_DIR = Path.home() / ".niu" / "lightrag_storage"
 
-# vdb 文件名 → 文本字段名（vdb data 内部）
-_VDB_TEXT_FIELD = {
-    "vdb_entities.json": "content",
-    "vdb_relationships.json": "content",
-    "vdb_chunks.json": "content",
-}
-
-# data 损坏时的 fallback 数据源
-_VDB_FALLBACK_KV = {
-    "vdb_chunks.json": ("kv_store_text_chunks.json", "content"),
-    # entities/relations 的 fallback 是 GraphML，暂不支持（返回 error）
-}
+_GRAPHML_FILE = "graph_chunk_entity_relation.graphml"
 
 
-def _embed_text(text: str) -> list[float]:
-    """用预加载的 embedding 模型生成向量，不依赖 LightRAG 实例。
+# =============================================================================
+# 工具函数
+# =============================================================================
 
-    embedding 模型在 __main__.py 启动时预加载（LightRAG eager init 之前）。
+
+def _storage_dir() -> Path:
+    """获取 _STORAGE_DIR（兼容 monkeypatch 注入 str 的形式）。"""
+    return Path(_STORAGE_DIR)
+
+
+def _atomic_write_json(path: Path, data: Any, indent: int | None = None) -> None:
+    """原子写 JSON：写 tmp + fsync + replace。
+
+    Args:
+        path: 目标文件路径
+        data: 要序列化的对象
+        indent: json.dump 的 indent 参数（None = 紧凑）
     """
+    tmp_file = path.with_name(path.name + ".tmp")
+    with open(tmp_file, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=indent)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp_file, path)
+
+
+def _backup_corrupt(path: Path) -> None:
+    """备份损坏文件到 .corrupt.{ms_timestamp}.bak。
+
+    用毫秒时间戳防 1 秒内连续 repair 覆盖。
+    备份失败不 abort（只是日志警告，让 repair 继续写新文件）。
+    """
+    if not path.exists():
+        return
+    timestamp = int(time.time() * 1000)
+    bak_path = path.with_name(f"{path.name}.corrupt.{timestamp}.bak")
+    try:
+        shutil.copy2(path, bak_path)
+        logger.info(f"[LightRAGRepair] 损坏文件备份到: {bak_path}")
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[LightRAGRepair] 备份损坏文件失败: {e}（继续覆盖）")
+
+
+def _embed_batch(texts: list[str]) -> list[list[float]] | None:
+    """批量 embedding。
+
+    优先用 niu_api.internal.embedding 预加载的模型。
+    失败 fallback 到 LightRAG 实例的 embedding_func。
+    都失败返回 None。
+
+    空列表返回 []（不调模型）。
+    """
+    if not texts:
+        return []
+
+    # 1. 优先用预加载的 embedding 模型
     try:
         from niu_api.internal.embedding import get_model
+
         model = get_model()
-        if model is None:
-            raise RuntimeError("embedding 模型未加载")
-        vec = model.encode([text])
-        return vec[0].tolist()
-    except ImportError:
-        # fallback：用 LightRAG 实例（如果已初始化）
+        if model is not None:
+            vecs = model.encode(texts)
+            # 转 list[list[float]]（vecs 可能是 numpy ndarray 或 Tensor）
+            return [list(map(float, v)) for v in vecs]
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[LightRAGRepair] 预加载 embedding 模型失败: {e}，fallback LightRAG")
+
+    # 2. fallback 到 LightRAG 实例
+    try:
+        import asyncio
+
         from niu_api.internal.lightrag_manager import get_lightrag
+
         rag = get_lightrag()
         if rag is None:
-            raise RuntimeError("embedding 模型未加载且 LightRAG 未初始化")
-        import asyncio
+            logger.error("[LightRAGRepair] embedding 失败：预加载模型未就绪 + LightRAG 未初始化")
+            return None
         loop = asyncio.new_event_loop()
         try:
-            result = loop.run_until_complete(rag.embedding_func([text]))
-            return result[0].tolist()
+            result = loop.run_until_complete(rag.embedding_func(texts))
+            return [list(map(float, v)) for v in result]
         finally:
             loop.close()
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"[LightRAGRepair] LightRAG embedding 也失败: {e}")
+        return None
+
+
+def _embed_text(text: str) -> list[float] | None:
+    """单条 embedding（内部调 _embed_batch）。
+
+    失败返回 None（不抛异常，让调用方决定如何处理）。
+    """
+    batch = _embed_batch([text])
+    if batch is None or len(batch) == 0:
+        return None
+    return batch[0]
+
+
+def _get_embedding_dim() -> int:
+    """获取 embedding 维度。
+
+    优先调 _embed_text 测一条获取维度。
+    失败 fallback 768（bge-base-zh-v1.5 默认）。
+    """
+    try:
+        vec = _embed_text("dim_probe")
+        if vec is not None and len(vec) > 0:
+            return len(vec)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[LightRAGRepair] embedding 维度探测失败: {e}，用 fallback 768")
+    return 768
 
 
 def _encode_vector(vec_f16) -> str:
     """vector 字段三层编码：base64(zlib(float16 bytes))"""
     import numpy as np
-    arr = np.array(vec_f16, dtype=np.float16) if not hasattr(vec_f16, 'astype') else vec_f16.astype(np.float16)
+
+    arr = vec_f16.astype(np.float16) if hasattr(vec_f16, "astype") else np.array(vec_f16, dtype=np.float16)
     return base64.b64encode(zlib.compress(arr.tobytes())).decode()
 
 
 def _encode_matrix(matrix_f32) -> str:
     """matrix 字段一层编码：base64(float32 bytes)"""
     import numpy as np
-    arr = np.array(matrix_f32, dtype=np.float32) if not hasattr(matrix_f32, 'astype') else matrix_f32.astype(np.float32)
+
+    arr = matrix_f32.astype(np.float32) if hasattr(matrix_f32, "astype") else np.array(matrix_f32, dtype=np.float32)
     return base64.b64encode(arr.tobytes()).decode()
 
 
-def _storage_dir() -> Path:
-    """获取当前 _STORAGE_DIR（兼容 str / Path 两种被 monkeypatch 的形式）。"""
-    return Path(_STORAGE_DIR)
-
-
-def _read_data_from_vdb(vdb_filename: str) -> list[dict] | None:
-    """尝试从损坏 vdb 的 data 字段读文本（matrix 损坏 data 完好场景）。
+def _load_json_dict(path: Path) -> dict[str, Any] | None:
+    """加载 JSON 文件为 dict。
 
     Returns:
-        data 列表（含 __id__ + content），如果 data 也损坏返回 None。
+        - 文件不存在 → {}（空 dict，合法）
+        - JSON 解析失败 / 非 dict → None（损坏）
+        - 成功 → dict
     """
-    vdb_path = _storage_dir() / vdb_filename
-    if not vdb_path.exists():
-        return None
+    if not path.exists():
+        return {}
     try:
-        with open(vdb_path, encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             raw = json.load(f)
     except (json.JSONDecodeError, Exception):
-        return None  # data 也损坏
-    data_list = raw.get("data")
-    if not isinstance(data_list, list) or not data_list:
         return None
-    text_field = _VDB_TEXT_FIELD.get(vdb_filename, "content")
-    # 验证 data 里的文本字段可用
-    valid = [item for item in data_list if isinstance(item, dict) and item.get(text_field)]
-    return valid if valid else None
+    if not isinstance(raw, dict):
+        return None
+    return raw
 
 
-def _read_data_from_kv_store(vdb_filename: str) -> tuple[list[dict] | None, str | None]:
-    """data 损坏时从 fallback kv_store 读文本。
+def _load_graphml_nodes_edges() -> tuple[set[str], list[tuple[str, str, str, str]], dict[str, Any] | None]:
+    """解析 GraphML，返回 (node_ids, edges, error)。
 
-    Returns:
-        (data_list, source_name)：data_list 为 None 表示无可用 fallback。
-        source_name 用作 repair_vdb 返回值里的 source 字段（值如 "kv_store_text_chunks"）。
+    node_ids: set of node id
+    edges: list of (src, tgt, source_id_src, source_id_tgt)
+           - source_id_src: edge 的 source_id data 字段（d3）
+           - 这里简化：edges 只存 (src, tgt, edge_source_id, edge_description)
+    error: None 或 {"check": ..., "severity": "critical", ...}
+
+    返回的 edge_source_id 是 GraphML edge 的 d3 字段（<SEP> 分隔的 chunk_id 列表）。
+    返回的 edge_description 是 edge 的 d2 字段（描述文本）。
     """
-    fallback = _VDB_FALLBACK_KV.get(vdb_filename)
-    if not fallback:
-        return None, None  # entities/relations 暂不支持 fallback
-    kv_filename, text_field = fallback
-    kv_path = _storage_dir() / kv_filename
-    if not kv_path.exists():
-        return None, None
+    import xml.etree.ElementTree as ET
+
+    path = _storage_dir() / _GRAPHML_FILE
+    if not path.exists():
+        return set(), [], None
     try:
-        with open(kv_path, encoding="utf-8") as f:
-            kv_data = json.load(f)
-    except (json.JSONDecodeError, Exception):
-        return None, None
-    data_list = []
-    for key, value in kv_data.items():
-        if isinstance(value, dict):
-            text = value.get(text_field)
-            if text:
-                data_list.append({"__id__": key, "content": text})
-    # source 用 fallback kv 文件主名（去 .json 后缀），跟测试期望对齐
-    source_name = kv_filename[:-5] if kv_filename.endswith(".json") else kv_filename
-    return (data_list if data_list else None), source_name
-
-
-def _try_truncate_repair(vdb_filename: str) -> list[dict] | None:
-    """vdb JSON 截断修复：括号配平找最后完整对象边界，补 ]} 闭合。
-
-    场景：vdb_entities.json 写入过程中崩溃，文件断在 data 数组某个对象的
-    vector 字段中间的 base64 字符串里，json.load 抛 JSONDecodeError。
-
-    策略（括号配平计数法，避免 content 字段里 } 干扰）：
-    1. 读原始字节
-    2. 找 "data":[ 的位置，从这之后开始扫描
-    3. 从 data_start 起逐字符扫描，维护 depth 计数器：
-       - 遇 { depth+1，遇 } depth-1
-       - depth 从 1 回到 0 时，记录一个"完整对象结束位置"
-         （此 } 的下一位即对象边界，后续应是 , 或 ]）
-    4. 取最后一个完整对象结束位置，截断到该 } 之后，补 ]} 闭合
-    5. json.loads 验证，提取 data 列表
-    6. data 数组为空（首个对象就截断，没有任何完整对象）→ 返回 None
-
-    为什么不用"找任意 }"：
-      content 字段（用户文档原文/实体描述）经常含 }（代码片段、JSON 示例、
-      模板字符串）。简单找 } 会在 base64 vector 之前命中 content 里的 }，
-      导致截断位置落在对象内部，补 ]} 后 json.loads 抛错，截断修复静默失败。
-      括号配平能区分"对象闭合的 }"和"字符串里的 }"，因为字符串里的 } 不会
-      让 depth 回到 0。
-
-    字符串处理简化（已知局限）：本扫描器不处理转义字符串内的 {/}（如 JSON
-    字符串里嵌套 JSON 字面量）。这种场景下配平法会把字符串内的 { 也计入
-    depth，导致最后一个完整对象结束位置偏后。最坏情况是截断后 json.loads
-    失败，返回 None，repair_vdb 继续 fallback kv_store，不引入新 bug。
-    比简单找 } 可靠性显著提升（失败安全）。
-
-    Args:
-        vdb_filename: vdb 文件名（vdb_entities.json / vdb_relationships.json / vdb_chunks.json）
-
-    Returns:
-        data 列表（含 __id__ + content），如果恢复后 data 为空或无法解析返回 None。
-    """
-    vdb_path = _storage_dir() / vdb_filename
-    if not vdb_path.exists():
-        return None
-
-    try:
-        raw_bytes = vdb_path.read_bytes()
-    except Exception:
-        return None
-
-    raw_text = raw_bytes.decode("utf-8", errors="replace")
-
-    # 1. 找 "data" 字段起始位置
-    # JSON 格式：{"embedding_dim":N,"data":[{...},{...},...,"matrix":"...（截断）
-    # 找 "data":[ 的位置（容忍空格）
-    import re
-    data_match = re.search(r'"data"\s*:\s*\[', raw_text)
-    if not data_match:
-        return None  # 没有 data 字段，无法修复
-
-    data_start = data_match.end()  # data 数组开始位置（[ 之后）
-
-    # 2. 括号配平计数：扫描所有完整对象的结束位置
-    # depth 计数：遇 { +1，遇 } -1。depth 从 1 回到 0 时，此 } 是一个完整对象的结束
-    complete_positions = []  # 每个完整对象结束 } 的位置（指向 } 字符）
-    depth = 0
-    i = data_start
-    n = len(raw_text)
-    while i < n:
-        ch = raw_text[i]
-        if ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0:
-                # 此 } 是 data 数组里一个完整对象的结束
-                complete_positions.append(i)
-        i += 1
-
-    if not complete_positions:
-        return None  # 没有任何完整对象（首个对象就截断在 { 之后某处）
-
-    # 3. 截到最后一个完整对象的 }（含），补 ]} 闭合
-    last_obj_end = complete_positions[-1]  # 最后一个完整对象结束 } 的位置
-    truncated_text = raw_text[:last_obj_end + 1] + "]}"  # 闭合 data 数组和外层 dict
-
-    # 4. 解析截断后的 JSON
-    try:
-        parsed = json.loads(truncated_text)
-    except (json.JSONDecodeError, Exception):
-        return None
-
-    data_list = parsed.get("data")
-    if not isinstance(data_list, list) or not data_list:
-        return None
-
-    text_field = _VDB_TEXT_FIELD.get(vdb_filename, "content")
-    valid = [item for item in data_list if isinstance(item, dict) and item.get(text_field)]
-    return valid if valid else None
-
-
-def repair_vdb(vdb_filename: str) -> dict[str, Any]:
-    """修复单个 vdb 文件。
-
-    优先从 vdb 自身 data 字段重建，fallback 到 kv_store。
-
-    Returns:
-        {"status": "ok"|"error", "rebuilt_count": int, "source": str, "message": str}
-    """
-    if vdb_filename not in _VDB_TEXT_FIELD:
-        return {"status": "error", "message": f"未知的 vdb 文件: {vdb_filename}"}
-
-    # 1. 优先从 vdb data 字段读
-    data_list = _read_data_from_vdb(vdb_filename)
-    source = "vdb_data_field" if data_list else None
-
-    # 1.5. vdb JSON 截断时，尝试字节级括号配平截断修复
-    #      （断在 vector base64 中间，json.load 失败，但断点前的完整 entity 可恢复）
-    if not data_list:
-        data_list = _try_truncate_repair(vdb_filename)
-        if data_list:
-            source = "vdb_truncate_repair"
-            logger.info(f"[LightRAGRepair] 截断修复恢复 {vdb_filename}: {len(data_list)} 条")
-
-    # 2. fallback 到 kv_store
-    if not data_list:
-        data_list, fallback_source = _read_data_from_kv_store(vdb_filename)
-        if data_list:
-            source = fallback_source
-
-    if not data_list:
-        return {
-            "status": "error",
-            "message": f"无可用数据源重建 {vdb_filename}（vdb data、截断修复、fallback kv_store 都失败）",
+        tree = ET.parse(path)
+        root = tree.getroot()
+    except ET.ParseError as e:
+        return set(), [], {
+            "check": "xml_parse",
+            "file": _GRAPHML_FILE,
+            "msg": str(e),
+            "severity": "critical",
+        }
+    except Exception as e:  # noqa: BLE001
+        return set(), [], {
+            "check": "xml_parse",
+            "file": _GRAPHML_FILE,
+            "msg": f"{type(e).__name__}: {e}",
+            "severity": "critical",
         }
 
-    # 3. 重新 embedding（保留原 data 所有非 vector 字段，只重算 vector）
-    import numpy as np
-    text_field = _VDB_TEXT_FIELD.get(vdb_filename, "content")
-    new_data = []
-    vectors = []
-    for item in data_list:
-        text = item.get(text_field, "")
-        try:
-            vec = _embed_text(text)
-        except Exception as e:
-            logger.warning(f"[LightRAGRepair] embedding 失败 {item.get('__id__')}: {e}，跳过")
-            continue
-        # 保留原 data 所有非 vector 字段（__created_at__ / entity_name / src_id / tgt_id / source_id / full_doc_id / file_path 等）
-        # 只重算 vector 字段
-        new_item = {k: v for k, v in item.items() if k != "vector"}
-        new_item["vector"] = _encode_vector(np.array(vec, dtype=np.float16))
-        new_data.append(new_item)
-        vectors.append(vec)
-
-    if not new_data:
-        return {"status": "error", "message": "embedding 全部失败，无数据可重建"}
-
-    embedding_dim = len(vectors[0])
-    matrix_f32 = np.array(vectors, dtype=np.float32)
-
-    # 4. 备份损坏 vdb 到 .corrupt.bak
-    vdb_path = _storage_dir() / vdb_filename
-    if vdb_path.exists():
-        corrupt_bak = _storage_dir() / f"{vdb_filename}.corrupt.bak"
-        try:
-            if corrupt_bak.exists():
-                corrupt_bak.unlink()
-            vdb_path.rename(corrupt_bak)
-            logger.info(f"[LightRAGRepair] 损坏 vdb 备份到: {corrupt_bak}")
-        except Exception as e:
-            logger.warning(f"[LightRAGRepair] 备份损坏 vdb 失败: {e}")
-
-    # 5. 原子写新 vdb
-    storage = {
-        "embedding_dim": embedding_dim,
-        "data": new_data,
-        "matrix": _encode_matrix(matrix_f32),
-    }
-    tmp_file = vdb_path.with_suffix(".json.tmp")
-    with open(tmp_file, "w", encoding="utf-8") as f:
-        json.dump(storage, f, ensure_ascii=False)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp_file, vdb_path)
-
-    logger.info(f"[LightRAGRepair] 重建 {vdb_filename}: {len(new_data)} 条 (source={source})")
-    return {
-        "status": "ok",
-        "rebuilt_count": len(new_data),
-        "source": source,
-        "message": f"从 {source} 重建 {len(new_data)} 条",
-    }
-
-
-def repair_kv_store(kv_filename: str) -> dict[str, Any]:
-    """kv_store 损坏时从 .bak 恢复。"""
-    kv_path = _storage_dir() / kv_filename
-    bak_path = _storage_dir() / f"{kv_filename}.bak"
-    if not bak_path.exists():
-        return {"status": "error", "message": f"备份文件不存在: {bak_path}"}
-    try:
-        shutil.copy2(bak_path, kv_path)
-        logger.info(f"[LightRAGRepair] 从 .bak 恢复 {kv_filename}")
-        return {"status": "ok", "message": f"从 .bak 恢复"}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
-
-
-def repair_entity_sync() -> dict[str, Any]:
-    """修复 vdb_entities 跟 GraphML 的实体同步性。
-
-    LightRAG 设计上 GraphML node id 全部 lower 化。用户铁律：所有写入必须转小写。
-    修复策略（以 GraphML 为真相源，统一小写）：
-    1. vdb 大写但 GraphML 有小写 → 改 vdb __id__/entity_name 为小写（matrix 不动，向量不变）
-    2. vdb 有重复 lower_name（如 'Niu'+'niu'）→ 优先保留已小写条目（orig==lower），丢弃大写重复
-    3. lower 后 vdb 有但 GraphML 没有（真孤儿）→ 删除条目 + matrix 对应行
-    4. lower 后 GraphML 有但 vdb 没有（缺失向量）→ 从 GraphML d2(description) 重新 embedding，
-       source_id 用 d3 真实 chunk-id
-
-    Returns:
-        {"status": "ok"|"error", "renamed": int, "removed": int, "rebuilt": int, "message": str}
-    """
-    import time
-    import xml.etree.ElementTree as ET
-    import numpy as np
-
-    storage_dir = _storage_dir()
-    vdb_path = storage_dir / "vdb_entities.json"
-    graphml_path = storage_dir / "graph_chunk_entity_relation.graphml"
-
-    if not vdb_path.exists() or not graphml_path.exists():
-        return {"status": "error", "message": "vdb_entities 或 GraphML 不存在", "renamed": 0, "removed": 0, "rebuilt": 0}
-
-    # 1. 读 vdb
-    try:
-        raw = json.loads(vdb_path.read_text(encoding="utf-8"))
-    except Exception as e:
-        return {"status": "error", "message": f"vdb 读取失败: {e}", "renamed": 0, "removed": 0, "rebuilt": 0}
-
-    embedding_dim = raw.get("embedding_dim")
-    data_list = raw.get("data", [])
-    if not isinstance(embedding_dim, int) or not isinstance(data_list, list):
-        return {"status": "error", "message": "vdb 格式异常", "renamed": 0, "removed": 0, "rebuilt": 0}
-
-    # 2. 读 GraphML：node id + d2(description) + d3(source_id)
     ns = "{http://graphml.graphdrawing.org/xmlns}"
-    graphml_nodes: dict[str, tuple[str, str]] = {}  # lower_name -> (description, source_id)
+    node_ids: set[str] = set()
+    edges: list[tuple[str, str, str, str]] = []  # (src, tgt, edge_source_id, edge_description)
+
+    # 找 graph 元素
+    graph = root.find(f"{ns}graph")
+    if graph is None:
+        for child in root:
+            tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+            if tag == "graph":
+                graph = child
+                break
+    if graph is None:
+        return set(), [], {
+            "check": "no_graph_element",
+            "file": _GRAPHML_FILE,
+            "severity": "critical",
+        }
+
+    for child in graph:
+        tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+        if tag == "node":
+            nid = child.get("id", "")
+            if nid:
+                node_ids.add(nid)
+        elif tag == "edge":
+            src = child.get("source", "")
+            tgt = child.get("target", "")
+            edge_src_id = ""
+            edge_desc = ""
+            for data in child.findall(f"{ns}data"):
+                key = data.get("key")
+                if key == "d2":
+                    edge_desc = data.text or ""
+                elif key == "d3":
+                    edge_src_id = data.text or ""
+            edges.append((src, tgt, edge_src_id, edge_desc))
+    return node_ids, edges, None
+
+
+def _load_graphml_nodes() -> tuple[dict[str, tuple[str, str]], dict[str, Any] | None]:
+    """解析 GraphML nodes，返回 {node_id: (description, source_id)} + error。
+
+    description = d2, source_id = d3
+    """
+    import xml.etree.ElementTree as ET
+
+    path = _storage_dir() / _GRAPHML_FILE
+    if not path.exists():
+        return {}, None
     try:
-        tree = ET.parse(graphml_path)
+        tree = ET.parse(path)
         root = tree.getroot()
-        for node in root.findall(f".//{ns}node"):
-            nid = node.get("id")
+    except ET.ParseError as e:
+        return {}, {
+            "check": "xml_parse",
+            "file": _GRAPHML_FILE,
+            "msg": str(e),
+            "severity": "critical",
+        }
+    except Exception as e:  # noqa: BLE001
+        return {}, {
+            "check": "xml_parse",
+            "file": _GRAPHML_FILE,
+            "msg": f"{type(e).__name__}: {e}",
+            "severity": "critical",
+        }
+
+    ns = "{http://graphml.graphdrawing.org/xmlns}"
+    nodes: dict[str, tuple[str, str]] = {}
+
+    graph = root.find(f"{ns}graph")
+    if graph is None:
+        for child in root:
+            tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+            if tag == "graph":
+                graph = child
+                break
+    if graph is None:
+        return {}, {
+            "check": "no_graph_element",
+            "file": _GRAPHML_FILE,
+            "severity": "critical",
+        }
+
+    for child in graph:
+        tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+        if tag == "node":
+            nid = child.get("id", "")
             if not nid:
                 continue
             desc = ""
             src = ""
-            for data in node.findall(f"{ns}data"):
+            for data in child.findall(f"{ns}data"):
                 key = data.get("key")
                 if key == "d2":
                     desc = data.text or ""
                 elif key == "d3":
                     src = data.text or ""
-            graphml_nodes[nid.lower()] = (desc, src)
-    except Exception as e:
-        return {"status": "error", "message": f"GraphML 读取失败: {e}", "renamed": 0, "removed": 0, "rebuilt": 0}
+            nodes[nid] = (desc, src)
+    return nodes, None
 
-    graphml_lower_names = set(graphml_nodes.keys())
 
-    # 3. 分类 vdb 条目（按 lower_name 分组，检测重复）
-    grouped: dict[str, list[dict]] = {}
-    for item in data_list:
-        orig_name = item.get("entity_name") or item.get("__id__")
-        if not orig_name:
-            continue
-        lower_name = orig_name.lower()
-        grouped.setdefault(lower_name, []).append(item)
+def _write_graphml_from_scratch(node_data: list[dict], edge_data: list[dict]) -> None:
+    """从零写 GraphML 文件（drop 后重建用，简化版只写 node id + edge src/tgt）。
 
-    renamed = 0
-    removed = 0
-    rebuilt = 0
-    new_data: list[dict] = []
-    new_vectors: list[np.ndarray] = []
+    实际 repair_graphml 不调这个（它用 LightRAG apipeline 重建）。
+    保留这个工具函数为未来可能的"从 GraphML snapshot 恢复"用。
+    """
+    import xml.etree.ElementTree as ET
 
-    for lower_name, items in grouped.items():
-        # 真孤儿（lower 后 GraphML 没有）→ 跳过（删除）
-        if lower_name not in graphml_lower_names:
-            removed += len(items)
-            continue
+    path = _storage_dir() / _GRAPHML_FILE
+    ns = "http://graphml.graphdrawing.org/xmlns"
+    ET.register_namespace("", ns)
+    root = ET.Element(f"{{{ns}}}graphml")
+    graph = ET.SubElement(root, f"{{{ns}}}graph", edgedefault="undirected")
+    for n in node_data:
+        node = ET.SubElement(graph, f"{{{ns}}}node", id=n["id"])
+        if n.get("description"):
+            ET.SubElement(node, f"{{{ns}}}data", key="d2").text = n["description"]
+        if n.get("source_id"):
+            ET.SubElement(node, f"{{{ns}}}data", key="d3").text = n["source_id"]
+    for e in edge_data:
+        edge = ET.SubElement(graph, f"{{{ns}}}edge", source=e["src"], target=e["tgt"])
+        if e.get("description"):
+            ET.SubElement(edge, f"{{{ns}}}data", key="d2").text = e["description"]
+        if e.get("source_id"):
+            ET.SubElement(edge, f"{{{ns}}}data", key="d3").text = e["source_id"]
+    tree = ET.ElementTree(root)
+    tmp = path.with_name(path.name + ".tmp")
+    tree.write(tmp, encoding="utf-8", xml_declaration=True)
+    os.replace(tmp, path)
 
-        # 重复时优先保留已小写条目（orig==lower），没有则用第一个
-        chosen = None
-        for it in items:
-            orig = it.get("entity_name") or it.get("__id__")
-            if orig == lower_name:
-                chosen = it
-                break
-        if chosen is None:
-            chosen = items[0]
-        # 丢弃的重复条目计入 removed（大写重复是 bug，丢弃是修正）
-        removed += len(items) - 1
 
-        # 大写改小写
-        new_item = {k: v for k, v in chosen.items() if k != "vector"}
-        orig_name = chosen.get("entity_name") or chosen.get("__id__")
-        # __id__ 必须用 compute_mdhash_id 重算（跟 LightRAG 写入 vdb 时的 id 一致）
-        # 不能用裸 lower_name，否则修复后 id 跟新写入 id 不匹配
-        new_item["__id__"] = compute_mdhash_id(lower_name, prefix="ent-")
-        new_item["entity_name"] = lower_name
-        if orig_name != lower_name:
-            renamed += 1
+def _build_vdb_file(
+    vdb_path: Path, data_list: list[dict[str, Any]], vectors: list[list[float]],
+    embedding_dim: int,
+) -> None:
+    """构造 vdb 文件内容并原子写入。
 
-        # 解码原向量保留
-        try:
-            vec = _decode_vector(chosen.get("vector", ""), embedding_dim)
-            new_vectors.append(np.array(vec, dtype=np.float16))
-        except Exception:
-            # 向量损坏，用 content 重新 embedding
-            try:
-                vec = _embed_text(chosen.get("content", ""))
-                new_vectors.append(np.array(vec, dtype=np.float16))
-                rebuilt += 1
-            except Exception as e:
-                logger.warning(f"[LightRAGRepair] 重建 {lower_name} 向量失败: {e}，跳过")
-                continue
-        new_data.append(new_item)
+    每条 data 的 vector 字段已 encode 后存入；matrix 单独 encode 后存入。
+    """
+    import numpy as np
 
-    # 4. 缺失向量：GraphML 有但 vdb 没有
-    for lower_name, (desc, src) in graphml_nodes.items():
-        if lower_name in grouped:
-            continue
-        if not desc:
-            logger.warning(f"[LightRAGRepair] GraphML 节点 {lower_name} 无 d2(description)，跳过")
-            continue
-        try:
-            vec = _embed_text(desc)
-        except Exception as e:
-            logger.warning(f"[LightRAGRepair] 重建 {lower_name} embedding 失败: {e}，跳过")
-            continue
-        new_data.append({
-            "__id__": compute_mdhash_id(lower_name, prefix="ent-"),
-            "entity_name": lower_name,
-            "content": desc,
-            "source_id": src or f"repair-from-graphml-{lower_name}",
-        })
-        new_vectors.append(np.array(vec, dtype=np.float16))
-        rebuilt += 1
-
-    if not new_data:
-        return {"status": "error", "message": "修复后无数据", "renamed": renamed, "removed": removed, "rebuilt": rebuilt}
-
-    # 5. 备份损坏 vdb（用 shutil.copy2，不先 unlink；加时间戳防覆盖）
-    timestamp = int(time.time() * 1000)  # 毫秒级，防 1 秒内连续 repair 覆盖
-    corrupt_bak = storage_dir / f"vdb_entities.json.corrupt.{timestamp}.bak"
-    try:
-        shutil.copy2(vdb_path, corrupt_bak)  # copy2 自动覆盖已存在目标
-        logger.info(f"[LightRAGRepair] 损坏 vdb 备份到: {corrupt_bak}")
-    except Exception as e:
-        # 备份失败立即 abort，不继续写新 vdb（避免数据丢失）
-        logger.error(f"[LightRAGRepair] 备份损坏 vdb 失败: {e}，abort 修复")
-        return {"status": "error", "message": f"备份失败: {e}", "renamed": renamed, "removed": removed, "rebuilt": rebuilt}
-
-    # 6. 原子写新 vdb
-    matrix_f32 = np.array(new_vectors, dtype=np.float32)
-    for i, item in enumerate(new_data):
-        item["vector"] = _encode_vector(new_vectors[i])
-
+    matrix_f32 = np.array(vectors, dtype=np.float32) if vectors else np.zeros((0, embedding_dim), dtype=np.float32)
+    # 编码 vector 字段到每条 data
+    encoded_data = []
+    for item, vec in zip(data_list, vectors):
+        new_item = {k: v for k, v in item.items() if k != "vector"}
+        new_item["vector"] = _encode_vector(np.array(vec, dtype=np.float16))
+        encoded_data.append(new_item)
     storage = {
         "embedding_dim": embedding_dim,
-        "data": new_data,
+        "data": encoded_data,
         "matrix": _encode_matrix(matrix_f32),
     }
-    tmp_file = vdb_path.with_name(vdb_path.name + ".tmp")
-    with open(tmp_file, "w", encoding="utf-8") as f:
-        json.dump(storage, f, ensure_ascii=False)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp_file, vdb_path)
+    _atomic_write_json(vdb_path, storage)
 
-    logger.info(
-        f"[LightRAGRepair] 实体同步修复完成: 改名 {renamed}, 删除 {removed}（含重复丢弃）, 重建 {rebuilt}, 总计 {len(new_data)}"
-    )
+
+# =============================================================================
+# 11 个 repair 函数（按依赖链顺序）
+# =============================================================================
+
+
+def repair_text_chunks() -> dict[str, Any]:
+    """1. 从 full_docs 重新 chunking 重建 text_chunks。
+
+    真相源：kv_store_full_docs.json
+    派生：kv_store_text_chunks.json
+
+    用 LightRAG 的 chunking_by_token_size（需要 tokenizer）。
+    chunk_id = compute_mdhash_id(content, prefix="chunk-")
+
+    如果 chunk_size 配置变更导致 chunk_id 不一致（跟旧 doc_status.chunks_list 比对）→ unrecoverable=True。
+    如果 full_docs 损坏 → unrecoverable=True。
+    """
+    storage_dir = _storage_dir()
+    full_docs_path = storage_dir / "kv_store_full_docs.json"
+    text_chunks_path = storage_dir / "kv_store_text_chunks.json"
+    doc_status_path = storage_dir / "kv_store_doc_status.json"
+
+    # 1. 读 full_docs（真相源）
+    full_docs = _load_json_dict(full_docs_path)
+    if full_docs is None:
+        return {
+            "status": "error",
+            "expected": 0,
+            "actual": 0,
+            "lost": 0,
+            "source": "kv_store_full_docs",
+            "message": "full_docs 损坏（JSON 解析失败或非 dict）",
+            "unrecoverable": True,
+        }
+    if not full_docs:
+        return {
+            "status": "ok",
+            "expected": 0,
+            "actual": 0,
+            "lost": 0,
+            "source": "kv_store_full_docs",
+            "message": "full_docs 为空，无需重建 text_chunks",
+        }
+
+    # 2. 获取 chunking 配置（跟 lightrag_manager 一致）
+    try:
+        from niu_api.internal.lightrag_manager import _get_lightrag_config
+
+        config = _get_lightrag_config()
+        chunk_token_size = config.get("chunk_token_size", 1200)
+        chunk_overlap_token_size = config.get("chunk_overlap_token_size", 50)
+    except Exception:  # noqa: BLE001
+        chunk_token_size = 1200
+        chunk_overlap_token_size = 50
+
+    # 3. 获取 tokenizer（从 LightRAG 实例）
+    try:
+        from niu_api.internal.lightrag_manager import get_lightrag
+
+        rag = get_lightrag()
+        if rag is None or not hasattr(rag, "tokenizer"):
+            return {
+                "status": "error",
+                "expected": len(full_docs),
+                "actual": 0,
+                "lost": len(full_docs),
+                "source": "kv_store_full_docs",
+                "message": "LightRAG 实例未初始化，无法获取 tokenizer 重新 chunking",
+                "unrecoverable": True,
+            }
+        tokenizer = rag.tokenizer
+    except Exception as e:  # noqa: BLE001
+        return {
+            "status": "error",
+            "expected": len(full_docs),
+            "actual": 0,
+            "lost": len(full_docs),
+            "source": "kv_store_full_docs",
+            "message": f"获取 tokenizer 失败: {e}",
+            "unrecoverable": True,
+        }
+
+    # 4. 重新 chunking
+    from lightrag.operate import chunking_by_token_size
+
+    new_text_chunks: dict[str, dict[str, Any]] = {}
+    expected_chunk_count = 0
+    for doc_id, doc_value in full_docs.items():
+        if not isinstance(doc_value, dict):
+            continue
+        content = doc_value.get("content", "")
+        if not content:
+            continue
+        try:
+            chunks = chunking_by_token_size(
+                tokenizer=tokenizer,
+                content=content,
+                chunk_token_size=chunk_token_size,
+                chunk_overlap_token_size=chunk_overlap_token_size,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[LightRAGRepair] 文档 {doc_id} chunking 失败: {e}，跳过")
+            continue
+        for chunk in chunks:
+            chunk_content = chunk["content"]
+            chunk_id = compute_mdhash_id(chunk_content, prefix="chunk-")
+            new_text_chunks[chunk_id] = {
+                "content": chunk_content,
+                "full_doc_id": doc_id,
+                "chunk_order_index": chunk.get("chunk_order_index", 0),
+                "tokens": chunk.get("tokens", 0),
+                "llm_cache_list": [],
+            }
+            expected_chunk_count += 1
+
+    # 5. chunk_id 一致性检查（如果 doc_status 存在且记录了 chunks_list）
+    doc_status = _load_json_dict(doc_status_path)
+    if doc_status:
+        old_chunk_ids: set[str] = set()
+        for ds_value in doc_status.values():
+            if not isinstance(ds_value, dict):
+                continue
+            for cid in ds_value.get("chunks_list", []) or []:
+                if isinstance(cid, str):
+                    old_chunk_ids.add(cid)
+        # 如果旧 chunks_list 跟新 chunk_id 集合差异过大 → unrecoverable
+        # （chunk_size 配置变更会导致 chunk_id 全变，下游 entity_chunks/relation_chunks 引用全失效）
+        if old_chunk_ids:
+            new_chunk_ids = set(new_text_chunks.keys())
+            intersection = old_chunk_ids & new_chunk_ids
+            # 如果重合率 < 50%，认为是 chunk_size 变更 → unrecoverable
+            overlap_ratio = len(intersection) / len(old_chunk_ids) if old_chunk_ids else 1.0
+            if overlap_ratio < 0.5:
+                return {
+                    "status": "error",
+                    "expected": expected_chunk_count,
+                    "actual": 0,
+                    "lost": expected_chunk_count,
+                    "source": "kv_store_full_docs",
+                    "message": (
+                        f"chunk_size 配置变更导致 chunk_id 不一致"
+                        f"（重合率 {overlap_ratio:.1%} < 50%），下游引用全失效"
+                    ),
+                    "unrecoverable": True,
+                }
+
+    # 6. 备份损坏的 text_chunks 并写新文件
+    _backup_corrupt(text_chunks_path)
+    _atomic_write_json(text_chunks_path, new_text_chunks)
+
+    actual = len(new_text_chunks)
+    logger.info(f"[LightRAGRepair] 重建 text_chunks: {actual} 条 (source=full_docs)")
     return {
         "status": "ok",
-        "renamed": renamed,
-        "removed": removed,
-        "rebuilt": rebuilt,
-        "message": f"改大小写 {renamed} 条，删除孤儿/重复 {removed} 条，重建 {rebuilt} 条",
+        "expected": expected_chunk_count,
+        "actual": actual,
+        "lost": expected_chunk_count - actual,
+        "source": "kv_store_full_docs",
+        "message": f"从 full_docs 重新 chunking 重建 {actual} 条 text_chunks",
+    }
+
+
+def repair_doc_status() -> dict[str, Any]:
+    """2. 从 text_chunks 派生 chunks_list + 从 full_docs 派生 status。
+
+    真相源：kv_store_text_chunks.json + kv_store_full_docs.json
+    派生：kv_store_doc_status.json
+
+    chunks_list: 按 full_doc_id 分组 text_chunks 的 key
+    status: PROCESSED 如果 GraphML 有数据，否则 PENDING
+    """
+    storage_dir = _storage_dir()
+    text_chunks_path = storage_dir / "kv_store_text_chunks.json"
+    full_docs_path = storage_dir / "kv_store_full_docs.json"
+    doc_status_path = storage_dir / "kv_store_doc_status.json"
+    graphml_path = storage_dir / _GRAPHML_FILE
+
+    # 1. 读 text_chunks（真相源）
+    text_chunks = _load_json_dict(text_chunks_path)
+    if text_chunks is None:
+        return {
+            "status": "error",
+            "expected": 0,
+            "actual": 0,
+            "lost": 0,
+            "source": "kv_store_text_chunks",
+            "message": "text_chunks 损坏",
+            "unrecoverable": True,
+        }
+    if not text_chunks:
+        return {
+            "status": "ok",
+            "expected": 0,
+            "actual": 0,
+            "lost": 0,
+            "source": "kv_store_text_chunks",
+            "message": "text_chunks 为空，无需重建 doc_status",
+        }
+
+    # 2. 读 full_docs（真相源）
+    full_docs = _load_json_dict(full_docs_path)
+    if full_docs is None:
+        return {
+            "status": "error",
+            "expected": len(full_docs) if isinstance(full_docs, dict) else 0,
+            "actual": 0,
+            "lost": 0,
+            "source": "kv_store_text_chunks",
+            "message": "full_docs 损坏",
+            "unrecoverable": True,
+        }
+
+    # 3. 判断 GraphML 是否有数据（决定 status 是 PROCESSED 还是 PENDING）
+    graphml_has_data = graphml_path.exists() and graphml_path.stat().st_size > 200
+
+    # 4. 按 full_doc_id 分组 chunks_list
+    chunks_by_doc: dict[str, list[str]] = {}
+    for chunk_id, chunk_value in text_chunks.items():
+        if not isinstance(chunk_value, dict):
+            continue
+        full_doc_id = chunk_value.get("full_doc_id", "")
+        if not full_doc_id:
+            continue
+        chunks_by_doc.setdefault(full_doc_id, []).append(chunk_id)
+
+    # 5. 构造 doc_status
+    new_doc_status: dict[str, dict[str, Any]] = {}
+    expected_count = len(full_docs) if full_docs else 0
+    for doc_id in full_docs.keys():
+        chunks_list = sorted(chunks_by_doc.get(doc_id, []))  # 排序保证稳定
+        # 保留原 doc_status 的 file_path 等元数据（如果存在）
+        old_ds = _load_json_dict(doc_status_path) or {}
+        old_value = old_ds.get(doc_id, {}) if isinstance(old_ds, dict) else {}
+        new_doc_status[doc_id] = {
+            "status": "PROCESSED" if graphml_has_data else "PENDING",
+            "chunks_count": len(chunks_list),
+            "content_summary": old_value.get("content_summary", "") if isinstance(old_value, dict) else "",
+            "content_length": old_value.get("content_length", 0) if isinstance(old_value, dict) else 0,
+            "created_at": old_value.get("created_at", "") if isinstance(old_value, dict) else "",
+            "updated_at": old_value.get("updated_at", "") if isinstance(old_value, dict) else "",
+            "file_path": old_value.get("file_path", "") if isinstance(old_value, dict) else "",
+            "chunks_list": chunks_list,
+        }
+
+    # 6. 备份 + 写
+    _backup_corrupt(doc_status_path)
+    _atomic_write_json(doc_status_path, new_doc_status)
+
+    actual = len(new_doc_status)
+    logger.info(f"[LightRAGRepair] 重建 doc_status: {actual} 条 (source=text_chunks+full_docs)")
+    return {
+        "status": "ok",
+        "expected": expected_count,
+        "actual": actual,
+        "lost": expected_count - actual,
+        "source": "kv_store_text_chunks + kv_store_full_docs",
+        "message": f"从 text_chunks 派生 chunks_list + 从 full_docs 派生 status，重建 {actual} 条",
+    }
+
+
+def repair_graphml() -> dict[str, Any]:
+    """3. 从零重建 GraphML（最复杂的 repair）。
+
+    策略：
+    1. 先 drop 旧 GraphML（直接删文件）
+    2. 改所有 doc_status 为 PENDING（触发重处理）
+    3. monkeypatch force_llm_summary_on_merge = 999999（尽量不调 LLM summary）
+    4. 调 LightRAG.apipeline_process_enqueue_documents 重处理
+       - extract 阶段：llm_response_cache 命中不调 LLM
+       - summary 阶段：可能调 LLM 如果 summary cache miss
+    5. 如果 llm_response_cache 损坏（extract cache miss）→ unrecoverable
+
+    简化方案：
+    - 如果 LightRAG 实例不可用 → unrecoverable
+    - 如果 apipeline 抛异常 → status=error，记录原因
+    """
+    storage_dir = _storage_dir()
+    graphml_path = storage_dir / _GRAPHML_FILE
+    doc_status_path = storage_dir / "kv_store_doc_status.json"
+    cache_path = storage_dir / "kv_store_llm_response_cache.json"
+
+    # 1. 检查 llm_response_cache 是否可用（extract cache 来源）
+    cache_data = _load_json_dict(cache_path)
+    if cache_data is None:
+        return {
+            "status": "error",
+            "expected": 1,
+            "actual": 0,
+            "lost": 1,
+            "source": "llm_response_cache",
+            "message": "llm_response_cache 损坏，无法重放 extract，GraphML 不可重建",
+            "unrecoverable": True,
+        }
+    if not cache_data:
+        # cache 空也允许重处理（但会调 LLM，用户承担费用）
+        logger.warning("[LightRAGRepair] llm_response_cache 为空，重处理会调 LLM")
+
+    # 2. 获取 LightRAG 实例
+    try:
+        from niu_api.internal.lightrag_manager import get_lightrag
+
+        rag = get_lightrag()
+    except Exception as e:  # noqa: BLE001
+        return {
+            "status": "error",
+            "expected": 1,
+            "actual": 0,
+            "lost": 1,
+            "source": "LightRAG apipeline",
+            "message": f"获取 LightRAG 实例失败: {e}",
+            "unrecoverable": True,
+        }
+    if rag is None:
+        return {
+            "status": "error",
+            "expected": 1,
+            "actual": 0,
+            "lost": 1,
+            "source": "LightRAG apipeline",
+            "message": "LightRAG 实例未初始化，无法重处理",
+            "unrecoverable": True,
+        }
+
+    # 3. drop 旧 GraphML
+    try:
+        if graphml_path.exists():
+            _backup_corrupt(graphml_path)
+            graphml_path.unlink()
+            logger.info("[LightRAGRepair] 已删除旧 GraphML")
+        # 重置内存中的 graph
+        if hasattr(rag, "chunk_entity_relation_graph"):
+            try:
+                import asyncio
+
+                loop = asyncio.new_event_loop()
+                try:
+                    loop.run_until_complete(rag.chunk_entity_relation_graph.drop())
+                finally:
+                    loop.close()
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[LightRAGRepair] 内存 graph drop 失败（忽略）: {e}")
+    except Exception as e:  # noqa: BLE001
+        return {
+            "status": "error",
+            "expected": 1,
+            "actual": 0,
+            "lost": 1,
+            "source": "graphml drop",
+            "message": f"drop 旧 GraphML 失败: {e}",
+        }
+
+    # 4. 改所有 doc_status 为 PENDING（触发重处理）
+    doc_status = _load_json_dict(doc_status_path)
+    if doc_status is None:
+        return {
+            "status": "error",
+            "expected": 1,
+            "actual": 0,
+            "lost": 1,
+            "source": "doc_status",
+            "message": "doc_status 损坏，无法改为 PENDING",
+            "unrecoverable": True,
+        }
+    if doc_status:
+        for doc_id, ds_value in doc_status.items():
+            if isinstance(ds_value, dict):
+                ds_value["status"] = "PENDING"
+        _atomic_write_json(doc_status_path, doc_status)
+
+    expected_docs = len(doc_status) if doc_status else 0
+
+    # 5. monkeypatch force_llm_summary_on_merge
+    old_force = None
+    try:
+        # global_config 在 LightRAG 实例上以 asdict 形式传递，但 force_llm_summary_on_merge 是字段
+        if hasattr(rag, "force_llm_summary_on_merge"):
+            old_force = rag.force_llm_summary_on_merge
+            rag.force_llm_summary_on_merge = 999999
+            logger.info("[LightRAGRepair] monkeypatch force_llm_summary_on_merge = 999999")
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[LightRAGRepair] monkeypatch force_llm_summary_on_merge 失败: {e}")
+
+    # 6. 调 apipeline_process_enqueue_documents
+    try:
+        import asyncio
+
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(rag.apipeline_process_enqueue_documents())
+        finally:
+            loop.close()
+    except Exception as e:  # noqa: BLE001
+        # 恢复 monkeypatch
+        if old_force is not None and hasattr(rag, "force_llm_summary_on_merge"):
+            rag.force_llm_summary_on_merge = old_force
+        return {
+            "status": "error",
+            "expected": expected_docs,
+            "actual": 0,
+            "lost": expected_docs,
+            "source": "LightRAG apipeline",
+            "message": f"apipeline_process_enqueue_documents 失败: {e}",
+            "unrecoverable": True,
+        }
+    finally:
+        # 恢复 monkeypatch
+        if old_force is not None and hasattr(rag, "force_llm_summary_on_merge"):
+            rag.force_llm_summary_on_merge = old_force
+
+    # 7. 验证 GraphML 是否生成
+    if not graphml_path.exists():
+        return {
+            "status": "error",
+            "expected": expected_docs,
+            "actual": 0,
+            "lost": expected_docs,
+            "source": "LightRAG apipeline",
+            "message": "apipeline 执行完成但 GraphML 未生成（可能 llm_response_cache 不完整）",
+            "unrecoverable": True,
+        }
+
+    # 统计 node + edge 数
+    node_ids, edges, _ = _load_graphml_nodes_edges()
+    actual = len(node_ids) + len(edges)
+    logger.info(f"[LightRAGRepair] 重建 GraphML: {len(node_ids)} nodes + {len(edges)} edges")
+    return {
+        "status": "ok",
+        "expected": expected_docs,
+        "actual": actual,
+        "lost": 0,
+        "source": "LightRAG apipeline (extract cache replay + summary 禁用 LLM)",
+        "message": f"从零重建 GraphML: {len(node_ids)} nodes + {len(edges)} edges",
+    }
+
+
+def repair_vdb_chunks() -> dict[str, Any]:
+    """4. 遍历 text_chunks 重新 embedding 重建 vdb_chunks。
+
+    真相源：kv_store_text_chunks.json
+    派生：vdb_chunks.json
+
+    每条 chunk 的 __id__ = compute_mdhash_id(content, prefix="chunk-")
+    embedding 失败 >10% → status=error 不写文件
+    """
+    storage_dir = _storage_dir()
+    text_chunks_path = storage_dir / "kv_store_text_chunks.json"
+    vdb_path = storage_dir / "vdb_chunks.json"
+
+    # 1. 读 text_chunks（真相源）
+    text_chunks = _load_json_dict(text_chunks_path)
+    if text_chunks is None:
+        return {
+            "status": "error",
+            "expected": 0,
+            "actual": 0,
+            "lost": 0,
+            "source": "kv_store_text_chunks",
+            "message": "text_chunks 损坏",
+            "unrecoverable": True,
+        }
+    if not text_chunks:
+        # 空 text_chunks → 写空 vdb（让 check 通过）
+        _backup_corrupt(vdb_path)
+        embedding_dim = _get_embedding_dim()
+        _build_vdb_file(vdb_path, [], [], embedding_dim)
+        return {
+            "status": "ok",
+            "expected": 0,
+            "actual": 0,
+            "lost": 0,
+            "source": "kv_store_text_chunks",
+            "message": "text_chunks 为空，写空 vdb_chunks",
+        }
+
+    # 2. 收集要 embedding 的 texts
+    items: list[tuple[str, str, dict[str, Any]]] = []  # (chunk_id, content, original_chunk_value)
+    for chunk_id, chunk_value in text_chunks.items():
+        if not isinstance(chunk_value, dict):
+            continue
+        content = chunk_value.get("content", "")
+        if not content:
+            continue
+        items.append((chunk_id, content, chunk_value))
+
+    if not items:
+        _backup_corrupt(vdb_path)
+        embedding_dim = _get_embedding_dim()
+        _build_vdb_file(vdb_path, [], [], embedding_dim)
+        return {
+            "status": "ok",
+            "expected": 0,
+            "actual": 0,
+            "lost": 0,
+            "source": "kv_store_text_chunks",
+            "message": "text_chunks 无有效 content，写空 vdb_chunks",
+        }
+
+    expected = len(items)
+    texts = [t for _, t, _ in items]
+
+    # 3. 批量 embedding
+    vectors = _embed_batch(texts)
+    if vectors is None:
+        return {
+            "status": "error",
+            "expected": expected,
+            "actual": 0,
+            "lost": expected,
+            "source": "kv_store_text_chunks",
+            "message": "embedding 完全失败，无法重建 vdb_chunks",
+        }
+    if len(vectors) != len(texts):
+        # 部分失败，补 None 占位
+        while len(vectors) < len(texts):
+            vectors.append(None)  # type: ignore[arg-type]
+
+    # 4. 构造 data_list
+    embedding_dim = len(vectors[0]) if vectors and vectors[0] is not None else _get_embedding_dim()
+    data_list: list[dict[str, Any]] = []
+    final_vectors: list[list[float]] = []
+    failed_count = 0
+    for (chunk_id, content, chunk_value), vec in zip(items, vectors):
+        if vec is None:
+            failed_count += 1
+            continue
+        # __id__ 用 compute_mdhash_id 重新算（跟 LightRAG 写入一致）
+        expected_id = compute_mdhash_id(content, prefix="chunk-")
+        data_list.append({
+            "__id__": expected_id,
+            "content": content,
+            "full_doc_id": chunk_value.get("full_doc_id", ""),
+            "chunk_order_index": chunk_value.get("chunk_order_index", 0),
+            "tokens": chunk_value.get("tokens", 0),
+            "file_path": chunk_value.get("file_path", ""),
+        })
+        final_vectors.append(vec)
+
+    # 5. embedding 失败率检查
+    if expected > 0 and failed_count / expected > 0.1:
+        return {
+            "status": "error",
+            "expected": expected,
+            "actual": len(data_list),
+            "lost": failed_count,
+            "source": "kv_store_text_chunks",
+            "message": f"embedding 失败率 {failed_count}/{expected} > 10%，不写文件",
+        }
+
+    if not data_list:
+        return {
+            "status": "error",
+            "expected": expected,
+            "actual": 0,
+            "lost": expected,
+            "source": "kv_store_text_chunks",
+            "message": "embedding 全部失败，无数据可重建",
+        }
+
+    # 6. 备份 + 写
+    _backup_corrupt(vdb_path)
+    _build_vdb_file(vdb_path, data_list, final_vectors, embedding_dim)
+
+    actual = len(data_list)
+    logger.info(f"[LightRAGRepair] 重建 vdb_chunks: {actual} 条 (source=text_chunks)")
+    return {
+        "status": "ok",
+        "expected": expected,
+        "actual": actual,
+        "lost": expected - actual,
+        "source": "kv_store_text_chunks",
+        "message": f"从 text_chunks 重新 embedding 重建 {actual} 条 vdb_chunks",
+    }
+
+
+def repair_vdb_entities() -> dict[str, Any]:
+    """5. 遍历 GraphML node 重新 embedding 重建 vdb_entities。
+
+    真相源：graph_chunk_entity_relation.graphml（node id + d2 description + d3 source_id）
+    派生：vdb_entities.json
+
+    每条 entity 的 __id__ = compute_mdhash_id(name, prefix="ent-")
+    embedding 失败 >10% → status=error 不写文件
+    """
+    storage_dir = _storage_dir()
+    vdb_path = storage_dir / "vdb_entities.json"
+
+    # 1. 读 GraphML nodes（真相源）
+    nodes, graphml_err = _load_graphml_nodes()
+    if graphml_err:
+        return {
+            "status": "error",
+            "expected": 0,
+            "actual": 0,
+            "lost": 0,
+            "source": "GraphML",
+            "message": f"GraphML 损坏: {graphml_err.get('msg', '')}",
+            "unrecoverable": True,
+        }
+    if not nodes:
+        _backup_corrupt(vdb_path)
+        embedding_dim = _get_embedding_dim()
+        _build_vdb_file(vdb_path, [], [], embedding_dim)
+        return {
+            "status": "ok",
+            "expected": 0,
+            "actual": 0,
+            "lost": 0,
+            "source": "GraphML",
+            "message": "GraphML 无 node，写空 vdb_entities",
+        }
+
+    # 2. 收集要 embedding 的 texts（用 d2 description 作为 embedding 内容）
+    items: list[tuple[str, str, str]] = []  # (node_id, description, source_id)
+    for node_id, (desc, src) in nodes.items():
+        # description 为空时用 node_id 作为 fallback（保证有内容可 embed）
+        embed_content = desc if desc else node_id
+        items.append((node_id, embed_content, src))
+
+    expected = len(items)
+    texts = [t for _, t, _ in items]
+
+    # 3. 批量 embedding
+    vectors = _embed_batch(texts)
+    if vectors is None:
+        return {
+            "status": "error",
+            "expected": expected,
+            "actual": 0,
+            "lost": expected,
+            "source": "GraphML",
+            "message": "embedding 完全失败，无法重建 vdb_entities",
+        }
+    if len(vectors) != len(texts):
+        while len(vectors) < len(texts):
+            vectors.append(None)  # type: ignore[arg-type]
+
+    # 4. 构造 data_list
+    embedding_dim = len(vectors[0]) if vectors and vectors[0] is not None else _get_embedding_dim()
+    data_list: list[dict[str, Any]] = []
+    final_vectors: list[list[float]] = []
+    failed_count = 0
+    for (node_id, embed_content, src), vec in zip(items, vectors):
+        if vec is None:
+            failed_count += 1
+            continue
+        # __id__ = compute_mdhash_id(node_id, prefix="ent-")
+        # node_id 已 lower（LightRAG 设计），但 compute_mdhash_id 对原始字符串算 hash
+        expected_id = compute_mdhash_id(node_id, prefix="ent-")
+        # content 字段用 description（跟 LightRAG 写入一致）
+        # 如果 description 为空，用 node_id 作为 content（避免空 content）
+        original_desc = nodes[node_id][0]  # 原始 d2 description
+        content = original_desc if original_desc else node_id
+        data_list.append({
+            "__id__": expected_id,
+            "entity_name": node_id,
+            "content": content,
+            "source_id": src or "",
+        })
+        final_vectors.append(vec)
+
+    # 5. embedding 失败率检查
+    if expected > 0 and failed_count / expected > 0.1:
+        return {
+            "status": "error",
+            "expected": expected,
+            "actual": len(data_list),
+            "lost": failed_count,
+            "source": "GraphML",
+            "message": f"embedding 失败率 {failed_count}/{expected} > 10%，不写文件",
+        }
+
+    if not data_list:
+        return {
+            "status": "error",
+            "expected": expected,
+            "actual": 0,
+            "lost": expected,
+            "source": "GraphML",
+            "message": "embedding 全部失败，无数据可重建",
+        }
+
+    # 6. 备份 + 写
+    _backup_corrupt(vdb_path)
+    _build_vdb_file(vdb_path, data_list, final_vectors, embedding_dim)
+
+    actual = len(data_list)
+    logger.info(f"[LightRAGRepair] 重建 vdb_entities: {actual} 条 (source=GraphML)")
+    return {
+        "status": "ok",
+        "expected": expected,
+        "actual": actual,
+        "lost": expected - actual,
+        "source": "GraphML",
+        "message": f"从 GraphML nodes 重新 embedding 重建 {actual} 条 vdb_entities",
+    }
+
+
+def repair_vdb_relationships() -> dict[str, Any]:
+    """6. 遍历 GraphML edge 重新 embedding 重建 vdb_relationships。
+
+    真相源：graph_chunk_entity_relation.graphml（edge src/tgt + d2 description + d3 source_id）
+    派生：vdb_relationships.json
+
+    每条 relationship 的 __id__ 用 make_relation_vdb_ids 生成正序 ID
+    src_id/tgt_id 用 sorted 后的值（跟 LightRAG 写入一致）
+    embedding 失败 >10% → status=error 不写文件
+    """
+    storage_dir = _storage_dir()
+    vdb_path = storage_dir / "vdb_relationships.json"
+
+    # 1. 读 GraphML edges（真相源）
+    _, edges, graphml_err = _load_graphml_nodes_edges()
+    if graphml_err:
+        return {
+            "status": "error",
+            "expected": 0,
+            "actual": 0,
+            "lost": 0,
+            "source": "GraphML",
+            "message": f"GraphML 损坏: {graphml_err.get('msg', '')}",
+            "unrecoverable": True,
+        }
+    if not edges:
+        _backup_corrupt(vdb_path)
+        embedding_dim = _get_embedding_dim()
+        _build_vdb_file(vdb_path, [], [], embedding_dim)
+        return {
+            "status": "ok",
+            "expected": 0,
+            "actual": 0,
+            "lost": 0,
+            "source": "GraphML",
+            "message": "GraphML 无 edge，写空 vdb_relationships",
+        }
+
+    # 2. 收集要 embedding 的 texts（用 d2 description 作为 embedding 内容）
+    items: list[tuple[str, str, str, str, str]] = []  # (sorted_src, sorted_tgt, description, source_id, edge_id_for_vdb)
+    for src, tgt, edge_src_id, edge_desc in edges:
+        if not src or not tgt:
+            continue
+        # sorted 后存，跟 LightRAG 写入一致
+        sorted_src, sorted_tgt = sorted((src, tgt))
+        # __id__ 用 make_relation_vdb_ids 的第一个（正序）
+        candidate_ids = make_relation_vdb_ids(sorted_src, sorted_tgt)
+        vdb_id = candidate_ids[0]
+        # description 为空时用 src+tgt 作为 fallback
+        embed_content = edge_desc if edge_desc else f"{sorted_src} - {sorted_tgt}"
+        items.append((sorted_src, sorted_tgt, embed_content, edge_src_id, vdb_id))
+
+    expected = len(items)
+    if expected == 0:
+        _backup_corrupt(vdb_path)
+        embedding_dim = _get_embedding_dim()
+        _build_vdb_file(vdb_path, [], [], embedding_dim)
+        return {
+            "status": "ok",
+            "expected": 0,
+            "actual": 0,
+            "lost": 0,
+            "source": "GraphML",
+            "message": "GraphML 无有效 edge，写空 vdb_relationships",
+        }
+
+    texts = [t for _, _, t, _, _ in items]
+
+    # 3. 批量 embedding
+    vectors = _embed_batch(texts)
+    if vectors is None:
+        return {
+            "status": "error",
+            "expected": expected,
+            "actual": 0,
+            "lost": expected,
+            "source": "GraphML",
+            "message": "embedding 完全失败，无法重建 vdb_relationships",
+        }
+    if len(vectors) != len(texts):
+        while len(vectors) < len(texts):
+            vectors.append(None)  # type: ignore[arg-type]
+
+    # 4. 构造 data_list
+    embedding_dim = len(vectors[0]) if vectors and vectors[0] is not None else _get_embedding_dim()
+    data_list: list[dict[str, Any]] = []
+    final_vectors: list[list[float]] = []
+    failed_count = 0
+    for (sorted_src, sorted_tgt, embed_content, edge_src_id, vdb_id), vec in zip(items, vectors):
+        if vec is None:
+            failed_count += 1
+            continue
+        # 找原始 description（用于 content 字段）
+        # edges 列表里每条是 (src, tgt, edge_src_id, edge_desc)
+        # 我们已经在 items 里丢了原始 desc，重新从 edges 找
+        original_desc = ""
+        for e_src, e_tgt, e_sid, e_desc in edges:
+            if (e_src, e_tgt) == (sorted_src, sorted_tgt) or (e_src, e_tgt) == (sorted_tgt, sorted_src):
+                original_desc = e_desc
+                break
+        content = original_desc if original_desc else f"{sorted_src} - {sorted_tgt}"
+        data_list.append({
+            "__id__": vdb_id,
+            "src_id": sorted_src,
+            "tgt_id": sorted_tgt,
+            "content": content,
+            "source_id": edge_src_id or "",
+        })
+        final_vectors.append(vec)
+
+    # 5. embedding 失败率检查
+    if expected > 0 and failed_count / expected > 0.1:
+        return {
+            "status": "error",
+            "expected": expected,
+            "actual": len(data_list),
+            "lost": failed_count,
+            "source": "GraphML",
+            "message": f"embedding 失败率 {failed_count}/{expected} > 10%，不写文件",
+        }
+
+    if not data_list:
+        return {
+            "status": "error",
+            "expected": expected,
+            "actual": 0,
+            "lost": expected,
+            "source": "GraphML",
+            "message": "embedding 全部失败，无数据可重建",
+        }
+
+    # 6. 备份 + 写
+    _backup_corrupt(vdb_path)
+    _build_vdb_file(vdb_path, data_list, final_vectors, embedding_dim)
+
+    actual = len(data_list)
+    logger.info(f"[LightRAGRepair] 重建 vdb_relationships: {actual} 条 (source=GraphML)")
+    return {
+        "status": "ok",
+        "expected": expected,
+        "actual": actual,
+        "lost": expected - actual,
+        "source": "GraphML",
+        "message": f"从 GraphML edges 重新 embedding 重建 {actual} 条 vdb_relationships",
+    }
+
+
+def repair_entity_chunks() -> dict[str, Any]:
+    """7. 从 GraphML node source_id 提取重建 entity_chunks。
+
+    真相源：GraphML node 的 d3 source_id 字段（<SEP> 分隔的 chunk_id 列表）
+    派生：kv_store_entity_chunks.json
+
+    key = entity_name (node id)
+    value = {"chunks_list": [chunk_id, ...], ...}
+    """
+    storage_dir = _storage_dir()
+    ec_path = storage_dir / "kv_store_entity_chunks.json"
+
+    # 1. 读 GraphML nodes
+    nodes, graphml_err = _load_graphml_nodes()
+    if graphml_err:
+        return {
+            "status": "error",
+            "expected": 0,
+            "actual": 0,
+            "lost": 0,
+            "source": "GraphML",
+            "message": f"GraphML 损坏: {graphml_err.get('msg', '')}",
+            "unrecoverable": True,
+        }
+    if not nodes:
+        _backup_corrupt(ec_path)
+        _atomic_write_json(ec_path, {})
+        return {
+            "status": "ok",
+            "expected": 0,
+            "actual": 0,
+            "lost": 0,
+            "source": "GraphML",
+            "message": "GraphML 无 node，写空 entity_chunks",
+        }
+
+    # 2. 从 source_id 提取 chunks_list
+    new_entity_chunks: dict[str, dict[str, Any]] = {}
+    expected = len(nodes)
+    for node_id, (desc, src) in nodes.items():
+        if not src:
+            # source_id 为空 → 空 chunks_list（合法）
+            new_entity_chunks[node_id] = {"chunks_list": []}
+            continue
+        # source_id 是 <SEP> 分隔的 chunk_id 列表
+        chunk_ids = [c for c in src.split(GRAPH_FIELD_SEP) if c]
+        new_entity_chunks[node_id] = {"chunks_list": chunk_ids}
+
+    # 3. 备份 + 写
+    _backup_corrupt(ec_path)
+    _atomic_write_json(ec_path, new_entity_chunks)
+
+    actual = len(new_entity_chunks)
+    logger.info(f"[LightRAGRepair] 重建 entity_chunks: {actual} 条 (source=GraphML source_id)")
+    return {
+        "status": "ok",
+        "expected": expected,
+        "actual": actual,
+        "lost": expected - actual,
+        "source": "GraphML node source_id",
+        "message": f"从 GraphML node source_id 提取重建 {actual} 条 entity_chunks",
+    }
+
+
+def repair_relation_chunks() -> dict[str, Any]:
+    """8. 从 GraphML edge source_id 提取重建 relation_chunks。
+
+    真相源：GraphML edge 的 d3 source_id 字段（<SEP> 分隔的 chunk_id 列表）
+    派生：kv_store_relation_chunks.json
+
+    key = make_relation_chunk_key(src, tgt) = GRAPH_FIELD_SEP.join(sorted((src, tgt)))
+    value = {"chunks_list": [chunk_id, ...], ...}
+    """
+    storage_dir = _storage_dir()
+    rc_path = storage_dir / "kv_store_relation_chunks.json"
+
+    # 1. 读 GraphML edges
+    _, edges, graphml_err = _load_graphml_nodes_edges()
+    if graphml_err:
+        return {
+            "status": "error",
+            "expected": 0,
+            "actual": 0,
+            "lost": 0,
+            "source": "GraphML",
+            "message": f"GraphML 损坏: {graphml_err.get('msg', '')}",
+            "unrecoverable": True,
+        }
+    if not edges:
+        _backup_corrupt(rc_path)
+        _atomic_write_json(rc_path, {})
+        return {
+            "status": "ok",
+            "expected": 0,
+            "actual": 0,
+            "lost": 0,
+            "source": "GraphML",
+            "message": "GraphML 无 edge，写空 relation_chunks",
+        }
+
+    # 2. 从 source_id 提取 chunks_list
+    new_relation_chunks: dict[str, dict[str, Any]] = {}
+    expected = 0
+    for src, tgt, edge_src_id, edge_desc in edges:
+        if not src or not tgt:
+            continue
+        # sorted 后用 make_relation_chunk_key 生成 key
+        key = make_relation_chunk_key(src, tgt)
+        chunk_ids = []
+        if edge_src_id:
+            chunk_ids = [c for c in edge_src_id.split(GRAPH_FIELD_SEP) if c]
+        # 同一个 key 可能被多个 edge 重复（不应该，但容错），合并 chunks_list
+        if key in new_relation_chunks:
+            existing = set(new_relation_chunks[key]["chunks_list"])
+            existing.update(chunk_ids)
+            new_relation_chunks[key]["chunks_list"] = sorted(existing)
+        else:
+            new_relation_chunks[key] = {"chunks_list": chunk_ids}
+            expected += 1
+
+    # 3. 备份 + 写
+    _backup_corrupt(rc_path)
+    _atomic_write_json(rc_path, new_relation_chunks)
+
+    actual = len(new_relation_chunks)
+    logger.info(f"[LightRAGRepair] 重建 relation_chunks: {actual} 条 (source=GraphML edge source_id)")
+    return {
+        "status": "ok",
+        "expected": expected,
+        "actual": actual,
+        "lost": expected - actual,
+        "source": "GraphML edge source_id",
+        "message": f"从 GraphML edge source_id 提取重建 {actual} 条 relation_chunks",
+    }
+
+
+def repair_full_entities() -> dict[str, Any]:
+    """9. 从 GraphML source_id → chunk→doc 映射重建 full_entities。
+
+    真相源：GraphML node source_id（chunk_id 列表）+ doc_status.chunks_list（chunk→doc 映射）
+    派生：kv_store_full_entities.json
+
+    key = doc_id
+    value = list of entity_name（在该 doc 的 chunks 中出现的实体）
+    """
+    storage_dir = _storage_dir()
+    fe_path = storage_dir / "kv_store_full_entities.json"
+    doc_status_path = storage_dir / "kv_store_doc_status.json"
+
+    # 1. 读 GraphML nodes
+    nodes, graphml_err = _load_graphml_nodes()
+    if graphml_err:
+        return {
+            "status": "error",
+            "expected": 0,
+            "actual": 0,
+            "lost": 0,
+            "source": "GraphML",
+            "message": f"GraphML 损坏: {graphml_err.get('msg', '')}",
+            "unrecoverable": True,
+        }
+
+    # 2. 读 doc_status（chunk→doc 映射）
+    doc_status = _load_json_dict(doc_status_path)
+    if doc_status is None:
+        return {
+            "status": "error",
+            "expected": 0,
+            "actual": 0,
+            "lost": 0,
+            "source": "doc_status",
+            "message": "doc_status 损坏，无法构建 chunk→doc 映射",
+            "unrecoverable": True,
+        }
+
+    # 3. 构建 chunk→doc 映射
+    chunk_to_doc: dict[str, str] = {}
+    for doc_id, ds_value in doc_status.items():
+        if not isinstance(ds_value, dict):
+            continue
+        for cid in ds_value.get("chunks_list", []) or []:
+            if isinstance(cid, str):
+                chunk_to_doc[cid] = doc_id
+
+    # 4. 从 GraphML source_id 提取 entity→docs 映射
+    entity_to_docs: dict[str, set[str]] = {}
+    for node_id, (desc, src) in nodes.items():
+        if not src:
+            continue
+        chunk_ids = [c for c in src.split(GRAPH_FIELD_SEP) if c]
+        for cid in chunk_ids:
+            doc_id = chunk_to_doc.get(cid)
+            if doc_id:
+                entity_to_docs.setdefault(node_id, set()).add(doc_id)
+
+    # 5. 反转：doc→entities
+    doc_to_entities: dict[str, list[str]] = {}
+    for entity_name, doc_set in entity_to_docs.items():
+        for doc_id in doc_set:
+            doc_to_entities.setdefault(doc_id, []).append(entity_name)
+
+    # 6. 备份 + 写
+    expected = len(doc_status) if doc_status else 0
+    _backup_corrupt(fe_path)
+    _atomic_write_json(fe_path, doc_to_entities)
+
+    actual = len(doc_to_entities)
+    logger.info(f"[LightRAGRepair] 重建 full_entities: {actual} 条 (source=GraphML source_id + doc_status)")
+    return {
+        "status": "ok",
+        "expected": expected,
+        "actual": actual,
+        "lost": expected - actual,
+        "source": "GraphML source_id + doc_status chunks_list",
+        "message": f"从 GraphML source_id → chunk→doc 映射重建 {actual} 条 full_entities",
+    }
+
+
+def repair_full_relations() -> dict[str, Any]:
+    """10. 从 GraphML edge source_id → chunk→doc 映射重建 full_relations。
+
+    真相源：GraphML edge source_id（chunk_id 列表）+ doc_status.chunks_list（chunk→doc 映射）
+    派生：kv_store_full_relations.json
+
+    key = doc_id
+    value = list of relation_key (make_relation_chunk_key 格式)
+    """
+    storage_dir = _storage_dir()
+    fr_path = storage_dir / "kv_store_full_relations.json"
+    doc_status_path = storage_dir / "kv_store_doc_status.json"
+
+    # 1. 读 GraphML edges
+    _, edges, graphml_err = _load_graphml_nodes_edges()
+    if graphml_err:
+        return {
+            "status": "error",
+            "expected": 0,
+            "actual": 0,
+            "lost": 0,
+            "source": "GraphML",
+            "message": f"GraphML 损坏: {graphml_err.get('msg', '')}",
+            "unrecoverable": True,
+        }
+
+    # 2. 读 doc_status
+    doc_status = _load_json_dict(doc_status_path)
+    if doc_status is None:
+        return {
+            "status": "error",
+            "expected": 0,
+            "actual": 0,
+            "lost": 0,
+            "source": "doc_status",
+            "message": "doc_status 损坏，无法构建 chunk→doc 映射",
+            "unrecoverable": True,
+        }
+
+    # 3. 构建 chunk→doc 映射
+    chunk_to_doc: dict[str, str] = {}
+    for doc_id, ds_value in doc_status.items():
+        if not isinstance(ds_value, dict):
+            continue
+        for cid in ds_value.get("chunks_list", []) or []:
+            if isinstance(cid, str):
+                chunk_to_doc[cid] = doc_id
+
+    # 4. 从 GraphML edge source_id 提取 relation→docs 映射
+    relation_to_docs: dict[str, set[str]] = {}
+    for src, tgt, edge_src_id, edge_desc in edges:
+        if not src or not tgt:
+            continue
+        if not edge_src_id:
+            continue
+        key = make_relation_chunk_key(src, tgt)
+        chunk_ids = [c for c in edge_src_id.split(GRAPH_FIELD_SEP) if c]
+        for cid in chunk_ids:
+            doc_id = chunk_to_doc.get(cid)
+            if doc_id:
+                relation_to_docs.setdefault(key, set()).add(doc_id)
+
+    # 5. 反转：doc→relations
+    doc_to_relations: dict[str, list[str]] = {}
+    for relation_key, doc_set in relation_to_docs.items():
+        for doc_id in doc_set:
+            doc_to_relations.setdefault(doc_id, []).append(relation_key)
+
+    # 6. 备份 + 写
+    expected = len(doc_status) if doc_status else 0
+    _backup_corrupt(fr_path)
+    _atomic_write_json(fr_path, doc_to_relations)
+
+    actual = len(doc_to_relations)
+    logger.info(f"[LightRAGRepair] 重建 full_relations: {actual} 条 (source=GraphML edge source_id + doc_status)")
+    return {
+        "status": "ok",
+        "expected": expected,
+        "actual": actual,
+        "lost": expected - actual,
+        "source": "GraphML edge source_id + doc_status chunks_list",
+        "message": f"从 GraphML edge source_id → chunk→doc 映射重建 {actual} 条 full_relations",
+    }
+
+
+def repair_llm_response_cache() -> dict[str, Any]:
+    """11. llm_response_cache 不可重建，清空（minor 级别，允许降级启动）。
+
+    真相源：无（不可重建）
+    派生：kv_store_llm_response_cache.json
+
+    清空文件 + 清空 text_chunks.llm_cache_list 引用。
+    """
+    storage_dir = _storage_dir()
+    cache_path = storage_dir / "kv_store_llm_response_cache.json"
+    text_chunks_path = storage_dir / "kv_store_text_chunks.json"
+
+    # 1. 备份 + 清空 cache
+    _backup_corrupt(cache_path)
+    _atomic_write_json(cache_path, {})
+
+    # 2. 清空 text_chunks.llm_cache_list（避免引用悬空）
+    text_chunks = _load_json_dict(text_chunks_path)
+    if text_chunks and isinstance(text_chunks, dict):
+        cleared = 0
+        for chunk_id, chunk_value in text_chunks.items():
+            if isinstance(chunk_value, dict) and chunk_value.get("llm_cache_list"):
+                chunk_value["llm_cache_list"] = []
+                cleared += 1
+        if cleared > 0:
+            _atomic_write_json(text_chunks_path, text_chunks)
+            logger.info(f"[LightRAGRepair] 清空 {cleared} 条 text_chunks.llm_cache_list")
+
+    logger.info("[LightRAGRepair] llm_response_cache 不可重建，已清空")
+    return {
+        "status": "ok",
+        "expected": 0,
+        "actual": 0,
+        "lost": 0,
+        "source": "N/A (不可重建，清空)",
+        "message": "llm_response_cache 不可重建，已清空（minor 级别，允许降级启动）",
+    }
+
+
+# =============================================================================
+# repair_all：按依赖链顺序调用
+# =============================================================================
+
+
+_REPAIR_ORDER = [
+    ("text_chunks", repair_text_chunks),
+    ("doc_status", repair_doc_status),
+    ("graphml", repair_graphml),
+    ("vdb_chunks", repair_vdb_chunks),
+    ("vdb_entities", repair_vdb_entities),
+    ("vdb_relationships", repair_vdb_relationships),
+    ("entity_chunks", repair_entity_chunks),
+    ("relation_chunks", repair_relation_chunks),
+    ("full_entities", repair_full_entities),
+    ("full_relations", repair_full_relations),
+    ("llm_response_cache", repair_llm_response_cache),
+]
+
+
+def repair_all() -> dict[str, Any]:
+    """一键修复所有 LightRAG 数据文件（按依赖链顺序）。
+
+    顺序：
+        text_chunks → doc_status → graphml → vdb_chunks → vdb_entities →
+        vdb_relationships → entity_chunks → relation_chunks →
+        full_entities → full_relations → llm_response_cache
+
+    Returns:
+        {name: {status, expected, actual, lost, source, message, ...}, ...}
+    """
+    results: dict[str, Any] = {}
+    unrecoverable_detected = False
+    for name, fn in _REPAIR_ORDER:
+        try:
+            result = fn()
+            results[name] = result
+            # 如果 unrecoverable，后续 repair 仍继续（让用户看到全部状态）
+            # 但标记 unrecoverable_detected 供调用方决策
+            if result.get("unrecoverable"):
+                unrecoverable_detected = True
+                logger.warning(
+                    f"[LightRAGRepair] {name} 报 unrecoverable: {result.get('message', '')}"
+                )
+        except Exception as e:  # noqa: BLE001
+            # 单个 repair 抛异常不影响其他 repair
+            logger.error(f"[LightRAGRepair] {name} 抛异常: {e}", exc_info=True)
+            results[name] = {
+                "status": "error",
+                "expected": 0,
+                "actual": 0,
+                "lost": 0,
+                "source": "internal error",
+                "message": f"repair 函数抛异常: {type(e).__name__}: {e}",
+            }
+
+    if unrecoverable_detected:
+        results["_unrecoverable"] = True
+    return results
+
+
+# =============================================================================
+# 向后兼容的废弃函数签名（已废弃，新代码应使用 repair_all 或具体 repair_xxx）
+# =============================================================================
+
+
+def repair_vdb(vdb_filename: str) -> dict[str, Any]:  # noqa: ARG001
+    """已废弃：用 repair_vdb_chunks / repair_vdb_entities / repair_vdb_relationships 代替。"""
+    logger.warning("repair_vdb is deprecated, use repair_vdb_chunks/entities/relationships instead")
+    return {
+        "status": "error",
+        "expected": 0,
+        "actual": 0,
+        "lost": 0,
+        "source": "deprecated",
+        "message": "repair_vdb 已废弃，请用 repair_all() 或具体 repair_xxx 函数",
+    }
+
+
+def repair_kv_store(kv_filename: str) -> dict[str, Any]:  # noqa: ARG001
+    """已废弃：用具体 repair_xxx 函数代替。"""
+    logger.warning("repair_kv_store is deprecated, use specific repair_xxx instead")
+    return {
+        "status": "error",
+        "expected": 0,
+        "actual": 0,
+        "lost": 0,
+        "source": "deprecated",
+        "message": "repair_kv_store 已废弃",
+    }
+
+
+def repair_entity_sync() -> dict[str, Any]:
+    """已废弃：用 repair_vdb_entities + repair_entity_chunks 代替。"""
+    logger.warning("repair_entity_sync is deprecated, use repair_vdb_entities + repair_entity_chunks instead")
+    return {
+        "status": "error",
+        "expected": 0,
+        "actual": 0,
+        "lost": 0,
+        "source": "deprecated",
+        "message": "repair_entity_sync 已废弃",
     }
 
 
 def repair_relationship_sync() -> dict[str, Any]:
-    """修复 vdb_relationships 跟 GraphML 的边同步性。
-
-    LightRAG 设计上 GraphML edge src/tgt 全部 lower 化，且写入 vdb 时
-    先 sorted((src, tgt)) 再 compute_mdhash_id(sorted_src + sorted_tgt, prefix='rel-')。
-    用户铁律：所有写入必须转小写。修复策略（以 GraphML 为真相源，统一小写 + sorted）：
-    1. vdb 关系 src/tgt 大写 → 改小写 + sorted + 重算 __id__ = compute_mdhash_id(sorted_lower_src + sorted_lower_tgt, prefix='rel-')
-       同时 src_id/tgt_id 也存排序后的值（跟 operate.py L1586-1589 / lightrag.py L2516 一致）
-    2. vdb 关系 src/tgt 在 GraphML 没有对应边 → 删除（真孤儿关系，含自环——LightRAG 不写自环边）
-
-    content/description/keywords 字段保留原样不 lower（自然语言）。
-
-    Returns:
-        {"status": "ok"|"error", "renamed": int, "removed": int, "message": str}
-    """
-    import time
-    import xml.etree.ElementTree as ET
-    import numpy as np
-
-    storage_dir = _storage_dir()
-    vdb_path = storage_dir / "vdb_relationships.json"
-    graphml_path = storage_dir / "graph_chunk_entity_relation.graphml"
-
-    if not vdb_path.exists() or not graphml_path.exists():
-        return {"status": "error", "message": "vdb_relationships 或 GraphML 不存在", "renamed": 0, "removed": 0}
-
-    # 1. 读 vdb
-    try:
-        raw = json.loads(vdb_path.read_text(encoding="utf-8"))
-    except Exception as e:
-        return {"status": "error", "message": f"vdb 读取失败: {e}", "renamed": 0, "removed": 0}
-
-    embedding_dim = raw.get("embedding_dim")
-    data_list = raw.get("data", [])
-    if not isinstance(embedding_dim, int) or not isinstance(data_list, list):
-        return {"status": "error", "message": "vdb 格式异常", "renamed": 0, "removed": 0}
-
-    # 2. 读 GraphML 边集合（src+tgt 都 lower，且已 sorted）
-    ns = "{http://graphml.graphdrawing.org/xmlns}"
-    graphml_edges: set[tuple[str, str]] = set()
-    try:
-        tree = ET.parse(graphml_path)
-        root = tree.getroot()
-        for edge in root.findall(f".//{ns}edge"):
-            src = (edge.get("source") or "").lower()
-            tgt = (edge.get("target") or "").lower()
-            if src and tgt:
-                # normalized：sorted 后存，跟 LightRAG 写入一致
-                s, t = sorted((src, tgt))
-                graphml_edges.add((s, t))
-    except Exception as e:
-        return {"status": "error", "message": f"GraphML 读取失败: {e}", "renamed": 0, "removed": 0}
-
-    # 3. 分类 vdb 关系
-    renamed = 0
-    removed = 0
-    new_data: list[dict] = []
-    new_vectors: list[np.ndarray] = []
-
-    for item in data_list:
-        orig_src = item.get("src_id", "")
-        orig_tgt = item.get("tgt_id", "")
-        if not orig_src or not orig_tgt:
-            continue
-        lower_src = orig_src.lower()
-        lower_tgt = orig_tgt.lower()
-        # sorted 后存，跟 LightRAG 写入一致（operate.py L1586-1589 / lightrag.py L2516）
-        sorted_src, sorted_tgt = sorted((lower_src, lower_tgt))
-
-        # 真孤儿关系（lower+sorted 后 GraphML 没有对应边，含自环——LightRAG 不写自环边）→ 删除
-        if (sorted_src, sorted_tgt) not in graphml_edges:
-            removed += 1
-            continue
-
-        # 大写改小写 + sorted + 重算 __id__
-        # 保留所有字段（content/description/keywords 等原样），只更新 src_id/tgt_id/__id__
-        new_item = {k: v for k, v in item.items() if k not in ("vector", "__id__")}
-        new_item["src_id"] = sorted_src
-        new_item["tgt_id"] = sorted_tgt
-        new_item["__id__"] = compute_mdhash_id(sorted_src + sorted_tgt, prefix="rel-")
-        if orig_src != sorted_src or orig_tgt != sorted_tgt:
-            renamed += 1
-
-        # 解码原向量保留
-        try:
-            vec = _decode_vector(item.get("vector", ""), embedding_dim)
-            new_vectors.append(np.array(vec, dtype=np.float16))
-        except Exception:
-            try:
-                vec = _embed_text(item.get("content", ""))
-                new_vectors.append(np.array(vec, dtype=np.float16))
-            except Exception as e:
-                logger.warning(f"[LightRAGRepair] 重建关系 {sorted_src}→{sorted_tgt} 向量失败: {e}，跳过")
-                continue
-        new_data.append(new_item)
-
-    if not new_data:
-        return {"status": "error", "message": "修复后无数据", "renamed": renamed, "removed": removed}
-
-    # 4. 备份（shutil.copy2 + 毫秒时间戳）
-    timestamp = int(time.time() * 1000)
-    corrupt_bak = storage_dir / f"vdb_relationships.json.corrupt.{timestamp}.bak"
-    try:
-        shutil.copy2(vdb_path, corrupt_bak)
-        logger.info(f"[LightRAGRepair] 损坏 vdb_relationships 备份到: {corrupt_bak}")
-    except Exception as e:
-        logger.error(f"[LightRAGRepair] 备份失败: {e}，abort")
-        return {"status": "error", "message": f"备份失败: {e}", "renamed": renamed, "removed": removed}
-
-    # 5. 原子写新 vdb
-    matrix_f32 = np.array(new_vectors, dtype=np.float32)
-    for i, item in enumerate(new_data):
-        item["vector"] = _encode_vector(new_vectors[i])
-
-    storage = {
-        "embedding_dim": embedding_dim,
-        "data": new_data,
-        "matrix": _encode_matrix(matrix_f32),
-    }
-    tmp_file = vdb_path.with_name(vdb_path.name + ".tmp")
-    with open(tmp_file, "w", encoding="utf-8") as f:
-        json.dump(storage, f, ensure_ascii=False)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp_file, vdb_path)
-
-    logger.info(
-        f"[LightRAGRepair] 关系同步修复完成: 改名 {renamed}, 删除孤儿 {removed}, 总计 {len(new_data)}"
-    )
+    """已废弃：用 repair_vdb_relationships + repair_relation_chunks 代替。"""
+    logger.warning("repair_relationship_sync is deprecated, use repair_vdb_relationships + repair_relation_chunks instead")
     return {
-        "status": "ok",
-        "renamed": renamed,
-        "removed": removed,
-        "message": f"改大小写/排序 {renamed} 条，删除孤儿 {removed} 条",
+        "status": "error",
+        "expected": 0,
+        "actual": 0,
+        "lost": 0,
+        "source": "deprecated",
+        "message": "repair_relationship_sync 已废弃",
     }
-
-
-def repair_all() -> dict[str, Any]:
-    """一键修复所有 vdb。"""
-    results: dict[str, Any] = {}
-    for vdb_file in _VDB_TEXT_FIELD:
-        results[vdb_file] = repair_vdb(vdb_file)
-    # 新增：实体同步性修复
-    results["entity_sync"] = repair_entity_sync()
-    # 新增：关系同步性修复
-    results["relationship_sync"] = repair_relationship_sync()
-    return results
