@@ -27,14 +27,12 @@ JSON 解析为 list 或其他类型 = 文件级 critical。
 from __future__ import annotations
 
 import json
-import os
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
 from loguru import logger
 
-from lightrag.constants import GRAPH_FIELD_SEP
 from lightrag.utils import (
     compute_mdhash_id,
     make_relation_vdb_ids,
@@ -44,8 +42,6 @@ from lightrag.utils import (
 _STORAGE_DIR = Path.home() / ".niu" / "lightrag_storage"
 
 _GRAPHML_FILE = "graph_chunk_entity_relation.graphml"
-
-_GRAPHML_NS = "{http://graphml.graphdrawing.org/xmlns}"
 
 
 # =============================================================================
@@ -434,7 +430,9 @@ def check_doc_status_chunks_dangling() -> dict[str, Any]:
     if tc_err:
         errors.append(tc_err)
         return {"name": "doc_status_chunks_dangling", "errors": errors}
-    assert tc_data is not None  # tc_err is None → tc_data is not None
+    if tc_data is None:
+        return {"name": "doc_status_chunks_dangling", "errors": errors}
+    tc_keys: set[str] = set(tc_data.keys())
 
     for doc_id, doc_value in ds_data.items():
         if not isinstance(doc_value, dict):
@@ -447,7 +445,7 @@ def check_doc_status_chunks_dangling() -> dict[str, Any]:
         for chunk_id in chunks_list:
             if not isinstance(chunk_id, str):
                 continue
-            if chunk_id not in tc_data:
+            if chunk_id not in tc_keys:
                 errors.append({
                     "check": "doc_status_chunks_dangling",
                     "severity": "major",
