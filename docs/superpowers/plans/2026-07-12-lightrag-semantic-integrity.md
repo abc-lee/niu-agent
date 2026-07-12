@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 让 LightRAG 数据一致性检查工具能检测出 16 个历史遗留的"僵尸脑区"（句法自洽但语义死亡的数据），让修复工具能完整清理 7 个存储的残留数据，确保修复后数据真正可用。
+**Goal:** 让 LightRAG 数据一致性检查工具能检测出 16 个历史遗留的"僵尸脑区"（句法自洽但语义死亡的数据），让修复工具能完整清理 8 个存储的残留数据，确保修复后数据真正可用。
 
-**Architecture:** 在现有 `lightrag_integrity.py`（11 项句法 check）和 `lightrag_repair.py`（12 项 repair）基础上，新增 5 项语义 check 和 5 项语义 repair（原计划 6 项，`check_brainregion_size_mismatch` 因真实数据无效已删除，见 Task 3）。语义 check 用"description 语义标记 + 跨存储交叉验证"作为参照系（不是句法引用完整性）。语义 repair 用"语义标记"作为真相源（不是 GraphML——GraphML 本身可能被污染），做完整 7 存储清理。修复后用"程序启动正常运行"作为验证标准（不是 check_all 返回 ok）。同时修复 4 个 P0 遗漏（Task 13-16：region_sync 覆盖率检查/forced sync 死循环/shrink_threshold/forced sync 阻塞）。
+**Architecture:** 在现有 `lightrag_integrity.py`（11 项句法 check）和 `lightrag_repair.py`（12 项 repair）基础上，新增 5 项语义 check 和 5 项语义 repair（原计划 6 项，`check_brainregion_size_mismatch` 因真实数据无效已删除，见 Task 3）。语义 check 用"description 语义标记 + 跨存储交叉验证"作为参照系（不是句法引用完整性）。语义 repair 用"语义标记"作为真相源（不是 GraphML——GraphML 本身可能被污染），做完整 8 存储清理（含 `kv_store_relation_chunks`——Bug #3 修复）。修复后用"程序启动正常运行"作为验证标准（不是 check_all 返回 ok）。同时修复 4 个 P0 遗漏（Task 13-16：region_sync 覆盖率检查/forced sync 死循环/shrink_threshold/forced sync 阻塞）。
 
 **Tech Stack:** Python 3.11、xml.etree.ElementTree（GraphML 解析）、nano-vectordb（向量存储）、pytest（TDD）、真实 LightRAG 实例（端到端验证）。
 
@@ -51,7 +51,7 @@
 - vdb_entities 里有向量但 GraphML 没有 node（反向孤儿）
 - vdb_chunks 里有向量但 text_chunks 没有 chunk（反向孤儿）
 
-**P3: 完整 7 存储清理**——repair 时清干净：
+**P3: 完整 8 存储清理**——repair 时清干净：
 - GraphML node + cascade edge
 - vdb_entities 向量
 - vdb_relationships 向量
@@ -59,9 +59,10 @@
 - text_chunks 专属 chunk
 - vdb_chunks 专属 chunk 向量
 - full_entities / full_relations 文档级索引
+- relation_chunks 僵尸关系 chunk（Bug #3 修复：key 格式 `src<SEP>tgt`，src 或 tgt 是僵尸脑区则删）
 
 **P4: 验证标准升级**——不只看 `check_all` 返回 ok，还要：
-- 16 个僵尸脑区在所有 7 个存储中完全消失
+- 16 个僵尸脑区在所有 8 个存储中完全消失
 - `brain_meta_shrink_count` 不在任何 description 里
 - 程序启动后 region_sync 一次 sync 完成（不卡 dissolve）
 - 风扇不狂转
@@ -77,11 +78,15 @@
 | 文件 | 责任 | 改动类型 |
 |------|------|---------|
 | `niu_api/internal/lightrag_integrity.py` | 新增 5 项语义 check + 扩展 `_load_graphml` 提取 description/entity_type | 修改 |
-| `niu_api/internal/lightrag_repair.py` | 新增 5 项语义 repair（完整 7 存储清理） + 扩展 `repair_all` 调用语义 repair | 修改 |
+| `niu_api/internal/lightrag_repair.py` | 新增 5 项语义 repair（完整 8 存储清理，含 `kv_store_relation_chunks`） + 扩展 `repair_all` 调用语义 repair + 顶部加 `import zlib` | 修改 |
 | `tests/test_lightrag_semantic_integrity.py` | 5 项语义 check 的 TDD 测试 | 创建 |
 | `tests/test_lightrag_semantic_repair.py` | 5 项语义 repair 的 TDD 测试 | 创建 |
 | `tests/fixtures/lightrag_zombie_regions/` | 僵尸脑区测试数据 fixture（含真实 16 个僵尸脑区的最小复现） | 创建 |
 | `tests/test_lightrag_e2e_semantic.py` | 端到端测试：真实数据跑 check → repair → 启动程序验证正常运行 | 创建 |
+| `agent/injector/region_sync.py` | 删除 `_refresh_activation_manager` 覆盖率检查（Task 13）+ `shrink_threshold` 从 100 降到 10（Task 15） | 修改 |
+| `agent/runner.py` | forced sync 加 5 分钟失败冷却 + 成功后重置冷却时间（Task 14）+ forced sync 改异步触发（Task 16）+ 顶部加 `import time`（Bug #6） | 修改 |
+| `niu_api/internal/region_manager.py` | `dissolve_shrunk_regions` 参数默认值 `shrink_threshold` 从 100 降到 10（Task 15） | 修改 |
+| `tests/test_region_sync.py` | 删除 `test_refresh_activation_manager_skips_when_coverage_too_low`（Task 13 Step 3.5，覆盖率检查已删） | 修改 |
 
 ---
 
@@ -1396,7 +1401,7 @@ git commit -m "test: 新增 16 个僵尸脑区真实数据 fixture（来自 ~/.n
 
 ---
 
-## Task 9: 语义 Repair 1 - 完整 7 存储清理僵尸脑区
+## Task 9: 语义 Repair 1 - 完整 8 存储清理僵尸脑区
 
 **Files:**
 - Modify: `niu_api/internal/lightrag_repair.py`（新增 `repair_brainregion_zombies`）
@@ -1404,7 +1409,7 @@ git commit -m "test: 新增 16 个僵尸脑区真实数据 fixture（来自 ~/.n
 
 ### 背景
 
-核心 repair 函数：用语义标记作为真相源（不是 GraphML），清理 7 个存储：
+核心 repair 函数：用语义标记作为真相源（不是 GraphML），清理 8 个存储：
 1. GraphML node + cascade edge
 2. vdb_entities 向量
 3. vdb_relationships 涉及该脑区的向量
@@ -1412,6 +1417,7 @@ git commit -m "test: 新增 16 个僵尸脑区真实数据 fixture（来自 ~/.n
 5. kv_store_text_chunks 的脑区专属 chunk（source_id=brain_xxx）
 6. vdb_chunks 的脑区专属 chunk 向量
 7. kv_store_full_entities / full_relations 的文档级索引
+8. kv_store_relation_chunks 的僵尸关系 chunk（Bug #3 修复：真实数据含 16 个僵尸脑区关系 chunk，key 格式 "src<SEP>tgt"，src 或 tgt 是僵尸脑区则删）
 
 ### - [ ] Step 1: Write the failing test
 
@@ -1527,9 +1533,21 @@ def _make_test_storage(tmp_path: Path, zombies: list[str], normal_regions: list[
         },
     }, ensure_ascii=False))
 
+    # 9. kv_store_relation_chunks（Bug #3 修复：第 8 个存储）
+    # 真实结构：dict[key] -> {chunk_ids, count}，key 格式 "src<SEP>tgt"（<SEP> 是 GRAPH_FIELD_SEP 字符串）
+    # 僵尸脑区的关系 chunk key 形如 "智家xxx脑区<SEP>知识图谱系统维护"
+    rc_data = {}
+    for z in zombies:
+        # src 是僵尸脑区
+        rc_data[f"{z}<SEP>知识图谱系统维护"] = {"chunk_ids": [f"chunk-rel-{z}"], "count": 1}
+    for n in normal_regions:
+        # 正常脑区的关系 chunk 保留
+        rc_data[f"{n}<SEP>知识图谱系统维护"] = {"chunk_ids": [f"chunk-rel-{n}"], "count": 1}
+    (storage / "kv_store_relation_chunks.json").write_text(json.dumps(rc_data, ensure_ascii=False))
 
-def test_repair_brainregion_zombies_cleans_all_7_storages(tmp_path):
-    """repair_brainregion_zombies 应清理 7 个存储的僵尸脑区残留"""
+
+def test_repair_brainregion_zombies_cleans_all_8_storages(tmp_path):
+    """repair_brainregion_zombies 应清理 8 个存储的僵尸脑区残留"""
     _make_test_storage(tmp_path, zombies=["智家脑区A", "智家脑区B"], normal_regions=["聊天历史脑区"])
     
     with patch("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path), \
@@ -1590,6 +1608,16 @@ def test_repair_brainregion_zombies_cleans_all_7_storages(tmp_path):
                    if isinstance(ent, dict) and ent.get("entity_name") == "聊天历史脑区"]
     assert len(normal_docs) == 1, f"正常 entity 的 doc 应保留 1 个，实际 {len(normal_docs)}"
 
+    # 8. kv_store_relation_chunks（Bug #3 修复）：僵尸关系 chunk 已删，正常关系 chunk 保留
+    rc = json.loads((tmp_path / "kv_store_relation_chunks.json").read_text())
+    # key 格式 "src<SEP>tgt"，src 是僵尸脑区的 key 应被删
+    zombie_rc_keys = [k for k in rc.keys()
+                      if any(z in k.split("<SEP>") for z in ["智家脑区A", "智家脑区B"])]
+    assert len(zombie_rc_keys) == 0, f"僵尸关系 chunk key 仍存在: {zombie_rc_keys}"
+    # 正常脑区的关系 chunk 保留
+    normal_rc_keys = [k for k in rc.keys() if "聊天历史脑区" in k.split("<SEP>")]
+    assert len(normal_rc_keys) == 1, f"正常关系 chunk 应保留 1 个，实际 {len(normal_rc_keys)}"
+
 
 def test_repair_brainregion_zombies_check_ok_after_repair(tmp_path):
     """repair 后 check_all 应该不再报僵尸脑区错误"""
@@ -1614,16 +1642,17 @@ def test_repair_brainregion_zombies_check_ok_after_repair(tmp_path):
 ### - [ ] Step 2: Run test to verify it fails
 
 ```bash
-python -m pytest tests/test_lightrag_semantic_repair.py::test_repair_brainregion_zombies_cleans_all_7_storages -v
+python -m pytest tests/test_lightrag_semantic_repair.py::test_repair_brainregion_zombies_cleans_all_8_storages -v
 ```
 
 Expected: FAIL with `ImportError`
 
 ### - [ ] Step 3: Write minimal implementation
 
-在 `niu_api/internal/lightrag_repair.py` 新增：
+在 `niu_api/internal/lightrag_repair.py` 新增（顶部需 `import zlib`，与 `lightrag_repair.py` 现有 `import numpy as np` / `import base64` 并列）：
 
 ```python
+import zlib
 import numpy as np
 import base64
 
@@ -1633,16 +1662,21 @@ def _rebuild_vdb_matrix(vdb_data: dict) -> dict:
 
     nano-vectordb 的 vdb 顶层字段是 `embedding_dim` + `data` + `matrix`：
     - `embedding_dim`: int，向量维度
-    - `data`: list[entry]，每个 entry 含 `__id__` / `entity_name` / `vector`（base64 float32）
+    - `data`: list[entry]，每个 entry 含 `__id__` / `entity_name` / `vector`
     - `matrix`: base64 编码的 float32 矩阵，长度 = 4 * embedding_dim * len(data_list)
 
     `_load_vdb` 会校验 `4 * embedding_dim * len(data_list) == len(matrix_bytes)`。
     删 entry 后 `len(data_list)` 变小，matrix 长度不变，触发 `matrix_size_mismatch` critical。
 
     本函数在删 entry 后调用，按当前 data_list 重建 matrix：
-    - 遍历 data_list 每个 entry 的 `vector` 字段（base64 float32 字符串）
+    - 遍历 data_list 每个 entry 的 `vector` 字段（三层编码：base64(zlib(float16)) 字符串）
     - 解码失败或缺失时用零向量填充（embedding_dim 维度）
-    - 拼接为 2D 矩阵，base64 编码后写回 `matrix` 字段
+    - 拼接为 2D 矩阵，转 float32，base64 编码（单层，无 zlib）后写回 `matrix` 字段
+
+    重要编码差异（审查实测确认）：
+    - `vector` 字段：三层编码 base64(zlib(float16 bytes))——参考 lightrag_repair.py _encode_vector (L177-182)
+    - `matrix` 字段：单层编码 base64(float32 bytes)——无 zlib 压缩
+    本函数读 vector 时用三层解码，写 matrix 时用单层编码。
     """
     embedding_dim = vdb_data.get("embedding_dim", 0)
     data_list = vdb_data.get("data", [])
@@ -1655,7 +1689,10 @@ def _rebuild_vdb_matrix(vdb_data: dict) -> dict:
         vec_b64 = entry.get("vector", "") if isinstance(entry, dict) else ""
         if vec_b64:
             try:
-                vec = np.frombuffer(base64.b64decode(vec_b64), dtype=np.float32)
+                # 三层解码：base64 → zlib → float16 → float32
+                raw_bytes = base64.b64decode(vec_b64)
+                decompressed = zlib.decompress(raw_bytes)
+                vec = np.frombuffer(decompressed, dtype=np.float16).astype(np.float32)
                 # 维度对齐（防止 entry vector 跟 embedding_dim 不一致）
                 if len(vec) != embedding_dim:
                     vec = np.zeros(embedding_dim, dtype=np.float32)
@@ -1666,17 +1703,18 @@ def _rebuild_vdb_matrix(vdb_data: dict) -> dict:
         else:
             vectors.append(np.zeros(embedding_dim, dtype=np.float32))
     matrix = np.array(vectors, dtype=np.float32)
+    # matrix 字段是 base64(float32) 单层编码（无 zlib）
     vdb_data["matrix"] = base64.b64encode(matrix.tobytes()).decode("ascii")
     return vdb_data
 
 
 def repair_brainregion_zombies() -> dict[str, Any]:
-    """语义 repair: 完整清理 7 个存储的僵尸脑区残留。
+    """语义 repair: 完整清理 8 个存储的僵尸脑区残留。
 
     真相源：脑区 description 的语义标记（"被删除"等）——不是 GraphML，
     因为 GraphML 本身可能被污染（含僵尸 node）。
 
-    清理范围（7 存储）：
+    清理范围（8 存储）：
     1. GraphML node + cascade edge（用 ET 删 node，edge 自然 cascade）
     2. vdb_entities 向量（删 entity_name 匹配的向量）
     3. vdb_relationships 向量（删 src_id 或 tgt_id 是僵尸的向量）
@@ -1684,6 +1722,7 @@ def repair_brainregion_zombies() -> dict[str, Any]:
     5. kv_store_text_chunks 的脑区专属 chunk（source_id=brain_xxx）
     6. vdb_chunks 的脑区专属 chunk 向量
     7. kv_store_full_entities / full_relations 的文档级索引（从列表中移除僵尸名）
+    8. kv_store_relation_chunks 的僵尸关系 chunk（key 格式 "src<SEP>tgt"，src 或 tgt 是僵尸则删——Bug #3 修复）
 
     Returns:
         {
@@ -1696,7 +1735,7 @@ def repair_brainregion_zombies() -> dict[str, Any]:
         _load_graphml, _parse_brain_meta, _ZOMBIE_DESCRIPTION_MARKERS,
     )
 
-    storage_dir = _resolve_storage_dir()
+    storage_dir = _storage_dir()
     details: dict[str, Any] = {}
 
     # 1. 识别僵尸脑区
@@ -1757,6 +1796,13 @@ def repair_brainregion_zombies() -> dict[str, Any]:
 
         fr_path = storage_dir / "kv_store_full_relations.json"
         fr = json.loads(fr_path.read_text()) if fr_path.exists() else {}
+
+        # Bug #3 修复：遗漏的第 8 个存储——僵尸脑区的关系 chunk
+        # 真实数据 kv_store_relation_chunks.json 含 16 个僵尸脑区的关系 chunk，
+        # key 格式 "智家xxx脑区<SEP>知识图谱系统维护"（src<SEP>tgt，<SEP> 是 GRAPH_FIELD_SEP 字符串）。
+        # 不清理会残留导致 check_relation_chunks_dangling 报 16 个 major error。
+        rc_path = storage_dir / "kv_store_relation_chunks.json"
+        rc = json.loads(rc_path.read_text()) if rc_path.exists() else {}
     except Exception as e:
         return {"status": "unrecoverable", "reason": f"读入存储失败: {e}"}
 
@@ -1884,6 +1930,26 @@ def repair_brainregion_zombies() -> dict[str, Any]:
             cleaned_fr += before - len(rel_data["relation_pairs"])
     details["full_relations"] = {"cleaned_count": cleaned_fr}
 
+    # 3.9 kv_store_relation_chunks（Bug #3 修复：遗漏的第 8 个存储）
+    # 真实数据：dict[key] -> {chunk_ids, count}，key 格式 "src<SEP>tgt"（<SEP> 是 GRAPH_FIELD_SEP 字符串）
+    # 16 个僵尸脑区的关系 chunk key 形如 "智家xxx脑区<SEP>知识图谱系统维护"——src 或 tgt 是僵尸脑区则删
+    before_rc = len(rc)
+    rc_keys_to_remove = []
+    for key in list(rc.keys()):
+        # key 格式 "src<SEP>tgt"（<SEP> 是 GRAPH_FIELD_SEP 字符串）
+        if "<SEP>" in key:
+            parts = key.split("<SEP>")
+            # src 或 tgt 是僵尸脑区则删
+            if any(p in zombie_names for p in parts):
+                rc_keys_to_remove.append(key)
+    for key in rc_keys_to_remove:
+        rc.pop(key, None)
+    details["relation_chunks"] = {
+        "before": before_rc,
+        "after": len(rc),
+        "removed": len(rc_keys_to_remove),
+    }
+
     # 4. 全部内存修改成功后，统一写盘（事务式）
     try:
         graphml_tree.write(graphml_path, xml_declaration=True, encoding="utf-8")
@@ -1896,6 +1962,8 @@ def repair_brainregion_zombies() -> dict[str, Any]:
             fe_path.write_text(json.dumps(fe, ensure_ascii=False))
         if fr_path.exists() or fr:
             fr_path.write_text(json.dumps(fr, ensure_ascii=False))
+        if rc_path.exists() or rc:  # Bug #3：写回清理后的 relation_chunks
+            rc_path.write_text(json.dumps(rc, ensure_ascii=False))
     except Exception as e:
         # 写盘失败：内存修改已丢失（不会半写盘），但部分文件可能已写——返回 unrecoverable
         return {"status": "unrecoverable", "reason": f"写盘失败（部分文件可能已写）: {e}"}
@@ -1919,7 +1987,7 @@ Expected: PASS
 
 ```bash
 git add niu_api/internal/lightrag_repair.py tests/test_lightrag_semantic_repair.py
-git commit -m "feat(repair): 新增 repair_brainregion_zombies 完整 7 存储清理僵尸脑区
+git commit -m "feat(repair): 新增 repair_brainregion_zombies 完整 8 存储清理僵尸脑区
 
 用 description 语义标记作为真相源（不是 GraphML），清理：
 1. GraphML node + cascade edge
@@ -1929,6 +1997,7 @@ git commit -m "feat(repair): 新增 repair_brainregion_zombies 完整 7 存储�
 5. kv_store_text_chunks 的脑区专属 chunk
 6. vdb_chunks 的脑区专属 chunk 向量
 7. kv_store_full_entities / full_relations 文档级索引
+8. kv_store_relation_chunks 的僵尸关系 chunk（Bug #3 修复：遗漏的第 8 个存储）
 "
 ```
 
@@ -2410,18 +2479,29 @@ FORCED_SYNC_COOLDOWN_SECONDS = 300  # 5 分钟
 
 def _get_brain_injector(self, ...):
     # ... 现有逻辑 ...
-    # 注意：真实代码用 get_activation_mgr() 函数或 self._cached_activation_mgr 属性
-    _activation_mgr = self._cached_activation_mgr  # 或 get_activation_mgr()
+    # Bug #4 修复：读全局单例 get_activation_mgr()，不读 cache self._cached_activation_mgr。
+    # cache 被清空后会误判 activation_mgr 未就绪，触发死循环。
+    # get_activation_mgr() 定义在 agent/brain_tools.py:39，runner.py 通过
+    # `from agent.brain_tools import get_activation_mgr` import 后调用。
+    _activation_mgr = get_activation_mgr()
     if _activation_mgr is None and self._brain_adapter._get_rag() is not None:
         # 冷却检查：失败后 5 分钟内不重试
         if time.time() - self._last_forced_sync_fail_time < FORCED_SYNC_COOLDOWN_SECONDS:
             logger.debug("forced sync in cooldown, skip")
             return None
         try:
-            run_sync()  # forced sync（Task 16 会改为异步触发）
+            # Bug #5 修复：run_sync 是 RegionSync 实例方法，不是模块级函数。
+            # 通过 get_region_sync().run_sync() 调用（get_region_sync 定义在
+            # agent/injector/region_sync.py）。
+            from agent.injector.region_sync import get_region_sync
+            get_region_sync().run_sync()  # forced sync（Task 16 会改为异步触发）
             # 重新读取 activation_manager（用真实属性名）
             self._cached_activation_mgr = get_activation_mgr()
             _activation_mgr = self._cached_activation_mgr
+            # Bug #7 修复：成功后重置冷却时间（_last_forced_sync_fail_time = 0.0）
+            # 否则第一次成功后 _last_forced_sync_fail_time 保持 0.0，
+            # 下次调用 time.time() - 0.0 < 300 永远 True，冷却永远不解除。
+            self._last_forced_sync_fail_time = 0.0
         except Exception as e:
             logger.error(f"forced sync failed: {e}")
             self._last_forced_sync_fail_time = time.time()  # 记录失败时间
@@ -2431,9 +2511,18 @@ def _get_brain_injector(self, ...):
     # ...
 ```
 
+> **Bug #6 重要说明：runner.py 顶部需要加 `import time`**
+> runner.py 顶部不 import time，但 Task 14 用 `time.time()`。
+> 实施者必须先检查：
+> ```bash
+> grep "^import time" REDACTED_USER_PATH/tools/ai-bot/agent/runner.py
+> ```
+> 如果没有输出，在 runner.py 顶部加 `import time`（与现有 `import threading` 等并列）。
+
 > **属性名重要提示**：
 > - `self._cached_activation_mgr` 是真实属性名（runner.py L616）
-> - `get_activation_mgr()` 是真实函数（runner.py L1681、L1702）
+> - `get_activation_mgr()` 是真实函数（定义在 `agent/brain_tools.py:39`，runner.py 通过 `from agent.brain_tools import get_activation_mgr` import 后调用，L1681、L1702 使用）
+> - `run_sync()` 是 `RegionSync` 实例方法，不是模块级函数，必须通过 `get_region_sync().run_sync()` 调用（`get_region_sync` 定义在 `agent/injector/region_sync.py`）
 > - 不要用 `self._activation_manager`——这是错误的属性名，会让实施者写代码时引用不存在的属性导致 AttributeError
 
 ### - [ ] Step 4: 跑 runner 测试
@@ -2585,14 +2674,15 @@ self._last_forced_sync_fail_time: float = 0.0  # Task 14 已引入
 
 改为异步触发（启动线程跑 `run_sync`，主线程立即返回 None）：
 
-**注意属性名**：runner.py 真实代码用 `self._cached_activation_mgr`（L616）+ 模块级 `get_activation_mgr()` 函数（L1681、L1702），不是 `self._activation_manager`。
+**注意属性名**：runner.py 真实代码用 `self._cached_activation_mgr`（L616）+ `get_activation_mgr()` 函数（定义在 `agent/brain_tools.py:39`，runner.py 通过 `from agent.brain_tools import get_activation_mgr` import 后调用），不是 `self._activation_manager`。`run_sync` 是 `RegionSync` 实例方法，必须通过 `get_region_sync().run_sync()` 调用（`get_region_sync` 定义在 `agent/injector/region_sync.py`）。
 
 ```python
 import threading
 
 def _get_brain_injector(self, ...):
     # ... 现有逻辑 ...
-    _activation_mgr = self._cached_activation_mgr  # 真实属性名
+    # Bug #4 修复：读全局单例 get_activation_mgr()，不读 cache self._cached_activation_mgr。
+    _activation_mgr = get_activation_mgr()
     if _activation_mgr is None and self._brain_adapter._get_rag() is not None:
         # 冷却检查（Task 14 已加）
         if time.time() - self._last_forced_sync_fail_time < FORCED_SYNC_COOLDOWN_SECONDS:
@@ -2605,9 +2695,13 @@ def _get_brain_injector(self, ...):
         self._forced_sync_running.set()
         def _run_forced_sync():
             try:
-                run_sync()
+                # Bug #5 修复：run_sync 是 RegionSync 实例方法，通过 get_region_sync().run_sync() 调用
+                from agent.injector.region_sync import get_region_sync
+                get_region_sync().run_sync()
                 # 成功后刷新 activation_manager（用真实属性名 + 函数）
                 self._cached_activation_mgr = get_activation_mgr()
+                # Bug #7 修复：成功后重置冷却时间，避免下次调用 time.time() - 0.0 < 300 永远 True
+                self._last_forced_sync_fail_time = 0.0
             except Exception as e:
                 logger.error(f"forced sync failed: {e}")
                 self._last_forced_sync_fail_time = time.time()
@@ -2693,8 +2787,8 @@ P0 修复：程序启动卡死根因。
 
 1. **语义维度检测**：description 语义标记、跨存储交叉验证、反向索引异常
 2. **跨存储交叉验证**：不只 A 引用 B，还验证字段一致
-3. **完整 7 存储清理**：GraphML + vdb_entities + vdb_relationships + entity_chunks +
-   text_chunks + vdb_chunks + full_entities/full_relations
+3. **完整 8 存储清理**：GraphML + vdb_entities + vdb_relationships + entity_chunks +
+   text_chunks + vdb_chunks + full_entities/full_relations + relation_chunks（Bug #3 修复）
 4. **验证标准升级**：不只 check_all 返回 ok，还要程序启动正常运行
 
 ## P0 遗漏修复（与本次计划一并完成）
@@ -2720,7 +2814,7 @@ P0 修复：程序启动卡死根因。
 
 ## 5 项新语义 repair
 
-1. repair_brainregion_zombies - 完整 7 存储清理僵尸脑区
+1. repair_brainregion_zombies - 完整 8 存储清理僵尸脑区
 2-5. 通过 repair_all 调用链集成
 
 ## 与删除工具 bug 的关系
@@ -2747,7 +2841,7 @@ git commit -m "docs: 新增 LightRAG 语义完整性设计文档"
 2. ✅ `tests/test_lightrag_semantic_repair.py` 全部通过（repair_brainregion_zombies + repair_all 集成）
 3. ✅ `tests/test_lightrag_e2e_semantic.py` 全部通过（真实数据 4 阶段验证）
 4. ✅ 真实数据 `check_all()` 在 16 个僵尸脑区数据上返回 `ok=False`
-5. ✅ `repair_all()` 清理后 16 个僵尸脑区在所有 7 个存储中完全消失
+5. ✅ `repair_all()` 清理后 16 个僵尸脑区在所有 8 个存储中完全消失
 6. ✅ 启动 `./niu` 后日志不含 16 个僵尸脑区名（智家全维资料脑区等）+ "被删除的重复脑区" + "activation_mgr still None"
 7. ✅ 启动后 region_sync 一次 sync 完成（不卡 dissolve，不进入 forced sync 死循环）
 8. ✅ 启动后风扇不狂转（CPU 占用正常）
@@ -2767,7 +2861,7 @@ git commit -m "docs: 新增 LightRAG 语义完整性设计文档"
 - "撤销你的错误修复" → Task 之前已完成（commit `da4d0db0`）
 - "修复工具的 bug，对于数据过去的错误，你不但没有检查出来，反而把问题放大了"
   - "检查不出来" → Task 2-7 新增 5 项语义 check 覆盖（原 6 项，`check_brainregion_size_mismatch` 因真实数据无效已删除）
-  - "放大问题" → Task 9-10 新增语义 repair 完整清理 7 存储，Task 11 端到端验证修复后程序正常运行
+  - "放大问题" → Task 9-10 新增语义 repair 完整清理 8 存储，Task 11 端到端验证修复后程序正常运行
 - "无论过去的数据有什么样的错误，你进行检测并修复后应该确保数据的可用性和准确性" → Task 11 端到端验证启动程序正常运行
 - "本次先不去修复删除工具的 bug" → 本计划不动 LightRAG adelete_by_entity，只增强检查+修复工具的"亡羊补牢"能力
 
@@ -2831,3 +2925,16 @@ git commit -m "docs: 新增 LightRAG 语义完整性设计文档"
 8. [HIGH] **Bug H** Task 1 Step 5 漏 1 处调用点：真实 grep 显示 `_load_graphml` 在 lightrag_integrity.py 有 10 处调用（不含定义），Task 1 Step 5 只列 7 处。漏掉 L687（`check_vdb_relationships_endpoint_dangling` 内部第二处）。已补上 L687 调点的 old/new 代码对照，从 7 处补到 8 处。
 9. [HIGH] **Bug I** Task 9 清理无事务式保护：8 个存储清理用独立 try/except，中间失败会状态不一致（半写盘）。已改为"in-memory 修改 + 统一写入"模式——所有清理在内存中完成，全部成功后才统一写盘；写盘失败则内存修改丢失（不会半写盘），返回 unrecoverable。
 10. [HIGH] **Bug J** Task 11 finally 块无 kill fallback：`proc.terminate() + proc.wait(timeout=10)` 如果进程不响应 SIGTERM 会超时抛异常，proc 成为僵尸进程。已加 `proc.kill()` fallback + psutil 杀进程树（或 pkill 兜底）。
+
+### 第三次审查后修复的 7 个新 bug
+
+第三次审查（baseline 274fe65b）发现 7 个新 bug（3 CRITICAL + 4 HIGH），已全部修复：
+
+1. [CRITICAL] **Bug #1** `_rebuild_vdb_matrix` 解码 vector 编码格式错误：原用 `np.frombuffer(base64.b64decode(vec_b64), dtype=np.float32)` 解码，但真实 vector 字段是 `base64(zlib(float16 bytes))` 三层编码（参考 `lightrag_repair.py` L177-182 `_encode_vector`）。原解码会抛 `buffer size must be a multiple of element size` 异常，被 except 用零向量填充，matrix 全零。已改为三层解码（base64 → zlib → float16 → float32），并在 docstring 明确 vector 字段三层编码、matrix 字段单层编码的差异。顶部加 `import zlib`。
+2. [CRITICAL] **Bug #2** Task 9 函数名错误：`lightrag_repair.py` 用 `_storage_dir()`（L68 定义），不是 `_resolve_storage_dir()`（这是 `lightrag_integrity.py` L52 的函数）。Task 9 `repair_brainregion_zombies` 函数里 L1709 的 `_resolve_storage_dir()` 已改为 `_storage_dir()`。其他 5 处 `_resolve_storage_dir()` 在 `lightrag_integrity.py` 的 check 函数里，保持不变。
+3. [CRITICAL] **Bug #3** Task 9 遗漏清理 `kv_store_relation_chunks.json`：真实数据含 16 个僵尸脑区的关系 chunk（key 格式 `智家xxx脑区<SEP>知识图谱系统维护`，`<SEP>` 是 GRAPH_FIELD_SEP 字符串），修复后残留导致 `check_relation_chunks_dangling` 报 16 个 major error。已加 3.9 段清理逻辑（读入 + src/tgt 是僵尸脑区则删 + 写盘），Task 9 清理范围从 7 存储改为 8 存储，commit message 同步更新。
+4. [HIGH] **Bug #4** Task 14 `_activation_mgr = self._cached_activation_mgr` 逻辑错误：应读全局单例 `get_activation_mgr()`（定义在 `agent/brain_tools.py:39`），不是读 cache `self._cached_activation_mgr`。cache 被清空后会误判 activation_mgr 未就绪。Task 14 和 Task 16 的 `_activation_mgr = self._cached_activation_mgr` 已改为 `_activation_mgr = get_activation_mgr()`。
+5. [HIGH] **Bug #5** Task 14/16 `run_sync()` 裸调用错误：`run_sync` 是 `RegionSync` 实例方法，不是模块级函数，裸调用会 `NameError`。已改为 `from agent.injector.region_sync import get_region_sync; get_region_sync().run_sync()`（`get_region_sync` 定义在 `agent/injector/region_sync.py`）。Task 14 Step 3 和 Task 16 Step 3 两处都已修复。
+6. [HIGH] **Bug #6** Task 14/16 缺 `import time`：runner.py 顶部不 import time，但 Task 14/16 用 `time.time()`。已在 Task 14 Step 3 加明确说明：实施者必须先 `grep "^import time" agent/runner.py` 检查，若无输出则在 runner.py 顶部加 `import time`。
+7. [HIGH] **Bug #7** Task 14 forced sync 成功后冷却永远不解除：第一次 forced sync 成功后 `_last_forced_sync_fail_time` 保持 0.0，下次调用 `time.time() - 0.0 < 300` 永远 True，冷却永远不解除。已在 Task 14 和 Task 16 的 forced sync 成功分支加 `self._last_forced_sync_fail_time = 0.0` 重置冷却时间。
+
