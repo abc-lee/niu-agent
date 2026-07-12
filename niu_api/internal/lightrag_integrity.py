@@ -167,31 +167,31 @@ def _load_vdb(path: Path) -> tuple[dict[str, Any] | None, list[dict[str, Any]] |
     return raw, data_list, None
 
 
-def _load_graphml(path: Path) -> tuple[set[str], list[tuple[str, str]], dict[str, Any] | None]:
-    """解析 GraphML 文件，返回 (node_ids, edges, error)。
+def _load_graphml(path: Path) -> tuple[set[str], list[tuple[str, str]], dict[str, dict[str, str]], dict[str, Any] | None]:
+    """解析 GraphML 文件，返回 (node_ids, edges, node_meta, error)。
 
     Returns:
-        - 文件不存在 → (set(), [], None)（空数据，通过）
-        - XML 解析失败 → (set(), [], {"check": "xml_parse", ...})（critical）
-        - 成功 → (node_id_set, [(src, tgt), ...], None)
+        - 文件不存在 → (set(), [], {}, None)（空数据，通过）
+        - XML 解析失败 → (set(), [], {}, {"check": "xml_parse", ...})（critical）
+        - 成功 → (node_id_set, [(src, tgt), ...], {node_id: {entity_type, description, source_id}}, None)
 
     注意：node id 和 edge source/target 都已 lower 化（LightRAG 设计），
     这里不再额外 lower，直接使用原始值。
     """
     if not path.exists():
-        return set(), [], None
+        return set(), [], {}, None
     try:
         tree = ET.parse(path)
         root = tree.getroot()
     except ET.ParseError as e:
-        return set(), [], {
+        return set(), [], {}, {
             "check": "xml_parse",
             "file": path.name,
             "msg": str(e),
             "severity": "critical",
         }
     except Exception as e:  # noqa: BLE001
-        return set(), [], {
+        return set(), [], {}, {
             "check": "xml_parse",
             "file": path.name,
             "msg": f"{type(e).__name__}: {e}",
@@ -207,7 +207,7 @@ def _load_graphml(path: Path) -> tuple[set[str], list[tuple[str, str]], dict[str
                 graph = child
                 break
     if graph is None:
-        return set(), [], {
+        return set(), [], {}, {
             "check": "no_graph_element",
             "file": path.name,
             "severity": "critical",
@@ -215,17 +215,52 @@ def _load_graphml(path: Path) -> tuple[set[str], list[tuple[str, str]], dict[str
 
     node_ids: set[str] = set()
     edges: list[tuple[str, str]] = []
+    node_meta: dict[str, dict[str, str]] = {}
     for child in graph:
         tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
         if tag == "node":
             nid = child.get("id", "")
             if nid:
                 node_ids.add(nid)
+                meta = {"entity_type": "", "description": "", "source_id": ""}
+                for data in child:
+                    d_key = data.get("key", "")
+                    d_text = data.text or ""
+                    if d_key == "d1":
+                        meta["entity_type"] = d_text
+                    elif d_key == "d2":
+                        meta["description"] = d_text
+                    elif d_key == "d3":
+                        meta["source_id"] = d_text
+                node_meta[nid] = meta
         elif tag == "edge":
             src = child.get("source", "")
             tgt = child.get("target", "")
             edges.append((src, tgt))
-    return node_ids, edges, None
+    return node_ids, edges, node_meta, None
+
+
+def _parse_brain_meta(description: str) -> dict[str, str]:
+    """解析脑区 description 里的 brain_meta_* 字段。
+
+    description 格式：<SEP> 分隔的多字段，每段形如 `brain_meta_<key>:<value>`
+
+    Returns:
+        {field_name_without_prefix: value}，比如 {"size": "0", "shrink_count": "1", ...}
+        空字段（value 为空）也保留，便于检测 size:0 这种"故意 0"的语义。
+    """
+    if not description:
+        return {}
+    result: dict[str, str] = {}
+    parts = description.split("<SEP>")
+    for part in parts:
+        if not part:
+            continue
+        if ":" in part:
+            key, _, value = part.partition(":")
+            if key.startswith("brain_meta_"):
+                result[key[len("brain_meta_"):]] = value
+    return result
 
 
 # =============================================================================
@@ -250,7 +285,7 @@ def check_entity_chunks_dangling() -> dict[str, Any]:
     if not ec_data:
         return {"name": "entity_chunks_dangling", "errors": []}
 
-    node_ids, _, graphml_err = _load_graphml(storage_dir / _GRAPHML_FILE)
+    node_ids, _, _, graphml_err = _load_graphml(storage_dir / _GRAPHML_FILE)
     if graphml_err:
         errors.append(graphml_err)
         return {"name": "entity_chunks_dangling", "errors": errors}
@@ -285,7 +320,7 @@ def check_relation_chunks_dangling() -> dict[str, Any]:
     if not rc_data:
         return {"name": "relation_chunks_dangling", "errors": []}
 
-    _, edges, graphml_err = _load_graphml(storage_dir / _GRAPHML_FILE)
+    _, edges, _, graphml_err = _load_graphml(storage_dir / _GRAPHML_FILE)
     if graphml_err:
         errors.append(graphml_err)
         return {"name": "relation_chunks_dangling", "errors": errors}
@@ -475,7 +510,7 @@ def check_vdb_entities_missing() -> dict[str, Any]:
     storage_dir = _resolve_storage_dir()
     errors: list[dict[str, Any]] = []
 
-    node_ids, _, graphml_err = _load_graphml(storage_dir / _GRAPHML_FILE)
+    node_ids, _, _, graphml_err = _load_graphml(storage_dir / _GRAPHML_FILE)
     if graphml_err:
         errors.append(graphml_err)
         return {"name": "vdb_entities_missing", "errors": errors}
@@ -519,7 +554,7 @@ def check_vdb_relationships_missing() -> dict[str, Any]:
     storage_dir = _resolve_storage_dir()
     errors: list[dict[str, Any]] = []
 
-    _, edges, graphml_err = _load_graphml(storage_dir / _GRAPHML_FILE)
+    _, edges, _, graphml_err = _load_graphml(storage_dir / _GRAPHML_FILE)
     if graphml_err:
         errors.append(graphml_err)
         return {"name": "vdb_relationships_missing", "errors": errors}
@@ -614,7 +649,7 @@ def check_graphml_edge_dangling() -> dict[str, Any]:
     storage_dir = _resolve_storage_dir()
     errors: list[dict[str, Any]] = []
 
-    node_ids, edges, graphml_err = _load_graphml(storage_dir / _GRAPHML_FILE)
+    node_ids, edges, _, graphml_err = _load_graphml(storage_dir / _GRAPHML_FILE)
     if graphml_err:
         errors.append(graphml_err)
         return {"name": "graphml_edge_dangling", "errors": errors}
@@ -653,7 +688,7 @@ def check_vdb_relationships_endpoint_dangling() -> dict[str, Any]:
     storage_dir = _resolve_storage_dir()
     errors: list[dict[str, Any]] = []
 
-    node_ids, _, graphml_err = _load_graphml(storage_dir / _GRAPHML_FILE)
+    node_ids, _, _, graphml_err = _load_graphml(storage_dir / _GRAPHML_FILE)
     if graphml_err:
         errors.append(graphml_err)
         return {"name": "vdb_relationships_endpoint_dangling", "errors": errors}
@@ -766,7 +801,7 @@ def _check_file_level_critical() -> dict[str, Any]:
             errors.append(err)
 
     # GraphML 文件
-    _, _, err = _load_graphml(storage_dir / _GRAPHML_FILE)
+    _, _, _, err = _load_graphml(storage_dir / _GRAPHML_FILE)
     if err:
         errors.append(err)
 
