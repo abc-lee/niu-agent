@@ -319,3 +319,86 @@ def test_check_vdb_entities_orphan_clean_ok(tmp_path):
         report = check_vdb_entities_orphan()
 
     assert report["errors"] == []
+
+
+def test_check_brainregion_orphan_chunks_detects_orphan(tmp_path):
+    """text_chunks 有 source_id=brain_xxx 的 chunk 但 GraphML 没 brain_xxx node"""
+    from niu_api.internal.lightrag_integrity import check_brainregion_orphan_chunks
+
+    graphml = tmp_path / "graph_chunk_entity_relation.graphml"
+    _write_test_graphml(graphml, nodes=[
+        {"id": "存在的脑区", "entity_type": "brainregion"},
+    ])
+
+    import json
+    (tmp_path / "kv_store_text_chunks.json").write_text(json.dumps({
+        "chunk-AAA": {"content": "正常 chunk", "full_doc_id": "doc-xxx", "source_id": "doc-xxx"},
+        "chunk-BBB": {"content": "脑区专属 chunk", "full_doc_id": "brain_被删的脑区", "source_id": "brain_被删的脑区"},
+        "chunk-CCC": {"content": "存在脑区的 chunk", "full_doc_id": "brain_存在的脑区", "source_id": "brain_存在的脑区"},
+    }, ensure_ascii=False))
+
+    with patch("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path):
+        report = check_brainregion_orphan_chunks()
+
+    assert report["name"] == "brainregion_orphan_chunks"
+    assert len(report["errors"]) == 1
+    assert report["errors"][0]["orphan_chunk_id"] == "chunk-BBB"
+    assert report["errors"][0]["brain_name"] == "被删的脑区"
+
+
+def test_check_brainregion_orphan_chunks_clean_ok(tmp_path):
+    """所有 brain_xxx source_id 的 chunk 都对应存在的脑区 → 0 errors"""
+    from niu_api.internal.lightrag_integrity import check_brainregion_orphan_chunks
+
+    graphml = tmp_path / "graph_chunk_entity_relation.graphml"
+    _write_test_graphml(graphml, nodes=[
+        {"id": "脑区A", "entity_type": "brainregion"},
+    ])
+
+    import json
+    (tmp_path / "kv_store_text_chunks.json").write_text(json.dumps({
+        "chunk-1": {"content": "脑区A 的 chunk", "full_doc_id": "brain_脑区A", "source_id": "brain_脑区A"},
+    }, ensure_ascii=False))
+
+    with patch("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path):
+        report = check_brainregion_orphan_chunks()
+
+    assert report["errors"] == []
+
+
+def test_check_brainregion_orphan_chunks_detects_zombie_content(tmp_path):
+    """brain_xxx chunk content 含'被删除'标记但 GraphML 仍有 brain_xxx node → chunk 侧僵尸信号"""
+    from niu_api.internal.lightrag_integrity import check_brainregion_orphan_chunks
+
+    graphml = tmp_path / "graph_chunk_entity_relation.graphml"
+    # 注意：脑区 node 仍在（这是僵尸脑区的特征：description 含标记但 node 还在）
+    _write_test_graphml(graphml, nodes=[
+        {"id": "智家僵尸脑区", "entity_type": "brainregion",
+         "description": "被删除的重复脑区实体之一。<SEP>brain_meta_size:0"},
+    ])
+
+    import json
+    (tmp_path / "kv_store_text_chunks.json").write_text(json.dumps({
+        # 脑区专属 chunk content 含"被删除"标记 → 报错（chunk 侧僵尸信号）
+        "chunk-zombie": {
+            "content": "这是被删除的重复脑区实体之一的专属 chunk",
+            "full_doc_id": "brain_智家僵尸脑区",
+            "source_id": "brain_智家僵尸脑区",
+        },
+        # 正常脑区专属 chunk，content 不含标记 → 不报
+        "chunk-normal": {
+            "content": "智家僵尸脑区的正常内容",
+            "full_doc_id": "brain_智家僵尸脑区",
+            "source_id": "brain_智家僵尸脑区",
+        },
+    }, ensure_ascii=False))
+
+    with patch("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path):
+        report = check_brainregion_orphan_chunks()
+
+    assert report["name"] == "brainregion_orphan_chunks"
+    assert len(report["errors"]) == 1
+    assert report["errors"][0]["orphan_chunk_id"] == "chunk-zombie"
+    assert report["errors"][0]["brain_name"] == "智家僵尸脑区"
+    assert "marker" in report["errors"][0]
+    assert "被删除" in report["errors"][0]["marker"]
