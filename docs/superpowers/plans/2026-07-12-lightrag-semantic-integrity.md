@@ -204,7 +204,7 @@ cd REDACTED_USER_PATH/tools/ai-bot
 python -m pytest tests/test_lightrag_semantic_integrity.py::test_load_graphml_returns_node_metadata -v
 ```
 
-Expected: FAIL with `ValueError: too many values to unpack`（当前 `_load_graphml` 返回 3-tuple）
+Expected: FAIL with `ValueError: not enough values to unpack (expected 4, got 3)`（当前 `_load_graphml` 返回 3-tuple，测试解构 4 个变量会抛 `not enough values`，不是 `too many values`）
 
 ### - [ ] Step 3: Write minimal implementation
 
@@ -1336,11 +1336,11 @@ for name in ['brainregion_semantic_zombie',
 - `entity_chunks_source_id_mismatch` 报 **23** 个错误（16 个僵尸 + 其他历史 source_id 不一致残留）
 - `chunk_shared_by_too_many_entities` 报 **84** 个错误（84 个共享 chunk——含其他历史问题，不只是 16 个僵尸脑区共享的"删除日志"chunk）
 - `vdb_entities_orphan` 报 **0** 个错误（当前 vdb_entities.json 为空文件，反向孤儿永远 0；本 check 作为防御性检测，未来 vdb 有数据时能检测）
-- `brainregion_orphan_chunks` 报 **39** 个错误（39 个孤儿 chunk——含其他历史残留孤儿 chunk，不只是 16 个僵尸脑区的 brain_xxx 专属 chunk；16 个僵尸脑区的 brain_xxx 专属 chunk 的 brain_name 在 GraphML 里有 node，所以不报"孤儿"，但部分会被 `check_brainregion_semantic_zombie` 跨存储交叉检测出来）
+- `brainregion_orphan_chunks` 报 **40** 个错误（40 个孤儿 chunk——含其他历史残留孤儿 chunk，不只是 16 个僵尸脑区的 brain_xxx 专属 chunk；16 个僵尸脑区的 brain_xxx 专属 chunk 的 brain_name 在 GraphML 里有 node，所以不报"孤儿"，但部分会被 `check_brainregion_semantic_zombie` 跨存储交叉检测出来）
 
 注意：
 - `check_brainregion_size_mismatch` 已删除（见 Task 3），不在 Expected 列表里。
-- 84 个共享 chunk 和 39 个孤儿 chunk 含其他历史残留问题，不全是 16 个僵尸脑区造成的——修复工具只清理"含'被删除'语义标记"的僵尸脑区及其关联 chunk，其他历史残留不在本次修复范围。
+- 84 个共享 chunk 和 40 个孤儿 chunk 含其他历史残留问题，不全是 16 个僵尸脑区造成的——修复工具只清理"含'被删除'语义标记"的僵尸脑区及其关联 chunk，其他历史残留不在本次修复范围。
 - 16 个僵尸脑区主要通过 `brainregion_semantic_zombie` 检测（description 含"被删除"语义标记）。
 - **repair 后整体 `ok` 不一定是 True**：repair 只清 16 个僵尸脑区，剩余 90 个非僵尸报错（7 个 `entity_chunks_source_id_mismatch` 从 23 降到 7 + 83 个 `chunk_shared_by_too_many_entities` 从 84 降到 83）是历史残留，待后续单独清理。Task 11 Step 3 测试 `test_e2e_zombies_cleaned_after_repair` 只断言 `brainregion_semantic_zombie=0`，不断言整体 `ok=True`。
 
@@ -1438,7 +1438,7 @@ def _make_test_storage(tmp_path: Path, zombies: list[str], normal_regions: list[
     """
     normal_regions = normal_regions or []
     storage = tmp_path
-    ns = "http://graphml.graphdrawing.org/xmlml"
+    ns = "http://graphml.graphdrawing.org/xmlns"
     
     # 1. GraphML
     root = ET.Element(f"{{{ns}}}graphml")
@@ -2998,7 +2998,7 @@ git commit -m "docs: 新增 LightRAG 语义完整性设计文档"
 
 重做审查（baseline 9698bd15）发现 10 个新重大 bug（5 CRITICAL + 5 HIGH），已全部修复：
 
-1. [CRITICAL] **Bug A** Task 8 Step 2 Expected 数字严重错误：计划写 `16/16/1/0/2`，真实数据是 `16/23/84/0/39`。已修正为真实值，并说明 84 个共享 chunk 和 39 个孤儿 chunk 含其他历史残留（不全是 16 个僵尸脑区造成）。
+1. [CRITICAL] **Bug A** Task 8 Step 2 Expected 数字严重错误：计划写 `16/16/1/0/2`，真实数据是 `16/23/84/0/40`。已修正为真实值，并说明 84 个共享 chunk 和 40 个孤儿 chunk 含其他历史残留（不全是 16 个僵尸脑区造成）。
 2. [CRITICAL] **Bug B** Task 9 清理 vdb 后未重建 matrix：vdb 顶层 `matrix` 是 base64 float32 矩阵，`_load_vdb` 会校验 `4 * embedding_dim * len(data_list) == len(matrix_bytes)`。删 entry 后 matrix 长度不变触发 `matrix_size_mismatch` critical。已加 `_rebuild_vdb_matrix` 函数，在清理 vdb_entities/vdb_relationships/vdb_chunks 后调用重建 matrix。
 3. [CRITICAL] **Bug C** Task 13 会破坏现有测试：`tests/test_region_sync.py:319-353` 的 `test_refresh_activation_manager_skips_when_coverage_too_low` 验证覆盖率 < 50% 时 `initialize_from_regions` 不被调用。Task 13 删除覆盖率检查后该测试失败。已新增 Step 3.5 删除/重写该测试。
 4. [CRITICAL] **Bug D** ~~Task 14/16 属性名错误：计划用 `self._activation_manager`，真实代码用 `self._cached_activation_mgr`（runner.py L616）+ 模块级 `get_activation_mgr()` 函数（L1681、L1702）。已把所有 `self._activation_manager` 改为 `self._cached_activation_mgr` + `get_activation_mgr()`。~~ **【第四次审查撤销虚构】**：真实代码 runner.py 本来就用正确属性名 `self._cached_activation_mgr`（L616）+ `get_activation_mgr()` 函数（L1681, L1702），不存在"`self._activation_manager` 错误"——这是第三次审查虚构的 bug。Task 14/16 在此基础上增加冷却检查 + 异步触发逻辑，不修改现有属性名。
@@ -3039,6 +3039,14 @@ git commit -m "docs: 新增 LightRAG 语义完整性设计文档"
 5. [LOW] Task 9 fixture 加注释说明：vector 字段真实是 `base64(zlib(float16))` 三层编码，本 fixture 用占位符 `AAAAAA==`，`_rebuild_vdb_matrix` 会走 except 分支用零向量填充——不影响测试断言（断言只检查 entry 是否被删，不检查 vector 值）。
 6. [LOW] Task 9 fixture 加 `embedding_dim: 8` 字段（不是真实 768 减少测试数据量），让 `_rebuild_vdb_matrix` 走完整重建路径（否则空数据走 `matrix=""` 分支）。三处 vdb fixture（vdb_entities / vdb_relationships / vdb_chunks）同步加 `embedding_dim`。
 7. [LOW] L7 Architecture 段 + L83 文件结构表 + L2827 Self-Review 段："5 项语义 repair" 表述改为"1 项语义 repair 函数 `repair_brainregion_zombies`（覆盖 5 个语义 check 的修复需求，完整清理 8 存储）"——实际只新增一个 repair 函数，不是五个。
+
+### 全量从头审查后修复的 3 个 bug
+
+全量从头审查（baseline d4447894）发现 3 个 bug（2 CRITICAL + 1 HIGH），已全部修复：
+
+1. [CRITICAL] **Bug #1** Task 9 测试 fixture `_make_test_storage` 命名空间 URI 拼写错误：L1441 `ns = "http://graphml.graphdrawing.org/xmlml"` 应为 `xmlns`。fixture 用错 URI `xmlml` 写 GraphML，但 L1562 断言用对的 URI `xmlns` 查找 node（`tree.findall('.//g:node', {'g': 'http://graphml.graphdrawing.org/xmlns'})`），返回空集导致 `assert "聊天历史脑区" in node_ids` 失败。已把 L1441 的 `xmlml` 改为 `xmlns`。
+2. [CRITICAL] **Bug #2** Task 8 Step 2 Expected `brainregion_orphan_chunks` 数字错误：计划写 **39** 个错误，真实数据实测是 **40** 个（检查 1 brain_name 不在 GraphML 报 3 个 + 检查 2 content 含"被删除"标记报 37 个，无重叠总计 40）。已把 L1339 和 L1343 的 39 改为 40，同步更新 Self-Review 段 Bug A 描述（L3001）从 `16/23/84/0/39` 改为 `16/23/84/0/40`。
+3. [HIGH] **Bug #3** Task 1 Step 2 Expected `ValueError` 方向反了：原写 `too many values to unpack`，实际当前 `_load_graphml` 返回 3-tuple，测试 `node_ids, edges, node_meta, err = _load_graphml(graphml)` 解构 4 个变量会抛 `ValueError: not enough values to unpack (expected 4, got 3)`，不是 "too many values"。已把 L207 改为 `not enough values to unpack (expected 4, got 3)` 并加说明。
 
 ### 扩大范围全逻辑链审查后修复的 3 个问题
 
