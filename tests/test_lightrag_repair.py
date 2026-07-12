@@ -254,6 +254,7 @@ def test_repair_graphml_pass(storage_dir, patched_embed, monkeypatch):
     # 完好的 llm_response_cache
     _write_json(storage_dir / "kv_store_llm_response_cache.json", {"key1": "value1"})
     # doc_status 有 2 个 PROCESSED 文档
+    # 注：status 用大写模拟历史损坏数据，repair 后应转为小写
     _write_json(
         storage_dir / "kv_store_doc_status.json",
         {
@@ -291,10 +292,10 @@ def test_repair_graphml_pass(storage_dir, patched_embed, monkeypatch):
     assert result["actual"] > 0  # nodes + edges
     # 验证 GraphML 已生成
     assert (storage_dir / "graph_chunk_entity_relation.graphml").exists()
-    # 验证 doc_status 改为 PENDING
+    # 验证 doc_status 改为 pending（小写）
     ds_data = json.loads((storage_dir / "kv_store_doc_status.json").read_text())
-    assert ds_data["doc-1"]["status"] == "PENDING"
-    assert ds_data["doc-2"]["status"] == "PENDING"
+    assert ds_data["doc-1"]["status"] == "pending"
+    assert ds_data["doc-2"]["status"] == "pending"
     # 验证 monkeypatch 已恢复
     assert FakeRag.force_llm_summary_on_merge == 8
 
