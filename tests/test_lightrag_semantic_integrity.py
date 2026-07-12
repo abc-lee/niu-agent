@@ -264,3 +264,58 @@ def test_check_chunk_shared_by_too_many_entities_normal_ok(tmp_path):
         report = check_chunk_shared_by_too_many_entities(threshold=3)
 
     assert report["errors"] == []
+
+
+def test_check_vdb_entities_orphan_detects_orphan_vectors(tmp_path):
+    """vdb_entities 有向量但 GraphML 没 node → 报错"""
+    from niu_api.internal.lightrag_integrity import check_vdb_entities_orphan
+
+    graphml = tmp_path / "graph_chunk_entity_relation.graphml"
+    _write_test_graphml(graphml, nodes=[
+        {"id": "存在的脑区", "entity_type": "brainregion"},
+    ])
+
+    # vdb_entities 写一些向量（nano-vectordb 格式）
+    # 注意：真实 vdb 顶层字段是 `data`（不是 `__data__`），entry 的向量字段是 `vector`（不是 `__vector__`），
+    # 值是 base64 字符串（不是 list[float]）。这里简化用 base64 字符串占位。
+    import json
+    (tmp_path / "vdb_entities.json").write_text(json.dumps({
+        "data": [
+            {"__id__": "ent-存在的脑区", "vector": "AAAAAA==", "entity_name": "存在的脑区"},
+            {"__id__": "ent-被删的脑区", "vector": "AAAAAA==", "entity_name": "被删的脑区"},
+            {"__id__": "ent-另一个被删", "vector": "AAAAAA==", "entity_name": "另一个被删"},
+        ],
+        "file_hash": "fake_hash",
+    }, ensure_ascii=False))
+
+    with patch("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path):
+        report = check_vdb_entities_orphan()
+
+    assert report["name"] == "vdb_entities_orphan"
+    assert len(report["errors"]) == 2
+    orphan_names = [e["entity_name"] for e in report["errors"]]
+    assert "被删的脑区" in orphan_names
+    assert "另一个被删" in orphan_names
+
+
+def test_check_vdb_entities_orphan_clean_ok(tmp_path):
+    """vdb 和 GraphML 一致 → 0 errors"""
+    from niu_api.internal.lightrag_integrity import check_vdb_entities_orphan
+
+    graphml = tmp_path / "graph_chunk_entity_relation.graphml"
+    _write_test_graphml(graphml, nodes=[
+        {"id": "脑区A", "entity_type": "brainregion"},
+    ])
+
+    import json
+    (tmp_path / "vdb_entities.json").write_text(json.dumps({
+        "data": [
+            {"__id__": "ent-脑区a", "vector": "AAAAAA==", "entity_name": "脑区A"},
+        ],
+        "file_hash": "fake_hash",
+    }, ensure_ascii=False))
+
+    with patch("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path):
+        report = check_vdb_entities_orphan()
+
+    assert report["errors"] == []
