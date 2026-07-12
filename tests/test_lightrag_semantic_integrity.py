@@ -2,6 +2,7 @@
 import pytest
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from unittest.mock import patch
 
 from niu_api.internal.lightrag_integrity import _load_graphml, _parse_brain_meta
 
@@ -111,3 +112,55 @@ def test_parse_brain_meta_empty_description():
     """空 description 返回空 dict"""
     assert _parse_brain_meta("") == {}
     assert _parse_brain_meta(None) == {}
+
+
+def test_check_brainregion_semantic_zombie_detects_zombie(tmp_path):
+    """检测 description 含'被删除'但 node 仍存在的脑区"""
+    from niu_api.internal.lightrag_integrity import check_brainregion_semantic_zombie
+
+    graphml = tmp_path / "graph_chunk_entity_relation.graphml"
+    _write_test_graphml(graphml, nodes=[
+        # 僵尸脑区 1：description 含"被删除的重复脑区实体之一"
+        {"id": "智家全维资料脑区", "entity_type": "brainregion",
+         "description": "被删除的重复脑区实体之一。<SEP>brain_meta_size:0<SEP>brain_meta_shrink_count:1"},
+        # 僵尸脑区 2：description 含"已删除"
+        {"id": "智家使用运维脑区", "entity_type": "brainregion",
+         "description": "已删除的脑区。<SEP>brain_meta_size:0"},
+        # 正常脑区
+        {"id": "聊天历史脑区", "entity_type": "brainregion",
+         "description": "brain_meta_size:10"},
+        # 非脑区实体（即使 description 含"被删除"也不该报）
+        {"id": "普通实体", "entity_type": "concept",
+         "description": "被删除的文档内容"},
+    ])
+
+    with patch("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path):
+        report = check_brainregion_semantic_zombie()
+
+    assert report["name"] == "brainregion_semantic_zombie"
+    assert len(report["errors"]) == 2
+    zombie_names = [e["ref_key"] for e in report["errors"]]
+    assert "智家全维资料脑区" in zombie_names
+    assert "智家使用运维脑区" in zombie_names
+    # 非脑区实体不报
+    assert "普通实体" not in zombie_names
+    # severity 应该是 major
+    assert all(e["severity"] == "major" for e in report["errors"])
+
+
+def test_check_brainregion_semantic_zombie_clean_data_ok(tmp_path):
+    """正常脑区（description 不含'被删除'标记）→ 0 errors"""
+    from niu_api.internal.lightrag_integrity import check_brainregion_semantic_zombie
+
+    graphml = tmp_path / "graph_chunk_entity_relation.graphml"
+    _write_test_graphml(graphml, nodes=[
+        {"id": "聊天历史脑区", "entity_type": "brainregion",
+         "description": "brain_meta_size:10"},
+        {"id": "文档库脑区", "entity_type": "brainregion",
+         "description": "brain_meta_size:5"},
+    ])
+
+    with patch("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path):
+        report = check_brainregion_semantic_zombie()
+
+    assert report["errors"] == []
