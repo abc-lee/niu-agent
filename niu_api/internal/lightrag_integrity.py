@@ -915,6 +915,61 @@ def check_chunk_shared_by_too_many_entities(threshold: int = 10) -> dict[str, An
     return {"name": "chunk_shared_by_too_many_entities", "errors": errors}
 
 
+def check_vdb_entities_orphan() -> dict[str, Any]:
+    """语义 check #5: 检测 vdb_entities 里有向量但 GraphML 没 node（反向孤儿）。
+
+    引用方：vdb_entities.data 的 __id__（或 entity_name）
+    被引用方：GraphML node id
+    severity: major
+
+    现有 check_vdb_entities_missing 检测"GraphML 有但 vdb 没"（正向缺失），
+    本 check 检测反向：vdb 有但 GraphML 没——这是 delete_entity 后的残留模式。
+    LightRAG adelete_by_entity 删 GraphML+vdb，但若被中断或被绕过，
+    vdb 向量可能残留。
+    """
+    storage_dir = _resolve_storage_dir()
+    errors: list[dict[str, Any]] = []
+
+    node_ids, _, _, graphml_err = _load_graphml(storage_dir / _GRAPHML_FILE)
+    if graphml_err:
+        errors.append(graphml_err)
+        return {"name": "vdb_entities_orphan", "errors": errors}
+
+    _, vdb_data_list, vdb_err = _load_vdb(storage_dir / "vdb_entities.json")
+    if vdb_err:
+        errors.append(vdb_err)
+        return {"name": "vdb_entities_orphan", "errors": errors}
+    if not vdb_data_list:
+        return {"name": "vdb_entities_orphan", "errors": []}
+
+    # 防御性 check：当前真实数据 vdb_entities.json 可能为空（len(data)=0），
+    # 此时反向孤儿永远 0 个。本 check 作为防御性检测，未来 vdb 有数据时能检测。
+    node_ids_lower = {n.lower() for n in node_ids}
+    for entry in vdb_data_list:
+        if not isinstance(entry, dict):
+            continue
+        entity_name = entry.get("entity_name", "")
+        if not entity_name:
+            continue
+        # GraphML node id 是原始大小写（LightRAG 设计），vdb entity_name 是 lower
+        # 检测时双向匹配：node_ids 直接匹配或 lower 后匹配
+        if entity_name in node_ids:
+            continue
+        if entity_name.lower() in node_ids_lower:
+            continue
+        # 没匹配上 → vdb 有但 GraphML 没 → 反向孤儿
+        errors.append({
+            "check": "vdb_entities_orphan",
+            "severity": "major",
+            "ref_file": "vdb_entities.json",
+            "target_file": _GRAPHML_FILE,
+            "ref_id": entry.get("__id__", ""),
+            "entity_name": entity_name,
+            "msg": f"vdb_entities 有 entity='{entity_name}' 向量但 GraphML 没 node（残留孤儿）",
+        })
+    return {"name": "vdb_entities_orphan", "errors": errors}
+
+
 # =============================================================================
 # 文件级 critical 预扫描
 # =============================================================================
