@@ -869,6 +869,52 @@ def check_entity_chunks_source_id_mismatch() -> dict[str, Any]:
     return {"name": "entity_chunks_source_id_mismatch", "errors": errors}
 
 
+def check_chunk_shared_by_too_many_entities(threshold: int = 10) -> dict[str, Any]:
+    """语义 check #4: 检测一个 chunk 被超过阈值个 entity 共享（异常信号）。
+
+    引用方：多个 entity_chunks 的 chunk_ids 指向同一个 chunk
+    被引用方：（无具体被引用方，是反向索引的异常检测）
+    severity: major
+
+    正常情况：一个 chunk 是某个文档的某段内容，被 1-N 个 entity 引用（N 通常 < 10）。
+    异常情况：16 个脑区全指向同一个"删除日志"chunk——明显是历史 bug 留下的脏数据。
+
+    Args:
+        threshold: 共享同一 chunk 的 entity 数量阈值，默认 10
+    """
+    storage_dir = _resolve_storage_dir()
+    errors: list[dict[str, Any]] = []
+
+    ec_data, ec_err = _load_json_dict(storage_dir / "kv_store_entity_chunks.json")
+    if ec_err:
+        errors.append(ec_err)
+        return {"name": "chunk_shared_by_too_many_entities", "errors": errors}
+    if not ec_data:
+        return {"name": "chunk_shared_by_too_many_entities", "errors": []}
+
+    # 反向索引：chunk_id -> [entity_name, ...]
+    chunk_to_entities: dict[str, list[str]] = {}
+    for entity_name, ec_entry in ec_data.items():
+        if not isinstance(ec_entry, dict):
+            continue
+        for chunk_id in ec_entry.get("chunk_ids", []):
+            chunk_to_entities.setdefault(chunk_id, []).append(entity_name)
+
+    for chunk_id, entities in chunk_to_entities.items():
+        if len(entities) > threshold:
+            errors.append({
+                "check": "chunk_shared_by_too_many_entities",
+                "severity": "major",
+                "ref_file": "kv_store_entity_chunks.json",
+                "chunk_id": chunk_id,
+                "entity_count": len(entities),
+                "entities": entities,
+                "threshold": threshold,
+                "msg": f"chunk '{chunk_id}' 被 {len(entities)} 个 entity 共享（阈值 {threshold}），可能是历史 bug 残留",
+            })
+    return {"name": "chunk_shared_by_too_many_entities", "errors": errors}
+
+
 # =============================================================================
 # 文件级 critical 预扫描
 # =============================================================================

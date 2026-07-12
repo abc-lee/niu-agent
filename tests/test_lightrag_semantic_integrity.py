@@ -219,3 +219,48 @@ def test_check_entity_chunks_source_id_mismatch_consistent_ok(tmp_path):
         report = check_entity_chunks_source_id_mismatch()
 
     assert report["errors"] == []
+
+
+def test_check_chunk_shared_by_too_many_entities_detects_anomaly(tmp_path):
+    """一个 chunk 被超过阈值个 entity 共享 → 报错"""
+    from niu_api.internal.lightrag_integrity import check_chunk_shared_by_too_many_entities
+
+    import json
+    (tmp_path / "kv_store_entity_chunks.json").write_text(json.dumps({
+        "脑区1": {"chunk_ids": ["chunk-shared-xxx"], "count": 1},
+        "脑区2": {"chunk_ids": ["chunk-shared-xxx"], "count": 1},
+        "脑区3": {"chunk_ids": ["chunk-shared-xxx"], "count": 1},
+        "脑区4": {"chunk_ids": ["chunk-shared-xxx"], "count": 1},
+        "脑区5": {"chunk_ids": ["chunk-shared-xxx"], "count": 1},
+        # 正常 entity 指向独立 chunk
+        "实体A": {"chunk_ids": ["chunk-a-1"], "count": 1},
+        "实体B": {"chunk_ids": ["chunk-b-1"], "count": 1},
+    }, ensure_ascii=False))
+
+    with patch("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path):
+        # 阈值设 3（测试用），5 个脑区共享 chunk-shared-xxx
+        report = check_chunk_shared_by_too_many_entities(threshold=3)
+
+    assert report["name"] == "chunk_shared_by_too_many_entities"
+    assert len(report["errors"]) == 1
+    err = report["errors"][0]
+    assert err["chunk_id"] == "chunk-shared-xxx"
+    assert err["entity_count"] == 5
+    assert set(err["entities"]) == {"脑区1", "脑区2", "脑区3", "脑区4", "脑区5"}
+
+
+def test_check_chunk_shared_by_too_many_entities_normal_ok(tmp_path):
+    """每个 chunk 被不超过阈值个 entity 共享 → 0 errors"""
+    from niu_api.internal.lightrag_integrity import check_chunk_shared_by_too_many_entities
+
+    import json
+    (tmp_path / "kv_store_entity_chunks.json").write_text(json.dumps({
+        "实体A": {"chunk_ids": ["chunk-shared"], "count": 1},
+        "实体B": {"chunk_ids": ["chunk-shared"], "count": 1},
+        "实体C": {"chunk_ids": ["chunk-other"], "count": 1},
+    }, ensure_ascii=False))
+
+    with patch("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path):
+        report = check_chunk_shared_by_too_many_entities(threshold=3)
+
+    assert report["errors"] == []
