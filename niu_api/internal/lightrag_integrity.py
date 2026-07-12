@@ -240,7 +240,7 @@ def _load_graphml(path: Path) -> tuple[set[str], list[tuple[str, str]], dict[str
     return node_ids, edges, node_meta, None
 
 
-def _parse_brain_meta(description: str) -> dict[str, str]:
+def _parse_brain_meta(description: str | None) -> dict[str, str]:
     """解析脑区 description 里的 brain_meta_* 字段。
 
     description 格式：<SEP> 分隔的多字段，每段形如 `brain_meta_<key>:<value>`
