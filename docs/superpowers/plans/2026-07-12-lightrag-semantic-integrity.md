@@ -4,7 +4,7 @@
 
 **Goal:** 让 LightRAG 数据一致性检查工具能检测出 16 个历史遗留的"僵尸脑区"（句法自洽但语义死亡的数据），让修复工具能完整清理 8 个存储的残留数据，确保修复后数据真正可用。
 
-**Architecture:** 在现有 `lightrag_integrity.py`（11 项句法 check）和 `lightrag_repair.py`（12 项 repair）基础上，新增 5 项语义 check 和 5 项语义 repair（原计划 6 项，`check_brainregion_size_mismatch` 因真实数据无效已删除，见 Task 3）。语义 check 用"description 语义标记 + 跨存储交叉验证"作为参照系（不是句法引用完整性）。语义 repair 用"语义标记"作为真相源（不是 GraphML——GraphML 本身可能被污染），做完整 8 存储清理（含 `kv_store_relation_chunks`——Bug #3 修复）。修复后用"程序启动正常运行"作为验证标准（不是 check_all 返回 ok）。同时修复 4 个 P0 遗漏（Task 13-16：region_sync 覆盖率检查/forced sync 死循环/shrink_threshold/forced sync 阻塞）。
+**Architecture:** 在现有 `lightrag_integrity.py`（11 项句法 check）和 `lightrag_repair.py`（12 项 repair）基础上，新增 5 项语义 check 和 1 项语义 repair 函数 `repair_brainregion_zombies`（覆盖 5 个语义 check 的修复需求，完整清理 8 存储）（原计划 6 项，`check_brainregion_size_mismatch` 因真实数据无效已删除，见 Task 3）。语义 check 用"description 语义标记 + 跨存储交叉验证"作为参照系（不是句法引用完整性）。语义 repair 用"语义标记"作为真相源（不是 GraphML——GraphML 本身可能被污染），做完整 8 存储清理（含 `kv_store_relation_chunks`——Bug #3 修复）。修复后用"程序启动正常运行"作为验证标准（不是 check_all 返回 ok）。同时修复 4 个 P0 遗漏（Task 13-16：region_sync 覆盖率检查/forced sync 死循环/shrink_threshold/forced sync 阻塞）。
 
 **Tech Stack:** Python 3.11、xml.etree.ElementTree（GraphML 解析）、nano-vectordb（向量存储）、pytest（TDD）、真实 LightRAG 实例（端到端验证）。
 
@@ -78,15 +78,16 @@
 | 文件 | 责任 | 改动类型 |
 |------|------|---------|
 | `niu_api/internal/lightrag_integrity.py` | 新增 5 项语义 check + 扩展 `_load_graphml` 提取 description/entity_type | 修改 |
-| `niu_api/internal/lightrag_repair.py` | 新增 5 项语义 repair（完整 8 存储清理，含 `kv_store_relation_chunks`） + 扩展 `repair_all` 调用语义 repair + 顶部加 `import zlib` | 修改 |
+| `niu_api/internal/lightrag_repair.py` | 新增 1 项语义 repair 函数 `repair_brainregion_zombies`（覆盖 5 个语义 check 的修复需求，完整 8 存储清理，含 `kv_store_relation_chunks`） + 扩展 `repair_all` 调用语义 repair + 新增 `_rebuild_vdb_matrix` 函数（函数内 `import numpy as np`，跟现有 `_encode_vector`/`_encode_matrix` 一致；顶部 `import zlib`/`import base64` 已存在无需加） | 修改 |
 | `tests/test_lightrag_semantic_integrity.py` | 5 项语义 check 的 TDD 测试 | 创建 |
-| `tests/test_lightrag_semantic_repair.py` | 5 项语义 repair 的 TDD 测试 | 创建 |
+| `tests/test_lightrag_semantic_repair.py` | 1 项语义 repair 函数 `repair_brainregion_zombies` 的 TDD 测试（覆盖 5 个语义 check 的修复） | 创建 |
 | `tests/fixtures/lightrag_zombie_regions/` | 僵尸脑区测试数据 fixture（含真实 16 个僵尸脑区的最小复现） | 创建 |
 | `tests/test_lightrag_e2e_semantic.py` | 端到端测试：真实数据跑 check → repair → 启动程序验证正常运行 | 创建 |
 | `agent/injector/region_sync.py` | 删除 `_refresh_activation_manager` 覆盖率检查（Task 13）+ `shrink_threshold` 从 100 降到 10（Task 15） | 修改 |
 | `agent/runner.py` | forced sync 加 5 分钟失败冷却 + 成功后重置冷却时间（Task 14）+ forced sync 改异步触发（Task 16）+ 顶部加 `import time`（Bug #6） | 修改 |
 | `niu_api/internal/region_manager.py` | `dissolve_shrunk_regions` 参数默认值 `shrink_threshold` 从 100 降到 10（Task 15） | 修改 |
 | `tests/test_region_sync.py` | 删除 `test_refresh_activation_manager_skips_when_coverage_too_low`（Task 13 Step 3.5，覆盖率检查已删） | 修改 |
+| `docs/lightrag-semantic-integrity-design.md` | 设计文档（Task 12 创建） | 创建 |
 
 ---
 
@@ -335,7 +336,7 @@ grep -n "_load_graphml" REDACTED_USER_PATH/tools/ai-bot/niu_api/internal/lightra
 - `node_ids, _, _, graphml_err = _load_graphml(...)`（不需要 node_meta 的地方）
 - `node_ids, _, node_meta, graphml_err = _load_graphml(...)`（需要 node_meta 的语义 check）
 
-具体 8 处调用点修改对照（行号基于当前 `lightrag_integrity.py`，Bug H 修复后从 7 处补到 8 处）：
+具体 7 处调用点修改对照（行号基于当前 `lightrag_integrity.py`）：
 
 ```python
 # L253 (check_entity_chunks_dangling)
@@ -358,25 +359,16 @@ grep -n "_load_graphml" REDACTED_USER_PATH/tools/ai-bot/niu_api/internal/lightra
 - node_ids, edges, graphml_err = _load_graphml(storage_dir / _GRAPHML_FILE)
 + node_ids, edges, _, graphml_err = _load_graphml(storage_dir / _GRAPHML_FILE)
 
-# L656 (check_vdb_relationships_endpoint_dangling 第一处)
+# L656 (check_vdb_relationships_endpoint_dangling)
 - node_ids, _, graphml_err = _load_graphml(storage_dir / _GRAPHML_FILE)
 + node_ids, _, _, graphml_err = _load_graphml(storage_dir / _GRAPHML_FILE)
-
-# L687 (check_vdb_relationships_endpoint_dangling 第二处——Bug H 修复)
-# 审查发现原计划漏掉 L687 这处调用。该函数内部有两处 _load_graphml 调用，
-# 一处在 L656 提取 node_ids 用于 endpoint dangling 检测，
-# 另一处在 L687 重新解析（或在该函数后段循环里重新调用——实施时以 grep 输出为准）
-- node_ids, _, graphml_err = _load_graphml(storage_dir / _GRAPHML_FILE)
-+ node_ids, _, _, graphml_err = _load_graphml(storage_dir / _GRAPHML_FILE)
-# 注意：L687 的解构形式可能是 `node_ids, _, graphml_err` 也可能是 `_, edges, graphml_err` 等，
-# 实施时必须 Read 该行确认具体解构形式再改。
 
 # L769 (_check_file_level_critical 内部调用)
 - _, _, err = _load_graphml(storage_dir / _GRAPHML_FILE)
 + _, _, _, err = _load_graphml(storage_dir / _GRAPHML_FILE)
 ```
 
-注意：实际行号可能在修改时已偏移，以 `grep -n "_load_graphml"` 输出为准——逐一打开每处确认当前是 3-tuple 解构，改成 4-tuple。**真实代码有 8 处调用（不含函数定义），不是 7 处**——审查 Bug H 修复前原计划漏了 L687。
+注意：实际行号可能在修改时已偏移，以 `grep -n "_load_graphml"` 输出为准——逐一打开每处确认当前是 3-tuple 解构，改成 4-tuple。**真实代码有 7 处调用（不含函数定义）**：L253, L288, L478, L522, L617, L656, L769。`check_vdb_relationships_endpoint_dangling` 函数内部只有 1 处 `_load_graphml` 调用（L656），L687 是 `_load_vdb` 调用（不是 `_load_graphml`）。
 
 ### - [ ] Step 6: 跑全部现有测试确认不破坏
 
@@ -1463,14 +1455,20 @@ def _make_test_storage(tmp_path: Path, zombies: list[str], normal_regions: list[
     ET.ElementTree(root).write(storage / "graph_chunk_entity_relation.graphml", xml_declaration=True, encoding="utf-8")
     
     # 2. vdb_entities（真实格式：顶层 `data` 字段，entry `vector` 是 base64 字符串）
+    # 注意：vector 字段真实是 base64(zlib(float16)) 三层编码，本 fixture 用占位符 "AAAAAA=="。
+    # _rebuild_vdb_matrix 会走 except 分支用零向量填充——不影响测试断言
+    # （断言只检查 entry 是否被删，不检查 vector 值）。
+    # embedding_dim 字段必须存在且非 0，否则 _rebuild_vdb_matrix 会走空数据分支（matrix=""）不重建 matrix。
+    # 这里用 8（不是真实 768）减少测试数据量。
     vdb_data = []
     for name in zombies + normal_regions:
         vdb_data.append({"__id__": f"ent-{name.lower()}", "entity_name": name, "vector": "AAAAAA=="})
     (storage / "vdb_entities.json").write_text(json.dumps({
-        "data": vdb_data, "file_hash": "fake",
+        "data": vdb_data, "file_hash": "fake", "embedding_dim": 8,
     }, ensure_ascii=False))
 
     # 3. vdb_relationships（僵尸脑区 + 知识图谱系统维护 的"删除操作"edge）
+    # embedding_dim 同 vdb_entities（_rebuild_vdb_matrix 重建 matrix 时需要）
     rel_data = []
     for zname in zombies:
         rel_data.append({
@@ -1480,7 +1478,7 @@ def _make_test_storage(tmp_path: Path, zombies: list[str], normal_regions: list[
             "vector": "AAAAAA==",
         })
     (storage / "vdb_relationships.json").write_text(json.dumps({
-        "data": rel_data, "file_hash": "fake",
+        "data": rel_data, "file_hash": "fake", "embedding_dim": 8,
     }, ensure_ascii=False))
     
     # 4. kv_store_entity_chunks（16 个僵尸全指向同一个共享 chunk）
@@ -1499,11 +1497,12 @@ def _make_test_storage(tmp_path: Path, zombies: list[str], normal_regions: list[
     (storage / "kv_store_text_chunks.json").write_text(json.dumps(tc_data, ensure_ascii=False))
     
     # 6. vdb_chunks（真实格式：顶层 `data` 字段，entry `vector` 是 base64 字符串）
+    # embedding_dim 同 vdb_entities（_rebuild_vdb_matrix 重建 matrix 时需要）
     chunk_data = []
     for cid in [shared_chunk_id] + [f"chunk-{n}" for n in zombies + normal_regions]:
         chunk_data.append({"__id__": cid, "vector": "AAAAAA=="})
     (storage / "vdb_chunks.json").write_text(json.dumps({
-        "data": chunk_data, "file_hash": "fake",
+        "data": chunk_data, "file_hash": "fake", "embedding_dim": 8,
     }, ensure_ascii=False))
     
     # 7. kv_store_full_entities（真实结构：dict[doc_id] -> 单 entity dict {entity_name, description, source_id}）
@@ -1649,14 +1648,9 @@ Expected: FAIL with `ImportError`
 
 ### - [ ] Step 3: Write minimal implementation
 
-在 `niu_api/internal/lightrag_repair.py` 新增（顶部需 `import zlib`，与 `lightrag_repair.py` 现有 `import numpy as np` / `import base64` 并列）：
+在 `niu_api/internal/lightrag_repair.py` 新增 `_rebuild_vdb_matrix` 函数（**函数内** `import numpy as np`，跟现有 `_encode_vector`/`_encode_matrix` L177-190 一致风格）。顶部 `import zlib`（L45）和 `import base64`（L40）已存在，**无需重复加**——第三次审查 Bug #1 让加顶部 `import zlib` 是基于"顶部已有 `import numpy as np`"的错误假设，实际 lightrag_repair.py 顶部并没有 `import numpy as np`。
 
 ```python
-import zlib
-import numpy as np
-import base64
-
-
 def _rebuild_vdb_matrix(vdb_data: dict) -> dict:
     """清理 vdb data 后重建 matrix 字段。
 
@@ -1678,6 +1672,8 @@ def _rebuild_vdb_matrix(vdb_data: dict) -> dict:
     - `matrix` 字段：单层编码 base64(float32 bytes)——无 zlib 压缩
     本函数读 vector 时用三层解码，写 matrix 时用单层编码。
     """
+    import numpy as np
+
     embedding_dim = vdb_data.get("embedding_dim", 0)
     data_list = vdb_data.get("data", [])
     if embedding_dim == 0 or not data_list:
@@ -2123,6 +2119,8 @@ git commit -m "feat(repair): repair_all 集成 brainregion_zombies——最早�
 
 TDD 测试用合成数据，但真正证明修复有效的是用**用户真实数据**跑完整流程：check（报错）→ repair（清理）→ check（通过）→ 启动程序（正常）。
 
+**重要**：Task 11 端到端验证必须在 Task 13-16（P0 修复）完成后执行。如果 Task 13-16 未完成，启动 ./niu 仍会卡死（forced sync 同步阻塞 43 秒 + 死循环 + 覆盖率检查过严 + shrink_threshold=100 误判）。Task 11 测试用例中"启动程序"步骤依赖 Task 13-16 的修复才能通过。
+
 ### - [ ] Step 1: 写端到端测试
 
 `tests/test_lightrag_e2e_semantic.py`:
@@ -2467,6 +2465,14 @@ sed -n '1690,1730p' REDACTED_USER_PATH/tools/ai-bot/agent/runner.py
 
 **注意属性名**：runner.py 真实代码用 `self._cached_activation_mgr`（L616）+ 模块级 `get_activation_mgr()` 函数（L1681、L1702），不是 `self._activation_manager`。修改前先 Read 确认。
 
+**注意：在现有代码基础上增量修改，不是整段重写**：真实代码 runner.py L1658-1731 的 `_get_brain_injector` 已经用 `get_activation_mgr()` + `get_region_sync().run_sync()`，且包含 try/except 日志细节。实施时应 Read 现有 `_get_brain_injector` 函数（runner.py L1658-1731），在合适位置插入以下新逻辑，**保留现有 try/except 日志**：
+1. `__init__` 加 `self._last_forced_sync_fail_time: float = 0.0`（初始化）
+2. forced sync 触发前加冷却检查（`time.time() - self._last_forced_sync_fail_time < 300`）
+3. forced sync 成功后重置冷却时间（`self._last_forced_sync_fail_time = 0.0`）
+4. forced sync 失败后记录失败时间（`self._last_forced_sync_fail_time = time.time()`）
+
+下方代码示例是**逻辑参考**，不是要求整段替换真实代码：
+
 ```python
 # 在 __init__ 或类属性加 instance 变量：
 # self._last_forced_sync_fail_time: float = 0.0
@@ -2662,6 +2668,12 @@ sed -n '1705,1725p' REDACTED_USER_PATH/tools/ai-bot/agent/runner.py
 
 **修复方案**：加 `self._forced_sync_running` 标志（threading.Event），避免并发启动多个 forced sync 线程。
 
+**注意：在现有代码基础上增量修改，不是整段重写**：真实代码 runner.py L1658-1731 的 `_get_brain_injector` 已经用 `get_activation_mgr()` + `get_region_sync().run_sync()`，且包含 try/except 日志细节。实施时应 Read 现有 `_get_brain_injector` 函数（runner.py L1658-1731），在 Task 14 已加的冷却检查基础上，插入以下新逻辑，**保留现有 try/except 日志**：
+1. `__init__` 加 `self._forced_sync_running = threading.Event()`（与 `_last_forced_sync_fail_time` 并列）
+2. forced sync 触发前加 `_forced_sync_running.is_set()` 检查（避免并发启动多个 daemon 线程）
+3. 把同步 `run_sync()` 调用改为 `threading.Thread(target=_run_forced_sync, daemon=True, name="forced-sync").start()`，主线程立即返回 None
+4. 异步线程内部 finally 块 `self._forced_sync_running.clear()`
+
 **初始化（在 `__init__` 或类属性加）**：
 
 ```python
@@ -2812,9 +2824,9 @@ P0 修复：程序启动卡死根因。
 > 注：原计划有 6 项，`check_brainregion_size_mismatch` 因在真实数据上无效（16 个僵尸
 > brain_meta_size:0 + 实际 0 条包含 edge 一致）已删除，见 Task 3。
 
-## 5 项新语义 repair
+## 1 项新语义 repair 函数（覆盖 5 个语义 check）
 
-1. repair_brainregion_zombies - 完整 8 存储清理僵尸脑区
+1. `repair_brainregion_zombies` - 完整 8 存储清理僵尸脑区（覆盖 5 个语义 check 的修复需求）
 2-5. 通过 repair_all 调用链集成
 
 ## 与删除工具 bug 的关系
@@ -2918,11 +2930,11 @@ git commit -m "docs: 新增 LightRAG 语义完整性设计文档"
 1. [CRITICAL] **Bug A** Task 8 Step 2 Expected 数字严重错误：计划写 `16/16/1/0/2`，真实数据是 `16/23/84/0/39`。已修正为真实值，并说明 84 个共享 chunk 和 39 个孤儿 chunk 含其他历史残留（不全是 16 个僵尸脑区造成）。
 2. [CRITICAL] **Bug B** Task 9 清理 vdb 后未重建 matrix：vdb 顶层 `matrix` 是 base64 float32 矩阵，`_load_vdb` 会校验 `4 * embedding_dim * len(data_list) == len(matrix_bytes)`。删 entry 后 matrix 长度不变触发 `matrix_size_mismatch` critical。已加 `_rebuild_vdb_matrix` 函数，在清理 vdb_entities/vdb_relationships/vdb_chunks 后调用重建 matrix。
 3. [CRITICAL] **Bug C** Task 13 会破坏现有测试：`tests/test_region_sync.py:319-353` 的 `test_refresh_activation_manager_skips_when_coverage_too_low` 验证覆盖率 < 50% 时 `initialize_from_regions` 不被调用。Task 13 删除覆盖率检查后该测试失败。已新增 Step 3.5 删除/重写该测试。
-4. [CRITICAL] **Bug D** Task 14/16 属性名错误：计划用 `self._activation_manager`，真实代码用 `self._cached_activation_mgr`（runner.py L616）+ 模块级 `get_activation_mgr()` 函数（L1681、L1702）。已把所有 `self._activation_manager` 改为 `self._cached_activation_mgr` + `get_activation_mgr()`。
+4. [CRITICAL] **Bug D** ~~Task 14/16 属性名错误：计划用 `self._activation_manager`，真实代码用 `self._cached_activation_mgr`（runner.py L616）+ 模块级 `get_activation_mgr()` 函数（L1681、L1702）。已把所有 `self._activation_manager` 改为 `self._cached_activation_mgr` + `get_activation_mgr()`。~~ **【第四次审查撤销虚构】**：真实代码 runner.py 本来就用正确属性名 `self._cached_activation_mgr`（L616）+ `get_activation_mgr()` 函数（L1681, L1702），不存在"`self._activation_manager` 错误"——这是第三次审查虚构的 bug。Task 14/16 在此基础上增加冷却检查 + 异步触发逻辑，不修改现有属性名。
 5. [CRITICAL] **Bug E** Task 16 异步线程安全 + 并发启动多个 forced sync：异步线程失败后 set `_last_forced_sync_fail_time`，主线程立即返回 None，5 分钟内多次调用会启动多个 daemon 线程。已加 `self._forced_sync_running`（threading.Event）标志，避免并发启动多个 forced sync 线程。
 6. [HIGH] **Bug F** Task 15 常量名错误：计划用 `SHRINK_THRESHOLD = 100`（region_sync.py L42），真实代码无此常量。真实位置是 `REGION_CONFIG_DEFAULTS["shrink_threshold"] = 100`（region_sync.py L41，字典 key）+ `dissolve_shrunk_regions(self, shrink_threshold: int = 100, ...)`（region_manager.py L1016，参数默认值）。已改为真实代码属性。
 7. [HIGH] **Bug G** Task 9 测试 fixture 与真实数据不符：Task 9 测试 fixture 用 form 1 `{entity_names: list, count}` 写 full_entities，但真实数据是 form 2 `{entity_name, description, source_id}`（单 entity）。测试能过但真实数据清理无效。已把 fixture 改为 form 2 真实结构，并同步修正断言（僵尸 entity 的 doc 整体被删，不是从 list 移除）。
-8. [HIGH] **Bug H** Task 1 Step 5 漏 1 处调用点：真实 grep 显示 `_load_graphml` 在 lightrag_integrity.py 有 10 处调用（不含定义），Task 1 Step 5 只列 7 处。漏掉 L687（`check_vdb_relationships_endpoint_dangling` 内部第二处）。已补上 L687 调点的 old/new 代码对照，从 7 处补到 8 处。
+8. [HIGH] **Bug H** ~~Task 1 Step 5 漏 1 处调用点~~ **【第四次审查撤销】**：第三次审查声称"真实 grep 显示 `_load_graphml` 在 lightrag_integrity.py 有 10 处调用，Task 1 Step 5 只列 7 处，漏掉 L687"——这是虚构。真实代码 `_load_graphml` 只有 7 处调用（L253, L288, L478, L522, L617, L656, L769），L687 是 `_load_vdb` 调用（`_, vdb_data, vdb_err = _load_vdb(storage_dir / "vdb_relationships.json")`），不是 `_load_graphml`。`check_vdb_relationships_endpoint_dangling` 函数内部只有 1 处 `_load_graphml` 调用（L656），不存在"第二处"。第四次审查已删除 L687 虚构段落，恢复为 7 处调用。
 9. [HIGH] **Bug I** Task 9 清理无事务式保护：8 个存储清理用独立 try/except，中间失败会状态不一致（半写盘）。已改为"in-memory 修改 + 统一写入"模式——所有清理在内存中完成，全部成功后才统一写盘；写盘失败则内存修改丢失（不会半写盘），返回 unrecoverable。
 10. [HIGH] **Bug J** Task 11 finally 块无 kill fallback：`proc.terminate() + proc.wait(timeout=10)` 如果进程不响应 SIGTERM 会超时抛异常，proc 成为僵尸进程。已加 `proc.kill()` fallback + psutil 杀进程树（或 pkill 兜底）。
 
@@ -2930,11 +2942,30 @@ git commit -m "docs: 新增 LightRAG 语义完整性设计文档"
 
 第三次审查（baseline 274fe65b）发现 7 个新 bug（3 CRITICAL + 4 HIGH），已全部修复：
 
-1. [CRITICAL] **Bug #1** `_rebuild_vdb_matrix` 解码 vector 编码格式错误：原用 `np.frombuffer(base64.b64decode(vec_b64), dtype=np.float32)` 解码，但真实 vector 字段是 `base64(zlib(float16 bytes))` 三层编码（参考 `lightrag_repair.py` L177-182 `_encode_vector`）。原解码会抛 `buffer size must be a multiple of element size` 异常，被 except 用零向量填充，matrix 全零。已改为三层解码（base64 → zlib → float16 → float32），并在 docstring 明确 vector 字段三层编码、matrix 字段单层编码的差异。顶部加 `import zlib`。
+1. [CRITICAL] **Bug #1** `_rebuild_vdb_matrix` 解码 vector 编码格式错误：原用 `np.frombuffer(base64.b64decode(vec_b64), dtype=np.float32)` 解码，但真实 vector 字段是 `base64(zlib(float16 bytes))` 三层编码（参考 `lightrag_repair.py` L177-182 `_encode_vector`）。原解码会抛 `buffer size must be a multiple of element size` 异常，被 except 用零向量填充，matrix 全零。已改为三层解码（base64 → zlib → float16 → float32），并在 docstring 明确 vector 字段三层编码、matrix 字段单层编码的差异。**【第四次审查撤销"顶部加 `import zlib`"建议】**：真实代码 lightrag_repair.py L45 已有 `import zlib`，L40 已有 `import base64`，顶部并无 `import numpy as np`（现有 `_encode_vector`/`_encode_matrix` 都是函数内 `import numpy as np`）。第四次审查改为在 `_rebuild_vdb_matrix` 函数内 `import numpy as np`，跟现有风格一致。
 2. [CRITICAL] **Bug #2** Task 9 函数名错误：`lightrag_repair.py` 用 `_storage_dir()`（L68 定义），不是 `_resolve_storage_dir()`（这是 `lightrag_integrity.py` L52 的函数）。Task 9 `repair_brainregion_zombies` 函数里 L1709 的 `_resolve_storage_dir()` 已改为 `_storage_dir()`。其他 5 处 `_resolve_storage_dir()` 在 `lightrag_integrity.py` 的 check 函数里，保持不变。
 3. [CRITICAL] **Bug #3** Task 9 遗漏清理 `kv_store_relation_chunks.json`：真实数据含 16 个僵尸脑区的关系 chunk（key 格式 `智家xxx脑区<SEP>知识图谱系统维护`，`<SEP>` 是 GRAPH_FIELD_SEP 字符串），修复后残留导致 `check_relation_chunks_dangling` 报 16 个 major error。已加 3.9 段清理逻辑（读入 + src/tgt 是僵尸脑区则删 + 写盘），Task 9 清理范围从 7 存储改为 8 存储，commit message 同步更新。
 4. [HIGH] **Bug #4** Task 14 `_activation_mgr = self._cached_activation_mgr` 逻辑错误：应读全局单例 `get_activation_mgr()`（定义在 `agent/brain_tools.py:39`），不是读 cache `self._cached_activation_mgr`。cache 被清空后会误判 activation_mgr 未就绪。Task 14 和 Task 16 的 `_activation_mgr = self._cached_activation_mgr` 已改为 `_activation_mgr = get_activation_mgr()`。
 5. [HIGH] **Bug #5** Task 14/16 `run_sync()` 裸调用错误：`run_sync` 是 `RegionSync` 实例方法，不是模块级函数，裸调用会 `NameError`。已改为 `from agent.injector.region_sync import get_region_sync; get_region_sync().run_sync()`（`get_region_sync` 定义在 `agent/injector/region_sync.py`）。Task 14 Step 3 和 Task 16 Step 3 两处都已修复。
 6. [HIGH] **Bug #6** Task 14/16 缺 `import time`：runner.py 顶部不 import time，但 Task 14/16 用 `time.time()`。已在 Task 14 Step 3 加明确说明：实施者必须先 `grep "^import time" agent/runner.py` 检查，若无输出则在 runner.py 顶部加 `import time`。
 7. [HIGH] **Bug #7** Task 14 forced sync 成功后冷却永远不解除：第一次 forced sync 成功后 `_last_forced_sync_fail_time` 保持 0.0，下次调用 `time.time() - 0.0 < 300` 永远 True，冷却永远不解除。已在 Task 14 和 Task 16 的 forced sync 成功分支加 `self._last_forced_sync_fail_time = 0.0` 重置冷却时间。
+
+### 第四次审查后修复的 2 个重大 bug + 7 个次要问题
+
+第四次审查（baseline af7bea44）发现 2 个重大 bug + 7 个次要问题（基于真实代码二次验证），已全部修复：
+
+**重大修复**：
+
+1. [HIGH] **重大 Bug #1** Bug H 虚构 L687 `_load_graphml` 调用点：第三次审查声称"`_load_graphml` 在 lightrag_integrity.py 有 10 处调用，Task 1 Step 5 漏 L687"——这是虚构。真实代码 `_load_graphml` 只有 7 处调用（L253, L288, L478, L522, L617, L656, L769），L687 是 `_load_vdb` 调用（`_, vdb_data, vdb_err = _load_vdb(storage_dir / "vdb_relationships.json")`）。已删除 Task 1 Step 5 中 L365-372 关于 L687 的虚构段落，恢复为 7 处调用对照；Self-Review Bug H 描述改为"第四次审查撤销"；L338 标题从"8 处"改为"7 处"。
+2. [MEDIUM] **重大 Bug #2** Task 9 Step 3 import 说明错误：原计划让加顶部 `import zlib / import numpy as np / import base64`——但 lightrag_repair.py L45 已有 `import zlib`、L40 已有 `import base64`，顶部并无 `import numpy as np`（现有 `_encode_vector`/`_encode_matrix` L177-190 都是函数内 `import numpy as np` 风格）。已改为在 `_rebuild_vdb_matrix` 函数内 `import numpy as np`，跟现有风格一致；删除顶部三行 import；文件结构表 L81 同步更新。
+
+**次要修复（非阻塞但已改）**：
+
+1. [LOW] Task 14/16 Step 3 加说明：在现有 runner.py 代码基础上**增量修改**（加 `_last_forced_sync_fail_time` 初始化 + 冷却检查 + 异步触发），不是整段重写。实施时应 Read 现有 `_get_brain_injector`（runner.py L1658-1731）在合适位置插入新逻辑，保留现有 try/except 日志。
+2. [LOW] 文件结构表 L78-90 加遗漏项 `docs/lightrag-semantic-integrity-design.md`（Task 12 创建的设计文档）。
+3. [LOW] Task 11 标题下加说明：端到端验证必须在 Task 13-16（P0 修复）完成后执行，否则启动 ./niu 仍会卡死。
+4. [LOW] Self-Review Bug D 描述改为基于真实代码状态：真实代码 runner.py 本来就用正确属性名 `self._cached_activation_mgr` + `get_activation_mgr()` 函数，不存在"`self._activation_manager` 错误"——第三次审查虚构的 bug 已撤销。Task 14/16 在此基础上增加冷却检查 + 异步触发逻辑，不修改现有属性名。
+5. [LOW] Task 9 fixture 加注释说明：vector 字段真实是 `base64(zlib(float16))` 三层编码，本 fixture 用占位符 `AAAAAA==`，`_rebuild_vdb_matrix` 会走 except 分支用零向量填充——不影响测试断言（断言只检查 entry 是否被删，不检查 vector 值）。
+6. [LOW] Task 9 fixture 加 `embedding_dim: 8` 字段（不是真实 768 减少测试数据量），让 `_rebuild_vdb_matrix` 走完整重建路径（否则空数据走 `matrix=""` 分支）。三处 vdb fixture（vdb_entities / vdb_relationships / vdb_chunks）同步加 `embedding_dim`。
+7. [LOW] L7 Architecture 段 + L83 文件结构表 + L2827 Self-Review 段："5 项语义 repair" 表述改为"1 项语义 repair 函数 `repair_brainregion_zombies`（覆盖 5 个语义 check 的修复需求，完整清理 8 存储）"——实际只新增一个 repair 函数，不是五个。
 
