@@ -810,6 +810,65 @@ def check_brainregion_semantic_zombie() -> dict[str, Any]:
     return {"name": "brainregion_semantic_zombie", "errors": errors}
 
 
+def check_entity_chunks_source_id_mismatch() -> dict[str, Any]:
+    """语义 check #3: 检测 entity_chunks 的 chunk_ids 跟 GraphML node d3 source_id 不一致。
+
+    引用方：kv_store_entity_chunks 的 chunk_ids
+    被引用方：GraphML node 的 d3 source_id
+    severity: major
+
+    正常情况：脑区 d3 source_id 应该是脑区专属 chunk_id（brain_xxx），
+    entity_chunks 的 chunk_ids 也应该指向同一个 chunk。
+    僵尸脑区情况：d3 = 脑区专属 chunk，但 entity_chunks 指向"删除日志"chunk——明显异常。
+    """
+    storage_dir = _resolve_storage_dir()
+    errors: list[dict[str, Any]] = []
+
+    ec_data, ec_err = _load_json_dict(storage_dir / "kv_store_entity_chunks.json")
+    if ec_err:
+        errors.append(ec_err)
+        return {"name": "entity_chunks_source_id_mismatch", "errors": errors}
+    if not ec_data:
+        return {"name": "entity_chunks_source_id_mismatch", "errors": []}
+
+    _, _, node_meta, graphml_err = _load_graphml(storage_dir / _GRAPHML_FILE)
+    if graphml_err:
+        errors.append(graphml_err)
+        return {"name": "entity_chunks_source_id_mismatch", "errors": errors}
+
+    for entity_name, ec_entry in ec_data.items():
+        if not isinstance(ec_entry, dict):
+            continue
+        ec_chunk_ids = ec_entry.get("chunk_ids", [])
+        meta = node_meta.get(entity_name)
+        if meta is None:
+            # 实体不在 GraphML，由 check_entity_chunks_dangling 报，这里不重复
+            continue
+        graphml_source_id = meta.get("source_id", "")
+        if not graphml_source_id:
+            continue  # GraphML 没记 source_id，跳过（没法比对）
+        # GraphML d3 可能含 <SEP> 分隔多个 source_id
+        graphml_ids = [s for s in graphml_source_id.split("<SEP>") if s]
+        # 检查 ec_chunk_ids 是否都在 graphml_ids 里
+        ec_ids_set = set(ec_chunk_ids)
+        graphml_ids_set = set(graphml_ids)
+        # 不一致 = ec_chunk_ids 有 graphml_ids 没有的 chunk
+        orphan_ec_ids = ec_ids_set - graphml_ids_set
+        if orphan_ec_ids:
+            errors.append({
+                "check": "entity_chunks_source_id_mismatch",
+                "severity": "major",
+                "ref_key": entity_name,
+                "ref_file": "kv_store_entity_chunks.json",
+                "target_file": _GRAPHML_FILE,
+                "graphml_source_id": graphml_source_id,
+                "entity_chunks_ids": list(ec_chunk_ids),
+                "orphan_ids": list(orphan_ec_ids),
+                "msg": f"实体 '{entity_name}' entity_chunks 指向 {list(orphan_ec_ids)} 但 GraphML d3 source_id 是 {graphml_source_id}",
+            })
+    return {"name": "entity_chunks_source_id_mismatch", "errors": errors}
+
+
 # =============================================================================
 # 文件级 critical 预扫描
 # =============================================================================

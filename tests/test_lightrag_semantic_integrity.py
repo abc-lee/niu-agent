@@ -164,3 +164,58 @@ def test_check_brainregion_semantic_zombie_clean_data_ok(tmp_path):
         report = check_brainregion_semantic_zombie()
 
     assert report["errors"] == []
+
+
+def test_check_entity_chunks_source_id_mismatch_detects_inconsistency(tmp_path):
+    """entity_chunks 的 chunk_ids 跟 GraphML node 的 d3 source_id 不一致"""
+    from niu_api.internal.lightrag_integrity import check_entity_chunks_source_id_mismatch
+
+    graphml = tmp_path / "graph_chunk_entity_relation.graphml"
+    _write_test_graphml(graphml, nodes=[
+        # 僵尸脑区：d3 source_id = chunk-A，但 entity_chunks 指向 chunk-B
+        {"id": "智家脑区X", "entity_type": "brainregion",
+         "description": "被删除的重复脑区实体之一",
+         "source_id": "chunk-AAAAAAAA"},
+        # 正常脑区：d3 source_id = chunk-C，entity_chunks 也指向 chunk-C
+        {"id": "聊天历史脑区", "entity_type": "brainregion",
+         "description": "brain_meta_size:10",
+         "source_id": "chunk-CCCCCCCC"},
+    ])
+
+    # 写 entity_chunks
+    ec_path = tmp_path / "kv_store_entity_chunks.json"
+    import json
+    ec_path.write_text(json.dumps({
+        "智家脑区X": {"chunk_ids": ["chunk-BBBBBBBB"], "count": 1},  # 不一致
+        "聊天历史脑区": {"chunk_ids": ["chunk-CCCCCCCC"], "count": 1},  # 一致
+    }, ensure_ascii=False))
+
+    with patch("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path):
+        report = check_entity_chunks_source_id_mismatch()
+
+    assert report["name"] == "entity_chunks_source_id_mismatch"
+    assert len(report["errors"]) == 1
+    assert report["errors"][0]["ref_key"] == "智家脑区X"
+    assert report["errors"][0]["graphml_source_id"] == "chunk-AAAAAAAA"
+    assert "chunk-BBBBBBBB" in report["errors"][0]["entity_chunks_ids"]
+
+
+def test_check_entity_chunks_source_id_mismatch_consistent_ok(tmp_path):
+    """entity_chunks 跟 GraphML d3 source_id 一致 → 0 errors"""
+    from niu_api.internal.lightrag_integrity import check_entity_chunks_source_id_mismatch
+
+    graphml = tmp_path / "graph_chunk_entity_relation.graphml"
+    _write_test_graphml(graphml, nodes=[
+        {"id": "脑区A", "entity_type": "brainregion",
+         "source_id": "chunk-AAAA"},
+    ])
+
+    import json
+    (tmp_path / "kv_store_entity_chunks.json").write_text(json.dumps({
+        "脑区A": {"chunk_ids": ["chunk-AAAA"], "count": 1},
+    }, ensure_ascii=False))
+
+    with patch("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path):
+        report = check_entity_chunks_source_id_mismatch()
+
+    assert report["errors"] == []
