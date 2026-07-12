@@ -757,6 +757,60 @@ def check_vdb_relationships_endpoint_dangling() -> dict[str, Any]:
 
 
 # =============================================================================
+# 语义维度检查（句法自洽但语义死亡的数据）
+# =============================================================================
+
+# "被删除"语义标记（LLM 写的 description，明确告诉系统这个实体该删）
+_ZOMBIE_DESCRIPTION_MARKERS = (
+    "被删除的重复脑区实体之一",
+    "被删除的脑区",
+    "已删除的脑区",
+    "已删除的重复脑区",
+)
+
+
+def check_brainregion_semantic_zombie() -> dict[str, Any]:
+    """语义 check #1: 检测脑区 description 含'被删除'标记但 GraphML node 仍存在。
+
+    引用方：脑区 description 的语义标记
+    被引用方：GraphML node 存在性
+    severity: major（句法自洽但语义死亡，会让 dissolve 卡在中间态）
+
+    历史 Agent 用 custom_kg 写"删除日志"但没真删，description 含明确"被删除"标记。
+    """
+    storage_dir = _resolve_storage_dir()
+    errors: list[dict[str, Any]] = []
+
+    _, _, node_meta, graphml_err = _load_graphml(storage_dir / _GRAPHML_FILE)
+    if graphml_err:
+        errors.append(graphml_err)
+        return {"name": "brainregion_semantic_zombie", "errors": errors}
+    if not node_meta:
+        return {"name": "brainregion_semantic_zombie", "errors": []}
+
+    for nid, meta in node_meta.items():
+        # 只检测 brainregion 类型
+        if meta.get("entity_type") != "brainregion":
+            continue
+        desc = meta.get("description", "")
+        if not desc:
+            continue
+        for marker in _ZOMBIE_DESCRIPTION_MARKERS:
+            if marker in desc:
+                errors.append({
+                    "check": "brainregion_semantic_zombie",
+                    "severity": "major",
+                    "ref_key": nid,
+                    "ref_file": _GRAPHML_FILE,
+                    "target_file": _GRAPHML_FILE,
+                    "marker": marker,
+                    "msg": f"脑区 '{nid}' description 含语义标记'{marker}'但 node 仍存在（僵尸脑区）",
+                })
+                break  # 一个脑区只报一次（匹配第一个 marker 就停）
+    return {"name": "brainregion_semantic_zombie", "errors": errors}
+
+
+# =============================================================================
 # 文件级 critical 预扫描
 # =============================================================================
 
