@@ -4,7 +4,7 @@
 
 **Goal:** 让 LightRAG 数据一致性检查工具能检测出 16 个历史遗留的"僵尸脑区"（句法自洽但语义死亡的数据），让修复工具能完整清理 7 个存储的残留数据，确保修复后数据真正可用。
 
-**Architecture:** 在现有 `lightrag_integrity.py`（11 项句法 check）和 `lightrag_repair.py`（12 项 repair）基础上，新增 6 项语义 check 和 6 项语义 repair。语义 check 用"description 语义标记 + 跨存储交叉验证"作为参照系（不是句法引用完整性）。语义 repair 用"语义标记"作为真相源（不是 GraphML——GraphML 本身可能被污染），做完整 7 存储清理。修复后用"程序启动正常运行"作为验证标准（不是 check_all 返回 ok）。
+**Architecture:** 在现有 `lightrag_integrity.py`（11 项句法 check）和 `lightrag_repair.py`（12 项 repair）基础上，新增 5 项语义 check 和 5 项语义 repair（原计划 6 项，`check_brainregion_size_mismatch` 因真实数据无效已删除，见 Task 3）。语义 check 用"description 语义标记 + 跨存储交叉验证"作为参照系（不是句法引用完整性）。语义 repair 用"语义标记"作为真相源（不是 GraphML——GraphML 本身可能被污染），做完整 7 存储清理。修复后用"程序启动正常运行"作为验证标准（不是 check_all 返回 ok）。同时修复 4 个 P0 遗漏（Task 13-16：region_sync 覆盖率检查/forced sync 死循环/shrink_threshold/forced sync 阻塞）。
 
 **Tech Stack:** Python 3.11、xml.etree.ElementTree（GraphML 解析）、nano-vectordb（向量存储）、pytest（TDD）、真实 LightRAG 实例（端到端验证）。
 
@@ -25,17 +25,26 @@
 ### 僵尸脑区的形成机制
 
 1. 历史 Agent 用 `custom_kg` 注入 16 条 `知识图谱系统维护 -> 僵尸脑区 (kw='删除操作')` edge（写"删除日志"但没调 `delete_entity`）
-2. 之后 dissolve 流程跑到 shrink_count=1，但被中断（进程重启、sync 没跑完等）
-3. 僵尸脑区卡在"shrink_count=1 中间态"——description 含 `brain_meta_shrink_count:1`，但 GraphML node 仍存在
+2. `shrink_threshold=100` 误判正常小脑区（成员数 < 100）为萎缩，dissolve 流程跑到 shrink_count=1
+3. dissolve 被中断（进程重启、sync 没跑完等），僵尸脑区卡在"shrink_count=1 中间态"——description 含 `brain_meta_shrink_count:1`，但 GraphML node 仍存在
 4. LightRAG 的 `adelete_by_entity` 设计缺陷：只删 3 个存储（GraphML + vdb_entities + vdb_relationships），留下 entity_chunks / text_chunks / vdb_chunks / full_entities / full_relations 5 个存储的残留
+
+> 根因之一是 `shrink_threshold=100` 太高（Task 15 修复），让正常小脑区被判萎缩进入 dissolve 流程。
+> 此外 region_sync 的覆盖率检查（Task 13）和 forced sync 死循环（Task 14）+ 阻塞（Task 16）
+> 是程序启动卡死的直接原因。
 
 ### 新设计原则
 
 **P1: 语义维度检测**——不只是"引用是否解析"，还要验证：
 - description 含"被删除"/"重复"等标记但 node 仍存在
 - `brain_meta_shrink_count` 卡在 1 ≤ N < 3 持续多周期
-- `brain_meta_size` 跟实际"包含"edge 数量不一致
+- text_chunks 的 brain_xxx 专属 chunk content 含"被删除"标记但 node 仍存在
 - 一个 chunk 被超过 N 个 entity 共享（异常）
+
+> 注：原计划有"`brain_meta_size` 跟实际'包含'edge 数量不一致"作为 P1 检测项，
+> 但真实数据验证发现 16 个僵尸脑区 `brain_meta_size:0` + 实际 0 条"包含"edge
+> 一致，此检测项无效，已从 check 列表删除（见 Task 3）。改用"chunk content
+> 含'被删除'标记"作为 chunk 侧僵尸信号检测。
 
 **P2: 跨存储交叉验证**——不只是"A 引用 B"，还要验证：
 - entity_chunks 的 chunk_ids 跟 GraphML node d3 source_id 是否一致
@@ -67,10 +76,10 @@
 
 | 文件 | 责任 | 改动类型 |
 |------|------|---------|
-| `niu_api/internal/lightrag_integrity.py` | 新增 6 项语义 check + 扩展 `_load_graphml` 提取 description/entity_type | 修改 |
-| `niu_api/internal/lightrag_repair.py` | 新增 6 项语义 repair（完整 7 存储清理） + 扩展 `repair_all` 调用语义 repair | 修改 |
-| `tests/test_lightrag_semantic_integrity.py` | 6 项语义 check 的 TDD 测试 | 创建 |
-| `tests/test_lightrag_semantic_repair.py` | 6 项语义 repair 的 TDD 测试 | 创建 |
+| `niu_api/internal/lightrag_integrity.py` | 新增 5 项语义 check + 扩展 `_load_graphml` 提取 description/entity_type | 修改 |
+| `niu_api/internal/lightrag_repair.py` | 新增 5 项语义 repair（完整 7 存储清理） + 扩展 `repair_all` 调用语义 repair | 修改 |
+| `tests/test_lightrag_semantic_integrity.py` | 5 项语义 check 的 TDD 测试 | 创建 |
+| `tests/test_lightrag_semantic_repair.py` | 5 项语义 repair 的 TDD 测试 | 创建 |
 | `tests/fixtures/lightrag_zombie_regions/` | 僵尸脑区测试数据 fixture（含真实 16 个僵尸脑区的最小复现） | 创建 |
 | `tests/test_lightrag_e2e_semantic.py` | 端到端测试：真实数据跑 check → repair → 启动程序验证正常运行 | 创建 |
 
@@ -284,9 +293,9 @@ def _parse_brain_meta(description: str) -> dict[str, str]:
     if not description:
         return {}
     result: dict[str, str] = {}
-    # 分隔符是 LightRAG 的 GRAPH_FIELD_SEP，但 description 里可能也有别的 <SEP>
-    # 先按 \x1f（unit separator）拆分
-    parts = description.split("\x1f")
+    # 分隔符是 LightRAG 的 GRAPH_FIELD_SEP（字符串 "<SEP>"）
+    # 真实数据观察：description 用 "<SEP>" 字符串分隔，不是 \x1f unit separator
+    parts = description.split("<SEP>")
     for part in parts:
         if not part:
             continue
@@ -320,6 +329,40 @@ grep -n "_load_graphml" REDACTED_USER_PATH/tools/ai-bot/niu_api/internal/lightra
 每处改为：
 - `node_ids, _, _, graphml_err = _load_graphml(...)`（不需要 node_meta 的地方）
 - `node_ids, _, node_meta, graphml_err = _load_graphml(...)`（需要 node_meta 的语义 check）
+
+具体 7 处调用点修改对照（行号基于当前 `lightrag_integrity.py`）：
+
+```python
+# L253 (check_entity_chunks_dangling)
+- node_ids, _, graphml_err = _load_graphml(storage_dir / _GRAPHML_FILE)
++ node_ids, _, _, graphml_err = _load_graphml(storage_dir / _GRAPHML_FILE)
+
+# L288 (check_relation_chunks_dangling)
+- _, edges, graphml_err = _load_graphml(storage_dir / _GRAPHML_FILE)
++ _, edges, _, graphml_err = _load_graphml(storage_dir / _GRAPHML_FILE)
+
+# L478 (check_vdb_entities_missing)
+- node_ids, _, graphml_err = _load_graphml(storage_dir / _GRAPHML_FILE)
++ node_ids, _, _, graphml_err = _load_graphml(storage_dir / _GRAPHML_FILE)
+
+# L522 (check_vdb_relationships_missing)
+- _, edges, graphml_err = _load_graphml(storage_dir / _GRAPHML_FILE)
++ _, edges, _, graphml_err = _load_graphml(storage_dir / _GRAPHML_FILE)
+
+# L617 (check_graphml_edge_dangling)
+- node_ids, edges, graphml_err = _load_graphml(storage_dir / _GRAPHML_FILE)
++ node_ids, edges, _, graphml_err = _load_graphml(storage_dir / _GRAPHML_FILE)
+
+# L656 (check_vdb_relationships_endpoint_dangling)
+- node_ids, _, graphml_err = _load_graphml(storage_dir / _GRAPHML_FILE)
++ node_ids, _, _, graphml_err = _load_graphml(storage_dir / _GRAPHML_FILE)
+
+# L769 (_check_file_level_critical 内部调用)
+- _, _, err = _load_graphml(storage_dir / _GRAPHML_FILE)
++ _, _, _, err = _load_graphml(storage_dir / _GRAPHML_FILE)
+```
+
+注意：实际行号可能在修改时已偏移，以 `grep -n "_load_graphml"` 输出为准——逐一打开每处确认当前是 3-tuple 解构，改成 4-tuple。
 
 ### - [ ] Step 6: 跑全部现有测试确认不破坏
 
@@ -501,222 +544,25 @@ delete_entity 的产物，句法自洽但语义死亡。
 
 ---
 
-## Task 3: 语义 Check 2 - 检测 `brain_meta_size` 跟实际"包含"edge 数量不一致
+## Task 3: [已删除] `check_brainregion_size_mismatch` 在真实数据上无效
 
-**Files:**
-- Modify: `niu_api/internal/lightrag_integrity.py`（新增 `check_brainregion_size_mismatch`）
-- Test: `tests/test_lightrag_semantic_integrity.py`
+> **此 Task 已在计划审查时删除**——真实数据验证发现 16 个僵尸脑区的
+> `brain_meta_size` 全是 0，实际"包含"edge 数量也是 0（一致），本 check
+> 检测不出僵尸。为避免给实施者虚假"已检测"的印象，删除整个 check。
+>
+> 后续 Task 4-12 编号保持不变（不重新编号），避免打乱交叉引用。
+> 新增 Task 13-16 修复 4 个 P0 遗漏问题。
+>
+> **实施者跳过此 Task，直接进入 Task 4。**
 
-### 背景
+### 删除理由
 
-脑区 description 写 `brain_meta_size:N`，但实际"包含"edge 数量可能跟 N 不一致。僵尸脑区 `brain_meta_size:0`，正常脑区应该是 `brain_meta_size:1077`（实际成员数）。
-
-### - [ ] Step 1: Write the failing test
-
-```python
-def test_check_brainregion_size_mismatch_detects_inconsistency(tmp_path):
-    """description brain_meta_size 跟实际'包含'edge 数量不一致"""
-    from niu_api.internal.lightrag_integrity import check_brainregion_size_mismatch
-    
-    graphml = tmp_path / "graph_chunk_entity_relation.graphml"
-    _write_test_graphml(graphml, nodes=[
-        # 脑区 A：description 写 size:3，实际 2 个"包含"edge → 报错
-        {"id": "脑区A", "entity_type": "brainregion",
-         "description": "brain_meta_size:3"},
-        # 脑区 B：description 写 size:2，实际 2 个"包含"edge → 通过
-        {"id": "脑区B", "entity_type": "brainregion",
-         "description": "brain_meta_size:2"},
-        # 脑区 C：description 无 brain_meta_size → 跳过（不是脑区元数据格式）
-        {"id": "脑区C", "entity_type": "brainregion",
-         "description": "随便写的"},
-    ], edges=[
-        # 脑区A 的包含 edge（2 条，不是 3）
-        {"source": "脑区A", "target": "成员1", "keywords": "包含"},
-        {"source": "脑区A", "target": "成员2", "keywords": "包含"},
-        # 脑区B 的包含 edge（2 条，匹配）
-        {"source": "脑区B", "target": "成员3", "keywords": "包含"},
-        {"source": "脑区B", "target": "成员4", "keywords": "包含"},
-        # 一条非"包含"edge 不计入
-        {"source": "脑区A", "target": "外部", "keywords": "其他"},
-    ], )
-    # 注意 _write_test_graphml 也要支持非脑区 node
-    # 修改 fixture 支持 nodes 中带 "成员1" 这种无 description 的非脑区节点
-    # 实际写：在 _write_test_graphml 里 nodes 都写完整，包括成员节点
-    
-    with patch("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path):
-        report = check_brainregion_size_mismatch()
-    
-    assert report["name"] == "brainregion_size_mismatch"
-    assert len(report["errors"]) == 1
-    assert report["errors"][0]["ref_key"] == "脑区A"
-    assert report["errors"][0]["declared_size"] == 3
-    assert report["errors"][0]["actual_size"] == 2
-
-
-def test_check_brainregion_size_mismatch_zero_members_ok(tmp_path):
-    """brain_meta_size:0 + 实际 0 个包含 edge → 一致，不报错"""
-    from niu_api.internal.lightrag_integrity import check_brainregion_size_mismatch
-    
-    graphml = tmp_path / "graph_chunk_entity_relation.graphml"
-    _write_test_graphml(graphml, nodes=[
-        {"id": "空脑区", "entity_type": "brainregion",
-         "description": "brain_meta_size:0"},
-    ])
-    
-    with patch("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path):
-        report = check_brainregion_size_mismatch()
-    
-    assert report["errors"] == []
-```
-
-### - [ ] Step 2: Run test to verify it fails
-
-```bash
-python -m pytest tests/test_lightrag_semantic_integrity.py::test_check_brainregion_size_mismatch_detects_inconsistency -v
-```
-
-Expected: FAIL with `ImportError`
-
-### - [ ] Step 3: Write minimal implementation
-
-在 `niu_api/internal/lightrag_integrity.py` 新增：
-
-```python
-def check_brainregion_size_mismatch() -> dict[str, Any]:
-    """语义 check #2: 检测脑区 description 的 brain_meta_size 跟实际'包含'edge 数量不一致。
-
-    引用方：脑区 description 的 brain_meta_size 字段
-    被引用方：GraphML 中以该脑区为一端的'包含'edge 数量
-    severity: major
-
-    僵尸脑区 brain_meta_size:0 但 node 仍存在（其实没有"包含"edge 也算一致），
-    但更严重的是 brain_meta_size:5 但实际 0 个"包含"edge——说明脑区元数据撒谎。
-    """
-    storage_dir = _resolve_storage_dir()
-    errors: list[dict[str, Any]] = []
-
-    node_ids, edges, node_meta, graphml_err = _load_graphml(storage_dir / _GRAPHML_FILE)
-    if graphml_err:
-        errors.append(graphml_err)
-        return {"name": "brainregion_size_mismatch", "errors": errors}
-    if not node_meta:
-        return {"name": "brainregion_size_mismatch", "errors": []}
-
-    # 统计每个脑区的"包含"edge 数量（无向，src/tgt 任一端是脑区都算）
-    contains_count: dict[str, int] = {}
-    for src, tgt in edges:
-        # 找 keywords，但 _load_graphml 当前不返回 edge keywords
-        # 这里先用一个 helper 读 edge keywords
-        pass
-    # ⚠️ 注意：当前 _load_graphml 不解析 edge 的 d9 (keywords) 字段
-    # 我们需要在 _load_graphml 里扩展 edges 为 list[dict] 而不是 list[tuple]
-    # 但这样会破坏现有 check。退一步：本 check 单独读 GraphML 提取 edge keywords
-
-    # 单独读 GraphML，提取每个脑区的"包含"edge
-    contains_count = _count_contains_edges(storage_dir / _GRAPHML_FILE, node_meta)
-
-    for nid, meta in node_meta.items():
-        if meta.get("entity_type") != "brainregion":
-            continue
-        desc = meta.get("description", "")
-        brain_meta = _parse_brain_meta(desc)
-        if "size" not in brain_meta:
-            continue  # 无 brain_meta_size 字段，跳过（不算不一致）
-        declared_size_str = brain_meta["size"]
-        try:
-            declared_size = int(declared_size_str)
-        except ValueError:
-            errors.append({
-                "check": "brainregion_size_mismatch",
-                "severity": "minor",
-                "ref_key": nid,
-                "msg": f"脑区 '{nid}' brain_meta_size 不是整数: {declared_size_str!r}",
-            })
-            continue
-        actual_size = contains_count.get(nid, 0)
-        if declared_size != actual_size:
-            errors.append({
-                "check": "brainregion_size_mismatch",
-                "severity": "major",
-                "ref_key": nid,
-                "ref_file": _GRAPHML_FILE,
-                "declared_size": declared_size,
-                "actual_size": actual_size,
-                "msg": f"脑区 '{nid}' brain_meta_size={declared_size} 但实际'包含'edge {actual_size} 条",
-            })
-    return {"name": "brainregion_size_mismatch", "errors": errors}
-
-
-def _count_contains_edges(graphml_path: Path, node_meta: dict[str, dict[str, str]]) -> dict[str, int]:
-    """读 GraphML 文件，统计每个脑区的'包含'edge 数量。
-
-    Args:
-        graphml_path: GraphML 文件路径
-        node_meta: _load_graphml 返回的 node 元数据 dict
-
-    Returns:
-        {脑区名: 包含 edge 数量}
-    """
-    if not graphml_path.exists():
-        return {}
-    try:
-        tree = ET.parse(graphml_path)
-        root = tree.getroot()
-    except Exception:
-        return {}
-    graph = root.find("graph")
-    if graph is None:
-        for child in root:
-            tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
-            if tag == "graph":
-                graph = child
-                break
-    if graph is None:
-        return {}
-    counts: dict[str, int] = {}
-    region_names = {nid for nid, m in node_meta.items() if m.get("entity_type") == "brainregion"}
-    for child in graph:
-        tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
-        if tag != "edge":
-            continue
-        src = child.get("source", "")
-        tgt = child.get("target", "")
-        # 找 d9 (keywords) 字段
-        keywords = ""
-        for data in child:
-            if data.get("key") == "d9":
-                keywords = data.text or ""
-                break
-        # "包含"关系（不区分大小写、包含匹配）
-        if "包含" not in keywords:
-            continue
-        # 哪一端是脑区
-        region = None
-        if src in region_names:
-            region = src
-        elif tgt in region_names:
-            region = tgt
-        if region is None:
-            continue
-        counts[region] = counts.get(region, 0) + 1
-    return counts
-```
-
-### - [ ] Step 4: Run test to verify it passes
-
-```bash
-python -m pytest tests/test_lightrag_semantic_integrity.py::test_check_brainregion_size_mismatch_detects_inconsistency \
-                tests/test_lightrag_semantic_integrity.py::test_check_brainregion_size_mismatch_zero_members_ok -v
-```
-
-Expected: PASS
-
-### - [ ] Step 5: Commit
-
-```bash
-git add niu_api/internal/lightrag_integrity.py tests/test_lightrag_semantic_integrity.py
-git commit -m "feat(integrity): 新增 check_brainregion_size_mismatch 检测脑区元数据与实际成员数不一致"
-```
+- 真实数据：16 个僵尸脑区 `brain_meta_size:0` + 实际 0 条"包含"edge → 一致，不报错
+- 保留本 check 会给实施者虚假的"已检测僵尸"印象，但实际检测不出
+- 真正能检测僵尸的是 Task 2 (`check_brainregion_semantic_zombie`，语义标记)
+- `_CHECK_FUNCTIONS` 列表（Task 7 Step 5）已同步移除 `check_brainregion_size_mismatch`
+- `Task 8 Step 2 Expected` 已同步移除 `brainregion_size_mismatch` 行
+- `_CHECK_TO_REPAIR`（Task 10）已同步移除 `brainregion_size_mismatch` 映射
 
 ---
 
@@ -837,7 +683,7 @@ def check_entity_chunks_source_id_mismatch() -> dict[str, Any]:
         if not graphml_source_id:
             continue  # GraphML 没记 source_id，跳过（没法比对）
         # GraphML d3 可能含 <SEP> 分隔多个 source_id
-        graphml_ids = [s for s in graphml_source_id.split("\x1f") if s]
+        graphml_ids = [s for s in graphml_source_id.split("<SEP>") if s]
         # 检查 ec_chunk_ids 是否都在 graphml_ids 里
         ec_ids_set = set(ec_chunk_ids)
         graphml_ids_set = set(graphml_ids)
@@ -1032,14 +878,16 @@ def test_check_vdb_entities_orphan_detects_orphan_vectors(tmp_path):
     ])
     
     # vdb_entities 写一些向量（nano-vectordb 格式）
+    # 注意：真实 vdb 顶层字段是 `data`（不是 `__data__`），entry 的向量字段是 `vector`（不是 `__vector__`），
+    # 值是 base64 字符串（不是 list[float]）。这里简化用 base64 字符串占位。
     import json
     (tmp_path / "vdb_entities.json").write_text(json.dumps({
-        "__data__": [
-            {"__id__": "ent-存在的脑区", "__vector__": [0.1] * 768, "entity_name": "存在的脑区"},
-            {"__id__": "ent-被删的脑区", "__vector__": [0.2] * 768, "entity_name": "被删的脑区"},
-            {"__id__": "ent-另一个被删", "__vector__": [0.3] * 768, "entity_name": "另一个被删"},
+        "data": [
+            {"__id__": "ent-存在的脑区", "vector": "AAAAAA==", "entity_name": "存在的脑区"},
+            {"__id__": "ent-被删的脑区", "vector": "AAAAAA==", "entity_name": "被删的脑区"},
+            {"__id__": "ent-另一个被删", "vector": "AAAAAA==", "entity_name": "另一个被删"},
         ],
-        "__file_hash__": "fake_hash",
+        "file_hash": "fake_hash",
     }, ensure_ascii=False))
     
     with patch("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path):
@@ -1063,10 +911,10 @@ def test_check_vdb_entities_orphan_clean_ok(tmp_path):
     
     import json
     (tmp_path / "vdb_entities.json").write_text(json.dumps({
-        "__data__": [
-            {"__id__": "ent-脑区a", "__vector__": [0.1] * 768, "entity_name": "脑区A"},
+        "data": [
+            {"__id__": "ent-脑区a", "vector": "AAAAAA==", "entity_name": "脑区A"},
         ],
-        "__file_hash__": "fake_hash",
+        "file_hash": "fake_hash",
     }, ensure_ascii=False))
     
     with patch("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path):
@@ -1108,15 +956,16 @@ def check_vdb_entities_orphan() -> dict[str, Any]:
         errors.append(graphml_err)
         return {"name": "vdb_entities_orphan", "errors": errors}
 
-    vdb_data, _, vdb_err = _load_vdb(storage_dir / "vdb_entities.json")
+    _, vdb_data_list, vdb_err = _load_vdb(storage_dir / "vdb_entities.json")
     if vdb_err:
         errors.append(vdb_err)
         return {"name": "vdb_entities_orphan", "errors": errors}
-    if not vdb_data:
+    if not vdb_data_list:
         return {"name": "vdb_entities_orphan", "errors": []}
 
-    data_list = vdb_data.get("__data__", [])
-    for entry in data_list:
+    # 防御性 check：当前真实数据 vdb_entities.json 可能为空（len(data)=0），
+    # 此时反向孤儿永远 0 个。本 check 作为防御性检测，未来 vdb 有数据时能检测。
+    for entry in vdb_data_list:
         if not isinstance(entry, dict):
             continue
         entity_name = entry.get("entity_name", "")
@@ -1215,6 +1064,44 @@ def test_check_brainregion_orphan_chunks_clean_ok(tmp_path):
         report = check_brainregion_orphan_chunks()
     
     assert report["errors"] == []
+
+
+def test_check_brainregion_orphan_chunks_detects_zombie_content(tmp_path):
+    """brain_xxx chunk content 含'被删除'标记但 GraphML 仍有 brain_xxx node → chunk 侧僵尸信号"""
+    from niu_api.internal.lightrag_integrity import check_brainregion_orphan_chunks
+    
+    graphml = tmp_path / "graph_chunk_entity_relation.graphml"
+    # 注意：脑区 node 仍在（这是僵尸脑区的特征：description 含标记但 node 还在）
+    _write_test_graphml(graphml, nodes=[
+        {"id": "智家僵尸脑区", "entity_type": "brainregion",
+         "description": "被删除的重复脑区实体之一。<SEP>brain_meta_size:0"},
+    ])
+    
+    import json
+    (tmp_path / "kv_store_text_chunks.json").write_text(json.dumps({
+        # 脑区专属 chunk content 含"被删除"标记 → 报错（chunk 侧僵尸信号）
+        "chunk-zombie": {
+            "content": "这是被删除的重复脑区实体之一的专属 chunk",
+            "full_doc_id": "brain_智家僵尸脑区",
+            "source_id": "brain_智家僵尸脑区",
+        },
+        # 正常脑区专属 chunk，content 不含标记 → 不报
+        "chunk-normal": {
+            "content": "智家僵尸脑区的正常内容",
+            "full_doc_id": "brain_智家僵尸脑区",
+            "source_id": "brain_智家僵尸脑区",
+        },
+    }, ensure_ascii=False))
+    
+    with patch("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path):
+        report = check_brainregion_orphan_chunks()
+    
+    assert report["name"] == "brainregion_orphan_chunks"
+    assert len(report["errors"]) == 1
+    assert report["errors"][0]["orphan_chunk_id"] == "chunk-zombie"
+    assert report["errors"][0]["brain_name"] == "智家僵尸脑区"
+    assert "marker" in report["errors"][0]
+    assert "被删除" in report["errors"][0]["marker"]
 ```
 
 ### - [ ] Step 2: Run test to verify it fails
@@ -1229,19 +1116,27 @@ Expected: FAIL
 
 ```python
 def check_brainregion_orphan_chunks() -> dict[str, Any]:
-    """语义 check #6: 检测 text_chunks 里 source_id=brain_xxx 但 GraphML 没 brain_xxx node 的孤儿 chunk。
+    """语义 check #6: 检测脑区孤儿 chunk（两种形式）。
 
-    引用方：kv_store_text_chunks 的 source_id（brain_<脑区名> 格式）
+    引用方：kv_store_text_chunks 的 source_id 或 content
     被引用方：GraphML node id
     severity: major
 
+    检测两种孤儿 chunk：
+    1. text_chunks 里 source_id=brain_xxx 但 GraphML 没 brain_xxx node（脑区被删但专属 chunk 残留）
+    2. text_chunks 里 source_id=brain_xxx 的 chunk content 含"被删除"标记，
+       但 GraphML 仍有该 brain_xxx node（chunk 侧标记 node 是僵尸，配合
+       check_brainregion_semantic_zombie 交叉验证）
+
     脑区专属 chunk 是 region_manager 创建脑区时生成的（source_id = brain_<脑区名>）。
     如果脑区被删但专属 chunk 残留，会让向量检索继续命中僵尸脑区数据。
+    如果脑区 node 还在但专属 chunk content 含"被删除"标记，说明 chunk 侧已标记删除
+    但 node 没删——这也是僵尸信号。
     """
     storage_dir = _resolve_storage_dir()
     errors: list[dict[str, Any]] = []
 
-    node_ids, _, _, graphml_err = _load_graphml(storage_dir / _GRAPHML_FILE)
+    _, _, node_meta, graphml_err = _load_graphml(storage_dir / _GRAPHML_FILE)
     if graphml_err:
         errors.append(graphml_err)
         return {"name": "brainregion_orphan_chunks", "errors": errors}
@@ -1253,7 +1148,9 @@ def check_brainregion_orphan_chunks() -> dict[str, Any]:
     if not tc_data:
         return {"name": "brainregion_orphan_chunks", "errors": []}
 
+    node_ids = set(node_meta.keys())
     BRAIN_PREFIX = "brain_"
+    seen_orphan_chunk_ids: set[str] = set()  # 避免同一 chunk 报两次
     for chunk_id, chunk_meta in tc_data.items():
         if not isinstance(chunk_meta, dict):
             continue
@@ -1261,21 +1158,39 @@ def check_brainregion_orphan_chunks() -> dict[str, Any]:
         if not source_id.startswith(BRAIN_PREFIX):
             continue  # 不是脑区专属 chunk，跳过
         brain_name = source_id[len(BRAIN_PREFIX):]
-        # 检查 brain_name 是否在 GraphML node 里
-        if brain_name in node_ids:
+        content = chunk_meta.get("content", "") or ""
+        # 检查 1：brain_name 不在 GraphML → 孤儿 chunk
+        brain_in_graph = brain_name in node_ids or brain_name.lower() in {n.lower() for n in node_ids}
+        if not brain_in_graph:
+            errors.append({
+                "check": "brainregion_orphan_chunks",
+                "severity": "major",
+                "ref_file": "kv_store_text_chunks.json",
+                "target_file": _GRAPHML_FILE,
+                "orphan_chunk_id": chunk_id,
+                "brain_name": brain_name,
+                "msg": f"text_chunks 有 source_id={source_id} 的 chunk 但 GraphML 没 brain '{brain_name}' node",
+            })
+            seen_orphan_chunk_ids.add(chunk_id)
             continue
-        if brain_name.lower() in {n.lower() for n in node_ids}:
+        # 检查 2：brain_name 在 GraphML 但 chunk content 含"被删除"标记 → chunk 侧僵尸信号
+        # 与 check_brainregion_semantic_zombie 配合（node description + chunk content 都含标记）
+        if chunk_id in seen_orphan_chunk_ids:
             continue
-        # 不在 → 孤儿 chunk
-        errors.append({
-            "check": "brainregion_orphan_chunks",
-            "severity": "major",
-            "ref_file": "kv_store_text_chunks.json",
-            "target_file": _GRAPHML_FILE,
-            "orphan_chunk_id": chunk_id,
-            "brain_name": brain_name,
-            "msg": f"text_chunks 有 source_id={source_id} 的 chunk 但 GraphML 没 brain '{brain_name}' node",
-        })
+        for marker in _ZOMBIE_DESCRIPTION_MARKERS:
+            if marker in content:
+                errors.append({
+                    "check": "brainregion_orphan_chunks",
+                    "severity": "major",
+                    "ref_file": "kv_store_text_chunks.json",
+                    "target_file": _GRAPHML_FILE,
+                    "orphan_chunk_id": chunk_id,
+                    "brain_name": brain_name,
+                    "marker": marker,
+                    "msg": f"text_chunks chunk '{chunk_id}' (brain={brain_name}) content 含语义标记'{marker}'（chunk 侧僵尸信号）",
+                })
+                seen_orphan_chunk_ids.add(chunk_id)
+                break  # 一个 chunk 只报一次
     return {"name": "brainregion_orphan_chunks", "errors": errors}
 ```
 
@@ -1283,12 +1198,13 @@ def check_brainregion_orphan_chunks() -> dict[str, Any]:
 
 ```bash
 python -m pytest tests/test_lightrag_semantic_integrity.py::test_check_brainregion_orphan_chunks_detects_orphan \
-                tests/test_lightrag_semantic_integrity.py::test_check_brainregion_orphan_chunks_clean_ok -v
+                tests/test_lightrag_semantic_integrity.py::test_check_brainregion_orphan_chunks_clean_ok \
+                tests/test_lightrag_semantic_integrity.py::test_check_brainregion_orphan_chunks_detects_zombie_content -v
 ```
 
 Expected: PASS
 
-### - [ ] Step 5: 把 6 个新 check 加入 `_CHECK_FUNCTIONS`
+### - [ ] Step 5: 把 5 个新 check 加入 `_CHECK_FUNCTIONS`
 
 修改 `niu_api/internal/lightrag_integrity.py:781-793` 的 `_CHECK_FUNCTIONS`：
 
@@ -1307,13 +1223,15 @@ _CHECK_FUNCTIONS = [
     check_vdb_relationships_endpoint_dangling,
     # 语义维度 check（新增）
     check_brainregion_semantic_zombie,
-    check_brainregion_size_mismatch,
     check_entity_chunks_source_id_mismatch,
     check_chunk_shared_by_too_many_entities,
     check_vdb_entities_orphan,
     check_brainregion_orphan_chunks,
 ]
 ```
+
+> 注意：`check_brainregion_size_mismatch` 原为第 2 项语义 check，因在真实数据上无效
+> （16 个僵尸脑区 brain_meta_size:0 + 实际 0 条包含 edge 一致）已删除，见 Task 3。
 
 ### - [ ] Step 6: 跑全部测试确认
 
@@ -1330,7 +1248,7 @@ git add niu_api/internal/lightrag_integrity.py tests/test_lightrag_semantic_inte
 git commit -m "feat(integrity): 新增 check_brainregion_orphan_chunks 脑区孤儿 chunk 检测
 
 - 检测 text_chunks 里 source_id=brain_xxx 但 GraphML 没 brain_xxx node 的孤儿
-- 把 6 个新语义 check 加入 _CHECK_FUNCTIONS
+- 把 5 个新语义 check 加入 _CHECK_FUNCTIONS（check_brainregion_size_mismatch 因无效已删除）
 - check_all 现在能检测出 16 个僵尸脑区（实测 ok=False, 16+ errors）
 "
 ```
@@ -1397,7 +1315,7 @@ print(f'major: {result[\"major_errors\"]}')
 print(f'minor: {result[\"minor_errors\"]}')
 print()
 print('新语义 check 报错数:')
-for name in ['brainregion_semantic_zombie', 'brainregion_size_mismatch',
+for name in ['brainregion_semantic_zombie',
              'entity_chunks_source_id_mismatch', 'chunk_shared_by_too_many_entities',
              'vdb_entities_orphan', 'brainregion_orphan_chunks']:
     check = result['checks'].get(name, {})
@@ -1411,8 +1329,10 @@ for name in ['brainregion_semantic_zombie', 'brainregion_size_mismatch',
 - `brainregion_semantic_zombie` 报 16 个错误
 - `entity_chunks_source_id_mismatch` 报 16 个错误
 - `chunk_shared_by_too_many_entities` 报 1 个错误（共享 chunk）
-- `vdb_entities_orphan` 报 0 或 16 个错误（取决于 vdb 是否有残留）
-- `brainregion_orphan_chunks` 报 0 或 16 个错误
+- `vdb_entities_orphan` 报 0 个错误（当前 vdb_entities.json 为空文件，反向孤儿永远 0；本 check 作为防御性检测，未来 vdb 有数据时能检测）
+- `brainregion_orphan_chunks` 报 2 个错误（实测值——这 2 个是其他历史残留孤儿 chunk，不是 16 个僵尸；16 个僵尸脑区的 brain_xxx 专属 chunk 的 brain_name 在 GraphML 里有 node，所以不报。本 check 仍保留作为防御性检测）
+
+注意：`check_brainregion_size_mismatch` 已删除（见 Task 3），不在 Expected 列表里。
 
 如果 ok=True，说明 check 工具仍然没检测出来——回 Task 2-7 找问题。
 
@@ -1524,14 +1444,14 @@ def _make_test_storage(tmp_path: Path, zombies: list[str], normal_regions: list[
         ET.SubElement(node, f"{{{ns}}}data", {"key": "d3"}).text = f"brain_{nname}"
     ET.ElementTree(root).write(storage / "graph_chunk_entity_relation.graphml", xml_declaration=True, encoding="utf-8")
     
-    # 2. vdb_entities
+    # 2. vdb_entities（真实格式：顶层 `data` 字段，entry `vector` 是 base64 字符串）
     vdb_data = []
     for name in zombies + normal_regions:
-        vdb_data.append({"__id__": f"ent-{name.lower()}", "entity_name": name, "__vector__": [0.1] * 8})
+        vdb_data.append({"__id__": f"ent-{name.lower()}", "entity_name": name, "vector": "AAAAAA=="})
     (storage / "vdb_entities.json").write_text(json.dumps({
-        "__data__": vdb_data, "__file_hash__": "fake",
+        "data": vdb_data, "file_hash": "fake",
     }, ensure_ascii=False))
-    
+
     # 3. vdb_relationships（僵尸脑区 + 知识图谱系统维护 的"删除操作"edge）
     rel_data = []
     for zname in zombies:
@@ -1539,10 +1459,10 @@ def _make_test_storage(tmp_path: Path, zombies: list[str], normal_regions: list[
             "__id__": f"rel-{zname.lower()}",
             "src_id": "知识图谱系统维护",
             "tgt_id": zname,
-            "__vector__": [0.1] * 8,
+            "vector": "AAAAAA==",
         })
     (storage / "vdb_relationships.json").write_text(json.dumps({
-        "__data__": rel_data, "__file_hash__": "fake",
+        "data": rel_data, "file_hash": "fake",
     }, ensure_ascii=False))
     
     # 4. kv_store_entity_chunks（16 个僵尸全指向同一个共享 chunk）
@@ -1560,22 +1480,31 @@ def _make_test_storage(tmp_path: Path, zombies: list[str], normal_regions: list[
         tc_data[f"chunk-{nname}"] = {"content": f"{nname} 的 chunk", "source_id": f"brain_{nname}"}
     (storage / "kv_store_text_chunks.json").write_text(json.dumps(tc_data, ensure_ascii=False))
     
-    # 6. vdb_chunks
+    # 6. vdb_chunks（真实格式：顶层 `data` 字段，entry `vector` 是 base64 字符串）
     chunk_data = []
     for cid in [shared_chunk_id] + [f"chunk-{n}" for n in zombies + normal_regions]:
-        chunk_data.append({"__id__": cid, "__vector__": [0.1] * 8})
+        chunk_data.append({"__id__": cid, "vector": "AAAAAA=="})
     (storage / "vdb_chunks.json").write_text(json.dumps({
-        "__data__": chunk_data, "__file_hash__": "fake",
+        "data": chunk_data, "file_hash": "fake",
     }, ensure_ascii=False))
     
-    # 7. kv_store_full_entities
+    # 7. kv_store_full_entities（真实结构：dict[doc_id] -> {entity_names: list, count: int}）
+    all_names = zombies + normal_regions
     (storage / "kv_store_full_entities.json").write_text(json.dumps({
-        "doc-1": zombies + normal_regions,
+        "doc-1": {"entity_names": all_names, "count": len(all_names)},
     }, ensure_ascii=False))
-    
-    # 8. kv_store_full_relations
+
+    # 8. kv_store_full_relations（真实结构：dict[doc_id] -> {relation_pairs: list[list], count: int, ...}）
+    # 每个 pair 是 [src, tgt, ...] 形式
+    pairs = [["知识图谱系统维护", z, "删除操作"] for z in zombies]
     (storage / "kv_store_full_relations.json").write_text(json.dumps({
-        "doc-1": [{"src": "知识图谱系统维护", "tgt": z, "keywords": "删除操作"} for z in zombies],
+        "doc-1": {
+            "relation_pairs": pairs,
+            "count": len(pairs),
+            "create_time": "2026-07-06T00:00:00",
+            "update_time": "2026-07-06T00:00:00",
+            "_id": "doc-1",
+        },
     }, ensure_ascii=False))
 
 
@@ -1600,14 +1529,14 @@ def test_repair_brainregion_zombies_cleans_all_7_storages(tmp_path):
     
     # 2. vdb_entities：僵尸向量已删
     vdb = json.loads((tmp_path / "vdb_entities.json").read_text())
-    names = [e["entity_name"] for e in vdb["__data__"]]
+    names = [e["entity_name"] for e in vdb["data"]]
     assert "智家脑区A" not in names
     assert "智家脑区B" not in names
     assert "聊天历史脑区" in names
-    
+
     # 3. vdb_relationships：涉及僵尸的 edge 已删
     vdb_r = json.loads((tmp_path / "vdb_relationships.json").read_text())
-    rel_tgt = [e.get("tgt_id") for e in vdb_r["__data__"]]
+    rel_tgt = [e.get("tgt_id") for e in vdb_r["data"]]
     assert "智家脑区A" not in rel_tgt
     assert "智家脑区B" not in rel_tgt
     
@@ -1625,15 +1554,19 @@ def test_repair_brainregion_zombies_cleans_all_7_storages(tmp_path):
     
     # 6. vdb_chunks：僵尸专属 chunk 向量已删
     vdb_c = json.loads((tmp_path / "vdb_chunks.json").read_text())
-    chunk_ids = [e["__id__"] for e in vdb_c["__data__"]]
+    chunk_ids = [e["__id__"] for e in vdb_c["data"]]
     assert "chunk-智家脑区A" not in chunk_ids
     assert "chunk-智家脑区B" not in chunk_ids
     
     # 7. kv_store_full_entities：僵尸名已从 doc-1 列表删
     fe = json.loads((tmp_path / "kv_store_full_entities.json").read_text())
-    assert "智家脑区A" not in fe["doc-1"]
-    assert "智家脑区B" not in fe["doc-1"]
-    assert "聊天历史脑区" in fe["doc-1"]
+    fe_doc1 = fe["doc-1"]
+    # 真实结构：{entity_names: list, count: int}
+    assert "entity_names" in fe_doc1
+    assert "智家脑区A" not in fe_doc1["entity_names"]
+    assert "智家脑区B" not in fe_doc1["entity_names"]
+    assert "聊天历史脑区" in fe_doc1["entity_names"]
+    assert fe_doc1["count"] == len(fe_doc1["entity_names"])
 
 
 def test_repair_brainregion_zombies_check_ok_after_repair(tmp_path):
@@ -1760,31 +1693,31 @@ def repair_brainregion_zombies() -> dict[str, Any]:
     except Exception as e:
         return {"status": "unrecoverable", "reason": f"GraphML 清理失败: {e}"}
 
-    # 3. 清理 vdb_entities
+    # 3. 清理 vdb_entities（真实格式：顶层 `data` 字段，不是 `__data__`）
     vdb_e_path = storage_dir / "vdb_entities.json"
     try:
         vdb_e = json.loads(vdb_e_path.read_text())
-        before_count = len(vdb_e.get("__data__", []))
-        vdb_e["__data__"] = [
-            entry for entry in vdb_e.get("__data__", [])
+        before_count = len(vdb_e.get("data", []))
+        vdb_e["data"] = [
+            entry for entry in vdb_e.get("data", [])
             if entry.get("entity_name") not in zombie_names
         ]
         vdb_e_path.write_text(json.dumps(vdb_e, ensure_ascii=False))
-        details["vdb_entities"] = {"before": before_count, "after": len(vdb_e["__data__"])}
+        details["vdb_entities"] = {"before": before_count, "after": len(vdb_e["data"])}
     except Exception as e:
         return {"status": "unrecoverable", "reason": f"vdb_entities 清理失败: {e}"}
 
-    # 4. 清理 vdb_relationships（涉及僵尸的）
+    # 4. 清理 vdb_relationships（涉及僵尸的；真实格式：顶层 `data` 字段）
     vdb_r_path = storage_dir / "vdb_relationships.json"
     try:
         vdb_r = json.loads(vdb_r_path.read_text())
-        before_count = len(vdb_r.get("__data__", []))
-        vdb_r["__data__"] = [
-            entry for entry in vdb_r.get("__data__", [])
+        before_count = len(vdb_r.get("data", []))
+        vdb_r["data"] = [
+            entry for entry in vdb_r.get("data", [])
             if entry.get("src_id") not in zombie_names and entry.get("tgt_id") not in zombie_names
         ]
         vdb_r_path.write_text(json.dumps(vdb_r, ensure_ascii=False))
-        details["vdb_relationships"] = {"before": before_count, "after": len(vdb_r["__data__"])}
+        details["vdb_relationships"] = {"before": before_count, "after": len(vdb_r["data"])}
     except Exception as e:
         return {"status": "unrecoverable", "reason": f"vdb_relationships 清理失败: {e}"}
 
@@ -1824,49 +1757,77 @@ def repair_brainregion_zombies() -> dict[str, Any]:
     except Exception as e:
         return {"status": "unrecoverable", "reason": f"text_chunks 清理失败: {e}"}
 
-    # 7. 清理 vdb_chunks 的对应 chunk 向量
+    # 7. 清理 vdb_chunks 的对应 chunk 向量（真实格式：顶层 `data` 字段）
     vdb_c_path = storage_dir / "vdb_chunks.json"
     try:
         vdb_c = json.loads(vdb_c_path.read_text())
-        before_count = len(vdb_c.get("__data__", []))
+        before_count = len(vdb_c.get("data", []))
         orphan_set = set(orphan_chunk_ids)
-        vdb_c["__data__"] = [
-            entry for entry in vdb_c.get("__data__", [])
+        vdb_c["data"] = [
+            entry for entry in vdb_c.get("data", [])
             if entry.get("__id__") not in orphan_set
         ]
         vdb_c_path.write_text(json.dumps(vdb_c, ensure_ascii=False))
-        details["vdb_chunks"] = {"before": before_count, "after": len(vdb_c["__data__"])}
+        details["vdb_chunks"] = {"before": before_count, "after": len(vdb_c["data"])}
     except Exception as e:
         return {"status": "unrecoverable", "reason": f"vdb_chunks 清理失败: {e}"}
 
-    # 8. 清理 kv_store_full_entities（从列表中移除僵尸名）
+    # 8. 清理 kv_store_full_entities
+    # 真实结构是 dict（不是 list），两种形式：
+    #   形式 1: {doc_id: {entity_names: list[str], count: int, ...}}
+    #   形式 2: {doc_id: {entity_name: str, description, source_id}}（单 entity 文档）
     fe_path = storage_dir / "kv_store_full_entities.json"
     try:
         if fe_path.exists():
             fe = json.loads(fe_path.read_text())
-            for doc_id, ent_list in fe.items():
-                if isinstance(ent_list, list):
-                    fe[doc_id] = [n for n in ent_list if n not in zombie_names]
+            cleaned_fe = 0
+            docs_to_remove: list[str] = []
+            for doc_id, ent_data in fe.items():
+                if not isinstance(ent_data, dict):
+                    continue
+                # 形式 1: {entity_names: [...], count: ...}
+                if "entity_names" in ent_data and isinstance(ent_data["entity_names"], list):
+                    before = len(ent_data["entity_names"])
+                    ent_data["entity_names"] = [
+                        n for n in ent_data["entity_names"] if n not in zombie_names
+                    ]
+                    if "count" in ent_data:
+                        ent_data["count"] = len(ent_data["entity_names"])
+                    cleaned_fe += before - len(ent_data["entity_names"])
+                # 形式 2: {entity_name: str, ...} - 单个 entity 的记录
+                elif "entity_name" in ent_data and ent_data.get("entity_name") in zombie_names:
+                    docs_to_remove.append(doc_id)
+            for doc_id in docs_to_remove:
+                fe.pop(doc_id, None)
             fe_path.write_text(json.dumps(fe, ensure_ascii=False))
-            details["full_entities"] = "cleaned"
+            details["full_entities"] = {"cleaned_count": cleaned_fe, "removed_docs": len(docs_to_remove)}
     except Exception as e:
         return {"status": "unrecoverable", "reason": f"full_entities 清理失败: {e}"}
 
-    # 9. 清理 kv_store_full_relations（移除涉及僵尸的 relation）
+    # 9. 清理 kv_store_full_relations
+    # 真实结构是 dict（不是 list）：{doc_id: {relation_pairs: list[list], count: int, create_time, update_time, _id}}
+    # 每个 pair 是 [src, tgt, ...] 形式
     fr_path = storage_dir / "kv_store_full_relations.json"
     try:
         if fr_path.exists():
             fr = json.loads(fr_path.read_text())
-            for doc_id, rel_list in fr.items():
-                if isinstance(rel_list, list):
-                    fr[doc_id] = [
-                        r for r in rel_list
-                        if (isinstance(r, dict) and
-                            r.get("src") not in zombie_names and
-                            r.get("tgt") not in zombie_names)
+            cleaned_fr = 0
+            for doc_id, rel_data in fr.items():
+                if not isinstance(rel_data, dict):
+                    continue
+                pairs = rel_data.get("relation_pairs", [])
+                if isinstance(pairs, list):
+                    before = len(pairs)
+                    rel_data["relation_pairs"] = [
+                        p for p in pairs
+                        if isinstance(p, list) and len(p) >= 2
+                        and p[0] not in zombie_names and p[1] not in zombie_names
                     ]
+                    if "count" in rel_data:
+                        rel_data["count"] = len(rel_data["relation_pairs"])
+                    cleaned_fr += before - len(rel_data["relation_pairs"])
             fr_path.write_text(json.dumps(fr, ensure_ascii=False))
-            details["full_relations"] = "cleaned"
+            details["full_relations"] = {"cleaned_count": cleaned_fr}
     except Exception as e:
         return {"status": "unrecoverable", "reason": f"full_relations 清理失败: {e}"}
 
@@ -1978,14 +1939,16 @@ _REPAIR_ORDER = [
 ```python
 _CHECK_TO_REPAIR: dict[str, str] = {
     "brainregion_semantic_zombie": "brainregion_zombies",  # 新增
-    "brainregion_size_mismatch": "brainregion_zombies",  # 新增（size 不一致也是僵尸信号）
     "entity_chunks_source_id_mismatch": "brainregion_zombies",  # 新增（source_id 不一致也可能是僵尸）
     "chunk_shared_by_too_many_entities": "brainregion_zombies",  # 新增（共享 chunk 异常）
-    "brainregion_orphan_chunks": "brainregion_zombies",  # 新增（孤儿 chunk）
+    "brainregion_orphan_chunks": "brainregion_zombies",  # 新增（孤儿 chunk + chunk 侧僵尸标记）
     "vdb_entities_orphan": "vdb_entities",  # 反向孤儿走 vdb_entities 重建
     # ... 原有项保留
 }
 ```
+
+> 注意：`brainregion_size_mismatch` 已从 check 列表删除（见 Task 3），
+> 此处不再映射。
 
 ### - [ ] Step 4: Run test to verify it passes
 
@@ -2046,22 +2009,27 @@ STORAGE_DIR = Path.home() / ".niu/lightrag_storage"
 
 @pytest.fixture
 def restore_real_data():
-    """fixture：测试前恢复真实数据（含 16 个僵尸），测试后恢复测试前状态"""
+    """fixture：测试前恢复真实数据（含 16 个僵尸），测试后恢复测试前状态。
+    
+    使用 try/finally 保护：测试失败时也能恢复用户数据，避免污染真实环境。
+    """
     # 保存当前状态
     snapshot = STORAGE_DIR.parent / f"lightrag_storage_e2e_snapshot_{int(time.time())}"
     if STORAGE_DIR.exists():
         shutil.copytree(STORAGE_DIR, snapshot)
-    
+
     # 恢复 16 个僵尸脑区的真实数据
     shutil.rmtree(STORAGE_DIR, ignore_errors=True)
     shutil.copytree(BACKUP_DIR, STORAGE_DIR)
-    
-    yield
-    
-    # 测试后恢复
-    shutil.rmtree(STORAGE_DIR, ignore_errors=True)
-    shutil.copytree(snapshot, STORAGE_DIR)
-    shutil.rmtree(snapshot, ignore_errors=True)
+
+    try:  # try/finally 保护：测试失败也确保恢复用户数据
+        yield
+    finally:
+        # 测试后恢复，无论测试是否失败都执行
+        shutil.rmtree(STORAGE_DIR, ignore_errors=True)
+        if snapshot.exists():
+            shutil.copytree(snapshot, STORAGE_DIR)
+            shutil.rmtree(snapshot, ignore_errors=True)
 
 
 def test_e2e_check_reports_zombies(restore_real_data):
@@ -2145,9 +2113,31 @@ def test_e2e_program_starts_normally(restore_real_data):
     # 读 stdout 日志
     output = proc.stdout.read().decode("utf-8", errors="replace")
     
-    # 不应该看到僵尸脑区 warning
-    assert "智家" not in output, f"启动日志里仍出现智家脑区 warning:\n{output[-2000:]}"
-    assert "被删除的重复脑区" not in output, "启动日志里仍出现'被删除的重复脑区'"
+    # 16 个僵尸脑区的特征标记（来自真实数据——description 含"被删除"且脑区名含"智家/家居/居家"）
+    # 必须全部检查，避免只查"智家"漏掉"家居智能应用脑区"等
+    ZOMBIE_MARKERS = [
+        "被删除的重复脑区实体之一",
+        "智家全维资料脑区",
+        "智家使用运维脑区",
+        "智家打理相关脑区",
+        "智家综合事务脑区",
+        "家居智能应用脑区",
+        "家居智能实践脑区",
+        "家庭智能物联脑区",
+        "家庭智能运维脑区",
+        "个人智家档案库脑区",
+        "个人智家运营脑区",
+        "个人智用空间脑区",
+        "个人智能库脑区",
+        "智能家居内容脑区",
+        "智能家居实践区脑区",
+        "智能家居管理脑区",
+        "居家智能脑区",
+    ]
+    for marker in ZOMBIE_MARKERS:
+        assert marker not in output, (
+            f"启动日志里仍出现僵尸脑区标记: {marker}\n日志末尾:\n{output[-2000:]}"
+        )
     # 不应该卡在 forced sync
     assert "activation_mgr still None" not in output, "启动后 activation_mgr 仍 None"
 ```
@@ -2168,6 +2158,297 @@ Expected: 4 个测试全 PASS
 ```bash
 git add tests/test_lightrag_e2e_semantic.py
 git commit -m "test: 端到端验证——真实数据 16 个僵尸脑区 check+repair+启动程序全流程通过"
+```
+
+---
+
+## Task 13: [P0] 修复 `_refresh_activation_manager` 覆盖率检查过严
+
+**Files:**
+- Modify: `agent/injector/region_sync.py:383-391`
+
+### 背景
+
+审查发现 region_sync 的 `_refresh_activation_manager` 在读取脑区"包含"edge 后做"覆盖率检查"——如果覆盖率 < 50% 直接 return，认为"图未就绪或读取失败"。但真实数据里 17 个非预置脑区没有"包含"edge 是正常状态（这些脑区是历史 dissolve 流程产生的中间态），覆盖率自然 < 50%，导致 activation_manager 永远为 None，触发 forced sync 死循环。
+
+### - [ ] Step 1: 先用 gitnexus_impact 分析影响范围
+
+```bash
+# 在改代码前必须分析 blast radius
+# 用 gitnexus_impact({target: "_refresh_activation_manager", direction: "upstream"})
+```
+
+### - [ ] Step 2: 读取现有代码
+
+```bash
+sed -n '370,400p' REDACTED_USER_PATH/tools/ai-bot/agent/injector/region_sync.py
+```
+
+确认 L383-391 是覆盖率检查代码（类似 `if coverage < 0.5: return`）。
+
+### - [ ] Step 3: 修改代码
+
+删除 L383-391 的覆盖率检查（`if coverage < 0.5: ...` 整段）。保留 L376-381 的非空检查（图未就绪或读取失败时返回空）。
+
+```python
+# 删除前（L383-391 大致结构）：
+# if coverage < 0.5:
+#     logger.warning(f"activation_manager coverage too low: {coverage}")
+#     return  # ← 这里直接 return，导致 activation_mgr 永远 None
+
+# 删除后：覆盖率低不视为失败，继续构建 activation_manager
+```
+
+注意：删除覆盖率检查后，activation_manager 会用现有数据（哪怕覆盖率为 0）构建，不再触发 forced sync 死循环。
+
+### - [ ] Step 4: 跑现有 region_sync 测试
+
+```bash
+python -m pytest tests/test_region_sync*.py -v 2>&1 | tail -30
+```
+
+Expected: 全部 PASS（如果有 fail，需要根据失败信息调整）
+
+### - [ ] Step 5: Commit
+
+```bash
+git add agent/injector/region_sync.py
+git commit -m "fix(region_sync): 删除 _refresh_activation_manager 覆盖率检查过严
+
+17 个非预置脑区没有'包含'edge 是数据正常状态，不应判为'读取失败'。
+覆盖率检查 < 50% 直接 return 导致 activation_mgr 永远 None，
+触发 forced sync 死循环。删除该检查，让 activation_mgr 用现有数据构建。
+
+P0 修复：region_sync 死循环根因之一。
+"
+```
+
+---
+
+## Task 14: [P0] 修复 `_get_brain_injector` forced sync 死循环
+
+**Files:**
+- Modify: `agent/runner.py:1695-1723`
+
+### 背景
+
+`_get_brain_injector` 在 activation_manager 为 None 时触发 forced sync（`run_sync()`），失败后清空 cache。下次再调用 `_get_brain_injector` 时 activation_manager 仍是 None，又触发 forced sync——死循环。
+
+### - [ ] Step 1: 先用 gitnexus_impact 分析影响范围
+
+```bash
+# 用 gitnexus_impact({target: "_get_brain_injector", direction: "upstream"})
+```
+
+### - [ ] Step 2: 读取现有代码
+
+```bash
+sed -n '1690,1730p' REDACTED_USER_PATH/tools/ai-bot/agent/runner.py
+```
+
+确认 L1695-1723 是 forced sync 调用 + 失败后清空 cache 的逻辑。
+
+### - [ ] Step 3: 修改代码
+
+加失败冷却时间（5 分钟），失败后 5 分钟内不再触发 forced sync：
+
+```python
+# 在 __init__ 或类属性加 instance 变量：
+# self._last_forced_sync_fail_time: float = 0.0
+
+# 在 _get_brain_injector 触发 forced sync 前加冷却检查：
+import time
+
+FORCED_SYNC_COOLDOWN_SECONDS = 300  # 5 分钟
+
+def _get_brain_injector(self, ...):
+    # ... 现有逻辑 ...
+    if self._activation_manager is None:
+        # 冷却检查：失败后 5 分钟内不重试
+        if time.time() - self._last_forced_sync_fail_time < FORCED_SYNC_COOLDOWN_SECONDS:
+            logger.debug("forced sync in cooldown, skip")
+            return None
+        try:
+            run_sync()  # forced sync
+            # 重新读取 activation_manager
+            ...
+        except Exception as e:
+            logger.error(f"forced sync failed: {e}")
+            self._last_forced_sync_fail_time = time.time()  # 记录失败时间
+            # 清空 cache（保留原逻辑）
+            ...
+            return None
+    # ...
+```
+
+### - [ ] Step 4: 跑 runner 测试
+
+```bash
+python -m pytest tests/test_runner*.py -v 2>&1 | tail -30
+```
+
+Expected: 全部 PASS
+
+### - [ ] Step 5: Commit
+
+```bash
+git add agent/runner.py
+git commit -m "fix(runner): _get_brain_injector forced sync 加 5 分钟失败冷却
+
+forced sync 失败后清空 cache，下次又触发 forced sync——死循环。
+加冷却时间：失败后 5 分钟内不再触发，避免短时间内反复重试。
+
+P0 修复：region_sync 死循环根因之二。
+"
+```
+
+---
+
+## Task 15: [P0] 降低 `shrink_threshold` 从 100 到 10
+
+**Files:**
+- Modify: `niu_api/internal/region_manager.py:1016`
+- Modify: `agent/injector/region_sync.py:42`
+
+### 背景
+
+`shrink_threshold=100` 让正常小脑区（成员数 < 100）被判萎缩（`shrink_count` 累加），dissolve 流程跑到 `shrink_count=1` 中间态被中断后就成僵尸。真实数据里很多正常脑区成员数 < 100，不应判萎缩。
+
+### - [ ] Step 1: 先用 gitnexus_impact 分析影响范围
+
+```bash
+# 用 gitnexus_impact({target: "shrink_threshold", direction: "upstream"})
+# 或 gitnexus_impact({target: "SHRINK_THRESHOLD", direction: "upstream"})
+```
+
+### - [ ] Step 2: 读取现有代码
+
+```bash
+sed -n '1010,1020p' REDACTED_USER_PATH/tools/ai-bot/niu_api/internal/region_manager.py
+sed -n '38,46p' REDACTED_USER_PATH/tools/ai-bot/agent/injector/region_sync.py
+```
+
+确认 `shrink_threshold = 100`（或 `SHRINK_THRESHOLD = 100`）。
+
+### - [ ] Step 3: 修改代码
+
+`shrink_threshold` 从 100 降到 10（或改为相对阈值——成员数 < 平均成员数 * 0.1 才判萎缩。本 Task 先用绝对值 10）：
+
+```python
+# niu_api/internal/region_manager.py:1016
+- shrink_threshold = 100
++ shrink_threshold = 10  # 成员数 < 10 才判萎缩（原 100 误判正常小脑区）
+
+# agent/injector/region_sync.py:42
+- SHRINK_THRESHOLD = 100
++ SHRINK_THRESHOLD = 10
+```
+
+### - [ ] Step 4: 跑 region_manager 测试
+
+```bash
+python -m pytest tests/test_region_manager*.py -v 2>&1 | tail -30
+```
+
+Expected: 全部 PASS
+
+### - [ ] Step 5: Commit
+
+```bash
+git add niu_api/internal/region_manager.py agent/injector/region_sync.py
+git commit -m "fix(region): shrink_threshold 从 100 降到 10
+
+shrink_threshold=100 让正常小脑区（成员数 < 100）被判萎缩，
+dissolve 跑到 shrink_count=1 中断后成僵尸。降到 10 避免误判。
+
+P0 修复：僵尸脑区形成根因。
+"
+```
+
+---
+
+## Task 16: [P0] forced sync 改异步触发（避免同步阻塞 43 秒）
+
+**Files:**
+- Modify: `agent/runner.py:1709`
+
+### 背景
+
+`_get_brain_injector` 触发 forced sync 时同步调用 `run_sync()`，阻塞主线程 43 秒（实测），导致程序启动卡死。改为异步触发——启动后台线程跑 `run_sync`，主线程立即返回 None（让用户感受到程序已启动，后台慢慢 sync）。
+
+### - [ ] Step 1: 先用 gitnexus_impact 分析影响范围
+
+```bash
+# 用 gitnexus_impact({target: "run_sync", direction: "upstream"})
+```
+
+### - [ ] Step 2: 读取现有代码
+
+```bash
+sed -n '1705,1725p' REDACTED_USER_PATH/tools/ai-bot/agent/runner.py
+```
+
+确认 L1709 是同步 `run_sync()` 调用。
+
+### - [ ] Step 3: 修改代码
+
+改为异步触发（启动线程跑 `run_sync`，主线程立即返回 None）：
+
+```python
+import threading
+
+def _get_brain_injector(self, ...):
+    # ... 现有逻辑 ...
+    if self._activation_manager is None:
+        # 冷却检查（Task 14 已加）
+        if time.time() - self._last_forced_sync_fail_time < FORCED_SYNC_COOLDOWN_SECONDS:
+            return None
+        # 异步触发 forced sync（不阻塞主线程）
+        def _run_forced_sync():
+            try:
+                run_sync()
+                # 成功后刷新 activation_manager（线程安全：加锁）
+                ...
+            except Exception as e:
+                logger.error(f"forced sync failed: {e}")
+                self._last_forced_sync_fail_time = time.time()
+        threading.Thread(target=_run_forced_sync, daemon=True, name="forced-sync").start()
+        return None  # 主线程立即返回，不阻塞
+    # ...
+```
+
+注意：异步触发后，`_activation_manager` 在后台 sync 完成后才就绪。期间 `_get_brain_injector` 返回 None，主流程继续（不阻塞启动）。下一次 `_get_brain_injector` 调用时（冷却期过后）会读到就绪的 activation_manager。
+
+### - [ ] Step 4: 跑 runner 测试
+
+```bash
+python -m pytest tests/test_runner*.py -v 2>&1 | tail -30
+```
+
+Expected: 全部 PASS
+
+### - [ ] Step 5: 端到端验证启动不阻塞
+
+```bash
+# 启动 ./niu，观察是否 5 秒内 API ready
+./niu &
+sleep 5
+curl http://127.0.0.1:9876/health
+# 应该返回 {"status":"ok"}，而不是卡 43 秒
+```
+
+### - [ ] Step 6: Commit
+
+```bash
+git add agent/runner.py
+git commit -m "fix(runner): forced sync 改异步触发，避免同步阻塞 43 秒
+
+forced sync 同步调用 run_sync 阻塞主线程 43 秒，程序启动卡死。
+改为启动 daemon 线程跑 run_sync，主线程立即返回 None。
+后台 sync 完成后 activation_manager 就绪，下次调用读到。
+
+P0 修复：程序启动卡死根因。
+"
 ```
 
 ---
@@ -2200,8 +2481,8 @@ git commit -m "test: 端到端验证——真实数据 16 个僵尸脑区 check+
 ## 僵尸脑区形成机制
 
 1. 历史 Agent 用 custom_kg 注入"删除日志"edge（kw='删除操作'），但没调 delete_entity
-2. dissolve 流程跑到 shrink_count=1，被中断
-3. 僵尸脑区卡在"shrink_count=1 中间态"——description 含标记，但 GraphML node 仍存在
+2. `shrink_threshold=100` 误判正常小脑区（成员数 < 100）为萎缩，dissolve 流程跑到 shrink_count=1
+3. dissolve 被中断（进程重启、sync 没跑完等），僵尸脑区卡在"shrink_count=1 中间态"——description 含标记，但 GraphML node 仍存在
 4. LightRAG adelete_by_entity 只删 3 个存储，留下 5 个存储的残留
 
 ## 新设计原则
@@ -2212,19 +2493,31 @@ git commit -m "test: 端到端验证——真实数据 16 个僵尸脑区 check+
    text_chunks + vdb_chunks + full_entities/full_relations
 4. **验证标准升级**：不只 check_all 返回 ok，还要程序启动正常运行
 
-## 6 项新语义 check
+## P0 遗漏修复（与本次计划一并完成）
+
+审查发现 4 个 P0 问题不是删除工具 bug，而是 region_sync/runner/region_manager 的设计缺陷，
+与本次检查+修复工具一并修复：
+
+1. `_refresh_activation_manager` 覆盖率 < 50% 直接 return（Task 13：删除覆盖率检查）
+2. `_get_brain_injector` forced sync 死循环（Task 14：加 5 分钟失败冷却）
+3. `shrink_threshold=100` 太高（Task 15：降到 10，僵尸脑区形成根因）
+4. forced sync 同步阻塞 43 秒（Task 16：改异步触发）
+
+## 5 项新语义 check
 
 1. check_brainregion_semantic_zombie - description 含"被删除"标记
-2. check_brainregion_size_mismatch - brain_meta_size 跟实际"包含"edge 数量不一致
-3. check_entity_chunks_source_id_mismatch - entity_chunks 跟 GraphML d3 source_id 不一致
-4. check_chunk_shared_by_too_many_entities - 一个 chunk 被过多 entity 共享
-5. check_vdb_entities_orphan - vdb 有向量但 GraphML 没 node（反向孤儿）
-6. check_brainregion_orphan_chunks - text_chunks 有 brain_xxx 但 GraphML 没 brain_xxx
+2. check_entity_chunks_source_id_mismatch - entity_chunks 跟 GraphML d3 source_id 不一致
+3. check_chunk_shared_by_too_many_entities - 一个 chunk 被过多 entity 共享
+4. check_vdb_entities_orphan - vdb 有向量但 GraphML 没 node（反向孤儿，防御性）
+5. check_brainregion_orphan_chunks - text_chunks 有 brain_xxx 但 GraphML 没 brain_xxx，或 chunk content 含"被删除"标记
 
-## 6 项新语义 repair
+> 注：原计划有 6 项，`check_brainregion_size_mismatch` 因在真实数据上无效（16 个僵尸
+> brain_meta_size:0 + 实际 0 条包含 edge 一致）已删除，见 Task 3。
+
+## 5 项新语义 repair
 
 1. repair_brainregion_zombies - 完整 7 存储清理僵尸脑区
-2-6. 通过 repair_all 调用链集成
+2-5. 通过 repair_all 调用链集成
 
 ## 与删除工具 bug 的关系
 
@@ -2246,14 +2539,19 @@ git commit -m "docs: 新增 LightRAG 语义完整性设计文档"
 
 实施完成的验收标准：
 
-1. ✅ `tests/test_lightrag_semantic_integrity.py` 全部通过（6 项 check + _load_graphml 扩展）
+1. ✅ `tests/test_lightrag_semantic_integrity.py` 全部通过（5 项 check + _load_graphml 扩展）
 2. ✅ `tests/test_lightrag_semantic_repair.py` 全部通过（repair_brainregion_zombies + repair_all 集成）
 3. ✅ `tests/test_lightrag_e2e_semantic.py` 全部通过（真实数据 4 阶段验证）
 4. ✅ 真实数据 `check_all()` 在 16 个僵尸脑区数据上返回 `ok=False`
 5. ✅ `repair_all()` 清理后 16 个僵尸脑区在所有 7 个存储中完全消失
-6. ✅ 启动 `./niu` 后日志不含"智家""被删除的重复脑区""activation_mgr still None"
-7. ✅ 启动后 region_sync 一次 sync 完成（不卡 dissolve）
+6. ✅ 启动 `./niu` 后日志不含 16 个僵尸脑区名（智家全维资料脑区等）+ "被删除的重复脑区" + "activation_mgr still None"
+7. ✅ 启动后 region_sync 一次 sync 完成（不卡 dissolve，不进入 forced sync 死循环）
 8. ✅ 启动后风扇不狂转（CPU 占用正常）
+9. ✅ P0 修复完成（Task 13-16）：
+   - region_sync 不再因覆盖率 < 50% return（Task 13）
+   - forced sync 失败后 5 分钟冷却（Task 14）
+   - shrink_threshold 从 100 降到 10（Task 15）
+   - forced sync 改异步触发，启动不阻塞 43 秒（Task 16）
 
 ---
 
@@ -2264,10 +2562,33 @@ git commit -m "docs: 新增 LightRAG 语义完整性设计文档"
 用户的核心要求：
 - "撤销你的错误修复" → Task 之前已完成（commit `da4d0db0`）
 - "修复工具的 bug，对于数据过去的错误，你不但没有检查出来，反而把问题放大了"
-  - "检查不出来" → Task 2-7 新增 6 项语义 check 覆盖
+  - "检查不出来" → Task 2-7 新增 5 项语义 check 覆盖（原 6 项，`check_brainregion_size_mismatch` 因真实数据无效已删除）
   - "放大问题" → Task 9-10 新增语义 repair 完整清理 7 存储，Task 11 端到端验证修复后程序正常运行
 - "无论过去的数据有什么样的错误，你进行检测并修复后应该确保数据的可用性和准确性" → Task 11 端到端验证启动程序正常运行
 - "本次先不去修复删除工具的 bug" → 本计划不动 LightRAG adelete_by_entity，只增强检查+修复工具的"亡羊补牢"能力
+
+### 审查后修复的 10 个 bug
+
+计划审查发现 10 个 bug（6 CRITICAL + 4 HIGH），已全部修复：
+
+1. [CRITICAL] vdb 字段名 `__data__` → `data`（影响 Task 6/9 代码示例和测试 fixture）
+2. [CRITICAL] description 分隔符 `\x1f` → `<SEP>`（影响 Task 1 `_parse_brain_meta` + Task 4 `check_entity_chunks_source_id_mismatch`）
+3. [CRITICAL] `full_entities` / `full_relations` 结构理解错误（dict 不是 list，影响 Task 9 repair 代码）
+4. [CRITICAL] `check_brainregion_size_mismatch` 在真实数据上无效（Task 3 已删除，避免给实施者虚假"已检测"印象）
+5. [CRITICAL] `check_vdb_entities_orphan` 在真实数据上无效（Task 8 Expected 改为 0 errors，check 保留作为防御性）
+6. [CRITICAL] `check_brainregion_orphan_chunks` 在真实数据上只报 2 个（Task 7 改 check 逻辑，增加检测"chunk content 含'被删除'标记"）
+7. [HIGH] Task 11 端到端测试会失败（4 个 P0 未修）→ 新增 Task 13-16 修复 4 个 P0
+8. [HIGH] Task 11 fixture 无 try/finally 保护 → 已加 try/finally
+9. [HIGH] Task 1 Step 5 没有具体代码 → 已补全 7 处调用点 old/new 代码对照
+10. [HIGH] Task 11 断言 `"智家" not in output` 不完整 → 改为 16 个僵尸脑区特征标记全检查
+
+### 4 个 P0 遗漏（Task 13-16 修复）
+
+审查发现 4 个 P0 问题不是删除工具 bug，而是 region_sync/runner/region_manager 的设计缺陷：
+1. `_refresh_activation_manager` 覆盖率 < 50% 直接 return（Task 13 修复：删除覆盖率检查）
+2. `_get_brain_injector` forced sync 死循环（Task 14 修复：加 5 分钟失败冷却）
+3. `shrink_threshold=100` 太高（Task 15 修复：降到 10）
+4. forced sync 同步阻塞 43 秒（Task 16 修复：改异步触发）
 
 ### 2. Placeholder scan
 
@@ -2276,13 +2597,18 @@ git commit -m "docs: 新增 LightRAG 语义完整性设计文档"
 ### 3. Type consistency
 
 - `_load_graphml` 返回 4-tuple `(node_ids, edges, node_meta, error)`，所有 Task 引用一致
-- `_parse_brain_meta` 返回 `dict[str, str]`，所有 check 使用一致
+- `_parse_brain_meta` 返回 `dict[str, str]`，所有 check 使用一致（分隔符是 `<SEP>` 字符串）
 - `repair_brainregion_zombies` 返回 `{status, cleaned_count, details}`，测试和集成调用一致
 - `check_brainregion_semantic_zombie` 等返回 `{name, errors}`，跟现有 check 一致
+- vdb 文件格式：顶层 `data` 字段（不是 `__data__`），entry `vector` 是 base64 字符串（不是 list[float]）
+- `kv_store_full_entities[doc_id]` 是 dict（`{entity_names: list, count}` 或 `{entity_name: str, ...}`），不是 list
+- `kv_store_full_relations[doc_id]` 是 dict（`{relation_pairs: list[list], count, ...}`），不是 list
 
 ### 4. 风险
 
 - 真实数据端到端测试（Task 11）会修改 `~/.niu/lightrag_storage`，需要 fixture 保护
-  - 已设计 `restore_real_data` fixture 测试前后恢复
+  - 已设计 `restore_real_data` fixture 测试前后恢复，并加 try/finally 保护（审查 Bug 8 修复）
 - 启动 `./niu` 需要确保无残留进程
 - 修复后真实数据可能仍有非僵尸的 check 报错（如其他历史问题），但 brainregion_semantic_zombie 必须 0 errors
+- P0 修复（Task 13-16）改 region_sync/runner/region_manager 代码，必须先用 gitnexus_impact 分析影响范围
+- forced sync 改异步（Task 16）后，activation_manager 在后台 sync 完成后才就绪，期间脑区激活功能暂时不可用——这是可接受的（比阻塞 43 秒好）
