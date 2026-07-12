@@ -970,6 +970,85 @@ def check_vdb_entities_orphan() -> dict[str, Any]:
     return {"name": "vdb_entities_orphan", "errors": errors}
 
 
+def check_brainregion_orphan_chunks() -> dict[str, Any]:
+    """语义 check #6: 检测脑区孤儿 chunk（两种形式）。
+
+    引用方：kv_store_text_chunks 的 source_id 或 content
+    被引用方：GraphML node id
+    severity: major
+
+    检测两种孤儿 chunk：
+    1. text_chunks 里 source_id=brain_xxx 但 GraphML 没 brain_xxx node（脑区被删但专属 chunk 残留）
+    2. text_chunks 里 source_id=brain_xxx 的 chunk content 含"被删除"标记，
+       但 GraphML 仍有该 brain_xxx node（chunk 侧标记 node 是僵尸，配合
+       check_brainregion_semantic_zombie 交叉验证）
+
+    脑区专属 chunk 是 region_manager 创建脑区时生成的（source_id = brain_<脑区名>）。
+    如果脑区被删但专属 chunk 残留，会让向量检索继续命中僵尸脑区数据。
+    如果脑区 node 还在但专属 chunk content 含"被删除"标记，说明 chunk 侧已标记删除
+    但 node 没删——这也是僵尸信号。
+    """
+    storage_dir = _resolve_storage_dir()
+    errors: list[dict[str, Any]] = []
+
+    _, _, node_meta, graphml_err = _load_graphml(storage_dir / _GRAPHML_FILE)
+    if graphml_err:
+        errors.append(graphml_err)
+        return {"name": "brainregion_orphan_chunks", "errors": errors}
+
+    tc_data, tc_err = _load_json_dict(storage_dir / "kv_store_text_chunks.json")
+    if tc_err:
+        errors.append(tc_err)
+        return {"name": "brainregion_orphan_chunks", "errors": errors}
+    if not tc_data:
+        return {"name": "brainregion_orphan_chunks", "errors": []}
+
+    node_ids = set(node_meta.keys())
+    BRAIN_PREFIX = "brain_"
+    seen_orphan_chunk_ids: set[str] = set()  # 避免同一 chunk 报两次
+    for chunk_id, chunk_meta in tc_data.items():
+        if not isinstance(chunk_meta, dict):
+            continue
+        source_id = chunk_meta.get("source_id", "") or chunk_meta.get("full_doc_id", "")
+        if not source_id.startswith(BRAIN_PREFIX):
+            continue  # 不是脑区专属 chunk，跳过
+        brain_name = source_id[len(BRAIN_PREFIX):]
+        content = chunk_meta.get("content", "") or ""
+        # 检查 1：brain_name 不在 GraphML → 孤儿 chunk
+        brain_in_graph = brain_name in node_ids or brain_name.lower() in {n.lower() for n in node_ids}
+        if not brain_in_graph:
+            errors.append({
+                "check": "brainregion_orphan_chunks",
+                "severity": "major",
+                "ref_file": "kv_store_text_chunks.json",
+                "target_file": _GRAPHML_FILE,
+                "orphan_chunk_id": chunk_id,
+                "brain_name": brain_name,
+                "msg": f"text_chunks 有 source_id={source_id} 的 chunk 但 GraphML 没 brain '{brain_name}' node",
+            })
+            seen_orphan_chunk_ids.add(chunk_id)
+            continue
+        # 检查 2：brain_name 在 GraphML 但 chunk content 含"被删除"标记 → chunk 侧僵尸信号
+        # 与 check_brainregion_semantic_zombie 配合（node description + chunk content 都含标记）
+        if chunk_id in seen_orphan_chunk_ids:
+            continue
+        for marker in _ZOMBIE_DESCRIPTION_MARKERS:
+            if marker in content:
+                errors.append({
+                    "check": "brainregion_orphan_chunks",
+                    "severity": "major",
+                    "ref_file": "kv_store_text_chunks.json",
+                    "target_file": _GRAPHML_FILE,
+                    "orphan_chunk_id": chunk_id,
+                    "brain_name": brain_name,
+                    "marker": marker,
+                    "msg": f"text_chunks chunk '{chunk_id}' (brain={brain_name}) content 含语义标记'{marker}'（chunk 侧僵尸信号）",
+                })
+                seen_orphan_chunk_ids.add(chunk_id)
+                break  # 一个 chunk 只报一次
+    return {"name": "brainregion_orphan_chunks", "errors": errors}
+
+
 # =============================================================================
 # 文件级 critical 预扫描
 # =============================================================================
@@ -1039,6 +1118,12 @@ _CHECK_FUNCTIONS = [
     check_vdb_chunks_missing,
     check_graphml_edge_dangling,
     check_vdb_relationships_endpoint_dangling,
+    # 语义维度 check（新增）
+    check_brainregion_semantic_zombie,
+    check_entity_chunks_source_id_mismatch,
+    check_chunk_shared_by_too_many_entities,
+    check_vdb_entities_orphan,
+    check_brainregion_orphan_chunks,
 ]
 
 
