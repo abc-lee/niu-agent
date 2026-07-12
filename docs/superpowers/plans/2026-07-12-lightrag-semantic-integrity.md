@@ -1342,6 +1342,7 @@ for name in ['brainregion_semantic_zombie',
 - `check_brainregion_size_mismatch` 已删除（见 Task 3），不在 Expected 列表里。
 - 84 个共享 chunk 和 39 个孤儿 chunk 含其他历史残留问题，不全是 16 个僵尸脑区造成的——修复工具只清理"含'被删除'语义标记"的僵尸脑区及其关联 chunk，其他历史残留不在本次修复范围。
 - 16 个僵尸脑区主要通过 `brainregion_semantic_zombie` 检测（description 含"被删除"语义标记）。
+- **repair 后整体 `ok` 不一定是 True**：repair 只清 16 个僵尸脑区，剩余 90 个非僵尸报错（7 个 `entity_chunks_source_id_mismatch` 从 23 降到 7 + 83 个 `chunk_shared_by_too_many_entities` 从 84 降到 83）是历史残留，待后续单独清理。Task 11 Step 3 测试 `test_e2e_zombies_cleaned_after_repair` 只断言 `brainregion_semantic_zombie=0`，不断言整体 `ok=True`。
 
 如果 ok=True，说明 check 工具仍然没检测出来——回 Task 2-7 找问题。
 
@@ -1636,15 +1637,49 @@ def test_repair_brainregion_zombies_check_ok_after_repair(tmp_path):
         # 至少不报 brainregion_semantic_zombie
         zombie_errors = after["checks"].get("brainregion_semantic_zombie", {}).get("errors", [])
         assert zombie_errors == [], f"仍有僵尸脑区: {zombie_errors}"
+
+
+def test_repair_brainregion_zombies_zombies_not_in_full_entities(tmp_path):
+    """边界情况：僵尸脑区不在 full_entities keys 时，repair 仍正确执行（不报错）。
+    
+    真实数据中 16 个僵尸脑区不在 kv_store_full_entities 的 keys 里
+    （full_entities 的 doc_id 对应的是其他 entity，不是僵尸脑区），
+    所以 full_entities 清理步骤实际清理 0 个 doc——本测试覆盖这个边界情况，
+    确保：
+    1. repair 仍正常返回 status=ok（不报错）
+    2. cleaned_count 仍正确（识别并清理了 GraphML 等 7 存储，只是 full_entities 清 0）
+    3. full_entities 里其他 entity 的 doc 保留（不被误删）
+    """
+    _make_test_storage(tmp_path, zombies=["智家脑区A"], normal_regions=["聊天历史脑区"])
+    
+    # 修改 fixture：把 full_entities 改为不含僵尸脑区（模拟真实数据行为）
+    import json
+    fe_path = tmp_path / "kv_store_full_entities.json"
+    fe_path.write_text(json.dumps({
+        "doc-1": {"entity_name": "其他实体", "description": "...", "source_id": "doc-1"},
+    }, ensure_ascii=False))
+    
+    with patch("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path), \
+         patch("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path):
+        result = repair_brainregion_zombies()
+    
+    # 1. repair 仍正常返回（不报错）
+    assert result["status"] == "ok", f"status 应为 ok，实际 {result.get('status')}"
+    # 2. 仍识别并清理了 1 个僵尸脑区（GraphML 等 7 存储）
+    assert result["cleaned_count"] == 1, f"cleaned_count 应为 1，实际 {result.get('cleaned_count')}"
+    # 3. full_entities 没改动（僵尸脑区不在里面，其他 entity 的 doc 保留）
+    fe = json.loads(fe_path.read_text())
+    assert "doc-1" in fe, "其他 entity 的 doc 应保留"
+    assert fe["doc-1"]["entity_name"] == "其他实体", "其他 entity 内容应保持不变"
 ```
 
 ### - [ ] Step 2: Run test to verify it fails
 
 ```bash
-python -m pytest tests/test_lightrag_semantic_repair.py::test_repair_brainregion_zombies_cleans_all_8_storages -v
+python -m pytest tests/test_lightrag_semantic_repair.py::test_repair_brainregion_zombies_cleans_all_8_storages tests/test_lightrag_semantic_repair.py::test_repair_brainregion_zombies_zombies_not_in_full_entities -v
 ```
 
-Expected: FAIL with `ImportError`
+Expected: FAIL with `ImportError`（两个测试都应失败，因为 `repair_brainregion_zombies` 函数尚未实现）
 
 ### - [ ] Step 3: Write minimal implementation
 
@@ -1719,6 +1754,15 @@ def repair_brainregion_zombies() -> dict[str, Any]:
     6. vdb_chunks 的脑区专属 chunk 向量
     7. kv_store_full_entities / full_relations 的文档级索引（从列表中移除僵尸名）
     8. kv_store_relation_chunks 的僵尸关系 chunk（key 格式 "src<SEP>tgt"，src 或 tgt 是僵尸则删——Bug #3 修复）
+
+    运维场景提示：
+        本函数清理 8 个存储的僵尸脑区残留。注意：如果用户不跑本函数而直接
+        启动 `./niu`，`dissolve_shrunk_regions` 只通过 LightRAG
+        `adelete_by_entity` 清理 GraphML node + vdb_entities + 部分 kv_store，
+        但 181 个 brain_xxx 专属 chunk（entity_chunks / text_chunks / vdb_chunks
+        / full_entities / relation_chunks 5 个存储）会残留——因为不是 entity，
+        `adelete_by_entity` 不清理。残留 chunk 会被向量检索命中，导致 LLM 上下文
+        污染。建议运维场景下定期跑 `repair_all()`（含本函数）做完整 8 存储清理。
 
     Returns:
         {
@@ -2194,19 +2238,27 @@ def test_e2e_repair_cleans_zombies(restore_real_data):
     assert zombie_repair["cleaned_count"] >= 16
 
 
-def test_e2e_check_ok_after_repair(restore_real_data):
-    """阶段 3: repair 后 check_all 应通过（无僵尸脑区）"""
+def test_e2e_zombies_cleaned_after_repair(restore_real_data):
+    """阶段 3: repair 后 check_all 应清掉 16 个僵尸脑区（brainregion_semantic_zombie=0）。
+    
+    本次只保证 16 个僵尸脑区清理干净（brainregion_semantic_zombie=0），
+    不保证整体 check_all ok=True。剩余 90 个非僵尸报错（7 个 source_id_mismatch +
+    83 个 chunk_shared）是历史残留，待后续单独清理，不在本次修复范围
+    （见 Task 8 Step 2 Expected 注释）。
+    """
     from niu_api.internal.lightrag_repair import repair_all
     from niu_api.internal.lightrag_integrity import check_all
     
     repair_all()
     result = check_all()
     
-    # 僵尸脑区 check 不再报错
+    # 僵尸脑区 check 不再报错（本次修复的唯一硬性目标）
     zombie_check = result["checks"].get("brainregion_semantic_zombie", {})
-    assert zombie_check.get("errors", []) == []
+    assert zombie_check.get("errors", []) == [], (
+        f"16 个僵尸脑区应被清理干净，实际仍报错: {zombie_check.get('errors', [])}"
+    )
     
-    # 整体 ok 应该是 True（如果还有其他 check 报错，单独追踪）
+    # 整体 ok 不一定是 True（剩余 90 个非僵尸报错是历史残留，不在本次修复范围）
     # 关键：brainregion_semantic_zombie 必须 0 errors
 
 
@@ -2328,6 +2380,24 @@ Expected: 4 个测试全 PASS
 git add tests/test_lightrag_e2e_semantic.py
 git commit -m "test: 端到端验证——真实数据 16 个僵尸脑区 check+repair+启动程序全流程通过"
 ```
+
+---
+
+## 运维建议
+
+### 程序启动时自动检查
+
+建议未来在程序启动 lifespan 阶段调用 `check_all()`，如果发现 `brainregion_orphan_chunks` 报错（孤儿 brain_xxx chunk），自动提示用户跑 `repair_all`。
+
+这样可以避免以下运维场景：
+- 用户不跑 `repair_all` 就直接启动 `./niu`
+- `dissolve_shrunk_regions` 通过 LightRAG `adelete_by_entity` 删除僵尸脑区 GraphML node
+- 但 181 个 brain_xxx 专属 chunk 会残留（因为不是 entity，`adelete_by_entity` 不清理 entity_chunks/text_chunks/vdb_chunks/full_entities 等 5 个存储）
+- 残留 chunk 会被向量检索命中，导致 LLM 上下文污染（用户提问时检索到"被删除的重复脑区实体之一"等僵尸语义内容）
+
+**本次不实现这个自动检查**，但建议在 Task 11 端到端验证通过后，作为后续优化项追踪。
+
+**本次的应对策略**：要求用户在启动 `./niu` 前先跑一次 `repair_all()`（见 Task 8 Step 1 的 repair 流程）。Task 9 的 `repair_brainregion_zombies` 函数 docstring 已加说明（见 Task 9 Step 3 函数 docstring）。
 
 ---
 
@@ -2862,6 +2932,7 @@ git commit -m "docs: 新增 LightRAG 语义完整性设计文档"
    - forced sync 失败后 5 分钟冷却（Task 14）
    - shrink_threshold 从 100 降到 10（Task 15）
    - forced sync 改异步触发，启动不阻塞 43 秒（Task 16）
+10. ✅ 本次修复只保证 16 个僵尸脑区被清理（`brainregion_semantic_zombie=0`），不保证 `check_all` 整体 `ok=True`（90 个非僵尸历史残留——7 个 `entity_chunks_source_id_mismatch` + 83 个 `chunk_shared_by_too_many_entities`——待后续单独清理，不在本次修复范围，见 Task 8 Step 2 Expected 注释）
 
 ---
 
@@ -2968,4 +3039,14 @@ git commit -m "docs: 新增 LightRAG 语义完整性设计文档"
 5. [LOW] Task 9 fixture 加注释说明：vector 字段真实是 `base64(zlib(float16))` 三层编码，本 fixture 用占位符 `AAAAAA==`，`_rebuild_vdb_matrix` 会走 except 分支用零向量填充——不影响测试断言（断言只检查 entry 是否被删，不检查 vector 值）。
 6. [LOW] Task 9 fixture 加 `embedding_dim: 8` 字段（不是真实 768 减少测试数据量），让 `_rebuild_vdb_matrix` 走完整重建路径（否则空数据走 `matrix=""` 分支）。三处 vdb fixture（vdb_entities / vdb_relationships / vdb_chunks）同步加 `embedding_dim`。
 7. [LOW] L7 Architecture 段 + L83 文件结构表 + L2827 Self-Review 段："5 项语义 repair" 表述改为"1 项语义 repair 函数 `repair_brainregion_zombies`（覆盖 5 个语义 check 的修复需求，完整清理 8 存储）"——实际只新增一个 repair 函数，不是五个。
+
+### 扩大范围全逻辑链审查后修复的 3 个问题
+
+扩大范围全逻辑链审查（baseline ff6835fe）发现 3 个问题（1 MEDIUM + 1 LOW + 1 极低），已全部修复：
+
+1. [MEDIUM] **问题 A** Task 11 Step 3 测试 `test_e2e_check_ok_after_repair` 断言与计划 L2209 注释矛盾：测试只断言 `brainregion_semantic_zombie=0`，但注释说"整体 ok 应该是 True"。真实数据 repair 后剩余 90 个非僵尸报错（7 个 `entity_chunks_source_id_mismatch` + 83 个 `chunk_shared_by_too_many_entities`）是历史残留，整体 `ok` 不是 True。已修复：(1) 测试函数改名为 `test_e2e_zombies_cleaned_after_repair`（更准确反映测试意图）+ 断言改为只验证 `brainregion_semantic_zombie=0` + 加注释说明"不保证整体 ok=True"；(2) Task 8 Step 2 Expected 加说明"repair 后整体 ok 不一定是 True"；(3) 验收标准加第 10 条"本次修复只保证 16 个僵尸脑区被清理，不保证 check_all 整体 ok=True"。
+
+2. [LOW] **问题 B** 运维场景下 dissolve 不清理 brain_xxx 专属 chunk：如果用户不跑 `repair_all` 就直接启动 `./niu`，`dissolve_shrunk_regions` 通过 LightRAG `adelete_by_entity` 删除僵尸脑区 GraphML node，但 181 个 brain_xxx 专属 chunk（entity_chunks / text_chunks / vdb_chunks / full_entities / relation_chunks 5 个存储）会残留——因为不是 entity，`adelete_by_entity` 不清理。残留 chunk 会被向量检索命中，导致 LLM 上下文污染。已修复：(1) Task 11 之后、Task 12 之前新增"运维建议"小节，说明运维场景风险 + 建议未来在程序启动 lifespan 阶段调用 `check_all()` 自动检测 `brainregion_orphan_chunks`；(2) Task 9 `repair_brainregion_zombies` 函数 docstring 加"运维场景提示"段，说明本函数清理 8 存储 + 不跑本函数直接启动 ./niu 的风险。
+
+3. [极低] **问题 C** Task 9 测试 fixture 与真实数据 full_entities 行为不完全匹配：测试 fixture 用 `fe_data[doc_id] = {entity_name, description, source_id}` 形式，期望清理 N 个 doc。但真实数据中僵尸脑区**不在 full_entities keys 里**（清理 0 个）——测试 fixture 与真实数据行为不一致。已修复：Task 9 测试文件加新测试 `test_repair_brainregion_zombies_zombies_not_in_full_entities`，覆盖"僵尸脑区不在 full_entities keys"边界情况：修改 fixture 让 full_entities 不含僵尸脑区 + 断言 repair 仍正常返回 `status=ok` + `cleaned_count=1`（GraphML 等 7 存储仍清理）+ 其他 entity 的 doc 保留不被误删。Task 9 Step 2 的 pytest 命令同步加上新测试名。
 
