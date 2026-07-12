@@ -1081,12 +1081,7 @@ class RegionManager:
             parsed = _parse_description(raw_desc)
             shrink_count = int(parsed.get("shrink_count", "0") or "0")
 
-            # current_size=0 可能是脑区从未有成员的正常状态（新建/纯叶子节点），
-            # 不应据此累加 shrink_count 误判萎缩——否则会连锁解散所有 0 成员脑区。
-            # 只有"曾经有成员现在变少"（0 < size < threshold）才算萎缩。
-            if current_size == 0:
-                continue  # 跳过本脑区，不增不减 shrink_count
-            elif current_size < shrink_threshold:
+            if current_size < shrink_threshold:
                 shrink_count += 1
             else:
                 shrink_count = 0
