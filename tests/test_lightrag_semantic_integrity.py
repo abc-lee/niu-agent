@@ -2,7 +2,6 @@
 import pytest
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from unittest.mock import patch
 
 from niu_api.internal.lightrag_integrity import _load_graphml, _parse_brain_meta
 
@@ -39,8 +38,7 @@ def test_load_graphml_returns_node_metadata(tmp_path):
         {"id": "Python", "entity_type": "concept", "description": "编程语言", "source_id": "doc-abc"},
     ])
 
-    with patch("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path):
-        node_ids, edges, node_meta, err = _load_graphml(graphml)
+    node_ids, edges, node_meta, err = _load_graphml(graphml)
 
     assert err is None
     assert node_ids == {"聊天历史脑区", "Python"}
@@ -56,8 +54,7 @@ def test_load_graphml_node_without_metadata(tmp_path):
     graphml = tmp_path / "graph_chunk_entity_relation.graphml"
     _write_test_graphml(graphml, nodes=[{"id": "bare_node"}])
 
-    with patch("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path):
-        _, _, node_meta, err = _load_graphml(graphml)
+    _, _, node_meta, err = _load_graphml(graphml)
 
     assert err is None
     assert node_meta["bare_node"] == {"entity_type": "", "description": "", "source_id": ""}
@@ -68,11 +65,49 @@ def test_load_graphml_backward_compat_node_ids(tmp_path):
     graphml = tmp_path / "graph_chunk_entity_relation.graphml"
     _write_test_graphml(graphml, nodes=[{"id": "X"}], edges=[{"source": "X", "target": "Y"}])
 
-    with patch("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path):
-        result = _load_graphml(graphml)
+    result = _load_graphml(graphml)
 
     assert len(result) == 4
     node_ids, edges, node_meta, err = result
     assert "X" in node_ids
     assert ("X", "Y") in edges
     assert err is None
+
+
+def test_parse_brain_meta_standard_fields():
+    """_parse_brain_meta 解析标准 brain_meta_* 字段"""
+    desc = "brain_meta_region_id:default_聊天历史<SEP>brain_meta_size:89<SEP>brain_meta_shrink_count:1"
+    result = _parse_brain_meta(desc)
+    assert result == {
+        "region_id": "default_聊天历史",
+        "size": "89",
+        "shrink_count": "1",
+    }
+
+
+def test_parse_brain_meta_mixed_with_normal_text():
+    """description 含普通文本 + brain_meta_* 字段（真实数据格式）"""
+    desc = "日常对话中提炼的偏好<SEP>brain_meta_region_id:default_聊天历史<SEP>brain_meta_size:89"
+    result = _parse_brain_meta(desc)
+    # 普通文本"日常对话中提炼的偏好"不含 brain_meta_ 前缀，被过滤
+    assert result == {
+        "region_id": "default_聊天历史",
+        "size": "89",
+    }
+
+
+def test_parse_brain_meta_empty_value_field():
+    """brain_meta_representative: 这种空值字段应保留为空字符串"""
+    desc = "brain_meta_region_id:<SEP>brain_meta_size:0<SEP>brain_meta_representative:"
+    result = _parse_brain_meta(desc)
+    assert result == {
+        "region_id": "",
+        "size": "0",
+        "representative": "",
+    }
+
+
+def test_parse_brain_meta_empty_description():
+    """空 description 返回空 dict"""
+    assert _parse_brain_meta("") == {}
+    assert _parse_brain_meta(None) == {}
