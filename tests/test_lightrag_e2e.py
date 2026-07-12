@@ -484,7 +484,7 @@ def test_07_entity_chunks_dangling_rebuilds_from_graphml(restore_baseline):
     original_keys = set(ec_data.keys())
 
     # 找一个 GraphML 中不存在的 entity_name
-    node_ids, _, _ = lightrag_integrity._load_graphml(
+    node_ids, _, _, _ = lightrag_integrity._load_graphml(
         STORAGE_DIR / lightrag_integrity._GRAPHML_FILE
     )
     dangling_name = "zzz_dangling_test_entity_xxx"
