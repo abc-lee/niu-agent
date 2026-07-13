@@ -2,7 +2,6 @@
 
 测试前提：~/.niu/lightrag_storage_backup_20260712_071242/ 存在（含 16 个僵尸脑区）。
 """
-import json
 import shutil
 import subprocess
 import time
@@ -132,6 +131,8 @@ def test_e2e_program_starts_normally(restore_real_data):
             except Exception:
                 pass
             time.sleep(1)
+        else:
+            pytest.fail("API 60 秒内未 ready，启动失败")
 
         # 再等 30 秒让 region_sync 跑完
         time.sleep(30)
@@ -157,30 +158,26 @@ def test_e2e_program_starts_normally(restore_real_data):
                 pass  # SIGKILL 后仍不退出——极端情况，记录但不阻塞测试
 
         # 额外清理：杀残留子进程（Electron / niu-api / mcp 等）
-        # 用 psutil 杀进程树（如果可用），否则用 pkill fallback
+        # 用 psutil 杀进程树（psutil 是项目硬依赖，测试环境必有）
         import signal
+        import psutil
         try:
-            import psutil
-            try:
-                parent = psutil.Process(proc.pid)
-                for child in parent.children(recursive=True):
-                    try:
-                        child.send_signal(signal.SIGTERM)
-                    except (psutil.NoSuchProcess, psutil.AccessDenied):
-                        pass
+            parent = psutil.Process(proc.pid)
+            for child in parent.children(recursive=True):
                 try:
-                    parent.send_signal(signal.SIGKILL)
+                    child.send_signal(signal.SIGTERM)
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     pass
-            except psutil.NoSuchProcess:
-                pass  # 进程已退出
-        except ImportError:
-            # psutil 不可用，用 pkill 兜底（只杀 niu 和 Electron，不杀其他）
-            subprocess.run(["pkill", "-9", "-f", "niu"], check=False, timeout=10)
-            subprocess.run(["pkill", "-9", "-f", "Electron"], check=False, timeout=10)
+            try:
+                parent.send_signal(signal.SIGKILL)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+        except psutil.NoSuchProcess:
+            pass  # 进程已退出
 
     # 读 stdout 日志
-    output = proc.stdout.read().decode("utf-8", errors="replace")
+    raw = proc.stdout.read() if proc.stdout else b""
+    output = raw.decode("utf-8", errors="replace")
 
     # 16 个僵尸脑区的特征标记（来自真实数据——description 含"被删除"且脑区名含"智家/家居/居家"）
     # 必须全部检查，避免只查"智家"漏掉"家居智能应用脑区"等
