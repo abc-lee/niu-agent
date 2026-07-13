@@ -16,6 +16,7 @@
 """
 import json
 import shutil
+import warnings
 import pytest
 from pathlib import Path
 from unittest.mock import patch
@@ -69,14 +70,14 @@ def _reset_lightrag_namespace_state():
     if ss._initialized:
         try:
             ss.finalize_share_data()
-        except Exception:
-            pass  # 忽略清理错误
+        except Exception as e:
+            warnings.warn(f"reset namespace: finalize_share_data failed: {type(e).__name__}: {e}")
 
     # 重新初始化（单进程模式）
     try:
         ss.initialize_share_data(workers=1)
-    except Exception:
-        pass  # 忽略初始化错误
+    except Exception as e:
+        warnings.warn(f"reset namespace: initialize_share_data failed: {type(e).__name__}: {e}")
 
     # 同时清 lightrag_manager 的 _rag_instance，让下次 get_lightrag 重建实例
     import niu_api.internal.lightrag_manager as lightrag_manager
@@ -226,3 +227,59 @@ def test_e2e_zombie_cache_cleaned_before_rebuild(isolated_storage, patched_stora
     assert "default:extract:syn-key-1" in cache, "正常 extract entry 应保留"
     # 注意：zombie-syn 是否被清取决于 GraphML 是否含僵尸 node（实际行为下不会清，
     # 因为 GraphML 不含僵尸，repair_brainregion_zombies 直接 return）。
+
+
+def test_e2e_rollback_when_rebuild_fails(isolated_storage, patched_storage):
+    """场景 7（回滚路径）：真相源完好但 rebuild 阶段抛异常 → 备份恢复。
+
+    代码审查发现场景 5 名不副实——它只验证 early-return（真相源损坏在步骤 1 就 return），
+    没真正覆盖 repair_all 步骤 5 的"重建失败→恢复备份"回滚路径。
+
+    本测试真正触发回滚路径：
+    1. 先跑一次 repair_all 建立完整 baseline（所有派生文件存在）
+    2. 记录 baseline 的 GraphML 内容
+    3. patch _REBUILD_ORDER 让 repair_graphml 抛 RuntimeError
+    4. 再次调用 repair_all —— 进到步骤 4 重建时抛异常 → 步骤 5 回滚
+    5. 断言 _rolled_back=True 且 GraphML 恢复到 baseline（不是被删除/损坏的状态）
+
+    注意：_REBUILD_ORDER 是模块级 list，在模块加载时直接捕获函数引用，
+    所以不能 patch lightrag_repair.repair_graphml —— 必须直接 patch _REBUILD_ORDER。
+    """
+    import niu_api.internal.lightrag_repair as lightrag_repair
+
+    # 1. 先跑一次 repair_all 建立完整 baseline
+    baseline_result = repair_all()
+    assert not baseline_result.get("_unrecoverable"), \
+        f"baseline repair_all 应成功: {baseline_result.get('_unrecoverable_reason')}"
+
+    graphml_path = isolated_storage / "graph_chunk_entity_relation.graphml"
+    assert graphml_path.exists(), "baseline 后 GraphML 应存在"
+    baseline_graphml = graphml_path.read_bytes()
+    assert len(baseline_graphml) > 0, "baseline GraphML 不应为空"
+
+    # 2. patch _REBUILD_ORDER 让 graphml 阶段抛异常
+    #    _REBUILD_ORDER 在模块加载时直接捕获函数引用，所以必须替换 list 里的条目
+    orig_order = lightrag_repair._REBUILD_ORDER
+
+    def boom():
+        raise RuntimeError("simulated rebuild failure")
+
+    patched_order = [
+        ("graphml", boom) if name == "graphml" else (name, fn)
+        for name, fn in orig_order
+    ]
+
+    with patch.object(lightrag_repair, "_REBUILD_ORDER", patched_order):
+        # 3. 调用 repair_all —— 应进到步骤 4 重建时抛异常 → 步骤 5 回滚
+        result = repair_all()
+
+    # 4. 断言回滚成功
+    assert result.get("_rolled_back") is True, \
+        f"重建失败应触发回滚: _rolled_back={result.get('_rolled_back')}, " \
+        f"_rollback_error={result.get('_rollback_error')}"
+
+    # 5. 断言 GraphML 恢复到 baseline 内容（备份恢复成功，不是被删除状态）
+    assert graphml_path.exists(), "回滚后 GraphML 应存在（从备份恢复）"
+    rolled_back_graphml = graphml_path.read_bytes()
+    assert rolled_back_graphml == baseline_graphml, \
+        "回滚后 GraphML 内容应跟 baseline 一致（备份恢复成功）"
