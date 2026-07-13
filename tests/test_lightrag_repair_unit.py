@@ -234,7 +234,7 @@ def test_repair_text_chunks_uses_real_config_not_hardcoded(tmp_path, monkeypatch
             return " ".join(tokens)  # 简化：用空格拼回
     class FakeRag:
         tokenizer = FakeTokenizer()
-    monkeypatch.setattr("niu_api.internal.lightrag_manager.get_lightrag", lambda: FakeRag())
+    monkeypatch.setattr("niu_api.internal.lightrag_manager.get_lightrag_for_repair", lambda: FakeRag())
 
     monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
 
@@ -275,7 +275,7 @@ def test_repair_text_chunks_chunk_id_mismatch_returns_unrecoverable(tmp_path, mo
             return " ".join(tokens)
     class FakeRag:
         tokenizer = FakeTokenizer()
-    monkeypatch.setattr("niu_api.internal.lightrag_manager.get_lightrag", lambda: FakeRag())
+    monkeypatch.setattr("niu_api.internal.lightrag_manager.get_lightrag_for_repair", lambda: FakeRag())
     monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
 
     result = repair_text_chunks()
@@ -325,7 +325,7 @@ def test_repair_text_chunks_rebuilds_llm_cache_list(tmp_path, monkeypatch):
             return doc_content
     class FakeRag:
         tokenizer = FakeTokenizer()
-    monkeypatch.setattr("niu_api.internal.lightrag_manager.get_lightrag", lambda: FakeRag())
+    monkeypatch.setattr("niu_api.internal.lightrag_manager.get_lightrag_for_repair", lambda: FakeRag())
     monkeypatch.setattr("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path)
 
     result = repair_text_chunks()
@@ -340,13 +340,17 @@ def test_repair_text_chunks_rebuilds_llm_cache_list(tmp_path, monkeypatch):
 
 
 def test_repair_graphml_clears_rag_instance_before_get_lightrag(tmp_path, monkeypatch):
-    """repair_graphml 调 get_lightrag() 前应显式置 _rag_instance=None + 同步 STORAGE_DIR。
+    """repair_graphml 调 get_lightrag_for_repair() 前应显式置 _rag_instance=None + 同步 STORAGE_DIR。
 
-    验证修复的必要性：如果 repair_graphml 不清 _rag_instance，get_lightrag() fast path
-    会返回旧实例（指向真实 ~/.niu/lightrag_storage），污染真实数据。
+    验证修复的必要性：如果 repair_graphml 不清 _rag_instance，
+    get_lightrag_for_repair() fast path 会返回旧实例（指向真实 ~/.niu/lightrag_storage），
+    污染真实数据。
 
     安全设计：不直接调 repair_graphml（避免真实 pipeline 跑污染数据），而是 mock
-    get_lightrag 验证调用前的状态。
+    get_lightrag_for_repair 验证调用前的状态。
+
+    Bug A 修复后：repair_graphml 改用 get_lightrag_for_repair（绕过 _repairing 门控），
+    但调用前的 _rag_instance 清理 + STORAGE_DIR 同步仍必要（防 fast path 污染）。
     """
     import niu_api.internal.lightrag_manager as lightrag_manager
 
@@ -369,23 +373,23 @@ def test_repair_graphml_clears_rag_instance_before_get_lightrag(tmp_path, monkey
     (tmp_path / "kv_store_text_chunks.json").write_text("{}")
     (tmp_path / "kv_store_doc_status.json").write_text("{}")
 
-    # mock get_lightrag：捕获调用时的 _rag_instance 状态
+    # mock get_lightrag_for_repair：捕获调用时的 _rag_instance 状态
     call_state = {}
-    def mock_get_lightrag():
+    def mock_get_lightrag_for_repair():
         call_state["_rag_instance_at_call"] = lightrag_manager._rag_instance
         call_state["storage_dir_at_call"] = lightrag_manager.STORAGE_DIR
         return None  # 返回 None 让 repair_graphml 走 unrecoverable 分支，不跑真实 pipeline
-    monkeypatch.setattr("niu_api.internal.lightrag_manager.get_lightrag", mock_get_lightrag)
+    monkeypatch.setattr("niu_api.internal.lightrag_manager.get_lightrag_for_repair", mock_get_lightrag_for_repair)
 
     from niu_api.internal.lightrag_repair import repair_graphml
     result = repair_graphml()
 
-    # 验证 get_lightrag 被调用前，_rag_instance 已被清空（None）
+    # 验证 get_lightrag_for_repair 被调用前，_rag_instance 已被清空（None）
     assert call_state.get("_rag_instance_at_call") is None, \
-        "repair_graphml 调 get_lightrag() 前应清 _rag_instance=None，否则 fast path 返回旧实例污染真实数据"
+        "repair_graphml 调 get_lightrag_for_repair() 前应清 _rag_instance=None，否则 fast path 返回旧实例污染真实数据"
     # 验证 lightrag_manager.STORAGE_DIR 已同步到 _storage_dir()（tmp_path）
     assert call_state.get("storage_dir_at_call") == tmp_path, \
-        "repair_graphml 调 get_lightrag() 前应同步 lightrag_manager.STORAGE_DIR 到 _storage_dir()"
+        "repair_graphml 调 get_lightrag_for_repair() 前应同步 lightrag_manager.STORAGE_DIR 到 _storage_dir()"
 
 
 def test_check_all_vdb_missing_but_graphml_intact_returns_major(tmp_path, monkeypatch):
@@ -750,3 +754,124 @@ def test_run_repair_on_user_request_repaired_true_when_unrecoverable_false_but_c
     )
     # check_all 的 major 错误应仍暴露给用户（不掩盖问题）
     assert result["major_errors"] == 1
+
+
+def test_get_lightrag_for_repair_bypasses_repairing_gate(monkeypatch):
+    """get_lightrag_for_repair 应绕过 _repairing 门控，返回非 None 实例。
+
+    Bug A 复现：run_repair_on_user_request 设 _repairing=True 后调 repair_all，
+    repair_text_chunks/repair_graphml 内部调 get_lightrag() 拿实例，但
+    get_lightrag() 看到 _repairing=True 直接 return None → 报 "LightRAG 实例
+    未初始化" → unrecoverable=True → 触发回滚。
+
+    修复：get_lightrag_for_repair() 绕过 _repairing 门控，但仍保留
+    _rag_lock 双检锁 + retry cooldown 确保线程安全。
+
+    注意：mock _create_lightrag_instance 避免真实 LightRAG 初始化污染单元测试。
+    """
+    import niu_api.internal.lightrag_manager as lightrag_manager
+
+    # 模拟 repair 期间状态
+    monkeypatch.setattr(lightrag_manager, "_repairing", True)
+    monkeypatch.setattr(lightrag_manager, "_rag_instance", None)
+    monkeypatch.setattr(lightrag_manager, "_init_failed_at", None)
+
+    # mock _create_lightrag_instance 避免真实初始化（单元测试不依赖真实 LightRAG）
+    class FakeRag:
+        tokenizer = "fake-tokenizer"
+    monkeypatch.setattr(lightrag_manager, "_create_lightrag_instance", lambda: FakeRag())
+
+    # 1. get_lightrag 应返回 None（_repairing 门控生效）
+    assert lightrag_manager.get_lightrag() is None, (
+        "get_lightrag 在 _repairing=True 时应返回 None（repair 期间静默）"
+    )
+
+    # 2. get_lightrag_for_repair 应绕过门控，返回非 None 实例
+    rag = lightrag_manager.get_lightrag_for_repair()
+    assert rag is not None, (
+        "get_lightrag_for_repair 应绕过 _repairing 门控返回实例"
+    )
+    assert hasattr(rag, "tokenizer"), "实例应有 tokenizer 属性"
+
+
+def test_get_lightrag_for_repair_skips_critical_major_gate(monkeypatch):
+    """get_lightrag_for_repair 应跳过三级门控 critical/major 检查。
+
+    repair 期间数据正在重建，critical/major 是预期状态，不应拒绝初始化。
+    否则 repair 期间 check_all 报 critical → get_lightrag_for_repair 也拒绝
+    → 死循环（永远拿不到实例）。
+    """
+    import niu_api.internal.lightrag_manager as lightrag_manager
+
+    # 模拟 critical 损坏状态（repair 期间预期）
+    monkeypatch.setattr(lightrag_manager, "_repairing", True)
+    monkeypatch.setattr(lightrag_manager, "_rag_instance", None)
+    monkeypatch.setattr(lightrag_manager, "_init_failed_at", None)
+    monkeypatch.setattr(lightrag_manager, "_integrity_result", {
+        "critical_errors": 5,
+        "major_errors": 3,
+        "minor_errors": 0,
+    })
+
+    class FakeRag:
+        tokenizer = "fake-tokenizer"
+    monkeypatch.setattr(lightrag_manager, "_create_lightrag_instance", lambda: FakeRag())
+
+    # get_lightrag 在 critical 状态下应返回 None（即使没有 _repairing 也会被 critical 拒绝）
+    # 这里 _repairing=True 优先命中，返回 None
+    assert lightrag_manager.get_lightrag() is None
+
+    # get_lightrag_for_repair 应跳过 critical/major 门控，返回实例
+    rag = lightrag_manager.get_lightrag_for_repair()
+    assert rag is not None, (
+        "get_lightrag_for_repair 应跳过 critical/major 门控（repair 期间是预期状态）"
+    )
+
+
+def test_get_lightrag_for_repair_respects_retry_cooldown(monkeypatch):
+    """get_lightrag_for_repair 应保留 retry cooldown（避免快速重试失败）。
+
+    若最近初始化失败（_init_failed_at 未过 cooldown），应返回 None 而非重试。
+    这避免 repair 期间短时间内反复失败导致 CPU 浪费。
+    """
+    import time
+    import niu_api.internal.lightrag_manager as lightrag_manager
+
+    monkeypatch.setattr(lightrag_manager, "_repairing", True)
+    monkeypatch.setattr(lightrag_manager, "_rag_instance", None)
+    # 模拟刚刚失败（_init_failed_at 设为当前时间，cooldown 未过）
+    monkeypatch.setattr(lightrag_manager, "_init_failed_at", time.monotonic())
+
+    class FakeRag:
+        tokenizer = "fake-tokenizer"
+    monkeypatch.setattr(lightrag_manager, "_create_lightrag_instance", lambda: FakeRag())
+
+    # cooldown 未过，应返回 None
+    rag = lightrag_manager.get_lightrag_for_repair()
+    assert rag is None, (
+        "get_lightrag_for_repair 在 retry cooldown 未过时应返回 None"
+    )
+
+
+def test_get_lightrag_for_repair_reuses_cached_instance(monkeypatch):
+    """get_lightrag_for_repair 应复用已缓存的 _rag_instance（fast path）。
+
+    若 _rag_instance 已存在（非 None），直接返回，不重新创建。
+    避免 repair 期间反复重建实例。
+    """
+    import niu_api.internal.lightrag_manager as lightrag_manager
+
+    class CachedRag:
+        tokenizer = "cached-tokenizer"
+    cached = CachedRag()
+    monkeypatch.setattr(lightrag_manager, "_repairing", True)
+    monkeypatch.setattr(lightrag_manager, "_rag_instance", cached)
+    monkeypatch.setattr(lightrag_manager, "_init_failed_at", None)
+
+    # _create_lightrag_instance 不应被调用（若被调用会抛异常暴露问题）
+    def _should_not_be_called():
+        raise AssertionError("_create_lightrag_instance 不应在 _rag_instance 已存在时被调用")
+    monkeypatch.setattr(lightrag_manager, "_create_lightrag_instance", _should_not_be_called)
+
+    rag = lightrag_manager.get_lightrag_for_repair()
+    assert rag is cached, "应直接返回缓存的 _rag_instance（同一对象）"

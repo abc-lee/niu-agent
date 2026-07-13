@@ -95,23 +95,34 @@ def patched_storage(tmp_path):
     同时 patch lightrag_repair._STORAGE_DIR 和 lightrag_integrity._STORAGE_DIR，
     避免 check_all 读真实路径污染数据。
 
-    关键 workaround：包装 lightrag_manager.get_lightrag，每次调用前清空 namespace
-    共享存储状态。这绕过 Task 4 遗留 bug（_init_flags 全局变量导致第二次
-    get_lightrag 不重新加载磁盘 doc_status）。
+    关键 workaround：包装 lightrag_manager.get_lightrag + get_lightrag_for_repair，
+    每次调用前清空 namespace 共享存储状态。这绕过 Task 4 遗留 bug（_init_flags
+    全局变量导致第二次 get_lightrag 不重新加载磁盘 doc_status）。
+
+    Bug A 修复后：repair_text_chunks/repair_graphml 改用 get_lightrag_for_repair，
+    所以也必须包装它，否则命名空间不重置 → 第二次调用看到 stale _init_flags=True
+    → 跳过 KV load → "No documents to process"。
     """
     import niu_api.internal.lightrag_manager as lightrag_manager
 
-    # 备份原 get_lightrag
+    # 备份原 get_lightrag + get_lightrag_for_repair
     orig_get_lightrag = lightrag_manager.get_lightrag
+    orig_get_lightrag_for_repair = lightrag_manager.get_lightrag_for_repair
 
     def patched_get_lightrag(*args, **kwargs):
         # 每次调用前清空 namespace，强制下次 initialize() 重新从磁盘加载
         _reset_lightrag_namespace_state()
         return orig_get_lightrag(*args, **kwargs)
 
+    def patched_get_lightrag_for_repair(*args, **kwargs):
+        # 同上：repair 专用路径也要清空 namespace
+        _reset_lightrag_namespace_state()
+        return orig_get_lightrag_for_repair(*args, **kwargs)
+
     with patch("niu_api.internal.lightrag_repair._STORAGE_DIR", tmp_path), \
          patch("niu_api.internal.lightrag_integrity._STORAGE_DIR", tmp_path), \
-         patch("niu_api.internal.lightrag_manager.get_lightrag", patched_get_lightrag):
+         patch("niu_api.internal.lightrag_manager.get_lightrag", patched_get_lightrag), \
+         patch("niu_api.internal.lightrag_manager.get_lightrag_for_repair", patched_get_lightrag_for_repair):
         # 初始清空一次（防止其他测试残留）
         _reset_lightrag_namespace_state()
         yield tmp_path

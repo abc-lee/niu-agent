@@ -433,11 +433,11 @@ def repair_text_chunks() -> dict[str, Any]:
         chunk_token_size = 1200
         chunk_overlap_token_size = 50
 
-    # 3. 获取 tokenizer（从 LightRAG 实例）
+    # 3. 获取 tokenizer（从 LightRAG 实例，用 repair 专用路径绕过 _repairing 门控）
     try:
-        from niu_api.internal.lightrag_manager import get_lightrag
+        from niu_api.internal.lightrag_manager import get_lightrag_for_repair
 
-        rag = get_lightrag()
+        rag = get_lightrag_for_repair()
         if rag is None or not hasattr(rag, "tokenizer"):
             return {
                 "status": "error",
@@ -696,22 +696,26 @@ def repair_graphml() -> dict[str, Any]:
         # cache 空也允许重处理（但会调 LLM，用户承担费用）
         logger.warning("[LightRAGRepair] llm_response_cache 为空，重处理会调 LLM")
 
-    # 2. 获取 LightRAG 实例
+    # 2. 获取 LightRAG 实例（用 repair 专用路径绕过 _repairing 门控）
     try:
-        from niu_api.internal.lightrag_manager import get_lightrag
+        from niu_api.internal.lightrag_manager import get_lightrag_for_repair
 
         # 修复：让 _STORAGE_DIR patch 生效
-        # get_lightrag() L929 的 fast path：只要 _rag_instance is not None 就直接返回旧实例
+        # get_lightrag_for_repair() 的 fast path：只要 _rag_instance is not None 就直接返回旧实例
         # （指向真实 ~/.niu/lightrag_storage）。
         #
         # 注意：不能用 lightrag_manager.reset_init_state()——它只清 _init_failed_at（lightrag_manager.py:1352），
-        # 不清 _rag_instance，调了也没用。必须显式置 _rag_instance = None 才能让 get_lightrag()
+        # 不清 _rag_instance，调了也没用。必须显式置 _rag_instance = None 才能让 get_lightrag_for_repair()
         # 重新创建实例。
         #
         # 关键：_create_lightrag_instance() 用的是 lightrag_manager.STORAGE_DIR（无下划线），
         # 不是 lightrag_repair._STORAGE_DIR（带下划线，被测试 patch 的）。
         # 所以必须同时 patch lightrag_manager.STORAGE_DIR 指向 _storage_dir()，
         # 否则新创建的实例仍指向真实 ~/.niu/lightrag_storage。
+        #
+        # 注意：repair_all 开头（L2257-2264）已做过同样的同步，但 repair_graphml 也可能被
+        # 独立调用（例如 Task 9 端到端测试的 workaround 路径），所以这里保留冗余同步
+        # 确保两种调用场景都能拿到指向 patch 后路径的实例。
         try:
             import niu_api.internal.lightrag_manager as lightrag_manager
             lightrag_manager._rag_instance = None
@@ -722,7 +726,7 @@ def repair_graphml() -> dict[str, Any]:
         except Exception as e:
             logger.warning(f"[LightRAGRepair] 清 _rag_instance 失败（继续用现有实例）: {e}")
 
-        rag = get_lightrag()
+        rag = get_lightrag_for_repair()
     except Exception as e:  # noqa: BLE001
         return {
             "status": "error",
